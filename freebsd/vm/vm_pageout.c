@@ -169,7 +169,7 @@ static int pageout_cpus_per_thread = 16;
 SYSCTL_INT(_vm, OID_AUTO, pageout_cpus_per_thread, CTLFLAG_RDTUN,
     &pageout_cpus_per_thread, 0,
     "Number of CPUs per pagedaemon worker thread");
-  
+
 SYSCTL_INT(_vm, OID_AUTO, lowmem_period, CTLFLAG_RWTUN, &lowmem_period, 0,
 	"Low memory callback period");
 
@@ -376,7 +376,7 @@ vm_pageout_cluster(vm_page_t m)
 	 * due to flushing pages out of order and not trying to
 	 * align the clusters (which leaves sporadic out-of-order
 	 * holes).  To solve this problem we do the reverse scan
-	 * first and attempt to align our cluster, then do a 
+	 * first and attempt to align our cluster, then do a
 	 * forward scan if room remains.
 	 */
 more:
@@ -417,7 +417,7 @@ more:
 		if ((pindex - (ib - 1)) % vm_pageout_page_count == 0)
 			break;
 	}
-	while (pageout_count < vm_pageout_page_count && 
+	while (pageout_count < vm_pageout_page_count &&
 	    pindex + is < object->size) {
 		if ((p = vm_page_next(ps)) == NULL ||
 		    vm_page_tryxbusy(p) == 0)
@@ -622,7 +622,7 @@ vm_pageout_clean(vm_page_t m, int *numpagedout)
 	 *
 	 * We can't wait forever for the vnode lock, we might
 	 * deadlock due to a vn_read() getting stuck in
-	 * vm_wait while holding this vnode.  We skip the 
+	 * vm_wait while holding this vnode.  We skip the
 	 * vnode if we can't get it in a reasonable amount
 	 * of time.
 	 */
@@ -694,7 +694,7 @@ vm_pageout_clean(vm_page_t m, int *numpagedout)
 	 * If a page is dirty, then it is either being washed
 	 * (but not yet cleaned) or it is still in the
 	 * laundry.  If it is still in the laundry, then we
-	 * start the cleaning operation. 
+	 * start the cleaning operation.
 	 */
 	if ((*numpagedout = vm_pageout_cluster(m)) == 0)
 		error = EIO;
@@ -1102,7 +1102,7 @@ dolaundry:
 			/*
 			 * Because of I/O clustering, the number of laundered
 			 * pages could exceed "target" by the maximum size of
-			 * a cluster minus one. 
+			 * a cluster minus one.
 			 */
 			target -= min(vm_pageout_launder(vmd, launder,
 			    in_shortfall), target);
@@ -2253,7 +2253,7 @@ vm_pageout_init_domain(int domain)
 	/*
 	 * v_free_reserved needs to include enough for the largest
 	 * swap pager structures plus enough for any pv_entry structs
-	 * when paging. 
+	 * when paging.
 	 */
 	vmd->vmd_pageout_free_min = 2 * MAXBSIZE / PAGE_SIZE +
 	    vmd->vmd_interrupt_free_min;

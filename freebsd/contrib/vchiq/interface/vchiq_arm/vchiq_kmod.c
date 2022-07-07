@@ -93,7 +93,7 @@ static struct ofw_compat_data compat_data[] = {
     bus_space_write_4(bcm_vchiq_sc->bst, bcm_vchiq_sc->bsh, (reg) + \
     bcm_vchiq_sc->regs_offset, val)
 
-/* 
+/*
  * Extern functions */
 void vchiq_exit(void);
 int vchiq_init(void);

@@ -210,7 +210,7 @@ ng_tcpmss_rcvmsg
 				if (resp == NULL)
 					ERROUT(ENOMEM);
 				bcopy(&priv->stats, resp->data,
-				    sizeof(struct ng_tcpmss_hookstat));	
+				    sizeof(struct ng_tcpmss_hookstat));
 			}
 
 			if (msg->header.cmd != NGM_TCPMSS_GET_STATS)

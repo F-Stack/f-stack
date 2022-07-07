@@ -652,8 +652,8 @@ vm_page_startup(vm_offset_t vaddr)
 	 * use, taking into account the overhead of a page structure per page.
 	 * In other words, solve
 	 *	"available physical memory" - round_page(page_range *
-	 *	    sizeof(struct vm_page)) = page_range * PAGE_SIZE 
-	 * for page_range.  
+	 *	    sizeof(struct vm_page)) = page_range * PAGE_SIZE
+	 * for page_range.
 	 */
 	low_avail = phys_avail[0];
 	high_avail = phys_avail[1];
@@ -3297,10 +3297,10 @@ vm_domain_alloc_fail(struct vm_domain *vmd, vm_object_t object, int req)
 	atomic_add_int(&vmd->vmd_pageout_deficit,
 	    max((u_int)req >> VM_ALLOC_COUNT_SHIFT, 1));
 	if (req & (VM_ALLOC_WAITOK | VM_ALLOC_WAITFAIL)) {
-		if (object != NULL) 
+		if (object != NULL)
 			VM_OBJECT_WUNLOCK(object);
 		vm_wait_domain(vmd->vmd_domain);
-		if (object != NULL) 
+		if (object != NULL)
 			VM_OBJECT_WLOCK(object);
 		if (req & VM_ALLOC_WAITOK)
 			return (EAGAIN);

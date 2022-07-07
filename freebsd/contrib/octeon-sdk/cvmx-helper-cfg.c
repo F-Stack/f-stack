@@ -92,8 +92,8 @@ struct cvmx_cfg_port_param {
 					 * When the user explicitly
 					 * assigns queues,
 					 * cvmx_cfg_pko_nqueue_pool[
-					 *     ccpp_pko_nqueues ... 
-					 *     ccpp_pko_nqueues + 
+					 *     ccpp_pko_nqueues ...
+					 *     ccpp_pko_nqueues +
 					 *     ccpp_pko_num_ports - 1]
 					 * are the numbers of PKO queues
 					 * assigned to the PKO ports for
@@ -149,7 +149,7 @@ static CVMX_SHARED struct cvmx_cfg_pko_port_param cvmx_cfg_pko_port
 	 CVMX_HELPER_CFG_INVALID_VALUE}};
 
 static CVMX_SHARED struct cvmx_cfg_pko_port_map cvmx_cfg_pko_port_map
-    [CVMX_HELPER_CFG_MAX_PKO_PORT] = 
+    [CVMX_HELPER_CFG_MAX_PKO_PORT] =
         {[0 ... CVMX_HELPER_CFG_MAX_PKO_PORT - 1] =
             {CVMX_HELPER_CFG_INVALID_VALUE,
 	     CVMX_HELPER_CFG_INVALID_VALUE,
@@ -163,7 +163,7 @@ static CVMX_SHARED struct cvmx_cfg_pko_port_map cvmx_cfg_pko_port_map
  */
 static CVMX_SHARED struct cvmx_cfg_pko_port_pair ipd2pko_port_cache[16]
     [CVMX_HELPER_CFG_MAX_PORT_PER_IFACE] =
-    {[0 ... 15] = 
+    {[0 ... 15] =
         {[0 ... CVMX_HELPER_CFG_MAX_PORT_PER_IFACE - 1] =
 	    {CVMX_HELPER_CFG_INVALID_VALUE,
 	     CVMX_HELPER_CFG_INVALID_VALUE}}};
@@ -177,7 +177,7 @@ static CVMX_SHARED int cvmx_cfg_default_pko_nqueues = 1;
  * physical port.
  */
 static CVMX_SHARED uint8_t cvmx_cfg_pko_nqueue_pool
-    [CVMX_HELPER_CFG_MAX_PKO_QUEUES] = 
+    [CVMX_HELPER_CFG_MAX_PKO_QUEUES] =
     {[0 ... CVMX_HELPER_CFG_MAX_PKO_QUEUES - 1] = 1};
 
 #endif
@@ -194,7 +194,7 @@ static CVMX_SHARED uint64_t cvmx_cfg_opts[CVMX_HELPER_CFG_OPT_MAX] =
 /*
  * MISC
  */
-static CVMX_SHARED int cvmx_cfg_max_pko_engines; /* # of PKO DMA engines 
+static CVMX_SHARED int cvmx_cfg_max_pko_engines; /* # of PKO DMA engines
 						    allocated */
 int __cvmx_helper_cfg_pknd(int interface, int index)
 {
@@ -245,7 +245,7 @@ int __cvmx_helper_cfg_pko_max_queue(void)
     }
 
     cvmx_helper_cfg_assert(0); /* shouldn't get here */
-    
+
     return 0;
 }
 
@@ -258,7 +258,7 @@ int cvmx_helper_cfg_opt_set(cvmx_helper_cfg_option_t opt, uint64_t val)
 {
     if (opt >= CVMX_HELPER_CFG_OPT_MAX)
         return -1;
-    
+
     cvmx_cfg_opts[opt] = val;
 
     return 0;
@@ -450,14 +450,14 @@ static int __cvmx_helper_cfg_init_ipd2pko_cache(void)
     for (i = 0; i < cvmx_helper_get_number_of_interfaces(); i++)
     {
 	n = cvmx_helper_interface_enumerate(i);
-    
+
         for (j = 0; j < n; j++)
 	{
 	    ipd_port = cvmx_helper_get_ipd_port(i, j);
 	    ipd_y = IPD2PKO_CACHE_Y(ipd_port);
 	    ipd_x = IPD2PKO_CACHE_X(ipd_port);
 	    ipd2pko_port_cache[ipd_y]
-	        [(ipd_port & 0x800) ? ((ipd_x >> 4) & 3) : ipd_x] = 
+	        [(ipd_port & 0x800) ? ((ipd_x >> 4) & 3) : ipd_x] =
 		(struct cvmx_cfg_pko_port_pair)
 		{__cvmx_helper_cfg_pko_port_base(i, j),
 		 __cvmx_helper_cfg_pko_port_num(i, j)};
@@ -529,7 +529,7 @@ static int __cvmx_ucfg_nqueues(int pko_port)
      * recorded in the pool.
      */
     k = pko_port - cvmx_cfg_port[interface][index].ccpp_pko_port_base;
-    cvmx_helper_cfg_assert(k < 
+    cvmx_helper_cfg_assert(k <
         cvmx_cfg_port[interface][index].ccpp_pko_num_ports);
     return cvmx_cfg_pko_nqueue_pool[i + k];
 }
@@ -636,7 +636,7 @@ int __cvmx_helper_cfg_init(void)
 
     cvmx_cfg_default_pko_nports = 1;
 #endif
-    
+
     if (!__cvmx_helper_cfg_init_common())
         return 0;
 
@@ -656,11 +656,11 @@ int __cvmx_helper_cfg_init(void)
     pknd = 0;
     bpid = 0;
     pko_port_base = 0;
-    
+
     for (i = 0; i < cvmx_helper_get_number_of_interfaces(); i++)
     {
 	n = cvmx_helper_interface_enumerate(i);
-    
+
         pport = cvmx_cfg_port[i];
         for (j = 0; j < n; j++, pport++)
 	{
@@ -679,11 +679,11 @@ int __cvmx_helper_cfg_init(void)
 	    pko_port_base += t;
 	}
     }
-    
+
     cvmx_helper_cfg_assert(pknd <= CVMX_HELPER_CFG_MAX_PIP_PKND);
     cvmx_helper_cfg_assert(bpid <= CVMX_HELPER_CFG_MAX_PIP_BPID);
     cvmx_helper_cfg_assert(pko_port_base <= CVMX_HELPER_CFG_MAX_PKO_PORT);
-    
+
     /*
      * pko_port map
      */

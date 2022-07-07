@@ -94,7 +94,7 @@ void CommandFilter_CommandFilter(RedisModuleCommandFilterCtx *filter)
         if (arg_len == 6 && !memcmp(arg_str, "@delme", 6)) {
             RedisModule_CommandFilterArgDelete(filter, pos);
             continue;
-        } 
+        }
         if (arg_len == 10 && !memcmp(arg_str, "@replaceme", 10)) {
             RedisModule_CommandFilterArgReplace(filter, pos,
                     RedisModule_CreateString(NULL, "--replaced--", 12));
@@ -141,7 +141,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
                 CommandFilter_UnregisterCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
             return REDISMODULE_ERR;
 
-    if ((filter = RedisModule_RegisterCommandFilter(ctx, CommandFilter_CommandFilter, 
+    if ((filter = RedisModule_RegisterCommandFilter(ctx, CommandFilter_CommandFilter,
                     noself ? REDISMODULE_CMDFILTER_NOSELF : 0))
             == NULL) return REDISMODULE_ERR;
 

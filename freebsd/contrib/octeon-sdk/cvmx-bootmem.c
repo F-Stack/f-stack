@@ -614,7 +614,7 @@ int64_t cvmx_bootmem_phy_alloc(uint64_t req_size, uint64_t address_min, uint64_t
     /* Round req_size up to mult of minimum alignment bytes */
     req_size = (req_size + (CVMX_BOOTMEM_ALIGNMENT_SIZE - 1)) & ~(CVMX_BOOTMEM_ALIGNMENT_SIZE - 1);
 
-    
+
     /* Enforce minimum alignment (this also keeps the minimum free block
     ** req_size the same as the alignment req_size */
     if (alignment < CVMX_BOOTMEM_ALIGNMENT_SIZE)

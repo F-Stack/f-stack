@@ -53,7 +53,7 @@ main (int argc, char **argv)
 	{ NULL, NULL, NULL },
     };
     int info_count = (sizeof(info) / sizeof(info[0])) - 1;
-    
+
     argc = xo_parse_args(argc, argv);
     if (argc < 0)
 	return 1;

@@ -349,7 +349,7 @@ int main(int argc, const char *argv[])
     /* Check to make sure the Chip version matches the configured version */
     octeon_model_version_check(cvmx_get_proc_id());
 
-    /* Initialize configuration to set bpid, pkind, pko_port for all the 
+    /* Initialize configuration to set bpid, pkind, pko_port for all the
        available ports connected. */
     __cvmx_helper_cfg_init();
 

@@ -494,7 +494,7 @@ vchiq_thread_create(int (*threadfn)(void *data),
 	va_start(ap, namefmt);
 	vsnprintf(name, sizeof(name), namefmt, ap);
 	va_end(ap);
-	
+
 	newp = NULL;
 	if (kproc_create(kthread_wrapper, (void*)slot, &newp, 0, 0,
 	    "%s", name) != 0) {

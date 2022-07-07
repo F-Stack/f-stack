@@ -97,7 +97,7 @@ static uint8_t get_gen_ht_code(enum fman_kg_gen_extract_src src,
 	case E_FMAN_KG_GEN_EXTRACT_ETYPE:
 		code = no_validation ? 0x77 : 0x7;
 		break;
- 
+
 	case E_FMAN_KG_GEN_EXTRACT_SNAP:
 		code = no_validation ? 0x74 : 0x4;
 		break;
@@ -405,7 +405,7 @@ void fman_kg_get_exception(struct fman_kg_regs *regs,
 	*events = ioread32be(&regs->fmkg_eer);
 	mask = ioread32be(&regs->fmkg_eeer);
 	*events &= mask;
- 
+
 	*scheme_ids = 0;
 
 	if (*events & FM_EX_KG_KEYSIZE_OVERFLOW) {
@@ -746,7 +746,7 @@ int fman_kg_get_scheme_counter(struct fman_kg_regs *regs,
 	int                         err;
 
 	kgse_regs = (struct fman_kg_scheme_regs *)&(regs->fmkg_indirect[0]);
- 
+
 	tmp_reg = build_ar_scheme(scheme_id, hwport_id, TRUE, FALSE);
     	err = fman_kg_write_ar_wait(regs, tmp_reg);
 
@@ -774,7 +774,7 @@ int fman_kg_set_scheme_counter(struct fman_kg_regs *regs,
 	err = fman_kg_write_ar_wait(regs, tmp_reg);
 	if (err != 0)
 		return err;
- 
+
 	/* Keygen indirect access memory contains all scheme_id registers
 	 * by now. Change only counter value. */
 	iowrite32be(counter, &kgse_regs->kgse_spc);

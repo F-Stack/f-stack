@@ -103,7 +103,7 @@ int ar9300_start_pcie_error_monitor(struct ath_hal *ah, int b_auto_stop)
     /* Clear the counters */
     OS_REG_WRITE(ah, PCIE_CO_ERR_CTR_CTR0, 0);
     OS_REG_WRITE(ah, PCIE_CO_ERR_CTR_CTR1, 0);
-    
+
     /* Read the previous value */
     val = OS_REG_READ(ah, PCIE_CO_ERR_CTR_CTRL);
 
@@ -139,15 +139,15 @@ int ar9300_read_pcie_error_monitor(struct ath_hal *ah, void* p_read_counters)
     u_int32_t val;
     ar_pcie_error_moniter_counters *p_counters =
         (ar_pcie_error_moniter_counters*) p_read_counters;
-    
+
     val = OS_REG_READ(ah, PCIE_CO_ERR_CTR_CTR0);
-    
+
     p_counters->uc_receiver_errors = MS(val, RCVD_ERR_MASK);
     p_counters->uc_bad_tlp_errors  = MS(val, BAD_TLP_ERR_MASK);
     p_counters->uc_bad_dllp_errors = MS(val, BAD_DLLP_ERR_MASK);
 
     val = OS_REG_READ(ah, PCIE_CO_ERR_CTR_CTR1);
-    
+
     p_counters->uc_replay_timeout_errors        = MS(val, RPLY_TO_ERR_MASK);
     p_counters->uc_replay_number_rollover_errors= MS(val, RPLY_NUM_RO_ERR_MASK);
 
@@ -157,17 +157,17 @@ int ar9300_read_pcie_error_monitor(struct ath_hal *ah, void* p_read_counters)
 int ar9300_stop_pcie_error_monitor(struct ath_hal *ah)
 {
     u_int32_t val;
-        
+
     /* Read the previous value */
     val = OS_REG_READ(ah, PCIE_CO_ERR_CTR_CTRL);
-    
+
     val &= ~(
         RCVD_ERR_CTR_RUN |
         BAD_TLP_ERR_CTR_RUN |
         BAD_DLLP_ERR_CTR_RUN |
         RPLY_TO_ERR_CTR_RUN |
         RPLY_NUM_RO_ERR_CTR_RUN);
-   
+
     /* Start to stop */
     OS_REG_WRITE(ah, PCIE_CO_ERR_CTR_CTRL, val );
 
@@ -454,7 +454,7 @@ static const struct ath_hal_private ar9300hal = {
 
         ar9300_set_dcs_mode,               /* ah_set_dcs_mode */
         ar9300_get_dcs_mode,               /* ah_get_dcs_mode */
-        
+
 #if ATH_ANT_DIV_COMB
         ar9300_ant_div_comb_get_config,    /* ah_get_ant_dvi_comb_conf */
         ar9300_ant_div_comb_set_config,    /* ah_set_ant_dvi_comb_conf */
@@ -470,7 +470,7 @@ static const struct ath_hal_private ar9300hal = {
         ar9300_stop_pcie_error_monitor,    /* ah_stop_pcie_error_monitor*/
 #endif /* ATH_PCIE_ERROR_MONITOR */
 
-#if ATH_SUPPORT_SPECTRAL        
+#if ATH_SUPPORT_SPECTRAL
         /* Spectral scan */
         ar9300_configure_spectral_scan,    /* ah_ar_configure_spectral */
         ar9300_get_spectral_params,        /* ah_ar_get_spectral_config */
@@ -480,7 +480,7 @@ static const struct ath_hal_private ar9300hal = {
         ar9300_is_spectral_active,         /* ah_ar_is_spectral_active */
         ar9300_get_ctl_chan_nf,            /* ah_ar_get_ctl_nf */
         ar9300_get_ext_chan_nf,            /* ah_ar_get_ext_nf */
-#endif  /*  ATH_SUPPORT_SPECTRAL */ 
+#endif  /*  ATH_SUPPORT_SPECTRAL */
 
 
         ar9300_promisc_mode,               /* ah_promisc_mode */
@@ -609,8 +609,8 @@ ar9300_read_revisions(struct ath_hal *ah)
 #define AR_SOC_RST_REVISION_ID         0xB8060090
 #define REG_READ(_reg)                 *((volatile u_int32_t *)(_reg))
 
-        AH_PRIVATE(ah)->ah_macRev = 
-            REG_READ(AR_SOC_RST_REVISION_ID) & AR_SREV_REVISION_WASP_MASK; 
+        AH_PRIVATE(ah)->ah_macRev =
+            REG_READ(AR_SOC_RST_REVISION_ID) & AR_SREV_REVISION_WASP_MASK;
 #undef REG_READ
 #undef AR_SOC_RST_REVISION_ID
     }
@@ -621,10 +621,10 @@ ar9300_read_revisions(struct ath_hal *ah)
         AH_PRIVATE(ah)->ah_ispcie = AH_TRUE;
     }
     else {
-        AH_PRIVATE(ah)->ah_ispcie = 
+        AH_PRIVATE(ah)->ah_ispcie =
             (val & AR_SREV_TYPE2_HOST_MODE) ? 0 : 1;
     }
-    
+
 }
 
 /*
@@ -695,9 +695,9 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
     }
 
     /*
-     * Read back AR_WA into a permanent copy and set bits 14 and 17. 
-     * We need to do this to avoid RMW of this register. 
-     * Do this before calling ar9300_set_reset_reg. 
+     * Read back AR_WA into a permanent copy and set bits 14 and 17.
+     * We need to do this to avoid RMW of this register.
+     * Do this before calling ar9300_set_reset_reg.
      * If not, the AR_WA register which was inited via EEPROM
      * will get wiped out.
      */
@@ -705,7 +705,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
     /* Set Bits 14 and 17 in the AR_WA register. */
     ahp->ah_wa_reg_val |=
         AR_WA_D3_TO_L1_DISABLE | AR_WA_ASPM_TIMER_BASED_DISABLE;
-    
+
     if (!ar9300_set_reset_reg(ah, HAL_RESET_POWER_ON)) {    /* reset chip */
         HALDEBUG(ah, HAL_DEBUG_RESET, "%s: couldn't reset chip\n", __func__);
         ecode = HAL_EIO;
@@ -830,7 +830,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
     if (((ahpriv->ah_macVersion == AR_SREV_VERSION_OSPREY) &&
           (ahpriv->ah_macRev <= AR_SREV_REVISION_OSPREY_20)) ||
         (ahpriv->ah_macVersion != AR_SREV_VERSION_OSPREY &&
-        ahpriv->ah_macVersion != AR_SREV_VERSION_WASP && 
+        ahpriv->ah_macVersion != AR_SREV_VERSION_WASP &&
         ahpriv->ah_macVersion != AR_SREV_VERSION_HORNET &&
         ahpriv->ah_macVersion != AR_SREV_VERSION_POSEIDON &&
         ahpriv->ah_macVersion != AR_SREV_VERSION_SCORPION &&
@@ -896,7 +896,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /* radio */
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
-        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE], 
+        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
             ar9331_hornet1_2_radio_core,
             ARRAY_LENGTH(ar9331_hornet1_2_radio_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST], NULL, 0, 0);
@@ -912,10 +912,10 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /* rx/tx gain */
         INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
-            ar9331_common_rx_gain_hornet1_2, 
+            ar9331_common_rx_gain_hornet1_2,
             ARRAY_LENGTH(ar9331_common_rx_gain_hornet1_2), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-            ar9331_modes_lowest_ob_db_tx_gain_hornet1_2, 
+            ar9331_modes_lowest_ob_db_tx_gain_hornet1_2,
             ARRAY_LENGTH(ar9331_modes_lowest_ob_db_tx_gain_hornet1_2), 5);
 
         ah->ah_config.ath_hal_pcie_power_save_enable = 0;
@@ -925,13 +925,13 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             ar9331_hornet1_2_baseband_core_txfir_coeff_japan_2484,
             ARRAY_LENGTH(
                 ar9331_hornet1_2_baseband_core_txfir_coeff_japan_2484), 2);
-    
+
 #if 0 /* ATH_WOW */
         /* SerDes values during WOW sleep */
         INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_wow, ar9300_pcie_phy_awow,
                 ARRAY_LENGTH(ar9300_pcie_phy_awow), 2);
 #endif
-    
+
         /* additional clock settings */
         if (AH9300(ah)->clk_25mhz) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_additional,
@@ -964,7 +964,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /* radio */
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
-        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE], 
+        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
             ar9331_hornet1_1_radio_core,
             ARRAY_LENGTH(ar9331_hornet1_1_radio_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST], NULL, 0, 0);
@@ -980,10 +980,10 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /* rx/tx gain */
         INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
-            ar9331_common_rx_gain_hornet1_1, 
+            ar9331_common_rx_gain_hornet1_1,
             ARRAY_LENGTH(ar9331_common_rx_gain_hornet1_1), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-            ar9331_modes_lowest_ob_db_tx_gain_hornet1_1, 
+            ar9331_modes_lowest_ob_db_tx_gain_hornet1_1,
             ARRAY_LENGTH(ar9331_modes_lowest_ob_db_tx_gain_hornet1_1), 5);
 
         ah->ah_config.ath_hal_pcie_power_save_enable = 0;
@@ -993,13 +993,13 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             ar9331_hornet1_1_baseband_core_txfir_coeff_japan_2484,
             ARRAY_LENGTH(
                 ar9331_hornet1_1_baseband_core_txfir_coeff_japan_2484), 2);
-    
+
 #if 0 /* ATH_WOW */
         /* SerDes values during WOW sleep */
         INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_wow, ar9300_pcie_phy_awow,
                        N(ar9300_pcie_phy_awow), 2);
 #endif
-    
+
         /* additional clock settings */
         if (AH9300(ah)->clk_25mhz) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_additional,
@@ -1015,45 +1015,45 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* mac */
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_CORE],
-            ar9485_poseidon1_1_mac_core, 
+            ar9485_poseidon1_1_mac_core,
             ARRAY_LENGTH( ar9485_poseidon1_1_mac_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_POST],
-            ar9485_poseidon1_1_mac_postamble, 
+            ar9485_poseidon1_1_mac_postamble,
             ARRAY_LENGTH(ar9485_poseidon1_1_mac_postamble), 5);
 
         /* bb */
-        INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_PRE], 
+        INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_PRE],
             ar9485_poseidon1_1, ARRAY_LENGTH(ar9485_poseidon1_1), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_CORE],
-            ar9485_poseidon1_1_baseband_core, 
+            ar9485_poseidon1_1_baseband_core,
             ARRAY_LENGTH(ar9485_poseidon1_1_baseband_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_POST],
-            ar9485_poseidon1_1_baseband_postamble, 
+            ar9485_poseidon1_1_baseband_postamble,
             ARRAY_LENGTH(ar9485_poseidon1_1_baseband_postamble), 5);
 
         /* radio */
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
-        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE], 
-            ar9485_poseidon1_1_radio_core, 
+        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
+            ar9485_poseidon1_1_radio_core,
             ARRAY_LENGTH(ar9485_poseidon1_1_radio_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST],
-            ar9485_poseidon1_1_radio_postamble, 
+            ar9485_poseidon1_1_radio_postamble,
             ARRAY_LENGTH(ar9485_poseidon1_1_radio_postamble), 2);
 
         /* soc */
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_PRE],
-            ar9485_poseidon1_1_soc_preamble, 
+            ar9485_poseidon1_1_soc_preamble,
             ARRAY_LENGTH(ar9485_poseidon1_1_soc_preamble), 2);
 
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_CORE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_POST], NULL, 0, 0);
 
         /* rx/tx gain */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
-            ar9485_common_wo_xlna_rx_gain_poseidon1_1, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
+            ar9485_common_wo_xlna_rx_gain_poseidon1_1,
             ARRAY_LENGTH(ar9485_common_wo_xlna_rx_gain_poseidon1_1), 2);
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
-            ar9485_modes_lowest_ob_db_tx_gain_poseidon1_1, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
+            ar9485_modes_lowest_ob_db_tx_gain_poseidon1_1,
             ARRAY_LENGTH(ar9485_modes_lowest_ob_db_tx_gain_poseidon1_1), 5);
 
         /* Japan 2484Mhz CCK settings */
@@ -1065,109 +1065,109 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* Load PCIE SERDES settings from INI */
         if (ah->ah_config.ath_hal_pcie_clock_req) {
             /* Pci-e Clock Request = 1 */
-            if (ah->ah_config.ath_hal_pll_pwr_save 
+            if (ah->ah_config.ath_hal_pll_pwr_save
                 & AR_PCIE_PLL_PWRSAVE_CONTROL)
             {
                 /* Sleep Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
-                    AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
+                    AR_PCIE_PLL_PWRSAVE_ON_D3)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_enable_L1),
                         2);
-                }    
+                }
                 /* Awake Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_enable_L1),
                         2);
-                }    
-                
+                }
+
             } else {
                 /*Use driver default setting*/
                 /* Sleep Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                     ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1,
-                    ARRAY_LENGTH(ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1), 
+                    ARRAY_LENGTH(ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1),
                     2);
                 /* Awake Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                     ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1,
-                    ARRAY_LENGTH(ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1), 
+                    ARRAY_LENGTH(ar9485_poseidon1_1_pcie_phy_clkreq_enable_L1),
                     2);
             }
         } else {
             /* Pci-e Clock Request = 0 */
-            if (ah->ah_config.ath_hal_pll_pwr_save 
+            if (ah->ah_config.ath_hal_pll_pwr_save
                 & AR_PCIE_PLL_PWRSAVE_CONTROL)
             {
                 /* Sleep Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
-                    AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
+                    AR_PCIE_PLL_PWRSAVE_ON_D3)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_disable_L1),
                         2);
-                }    
+                }
                 /* Awake Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_1_pcie_phy_pll_on_clkreq_disable_L1),
                         2);
-                }    
-                
+                }
+
             } else {
                 /*Use driver default setting*/
                 /* Sleep Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                     ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1,
                     ARRAY_LENGTH(ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1),
                     2);
                 /* Awake Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                     ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1,
                     ARRAY_LENGTH(ar9485_poseidon1_1_pcie_phy_clkreq_disable_L1),
                     2);
             }
         }
         /* pcie ps setting will honor registry setting, default is 0 */
-        //ah->ah_config.ath_hal_pciePowerSaveEnable = 0;    
+        //ah->ah_config.ath_hal_pciePowerSaveEnable = 0;
    } else if (AR_SREV_POSEIDON(ah)) {
         /* mac */
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_PRE], NULL, 0, 0);
@@ -1179,8 +1179,8 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             ARRAY_LENGTH(ar9485_poseidon1_0_mac_postamble), 5);
 
         /* bb */
-        INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_PRE], 
-            ar9485_poseidon1_0, 
+        INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_PRE],
+            ar9485_poseidon1_0,
             ARRAY_LENGTH(ar9485_poseidon1_0), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_CORE],
             ar9485_poseidon1_0_baseband_core,
@@ -1191,7 +1191,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /* radio */
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
-        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE], 
+        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
             ar9485_poseidon1_0_radio_core,
             ARRAY_LENGTH(ar9485_poseidon1_0_radio_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST],
@@ -1207,10 +1207,10 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /* rx/tx gain */
         INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
-            ar9485Common_wo_xlna_rx_gain_poseidon1_0, 
+            ar9485Common_wo_xlna_rx_gain_poseidon1_0,
             ARRAY_LENGTH(ar9485Common_wo_xlna_rx_gain_poseidon1_0), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-            ar9485Modes_lowest_ob_db_tx_gain_poseidon1_0, 
+            ar9485Modes_lowest_ob_db_tx_gain_poseidon1_0,
             ARRAY_LENGTH(ar9485Modes_lowest_ob_db_tx_gain_poseidon1_0), 5);
 
         /* Japan 2484Mhz CCK settings */
@@ -1222,114 +1222,114 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* Load PCIE SERDES settings from INI */
         if (ah->ah_config.ath_hal_pcie_clock_req) {
             /* Pci-e Clock Request = 1 */
-            if (ah->ah_config.ath_hal_pll_pwr_save 
+            if (ah->ah_config.ath_hal_pll_pwr_save
                 & AR_PCIE_PLL_PWRSAVE_CONTROL)
             {
                 /* Sleep Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
-                    AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
+                    AR_PCIE_PLL_PWRSAVE_ON_D3)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_0_pcie_phy_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_0_pcie_phy_clkreq_enable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1),
                         2);
-                }    
+                }
                 /* Awake Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_0_pcie_phy_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_0_pcie_phy_clkreq_enable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1,
                         ARRAY_LENGTH(
                            ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1),
                         2);
-                }    
-                
+                }
+
             } else {
                 /*Use driver default setting*/
                 /* Sleep Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                     ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1,
                     ARRAY_LENGTH(
-                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1), 
+                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1),
                     2);
                 /* Awake Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                     ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1,
                     ARRAY_LENGTH(
-                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1), 
+                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_enable_L1),
                     2);
             }
         } else {
             /* Pci-e Clock Request = 0 */
-            if (ah->ah_config.ath_hal_pll_pwr_save 
+            if (ah->ah_config.ath_hal_pll_pwr_save
                 & AR_PCIE_PLL_PWRSAVE_CONTROL)
             {
                 /* Sleep Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
-                    AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
+                    AR_PCIE_PLL_PWRSAVE_ON_D3)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_0_pcie_phy_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_0_pcie_phy_clkreq_disable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1),
                         2);
-                }    
+                }
                 /* Awake Setting */
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
                 {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_0_pcie_phy_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_0_pcie_phy_clkreq_disable_L1),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1,
                         ARRAY_LENGTH(
                           ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1),
                         2);
-                }    
-                
+                }
+
             } else {
                 /*Use driver default setting*/
                 /* Sleep Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                     ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1,
                     ARRAY_LENGTH(
-                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1), 
+                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1),
                     2);
                 /* Awake Setting */
-                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                     ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1,
                     ARRAY_LENGTH(
-                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1), 
+                        ar9485_poseidon1_0_pcie_phy_pll_on_clkreq_disable_L1),
                     2);
             }
         }
         /* pcie ps setting will honor registry setting, default is 0 */
         /*ah->ah_config.ath_hal_pcie_power_save_enable = 0;*/
-    
+
 #if 0 /* ATH_WOW */
         /* SerDes values during WOW sleep */
         INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_wow, ar9300_pcie_phy_awow,
@@ -1398,7 +1398,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 #endif
 
         /* Additional setttings for 40Mhz */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_additional_40mhz, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_additional_40mhz,
             ar9340_wasp_1p0_radio_core_40M,
             ARRAY_LENGTH(ar9340_wasp_1p0_radio_core_40M), 2);
 
@@ -1533,12 +1533,12 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* mac */
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_CORE],
-            ar9300_jupiter_1p0_mac_core, 
+            ar9300_jupiter_1p0_mac_core,
             ARRAY_LENGTH(ar9300_jupiter_1p0_mac_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_POST],
             ar9300_jupiter_1p0_mac_postamble,
             ARRAY_LENGTH(ar9300_jupiter_1p0_mac_postamble), 5);
-                       
+
         /* bb */
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_CORE],
@@ -1551,23 +1551,23 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* radio */
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
-            ar9300_jupiter_1p0_radio_core, 
+            ar9300_jupiter_1p0_radio_core,
             ARRAY_LENGTH(ar9300_jupiter_1p0_radio_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST],
-            ar9300_jupiter_1p0_radio_postamble, 
+            ar9300_jupiter_1p0_radio_postamble,
             ARRAY_LENGTH(ar9300_jupiter_1p0_radio_postamble), 5);
 
         /* soc */
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_PRE],
-            ar9300_jupiter_1p0_soc_preamble, 
+            ar9300_jupiter_1p0_soc_preamble,
             ARRAY_LENGTH(ar9300_jupiter_1p0_soc_preamble), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_CORE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_POST],
-            ar9300_jupiter_1p0_soc_postamble, 
+            ar9300_jupiter_1p0_soc_postamble,
             ARRAY_LENGTH(ar9300_jupiter_1p0_soc_postamble), 5);
 
         /* rx/tx gain */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
             ar9300_common_rx_gain_table_jupiter_1p0,
             ARRAY_LENGTH(ar9300_common_rx_gain_table_jupiter_1p0), 2);
 
@@ -1606,7 +1606,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             {
                 /* Awake -> Sleep Setting */
                 if (ah->ah_config.ath_hal_pll_pwr_save &
-                     AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                     AR_PCIE_PLL_PWRSAVE_ON_D3)
                 {
                     INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9300_pcie_phy_clkreq_disable_L1_jupiter_1p0,
@@ -1620,7 +1620,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
                         ARRAY_LENGTH(
                           ar9300_pcie_phy_pll_on_clkreq_disable_L1_jupiter_1p0),
                         2);
-                }    
+                }
                 /* Sleep -> Awake Setting */
                 if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
@@ -1637,8 +1637,8 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
                         ARRAY_LENGTH(
                           ar9300_pcie_phy_pll_on_clkreq_disable_L1_jupiter_1p0),
                         2);
-                }    
-                
+                }
+
             }
             else {
                 /*Use driver default setting*/
@@ -1656,9 +1656,9 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
                     2);
             }
         }
-        /* 
-         * ath_hal_pcie_power_save_enable should be 2 for OWL/Condor and 
-         * 0 for merlin 
+        /*
+         * ath_hal_pcie_power_save_enable should be 2 for OWL/Condor and
+         * 0 for merlin
          */
         ah->ah_config.ath_hal_pcie_power_save_enable = 0;
 
@@ -1669,7 +1669,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 #endif
 
         /* Fast clock modal settings */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_additional, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_additional,
             ar9300_modes_fast_clock_jupiter_1p0,
             ARRAY_LENGTH(ar9300_modes_fast_clock_jupiter_1p0), 3);
         INIT_INI_ARRAY(&ahp->ah_ini_japan2484,
@@ -1693,14 +1693,14 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
               ARRAY_LENGTH(ar9462_2p1_mac_core), 2);
         } else {
             INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_CORE],
-                ar9300_jupiter_2p0_mac_core, 
+                ar9300_jupiter_2p0_mac_core,
                 ARRAY_LENGTH(ar9300_jupiter_2p0_mac_core), 2);
         }
 
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_POST],
             ar9300_jupiter_2p0_mac_postamble,
             ARRAY_LENGTH(ar9300_jupiter_2p0_mac_postamble), 5);
-                       
+
         /* bb */
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_bb[ATH_INI_CORE],
@@ -1720,13 +1720,13 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* radio */
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
-            ar9300_jupiter_2p0_radio_core, 
+            ar9300_jupiter_2p0_radio_core,
             ARRAY_LENGTH(ar9300_jupiter_2p0_radio_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST],
-            ar9300_jupiter_2p0_radio_postamble, 
+            ar9300_jupiter_2p0_radio_postamble,
             ARRAY_LENGTH(ar9300_jupiter_2p0_radio_postamble), 5);
         INIT_INI_ARRAY(&ahp->ah_ini_radio_post_sys2ant,
-            ar9300_jupiter_2p0_radio_postamble_sys2ant, 
+            ar9300_jupiter_2p0_radio_postamble_sys2ant,
             ARRAY_LENGTH(ar9300_jupiter_2p0_radio_postamble_sys2ant), 5);
 
         /* soc */
@@ -1736,22 +1736,22 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
               ARRAY_LENGTH(ar9462_2p1_soc_preamble), 2);
         } else {
             INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_PRE],
-              ar9300_jupiter_2p0_soc_preamble, 
+              ar9300_jupiter_2p0_soc_preamble,
               ARRAY_LENGTH(ar9300_jupiter_2p0_soc_preamble), 2);
         }
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_CORE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_POST],
-            ar9300_jupiter_2p0_soc_postamble, 
+            ar9300_jupiter_2p0_soc_postamble,
             ARRAY_LENGTH(ar9300_jupiter_2p0_soc_postamble), 5);
 
         /* rx/tx gain */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
             ar9300Common_rx_gain_table_jupiter_2p0,
             ARRAY_LENGTH(ar9300Common_rx_gain_table_jupiter_2p0), 2);
 
         /* BTCOEX */
         INIT_INI_ARRAY(&ahp->ah_ini_BTCOEX_MAX_TXPWR,
-            ar9300_jupiter_2p0_BTCOEX_MAX_TXPWR_table, 
+            ar9300_jupiter_2p0_BTCOEX_MAX_TXPWR_table,
             ARRAY_LENGTH(ar9300_jupiter_2p0_BTCOEX_MAX_TXPWR_table), 2);
 
         /* Load PCIE SERDES settings from INI */
@@ -1782,7 +1782,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             {
                 /* Awake -> Sleep Setting */
                 if (ah->ah_config.ath_hal_pll_pwr_save &
-                     AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                     AR_PCIE_PLL_PWRSAVE_ON_D3)
                 {
                     INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9300_PciePhy_clkreq_disable_L1_jupiter_2p0,
@@ -1796,7 +1796,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
                         ARRAY_LENGTH(
                           ar9300_PciePhy_pll_on_clkreq_disable_L1_jupiter_2p0),
                         2);
-                }    
+                }
                 /* Sleep -> Awake Setting */
                 if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
@@ -1813,8 +1813,8 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
                         ARRAY_LENGTH(
                           ar9300_PciePhy_pll_on_clkreq_disable_L1_jupiter_2p0),
                         2);
-                }    
-                
+                }
+
             }
             else {
                 /*Use driver default setting*/
@@ -1833,9 +1833,9 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             }
         }
 
-        /* 
-         * ath_hal_pcie_power_save_enable should be 2 for OWL/Condor and 
-         * 0 for merlin 
+        /*
+         * ath_hal_pcie_power_save_enable should be 2 for OWL/Condor and
+         * 0 for merlin
          */
         ah->ah_config.ath_hal_pcie_power_save_enable = 0;
 
@@ -1846,7 +1846,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 #endif
 
         /* Fast clock modal settings */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_additional, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_additional,
             ar9300Modes_fast_clock_jupiter_2p0,
             ARRAY_LENGTH(ar9300Modes_fast_clock_jupiter_2p0), 3);
         INIT_INI_ARRAY(&ahp->ah_ini_japan2484,
@@ -1860,7 +1860,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
         /* mac */
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_PRE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_CORE],
-            ar956X_aphrodite_1p0_mac_core, 
+            ar956X_aphrodite_1p0_mac_core,
             ARRAY_LENGTH(ar956X_aphrodite_1p0_mac_core), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_mac[ATH_INI_POST],
             ar956X_aphrodite_1p0_mac_postamble,
@@ -1879,34 +1879,34 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 //        /* radio */
 //        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_PRE], NULL, 0, 0);
 //        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_CORE],
-//            ar9300_aphrodite_1p0_radio_core, 
+//            ar9300_aphrodite_1p0_radio_core,
 //            ARRAY_LENGTH(ar9300_aphrodite_1p0_radio_core), 2);
 //        INIT_INI_ARRAY(&ahp->ah_ini_radio[ATH_INI_POST],
-//            ar9300_aphrodite_1p0_radio_postamble, 
+//            ar9300_aphrodite_1p0_radio_postamble,
 //            ARRAY_LENGTH(ar9300_aphrodite_1p0_radio_postamble), 5);
 
         /* soc */
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_PRE],
-            ar956X_aphrodite_1p0_soc_preamble, 
+            ar956X_aphrodite_1p0_soc_preamble,
             ARRAY_LENGTH(ar956X_aphrodite_1p0_soc_preamble), 2);
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_CORE], NULL, 0, 0);
         INIT_INI_ARRAY(&ahp->ah_ini_soc[ATH_INI_POST],
-            ar956X_aphrodite_1p0_soc_postamble, 
+            ar956X_aphrodite_1p0_soc_postamble,
             ARRAY_LENGTH(ar956X_aphrodite_1p0_soc_postamble), 5);
 
         /* rx/tx gain */
-        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+        INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
             ar956XCommon_rx_gain_table_aphrodite_1p0,
             ARRAY_LENGTH(ar956XCommon_rx_gain_table_aphrodite_1p0), 2);
-        //INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+        //INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
         //    ar956XModes_lowest_ob_db_tx_gain_table_aphrodite_1p0,
         //    ARRAY_LENGTH(ar956XModes_lowest_ob_db_tx_gain_table_aphrodite_1p0),
         //    5);
 
 
-        /* 
-         * ath_hal_pcie_power_save_enable should be 2 for OWL/Condor and 
-         * 0 for merlin 
+        /*
+         * ath_hal_pcie_power_save_enable should be 2 for OWL/Condor and
+         * 0 for merlin
          */
         ah->ah_config.ath_hal_pcie_power_save_enable = 0;
 
@@ -1916,7 +1916,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             ARRAY_LENGTH(ar9300_pcie_phy_AWOW), 2);
 #endif
        /* Fast clock modal settings */
-       INIT_INI_ARRAY(&ahp->ah_ini_modes_additional, 
+       INIT_INI_ARRAY(&ahp->ah_ini_modes_additional,
             ar956XModes_fast_clock_aphrodite_1p0,
             ARRAY_LENGTH(ar956XModes_fast_clock_aphrodite_1p0), 3);
 
@@ -1975,7 +1975,7 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
             ar9300_ar9580_1p0_baseband_postamble_dfs_channel,
             ARRAY_LENGTH(ar9300_ar9580_1p0_baseband_postamble_dfs_channel), 3);
 
- 
+
         /* Load PCIE SERDES settings from INI */
 
         /*D3 Setting */
@@ -2165,18 +2165,18 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /*D3 Setting */
         if  (ah->ah_config.ath_hal_pcie_clock_req) {
-            if (ah->ah_config.ath_hal_pll_pwr_save & 
-                AR_PCIE_PLL_PWRSAVE_CONTROL) 
+            if (ah->ah_config.ath_hal_pll_pwr_save &
+                AR_PCIE_PLL_PWRSAVE_CONTROL)
             { //registry control
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
-                    AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
+                    AR_PCIE_PLL_PWRSAVE_ON_D3)
                 { //bit1, in to D3
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9300PciePhy_clkreq_enable_L1_osprey_2p2,
                         ARRAY_LENGTH(ar9300PciePhy_clkreq_enable_L1_osprey_2p2),
                     2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2,
                         ARRAY_LENGTH(
                             ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2),
@@ -2202,19 +2202,19 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
             }
         } else {
-            if (ah->ah_config.ath_hal_pll_pwr_save & 
-                AR_PCIE_PLL_PWRSAVE_CONTROL) 
+            if (ah->ah_config.ath_hal_pll_pwr_save &
+                AR_PCIE_PLL_PWRSAVE_CONTROL)
             { //registry control
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
-                    AR_PCIE_PLL_PWRSAVE_ON_D3) 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
+                    AR_PCIE_PLL_PWRSAVE_ON_D3)
                 { //bit1, in to D3
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                         ar9300PciePhy_clkreq_disable_L1_osprey_2p2,
                         ARRAY_LENGTH(
                             ar9300PciePhy_clkreq_disable_L1_osprey_2p2),
                         2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes,
                        ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2,
                        ARRAY_LENGTH(
                            ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2),
@@ -2239,19 +2239,19 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
 
         /*D0 Setting */
         if  (ah->ah_config.ath_hal_pcie_clock_req) {
-             if (ah->ah_config.ath_hal_pll_pwr_save & 
-                AR_PCIE_PLL_PWRSAVE_CONTROL) 
+             if (ah->ah_config.ath_hal_pll_pwr_save &
+                AR_PCIE_PLL_PWRSAVE_CONTROL)
              { //registry control
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
                 { //bit2, out of D3
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9300PciePhy_clkreq_enable_L1_osprey_2p2,
                         ARRAY_LENGTH(ar9300PciePhy_clkreq_enable_L1_osprey_2p2),
                     2);
 
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2,
                         ARRAY_LENGTH(
                             ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2),
@@ -2266,18 +2266,18 @@ ar9300_attach(u_int16_t devid, HAL_SOFTC sc, HAL_BUS_TAG st,
                     2);
             }
         } else {
-            if (ah->ah_config.ath_hal_pll_pwr_save & 
-                AR_PCIE_PLL_PWRSAVE_CONTROL) 
+            if (ah->ah_config.ath_hal_pll_pwr_save &
+                AR_PCIE_PLL_PWRSAVE_CONTROL)
             {//registry control
-                if (ah->ah_config.ath_hal_pll_pwr_save & 
+                if (ah->ah_config.ath_hal_pll_pwr_save &
                     AR_PCIE_PLL_PWRSAVE_ON_D0)
                 {//bit2, out of D3
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9300PciePhy_clkreq_disable_L1_osprey_2p2,
                        ARRAY_LENGTH(ar9300PciePhy_clkreq_disable_L1_osprey_2p2),
                     2);
                 } else {
-                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power, 
+                    INIT_INI_ARRAY(&ahp->ah_ini_pcie_serdes_low_power,
                         ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2,
                         ARRAY_LENGTH(
                             ar9300PciePhy_pll_on_clkreq_disable_L1_osprey_2p2),
@@ -2550,7 +2550,7 @@ ar9300_new_state(u_int16_t devid, HAL_SOFTC sc,
     AH_PRIVATE(ah)->ah_devid = devid;
 
     AH_PRIVATE(ah)->ah_flags = 0;
-   
+
     /*
     ** Initialize factory defaults in the private space
     */
@@ -2564,7 +2564,7 @@ ar9300_new_state(u_int16_t devid, HAL_SOFTC sc,
     }
 #endif
     AH_PRIVATE(ah)->ah_flags |= AH_USE_EEPROM;
-   
+
 #if 0
     if (ar9300_eep_data_in_flash(ah)) {
         ahp->ah_priv.priv.ah_eeprom_read  = ar9300_flash_read;
@@ -2849,7 +2849,7 @@ ar9300_fill_capability_info(struct ath_hal *ah)
 
     p_cap->halForcePpmSupport = AH_TRUE;
     p_cap->halHwBeaconProcSupport = AH_TRUE;
-    
+
     /* ar9300 - has the HW UAPSD trigger support,
      * but it has the following limitations
      * The power state change from the following
@@ -2909,14 +2909,14 @@ ar9300_fill_capability_info(struct ath_hal *ah)
 
     if (AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)) {
 #if ATH_SUPPORT_MCI
-        if (ah->ah_config.ath_hal_mci_config & ATH_MCI_CONFIG_DISABLE_MCI) 
+        if (ah->ah_config.ath_hal_mci_config & ATH_MCI_CONFIG_DISABLE_MCI)
         {
             p_cap->halMciSupport = AH_FALSE;
         }
         else
 #endif
         {
-            p_cap->halMciSupport = (ahp->ah_enterprise_mode & 
+            p_cap->halMciSupport = (ahp->ah_enterprise_mode &
                             AR_ENT_OTP_49GHZ_DISABLE) ? AH_FALSE: AH_TRUE;
         }
         HALDEBUG(AH_NULL, HAL_DEBUG_UNMASKABLE,
@@ -3004,16 +3004,16 @@ ar9300_fill_capability_info(struct ath_hal *ah)
     p_cap->halRxTxAbortSupport = AH_TRUE;
     p_cap->hal_ani_poll_interval = AR9300_ANI_POLLINTERVAL;
     p_cap->hal_channel_switch_time_usec = AR9300_CHANNEL_SWITCH_TIME_USEC;
-  
+
     /* Transmit Beamforming supported, fill capabilities */
     p_cap->halPaprdEnabled = ar9300_eeprom_get(ahp, EEP_PAPRD_ENABLED);
     p_cap->halChanHalfRate =
         !(ahp->ah_enterprise_mode & AR_ENT_OTP_10MHZ_DISABLE);
     p_cap->halChanQuarterRate =
         !(ahp->ah_enterprise_mode & AR_ENT_OTP_5MHZ_DISABLE);
-	
+
     if(AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)){
-        /* There is no AR_ENT_OTP_49GHZ_DISABLE feature in Jupiter, now the bit is used to disable BT. */		
+        /* There is no AR_ENT_OTP_49GHZ_DISABLE feature in Jupiter, now the bit is used to disable BT. */
         p_cap->hal49GhzSupport = 1;
     } else {
         p_cap->hal49GhzSupport = !(ahp->ah_enterprise_mode & AR_ENT_OTP_49GHZ_DISABLE);
@@ -3034,20 +3034,20 @@ ar9300_fill_capability_info(struct ath_hal *ah)
     } else {
         p_cap->halLDPCSupport = AH_TRUE;
     }
-    
+
     /* XXX is this a flag, or a chainmask number? */
     p_cap->halApmEnable = !! ar9300_eeprom_get(ahp, EEP_CHAIN_MASK_REDUCE);
-#if ATH_ANT_DIV_COMB        
+#if ATH_ANT_DIV_COMB
     if (AR_SREV_HORNET(ah) || AR_SREV_POSEIDON_11_OR_LATER(ah) || AR_SREV_APHRODITE(ah)) {
         if (ahp->ah_diversity_control == HAL_ANT_VARIABLE) {
-            u_int8_t ant_div_control1 = 
+            u_int8_t ant_div_control1 =
                 ar9300_eeprom_get(ahp, EEP_ANTDIV_control);
-            /* if enable_lnadiv is 0x1 and enable_fast_div is 0x1, 
-             * we enable the diversity-combining algorithm. 
+            /* if enable_lnadiv is 0x1 and enable_fast_div is 0x1,
+             * we enable the diversity-combining algorithm.
              */
             if ((ant_div_control1 >> 0x6) == 0x3) {
                 p_cap->halAntDivCombSupport = AH_TRUE;
-            }            
+            }
             p_cap->halAntDivCombSupportOrg = p_cap->halAntDivCombSupport;
         }
     }
@@ -3412,14 +3412,14 @@ HAL_BOOL ar9300_rf_gain_cap_apply(struct ath_hal *ah, int is_2GHz)
 
     if ( !((eep->base_eep_header.misc_configuration & 0x80) >> 7) )
         return AH_FALSE;
-		  
+
     if (is_2GHz)
     {
-        rf_gain_cap = (u_int32_t) eep->modal_header_2g.rf_gain_cap;    
+        rf_gain_cap = (u_int32_t) eep->modal_header_2g.rf_gain_cap;
     }
     else
     {
-        rf_gain_cap = (u_int32_t) eep->modal_header_5g.rf_gain_cap;       
+        rf_gain_cap = (u_int32_t) eep->modal_header_5g.rf_gain_cap;
 	}
 
 	if (rf_gain_cap == 0)
@@ -3427,28 +3427,28 @@ HAL_BOOL ar9300_rf_gain_cap_apply(struct ath_hal *ah, int is_2GHz)
 
 	for (i = 0; i< RX_GAIN_TABLE_LENGTH * 2; i++)
 	{
-        if (AR_SREV_AR9580(ah)) 
+        if (AR_SREV_AR9580(ah))
         {
             // BB_rx_ocgain2
             i_rx_gain = 128 + 32;
             switch (ar9300_rx_gain_index_get(ah))
             {
             case 0:
-                rx_gain_table[i][0] = 
+                rx_gain_table[i][0] =
 					ar9300_common_rx_gain_table_ar9580_1p0[i][0];
-                rx_gain_table[i][1] = 
+                rx_gain_table[i][1] =
 					ar9300_common_rx_gain_table_ar9580_1p0[i][1];
                 break;
             case 1:
-                rx_gain_table[i][0] = 
+                rx_gain_table[i][0] =
 					ar9300_common_wo_xlna_rx_gain_table_ar9580_1p0[i][0];
-                rx_gain_table[i][1] = 
+                rx_gain_table[i][1] =
 					ar9300_common_wo_xlna_rx_gain_table_ar9580_1p0[i][1];
                 break;
 			}
-        } 
-        else if (AR_SREV_OSPREY_22(ah)) 
-        { 
+        }
+        else if (AR_SREV_OSPREY_22(ah))
+        {
             i_rx_gain = 128 + 32;
             switch (ar9300_rx_gain_index_get(ah))
             {
@@ -3457,9 +3457,9 @@ HAL_BOOL ar9300_rf_gain_cap_apply(struct ath_hal *ah, int is_2GHz)
                 rx_gain_table[i][1] = ar9300_common_rx_gain_table_osprey_2p2[i][1];
                 break;
             case 1:
-                rx_gain_table[i][0] = 
+                rx_gain_table[i][0] =
 					ar9300Common_wo_xlna_rx_gain_table_osprey_2p2[i][0];
-                rx_gain_table[i][1] = 
+                rx_gain_table[i][1] =
 					ar9300Common_wo_xlna_rx_gain_table_osprey_2p2[i][1];
                 break;
 			}
@@ -3469,36 +3469,36 @@ HAL_BOOL ar9300_rf_gain_cap_apply(struct ath_hal *ah, int is_2GHz)
             return AH_FALSE;
         }
     }
-    
-    while (1) 
+
+    while (1)
 	{
         rx_gain_value = rx_gain_table[i_rx_gain][1];
         rx_gain_value_caped = rx_gain_value;
         a_Byte = rx_gain_value & (0x000000FF);
-        if (a_Byte>rf_gain_cap) 
+        if (a_Byte>rf_gain_cap)
         {
-        	rx_gain_value_caped = (rx_gain_value_caped & 
+        	rx_gain_value_caped = (rx_gain_value_caped &
 				(0xFFFFFF00)) + rf_gain_cap;
         }
         a_Byte = rx_gain_value & (0x0000FF00);
-        if ( a_Byte > ( rf_gain_cap << 8 ) ) 
+        if ( a_Byte > ( rf_gain_cap << 8 ) )
         {
-        	rx_gain_value_caped = (rx_gain_value_caped & 
+        	rx_gain_value_caped = (rx_gain_value_caped &
 				(0xFFFF00FF)) + (rf_gain_cap<<8);
         }
         a_Byte = rx_gain_value & (0x00FF0000);
-        if ( a_Byte > ( rf_gain_cap << 16 ) ) 
+        if ( a_Byte > ( rf_gain_cap << 16 ) )
         {
-        	rx_gain_value_caped = (rx_gain_value_caped & 
+        	rx_gain_value_caped = (rx_gain_value_caped &
 				(0xFF00FFFF)) + (rf_gain_cap<<16);
         }
         a_Byte = rx_gain_value & (0xFF000000);
-        if ( a_Byte > ( rf_gain_cap << 24 ) ) 
+        if ( a_Byte > ( rf_gain_cap << 24 ) )
         {
-        	rx_gain_value_caped = (rx_gain_value_caped & 
+        	rx_gain_value_caped = (rx_gain_value_caped &
 				(0x00FFFFFF)) + (rf_gain_cap<<24);
-        } 
-        else 
+        }
+        else
         {
             done = 1;
         }
@@ -3536,13 +3536,13 @@ void ar9300_rx_gain_table_apply(struct ath_hal *ah)
     {
     case 2:
         if (AR_SREV_JUPITER_10(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9300_common_mixed_rx_gain_table_jupiter_1p0,
                 ARRAY_LENGTH(ar9300_common_mixed_rx_gain_table_jupiter_1p0), 2);
             break;
         }
         else if (AR_SREV_JUPITER_20(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9300Common_mixed_rx_gain_table_jupiter_2p0,
                 ARRAY_LENGTH(ar9300Common_mixed_rx_gain_table_jupiter_2p0), 2);
             INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain_bb_core,
@@ -3557,7 +3557,7 @@ void ar9300_rx_gain_table_apply(struct ath_hal *ah)
             break;
         }
         else if (AR_SREV_JUPITER_21(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9462_2p1_common_mixed_rx_gain,
                 ARRAY_LENGTH(ar9462_2p1_common_mixed_rx_gain), 2);
             INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain_bb_core,
@@ -3593,11 +3593,11 @@ void ar9300_rx_gain_table_apply(struct ath_hal *ah)
     default:
         if (AR_SREV_HORNET_12(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
-                ar9331_common_rx_gain_hornet1_2, 
+                ar9331_common_rx_gain_hornet1_2,
                 ARRAY_LENGTH(ar9331_common_rx_gain_hornet1_2), 2);
         } else if (AR_SREV_HORNET_11(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
-                ar9331_common_rx_gain_hornet1_1, 
+                ar9331_common_rx_gain_hornet1_1,
                 ARRAY_LENGTH(ar9331_common_rx_gain_hornet1_1), 2);
         } else if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
@@ -3625,11 +3625,11 @@ void ar9300_rx_gain_table_apply(struct ath_hal *ah)
                 ar9485Common_wo_xlna_rx_gain_poseidon1_0,
                 ARRAY_LENGTH(ar9485Common_wo_xlna_rx_gain_poseidon1_0), 2);
         } else if (AR_SREV_JUPITER_10(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9300_common_rx_gain_table_jupiter_1p0,
                 ARRAY_LENGTH(ar9300_common_rx_gain_table_jupiter_1p0), 2);
         } else if (AR_SREV_JUPITER_20(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9300Common_rx_gain_table_jupiter_2p0,
                 ARRAY_LENGTH(ar9300Common_rx_gain_table_jupiter_2p0), 2);
         } else if (AR_SREV_JUPITER_21(ah)) {
@@ -3682,12 +3682,12 @@ void ar9300_rx_gain_table_apply(struct ath_hal *ah)
                 ar9485Common_wo_xlna_rx_gain_poseidon1_0,
                 ARRAY_LENGTH(ar9485Common_wo_xlna_rx_gain_poseidon1_0), 2);
         } else if (AR_SREV_JUPITER_10(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9300_common_wo_xlna_rx_gain_table_jupiter_1p0,
                 ARRAY_LENGTH(ar9300_common_wo_xlna_rx_gain_table_jupiter_1p0),
                 2);
         } else if (AR_SREV_JUPITER_20(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar9300Common_wo_xlna_rx_gain_table_jupiter_2p0,
                 ARRAY_LENGTH(ar9300Common_wo_xlna_rx_gain_table_jupiter_2p0),
                 2);
@@ -3697,7 +3697,7 @@ void ar9300_rx_gain_table_apply(struct ath_hal *ah)
                 ARRAY_LENGTH(ar9462_2p1_common_wo_xlna_rx_gain),
                 2);
         } else if (AR_SREV_APHRODITE(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_rxgain,
                 ar956XCommon_wo_xlna_rx_gain_table_aphrodite_1p0,
                 ARRAY_LENGTH(ar956XCommon_wo_xlna_rx_gain_table_aphrodite_1p0),
                 2);
@@ -3742,19 +3742,19 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
     default:
         if (AR_SREV_HORNET_12(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_lowest_ob_db_tx_gain_hornet1_2, 
+                ar9331_modes_lowest_ob_db_tx_gain_hornet1_2,
                 ARRAY_LENGTH(ar9331_modes_lowest_ob_db_tx_gain_hornet1_2), 5);
         } else if (AR_SREV_HORNET_11(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_lowest_ob_db_tx_gain_hornet1_1, 
+                ar9331_modes_lowest_ob_db_tx_gain_hornet1_1,
                 ARRAY_LENGTH(ar9331_modes_lowest_ob_db_tx_gain_hornet1_1), 5);
         } else if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485_modes_lowest_ob_db_tx_gain_poseidon1_1, 
+                ar9485_modes_lowest_ob_db_tx_gain_poseidon1_1,
                 ARRAY_LENGTH(ar9485_modes_lowest_ob_db_tx_gain_poseidon1_1), 5);
         } else if (AR_SREV_POSEIDON(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485Modes_lowest_ob_db_tx_gain_poseidon1_0, 
+                ar9485Modes_lowest_ob_db_tx_gain_poseidon1_0,
                 ARRAY_LENGTH(ar9485Modes_lowest_ob_db_tx_gain_poseidon1_0), 5);
         } else if (AR_SREV_AR9580(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
@@ -3806,19 +3806,19 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
     case 1:
         if (AR_SREV_HORNET_12(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_high_ob_db_tx_gain_hornet1_2, 
+                ar9331_modes_high_ob_db_tx_gain_hornet1_2,
                 ARRAY_LENGTH(ar9331_modes_high_ob_db_tx_gain_hornet1_2), 5);
         } else if (AR_SREV_HORNET_11(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_high_ob_db_tx_gain_hornet1_1, 
+                ar9331_modes_high_ob_db_tx_gain_hornet1_1,
                 ARRAY_LENGTH(ar9331_modes_high_ob_db_tx_gain_hornet1_1), 5);
         } else if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485_modes_high_ob_db_tx_gain_poseidon1_1, 
+                ar9485_modes_high_ob_db_tx_gain_poseidon1_1,
                 ARRAY_LENGTH(ar9485_modes_high_ob_db_tx_gain_poseidon1_1), 5);
         } else if (AR_SREV_POSEIDON(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485Modes_high_ob_db_tx_gain_poseidon1_0, 
+                ar9485Modes_high_ob_db_tx_gain_poseidon1_0,
                 ARRAY_LENGTH(ar9485Modes_high_ob_db_tx_gain_poseidon1_0), 5);
         } else if (AR_SREV_AR9580(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
@@ -3873,19 +3873,19 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
     case 2:
         if (AR_SREV_HORNET_12(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_low_ob_db_tx_gain_hornet1_2, 
+                ar9331_modes_low_ob_db_tx_gain_hornet1_2,
                 ARRAY_LENGTH(ar9331_modes_low_ob_db_tx_gain_hornet1_2), 5);
         } else if (AR_SREV_HORNET_11(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_low_ob_db_tx_gain_hornet1_1, 
+                ar9331_modes_low_ob_db_tx_gain_hornet1_1,
                 ARRAY_LENGTH(ar9331_modes_low_ob_db_tx_gain_hornet1_1), 5);
         } else if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485_modes_low_ob_db_tx_gain_poseidon1_1, 
+                ar9485_modes_low_ob_db_tx_gain_poseidon1_1,
                 ARRAY_LENGTH(ar9485_modes_low_ob_db_tx_gain_poseidon1_1), 5);
         } else if (AR_SREV_POSEIDON(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485Modes_low_ob_db_tx_gain_poseidon1_0, 
+                ar9485Modes_low_ob_db_tx_gain_poseidon1_0,
                 ARRAY_LENGTH(ar9485Modes_low_ob_db_tx_gain_poseidon1_0), 5);
         } else if (AR_SREV_AR9580(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
@@ -3898,7 +3898,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
                 ARRAY_LENGTH(ar9340Modes_low_ob_db_tx_gain_table_wasp_1p0), 5);
         } else if (AR_SREV_APHRODITE(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar956XModes_low_ob_db_tx_gain_table_aphrodite_1p0, 
+                ar956XModes_low_ob_db_tx_gain_table_aphrodite_1p0,
                 ARRAY_LENGTH(ar956XModes_low_ob_db_tx_gain_table_aphrodite_1p0), 5);
         } else {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
@@ -3910,19 +3910,19 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
     case 3:
         if (AR_SREV_HORNET_12(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_high_power_tx_gain_hornet1_2, 
+                ar9331_modes_high_power_tx_gain_hornet1_2,
                 ARRAY_LENGTH(ar9331_modes_high_power_tx_gain_hornet1_2), 5);
         } else if (AR_SREV_HORNET_11(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9331_modes_high_power_tx_gain_hornet1_1, 
+                ar9331_modes_high_power_tx_gain_hornet1_1,
                 ARRAY_LENGTH(ar9331_modes_high_power_tx_gain_hornet1_1), 5);
         } else if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485_modes_high_power_tx_gain_poseidon1_1, 
+                ar9485_modes_high_power_tx_gain_poseidon1_1,
                 ARRAY_LENGTH(ar9485_modes_high_power_tx_gain_poseidon1_1), 5);
         } else if (AR_SREV_POSEIDON(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar9485Modes_high_power_tx_gain_poseidon1_0, 
+                ar9485Modes_high_power_tx_gain_poseidon1_0,
                 ARRAY_LENGTH(ar9485Modes_high_power_tx_gain_poseidon1_0), 5);
         } else if (AR_SREV_AR9580(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
@@ -3936,7 +3936,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
                 5);
         } else if (AR_SREV_APHRODITE(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
-                ar956XModes_high_power_tx_gain_table_aphrodite_1p0, 
+                ar956XModes_high_power_tx_gain_table_aphrodite_1p0,
                 ARRAY_LENGTH(ar956XModes_high_power_tx_gain_table_aphrodite_1p0), 5);
         } else {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
@@ -3957,7 +3957,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
                 ARRAY_LENGTH(ar9300_modes_mixed_ob_db_tx_gain_table_ar9580_1p0),
                 5);
         } else {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
 		ar9300Modes_mixed_ob_db_tx_gain_table_osprey_2p2,
                 ARRAY_LENGTH(ar9300Modes_mixed_ob_db_tx_gain_table_osprey_2p2),
 		 5);
@@ -3967,12 +3967,12 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
         /* HW Green TX */
         if (AR_SREV_POSEIDON(ah)) {
             if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
-                INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+                INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
                     ar9485_modes_green_ob_db_tx_gain_poseidon1_1,
                     sizeof(ar9485_modes_green_ob_db_tx_gain_poseidon1_1) /
                     sizeof(ar9485_modes_green_ob_db_tx_gain_poseidon1_1[0]), 5);
             } else {
-                INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+                INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
                     ar9485_modes_green_ob_db_tx_gain_poseidon1_0,
                     sizeof(ar9485_modes_green_ob_db_tx_gain_poseidon1_0) /
                     sizeof(ar9485_modes_green_ob_db_tx_gain_poseidon1_0[0]), 5);
@@ -3980,7 +3980,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
             ahp->ah_hw_green_tx_enable = 1;
         }
         else if (AR_SREV_WASP(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
             ar9340_modes_ub124_tx_gain_table_wasp_1p0,
             sizeof(ar9340_modes_ub124_tx_gain_table_wasp_1p0) /
             sizeof(ar9340_modes_ub124_tx_gain_table_wasp_1p0[0]), 5);
@@ -3990,7 +3990,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
                 ar9300_modes_type5_tx_gain_table_ar9580_1p0,
                 ARRAY_LENGTH( ar9300_modes_type5_tx_gain_table_ar9580_1p0),
                 5);
-        } 
+        }
         else if (AR_SREV_OSPREY_22(ah)) {
             INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
                 ar9300_modes_number_5_tx_gain_table_osprey_2p2,
@@ -4008,7 +4008,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
         /* HW Green TX */
         else if (AR_SREV_POSEIDON(ah)) {
             if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
-                INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+                INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
                 ar9485_modes_green_spur_ob_db_tx_gain_poseidon1_1,
                 sizeof(ar9485_modes_green_spur_ob_db_tx_gain_poseidon1_1) /
                 sizeof(ar9485_modes_green_spur_ob_db_tx_gain_poseidon1_1[0]),
@@ -4025,7 +4025,7 @@ void ar9300_tx_gain_table_apply(struct ath_hal *ah)
         break;
 	case 7:
 		if (AR_SREV_WASP(ah)) {
-            INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain, 
+            INIT_INI_ARRAY(&ahp->ah_ini_modes_txgain,
             ar9340Modes_cus227_tx_gain_table_wasp_1p0,
             sizeof(ar9340Modes_cus227_tx_gain_table_wasp_1p0) /
             sizeof(ar9340Modes_cus227_tx_gain_table_wasp_1p0[0]), 5);
@@ -4040,12 +4040,12 @@ ar9300_ant_div_comb_get_config(struct ath_hal *ah,
     HAL_ANT_COMB_CONFIG *div_comb_conf)
 {
     u_int32_t reg_val = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
-    div_comb_conf->main_lna_conf = 
+    div_comb_conf->main_lna_conf =
         MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__READ(reg_val);
-    div_comb_conf->alt_lna_conf = 
+    div_comb_conf->alt_lna_conf =
         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__READ(reg_val);
-    div_comb_conf->fast_div_bias = 
-        MULTICHAIN_GAIN_CTRL__ANT_FAST_DIV_BIAS__READ(reg_val); 
+    div_comb_conf->fast_div_bias =
+        MULTICHAIN_GAIN_CTRL__ANT_FAST_DIV_BIAS__READ(reg_val);
     if (AR_SREV_HORNET_11(ah)) {
         div_comb_conf->antdiv_configgroup = HAL_ANTDIV_CONFIG_GROUP_1;
     } else if (AR_SREV_POSEIDON_11_OR_LATER(ah)) {
@@ -4068,12 +4068,12 @@ ar9300_ant_div_comb_set_config(struct ath_hal *ah,
     struct ath_hal_9300 *ahp = AH9300(ah);
 
     /* DO NOTHING when set to fixed antenna for manufacturing purpose */
-    if (AR_SREV_POSEIDON(ah) && ( ahp->ah_diversity_control == HAL_ANT_FIXED_A 
+    if (AR_SREV_POSEIDON(ah) && ( ahp->ah_diversity_control == HAL_ANT_FIXED_A
          || ahp->ah_diversity_control == HAL_ANT_FIXED_B)) {
         return;
     }
     reg_val = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
-    reg_val &= ~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK    | 
+    reg_val &= ~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK    |
                 MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__MASK     |
                 MULTICHAIN_GAIN_CTRL__ANT_FAST_DIV_BIAS__MASK       |
                 MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_GAINTB__MASK     |
@@ -4084,13 +4084,13 @@ ar9300_ant_div_comb_set_config(struct ath_hal *ah,
     reg_val |=
         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_GAINTB__WRITE(
         div_comb_conf->alt_gaintb);
-    reg_val |= 
+    reg_val |=
         MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__WRITE(
         div_comb_conf->main_lna_conf);
-    reg_val |= 
+    reg_val |=
         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__WRITE(
         div_comb_conf->alt_lna_conf);
-    reg_val |= 
+    reg_val |=
         MULTICHAIN_GAIN_CTRL__ANT_FAST_DIV_BIAS__WRITE(
         div_comb_conf->fast_div_bias);
     OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, reg_val);
@@ -4098,13 +4098,13 @@ ar9300_ant_div_comb_set_config(struct ath_hal *ah,
 }
 #endif /* ATH_ANT_DIV_COMB */
 
-static void 
+static void
 ar9300_init_hostif_offsets(struct ath_hal *ah)
 {
     AR_HOSTIF_REG(ah, AR_RC) =
         AR9300_HOSTIF_OFFSET(HOST_INTF_RESET_CONTROL);
     AR_HOSTIF_REG(ah, AR_WA) =
-        AR9300_HOSTIF_OFFSET(HOST_INTF_WORK_AROUND);                   
+        AR9300_HOSTIF_OFFSET(HOST_INTF_WORK_AROUND);
     AR_HOSTIF_REG(ah, AR_PM_STATE) =
         AR9300_HOSTIF_OFFSET(HOST_INTF_PM_STATE);
     AR_HOSTIF_REG(ah, AR_H_INFOL) =
@@ -4183,7 +4183,7 @@ ar9300_init_hostif_offsets(struct ath_hal *ah)
         AR9300_HOSTIF_OFFSET(HOST_INTF_MISC);
     AR_HOSTIF_REG(ah, AR_PCIE_MSI) =
         AR9300_HOSTIF_OFFSET(HOST_INTF_PCIE_MSI);
-#if 0   /* Offsets are not defined in reg_map structure */ 
+#if 0   /* Offsets are not defined in reg_map structure */
     AR_HOSTIF_REG(ah, AR_TSF_SNAPSHOT_BT_ACTIVE) =
         AR9300_HOSTIF_OFFSET(HOST_INTF_TSF_SNAPSHOT_BT_ACTIVE);
     AR_HOSTIF_REG(ah, AR_TSF_SNAPSHOT_BT_PRIORITY) =
@@ -4213,13 +4213,13 @@ ar9300_init_hostif_offsets(struct ath_hal *ah)
         AR9300_HOSTIF_OFFSET(HOST_INTF_INTR_PRIORITY_ASYNC_ENABLE);
 }
 
-static void 
+static void
 ar9340_init_hostif_offsets(struct ath_hal *ah)
 {
     AR_HOSTIF_REG(ah, AR_RC) =
         AR9340_HOSTIF_OFFSET(HOST_INTF_RESET_CONTROL);
     AR_HOSTIF_REG(ah, AR_WA) =
-        AR9340_HOSTIF_OFFSET(HOST_INTF_WORK_AROUND);                   
+        AR9340_HOSTIF_OFFSET(HOST_INTF_WORK_AROUND);
     AR_HOSTIF_REG(ah, AR_PCIE_PM_CTRL) =
         AR9340_HOSTIF_OFFSET(HOST_INTF_PM_CTRL);
     AR_HOSTIF_REG(ah, AR_HOST_TIMEOUT) =
@@ -4298,8 +4298,8 @@ ar9340_init_hostif_offsets(struct ath_hal *ah)
         AR9340_HOSTIF_OFFSET(HOST_INTF_INTR_PRIORITY_ASYNC_ENABLE);
 }
 
-/* 
- * Host interface register offsets are different for Osprey and Wasp 
+/*
+ * Host interface register offsets are different for Osprey and Wasp
  * and hence store the offsets in hal structure
  */
 static int ar9300_init_offsets(struct ath_hal *ah, u_int16_t devid)

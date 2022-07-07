@@ -642,7 +642,7 @@ int serveClientBlockedOnList(client *receiver, robj *key, robj *dstkey, redisDb 
         addReplyMultiBulkLen(receiver,2);
         addReplyBulk(receiver,key);
         addReplyBulk(receiver,value);
-        
+
         /* Notify event. */
         char *event = (where == LIST_HEAD) ? "lpop" : "rpop";
         notifyKeyspaceEvent(NOTIFY_LIST,event,key,receiver->db->id);

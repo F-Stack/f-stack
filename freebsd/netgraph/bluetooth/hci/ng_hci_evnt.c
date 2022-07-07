@@ -56,8 +56,8 @@
  ******************************************************************************
  ******************************************************************************/
 
-/* 
- * Event processing routines 
+/*
+ * Event processing routines
  */
 
 static int inquiry_result             (ng_hci_unit_p, struct mbuf *);
@@ -262,7 +262,7 @@ send_data_packets(ng_hci_unit_p unit, int link_type, int limit)
 		winner = NULL;
 
 		/*
-		 * Find the connection that has has data to send 
+		 * Find the connection that has has data to send
 		 * and the smallest number of pending packets
 		 */
 
@@ -274,7 +274,7 @@ send_data_packets(ng_hci_unit_p unit, int link_type, int limit)
 			}
 			if (NG_BT_ITEMQ_LEN(&con->conq) == 0)
 				continue;
-        
+
 			if (con->pending < min_pending) {
 				winner = con;
 				min_pending = con->pending;
@@ -284,7 +284,7 @@ send_data_packets(ng_hci_unit_p unit, int link_type, int limit)
 	        if (winner == NULL)
 			break;
 
-		/* 
+		/*
 		 * OK, we have a winner now send as much packets as we can
 		 * Count the number of packets we have sent and then sync
 		 * winner connection queue.
@@ -294,15 +294,15 @@ send_data_packets(ng_hci_unit_p unit, int link_type, int limit)
 			NG_BT_ITEMQ_DEQUEUE(&winner->conq, item);
 			if (item == NULL)
 				break;
-		
+
 			NG_HCI_INFO(
 "%s: %s - sending data packet, handle=%d, len=%d\n",
-				__func__, NG_NODE_NAME(unit->node), 
+				__func__, NG_NODE_NAME(unit->node),
 				winner->con_handle, NGI_M(item)->m_pkthdr.len);
 
 			/* Check if driver hook still there */
 			v = (unit->drv != NULL && NG_HOOK_IS_VALID(unit->drv));
-			if (!v || (unit->state & NG_HCI_UNIT_READY) != 
+			if (!v || (unit->state & NG_HCI_UNIT_READY) !=
 					NG_HCI_UNIT_READY) {
 				NG_HCI_ERR(
 "%s: %s - could not send data. Hook \"%s\" is %svalid, state=%#x\n",
@@ -405,7 +405,7 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 
 		m_copydata(event, 0, sizeof(bdaddr), (caddr_t) &bdaddr);
 		m_adj(event, sizeof(bdaddr));
-		
+
 		/* Lookup entry in the cache */
 		n = ng_hci_get_neighbor(unit, &bdaddr, (addr_type) ? NG_HCI_LINK_LE_RANDOM:NG_HCI_LINK_LE_PUBLIC);
 		if (n == NULL) {
@@ -418,17 +418,17 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 			bcopy(&bdaddr, &n->bdaddr, sizeof(n->bdaddr));
 			n->addrtype = (addr_type)? NG_HCI_LINK_LE_RANDOM :
 			  NG_HCI_LINK_LE_PUBLIC;
-			
+
 		} else
 			getmicrotime(&n->updated);
-		
+
 		{
-			/* 
-			 * TODO: Make these information 
+			/*
+			 * TODO: Make these information
 			 * Available from userland.
 			 */
 			u_int8_t length_data;
-			
+
 			event = m_pullup(event, sizeof(u_int8_t));
 			if(event == NULL){
 				NG_HCI_WARN("%s: Event datasize Pullup Failed\n", __func__);
@@ -438,7 +438,7 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 			m_adj(event, sizeof(u_int8_t));
 			n->extinq_size = (length_data < NG_HCI_EXTINQ_MAX)?
 				length_data : NG_HCI_EXTINQ_MAX;
-			
+
 			/*Advertizement data*/
 			event = m_pullup(event, n->extinq_size);
 			if(event == NULL){
@@ -451,9 +451,9 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 			/*Get RSSI*/
 			if(event == NULL){
 				NG_HCI_WARN("%s: Event rssi pull up Failed\n", __func__);
-				
+
 				goto out;
-			}				
+			}
 			n->page_scan_mode = *mtod(event, char *);
 			m_adj(event, sizeof(u_int8_t));
 		}
@@ -506,7 +506,7 @@ static int le_connection_complete(ng_hci_unit_p unit, struct mbuf *event)
 	 *    nas not requested this connection , (less likely) we gave up
 	 *    on this connection (timeout) or as node act as slave role.
 	 *    The most likely scenario is that
-	 *    we have received LE_Create_Connection command 
+	 *    we have received LE_Create_Connection command
 	 *    from the RAW hook
 	 */
 
@@ -534,7 +534,7 @@ static int le_connection_complete(ng_hci_unit_p unit, struct mbuf *event)
 			goto out;
 
 	/*
-	 * Update connection descriptor and send notification 
+	 * Update connection descriptor and send notification
 	 * to the upper layers.
 	 */
 
@@ -549,8 +549,8 @@ static int le_connection_complete(ng_hci_unit_p unit, struct mbuf *event)
 	else {
 		con->state = NG_HCI_CON_OPEN;
 
-		/*	
-		 * Change link policy for the ACL connections. Enable all 
+		/*
+		 * Change link policy for the ACL connections. Enable all
 		 * supported link modes. Enable Role switch as well if
 		 * device supports it.
 		 */
@@ -657,7 +657,7 @@ inquiry_result(ng_hci_unit_p unit, struct mbuf *event)
 		m_adj(event, NG_HCI_CLASS_SIZE);
 
 		/* clock offset */
-		m_copydata(event, 0, sizeof(n->clock_offset), 
+		m_copydata(event, 0, sizeof(n->clock_offset),
 			(caddr_t) &n->clock_offset);
 		n->clock_offset = le16toh(n->clock_offset);
 	}
@@ -707,7 +707,7 @@ con_compl(ng_hci_unit_p unit, struct mbuf *event)
 	 * 2) We do not have connection descriptor. That means upper layer
 	 *    nas not requested this connection or (less likely) we gave up
 	 *    on this connection (timeout). The most likely scenario is that
-	 *    we have received Create_Connection/Add_SCO_Connection command 
+	 *    we have received Create_Connection/Add_SCO_Connection command
 	 *    from the RAW hook
 	 */
 
@@ -726,7 +726,7 @@ con_compl(ng_hci_unit_p unit, struct mbuf *event)
 			goto out;
 
 	/*
-	 * Update connection descriptor and send notification 
+	 * Update connection descriptor and send notification
 	 * to the upper layers.
 	 */
 
@@ -741,8 +741,8 @@ con_compl(ng_hci_unit_p unit, struct mbuf *event)
 	else {
 		con->state = NG_HCI_CON_OPEN;
 
-		/*	
-		 * Change link policy for the ACL connections. Enable all 
+		/*
+		 * Change link policy for the ACL connections. Enable all
 		 * supported link modes. Enable Role switch as well if
 		 * device supports it.
 		 */
@@ -814,7 +814,7 @@ con_req(ng_hci_unit_p unit, struct mbuf *event)
 	 *
 	 * 2) con->state == NG_HCI_CON_W4_LP_CON_RSP ||
 	 *    con->state == NG_HCI_CON_W4_CONN_COMPL
-	 * 
+	 *
 	 * 3) con->bdaddr == ep->bdaddr
 	 *
 	 * Possible cases:
@@ -824,14 +824,14 @@ con_req(ng_hci_unit_p unit, struct mbuf *event)
 	 *    appropriate upstream hook (based on link_type).
 	 *
 	 * 2) We found connection handle. This is more complicated.
-	 * 
+	 *
 	 * 2.1) ACL links
 	 *
 	 *      Since only one ACL link can exist between each pair of
-	 *      units then we have a race. Our upper layer has requested 
-	 *      an ACL connection to the remote unit, but we did not send 
+	 *      units then we have a race. Our upper layer has requested
+	 *      an ACL connection to the remote unit, but we did not send
 	 *      command yet. At the same time the remote unit has requested
-	 *      an ACL connection from us. In this case we will ignore 
+	 *      an ACL connection from us. In this case we will ignore
 	 *	Connection_Request event. This probably will cause connect
 	 *      failure	on both units.
 	 *
@@ -839,14 +839,14 @@ con_req(ng_hci_unit_p unit, struct mbuf *event)
 	 *
 	 *      The spec on page 45 says :
 	 *
-	 *      "The master can support up to three SCO links to the same 
-	 *       slave or to different slaves. A slave can support up to 
-	 *       three SCO links from the same master, or two SCO links if 
+	 *      "The master can support up to three SCO links to the same
+	 *       slave or to different slaves. A slave can support up to
+	 *       three SCO links from the same master, or two SCO links if
 	 *       the links originate from different masters."
 	 *
 	 *      The only problem is how to handle multiple SCO links between
 	 *      matster and slave. For now we will assume that multiple SCO
-	 *      links MUST be opened one after another. 
+	 *      links MUST be opened one after another.
 	 */
 
 	LIST_FOREACH(con, &unit->con_list, next)
@@ -893,9 +893,9 @@ discon_compl(ng_hci_unit_p unit, struct mbuf *event)
 
 	ep = mtod(event, ng_hci_discon_compl_ep *);
 
-	/* 
-	 * XXX 
-	 * Do we have to send notification if ep->status != 0? 
+	/*
+	 * XXX
+	 * Do we have to send notification if ep->status != 0?
 	 * For now we will send notification for both ACL and SCO connections
 	 * ONLY if ep->status == 0.
 	 */
@@ -950,7 +950,7 @@ encryption_change(ng_hci_unit_p unit, struct mbuf *event)
 		} else if (con->link_type == NG_HCI_LINK_SCO) {
 			NG_HCI_ALERT(
 "%s: %s - invalid link type=%d\n",
-				__func__, NG_NODE_NAME(unit->node), 
+				__func__, NG_NODE_NAME(unit->node),
 				con->link_type);
 			error = EINVAL;
 		} else if (ep->encryption_enable)
@@ -1055,7 +1055,7 @@ qos_setup_compl(ng_hci_unit_p unit, struct mbuf *event)
 	} else if (con->state != NG_HCI_CON_OPEN) {
 		NG_HCI_ALERT(
 "%s: %s - invalid connection state=%d, handle=%d\n",
-			__func__, NG_NODE_NAME(unit->node), 
+			__func__, NG_NODE_NAME(unit->node),
 			con->state, h);
 		error = EINVAL;
 	} else /* Notify upper layer */
@@ -1101,8 +1101,8 @@ role_change(ng_hci_unit_p unit, struct mbuf *event)
 			NG_HCI_ALERT(
 "%s: %s - ACL connection does not exist, bdaddr=%x:%x:%x:%x:%x:%x\n",
 				__func__, NG_NODE_NAME(unit->node),
-				ep->bdaddr.b[5], ep->bdaddr.b[4], 
-				ep->bdaddr.b[3], ep->bdaddr.b[2], 
+				ep->bdaddr.b[5], ep->bdaddr.b[4],
+				ep->bdaddr.b[3], ep->bdaddr.b[2],
 				ep->bdaddr.b[1], ep->bdaddr.b[0]);
 	} else
 		NG_HCI_ERR(
@@ -1149,7 +1149,7 @@ num_compl_pkts(ng_hci_unit_p unit, struct mbuf *event)
 			if (con->pending < 0) {
 				NG_HCI_WARN(
 "%s: %s - pending packet counter is out of sync! " \
-"handle=%d, pending=%d, ncp=%d\n",	__func__, NG_NODE_NAME(unit->node), 
+"handle=%d, pending=%d, ncp=%d\n",	__func__, NG_NODE_NAME(unit->node),
 					con->con_handle, con->pending, p);
 
 				con->pending = 0;
@@ -1158,7 +1158,7 @@ num_compl_pkts(ng_hci_unit_p unit, struct mbuf *event)
 			/* Update buffer descriptor */
 			if (con->link_type != NG_HCI_LINK_SCO)
 				NG_HCI_BUFF_ACL_FREE(unit->buffer, p);
-			else 
+			else
 				NG_HCI_BUFF_SCO_FREE(unit->buffer, p);
 		} else
 			NG_HCI_ALERT(
@@ -1200,7 +1200,7 @@ mode_change(ng_hci_unit_p unit, struct mbuf *event)
 		} else if (con->link_type != NG_HCI_LINK_ACL) {
 			NG_HCI_ALERT(
 "%s: %s - invalid link type=%d\n",
-				__func__, NG_NODE_NAME(unit->node), 
+				__func__, NG_NODE_NAME(unit->node),
 				con->link_type);
 			error = EINVAL;
 		} else
@@ -1315,7 +1315,7 @@ qos_violation(ng_hci_unit_p unit, struct mbuf *event)
 			__func__, NG_NODE_NAME(unit->node), con->state, h);
 		error = EINVAL;
 	} else /* Notify upper layer */
-		error = ng_hci_lp_qos_ind(con); 
+		error = ng_hci_lp_qos_ind(con);
 
 	NG_FREE_M(event);
 

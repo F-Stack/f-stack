@@ -949,7 +949,7 @@ static int streamParseAddOrTrimArgsOrReply(client *c, streamAddTrimArgs *args, i
 
             if (streamParseStrictIDOrReply(c,c->argv[i+1],&args->minid,0) != C_OK)
                 return -1;
-            
+
             i++;
             args->trim_strategy = TRIM_STRATEGY_MINID;
             args->trim_strategy_arg_idx = i;
@@ -1740,7 +1740,7 @@ int streamParseStrictIDOrReply(client *c, robj *o, streamID *id, uint64_t missin
 
 /* Helper for parsing a stream ID that is a range query interval. When the
  * exclude argument is NULL, streamParseIDOrReply() is called and the interval
- * is treated as close (inclusive). Otherwise, the exclude argument is set if 
+ * is treated as close (inclusive). Otherwise, the exclude argument is set if
  * the interval is open (the "(" prefix) and streamParseStrictIDOrReply() is
  * called in that case.
  */
@@ -1748,13 +1748,13 @@ int streamParseIntervalIDOrReply(client *c, robj *o, streamID *id, int *exclude,
     char *p = o->ptr;
     size_t len = sdslen(p);
     int invalid = 0;
-    
+
     if (exclude != NULL) *exclude = (len > 1 && p[0] == '(');
     if (exclude != NULL && *exclude) {
         robj *t = createStringObject(p+1,len-1);
         invalid = (streamParseStrictIDOrReply(c,t,id,missing_seq) == C_ERR);
         decrRefCount(t);
-    } else 
+    } else
         invalid = (streamParseIDOrReply(c,o,id,missing_seq) == C_ERR);
     if (invalid)
         return C_ERR;
@@ -1879,7 +1879,7 @@ void xrangeGenericCommand(client *c, int rev) {
     robj *startarg = rev ? c->argv[3] : c->argv[2];
     robj *endarg = rev ? c->argv[2] : c->argv[3];
     int startex = 0, endex = 0;
-    
+
     /* Parse start and end IDs. */
     if (streamParseIntervalIDOrReply(c,startarg,&startid,&startex,0) != C_OK)
         return;

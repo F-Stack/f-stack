@@ -443,7 +443,7 @@ ipf_p_tftp_client(softt, fin, aps, nat)
 	switch (opcode)
 	{
 	case TFTP_CMD_WRITE :
-		if (softt->ipf_p_tftp_readonly != 0) 
+		if (softt->ipf_p_tftp_readonly != 0)
 			break;
 		/* FALLTHROUGH */
 	case TFTP_CMD_READ :

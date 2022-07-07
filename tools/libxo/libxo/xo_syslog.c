@@ -152,7 +152,7 @@ static char xo_syslog_enterprise_id[12];
 /*
  * Record an enterprise ID, which functions as a namespace for syslog
  * messages.  The value is pre-formatted into a string.  This allows
- * applications to customize their syslog message set, when needed. 
+ * applications to customize their syslog message set, when needed.
  */
 void
 xo_set_syslog_enterprise_id (unsigned short eid)
@@ -200,7 +200,7 @@ xo_send_syslog (char *full_msg, char *v0_hdr,
     xo_connect_log();
 
     /*
-     * If the send() fails, there are two likely scenarios: 
+     * If the send() fails, there are two likely scenarios:
      *  1) syslogd was restarted
      *  2) /var/run/log is out of socket buffer space, which
      *     in most cases means local DoS.
@@ -392,7 +392,7 @@ xo_open_log (const char *ident, int logstat, int logfac)
 
 
 void
-xo_close_log (void) 
+xo_close_log (void)
 {
     THREAD_LOCK();
     if (xo_logfile != -1) {

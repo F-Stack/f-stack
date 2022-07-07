@@ -1717,7 +1717,7 @@ kern_jail_set(struct thread *td, struct uio *optuio, int flags)
 		if (host != NULL)
 			strlcpy(pr->pr_hostname, host, sizeof(pr->pr_hostname));
 		if (domain != NULL)
-			strlcpy(pr->pr_domainname, domain, 
+			strlcpy(pr->pr_domainname, domain,
 			    sizeof(pr->pr_domainname));
 		if (uuid != NULL)
 			strlcpy(pr->pr_hostuuid, uuid, sizeof(pr->pr_hostuuid));
@@ -1732,7 +1732,7 @@ kern_jail_set(struct thread *td, struct uio *optuio, int flags)
 					    pr->pr_hostname,
 					    sizeof(tpr->pr_hostname));
 				if (domain != NULL)
-					strlcpy(tpr->pr_domainname, 
+					strlcpy(tpr->pr_domainname,
 					    pr->pr_domainname,
 					    sizeof(tpr->pr_domainname));
 				if (uuid != NULL)

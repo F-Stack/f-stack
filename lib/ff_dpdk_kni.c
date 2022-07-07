@@ -160,7 +160,7 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
     }
 
     if (ret < 0)
-        printf("Failed to Configure network interface of %d %s\n", 
+        printf("Failed to Configure network interface of %d %s\n",
             port_id, if_up ? "up" : "down");
 
     return ret;
@@ -507,7 +507,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
             conf.addr = pci_dev->addr;
             conf.id = pci_dev->id;
         }
-        
+
         /* Get the interface default mac address */
         rte_eth_macaddr_get(port_id,
                 (struct rte_ether_addr *)&conf.mac_addr);
@@ -534,7 +534,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
     snprintf((char*)ring_name, RTE_KNI_NAMESIZE, "kni_ring_%u", port_id);
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size, 
+        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size,
             socket_id, RING_F_SC_DEQ);
 
         if (rte_ring_lookup(ring_name) != kni_rp[port_id])

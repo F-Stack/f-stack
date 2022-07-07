@@ -165,8 +165,8 @@ static struct pr_usrreqs	ng_btsocket_sco_usrreqs = {
 	.pru_close =		ng_btsocket_sco_close,
 };
 
-/* 
- * Definitions of protocols supported in the BLUETOOTH domain 
+/*
+ * Definitions of protocols supported in the BLUETOOTH domain
  */
 
 static struct protosw		ng_btsocket_protosw[] = {
@@ -230,8 +230,8 @@ static struct domain ng_btsocket_domain = {
 	.dom_protoswNPROTOSW =	ng_btsocket_protosw_end
 };
 
-/* 
- * Socket sysctl tree 
+/*
+ * Socket sysctl tree
  */
 
 SYSCTL_NODE(_net_bluetooth_hci, OID_AUTO, sockets,
@@ -247,8 +247,8 @@ SYSCTL_NODE(_net_bluetooth_sco, OID_AUTO, sockets,
     CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Bluetooth SCO sockets family");
 
-/* 
- * Module 
+/*
+ * Module
  */
 
 static moduledata_t	ng_btsocket_mod = {
@@ -270,11 +270,11 @@ MODULE_DEPEND(ng_btsocket, netgraph, NG_ABI_VERSION,
  * This is to handle auxiliary linkages (e.g protocol domain addition).
  */
 
-static int  
+static int
 ng_btsocket_modevent(module_t mod, int event, void *data)
 {
 	int	error = 0;
-        
+
 	switch (event) {
 	case MOD_LOAD:
 		break;

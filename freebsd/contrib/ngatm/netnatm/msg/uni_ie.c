@@ -218,21 +218,21 @@ uni_encode_msg_hdr(struct uni_msg *msg, struct uni_msghdr *h,
 
 	(void)uni_msg_ensure(msg, 9);
 
-	APP_BYTE(msg, cx->pnni ? PNNI_PROTO : UNI_PROTO); 
-	APP_BYTE(msg, 3); 
-	if(h->cref.cref >= 1<<23) 
-		return -1; 
+	APP_BYTE(msg, cx->pnni ? PNNI_PROTO : UNI_PROTO);
+	APP_BYTE(msg, 3);
+	if(h->cref.cref >= 1<<23)
+		return -1;
 	APP_24BIT(msg, h->cref.cref | (h->cref.flag ? 0x800000 : 0));
-	APP_BYTE(msg, type); 
+	APP_BYTE(msg, type);
 
 	byte = 0x80;
 	if(h->act != UNI_MSGACT_DEFAULT)
 		byte |= 0x10 | (h->act & 3);
 	if(cx->pnni && h->pass)
 		byte |= 0x08;
-	APP_BYTE(msg, byte); 
+	APP_BYTE(msg, byte);
 
-	*mlen = msg->b_wptr - msg->b_rptr; 
+	*mlen = msg->b_wptr - msg->b_rptr;
 	APP_16BIT(msg, 0);
 
 	return 0;
@@ -315,7 +315,7 @@ uni_print_eol(struct unicx *cx)
 			uni_putc('\n', cx);
 			cx->doindent = 1;
 		}
-	} 
+	}
 }
 
 /*
@@ -3138,7 +3138,7 @@ decode_aal_1(struct uni_ie_aal *ie, struct uni_msg *msg, u_int ielen)
 			ie->u.aal1.mult  = *msg->b_rptr++ << 8;
 			ie->u.aal1.mult |= *msg->b_rptr++;
 			break;
-			
+
 		  case UNI_AAL_SCREC_ID:
 			if(ielen == 0 || (ie->h.present & UNI_AAL1_SCREC_P))
 				return -1;
@@ -3495,7 +3495,7 @@ check_traffic(u_int mask, u_int mopt, struct tallow *a)
 			return 1;
 		return 0;
 	}
-	
+
 	/* required */
 	if(mopt == 0xffff)
 		return 0;
@@ -3551,7 +3551,7 @@ check_ie_traffic_common(struct uni_xtraffic *ie, u_int present,
 		   | (ie->fdisc ? UNI_TRAFFIC_FDISC : 0)
 		   | (ie->bdisc ? UNI_TRAFFIC_BDISC : 0))
 		: 0xffff;
-	
+
 
 	if(present & UNI_TRAFFIC_BEST_P) {
 		/*
@@ -3667,7 +3667,7 @@ decode_traffic_common(struct uni_xtraffic *ie, struct uni_msg *msg,
 				ie->btag = (*msg->b_rptr&UNI_TRAFFIC_BTAG)?1:0;
 				ie->fdisc = (*msg->b_rptr&UNI_TRAFFIC_FDISC)?1:0;
 				ie->bdisc = (*msg->b_rptr&UNI_TRAFFIC_BDISC)?1:0;
-			} 
+			}
 			msg->b_rptr++;
 			break;
 		}

@@ -347,7 +347,7 @@ ProxyEncodeTcpStream(struct alias_link *lnk,
 		int delta;
 
 		SetAckModified(lnk);
-		tc = (struct tcphdr *)ip_next(pip);			
+		tc = (struct tcphdr *)ip_next(pip);
 		delta = GetDeltaSeqOut(tc->th_seq, lnk);
 		AddSeq(lnk, delta + slen, pip->ip_hl, pip->ip_len, tc->th_seq,
 		    tc->th_off);
@@ -457,7 +457,7 @@ ProxyEncodeIpHeader(struct ip *pip,
 
 int
 ProxyCheck(struct libalias *la, struct in_addr *proxy_server_addr,
-    u_short * proxy_server_port, struct in_addr src_addr, 
+    u_short * proxy_server_port, struct in_addr src_addr,
     struct in_addr dst_addr, u_short dst_port, u_char ip_p)
 {
 	struct proxy_entry *ptr;

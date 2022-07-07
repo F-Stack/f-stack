@@ -62,7 +62,7 @@ SYSCTL_NODE(_net, OID_AUTO, bluetooth, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
 SYSCTL_INT(_net_bluetooth, OID_AUTO, version,
 	CTLFLAG_RD, SYSCTL_NULL_INT_PTR, NG_BLUETOOTH_VERSION, "Version of the stack");
 
-/* 
+/*
  * HCI
  */
 
@@ -89,7 +89,7 @@ bluetooth_set_hci_command_timeout_value(SYSCTL_HANDLER_ARGS)
 
 SYSCTL_PROC(_net_bluetooth_hci, OID_AUTO, command_timeout,
 	CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-	&bluetooth_hci_command_timeout_value, 5, 
+	&bluetooth_hci_command_timeout_value, 5,
 	bluetooth_set_hci_command_timeout_value,
 	"I", "HCI command timeout (sec)");
 
@@ -111,9 +111,9 @@ bluetooth_set_hci_connect_timeout_value(SYSCTL_HANDLER_ARGS)
 	return (error);
 } /* bluetooth_set_hci_connect_timeout_value */
 
-SYSCTL_PROC(_net_bluetooth_hci, OID_AUTO, connection_timeout, 
+SYSCTL_PROC(_net_bluetooth_hci, OID_AUTO, connection_timeout,
 	CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-	&bluetooth_hci_connect_timeout_value, 60, 
+	&bluetooth_hci_connect_timeout_value, 60,
 	bluetooth_set_hci_connect_timeout_value,
 	"I", "HCI connect timeout (sec)");
 
@@ -121,7 +121,7 @@ SYSCTL_UINT(_net_bluetooth_hci, OID_AUTO, max_neighbor_age, CTLFLAG_RW,
 	&bluetooth_hci_max_neighbor_age_value, 600,
 	"Maximal HCI neighbor cache entry age (sec)");
 
-/* 
+/*
  * L2CAP
  */
 
@@ -217,18 +217,18 @@ bluetooth_sco_rtx_timeout(void)
 	return (bluetooth_sco_rtx_timeout_value * hz);
 } /* bluetooth_sco_rtx_timeout */
 
-/* 
+/*
  * RFCOMM
  */
 
 SYSCTL_NODE(_net_bluetooth, OID_AUTO, rfcomm, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Bluetooth RFCOMM family");
 
-/* 
+/*
  * SCO
  */
 
-SYSCTL_NODE(_net_bluetooth, OID_AUTO, sco, CTLFLAG_RW | CTLFLAG_MPSAFE, 0, 
+SYSCTL_NODE(_net_bluetooth, OID_AUTO, sco, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Bluetooth SCO family");
 
 static int
@@ -266,10 +266,10 @@ bluetooth_modevent(module_t mod, int event, void *data)
 
 	switch (event) {
 	case MOD_LOAD:
-		break; 
+		break;
 
 	case MOD_UNLOAD:
-		break; 
+		break;
 
 	default:
 		error = EOPNOTSUPP;

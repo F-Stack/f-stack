@@ -201,7 +201,7 @@ taskq_tsd_set(void *context)
 {
 	taskq_t *tq = context;
 
-#if defined(__amd64__) || defined(__aarch64__) 
+#if defined(__amd64__) || defined(__aarch64__)
 	if (context != NULL && tsd_get(taskq_tsd) == NULL)
 		fpu_kern_thread(FPU_KERN_NORMAL);
 #endif

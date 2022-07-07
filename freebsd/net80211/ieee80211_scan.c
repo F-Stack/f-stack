@@ -34,7 +34,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
+#include <sys/systm.h>
 #include <sys/proc.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
@@ -565,7 +565,7 @@ ieee80211_scan_dump_probe_beacon(uint8_t subtype, int isnew,
 	printf(" rssi %d\n", rssi);
 
 	if (isnew) {
-		printf("[%s] caps 0x%x bintval %u erp 0x%x", 
+		printf("[%s] caps 0x%x bintval %u erp 0x%x",
 			ether_sprintf(mac), sp->capinfo, sp->bintval, sp->erp);
 		if (sp->country != NULL)
 			dump_country(sp->country);

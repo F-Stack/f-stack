@@ -335,7 +335,7 @@ ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
     struct mbuf *mb = m_get(M_NOWAIT, MT_DATA);
 
     if (mb == NULL) {
-        return NULL; 
+        return NULL;
     }
 
     m_extadd(mb, data, len, ff_mbuf_ext_free, m, NULL, 0, EXT_DISPOSABLE);
@@ -725,7 +725,7 @@ ff_veth_softc_to_hostc(void *softc)
 
 /********************
 *  get next mbuf's addr, current mbuf's data and datalen.
-*  
+*
 ********************/
 int ff_next_mbuf(void **mbuf_bsd, void **data, unsigned *len)
 {
@@ -757,7 +757,7 @@ void* ff_rte_frm_extcl(void* mbuf)
         bsd_mbuf->m_ext.ext_type == EXT_DISPOSABLE && bsd_mbuf->m_ext.ext_free == ff_mbuf_ext_free ) {
         return bsd_mbuf->m_ext.ext_arg1;
     }
-    else 
+    else
         return NULL;
 }
 

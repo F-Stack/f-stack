@@ -101,7 +101,7 @@ CVMX_SHARED qlm_jtag_uint32_t *__cvmx_qlm_jtag_xor_ref;
 
 /**
  * Return the number of QLMs supported by the chip
- * 
+ *
  * @return  Number of QLMs
  */
 int cvmx_qlm_get_num(void)
@@ -147,7 +147,7 @@ int cvmx_qlm_interface(int interface)
 
 /**
  * Return number of lanes for a given qlm
- * 
+ *
  * @return  Number of lanes
  */
 int cvmx_qlm_get_lanes(int qlm)
@@ -156,12 +156,12 @@ int cvmx_qlm_get_lanes(int qlm)
         return 2;
     else if (OCTEON_IS_MODEL(OCTEON_CNF71XX))
         return 2;
-    
+
     return 4;
 }
 
 /**
- * Get the QLM JTAG fields based on Octeon model on the supported chips. 
+ * Get the QLM JTAG fields based on Octeon model on the supported chips.
  *
  * @return  qlm_jtag_field_t structure
  */
@@ -170,7 +170,7 @@ const __cvmx_qlm_jtag_field_t *cvmx_qlm_jtag_get_field(void)
     /* Figure out which JTAG chain description we're using */
     if (OCTEON_IS_MODEL(OCTEON_CN68XX))
         return __cvmx_qlm_jtag_field_cn68xx;
-    else if (OCTEON_IS_MODEL(OCTEON_CN66XX) 
+    else if (OCTEON_IS_MODEL(OCTEON_CN66XX)
              || OCTEON_IS_MODEL(OCTEON_CN61XX)
              || OCTEON_IS_MODEL(OCTEON_CNF71XX))
         return __cvmx_qlm_jtag_field_cn66xx;
@@ -219,7 +219,7 @@ void cvmx_qlm_init(void)
     int qlm_jtag_size = CVMX_QLM_JTAG_UINT32 * 8 * 4;
     static uint64_t qlm_base = 0;
     const cvmx_bootmem_named_block_desc_t *desc;
-    
+
 #ifndef CVMX_BUILD_FOR_LINUX_HOST
     /* Skip actual JTAG accesses on simulator */
     if (cvmx_sysinfo_get()->board_type == CVMX_BOARD_TYPE_SIM)
@@ -405,7 +405,7 @@ void cvmx_qlm_jtag_set(int qlm, int lane, const char *name, uint64_t value)
        electrical changes */
     cvmx_wait_usec(1000);
 }
-                                                                                
+
 /**
  * Errata G-16094: QLM Gen2 Equalizer Default Setting Change.
  * CN68XX pass 1.x and CN66XX pass 1.x QLM tweak. This function tweaks the
@@ -655,7 +655,7 @@ int cvmx_qlm_get_status(int qlm)
         {
             cvmx_gmxx_inf_mode_t inf_mode;
             inf_mode.u64 = cvmx_read_csr(CVMX_GMXX_INF_MODE(0));
-            if (inf_mode.s.speed == 15) 
+            if (inf_mode.s.speed == 15)
                 return -1;
             else if(inf_mode.s.mode == 0)
                 return 1;

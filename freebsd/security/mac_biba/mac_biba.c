@@ -1845,7 +1845,7 @@ biba_posixshm_check_unlink(struct ucred *cred, struct shmfd *shmfd,
 
 	if (!biba_dominate_effective(subj, obj))
 		return (EACCES);
-    
+
 	return (0);
 }
 

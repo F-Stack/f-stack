@@ -5,7 +5,7 @@
 /*-
  * Copyright (c) 1996-2000 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -16,7 +16,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -409,7 +409,7 @@ ng_mppc_rcvdata(hook_p hook, item_p item)
 				if (msg == NULL)
 					return (error);
 				NG_SEND_MSG_ID(error, node, msg,
-					priv->ctrlnode, 0); 
+					priv->ctrlnode, 0);
 			}
 			return (error);
 		}
@@ -546,11 +546,11 @@ err1:
 		/* KASSERT(rtn != MPPC_INVALID, ("%s: invalid", __func__)); */
 		if ((rtn & MPPC_EXPANDED) == 0
 		    && (rtn & MPPC_COMP_OK) == MPPC_COMP_OK) {
-			outlen -= destCnt;     
+			outlen -= destCnt;
 			header |= MPPC_FLAG_COMPRESSED;
 			if ((rtn & MPPC_RESTART_HISTORY) != 0)
-				header |= MPPC_FLAG_RESTART;  
-				
+				header |= MPPC_FLAG_RESTART;
+
 			/* Replace m by the compresed one. */
 			m_copyback(m, 0, outlen, (caddr_t)outbuf);
 			if (m->m_pkthdr.len < outlen) {
@@ -591,7 +591,7 @@ err1:
 			ng_mppc_updatekey(d->cfg.bits,
 			    d->cfg.startkey, d->key, &d->rc4);
 		} else if ((header & MPPC_FLAG_FLUSHED) != 0) {
-			/* Need to reset key if we say we did 
+			/* Need to reset key if we say we did
 			   and ng_mppc_updatekey wasn't called to do it also. */
 			rc4_init(&d->rc4, d->key, KEYLEN(d->cfg.bits));
 		}
@@ -840,7 +840,7 @@ failed:
  */
 static void
 ng_mppc_reset_req(node_p node)
-{   
+{
 	const priv_p priv = NG_NODE_PRIVATE(node);
 	struct ng_mppc_dir *const d = &priv->xmit;
 
@@ -853,7 +853,7 @@ ng_mppc_reset_req(node_p node)
 		rc4_init(&d->rc4, d->key, KEYLEN(d->cfg.bits));
 #endif
 	d->flushed = 1;
-}   
+}
 
 #ifdef NETGRAPH_MPPC_ENCRYPTION
 /*
@@ -890,7 +890,7 @@ ng_mppc_getkey(const u_char *h, u_char *h2, int len)
 static void
 ng_mppc_updatekey(u_int32_t bits,
 	u_char *key0, u_char *key, struct rc4_state *rc4)
-{ 
+{
 	const int keylen = KEYLEN(bits);
 
 	ng_mppc_getkey(key0, key, keylen);

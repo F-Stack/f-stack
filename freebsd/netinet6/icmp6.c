@@ -641,7 +641,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 		sx_slock(&allprison_lock);
 		TAILQ_FOREACH(pr, &allprison, pr_list)
 			if (pr->pr_vnet == ifp->if_vnet)
-				break; 
+				break;
 		sx_sunlock(&allprison_lock);
 		if (pr == NULL)
 			pr = curthread->td_ucred->cr_prison;
@@ -2556,7 +2556,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 		len = sizeof(*nd_opt) + ifp->if_addrlen;
 		len = (len + 7) & ~7;	/* round by 8 */
 		/* safety check */
-		if (len + (p - (u_char *)ip6) > maxlen) 			
+		if (len + (p - (u_char *)ip6) > maxlen)
 			goto nolladdropt;
 
 		if (ln->la_flags & LLE_VALID) {
@@ -2571,7 +2571,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 nolladdropt:
 	if (ln != NULL)
 		LLE_RUNLOCK(ln);
-		
+
 	m->m_pkthdr.len = m->m_len = p - (u_char *)ip6;
 
 	/* just to be safe */

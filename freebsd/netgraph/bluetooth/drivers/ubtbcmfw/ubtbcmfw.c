@@ -105,7 +105,7 @@ static usb_fifo_cmd_t		ubtbcmfw_stop_write;
 static usb_fifo_ioctl_t	ubtbcmfw_ioctl;
 static usb_fifo_open_t		ubtbcmfw_open;
 
-static struct usb_fifo_methods	ubtbcmfw_fifo_methods = 
+static struct usb_fifo_methods	ubtbcmfw_fifo_methods =
 {
 	.f_close =		&ubtbcmfw_close,
 	.f_ioctl =		&ubtbcmfw_ioctl,
@@ -243,7 +243,7 @@ detach:
 	ubtbcmfw_detach(dev);
 
 	return (ENXIO);	/* failure */
-} /* ubtbcmfw_attach */ 
+} /* ubtbcmfw_attach */
 
 /*
  * Detach the device
@@ -413,7 +413,7 @@ ubtbcmfw_open(struct usb_fifo *fifo, int fflags)
 	return (0);
 } /* ubtbcmfw_open */
 
-/* 
+/*
  * Called when fifo is closed
  */
 

@@ -52,7 +52,7 @@
 #include <netnatm/sig/unisig.h>
 #include <netnatm/sig/unidef.h>
 
-const char * 
+const char *
 uni_strerr(u_int err)
 {
 	static const char *const errstr[] = {

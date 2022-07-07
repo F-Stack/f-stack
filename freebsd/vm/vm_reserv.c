@@ -229,7 +229,7 @@ TAILQ_HEAD(vm_reserv_queue, vm_reserv);
  * An "active" reservation is a valid reservation structure that has a non-NULL
  * "object" field and a non-zero "popcnt" field.  In other words, every active
  * reservation belongs to a particular object.  Moreover, every active
- * reservation has an entry in the containing object's list of reservations.  
+ * reservation has an entry in the containing object's list of reservations.
  */
 static vm_reserv_t vm_reserv_array;
 

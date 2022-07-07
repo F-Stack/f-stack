@@ -25,7 +25,7 @@ int sockfd;
 int sockfd6;
 #endif
 
-char html[] = 
+char html[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"

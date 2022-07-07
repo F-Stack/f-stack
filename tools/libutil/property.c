@@ -163,7 +163,7 @@ properties_read(int fd)
 	        hold_v[v] = '\0';
 	        v = n = 0;
 	        state = COMMIT;
-	    } 
+	    }
 	    else if (v == 0 && isspace((unsigned char)ch))
 		continue;
 	    else if (ch == '{') {

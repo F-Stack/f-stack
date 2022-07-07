@@ -525,7 +525,7 @@ t_Error FM_VSP_Init(t_Handle h_FmVsp)
     }
     else
         fm_vsp_params.buf_pool_depletion.buf_pool_depletion_enabled = FALSE;
- 
+
     if (p_FmVspEntry->p_FmVspEntryDriverParams->p_BackupBmPools)
     {
         fm_vsp_params.backup_pools.num_backup_pools = p_FmVspEntry->p_FmVspEntryDriverParams->p_BackupBmPools->numOfBackupPools;

@@ -674,7 +674,7 @@ ipfw_chg_hook(SYSCTL_HANDLER_ARGS)
 #endif
 	else if (arg1 == &V_fwlink_enable)
 		af = AF_LINK;
-	else 
+	else
 		return (EINVAL);
 
 	newval = *(int *)arg1;

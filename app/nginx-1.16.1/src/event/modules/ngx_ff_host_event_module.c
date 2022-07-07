@@ -84,7 +84,7 @@ ngx_ff_host_event_create_conf(ngx_cycle_t *cycle)
     ngx_ff_host_event_conf_t  *cf;
     cf = ngx_palloc(cycle->pool, sizeof(ngx_ff_host_event_conf_t));
     if (cf == NULL) {
-        return NULL;    
+        return NULL;
     }
     cf->events = NGX_CONF_UNSET;
     return cf;
@@ -92,7 +92,7 @@ ngx_ff_host_event_create_conf(ngx_cycle_t *cycle)
 
 static char *
 ngx_ff_host_event_init_conf(ngx_cycle_t *cycle, void *conf)
-{   
+{
     ngx_ff_host_event_conf_t *cf = conf;
     cf->events = 8;
     return NGX_CONF_OK;

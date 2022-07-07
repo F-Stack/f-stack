@@ -34,7 +34,7 @@ main (int argc, char **argv)
     };
     struct item *ip;
     int i;
-    
+
     argc = xo_parse_args(argc, argv);
     if (argc < 0)
 	return 1;

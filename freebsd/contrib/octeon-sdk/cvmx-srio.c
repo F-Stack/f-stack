@@ -433,7 +433,7 @@ int cvmx_srio_initialize(int srio_port, cvmx_srio_initialize_flags_t flags)
     sriox_status_reg.u64 = cvmx_read_csr(CVMX_SRIOX_STATUS_REG(srio_port));
     if (OCTEON_IS_MODEL(OCTEON_CN66XX))
     {
-        /* All SRIO ports are connected to QLM0 */ 
+        /* All SRIO ports are connected to QLM0 */
         int status = cvmx_qlm_get_status(0);
         if (status < 4 || status > 6)
         {
@@ -848,7 +848,7 @@ int cvmx_srio_initialize(int srio_port, cvmx_srio_initialize_flags_t flags)
                 if (__cvmx_srio_local_write32(srio_port, CVMX_SRIOMAINTX_PORT_0_LOCAL_ACKID(srio_port), local_ackid.u32))
                     return -1;
             }
-            else 
+            else
                 return -1;
         }
     }

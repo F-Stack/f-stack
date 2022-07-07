@@ -569,7 +569,7 @@ sscop_setparam(struct sscop *sscop, struct sscop_param *p, u_int *pmask)
 		*pmask |= SSCOP_SET_MAXCC;
 	if ((mask & SSCOP_SET_MAXPD) && p->maxpd >= (1 << 24))
 		*pmask |= SSCOP_SET_MAXPD;
-	if ((mask & SSCOP_SET_MAXSTAT) && 
+	if ((mask & SSCOP_SET_MAXSTAT) &&
 	    ((p->maxstat & 1) == 0 || p->maxstat == 1 || p->maxstat == 2 ||
 	    p->maxstat * 4 > MAXMAXK - 8))
 		*pmask |= SSCOP_SET_MAXSTAT;
@@ -2038,7 +2038,7 @@ sscop_outpend_bgn(struct sscop *sscop, struct sscop_msg *msg)
 	m_initialize_mr(sscop);
 
 	send_bgak(sscop, sscop->uu_bgak);
- 
+
 	AAL_UU_SIGNAL(sscop, SSCOP_ESTABLISH_confirm, msg, pdu.sscop_pl, 0);
 
 	m_initialize_state(sscop);
@@ -4860,7 +4860,7 @@ handle_sigs(struct sscop *sscop)
 	int exec;
 
 	sscop->in_sig++;
- 
+
 	/*
 	 * Copy the current signal queue to the local one and empty
 	 * the signal queue. Then loop through the signals. After one

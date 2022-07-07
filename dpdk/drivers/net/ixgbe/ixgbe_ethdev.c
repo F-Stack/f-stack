@@ -2720,8 +2720,8 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 
 	link_speeds = &dev->data->dev_conf.link_speeds;
 
-	/* Ignore autoneg flag bit and check the validity of 
-	 * link_speed 
+	/* Ignore autoneg flag bit and check the validity of
+	 * link_speed
 	 */
 	if (((*link_speeds) >> 1) & ~(allowed_speeds >> 1)) {
 		PMD_INIT_LOG(ERR, "Invalid link setting");

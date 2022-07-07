@@ -1,25 +1,25 @@
 /*******************************************************************************
-* Copyright (c) 2013, Intel Corporation 
-* 
-* All rights reserved. 
-* 
+* Copyright (c) 2013, Intel Corporation
+*
+* All rights reserved.
+*
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
-* met: 
-* 
+* met:
+*
 * * Redistributions of source code must retain the above copyright
-*   notice, this list of conditions and the following disclaimer.  
-* 
+*   notice, this list of conditions and the following disclaimer.
+*
 * * Redistributions in binary form must reproduce the above copyright
 *   notice, this list of conditions and the following disclaimer in the
 *   documentation and/or other materials provided with the
-*   distribution. 
-* 
+*   distribution.
+*
 * * Neither the name of the Intel Corporation nor the names of its
 *   contributors may be used to endorse or promote products derived from
-*   this software without specific prior written permission. 
-* 
-* 
+*   this software without specific prior written permission.
+*
+*
 * THIS SOFTWARE IS PROVIDED BY INTEL CORPORATION ""AS IS"" AND ANY
 * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
@@ -33,18 +33,18 @@
 * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************************
 *
-* Intel SHA Extensions optimized implementation of a SHA-1 update function 
-* 
-* The function takes a pointer to the current hash values, a pointer to the 
-* input data, and a number of 64 byte blocks to process.  Once all blocks have 
+* Intel SHA Extensions optimized implementation of a SHA-1 update function
+*
+* The function takes a pointer to the current hash values, a pointer to the
+* input data, and a number of 64 byte blocks to process.  Once all blocks have
 * been processed, the digest pointer is  updated with the resulting hash value.
-* The function only processes complete blocks, there is no functionality to 
+* The function only processes complete blocks, there is no functionality to
 * store partial blocks.  All message padding and hash value initialization must
-* be done outside the update function.  
-* 
+* be done outside the update function.
+*
 * The indented lines in the loop are instructions related to rounds processing.
 * The non-indented lines are instructions related to the message schedule.
-* 
+*
 * Author: Sean Gulley <sean.m.gulley@intel.com>
 * Date:   July 2013
 *
@@ -140,7 +140,7 @@ void intel_sha1_step(uint32_t *digest, const char *data, uint32_t num_blks) {
          abcd = _mm_sha1rnds4_epu32(abcd, e1, 1);
       msg0 = _mm_sha1msg1_epu32(msg0, msg1);
       msg3 = _mm_xor_si128(msg3, msg1);
-	
+
       // Rounds 24-27
          e0   = _mm_sha1nexte_epu32(e0, msg2);
          e1   = abcd;
@@ -172,7 +172,7 @@ void intel_sha1_step(uint32_t *digest, const char *data, uint32_t num_blks) {
          abcd = _mm_sha1rnds4_epu32(abcd, e1, 1);
       msg0 = _mm_sha1msg1_epu32(msg0, msg1);
       msg3 = _mm_xor_si128(msg3, msg1);
-	
+
       // Rounds 40-43
          e0   = _mm_sha1nexte_epu32(e0, msg2);
          e1   = abcd;
@@ -204,7 +204,7 @@ void intel_sha1_step(uint32_t *digest, const char *data, uint32_t num_blks) {
          abcd = _mm_sha1rnds4_epu32(abcd, e1, 2);
       msg0 = _mm_sha1msg1_epu32(msg0, msg1);
       msg3 = _mm_xor_si128(msg3, msg1);
-	
+
       // Rounds 56-59
          e0   = _mm_sha1nexte_epu32(e0, msg2);
          e1   = abcd;
@@ -235,7 +235,7 @@ void intel_sha1_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msg2 = _mm_sha1msg2_epu32(msg2, msg1);
          abcd = _mm_sha1rnds4_epu32(abcd, e1, 3);
       msg3 = _mm_xor_si128(msg3, msg1);
-	
+
       // Rounds 72-75
          e0   = _mm_sha1nexte_epu32(e0, msg2);
          e1   = abcd;

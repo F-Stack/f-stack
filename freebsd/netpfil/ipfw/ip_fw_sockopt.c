@@ -1994,7 +1994,7 @@ check_ipfw_rule_body(ipfw_insn *cmd, int cmd_len, struct rule_check_info *ci)
 			if (!IPFW_NAT_LOADED)
 				return EINVAL;
 			if (cmdlen != F_INSN_SIZE(ipfw_insn_nat))
- 				goto bad_size;		
+ 				goto bad_size;
  			goto check_action;
 		case O_CHECK_STATE:
 			ci->object_opcodes++;
@@ -2393,7 +2393,7 @@ mark_rule_objects(struct ip_fw_chain *ch, struct ip_fw *rule,
  * Data layout (version 0)(current):
  * Request: [ ipfw_cfg_lheader ] + IPFW_CFG_GET_* flags
  *   size = ipfw_cfg_lheader.size
- * Reply: [ ipfw_cfg_lheader 
+ * Reply: [ ipfw_cfg_lheader
  *   [ ipfw_obj_ctlv(IPFW_TLV_TBL_LIST) ipfw_obj_ntlv x N ] (optional)
  *   [ ipfw_obj_ctlv(IPFW_TLV_RULE_LIST)
  *     ipfw_obj_tlv(IPFW_TLV_RULE_ENT) [ ip_fw_bcounter (optional) ip_fw_rule ]
@@ -3454,7 +3454,7 @@ find_ref_sh(uint16_t opcode, uint8_t version, struct ipfw_sopt_handler *psh)
 	sh->refcnt++;
 	ctl3_refct++;
 	/* Copy handler data to requested buffer */
-	*psh = *sh; 
+	*psh = *sh;
 	CTL3_UNLOCK();
 
 	return (0);
@@ -4180,7 +4180,7 @@ convert_rule_to_8(struct ip_fw_rule0 *rule)
 	for (ll = tmp->cmd_len, ccmd = tmp->cmd, dst = rule->cmd ;
 			ll > 0 ; ll -= ccmdlen, ccmd += ccmdlen, dst += ccmdlen) {
 		ccmdlen = F_LEN(ccmd);
-		
+
 		bcopy(ccmd, dst, F_LEN(ccmd)*sizeof(uint32_t));
 
 		if (dst->opcode > O_NAT)
@@ -4684,7 +4684,7 @@ ipfw_objhash_alloc_idx(void *n, uint16_t *pidx)
 		*mask &= ~ ((u_long)1 << (v - 1));
 
 		ni->free_off[0] = i;
-		
+
 		v = BLOCK_ITEMS * i + v - 1;
 
 		*pidx = v;

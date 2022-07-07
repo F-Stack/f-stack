@@ -32,7 +32,7 @@
 #include "ar9300_stub_funcs.h"
 
 #define FIX_NOISE_FLOOR     1
-#define NEXT_TBTT_NOW      5 
+#define NEXT_TBTT_NOW      5
 static HAL_BOOL ar9300ClrMulticastFilterIndex(struct ath_hal *ah, uint32_t ix);
 static HAL_BOOL ar9300SetMulticastFilterIndex(struct ath_hal *ah, uint32_t ix);
 
@@ -146,7 +146,7 @@ ar9300_freebsd_proc_radar_event(struct ath_hal *ah, struct ath_rx_status *rxs,
 	/* If hardware supports it, use combined RSSI, else use chain 0 RSSI */
 	if (doDfsCombinedRssi)
 		rssi = (uint8_t) rxs->rs_rssi;
-	else		
+	else
 		rssi = (uint8_t) rxs->rs_rssi_ctl[0];
 
 	/* Set this; but only use it if doDfsExtCh is set */
@@ -199,7 +199,7 @@ ar9300_freebsd_proc_radar_event(struct ath_hal *ah, struct ath_rx_status *rxs,
 	 */
 	if (doDfsExtCh && pulse_bw_info == 0x0)
 		return AH_FALSE;
-		
+
 	/*
 	 * If the extended channel data is available, calculate
 	 * which to pay attention to.
@@ -232,7 +232,7 @@ ar9300_freebsd_proc_radar_event(struct ath_hal *ah, struct ath_rx_status *rxs,
 			pri_found = 0;
 			ext_found = 1;
 		}
-		
+
 	}
 
 	/*
@@ -674,7 +674,7 @@ ar9300_reset_cal_valid_freebsd(struct ath_hal *ah,
 {
 
 	HAL_BOOL is_cal_done = AH_TRUE;
-	
+
 	ar9300_reset_cal_valid(ah, chan, &is_cal_done, 0xffffffff);
 	return (is_cal_done);
 }

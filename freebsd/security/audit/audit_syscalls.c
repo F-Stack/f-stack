@@ -747,7 +747,7 @@ sys_setaudit_addr(struct thread *td, struct setaudit_addr_args *uap)
 	    aia.ai_termid.at_type != AU_IPv4)
 		return (EINVAL);
 	newcred = crget();
-	PROC_LOCK(td->td_proc);	
+	PROC_LOCK(td->td_proc);
 	oldcred = td->td_proc->p_ucred;
 	crcopy(newcred, oldcred);
 #ifdef MAC

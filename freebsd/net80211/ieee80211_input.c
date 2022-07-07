@@ -33,7 +33,7 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/mbuf.h>   
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/endian.h>
 #include <sys/kernel.h>
@@ -368,7 +368,7 @@ ieee80211_decap1(struct mbuf *m, int *framelen)
 	/*
 	 * The frame has an 802.3 header followed by an 802.2
 	 * LLC header.  The encapsulated frame length is in the
-	 * first header type field; save that and overwrite it 
+	 * first header type field; save that and overwrite it
 	 * with the true type field found in the second.  Then
 	 * copy the 802.3 header up to where it belongs and
 	 * adjust the mbuf contents to remove the void.

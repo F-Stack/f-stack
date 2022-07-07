@@ -156,7 +156,7 @@ static int __cvmx_helper_sgmii_hardware_init_one_time(int interface, int index)
 #ifdef CVMX_HELPER_CONFIG_NO_PHY
         /* If the interface does not have PHY, then set explicitly in PHY mode
            so that link will be set during auto negotiation. */
-        if (!pcsx_miscx_ctl_reg.s.mac_phy) 
+        if (!pcsx_miscx_ctl_reg.s.mac_phy)
         {
             cvmx_dprintf("SGMII%d%d: Forcing PHY mode as PHY address is not set\n", interface, index);
             pcsx_miscx_ctl_reg.s.mac_phy = 1;
@@ -214,7 +214,7 @@ static int __cvmx_helper_sgmii_hardware_init_link(int interface, int index)
     }
 #endif
 
- 
+
     /* Take PCS through a reset sequence.
         PCS*_MR*_CONTROL_REG[PWR_DN] should be cleared to zero.
         Write PCS*_MR*_CONTROL_REG[RESET]=1 (while not changing the value of
@@ -230,7 +230,7 @@ static int __cvmx_helper_sgmii_hardware_init_link(int interface, int index)
         if( (cvmx_sysinfo_get()->board_type == CVMX_BOARD_TYPE_CUST_TNPA56X4) && (interface == 0) )
         {
     	    link_timeout = 5000000;
-        } 
+        }
 #endif
         control_reg.s.reset = 1;
         cvmx_write_csr(CVMX_PCSX_MRX_CONTROL_REG(index, interface), control_reg.u64);
@@ -449,7 +449,7 @@ int __cvmx_helper_sgmii_probe(int interface)
 {
     cvmx_gmxx_inf_mode_t mode;
 
-    /* Check if QLM is configured correct for SGMII, verify the speed 
+    /* Check if QLM is configured correct for SGMII, verify the speed
        as well as mode */
     if (OCTEON_IS_MODEL(OCTEON_CN6XXX))
     {
@@ -525,7 +525,7 @@ int __cvmx_helper_sgmii_enable(int interface)
 	        CVMX_GMXX_TXX_APPEND(index, interface));
 	    gmxx_txx_append_cfg.s.fcs = 0;
 	    gmxx_txx_append_cfg.s.pad = 0;
-            cvmx_write_csr(CVMX_GMXX_TXX_APPEND(index, interface), 
+            cvmx_write_csr(CVMX_GMXX_TXX_APPEND(index, interface),
 	        gmxx_txx_append_cfg.u64);
 	}
     }
@@ -629,7 +629,7 @@ cvmx_helper_link_info_t __cvmx_helper_sgmii_link_get(int ipd_port)
         inband_status.u64 = cvmx_read_csr(CVMX_PCSX_ANX_RESULTS_REG(index, interface));
 
         result.s.link_up = inband_status.s.link_ok;/* this is only accurate for 1000-base x */
-        
+
         result.s.full_duplex = inband_status.s.dup;
         switch (inband_status.s.spd)
         {

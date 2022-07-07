@@ -1341,7 +1341,7 @@ inet6name(struct in6_addr *ia6)
 		strcpy(line, "*");
 		return (line);
 	}
-    
+
 #ifndef FSTACK
 	if (first && !numeric_addr) {
 		first = 0;

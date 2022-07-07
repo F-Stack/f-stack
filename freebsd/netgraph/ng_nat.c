@@ -384,15 +384,15 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			break;
 		case NGM_NAT_SET_MODE:
 		    {
-			struct ng_nat_mode *const mode = 
+			struct ng_nat_mode *const mode =
 			    (struct ng_nat_mode *)msg->data;
 
 			if (msg->header.arglen < sizeof(*mode)) {
 				error = EINVAL;
 				break;
 			}
-			
-			if (LibAliasSetMode(priv->lib, 
+
+			if (LibAliasSetMode(priv->lib,
 			    ng_nat_translate_flags(mode->flags),
 			    ng_nat_translate_flags(mode->mask)) < 0) {
 				error = ENOMEM;
@@ -651,7 +651,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 		case NGM_NAT_LIST_REDIRECTS:
 		    {
 			struct ng_nat_rdr_lst *entry;
-			struct ng_nat_list_redirects *ary; 
+			struct ng_nat_list_redirects *ary;
 			int i = 0;
 
 			NG_MKRESPONSE(resp, msg, sizeof(*ary) +
@@ -700,7 +700,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	else							\
 		i->F = UINT32_MAX;				\
 } while (0)
-		
+
 			COPY(icmpLinkCount);
 			COPY(udpLinkCount);
 			COPY(tcpLinkCount);

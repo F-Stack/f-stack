@@ -1,15 +1,15 @@
 /***********************license start***************
  * Copyright (c) 2011  Cavium Inc. (support@cavium.com). All rights
  * reserved.
- * 
+ *
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
  * met:
- * 
+ *
  *   * Redistributions of source code must retain the above copyright
  *     notice, this list of conditions and the following disclaimer.
- *  
+ *
  *   * Redistributions in binary form must reproduce the above
  *     copyright notice, this list of conditions and the following
  *     disclaimer in the documentation and/or other materials provided
@@ -76,7 +76,7 @@ int read_percpu_block = 1;
 void cvmx_update_perfcnt_irq(void)
 {
     uint64_t cvmctl;
-   
+
     /* Clear CvmCtl[IPPCI] bit and move the Performance Counter
      * interrupt to IRQ 6
      */
@@ -88,7 +88,7 @@ void cvmx_update_perfcnt_irq(void)
 
 /**
  * @INTERNAL
- * Return the baseaddress of the namedblock 
+ * Return the baseaddress of the namedblock
  * @param buf_name  Name of Namedblock
  *
  * @return baseaddress of block on Success, NULL on failure.
@@ -107,8 +107,8 @@ void *cvmx_get_memory_addr(const char* buf_name)
 
 /**
  * @INTERNAL
- * Initialize the cpu block metadata. 
- * 
+ * Initialize the cpu block metadata.
+ *
  * @param cpu	core no
  * @param size	size of per cpu memory in named block
  *
@@ -116,7 +116,7 @@ void *cvmx_get_memory_addr(const char* buf_name)
 static
 void cvmx_init_pcpu_block(int cpu, int size)
 {
-    eccb.cfg_blk.pcpu_base_addr[cpu] = (char *)cvmx_get_memory_addr(EVENT_BUFFER_BLOCK) + (size * cpu); 
+    eccb.cfg_blk.pcpu_base_addr[cpu] = (char *)cvmx_get_memory_addr(EVENT_BUFFER_BLOCK) + (size * cpu);
     assert (eccb.cfg_blk.pcpu_base_addr[cpu] != NULL);
 
     cvmx_ringbuf_t  *cpu_buf = (cvmx_ringbuf_t *) eccb.cfg_blk.pcpu_base_addr[cpu];
@@ -134,7 +134,7 @@ void cvmx_init_pcpu_block(int cpu, int size)
 
     /*
      * Write per cpu mem base address info in to 'event config' named block,
-     * This info is needed by oct-remote-profile to get Per cpu memory 
+     * This info is needed by oct-remote-profile to get Per cpu memory
      * base address of each core of the named block.
      */
     pcpu_cfg_blk = (cvmx_config_block_t *) eccb.config_blk_base_addr;
@@ -145,7 +145,7 @@ void cvmx_init_pcpu_block(int cpu, int size)
  * @INTERNAL
  * Retrieve the info from the 'event_config' named block.
  *
- * Here events value is read(as passed to oct-remote-profile) to reset perf 
+ * Here events value is read(as passed to oct-remote-profile) to reset perf
  * counters on every Perf counter overflow.
  *
  */
@@ -162,8 +162,8 @@ void cvmx_read_config_blk(void)
 
 /**
  * @INTERNAL
- * Add new sample to the buffer and increment the head pointer and 
- * global sample count(i.e sum total of samples collected on all cores) 
+ * Add new sample to the buffer and increment the head pointer and
+ * global sample count(i.e sum total of samples collected on all cores)
  *
  */
 static
@@ -175,13 +175,13 @@ void cvmx_add_sample_to_buffer(void)
 
     cvmx_ringbuf_t  *cpu_buf = (cvmx_ringbuf_t *) eccb.cfg_blk.pcpu_base_addr[cpu];
 
-    /* 
+    /*
      * head/tail pointer can be NULL, and this case arises when oct-remote-profile is
-     * invoked afresh. To keep memory sane for current instance, we clear namedblock off 
+     * invoked afresh. To keep memory sane for current instance, we clear namedblock off
      * previous data and this is accomplished by octeon_remote_write_mem from host.
      */
     if (cvmx_unlikely(!cpu_buf->pcpu_blk_info.head && !cpu_buf->pcpu_blk_info.end)) {
-       /* Reread the event count as a different threshold val could be 
+       /* Reread the event count as a different threshold val could be
         * passed with profiler alongside --events flag */
         cvmx_read_config_blk();
         cvmx_init_pcpu_block(cpu, EVENT_PERCPU_BUFFER_SIZE);
@@ -189,13 +189,13 @@ void cvmx_add_sample_to_buffer(void)
 
     /* In case of hitting end of buffer, reset head,data ptr to start */
     if (cpu_buf->pcpu_blk_info.head == cpu_buf->pcpu_blk_info.end)
-        cpu_buf->pcpu_blk_info.head = cpu_buf->pcpu_blk_info.data = cpu_buf->pcpu_data; 
+        cpu_buf->pcpu_blk_info.head = cpu_buf->pcpu_blk_info.data = cpu_buf->pcpu_data;
 
     /* Store the pc, respective core no.*/
     cvmx_sample_entry_t *sample = (cvmx_sample_entry_t *) cpu_buf->pcpu_blk_info.data;
     sample->pc = epc;
     sample->core = cpu;
-  
+
     /* Update Per CPU stats */
     cpu_buf->pcpu_blk_info.sample_count++;
     cpu_buf->pcpu_blk_info.data += sizeof(cvmx_sample_entry_t);
@@ -219,7 +219,7 @@ void cvmx_reset_perf_counter(int pf, uint64_t events)
 {
     uint64_t pfc;
     pfc = (1ull << 63) - events;
- 	
+
     if (!pf) {
         CVMX_MT_COP0(pfc, COP0_PERFVALUE0);
     } else

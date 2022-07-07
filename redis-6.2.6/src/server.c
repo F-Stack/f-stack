@@ -169,12 +169,12 @@ struct redisServer server; /* Server global state */
  *              delay its execution as long as the kernel scheduler is giving
  *              us time. Note that commands that may trigger a DEL as a side
  *              effect (like SET) are not fast commands.
- * 
- * may-replicate: Command may produce replication traffic, but should be 
- *                allowed under circumstances where write commands are disallowed. 
- *                Examples include PUBLISH, which replicates pubsub messages,and 
- *                EVAL, which may execute write commands, which are replicated, 
- *                or may just execute read commands. A command can not be marked 
+ *
+ * may-replicate: Command may produce replication traffic, but should be
+ *                allowed under circumstances where write commands are disallowed.
+ *                Examples include PUBLISH, which replicates pubsub messages,and
+ *                EVAL, which may execute write commands, which are replicated,
+ *                or may just execute read commands. A command can not be marked
  *                both "write" and "may-replicate"
  *
  * The following additional flags are only used in order to put commands
@@ -912,7 +912,7 @@ struct redisCommand redisCommandTable[] = {
 
     /* EVAL can modify the dataset, however it is not flagged as a write
      * command since we do the check while running commands from Lua.
-     * 
+     *
      * EVAL and EVALSHA also feed monitors before the commands are executed,
      * as opposed to after.
       */
@@ -2216,8 +2216,8 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     checkClientPauseTimeoutAndReturnIfPaused();
 
     /* Replication cron function -- used to reconnect to master,
-     * detect transfer failures, start background RDB transfers and so forth. 
-     * 
+     * detect transfer failures, start background RDB transfers and so forth.
+     *
      * If Redis is trying to failover then run the replication cron faster so
      * progress on the handshake happens more quickly. */
     if (server.failover_state != NO_FAILOVER) {
@@ -2418,7 +2418,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
      * processUnblockedClients(), so if there are multiple pipelined WAITs
      * and the just unblocked WAIT gets blocked again, we don't have to wait
      * a server cron cycle in absence of other event loop events. See #6623.
-     * 
+     *
      * We also don't send the ACKs while clients are paused, since it can
      * increment the replication backlog, they'll be sent after the pause
      * if we are still the master. */
@@ -2433,7 +2433,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     }
 
     /* We may have recieved updates from clients about their current offset. NOTE:
-     * this can't be done where the ACK is recieved since failover will disconnect 
+     * this can't be done where the ACK is recieved since failover will disconnect
      * our clients. */
     updateFailoverStatus();
 
@@ -2772,7 +2772,7 @@ void initServerConfig(void) {
 
     /* Client Pause related */
     server.client_pause_type = CLIENT_PAUSE_OFF;
-    server.client_pause_end_time = 0;   
+    server.client_pause_end_time = 0;
 
     initConfigValues();
 }
@@ -3362,7 +3362,7 @@ void initServer(void) {
     scriptingInit(1);
     slowlogInit();
     latencyMonitorInit();
-    
+
     /* Initialize ACL default password if it exists */
     ACLUpdateDefaultUserPassword(server.requirepass);
 }
@@ -3587,7 +3587,7 @@ void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
     if (server.in_exec && !server.propagate_in_transaction)
         execCommandPropagateMulti(dbid);
 
-    /* This needs to be unreachable since the dataset should be fixed during 
+    /* This needs to be unreachable since the dataset should be fixed during
      * client pause, otherwise data may be lossed during a failover. */
     serverAssert(!(areClientsPaused() && !server.client_pause_in_transaction));
 
@@ -4227,13 +4227,13 @@ int processCommand(client *c) {
 
     /* If the server is paused, block the client until
      * the pause has ended. Replicas are never paused. */
-    if (!(c->flags & CLIENT_SLAVE) && 
+    if (!(c->flags & CLIENT_SLAVE) &&
         ((server.client_pause_type == CLIENT_PAUSE_ALL) ||
         (server.client_pause_type == CLIENT_PAUSE_WRITE && is_may_replicate_command)))
     {
         c->bpop.timeout = 0;
         blockClient(c,BLOCKED_PAUSE);
-        return C_OK;       
+        return C_OK;
     }
 
     /* Exec the command */

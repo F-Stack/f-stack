@@ -1550,7 +1550,7 @@ ipfw_resize_tables(struct ip_fw_chain *ch, unsigned int ntables)
 	if (ntables > IPFW_TABLES_MAX)
 		ntables = IPFW_TABLES_MAX;
 	/* Alight to nearest power of 2 */
-	ntables = (unsigned int)roundup2p(ntables); 
+	ntables = (unsigned int)roundup2p(ntables);
 
 	/* Allocate new pointers */
 	tablestate = malloc(ntables * sizeof(struct table_info),
@@ -2558,7 +2558,7 @@ ipfw_foreach_table_tentry(struct ip_fw_chain *ch, uint16_t kidx,
 
 /*
  * Table algorithms
- */ 
+ */
 
 /*
  * Finds algorithm by index, table type or supplied name.
@@ -2745,7 +2745,7 @@ classify_srcdst(ipfw_insn *cmd, uint16_t *puidx, uint8_t *ptype)
 	/* Assume ADDR by default */
 	*ptype = IPFW_TABLE_ADDR;
 	int v;
-		
+
 	if (F_LEN(cmd) > F_INSN_SIZE(ipfw_insn_u32)) {
 		/*
 		 * generic lookup. The key must be

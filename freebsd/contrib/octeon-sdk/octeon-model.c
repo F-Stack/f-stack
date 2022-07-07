@@ -316,7 +316,7 @@ const char *octeon_model_get_string_buffer(uint32_t chip_id, char * buffer)
                     if (fus_dat3.s.nozip)
                         suffix = "SCP";
 
-                    if (fus_dat3.s.bar2_en) 
+                    if (fus_dat3.s.bar2_en)
                         suffix = "NSPB2";
                 }
                 if (fus3.cn56xx.crip_1024k)

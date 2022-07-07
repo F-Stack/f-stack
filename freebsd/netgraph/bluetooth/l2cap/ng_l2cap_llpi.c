@@ -79,7 +79,7 @@ ng_l2cap_lp_con_req(ng_l2cap_p l2cap, bdaddr_p bdaddr, int type)
 		NG_L2CAP_ALERT(
 "%s: %s - unexpected LP_ConnectReq event. " \
 "Connection already exists, state=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), con->state, 
+			__func__, NG_NODE_NAME(l2cap->node), con->state,
 			con->con_handle);
 
 		return (EEXIST);
@@ -132,8 +132,8 @@ ng_l2cap_lp_con_req(ng_l2cap_p l2cap, bdaddr_p bdaddr, int type)
 } /* ng_l2cap_lp_con_req */
 
 /*
- * Process LP_ConnectCfm event from the lower layer protocol. It could be 
- * positive or negative. Verify remote unit address then stop the timer and 
+ * Process LP_ConnectCfm event from the lower layer protocol. It could be
+ * positive or negative. Verify remote unit address then stop the timer and
  * process event.
  */
 
@@ -169,14 +169,14 @@ ng_l2cap_lp_con_cfm(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		NG_L2CAP_ALERT(
 "%s: %s - unexpected LP_ConnectCfm event. " \
 "Invalid connection state, state=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), con->state, 
+			__func__, NG_NODE_NAME(l2cap->node), con->state,
 			con->con_handle);
 		error = EINVAL;
 		goto out;
 	}
 
 	/*
-	 * Looks like it is our confirmation. It is safe now to cancel 
+	 * Looks like it is our confirmation. It is safe now to cancel
 	 * connection timer and notify upper layer. If timeout already
 	 * happened then ignore connection confirmation and let timeout
 	 * handle that.
@@ -196,11 +196,11 @@ out:
 } /* ng_l2cap_lp_con_cfm */
 
 /*
- * Process LP_ConnectInd event from the lower layer protocol. This is a good 
+ * Process LP_ConnectInd event from the lower layer protocol. This is a good
  * place to put some extra check on remote unit address and/or class. We could
  * even forward this information to control hook (or check against internal
- * black list) and thus implement some kind of firewall. But for now be simple 
- * and create new connection descriptor, start timer and send LP_ConnectRsp 
+ * black list) and thus implement some kind of firewall. But for now be simple
+ * and create new connection descriptor, start timer and send LP_ConnectRsp
  * event (i.e. accept connection).
  */
 
@@ -230,7 +230,7 @@ ng_l2cap_lp_con_ind(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		NG_L2CAP_ALERT(
 "%s: %s - unexpected LP_ConnectInd event. " \
 "Connection already exists, state=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), con->state, 
+			__func__, NG_NODE_NAME(l2cap->node), con->state,
 			con->con_handle);
 
 		return (EEXIST);
@@ -321,7 +321,7 @@ ng_l2cap_lp_discon_ind(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		NG_L2CAP_ERR(
 "%s: %s - unexpected LP_DisconnectInd event. " \
 "Invalid connection state, state=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), con->state, 
+			__func__, NG_NODE_NAME(l2cap->node), con->state,
 			con->con_handle);
 		error = EINVAL;
 		goto out;
@@ -433,8 +433,8 @@ out:
 } /* ng_l2cap_lp_qos_cfm */
 
 /*
- * Process LP_QoSViolationInd event from the lower layer protocol. Lower 
- * layer protocol has detected QoS Violation, so we MUST notify the 
+ * Process LP_QoSViolationInd event from the lower layer protocol. Lower
+ * layer protocol has detected QoS Violation, so we MUST notify the
  * upper layer.
  */
 
@@ -472,7 +472,7 @@ ng_l2cap_lp_qos_ind(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		NG_L2CAP_ERR(
 "%s: %s - unexpected LP_QoSViolationInd event. " \
 "Invalid connection state, state=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), con->state, 
+			__func__, NG_NODE_NAME(l2cap->node), con->state,
 			con->con_handle);
 		error = EINVAL;
 		goto out;
@@ -517,7 +517,7 @@ ng_l2cap_lp_enc_change(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		NG_L2CAP_ERR(
 "%s: %s - unexpected ENC_CHANGE event. " \
 "Invalid connection state, state=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), con->state, 
+			__func__, NG_NODE_NAME(l2cap->node), con->state,
 			con->con_handle);
 		error = EINVAL;
 		goto out;
@@ -536,7 +536,7 @@ out:
 } /* ng_l2cap_enc_change */
 
 /*
- * Prepare L2CAP packet. Prepend packet with L2CAP packet header and then 
+ * Prepare L2CAP packet. Prepend packet with L2CAP packet header and then
  * segment it according to HCI MTU.
  */
 
@@ -570,9 +570,9 @@ ng_l2cap_lp_send(ng_l2cap_con_p con, u_int16_t dcid, struct mbuf *m0)
 	l2cap_hdr->dcid = htole16(dcid);
 
 	/*
-	 * Segment single L2CAP packet according to the HCI layer MTU. Convert 
+	 * Segment single L2CAP packet according to the HCI layer MTU. Convert
 	 * each segment into ACL data packet and prepend it with ACL data packet
-	 * header. Link all segments together via m_nextpkt link. 
+	 * header. Link all segments together via m_nextpkt link.
  	 *
 	 * XXX BC (Broadcast flag) will always be 0 (zero).
 	 */
@@ -645,11 +645,11 @@ fail:
 /*
  * Receive ACL data packet from the HCI layer. First strip ACL packet header
  * and get connection handle, PB (Packet Boundary) flag and payload length.
- * Then find connection descriptor and verify its state. Then process ACL 
+ * Then find connection descriptor and verify its state. Then process ACL
  * packet as follows.
- * 
- * 1) If we got first segment (pb == NG_HCI_PACKET_START) then extract L2CAP 
- *    header and get total length of the L2CAP packet. Then start new L2CAP 
+ *
+ * 1) If we got first segment (pb == NG_HCI_PACKET_START) then extract L2CAP
+ *    header and get total length of the L2CAP packet. Then start new L2CAP
  *    packet.
  *
  * 2) If we got other (then first :) segment (pb == NG_HCI_PACKET_FRAGMENT)
@@ -752,7 +752,7 @@ ng_l2cap_lp_receive(ng_l2cap_p l2cap, struct mbuf *m)
 		if (con->rx_pkt == NULL) {
 			NG_L2CAP_ERR(
 "%s: %s - unexpected ACL data packet fragment, con_handle=%d\n",
-				__func__, NG_NODE_NAME(l2cap->node), 
+				__func__, NG_NODE_NAME(l2cap->node),
 				con->con_handle);
 			goto drop;
 		}
@@ -772,7 +772,7 @@ ng_l2cap_lp_receive(ng_l2cap_p l2cap, struct mbuf *m)
 	if (con->rx_pkt_len < 0) {
 		NG_L2CAP_ALERT(
 "%s: %s - packet length mismatch. Got %d bytes, offset %d bytes\n",
-			__func__, NG_NODE_NAME(l2cap->node), 
+			__func__, NG_NODE_NAME(l2cap->node),
 			con->rx_pkt->m_pkthdr.len, con->rx_pkt_len);
 		NG_FREE_M(con->rx_pkt);
 		con->rx_pkt_len = 0;
@@ -832,15 +832,15 @@ ng_l2cap_lp_deliver(ng_l2cap_con_p con)
 			continue;
 		}
 		NG_L2CAP_INFO(
-"%s: %s - sending ACL packet, con_handle=%d, len=%d\n", 
-			__func__, NG_NODE_NAME(l2cap->node), con->con_handle, 
+"%s: %s - sending ACL packet, con_handle=%d, len=%d\n",
+			__func__, NG_NODE_NAME(l2cap->node), con->con_handle,
 			m->m_pkthdr.len);
 
 		NG_SEND_DATA_ONLY(error, l2cap->hci, m);
 		if (error != 0) {
 			NG_L2CAP_ERR(
 "%s: %s - could not send ACL data packet, con_handle=%d, error=%d\n",
-				__func__, NG_NODE_NAME(l2cap->node), 
+				__func__, NG_NODE_NAME(l2cap->node),
 				con->con_handle, error);
 
 			goto drop; /* XXX what to do with "pending"? */
@@ -851,7 +851,7 @@ ng_l2cap_lp_deliver(ng_l2cap_con_p con)
 
 	NG_L2CAP_INFO(
 "%s: %s - %d ACL packets have been sent, con_handle=%d\n",
-		__func__, NG_NODE_NAME(l2cap->node), con->pending, 
+		__func__, NG_NODE_NAME(l2cap->node), con->pending,
 		con->con_handle);
 
 	return;
@@ -866,7 +866,7 @@ drop:
 
 /*
  * Process connection timeout. Remove connection from the list. If there
- * are any channels that wait for the connection then notify them. Free 
+ * are any channels that wait for the connection then notify them. Free
  * connection descriptor.
  */
 
@@ -900,7 +900,7 @@ ng_l2cap_process_lp_timeout(node_p node, hook_p hook, void *arg1, int con_handle
 	}
 
 	/*
-	 * Notify channels that connection has timed out. This will remove 
+	 * Notify channels that connection has timed out. This will remove
 	 * connection, channels and pending commands.
 	 */
 
@@ -909,7 +909,7 @@ ng_l2cap_process_lp_timeout(node_p node, hook_p hook, void *arg1, int con_handle
 } /* ng_l2cap_process_lp_timeout */
 
 /*
- * Process auto disconnect timeout and send LP_DisconReq event to the 
+ * Process auto disconnect timeout and send LP_DisconReq event to the
  * lower layer protocol
  */
 

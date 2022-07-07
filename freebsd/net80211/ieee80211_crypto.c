@@ -37,7 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
-#include <sys/mbuf.h>   
+#include <sys/mbuf.h>
 
 #include <sys/socket.h>
 
@@ -112,7 +112,7 @@ cipher_attach(struct ieee80211vap *vap, struct ieee80211_key *key)
 	return key->wk_cipher->ic_attach(vap, key);
 }
 
-/* 
+/*
  * Wrappers for driver key management methods.
  */
 static __inline int

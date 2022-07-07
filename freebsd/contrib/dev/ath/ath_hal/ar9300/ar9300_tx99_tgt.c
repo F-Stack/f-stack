@@ -36,14 +36,14 @@
 #include "ar9300eep.h"
 
 #ifdef ATH_TX99_DIAG
-void 
+void
 ar9300_tx99_tgt_channel_pwr_update(struct ath_hal *ah, HAL_CHANNEL *c, u_int32_t txpower)
 {
 #define PWR_MAS(_r, _s)     (((_r) & 0x3f) << (_s))
     static int16_t pPwrArray[ar9300_rate_size] = { 0 };
     int32_t i;
     //u_int8_t ht40PowerIncForPdadc = 2;
-    
+
     for (i = 0; i < ar9300_rate_size; i++)
         pPwrArray[i] = txpower;
 
@@ -66,7 +66,7 @@ ar9300_tx99_tgt_channel_pwr_update(struct ath_hal *ah, HAL_CHANNEL *c, u_int32_t
     );
 
 	/* Write the CCK power per rate set */
-    /* 1L (LSB), reserved, 2L, 2S (MSB) */  
+    /* 1L (LSB), reserved, 2L, 2S (MSB) */
 	OS_REG_WRITE(ah, AR_PHY_POWER_TX_RATE(3),
 	    PWR_MAS(pPwrArray[ALL_TARGET_LEGACY_1L_5L], 24)
 		  | PWR_MAS(pPwrArray[ALL_TARGET_LEGACY_1L_5L],  16)
@@ -89,7 +89,7 @@ ar9300_tx99_tgt_channel_pwr_update(struct ath_hal *ah, HAL_CHANNEL *c, u_int32_t
           | PWR_MAS(pPwrArray[ALL_TARGET_HT20_1_3_9_11_17_19],  8)
           | PWR_MAS(pPwrArray[ALL_TARGET_HT20_0_8_16],   0)
     );
-    
+
     /* 6 (LSB), 7, 12, 13 (MSB) */
     OS_REG_WRITE(ah, AR_PHY_POWER_TX_RATE(6),
         PWR_MAS(pPwrArray[ALL_TARGET_HT20_13], 24)
@@ -114,7 +114,7 @@ ar9300_tx99_tgt_channel_pwr_update(struct ath_hal *ah, HAL_CHANNEL *c, u_int32_t
           | PWR_MAS(pPwrArray[ALL_TARGET_HT20_23],  8)
           | PWR_MAS(pPwrArray[ALL_TARGET_HT20_22],   0)
     );
-    
+
     /* Write the HT40 power per rate set */
     // correct PAR difference between HT40 and HT20/LEGACY
     /* 0/8/16 (LSB), 1-3/9-11/17-19, 4, 5 (MSB) */
@@ -139,7 +139,7 @@ ar9300_tx99_tgt_channel_pwr_update(struct ath_hal *ah, HAL_CHANNEL *c, u_int32_t
 	      | PWR_MAS(pPwrArray[ALL_TARGET_HT40_20],  16)
 	      | PWR_MAS(pPwrArray[ALL_TARGET_HT40_15],  8)
 	      | PWR_MAS(pPwrArray[ALL_TARGET_HT40_14],   0)
-	);  
+	);
 #undef PWR_MAS
 }
 
@@ -172,32 +172,32 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                     | (0x1 << 3) | (0x1 << 2));
         if (AR_SREV_OSPREY(ah) || AR_SREV_WASP(ah)) {
             OS_REG_WRITE(ah, AR_PHY_65NM_CH0_TOP, OS_REG_READ(ah, AR_PHY_65NM_CH0_TOP)
-                                                        & ~(0x1 << 4)); 
+                                                        & ~(0x1 << 4));
             OS_REG_WRITE(ah, AR_PHY_65NM_CH0_TOP2, (OS_REG_READ(ah, AR_PHY_65NM_CH0_TOP2)
-                                                        | (0x1 << 26)  | (0x7 << 24)) 
+                                                        | (0x1 << 26)  | (0x7 << 24))
                                                         & ~(0x1 << 22));
         } else {
             OS_REG_WRITE(ah, AR_HORNET_CH0_TOP, OS_REG_READ(ah, AR_HORNET_CH0_TOP)
-                                                        & ~(0x1 << 4)); 
+                                                        & ~(0x1 << 4));
             OS_REG_WRITE(ah, AR_HORNET_CH0_TOP2, (OS_REG_READ(ah, AR_HORNET_CH0_TOP2)
-                                                        | (0x1 << 26)  | (0x7 << 24)) 
+                                                        | (0x1 << 26)  | (0x7 << 24))
                                                         & ~(0x1 << 22));
-        }                                                    
-        
+        }
+
         /* chain zero */
     	if((tx_chain_mask & 0x01) == 0x01) {
     		OS_REG_WRITE(ah, AR_PHY_65NM_CH0_RXTX1, (OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX1)
-                                                          | (0x1 << 31) | (0x5 << 15) 
-                                                          | (0x3 << 9)) & ~(0x1 << 27) 
+                                                          | (0x1 << 31) | (0x5 << 15)
+                                                          | (0x3 << 9)) & ~(0x1 << 27)
                                                           & ~(0x1 << 12));
     		OS_REG_WRITE(ah, AR_PHY_65NM_CH0_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2)
-                                                          | (0x1 << 12) | (0x1 << 10) 
-                                                          | (0x1 << 9)  | (0x1 << 8)  
-                                                          | (0x1 << 7)) & ~(0x1 << 11));                                      
+                                                          | (0x1 << 12) | (0x1 << 10)
+                                                          | (0x1 << 9)  | (0x1 << 8)
+                                                          | (0x1 << 7)) & ~(0x1 << 11));
     		OS_REG_WRITE(ah, AR_PHY_65NM_CH0_RXTX3, (OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX3)
-                                                          | (0x1 << 29) | (0x1 << 25) 
-                                                          | (0x1 << 23) | (0x1 << 19) 
-                                                          | (0x1 << 10) | (0x1 << 9)  
+                                                          | (0x1 << 29) | (0x1 << 25)
+                                                          | (0x1 << 23) | (0x1 << 19)
+                                                          | (0x1 << 10) | (0x1 << 9)
                                                           | (0x1 << 8)  | (0x1 << 3))
                                                           & ~(0x1 << 28)& ~(0x1 << 24)
                                                           & ~(0x1 << 22)& ~(0x1 << 7));
@@ -208,25 +208,25 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                           | (0x1 << 9)  | (0x1 << 8)
                                                           | (0x1 << 6)  | (0x1 << 5)
                                                           | (0x1 << 4)  | (0x1 << 3)
-                                                          | (0x1 << 2));                                                          
+                                                          | (0x1 << 2));
             OS_REG_WRITE(ah, AR_PHY_65NM_CH0_BB2, OS_REG_READ(ah, AR_PHY_65NM_CH0_BB2)
-                                                          | (0x1 << 31));                                                 
+                                                          | (0x1 << 31));
         }
         if (AR_SREV_OSPREY(ah) || AR_SREV_WASP(ah)) {
             /* chain one */
         	if ((tx_chain_mask & 0x02) == 0x02 ) {
         	    OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX1, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX1)
-                                                              | (0x1 << 31) | (0x5 << 15) 
-                                                              | (0x3 << 9)) & ~(0x1 << 27) 
+                                                              | (0x1 << 31) | (0x5 << 15)
+                                                              | (0x3 << 9)) & ~(0x1 << 27)
                                                               & ~(0x1 << 12));
         		OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX2)
-                                                              | (0x1 << 12) | (0x1 << 10) 
-                                                              | (0x1 << 9)  | (0x1 << 8)  
+                                                              | (0x1 << 12) | (0x1 << 10)
+                                                              | (0x1 << 9)  | (0x1 << 8)
                                                               | (0x1 << 7)) & ~(0x1 << 11));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX3, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX3)
-                                                              | (0x1 << 29) | (0x1 << 25) 
-                                                              | (0x1 << 23) | (0x1 << 19) 
-                                                              | (0x1 << 10) | (0x1 << 9)  
+                                                              | (0x1 << 29) | (0x1 << 25)
+                                                              | (0x1 << 23) | (0x1 << 19)
+                                                              | (0x1 << 10) | (0x1 << 9)
                                                               | (0x1 << 8)  | (0x1 << 3))
                                                               & ~(0x1 << 28)& ~(0x1 << 24)
                                                               & ~(0x1 << 22)& ~(0x1 << 7));
@@ -237,28 +237,28 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                               | (0x1 << 9)  | (0x1 << 8)
                                                               | (0x1 << 6)  | (0x1 << 5)
                                                               | (0x1 << 4)  | (0x1 << 3)
-                                                              | (0x1 << 2));                                            
+                                                              | (0x1 << 2));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_BB2, OS_REG_READ(ah, AR_PHY_65NM_CH1_BB2)
-                                                              | (0x1 << 31));	
+                                                              | (0x1 << 31));
         	}
     	}
     	if (AR_SREV_OSPREY(ah)) {
         	/* chain two */
         	if ((tx_chain_mask & 0x04) == 0x04 ) {
         	    OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX1, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX1)
-                                                              | (0x1 << 31) | (0x5 << 15) 
+                                                              | (0x1 << 31) | (0x5 << 15)
                                                               | (0x3 << 9)) & ~(0x1 << 27)
                                                               & ~(0x1 << 12));
         		OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX2)
-                                                              | (0x1 << 12) | (0x1 << 10) 
-                                                              | (0x1 << 9)  | (0x1 << 8)  
+                                                              | (0x1 << 12) | (0x1 << 10)
+                                                              | (0x1 << 9)  | (0x1 << 8)
                                                               | (0x1 << 7)) & ~(0x1 << 11));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX3, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX3)
-                                                              | (0x1 << 29) | (0x1 << 25) 
-                                                              | (0x1 << 23) | (0x1 << 19) 
-                                                              | (0x1 << 10) | (0x1 << 9)  
-                                                              | (0x1 << 8)  | (0x1 << 3)) 
-                                                              & ~(0x1 << 28)& ~(0x1 << 24) 
+                                                              | (0x1 << 29) | (0x1 << 25)
+                                                              | (0x1 << 23) | (0x1 << 19)
+                                                              | (0x1 << 10) | (0x1 << 9)
+                                                              | (0x1 << 8)  | (0x1 << 3))
+                                                              & ~(0x1 << 28)& ~(0x1 << 24)
                                                               & ~(0x1 << 22)& ~(0x1 << 7));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH2_TXRF1, (OS_REG_READ(ah, AR_PHY_65NM_CH2_TXRF1)
                                                               | (0x1 << 23))& ~(0x1 << 21));
@@ -267,14 +267,14 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                               | (0x1 << 9)  | (0x1 << 8)
                                                               | (0x1 << 6)  | (0x1 << 5)
                                                               | (0x1 << 4)  | (0x1 << 3)
-                                                              | (0x1 << 2));                                            
+                                                              | (0x1 << 2));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH2_BB2, OS_REG_READ(ah, AR_PHY_65NM_CH2_BB2)
-                                                              | (0x1 << 31));	
+                                                              | (0x1 << 31));
         	}
     	}
-    	
+
     	OS_REG_WRITE(ah, AR_PHY_SWITCH_COM_2, 0x11111);
-        OS_REG_WRITE(ah, AR_PHY_SWITCH_COM, 0x111);      
+        OS_REG_WRITE(ah, AR_PHY_SWITCH_COM, 0x111);
     }
     else
     {
@@ -286,15 +286,15 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                           | (0x1 << 15) | (0x3 << 9))
                                                           & ~(0x1 << 12));
     		OS_REG_WRITE(ah, AR_PHY_65NM_CH0_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2)
-                                                          | (0x1 << 12) | (0x1 << 10) 
-                                                          | (0x1 << 9)  | (0x1 << 8)  
-                                                          | (0x1 << 7)  | (0x1 << 3)  
-                                                          | (0x1 << 2)  | (0x1 << 1)) 
+                                                          | (0x1 << 12) | (0x1 << 10)
+                                                          | (0x1 << 9)  | (0x1 << 8)
+                                                          | (0x1 << 7)  | (0x1 << 3)
+                                                          | (0x1 << 2)  | (0x1 << 1))
                                                           & ~(0x1 << 11)& ~(0x1 << 0));
             OS_REG_WRITE(ah, AR_PHY_65NM_CH0_RXTX3, (OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX3)
-			                                              | (0x1 << 29) | (0x1 << 25) 
-                                                          | (0x1 << 23) | (0x1 << 19) 
-                                                          | (0x1 << 10) | (0x1 << 9)  
+			                                              | (0x1 << 29) | (0x1 << 25)
+                                                          | (0x1 << 23) | (0x1 << 19)
+                                                          | (0x1 << 10) | (0x1 << 9)
                                                           | (0x1 << 8)  | (0x1 << 3))
                                                           & ~(0x1 << 28)& ~(0x1 << 24)
                                                           & ~(0x1 << 22)& ~(0x1 << 7));
@@ -326,8 +326,8 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
     			OS_REG_WRITE(ah, AR_HORNET_CH0_TOP2, OS_REG_READ(ah, AR_HORNET_CH0_TOP2)
     		                                                  | (0x1 << 26) | (0x7 << 24)
     		                                                  | (0x3 << 22));
-		    }	                                                 
-                                    
+		    }
+
             if (AR_SREV_OSPREY(ah) || AR_SREV_WASP(ah)) {
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX2)
     			                                              | (0x1 << 3)  | (0x1 << 2)
@@ -337,7 +337,7 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_TXRF1, OS_REG_READ(ah, AR_PHY_65NM_CH1_TXRF1)
     			                                              | (0x1 << 23));
 			}
-			if (AR_SREV_OSPREY(ah)) {    		
+			if (AR_SREV_OSPREY(ah)) {
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX2)
     			                                              | (0x1 << 3)  | (0x1 << 2)
                                                               | (0x1 << 1)) & ~(0x1 << 0));
@@ -370,22 +370,22 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
         		                                                  | (0x1 << 26) | (0x7 << 24)
         		                                                  | (0x3 << 22));
                 }
-                
+
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX1, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX1)
         		                                              | (0x1 << 31) | (0x1 << 27)
                                                               | (0x3 << 23) | (0x1 << 19)
-                                                              | (0x1 << 15) | (0x3 << 9)) 
+                                                              | (0x1 << 15) | (0x3 << 9))
                                                               & ~(0x1 << 12));
     			OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX2)
-                                                              | (0x1 << 12) | (0x1 << 10) 
-                                                              | (0x1 << 9)  | (0x1 << 8)  
-                                                              | (0x1 << 7)  | (0x1 << 3)  
-                                                              | (0x1 << 2)  | (0x1 << 1))  
+                                                              | (0x1 << 12) | (0x1 << 10)
+                                                              | (0x1 << 9)  | (0x1 << 8)
+                                                              | (0x1 << 7)  | (0x1 << 3)
+                                                              | (0x1 << 2)  | (0x1 << 1))
                                                               & ~(0x1 << 11)& ~(0x1 << 0));
     			OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX3, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX3)
-    			                                              | (0x1 << 29) | (0x1 << 25) 
-                                                              | (0x1 << 23) | (0x1 << 19) 
-                                                              | (0x1 << 10) | (0x1 << 9)  
+    			                                              | (0x1 << 29) | (0x1 << 25)
+                                                              | (0x1 << 23) | (0x1 << 19)
+                                                              | (0x1 << 10) | (0x1 << 9)
                                                               | (0x1 << 8)  | (0x1 << 3))
                                                               & ~(0x1 << 28)& ~(0x1 << 24)
                                                               & ~(0x1 << 22)& ~(0x1 << 7));
@@ -405,7 +405,7 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                               | (0x1 << 2));
     			OS_REG_WRITE(ah, AR_PHY_65NM_CH1_BB2, OS_REG_READ(ah, AR_PHY_65NM_CH1_BB2)
                                                               | (0x1 << 31));
-    			
+
     			if (AR_SREV_OSPREY(ah)) {
                     OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX2)
         			                                              | (0x1 << 3)  | (0x1 << 2)
@@ -440,7 +440,7 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
         		                                                  | (0x1 << 26) | (0x7 << 24)
         		                                                  | (0x3 << 22));
     		    }
-    		    
+
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH1_RXTX2)
     			                                              | (0x1 << 3)  | (0x1 << 2)
                                                               | (0x1 << 1)) & ~(0x1 << 0));
@@ -448,22 +448,22 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
     			                                              | (0x1 << 19) | (0x1 << 3));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH1_TXRF1, OS_REG_READ(ah, AR_PHY_65NM_CH1_TXRF1)
     			                                              | (0x1 << 23));
-    			
+
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX1, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX1)
         		                                              | (0x1 << 31) | (0x1 << 27)
                                                               | (0x3 << 23) | (0x1 << 19)
-                                                              | (0x1 << 15) | (0x3 << 9)) 
+                                                              | (0x1 << 15) | (0x3 << 9))
                                                               & ~(0x1 << 12));
                 OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX2, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX2)
-                                                              | (0x1 << 12) | (0x1 << 10) 
-                                                              | (0x1 << 9)  | (0x1 << 8)  
-                                                              | (0x1 << 7)  | (0x1 << 3)  
-                                                              | (0x1 << 2)  | (0x1 << 1))  
+                                                              | (0x1 << 12) | (0x1 << 10)
+                                                              | (0x1 << 9)  | (0x1 << 8)
+                                                              | (0x1 << 7)  | (0x1 << 3)
+                                                              | (0x1 << 2)  | (0x1 << 1))
                                                               & ~(0x1 << 11)& ~(0x1 << 0));
     			OS_REG_WRITE(ah, AR_PHY_65NM_CH2_RXTX3, (OS_REG_READ(ah, AR_PHY_65NM_CH2_RXTX3)
-    			                                              | (0x1 << 29) | (0x1 << 25) 
-                                                              | (0x1 << 23) | (0x1 << 19) 
-                                                              | (0x1 << 10) | (0x1 << 9)  
+    			                                              | (0x1 << 29) | (0x1 << 25)
+                                                              | (0x1 << 23) | (0x1 << 19)
+                                                              | (0x1 << 10) | (0x1 << 9)
                                                               | (0x1 << 8)  | (0x1 << 3))
                                                               & ~(0x1 << 28)& ~(0x1 << 24)
                                                               & ~(0x1 << 22)& ~(0x1 << 7));
@@ -485,13 +485,13 @@ ar9300_tx99_tgt_set_single_carrier(struct ath_hal *ah, int tx_chain_mask, int ch
                                                               | (0x1 << 31));
     		}
 		}
-    	
+
         OS_REG_WRITE(ah, AR_PHY_SWITCH_COM_2, 0x22222);
         OS_REG_WRITE(ah, AR_PHY_SWITCH_COM, 0x222);
     }
 }
 
-void 
+void
 ar9300_tx99_tgt_start(struct ath_hal *ah, u_int8_t data)
 {
     a_uint32_t val;
@@ -508,15 +508,15 @@ ar9300_tx99_tgt_start(struct ath_hal *ah, u_int8_t data)
     OS_REG_WRITE(ah, AR_DLCL_IFS(qnum), 0);
     OS_REG_WRITE(ah, AR_D_GBL_IFS_SIFS, 20); //50 OK
     OS_REG_WRITE(ah, AR_D_GBL_IFS_EIFS, 20);
-    OS_REG_WRITE(ah, AR_TIME_OUT, 0x00000400); //200 ok for HT20, 400 ok for HT40 
+    OS_REG_WRITE(ah, AR_TIME_OUT, 0x00000400); //200 ok for HT20, 400 ok for HT40
     OS_REG_WRITE(ah, AR_DRETRY_LIMIT(qnum), 0xffffffff);
-    
+
     /* set QCU modes to early termination */
     val = OS_REG_READ(ah, AR_QMISC(qnum));
     OS_REG_WRITE(ah, AR_QMISC(qnum), val | AR_Q_MISC_DCU_EARLY_TERM_REQ);
 }
 
-void 
+void
 ar9300_tx99_tgt_stop(struct ath_hal *ah)
 {
     OS_REG_WRITE(ah, AR_PHY_TEST, OS_REG_READ(ah, AR_PHY_TEST) &~ PHY_AGC_CLR);

@@ -95,11 +95,11 @@ AES_CBC_MAC_Reinit(void *vctx, const uint8_t *nonce, u_int nonceLen)
 
 	ctx->nonce = nonce;
 	ctx->nonceLength = nonceLen;
-	
+
 	ctx->authDataCount = 0;
 	ctx->blockIndex = 0;
 	explicit_bzero(ctx->staging_block, sizeof(ctx->staging_block));
-	
+
 	/*
 	 * Need to determine the L field value.  This is the number of
 	 * bytes needed to specify the length of the message; the length
@@ -107,7 +107,7 @@ AES_CBC_MAC_Reinit(void *vctx, const uint8_t *nonce, u_int nonceLen)
 	 * the nonce.
 	 */
 	L = 15 - nonceLen;
-	
+
 	flags = ((ctx->authDataLength > 0) << 6) +
 	    (((AES_CBC_MAC_HASH_LEN - 2) / 2) << 3) +
 	    L - 1;
@@ -162,7 +162,7 @@ AES_CBC_MAC_Update(void *vctx, const void *vdata, u_int length)
 	struct aes_cbc_mac_ctx *ctx;
 	const uint8_t *data;
 	size_t copy_amt;
-	
+
 	ctx = vctx;
 	data = vdata;
 
@@ -177,7 +177,7 @@ AES_CBC_MAC_Update(void *vctx, const void *vdata, u_int length)
 	 *
 	 * The payload data doesn't have that problem.
 	 */
-				
+
 	if (ctx->authDataCount < ctx->authDataLength) {
 		/*
 		 * We need to process data as authentication data.
@@ -232,7 +232,7 @@ AES_CBC_MAC_Update(void *vctx, const void *vdata, u_int length)
 
 	while (length) {
 		uint8_t *ptr;
-		
+
 		copy_amt = MIN(sizeof(ctx->staging_block) - ctx->blockIndex,
 		    length);
 		ptr = ctx->staging_block + ctx->blockIndex;

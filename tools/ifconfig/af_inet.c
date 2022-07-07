@@ -66,7 +66,7 @@ in_status(int s __unused, const struct ifaddrs *ifa)
 #ifndef FSTACK
 	int error, n_flags;
 #endif
-	
+
 	memset(&null_sin, 0, sizeof(null_sin));
 
 	sin = (struct sockaddr_in *)ifa->ifa_addr;
@@ -87,7 +87,7 @@ in_status(int s __unused, const struct ifaddrs *ifa)
 	if (error)
 #endif
 		inet_ntop(AF_INET, &sin->sin_addr, addr_buf, sizeof(addr_buf));
-	
+
 	printf("\tinet %s", addr_buf);
 
 	if (ifa->ifa_flags & IFF_POINTOPOINT) {
@@ -165,7 +165,7 @@ in_getaddr(const char *s, int which)
 			}
 			min->sin_family = AF_INET;
 			min->sin_len = sizeof(*min);
-			min->sin_addr.s_addr = htonl(~((1LL << (32 - masklen)) - 1) & 
+			min->sin_addr.s_addr = htonl(~((1LL << (32 - masklen)) - 1) &
 				              0xffffffff);
 		}
 	}
@@ -177,7 +177,7 @@ in_getaddr(const char *s, int which)
 		errx(1, "%s: bad value", s);
 #else
 	if ((hp = gethostbyname(s)) != NULL)
-		bcopy(hp->h_addr, (char *)&sin->sin_addr, 
+		bcopy(hp->h_addr, (char *)&sin->sin_addr,
 		    MIN((size_t)hp->h_length, sizeof(sin->sin_addr)));
 	else if ((np = getnetbyname(s)) != NULL)
 		sin->sin_addr = inet_makeaddr(np->n_net, INADDR_ANY);

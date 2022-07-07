@@ -111,7 +111,7 @@ ng_hci_node_is_up(node_p node, hook_p hook, void *arg1, int arg2)
 		} else {
 			NG_HCI_BUFF_SCO_SIZE(unit->buffer, ep->pkt_size);
 			NG_HCI_BUFF_SCO_TOTAL(unit->buffer, ep->num_pkts);
-		} 
+		}
 
 		bcopy(&unit->bdaddr, &ep->bdaddr, sizeof(ep->bdaddr));
 
@@ -122,7 +122,7 @@ ng_hci_node_is_up(node_p node, hook_p hook, void *arg1, int arg2)
 	if (error != 0)
 		NG_HCI_INFO(
 "%s: %s - failed to send NODE_UP message to hook \"%s\", error=%d\n",
-			__func__, NG_NODE_NAME(unit->node), 
+			__func__, NG_NODE_NAME(unit->node),
 			NG_HOOK_NAME(hook), error);
 } /* ng_hci_node_is_up */
 
@@ -151,7 +151,7 @@ ng_hci_unit_clean(ng_hci_unit_p unit, int reason)
 			ng_hci_con_untimeout(con);
 
 		/*
-		 * Notify upper layer protocol and destroy connection 
+		 * Notify upper layer protocol and destroy connection
 		 * descriptor. Do not really care about the result.
 		 */
 
@@ -179,7 +179,7 @@ ng_hci_new_neighbor(ng_hci_unit_p unit)
 	ng_hci_neighbor_p	n = NULL;
 
 	n = malloc(sizeof(*n), M_NETGRAPH_HCI,
-		M_NOWAIT | M_ZERO); 
+		M_NOWAIT | M_ZERO);
 	if (n != NULL) {
 		getmicrotime(&n->updated);
 		LIST_INSERT_HEAD(&unit->neighbors, n, next);
@@ -201,7 +201,7 @@ ng_hci_free_neighbor(ng_hci_neighbor_p n)
 } /* ng_hci_free_neighbor */
 
 /*
- * Flush neighbor cache 
+ * Flush neighbor cache
  */
 
 void
@@ -224,10 +224,10 @@ ng_hci_get_neighbor(ng_hci_unit_p unit, bdaddr_p bdaddr,int link_type)
 		ng_hci_neighbor_p	nn = LIST_NEXT(n, next);
 
 		if (!ng_hci_neighbor_stale(n)) {
-			if (n->addrtype == link_type && 
+			if (n->addrtype == link_type &&
 			    bcmp(&n->bdaddr, bdaddr, sizeof(*bdaddr)) == 0)
 				break;
-		} else 
+		} else
 			ng_hci_free_neighbor(n); /* remove old entry */
 
 		n = nn;
@@ -308,11 +308,11 @@ ng_hci_new_con(ng_hci_unit_p unit, int link_type)
 
 void
 ng_hci_free_con(ng_hci_unit_con_p con)
-{ 
+{
 	LIST_REMOVE(con, next);
 
 	/*
-	 * If we have pending packets then assume that Host Controller has 
+	 * If we have pending packets then assume that Host Controller has
 	 * flushed these packets and we can free them too
 	 */
 

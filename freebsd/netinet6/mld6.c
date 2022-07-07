@@ -752,7 +752,7 @@ mld_v1_input_query(struct ifnet *ifp, const struct ip6_hdr *ip6,
  * We may be updating the group for the first time since we switched
  * to MLDv2. If we are, then we must clear any recorded source lists,
  * and transition to REPORTING state; the group timer is overloaded
- * for group and group-source query responses. 
+ * for group and group-source query responses.
  *
  * Unlike MLDv2, the delay per group should be jittered
  * to avoid bursts of MLDv1 reports.

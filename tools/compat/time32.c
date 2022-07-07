@@ -31,7 +31,7 @@ _time32_to_time(__int32_t t32)
 
 /*
  * Convert time_t to a 32 bit representation.  If time_t is 64 bits we can
- * simply chop it down.   The resulting 32 bit representation can be 
+ * simply chop it down.   The resulting 32 bit representation can be
  * converted back to a temporally local 64 bit time_t using time32_to_time.
  */
 __int32_t
@@ -62,7 +62,7 @@ _time_to_time64(time_t t)
 }
 
 /*
- * Convert to/from 'long'.  Depending on the sizeof(long) this may or 
+ * Convert to/from 'long'.  Depending on the sizeof(long) this may or
  * may not require using the 50-year rule.
  */
 long
@@ -82,7 +82,7 @@ _long_to_time(long tlong)
 }
 
 /*
- * Convert to/from 'int'.  Depending on the sizeof(int) this may or 
+ * Convert to/from 'int'.  Depending on the sizeof(int) this may or
  * may not require using the 50-year rule.
  */
 int

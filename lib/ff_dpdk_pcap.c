@@ -59,7 +59,7 @@ int ff_enable_pcap(const char* dump_path, uint16_t snap_len)
 
     snprintf(pcap_f_path, FILE_PATH_LEN,  "%s/cpu%d_%d.pcap", dump_path==NULL?".":dump_path, rte_lcore_id(), seq);
     g_pcap_fp = fopen(pcap_f_path, "w+");
-    if (g_pcap_fp == NULL) { 
+    if (g_pcap_fp == NULL) {
         rte_exit(EXIT_FAILURE, "Cannot open pcap dump path: %s, errno %d.\n", pcap_f_path, errno);
         return -1;
     }
@@ -116,7 +116,7 @@ ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, 
         fclose(g_pcap_fp);
         if ( ++seq >= PCAP_FILE_NUM )
             seq = 0;
-        
+
         ff_enable_pcap(dump_path, snap_len);
     }
 

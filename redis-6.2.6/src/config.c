@@ -246,7 +246,7 @@ typedef struct standardConfig {
     typeData data; /* The type specific data exposed used by the interface */
 } standardConfig;
 
-#define MODIFIABLE_CONFIG 0 /* This is the implied default for a standard 
+#define MODIFIABLE_CONFIG 0 /* This is the implied default for a standard
                              * config, which is mutable. */
 #define IMMUTABLE_CONFIG (1ULL<<0) /* Can this value only be set at startup? */
 #define SENSITIVE_CONFIG (1ULL<<1) /* Does this value contain sensitive information */
@@ -361,7 +361,7 @@ static int updateOOMScoreAdjValues(sds *args, const char **err, int apply) {
         old_values[i] = server.oom_score_adj_values[i];
         server.oom_score_adj_values[i] = values[i];
     }
-    
+
     /* When parsing the config file, we want to apply only when all is done. */
     if (!apply)
         return C_OK;
@@ -721,7 +721,7 @@ void configSetCommand(client *c) {
 
     /* Iterate the configs that are standard */
     for (standardConfig *config = configs; config->name != NULL; config++) {
-        if (!(config->flags & IMMUTABLE_CONFIG) && 
+        if (!(config->flags & IMMUTABLE_CONFIG) &&
             (!strcasecmp(c->argv[2]->ptr,config->name) ||
             (config->alias && !strcasecmp(c->argv[2]->ptr,config->alias))))
         {
@@ -1193,7 +1193,7 @@ struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
             sdsfree(argv[0]);
             argv[0] = alt;
         }
-        /* If this is sentinel config, we use sentinel "sentinel <config>" as option 
+        /* If this is sentinel config, we use sentinel "sentinel <config>" as option
             to avoid messing up the sequence. */
         if (server.sentinel_mode && argc > 1 && !strcasecmp(argv[0],"sentinel")) {
             sds sentinelOption = sdsempty();

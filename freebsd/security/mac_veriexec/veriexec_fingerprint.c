@@ -40,7 +40,7 @@
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
-#include <sys/mount.h> 
+#include <sys/mount.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/sbuf.h>
@@ -326,7 +326,7 @@ mac_veriexec_fingerprint_check_image(struct image_params *imgp,
 		identify_error(imgp, td, "invalid status field for vnode");
 		error = EPERM;
 	}
-	return error; 
+	return error;
 }
 
 /**

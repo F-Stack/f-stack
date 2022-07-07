@@ -1291,7 +1291,7 @@ cryptodev_key(struct crypt_kop *kop)
 		SDT_PROBE1(opencrypto, dev, ioctl, error, __LINE__);
 		goto fail;
 	}
-	
+
 	kop->crk_crid = krp->krp_hid;		/* device that did the work */
 	if (krp->krp_status != 0) {
 		error = krp->krp_status;
@@ -1597,7 +1597,7 @@ cryptodev_modevent(module_t mod, int type, void *unused)
 	case MOD_LOAD:
 		if (bootverbose)
 			printf("crypto: <crypto device>\n");
-		crypto_dev = make_dev(&crypto_cdevsw, 0, 
+		crypto_dev = make_dev(&crypto_cdevsw, 0,
 				      UID_ROOT, GID_WHEEL, 0666,
 				      "crypto");
 		return 0;

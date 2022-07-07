@@ -148,7 +148,7 @@ main(int argc, char *argv[])
 		uint64_t prevk = 0;
 		for (i=0; i < n; i++)
 			heap_insert(&h, n3 ? n-i: random(), (void *)(100+i));
-		
+
 		for (i=0; h.elements > 0; i++) {
 			uint64_t k = h.p[0].key;
 			if (k < prevk)

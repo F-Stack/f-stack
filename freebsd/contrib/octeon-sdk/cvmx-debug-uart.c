@@ -58,7 +58,7 @@ int cvmx_debug_uart = 1;
 #include "octeon-boot-info.h"
 #endif
 
-/* 
+/*
  * NOTE: CARE SHOULD BE TAKEN USING STD C LIBRARY FUNCTIONS IN
  * THIS FILE IF SOMEONE PUTS A BREAKPOINT ON THOSE FUNCTIONS
  * DEBUGGING WILL FAIL.

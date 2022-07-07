@@ -118,7 +118,7 @@ uni_mandate_epref(struct uni *uni, struct uni_ie_epref *epref)
 		 */
 		uni_mandate_ie(uni, UNI_IE_EPREF);
 		return;
-		
+
 	}
 	if (IE_ISGOOD(*epref))
 		return;

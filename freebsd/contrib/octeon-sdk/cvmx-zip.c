@@ -101,7 +101,7 @@ int cvmx_zip_queue_initialize(int queue, int zcoremask)
     cvmx_zip_que_ena_t que_ena;
     cvmx_zip_int_reg_t int_reg;
 
-    /* Previous Octeon models has only one instruction queue, call 
+    /* Previous Octeon models has only one instruction queue, call
        cvmx_zip_inititalize() to initialize the ZIP block */
 
     if (!OCTEON_IS_MODEL(OCTEON_CN68XX))
@@ -122,17 +122,17 @@ int cvmx_zip_queue_initialize(int queue, int zcoremask)
     zip_que_buf.s.ptr =  cvmx_ptr_to_phys(cvmx_cmd_queue_buffer(CVMX_CMD_QUEUE_ZIP_QUE(queue)))>>7;
     cvmx_write_csr(CVMX_ZIP_QUEX_BUF(queue), zip_que_buf.u64);
 
-    /* 2. Change the queue-to-ZIP core mapping by programming ZIP_QUE0/1_MAP. */ 
+    /* 2. Change the queue-to-ZIP core mapping by programming ZIP_QUE0/1_MAP. */
     que_map.u64 = cvmx_read_csr(CVMX_ZIP_QUEX_MAP(queue));
     que_map.s.zce = zcoremask;
-    cvmx_write_csr(CVMX_ZIP_QUEX_MAP(queue), que_map.u64); 
+    cvmx_write_csr(CVMX_ZIP_QUEX_MAP(queue), que_map.u64);
 
     /* Enable the queue */
     que_ena.u64 = cvmx_read_csr(CVMX_ZIP_QUE_ENA);
     que_ena.s.ena |= (1<<queue);
     cvmx_write_csr(CVMX_ZIP_QUE_ENA, que_ena.u64);
 
-    /* Use round robin to have equal priority for each instruction queue */ 
+    /* Use round robin to have equal priority for each instruction queue */
     cvmx_write_csr(CVMX_ZIP_QUE_PRI, 0x3);
 
     int_reg.u64 = cvmx_read_csr(CVMX_ZIP_INT_REG);

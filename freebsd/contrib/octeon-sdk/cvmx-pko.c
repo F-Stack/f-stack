@@ -93,8 +93,8 @@
  *
  * Get INT for a port
  *
- * @param interface 
- * @param index 
+ * @param interface
+ * @param index
  * @return the INT value on success and -1 on error
  */
 static int __cvmx_pko_int(int interface, int index)
@@ -297,7 +297,7 @@ static void __cvmx_pko_iport_config(int pko_port)
     base_queue = __cvmx_helper_cfg_pko_queue_base(pko_port);
     num_queues = __cvmx_helper_cfg_pko_queue_num(pko_port);
 
-    /* 
+    /*
      * Give the user a chance to override the per queue priorities.
      */
     if (cvmx_override_pko_queue_priority)
@@ -322,7 +322,7 @@ static void __cvmx_pko_iport_config(int pko_port)
 	    queue == num_queues - 1)
                 static_priority_end = queue;  /* all queues are static priority */
 
-        /* 
+        /*
 	 * Check to make sure all static priority queues are contiguous.
 	 * Also catches some cases of static priorites not starting from
 	 * queue 0.
@@ -358,7 +358,7 @@ static void __cvmx_pko_iport_config(int pko_port)
         config.s.static_p = (static_priority_base >= 0);
         config.s.static_q = (queue <= static_priority_end);
 
-        /* 
+        /*
          * Convert the priority into an enable bit field.
 	 * Try to space the bits out evenly so the packet
 	 * don't get grouped up.
@@ -430,7 +430,7 @@ static void __cvmx_pko_iport_config(int pko_port)
 /*
  * Allocate queues for the PKO internal ports.
  * @INTERNAL
- * 
+ *
  */
 static void __cvmx_pko_queue_alloc_o68(void)
 {
@@ -603,7 +603,7 @@ void cvmx_pko_initialize_global(void)
 	{
 	    num_interfaces = cvmx_helper_get_number_of_interfaces();
 	    last_port = cvmx_helper_get_last_ipd_port(num_interfaces-1);
-            max_queues = cvmx_pko_get_base_queue(last_port) + 
+            max_queues = cvmx_pko_get_base_queue(last_port) +
 	        cvmx_pko_get_num_queues(last_port);
         }
 
@@ -815,7 +815,7 @@ cvmx_pko_status_t cvmx_pko_config_port(uint64_t port, uint64_t base_queue,
 
     if (port != CVMX_PKO_MEM_QUEUE_PTRS_ILLEGAL_PID)
     {
-        /* 
+        /*
 	 * Validate the static queue priority setup and set
 	 * static_priority_base and static_priority_end accordingly.
 	 */
@@ -826,14 +826,14 @@ cvmx_pko_status_t cvmx_pko_config_port(uint64_t port, uint64_t base_queue,
 	        CVMX_PKO_QUEUE_STATIC_PRIORITY)
                 static_priority_base = queue;
             /* Find last queue of static priority */
-            if (static_priority_base != -1 && static_priority_end == -1 && 
+            if (static_priority_base != -1 && static_priority_end == -1 &&
 	        priority[queue] != CVMX_PKO_QUEUE_STATIC_PRIORITY && queue)
                 static_priority_end = queue - 1;
             else if (static_priority_base != -1 && static_priority_end == -1 &&
 	        queue == num_queues - 1)
                 static_priority_end = queue; /* all queues're static priority */
 
-            /* 
+            /*
 	     * Check to make sure all static priority queues are contiguous.
 	     * Also catches some cases of static priorites not starting at
 	     * queue 0.
@@ -983,7 +983,7 @@ int cvmx_pko_rate_limit_packets(int port, int packets_s, int burst)
 
     pko_mem_port_rate1.u64 = 0;
     pko_mem_port_rate1.s.pid = port;
-    pko_mem_port_rate1.s.rate_lim = 
+    pko_mem_port_rate1.s.rate_lim =
         ((uint64_t)pko_mem_port_rate0.s.rate_pkt * burst) >> 8;
 
     cvmx_write_csr(CVMX_PKO_MEM_PORT_RATE0, pko_mem_port_rate0.u64);

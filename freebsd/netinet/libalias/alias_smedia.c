@@ -131,7 +131,7 @@ __FBSDID("$FreeBSD$");
 #define TFTP_PORT_NUMBER 69
 
 static void
-AliasHandleRtspOut(struct libalias *, struct ip *, struct alias_link *,	
+AliasHandleRtspOut(struct libalias *, struct ip *, struct alias_link *,
 		  int maxpacketsize);
 static int
 fingerprint(struct libalias *la, struct alias_data *ah)
@@ -158,7 +158,7 @@ protohandler(struct libalias *la, struct ip *pip, struct alias_data *ah)
 	if (ntohs(*ah->dport) == TFTP_PORT_NUMBER)
 		FindRtspOut(la, pip->ip_src, pip->ip_dst,
  			    *ah->sport, *ah->aport, IPPROTO_UDP);
-	else AliasHandleRtspOut(la, pip, ah->lnk, ah->maxpktsize);	
+	else AliasHandleRtspOut(la, pip, ah->lnk, ah->maxpktsize);
 	return (0);
 }
 

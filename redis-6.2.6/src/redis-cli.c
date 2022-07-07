@@ -314,7 +314,7 @@ static void cliRefreshPrompt(void) {
         prompt = sdscatfmt(prompt,"[%i]",config.dbnum);
 
     /* Add TX if in transaction state*/
-    if (config.in_multi)  
+    if (config.in_multi)
         prompt = sdscatlen(prompt,"(TX)",4);
 
     /* Copy the prompt in the static buffer. */
@@ -1351,8 +1351,8 @@ static int cliReadReply(int output_raw_strings) {
             config.cluster_send_asking = 1;
         }
         cliRefreshPrompt();
-    } else if (!config.interactive && config.set_errcode && 
-        reply->type == REDIS_REPLY_ERROR) 
+    } else if (!config.interactive && config.set_errcode &&
+        reply->type == REDIS_REPLY_ERROR)
     {
         fprintf(stderr,"%s\n",reply->str);
         exit(1);
@@ -1481,15 +1481,15 @@ static int cliSendCommand(int argc, char **argv, long repeat) {
             return REDIS_ERR;
         } else {
             /* Store database number when SELECT was successfully executed. */
-            if (!strcasecmp(command,"select") && argc == 2 && 
-                config.last_cmd_type != REDIS_REPLY_ERROR) 
+            if (!strcasecmp(command,"select") && argc == 2 &&
+                config.last_cmd_type != REDIS_REPLY_ERROR)
             {
                 config.input_dbnum = config.dbnum = atoi(argv[1]);
                 cliRefreshPrompt();
             } else if (!strcasecmp(command,"auth") && (argc == 2 || argc == 3)) {
                 cliSelect();
             } else if (!strcasecmp(command,"multi") && argc == 1 &&
-                config.last_cmd_type != REDIS_REPLY_ERROR) 
+                config.last_cmd_type != REDIS_REPLY_ERROR)
             {
                 config.in_multi = 1;
                 config.pre_multi_dbnum = config.dbnum;
@@ -1502,13 +1502,13 @@ static int cliSendCommand(int argc, char **argv, long repeat) {
                     config.input_dbnum = config.dbnum = config.pre_multi_dbnum;
                 }
                 cliRefreshPrompt();
-            } else if (!strcasecmp(command,"discard") && argc == 1 && 
-                config.last_cmd_type != REDIS_REPLY_ERROR) 
+            } else if (!strcasecmp(command,"discard") && argc == 1 &&
+                config.last_cmd_type != REDIS_REPLY_ERROR)
             {
                 config.in_multi = 0;
                 config.input_dbnum = config.dbnum = config.pre_multi_dbnum;
                 cliRefreshPrompt();
-            } 
+            }
         }
         if (config.cluster_reissue_command){
             /* If we need to reissue the command, break to prevent a
@@ -6549,7 +6549,7 @@ static int clusterManagerCommandImport(int argc, char **argv) {
                 src_port, src_ctx->errstr);
         goto cleanup;
     }
-    // Auth for the source node. 
+    // Auth for the source node.
     char *from_user = config.cluster_manager_command.from_user;
     char *from_pass = config.cluster_manager_command.from_pass;
     if (cliAuth(src_ctx, from_user, from_pass) == REDIS_ERR) {
@@ -6599,7 +6599,7 @@ static int clusterManagerCommandImport(int argc, char **argv) {
     cmdfmt = sdsnew("MIGRATE %s %d %s %d %d");
     if (config.auth) {
         if (config.user) {
-            cmdfmt = sdscatfmt(cmdfmt," AUTH2 %s %s", config.user, config.auth); 
+            cmdfmt = sdscatfmt(cmdfmt," AUTH2 %s %s", config.user, config.auth);
         } else {
             cmdfmt = sdscatfmt(cmdfmt," AUTH %s", config.auth);
         }

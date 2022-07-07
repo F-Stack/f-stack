@@ -235,7 +235,7 @@ sta_flush_table(struct sta_table *st)
  * entry in the scan cache or update any previous entry.
  */
 static int
-sta_add(struct ieee80211_scan_state *ss, 
+sta_add(struct ieee80211_scan_state *ss,
 	struct ieee80211_channel *curchan,
 	const struct ieee80211_scanparams *sp,
 	const struct ieee80211_frame *wh,
@@ -524,7 +524,7 @@ checktable(const struct scanlist *scan, const struct ieee80211_channel *c)
 
 	for (; scan->list != NULL; scan++) {
 		for (i = 0; i < scan->count; i++)
-			if (scan->list[i] == c->ic_freq) 
+			if (scan->list[i] == c->ic_freq)
 				return 1;
 	}
 	return 0;
@@ -566,7 +566,7 @@ sweepchannels(struct ieee80211_scan_state *ss, struct ieee80211vap *vap,
 			continue;
 
 		/*
-		 * If a desired mode was specified, scan only 
+		 * If a desired mode was specified, scan only
 		 * channels that satisfy that constraint.
 		 */
 		if (vap->iv_des_mode != IEEE80211_MODE_AUTO &&
@@ -938,7 +938,7 @@ again:
 		r = IEEE80211_RV(rs[i]);
 		badrate = r;
 		/*
-		 * Check any fixed rate is included. 
+		 * Check any fixed rate is included.
 		 */
 		if (r == ucastrate)
 			fixedrate = r;
@@ -1448,7 +1448,7 @@ sta_age(struct ieee80211_scan_state *ss)
  * the callback function on each one.
  */
 static void
-sta_iterate(struct ieee80211_scan_state *ss, 
+sta_iterate(struct ieee80211_scan_state *ss,
 	ieee80211_scan_iter_func *f, void *arg)
 {
 	struct sta_table *st = ss->ss_priv;

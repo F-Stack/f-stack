@@ -826,7 +826,7 @@ kset_dpcpu(u_int cpuid)
 
 	if (kvm_dpcpu_setcpu(kvmd, cpuid) < 0)
 		xo_errx(-1, "%s: kvm_dpcpu_setcpu(%u): %s", __func__,
-		    cpuid, kvm_geterr(kvmd)); 
+		    cpuid, kvm_geterr(kvmd));
 	return;
 }
 

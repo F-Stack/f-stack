@@ -58,7 +58,7 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
     u_int32_t val = OS_REG_READ(ah, AR_2040_MODE);
     u_int8_t target_power_val_t2[ar9300_rate_size];
     int      power_tblindex = 0, power_delta = 0;
-    int      paprd_scale_factor = 5;  
+    int      paprd_scale_factor = 5;
 
     const u_int8_t mask2num[8] = {
         0 /* 000 */,
@@ -82,7 +82,7 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
 
     /*
      * Note on paprd_scale_factor
-     * This factor is saved in eeprom as 3 bit fields in following fashion. 
+     * This factor is saved in eeprom as 3 bit fields in following fashion.
      * In 5G there are 3 scale factors -- upper, mid and lower band.
      * Upper band scale factor is coded in bits 25-27 of
      * modal_header_5g.paprd_rate_mask_ht20.
@@ -104,10 +104,10 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
         }
         if (AR_SREV_HORNET(ah) || AR_SREV_WASP(ah) || AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)) {
             if (is_ht40) {
-                ahp->paprd_training_power = 
+                ahp->paprd_training_power =
                     target_power_val_t2[ALL_TARGET_HT40_7] + 2;
             } else {
-                ahp->paprd_training_power = 
+                ahp->paprd_training_power =
                     target_power_val_t2[ALL_TARGET_HT20_7] + 2;
             }
 		} else if (AR_SREV_POSEIDON(ah)) {
@@ -116,23 +116,23 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
             ahp->paprd_training_power =
                 OS_REG_READ_FIELD_ALT(ah, AR_PHY_POWERTX_RATE5,
                 AR_PHY_POWERTX_RATE5_POWERTXHT20_0);
-            if (ABS(target_power_val_t2[power_tblindex], 
+            if (ABS(target_power_val_t2[power_tblindex],
                 ahp->paprd_training_power) >  paprd_scale_factor)
             {
                 HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
-                    "%s[%d]: Chan %d paprd failing EEP PWR 0x%08x" 
+                    "%s[%d]: Chan %d paprd failing EEP PWR 0x%08x"
                     "TGT PWR 0x%08x\n", __func__, __LINE__, ichan->channel,
-                    target_power_val_t2[power_tblindex], 
+                    target_power_val_t2[power_tblindex],
                     ahp->paprd_training_power);
                 goto FAILED;
             }
-            
+
             power_delta =
-                ABS(ahp->paprd_training_power, 
+                ABS(ahp->paprd_training_power,
                     target_power_val_t2[power_tblindex]);
 
             power_delta = power_delta > 4 ? 0 : 4 - power_delta;
-            ahp->paprd_training_power = 
+            ahp->paprd_training_power =
                 ahp->paprd_training_power - power_delta;
         }
 
@@ -328,12 +328,12 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
         OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL1,
             AR_PHY_PAPRD_TRAINER_CNTL1_CF_CF_PAPRD_TRAIN_ENABLE, 1);
         if (is_2g) {
-        	 if(AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)){ 
+        	 if(AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)){
              OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL2,
                  AR_PHY_PAPRD_TRAINER_CNTL2_CF_PAPRD_INIT_RX_BB_GAIN, 0x91);
            }else{
              OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL2,
-                 AR_PHY_PAPRD_TRAINER_CNTL2_CF_PAPRD_INIT_RX_BB_GAIN, 147);          	
+                 AR_PHY_PAPRD_TRAINER_CNTL2_CF_PAPRD_INIT_RX_BB_GAIN, 147);
            }
         }
 		else if (AR_SREV_WASP(ah) && !is_2g) {
@@ -359,12 +359,12 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
                 AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP, -6);
         }
         if (is_2g) {
-            if(AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)){       	
+            if(AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)){
                 OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3,
                     AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_ADC_DESIRED_SIZE, -10);
             }else{
                 OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3,
-                    AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_ADC_DESIRED_SIZE, -15);         	           
+                    AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_ADC_DESIRED_SIZE, -15);
             }
         }
         else {
@@ -398,10 +398,10 @@ ar9300_paprd_setup_single_table(struct ath_hal *ah, struct ieee80211_channel * c
     OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_PRE_POST_SCALE_7_B0,
         AR_PHY_PAPRD_PRE_POST_SCALE_7_B0_PAPRD_PRE_POST_SCALING_7_0, 175487);
     return 0;
-    
+
 FAILED:
     return -1;
-#undef ABS    
+#undef ABS
 }
 
 /*
@@ -486,7 +486,7 @@ void ar9300_enable_paprd(struct ath_hal *ah, HAL_BOOL enable_flag,
             ahp->ah_paprd_broken = AH_FALSE;
             enable = AH_FALSE;
 
-            HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, 
+            HALDEBUG(ah, HAL_DEBUG_UNMASKABLE,
                      "%s: PAPRD is in bad state. Don't enable PAPRD\n",
                      __func__);
         }
@@ -529,7 +529,7 @@ void ar9300_enable_paprd(struct ath_hal *ah, HAL_BOOL enable_flag,
             ath_hal_printf(ah,
                 "%s[%d] eeprom_set_transmit_power failed ABORT PAPRD\n",
                 __func__, __LINE__);
-            
+
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B0,
                 AR_PHY_PAPRD_CTRL0_B0_PAPRD_ENABLE_0, 0);
             if (!AR_SREV_POSEIDON(ah) && !AR_SREV_HORNET(ah)) {
@@ -615,12 +615,12 @@ void ar9300_enable_paprd(struct ath_hal *ah, HAL_BOOL enable_flag,
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B2,
                 AR_PHY_PAPRD_CTRL0_B2_PAPRD_MAG_THRSH_2, 3);
         }
-        
+
         if (AH9300(ah)->ah_tx_chainmask & AR9300_CHAIN0_MASK) {
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B0,
                 AR_PHY_PAPRD_CTRL0_B0_PAPRD_ENABLE_0, 1);
         }
-        
+
         if (AH9300(ah)->ah_tx_chainmask & AR9300_CHAIN1_MASK) {
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B1,
                 AR_PHY_PAPRD_CTRL0_B1_PAPRD_ENABLE_1, 1);
@@ -630,18 +630,18 @@ void ar9300_enable_paprd(struct ath_hal *ah, HAL_BOOL enable_flag,
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B2,
                 AR_PHY_PAPRD_CTRL0_B2_PAPRD_ENABLE_2, 1);
         }
-        
+
     } else {
         if (AH9300(ah)->ah_tx_chainmask & AR9300_CHAIN0_MASK) {
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B0,
                 AR_PHY_PAPRD_CTRL0_B0_PAPRD_ENABLE_0, 0);
         }
-        
+
         if (AH9300(ah)->ah_tx_chainmask & AR9300_CHAIN1_MASK) {
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B1,
                 AR_PHY_PAPRD_CTRL0_B1_PAPRD_ENABLE_1, 0);
         }
-        
+
         if (AH9300(ah)->ah_tx_chainmask & AR9300_CHAIN2_MASK) {
             OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL0_B2,
                 AR_PHY_PAPRD_CTRL0_B2_PAPRD_ENABLE_2, 0);
@@ -663,7 +663,7 @@ static void ar9300_gain_table_entries(struct ath_hal *ah)
         gain_vs_table_index[i] = (gain_table_entries[i] >> 24) & 0xff;
         /*
          * ath_hal_printf(
-         *     ah, "+++reg 0x%08x gain_table_entries[%d] = 0x%08x \n", 
+         *     ah, "+++reg 0x%08x gain_table_entries[%d] = 0x%08x \n",
          *     reg, i, gain_table_entries[i]);
          */
         reg = reg + 4;
@@ -721,7 +721,7 @@ static unsigned int ar9300_get_desired_gain_for_chain(struct ath_hal *ah,
 
     /*
      * sprintf(
-     *     field_name, "%s%d%s%d\0", "BB_tpc_11_b", 
+     *     field_name, "%s%d%s%d\0", "BB_tpc_11_b",
      *     chain_num, ".olpc_gain_delta_", chain_num);
      */
     /*field_read(field_name, &olpc_gain_delta_tmp);*/
@@ -731,14 +731,14 @@ static unsigned int ar9300_get_desired_gain_for_chain(struct ath_hal *ah,
         olpc_gain_delta_tmp =
             OS_REG_READ_FIELD_ALT(ah, AR_PHY_TPC_11_B0,
             AR_PHY_TPC_11_B0_OLPC_GAIN_DELTA_0);
-        cl_gain_mod = OS_REG_READ_FIELD_ALT(ah, AR_PHY_CL_TAB_0, 
+        cl_gain_mod = OS_REG_READ_FIELD_ALT(ah, AR_PHY_CL_TAB_0,
             AR_PHY_CL_TAB_0_CL_GAIN_MOD);
     } else if (chain_num == 1) {
         if (!AR_SREV_POSEIDON(ah)) {
             olpc_gain_delta_tmp =
                 OS_REG_READ_FIELD_ALT(ah, AR_PHY_TPC_11_B1,
                 AR_PHY_TPC_11_B1_OLPC_GAIN_DELTA_1);
-            cl_gain_mod = OS_REG_READ_FIELD_ALT(ah, AR_PHY_CL_TAB_1, 
+            cl_gain_mod = OS_REG_READ_FIELD_ALT(ah, AR_PHY_CL_TAB_1,
                 AR_PHY_CL_TAB_1_CL_GAIN_MOD);
         }
     } else if (chain_num == 2) {
@@ -746,7 +746,7 @@ static unsigned int ar9300_get_desired_gain_for_chain(struct ath_hal *ah,
             olpc_gain_delta_tmp =
                 OS_REG_READ_FIELD_ALT(ah, AR_PHY_TPC_11_B2,
                 AR_PHY_TPC_11_B2_OLPC_GAIN_DELTA_2);
-            cl_gain_mod = OS_REG_READ_FIELD_ALT(ah, AR_PHY_CL_TAB_2, 
+            cl_gain_mod = OS_REG_READ_FIELD_ALT(ah, AR_PHY_CL_TAB_2,
                 AR_PHY_CL_TAB_2_CL_GAIN_MOD);
         }
     } else {
@@ -769,7 +769,7 @@ static unsigned int ar9300_get_desired_gain_for_chain(struct ath_hal *ah,
         voltage_gain_corr + desired_scale + cl_gain_mod;
     /*
      * printf(
-     *     "olpc_gain_delta %d, desired_gain %d\n", 
+     *     "olpc_gain_delta %d, desired_gain %d\n",
      *     olpc_gain_delta, desired_gain);
      */
 #if 0
@@ -1287,7 +1287,7 @@ static int ar9300_create_pa_curve(struct ath_hal *ah, u_int32_t * pa_table,
     for (i = 0; i < 48; i++) {
         /*
          * sprintf(
-         *     field_name, "%s%d%s\0", "BB_chan_info_chan_tab_b0[", 
+         *     field_name, "%s%d%s\0", "BB_chan_info_chan_tab_b0[",
          *     i, "].chaninfo_word");
          */
         /*field_read(field_name, &paprd_train_data_l[i]);*/
@@ -1302,7 +1302,7 @@ static int ar9300_create_pa_curve(struct ath_hal *ah, u_int32_t * pa_table,
     for (i = 0; i < 48; i++) {
         /*
          * sprintf(
-         *     field_name, "%s%d%s\0", "BB_chan_info_chan_tab_b0[", 
+         *     field_name, "%s%d%s\0", "BB_chan_info_chan_tab_b0[",
          *     i, "].chaninfo_word");
          */
         /*field_read(field_name, &paprd_train_data_u[i]);*/
@@ -1317,7 +1317,7 @@ static int ar9300_create_pa_curve(struct ath_hal *ah, u_int32_t * pa_table,
      */
     status = 0;
     if (create_pa_curve(
-            paprd_train_data_l, paprd_train_data_u, 
+            paprd_train_data_l, paprd_train_data_u,
             pa_table, small_signal_gain, pa_in) ==
             AH_FALSE)
     {
@@ -1383,7 +1383,7 @@ static int paprd_abs(int num)
 #define NUM_BIN 23
 
 HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
-    u_int32_t * paprd_train_data_u, u_int32_t * pa_table, 
+    u_int32_t * paprd_train_data_u, u_int32_t * pa_table,
     u_int32_t * g_fxp_ext, int *pa_in)
 {
     unsigned int accum_cnt[NUM_BIN + 1];
@@ -1434,23 +1434,23 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
     /*
      * [15:00] u16, accum_cnt[15:00]: number of samples in the bin
      * [42:16] u27, accum_tx[26:00]: sum(tx amplitude) of the bin
-     * [63:43] u21, accum_rx[20:00]: 
+     * [63:43] u21, accum_rx[20:00]:
      *     sum(rx amplitude distance to lower bin edge) of the bin
      * [90:64] s27, accum_ang[26:00]: sum(angles) of the bin
      */
     max_index = 0;
     /*
-     * Disregard any bin that contains less than 
+     * Disregard any bin that contains less than
      * or equal to 16 counts of samples
      */
-    thresh_accum_cnt = 16;      
+    thresh_accum_cnt = 16;
     scale_factor = 5;
 
     for (bin = 0; bin < NUM_BIN; bin++) {
         accum_cnt[bin] = paprd_train_data_l[bin] & 0xffff;
         /* lower 16 bit OR-ed  upper 11 bits */
-        accum_tx[bin] = 
-            ((paprd_train_data_l[bin] >> 16) & 0xffff) | 
+        accum_tx[bin] =
+            ((paprd_train_data_l[bin] >> 16) & 0xffff) |
             ((paprd_train_data_u[bin] & 0x7ff) << 16);
         accum_rx[bin] =
             ((paprd_train_data_u[bin] >> 11) & 0x1f) |
@@ -1478,8 +1478,8 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
                     accum_cnt[bin]);
                 theta[bin + 1] = theta[bin + 1] / (int) accum_cnt[bin];
                 /*
-                 *  theta[i+1] = 
-                 *      ((accum_ang[i] - (1 << 27)) * 
+                 *  theta[i+1] =
+                 *      ((accum_ang[i] - (1 << 27)) *
                  *      (1 << scale_factor) + zz) / zz;
                  */
             } else {
@@ -1491,14 +1491,14 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
         }
         /*
          * printf(
-         *     "i=%d, theta[i+1]=%d\t%d\t%d\t%d\t%d\n", 
-         *     i, theta[i+1], accum_cnt[i], 
+         *     "i=%d, theta[i+1]=%d\t%d\t%d\t%d\t%d\n",
+         *     i, theta[i+1], accum_cnt[i],
          *     accum_tx[i], accum_rx[i], accum_ang[i]);
          */
     }
 
     /*
-     * Find average theta of first 5 bin and all of those to same value. 
+     * Find average theta of first 5 bin and all of those to same value.
      * Curve is linear at that range.
      */
     for (bin = 1; bin < 6; bin++) {
@@ -1622,7 +1622,7 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
 
         /*
          * printf(
-         *     "bin=%d, b1_tmp[bin] = %d, b2_tmp[bin] = %d\n", 
+         *     "bin=%d, b1_tmp[bin] = %d, b2_tmp[bin] = %d\n",
          *     bin, b1_tmp[bin], b2_tmp[bin]);
          */
     }
@@ -1641,7 +1641,7 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
 
         /*
          * printf(
-         *     "bin=%d, b1_tmp[bin]=%d b2_tmp[bin]=%d x_tilde[bin] = %d\n", 
+         *     "bin=%d, b1_tmp[bin]=%d b2_tmp[bin]=%d x_tilde[bin] = %d\n",
          *     bin, b1_tmp[bin], b2_tmp[bin], x_tilde[bin]);
          */
         beta_raw = beta_raw + b1_tmp[bin] * x_tilde[bin];
@@ -1710,7 +1710,7 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
         /*
          *  printf(
          *      "bin=%d half_lo=%d m=%d theta[bin+half_lo]=%d "
-         *      "y_est[bin+half_lo]=%d\n", 
+         *      "y_est[bin+half_lo]=%d\n",
          *      bin, half_lo, m, theta[bin+half_lo], y_est[bin+half_lo]);
          */
         /* y_est[] was already checked for zero */
@@ -1794,7 +1794,7 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
         pa_table[idx] = ((pa_in[idx] & 0x7ff) << 11) + (pa_angle[idx] & 0x7ff);
         /*
          * HALDEBUG(
-         *     NULL, HAL_DEBUG_UNMASKABLE,"%d\t%d\t0x%x\n", 
+         *     NULL, HAL_DEBUG_UNMASKABLE,"%d\t%d\t0x%x\n",
          *     pa_in[idx], pa_angle[idx], pa_table[idx]);
          */
     }
@@ -1805,7 +1805,7 @@ HAL_BOOL create_pa_curve(u_int32_t * paprd_train_data_l,
 }
 
 // Due to a hardware bug, when transmitting with just one chain the papd
-// data for chain 0 is always used. So when using chain 2 or 4, the 
+// data for chain 0 is always used. So when using chain 2 or 4, the
 // corresponding data must be copied into the chain 0 area.
 void ar9300_swizzle_paprd_entries(struct ath_hal *ah, unsigned int txchain)
 {
@@ -1816,7 +1816,7 @@ void ar9300_swizzle_paprd_entries(struct ath_hal *ah, unsigned int txchain)
 
     reg = AR_PHY_PAPRD_MEM_TAB_B0;
     switch (txchain) {
-    case 0x1: 
+    case 0x1:
     case 0x3:
     case 0x7:
 	paprd_table_val = &AH9300(ah)->pa_table[0][0];
@@ -1835,11 +1835,11 @@ void ar9300_swizzle_paprd_entries(struct ath_hal *ah, unsigned int txchain)
 	ath_hal_printf(ah, "YAK! Bad chain mask %x\n", txchain);
 	return;
     }
-    for (i = 0; i < AR9300_PAPRD_TABLE_SZ; i++) { 
+    for (i = 0; i < AR9300_PAPRD_TABLE_SZ; i++) {
         OS_REG_WRITE(ah, reg, paprd_table_val[i]);
         HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "%s[%d] reg %08x = 0x%08x\n", __func__,
 		 __LINE__, reg, paprd_table_val[i]);
-        
+
         reg = reg + 4;
     }
     OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PA_GAIN123_B0,AR_PHY_PA_GAIN123_B0_PA_GAIN1_0, small_signal_gain);
@@ -1848,7 +1848,7 @@ void ar9300_swizzle_paprd_entries(struct ath_hal *ah, unsigned int txchain)
 
     OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_CTRL1_B0, AR_PHY_PAPRD_CTRL1_B0_PAPRD_POWER_AT_AM2AM_CAL_0,
 			 AH9300(ah)->paprd_training_power);
-    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "%s[%d] reg %08x = 0x%08x\n", __func__, __LINE__, 
+    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "%s[%d] reg %08x = 0x%08x\n", __func__, __LINE__,
 	     (unsigned) AR_PHY_PAPRD_CTRL1_B0, OS_REG_READ(ah, AR_PHY_PAPRD_CTRL1_B0));
 
 }
@@ -1879,14 +1879,14 @@ void ar9300_populate_paprd_single_table(struct ath_hal *ah,
     for (i = 0; i < AR9300_PAPRD_TABLE_SZ; i++) {
         if (AR_SREV_POSEIDON(ah)) {
             HALASSERT(chain_num == 0x1);
-            if ((reg == AR_PHY_PAPRD_MEM_TAB_B1) || 
+            if ((reg == AR_PHY_PAPRD_MEM_TAB_B1) ||
                 (reg == AR_PHY_PAPRD_MEM_TAB_B2)) {
                 continue;
             }
         }
         /*
          * sprintf(
-         *     field_name, "%s%d[%d]%s\0", "BB_paprd_mem_tab_b", 
+         *     field_name, "%s%d[%d]%s\0", "BB_paprd_mem_tab_b",
          *     chain_num, i, ".paprd_mem");
          */
         OS_REG_WRITE(ah, reg, paprd_table_val[i]);
@@ -1894,17 +1894,17 @@ void ar9300_populate_paprd_single_table(struct ath_hal *ah,
             __LINE__, reg, paprd_table_val[i]);
         /*
          * printf(
-         *     "%s[%d] reg %08x = 0x%08x\n", 
+         *     "%s[%d] reg %08x = 0x%08x\n",
          *     __func__, __LINE__, reg, paprd_table_val[i]);
          */
          if (OS_REG_READ(ah, reg) == 0xdeadbeef) {
-            HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, 
+            HALDEBUG(ah, HAL_DEBUG_UNMASKABLE,
                      "%s: Reg0x%x = 0xdeadbeef\n", __func__, reg);
             bad_read++;
             for (j = AR_PHY_PAPRD_MEM_TAB_B0; j < (AR_PHY_PAPRD_MEM_TAB_B0 + 0x10); j+=4)
             {
                 if (OS_REG_READ(ah, j) == 0xdeadbeef) {
-                    HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, 
+                    HALDEBUG(ah, HAL_DEBUG_UNMASKABLE,
                              "%s: Reg0x%x = 0xdeadbeef\n", __func__, j);
                     bad_read++;
                 }
@@ -1912,19 +1912,19 @@ void ar9300_populate_paprd_single_table(struct ath_hal *ah,
             for (j = AR_PHY_PAPRD_MEM_TAB_B1; j < (AR_PHY_PAPRD_MEM_TAB_B1 + 0x10); j+=4)
             {
                 if (OS_REG_READ(ah, j) == 0xdeadbeef) {
-                    HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, 
+                    HALDEBUG(ah, HAL_DEBUG_UNMASKABLE,
                              "%s: Reg0x%x = 0xdeadbeef\n", __func__, j);
                     bad_read++;
                 }
             }
          }
-         
+
         reg = reg + 4;
     }
 
     if (bad_read > 4) {
-        HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, 
-                 "%s: Get %d 0xdeadbeef. Mark PAPRD as broken.\n", 
+        HALDEBUG(ah, HAL_DEBUG_UNMASKABLE,
+                 "%s: Get %d 0xdeadbeef. Mark PAPRD as broken.\n",
                  __func__, bad_read);
         AH9300(ah)->ah_paprd_broken = AH_TRUE;
     }
@@ -2031,22 +2031,22 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
 
     capdiv2g = (OS_REG_READ(ah, AR_PHY_65NM_CH0_TXRF3) >> 1) & 0xF;
     if (!AR_SREV_POSEIDON(ah)) {
-        quick_drop = 
+        quick_drop =
             OS_REG_READ_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3,
                 AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP);
     } else {
-        quick_drop = 
+        quick_drop =
             OS_REG_READ_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3_POSEIDON,
                 AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP);
     }
 
     if ( quick_drop != 0 ) {
-        quick_drop -= 0x40; 
+        quick_drop -= 0x40;
     }
     for (i = 0; i < (NUM_BIN + 1); i++) {
         if (pa_in[i] == 1400) {
             count++;
-        }            
+        }
     }
 
     if (AR_SREV_POSEIDON(ah)) {
@@ -2063,17 +2063,17 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
                         }
                     }
                 }
-                
-                OS_REG_RMW_FIELD(ah, 
-                    AR_PHY_65NM_CH0_TXRF3, 
-    			    AR_PHY_65NM_CH0_TXRF3_CAPDIV2G, 
+
+                OS_REG_RMW_FIELD(ah,
+                    AR_PHY_65NM_CH0_TXRF3,
+    			    AR_PHY_65NM_CH0_TXRF3_CAPDIV2G,
     			    capdiv2g);
 
-                OS_REG_RMW_FIELD_ALT(ah, 
-                    AR_PHY_PAPRD_TRAINER_CNTL3_POSEIDON, 
-                    AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP, 
+                OS_REG_RMW_FIELD_ALT(ah,
+                    AR_PHY_PAPRD_TRAINER_CNTL3_POSEIDON,
+                    AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP,
                     quick_drop);
-                
+
                 return AH_TRUE;
             } /* end of if (pa_in[23] < 800) */
             else if (pa_in[23] == 1400) {
@@ -2082,7 +2082,7 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
                     quick_drop_offset = 2;
                 }
                 quick_drop = quick_drop + quick_drop_offset;
-                capdiv2g = capdiv2g + (int)(quick_drop_offset / 2); 
+                capdiv2g = capdiv2g + (int)(quick_drop_offset / 2);
                 if (capdiv2g > 7) {
                     capdiv2g = 7;
                 }
@@ -2093,24 +2093,24 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
                         capdiv2g = 0;
     				}
                 }
-                OS_REG_RMW_FIELD(ah, 
-                        AR_PHY_65NM_CH0_TXRF3, 
-    			        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G, 
+                OS_REG_RMW_FIELD(ah,
+                        AR_PHY_65NM_CH0_TXRF3,
+    			        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G,
     			        capdiv2g);
 
-                OS_REG_RMW_FIELD_ALT(ah, 
-                        AR_PHY_PAPRD_TRAINER_CNTL3_POSEIDON, 
-        			    AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP, 
+                OS_REG_RMW_FIELD_ALT(ah,
+                        AR_PHY_PAPRD_TRAINER_CNTL3_POSEIDON,
+        			    AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP,
                         quick_drop);
-                
+
                 return AH_TRUE;
-                /* sleep(1); */            
+                /* sleep(1); */
             } /* end of if (pa_in[23] == 1400)*/
         } /* end of if ((pa_in[23] < 800) || (pa_in[23] == 1400)) */
     }else if (AR_SREV_HORNET(ah)) {
         if ((pa_in[23] < 1000) || (pa_in[23] == 1400)) {
             if (pa_in[23] < 1000) {
-                capdiv_offset = ((1000 - pa_in[23]) / 100);   
+                capdiv_offset = ((1000 - pa_in[23]) / 100);
                 capdiv2g = capdiv2g + capdiv_offset;
                 if (capdiv_offset > 3) {
                     quick_drop_offset = 1;
@@ -2122,13 +2122,13 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
                     if (quick_drop < -4) {
                         quick_drop = -4;
                     }
-                    OS_REG_RMW_FIELD(ah, 
-                        AR_PHY_65NM_CH0_TXRF3, 
-                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G, 
+                    OS_REG_RMW_FIELD(ah,
+                        AR_PHY_65NM_CH0_TXRF3,
+                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G,
                         capdiv2g);
-                    OS_REG_RMW_FIELD_ALT(ah, 
-                        AR_PHY_PAPRD_TRAINER_CNTL3, 
-                        AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP, 
+                    OS_REG_RMW_FIELD_ALT(ah,
+                        AR_PHY_PAPRD_TRAINER_CNTL3,
+                        AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP,
                         quick_drop);
                     return AH_TRUE;
                 } else {
@@ -2139,13 +2139,13 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
                     if (quick_drop < -4) {
                         quick_drop = -4;
                     }
-                    OS_REG_RMW_FIELD(ah, 
-                        AR_PHY_65NM_CH0_TXRF3, 
-                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G, 
+                    OS_REG_RMW_FIELD(ah,
+                        AR_PHY_65NM_CH0_TXRF3,
+                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G,
                         capdiv2g);
-                    OS_REG_RMW_FIELD_ALT(ah, 
-                        AR_PHY_PAPRD_TRAINER_CNTL3, 
-                        AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP, 
+                    OS_REG_RMW_FIELD_ALT(ah,
+                        AR_PHY_PAPRD_TRAINER_CNTL3,
+                        AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP,
                         quick_drop);
                     return AH_TRUE;
                 }
@@ -2154,32 +2154,32 @@ static HAL_BOOL ar9300_paprd_retrain_pain(struct ath_hal * ah, int * pa_in)
                 if (count > 3) {
                     quick_drop_offset = 1;
                     quick_drop = quick_drop + quick_drop_offset;
-                    capdiv2g = capdiv2g - (count / 4);  
+                    capdiv2g = capdiv2g - (count / 4);
                     if (capdiv2g < 0) {
                         capdiv2g = 0;
                     }
                     if (quick_drop > -2) {
                         quick_drop = -2;
                     }
-                    OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_TXRF3, 
-                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G, 
+                    OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_TXRF3,
+                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G,
                         capdiv2g);
-                    OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3, 
+                    OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3,
                         AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP,
                         quick_drop);
                     return AH_TRUE;
                 } else {
-                    capdiv2g = capdiv2g - 1;  
+                    capdiv2g = capdiv2g - 1;
                     if (capdiv2g < 0) {
                         capdiv2g = 0;
                     }
-                    OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_TXRF3, 
-                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G, 
+                    OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_TXRF3,
+                        AR_PHY_65NM_CH0_TXRF3_CAPDIV2G,
                         capdiv2g);
-                    OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3, 
-                        AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP, 
+                    OS_REG_RMW_FIELD_ALT(ah, AR_PHY_PAPRD_TRAINER_CNTL3,
+                        AR_PHY_PAPRD_TRAINER_CNTL3_CF_PAPRD_QUICK_DROP,
                         quick_drop);
-                    return AH_TRUE; 
+                    return AH_TRUE;
                 }
             } /* end of if (PA_in[23] == 1400)*/
         } /* end of if ((PA_in[23] < 1000) || (PA_in[23] == 1400)) */
@@ -2198,7 +2198,7 @@ HAL_STATUS ar9300_paprd_create_curve(struct ath_hal * ah,
     if (AH9300(ah)->ah_tx_chainmask & (1 << chain_num)) {
         pa_table = &AH9300(ah)->pa_table[chain_num][0];
         /* Compute PA table and gain index */
-        status = ar9300_create_pa_curve(ah, &pa_table[0], &small_signal_gain, 
+        status = ar9300_create_pa_curve(ah, &pa_table[0], &small_signal_gain,
                     &pa_in[0]);
 
 		if (AR_SREV_WASP(ah)) {
@@ -2282,7 +2282,7 @@ int ar9300_paprd_is_done(struct ath_hal *ah)
  *
  * This function do decrease tx power if Paprd is off or train failed.
  */
-void 
+void
 ar9300_paprd_dec_tx_pwr(struct ath_hal *ah)
 {
     u_int32_t   pwr_temp, pwr_reg;
@@ -2291,8 +2291,8 @@ ar9300_paprd_dec_tx_pwr(struct ath_hal *ah)
     struct ath_hal_9300 *ahp = AH9300(ah);
 
     if (AR_SREV_POSEIDON(ah)) {
-        loop_cnt = 
-        (sizeof(ar9300_paprd_pwr_adj_array) / 
+        loop_cnt =
+        (sizeof(ar9300_paprd_pwr_adj_array) /
             sizeof(struct ar9300_paprd_pwr_adjust));
         for (i = 0; i < loop_cnt; i++ )
         {
@@ -2303,7 +2303,7 @@ ar9300_paprd_dec_tx_pwr(struct ath_hal *ah)
             pwr_temp = pwr_temp << p_item->reg_mask_offset;
             pwr_temp |= (pwr_reg&~(p_item->reg_mask <<p_item->reg_mask_offset));
 
-            if (pwr_temp != pwr_reg) 
+            if (pwr_temp != pwr_reg)
             {
                 OS_REG_WRITE(ah, p_item->reg_addr, pwr_temp);
             }
@@ -2332,7 +2332,7 @@ void ar9300_paprd_test_prints(struct ath_hal *ah)
         OS_REG_READ(ah, AR_PHY_PAPRD_CTRL0_B0));
     /*
      * printf(
-     *     "BB_paprd_ctrl0_b0 = 0x%08x\n", 
+     *     "BB_paprd_ctrl0_b0 = 0x%08x\n",
      *     OS_REG_READ(ah, AR_PHY_PAPRD_CTRL0_B0));
      */
     if (!AR_SREV_POSEIDON(ah) && !AR_SREV_HORNET(ah)) {
@@ -2340,14 +2340,14 @@ void ar9300_paprd_test_prints(struct ath_hal *ah)
             OS_REG_READ(ah, AR_PHY_PAPRD_CTRL0_B1));
         /*
          * printf(
-         *     "BB_paprd_ctrl0_b1 = 0x%08x\n", 
+         *     "BB_paprd_ctrl0_b1 = 0x%08x\n",
          *     OS_REG_READ(ah, AR_PHY_PAPRD_CTRL0_B1));
          */
         HALDEBUG(NULL, HAL_DEBUG_CALIBRATE, "BB_paprd_ctrl0_b2 = 0x%08x\n",
             OS_REG_READ(ah, AR_PHY_PAPRD_CTRL0_B2));
         /*
          * printf(
-         *     "BB_paprd_ctrl0_b2 = 0x%08x\n", 
+         *     "BB_paprd_ctrl0_b2 = 0x%08x\n",
          *     OS_REG_READ(ah, AR_PHY_PAPRD_CTRL0_B2));
          */
     }
@@ -2359,7 +2359,7 @@ void ar9300_paprd_test_prints(struct ath_hal *ah)
     /*
      * printf(
      *     "%s[%d] reg %08lx small_signal_gain ch0 0x%08x\n",
-     *     __func__,  __LINE__, AR_PHY_PA_GAIN123_B0, 
+     *     __func__,  __LINE__, AR_PHY_PA_GAIN123_B0,
      *     OS_REG_READ(ah, AR_PHY_PA_GAIN123_B0));
      */
 
@@ -2392,7 +2392,7 @@ void ar9300_paprd_test_prints(struct ath_hal *ah)
                 OS_REG_READ(ah, reg));
             reg = reg + 4;
         }
-    
+
         reg = AR_PHY_PAPRD_MEM_TAB_B2;
         printf("%s[%d] reg %08lx small_signal_gain ch2 0x%08x\n",
             __func__, __LINE__,
@@ -2440,7 +2440,7 @@ ar9300_populate_paprd_single_table(struct ath_hal *ah, HAL_CHANNEL * chan,
     return;
 }
 
-void 
+void
 ar9300_paprd_dec_tx_pwr(struct ath_hal *ah)
 {
     return;

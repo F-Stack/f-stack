@@ -37,8 +37,8 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
 
@@ -315,7 +315,7 @@ adhoc_input(struct ieee80211_node *ni, struct mbuf *m,
 	struct ieee80211_frame *wh;
 	struct ieee80211_key *key;
 	struct ether_header *eh;
-	int hdrspace, need_tap = 1;	/* mbuf need to be tapped. */	
+	int hdrspace, need_tap = 1;	/* mbuf need to be tapped. */
 	uint8_t dir, type, subtype, qos;
 	uint8_t *bssid;
 	int is_hw_decrypted = 0;
@@ -732,7 +732,7 @@ adhoc_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0,
 		/*
 		 * We process beacon/probe response
 		 * frames to discover neighbors.
-		 */ 
+		 */
 		if (rxs != NULL) {
 			c = ieee80211_lookup_channel_rxstatus(vap, rxs);
 			if (c != NULL)

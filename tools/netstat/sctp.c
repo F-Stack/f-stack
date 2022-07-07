@@ -391,7 +391,7 @@ sctp_process_inpcb(struct xsctp_inpcb *xinpcb,
 	if (Lflag) {
 		char buf1[22];
 
-		snprintf(buf1, sizeof buf1, "%u/%u", 
+		snprintf(buf1, sizeof buf1, "%u/%u",
 		    xinpcb->qlen, xinpcb->maxqlen);
 		xo_emit("{:protocol/%-6.6s/%s} {:type/%-5.5s/%s} ",
 		    pname, tname);

@@ -77,7 +77,7 @@ static ng_rcvdata_t		ng_atmllc_rcvdata;
 static ng_disconnect_t		ng_atmllc_disconnect;
 
 static struct ng_type ng_atmllc_typestruct = {
-	.version =	NG_ABI_VERSION,	
+	.version =	NG_ABI_VERSION,
 	.name =		NG_ATMLLC_NODE_TYPE,
 	.constructor =	ng_atmllc_constructor,
 	.rcvmsg =	ng_atmllc_rcvmsg,

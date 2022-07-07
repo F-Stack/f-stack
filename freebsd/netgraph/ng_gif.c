@@ -34,7 +34,7 @@
  *
  * Copyright (c) 1996-2000 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -45,7 +45,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -106,7 +106,7 @@ typedef struct private *priv_p;
 static void	ng_gif_input(struct ifnet *ifp, struct mbuf **mp, int af);
 static void	ng_gif_input_orphan(struct ifnet *ifp, struct mbuf *m, int af);
 static void	ng_gif_attach(struct ifnet *ifp);
-static void	ng_gif_detach(struct ifnet *ifp); 
+static void	ng_gif_detach(struct ifnet *ifp);
 
 /* Other functions */
 static void	ng_gif_input2(node_p node, struct mbuf **mp, int af);
@@ -498,7 +498,7 @@ ng_gif_shutdown(node_p node)
 		 * Assume the ifp has already been freed.
 		 */
 		NG_NODE_SET_PRIVATE(node, NULL);
-		free(priv, M_NETGRAPH);		
+		free(priv, M_NETGRAPH);
 		NG_NODE_UNREF(node);	/* free node itself */
 		return (0);
 	}
@@ -517,7 +517,7 @@ ng_gif_disconnect(hook_p hook)
 	if (hook == priv->lower) {
 		priv->lower = NULL;
 		priv->lowerOrphan = 0;
-	} else 
+	} else
 		panic("%s: weird hook", __func__);
 	if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
 	    && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook))))

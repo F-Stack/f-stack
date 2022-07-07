@@ -1351,7 +1351,7 @@ ccp_blkcipher_done(struct ccp_queue *qp, struct ccp_session *s, void *vcrp,
 static void
 ccp_collect_iv(struct cryptop *crp, const struct crypto_session_params *csp,
     char *iv)
-{	
+{
 
 	crypto_read_iv(crp, iv);
 

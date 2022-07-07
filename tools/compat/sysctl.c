@@ -65,7 +65,7 @@ sysctl(int *name, unsigned namelen, void *old,
         msg->original_buf = msg->buf_addr;
         msg->original_buf_len = msg->buf_len;
         msg->buf_addr = extra_buf;
-        msg->buf_len = total_len; 
+        msg->buf_len = total_len;
     }
 
     char *buf_addr = msg->buf_addr;

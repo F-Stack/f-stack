@@ -106,7 +106,7 @@ static const char *__cvmx_pow_list_names[] = {
     "Desched 52", "Desched 53", "Desched 54", "Desched 55",
     "Desched 56", "Desched 57", "Desched 58", "Desched 59",
     "Desched 60", "Desched 61", "Desched 62", "Desched 63",
-    "Nosched 0" 
+    "Nosched 0"
 };
 
 
@@ -381,7 +381,7 @@ static void __cvmx_pow_display_list_and_walk(__cvmx_pow_list_types_t entry_type,
                 if (octeon_has_feature(OCTEON_FEATURE_PKND))
                 {
                     if (entry_type >= CVMX_POW_LIST_INPUT && entry_type < CVMX_POW_LIST_CORE)
-                 
+
                         head = dump->smemload[head][4].s_smemload3_cn68xx.next_index;
                     else
                         head = dump->smemload[head][4].s_smemload3_cn68xx.fwd_index;
@@ -608,7 +608,7 @@ void __cvmx_pow_display_v2(void *buffer, int buffer_size)
         printf("Free0: valid=%d, one=%d, head=%llu, tail=%llu\n", valid[0], has_one[0], CAST64(head[0]), CAST64(tail[0]));
         printf("Free1: valid=%d, one=%d, head=%llu, tail=%llu\n", valid[1], has_one[1], CAST64(head[1]), CAST64(tail[1]));
         printf("Free2: valid=%d, one=%d, head=%llu, tail=%llu\n", valid[2], has_one[2], CAST64(head[2]), CAST64(tail[2]));
-        
+
         idx=qnum_head;
         while (valid[0] || valid[1] || valid[2])
         {
@@ -617,14 +617,14 @@ void __cvmx_pow_display_v2(void *buffer, int buffer_size)
             if (head[qidx] == tail[qidx])
                 valid[qidx] = 0;
 
-            if (__cvmx_pow_entry_mark_list(head[qidx], CVMX_POW_LIST_FREE, entry_list))   
+            if (__cvmx_pow_entry_mark_list(head[qidx], CVMX_POW_LIST_FREE, entry_list))
                 break;
             head[qidx] = dump->smemload[head[qidx]][4].s_smemload3_cn68xx.fwd_index;
             //printf("qidx = %d, idx = %d, head[qidx] = %d\n", qidx, idx, head[qidx]);
             idx++;
         }
     }
-            
+
     /* Print the core state */
     for (core = 0; core < num_cores; core++)
     {
@@ -634,7 +634,7 @@ void __cvmx_pow_display_v2(void *buffer, int buffer_size)
         int wqp = 4;
         int links = 5;
 
-        printf("Core %d State: tag=%s,0x%08x", core, 
+        printf("Core %d State: tag=%s,0x%08x", core,
                OCT_TAG_TYPE_STRING(dump->sstatus[core][tag].s_sstatus2_cn68xx.tag_type),
                dump->sstatus[core][tag].s_sstatus2_cn68xx.tag);
         if (dump->sstatus[core][tag].s_sstatus2_cn68xx.tag_type != CVMX_POW_TAG_TYPE_NULL_NULL)
@@ -656,7 +656,7 @@ void __cvmx_pow_display_v2(void *buffer, int buffer_size)
         {
             printf(" pend_switch=%d",           dump->sstatus[core][pendtag].s_sstatus0_cn68xx.pend_switch);
         }
-                                                                                
+
         if (dump->sstatus[core][pendtag].s_sstatus0_cn68xx.pend_desched)
         {
             printf(" pend_desched=%d",          dump->sstatus[core][pendtag].s_sstatus0_cn68xx.pend_desched);
@@ -781,7 +781,7 @@ void cvmx_pow_display(void *buffer, int buffer_size)
         __cvmx_pow_display_v2(buffer, buffer_size);
     else
         __cvmx_pow_display_v1(buffer, buffer_size);
-        
+
     printf("POW Display End\n");
     return;
 }

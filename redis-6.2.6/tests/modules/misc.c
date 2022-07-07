@@ -207,7 +207,7 @@ int test_redisversion(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
     RedisModuleString* vStr = RedisModule_CreateStringPrintf(ctx, "%d.%d.%d", major, minor, patch);
     RedisModule_ReplyWithString(ctx, vStr);
     RedisModule_FreeString(ctx, vStr);
-  
+
     return REDISMODULE_OK;
 }
 

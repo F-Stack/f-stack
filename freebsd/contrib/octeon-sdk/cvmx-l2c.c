@@ -373,10 +373,10 @@ int cvmx_l2c_lock_line(uint64_t addr)
 
         if (tag == 0xFFFFFFFF) {
             cvmx_dprintf("ERROR: cvmx_l2c_lock_line: addr 0x%llx in LMC hole."
-                         "\n", (unsigned long long) addr); 
+                         "\n", (unsigned long long) addr);
             return -1;
         }
-        
+
         tad = cvmx_l2c_address_to_tad(addr);
 
         /* cvmx_dprintf("shift=%d index=%lx tag=%x\n",shift, index, tag); */
@@ -966,7 +966,7 @@ uint32_t cvmx_l2c_address_to_index(uint64_t addr)
             uint32_t a_14_12 = (idx / (CVMX_L2C_MEMBANK_SELECT_SIZE/(1<<CVMX_L2C_IDX_ADDR_SHIFT))) & 0x7;
             idx ^= (idx / cvmx_l2c_get_num_sets()) & 0x3ff;
             idx ^= a_14_12 & 0x3;
-            idx ^= a_14_12 << 2; 
+            idx ^= a_14_12 << 2;
         } else if (OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX)) {
             uint32_t a_14_12 = (idx / (CVMX_L2C_MEMBANK_SELECT_SIZE/(1<<CVMX_L2C_IDX_ADDR_SHIFT))) & 0x7;
             idx ^= idx / cvmx_l2c_get_num_sets();
@@ -1141,7 +1141,7 @@ void cvmx_l2c_flush_line(uint32_t assoc, uint32_t index)
 
 /**
  * Initialize the BIG address in L2C+DRAM to generate proper error
- * on reading/writing to an non-existant memory location. 
+ * on reading/writing to an non-existant memory location.
  *
  * @param mem_size  Amount of DRAM configured in MB.
  * @param mode      Allow/Disallow reporting errors L2C_INT_SUM[BIGRD,BIGWR].

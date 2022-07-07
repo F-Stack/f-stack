@@ -5,7 +5,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2001, FreeBSD Incorporated 
+ * Copyright (c) 2001, FreeBSD Incorporated
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -254,7 +254,7 @@ ng_etf_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	NGI_GET_MSG(item, msg);
 	/* Deal with message according to cookie and command */
 	switch (msg->header.typecookie) {
-	case NGM_ETF_COOKIE: 
+	case NGM_ETF_COOKIE:
 		switch (msg->header.cmd) {
 		case NGM_ETF_GET_STATUS:
 		    {
@@ -311,7 +311,7 @@ ng_etf_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				}
 
 				/*
-				 * Ok, make the filter and put it in the 
+				 * Ok, make the filter and put it in the
 				 * hashtable ready for matching.
 				 */
 				fil = malloc(sizeof(*fil),
@@ -358,7 +358,7 @@ ng_etf_rcvmsg(node_p node, item_p item, hook_p lasthook)
  * If we want, we may decide to force this data to be queued and reprocessed
  * at the netgraph NETISR time.
  * We would do that by setting the HK_QUEUE flag on our hook. We would do that
- * in the connect() method. 
+ * in the connect() method.
  */
 static int
 ng_etf_rcvdata(hook_p hook, item_p item )
@@ -374,7 +374,7 @@ ng_etf_rcvdata(hook_p hook, item_p item )
 		NG_FREE_ITEM(item);
 	}
 
-	/* 
+	/*
 	 * Everything not from the downstream hook goes to the
 	 * downstream hook. But only if it matches the ethertype
 	 * of the source hook. Un matching must go to/from 'nomatch'.
@@ -406,9 +406,9 @@ ng_etf_rcvdata(hook_p hook, item_p item )
 			NG_FWD_NEW_DATA(error, item,etfp->nomatch_hook.hook, m);
 		}
 	} else {
-		/* 
+		/*
 		 * It must be heading towards the downstream.
-		 * Check that it's ethertype matches 
+		 * Check that it's ethertype matches
 		 * the filters for it's input hook.
 		 * If it doesn't have one, check it's from nomatch.
 		 */
@@ -465,7 +465,7 @@ ng_etf_disconnect(hook_p hook)
 			fil1 = fil2;
 		}
 	}
-		
+
 	/* If it's not one of the special hooks, then free it */
 	if (hook == etfp->downstream_hook.hook) {
 		etfp->downstream_hook.hook = NULL;

@@ -236,7 +236,7 @@ SYSCTL_INT(_net_inet_ipsec, OID_AUTO, test_integrity,
 	"Emulate man-in-the-middle attack");
 #endif
 
-#ifdef INET6 
+#ifdef INET6
 VNET_PCPUSTAT_DEFINE(struct ipsecstat, ipsec6stat);
 VNET_PCPUSTAT_SYSINIT(ipsec6stat);
 

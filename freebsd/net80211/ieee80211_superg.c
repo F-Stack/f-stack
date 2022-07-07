@@ -33,8 +33,8 @@ __FBSDID("$FreeBSD$");
 #ifdef	IEEE80211_SUPPORT_SUPERG
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/kernel.h>
 #include <sys/endian.h>
 
@@ -193,7 +193,7 @@ ieee80211_add_ath(uint8_t *frm, uint8_t caps, ieee80211_keyix defkeyix)
 		ath->ath_defkeyix[0] = 0xff;
 		ath->ath_defkeyix[1] = 0x7f;
 	}
-	return frm + sizeof(info); 
+	return frm + sizeof(info);
 }
 #undef ATH_OUI_BYTES
 
@@ -254,7 +254,7 @@ ieee80211_parse_athparams(struct ieee80211_node *ni, uint8_t *frm,
 		 */
 		newflags = curflags = vap->iv_ic->ic_bsschan->ic_flags;
 		/* NB: BOOST is not in ic_flags, so get it from the ie */
-		if (ath->ath_capability & ATHEROS_CAP_BOOST) 
+		if (ath->ath_capability & ATHEROS_CAP_BOOST)
 			newflags |= IEEE80211_CHAN_TURBO;
 		else
 			newflags &= ~IEEE80211_CHAN_TURBO;

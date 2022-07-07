@@ -30,7 +30,7 @@ dn_free_pkts(struct mbuf *m)
 		m_freem(x);
 	}
 }
-		
+
 int
 dn_delete_queue(void *_q, void *do_free)
 {

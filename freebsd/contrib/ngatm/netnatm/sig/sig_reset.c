@@ -414,7 +414,7 @@ start_status(struct uni *uni, struct uni_msg *m, struct uni_all *u)
 
 		uni->funcs->uni_output(uni, uni->arg,
 		    UNIAPI_RESET_STATUS_indication, 0, app);
-		
+
 	} else {
 		struct uniapi_reset_error_indication *resp;
 		struct uni_msg *app;
@@ -801,7 +801,7 @@ response_status(struct uni *uni, struct uni_msg *m, struct uni_all *u)
 
 		uni->funcs->uni_output(uni, uni->arg,
 		    UNIAPI_RESET_STATUS_indication, 0, app);
-		
+
 	} else {
 		struct uniapi_reset_error_indication *resp;
 		struct uni_msg *app;

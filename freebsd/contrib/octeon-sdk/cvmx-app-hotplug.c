@@ -40,8 +40,8 @@
 /**
  * @file
  *
- * Provides APIs for applications to register for hotplug. It also provides 
- * APIs for requesting shutdown of a running target application. 
+ * Provides APIs for applications to register for hotplug. It also provides
+ * APIs for requesting shutdown of a running target application.
  *
  * <hr>$Revision: $<hr>
  */
@@ -72,13 +72,13 @@ char __hotplug_info_check[(sizeof(cvmx_app_hotplug_info_t) == 1024) ? 1 : -1];
 /**
  * This routine registers an application for hotplug. It installs a handler for
  * any incoming shutdown request. It also registers a callback routine from the
- * application. This callback is invoked when the application receives a 
- * shutdown notification. 
+ * application. This callback is invoked when the application receives a
+ * shutdown notification.
  *
- * This routine only needs to be called once per application. 
+ * This routine only needs to be called once per application.
  *
- * @param fn      Callback routine from the application. 
- * @param arg     Argument to the application callback routine. 
+ * @param fn      Callback routine from the application.
+ * @param arg     Argument to the application callback routine.
  * @return        Return 0 on success, -1 on failure
  *
  */
@@ -98,7 +98,7 @@ int cvmx_app_hotplug_register(void(*fn)(void*), void* arg)
     cvmx_app_hotplug_info_ptr->shutdown_callback = CAST64(fn);
 
 #ifdef DEBUG
-    printf("cvmx_app_hotplug_register(): coremask 0x%x valid %d\n", 
+    printf("cvmx_app_hotplug_register(): coremask 0x%x valid %d\n",
                   cvmx_app_hotplug_info_ptr->coremask, cvmx_app_hotplug_info_ptr->valid);
 #endif
 
@@ -185,16 +185,16 @@ int is_core_being_unplugged(void)
 /**
  * Activate the current application core for receiving hotplug shutdown requests.
  *
- * This routine makes sure that each core belonging to the application is enabled 
+ * This routine makes sure that each core belonging to the application is enabled
  * to receive the shutdown notification and also provides a barrier sync to make
- * sure that all cores are ready. 
+ * sure that all cores are ready.
  */
 int cvmx_app_hotplug_activate(void)
 {
     uint64_t cnt = 0;
     uint64_t cnt_interval = 10000000;
 
-    while (!cvmx_app_hotplug_info_ptr) 
+    while (!cvmx_app_hotplug_info_ptr)
     {
         cnt++;
         if ((cnt % cnt_interval) == 0)
@@ -225,8 +225,8 @@ int cvmx_app_hotplug_activate(void)
     cvmx_app_hotplug_info_ptr->hotplug_activated_coremask |= (1ull<<cvmx_get_core_num());
 
 #ifdef DEBUG
-    printf("cvmx_app_hotplug_activate(): coremask 0x%x valid %d sizeof %d\n", 
-                 cvmx_app_hotplug_info_ptr->coremask, cvmx_app_hotplug_info_ptr->valid, 
+    printf("cvmx_app_hotplug_activate(): coremask 0x%x valid %d sizeof %d\n",
+                 cvmx_app_hotplug_info_ptr->coremask, cvmx_app_hotplug_info_ptr->valid,
                  sizeof(*cvmx_app_hotplug_info_ptr));
 #endif
 
@@ -237,9 +237,9 @@ int cvmx_app_hotplug_activate(void)
 
 /**
  * This routine is only required if cvmx_app_hotplug_shutdown_request() was called
- * with wait=0. This routine waits for the application shutdown to complete. 
+ * with wait=0. This routine waits for the application shutdown to complete.
  *
- * @param coremask     Coremask the application is running on. 
+ * @param coremask     Coremask the application is running on.
  * @return             0 on success, -1 on error
  *
  */
@@ -262,7 +262,7 @@ int cvmx_app_hotplug_shutdown_complete(uint32_t coremask)
 }
 
 /**
- * Disable recognition of any incoming shutdown request. 
+ * Disable recognition of any incoming shutdown request.
  */
 
 void cvmx_app_hotplug_shutdown_disable(void)
@@ -371,7 +371,7 @@ static void __cvmx_app_hotplug_shutdown(int irq_number, uint64_t registers[32],
         }
         if (!ai->app_shutdown)
         {
-            if (dbg) 
+            if (dbg)
                 printf("%s : core = %d Invoking app shutdown\n", __FUNCTION__, core);
             cvmx_app_hotplug_core_shutdown();
         }
@@ -471,10 +471,10 @@ void __cvmx_app_hotplug_reset(void)
 
 }
 
-/* 
+/*
  * We need a separate sync operation from cvmx_coremask_barrier_sync() to
  * avoid a deadlock on state.lock, since the application itself maybe doing a
- * cvmx_coremask_barrier_sync(). 
+ * cvmx_coremask_barrier_sync().
  */
 static void __cvmx_app_hotplug_sync(void)
 {
@@ -482,7 +482,7 @@ static void __cvmx_app_hotplug_sync(void)
     cvmx_sysinfo_t *sys_info_ptr = cvmx_sysinfo_get();
 
     cvmx_spinlock_lock(&cvmx_app_hotplug_sync_lock);
-    
+
     sync_coremask |= cvmx_coremask_core(cvmx_get_core_num());
 
     cvmx_spinlock_unlock(&cvmx_app_hotplug_sync_lock);
@@ -542,13 +542,13 @@ static cvmx_app_hotplug_global_t *cvmx_app_get_hotplug_global_ptr(void)
         }
 
         /*
-         * We need to mmap() this memory, since this was allocated from the 
+         * We need to mmap() this memory, since this was allocated from the
          * kernel bootup code and does not reside in the RESERVE32 region.
          */
         size = CVMX_APP_HOTPLUG_INFO_REGION_SIZE + pg_sz-1;
         offset = block_desc->base_addr & ~(pg_sz-1);
-        if ((vaddr = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, offset)) 
-	    == MAP_FAILED) 
+        if ((vaddr = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, offset))
+	    == MAP_FAILED)
         {
             perror("mmap");
             return NULL;
@@ -565,10 +565,10 @@ static cvmx_app_hotplug_global_t *cvmx_app_get_hotplug_global_ptr(void)
 }
 
 /**
- * Return the hotplug info structure (cvmx_app_hotplug_info_t) pointer for the 
- * application running on the given coremask. 
+ * Return the hotplug info structure (cvmx_app_hotplug_info_t) pointer for the
+ * application running on the given coremask.
  *
- * @param coremask     Coremask of application. 
+ * @param coremask     Coremask of application.
  * @return             Returns hotplug info struct on success, NULL on failure
  *
  */
@@ -600,12 +600,12 @@ cvmx_app_hotplug_info_t* cvmx_app_hotplug_get_info(uint32_t coremask)
 }
 
 /**
- * Return the hotplug application index structure for the application running on the 
- * given coremask. 
+ * Return the hotplug application index structure for the application running on the
+ * given coremask.
  *
- * @param coremask     Coremask of application. 
+ * @param coremask     Coremask of application.
  * @return             Returns hotplug application index on success. -1 on failure
- *                     
+ *
  */
 int cvmx_app_hotplug_get_index(uint32_t coremask)
 {
@@ -641,10 +641,10 @@ void print_hot_plug_info(cvmx_app_hotplug_info_t* hpinfo)
 }
 
 /**
- * Return the hotplug info structure (cvmx_app_hotplug_info_t) pointer for the 
+ * Return the hotplug info structure (cvmx_app_hotplug_info_t) pointer for the
  * application with the specified index.
  *
- * @param index        index of application. 
+ * @param index        index of application.
  * @return             Returns hotplug info struct on success, NULL on failure
  *
  */
@@ -658,12 +658,12 @@ cvmx_app_hotplug_info_t* cvmx_app_hotplug_get_info_at_index(int index)
     hip = hgp->hotplug_info_array;
 
 #ifdef DEBUG
-    printf("cvmx_app_hotplug_get_info(): hotplug_info phy addr 0x%llx ptr %p\n", 
+    printf("cvmx_app_hotplug_get_info(): hotplug_info phy addr 0x%llx ptr %p\n",
                   block_desc->base_addr, hgp);
 #endif
     if (index < CVMX_APP_HOTPLUG_MAX_APPS)
     {
-        if (hip[index].valid) 
+        if (hip[index].valid)
         {
             //print_hot_plug_info( &hip[index] );
             return &hip[index];
@@ -694,16 +694,16 @@ int is_app_hotpluggable(int index)
 }
 
 /**
- * This routine sends a shutdown request to a running target application. 
+ * This routine sends a shutdown request to a running target application.
  *
- * @param coremask     Coremask the application is running on. 
+ * @param coremask     Coremask the application is running on.
  * @param wait         1 - Wait for shutdown completion
  *                     0 - Do not wait
  * @return             0 on success, -1 on error
  *
  */
 
-int cvmx_app_hotplug_shutdown_request(uint32_t coremask, int wait) 
+int cvmx_app_hotplug_shutdown_request(uint32_t coremask, int wait)
 {
     int i;
     cvmx_app_hotplug_info_t *hotplug_info_ptr;
@@ -734,7 +734,7 @@ int cvmx_app_hotplug_shutdown_request(uint32_t coremask, int wait)
 
     if (wait)
     {
-        while (!hotplug_info_ptr->shutdown_done);    
+        while (!hotplug_info_ptr->shutdown_done);
 
         /* Clean up the hotplug info region for this application */
         bzero(hotplug_info_ptr, sizeof(*hotplug_info_ptr));
@@ -774,8 +774,8 @@ int cvmx_app_hotplug_call_add_cores_callback(int index)
  *                     0 - Do not wait
  * @return             0 on success, -1 on error
  *
- */ 
-int cvmx_app_hotplug_unplug_cores(int index, uint32_t coremask, int wait) 
+ */
+int cvmx_app_hotplug_unplug_cores(int index, uint32_t coremask, int wait)
 {
     cvmx_app_hotplug_info_t *ai;
     int i;
@@ -815,7 +815,7 @@ int cvmx_app_hotplug_unplug_cores(int index, uint32_t coremask, int wait)
 #if 0
     if (wait)
     {
-        while (!ai->shutdown_done);    
+        while (!ai->shutdown_done);
 
         /* Clean up the hotplug info region for this application */
         bzero(ai, sizeof(*ai));

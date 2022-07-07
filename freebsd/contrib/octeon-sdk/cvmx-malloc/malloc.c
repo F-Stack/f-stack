@@ -1447,7 +1447,7 @@ int      __posix_memalign(void **, size_t, size_t);
 #ifdef DEBUG_PRINTS
 #define debug_printf    printf
 #else
-#define debug_printf(format, args...)  
+#define debug_printf(format, args...)
 #endif
 
 #ifndef BOUNDED_N
@@ -1994,19 +1994,19 @@ typedef struct malloc_chunk* mbinptr;
 
   Normally, this should be MIN_LARGE_SIZE. But you can weaken
   best fit guarantees to sometimes speed up malloc by increasing value.
-  Doing this means that malloc may choose a chunk that is 
+  Doing this means that malloc may choose a chunk that is
   non-best-fitting by up to the width of the bin.
 
   Some useful cutoff values:
       512 - all bins sorted
-     2560 - leaves bins <=     64 bytes wide unsorted  
+     2560 - leaves bins <=     64 bytes wide unsorted
     12288 - leaves bins <=    512 bytes wide unsorted
     65536 - leaves bins <=   4096 bytes wide unsorted
    262144 - leaves bins <=  32768 bytes wide unsorted
        -1 - no bins sorted (not recommended!)
 */
 
-#define FIRST_SORTED_BIN_SIZE MIN_LARGE_SIZE 
+#define FIRST_SORTED_BIN_SIZE MIN_LARGE_SIZE
 /* #define FIRST_SORTED_BIN_SIZE 65536 */
 
 /*
@@ -2631,7 +2631,7 @@ public_mALLOc(cvmx_arena_list_t arena_list, size_t bytes)
 #ifdef DEBUG_MALLOC
   int arena_cnt=0;
 #endif
-  
+
   ar_ptr = arena_list;
 
   if (!ar_ptr)
@@ -3078,7 +3078,7 @@ _int_malloc(mstate av, size_t bytes)
             fwd = bck;
             bck = bck->bk;
           }
-          else if ((unsigned long)(size) >= 
+          else if ((unsigned long)(size) >=
                    (unsigned long)(FIRST_SORTED_BIN_SIZE)) {
 
             /* maintain large bins in sorted order */

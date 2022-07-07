@@ -144,7 +144,7 @@ ng_hci_constructor(node_p node)
 	 */
 
 	NG_HCI_BUFF_CMD_SET(unit->buffer, 1);
-	NG_HCI_BUFF_ACL_SET(unit->buffer, 1, 17, 1);  
+	NG_HCI_BUFF_ACL_SET(unit->buffer, 1, 17, 1);
 	NG_HCI_BUFF_SCO_SET(unit->buffer, 1, 10, 1);
 
 	/* Init command queue & command timeout handler */
@@ -157,7 +157,7 @@ ng_hci_constructor(node_p node)
 
 	/*
 	 * This node has to be a WRITER because both data and messages
-	 * can change node state. 
+	 * can change node state.
 	 */
 
 	NG_NODE_FORCE_WRITER(node);
@@ -190,7 +190,7 @@ ng_hci_shutdown(node_p node)
 } /* ng_hci_shutdown */
 
 /*
- * Give our OK for a hook to be added. Unit driver is connected to the driver 
+ * Give our OK for a hook to be added. Unit driver is connected to the driver
  * (NG_HCI_HOOK_DRV) hook. Upper layer protocols are connected to appropriate
  * (NG_HCI_HOOK_ACL or NG_HCI_HOOK_SCO) hooks.
  */
@@ -240,7 +240,7 @@ ng_hci_connect(hook_p hook)
 			NG_HOOK_SET_RCVDATA(hook, ng_hci_raw_rcvdata);
 
 		/* Send delayed notification to the upper layers */
-		if (hook != unit->raw) 
+		if (hook != unit->raw)
 			ng_send_fn(unit->node, hook, ng_hci_node_is_up, NULL,0);
 	} else
 		unit->state |= NG_HCI_UNIT_CONNECTED;
@@ -295,7 +295,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	struct ng_mesg	*msg = NULL, *rsp = NULL;
 	int		 error = 0;
 
-	NGI_GET_MSG(item, msg); 
+	NGI_GET_MSG(item, msg);
 
 	switch (msg->header.typecookie) {
 	case NGM_GENERIC_COOKIE:
@@ -337,7 +337,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				unit->state,
 				NG_BT_MBUFQ_LEN(&unit->cmdq),
 				cmd_avail,
-				acl_avail, acl_total, acl_size, 
+				acl_avail, acl_total, acl_size,
 				sco_avail, sco_total, sco_size);
 			} break;
 
@@ -367,7 +367,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				error = ENXIO;
 				break;
 			}
-				
+
 			unit->state |= NG_HCI_UNIT_INITED;
 
 			ng_hci_node_is_up(unit->node, unit->acl, NULL, 0);
@@ -501,7 +501,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				e2->addrtype =
 					ng_hci_linktype_to_addrtype(n->addrtype);
 				e2->extinq_size = n->extinq_size;
-				bcopy(&n->bdaddr, &e2->bdaddr, 
+				bcopy(&n->bdaddr, &e2->bdaddr,
 					sizeof(e2->bdaddr));
 				bcopy(&n->features, &e2->features,
 					sizeof(e2->features));
@@ -527,7 +527,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				s = NG_HCI_MAX_CON_NUM;
 
 			/* Prepare response */
-			NG_MKRESPONSE(rsp, msg, sizeof(*e1) + s * sizeof(*e2), 
+			NG_MKRESPONSE(rsp, msg, sizeof(*e1) + s * sizeof(*e2),
 				M_NOWAIT);
 			if (rsp == NULL) {
 				error = ENOMEM;
@@ -551,7 +551,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				e2->queue_len = NG_BT_ITEMQ_LEN(&c->conq);
 
 				e2->con_handle = c->con_handle;
-				bcopy(&c->bdaddr, &e2->bdaddr, 
+				bcopy(&c->bdaddr, &e2->bdaddr,
 					sizeof(e2->bdaddr));
 
 				e2 ++;
@@ -569,7 +569,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				break;
 			}
 
-			*((ng_hci_node_link_policy_mask_ep *)(rsp->data)) = 
+			*((ng_hci_node_link_policy_mask_ep *)(rsp->data)) =
 				unit->link_policy_mask;
 			break;
 
@@ -581,7 +581,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				break;
 			}
 
-			unit->link_policy_mask = 
+			unit->link_policy_mask =
 				*((ng_hci_node_link_policy_mask_ep *)
 					(msg->data));
 			break;
@@ -595,7 +595,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				break;
 			}
 
-			*((ng_hci_node_packet_mask_ep *)(rsp->data)) = 
+			*((ng_hci_node_packet_mask_ep *)(rsp->data)) =
 				unit->packet_mask;
 			break;
 
@@ -607,7 +607,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				break;
 			}
 
-			unit->packet_mask = 
+			unit->packet_mask =
 				*((ng_hci_node_packet_mask_ep *)(msg->data));
 			break;
 
@@ -620,7 +620,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				break;
 			}
 
-			*((ng_hci_node_role_switch_ep *)(rsp->data)) = 
+			*((ng_hci_node_role_switch_ep *)(rsp->data)) =
 				unit->role_switch;
 			break;
 
@@ -632,7 +632,7 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				break;
 			}
 
-			unit->role_switch = 
+			unit->role_switch =
 				*((ng_hci_node_role_switch_ep *)(msg->data));
 			break;
 
@@ -699,7 +699,7 @@ ng_hci_upper_rcvmsg(node_p node, item_p item, hook_p lasthook)
 } /* ng_hci_upper_rcvmsg */
 
 /*
- * Process data packet from the driver hook. 
+ * Process data packet from the driver hook.
  * We expect HCI events, ACL or SCO data packets.
  */
 
@@ -733,7 +733,7 @@ ng_hci_drv_rcvdata(hook_p hook, item_p item)
 		    unit->acl == NULL || NG_HOOK_NOT_VALID(unit->acl)) {
 			NG_HCI_WARN(
 "%s: %s - could not forward HCI ACL data packet, state=%#x, hook=%p\n",
-				__func__, NG_NODE_NAME(unit->node), 
+				__func__, NG_NODE_NAME(unit->node),
 				unit->state, unit->acl);
 
 			NG_FREE_ITEM(item);
@@ -748,7 +748,7 @@ ng_hci_drv_rcvdata(hook_p hook, item_p item)
 		    unit->sco == NULL || NG_HOOK_NOT_VALID(unit->sco)) {
 			NG_HCI_INFO(
 "%s: %s - could not forward HCI SCO data packet, state=%#x, hook=%p\n",
-				__func__, NG_NODE_NAME(unit->node), 
+				__func__, NG_NODE_NAME(unit->node),
 				unit->state, unit->sco);
 
 			NG_FREE_ITEM(item);
@@ -765,7 +765,7 @@ ng_hci_drv_rcvdata(hook_p hook, item_p item)
 
 		error = ng_hci_process_event(unit, m);
 		break;
-		
+
 	default:
 		NG_HCI_ALERT(
 "%s: %s - got unknown HCI packet type=%#x\n",
@@ -812,7 +812,7 @@ ng_hci_acl_rcvdata(hook_p hook, item_p item)
 	    m->m_pkthdr.len > sizeof(ng_hci_acldata_pkt_t) + size) {
 		NG_HCI_ALERT(
 "%s: %s - invalid HCI ACL data packet, len=%d, mtu=%d\n",
-			__func__, NG_NODE_NAME(unit->node), 
+			__func__, NG_NODE_NAME(unit->node),
 			m->m_pkthdr.len, size);
 
 		error = EMSGSIZE;
@@ -832,7 +832,7 @@ ng_hci_acl_rcvdata(hook_p hook, item_p item)
 	if (m->m_pkthdr.len != sizeof(ng_hci_acldata_pkt_t) + size) {
 		NG_HCI_ALERT(
 "%s: %s - invalid HCI ACL data packet size, len=%d, length=%d\n",
-			__func__, NG_NODE_NAME(unit->node), 
+			__func__, NG_NODE_NAME(unit->node),
 			m->m_pkthdr.len, size);
 
 		error = EMSGSIZE;
@@ -853,7 +853,7 @@ ng_hci_acl_rcvdata(hook_p hook, item_p item)
 	if (con->link_type == NG_HCI_LINK_SCO) {
 		NG_HCI_ERR(
 "%s: %s - unexpected HCI ACL data packet. Not ACL link, con_handle=%d, " \
-"link_type=%d\n",	__func__, NG_NODE_NAME(unit->node), 
+"link_type=%d\n",	__func__, NG_NODE_NAME(unit->node),
 			con_handle, con->link_type);
 
 		error = EINVAL;
@@ -863,7 +863,7 @@ ng_hci_acl_rcvdata(hook_p hook, item_p item)
 	if (con->state != NG_HCI_CON_OPEN) {
 		NG_HCI_ERR(
 "%s: %s - unexpected HCI ACL data packet. Invalid connection state=%d, " \
-"con_handle=%d\n",	 __func__, NG_NODE_NAME(unit->node), 
+"con_handle=%d\n",	 __func__, NG_NODE_NAME(unit->node),
 			con->state, con_handle);
 
 		error = EHOSTDOWN;
@@ -873,7 +873,7 @@ ng_hci_acl_rcvdata(hook_p hook, item_p item)
 	if (NG_BT_ITEMQ_FULL(&con->conq)) {
 		NG_HCI_ALERT(
 "%s: %s - dropping HCI ACL data packet, con_handle=%d, len=%d, queue_len=%d\n",
-			 __func__, NG_NODE_NAME(unit->node), con_handle, 
+			 __func__, NG_NODE_NAME(unit->node), con_handle,
 			m->m_pkthdr.len, NG_BT_ITEMQ_LEN(&con->conq));
 
 		NG_BT_ITEMQ_DROP(&con->conq);
@@ -931,7 +931,7 @@ ng_hci_sco_rcvdata(hook_p hook, item_p item)
 	    m->m_pkthdr.len > sizeof(ng_hci_scodata_pkt_t) + size) {
 		NG_HCI_ALERT(
 "%s: %s - invalid HCI SCO data packet, len=%d, mtu=%d\n",
-			__func__, NG_NODE_NAME(unit->node), 
+			__func__, NG_NODE_NAME(unit->node),
 			m->m_pkthdr.len, size);
 
 		error = EMSGSIZE;
@@ -951,7 +951,7 @@ ng_hci_sco_rcvdata(hook_p hook, item_p item)
 	if (m->m_pkthdr.len != sizeof(ng_hci_scodata_pkt_t) + size) {
 		NG_HCI_ALERT(
 "%s: %s - invalid HCI SCO data packet size, len=%d, length=%d\n",
-			__func__, NG_NODE_NAME(unit->node), 
+			__func__, NG_NODE_NAME(unit->node),
 			m->m_pkthdr.len, size);
 
 		error = EMSGSIZE;
@@ -972,7 +972,7 @@ ng_hci_sco_rcvdata(hook_p hook, item_p item)
 	if (con->link_type != NG_HCI_LINK_SCO) {
 		NG_HCI_ERR(
 "%s: %s - unexpected HCI SCO data packet. Not SCO link, con_handle=%d, " \
-"link_type=%d\n",	__func__, NG_NODE_NAME(unit->node), 
+"link_type=%d\n",	__func__, NG_NODE_NAME(unit->node),
 			con_handle, con->link_type);
 
 		error = EINVAL;
@@ -982,7 +982,7 @@ ng_hci_sco_rcvdata(hook_p hook, item_p item)
 	if (con->state != NG_HCI_CON_OPEN) {
 		NG_HCI_ERR(
 "%s: %s - unexpected HCI SCO data packet. Invalid connection state=%d, " \
-"con_handle=%d\n",	__func__, NG_NODE_NAME(unit->node), 
+"con_handle=%d\n",	__func__, NG_NODE_NAME(unit->node),
 			con->state, con_handle);
 
 		error = EHOSTDOWN;
@@ -992,7 +992,7 @@ ng_hci_sco_rcvdata(hook_p hook, item_p item)
 	if (NG_BT_ITEMQ_FULL(&con->conq)) {
 		NG_HCI_ALERT(
 "%s: %s - dropping HCI SCO data packet, con_handle=%d, len=%d, queue_len=%d\n",
-			__func__, NG_NODE_NAME(unit->node), con_handle, 
+			__func__, NG_NODE_NAME(unit->node), con_handle,
 			m->m_pkthdr.len, NG_BT_ITEMQ_LEN(&con->conq));
 
 		NG_BT_ITEMQ_DROP(&con->conq);
@@ -1029,7 +1029,7 @@ ng_hci_raw_rcvdata(hook_p hook, item_p item)
 	struct mbuf	*m = NULL;
 	int		 error = 0;
 
-	NGI_GET_M(item, m); 
+	NGI_GET_M(item, m);
 	NG_FREE_ITEM(item);
 
 	/* Check packet */
@@ -1058,7 +1058,7 @@ ng_hci_raw_rcvdata(hook_p hook, item_p item)
 		goto drop;
 	}
 
-	if (m->m_pkthdr.len != 
+	if (m->m_pkthdr.len !=
 	    mtod(m, ng_hci_cmd_pkt_t *)->length + sizeof(ng_hci_cmd_pkt_t)) {
 		NG_HCI_ALERT(
 "%s: %s - invalid HCI command packet size, len=%d, length=%d\n",
@@ -1071,7 +1071,7 @@ ng_hci_raw_rcvdata(hook_p hook, item_p item)
 
 	if (mtod(m, ng_hci_cmd_pkt_t *)->opcode == 0) {
 		NG_HCI_ALERT(
-"%s: %s - invalid HCI command opcode\n", 
+"%s: %s - invalid HCI command opcode\n",
 			__func__, NG_NODE_NAME(unit->node));
 
 		error = EINVAL;
@@ -1081,7 +1081,7 @@ ng_hci_raw_rcvdata(hook_p hook, item_p item)
 	if (NG_BT_MBUFQ_FULL(&unit->cmdq)) {
 		NG_HCI_ALERT(
 "%s: %s - dropping HCI command packet, len=%d, queue_len=%d\n",
-			__func__, NG_NODE_NAME(unit->node), m->m_pkthdr.len, 
+			__func__, NG_NODE_NAME(unit->node), m->m_pkthdr.len,
 			NG_BT_MBUFQ_LEN(&unit->cmdq));
 
 		NG_BT_MBUFQ_DROP(&unit->cmdq);

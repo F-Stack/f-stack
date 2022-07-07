@@ -311,7 +311,7 @@ static bool
 ccp_auth_supported(struct ccp_softc *sc,
     const struct crypto_session_params *csp)
 {
-	
+
 	if ((sc->hw_features & VERSION_CAP_SHA) == 0)
 		return (false);
 	switch (csp->csp_auth_alg) {

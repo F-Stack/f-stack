@@ -231,8 +231,8 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
         val->lru = old->lru;
     }
-    /* Although the key is not really deleted from the database, we regard 
-    overwrite as two steps of unlink+add, so we still need to call the unlink 
+    /* Although the key is not really deleted from the database, we regard
+    overwrite as two steps of unlink+add, so we still need to call the unlink
     callback of the module. */
     moduleNotifyKeyUnlink(key,old);
     dictSetVal(db->dict, de, val);
@@ -1206,8 +1206,8 @@ void copyCommand(client *c) {
     long long expire;
     int j, replace = 0, delete = 0;
 
-    /* Obtain source and target DB pointers 
-     * Default target DB is the same as the source DB 
+    /* Obtain source and target DB pointers
+     * Default target DB is the same as the source DB
      * Parse the REPLACE option and targetDB option. */
     src = c->db;
     dst = c->db;
@@ -1257,7 +1257,7 @@ void copyCommand(client *c) {
     }
     expire = getExpire(c->db,key);
 
-    /* Return zero if the key already exists in the target DB. 
+    /* Return zero if the key already exists in the target DB.
      * If REPLACE option is selected, delete newkey from targetDB. */
     if (lookupKeyWrite(dst,newkey) != NULL) {
         if (replace) {

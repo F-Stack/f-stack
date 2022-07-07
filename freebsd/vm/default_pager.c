@@ -52,9 +52,9 @@ static vm_object_t	default_pager_alloc(void *, vm_ooffset_t, vm_prot_t,
 static void		default_pager_dealloc(vm_object_t);
 static int		default_pager_getpages(vm_object_t, vm_page_t *, int,
 			    int *, int *);
-static void		default_pager_putpages(vm_object_t, vm_page_t *, int, 
+static void		default_pager_putpages(vm_object_t, vm_page_t *, int,
 			    boolean_t, int *);
-static boolean_t	default_pager_haspage(vm_object_t, vm_pindex_t, int *, 
+static boolean_t	default_pager_haspage(vm_object_t, vm_pindex_t, int *,
 			    int *);
 
 /*

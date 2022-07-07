@@ -36,7 +36,7 @@
 
 #include <crypto/rijndael/rijndael-api-fst.h>
 
-#define LL 32 
+#define LL 32
 int
 main(int argc, char **argv)
 {

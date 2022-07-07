@@ -101,7 +101,7 @@ ng_l2cap_l2ca_con_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 	}
 
 	/*
-	 * Create new empty channel descriptor. In case of any failure do 
+	 * Create new empty channel descriptor. In case of any failure do
 	 * not touch connection descriptor.
 	 */
 
@@ -188,7 +188,7 @@ ng_l2cap_l2ca_con_rsp(ng_l2cap_chan_p ch, u_int32_t token, u_int16_t result,
 		msg->header.flags |= NGF_RESP;
 
 		op = (ng_l2cap_l2ca_con_op *)(msg->data);
-		
+
 		/*
 		 * XXX Spec. says we should only populate LCID when result == 0
 		 * What about PENDING? What the heck, for now always populate
@@ -204,7 +204,7 @@ ng_l2cap_l2ca_con_rsp(ng_l2cap_chan_p ch, u_int32_t token, u_int16_t result,
 			op->idtype = (ch->con->linktype == NG_HCI_LINK_ACL)?
 				NG_L2CAP_L2CA_IDTYPE_BREDR :
 				NG_L2CAP_L2CA_IDTYPE_LE;
-			op->lcid = ch->scid;				
+			op->lcid = ch->scid;
 		}
 		op->encryption = ch->con->encryption;
 		op->result = result;
@@ -277,7 +277,7 @@ ng_l2cap_l2ca_con_rsp_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 	con = ch->con;
 
 	/*
-	 * Now we are pretty much sure it is our response. So create and send 
+	 * Now we are pretty much sure it is our response. So create and send
 	 * L2CAP_ConnectRsp message to our peer.
 	 */
 
@@ -285,7 +285,7 @@ ng_l2cap_l2ca_con_rsp_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		NG_L2CAP_WARN(
 "%s: %s - channel ident and response ident do not match, scid=%d, ident=%d. " \
 "Will use response ident=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), ch->scid, 
+			__func__, NG_NODE_NAME(l2cap->node), ch->scid,
 			ch->ident, ip->ident);
 
 	/* Check result */
@@ -317,7 +317,7 @@ ng_l2cap_l2ca_con_rsp_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		goto out;
 	}
 
-	_ng_l2cap_con_rsp(cmd->aux, cmd->ident, ip->lcid, dcid, 
+	_ng_l2cap_con_rsp(cmd->aux, cmd->ident, ip->lcid, dcid,
 		ip->result, ip->status);
 	if (cmd->aux == NULL) {
 		if (ch != NULL)
@@ -326,7 +326,7 @@ ng_l2cap_l2ca_con_rsp_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		ng_l2cap_free_cmd(cmd);
 		error = ENOBUFS;
 		goto out;
-	} 
+	}
 
 	/* Link command to the queue */
 	ng_l2cap_link_cmd(con, cmd);
@@ -374,7 +374,7 @@ int ng_l2cap_l2ca_encryption_change(ng_l2cap_chan_p ch, uint16_t result)
 				NG_L2CAP_L2CA_IDTYPE_BREDR:
 				NG_L2CAP_L2CA_IDTYPE_LE;
 		}
-			
+
 
 		NG_SEND_MSG_HOOK(error, l2cap->node, msg, l2cap->l2c, 0);
 	}
@@ -423,7 +423,7 @@ ng_l2cap_l2ca_con_rsp_rsp(ng_l2cap_chan_p ch, u_int32_t token, u_int16_t result)
 } /* ng_l2cap_l2ca_con_rsp_rsp */
 
 /*
- * Send L2CA_ConnectInd message to the upper layer protocol. 
+ * Send L2CA_ConnectInd message to the upper layer protocol.
  */
 
 int
@@ -628,9 +628,9 @@ ng_l2cap_l2ca_cfg_rsp(ng_l2cap_chan_p ch, u_int32_t token, u_int16_t result)
  *
  * XXX XXX XXX
  *
- * NOTE: The Bluetooth specification says that Configuration_Response 
+ * NOTE: The Bluetooth specification says that Configuration_Response
  * (L2CA_ConfigRsp) should be used to issue response to configuration request
- * indication. The minor problem here is L2CAP command ident. We should use 
+ * indication. The minor problem here is L2CAP command ident. We should use
  * ident from original L2CAP request to make sure our peer can match request
  * and response. For some reason Bluetooth specification does not include
  * ident field into L2CA_ConfigInd and L2CA_ConfigRsp messages. This seems
@@ -692,7 +692,7 @@ ng_l2cap_l2ca_cfg_rsp_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		mtu = &ch->omtu;
 	}
 
-	if (bcmp(&ip->iflow, &ch->iflow, sizeof(ch->iflow)) != 0) { 
+	if (bcmp(&ip->iflow, &ch->iflow, sizeof(ch->iflow)) != 0) {
 		bcopy(&ip->iflow, &ch->iflow, sizeof(ch->iflow));
 		flow = &ch->iflow;
 	}
@@ -778,9 +778,9 @@ ng_l2cap_l2ca_cfg_rsp_rsp(ng_l2cap_chan_p ch, u_int32_t token, u_int16_t result)
  *
  * XXX XXX XXX
  *
- * NOTE: The Bluetooth specification says that Configuration_Response 
+ * NOTE: The Bluetooth specification says that Configuration_Response
  * (L2CA_ConfigRsp) should be used to issue response to configuration request
- * indication. The minor problem here is L2CAP command ident. We should use 
+ * indication. The minor problem here is L2CAP command ident. We should use
  * ident from original L2CAP request to make sure our peer can match request
  * and response. For some reason Bluetooth specification does not include
  * ident field into L2CA_ConfigInd and L2CA_ConfigRsp messages. This seems
@@ -901,7 +901,7 @@ ng_l2cap_l2ca_write_req(ng_l2cap_p l2cap, struct mbuf *m)
 	if (ch->state != NG_L2CAP_OPEN) {
 		NG_L2CAP_ERR(
 "%s: %s - invalid L2CA Data packet. Invalid channel state, scid=%d, state=%d\n",
-			 __func__, NG_NODE_NAME(l2cap->node), ch->scid, 
+			 __func__, NG_NODE_NAME(l2cap->node), ch->scid,
 			ch->state);
 		error = EHOSTDOWN;
 		goto drop; /* XXX not always - re-configure */
@@ -971,8 +971,8 @@ ng_l2cap_l2ca_write_rsp(ng_l2cap_chan_p ch, u_int32_t token, u_int16_t result,
 			op->idtype = (ch->con->linktype == NG_HCI_LINK_ACL)?
 				NG_L2CAP_L2CA_IDTYPE_BREDR :
 				NG_L2CAP_L2CA_IDTYPE_LE;
-			op->lcid = ch->scid;				
-			
+			op->lcid = ch->scid;
+
 		}
 		NG_SEND_MSG_HOOK(error, l2cap->node, msg, l2cap->l2c, 0);
 	}
@@ -1009,7 +1009,7 @@ ng_l2cap_l2ca_receive(ng_l2cap_con_p con)
 		ch = ng_l2cap_chan_by_conhandle(l2cap, NG_L2CAP_ATT_CID,
 						con->con_handle);
 		/*
-		 * Here,ATT channel is distinguished by 
+		 * Here,ATT channel is distinguished by
 		 * connection handle
 		 */
 		hdr->dcid = con->con_handle;
@@ -1019,11 +1019,11 @@ ng_l2cap_l2ca_receive(ng_l2cap_con_p con)
 		ch = ng_l2cap_chan_by_conhandle(l2cap, NG_L2CAP_SMP_CID,
 						con->con_handle);
 		/*
-		 * Here,SMP channel is distinguished by 
+		 * Here,SMP channel is distinguished by
 		 * connection handle
 		 */
 		silent = 1;
-		hdr->dcid = con->con_handle; 
+		hdr->dcid = con->con_handle;
 	}else{
 		idtype = (con->linktype==NG_HCI_LINK_ACL)?
 			NG_L2CAP_L2CA_IDTYPE_BREDR:
@@ -1055,7 +1055,7 @@ ng_l2cap_l2ca_receive(ng_l2cap_con_p con)
 		NG_L2CAP_ERR(
 "%s: %s - invalid L2CAP data packet. " \
 "Packet too big, length=%d, imtu=%d, cid=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), hdr->length, 
+			__func__, NG_NODE_NAME(l2cap->node), hdr->length,
 			ch->imtu, ch->scid);
 		error = EMSGSIZE;
 		goto drop;
@@ -1090,7 +1090,7 @@ drop:
 } /* ng_l2cap_receive */
 
 /*
- * Receive connectioless (multicast) packet from the lower layer protocol and 
+ * Receive connectioless (multicast) packet from the lower layer protocol and
  * send it to the upper layer protocol
  */
 
@@ -1237,7 +1237,7 @@ ng_l2cap_l2ca_discon_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		/* Don't send Disconnect request on L2CAP Layer*/
 		ch = ng_l2cap_chan_by_conhandle(l2cap, NG_L2CAP_ATT_CID,
 			ip->lcid);
-		
+
 		if(ch != NULL){
 			ng_l2cap_free_chan(ch);
 		}else{
@@ -1252,7 +1252,7 @@ ng_l2cap_l2ca_discon_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 		/* Don't send Disconnect request on L2CAP Layer*/
 		ch = ng_l2cap_chan_by_conhandle(l2cap, NG_L2CAP_SMP_CID,
 			ip->lcid);
-		
+
 		if(ch != NULL){
 			ng_l2cap_free_chan(ch);
 		}else{
@@ -1277,11 +1277,11 @@ ng_l2cap_l2ca_discon_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 	}
 
 	/* Check channel state */
-	if (ch->state != NG_L2CAP_CONFIG && ch->state != NG_L2CAP_OPEN && 
+	if (ch->state != NG_L2CAP_CONFIG && ch->state != NG_L2CAP_OPEN &&
 	    ch->state != NG_L2CAP_W4_L2CAP_DISCON_RSP) {
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CA_Disconnect request message. " \
-"Invalid channel state, state=%d, lcid=%d\n", 
+"Invalid channel state, state=%d, lcid=%d\n",
 			__func__, NG_NODE_NAME(l2cap->node), ch->state,
 			ch->scid);
 		error = EINVAL;
@@ -1396,9 +1396,9 @@ ng_l2cap_l2ca_discon_ind(ng_l2cap_chan_p ch)
 			ip->lcid = ch->con->con_handle;
 		else
 			ip->lcid = ch->scid;
-		
+
 		NG_SEND_MSG_HOOK(error, l2cap->node, msg, l2cap->l2c, 0);
-	} 
+	}
 
 	return (error);
 } /* ng_l2cap_l2ca_discon_ind */
@@ -1534,7 +1534,7 @@ ng_l2cap_l2ca_ping_req(ng_l2cap_p l2cap, struct ng_mesg *msg)
 	}
 
 	/* Create L2CAP command packet */
-	_ng_l2cap_echo_req(cmd->aux, cmd->ident, 
+	_ng_l2cap_echo_req(cmd->aux, cmd->ident,
 			msg->data + sizeof(*ip), ip->echo_size);
 	if (cmd->aux == NULL) {
 		ng_l2cap_free_cmd(cmd);
@@ -1675,7 +1675,7 @@ out:
  */
 
 int
-ng_l2cap_l2ca_get_info_rsp(ng_l2cap_con_p con, u_int32_t token, 
+ng_l2cap_l2ca_get_info_rsp(ng_l2cap_con_p con, u_int32_t token,
 		u_int16_t result, struct mbuf *data)
 {
 	ng_l2cap_p			 l2cap = con->l2cap;
@@ -1731,7 +1731,7 @@ ng_l2cap_l2ca_enable_clt(ng_l2cap_p l2cap, struct ng_mesg *msg)
 	int				 error = 0;
 #if 0
  *	ng_l2cap_l2ca_enable_clt_op	*op = NULL;
- *	u_int16_t			 result; 
+ *	u_int16_t			 result;
  * 	u_int32_t			 token;
 #endif
 
@@ -1751,7 +1751,7 @@ ng_l2cap_l2ca_enable_clt(ng_l2cap_p l2cap, struct ng_mesg *msg)
  *	result = NG_L2CAP_SUCCESS;
 #endif
 
-	switch (ip->psm) 
+	switch (ip->psm)
 	{
 	case 0:
 		/* Special case: disable/enable all PSM */
@@ -1807,11 +1807,11 @@ ng_l2cap_l2ca_enable_clt(ng_l2cap_p l2cap, struct ng_mesg *msg)
  * 	else {
  * 		msg->header.token = token;
  * 		msg->header.flags |= NGF_RESP;
- * 
+ *
  * 		op = (ng_l2cap_l2ca_enable_clt_op *)(msg->data);
  * 		op->result = result;
  * 	}
- * 
+ *
  * 	/* Send response to control hook */
  * 	if (l2cap->ctl != NULL && NG_HOOK_IS_VALID(l2cap->ctl))
  * 		NG_SEND_MSG_HOOK(error, l2cap->node, msg, l2cap->ctl, 0);

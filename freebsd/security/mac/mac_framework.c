@@ -14,7 +14,7 @@
  * Associates, Inc. under DARPA/SPAWAR contract N66001-01-C-8035 ("CBOSS"),
  * as part of the DARPA CHATS research program.
  *
- * This software was enhanced by SPARTA ISSO under SPAWAR contract 
+ * This software was enhanced by SPARTA ISSO under SPAWAR contract
  * N66001-04-C-6019 ("SEFOS").
  *
  * This software was developed at the University of Cambridge Computer

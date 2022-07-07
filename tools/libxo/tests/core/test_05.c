@@ -61,7 +61,7 @@ main (int argc, char **argv)
     xo_set_flags(NULL, XOF_COLUMNS);
 
     xo_open_container("indian-languages");
-    
+
     xo_emit("{T:Sample text}\n");
     xo_emit("This sample text was taken from the Punjabi Wikipedia "
 	    "article on Lahore and transliterated into the Latin script.\n");

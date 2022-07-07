@@ -321,7 +321,7 @@ ar9300_reset_tx_queue(struct ath_hal *ah, u_int q)
 
     /* set cw_min/Max and AIFS values */
     if (q > 3 || (!AH9300(ah)->ah_fccaifs))
-       /* values should not be overwritten if domain is FCC and manual rate 
+       /* values should not be overwritten if domain is FCC and manual rate
          less than 24Mb is set, this check  is making sure this */
     {
         OS_REG_WRITE(ah, AR_DLCL_IFS(q), SM(cw_min, AR_D_LCL_IFS_CWMIN)
@@ -340,7 +340,7 @@ ar9300_reset_tx_queue(struct ath_hal *ah, u_int q)
 
     /* enable DCU to wait for next fragment from QCU  */
     if (AR_SREV_WASP(ah) && (AH_PRIVATE((ah))->ah_macRev <= AR_SREV_REVISION_WASP_12)) {
-        /* WAR for EV#85395: Wasp Rx overrun issue - reduces Tx queue backoff 
+        /* WAR for EV#85395: Wasp Rx overrun issue - reduces Tx queue backoff
          * threshold to 1 to avoid Rx overruns - Fixed in Wasp 1.3 */
         dmisc = AR_D_MISC_CW_BKOFF_EN | AR_D_MISC_FRAG_WAIT_EN | 0x1;
     } else {
@@ -890,10 +890,10 @@ ar9300_abort_tx_dma(struct ath_hal *ah)
     OS_REG_SET_BIT(ah, AR_D_GBL_IFS_MISC, AR_D_GBL_IFS_MISC_IGNORE_BACKOFF);
 
     /*
-     * Let TXE (all queues) clear before waiting for any pending frames 
-     * This is needed before starting the RF_BUS GRANT sequence other wise causes kernel 
-     * panic 
-     */     
+     * Let TXE (all queues) clear before waiting for any pending frames
+     * This is needed before starting the RF_BUS GRANT sequence other wise causes kernel
+     * panic
+     */
     for(i = 0; i < AR9300_ABORT_LOOPS; i++) {
         if(OS_REG_READ(ah, AR_Q_TXE) == 0) {
             break;
@@ -907,9 +907,9 @@ ar9300_abort_tx_dma(struct ath_hal *ah)
 
     /*
      * wait on all tx queues
-     * This need to be checked in the last to gain extra 50 usec. on avg. 
-     * Currently checked first since we dont have a previous channel information currently. 
-     * Which is needed to revert the rf changes. 
+     * This need to be checked in the last to gain extra 50 usec. on avg.
+     * Currently checked first since we dont have a previous channel information currently.
+     * Which is needed to revert the rf changes.
      */
     for (q = AR_NUM_QCU - 1; q >= 0; q--) {
         for (i = 0; i < AR9300_ABORT_LOOPS; i++) {

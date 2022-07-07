@@ -117,7 +117,7 @@
 #include "rtioctl.h"
 #include "ff_ipc.h"
 #include "ff_api.h"
-    
+
 #ifndef __unused
 #define __unused __attribute__((__unused__))
 

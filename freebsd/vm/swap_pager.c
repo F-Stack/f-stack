@@ -160,10 +160,10 @@ static SYSCTL_NODE(_vm_stats, OID_AUTO, swap, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "VM swap stats");
 
 SYSCTL_PROC(_vm, OID_AUTO, swap_reserved, CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE,
-    &swap_reserved, 0, sysctl_page_shift, "A", 
+    &swap_reserved, 0, sysctl_page_shift, "A",
     "Amount of swap storage needed to back all allocated anonymous memory.");
 SYSCTL_PROC(_vm, OID_AUTO, swap_total, CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE,
-    &swap_total, 0, sysctl_page_shift, "A", 
+    &swap_total, 0, sysctl_page_shift, "A",
     "Total amount of available swap storage.");
 
 static int overcommit = 0;
@@ -1975,7 +1975,7 @@ swp_pager_free_empty_swblk(vm_object_t object, struct swblk *sb)
 		uma_zfree(swblk_zone, sb);
 	}
 }
-   
+
 /*
  * SWP_PAGER_META_BUILD() -	add swap block to swap meta data for object
  *
@@ -2136,7 +2136,7 @@ swp_pager_meta_transfer(vm_object_t srcobject, vm_object_t dstobject,
 			if (sb->d[i] == SWAPBLK_NONE)
 				continue;
 			if (dstobject == NULL ||
-			    !swp_pager_xfer_source(srcobject, dstobject, 
+			    !swp_pager_xfer_source(srcobject, dstobject,
 			    sb->p + i - offset, sb->d[i])) {
 				swp_pager_update_freerange(&s_free, &n_free,
 				    sb->d[i]);

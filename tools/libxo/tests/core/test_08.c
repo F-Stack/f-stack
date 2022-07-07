@@ -34,7 +34,7 @@ main (int argc, char **argv)
     };
     struct item *ip;
     int i;
-    
+
     argc = xo_parse_args(argc, argv);
     if (argc < 0)
 	return 1;
@@ -134,7 +134,7 @@ main (int argc, char **argv)
 
 	xo_emit("{k:name/%-10s/%s}{n:count/%12u/%u}\n",
 		ip->i_title, ip->i_count);
-	
+
 	xo_open_marker("m2");
 	for (i = 0; i < 3; i++) {
 	    xo_open_instance("sub");

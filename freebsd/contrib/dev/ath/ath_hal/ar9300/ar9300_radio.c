@@ -138,7 +138,7 @@ ar9300_set_channel(struct ath_hal *ah, struct ieee80211_channel *chan)
             }
         } else if (AR_SREV_POSEIDON(ah) || AR_SREV_APHRODITE(ah)) {
             u_int32_t channel_frac;
-            /* 
+            /*
              * freq_ref = (40 / (refdiva >> a_mode_ref_sel));
              *     (where refdiva = 1 and amoderefsel = 0)
              * ndiv = ((chan_mhz * 4) / 3) / freq_ref;
@@ -150,7 +150,7 @@ ar9300_set_channel(struct ath_hal *ah, struct ieee80211_channel *chan)
         } else if (AR_SREV_WASP(ah) || AR_SREV_SCORPION(ah) || AR_SREV_HONEYBEE(ah)) {
             u_int32_t channel_frac;
             if (clk_25mhz) {
-                /* 
+                /*
                  * freq_ref = (50 / (refdiva >> a_mode_ref_sel));
                  *     (where refdiva = 1 and amoderefsel = 0)
                  * ndiv = ((chan_mhz * 4) / 3) / freq_ref;
@@ -165,7 +165,7 @@ ar9300_set_channel(struct ath_hal *ah, struct ieee80211_channel *chan)
                     channel_frac = (((freq * 2) % 75) * 0x20000) / 75;
                 }
             } else {
-                /* 
+                /*
                  * freq_ref = (50 / (refdiva >> a_mode_ref_sel));
                  *     (where refdiva = 1 and amoderefsel = 0)
                  * ndiv = ((chan_mhz * 4) / 3) / freq_ref;
@@ -188,7 +188,7 @@ ar9300_set_channel(struct ath_hal *ah, struct ieee80211_channel *chan)
         b_mode = 0; /* 5 GHz */
         if ((AR_SREV_WASP(ah) || AR_SREV_SCORPION(ah)) && clk_25mhz){
             u_int32_t channel_frac;
-            /* 
+            /*
              * freq_ref = (50 / (refdiva >> amoderefsel));
              *     (refdiva = 1, amoderefsel = 0)
              * ndiv = ((chan_mhz * 2) / 3) / freq_ref;
@@ -209,7 +209,7 @@ ar9300_set_channel(struct ath_hal *ah, struct ieee80211_channel *chan)
     frac_mode = 1;
     a_mode_ref_sel = 0;
     load_synth_channel = 0;
-    
+
     reg32 = (b_mode << 29);
     OS_REG_WRITE(ah, AR_PHY_SYNTH_CONTROL, reg32);
 

@@ -34,8 +34,8 @@
  */
 #if UMAC_SUPPORT_SMARTANTENNA
 static void  ar9340_soc_gpio_cfg_output_mux(
-    struct ath_hal *ah, 
-    u_int32_t gpio, 
+    struct ath_hal *ah,
+    u_int32_t gpio,
     u_int32_t ah_signal_type)
 {
 #define ADDR_READ(addr)      (*((volatile u_int32_t *)(addr)))
@@ -55,12 +55,12 @@ static void  ar9340_soc_gpio_cfg_output_mux(
         return;
     }
 #if ATH_SMARTANTENNA_DISABLE_JTAG
-/* 
+/*
  * To use GPIO pins 0 and 1 for controling antennas, JTAG needs to disabled.
  */
     if (gpio <= MAX_JTAG_GPIO_PIN) {
         flags = ADDR_READ(AR9340_SOC_GPIO_FUNCTION);
-        flags |= WASP_DISABLE_JTAG; 
+        flags |= WASP_DISABLE_JTAG;
         ADDR_WRITE(AR9340_SOC_GPIO_FUNCTION, flags);
     }
 #endif
@@ -69,7 +69,7 @@ static void  ar9340_soc_gpio_cfg_output_mux(
     address = (volatile u_int32_t *)(AR9340_SOC_GPIO_FUN0 + (out_func*4));
 
     flags = ADDR_READ(address);
-    flags |= ah_signal_type << (8*shift); 
+    flags |= ah_signal_type << (8*shift);
     ADDR_WRITE(address, flags);
     flags = ADDR_READ(AR9340_SOC_GPIO_OE);
     flags &= ~(1 << gpio);
@@ -188,13 +188,13 @@ ar9300_gpio_cfg_output(
             gpio = ATH_GPIOPIN_ANTCHAIN0;
             ah_signal_type = ATH_GPIOFUNC_ANTCHAIN0;
             smart_ant = 1;
-            break; 
+            break;
         case AR_GPIO_OUTPUT_MUX_AS_SMARTANT_CTRL1:
             gpio = ATH_GPIOPIN_ANTCHAIN1;
             ah_signal_type = ATH_GPIOFUNC_ANTCHAIN1;
             smart_ant = 1;
             break;
-        case AR_GPIO_OUTPUT_MUX_AS_SMARTANT_CTRL2:    
+        case AR_GPIO_OUTPUT_MUX_AS_SMARTANT_CTRL2:
             gpio = ATH_GPIOPIN_ANTCHAIN2;
             ah_signal_type = ATH_GPIOFUNC_ANTCHAIN2;
             smart_ant = 1;
@@ -301,13 +301,13 @@ ar9300_gpio_cfg_output_led_off(
             gpio = ATH_GPIOPIN_ANTCHAIN0;
             ah_signal_type = ATH_GPIOFUNC_ANTCHAIN0;
             smart_ant = 1;
-            break; 
+            break;
         case AR_GPIO_OUTPUT_MUX_AS_SMARTANT_CTRL1:
             gpio = ATH_GPIOPIN_ANTCHAIN1;
             ah_signal_type = ATH_GPIOFUNC_ANTCHAIN1;
             smart_ant = 1;
             break;
-        case AR_GPIO_OUTPUT_MUX_AS_SMARTANT_CTRL2:    
+        case AR_GPIO_OUTPUT_MUX_AS_SMARTANT_CTRL2:
             gpio = ATH_GPIOPIN_ANTCHAIN2;
             ah_signal_type = ATH_GPIOFUNC_ANTCHAIN2;
             smart_ant = 1;
@@ -327,7 +327,7 @@ ar9300_gpio_cfg_output_led_off(
 
     // 2 bits per output mode
     gpio_shift = 2*gpio;
-    
+
     OS_REG_RMW(ah,
                AR_HOSTIF_REG(ah, AR_GPIO_OE_OUT),
                (AR_GPIO_OE_OUT_DRV_NO << gpio_shift),
@@ -369,7 +369,7 @@ ar9300_gpio_cfg_input(struct ath_hal *ah, u_int32_t gpio)
 
 /*
  * Once configured for I/O - set output lines
- * output the level of GPio PIN without care work mode 
+ * output the level of GPio PIN without care work mode
  */
 HAL_BOOL
 ar9300_gpio_set(struct ath_hal *ah, u_int32_t gpio, u_int32_t val)
@@ -506,7 +506,7 @@ u_int32_t
 ar9300_gpio_get_polarity(struct ath_hal *ah)
 {
     return OS_REG_READ(ah, AR_HOSTIF_REG(ah, AR_GPIO_INTR_POL));
- 
+
 }
 
 void
@@ -569,8 +569,8 @@ ar9300_gpio_set_mask(struct ath_hal *ah, u_int32_t mask, u_int32_t pol_map)
 }
 
 #ifdef AH_DEBUG
-void ar9300_gpio_show(struct ath_hal *ah); 
-void ar9300_gpio_show(struct ath_hal *ah) 
+void ar9300_gpio_show(struct ath_hal *ah);
+void ar9300_gpio_show(struct ath_hal *ah)
 {
     ath_hal_printf(ah, "--- 9382 GPIOs ---(ah=%p)\n", ah );
     ath_hal_printf(ah,

@@ -250,7 +250,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     delta = ngx_current_msec;
 
 #if (NGX_HAVE_FSTACK)
-    /* 
+    /*
      * NGX_FF_PROCESS_*s run on both fstack and kernel,
      * others ( e.g. cache manager/loader ) only run on kernel.
      */
@@ -853,7 +853,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         rev->accept = 1;
 
 #if (NGX_HAVE_FSTACK)
-        /* Note when nginx running on fstack, 
+        /* Note when nginx running on fstack,
             make sure that add the right fd to kqueue !! */
         c->read->belong_to_host = c->write->belong_to_host = ls[i].belong_to_host;
 #endif

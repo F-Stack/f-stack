@@ -1298,7 +1298,7 @@ ip6_savecontrol_v4(struct inpcb *inp, struct mbuf *m, struct mbuf **mp,
 			/* We won't hit this code */
 			bzero(&pi6.ipi6_addr, sizeof(struct in6_addr));
 #endif
-		} else {	
+		} else {
 			bcopy(&ip6->ip6_dst, &pi6.ipi6_addr, sizeof(struct in6_addr));
 			in6_clearscope(&pi6.ipi6_addr);	/* XXX */
 		}

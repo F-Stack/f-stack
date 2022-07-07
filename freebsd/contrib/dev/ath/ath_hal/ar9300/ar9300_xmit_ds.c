@@ -375,13 +375,13 @@ ar9300_proc_tx_desc(struct ath_hal *ah, void *txstatus)
  * this is required for VOW_DCS ( dynamic channel selection )
  */
 u_int32_t
-ar9300_calc_tx_airtime(struct ath_hal *ah, void *ds, struct ath_tx_status *ts, 
+ar9300_calc_tx_airtime(struct ath_hal *ah, void *ds, struct ath_tx_status *ts,
         HAL_BOOL comp_wastedt, u_int8_t nbad, u_int8_t nframes )
 {
     struct ar9300_txc *ads = AR9300TXC(ds);
     int finalindex_tries;
     u_int32_t airtime, lastrate_dur;
-    
+
 
     /*
      * Number of attempts made on the final index
@@ -434,7 +434,7 @@ ar9300_calc_tx_airtime(struct ath_hal *ah, void *ds, struct ath_tx_status *ts,
     }
 
     if ( comp_wastedt && (ts->ts_flags & HAL_TX_BA)){
-        airtime += nbad?((lastrate_dur*nbad) / nframes):0;  
+        airtime += nbad?((lastrate_dur*nbad) / nframes):0;
     }
     return airtime;
 
@@ -710,7 +710,7 @@ ar9300_set_11n_rate_scenario(
     u_int rts_cts_duration,
     HAL_11N_RATE_SERIES series[],
     u_int nseries,
-    u_int flags, 
+    u_int flags,
     u_int32_t smart_antenna)
 {
     struct ath_hal_private *ap = AH_PRIVATE(ah);
@@ -801,7 +801,7 @@ ar9300_set_11n_rate_scenario(
         }
         ads->ds_ctl20 |=
             set_11n_tx_power(1, AH_MIN(txpower, series[1].tx_power_cap));
-               
+
 
         /* Series 2 TxPower */
         if (!cal_pkt) {

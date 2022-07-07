@@ -1479,7 +1479,7 @@ cc_conn_sig_handle(struct ccconn *conn, enum conn_sig sig,
 			    NULL, 0);
 			cc_disconnect_from_user(conn);
 			break;
-			
+
 		  default:
 			goto bad_state;
 		}

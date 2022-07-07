@@ -414,7 +414,7 @@ bcm2835_rng_attach(device_t dev)
 	    sysctl_bcm2835_rng_dump, "S", "Dump RNG registers");
 #endif
 
-	/* 
+	/*
 	 * Schedule the initial harvesting one second from now, which should give the
 	 * hardware RNG plenty of time to generate the first random bytes.
 	 */

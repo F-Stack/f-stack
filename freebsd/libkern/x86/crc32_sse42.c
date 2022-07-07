@@ -78,7 +78,7 @@ _mm_crc32_u32(uint32_t x, uint32_t y)
 #define LONG	128
 #define SHORT	64
 
-/* 
+/*
  * Tables for updating a crc for LONG, 2 * LONG, SHORT and 2 * SHORT bytes
  * of value 0 later in the input stream, in the same way that the hardware
  * would, but in software without calculating intermediate steps.

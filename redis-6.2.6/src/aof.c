@@ -1004,7 +1004,7 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
                     AOF_REWRITE_ITEMS_PER_CMD : items;
                 if (!rioWriteBulkCount(r,'*',2+cmd_items) ||
                     !rioWriteBulkString(r,"RPUSH",5) ||
-                    !rioWriteBulkObject(r,key)) 
+                    !rioWriteBulkObject(r,key))
                 {
                     quicklistReleaseIterator(li);
                     return 0;
@@ -1048,7 +1048,7 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
 
                 if (!rioWriteBulkCount(r,'*',2+cmd_items) ||
                     !rioWriteBulkString(r,"SADD",4) ||
-                    !rioWriteBulkObject(r,key)) 
+                    !rioWriteBulkObject(r,key))
                 {
                     return 0;
                 }
@@ -1069,7 +1069,7 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
 
                 if (!rioWriteBulkCount(r,'*',2+cmd_items) ||
                     !rioWriteBulkString(r,"SADD",4) ||
-                    !rioWriteBulkObject(r,key)) 
+                    !rioWriteBulkObject(r,key))
                 {
                     dictReleaseIterator(di);
                     return 0;
@@ -1077,7 +1077,7 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
             }
             if (!rioWriteBulkString(r,ele,sdslen(ele))) {
                 dictReleaseIterator(di);
-                return 0;          
+                return 0;
             }
             if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
             items--;
@@ -1117,7 +1117,7 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
 
                 if (!rioWriteBulkCount(r,'*',2+cmd_items*2) ||
                     !rioWriteBulkString(r,"ZADD",4) ||
-                    !rioWriteBulkObject(r,key)) 
+                    !rioWriteBulkObject(r,key))
                 {
                     return 0;
                 }
@@ -1147,7 +1147,7 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
 
                 if (!rioWriteBulkCount(r,'*',2+cmd_items*2) ||
                     !rioWriteBulkString(r,"ZADD",4) ||
-                    !rioWriteBulkObject(r,key)) 
+                    !rioWriteBulkObject(r,key))
                 {
                     dictReleaseIterator(di);
                     return 0;
@@ -1209,7 +1209,7 @@ int rewriteHashObject(rio *r, robj *key, robj *o) {
 
             if (!rioWriteBulkCount(r,'*',2+cmd_items*2) ||
                 !rioWriteBulkString(r,"HMSET",5) ||
-                !rioWriteBulkObject(r,key)) 
+                !rioWriteBulkObject(r,key))
             {
                 hashTypeReleaseIterator(hi);
                 return 0;
@@ -1220,7 +1220,7 @@ int rewriteHashObject(rio *r, robj *key, robj *o) {
             !rioWriteHashIteratorCursor(r, hi, OBJ_HASH_VALUE))
         {
             hashTypeReleaseIterator(hi);
-            return 0;           
+            return 0;
         }
         if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
         items--;
@@ -1297,10 +1297,10 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
              * the ID, the second is an array of field-value pairs. */
 
             /* Emit the XADD <key> <id> ...fields... command. */
-            if (!rioWriteBulkCount(r,'*',3+numfields*2) || 
+            if (!rioWriteBulkCount(r,'*',3+numfields*2) ||
                 !rioWriteBulkString(r,"XADD",4) ||
                 !rioWriteBulkObject(r,key) ||
-                !rioWriteBulkStreamID(r,&id)) 
+                !rioWriteBulkStreamID(r,&id))
             {
                 streamIteratorStop(&si);
                 return 0;
@@ -1310,10 +1310,10 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                 int64_t field_len, value_len;
                 streamIteratorGetField(&si,&field,&value,&field_len,&value_len);
                 if (!rioWriteBulkString(r,(char*)field,field_len) ||
-                    !rioWriteBulkString(r,(char*)value,value_len)) 
+                    !rioWriteBulkString(r,(char*)value,value_len))
                 {
                     streamIteratorStop(&si);
-                    return 0;                  
+                    return 0;
                 }
             }
         }
@@ -1321,7 +1321,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
         /* Use the XADD MAXLEN 0 trick to generate an empty stream if
          * the key we are serializing is an empty string, which is possible
          * for the Stream type. */
-        id.ms = 0; id.seq = 1; 
+        id.ms = 0; id.seq = 1;
         if (!rioWriteBulkCount(r,'*',7) ||
             !rioWriteBulkString(r,"XADD",4) ||
             !rioWriteBulkObject(r,key) ||
@@ -1332,7 +1332,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
             !rioWriteBulkString(r,"y",1))
         {
             streamIteratorStop(&si);
-            return 0;     
+            return 0;
         }
     }
 
@@ -1341,10 +1341,10 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
     if (!rioWriteBulkCount(r,'*',3) ||
         !rioWriteBulkString(r,"XSETID",6) ||
         !rioWriteBulkObject(r,key) ||
-        !rioWriteBulkStreamID(r,&s->last_id)) 
+        !rioWriteBulkStreamID(r,&s->last_id))
     {
         streamIteratorStop(&si);
-        return 0; 
+        return 0;
     }
 
 
@@ -1361,7 +1361,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkString(r,"CREATE",6) ||
                 !rioWriteBulkObject(r,key) ||
                 !rioWriteBulkString(r,(char*)ri.key,ri.key_len) ||
-                !rioWriteBulkStreamID(r,&group->last_id)) 
+                !rioWriteBulkStreamID(r,&group->last_id))
             {
                 raxStop(&ri);
                 streamIteratorStop(&si);
@@ -1878,7 +1878,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
         }
         latencyEndMonitor(latency);
         latencyAddSampleIfNeeded("aof-rewrite-diff-write",latency);
-  
+
         if (server.aof_fsync == AOF_FSYNC_EVERYSEC) {
             aof_background_fsync(newfd);
         } else if (server.aof_fsync == AOF_FSYNC_ALWAYS) {

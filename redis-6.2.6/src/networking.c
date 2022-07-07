@@ -2736,8 +2736,8 @@ NULL
                 type = CLIENT_PAUSE_ALL;
             } else {
                 addReplyError(c,
-                    "CLIENT PAUSE mode must be WRITE or ALL");  
-                return;       
+                    "CLIENT PAUSE mode must be WRITE or ALL");
+                return;
             }
         }
 
@@ -2924,7 +2924,7 @@ NULL
             numflags++;
             if (c->flags & CLIENT_TRACKING_CACHING) {
                 addReplyBulkCString(c,"caching-yes");
-                numflags++;        
+                numflags++;
             }
         }
         if (c->flags & CLIENT_TRACKING_OPTOUT) {
@@ -2932,7 +2932,7 @@ NULL
             numflags++;
             if (c->flags & CLIENT_TRACKING_CACHING) {
                 addReplyBulkCString(c,"caching-no");
-                numflags++;        
+                numflags++;
             }
         }
         if (c->flags & CLIENT_TRACKING_NOLOOP) {
@@ -3332,7 +3332,7 @@ void flushSlavesOutputBuffers(void) {
  * A main use case of this function is to allow pausing replication traffic
  * so that a failover without data loss to occur. Replicas will continue to receive
  * traffic to faciliate this functionality.
- * 
+ *
  * This function is also internally used by Redis Cluster for the manual
  * failover procedure implemented by CLUSTER FAILOVER.
  *
@@ -3362,7 +3362,7 @@ void unpauseClients(void) {
     listNode *ln;
     listIter li;
     client *c;
-    
+
     server.client_pause_type = CLIENT_PAUSE_OFF;
     server.client_pause_end_time = 0;
 
@@ -3374,13 +3374,13 @@ void unpauseClients(void) {
     }
 }
 
-/* Returns true if clients are paused and false otherwise. */ 
+/* Returns true if clients are paused and false otherwise. */
 int areClientsPaused(void) {
     return server.client_pause_type != CLIENT_PAUSE_OFF;
 }
 
 /* Checks if the current client pause has elapsed and unpause clients
- * if it has. Also returns true if clients are now paused and false 
+ * if it has. Also returns true if clients are now paused and false
  * otherwise. */
 int checkClientPauseTimeoutAndReturnIfPaused(void) {
     if (!areClientsPaused())
@@ -3684,7 +3684,7 @@ int postponeClientRead(client *c) {
     if (server.io_threads_active &&
         server.io_threads_do_reads &&
         !ProcessingEventsWhileBlocked &&
-        !(c->flags & (CLIENT_MASTER|CLIENT_SLAVE|CLIENT_PENDING_READ|CLIENT_BLOCKED))) 
+        !(c->flags & (CLIENT_MASTER|CLIENT_SLAVE|CLIENT_PENDING_READ|CLIENT_BLOCKED)))
     {
         c->flags |= CLIENT_PENDING_READ;
         listAddNodeHead(server.clients_pending_read,c);

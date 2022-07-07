@@ -5137,7 +5137,7 @@ ff_getmaxfd(void)
 {
 	struct thread *td = curthread;
 	return 	getmaxfd(td);
-	
+
 }
 
 #endif

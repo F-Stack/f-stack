@@ -147,7 +147,7 @@ lookup_host (char *host, struct in_addr *ipaddr)
  * 	ipfw table NAME swap NAME
  * 	ipfw table NAME lock
  * 	ipfw table NAME unlock
- * 	ipfw table NAME add addr[/masklen] [value] 
+ * 	ipfw table NAME add addr[/masklen] [value]
  * 	ipfw table NAME add [addr[/masklen] value] [addr[/masklen] value] ..
  * 	ipfw table NAME delete addr[/masklen] [addr[/masklen]] ..
  * 	ipfw table NAME lookup addr
@@ -724,7 +724,7 @@ struct ta_cldata {
 	uint8_t		spare4;
 	uint16_t	itemsize;
 	uint16_t	itemsize6;
-	uint32_t	size;	
+	uint32_t	size;
 	uint32_t	count;
 };
 
@@ -871,7 +871,7 @@ table_show_one(ipfw_xtable_info *i, void *arg)
 	table_show_list(oh, is_all);
 
 	free(oh);
-	return (0);	
+	return (0);
 }
 
 static int
@@ -951,7 +951,7 @@ table_modify_record(ipfw_obj_header *oh, int ac, char *av[], int add,
 
 	if (ac == 0)
 		errx(EX_USAGE, "address required");
-	
+
 	if (add != 0) {
 		cmd = IP_FW_TABLE_XADD;
 		texterr = "Adding record failed";
@@ -973,7 +973,7 @@ table_modify_record(ipfw_obj_header *oh, int ac, char *av[], int add,
 		memset(&tent, 0, sizeof(tent));
 		tent_buf = &tent;
 	} else {
-		
+
 		if ((tent_buf = calloc(count, sizeof(tent))) == NULL)
 			errx(EX_OSERR,
 			    "Unable to allocate memory for all entries");
@@ -999,10 +999,10 @@ table_modify_record(ipfw_obj_header *oh, int ac, char *av[], int add,
 				    xi.tablename);
 			table_do_create(oh, &xi);
 		}
-	
+
 		oh->ntlv.type = type;
 		ac--; av++;
-	
+
 		if (add != 0 && ac > 0) {
 			tentry_fill_value(oh, ptent, *av, type, vmask);
 			ac--; av++;
@@ -1287,7 +1287,7 @@ tentry_fill_key_type(char *arg, ipfw_obj_tentry *tentry, uint8_t type,
 				else
 					key = pent->p_proto;
 			}
-			
+
 			if (key > 255)
 				errx(EX_DATAERR, "Bad protocol number: %u",key);
 
@@ -1359,7 +1359,7 @@ tentry_fill_key_type(char *arg, ipfw_obj_tentry *tentry, uint8_t type,
 		tfe->af = af;
 
 		break;
-	
+
 	default:
 		errx(EX_DATAERR, "Unsupported table type: %d", type);
 	}

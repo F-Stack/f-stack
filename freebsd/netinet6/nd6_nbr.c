@@ -1137,10 +1137,10 @@ VNET_DEFINE_STATIC(struct rwlock, dad_rwlock);
 #define	V_dadq			VNET(dadq)
 #define	V_dad_rwlock		VNET(dad_rwlock)
 
-#define	DADQ_RLOCK()		rw_rlock(&V_dad_rwlock)	
-#define	DADQ_RUNLOCK()		rw_runlock(&V_dad_rwlock)	
-#define	DADQ_WLOCK()		rw_wlock(&V_dad_rwlock)	
-#define	DADQ_WUNLOCK()		rw_wunlock(&V_dad_rwlock)	
+#define	DADQ_RLOCK()		rw_rlock(&V_dad_rwlock)
+#define	DADQ_RUNLOCK()		rw_runlock(&V_dad_rwlock)
+#define	DADQ_WLOCK()		rw_wlock(&V_dad_rwlock)
+#define	DADQ_WUNLOCK()		rw_wunlock(&V_dad_rwlock)
 
 static void
 nd6_dad_add(struct dadq *dp)

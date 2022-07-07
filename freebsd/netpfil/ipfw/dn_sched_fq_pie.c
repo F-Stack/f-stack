@@ -1,11 +1,11 @@
-/* 
+/*
  * FQ_PIE - The FlowQueue-PIE scheduler/AQM
  *
  * $FreeBSD$
- * 
+ *
  * Copyright (C) 2016 Centre for Advanced Internet Architectures,
  *  Swinburne University of Technology, Melbourne, Australia.
- * Portions of this code were made possible in part by a gift from 
+ * Portions of this code were made possible in part by a gift from
  *  The Comcast Innovation Fund.
  * Implemented by Rasool Al-Saadi <ralsaadi@swin.edu.au>
  *
@@ -34,11 +34,11 @@
 /* Important note:
  * As there is no an office document for FQ-PIE specification, we used
  * FQ-CoDel algorithm with some modifications to implement FQ-PIE.
- * This FQ-PIE implementation is a beta version and have not been tested 
+ * This FQ-PIE implementation is a beta version and have not been tested
  * extensively. Our FQ-PIE uses stand-alone PIE AQM per sub-queue. By
  * default, timestamp is used to calculate queue delay instead of departure
- * rate estimation method. Although departure rate estimation is available 
- * as testing option, the results could be incorrect. Moreover, turning PIE on 
+ * rate estimation method. Although departure rate estimation is available
+ * as testing option, the results could be incorrect. Moreover, turning PIE on
  * and off option is available but it does not work properly in this version.
  */
 
@@ -133,7 +133,7 @@ struct fq_pie_si_extra {
 
 /* fq_pie scheduler instance */
 struct fq_pie_si {
-	struct dn_sch_inst _si;	/* standard scheduler instance. SHOULD BE FIRST */ 
+	struct dn_sch_inst _si;	/* standard scheduler instance. SHOULD BE FIRST */
 	struct dn_queue main_q; /* main queue is after si directly */
 	uint32_t perturbation; 	/* random value */
 	struct fq_pie_list newflows;	/* list of new queues */
@@ -145,14 +145,14 @@ static struct dn_alg fq_pie_desc;
 
 /*  Default FQ-PIE parameters including PIE */
 /*  PIE defaults
- * target=15ms, max_burst=150ms, max_ecnth=0.1, 
+ * target=15ms, max_burst=150ms, max_ecnth=0.1,
  * alpha=0.125, beta=1.25, tupdate=15ms
  * FQ-
  * flows=1024, limit=10240, quantum =1514
  */
-struct dn_sch_fq_pie_parms 
+struct dn_sch_fq_pie_parms
  fq_pie_sysctl = {{15000 * AQM_TIME_1US, 15000 * AQM_TIME_1US,
-	150000 * AQM_TIME_1US, PIE_SCALE * 0.1, PIE_SCALE * 0.125, 
+	150000 * AQM_TIME_1US, PIE_SCALE * 0.1, PIE_SCALE * 0.125,
 	PIE_SCALE * 1.25,	PIE_CAPDROP_ENABLED | PIE_DERAND_ENABLED},
 	1024, 10240, 1514};
 
@@ -166,7 +166,7 @@ fqpie_sysctl_alpha_beta_handler(SYSCTL_HANDLER_ARGS)
 		value = fq_pie_sysctl.pcfg.alpha;
 	else
 		value = fq_pie_sysctl.pcfg.beta;
-		
+
 	value = value * 1000 / PIE_SCALE;
 	error = sysctl_handle_long(oidp, &value, 0, req);
 	if (error != 0 || req->newptr == NULL)
@@ -290,7 +290,7 @@ fq_update_stats(struct fq_pie_flow *q, struct fq_pie_si *si, int len,
 {
 	int inc = 0;
 
-	if (len < 0) 
+	if (len < 0)
 		inc = -1;
 	else if (len > 0)
 		inc = 1;
@@ -300,7 +300,7 @@ fq_update_stats(struct fq_pie_flow *q, struct fq_pie_si *si, int len,
 		q->stats.drops ++;
 		si->_si.ni.drops ++;
 		io_pkt_drop ++;
-	} 
+	}
 
 	if (!drop || (drop && len < 0)) {
 		/* Update stats for the main queue */
@@ -319,10 +319,10 @@ fq_update_stats(struct fq_pie_flow *q, struct fq_pie_si *si, int len,
 	if (inc > 0) {
 		si->main_q.ni.tot_bytes += len;
 		si->main_q.ni.tot_pkts ++;
-		
+
 		q->stats.tot_bytes +=len;
 		q->stats.tot_pkts++;
-		
+
 		si->_si.ni.tot_bytes +=len;
 		si->_si.ni.tot_pkts ++;
 	}
@@ -358,14 +358,14 @@ fq_pie_extract_head(struct fq_pie_flow *q, aqm_time_t *pkt_ts,
 			*pkt_ts = 0;
 		} else {
 			*pkt_ts = *(aqm_time_t *)(mtag + 1);
-			m_tag_delete(m,mtag); 
+			m_tag_delete(m,mtag);
 		}
 	}
 	return m;
 }
 
 /*
- * Callout function for drop probability calculation 
+ * Callout function for drop probability calculation
  * This function is called over tupdate ms and takes pointer of FQ-PIE
  * flow as an argument
   */
@@ -374,7 +374,7 @@ fq_calculate_drop_prob(void *x)
 {
 	struct fq_pie_flow *q = (struct fq_pie_flow *) x;
 	struct pie_status *pst = &q->pst;
-	struct dn_aqm_pie_parms *pprms; 
+	struct dn_aqm_pie_parms *pprms;
 	int64_t p, prob, oldprob;
 	aqm_time_t now;
 	int p_isneg;
@@ -395,17 +395,17 @@ fq_calculate_drop_prob(void *x)
 			pst->current_qdelay = 0;
 
 	/* calculate drop probability */
-	p = (int64_t)pprms->alpha * 
-		((int64_t)pst->current_qdelay - (int64_t)pprms->qdelay_ref); 
-	p +=(int64_t) pprms->beta * 
-		((int64_t)pst->current_qdelay - (int64_t)pst->qdelay_old); 
+	p = (int64_t)pprms->alpha *
+		((int64_t)pst->current_qdelay - (int64_t)pprms->qdelay_ref);
+	p +=(int64_t) pprms->beta *
+		((int64_t)pst->current_qdelay - (int64_t)pst->qdelay_old);
 
 	/* take absolute value so right shift result is well defined */
 	p_isneg = p < 0;
 	if (p_isneg) {
 		p = -p;
 	}
-		
+
 	/* We PIE_MAX_PROB shift by 12-bits to increase the division precision  */
 	p *= (PIE_MAX_PROB << 12) / AQM_TIME_1S;
 
@@ -461,7 +461,7 @@ fq_calculate_drop_prob(void *x)
 	} else {
 		if (pst->current_qdelay == 0 && pst->qdelay_old == 0) {
 			/* 0.98 ~= 1- 1/64 */
-			prob = prob - (prob >> 6); 
+			prob = prob - (prob >> 6);
 		}
 
 		if (prob > PIE_MAX_PROB) {
@@ -478,7 +478,7 @@ fq_calculate_drop_prob(void *x)
 	if ((pst->sflags & PIE_ACTIVE) && pst->burst_allowance) {
 		if (pst->burst_allowance > pprms->tupdate)
 			pst->burst_allowance -= pprms->tupdate;
-		else 
+		else
 			pst->burst_allowance = 0;
 	}
 
@@ -490,12 +490,12 @@ fq_calculate_drop_prob(void *x)
 	mtx_unlock(&pst->lock_mtx);
 }
 
-/* 
+/*
  * Reset PIE variables & activate the queue
  */
 __inline static void
 fq_activate_pie(struct fq_pie_flow *q)
-{ 
+{
 	struct pie_status *pst = &q->pst;
 	struct dn_aqm_pie_parms *pprms;
 
@@ -519,12 +519,12 @@ fq_activate_pie(struct fq_pie_flow *q)
 	mtx_unlock(&pst->lock_mtx);
 }
 
- /* 
+ /*
   * Deactivate PIE and stop probe update callout
   */
 __inline static void
 fq_deactivate_pie(struct pie_status *pst)
-{ 
+{
 	mtx_lock(&pst->lock_mtx);
 	pst->sflags &= ~(PIE_ACTIVE | PIE_INMEASUREMENT);
 	callout_stop(&pst->aqm_pie_callout);
@@ -532,7 +532,7 @@ fq_deactivate_pie(struct pie_status *pst)
 	mtx_unlock(&pst->lock_mtx);
 }
 
- /* 
+ /*
   * Initialize PIE for sub-queue 'q'
   */
 static int
@@ -549,8 +549,8 @@ pie_init(struct fq_pie_flow *q, struct fq_pie_schk *fqpie_schk)
 		q->psi_extra->nr_active_q++;
 
 		/* For speed optimization, we caculate 1/3 queue size once here */
-		// XXX limit divided by number of queues divided by 3 ??? 
-		pst->one_third_q_size = (fqpie_schk->cfg.limit / 
+		// XXX limit divided by number of queues divided by 3 ???
+		pst->one_third_q_size = (fqpie_schk->cfg.limit /
 			fqpie_schk->cfg.flows_cnt) / 3;
 
 		mtx_init(&pst->lock_mtx, "mtx_pie", NULL, MTX_DEF);
@@ -561,7 +561,7 @@ pie_init(struct fq_pie_flow *q, struct fq_pie_schk *fqpie_schk)
 	return err;
 }
 
-/* 
+/*
  * callout function to destroy PIE lock, and free fq_pie flows and fq_pie si
  * extra memory when number of active sub-queues reaches zero.
  * 'x' is a fq_pie_flow to be destroyed
@@ -589,8 +589,8 @@ fqpie_callout_cleanup(void *x)
 	DN_BH_WUNLOCK();
 }
 
-/* 
- * Clean up PIE status for sub-queue 'q' 
+/*
+ * Clean up PIE status for sub-queue 'q'
  * Stop callout timer and destroy mtx using fqpie_callout_cleanup() callout.
  */
 static int
@@ -605,7 +605,7 @@ pie_cleanup(struct fq_pie_flow *q)
 	return 0;
 }
 
-/* 
+/*
  * Dequeue and return a pcaket from sub-queue 'q' or NULL if 'q' is empty.
  * Also, caculate depature time or queue delay using timestamp
  */
@@ -623,7 +623,7 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 	pprms = q->pst.parms;
 
 	/*we extarct packet ts only when Departure Rate Estimation dis not used*/
-	m = fq_pie_extract_head(q, &pkt_ts, si, 
+	m = fq_pie_extract_head(q, &pkt_ts, si,
 		!(pprms->flags & PIE_DEPRATEEST_ENABLED));
 
 	if (!m || !(pst->sflags & PIE_ACTIVE))
@@ -638,17 +638,17 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 			if (pst->dq_count >= PIE_DQ_THRESHOLD) {
 				dq_time = now - pst->measurement_start;
 
-				/* 
-				 * if we don't have old avg dq_time i.e PIE is (re)initialized, 
+				/*
+				 * if we don't have old avg dq_time i.e PIE is (re)initialized,
 				 * don't use weight to calculate new avg_dq_time
 				 */
 				if(pst->avg_dq_time == 0)
 					pst->avg_dq_time = dq_time;
 				else {
-					/* 
-					 * weight = PIE_DQ_THRESHOLD/2^6, but we scaled 
-					 * weight by 2^8. Thus, scaled 
-					 * weight = PIE_DQ_THRESHOLD /2^8 
+					/*
+					 * weight = PIE_DQ_THRESHOLD/2^6, but we scaled
+					 * weight by 2^8. Thus, scaled
+					 * weight = PIE_DQ_THRESHOLD /2^8
 					 * */
 					w = PIE_DQ_THRESHOLD >> 8;
 					pst->avg_dq_time = (dq_time* w
@@ -658,11 +658,11 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 			}
 		}
 
-		/* 
+		/*
 		 * Start new measurment cycle when the queue has
 		 *  PIE_DQ_THRESHOLD worth of bytes.
 		 */
-		if(!(pst->sflags & PIE_INMEASUREMENT) && 
+		if(!(pst->sflags & PIE_INMEASUREMENT) &&
 			q->stats.len_bytes >= PIE_DQ_THRESHOLD) {
 			pst->sflags |= PIE_INMEASUREMENT;
 			pst->measurement_start = now;
@@ -673,7 +673,7 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 	else
 		pst->current_qdelay = now - pkt_ts;
 
-	return m;	
+	return m;
 }
 
  /*
@@ -698,11 +698,11 @@ pie_enqueue(struct fq_pie_flow *q, struct mbuf* m, struct fq_pie_si *si)
 	/* drop/mark the packet when PIE is active and burst time elapsed */
 	if (pst->sflags & PIE_ACTIVE && pst->burst_allowance == 0
 		&& drop_early(pst, q->stats.len_bytes) == DROP) {
-			/* 
-			 * if drop_prob over ECN threshold, drop the packet 
+			/*
+			 * if drop_prob over ECN threshold, drop the packet
 			 * otherwise mark and enqueue it.
 			 */
-			if (pprms->flags & PIE_ECN_ENABLED && pst->drop_prob < 
+			if (pprms->flags & PIE_ECN_ENABLED && pst->drop_prob <
 				(pprms->max_ecnth << (PIE_PROB_BITS - PIE_FIX_POINT_BITS))
 				&& ecn_mark(m))
 				t = ENQUE;
@@ -710,8 +710,8 @@ pie_enqueue(struct fq_pie_flow *q, struct mbuf* m, struct fq_pie_si *si)
 				t = DROP;
 		}
 
-	/* Turn PIE on when 1/3 of the queue is full */ 
-	if (!(pst->sflags & PIE_ACTIVE) && q->stats.len_bytes >= 
+	/* Turn PIE on when 1/3 of the queue is full */
+	if (!(pst->sflags & PIE_ACTIVE) && q->stats.len_bytes >=
 		pst->one_third_q_size) {
 		fq_activate_pie(q);
 	}
@@ -719,7 +719,7 @@ pie_enqueue(struct fq_pie_flow *q, struct mbuf* m, struct fq_pie_si *si)
 	/*  reset burst tolerance and optinally turn PIE off*/
 	if (pst->drop_prob == 0 && pst->current_qdelay < (pprms->qdelay_ref >> 1)
 		&& pst->qdelay_old < (pprms->qdelay_ref >> 1)) {
-			
+
 			pst->burst_allowance = pprms->max_burst;
 		if (pprms->flags & PIE_ON_OFF_MODE_ENABLED && q->stats.len_bytes<=0)
 			fq_deactivate_pie(pst);
@@ -734,7 +734,7 @@ pie_enqueue(struct fq_pie_flow *q, struct mbuf* m, struct fq_pie_si *si)
 			mtag = m_tag_alloc(MTAG_ABI_COMPAT, DN_AQM_MTAG_TS,
 				sizeof(aqm_time_t), M_NOWAIT);
 		if (mtag == NULL) {
-			m_freem(m); 
+			m_freem(m);
 			t = DROP;
 		}
 		*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
@@ -777,7 +777,7 @@ pie_drop_head(struct fq_pie_flow *q, struct fq_pie_si *si)
 
 /*
  * Classify a packet to queue number using Jenkins hash function.
- * Return: queue number 
+ * Return: queue number
  * the input of the hash are protocol no, perturbation, src IP, dst IP,
  * src port, dst port,
  */
@@ -821,7 +821,7 @@ fq_pie_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_pie_si *si)
 
 		hash = jenkins_hash(tuple, 41, HASHINIT) %  fcount;
 		return hash;
-	} 
+	}
 //#endif
 
 	/* IPv4 */
@@ -854,10 +854,10 @@ fq_pie_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_pie_si *si)
  * Enqueue a packet into an appropriate queue according to
  * FQ-CoDe; algorithm.
  */
-static int 
-fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q, 
+static int
+fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	struct mbuf *m)
-{ 
+{
 	struct fq_pie_si *si;
 	struct fq_pie_schk *schk;
 	struct dn_sch_fq_pie_parms *param;
@@ -875,11 +875,11 @@ fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	idx = fq_pie_classify_flow(m, param->flows_cnt, si);
 
 	/* enqueue packet into appropriate queue using PIE AQM.
-	 * Note: 'pie_enqueue' function returns 1 only when it unable to 
+	 * Note: 'pie_enqueue' function returns 1 only when it unable to
 	 * add timestamp to packet (no limit check)*/
 	drop = pie_enqueue(&flows[idx], m, si);
 
-	/* pie unable to timestamp a packet */ 
+	/* pie unable to timestamp a packet */
 	if (drop)
 		return 1;
 
@@ -894,7 +894,7 @@ fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	}
 
 	/* check the limit for all queues and remove a packet from the
-	 * largest one 
+	 * largest one
 	 */
 	if (mainq->ni.length > schk->cfg.limit) {
 		/* find first active flow */
@@ -903,7 +903,7 @@ fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 				break;
 		if (maxidx < schk->cfg.flows_cnt) {
 			/* find the largest sub- queue */
-			for (i = maxidx + 1; i < schk->cfg.flows_cnt; i++) 
+			for (i = maxidx + 1; i < schk->cfg.flows_cnt; i++)
 				if (flows[i].active && flows[i].stats.length >
 					flows[maxidx].stats.length)
 					maxidx = i;
@@ -921,7 +921,7 @@ fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
  */
 static struct mbuf *
 fq_pie_dequeue(struct dn_sch_inst *_si)
-{ 
+{
 	struct fq_pie_si *si;
 	struct fq_pie_schk *schk;
 	struct dn_sch_fq_pie_parms *param;
@@ -941,7 +941,7 @@ fq_pie_dequeue(struct dn_sch_inst *_si)
 			fq_pie_flowlist = &si->newflows;
 
 		/* Both new and old queue lists are empty, return NULL */
-		if (STAILQ_EMPTY(fq_pie_flowlist)) 
+		if (STAILQ_EMPTY(fq_pie_flowlist))
 			return NULL;
 
 		f = STAILQ_FIRST(fq_pie_flowlist);
@@ -955,14 +955,14 @@ fq_pie_dequeue(struct dn_sch_inst *_si)
 				 f->deficit += param->quantum;
 				 STAILQ_REMOVE_HEAD(fq_pie_flowlist, flowchain);
 				 STAILQ_INSERT_TAIL(&si->oldflows, f, flowchain);
-			 } else 
+			 } else
 				 break;
 
 			f = STAILQ_FIRST(fq_pie_flowlist);
 		}
-		
+
 		/* the new flows list is empty, try old flows list */
-		if (STAILQ_EMPTY(fq_pie_flowlist)) 
+		if (STAILQ_EMPTY(fq_pie_flowlist))
 			continue;
 
 		/* Dequeue a packet from the selected flow */
@@ -970,7 +970,7 @@ fq_pie_dequeue(struct dn_sch_inst *_si)
 
 		/* pie did not return a packet */
 		if (!mbuf) {
-			/* If the selected flow belongs to new flows list, then move 
+			/* If the selected flow belongs to new flows list, then move
 			 * it to the tail of old flows list. Otherwise, deactivate it and
 			 * remove it from the old list and
 			 */
@@ -986,7 +986,7 @@ fq_pie_dequeue(struct dn_sch_inst *_si)
 			continue;
 		}
 
-		/* we have a packet to return, 
+		/* we have a packet to return,
 		 * update flow deficit and return the packet*/
 		f->deficit -= mbuf->m_pkthdr.len;
 		return mbuf;
@@ -1029,7 +1029,7 @@ fq_pie_new_sched(struct dn_sch_inst *_si)
 		 M_DUMMYNET, M_NOWAIT | M_ZERO);
 	if (si->si_extra == NULL) {
 		D("cannot allocate memory for fq_pie si extra vars");
-		return ENOMEM ; 
+		return ENOMEM ;
 	}
 	/* allocate memory for flows array */
 	si->si_extra->flows = mallocarray(schk->cfg.flows_cnt,
@@ -1039,7 +1039,7 @@ fq_pie_new_sched(struct dn_sch_inst *_si)
 		free(si->si_extra, M_DUMMYNET);
 		si->si_extra = NULL;
 		D("cannot allocate memory for fq_pie flows");
-		return ENOMEM ; 
+		return ENOMEM ;
 	}
 
 	/* init perturbation for this si */
@@ -1176,7 +1176,7 @@ fq_pie_config(struct dn_schk *_schk)
  * Return FQ-PIE scheduler configurations
  * the configurations for the scheduler is passed to userland.
  */
-static int 
+static int
 fq_pie_getconfig (struct dn_schk *_schk, struct dn_extra_parms *ep) {
 	struct fq_pie_schk *schk = (struct fq_pie_schk *)(_schk+1);
 	struct dn_sch_fq_pie_parms *fqp_cfg;

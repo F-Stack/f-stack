@@ -134,7 +134,7 @@ ar9300_disable_weak_signal(struct ath_hal *ah)
     /* set relstep to max (signed) */
     OS_REG_RMW_FIELD(ah, AR_PHY_FIND_SIG, AR_PHY_FIND_SIG_RELSTEP, 0x1f);
     OS_REG_CLR_BIT(ah, AR_PHY_FIND_SIG, AR_PHY_FIND_SIG_RELSTEP_SIGN_BIT);
- 
+
     /* set firpwr_low to max (signed) */
     OS_REG_RMW_FIELD(ah, AR_PHY_FIND_SIG_LOW, AR_PHY_FIND_SIG_LOW_FIRPWR, 0x7f);
     OS_REG_CLR_BIT(
@@ -276,7 +276,7 @@ ar9300_noise_floor_get(struct ath_hal *ah, int freq_mhz, int ch)
     ath_hal_printf(ah,
         "%s: **Warning: device %d.%d: "
         "no nf cal offset found for freq %d chain %d\n",
-        __func__, (AH_PRIVATE(ah))->ah_macVersion, 
+        __func__, (AH_PRIVATE(ah))->ah_macVersion,
         (AH_PRIVATE(ah))->ah_macRev, freq_mhz, ch);
     return 0;
 }
@@ -296,7 +296,7 @@ ar9300_noise_floor_power_get(struct ath_hal *ah, int freq_mhz, int ch)
     ath_hal_printf(ah,
         "%s: **Warning: device %d.%d: "
         "no nf pwr offset found for freq %d chain %d\n",
-        __func__, (AH_PRIVATE(ah))->ah_macVersion, 
+        __func__, (AH_PRIVATE(ah))->ah_macVersion,
         (AH_PRIVATE(ah))->ah_macRev, freq_mhz, ch);
     return 0;
 }
@@ -342,7 +342,7 @@ ar9300_configure_spectral_scan(struct ath_hal *ah, HAL_SPECTRAL_PARAM *ss)
         ar9300_set_cca_threshold(ah, MAX_CCA_THRESH);
         /*ar9300_disable_restart(ah);*/
 #endif
-    }   
+    }
 #endif
 
     val = OS_REG_READ(ah, AR_PHY_SPECTRAL_SCAN);
@@ -382,7 +382,7 @@ ar9300_configure_spectral_scan(struct ath_hal *ah, HAL_SPECTRAL_PARAM *ss)
         val &= ~AR_PHY_SPECTRAL_SCAN_SHORT_REPEAT;
     }
     }
-    
+
     /* if noise power cal, force high priority */
     if (ss->ss_spectral_pri != HAL_SPECTRAL_PARAM_NOVAL) {
     if (ss->ss_spectral_pri) {
@@ -391,7 +391,7 @@ ar9300_configure_spectral_scan(struct ath_hal *ah, HAL_SPECTRAL_PARAM *ss)
         val &= ~AR_PHY_SPECTRAL_SCAN_PRIORITY_HI;
     }
     }
-    
+
     /* enable spectral scan */
     OS_REG_WRITE(ah, AR_PHY_SPECTRAL_SCAN, val | AR_PHY_SPECTRAL_SCAN_ENABLE);
 
@@ -444,8 +444,8 @@ ar9300_get_spectral_params(struct ath_hal *ah, HAL_SPECTRAL_PARAM *ss)
     HALDEBUG(ah, HAL_DEBUG_SPECTRAL, "ss_enabled=%d\n", ss->ss_enabled);
     HALDEBUG(ah, HAL_DEBUG_SPECTRAL, "ss_active=%d\n", ss->ss_active);
 
-    OS_MEMZERO(ss->ss_nf_cal, sizeof(ss->ss_nf_cal)); 
-    OS_MEMZERO(ss->ss_nf_pwr, sizeof(ss->ss_nf_cal)); 
+    OS_MEMZERO(ss->ss_nf_cal, sizeof(ss->ss_nf_cal));
+    OS_MEMZERO(ss->ss_nf_pwr, sizeof(ss->ss_nf_cal));
     ss->ss_nf_temp_data = 0;
 
     if (chan != NULL) {
@@ -454,7 +454,7 @@ ar9300_get_spectral_params(struct ath_hal *ah, HAL_SPECTRAL_PARAM *ss)
             ichain = i % 3;
             if (rx_chain_status & (1 << ichain)) {
                 ss->ss_nf_cal[i] =
-                    ar9300_noise_floor_get(ah, chan->channel, ichain);     
+                    ar9300_noise_floor_get(ah, chan->channel, ichain);
                 ss->ss_nf_pwr[i] =
                     ar9300_noise_floor_power_get(ah, chan->channel, ichain);
             }
@@ -504,8 +504,8 @@ void ar9300_start_spectral_scan(struct ath_hal *ah)
 
     /* activate spectral scan */
     val = OS_REG_READ(ah, AR_PHY_SPECTRAL_SCAN);
-    /* This is a hardware bug fix, the enable and active bits should 
-     * not be set/reset in the same write operation to the register 
+    /* This is a hardware bug fix, the enable and active bits should
+     * not be set/reset in the same write operation to the register
      */
     if (!(val & AR_PHY_SPECTRAL_SCAN_ENABLE)) {
         val |= AR_PHY_SPECTRAL_SCAN_ENABLE;
@@ -514,7 +514,7 @@ void ar9300_start_spectral_scan(struct ath_hal *ah)
     }
     val |= AR_PHY_SPECTRAL_SCAN_ACTIVE;
     OS_REG_WRITE(ah, AR_PHY_SPECTRAL_SCAN, val);
-    
+
     /* Reset the PHY_ERR_MASK */
     val = OS_REG_READ(ah, AR_PHY_ERR_MASK_REG);
     OS_REG_WRITE(ah, AR_PHY_ERR_MASK_REG, val | AR_PHY_ERR_RADAR);
@@ -558,10 +558,10 @@ void ar9300_stop_spectral_scan(struct ath_hal *ah)
     }
 
     val = OS_REG_READ(ah, AR_PHY_ERR);
-    
+
     val = OS_REG_READ(ah, AR_PHY_ERR_MASK_REG) & (~AR_PHY_ERR_RADAR);
     OS_REG_WRITE(ah, AR_PHY_ERR_MASK_REG, val);
-    
+
     if ((AR_SREV_WASP(ah) || AR_SREV_SCORPION(ah)) && asleep) {
         ar9300_set_power_mode(ah, HAL_PM_FULL_SLEEP, AH_TRUE);
     }

@@ -170,7 +170,7 @@ mod_handler(module_t mod, int type, void *data)
 {
 	int error;
 
-	switch (type) {	  
+	switch (type) {
 	case MOD_LOAD:
 		error = 0;
 		LibAliasAttachHandlers(handlers);
@@ -742,9 +742,9 @@ NewFtpMessage(struct libalias *la, struct ip *pip,
 			int delta;
 
 			SetAckModified(lnk);
-			tc = (struct tcphdr *)ip_next(pip);				
+			tc = (struct tcphdr *)ip_next(pip);
 			delta = GetDeltaSeqOut(tc->th_seq, lnk);
-			AddSeq(lnk, delta + slen - dlen, pip->ip_hl, 
+			AddSeq(lnk, delta + slen - dlen, pip->ip_hl,
 			    pip->ip_len, tc->th_seq, tc->th_off);
 		}
 

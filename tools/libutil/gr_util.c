@@ -501,7 +501,7 @@ gr_add(const struct group *gr, const char *newmember)
  * (int gid)
  * (gr_mem * newgrp + sizeof(struct group) + sizeof(**)) points to gr_mem area
  * gr_mem area
- * (member1 *) 
+ * (member1 *)
  * (member2 *)
  * (NULL)
  * (name string)

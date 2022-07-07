@@ -511,7 +511,7 @@ ar9300_ani_control(struct ath_hal *ah, HAL_ANI_CMD cmd, int param)
      */
     switch (cmd) {
 
-    case HAL_ANI_OFDM_WEAK_SIGNAL_DETECTION: 
+    case HAL_ANI_OFDM_WEAK_SIGNAL_DETECTION:
         {
             int m1_thresh_low, m2_thresh_low;
             int m1_thresh, m2_thresh;

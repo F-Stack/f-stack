@@ -135,7 +135,7 @@ static inline cpu_feature_t get_cpu_features( void )
   }
 
   /* For future architectures */
-  /* 
+  /*
       eax = 7; ecx = 0;
       cpuid(&eax, &ebx, &ecx, &edx);
 

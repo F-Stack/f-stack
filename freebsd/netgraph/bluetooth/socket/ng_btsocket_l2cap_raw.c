@@ -222,7 +222,7 @@ ng_btsocket_l2cap_raw_node_shutdown(node_p node)
 
 		return (error);
 	}
-		
+
 	return (0);
 } /* ng_btsocket_l2cap_raw_node_shutdown */
 
@@ -236,7 +236,7 @@ ng_btsocket_l2cap_raw_node_newhook(node_p node, hook_p hook, char const *name)
 	return (0);
 } /* ng_btsocket_l2cap_raw_node_newhook */
 
-/* 
+/*
  * Just say "YEP, that's OK by me!"
  */
 
@@ -273,7 +273,7 @@ ng_btsocket_l2cap_raw_node_disconnect(hook_p hook)
 } /* ng_btsocket_l2cap_raw_node_disconnect */
 
 /*
- * Process incoming messages 
+ * Process incoming messages
  */
 
 static int
@@ -286,7 +286,7 @@ ng_btsocket_l2cap_raw_node_rcvmsg(node_p node, item_p item, hook_p hook)
 		/*
 		 * NGM_L2CAP_NODE_HOOK_INFO is special message initiated by
 		 * L2CAP layer. Ignore all other messages if they are not
-		 * replies or token is zero 
+		 * replies or token is zero
 		 */
 
 		if (msg->header.cmd != NGM_L2CAP_NODE_HOOK_INFO) {
@@ -379,7 +379,7 @@ ng_btsocket_l2cap_raw_input(void *context, int pending)
 					sizeof(bdaddr_t)) == 0)
 				break;
 
-			rt = (ng_btsocket_l2cap_rtentry_t *) 
+			rt = (ng_btsocket_l2cap_rtentry_t *)
 				NG_HOOK_PRIVATE(hook);
 			if (rt == NULL) {
 				rt = malloc(sizeof(*rt),
@@ -392,17 +392,17 @@ ng_btsocket_l2cap_raw_input(void *context, int pending)
 
 				mtx_lock(&ng_btsocket_l2cap_raw_rt_mtx);
 
-				LIST_INSERT_HEAD(&ng_btsocket_l2cap_raw_rt, 
+				LIST_INSERT_HEAD(&ng_btsocket_l2cap_raw_rt,
 					rt, next);
 			} else
 				mtx_lock(&ng_btsocket_l2cap_raw_rt_mtx);
-		
+
 			bcopy(msg->data, &rt->src, sizeof(rt->src));
 			rt->hook = hook;
 
 			NG_BTSOCKET_L2CAP_RAW_INFO(
 "%s: Updating hook \"%s\", src bdaddr=%x:%x:%x:%x:%x:%x\n",
-				__func__, NG_HOOK_NAME(hook), 
+				__func__, NG_HOOK_NAME(hook),
 				rt->src.b[5], rt->src.b[4], rt->src.b[3],
 				rt->src.b[2], rt->src.b[1], rt->src.b[0]);
 
@@ -451,7 +451,7 @@ ng_btsocket_l2cap_raw_input(void *context, int pending)
 } /* ng_btsocket_l2cap_raw_input */
 
 /*
- * Route cleanup task. Gets scheduled when hook is disconnected. Here we 
+ * Route cleanup task. Gets scheduled when hook is disconnected. Here we
  * will find all sockets that use "invalid" hook and disconnect them.
  */
 
@@ -614,7 +614,7 @@ ng_btsocket_l2cap_raw_attach(struct socket *so, int proto, struct thread *td)
 	if (pcb != NULL)
 		return (EISCONN);
 
-	if (ng_btsocket_l2cap_raw_node == NULL) 
+	if (ng_btsocket_l2cap_raw_node == NULL)
 		return (EPROTONOSUPPORT);
 	if (so->so_type != SOCK_RAW)
 		return (ESOCKTNOSUPPORT);
@@ -653,7 +653,7 @@ ng_btsocket_l2cap_raw_attach(struct socket *so, int proto, struct thread *td)
  */
 
 int
-ng_btsocket_l2cap_raw_bind(struct socket *so, struct sockaddr *nam, 
+ng_btsocket_l2cap_raw_bind(struct socket *so, struct sockaddr *nam,
 		struct thread *td)
 {
 	ng_btsocket_l2cap_raw_pcb_t	*pcb = so2l2cap_raw_pcb(so);
@@ -662,7 +662,7 @@ ng_btsocket_l2cap_raw_bind(struct socket *so, struct sockaddr *nam,
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_l2cap_raw_node == NULL) 
+	if (ng_btsocket_l2cap_raw_node == NULL)
 		return (EINVAL);
 
 	if (sa == NULL)
@@ -706,7 +706,7 @@ ng_btsocket_l2cap_raw_bind(struct socket *so, struct sockaddr *nam,
  */
 
 int
-ng_btsocket_l2cap_raw_connect(struct socket *so, struct sockaddr *nam, 
+ng_btsocket_l2cap_raw_connect(struct socket *so, struct sockaddr *nam,
 		struct thread *td)
 {
 	ng_btsocket_l2cap_raw_pcb_t	*pcb = so2l2cap_raw_pcb(so);
@@ -716,7 +716,7 @@ ng_btsocket_l2cap_raw_connect(struct socket *so, struct sockaddr *nam,
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_l2cap_raw_node == NULL) 
+	if (ng_btsocket_l2cap_raw_node == NULL)
 		return (EINVAL);
 
 	if (sa == NULL)
@@ -810,7 +810,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 	if (pcb->token != 0) {
 		mtx_unlock(&pcb->pcb_mtx);
 		return (EBUSY);
-	}  
+	}
 
 	switch (cmd) {
 	case SIOC_L2CAP_NODE_GET_FLAGS: {
@@ -832,7 +832,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 		} break;
 
 	case SIOC_L2CAP_NODE_SET_DEBUG: {
-		struct ng_btsocket_l2cap_raw_node_debug	*p = 
+		struct ng_btsocket_l2cap_raw_node_debug	*p =
 			(struct ng_btsocket_l2cap_raw_node_debug *) data;
 
 		if (pcb->flags & NG_BTSOCKET_L2CAP_RAW_PRIVILEGED)
@@ -897,7 +897,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 			p->num_connections = min(p->num_connections,
 						p1->num_connections);
 			if (p->num_connections > 0)
-				error = copyout((caddr_t) p2, 
+				error = copyout((caddr_t) p2,
 					(caddr_t) p->connections,
 					p->num_connections * sizeof(*p2));
 		} else
@@ -958,10 +958,10 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 			p1 = (ng_l2cap_node_chan_list_ep *)(msg->data);
 			p2 = (ng_l2cap_node_chan_ep *)(p1 + 1);
 
-			p->num_channels = min(p->num_channels, 
+			p->num_channels = min(p->num_channels,
 						p1->num_channels);
 			if (p->num_channels > 0)
-				error = copyout((caddr_t) p2, 
+				error = copyout((caddr_t) p2,
 						(caddr_t) p->channels,
 						p->num_channels * sizeof(*p2));
 		} else
@@ -972,7 +972,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 		} /* NOTREACHED */
 
 	case SIOC_L2CAP_L2CA_PING: {
-		struct ng_btsocket_l2cap_raw_ping	*p = 
+		struct ng_btsocket_l2cap_raw_ping	*p =
 			(struct ng_btsocket_l2cap_raw_ping *) data;
 		ng_l2cap_l2ca_ping_ip			*ip = NULL;
 		ng_l2cap_l2ca_ping_op			*op = NULL;
@@ -1041,7 +1041,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 			p->echo_size = min(p->echo_size, op->echo_size);
 
 			if (p->echo_size > 0)
-				error = copyout(op + 1, p->echo_data, 
+				error = copyout(op + 1, p->echo_data,
 						p->echo_size);
 		} else
 			error = EINVAL;
@@ -1051,7 +1051,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 		} /* NOTREACHED */
 
 	case SIOC_L2CAP_L2CA_GET_INFO: {
-		struct ng_btsocket_l2cap_raw_get_info	*p = 
+		struct ng_btsocket_l2cap_raw_get_info	*p =
 			(struct ng_btsocket_l2cap_raw_get_info *) data;
 		ng_l2cap_l2ca_get_info_ip		*ip = NULL;
 		ng_l2cap_l2ca_get_info_op		*op = NULL;
@@ -1111,7 +1111,7 @@ ng_btsocket_l2cap_raw_control(struct socket *so, u_long cmd, caddr_t data,
 			p->info_size = min(p->info_size, op->info_size);
 
 			if (p->info_size > 0)
-				error = copyout(op + 1, p->info_data, 
+				error = copyout(op + 1, p->info_data,
 						p->info_size);
 		} else
 			error = EINVAL;
@@ -1161,7 +1161,7 @@ ng_btsocket_l2cap_raw_detach(struct socket *so)
 	ng_btsocket_l2cap_raw_pcb_p	pcb = so2l2cap_raw_pcb(so);
 
 	KASSERT(pcb != NULL, ("nt_btsocket_l2cap_raw_detach: pcb == NULL"));
-	if (ng_btsocket_l2cap_raw_node == NULL) 
+	if (ng_btsocket_l2cap_raw_node == NULL)
 		return;
 
 	mtx_lock(&ng_btsocket_l2cap_raw_sockets_mtx);
@@ -1214,7 +1214,7 @@ ng_btsocket_l2cap_raw_peeraddr(struct socket *so, struct sockaddr **nam)
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_l2cap_raw_node == NULL) 
+	if (ng_btsocket_l2cap_raw_node == NULL)
 		return (EINVAL);
 
 	mtx_lock(&pcb->pcb_mtx);
@@ -1258,7 +1258,7 @@ ng_btsocket_l2cap_raw_sockaddr(struct socket *so, struct sockaddr **nam)
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_l2cap_raw_node == NULL) 
+	if (ng_btsocket_l2cap_raw_node == NULL)
 		return (EINVAL);
 
 	mtx_lock(&pcb->pcb_mtx);
@@ -1283,7 +1283,7 @@ static void
 ng_btsocket_l2cap_raw_get_token(u_int32_t *token)
 {
 	mtx_lock(&ng_btsocket_l2cap_raw_token_mtx);
-  
+
 	if (++ ng_btsocket_l2cap_raw_token == 0)
 		ng_btsocket_l2cap_raw_token = 1;
 

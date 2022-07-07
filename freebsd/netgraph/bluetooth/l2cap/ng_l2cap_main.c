@@ -61,7 +61,7 @@
 
 /* MALLOC define */
 #ifdef NG_SEPARATE_MALLOC
-MALLOC_DEFINE(M_NETGRAPH_L2CAP, "netgraph_l2cap", 
+MALLOC_DEFINE(M_NETGRAPH_L2CAP, "netgraph_l2cap",
 	"Netgraph Bluetooth L2CAP node");
 #else
 #define M_NETGRAPH_L2CAP M_NETGRAPH
@@ -153,13 +153,13 @@ ng_l2cap_shutdown(node_p node)
 } /* ng_l2cap_shutdown */
 
 /*
- * Give our OK for a hook to be added. HCI layer is connected to the HCI 
+ * Give our OK for a hook to be added. HCI layer is connected to the HCI
  * (NG_L2CAP_HOOK_HCI) hook. As per specification L2CAP layer MUST provide
- * Procol/Service Multiplexing, so the L2CAP node provides separate hooks 
- * for SDP (NG_L2CAP_HOOK_SDP), RFCOMM (NG_L2CAP_HOOK_RFCOMM) and TCP 
- * (NG_L2CAP_HOOK_TCP) protcols. Unknown PSM will be forwarded to 
- * NG_L2CAP_HOOK_ORPHAN hook. Control node/application is connected to 
- * control (NG_L2CAP_HOOK_CTL) hook. 
+ * Procol/Service Multiplexing, so the L2CAP node provides separate hooks
+ * for SDP (NG_L2CAP_HOOK_SDP), RFCOMM (NG_L2CAP_HOOK_RFCOMM) and TCP
+ * (NG_L2CAP_HOOK_TCP) protcols. Unknown PSM will be forwarded to
+ * NG_L2CAP_HOOK_ORPHAN hook. Control node/application is connected to
+ * control (NG_L2CAP_HOOK_CTL) hook.
  */
 
 static int
@@ -212,12 +212,12 @@ ng_l2cap_connect(hook_p hook)
 
 /*
  * Disconnect the hook. For downstream hook we must notify upper layers.
- * 
- * XXX For upstream hooks this is really ugly :( Hook was disconnected and it 
+ *
+ * XXX For upstream hooks this is really ugly :( Hook was disconnected and it
  * XXX is now too late to do anything. For now we just clean up our own mess
- * XXX and remove all channels that use disconnected upstream hook. If we don't 
+ * XXX and remove all channels that use disconnected upstream hook. If we don't
  * XXX do that then L2CAP node can get out of sync with upper layers.
- * XXX No notification will be sent to remote peer. 
+ * XXX No notification will be sent to remote peer.
  */
 
 static int
@@ -316,9 +316,9 @@ ng_l2cap_lower_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				if (con->pending < 0) {
 					NG_L2CAP_WARN(
 "%s: %s - pending packet counter is out of sync! " \
-"con_handle=%d, pending=%d, completed=%d\n",	__func__, 
+"con_handle=%d, pending=%d, completed=%d\n",	__func__,
 						NG_NODE_NAME(l2cap->node),
-						con->con_handle, con->pending, 
+						con->con_handle, con->pending,
 						ep->completed);
 
 					con->pending = 0;
@@ -500,9 +500,9 @@ ng_l2cap_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 					(l2cap->hci != NULL)?
 						NG_L2CAP_HOOK_HCI : "",
 					(l2cap->l2c != NULL)?
-						NG_L2CAP_HOOK_L2C : "", 
+						NG_L2CAP_HOOK_L2C : "",
 					(l2cap->ctl != NULL)?
-						NG_L2CAP_HOOK_CTL : "", 
+						NG_L2CAP_HOOK_CTL : "",
 					l2cap->flags);
 			break;
 
@@ -680,22 +680,22 @@ ng_l2cap_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 /*
  * Process data packet from one of our hooks.
  *
- * From the HCI hook we expect to receive ACL data packets. ACL data packets 
- * gets re-assembled into one L2CAP packet (according to length) and then gets 
+ * From the HCI hook we expect to receive ACL data packets. ACL data packets
+ * gets re-assembled into one L2CAP packet (according to length) and then gets
  * processed.
  *
- * NOTE: We expect to receive L2CAP packet header in the first fragment. 
+ * NOTE: We expect to receive L2CAP packet header in the first fragment.
  *       Otherwise we WILL NOT be able to get length of the L2CAP packet.
- * 
+ *
  * Signaling L2CAP packets (destination channel ID == 0x1) are processed within
- * the node. Connectionless data packets (destination channel ID == 0x2) will 
- * be forwarded to appropriate upstream hook unless it is not connected or 
+ * the node. Connectionless data packets (destination channel ID == 0x2) will
+ * be forwarded to appropriate upstream hook unless it is not connected or
  * connectionless traffic for the specified PSM was disabled.
  *
- * From the upstream hooks we expect to receive data packets. These data 
+ * From the upstream hooks we expect to receive data packets. These data
  * packets will be converted into L2CAP data packets. The length of each
  * L2CAP packet must not exceed channel's omtu (our peer's imtu). Then
- * these L2CAP packets will be converted to ACL data packets (according to 
+ * these L2CAP packets will be converted to ACL data packets (according to
  * HCI layer MTU) and sent to lower layer.
  *
  * No data is expected from the control hook.

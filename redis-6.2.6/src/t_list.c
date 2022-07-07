@@ -221,7 +221,7 @@ robj *listTypeDup(robj *o) {
  * List Commands
  *----------------------------------------------------------------------------*/
 
-/* Implements LPUSH/RPUSH/LPUSHX/RPUSHX. 
+/* Implements LPUSH/RPUSH/LPUSHX/RPUSHX.
  * 'xx': push if key exists. */
 void pushGenericCommand(client *c, int where, int xx) {
     int j;
@@ -465,7 +465,7 @@ void popGenericCommand(client *c, int where) {
         return;
     } else if (c->argc == 3) {
         /* Parse the optional count argument. */
-        if (getPositiveLongFromObjectOrReply(c,c->argv[2],&count,NULL) != C_OK) 
+        if (getPositiveLongFromObjectOrReply(c,c->argv[2],&count,NULL) != C_OK)
             return;
         if (count == 0) {
             /* Fast exit path. */
@@ -621,7 +621,7 @@ void lposCommand(client *c) {
                 return;
         } else if (!strcasecmp(opt,"MAXLEN") && moreargs) {
             j++;
-            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &maxlen, 
+            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &maxlen,
               "MAXLEN can't be negative") != C_OK)
                 return;
         } else {

@@ -66,7 +66,7 @@ in6_pcbgroup_getbucket(struct inpcbinfo *pcbinfo, uint32_t hash)
 }
 
 /*
- * Map a (hashtype, hash) tuple into a connection group, or NULL if the hash 
+ * Map a (hashtype, hash) tuple into a connection group, or NULL if the hash
  * information is insufficient to identify the pcbgroup.  This might occur if
  * a TCP packet turnsup with a 2-tuple hash, or if an RSS hash is present but
  * RSS is not compiled into the kernel.

@@ -106,7 +106,7 @@ sscfu_reset(struct sscfu *sscf)
 }
 
 /*
- * Destroy SSCF 
+ * Destroy SSCF
  */
 void
 sscfu_destroy(struct sscfu *sscf)

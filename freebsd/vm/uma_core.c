@@ -842,7 +842,7 @@ cache_bucket_load_free(uma_cache_t cache, uma_bucket_t b)
 }
 
 #ifdef NUMA
-static inline void 
+static inline void
 cache_bucket_load_cross(uma_cache_t cache, uma_bucket_t b)
 {
 
@@ -1158,7 +1158,7 @@ bucket_drain(uma_zone_t zone, uma_bucket_t bucket)
 			    zone->uz_size, NULL, SKIP_NONE);
 	}
 	if (zone->uz_fini)
-		for (i = 0; i < bucket->ub_cnt; i++) 
+		for (i = 0; i < bucket->ub_cnt; i++)
 			zone->uz_fini(bucket->ub_bucket[i], zone->uz_size);
 	zone->uz_release(zone->uz_arg, bucket->ub_bucket, bucket->ub_cnt);
 	if (zone->uz_max_items > 0)
@@ -1664,7 +1664,7 @@ startup_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
 
 	*pflag = UMA_SLAB_BOOT;
 	m = vm_page_alloc_contig_domain(NULL, 0, domain,
-	    malloc2vm_flags(wait) | VM_ALLOC_NOOBJ | VM_ALLOC_WIRED, pages, 
+	    malloc2vm_flags(wait) | VM_ALLOC_NOOBJ | VM_ALLOC_WIRED, pages,
 	    (vm_paddr_t)0, ~(vm_paddr_t)0, 1, 0, VM_MEMATTR_DEFAULT);
 	if (m == NULL)
 		return (NULL);
@@ -1836,7 +1836,7 @@ noobj_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *flags,
 		 */
 		TAILQ_FOREACH_SAFE(p, &alloctail, listq, p_next) {
 			vm_page_unwire_noq(p);
-			vm_page_free(p); 
+			vm_page_free(p);
 		}
 		return (NULL);
 	}
@@ -2686,7 +2686,7 @@ zone_ctor(void *mem, int size, void *udata, int flags)
 	 */
 	zone->uz_import = zone_import;
 	zone->uz_release = zone_release;
-	zone->uz_arg = zone; 
+	zone->uz_arg = zone;
 	keg = arg->keg;
 
 	if (arg->flags & UMA_ZONE_SECONDARY) {
@@ -5446,7 +5446,7 @@ uma_dbg_alloc(uma_zone_t zone, uma_slab_t slab, void *item)
 
 	if (slab == NULL) {
 		slab = uma_dbg_getslab(zone, item);
-		if (slab == NULL) 
+		if (slab == NULL)
 			panic("uma: item %p did not belong to zone %s",
 			    item, zone->uz_name);
 	}
@@ -5472,7 +5472,7 @@ uma_dbg_free(uma_zone_t zone, uma_slab_t slab, void *item)
 
 	if (slab == NULL) {
 		slab = uma_dbg_getslab(zone, item);
-		if (slab == NULL) 
+		if (slab == NULL)
 			panic("uma: Freed item %p did not belong to zone %s",
 			    item, zone->uz_name);
 	}

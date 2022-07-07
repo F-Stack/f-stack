@@ -31,7 +31,7 @@
  *
  * $Id: ng_h4.c,v 1.10 2005/10/31 17:57:43 max Exp $
  * $FreeBSD$
- * 
+ *
  * Based on:
  * ---------
  *
@@ -68,12 +68,12 @@
 /*****************************************************************************
  *****************************************************************************
  ** This node implements a Bluetooth HCI UART transport layer as per chapter
- ** H4 of the Bluetooth Specification Book v1.1. It is a terminal line 
- ** discipline that is also a netgraph node. Installing this line discipline 
- ** on a terminal device instantiates a new netgraph node of this type, which 
+ ** H4 of the Bluetooth Specification Book v1.1. It is a terminal line
+ ** discipline that is also a netgraph node. Installing this line discipline
+ ** on a terminal device instantiates a new netgraph node of this type, which
  ** allows access to the device via the "hook" hook of the node.
  **
- ** Once the line discipline is installed, you can find out the name of the 
+ ** Once the line discipline is installed, you can find out the name of the
  ** corresponding netgraph node via a NGIOCGINFO ioctl().
  *****************************************************************************
  *****************************************************************************/
@@ -92,7 +92,7 @@ static int	ng_h4_read	(struct tty *, struct uio *, int);
 static int	ng_h4_write	(struct tty *, struct uio *, int);
 static int	ng_h4_input	(int, struct tty *);
 static int	ng_h4_start	(struct tty *);
-static int	ng_h4_ioctl	(struct tty *, u_long, caddr_t, 
+static int	ng_h4_ioctl	(struct tty *, u_long, caddr_t,
 					int, struct thread *);
 
 /* Line discipline descriptor */
@@ -308,10 +308,10 @@ ng_h4_ioctl(struct tty *tp, u_long cmd, caddr_t data, int flag,
 		bzero(data, sizeof(*NI(data)));
 
 		if (NG_NODE_HAS_NAME(sc->node))
-			strncpy(NI(data)->name, NG_NODE_NAME(sc->node), 
+			strncpy(NI(data)->name, NG_NODE_NAME(sc->node),
 				sizeof(NI(data)->name) - 1);
 
-		strncpy(NI(data)->type, sc->node->nd_type->name, 
+		strncpy(NI(data)->type, sc->node->nd_type->name,
 			sizeof(NI(data)->type) - 1);
 
 		NI(data)->id = (u_int32_t) ng_node2ID(sc->node);
@@ -329,7 +329,7 @@ ng_h4_ioctl(struct tty *tp, u_long cmd, caddr_t data, int flag,
 } /* ng_h4_ioctl */
 
 /*
- * Receive data coming from the device. We get one character at a time, which 
+ * Receive data coming from the device. We get one character at a time, which
  * is kindof silly.
  */
 
@@ -360,7 +360,7 @@ ng_h4_input(int c, struct tty *tp)
 
 	/* Check for framing error or overrun on this char */
 	if (c & TTY_ERRORMASK) {
-		NG_H4_ERR("%s: %s - line error %#x, c=%#x\n", __func__, 
+		NG_H4_ERR("%s: %s - line error %#x, c=%#x\n", __func__,
 			NG_NODE_NAME(sc->node), c & TTY_ERRORMASK,
 			c & TTY_CHARMASK);
 
@@ -470,23 +470,23 @@ ng_h4_input(int c, struct tty *tp)
 		}
 
 		NG_H4_INFO("%s: %s - got packet header, packet type=%#x, " \
-			"packet size=%d, payload size=%d\n", __func__, 
+			"packet size=%d, payload size=%d\n", __func__,
 			NG_NODE_NAME(sc->node), sc->ibuf[0], sc->got, c);
 
 		if (c > 0) {
 			sc->want += c;
 
-			/* 
+			/*
 			 * Try to prevent possible buffer overrun
 			 *
 			 * XXX I'm *really* confused here. It turns out
 			 * that Xircom card sends us packets with length
 			 * greater then 512 bytes! This is greater then
 			 * our old receive buffer (ibuf) size. In the same
-			 * time the card demands from us *not* to send 
-			 * packets greater then 192 bytes. Weird! How the 
-			 * hell i should know how big *receive* buffer 
-			 * should be? For now increase receiving buffer 
+			 * time the card demands from us *not* to send
+			 * packets greater then 192 bytes. Weird! How the
+			 * hell i should know how big *receive* buffer
+			 * should be? For now increase receiving buffer
 			 * size to 1K and add the following check.
 			 */
 
@@ -495,7 +495,7 @@ ng_h4_input(int c, struct tty *tp)
 
 				NG_H4_ALERT("%s: %s - packet too big for " \
 					"buffer, type=%#x, got=%d, want=%d, " \
-					"length=%d\n", __func__, 
+					"length=%d\n", __func__,
 					NG_NODE_NAME(sc->node), sc->ibuf[0],
 					sc->got, sc->want, c);
 
@@ -562,8 +562,8 @@ ng_h4_input(int c, struct tty *tp)
 } /* ng_h4_input */
 
 /*
- * This is called when the device driver is ready for more output. Called from 
- * tty system. 
+ * This is called when the device driver is ready for more output. Called from
+ * tty system.
  */
 
 static int
@@ -573,7 +573,7 @@ ng_h4_start(struct tty *tp)
 	struct mbuf	*m = NULL;
 	int		 size;
 
-	if (sc == NULL || tp != sc->tp || 
+	if (sc == NULL || tp != sc->tp ||
 	    sc->node == NULL || NG_NODE_NOT_VALID(sc->node))
 		return (0);
 
@@ -616,7 +616,7 @@ ng_h4_start(struct tty *tp)
 		NG_H4_UNLOCK(sc);
 	}
 
-	/* 
+	/*
 	 * Call output process whether or not there is any output. We are
 	 * being called in lieu of ttstart and must do what it would.
 	 */
@@ -646,7 +646,7 @@ ng_h4_start(struct tty *tp)
  *****************************************************************************/
 
 /*
- * Initialize a new node of this type. We only allow nodes to be created as 
+ * Initialize a new node of this type. We only allow nodes to be created as
  * a result of setting the line discipline on a tty, so always return an error
  * if not.
  */
@@ -724,7 +724,7 @@ ng_h4_disconnect(hook_p hook)
 		if (callout_pending(&sc->timo))
 			ng_uncallout(&sc->timo, sc->node);
 
-		_IF_DRAIN(&sc->outq); 
+		_IF_DRAIN(&sc->outq);
 
 		sc->state = NG_H4_W4_PKT_IND;
 		sc->want = 1;
@@ -878,7 +878,7 @@ ng_h4_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	case NGM_H4_COOKIE:
 		switch (msg->header.cmd) {
 		case NGM_H4_NODE_RESET:
-			_IF_DRAIN(&sc->outq); 
+			_IF_DRAIN(&sc->outq);
 			sc->state = NG_H4_W4_PKT_IND;
 			sc->want = 1;
 			sc->got = 0;
@@ -890,7 +890,7 @@ ng_h4_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			if (resp == NULL)
 				error = ENOMEM;
 			else
-				*((ng_h4_node_state_ep *)(resp->data)) = 
+				*((ng_h4_node_state_ep *)(resp->data)) =
 					sc->state;
 			break;
 
@@ -900,7 +900,7 @@ ng_h4_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			if (resp == NULL)
 				error = ENOMEM;
 			else
-				*((ng_h4_node_debug_ep *)(resp->data)) = 
+				*((ng_h4_node_debug_ep *)(resp->data)) =
 					sc->debug;
 			break;
 
@@ -918,7 +918,7 @@ ng_h4_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			if (resp == NULL)
 				error = ENOMEM;
 			else
-				*((ng_h4_node_qlen_ep *)(resp->data)) = 
+				*((ng_h4_node_qlen_ep *)(resp->data)) =
 					sc->outq.ifq_maxlen;
 			break;
 

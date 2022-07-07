@@ -143,7 +143,7 @@ int __cvmx_helper_xaui_probe(int interface)
         }
     }
 
-    /* Check if QLM is configured correct for XAUI/RXAUI, verify the 
+    /* Check if QLM is configured correct for XAUI/RXAUI, verify the
        speed as well as mode */
     if (OCTEON_IS_MODEL(OCTEON_CN6XXX))
     {
@@ -189,7 +189,7 @@ int __cvmx_helper_xaui_probe(int interface)
 
 /**
  * @INTERNAL
- * Bringup XAUI interface. After this call packet I/O should be 
+ * Bringup XAUI interface. After this call packet I/O should be
  * fully functional.
  *
  * @param interface Interface to bring up
@@ -229,9 +229,9 @@ static int __cvmx_helper_xaui_link_init(int interface)
 
     /* Errata G-15618 requires disabling PCS soft reset in some OCTEON II models. */
     if (!OCTEON_IS_MODEL(OCTEON_CN63XX_PASS1_X)
-        && !OCTEON_IS_MODEL(OCTEON_CN63XX_PASS2_0) 
-        && !OCTEON_IS_MODEL(OCTEON_CN63XX_PASS2_1) 
-        && !OCTEON_IS_MODEL(OCTEON_CN66XX_PASS1_X) 
+        && !OCTEON_IS_MODEL(OCTEON_CN63XX_PASS2_0)
+        && !OCTEON_IS_MODEL(OCTEON_CN63XX_PASS2_1)
+        && !OCTEON_IS_MODEL(OCTEON_CN66XX_PASS1_X)
         && !OCTEON_IS_MODEL(OCTEON_CN68XX))
         xauiCtl.s.reset  = 1;
     cvmx_write_csr (CVMX_PCSXX_CONTROL1_REG(interface), xauiCtl.u64);
@@ -326,7 +326,7 @@ int __cvmx_helper_xaui_enable(int interface)
         bpid_msk.s.msk_and &= ~1;
         cvmx_write_csr(CVMX_GMXX_BPID_MSK(interface), bpid_msk.u64);
 
-        /* CN68XX adds the padding and FCS in PKO, not GMX */                   
+        /* CN68XX adds the padding and FCS in PKO, not GMX */
         gmxx_txx_append_cfg.u64 = cvmx_read_csr(CVMX_GMXX_TXX_APPEND(0, interface));
         gmxx_txx_append_cfg.s.fcs = 0;
         gmxx_txx_append_cfg.s.pad = 0;
@@ -377,7 +377,7 @@ cvmx_helper_link_info_t __cvmx_helper_xaui_link_get(int ipd_port)
 
             qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(qlm));
             result.s.speed = cvmx_qlm_get_gbaud_mhz(qlm) * 8 / 10;
-            lanes = (qlm_cfg.s.qlm_cfg == 7) ? 2 : 4;          
+            lanes = (qlm_cfg.s.qlm_cfg == 7) ? 2 : 4;
             result.s.speed *= lanes;
         }
         else if (OCTEON_IS_MODEL(OCTEON_CN6XXX))
@@ -432,7 +432,7 @@ int __cvmx_helper_xaui_link_set(int ipd_port, cvmx_helper_link_info_t link_info)
     /* Do nothing if both RX and TX are happy */
     if ((gmxx_tx_xaui_ctl.s.ls == 0) && (gmxx_rx_xaui_ctl.s.status == 0))
         return 0;
-    
+
     /* Bring the link up */
     return __cvmx_helper_xaui_link_init(interface);
 }

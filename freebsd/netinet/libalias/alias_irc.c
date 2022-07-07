@@ -91,7 +91,7 @@ char *newpacket;
 #define DBprintf(a)
 
 static void
-AliasHandleIrcOut(struct libalias *, struct ip *, struct alias_link *,	
+AliasHandleIrcOut(struct libalias *, struct ip *, struct alias_link *,
 		  int maxpacketsize);
 
 static int
@@ -439,7 +439,7 @@ lPACKET_DONE:
 			int delta;
 
 			SetAckModified(lnk);
-			tc = (struct tcphdr *)ip_next(pip);				
+			tc = (struct tcphdr *)ip_next(pip);
 			delta = GetDeltaSeqOut(tc->th_seq, lnk);
 			AddSeq(lnk, delta + copyat + iCopy - dlen, pip->ip_hl,
 			    pip->ip_len, tc->th_seq, tc->th_off);

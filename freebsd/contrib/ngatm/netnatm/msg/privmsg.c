@@ -30,7 +30,7 @@
  *
  * Private definitions for the MSG code file.
  *
- * This file is included at the begin of the automatically generated 
+ * This file is included at the begin of the automatically generated
  * uni_msg.c.
  */
 
@@ -89,7 +89,7 @@ uni_decode_head(struct uni_msg *msg, struct uni_all *out,
 		out->u.hdr.pass = 1;
 	else
 		out->u.hdr.pass = 0;
-	
+
 	msg->b_rptr++;
 
 	mlen = *msg->b_rptr++ << 8;

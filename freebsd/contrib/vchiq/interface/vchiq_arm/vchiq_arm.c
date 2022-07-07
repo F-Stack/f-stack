@@ -386,7 +386,7 @@ static void
 user_service_free(void *userdata)
 {
 	USER_SERVICE_T *user_service = userdata;
-	
+
 	_sema_destroy(&user_service->insert_event);
 	_sema_destroy(&user_service->remove_event);
 
@@ -410,7 +410,7 @@ static void close_delivered(USER_SERVICE_T *user_service)
 
 		/* Wake the user-thread blocked in close_ or remove_service */
 		up(&user_service->close_event);
- 
+
 		user_service->close_pending = 0;
 	}
 }
@@ -947,9 +947,9 @@ vchiq_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int fflag,
 
 		if ((ret == 0) && instance->closing)
 			ret = -ENOTCONN;
-		/* 
+		/*
 		 * XXXBSD: ioctl return codes are not negative as in linux, so
-		 * we can not indicate success with positive number of passed 
+		 * we can not indicate success with positive number of passed
 		 * messages
 		 */
 		if (ret > 0)
@@ -1206,7 +1206,7 @@ vchiq_open(struct cdev *dev, int flags, int fmt __unused, struct thread *td)
 		INIT_LIST_HEAD(&instance->bulk_waiter_list);
 
 		devfs_set_cdevpriv(instance, instance_dtr);
-	} 
+	}
 	else {
 		vchiq_log_error(vchiq_arm_log_level,
 			"Unknown minor device");

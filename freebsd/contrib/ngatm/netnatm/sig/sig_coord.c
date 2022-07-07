@@ -548,7 +548,7 @@ input_dummy(struct uni *uni __unused, struct uni_msg *m, struct uni_all *u)
 static void
 input_call(struct call *c, struct uni_msg *m, struct uni_all *u)
 {
-	VERBOSE(c->uni, UNI_FAC_COORD, 2, "CALL MTYPE = %x %d/%s", 
+	VERBOSE(c->uni, UNI_FAC_COORD, 2, "CALL MTYPE = %x %d/%s",
 		u->mtype, c->cref, c->mine ? "mine":"his");
 
 	switch (u->mtype) {
@@ -1019,7 +1019,7 @@ uni_sig_coord(struct uni *uni, enum coord_sig sig, uint32_t cookie,
 
 	  case SIGO_ABORT_CALL_request:
 	    {
-		struct uniapi_abort_call_request *arg = 
+		struct uniapi_abort_call_request *arg =
 		    uni_msg_rptr(msg, struct uniapi_abort_call_request *);
 
 		if ((c = uni_find_call(uni, &arg->cref)) != NULL) {

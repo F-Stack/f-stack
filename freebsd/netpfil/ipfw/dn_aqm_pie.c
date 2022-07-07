@@ -2,10 +2,10 @@
  * PIE - Proportional Integral controller Enhanced AQM algorithm.
  *
  * $FreeBSD$
- * 
+ *
  * Copyright (C) 2016 Centre for Advanced Internet Architectures,
  *  Swinburne University of Technology, Melbourne, Australia.
- * Portions of this code were made possible in part by a gift from 
+ * Portions of this code were made possible in part by a gift from
  *  The Comcast Innovation Fund.
  * Implemented by Rasool Al-Saadi <ralsaadi@swin.edu.au>
  *
@@ -76,10 +76,10 @@
 static struct dn_aqm pie_desc;
 
 /*  PIE defaults
- * target=15ms, tupdate=15ms, max_burst=150ms, 
- * max_ecnth=0.1, alpha=0.125, beta=1.25, 
+ * target=15ms, tupdate=15ms, max_burst=150ms,
+ * max_ecnth=0.1, alpha=0.125, beta=1.25,
  */
-struct dn_aqm_pie_parms pie_sysctl = 
+struct dn_aqm_pie_parms pie_sysctl =
 	{ 15 * AQM_TIME_1MS,  15 * AQM_TIME_1MS, 150 * AQM_TIME_1MS,
 	PIE_SCALE/10 , PIE_SCALE * 0.125,  PIE_SCALE * 1.25 ,
 	PIE_CAPDROP_ENABLED | PIE_DEPRATEEST_ENABLED | PIE_DERAND_ENABLED };
@@ -94,7 +94,7 @@ pie_sysctl_alpha_beta_handler(SYSCTL_HANDLER_ARGS)
 		value = pie_sysctl.alpha;
 	else
 		value = pie_sysctl.beta;
-		
+
 	value = value * 1000 / PIE_SCALE;
 	error = sysctl_handle_long(oidp, &value, 0, req);
 	if (error != 0 || req->newptr == NULL)
@@ -196,7 +196,7 @@ SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, beta,
 #endif
 
 /*
- * Callout function for drop probability calculation 
+ * Callout function for drop probability calculation
  * This function is called over tupdate ms and takes pointer of PIE
  * status variables as an argument
   */
@@ -213,27 +213,27 @@ calculate_drop_prob(void *x)
 
 	/* calculate current qdelay using DRE method.
 	 * If TS is used and no data in the queue, reset current_qdelay
-	 * as it stays at last value during dequeue process. 
+	 * as it stays at last value during dequeue process.
 	*/
 	if (pprms->flags & PIE_DEPRATEEST_ENABLED)
 		pst->current_qdelay = ((uint64_t)pst->pq->ni.len_bytes *
 			pst->avg_dq_time) >> PIE_DQ_THRESHOLD_BITS;
-	else 
+	else
 		if (!pst->pq->ni.len_bytes)
 			 pst->current_qdelay = 0;
 
 	/* calculate drop probability */
-	p = (int64_t)pprms->alpha * 
-		((int64_t)pst->current_qdelay - (int64_t)pprms->qdelay_ref); 
-	p +=(int64_t) pprms->beta * 
-		((int64_t)pst->current_qdelay - (int64_t)pst->qdelay_old); 
+	p = (int64_t)pprms->alpha *
+		((int64_t)pst->current_qdelay - (int64_t)pprms->qdelay_ref);
+	p +=(int64_t) pprms->beta *
+		((int64_t)pst->current_qdelay - (int64_t)pst->qdelay_old);
 
 	/* take absolute value so right shift result is well defined */
 	p_isneg = p < 0;
 	if (p_isneg) {
 		p = -p;
 	}
-		
+
 	/* We PIE_MAX_PROB shift by 12-bits to increase the division precision */
 	p *= (PIE_MAX_PROB << 12) / AQM_TIME_1S;
 
@@ -289,7 +289,7 @@ calculate_drop_prob(void *x)
 	} else {
 		if (pst->current_qdelay == 0 && pst->qdelay_old == 0) {
 			/* 0.98 ~= 1- 1/64 */
-			prob = prob - (prob >> 6); 
+			prob = prob - (prob >> 6);
 		}
 
 		if (prob > PIE_MAX_PROB) {
@@ -304,10 +304,10 @@ calculate_drop_prob(void *x)
 
 	/* update burst allowance */
 	if ((pst->sflags & PIE_ACTIVE) && pst->burst_allowance>0) {
-		
+
 		if (pst->burst_allowance > pprms->tupdate )
 			pst->burst_allowance -= pprms->tupdate;
-		else 
+		else
 			pst->burst_allowance = 0;
 	}
 
@@ -348,13 +348,13 @@ pie_extract_head(struct dn_queue *q, aqm_time_t *pkt_ts, int getts)
 			*pkt_ts = 0;
 		} else {
 			*pkt_ts = *(aqm_time_t *)(mtag + 1);
-			m_tag_delete(m,mtag); 
+			m_tag_delete(m,mtag);
 		}
 	}
 	return m;
 }
 
-/* 
+/*
  * Initiate PIE  variable and optionally activate it
  */
 __inline static void
@@ -383,8 +383,8 @@ init_activate_pie(struct pie_status *pst, int resettimer)
 	mtx_unlock(&pst->lock_mtx);
 }
 
-/* 
- * Deactivate PIE and stop probe update callout 
+/*
+ * Deactivate PIE and stop probe update callout
  */
 __inline static void
 deactivate_pie(struct pie_status *pst)
@@ -396,7 +396,7 @@ deactivate_pie(struct pie_status *pst)
 	mtx_unlock(&pst->lock_mtx);
 }
 
-/* 
+/*
  * Dequeue and return a pcaket from queue 'q' or NULL if 'q' is empty.
  * Also, caculate depature time or queue delay using timestamp
  */
@@ -404,7 +404,7 @@ static struct mbuf *
 aqm_pie_dequeue(struct dn_queue *q)
 {
 	struct mbuf *m;
-	struct dn_flow *ni;	/* stats for scheduler instance */	
+	struct dn_flow *ni;	/* stats for scheduler instance */
 	struct dn_aqm_pie_parms *pprms;
 	struct pie_status *pst;
 	aqm_time_t now;
@@ -430,17 +430,17 @@ aqm_pie_dequeue(struct dn_queue *q)
 			if (pst->dq_count >= PIE_DQ_THRESHOLD) {
 				dq_time = now - pst->measurement_start;
 
-				/* 
-				 * if we don't have old avg dq_time i.e PIE is (re)initialized, 
+				/*
+				 * if we don't have old avg dq_time i.e PIE is (re)initialized,
 				 * don't use weight to calculate new avg_dq_time
 				 */
 				if(pst->avg_dq_time == 0)
 					pst->avg_dq_time = dq_time;
 				else {
-					/* 
-					 * weight = PIE_DQ_THRESHOLD/2^6, but we scaled 
-					 * weight by 2^8. Thus, scaled 
-					 * weight = PIE_DQ_THRESHOLD /2^8 
+					/*
+					 * weight = PIE_DQ_THRESHOLD/2^6, but we scaled
+					 * weight by 2^8. Thus, scaled
+					 * weight = PIE_DQ_THRESHOLD /2^8
 					 * */
 					w = PIE_DQ_THRESHOLD >> 8;
 					pst->avg_dq_time = (dq_time* w
@@ -450,11 +450,11 @@ aqm_pie_dequeue(struct dn_queue *q)
 			}
 		}
 
-		/* 
+		/*
 		 * Start new measurment cycle when the queue has
 		 *  PIE_DQ_THRESHOLD worth of bytes.
 		 */
-		if(!(pst->sflags & PIE_INMEASUREMENT) && 
+		if(!(pst->sflags & PIE_INMEASUREMENT) &&
 			q->ni.len_bytes >= PIE_DQ_THRESHOLD) {
 			pst->sflags |= PIE_INMEASUREMENT;
 			pst->measurement_start = now;
@@ -465,7 +465,7 @@ aqm_pie_dequeue(struct dn_queue *q)
 	else
 		pst->current_qdelay = now - pkt_ts;
 
-	return m;	
+	return m;
 }
 
 /*
@@ -507,8 +507,8 @@ aqm_pie_enqueue(struct dn_queue *q, struct mbuf* m)
 	/* drop/mark the packet when PIE is active and burst time elapsed */
 	else if ((pst->sflags & PIE_ACTIVE) && pst->burst_allowance==0
 			&& drop_early(pst, q->ni.len_bytes) == DROP) {
-				/* 
-				 * if drop_prob over ECN threshold, drop the packet 
+				/*
+				 * if drop_prob over ECN threshold, drop the packet
 				 * otherwise mark and enqueue it.
 				 */
 				if ((pprms->flags & PIE_ECN_ENABLED) && pst->drop_prob <
@@ -519,7 +519,7 @@ aqm_pie_enqueue(struct dn_queue *q, struct mbuf* m)
 					t = DROP;
 	}
 
-	/* Turn PIE on when 1/3 of the queue is full */ 
+	/* Turn PIE on when 1/3 of the queue is full */
 	if (!(pst->sflags & PIE_ACTIVE) && qlen >= pst->one_third_q_size) {
 		init_activate_pie(pst, 1);
 	}
@@ -542,7 +542,7 @@ aqm_pie_enqueue(struct dn_queue *q, struct mbuf* m)
 			mtag = m_tag_alloc(MTAG_ABI_COMPAT, DN_AQM_MTAG_TS,
 				sizeof(aqm_time_t), M_NOWAIT);
 		if (mtag == NULL) {
-			m_freem(m); 
+			m_freem(m);
 			t = DROP;
 		}
 		*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
@@ -564,8 +564,8 @@ aqm_pie_enqueue(struct dn_queue *q, struct mbuf* m)
 	return 0;
 }
 
-/* 
- * initialize PIE for queue 'q' 
+/*
+ * initialize PIE for queue 'q'
  * First allocate memory for PIE status.
  */
 static int
@@ -588,28 +588,28 @@ aqm_pie_init(struct dn_queue *q)
 				 M_DUMMYNET, M_NOWAIT | M_ZERO);
 		if (q->aqm_status == NULL) {
 			D("cannot allocate PIE private data");
-			err =  ENOMEM ; 
+			err =  ENOMEM ;
 			break;
 		}
 
 		pst = q->aqm_status;
 		/* increase reference count for PIE module */
 		pie_desc.ref_count++;
-		
+
 		pst->pq = q;
 		pst->parms = pprms;
-		
+
 		/* For speed optimization, we caculate 1/3 queue size once here */
 		// we can use x/3 = (x >>2) + (x >>4) + (x >>7)
 		pst->one_third_q_size = q->fs->fs.qsize/3;
-		
+
 		mtx_init(&pst->lock_mtx, "mtx_pie", NULL, MTX_DEF);
 		callout_init_mtx(&pst->aqm_pie_callout, &pst->lock_mtx,
 			CALLOUT_RETURNUNLOCKED);
-		
+
 		pst->current_qdelay = 0;
 		init_activate_pie(pst, !(pprms->flags & PIE_ON_OFF_MODE_ENABLED));
-		
+
 		//DX(2, "aqm_PIE_init");
 
 	} while(0);
@@ -617,7 +617,7 @@ aqm_pie_init(struct dn_queue *q)
 	return err;
 }
 
-/* 
+/*
  * Callout function to destroy pie mtx and free PIE status memory
  */
 static void
@@ -633,8 +633,8 @@ pie_callout_cleanup(void *x)
 	DN_BH_WUNLOCK();
 }
 
-/* 
- * Clean up PIE status for queue 'q' 
+/*
+ * Clean up PIE status for queue 'q'
  * Destroy memory allocated for PIE status.
  */
 static int
@@ -659,11 +659,11 @@ aqm_pie_cleanup(struct dn_queue *q)
 		return 1;
 	}
 
-	/* 
+	/*
 	 * Free PIE status allocated memory using pie_callout_cleanup() callout
 	 * function to avoid any potential race.
 	 * We reset aqm_pie_callout to call pie_callout_cleanup() in next 1um. This
-	 * stops the scheduled calculate_drop_prob() callout and call pie_callout_cleanup() 
+	 * stops the scheduled calculate_drop_prob() callout and call pie_callout_cleanup()
 	 * which does memory freeing.
 	 */
 	mtx_lock(&pst->lock_mtx);
@@ -675,13 +675,13 @@ aqm_pie_cleanup(struct dn_queue *q)
 	return 0;
 }
 
-/* 
+/*
  * Config PIE parameters
  * also allocate memory for PIE configurations
  */
-static int 
+static int
 aqm_pie_config(struct dn_fsk* fs, struct dn_extra_parms *ep, int len)
-{ 
+{
 	struct dn_aqm_pie_parms *pcfg;
 
 	int l = sizeof(struct dn_extra_parms);
@@ -689,7 +689,7 @@ aqm_pie_config(struct dn_fsk* fs, struct dn_extra_parms *ep, int len)
 		D("invalid sched parms length got %d need %d", len, l);
 		return EINVAL;
 	}
-	/* we free the old cfg because maybe the orignal allocation 
+	/* we free the old cfg because maybe the orignal allocation
 	 * was used for diffirent AQM type.
 	 */
 	if (fs->aqmcfg) {
@@ -701,7 +701,7 @@ aqm_pie_config(struct dn_fsk* fs, struct dn_extra_parms *ep, int len)
 			 M_DUMMYNET, M_NOWAIT | M_ZERO);
 	if (fs->aqmcfg== NULL) {
 		D("cannot allocate PIE configuration parameters");
-		return ENOMEM; 
+		return ENOMEM;
 	}
 
 	/* par array contains pie configuration as follow
@@ -768,10 +768,10 @@ aqm_pie_deconfig(struct dn_fsk* fs)
 	return 0;
 }
 
-/* 
+/*
  * Retrieve PIE configuration parameters.
- */ 
-static int 
+ */
+static int
 aqm_pie_getconfig (struct dn_fsk *fs, struct dn_extra_parms * ep)
 {
 	struct dn_aqm_pie_parms *pcfg;

@@ -36,8 +36,8 @@ __FBSDID("$FreeBSD$");
 #define	IDX(c)	((u_char)(c) / LONG_BIT)
 #define	BIT(c)	((u_long)1 << ((u_char)(c) % LONG_BIT))
 
-size_t 
-strcspn(const char * __restrict s, const char * __restrict charset) 
+size_t
+strcspn(const char * __restrict s, const char * __restrict charset)
 {
 	/*
 	 * NB: idx and bit are temporaries whose use causes gcc 3.4.2 to

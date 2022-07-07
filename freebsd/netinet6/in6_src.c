@@ -773,7 +773,7 @@ selectroute(struct sockaddr_in6 *dstsock, struct ip6_pktopts *opts,
 			if (IN6_IS_SCOPE_LINKLOCAL(&sa6->sin6_addr))
 				sa6->sin6_addr.s6_addr16[1] = htons(scopeid);
 		}
-				
+
 		/*
 		 * do not care about the result if we have the nexthop
 		 * explicitly specified.

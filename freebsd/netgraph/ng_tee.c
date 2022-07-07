@@ -6,7 +6,7 @@
 /*-
  * Copyright (c) 1996-1999 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -17,7 +17,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -185,7 +185,7 @@ ng_tee_newhook(node_p node, hook_p hook, const char *name)
 		hinfo = &privdata->right2left;
 		if (privdata->right.dest)
 			privdata->right.dup = hinfo;
-		else    
+		else
 			privdata->right.dest = hinfo;
 	} else if (strcmp(name, NG_TEE_HOOK_LEFT2RIGHT) == 0) {
 		hinfo = &privdata->left2right;

@@ -679,7 +679,7 @@ again:
 		dst->sin6_family = AF_INET6;
 		dst->sin6_len = sizeof(*dst);
 		dst->sin6_addr = ip6->ip6_dst;
-	} 
+	}
 	/*
 	 * Validate route against routing table changes.
 	 * Make sure that the address family is set in route.

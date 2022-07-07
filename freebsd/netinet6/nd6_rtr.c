@@ -170,7 +170,7 @@ nd6_rs_input(struct mbuf *m, int off, int icmp6len)
 	if (!V_ip6_forwarding || ND_IFINFO(ifp)->flags & ND6_IFF_ACCEPT_RTADV)
 		goto freeit;
 
-	/* RFC 6980: Nodes MUST silently ignore fragments */   
+	/* RFC 6980: Nodes MUST silently ignore fragments */
 	if(m->m_flags & M_FRAGMENTED)
 		goto freeit;
 
@@ -1939,7 +1939,7 @@ restart:
 			    (e = nd6_prefix_offlink(pr)) != 0) {
 				nd6log((LOG_ERR,
 				    "%s: failed to make %s/%d offlink "
-				    "(errno=%d)\n", __func__, 
+				    "(errno=%d)\n", __func__,
 				    ip6_sprintf(ip6buf,
 					    &pr->ndpr_prefix.sin6_addr),
 					    pr->ndpr_plen, e));

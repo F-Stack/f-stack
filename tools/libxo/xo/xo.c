@@ -350,7 +350,7 @@ main (int argc UNUSED, char **argv)
 	case 0:
 	    if (opts.o_depth) {
 		opt_depth = atoi(optarg);
-		
+
 	    } else if (opts.o_help) {
 		print_help();
 		return 1;
@@ -515,7 +515,7 @@ main (int argc UNUSED, char **argv)
 
     if (opt_instance)
 	xo_close_instance(opt_instance);
-    
+
     /* If there's an wrapper hierarchy, close each element's container */
     while (opt_wrapper) {
 	np = strrchr(opt_wrapper, '/');

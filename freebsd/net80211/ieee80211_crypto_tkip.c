@@ -38,8 +38,8 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
@@ -418,7 +418,7 @@ tkip_demic(struct ieee80211_key *k, struct mbuf *m, int force)
 
 		vap->iv_stats.is_crypto_tkipdemic++;
 
-		michael_mic(ctx, k->wk_rxmic, 
+		michael_mic(ctx, k->wk_rxmic,
 			m, hdrlen, m->m_pkthdr.len - (hdrlen + tkip.ic_miclen),
 			mic);
 		m_copydata(m, m->m_pkthdr.len - tkip.ic_miclen,

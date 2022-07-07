@@ -120,7 +120,7 @@ struct ng_type ng_deadtype = {
 
 struct ng_node ng_deadnode = {
     "dead",
-    &ng_deadtype,    
+    &ng_deadtype,
     NGF_INVALID,
     0,    /* numhooks */
     NULL,    /* private */
@@ -1504,7 +1504,7 @@ ng_con_nodes(item_p item, node_p node, const char *name,
     hook2->hk_refs = 1;        /* start with a reference for us. */
     hook2->hk_flags = HK_INVALID;
     hook2->hk_peer = hook;        /* Link the two together */
-    hook->hk_peer = hook2;    
+    hook->hk_peer = hook2;
     NG_HOOK_REF(hook);        /* Add a ref for the peer to each*/
     NG_HOOK_REF(hook2);
     hook2->hk_node = &ng_deadnode;
@@ -2118,7 +2118,7 @@ ng_upgrade_write(node_p node, item_p item)
     atomic_add_int(&ngq->q_flags, WRITER_ACTIVE - READER_INCREMENT);
     if ((ngq->q_flags & (NGQ_WMASK & ~OP_PENDING)) == WRITER_ACTIVE) {
         NG_QUEUE_UNLOCK(ngq);
-        
+
         /* It's just us, act on the item. */
         /* will NOT drop writer lock when done */
         ng_apply_item(node, item, 0);
@@ -2487,7 +2487,7 @@ ng_apply_item(node_p node, item_p item, int rw)
             NG_FREE_ITEM(item);
             break;
         }
-        
+
         if ((item->el_flags & NGQF_TYPE) == NGQF_FN) {
             (*NGI_FN(item))(node, hook, NGI_ARG1(item),
                 NGI_ARG2(item));

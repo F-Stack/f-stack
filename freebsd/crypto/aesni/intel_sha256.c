@@ -1,25 +1,25 @@
 /*******************************************************************************
-* Copyright (c) 2013, Intel Corporation 
-* 
-* All rights reserved. 
-* 
+* Copyright (c) 2013, Intel Corporation
+*
+* All rights reserved.
+*
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
-* met: 
-* 
+* met:
+*
 * * Redistributions of source code must retain the above copyright
-*   notice, this list of conditions and the following disclaimer.  
-* 
+*   notice, this list of conditions and the following disclaimer.
+*
 * * Redistributions in binary form must reproduce the above copyright
 *   notice, this list of conditions and the following disclaimer in the
 *   documentation and/or other materials provided with the
-*   distribution. 
-* 
+*   distribution.
+*
 * * Neither the name of the Intel Corporation nor the names of its
 *   contributors may be used to endorse or promote products derived from
-*   this software without specific prior written permission. 
-* 
-* 
+*   this software without specific prior written permission.
+*
+*
 * THIS SOFTWARE IS PROVIDED BY INTEL CORPORATION ""AS IS"" AND ANY
 * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
@@ -33,14 +33,14 @@
 * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************************
 *
-* Intel SHA Extensions optimized implementation of a SHA-256 update function 
+* Intel SHA Extensions optimized implementation of a SHA-256 update function
 *
-* The function takes a pointer to the current hash values, a pointer to the 
-* input data, and a number of 64 byte blocks to process.  Once all blocks have 
+* The function takes a pointer to the current hash values, a pointer to the
+* input data, and a number of 64 byte blocks to process.  Once all blocks have
 * been processed, the digest pointer is  updated with the resulting hash value.
-* The function only processes complete blocks, there is no functionality to 
+* The function only processes complete blocks, there is no functionality to
 * store partial blocks.  All message padding and hash value initialization must
-* be done outside the update function.  
+* be done outside the update function.
 *
 * The indented lines in the loop are instructions related to rounds processing.
 * The non-indented lines are instructions related to the message schedule.
@@ -93,7 +93,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       // Rounds 0-3
       msg     = _mm_loadu_si128((const __m128i*) data);
       msgtmp0 = _mm_shuffle_epi8(msg, shuf_mask);
-         msg    = _mm_add_epi32(msgtmp0, 
+         msg    = _mm_add_epi32(msgtmp0,
                   _mm_set_epi64x(0xE9B5DBA5B5C0FBCFull, 0x71374491428A2F98ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
          msg    = _mm_shuffle_epi32(msg, 0x0E);
@@ -102,7 +102,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       // Rounds 4-7
       msgtmp1 = _mm_loadu_si128((const __m128i*) (data+16));
       msgtmp1 = _mm_shuffle_epi8(msgtmp1, shuf_mask);
-         msg    = _mm_add_epi32(msgtmp1, 
+         msg    = _mm_add_epi32(msgtmp1,
                   _mm_set_epi64x(0xAB1C5ED5923F82A4ull, 0x59F111F13956C25Bull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
          msg    = _mm_shuffle_epi32(msg, 0x0E);
@@ -112,7 +112,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       // Rounds 8-11
       msgtmp2 = _mm_loadu_si128((const __m128i*) (data+32));
       msgtmp2 = _mm_shuffle_epi8(msgtmp2, shuf_mask);
-         msg    = _mm_add_epi32(msgtmp2, 
+         msg    = _mm_add_epi32(msgtmp2,
                   _mm_set_epi64x(0x550C7DC3243185BEull, 0x12835B01D807AA98ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
          msg    = _mm_shuffle_epi32(msg, 0x0E);
@@ -122,7 +122,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       // Rounds 12-15
       msgtmp3 = _mm_loadu_si128((const __m128i*) (data+48));
       msgtmp3 = _mm_shuffle_epi8(msgtmp3, shuf_mask);
-         msg    = _mm_add_epi32(msgtmp3, 
+         msg    = _mm_add_epi32(msgtmp3,
                   _mm_set_epi64x(0xC19BF1749BDC06A7ull, 0x80DEB1FE72BE5D74ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp3, msgtmp2, 4);
@@ -133,7 +133,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp2 = _mm_sha256msg1_epu32(msgtmp2, msgtmp3);
 
       // Rounds 16-19
-         msg    = _mm_add_epi32(msgtmp0, 
+         msg    = _mm_add_epi32(msgtmp0,
                   _mm_set_epi64x(0x240CA1CC0FC19DC6ull, 0xEFBE4786E49B69C1ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp0, msgtmp3, 4);
@@ -144,7 +144,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp3 = _mm_sha256msg1_epu32(msgtmp3, msgtmp0);
 
       // Rounds 20-23
-         msg    = _mm_add_epi32(msgtmp1, 
+         msg    = _mm_add_epi32(msgtmp1,
                   _mm_set_epi64x(0x76F988DA5CB0A9DCull, 0x4A7484AA2DE92C6Full));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp1, msgtmp0, 4);
@@ -155,7 +155,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp0 = _mm_sha256msg1_epu32(msgtmp0, msgtmp1);
 
       // Rounds 24-27
-         msg    = _mm_add_epi32(msgtmp2, 
+         msg    = _mm_add_epi32(msgtmp2,
                   _mm_set_epi64x(0xBF597FC7B00327C8ull, 0xA831C66D983E5152ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp2, msgtmp1, 4);
@@ -166,7 +166,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp1 = _mm_sha256msg1_epu32(msgtmp1, msgtmp2);
 
       // Rounds 28-31
-         msg    = _mm_add_epi32(msgtmp3, 
+         msg    = _mm_add_epi32(msgtmp3,
                   _mm_set_epi64x(0x1429296706CA6351ull, 0xD5A79147C6E00BF3ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp3, msgtmp2, 4);
@@ -177,7 +177,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp2 = _mm_sha256msg1_epu32(msgtmp2, msgtmp3);
 
       // Rounds 32-35
-         msg    = _mm_add_epi32(msgtmp0, 
+         msg    = _mm_add_epi32(msgtmp0,
                   _mm_set_epi64x(0x53380D134D2C6DFCull, 0x2E1B213827B70A85ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp0, msgtmp3, 4);
@@ -188,7 +188,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp3 = _mm_sha256msg1_epu32(msgtmp3, msgtmp0);
 
       // Rounds 36-39
-         msg    = _mm_add_epi32(msgtmp1, 
+         msg    = _mm_add_epi32(msgtmp1,
                   _mm_set_epi64x(0x92722C8581C2C92Eull, 0x766A0ABB650A7354ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp1, msgtmp0, 4);
@@ -199,7 +199,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp0 = _mm_sha256msg1_epu32(msgtmp0, msgtmp1);
 
       // Rounds 40-43
-         msg    = _mm_add_epi32(msgtmp2, 
+         msg    = _mm_add_epi32(msgtmp2,
                   _mm_set_epi64x(0xC76C51A3C24B8B70ull, 0xA81A664BA2BFE8A1ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp2, msgtmp1, 4);
@@ -210,7 +210,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp1 = _mm_sha256msg1_epu32(msgtmp1, msgtmp2);
 
       // Rounds 44-47
-         msg    = _mm_add_epi32(msgtmp3, 
+         msg    = _mm_add_epi32(msgtmp3,
                   _mm_set_epi64x(0x106AA070F40E3585ull, 0xD6990624D192E819ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp3, msgtmp2, 4);
@@ -221,7 +221,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp2 = _mm_sha256msg1_epu32(msgtmp2, msgtmp3);
 
       // Rounds 48-51
-         msg    = _mm_add_epi32(msgtmp0, 
+         msg    = _mm_add_epi32(msgtmp0,
                   _mm_set_epi64x(0x34B0BCB52748774Cull, 0x1E376C0819A4C116ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp0, msgtmp3, 4);
@@ -232,7 +232,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
       msgtmp3 = _mm_sha256msg1_epu32(msgtmp3, msgtmp0);
 
       // Rounds 52-55
-         msg    = _mm_add_epi32(msgtmp1, 
+         msg    = _mm_add_epi32(msgtmp1,
                   _mm_set_epi64x(0x682E6FF35B9CCA4Full, 0x4ED8AA4A391C0CB3ull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp1, msgtmp0, 4);
@@ -242,7 +242,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
          state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
 
       // Rounds 56-59
-         msg    = _mm_add_epi32(msgtmp2, 
+         msg    = _mm_add_epi32(msgtmp2,
                   _mm_set_epi64x(0x8CC7020884C87814ull, 0x78A5636F748F82EEull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
       tmp     = _mm_alignr_epi8(msgtmp2, msgtmp1, 4);
@@ -252,7 +252,7 @@ void intel_sha256_step(uint32_t *digest, const char *data, uint32_t num_blks) {
          state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
 
       // Rounds 60-63
-         msg    = _mm_add_epi32(msgtmp3, 
+         msg    = _mm_add_epi32(msgtmp3,
                   _mm_set_epi64x(0xC67178F2BEF9A3F7ull, 0xA4506CEB90BEFFFAull));
          state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
          msg    = _mm_shuffle_epi32(msg, 0x0E);

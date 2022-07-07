@@ -28,7 +28,7 @@
  */
 
 /*
- * Algorithm Specification 
+ * Algorithm Specification
  *  http://info.isl.ntt.co.jp/crypt/eng/camellia/specifications.html
  */
 
@@ -1013,7 +1013,7 @@ void
 camellia_decrypt128(const uint32_t *subkey, uint32_t *io)
 {
     uint32_t il,ir,t0,t1;               /* temporary valiables */
-    
+
     /* pre whitening but absorb kw2*/
     io[0] ^= SUBL(24);
     io[1] ^= SUBR(24);
@@ -1170,7 +1170,7 @@ camellia_decrypt256(const uint32_t *subkey, uint32_t *io)
     /* pre whitening but absorb kw2*/
     io[0] ^= SUBL(32);
     io[1] ^= SUBR(32);
-	
+
     /* main iteration */
     CAMELLIA_ROUNDSM(io[0],io[1], SUBL(31),SUBR(31),
 		     io[2],io[3],il,ir,t0,t1);
@@ -1246,8 +1246,8 @@ camellia_decrypt256(const uint32_t *subkey, uint32_t *io)
 }
 
 void
-Camellia_Ekeygen(const int keyBitLength, 
-		 const unsigned char *rawKey, 
+Camellia_Ekeygen(const int keyBitLength,
+		 const unsigned char *rawKey,
 		 uint32_t *subkey)
 {
     KASSERT(keyBitLength == 128 || keyBitLength == 192 || keyBitLength == 256,
@@ -1268,8 +1268,8 @@ Camellia_Ekeygen(const int keyBitLength,
     }
 }
 void
-Camellia_EncryptBlock(const int keyBitLength, 
-		      const unsigned char *plaintext, 
+Camellia_EncryptBlock(const int keyBitLength,
+		      const unsigned char *plaintext,
 		      const uint32_t *subkey,
 		      unsigned char *ciphertext)
 {
@@ -1300,13 +1300,13 @@ Camellia_EncryptBlock(const int keyBitLength,
 }
 
 void
-Camellia_DecryptBlock(const int keyBitLength, 
-		      const unsigned char *ciphertext, 
+Camellia_DecryptBlock(const int keyBitLength,
+		      const unsigned char *ciphertext,
 		      const uint32_t *subkey,
 		      unsigned char *plaintext)
 {
     uint32_t tmp[4];
- 
+
     tmp[0] = GETU32(ciphertext);
     tmp[1] = GETU32(ciphertext + 4);
     tmp[2] = GETU32(ciphertext + 8);

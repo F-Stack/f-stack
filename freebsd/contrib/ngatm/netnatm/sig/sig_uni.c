@@ -213,7 +213,7 @@ uni_create(void *arg, const struct uni_funcs *funcs)
 	return (uni);
 }
 
-void 
+void
 uni_destroy(struct uni *uni)
 {
 	uni_stop(uni);

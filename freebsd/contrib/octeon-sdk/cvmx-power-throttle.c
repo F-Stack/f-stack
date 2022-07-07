@@ -135,7 +135,7 @@ uint64_t cvmx_power_throttle_get_field(uint64_t r,
     if (!p->present)
         return (uint64_t) -1;
     m = CVMX_PTH_GET_MASK(p->len, p->pos);
-    
+
     return((r & m) >> p->pos);
 }
 

@@ -273,14 +273,14 @@ err_free_chpknd:
 #ifdef CVMX_BUILD_FOR_LINUX_KERNEL
     kfree (chpknd);
 #else
-    /* no free() for cvmx_bootmem_alloc() */ 
+    /* no free() for cvmx_bootmem_alloc() */
 #endif
 
 err_free_pch:
 #ifdef CVMX_BUILD_FOR_LINUX_KERNEL
     kfree (pch);
 #else
-    /* no free() for cvmx_bootmem_alloc() */ 
+    /* no free() for cvmx_bootmem_alloc() */
 #endif
 out:
     return res;
@@ -386,7 +386,7 @@ out:
         ilk_txx_cfg1.u64 = cvmx_read_csr(CVMX_ILK_TXX_CFG1(interface));
         ilk_rxx_cfg1.s.pkt_ena = ilk_txx_cfg1.s.pkt_ena;
         cvmx_write_csr(CVMX_ILK_RXX_CFG1(interface), ilk_rxx_cfg1.u64);
-        //cvmx_dprintf("ILK%d: link up, %d Mbps, Full duplex mode, %d lanes\n", interface, result.s.speed, lanes);  
+        //cvmx_dprintf("ILK%d: link up, %d Mbps, Full duplex mode, %d lanes\n", interface, result.s.speed, lanes);
     }
     else
     {

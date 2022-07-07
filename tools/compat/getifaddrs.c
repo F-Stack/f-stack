@@ -133,7 +133,7 @@ getifaddrs(struct ifaddrs **pif)
 			}
 			free(buf);
 			buf = NULL;
-		} 
+		}
 	} while (buf == NULL);
 
 	for (next = buf; next < buf + needed; next += rtm->rtm_msglen) {

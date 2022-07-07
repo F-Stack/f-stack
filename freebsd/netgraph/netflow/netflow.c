@@ -479,12 +479,12 @@ ng_netflow_cache_init(priv_p priv)
 	    sizeof(struct flow_entry), NULL, NULL, NULL, NULL,
 	    UMA_ALIGN_CACHE, 0);
 	uma_zone_set_max(priv->zone, CACHESIZE);
-#ifdef INET6	
+#ifdef INET6
 	priv->zone6 = uma_zcreate("NetFlow IPv6 cache",
 	    sizeof(struct flow6_entry), NULL, NULL, NULL, NULL,
 	    UMA_ALIGN_CACHE, 0);
 	uma_zone_set_max(priv->zone6, CACHESIZE);
-#endif	
+#endif
 
 	/* Allocate hash. */
 	priv->hash = malloc(NBUCKETS * sizeof(struct flow_hash_entry),
@@ -821,7 +821,7 @@ ng_netflow_flow6_add(priv_p priv, fib_export_p fe, struct ip6_hdr *ip6,
 			r.r_ports = *(uint32_t *)upper_ptr;
 			break;
 		}
-	}	
+	}
 
 	r.r_ip_p = upper_proto;
 	r.r_i_ifx = src_if_index;
@@ -932,12 +932,12 @@ struct ngnf_show_header *resp)
 	/*
 	 * We will transfer not more than NREC_AT_ONCE. More data
 	 * will come in next message.
-	 * We send current hash index and current record number in list 
-	 * to userland, and userland should return it back to us. 
+	 * We send current hash index and current record number in list
+	 * to userland, and userland should return it back to us.
 	 * Then, we will restart with new entry.
 	 *
 	 * The resulting cache snapshot can be inaccurate if flow expiration
-	 * is taking place on hash item between userland data requests for 
+	 * is taking place on hash item between userland data requests for
 	 * this hash item id.
 	 */
 	resp->nentries = 0;
@@ -945,7 +945,7 @@ struct ngnf_show_header *resp)
 		int list_id;
 
 		if (mtx_trylock(&hsh->mtx) == 0) {
-			/* 
+			/*
 			 * Requested hash index is not available,
 			 * relay decision to skip or re-request data
 			 * to userland.
@@ -987,7 +987,7 @@ struct ngnf_show_header *resp)
 			resp->nentries++;
 			if (resp->nentries == max) {
 				resp->hash_id = i;
-				/* 
+				/*
 				 * If it was the last item in list
 				 * we simply skip to next hash_id.
 				 */
@@ -1080,7 +1080,7 @@ export_add(item_p item, struct flow_entry *fle)
 	if (header->count == NETFLOW_V5_MAX_RECORDS)
 		return (1); /* end of datagram */
 	else
-		return (0);	
+		return (0);
 }
 
 /* Periodic flow expiry run. */

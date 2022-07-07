@@ -82,7 +82,7 @@
 #define HDRSIZE(sav) \
 	(((sav)->flags & SADB_X_EXT_OLD) ? \
 		sizeof (struct ah) : sizeof (struct ah) + sizeof (u_int32_t))
-/* 
+/*
  * Return authenticator size in bytes, based on a field in the
  * algorithm descriptor.
  */

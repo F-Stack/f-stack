@@ -23,7 +23,7 @@ struct epoll_event events[MAX_EVENTS];
 int epfd;
 int sockfd;
 
-char html[] = 
+char html[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
@@ -80,7 +80,7 @@ int loop(void *arg)
                     break;
                 }
             }
-        } else { 
+        } else {
             if (events[i].events & EPOLLERR ) {
                 /* Simply close socket */
                 ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);

@@ -906,7 +906,7 @@ vnode_pager_generic_getpages(struct vnode *vp, vm_page_t *m, int count,
 	    __func__, count, after + 1));
 	after -= count - 1;
 
-	/* Trim requested rbehind/rahead to possible values. */   
+	/* Trim requested rbehind/rahead to possible values. */
 	rbehind = a_rbehind ? *a_rbehind : 0;
 	rahead = a_rahead ? *a_rahead : 0;
 	rbehind = min(rbehind, before);
@@ -936,7 +936,7 @@ vnode_pager_generic_getpages(struct vnode *vp, vm_page_t *m, int count,
 	    rbehind, rahead, count, maxphys));
 
 	/*
-	 * Fill in the bp->b_pages[] array with requested and optional   
+	 * Fill in the bp->b_pages[] array with requested and optional
 	 * read behind or read ahead pages.  Read behind pages are looked
 	 * up in a backward direction, down to a first cached page.  Same
 	 * for read ahead pages, but there is no need to shift the array
@@ -961,8 +961,8 @@ vnode_pager_generic_getpages(struct vnode *vp, vm_page_t *m, int count,
 			if (p == NULL) {
 				/* Shift the array. */
 				for (int j = 0; j < i; j++)
-					bp->b_pages[j] = bp->b_pages[j + 
-					    tpindex + 1 - startpindex]; 
+					bp->b_pages[j] = bp->b_pages[j +
+					    tpindex + 1 - startpindex];
 				break;
 			}
 			bp->b_pages[tpindex - startpindex] = p;
@@ -1235,7 +1235,7 @@ vnode_pager_putpages(vm_object_t object, vm_page_t *m, int count,
 	vp = object->handle;
 	VM_OBJECT_WUNLOCK(object);
 	rtval = VOP_PUTPAGES(vp, m, bytes, flags, rtvals);
-	KASSERT(rtval != EOPNOTSUPP, 
+	KASSERT(rtval != EOPNOTSUPP,
 	    ("vnode_pager: stale FS putpages\n"));
 	VM_OBJECT_WLOCK(object);
 }

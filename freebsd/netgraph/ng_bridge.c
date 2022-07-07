@@ -1,7 +1,7 @@
 /*-
  * Copyright (c) 2000 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -12,7 +12,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -310,9 +310,9 @@ ng_bridge_constructor(node_p node)
 
 	/*
 	 * This node has all kinds of stuff that could be screwed by SMP.
-	 * Until it gets it's own internal protection, we go through in 
-	 * single file. This could hurt a machine bridging between two 
-	 * GB ethernets so it should be fixed. 
+	 * Until it gets it's own internal protection, we go through in
+	 * single file. This could hurt a machine bridging between two
+	 * GB ethernets so it should be fixed.
 	 * When it's fixed the process SHOULD NOT SLEEP, spinlocks please!
 	 * (and atomic ops )
 	 */
@@ -350,7 +350,7 @@ ng_bridge_newhook(node_p node, hook_p hook, const char *name)
 			 linkNum);
 		if (strcmp(linkName, name) != 0)
 			return (EINVAL);
-		
+
 		if(NG_PEER_NODE(hook) == node)
 		        return (ELOOP);
 
@@ -506,7 +506,7 @@ ng_bridge_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			hook_p hook;
 			link_p link;
 			char linkName[NG_HOOKSIZ];
-			    
+
 			/* Get link number */
 			if (msg->header.arglen != sizeof(u_int32_t)) {
 				error = EINVAL;
@@ -515,7 +515,7 @@ ng_bridge_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			snprintf(linkName, sizeof(linkName),
 				 "%s%u", NG_BRIDGE_HOOK_LINK_PREFIX,
 				 *((u_int32_t *)msg->data));
-			    
+
 			if ((hook = ng_findhook(node, linkName)) == NULL) {
 				error = ENOTCONN;
 				break;

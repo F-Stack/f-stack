@@ -97,7 +97,7 @@ char *des_options(void)
                 }
         return(buf);
 }
-void des_ecb_encrypt(unsigned char *input, unsigned char *output, 
+void des_ecb_encrypt(unsigned char *input, unsigned char *output,
 		     des_key_schedule ks, int enc)
 {
 	register DES_LONG l;
@@ -121,10 +121,10 @@ void des_ecb3_encrypt(unsigned char *input, unsigned char *output,
 	DES_LONG ll[2];
 	const unsigned char *in = input;
 	unsigned char *out = output;
- 
-	c2l(in,l0); 
+
+	c2l(in,l0);
 	c2l(in,l1);
-	ll[0]=l0; 
+	ll[0]=l0;
 	ll[1]=l1;
 
 	if (enc)

@@ -121,8 +121,8 @@ EXPORT_SYMBOL(cvmx_override_pko_queue_priority);
 
 /**
  * cvmx_override_ipd_port_setup(int ipd_port) is a function
- * pointer. It is meant to allow customization of the IPD 
- * port/port kind setup before packet input/output comes online. 
+ * pointer. It is meant to allow customization of the IPD
+ * port/port kind setup before packet input/output comes online.
  * It is called after cvmx-helper does the default IPD configuration,
  * but before IPD is enabled. Users should set this pointer to a
  * function before calling any cvmx-helper operations.
@@ -253,7 +253,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
                     return CVMX_HELPER_INTERFACE_MODE_XAUI;
                 else
                     return CVMX_HELPER_INTERFACE_MODE_DISABLED;
-                break; 
+                break;
             case 5:
             case 6:
                 qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(interface - 4));
@@ -267,7 +267,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
 		}
                 else
                     return CVMX_HELPER_INTERFACE_MODE_DISABLED;
-                break; 
+                break;
             case 7:
                 qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(3));
                 /* QLM is disabled when QLM SPD is 15. */
@@ -280,16 +280,16 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
                         return CVMX_HELPER_INTERFACE_MODE_DISABLED;
                 }
                 return CVMX_HELPER_INTERFACE_MODE_NPI;
-                break; 
+                break;
             case 8:
                 return CVMX_HELPER_INTERFACE_MODE_LOOP;
-                break; 
+                break;
             default:
                 return CVMX_HELPER_INTERFACE_MODE_DISABLED;
-                break; 
+                break;
         }
     }
-                    
+
     if (interface == 2)
         return CVMX_HELPER_INTERFACE_MODE_NPI;
 
@@ -305,7 +305,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
     }
 
     /* Only present in CN63XX & CN66XX Octeon model */
-    if ((OCTEON_IS_MODEL(OCTEON_CN63XX) && (interface == 4 || interface == 5)) 
+    if ((OCTEON_IS_MODEL(OCTEON_CN63XX) && (interface == 4 || interface == 5))
         || (OCTEON_IS_MODEL(OCTEON_CN66XX) && interface >= 4 && interface <= 7))
     {
         cvmx_sriox_status_reg_t sriox_status_reg;
@@ -386,7 +386,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
     }
 
     /* Interface 1 is always disabled on CN31XX and CN30XX */
-    if ((interface == 1) 
+    if ((interface == 1)
         && (OCTEON_IS_MODEL(OCTEON_CN31XX)
             || OCTEON_IS_MODEL(OCTEON_CN30XX)
             || OCTEON_IS_MODEL(OCTEON_CN50XX)
@@ -444,7 +444,7 @@ EXPORT_SYMBOL(cvmx_helper_interface_get_mode);
  * contents for a port. The setup performed here is controlled by
  * the defines in executive-config.h.
  *
- * @param ipd_port Port/Port kind to configure. This follows the IPD numbering, 
+ * @param ipd_port Port/Port kind to configure. This follows the IPD numbering,
  *                 not the per interface numbering
  *
  * @return Zero on success, negative on failure
@@ -527,14 +527,14 @@ static int cvmx_helper_fcs_op(int interface, int nports, int has_fcs)
     int pknd;
     cvmx_pip_sub_pkind_fcsx_t pkind_fcsx;
     cvmx_pip_prt_cfgx_t port_cfg;
-    
+
     if (!octeon_has_feature(OCTEON_FEATURE_PKND))
         return 0;
 
     port_bit = 0;
     for (index = 0; index < nports; index++)
         port_bit |= ((uint64_t)1 << cvmx_helper_get_pknd(interface, index));
-    
+
     pkind_fcsx.u64 = cvmx_read_csr(CVMX_PIP_SUB_PKIND_FCSX(0));
     if (has_fcs)
         pkind_fcsx.s.port_bit |= port_bit;
@@ -1291,8 +1291,8 @@ int cvmx_helper_initialize_packet_io_global(void)
         /* Newer chips have more than one SMI/MDIO interface */
         if (OCTEON_IS_MODEL(OCTEON_CN68XX))
             smi_inf = 4;
-        else if (!OCTEON_IS_MODEL(OCTEON_CN3XXX) 
-                 && !OCTEON_IS_MODEL(OCTEON_CN58XX) 
+        else if (!OCTEON_IS_MODEL(OCTEON_CN3XXX)
+                 && !OCTEON_IS_MODEL(OCTEON_CN58XX)
                  && !OCTEON_IS_MODEL(OCTEON_CN50XX))
             smi_inf = 2;
 

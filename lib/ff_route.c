@@ -107,7 +107,7 @@ rt_xaddrs(caddr_t cp, caddr_t cplim, struct rt_addrinfo *rtinfo)
         /*
          * there are no more.. quit now
          * If there are more bits, they are in error.
-         * I've seen this. route(1) can evidently generate these. 
+         * I've seen this. route(1) can evidently generate these.
          * This causes kernel to core dump.
          * for compatibility, If we see this, point to a safe address.
          */
@@ -543,7 +543,7 @@ fill_addrinfo(struct rt_msghdr *rtm, int len, u_int fibnum, struct rt_addrinfo *
      * The given gateway address may be an interface address.
      * For example, issuing a "route change" command on a route
      * entry that was created from a tunnel, and the gateway
-     * address given is the local end point. In this case the 
+     * address given is the local end point. In this case the
      * RTF_GATEWAY flag must be cleared or the destination will
      * not be reachable even though there is no error message.
      */
@@ -560,11 +560,11 @@ fill_addrinfo(struct rt_msghdr *rtm, int len, u_int fibnum, struct rt_addrinfo *
         ginfo.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&ss;
         gdst = info->rti_info[RTAX_GATEWAY];
 
-        /* 
-         * A host route through the loopback interface is 
+        /*
+         * A host route through the loopback interface is
          * installed for each interface adddress. In pre 8.0
          * releases the interface address of a PPP link type
-         * is not reachable locally. This behavior is fixed as 
+         * is not reachable locally. This behavior is fixed as
          * part of the new L2/L3 redesign and rewrite work. The
          * signature of this interface address route is the
          * AF_LINK sa_family type of the gateway, and the
@@ -697,7 +697,7 @@ handle_rtm_get(struct rt_addrinfo *info, u_int fibnum,
 			rt_maskedcopy(nh->nh_ifa->ifa_addr,
 				      &laddr,
 				      nh->nh_ifa->ifa_netmask);
-		/* 
+		/*
 		 * refactor rt and no lock operation necessary
 		 */
 		rc->rc_rt = (struct rtentry *)rnh->rnh_matchaddr(&laddr,
@@ -1000,7 +1000,7 @@ update_rtm_from_rc(struct rt_addrinfo *info, struct rt_msghdr **prtm,
 
     rtm->rtm_flags = rc->rc_rt->rte_flags | nhop_get_rtflags(nh);
     if (rtm->rtm_flags & RTF_GWFLAG_COMPAT)
-        rtm->rtm_flags = RTF_GATEWAY | 
+        rtm->rtm_flags = RTF_GATEWAY |
             (rtm->rtm_flags & ~RTF_GWFLAG_COMPAT);
     rt_getmetrics(rc->rc_rt, nh, &rtm->rtm_rmx);
     rtm->rtm_rmx.rmx_weight = rc->rc_nh_weight;
@@ -1306,7 +1306,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
      * The given gateway address may be an interface address.
      * For example, issuing a "route change" command on a route
      * entry that was created from a tunnel, and the gateway
-     * address given is the local end point. In this case the 
+     * address given is the local end point. In this case the
      * RTF_GATEWAY flag must be cleared or the destination will
      * not be reachable even though there is no error message.
      */
@@ -1322,11 +1322,11 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
         ginfo.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&ss;
         gdst = info.rti_info[RTAX_GATEWAY];
 
-        /* 
-         * A host route through the loopback interface is 
+        /*
+         * A host route through the loopback interface is
          * installed for each interface adddress. In pre 8.0
          * releases the interface address of a PPP link type
-         * is not reachable locally. This behavior is fixed as 
+         * is not reachable locally. This behavior is fixed as
          * part of the new L2/L3 redesign and rewrite work. The
          * signature of this interface address route is the
          * AF_LINK sa_family type of the rt_gateway, and the
@@ -1377,7 +1377,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
     case RTM_DELETE:
         saved_nrt = NULL;
         /* support for new ARP code */
-        if (info.rti_info[RTAX_GATEWAY] && 
+        if (info.rti_info[RTAX_GATEWAY] &&
             (info.rti_info[RTAX_GATEWAY]->sa_family == AF_LINK) &&
             (rtm->rtm_flags & RTF_LLDATA) != 0) {
             error = lla_rt_output(rtm, &info);
@@ -1451,7 +1451,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
         if (rtm->rtm_flags & RTF_ANNOUNCE) {
             struct sockaddr laddr;
 
-            if (rt->rt_ifp != NULL && 
+            if (rt->rt_ifp != NULL &&
                 rt->rt_ifp->if_type == IFT_PROPVIRTUAL) {
                 struct ifaddr *ifa;
 
@@ -1465,7 +1465,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
                 rt_maskedcopy(rt->rt_ifa->ifa_addr,
                           &laddr,
                           rt->rt_ifa->ifa_netmask);
-            /* 
+            /*
              * refactor rt and no lock operation necessary
              */
             rt = (struct rtentry *)rnh->rnh_matchaddr(&laddr,
@@ -1474,7 +1474,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
                 RIB_RUNLOCK(rnh);
                 senderr(ESRCH);
             }
-        } 
+        }
         RT_LOCK(rt);
         RT_ADDREF(rt);
         RIB_RUNLOCK(rnh);
@@ -1541,7 +1541,7 @@ report:
         rtsock_msg_buffer(rtm->rtm_type, &info, &w, &len);
 
         if (rt->rt_flags & RTF_GWFLAG_COMPAT)
-            rtm->rtm_flags = RTF_GATEWAY | 
+            rtm->rtm_flags = RTF_GATEWAY |
                 (rt->rt_flags & ~RTF_GWFLAG_COMPAT);
         else
             rtm->rtm_flags = rt->rt_flags;

@@ -2043,7 +2043,7 @@ ng_ppp_mp_xmit(node_p node, item_p item, uint16_t proto)
 	if (priv->allLinksEqual) {
 		int	numFrags, fraction, remain;
 		int	i;
-		
+
 		/* Calculate optimal fragment count */
 		numFrags = priv->numActiveLinks;
 		if (numFrags > m->m_pkthdr.len / MP_MIN_FRAG_LEN)
@@ -2053,7 +2053,7 @@ ng_ppp_mp_xmit(node_p node, item_p item, uint16_t proto)
 
 		fraction = m->m_pkthdr.len / numFrags;
 		remain = m->m_pkthdr.len - (fraction * numFrags);
-		
+
 		/* Assign distribution */
 		for (i = 0; i < numFrags; i++) {
 			distrib[priv->lastLink++ % priv->numActiveLinks]
@@ -2072,7 +2072,7 @@ deliver:
 	    activeLinkNum >= 0; activeLinkNum--) {
 		const uint16_t linkNum = priv->activeLinks[activeLinkNum];
 		struct ng_ppp_link *const link = &priv->links[linkNum];
-		
+
 		frags += (distrib[activeLinkNum] + link->conf.mru - hdr_len - 1) /
 		    (link->conf.mru - hdr_len);
 	}
@@ -2297,7 +2297,7 @@ ng_ppp_mp_strategy(node_p node, int len, int *distrib)
 		/* Compute time delta since last write */
 		diff = now;
 		timevalsub(&diff, &alink->lastWrite);
-		
+
 		/* alink->bytesInQueue will be changed, mark change time. */
 		alink->lastWrite = now;
 

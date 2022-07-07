@@ -83,7 +83,7 @@ struct prio_si {
  * If a queue with the same priority is already backlogged, use
  * that one instead of the queue passed as argument.
  */
-static int 
+static int
 prio_enqueue(struct dn_sch_inst *_si, struct dn_queue *q, struct mbuf *m)
 {
 	struct prio_si *si = (struct prio_si *)(_si + 1);

@@ -492,21 +492,21 @@ sds ACLDescribeUserCommandRules(user *u) {
 
     /* Attempt to find a good approximation for categories and commands
      * based on the current bits used, by looping over the category list
-     * and applying the best fit each time. Often a set of categories will not 
-     * perfectly match the set of commands into it, so at the end we do a 
+     * and applying the best fit each time. Often a set of categories will not
+     * perfectly match the set of commands into it, so at the end we do a
      * final pass adding/removing the single commands needed to make the bitmap
-     * exactly match. A temp user is maintained to keep track of categories 
+     * exactly match. A temp user is maintained to keep track of categories
      * already applied. */
     user tu = {0};
     user *tempuser = &tu;
-    
+
     /* Keep track of the categories that have been applied, to prevent
      * applying them twice.  */
     char applied[sizeof(ACLCommandCategories)/sizeof(ACLCommandCategories[0])];
     memset(applied, 0, sizeof(applied));
 
     memcpy(tempuser->allowed_commands,
-        u->allowed_commands, 
+        u->allowed_commands,
         sizeof(u->allowed_commands));
     while (1) {
         int best = -1;
@@ -521,12 +521,12 @@ sds ACLDescribeUserCommandRules(user *u) {
              *   that are different.
              * AND EITHER
              * * It has the fewest number of differences
-             *    than the best match we have found so far. 
+             *    than the best match we have found so far.
              * * OR it matches the fewest number of differences
              *   that we've seen but it has more in common. */
             diff = additive ? off : on;
             same = additive ? on : off;
-            if (same > diff && 
+            if (same > diff &&
                 ((diff < mindiff) || (diff == mindiff && same > maxsame)))
             {
                 best = j;
@@ -1264,7 +1264,7 @@ int ACLCheckPubsubChannelPerm(sds channel, list *allowed, int literal) {
         sds pattern = listNodeValue(ln);
         size_t plen = sdslen(pattern);
 
-        if ((literal && !sdscmp(pattern,channel)) || 
+        if ((literal && !sdscmp(pattern,channel)) ||
             (!literal && stringmatchlen(pattern,plen,channel,clen,0)))
         {
             match = 1;
@@ -1284,7 +1284,7 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
     listNode *ln, *lpn;
     robj *o;
     int kill = 0;
-    
+
     /* Nothing to kill when the upcoming are a literal super set of the original
      * permissions. */
     listRewind(u->channels,&li);
@@ -1306,13 +1306,13 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
             listRewind(c->pubsub_patterns,&lpi);
             while (!kill && ((lpn = listNext(&lpi)) != NULL)) {
                 o = lpn->value;
-                kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,1) == 
+                kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,1) ==
                         ACL_DENIED_CHANNEL);
             }
             /* Check for channel violations. */
             if (!kill) {
                 dictIterator *di = dictGetIterator(c->pubsub_channels);
-                dictEntry *de;                
+                dictEntry *de;
                 while (!kill && ((de = dictNext(di)) != NULL)) {
                     o = dictGetKey(de);
                     kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,0) ==
@@ -1332,12 +1332,12 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
 /* Check if the pub/sub channels of the command, that's ready to be executed in
  * the client 'c', can be executed by this client according to the ACLs channels
  * associated to the client user c->user.
- * 
+ *
  * idx and count are the index and count of channel arguments from the
- * command. The literal argument controls whether the user's ACL channels are 
+ * command. The literal argument controls whether the user's ACL channels are
  * evaluated as literal values or matched as glob-like patterns.
  *
- * If the user can execute the command ACL_OK is returned, otherwise 
+ * If the user can execute the command ACL_OK is returned, otherwise
  * ACL_DENIED_CHANNEL. */
 int ACLCheckPubsubPerm(client *c, int idx, int count, int literal, int *idxptr) {
     user *u = c->user;
@@ -1794,7 +1794,7 @@ void ACLFreeLogEntry(void *leptr) {
  * the log entry instead of creating many entries for very similar ACL
  * rules issues.
  *
- * The argpos argument is used when the reason is ACL_DENIED_KEY or 
+ * The argpos argument is used when the reason is ACL_DENIED_KEY or
  * ACL_DENIED_CHANNEL, since it allows the function to log the key or channel
  * name that caused the problem. Similarly the username is only passed when we
  * failed to authenticate the user with AUTH or HELLO, for the ACL_DENIED_AUTH
@@ -2263,7 +2263,7 @@ void authCommand(client *c) {
             return;
         }
 
-        username = shared.default_username; 
+        username = shared.default_username;
         password = c->argv[1];
     } else {
         username = c->argv[1];

@@ -111,7 +111,7 @@ uni_create_partyx(struct call *c, u_int epref, u_int mine, uint32_t cookie)
 	    p->epref, (p->flags & PARTY_MINE) ? "mine" : "his");
 
 	return (p);
-	
+
 }
 
 struct party *

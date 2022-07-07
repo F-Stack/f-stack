@@ -37,8 +37,8 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
 
@@ -327,7 +327,7 @@ ieee80211_dwds_discover(struct ieee80211_node *ni, struct mbuf *m)
 
 	/*
 	 * Save the frame with an aging interval 4 times
-	 * the listen interval specified by the station. 
+	 * the listen interval specified by the station.
 	 * Frames that sit around too long are reclaimed
 	 * using this information.
 	 * XXX handle overflow?

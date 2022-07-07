@@ -12,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -41,10 +41,10 @@ static SYSCTL_NODE(_vm, OID_AUTO, redzone, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
     "RedZone data");
 static u_long redzone_extra_mem = 0;
 SYSCTL_ULONG(_vm_redzone, OID_AUTO, extra_mem, CTLFLAG_RD, &redzone_extra_mem,
-    0, "Extra memory allocated by redzone");     
+    0, "Extra memory allocated by redzone");
 static int redzone_panic = 0;
 SYSCTL_INT(_vm_redzone, OID_AUTO, panic, CTLFLAG_RWTUN, &redzone_panic, 0,
-    "Panic when buffer corruption is detected");     
+    "Panic when buffer corruption is detected");
 
 #define	REDZONE_CHSIZE	(16)
 #define	REDZONE_CFSIZE	(16)

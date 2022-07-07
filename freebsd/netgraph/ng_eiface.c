@@ -616,7 +616,7 @@ ng_eiface_rmnode(node_p node)
 	struct ifnet *const ifp = priv->ifp;
 
 	/*
-	 * the ifnet may be in a different vnet than the netgraph node, 
+	 * the ifnet may be in a different vnet than the netgraph node,
 	 * hence we have to change the current vnet context here.
 	 */
 	CURVNET_SET_QUIET(ifp->if_vnet);

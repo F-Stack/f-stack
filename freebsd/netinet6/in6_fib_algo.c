@@ -131,7 +131,7 @@ lradix6_init(uint32_t fibnum, struct fib_data *fd, void *_old_data, void **_data
 	struct rib_rtable_info rinfo;
 	uint32_t count;
 	void *mem;
- 
+
 	lr = malloc(sizeof(struct lradix6_data), M_RTABLE, M_NOWAIT | M_ZERO);
 	if (lr == NULL || !rn_inithead((void **)&lr->rnh, OFF_LEN_INET6))
 		return (FLM_REBUILD);

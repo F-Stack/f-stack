@@ -575,7 +575,7 @@ maybe_demote(struct mac_lomac *subjlabel, struct mac_lomac *objlabel,
 	sbuf_delete(&subjlabel_sb);
 	sbuf_delete(&subjtext_sb);
 	sbuf_delete(&objlabel_sb);
-		
+
 	return (0);
 }
 
@@ -1649,7 +1649,7 @@ lomac_pipe_relabel(struct ucred *cred, struct pipepair *pp,
 
 /*
  * Some system privileges are allowed regardless of integrity grade; others
- * are allowed only when running with privilege with respect to the LOMAC 
+ * are allowed only when running with privilege with respect to the LOMAC
  * policy as they might otherwise allow bypassing of the integrity policy.
  */
 static int

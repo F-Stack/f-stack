@@ -34,7 +34,7 @@ extern u_int32_t ar9300_num_tx_pending(struct ath_hal *ah, u_int q);
  */
 void
 ar9300_beacon_init(struct ath_hal *ah,
-    u_int32_t next_beacon, u_int32_t beacon_period, 
+    u_int32_t next_beacon, u_int32_t beacon_period,
     u_int32_t beacon_period_fraction, HAL_OPMODE opmode)
 {
     u_int32_t               beacon_period_usec;
@@ -189,7 +189,7 @@ ar9300_set_sta_beacon_timers(struct ath_hal *ah, const HAL_BEACON_STATE *bs)
     OS_REG_WRITE(ah, AR_TIM_PERIOD, TU_TO_USEC(beaconintval));
     OS_REG_WRITE(ah, AR_DTIM_PERIOD, TU_TO_USEC(dtimperiod));
 
-    /* clear HOST AP related timers first */    
+    /* clear HOST AP related timers first */
     OS_REG_CLR_BIT(ah, AR_TIMER_MODE, (AR_DBA_TIMER_EN | AR_SWBA_TIMER_EN));
 
     OS_REG_SET_BIT(ah, AR_TIMER_MODE, AR_TBTT_TIMER_EN | AR_TIM_TIMER_EN

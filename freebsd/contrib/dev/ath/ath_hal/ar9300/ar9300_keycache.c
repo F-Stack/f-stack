@@ -208,7 +208,7 @@ ar9300_set_key_cache_entry(struct ath_hal *ah, u_int16_t entry,
     HALDEBUG(ah, HAL_DEBUG_KEYCACHE, "%s[%d] mac %s proxy %d\n",
         __func__, __LINE__, mac ? ath_hal_ether_sprintf(mac) : "null",
         is_proxysta_key);
-	
+
     switch (k->kv_type & AH_KEYTYPE_MASK) {
     case HAL_CIPHER_AES_OCB:
         key_type = AR_KEYTABLE_TYPE_AES;
@@ -269,7 +269,7 @@ ar9300_set_key_cache_entry(struct ath_hal *ah, u_int16_t entry,
 
     /* Need to preserve the power management bit used by MAC */
     pwrmgt = OS_REG_READ(ah, AR_KEYTABLE_TYPE(entry)) & AR_KEYTABLE_PWRMGT;
-    
+
     if (is_proxysta_key) {
         u_int8_t bcast_mac[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
         if (!mac || OS_MEMCMP(mac, bcast_mac, 6)) {
@@ -528,12 +528,12 @@ ar9300_check_key_cache_entry(struct ath_hal *ah, u_int16_t entry,
          * key is installed so pending rx frames will fail
          * with decrypt errors rather than a MIC error.
          */
-        if ((OS_REG_READ(ah, AR_KEYTABLE_KEY0(entry)) == key0) && 
+        if ((OS_REG_READ(ah, AR_KEYTABLE_KEY0(entry)) == key0) &&
                 (OS_REG_READ(ah, AR_KEYTABLE_KEY1(entry)) == key1) &&
                 (OS_REG_READ(ah, AR_KEYTABLE_KEY2(entry)) == key2) &&
                 (OS_REG_READ(ah, AR_KEYTABLE_KEY3(entry)) == key3) &&
                 (OS_REG_READ(ah, AR_KEYTABLE_KEY4(entry)) == key4) &&
-                ((OS_REG_READ(ah, AR_KEYTABLE_TYPE(entry)) & AR_KEY_TYPE) == (keyType & AR_KEY_TYPE))) 
+                ((OS_REG_READ(ah, AR_KEYTABLE_TYPE(entry)) & AR_KEY_TYPE) == (keyType & AR_KEY_TYPE)))
         {
 
             /*

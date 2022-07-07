@@ -362,7 +362,7 @@ retry_sleepq:
 				    SLEEPQ_LK, 0, SQ_EXCLUSIVE_QUEUE);
 				queue = SQ_SHARED_QUEUE;
 			}
-				
+
 		} else {
 			/*
 			 * Exclusive waiters sleeping with LK_SLEEPFAIL on

@@ -840,7 +840,7 @@ static void FIO_adjustMemLimitForPatchFromMode(FIO_prefs_t* const prefs,
 /* FIO_removeMultiFilesWarning() :
  * Returns 1 if the console should abort, 0 if console should proceed.
  * This function handles logic when processing multiple files with -o, displaying the appropriate warnings/prompts.
- * 
+ *
  * If -f is specified, or there is just 1 file, zstd will always proceed as usual.
  * If --rm is specified, there will be a prompt asking for user confirmation.
  *         If -f is specified with --rm, zstd will proceed as usual
@@ -1545,7 +1545,7 @@ FIO_compressFilename_internal(FIO_ctx_t* const fCtx,
     fCtx->totalBytesOutput += (size_t)compressedfilesize;
     DISPLAYLEVEL(2, "\r%79s\r", "");
     if (g_display_prefs.displayLevel >= 2 &&
-        !fCtx->hasStdoutOutput && 
+        !fCtx->hasStdoutOutput &&
         (g_display_prefs.displayLevel >= 3 || fCtx->nbFilesTotal <= 1)) {
         if (readsize == 0) {
             DISPLAYLEVEL(2,"%-20s :  (%6llu => %6llu bytes, %s) \n",
@@ -1892,7 +1892,7 @@ static dRess_t FIO_createDResources(FIO_prefs_t* const prefs, const char* dictFi
         EXM_THROW(60, "Error: %s : can't create ZSTD_DStream", strerror(errno));
     CHECK( ZSTD_DCtx_setMaxWindowSize(ress.dctx, prefs->memLimit) );
     CHECK( ZSTD_DCtx_setParameter(ress.dctx, ZSTD_d_forceIgnoreChecksum, !prefs->checksumFlag));
-    
+
     ress.srcBufferSize = ZSTD_DStreamInSize();
     ress.srcBuffer = malloc(ress.srcBufferSize);
     ress.dstBufferSize = ZSTD_DStreamOutSize();
@@ -2771,7 +2771,7 @@ FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
         if (outDirName)
             FIO_checkFilenameCollisions(srcNamesTable , fCtx->nbFilesTotal);
     }
-    
+
     if (fCtx->nbFilesProcessed >= 1  && fCtx->nbFilesTotal > 1 && fCtx->totalBytesOutput != 0)
         DISPLAYLEVEL(2, "%d files decompressed : %6zu bytes total \n", fCtx->nbFilesProcessed, fCtx->totalBytesOutput);
 

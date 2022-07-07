@@ -98,7 +98,7 @@ ng_l2cap_send_hook_info(node_p node, hook_p hook, void *arg1, int arg2)
 } /* ng_l2cap_send_hook_info */
 
 /*
- * Create new connection descriptor for the "remote" unit. 
+ * Create new connection descriptor for the "remote" unit.
  * Will link connection descriptor to the l2cap node.
  */
 
@@ -121,8 +121,8 @@ ng_l2cap_new_con(ng_l2cap_p l2cap, bdaddr_p bdaddr, int type)
 	 * XXX
 	 *
 	 * Assign fake connection handle to the connection descriptor.
-	 * Bluetooth specification marks 0x0f00 - 0x0fff connection 
-	 * handles as reserved. We need this fake connection handles 
+	 * Bluetooth specification marks 0x0f00 - 0x0fff connection
+	 * handles as reserved. We need this fake connection handles
 	 * for timeouts. Connection handle will be passed as argument
 	 * to timeout so when timeout happens we can find the right
 	 * connection descriptor. We can not pass pointers, because
@@ -143,7 +143,7 @@ ng_l2cap_new_con(ng_l2cap_p l2cap, bdaddr_p bdaddr, int type)
 	TAILQ_INIT(&con->cmd_list);
 
 	/* Link connection */
-	LIST_INSERT_HEAD(&l2cap->con_list, con, next); 
+	LIST_INSERT_HEAD(&l2cap->con_list, con, next);
 
 	return (con);
 } /* ng_l2cap_new_con */
@@ -193,7 +193,7 @@ ng_l2cap_con_unref(ng_l2cap_con_p con)
 
 	if ((con->refcnt == 0) &&
 	    (con->state == NG_L2CAP_CON_OPEN) &&
-	    (con->flags & NG_L2CAP_CON_OUTGOING) && 
+	    (con->flags & NG_L2CAP_CON_OUTGOING) &&
 	    (con->l2cap->discon_timo > 0) &&
 	    ((con->flags & NG_L2CAP_CON_DYING) == 0))
 		ng_l2cap_discon_timeout(con);
@@ -311,7 +311,7 @@ ng_l2cap_con_by_addr(ng_l2cap_p l2cap, bdaddr_p bdaddr, unsigned int type)
 } /* ng_l2cap_con_by_addr */
 
 /*
- * Get connection by "handle" 
+ * Get connection by "handle"
  */
 
 ng_l2cap_con_p
@@ -640,12 +640,12 @@ ng_l2cap_get_cid(ng_l2cap_p l2cap,int isle)
 		idtype = NG_L2CAP_L2CA_IDTYPE_LE;
 	}else{
 		endcid = l2cap->cid;
-		/*Assume Last CID is 2^n-1 */		
+		/*Assume Last CID is 2^n-1 */
 		mask = NG_L2CAP_LAST_CID;
 		idtype = NG_L2CAP_L2CA_IDTYPE_BREDR;
 	}
 	cid = (endcid+1) & mask;
-	     
+
 	if (cid < NG_L2CAP_FIRST_CID)
 		cid = NG_L2CAP_FIRST_CID;
 
@@ -664,7 +664,7 @@ ng_l2cap_get_cid(ng_l2cap_p l2cap,int isle)
 		if (cid < NG_L2CAP_FIRST_CID)
 			cid = NG_L2CAP_FIRST_CID;
 	}
-		
+
 	return (NG_L2CAP_NULL_CID);
 } /* ng_l2cap_get_cid */
 

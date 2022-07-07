@@ -246,7 +246,7 @@ export9_add(item_p item, struct netflow_v9_packet_opt *t, struct flow_entry *fle
 	struct mbuf *m = NGI_M(item);
 	uint16_t flow_type;
 	struct flow_entry_data *fed;
-#ifdef INET6	
+#ifdef INET6
 	struct flow6_entry_data *fed6;
 #endif
 	if (t == NULL) {
@@ -267,7 +267,7 @@ export9_add(item_p item, struct netflow_v9_packet_opt *t, struct flow_entry *fle
 	{
 		/* IPv4 TCP/UDP/[SCTP] */
 		struct netflow_v9_record_ipv4_tcp *rec = &rg.rec.v4_tcp;
-		
+
 		rec->src_addr = fed->r.r_src.s_addr;
 		rec->dst_addr = fed->r.r_dst.s_addr;
 		rec->next_hop = fed->next_hop.s_addr;
@@ -293,7 +293,7 @@ export9_add(item_p item, struct netflow_v9_packet_opt *t, struct flow_entry *fle
 		len = sizeof(struct netflow_v9_record_ipv4_tcp);
 		break;
 	}
-#ifdef INET6	
+#ifdef INET6
 	case NETFLOW_V9_FLOW_V6_L4:
 	{
 		/* IPv6 TCP/UDP/[SCTP] */
@@ -324,7 +324,7 @@ export9_add(item_p item, struct netflow_v9_packet_opt *t, struct flow_entry *fle
 		len = sizeof(struct netflow_v9_record_ipv6_tcp);
 		break;
 	}
-#endif	
+#endif
 	default:
 	{
 		CTR1(KTR_NET, "export9_add(): Don't know what to do with %d flow type!", flow_type);
@@ -348,7 +348,7 @@ export9_add(item_p item, struct netflow_v9_packet_opt *t, struct flow_entry *fle
 		/* m_append should not fail since all data is already allocated */
 		if (m_append(m, sizeof(fsh), (void *)&fsh) != 1)
 			panic("ng_netflow: m_append() failed");
-		
+
 	}
 
 	if (m_append(m, len, (void *)&rg.rec) != 1)
@@ -415,7 +415,7 @@ get_export9_dgram(priv_p priv, fib_export_p fe, struct netflow_v9_packet_opt **t
 		/*
 		 * Check if we need to insert templates into packet
 		 */
-		
+
 		struct netflow_v9_flowset_header	*fl;
 
 		if ((time_uptime >= priv->templ_time + fe->templ_last_ts) ||

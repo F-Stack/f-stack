@@ -955,7 +955,7 @@ retry:
 				 * required because a concurrent pmap
 				 * operation could clear the last reference
 				 * and set PGA_REFERENCED before the call to
-				 * pmap_is_referenced(). 
+				 * pmap_is_referenced().
 				 */
 				if ((m->a.flags & PGA_REFERENCED) != 0 ||
 				    pmap_is_referenced(m) ||

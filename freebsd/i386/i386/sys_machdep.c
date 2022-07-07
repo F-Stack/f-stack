@@ -303,7 +303,7 @@ i386_extend_pcb(struct thread *td)
 	 * address on a doubleword boundary.
 	 */
 	offset = PAGE_SIZE - 16;
-	ext->ext_tss.tss_ioopt = 
+	ext->ext_tss.tss_ioopt =
 	    (offset - ((unsigned)&ext->ext_tss - (unsigned)ext)) << 16;
 	ext->ext_iomap = (caddr_t)ext + offset;
 	ext->ext_vm86.vm86_intmap = (caddr_t)ext + offset - 32;
@@ -345,7 +345,7 @@ i386_set_ioperm(td, uap)
 	if ((error = securelevel_gt(td->td_ucred, 0)) != 0)
 		return (error);
 	/*
-	 * XXX 
+	 * XXX
 	 * While this is restricted to root, we should probably figure out
 	 * whether any other driver is using this i/o address, as so not to
 	 * cause confusion.  This probably requires a global 'usage registry'.
@@ -405,7 +405,7 @@ done:
 /*
  * Update the GDT entry pointing to the LDT to point to the LDT of the
  * current process. Manage dt_lock holding/unholding autonomously.
- */   
+ */
 static void
 set_user_ldt_locked(struct mdproc *mdp)
 {
@@ -611,7 +611,7 @@ i386_set_ldt(struct thread *td, struct i386_ldt_args *uap,
 		dp = &descs[i];
 
 		switch (dp->sd.sd_type) {
-		case SDT_SYSNULL:	/* system null */ 
+		case SDT_SYSNULL:	/* system null */
 			dp->sd.sd_p = 0;
 			break;
 		case SDT_SYS286TSS: /* system 286 TSS available */
@@ -620,14 +620,14 @@ i386_set_ldt(struct thread *td, struct i386_ldt_args *uap,
 		case SDT_SYSTASKGT: /* system task gate */
 		case SDT_SYS286IGT: /* system 286 interrupt gate */
 		case SDT_SYS286TGT: /* system 286 trap gate */
-		case SDT_SYSNULL2:  /* undefined by Intel */ 
+		case SDT_SYSNULL2:  /* undefined by Intel */
 		case SDT_SYS386TSS: /* system 386 TSS available */
 		case SDT_SYSNULL3:  /* undefined by Intel */
 		case SDT_SYS386BSY: /* system 386 TSS busy */
-		case SDT_SYSNULL4:  /* undefined by Intel */ 
+		case SDT_SYSNULL4:  /* undefined by Intel */
 		case SDT_SYS386IGT: /* system 386 interrupt gate */
 		case SDT_SYS386TGT: /* system 386 trap gate */
-		case SDT_SYS286CGT: /* system 286 call gate */ 
+		case SDT_SYS286CGT: /* system 286 call gate */
 		case SDT_SYS386CGT: /* system 386 call gate */
 			return (EACCES);
 
@@ -646,9 +646,9 @@ i386_set_ldt(struct thread *td, struct i386_ldt_args *uap,
 		case SDT_MEMRWA:  /* memory read write accessed */
 		case SDT_MEMROD:  /* memory read only expand dwn limit */
 		case SDT_MEMRODA: /* memory read only expand dwn lim accessed */
-		case SDT_MEMRWD:  /* memory read write expand dwn limit */  
+		case SDT_MEMRWD:  /* memory read write expand dwn limit */
 		case SDT_MEMRWDA: /* memory read write expand dwn lim acessed */
-		case SDT_MEME:    /* memory execute only */ 
+		case SDT_MEME:    /* memory execute only */
 		case SDT_MEMEA:   /* memory execute only accessed */
 		case SDT_MEMER:   /* memory execute read */
 		case SDT_MEMERA:  /* memory execute read accessed */
@@ -734,7 +734,7 @@ i386_set_ldt_data(struct thread *td, int start, int num,
 }
 
 static int
-i386_ldt_grow(struct thread *td, int len) 
+i386_ldt_grow(struct thread *td, int len)
 {
 	struct mdproc *mdp;
 	struct proc_ldt *new_ldt, *pldt;

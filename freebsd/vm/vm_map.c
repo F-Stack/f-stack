@@ -152,7 +152,7 @@ static void vm_map_wire_entry_failure(vm_map_t map, vm_map_entry_t entry,
     ((e)->object.vm_object != NULL && (e)->object.vm_object->cred != NULL && \
      !((e)->eflags & MAP_ENTRY_NEEDS_COPY)))
 
-/* 
+/*
  * PROC_VMSPACE_{UN,}LOCK() can be a noop as long as vmspaces are type
  * stable.
  */
@@ -893,7 +893,7 @@ vm_map_unbusy(vm_map_t map)
 	}
 }
 
-void 
+void
 vm_map_wait_busy(vm_map_t map)
 {
 
@@ -3665,7 +3665,7 @@ done:
 		    (entry->eflags & MAP_ENTRY_USER_WIRED) == 0) {
 			/*
 			 * Undo the wiring.  Wiring succeeded on this entry
-			 * but failed on a later entry.  
+			 * but failed on a later entry.
 			 */
 			if (entry->wired_count == 1) {
 				vm_map_entry_unwire(map, entry);
@@ -3894,7 +3894,7 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 			 * The option OBJPR_NOTMAPPED can be passed here
 			 * because vm_map_delete() already performed
 			 * pmap_remove() on the only mapping to this range
-			 * of pages. 
+			 * of pages.
 			 */
 			vm_object_page_remove(object, offidxstart, offidxend,
 			    OBJPR_NOTMAPPED);
@@ -5105,7 +5105,7 @@ RetryLookupLocked:
 /*
  *	vm_map_lookup_locked:
  *
- *	Lookup the faulting address.  A version of vm_map_lookup that returns 
+ *	Lookup the faulting address.  A version of vm_map_lookup that returns
  *      KERN_FAILURE instead of blocking on map lock or memory allocation.
  */
 int

@@ -235,8 +235,8 @@ mac_veriexec_vfs_unmounted(void *arg __unused, struct mount *mp,
  *
  * @param label the label that is being initialized
  */
-static void 
-mac_veriexec_mount_init_label(struct label *label) 
+static void
+mac_veriexec_mount_init_label(struct label *label)
 {
 
 	SLOT_SET(label, 0);
@@ -252,8 +252,8 @@ mac_veriexec_mount_init_label(struct label *label)
  *
  * @param label the label that is being destroyed
  */
-static void 
-mac_veriexec_mount_destroy_label(struct label *label) 
+static void
+mac_veriexec_mount_destroy_label(struct label *label)
 {
 
 	SLOT_SET(label, 0);
@@ -296,7 +296,7 @@ mac_veriexec_vnode_destroy_label(struct label *label)
  * @brief Copy the value in the MAC per-policy slot assigned to veriexec from
  *        the @p src label to the @p dest label
  */
-static void 
+static void
 mac_veriexec_copy_label(struct label *src, struct label *dest)
 {
 
@@ -505,7 +505,7 @@ mac_veriexec_check_vp(struct ucred *cred, struct vnode *vp, accmode_t accmode)
 		/*
 		 * If file has a fingerprint then deny the write request,
 		 * otherwise invalidate the status so we don't keep checking
-		 * for the file having a fingerprint. 
+		 * for the file having a fingerprint.
 		 */
 		switch (status) {
 		case FINGERPRINT_FILE:
@@ -531,7 +531,7 @@ mac_veriexec_check_vp(struct ucred *cred, struct vnode *vp, accmode_t accmode)
 		default:
 			/*
 			 * Caller wants open to fail unless there is a valid
-			 * fingerprint registered. 
+			 * fingerprint registered.
 			 */
 			MAC_VERIEXEC_DBG(2, "fingerprint status is %d for dev "
 			    "%ju, file %ju.%ju\n", status,
@@ -685,7 +685,7 @@ mac_veriexec_syscall(struct thread *td, int call, void *arg)
 		error = VOP_GETATTR(fp->f_vnode, &va,  td->td_ucred);
 		if (error)
 			goto check_done;
-		       
+
 		MAC_VERIEXEC_DBG(2, "mac_veriexec_fingerprint_check_image: "
 		    "va_mode=%o, check_files=%d\n", va.va_mode,
 		    ((va.va_mode & (S_IXUSR|S_IXGRP|S_IXOTH)) == 0));

@@ -362,8 +362,8 @@ skip_checksum:
 
 			/*
 			 * XXXRW: Because we weren't holding either the inpcb
-			 * or the hash lock when we checked for a match 
-			 * before, we should probably recheck now that the 
+			 * or the hash lock when we checked for a match
+			 * before, we should probably recheck now that the
 			 * inpcb lock is (supposed to be) held.
 			 */
 
@@ -609,7 +609,7 @@ udp6_common_ctlinput(int cmd, struct sockaddr *sa, void *d,
 			    m->m_pkthdr.rcvif, m);
 			if (inp != NULL) {
 				struct udpcb *up;
-				
+
 				up = intoudpcb(inp);
 				if (up->u_icmp_func) {
 					/* Yes it is. */

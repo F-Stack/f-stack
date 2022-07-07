@@ -32,7 +32,7 @@
 #define AR9300_DFS_FIRPWR   -28
 #define AR9300_DFS_RRSSI    0
 #define AR9300_DFS_HEIGHT   10
-#define AR9300_DFS_PRSSI    6 
+#define AR9300_DFS_PRSSI    6
 #define AR9300_DFS_INBAND   8
 #define AR9300_DFS_RELPWR   8
 #define AR9300_DFS_RELSTEP  12
@@ -41,7 +41,7 @@
 /*
  * This PRSSI value should be used during CAC.
  */
-#define AR9300_DFS_PRSSI_CAC 10 
+#define AR9300_DFS_PRSSI_CAC 10
 
 /*
  *  make sure that value matches value in ar9300_osprey_2p2_mac_core[][2]
@@ -100,8 +100,8 @@ struct dfs_pulse ar9300_fcc_radars[] = {
 
     // FCC TYPE 1
     // {18,  1,  325, 1930, 0,  6,  7,  0,  1, 18,  0, 3, 0, 0}, // 518 to 3066
-    {18,  1,  700, 700, 0,  6,  5,  0,  1, 18,  0, 3, 1, 8}, 
-    {18,  1,  350, 350, 0,  6,  5,  0,  1, 18,  0, 3, 0, 0}, 
+    {18,  1,  700, 700, 0,  6,  5,  0,  1, 18,  0, 3, 1, 8},
+    {18,  1,  350, 350, 0,  6,  5,  0,  1, 18,  0, 3, 0, 0},
 
 
     // FCC TYPE 6
@@ -109,14 +109,14 @@ struct dfs_pulse ar9300_fcc_radars[] = {
     //{9,   1, 3003, 3003, 1,  7,  5,  0,  1, 18,  0, 0, 0, 1},
     {9,   1, 3003, 3003, 0,  7,  5,  0,  1, 18,  0, 0, 1, 1},
 
-    // FCC TYPE 2	
-    {23, 5, 4347, 6666, 0, 18, 11,  0,  7, 22,  0, 3, 0, 2}, 
+    // FCC TYPE 2
+    {23, 5, 4347, 6666, 0, 18, 11,  0,  7, 22,  0, 3, 0, 2},
 
     // FCC TYPE 3
     {18, 10, 2000, 5000, 0, 23,  8,  6, 13, 22,  0, 3, 0, 5},
 
     // FCC TYPE 4
-    {16, 15, 2000, 5000, 0, 25,  7, 11, 23, 22,  0, 3, 0, 11}, 
+    {16, 15, 2000, 5000, 0, 25,  7, 11, 23, 22,  0, 3, 0, 11},
 
 };
 
@@ -456,7 +456,7 @@ void ar9300_adjust_difs(struct ath_hal *ah, u_int32_t val)
         /*
          * EV 116936:
          * Restore the register values with that of the HAL structure.
-         * Do not assume and overwrite these values to whatever 
+         * Do not assume and overwrite these values to whatever
          * is in ar9300_osprey22.ini.
          */
         struct ath_hal_9300 *ahp = AH9300(ah);
@@ -475,13 +475,13 @@ void ar9300_adjust_difs(struct ath_hal *ah, u_int32_t val)
     } else {
         /*
          * These are values from George Lai and are specific to
-         * FCC domain. They are yet to be determined for other domains. 
+         * FCC domain. They are yet to be determined for other domains.
          */
 
         AH9300(ah)->ah_fccaifs = 1;
         HALDEBUG(ah, HAL_DEBUG_DFS, "%s: set DIFS to default\n", __func__);
         /*printk("%s:  modify DIFS\n", __func__);*/
-        
+
         OS_REG_WRITE(ah, AR_DLCL_IFS(0), 0x05fffc0f);
         OS_REG_WRITE(ah, AR_DLCL_IFS(1), 0x05f0fc0f);
         OS_REG_WRITE(ah, AR_DLCL_IFS(2), 0x05f03c07);
@@ -518,7 +518,7 @@ ar9300_dfs_cac_war(struct ath_hal *ah, u_int32_t start)
         val = OS_REG_READ(ah, AR_PHY_RADAR_0);
         if (start) {
             val &= ~AR_PHY_RADAR_0_PRSSI;
-            val |= SM(AR9300_DFS_PRSSI_CAC, AR_PHY_RADAR_0_PRSSI); 
+            val |= SM(AR9300_DFS_PRSSI_CAC, AR_PHY_RADAR_0_PRSSI);
         } else {
             val &= ~AR_PHY_RADAR_0_PRSSI;
             val |= SM(AR9300_DFS_PRSSI, AR_PHY_RADAR_0_PRSSI);
@@ -574,14 +574,14 @@ HAL_BOOL
 ar9300_handle_radar_bb_panic(struct ath_hal *ah)
 {
     u_int32_t status;
-    u_int32_t val;   
+    u_int32_t val;
 #ifdef AH_DEBUG
     struct ath_hal_9300 *ahp = AH9300(ah);
 #endif
-       
+
     status = AH_PRIVATE(ah)->ah_bb_panic_last_status;
-   
-    if ( status == 0x04000539 ) { 
+
+    if ( status == 0x04000539 ) {
         /* recover from this BB panic without reset*/
         /* set AR9300_DFS_FIRPWR to -1 */
         val = OS_REG_READ(ah, AR_PHY_RADAR_0);

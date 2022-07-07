@@ -519,7 +519,7 @@ create_pagelist(char __user *buf, size_t count, unsigned short type,
 		g_free_fragments = *(char **) g_free_fragments;
 		up(&g_free_fragments_mutex);
 		pagelist->type =
-			 PAGELIST_READ_WITH_FRAGMENTS + 
+			 PAGELIST_READ_WITH_FRAGMENTS +
 			 (fragments - g_fragments_base)/g_fragment_size;
 	}
 

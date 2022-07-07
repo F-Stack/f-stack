@@ -50,7 +50,7 @@ __FBSDID("$FreeBSD$");
 
 #define _socket(a, b, c) 0
 #define _ioctl(a, b, c) ioctl((a), (b), (c))
-#define _close(s) 
+#define _close(s)
 #endif
 
 /*

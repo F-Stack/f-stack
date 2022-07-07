@@ -672,7 +672,7 @@ cc_uni_signal(struct ccport *port, u_int cookie, u_int sig, struct uni_msg *msg)
 		    struct uniapi_reset_indication *);
 		struct uniapi_reset_response *resp;
 		struct uni_msg *u;
-		
+
 		/*
 		 * Construct message to UNI.
 		 */

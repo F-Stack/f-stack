@@ -229,7 +229,7 @@ common_test_pidfile_child(const char *fn, int parent_open)
 		return (strerror(errno));
 	if (WIFSIGNALED(status))
 		return ("child caught signal");
-	if (WEXITSTATUS(status) != 0) 
+	if (WEXITSTATUS(status) != 0)
 		return ("child returned non-zero status");
 
 	// success

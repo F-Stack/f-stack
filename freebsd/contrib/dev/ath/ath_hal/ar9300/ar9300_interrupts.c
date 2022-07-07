@@ -196,14 +196,14 @@ ar9300_get_pending_interrupts(
                  * could come in between reading the ISR and clearing the
                  * interrupt via the primary ISR.  We therefore clear the
                  * interrupt via the secondary, which avoids this race.
-                 */ 
+                 */
                 OS_REG_WRITE(ah, AR_ISR_S2, isr2);
                 isr &= ~AR_ISR_BCNMISC;
             }
         }
 
-        /* Use AR_ISR_RAC only if chip supports it. 
-         * See EV61133 (missing interrupts due to ISR_RAC) 
+        /* Use AR_ISR_RAC only if chip supports it.
+         * See EV61133 (missing interrupts due to ISR_RAC)
          */
         if (p_cap->halIsrRacSupport) {
             isr = OS_REG_READ(ah, AR_ISR_RAC);
@@ -213,7 +213,7 @@ ar9300_get_pending_interrupts(
             ret_val = AH_FALSE;
             goto end;
         }
- 
+
         *masked = isr & HAL_INT_COMMON;
 
         /*
@@ -252,7 +252,7 @@ ar9300_get_pending_interrupts(
                  * could come in between reading the ISR and clearing the
                  * interrupt via the primary ISR.  We therefore clear the
                  * interrupt via the secondary, which avoids this race.
-                 */ 
+                 */
                 s0 = OS_REG_READ(ah, AR_ISR_S0);
                 OS_REG_WRITE(ah, AR_ISR_S0, s0);
                 s1 = OS_REG_READ(ah, AR_ISR_S1);
@@ -311,7 +311,7 @@ ar9300_get_pending_interrupts(
                  * could come in between reading the ISR and clearing the
                  * interrupt via the primary ISR.  We therefore clear the
                  * interrupt via the secondary, which avoids this race.
-                 */ 
+                 */
                 OS_REG_WRITE(ah, AR_ISR_S5, s5);
                 isr &= ~AR_ISR_GENTMR;
             }
@@ -326,7 +326,7 @@ ar9300_get_pending_interrupts(
              * writing back ones in these locations to the primary ISR
              * (except for interrupts that have a secondary isr register -
              * see above).
-             */ 
+             */
             OS_REG_WRITE(ah, AR_ISR, isr);
 
             /* Flush prior write */
@@ -367,11 +367,11 @@ ar9300_get_pending_interrupts(
 
             if ((int_raw == 0xdeadbeef) || (int_rx_msg == 0xdeadbeef))
             {
-                HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+                HALDEBUG(ah, HAL_DEBUG_BT_COEX,
                     "(MCI) Get 0xdeadbeef during MCI int processing"
                     "new int_raw=0x%08x, new rx_msg_raw=0x%08x, "
                     "int_raw=0x%08x, rx_msg_raw=0x%08x\n",
-                    int_raw, int_rx_msg, ahp->ah_mci_int_raw, 
+                    int_raw, int_rx_msg, ahp->ah_mci_int_raw,
                     ahp->ah_mci_int_rx_msg);
             }
             else {
@@ -387,12 +387,12 @@ ar9300_get_pending_interrupts(
                 *masked |= HAL_INT_MCI;
                 ahp->ah_mci_rx_status = OS_REG_READ(ah, AR_MCI_RX_STATUS);
                 if (int_rx_msg & AR_MCI_INTERRUPT_RX_MSG_CONT_INFO) {
-                    ahp->ah_mci_cont_status = 
+                    ahp->ah_mci_cont_status =
                                     OS_REG_READ(ah, AR_MCI_CONT_STATUS);
                     HALDEBUG(ah, HAL_DEBUG_BT_COEX,
                         "(MCI) cont_status=0x%08x\n", ahp->ah_mci_cont_status);
                 }
-                OS_REG_WRITE(ah, AR_MCI_INTERRUPT_RX_MSG_RAW, 
+                OS_REG_WRITE(ah, AR_MCI_INTERRUPT_RX_MSG_RAW,
                     int_rx_msg);
                 OS_REG_WRITE(ah, AR_MCI_INTERRUPT_RAW, int_raw);
 
@@ -405,11 +405,11 @@ ar9300_get_pending_interrupts(
     if (sync_cause) {
         int host1_fatal, host1_perr, radm_cpl_timeout, local_timeout;
 
-        host1_fatal = AR_SREV_WASP(ah) ? 
+        host1_fatal = AR_SREV_WASP(ah) ?
             AR9340_INTR_SYNC_HOST1_FATAL : AR9300_INTR_SYNC_HOST1_FATAL;
         host1_perr = AR_SREV_WASP(ah) ?
             AR9340_INTR_SYNC_HOST1_PERR : AR9300_INTR_SYNC_HOST1_PERR;
-        radm_cpl_timeout = AR_SREV_WASP(ah) ? 
+        radm_cpl_timeout = AR_SREV_WASP(ah) ?
             0x0 : AR9300_INTR_SYNC_RADM_CPL_TIMEOUT;
         local_timeout = AR_SREV_WASP(ah) ?
             AR9340_INTR_SYNC_LOCAL_TIMEOUT : AR9300_INTR_SYNC_LOCAL_TIMEOUT;
@@ -548,7 +548,7 @@ ar9300_set_interrupts(struct ath_hal *ah, HAL_INT ints, HAL_BOOL nortc)
 #if 0
             if (OS_ATOMIC_READ(&ahp->ah_ier_ref_count) > 0) {
                 OS_ATOMIC_DEC(&ahp->ah_ier_ref_count);
-            } 
+            }
 #endif
         } else {
             HALDEBUG(ah, HAL_DEBUG_INTERRUPT,
@@ -664,7 +664,7 @@ ar9300_set_interrupts(struct ath_hal *ah, HAL_INT ints, HAL_BOOL nortc)
     if ((ints & HAL_INT_GLOBAL) && (OS_ATOMIC_READ(&ahp->ah_ier_ref_count) == 0)) {
 #endif
         HALDEBUG(ah, HAL_DEBUG_INTERRUPT, "%s: enable IER\n", __func__);
-        
+
         if (!nortc) {
             OS_REG_WRITE(ah, AR_IER, AR_IER_ENABLE);
         }

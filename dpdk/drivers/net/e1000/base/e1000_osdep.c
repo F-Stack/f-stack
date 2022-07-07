@@ -6,7 +6,7 @@
 #include "e1000_api.h"
 
 /*
- * NOTE: the following routines using the e1000 
+ * NOTE: the following routines using the e1000
  * 	naming style are provided to the shared
  *	code but are OS specific
  */

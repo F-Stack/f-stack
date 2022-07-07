@@ -185,7 +185,7 @@ rssadapt_node_init(struct ieee80211_node *ni)
 	}
 
 	if (ni->ni_rctls == NULL) {
-		ni->ni_rctls = ra = 
+		ni->ni_rctls = ra =
 		    IEEE80211_MALLOC(sizeof(struct ieee80211_rssadapt_node),
 		        M_80211_RATECTL, IEEE80211_M_NOWAIT | IEEE80211_M_ZERO);
 		if (ra == NULL) {

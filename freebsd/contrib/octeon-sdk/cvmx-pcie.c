@@ -461,7 +461,7 @@ static int __cvmx_pcie_rc_initialize_link_gen1(int pcie_port)
 }
 
 static inline void __cvmx_increment_ba(cvmx_sli_mem_access_subidx_t *pmas)
-{   
+{
     if (OCTEON_IS_MODEL(OCTEON_CN68XX))
         pmas->cn68xx.ba++;
     else
@@ -933,7 +933,7 @@ static int __cvmx_pcie_rc_initialize_gen2(int pcie_port)
             if (qlm_cfg.s.qlm_cfg == 1)
                 qlm = 1;
         }
-        /* PCIe is allowed only in QLM1, 1 PCIe port in x2 or 
+        /* PCIe is allowed only in QLM1, 1 PCIe port in x2 or
            2 PCIe ports in x1 */
         else if (OCTEON_IS_MODEL(OCTEON_CNF71XX))
             qlm = 1;

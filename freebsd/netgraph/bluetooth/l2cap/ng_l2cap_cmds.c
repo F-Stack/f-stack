@@ -114,7 +114,7 @@ ng_l2cap_con_wakeup(ng_l2cap_con_p con)
 		ng_l2cap_unlink_cmd(cmd);
 		ng_l2cap_free_cmd(cmd);
 		break;
-		
+
 	case NG_L2CAP_CON_REQ:
 		error = ng_l2cap_lp_send(con, NG_L2CAP_SIGNAL_CID, m);
 		if (error != 0) {
@@ -130,7 +130,7 @@ ng_l2cap_con_wakeup(ng_l2cap_con_p con)
 		ng_l2cap_unlink_cmd(cmd);
 		if (cmd->ch != NULL) {
 			ng_l2cap_l2ca_con_rsp_rsp(cmd->ch, cmd->token,
-				(error == 0)? NG_L2CAP_SUCCESS : 
+				(error == 0)? NG_L2CAP_SUCCESS :
 					NG_L2CAP_NO_RESOURCES);
 			if (error != 0)
 				ng_l2cap_free_chan(cmd->ch);
@@ -179,19 +179,19 @@ ng_l2cap_con_wakeup(ng_l2cap_con_p con)
 			ng_l2cap_unlink_cmd(cmd);
 			ng_l2cap_free_cmd(cmd);
 		} else
-			ng_l2cap_command_timeout(cmd, 
+			ng_l2cap_command_timeout(cmd,
 				bluetooth_l2cap_rtx_timeout());
 		break;
 
 	case NG_L2CAP_INFO_REQ:
 		error = ng_l2cap_lp_send(con, NG_L2CAP_SIGNAL_CID, m);
 		if (error != 0) {
-			ng_l2cap_l2ca_get_info_rsp(con, cmd->token, 
+			ng_l2cap_l2ca_get_info_rsp(con, cmd->token,
 				NG_L2CAP_NO_RESOURCES, NULL);
 			ng_l2cap_unlink_cmd(cmd);
 			ng_l2cap_free_cmd(cmd);
 		} else
-			ng_l2cap_command_timeout(cmd, 
+			ng_l2cap_command_timeout(cmd,
 				bluetooth_l2cap_rtx_timeout());
 		break;
 
@@ -375,7 +375,7 @@ ng_l2cap_process_command_timeout(node_p node, hook_p hook, void *arg1, int arg2)
 	switch (cmd->code) {
  	case NG_L2CAP_CON_REQ:
 		ng_l2cap_l2ca_con_rsp(cmd->ch, cmd->token, NG_L2CAP_TIMEOUT, 0);
-		ng_l2cap_free_chan(cmd->ch); 
+		ng_l2cap_free_chan(cmd->ch);
 		break;
 
 	case NG_L2CAP_CFG_REQ:

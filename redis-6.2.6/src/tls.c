@@ -64,7 +64,7 @@ static int parseProtocolsConfig(const char *str) {
     if (!str) return REDIS_TLS_PROTO_DEFAULT;
     sds *tokens = sdssplitlen(str, strlen(str), " ", 1, &count);
 
-    if (!tokens) { 
+    if (!tokens) {
         serverLog(LL_WARNING, "Invalid tls-protocols configuration string");
         return -1;
     }
@@ -139,7 +139,7 @@ static void initCryptoLocks(void) {
 
 void tlsInit(void) {
     /* Enable configuring OpenSSL using the standard openssl.cnf
-     * OPENSSL_config()/OPENSSL_init_crypto() should be the first 
+     * OPENSSL_config()/OPENSSL_init_crypto() should be the first
      * call to the OpenSSL* library.
      *  - OPENSSL_config() should be used for OpenSSL versions < 1.1.0
      *  - OPENSSL_init_crypto() should be used for OpenSSL versions >= 1.1.0
@@ -994,7 +994,7 @@ int tlsConfigure(redisTLSContextConfig *ctx_config) {
     return C_OK;
 }
 
-connection *connCreateTLS(void) { 
+connection *connCreateTLS(void) {
     return NULL;
 }
 

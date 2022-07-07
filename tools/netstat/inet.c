@@ -559,7 +559,7 @@ protopr(u_long off, const char *name, int af1, int proto)
 		if (istcp) {
 			if (cflag)
 				xo_emit(" {:stack/%-*.*s}",
-					
+
 					fnamelen, fnamelen, tp->xt_stack);
 			if (Cflag)
 				xo_emit(" {:cc/%-*.*s}"

@@ -87,7 +87,7 @@
  */
 #ifdef HAVE_HUMANIZE_NUMBER
 #include <libutil.h>
-#define xo_humanize_number humanize_number 
+#define xo_humanize_number humanize_number
 #else /* HAVE_HUMANIZE_NUMBER */
 #include "xo_humanize.h"
 #endif /* HAVE_HUMANIZE_NUMBER */
@@ -300,7 +300,7 @@ struct xo_handle_s {
  * pitches on its ear.  It may take 40 bytes of data to populate 14
  * columns, but we can't go off looking at 40 bytes of data without the
  * caller's permission for fear/knowledge that we'll generate core files.
- * 
+ *
  * So we make three values, distinguishing between "max column" and
  * "number of bytes that we will inspect inspect safely" We call the
  * later "size", and make the format "%[[<min>].[[<size>].<max>]]s".
@@ -517,7 +517,7 @@ xo_printable (const char *str)
 	} else if (*str == '\"') {
 	    *cp++ = '\\';
 	    *cp = '"';
-	} else 
+	} else
 	    *cp = *str;
     }
 
@@ -787,7 +787,7 @@ xo_escape_xml (xo_buffer_t *xbp, ssize_t len, xo_xff_flags_t flags)
 	slen = strlen(sp);
 	ip -= slen - 1;
 	memcpy(ip, sp, slen);
-	
+
     } while (cp > ep && cp != ip);
 
     return len + delta;
@@ -831,7 +831,7 @@ xo_escape_json (xo_buffer_t *xbp, ssize_t len, xo_xff_flags_t flags UNUSED)
 	} else {
 	    *ip = *cp;
 	}
-	
+
     } while (cp > ep && cp != ip);
 
     return len + delta;
@@ -871,7 +871,7 @@ xo_escape_sdparams (xo_buffer_t *xbp, ssize_t len, xo_xff_flags_t flags UNUSED)
 	} else {
 	    *ip = *cp;
 	}
-	
+
     } while (cp > ep && cp != ip);
 
     return len + delta;
@@ -1384,7 +1384,7 @@ xo_retain_hash (const char *fmt)
     val &= RETAIN_HASH_SIZE - 1;
 
     return val;
-}	
+}
 
 /*
  * Walk all buckets, clearing all retained entries
@@ -2428,7 +2428,7 @@ xo_set_options (xo_handle_t *xop, const char *input)
 		    if (rc)
 			xo_warnx("error initializing encoder: %s", vp);
 		}
-		
+
 	    } else {
 		xo_warnx("unknown libxo option value: '%s'", cp);
 		rc = -1;
@@ -3120,7 +3120,7 @@ xo_dngettext (xo_handle_t *xop, const char *sing, const char *plural,
     if (XOF_ISSET(xop, XOF_LOG_GETTEXT))
 	fprintf(stderr, "xo: gettext: %s%s%s"
 		"msgid \"%s\", msgid_plural \"%s\" (%lu) returns \"%s\"\n",
-		domainname ? "domain \"" : "", 
+		domainname ? "domain \"" : "",
 		xo_printable(domainname), domainname ? "\", " : "",
 		xo_printable(sing),
 		xo_printable(plural), n, xo_printable(res));
@@ -3160,7 +3160,7 @@ xo_format_gettext (xo_handle_t *xop, xo_xff_flags_t flags,
 	return cols;
 
     xbp->xb_curp[0] = '\0'; /* NUL-terminate the input string */
-    
+
     char *cp = xbp->xb_bufp + start_offset;
     ssize_t len = xbp->xb_curp - cp;
     const char *newstr = NULL;
@@ -3455,7 +3455,7 @@ xo_do_format_field (xo_handle_t *xop, xo_buffer_t *xbp,
 		for (s = 0; s < XF_WIDTH_NUM; s++) {
 		    if (xf.xf_star[s]) {
 			xf.xf_width[s] = va_arg(xop->xo_vap, int);
-			
+
 			/* Normalize a negative width value */
 			if (xf.xf_width[s] < 0) {
 			    if (s == 0) {
@@ -3653,7 +3653,7 @@ xo_do_format_field (xo_handle_t *xop, xo_buffer_t *xbp,
 	 */
 	ssize_t new_cols = xo_format_gettext(xop, flags, start_offset,
 					 old_cols, real_need_enc);
-	
+
 	if (XOF_ISSET(xop, XOF_COLUMNS))
 	    xop->xo_columns += new_cols - old_cols;
 	if (XOIF_ISSET(xop, XOIF_ANCHOR))
@@ -3724,7 +3724,7 @@ xo_humanize (char *buf, ssize_t len, uint64_t value, int flags)
 	}
 	scale -= 1;
     }
-    
+
     return xo_humanize_number(buf, len, value, "", scale, flags);
 }
 
@@ -3853,7 +3853,7 @@ xo_buf_append_div (xo_handle_t *xop, const char *class, xo_xff_flags_t flags,
      * Display-only keys implies that we've got an encode-only key
      * elsewhere, so we don't use them from making predicates.
      */
-    int need_predidate = 
+    int need_predidate =
 	(name && (flags & XFF_KEY) && !(flags & XFF_DISPLAY_ONLY)
 	 && XOF_ISSET(xop, XOF_XPATH)) ? 1 : 0;
 
@@ -5970,8 +5970,8 @@ xo_dump_fields (xo_field_info_t *fields)
 	       (unsigned long) xfip->xfi_flags,
 	       isprint((int) xfip->xfi_ftype) ? xfip->xfi_ftype : ' ',
 	       xfip->xfi_ftype,
-	       (int) xfip->xfi_clen, xfip->xfi_content ?: "", 
-	       (int) xfip->xfi_flen, xfip->xfi_format ?: "", 
+	       (int) xfip->xfi_clen, xfip->xfi_content ?: "",
+	       (int) xfip->xfi_flen, xfip->xfi_format ?: "",
 	       (int) xfip->xfi_elen, xfip->xfi_encoding ?: "");
     }
 }
@@ -6869,7 +6869,7 @@ xo_depth_change (xo_handle_t *xop, const char *name,
 		xo_failure(xop, "incorrect close: '%s' .vs. '%s'",
 			      name, top);
 		return;
-	    } 
+	    }
 	    if ((xsp->xs_flags & XSF_LIST) != (flags & XSF_LIST)) {
 		xo_failure(xop, "list close on list confict: '%s'",
 			      name);
@@ -7607,7 +7607,7 @@ xo_do_close (xo_handle_t *xop, const char *name, xo_state_t new_state)
 	    }
 	    break;
 	}
-	
+
 	if (xsp->xs_state != need_state)
 	    continue;
 
@@ -8052,7 +8052,7 @@ xo_errorn_hv (xo_handle_t *xop, int need_newline, const char *fmt, va_list vap)
 
     case XO_STYLE_HTML:
 	va_copy(xop->xo_vap, vap);
-	
+
 	xo_buf_append_div(xop, "error", 0, NULL, 0, NULL, 0,
 			  fmt, strlen(fmt), NULL, 0);
 
@@ -8187,7 +8187,7 @@ xo_parse_args (int argc, char **argv)
 		xo_warnx("missing libxo option");
 		return -1;
 	    }
-		
+
 	    if (xo_set_options(xop, cp) < 0)
 		return -1;
 	} else if (*cp == ':') {

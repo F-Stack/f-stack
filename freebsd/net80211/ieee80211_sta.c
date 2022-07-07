@@ -37,8 +37,8 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
 
@@ -428,7 +428,7 @@ sta_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			}
 #endif
 			ieee80211_scan_assoc_success(vap, ni->ni_macaddr);
-			ieee80211_notify_node_join(ni, 
+			ieee80211_notify_node_join(ni,
 			    arg == IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 			break;
 		case IEEE80211_S_SLEEP:
@@ -1412,7 +1412,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 		 *    o station mode when associated (to collect state
 		 *      updates such as 802.11g slot time)
 		 * Frames otherwise received are discarded.
-		 */ 
+		 */
 		if (!((ic->ic_flags & IEEE80211_F_SCAN) || ni->ni_associd)) {
 			vap->iv_stats.is_rx_mgtdiscard++;
 			return;
@@ -1723,7 +1723,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 			    wh, "auth", "unsupported alg %d", algo);
 			vap->iv_stats.is_rx_auth_unsupported++;
 			return;
-		} 
+		}
 		break;
 	}
 

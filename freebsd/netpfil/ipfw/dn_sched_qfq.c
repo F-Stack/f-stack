@@ -135,12 +135,12 @@ FRAC_BITS decimal bits.
   	one bit per index.
    QFQ_MAX_WSHIFT is the maximum power of two supported as a weight.
    The layout of the bits is as below:
-  
+
                    [ MTU_SHIFT ][      FRAC_BITS    ]
                    [ MAX_INDEX    ][ MIN_SLOT_SHIFT ]
   				 ^.__grp->index = 0
   				 *.__grp->slot_shift
-  
+
    where MIN_SLOT_SHIFT is derived by difference from the others.
 
 The max group index corresponds to Lmax/w_min, where
@@ -317,7 +317,7 @@ qfq_new_queue(struct dn_queue *_q)
 		D("rounding weight to 1");
 	}
 	cl->inv_w = ONE_FP/w;
-	w = ONE_FP/cl->inv_w;	
+	w = ONE_FP/cl->inv_w;
 	if (q->wsum + w > QFQ_MAX_WSUM)
 		return EINVAL;
 

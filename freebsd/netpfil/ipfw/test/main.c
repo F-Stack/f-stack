@@ -277,7 +277,7 @@ getnum(const char *s, char **next, const char *key)
 	}
 	if (l < 0) {
 		DX(2, "invalid %s for %s", s ? s : "NULL", (key ? key : "") );
-		return 0;	// invalid 
+		return 0;	// invalid
 	}
 	if (!end || !*end)
 		return l;

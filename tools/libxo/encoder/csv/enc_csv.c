@@ -324,7 +324,7 @@ csv_append_newline (xo_buffer_t *xbp, csv_private_t *csv)
 {
     if (csv->c_flags & CF_DOS_NEWLINE)
 	xo_buf_append(xbp, "\r\n", 2);
-    else 
+    else
 	xo_buf_append(xbp, "\n", 1);
 }
 

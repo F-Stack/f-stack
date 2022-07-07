@@ -161,7 +161,7 @@ EXPORT_SYMBOL(hfa_bootmem_alloc);
 #endif
 
 int  hfa_bootmem_free (void *ptr, uint64_t size)
-{	
+{
 	uint64_t address;
 	address = cvmx_ptr_to_phys (ptr);
 	return __cvmx_bootmem_phy_free (address, size, 0);

@@ -1281,15 +1281,15 @@ int main(int const argCount, const char* argv[])
         DISPLAY("error : can't use --patch-from=# on multiple files \n");
         CLEAN_RETURN(1);
     }
-    
-    /* No status message in pipe mode (stdin - stdout) */	
+
+    /* No status message in pipe mode (stdin - stdout) */
     hasStdout = outFileName && !strcmp(outFileName,stdoutmark);
 
     if (hasStdout && (g_displayLevel==2)) g_displayLevel=1;
 
     /* IO Stream/File */
     FIO_setHasStdoutOutput(fCtx, hasStdout);
-    FIO_setNbFilesTotal(fCtx, (int)filenames->tableSize); 
+    FIO_setNbFilesTotal(fCtx, (int)filenames->tableSize);
     FIO_determineHasStdinInput(fCtx, filenames);
     FIO_setNotificationLevel(g_displayLevel);
     FIO_setPatchFromMode(prefs, patchFromDictFileName != NULL);

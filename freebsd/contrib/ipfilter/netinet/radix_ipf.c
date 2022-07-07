@@ -618,7 +618,7 @@ ipf_rx_delete(head, addr, mask)
 			node->dupkey->parent = parent;
 		} else {
 			/*
-			 * 
+			 *
 			 * When removing the top node of the dupkey list,
 			 * the pointers at the top of the list that point
 			 * to other tree nodes need to be preserved and

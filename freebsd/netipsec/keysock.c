@@ -291,7 +291,7 @@ key_attach(struct socket *so, int proto, struct thread *td)
 	}
 
 	/* XXX */
-	kp = malloc(sizeof *kp, M_PCB, M_WAITOK | M_ZERO); 
+	kp = malloc(sizeof *kp, M_PCB, M_WAITOK | M_ZERO);
 	if (kp == NULL)
 		return ENOBUFS;
 

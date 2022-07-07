@@ -1218,7 +1218,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     server.repl_transfer_lastio = server.unixtime;
     if ((nwritten = write(server.repl_transfer_fd,buf,nread)) != nread) {
-        serverLog(LL_WARNING,"Write error or short write writing to the DB dump file needed for MASTER <-> REPLICA synchronization: %s", 
+        serverLog(LL_WARNING,"Write error or short write writing to the DB dump file needed for MASTER <-> REPLICA synchronization: %s",
             (nwritten == -1) ? strerror(errno) : "short write");
         goto error;
     }

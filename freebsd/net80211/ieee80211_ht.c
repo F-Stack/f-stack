@@ -40,7 +40,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
-#include <sys/systm.h> 
+#include <sys/systm.h>
 #include <sys/endian.h>
 
 #include <sys/socket.h>
@@ -184,24 +184,24 @@ ieee80211_ht_init(void)
 	/*
 	 * Register action frame handlers.
 	 */
-	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_BA, 
+	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_BA,
 	    IEEE80211_ACTION_BA_ADDBA_REQUEST, ht_recv_action_ba_addba_request);
-	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_BA, 
+	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_BA,
 	    IEEE80211_ACTION_BA_ADDBA_RESPONSE, ht_recv_action_ba_addba_response);
-	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_BA, 
+	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_BA,
 	    IEEE80211_ACTION_BA_DELBA, ht_recv_action_ba_delba);
-	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_HT, 
+	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_HT,
 	    IEEE80211_ACTION_HT_MIMOPWRSAVE, ht_recv_action_ht_mimopwrsave);
-	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_HT, 
+	ieee80211_recv_action_register(IEEE80211_ACTION_CAT_HT,
 	    IEEE80211_ACTION_HT_TXCHWIDTH, ht_recv_action_ht_txchwidth);
 
-	ieee80211_send_action_register(IEEE80211_ACTION_CAT_BA, 
+	ieee80211_send_action_register(IEEE80211_ACTION_CAT_BA,
 	    IEEE80211_ACTION_BA_ADDBA_REQUEST, ht_send_action_ba_addba);
-	ieee80211_send_action_register(IEEE80211_ACTION_CAT_BA, 
+	ieee80211_send_action_register(IEEE80211_ACTION_CAT_BA,
 	    IEEE80211_ACTION_BA_ADDBA_RESPONSE, ht_send_action_ba_addba);
-	ieee80211_send_action_register(IEEE80211_ACTION_CAT_BA, 
+	ieee80211_send_action_register(IEEE80211_ACTION_CAT_BA,
 	    IEEE80211_ACTION_BA_DELBA, ht_send_action_ba_delba);
-	ieee80211_send_action_register(IEEE80211_ACTION_CAT_HT, 
+	ieee80211_send_action_register(IEEE80211_ACTION_CAT_HT,
 	    IEEE80211_ACTION_HT_TXCHWIDTH, ht_send_action_ht_txchwidth);
 }
 SYSINIT(wlan_ht, SI_SUB_DRIVERS, SI_ORDER_FIRST, ieee80211_ht_init, NULL);
@@ -464,7 +464,7 @@ ieee80211_init_suphtrates(struct ieee80211com *ic)
 
 /*
  * Decap the encapsulated A-MSDU frames and dispatch all but
- * the last for delivery.  The last frame is returned for 
+ * the last for delivery.  The last frame is returned for
  * delivery via the normal path.
  */
 struct mbuf *
@@ -1113,7 +1113,7 @@ again:
 		 * Sec 9.10.7.6.2 a) (p.137)
 		 */
 
-		/* 
+		/*
 		 * Check for frames sitting too long in the reorder queue.
 		 * This should only ever happen if frames are not delivered
 		 * without the sender otherwise notifying us (e.g. with a
@@ -1389,7 +1389,7 @@ ieee80211_ht_node_age(struct ieee80211_node *ni)
 			continue;
 		if (rap->rxa_qframes == 0)
 			continue;
-		/* 
+		/*
 		 * Check for frames sitting too long in the reorder queue.
 		 * See above for more details on what's happening here.
 		 */
@@ -1557,7 +1557,7 @@ htinfo_update(struct ieee80211vap *vap)
 		protmode = IEEE80211_HTINFO_OPMODE_PROTOPT
 			 | IEEE80211_HTINFO_NONHT_PRESENT;
 	} else if (ic->ic_bsschan != IEEE80211_CHAN_ANYC &&
-	    IEEE80211_IS_CHAN_HT40(ic->ic_bsschan) && 
+	    IEEE80211_IS_CHAN_HT40(ic->ic_bsschan) &&
 	    vap->iv_sta_assoc != vap->iv_ht40_sta_assoc) {
 		protmode = IEEE80211_HTINFO_OPMODE_HT20PR;
 	} else {
@@ -2220,7 +2220,7 @@ ampdu_tx_stop(struct ieee80211_tx_ampdu *tap)
 	 */
 	ieee80211_txampdu_init_pps(tap);
 
-	/* NB: clearing NAK means we may re-send ADDBA */ 
+	/* NB: clearing NAK means we may re-send ADDBA */
 	tap->txa_flags &= ~(IEEE80211_AGGR_SETUP | IEEE80211_AGGR_NAK);
 }
 
@@ -3150,7 +3150,7 @@ ht_send_action_ht_txchwidth(struct ieee80211_node *ni,
 	if (m != NULL) {
 		*frm++ = category;
 		*frm++ = action;
-		*frm++ = IEEE80211_IS_CHAN_HT40(ni->ni_chan) ? 
+		*frm++ = IEEE80211_IS_CHAN_HT40(ni->ni_chan) ?
 			IEEE80211_A_HT_TXCHWIDTH_2040 :
 			IEEE80211_A_HT_TXCHWIDTH_20;
 		m->m_pkthdr.len = m->m_len = frm - mtod(m, uint8_t *);
@@ -3315,7 +3315,7 @@ ieee80211_add_htcap_body(uint8_t *frm, struct ieee80211_node *ni)
 	frm++;
 
 	/* pre-zero remainder of ie */
-	memset(frm, 0, sizeof(struct ieee80211_ie_htcap) - 
+	memset(frm, 0, sizeof(struct ieee80211_ie_htcap) -
 		__offsetof(struct ieee80211_ie_htcap, hc_mcsset));
 
 	/* supported MCS set */
@@ -3404,7 +3404,7 @@ ieee80211_add_htcap_body_ch(uint8_t *frm, struct ieee80211vap *vap,
 	frm++;
 
 	/* pre-zero remainder of ie */
-	memset(frm, 0, sizeof(struct ieee80211_ie_htcap) - 
+	memset(frm, 0, sizeof(struct ieee80211_ie_htcap) -
 		__offsetof(struct ieee80211_ie_htcap, hc_mcsset));
 
 	/* supported MCS set */

@@ -482,7 +482,7 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
     {
         ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
                       "start worker processes sem_init");
-        
+
         munmap(ngx_ff_worker_sem, sizeof(sem_t));
         shm_unlink(shm_name);
         exit(2);
@@ -512,7 +512,7 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
         if (i == 0) {
             struct timespec ts;
             (void) clock_gettime(CLOCK_REALTIME,&ts);
-            
+
             ts.tv_sec  += 15; //15s
             while ((r = sem_timedwait(ngx_ff_worker_sem, &ts)) == -1
                     && errno == EINTR)

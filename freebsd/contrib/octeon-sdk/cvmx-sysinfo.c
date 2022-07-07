@@ -122,7 +122,7 @@ void cvmx_sysinfo_add_self_to_core_mask(void)
 {
     int core = cvmx_get_core_num();
     uint32_t core_mask = 1 << core;
-    
+
     cvmx_spinlock_lock(&state.lock);
     state.sysinfo.core_mask = state.sysinfo.core_mask | core_mask;
     cvmx_spinlock_unlock(&state.lock);
@@ -132,7 +132,7 @@ void cvmx_sysinfo_remove_self_from_core_mask(void)
 {
     int core = cvmx_get_core_num();
     uint32_t core_mask = 1 << core;
-    
+
     cvmx_spinlock_lock(&state.lock);
     state.sysinfo.core_mask = state.sysinfo.core_mask & ~core_mask;
     cvmx_spinlock_unlock(&state.lock);

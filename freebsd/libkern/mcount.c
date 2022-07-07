@@ -124,7 +124,7 @@ _MCOUNT_DECL(uintfptr_t frompc, uintfptr_t selfpc)
 		 *
 		 * cputime() sets its prev_count variable to the count when
 		 * it is called.  This in effect starts a counter for
-		 * the next period of execution (normally from now until 
+		 * the next period of execution (normally from now until
 		 * the next call to mcount() or mexitcount()).  We set
 		 * cputime_bias to compensate for our own overhead.
 		 *

@@ -86,7 +86,7 @@ fingerprint1(struct libalias *la, struct alias_data *ah)
 	    ah->aaddr == NULL || ah->aport == NULL)
 		return (-1);
 	if (ntohs(*ah->dport) == NETBIOS_DGM_PORT_NUMBER
-	    || ntohs(*ah->sport) == NETBIOS_DGM_PORT_NUMBER)		
+	    || ntohs(*ah->sport) == NETBIOS_DGM_PORT_NUMBER)
 		return (0);
 	return (-1);
 }

@@ -1225,7 +1225,7 @@ size_t HUF_decompress1X1 (void* dst, size_t dstSize, const void* cSrc, size_t cS
     HUF_CREATE_STATIC_DTABLEX1(DTable, HUF_TABLELOG_MAX);
     return HUF_decompress1X1_DCtx (DTable, dst, dstSize, cSrc, cSrcSize);
 }
-#endif 
+#endif
 
 #ifndef HUF_FORCE_DECOMPRESS_X1
 size_t HUF_readDTableX2(HUF_DTable* DTable, const void* src, size_t srcSize)

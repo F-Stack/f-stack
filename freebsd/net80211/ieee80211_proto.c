@@ -381,7 +381,7 @@ ieee80211_proto_vattach(struct ieee80211vap *vap)
 		} else {
 			vap->iv_txparms[i].mgmtrate =
 			    rs->rs_rates[0] & IEEE80211_RATE_VAL;
-			vap->iv_txparms[i].mcastrate = 
+			vap->iv_txparms[i].mcastrate =
 			    rs->rs_rates[0] & IEEE80211_RATE_VAL;
 		}
 #endif
@@ -594,7 +594,7 @@ ieee80211_dump_pkt(struct ieee80211com *ic,
 		break;
 	}
 	if (IEEE80211_QOS_HAS_SEQ(wh)) {
-		const struct ieee80211_qosframe *qwh = 
+		const struct ieee80211_qosframe *qwh =
 			(const struct ieee80211_qosframe *)buf;
 		printf(" QoS [TID %u%s]", qwh->i_qos[0] & IEEE80211_QOS_TID,
 			qwh->i_qos[0] & IEEE80211_QOS_ACKPOLICY ? " ACM" : "");
@@ -1483,8 +1483,8 @@ static void
 _setifsparams(struct wmeParams *wmep, const paramType *phy)
 {
 	wmep->wmep_aifsn = phy->aifsn;
-	wmep->wmep_logcwmin = phy->logcwmin;	
-	wmep->wmep_logcwmax = phy->logcwmax;		
+	wmep->wmep_logcwmin = phy->logcwmin;
+	wmep->wmep_logcwmax = phy->logcwmax;
 	wmep->wmep_txopLimit = phy->txopLimit;
 }
 
@@ -1564,7 +1564,7 @@ ieee80211_wme_initparams_locked(struct ieee80211vap *vap)
 			setwmeparams(vap, "chan", i, wmep, pPhyParam);
 		} else {
 			setwmeparams(vap, "chan", i, wmep, pBssPhyParam);
-		}	
+		}
 		wmep = &wme->wme_wmeBssChanParams.cap_wmeParams[i];
 		setwmeparams(vap, "bss ", i, wmep, pBssPhyParam);
 	}
@@ -1704,7 +1704,7 @@ ieee80211_wme_updateparams_locked(struct ieee80211vap *vap)
 		    aggrParam[mode].logcwmax;
 		chanp->wmep_txopLimit = bssp->wmep_txopLimit =
 		    (vap->iv_flags & IEEE80211_F_BURST) ?
-			aggrParam[mode].txopLimit : 0;		
+			aggrParam[mode].txopLimit : 0;
 		IEEE80211_DPRINTF(vap, IEEE80211_MSG_WME,
 		    "update %s (chan+bss) [acm %u aifsn %u logcwmin %u "
 		    "logcwmax %u txop %u]\n", ieee80211_wme_acnames[WME_AC_BE],
@@ -2019,7 +2019,7 @@ ieee80211_start_locked(struct ieee80211vap *vap)
 			 * we should be able to apply any new state/parameters
 			 * simply by re-associating.  Otherwise we need to
 			 * re-scan to select an appropriate ap.
-			 */ 
+			 */
 			if (vap->iv_state >= IEEE80211_S_RUN)
 				ieee80211_new_state_locked(vap,
 				    IEEE80211_S_ASSOC, 1);

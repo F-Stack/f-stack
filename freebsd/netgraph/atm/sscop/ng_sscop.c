@@ -101,7 +101,7 @@ struct priv {
 /*
  * Parse PARAM type
  */
-static const struct ng_parse_struct_field ng_sscop_param_type_info[] = 
+static const struct ng_parse_struct_field ng_sscop_param_type_info[] =
     NG_SSCOP_PARAM_INFO;
 
 static const struct ng_parse_type ng_sscop_param_type = {

@@ -189,7 +189,7 @@ login_cap_t *
 login_getclassbyname(char const *name, const struct passwd *pwd)
 {
     login_cap_t	*lc;
-  
+
     if ((lc = malloc(sizeof(login_cap_t))) != NULL) {
 	int         r, me, i = 0;
 	uid_t euid = 0;
@@ -474,9 +474,9 @@ rmultiply(u_quad_t n1, u_quad_t n2)
      * is not done then the first multiply below may overflow.)
      */
     for (b1 = bpw; (((u_quad_t)1 << (b1-1)) & n1) == 0; --b1)
-	; 
+	;
     for (b2 = bpw; (((u_quad_t)1 << (b2-1)) & n2) == 0; --b2)
-	; 
+	;
     if (b1 + b2 - 2 > bpw) {
 	errno = ERANGE;
 	return (UQUAD_MAX);

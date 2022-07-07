@@ -47,7 +47,7 @@ const char * get_action_str(enum FF_KNICTL_CMD cmd){
 int knictl_status(struct ff_knictl_args *knictl){
     int            ret;
     struct ff_msg *msg, *retmsg = NULL;
-    
+
     msg = ff_ipc_msg_alloc();
     if (msg == NULL) {
         errno = ENOMEM;

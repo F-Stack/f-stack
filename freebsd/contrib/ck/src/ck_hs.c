@@ -105,7 +105,7 @@ ck_hs_map_signal(struct ck_hs_map *map, unsigned long h)
 	return;
 }
 
-static bool 
+static bool
 _ck_hs_next(struct ck_hs *hs, struct ck_hs_map *map, struct ck_hs_iterator *i, void **key)
 {
 	void *value;

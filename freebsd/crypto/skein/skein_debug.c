@@ -93,7 +93,7 @@ void Skein_Show_Round(uint_t bits,const Skein_Ctxt_Hdr_t *h,size_t r,const u64b_
     if (skein_DebugFlag & SKEIN_DEBUG_CONFIG || ((h->T[1] & SKEIN_T1_BLK_TYPE_MASK) != SKEIN_T1_BLK_TYPE_CFG))
     if (skein_DebugFlag)
         {
-        if (r >= SKEIN_RND_SPECIAL) 
+        if (r >= SKEIN_RND_SPECIAL)
             {       /* a key injection (or feedforward) point */
             injectNum = (r == SKEIN_RND_KEY_INITIAL) ? 0 : injectNum+1;
             if (  skein_DebugFlag & SKEIN_DEBUG_INJECT ||
@@ -135,7 +135,7 @@ void Skein_Show_Round(uint_t bits,const Skein_Ctxt_Hdr_t *h,size_t r,const u64b_
                                                      { 0, 7, 2, 5, 4, 3, 6, 1,12,15,14,13, 8,11,10, 9 },
                                                      { 0,15, 2,11, 6,13, 4, 9,14, 1, 8, 5,10, 3,12, 7 }
                                                    };
-                    
+
             if ((skein_DebugFlag & SKEIN_DEBUG_PERMUTE) && (r & 3))
                 {
                 printf("\n%s [state after round %2d (permuted)]=\n",AlgoHeader(bits),(int)r);
@@ -164,7 +164,7 @@ void Skein_Show_R_Ptr(uint_t bits,const Skein_Ctxt_Hdr_t *h,size_t r,const u64b_
     uint_t i;
     u64b_t X[SKEIN_MAX_STATE_WORDS];
 
-    for (i=0;i<bits/64;i++)     /* copy over the words */ 
+    for (i=0;i<bits/64;i++)     /* copy over the words */
         X[i] = X_ptr[i][0];
     Skein_Show_Round(bits,h,r,X);
     }

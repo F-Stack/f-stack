@@ -119,7 +119,7 @@ mod_handler(module_t mod, int type, void *data)
 {
 	int error;
 
-	switch (type) {	
+	switch (type) {
 	case MOD_LOAD:
 		error = 0;
 		LibAliasAttachHandlers(handlers);

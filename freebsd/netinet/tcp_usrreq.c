@@ -317,7 +317,7 @@ tcp_usr_detach(struct socket *so)
 #define TCPOLEN_TOA  8
 #endif
 
-struct toa_data { 
+struct toa_data {
     uint8_t opcode;
     uint8_t opsize;
     uint16_t port;

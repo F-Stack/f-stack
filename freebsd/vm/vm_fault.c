@@ -550,7 +550,7 @@ vm_fault_populate(struct faultstate *fs)
 			psind = 0;
 #else
 		psind = 0;
-#endif		
+#endif
 		npages = atop(pagesizes[psind]);
 		for (i = 0; i < npages; i++) {
 			vm_fault_populate_check_page(&m[i]);
@@ -1340,7 +1340,7 @@ RetryFault:
 	 * to be diddled.  Since objects reference their shadows (and copies),
 	 * they will stay around as well.
 	 *
-	 * Bump the paging-in-progress count to prevent size changes (e.g. 
+	 * Bump the paging-in-progress count to prevent size changes (e.g.
 	 * truncation operations) during I/O.
 	 */
 	vm_object_reference_locked(fs.first_object);
@@ -1627,7 +1627,7 @@ RetryFault:
 			PROC_UNLOCK(curproc);
 		}
 #endif
-	} else 
+	} else
 		curthread->td_ru.ru_minflt++;
 
 	return (KERN_SUCCESS);
@@ -1860,7 +1860,7 @@ vm_fault_quick_hold_pages(vm_map_t map, vm_offset_t addr, vm_size_t len,
 				goto error;
 	}
 	return (count);
-error:	
+error:
 	for (mp = ma; mp < ma + count; mp++)
 		if (*mp != NULL)
 			vm_page_unwire(*mp, PQ_INACTIVE);
@@ -2058,7 +2058,7 @@ again:
 		 * Mark it no longer busy, and put it on the active list.
 		 */
 		VM_OBJECT_WLOCK(dst_object);
-		
+
 		if (upgrade) {
 			if (src_m != dst_m) {
 				vm_page_unwire(src_m, PQ_INACTIVE);
@@ -2083,7 +2083,7 @@ again:
  * Block entry into the machine-independent layer's page fault handler by
  * the calling thread.  Subsequent calls to vm_fault() by that thread will
  * return KERN_PROTECTION_FAILURE.  Enable machine-dependent handling of
- * spurious page faults. 
+ * spurious page faults.
  */
 int
 vm_fault_disable_pagefaults(void)

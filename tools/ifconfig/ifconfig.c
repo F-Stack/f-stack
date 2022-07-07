@@ -373,7 +373,7 @@ static void freeformat(void)
 
 static void setformat(char *input)
 {
-	char	*formatstr, *category, *modifier; 
+	char	*formatstr, *category, *modifier;
 
 	formatstr = strdup(input);
 	while ((category = strsep(&formatstr, ",")) != NULL) {
@@ -408,7 +408,7 @@ sortifaddrs(struct ifaddrs *list,
     struct ifa_queue *q)
 {
 	struct ifaddrs *right, *temp, *last, *result, *next, *tail;
-	
+
 	right = list;
 	temp = list;
 	last = list;
@@ -692,10 +692,10 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "getifaddrs");
 
 	cp = NULL;
-	
+
 	if (calcorders(ifap, &q) != 0)
 		err(EXIT_FAILURE, "calcorders");
-		
+
 	sifap = sortifaddrs(ifap, cmpifaddrs, &q);
 
 	TAILQ_FOREACH_SAFE(cur, &q, link, tmp)
@@ -750,7 +750,7 @@ main(int argc, char *argv[])
 					    sdl->sdl_alen != ETHER_ADDR_LEN)
 						continue;
 				} else {
-					if (ifa->ifa_addr->sa_family 
+					if (ifa->ifa_addr->sa_family
 					    != afp->af_af)
 						continue;
 				}
@@ -1263,7 +1263,7 @@ notealias(const char *addr, int param, int s, const struct afswtch *afp)
 
 /*ARGSUSED*/
 static void
-setifdstaddr(const char *addr, int param __unused, int s, 
+setifdstaddr(const char *addr, int param __unused, int s,
     const struct afswtch *afp)
 {
 	if (afp->af_getaddr != NULL)
@@ -1275,7 +1275,7 @@ getifflags(const char *ifname, int us)
 {
 	struct ifreq my_ifr;
 	int s;
-	
+
 	memset(&my_ifr, 0, sizeof(my_ifr));
 	(void) strlcpy(my_ifr.ifr_name, ifname, sizeof(my_ifr.ifr_name));
 	if (us < 0) {
@@ -1345,7 +1345,7 @@ setifcap(const char *vname, int value, int s, const struct afswtch *afp)
 }
 
 static void
-setifmetric(const char *val, int dummy __unused, int s, 
+setifmetric(const char *val, int dummy __unused, int s,
     const struct afswtch *afp)
 {
 	strlcpy(ifr.ifr_name, name, sizeof (ifr.ifr_name));
@@ -1355,7 +1355,7 @@ setifmetric(const char *val, int dummy __unused, int s,
 }
 
 static void
-setifmtu(const char *val, int dummy __unused, int s, 
+setifmtu(const char *val, int dummy __unused, int s,
     const struct afswtch *afp)
 {
 	strlcpy(ifr.ifr_name, name, sizeof (ifr.ifr_name));
@@ -1391,11 +1391,11 @@ disableifpcp(const char *val, int arg __unused, int s,
 }
 
 static void
-setifname(const char *val, int dummy __unused, int s, 
+setifname(const char *val, int dummy __unused, int s,
     const struct afswtch *afp)
 {
 	char *newname;
-	
+
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
 
 	newname = strdup(val);
@@ -1419,13 +1419,13 @@ setifname(const char *val, int dummy __unused, int s,
 
 /* ARGSUSED */
 static void
-setifdescr(const char *val, int dummy __unused, int s, 
+setifdescr(const char *val, int dummy __unused, int s,
     const struct afswtch *afp)
 {
 	char *newdescr;
 
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
-	
+
 	ifr.ifr_buffer.length = strlen(val) + 1;
 	if (ifr.ifr_buffer.length == 1) {
 		ifr.ifr_buffer.buffer = newdescr = NULL;
@@ -1581,7 +1581,7 @@ status(const struct afswtch *afp, const struct sockaddr_dl *sdl,
 		afp->af_other_status(s);
 
 	strlcpy(ifs.ifs_name, name, sizeof ifs.ifs_name);
-	if (ioctl(s, SIOCGIFSTATUS, &ifs) == 0) 
+	if (ioctl(s, SIOCGIFSTATUS, &ifs) == 0)
 		printf("%s", ifs.ascii);
 
 #ifndef FSTACK
@@ -1659,7 +1659,7 @@ print_vhid(const struct ifaddrs *ifa, const char *s)
 	ifd = ifa->ifa_data;
 	if (ifd->ifi_vhid == 0)
 		return;
-	
+
 	printf(" vhid %d", ifd->ifi_vhid);
 }
 
@@ -1736,7 +1736,8 @@ ifmaybeload(const char *name)
 	 * infer the names of all drivers (eg mlx4en(4)).
 	 */
 	(void) kldload(ifkind);
-#endif
+
+#endif
 }
 
 static struct cmd basic_cmds[] = {

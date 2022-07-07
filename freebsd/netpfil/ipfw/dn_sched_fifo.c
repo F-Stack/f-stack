@@ -62,7 +62,7 @@
  * queue size and policy.
  * Enqueue and dequeue use the default library functions.
  */
-static int 
+static int
 fifo_enqueue(struct dn_sch_inst *si, struct dn_queue *q, struct mbuf *m)
 {
 	/* XXX if called with q != NULL and m=NULL, this is a

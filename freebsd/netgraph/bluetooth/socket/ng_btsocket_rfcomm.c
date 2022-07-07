@@ -157,13 +157,13 @@ static int ng_btsocket_rfcomm_receive_rls
 static int ng_btsocket_rfcomm_receive_pn
 	(ng_btsocket_rfcomm_session_p s, struct mbuf *m0);
 static void ng_btsocket_rfcomm_set_pn
-	(ng_btsocket_rfcomm_pcb_p pcb, u_int8_t cr, u_int8_t flow_control, 
+	(ng_btsocket_rfcomm_pcb_p pcb, u_int8_t cr, u_int8_t flow_control,
 	 u_int8_t credits, u_int16_t mtu);
 
 static int ng_btsocket_rfcomm_send_command
 	(ng_btsocket_rfcomm_session_p s, u_int8_t type, u_int8_t dlci);
 static int ng_btsocket_rfcomm_send_uih
-	(ng_btsocket_rfcomm_session_p s, u_int8_t address, u_int8_t pf, 
+	(ng_btsocket_rfcomm_session_p s, u_int8_t address, u_int8_t pf,
 	 u_int8_t credits, struct mbuf *data);
 static int ng_btsocket_rfcomm_send_msc
 	(ng_btsocket_rfcomm_pcb_p pcb);
@@ -283,7 +283,7 @@ ng_btsocket_rfcomm_fcs2(u_int8_t *data)
 {
 	return (0xff - ng_btsocket_rfcomm_crc(data, 2));
 } /* ng_btsocket_rfcomm_fcs2 */
-  
+
 /* FCS on 3 bytes */
 static u_int8_t
 ng_btsocket_rfcomm_fcs3(u_int8_t *data)
@@ -291,13 +291,13 @@ ng_btsocket_rfcomm_fcs3(u_int8_t *data)
 	return (0xff - ng_btsocket_rfcomm_crc(data, 3));
 } /* ng_btsocket_rfcomm_fcs3 */
 
-/* 
+/*
  * Check FCS
  *
  * From Bluetooth spec
  *
- * "... In 07.10, the frame check sequence (FCS) is calculated on different 
- * sets of fields for different frame types. These are the fields that the 
+ * "... In 07.10, the frame check sequence (FCS) is calculated on different
+ * sets of fields for different frame types. These are the fields that the
  * FCS are calculated on:
  *
  * For SABM, DISC, UA, DM frames: on Address, Control and length field.
@@ -324,7 +324,7 @@ ng_btsocket_rfcomm_check_fcs(u_int8_t *data, int type, u_int8_t fcs)
  *****************************************************************************
  *****************************************************************************/
 
-/* 
+/*
  * Initialize everything
  */
 
@@ -399,7 +399,7 @@ ng_btsocket_rfcomm_attach(struct socket *so, int proto, struct thread *td)
 		return (ESOCKTNOSUPPORT);
 
 #if 0 /* XXX sonewconn() calls "pru_attach" with proto == 0 */
-	if (proto != 0) 
+	if (proto != 0)
 		if (proto != BLUETOOTH_PROTO_RFCOMM)
 			return (EPROTONOSUPPORT);
 #endif /* XXX */
@@ -452,7 +452,7 @@ ng_btsocket_rfcomm_attach(struct socket *so, int proto, struct thread *td)
  */
 
 int
-ng_btsocket_rfcomm_bind(struct socket *so, struct sockaddr *nam, 
+ng_btsocket_rfcomm_bind(struct socket *so, struct sockaddr *nam,
 		struct thread *td)
 {
 	ng_btsocket_rfcomm_pcb_t	*pcb = so2rfcomm_pcb(so), *pcb1;
@@ -503,7 +503,7 @@ ng_btsocket_rfcomm_bind(struct socket *so, struct sockaddr *nam,
  */
 
 int
-ng_btsocket_rfcomm_connect(struct socket *so, struct sockaddr *nam, 
+ng_btsocket_rfcomm_connect(struct socket *so, struct sockaddr *nam,
 		struct thread *td)
 {
 	ng_btsocket_rfcomm_pcb_t	*pcb = so2rfcomm_pcb(so);
@@ -537,7 +537,7 @@ ng_btsocket_rfcomm_connect(struct socket *so, struct sockaddr *nam,
 	error = socreate(PF_BLUETOOTH, &l2so, SOCK_SEQPACKET,
 			BLUETOOTH_PROTO_L2CAP, td->td_ucred, td);
 
-	/* 
+	/*
 	 * Look for session between "pcb->src" and "sa->rfcomm_bdaddr" (dst)
 	 */
 
@@ -593,7 +593,7 @@ ng_btsocket_rfcomm_connect(struct socket *so, struct sockaddr *nam,
 	case NG_BTSOCKET_RFCOMM_SESSION_CONNECTED:
 	case NG_BTSOCKET_RFCOMM_SESSION_OPEN:
 		/*
-		 * Update destination address and channel and attach 
+		 * Update destination address and channel and attach
 		 * DLC to the session
 		 */
 
@@ -795,7 +795,7 @@ ng_btsocket_rfcomm_disconnect(struct socket *so)
 		/*
 		 * Just change DLC state and enqueue RFCOMM task. It will
 		 * queue and send DISC on the DLC.
-		 */ 
+		 */
 
 		pcb->state = NG_BTSOCKET_RFCOMM_DLC_DISCONNECTING;
 		soisdisconnecting(so);
@@ -889,8 +889,8 @@ ng_btsocket_rfcomm_listen(struct socket *so, int backlog, struct thread *td)
 
 	if (s == NULL) {
 		/*
-		 * We need to create default RFCOMM session. Check if we have 
-		 * L2CAP socket. If l2so == NULL then error has the error code 
+		 * We need to create default RFCOMM session. Check if we have
+		 * L2CAP socket. If l2so == NULL then error has the error code
 		 * from socreate()
 		 */
 		if (l2so == NULL) {
@@ -898,8 +898,8 @@ ng_btsocket_rfcomm_listen(struct socket *so, int backlog, struct thread *td)
 			goto out;
 		}
 
-		/* 
-		 * Create default listen RFCOMM session. The default RFCOMM 
+		/*
+		 * Create default listen RFCOMM session. The default RFCOMM
 		 * session will listen on ANY address.
 		 *
 		 * XXX FIXME Note that currently there is no way to adjust MTU
@@ -1093,7 +1093,7 @@ ng_btsocket_rfcomm_session_task(ng_btsocket_rfcomm_session_p s)
 	if (s->l2so->so_rcv.sb_state & SBS_CANTRCVMORE) {
 		NG_BTSOCKET_RFCOMM_INFO(
 "%s: L2CAP connection has been terminated, so=%p, so_state=%#x, so_count=%d, " \
-"state=%d, flags=%#x\n", __func__, s->l2so, s->l2so->so_state, 
+"state=%d, flags=%#x\n", __func__, s->l2so, s->l2so->so_state,
 			s->l2so->so_count, s->state, s->flags);
 
 		s->state = NG_BTSOCKET_RFCOMM_SESSION_CLOSED;
@@ -1115,7 +1115,7 @@ ng_btsocket_rfcomm_session_task(ng_btsocket_rfcomm_session_p s)
 		if (ng_btsocket_rfcomm_session_connect(s) != 0) {
 			s->state = NG_BTSOCKET_RFCOMM_SESSION_CLOSED;
 			ng_btsocket_rfcomm_session_clean(s);
-		} 
+		}
 		break;
 
 	/* Try to receive/send more data */
@@ -1157,7 +1157,7 @@ ng_btsocket_rfcomm_connect_ind(ng_btsocket_rfcomm_session_p s, int channel)
 	mtx_assert(&s->session_mtx, MA_OWNED);
 
 	/*
-	 * Try to find RFCOMM socket that listens on given source address 
+	 * Try to find RFCOMM socket that listens on given source address
 	 * and channel. This will return the best possible match.
 	 */
 
@@ -1167,7 +1167,7 @@ ng_btsocket_rfcomm_connect_ind(ng_btsocket_rfcomm_session_p s, int channel)
 		return (NULL);
 
 	/*
-	 * Check the pending connections queue and if we have space then 
+	 * Check the pending connections queue and if we have space then
 	 * create new socket and set proper source and destination address,
 	 * and channel.
 	 */
@@ -1184,7 +1184,7 @@ ng_btsocket_rfcomm_connect_ind(ng_btsocket_rfcomm_session_p s, int channel)
 		return (NULL);
 
 	/*
-	 * If we got here than we have created new socket. So complete the 
+	 * If we got here than we have created new socket. So complete the
 	 * connection. Set source and destination address from the session.
 	 */
 
@@ -1201,7 +1201,7 @@ ng_btsocket_rfcomm_connect_ind(ng_btsocket_rfcomm_session_p s, int channel)
 	/* Link new DLC to the session. We already hold s->session_mtx */
 	LIST_INSERT_HEAD(&s->dlcs, pcb1, session_next);
 	pcb1->session = s;
-			
+
 	mtx_unlock(&pcb1->pcb_mtx);
 
 	return (pcb1);
@@ -1220,7 +1220,7 @@ ng_btsocket_rfcomm_connect_cfm(ng_btsocket_rfcomm_session_p s)
 	mtx_assert(&s->session_mtx, MA_OWNED);
 
 	/*
-	 * Wake up all waiting sockets and send PN request for each of them. 
+	 * Wake up all waiting sockets and send PN request for each of them.
 	 * Note that timeout already been set in ng_btsocket_rfcomm_connect()
 	 *
 	 * Note: cannot use LIST_FOREACH because ng_btsocket_rfcomm_pcb_kill
@@ -1285,9 +1285,9 @@ ng_btsocket_rfcomm_session_create(ng_btsocket_rfcomm_session_p *sp,
 	NG_BT_MBUFQ_INIT(&s->outq, ifqmaxlen);
 
 	/*
-	 * XXX Mark session mutex as DUPOK to prevent "duplicated lock of 
+	 * XXX Mark session mutex as DUPOK to prevent "duplicated lock of
 	 * the same type" message. When accepting new L2CAP connection
-	 * ng_btsocket_rfcomm_session_accept() holds both session mutexes 
+	 * ng_btsocket_rfcomm_session_accept() holds both session mutexes
 	 * for "old" (accepting) session and "new" (created) session.
 	 */
 
@@ -1317,7 +1317,7 @@ ng_btsocket_rfcomm_session_create(ng_btsocket_rfcomm_session_p *sp,
 		goto done;
 
 	/*
-	 * Set incoming MTU on L2CAP socket. It is RFCOMM session default MTU 
+	 * Set incoming MTU on L2CAP socket. It is RFCOMM session default MTU
 	 * plus 5 bytes: RFCOMM frame header, one extra byte for length and one
 	 * extra byte for credits.
 	 */
@@ -1359,7 +1359,7 @@ ng_btsocket_rfcomm_session_create(ng_btsocket_rfcomm_session_p *sp,
 		s->flags = NG_BTSOCKET_RFCOMM_SESSION_INITIATOR;
 		s->state = NG_BTSOCKET_RFCOMM_SESSION_CONNECTING;
 
-		l2sa.l2cap_len = sizeof(l2sa);   
+		l2sa.l2cap_len = sizeof(l2sa);
 		l2sa.l2cap_family = AF_BLUETOOTH;
 		l2sa.l2cap_psm = htole16(NG_L2CAP_PSM_RFCOMM);
 	        bcopy(dst, &l2sa.l2cap_bdaddr, sizeof(l2sa.l2cap_bdaddr));
@@ -1455,7 +1455,7 @@ ng_btsocket_rfcomm_session_accept(ng_btsocket_rfcomm_session_p s0)
 
 			/*
 			 * Adjust MTU on incoming connection. Reserve 5 bytes:
-			 * RFCOMM frame header, one extra byte for length and 
+			 * RFCOMM frame header, one extra byte for length and
 			 * one extra byte for credits.
 			 */
 
@@ -1512,10 +1512,10 @@ ng_btsocket_rfcomm_session_connect(ng_btsocket_rfcomm_session_p s)
 
 	/* Is connection still in progress? */
 	if (s->l2so->so_state & SS_ISCONNECTING)
-		return (0); 
+		return (0);
 
-	/* 
-	 * If we got here then we are connected. Send SABM on DLCI 0 to 
+	/*
+	 * If we got here then we are connected. Send SABM on DLCI 0 to
 	 * open multiplexor channel.
 	 */
 
@@ -1523,8 +1523,8 @@ ng_btsocket_rfcomm_session_connect(ng_btsocket_rfcomm_session_p s)
 		s->state = NG_BTSOCKET_RFCOMM_SESSION_CONNECTED;
 
 		/*
-		 * Adjust MTU on outgoing connection. Reserve 5 bytes: RFCOMM 
-		 * frame header, one extra byte for length and one extra byte 
+		 * Adjust MTU on outgoing connection. Reserve 5 bytes: RFCOMM
+		 * frame header, one extra byte for length and one extra byte
 		 * for credits.
 		 */
 
@@ -1569,7 +1569,7 @@ ng_btsocket_rfcomm_session_receive(ng_btsocket_rfcomm_session_p s)
 	}
 
 	/*
-	 * Read all packets from the L2CAP socket. 
+	 * Read all packets from the L2CAP socket.
 	 * XXX FIXME/VERIFY is that correct? For now use m->m_nextpkt as
 	 * indication that there is more packets on the socket's buffer.
 	 * Also what should we use in uio.uio_resid?
@@ -1650,7 +1650,7 @@ ng_btsocket_rfcomm_session_send(ng_btsocket_rfcomm_session_p s)
 } /* ng_btsocket_rfcomm_session_send */
 
 /*
- * Close and disconnect all DLCs for the given session. Caller must hold 
+ * Close and disconnect all DLCs for the given session. Caller must hold
  * s->sesson_mtx. Will wakeup session.
  */
 
@@ -1750,7 +1750,7 @@ ng_btsocket_rfcomm_session_process_pcb(ng_btsocket_rfcomm_session_p s)
 
 		/*
 		 * If DLC in DISCONNECTING state then we must send DISC frame.
-		 * Note that if DLC has timeout set then we do not need to 
+		 * Note that if DLC has timeout set then we do not need to
 		 * resend DISC frame.
 		 *
 		 * XXX FIXME need to drain all data from the socket's queue
@@ -1769,7 +1769,7 @@ ng_btsocket_rfcomm_session_process_pcb(ng_btsocket_rfcomm_session_p s)
 			} else if (pcb->flags & NG_BTSOCKET_RFCOMM_DLC_TIMEDOUT)
 				ng_btsocket_rfcomm_pcb_kill(pcb, ETIMEDOUT);
 			break;
-		
+
 /*		case NG_BTSOCKET_RFCOMM_DLC_CLOSED: */
 		default:
 			panic("%s: Invalid DLC state=%d, flags=%#x\n",
@@ -1811,7 +1811,7 @@ ng_btsocket_rfcomm_session_by_addr(bdaddr_p src, bdaddr_p dst)
 
 /*****************************************************************************
  *****************************************************************************
- **                                  RFCOMM 
+ **                                  RFCOMM
  *****************************************************************************
  *****************************************************************************/
 
@@ -1893,16 +1893,16 @@ ng_btsocket_rfcomm_receive_frame(ng_btsocket_rfcomm_session_p s,
 	 * Process RFCOMM frame.
 	 *
 	 * From TS 07.10 spec
-	 * 
+	 *
 	 * "... In the case where a SABM or DISC command with the P bit set
 	 * to 0 is received then the received frame shall be discarded..."
  	 *
 	 * "... If a unsolicited DM response is received then the frame shall
 	 * be processed irrespective of the P/F setting... "
 	 *
-	 * "... The station may transmit response frames with the F bit set 
-	 * to 0 at any opportunity on an asynchronous basis. However, in the 
-	 * case where a UA response is received with the F bit set to 0 then 
+	 * "... The station may transmit response frames with the F bit set
+	 * to 0 at any opportunity on an asynchronous basis. However, in the
+	 * case where a UA response is received with the F bit set to 0 then
 	 * the received frame shall be discarded..."
 	 *
 	 * From Bluetooth spec
@@ -2044,7 +2044,7 @@ ng_btsocket_rfcomm_receive_sabm(ng_btsocket_rfcomm_session_p s, int dlci)
 	/*
 	 * We do not have requested DLCI, so it must be an incoming connection
 	 * with default parameters. Try to accept it.
-	 */ 
+	 */
 
 	pcb = ng_btsocket_rfcomm_connect_ind(s, RFCOMM_SRVCHANNEL(dlci));
 	if (pcb != NULL) {
@@ -2300,7 +2300,7 @@ ng_btsocket_rfcomm_receive_uih(ng_btsocket_rfcomm_session_p s, int dlci,
 
 	mtx_lock(&pcb->pcb_mtx);
 
-	/* Check dlci state */	
+	/* Check dlci state */
 	if (pcb->state != NG_BTSOCKET_RFCOMM_DLC_CONNECTED) {
 		NG_BTSOCKET_RFCOMM_WARN(
 "%s: Got UIH for dlci=%d in invalid state=%d, flags=%#x\n",
@@ -2325,7 +2325,7 @@ ng_btsocket_rfcomm_receive_uih(ng_btsocket_rfcomm_session_p s, int dlci,
 		NG_BTSOCKET_RFCOMM_INFO(
 "%s: Got %d more credits for dlci=%d, state=%d, flags=%#x, " \
 "rx_cred=%d, tx_cred=%d\n",
-			__func__, *mtod(m0, u_int8_t *), dlci, pcb->state, 
+			__func__, *mtod(m0, u_int8_t *), dlci, pcb->state,
 			pcb->flags, pcb->rx_cred, pcb->tx_cred);
 
 		pcb->tx_cred += *mtod(m0, u_int8_t *);
@@ -2333,7 +2333,7 @@ ng_btsocket_rfcomm_receive_uih(ng_btsocket_rfcomm_session_p s, int dlci,
 
 		/* Send more from the DLC. XXX check for errors? */
 		ng_btsocket_rfcomm_pcb_send(pcb, ALOT);
-	} 
+	}
 
 	/* OK the of the rest of the mbuf is the data */
 	if (m0->m_pkthdr.len > 0) {
@@ -2348,7 +2348,7 @@ ng_btsocket_rfcomm_receive_uih(ng_btsocket_rfcomm_session_p s, int dlci,
 "rx_cred=%d, tx_cred=%d\n",		__func__, dlci, pcb->state, pcb->flags,
 					pcb->rx_cred, pcb->tx_cred);
 		}
-		
+
 		/* Check packet against mtu on dlci */
 		if (m0->m_pkthdr.len > pcb->mtu) {
 			NG_BTSOCKET_RFCOMM_ERR(
@@ -2361,7 +2361,7 @@ ng_btsocket_rfcomm_receive_uih(ng_btsocket_rfcomm_session_p s, int dlci,
 			/*
 			 * This is really bad. Receive queue on socket does
 			 * not have enough space for the packet. We do not
-			 * have any other choice but drop the packet. 
+			 * have any other choice but drop the packet.
 			 */
 
 			NG_BTSOCKET_RFCOMM_ERR(
@@ -2389,24 +2389,24 @@ drop:
 
 /*
  * Process RFCOMM MCC command (Multiplexor)
- * 
+ *
  * From TS 07.10 spec
  *
  * "5.4.3.1 Information Data
- * 
- *  ...The frames (UIH) sent by the initiating station have the C/R bit set 
+ *
+ *  ...The frames (UIH) sent by the initiating station have the C/R bit set
  *  to 1 and those sent by the responding station have the C/R bit set to 0..."
  *
  * "5.4.6.2 Operating procedures
  *
- *  Messages always exist in pairs; a command message and a corresponding 
- *  response message. If the C/R bit is set to 1 the message is a command, 
+ *  Messages always exist in pairs; a command message and a corresponding
+ *  response message. If the C/R bit is set to 1 the message is a command,
  *  if it is set to 0 the message is a response...
  *
  *  ...
- * 
+ *
  *  NOTE: Notice that when UIH frames are used to convey information on DLCI 0
- *  there are at least two different fields that contain a C/R bit, and the 
+ *  there are at least two different fields that contain a C/R bit, and the
  *  bits are set of different form. The C/R bit in the Type field shall be set
  *  as it is stated above, while the C/R bit in the Address field (see subclause
  *  5.2.1.2) shall be set as it is described in subclause 5.4.3.1."
@@ -2545,7 +2545,7 @@ ng_btsocket_rfcomm_receive_fc(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 	mtx_assert(&s->session_mtx, MA_OWNED);
 
 	/*
-	 * Turn ON/OFF aggregate flow on the entire session. When remote peer 
+	 * Turn ON/OFF aggregate flow on the entire session. When remote peer
 	 * asserted flow control no transmission shall occur except on dlci 0
 	 * (control channel).
 	 */
@@ -2676,8 +2676,8 @@ ng_btsocket_rfcomm_receive_rpn(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 			xoff_char = RFCOMM_RPN_XOFF_CHAR;
                 } else {
 			/*
-			 * Ignore/accept bit_rate, 8 bits, 1 stop bit, no 
-			 * parity, no flow control lines, default XON/XOFF 
+			 * Ignore/accept bit_rate, 8 bits, 1 stop bit, no
+			 * parity, no flow control lines, default XON/XOFF
 			 * chars.
 			 */
 
@@ -2728,7 +2728,7 @@ ng_btsocket_rfcomm_receive_rpn(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 		}
 
 		rpn->bit_rate = bit_rate;
-		rpn->line_settings = RFCOMM_MKRPN_LINE_SETTINGS(data_bits, 
+		rpn->line_settings = RFCOMM_MKRPN_LINE_SETTINGS(data_bits,
 						stop_bits, parity);
 		rpn->flow_control = flow_control;
 		rpn->xon_char = xon_char;
@@ -2760,7 +2760,7 @@ ng_btsocket_rfcomm_receive_rls(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 	mtx_assert(&s->session_mtx, MA_OWNED);
 
 	/*
-	 * XXX FIXME Do we have to do anything else here? Remote peer tries to 
+	 * XXX FIXME Do we have to do anything else here? Remote peer tries to
 	 * tell us something about DLCI. Just report what we have received and
 	 * return back received values as required by TS 07.10 spec.
 	 */
@@ -2836,7 +2836,7 @@ ng_btsocket_rfcomm_receive_pn(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 			}
 
 			hdr->type = RFCOMM_MKMCC_TYPE(0, RFCOMM_MCC_PN);
-			error = ng_btsocket_rfcomm_send_uih(s, 
+			error = ng_btsocket_rfcomm_send_uih(s,
 					RFCOMM_MKADDRESS(INITIATOR(s), 0),
 					0, 0, m0);
 		} else {
@@ -2878,7 +2878,7 @@ ng_btsocket_rfcomm_receive_pn(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 			}
 
 			hdr->type = RFCOMM_MKMCC_TYPE(0, RFCOMM_MCC_PN);
-			error = ng_btsocket_rfcomm_send_uih(s, 
+			error = ng_btsocket_rfcomm_send_uih(s,
 					RFCOMM_MKADDRESS(INITIATOR(s), 0),
 					0, 0, m0);
 
@@ -2904,23 +2904,23 @@ ng_btsocket_rfcomm_receive_pn(ng_btsocket_rfcomm_session_p s, struct mbuf *m0)
 
 /*
  * Set PN parameters for dlci. Caller must hold pcb->pcb_mtx.
- * 
+ *
  * From Bluetooth spec.
- * 
- * "... The CL1 - CL4 field is completely redefined. (In TS07.10 this defines 
+ *
+ * "... The CL1 - CL4 field is completely redefined. (In TS07.10 this defines
  *  the convergence layer to use, which is not applicable to RFCOMM. In RFCOMM,
  *  in Bluetooth versions up to 1.0B, this field was forced to 0).
  *
  *  In the PN request sent prior to a DLC establishment, this field must contain
- *  the value 15 (0xF), indicating support of credit based flow control in the 
- *  sender. See Table 5.3 below. If the PN response contains any other value 
- *  than 14 (0xE) in this field, it is inferred that the peer RFCOMM entity is 
+ *  the value 15 (0xF), indicating support of credit based flow control in the
+ *  sender. See Table 5.3 below. If the PN response contains any other value
+ *  than 14 (0xE) in this field, it is inferred that the peer RFCOMM entity is
  *  not supporting the credit based flow control feature. (This is only possible
- *  if the peer RFCOMM implementation is only conforming to Bluetooth version 
+ *  if the peer RFCOMM implementation is only conforming to Bluetooth version
  *  1.0B.) If a PN request is sent on an already open DLC, then this field must
- *  contain the value zero; it is not possible to set initial credits  more 
- *  than once per DLC activation. A responding implementation must set this 
- *  field in the PN response to 14 (0xE), if (and only if) the value in the PN 
+ *  contain the value zero; it is not possible to set initial credits  more
+ *  than once per DLC activation. A responding implementation must set this
+ *  field in the PN response to 14 (0xE), if (and only if) the value in the PN
  *  request was 15..."
  */
 
@@ -3259,7 +3259,7 @@ ng_btsocket_rfcomm_pcb_send(ng_btsocket_rfcomm_pcb_p pcb, int limit)
 		return (0);
 	}
 
-	for (error = 0, sent = 0; sent < limit; sent ++) { 
+	for (error = 0, sent = 0; sent < limit; sent ++) {
 		length = min(pcb->mtu, sbavail(&pcb->so->so_snd));
 		if (length == 0)
 			break;
@@ -3337,7 +3337,7 @@ ng_btsocket_rfcomm_pcb_kill(ng_btsocket_rfcomm_pcb_p pcb, int error)
 		case NG_BTSOCKET_RFCOMM_SESSION_DISCONNECTING:
 			/*
 			 * Do not have to do anything here. We can get here
-			 * when L2CAP connection was terminated or we have 
+			 * when L2CAP connection was terminated or we have
 			 * received DISC on multiplexor channel
 			 */
 			break;
@@ -3416,7 +3416,7 @@ ng_btsocket_rfcomm_pcb_listener(bdaddr_p src, int channel)
 
 /*****************************************************************************
  *****************************************************************************
- **                              Misc. functions 
+ **                              Misc. functions
  *****************************************************************************
  *****************************************************************************/
 

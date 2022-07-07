@@ -437,7 +437,7 @@ int __cvmx_helper_setup_gmx(int interface, int num_ports)
         cvmx_write_csr(CVMX_GMXX_RX_PRTS(interface), gmx_rx_prts.u64);
     }
 
-    /* 
+    /*
      * Skip setting CVMX_PKO_REG_GMX_PORT_MODE on 30XX, 31XX, 50XX,
      * and 68XX.
      */
@@ -475,7 +475,7 @@ int __cvmx_helper_setup_gmx(int interface, int num_ports)
         cvmx_write_csr(CVMX_PKO_REG_GMX_PORT_MODE, pko_mode.u64);
     }
 
-    /* 
+    /*
      * Set GMX to buffer as much data as possible before starting
      * transmit. This reduces the chances that we have a TX under run
      * due to memory contention. Any packet that fits entirely in the
@@ -489,7 +489,7 @@ int __cvmx_helper_setup_gmx(int interface, int num_ports)
     else
     {
         /* ccn - common cnt numberator */
-	int ccn = 0x100; 
+	int ccn = 0x100;
 
         /* Choose the max value for the number of ports */
         if (num_ports <= 1)

@@ -281,9 +281,9 @@ cc_dump_port(struct dump *d, const struct ccport *p)
 	TAILQ_FOREACH(a, &p->addr_list, port_link) {
 		cc_dumpf(d, "  addr(%p): %s %s %u ", a,
 		    (a->addr.type < sizeof(ttab) / sizeof(ttab[0]) &&
-		    ttab[a->addr.type] != NULL) ? ttab[a->addr.type] : "?", 
+		    ttab[a->addr.type] != NULL) ? ttab[a->addr.type] : "?",
 		    (a->addr.plan < sizeof(ptab) / sizeof(ptab[0]) &&
-		    ptab[a->addr.plan] != NULL) ? ptab[a->addr.plan] : "?", 
+		    ptab[a->addr.plan] != NULL) ? ptab[a->addr.plan] : "?",
 		    a->addr.len);
 		for (i = 0; i < a->addr.len; i++)
 			cc_dumpf(d, "%02x", a->addr.addr[i]);

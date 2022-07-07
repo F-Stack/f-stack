@@ -37,8 +37,8 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
 
@@ -223,7 +223,7 @@ hostap_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			    !IEEE80211_IS_CHAN_RADAR(vap->iv_des_chan)) {
 				/*
 				 * Already have a channel; bypass the
-				 * scan and startup immediately.  
+				 * scan and startup immediately.
 				 * ieee80211_create_ibss will call back to
 				 * move us to RUN state.
 				 */
@@ -929,7 +929,7 @@ hostap_auth_open(struct ieee80211_node *ni, struct ieee80211_frame *wh,
 			ni->ni_challenge = NULL;
 		}
 		/* XXX hack to workaround calling convention */
-		ieee80211_send_error(ni, wh->i_addr2, 
+		ieee80211_send_error(ni, wh->i_addr2,
 		    IEEE80211_FC0_SUBTYPE_AUTH,
 		    (seq + 1) | (IEEE80211_STATUS_ALG<<16));
 		return;
@@ -1416,7 +1416,7 @@ ieee80211_parse_rsn(struct ieee80211vap *vap, const uint8_t *frm,
 	int error, n;
 
 	/*
-	 * Check the length once for fixed parts: 
+	 * Check the length once for fixed parts:
 	 * version, mcast cipher, and 2 selector counts.
 	 * Other, variable-length data, must be checked separately.
 	 */
@@ -1555,7 +1555,7 @@ wpa_assocreq(struct ieee80211_node *ni, struct ieee80211_rsnparms *rsnparms,
 		}
 		if ((vap->iv_flags_ext & IEEE80211_FEXT_TSN) &&
 		    (capinfo & IEEE80211_CAPINFO_PRIVACY)) {
-			/* 
+			/*
 			 * Transitional Security Network.  Permits clients
 			 * to associate and use WEP while WPA is configured.
 			 */
@@ -1831,7 +1831,7 @@ hostap_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0,
 				ieee80211_vap_update_erp_protmode(vap);
 			}
 		}
-		/* 
+		/*
 		 * Check beacon for non-HT station on HT channel
 		 * and update HT BSS occupancy as appropriate.
 		 */
@@ -1994,7 +1994,7 @@ hostap_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0,
 			authalgreject(ni, wh, algo,
 			    4, IEEE80211_STATUS_CHALLENGE);
 			return;
-		} 
+		}
 		break;
 	}
 
@@ -2273,7 +2273,7 @@ hostap_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0,
 #ifdef IEEE80211_SUPPORT_SUPERG
 			if (ath != NULL) {
 				setie(ath_ie, ath - sfrm);
-				/* 
+				/*
 				 * Parse ATH station parameters.
 				 */
 				ieee80211_parse_ath(ni, ni->ni_ies.ath_ie);
@@ -2410,7 +2410,7 @@ ieee80211_recv_pspoll(struct ieee80211_node *ni, struct mbuf *m0)
 		vap->iv_stats.is_ps_badaid++;
 		/*
 		 * NB: We used to deauth the station but it turns out
-		 * the Blackberry Curve 8230 (and perhaps other devices) 
+		 * the Blackberry Curve 8230 (and perhaps other devices)
 		 * sometimes send the wrong AID when WME is negotiated.
 		 * Being more lenient here seems ok as we already check
 		 * the station is associated and we only return frames
@@ -2430,7 +2430,7 @@ ieee80211_recv_pspoll(struct ieee80211_node *ni, struct mbuf *m0)
 			vap->iv_set_tim(ni, 0);	/* just in case */
 		return;
 	}
-	/* 
+	/*
 	 * If there are more packets, set the more packets bit
 	 * in the packet dispatched to the station; otherwise
 	 * turn off the TIM bit.

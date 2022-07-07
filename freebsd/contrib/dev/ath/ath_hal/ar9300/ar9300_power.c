@@ -360,8 +360,8 @@ void ar9300_wowoffload_download_ns_info(struct ath_hal *ah, u_int32_t id, u_int3
 u_int32_t ar9300_wow_offload_download_hal_params(struct ath_hal *ah)
 {
     u_int32_t tpc = 0x3f; /* Transmit Power Control */
-    u_int32_t tx_tries_series = 7;  
-    u_int32_t tx_rate_series, transmit_rate; 
+    u_int32_t tx_tries_series = 7;
+    u_int32_t tx_rate_series, transmit_rate;
     u_int32_t gtk_txdesc_param_start;
 
     if (AH_PRIVATE(ah)->ah_curchan->channel_flags & CHANNEL_CCK) {
@@ -409,7 +409,7 @@ u_int32_t ar9300_wow_offload_handshake(struct ath_hal *ah, u_int32_t pattern_ena
 #endif /* ATH_WOW_OFFLOAD */
 
     if (mbox_status & AR_MBOX_WOW_REQ) {
-        /* WOW mode request handshake is already in progress. 
+        /* WOW mode request handshake is already in progress.
          * Do nothing */
         return 0;
     }
@@ -421,7 +421,7 @@ u_int32_t ar9300_wow_offload_handshake(struct ath_hal *ah, u_int32_t pattern_ena
     OS_REG_WRITE(ah, AR_WLAN_WOW_STATUS, 0xFFFFFFFF);
 
     OS_REG_WRITE(ah, AR_RIMT, 0);
-    OS_REG_WRITE(ah, AR_TIMT, 0); 
+    OS_REG_WRITE(ah, AR_TIMT, 0);
 
     val = 0;
     if (pattern_enable & AH_WOW_USER_PATTERN_EN) {
@@ -476,7 +476,7 @@ u_int32_t ar9300_wow_offload_handshake(struct ath_hal *ah, u_int32_t pattern_ena
     else {
         OS_REG_CLR_BIT(ah, AR_MBOX_CTRL_STATUS, AR_MBOX_WOW_CONF);
         HALDEBUG(ah, HAL_DEBUG_POWER_MGMT, "%s: WoW offload handshake successful",__func__);
-    } 
+    }
     return 1;
 }
 #endif /* ATH_WOW_OFFLOAD */
@@ -596,7 +596,7 @@ static void
 ar9300_set_power_mode_network_sleep(struct ath_hal *ah, int set_chip)
 {
     struct ath_hal_9300 *ahp = AH9300(ah);
-    
+
     OS_REG_SET_BIT(ah, AR_STA_ID1, AR_STA_ID1_PWR_SAV);
     if (set_chip) {
         HAL_CAPABILITIES *p_cap = &AH_PRIVATE(ah)->ah_caps;
@@ -667,7 +667,7 @@ ar9300_set_power_mode(struct ath_hal *ah, HAL_POWER_MODE mode, int set_chip)
         modes[ar9300_get_power_mode(ah)], modes[mode],
         set_chip ? "set chip " : "");
     OS_MARK(ah, AH_MARK_CHIP_POWER, mode);
-    
+
     switch (mode) {
     case HAL_PM_AWAKE:
         if (set_chip)
@@ -1054,7 +1054,7 @@ ar9300_wow_enable(
      * we do not want the Reset from the PCI-E to disturb our hw state.
      */
     if (AH_PRIVATE(ah)->ah_is_pci_express == AH_TRUE) {
-        
+
         u_int32_t wa_reg_val;
         /*
          * We need to untie the internal POR (power-on-reset) to the external
@@ -1098,7 +1098,7 @@ ar9300_wow_enable(
      */
     val = OS_REG_READ(ah, AR_HOSTIF_REG(ah, AR_PCIE_PM_CTRL));
     val |=
-        AR_PMCTRL_HOST_PME_EN     | 
+        AR_PMCTRL_HOST_PME_EN     |
         AR_PMCTRL_PWR_PM_CTRL_ENA |
         AR_PMCTRL_AUX_PWR_DET;
 
@@ -1170,7 +1170,7 @@ ar9300_wow_enable(
      * Configure Mac Wow Registers.
      */
 
-    val = OS_REG_READ(ah, AR_WOW_KEEP_ALIVE_REG);    
+    val = OS_REG_READ(ah, AR_WOW_KEEP_ALIVE_REG);
 
     /*
      * Send keep alive timeouts anyway.
@@ -1185,10 +1185,10 @@ ar9300_wow_enable(
     }
 #if ATH_WOW_OFFLOAD
     if (offloadEnable) {
-        /* Don't enable KA frames yet. BT CPU is not 
+        /* Don't enable KA frames yet. BT CPU is not
          * yet ready. */
     }
-    else 
+    else
 #endif /* ATH_WOW_OFFLOAD */
     {
         OS_REG_WRITE(ah, AR_WOW_KEEP_ALIVE_REG, val);
@@ -1240,7 +1240,7 @@ ar9300_wow_enable(
         wow_feature_enable &= ~AR_WOW_OFFLOAD_ENA_BT_SLEEP;
         HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, "(WOW) DIS - BT SLEEP\n");
     }
-        
+
     if (HAL_WOW_CTRL(ah, HAL_WOW_OFFLOAD_SW_NULL_DISABLE)) {
         HALDEBUG(ah, HAL_DEBUG_UNMASKABLE, "(WOW) DIS - SW NULL\n");
         wow_feature_enable &= ~AR_WOW_OFFLOAD_ENA_SW_NULL;
@@ -1368,7 +1368,7 @@ ar9300_wow_enable(
     }
 
     /* Enable Seq# generation when asleep. */
-    OS_REG_WRITE(ah, AR_STA_ID1, 
+    OS_REG_WRITE(ah, AR_STA_ID1,
                      OS_REG_READ(ah, AR_STA_ID1) & ~AR_STA_ID1_PRESERVE_SEQNUM);
 
     AH_PRIVATE(ah)->ah_wow_event_mask = wow_event_mask;
@@ -1401,7 +1401,7 @@ ar9300_wow_enable(
 
         //OS_REG_SET_BIT(ah, AR_SW_WOW_CONTROL, AR_HW_WOW_DISABLE);
     }
-    else 
+    else
 #endif /* ATH_WOW_OFFLOAD */
     {
 #if ATH_SUPPORT_MCI
@@ -1409,7 +1409,7 @@ ar9300_wow_enable(
             OS_REG_WRITE(ah, AR_RTC_KEEP_AWAKE, 0x2);
         }
 #endif
-        ar9300_set_power_mode_wow_sleep(ah);    
+        ar9300_set_power_mode_wow_sleep(ah);
         AH9300(ah)->ah_chip_full_sleep = AH_TRUE;
     }
 
@@ -1427,7 +1427,7 @@ ar9300_wow_wake_up(struct ath_hal *ah, HAL_BOOL offloadEnabled)
     OS_REG_CLR_BIT(ah, AR_SW_WOW_CONTROL, AR_SW_WOW_ENABLE);
 
 #if ATH_WOW_OFFLOAD
-    /* If WoW was offloaded to embedded CPU, use the global 
+    /* If WoW was offloaded to embedded CPU, use the global
      * shared register to know the wakeup reason */
     if (offloadEnabled) {
         val = OS_REG_READ(ah, AR_EMB_CPU_WOW_STATUS);
@@ -1456,7 +1456,7 @@ ar9300_wow_wake_up(struct ath_hal *ah, HAL_BOOL offloadEnabled)
         OS_REG_WRITE(ah, AR_MBOX_CTRL_STATUS, 0);
 
     }
-    else 
+    else
 #endif /* ATH_WOW_OFFLOAD */
     {
         /*
@@ -1478,9 +1478,9 @@ ar9300_wow_wake_up(struct ath_hal *ah, HAL_BOOL offloadEnabled)
                 wow_status |= AH_WOW_MAGIC_PATTERN_EN;
             }
             if (AR_WOW_PATTERN_FOUND(val)) {
-                //int  i, offset; 
+                //int  i, offset;
                 //offset = OS_REG_READ(ah, AR_WOW_RXBUF_START_ADDR);
-                //// Read matched pattern for wake packet detection indication.            
+                //// Read matched pattern for wake packet detection indication.
                 //for( i = 0; i< MAX_PATTERN_SIZE/4; i+=4)
                 //{
                 //    // RX FIFO is only 8K wrapping.

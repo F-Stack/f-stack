@@ -162,7 +162,7 @@ cbc_mac_start(const unsigned char *auth_data, size_t auth_len,
 		auth_ptr += copy_amt;
 
 		cbc_block = xor_and_encrypt(cbc_block, staging_block, key, nr);
-		
+
 		while (auth_ptr < auth_data + auth_len) {
 			copy_amt = MIN((auth_data + auth_len) - auth_ptr,
 			    sizeof(staging_block));
@@ -322,7 +322,7 @@ decrypt_loop(const unsigned char *in, unsigned char *out, size_t nbytes,
 	 */
 	if (macp != NULL)
 		mac_block = *macp;
-	
+
 	while (total < nbytes) {
 		size_t copy_amt = MIN(nbytes - total, sizeof(staging_block));
 

@@ -793,7 +793,7 @@ aesni_cipher_crypt(struct aesni_session *ses, struct cryptop *crp,
 		break;
 	case CRYPTO_AES_CCM_16:
 		if (encflag) {
-			memset(tag, 0, sizeof(tag));			
+			memset(tag, 0, sizeof(tag));
 			AES_CCM_encrypt(buf, outbuf, authbuf, iv, tag,
 			    crp->crp_payload_length, crp->crp_aad_length,
 			    csp->csp_ivlen, ses->enc_schedule, ses->rounds);

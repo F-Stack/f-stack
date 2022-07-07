@@ -146,7 +146,7 @@ __FBSDID("$FreeBSD$");
 #include "alias_mod.h"
 #endif
 
-/* 
+/*
  * Define libalias SYSCTL Node
  */
 #ifdef SYSCTL_NODE
@@ -753,8 +753,8 @@ UdpAliasIn(struct libalias *la, struct ip *pip)
 		int accumulate;
 		int error;
 		struct alias_data ad = {
-			.lnk = lnk, 
-			.oaddr = &original_address, 
+			.lnk = lnk,
+			.oaddr = &original_address,
 			.aaddr = &alias_address,
 			.aport = &alias_port,
 			.sport = &ud->uh_sport,
@@ -769,7 +769,7 @@ UdpAliasIn(struct libalias *la, struct ip *pip)
 		ud->uh_dport = GetOriginalPort(lnk);
 		proxy_port = GetProxyPort(lnk);
 
-		/* Walk out chain. */		
+		/* Walk out chain. */
 		error = find_handler(IN, UDP, la, pip, &ad);
 		/* If we cannot figure out the packet, ignore it. */
 		if (error < 0)
@@ -842,8 +842,8 @@ UdpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 	if (dlen < ntohs(ud->uh_ulen))
 		return (PKT_ALIAS_IGNORED);
 
-	proxy_type = ProxyCheck(la, &proxy_server_address, 
-		&proxy_server_port, pip->ip_src, pip->ip_dst, 
+	proxy_type = ProxyCheck(la, &proxy_server_address,
+		&proxy_server_port, pip->ip_src, pip->ip_dst,
 		ud->uh_dport, pip->ip_p);
 	if (proxy_type == 0 && (la->packetAliasMode & PKT_ALIAS_PROXY_ONLY))
 		return (PKT_ALIAS_OK);
@@ -878,7 +878,7 @@ UdpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 		u_short alias_port;
 		struct in_addr alias_address;
 		struct alias_data ad = {
-			.lnk = lnk, 
+			.lnk = lnk,
 			.oaddr = NULL,
 			.aaddr = &alias_address,
 			.aport = &alias_port,
@@ -900,7 +900,7 @@ UdpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 		alias_address = GetAliasAddress(lnk);
 		alias_port = GetAliasPort(lnk);
 
-		/* Walk out chain. */		
+		/* Walk out chain. */
 		error = find_handler(OUT, UDP, la, pip, &ad);
 
 /* If UDP checksum is not zero, adjust since source port is */
@@ -953,14 +953,14 @@ TcpAliasIn(struct libalias *la, struct ip *pip)
 		u_short proxy_port;
 		int accumulate, error;
 
-		/* 
-		 * The init of MANY vars is a bit below, but aliashandlepptpin 
+		/*
+		 * The init of MANY vars is a bit below, but aliashandlepptpin
 		 * seems to need the destination port that came within the
 		 * packet and not the original one looks below [*].
 		 */
 
 		struct alias_data ad = {
-			.lnk = lnk, 
+			.lnk = lnk,
 			.oaddr = NULL,
 			.aaddr = NULL,
 			.aport = NULL,
@@ -969,7 +969,7 @@ TcpAliasIn(struct libalias *la, struct ip *pip)
 			.maxpktsize = 0
 		};
 
-		/* Walk out chain. */		
+		/* Walk out chain. */
 		error = find_handler(IN, TCP, la, pip, &ad);
 
 		alias_address = GetAliasAddress(lnk);
@@ -979,8 +979,8 @@ TcpAliasIn(struct libalias *la, struct ip *pip)
 		tc->th_dport = GetOriginalPort(lnk);
 		proxy_port = GetProxyPort(lnk);
 
-		/* 
-		 * Look above, if anyone is going to add find_handler AFTER 
+		/*
+		 * Look above, if anyone is going to add find_handler AFTER
 		 * this aliashandlepptpin/point, please redo alias_data too.
 		 * Uncommenting the piece here below should be enough.
 		 */
@@ -994,7 +994,7 @@ TcpAliasIn(struct libalias *la, struct ip *pip)
 					.dport = &ud->uh_dport,
 					.maxpktsize = 0
 				};
-		
+
 				/* Walk out chain. */
 				error = find_handler(la, pip, &ad);
 				if (error == EHDNOF)
@@ -1074,8 +1074,8 @@ TcpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 	tc = (struct tcphdr *)ip_next(pip);
 
 	if (create)
-		proxy_type = ProxyCheck(la, &proxy_server_address, 
-		    &proxy_server_port, pip->ip_src, pip->ip_dst, 
+		proxy_type = ProxyCheck(la, &proxy_server_address,
+		    &proxy_server_port, pip->ip_src, pip->ip_dst,
 		    tc->th_dport, pip->ip_p);
 	else
 		proxy_type = 0;
@@ -1112,7 +1112,7 @@ TcpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 		struct in_addr alias_address;
 		int accumulate;
 		struct alias_data ad = {
-			.lnk = lnk, 
+			.lnk = lnk,
 			.oaddr = NULL,
 			.aaddr = &alias_address,
 			.aport = &alias_port,
@@ -1137,8 +1137,8 @@ TcpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 /* Monitor TCP connection state */
 		tc = (struct tcphdr *)ip_next(pip);
 		TcpMonitorOut(tc->th_flags, lnk);
-		
-		/* Walk out chain. */		
+
+		/* Walk out chain. */
 		error = find_handler(OUT, TCP, la, pip, &ad);
 
 /* Adjust TCP checksum since source port is being aliased */
@@ -1152,7 +1152,7 @@ TcpAliasOut(struct libalias *la, struct ip *pip, int maxpacketsize, int create)
 /* Modify sequence number if necessary */
 		if (GetAckModified(lnk) == 1) {
 			int delta;
-			
+
 			tc = (struct tcphdr *)ip_next(pip);
 			delta = GetDeltaSeqOut(tc->th_seq, lnk);
 			if (delta != 0) {
@@ -1273,7 +1273,7 @@ LibAliasGetFragment(struct libalias *la, void *ptr)
 		GetFragmentPtr(lnk, &fptr);
 		SetFragmentPtr(lnk, NULL);
 		SetExpire(lnk, 0);	/* Deletes link */
-	} else		
+	} else
 		fptr = NULL;
 
 	LIBALIAS_UNLOCK(la);
@@ -1340,7 +1340,7 @@ LibAliasInLocked(struct libalias *la, struct ip *pip, int maxpacketsize)
 	/* Defense against mangled packets */
 	if (ntohs(pip->ip_len) > maxpacketsize
 	    || (pip->ip_hl << 2) > maxpacketsize) {
-		iresult = PKT_ALIAS_IGNORED; 
+		iresult = PKT_ALIAS_IGNORED;
 		goto getout;
 	}
 
@@ -1364,16 +1364,16 @@ LibAliasInLocked(struct libalias *la, struct ip *pip, int maxpacketsize)
  		case IPPROTO_GRE: {
 			int error;
 			struct alias_data ad = {
-				.lnk = NULL, 
-				.oaddr = NULL, 
+				.lnk = NULL,
+				.oaddr = NULL,
 				.aaddr = NULL,
 				.aport = NULL,
 				.sport = NULL,
 				.dport = NULL,
-				.maxpktsize = 0                  
+				.maxpktsize = 0
 			};
-			
-			/* Walk out chain. */		
+
+			/* Walk out chain. */
 			error = find_handler(IN, IP, la, pip, &ad);
 			if (error ==  0)
 				iresult = PKT_ALIAS_OK;
@@ -1381,7 +1381,7 @@ LibAliasInLocked(struct libalias *la, struct ip *pip, int maxpacketsize)
 				iresult = ProtoAliasIn(la, pip->ip_src,
 				    pip, pip->ip_p, &pip->ip_sum);
 		}
- 			break; 
+ 			break;
 		default:
 			iresult = ProtoAliasIn(la, pip->ip_src, pip,
 			    pip->ip_p, &pip->ip_sum);
@@ -1518,15 +1518,15 @@ LibAliasOutLocked(struct libalias *la, struct ip *pip,	/* valid IP packet */
 		case IPPROTO_GRE: {
 			int error;
 			struct alias_data ad = {
-				.lnk = NULL, 
-				.oaddr = NULL, 
+				.lnk = NULL,
+				.oaddr = NULL,
 				.aaddr = NULL,
 				.aport = NULL,
 				.sport = NULL,
 				.dport = NULL,
-				.maxpktsize = 0                  
+				.maxpktsize = 0
 			};
-			/* Walk out chain. */		
+			/* Walk out chain. */
 			error = find_handler(OUT, IP, la, pip, &ad);
 			if (error == 0)
  				iresult = PKT_ALIAS_OK;
@@ -1673,7 +1673,7 @@ LibAliasRefreshModules(void)
 
 	for (;;) {
 		fgets(buf, 256, fd);
-		if (feof(fd)) 
+		if (feof(fd))
 		        break;
 		len = strlen(buf);
 		if (len > 1) {
@@ -1739,10 +1739,10 @@ LibAliasUnLoadAllModule(void)
 	struct proto_handler *p;
 
 	/* Unload all modules then reload everything. */
-	while ((p = first_handler()) != NULL) {	
+	while ((p = first_handler()) != NULL) {
 		LibAliasDetachHandlers(p);
 	}
-	while ((t = walk_dll_chain()) != NULL) {	
+	while ((t = walk_dll_chain()) != NULL) {
 		dlclose(t->handle);
 		free(t);
 	}

@@ -139,7 +139,7 @@ extern void     uma_startup2(void);
  *	no initial mapping to physical memory.  Any mapping from this
  *	range to physical memory must be explicitly created prior to
  *	its use, typically with pmap_qenter().  Any attempt to create
- *	a mapping on demand through vm_fault() will result in a panic. 
+ *	a mapping on demand through vm_fault() will result in a panic.
  */
 vm_offset_t
 kva_alloc(vm_size_t size)
@@ -572,7 +572,7 @@ _kmem_unback(vm_object_t object, vm_offset_t addr, vm_size_t size)
 	offset = addr - VM_MIN_KERNEL_ADDRESS;
 	end = offset + size;
 	VM_OBJECT_WLOCK(object);
-	m = vm_page_lookup(object, atop(offset)); 
+	m = vm_page_lookup(object, atop(offset));
 	domain = vm_page_domain(m);
 	if (__predict_true((m->oflags & VPO_KMEM_EXEC) == 0))
 		arena = vm_dom[domain].vmd_kernel_arena;
@@ -737,9 +737,9 @@ kva_import_domain(void *arena, vmem_size_t size, int flags, vmem_addr_t *addrp)
 /*
  * 	kmem_init:
  *
- *	Create the kernel map; insert a mapping covering kernel text, 
- *	data, bss, and all space allocated thus far (`boostrap' data).  The 
- *	new map will thus map the range between VM_MIN_KERNEL_ADDRESS and 
+ *	Create the kernel map; insert a mapping covering kernel text,
+ *	data, bss, and all space allocated thus far (`boostrap' data).  The
+ *	new map will thus map the range between VM_MIN_KERNEL_ADDRESS and
  *	`start' as allocated, and the range between `start' and `end' as free.
  *	Create the kernel vmem arena and its per-domain children.
  */
@@ -756,7 +756,7 @@ kmem_init(vm_offset_t start, vm_offset_t end)
 	(void)vm_map_insert(kernel_map, NULL, 0,
 #ifdef __amd64__
 	    KERNBASE,
-#else		     
+#else
 	    VM_MIN_KERNEL_ADDRESS,
 #endif
 	    start, VM_PROT_ALL, VM_PROT_ALL, MAP_NOFAULT);

@@ -75,7 +75,7 @@ struct cfg_redir {
 	uint16_t		rport;	/* remote port	*/
 	uint16_t		pport_cnt;	/* number of public ports */
 	uint16_t		rport_cnt;	/* number of remote ports */
-	struct alias_link	**alink;	
+	struct alias_link	**alink;
 	u_int16_t		spool_cnt; /* num of entry in spool chain */
 	/* chain of spool instances */
 	LIST_HEAD(spool_chain, cfg_spool) spool_chain;
@@ -91,7 +91,7 @@ struct cfg_nat {
 	int			mode;		/* aliasing mode */
 	int			redir_cnt; /* number of entry in spool chain */
 	/* chain of redir instances */
-	LIST_HEAD(redir_chain, cfg_redir) redir_chain;  
+	LIST_HEAD(redir_chain, cfg_redir) redir_chain;
 	char			if_name[IF_NAMESIZE];	/* interface name */
 };
 

@@ -618,7 +618,7 @@ void fman_defconfig(struct fman_cfg *cfg, bool is_master)
     cfg->qmi_deq_disp_tsh               = DEFAULT_QMI_DEQ_DISP_TH;
     cfg->fm_ctl1_disp_tsh               = DEFAULT_FM_CTL1_DISP_TH;
     cfg->fm_ctl2_disp_tsh               = DEFAULT_FM_CTL2_DISP_TH;
- 
+
 	cfg->pedantic_dma                   = FALSE;
 	cfg->tnum_aging_period              = DEFAULT_TNUM_AGING_PERIOD;
 	cfg->dma_stop_on_bus_error          = FALSE;

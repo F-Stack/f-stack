@@ -153,7 +153,7 @@ SYSCTL_UINT(_net_bluetooth_sco_sockets_seq, OID_AUTO, queue_drops,
 	    ppsratecheck(&ng_btsocket_sco_lasttime, &ng_btsocket_sco_curpps, 1)) \
 		printf
 
-/* 
+/*
  * Netgraph message processing routines
  */
 
@@ -178,7 +178,7 @@ static int  ng_btsocket_sco_send_lp_discon_req
 static int ng_btsocket_sco_send2
 	(ng_btsocket_sco_pcb_p);
 
-/* 
+/*
  * Timeout processing routines
  */
 
@@ -186,8 +186,8 @@ static void ng_btsocket_sco_timeout         (ng_btsocket_sco_pcb_p);
 static void ng_btsocket_sco_untimeout       (ng_btsocket_sco_pcb_p);
 static void ng_btsocket_sco_process_timeout (void *);
 
-/* 
- * Other stuff 
+/*
+ * Other stuff
  */
 
 static ng_btsocket_sco_pcb_p	ng_btsocket_sco_pcb_by_addr(bdaddr_p);
@@ -249,7 +249,7 @@ ng_btsocket_sco_node_shutdown(node_p node)
 
 		return (error);
 	}
-		
+
 	return (0);
 } /* ng_btsocket_sco_node_shutdown */
 
@@ -263,7 +263,7 @@ ng_btsocket_sco_node_newhook(node_p node, hook_p hook, char const *name)
 	return (0);
 } /* ng_btsocket_sco_node_newhook */
 
-/* 
+/*
  * Just say "YEP, that's OK by me!"
  */
 
@@ -305,7 +305,7 @@ ng_btsocket_sco_node_disconnect(hook_p hook)
 } /* ng_btsocket_sco_node_disconnect */
 
 /*
- * Process incoming messages 
+ * Process incoming messages
  */
 
 static int
@@ -423,9 +423,9 @@ ng_btsocket_sco_process_lp_con_cfm(struct ng_mesg *msg,
 		 * socket state
 		 */
 
-		pcb->con_handle = ep->con_handle; 
+		pcb->con_handle = ep->con_handle;
 		pcb->state = NG_BTSOCKET_SCO_OPEN;
-		soisconnected(pcb->so); 
+		soisconnected(pcb->so);
 	} else {
 		/*
 		 * We have failed to open connection, so disconnect the socket
@@ -433,7 +433,7 @@ ng_btsocket_sco_process_lp_con_cfm(struct ng_mesg *msg,
 
 		pcb->so->so_error = ECONNREFUSED; /* XXX convert status ??? */
 		pcb->state = NG_BTSOCKET_SCO_CLOSED;
-		soisdisconnected(pcb->so); 
+		soisdisconnected(pcb->so);
 	}
 
 	mtx_unlock(&pcb->pcb_mtx);
@@ -488,9 +488,9 @@ ng_btsocket_sco_process_lp_con_ind(struct ng_mesg *msg,
 		}
 
 		/*
-		 * If we got here than we have created new socket. So complete 
-		 * connection. If we we listening on specific address then copy 
-		 * source address from listening socket, otherwise copy source 
+		 * If we got here than we have created new socket. So complete
+		 * connection. If we we listening on specific address then copy
+		 * source address from listening socket, otherwise copy source
 		 * address from hook's routing information.
 		 */
 
@@ -606,9 +606,9 @@ ng_btsocket_sco_send_lp_con_req(ng_btsocket_sco_pcb_p pcb)
 
 	mtx_assert(&pcb->pcb_mtx, MA_OWNED);
 
-	if (pcb->rt == NULL || 
+	if (pcb->rt == NULL ||
 	    pcb->rt->hook == NULL || NG_HOOK_NOT_VALID(pcb->rt->hook))
-		return (ENETDOWN); 
+		return (ENETDOWN);
 
 	NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_REQ,
 		sizeof(*ep), M_NOWAIT);
@@ -636,7 +636,7 @@ ng_btsocket_sco_send_lp_con_rsp(ng_btsocket_sco_rtentry_p rt, bdaddr_p dst, int 
 	int			 error = 0;
 
 	if (rt == NULL || rt->hook == NULL || NG_HOOK_NOT_VALID(rt->hook))
-		return (ENETDOWN); 
+		return (ENETDOWN);
 
 	NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_RSP,
 		sizeof(*ep), M_NOWAIT);
@@ -666,9 +666,9 @@ ng_btsocket_sco_send_lp_discon_req(ng_btsocket_sco_pcb_p pcb)
 
 	mtx_assert(&pcb->pcb_mtx, MA_OWNED);
 
-	if (pcb->rt == NULL || 
+	if (pcb->rt == NULL ||
 	    pcb->rt->hook == NULL || NG_HOOK_NOT_VALID(pcb->rt->hook))
-		return (ENETDOWN); 
+		return (ENETDOWN);
 
 	NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_DISCON_REQ,
 		sizeof(*ep), M_NOWAIT);
@@ -722,7 +722,7 @@ ng_btsocket_sco_data_input(struct mbuf *m, hook_p hook)
 		goto drop;
 	}
 
-	if (m->m_len < sizeof(*hdr)) { 
+	if (m->m_len < sizeof(*hdr)) {
 		m = m_pullup(m, sizeof(*hdr));
 		if (m == NULL)
 			goto drop;
@@ -852,8 +852,8 @@ ng_btsocket_sco_default_msg_input(struct ng_mesg *msg, hook_p hook)
 
 		NG_BTSOCKET_SCO_INFO(
 "%s: Updating hook \"%s\", src bdaddr=%x:%x:%x:%x:%x:%x, pkt_size=%d, " \
-"num_pkts=%d\n",	__func__, NG_HOOK_NAME(hook), 
-			rt->src.b[5], rt->src.b[4], rt->src.b[3], 
+"num_pkts=%d\n",	__func__, NG_HOOK_NAME(hook),
+			rt->src.b[5], rt->src.b[4], rt->src.b[3],
 			rt->src.b[2], rt->src.b[1], rt->src.b[0],
 			rt->pkt_size, rt->num_pkts);
 		} break;
@@ -896,7 +896,7 @@ ng_btsocket_sco_default_msg_input(struct ng_mesg *msg, hook_p hook)
 		if (pcb->state == NG_BTSOCKET_SCO_OPEN) {
 			/* Remove timeout */
 			ng_btsocket_sco_untimeout(pcb);
-			
+
 			/* Drop completed packets from the send queue */
 			for (; ep->completed > 0; ep->completed --)
 				sbdroprecord(&pcb->so->so_snd);
@@ -1032,7 +1032,7 @@ drop:
 } /* ng_btsocket_sco_input */
 
 /*
- * Route cleanup task. Gets scheduled when hook is disconnected. Here we 
+ * Route cleanup task. Gets scheduled when hook is disconnected. Here we
  * will find all sockets that use "invalid" hook and disconnect them.
  */
 
@@ -1187,7 +1187,7 @@ ng_btsocket_sco_close(struct socket *so)
 int
 ng_btsocket_sco_accept(struct socket *so, struct sockaddr **nam)
 {
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 
 	return (ng_btsocket_sco_peeraddr(so, nam));
@@ -1204,13 +1204,13 @@ ng_btsocket_sco_attach(struct socket *so, int proto, struct thread *td)
 	int			error;
 
 	/* Check socket and protocol */
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EPROTONOSUPPORT);
 	if (so->so_type != SOCK_SEQPACKET)
 		return (ESOCKTNOSUPPORT);
 
 #if 0 /* XXX sonewconn() calls "pru_attach" with proto == 0 */
-	if (proto != 0) 
+	if (proto != 0)
 		if (proto != BLUETOOTH_PROTO_SCO)
 			return (EPROTONOSUPPORT);
 #endif /* XXX */
@@ -1241,11 +1241,11 @@ ng_btsocket_sco_attach(struct socket *so, int proto, struct thread *td)
 
 	/*
 	 * Mark PCB mutex as DUPOK to prevent "duplicated lock of
-	 * the same type" message. When accepting new SCO connection 
-	 * ng_btsocket_sco_process_lp_con_ind() holds both PCB mutexes 
+	 * the same type" message. When accepting new SCO connection
+	 * ng_btsocket_sco_process_lp_con_ind() holds both PCB mutexes
 	 * for "old" (accepting) PCB and "new" (created) PCB.
 	 */
-		
+
 	mtx_init(&pcb->pcb_mtx, "btsocks_sco_pcb_mtx", NULL,
 		MTX_DEF|MTX_DUPOK);
 
@@ -1286,13 +1286,13 @@ ng_btsocket_sco_attach(struct socket *so, int proto, struct thread *td)
  */
 
 int
-ng_btsocket_sco_bind(struct socket *so, struct sockaddr *nam, 
+ng_btsocket_sco_bind(struct socket *so, struct sockaddr *nam,
 		struct thread *td)
 {
 	ng_btsocket_sco_pcb_t	*pcb = NULL;
 	struct sockaddr_sco	*sa = (struct sockaddr_sco *) nam;
 
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 
 	/* Verify address */
@@ -1305,7 +1305,7 @@ ng_btsocket_sco_bind(struct socket *so, struct sockaddr *nam,
 
 	mtx_lock(&ng_btsocket_sco_sockets_mtx);
 
-	/* 
+	/*
 	 * Check if other socket has this address already (look for exact
 	 * match in bdaddr) and assign socket address if it's available.
 	 */
@@ -1345,7 +1345,7 @@ ng_btsocket_sco_bind(struct socket *so, struct sockaddr *nam,
  */
 
 int
-ng_btsocket_sco_connect(struct socket *so, struct sockaddr *nam, 
+ng_btsocket_sco_connect(struct socket *so, struct sockaddr *nam,
 		struct thread *td)
 {
 	ng_btsocket_sco_pcb_t		*pcb = so2sco_pcb(so);
@@ -1356,7 +1356,7 @@ ng_btsocket_sco_connect(struct socket *so, struct sockaddr *nam,
 	/* Check socket */
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 
 	/* Verify address */
@@ -1422,10 +1422,10 @@ ng_btsocket_sco_connect(struct socket *so, struct sockaddr *nam,
 		error = EHOSTUNREACH;
 
 	/*
-	 * Send LP_Connect request 
+	 * Send LP_Connect request
 	 */
 
-	if (error == 0) {	
+	if (error == 0) {
 		error = ng_btsocket_sco_send_lp_con_req(pcb);
 		if (error == 0) {
 			pcb->flags |= NG_BTSOCKET_SCO_CLIENT;
@@ -1463,7 +1463,7 @@ ng_btsocket_sco_ctloutput(struct socket *so, struct sockopt *sopt)
 	ng_btsocket_sco_pcb_p	pcb = so2sco_pcb(so);
         int			error, tmp;
 
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 	if (pcb == NULL)
 		return (EINVAL);
@@ -1479,7 +1479,7 @@ ng_btsocket_sco_ctloutput(struct socket *so, struct sockopt *sopt)
 			error = ENOTCONN;
 			break;
 		}
-		
+
 		switch (sopt->sopt_name) {
 		case SO_SCO_MTU:
 			tmp = pcb->rt->pkt_size;
@@ -1522,7 +1522,7 @@ ng_btsocket_sco_detach(struct socket *so)
 
 	KASSERT(pcb != NULL, ("ng_btsocket_sco_detach: pcb == NULL"));
 
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return;
 
 	mtx_lock(&ng_btsocket_sco_sockets_mtx);
@@ -1560,7 +1560,7 @@ ng_btsocket_sco_disconnect(struct socket *so)
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 
 	mtx_lock(&pcb->pcb_mtx);
@@ -1638,7 +1638,7 @@ ng_btsocket_sco_peeraddr(struct socket *so, struct sockaddr **nam)
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 
 	mtx_lock(&pcb->pcb_mtx);
@@ -1663,7 +1663,7 @@ ng_btsocket_sco_send(struct socket *so, int flags, struct mbuf *m,
 {
 	ng_btsocket_sco_pcb_t	*pcb = so2sco_pcb(so);
 	int			 error = 0;
-                        
+
 	if (ng_btsocket_sco_node == NULL) {
 		error = ENETDOWN;
 		goto drop;
@@ -1674,12 +1674,12 @@ ng_btsocket_sco_send(struct socket *so, int flags, struct mbuf *m,
 		error = EINVAL;
 		goto drop;
 	}
-                 
+
 	mtx_lock(&pcb->pcb_mtx);
-                  
+
 	/* Make sure socket is connected */
 	if (pcb->state != NG_BTSOCKET_SCO_OPEN) {
-		mtx_unlock(&pcb->pcb_mtx); 
+		mtx_unlock(&pcb->pcb_mtx);
 		error = ENOTCONN;
 		goto drop;
 	}
@@ -1791,7 +1791,7 @@ ng_btsocket_sco_sockaddr(struct socket *so, struct sockaddr **nam)
 
 	if (pcb == NULL)
 		return (EINVAL);
-	if (ng_btsocket_sco_node == NULL) 
+	if (ng_btsocket_sco_node == NULL)
 		return (EINVAL);
 
 	mtx_lock(&pcb->pcb_mtx);

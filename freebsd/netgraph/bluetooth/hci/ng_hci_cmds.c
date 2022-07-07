@@ -113,8 +113,8 @@ ng_hci_send_command(ng_hci_unit_p unit)
 		return (ENOTCONN);
 	}
 
-	/* 
-	 * Get first command from queue, give it to RAW hook then 
+	/*
+	 * Get first command from queue, give it to RAW hook then
 	 * make copy of it and send it to the driver
 	 */
 
@@ -145,7 +145,7 @@ ng_hci_send_command(ng_hci_unit_p unit)
 	NG_HCI_STAT_BYTES_SENT(unit->stat, m0->m_pkthdr.len);
 
 	/*
-	 * Note: ng_hci_command_timeout() will set 
+	 * Note: ng_hci_command_timeout() will set
 	 * NG_HCI_UNIT_COMMAND_PENDING flag
 	 */
 
@@ -155,7 +155,7 @@ ng_hci_send_command(ng_hci_unit_p unit)
 } /* ng_hci_send_command */
 
 /*
- * Process HCI Command_Compete event. Complete HCI command, and do post 
+ * Process HCI Command_Compete event. Complete HCI command, and do post
  * processing on the command parameters (cp) and command return parameters
  * (e) if required (for example adjust state).
  */
@@ -188,7 +188,7 @@ ng_hci_process_command_complete(ng_hci_unit_p unit, struct mbuf *e)
 		goto out;
 	}
 
-	/* 
+	/*
 	 * Perform post processing on command parameters and return parameters
 	 * do it only if status is OK (status == 0). Status is the first byte
 	 * of any command return parameters.
@@ -248,7 +248,7 @@ ng_hci_process_command_complete(ng_hci_unit_p unit, struct mbuf *e)
 		NG_HCI_ERR(
 "%s: %s - HCI command failed, OGF=%#x, OCF=%#x, status=%#x\n",
 			__func__, NG_NODE_NAME(unit->node),
-			NG_HCI_OGF(ep->opcode), NG_HCI_OCF(ep->opcode), 
+			NG_HCI_OGF(ep->opcode), NG_HCI_OCF(ep->opcode),
 			*mtod(e, u_int8_t *));
 
 		NG_FREE_M(cp);
@@ -261,7 +261,7 @@ out:
 } /* ng_hci_process_command_complete */
 
 /*
- * Process HCI Command_Status event. Check the status (mst) and do post 
+ * Process HCI Command_Status event. Check the status (mst) and do post
  * processing (if required).
  */
 
@@ -289,7 +289,7 @@ ng_hci_process_command_status(ng_hci_unit_p unit, struct mbuf *e)
         if (error != 0)
 		goto out;
 
-	/* 
+	/*
 	 * Perform post processing on HCI Command_Status event
 	 */
 
@@ -328,7 +328,7 @@ out:
 } /* ng_hci_process_command_status */
 
 /*
- * Complete queued HCI command. 
+ * Complete queued HCI command.
  */
 
 static int
@@ -355,7 +355,7 @@ complete_command(ng_hci_unit_p unit, int opcode, struct mbuf **cp)
 	}
 
 	/*
-	 * Match command opcode, if does not match - do nothing and 
+	 * Match command opcode, if does not match - do nothing and
 	 * let timeout handle that.
 	 */
 
@@ -366,7 +366,7 @@ complete_command(ng_hci_unit_p unit, int opcode, struct mbuf **cp)
 		return (EINVAL);
 	}
 
-	/* 
+	/*
 	 * Now we can remove command timeout, dequeue completed command
 	 * and return command parameters. ng_hci_command_untimeout will
 	 * drop NG_HCI_UNIT_COMMAND_PENDING flag.
@@ -430,12 +430,12 @@ ng_hci_process_command_timeout(node_p node, hook_p hook, void *arg1, int arg2)
 "%s: %s - no pending command\n", __func__, NG_NODE_NAME(unit->node));
 } /* ng_hci_process_command_timeout */
 
-/* 
+/*
  * Process link command return parameters
  */
 
 static int
-process_link_control_params(ng_hci_unit_p unit, u_int16_t ocf, 
+process_link_control_params(ng_hci_unit_p unit, u_int16_t ocf,
 		struct mbuf *mcp, struct mbuf *mrp)
 {
 	int	error  = 0;
@@ -445,7 +445,7 @@ process_link_control_params(ng_hci_unit_p unit, u_int16_t ocf,
 	case NG_HCI_OCF_PERIODIC_INQUIRY:
 	case NG_HCI_OCF_EXIT_PERIODIC_INQUIRY:
 	case NG_HCI_OCF_LINK_KEY_REP:
-	case NG_HCI_OCF_LINK_KEY_NEG_REP: 
+	case NG_HCI_OCF_LINK_KEY_NEG_REP:
 	case NG_HCI_OCF_PIN_CODE_REP:
 	case NG_HCI_OCF_PIN_CODE_NEG_REP:
 		/* These do not need post processing */
@@ -469,9 +469,9 @@ process_link_control_params(ng_hci_unit_p unit, u_int16_t ocf,
 	default:
 
 		/*
-		 * None of these command was supposed to generate 
-		 * Command_Complete event. Instead Command_Status event 
-		 * should have been generated and then appropriate event 
+		 * None of these command was supposed to generate
+		 * Command_Complete event. Instead Command_Status event
+		 * should have been generated and then appropriate event
 		 * should have been sent to indicate the final result.
 		 */
 
@@ -485,7 +485,7 @@ process_link_control_params(ng_hci_unit_p unit, u_int16_t ocf,
 	return (error);
 } /* process_link_control_params */
 
-/* 
+/*
  * Process link policy command return parameters
  */
 
@@ -510,7 +510,7 @@ process_link_policy_params(ng_hci_unit_p unit, u_int16_t ocf,
 			if (con == NULL) {
 				NG_HCI_ALERT(
 "%s: %s - invalid connection handle=%d\n",
-					__func__, NG_NODE_NAME(unit->node), h); 
+					__func__, NG_NODE_NAME(unit->node), h);
 				error = ENOENT;
 			} else if (con->link_type != NG_HCI_LINK_ACL) {
 				NG_HCI_ALERT(
@@ -538,15 +538,15 @@ process_link_policy_params(ng_hci_unit_p unit, u_int16_t ocf,
 	default:
 
 		/*
-		 * None of these command was supposed to generate 
-		 * Command_Complete event. Instead Command_Status event 
+		 * None of these command was supposed to generate
+		 * Command_Complete event. Instead Command_Status event
 		 * should have been generated and then appropriate event
 		 * should have been sent to indicate the final result.
 		 */
 
 		error = EINVAL;
 		break;
-	} 
+	}
 
 	NG_FREE_M(mcp);
 	NG_FREE_M(mrp);
@@ -554,12 +554,12 @@ process_link_policy_params(ng_hci_unit_p unit, u_int16_t ocf,
 	return (error);
 } /* process_link_policy_params */
 
-/* 
+/*
  * Process HC and baseband command return parameters
  */
 
 int
-process_hc_baseband_params(ng_hci_unit_p unit, u_int16_t ocf, 
+process_hc_baseband_params(ng_hci_unit_p unit, u_int16_t ocf,
 		struct mbuf *mcp, struct mbuf *mrp)
 {
 	int	error = 0;
@@ -625,12 +625,12 @@ process_hc_baseband_params(ng_hci_unit_p unit, u_int16_t ocf,
 		int			size;
 
 		/*
-		 * XXX 
+		 * XXX
 		 *
 		 * After RESET command unit goes into standby mode
 		 * and all operational state is lost. Host controller
 		 * will revert to default values for all parameters.
-		 * 
+		 *
 		 * For now we shall terminate all connections and drop
 		 * inited bit. After RESET unit must be re-initialized.
 		 */
@@ -667,7 +667,7 @@ process_hc_baseband_params(ng_hci_unit_p unit, u_int16_t ocf,
 	return (error);
 } /* process_hc_baseband_params */
 
-/* 
+/*
  * Process info command return parameters
  */
 
@@ -745,7 +745,7 @@ process_info_params(ng_hci_unit_p unit, u_int16_t ocf, struct mbuf *mcp,
 	return (error);
 } /* process_info_params */
 
-/* 
+/*
  * Process status command return parameters
  */
 
@@ -774,7 +774,7 @@ process_status_params(ng_hci_unit_p unit, u_int16_t ocf, struct mbuf *mcp,
 	return (error);
 } /* process_status_params */
 
-/* 
+/*
  * Process testing command return parameters
  */
 
@@ -808,7 +808,7 @@ process_testing_params(ng_hci_unit_p unit, u_int16_t ocf, struct mbuf *mcp,
 	return (error);
 } /* process_testing_params */
 
-/* 
+/*
  * Process LE command return parameters
  */
 
@@ -855,15 +855,15 @@ process_le_params(ng_hci_unit_p unit, u_int16_t ocf,
 
 	default:
 		/*
-		 * None of these command was supposed to generate 
-		 * Command_Complete event. Instead Command_Status event 
+		 * None of these command was supposed to generate
+		 * Command_Complete event. Instead Command_Status event
 		 * should have been generated and then appropriate event
 		 * should have been sent to indicate the final result.
 		 */
 
 		error = EINVAL;
 		break;
-	} 
+	}
 
 	NG_FREE_M(mcp);
 	NG_FREE_M(mrp);
@@ -916,13 +916,13 @@ process_le_status(ng_hci_unit_p unit,ng_hci_command_status_ep *ep,
 
 	default:
 		/*
-		 * None of these command was supposed to generate 
+		 * None of these command was supposed to generate
 		 * Command_Stutus event. Command Complete instead.
 		 */
 
 		error = EINVAL;
 		break;
-	} 
+	}
 
 	NG_FREE_M(mcp);
 
@@ -969,14 +969,14 @@ process_link_control_status(ng_hci_unit_p unit, ng_hci_command_status_ep *ep,
 	case NG_HCI_OCF_PERIODIC_INQUIRY:
 	case NG_HCI_OCF_EXIT_PERIODIC_INQUIRY:
 	case NG_HCI_OCF_LINK_KEY_REP:
-	case NG_HCI_OCF_LINK_KEY_NEG_REP: 
+	case NG_HCI_OCF_LINK_KEY_NEG_REP:
 	case NG_HCI_OCF_PIN_CODE_REP:
 	case NG_HCI_OCF_PIN_CODE_NEG_REP:
 	default:
 
 		/*
-		 * None of these command was supposed to generate 
-		 * Command_Status event. Instead Command_Complete event 
+		 * None of these command was supposed to generate
+		 * Command_Status event. Instead Command_Complete event
 		 * should have been sent.
 		 */
 
@@ -1018,8 +1018,8 @@ process_link_policy_status(ng_hci_unit_p unit, ng_hci_command_status_ep *ep,
 	default:
 
 		/*
-		 * None of these command was supposed to generate 
-		 * Command_Status event. Instead Command_Complete event 
+		 * None of these command was supposed to generate
+		 * Command_Status event. Instead Command_Complete event
 		 * should have been sent.
 		 */
 

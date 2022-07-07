@@ -271,10 +271,10 @@ void ff_os_errno(int error)
         case ff_EPIPE:       errno = EPIPE; break;
         case ff_EDOM:        errno = EDOM; break;
         case ff_ERANGE:      errno = ERANGE; break;
-    
+
         /* case ff_EAGAIN:       same as EWOULDBLOCK */
         case ff_EWOULDBLOCK:     errno = EWOULDBLOCK; break;
-    
+
         case ff_EINPROGRESS:     errno = EINPROGRESS; break;
         case ff_EALREADY:        errno = EALREADY; break;
         case ff_ENOTSOCK:        errno = ENOTSOCK; break;

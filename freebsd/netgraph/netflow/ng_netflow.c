@@ -496,7 +496,7 @@ ng_netflow_rcvmsg (node_p node, item_p item, hook_p lasthook)
 
 			if (set->iface >= NG_NETFLOW_MAXIFACES)
 				ERROUT(EINVAL);
-			
+
 			priv->ifaces[set->iface].info.conf = set->conf;
 
 			break;
@@ -599,7 +599,7 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 	int error = 0, l3_off = 0;
 	unsigned int src_if_index;
 	caddr_t upper_ptr = NULL;
-	fib_export_p fe;	
+	fib_export_p fe;
 	uint32_t fib;
 
 	if ((hook == priv->export) || (hook == priv->export9)) {
@@ -882,7 +882,7 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 				flags |= NG_NETFLOW_IS_FRAG;
 				goto loopend;
 
-#if 0				
+#if 0
 			case IPPROTO_NONE:
 				goto loopend;
 #endif
@@ -985,7 +985,7 @@ done:
 	if (m)
 		NG_FREE_M(m);
 
-	return (error);	
+	return (error);
 }
 
 /* We will be shut down in a moment */

@@ -575,7 +575,7 @@ in6_ifattach_loopback(struct ifnet *ifp)
  * when ifp == NULL, the caller is responsible for filling scopeid.
  *
  * If oldmcprefix == 1, FF02:0:0:0:0:2::/96 is used for NI group address
- * while it is FF02:0:0:0:0:2:FF00::/104 in RFC 4620. 
+ * while it is FF02:0:0:0:0:2:FF00::/104 in RFC 4620.
  */
 static int
 in6_nigroup0(struct ifnet *ifp, const char *name, int namelen,

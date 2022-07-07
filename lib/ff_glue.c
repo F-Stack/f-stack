@@ -326,7 +326,7 @@ prison_remote_ip6(struct ucred *cred, struct in6_addr *ia)
 }
 #endif
 
-int 
+int
 prison_saddrsel_ip4(struct ucred *cred, struct in_addr *ia)
 {
     /* not jailed */
@@ -334,7 +334,7 @@ prison_saddrsel_ip4(struct ucred *cred, struct in_addr *ia)
 }
 
 #ifdef INET6
-int 
+int
 prison_saddrsel_ip6(struct ucred *cred, struct in6_addr *ia)
 {
     /* not jailed */
@@ -517,7 +517,7 @@ ratecheck(struct timeval *lasttime, const struct timeval *mininterval)
  *
  * Note that we maintain the struct timeval for compatibility
  * with other bsd systems.  We reuse the storage and just monitor
- * clock ticks for minimal overhead.  
+ * clock ticks for minimal overhead.
  */
 int
 ppsratecheck(struct timeval *lasttime, int *curpps, int maxpps)
@@ -629,7 +629,7 @@ copystr(const void *kfaddr, void *kdaddr, size_t len, size_t *done)
 
 int
 copyinstr(const void *uaddr, void *kaddr, size_t len, size_t *done)
-{    
+{
     size_t bytes;
 
     bytes = strlcpy(kaddr, uaddr, len);
@@ -812,7 +812,7 @@ useracc(void *addr, int len, int rw)
 struct pgrp *
 pgfind(pid_t pgid)
 {
-    return (NULL); 
+    return (NULL);
 }
 
 #if 0
@@ -1038,14 +1038,14 @@ kmem_alloc_contig(vm_size_t size, int flags, vm_paddr_t low,
 void
 malloc_init(void *data)
 {
-    /* Nothing to do here */ 
+    /* Nothing to do here */
 }
 
 
 void
 malloc_uninit(void *data)
 {
-    /* Nothing to do here */ 
+    /* Nothing to do here */
 }
 
 void *
@@ -1098,7 +1098,7 @@ DELAY(int delay)
 
     if (delay < 1000)
         return;
-    
+
     rqt.tv_nsec = 1000*((unsigned long)delay);
     rqt.tv_sec = 0;
     /*
@@ -1107,8 +1107,8 @@ DELAY(int delay)
     //nanosleep(&rqt, NULL);
 }
 
-void 
-bwillwrite(void) 
+void
+bwillwrite(void)
 {
 
 }
@@ -1206,9 +1206,9 @@ groupmember(gid_t gid, struct ucred *cred)
     while (l < h) {
         m = l + ((h - l) / 2);
         if (cred->cr_groups[m] < gid)
-            l = m + 1; 
+            l = m + 1;
         else
-            h = m; 
+            h = m;
     }
     if ((l < cred->cr_ngroups) && (cred->cr_groups[l] == gid))
         return (1);
@@ -1433,7 +1433,7 @@ elf_reloc_late(linker_file_t lf, Elf_Addr relocbase, const void *data,
 }
 
 bool
-elf_is_ifunc_reloc(Elf_Size r_info) 
+elf_is_ifunc_reloc(Elf_Size r_info)
 {
     return (true);
 }

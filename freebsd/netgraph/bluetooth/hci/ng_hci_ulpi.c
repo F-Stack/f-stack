@@ -98,15 +98,15 @@ ng_hci_lp_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 			NG_HCI_WARN(
 				"%s: %s - LP_ConnectReq for SCO connection came from wrong hook=%p\n",
 				__func__, NG_NODE_NAME(unit->node), hook);
-			
+
 			NG_FREE_ITEM(item);
-			
+
 			return (EINVAL);
 		}
-		
+
 		return (ng_hci_lp_sco_con_req(unit, item, hook));
 	case NG_HCI_LINK_LE_PUBLIC:
-	case NG_HCI_LINK_LE_RANDOM:		
+	case NG_HCI_LINK_LE_RANDOM:
 		return (ng_hci_lp_le_con_req(unit, item, hook, link_type));
 	default:
 		panic("%s: link_type invalid.", __func__);
@@ -147,7 +147,7 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	 *
 	 * 2) We do have connection descriptor. We need to check connection
 	 *    state:
-	 * 
+	 *
 	 * 2.1) NG_HCI_CON_W4_LP_CON_RSP means that we are in the middle of
 	 *      accepting connection from the remote unit. This is a race
 	 *      condition. We will ignore this message.
@@ -156,7 +156,7 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	 *      requested connection or we just accepted it. In any case
 	 *      all we need to do here is set appropriate notification bit
 	 *      and wait.
-	 *	
+	 *
 	 * 2.3) NG_HCI_CON_OPEN means connection is open. Just reply back
 	 *      and let upper layer know that we have connection already.
 	 */
@@ -183,15 +183,15 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 				NGI_GET_MSG(item, msg);
 				NG_FREE_MSG(msg);
 
-				NG_MKMESSAGE(msg, NGM_HCI_COOKIE, 
-					NGM_HCI_LP_CON_CFM, sizeof(*cfm), 
+				NG_MKMESSAGE(msg, NGM_HCI_COOKIE,
+					NGM_HCI_LP_CON_CFM, sizeof(*cfm),
 					M_NOWAIT);
 				if (msg != NULL) {
 					cfm = (ng_hci_lp_con_cfm_ep *)msg->data;
 					cfm->status = 0;
 					cfm->link_type = con->link_type;
 					cfm->con_handle = con->con_handle;
-					bcopy(&con->bdaddr, &cfm->bdaddr, 
+					bcopy(&con->bdaddr, &cfm->bdaddr,
 						sizeof(cfm->bdaddr));
 
 					/*
@@ -206,7 +206,7 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 			} else
 				NG_HCI_INFO(
 "%s: %s - Source hook is not valid, hook=%p\n",
-					__func__, NG_NODE_NAME(unit->node), 
+					__func__, NG_NODE_NAME(unit->node),
 					hook);
 			} break;
 
@@ -234,8 +234,8 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 
 	bcopy(&ep->bdaddr, &con->bdaddr, sizeof(con->bdaddr));
 
-	/* 
-	 * Create HCI command 
+	/*
+	 * Create HCI command
 	 */
 
 	MGETHDR(m, M_NOWAIT, MT_DATA);
@@ -274,7 +274,7 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 		req->cp.accept_role_switch = 0;
 
 	/*
-	 * We may speed up connect by specifying valid parameters. 
+	 * We may speed up connect by specifying valid parameters.
 	 * So check the neighbor cache.
 	 */
 
@@ -289,8 +289,8 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 		req->cp.clock_offset = htole16(n->clock_offset);
 	}
 
-	/* 
-	 * Adust connection state 
+	/*
+	 * Adust connection state
 	 */
 
 	if (hook == unit->acl)
@@ -301,8 +301,8 @@ ng_hci_lp_acl_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	con->state = NG_HCI_CON_W4_CONN_COMPLETE;
 	ng_hci_con_timeout(con);
 
-	/* 
-	 * Queue and send HCI command 
+	/*
+	 * Queue and send HCI command
 	 */
 
 	NG_BT_MBUFQ_ENQUEUE(&unit->cmdq, m);
@@ -336,7 +336,7 @@ ng_hci_lp_sco_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	/*
 	 * SCO connection without ACL link
 	 *
-	 * If upper layer requests SCO connection and there is no open ACL 
+	 * If upper layer requests SCO connection and there is no open ACL
 	 * connection to the desired remote unit, we will reject the request.
 	 */
 
@@ -359,21 +359,21 @@ ng_hci_lp_sco_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 
 	/*
 	 * Multiple SCO connections can exist between the same pair of units.
-	 * We assume that multiple SCO connections have to be opened one after 
-	 * another. 
+	 * We assume that multiple SCO connections have to be opened one after
+	 * another.
 	 *
 	 * Try to find SCO connection descriptor that matches the following:
 	 *
 	 * 1) sco_con->link_type == NG_HCI_LINK_SCO
-	 * 
+	 *
 	 * 2) sco_con->state == NG_HCI_CON_W4_LP_CON_RSP ||
 	 *    sco_con->state == NG_HCI_CON_W4_CONN_COMPLETE
-	 * 
+	 *
 	 * 3) sco_con->bdaddr == ep->bdaddr
 	 *
 	 * Two cases:
 	 *
-	 * 1) We do not have connection descriptor. This is simple. Just 
+	 * 1) We do not have connection descriptor. This is simple. Just
 	 *    create new connection and submit Add_SCO_Connection command.
 	 *
 	 * 2) We do have connection descriptor. We need to check the state.
@@ -427,8 +427,8 @@ ng_hci_lp_sco_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 
 	bcopy(&ep->bdaddr, &sco_con->bdaddr, sizeof(sco_con->bdaddr));
 
-	/* 
-	 * Create HCI command 
+	/*
+	 * Create HCI command
 	 */
 
 	MGETHDR(m, M_NOWAIT, MT_DATA);
@@ -461,7 +461,7 @@ ng_hci_lp_sco_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 
 	req->cp.pkt_type = htole16(req->cp.pkt_type);
 
-	/* 
+	/*
 	 * Adust connection state
 	 */
 
@@ -470,7 +470,7 @@ ng_hci_lp_sco_con_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	sco_con->state = NG_HCI_CON_W4_CONN_COMPLETE;
 	ng_hci_con_timeout(sco_con);
 
-	/* 
+	/*
 	 * Queue and send HCI command
 	 */
 
@@ -498,7 +498,7 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 	ep = (ng_hci_lp_con_req_ep *)(NGI_MSG(item)->data);
 	if((link_type != NG_HCI_LINK_LE_PUBLIC)&&
 	   (link_type != NG_HCI_LINK_LE_RANDOM)){
-		printf("%s: Link type %d Cannot be here \n", __func__, 
+		printf("%s: Link type %d Cannot be here \n", __func__,
 		       link_type);
 	}
 	/*
@@ -514,7 +514,7 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 	 *
 	 * 2) We do have connection descriptor. We need to check connection
 	 *    state:
-	 * 
+	 *
 	 * 2.1) NG_HCI_CON_W4_LP_CON_RSP means that we are in the middle of
 	 *      accepting connection from the remote unit. This is a race
 	 *      condition. We will ignore this message.
@@ -523,7 +523,7 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 	 *      requested connection or we just accepted it. In any case
 	 *      all we need to do here is set appropriate notification bit
 	 *      and wait.
-	 *	
+	 *
 	 * 2.3) NG_HCI_CON_OPEN means connection is open. Just reply back
 	 *      and let upper layer know that we have connection already.
 	 */
@@ -550,15 +550,15 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 				NGI_GET_MSG(item, msg);
 				NG_FREE_MSG(msg);
 
-				NG_MKMESSAGE(msg, NGM_HCI_COOKIE, 
-					NGM_HCI_LP_CON_CFM, sizeof(*cfm), 
+				NG_MKMESSAGE(msg, NGM_HCI_COOKIE,
+					NGM_HCI_LP_CON_CFM, sizeof(*cfm),
 					M_NOWAIT);
 				if (msg != NULL) {
 					cfm = (ng_hci_lp_con_cfm_ep *)msg->data;
 					cfm->status = 0;
 					cfm->link_type = con->link_type;
 					cfm->con_handle = con->con_handle;
-					bcopy(&con->bdaddr, &cfm->bdaddr, 
+					bcopy(&con->bdaddr, &cfm->bdaddr,
 						sizeof(cfm->bdaddr));
 
 					/*
@@ -573,7 +573,7 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 			} else
 				NG_HCI_INFO(
 "%s: %s - Source hook is not valid, hook=%p\n",
-					__func__, NG_NODE_NAME(unit->node), 
+					__func__, NG_NODE_NAME(unit->node),
 					hook);
 			} break;
 
@@ -601,8 +601,8 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 
 	bcopy(&ep->bdaddr, &con->bdaddr, sizeof(con->bdaddr));
 
-	/* 
-	 * Create HCI command 
+	/*
+	 * Create HCI command
 	 */
 
 	MGETHDR(m, M_NOWAIT, MT_DATA);
@@ -631,8 +631,8 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 	req->cp.supervision_timeout = htole16(0xc80);
 	req->cp.min_ce_length = htole16(1);
 	req->cp.max_ce_length = htole16(1);
-	/* 
-	 * Adust connection state 
+	/*
+	 * Adust connection state
 	 */
 
 	if (hook != unit->sco)
@@ -643,8 +643,8 @@ ng_hci_lp_le_con_req(ng_hci_unit_p unit, item_p item, hook_p hook, int link_type
 	con->state = NG_HCI_CON_W4_CONN_COMPLETE;
 	ng_hci_con_timeout(con);
 
-	/* 
-	 * Queue and send HCI command 
+	/*
+	 * Queue and send HCI command
 	 */
 
 	NG_BT_MBUFQ_ENQUEUE(&unit->cmdq, m);
@@ -715,7 +715,7 @@ ng_hci_lp_discon_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 		goto out;
 	}
 
-	/* 
+	/*
 	 * Create HCI command
 	 */
 
@@ -735,8 +735,8 @@ ng_hci_lp_discon_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	req->cp.con_handle = htole16(ep->con_handle);
 	req->cp.reason = ep->reason;
 
-	/* 
-	 * Queue and send HCI command 
+	/*
+	 * Queue and send HCI command
 	 */
 
 	NG_BT_MBUFQ_ENQUEUE(&unit->cmdq, m);
@@ -766,17 +766,17 @@ ng_hci_lp_con_cfm(ng_hci_unit_con_p con, int status)
 	 * only SCO upstream hook will receive notification
 	 */
 
-	if (con->link_type != NG_HCI_LINK_SCO && 
+	if (con->link_type != NG_HCI_LINK_SCO &&
 	    con->flags & NG_HCI_CON_NOTIFY_ACL) {
 		if (unit->acl != NULL && NG_HOOK_IS_VALID(unit->acl)) {
-			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_CFM, 
+			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_CFM,
 				sizeof(*ep), M_NOWAIT);
 			if (msg != NULL) {
 				ep = (ng_hci_lp_con_cfm_ep *) msg->data;
 				ep->status = status;
 				ep->link_type = con->link_type;
 				ep->con_handle = con->con_handle;
-				bcopy(&con->bdaddr, &ep->bdaddr, 
+				bcopy(&con->bdaddr, &ep->bdaddr,
 					sizeof(ep->bdaddr));
 
 				NG_SEND_MSG_HOOK(error, unit->node, msg,
@@ -792,14 +792,14 @@ ng_hci_lp_con_cfm(ng_hci_unit_con_p con, int status)
 
 	if (con->flags & NG_HCI_CON_NOTIFY_SCO) {
 		if (unit->sco != NULL && NG_HOOK_IS_VALID(unit->sco)) {
-			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_CFM, 
+			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_CFM,
 				sizeof(*ep), M_NOWAIT);
 			if (msg != NULL) {
 				ep = (ng_hci_lp_con_cfm_ep *) msg->data;
 				ep->status = status;
 				ep->link_type = con->link_type;
 				ep->con_handle = con->con_handle;
-				bcopy(&con->bdaddr, &ep->bdaddr, 
+				bcopy(&con->bdaddr, &ep->bdaddr,
 					sizeof(ep->bdaddr));
 
 				NG_SEND_MSG_HOOK(error, unit->node, msg,
@@ -826,7 +826,7 @@ ng_hci_lp_enc_change(ng_hci_unit_con_p con, int status)
 
 	if (con->link_type != NG_HCI_LINK_SCO) {
 		if (unit->acl != NULL && NG_HOOK_IS_VALID(unit->acl)) {
-			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_ENC_CHG, 
+			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_ENC_CHG,
 				sizeof(*ep), M_NOWAIT);
 			if (msg != NULL) {
 				ep = (ng_hci_lp_enc_change_ep *) msg->data;
@@ -869,7 +869,7 @@ ng_hci_lp_con_ind(ng_hci_unit_con_p con, u_int8_t *uclass)
 		hook = unit->sco;
 
 	if (hook != NULL && NG_HOOK_IS_VALID(hook)) {
-		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_IND, 
+		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_CON_IND,
 			sizeof(*ep), M_NOWAIT);
 		if (msg == NULL)
 			return (ENOMEM);
@@ -953,13 +953,13 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 	 *
 	 * 2) We do have connection descriptor. Then we need to check state:
 	 *
-	 * 2.1) NG_HCI_CON_W4_LP_CON_RSP means upper layer has requested 
+	 * 2.1) NG_HCI_CON_W4_LP_CON_RSP means upper layer has requested
 	 *      connection and it is a first response from the upper layer.
 	 *      if "status == 0" (Accept) then we will send Accept_Connection
 	 *      command and change connection state to W4_CONN_COMPLETE, else
 	 *      send reject and delete connection.
 	 *
-	 * 2.2) NG_HCI_CON_W4_CONN_COMPLETE means that we already accepted 
+	 * 2.2) NG_HCI_CON_W4_CONN_COMPLETE means that we already accepted
 	 *      connection. If "status == 0" we just need to link request
 	 *      and wait, else ignore Reject request.
 	 */
@@ -977,7 +977,7 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 		goto out;
 	}
 
-	/* 
+	/*
 	 * Remove connection timeout and check connection state.
 	 * Note: if ng_hci_con_untimeout() fails (returns non-zero value) then
 	 * timeout already happened and event went into node's queue.
@@ -989,8 +989,8 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 	switch (con->state) {
 	case NG_HCI_CON_W4_LP_CON_RSP:
 
-		/* 
-		 * Create HCI command 
+		/*
+		 * Create HCI command
 		 */
 
 		MGETHDR(m, M_NOWAIT, MT_DATA);
@@ -998,7 +998,7 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 			error = ENOBUFS;
 			goto out;
 		}
-		
+
 		req = mtod(m, struct con_rsp_req *);
 		req->hdr.type = NG_HCI_CMD_PKT;
 
@@ -1012,8 +1012,8 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 				sizeof(req->cp.acc.bdaddr));
 
 			/*
-			 * We are accepting connection, so if we support role 
-			 * switch and role switch was enabled then set role to 
+			 * We are accepting connection, so if we support role
+			 * switch and role switch was enabled then set role to
 			 * NG_HCI_ROLE_MASTER and let LM peform role switch.
 			 * Otherwise we remain slave. In this case LM WILL NOT
 			 * perform role switch.
@@ -1025,8 +1025,8 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 			else
 				req->cp.acc.role = NG_HCI_ROLE_SLAVE;
 
-			/* 
-			 * Adjust connection state 
+			/*
+			 * Adjust connection state
 			 */
 
 			if (hook == unit->acl)
@@ -1051,7 +1051,7 @@ ng_hci_lp_con_rsp(ng_hci_unit_p unit, item_p item, hook_p hook)
 			 * Free connection descritor
 			 * Item will be deleted just before return.
 			 */
-			
+
 			ng_hci_free_con(con);
 		}
 
@@ -1106,7 +1106,7 @@ ng_hci_lp_discon_ind(ng_hci_unit_con_p con, int reason)
 
 	if (con->link_type != NG_HCI_LINK_SCO) {
 		if (unit->acl != NULL && NG_HOOK_IS_VALID(unit->acl)) {
-			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, 
+			NG_MKMESSAGE(msg, NGM_HCI_COOKIE,
 				NGM_HCI_LP_DISCON_IND, sizeof(*ep), M_NOWAIT);
 			if (msg == NULL)
 				return (ENOMEM);
@@ -1124,7 +1124,7 @@ ng_hci_lp_discon_ind(ng_hci_unit_con_p con, int reason)
 	}
 
 	if (unit->sco != NULL && NG_HOOK_IS_VALID(unit->sco)) {
-		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_DISCON_IND, 
+		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_DISCON_IND,
 			sizeof(*ep), M_NOWAIT);
 		if (msg == NULL)
 			return (ENOMEM);
@@ -1209,8 +1209,8 @@ ng_hci_lp_qos_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 		goto out;
 	}
 
-	/* 
-	 * Create HCI command 
+	/*
+	 * Create HCI command
 	 */
 
 	MGETHDR(m, M_NOWAIT, MT_DATA);
@@ -1234,8 +1234,8 @@ ng_hci_lp_qos_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	req->cp.latency = htole32(ep->latency);
 	req->cp.delay_variation = htole32(ep->delay_variation);
 
-	/* 
-	 * Adjust connection state 
+	/*
+	 * Adjust connection state
  	 */
 
 	if (hook == unit->acl)
@@ -1243,8 +1243,8 @@ ng_hci_lp_qos_req(ng_hci_unit_p unit, item_p item, hook_p hook)
 	else
 		con->flags |= NG_HCI_CON_NOTIFY_SCO;
 
-	/* 
-	 * Queue and send HCI command 
+	/*
+	 * Queue and send HCI command
 	 */
 
 	NG_BT_MBUFQ_ENQUEUE(&unit->cmdq, m);
@@ -1270,7 +1270,7 @@ ng_hci_lp_qos_cfm(ng_hci_unit_con_p con, int status)
 
 	if (con->flags & NG_HCI_CON_NOTIFY_ACL) {
 		if (unit->acl != NULL && NG_HOOK_IS_VALID(unit->acl)) {
-			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_CFM, 
+			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_CFM,
 				sizeof(*ep), M_NOWAIT);
 			if (msg != NULL) {
 				ep = (ng_hci_lp_qos_cfm_ep *) msg->data;
@@ -1290,7 +1290,7 @@ ng_hci_lp_qos_cfm(ng_hci_unit_con_p con, int status)
 
 	if (con->flags & NG_HCI_CON_NOTIFY_SCO) {
 		if (unit->sco != NULL && NG_HOOK_IS_VALID(unit->sco)) {
-			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_CFM, 
+			NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_CFM,
 				sizeof(*ep), M_NOWAIT);
 			if (msg != NULL) {
 				ep = (ng_hci_lp_qos_cfm_ep *) msg->data;
@@ -1323,13 +1323,13 @@ ng_hci_lp_qos_ind(ng_hci_unit_con_p con)
 	ng_hci_lp_qos_ind_ep	*ep = NULL;
 	int			 error;
 
-	/* 
+	/*
 	 * QoS Violation can only be generated for ACL connection handles.
 	 * Both ACL and SCO upstream hooks will receive notification.
 	 */
 
 	if (unit->acl != NULL && NG_HOOK_IS_VALID(unit->acl)) {
-		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_IND, 
+		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_IND,
 			sizeof(*ep), M_NOWAIT);
 		if (msg == NULL)
 			return (ENOMEM);
@@ -1344,7 +1344,7 @@ ng_hci_lp_qos_ind(ng_hci_unit_con_p con)
 			__func__, NG_NODE_NAME(unit->node), unit->acl);
 
 	if (unit->sco != NULL && NG_HOOK_IS_VALID(unit->sco)) {
-		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_IND, 
+		NG_MKMESSAGE(msg, NGM_HCI_COOKIE, NGM_HCI_LP_QOS_IND,
 			sizeof(*ep), M_NOWAIT);
 		if (msg == NULL)
 			return (ENOMEM);
@@ -1403,7 +1403,7 @@ ng_hci_process_con_timeout(node_p node, hook_p hook, void *arg1, int con_handle)
 	 * 1) NG_HCI_CON_W4_LP_CON_RSP means that upper layer has not responded
 	 *    to our LP_CON_IND. Do nothing and destroy connection. Remote peer
 	 *    most likely already gave up on us.
-	 * 
+	 *
 	 * 2) NG_HCI_CON_W4_CONN_COMPLETE means upper layer requested connection
 	 *    (or we in the process of accepting it) and baseband has timedout
 	 *    on us. Inform upper layers and send LP_CON_CFM.

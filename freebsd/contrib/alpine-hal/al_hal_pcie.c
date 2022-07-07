@@ -2740,7 +2740,7 @@ al_pcie_msix_masked(struct al_pcie_pf *pcie_pf)
 /******************** Advanced Error Reporting (AER) API **********************/
 /************************* Auxiliary functions ********************************/
 /* configure AER capability */
-static int 
+static int
 al_pcie_aer_config_aux(
 		struct al_pcie_port		*pcie_port,
 		unsigned int	pf_num,
@@ -2810,7 +2810,7 @@ al_pcie_aer_config_aux(
 }
 
 /** AER uncorrectable errors get and clear */
-static unsigned int 
+static unsigned int
 al_pcie_aer_uncorr_get_and_clear_aux(
 		struct al_pcie_port		*pcie_port,
 		unsigned int	pf_num)
@@ -2826,7 +2826,7 @@ al_pcie_aer_uncorr_get_and_clear_aux(
 }
 
 /** AER correctable errors get and clear */
-static unsigned int 
+static unsigned int
 al_pcie_aer_corr_get_and_clear_aux(
 		struct al_pcie_port		*pcie_port,
 		unsigned int	pf_num)
@@ -2846,7 +2846,7 @@ al_pcie_aer_corr_get_and_clear_aux(
 #endif
 
 /** AER get the header for the TLP corresponding to a detected error */
-static void 
+static void
 al_pcie_aer_err_tlp_hdr_get_aux(
 		struct al_pcie_port		*pcie_port,
 		unsigned int	pf_num,

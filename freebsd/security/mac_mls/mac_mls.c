@@ -778,7 +778,7 @@ mls_bpfdesc_create_mbuf(struct bpf_d *d, struct label *dlabel,
 }
 
 static void
-mls_cred_associate_nfsd(struct ucred *cred) 
+mls_cred_associate_nfsd(struct ucred *cred)
 {
 	struct mac_mls *label;
 
@@ -1741,7 +1741,7 @@ mls_posixshm_check_unlink(struct ucred *cred, struct shmfd *shmfd,
 
 	if (!mls_dominate_effective(obj, subj))
 		return (EACCES);
-    
+
 	return (0);
 }
 

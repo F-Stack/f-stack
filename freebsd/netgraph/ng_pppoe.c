@@ -5,7 +5,7 @@
 /*-
  * Copyright (c) 1996-1999 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -16,7 +16,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -1656,9 +1656,9 @@ ng_pppoe_rcvdata_ether(hook_p hook, item_p item)
 				tag = &sntag;
 
 			/*
-			 * First, try to match Service-Name against our 
+			 * First, try to match Service-Name against our
 			 * listening hooks. If no success and we are in D-Link
-			 * compat mode and Service-Name is empty, then we 
+			 * compat mode and Service-Name is empty, then we
 			 * broadcast the PADI to all listening hooks.
 			 */
 			sendhook = pppoe_match_svc(node, tag);
@@ -1738,7 +1738,7 @@ ng_pppoe_rcvdata_ether(hook_p hook, item_p item)
 			insert_tag(sp, utag);      	/* Host Unique */
 			if ((tag = get_tag(ph, PTT_AC_COOKIE)))
 				insert_tag(sp, tag); 	/* return cookie */
-			if ((tag = get_tag(ph, PTT_AC_NAME))) {	
+			if ((tag = get_tag(ph, PTT_AC_NAME))) {
 				insert_tag(sp, tag); 	/* return it */
 				send_acname(sp, tag);
 			}
@@ -2051,7 +2051,7 @@ ng_pppoe_disconnect(hook_p hook)
 				 * Configure ethertype depending on what
 				 * was used during sessions stage.
 				 */
-				if (wh->eh.ether_type == 
+				if (wh->eh.ether_type ==
 				    ETHERTYPE_PPPOE_3COM_SESS)
 					wh->eh.ether_type = ETHERTYPE_PPPOE_3COM_DISC;
 				else

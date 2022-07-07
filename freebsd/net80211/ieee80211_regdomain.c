@@ -34,7 +34,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_wlan.h"
 
 #include <sys/param.h>
-#include <sys/systm.h> 
+#include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/socket.h>
@@ -282,7 +282,7 @@ ieee80211_alloc_countryie(struct ieee80211com *ic)
 		ie->cc[0] = rd->isocc[0];
 		ie->cc[1] = rd->isocc[1];
 	}
-	/* 
+	/*
 	 * Indoor/Outdoor portion of country string:
 	 *     'I' indoor only
 	 *     'O' outdoor only
@@ -290,7 +290,7 @@ ieee80211_alloc_countryie(struct ieee80211com *ic)
 	 */
 	ie->cc[2] = (rd->location == 'I' ? 'I' :
 		     rd->location == 'O' ? 'O' : ' ');
-	/* 
+	/*
 	 * Run-length encoded channel+max tx power info.
 	 */
 	frm = (uint8_t *)&ie->band[0];

@@ -26,8 +26,8 @@ __FBSDID("$FreeBSD$");
  *	Returns opts->val if a matching entry in the 'opts' array is found,
  *	0 when no more tokens are found, -1 if an error is encountered.
  */
-int krping_getopt(const char *caller, char **options, 
-		  const struct krping_option *opts, char **optopt, 
+int krping_getopt(const char *caller, char **options,
+		  const struct krping_option *opts, char **optopt,
 		  char **optarg, unsigned long *value)
 {
 	char *token;

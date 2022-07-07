@@ -358,15 +358,15 @@ void cvmx_tra_setup(cvmx_tra_ctl_t control, cvmx_tra_filt_t filter,
 
     /* Address filtering does not work when IOBDMA filter command is enabled
        because of some caveats.  Disable the IOBDMA filter command. */
-    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX)) 
+    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX))
         && ((filt_cmd.u64 & CVMX_TRA_FILT_IOBDMA) == CVMX_TRA_FILT_IOBDMA)
         && address_mask != 0)
     {
         cvmx_dprintf("The address-based filtering does not work with IOBDMAs, disabling the filter command.\n");
         filt_cmd.u64 &= ~(CVMX_TRA_FILT_IOBDMA);
-    } 
+    }
 
-    /* In OcteonII pass2, the mode bit is added to enable reading the trace 
+    /* In OcteonII pass2, the mode bit is added to enable reading the trace
        buffer data from different registers for lower and upper 64-bit value.
        This bit is reserved in other Octeon models. */
     control.s.rdat_md = 1;
@@ -419,15 +419,15 @@ void cvmx_tra_setup_v2(int tra, cvmx_tra_ctl_t control, cvmx_tra_filt_t filter,
 
     /* Address filtering does not work when IOBDMA filter command is enabled
        because of some caveats.  Disable the IOBDMA filter command. */
-    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX)) 
+    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX))
         && ((filt_cmd.u64 & CVMX_TRA_FILT_IOBDMA) == CVMX_TRA_FILT_IOBDMA)
         && address_mask != 0)
     {
         cvmx_dprintf("The address-based filtering does not work with IOBDMAs, disabling the filter command.\n");
         filt_cmd.u64 &= ~(CVMX_TRA_FILT_IOBDMA);
-    } 
+    }
 
-    /* In OcteonII pass2, the mode bit is added to enable reading the trace 
+    /* In OcteonII pass2, the mode bit is added to enable reading the trace
        buffer data from different registers for lower and upper 64-bit value.
        This bit is reserved in other Octeon models. */
     control.s.rdat_md = 1;
@@ -472,7 +472,7 @@ void cvmx_tra_trig_setup(uint64_t trigger, cvmx_tra_filt_t filter,
 
     /* Address filtering does not work when IOBDMA filter command is enabled
        because of some caveats.  Disable the IOBDMA filter command. */
-    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX)) 
+    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX))
         && ((tra_filt_cmd.u64 & CVMX_TRA_FILT_IOBDMA) == CVMX_TRA_FILT_IOBDMA)
         && address_mask != 0)
     {
@@ -522,7 +522,7 @@ void cvmx_tra_trig_setup_v2(int tra, uint64_t trigger, cvmx_tra_filt_t filter,
 
     /* Address filtering does not work when IOBDMA filter command is enabled
        because of some caveats.  Disable the IOBDMA filter command. */
-    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX)) 
+    if ((OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF7XXX))
         && ((tra_filt_cmd.u64 & CVMX_TRA_FILT_IOBDMA) == CVMX_TRA_FILT_IOBDMA)
         && address_mask != 0)
     {
@@ -589,7 +589,7 @@ cvmx_tra_data_t cvmx_tra_read_v2(int tra_unit)
     result.u128.datahi = cvmx_read_csr(CVMX_TRAX_READ_DAT_HI(tra_unit));
 
     return result;
-} 
+}
 
 /**
  * Decode a TRA entry into human readable output
@@ -724,7 +724,7 @@ void cvmx_tra_decode_text(cvmx_tra_ctl_t tra_ctl, cvmx_tra_data_t data)
                 }
                 else
                         srcId = (data.cmn2.source);
-                
+
                 cvmx_dprintf("0x%016llx%016llx %c%+10d %s %s 0x%016llx%llx\n",
                    (unsigned long long)data.u128.datahi, (unsigned long long)data.u128.data,
                    (data.cmn2.discontinuity) ? 'D' : ' ',
@@ -863,7 +863,7 @@ void cvmx_tra_display(void)
         cvmx_trax_ctl_t tra_ctl;
         cvmx_tra_data_t data[4];
         int tad;
-        do 
+        do
         {
             valid = 0;
             for (tad = 0; tad < CVMX_L2C_TADS; tad++)
@@ -898,7 +898,7 @@ void cvmx_tra_display(void)
                 valid = 1;
             else
                 valid = 0;
-    
+
             if (valid)
                 cvmx_tra_decode_text(tra_ctl, data);
 
@@ -927,12 +927,12 @@ void cvmx_tra_display_v2(int tra_unit)
     valid = 0;
     tra_ctl.u64 = cvmx_read_csr(CVMX_TRAX_CTL(tra_unit));
 
-    do 
+    do
     {
         data = cvmx_tra_read_v2(tra_unit);
         if (data.cmn2.valid)
         {
-            _cvmx_tra_unit = tra_unit; 
+            _cvmx_tra_unit = tra_unit;
             cvmx_tra_decode_text(tra_ctl, data);
             valid = 1;
         }

@@ -159,7 +159,7 @@ ar9300_proc_rx_desc_fast(struct ath_hal *ah, struct ath_desc *ds,
              * (EV 70071)
              */
             phyerr = MS(rxsp->status11, AR_phy_err_code);
-            if ((phyerr == HAL_PHYERR_OFDM_RESTART) && 
+            if ((phyerr == HAL_PHYERR_OFDM_RESTART) &&
                     (rxsp->status11 & AR_post_delim_crc_err)) {
                 rxs->rs_phyerr = 0;
             } else {
@@ -197,7 +197,7 @@ ar9300_proc_rx_desc_fast(struct ath_hal *ah, struct ath_desc *ds,
 
 HAL_STATUS
 ar9300_proc_rx_desc(struct ath_hal *ah, struct ath_desc *ds,
-    u_int32_t pa, struct ath_desc *nds, u_int64_t tsf, 
+    u_int32_t pa, struct ath_desc *nds, u_int64_t tsf,
     struct ath_rx_status *rxs)
 {
     return HAL_ENOTSUPP;
@@ -206,9 +206,9 @@ ar9300_proc_rx_desc(struct ath_hal *ah, struct ath_desc *ds,
 /*
  * rx path in ISR is different for ar9300 from ar5416, and
  * ath_rx_proc_descfast will not be called if edmasupport is true.
- * So this function ath_hal_get_rxkeyidx will not be 
+ * So this function ath_hal_get_rxkeyidx will not be
  * called for ar9300.
- * This function in ar9300's HAL is just a stub one because we need 
+ * This function in ar9300's HAL is just a stub one because we need
  * to link something to the callback interface of the HAL module.
  */
 HAL_STATUS
@@ -216,6 +216,6 @@ ar9300_get_rx_key_idx(struct ath_hal *ah, struct ath_desc *ds, u_int8_t *keyix,
     u_int8_t *status)
 {
     *status = 0;
-    *keyix = HAL_RXKEYIX_INVALID;    
+    *keyix = HAL_RXKEYIX_INVALID;
     return HAL_ENOTSUPP;
 }

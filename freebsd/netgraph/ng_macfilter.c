@@ -4,7 +4,7 @@
  * Copyright (c) 2002 Ericsson Research & Pekka Nikander
  * Copyright (c) 2020 Nick Hibma <n_hibma@FreeBSD.org>
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -30,7 +30,7 @@
  * $FreeBSD$
  */
 
-/* 
+/*
  * MACFILTER NETGRAPH NODE TYPE
  *
  * This node type routes packets from the ether hook to either the default hook
@@ -84,7 +84,7 @@ MALLOC_DEFINE(M_NETGRAPH_MACFILTER, "netgraph_macfilter", "netgraph macfilter no
 #define MAC_S_ARGS(v)           (v)[0], (v)[1], (v)[2], (v)[3], (v)[4], (v)[5]
 
 /*
- * Parse type for struct ngm_macfilter_direct 
+ * Parse type for struct ngm_macfilter_direct
  */
 
 static const struct ng_parse_struct_field macfilter_direct_fields[]
@@ -161,7 +161,7 @@ static const struct ng_parse_type ng_macfilter_hook_type = {
 };
 static const struct ng_parse_array_info ng_macfilter_hooks_array_info = {
     &ng_macfilter_hook_type,
-    macfilter_get_upper_hook_count   
+    macfilter_get_upper_hook_count
 };
 static const struct ng_parse_type ng_macfilter_hooks_array_type = {
     &ng_parse_array_type,
@@ -175,7 +175,7 @@ static const struct ng_parse_type ng_macfilter_hooks_type = {
 };
 
 /*
- * List of commands and how to convert arguments to/from ASCII 
+ * List of commands and how to convert arguments to/from ASCII
  */
 static const struct ng_cmdlist ng_macfilter_cmdlist[] = {
     {
@@ -231,7 +231,7 @@ static const struct ng_cmdlist ng_macfilter_cmdlist[] = {
 };
 
 /*
- * Netgraph node type descriptor 
+ * Netgraph node type descriptor
  */
 static ng_constructor_t	ng_macfilter_constructor;
 static ng_rcvmsg_t	ng_macfilter_rcvmsg;
@@ -253,7 +253,7 @@ static struct ng_type typestruct = {
 };
 NETGRAPH_INIT(macfilter, &typestruct);
 
-/* 
+/*
  * Per MAC address info: the hook where to send to, the address
  * Note: We use the same struct as in the netgraph message, so we can bcopy the
  * array.
@@ -296,7 +296,7 @@ macfilter_mactable_resize(macfilter_p mfp)
     if (n != mfp->mf_mac_allocated) {
         MACFILTER_DEBUG("used=%d allocated=%d->%d",
               mfp->mf_mac_used, mfp->mf_mac_allocated, n);
-        
+
         mf_mac_p mfp_new = realloc(mfp->mf_macs,
                 sizeof(mfp->mf_macs[0])*n,
                 M_NETGRAPH, M_NOWAIT | M_ZERO);
@@ -344,7 +344,7 @@ macfilter_reset_stats(macfilter_p mfp)
 
 /*
  * Count the number of matching macs routed to this hook.
- * 
+ *
  * Note: mtx already held
  */
 static int
@@ -365,8 +365,8 @@ macfilter_mac_count(macfilter_p mfp, int hookid)
  *
  * Returns 0 on failure with *ri set to index before which to insert a new
  * element. Or returns 1 on success with *ri set to the index of the element
- * that matches. 
- * 
+ * that matches.
+ *
  * Note: mtx already held.
  */
 static u_int
@@ -399,7 +399,7 @@ macfilter_find_mac(macfilter_p mfp, const u_char *ether, u_int *ri)
  * default hook), the MAC address is removed from the table. Otherwise it is
  * inserted to the table at a proper location, and the id of the hook is
  * marked.
- * 
+ *
  * Note: mtx already held.
  */
 static int
@@ -426,7 +426,7 @@ macfilter_mactable_change(macfilter_p mfp, u_char *ether, int hookid)
             macfilter_mactable_resize(mfp);
         } else {                                        /* modify */
             mf_macs[i].hookid = hookid;
-        }   
+        }
     } else {
         if (hookid == NG_MACFILTER_HOOK_DEFAULT_ID) {   /* not found */
             /* not present and not inserted */
@@ -480,7 +480,7 @@ macfilter_find_hook(macfilter_p mfp, const char *hookname)
 
     for (hookid = 0; hookid < mfp->mf_upper_cnt; hookid++) {
 	if (mfp->mf_upper[hookid]) {
-            if (strncmp(NG_HOOK_NAME(mfp->mf_upper[hookid]), 
+            if (strncmp(NG_HOOK_NAME(mfp->mf_upper[hookid]),
 		    hookname, NG_HOOKSIZ) == 0) {
                 return hookid;
             }
@@ -513,7 +513,7 @@ macfilter_direct_hookid(macfilter_p mfp, struct ngm_macfilter_direct_hookid *mdi
 	return EINVAL;
     else if (mfp->mf_upper[mdi->hookid] == NULL)
 	return EINVAL;
-    
+
     return macfilter_mactable_change(mfp, mdi->ether, mdi->hookid);
 }
 
@@ -543,7 +543,7 @@ macfilter_ether_output(hook_p hook, macfilter_p mfp, struct mbuf *m, hook_p *nex
         mf_macs[i].packets_out++;
         if (m->m_len > ETHER_HDR_LEN)
             mf_macs[i].bytes_out += m->m_len - ETHER_HDR_LEN;
-    
+
 #ifdef NG_MACFILTER_DEBUG_RECVDATA
         MACFILTER_DEBUG("ether=" MAC_FMT " len=%db->%lldb: bytes: %s -> %s",
             MAC_S_ARGS(ether), m->m_len - ETHER_HDR_LEN, mf_macs[i].bytes_out,
@@ -563,7 +563,7 @@ macfilter_ether_output(hook_p hook, macfilter_p mfp, struct mbuf *m, hook_p *nex
 }
 
 /*
- * Search for the right upper hook, based on the source ethernet 
+ * Search for the right upper hook, based on the source ethernet
  * address.  If not found, pass to the default upper hook.
  */
 static int
@@ -585,7 +585,7 @@ macfilter_ether_input(hook_p hook, macfilter_p mfp, struct mbuf *m, hook_p *next
             mf_macs[i].bytes_in += m->m_len - ETHER_HDR_LEN;
 
         hookid = mf_macs[i].hookid;
-    
+
 #ifdef NG_MACFILTER_DEBUG_RECVDATA
         MACFILTER_DEBUG("ether=" MAC_FMT " len=%db->%lldb: bytes: %s->%s",
             MAC_S_ARGS(ether), m->m_len - ETHER_HDR_LEN, mf_macs[i].bytes_in,
@@ -691,7 +691,7 @@ ng_macfilter_rcvmsg(node_p node, item_p item, hook_p lasthook)
     mtx_lock(&mfp->mtx);
 
     switch (msg->header.typecookie) {
-    case NGM_MACFILTER_COOKIE: 
+    case NGM_MACFILTER_COOKIE:
 	switch (msg->header.cmd) {
 
 	case NGM_MACFILTER_RESET:

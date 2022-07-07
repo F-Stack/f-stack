@@ -384,7 +384,7 @@ dump_nhops_sysctl(int fibnum, int af, struct nhops_dump *nd)
 			nh_map = realloc(nh_map, nh_size * sizeof(struct nhops_map));
 		}
 
-		nh = (struct nhop_external *)(rtm + 1); 
+		nh = (struct nhop_external *)(rtm + 1);
 		nh_map[nh_count].idx = nh->nh_idx;
 		nh_map[nh_count].rtm = rtm;
 		nh_count++;

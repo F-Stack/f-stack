@@ -203,7 +203,7 @@ __FBSDID("$FreeBSD$");
  * Allocate all needed state for table modification. Caller
  * should use `struct mod_item` to store new state in @ta_buf.
  * Up to TA_BUF_SZ (128 bytes) can be stored in @ta_buf.
- * 
+ *
  *
  *
  * -fill_mod: copy some data to new state/
@@ -219,7 +219,7 @@ __FBSDID("$FreeBSD$");
  * -modify: perform final modification.
  *  typedef void (ta_modify)(void *ta_state, struct table_info *ti,
  *      void *ta_buf, uint64_t pflags);
- * OPTIONAL(need_modify), locked (UH+WLOCK). (M_NOWAIT). 
+ * OPTIONAL(need_modify), locked (UH+WLOCK). (M_NOWAIT).
  *
  * Performs all changes necessary to switch to new structures.
  * * Caller should save old pointers to @ta_buf storage.

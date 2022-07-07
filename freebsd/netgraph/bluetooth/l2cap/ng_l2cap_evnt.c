@@ -101,7 +101,7 @@ ng_l2cap_receive(ng_l2cap_con_p con)
 	if (con->rx_pkt->m_pkthdr.len < sizeof(*hdr)) {
 		NG_L2CAP_ERR(
 "%s: %s - invalid L2CAP packet. Packet too small, len=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), 
+			__func__, NG_NODE_NAME(l2cap->node),
 			con->rx_pkt->m_pkthdr.len);
 		error = EMSGSIZE;
 		goto drop;
@@ -120,7 +120,7 @@ ng_l2cap_receive(ng_l2cap_con_p con)
 	if (hdr->length != con->rx_pkt->m_pkthdr.len - sizeof(*hdr)) {
 		NG_L2CAP_ERR(
 "%s: %s - invalid L2CAP packet. Payload length mismatch, length=%d, len=%zd\n",
-			__func__, NG_NODE_NAME(l2cap->node), hdr->length, 
+			__func__, NG_NODE_NAME(l2cap->node), hdr->length,
 			con->rx_pkt->m_pkthdr.len - sizeof(*hdr));
 		error = EMSGSIZE;
 		goto drop;
@@ -260,7 +260,7 @@ ng_l2cap_process_signal_cmd(ng_l2cap_con_p con)
 				hdr->code, hdr->ident, hdr->length);
 
 			/*
-			 * Send L2CAP_CommandRej. Do not really care 
+			 * Send L2CAP_CommandRej. Do not really care
 			 * about the result
 			 */
 
@@ -333,7 +333,7 @@ ng_l2cap_process_lesignal_cmd(ng_l2cap_con_p con)
 		case NG_L2CAP_CMD_PARAM_UPDATE_RESPONSE:
 			ng_l2cap_process_cmd_urs(con, hdr->ident);
 			break;
-			
+
 
 		default:
 			NG_L2CAP_ERR(
@@ -342,7 +342,7 @@ ng_l2cap_process_lesignal_cmd(ng_l2cap_con_p con)
 				hdr->code, hdr->ident, hdr->length);
 
 			/*
-			 * Send L2CAP_CommandRej. Do not really care 
+			 * Send L2CAP_CommandRej. Do not really care
 			 * about the result
 			 */
 
@@ -485,7 +485,7 @@ ng_l2cap_process_con_req(ng_l2cap_con_p con, u_int8_t ident)
 		idtype = NG_L2CAP_L2CA_IDTYPE_BREDR;
 
 	/*
-	 * Create new channel and send L2CA_ConnectInd notification 
+	 * Create new channel and send L2CA_ConnectInd notification
 	 * to the upper layer protocol.
 	 */
 
@@ -504,7 +504,7 @@ ng_l2cap_process_con_req(ng_l2cap_con_p con, u_int8_t ident)
 
 	error = ng_l2cap_l2ca_con_ind(ch);
 	if (error != 0) {
-		send_l2cap_con_rej(con, ident, ch->scid, dcid, 
+		send_l2cap_con_rej(con, ident, ch->scid, dcid,
 			(error == ENOMEM)? NG_L2CAP_NO_RESOURCES :
 				NG_L2CAP_PSM_NOT_SUPPORTED);
 		ng_l2cap_free_chan(ch);
@@ -546,7 +546,7 @@ ng_l2cap_process_con_rsp(ng_l2cap_con_p con, u_int8_t ident)
 	if (cmd == NULL) {
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_ConnectRsp command. ident=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), ident, 
+			__func__, NG_NODE_NAME(l2cap->node), ident,
 			con->con_handle);
 
 		return (ENOENT);
@@ -557,7 +557,7 @@ ng_l2cap_process_con_rsp(ng_l2cap_con_p con, u_int8_t ident)
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_ConnectRsp. " \
 "Invalid channel state, cid=%d, state=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), scid, 
+			__func__, NG_NODE_NAME(l2cap->node), scid,
 			cmd->ch->state);
 		goto reject;
 	}
@@ -566,14 +566,14 @@ ng_l2cap_process_con_rsp(ng_l2cap_con_p con, u_int8_t ident)
 	if (cmd->ch->scid != scid) {
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_ConnectRsp. Channel IDs do not match, scid=%d(%d)\n",
-			 __func__, NG_NODE_NAME(l2cap->node), cmd->ch->scid, 
+			 __func__, NG_NODE_NAME(l2cap->node), cmd->ch->scid,
 			scid);
 		goto reject;
 	}
 
 	/*
 	 * Looks good. We got confirmation from our peer. Now process
-	 * it. First disable RTX timer. Then check the result and send 
+	 * it. First disable RTX timer. Then check the result and send
 	 * notification to the upper layer. If command timeout already
 	 * happened then ignore response.
 	 */
@@ -583,14 +583,14 @@ ng_l2cap_process_con_rsp(ng_l2cap_con_p con, u_int8_t ident)
 
 	if (result == NG_L2CAP_PENDING) {
 		/*
-		 * Our peer wants more time to complete connection. We shall 
+		 * Our peer wants more time to complete connection. We shall
 		 * start ERTX timer and wait. Keep command in the list.
 		 */
 
 		cmd->ch->dcid = dcid;
 		ng_l2cap_command_timeout(cmd, bluetooth_l2cap_ertx_timeout());
 
-		error = ng_l2cap_l2ca_con_rsp(cmd->ch, cmd->token, 
+		error = ng_l2cap_l2ca_con_rsp(cmd->ch, cmd->token,
 				result, status);
 		if (error != 0)
 			ng_l2cap_free_chan(cmd->ch);
@@ -600,7 +600,7 @@ ng_l2cap_process_con_rsp(ng_l2cap_con_p con, u_int8_t ident)
 		if (result == NG_L2CAP_SUCCESS) {
 			/*
 			 * Channel is open. Complete command and move to CONFIG
-			 * state. Since we have sent positive confirmation we 
+			 * state. Since we have sent positive confirmation we
 			 * expect to receive L2CA_Config request from the upper
 			 * layer protocol.
 			 */
@@ -614,10 +614,10 @@ ng_l2cap_process_con_rsp(ng_l2cap_con_p con, u_int8_t ident)
 			/* There was an error, so close the channel */
 			NG_L2CAP_INFO(
 "%s: %s - failed to open L2CAP channel, result=%d, status=%d\n",
-				__func__, NG_NODE_NAME(l2cap->node), result, 
+				__func__, NG_NODE_NAME(l2cap->node), result,
 				status);
 
-		error = ng_l2cap_l2ca_con_rsp(cmd->ch, cmd->token, 
+		error = ng_l2cap_l2ca_con_rsp(cmd->ch, cmd->token,
 				result, status);
 
 		/* XXX do we have to remove the channel on error? */
@@ -733,14 +733,14 @@ ng_l2cap_process_cfg_req(ng_l2cap_con_p con, u_int8_t ident)
 	}
 
 	/*
-	 * Now check and see if we have to respond. If everything was OK then 
-	 * respond contain "C flag" and (if set) we will respond with empty 
-	 * packet and will wait for more options. 
-	 * 
-	 * Other case is that we did not like peer's options and will respond 
-	 * with L2CAP_Config response command with Reject error code. 
-	 * 
-	 * When "respond == 0" than we have received all options and we will 
+	 * Now check and see if we have to respond. If everything was OK then
+	 * respond contain "C flag" and (if set) we will respond with empty
+	 * packet and will wait for more options.
+	 *
+	 * Other case is that we did not like peer's options and will respond
+	 * with L2CAP_Config response command with Reject error code.
+	 *
+	 * When "respond == 0" than we have received all options and we will
 	 * sent L2CA_ConfigInd event to the upper layer protocol.
 	 */
 
@@ -802,7 +802,7 @@ ng_l2cap_process_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident)
 	if (cmd == NULL) {
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_ConfigRsp command. ident=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), ident, 
+			__func__, NG_NODE_NAME(l2cap->node), ident,
 			con->con_handle);
 		NG_FREE_M(m);
 
@@ -814,7 +814,7 @@ ng_l2cap_process_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident)
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_ConfigRsp. " \
 "Channel ID does not match, scid=%d(%d)\n",
-			__func__, NG_NODE_NAME(l2cap->node), cmd->ch->scid, 
+			__func__, NG_NODE_NAME(l2cap->node), cmd->ch->scid,
 			scid);
 		goto reject;
 	}
@@ -831,8 +831,8 @@ ng_l2cap_process_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident)
 
 	/*
 	 * Looks like it is our response, so process it. First parse options,
-	 * then verify C flag. If it is set then we shall expect more 
-	 * configuration options from the peer and we will wait. Otherwise we 
+	 * then verify C flag. If it is set then we shall expect more
+	 * configuration options from the peer and we will wait. Otherwise we
 	 * have received all options and we will send L2CA_ConfigRsp event to
 	 * the upper layer protocol. If command timeout already happened then
 	 * ignore response.
@@ -844,7 +844,7 @@ ng_l2cap_process_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident)
 	}
 
 	for (off = 0; ; ) {
-		error = get_next_l2cap_opt(m, &off, &hdr, &val); 
+		error = get_next_l2cap_opt(m, &off, &hdr, &val);
 		if (error == 0) /* We done with this packet */
 			break;
 		else if (error > 0) { /* Got option */
@@ -869,13 +869,13 @@ ng_l2cap_process_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident)
 			/*
 			 * XXX FIXME What to do here?
 			 *
-			 * This is really BAD :( options packet was broken, or 
-			 * peer sent us option that we did not understand. Let 
+			 * This is really BAD :( options packet was broken, or
+			 * peer sent us option that we did not understand. Let
 			 * upper layer know and do not wait for more options.
 			 */
 
 			NG_L2CAP_ALERT(
-"%s: %s - failed to parse configuration options, error=%d\n", 
+"%s: %s - failed to parse configuration options, error=%d\n",
 				__func__, NG_NODE_NAME(l2cap->node), error);
 
 			result = NG_L2CAP_UNKNOWN;
@@ -897,8 +897,8 @@ ng_l2cap_process_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident)
 		if (error != 0) {
 			/*
 			 * XXX FIXME what to do here? we were not able to send
-			 * response to the upper layer protocol, so for now 
-			 * just close the channel. Send L2CAP_Disconnect to 
+			 * response to the upper layer protocol, so for now
+			 * just close the channel. Send L2CAP_Disconnect to
 			 * remote peer?
 			 */
 
@@ -979,7 +979,7 @@ ng_l2cap_process_discon_req(ng_l2cap_con_p con, u_int8_t ident)
 	}
 
 	/*
-	 * Looks good, so notify upper layer protocol that channel is about 
+	 * Looks good, so notify upper layer protocol that channel is about
 	 * to be disconnected and send L2CA_DisconnectInd message. Then respond
 	 * with L2CAP_DisconnectRsp.
 	 */
@@ -1043,7 +1043,7 @@ ng_l2cap_process_discon_rsp(ng_l2cap_con_p con, u_int8_t ident)
 	if (cmd == NULL) {
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_DisconnectRsp command. ident=%d, con_handle=%d\n",
-			__func__, NG_NODE_NAME(l2cap->node), ident, 
+			__func__, NG_NODE_NAME(l2cap->node), ident,
 			con->con_handle);
 		goto out;
 	}
@@ -1063,13 +1063,13 @@ ng_l2cap_process_discon_rsp(ng_l2cap_con_p con, u_int8_t ident)
 		NG_L2CAP_ERR(
 "%s: %s - unexpected L2CAP_DisconnectRsp. " \
 "Channel IDs do not match, scid=%d(%d), dcid=%d(%d)\n",
-			__func__, NG_NODE_NAME(l2cap->node), cmd->ch->scid, 
+			__func__, NG_NODE_NAME(l2cap->node), cmd->ch->scid,
 			scid, cmd->ch->dcid, dcid);
 		goto out;
 	}
 
 	/*
-	 * Looks like we have successfully disconnected channel, so notify 
+	 * Looks like we have successfully disconnected channel, so notify
 	 * upper layer. If command timeout already happened then ignore
 	 * response.
 	 */
@@ -1256,7 +1256,7 @@ ng_l2cap_process_info_rsp(ng_l2cap_con_p con, u_int8_t ident)
 		switch (cp->type) {
 		case NG_L2CAP_CONNLESS_MTU:
 	    		if (con->rx_pkt->m_pkthdr.len == sizeof(u_int16_t))
-				*mtod(con->rx_pkt, u_int16_t *) = 
+				*mtod(con->rx_pkt, u_int16_t *) =
 					le16toh(*mtod(con->rx_pkt,u_int16_t *));
 			else {
 				cp->result = NG_L2CAP_UNKNOWN; /* XXX */
@@ -1346,7 +1346,7 @@ send_l2cap_con_rej(ng_l2cap_con_p con, u_int8_t ident, u_int16_t scid,
  * Send L2CAP config response
  */
 
-static int 
+static int
 send_l2cap_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident, u_int16_t scid,
 		u_int16_t result, struct mbuf *opt)
 {
@@ -1373,7 +1373,7 @@ send_l2cap_cfg_rsp(ng_l2cap_con_p con, u_int8_t ident, u_int16_t scid,
 	return (0);
 } /* send_l2cap_cfg_rsp */
 
-static int 
+static int
 send_l2cap_param_urs(ng_l2cap_con_p con, u_int8_t ident,
 		     u_int16_t result)
 {
@@ -1440,7 +1440,7 @@ get_next_l2cap_opt(struct mbuf *m, int *off, ng_l2cap_cfg_opt_p hdr,
 		break;
 
 	case NG_L2CAP_OPT_FLUSH_TIMO:
-		if (hdr->length != NG_L2CAP_OPT_FLUSH_TIMO_SIZE || 
+		if (hdr->length != NG_L2CAP_OPT_FLUSH_TIMO_SIZE ||
 		    len < hdr->length)
 			return (-2);
 
@@ -1455,7 +1455,7 @@ get_next_l2cap_opt(struct mbuf *m, int *off, ng_l2cap_cfg_opt_p hdr,
 
 		m_copydata(m, *off, NG_L2CAP_OPT_QOS_SIZE, (caddr_t) val);
 		val->flow.token_rate = le32toh(val->flow.token_rate);
-		val->flow.token_bucket_size = 
+		val->flow.token_bucket_size =
 				le32toh(val->flow.token_bucket_size);
 		val->flow.peak_bandwidth = le32toh(val->flow.peak_bandwidth);
 		val->flow.latency = le32toh(val->flow.latency);

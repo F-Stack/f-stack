@@ -13,7 +13,7 @@ int cpu_status(struct ff_top_args *top)
 {
     int            ret;
     struct ff_msg *msg, *retmsg = NULL;
-    
+
     msg = ff_ipc_msg_alloc();
     if (msg == NULL) {
         errno = ENOMEM;

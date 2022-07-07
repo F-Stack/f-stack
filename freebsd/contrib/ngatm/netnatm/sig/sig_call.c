@@ -206,7 +206,7 @@ uni_create_new_call(struct uni *uni, uint32_t cookie)
 /*
  * Assume timers are all stopped. Memory is not actually freed unless
  * the reference count drops to 0.
- * This function is assumed to remove the call from the parent UNI's 
+ * This function is assumed to remove the call from the parent UNI's
  * call queue.
  */
 void
@@ -286,7 +286,7 @@ reset_all_timers(struct call *c)
 }
 
 /*
- * Initiate call clearing because of a problem. This is label D in 
+ * Initiate call clearing because of a problem. This is label D in
  * the SDLs and is called from many places.
  * The call must have constructed the cause IE in struct call.
  *
@@ -1932,7 +1932,7 @@ unx_status(struct call *c, struct uni_msg *m, struct uni_all *u)
 
 	uni_msg_destroy(m);
 	UNI_FREE(u);
-	
+
 	clear_callD(c);
 }
 
@@ -2118,7 +2118,7 @@ unx_link_release_indication(struct call *c)
 	if (c->type == CALL_LEAF || c->type == CALL_ROOT)
 		TAILQ_FOREACH(p, &c->parties, link)
 			uni_enq_party(p, SIGP_RELEASE_COMPL, 0, NULL, NULL);
-	
+
 	if ((conf = ALLOC_API(struct uniapi_release_confirm, api)) != NULL) {
 		conf->release.hdr.cref.cref = c->cref;
 		conf->release.hdr.cref.flag = c->mine;

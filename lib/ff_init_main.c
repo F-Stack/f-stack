@@ -183,7 +183,7 @@ mi_startup(void)
     int verbose;
 #endif
 
-    if (sysinit == NULL) {        
+    if (sysinit == NULL) {
         sysinit = SET_BEGIN(sysinit_set);
         sysinit_end = SET_LIMIT(sysinit_set);
         size = (uintptr_t)sysinit_end - (uintptr_t)sysinit;

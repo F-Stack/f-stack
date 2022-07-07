@@ -99,7 +99,7 @@
 #define LINUX_IP_DROP_MEMBERSHIP    36
 
 #define LINUX_IPV6_V6ONLY           26
-#define LINUX_IPV6_RECVPKTINFO      49  
+#define LINUX_IPV6_RECVPKTINFO      49
 
 #define LINUX_TCP_NODELAY     1
 #define LINUX_TCP_MAXSEG      2
@@ -418,7 +418,7 @@ ip6_opt_convert(int optname)
         case LINUX_IPV6_V6ONLY:
             return IPV6_V6ONLY;
         case LINUX_IPV6_RECVPKTINFO:
-            return IPV6_RECVPKTINFO;    
+            return IPV6_RECVPKTINFO;
         default:
             return optname;
     }
@@ -490,7 +490,7 @@ linux2freebsd_opt(int level, int optname)
         case IPPROTO_IP:
             return ip_opt_convert(optname);
         case IPPROTO_IPV6:
-            return ip6_opt_convert(optname);    
+            return ip6_opt_convert(optname);
         case IPPROTO_TCP:
             return tcp_opt_convert(optname);
         default:
@@ -681,7 +681,7 @@ ff_close(int fd)
 {
     int rc;
 
-    if ((rc = kern_close(curthread, fd))) 
+    if ((rc = kern_close(curthread, fd)))
         goto kern_fail;
 
     return (rc);
@@ -696,7 +696,7 @@ ff_read(int fd, void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
-    
+
     if (nbytes > INT_MAX) {
         rc = EINVAL;
         goto kern_fail;
@@ -763,7 +763,7 @@ ff_write(int fd, const void *buf, size_t nbytes)
     if ((rc = kern_writev(curthread, fd, &auio)))
         goto kern_fail;
     rc = curthread->td_retval[0];
-    
+
     return (rc);
 kern_fail:
     ff_os_errno(rc);
@@ -786,7 +786,7 @@ ff_writev(int fd, const struct iovec *iov, int iovcnt)
     if ((rc = kern_writev(curthread, fd, &auio)))
         goto kern_fail;
     rc = curthread->td_retval[0];
-    
+
     return (rc);
 kern_fail:
     ff_os_errno(rc);
@@ -947,7 +947,7 @@ ff_fcntl(int fd, int cmd, ...)
     va_start(ap, cmd);
 
     argp = va_arg(ap, uintptr_t);
-    va_end(ap);    
+    va_end(ap);
 
     if ((rc = kern_fcntl(curthread, fd, cmd, argp)))
         goto kern_fail;
@@ -978,11 +978,11 @@ ff_accept(int s, struct linux_sockaddr * addr,
 
     if (addrlen)
         *addrlen = pf->sa_len;
-    
+
     if(pf != NULL)
         free(pf, M_SONAME);
     return (rc);
-    
+
 kern_fail:
     if(pf != NULL)
         free(pf, M_SONAME);
@@ -1010,7 +1010,7 @@ kern_fail:
 int
 ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen)
 {
-    int rc;    
+    int rc;
     struct sockaddr_storage bsdaddr;
     linux2freebsd_sockaddr(addr, addrlen, (struct sockaddr *)&bsdaddr);
 
@@ -1055,7 +1055,7 @@ ff_getpeername(int s, struct linux_sockaddr * name,
     if(pf != NULL)
         free(pf, M_SONAME);
     return (rc);
-    
+
 kern_fail:
     if(pf != NULL)
         free(pf, M_SONAME);
@@ -1087,7 +1087,7 @@ kern_fail:
     return (-1);
 }
 
-int    
+int
 ff_shutdown(int s, int how)
 {
     int rc;
@@ -1112,7 +1112,7 @@ ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
     int rc;
     size_t retval;
 
-    rc = userland_sysctl(curthread, __DECONST(int *, name), namelen, oldp, oldlenp, 
+    rc = userland_sysctl(curthread, __DECONST(int *, name), namelen, oldp, oldlenp,
         1, __DECONST(void *, newp), newlen, &retval, 0);
     if (rc)
         goto kern_fail;
@@ -1224,8 +1224,8 @@ kevent_copyin(void *arg, struct kevent *kevp, int count)
 }
 
 int
-ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges, 
-    void *eventlist, int nevents, const struct timespec *timeout, 
+ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
+    void *eventlist, int nevents, const struct timespec *timeout,
     void (*do_each)(void **, struct kevent *))
 {
     int rc;
@@ -1249,7 +1249,7 @@ ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
         kevent_copyin
     };
 
-    if ((rc = kern_kevent(curthread, kq, nchanges, nevents, &k_ops, 
+    if ((rc = kern_kevent(curthread, kq, nchanges, nevents, &k_ops,
             &ts)))
         goto kern_fail;
 
@@ -1261,7 +1261,7 @@ kern_fail:
 }
 
 int
-ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
+ff_kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents, const struct timespec *timeout)
 {
     return ff_kevent_do_each(kq, changelist, nchanges, eventlist, nevents, timeout, NULL);

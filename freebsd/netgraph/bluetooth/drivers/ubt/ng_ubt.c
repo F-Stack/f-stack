@@ -36,7 +36,7 @@
 /*
  * NOTE: ng_ubt2 driver has a split personality. On one side it is
  * a USB device driver and on the other it is a Netgraph node. This
- * driver will *NOT* create traditional /dev/ enties, only Netgraph 
+ * driver will *NOT* create traditional /dev/ enties, only Netgraph
  * node.
  *
  * NOTE ON LOCKS USED: ng_ubt2 drives uses 2 locks (mutexes)
@@ -44,7 +44,7 @@
  * 1) sc_if_mtx - lock for device's interface #0 and #1. This lock is used
  *    by USB for any USB request going over device's interface #0 and #1,
  *    i.e. interrupt, control, bulk and isoc. transfers.
- * 
+ *
  * 2) sc_ng_mtx - this lock is used to protect shared (between USB, Netgraph
  *    and Taskqueue) data, such as outgoing mbuf queues, task flags and hook
  *    pointer. This lock *SHOULD NOT* be grabbed for a long time. In fact,
@@ -265,7 +265,7 @@ static int		ubt_isoc_read_one_frame(struct usb_xfer *, int);
 
 /*
  * USB config
- * 
+ *
  * The following desribes usb transfers that could be submitted on USB device.
  *
  * Interface 0 on the USB device must present the following endpoints
@@ -385,7 +385,7 @@ static const struct usb_config		ubt_config[UBT_N_TRANSFER] =
  * where VENDOR_ID and PRODUCT_ID are hex numbers.
  */
 
-static const STRUCT_USB_HOST_ID ubt_ignore_devs[] = 
+static const STRUCT_USB_HOST_ID ubt_ignore_devs[] =
 {
 	/* AVM USB Bluetooth-Adapter BlueFritz! v1.0 */
 	{ USB_VPI(USB_VENDOR_AVM, 0x2200, 0) },
@@ -632,7 +632,7 @@ ubt_attach(device_t dev)
 	sc->sc_dev = dev;
 	sc->sc_debug = NG_UBT_WARN_LEVEL;
 
-	/* 
+	/*
 	 * Create Netgraph node
 	 */
 
@@ -695,12 +695,12 @@ ubt_attach(device_t dev)
 	j = 0;
 	ed = NULL;
 
-	/* 
+	/*
 	 * Search through all the descriptors looking for the largest
 	 * packet size:
 	 */
 	while ((ed = (struct usb_endpoint_descriptor *)usb_desc_foreach(
-	    usbd_get_config_descriptor(uaa->device), 
+	    usbd_get_config_descriptor(uaa->device),
 	    (struct usb_descriptor *)ed))) {
 		if ((ed->bDescriptorType == UDESC_INTERFACE) &&
 		    (ed->bLength >= sizeof(*id))) {
@@ -841,7 +841,7 @@ submit_next:
 	}
 } /* ubt_probe_intr_callback */
 
-/* 
+/*
  * Called when outgoing control request (HCI command) has completed, i.e.
  * HCI command was sent to the device.
  * USB context.
@@ -914,7 +914,7 @@ send_next:
 	}
 } /* ubt_ctrl_write_callback */
 
-/* 
+/*
  * Called when incoming interrupt transfer (HCI event) has completed, i.e.
  * HCI event was received from the device.
  * USB context.
@@ -1262,7 +1262,7 @@ ubt_isoc_read_one_frame(struct usb_xfer *xfer, int frame_no)
 			want = sizeof(ng_hci_scodata_pkt_t);
 		} else {
 			/*
-			 * Check if we have SCO header and if so 
+			 * Check if we have SCO header and if so
 			 * adjust amount of data we want
 			 */
 			got = m->m_pkthdr.len;
@@ -1444,12 +1444,12 @@ ubt_fwd_mbuf_up(ubt_softc_p sc, struct mbuf **m)
 
 /****************************************************************************
  ****************************************************************************
- **                                 Glue 
+ **                                 Glue
  ****************************************************************************
  ****************************************************************************/
 
 /*
- * Schedule glue task. Should be called with sc_ng_mtx held. 
+ * Schedule glue task. Should be called with sc_ng_mtx held.
  * Netgraph context.
  */
 
@@ -1923,7 +1923,7 @@ ng_ubt_rcvdata(hook_p hook, item_p item)
 	if (NG_BT_MBUFQ_FULL(q)) {
 		NG_BT_MBUFQ_DROP(q);
 		UBT_NG_UNLOCK(sc);
-		
+
 		UBT_ERR(sc, "Dropping HCI frame 0x%02x, len=%d. Queue full\n",
 			*mtod(m, uint8_t *), m->m_pkthdr.len);
 

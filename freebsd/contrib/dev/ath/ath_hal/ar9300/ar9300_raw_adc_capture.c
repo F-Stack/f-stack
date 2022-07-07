@@ -14,13 +14,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 /*
- * Copyright (c) 2002-2009 Atheros Communications, Inc. 
+ * Copyright (c) 2002-2009 Atheros Communications, Inc.
  * All Rights Reserved.
- * 
+ *
  * Copyright (c) 2011 Qualcomm Atheros, Inc.
  * All Rights Reserved.
  * Qualcomm Atheros Confidential and Proprietary.
- * 
+ *
  */
 
 

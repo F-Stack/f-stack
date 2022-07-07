@@ -114,7 +114,7 @@ int __cvmx_helper_loop_enable(int interface)
 
     num_ports = __cvmx_helper_get_num_ipd_ports(interface);
 
-    /* 
+    /*
      * We need to disable length checking so packet < 64 bytes and jumbo
      * frames don't get errors
      */

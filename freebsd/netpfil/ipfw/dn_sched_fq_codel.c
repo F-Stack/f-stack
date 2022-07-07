@@ -1,11 +1,11 @@
-/* 
+/*
  * FQ_Codel - The FlowQueue-Codel scheduler/AQM
  *
  * $FreeBSD$
- * 
+ *
  * Copyright (C) 2016 Centre for Advanced Internet Architectures,
  *  Swinburne University of Technology, Melbourne, Australia.
- * Portions of this code were made possible in part by a gift from 
+ * Portions of this code were made possible in part by a gift from
  *  The Comcast Innovation Fund.
  * Implemented by Rasool Al-Saadi <ralsaadi@swin.edu.au>
  *
@@ -71,9 +71,9 @@
 #include <dn_test.h>
 #endif
 
-/* NOTE: In fq_codel module, we reimplements CoDel AQM functions 
- * because fq_codel use different flows (sub-queues) structure and 
- * dn_queue includes many variables not needed by a flow (sub-queue 
+/* NOTE: In fq_codel module, we reimplements CoDel AQM functions
+ * because fq_codel use different flows (sub-queues) structure and
+ * dn_queue includes many variables not needed by a flow (sub-queue
  * )i.e. avoid extra overhead (88 bytes vs 208 bytes).
  * Also, CoDel functions manages stats of sub-queues as well as the main queue.
  */
@@ -83,7 +83,7 @@
 static struct dn_alg fq_codel_desc;
 
 /* fq_codel default parameters including codel */
-struct dn_sch_fq_codel_parms 
+struct dn_sch_fq_codel_parms
 fq_codel_sysctl = {{5000 * AQM_TIME_1US, 100000 * AQM_TIME_1US,
 	CODEL_ECN_ENABLED}, 1024, 10240, 1514};
 
@@ -146,7 +146,7 @@ SYSCTL_PROC(_net_inet_ip_dummynet_fqcodel, OID_AUTO, interval,
 SYSCTL_UINT(_net_inet_ip_dummynet_fqcodel, OID_AUTO, quantum,
 	CTLFLAG_RW, &fq_codel_sysctl.quantum, 1514, "FQ_CoDel quantum");
 SYSCTL_UINT(_net_inet_ip_dummynet_fqcodel, OID_AUTO, flows,
-	CTLFLAG_RW, &fq_codel_sysctl.flows_cnt, 1024, 
+	CTLFLAG_RW, &fq_codel_sysctl.flows_cnt, 1024,
 	"Number of queues for FQ_CoDel");
 SYSCTL_UINT(_net_inet_ip_dummynet_fqcodel, OID_AUTO, limit,
 	CTLFLAG_RW, &fq_codel_sysctl.limit, 10240, "FQ_CoDel queues size limit");
@@ -171,7 +171,7 @@ codel_drop_head(struct fq_codel_flow *q, struct fq_codel_si *si)
 }
 
 /* Enqueue a packet 'm' to a queue 'q' and add timestamp to that packet.
- * Return 1 when unable to add timestamp, otherwise return 0 
+ * Return 1 when unable to add timestamp, otherwise return 0
  */
 static int
 codel_enqueue(struct fq_codel_flow *q, struct mbuf *m, struct fq_codel_si *si)
@@ -190,7 +190,7 @@ codel_enqueue(struct fq_codel_flow *q, struct mbuf *m, struct fq_codel_si *si)
 		mtag = m_tag_alloc(MTAG_ABI_COMPAT, DN_AQM_MTAG_TS, sizeof(aqm_time_t),
 			M_NOWAIT);
 	if (mtag == NULL) {
-		m_freem(m); 
+		m_freem(m);
 		goto drop;
 	}
 	*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
@@ -208,7 +208,7 @@ drop:
 
 /*
  * Classify a packet to queue number using Jenkins hash function.
- * Return: queue number 
+ * Return: queue number
  * the input of the hash are protocol no, perturbation, src IP, dst IP,
  * src port, dst port,
  */
@@ -252,7 +252,7 @@ fq_codel_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_codel_si *si)
 
 		hash = jenkins_hash(tuple, 41, HASHINIT) %  fcount;
 		return hash;
-	} 
+	}
 //#endif
 
 	/* IPv4 */
@@ -285,8 +285,8 @@ fq_codel_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_codel_si *si)
  * Enqueue a packet into an appropriate queue according to
  * FQ_CODEL algorithm.
  */
-static int 
-fq_codel_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q, 
+static int
+fq_codel_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	struct mbuf *m)
 {
 	struct fq_codel_si *si;
@@ -303,11 +303,11 @@ fq_codel_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	 /* classify a packet to queue number*/
 	idx = fq_codel_classify_flow(m, param->flows_cnt, si);
 	/* enqueue packet into appropriate queue using CoDel AQM.
-	 * Note: 'codel_enqueue' function returns 1 only when it unable to 
+	 * Note: 'codel_enqueue' function returns 1 only when it unable to
 	 * add timestamp to packet (no limit check)*/
 	drop = codel_enqueue(&si->flows[idx], m, si);
 
-	/* codel unable to timestamp a packet */ 
+	/* codel unable to timestamp a packet */
 	if (drop)
 		return 1;
 
@@ -324,7 +324,7 @@ fq_codel_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	}
 
 	/* check the limit for all queues and remove a packet from the
-	 * largest one 
+	 * largest one
 	 */
 	if (mainq->ni.length > schk->cfg.limit) { D("over limit");
 		/* find first active flow */
@@ -333,7 +333,7 @@ fq_codel_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 				break;
 		if (maxidx < schk->cfg.flows_cnt) {
 			/* find the largest sub- queue */
-			for (i = maxidx + 1; i < schk->cfg.flows_cnt; i++) 
+			for (i = maxidx + 1; i < schk->cfg.flows_cnt; i++)
 				if (si->flows[i].active && si->flows[i].stats.length >
 					si->flows[maxidx].stats.length)
 					maxidx = i;
@@ -372,7 +372,7 @@ fq_codel_dequeue(struct dn_sch_inst *_si)
 			fq_codel_flowlist = &si->newflows;
 
 		/* Both new and old queue lists are empty, return NULL */
-		if (STAILQ_EMPTY(fq_codel_flowlist)) 
+		if (STAILQ_EMPTY(fq_codel_flowlist))
 			return NULL;
 
 		f = STAILQ_FIRST(fq_codel_flowlist);
@@ -386,14 +386,14 @@ fq_codel_dequeue(struct dn_sch_inst *_si)
 				 f->deficit += param->quantum;
 				 STAILQ_REMOVE_HEAD(fq_codel_flowlist, flowchain);
 				 STAILQ_INSERT_TAIL(&si->oldflows, f, flowchain);
-			 } else 
+			 } else
 				 break;
 
 			f = STAILQ_FIRST(fq_codel_flowlist);
 		}
-		
+
 		/* the new flows list is empty, try old flows list */
-		if (STAILQ_EMPTY(fq_codel_flowlist)) 
+		if (STAILQ_EMPTY(fq_codel_flowlist))
 			continue;
 
 		/* Dequeue a packet from the selected flow */
@@ -401,7 +401,7 @@ fq_codel_dequeue(struct dn_sch_inst *_si)
 
 		/* Codel did not return a packet */
 		if (!mbuf) {
-			/* If the selected flow belongs to new flows list, then move 
+			/* If the selected flow belongs to new flows list, then move
 			 * it to the tail of old flows list. Otherwise, deactivate it and
 			 * remove it from the old list and
 			 */
@@ -416,7 +416,7 @@ fq_codel_dequeue(struct dn_sch_inst *_si)
 			continue;
 		}
 
-		/* we have a packet to return, 
+		/* we have a packet to return,
 		 * update flow deficit and return the packet*/
 		f->deficit -= mbuf->m_pkthdr.len;
 		return mbuf;
@@ -458,7 +458,7 @@ fq_codel_new_sched(struct dn_sch_inst *_si)
 	    sizeof(struct fq_codel_flow), M_DUMMYNET, M_NOWAIT | M_ZERO);
 	if (si->flows == NULL) {
 		D("cannot allocate memory for fq_codel configuration parameters");
-		return ENOMEM ; 
+		return ENOMEM ;
 	}
 
 	/* init perturbation for this si */
@@ -547,7 +547,7 @@ fq_codel_config(struct dn_schk *_schk)
 			fqc_cfg->flows_cnt = ep->par[5];
 
 		/* Bound the configurations */
-		fqc_cfg->ccfg.target = BOUND_VAR(fqc_cfg->ccfg.target, 1 , 
+		fqc_cfg->ccfg.target = BOUND_VAR(fqc_cfg->ccfg.target, 1 ,
 			5 * AQM_TIME_1S); ;
 		fqc_cfg->ccfg.interval = BOUND_VAR(fqc_cfg->ccfg.interval, 1,
 			100 * AQM_TIME_1S);
@@ -566,7 +566,7 @@ fq_codel_config(struct dn_schk *_schk)
  * Return fq_codel scheduler configurations
  * the configurations for the scheduler is passed to userland.
  */
-static int 
+static int
 fq_codel_getconfig (struct dn_schk *_schk, struct dn_extra_parms *ep) {
 	struct fq_codel_schk *schk = (struct fq_codel_schk *)(_schk+1);
 	struct dn_sch_fq_codel_parms *fqc_cfg;

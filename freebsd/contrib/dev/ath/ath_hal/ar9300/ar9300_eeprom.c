@@ -171,7 +171,7 @@ ar9300_eeprom_restore_something(struct ath_hal *ah, ar9300_eeprom_t *mptr,
     ar9300_eeprom_t *dptr;
     int nptr;
 
-    nptr = -1; 
+    nptr = -1;
     /*
      * if we didn't find any blocks in the memory,
      * put the prefered template in place
@@ -182,7 +182,7 @@ ar9300_eeprom_restore_something(struct ath_hal *ah, ar9300_eeprom_t *mptr,
         dptr = ar9300_eeprom_struct_default_find_by_id(
             Ar9300_eeprom_template_preference);
         if (dptr != 0) {
-            OS_MEMCPY(mptr, dptr, mdata_size);    
+            OS_MEMCPY(mptr, dptr, mdata_size);
             nptr = 0;
         }
     }
@@ -196,7 +196,7 @@ ar9300_eeprom_restore_something(struct ath_hal *ah, ar9300_eeprom_t *mptr,
         dptr = ar9300_eeprom_struct_default_find_by_id(
             ar9300_eeprom_template_default);
         if (dptr != 0) {
-            OS_MEMCPY(mptr, dptr, mdata_size);    
+            OS_MEMCPY(mptr, dptr, mdata_size);
             nptr = 0;
         }
     }
@@ -210,7 +210,7 @@ ar9300_eeprom_restore_something(struct ath_hal *ah, ar9300_eeprom_t *mptr,
         for (it = ar9300_eeprom_struct_default_many() - 1; it >= 0; it--) {
             dptr = ar9300_eeprom_struct_default(it);
             if (dptr != 0) {
-                OS_MEMCPY(mptr, dptr, mdata_size);    
+                OS_MEMCPY(mptr, dptr, mdata_size);
                 nptr = 0;
                 break;
             }
@@ -388,7 +388,7 @@ ar9300_eeprom_attach(struct ath_hal *ah)
 
 #ifdef UNUSED
 #endif
-    
+
     if (!ar9300_fill_eeprom(ah)) {
         return HAL_EIO;
     }
@@ -510,7 +510,7 @@ ar9300_eeprom_get(struct ath_hal_9300 *ahp, EEPROM_PARAM param)
         return p_base->rx_gain_type;
 #endif
     case EEP_DRIVE_STRENGTH:
-#define AR9300_EEP_BASE_DRIVE_STRENGTH    0x1 
+#define AR9300_EEP_BASE_DRIVE_STRENGTH    0x1
         return p_base->misc_configuration & AR9300_EEP_BASE_DRIVE_STRENGTH;
     case EEP_INTERNAL_REGULATOR:
         /* Bit 4 is internal regulator flag */
@@ -686,13 +686,13 @@ ar9300_eeprom_get_legacy_trgt_pwr(struct ath_hal *ah, u_int16_t rate_index,
 {
     u_int16_t            num_piers, i;
     int32_t              target_power_array[OSPREY_NUM_5G_20_TARGET_POWERS];
-    int32_t              freq_array[OSPREY_NUM_5G_20_TARGET_POWERS]; 
+    int32_t              freq_array[OSPREY_NUM_5G_20_TARGET_POWERS];
     u_int8_t             *p_freq_bin;
     ar9300_eeprom_t      *eep = &AH9300(ah)->ah_eeprom;
     CAL_TARGET_POWER_LEG *p_eeprom_target_pwr;
 
     if (is_2ghz) {
-        num_piers = OSPREY_NUM_2G_20_TARGET_POWERS;    
+        num_piers = OSPREY_NUM_2G_20_TARGET_POWERS;
         p_eeprom_target_pwr = eep->cal_target_power_2g;
         p_freq_bin = eep->cal_target_freqbin_2g;
     } else {
@@ -722,13 +722,13 @@ ar9300_eeprom_get_ht20_trgt_pwr(struct ath_hal *ah, u_int16_t rate_index,
 {
     u_int16_t               num_piers, i;
     int32_t                 target_power_array[OSPREY_NUM_5G_20_TARGET_POWERS];
-    int32_t                 freq_array[OSPREY_NUM_5G_20_TARGET_POWERS]; 
+    int32_t                 freq_array[OSPREY_NUM_5G_20_TARGET_POWERS];
     u_int8_t                *p_freq_bin;
     ar9300_eeprom_t         *eep = &AH9300(ah)->ah_eeprom;
     OSP_CAL_TARGET_POWER_HT *p_eeprom_target_pwr;
 
     if (is_2ghz) {
-        num_piers = OSPREY_NUM_2G_20_TARGET_POWERS;    
+        num_piers = OSPREY_NUM_2G_20_TARGET_POWERS;
         p_eeprom_target_pwr = eep->cal_target_power_2g_ht20;
         p_freq_bin = eep->cal_target_freqbin_2g_ht20;
     } else {
@@ -758,13 +758,13 @@ ar9300_eeprom_get_ht40_trgt_pwr(struct ath_hal *ah, u_int16_t rate_index,
 {
     u_int16_t               num_piers, i;
     int32_t                 target_power_array[OSPREY_NUM_5G_40_TARGET_POWERS];
-    int32_t                 freq_array[OSPREY_NUM_5G_40_TARGET_POWERS]; 
+    int32_t                 freq_array[OSPREY_NUM_5G_40_TARGET_POWERS];
     u_int8_t                *p_freq_bin;
     ar9300_eeprom_t         *eep = &AH9300(ah)->ah_eeprom;
     OSP_CAL_TARGET_POWER_HT *p_eeprom_target_pwr;
 
     if (is_2ghz) {
-        num_piers = OSPREY_NUM_2G_40_TARGET_POWERS;    
+        num_piers = OSPREY_NUM_2G_40_TARGET_POWERS;
         p_eeprom_target_pwr = eep->cal_target_power_2g_ht40;
         p_freq_bin = eep->cal_target_freqbin_2g_ht40;
     } else {
@@ -794,7 +794,7 @@ ar9300_eeprom_get_cck_trgt_pwr(struct ath_hal *ah, u_int16_t rate_index,
 {
     u_int16_t            num_piers = OSPREY_NUM_2G_CCK_TARGET_POWERS, i;
     int32_t              target_power_array[OSPREY_NUM_2G_CCK_TARGET_POWERS];
-    int32_t              freq_array[OSPREY_NUM_2G_CCK_TARGET_POWERS]; 
+    int32_t              freq_array[OSPREY_NUM_2G_CCK_TARGET_POWERS];
     ar9300_eeprom_t      *eep = &AH9300(ah)->ah_eeprom;
     u_int8_t             *p_freq_bin = eep->cal_target_freqbin_cck;
     CAL_TARGET_POWER_LEG *p_eeprom_target_pwr = eep->cal_target_power_cck;
@@ -818,8 +818,8 @@ ar9300_eeprom_get_cck_trgt_pwr(struct ath_hal *ah, u_int16_t rate_index,
  * Set tx power registers to array of values passed in
  */
 int
-ar9300_transmit_power_reg_write(struct ath_hal *ah, u_int8_t *p_pwr_array) 
-{   
+ar9300_transmit_power_reg_write(struct ath_hal *ah, u_int8_t *p_pwr_array)
+{
 #define POW_SM(_r, _s)     (((_r) & 0x3f) << (_s))
     /* make sure forced gain is not set */
 #if 0
@@ -847,7 +847,7 @@ ar9300_transmit_power_reg_write(struct ath_hal *ah, u_int8_t *p_pwr_array)
     );
 
     /* Write the CCK power per rate set */
-    /* 1L (LSB), reserved, 2L, 2S (MSB) */  
+    /* 1L (LSB), reserved, 2L, 2S (MSB) */
     OS_REG_WRITE(ah, 0xa3c8,
         POW_SM(p_pwr_array[ALL_TARGET_LEGACY_1L_5L], 24)
           | POW_SM(p_pwr_array[ALL_TARGET_LEGACY_1L_5L],  16)
@@ -879,7 +879,7 @@ ar9300_transmit_power_reg_write(struct ath_hal *ah, u_int8_t *p_pwr_array)
           | POW_SM(p_pwr_array[ALL_TARGET_HT20_1_3_9_11_17_19],  8)
           | POW_SM(p_pwr_array[ALL_TARGET_HT20_0_8_16],   0)
     );
-    
+
     /* 6 (LSB), 7, 12, 13 (MSB) */
     OS_REG_WRITE(ah, 0xa3d4,
         POW_SM(p_pwr_array[ALL_TARGET_HT20_13], 24)
@@ -904,7 +904,7 @@ ar9300_transmit_power_reg_write(struct ath_hal *ah, u_int8_t *p_pwr_array)
           | POW_SM(p_pwr_array[ALL_TARGET_HT20_23],  8)
           | POW_SM(p_pwr_array[ALL_TARGET_HT20_22],   0)
     );
-    
+
     /* Write the HT40 power per rate set */
     /* correct PAR difference between HT40 and HT20/LEGACY */
     /* 0/8/16 (LSB), 1-3/9-11/17-19, 4, 5 (MSB) */
@@ -932,12 +932,12 @@ ar9300_transmit_power_reg_write(struct ath_hal *ah, u_int8_t *p_pwr_array)
     );
 
     return 0;
-#undef POW_SM    
+#undef POW_SM
 }
 
 static void
 ar9300_selfgen_tpc_reg_write(struct ath_hal *ah, const struct ieee80211_channel *chan,
-                             u_int8_t *p_pwr_array) 
+                             u_int8_t *p_pwr_array)
 {
     u_int32_t tpc_reg_val;
 
@@ -946,7 +946,7 @@ ar9300_selfgen_tpc_reg_write(struct ath_hal *ah, const struct ieee80211_channel 
      * enabled the target power value used with self generated frames will be
      * MIN( TPC reg, BB_powertx_rate register)
      */
-    
+
     if (IEEE80211_IS_CHAN_2GHZ(chan)) {
         tpc_reg_val = (SM(p_pwr_array[ALL_TARGET_LEGACY_1L_5L], AR_TPC_ACK) |
                        SM(p_pwr_array[ALL_TARGET_LEGACY_1L_5L], AR_TPC_CTS) |
@@ -968,7 +968,7 @@ ar9300_set_target_power_from_eeprom(struct ath_hal *ah, u_int16_t freq,
     /* hard code for now, need to get from eeprom struct */
     u_int8_t ht40_power_inc_for_pdadc = 0;
     HAL_BOOL  is_2ghz = 0;
-    
+
     if (freq < 4000) {
         is_2ghz = 1;
     }
@@ -1114,7 +1114,7 @@ ar9300_set_target_power_from_eeprom(struct ath_hal *ah, u_int16_t freq,
         }
     }
 #endif
-} 
+}
 
 u_int16_t *ar9300_regulatory_domain_get(struct ath_hal *ah)
 {
@@ -1123,28 +1123,28 @@ u_int16_t *ar9300_regulatory_domain_get(struct ath_hal *ah)
 }
 
 
-int32_t 
+int32_t
 ar9300_eeprom_write_enable_gpio_get(struct ath_hal *ah)
 {
     ar9300_eeprom_t *eep = &AH9300(ah)->ah_eeprom;
     return eep->base_eep_header.eeprom_write_enable_gpio;
 }
 
-int32_t 
+int32_t
 ar9300_wlan_disable_gpio_get(struct ath_hal *ah)
 {
     ar9300_eeprom_t *eep = &AH9300(ah)->ah_eeprom;
     return eep->base_eep_header.wlan_disable_gpio;
 }
 
-int32_t 
+int32_t
 ar9300_wlan_led_gpio_get(struct ath_hal *ah)
 {
     ar9300_eeprom_t *eep = &AH9300(ah)->ah_eeprom;
     return eep->base_eep_header.wlan_led_gpio;
 }
 
-int32_t 
+int32_t
 ar9300_rx_band_select_gpio_get(struct ath_hal *ah)
 {
     ar9300_eeprom_t *eep = &AH9300(ah)->ah_eeprom;
@@ -1217,7 +1217,7 @@ ar9300_noise_floor_cal_or_power_get(struct ath_hal *ah, int32_t frequency,
 int ar9300_get_rx_nf_offset(struct ath_hal *ah, struct ieee80211_channel *chan, int8_t *nf_pwr, int8_t *nf_cal) {
     HAL_CHANNEL_INTERNAL *ichan = ath_hal_checkchannel(ah, chan);
     int8_t rx_nf_pwr, rx_nf_cal;
-    int i; 
+    int i;
     //HALASSERT(ichan);
 
     /* Fill 0 if valid internal channel is not found */
@@ -1270,7 +1270,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
     unsigned long eep_addr;
     u_int32_t reg_val, reg_usb = 0, reg_pmu = 0;
     int usb_valid = 0, pmu_valid = 0;
-    unsigned char pmu_refv; 
+    unsigned char pmu_refv;
 
     if (AR_SREV_JUPITER(ah) || AR_SREV_APHRODITE(ah)) {
         reg_PMU1 = AR_PHY_PMU1_JUPITER;
@@ -1293,7 +1293,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
                         usb_valid = 1;
                         reg_usb = reg_val & 0x000000ff;
                     }
-                    
+
                     if ((reg_val & 0x80000000) == 0x80000000){
                         pmu_valid = 1;
                         reg_pmu = (reg_val & 0xff000000) >> 24;
@@ -1320,7 +1320,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
                 if (usb_valid) {
                     OS_REG_RMW_FIELD(ah, 0x16c88, AR_PHY_CTRL2_TX_CAL_EN, 0x0);
                     OS_REG_RMW_FIELD(ah, 0x16c88, AR_PHY_CTRL2_TX_CAL_SEL, 0x0);
-                    OS_REG_RMW_FIELD(ah, 0x16c88, 
+                    OS_REG_RMW_FIELD(ah, 0x16c88,
                         AR_PHY_CTRL2_TX_MAN_CAL, (reg_usb & 0xf));
                 }
 
@@ -1355,7 +1355,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
              * $reg_PMU2 = $handle->reg_rd("ch0_PMU2");
              * $reg_PMU2 = ($reg_PMU2 & 0xfe3fffff) | ($Filtervc<<22);
              * $reg_PMU2 = ($reg_PMU2 & 0xe3ffffff) | ($discdel<<26);
-             * $reg_PMU2 = ($reg_PMU2 & 0x1fffffff) | ($spare<<29); 
+             * $reg_PMU2 = ($reg_PMU2 & 0x1fffffff) | ($spare<<29);
              */
             if (ahp->clk_25mhz) {
                 reg_pmu1_set = 0 |
@@ -1364,7 +1364,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
                     (0 << 26) | (0 << 27) | (0 << 28) | (0 << 29);
             } else {
                 if (AR_SREV_POSEIDON(ah)) {
-                    reg_pmu1_set = 0 | 
+                    reg_pmu1_set = 0 |
                         (5 <<  1) | (7 <<  4) | (2 <<  8) | (0 << 11) |
                         (2 << 14) | (6 << 17) | (1 << 20) | (3 << 24) |
                         (0 << 26) | (0 << 27) | (1 << 28) | (0 << 29) ;
@@ -1373,7 +1373,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
                         (4 <<  1) | (7 <<  4) | (3 <<  8) | (0 << 11) |
                         (1 << 14) | (6 << 17) | (1 << 20) | (3 << 24) |
                         (0 << 26) | (0 << 27) | (0 << 28) | (0 << 29) ;
-                } 
+                }
             }
             OS_REG_RMW_FIELD(ah, reg_PMU2, AR_PHY_PMU2_PGM, 0x0);
 
@@ -1384,7 +1384,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
                 OS_DELAY(10);
                 reg_pmu1 = OS_REG_READ(ah, reg_PMU1);
             }
-                                
+
             reg_pmu2_set =
                  (OS_REG_READ(ah, reg_PMU2) & (~0xFFC00000)) | (4 << 26);
             OS_REG_WRITE(ah, reg_PMU2, reg_pmu2_set);
@@ -1449,7 +1449,7 @@ HAL_BOOL ar9300_internal_regulator_apply(struct ath_hal *ah)
         }
     }
 
-    return 0;  
+    return 0;
 }
 
 HAL_BOOL ar9300_drive_strength_apply(struct ath_hal *ah)
@@ -1506,7 +1506,7 @@ int32_t ar9300_xpa_bias_level_get(struct ath_hal *ah, HAL_BOOL is_2ghz)
 HAL_BOOL ar9300_xpa_bias_level_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
 {
     /*
-     * In ar9330 emu, we can't access radio registers, 
+     * In ar9330 emu, we can't access radio registers,
      * merlin is used for radio part.
      */
     int bias;
@@ -1542,7 +1542,7 @@ u_int32_t ar9300_ant_ctrl_common_get(struct ath_hal *ah, HAL_BOOL is_2ghz)
         return eep->modal_header_5g.ant_ctrl_common;
     }
 }
-static u_int16_t 
+static u_int16_t
 ar9300_switch_com_spdt_get(struct ath_hal *ah, HAL_BOOL is_2ghz)
 {
     ar9300_eeprom_t *eep = &AH9300(ah)->ah_eeprom;
@@ -1652,11 +1652,11 @@ HAL_BOOL ar9300_ant_ctrl_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
         if (xlan_gpio_cfg) {
             for (i = 0; i < 32; i++) {
                 if (xlan_gpio_cfg & (1 << i)) {
-                    ath_hal_gpioCfgOutput(ah, i, 
+                    ath_hal_gpioCfgOutput(ah, i,
                         HAL_GPIO_OUTPUT_MUX_PCIE_ATTENTION_LED);
                 }
             }
-        }    
+        }
     }
 #define AR_SWITCH_TABLE_COM_ALL (0xffff)
 #define AR_SWITCH_TABLE_COM_ALL_S (0)
@@ -1674,34 +1674,34 @@ HAL_BOOL ar9300_ant_ctrl_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
             value &= ~AR_SWITCH_TABLE_COM_SPDT;
             value |= 0x00100000;
         }
-        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM,
             AR_SWITCH_TABLE_COM_JUPITER_ALL, value);
     }
     else if (AR_SREV_SCORPION(ah)) {
-        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM,
             AR_SWITCH_TABLE_COM_SCORPION_ALL, value);
     }
     else if (AR_SREV_HONEYBEE(ah)) {
-        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM,
             AR_SWITCH_TABLE_COM_HONEYBEE_ALL, value);
     }
     else {
-        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM,
             AR_SWITCH_TABLE_COM_ALL, value);
     }
 /*
-*   Jupiter2.0 defines new switch table for BT/WLAN, 
+*   Jupiter2.0 defines new switch table for BT/WLAN,
 *	here's new field name in WB222.ref for both 2G and 5G.
 *   Register: [GLB_CONTROL] GLB_CONTROL (@0x20044)
-*   15:12	R/W	SWITCH_TABLE_COM_SPDT_WLAN_RX	SWITCH_TABLE_COM_SPDT_WLAN_RX 
+*   15:12	R/W	SWITCH_TABLE_COM_SPDT_WLAN_RX	SWITCH_TABLE_COM_SPDT_WLAN_RX
 *   11:8	R/W	SWITCH_TABLE_COM_SPDT_WLAN_TX	SWITCH_TABLE_COM_SPDT_WLAN_TX
-*   7:4	R/W	SWITCH_TABLE_COM_SPDT_WLAN_IDLE	SWITCH_TABLE_COM_SPDT_WLAN_IDLE	
+*   7:4	R/W	SWITCH_TABLE_COM_SPDT_WLAN_IDLE	SWITCH_TABLE_COM_SPDT_WLAN_IDLE
 */
 #define AR_SWITCH_TABLE_COM_SPDT_ALL (0x0000fff0)
 #define AR_SWITCH_TABLE_COM_SPDT_ALL_S (4)
     if (AR_SREV_JUPITER_20_OR_LATER(ah) || AR_SREV_APHRODITE(ah)) {
         value = ar9300_switch_com_spdt_get(ah, is_2ghz);
-        OS_REG_RMW_FIELD(ah, AR_GLB_CONTROL, 
+        OS_REG_RMW_FIELD(ah, AR_GLB_CONTROL,
             AR_SWITCH_TABLE_COM_SPDT_ALL, value);
 
         OS_REG_SET_BIT(ah, AR_GLB_CONTROL,
@@ -1741,12 +1741,12 @@ HAL_BOOL ar9300_ant_ctrl_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
         value = ar9300_eeprom_get(ahp, EEP_ANTDIV_control);
         /* main_lnaconf, alt_lnaconf, main_tb, alt_tb */
         regval = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
-        regval &= (~ANT_DIV_CONTROL_ALL); /* clear bit 25~30 */     
-        regval |= (value & 0x3f) << ANT_DIV_CONTROL_ALL_S; 
+        regval &= (~ANT_DIV_CONTROL_ALL); /* clear bit 25~30 */
+        regval |= (value & 0x3f) << ANT_DIV_CONTROL_ALL_S;
         /* enable_lnadiv */
         regval &= (~MULTICHAIN_GAIN_CTRL__ENABLE_ANT_DIV_LNADIV__MASK);
-        regval |= ((value >> 6) & 0x1) << 
-                  MULTICHAIN_GAIN_CTRL__ENABLE_ANT_DIV_LNADIV__SHIFT; 
+        regval |= ((value >> 6) & 0x1) <<
+                  MULTICHAIN_GAIN_CTRL__ENABLE_ANT_DIV_LNADIV__SHIFT;
 #if ATH_ANT_DIV_COMB
         if ( AR_SREV_POSEIDON(ah) && (ahp->ah_lna_div_use_bt_ant_enable == TRUE) ) {
             regval |= ANT_DIV_ENABLE;
@@ -1776,11 +1776,11 @@ HAL_BOOL ar9300_ant_ctrl_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
 
 #endif  /* ATH_ANT_DIV_COMB */
         OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, regval);
-        
+
         /* enable fast_div */
         regval = OS_REG_READ(ah, AR_PHY_CCK_DETECT);
         regval &= (~BBB_SIG_DETECT__ENABLE_ANT_FAST_DIV__MASK);
-        regval |= ((value >> 7) & 0x1) << 
+        regval |= ((value >> 7) & 0x1) <<
                   BBB_SIG_DETECT__ENABLE_ANT_FAST_DIV__SHIFT;
 #if ATH_ANT_DIV_COMB
         if ((AR_SREV_POSEIDON(ah) || AR_SREV_APHRODITE(ah))
@@ -1788,33 +1788,33 @@ HAL_BOOL ar9300_ant_ctrl_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
             regval |= FAST_DIV_ENABLE;
         }
 #endif  /* ATH_ANT_DIV_COMB */
-        OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);        
+        OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);
     }
 
-#if ATH_ANT_DIV_COMB    
+#if ATH_ANT_DIV_COMB
     if (AR_SREV_HORNET(ah) || AR_SREV_POSEIDON_11_OR_LATER(ah)) {
         if (pcap->halAntDivCombSupport) {
             /* If support DivComb, set MAIN to LNA1, ALT to LNA2 at beginning */
             regval = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
             /* clear bit 25~30 main_lnaconf, alt_lnaconf, main_tb, alt_tb */
-            regval &= (~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK | 
-                         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__MASK | 
-                         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_GAINTB__MASK | 
-                         MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_GAINTB__MASK)); 
-            regval |= (HAL_ANT_DIV_COMB_LNA1 << 
-                       MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT); 
-            regval |= (HAL_ANT_DIV_COMB_LNA2 << 
-                       MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT); 
+            regval &= (~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK |
+                         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__MASK |
+                         MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_GAINTB__MASK |
+                         MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_GAINTB__MASK));
+            regval |= (HAL_ANT_DIV_COMB_LNA1 <<
+                       MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT);
+            regval |= (HAL_ANT_DIV_COMB_LNA2 <<
+                       MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT);
             OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, regval);
         }
 
     }
 #endif /* ATH_ANT_DIV_COMB */
-    if (AR_SREV_POSEIDON(ah) && ( ahp->ah_diversity_control == HAL_ANT_FIXED_A 
+    if (AR_SREV_POSEIDON(ah) && ( ahp->ah_diversity_control == HAL_ANT_FIXED_A
 	     || ahp->ah_diversity_control == HAL_ANT_FIXED_B))
     {
         u_int32_t reg_val = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
-        reg_val &=  ~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK | 
+        reg_val &=  ~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK |
                     MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__MASK |
                     MULTICHAIN_GAIN_CTRL__ANT_FAST_DIV_BIAS__MASK |
     		        MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_GAINTB__MASK |
@@ -1823,39 +1823,39 @@ HAL_BOOL ar9300_ant_ctrl_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
         switch (ahp->ah_diversity_control) {
         case HAL_ANT_FIXED_A:
             /* Enable first antenna only */
-            reg_val |= (HAL_ANT_DIV_COMB_LNA1 << 
-                       MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT); 
-            reg_val |= (HAL_ANT_DIV_COMB_LNA2 << 
-                       MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT); 
+            reg_val |= (HAL_ANT_DIV_COMB_LNA1 <<
+                       MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT);
+            reg_val |= (HAL_ANT_DIV_COMB_LNA2 <<
+                       MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT);
             /* main/alt gain table and Fast Div Bias all set to 0 */
             OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, reg_val);
             regval = OS_REG_READ(ah, AR_PHY_CCK_DETECT);
             regval &= (~BBB_SIG_DETECT__ENABLE_ANT_FAST_DIV__MASK);
-            OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);        
+            OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);
             break;
         case HAL_ANT_FIXED_B:
             /* Enable second antenna only, after checking capability */
-            reg_val |= (HAL_ANT_DIV_COMB_LNA2 << 
-                       MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT); 
-            reg_val |= (HAL_ANT_DIV_COMB_LNA1 << 
-                       MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT); 
+            reg_val |= (HAL_ANT_DIV_COMB_LNA2 <<
+                       MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT);
+            reg_val |= (HAL_ANT_DIV_COMB_LNA1 <<
+                       MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT);
             /* main/alt gain table and Fast Div all set to 0 */
             OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, reg_val);
             regval = OS_REG_READ(ah, AR_PHY_CCK_DETECT);
             regval &= (~BBB_SIG_DETECT__ENABLE_ANT_FAST_DIV__MASK);
-            OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);        
+            OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);
             /* For WB225, need to swith ANT2 from BT to Wifi
              * This will not affect HB125 LNA diversity feature.
              */
 	     HALDEBUG(ah, HAL_DEBUG_RESET, "%s: com2=0x%08x\n", __func__,
 	         ah->ah_config.ath_hal_ant_ctrl_comm2g_switch_enable)
-            OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM_2, AR_SWITCH_TABLE_COM2_ALL, 
+            OS_REG_RMW_FIELD(ah, AR_PHY_SWITCH_COM_2, AR_SWITCH_TABLE_COM2_ALL,
                 ah->ah_config.ath_hal_ant_ctrl_comm2g_switch_enable);
             break;
         default:
             break;
         }
-    }    
+    }
     return 0;
 }
 
@@ -1869,7 +1869,7 @@ ar9300_attenuation_chain_get(struct ath_hal *ah, int chain, u_int16_t channel)
         if (channel < 4000) {
             return eep->modal_header_2g.xatten1_db[chain];
         } else {
-            if (eep->base_ext2.xatten1_db_low[chain] != 0) {        
+            if (eep->base_ext2.xatten1_db_low[chain] != 0) {
                 t[0] = eep->base_ext2.xatten1_db_low[chain];
                 f[0] = 5180;
                 t[1] = eep->modal_header_5g.xatten1_db[chain];
@@ -1897,7 +1897,7 @@ ar9300_attenuation_margin_chain_get(struct ath_hal *ah, int chain,
         if (channel < 4000) {
             return eep->modal_header_2g.xatten1_margin[chain];
         } else {
-            if (eep->base_ext2.xatten1_margin_low[chain] != 0) {    
+            if (eep->base_ext2.xatten1_margin_low[chain] != 0) {
                 t[0] = eep->base_ext2.xatten1_margin_low[chain];
                 f[0] = 5180;
                 t[1] = eep->modal_header_5g.xatten1_margin[chain];
@@ -2023,7 +2023,7 @@ ar9300_attenuation_apply(struct ath_hal *ah, u_int16_t channel)
 }
 
 
-static u_int16_t ar9300_quick_drop_get(struct ath_hal *ah, 
+static u_int16_t ar9300_quick_drop_get(struct ath_hal *ah,
 								int chain, u_int16_t channel)
 {
     int32_t f[3], t[3];
@@ -2054,7 +2054,7 @@ static HAL_BOOL ar9300_quick_drop_apply(struct ath_hal *ah, u_int16_t channel)
     //
     if (eep->base_eep_header.misc_configuration & 0x10)
 	{
-        if (AR_SREV_OSPREY(ah) || AR_SREV_AR9580(ah) || AR_SREV_WASP(ah)) 
+        if (AR_SREV_OSPREY(ah) || AR_SREV_AR9580(ah) || AR_SREV_WASP(ah))
         {
             value = ar9300_quick_drop_get(ah, 0, channel);
             OS_REG_RMW_FIELD(ah, AR_PHY_AGC, AR_PHY_AGC_QUICK_DROP, value);
@@ -2080,18 +2080,18 @@ static HAL_BOOL ar9300_tx_end_to_xpab_off_apply(struct ath_hal *ah, u_int16_t ch
 
     value = ar9300_tx_end_to_xpa_off_get(ah, channel);
     /* Apply to both xpaa and xpab */
-    if (AR_SREV_OSPREY(ah) || AR_SREV_AR9580(ah) || AR_SREV_WASP(ah)) 
+    if (AR_SREV_OSPREY(ah) || AR_SREV_AR9580(ah) || AR_SREV_WASP(ah))
     {
-        OS_REG_RMW_FIELD(ah, AR_PHY_XPA_TIMING_CTL, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_XPA_TIMING_CTL,
             AR_PHY_XPA_TIMING_CTL_TX_END_XPAB_OFF, value);
-        OS_REG_RMW_FIELD(ah, AR_PHY_XPA_TIMING_CTL, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_XPA_TIMING_CTL,
             AR_PHY_XPA_TIMING_CTL_TX_END_XPAA_OFF, value);
     }
     return 0;
 }
 
 static int
-ar9300_eeprom_cal_pier_get(struct ath_hal *ah, int mode, int ipier, int ichain, 
+ar9300_eeprom_cal_pier_get(struct ath_hal *ah, int mode, int ipier, int ichain,
     int *pfrequency, int *pcorrection, int *ptemperature, int *pvoltage)
 {
     u_int8_t *p_cal_pier;
@@ -2146,7 +2146,7 @@ ar9300_calibration_apply(struct ath_hal *ah, int frequency)
     int ichain, ipier, npier;
     int mode;
     int fdiff;
-    int pfrequency, pcorrection, ptemperature, pvoltage; 
+    int pfrequency, pcorrection, ptemperature, pvoltage;
     int bf, factor, plus;
 
     int lfrequency[AR9300_MAX_CHAINS];
@@ -2223,7 +2223,7 @@ ar9300_calibration_apply(struct ath_hal *ah, int frequency)
             hfrequency[ichain], hcorrection[ichain]);
         /*
          * they're the same, so just pick one
-         */ 
+         */
         if (hfrequency[ichain] == lfrequency[ichain]) {
             correction[ichain] = lcorrection[ichain];
             voltage[ichain] = lvoltage[ichain];
@@ -2280,7 +2280,7 @@ ar9300_calibration_apply(struct ath_hal *ah, int frequency)
     if (ah->ah_config.ath_hal_sta_update_tx_pwr_enable) {
         if (AR_SREV_POSEIDON(ah)) {
             /* Get calibrated OLPC gain delta value for GreenTx */
-            ahp->ah_db2[POSEIDON_STORED_REG_G2_OLPC_OFFSET] = 
+            ahp->ah_db2[POSEIDON_STORED_REG_G2_OLPC_OFFSET] =
                 (u_int32_t) correction[0];
         }
     }
@@ -2313,7 +2313,7 @@ ar9300_power_control_override(struct ath_hal *ah, int frequency,
             (correction[1] << AR_PHY_TPC_OLPC_GAIN_DELTA_S),
             AR_PHY_TPC_OLPC_GAIN_DELTA);
         if (!AR_SREV_WASP(ah) && !AR_SREV_JUPITER(ah) && !AR_SREV_HONEYBEE(ah) ) {
-            OS_REG_RMW(ah, AR_PHY_TPC_11_B2, 
+            OS_REG_RMW(ah, AR_PHY_TPC_11_B2,
                 (correction[2] << AR_PHY_TPC_OLPC_GAIN_DELTA_S),
                 AR_PHY_TPC_OLPC_GAIN_DELTA);
         }
@@ -2324,10 +2324,10 @@ ar9300_power_control_override(struct ath_hal *ah, int frequency,
     OS_REG_RMW(ah, AR_PHY_TPC_6_B0,
         (3 << AR_PHY_TPC_6_ERROR_EST_MODE_S), AR_PHY_TPC_6_ERROR_EST_MODE);
     if (!AR_SREV_POSEIDON(ah)) {
-        OS_REG_RMW(ah, AR_PHY_TPC_6_B1, 
+        OS_REG_RMW(ah, AR_PHY_TPC_6_B1,
             (3 << AR_PHY_TPC_6_ERROR_EST_MODE_S), AR_PHY_TPC_6_ERROR_EST_MODE);
         if (!AR_SREV_WASP(ah) && !AR_SREV_JUPITER(ah) && !AR_SREV_HONEYBEE(ah)  ) {
-            OS_REG_RMW(ah, AR_PHY_TPC_6_B2, 
+            OS_REG_RMW(ah, AR_PHY_TPC_6_B2,
                 (3 << AR_PHY_TPC_6_ERROR_EST_MODE_S),
                 AR_PHY_TPC_6_ERROR_EST_MODE);
         }
@@ -2382,7 +2382,7 @@ ar9300_power_control_override(struct ath_hal *ah, int frequency,
              temp_slope = interpolate(frequency, f, t, 3);
              temp_slope_1=interpolate(frequency, f, t1,3);
              temp_slope_2=interpolate(frequency, f, t2,3);
-       } 
+       }
 	 }
   }
 
@@ -2396,35 +2396,35 @@ ar9300_power_control_override(struct ath_hal *ah, int frequency,
 	    if(frequency < 4000) {
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x1) {
 		    OS_REG_RMW_FIELD(ah,
-				    AR_PHY_TPC_19, AR_PHY_TPC_19_ALPHA_THERM, 
+				    AR_PHY_TPC_19, AR_PHY_TPC_19_ALPHA_THERM,
 				    eep->base_ext2.temp_slope_low);
-		    } 
+		    }
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x2) {
 		    OS_REG_RMW_FIELD(ah,
-				    AR_SCORPION_PHY_TPC_19_B1, AR_PHY_TPC_19_ALPHA_THERM, 
+				    AR_SCORPION_PHY_TPC_19_B1, AR_PHY_TPC_19_ALPHA_THERM,
 				    temp_slope);
-		    } 
+		    }
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x4) {
 		    OS_REG_RMW_FIELD(ah,
-				    AR_SCORPION_PHY_TPC_19_B2, AR_PHY_TPC_19_ALPHA_THERM, 
+				    AR_SCORPION_PHY_TPC_19_B2, AR_PHY_TPC_19_ALPHA_THERM,
 				    eep->base_ext2.temp_slope_high);
-		     } 	
+		     }
 	    } else {
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x1) {
 		    OS_REG_RMW_FIELD(ah,
-				    AR_PHY_TPC_19, AR_PHY_TPC_19_ALPHA_THERM, 
+				    AR_PHY_TPC_19, AR_PHY_TPC_19_ALPHA_THERM,
 				    temp_slope);
 			}
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x2) {
 		    OS_REG_RMW_FIELD(ah,
-				    AR_SCORPION_PHY_TPC_19_B1, AR_PHY_TPC_19_ALPHA_THERM, 
+				    AR_SCORPION_PHY_TPC_19_B1, AR_PHY_TPC_19_ALPHA_THERM,
 				    temp_slope_1);
 		}
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x4) {
 		    OS_REG_RMW_FIELD(ah,
-				    AR_SCORPION_PHY_TPC_19_B2, AR_PHY_TPC_19_ALPHA_THERM, 
+				    AR_SCORPION_PHY_TPC_19_B2, AR_PHY_TPC_19_ALPHA_THERM,
 				    temp_slope_2);
-			} 
+			}
 	    }
         }else {
         	/* If temp compensation is not enabled, set all registers to 0*/
@@ -2435,11 +2435,11 @@ ar9300_power_control_override(struct ath_hal *ah, int frequency,
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x2) {
             OS_REG_RMW_FIELD(ah,
                 AR_SCORPION_PHY_TPC_19_B1, AR_PHY_TPC_19_ALPHA_THERM, 0);
-		    }  
+		    }
 		if (((eep->base_eep_header.txrx_mask & 0xf0) >> 4) & 0x4) {
             OS_REG_RMW_FIELD(ah,
                 AR_SCORPION_PHY_TPC_19_B2, AR_PHY_TPC_19_ALPHA_THERM, 0);
-		} 
+		}
         }
     }
     OS_REG_RMW_FIELD(ah,
@@ -2476,7 +2476,7 @@ ar9300_eep_def_get_max_edge_power(ar9300_eeprom_t *p_eep_data, u_int16_t freq,
             if (is_2ghz) {
                 twice_max_edge_power =
                     p_eep_data->ctl_power_data_2g[idx].ctl_edges[i].t_power;
-            } else {       
+            } else {
                 twice_max_edge_power =
                     p_eep_data->ctl_power_data_5g[idx].ctl_edges[i].t_power;
             }
@@ -2591,7 +2591,7 @@ ar9300_eeprom_set_power_per_rate_table(
 #endif
 
     /* Save max allowed antenna gain to ease future lookups */
-    ahp->twice_antenna_reduction = twice_antenna_reduction; 
+    ahp->twice_antenna_reduction = twice_antenna_reduction;
 
     /*  Deduct antenna gain from  EIRP to get the upper limit */
     twice_largest_antenna = (int16_t)AH_MIN((twice_antenna_reduction -
@@ -2599,7 +2599,7 @@ ar9300_eeprom_set_power_per_rate_table(
     max_reg_allowed_power = twice_max_regulatory_power + twice_largest_antenna;
 
     /* Use ah_tp_scale - see bug 30070. */
-    if (AH_PRIVATE(ah)->ah_tpScale != HAL_TP_SCALE_MAX) { 
+    if (AH_PRIVATE(ah)->ah_tpScale != HAL_TP_SCALE_MAX) {
         max_reg_allowed_power -=
             (tp_scale_reduction_table[(AH_PRIVATE(ah)->ah_tpScale)] * 2);
     }
@@ -2688,14 +2688,14 @@ ar9300_eeprom_set_power_per_rate_table(
         }
 
         for (i = 0; (i < ctl_num) && ctl_index[i]; i++) {
-            HALDEBUG(ah, HAL_DEBUG_POWER_MGMT, 
+            HALDEBUG(ah, HAL_DEBUG_POWER_MGMT,
                 "  LOOP-Ctlidx %d: cfg_ctl 0x%2.2x p_ctl_mode 0x%2.2x "
                 "ctl_index 0x%2.2x chan %d chanctl 0x%x\n",
-                i, cfg_ctl, p_ctl_mode[ctl_mode], ctl_index[i], 
+                i, cfg_ctl, p_ctl_mode[ctl_mode], ctl_index[i],
                 ichan->channel, ath_hal_getctl(ah, chan));
 
 
-            /* 
+            /*
              * compare test group from regulatory channel list
              * with test mode from p_ctl_mode list
              */
@@ -2757,20 +2757,20 @@ ar9300_eeprom_set_power_per_rate_table(
                     (ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_MCI))
                 {
                     if ((ahp->ah_bt_coex_flag & HAL_BT_COEX_FLAG_LOWER_TX_PWR)
-                        && (ahp->ah_bt_wlan_isolation 
+                        && (ahp->ah_bt_wlan_isolation
                          < HAL_BT_COEX_ISOLATION_FOR_NO_COEX))
                     {
 
                         u_int8_t reduce_pow;
-                        
-                        reduce_pow = (HAL_BT_COEX_ISOLATION_FOR_NO_COEX 
+
+                        reduce_pow = (HAL_BT_COEX_ISOLATION_FOR_NO_COEX
                                      - ahp->ah_bt_wlan_isolation) << 1;
 
                         if (reduce_pow <= p_pwr_array[i]) {
                             p_pwr_array[i] -= reduce_pow;
                         }
                     }
-                    if ((ahp->ah_bt_coex_flag & 
+                    if ((ahp->ah_bt_coex_flag &
                           HAL_BT_COEX_FLAG_LOW_ACK_PWR) &&
                           (i != ALL_TARGET_LEGACY_36) &&
                           (i != ALL_TARGET_LEGACY_48) &&
@@ -2791,11 +2791,11 @@ ar9300_eeprom_set_power_per_rate_table(
 #ifdef ATH_BT_COEX
                 if (((ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_3WIRE) ||
                      (ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_MCI)) &&
-                    (ahp->ah_bt_coex_flag & HAL_BT_COEX_FLAG_LOWER_TX_PWR) && 
-                    (ahp->ah_bt_wlan_isolation 
+                    (ahp->ah_bt_coex_flag & HAL_BT_COEX_FLAG_LOWER_TX_PWR) &&
+                    (ahp->ah_bt_wlan_isolation
                         < HAL_BT_COEX_ISOLATION_FOR_NO_COEX)) {
 
-                    u_int8_t reduce_pow = (HAL_BT_COEX_ISOLATION_FOR_NO_COEX 
+                    u_int8_t reduce_pow = (HAL_BT_COEX_ISOLATION_FOR_NO_COEX
                                            - ahp->ah_bt_wlan_isolation) << 1;
 
                     if (reduce_pow <= p_pwr_array[i]) {
@@ -2803,7 +2803,7 @@ ar9300_eeprom_set_power_per_rate_table(
                     }
                 }
 #if ATH_SUPPORT_MCI
-                else if ((ahp->ah_bt_coex_flag & 
+                else if ((ahp->ah_bt_coex_flag &
                           HAL_BT_COEX_FLAG_MCI_MAX_TX_PWR) &&
                          (p_ctl_mode[ctl_mode] == CTL_2GHT20) &&
                          (ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_MCI))
@@ -2841,11 +2841,11 @@ ar9300_eeprom_set_power_per_rate_table(
 #ifdef ATH_BT_COEX
                 if (((ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_3WIRE) ||
                      (ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_MCI)) &&
-                    (ahp->ah_bt_coex_flag & HAL_BT_COEX_FLAG_LOWER_TX_PWR) && 
-                    (ahp->ah_bt_wlan_isolation 
+                    (ahp->ah_bt_coex_flag & HAL_BT_COEX_FLAG_LOWER_TX_PWR) &&
+                    (ahp->ah_bt_wlan_isolation
                         < HAL_BT_COEX_ISOLATION_FOR_NO_COEX)) {
 
-                    u_int8_t reduce_pow = (HAL_BT_COEX_ISOLATION_FOR_NO_COEX 
+                    u_int8_t reduce_pow = (HAL_BT_COEX_ISOLATION_FOR_NO_COEX
                                               - ahp->ah_bt_wlan_isolation) << 1;
 
                     if (reduce_pow <= p_pwr_array[i]) {
@@ -2853,7 +2853,7 @@ ar9300_eeprom_set_power_per_rate_table(
                     }
                 }
 #if ATH_SUPPORT_MCI
-                else if ((ahp->ah_bt_coex_flag & 
+                else if ((ahp->ah_bt_coex_flag &
                           HAL_BT_COEX_FLAG_MCI_MAX_TX_PWR) &&
                          (p_ctl_mode[ctl_mode] == CTL_2GHT40) &&
                          (ahp->ah_bt_coex_config_type == HAL_BT_COEX_CFG_MCI))
@@ -3035,7 +3035,7 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
                                      antenna_reduction,
                                      twice_max_regulatory_power,
                                      power_limit, 0);
-    
+
     /* Save this for quick lookup */
     ahp->reg_dmn = ath_hal_getctl(ah, chan);
 
@@ -3068,7 +3068,7 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
 #if 0
     /*
      * Always use CDD/direct per rate power table for register based approach.
-     * For FCC, CDD calculations should factor in the array gain, hence 
+     * For FCC, CDD calculations should factor in the array gain, hence
      * this adjust call. ETSI and MKK does not have this requirement.
      */
     if (is_reg_dmn_fcc(ahp->reg_dmn)) {
@@ -3100,7 +3100,7 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
                         target_power_val_t2[i], tmp_paprd_rate_mask);
                 }
             }
-            
+
         }
         HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
             "%s: Chan %d After tmp_paprd_rate_mask = 0x%08x\n",
@@ -3112,28 +3112,28 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
 
     /* Write target power array to registers */
     ar9300_transmit_power_reg_write(ah, target_power_val_t2);
-    
+
     /* Write target power for self generated frames to the TPC register */
     ar9300_selfgen_tpc_reg_write(ah, chan, target_power_val_t2);
 
     /* GreenTx or Paprd */
-    if (ah->ah_config.ath_hal_sta_update_tx_pwr_enable || 
-        AH_PRIVATE(ah)->ah_caps.halPaprdEnabled) 
+    if (ah->ah_config.ath_hal_sta_update_tx_pwr_enable ||
+        AH_PRIVATE(ah)->ah_caps.halPaprdEnabled)
     {
         if (AR_SREV_POSEIDON(ah)) {
             /*For HAL_RSSI_TX_POWER_NONE array*/
-            OS_MEMCPY(ahp->ah_default_tx_power, 
-                target_power_val_t2, 
+            OS_MEMCPY(ahp->ah_default_tx_power,
+                target_power_val_t2,
                 sizeof(target_power_val_t2));
             /* Get defautl tx related register setting for GreenTx */
             /* Record OB/DB */
-            ahp->ah_ob_db1[POSEIDON_STORED_REG_OBDB] = 
+            ahp->ah_ob_db1[POSEIDON_STORED_REG_OBDB] =
                 OS_REG_READ(ah, AR_PHY_65NM_CH0_TXRF2);
             /* Record TPC settting */
             ahp->ah_ob_db1[POSEIDON_STORED_REG_TPC] =
                 OS_REG_READ(ah, AR_TPC);
-            /* Record BB_powertx_rate9 setting */ 
-            ahp->ah_ob_db1[POSEIDON_STORED_REG_BB_PWRTX_RATE9] = 
+            /* Record BB_powertx_rate9 setting */
+            ahp->ah_ob_db1[POSEIDON_STORED_REG_BB_PWRTX_RATE9] =
                 OS_REG_READ(ah, AR_PHY_BB_POWERTX_RATE9);
         }
     }
@@ -3160,7 +3160,7 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
         case 1:
             break;
         case 2:
-            twice_array_gain = (ahp->twice_antenna_gain >= ahp->twice_antenna_reduction)? 0: 
+            twice_array_gain = (ahp->twice_antenna_gain >= ahp->twice_antenna_reduction)? 0:
                                ((int16_t)AH_MIN((ahp->twice_antenna_reduction -
                                    (ahp->twice_antenna_gain + INCREASE_MAXPOW_BY_TWO_CHAIN)), 0));
             /* Adjusting maxpower with antennaGain */
@@ -3190,7 +3190,7 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
     if (ah->ah_config.ath_hal_desc_tpc) {
         /* Transmit Power per-rate per-chain  are  computed here. A separate
          * power table is maintained for different MIMO modes (i.e. TXBF ON,
-         * STBC) to enable easy lookup during packet transmit. 
+         * STBC) to enable easy lookup during packet transmit.
          * The reason for maintaing each of these tables per chain is that
          * the transmit power used for different number of chains is different
          * depending on whether the power has been limited by the target power,
@@ -3214,14 +3214,14 @@ ar9300_eeprom_set_transmit_power(struct ath_hal *ah,
                                        ahp->upper_limit[i]%2 * 5);
             ar9300_init_rate_txpower(ah, mode, chan, target_power_val_t2,
                                                            chainmasks[i]);
-                                     
+
         }
 
         /* Enable TPC */
         OS_REG_WRITE(ah, AR_PHY_PWRTX_MAX, AR_PHY_PWRTX_MAX_TPC_ENABLE);
         /*
-         * Disable per chain power reduction since we are already 
-         * accounting for this in our calculations 
+         * Disable per chain power reduction since we are already
+         * accounting for this in our calculations
          */
         val = OS_REG_READ(ah, AR_PHY_POWER_TX_SUB);
         if (AR_SREV_WASP(ah)) {
@@ -3539,7 +3539,7 @@ ar9300_check_eeprom(struct ath_hal *ah)
         HALDEBUG(ah,  HAL_DEBUG_POWER_OVERRIDE, "Original Target Powers\n");
         ar9300_eep_def_dump_tgt_power(ah, eep);
 #endif
-        HALDEBUG(ah,  HAL_DEBUG_POWER_OVERRIDE, 
+        HALDEBUG(ah,  HAL_DEBUG_POWER_OVERRIDE,
                 "Override Target Powers. EEPROM Version is %d.%d, "
                 "Device Type %d\n",
                 owl_get_eepdef_ver(ahp),
@@ -3611,7 +3611,7 @@ ar9300_fill_eeprom(struct ath_hal *ah)
 #endif
 
 u_int16_t
-ar9300_eeprom_struct_size(void) 
+ar9300_eeprom_struct_size(void)
 {
     return sizeof(ar9300_eeprom_t);
 }
@@ -3623,7 +3623,7 @@ int ar9300_eeprom_struct_default_many(void)
 
 
 ar9300_eeprom_t *
-ar9300_eeprom_struct_default(int default_index) 
+ar9300_eeprom_struct_default(int default_index)
 {
     if (default_index >= 0 &&
         default_index < ARRAY_LENGTH(default9300))
@@ -3635,7 +3635,7 @@ ar9300_eeprom_struct_default(int default_index)
 }
 
 ar9300_eeprom_t *
-ar9300_eeprom_struct_default_find_by_id(int id) 
+ar9300_eeprom_struct_default_find_by_id(int id)
 {
     int it;
 
@@ -3681,9 +3681,9 @@ ar9300_calibration_data_read_eeprom(struct ath_hal *ah, long address,
             HALDEBUG(ah, HAL_DEBUG_EEPROM,
                 "%s: Unable to read eeprom region \n", __func__);
             return AH_FALSE;
-        }  
+        }
         buffer[i] = (*svalue >> (8 * byte_addr)) & 0xff;
-    }  
+    }
     return AH_TRUE;
 }
 
@@ -3707,9 +3707,9 @@ ar9300_calibration_data_read_otp(struct ath_hal *ah, long address,
             HALDEBUG(ah, HAL_DEBUG_EEPROM,
                 "%s: Unable to read otp region \n", __func__);
             return AH_FALSE;
-        }  
+        }
         buffer[i] = (svalue >> (8 * byte_addr)) & 0xff;
-    }  
+    }
     return AH_TRUE;
 }
 
@@ -3720,10 +3720,10 @@ ar9300_calibration_data_read_nand(struct ath_hal *ah, long address,
 {
     int ret_len;
     int ret_val = 1;
-    
+
       /* Calling OS based API to read NAND */
     ret_val = OS_NAND_FLASH_READ(ATH_CAL_NAND_PARTITION, address, many, &ret_len, buffer);
-    
+
     return (ret_val ? AH_FALSE: AH_TRUE);
 }
 #endif
@@ -3749,7 +3749,7 @@ ar9300_calibration_data_read(struct ath_hal *ah, long address,
 }
 
 
-HAL_BOOL 
+HAL_BOOL
 ar9300_calibration_data_read_array(struct ath_hal *ah, int address,
     u_int8_t *buffer, int many)
 {
@@ -3783,10 +3783,10 @@ static const int low_limit = 0x040;
 
 /*
  * returns size of the physical eeprom in bytes.
- * 1024 and 2048 are normal sizes. 
- * 0 means there is no eeprom. 
- */ 
-int32_t 
+ * 1024 and 2048 are normal sizes.
+ * 0 means there is no eeprom.
+ */
+int32_t
 ar9300_eeprom_size(struct ath_hal *ah)
 {
     u_int16_t data;
@@ -3819,10 +3819,10 @@ ar9300_eeprom_size(struct ath_hal *ah)
 
 /*
  * returns size of the physical otp in bytes.
- * 1024 and 2048 are normal sizes. 
- * 0 means there is no eeprom. 
- */ 
-int32_t 
+ * 1024 and 2048 are normal sizes.
+ * 0 means there is no eeprom.
+ */
+int32_t
 ar9300_otp_size(struct ath_hal *ah)
 {
     if (AR_SREV_POSEIDON(ah) || AR_SREV_HORNET(ah)) {
@@ -3867,7 +3867,7 @@ ar9300_eeprom_volatile(struct ath_hal *ah)
 
 /*
  * need to change this to look for the pcie data in the low parts of memory
- * cal data needs to stop a few locations above 
+ * cal data needs to stop a few locations above
  */
 int
 ar9300_eeprom_low_limit(struct ath_hal *ah)
@@ -3945,7 +3945,7 @@ static int
 ar9300_eeprom_restore_internal_address(struct ath_hal *ah,
     ar9300_eeprom_t *mptr, int mdata_size, int cptr, u_int8_t blank)
 {
-    u_int8_t word[MOUTPUT]; 
+    u_int8_t word[MOUTPUT];
     ar9300_eeprom_t *dptr; /* was uint8 */
     int code;
     int reference, length, major, minor;
@@ -3955,7 +3955,7 @@ ar9300_eeprom_restore_internal_address(struct ath_hal *ah,
     u_int16_t checksum, mchecksum;
 
     restored = 0;
-    for (it = 0; it < MSTATE; it++) {            
+    for (it = 0; it < MSTATE; it++) {
         (void) ar9300_calibration_data_read_array(
             ah, cptr, word, compression_header_length);
         if (word[0] == blank && word[1] == blank && word[2] == blank && word[3] == blank)
@@ -3975,7 +3975,7 @@ ar9300_eeprom_restore_internal_address(struct ath_hal *ah,
             continue;
         }
 #endif
-        osize = length;                
+        osize = length;
         (void) ar9300_calibration_data_read_array(
             ah, cptr, word,
             compression_header_length + osize + compression_checksum_length);
@@ -4104,7 +4104,7 @@ ar9300_eeprom_restore_from_dram(struct ath_hal *ah, ar9300_eeprom_t *mptr,
     HALASSERT(mdata_size > 0);
 
     /* if cal_in_flash is AH_TRUE, the address sent by LMAC to HAL
-       (i.e. ah->ah_st) is corresponding to Flash. so return from 
+       (i.e. ah->ah_st) is corresponding to Flash. so return from
        here if ar9300_eep_data_in_flash(ah) returns AH_TRUE */
     if(ar9300_eep_data_in_flash(ah))
         return -1;
@@ -4116,11 +4116,11 @@ ar9300_eeprom_restore_from_dram(struct ath_hal *ah, ar9300_eeprom_t *mptr,
     }
 #endif
 
-    /* When calibration data is from host, Host will copy the 
+    /* When calibration data is from host, Host will copy the
        compressed data to the predefined DRAM location saved at ah->ah_st */
 #if 0
     ath_hal_printf(ah, "Restoring Cal data from DRAM\n");
-    ahp->ah_cal_mem = OS_REMAP((uintptr_t)(AH_PRIVATE(ah)->ah_st), 
+    ahp->ah_cal_mem = OS_REMAP((uintptr_t)(AH_PRIVATE(ah)->ah_st),
 							HOST_CALDATA_SIZE);
 #endif
     if (!ahp->ah_cal_mem)
@@ -4179,10 +4179,10 @@ ar9300_eeprom_restore_from_flash(struct ath_hal *ah, ar9300_eeprom_t *mptr,
         mptr->template_version == 0xff ||
         mptr->eeprom_version   == 0    ||
         mptr->template_version == 0)
-    {   
+    {
         /* The board is uncalibrated */
         return -1;
-    } 
+    }
     if (mptr->eeprom_version != 0x2)
     {
         return -1;
@@ -4195,7 +4195,7 @@ ar9300_eeprom_restore_from_flash(struct ath_hal *ah, ar9300_eeprom_t *mptr,
  * EEPROM, Flash, OTP. If all of above failed, use the default template.
  * The data can be put in any specified memory buffer.
  *
- * Returns -1 on error. 
+ * Returns -1 on error.
  * Returns address of next memory location on success.
  */
 int
@@ -4204,12 +4204,12 @@ ar9300_eeprom_restore_internal(struct ath_hal *ah, ar9300_eeprom_t *mptr,
 {
     int nptr;
 
-    nptr = -1;    
+    nptr = -1;
 
     if ((AH9300(ah)->calibration_data_try == calibration_data_none ||
          AH9300(ah)->calibration_data_try == calibration_data_dram) &&
          AH9300(ah)->try_dram && nptr < 0)
-    {   
+    {
         ath_hal_printf(ah, "Restoring Cal data from DRAM\n");
         AH9300(ah)->calibration_data_source = calibration_data_dram;
         AH9300(ah)->calibration_data_source_address = 0;
@@ -4219,7 +4219,7 @@ ar9300_eeprom_restore_internal(struct ath_hal *ah, ar9300_eeprom_t *mptr,
             AH9300(ah)->calibration_data_source_address = 0;
         }
     }
-    
+
     if ((AH9300(ah)->calibration_data_try == calibration_data_none ||
          AH9300(ah)->calibration_data_try == calibration_data_eeprom) &&
         AH9300(ah)->try_eeprom && nptr < 0)
@@ -4305,7 +4305,7 @@ ar9300_eeprom_restore_internal(struct ath_hal *ah, ar9300_eeprom_t *mptr,
         AH9300(ah)->calibration_data_source = calibration_data_nand;
         AH9300(ah)->calibration_data_source_address = ((unsigned int)(AH_PRIVATE(ah)->ah_st)) + base_address_nand;
         if(ar9300_calibration_data_read(
-            ah, AH9300(ah)->calibration_data_source_address, 
+            ah, AH9300(ah)->calibration_data_source_address,
             (u_int8_t *)mptr, mdata_size) == AH_TRUE)
         {
             nptr = mdata_size;
@@ -4594,7 +4594,7 @@ HAL_BOOL ar9300_tuning_caps_apply(struct ath_hal *ah)
 }
 
 /*
- * Read the tx_frame_to_xpa_on param from eeprom and apply the value to 
+ * Read the tx_frame_to_xpa_on param from eeprom and apply the value to
  * correct register.
  */
 HAL_BOOL ar9300_xpa_timing_control_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
@@ -4621,9 +4621,9 @@ HAL_BOOL ar9300_xpa_timing_control_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
 
 
 /*
- * Read the xLNA_bias_strength param from eeprom and apply the value to 
+ * Read the xLNA_bias_strength param from eeprom and apply the value to
  * correct register.
- */ 
+ */
 HAL_BOOL ar9300_x_lNA_bias_strength_apply(struct ath_hal *ah, HAL_BOOL is_2ghz)
 {
     u_int8_t x_lNABias;
@@ -4721,7 +4721,7 @@ u_int8_t ar9300_eeprom_tx_gain_table_index_max_apply(struct ath_hal *ah, u_int16
     if (ahp_Eeprom->base_ext1.misc_enable == 0)
         return AH_FALSE;
 
-    if (channel < 4000) 
+    if (channel < 4000)
     {
         index = ahp_Eeprom->modal_header_2g.tx_gain_cap;
     }
@@ -4735,7 +4735,7 @@ u_int8_t ar9300_eeprom_tx_gain_table_index_max_apply(struct ath_hal *ah, u_int16
     return AH_TRUE;
 }
 
-static u_int8_t ar9300_eeprom_get_pcdac_tx_gain_table_i(struct ath_hal *ah, 
+static u_int8_t ar9300_eeprom_get_pcdac_tx_gain_table_i(struct ath_hal *ah,
                                                int i, u_int8_t *pcdac)
 {
     unsigned long tx_gain;
@@ -4751,14 +4751,14 @@ static u_int8_t ar9300_eeprom_get_pcdac_tx_gain_table_i(struct ath_hal *ah,
     return AH_TRUE;
 }
 
-u_int8_t ar9300_eeprom_set_tx_gain_cap(struct ath_hal *ah, 
+u_int8_t ar9300_eeprom_set_tx_gain_cap(struct ath_hal *ah,
                                                int *tx_gain_max)
-// pcdac read back from reg, read back value depends on reset 2GHz/5GHz ini 
-// tx_gain_table, this function will be called twice after each 
+// pcdac read back from reg, read back value depends on reset 2GHz/5GHz ini
+// tx_gain_table, this function will be called twice after each
 // band's calibration.
-// after 2GHz cal, tx_gain_max[0] has 2GHz, calibration max txgain, 
+// after 2GHz cal, tx_gain_max[0] has 2GHz, calibration max txgain,
 // tx_gain_max[1]=-100
-// after 5GHz cal, tx_gain_max[0],tx_gain_max[1] have calibration 
+// after 5GHz cal, tx_gain_max[0],tx_gain_max[1] have calibration
 // value for both band
 // reset is on 5GHz, reg reading from tx_gain_table is for 5GHz,
 // so program can't recalculate 2g.tx_gain_cap at this point.

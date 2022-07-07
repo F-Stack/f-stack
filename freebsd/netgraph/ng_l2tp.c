@@ -1,12 +1,12 @@
 /*-
  * Copyright (c) 2001-2002 Packet Design, LLC.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty,
  * use and redistribution of this software, in source or object code
  * forms, with or without modifications are expressly permitted by
  * Packet Design; provided, however, that:
- * 
+ *
  *    (i)  Any and all reproductions of the source or object code
  *         must include the copyright notice above and the following
  *         disclaimer of warranties; and
@@ -14,7 +14,7 @@
  *         Packet Design trademarks, including the mark "PACKET DESIGN"
  *         on advertising, endorsements, or otherwise except as such
  *         appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY PACKET DESIGN "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, PACKET DESIGN MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING
@@ -33,7 +33,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
  * THE USE OF THIS SOFTWARE, EVEN IF PACKET DESIGN IS ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
- * 
+ *
  * Author: Archie Cobbs <archie@freebsd.org>
  *
  * $FreeBSD$
@@ -946,7 +946,7 @@ ng_l2tp_rcvdata_lower(hook_p h, item_p item)
 
 		/* Deliver packet to upper layers */
 		NG_FWD_NEW_DATA(error, item, priv->ctrl, m);
-		
+
 		mtx_lock(&seq->mtx);
 		/* Ready to process next packet. */
 		seq->inproc = 0;
@@ -1434,14 +1434,14 @@ ng_l2tp_seq_xack_timeout(node_p node, hook_p hook, void *arg1, int arg2)
 	/* Send a ZLB */
 	ng_l2tp_xmit_ctrl(priv, NULL, seq->ns);
 
-	/* callout_deactivate() is not needed here 
+	/* callout_deactivate() is not needed here
 	    as ng_uncallout() was called by ng_l2tp_xmit_ctrl() */
 
 	/* Sanity check */
 	L2TP_SEQ_CHECK(seq);
 }
 
-/* 
+/*
  * Handle a transmit timeout. The peer has failed to respond
  * with an ack for our packet, so retransmit it.
  */
@@ -1491,7 +1491,7 @@ ng_l2tp_seq_rack_timeout(node_p node, hook_p hook, void *arg1, int arg2)
 	else
 		ng_l2tp_xmit_ctrl(priv, m, seq->ns++);
 
-	/* callout_deactivate() is not needed here 
+	/* callout_deactivate() is not needed here
 	    as ng_callout() is getting called each time */
 
 	/* Sanity check */

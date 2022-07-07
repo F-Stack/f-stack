@@ -39,7 +39,7 @@
  * and as such are:
  * Copyright © 2010 Intel Corporation.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -51,7 +51,7 @@
  *   * Neither the name of Intel Corporation nor the
  *     names of its contributors may be used to endorse or promote products
  *     derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -89,7 +89,7 @@ m128icmp(__m128i a, __m128i b)
 #ifdef __i386__
 static inline __m128i
 _mm_insert_epi64(__m128i a, int64_t b, const int ndx)
-{  
+{
 
 	if (!ndx) {
 		a = _mm_insert_epi32(a, b, 0);

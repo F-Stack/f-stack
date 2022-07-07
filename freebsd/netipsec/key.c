@@ -2659,7 +2659,7 @@ key_setdumpsp(struct secpolicy *sp, u_int8_t type, u_int32_t seq,
 		if (!m)
 			goto fail;
 		m_cat(result, m);
-		
+
 		lt.addtime=sp->lifetime;
 		lt.usetime= sp->validtime;
 		m = key_setlifetime(&lt, SADB_EXT_LIFETIME_HARD);
@@ -3632,7 +3632,7 @@ key_setdumpsa(struct secasvar *sav, uint8_t type, uint8_t satype,
 		case SADB_EXT_LIFETIME_HARD:
 			if (!sav->lft_h)
 				continue;
-			m = key_setlifetime(sav->lft_h, 
+			m = key_setlifetime(sav->lft_h,
 					    SADB_EXT_LIFETIME_HARD);
 			if (!m)
 				goto fail;
@@ -3641,7 +3641,7 @@ key_setdumpsa(struct secasvar *sav, uint8_t type, uint8_t satype,
 		case SADB_EXT_LIFETIME_SOFT:
 			if (!sav->lft_s)
 				continue;
-			m = key_setlifetime(sav->lft_s, 
+			m = key_setlifetime(sav->lft_s,
 					    SADB_EXT_LIFETIME_SOFT);
 
 			if (!m)
@@ -4098,10 +4098,10 @@ key_dup_lifemsg(const struct sadb_lifetime *src, struct malloc_type *type)
  * flag can specify to compare 2 saidxes.
  * compare two secasindex structure without both mode and reqid.
  * don't compare port.
- * IN:  
+ * IN:
  *      saidx0: source, it can be in SAD.
  *      saidx1: object.
- * OUT: 
+ * OUT:
  *      1 : equal
  *      0 : not equal
  */
@@ -4233,7 +4233,7 @@ key_cmpspidx_withmask(struct secpolicyindex *spidx0,
 			return 0;
 		/*
 		 * scope_id check. if sin6_scope_id is 0, we regard it
-		 * as a wildcard scope, which matches any scope zone ID. 
+		 * as a wildcard scope, which matches any scope zone ID.
 		 */
 		if (spidx0->src.sin6.sin6_scope_id &&
 		    spidx1->src.sin6.sin6_scope_id &&
@@ -4265,7 +4265,7 @@ key_cmpspidx_withmask(struct secpolicyindex *spidx0,
 			return 0;
 		/*
 		 * scope_id check. if sin6_scope_id is 0, we regard it
-		 * as a wildcard scope, which matches any scope zone ID. 
+		 * as a wildcard scope, which matches any scope zone ID.
 		 */
 		if (spidx0->dst.sin6.sin6_scope_id &&
 		    spidx1->dst.sin6.sin6_scope_id &&
@@ -8463,8 +8463,8 @@ key_sa_recordxfer(struct secasvar *sav, struct mbuf *m)
  * Take one of the kernel's security keys and convert it into a PF_KEY
  * structure within an mbuf, suitable for sending up to a waiting
  * application in user land.
- * 
- * IN: 
+ *
+ * IN:
  *    src: A pointer to a kernel security key.
  *    exttype: Which type of key this is. Refer to the PF_KEY data structures.
  * OUT:
@@ -8473,7 +8473,7 @@ key_sa_recordxfer(struct secasvar *sav, struct mbuf *m)
  */
 
 static struct mbuf *
-key_setkey(struct seckey *src, uint16_t exttype) 
+key_setkey(struct seckey *src, uint16_t exttype)
 {
 	struct mbuf *m;
 	struct sadb_key *p;
@@ -8502,10 +8502,10 @@ key_setkey(struct seckey *src, uint16_t exttype)
  * Take one of the kernel's lifetime data structures and convert it
  * into a PF_KEY structure within an mbuf, suitable for sending up to
  * a waiting application in user land.
- * 
- * IN: 
+ *
+ * IN:
  *    src: A pointer to a kernel lifetime structure.
- *    exttype: Which type of lifetime this is. Refer to the PF_KEY 
+ *    exttype: Which type of lifetime this is. Refer to the PF_KEY
  *             data structures for more information.
  * OUT:
  *    a valid mbuf or NULL indicating an error

@@ -68,7 +68,7 @@ ngctl_bind(struct bind_args *uap)
         ff_os_errno(error);
         return (-1);
     }
-    
+
     return (error);
 }
 

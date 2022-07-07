@@ -979,7 +979,7 @@ kau_to_socket(struct socket_au_info *soi)
 
 	GET_TOKEN_AREA(t, dptr, sizeof(u_char) + 2 * sizeof(u_int16_t) +
 	    sizeof(u_int32_t) + sizeof(u_int16_t) + sizeof(u_int32_t));
-                                                 
+
 	ADD_U_CHAR(dptr, AUT_SOCKET);
 	/* Coerce the socket type into a short value */
 	so_type = soi->so_type;

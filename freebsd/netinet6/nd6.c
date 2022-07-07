@@ -754,7 +754,7 @@ nd6_llinfo_timer(void *arg)
 	LLE_WLOCK(ln);
 	if (callout_pending(&ln->lle_timer)) {
 		/*
-		 * Here we are a bit odd here in the treatment of 
+		 * Here we are a bit odd here in the treatment of
 		 * active/pending. If the pending bit is set, it got
 		 * rescheduled before I ran. The active
 		 * bit we ignore, since if it was stopped
@@ -1188,7 +1188,7 @@ nd6_purge(struct ifnet *ifp)
 	}
 }
 
-/* 
+/*
  * the caller acquires and releases the lock on the lltbls
  * Returns the llentry locked
  */
@@ -1314,7 +1314,7 @@ restart:
 
 			/*
 			 * This is the case where multiple interfaces
-			 * have the same prefix, but only one is installed 
+			 * have the same prefix, but only one is installed
 			 * into the routing table and that prefix entry
 			 * is not the one being examined here.
 			 */
@@ -1998,7 +1998,7 @@ nd6_cache_lladdr(struct ifnet *ifp, struct in6_addr *from, char *lladdr,
 			ln = ln_tmp;
 			ln_tmp = NULL;
 		}
-	} 
+	}
 	/* do nothing if static ndp is set */
 	if ((ln->la_flags & LLE_STATIC)) {
 		if (flags & LLE_EXCLUSIVE)
@@ -2332,7 +2332,7 @@ nd6_resolve_slow(struct ifnet *ifp, int flags, struct mbuf *m,
 				lle_tmp = NULL;
 			}
 		}
-	} 
+	}
 	if (lle == NULL) {
 		m_freem(m);
 		return (ENOBUFS);
@@ -2384,7 +2384,7 @@ nd6_resolve_slow(struct ifnet *ifp, int flags, struct mbuf *m,
 	if (lle->la_hold != NULL) {
 		struct mbuf *m_hold;
 		int i;
-		
+
 		i = 0;
 		for (m_hold = lle->la_hold; m_hold; m_hold = m_hold->m_nextpkt){
 			i++;
@@ -2564,7 +2564,7 @@ nd6_rem_ifa_lle(struct in6_ifaddr *ia, int all)
 		lltable_delete_addr(LLTABLE6(ifp), LLE_IFADDR, saddr);
 }
 
-static void 
+static void
 clear_llinfo_pqueue(struct llentry *ln)
 {
 	struct mbuf *m_hold, *m_hold_next;

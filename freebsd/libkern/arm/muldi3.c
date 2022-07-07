@@ -54,7 +54,7 @@ __FBSDID("$FreeBSD$");
  *
  *	u = 2^n u1  *  u0	(n = number of bits in `u_int', usu. 32)
  *
- * and 
+ * and
  *
  *	v = 2^n v1  *  v0
  *

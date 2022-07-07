@@ -727,9 +727,9 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return bond_cfg_handler(pconfig, section, name, value);
     } else if (strcmp(section, "pcap") == 0) {
         if (strcmp(name, "snaplen") == 0) {
-            pconfig->pcap.snap_len = (uint16_t)atoi(value);            
+            pconfig->pcap.snap_len = (uint16_t)atoi(value);
         } else if (strcmp(name, "savelen") == 0) {
-            pconfig->pcap.save_len = (uint32_t)atoi(value);            
+            pconfig->pcap.save_len = (uint32_t)atoi(value);
         } else if (strcmp(name, "enable") == 0) {
             pconfig->pcap.enable = (uint16_t)atoi(value);
         } else if (strcmp(name, "savepath") == 0) {

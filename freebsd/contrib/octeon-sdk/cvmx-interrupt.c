@@ -340,7 +340,7 @@ static void __cvmx_interrupt_set_mapping(int irq, unsigned int en, unsigned int 
         cvmx_ciu_to_irq[en][bit] = irq;
     else if (en == 8)
         cvmx_ciu_61xx_timer_to_irq[bit] = irq;
-    else 
+    else
         cvmx_ciu2_mbox_to_irq[bit] = irq;
 }
 
@@ -350,13 +350,13 @@ static uint64_t cvmx_interrupt_ciu_61xx_timer_mirror;
 
 /**
  * @INTERNAL
- * Called for all Performance Counter interrupts. Handler for 
+ * Called for all Performance Counter interrupts. Handler for
  * interrupt line 6
  *
  * @param irq_number Interrupt number that we're being called for
  * @param registers  Registers at the time of the interrupt
  * @param user_arg   Unused user argument*
- */ 
+ */
 static void __cvmx_interrupt_perf(int irq_number, uint64_t *registers, void *user_arg)
 {
     uint64_t perf_counter;
@@ -1156,13 +1156,13 @@ void cvmx_interrupt_initialize(void)
         cvmx_interrupt_register(CVMX_IRQ_MIPS2, __cvmx_interrupt_ciu, NULL);
         cvmx_interrupt_register(CVMX_IRQ_MIPS3, __cvmx_interrupt_ciu, NULL);
     }
-   
+
     /* Move performance counter interrupts to IRQ 6*/
     cvmx_update_perfcnt_irq();
 
     /* Add an interrupt handler for Perf counter interrupts */
     cvmx_interrupt_register(CVMX_IRQ_MIPS6, __cvmx_interrupt_perf, NULL);
-    
+
     if (cvmx_coremask_first_core(sys_info_ptr->core_mask) && !is_core_being_hot_plugged())
     {
         cvmx_interrupt_state.exception_handler = __cvmx_interrupt_default_exception_handler;
@@ -1185,7 +1185,7 @@ void cvmx_interrupt_initialize(void)
             cvmx_warn("cvmx_error_initialize() failed\n");
 
         /* Enable PIP/IPD, POW, PKO, FPA, NAND, KEY, RAD, L2C, LMC, GMX, AGL,
-           DFM, DFA, error handling interrupts. */ 
+           DFM, DFA, error handling interrupts. */
         if (OCTEON_IS_MODEL(OCTEON_CN68XX))
         {
             int i;

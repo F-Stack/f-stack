@@ -109,9 +109,9 @@ int TestStringPrintf(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     if (argc < 3) {
         return RedisModule_WrongArity(ctx);
     }
-    RedisModuleString *s = RedisModule_CreateStringPrintf(ctx, 
-        "Got %d args. argv[1]: %s, argv[2]: %s", 
-        argc, 
+    RedisModuleString *s = RedisModule_CreateStringPrintf(ctx,
+        "Got %d args. argv[1]: %s, argv[2]: %s",
+        argc,
         RedisModule_StringPtrLen(argv[1], NULL),
         RedisModule_StringPtrLen(argv[2], NULL)
     );
@@ -133,7 +133,7 @@ int TestUnlink(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
     RedisModuleKey *k = RedisModule_OpenKey(ctx, RedisModule_CreateStringPrintf(ctx, "unlinked"), REDISMODULE_WRITE | REDISMODULE_READ);
     if (!k) return failTest(ctx, "Could not create key");
-    
+
     if (REDISMODULE_ERR == RedisModule_StringSet(k, RedisModule_CreateStringPrintf(ctx, "Foobar"))) {
         return failTest(ctx, "Could not set string value");
     }
@@ -152,7 +152,7 @@ int TestUnlink(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         return failTest(ctx, "Could not verify key to be unlinked");
     }
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
-    
+
 }
 
 int NotifyCallback(RedisModuleCtx *ctx, int type, const char *event,
@@ -423,7 +423,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     if (RedisModule_CreateCommand(ctx,"test.ctxflags",
         TestCtxFlags,"readonly",1,1,1) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
-    
+
     if (RedisModule_CreateCommand(ctx,"test.unlink",
         TestUnlink,"write deny-oom",1,1,1) == REDISMODULE_ERR)
         return REDISMODULE_ERR;

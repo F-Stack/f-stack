@@ -387,7 +387,7 @@ ar9300_invalid_stbc_cfg(int tx_chains, u_int8_t rate_code)
     default:
         HALASSERT(0);
         break;
-    } 
+    }
 
     return AH_TRUE;
 }
@@ -403,10 +403,10 @@ ar9300_get_rate_txpower(struct ath_hal *ah, u_int mode, u_int8_t rate_index,
     case AR9300_DEF_MODE:
         return ahp->txpower[rate_index][num_chains-1];
 
-    
+
     case AR9300_STBC_MODE:
         return ahp->txpower_stbc[rate_index][num_chains-1];
-       
+
     default:
         HALDEBUG(ah, HAL_DEBUG_POWER_MGMT, "%s: invalid mode 0x%x\n",
              __func__, xmit_mode);
@@ -418,9 +418,9 @@ ar9300_get_rate_txpower(struct ath_hal *ah, u_int mode, u_int8_t rate_index,
 }
 
 extern void
-ar9300_adjust_reg_txpower_cdd(struct ath_hal *ah, 
+ar9300_adjust_reg_txpower_cdd(struct ath_hal *ah,
                       u_int8_t power_per_rate[])
-                      
+
 {
     struct ath_hal_9300 *ahp = AH9300(ah);
     int16_t twice_array_gain, cdd_power = 0;
@@ -428,14 +428,14 @@ ar9300_adjust_reg_txpower_cdd(struct ath_hal *ah,
 
     /*
      *  Adjust the upper limit for CDD factoring in the array gain .
-     *  The array gain is the same as TxBF, hence reuse the same defines. 
+     *  The array gain is the same as TxBF, hence reuse the same defines.
      */
     switch (ahp->ah_tx_chainmask) {
 
     case OSPREY_1_CHAINMASK:
         cdd_power = ahp->upper_limit[0];
         break;
-  
+
     case OSPREY_2LOHI_CHAINMASK:
     case OSPREY_2LOMID_CHAINMASK:
         twice_array_gain =
@@ -449,25 +449,25 @@ ar9300_adjust_reg_txpower_cdd(struct ath_hal *ah,
         /* Adjust OFDM legacy rates as well */
         for (i = ALL_TARGET_LEGACY_6_24; i <= ALL_TARGET_LEGACY_54; i++) {
             if (power_per_rate[i] > cdd_power) {
-                power_per_rate[i] = cdd_power; 
-            } 
+                power_per_rate[i] = cdd_power;
+            }
         }
-            
+
         /* 2Tx/(n-1) stream Adjust rates MCS0 through MCS 7  HT 20*/
         for (i = ALL_TARGET_HT20_0_8_16; i <= ALL_TARGET_HT20_7; i++) {
             if (power_per_rate[i] > cdd_power) {
-                power_per_rate[i] = cdd_power; 
-            } 
-        } 
+                power_per_rate[i] = cdd_power;
+            }
+        }
 
         /* 2Tx/(n-1) stream Adjust rates MCS0 through MCS 7  HT 40*/
         for (i = ALL_TARGET_HT40_0_8_16; i <= ALL_TARGET_HT40_7; i++) {
             if (power_per_rate[i] > cdd_power) {
-                power_per_rate[i] = cdd_power; 
-            } 
-        } 
+                power_per_rate[i] = cdd_power;
+            }
+        }
         break;
-        
+
     case OSPREY_3_CHAINMASK:
         twice_array_gain =
             (ahp->twice_antenna_gain >= ahp->twice_antenna_reduction)?
@@ -479,8 +479,8 @@ ar9300_adjust_reg_txpower_cdd(struct ath_hal *ah,
         /* Adjust OFDM legacy rates as well */
         for (i = ALL_TARGET_LEGACY_6_24; i <= ALL_TARGET_LEGACY_54; i++) {
             if (power_per_rate[i] > cdd_power) {
-                power_per_rate[i] = cdd_power; 
-            } 
+                power_per_rate[i] = cdd_power;
+            }
         }
         /* 3Tx/(n-1)streams Adjust rates MCS0 through MCS 15 HT20 */
         for (i = ALL_TARGET_HT20_0_8_16; i <= ALL_TARGET_HT20_15; i++) {
@@ -539,7 +539,7 @@ ar9300_init_rate_txpower(struct ath_hal *ah, u_int mode,
 #if 0
         /* For FCC the array gain has to be factored for CDD mode */
         if (is_reg_dmn_fcc(ath_hal_getctl(ah, chan))) {
-            ar9300_adjust_rate_txpower_cdd(ah, rt, is40, 
+            ar9300_adjust_rate_txpower_cdd(ah, rt, is40,
                             AR9300_11NA_RT_HT_SS_OFFSET,
                             AR9300_11NA_RT_HT_DS_OFFSET,
                             AR9300_11NA_RT_HT_TS_OFFSET, chainmask);
@@ -571,7 +571,7 @@ ar9300_init_rate_txpower(struct ath_hal *ah, u_int mode,
 #if 0
         /* For FCC the array gain needs to be factored for CDD mode */
         if (is_reg_dmn_fcc(ath_hal_getctl(ah, chan))) {
-            ar9300_adjust_rate_txpower_cdd(ah, rt, is40, 
+            ar9300_adjust_rate_txpower_cdd(ah, rt, is40,
                             AR9300_11NG_RT_HT_SS_OFFSET,
                             AR9300_11NG_RT_HT_DS_OFFSET,
                             AR9300_11NG_RT_HT_TS_OFFSET, chainmask);
@@ -651,12 +651,12 @@ ar9300_init_rate_txpower_ofdm(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
 
     /*
      *  For FCC adjust the upper limit for CDD factoring in the array gain.
-     *  The array gain is the same as TxBF, hence reuse the same defines. 
+     *  The array gain is the same as TxBF, hence reuse the same defines.
      */
     for (i = rt_offset; i < rt_offset + AR9300_NUM_OFDM_RATES; i++) {
 
         /* Get the correct OFDM rate to Power table Index */
-        j = ofdm_rt_2_pwr_idx[i- rt_offset]; 
+        j = ofdm_rt_2_pwr_idx[i- rt_offset];
 
         switch (chainmask) {
         case OSPREY_1_CHAINMASK:
@@ -689,7 +689,7 @@ ar9300_init_rate_txpower_ofdm(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
                 if (ahp->txpower[i][2] > cdd_power){
                     ahp->txpower[i][2] = cdd_power;
                 }
-            } 
+            }
             break;
         default:
             HALDEBUG(ah, HAL_DEBUG_POWER_MGMT, "%s: invalid chainmask 0x%x\n",
@@ -917,7 +917,7 @@ ar9300_init_rate_txpower_stbc(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
             /* 3 TX/2 stream  STBC gain adjustment */
             if (ahp->txpower_stbc[i][2] > stbc_power){
                 ahp->txpower_stbc[i][2] = stbc_power;
-	    } 
+	    }
             break;
         default:
             HALDEBUG(ah, HAL_DEBUG_POWER_MGMT, "%s: invalid chainmask 0x%x\n",
@@ -968,13 +968,13 @@ ar9300_adjust_rate_txpower_cdd(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
 
     /*
      *  Adjust the upper limit for CDD factoring in the array gain .
-     *  The array gain is the same as TxBF, hence reuse the same defines. 
+     *  The array gain is the same as TxBF, hence reuse the same defines.
      */
     switch (chainmask) {
     case OSPREY_1_CHAINMASK:
         cdd_power = ahp->upper_limit[0];
         break;
-  
+
     case OSPREY_2LOHI_CHAINMASK:
     case OSPREY_2LOMID_CHAINMASK:
         twice_array_gain =
@@ -984,7 +984,7 @@ ar9300_adjust_rate_txpower_cdd(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
             (ahp->twice_antenna_gain + AR9300_TXBF_2TX_ARRAY_GAIN)), 0));
         cdd_power = ahp->upper_limit[1] + twice_array_gain;
         break;
-        
+
     case OSPREY_3_CHAINMASK:
         twice_array_gain =
             (ahp->twice_antenna_gain >= ahp->twice_antenna_reduction)?
@@ -1011,7 +1011,7 @@ ar9300_adjust_rate_txpower_cdd(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
             /* 2 TX/1 stream  CDD gain adjustment */
             if (ahp->txpower[i][1] > cdd_power){
                 ahp->txpower[i][1] = cdd_power;
-            } 
+            }
             break;
         case OSPREY_3_CHAINMASK:
             /* 3 TX/1 stream  CDD gain adjustment */
@@ -1037,7 +1037,7 @@ ar9300_adjust_rate_txpower_cdd(struct ath_hal *ah, const HAL_RATE_TABLE *rt,
         /* 3 TX/2 stream  TxBF gain adjustment */
             if (ahp->txpower[i][2] > cdd_power){
                 ahp->txpower[i][2] = cdd_power;
-            } 
+            }
             break;
         default:
             HALDEBUG(ah, HAL_DEBUG_POWER_MGMT, "%s: invalid chainmask 0x%x\n",
@@ -1065,14 +1065,14 @@ void ar9300_disp_tpc_tables(struct ath_hal *ah)
         ath_hal_printf(ah, "\n TPC Register method in use\n");
         return;
     }
-    
+
     rt = ar9300_get_rate_table(ah, mode);
     HALASSERT(rt != NULL);
 
     ath_hal_printf(ah, "\n===TARGET POWER TABLE===\n");
     for (j = 0 ; j < ar9300_get_ntxchains(ahp->ah_tx_chainmask) ; j++ ) {
         for (i = 0; i < rt->rateCount; i++) {
-            int16_t txpower[AR9300_MAX_CHAINS]; 
+            int16_t txpower[AR9300_MAX_CHAINS];
             txpower[j] = ahp->txpower[i][j];
             ath_hal_printf(ah, " Index[%2d] Rate[0x%02x] %6d kbps "
                        "Power (%d Chain) [%2d.%1d dBm]\n",
@@ -1085,7 +1085,7 @@ void ar9300_disp_tpc_tables(struct ath_hal *ah)
     ath_hal_printf(ah, "\n\n===TARGET POWER TABLE with STBC===\n");
     for ( j = 0 ; j < ar9300_get_ntxchains(ahp->ah_tx_chainmask) ; j++ ) {
         for (i = 0; i < rt->rateCount; i++) {
-            int16_t txpower[AR9300_MAX_CHAINS]; 
+            int16_t txpower[AR9300_MAX_CHAINS];
             txpower[j] = ahp->txpower_stbc[i][j];
 
             /* Do not display invalid configurations */
@@ -1138,7 +1138,7 @@ u_int8_t *ar9300_get_tpc_tables(struct ath_hal *ah)
         ath_hal_printf(ah, "\n TPC Register method in use\n");
         return NULL;
     }
-    
+
     rt = (const HAL_RATE_TABLE *)ar9300_get_rate_table(ah, mode);
     HALASSERT(rt != NULL);
 

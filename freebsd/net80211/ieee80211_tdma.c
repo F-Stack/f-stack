@@ -41,8 +41,8 @@ __FBSDID("$FreeBSD$");
 #ifdef	IEEE80211_SUPPORT_TDMA
 
 #include <sys/param.h>
-#include <sys/systm.h> 
-#include <sys/mbuf.h>   
+#include <sys/systm.h>
+#include <sys/mbuf.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
 
@@ -270,7 +270,7 @@ tdma_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	} else {
 		status = ts->tdma_newstate(vap, nstate, arg);
 	}
-	if (status == 0 && 
+	if (status == 0 &&
 	    nstate == IEEE80211_S_RUN && ostate != IEEE80211_S_RUN &&
 	    (vap->iv_flags_ext & IEEE80211_FEXT_SWBMISS) &&
 	    ts->tdma_slot != 0 &&
@@ -527,7 +527,7 @@ tdma_process_params(struct ieee80211_node *ni, const u_int8_t *ie,
 {
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct ieee80211_tdma_state *ts = vap->iv_tdma;
-	const struct ieee80211_tdma_param *tdma = 
+	const struct ieee80211_tdma_param *tdma =
 		(const struct ieee80211_tdma_param *) ie;
 	u_int len = ie[1];
 
@@ -705,7 +705,7 @@ ieee80211_add_tdma(uint8_t *frm, struct ieee80211vap *vap)
 	*frm++ = ts->tdma_bintval;
 	*frm++ = ts->tdma_inuse[0];
 	frm += 10;				/* pad+timestamp */
-	return frm; 
+	return frm;
 #undef ADDSHORT
 }
 #undef TDMA_OUI_BYTES

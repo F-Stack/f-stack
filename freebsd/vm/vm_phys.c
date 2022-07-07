@@ -1274,7 +1274,7 @@ vm_phys_scan_contig(int domain, u_long npages, vm_paddr_t low, vm_paddr_t high,
 }
 
 /*
- * Set the pool for a contiguous, power of two-sized set of physical pages. 
+ * Set the pool for a contiguous, power of two-sized set of physical pages.
  */
 void
 vm_phys_set_pool(int pool, vm_page_t m, int order)

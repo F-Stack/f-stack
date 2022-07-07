@@ -825,7 +825,7 @@ static cvmx_debug_command_t cvmx_debug_process_packet(const char *packet)
                 n = cvmx_debug_hex(buf[i * 2]);
                 n1 = cvmx_debug_hex(buf[i * 2 + 1]);
                 c = (n << 4) | n1;
-            
+
                 if (n == -1 || n1 == -1)
                 {
                     cvmx_debug_printf("M packet corrupt: %s\n", &buf[i * 2]);
@@ -1181,7 +1181,7 @@ static void cvmx_debug_delay_isr_core(unsigned core, uint32_t depc, int single_s
        if (i > 600000 && state.focus_switch)
            i = 500000;
     }
-    
+
 }
 
 static int cvmx_debug_perform_proxy(cvmx_debug_register_t *debug_reg, volatile cvmx_debug_core_context_t *context)

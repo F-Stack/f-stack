@@ -225,10 +225,10 @@ int cvmx_ilk_start_interface (int interface, unsigned char lane_mask)
  *
  * @param pipe_base the base of the pipe group
  * @param pipe_len  the length of the pipe group
- * 
+ *
  * @return Zero on success, negative of failure.
  */
-int cvmx_ilk_set_pipe (int interface, int pipe_base, unsigned int pipe_len) 
+int cvmx_ilk_set_pipe (int interface, int pipe_base, unsigned int pipe_len)
 {
     int res = -1;
     cvmx_ilk_txx_pipe_t ilk_txx_pipe;
@@ -356,7 +356,7 @@ int cvmx_ilk_rx_set_pknd (int interface, cvmx_ilk_chan_pknd_t *chpknd,
  *
  * @return Zero on success, negative of failure.
  */
-static int cvmx_ilk_rx_cal_conf (int interface, int cal_depth, 
+static int cvmx_ilk_rx_cal_conf (int interface, int cal_depth,
                           cvmx_ilk_cal_entry_t *pent)
 {
     int res = -1, num_grp, num_rest, i, j;
@@ -387,14 +387,14 @@ static int cvmx_ilk_rx_cal_conf (int interface, int cal_depth,
     /* set the depth */
     ilk_rxx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG0(interface));
     ilk_rxx_cfg0.s.cal_depth = cal_depth;
-    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64);
 
     /* set the calendar index */
     num_grp = cal_depth / CVMX_ILK_CAL_GRP_SZ;
     num_rest = cal_depth % CVMX_ILK_CAL_GRP_SZ;
     ilk_rxx_idx_cal.u64 = 0;
     ilk_rxx_idx_cal.s.inc = 1;
-    cvmx_write_csr (CVMX_ILK_RXX_IDX_CAL(interface), ilk_rxx_idx_cal.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_IDX_CAL(interface), ilk_rxx_idx_cal.u64);
 
     /* set the calendar entries. each group has both cal0 and cal1 registers */
     for (i = 0; i < num_grp; i++)
@@ -506,7 +506,7 @@ static int cvmx_ilk_rx_set_hwm (int interface, int hi_wm)
     /* set the hwm */
     ilk_rxx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG1(interface));
     ilk_rxx_cfg1.s.rx_fifo_hwm = hi_wm;
-    cvmx_write_csr (CVMX_ILK_RXX_CFG1(interface), ilk_rxx_cfg1.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_CFG1(interface), ilk_rxx_cfg1.u64);
     res = 0;
 
     return res;
@@ -537,7 +537,7 @@ static int cvmx_ilk_rx_cal_ena (int interface, unsigned char cal_ena)
     /* set the enable */
     ilk_rxx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG0(interface));
     ilk_rxx_cfg0.s.cal_ena = cal_ena;
-    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64);
     cvmx_read_csr (CVMX_ILK_RXX_CFG0(interface));
     res = 0;
 
@@ -597,7 +597,7 @@ EXPORT_SYMBOL(cvmx_ilk_cal_setup_rx);
  *
  * @return Zero on success, negative of failure.
  */
-static int cvmx_ilk_tx_cal_conf (int interface, int cal_depth, 
+static int cvmx_ilk_tx_cal_conf (int interface, int cal_depth,
                           cvmx_ilk_cal_entry_t *pent)
 {
     int res = -1, num_grp, num_rest, i, j;
@@ -643,12 +643,12 @@ static int cvmx_ilk_tx_cal_conf (int interface, int cal_depth,
     /* set the depth */
     ilk_txx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG0(interface));
     ilk_txx_cfg0.s.cal_depth = cal_depth;
-    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64);
 
     /* set the calendar index */
     ilk_txx_idx_cal.u64 = 0;
     ilk_txx_idx_cal.s.inc = 1;
-    cvmx_write_csr (CVMX_ILK_TXX_IDX_CAL(interface), ilk_txx_idx_cal.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_IDX_CAL(interface), ilk_txx_idx_cal.u64);
 
     /* set the calendar entries. each group has both cal0 and cal1 registers */
     for (i = 0; i < num_grp; i++)
@@ -727,7 +727,7 @@ static int cvmx_ilk_bp_conf (int interface, int cal_depth, cvmx_ilk_cal_entry_t 
         ipd_bpidx_mbuf_th.s.page_cnt = 1; /* 256 buffers */
         ipd_bpidx_mbuf_th.s.bp_enb = 1;
         cvmx_write_csr (CVMX_IPD_BPIDX_MBUF_TH(bpid), ipd_bpidx_mbuf_th.u64);
-    }         
+    }
     res = 0;
 
     return res;
@@ -759,7 +759,7 @@ static int cvmx_ilk_tx_cal_ena (int interface, unsigned char cal_ena)
     /* set the enable */
     ilk_txx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG0(interface));
     ilk_txx_cfg0.s.cal_ena = cal_ena;
-    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64);
     cvmx_read_csr (CVMX_ILK_TXX_CFG0(interface));
     res = 0;
 
@@ -827,10 +827,10 @@ static void cvmx_ilk_reg_dump_rx (int interface)
 
     ilk_rxx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG0(interface));
     cvmx_dprintf ("ilk rxx cfg0: 0x%16lx\n", ilk_rxx_cfg0.u64);
-    
+
     ilk_rxx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG1(interface));
     cvmx_dprintf ("ilk rxx cfg1: 0x%16lx\n", ilk_rxx_cfg1.u64);
-    
+
     ilk_rxx_int.u64 = cvmx_read_csr (CVMX_ILK_RXX_INT(interface));
     cvmx_dprintf ("ilk rxx int: 0x%16lx\n", ilk_rxx_int.u64);
     cvmx_write_csr (CVMX_ILK_RXX_INT(interface), ilk_rxx_int.u64);
@@ -875,7 +875,7 @@ static void cvmx_ilk_reg_dump_rx (int interface)
 #define CAL_NUM_DBG 2
     ilk_rxx_idx_cal.u64 = 0;
     ilk_rxx_idx_cal.s.inc = 1;
-    cvmx_write_csr (CVMX_ILK_RXX_IDX_CAL(interface), ilk_rxx_idx_cal.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_IDX_CAL(interface), ilk_rxx_idx_cal.u64);
     for (i = 0; i < CAL_NUM_DBG; i++)
     {
         ilk_rxx_idx_cal.u64 = cvmx_read_csr(CVMX_ILK_RXX_IDX_CAL(interface));
@@ -903,7 +903,7 @@ static void cvmx_ilk_reg_dump_tx (int interface)
 
     ilk_txx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG0(interface));
     cvmx_dprintf ("ilk txx cfg0: 0x%16lx\n", ilk_txx_cfg0.u64);
-    
+
     ilk_txx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG1(interface));
     cvmx_dprintf ("ilk txx cfg1: 0x%16lx\n", ilk_txx_cfg1.u64);
 
@@ -926,7 +926,7 @@ static void cvmx_ilk_reg_dump_tx (int interface)
 
     ilk_txx_idx_cal.u64 = 0;
     ilk_txx_idx_cal.s.inc = 1;
-    cvmx_write_csr (CVMX_ILK_TXX_IDX_CAL(interface), ilk_txx_idx_cal.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_IDX_CAL(interface), ilk_txx_idx_cal.u64);
     for (i = 0; i < CAL_NUM_DBG; i++)
     {
         ilk_txx_idx_cal.u64 = cvmx_read_csr(CVMX_ILK_TXX_IDX_CAL(interface));
@@ -952,11 +952,11 @@ static void cvmx_ilk_reg_dump_tx (int interface)
 void cvmx_ilk_runtime_status (int interface)
 {
     cvmx_ilk_txx_cfg1_t ilk_txx_cfg1;
-    cvmx_ilk_txx_flow_ctl0_t ilk_txx_flow_ctl0; 
+    cvmx_ilk_txx_flow_ctl0_t ilk_txx_flow_ctl0;
     cvmx_ilk_rxx_cfg1_t ilk_rxx_cfg1;
     cvmx_ilk_rxx_int_t ilk_rxx_int;
-    cvmx_ilk_rxx_flow_ctl0_t ilk_rxx_flow_ctl0; 
-    cvmx_ilk_rxx_flow_ctl1_t ilk_rxx_flow_ctl1; 
+    cvmx_ilk_rxx_flow_ctl0_t ilk_rxx_flow_ctl0;
+    cvmx_ilk_rxx_flow_ctl1_t ilk_rxx_flow_ctl1;
     cvmx_ilk_gbl_int_t ilk_gbl_int;
 
     cvmx_dprintf ("\nilk run-time status: interface: %d\n", interface);
@@ -970,7 +970,7 @@ void cvmx_ilk_runtime_status (int interface)
 
     ilk_txx_flow_ctl0.u64 = cvmx_read_csr (CVMX_ILK_TXX_FLOW_CTL0(interface));
     cvmx_dprintf ("\nilk txx flow ctl0: 0x%16lx\n", ilk_txx_flow_ctl0.u64);
-        
+
     ilk_rxx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG1(interface));
     cvmx_dprintf ("\nilk rxx cfg1: 0x%16lx\n", ilk_rxx_cfg1.u64);
     cvmx_dprintf ("rx fifo count: %d\n", ilk_rxx_cfg1.s.rx_fifo_cnt);
@@ -981,7 +981,7 @@ void cvmx_ilk_runtime_status (int interface)
         cvmx_dprintf ("rx fifo packet drop\n");
     if (ilk_rxx_int.u64)
         cvmx_write_csr (CVMX_ILK_RXX_INT(interface), ilk_rxx_int.u64);
-        
+
     ilk_rxx_flow_ctl0.u64 = cvmx_read_csr (CVMX_ILK_RXX_FLOW_CTL0(interface));
     cvmx_dprintf ("\nilk rxx flow ctl0: 0x%16lx\n", ilk_rxx_flow_ctl0.u64);
 
@@ -1025,7 +1025,7 @@ int cvmx_ilk_enable (int interface)
         return res;
 
     result.u64 = 0;
-    
+
 #ifdef CVMX_ILK_STATS_ENA
     cvmx_dprintf ("\n");
     cvmx_dprintf ("<<<< ILK%d: Before enabling ilk\n", interface);
@@ -1039,19 +1039,19 @@ int cvmx_ilk_enable (int interface)
     ilk_txx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG1(interface));
     ilk_txx_cfg1.s.pkt_ena = 1;
     ilk_txx_cfg1.s.rx_link_fc_ign = 1; /* cannot use link fc workaround */
-    cvmx_write_csr (CVMX_ILK_TXX_CFG1(interface), ilk_txx_cfg1.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_CFG1(interface), ilk_txx_cfg1.u64);
     cvmx_read_csr (CVMX_ILK_TXX_CFG1(interface));
 
 #ifdef CVMX_ILK_STATS_ENA
     /* RX side stats */
     ilk_rxx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG0(interface));
     ilk_rxx_cfg0.s.lnk_stats_ena = 1;
-    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64);
 
     /* TX side stats */
     ilk_txx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG0(interface));
     ilk_txx_cfg0.s.lnk_stats_ena = 1;
-    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64);
 #endif
 
 retry:
@@ -1067,10 +1067,10 @@ retry:
 
     ilk_rxx_cfg1.u64 = cvmx_read_csr(CVMX_ILK_RXX_CFG1(interface));
     if (ilk_rxx_cfg1.s.pkt_ena == 0)
-       goto retry; 
+       goto retry;
 
 out:
-        
+
 #ifdef CVMX_ILK_STATS_ENA
     cvmx_dprintf (">>>> ILK%d: After ILK is enabled\n", interface);
     cvmx_ilk_reg_dump_rx (interface);
@@ -1110,23 +1110,23 @@ int cvmx_ilk_disable (int interface)
     /* TX side */
     ilk_txx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG1(interface));
     ilk_txx_cfg1.s.pkt_ena = 0;
-    cvmx_write_csr (CVMX_ILK_TXX_CFG1(interface), ilk_txx_cfg1.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_CFG1(interface), ilk_txx_cfg1.u64);
 
     /* RX side */
     ilk_rxx_cfg1.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG1(interface));
     ilk_rxx_cfg1.s.pkt_ena = 0;
-    cvmx_write_csr (CVMX_ILK_RXX_CFG1(interface), ilk_rxx_cfg1.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_CFG1(interface), ilk_rxx_cfg1.u64);
 
 #ifdef CVMX_ILK_STATS_ENA
     /* RX side stats */
     ilk_rxx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_RXX_CFG0(interface));
     ilk_rxx_cfg0.s.lnk_stats_ena = 0;
-    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_RXX_CFG0(interface), ilk_rxx_cfg0.u64);
 
     /* RX side stats */
     ilk_txx_cfg0.u64 = cvmx_read_csr (CVMX_ILK_TXX_CFG0(interface));
     ilk_txx_cfg0.s.lnk_stats_ena = 0;
-    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64); 
+    cvmx_write_csr (CVMX_ILK_TXX_CFG0(interface), ilk_txx_cfg0.u64);
 #endif
 
     return 0;

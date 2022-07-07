@@ -66,7 +66,7 @@ ar9300_enable_receive(struct ath_hal *ah)
  */
 HAL_BOOL
 ar9300_set_rx_abort(struct ath_hal *ah, HAL_BOOL set)
-{ 
+{
     if (set) {
         /* Set the force_rx_abort bit */
         OS_REG_SET_BIT(ah, AR_DIAG_SW, (AR_DIAG_RX_DIS | AR_DIAG_RX_ABORT));
@@ -121,8 +121,8 @@ ar9300_stop_dma_receive(struct ath_hal *ah, u_int timeout)
 
     org_value = OS_REG_READ(ah, AR_MACMISC);
 
-    OS_REG_WRITE(ah, AR_MACMISC, 
-        ((AR_MACMISC_DMA_OBS_LINE_8 << AR_MACMISC_DMA_OBS_S) | 
+    OS_REG_WRITE(ah, AR_MACMISC,
+        ((AR_MACMISC_DMA_OBS_LINE_8 << AR_MACMISC_DMA_OBS_S) |
          (AR_MACMISC_MISC_OBS_BUS_1 << AR_MACMISC_MISC_OBS_BUS_MSB_S)));
 
         okay = ath_hal_wait(
@@ -286,11 +286,11 @@ void ar9300_promisc_mode(struct ath_hal *ah, HAL_BOOL enable)
         reg_val |= AR_RX_PROM;
     } else{ /*Disable promisc mode */
         reg_val &= ~AR_RX_PROM;
-    }    
+    }
     OS_REG_WRITE(ah, AR_RX_FILTER, reg_val);
 }
 
-void 
+void
 ar9300_read_pktlog_reg(
     struct ath_hal *ah,
     u_int32_t *rxfilter_val,

@@ -339,9 +339,9 @@ mbpr(void *kvmd, u_long mbaddr)
 		goto out;
 
         xo_emit("{:sendfile-syscalls/%ju} {N:sendfile syscalls}\n",
-	    (uintmax_t)sfstat.sf_syscalls); 
+	    (uintmax_t)sfstat.sf_syscalls);
         xo_emit("{:sendfile-no-io/%ju} "
-	    "{N:sendfile syscalls completed without I\\/O request}\n", 
+	    "{N:sendfile syscalls completed without I\\/O request}\n",
             (uintmax_t)sfstat.sf_noiocnt);
 	xo_emit("{:sendfile-io-count/%ju} "
 	    "{N:requests for I\\/O initiated by sendfile}\n",

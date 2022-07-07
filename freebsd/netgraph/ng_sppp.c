@@ -120,7 +120,7 @@ ng_sppp_get_unit (int *unit)
 	if (index == ng_sppp_units_len) {		/* extend array */
 		unsigned char *newarray;
 		int newlen;
-		
+
 		newlen = (2 * ng_sppp_units_len) + sizeof (*ng_sppp_units);
 		newarray = malloc (newlen * sizeof (*ng_sppp_units),
 		    M_NETGRAPH_SPPP, M_WAITOK);
@@ -210,18 +210,18 @@ ng_sppp_start (struct ifnet *ifp)
 
 	if (ifp->if_drv_flags & IFF_DRV_OACTIVE)
 		return;
-		
+
 	if (!priv->hook)
 		return;
-		
+
 	ifp->if_drv_flags |= IFF_DRV_OACTIVE;
 
 	while ((m = sppp_dequeue (ifp)) != NULL) {
 		BPF_MTAP (ifp, m);
 		len = m->m_pkthdr.len;
-		
+
 		NG_SEND_DATA_ONLY (error, priv->hook, m);
-		
+
 		if (error) {
 			ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 			return;
@@ -298,7 +298,7 @@ ng_sppp_newhook (node_p node, hook_p hook, const char *name)
 
 	if (priv->hook)
 		return (EISCONN);
-		
+
 	priv->hook = hook;
 	NG_HOOK_SET_PRIVATE (hook, priv);
 

@@ -72,10 +72,10 @@ static inline HAL_BOOL ar9300_init_cal(struct ath_hal *ah, struct ieee80211_chan
 static inline void ar9300_init_user_settings(struct ath_hal *ah);
 
 #ifdef HOST_OFFLOAD
-/* 
- * For usb offload solution, some USB registers must be tuned 
+/*
+ * For usb offload solution, some USB registers must be tuned
  * to gain better stability/performance but these registers
- * might be changed while doing wlan reset so do this here 
+ * might be changed while doing wlan reset so do this here
  */
 #define WAR_USB_DISABLE_PLL_LOCK_DETECT(__ah) \
 do { \
@@ -123,11 +123,11 @@ ar9300_attach_hw_platform(struct ath_hal *ah)
 }
 
 /* Adjust various register settings based on half/quarter rate clock setting.
- * This includes: +USEC, TX/RX latency, 
+ * This includes: +USEC, TX/RX latency,
  *                + IFS params: slot, eifs, misc etc.
  * SIFS stays the same.
  */
-static void 
+static void
 ar9300_set_ifs_timing(struct ath_hal *ah, struct ieee80211_channel *chan)
 {
     u_int32_t tx_lat, rx_lat, usec, slot, regval, eifs;
@@ -194,9 +194,9 @@ ar9300_init_mfp(struct ath_hal * ah)
             AR_PCU_MISC_MODE2_NO_CRYPTO_FOR_NON_DATA_PKT);
         /*
         * Mask used to construct AAD for CCMP-AES
-        * Cisco spec defined bits 0-3 as mask 
+        * Cisco spec defined bits 0-3 as mask
         * IEEE802.11w defined as bit 4.
-        */		
+        */
         if (ath_hal_get_mfp_qos(ah)) {
             mfp_qos = AR_MFP_QOS_MASK_IEEE;
         } else {
@@ -320,7 +320,7 @@ ar9300_upload_noise_floor(struct ath_hal *ah, int is_2g,
     for (chan = 0; chan < 2 /*ctl,ext*/; chan++) {
         for (chain = 0; chain < AR9300_MAX_CHAINS; chain++) {
             int i;
-            
+
             if (!((chainmask >> chain) & 0x1)) {
                 continue;
             }
@@ -339,7 +339,7 @@ ar9300_upload_noise_floor(struct ath_hal *ah, int is_2g,
  * reading is done. In case it has been done, it reads the noise floor value.
  * If the noise floor calibration has not been finished, it assumes this is
  * due to presence of CW interference an returns a high value for noise floor,
- * derived from the CW interference threshold + margin fudge factor. 
+ * derived from the CW interference threshold + margin fudge factor.
  */
 #define BAD_SCAN_NF_MARGIN (30)
 int16_t ar9300_get_min_cca_pwr(struct ath_hal *ah)
@@ -362,8 +362,8 @@ int16_t ar9300_get_min_cca_pwr(struct ath_hal *ah)
 }
 
 
-/* 
- * Noise Floor values for all chains. 
+/*
+ * Noise Floor values for all chains.
  * Most recently updated values from the NF history buffer are used.
  */
 void ar9300_chain_noise_floor(struct ath_hal *ah, int16_t *nf_buf,
@@ -373,7 +373,7 @@ void ar9300_chain_noise_floor(struct ath_hal *ah, int16_t *nf_buf,
     int i, nf_hist_len, recent_nf_index = 0;
     HAL_NFCAL_HIST_FULL *h;
     u_int8_t rx_chainmask = ahp->ah_rx_chainmask | (ahp->ah_rx_chainmask << 3);
-    HAL_CHANNEL_INTERNAL *ichan = ath_hal_checkchannel(ah, chan); 
+    HAL_CHANNEL_INTERNAL *ichan = ath_hal_checkchannel(ah, chan);
     HALASSERT(ichan);
 
 #ifdef ATH_NF_PER_CHAN
@@ -502,8 +502,8 @@ ar9300_reset_nf_hist_buff(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan)
     HAL_CHAN_NFCAL_HIST *h = &ichan->nf_cal_hist;
     HAL_NFCAL_HIST_FULL *home = &AH_PRIVATE(ah)->nf_cal_hist;
     int i;
-    
-    /* 
+
+    /*
      * Copy the value for the channel in question into the home-channel
      * NF history buffer.  The channel NF is probably a value filled in by
      * a prior background channel scan, but if no scan has been done then
@@ -735,7 +735,7 @@ ar9300_store_new_nf(struct ath_hal *ah, struct ieee80211_channel *chan,
          */
         HALDEBUG(ah, HAL_DEBUG_NFCAL,
             "%s: NF Cal: CW interferer detected through NF: %d\n",
-            __func__, nf_no_lim); 
+            __func__, nf_no_lim);
         chan->ic_state |= IEEE80211_CHANSTATE_CWINT;
     }
     return 1; /* HW's NF measurement finished */
@@ -943,7 +943,7 @@ ar9300_spur_mitigate_mrc_cck(struct ath_hal *ah, struct ieee80211_channel *chan)
     u_int8_t* spur_fbin_ptr = NULL;
     int synth_freq;
     int range = 10;
-    int max_spurcounts = OSPREY_EEPROM_MODAL_SPURS; 
+    int max_spurcounts = OSPREY_EEPROM_MODAL_SPURS;
     HAL_CHANNEL_INTERNAL *ichan = ath_hal_checkchannel(ah, chan);
 
     /*
@@ -984,14 +984,14 @@ ar9300_spur_mitigate_mrc_cck(struct ath_hal *ah, struct ieee80211_channel *chan)
 
         if (AR_SREV_HORNET(ah) || AR_SREV_POSEIDON(ah) ||
             AR_SREV_WASP(ah) || AR_SREV_SCORPION(ah)) {
-            cur_bb_spur = 
+            cur_bb_spur =
                 FBIN2FREQ(spur_fbin_ptr[i], HAL_FREQ_BAND_2GHZ) - synth_freq;
         } else if(AR_SREV_JUPITER(ah)) {
             cur_bb_spur = spur_freq_for_jupiter[i] - synth_freq;
         } else {
             cur_bb_spur = spur_freq_for_osprey[i] - synth_freq;
         }
-        
+
         if (cur_bb_spur < 0) {
             negative = 1;
             cur_bb_spur = -cur_bb_spur;
@@ -1018,7 +1018,7 @@ ar9300_spur_mitigate_mrc_cck(struct ath_hal *ah, struct ieee80211_channel *chan)
             OS_REG_RMW_FIELD(ah,
                 AR_PHY_CCK_SPUR_MIT, AR_PHY_CCK_SPUR_MIT_CCK_SPUR_FREQ,
                 cck_spur_freq);
-            return; 
+            return;
         }
     }
 
@@ -1035,7 +1035,7 @@ ar9300_spur_mitigate_mrc_cck(struct ath_hal *ah, struct ieee80211_channel *chan)
 /* Spur mitigation for OFDM */
 static void
 ar9300_spur_mitigate_ofdm(struct ath_hal *ah, struct ieee80211_channel *chan)
-{ 
+{
     int synth_freq;
     int range = 10;
     int freq_offset = 0;
@@ -1239,7 +1239,7 @@ ar9300_spur_mitigate_ofdm(struct ath_hal *ah, struct ieee80211_channel *chan)
 
 
 /*
- * Convert to baseband spur frequency given input channel frequency 
+ * Convert to baseband spur frequency given input channel frequency
  * and compute register settings below.
  */
 static void
@@ -1296,8 +1296,8 @@ ar9300_channel_change(struct ath_hal *ah, struct ieee80211_channel *chan,
         return AH_FALSE;
     }
 
-    /* 
-     * Some registers get reinitialized during ATH_INI_POST INI programming. 
+    /*
+     * Some registers get reinitialized during ATH_INI_POST INI programming.
      */
     ar9300_init_user_settings(ah);
 
@@ -1470,31 +1470,31 @@ ar9300_init_pll(struct ath_hal *ah, struct ieee80211_channel *chan)
         OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, AR_PHY_BB_DPLL2_PLL_PWD, 0x1);
 
         /* program BB PLL ki and kd value, ki=0x4, kd=0x40 */
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2,
             AR_PHY_BB_DPLL2_KD, 0x40);
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2,
             AR_PHY_BB_DPLL2_KI, 0x4);
 
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL1, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL1,
             AR_PHY_BB_DPLL1_REFDIV, 0x5);
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL1, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL1,
             AR_PHY_BB_DPLL1_NINI, 0x58);
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL1, 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL1,
             AR_PHY_BB_DPLL1_NFRAC, 0x0);
 
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, 
-            AR_PHY_BB_DPLL2_OUTDIV, 0x1);      
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, 
-            AR_PHY_BB_DPLL2_LOCAL_PLL, 0x1);      
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, 
-            AR_PHY_BB_DPLL2_EN_NEGTRIG, 0x1); 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2,
+            AR_PHY_BB_DPLL2_OUTDIV, 0x1);
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2,
+            AR_PHY_BB_DPLL2_LOCAL_PLL, 0x1);
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2,
+            AR_PHY_BB_DPLL2_EN_NEGTRIG, 0x1);
 
         /* program BB PLL phase_shift to 0x6 */
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL3, 
-            AR_PHY_BB_DPLL3_PHASE_SHIFT, 0x6); 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL3,
+            AR_PHY_BB_DPLL3_PHASE_SHIFT, 0x6);
 
-        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2, 
-            AR_PHY_BB_DPLL2_PLL_PWD, 0x0); 
+        OS_REG_RMW_FIELD(ah, AR_PHY_BB_DPLL2,
+            AR_PHY_BB_DPLL2_PLL_PWD, 0x0);
         OS_DELAY(1000);
 
         OS_REG_WRITE(ah, AR_RTC_PLL_CONTROL, 0x142c);
@@ -1575,7 +1575,7 @@ ar9300_init_pll(struct ath_hal *ah, struct ieee80211_channel *chan)
                     (0x1 << 30) | (0x1 << 13) | (0x4 << 26) | (0x18 << 19);
             } else if (AR_SREV_HONEYBEE(ah)) {
                 /*
-                 * Kd=10, Ki=2, Outdiv=1, Local PLL=0, Phase Shift=4 
+                 * Kd=10, Ki=2, Outdiv=1, Local PLL=0, Phase Shift=4
                  */
                 regdata = (regdata & 0x01c00fff) |
                     (0x1 << 31) | (0x2 << 29) | (0xa << 25) | (0x1 << 19) | (0x6 << 12);
@@ -1600,22 +1600,22 @@ ar9300_init_pll(struct ath_hal *ah, struct ieee80211_channel *chan)
                 regdata &= ~(1 << 30);
                 OS_REG_WRITE(ah, AR_PHY_PLL_BB_DPLL3, regdata);
                 OS_DELAY(100);
-            
+
                 /* set do measure */
                 regdata = OS_REG_READ(ah, AR_PHY_PLL_BB_DPLL3);
                 regdata |= (1 << 30);
                 OS_REG_WRITE(ah, AR_PHY_PLL_BB_DPLL3, regdata);
-            
+
                 /* wait for measure done */
                 do {
                     regdata = OS_REG_READ(ah, AR_PHY_PLL_BB_DPLL4);
                 } while ((regdata & (1 << 3)) == 0);
-            
+
                 /* clear do measure */
                 regdata = OS_REG_READ(ah, AR_PHY_PLL_BB_DPLL3);
                 regdata &= ~(1 << 30);
                 OS_REG_WRITE(ah, AR_PHY_PLL_BB_DPLL3, regdata);
-            
+
                 /* get measure sqsum dvc */
                 regdata = (OS_REG_READ(ah, AR_PHY_PLL_BB_DPLL3) & 0x007FFFF8) >> 3;
             } else {
@@ -1628,7 +1628,7 @@ ar9300_init_pll(struct ath_hal *ah, struct ieee80211_channel *chan)
         OS_DELAY(1000);
     } else {
         pll = SM(0x5, AR_RTC_PLL_REFDIV);
-  
+
         /* Supposedly not needed on Osprey */
 #if 0
         if (chan && IS_CHAN_HALF_RATE(chan)) {
@@ -1639,7 +1639,7 @@ ar9300_init_pll(struct ath_hal *ah, struct ieee80211_channel *chan)
 #endif
         if (ichan && IS_CHAN_5GHZ(ichan)) {
             pll |= SM(0x28, AR_RTC_PLL_DIV);
-            /* 
+            /*
              * When doing fast clock, set PLL to 0x142c
              */
             if (IS_5GHZ_FAST_CLOCK_EN(ah, chan)) {
@@ -1713,7 +1713,7 @@ ar9300_set_reset(struct ath_hal *ah, int type)
             /*OS_REG_WRITE(ah, AR_HOSTIF_REG(ah, AR_RC), AR_RC_AHB);*/
         }
     }
-    
+
     rst_flags = AR_RTC_RC_MAC_WARM;
     if (type == HAL_RESET_COLD) {
         rst_flags |= AR_RTC_RC_MAC_COLD;
@@ -1721,7 +1721,7 @@ ar9300_set_reset(struct ath_hal *ah, int type)
 
 #ifdef AH_SUPPORT_HORNET
     /* Hornet WAR: trigger SoC to reset WMAC if ...
-     * (1) doing cold reset. Ref: EV 69254 
+     * (1) doing cold reset. Ref: EV 69254
      * (2) beacon pending. Ref: EV 70983
      */
     if (AR_SREV_HORNET(ah) &&
@@ -1890,7 +1890,7 @@ ar9300_set_reset_power_on(struct ath_hal *ah)
     OS_REG_WRITE(ah, AR_RTC_FORCE_WAKE,
         AR_RTC_FORCE_WAKE_EN | AR_RTC_FORCE_WAKE_ON_INT);
     /*
-     * RTC reset and clear. Some delay in between is needed 
+     * RTC reset and clear. Some delay in between is needed
      * to give the chip time to settle.
      */
     OS_REG_WRITE(ah, AR_RTC_RESET, 0);
@@ -1949,7 +1949,7 @@ ar9300_set_reset_reg(struct ath_hal *ah, u_int32_t type)
     default:
         break;
     }
-    
+
 #if ATH_SUPPORT_MCI
     if (AH_PRIVATE(ah)->ah_caps.halMciSupport) {
         OS_REG_WRITE(ah, AR_RTC_KEEP_AWAKE, 0x2);
@@ -1981,7 +1981,7 @@ ar9300_phy_disable(struct ath_hal *ah)
         if (IS_CHAN_2GHZ((AH_PRIVATE(ah)->ah_curchan))) {
             REG_WRITE(ATH_GPIO_OE, (REG_READ(ATH_GPIO_OE) | (0x1 << 13)));
         }
-        else { 
+        else {
             REG_WRITE(ATH_GPIO_OE, (REG_READ(ATH_GPIO_OE) | (0x1 << 12)));
         }
     }
@@ -2002,7 +2002,7 @@ ar9300_phy_disable(struct ath_hal *ah)
 #undef REG_WRITE
 #endif
 
-    if ( AR_SREV_OSPREY(ah) ) { 
+    if ( AR_SREV_OSPREY(ah) ) {
         OS_REG_RMW(ah, AR_HOSTIF_REG(ah, AR_GPIO_OUTPUT_MUX1), 0x0, 0x1f);
     }
 
@@ -2212,7 +2212,7 @@ ar9300_get_rx_chain_mask(struct ath_hal *ah)
 }
 #endif
 
-static void 
+static void
 ar9300_get_nf_hist_base(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *chan,
     int is_scan, int16_t nf[])
 {
@@ -2308,17 +2308,17 @@ ar9300_load_nf(struct ath_hal *ah, int16_t nf[])
         /*
          * We timed out waiting for the noisefloor to load, probably
          * due to an in-progress rx.  Simply return here and allow
-         * the load plenty of time to complete before the next 
+         * the load plenty of time to complete before the next
          * calibration interval.  We need to avoid trying to load -50
          * (which happens below) while the previous load is still in
          * progress as this can cause rx deafness (see EV 66368,62830).
-         * Instead by returning here, the baseband nf cal will 
+         * Instead by returning here, the baseband nf cal will
          * just be capped by our present noisefloor until the next
          * calibration timer.
          */
         HALDEBUG(AH_NULL, HAL_DEBUG_UNMASKABLE,
             "%s: *** TIMEOUT while waiting for nf to load: "
-            "AR_PHY_AGC_CONTROL=0x%x ***\n", 
+            "AR_PHY_AGC_CONTROL=0x%x ***\n",
             __func__, OS_REG_READ(ah, AR_PHY_AGC_CONTROL));
         return AH_FALSE;
     }
@@ -2403,7 +2403,7 @@ ar9300_start_nf_cal(struct ath_hal *ah)
     OS_REG_SET_BIT(ah, AR_PHY_AGC_CONTROL, AR_PHY_AGC_CONTROL_NF);
     AH9300(ah)->nf_tsf32 = ar9300_get_tsf32(ah);
 
-/*  
+/*
  *  We are reading the NF values before we start the NF operation, because
  *  of that we are getting very high values like -45.
  *  This triggers the CW_INT detected and EACS module triggers the channel change
@@ -2412,7 +2412,7 @@ ar9300_start_nf_cal(struct ath_hal *ah)
  *  chip_reset_flag is cleared during the starting NF operation.
  *  if flag is set we will clear the flag and will not read the NF values.
  */
-    ahp->ah_chip_reset_done = 0;    
+    ahp->ah_chip_reset_done = 0;
 }
 
 /* ar9300_calibration
@@ -2650,7 +2650,7 @@ ar9300_iq_calibration(struct ath_hal *ah, u_int8_t num_chains)
             ahp->ah_rx_cal_corr[i] = OS_REG_READ(ah, offset_array[i]) & 0x7fff;
             ahp->ah_rx_cal_complete = AH_TRUE;
             ahp->ah_rx_cal_chan = ichan->channel;
-//            ahp->ah_rx_cal_chan_flag = ichan->channel_flags &~ CHANNEL_PASSIVE; 
+//            ahp->ah_rx_cal_chan_flag = ichan->channel_flags &~ CHANNEL_PASSIVE;
             ahp->ah_rx_cal_chan_flag = 0; /* XXX */
 	    } else {
 	        /* XXX? Is this what I should do? */
@@ -2877,9 +2877,9 @@ ar9300_prog_ini(struct ath_hal *ah, struct ar9300_ini_array *ini_arr,
         u_int32_t val = INI_RA(ini_arr, i, column);
 
         /*
-        ** Determine if this is a shift register value 
-        ** (reg >= 0x16000 && reg < 0x17000 for Osprey) , 
-        ** and insert the configured delay if so. 
+        ** Determine if this is a shift register value
+        ** (reg >= 0x16000 && reg < 0x17000 for Osprey) ,
+        ** and insert the configured delay if so.
         ** -this delay is not required for Osprey (EV#71410)
         */
         OS_REG_WRITE(ah, reg, val);
@@ -3047,42 +3047,42 @@ ar9300_process_ini(struct ath_hal *ah, struct ieee80211_channel *chan,
 	if (!(AR_SREV_SOC(ah))) {
 			/* Doubler issue : Some board doesn't work well with MCS15. Turn off doubler after freq locking is complete*/
 			//ath_hal_printf(ah, "%s[%d] ==== before reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
-			OS_REG_RMW(ah, AR_PHY_65NM_CH0_RXTX2, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S | 
+			OS_REG_RMW(ah, AR_PHY_65NM_CH0_RXTX2, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S |
 			               1 << AR_PHY_65NM_CH0_RXTX2_SYNTHOVR_MASK_S, 0); /*Set synthon, synthover */
 			//ath_hal_printf(ah, "%s[%d] ==== after reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
-			
-			OS_REG_RMW(ah, AR_PHY_65NM_CH1_RXTX2, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S | 
+
+			OS_REG_RMW(ah, AR_PHY_65NM_CH1_RXTX2, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S |
 			               1 << AR_PHY_65NM_CH0_RXTX2_SYNTHOVR_MASK_S, 0); /*Set synthon, synthover */
-			OS_REG_RMW(ah, AR_PHY_65NM_CH2_RXTX2, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S | 
+			OS_REG_RMW(ah, AR_PHY_65NM_CH2_RXTX2, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S |
 			               1 << AR_PHY_65NM_CH0_RXTX2_SYNTHOVR_MASK_S, 0); /*Set synthon, synthover */
 			OS_DELAY(200);
-			
+
 			//ath_hal_printf(ah, "%s[%d] ==== before reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
 			OS_REG_CLR_BIT(ah, AR_PHY_65NM_CH0_RXTX2, AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK); /* clr synthon */
 			OS_REG_CLR_BIT(ah, AR_PHY_65NM_CH1_RXTX2, AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK); /* clr synthon */
 			OS_REG_CLR_BIT(ah, AR_PHY_65NM_CH2_RXTX2, AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK); /* clr synthon */
 			//ath_hal_printf(ah, "%s[%d] ==== after reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
-			
+
 			OS_DELAY(1);
-			
+
 			//ath_hal_printf(ah, "%s[%d] ==== before reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
 			OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_RXTX2, AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK, 1); /* set synthon */
 			OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH1_RXTX2, AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK, 1); /* set synthon */
 			OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH2_RXTX2, AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK, 1); /* set synthon */
 			//ath_hal_printf(ah, "%s[%d] ==== after reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
-			
+
 			OS_DELAY(200);
-			
+
 			//ath_hal_printf(ah, "%s[%d] ==== before reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_SYNTH12, OS_REG_READ(ah, AR_PHY_65NM_CH0_SYNTH12));
 			OS_REG_RMW_FIELD(ah, AR_PHY_65NM_CH0_SYNTH12, AR_PHY_65NM_CH0_SYNTH12_VREFMUL3, 0xf);
 			//OS_REG_CLR_BIT(ah, AR_PHY_65NM_CH0_SYNTH12, 1<< 16); /* clr charge pump */
 			//ath_hal_printf(ah, "%s[%d] ==== After  reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_SYNTH12, OS_REG_READ(ah, AR_PHY_65NM_CH0_SYNTH12));
-			
-			OS_REG_RMW(ah, AR_PHY_65NM_CH0_RXTX2, 0, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S | 
+
+			OS_REG_RMW(ah, AR_PHY_65NM_CH0_RXTX2, 0, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S |
 			               1 << AR_PHY_65NM_CH0_RXTX2_SYNTHOVR_MASK_S); /*Clr synthon, synthover */
-			OS_REG_RMW(ah, AR_PHY_65NM_CH1_RXTX2, 0, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S | 
+			OS_REG_RMW(ah, AR_PHY_65NM_CH1_RXTX2, 0, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S |
 			               1 << AR_PHY_65NM_CH0_RXTX2_SYNTHOVR_MASK_S); /*Clr synthon, synthover */
-			OS_REG_RMW(ah, AR_PHY_65NM_CH2_RXTX2, 0, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S | 
+			OS_REG_RMW(ah, AR_PHY_65NM_CH2_RXTX2, 0, 1 << AR_PHY_65NM_CH0_RXTX2_SYNTHON_MASK_S |
 			               1 << AR_PHY_65NM_CH0_RXTX2_SYNTHOVR_MASK_S); /*Clr synthon, synthover */
 			//ath_hal_printf(ah, "%s[%d] ==== after reg[0x%08x] = 0x%08x\n", __func__, __LINE__, AR_PHY_65NM_CH0_RXTX2, OS_REG_READ(ah, AR_PHY_65NM_CH0_RXTX2));
 		}
@@ -3141,7 +3141,7 @@ ar9300_process_ini(struct ath_hal *ah, struct ieee80211_channel *chan,
 
     /* Write txgain Array Parameters */
     if (AR_SREV_SCORPION(ah) || AR_SREV_HONEYBEE(ah)) {
-        REG_WRITE_ARRAY(&ahp->ah_ini_modes_txgain, modes_txgaintable_index, 
+        REG_WRITE_ARRAY(&ahp->ah_ini_modes_txgain, modes_txgaintable_index,
             reg_writes);
     }else{
         REG_WRITE_ARRAY(&ahp->ah_ini_modes_txgain, modes_index, reg_writes);
@@ -3223,7 +3223,7 @@ ar9300_process_ini(struct ath_hal *ah, struct ieee80211_channel *chan,
  */
 inline static HAL_BOOL
 ar9300_is_cal_supp(struct ath_hal *ah, const struct ieee80211_channel *chan,
-    HAL_CAL_TYPES cal_type) 
+    HAL_CAL_TYPES cal_type)
 {
     struct ath_hal_9300 *ahp = AH9300(ah);
     HAL_BOOL retval = AH_FALSE;
@@ -3259,7 +3259,7 @@ ar9285_pa_cal(struct ath_hal *ah)
     u_int32_t an_top2_reg_val, phy_tst_dac_reg_val;
 
 
-    /* Kite 1.1 WAR for Bug 35666 
+    /* Kite 1.1 WAR for Bug 35666
      * Increase the LDO value to 1.28V before accessing analog Reg */
     if (AR_SREV_KITE_11(ah)) {
         OS_REG_WRITE(ah, AR9285_AN_TOP4, (AR9285_AN_TOP4_DEFAULT | 0x14) );
@@ -3294,7 +3294,7 @@ ar9285_pa_cal(struct ath_hal *ah)
     /* Read back reflo, increase it by 1 and write it. */
     reg_val = OS_REG_READ(ah, AR9285_AN_RF2G3);
     reflo = ((reg_val >> 26) & 0x7);
-    
+
     if (reflo < 0x7) {
         reflo++;
     }
@@ -3309,7 +3309,7 @@ ar9285_pa_cal(struct ath_hal *ah)
      * reg. 15
      */
     phy_tst_dac_reg_val = OS_REG_READ(ah, AR_PHY_TSTDAC_CONST);
-    OS_REG_WRITE(ah, AR_PHY_TSTDAC_CONST, ((0x7ff << 11) | 0x7ff)); 
+    OS_REG_WRITE(ah, AR_PHY_TSTDAC_CONST, ((0x7ff << 11) | 0x7ff));
     reg_val = OS_REG_READ(ah, AR_PHY_TSTDAC_CONST);
 
     /* source is dac const
@@ -3407,7 +3407,7 @@ ar9285_pa_cal(struct ath_hal *ah)
     OS_REG_WRITE(ah, AR_PHY_ADC_CTL, phy_adc_ctl_reg_val);
     OS_REG_WRITE(ah, AR9285_AN_TOP2, an_top2_reg_val);
 
-    /* Kite 1.1 WAR for Bug 35666 
+    /* Kite 1.1 WAR for Bug 35666
      * Decrease the LDO value back to 1.20V */
     if (AR_SREV_KITE_11(ah)) {
         OS_REG_WRITE(ah, AR9285_AN_TOP4, AR9285_AN_TOP4_DEFAULT);
@@ -3449,7 +3449,7 @@ ar9300_run_init_cals(struct ath_hal *ah, int init_cal_count)
             ahp->ah_cal_list = ahp->ah_cal_list_last = ahp->ah_cal_list_curr
                 = AH_NULL;
             return AH_FALSE;
-        } 
+        }
         /* Run this cal */
         ar9300_per_calibration(
             ah, &ichan, ahp->ah_rx_chainmask, curr_cal, &is_cal_done);
@@ -3706,7 +3706,7 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
         IS_CHAN_2GHZ(ichan) &&
         (ahp->ah_mci_bt_state == MCI_BT_AWAKE) &&
         do_agc_cal &&
-        !(ah->ah_config.ath_hal_mci_config & 
+        !(ah->ah_config.ath_hal_mci_config &
         ATH_MCI_CONFIG_DISABLE_MCI_CAL))
     {
         u_int32_t payload[4] = {0, 0, 0, 0};
@@ -3719,16 +3719,16 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
         ar9300_mci_send_message(ah, MCI_GPM, 0, payload, 16, AH_TRUE, AH_FALSE);
 
         /* Wait BT_CAL_GRANT for 50ms */
-        HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+        HALDEBUG(ah, HAL_DEBUG_BT_COEX,
             "(MCI) %s: Wait for BT_CAL_GRANT\n", __func__);
         if (ar9300_mci_wait_for_gpm(ah, MCI_GPM_BT_CAL_GRANT, 0, 50000))
         {
-            HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+            HALDEBUG(ah, HAL_DEBUG_BT_COEX,
                 "(MCI) %s: Got BT_CAL_GRANT.\n", __func__);
         }
         else {
             is_cal_reusable = AH_FALSE;
-            HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+            HALDEBUG(ah, HAL_DEBUG_BT_COEX,
                 "(MCI) %s: BT is not responding.\n", __func__);
         }
     }
@@ -3766,7 +3766,7 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
                 HALDEBUG(ah, HAL_DEBUG_FCS_RTT,
                     "(FCS) CAL NOT DONE!!! - %d\n", ichan->channel);
             }
-        } else { 
+        } else {
             cal_done = AH_TRUE;
         }
             /*
@@ -3781,7 +3781,7 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
         if (!txiqcal_success_flag) {
             OS_REG_WRITE(ah, AR_PHY_AGC_CONTROL,
                 OS_REG_READ(ah, AR_PHY_AGC_CONTROL) | AR_PHY_AGC_CONTROL_CAL);
-            if (!ath_hal_wait(ah, AR_PHY_AGC_CONTROL, AR_PHY_AGC_CONTROL_CAL, 
+            if (!ath_hal_wait(ah, AR_PHY_AGC_CONTROL, AR_PHY_AGC_CONTROL_CAL,
                     0)) {
                 HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
                     "%s: offset calibration failed to complete in 1ms; "
@@ -3797,7 +3797,7 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
                     OS_REG_READ(ah, AR_PHY_AGC_CONTROL) | AR_PHY_AGC_CONTROL_CAL);
 
                 /* Poll for offset calibration complete */
-                if (!ath_hal_wait(ah, AR_PHY_AGC_CONTROL, 
+                if (!ath_hal_wait(ah, AR_PHY_AGC_CONTROL,
                         AR_PHY_AGC_CONTROL_CAL, 0)) {
                     HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
                         "%s: offset calibration failed to complete in 1ms; "
@@ -3820,7 +3820,7 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
         IS_CHAN_2GHZ(ichan) &&
         (ahp->ah_mci_bt_state == MCI_BT_AWAKE) &&
         do_agc_cal &&
-        !(ah->ah_config.ath_hal_mci_config & 
+        !(ah->ah_config.ath_hal_mci_config &
         ATH_MCI_CONFIG_DISABLE_MCI_CAL))
     {
         u_int32_t payload[4] = {0, 0, 0, 0};
@@ -3916,7 +3916,7 @@ ar9300_init_cal_internal(struct ath_hal *ah, struct ieee80211_channel *chan,
      */
     OS_REG_WRITE(ah, AR_PHY_AGC_CONTROL,
         OS_REG_READ(ah, AR_PHY_AGC_CONTROL) | AR_PHY_AGC_CONTROL_NF);
-#endif 
+#endif
 
     /* Initialize list pointers */
     ahp->ah_cal_list = ahp->ah_cal_list_last = ahp->ah_cal_list_curr = AH_NULL;
@@ -4075,7 +4075,7 @@ ar9300_set_dma(struct ath_hal *ah)
     /*
     OS_REG_RMW_FIELD(ah, AR_TXCFG, AR_FTRIG, AH_PRIVATE(ah)->ah_tx_trig_level);
      */
-    /* 
+    /*
      * Osprey 1.0 bug (EV 61936). Don't change trigger level from .ini default.
      * Osprey 2.0 - hardware recommends using the default INI settings.
      */
@@ -4097,11 +4097,11 @@ ar9300_set_dma(struct ath_hal *ah)
      * reduce the number of usable entries in PCU TXBUF to avoid
      * wrap around bugs. (bug 20428)
      */
-    
-    if (AR_SREV_WASP(ah) && 
+
+    if (AR_SREV_WASP(ah) &&
         (AH_PRIVATE((ah))->ah_macRev > AR_SREV_REVISION_WASP_12)) {
-        /* Wasp 1.3 fix for EV#85395 requires usable entries 
-         * to be set to 0x500 
+        /* Wasp 1.3 fix for EV#85395 requires usable entries
+         * to be set to 0x500
          */
         OS_REG_WRITE(ah, AR_PCU_TXBUF_CTRL, 0x500);
     } else {
@@ -4242,7 +4242,7 @@ ar9300_init_interrupt_masks(struct ath_hal *ah, HAL_OPMODE opmode)
     }
     OS_REG_WRITE(ah,
         AR_HOSTIF_REG(ah, AR_INTR_SYNC_ENABLE), sync_en_def);
-    
+
     /* _Disable_ host interface sync interrupt when cause bits set */
     OS_REG_WRITE(ah, AR_HOSTIF_REG(ah, AR_INTR_SYNC_MASK), 0);
 
@@ -4382,17 +4382,17 @@ ar9300_set_spur_info(struct ath_hal * ah, int enable, int len, u_int16_t *freq)
 #define ar9300_check_op_mode(_opmode) \
     ((_opmode == HAL_M_STA) || (_opmode == HAL_M_IBSS) ||\
      (_opmode == HAL_M_HOSTAP) || (_opmode == HAL_M_MONITOR))
- 
+
 
 
 
 #ifndef ATH_NF_PER_CHAN
 /*
 * To fixed first reset noise floor value not correct issue
-* For ART need it to fixed low rate sens too low issue	
+* For ART need it to fixed low rate sens too low issue
 */
 static int
-First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan, 
+First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan,
     int is_scan, struct ieee80211_channel *chan)
 {
     HAL_NFCAL_HIST_FULL *nfh;
@@ -4401,7 +4401,7 @@ First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan,
     int is_2g = 0;
     int nf_hist_len;
     int stats = 0;
-	
+
     int16_t nf_buf[HAL_NUM_NF_READINGS];
 #define IS(_c, _f)       (((_c)->channel_flags & _f) || 0)
 
@@ -4444,7 +4444,7 @@ First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan,
     		for (k = 0; k < HAL_NF_CAL_HIST_LEN_FULL; k++) {
                 nfh->nf_cal_buffer[k][i] = nfarray[i];
             }
-            nfh->base.priv_nf[i] = ar9300_limit_nf_range(ah, 
+            nfh->base.priv_nf[i] = ar9300_limit_nf_range(ah,
 							ar9300_get_nf_hist_mid(ah, nfh, i, nf_hist_len));
   		}
 
@@ -4460,7 +4460,7 @@ First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan,
 		for (i = 0; i < HAL_NUM_NF_READINGS; i++)
 		{
     		if (IEEE80211_IS_CHAN_2GHZ(chan))
-    		{     
+    		{
     			if (nfh->nf_cal_buffer[0][i] <
 					AR_PHY_CCA_MAX_GOOD_VAL_OSPREY_2GHZ)
                 {
@@ -4470,15 +4470,15 @@ First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan,
     		} else {
                 if (AR_SREV_AR9580(ah)) {
                     if (nfh->nf_cal_buffer[0][i] <
-                        AR_PHY_CCA_NOM_VAL_PEACOCK_5GHZ)  
+                        AR_PHY_CCA_NOM_VAL_PEACOCK_5GHZ)
                     {
                        ichan->nf_cal_hist.nf_cal_buffer[0][i] =
                        AH_PRIVATE(ah)->nf_cal_hist.nf_cal_buffer[0][i];
                     }
                 } else {
                    if (nfh->nf_cal_buffer[0][i] <
-                       AR_PHY_CCA_NOM_VAL_OSPREY_5GHZ)  
-                    {  
+                       AR_PHY_CCA_NOM_VAL_OSPREY_5GHZ)
+                    {
                         ichan->nf_cal_hist.nf_cal_buffer[0][i] =
                             AH_PRIVATE(ah)->nf_cal_hist.nf_cal_buffer[0][i];
                      }
@@ -4495,7 +4495,7 @@ First_NFCal(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ichan,
         /* XXX TODO: handle failure from load_nf */
         stats = 0;
 	} else {
-        stats = 1;	
+        stats = 1;
 	}
 #undef IS
     return stats;
@@ -4523,9 +4523,9 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
     struct ath_hal_private  *ap  = AH_PRIVATE(ah);
     HAL_CHANNEL_INTERNAL    *ichan;
     //const struct ieee80211_channel *curchan = ap->ah_curchan;
-#if ATH_SUPPORT_MCI    
+#if ATH_SUPPORT_MCI
     HAL_BOOL                    save_full_sleep = ahp->ah_chip_full_sleep;
-#endif    
+#endif
     u_int32_t               save_def_antenna;
     u_int32_t               mac_sta_id1;
     HAL_STATUS              ecode;
@@ -4569,7 +4569,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
     ahp->ah_tx_cal_chainmask = ap->ah_caps.halTxChainMask;
     ahp->ah_rx_cal_chainmask = ap->ah_caps.halRxChainMask;
 
-    /* 
+    /*
      * Keep the previous optinal txchainmask value
      */
 
@@ -4587,7 +4587,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
             __func__, chan->ic_freq, chan->ic_flags);
         FAIL(HAL_EINVAL);
     }
-    
+
     ichan->paprd_table_write_done = 0;  /* Clear PAPRD table write flag */
 #if 0
     chan->paprd_table_write_done = 0;  /* Clear PAPRD table write flag */
@@ -4618,7 +4618,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
     {
         u_int32_t payload[4] = {0, 0, 0, 0};
 
-        HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+        HALDEBUG(ah, HAL_DEBUG_BT_COEX,
             "(MCI) %s: Stop rx for BT cal.\n", __func__);
         ahp->ah_mci_bt_state = MCI_BT_CAL;
 
@@ -4628,7 +4628,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
          */
         ar9300_mci_disable_interrupt(ah);
 
-        HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+        HALDEBUG(ah, HAL_DEBUG_BT_COEX,
             "(MCI) %s: Send WLAN_CAL_GRANT\n", __func__);
         MCI_GPM_SET_CAL_TYPE(payload, MCI_GPM_WLAN_CAL_GRANT);
         ar9300_mci_send_message(ah, MCI_GPM, 0, payload, 16, AH_TRUE, AH_FALSE);
@@ -4637,12 +4637,12 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
         HALDEBUG(ah, HAL_DEBUG_BT_COEX,
             "(MCI) %s: BT is calibrating.\n", __func__);
         if (ar9300_mci_wait_for_gpm(ah, MCI_GPM_BT_CAL_DONE, 0, 25000)) {
-            HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
+            HALDEBUG(ah, HAL_DEBUG_BT_COEX,
                 "(MCI) %s: Got BT_CAL_DONE.\n", __func__);
         }
         else {
-            HALDEBUG(ah, HAL_DEBUG_BT_COEX, 
-                "(MCI) %s: ### BT cal takes too long. Force bt_state to be bt_awake.\n", 
+            HALDEBUG(ah, HAL_DEBUG_BT_COEX,
+                "(MCI) %s: ### BT cal takes too long. Force bt_state to be bt_awake.\n",
                 __func__);
         }
         ahp->ah_mci_bt_state = MCI_BT_AWAKE;
@@ -4720,7 +4720,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
 #endif
     apply_last_iqcorr = AH_FALSE;
 
- 
+
 #ifndef ATH_NF_PER_CHAN
     /*
      * If there's only one full-size home-channel NF history buffer
@@ -4788,7 +4788,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
         (ahp->ah_chip_full_sleep != AH_TRUE) &&
         (AH_PRIVATE(ah)->ah_curchan != AH_NULL) &&
         ((chan->channel != AH_PRIVATE(ah)->ah_curchan->channel) &&
-        (((CHANNEL_ALL|CHANNEL_HALF|CHANNEL_QUARTER) & chan->channel_flags) == 
+        (((CHANNEL_ALL|CHANNEL_HALF|CHANNEL_QUARTER) & chan->channel_flags) ==
         ((CHANNEL_ALL|CHANNEL_HALF|CHANNEL_QUARTER) & AH_PRIVATE(ah)->ah_curchan->channel_flags))))
     {
         if (ar9300_channel_change(ah, chan, ichan, macmode)) {
@@ -4856,7 +4856,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
         if (save_def_antenna == 0) {
             save_def_antenna = 1;
         }
-    } 
+    }
 
     /* Save hardware flag before chip reset clears the register */
     mac_sta_id1 = OS_REG_READ(ah, AR_STA_ID1) & AR_STA_ID1_BASE_RATE_11B;
@@ -4890,9 +4890,9 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
     if (ecode != HAL_OK) {
         goto bad;
     }
- 
+
     /*
-     * Configuring WMAC PLL values for 25/40 MHz 
+     * Configuring WMAC PLL values for 25/40 MHz
      */
     if(AR_SREV_WASP(ah) || AR_SREV_HONEYBEE(ah) || AR_SREV_SCORPION(ah) ) {
         if(clk_25mhz) {
@@ -4961,7 +4961,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
 #ifdef ATH_HAL_WAR_REG16284_APH128
     /* temp work around, will be removed. */
     if (AR_SREV_WASP(ah)) {
-        OS_REG_WRITE(ah, 0x16284, 0x1553e000); 
+        OS_REG_WRITE(ah, 0x16284, 0x1553e000);
     }
 #endif
 
@@ -5042,7 +5042,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
     ar9300_init_interrupt_masks(ah, opmode);
 
     /* Reset ier reference count to disabled */
-//    OS_ATOMIC_SET(&ahp->ah_ier_ref_count, 1); 
+//    OS_ATOMIC_SET(&ahp->ah_ier_ref_count, 1);
     if (ath_hal_isrfkillenabled(ah)) {
         ar9300_enable_rf_kill(ah);
     }
@@ -5080,7 +5080,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
 
 
     /* enabling AR_GTTM_IGNORE_IDLE in GTTM register so that
-       GTT timer will not increment if the channel idle indicates 
+       GTT timer will not increment if the channel idle indicates
        the air is busy or NAV is still counting down */
     OS_REG_WRITE(ah, AR_GTTM, AR_GTTM_IGNORE_IDLE);
 
@@ -5114,9 +5114,9 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
         OS_REG_RMW_FIELD(ah, AR_RIMT, AR_RIMT_FIRST, AH_RIMT_FIRST_MICROSEC);
 #else
         /* lower mitigation level to reduce latency for offload arch. */
-        OS_REG_RMW_FIELD(ah, AR_RIMT, AR_RIMT_LAST, 
+        OS_REG_RMW_FIELD(ah, AR_RIMT, AR_RIMT_LAST,
             (AH_RIMT_LAST_MICROSEC >> 2));
-        OS_REG_RMW_FIELD(ah, AR_RIMT, AR_RIMT_FIRST, 
+        OS_REG_RMW_FIELD(ah, AR_RIMT, AR_RIMT_FIRST,
             (AH_RIMT_FIRST_MICROSEC >> 2));
 #endif
     }
@@ -5174,8 +5174,8 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
             if (ar9300_mci_check_int(ah, AR_MCI_INTERRUPT_RX_MSG_REMOTE_RESET) ||
                 ar9300_mci_check_int(ah, AR_MCI_INTERRUPT_RX_MSG_REQ_WAKE))
             {
-                /* 
-                 * BT is sleeping. Check if BT wakes up duing WLAN 
+                /*
+                 * BT is sleeping. Check if BT wakes up duing WLAN
                  * calibration. If BT wakes up during WLAN calibration, need
                  * to go through all message exchanges again and recal.
                  */
@@ -5280,15 +5280,15 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
         }
         else {
 
-            /* Disable 2G WLAN LED. During ath_open, reset function is called even before channel is set. 
-            So 2GHz is taken as default and it also blinks. Hence 
+            /* Disable 2G WLAN LED. During ath_open, reset function is called even before channel is set.
+            So 2GHz is taken as default and it also blinks. Hence
             to avoid both from blinking, disable 2G led while in 5G mode */
 
             REG_WRITE(ATH_GPIO_OE, ( REG_READ(ATH_GPIO_OE) | (1 << 13) ));
             REG_WRITE(ATH_GPIO_OUT_FUNCTION3, ( REG_READ(ATH_GPIO_OUT_FUNCTION3) & (~(0xff))) | (0x33) );
-            REG_WRITE(ATH_GPIO_OE, ( REG_READ(ATH_GPIO_OE) & (~(0x1 << 12) )));		
+            REG_WRITE(ATH_GPIO_OE, ( REG_READ(ATH_GPIO_OE) & (~(0x1 << 12) )));
         }
- 
+
     }
     else if (AR_SREV_SCORPION(ah)) {
         if (IS_CHAN_2GHZ((AH_PRIVATE(ah)->ah_curchan))) {
@@ -5318,7 +5318,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
     ar9300_get_nf_hist_base(ah, ichan, is_scan, nf_buf);
     ar9300_load_nf(ah, nf_buf);
     /* XXX TODO: handle NF load failure */
-    if (nf_hist_buff_reset == 1)    
+    if (nf_hist_buff_reset == 1)
     {
         nf_hist_buff_reset = 0;
     #ifndef ATH_NF_PER_CHAN
@@ -5330,9 +5330,9 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
             }
         }
     #endif /* ATH_NF_PER_CHAN */
-    } 
+    }
     else{
-        ar9300_start_nf_cal(ah); 
+        ar9300_start_nf_cal(ah);
     }
 #endif
 
@@ -5350,7 +5350,7 @@ ar9300_reset(struct ath_hal *ah, HAL_OPMODE opmode, struct ieee80211_channel *ch
      * state machine is in 0xb state, BB would go hang, if we
      * see 0xb state after first bb panic, make sure that we
      * disable the phy_restart.
-     * 
+     *
      * There may be multiple panics, make sure that we always do
      * this if we see this panic at least once. This is required
      * because reset seems to be writing from INI file.
@@ -5459,14 +5459,14 @@ ar9300_find_mag_approx(struct ath_hal *ah, int32_t in_re, int32_t in_im)
         min_abs = abs_q;
     } else {
         max_abs = abs_q;
-        min_abs = abs_i; 
+        min_abs = abs_i;
     }
 
     return (max_abs - (max_abs / 32) + (min_abs / 8) + (min_abs / 4));
 }
 
-/* 
- * ar9300_solve_iq_cal()       
+/*
+ * ar9300_solve_iq_cal()
  * solve 4x4 linear equation used in loopback iq cal.
  */
 static HAL_BOOL
@@ -5552,7 +5552,7 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
     }
 
     i2_m_q2_a0_d1 = (iq_res[1] >> 4) & 0xfff;
-    i2_p_q2_a0_d1 = (iq_res[2] & 0xfff); 
+    i2_p_q2_a0_d1 = (iq_res[2] & 0xfff);
     iq_corr_a0_d1 = (iq_res[2] >> 12) & 0xfff;
 
     if (i2_m_q2_a0_d1 > 0x800)  {
@@ -5563,7 +5563,7 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
     }
 
     i2_m_q2_a1_d0 = ((iq_res[2] >> 24) & 0xff) + ((iq_res[3] & 0xf) << 8);
-    i2_p_q2_a1_d0 = (iq_res[3] >> 4) & 0xfff; 
+    i2_p_q2_a1_d0 = (iq_res[3] >> 4) & 0xfff;
     iq_corr_a1_d0 = iq_res[4] & 0xfff;
 
     if (i2_m_q2_a1_d0 > 0x800)  {
@@ -5574,7 +5574,7 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
     }
 
     i2_m_q2_a1_d1 = (iq_res[4] >> 12) & 0xfff;
-    i2_p_q2_a1_d1 = ((iq_res[4] >> 24) & 0xff) + ((iq_res[5] & 0xf) << 8); 
+    i2_p_q2_a1_d1 = ((iq_res[4] >> 24) & 0xff) + ((iq_res[5] & 0xf) << 8);
     iq_corr_a1_d1 = (iq_res[5] >> 4) & 0xfff;
 
     if (i2_m_q2_a1_d1 > 0x800)  {
@@ -5656,7 +5656,7 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
             "%s: Call to ar9300_solve_iq_cal failed.\n", __func__);
         return AH_FALSE;
     }
-   
+
     mag_tx = solved_eq[0];
     phs_tx = solved_eq[1];
     mag_rx = solved_eq[2];
@@ -5665,7 +5665,7 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
     HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
         "%s: chain %d: mag mismatch=%d phase mismatch=%d\n",
         __func__, chain_idx, mag_tx / res_scale, phs_tx / res_scale);
-  
+
     if (res_scale == mag_tx) {
         HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
             "%s: Divide by 0(%d): mag_tx=%d, res_scale=%d\n",
@@ -5700,7 +5700,7 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
     iqc_coeff[0] = (q_q_coff * 128) + (0x7f & q_i_coff);
 
     HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "%s: tx chain %d: iq corr coeff=%x\n",
-        __func__, chain_idx, iqc_coeff[0]);  
+        __func__, chain_idx, iqc_coeff[0]);
 
     if (-mag_rx == res_scale) {
         HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
@@ -5732,11 +5732,11 @@ ar9300_calc_iq_corr(struct ath_hal *ah, int32_t chain_idx,
     if (q_q_coff > 63) {
         q_q_coff = 63;
     }
-   
+
     iqc_coeff[1] = (q_q_coff * 128) + (0x7f & q_i_coff);
 
     HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "%s: rx chain %d: iq corr coeff=%x\n",
-        __func__, chain_idx, iqc_coeff[1]);  
+        __func__, chain_idx, iqc_coeff[1]);
 
     return AH_TRUE;
 }
@@ -5885,7 +5885,7 @@ ar9300_tx_iq_cal_outlier_detection(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ich
                     }
                     coeff->mag_coeff[ch_idx][outlier_mag_idx][0] = magnitude_avg;
                     coeff->phs_coeff[ch_idx][outlier_mag_idx][0] = phase_avg;
-                    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, 
+                    HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
                         "[ch%d][outlier mag gain%d]:: "
                         "mag_avg = %d (/128), phase_avg = %d (/256)\n",
                         ch_idx, outlier_mag_idx, magnitude_avg, phase_avg);
@@ -5901,8 +5901,8 @@ ar9300_tx_iq_cal_outlier_detection(struct ath_hal *ah, HAL_CHANNEL_INTERNAL *ich
                     }
                     coeff->mag_coeff[ch_idx][outlier_phs_idx][0] = magnitude_avg;
                     coeff->phs_coeff[ch_idx][outlier_phs_idx][0] = phase_avg;
-                    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, 
-                        "[ch%d][outlier phs gain%d]:: " 
+                    HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
+                        "[ch%d][outlier phs gain%d]:: "
                         "mag_avg = %d (/128), phase_avg = %d (/256)\n",
                         ch_idx, outlier_phs_idx, magnitude_avg, phase_avg);
                 }
@@ -6174,14 +6174,14 @@ ar9300_tx_iq_cal_post_proc(struct ath_hal *ah,HAL_CHANNEL_INTERNAL *ichan,
 
                 OS_REG_RMW_FIELD(ah, AR_PHY_CHAN_INFO_MEMORY,
                     AR_PHY_CHAN_INFO_TAB_S2_READ, 0);
-                /* 32 bits */    
+                /* 32 bits */
                 iq_res[idx] = OS_REG_READ(ah, chan_info_tab[ch_idx] + offset);
                 OS_REG_RMW_FIELD(ah, AR_PHY_CHAN_INFO_MEMORY,
                     AR_PHY_CHAN_INFO_TAB_S2_READ, 1);
                 /* 16 bits */
                 iq_res[idx + 1] = 0xffff &
                     OS_REG_READ(ah, chan_info_tab[ch_idx] + offset);
-    
+
                 HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
                     "%s: IQ RES[%d]=0x%x IQ_RES[%d]=0x%x\n",
                     __func__, idx, iq_res[idx], idx + 1, iq_res[idx + 1]);
@@ -6202,7 +6202,7 @@ ar9300_tx_iq_cal_post_proc(struct ath_hal *ah,HAL_CHANNEL_INTERNAL *ichan,
                 coeff.mag_coeff[ch_idx][im][iqcal_idx-1] -= 128;
             }
             if (coeff.phs_coeff[ch_idx][im][iqcal_idx-1] > 63) {
-                coeff.phs_coeff[ch_idx][im][iqcal_idx-1] -= 128;     
+                coeff.phs_coeff[ch_idx][im][iqcal_idx-1] -= 128;
             }
 #if 0
             ath_hal_printf(ah, "IQCAL::[ch%d][gain%d]:: mag = %d phase = %d \n",
@@ -6219,33 +6219,33 @@ ar9300_tx_iq_cal_post_proc(struct ath_hal *ah,HAL_CHANNEL_INTERNAL *ichan,
                     //sort mag and phs
                     for( ix=0;ix<max_iqcal-1;ix++){
                         for( iy=ix+1;iy<=max_iqcal-1;iy++){
-                            if(coeff.mag_coeff[ch_idx][im][iy] < 
+                            if(coeff.mag_coeff[ch_idx][im][iy] <
                                 coeff.mag_coeff[ch_idx][im][ix]) {
                                 //swap
                                 temp=coeff.mag_coeff[ch_idx][im][ix];
                                 coeff.mag_coeff[ch_idx][im][ix] = coeff.mag_coeff[ch_idx][im][iy];
                                 coeff.mag_coeff[ch_idx][im][iy] = temp;
                             }
-                            if(coeff.phs_coeff[ch_idx][im][iy] < 
+                            if(coeff.phs_coeff[ch_idx][im][iy] <
                                 coeff.phs_coeff[ch_idx][im][ix]){
                                 //swap
                                 temp=coeff.phs_coeff[ch_idx][im][ix];
                                 coeff.phs_coeff[ch_idx][im][ix]=coeff.phs_coeff[ch_idx][im][iy];
                                 coeff.phs_coeff[ch_idx][im][iy]=temp;
                             }
-                        }  
+                        }
                     }
                     //select median; 3rd entry in the sorted array
-                    coeff.mag_coeff[ch_idx][im][0] = 
+                    coeff.mag_coeff[ch_idx][im][0] =
                         coeff.mag_coeff[ch_idx][im][max_iqcal/2];
                     coeff.phs_coeff[ch_idx][im][0] =
                         coeff.phs_coeff[ch_idx][im][max_iqcal/2];
-                    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, 
-                        "IQCAL: Median [ch%d][gain%d]:: mag = %d phase = %d \n", 
-                        ch_idx, im,coeff.mag_coeff[ch_idx][im][0], 
+                    HALDEBUG(ah, HAL_DEBUG_CALIBRATE,
+                        "IQCAL: Median [ch%d][gain%d]:: mag = %d phase = %d \n",
+                        ch_idx, im,coeff.mag_coeff[ch_idx][im][0],
                         coeff.phs_coeff[ch_idx][im][0]);
                 }
-            }	
+            }
         }
         ar9300_tx_iq_cal_outlier_detection(ah,ichan, num_chains, &coeff,is_cal_reusable);
     }
@@ -6327,7 +6327,7 @@ ar9300_crdc_rx_notify(struct ath_hal *ah, struct ath_rx_status *rxs)
 {
     struct ath_hal_private *ahpriv = AH_PRIVATE(ah);
     int rssi_index;
-    
+
     if ((!AR_SREV_WASP(ah)) ||
         (!ahpriv->ah_config.ath_hal_crdc_enable)) {
         return;
@@ -6363,7 +6363,7 @@ ar9300_crdc_avg_rssi(struct ath_hal *ah, int chain)
     }
 
     for (i = 1; i <= crdc_window; i++) {
-        crdc_rssi_sum += 
+        crdc_rssi_sum +=
             ah->ah_crdc_rssi_sample[chain]
             [(crdc_rssi_ptr - i) % HAL_MAX_CRDC_RSSI_SAMPLE];
     }
@@ -6387,7 +6387,7 @@ ar9300_crdc_activate(struct ath_hal *ah, int rssi_diff, int enable)
         val |= ((c << 1) & 0xff);
     }
     OS_REG_WRITE(ah, AR_PHY_MULTICHAIN_CTRL, val);
-    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "diff: %02d comp: %02d reg: %08x %08x\n", 
+    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "diff: %02d comp: %02d reg: %08x %08x\n",
         rssi_diff, c, orig_val, val);
 }
 
@@ -6422,7 +6422,7 @@ void ar9300_chain_rssi_diff_compensation(struct ath_hal *ah)
     avg_rssi[1] = ar9300_crdc_avg_rssi(ah, 1);
     avg_rssi_diff = avg_rssi[1] - avg_rssi[0];
 
-    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "crdc: avg: %02d %02d ", 
+    HALDEBUG(ah, HAL_DEBUG_CALIBRATE, "crdc: avg: %02d %02d ",
         avg_rssi[0], avg_rssi[1]);
 
     if ((avg_rssi[0] < crdc_rssi_thresh) &&
@@ -6482,11 +6482,11 @@ ar9300_ant_ctrl_set_lna_div_use_bt_ant(struct ath_hal *ah, HAL_BOOL enable, cons
         value = ar9300_eeprom_get(ahp, EEP_ANTDIV_control);
         /* main_lnaconf, alt_lnaconf, main_tb, alt_tb */
         regval = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
-        regval &= (~ANT_DIV_CONTROL_ALL); /* clear bit 25~30 */     
-        regval |= (value & 0x3f) << ANT_DIV_CONTROL_ALL_S; 
+        regval &= (~ANT_DIV_CONTROL_ALL); /* clear bit 25~30 */
+        regval |= (value & 0x3f) << ANT_DIV_CONTROL_ALL_S;
         /* enable_lnadiv */
         regval &= (~MULTICHAIN_GAIN_CTRL__ENABLE_ANT_DIV_LNADIV__MASK);
-        regval |= ((value >> 6) & 0x1) << 
+        regval |= ((value >> 6) & 0x1) <<
                   MULTICHAIN_GAIN_CTRL__ENABLE_ANT_DIV_LNADIV__SHIFT;
         if ( enable == TRUE ) {
             regval |= ANT_DIV_ENABLE;
@@ -6496,26 +6496,26 @@ ar9300_ant_ctrl_set_lna_div_use_bt_ant(struct ath_hal *ah, HAL_BOOL enable, cons
         /* enable fast_div */
         regval = OS_REG_READ(ah, AR_PHY_CCK_DETECT);
         regval &= (~BBB_SIG_DETECT__ENABLE_ANT_FAST_DIV__MASK);
-        regval |= ((value >> 7) & 0x1) << 
+        regval |= ((value >> 7) & 0x1) <<
                   BBB_SIG_DETECT__ENABLE_ANT_FAST_DIV__SHIFT;
         if ( enable == TRUE ) {
             regval |= FAST_DIV_ENABLE;
         }
         OS_REG_WRITE(ah, AR_PHY_CCK_DETECT, regval);
-  
+
         if ( AR_SREV_POSEIDON_11_OR_LATER(ah) ) {
             if (pcap->halAntDivCombSupport) {
                 /* If support DivComb, set MAIN to LNA1 and ALT to LNA2 at the first beginning */
                 regval = OS_REG_READ(ah, AR_PHY_MC_GAIN_CTRL);
                 /* clear bit 25~30 main_lnaconf, alt_lnaconf, main_tb, alt_tb */
-                regval &= (~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK | 
-                             MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__MASK | 
-                             MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_GAINTB__MASK | 
-                             MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_GAINTB__MASK)); 
-                regval |= (HAL_ANT_DIV_COMB_LNA1 << 
-                           MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT); 
-                regval |= (HAL_ANT_DIV_COMB_LNA2 << 
-                           MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT); 
+                regval &= (~(MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__MASK |
+                             MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__MASK |
+                             MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_GAINTB__MASK |
+                             MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_GAINTB__MASK));
+                regval |= (HAL_ANT_DIV_COMB_LNA1 <<
+                           MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT);
+                regval |= (HAL_ANT_DIV_COMB_LNA2 <<
+                           MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT);
                 OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, regval);
             }
         }
@@ -6545,7 +6545,7 @@ ar9300_ant_ctrl_set_lna_div_use_bt_ant(struct ath_hal *ah, HAL_BOOL enable, cons
                            MULTICHAIN_GAIN_CTRL__ANT_DIV_MAIN_LNACONF__SHIFT);
                 regval |= (HAL_ANT_DIV_COMB_LNA2 <<
                            MULTICHAIN_GAIN_CTRL__ANT_DIV_ALT_LNACONF__SHIFT);
- 
+
                 OS_REG_WRITE(ah, AR_PHY_MC_GAIN_CTRL, regval);
         }
         return AH_TRUE;

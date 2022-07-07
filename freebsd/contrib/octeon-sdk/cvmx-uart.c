@@ -81,12 +81,12 @@ static int cvmx_uart_simulator_p(void)
  * Function that does the real work of setting up the Octeon uart.
  * Takes all parameters as arguments, so it does not require gd
  * structure to be set up.
- * 
+ *
  * @param uart_index Index of uart to configure
  * @param cpu_clock_hertz
  *                   CPU clock frequency in Hz
  * @param baudrate   Baudrate to configure
- * 
+ *
  * @return 0 on success
  *         !0 on error
  */

@@ -412,7 +412,7 @@ crypto_cursor_copyback(struct crypto_buffer_cursor *cc, int size,
 				cc->cc_offset += todo;
 				break;
 			}
-			size -= todo;	
+			size -= todo;
 			cc->cc_mbuf = cc->cc_mbuf->m_next;
 			cc->cc_offset = 0;
 			if (size == 0)
@@ -450,7 +450,7 @@ crypto_cursor_copyback(struct crypto_buffer_cursor *cc, int size,
 				cc->cc_offset += todo;
 				break;
 			}
-			size -= todo;	
+			size -= todo;
 			cc->cc_iov++;
 			cc->cc_offset = 0;
 			if (size == 0)

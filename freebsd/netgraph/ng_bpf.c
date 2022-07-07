@@ -5,7 +5,7 @@
 /*-
  * Copyright (c) 1999 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -16,7 +16,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -423,12 +423,12 @@ ng_bpf_rcvdata(hook_p hook, item_p item)
 	u_int len;
 	struct mbuf *m;
 
-	m = NGI_M(item);	/* 'item' still owns it.. we are peeking */ 
+	m = NGI_M(item);	/* 'item' still owns it.. we are peeking */
 	totlen = m->m_pkthdr.len;
 	/* Update stats on incoming hook. XXX Can we do 64 bits atomically? */
 	/* atomic_add_int64(&hip->stats.recvFrames, 1); */
 	/* atomic_add_int64(&hip->stats.recvOctets, totlen); */
-	hip->stats.recvFrames++; 
+	hip->stats.recvFrames++;
 	hip->stats.recvOctets += totlen;
 
 	/* Don't call bpf_filter() with totlen == 0! */
