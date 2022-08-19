@@ -737,7 +737,7 @@ init_port_start(void)
             uint16_t q;
             for (q = 0; q < nb_queues; q++) {
                 if (numa_on) {
-                    uint16_t lcore_id = lcore_conf.port_cfgs[port_id].lcore_list[q];
+                    uint16_t lcore_id = lcore_conf.port_cfgs[u_port_id].lcore_list[q];
                     socketid = rte_lcore_to_socket_id(lcore_id);
                 }
                 mbuf_pool = pktmbuf_pool[socketid];
