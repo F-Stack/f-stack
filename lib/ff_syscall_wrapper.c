@@ -896,7 +896,7 @@ ff_recvfrom(int s, void *buf, size_t len, int flags,
     if (fromlen != NULL)
         *fromlen = msg.msg_namelen;
 
-    if (from)
+    if (from && msg.msg_namelen != 0)
         freebsd2linux_sockaddr(from, (struct sockaddr *)&bsdaddr);
 
     return (rc);
