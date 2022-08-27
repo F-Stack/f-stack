@@ -67,7 +67,7 @@ epoch_wait_preempt(epoch_t epoch)
 void
 epoch_call(epoch_t epoch, epoch_callback_t callback, epoch_context_t ctx)
 {
-
+    callback(ctx);
 }
 
 epoch_t
