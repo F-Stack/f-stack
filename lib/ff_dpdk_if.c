@@ -53,6 +53,7 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_eth_bond.h>
+#include <rte_eth_bond_8023ad.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
@@ -576,6 +577,9 @@ init_port_start(void)
         struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[u_port_id];
         uint16_t nb_queues = pconf->nb_lcores;
 
+        if (pconf->nb_slaves > 0) {
+            rte_eth_bond_8023ad_dedicated_queues_enable(u_port_id);
+        }
         for (j=0; j<=pconf->nb_slaves; j++) {
             if (j < pconf->nb_slaves) {
                 port_id = pconf->slave_portid_list[j];
