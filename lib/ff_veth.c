@@ -335,7 +335,7 @@ ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
     struct mbuf *mb = m_get(M_NOWAIT, MT_DATA);
 
     if (mb == NULL) {
-        return NULL; 
+        return NULL;
     }
 
     m_extadd(mb, data, len, ff_mbuf_ext_free, m, NULL, 0, EXT_DISPOSABLE);
@@ -518,7 +518,7 @@ ff_veth_setaddr6(struct ff_veth_softc *sc)
 static int
 ff_veth_set_gateway6(struct ff_veth_softc *sc)
 {
-    struct sockaddr_in6 gw;
+    struct sockaddr_in6 gw, dst, nm;;
     struct rt_addrinfo info;
     struct rib_cmd_info rci;
 
@@ -526,13 +526,18 @@ ff_veth_set_gateway6(struct ff_veth_softc *sc)
     info.rti_flags = RTF_GATEWAY;
 
     bzero(&gw, sizeof(gw));
+    bzero(&dst, sizeof(dst));
+    bzero(&nm, sizeof(nm));
 
-    gw.sin6_len = sizeof(struct sockaddr_in6);
-    gw.sin6_family = AF_INET6;
+    gw.sin6_len = dst.sin6_len = nm.sin6_len = sizeof(struct sockaddr_in6);
+    gw.sin6_family = dst.sin6_family = nm.sin6_family = AF_INET6;
 
     gw.sin6_addr = sc->gateway6;
+    //dst.sin6_addr = nm.sin6_addr = 0;
 
     info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&gw;
+    info.rti_info[RTAX_DST] = (struct sockaddr *)&dst;
+    info.rti_info[RTAX_NETMASK] = (struct sockaddr *)&nm;
 
     return rib_action(RT_DEFAULT_FIB, RTM_ADD, &info, &rci);
 }
@@ -725,7 +730,7 @@ ff_veth_softc_to_hostc(void *softc)
 
 /********************
 *  get next mbuf's addr, current mbuf's data and datalen.
-*  
+*
 ********************/
 int ff_next_mbuf(void **mbuf_bsd, void **data, unsigned *len)
 {
@@ -757,7 +762,7 @@ void* ff_rte_frm_extcl(void* mbuf)
         bsd_mbuf->m_ext.ext_type == EXT_DISPOSABLE && bsd_mbuf->m_ext.ext_free == ff_mbuf_ext_free ) {
         return bsd_mbuf->m_ext.ext_arg1;
     }
-    else 
+    else
         return NULL;
 }
 
