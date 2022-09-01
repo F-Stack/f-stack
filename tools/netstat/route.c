@@ -559,17 +559,18 @@ routename(struct sockaddr *sa, int flags)
 #ifdef INET
 		case AF_INET:
 			src = &satosin(sa)->sin_addr;
+			inet_ntop(sa->sa_family, src, line, sizeof(line) - 1);
 			break;
 #endif /* INET */
 #ifdef INET6
 		case AF_INET6:
 			src = &satosin6(sa)->sin6_addr;
+			inet_ntop(AF_INET6_LINUX, src, line, sizeof(line) - 1);
 			break;
 #endif /* INET6 */
 		default:
 			return(line);
 		}
-		inet_ntop(sa->sa_family, src, line, sizeof(line) - 1);
 		return (line);
 	}
 	trimdomain(line, strlen(line));
