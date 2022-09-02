@@ -6,7 +6,7 @@
 
   1. Freebsd
 
-- Upgrade to FreeBSD-releng-13.0,  support RACK and BBR.
+  - Upgrade to FreeBSD-releng-13.0,  support RACK and BBR.
 
   1. F-Stack lib:
 
@@ -43,20 +43,19 @@
   - Upgrade to DPDK-20.11.6(LTS).
   - MLX5: modify if_indextoname syscall to support F-Stack tools.
 
-3. ff tools
+  3. ff tools
 
 - Fix bug of ff_ipc_msg_free in ff tools.
 - The ff_traffic and ff_top's -P argument support bigger than 38.
 
-4. APP
+
+  4. APP
 
 - Redis: Upgrade to Redis-6.2.6. @GlareR
 
-5. examples
+  5. example
 
 - Enable INET6 by default in helloworld.
-
-
 
 
 
