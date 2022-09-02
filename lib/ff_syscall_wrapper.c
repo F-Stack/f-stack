@@ -926,13 +926,10 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
     freebsd2linux_sockaddr(linux_msg->msg_name, msg->msg_name);
     linux_msg->msg_flags = msg->msg_flags;
     msg->msg_flags = 0;
-<<<<<<< HEAD
-=======
 
     if(msg->msg_control) {
         freebsd2linux_cmsghdr(linux_msg);
     }
->>>>>>> dev
 
     return (rc);
 kern_fail:

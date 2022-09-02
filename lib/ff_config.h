@@ -74,15 +74,12 @@ struct ff_port_cfg {
     char *addr6_str;
     char *gateway6_str;
     uint8_t prefix_len;
+
     char *vip_addr6_str;
     char **vip_addr6_array;
     uint32_t nb_vip6;
     uint8_t vip_prefix_len;
 #endif
-
-    char *pcap;
-    uint16_t snaplen;
-    uint32_t savelen;
 
     int nb_lcores;
     int nb_slaves;

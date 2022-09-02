@@ -83,7 +83,7 @@ int lo_set_defaultaddr(void)
     int ret;
 
     IFNET_WLOCK();
-    TAILQ_FOREACH(ifp, &V_ifnet, if_link)
+    CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link)
         if ( (ifp->if_flags & IFF_LOOPBACK) != 0 )
             break;
     IFNET_WUNLOCK();

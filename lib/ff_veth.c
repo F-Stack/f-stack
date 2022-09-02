@@ -300,65 +300,6 @@ ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
     return 0;
 }
 
-int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len) {
-    struct mbuf *mb;
-
-    if (m == NULL) {
-        return -1;
-    }
-
-    mb = m_getm2(NULL, max(len, 1), M_WAITOK, MT_DATA, 0);
-    if (mb == NULL) {
-        return -1;
-    }
-
-    m->bsd_mbuf = m->bsd_mbuf_off = mb;
-    m->off = 0;
-    m->len = len;
-
-    return 0;
-}
-
-int
-ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
-{
-    int ret, length, progress = 0;
-    struct mbuf *m, *mb;
-
-    if (zm == NULL) {
-        return -1;
-    }
-    m = (struct mbuf *)zm->bsd_mbuf_off;
-
-    if (zm->off + len > zm->len) {
-        return -1;
-    }
-
-    for (mb = m; mb != NULL; mb = mb->m_next) {
-        length = min(M_TRAILINGSPACE(mb), len - progress);
-        bcopy(data + progress, mtod(mb, char *) + mb->m_len, length);
-
-        mb->m_len += length;
-        progress += length;
-        if (len == progress) {
-            break;
-        }
-        //if (flags & M_PKTHDR)
-        //    m->m_pkthdr.len += length;
-    }
-    zm->off += len;
-    zm->bsd_mbuf_off = mb;
-
-    return len;
-}
-
-int
-ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
-{
-    // DOTO: Support read zero copy
-    return 0;
-}
-
 void *
 ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
     uint16_t len, uint8_t rx_csum)
@@ -495,57 +436,6 @@ ff_veth_set_gateway(struct ff_veth_softc *sc)
 
     return rib_action(RT_DEFAULT_FIB, RTM_ADD, &info, &rci);
 }
-
-#ifdef INET6
-static int
-ff_veth_setaddr6(struct ff_veth_softc *sc)
-{
-    struct in6_aliasreq ifr6;
-    bzero(&ifr6, sizeof(ifr6));
-    strcpy(ifr6.ifra_name, sc->ifp->if_dname);
-
-    ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
-    ifr6.ifra_addr.sin6_family = AF_INET6;
-    ifr6.ifra_addr.sin6_addr = sc->ip6;
-
-    ifr6.ifra_prefixmask.sin6_len = sizeof ifr6.ifra_prefixmask;
-    memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, sc->prefix_length / 8);
-    uint8_t mask_size_mod = sc->prefix_length % 8;
-    if (mask_size_mod)
-    {
-        ifr6.ifra_prefixmask.sin6_addr.__u6_addr.__u6_addr8[sc->prefix_length / 8] = ((1 << mask_size_mod) - 1) << (8 - mask_size_mod);
-    }
-
-    ifr6.ifra_lifetime.ia6t_pltime = ifr6.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
-
-    struct socket *so = NULL;
-    socreate(AF_INET6, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
-    int ret = ifioctl(so, SIOCAIFADDR_IN6, (caddr_t)&ifr6, curthread);
-
-    sofree(so);
-
-    return ret;
-}
-
-static int
-ff_veth_set_gateway6(struct ff_veth_softc *sc)
-{
-    struct sockaddr_in6 gw, dst, nm;
-
-    bzero(&gw, sizeof(gw));
-    bzero(&dst, sizeof(dst));
-    bzero(&nm, sizeof(nm));
-
-    gw.sin6_len = dst.sin6_len = nm.sin6_len = sizeof(struct sockaddr_in6);
-    gw.sin6_family = dst.sin6_family = AF_INET6;
-
-    gw.sin6_addr = sc->gateway6;
-    //dst.sin6_addr = nm.sin6_addr = 0;
-
-    return rtrequest_fib(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
-        (struct sockaddr *)&nm, RTF_GATEWAY, NULL, RT_DEFAULT_FIB);
-}
-#endif /* INET6 */
 
 static int
 ff_veth_setvaddr(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
