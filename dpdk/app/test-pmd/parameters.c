@@ -39,9 +39,6 @@
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
-#ifdef RTE_LIBRTE_PMD_BOND
-#include <rte_eth_bond.h>
-#endif
 #include <rte_flow.h>
 
 #include "testpmd.h"
@@ -694,7 +691,7 @@ launch_args_parse(int argc, char** argv)
 		case 0: /*long options */
 			if (!strcmp(lgopts[opt_idx].name, "help")) {
 				usage(argv[0]);
-				rte_exit(EXIT_SUCCESS, "Displayed help\n");
+				exit(EXIT_SUCCESS);
 			}
 #ifdef RTE_LIBRTE_CMDLINE
 			if (!strcmp(lgopts[opt_idx].name, "interactive")) {
@@ -876,20 +873,18 @@ launch_args_parse(int argc, char** argv)
 			}
 			if (!strcmp(lgopts[opt_idx].name, "total-num-mbufs")) {
 				n = atoi(optarg);
-				if (n > 1024)
+				if (n > MIN_TOTAL_NUM_MBUFS)
 					param_total_num_mbufs = (unsigned)n;
 				else
 					rte_exit(EXIT_FAILURE,
-						 "total-num-mbufs should be > 1024\n");
+						 "total-num-mbufs should be > %d\n",
+						 MIN_TOTAL_NUM_MBUFS);
 			}
 			if (!strcmp(lgopts[opt_idx].name, "max-pkt-len")) {
 				n = atoi(optarg);
-				if (n >= RTE_ETHER_MIN_LEN) {
+				if (n >= RTE_ETHER_MIN_LEN)
 					rx_mode.max_rx_pkt_len = (uint32_t) n;
-					if (n > RTE_ETHER_MAX_LEN)
-						rx_offloads |=
-							DEV_RX_OFFLOAD_JUMBO_FRAME;
-				} else
+				else
 					rte_exit(EXIT_FAILURE,
 						 "Invalid max-pkt-len=%d - should be > %d\n",
 						 n, RTE_ETHER_MIN_LEN);
@@ -1359,7 +1354,7 @@ launch_args_parse(int argc, char** argv)
 			break;
 		case 'h':
 			usage(argv[0]);
-			rte_exit(EXIT_SUCCESS, "Displayed help\n");
+			exit(EXIT_SUCCESS);
 			break;
 		default:
 			usage(argv[0]);

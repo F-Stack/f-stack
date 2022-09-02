@@ -65,8 +65,13 @@ ifcvf_init_hw(struct ifcvf_hw *hw, PCI_DEV *dev)
 			hw->common_cfg = get_cap_addr(hw, &cap);
 			break;
 		case IFCVF_PCI_CAP_NOTIFY_CFG:
-			PCI_READ_CONFIG_DWORD(dev, &hw->notify_off_multiplier,
+			ret = PCI_READ_CONFIG_DWORD(dev,
+					&hw->notify_off_multiplier,
 					pos + sizeof(cap));
+			if (ret < 0) {
+				DEBUGOUT("failed to read notify_off_multiplier\n");
+				return -1;
+			}
 			hw->notify_base = get_cap_addr(hw, &cap);
 			hw->notify_region = cap.bar;
 			break;
@@ -82,6 +87,8 @@ next:
 	}
 
 	hw->lm_cfg = hw->mem_resource[4].addr;
+	if (!hw->lm_cfg)
+		WARNINGOUT("HW support live migration not support!\n");
 
 	if (hw->common_cfg == NULL || hw->notify_base == NULL ||
 			hw->isr == NULL || hw->dev_cfg == NULL) {
@@ -89,12 +96,14 @@ next:
 		return -1;
 	}
 
-	DEBUGOUT("capability mapping:\ncommon cfg: %p\n"
-			"notify base: %p\nisr cfg: %p\ndevice cfg: %p\n"
-			"multiplier: %u\n",
-			hw->common_cfg, hw->dev_cfg,
-			hw->isr, hw->notify_base,
-			hw->notify_off_multiplier);
+	DEBUGOUT("capability mapping:\n"
+		 "common cfg: %p\n"
+		 "notify base: %p\n"
+		 "isr cfg: %p\n"
+		 "device cfg: %p\n"
+		 "multiplier: %u\n",
+		 hw->common_cfg, hw->notify_base, hw->isr, hw->dev_cfg,
+		 hw->notify_off_multiplier);
 
 	return 0;
 }
@@ -211,10 +220,12 @@ ifcvf_hw_enable(struct ifcvf_hw *hw)
 				&cfg->queue_used_hi);
 		IFCVF_WRITE_REG16(hw->vring[i].size, &cfg->queue_size);
 
-		*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
-				(i / 2) * IFCVF_LM_CFG_SIZE + (i % 2) * 4) =
-			(u32)hw->vring[i].last_avail_idx |
-			((u32)hw->vring[i].last_used_idx << 16);
+		if (lm_cfg) {
+			*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
+					(i / 2) * IFCVF_LM_CFG_SIZE + (i % 2) * 4) =
+				(u32)hw->vring[i].last_avail_idx |
+				((u32)hw->vring[i].last_used_idx << 16);
+		}
 
 		IFCVF_WRITE_REG16(i + 1, &cfg->queue_msix_vector);
 		if (IFCVF_READ_REG16(&cfg->queue_msix_vector) ==
@@ -284,6 +295,8 @@ ifcvf_enable_logging(struct ifcvf_hw *hw, u64 log_base, u64 log_size)
 	u8 *lm_cfg;
 
 	lm_cfg = hw->lm_cfg;
+	if (!lm_cfg)
+		return;
 
 	*(u32 *)(lm_cfg + IFCVF_LM_BASE_ADDR_LOW) =
 		log_base & IFCVF_32_BIT_MASK;
@@ -306,6 +319,9 @@ ifcvf_disable_logging(struct ifcvf_hw *hw)
 	u8 *lm_cfg;
 
 	lm_cfg = hw->lm_cfg;
+	if (!lm_cfg)
+		return;
+
 	*(u32 *)(lm_cfg + IFCVF_LM_LOGGING_CTRL) = IFCVF_LM_DISABLE;
 }
 

@@ -112,10 +112,11 @@ setup_test_string(struct rte_mempool *mpool,
 	struct rte_mbuf *m = rte_pktmbuf_alloc(mpool);
 	size_t t_len = len - (blocksize ? (len % blocksize) : 0);
 
-	memset(m->buf_addr, 0, m->buf_len);
 	if (m) {
-		char *dst = rte_pktmbuf_append(m, t_len);
+		char *dst;
 
+		memset(m->buf_addr, 0, m->buf_len);
+		dst = rte_pktmbuf_append(m, t_len);
 		if (!dst) {
 			rte_pktmbuf_free(m);
 			return NULL;
@@ -580,7 +581,6 @@ ut_teardown(void)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
-	struct rte_cryptodev_stats stats;
 
 	/* free crypto session structure */
 #ifdef RTE_LIBRTE_SECURITY
@@ -626,8 +626,6 @@ ut_teardown(void)
 	if (ts_params->mbuf_pool != NULL)
 		RTE_LOG(DEBUG, USER1, "CRYPTO_MBUFPOOL count %u\n",
 			rte_mempool_avail_count(ts_params->mbuf_pool));
-
-	rte_cryptodev_stats_get(ts_params->valid_devs[0], &stats);
 
 	/* Stop the device */
 	rte_cryptodev_stop(ts_params->valid_devs[0]);
@@ -3956,9 +3954,9 @@ test_kasumi_decryption(const struct kasumi_test_data *tdata)
 
 	/* Create KASUMI operation */
 	retval = create_wireless_algo_cipher_operation(tdata->cipher_iv.data,
-					tdata->cipher_iv.len,
-					tdata->ciphertext.len,
-					tdata->validCipherOffsetInBits.len);
+			tdata->cipher_iv.len,
+			RTE_ALIGN_CEIL(tdata->validCipherLenInBits.len, 8),
+			tdata->validCipherOffsetInBits.len);
 	if (retval < 0)
 		return retval;
 
@@ -4593,9 +4591,9 @@ test_snow3g_cipher_auth(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
+	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
 	ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
-	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
 	ut_params->obuf = ut_params->op->sym->m_src;
 	if (ut_params->obuf)
 		ciphertext = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
@@ -4761,16 +4759,20 @@ test_snow3g_auth_cipher(const struct snow3g_test_data *tdata,
 
 	/* Validate obuf */
 	if (verify) {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT_OFFSET(
 			plaintext,
 			tdata->plaintext.data,
-			tdata->plaintext.len >> 3,
+			(tdata->plaintext.len - tdata->cipher.offset_bits -
+			 (tdata->digest.len << 3)),
+			tdata->cipher.offset_bits,
 			"SNOW 3G Plaintext data not as expected");
 	} else {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT_OFFSET(
 			ciphertext,
 			tdata->ciphertext.data,
-			tdata->validDataLenInBits.len,
+			(tdata->validDataLenInBits.len -
+			 tdata->cipher.offset_bits),
+			tdata->cipher.offset_bits,
 			"SNOW 3G Ciphertext data not as expected");
 
 		TEST_ASSERT_BUFFERS_ARE_EQUAL(
@@ -4945,16 +4947,20 @@ test_snow3g_auth_cipher_sgl(const struct snow3g_test_data *tdata,
 
 	/* Validate obuf */
 	if (verify) {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT_OFFSET(
 			plaintext,
 			tdata->plaintext.data,
-			tdata->plaintext.len >> 3,
+			(tdata->plaintext.len - tdata->cipher.offset_bits -
+			 (tdata->digest.len << 3)),
+			tdata->cipher.offset_bits,
 			"SNOW 3G Plaintext data not as expected");
 	} else {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT_OFFSET(
 			ciphertext,
 			tdata->ciphertext.data,
-			tdata->validDataLenInBits.len,
+			(tdata->validDataLenInBits.len -
+			 tdata->cipher.offset_bits),
+			tdata->cipher.offset_bits,
 			"SNOW 3G Ciphertext data not as expected");
 
 		TEST_ASSERT_BUFFERS_ARE_EQUAL(
@@ -5449,7 +5455,7 @@ test_zuc_encryption(const struct wireless_test_data *tdata)
 	retval = create_wireless_algo_cipher_operation(tdata->cipher_iv.data,
 					tdata->cipher_iv.len,
 					tdata->plaintext.len,
-					0);
+					tdata->validCipherOffsetInBits.len);
 	if (retval < 0)
 		return retval;
 
@@ -5536,7 +5542,7 @@ test_zuc_encryption_sgl(const struct wireless_test_data *tdata)
 	/* Create ZUC operation */
 	retval = create_wireless_algo_cipher_operation(tdata->cipher_iv.data,
 			tdata->cipher_iv.len, tdata->plaintext.len,
-			0);
+			tdata->validCipherOffsetInBits.len);
 	if (retval < 0)
 		return retval;
 
@@ -5708,19 +5714,19 @@ test_zuc_auth_cipher(const struct wireless_test_data *tdata,
 		ciphertext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
 					ciphertext_pad_len);
 		memcpy(ciphertext, tdata->ciphertext.data, ciphertext_len);
-		if (op_mode == OUT_OF_PLACE)
-			rte_pktmbuf_append(ut_params->obuf, ciphertext_pad_len);
 		debug_hexdump(stdout, "ciphertext:", ciphertext,
 			ciphertext_len);
 	} else {
+		/* make sure enough space to cover partial digest verify case */
 		plaintext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
-					plaintext_pad_len);
+					ciphertext_pad_len);
 		memcpy(plaintext, tdata->plaintext.data, plaintext_len);
-		if (op_mode == OUT_OF_PLACE)
-			rte_pktmbuf_append(ut_params->obuf, plaintext_pad_len);
 		debug_hexdump(stdout, "plaintext:", plaintext,
 			plaintext_len);
 	}
+
+	if (op_mode == OUT_OF_PLACE)
+		rte_pktmbuf_append(ut_params->obuf, ciphertext_pad_len);
 
 	/* Create ZUC operation */
 	retval = create_wireless_algo_auth_cipher_operation(
@@ -5912,7 +5918,7 @@ test_zuc_auth_cipher_sgl(const struct wireless_test_data *tdata,
 	retval = create_wireless_algo_auth_cipher_operation(
 		tdata->digest.data, tdata->digest.len,
 		tdata->cipher_iv.data, tdata->cipher_iv.len,
-		NULL, 0,
+		tdata->auth_iv.data, tdata->auth_iv.len,
 		(tdata->digest.offset_bytes == 0 ?
 		(verify ? ciphertext_pad_len : plaintext_pad_len)
 			: tdata->digest.offset_bytes),
@@ -6695,18 +6701,18 @@ test_mixed_auth_cipher(const struct mixed_cipher_auth_test_data *tdata,
 		ciphertext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
 				ciphertext_pad_len);
 		memcpy(ciphertext, tdata->ciphertext.data, ciphertext_len);
-		if (op_mode == OUT_OF_PLACE)
-			rte_pktmbuf_append(ut_params->obuf, ciphertext_pad_len);
 		debug_hexdump(stdout, "ciphertext:", ciphertext,
 				ciphertext_len);
 	} else {
+		/* make sure enough space to cover partial digest verify case */
 		plaintext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
-				plaintext_pad_len);
+				ciphertext_pad_len);
 		memcpy(plaintext, tdata->plaintext.data, plaintext_len);
-		if (op_mode == OUT_OF_PLACE)
-			rte_pktmbuf_append(ut_params->obuf, plaintext_pad_len);
 		debug_hexdump(stdout, "plaintext:", plaintext, plaintext_len);
 	}
+
+	if (op_mode == OUT_OF_PLACE)
+		rte_pktmbuf_append(ut_params->obuf, ciphertext_pad_len);
 
 	/* Create the operation */
 	retval = create_wireless_algo_auth_cipher_operation(
@@ -6780,25 +6786,28 @@ test_mixed_auth_cipher(const struct mixed_cipher_auth_test_data *tdata,
 				tdata->digest_enc.len);
 	}
 
-	/* Validate obuf */
-	if (verify) {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
-				plaintext,
-				tdata->plaintext.data,
-				tdata->plaintext.len_bits >> 3,
-				"Plaintext data not as expected");
-	} else {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
-				ciphertext,
-				tdata->ciphertext.data,
-				tdata->validDataLen.len_bits,
-				"Ciphertext data not as expected");
-
+	if (!verify) {
 		TEST_ASSERT_BUFFERS_ARE_EQUAL(
 				ut_params->digest,
 				tdata->digest_enc.data,
-				DIGEST_BYTE_LENGTH_SNOW3G_UIA2,
+				tdata->digest_enc.len,
 				"Generated auth tag not as expected");
+	}
+
+	if (tdata->cipher_algo != RTE_CRYPTO_CIPHER_NULL) {
+		if (verify) {
+			TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+					plaintext,
+					tdata->plaintext.data,
+					tdata->plaintext.len_bits >> 3,
+					"Plaintext data not as expected");
+		} else {
+			TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+					ciphertext,
+					tdata->ciphertext.data,
+					tdata->validDataLen.len_bits,
+					"Ciphertext data not as expected");
+		}
 	}
 
 	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
@@ -6997,24 +7006,28 @@ test_mixed_auth_cipher_sgl(const struct mixed_cipher_auth_test_data *tdata,
 				tdata->digest_enc.data, tdata->digest_enc.len);
 	}
 
-	/* Validate obuf */
-	if (verify) {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
-				plaintext,
-				tdata->plaintext.data,
-				tdata->plaintext.len_bits >> 3,
-				"Plaintext data not as expected");
-	} else {
-		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
-				ciphertext,
-				tdata->ciphertext.data,
-				tdata->validDataLen.len_bits,
-				"Ciphertext data not as expected");
+	if (!verify) {
 		TEST_ASSERT_BUFFERS_ARE_EQUAL(
 				digest,
 				tdata->digest_enc.data,
 				tdata->digest_enc.len,
 				"Generated auth tag not as expected");
+	}
+
+	if (tdata->cipher_algo != RTE_CRYPTO_CIPHER_NULL) {
+		if (verify) {
+			TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+					plaintext,
+					tdata->plaintext.data,
+					tdata->plaintext.len_bits >> 3,
+					"Plaintext data not as expected");
+		} else {
+			TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+					ciphertext,
+					tdata->ciphertext.data,
+					tdata->validDataLen.len_bits,
+					"Ciphertext data not as expected");
+		}
 	}
 
 	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
@@ -9653,8 +9666,8 @@ test_multi_session(void)
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
 
 	sessions = rte_malloc(NULL,
-			(sizeof(struct rte_cryptodev_sym_session *) *
-			MAX_NB_SESSIONS) + 1, 0);
+			sizeof(struct rte_cryptodev_sym_session *) *
+			(MAX_NB_SESSIONS + 1), 0);
 
 	/* Create multiple crypto sessions*/
 	for (i = 0; i < MAX_NB_SESSIONS; i++) {
@@ -9699,6 +9712,7 @@ test_multi_session(void)
 		}
 	}
 
+	sessions[i] = NULL;
 	/* Next session create should fail */
 	rte_cryptodev_sym_session_init(ts_params->valid_devs[0],
 			sessions[i], &ut_params->auth_xform,
@@ -11202,7 +11216,7 @@ test_authenticated_decryption_fail_when_corruption(
 }
 
 static int
-test_authenticated_encryt_with_esn(
+test_authenticated_encrypt_with_esn(
 		struct crypto_testsuite_params *ts_params,
 		struct crypto_unittest_params *ut_params,
 		const struct test_crypto_vector *reference)
@@ -11867,7 +11881,7 @@ auth_decryption_AES128CBC_HMAC_SHA1_fail_tag_corrupt(void)
 static int
 auth_encrypt_AES128CBC_HMAC_SHA1_esn_check(void)
 {
-	return test_authenticated_encryt_with_esn(
+	return test_authenticated_encrypt_with_esn(
 			&testsuite_params,
 			&unittest_params,
 			&aes128cbc_hmac_sha1_aad_test_vector);

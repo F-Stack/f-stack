@@ -7,6 +7,10 @@
 #ifndef _RTE_TELEMETRY_H_
 #define _RTE_TELEMETRY_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @file
  *
@@ -70,5 +74,9 @@ rte_telemetry_cleanup(void);
 __rte_experimental
 int32_t
 rte_telemetry_selftest(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

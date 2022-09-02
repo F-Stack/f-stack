@@ -256,5 +256,8 @@ main(int argc, char **argv)
 
 	main_loop();
 
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

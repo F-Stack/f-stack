@@ -13,6 +13,10 @@
 #ifndef _RTE_EVENT_RING_
 #define _RTE_EVENT_RING_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #include <rte_common.h>
@@ -275,4 +279,9 @@ rte_event_ring_get_capacity(const struct rte_event_ring *r)
 {
 	return rte_ring_get_capacity(&r->r);
 }
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

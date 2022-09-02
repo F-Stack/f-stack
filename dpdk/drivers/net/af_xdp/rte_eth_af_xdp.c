@@ -696,7 +696,6 @@ xdp_umem_destroy(struct xsk_umem_info *umem)
 #endif
 
 	rte_free(umem);
-	umem = NULL;
 }
 
 static void
@@ -705,6 +704,9 @@ eth_dev_close(struct rte_eth_dev *dev)
 	struct pmd_internals *internals = dev->data->dev_private;
 	struct pkt_rx_queue *rxq;
 	int i;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	AF_XDP_LOG(INFO, "Closing AF_XDP ethdev on numa socket %u\n",
 		rte_socket_id());
@@ -781,7 +783,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals __rte_unused,
 
 	umem = rte_zmalloc_socket("umem", sizeof(*umem), 0, rte_socket_id());
 	if (umem == NULL) {
-		AF_XDP_LOG(ERR, "Failed to allocate umem info");
+		AF_XDP_LOG(ERR, "Failed to allocate umem info\n");
 		return NULL;
 	}
 
@@ -793,7 +795,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals __rte_unused,
 			       &umem->fq, &umem->cq, &usr_config);
 
 	if (ret) {
-		AF_XDP_LOG(ERR, "Failed to create umem");
+		AF_XDP_LOG(ERR, "Failed to create umem\n");
 		goto err;
 	}
 	umem->buffer = base_addr;
@@ -817,7 +819,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 
 	umem = rte_zmalloc_socket("umem", sizeof(*umem), 0, rte_socket_id());
 	if (umem == NULL) {
-		AF_XDP_LOG(ERR, "Failed to allocate umem info");
+		AF_XDP_LOG(ERR, "Failed to allocate umem info\n");
 		return NULL;
 	}
 
@@ -853,7 +855,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 			       &usr_config);
 
 	if (ret) {
-		AF_XDP_LOG(ERR, "Failed to create umem");
+		AF_XDP_LOG(ERR, "Failed to create umem\n");
 		goto err;
 	}
 	umem->mz = mz;
@@ -896,25 +898,27 @@ xsk_configure(struct pmd_internals *internals, struct pkt_rx_queue *rxq,
 			&txq->tx, &cfg);
 	if (ret) {
 		AF_XDP_LOG(ERR, "Failed to create xsk socket.\n");
-		goto err;
+		goto out_umem;
 	}
 
 #if defined(XDP_UMEM_UNALIGNED_CHUNK_FLAG)
-	if (rte_pktmbuf_alloc_bulk(rxq->umem->mb_pool, fq_bufs, reserve_size)) {
+	ret = rte_pktmbuf_alloc_bulk(rxq->umem->mb_pool, fq_bufs, reserve_size);
+	if (ret) {
 		AF_XDP_LOG(DEBUG, "Failed to get enough buffers for fq.\n");
-		goto err;
+		goto out_xsk;
 	}
 #endif
 	ret = reserve_fill_queue(rxq->umem, reserve_size, fq_bufs);
 	if (ret) {
-		xsk_socket__delete(rxq->xsk);
 		AF_XDP_LOG(ERR, "Failed to reserve fill queue.\n");
-		goto err;
+		goto out_xsk;
 	}
 
 	return 0;
 
-err:
+out_xsk:
+	xsk_socket__delete(rxq->xsk);
+out_umem:
 	xdp_umem_destroy(rxq->umem);
 
 	return ret;
@@ -1302,16 +1306,11 @@ rte_pmd_af_xdp_probe(struct rte_vdev_device *dev)
 		rte_vdev_device_name(dev));
 
 	name = rte_vdev_device_name(dev);
-	if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
-		strlen(rte_vdev_device_args(dev)) == 0) {
-		eth_dev = rte_eth_dev_attach_secondary(name);
-		if (eth_dev == NULL) {
-			AF_XDP_LOG(ERR, "Failed to probe %s\n", name);
-			return -EINVAL;
-		}
-		eth_dev->dev_ops = &ops;
-		rte_eth_dev_probing_finish(eth_dev);
-		return 0;
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		AF_XDP_LOG(ERR, "Failed to probe %s. "
+				"AF_XDP PMD does not support secondary processes.\n",
+				name);
+		return -ENOTSUP;
 	}
 
 	kvlist = rte_kvargs_parse(rte_vdev_device_args(dev), valid_arguments);

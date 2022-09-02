@@ -66,7 +66,16 @@
  * - any name that does not start with "rte_" in an application
  */
 
+#include <stdio.h>
+#include <stdint.h>
 #include <sys/types.h>
+
+#include <rte_compat.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Maximum length of the dynamic field or flag string.
  */
@@ -250,4 +259,8 @@ void rte_mbuf_dyn_dump(FILE *out);
 #define RTE_MBUF_DYNFIELD_METADATA_NAME "rte_flow_dynfield_metadata"
 #define RTE_MBUF_DYNFLAG_METADATA_NAME "rte_flow_dynflag_metadata"
 
+#ifdef __cplusplus
+}
 #endif
+
+#endif /* _RTE_MBUF_DYN_H_ */

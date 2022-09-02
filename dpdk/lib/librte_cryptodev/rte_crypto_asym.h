@@ -133,10 +133,12 @@ enum rte_crypto_rsa_padding_type {
 enum rte_crypto_rsa_priv_key_type {
 	RTE_RSA_KEY_TYPE_EXP,
 	/**< RSA private key is an exponent */
-	RTE_RSA_KET_TYPE_QT,
+	RTE_RSA_KEY_TYPE_QT,
 	/**< RSA private key is in quintuple format
 	 * See rte_crypto_rsa_priv_key_qt
 	 */
+	RTE_RSA_KET_TYPE_QT = RTE_RSA_KEY_TYPE_QT,
+	/**< Backward-compatible definition of old name */
 };
 
 /**

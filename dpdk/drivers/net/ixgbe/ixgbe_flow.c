@@ -3137,13 +3137,13 @@ ixgbe_flow_create(struct rte_eth_dev *dev,
 				rte_memcpy(&fdir_info->mask,
 					&fdir_rule.mask,
 					sizeof(struct ixgbe_hw_fdir_mask));
-				fdir_info->flex_bytes_offset =
-					fdir_rule.flex_bytes_offset;
 
-				if (fdir_rule.mask.flex_bytes_mask)
-					ixgbe_fdir_set_flexbytes_offset(dev,
+				if (fdir_rule.mask.flex_bytes_mask) {
+					ret = ixgbe_fdir_set_flexbytes_offset(dev,
 						fdir_rule.flex_bytes_offset);
-
+					if (ret)
+						goto out;
+				}
 				ret = ixgbe_fdir_set_input_mask(dev);
 				if (ret)
 					goto out;
@@ -3161,8 +3161,9 @@ ixgbe_flow_create(struct rte_eth_dev *dev,
 				if (ret)
 					goto out;
 
-				if (fdir_info->flex_bytes_offset !=
-						fdir_rule.flex_bytes_offset)
+				if (fdir_rule.mask.flex_bytes_mask &&
+				    fdir_info->flex_bytes_offset !=
+				    fdir_rule.flex_bytes_offset)
 					goto out;
 			}
 		}
@@ -3436,6 +3437,7 @@ ixgbe_flow_destroy(struct rte_eth_dev *dev,
 			TAILQ_REMOVE(&ixgbe_flow_list,
 				ixgbe_flow_mem_ptr, entries);
 			rte_free(ixgbe_flow_mem_ptr);
+			break;
 		}
 	}
 	rte_free(flow);

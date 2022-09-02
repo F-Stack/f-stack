@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #include <stdbool.h>
@@ -1011,6 +1011,10 @@ int hns3_clear_all_fdir_filter(struct hns3_adapter *hns)
 	rte_spinlock_lock(&fdir_info->flows_lock);
 	rte_hash_reset(fdir_info->hash_handle);
 	rte_spinlock_unlock(&fdir_info->flows_lock);
+
+	memset(fdir_info->hash_map, 0,
+	       sizeof(struct hns3_fdir_rule_ele *) *
+	       fdir_info->fd_cfg.rule_num[HNS3_FD_STAGE_1]);
 
 	fdir_filter = TAILQ_FIRST(&fdir_info->fdir_list);
 	while (fdir_filter) {

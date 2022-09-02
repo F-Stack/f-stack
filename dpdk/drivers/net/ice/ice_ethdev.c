@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <rte_tailq.h>
+
 #include "base/ice_sched.h"
 #include "base/ice_flow.h"
 #include "base/ice_dcb.h"
@@ -795,7 +797,7 @@ ice_init_mac_address(struct rte_eth_dev *dev)
 		(struct rte_ether_addr *)hw->port_info[0].mac.perm_addr);
 
 	dev->data->mac_addrs =
-		rte_zmalloc(NULL, sizeof(struct rte_ether_addr), 0);
+		rte_zmalloc(NULL, sizeof(struct rte_ether_addr) * ICE_NUM_MACADDR_MAX, 0);
 	if (!dev->data->mac_addrs) {
 		PMD_INIT_LOG(ERR,
 			     "Failed to allocate memory to store mac address");
@@ -1078,12 +1080,13 @@ ice_remove_all_mac_vlan_filters(struct ice_vsi *vsi)
 {
 	struct ice_mac_filter *m_f;
 	struct ice_vlan_filter *v_f;
+	void *temp;
 	int ret = 0;
 
 	if (!vsi || !vsi->mac_num)
 		return -EINVAL;
 
-	TAILQ_FOREACH(m_f, &vsi->mac_list, next) {
+	TAILQ_FOREACH_SAFE(m_f, &vsi->mac_list, next, temp) {
 		ret = ice_remove_mac_filter(vsi, &m_f->mac_info.mac_addr);
 		if (ret != ICE_SUCCESS) {
 			ret = -EINVAL;
@@ -1094,7 +1097,7 @@ ice_remove_all_mac_vlan_filters(struct ice_vsi *vsi)
 	if (vsi->vlan_num == 0)
 		return 0;
 
-	TAILQ_FOREACH(v_f, &vsi->vlan_list, next) {
+	TAILQ_FOREACH_SAFE(v_f, &vsi->vlan_list, next, temp) {
 		ret = ice_remove_vlan_filter(vsi, v_f->vlan_info.vlan_id);
 		if (ret != ICE_SUCCESS) {
 			ret = -EINVAL;
@@ -1800,8 +1803,14 @@ ice_pkg_file_search_path(struct rte_pci_device *pci_dev, char *pkg_file)
 	pos = ice_pci_find_next_ext_capability(pci_dev, PCI_EXT_CAP_ID_DSN);
 
 	if (pos) {
-		rte_pci_read_config(pci_dev, &dsn_low, 4, pos + 4);
-		rte_pci_read_config(pci_dev, &dsn_high, 4, pos + 8);
+		if (rte_pci_read_config(pci_dev, &dsn_low, 4, pos + 4) < 0) {
+			PMD_INIT_LOG(ERR, "Failed to read pci config space\n");
+			return -1;
+		}
+		if (rte_pci_read_config(pci_dev, &dsn_high, 4, pos + 8) < 0) {
+			PMD_INIT_LOG(ERR, "Failed to read pci config space\n");
+			return -1;
+		}
 		snprintf(opt_ddp_filename, ICE_MAX_PKG_FILENAME_SIZE,
 			 "ice-%08x%08x.pkg", dsn_high, dsn_low);
 	} else {
@@ -1863,7 +1872,11 @@ static int ice_load_pkg(struct rte_eth_dev *dev)
 	struct ice_adapter *ad =
 		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 
-	ice_pkg_file_search_path(pci_dev, pkg_file);
+	err = ice_pkg_file_search_path(pci_dev, pkg_file);
+	if (err) {
+		PMD_INIT_LOG(ERR, "failed to search file path\n");
+		return err;
+	}
 
 	file = fopen(pkg_file, "rb");
 	if (!file)  {
@@ -2182,7 +2195,7 @@ ice_dev_init(struct rte_eth_dev *dev)
 		if (ad->devargs.safe_mode_support == 0) {
 			PMD_INIT_LOG(ERR, "Failed to load the DDP package,"
 					"Use safe-mode-support=1 to enter Safe Mode");
-			return ret;
+			goto err_init_fw;
 		}
 
 		PMD_INIT_LOG(WARNING, "Failed to load the DDP package,"
@@ -2256,28 +2269,35 @@ ice_dev_init(struct rte_eth_dev *dev)
 		ret = ice_flow_init(ad);
 		if (ret) {
 			PMD_INIT_LOG(ERR, "Failed to initialize flow");
-			return ret;
+			goto err_flow_init;
 		}
 	}
 
 	ret = ice_reset_fxp_resource(hw);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Failed to reset fxp resource");
-		return ret;
+		goto err_flow_init;
 	}
 
 	return 0;
 
+err_flow_init:
+	ice_flow_uninit(ad);
+	rte_intr_disable(intr_handle);
+	ice_pf_disable_irq0(hw);
+	rte_intr_callback_unregister(intr_handle,
+				     ice_interrupt_handler, dev);
 err_pf_setup:
 	ice_res_pool_destroy(&pf->msix_pool);
 err_msix_pool_init:
 	rte_free(dev->data->mac_addrs);
 	dev->data->mac_addrs = NULL;
 err_init_mac:
-	ice_sched_cleanup_all(hw);
-	rte_free(hw->port_info);
-	ice_shutdown_all_ctrlq(hw);
 	rte_free(pf->proto_xtr);
+#ifndef RTE_EXEC_ENV_WINDOWS
+err_init_fw:
+#endif
+	ice_deinit_hw(hw);
 
 	return ret;
 }
@@ -2394,6 +2414,9 @@ ice_dev_close(struct rte_eth_dev *dev)
 	struct ice_adapter *ad =
 		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	/* Since stop will make link down, then the link event will be
 	 * triggered, disable the irq firstly to avoid the port_infoe etc
 	 * resources deallocation causing the interrupt service thread
@@ -2442,6 +2465,31 @@ ice_dev_uninit(struct rte_eth_dev *dev)
 	return 0;
 }
 
+static void
+ice_get_default_rss_key(uint8_t *rss_key, uint32_t rss_key_size)
+{
+	static struct ice_aqc_get_set_rss_keys default_key;
+	static bool default_key_done;
+	uint8_t *key = (uint8_t *)&default_key;
+	size_t i;
+
+	if (rss_key_size > sizeof(default_key)) {
+		PMD_DRV_LOG(WARNING,
+			    "requested size %u is larger than default %zu, "
+			    "only %zu bytes are gotten for key\n",
+			    rss_key_size, sizeof(default_key),
+			    sizeof(default_key));
+	}
+
+	if (!default_key_done) {
+		/* Calculate the default hash key */
+		for (i = 0; i < sizeof(default_key); i++)
+			key[i] = (uint8_t)rte_rand();
+		default_key_done = true;
+	}
+	rte_memcpy(rss_key, key, RTE_MIN(rss_key_size, sizeof(default_key)));
+}
+
 static int ice_init_rss(struct ice_pf *pf)
 {
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
@@ -2458,6 +2506,12 @@ static int ice_init_rss(struct ice_pf *pf)
 	nb_q = dev->data->nb_rx_queues;
 	vsi->rss_key_size = ICE_AQC_GET_SET_RSS_KEY_DATA_RSS_KEY_SIZE;
 	vsi->rss_lut_size = pf->hash_lut_size;
+
+	if (nb_q == 0) {
+		PMD_DRV_LOG(WARNING,
+			"RSS is not supported as rx queues number is zero\n");
+		return 0;
+	}
 
 	if (is_safe_mode) {
 		PMD_DRV_LOG(WARNING, "RSS is not supported in safe mode\n");
@@ -2483,16 +2537,15 @@ static int ice_init_rss(struct ice_pf *pf)
 		}
 	}
 	/* configure RSS key */
-	if (!rss_conf->rss_key) {
-		/* Calculate the default hash key */
-		for (i = 0; i <= vsi->rss_key_size; i++)
-			vsi->rss_key[i] = (uint8_t)rte_rand();
-	} else {
+	if (!rss_conf->rss_key)
+		ice_get_default_rss_key(vsi->rss_key, vsi->rss_key_size);
+	else
 		rte_memcpy(vsi->rss_key, rss_conf->rss_key,
 			   RTE_MIN(rss_conf->rss_key_len,
 				   vsi->rss_key_size));
-	}
-	rte_memcpy(key.standard_rss_key, vsi->rss_key, vsi->rss_key_size);
+
+	rte_memcpy(key.standard_rss_key, vsi->rss_key,
+		RTE_MIN(sizeof(key.standard_rss_key), vsi->rss_key_size));
 	ret = ice_aq_set_rss_key(hw, vsi->idx, &key);
 	if (ret)
 		goto out;
@@ -2606,10 +2659,12 @@ ice_dev_configure(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
 		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
-	ret = ice_init_rss(pf);
-	if (ret) {
-		PMD_DRV_LOG(ERR, "Failed to enable rss for PF");
-		return ret;
+	if (dev->data->nb_rx_queues) {
+		ret = ice_init_rss(pf);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "Failed to enable rss for PF");
+			return ret;
+		}
 	}
 
 	return 0;
@@ -2857,7 +2912,7 @@ ice_dev_start(struct rte_eth_dev *dev)
 	ice_dev_set_link_up(dev);
 
 	/* Call get_link_info aq commond to enable/disable LSE */
-	ice_link_update(dev, 0);
+	ice_link_update(dev, 1);
 
 	pf->adapter_stopped = false;
 
@@ -2959,7 +3014,7 @@ ice_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	}
 
 	dev_info->rx_queue_offload_capa = 0;
-	dev_info->tx_queue_offload_capa = 0;
+	dev_info->tx_queue_offload_capa = DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	dev_info->reta_size = pf->hash_lut_size;
 	dev_info->hash_key_size = (VSIQF_HKEY_MAX_INDEX + 1) * sizeof(uint32_t);
@@ -3239,7 +3294,7 @@ ice_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EBUSY;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > ICE_ETH_MAX_LEN)
 		dev_data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -3366,20 +3421,16 @@ ice_vsi_config_vlan_filter(struct ice_vsi *vsi, bool on)
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	uint8_t sec_flags, sw_flags2;
+	uint8_t sw_flags2;
 	int ret = 0;
 
-	sec_flags = ICE_AQ_VSI_SEC_TX_VLAN_PRUNE_ENA <<
-		    ICE_AQ_VSI_SEC_TX_PRUNE_ENA_S;
 	sw_flags2 = ICE_AQ_VSI_SW_FLAG_RX_VLAN_PRUNE_ENA;
 
-	if (on) {
-		vsi->info.sec_flags |= sec_flags;
+	if (on)
 		vsi->info.sw_flags2 |= sw_flags2;
-	} else {
-		vsi->info.sec_flags &= ~sec_flags;
+	else
 		vsi->info.sw_flags2 &= ~sw_flags2;
-	}
+
 	vsi->info.sw_id = hw->port_info->sw_id;
 	(void)rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
 	ctxt.info.valid_sections =
@@ -3761,8 +3812,11 @@ ice_promisc_disable(struct rte_eth_dev *dev)
 	uint8_t pmask;
 	int ret = 0;
 
-	pmask = ICE_PROMISC_UCAST_RX | ICE_PROMISC_UCAST_TX |
-		ICE_PROMISC_MCAST_RX | ICE_PROMISC_MCAST_TX;
+	if (dev->data->all_multicast == 1)
+		pmask = ICE_PROMISC_UCAST_RX | ICE_PROMISC_UCAST_TX;
+	else
+		pmask = ICE_PROMISC_UCAST_RX | ICE_PROMISC_UCAST_TX |
+			ICE_PROMISC_MCAST_RX | ICE_PROMISC_MCAST_TX;
 
 	status = ice_clear_vsi_promisc(hw, vsi->idx, pmask, 0);
 	if (status != ICE_SUCCESS) {

@@ -6,6 +6,10 @@
 #ifndef _RTE_COMPAT_H_
 #define _RTE_COMPAT_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef ALLOW_EXPERIMENTAL_API
 
 #define __rte_experimental \
@@ -17,6 +21,10 @@ section(".text.experimental")))
 #define __rte_experimental \
 __attribute__((section(".text.experimental")))
 
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* _RTE_COMPAT_H_ */

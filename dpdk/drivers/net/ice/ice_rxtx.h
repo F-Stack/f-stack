@@ -31,7 +31,7 @@
 
 #define ICE_VPMD_RX_BURST           32
 #define ICE_VPMD_TX_BURST           32
-#define ICE_RXQ_REARM_THRESH        32
+#define ICE_RXQ_REARM_THRESH        64
 #define ICE_MAX_RX_BURST            ICE_RXQ_REARM_THRESH
 #define ICE_TX_MAX_FREE_BUF_SZ      64
 #define ICE_DESCS_PER_LOOP          4
@@ -80,6 +80,7 @@ struct ice_rx_queue {
 	bool rx_deferred_start; /* don't start this queue in dev start */
 	uint8_t proto_xtr; /* Protocol extraction from flexible descriptor */
 	ice_rx_release_mbufs_t rx_rel_mbufs;
+	const struct rte_memzone *mz;
 };
 
 struct ice_tx_entry {
@@ -120,6 +121,7 @@ struct ice_tx_queue {
 	bool tx_deferred_start; /* don't start this queue in dev start */
 	bool q_set; /* indicate if tx queue has been configured */
 	ice_tx_release_mbufs_t tx_rel_mbufs;
+	const struct rte_memzone *mz;
 };
 
 /* Offload features */

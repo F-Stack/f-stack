@@ -252,11 +252,9 @@ struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS];
 struct l2fwd_crypto_statistics crypto_statistics[RTE_CRYPTO_MAX_DEVS];
 
 /* A tsc-based timer responsible for triggering statistics printout */
-#define TIMER_MILLISECOND 2000000ULL /* around 1ms at 2 Ghz */
+#define TIMER_MILLISECOND (rte_get_tsc_hz() / 1000)
 #define MAX_TIMER_PERIOD 86400UL /* 1 day max */
-
-/* default period is 10 seconds */
-static int64_t timer_period = 10 * TIMER_MILLISECOND * 1000;
+#define DEFAULT_TIMER_PERIOD 10UL
 
 /* Print out statistics on packets dropped */
 static void
@@ -616,11 +614,25 @@ l2fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		struct l2fwd_crypto_options *options)
 {
 	uint16_t dst_port;
+	uint32_t pad_len;
+	struct rte_ipv4_hdr *ip_hdr;
+	uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
 
+	ip_hdr = (struct rte_ipv4_hdr *)(rte_pktmbuf_mtod(m, char *) +
+					 ipdata_offset);
 	dst_port = l2fwd_dst_ports[portid];
 
 	if (options->mac_updating)
 		l2fwd_mac_updating(m, dst_port);
+
+	if (options->auth_xform.auth.op == RTE_CRYPTO_AUTH_OP_VERIFY)
+		rte_pktmbuf_trim(m, options->auth_xform.auth.digest_length);
+
+	if (options->cipher_xform.cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT) {
+		pad_len = m->pkt_len - rte_be_to_cpu_16(ip_hdr->total_length) -
+			  ipdata_offset;
+		rte_pktmbuf_trim(m, pad_len);
+	}
 
 	l2fwd_send_packet(m, dst_port);
 }
@@ -865,18 +877,17 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 			}
 
 			/* if timer is enabled */
-			if (timer_period > 0) {
+			if (options->refresh_period > 0) {
 
 				/* advance the timer */
 				timer_tsc += diff_tsc;
 
 				/* if timer has reached its timeout */
 				if (unlikely(timer_tsc >=
-						(uint64_t)timer_period)) {
+						options->refresh_period)) {
 
 					/* do this only on master core */
-					if (lcore_id == rte_get_master_lcore()
-						&& options->refresh_period) {
+					if (lcore_id == rte_get_master_lcore()) {
 						print_stats();
 						timer_tsc = 0;
 					}
@@ -1437,7 +1448,8 @@ l2fwd_crypto_default_options(struct l2fwd_crypto_options *options)
 {
 	options->portmask = 0xffffffff;
 	options->nb_ports_per_lcore = 1;
-	options->refresh_period = 10000;
+	options->refresh_period = DEFAULT_TIMER_PERIOD *
+					TIMER_MILLISECOND * 1000;
 	options->single_lcore = 0;
 	options->sessionless = 0;
 
@@ -2254,6 +2266,12 @@ initialize_cryptodevs(struct l2fwd_crypto_options *options, unsigned nb_ports,
 		if (enabled_cdevs[cdev_id] == 0)
 			continue;
 
+		if (check_cryptodev_mask(options, cdev_id) < 0)
+			continue;
+
+		if (check_capabilities(options, cdev_id) < 0)
+			continue;
+
 		retval = rte_cryptodev_socket_id(cdev_id);
 
 		if (retval < 0) {
@@ -2619,7 +2637,7 @@ initialize_ports(struct l2fwd_crypto_options *options)
 			last_portid = portid;
 		}
 
-		l2fwd_enabled_port_mask |= (1 << portid);
+		l2fwd_enabled_port_mask |= (1ULL << portid);
 		enabled_portcount++;
 	}
 
@@ -2807,6 +2825,9 @@ main(int argc, char **argv)
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

@@ -21,7 +21,7 @@ extern "C" {
  * with the given regular expression pattern.
  *
  * @param pattern
- *	regular expression notation decribing the pattern to match
+ *	regular expression notation describing the pattern to match
  *
  * @param string
  *	source string to searcg for the pattern

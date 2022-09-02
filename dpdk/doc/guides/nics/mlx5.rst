@@ -18,7 +18,7 @@ Information and documentation about these adapters can be found on the
 `Mellanox community <http://community.mellanox.com/welcome>`__.
 
 There is also a `section dedicated to this poll mode driver
-<http://www.mellanox.com/page/products_dyn?product_family=209&mtag=pmd_for_dpdk>`__.
+<https://developer.nvidia.com/networking/dpdk>`_.
 
 .. note::
 
@@ -227,6 +227,22 @@ Limitations
   - Rx queue with LRO offload enabled, receiving a non-LRO packet, can forward
     it with size limited to max LRO size, not to max RX packet length.
 
+- Timestamps:
+
+  - CQE timestamp field width is limited by hardware to 63 bits, MSB is zero.
+  - In the free-running mode the timestamp counter is reset on power on
+    and 63-bit value provides over 1800 years of uptime till overflow.
+  - In the real-time mode
+    (configurable with ``REAL_TIME_CLOCK_ENABLE`` firmware settings),
+    the timestamp presents the nanoseconds elapsed since 01-Jan-1970,
+    hardware timestamp overflow will happen on 19-Jan-2038
+    (0x80000000 seconds since 01-Jan-1970).
+  - The send scheduling is based on timestamps
+    from the reference "Clock Queue" completions,
+    the scheduled send timestamps should not be specified with non-zero MSB.
+
+- The NIC egress flow rules on representor port are not supported.
+
 Statistics
 ----------
 
@@ -310,15 +326,6 @@ Environment variables
   By default, the HW Tx doorbell is configured as a write-combining register.
   The register would be flushed to HW usually when the write-combining buffer
   becomes full, but it depends on CPU design.
-
-  Except for vectorized Tx burst routines, a write memory barrier is enforced
-  after updating the register so that the update can be immediately visible to
-  HW.
-
-  When vectorized Tx burst is called, the barrier is set only if the burst size
-  is not aligned to MLX5_VPMD_TX_MAX_BURST. However, setting this environmental
-  variable will bring better latency even though the maximum throughput can
-  slightly decline.
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -497,6 +504,13 @@ Run-time configuration
   For ConnectX-4 Lx NIC, it is allowed to specify values below 18, but
   it is not recommended and may prevent NIC from sending packets over
   some configurations.
+
+  For ConnectX-4 and ConnectX-4 Lx NICs, automatically configured value
+  is insufficient for some traffic, because they require at least all L2 headers
+  to be inlined. For example, Q-in-Q adds 4 bytes to default 18 bytes
+  of Ethernet and VLAN, thus ``txq_inline_min`` must be set to 22.
+  MPLS would add 4 bytes per label. Final value must account for all possible
+  L2 encapsulation headers used in particular environment.
 
   Please, note, this minimal data inlining disengages eMPW feature (Enhanced
   Multi-Packet Write), because last one does not support partial packet inlining.
@@ -693,7 +707,7 @@ Run-time configuration
   +------+-----------+-----------+-------------+-------------+
   | 1    | 24 bits   | vary 0-32 | 32 bits     | yes         |
   +------+-----------+-----------+-------------+-------------+
-  | 2    | vary 0-32 | 32 bits   | 32 bits     | yes         |
+  | 2    | vary 0-24 | 32 bits   | 32 bits     | yes         |
   +------+-----------+-----------+-------------+-------------+
 
   If there is no E-Switch configuration the ``dv_xmeta_en`` parameter is
@@ -704,6 +718,17 @@ Run-time configuration
   The Direct Verbs/Rules (engaged with ``dv_flow_en`` = 1) supports all
   of the extensive metadata features. The legacy Verbs supports FLAG and
   MARK metadata actions over NIC Rx steering domain only.
+
+  Setting META value to zero in flow action means there is no item provided
+  and receiving datapath will not report in mbufs the metadata are present.
+  Setting MARK value to zero in flow action means the zero FDIR ID value
+  will be reported on packet receiving.
+
+  For the MARK action the last 16 values in the full range are reserved for
+  internal PMD purposes (to emulate FLAG action). The valid range for the
+  MARK action values is 0-0xFFEF for the 16-bit mode and 0-xFFFFEF
+  for the 24-bit mode, the flows with the MARK action value outside
+  the specified range will be rejected.
 
 - ``dv_flow_en`` parameter [int]
 
@@ -821,6 +846,10 @@ Below are some firmware configurations listed.
 
    FLEX_PARSER_PROFILE_ENABLE=0
 
+- enable realtime timestamp format::
+
+   REAL_TIME_CLOCK_ENABLE=1
+
 Prerequisites
 -------------
 
@@ -930,9 +959,9 @@ managers on most distributions, this PMD requires Ethernet extensions that
 may not be supported at the moment (this is a work in progress).
 
 `Mellanox OFED
-<http://www.mellanox.com/page/products_dyn?product_family=26&mtag=linux>`__ and
+<https://network.nvidia.com/products/infiniband-drivers/linux/mlnx_ofed/>`__ and
 `Mellanox EN
-<http://www.mellanox.com/page/products_dyn?product_family=27&mtag=linux>`__
+<https://network.nvidia.com/products/ethernet-drivers/linux/mlnx_en/>`__
 include the necessary support and should be used in the meantime. For DPDK,
 only libibverbs, libmlx5, mlnx-ofed-kernel packages and firmware updates are
 required from that distribution.
@@ -1077,7 +1106,7 @@ the DPDK application.
 
         echo -n "<device pci address" > /sys/bus/pci/drivers/mlx5_core/unbind
 
-5. Enbale switchdev mode::
+5. Enable switchdev mode::
 
         echo switchdev > /sys/class/net/<net device>/compat/devlink/mode
 

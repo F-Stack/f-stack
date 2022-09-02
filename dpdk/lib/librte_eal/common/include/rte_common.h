@@ -68,6 +68,11 @@ typedef uint16_t unaligned_uint16_t;
  */
 #define __rte_packed __attribute__((__packed__))
 
+/**
+ * Macro to mark a type that is not subject to type-based aliasing rules
+ */
+#define __rte_may_alias __attribute__((__may_alias__))
+
 /******* Macro to mark functions and fields scheduled for removal *****/
 #define __rte_deprecated	__attribute__((__deprecated__))
 

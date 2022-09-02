@@ -26,6 +26,7 @@
 #include "vhost_user.h"
 
 struct virtio_net *vhost_devices[MAX_VHOST_DEVICE];
+pthread_mutex_t vhost_dev_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Called with iotlb_lock read-locked */
 uint64_t
@@ -567,7 +568,7 @@ alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx)
 		if (dev->virtqueue[i])
 			continue;
 
-		vq = rte_malloc(NULL, sizeof(struct vhost_virtqueue), 0);
+		vq = rte_zmalloc(NULL, sizeof(struct vhost_virtqueue), 0);
 		if (vq == NULL) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"Failed to allocate memory for vring:%u.\n", i);
@@ -615,6 +616,7 @@ vhost_new_device(void)
 	struct virtio_net *dev;
 	int i;
 
+	pthread_mutex_lock(&vhost_dev_lock);
 	for (i = 0; i < MAX_VHOST_DEVICE; i++) {
 		if (vhost_devices[i] == NULL)
 			break;
@@ -623,6 +625,7 @@ vhost_new_device(void)
 	if (i == MAX_VHOST_DEVICE) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"Failed to find a free slot for new device.\n");
+		pthread_mutex_unlock(&vhost_dev_lock);
 		return -1;
 	}
 
@@ -630,10 +633,13 @@ vhost_new_device(void)
 	if (dev == NULL) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"Failed to allocate memory for new dev.\n");
+		pthread_mutex_unlock(&vhost_dev_lock);
 		return -1;
 	}
 
 	vhost_devices[i] = dev;
+	pthread_mutex_unlock(&vhost_dev_lock);
+
 	dev->vid = i;
 	dev->flags = VIRTIO_DEV_BUILTIN_VIRTIO_NET;
 	dev->slave_req_fd = -1;
@@ -1168,6 +1174,9 @@ rte_vhost_set_last_inflight_io_split(int vid, uint16_t vring_idx,
 	if (unlikely(!vq->inflight_split))
 		return -1;
 
+	if (unlikely(idx >= vq->size))
+		return -1;
+
 	vq->inflight_split->last_inflight_io = idx;
 	return 0;
 }
@@ -1239,10 +1248,14 @@ rte_vhost_vring_call(int vid, uint16_t vring_idx)
 	if (!vq)
 		return -1;
 
+	rte_spinlock_lock(&vq->access_lock);
+
 	if (vq_is_packed(dev))
 		vhost_vring_call_packed(dev, vq);
 	else
 		vhost_vring_call_split(dev, vq);
+
+	rte_spinlock_unlock(&vq->access_lock);
 
 	return 0;
 }

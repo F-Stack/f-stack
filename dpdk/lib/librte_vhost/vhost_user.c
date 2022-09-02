@@ -198,7 +198,7 @@ vhost_backend_cleanup(struct virtio_net *dev)
 		dev->mem = NULL;
 	}
 
-	free(dev->guest_pages);
+	rte_free(dev->guest_pages);
 	dev->guest_pages = NULL;
 
 	if (dev->log_addr) {
@@ -498,8 +498,8 @@ vhost_user_set_vring_num(struct virtio_net **pdev,
 }
 
 /*
- * Reallocate virtio_dev and vhost_virtqueue data structure to make them on the
- * same numa node as the memory of vring descriptor.
+ * Reallocate virtio_dev, vhost_virtqueue and related data structures to
+ * make them on the same numa node as the memory of vring descriptor.
  */
 #ifdef RTE_LIBRTE_VHOST_NUMA
 static struct virtio_net*
@@ -593,6 +593,10 @@ numa_realloc(struct virtio_net *dev, int index)
 		goto out;
 	}
 	if (oldnode != newnode) {
+		struct rte_vhost_memory *old_mem;
+		struct guest_page *old_gp;
+		ssize_t mem_size, gp_size;
+
 		RTE_LOG(INFO, VHOST_CONFIG,
 			"reallocate dev from %d to %d node\n",
 			oldnode, newnode);
@@ -604,6 +608,29 @@ numa_realloc(struct virtio_net *dev, int index)
 
 		memcpy(dev, old_dev, sizeof(*dev));
 		rte_free(old_dev);
+
+		mem_size = sizeof(struct rte_vhost_memory) +
+			sizeof(struct rte_vhost_mem_region) * dev->mem->nregions;
+		old_mem = dev->mem;
+		dev->mem = rte_malloc_socket(NULL, mem_size, 0, newnode);
+		if (!dev->mem) {
+			dev->mem = old_mem;
+			goto out;
+		}
+
+		memcpy(dev->mem, old_mem, mem_size);
+		rte_free(old_mem);
+
+		gp_size = dev->max_guest_pages * sizeof(*dev->guest_pages);
+		old_gp = dev->guest_pages;
+		dev->guest_pages = rte_malloc_socket(NULL, gp_size, RTE_CACHE_LINE_SIZE, newnode);
+		if (!dev->guest_pages) {
+			dev->guest_pages = old_gp;
+			goto out;
+		}
+
+		memcpy(dev->guest_pages, old_gp, gp_size);
+		rte_free(old_gp);
 	}
 
 out:
@@ -912,11 +939,12 @@ add_one_guest_page(struct virtio_net *dev, uint64_t guest_phys_addr,
 	if (dev->nr_guest_pages == dev->max_guest_pages) {
 		dev->max_guest_pages *= 2;
 		old_pages = dev->guest_pages;
-		dev->guest_pages = realloc(dev->guest_pages,
-					dev->max_guest_pages * sizeof(*page));
-		if (!dev->guest_pages) {
+		dev->guest_pages = rte_realloc(dev->guest_pages,
+					dev->max_guest_pages * sizeof(*page),
+					RTE_CACHE_LINE_SIZE);
+		if (dev->guest_pages == NULL) {
 			RTE_LOG(ERR, VHOST_CONFIG, "cannot realloc guest_pages\n");
-			free(old_pages);
+			rte_free(old_pages);
 			return -1;
 		}
 	}
@@ -1070,10 +1098,12 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			vhost_user_iotlb_flush_all(dev->virtqueue[i]);
 
 	dev->nr_guest_pages = 0;
-	if (!dev->guest_pages) {
+	if (dev->guest_pages == NULL) {
 		dev->max_guest_pages = 8;
-		dev->guest_pages = malloc(dev->max_guest_pages *
-						sizeof(struct guest_page));
+		dev->guest_pages = rte_zmalloc(NULL,
+					dev->max_guest_pages *
+					sizeof(struct guest_page),
+					RTE_CACHE_LINE_SIZE);
 		if (dev->guest_pages == NULL) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"(%d) failed to allocate memory "
@@ -1411,6 +1441,9 @@ vhost_user_get_inflight_fd(struct virtio_net **pdev,
 	int fd, i, j;
 	void *addr;
 
+	if (validate_msg_fds(msg, 0) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
+
 	if (msg->size != sizeof(msg->payload.inflight)) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"invalid get_inflight_fd message size is %d\n",
@@ -1503,6 +1536,9 @@ vhost_user_set_inflight_fd(struct virtio_net **pdev, VhostUserMsg *msg,
 	struct vhost_virtqueue *vq;
 	void *addr;
 	int fd, i;
+
+	if (validate_msg_fds(msg, 1) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
 
 	fd = msg->fds[0];
 	if (msg->size != sizeof(msg->payload.inflight) || fd < 0) {
@@ -1967,6 +2003,8 @@ vhost_user_get_vring_base(struct virtio_net **pdev,
 	msg->size = sizeof(msg->payload.state);
 	msg->fd_num = 0;
 
+	vhost_user_iotlb_flush_all(vq);
+
 	vring_invalidate(dev, vq);
 
 	return RTE_VHOST_MSG_RESULT_REPLY;
@@ -2348,8 +2386,11 @@ vhost_user_iotlb_msg(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			vhost_user_iotlb_cache_insert(vq, imsg->iova, vva,
 					len, imsg->perm);
 
-			if (is_vring_iotlb(dev, vq, imsg))
+			if (is_vring_iotlb(dev, vq, imsg)) {
+				rte_spinlock_lock(&vq->access_lock);
 				*pdev = dev = translate_ring_addresses(dev, i);
+				rte_spinlock_unlock(&vq->access_lock);
+			}
 		}
 		break;
 	case VHOST_IOTLB_INVALIDATE:
@@ -2359,8 +2400,11 @@ vhost_user_iotlb_msg(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			vhost_user_iotlb_cache_remove(vq, imsg->iova,
 					imsg->size);
 
-			if (is_vring_iotlb(dev, vq, imsg))
+			if (is_vring_iotlb(dev, vq, imsg)) {
+				rte_spinlock_lock(&vq->access_lock);
 				vring_invalidate(dev, vq);
+				rte_spinlock_unlock(&vq->access_lock);
+			}
 		}
 		break;
 	default:
@@ -2579,11 +2623,15 @@ vhost_user_check_and_alloc_queue_pair(struct virtio_net *dev,
 		break;
 	case VHOST_USER_SET_VRING_NUM:
 	case VHOST_USER_SET_VRING_BASE:
+	case VHOST_USER_GET_VRING_BASE:
 	case VHOST_USER_SET_VRING_ENABLE:
 		vring_idx = msg->payload.state.index;
 		break;
 	case VHOST_USER_SET_VRING_ADDR:
 		vring_idx = msg->payload.addr.index;
+		break;
+	case VHOST_USER_SET_INFLIGHT_FD:
+		vring_idx = msg->payload.inflight.num_queues - 1;
 		break;
 	default:
 		return 0;

@@ -233,7 +233,7 @@ process_packets(uint32_t port_num __rte_unused,
 		struct rte_mbuf *pkts[], uint16_t rx_count)
 {
 	uint16_t i;
-	uint8_t client = 0;
+	static uint8_t client;
 
 	for (i = 0; i < rx_count; i++) {
 		enqueue_rx_packet(client, pkts[i]);
@@ -304,5 +304,9 @@ main(int argc, char *argv[])
 	rte_eal_mp_remote_launch(sleep_lcore, NULL, SKIP_MASTER);
 
 	do_packet_forwarding();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

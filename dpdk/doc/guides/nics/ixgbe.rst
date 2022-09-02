@@ -82,6 +82,23 @@ To guarantee the constraint, capabilities in dev_conf.rxmode.offloads will be ch
 
 fdir_conf->mode will also be checked.
 
+Disable SDP3 TX_DISABLE for Fiber Links
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following ``devargs`` option can be enabled at runtime.  It must
+be passed as part of EAL arguments. For example,
+
+.. code-block:: console
+
+   dpdk-testpmd -a fiber_sdp3_no_tx_disable=1 -- -i
+
+- ``fiber_sdp3_no_tx_disable`` (default **0**)
+
+  Not all IXGBE implementations with SFP cages use the SDP3 signal as
+  TX_DISABLE as a means to disable the laser on fiber SFP modules.
+  This option informs the driver that in this case, SDP3 is not to be
+  used as a check for link up by testing for laser on/off.
+
 VF Runtime Options
 ^^^^^^^^^^^^^^^^^^
 
@@ -252,6 +269,16 @@ Do not bind ``igb_uio`` with legacy mode in X550 NICs.
 Before binding ``vfio`` with legacy mode in X550 NICs, use ``modprobe vfio ``
 ``nointxmask=1`` to load ``vfio`` module if the intx is not shared with other
 devices.
+
+UDP with zero checksum is reported as error
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Intel 82599 10 Gigabit Ethernet Controller Specification Update (Revision 2.87)
+Errata: 44 Integrity Error Reported for IPv4/UDP Packets With Zero Checksum
+
+To support UDP zero checksum, the zero and bad UDP checksum packet is marked as
+PKT_RX_L4_CKSUM_UNKNOWN, so the application needs to recompute the checksum to
+validate it.
 
 Inline crypto processing support
 --------------------------------

@@ -251,6 +251,7 @@ struct bnxt_link_info {
 	uint8_t			phy_ver[PHY_VER_LEN];
 	uint16_t		link_speed;
 	uint16_t		support_speeds;
+	uint16_t                support_auto_speeds;
 	uint16_t		auto_link_speed;
 	uint16_t		force_link_speed;
 	uint16_t		auto_link_speed_mask;
@@ -271,9 +272,11 @@ struct rte_flow {
 	struct bnxt_vnic_info	*vnic;
 };
 
+#define BNXT_PTP_RX_PND_CNT		10
 #define BNXT_PTP_FLAGS_PATH_TX		0x0
 #define BNXT_PTP_FLAGS_PATH_RX		0x1
 #define BNXT_PTP_FLAGS_CURRENT_TIME	0x2
+#define BNXT_PTP_CURRENT_TIME_MASK	0xFFFF00000000ULL
 
 struct bnxt_ptp_cfg {
 #define BNXT_GRCPF_REG_WINDOW_BASE_OUT  0x400
@@ -323,6 +326,7 @@ struct bnxt_ptp_cfg {
 
 	/* On Thor, the Rx timestamp is present in the Rx completion record */
 	uint64_t			rx_timestamp;
+	uint64_t			current_time;
 };
 
 struct bnxt_coal {
@@ -344,7 +348,7 @@ struct bnxt_coal {
 #define DBR_TYPE_NQ				(0xaULL << 60)
 #define DBR_TYPE_NQ_ARM				(0xbULL << 60)
 
-#define BNXT_RSS_TBL_SIZE_THOR		512
+#define BNXT_RSS_TBL_SIZE_THOR		512U
 #define BNXT_RSS_ENTRIES_PER_CTX_THOR	64
 #define BNXT_MAX_RSS_CTXTS_THOR \
 	(BNXT_RSS_TBL_SIZE_THOR / BNXT_RSS_ENTRIES_PER_CTX_THOR)
@@ -488,6 +492,50 @@ struct bnxt_error_recovery_info {
 #define BNXT_FW_STATUS_SHUTDOWN		0x100000
 
 #define BNXT_HWRM_SHORT_REQ_LEN		sizeof(struct hwrm_short_input)
+
+struct bnxt_ring_stats {
+	/* Number of transmitted unicast packets */
+	uint64_t	tx_ucast_pkts;
+	/* Number of transmitted multicast packets */
+	uint64_t	tx_mcast_pkts;
+	/* Number of transmitted broadcast packets */
+	uint64_t	tx_bcast_pkts;
+	/* Number of packets discarded in transmit path */
+	uint64_t	tx_discard_pkts;
+	/* Number of packets in transmit path with error */
+	uint64_t	tx_error_pkts;
+	/* Number of transmitted bytes for unicast traffic */
+	uint64_t	tx_ucast_bytes;
+	/* Number of transmitted bytes for multicast traffic */
+	uint64_t	tx_mcast_bytes;
+	/* Number of transmitted bytes for broadcast traffic */
+	uint64_t	tx_bcast_bytes;
+	/* Number of received unicast packets */
+	uint64_t	rx_ucast_pkts;
+	/* Number of received multicast packets */
+	uint64_t	rx_mcast_pkts;
+	/* Number of received broadcast packets */
+	uint64_t	rx_bcast_pkts;
+	/* Number of packets discarded in receive path */
+	uint64_t	rx_discard_pkts;
+	/* Number of packets in receive path with errors */
+	uint64_t	rx_error_pkts;
+	/* Number of received bytes for unicast traffic */
+	uint64_t	rx_ucast_bytes;
+	/* Number of received bytes for multicast traffic */
+	uint64_t	rx_mcast_bytes;
+	/* Number of received bytes for broadcast traffic */
+	uint64_t	rx_bcast_bytes;
+	/* Number of aggregated unicast packets */
+	uint64_t	rx_agg_pkts;
+	/* Number of aggregated unicast bytes */
+	uint64_t	rx_agg_bytes;
+	/* Number of aggregation events */
+	uint64_t	rx_agg_events;
+	/* Number of aborted aggregations */
+	uint64_t	rx_agg_aborts;
+};
+
 struct bnxt {
 	void				*bar0;
 
@@ -501,7 +549,6 @@ struct bnxt {
 #define BNXT_FLAG_PORT_STATS		BIT(2)
 #define BNXT_FLAG_JUMBO			BIT(3)
 #define BNXT_FLAG_SHORT_CMD		BIT(4)
-#define BNXT_FLAG_UPDATE_HASH		BIT(5)
 #define BNXT_FLAG_PTP_SUPPORTED		BIT(6)
 #define BNXT_FLAG_MULTI_HOST    	BIT(7)
 #define BNXT_FLAG_EXT_RX_PORT_STATS	BIT(8)
@@ -521,6 +568,8 @@ struct bnxt {
 #define BNXT_FLAG_ADV_FLOW_MGMT			BIT(23)
 #define BNXT_FLAG_NPAR_PF                      BIT(24)
 #define BNXT_FLAG_DFLT_MAC_SET			BIT(26)
+#define BNXT_FLAGS_PTP_TIMESYNC_ENABLED		BIT(27)
+#define BNXT_FLAGS_PTP_ALARM_SCHEDULED		BIT(28)
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
 #define BNXT_NPAR(bp)		((bp)->flags & BNXT_FLAG_NPAR_PF)
@@ -534,17 +583,22 @@ struct bnxt {
 #define BNXT_HAS_NQ(bp)		BNXT_CHIP_THOR(bp)
 #define BNXT_HAS_RING_GRPS(bp)	(!BNXT_CHIP_THOR(bp))
 #define BNXT_HAS_DFLT_MAC_SET(bp)      ((bp)->flags & BNXT_FLAG_DFLT_MAC_SET)
+#define BNXT_THOR_PTP_TIMESYNC_ENABLED(bp)	\
+	((bp)->flags & BNXT_FLAGS_PTP_TIMESYNC_ENABLED)
 
 	uint32_t		fw_cap;
 #define BNXT_FW_CAP_HOT_RESET		BIT(0)
 #define BNXT_FW_CAP_IF_CHANGE		BIT(1)
 #define BNXT_FW_CAP_ERROR_RECOVERY	BIT(2)
 #define BNXT_FW_CAP_ERR_RECOVER_RELOAD	BIT(3)
+#define BNXT_FW_CAP_VLAN_TX_INSERT	BIT(4)
 
 	pthread_mutex_t         flow_lock;
 
 	uint32_t		vnic_cap_flags;
 #define BNXT_VNIC_CAP_COS_CLASSIFY	BIT(0)
+#define BNXT_VNIC_CAP_VLAN_RX_STRIP	BIT(1)
+#define BNXT_RX_VLAN_STRIP_EN(bp)	((bp)->vnic_cap_flags & BNXT_VNIC_CAP_VLAN_RX_STRIP)
 	unsigned int		rx_nr_rings;
 	unsigned int		rx_cp_nr_rings;
 	unsigned int		rx_num_qs_per_vnic;
@@ -572,7 +626,7 @@ struct bnxt {
 	uint32_t		max_ring_grps;
 	struct bnxt_ring_grp_info	*grp_info;
 
-	unsigned int		nr_vnics;
+	uint16_t			nr_vnics;
 
 #define BNXT_GET_DEFAULT_VNIC(bp)	(&(bp)->vnic_info[0])
 	struct bnxt_vnic_info	*vnic_info;
@@ -620,19 +674,6 @@ struct bnxt {
 	uint16_t		max_tx_rings;
 	uint16_t		max_rx_rings;
 #define MAX_STINGRAY_RINGS		128U
-/* For sake of symmetry, max Tx rings == max Rx rings, one stat ctx for each */
-#define BNXT_MAX_RX_RINGS(bp) \
-	(BNXT_STINGRAY(bp) ? RTE_MIN(RTE_MIN(bp->max_rx_rings / 2U, \
-					     MAX_STINGRAY_RINGS), \
-				     bp->max_stat_ctx / 2U) : \
-				RTE_MIN(bp->max_rx_rings / 2U, \
-					bp->max_stat_ctx / 2U))
-#define BNXT_MAX_TX_RINGS(bp) \
-	(RTE_MIN((bp)->max_tx_rings, BNXT_MAX_RX_RINGS(bp)))
-
-#define BNXT_MAX_RINGS(bp) \
-	(RTE_MIN((((bp)->max_cp_rings - BNXT_NUM_ASYNC_CPR(bp)) / 2U), \
-		 BNXT_MAX_TX_RINGS(bp)))
 	uint16_t		max_nq_rings;
 	uint16_t		max_l2_ctx;
 	uint16_t		max_rx_em_flows;
@@ -666,7 +707,51 @@ struct bnxt {
 
 	/* Struct to hold adapter error recovery related info */
 	struct bnxt_error_recovery_info *recovery_info;
+	struct bnxt_ring_stats	*prev_rx_ring_stats;
+	struct bnxt_ring_stats	*prev_tx_ring_stats;
+
+#define BNXT_MAX_MC_ADDRS	((bp)->max_mcast_addr)
+	struct rte_ether_addr	*mcast_addr_list;
+	rte_iova_t		mc_list_dma_addr;
+	uint32_t		nb_mc_addr;
+	uint32_t		max_mcast_addr; /* maximum number of mcast filters supported */
+
+	struct rte_eth_rss_conf	rss_conf; /* RSS configuration. */
 };
+
+static
+inline uint16_t bnxt_max_rings(struct bnxt *bp)
+{
+	uint16_t max_tx_rings = bp->max_tx_rings;
+	uint16_t max_rx_rings = bp->max_rx_rings;
+	uint16_t max_cp_rings = bp->max_cp_rings;
+	uint16_t max_rings;
+
+	/* For the sake of symmetry:
+	 * max Tx rings == max Rx rings, one stat ctx for each.
+	 */
+	if (BNXT_STINGRAY(bp)) {
+		max_rx_rings = RTE_MIN(RTE_MIN(max_rx_rings / 2U,
+					       MAX_STINGRAY_RINGS),
+				       bp->max_stat_ctx / 2U);
+	} else {
+		max_rx_rings = RTE_MIN(max_rx_rings / 2U,
+				       bp->max_stat_ctx / 2U);
+	}
+
+	/* RSS table size in Thor is 512.
+	 * Cap max Rx rings to the same value for RSS.
+	 */
+	if (BNXT_CHIP_THOR(bp))
+		max_rx_rings = RTE_MIN(max_rx_rings, BNXT_RSS_TBL_SIZE_THOR);
+
+	max_tx_rings = RTE_MIN(max_tx_rings, max_rx_rings);
+	if (max_cp_rings > BNXT_NUM_ASYNC_CPR(bp))
+		max_cp_rings -= BNXT_NUM_ASYNC_CPR(bp);
+	max_rings = RTE_MIN(max_cp_rings / 2U, max_tx_rings);
+
+	return max_rings;
+}
 
 int bnxt_mtu_set_op(struct rte_eth_dev *eth_dev, uint16_t new_mtu);
 int bnxt_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete,
@@ -687,7 +772,9 @@ uint16_t bnxt_dummy_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			      uint16_t nb_pkts);
 uint16_t bnxt_dummy_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			      uint16_t nb_pkts);
-
+int bnxt_dev_start_op(struct rte_eth_dev *eth_dev);
+void bnxt_dev_stop_op(struct rte_eth_dev *eth_dev);
+void bnxt_handle_vf_cfg_change(void *arg);
 extern const struct rte_flow_ops bnxt_flow_ops;
 #define bnxt_acquire_flow_lock(bp) \
 	pthread_mutex_lock(&(bp)->flow_lock)

@@ -457,6 +457,9 @@ static void enicpmd_dev_close(struct rte_eth_dev *eth_dev)
 	struct enic *enic = pmd_priv(eth_dev);
 
 	ENICPMD_FUNC_TRACE();
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	enic_remove(enic);
 }
 

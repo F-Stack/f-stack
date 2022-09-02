@@ -25,7 +25,6 @@ try:
     import sphinx_rtd_theme
 
     html_theme = "sphinx_rtd_theme"
-    html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 except:
     print('Install the sphinx ReadTheDocs theme for improved html documentation '
           'layout: pip install sphinx_rtd_theme')
@@ -34,7 +33,10 @@ except:
 project = 'Data Plane Development Kit'
 html_logo = '../logo/DPDK_logo_vertical_rev_small.png'
 latex_logo = '../logo/DPDK_logo_horizontal_tag.png'
-html_add_permalinks = ""
+if LooseVersion(sphinx_version) >= LooseVersion('3.5'):
+    html_permalinks = False
+else:
+    html_add_permalinks = ""
 html_show_copyright = False
 highlight_language = 'none'
 

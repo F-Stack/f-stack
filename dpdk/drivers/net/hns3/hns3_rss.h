@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #ifndef _HNS3_RSS_H_
@@ -99,6 +99,8 @@ static inline uint32_t roundup_pow_of_two(uint32_t x)
 {
 	return 1UL << fls(x - 1);
 }
+
+extern const uint8_t hns3_hash_key[];
 
 struct hns3_adapter;
 

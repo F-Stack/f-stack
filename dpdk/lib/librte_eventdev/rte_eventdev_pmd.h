@@ -5,6 +5,10 @@
 #ifndef _RTE_EVENTDEV_PMD_H_
 #define _RTE_EVENTDEV_PMD_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** @file
  * RTE Event PMD APIs
  *
@@ -144,7 +148,7 @@ rte_event_pmd_is_valid_dev(uint8_t dev_id)
 
 /**
  * Definitions of all functions exported by a driver through the
- * the generic structure of type *event_dev_ops* supplied in the
+ * generic structure of type *event_dev_ops* supplied in the
  * *rte_eventdev* structure associated with a device.
  */
 
@@ -155,9 +159,6 @@ rte_event_pmd_is_valid_dev(uint8_t dev_id)
  *   Event device pointer
  * @param dev_info
  *   Event device information structure
- *
- * @return
- *   Returns 0 on success
  */
 typedef void (*eventdev_info_get_t)(struct rte_eventdev *dev,
 		struct rte_event_dev_info *dev_info);
@@ -1110,6 +1111,10 @@ rte_event_pmd_allocate(const char *name, int socket_id);
  */
 int
 rte_event_pmd_release(struct rte_eventdev *eventdev);
+
+#ifdef __cplusplus
+}
+#endif
 
 #ifdef __cplusplus
 }

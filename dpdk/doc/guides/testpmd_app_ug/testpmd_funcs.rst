@@ -3944,7 +3944,8 @@ This section lists supported pattern items and their attributes, if any.
 - ``gtp_psc``: match GTP PDU extension header with type 0x85.
 
   - ``pdu_type {unsigned}``: PDU type.
-  - ``qfi {unsigned}``: QoS flow identifier.
+
+  - ``qfi {unsigned}``: PPP, RQI and QoS flow identifier.
 
 - ``pppoes``, ``pppoed``: match PPPoE header.
 
@@ -4435,14 +4436,14 @@ Sample QinQ flow rules
 Before creating QinQ rule(s) the following commands should be issued to enable QinQ::
 
    testpmd> port stop 0
-   testpmd> vlan set qinq_strip on 0
+   testpmd> vlan set extend on 0
 
 The above command sets the inner and outer TPID's to 0x8100.
 
 To change the TPID's the following commands should be used::
 
-   testpmd> vlan set outer tpid 0xa100 0
-   testpmd> vlan set inner tpid 0x9100 0
+   testpmd> vlan set outer tpid 0x88A8 0
+   testpmd> vlan set inner tpid 0x8100 0
    testpmd> port start 0
 
 Validate and create a QinQ rule on port 0 to steer traffic to a VF queue in a VM.
@@ -4732,7 +4733,7 @@ Sample Raw encapsulation rule
 
 Raw encapsulation configuration can be set by the following commands
 
-Eecapsulating VxLAN::
+Encapsulating VxLAN::
 
  testpmd> set raw_encap 4 eth src is 10:11:22:33:44:55 / vlan tci is 1
         inner_type is 0x0800 / ipv4 / udp dst is 4789 / vxlan vni

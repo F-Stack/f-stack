@@ -17,6 +17,13 @@
 
 #include "base/i40e_register.h"
 
+/**
+ * _i=0...143,
+ * counters 0-127 are for the 128 VFs,
+ * counters 128-143 are for the 16 PFs
+ */
+#define I40E_GL_RXERR1_H(_i)	(0x00318004 + ((_i) * 8))
+
 #define I40E_VLAN_TAG_SIZE        4
 
 #define I40E_AQ_LEN               32
@@ -88,8 +95,10 @@
 	do {								\
 		uint32_t ori_val;					\
 		struct rte_eth_dev *dev;				\
+		struct rte_eth_dev_data *dev_data;			\
 		ori_val = I40E_READ_REG((hw), (reg));			\
-		dev = ((struct i40e_adapter *)hw->back)->eth_dev;	\
+		dev_data = ((struct i40e_adapter *)hw->back)->pf.dev_data; \
+		dev = &rte_eth_devices[dev_data->port_id];		\
 		I40E_PCI_REG_WRITE(I40E_PCI_REG_ADDR((hw),		\
 						     (reg)), (value));	\
 		if (ori_val != value)					\
@@ -269,6 +278,7 @@ enum i40e_flxpld_layer_idx {
  */
 #define I40E_ETH_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + I40E_VLAN_TAG_SIZE * 2)
+#define I40E_ETH_MAX_LEN (RTE_ETHER_MTU + I40E_ETH_OVERHEAD)
 
 #define I40E_RXTX_BYTES_H_16_BIT(bytes) ((bytes) & ~I40E_48_BIT_MASK)
 #define I40E_RXTX_BYTES_L_48_BIT(bytes) ((bytes) & I40E_48_BIT_MASK)
@@ -953,6 +963,9 @@ struct i40e_pf {
 
 	struct i40e_hw_port_stats stats_offset;
 	struct i40e_hw_port_stats stats;
+	u64 rx_err1;	/* rxerr1 */
+	u64 rx_err1_offset;
+
 	/* internal packet statistics, it should be excluded from the total */
 	struct i40e_eth_stats internal_stats_offset;
 	struct i40e_eth_stats internal_stats;
@@ -1100,7 +1113,6 @@ struct i40e_vf {
 struct i40e_adapter {
 	/* Common for both PF and VF */
 	struct i40e_hw hw;
-	struct rte_eth_dev *eth_dev;
 
 	/* Specific for PF or VF */
 	union {
@@ -1275,8 +1287,8 @@ bool is_i40evf_supported(struct rte_eth_dev *dev);
 
 int i40e_validate_input_set(enum i40e_filter_pctype pctype,
 			    enum rte_filter_type filter, uint64_t inset);
-int i40e_generate_inset_mask_reg(uint64_t inset, uint32_t *mask,
-				 uint8_t nb_elem);
+int i40e_generate_inset_mask_reg(struct i40e_hw *hw, uint64_t inset,
+				 uint32_t *mask, uint8_t nb_elem);
 uint64_t i40e_translate_input_set_reg(enum i40e_mac_type type, uint64_t input);
 void i40e_check_write_reg(struct i40e_hw *hw, uint32_t addr, uint32_t val);
 void i40e_check_write_global_reg(struct i40e_hw *hw,
@@ -1351,7 +1363,7 @@ i40e_get_vsi_from_adapter(struct i40e_adapter *adapter)
 #define I40E_VSI_TO_DEV_DATA(vsi) \
 	(((struct i40e_vsi *)vsi)->adapter->pf.dev_data)
 #define I40E_VSI_TO_ETH_DEV(vsi) \
-	(((struct i40e_vsi *)vsi)->adapter->eth_dev)
+	(&rte_eth_devices[((struct i40e_vsi *)vsi)->adapter->pf.dev_data->port_id])
 
 /* I40E_PF_TO */
 #define I40E_PF_TO_HW(pf) \

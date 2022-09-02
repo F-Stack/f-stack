@@ -8,8 +8,6 @@
 extern "C" {
 #endif
 
-#include <channel_commands.h>
-
 /**
  * Connect to the Virtio-Serial VM end-point located in path. It is
  * thread safe for unique lcore_ids. This function must be only called once from
@@ -51,31 +49,16 @@ void guest_channel_host_disconnect(unsigned int lcore_id);
  *  - Negative on channel not connected.
  *  - errno on write to channel error.
  */
-int guest_channel_send_msg(struct channel_packet *pkt, unsigned int lcore_id);
-
-/**
- * Send a message contained in pkt over the Virtio-Serial to the host endpoint.
- *
- * @param pkt
- *  Pointer to a populated struct channel_packet
- *
- * @param lcore_id
- *  lcore_id.
- *
- * @return
- *  - 0 on success.
- *  - Negative on error.
- */
-int rte_power_guest_channel_send_msg(struct channel_packet *pkt,
-			unsigned int lcore_id);
+int guest_channel_send_msg(struct rte_power_channel_packet *pkt,
+		unsigned int lcore_id);
 
 /**
  * Read a message contained in pkt over the Virtio-Serial
  * from the host endpoint.
  *
  * @param pkt
- *  Pointer to channel_packet or
- *  channel_packet_freq_list struct.
+ *  Pointer to rte_power_channel_packet or
+ *  rte_power_channel_packet_freq_list struct.
  *
  * @param pkt_len
  *  Size of expected data packet.
@@ -88,30 +71,6 @@ int rte_power_guest_channel_send_msg(struct channel_packet *pkt,
  *  - Negative on error.
  */
 int power_guest_channel_read_msg(void *pkt,
-		size_t pkt_len,
-		unsigned int lcore_id);
-
-/**
- * Receive a message contained in pkt over the Virtio-Serial
- * from the host endpoint.
- *
- * @param pkt
- *  Pointer to channel_packet or
- *  channel_packet_freq_list struct.
- *
- * @param pkt_len
- *  Size of expected data packet.
- *
- * @param lcore_id
- *  lcore_id.
- *
- * @return
- *  - 0 on success.
- *  - Negative on error.
- */
-__rte_experimental
-int
-rte_power_guest_channel_receive_msg(void *pkt,
 		size_t pkt_len,
 		unsigned int lcore_id);
 

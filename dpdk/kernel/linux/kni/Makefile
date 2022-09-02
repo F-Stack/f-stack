@@ -16,6 +16,16 @@ MODULE_CFLAGS += -I$(RTE_OUTPUT)/include
 MODULE_CFLAGS += -include $(RTE_OUTPUT)/include/rte_config.h
 MODULE_CFLAGS += -Wall -Werror
 
+#
+# Use explicit 'source' folder for header path. In SUSE 'source' is not linked to 'build' folder.
+#
+ifdef CONFIG_SUSE_KERNEL
+   KSRC = /lib/modules/$(shell uname -r)/source
+   ifneq ($(shell grep -A 1 "ndo_tx_timeout" $(KSRC)/include/linux/netdevice.h | grep -o txqueue),)
+      MODULE_CFLAGS += -DHAVE_TX_TIMEOUT_TXQUEUE
+   endif
+endif
+
 -include /etc/lsb-release
 
 ifeq ($(DISTRIB_ID),Ubuntu)

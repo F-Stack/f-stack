@@ -119,29 +119,18 @@ struct rte_ipv4_hdr {
 static inline uint32_t
 __rte_raw_cksum(const void *buf, size_t len, uint32_t sum)
 {
-	/* workaround gcc strict-aliasing warning */
-	uintptr_t ptr = (uintptr_t)buf;
+	/* extend strict-aliasing rules */
 	typedef uint16_t __attribute__((__may_alias__)) u16_p;
-	const u16_p *u16_buf = (const u16_p *)ptr;
+	const u16_p *u16_buf = (const u16_p *)buf;
+	const u16_p *end = u16_buf + len / sizeof(*u16_buf);
 
-	while (len >= (sizeof(*u16_buf) * 4)) {
-		sum += u16_buf[0];
-		sum += u16_buf[1];
-		sum += u16_buf[2];
-		sum += u16_buf[3];
-		len -= sizeof(*u16_buf) * 4;
-		u16_buf += 4;
-	}
-	while (len >= sizeof(*u16_buf)) {
+	for (; u16_buf != end; ++u16_buf)
 		sum += *u16_buf;
-		len -= sizeof(*u16_buf);
-		u16_buf += 1;
-	}
 
-	/* if length is in odd bytes */
-	if (len == 1) {
+	/* if length is odd, keeping it byte order independent */
+	if (unlikely(len % 2)) {
 		uint16_t left = 0;
-		*(uint8_t *)&left = *(const uint8_t *)u16_buf;
+		*(unsigned char *)&left = *(const unsigned char *)end;
 		sum += left;
 	}
 
@@ -322,15 +311,14 @@ rte_ipv4_phdr_cksum(const struct rte_ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
 /**
  * Process the IPv4 UDP or TCP checksum.
  *
- * The IPv4 header should not contains options. The IP and layer 4
- * checksum must be set to 0 in the packet by the caller.
+ * The layer 4 checksum must be set to 0 in the L4 header by the caller.
  *
  * @param ipv4_hdr
  *   The pointer to the contiguous IPv4 header.
  * @param l4_hdr
  *   The pointer to the beginning of the L4 header.
  * @return
- *   The complemented checksum to set in the IP packet.
+ *   The complemented checksum to set in the L4 header.
  */
 static inline uint16_t
 rte_ipv4_udptcp_cksum(const struct rte_ipv4_hdr *ipv4_hdr, const void *l4_hdr)
@@ -365,7 +353,7 @@ rte_ipv4_udptcp_cksum(const struct rte_ipv4_hdr *ipv4_hdr, const void *l4_hdr)
  */
 struct rte_ipv6_hdr {
 	rte_be32_t vtc_flow;	/**< IP version, traffic class & flow label. */
-	rte_be16_t payload_len;	/**< IP packet length - includes header size */
+	rte_be16_t payload_len;	/**< IP payload size, including ext. headers */
 	uint8_t  proto;		/**< Protocol, next header. */
 	uint8_t  hop_limits;	/**< Hop limits. */
 	uint8_t  src_addr[16];	/**< IP address of source host. */
@@ -423,15 +411,15 @@ rte_ipv6_phdr_cksum(const struct rte_ipv6_hdr *ipv6_hdr, uint64_t ol_flags)
 /**
  * Process the IPv6 UDP or TCP checksum.
  *
- * The IPv4 header should not contains options. The layer 4 checksum
- * must be set to 0 in the packet by the caller.
+ * The IPv6 header must not be followed by extension headers. The layer 4
+ * checksum must be set to 0 in the L4 header by the caller.
  *
  * @param ipv6_hdr
  *   The pointer to the contiguous IPv6 header.
  * @param l4_hdr
  *   The pointer to the beginning of the L4 header.
  * @return
- *   The complemented checksum to set in the IP packet.
+ *   The complemented checksum to set in the L4 header.
  */
 static inline uint16_t
 rte_ipv6_udptcp_cksum(const struct rte_ipv6_hdr *ipv6_hdr, const void *l4_hdr)

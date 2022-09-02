@@ -335,7 +335,7 @@ enum mlx5_feature_name {
 #define MLX5_ACT_NUM_MDF_IPV6		4
 #define MLX5_ACT_NUM_MDF_MAC		2
 #define MLX5_ACT_NUM_MDF_VID		1
-#define MLX5_ACT_NUM_MDF_PORT		2
+#define MLX5_ACT_NUM_MDF_PORT		1
 #define MLX5_ACT_NUM_MDF_TTL		1
 #define MLX5_ACT_NUM_DEC_TTL		MLX5_ACT_NUM_MDF_TTL
 #define MLX5_ACT_NUM_MDF_TCPSEQ		1
@@ -893,4 +893,5 @@ int mlx5_flow_destroy_policer_rules(struct rte_eth_dev *dev,
 				    const struct rte_flow_attr *attr);
 int mlx5_flow_meter_flush(struct rte_eth_dev *dev,
 			  struct rte_mtr_error *error);
+int mlx5_flow_discover_dr_action_support(struct rte_eth_dev *dev);
 #endif /* RTE_PMD_MLX5_FLOW_H_ */

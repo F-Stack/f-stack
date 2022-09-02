@@ -56,8 +56,6 @@
 #define SEC_FLC_DHR_OUTBOUND	-114
 #define SEC_FLC_DHR_INBOUND	0
 
-enum rta_sec_era rta_sec_era = RTA_SEC_ERA_8;
-
 static uint8_t cryptodev_driver_id;
 
 int dpaa2_logtype_sec;
@@ -1532,6 +1530,10 @@ sec_simple_fd_to_mbuf(const struct qbman_fd *fd)
 	int16_t diff = 0;
 	dpaa2_sec_session *sess_priv __rte_unused;
 
+	if (unlikely(DPAA2_GET_FD_IVP(fd))) {
+		DPAA2_SEC_ERR("error: non inline buffer");
+		return NULL;
+	}
 	struct rte_mbuf *mbuf = DPAA2_INLINE_MBUF_FROM_BUF(
 		DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd)),
 		rte_dpaa2_bpid_info[DPAA2_GET_FD_BPID(fd)].meta_data_size);
@@ -1549,6 +1551,14 @@ sec_simple_fd_to_mbuf(const struct qbman_fd *fd)
 		mbuf->data_off += SEC_FLC_DHR_OUTBOUND;
 	else
 		mbuf->data_off += SEC_FLC_DHR_INBOUND;
+
+	if (unlikely(fd->simple.frc)) {
+		DPAA2_SEC_ERR("SEC returned Error - %x",
+				fd->simple.frc);
+		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
+	} else {
+		op->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+	}
 
 	return op;
 }
@@ -1578,11 +1588,6 @@ sec_fd_to_mbuf(const struct qbman_fd *fd)
 	 * We can have a better approach to use the inline Mbuf
 	 */
 
-	if (unlikely(DPAA2_GET_FD_IVP(fd))) {
-		/* TODO complete it. */
-		DPAA2_SEC_ERR("error: non inline buffer");
-		return NULL;
-	}
 	op = (struct rte_crypto_op *)DPAA2_GET_FLE_ADDR((fle - 1));
 
 	/* Prefeth op */
@@ -1847,7 +1852,7 @@ dpaa2_sec_cipher_init(struct rte_cryptodev *dev,
 	session->ctxt_type = DPAA2_SEC_CIPHER;
 	session->cipher_key.data = rte_zmalloc(NULL, xform->cipher.key.length,
 			RTE_CACHE_LINE_SIZE);
-	if (session->cipher_key.data == NULL) {
+	if (session->cipher_key.data == NULL && xform->cipher.key.length > 0) {
 		DPAA2_SEC_ERR("No Memory for cipher key");
 		rte_free(priv);
 		return -1;
@@ -2836,8 +2841,9 @@ dpaa2_sec_set_ipsec_session(struct rte_cryptodev *dev,
 		encap_pdb.options = (IPVERSION << PDBNH_ESP_ENCAP_SHIFT) |
 			PDBOPTS_ESP_OIHI_PDB_INL |
 			PDBOPTS_ESP_IVSRC |
-			PDBHMO_ESP_ENCAP_DTTL |
 			PDBHMO_ESP_SNR;
+		if (ipsec_xform->options.dec_ttl)
+			encap_pdb.options |= PDBHMO_ESP_ENCAP_DTTL;
 		if (ipsec_xform->options.esn)
 			encap_pdb.options |= PDBOPTS_ESP_ESN;
 		encap_pdb.spi = ipsec_xform->spi;
@@ -3423,31 +3429,9 @@ dpaa2_sec_dev_stop(struct rte_cryptodev *dev)
 }
 
 static int
-dpaa2_sec_dev_close(struct rte_cryptodev *dev)
+dpaa2_sec_dev_close(struct rte_cryptodev *dev __rte_unused)
 {
-	struct dpaa2_sec_dev_private *priv = dev->data->dev_private;
-	struct fsl_mc_io *dpseci = (struct fsl_mc_io *)priv->hw;
-	int ret;
-
 	PMD_INIT_FUNC_TRACE();
-
-	/* Function is reverse of dpaa2_sec_dev_init.
-	 * It does the following:
-	 * 1. Detach a DPSECI from attached resources i.e. buffer pools, dpbp_id
-	 * 2. Close the DPSECI device
-	 * 3. Free the allocated resources.
-	 */
-
-	/*Close the device at underlying layer*/
-	ret = dpseci_close(dpseci, CMD_PRI_LOW, priv->token);
-	if (ret) {
-		DPAA2_SEC_ERR("Failure closing dpseci device: err(%d)", ret);
-		return -1;
-	}
-
-	/*Free the allocated memory for ethernet private data and dpseci*/
-	priv->hw = NULL;
-	rte_free(dpseci);
 
 	return 0;
 }
@@ -3704,11 +3688,31 @@ static const struct rte_security_ops dpaa2_sec_security_ops = {
 static int
 dpaa2_sec_uninit(const struct rte_cryptodev *dev)
 {
-	struct dpaa2_sec_dev_private *internals = dev->data->dev_private;
+	struct dpaa2_sec_dev_private *priv = dev->data->dev_private;
+	struct fsl_mc_io *dpseci = (struct fsl_mc_io *)priv->hw;
+	int ret;
 
+	PMD_INIT_FUNC_TRACE();
+
+	/* Function is reverse of dpaa2_sec_dev_init.
+	 * It does the following:
+	 * 1. Detach a DPSECI from attached resources i.e. buffer pools, dpbp_id
+	 * 2. Close the DPSECI device
+	 * 3. Free the allocated resources.
+	 */
+
+	/*Close the device at underlying layer*/
+	ret = dpseci_close(dpseci, CMD_PRI_LOW, priv->token);
+	if (ret) {
+		DPAA2_SEC_ERR("Failure closing dpseci device: err(%d)", ret);
+		return -1;
+	}
+
+	/*Free the allocated memory for ethernet private data and dpseci*/
+	priv->hw = NULL;
+	rte_free(dpseci);
 	rte_free(dev->security_ctx);
-
-	rte_mempool_free(internals->fle_pool);
+	rte_mempool_free(priv->fle_pool);
 
 	DPAA2_SEC_INFO("Closing DPAA2_SEC device %s on numa socket %u",
 		       dev->data->name, rte_socket_id());
@@ -3866,6 +3870,8 @@ cryptodev_dpaa2_sec_probe(struct rte_dpaa2_driver *dpaa2_drv __rte_unused,
 
 	if (dpaa2_svr_family == SVR_LX2160A)
 		rta_set_sec_era(RTA_SEC_ERA_10);
+	else
+		rta_set_sec_era(RTA_SEC_ERA_8);
 
 	DPAA2_SEC_INFO("2-SEC ERA is %d", rta_get_sec_era());
 

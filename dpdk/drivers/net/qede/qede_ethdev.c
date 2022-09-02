@@ -270,7 +270,7 @@ qede_interrupt_handler(void *param)
 static void
 qede_alloc_etherdev(struct qede_dev *qdev, struct qed_dev_eth_info *info)
 {
-	rte_memcpy(&qdev->dev_info, info, sizeof(*info));
+	qdev->dev_info = *info;
 	qdev->ops = qed_ops;
 }
 
@@ -1796,6 +1796,8 @@ static int qede_allmulticast_enable(struct rte_eth_dev *eth_dev)
 	    QED_FILTER_RX_MODE_TYPE_MULTI_PROMISC;
 	enum _ecore_status_t ecore_status;
 
+	if (rte_eth_promiscuous_get(eth_dev->data->port_id) == 1)
+		type = QED_FILTER_RX_MODE_TYPE_PROMISC;
 	ecore_status = qed_configure_filter_rx_mode(eth_dev, type);
 
 	return ecore_status >= ECORE_SUCCESS ? 0 : -EAGAIN;
@@ -2047,8 +2049,10 @@ int qede_rss_hash_update(struct rte_eth_dev *eth_dev,
 		/* RSS hash key */
 		if (key) {
 			if (len > (ECORE_RSS_KEY_SIZE * sizeof(uint32_t))) {
-				DP_ERR(edev, "RSS key length exceeds limit\n");
-				return -EINVAL;
+				len = ECORE_RSS_KEY_SIZE * sizeof(uint32_t);
+				DP_NOTICE(edev, false,
+					  "RSS key length too big, trimmed to %d\n",
+					  len);
 			}
 			DP_INFO(edev, "Applying user supplied hash key\n");
 			rss_params.update_rss_key = 1;
@@ -2280,7 +2284,7 @@ static int qede_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 			fp->rxq->rx_buf_size = rc;
 		}
 	}
-	if (max_rx_pkt_len > RTE_ETHER_MAX_LEN)
+	if (frame_size > QEDE_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		dev->data->dev_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;

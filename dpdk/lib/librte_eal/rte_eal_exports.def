@@ -1,5 +1,6 @@
 EXPORTS
 	__rte_panic
+	rte_eal_cleanup
 	rte_eal_init
 	rte_eal_mp_remote_launch
 	rte_eal_mp_wait_lcore

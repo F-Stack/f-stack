@@ -310,14 +310,13 @@ proc_info_parse_args(int argc, char **argv)
 			} else if (!strncmp(long_option[option_index].name,
 					"xstats-ids",
 					MAX_LONG_OPT_SZ))	{
-				nb_xstats_ids = parse_xstats_ids(optarg,
+				int ret = parse_xstats_ids(optarg,
 						xstats_ids, MAX_NB_XSTATS_IDS);
-
-				if (nb_xstats_ids <= 0) {
+				if (ret <= 0) {
 					printf("xstats-id list parse error.\n");
 					return -1;
 				}
-
+				nb_xstats_ids = ret;
 			}
 			break;
 		default:
@@ -429,11 +428,9 @@ static void collectd_resolve_cnt_type(char *cnt_type, size_t cnt_type_len,
 	} else if ((type_end != NULL) &&
 		   (strncmp(cnt_name, "flow_", strlen("flow_"))) == 0) {
 		if (strncmp(type_end, "_filters", strlen("_filters")) == 0)
-			strlcpy(cnt_type, "operations", cnt_type_len);
+			strlcpy(cnt_type, "filter_result", cnt_type_len);
 		else if (strncmp(type_end, "_errors", strlen("_errors")) == 0)
 			strlcpy(cnt_type, "errors", cnt_type_len);
-		else if (strncmp(type_end, "_filters", strlen("_filters")) == 0)
-			strlcpy(cnt_type, "filter_result", cnt_type_len);
 	} else if ((type_end != NULL) &&
 		   (strncmp(cnt_name, "mac_", strlen("mac_"))) == 0) {
 		if (strncmp(type_end, "_errors", strlen("_errors")) == 0)
@@ -1110,7 +1107,6 @@ show_crypto(void)
 
 		display_crypto_feature_info(dev_info.feature_flags);
 
-		memset(&stats, 0, sizeof(0));
 		if (rte_cryptodev_stats_get(i, &stats) == 0) {
 			printf("\t  -- stats\n");
 			printf("\t\t  + enqueue count (%"PRIu64")"

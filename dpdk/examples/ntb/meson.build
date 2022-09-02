@@ -9,11 +9,8 @@
 if host_machine.system() != 'linux'
 	build = false
 endif
-deps += 'rawdev'
+deps += ['rawdev','rawdev_ntb']
 cflags += ['-D_FILE_OFFSET_BITS=64']
 sources = files(
 	'ntb_fwd.c'
 )
-if dpdk_conf.has('RTE_LIBRTE_PMD_NTB_RAWDEV')
-	deps += 'rawdev_ntb'
-endif

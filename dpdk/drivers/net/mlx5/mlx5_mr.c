@@ -1397,10 +1397,10 @@ mlx5_dma_unmap(struct rte_pci_device *pdev, void *addr,
 	}
 	priv = dev->data->dev_private;
 	sh = priv->sh;
-	rte_rwlock_read_lock(&sh->mr.rwlock);
+	rte_rwlock_write_lock(&sh->mr.rwlock);
 	mr = mr_lookup_dev_list(sh, &entry, (uintptr_t)addr);
 	if (!mr) {
-		rte_rwlock_read_unlock(&sh->mr.rwlock);
+		rte_rwlock_write_unlock(&sh->mr.rwlock);
 		DRV_LOG(WARNING, "address 0x%" PRIxPTR " wasn't registered "
 				 "to PCI device %p", (uintptr_t)addr,
 				 (void *)pdev);
@@ -1424,7 +1424,7 @@ mlx5_dma_unmap(struct rte_pci_device *pdev, void *addr,
 	++sh->mr.dev_gen;
 	DEBUG("broadcasting local cache flush, gen=%d",	sh->mr.dev_gen);
 	rte_smp_wmb();
-	rte_rwlock_read_unlock(&sh->mr.rwlock);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
 	return 0;
 }
 

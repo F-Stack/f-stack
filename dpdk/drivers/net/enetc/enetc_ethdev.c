@@ -547,6 +547,9 @@ enetc_dev_close(struct rte_eth_dev *dev)
 	uint16_t i;
 
 	PMD_INIT_FUNC_TRACE();
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	enetc_dev_stop(dev);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -661,7 +664,7 @@ enetc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > ENETC_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads &=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else

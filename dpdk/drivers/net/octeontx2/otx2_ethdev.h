@@ -50,6 +50,8 @@
 /* ETH_HLEN+ETH_FCS+2*VLAN_HLEN */
 #define NIX_L2_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + 8)
+#define NIX_L2_MAX_LEN \
+	(RTE_ETHER_MTU + NIX_L2_OVERHEAD)
 
 /* HW config of frame size doesn't include FCS */
 #define NIX_MAX_HW_FRS			9212
@@ -169,6 +171,14 @@ enum nix_q_size_e {
 	nix_q_size_max
 };
 
+enum nix_lso_tun_type {
+	NIX_LSO_TUN_V4V4,
+	NIX_LSO_TUN_V4V6,
+	NIX_LSO_TUN_V6V4,
+	NIX_LSO_TUN_V6V6,
+	NIX_LSO_TUN_MAX,
+};
+
 struct otx2_qint {
 	struct rte_eth_dev *eth_dev;
 	uint8_t qintx;
@@ -263,7 +273,9 @@ struct otx2_eth_dev {
 	uint8_t tx_chan_cnt;
 	uint8_t lso_tsov4_idx;
 	uint8_t lso_tsov6_idx;
-	uint8_t lso_base_idx;
+	uint8_t lso_udp_tun_idx[NIX_LSO_TUN_MAX];
+	uint8_t lso_tun_idx[NIX_LSO_TUN_MAX];
+	uint64_t lso_tun_fmt;
 	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 	uint8_t mkex_pfl_name[MKEX_NAME_LEN];
 	uint8_t max_mac_entries;
@@ -337,6 +349,7 @@ struct otx2_eth_txq {
 	rte_iova_t fc_iova;
 	uint16_t sqes_per_sqb_log2;
 	int16_t nb_sqb_bufs_adj;
+	uint64_t lso_tun_fmt;
 	MARKER slow_path_start;
 	uint16_t nb_sqb_bufs;
 	uint16_t sq;

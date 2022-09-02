@@ -621,8 +621,15 @@ eval_alu(struct bpf_verifier *bvf, const struct ebpf_insn *ins)
 
 	op = BPF_OP(ins->code);
 
+	/* Allow self-xor as way to zero register */
+	if (op == BPF_XOR && BPF_SRC(ins->code) == BPF_X &&
+	    ins->src_reg == ins->dst_reg) {
+		eval_fill_imm(&rs, UINT64_MAX, 0);
+		eval_fill_imm(rd, UINT64_MAX, 0);
+	}
+
 	err = eval_defined((op != EBPF_MOV) ? rd : NULL,
-			(op != BPF_NEG) ? &rs : NULL);
+			   (op != BPF_NEG) ? &rs : NULL);
 	if (err != NULL)
 		return err;
 
@@ -1075,7 +1082,7 @@ eval_jcc(struct bpf_verifier *bvf, const struct ebpf_insn *ins)
 		eval_jsgt_jsle(trd, trs, frd, frs);
 	else if (op == EBPF_JSLE)
 		eval_jsgt_jsle(frd, frs, trd, trs);
-	else if (op == EBPF_JLT)
+	else if (op == EBPF_JSLT)
 		eval_jslt_jsge(trd, trs, frd, frs);
 	else if (op == EBPF_JSGE)
 		eval_jslt_jsge(frd, frs, trd, trs);
@@ -1645,7 +1652,7 @@ static const struct bpf_ins_check ins_chk[UINT8_MAX + 1] = {
 
 /*
  * make sure that instruction syntax is valid,
- * and it fields don't violate partciular instrcution type restrictions.
+ * and its fields don't violate particular instruction type restrictions.
  */
 static const char *
 check_syntax(const struct ebpf_insn *ins)
@@ -1876,7 +1883,7 @@ log_loop(const struct bpf_verifier *bvf)
  * First pass goes though all instructions in the set, checks that each
  * instruction is a valid one (correct syntax, valid field values, etc.)
  * and constructs control flow graph (CFG).
- * Then deapth-first search is performed over the constructed graph.
+ * Then depth-first search is performed over the constructed graph.
  * Programs with unreachable instructions and/or loops will be rejected.
  */
 static int
@@ -1903,7 +1910,7 @@ validate(struct bpf_verifier *bvf)
 
 		/*
 		 * construct CFG, jcc nodes have to outgoing edges,
-		 * 'exit' nodes - none, all others nodes have exaclty one
+		 * 'exit' nodes - none, all other nodes have exactly one
 		 * outgoing edge.
 		 */
 		switch (ins->code) {
@@ -2165,7 +2172,7 @@ evaluate(struct bpf_verifier *bvf)
 			idx = get_node_idx(bvf, node);
 			op = ins[idx].code;
 
-			/* for jcc node make a copy of evaluatoion state */
+			/* for jcc node make a copy of evaluation state */
 			if (node->nb_edge > 1)
 				rc |= save_eval_state(bvf, node);
 

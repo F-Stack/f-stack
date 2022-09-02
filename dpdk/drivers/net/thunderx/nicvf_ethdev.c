@@ -191,7 +191,7 @@ nicvf_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 		(frame_size + 2 * VLAN_TAG_SIZE > buffsz * NIC_HW_MAX_SEGS))
 		return -EINVAL;
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > NIC_HW_L2_MAX_LEN)
 		rxmode->offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		rxmode->offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
@@ -1875,6 +1875,8 @@ nicvf_dev_close(struct rte_eth_dev *dev)
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	nicvf_dev_stop_cleanup(dev, true);
 	nicvf_periodic_alarm_stop(nicvf_interrupt, dev);
@@ -2101,10 +2103,7 @@ static int
 nicvf_eth_dev_uninit(struct rte_eth_dev *dev)
 {
 	PMD_INIT_FUNC_TRACE();
-
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-		nicvf_dev_close(dev);
-
+	nicvf_dev_close(dev);
 	return 0;
 }
 static int

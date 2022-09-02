@@ -284,7 +284,7 @@ lcore_main(struct flow_classifier *cls_app)
 	 * for best performance.
 	 */
 	RTE_ETH_FOREACH_DEV(port)
-		if (rte_eth_dev_socket_id(port) > 0 &&
+		if (rte_eth_dev_socket_id(port) >= 0 &&
 			rte_eth_dev_socket_id(port) != (int)rte_socket_id()) {
 			printf("\n\n");
 			printf("WARNING: port %u is on remote NUMA node\n",
@@ -424,7 +424,7 @@ parse_ipv4_5tuple_rule(char *str, struct rte_eth_ntuple_filter *ntuple_filter)
 			&ntuple_filter->dst_ip,
 			&ntuple_filter->dst_ip_mask);
 	if (ret != 0) {
-		flow_classify_log("failed to read source address/mask: %s\n",
+		flow_classify_log("failed to read destination address/mask: %s\n",
 			in[CB_FLD_DST_ADDR]);
 		return ret;
 	}
@@ -852,6 +852,9 @@ main(int argc, char *argv[])
 
 	/* Call lcore_main on the master core only. */
 	lcore_main(cls_app);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

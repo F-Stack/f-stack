@@ -894,6 +894,11 @@ ntb_dev_start(struct rte_rawdev *dev)
 
 	hw->peer_mw_base = rte_zmalloc("ntb_peer_mw_base", hw->mw_cnt *
 					sizeof(uint64_t), 0);
+	if (hw->peer_mw_base == NULL) {
+		NTB_LOG(ERR, "Cannot allocate memory for peer mw base.");
+		ret = -ENOMEM;
+		goto err_q_init;
+	}
 
 	if (hw->ntb_ops->spad_read == NULL) {
 		ret = -ENOTSUP;
@@ -1051,6 +1056,10 @@ ntb_attr_set(struct rte_rawdev *dev, const char *attr_name,
 		if (hw->ntb_ops->spad_write == NULL)
 			return -ENOTSUP;
 		index = atoi(&attr_name[NTB_SPAD_USER_LEN]);
+		if (index < 0 || index >= NTB_SPAD_USER_MAX_NUM) {
+			NTB_LOG(ERR, "Invalid attribute (%s)", attr_name);
+			return -EINVAL;
+		}
 		(*hw->ntb_ops->spad_write)(dev, hw->spad_user_list[index],
 					   1, attr_value);
 		NTB_LOG(DEBUG, "Set attribute (%s) Value (%" PRIu64 ")",
@@ -1145,6 +1154,10 @@ ntb_attr_get(struct rte_rawdev *dev, const char *attr_name,
 		if (hw->ntb_ops->spad_read == NULL)
 			return -ENOTSUP;
 		index = atoi(&attr_name[NTB_SPAD_USER_LEN]);
+		if (index < 0 || index >= NTB_SPAD_USER_MAX_NUM) {
+			NTB_LOG(ERR, "Attribute (%s) out of range", attr_name);
+			return -EINVAL;
+		}
 		*attr_value = (*hw->ntb_ops->spad_read)(dev,
 				hw->spad_user_list[index], 0);
 		NTB_LOG(DEBUG, "Attribute (%s) Value (%" PRIu64 ")",
@@ -1358,6 +1371,10 @@ ntb_init_hw(struct rte_rawdev *dev, struct rte_pci_device *pci_dev)
 
 	/* Init doorbell. */
 	hw->db_valid_mask = RTE_LEN2MASK(hw->db_cnt, uint64_t);
+	/* Clear all valid doorbell bits before registering intr handler */
+	if (hw->ntb_ops->db_clear == NULL)
+		return -ENOTSUP;
+	(*hw->ntb_ops->db_clear)(dev, hw->db_valid_mask);
 
 	intr_handle = &pci_dev->intr_handle;
 	/* Register callback func to eal lib */

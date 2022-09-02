@@ -152,3 +152,17 @@ static inline bool igbuio_kernel_is_locked_down(void)
 	return false;
 #endif
 }
+
+#ifndef fallthrough
+
+#ifndef __has_attribute
+#define __has_attribute(x) 0
+#endif
+
+#if __has_attribute(__fallthrough__)
+#define fallthrough	__attribute__((__fallthrough__))
+#else
+#define fallthrough	do {} while (0)
+#endif
+
+#endif

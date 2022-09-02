@@ -5,6 +5,10 @@
 #ifndef _VHOST_CRYPTO_H_
 #define _VHOST_CRYPTO_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define VHOST_CRYPTO_MBUF_POOL_SIZE		(8192)
 #define VHOST_CRYPTO_MAX_BURST_SIZE		(64)
 #define VHOST_CRYPTO_MAX_DATA_SIZE		(4096)
@@ -116,5 +120,9 @@ __rte_experimental
 uint16_t
 rte_vhost_crypto_finalize_requests(struct rte_crypto_op **ops,
 		uint16_t nb_ops, int *callfds, uint16_t *nb_callfds);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /**< _VHOST_CRYPTO_H_ */

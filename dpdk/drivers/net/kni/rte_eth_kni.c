@@ -204,6 +204,9 @@ eth_kni_close(struct rte_eth_dev *eth_dev)
 	struct pmd_internals *internals;
 	int ret;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	eth_kni_dev_stop(eth_dev);
 
 	/* mac_addrs must not be freed alone because part of dev_private */
@@ -399,8 +402,13 @@ eth_kni_create(struct rte_vdev_device *vdev,
 static int
 kni_init(void)
 {
-	if (is_kni_initialized == 0)
-		rte_kni_init(MAX_KNI_PORTS);
+	int ret;
+
+	if (is_kni_initialized == 0) {
+		ret = rte_kni_init(MAX_KNI_PORTS);
+		if (ret < 0)
+			return ret;
+	}
 
 	is_kni_initialized++;
 

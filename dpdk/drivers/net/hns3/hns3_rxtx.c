@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #include <stdarg.h>
@@ -294,7 +294,7 @@ hns3_init_rx_queue_hw(struct hns3_rx_queue *rxq)
 
 	hns3_write_dev(rxq, HNS3_RING_RX_BASEADDR_L_REG, (uint32_t)dma_addr);
 	hns3_write_dev(rxq, HNS3_RING_RX_BASEADDR_H_REG,
-		       (uint32_t)((dma_addr >> 31) >> 1));
+		       (uint32_t)(dma_addr >> 32));
 
 	hns3_write_dev(rxq, HNS3_RING_RX_BD_LEN_REG,
 		       hns3_buf_size2type(rx_buf_len));
@@ -309,7 +309,7 @@ hns3_init_tx_queue_hw(struct hns3_tx_queue *txq)
 
 	hns3_write_dev(txq, HNS3_RING_TX_BASEADDR_L_REG, (uint32_t)dma_addr);
 	hns3_write_dev(txq, HNS3_RING_TX_BASEADDR_H_REG,
-		       (uint32_t)((dma_addr >> 31) >> 1));
+		       (uint32_t)(dma_addr >> 32));
 
 	hns3_write_dev(txq, HNS3_RING_TX_BD_NUM_REG,
 		       HNS3_CFG_DESC_NUM(txq->nb_tx_desc));
@@ -2222,6 +2222,7 @@ hns3_parse_l4_cksum_params(struct rte_mbuf *m, uint32_t *type_cs_vlan_tso_len)
 	uint32_t tmp;
 	/* Enable L4 checksum offloads */
 	switch (ol_flags & PKT_TX_L4_MASK) {
+	case PKT_TX_TCP_CKSUM | PKT_TX_TCP_SEG:
 	case PKT_TX_TCP_CKSUM:
 		tmp = *type_cs_vlan_tso_len;
 		tmp |= hns3_gen_field_val(HNS3_TXD_L4T_M, HNS3_TXD_L4T_S,
@@ -2431,6 +2432,6 @@ void hns3_set_rxtx_function(struct rte_eth_dev *eth_dev)
 	} else {
 		eth_dev->rx_pkt_burst = hns3_dummy_rxtx_burst;
 		eth_dev->tx_pkt_burst = hns3_dummy_rxtx_burst;
-		eth_dev->tx_pkt_prepare = hns3_dummy_rxtx_burst;
+		eth_dev->tx_pkt_prepare = NULL;
 	}
 }

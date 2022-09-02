@@ -293,7 +293,7 @@ configure_eth_port(uint16_t port_id)
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-	ret = rte_eth_dev_configure(port_id, rxRings, txRings, &port_conf_default);
+	ret = rte_eth_dev_configure(port_id, rxRings, txRings, &port_conf);
 	if (ret != 0)
 		return ret;
 
@@ -779,5 +779,9 @@ main(int argc, char **argv)
 	}
 
 	print_stats();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

@@ -13,7 +13,6 @@ struct bnxt;
 struct bnxt_filter_info;
 struct bnxt_cp_ring_info;
 
-#define HWRM_SEQ_ID_INVALID -1U
 /* Convert Bit field location to value */
 #define ASYNC_CMPL_EVENT_ID_LINK_STATUS_CHANGE	\
 	(1 << HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE)
@@ -89,9 +88,9 @@ int bnxt_hwrm_func_buf_rgtr(struct bnxt *bp);
 int bnxt_hwrm_func_buf_unrgtr(struct bnxt *bp);
 int bnxt_hwrm_func_driver_register(struct bnxt *bp);
 int bnxt_hwrm_func_qcaps(struct bnxt *bp);
-void bnxt_hwrm_free_vf_info(struct bnxt *bp);
+void bnxt_free_vf_info(struct bnxt *bp);
 int bnxt_hwrm_func_reset(struct bnxt *bp);
-int bnxt_hwrm_func_driver_unregister(struct bnxt *bp, uint32_t flags);
+int bnxt_hwrm_func_driver_unregister(struct bnxt *bp);
 int bnxt_hwrm_func_qstats(struct bnxt *bp, uint16_t fid,
 			  struct rte_eth_stats *stats);
 int bnxt_hwrm_func_qstats_tx_drop(struct bnxt *bp, uint16_t fid,
@@ -114,13 +113,6 @@ int bnxt_hwrm_ring_grp_alloc(struct bnxt *bp, unsigned int idx);
 int bnxt_hwrm_ring_grp_free(struct bnxt *bp, unsigned int idx);
 
 int bnxt_hwrm_stat_clear(struct bnxt *bp, struct bnxt_cp_ring_info *cpr);
-int bnxt_hwrm_stat_ctx_alloc(struct bnxt *bp,
-			     struct bnxt_cp_ring_info *cpr, unsigned int idx);
-int bnxt_hwrm_stat_ctx_free(struct bnxt *bp,
-			    struct bnxt_cp_ring_info *cpr, unsigned int idx);
-int bnxt_hwrm_ctx_qstats(struct bnxt *bp, uint32_t cid, int idx,
-			 struct rte_eth_stats *stats, uint8_t rx);
-
 int bnxt_hwrm_ver_get(struct bnxt *bp, uint32_t timeout);
 
 int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic);
@@ -232,4 +224,10 @@ int bnxt_hwrm_port_ts_query(struct bnxt *bp, uint8_t path,
 			    uint64_t *timestamp);
 int bnxt_clear_one_vnic_filter(struct bnxt *bp,
 			       struct bnxt_filter_info *filter);
+int bnxt_hwrm_poll_ver_get(struct bnxt *bp);
+int bnxt_hwrm_port_phy_qcaps(struct bnxt *bp);
+int bnxt_hwrm_rx_ring_reset(struct bnxt *bp, int queue_index);
+int bnxt_hwrm_ring_stats(struct bnxt *bp, uint32_t cid, int idx,
+			 struct bnxt_ring_stats *stats, bool rx);
+int bnxt_vnic_rss_clear_p5(struct bnxt *bp, struct bnxt_vnic_info *vnic);
 #endif

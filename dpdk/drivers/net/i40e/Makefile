@@ -35,6 +35,9 @@ CFLAGS_BASE_DRIVER += -Wno-missing-field-initializers
 CFLAGS_BASE_DRIVER += -Wno-pointer-to-int-cast
 CFLAGS_BASE_DRIVER += -Wno-format-nonliteral
 CFLAGS_BASE_DRIVER += -Wno-unused-variable
+ifeq ($(shell test $(CLANG_MAJOR_VERSION) -ge 13 && echo 1), 1)
+CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
+endif
 else
 CFLAGS_BASE_DRIVER  = -Wno-sign-compare
 CFLAGS_BASE_DRIVER += -Wno-unused-value

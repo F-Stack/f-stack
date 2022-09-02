@@ -98,7 +98,7 @@ int bnxt_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	if (rc)
 		return rc;
 
-	if (queue_idx >= BNXT_MAX_RINGS(bp)) {
+	if (queue_idx >= bnxt_max_rings(bp)) {
 		PMD_DRV_LOG(ERR,
 			"Cannot create Tx ring %d. Only %d rings available\n",
 			queue_idx, bp->max_tx_rings);
@@ -145,8 +145,8 @@ int bnxt_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	txq->port_id = eth_dev->data->port_id;
 
 	/* Allocate TX ring hardware descriptors */
-	if (bnxt_alloc_rings(bp, queue_idx, txq, NULL, txq->cp_ring, NULL,
-			     "txr")) {
+	if (bnxt_alloc_rings(bp, socket_id, queue_idx, txq, NULL, txq->cp_ring,
+			     NULL, "txr")) {
 		PMD_DRV_LOG(ERR, "ring_dma_zone_reserve for tx_ring failed!");
 		rc = -ENOMEM;
 		goto err;
@@ -159,11 +159,6 @@ int bnxt_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	}
 
 	eth_dev->data->tx_queues[queue_idx] = txq;
-
-	if (txq->tx_deferred_start)
-		txq->tx_started = false;
-	else
-		txq->tx_started = true;
 
 	return 0;
 err:

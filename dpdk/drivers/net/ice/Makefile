@@ -26,12 +26,19 @@ CFLAGS_BASE_DRIVER +=
 else ifeq ($(CONFIG_RTE_TOOLCHAIN_CLANG),y)
 CFLAGS_BASE_DRIVER += -Wno-unused-parameter
 CFLAGS_BASE_DRIVER += -Wno-unused-variable
+ifeq ($(shell test $(CLANG_MAJOR_VERSION) -ge 13 && echo 1), 1)
+CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
+endif
 else
 CFLAGS_BASE_DRIVER += -Wno-unused-parameter
 CFLAGS_BASE_DRIVER += -Wno-unused-variable
 
 ifeq ($(shell test $(GCC_VERSION) -ge 44 && echo 1), 1)
 CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
+endif
+
+ifeq ($(shell test $(GCC_VERSION) -ge 110 && echo 1), 1)
+CFLAGS_BASE_DRIVER += -Wno-maybe-uninitialized
 endif
 
 endif

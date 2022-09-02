@@ -767,6 +767,9 @@ eth_em_close(struct rte_eth_dev *dev)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	eth_em_stop(dev);
 	adapter->stopped = 1;
 	em_dev_free_queues(dev);
@@ -971,8 +974,7 @@ eth_em_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 
 	/* Rx Errors */
 	rte_stats->imissed = stats->mpc;
-	rte_stats->ierrors = stats->crcerrs +
-	                     stats->rlec + stats->ruc + stats->roc +
+	rte_stats->ierrors = stats->crcerrs + stats->rlec +
 	                     stats->rxerrc + stats->algnerrc + stats->cexterr;
 
 	/* Tx Errors */
@@ -1795,24 +1797,27 @@ eth_em_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (ret != 0)
 		return ret;
 
-	frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN +
-		VLAN_TAG_SIZE;
+	frame_size = mtu + E1000_ETH_OVERHEAD;
 
 	/* check that mtu is within the allowed range */
 	if (mtu < RTE_ETHER_MIN_MTU || frame_size > dev_info.max_rx_pktlen)
 		return -EINVAL;
 
-	/* refuse mtu that requires the support of scattered packets when this
-	 * feature has not been enabled before. */
-	if (!dev->data->scattered_rx &&
-	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM)
+	/*
+	 * If device is started, refuse mtu that requires the support of
+	 * scattered packets when this feature has not been enabled before.
+	 */
+	if (dev->data->dev_started && !dev->data->scattered_rx &&
+	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR, "Stop port first.");
 		return -EINVAL;
+	}
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > RTE_ETHER_MAX_LEN) {
+	if (frame_size > E1000_ETH_MAX_LEN) {
 		dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 		rctl |= E1000_RCTL_LPE;

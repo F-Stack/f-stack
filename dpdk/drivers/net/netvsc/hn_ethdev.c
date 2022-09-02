@@ -847,6 +847,8 @@ static void
 hn_dev_close(struct rte_eth_dev *dev)
 {
 	PMD_INIT_FUNC_TRACE();
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	hn_vf_close(dev);
 	hn_dev_free_queues(dev);
@@ -953,8 +955,8 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	hv->vmbus = vmbus;
-	hv->rxbuf_res = &vmbus->resource[HV_RECV_BUF_MAP];
-	hv->chim_res  = &vmbus->resource[HV_SEND_BUF_MAP];
+	hv->rxbuf_res = vmbus->resource[HV_RECV_BUF_MAP];
+	hv->chim_res  = vmbus->resource[HV_SEND_BUF_MAP];
 	hv->port_id = eth_dev->data->port_id;
 	hv->latency = HN_CHAN_LATENCY_NS;
 	hv->max_queues = 1;

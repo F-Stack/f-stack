@@ -16,7 +16,7 @@
  * VNIC Functions
  */
 
-void prandom_bytes(void *dest_ptr, size_t len)
+void bnxt_prandom_bytes(void *dest_ptr, size_t len)
 {
 	char *dest = (char *)dest_ptr;
 	uint64_t rb;
@@ -98,23 +98,16 @@ void bnxt_free_vnic_attributes(struct bnxt *bp)
 
 	for (i = 0; i < bp->max_vnics; i++) {
 		vnic = &bp->vnic_info[i];
-		if (vnic->rss_table) {
-			/* 'Unreserve' the rss_table */
-			/* N/A */
-
-			vnic->rss_table = NULL;
-		}
-
-		if (vnic->rss_hash_key) {
-			/* 'Unreserve' the rss_hash_key */
-			/* N/A */
-
+		if (vnic->rss_mz != NULL) {
+			rte_memzone_free(vnic->rss_mz);
+			vnic->rss_mz = NULL;
 			vnic->rss_hash_key = NULL;
+			vnic->rss_table = NULL;
 		}
 	}
 }
 
-int bnxt_alloc_vnic_attributes(struct bnxt *bp)
+int bnxt_alloc_vnic_attributes(struct bnxt *bp, bool reconfig)
 {
 	struct bnxt_vnic_info *vnic;
 	struct rte_pci_device *pdev = bp->pdev;
@@ -122,12 +115,10 @@ int bnxt_alloc_vnic_attributes(struct bnxt *bp)
 	char mz_name[RTE_MEMZONE_NAMESIZE];
 	uint32_t entry_length;
 	size_t rss_table_size;
-	uint16_t max_vnics;
 	int i;
 	rte_iova_t mz_phys_addr;
 
-	entry_length = HW_HASH_KEY_SIZE +
-		       BNXT_MAX_MC_ADDRS * RTE_ETHER_ADDR_LEN;
+	entry_length = HW_HASH_KEY_SIZE;
 
 	if (BNXT_CHIP_THOR(bp))
 		rss_table_size = BNXT_RSS_TBL_SIZE_THOR *
@@ -137,42 +128,43 @@ int bnxt_alloc_vnic_attributes(struct bnxt *bp)
 
 	entry_length = RTE_CACHE_LINE_ROUNDUP(entry_length + rss_table_size);
 
-	max_vnics = bp->max_vnics;
-	snprintf(mz_name, RTE_MEMZONE_NAMESIZE,
-		 "bnxt_%04x:%02x:%02x:%02x_vnicattr", pdev->addr.domain,
-		 pdev->addr.bus, pdev->addr.devid, pdev->addr.function);
-	mz_name[RTE_MEMZONE_NAMESIZE - 1] = 0;
-	mz = rte_memzone_lookup(mz_name);
-	if (!mz) {
-		mz = rte_memzone_reserve(mz_name,
-				entry_length * max_vnics, SOCKET_ID_ANY,
-				RTE_MEMZONE_2MB |
-				RTE_MEMZONE_SIZE_HINT_ONLY |
-				RTE_MEMZONE_IOVA_CONTIG);
-		if (!mz)
-			return -ENOMEM;
-	}
-	mz_phys_addr = mz->iova;
-
-	for (i = 0; i < max_vnics; i++) {
+	for (i = 0; i < bp->max_vnics; i++) {
 		vnic = &bp->vnic_info[i];
 
+		snprintf(mz_name, RTE_MEMZONE_NAMESIZE,
+			 "bnxt_%04x:%02x:%02x:%02x_vnicattr_%d", pdev->addr.domain,
+			 pdev->addr.bus, pdev->addr.devid, pdev->addr.function, i);
+		mz_name[RTE_MEMZONE_NAMESIZE - 1] = 0;
+		mz = rte_memzone_lookup(mz_name);
+		if (mz == NULL) {
+			mz = rte_memzone_reserve(mz_name,
+						 entry_length,
+						 bp->eth_dev->device->numa_node,
+						 RTE_MEMZONE_2MB |
+						 RTE_MEMZONE_SIZE_HINT_ONLY |
+						 RTE_MEMZONE_IOVA_CONTIG);
+			if (mz == NULL) {
+				PMD_DRV_LOG(ERR, "Cannot allocate bnxt vnic_attributes memory\n");
+				return -ENOMEM;
+			}
+		}
+		vnic->rss_mz = mz;
+		mz_phys_addr = mz->iova;
+
 		/* Allocate rss table and hash key */
-		vnic->rss_table =
-			(void *)((char *)mz->addr + (entry_length * i));
+		vnic->rss_table = (void *)((char *)mz->addr);
+		vnic->rss_table_dma_addr = mz_phys_addr;
 		memset(vnic->rss_table, -1, entry_length);
 
-		vnic->rss_table_dma_addr = mz_phys_addr + (entry_length * i);
-		vnic->rss_hash_key = (void *)((char *)vnic->rss_table +
-					      rss_table_size);
+		vnic->rss_hash_key = (void *)((char *)vnic->rss_table + rss_table_size);
+		vnic->rss_hash_key_dma_addr = vnic->rss_table_dma_addr + rss_table_size;
 
-		vnic->rss_hash_key_dma_addr = vnic->rss_table_dma_addr +
-					      rss_table_size;
-		vnic->mc_list = (void *)((char *)vnic->rss_hash_key +
-				HW_HASH_KEY_SIZE);
-		vnic->mc_list_dma_addr = vnic->rss_hash_key_dma_addr +
-				HW_HASH_KEY_SIZE;
-		prandom_bytes(vnic->rss_hash_key, HW_HASH_KEY_SIZE);
+		if (!reconfig) {
+			bnxt_prandom_bytes(vnic->rss_hash_key, HW_HASH_KEY_SIZE);
+			memcpy(bp->rss_conf.rss_key, vnic->rss_hash_key, HW_HASH_KEY_SIZE);
+		} else {
+			memcpy(vnic->rss_hash_key, bp->rss_conf.rss_key, HW_HASH_KEY_SIZE);
+		}
 	}
 
 	return 0;

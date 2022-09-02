@@ -214,6 +214,9 @@ ipn3ke_rpst_dev_close(struct rte_eth_dev *dev)
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(dev);
 	struct ipn3ke_rpst *rpst = IPN3KE_DEV_PRIVATE_TO_RPST(dev);
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	if (hw->retimer.mac_type == IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) {
 		/* Disable the TX path */
 		ipn3ke_xmac_tx_disable(hw, rpst->port_id, 0);
@@ -2221,9 +2224,6 @@ ipn3ke_rpst_xstats_get
 	struct ipn3ke_rpst_hw_port_stats hw_stats;
 	struct rte_eth_stats stats;
 
-	if (!xstats)
-		return 0;
-
 	if (!ethdev) {
 		IPN3KE_AFU_PMD_ERR("ethernet device to get statistics is NULL");
 		return -EINVAL;
@@ -2794,7 +2794,7 @@ ipn3ke_rpst_mtu_set(struct rte_eth_dev *ethdev, uint16_t mtu)
 		return -EBUSY;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > IPN3KE_ETH_MAX_LEN)
 		dev_data->dev_conf.rxmode.offloads |=
 			(uint64_t)(DEV_RX_OFFLOAD_JUMBO_FRAME);
 	else

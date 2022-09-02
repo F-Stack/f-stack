@@ -1120,5 +1120,8 @@ main(int argc, char** argv)
 			kni_port_params_array[i] = NULL;
 		}
 
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

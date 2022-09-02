@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #include <stdbool.h>
@@ -10,15 +10,6 @@
 
 #include "hns3_ethdev.h"
 #include "hns3_logs.h"
-
-/* Default default keys */
-static uint8_t hns3_hash_key[] = {
-	0x6D, 0x5A, 0x56, 0xDA, 0x25, 0x5B, 0x0E, 0xC2,
-	0x41, 0x67, 0x25, 0x3D, 0x43, 0xA3, 0x8F, 0xB0,
-	0xD0, 0xCA, 0x2B, 0xCB, 0xAE, 0x7B, 0x30, 0xB4,
-	0x77, 0xCB, 0x2D, 0xA3, 0x80, 0x30, 0xF2, 0x0C,
-	0x6A, 0x42, 0xB7, 0x3B, 0xBE, 0xAC, 0x01, 0xFA
-};
 
 static const uint8_t full_mask[VNI_OR_TNI_LEN] = { 0xFF, 0xFF, 0xFF };
 static const uint8_t zero_mask[VNI_OR_TNI_LEN] = { 0x00, 0x00, 0x00 };
@@ -46,8 +37,7 @@ static enum rte_flow_item_type first_items[] = {
 	RTE_FLOW_ITEM_TYPE_NVGRE,
 	RTE_FLOW_ITEM_TYPE_VXLAN,
 	RTE_FLOW_ITEM_TYPE_GENEVE,
-	RTE_FLOW_ITEM_TYPE_VXLAN_GPE,
-	RTE_FLOW_ITEM_TYPE_MPLS
+	RTE_FLOW_ITEM_TYPE_VXLAN_GPE
 };
 
 static enum rte_flow_item_type L2_next_items[] = {
@@ -67,8 +57,7 @@ static enum rte_flow_item_type L3_next_items[] = {
 static enum rte_flow_item_type L4_next_items[] = {
 	RTE_FLOW_ITEM_TYPE_VXLAN,
 	RTE_FLOW_ITEM_TYPE_GENEVE,
-	RTE_FLOW_ITEM_TYPE_VXLAN_GPE,
-	RTE_FLOW_ITEM_TYPE_MPLS
+	RTE_FLOW_ITEM_TYPE_VXLAN_GPE
 };
 
 static enum rte_flow_item_type tunnel_next_items[] = {
@@ -122,7 +111,10 @@ hns3_counter_new(struct rte_eth_dev *dev, uint32_t shared, uint32_t id,
 {
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_pf *pf = &hns->pf;
+	struct hns3_hw *hw = &hns->hw;
 	struct hns3_flow_counter *cnt;
+	uint64_t value;
+	int ret;
 
 	cnt = hns3_counter_lookup(dev, id);
 	if (cnt) {
@@ -134,6 +126,13 @@ hns3_counter_new(struct rte_eth_dev *dev, uint32_t shared, uint32_t id,
 		cnt->ref_cnt++;
 		return 0;
 	}
+
+	/* Clear the counter by read ops because the counter is read-clear */
+	ret = hns3_get_count(hw, id, &value);
+	if (ret)
+		return rte_flow_error_set(error, EIO,
+					  RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+					  "Clear counter failed!");
 
 	cnt = rte_zmalloc("hns3 counter", sizeof(*cnt), 0);
 	if (cnt == NULL)
@@ -178,6 +177,8 @@ hns3_counter_query(struct rte_eth_dev *dev, struct rte_flow *flow,
 	}
 	qc->hits_set = 1;
 	qc->hits = value;
+	qc->bytes_set = 0;
+	qc->bytes = 0;
 
 	return 0;
 }
@@ -1059,49 +1060,35 @@ is_tunnel_packet(enum rte_flow_item_type type)
 	if (type == RTE_FLOW_ITEM_TYPE_VXLAN_GPE ||
 	    type == RTE_FLOW_ITEM_TYPE_VXLAN ||
 	    type == RTE_FLOW_ITEM_TYPE_NVGRE ||
-	    type == RTE_FLOW_ITEM_TYPE_GENEVE ||
-	    type == RTE_FLOW_ITEM_TYPE_MPLS)
+	    type == RTE_FLOW_ITEM_TYPE_GENEVE)
 		return true;
 	return false;
 }
 
 /*
- * Parse the rule to see if it is a IP or MAC VLAN flow director rule.
- * And get the flow director filter info BTW.
- * UDP/TCP/SCTP PATTERN:
- * The first not void item can be ETH or IPV4 or IPV6
- * The second not void item must be IPV4 or IPV6 if the first one is ETH.
- * The next not void item could be UDP or TCP or SCTP (optional)
- * The next not void item could be RAW (for flexbyte, optional)
- * The next not void item must be END.
- * A Fuzzy Match pattern can appear at any place before END.
- * Fuzzy Match is optional for IPV4 but is required for IPV6
- * MAC VLAN PATTERN:
- * The first not void item must be ETH.
- * The second not void item must be MAC VLAN.
- * The next not void item must be END.
- * ACTION:
- * The first not void action should be QUEUE or DROP.
- * The second not void optional action should be MARK,
- * mark_id is a uint32_t number.
- * The next not void action should be END.
- * UDP/TCP/SCTP pattern example:
- * ITEM		Spec			Mask
- * ETH		NULL			NULL
- * IPV4		src_addr 192.168.1.20	0xFFFFFFFF
- *		dst_addr 192.167.3.50	0xFFFFFFFF
- * UDP/TCP/SCTP	src_port	80	0xFFFF
- *		dst_port	80	0xFFFF
- * END
- * MAC VLAN pattern example:
- * ITEM		Spec			Mask
- * ETH		dst_addr
-		{0xAC, 0x7B, 0xA1,	{0xFF, 0xFF, 0xFF,
-		0x2C, 0x6D, 0x36}	0xFF, 0xFF, 0xFF}
- * MAC VLAN	tci	0x2016		0xEFFF
- * END
- * Other members in mask and spec should set to 0x00.
- * Item->last should be NULL.
+ * Parse the flow director rule.
+ * The supported PATTERN:
+ *   case: non-tunnel packet:
+ *     ETH : src-mac, dst-mac, ethertype
+ *     VLAN: tag1, tag2
+ *     IPv4: src-ip, dst-ip, tos, proto
+ *     IPv6: src-ip(last 32 bit addr), dst-ip(last 32 bit addr), proto
+ *     UDP : src-port, dst-port
+ *     TCP : src-port, dst-port
+ *     SCTP: src-port, dst-port, tag
+ *   case: tunnel packet:
+ *     OUTER-ETH: ethertype
+ *     OUTER-L3 : proto
+ *     OUTER-L4 : src-port, dst-port
+ *     TUNNEL   : vni, flow-id(only valid when NVGRE)
+ *     INNER-ETH/VLAN/IPv4/IPv6/UDP/TCP/SCTP: same as non-tunnel packet
+ * The supported ACTION:
+ *    QUEUE
+ *    DROP
+ *    COUNT
+ *    MARK: the id range [0, 4094]
+ *    FLAG
+ *    RSS: only valid if firmware support FD_QUEUE_REGION.
  */
 static int
 hns3_parse_fdir_filter(struct rte_eth_dev *dev,
@@ -1120,11 +1107,6 @@ hns3_parse_fdir_filter(struct rte_eth_dev *dev,
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 					  "Fdir not supported in VF");
-
-	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_PERFECT)
-		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
-					  "fdir_conf.mode isn't perfect");
 
 	step_mngr.items = first_items;
 	step_mngr.count = ARRAY_SIZE(first_items);
@@ -1198,6 +1180,7 @@ static bool
 hns3_action_rss_same(const struct rte_flow_action_rss *comp,
 		     const struct rte_flow_action_rss *with)
 {
+	bool rss_key_is_same;
 	bool func_is_same;
 
 	/*
@@ -1211,13 +1194,19 @@ hns3_action_rss_same(const struct rte_flow_action_rss *comp,
 	if (comp->func == RTE_ETH_HASH_FUNCTION_MAX)
 		func_is_same = false;
 	else
-		func_is_same = (with->func ? (comp->func == with->func) : true);
+		func_is_same = (with->func != RTE_ETH_HASH_FUNCTION_DEFAULT) ?
+				(comp->func == with->func) : true;
 
-	return (func_is_same &&
+	if (with->key_len == 0 || with->key == NULL)
+		rss_key_is_same = 1;
+	else
+		rss_key_is_same = comp->key_len == with->key_len &&
+		!memcmp(comp->key, with->key, with->key_len);
+
+	return (func_is_same && rss_key_is_same &&
 		comp->types == (with->types & HNS3_ETH_RSS_SUPPORT) &&
-		comp->level == with->level && comp->key_len == with->key_len &&
+		comp->level == with->level &&
 		comp->queue_num == with->queue_num &&
-		!memcmp(comp->key, with->key, with->key_len) &&
 		!memcmp(comp->queue, with->queue,
 			sizeof(*with->queue) * with->queue_num));
 }
@@ -1363,7 +1352,7 @@ hns3_parse_rss_algorithm(struct hns3_hw *hw, enum rte_eth_hash_function *func,
 		*hash_algo = HNS3_RSS_HASH_ALGO_SIMPLE;
 		break;
 	default:
-		hns3_err(hw, "Invalid RSS algorithm configuration(%u)",
+		hns3_err(hw, "Invalid RSS algorithm configuration(%d)",
 			 algo_func);
 		return -EINVAL;
 	}
@@ -1750,17 +1739,18 @@ hns3_flow_create(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 
 		flow->counter_id = fdir_rule.act_cnt.id;
 	}
+
+	fdir_rule_ptr = rte_zmalloc("hns3 fdir rule",
+				    sizeof(struct hns3_fdir_rule_ele),
+				    0);
+	if (fdir_rule_ptr == NULL) {
+		hns3_err(hw, "failed to allocate fdir_rule memory.");
+		ret = -ENOMEM;
+		goto err_fdir;
+	}
+
 	ret = hns3_fdir_filter_program(hns, &fdir_rule, false);
 	if (!ret) {
-		fdir_rule_ptr = rte_zmalloc("hns3 fdir rule",
-					    sizeof(struct hns3_fdir_rule_ele),
-					    0);
-		if (fdir_rule_ptr == NULL) {
-			hns3_err(hw, "Failed to allocate fdir_rule memory");
-			ret = -ENOMEM;
-			goto err_fdir;
-		}
-
 		memcpy(&fdir_rule_ptr->fdir_conf, &fdir_rule,
 			sizeof(struct hns3_fdir_rule));
 		TAILQ_INSERT_TAIL(&process_list->fdir_list,
@@ -1771,10 +1761,10 @@ hns3_flow_create(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		return flow;
 	}
 
+	rte_free(fdir_rule_ptr);
 err_fdir:
 	if (fdir_rule.flags & HNS3_RULE_FLAG_COUNTER)
 		hns3_counter_release(dev, fdir_rule.act_cnt.id);
-
 err:
 	rte_flow_error_set(error, -ret, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 			   "Failed to create flow");

@@ -1005,10 +1005,10 @@ rte_telemetry_init(void)
 	}
 	TAILQ_INIT(&static_telemetry->client_list_head);
 
+	static_telemetry->thread_status = 1;
 	ret = rte_ctrl_thread_create(&static_telemetry->thread_id,
 		telemetry_ctrl_thread, &attr, rte_telemetry_run_thread_func,
 		(void *)static_telemetry);
-	static_telemetry->thread_status = 1;
 
 	if (ret < 0) {
 		ret = rte_telemetry_cleanup();

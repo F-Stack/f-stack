@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #include <errno.h>
@@ -118,6 +118,7 @@ hns3_get_regs_length(struct hns3_hw *hw, uint32_t *length)
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	uint32_t cmdq_lines, common_lines, ring_lines, tqp_intr_lines;
 	uint32_t regs_num_32_bit, regs_num_64_bit;
+	uint32_t dfx_reg_lines;
 	uint32_t len;
 	int ret;
 
@@ -131,7 +132,7 @@ hns3_get_regs_length(struct hns3_hw *hw, uint32_t *length)
 	tqp_intr_lines = sizeof(tqp_intr_reg_addrs) / REG_LEN_PER_LINE + 1;
 
 	len = (cmdq_lines + common_lines + ring_lines * hw->tqps_num +
-	      tqp_intr_lines * hw->num_msi) * REG_LEN_PER_LINE;
+	      tqp_intr_lines * hw->num_msi) * REG_NUM_PER_LINE;
 
 	if (!hns->is_vf) {
 		ret = hns3_get_regs_num(hw, &regs_num_32_bit, &regs_num_64_bit);
@@ -140,8 +141,11 @@ hns3_get_regs_length(struct hns3_hw *hw, uint32_t *length)
 				 ret);
 			return -ENOTSUP;
 		}
-		len += regs_num_32_bit * sizeof(uint32_t) +
-		       regs_num_64_bit * sizeof(uint64_t);
+		dfx_reg_lines = regs_num_32_bit * sizeof(uint32_t) /
+					REG_LEN_PER_LINE + 1;
+		dfx_reg_lines += regs_num_64_bit * sizeof(uint64_t) /
+					REG_LEN_PER_LINE + 1;
+		len += dfx_reg_lines * REG_NUM_PER_LINE;
 	}
 
 	*length = len;
@@ -262,63 +266,68 @@ hns3_get_64_bit_regs(struct hns3_hw *hw, uint32_t regs_num, void *data)
 	return 0;
 }
 
-static void
+static int
+hns3_insert_reg_separator(int reg_num, uint32_t *data)
+{
+	int separator_num;
+	int i;
+
+	separator_num = MAX_SEPARATE_NUM - reg_num % REG_NUM_PER_LINE;
+	for (i = 0; i < separator_num; i++)
+		*data++ = SEPARATOR_VALUE;
+	return separator_num;
+}
+
+static int
 hns3_direct_access_regs(struct hns3_hw *hw, uint32_t *data)
 {
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+	uint32_t *origin_data_ptr = data;
 	uint32_t reg_offset;
-	int separator_num;
-	int reg_um;
+	int reg_num;
 	int i, j;
 
 	/* fetching per-PF registers values from PF PCIe register space */
-	reg_um = sizeof(cmdq_reg_addrs) / sizeof(uint32_t);
-	separator_num = MAX_SEPARATE_NUM - reg_um % REG_NUM_PER_LINE;
-	for (i = 0; i < reg_um; i++)
+	reg_num = sizeof(cmdq_reg_addrs) / sizeof(uint32_t);
+	for (i = 0; i < reg_num; i++)
 		*data++ = hns3_read_dev(hw, cmdq_reg_addrs[i]);
-	for (i = 0; i < separator_num; i++)
-		*data++ = SEPARATOR_VALUE;
+	data += hns3_insert_reg_separator(reg_num, data);
 
 	if (hns->is_vf)
-		reg_um = sizeof(common_vf_reg_addrs) / sizeof(uint32_t);
+		reg_num = sizeof(common_vf_reg_addrs) / sizeof(uint32_t);
 	else
-		reg_um = sizeof(common_reg_addrs) / sizeof(uint32_t);
-	separator_num = MAX_SEPARATE_NUM - reg_um % REG_NUM_PER_LINE;
-	for (i = 0; i < reg_um; i++)
+		reg_num = sizeof(common_reg_addrs) / sizeof(uint32_t);
+	for (i = 0; i < reg_num; i++)
 		if (hns->is_vf)
 			*data++ = hns3_read_dev(hw, common_vf_reg_addrs[i]);
 		else
 			*data++ = hns3_read_dev(hw, common_reg_addrs[i]);
-	for (i = 0; i < separator_num; i++)
-		*data++ = SEPARATOR_VALUE;
+	data += hns3_insert_reg_separator(reg_num, data);
 
-	reg_um = sizeof(ring_reg_addrs) / sizeof(uint32_t);
-	separator_num = MAX_SEPARATE_NUM - reg_um % REG_NUM_PER_LINE;
+	reg_num = sizeof(ring_reg_addrs) / sizeof(uint32_t);
 	for (j = 0; j < hw->tqps_num; j++) {
 		reg_offset = HNS3_TQP_REG_OFFSET + HNS3_TQP_REG_SIZE * j;
-		for (i = 0; i < reg_um; i++)
+		for (i = 0; i < reg_num; i++)
 			*data++ = hns3_read_dev(hw,
 						ring_reg_addrs[i] + reg_offset);
-		for (i = 0; i < separator_num; i++)
-			*data++ = SEPARATOR_VALUE;
+		data += hns3_insert_reg_separator(reg_num, data);
 	}
 
-	reg_um = sizeof(tqp_intr_reg_addrs) / sizeof(uint32_t);
-	separator_num = MAX_SEPARATE_NUM - reg_um % REG_NUM_PER_LINE;
-	for (j = 0; j < hw->num_msi; j++) {
+	reg_num = sizeof(tqp_intr_reg_addrs) / sizeof(uint32_t);
+	for (j = 0; j < hw->intr_tqps_num; j++) {
 		reg_offset = HNS3_TQP_INTR_REG_SIZE * j;
-		for (i = 0; i < reg_um; i++)
-			*data++ = hns3_read_dev(hw,
-						tqp_intr_reg_addrs[i] +
+		for (i = 0; i < reg_num; i++)
+			*data++ = hns3_read_dev(hw, tqp_intr_reg_addrs[i] +
 						reg_offset);
-		for (i = 0; i < separator_num; i++)
-			*data++ = SEPARATOR_VALUE;
+		data += hns3_insert_reg_separator(reg_num, data);
 	}
+	return data - origin_data_ptr;
 }
 
 int
 hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs)
 {
+#define HNS3_64_BIT_REG_SIZE (sizeof(uint64_t) / sizeof(uint32_t))
 	struct hns3_adapter *hns = eth_dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 	uint32_t regs_num_32_bit;
@@ -326,11 +335,6 @@ hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs)
 	uint32_t length;
 	uint32_t *data;
 	int ret;
-
-	if (regs == NULL) {
-		hns3_err(hw, "the input parameter regs is NULL!");
-		return -EINVAL;
-	}
 
 	ret = hns3_get_regs_length(hw, &length);
 	if (ret)
@@ -347,8 +351,10 @@ hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs)
 	if (regs->length && regs->length != length)
 		return -ENOTSUP;
 
+	regs->version = hw->fw_version;
+
 	/* fetching per-PF registers values from PF PCIe register space */
-	hns3_direct_access_regs(hw, data);
+	data += hns3_direct_access_regs(hw, data);
 
 	if (hns->is_vf)
 		return 0;
@@ -365,11 +371,16 @@ hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs)
 		hns3_err(hw, "Get 32 bit register failed, ret = %d", ret);
 		return ret;
 	}
-
 	data += regs_num_32_bit;
-	ret = hns3_get_64_bit_regs(hw, regs_num_64_bit, data);
-	if (ret)
-		hns3_err(hw, "Get 64 bit register failed, ret = %d", ret);
+	data += hns3_insert_reg_separator(regs_num_32_bit, data);
 
+	ret = hns3_get_64_bit_regs(hw, regs_num_64_bit, data);
+	if (ret) {
+		hns3_err(hw, "Get 64 bit register failed, ret = %d", ret);
+		return ret;
+	}
+	data += regs_num_64_bit * HNS3_64_BIT_REG_SIZE;
+	data += hns3_insert_reg_separator(regs_num_64_bit *
+					  HNS3_64_BIT_REG_SIZE, data);
 	return ret;
 }

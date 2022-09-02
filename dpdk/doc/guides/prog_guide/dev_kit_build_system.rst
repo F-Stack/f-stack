@@ -9,7 +9,7 @@ Development Kit Build System
 The DPDK requires a build system for compilation activities and so on.
 This section describes the constraints and the mechanisms used in the DPDK framework.
 
-There are two use-cases for the framework:
+There are two use cases for the framework:
 
 *   Compilation of the DPDK libraries and sample applications;
     the framework generates specific binary libraries,

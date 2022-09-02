@@ -18,7 +18,7 @@ BIOS setting on Intel Skylake
 -----------------------------
 
 Intel Non-transparent Bridge needs special BIOS setting. Since the PMD only
-supports Intel Skylake platform, introduce BIOS setting here. The referencce
+supports Intel Skylake platform, introduce BIOS setting here. The reference
 is https://www.intel.com/content/dam/support/us/en/documents/server-products/Intel_Xeon_Processor_Scalable_Family_BIOS_User_Guide.pdf
 
 - Set the needed PCIe port as NTB to NTB mode on both hosts.

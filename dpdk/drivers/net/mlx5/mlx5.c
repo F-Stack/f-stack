@@ -470,6 +470,40 @@ mlx5_restore_doorbell_mapping_env(int value)
 		setenv(MLX5_SHUT_UP_BF, value ? "1" : "0", 1);
 }
 
+static int
+mlx5_os_dev_shared_handler_install_lsc(struct mlx5_ibv_shared *sh)
+{
+	int nlsk_fd, flags, ret;
+
+	nlsk_fd = mlx5_nl_init(NETLINK_ROUTE, RTMGRP_LINK);
+	if (nlsk_fd < 0) {
+		DRV_LOG(ERR, "Failed to create a socket for Netlink events: %s",
+			rte_strerror(rte_errno));
+		return -1;
+	}
+	flags = fcntl(nlsk_fd, F_GETFL);
+	ret = fcntl(nlsk_fd, F_SETFL, flags | O_NONBLOCK);
+	if (ret != 0) {
+		DRV_LOG(ERR, "Failed to make Netlink event socket non-blocking: %s",
+			strerror(errno));
+		rte_errno = errno;
+		goto error;
+	}
+	sh->intr_handle_nl.type = RTE_INTR_HANDLE_EXT;
+	sh->intr_handle_nl.fd = nlsk_fd;
+	if (rte_intr_callback_register(&sh->intr_handle_nl,
+				       mlx5_dev_interrupt_handler_nl,
+				       sh) != 0) {
+		DRV_LOG(ERR, "Failed to register Netlink events interrupt");
+		sh->intr_handle_nl.fd = -1;
+		goto error;
+	}
+	return 0;
+error:
+	close(nlsk_fd);
+	return -1;
+}
+
 /**
  * Install shared asynchronous device events handler.
  * This function is implemented to support event sharing
@@ -498,6 +532,11 @@ mlx5_dev_shared_handler_install(struct mlx5_ibv_shared *sh)
 			DRV_LOG(INFO, "Fail to install the shared interrupt.");
 			sh->intr_handle.fd = -1;
 		}
+	}
+	sh->intr_handle_nl.fd = -1;
+	if (mlx5_os_dev_shared_handler_install_lsc(sh) < 0) {
+		DRV_LOG(INFO, "Fail to install the shared Netlink event handler.");
+		sh->intr_handle_nl.fd = -1;
 	}
 	if (sh->devx) {
 #ifdef HAVE_IBV_DEVX_ASYNC
@@ -651,6 +690,7 @@ mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn,
 	for (i = 0; i < sh->max_port; i++) {
 		sh->port[i].ih_port_id = RTE_MAX_ETHPORTS;
 		sh->port[i].devx_ih_port_id = RTE_MAX_ETHPORTS;
+		sh->port[i].nl_ih_port_id = RTE_MAX_ETHPORTS;
 	}
 	sh->pd = mlx5_glue->alloc_pd(sh->ctx);
 	if (sh->pd == NULL) {
@@ -849,6 +889,7 @@ mlx5_free_table_hash_list(struct mlx5_priv *priv)
 		rte_free(tbl_data);
 	}
 	mlx5_hlist_destroy(sh->flow_tbls, NULL, NULL);
+	sh->flow_tbls = NULL;
 }
 
 /**
@@ -998,7 +1039,17 @@ mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 			goto error;
 		}
 		sh->fdb_domain = domain;
-		sh->esw_drop_action = mlx5_glue->dr_create_flow_action_drop();
+	}
+	/*
+	 * The drop action is just some dummy placeholder in rdma-core. It
+	 * does not belong to domains and has no any attributes, and, can be
+	 * shared by the entire device.
+	 */
+	sh->dr_drop_action = mlx5_glue->dr_create_flow_action_drop();
+	if (!sh->dr_drop_action) {
+		DRV_LOG(ERR, "FDB mlx5dv_dr_create_flow_action_drop");
+		err = errno;
+		goto error;
 	}
 #endif
 	sh->pop_vlan_action = mlx5_glue->dr_create_flow_action_pop_vlan();
@@ -1018,9 +1069,9 @@ error:
 		mlx5_glue->dr_destroy_domain(sh->fdb_domain);
 		sh->fdb_domain = NULL;
 	}
-	if (sh->esw_drop_action) {
-		mlx5_glue->destroy_flow_action(sh->esw_drop_action);
-		sh->esw_drop_action = NULL;
+	if (sh->dr_drop_action) {
+		mlx5_glue->destroy_flow_action(sh->dr_drop_action);
+		sh->dr_drop_action = NULL;
 	}
 	if (sh->pop_vlan_action) {
 		mlx5_glue->destroy_flow_action(sh->pop_vlan_action);
@@ -1063,9 +1114,9 @@ mlx5_free_shared_dr(struct mlx5_priv *priv)
 		mlx5_glue->dr_destroy_domain(sh->fdb_domain);
 		sh->fdb_domain = NULL;
 	}
-	if (sh->esw_drop_action) {
-		mlx5_glue->destroy_flow_action(sh->esw_drop_action);
-		sh->esw_drop_action = NULL;
+	if (sh->dr_drop_action) {
+		mlx5_glue->destroy_flow_action(sh->dr_drop_action);
+		sh->dr_drop_action = NULL;
 	}
 #endif
 	if (sh->pop_vlan_action) {
@@ -1245,19 +1296,20 @@ mlx5_proc_priv_init(struct rte_eth_dev *dev)
 	struct mlx5_proc_priv *ppriv;
 	size_t ppriv_size;
 
+	mlx5_proc_priv_uninit(dev);
 	/*
 	 * UAR register table follows the process private structure. BlueFlame
 	 * registers for Tx queues are stored in the table.
 	 */
 	ppriv_size =
 		sizeof(struct mlx5_proc_priv) + priv->txqs_n * sizeof(void *);
-	ppriv = rte_malloc_socket("mlx5_proc_priv", ppriv_size,
+	ppriv = rte_zmalloc_socket("mlx5_proc_priv", ppriv_size,
 				  RTE_CACHE_LINE_SIZE, dev->device->numa_node);
 	if (!ppriv) {
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
-	ppriv->uar_table_sz = ppriv_size;
+	ppriv->uar_table_sz = priv->txqs_n;
 	dev->process_private = ppriv;
 	return 0;
 }
@@ -1268,7 +1320,7 @@ mlx5_proc_priv_init(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+void
 mlx5_proc_priv_uninit(struct rte_eth_dev *dev)
 {
 	if (!dev->process_private)
@@ -1322,6 +1374,11 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 			mlx5_rxq_release(dev, i);
 		priv->rxqs_n = 0;
 		priv->rxqs = NULL;
+	}
+	if (priv->representor) {
+		/* Each representor has a dedicated interrupts handler */
+		rte_free(dev->intr_handle);
+		dev->intr_handle = NULL;
 	}
 	if (priv->txqs != NULL) {
 		/* XXX race condition if mlx5_tx_burst() is still running. */
@@ -1568,9 +1625,9 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 	} else if (strcmp(MLX5_RX_MPRQ_EN, key) == 0) {
 		config->mprq.enabled = !!tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_LOG_STRIDE_NUM, key) == 0) {
-		config->mprq.stride_num_n = tmp;
+		config->mprq.log_stride_num = tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_LOG_STRIDE_SIZE, key) == 0) {
-		config->mprq.stride_size_n = tmp;
+		config->mprq.log_stride_size = tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_MAX_MEMCPY_LEN, key) == 0) {
 		config->mprq.max_memcpy_len = tmp;
 	} else if (strcmp(MLX5_RXQS_MIN_MPRQ, key) == 0) {
@@ -2118,6 +2175,33 @@ mlx5_dev_check_sibling_config(struct mlx5_priv *priv,
 	}
 	return 0;
 }
+
+/**
+ * DR flow drop action support detect.
+ *
+ * @param dev
+ *   Pointer to rte_eth_dev structure.
+ *
+ */
+static void
+mlx5_flow_drop_action_config(struct rte_eth_dev *dev __rte_unused)
+{
+#ifdef HAVE_MLX5DV_DR
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (!priv->config.dv_flow_en || !priv->sh->dr_drop_action)
+		return;
+	/**
+	 * DR supports drop action placeholder when it is supported;
+	 * otherwise, use the queue drop action.
+	 */
+	if (mlx5_flow_discover_dr_action_support(dev))
+		priv->root_verbs_drop_action = 1;
+	else
+		priv->root_verbs_drop_action = 0;
+#endif
+}
+
 /**
  * Spawn an Ethernet device from Verbs information.
  *
@@ -2155,18 +2239,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	unsigned int mpls_en = 0;
 	unsigned int swp = 0;
 	unsigned int mprq = 0;
-	unsigned int mprq_min_stride_size_n = 0;
-	unsigned int mprq_max_stride_size_n = 0;
-	unsigned int mprq_min_stride_num_n = 0;
-	unsigned int mprq_max_stride_num_n = 0;
 	struct rte_ether_addr mac;
 	char name[RTE_ETH_NAME_MAX_LEN];
 	int own_domain_id = 0;
 	uint16_t port_id;
 	unsigned int i;
-#ifdef HAVE_MLX5DV_DR_DEVX_PORT
-	struct mlx5dv_devx_port devx_port = { .comp_mask = 0 };
-#endif
+	struct mlx5_port_info vport_info = { .query_flags = 0 };
 
 	/* Determine if this port representor is supposed to be spawned. */
 	if (switch_info->representor && dpdk_dev->devargs) {
@@ -2313,13 +2391,13 @@ err_secondary:
 			mprq_caps.supported_qpts);
 		DRV_LOG(DEBUG, "device supports Multi-Packet RQ");
 		mprq = 1;
-		mprq_min_stride_size_n =
+		config.mprq.log_min_stride_size =
 			mprq_caps.min_single_stride_log_num_of_bytes;
-		mprq_max_stride_size_n =
+		config.mprq.log_max_stride_size =
 			mprq_caps.max_single_stride_log_num_of_bytes;
-		mprq_min_stride_num_n =
+		config.mprq.log_min_stride_num =
 			mprq_caps.min_single_wqe_log_num_of_strides;
-		mprq_max_stride_num_n =
+		config.mprq.log_max_stride_num =
 			mprq_caps.max_single_wqe_log_num_of_strides;
 	}
 #endif
@@ -2391,8 +2469,8 @@ err_secondary:
 	priv->pci_dev = spawn->pci_dev;
 	priv->mtu = RTE_ETHER_MTU;
 	/* Some internal functions rely on Netlink sockets, open them now. */
-	priv->nl_socket_rdma = mlx5_nl_init(NETLINK_RDMA);
-	priv->nl_socket_route =	mlx5_nl_init(NETLINK_ROUTE);
+	priv->nl_socket_rdma = mlx5_nl_init(NETLINK_RDMA, 0);
+	priv->nl_socket_route =	mlx5_nl_init(NETLINK_ROUTE, 0);
 	priv->nl_sn = 0;
 	priv->representor = !!switch_info->representor;
 	priv->master = !!switch_info->master;
@@ -2400,28 +2478,26 @@ err_secondary:
 	priv->vport_meta_tag = 0;
 	priv->vport_meta_mask = 0;
 	priv->pf_bond = spawn->pf_bond;
-#ifdef HAVE_MLX5DV_DR_DEVX_PORT
 	/*
-	 * The DevX port query API is implemented. E-Switch may use
-	 * either vport or reg_c[0] metadata register to match on
-	 * vport index. The engaged part of metadata register is
-	 * defined by mask.
+	 * If we have E-Switch we should determine the vport attributes.
+	 * E-Switch may use either source vport field or reg_c[0] metadata
+	 * register to match on vport index. The engaged part of metadata
+	 * register is defined by mask.
 	 */
 	if (switch_info->representor || switch_info->master) {
-		devx_port.comp_mask = MLX5DV_DEVX_PORT_VPORT |
-				      MLX5DV_DEVX_PORT_MATCH_REG_C_0;
-		err = mlx5_glue->devx_port_query(sh->ctx, spawn->ibv_port,
-						 &devx_port);
+		err = mlx5_glue->devx_port_query(sh->ctx,
+						 spawn->ibv_port,
+						 &vport_info);
 		if (err) {
 			DRV_LOG(WARNING,
 				"can't query devx port %d on device %s",
 				spawn->ibv_port, spawn->ibv_dev->name);
-			devx_port.comp_mask = 0;
+			vport_info.query_flags = 0;
 		}
 	}
-	if (devx_port.comp_mask & MLX5DV_DEVX_PORT_MATCH_REG_C_0) {
-		priv->vport_meta_tag = devx_port.reg_c_0.value;
-		priv->vport_meta_mask = devx_port.reg_c_0.mask;
+	if (vport_info.query_flags & MLX5_PORT_QUERY_REG_C0) {
+		priv->vport_meta_tag = vport_info.vport_meta_tag;
+		priv->vport_meta_mask = vport_info.vport_meta_mask;
 		if (!priv->vport_meta_mask) {
 			DRV_LOG(ERR, "vport zero mask for port %d"
 				     " on bonding device %s",
@@ -2437,34 +2513,31 @@ err_secondary:
 			goto error;
 		}
 	}
-	if (devx_port.comp_mask & MLX5DV_DEVX_PORT_VPORT) {
-		priv->vport_id = devx_port.vport_num;
-	} else if (spawn->pf_bond >= 0) {
+	if (vport_info.query_flags & MLX5_PORT_QUERY_VPORT) {
+		priv->vport_id = vport_info.vport_id;
+	} else if (spawn->pf_bond >= 0 &&
+			(switch_info->representor || switch_info->master)) {
 		DRV_LOG(ERR, "can't deduce vport index for port %d"
 			     " on bonding device %s",
 			     spawn->ibv_port, spawn->ibv_dev->name);
 		err = ENOTSUP;
 		goto error;
 	} else {
-		/* Suppose vport index in compatible way. */
+		/*
+		 * Suppose vport index in compatible way. Kernel/rdma_core
+		 * support single E-Switch per PF configurations only and
+		 * vport_id field contains the vport index for associated VF,
+		 * which is deduced from representor port name.
+		 * For example, let's have the IB device port 10, it has
+		 * attached network device eth0, which has port name attribute
+		 * pf0vf2, we can deduce the VF number as 2, and set vport index
+		 * as 3 (2+1). This assigning schema should be changed if the
+		 * multiple E-Switch instances per PF configurations or/and PCI
+		 * subfunctions are added.
+		 */
 		priv->vport_id = switch_info->representor ?
 				 switch_info->port_name + 1 : -1;
 	}
-#else
-	/*
-	 * Kernel/rdma_core support single E-Switch per PF configurations
-	 * only and vport_id field contains the vport index for
-	 * associated VF, which is deduced from representor port name.
-	 * For example, let's have the IB device port 10, it has
-	 * attached network device eth0, which has port name attribute
-	 * pf0vf2, we can deduce the VF number as 2, and set vport index
-	 * as 3 (2+1). This assigning schema should be changed if the
-	 * multiple E-Switch instances per PF configurations or/and PCI
-	 * subfunctions are added.
-	 */
-	priv->vport_id = switch_info->representor ?
-			 switch_info->port_name + 1 : -1;
-#endif
 	/* representor_id field keeps the unmodified VF index. */
 	priv->representor_id = switch_info->representor ?
 			       switch_info->port_name : -1;
@@ -2571,6 +2644,8 @@ err_secondary:
 	} else if (config.cqe_pad) {
 		DRV_LOG(INFO, "Rx CQE padding is enabled");
 	}
+	config.mprq.log_min_stride_wqe_size = MLX5_MPRQ_LOG_MIN_STRIDE_WQE_SIZE;
+	config.mprq.log_stride_num = MLX5_MPRQ_DEFAULT_LOG_STRIDE_NUM;
 	if (config.devx) {
 		priv->counter_fallback = 0;
 		err = mlx5_devx_cmd_query_hca_attr(sh->ctx, &config.hca_attr);
@@ -2578,6 +2653,8 @@ err_secondary:
 			err = -err;
 			goto error;
 		}
+		config.mprq.log_min_stride_wqe_size =
+				config.hca_attr.log_min_stride_wqe_sz;
 		if (!config.hca_attr.flow_counters_dump)
 			priv->counter_fallback = 1;
 #ifndef HAVE_IBV_DEVX_ASYNC
@@ -2628,36 +2705,7 @@ err_secondary:
 		}
 #endif
 	}
-	if (config.mprq.enabled && mprq) {
-		if (config.mprq.stride_num_n &&
-		    (config.mprq.stride_num_n > mprq_max_stride_num_n ||
-		     config.mprq.stride_num_n < mprq_min_stride_num_n)) {
-			config.mprq.stride_num_n =
-				RTE_MIN(RTE_MAX(MLX5_MPRQ_STRIDE_NUM_N,
-						mprq_min_stride_num_n),
-					mprq_max_stride_num_n);
-			DRV_LOG(WARNING,
-				"the number of strides"
-				" for Multi-Packet RQ is out of range,"
-				" setting default value (%u)",
-				1 << config.mprq.stride_num_n);
-		}
-		if (config.mprq.stride_size_n &&
-		    (config.mprq.stride_size_n > mprq_max_stride_size_n ||
-		     config.mprq.stride_size_n < mprq_min_stride_size_n)) {
-			config.mprq.stride_size_n =
-				RTE_MIN(RTE_MAX(MLX5_MPRQ_STRIDE_SIZE_N,
-						mprq_min_stride_size_n),
-					mprq_max_stride_size_n);
-			DRV_LOG(WARNING,
-				"the size of a stride"
-				" for Multi-Packet RQ is out of range,"
-				" setting default value (%u)",
-				1 << config.mprq.stride_size_n);
-		}
-		config.mprq.min_stride_size_n = mprq_min_stride_size_n;
-		config.mprq.max_stride_size_n = mprq_max_stride_size_n;
-	} else if (config.mprq.enabled && !mprq) {
+	if (config.mprq.enabled && !mprq) {
 		DRV_LOG(WARNING, "Multi-Packet RQ isn't supported");
 		config.mprq.enabled = 0;
 	}
@@ -2745,13 +2793,12 @@ err_secondary:
 	/* Bring Ethernet device up. */
 	DRV_LOG(DEBUG, "port %u forcing Ethernet interface up",
 		eth_dev->data->port_id);
-	mlx5_set_link_up(eth_dev);
-	/*
-	 * Even though the interrupt handler is not installed yet,
-	 * interrupts will still trigger on the async_fd from
-	 * Verbs context returned by ibv_open_device().
-	 */
+	/* Read link status in case it is up and there will be no event. */
 	mlx5_link_update(eth_dev, 0);
+	/* Watch LSC interrupts between port probe and port start. */
+	priv->sh->port[priv->ibv_port - 1].nl_ih_port_id =
+							eth_dev->data->port_id;
+	mlx5_set_link_up(eth_dev);
 #ifdef HAVE_MLX5DV_DR_ESWITCH
 	if (!(config.hca_attr.eswitch_manager && config.dv_flow_en &&
 	      (switch_info->representor || switch_info->master)))
@@ -2832,6 +2879,7 @@ err_secondary:
 			goto error;
 		}
 	}
+	mlx5_flow_drop_action_config(eth_dev);
 	return eth_dev;
 error:
 	if (priv) {
@@ -3067,8 +3115,8 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	 * matching ones, gathering into the list.
 	 */
 	struct ibv_device *ibv_match[ret + 1];
-	int nl_route = mlx5_nl_init(NETLINK_ROUTE);
-	int nl_rdma = mlx5_nl_init(NETLINK_RDMA);
+	int nl_route = mlx5_nl_init(NETLINK_ROUTE, 0);
+	int nl_rdma = mlx5_nl_init(NETLINK_RDMA, 0);
 	unsigned int i;
 
 	while (ret-- > 0) {
@@ -3142,19 +3190,6 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 			goto exit;
 		}
 	}
-#ifndef HAVE_MLX5DV_DR_DEVX_PORT
-	if (bd >= 0) {
-		/*
-		 * This may happen if there is VF LAG kernel support and
-		 * application is compiled with older rdma_core library.
-		 */
-		DRV_LOG(ERR,
-			"No kernel/verbs support for VF LAG bonding found.");
-		rte_errno = ENOTSUP;
-		ret = -rte_errno;
-		goto exit;
-	}
-#endif
 	/*
 	 * Now we can determine the maximal
 	 * amount of devices to be spawned.
@@ -3218,6 +3253,15 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 			if (!ret && bd >= 0) {
 				switch (list[ns].info.name_type) {
 				case MLX5_PHYS_PORT_NAME_TYPE_UPLINK:
+					if (np == 1) {
+						/*
+						 * Force standalone bonding
+						 * device for ROCE LAG
+						 * confgiurations.
+						 */
+						list[ns].info.master = 0;
+						list[ns].info.representor = 0;
+					}
 					if (list[ns].info.port_name == bd)
 						ns++;
 					break;
@@ -3352,6 +3396,18 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 			ret = -rte_errno;
 			goto exit;
 		}
+		/*
+		 * New kernels may add the switch_id attribute for the case
+		 * there is no E-Switch and we wrongly recognized the
+		 * only device as master. Override this if there is the
+		 * single device with single port and new device name
+		 * format present.
+		 */
+		if (nd == 1 &&
+		    list[0].info.name_type == MLX5_PHYS_PORT_NAME_TYPE_UPLINK) {
+			list[0].info.master = 0;
+			list[0].info.representor = 0;
+		}
 	}
 	assert(ns);
 	/*
@@ -3373,8 +3429,8 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		.mr_ext_memseg_en = 1,
 		.mprq = {
 			.enabled = 0, /* Disabled by default. */
-			.stride_num_n = 0,
-			.stride_size_n = 0,
+			.log_stride_num = 0,
+			.log_stride_size = 0,
 			.max_memcpy_len = MLX5_MPRQ_MEMCPY_DEFAULT_LEN,
 			.min_rxqs_num = MLX5_MPRQ_MIN_RXQS,
 		},
@@ -3409,6 +3465,31 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		}
 		restore = list[i].eth_dev->data->dev_flags;
 		rte_eth_copy_pci_info(list[i].eth_dev, pci_dev);
+		/**
+		 * Each representor has a dedicated interrupts vector.
+		 * rte_eth_copy_pci_info() assigns PF interrupts handle to
+		 * representor eth_dev object because representor and PF
+		 * share the same PCI address.
+		 * Override representor device with a dedicated
+		 * interrupts handle here.
+		 * Representor interrupts handle is released in
+		 * mlx5_dev_stop().
+		 */
+		if (list[i].info.representor) {
+			struct rte_intr_handle *intr_handle;
+			intr_handle = rte_zmalloc("representor interrupts",
+						  sizeof(*intr_handle), 0);
+			if (!intr_handle) {
+				DRV_LOG(ERR,
+					"port %u failed to allocate memory for interrupt handler "
+					"Rx interrupts will not be supported",
+					i);
+				rte_errno = ENOMEM;
+				ret = -rte_errno;
+				goto exit;
+			}
+			list[i].eth_dev->intr_handle = intr_handle;
+		}
 		/* Restore non-PCI flags cleared by the above call. */
 		list[i].eth_dev->data->dev_flags |= restore;
 		rte_eth_dev_probing_finish(list[i].eth_dev);

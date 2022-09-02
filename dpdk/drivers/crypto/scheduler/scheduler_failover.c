@@ -156,6 +156,9 @@ scheduler_start(struct rte_cryptodev *dev)
 			((struct scheduler_qp_ctx *)
 				dev->data->queue_pairs[i])->private_qp_ctx;
 
+		sched_ctx->slaves[PRIMARY_SLAVE_IDX].qp_id = i;
+		sched_ctx->slaves[SECONDARY_SLAVE_IDX].qp_id = i;
+
 		rte_memcpy(&qp_ctx->primary_slave,
 				&sched_ctx->slaves[PRIMARY_SLAVE_IDX],
 				sizeof(struct scheduler_slave));

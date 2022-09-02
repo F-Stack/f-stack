@@ -82,3 +82,9 @@ rte_eal_init(int argc __rte_unused, char **argv __rte_unused)
 	rte_eal_mp_wait_lcore();
 	return 0;
 }
+
+int
+rte_eal_cleanup(void)
+{
+	return 0;
+}

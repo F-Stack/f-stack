@@ -18,6 +18,10 @@ sources = files(
 deps += ['hash']
 includes += include_directories('base')
 
+if (toolchain == 'gcc' and cc.version().version_compare('>=11.0.0'))
+	cflags += '-Wno-array-bounds'
+endif
+
 if arch_subdir == 'x86'
 	sources += files('ice_rxtx_vec_sse.c')
 

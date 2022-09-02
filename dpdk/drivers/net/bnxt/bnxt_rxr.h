@@ -147,6 +147,10 @@ static inline uint16_t bnxt_tpa_start_agg_id(struct bnxt *bp,
 #define RX_CMP_L4_CS_UNKNOWN(rxcmp1)					\
 	    !((rxcmp1)->flags2 & RX_CMP_L4_CS_BITS)
 
+#define BNXT_RX_L2_AGG_BUFS(cmp) \
+	(((cmp)->agg_bufs_v1 & RX_PKT_CMPL_AGG_BUFS_MASK) >> \
+		RX_PKT_CMPL_AGG_BUFS_SFT)
+
 #define RX_CMP_T_L4_CS_BITS	\
 	rte_cpu_to_le_32(RX_PKT_CMPL_FLAGS2_T_L4_CS_CALC)
 
@@ -164,8 +168,6 @@ static inline uint16_t bnxt_tpa_start_agg_id(struct bnxt *bp,
 #define RX_CMP_L4_INNER_CS_ERR2(rxcmp1)	\
 	 ((rxcmp1)->errors_v2 & \
 	  rte_cpu_to_le_32(RX_PKT_CMPL_ERRORS_L4_CS_ERROR))
-
-#define BNXT_RX_POST_THRESH	32
 
 enum pkt_hash_types {
 	PKT_HASH_TYPE_NONE,	/* Undefined type */
@@ -188,6 +190,7 @@ struct bnxt_sw_rx_bd {
 struct bnxt_rx_ring_info {
 	uint16_t		rx_prod;
 	uint16_t		ag_prod;
+	uint16_t                rx_next_cons;
 	struct bnxt_db_info     rx_db;
 	struct bnxt_db_info     ag_db;
 

@@ -5,6 +5,10 @@
 #ifndef _RTE_VDPA_H_
 #define _RTE_VDPA_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @file
  *
@@ -200,4 +204,9 @@ rte_vhost_host_notifier_ctrl(int vid, bool enable);
 __rte_experimental
 int
 rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* _RTE_VDPA_H_ */

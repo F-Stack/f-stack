@@ -481,7 +481,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	assert(rxq->decompressed == 0);
 	/*
 	 * A. load first Qword (8bytes) in one loop.
-	 * B. copy 4 mbuf pointers from elts ring to returing pkts.
+	 * B. copy 4 mbuf pointers from elts ring to returning pkts.
 	 * C. load remained CQE data and extract necessary fields.
 	 *    Final 16bytes cqes[] extracted from original 64bytes CQE has the
 	 *    following structure:
@@ -665,15 +665,16 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		if (rxq->dynf_meta) {
 			/* This code is subject for futher optimization. */
 			int32_t offs = rxq->flow_meta_offset;
+			uint32_t mask = rxq->flow_meta_port_mask;
 
 			*RTE_MBUF_DYNFIELD(pkts[pos], offs, uint32_t *) =
-				cq[pos].flow_table_metadata;
+				cq[pos].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos + 1], offs, uint32_t *) =
-				cq[pos + p1].flow_table_metadata;
+				cq[pos + p1].flow_table_metadata  & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos + 2], offs, uint32_t *) =
-				cq[pos + p2].flow_table_metadata;
+				cq[pos + p2].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos + 3], offs, uint32_t *) =
-				cq[pos + p3].flow_table_metadata;
+				cq[pos + p3].flow_table_metadata & mask;
 			if (*RTE_MBUF_DYNFIELD(pkts[pos], offs, uint32_t *))
 				pkts[pos]->ol_flags |= rxq->flow_meta_mask;
 			if (*RTE_MBUF_DYNFIELD(pkts[pos + 1], offs, uint32_t *))

@@ -142,9 +142,8 @@ struct ena_stats_dev {
 };
 
 struct ena_offloads {
-	bool tso4_supported;
-	bool tx_csum_supported;
-	bool rx_csum_supported;
+	uint32_t tx_offloads;
+	uint32_t rx_offloads;
 };
 
 /* board specific private data structure */
@@ -179,11 +178,6 @@ struct ena_adapter {
 
 	struct ena_driver_stats *drv_stats;
 	enum ena_adapter_state state;
-
-	uint64_t tx_supported_offloads;
-	uint64_t tx_selected_offloads;
-	uint64_t rx_supported_offloads;
-	uint64_t rx_selected_offloads;
 
 	bool link_status;
 

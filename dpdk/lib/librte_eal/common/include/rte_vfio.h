@@ -14,6 +14,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -149,14 +150,13 @@ int rte_vfio_enable(const char *modname);
 /**
  * Check whether a VFIO-related kmod is enabled.
  *
- * This function is only relevant to linux and will return
- * an error on BSD.
+ * This function is only relevant to Linux.
  *
  * @param modname
  *   kernel module name.
  *
  * @return
- *   !0 if true.
+ *   1 if true.
  *   0 otherwise.
  */
 int rte_vfio_is_enabled(const char *modname);
@@ -164,12 +164,12 @@ int rte_vfio_is_enabled(const char *modname);
 /**
  * Whether VFIO NOIOMMU mode is enabled.
  *
- * This function is only relevant to linux and will return
- * an error on BSD.
+ * This function is only relevant to Linux.
  *
  * @return
- *   !0 if true.
- *   0 otherwise.
+ *   1 if true.
+ *   0 if false.
+ *   <0 for errors.
  */
 int rte_vfio_noiommu_is_enabled(void);
 

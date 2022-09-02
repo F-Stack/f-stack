@@ -199,7 +199,7 @@ iavf_init_rss(struct iavf_adapter *adapter)
 	/* configure RSS key */
 	if (!rss_conf->rss_key) {
 		/* Calculate the default hash key */
-		for (i = 0; i <= vf->vf_res->rss_key_size; i++)
+		for (i = 0; i < vf->vf_res->rss_key_size; i++)
 			vf->rss_key[i] = (uint8_t)rte_rand();
 	} else
 		rte_memcpy(vf->rss_key, rss_conf->rss_key,
@@ -263,35 +263,36 @@ iavf_init_rxq(struct rte_eth_dev *dev, struct iavf_rx_queue *rxq)
 {
 	struct iavf_hw *hw = IAVF_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_eth_dev_data *dev_data = dev->data;
-	uint16_t buf_size, max_pkt_len, len;
+	uint16_t buf_size, max_pkt_len;
 
 	buf_size = rte_pktmbuf_data_room_size(rxq->mp) - RTE_PKTMBUF_HEADROOM;
 
 	/* Calculate the maximum packet length allowed */
-	len = rxq->rx_buf_len * IAVF_MAX_CHAINED_RX_BUFFERS;
-	max_pkt_len = RTE_MIN(len, dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	max_pkt_len = RTE_MIN((uint32_t)
+			rxq->rx_buf_len * IAVF_MAX_CHAINED_RX_BUFFERS,
+			dev->data->dev_conf.rxmode.max_rx_pkt_len);
 
 	/* Check if the jumbo frame and maximum packet length are set
 	 * correctly.
 	 */
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
-		if (max_pkt_len <= RTE_ETHER_MAX_LEN ||
+		if (max_pkt_len <= IAVF_ETH_MAX_LEN ||
 		    max_pkt_len > IAVF_FRAME_SIZE_MAX) {
 			PMD_DRV_LOG(ERR, "maximum packet length must be "
 				    "larger than %u and smaller than %u, "
 				    "as jumbo frame is enabled",
-				    (uint32_t)RTE_ETHER_MAX_LEN,
+				    (uint32_t)IAVF_ETH_MAX_LEN,
 				    (uint32_t)IAVF_FRAME_SIZE_MAX);
 			return -EINVAL;
 		}
 	} else {
 		if (max_pkt_len < RTE_ETHER_MIN_LEN ||
-		    max_pkt_len > RTE_ETHER_MAX_LEN) {
+		    max_pkt_len > IAVF_ETH_MAX_LEN) {
 			PMD_DRV_LOG(ERR, "maximum packet length must be "
 				    "larger than %u and smaller than %u, "
 				    "as jumbo frame is disabled",
 				    (uint32_t)RTE_ETHER_MIN_LEN,
-				    (uint32_t)RTE_ETHER_MAX_LEN);
+				    (uint32_t)IAVF_ETH_MAX_LEN);
 			return -EINVAL;
 		}
 	}
@@ -403,14 +404,14 @@ static int iavf_config_rx_queues_irqs(struct rte_eth_dev *dev,
 			/* If Rx interrupt is reuquired, and we can use
 			 * multi interrupts, then the vec is from 1
 			 */
-			vf->nb_msix = RTE_MIN(vf->vf_res->max_vectors,
-					      intr_handle->nb_efd);
+			vf->nb_msix = RTE_MIN(intr_handle->nb_efd,
+				 (uint16_t)(vf->vf_res->max_vectors - 1));
 			vf->msix_base = IAVF_RX_VEC_START;
 			vec = IAVF_RX_VEC_START;
 			for (i = 0; i < dev->data->nb_rx_queues; i++) {
 				vf->rxq_map[vec] |= 1 << i;
 				intr_handle->intr_vec[i] = vec++;
-				if (vec >= vf->nb_msix)
+				if (vec >= vf->nb_msix + IAVF_RX_VEC_START)
 					vec = IAVF_RX_VEC_START;
 			}
 			PMD_DRV_LOG(DEBUG,
@@ -432,28 +433,38 @@ iavf_start_queues(struct rte_eth_dev *dev)
 	struct iavf_rx_queue *rxq;
 	struct iavf_tx_queue *txq;
 	int i;
+	uint16_t nb_txq, nb_rxq;
 
-	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		txq = dev->data->tx_queues[i];
+	for (nb_txq = 0; nb_txq < dev->data->nb_tx_queues; nb_txq++) {
+		txq = dev->data->tx_queues[nb_txq];
 		if (txq->tx_deferred_start)
 			continue;
-		if (iavf_dev_tx_queue_start(dev, i) != 0) {
-			PMD_DRV_LOG(ERR, "Fail to start queue %u", i);
-			return -1;
+		if (iavf_dev_tx_queue_start(dev, nb_txq) != 0) {
+			PMD_DRV_LOG(ERR, "Fail to start tx queue %u", nb_txq);
+			goto tx_err;
 		}
 	}
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		rxq = dev->data->rx_queues[i];
+	for (nb_rxq = 0; nb_rxq < dev->data->nb_rx_queues; nb_rxq++) {
+		rxq = dev->data->rx_queues[nb_rxq];
 		if (rxq->rx_deferred_start)
 			continue;
-		if (iavf_dev_rx_queue_start(dev, i) != 0) {
-			PMD_DRV_LOG(ERR, "Fail to start queue %u", i);
-			return -1;
+		if (iavf_dev_rx_queue_start(dev, nb_rxq) != 0) {
+			PMD_DRV_LOG(ERR, "Fail to start rx queue %u", nb_rxq);
+			goto rx_err;
 		}
 	}
 
 	return 0;
+
+rx_err:
+	for (i = 0; i < nb_rxq; i++)
+		iavf_dev_rx_queue_stop(dev, i);
+tx_err:
+	for (i = 0; i < nb_txq; i++)
+		iavf_dev_tx_queue_stop(dev, i);
+
+	return -1;
 }
 
 static int
@@ -792,7 +803,7 @@ iavf_dev_add_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *addr,
 		return -EINVAL;
 	}
 
-	err = iavf_add_del_eth_addr(adapter, addr, TRUE);
+	err = iavf_add_del_eth_addr(adapter, addr, TRUE, VIRTCHNL_ETHER_ADDR_EXTRA);
 	if (err) {
 		PMD_DRV_LOG(ERR, "fail to add MAC address");
 		return -EIO;
@@ -814,7 +825,7 @@ iavf_dev_del_mac_addr(struct rte_eth_dev *dev, uint32_t index)
 
 	addr = &dev->data->mac_addrs[index];
 
-	err = iavf_add_del_eth_addr(adapter, addr, FALSE);
+	err = iavf_add_del_eth_addr(adapter, addr, FALSE, VIRTCHNL_ETHER_ADDR_EXTRA);
 	if (err)
 		PMD_DRV_LOG(ERR, "fail to delete MAC address");
 
@@ -1007,7 +1018,7 @@ iavf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EBUSY;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > IAVF_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads |=
 				DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -1026,17 +1037,15 @@ iavf_dev_set_default_mac_addr(struct rte_eth_dev *dev,
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_hw *hw = IAVF_DEV_PRIVATE_TO_HW(adapter);
-	struct rte_ether_addr *perm_addr, *old_addr;
+	struct rte_ether_addr *old_addr;
 	int ret;
 
 	old_addr = (struct rte_ether_addr *)hw->mac.addr;
-	perm_addr = (struct rte_ether_addr *)hw->mac.perm_addr;
 
-	/* If the MAC address is configured by host, skip the setting */
-	if (rte_is_valid_assigned_ether_addr(perm_addr))
-		return -EPERM;
+	if (rte_is_same_ether_addr(old_addr, mac_addr))
+		return 0;
 
-	ret = iavf_add_del_eth_addr(adapter, old_addr, FALSE);
+	ret = iavf_add_del_eth_addr(adapter, old_addr, FALSE, VIRTCHNL_ETHER_ADDR_PRIMARY);
 	if (ret)
 		PMD_DRV_LOG(ERR, "Fail to delete old MAC:"
 			    " %02X:%02X:%02X:%02X:%02X:%02X",
@@ -1047,7 +1056,7 @@ iavf_dev_set_default_mac_addr(struct rte_eth_dev *dev,
 			    old_addr->addr_bytes[4],
 			    old_addr->addr_bytes[5]);
 
-	ret = iavf_add_del_eth_addr(adapter, mac_addr, TRUE);
+	ret = iavf_add_del_eth_addr(adapter, mac_addr, TRUE, VIRTCHNL_ETHER_ADDR_PRIMARY);
 	if (ret)
 		PMD_DRV_LOG(ERR, "Fail to add new MAC:"
 			    " %02X:%02X:%02X:%02X:%02X:%02X",
@@ -1425,6 +1434,9 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	iavf_dev_stop(dev);
 	iavf_shutdown_adminq(hw);
 	/* disable uio intr before callback unregister */
@@ -1543,13 +1555,15 @@ iavf_allocate_dma_mem_d(__rte_unused struct iavf_hw *hw,
 		       u64 size,
 		       u32 alignment)
 {
+	static uint64_t iavf_dma_memzone_id;
 	const struct rte_memzone *mz = NULL;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 
 	if (!mem)
 		return IAVF_ERR_PARAM;
 
-	snprintf(z_name, sizeof(z_name), "iavf_dma_%"PRIu64, rte_rand());
+	snprintf(z_name, sizeof(z_name), "iavf_dma_%" PRIu64,
+		__atomic_fetch_add(&iavf_dma_memzone_id, 1, __ATOMIC_RELAXED));
 	mz = rte_memzone_reserve_bounded(z_name, size, SOCKET_ID_ANY,
 			RTE_MEMZONE_IOVA_CONTIG, alignment, RTE_PGSIZE_2M);
 	if (!mz)

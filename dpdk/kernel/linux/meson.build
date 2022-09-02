@@ -10,15 +10,20 @@ if get_option('kernel_dir') == '' and meson.is_cross_build()
 endif
 
 kernel_dir = get_option('kernel_dir')
+kernel_source_dir = get_option('kernel_dir')
 if kernel_dir == ''
 	# use default path for native builds
-	kernel_version = run_command('uname', '-r').stdout().strip()
+	kernel_version = run_command('uname', '-r', check: true).stdout().strip()
 	kernel_dir = '/lib/modules/' + kernel_version
+	if kernel_source_dir == ''
+		# use default path for native builds
+		kernel_source_dir = '/lib/modules/' + kernel_version + '/source'
+	endif
 endif
 
 # test running make in kernel directory, using "make kernelversion"
-make_returncode = run_command('make', '-sC', kernel_dir + '/build',
-		'kernelversion').returncode()
+make_returncode = run_command('make', '-sC', kernel_dir + '/build', 'kernelversion',
+		check: false).returncode()
 if make_returncode != 0
 	warning('Cannot compile kernel modules as requested - are kernel headers installed?')
 	subdir_done()

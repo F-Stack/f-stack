@@ -804,23 +804,59 @@ rx_machine_update(struct bond_dev_private *internals, uint16_t slave_id,
 		struct rte_mbuf *lacp_pkt) {
 	struct lacpdu_header *lacp;
 	struct lacpdu_actor_partner_params *partner;
+	struct port *port, *agg;
 
 	if (lacp_pkt != NULL) {
 		lacp = rte_pktmbuf_mtod(lacp_pkt, struct lacpdu_header *);
 		RTE_ASSERT(lacp->lacpdu.subtype == SLOW_SUBTYPE_LACP);
 
 		partner = &lacp->lacpdu.partner;
+		port = &bond_mode_8023ad_ports[slave_id];
+		agg = &bond_mode_8023ad_ports[port->aggregator_port_id];
+
 		if (rte_is_zero_ether_addr(&partner->port_params.system) ||
 			rte_is_same_ether_addr(&partner->port_params.system,
-			&internals->mode4.mac_addr)) {
+				&agg->actor.system)) {
 			/* This LACP frame is sending to the bonding port
 			 * so pass it to rx_machine.
 			 */
 			rx_machine(internals, slave_id, &lacp->lacpdu);
+		} else {
+			char preferred_system_name[RTE_ETHER_ADDR_FMT_SIZE];
+			char self_system_name[RTE_ETHER_ADDR_FMT_SIZE];
+
+			rte_ether_format_addr(preferred_system_name,
+				RTE_ETHER_ADDR_FMT_SIZE, &partner->port_params.system);
+			rte_ether_format_addr(self_system_name,
+				RTE_ETHER_ADDR_FMT_SIZE, &agg->actor.system);
+			MODE4_DEBUG("preferred partner system %s "
+				"is not equal with self system: %s\n",
+				preferred_system_name, self_system_name);
 		}
 		rte_pktmbuf_free(lacp_pkt);
 	} else
 		rx_machine(internals, slave_id, NULL);
+}
+
+static void
+bond_mode_8023ad_dedicated_rxq_process(struct bond_dev_private *internals,
+			uint16_t slave_id)
+{
+#define DEDICATED_QUEUE_BURST_SIZE 32
+	struct rte_mbuf *lacp_pkt[DEDICATED_QUEUE_BURST_SIZE];
+	uint16_t rx_count = rte_eth_rx_burst(slave_id,
+				internals->mode4.dedicated_queues.rx_qid,
+				lacp_pkt, DEDICATED_QUEUE_BURST_SIZE);
+
+	if (rx_count) {
+		uint16_t i;
+
+		for (i = 0; i < rx_count; i++)
+			bond_mode_8023ad_handle_slow_pkt(internals, slave_id,
+					lacp_pkt[i]);
+	} else {
+		rx_machine_update(internals, slave_id, NULL);
+	}
 }
 
 static void
@@ -911,15 +947,8 @@ bond_mode_8023ad_periodic_cb(void *arg)
 
 			rx_machine_update(internals, slave_id, lacp_pkt);
 		} else {
-			uint16_t rx_count = rte_eth_rx_burst(slave_id,
-					internals->mode4.dedicated_queues.rx_qid,
-					&lacp_pkt, 1);
-
-			if (rx_count == 1)
-				bond_mode_8023ad_handle_slow_pkt(internals,
-						slave_id, lacp_pkt);
-			else
-				rx_machine_update(internals, slave_id, NULL);
+			bond_mode_8023ad_dedicated_rxq_process(internals,
+					slave_id);
 		}
 
 		periodic_machine(internals, slave_id);
@@ -1334,8 +1363,7 @@ bond_mode_8023ad_handle_slow_pkt(struct bond_dev_private *internals,
 		rte_eth_macaddr_get(slave_id, &m_hdr->eth_hdr.s_addr);
 
 		if (internals->mode4.dedicated_queues.enabled == 0) {
-			int retval = rte_ring_enqueue(port->tx_ring, pkt);
-			if (retval != 0) {
+			if (rte_ring_enqueue(port->tx_ring, pkt) != 0) {
 				/* reset timer */
 				port->rx_marker_timer = 0;
 				wrn = WRN_TX_QUEUE_FULL;
@@ -1355,8 +1383,7 @@ bond_mode_8023ad_handle_slow_pkt(struct bond_dev_private *internals,
 		}
 	} else if (likely(subtype == SLOW_SUBTYPE_LACP)) {
 		if (internals->mode4.dedicated_queues.enabled == 0) {
-			int retval = rte_ring_enqueue(port->rx_ring, pkt);
-			if (retval != 0) {
+			if (rte_ring_enqueue(port->rx_ring, pkt) != 0) {
 				/* If RX fing full free lacpdu message and drop packet */
 				wrn = WRN_RX_QUEUE_FULL;
 				goto free_out;

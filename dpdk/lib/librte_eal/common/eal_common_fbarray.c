@@ -80,9 +80,8 @@ get_used_mask(void *data, unsigned int elt_sz, unsigned int len)
 }
 
 static int
-resize_and_map(int fd, void *addr, size_t len)
+resize_and_map(int fd, const char *path, void *addr, size_t len)
 {
-	char path[PATH_MAX];
 	void *map_addr;
 
 	if (ftruncate(fd, len)) {
@@ -114,7 +113,7 @@ overlap(const struct mem_area *ma, const void *start, size_t len)
 	if (start >= ma_start && start < ma_end)
 		return 1;
 	/* end overlap? */
-	if (end >= ma_start && end < ma_end)
+	if (end > ma_start && end < ma_end)
 		return 1;
 	return 0;
 }
@@ -794,7 +793,7 @@ rte_fbarray_init(struct rte_fbarray *arr, const char *name, unsigned int len,
 			goto fail;
 		}
 
-		if (resize_and_map(fd, data, mmap_len))
+		if (resize_and_map(fd, path, data, mmap_len))
 			goto fail;
 	}
 	ma->addr = data;
@@ -900,7 +899,7 @@ rte_fbarray_attach(struct rte_fbarray *arr)
 		goto fail;
 	}
 
-	if (resize_and_map(fd, data, mmap_len))
+	if (resize_and_map(fd, path, data, mmap_len))
 		goto fail;
 
 	/* store our new memory area */

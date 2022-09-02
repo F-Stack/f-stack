@@ -14,7 +14,7 @@ checksum and segmentation offloads.
 Features and Limitations of Hyper-V PMD
 ---------------------------------------
 
-In this release, the hyper PMD driver provides the basic functionality of packet reception and transmission.
+In this release, the hyper PMD provides the basic functionality of packet reception and transmission.
 
 *   It supports merge-able buffers per packet when receiving packets and scattered buffer per packet
     when transmitting packets. The packet size supported is from 64 to 65536.
@@ -62,7 +62,7 @@ store it in a shell variable:
 
 .. _`UUID`: https://en.wikipedia.org/wiki/Universally_unique_identifier
 
-There are several possible ways to assign the uio device driver for a device.
+There are several possible ways to assign the UIO device driver for a device.
 The easiest way (but only on 4.18 or later)
 is to use the `driverctl Device Driver control utility`_ to override
 the normal kernel device.

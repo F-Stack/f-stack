@@ -269,7 +269,7 @@ avp_dev_process_request(struct avp_dev *avp, struct rte_avp_request *request)
 			break;
 		}
 
-		if ((count < 1) && (retry == 0)) {
+		if (retry == 0) {
 			PMD_DRV_LOG(ERR, "Timeout while waiting for a response for %u\n",
 				    request->req_id);
 			ret = -ETIME;
@@ -2110,6 +2110,9 @@ avp_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	int ret;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {

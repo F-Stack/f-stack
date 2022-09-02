@@ -5,10 +5,13 @@
 #ifndef _RTE_OS_H_
 #define _RTE_OS_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
- * This is header should contain any function/macro definition
- * which are not supported natively or named differently in the
- * linux OS. Functions will be added in future releases.
+ * This header should contain any definition
+ * which is not supported natively or named differently in Linux.
  */
 
 #include <sched.h>
@@ -29,5 +32,9 @@ typedef cpu_set_t rte_cpuset_t;
 	RTE_CPU_FILL(&tmp); \
 	CPU_XOR(dst, &tmp, src); \
 } while (0)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_OS_H_ */

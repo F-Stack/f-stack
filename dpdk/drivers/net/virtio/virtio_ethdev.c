@@ -721,6 +721,8 @@ virtio_dev_close(struct rte_eth_dev *dev)
 	struct rte_intr_conf *intr_conf = &dev->data->dev_conf.intr_conf;
 
 	PMD_INIT_LOG(DEBUG, "virtio_dev_close");
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	if (!hw->opened)
 		return;
@@ -1641,13 +1643,15 @@ virtio_configure_intr(struct rte_eth_dev *dev)
 		}
 	}
 
-	/* Re-register callback to update max_intr */
-	rte_intr_callback_unregister(dev->intr_handle,
-				     virtio_interrupt_handler,
-				     dev);
-	rte_intr_callback_register(dev->intr_handle,
-				   virtio_interrupt_handler,
-				   dev);
+	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC) {
+		/* Re-register callback to update max_intr */
+		rte_intr_callback_unregister(dev->intr_handle,
+					     virtio_interrupt_handler,
+					     dev);
+		rte_intr_callback_register(dev->intr_handle,
+					   virtio_interrupt_handler,
+					   dev);
+	}
 
 	/* DO NOT try to remove this! This function will enable msix, or QEMU
 	 * will encounter SIGSEGV when DRIVER_OK is sent.
@@ -2445,6 +2449,7 @@ virtio_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->min_rx_bufsize = VIRTIO_MIN_RX_BUFSIZE;
 	dev_info->max_rx_pktlen = VIRTIO_MAX_RX_PKTLEN;
 	dev_info->max_mac_addrs = VIRTIO_MAX_MAC_ADDRS;
+	dev_info->max_mtu = hw->max_mtu;
 
 	host_features = VTPCI_OPS(hw)->get_features(hw);
 	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP;

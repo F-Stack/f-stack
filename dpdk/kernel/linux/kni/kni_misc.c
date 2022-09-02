@@ -180,12 +180,16 @@ kni_dev_remove(struct kni_dev *dev)
 	if (!dev)
 		return -ENODEV;
 
+	/*
+	 * The memory of kni device is allocated and released together
+	 * with net device. Release mbuf before freeing net device.
+	 */
+	kni_net_release_fifo_phy(dev);
+
 	if (dev->net_dev) {
 		unregister_netdev(dev->net_dev);
 		free_netdev(dev->net_dev);
 	}
-
-	kni_net_release_fifo_phy(dev);
 
 	return 0;
 }
@@ -216,8 +220,8 @@ kni_release(struct inode *inode, struct file *file)
 			dev->pthread = NULL;
 		}
 
-		kni_dev_remove(dev);
 		list_del(&dev->list);
+		kni_dev_remove(dev);
 	}
 	up_write(&knet->kni_list_lock);
 
@@ -396,14 +400,16 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 	pr_debug("mbuf_size:    %u\n", kni->mbuf_size);
 
 	/* if user has provided a valid mac address */
-	if (is_valid_ether_addr(dev_info.mac_addr))
+	if (is_valid_ether_addr(dev_info.mac_addr)) {
+#ifdef HAVE_ETH_HW_ADDR_SET
+		eth_hw_addr_set(net_dev, dev_info.mac_addr);
+#else
 		memcpy(net_dev->dev_addr, dev_info.mac_addr, ETH_ALEN);
-	else
-		/*
-		 * Generate random mac address. eth_random_addr() is the
-		 * newer version of generating mac address in kernel.
-		 */
-		random_ether_addr(net_dev->dev_addr);
+#endif
+	} else {
+		/* Assign random MAC address. */
+		eth_hw_addr_random(net_dev);
+	}
 
 	if (dev_info.mtu)
 		net_dev->mtu = dev_info.mtu;
@@ -469,8 +475,8 @@ kni_ioctl_release(struct net *net, uint32_t ioctl_num,
 			dev->pthread = NULL;
 		}
 
-		kni_dev_remove(dev);
 		list_del(&dev->list);
+		kni_dev_remove(dev);
 		ret = 0;
 		break;
 	}
@@ -481,10 +487,10 @@ kni_ioctl_release(struct net *net, uint32_t ioctl_num,
 	return ret;
 }
 
-static int
-kni_ioctl(struct inode *inode, uint32_t ioctl_num, unsigned long ioctl_param)
+static long
+kni_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
 {
-	int ret = -EINVAL;
+	long ret = -EINVAL;
 	struct net *net = current->nsproxy->net_ns;
 
 	pr_debug("IOCTL num=0x%0x param=0x%0lx\n", ioctl_num, ioctl_param);
@@ -510,8 +516,8 @@ kni_ioctl(struct inode *inode, uint32_t ioctl_num, unsigned long ioctl_param)
 	return ret;
 }
 
-static int
-kni_compat_ioctl(struct inode *inode, uint32_t ioctl_num,
+static long
+kni_compat_ioctl(struct file *file, unsigned int ioctl_num,
 		unsigned long ioctl_param)
 {
 	/* 32 bits app on 64 bits OS to be supported later */
@@ -524,8 +530,8 @@ static const struct file_operations kni_fops = {
 	.owner = THIS_MODULE,
 	.open = kni_open,
 	.release = kni_release,
-	.unlocked_ioctl = (void *)kni_ioctl,
-	.compat_ioctl = (void *)kni_compat_ioctl,
+	.unlocked_ioctl = kni_ioctl,
+	.compat_ioctl = kni_compat_ioctl,
 };
 
 static struct miscdevice kni_misc = {

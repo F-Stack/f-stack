@@ -871,6 +871,9 @@ nfp_net_close(struct rte_eth_dev *dev)
 	struct rte_pci_device *pci_dev;
 	int i;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	PMD_INIT_LOG(DEBUG, "Close");
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -1213,9 +1216,6 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 					     DEV_RX_OFFLOAD_UDP_CKSUM |
 					     DEV_RX_OFFLOAD_TCP_CKSUM;
 
-	dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_JUMBO_FRAME |
-				     DEV_RX_OFFLOAD_RSS_HASH;
-
 	if (hw->cap & NFP_NET_CFG_CTRL_TXVLAN)
 		dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT;
 
@@ -1264,15 +1264,22 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_mtu_seg_max = NFP_TX_MAX_MTU_SEG,
 	};
 
-	dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
-					   ETH_RSS_NONFRAG_IPV4_TCP |
-					   ETH_RSS_NONFRAG_IPV4_UDP |
-					   ETH_RSS_IPV6 |
-					   ETH_RSS_NONFRAG_IPV6_TCP |
-					   ETH_RSS_NONFRAG_IPV6_UDP;
+	/* All NFP devices support jumbo frames */
+	dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 
-	dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
-	dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
+	if (hw->cap & NFP_NET_CFG_CTRL_RSS) {
+		dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_RSS_HASH;
+
+		dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
+						   ETH_RSS_NONFRAG_IPV4_TCP |
+						   ETH_RSS_NONFRAG_IPV4_UDP |
+						   ETH_RSS_IPV6 |
+						   ETH_RSS_NONFRAG_IPV6_TCP |
+						   ETH_RSS_NONFRAG_IPV6_UDP;
+
+		dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
+		dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
+	}
 
 	dev_info->speed_capa = ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
 			       ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G |
@@ -1501,7 +1508,7 @@ nfp_net_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	}
 
 	/* switch to jumbo mode if needed */
-	if ((uint32_t)mtu > RTE_ETHER_MAX_LEN)
+	if ((uint32_t)mtu > RTE_ETHER_MTU)
 		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		dev->data->dev_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
@@ -2366,22 +2373,25 @@ nfp_net_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	uint32_t new_ctrl, update;
 	struct nfp_net_hw *hw;
+	struct rte_eth_conf *dev_conf;
 	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	new_ctrl = 0;
+	dev_conf = &dev->data->dev_conf;
+	new_ctrl = hw->ctrl;
 
-	/* Enable vlan strip if it is not configured yet */
-	if ((mask & ETH_VLAN_STRIP_OFFLOAD) &&
-	    !(hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN))
-		new_ctrl = hw->ctrl | NFP_NET_CFG_CTRL_RXVLAN;
+	/*
+	 * Vlan stripping setting
+	 * Enable or disable VLAN stripping
+	 */
+	if (mask & ETH_VLAN_STRIP_MASK) {
+		if (dev_conf->rxmode.offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+			new_ctrl |= NFP_NET_CFG_CTRL_RXVLAN;
+		else
+			new_ctrl &= ~NFP_NET_CFG_CTRL_RXVLAN;
+	}
 
-	/* Disable vlan strip just if it is configured */
-	if (!(mask & ETH_VLAN_STRIP_OFFLOAD) &&
-	    (hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN))
-		new_ctrl = hw->ctrl & ~NFP_NET_CFG_CTRL_RXVLAN;
-
-	if (new_ctrl == 0)
+	if (new_ctrl == hw->ctrl)
 		return 0;
 
 	update = NFP_NET_CFG_UPDATE_GEN;
@@ -2912,6 +2922,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
 	hw->mtu = RTE_ETHER_MTU;
+	hw->flbufsz = RTE_ETHER_MTU;
 
 	/* VLAN insertion is incompatible with LSOv2 */
 	if (hw->cap & NFP_NET_CFG_CTRL_LSO2)
@@ -3027,7 +3038,7 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 	off_t offset, nfp_offset;
 	uint32_t cpp_id, pos, len;
 	uint32_t tmpbuf[16];
-	size_t count, curlen, totlen = 0;
+	size_t count, curlen;
 	int err = 0;
 
 	PMD_CPP_LOG(DEBUG, "%s: offset size %zu, count_size: %zu\n", __func__,
@@ -3104,7 +3115,6 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 		}
 
 		nfp_offset += pos;
-		totlen += pos;
 		nfp_cpp_area_release(area);
 		nfp_cpp_area_free(area);
 
@@ -3129,7 +3139,7 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 	off_t offset, nfp_offset;
 	uint32_t cpp_id, pos, len;
 	uint32_t tmpbuf[16];
-	size_t count, curlen, totlen = 0;
+	size_t count, curlen;
 	int err = 0;
 
 	PMD_CPP_LOG(DEBUG, "%s: offset size %zu, count_size: %zu\n", __func__,
@@ -3205,7 +3215,6 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 		}
 
 		nfp_offset += pos;
-		totlen += pos;
 		nfp_cpp_area_release(area);
 		nfp_cpp_area_free(area);
 

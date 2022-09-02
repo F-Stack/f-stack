@@ -8,6 +8,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_memcpy.h>
+#include <rte_net.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_vhost.h>
@@ -402,6 +403,16 @@ virtio_enqueue_offload(struct rte_mbuf *m_buf, struct virtio_net_hdr *net_hdr)
 		csum_l4 |= PKT_TX_TCP_CKSUM;
 
 	if (csum_l4) {
+		/*
+		 * Pseudo-header checksum must be set as per Virtio spec.
+		 *
+		 * Note: We don't propagate rte_net_intel_cksum_prepare()
+		 * errors, as it would have an impact on performance, and an
+		 * error would mean the packet is dropped by the guest instead
+		 * of being dropped here.
+		 */
+		rte_net_intel_cksum_prepare(m_buf);
+
 		net_hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
 		net_hdr->csum_start = m_buf->l2_len + m_buf->l3_len;
 
@@ -546,10 +557,11 @@ fill_vec_buf_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			return -1;
 		}
 
-		len += descs[idx].len;
+		dlen = descs[idx].len;
+		len += dlen;
 
 		if (unlikely(map_one_desc(dev, vq, buf_vec, &vec_id,
-						descs[idx].addr, descs[idx].len,
+						descs[idx].addr, dlen,
 						perm))) {
 			free_ind_table(idesc);
 			return -1;
@@ -666,9 +678,10 @@ fill_vec_buf_packed_indirect(struct virtio_net *dev,
 			return -1;
 		}
 
-		*len += descs[i].len;
+		dlen = descs[i].len;
+		*len += dlen;
 		if (unlikely(map_one_desc(dev, vq, buf_vec, &vec_id,
-						descs[i].addr, descs[i].len,
+						descs[i].addr, dlen,
 						perm)))
 			return -1;
 	}
@@ -689,6 +702,7 @@ fill_vec_buf_packed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	bool wrap_counter = vq->avail_wrap_counter;
 	struct vring_packed_desc *descs = vq->desc_packed;
 	uint16_t vec_id = *vec_idx;
+	uint64_t dlen;
 
 	if (avail_idx < vq->last_avail_idx)
 		wrap_counter ^= 1;
@@ -721,11 +735,12 @@ fill_vec_buf_packed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 							len, perm) < 0))
 				return -1;
 		} else {
-			*len += descs[avail_idx].len;
+			dlen = descs[avail_idx].len;
+			*len += dlen;
 
 			if (unlikely(map_one_desc(dev, vq, buf_vec, &vec_id,
 							descs[avail_idx].addr,
-							descs[avail_idx].len,
+							dlen,
 							perm)))
 				return -1;
 		}
@@ -806,9 +821,10 @@ copy_mbuf_to_desc(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 	hdr_mbuf = m;
 	hdr_addr = buf_addr;
-	if (unlikely(buf_len < dev->vhost_hlen))
+	if (unlikely(buf_len < dev->vhost_hlen)) {
+		memset(&tmp_hdr, 0, sizeof(struct virtio_net_hdr_mrg_rxbuf));
 		hdr = &tmp_hdr;
-	else
+	} else
 		hdr = (struct virtio_net_hdr_mrg_rxbuf *)(uintptr_t)hdr_addr;
 
 	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) RX: num merge buffers %d\n",
@@ -1383,26 +1399,22 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	uint32_t buf_avail, buf_offset;
 	uint64_t buf_addr, buf_iova, buf_len;
 	uint32_t mbuf_avail, mbuf_offset;
+	uint32_t hdr_remain = dev->vhost_hlen;
 	uint32_t cpy_len;
 	struct rte_mbuf *cur = m, *prev = m;
 	struct virtio_net_hdr tmp_hdr;
 	struct virtio_net_hdr *hdr = NULL;
-	/* A counter to avoid desc dead loop chain */
-	uint16_t vec_idx = 0;
+	uint16_t vec_idx;
 	struct batch_copy_elem *batch_copy = vq->batch_copy_elems;
 	int error = 0;
 
-	buf_addr = buf_vec[vec_idx].buf_addr;
-	buf_iova = buf_vec[vec_idx].buf_iova;
-	buf_len = buf_vec[vec_idx].buf_len;
-
-	if (unlikely(buf_len < dev->vhost_hlen && nr_vec <= 1)) {
-		error = -1;
-		goto out;
-	}
+	/*
+	 * The caller has checked the descriptors chain is larger than the
+	 * header size.
+	 */
 
 	if (virtio_net_with_host_offload(dev)) {
-		if (unlikely(buf_len < sizeof(struct virtio_net_hdr))) {
+		if (unlikely(buf_vec[0].buf_len < sizeof(struct virtio_net_hdr))) {
 			/*
 			 * No luck, the virtio-net header doesn't fit
 			 * in a contiguous virtual area.
@@ -1410,35 +1422,22 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			copy_vnet_hdr_from_desc(&tmp_hdr, buf_vec);
 			hdr = &tmp_hdr;
 		} else {
-			hdr = (struct virtio_net_hdr *)((uintptr_t)buf_addr);
+			hdr = (struct virtio_net_hdr *)((uintptr_t)buf_vec[0].buf_addr);
 		}
 	}
 
-	/*
-	 * A virtio driver normally uses at least 2 desc buffers
-	 * for Tx: the first for storing the header, and others
-	 * for storing the data.
-	 */
-	if (unlikely(buf_len < dev->vhost_hlen)) {
-		buf_offset = dev->vhost_hlen - buf_len;
-		vec_idx++;
-		buf_addr = buf_vec[vec_idx].buf_addr;
-		buf_iova = buf_vec[vec_idx].buf_iova;
-		buf_len = buf_vec[vec_idx].buf_len;
-		buf_avail  = buf_len - buf_offset;
-	} else if (buf_len == dev->vhost_hlen) {
-		if (unlikely(++vec_idx >= nr_vec))
-			goto out;
-		buf_addr = buf_vec[vec_idx].buf_addr;
-		buf_iova = buf_vec[vec_idx].buf_iova;
-		buf_len = buf_vec[vec_idx].buf_len;
+	for (vec_idx = 0; vec_idx < nr_vec; vec_idx++) {
+		if (buf_vec[vec_idx].buf_len > hdr_remain)
+			break;
 
-		buf_offset = 0;
-		buf_avail = buf_len;
-	} else {
-		buf_offset = dev->vhost_hlen;
-		buf_avail = buf_vec[vec_idx].buf_len - dev->vhost_hlen;
+		hdr_remain -= buf_vec[vec_idx].buf_len;
 	}
+
+	buf_addr = buf_vec[vec_idx].buf_addr;
+	buf_iova = buf_vec[vec_idx].buf_iova;
+	buf_len = buf_vec[vec_idx].buf_len;
+	buf_offset = hdr_remain;
+	buf_avail = buf_vec[vec_idx].buf_len - hdr_remain;
 
 	PRINT_PACKET(dev,
 			(uintptr_t)(buf_addr + buf_offset),
@@ -1726,6 +1725,14 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		if (likely(dev->dequeue_zero_copy == 0))
 			update_shadow_used_ring_split(vq, head_idx, 0);
 
+		if (unlikely(buf_len <= dev->vhost_hlen)) {
+			dropped += 1;
+			i++;
+			break;
+		}
+
+		buf_len -= dev->vhost_hlen;
+
 		pkts[i] = virtio_dev_pktmbuf_alloc(dev, mbuf_pool, buf_len);
 		if (unlikely(pkts[i] == NULL)) {
 			/*
@@ -1810,7 +1817,6 @@ vhost_reserve_avail_batch_packed(struct virtio_net *dev,
 {
 	bool wrap = vq->avail_wrap_counter;
 	struct vring_packed_desc *descs = vq->desc_packed;
-	struct virtio_net_hdr *hdr;
 	uint64_t lens[PACKED_BATCH_SIZE];
 	uint64_t buf_lens[PACKED_BATCH_SIZE];
 	uint32_t buf_offset = dev->vhost_hlen;
@@ -1862,16 +1868,9 @@ vhost_reserve_avail_batch_packed(struct virtio_net *dev,
 	}
 
 	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
-		pkts[i]->pkt_len = descs[avail_idx + i].len - buf_offset;
+		pkts[i]->pkt_len = lens[i] - buf_offset;
 		pkts[i]->data_len = pkts[i]->pkt_len;
 		ids[i] = descs[avail_idx + i].id;
-	}
-
-	if (virtio_net_with_host_offload(dev)) {
-		vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
-			hdr = (struct virtio_net_hdr *)(desc_addrs[i]);
-			vhost_dequeue_offload(hdr, pkts[i]);
-		}
 	}
 
 	return 0;
@@ -1891,6 +1890,7 @@ virtio_dev_tx_batch_packed(struct virtio_net *dev,
 {
 	uint16_t avail_idx = vq->last_avail_idx;
 	uint32_t buf_offset = dev->vhost_hlen;
+	struct virtio_net_hdr *hdr;
 	uintptr_t desc_addrs[PACKED_BATCH_SIZE];
 	uint16_t ids[PACKED_BATCH_SIZE];
 	uint16_t i;
@@ -1906,6 +1906,13 @@ virtio_dev_tx_batch_packed(struct virtio_net *dev,
 		rte_memcpy(rte_pktmbuf_mtod_offset(pkts[i], void *, 0),
 			   (void *)(uintptr_t)(desc_addrs[i] + buf_offset),
 			   pkts[i]->pkt_len);
+
+	if (virtio_net_with_host_offload(dev)) {
+		vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
+			hdr = (struct virtio_net_hdr *)(desc_addrs[i]);
+			vhost_dequeue_offload(hdr, pkts[i]);
+		}
+	}
 
 	if (virtio_net_is_inorder(dev))
 		vhost_shadow_dequeue_batch_packed_inorder(vq,
@@ -1938,6 +1945,11 @@ vhost_dequeue_single_packed(struct virtio_net *dev,
 					 buf_id, &buf_len,
 					 VHOST_ACCESS_RO) < 0))
 		return -1;
+
+	if (unlikely(buf_len <= dev->vhost_hlen))
+		return -1;
+
+	buf_len -= dev->vhost_hlen;
 
 	*pkts = virtio_dev_pktmbuf_alloc(dev, mbuf_pool, buf_len);
 	if (unlikely(*pkts == NULL)) {

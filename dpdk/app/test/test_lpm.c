@@ -173,7 +173,7 @@ test3(void)
 	status = rte_lpm_add(NULL, ip, depth, next_hop);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -211,7 +211,7 @@ test4(void)
 	status = rte_lpm_delete(NULL, ip, depth);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -249,7 +249,7 @@ test5(void)
 	status = rte_lpm_lookup(NULL, ip, &next_hop_return);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 

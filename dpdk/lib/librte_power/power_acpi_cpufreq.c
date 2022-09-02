@@ -78,7 +78,7 @@ enum power_state {
 /**
  * Power info per lcore.
  */
-struct rte_power_info {
+struct acpi_power_info {
 	unsigned int lcore_id;                   /**< Logical core id */
 	uint32_t freqs[RTE_MAX_LCORE_FREQS]; /**< Frequency array */
 	uint32_t nb_freqs;                   /**< number of available freqs */
@@ -90,14 +90,14 @@ struct rte_power_info {
 	uint16_t turbo_enable;               /**< Turbo Boost enable/disable */
 } __rte_cache_aligned;
 
-static struct rte_power_info lcore_power_info[RTE_MAX_LCORE];
+static struct acpi_power_info lcore_power_info[RTE_MAX_LCORE];
 
 /**
  * It is to set specific freq for specific logical core, according to the index
  * of supported frequencies.
  */
 static int
-set_freq_internal(struct rte_power_info *pi, uint32_t idx)
+set_freq_internal(struct acpi_power_info *pi, uint32_t idx)
 {
 	if (idx >= RTE_MAX_LCORE_FREQS || idx >= pi->nb_freqs) {
 		RTE_LOG(ERR, POWER, "Invalid frequency index %u, which "
@@ -133,7 +133,7 @@ set_freq_internal(struct rte_power_info *pi, uint32_t idx)
  * governor will be saved for rolling back.
  */
 static int
-power_set_governor_userspace(struct rte_power_info *pi)
+power_set_governor_userspace(struct acpi_power_info *pi)
 {
 	FILE *f;
 	int ret = -1;
@@ -152,6 +152,9 @@ power_set_governor_userspace(struct rte_power_info *pi)
 	/* Strip off terminating '\n' */
 	strtok(buf, "\n");
 
+	/* Save the original governor */
+	rte_strscpy(pi->governor_ori, buf, sizeof(pi->governor_ori));
+
 	/* Check if current governor is userspace */
 	if (strncmp(buf, POWER_GOVERNOR_USERSPACE,
 			sizeof(POWER_GOVERNOR_USERSPACE)) == 0) {
@@ -160,8 +163,6 @@ power_set_governor_userspace(struct rte_power_info *pi)
 				"already userspace\n", pi->lcore_id);
 		goto out;
 	}
-	/* Save the original governor */
-	strlcpy(pi->governor_ori, buf, sizeof(pi->governor_ori));
 
 	/* Write 'userspace' to the governor */
 	val = fseek(f, 0, SEEK_SET);
@@ -188,7 +189,7 @@ out:
  * sys file.
  */
 static int
-power_get_available_freqs(struct rte_power_info *pi)
+power_get_available_freqs(struct acpi_power_info *pi)
 {
 	FILE *f;
 	int ret = -1, i, count;
@@ -225,7 +226,7 @@ power_get_available_freqs(struct rte_power_info *pi)
 		goto out;
 	}
 
-	/* Store the available frequncies into power context */
+	/* Store the available frequencies into power context */
 	for (i = 0, pi->nb_freqs = 0; i < count; i++) {
 		POWER_DEBUG_TRACE("Lcore %u frequency[%d]: %s\n", pi->lcore_id,
 				i, freqs[i]);
@@ -258,7 +259,7 @@ out:
  * It is to fopen the sys file for the future setting the lcore frequency.
  */
 static int
-power_init_for_setting_freq(struct rte_power_info *pi)
+power_init_for_setting_freq(struct acpi_power_info *pi)
 {
 	FILE *f;
 	char fullpath[PATH_MAX];
@@ -292,7 +293,7 @@ out:
 int
 power_acpi_cpufreq_init(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Lcore id %u can not exceeds %u\n",
@@ -354,7 +355,7 @@ fail:
  * needed by writing the sys file.
  */
 static int
-power_set_governor_original(struct rte_power_info *pi)
+power_set_governor_original(struct acpi_power_info *pi)
 {
 	FILE *f;
 	int ret = -1;
@@ -400,7 +401,7 @@ out:
 int
 power_acpi_cpufreq_exit(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Lcore id %u can not exceeds %u\n",
@@ -442,7 +443,7 @@ fail:
 uint32_t
 power_acpi_cpufreq_freqs(unsigned int lcore_id, uint32_t *freqs, uint32_t num)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -489,7 +490,7 @@ power_acpi_cpufreq_set_freq(unsigned int lcore_id, uint32_t index)
 int
 power_acpi_cpufreq_freq_down(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -507,7 +508,7 @@ power_acpi_cpufreq_freq_down(unsigned int lcore_id)
 int
 power_acpi_cpufreq_freq_up(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -548,7 +549,7 @@ power_acpi_cpufreq_freq_max(unsigned int lcore_id)
 int
 power_acpi_cpufreq_freq_min(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -565,7 +566,7 @@ power_acpi_cpufreq_freq_min(unsigned int lcore_id)
 int
 power_acpi_turbo_status(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -581,7 +582,7 @@ power_acpi_turbo_status(unsigned int lcore_id)
 int
 power_acpi_enable_turbo(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -614,7 +615,7 @@ power_acpi_enable_turbo(unsigned int lcore_id)
 int
 power_acpi_disable_turbo(unsigned int lcore_id)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -641,7 +642,7 @@ power_acpi_disable_turbo(unsigned int lcore_id)
 int power_acpi_get_capabilities(unsigned int lcore_id,
 		struct rte_power_core_capabilities *caps)
 {
-	struct rte_power_info *pi;
+	struct acpi_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");

@@ -14,9 +14,9 @@
 
 
 #include <rte_log.h>
+#include <rte_power.h>
 
 #include "guest_channel.h"
-#include "channel_commands.h"
 
 #define RTE_LOGTYPE_GUEST_CHANNEL RTE_LOGTYPE_USER1
 
@@ -29,7 +29,7 @@ int
 guest_channel_host_connect(const char *path, unsigned int lcore_id)
 {
 	int flags, ret;
-	struct channel_packet pkt;
+	struct rte_power_channel_packet pkt;
 	char fd_path[PATH_MAX];
 	int fd = -1;
 
@@ -74,7 +74,7 @@ guest_channel_host_connect(const char *path, unsigned int lcore_id)
 	/* Send a test packet, this command is ignored by the host, but a successful
 	 * send indicates that the host endpoint is monitoring.
 	 */
-	pkt.command = CPU_POWER_CONNECT;
+	pkt.command = RTE_POWER_CPU_POWER_CONNECT;
 	global_fds[lcore_id] = fd;
 	ret = guest_channel_send_msg(&pkt, lcore_id);
 	if (ret != 0) {
@@ -93,7 +93,8 @@ error:
 }
 
 int
-guest_channel_send_msg(struct channel_packet *pkt, unsigned int lcore_id)
+guest_channel_send_msg(struct rte_power_channel_packet *pkt,
+		unsigned int lcore_id)
 {
 	int ret, buffer_len = sizeof(*pkt);
 	void *buffer = pkt;
@@ -123,7 +124,7 @@ guest_channel_send_msg(struct channel_packet *pkt, unsigned int lcore_id)
 	return 0;
 }
 
-int rte_power_guest_channel_send_msg(struct channel_packet *pkt,
+int rte_power_guest_channel_send_msg(struct rte_power_channel_packet *pkt,
 			unsigned int lcore_id)
 {
 	return guest_channel_send_msg(pkt, lcore_id);
@@ -139,6 +140,17 @@ int power_guest_channel_read_msg(void *pkt,
 	if (pkt_len == 0 || pkt == NULL)
 		return -1;
 
+	if (lcore_id >= RTE_MAX_LCORE) {
+		RTE_LOG(ERR, GUEST_CHANNEL, "Channel(%u) is out of range 0...%d\n",
+				lcore_id, RTE_MAX_LCORE-1);
+		return -1;
+	}
+
+	if (global_fds[lcore_id] < 0) {
+		RTE_LOG(ERR, GUEST_CHANNEL, "Channel is not connected\n");
+		return -1;
+	}
+
 	fds.fd = global_fds[lcore_id];
 	fds.events = POLLIN;
 
@@ -149,17 +161,6 @@ int power_guest_channel_read_msg(void *pkt,
 	} else if (ret < 0) {
 		RTE_LOG(ERR, GUEST_CHANNEL, "Error occurred during poll function: %s\n",
 				strerror(errno));
-		return -1;
-	}
-
-	if (lcore_id >= RTE_MAX_LCORE) {
-		RTE_LOG(ERR, GUEST_CHANNEL, "Channel(%u) is out of range 0...%d\n",
-				lcore_id, RTE_MAX_LCORE-1);
-		return -1;
-	}
-
-	if (global_fds[lcore_id] < 0) {
-		RTE_LOG(ERR, GUEST_CHANNEL, "Channel is not connected\n");
 		return -1;
 	}
 

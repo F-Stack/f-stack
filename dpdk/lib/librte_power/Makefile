@@ -19,6 +19,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_POWER) += rte_power_empty_poll.c
 SRCS-$(CONFIG_RTE_LIBRTE_POWER) += power_pstate_cpufreq.c
 
 # install this header file
-SYMLINK-$(CONFIG_RTE_LIBRTE_POWER)-include := rte_power.h  rte_power_empty_poll.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_POWER)-include := rte_power.h  rte_power_empty_poll.h rte_power_guest_channel.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

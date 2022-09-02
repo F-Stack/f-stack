@@ -61,8 +61,6 @@
 
 #define NS_PER_SEC 1E9
 
-static char *flowtype_to_str(uint16_t flow_type);
-
 static const struct {
 	enum tx_pkt_split split;
 	const char *name;
@@ -141,14 +139,20 @@ nic_stats_display(portid_t port_id)
 	struct rte_eth_stats stats;
 	struct rte_port *port = &ports[port_id];
 	uint8_t i;
-
 	static const char *nic_stats_border = "########################";
+	int ret;
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
 		print_valid_ports();
 		return;
 	}
-	rte_eth_stats_get(port_id, &stats);
+	ret = rte_eth_stats_get(port_id, &stats);
+	if (ret != 0) {
+		fprintf(stderr,
+			"%s: Error: failed to get stats (port %u): %d",
+			__func__, port_id, ret);
+		return;
+	}
 	printf("\n  %s NIC statistics for port %-2d %s\n",
 	       nic_stats_border, port_id, nic_stats_border);
 
@@ -555,6 +559,19 @@ skip_parse:
 	};
 }
 
+const char *
+rsstypes_to_str(uint64_t rss_type)
+{
+	uint16_t i;
+
+	for (i = 0; rss_type_table[i].str != NULL; i++) {
+		if (rss_type_table[i].rss_type == rss_type)
+			return rss_type_table[i].str;
+	}
+
+	return NULL;
+}
+
 void
 port_infos_display(portid_t port_id)
 {
@@ -649,19 +666,21 @@ port_infos_display(portid_t port_id)
 	if (!dev_info.flow_type_rss_offloads)
 		printf("No RSS offload flow type is supported.\n");
 	else {
+		uint64_t rss_offload_types = dev_info.flow_type_rss_offloads;
 		uint16_t i;
-		char *p;
 
 		printf("Supported RSS offload flow types:\n");
-		for (i = RTE_ETH_FLOW_UNKNOWN + 1;
-		     i < sizeof(dev_info.flow_type_rss_offloads) * CHAR_BIT; i++) {
-			if (!(dev_info.flow_type_rss_offloads & (1ULL << i)))
-				continue;
-			p = flowtype_to_str(i);
-			if (p)
-				printf("  %s\n", p);
-			else
-				printf("  user defined %d\n", i);
+		for (i = 0; i < sizeof(rss_offload_types) * CHAR_BIT; i++) {
+			uint64_t rss_offload = 1ULL << i;
+
+			if ((rss_offload_types & rss_offload) != 0) {
+				const char *p = rsstypes_to_str(rss_offload);
+				if (p)
+					printf("  %s\n", p);
+				else
+					printf("  user defined %u\n",
+					       i);
+			}
 		}
 	}
 
@@ -1287,7 +1306,7 @@ port_mtu_set(portid_t port_id, uint16_t mtu)
 		 * device supports jumbo frame.
 		 */
 		eth_overhead = dev_info.max_rx_pktlen - dev_info.max_mtu;
-		if (mtu > RTE_ETHER_MAX_LEN - eth_overhead) {
+		if (mtu > RTE_ETHER_MTU) {
 			rte_port->dev_conf.rxmode.offloads |=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 			rte_port->dev_conf.rxmode.max_rx_pkt_len =
@@ -2069,7 +2088,7 @@ port_rss_reta_info(portid_t port_id,
 }
 
 /*
- * Displays the RSS hash functions of a port, and, optionaly, the RSS hash
+ * Displays the RSS hash functions of a port, and, optionally, the RSS hash
  * key of the port.
  */
 void
@@ -2124,7 +2143,9 @@ port_rss_hash_conf_show(portid_t port_id, int show_rss_key)
 	}
 	printf("RSS functions:\n ");
 	for (i = 0; rss_type_table[i].str; i++) {
-		if (rss_hf & rss_type_table[i].rss_type)
+		if (rss_type_table[i].rss_type == 0)
+			continue;
+		if ((rss_hf & rss_type_table[i].rss_type) == rss_type_table[i].rss_type)
 			printf("%s ", rss_type_table[i].str);
 	}
 	printf("\n");
@@ -2138,14 +2159,14 @@ port_rss_hash_conf_show(portid_t port_id, int show_rss_key)
 
 void
 port_rss_hash_key_update(portid_t port_id, char rss_type[], uint8_t *hash_key,
-			 uint hash_key_len)
+			 uint8_t hash_key_len)
 {
 	struct rte_eth_rss_conf rss_conf;
 	int diag;
 	unsigned int i;
 
 	rss_conf.rss_key = NULL;
-	rss_conf.rss_key_len = hash_key_len;
+	rss_conf.rss_key_len = 0;
 	rss_conf.rss_hf = 0;
 	for (i = 0; rss_type_table[i].str; i++) {
 		if (!strcmp(rss_type_table[i].str, rss_type))
@@ -2154,6 +2175,7 @@ port_rss_hash_key_update(portid_t port_id, char rss_type[], uint8_t *hash_key,
 	diag = rte_eth_dev_rss_hash_conf_get(port_id, &rss_conf);
 	if (diag == 0) {
 		rss_conf.rss_key = hash_key;
+		rss_conf.rss_key_len = hash_key_len;
 		diag = rte_eth_dev_rss_hash_update(port_id, &rss_conf);
 	}
 	if (diag == 0)
@@ -2328,6 +2350,21 @@ rss_fwd_config_setup(void)
 	}
 }
 
+static uint16_t
+get_fwd_port_total_tc_num(void)
+{
+	struct rte_eth_dcb_info dcb_info;
+	uint16_t total_tc_num = 0;
+	unsigned int i;
+
+	for (i = 0; i < nb_fwd_ports; i++) {
+		(void)rte_eth_dev_get_dcb_info(fwd_ports_ids[i], &dcb_info);
+		total_tc_num += dcb_info.nb_tcs;
+	}
+
+	return total_tc_num;
+}
+
 /**
  * For the DCB forwarding test, each core is assigned on each traffic class.
  *
@@ -2347,12 +2384,42 @@ dcb_fwd_config_setup(void)
 	lcoreid_t  lc_id;
 	uint16_t nb_rx_queue, nb_tx_queue;
 	uint16_t i, j, k, sm_id = 0;
+	uint16_t total_tc_num;
+	struct rte_port *port;
 	uint8_t tc = 0;
+	portid_t pid;
+	int ret;
+
+	/*
+	 * The fwd_config_setup() is called when the port is RTE_PORT_STARTED
+	 * or RTE_PORT_STOPPED.
+	 *
+	 * Re-configure ports to get updated mapping between tc and queue in
+	 * case the queue number of the port is changed. Skip for started ports
+	 * since modifying queue number and calling dev_configure need to stop
+	 * ports first.
+	 */
+	for (pid = 0; pid < nb_fwd_ports; pid++) {
+		if (port_is_started(pid) == 1)
+			continue;
+
+		port = &ports[pid];
+		ret = rte_eth_dev_configure(pid, nb_rxq, nb_txq,
+					    &port->dev_conf);
+		if (ret < 0) {
+			printf("Failed to re-configure port %d, ret = %d.\n",
+				pid, ret);
+			return;
+		}
+	}
 
 	cur_fwd_config.nb_fwd_lcores = (lcoreid_t) nb_fwd_lcores;
 	cur_fwd_config.nb_fwd_ports = nb_fwd_ports;
 	cur_fwd_config.nb_fwd_streams =
 		(streamid_t) (nb_rxq * cur_fwd_config.nb_fwd_ports);
+	total_tc_num = get_fwd_port_total_tc_num();
+	if (cur_fwd_config.nb_fwd_lcores > total_tc_num)
+		cur_fwd_config.nb_fwd_lcores = total_tc_num;
 
 	/* reinitialize forwarding streams */
 	init_fwd_streams();
@@ -2843,13 +2910,15 @@ nb_segs_is_invalid(unsigned int nb_segs)
 	RTE_ETH_FOREACH_DEV(port_id) {
 		for (queue_id = 0; queue_id < nb_txq; queue_id++) {
 			ret = get_tx_ring_size(port_id, queue_id, &ring_size);
-
-			if (ret)
-				return true;
-
+			if (ret) {
+				/* Port may not be initialized yet, can't say
+				 * the port is invalid in this stage.
+				 */
+				continue;
+			}
 			if (ring_size < nb_segs) {
-				printf("nb segments per TX packets=%u >= "
-				       "TX queue(%u) ring_size=%u - ignored\n",
+				printf("nb segments per TX packets=%u >= TX "
+				       "queue(%u) ring_size=%u - txpkts ignored\n",
 				       nb_segs, queue_id, ring_size);
 				return true;
 			}
@@ -2865,12 +2934,26 @@ set_tx_pkt_segments(unsigned *seg_lengths, unsigned nb_segs)
 	uint16_t tx_pkt_len;
 	unsigned i;
 
-	if (nb_segs_is_invalid(nb_segs))
+	/*
+	 * For single segment settings failed check is ignored.
+	 * It is a very basic capability to send the single segment
+	 * packets, suppose it is always supported.
+	 */
+	if (nb_segs > 1 && nb_segs_is_invalid(nb_segs)) {
+		printf("Tx segment size(%u) is not supported - txpkts ignored\n",
+			nb_segs);
 		return;
+	}
+
+	if (nb_segs > RTE_MAX_SEGS_PER_PKT) {
+		printf("Tx segment size(%u) is bigger than max number of segment(%u)\n",
+			nb_segs, RTE_MAX_SEGS_PER_PKT);
+		return;
+	}
 
 	/*
 	 * Check that each segment length is greater or equal than
-	 * the mbuf data sise.
+	 * the mbuf data size.
 	 * Check also that the total packet length is greater or equal than the
 	 * size of an empty UDP/IP packet (sizeof(struct rte_ether_hdr) +
 	 * 20 + 8).
@@ -3913,7 +3996,7 @@ mcast_addr_pool_remove(struct rte_port *port, uint32_t addr_idx)
 {
 	port->mc_addr_nb--;
 	if (addr_idx == port->mc_addr_nb) {
-		/* No need to recompact the set of multicast addressses. */
+		/* No need to recompact the set of multicast addresses. */
 		if (port->mc_addr_nb == 0) {
 			/* free the pool of multicast addresses. */
 			free(port->mc_addr_pool);
@@ -3924,6 +4007,25 @@ mcast_addr_pool_remove(struct rte_port *port, uint32_t addr_idx)
 	memmove(&port->mc_addr_pool[addr_idx],
 		&port->mc_addr_pool[addr_idx + 1],
 		sizeof(struct rte_ether_addr) * (port->mc_addr_nb - addr_idx));
+}
+
+int
+mcast_addr_pool_destroy(portid_t port_id)
+{
+	struct rte_port *port;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN) ||
+	    port_id == (portid_t)RTE_PORT_ALL)
+		return -EINVAL;
+	port = &ports[port_id];
+
+	if (port->mc_addr_nb != 0) {
+		/* free the pool of multicast addresses. */
+		free(port->mc_addr_pool);
+		port->mc_addr_pool = NULL;
+		port->mc_addr_nb = 0;
+	}
+	return 0;
 }
 
 static int

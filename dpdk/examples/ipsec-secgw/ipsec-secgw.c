@@ -170,7 +170,7 @@ static const struct option lgopts[] = {
 static uint32_t enabled_port_mask;
 static uint64_t enabled_cryptodev_mask = UINT64_MAX;
 static uint32_t unprotected_port_mask;
-static int32_t promiscuous_on = 1;
+static int32_t promiscuous_on;
 static int32_t numa_on = 1; /**< NUMA is enabled by default. */
 static uint32_t nb_lcores;
 static uint32_t single_sa;
@@ -2543,5 +2543,7 @@ main(int32_t argc, char **argv)
 			return -1;
 	}
 
+	/* clean up the EAL */
+	rte_eal_cleanup();
 	return 0;
 }

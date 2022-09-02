@@ -241,7 +241,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	if (vsocket->linearbuf)
 		vhost_enable_linearbuf(vid);
 
-	RTE_LOG(INFO, VHOST_CONFIG, "new device, handle is %d\n", vid);
+	RTE_LOG(INFO, VHOST_CONFIG, "new device, handle is %d, path is %s\n", vid, vsocket->path);
 
 	if (vsocket->notify_ops->new_connection) {
 		ret = vsocket->notify_ops->new_connection(vid);
@@ -499,7 +499,7 @@ vhost_user_reconnect_init(void)
 
 	ret = pthread_mutex_init(&reconn_list.mutex, NULL);
 	if (ret < 0) {
-		RTE_LOG(ERR, VHOST_CONFIG, "failed to initialize mutex");
+		RTE_LOG(ERR, VHOST_CONFIG, "failed to initialize mutex\n");
 		return ret;
 	}
 	TAILQ_INIT(&reconn_list.head);
@@ -507,10 +507,10 @@ vhost_user_reconnect_init(void)
 	ret = rte_ctrl_thread_create(&reconn_tid, "vhost_reconn", NULL,
 			     vhost_user_client_reconnect, NULL);
 	if (ret != 0) {
-		RTE_LOG(ERR, VHOST_CONFIG, "failed to create reconnect thread");
+		RTE_LOG(ERR, VHOST_CONFIG, "failed to create reconnect thread\n");
 		if (pthread_mutex_destroy(&reconn_list.mutex)) {
 			RTE_LOG(ERR, VHOST_CONFIG,
-				"failed to destroy reconnect mutex");
+				"failed to destroy reconnect mutex\n");
 		}
 	}
 
@@ -1173,7 +1173,7 @@ rte_vhost_driver_start(const char *path)
 			&vhost_user.fdset);
 		if (ret != 0) {
 			RTE_LOG(ERR, VHOST_CONFIG,
-				"failed to create fdset handling thread");
+				"failed to create fdset handling thread\n");
 
 			fdset_pipe_uninit(&vhost_user.fdset);
 			return -1;

@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <sys/types.h>
-#include <sys/unistd.h>
+#include <unistd.h>
 #include <sys/queue.h>
 #include <stdarg.h>
 #include <ctype.h>
@@ -1170,6 +1170,9 @@ main(int argc, char **argv)
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 		ret |= rte_eal_wait_lcore(lcore_id);
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return ret;
 }

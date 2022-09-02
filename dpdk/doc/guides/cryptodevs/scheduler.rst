@@ -126,7 +126,7 @@ operation:
    than the designated threshold, otherwise it will be handled by the secondary
    slave.
 
-   A typical usecase in this mode is with the QAT cryptodev as the primary and
+   A typical use case in this mode is with the QAT cryptodev as the primary and
    a software cryptodev as the secondary slave. This may help applications to
    process additional crypto workload than what the QAT cryptodev can handle on
    its own, by making use of the available CPU cycles to deal with smaller

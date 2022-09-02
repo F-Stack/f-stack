@@ -88,7 +88,7 @@
  *
  *   - Invoke ``test_atomic_exchange`` on each lcore.  Before doing
  *     anything else, the cores wait for a synchronization event.
- *     Each core then does the follwoing for N iterations:
+ *     Each core then does the following for N iterations:
  *
  *       Generate a new token with a data integrity check
  *       Exchange the new token for previously generated token
@@ -591,7 +591,7 @@ test_atomic(void)
 	rte_atomic32_clear(&synchro);
 
 	iterations = count128.val[0] - count128.val[1];
-	if (iterations != 4*N*(rte_lcore_count()-1)) {
+	if (iterations != (uint64_t)4*N*(rte_lcore_count()-1)) {
 		printf("128-bit compare and swap failed\n");
 		return -1;
 	}

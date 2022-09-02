@@ -552,7 +552,7 @@ test_mempool(void)
 		GOTO_ERR(ret, err);
 
 	/* test to initialize mempool objects and memory */
-	nb_objs = rte_mempool_obj_iter(mp_stack_mempool_iter, rte_pktmbuf_init,
+	nb_objs = rte_mempool_obj_iter(mp_stack_mempool_iter, my_obj_init,
 			NULL);
 	if (nb_objs == 0)
 		GOTO_ERR(ret, err);
@@ -633,7 +633,7 @@ test_mempool(void)
 	if (test_mempool_basic_ex(mp_nocache) < 0)
 		GOTO_ERR(ret, err);
 
-	/* mempool operation test based on single producer and single comsumer */
+	/* mempool operation test based on single producer and single consumer */
 	if (test_mempool_sp_sc() < 0)
 		GOTO_ERR(ret, err);
 

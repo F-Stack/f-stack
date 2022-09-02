@@ -4,15 +4,21 @@
 project('DPDK', 'C',
 	# Get version number from file.
 	# Fallback to "more" for Windows compatibility.
-	version: run_command(find_program('cat', 'more'),
-		files('VERSION')).stdout().strip(),
+	version: run_command(find_program('cat', 'more'), files('VERSION'),
+			check: true).stdout().strip(),
 	license: 'BSD',
-	default_options: ['buildtype=release', 'default_library=static'],
+	default_options: [
+        'buildtype=release',
+        'default_library=static',
+        'warning_level=2',
+    ],
 	meson_version: '>= 0.47.1'
 )
 
 # set up some global vars for compiler, platform, configuration, etc.
 cc = meson.get_compiler('c')
+dpdk_source_root = meson.current_source_dir()
+dpdk_build_root = meson.current_build_dir()
 dpdk_conf = configuration_data()
 dpdk_libraries = []
 dpdk_static_libraries = []
@@ -50,7 +56,7 @@ subdir('doc')
 subdir('examples')
 install_subdir('examples',
 	install_dir: get_option('datadir') + '/dpdk',
-	exclude_files: 'meson.build')
+	exclude_files: ex_file_excludes)
 
 # build kernel modules if enabled
 if get_option('enable_kmods')
@@ -64,8 +70,34 @@ configure_file(output: build_cfg,
 		install_dir: join_paths(get_option('includedir'),
 				get_option('include_subdir_arch')))
 
-# build pkg-config files for dpdk
-subdir('buildtools/pkg-config')
+platform_flags = []
+if not is_windows
+       platform_flags += ['-Wl,--export-dynamic'] # ELF only
+endif
+
+# for static builds, include the drivers as libs and we need to "whole-archive"
+# them.
+dpdk_drivers = ['-Wl,--whole-archive'] + dpdk_drivers + ['-Wl,--no-whole-archive'] + platform_flags
+
+pkg = import('pkgconfig')
+pkg_extra_cflags = ['-include', 'rte_config.h'] + machine_args
+if is_freebsd
+	pkg_extra_cflags += ['-D__BSD_VISIBLE']
+endif
+pkg.generate(name: meson.project_name(),
+	filebase: 'lib' + meson.project_name().to_lower(),
+	version: meson.project_version(),
+	libraries: dpdk_libraries,
+	libraries_private: dpdk_drivers + dpdk_static_libraries +
+			['-Wl,-Bdynamic'] + dpdk_extra_ldflags,
+	requires: libbsd, # apps using rte_string_fns.h may need this if enabled
+	                  # if libbsd is not enabled, then this is blank
+	description: '''The Data Plane Development Kit (DPDK).
+Note that CFLAGS might contain an -march flag higher than typical baseline.
+This is required for a number of static inline functions in the public headers.''',
+	subdirs: [get_option('include_subdir_arch'), '.'],
+	extra_cflags: pkg_extra_cflags
+)
 
 # final output, list all the libs and drivers to be built
 # this does not affect any part of the build, for information only.

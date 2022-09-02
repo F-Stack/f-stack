@@ -451,17 +451,18 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 
 	if (info->ethertype == _htons(RTE_ETHER_TYPE_IPV4)) {
 		ipv4_hdr = l3_hdr;
-		ipv4_hdr->hdr_checksum = 0;
 
 		ol_flags |= PKT_TX_IPV4;
 		if (info->l4_proto == IPPROTO_TCP && tso_segsz) {
 			ol_flags |= PKT_TX_IP_CKSUM;
 		} else {
-			if (tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM)
+			if (tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM) {
 				ol_flags |= PKT_TX_IP_CKSUM;
-			else
+			} else {
+				ipv4_hdr->hdr_checksum = 0;
 				ipv4_hdr->hdr_checksum =
 					rte_ipv4_cksum(ipv4_hdr);
+			}
 		}
 	} else if (info->ethertype == _htons(RTE_ETHER_TYPE_IPV6))
 		ol_flags |= PKT_TX_IPV6;
@@ -472,10 +473,10 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 		udp_hdr = (struct rte_udp_hdr *)((char *)l3_hdr + info->l3_len);
 		/* do not recalculate udp cksum if it was 0 */
 		if (udp_hdr->dgram_cksum != 0) {
-			udp_hdr->dgram_cksum = 0;
-			if (tx_offloads & DEV_TX_OFFLOAD_UDP_CKSUM)
+			if (tx_offloads & DEV_TX_OFFLOAD_UDP_CKSUM) {
 				ol_flags |= PKT_TX_UDP_CKSUM;
-			else {
+			} else {
+				udp_hdr->dgram_cksum = 0;
 				udp_hdr->dgram_cksum =
 					get_udptcp_checksum(l3_hdr, udp_hdr,
 						info->ethertype);
@@ -485,12 +486,12 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 			ol_flags |= PKT_TX_UDP_SEG;
 	} else if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct rte_tcp_hdr *)((char *)l3_hdr + info->l3_len);
-		tcp_hdr->cksum = 0;
 		if (tso_segsz)
 			ol_flags |= PKT_TX_TCP_SEG;
-		else if (tx_offloads & DEV_TX_OFFLOAD_TCP_CKSUM)
+		else if (tx_offloads & DEV_TX_OFFLOAD_TCP_CKSUM) {
 			ol_flags |= PKT_TX_TCP_CKSUM;
-		else {
+		} else {
+			tcp_hdr->cksum = 0;
 			tcp_hdr->cksum =
 				get_udptcp_checksum(l3_hdr, tcp_hdr,
 					info->ethertype);
@@ -500,13 +501,13 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 	} else if (info->l4_proto == IPPROTO_SCTP) {
 		sctp_hdr = (struct rte_sctp_hdr *)
 			((char *)l3_hdr + info->l3_len);
-		sctp_hdr->cksum = 0;
 		/* sctp payload must be a multiple of 4 to be
 		 * offloaded */
 		if ((tx_offloads & DEV_TX_OFFLOAD_SCTP_CKSUM) &&
 			((ipv4_hdr->total_length & 0x3) == 0)) {
 			ol_flags |= PKT_TX_SCTP_CKSUM;
 		} else {
+			sctp_hdr->cksum = 0;
 			/* XXX implement CRC32c, example available in
 			 * RFC3309 */
 		}
@@ -733,6 +734,26 @@ pkt_copy_split(const struct rte_mbuf *pkt)
 }
 
 /*
+ * Re-calculate IP checksum for merged/fragmented packets.
+ */
+static void
+pkts_ip_csum_recalc(struct rte_mbuf **pkts_burst, const uint16_t nb_pkts, uint64_t tx_offloads)
+{
+	int i;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	for (i = 0; i < nb_pkts; i++) {
+		if ((pkts_burst[i]->ol_flags & PKT_TX_IPV4) &&
+			(tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM) == 0) {
+			ipv4_hdr = rte_pktmbuf_mtod_offset(pkts_burst[i],
+						struct rte_ipv4_hdr *,
+						pkts_burst[i]->l2_len);
+			ipv4_hdr->hdr_checksum = 0;
+			ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);
+		}
+	}
+}
+
+/*
  * Receive a burst of packets, and for each packet:
  *  - parse packet, and try to recognize a supported packet type (1)
  *  - if it's not a supported packet type, don't touch the packet, else:
@@ -845,10 +866,6 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		 * and inner headers */
 
 		eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-		rte_ether_addr_copy(&peer_eth_addrs[fs->peer_addr],
-				&eth_hdr->d_addr);
-		rte_ether_addr_copy(&ports[fs->tx_port].eth_addr,
-				&eth_hdr->s_addr);
 		parse_ethernet(eth_hdr, &info);
 		l3_hdr = (char *)eth_hdr + info.l2_len;
 
@@ -926,8 +943,7 @@ tunnel_update:
 			    (tx_offloads &
 			     DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
 			    (tx_offloads &
-			     DEV_TX_OFFLOAD_OUTER_UDP_CKSUM) ||
-			    (tx_ol_flags & PKT_TX_OUTER_IPV6)) {
+			     DEV_TX_OFFLOAD_OUTER_UDP_CKSUM)) {
 				m->outer_l2_len = info.outer_l2_len;
 				m->outer_l3_len = info.outer_l3_len;
 				m->l2_len = info.l2_len;
@@ -1039,6 +1055,8 @@ tunnel_update:
 				fs->gro_times = 0;
 			}
 		}
+
+		pkts_ip_csum_recalc(pkts_burst, nb_rx, tx_offloads);
 	}
 
 	if (gso_ports[fs->tx_port].enable == 0)
@@ -1060,6 +1078,8 @@ tunnel_update:
 
 		tx_pkts_burst = gso_segments;
 		nb_rx = nb_segments;
+
+		pkts_ip_csum_recalc(tx_pkts_burst, nb_rx, tx_offloads);
 	}
 
 	nb_prep = rte_eth_tx_prepare(fs->tx_port, fs->tx_queue,

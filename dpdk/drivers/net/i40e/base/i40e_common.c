@@ -1261,12 +1261,15 @@ STATIC enum i40e_media_type i40e_get_media_type(struct i40e_hw *hw)
 	case I40E_PHY_TYPE_40GBASE_LR4:
 	case I40E_PHY_TYPE_25GBASE_LR:
 	case I40E_PHY_TYPE_25GBASE_SR:
+	case I40E_PHY_TYPE_10GBASE_AOC:
+	case I40E_PHY_TYPE_25GBASE_AOC:
+	case I40E_PHY_TYPE_40GBASE_AOC:
 		media = I40E_MEDIA_TYPE_FIBER;
 		break;
 	case I40E_PHY_TYPE_100BASE_TX:
 	case I40E_PHY_TYPE_1000BASE_T:
-	case I40E_PHY_TYPE_2_5GBASE_T:
-	case I40E_PHY_TYPE_5GBASE_T:
+	case I40E_PHY_TYPE_2_5GBASE_T_LINK_STATUS:
+	case I40E_PHY_TYPE_5GBASE_T_LINK_STATUS:
 	case I40E_PHY_TYPE_10GBASE_T:
 		media = I40E_MEDIA_TYPE_BASET;
 		break;
@@ -1275,10 +1278,7 @@ STATIC enum i40e_media_type i40e_get_media_type(struct i40e_hw *hw)
 	case I40E_PHY_TYPE_10GBASE_CR1:
 	case I40E_PHY_TYPE_40GBASE_CR4:
 	case I40E_PHY_TYPE_10GBASE_SFPP_CU:
-	case I40E_PHY_TYPE_40GBASE_AOC:
-	case I40E_PHY_TYPE_10GBASE_AOC:
 	case I40E_PHY_TYPE_25GBASE_CR:
-	case I40E_PHY_TYPE_25GBASE_AOC:
 	case I40E_PHY_TYPE_25GBASE_ACC:
 		media = I40E_MEDIA_TYPE_DA;
 		break;
@@ -1326,7 +1326,7 @@ STATIC enum i40e_status_code i40e_poll_globr(struct i40e_hw *hw,
 	return I40E_ERR_RESET_FAILED;
 }
 
-#define I40E_PF_RESET_WAIT_COUNT	200
+#define I40E_PF_RESET_WAIT_COUNT	1000
 /**
  * i40e_pf_reset - Reset the PF
  * @hw: pointer to the hardware structure
@@ -2030,6 +2030,9 @@ enum i40e_status_code i40e_aq_get_link_info(struct i40e_hw *hw,
 	     hw->aq.fw_min_ver < 40)) && hw_link_info->phy_type == 0xE)
 		hw_link_info->phy_type = I40E_PHY_TYPE_10GBASE_SFPP_CU;
 
+	/* 'Get Link Status' response data structure from X722 FW has
+	 * different format and does not contain this information
+	 */
 	if (hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE &&
 	    hw->mac.type != I40E_MAC_X722) {
 		__le32 tmp;
@@ -2626,7 +2629,7 @@ enum i40e_status_code i40e_aq_set_vsi_vlan_promisc(struct i40e_hw *hw,
 }
 
 /**
- * i40e_get_vsi_params - get VSI configuration info
+ * i40e_aq_get_vsi_params - get VSI configuration info
  * @hw: pointer to the hw struct
  * @vsi_ctx: pointer to a vsi context struct
  * @cmd_details: pointer to command details structure or NULL
@@ -2887,7 +2890,7 @@ enum i40e_status_code i40e_get_link_status(struct i40e_hw *hw, bool *link_up)
 }
 
 /**
- * i40e_updatelink_status - update status of the HW network link
+ * i40e_update_link_info - update status of the HW network link
  * @hw: pointer to the hw struct
  **/
 enum i40e_status_code i40e_update_link_info(struct i40e_hw *hw)
@@ -2900,10 +2903,13 @@ enum i40e_status_code i40e_update_link_info(struct i40e_hw *hw)
 		return status;
 
 	/* extra checking needed to ensure link info to user is timely */
-	if ((hw->phy.link_info.link_info & I40E_AQ_MEDIA_AVAILABLE) &&
-	    ((hw->phy.link_info.link_info & I40E_AQ_LINK_UP) ||
-	     !(hw->phy.link_info_old.link_info & I40E_AQ_LINK_UP))) {
-		status = i40e_aq_get_phy_capabilities(hw, false, false,
+	if (((hw->phy.link_info.link_info & I40E_AQ_MEDIA_AVAILABLE) &&
+	     ((hw->phy.link_info.link_info & I40E_AQ_LINK_UP) ||
+	      !(hw->phy.link_info_old.link_info & I40E_AQ_LINK_UP))) ||
+		hw->mac.type == I40E_MAC_X722) {
+		status = i40e_aq_get_phy_capabilities(hw, false,
+						      hw->mac.type ==
+						      I40E_MAC_X722,
 						      &abilities, NULL);
 		if (status)
 			return status;
@@ -4716,7 +4722,7 @@ enum i40e_status_code i40e_aq_del_udp_tunnel(struct i40e_hw *hw, u8 index,
 }
 
 /**
- * i40e_aq_get_switch_resource_alloc (0x0204)
+ * i40e_aq_get_switch_resource_alloc - command (0x0204) to get allocations
  * @hw: pointer to the hw struct
  * @num_entries: pointer to u8 to store the number of resource entries returned
  * @buf: pointer to a user supplied buffer.  This buffer must be large enough
@@ -5857,7 +5863,7 @@ enum i40e_status_code i40e_aq_add_cloud_filters(struct i40e_hw *hw,
  * @filter_count: number of filters contained in the buffer
  *
  * Set the cloud filters for a given VSI.  The contents of the
- * i40e_aqc_cloud_filters_element_bb are filled in by the caller of the
+ * i40e_aqc_cloud_filters_element_bb are filled in by the caller of
  * the function.
  *
  **/
@@ -6798,7 +6804,7 @@ u8 i40e_get_phy_address(struct i40e_hw *hw, u8 dev_num)
 }
 
 /**
- * i40e_blink_phy_led
+ * i40e_blink_phy_link_led
  * @hw: pointer to the HW structure
  * @time: time how long led will blinks in secs
  * @interval: gap between LED on and off in msecs
@@ -7365,7 +7371,7 @@ enum i40e_status_code i40e_aq_set_arp_proxy_config(struct i40e_hw *hw,
 }
 
 /**
- * i40e_aq_opc_set_ns_proxy_table_entry
+ * i40e_aq_set_ns_proxy_table_entry
  * @hw: pointer to the HW structure
  * @ns_proxy_table_entry: pointer to NS table entry command struct
  * @cmd_details: pointer to command details

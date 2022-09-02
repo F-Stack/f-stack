@@ -472,7 +472,7 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		mbp1 = _mm_loadu_si128((__m128i *)&mbufp[pos]);
 
 		/* Read desc statuses backwards to avoid race condition */
-		/* A.1 load 4 pkts desc */
+		/* A.1 load desc[3] */
 		descs0[3] = _mm_loadu_si128((__m128i *)(rxdp + 3));
 		rte_compiler_barrier();
 
@@ -484,9 +484,9 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		mbp2 = _mm_loadu_si128((__m128i *)&mbufp[pos+2]);
 #endif
 
+		/* A.1 load desc[2-0] */
 		descs0[2] = _mm_loadu_si128((__m128i *)(rxdp + 2));
 		rte_compiler_barrier();
-		/* B.1 load 2 mbuf point */
 		descs0[1] = _mm_loadu_si128((__m128i *)(rxdp + 1));
 		rte_compiler_barrier();
 		descs0[0] = _mm_loadu_si128((__m128i *)(rxdp));
@@ -544,7 +544,7 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			/* and with mask to extract bits, flipping 1-0 */
 			__m128i eop_bits = _mm_andnot_si128(staterr, eop_check);
 			/* the staterr values are not in order, as the count
-			 * count of dd bits doesn't care. However, for end of
+			 * of dd bits doesn't care. However, for end of
 			 * packet tracking, we do care, so shuffle. This also
 			 * compresses the 32-bit values to 8-bit
 			 */

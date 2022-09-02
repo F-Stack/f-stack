@@ -587,7 +587,6 @@ eal_parse_socket_arg(char *strval, volatile uint64_t *socket_arg)
 	char * arg[RTE_MAX_NUMA_NODES];
 	char *end;
 	int arg_num, i, len;
-	uint64_t total_mem = 0;
 
 	len = strnlen(strval, SOCKET_MEM_STRLEN);
 	if (len == SOCKET_MEM_STRLEN) {
@@ -619,7 +618,6 @@ eal_parse_socket_arg(char *strval, volatile uint64_t *socket_arg)
 				(arg[i][0] == '\0') || (end == NULL) || (*end != '\0'))
 			return -1;
 		val <<= 20;
-		total_mem += val;
 		socket_arg[i] = val;
 	}
 
@@ -1325,7 +1323,11 @@ rte_eal_cleanup(void)
 	 */
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
 		rte_memseg_walk(mark_freeable, NULL);
+
 	rte_service_finalize();
+#ifdef VFIO_PRESENT
+	vfio_mp_sync_cleanup();
+#endif
 	rte_mp_channel_cleanup();
 	eal_cleanup_config(&internal_config);
 	return 0;

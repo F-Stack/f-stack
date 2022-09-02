@@ -3,6 +3,8 @@
  * Copyright(c) 2017-2018 Intel Corporation.
  */
 
+#include <math.h>
+
 #include <rte_atomic.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
@@ -46,7 +48,7 @@ static uint64_t global_info_bkt_tck_ns;
 static volatile uint8_t arm_done;
 
 #define CALC_TICKS(tks)					\
-	((tks * global_bkt_tck_ns) / global_info_bkt_tck_ns)
+	ceil((double)(tks * global_bkt_tck_ns) / global_info_bkt_tck_ns)
 
 
 static bool using_services;
@@ -963,8 +965,6 @@ adapter_create(void)
 
 	TEST_ASSERT_SUCCESS(rte_event_timer_adapter_free(adapter),
 			"Failed to free adapter");
-
-	rte_mempool_free(eventdev_test_mempool);
 
 	return TEST_SUCCESS;
 }

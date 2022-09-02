@@ -380,7 +380,7 @@ cperf_check_test_vector(struct cperf_options *opts,
 		if (opts->cipher_algo == RTE_CRYPTO_CIPHER_NULL) {
 			if (test_vec->plaintext.data == NULL)
 				return -1;
-		} else if (opts->cipher_algo != RTE_CRYPTO_CIPHER_NULL) {
+		} else {
 			if (test_vec->plaintext.data == NULL)
 				return -1;
 			if (test_vec->plaintext.length < opts->max_buffer_size)
@@ -430,7 +430,7 @@ cperf_check_test_vector(struct cperf_options *opts,
 				return -1;
 			if (test_vec->plaintext.length < opts->max_buffer_size)
 				return -1;
-		} else if (opts->cipher_algo != RTE_CRYPTO_CIPHER_NULL) {
+		} else {
 			if (test_vec->plaintext.data == NULL)
 				return -1;
 			if (test_vec->plaintext.length < opts->max_buffer_size)
@@ -520,14 +520,14 @@ main(int argc, char **argv)
 
 	ret = cperf_options_parse(&opts, argc, argv);
 	if (ret) {
-		RTE_LOG(ERR, USER1, "Parsing on or more user options failed\n");
+		RTE_LOG(ERR, USER1, "Parsing one or more user options failed\n");
 		goto err;
 	}
 
 	ret = cperf_options_check(&opts);
 	if (ret) {
 		RTE_LOG(ERR, USER1,
-				"Checking on or more user options failed\n");
+				"Checking one or more user options failed\n");
 		goto err;
 	}
 

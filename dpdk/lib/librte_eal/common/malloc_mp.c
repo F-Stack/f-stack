@@ -170,9 +170,7 @@ handle_sync(const struct rte_mp_msg *msg, const void *peer)
 	resp->id = req->id;
 	resp->result = ret == 0 ? REQ_RESULT_SUCCESS : REQ_RESULT_FAIL;
 
-	rte_mp_reply(&reply, peer);
-
-	return 0;
+	return rte_mp_reply(&reply, peer);
 }
 
 static int
@@ -188,7 +186,7 @@ handle_alloc_request(const struct malloc_mp_req *m,
 	void *map_addr;
 
 	alloc_sz = RTE_ALIGN_CEIL(ar->align + ar->elt_size +
-			MALLOC_ELEM_TRAILER_LEN, ar->page_sz);
+			MALLOC_ELEM_OVERHEAD, ar->page_sz);
 	n_segs = alloc_sz / ar->page_sz;
 
 	heap = ar->heap;

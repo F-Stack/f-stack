@@ -117,6 +117,7 @@ initialize_tcp_header(struct rte_tcp_hdr *tcp_hdr, uint16_t src_port,
 	memset(tcp_hdr, 0, sizeof(struct rte_tcp_hdr));
 	tcp_hdr->src_port = rte_cpu_to_be_16(src_port);
 	tcp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
+	tcp_hdr->data_off = (sizeof(struct rte_tcp_hdr) << 2) & 0xF0;
 
 	return pkt_len;
 }
@@ -141,8 +142,8 @@ uint16_t
 initialize_ipv6_header(struct rte_ipv6_hdr *ip_hdr, uint8_t *src_addr,
 		uint8_t *dst_addr, uint16_t pkt_data_len)
 {
-	ip_hdr->vtc_flow = 0;
-	ip_hdr->payload_len = pkt_data_len;
+	ip_hdr->vtc_flow = rte_cpu_to_be_32(0x60000000); /* Set version to 6. */
+	ip_hdr->payload_len = rte_cpu_to_be_16(pkt_data_len);
 	ip_hdr->proto = IPPROTO_UDP;
 	ip_hdr->hop_limits = IP_DEFTTL;
 

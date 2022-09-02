@@ -113,7 +113,7 @@ i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
 #endif
 	rx_ctx.dtype = i40e_header_split_none;
 	rx_ctx.hsplit_0 = I40E_HEADER_SPLIT_NONE;
-	rx_ctx.rxmax = RTE_ETHER_MAX_LEN;
+	rx_ctx.rxmax = I40E_ETH_MAX_LEN;
 	rx_ctx.tphrdesc_ena = 1;
 	rx_ctx.tphwdesc_ena = 1;
 	rx_ctx.tphdata_ena = 1;
@@ -156,7 +156,7 @@ i40e_fdir_setup(struct i40e_pf *pf)
 	int err = I40E_SUCCESS;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 	const struct rte_memzone *mz = NULL;
-	struct rte_eth_dev *eth_dev = pf->adapter->eth_dev;
+	struct rte_eth_dev *eth_dev = &rte_eth_devices[pf->dev_data->port_id];
 
 	if ((pf->flags & I40E_FLAG_FDIR) == 0) {
 		PMD_INIT_LOG(ERR, "HW doesn't support FDIR");

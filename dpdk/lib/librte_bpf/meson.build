@@ -20,7 +20,7 @@ install_headers('bpf_def.h',
 
 deps += ['mbuf', 'net', 'ethdev']
 
-dep = dependency('libelf', required: false)
+dep = dependency('libelf', required: false, method: 'pkg-config')
 if dep.found()
 	dpdk_conf.set('RTE_LIBRTE_BPF_ELF', 1)
 	sources += files('bpf_load_elf.c')

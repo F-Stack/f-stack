@@ -96,14 +96,14 @@ static struct flow_key keys[5] = {
 /* Array to store the data */
 static efd_value_t data[5];
 
-static inline uint8_t efd_get_all_sockets_bitmask(void)
+static inline uint64_t efd_get_all_sockets_bitmask(void)
 {
-	uint8_t all_cpu_sockets_bitmask = 0;
+	uint64_t all_cpu_sockets_bitmask = 0;
 	unsigned int i;
 	unsigned int next_lcore = rte_get_master_lcore();
 	const int val_true = 1, val_false = 0;
 	for (i = 0; i < rte_lcore_count(); i++) {
-		all_cpu_sockets_bitmask |= 1 << rte_lcore_to_socket_id(next_lcore);
+		all_cpu_sockets_bitmask |= 1ULL << rte_lcore_to_socket_id(next_lcore);
 		next_lcore = rte_get_next_lcore(next_lcore, val_false, val_true);
 	}
 
@@ -448,6 +448,7 @@ static int test_efd_creation_with_bad_parameters(void)
 static int
 test_efd(void)
 {
+	test_socket_id = rte_socket_id();
 
 	/* Unit tests */
 	if (test_add_delete() < 0)

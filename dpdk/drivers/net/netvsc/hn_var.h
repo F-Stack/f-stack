@@ -113,14 +113,14 @@ struct hn_data {
 	uint32_t	link_status;
 	uint32_t	link_speed;
 
-	struct rte_mem_resource *rxbuf_res;	/* UIO resource for Rx */
+	struct rte_mem_resource rxbuf_res;	/* UIO resource for Rx */
 	uint32_t	rxbuf_section_cnt;	/* # of Rx sections */
 	uint16_t	max_queues;		/* Max available queues */
 	uint16_t	num_queues;
 	uint64_t	rss_offloads;
 
 	rte_spinlock_t	chim_lock;
-	struct rte_mem_resource *chim_res;	/* UIO resource for Tx */
+	struct rte_mem_resource chim_res;	/* UIO resource for Tx */
 	struct rte_bitmap *chim_bmap;		/* Send buffer map */
 	void		*chim_bmem;
 	uint32_t	chim_szmax;		/* Max size per buffer */

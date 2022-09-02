@@ -392,6 +392,9 @@ pfe_eth_exit(struct rte_eth_dev *dev, struct pfe *pfe)
 {
 	PMD_INIT_FUNC_TRACE();
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	pfe_eth_stop(dev);
 	/* Close the device file for link status */
 	pfe_eth_close_cdev(dev->data->dev_private);
@@ -579,11 +582,6 @@ pfe_eth_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 	struct pfe_eth_priv_s *priv = dev->data->dev_private;
 	struct rte_eth_link link, old;
 	unsigned int lstatus = 1;
-
-	if (dev == NULL) {
-		PFE_PMD_ERR("Invalid device in link_update.\n");
-		return 0;
-	}
 
 	memset(&old, 0, sizeof(old));
 	memset(&link, 0, sizeof(struct rte_eth_link));

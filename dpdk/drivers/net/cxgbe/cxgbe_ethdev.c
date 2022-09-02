@@ -304,7 +304,7 @@ int cxgbe_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 		return -EINVAL;
 
 	/* set to jumbo mode if needed */
-	if (new_mtu > RTE_ETHER_MAX_LEN)
+	if (new_mtu > CXGBE_ETH_MAX_LEN)
 		eth_dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -328,6 +328,9 @@ void cxgbe_dev_close(struct rte_eth_dev *eth_dev)
 	struct adapter *adapter = pi->adapter;
 
 	CXGBE_FUNC_TRACE();
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	if (!(adapter->flags & FULL_INIT_DONE))
 		return;
@@ -644,11 +647,10 @@ int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	}
 
 	rxq->rspq.size = temp_nb_desc;
-	if ((&rxq->fl) != NULL)
-		rxq->fl.size = temp_nb_desc;
+	rxq->fl.size = temp_nb_desc;
 
 	/* Set to jumbo mode if necessary */
-	if (pkt_len > RTE_ETHER_MAX_LEN)
+	if (pkt_len > CXGBE_ETH_MAX_LEN)
 		eth_dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else

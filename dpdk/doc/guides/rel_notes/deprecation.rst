@@ -59,6 +59,12 @@ Deprecation Notices
   - ``rte_eth_dev_stop``
   - ``rte_eth_dev_close``
 
+* ethdev: Will add ``RTE_ETH_`` prefix to all ethdev macros/enums in v21.11.
+  Macros will be added for backward compatibility.
+  Backward compatibility macros will be removed on v22.11.
+  A few old backward compatibility macros from 2013 that does not have
+  proper prefix will be removed on v21.11.
+
 * ethdev: New offload flags ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
   This will allow application to enable or disable PMDs from updating
   ``rte_mbuf::hash::fdir``.

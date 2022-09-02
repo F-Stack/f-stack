@@ -133,6 +133,8 @@ struct rte_flow_expand_node {
 	 * RSS types bit-field associated with this node
 	 * (see ETH_RSS_* definitions).
 	 */
+	uint8_t optional;
+	/**< optional expand field. Default 0 to expand, 1 not go deeper. */
 };
 
 /** Object returned by rte_flow_expand_rss(). */

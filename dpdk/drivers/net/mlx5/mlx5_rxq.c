@@ -89,7 +89,7 @@ mlx5_check_mprq_support(struct rte_eth_dev *dev)
 inline int
 mlx5_rxq_mprq_enabled(struct mlx5_rxq_data *rxq)
 {
-	return rxq->strd_num_n > 0;
+	return rxq->log_strd_num > 0;
 }
 
 /**
@@ -502,8 +502,18 @@ mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	struct mlx5_rxq_data *rxq = (*priv->rxqs)[idx];
 	struct mlx5_rxq_ctrl *rxq_ctrl =
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
+	uint64_t offloads = conf->offloads |
+			    dev->data->dev_conf.rxmode.offloads;
 	int res;
 
+	if ((offloads & DEV_RX_OFFLOAD_TCP_LRO) &&
+	    !priv->config.lro.supported) {
+		DRV_LOG(ERR,
+			"Port %u queue %u LRO is configured but not supported.",
+			dev->data->port_id, idx);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
 	res = mlx5_rx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
@@ -723,9 +733,6 @@ mlx5_rx_intr_vec_enable(struct rte_eth_dev *dev)
 	unsigned int count = 0;
 	struct rte_intr_handle *intr_handle = dev->intr_handle;
 
-	/* Representor shares dev->intr_handle with PF. */
-	if (priv->representor)
-		return 0;
 	if (!dev->data->dev_conf.intr_conf.rxq)
 		return 0;
 	mlx5_rx_intr_vec_disable(dev);
@@ -803,9 +810,6 @@ mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev)
 	unsigned int rxqs_n = priv->rxqs_n;
 	unsigned int n = RTE_MIN(rxqs_n, (uint32_t)RTE_MAX_RXTX_INTR_VEC_ID);
 
-	/* Representor shares dev->intr_handle with PF. */
-	if (priv->representor)
-		return;
 	if (!dev->data->dev_conf.intr_conf.rxq)
 		return;
 	if (!intr_handle->intr_vec)
@@ -1093,8 +1097,8 @@ mlx5_ibv_wq_new(struct rte_eth_dev *dev, struct mlx5_priv *priv,
 
 		wq_attr.mlx5.comp_mask |= MLX5DV_WQ_INIT_ATTR_MASK_STRIDING_RQ;
 		*mprq_attr = (struct mlx5dv_striding_rq_init_attr){
-			.single_stride_log_num_of_bytes = rxq_data->strd_sz_n,
-			.single_wqe_log_num_of_strides = rxq_data->strd_num_n,
+			.single_stride_log_num_of_bytes = rxq_data->log_strd_sz,
+			.single_wqe_log_num_of_strides = rxq_data->log_strd_num,
 			.two_byte_shift_en = MLX5_MPRQ_TWO_BYTE_SHIFT,
 		};
 	}
@@ -1211,11 +1215,11 @@ mlx5_devx_rq_new(struct rte_eth_dev *dev, uint16_t idx, uint32_t cqn)
 		 * 512*2^single_wqe_log_num_of_strides.
 		 */
 		rq_attr.wq_attr.single_wqe_log_num_of_strides =
-				rxq_data->strd_num_n -
+				rxq_data->log_strd_num -
 				MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
 		/* Stride size = (2^single_stride_log_num_of_bytes)*64B. */
 		rq_attr.wq_attr.single_stride_log_num_of_bytes =
-				rxq_data->strd_sz_n -
+				rxq_data->log_strd_sz -
 				MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES;
 		wqe_size = sizeof(struct mlx5_wqe_mprq);
 	} else {
@@ -1366,7 +1370,7 @@ mlx5_rxq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 		}
 	}
 	if (mlx5_rxq_mprq_enabled(rxq_data))
-		cqe_n = wqe_n * (1 << rxq_data->strd_num_n) - 1;
+		cqe_n = wqe_n * (1 << rxq_data->log_strd_num) - 1;
 	else
 		cqe_n = wqe_n  - 1;
 	tmpl->cq = mlx5_ibv_cq_new(dev, priv, rxq_data, cqe_n, tmpl);
@@ -1610,8 +1614,8 @@ mlx5_mprq_alloc_mp(struct rte_eth_dev *dev)
 	unsigned int buf_len;
 	unsigned int obj_num;
 	unsigned int obj_size;
-	unsigned int strd_num_n = 0;
-	unsigned int strd_sz_n = 0;
+	unsigned int log_strd_num = 0;
+	unsigned int log_strd_sz = 0;
 	unsigned int i;
 	unsigned int n_ibv = 0;
 
@@ -1628,16 +1632,18 @@ mlx5_mprq_alloc_mp(struct rte_eth_dev *dev)
 		n_ibv++;
 		desc += 1 << rxq->elts_n;
 		/* Get the max number of strides. */
-		if (strd_num_n < rxq->strd_num_n)
-			strd_num_n = rxq->strd_num_n;
+		if (log_strd_num < rxq->log_strd_num)
+			log_strd_num = rxq->log_strd_num;
 		/* Get the max size of a stride. */
-		if (strd_sz_n < rxq->strd_sz_n)
-			strd_sz_n = rxq->strd_sz_n;
+		if (log_strd_sz < rxq->log_strd_sz)
+			log_strd_sz = rxq->log_strd_sz;
 	}
-	assert(strd_num_n && strd_sz_n);
-	buf_len = (1 << strd_num_n) * (1 << strd_sz_n);
-	obj_size = sizeof(struct mlx5_mprq_buf) + buf_len + (1 << strd_num_n) *
-		sizeof(struct rte_mbuf_ext_shared_info) + RTE_PKTMBUF_HEADROOM;
+	assert(log_strd_num && log_strd_sz);
+	buf_len = (1 << log_strd_num) * (1 << log_strd_sz);
+	obj_size = sizeof(struct mlx5_mprq_buf) + buf_len +
+		   (1 << log_strd_num) *
+		   sizeof(struct rte_mbuf_ext_shared_info) +
+		   RTE_PKTMBUF_HEADROOM;
 	/*
 	 * Received packets can be either memcpy'd or externally referenced. In
 	 * case that the packet is attached to an mbuf as an external buffer, as
@@ -1683,7 +1689,7 @@ mlx5_mprq_alloc_mp(struct rte_eth_dev *dev)
 	snprintf(name, sizeof(name), "port-%u-mprq", dev->data->port_id);
 	mp = rte_mempool_create(name, obj_num, obj_size, MLX5_MPRQ_MP_CACHE_SZ,
 				0, NULL, NULL, mlx5_mprq_buf_init,
-				(void *)(uintptr_t)(1 << strd_num_n),
+				(void *)((uintptr_t)1 << log_strd_num),
 				dev->device->numa_node, 0);
 	if (mp == NULL) {
 		DRV_LOG(ERR,
@@ -1746,6 +1752,117 @@ mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint32_t max_lro_size)
 }
 
 /**
+ * Prepare both size and number of stride for Multi-Packet RQ.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param idx
+ *   RX queue index.
+ * @param min_mbuf_size
+ *   Non scatter min mbuf size, max_rx_pktlen plus overhead.
+ * @param actual_log_stride_num
+ *   Log number of strides to configure for this queue.
+ * @param actual_log_stride_size
+ *   Log stride size to configure for this queue.
+ *
+ * @return
+ *   0 if Multi-Packet RQ is supported, otherwise -1.
+ */
+static int
+mlx5_mprq_prepare(struct rte_eth_dev *dev, uint16_t idx,
+		  uint32_t min_mbuf_size, uint32_t *actual_log_stride_num,
+		  uint32_t *actual_log_stride_size)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_dev_config *config = &priv->config;
+	uint32_t log_min_stride_num = config->mprq.log_min_stride_num;
+	uint32_t log_max_stride_num = config->mprq.log_max_stride_num;
+	uint32_t log_def_stride_num =
+			RTE_MIN(RTE_MAX(MLX5_MPRQ_DEFAULT_LOG_STRIDE_NUM,
+					log_min_stride_num),
+				log_max_stride_num);
+	uint32_t log_min_stride_size = config->mprq.log_min_stride_size;
+	uint32_t log_max_stride_size = config->mprq.log_max_stride_size;
+	uint32_t log_def_stride_size =
+			RTE_MIN(RTE_MAX(MLX5_MPRQ_DEFAULT_LOG_STRIDE_SIZE,
+					log_min_stride_size),
+				log_max_stride_size);
+	uint32_t log_stride_wqe_size;
+
+	if (mlx5_check_mprq_support(dev) != 1)
+		goto unsupport;
+	/* Checks if chosen number of strides is in supported range. */
+	if (config->mprq.log_stride_num > log_max_stride_num ||
+	    config->mprq.log_stride_num < log_min_stride_num) {
+		*actual_log_stride_num = log_def_stride_num;
+		DRV_LOG(WARNING,
+			"Port %u Rx queue %u number of strides for Multi-Packet RQ is out of range, setting default value (%u)",
+			dev->data->port_id, idx, 1U << log_def_stride_num);
+	} else {
+		*actual_log_stride_num = config->mprq.log_stride_num;
+	}
+	if (config->mprq.log_stride_size) {
+		/* Checks if chosen size of stride is in supported range. */
+		if (config->mprq.log_stride_size > log_max_stride_size ||
+		    config->mprq.log_stride_size < log_min_stride_size) {
+			*actual_log_stride_size = log_def_stride_size;
+			DRV_LOG(WARNING,
+				"Port %u Rx queue %u size of a stride for Multi-Packet RQ is out of range, setting default value (%u)",
+				dev->data->port_id, idx,
+				1U << log_def_stride_size);
+		} else {
+			*actual_log_stride_size = config->mprq.log_stride_size;
+		}
+	} else {
+		if (min_mbuf_size <= (1U << log_max_stride_size))
+			*actual_log_stride_size = log2above(min_mbuf_size);
+		else
+			goto unsupport;
+	}
+	log_stride_wqe_size = *actual_log_stride_num + *actual_log_stride_size;
+	/* Check if WQE buffer size is supported by hardware. */
+	if (log_stride_wqe_size < config->mprq.log_min_stride_wqe_size) {
+		*actual_log_stride_num = log_def_stride_num;
+		*actual_log_stride_size = log_def_stride_size;
+		DRV_LOG(WARNING,
+			"Port %u Rx queue %u size of WQE buffer for Multi-Packet RQ is too small, setting default values (stride_num_n=%u, stride_size_n=%u)",
+			dev->data->port_id, idx, 1U << log_def_stride_num,
+			1U << log_def_stride_size);
+		log_stride_wqe_size = log_def_stride_num + log_def_stride_size;
+	}
+	assert(log_stride_wqe_size >= config->mprq.log_min_stride_wqe_size);
+	if (min_mbuf_size > (1U << log_stride_wqe_size)) {
+		DRV_LOG(WARNING, "Port %u Rx queue %u "
+			"Multi-Packet RQ is unsupported, WQE buffer size (%u) "
+			"is smaller than min mbuf size (%u)",
+			dev->data->port_id, idx, 1U << log_stride_wqe_size,
+			min_mbuf_size);
+		goto unsupport;
+	}
+	DRV_LOG(DEBUG, "Port %u Rx queue %u "
+		"Multi-Packet RQ is enabled strd_num_n = %u, strd_sz_n = %u",
+		dev->data->port_id, idx, 1U << *actual_log_stride_num,
+		1U << *actual_log_stride_size);
+	return 0;
+unsupport:
+	if (config->mprq.enabled)
+		DRV_LOG(WARNING,
+			"Port %u MPRQ is requested but cannot be enabled\n"
+			" (requested: pkt_sz = %u,"
+			" rxq_num = %u, stride_sz = %u, stride_num = %u\n"
+			"  supported: min_rxqs_num = %u, min_buf_wqe_sz = %u"
+			" min_stride_sz = %u, max_stride_sz = %u).\n",
+			dev->data->port_id, min_mbuf_size, priv->rxqs_n,
+			1U << config->mprq.log_stride_size,
+			1U << config->mprq.log_stride_num,
+			config->mprq.min_rxqs_num,
+			1U << config->mprq.log_min_stride_wqe_size,
+			1U << config->mprq.log_min_stride_size,
+			1U << config->mprq.log_max_stride_size);
+	return -1;
+}
+
+/**
  * Create a DPDK Rx queue.
  *
  * @param dev
@@ -1768,20 +1885,15 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *tmpl;
 	unsigned int mb_len = rte_pktmbuf_data_room_size(mp);
-	unsigned int mprq_stride_nums;
-	unsigned int mprq_stride_size;
-	unsigned int mprq_stride_cap;
 	struct mlx5_dev_config *config = &priv->config;
 	/*
 	 * Always allocate extra slots, even if eventually
 	 * the vector Rx will not be used.
 	 */
-	uint16_t desc_n =
-		desc + config->rx_vec_en * MLX5_VPMD_DESCS_PER_LOOP;
+	uint16_t desc_n = desc + config->rx_vec_en * MLX5_VPMD_DESCS_PER_LOOP;
 	uint64_t offloads = conf->offloads |
 			   dev->data->dev_conf.rxmode.offloads;
 	unsigned int lro_on_queue = !!(offloads & DEV_RX_OFFLOAD_TCP_LRO);
-	const int mprq_en = mlx5_check_mprq_support(dev) > 0;
 	unsigned int max_rx_pkt_len = lro_on_queue ?
 			dev->data->dev_conf.rxmode.max_lro_pkt_size :
 			dev->data->dev_conf.rxmode.max_rx_pkt_len;
@@ -1789,6 +1901,12 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 							RTE_PKTMBUF_HEADROOM;
 	unsigned int max_lro_size = 0;
 	unsigned int first_mb_free_size = mb_len - RTE_PKTMBUF_HEADROOM;
+	uint32_t mprq_log_actual_stride_num = 0;
+	uint32_t mprq_log_actual_stride_size = 0;
+	const int mprq_en = !mlx5_mprq_prepare(dev, idx,
+					       non_scatter_min_mbuf_size,
+					       &mprq_log_actual_stride_num,
+					       &mprq_log_actual_stride_size);
 
 	if (non_scatter_min_mbuf_size > mb_len && !(offloads &
 						    DEV_RX_OFFLOAD_SCATTER)) {
@@ -1817,52 +1935,26 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	tmpl->socket = socket;
 	if (dev->data->dev_conf.intr_conf.rxq)
 		tmpl->irq = 1;
-	mprq_stride_nums = config->mprq.stride_num_n ?
-		config->mprq.stride_num_n : MLX5_MPRQ_STRIDE_NUM_N;
-	mprq_stride_size = non_scatter_min_mbuf_size <=
-		(1U << config->mprq.max_stride_size_n) ?
-		log2above(non_scatter_min_mbuf_size) : MLX5_MPRQ_STRIDE_SIZE_N;
-	mprq_stride_cap = (config->mprq.stride_num_n ?
-		(1U << config->mprq.stride_num_n) : (1U << mprq_stride_nums)) *
-			(config->mprq.stride_size_n ?
-		(1U << config->mprq.stride_size_n) : (1U << mprq_stride_size));
-	/*
-	 * This Rx queue can be configured as a Multi-Packet RQ if all of the
-	 * following conditions are met:
-	 *  - MPRQ is enabled.
-	 *  - The number of descs is more than the number of strides.
-	 *  - max_rx_pkt_len plus overhead is less than the max size
-	 *    of a stride or mprq_stride_size is specified by a user.
-	 *    Need to nake sure that there are enough stides to encap
-	 *    the maximum packet size in case mprq_stride_size is set.
-	 *  Otherwise, enable Rx scatter if necessary.
-	 */
-	if (mprq_en && desc > (1U << mprq_stride_nums) &&
-	    (non_scatter_min_mbuf_size <=
-	     (1U << config->mprq.max_stride_size_n) ||
-	     (config->mprq.stride_size_n &&
-	      non_scatter_min_mbuf_size <= mprq_stride_cap))) {
+	if (mprq_en && desc > (1U << mprq_log_actual_stride_num)) {
 		/* TODO: Rx scatter isn't supported yet. */
 		tmpl->rxq.sges_n = 0;
 		/* Trim the number of descs needed. */
-		desc >>= mprq_stride_nums;
-		tmpl->rxq.strd_num_n = config->mprq.stride_num_n ?
-			config->mprq.stride_num_n : mprq_stride_nums;
-		tmpl->rxq.strd_sz_n = config->mprq.stride_size_n ?
-			config->mprq.stride_size_n : mprq_stride_size;
+		desc >>= mprq_log_actual_stride_num;
+		tmpl->rxq.log_strd_num = mprq_log_actual_stride_num;
+		tmpl->rxq.log_strd_sz = mprq_log_actual_stride_size;
 		tmpl->rxq.strd_shift_en = MLX5_MPRQ_TWO_BYTE_SHIFT;
 		tmpl->rxq.strd_scatter_en =
 				!!(offloads & DEV_RX_OFFLOAD_SCATTER);
 		tmpl->rxq.mprq_max_memcpy_len = RTE_MIN(first_mb_free_size,
 				config->mprq.max_memcpy_len);
 		max_lro_size = RTE_MIN(max_rx_pkt_len,
-				       (1u << tmpl->rxq.strd_num_n) *
-				       (1u << tmpl->rxq.strd_sz_n));
+				       (1u << tmpl->rxq.log_strd_num) *
+				       (1u << tmpl->rxq.log_strd_sz));
 		DRV_LOG(DEBUG,
 			"port %u Rx queue %u: Multi-Packet RQ is enabled"
 			" strd_num_n = %u, strd_sz_n = %u",
 			dev->data->port_id, idx,
-			tmpl->rxq.strd_num_n, tmpl->rxq.strd_sz_n);
+			tmpl->rxq.log_strd_num, tmpl->rxq.log_strd_sz);
 	} else if (max_rx_pkt_len <= first_mb_free_size) {
 		tmpl->rxq.sges_n = 0;
 		max_lro_size = max_rx_pkt_len;
@@ -1896,24 +1988,6 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		tmpl->rxq.sges_n = sges_n;
 		max_lro_size = max_rx_pkt_len;
 	}
-	if (config->mprq.enabled && !mlx5_rxq_mprq_enabled(&tmpl->rxq))
-		DRV_LOG(WARNING,
-			"port %u MPRQ is requested but cannot be enabled\n"
-			" (requested: pkt_sz = %u, desc_num = %u,"
-			" rxq_num = %u, stride_sz = %u, stride_num = %u\n"
-			"  supported: min_rxqs_num = %u,"
-			" min_stride_sz = %u, max_stride_sz = %u).",
-			dev->data->port_id, non_scatter_min_mbuf_size,
-			desc, priv->rxqs_n,
-			config->mprq.stride_size_n ?
-				(1U << config->mprq.stride_size_n) :
-				(1U << mprq_stride_size),
-			config->mprq.stride_num_n ?
-				(1U << config->mprq.stride_num_n) :
-				(1U << mprq_stride_nums),
-			config->mprq.min_rxqs_num,
-			(1U << config->mprq.min_stride_size_n),
-			(1U << config->mprq.max_stride_size_n));
 	DRV_LOG(DEBUG, "port %u maximum number of segments per packet: %u",
 		dev->data->port_id, 1 << tmpl->rxq.sges_n);
 	if (desc % (1 << tmpl->rxq.sges_n)) {
@@ -1982,6 +2056,7 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	LIST_INSERT_HEAD(&priv->rxqsctrl, tmpl, next);
 	return tmpl;
 error:
+	mlx5_mr_btree_free(&tmpl->rxq.mr_ctrl.cache_bh);
 	rte_free(tmpl);
 	return NULL;
 }
@@ -2073,7 +2148,7 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 
-	if (!(*priv->rxqs)[idx])
+	if (priv->rxqs == NULL || (*priv->rxqs)[idx] == NULL)
 		return 0;
 	rxq_ctrl = container_of((*priv->rxqs)[idx], struct mlx5_rxq_ctrl, rxq);
 	assert(rxq_ctrl->priv);

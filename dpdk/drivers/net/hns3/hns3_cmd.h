@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #ifndef _HNS3_CMD_H_
 #define _HNS3_CMD_H_
 
 #define HNS3_CMDQ_TX_TIMEOUT		30000
+#define HNS3_CMDQ_CLEAR_WAIT_TIME	200
 #define HNS3_CMDQ_RX_INVLD_B		0
 #define HNS3_CMDQ_RX_OUTVLD_B		1
 #define HNS3_CMD_DESC_ALIGNMENT		4096
@@ -208,7 +209,7 @@ enum hns3_opcode_type {
 	HNS3_OPC_FD_COUNTER_OP          = 0x1205,
 
 	/* Clear hardware state command */
-	HNS3_OPC_CLEAR_HW_STATE         = 0x700A,
+	HNS3_OPC_CLEAR_HW_STATE         = 0x700B,
 
 	/* SFP command */
 	HNS3_OPC_SFP_GET_SPEED          = 0x7104,
@@ -380,8 +381,6 @@ struct hns3_umv_spc_alc_cmd {
 #define HNS3_CFG_RD_LEN_BYTES		16
 #define HNS3_CFG_RD_LEN_UNIT		4
 
-#define HNS3_CFG_VMDQ_S			0
-#define HNS3_CFG_VMDQ_M			GENMASK(7, 0)
 #define HNS3_CFG_TC_NUM_S		8
 #define HNS3_CFG_TC_NUM_M		GENMASK(15, 8)
 #define HNS3_CFG_TQP_DESC_N_S		16
@@ -509,7 +508,6 @@ struct hns3_cfg_gro_status_cmd {
 
 #define HNS3_RSS_HASH_KEY_OFFSET_B	4
 
-#define HNS3_RSS_CFG_TBL_SIZE	16
 #define HNS3_RSS_HASH_KEY_NUM	16
 /* Configure the algorithm mode and Hash Key, opcode:0x0D01 */
 struct hns3_rss_generic_config_cmd {
@@ -739,7 +737,8 @@ enum hns3_mac_vlan_add_resp_code {
 	HNS3_ADD_MC_OVERFLOW,      /* ADD failed for MC overflow */
 };
 
-#define HNS3_MC_MAC_VLAN_ADD_DESC_NUM	3
+#define HNS3_MC_MAC_VLAN_OPS_DESC_NUM   3
+#define HNS3_UC_MAC_VLAN_OPS_DESC_NUM   1
 
 #define HNS3_MAC_VLAN_BIT0_EN_B		0
 #define HNS3_MAC_VLAN_BIT1_EN_B		1

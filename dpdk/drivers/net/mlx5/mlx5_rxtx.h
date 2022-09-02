@@ -110,8 +110,8 @@ struct mlx5_rxq_data {
 	unsigned int elts_n:4; /* Log 2 of Mbufs. */
 	unsigned int rss_hash:1; /* RSS hash result is enabled. */
 	unsigned int mark:1; /* Marked flow available on the queue. */
-	unsigned int strd_num_n:5; /* Log 2 of the number of stride. */
-	unsigned int strd_sz_n:4; /* Log 2 of stride size. */
+	unsigned int log_strd_num:5; /* Log 2 of the number of stride. */
+	unsigned int log_strd_sz:4; /* Log 2 of stride size. */
 	unsigned int strd_shift_en:1; /* Enable 2bytes shift on a stride. */
 	unsigned int err_state:2; /* enum mlx5_rxq_err_state. */
 	unsigned int strd_scatter_en:1; /* Scattered packets from a stride. */
@@ -156,6 +156,7 @@ struct mlx5_rxq_data {
 	uint32_t tunnel; /* Tunnel information. */
 	uint64_t flow_meta_mask;
 	int32_t flow_meta_offset;
+	uint32_t flow_meta_port_mask;
 } __rte_cache_aligned;
 
 enum mlx5_rxq_obj_type {
@@ -197,7 +198,6 @@ struct mlx5_rxq_ctrl {
 	unsigned int socket; /* CPU socket ID for allocations. */
 	unsigned int irq:1; /* Whether IRQ is enabled. */
 	unsigned int dbr_umem_id_valid:1; /* dbr_umem_id holds a valid value. */
-	uint32_t flow_mark_n; /* Number of Mark/Flag flows using this Queue. */
 	uint32_t flow_tunnels_n[MLX5_FLOW_TUNNEL]; /* Tunnels counters. */
 	uint32_t wqn; /* WQ number. */
 	uint16_t dump_file_n; /* Number of dump files. */

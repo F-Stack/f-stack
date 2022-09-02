@@ -95,39 +95,67 @@ ice_rx_desc_to_olflags_v(struct ice_rx_queue *rxq, __m128i descs[4],
 	 * bit12 for RSS indication.
 	 * bit13 for VLAN indication.
 	 */
-	const __m128i desc_mask = _mm_set_epi32(0x3070, 0x3070,
-						0x3070, 0x3070);
-
+	const __m128i desc_mask = _mm_set_epi32(0x30f0, 0x30f0,
+						0x30f0, 0x30f0);
 	const __m128i cksum_mask = _mm_set_epi32(PKT_RX_IP_CKSUM_MASK |
 						 PKT_RX_L4_CKSUM_MASK |
+						 PKT_RX_OUTER_L4_CKSUM_MASK |
 						 PKT_RX_EIP_CKSUM_BAD,
 						 PKT_RX_IP_CKSUM_MASK |
 						 PKT_RX_L4_CKSUM_MASK |
+						 PKT_RX_OUTER_L4_CKSUM_MASK |
 						 PKT_RX_EIP_CKSUM_BAD,
 						 PKT_RX_IP_CKSUM_MASK |
 						 PKT_RX_L4_CKSUM_MASK |
+						 PKT_RX_OUTER_L4_CKSUM_MASK |
 						 PKT_RX_EIP_CKSUM_BAD,
 						 PKT_RX_IP_CKSUM_MASK |
 						 PKT_RX_L4_CKSUM_MASK |
+						 PKT_RX_OUTER_L4_CKSUM_MASK |
 						 PKT_RX_EIP_CKSUM_BAD);
 
 	/* map the checksum, rss and vlan fields to the checksum, rss
 	 * and vlan flag
 	 */
-	const __m128i cksum_flags = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0,
-			/* shift right 1 bit to make sure it not exceed 255 */
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
-			 PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
-			 PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD |
-			 PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD |
-			 PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1);
+	const __m128i cksum_flags =
+		_mm_set_epi8((PKT_RX_OUTER_L4_CKSUM_BAD >> 20 |
+		 PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
+		  PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		/**
+		 * shift right 20 bits to use the low two bits to indicate
+		 * outer checksum status
+		 * shift right 1 bit to make sure it not exceed 255
+		 */
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1);
 
 	const __m128i rss_vlan_flags = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
@@ -147,6 +175,14 @@ ice_rx_desc_to_olflags_v(struct ice_rx_queue *rxq, __m128i descs[4],
 	flags = _mm_shuffle_epi8(cksum_flags, tmp_desc);
 	/* then we shift left 1 bit */
 	flags = _mm_slli_epi32(flags, 1);
+
+	__m128i l4_outer_mask = _mm_set_epi32(0x6, 0x6, 0x6, 0x6);
+	__m128i l4_outer_flags = _mm_and_si128(flags, l4_outer_mask);
+	l4_outer_flags = _mm_slli_epi32(l4_outer_flags, 20);
+
+	__m128i l3_l4_mask = _mm_set_epi32(~0x6, ~0x6, ~0x6, ~0x6);
+	__m128i l3_l4_flags = _mm_and_si128(flags, l3_l4_mask);
+	flags = _mm_or_si128(l3_l4_flags, l4_outer_flags);
 	/* we need to mask out the reduntant bits introduced by RSS or
 	 * VLAN fields.
 	 */
@@ -168,10 +204,10 @@ ice_rx_desc_to_olflags_v(struct ice_rx_queue *rxq, __m128i descs[4],
 	 * appropriate flags means that we have to do a shift and blend for
 	 * each mbuf before we do the write.
 	 */
-	rearm0 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(flags, 8), 0x10);
-	rearm1 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(flags, 4), 0x10);
-	rearm2 = _mm_blend_epi16(mbuf_init, flags, 0x10);
-	rearm3 = _mm_blend_epi16(mbuf_init, _mm_srli_si128(flags, 4), 0x10);
+	rearm0 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(flags, 8), 0x30);
+	rearm1 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(flags, 4), 0x30);
+	rearm2 = _mm_blend_epi16(mbuf_init, flags, 0x30);
+	rearm3 = _mm_blend_epi16(mbuf_init, _mm_srli_si128(flags, 4), 0x30);
 
 	/* write the rearm data and the olflags in one write */
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, ol_flags) !=
@@ -330,7 +366,7 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* B.1 load 2 (64 bit) or 4 (32 bit) mbuf points */
 		mbp1 = _mm_loadu_si128((__m128i *)&sw_ring[pos]);
 		/* Read desc statuses backwards to avoid race condition */
-		/* A.1 load 4 pkts desc */
+		/* A.1 load desc[3] */
 		descs[3] = _mm_loadu_si128((__m128i *)(rxdp + 3));
 		rte_compiler_barrier();
 
@@ -342,9 +378,9 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		mbp2 = _mm_loadu_si128((__m128i *)&sw_ring[pos + 2]);
 #endif
 
+		/* A.1 load desc[2-0] */
 		descs[2] = _mm_loadu_si128((__m128i *)(rxdp + 2));
 		rte_compiler_barrier();
-		/* B.1 load 2 mbuf point */
 		descs[1] = _mm_loadu_si128((__m128i *)(rxdp + 1));
 		rte_compiler_barrier();
 		descs[0] = _mm_loadu_si128((__m128i *)(rxdp));
@@ -403,7 +439,7 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			/* and with mask to extract bits, flipping 1-0 */
 			__m128i eop_bits = _mm_andnot_si128(staterr, eop_check);
 			/* the staterr values are not in order, as the count
-			 * count of dd bits doesn't care. However, for end of
+			 * of dd bits doesn't care. However, for end of
 			 * packet tracking, we do care, so shuffle. This also
 			 * compresses the 32-bit values to 8-bit
 			 */

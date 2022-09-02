@@ -95,7 +95,7 @@ Features should not be backported to stable releases. It may be acceptable, in
 limited cases, to back port features for the LTS release where:
 
 * There is a justifiable use case (for example a new PMD).
-* The change is non-invasive.
+* The change is noninvasive.
 * The work of preparing the backport is done by the proposer.
 * There is support within the community.
 

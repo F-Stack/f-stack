@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #include <errno.h>
@@ -172,9 +172,12 @@ hns3vf_enable_msix(const struct rte_pci_device *device, bool op)
 		if (ret < 0) {
 			PMD_INIT_LOG(ERR, "failed to write PCI offset 0x%x",
 				    (pos + PCI_MSIX_FLAGS));
+			return -ENXIO;
 		}
+
 		return 0;
 	}
+
 	return -1;
 }
 
@@ -690,6 +693,7 @@ hns3vf_dev_configure(struct rte_eth_dev *dev)
 	uint16_t nb_rx_q = dev->data->nb_rx_queues;
 	uint16_t nb_tx_q = dev->data->nb_tx_queues;
 	struct rte_eth_rss_conf rss_conf;
+	uint32_t max_rx_pkt_len;
 	uint16_t mtu;
 	int ret;
 
@@ -736,12 +740,18 @@ hns3vf_dev_configure(struct rte_eth_dev *dev)
 	 * according to the maximum RX packet length.
 	 */
 	if (conf->rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
-		/*
-		 * Security of max_rx_pkt_len is guaranteed in dpdk frame.
-		 * Maximum value of max_rx_pkt_len is HNS3_MAX_FRAME_LEN, so it
-		 * can safely assign to "uint16_t" type variable.
-		 */
-		mtu = (uint16_t)HNS3_PKTLEN_TO_MTU(conf->rxmode.max_rx_pkt_len);
+		max_rx_pkt_len = conf->rxmode.max_rx_pkt_len;
+		if (max_rx_pkt_len > HNS3_MAX_FRAME_LEN ||
+		    max_rx_pkt_len <= HNS3_DEFAULT_FRAME_LEN) {
+			hns3_err(hw, "maximum Rx packet length must be greater "
+				 "than %u and less than %u when jumbo frame enabled.",
+				 (uint16_t)HNS3_DEFAULT_FRAME_LEN,
+				 (uint16_t)HNS3_MAX_FRAME_LEN);
+			ret = -EINVAL;
+			goto cfg_err;
+		}
+
+		mtu = (uint16_t)HNS3_PKTLEN_TO_MTU(max_rx_pkt_len);
 		ret = hns3vf_dev_mtu_set(dev, mtu);
 		if (ret)
 			goto cfg_err;
@@ -785,9 +795,9 @@ hns3vf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	/*
 	 * The hns3 PF/VF devices on the same port share the hardware MTU
 	 * configuration. Currently, we send mailbox to inform hns3 PF kernel
-	 * ethdev driver to finish hardware MTU configuration in hns3 VF PMD
-	 * driver, there is no need to stop the port for hns3 VF device, and the
-	 * MTU value issued by hns3 VF PMD driver must be less than or equal to
+	 * ethdev driver to finish hardware MTU configuration in hns3 VF PMD,
+	 * there is no need to stop the port for hns3 VF device, and the
+	 * MTU value issued by hns3 VF PMD must be less than or equal to
 	 * PF's MTU.
 	 */
 	if (rte_atomic16_read(&hw->reset.resetting)) {
@@ -801,7 +811,7 @@ hns3vf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		rte_spinlock_unlock(&hw->lock);
 		return ret;
 	}
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (mtu > RTE_ETHER_MTU)
 		dev->data->dev_conf.rxmode.offloads |=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -879,8 +889,6 @@ hns3vf_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 		.offloads = 0,
 	};
 
-	info->vmdq_queue_num = 0;
-
 	info->reta_size = HNS3_RSS_IND_TBL_SIZE;
 	info->hash_key_size = HNS3_RSS_KEY_SIZE;
 	info->flow_type_rss_offloads = HNS3_ETH_RSS_SUPPORT;
@@ -919,7 +927,6 @@ hns3vf_check_event_cause(struct hns3_adapter *hns, uint32_t *clearval)
 
 	/* Fetch the events from their corresponding regs */
 	cmdq_stat_reg = hns3_read_dev(hw, HNS3_VECTOR0_CMDQ_STAT_REG);
-
 	if (BIT(HNS3_VECTOR0_RST_INT_B) & cmdq_stat_reg) {
 		rst_ing_reg = hns3_read_dev(hw, HNS3_FUN_RST_ING);
 		hns3_warn(hw, "resetting reg: 0x%x", rst_ing_reg);
@@ -1187,7 +1194,8 @@ hns3vf_en_hw_strip_rxvtag(struct hns3_hw *hw, bool enable)
 	ret = hns3_send_mbx_msg(hw, HNS3_MBX_SET_VLAN, HNS3_MBX_VLAN_RX_OFF_CFG,
 				&msg_data, sizeof(msg_data), false, NULL, 0);
 	if (ret)
-		hns3_err(hw, "vf enable strip failed, ret =%d", ret);
+		hns3_err(hw, "vf %s strip failed, ret = %d.",
+				enable ? "enable" : "disable", ret);
 
 	return ret;
 }
@@ -1439,7 +1447,6 @@ hns3vf_init_hardware(struct hns3_adapter *hns)
 		goto err_init_hardware;
 	}
 
-	hns3vf_request_link_info(hw);
 	return 0;
 
 err_init_hardware:
@@ -1625,7 +1632,7 @@ hns3vf_dev_stop(struct rte_eth_dev *dev)
 	/* Disable datapath on secondary process. */
 	hns3_mp_req_stop_rxtx(dev);
 	/* Prevent crashes when queues are still in use. */
-	rte_delay_ms(hw->tqps_num);
+	rte_delay_ms(hw->cfg_max_queues);
 
 	rte_spinlock_lock(&hw->lock);
 	if (rte_atomic16_read(&hw->reset.resetting) == 0) {
@@ -1644,8 +1651,13 @@ hns3vf_dev_close(struct rte_eth_dev *eth_dev)
 	struct hns3_adapter *hns = eth_dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		rte_free(eth_dev->process_private);
+		eth_dev->process_private = NULL;
+		__atomic_fetch_sub(&hw->secondary_cnt, 1, __ATOMIC_RELAXED);
+		hns3_mp_uninit();
 		return;
+    }
 
 	if (hw->adapter_state == HNS3_NIC_STARTED)
 		hns3vf_dev_stop(eth_dev);
@@ -1661,7 +1673,7 @@ hns3vf_dev_close(struct rte_eth_dev *eth_dev)
 	rte_free(hw->reset.wait_data);
 	rte_free(eth_dev->process_private);
 	eth_dev->process_private = NULL;
-	hns3_mp_uninit_primary();
+	hns3_mp_uninit();
 	hns3_warn(hw, "Close port %d finished", hw->data->port_id);
 }
 
@@ -1848,7 +1860,7 @@ hns3vf_dev_start(struct rte_eth_dev *dev)
 
 	hns3_set_rxtx_function(dev);
 	hns3_mp_req_start_rxtx(dev);
-	rte_eal_alarm_set(HNS3VF_SERVICE_INTERVAL, hns3vf_service_handler, dev);
+	hns3vf_service_handler(dev);
 
 	hns3vf_restore_filter(dev);
 
@@ -1919,6 +1931,7 @@ hns3vf_is_reset_pending(struct hns3_adapter *hns)
 static int
 hns3vf_wait_hardware_ready(struct hns3_adapter *hns)
 {
+#define HNS3_WAIT_PF_RESET_READY_TIME 5
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_wait_data *wait_data = hw->reset.wait_data;
 	struct timeval tv;
@@ -1939,12 +1952,14 @@ hns3vf_wait_hardware_ready(struct hns3_adapter *hns)
 			return 0;
 
 		wait_data->check_completion = NULL;
-		wait_data->interval = 1 * MSEC_PER_SEC * USEC_PER_MSEC;
+		wait_data->interval = HNS3_WAIT_PF_RESET_READY_TIME *
+			MSEC_PER_SEC * USEC_PER_MSEC;
 		wait_data->count = 1;
 		wait_data->result = HNS3_WAIT_REQUEST;
 		rte_eal_alarm_set(wait_data->interval, hns3_wait_callback,
 				  wait_data);
-		hns3_warn(hw, "hardware is ready, delay 1 sec for PF reset complete");
+		hns3_warn(hw, "hardware is ready, delay %d sec for PF reset complete",
+				HNS3_WAIT_PF_RESET_READY_TIME);
 		return -EAGAIN;
 	} else if (wait_data->result == HNS3_WAIT_TIMEOUT) {
 		gettimeofday(&tv, NULL);
@@ -1969,15 +1984,17 @@ static int
 hns3vf_prepare_reset(struct hns3_adapter *hns)
 {
 	struct hns3_hw *hw = &hns->hw;
-	int ret = 0;
+	int ret;
 
 	if (hw->reset.level == HNS3_VF_FUNC_RESET) {
 		ret = hns3_send_mbx_msg(hw, HNS3_MBX_RESET, 0, NULL,
 					0, true, NULL, 0);
+		if (ret)
+			return ret;
 	}
 	rte_atomic16_set(&hw->reset.disable_cmd, 1);
 
-	return ret;
+	return 0;
 }
 
 static int
@@ -1995,7 +2012,7 @@ hns3vf_stop_service(struct hns3_adapter *hns)
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	hns3_mp_req_stop_rxtx(eth_dev);
-	rte_delay_ms(hw->tqps_num);
+	rte_delay_ms(hw->cfg_max_queues);
 
 	rte_spinlock_lock(&hw->lock);
 	if (hw->adapter_state == HNS3_NIC_STARTED ||
@@ -2145,7 +2162,7 @@ hns3vf_reset_service(void *param)
 		msec = tv_delta.tv_sec * MSEC_PER_SEC +
 		       tv_delta.tv_usec / USEC_PER_MSEC;
 		if (msec > HNS3_RESET_PROCESS_MS)
-			hns3_err(hw, "%d handle long time delta %" PRIx64
+			hns3_err(hw, "%d handle long time delta %" PRIu64
 				 " ms time=%ld.%.6ld",
 				 hw->reset.level, msec, tv.tv_sec, tv.tv_usec);
 	}
@@ -2280,8 +2297,8 @@ hns3vf_dev_init(struct rte_eth_dev *eth_dev)
 					  "process, ret = %d", ret);
 			goto err_mp_init_secondary;
 		}
-
-		hw->secondary_cnt++;
+		__atomic_fetch_add(&hw->secondary_cnt, 1, __ATOMIC_RELAXED);
+		process_data.eth_dev_cnt++;
 		return 0;
 	}
 
@@ -2292,6 +2309,7 @@ hns3vf_dev_init(struct rte_eth_dev *eth_dev)
 			     ret);
 		goto err_mp_init_primary;
 	}
+	process_data.eth_dev_cnt++;
 
 	hw->adapter_state = HNS3_NIC_UNINITIALIZED;
 	hns->is_vf = true;
@@ -2350,7 +2368,7 @@ err_init_vf:
 	rte_free(hw->reset.wait_data);
 
 err_init_reset:
-	hns3_mp_uninit_primary();
+	hns3_mp_uninit();
 
 err_mp_init_primary:
 err_mp_init_secondary:
@@ -2372,8 +2390,13 @@ hns3vf_dev_uninit(struct rte_eth_dev *eth_dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return -EPERM;
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		rte_free(eth_dev->process_private);
+		eth_dev->process_private = NULL;
+		__atomic_fetch_sub(&hw->secondary_cnt, 1, __ATOMIC_RELAXED);
+		hns3_mp_uninit();
+		return 0;
+	}
 
 	eth_dev->dev_ops = NULL;
 	eth_dev->rx_pkt_burst = NULL;

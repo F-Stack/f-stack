@@ -743,6 +743,10 @@ rte_eal_init(int argc, char **argv)
 
 	/* FreeBSD always uses legacy memory model */
 	internal_config.legacy_mem = true;
+	if (internal_config.in_memory) {
+		RTE_LOG(WARNING, EAL, "Warning: ignoring unsupported flag, '%s'\n", OPT_IN_MEMORY);
+		internal_config.in_memory = false;
+	}
 
 	if (eal_plugins_init() < 0) {
 		rte_eal_init_alert("Cannot init plugins");
@@ -1024,7 +1028,7 @@ int rte_vfio_noiommu_is_enabled(void)
 
 int rte_vfio_clear_group(__rte_unused int vfio_group_fd)
 {
-	return 0;
+	return -1;
 }
 
 int

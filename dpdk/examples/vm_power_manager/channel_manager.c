@@ -27,7 +27,6 @@
 #include <libvirt/libvirt.h>
 
 #include "channel_manager.h"
-#include "channel_commands.h"
 #include "channel_monitor.h"
 #include "power_manager.h"
 

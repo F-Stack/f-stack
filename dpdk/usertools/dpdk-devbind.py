@@ -7,6 +7,7 @@ from __future__ import print_function
 import sys
 import os
 import getopt
+import platform
 import subprocess
 from os.path import exists, abspath, dirname, basename
 
@@ -172,7 +173,17 @@ def module_is_loaded(module):
 
     loaded_modules = sysfs_mods
 
-    return module in sysfs_mods
+    # add built-in modules as loaded
+    release = platform.release()
+    filename = os.path.join("/lib/modules/", release, "modules.builtin")
+    if os.path.exists(filename):
+        try:
+            with open(filename) as f:
+                loaded_modules += [os.path.splitext(os.path.basename(mod))[0] for mod in f]
+        except IOError:
+            print("Warning: cannot read list of built-in kernel modules")
+
+    return module in loaded_modules
 
 
 def check_modules():

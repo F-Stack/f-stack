@@ -1597,6 +1597,9 @@ static int hinic_vlan_filter_set(struct rte_eth_dev *dev,
 	if (vlan_id > RTE_ETHER_MAX_VLAN_ID)
 		return -EINVAL;
 
+	if (vlan_id == 0)
+		return 0;
+
 	func_id = hinic_global_func_id(nic_dev->hwdev);
 
 	if (enable) {
@@ -2866,6 +2869,9 @@ static void hinic_dev_close(struct rte_eth_dev *dev)
 {
 	struct hinic_nic_dev *nic_dev = HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(dev);
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	if (hinic_test_and_set_bit(HINIC_DEV_CLOSE, &nic_dev->dev_status)) {
 		PMD_DRV_LOG(WARNING, "Device %s already closed",
 			    dev->data->name);
@@ -2972,6 +2978,10 @@ static const struct eth_dev_ops hinic_pmd_vf_ops = {
 	.filter_ctrl                   = hinic_dev_filter_ctrl,
 };
 
+static const struct eth_dev_ops hinic_dev_sec_ops = {
+	.dev_infos_get                 = hinic_dev_infos_get,
+};
+
 static int hinic_func_init(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev;
@@ -2985,6 +2995,7 @@ static int hinic_func_init(struct rte_eth_dev *eth_dev)
 
 	/* EAL is SECONDARY and eth_dev is already created */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		eth_dev->dev_ops = &hinic_dev_sec_ops;
 		PMD_DRV_LOG(INFO, "Initialize %s in secondary process",
 			    eth_dev->data->name);
 

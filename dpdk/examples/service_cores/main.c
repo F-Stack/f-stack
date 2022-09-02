@@ -118,7 +118,7 @@ apply_profile(int profile_id)
 	struct profile *p = &profiles[profile_id];
 	const uint8_t core_off = 1;
 
-	if (p->num_cores > rte_lcore_count() + 1) {
+	if (p->num_cores > rte_lcore_count() - 1) {
 		printf("insufficent cores to run (%s)",
 			p->name);
 		return;
@@ -219,6 +219,9 @@ main(int argc, char **argv)
 		if (i >= NUM_PROFILES)
 			i = 0;
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

@@ -72,6 +72,7 @@ enum mlx5_expansion {
 	MLX5_EXPANSION_VXLAN,
 	MLX5_EXPANSION_VXLAN_GPE,
 	MLX5_EXPANSION_GRE,
+	MLX5_EXPANSION_GRE_KEY,
 	MLX5_EXPANSION_MPLS,
 	MLX5_EXPANSION_ETH,
 	MLX5_EXPANSION_ETH_VLAN,
@@ -108,8 +109,7 @@ static const struct rte_flow_expand_node mlx5_support_expansion[] = {
 	},
 	[MLX5_EXPANSION_OUTER_ETH] = {
 		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_OUTER_IPV4,
-						 MLX5_EXPANSION_OUTER_IPV6,
-						 MLX5_EXPANSION_MPLS),
+						 MLX5_EXPANSION_OUTER_IPV6),
 		.type = RTE_FLOW_ITEM_TYPE_ETH,
 		.rss_types = 0,
 	},
@@ -136,7 +136,8 @@ static const struct rte_flow_expand_node mlx5_support_expansion[] = {
 	},
 	[MLX5_EXPANSION_OUTER_IPV4_UDP] = {
 		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_VXLAN,
-						 MLX5_EXPANSION_VXLAN_GPE),
+						 MLX5_EXPANSION_VXLAN_GPE,
+						 MLX5_EXPANSION_MPLS),
 		.type = RTE_FLOW_ITEM_TYPE_UDP,
 		.rss_types = ETH_RSS_NONFRAG_IPV4_UDP,
 	},
@@ -149,14 +150,16 @@ static const struct rte_flow_expand_node mlx5_support_expansion[] = {
 			(MLX5_EXPANSION_OUTER_IPV6_UDP,
 			 MLX5_EXPANSION_OUTER_IPV6_TCP,
 			 MLX5_EXPANSION_IPV4,
-			 MLX5_EXPANSION_IPV6),
+			 MLX5_EXPANSION_IPV6,
+			 MLX5_EXPANSION_GRE),
 		.type = RTE_FLOW_ITEM_TYPE_IPV6,
 		.rss_types = ETH_RSS_IPV6 | ETH_RSS_FRAG_IPV6 |
 			ETH_RSS_NONFRAG_IPV6_OTHER,
 	},
 	[MLX5_EXPANSION_OUTER_IPV6_UDP] = {
 		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_VXLAN,
-						 MLX5_EXPANSION_VXLAN_GPE),
+						 MLX5_EXPANSION_VXLAN_GPE,
+						 MLX5_EXPANSION_MPLS),
 		.type = RTE_FLOW_ITEM_TYPE_UDP,
 		.rss_types = ETH_RSS_NONFRAG_IPV6_UDP,
 	},
@@ -177,13 +180,25 @@ static const struct rte_flow_expand_node mlx5_support_expansion[] = {
 		.type = RTE_FLOW_ITEM_TYPE_VXLAN_GPE,
 	},
 	[MLX5_EXPANSION_GRE] = {
-		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_IPV4),
+		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_IPV4,
+						 MLX5_EXPANSION_IPV6,
+						 MLX5_EXPANSION_GRE_KEY,
+						 MLX5_EXPANSION_MPLS),
 		.type = RTE_FLOW_ITEM_TYPE_GRE,
+	},
+	[MLX5_EXPANSION_GRE_KEY] = {
+		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_IPV4,
+						  MLX5_EXPANSION_IPV6,
+						  MLX5_EXPANSION_MPLS),
+		.type = RTE_FLOW_ITEM_TYPE_GRE_KEY,
+		.optional = 1,
 	},
 	[MLX5_EXPANSION_MPLS] = {
 		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_IPV4,
-						 MLX5_EXPANSION_IPV6),
+						 MLX5_EXPANSION_IPV6,
+						 MLX5_EXPANSION_ETH),
 		.type = RTE_FLOW_ITEM_TYPE_MPLS,
+		.optional = 1,
 	},
 	[MLX5_EXPANSION_ETH] = {
 		.next = RTE_FLOW_EXPAND_RSS_NEXT(MLX5_EXPANSION_IPV4,
@@ -416,7 +431,7 @@ mlx5_flow_get_reg_id(struct rte_eth_dev *dev,
 		start_reg = priv->mtr_color_reg != REG_C_2 ? REG_C_2 :
 			    (priv->mtr_reg_share ? REG_C_3 : REG_C_4);
 		skip_mtr_reg = !!(priv->mtr_en && start_reg == REG_C_2);
-		if (id > (REG_C_7 - start_reg))
+		if (id > (uint32_t)(REG_C_7 - start_reg))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ITEM,
 						  NULL, "invalid tag id");
@@ -432,7 +447,7 @@ mlx5_flow_get_reg_id(struct rte_eth_dev *dev,
 		 */
 		if (skip_mtr_reg && config->flow_mreg_c
 		    [id + start_reg - REG_C_0] >= priv->mtr_color_reg) {
-			if (id >= (REG_C_7 - start_reg))
+			if (id >= (uint32_t)(REG_C_7 - start_reg))
 				return rte_flow_error_set(error, EINVAL,
 						       RTE_FLOW_ERROR_TYPE_ITEM,
 							NULL, "invalid tag id");
@@ -712,12 +727,11 @@ flow_rxq_tunnel_ptype_update(struct mlx5_rxq_ctrl *rxq_ctrl)
  *   Pointer to device flow structure.
  */
 static void
-flow_drv_rxq_flags_set(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow)
+flow_drv_rxq_flags_set(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
+			int mark)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_flow *flow = dev_flow->flow;
-	const int mark = !!(dev_flow->actions &
-			    (MLX5_FLOW_ACTION_FLAG | MLX5_FLOW_ACTION_MARK));
 	const int tunnel = !!(dev_flow->layers & MLX5_FLOW_LAYER_TUNNEL);
 	unsigned int i;
 
@@ -736,10 +750,8 @@ flow_drv_rxq_flags_set(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow)
 		    priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
 		    mlx5_flow_ext_mreg_supported(dev)) {
 			rxq_ctrl->rxq.mark = 1;
-			rxq_ctrl->flow_mark_n = 1;
 		} else if (mark) {
 			rxq_ctrl->rxq.mark = 1;
-			rxq_ctrl->flow_mark_n++;
 		}
 		if (tunnel) {
 			unsigned int j;
@@ -758,6 +770,20 @@ flow_drv_rxq_flags_set(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow)
 	}
 }
 
+static void
+flow_rxq_mark_flag_set(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_rxq_ctrl *rxq_ctrl;
+
+	if (priv->mark_enabled)
+		return;
+	LIST_FOREACH(rxq_ctrl, &priv->rxqsctrl, next) {
+		rxq_ctrl->rxq.mark = 1;
+	}
+	priv->mark_enabled = 1;
+}
+
 /**
  * Set the Rx queue flags (Mark/Flag and Tunnel Ptypes) for a flow
  *
@@ -770,9 +796,14 @@ static void
 flow_rxq_flags_set(struct rte_eth_dev *dev, struct rte_flow *flow)
 {
 	struct mlx5_flow *dev_flow;
-
+	int mark = 0;
 	LIST_FOREACH(dev_flow, &flow->dev_flows, next)
-		flow_drv_rxq_flags_set(dev, dev_flow);
+		mark = mark | (!!(dev_flow->actions & (MLX5_FLOW_ACTION_FLAG |
+		MLX5_FLOW_ACTION_MARK)));
+	if (mark)
+		flow_rxq_mark_flag_set(dev);
+	LIST_FOREACH(dev_flow, &flow->dev_flows, next)
+		flow_drv_rxq_flags_set(dev, dev_flow, mark);
 }
 
 /**
@@ -789,8 +820,6 @@ flow_drv_rxq_flags_trim(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_flow *flow = dev_flow->flow;
-	const int mark = !!(dev_flow->actions &
-			    (MLX5_FLOW_ACTION_FLAG | MLX5_FLOW_ACTION_MARK));
 	const int tunnel = !!(dev_flow->layers & MLX5_FLOW_LAYER_TUNNEL);
 	unsigned int i;
 
@@ -805,10 +834,6 @@ flow_drv_rxq_flags_trim(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow)
 		    priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
 		    mlx5_flow_ext_mreg_supported(dev)) {
 			rxq_ctrl->rxq.mark = 1;
-			rxq_ctrl->flow_mark_n = 1;
-		} else if (mark) {
-			rxq_ctrl->flow_mark_n--;
-			rxq_ctrl->rxq.mark = !!rxq_ctrl->flow_mark_n;
 		}
 		if (tunnel) {
 			unsigned int j;
@@ -865,7 +890,6 @@ flow_rxq_flags_clear(struct rte_eth_dev *dev)
 			continue;
 		rxq_ctrl = container_of((*priv->rxqs)[i],
 					struct mlx5_rxq_ctrl, rxq);
-		rxq_ctrl->flow_mark_n = 0;
 		rxq_ctrl->rxq.mark = 0;
 		for (j = 0; j != MLX5_FLOW_TUNNEL; ++j)
 			rxq_ctrl->flow_tunnels_n[j] = 0;
@@ -894,10 +918,14 @@ mlx5_flow_rxq_dynf_metadata_set(struct rte_eth_dev *dev)
 			data->dynf_meta = 0;
 			data->flow_meta_mask = 0;
 			data->flow_meta_offset = -1;
+			data->flow_meta_port_mask = 0;
 		} else {
 			data->dynf_meta = 1;
 			data->flow_meta_mask = rte_flow_dynf_metadata_mask;
 			data->flow_meta_offset = rte_flow_dynf_metadata_offs;
+			data->flow_meta_port_mask = (uint32_t)~0;
+			if (priv->config.dv_xmeta_en == MLX5_XMETA_MODE_META16)
+				data->flow_meta_port_mask >>= 16;
 		}
 	}
 }
@@ -1211,6 +1239,13 @@ mlx5_flow_validate_action_rss(const struct rte_flow_action *action,
 					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, NULL,
 					  "inner RSS is not supported for "
 					  "non-tunnel flows");
+	if ((item_flags & MLX5_FLOW_LAYER_MPLS) &&
+	    !(item_flags &
+	      (MLX5_FLOW_LAYER_INNER_L2 | MLX5_FLOW_LAYER_INNER_L3)) &&
+	    rss->level > 1)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+					  "MPLS inner RSS needs to specify inner L2/L3 items after MPLS in pattern");
 	return 0;
 }
 
@@ -1583,7 +1618,7 @@ mlx5_flow_validate_item_ipv4(const struct rte_flow_item *item,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "IPv4 cannot follow L2/VLAN layer "
 					  "which ether type is not IPv4");
-	if (item_flags & MLX5_FLOW_LAYER_IPIP) {
+	if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
 		if (mask && spec)
 			next_proto = mask->hdr.next_proto_id &
 				     spec->hdr.next_proto_id;
@@ -1685,7 +1720,7 @@ mlx5_flow_validate_item_ipv6(const struct rte_flow_item *item,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "IPv6 cannot follow L2/VLAN layer "
 					  "which ether type is not IPv6");
-	if (item_flags & MLX5_FLOW_LAYER_IPV6_ENCAP) {
+	if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
 		if (mask && spec)
 			next_proto = mask->hdr.proto & spec->hdr.proto;
 		if (next_proto == IPPROTO_IPIP || next_proto == IPPROTO_IPV6)
@@ -2218,9 +2253,8 @@ mlx5_flow_validate_item_mpls(struct rte_eth_dev *dev __rte_unused,
 					  "MPLS not supported or"
 					  " disabled in firmware"
 					  " configuration.");
-	/* MPLS over IP, UDP, GRE is allowed */
-	if (!(prev_layer & (MLX5_FLOW_LAYER_OUTER_L3 |
-			    MLX5_FLOW_LAYER_OUTER_L4_UDP |
+	/* MPLS over UDP, GRE is allowed */
+	if (!(prev_layer & (MLX5_FLOW_LAYER_OUTER_L4_UDP |
 			    MLX5_FLOW_LAYER_GRE |
 			    MLX5_FLOW_LAYER_GRE_KEY)))
 		return rte_flow_error_set(error, EINVAL,
@@ -3659,6 +3693,8 @@ flow_meter_split_prep(struct rte_eth_dev *dev,
  *   Pointer to the Q/RSS action.
  * @param[in] actions_n
  *   Number of original actions.
+ * @param[in] mtr_sfx
+ *   Check if it is in meter suffix table.
  * @param[out] error
  *   Perform verbose error reporting if not NULL.
  *
@@ -3671,7 +3707,8 @@ flow_mreg_split_qrss_prep(struct rte_eth_dev *dev,
 			  struct rte_flow_action *split_actions,
 			  const struct rte_flow_action *actions,
 			  const struct rte_flow_action *qrss,
-			  int actions_n, struct rte_flow_error *error)
+			  int actions_n, int mtr_sfx,
+			  struct rte_flow_error *error)
 {
 	struct mlx5_rte_flow_action_set_tag *set_tag;
 	struct rte_flow_action_jump *jump;
@@ -3685,15 +3722,15 @@ flow_mreg_split_qrss_prep(struct rte_eth_dev *dev,
 	 * - Add jump to mreg CP_TBL.
 	 * As a result, there will be one more action.
 	 */
-	++actions_n;
 	memcpy(split_actions, actions, sizeof(*split_actions) * actions_n);
+	/* Count MLX5_RTE_FLOW_ACTION_TYPE_TAG. */
+	++actions_n;
 	set_tag = (void *)(split_actions + actions_n);
 	/*
-	 * If tag action is not set to void(it means we are not the meter
-	 * suffix flow), add the tag action. Since meter suffix flow already
-	 * has the tag added.
+	 * If we are not the meter suffix flow, add the tag action.
+	 * Since meter suffix flow already has the tag added.
 	 */
-	if (split_actions[qrss_idx].type != RTE_FLOW_ACTION_TYPE_VOID) {
+	if (!mtr_sfx) {
 		/*
 		 * Allocate the new subflow ID. This one is unique within
 		 * device and not shared with representors. Otherwise,
@@ -3725,6 +3762,12 @@ flow_mreg_split_qrss_prep(struct rte_eth_dev *dev,
 				MLX5_RTE_FLOW_ACTION_TYPE_TAG,
 			.conf = set_tag,
 		};
+	} else {
+		/*
+		 * If we are the suffix flow of meter, tag already exist.
+		 * Set the QUEUE/RSS action to void.
+		 */
+		split_actions[qrss_idx].type = RTE_FLOW_ACTION_TYPE_VOID;
 	}
 	/* JUMP action to jump to mreg copy table (CP_TBL). */
 	jump = (void *)(set_tag + 1);
@@ -3901,24 +3944,14 @@ flow_create_split_metadata(struct rte_eth_dev *dev,
 						  NULL, "no memory to split "
 						  "metadata flow");
 		/*
-		 * If we are the suffix flow of meter, tag already exist.
-		 * Set the tag action to void.
-		 */
-		if (mtr_sfx)
-			ext_actions[qrss - actions].type =
-						RTE_FLOW_ACTION_TYPE_VOID;
-		else
-			ext_actions[qrss - actions].type =
-						(enum rte_flow_action_type)
-						MLX5_RTE_FLOW_ACTION_TYPE_TAG;
-		/*
 		 * Create the new actions list with removed Q/RSS action
 		 * and appended set tag and jump to register copy table
 		 * (RX_CP_TBL). We should preallocate unique tag ID here
 		 * in advance, because it is needed for set tag action.
 		 */
 		qrss_id = flow_mreg_split_qrss_prep(dev, ext_actions, actions,
-						    qrss, actions_n, error);
+						    qrss, actions_n,
+						    mtr_sfx, error);
 		if (!mtr_sfx && !qrss_id) {
 			ret = -rte_errno;
 			goto exit;

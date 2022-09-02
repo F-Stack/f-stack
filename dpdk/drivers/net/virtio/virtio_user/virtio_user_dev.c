@@ -263,6 +263,7 @@ virtio_user_dev_init_notify(struct virtio_user_dev *dev)
 		}
 		kickfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 		if (kickfd < 0) {
+			close(callfd);
 			PMD_DRV_LOG(ERR, "kickfd error, %s", strerror(errno));
 			break;
 		}
@@ -271,7 +272,7 @@ virtio_user_dev_init_notify(struct virtio_user_dev *dev)
 	}
 
 	if (i < VIRTIO_MAX_VIRTQUEUES) {
-		for (j = 0; j <= i; ++j) {
+		for (j = 0; j < i; ++j) {
 			close(dev->callfds[j]);
 			close(dev->kickfds[j]);
 		}
@@ -298,7 +299,7 @@ virtio_user_fill_intr_handle(struct virtio_user_dev *dev)
 	}
 
 	for (i = 0; i < dev->max_queue_pairs; ++i)
-		eth_dev->intr_handle->efds[i] = dev->callfds[i];
+		eth_dev->intr_handle->efds[i] = dev->callfds[2 * i];
 	eth_dev->intr_handle->nb_efd = dev->max_queue_pairs;
 	eth_dev->intr_handle->max_intr = dev->max_queue_pairs + 1;
 	eth_dev->intr_handle->type = RTE_INTR_HANDLE_VDEV;

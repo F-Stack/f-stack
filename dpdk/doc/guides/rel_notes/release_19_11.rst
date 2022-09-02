@@ -236,7 +236,7 @@ New Features
 
 * **Added Marvell OCTEON TX2 crypto PMD.**
 
-  Added a new PMD driver for hardware crypto offload block on ``OCTEON TX2``
+  Added a new PMD for hardware crypto offload block on ``OCTEON TX2``
   SoC.
 
   See :doc:`../cryptodevs/octeontx2` for more details
@@ -2919,3 +2919,1903 @@ Tested Platforms
 * vdev_netvsc
 
    * hot-removal of VF driver can fail
+
+19.11.7 Release Notes
+---------------------
+
+19.11.7 Fixes
+~~~~~~~~~~~~~
+
+* app/crypto-perf: fix CSV output format
+* app/crypto-perf: fix latency CSV output
+* app/crypto-perf: fix spelling in output
+* app/crypto-perf: remove always true condition
+* app/eventdev: adjust event count order for pipeline test
+* app/eventdev: fix SMP barrier in performance test
+* app/eventdev: remove redundant enqueue in burst Tx
+* app: fix build with extra include paths
+* app/procinfo: fix check on xstats-ids
+* app/procinfo: fix _filters stats reporting
+* app/procinfo: remove useless memset
+* app/testpmd: avoid exit without terminal restore
+* app/testpmd: fix help of metering commands
+* app/testpmd: fix IP checksum calculation
+* app/testpmd: fix key for RSS flow rule
+* app/testpmd: fix max Rx packet length for VLAN packets
+* app/testpmd: fix packets dump overlapping
+* app/testpmd: release flows left before port stop
+* build: fix linker flags on Windows
+* build: fix plugin load on static build
+* build: fix scheduler macro definition for meson
+* build: force pkg-config for dependency detection
+* build: provide suitable error for "both" libraries option
+* common/mlx5: fix pointer cast on Windows
+* common/octeontx2: fix build with SVE
+* crypto/dpaa2_sec: fix memory allocation check
+* doc: fix mark action zero value in mlx5 guide
+* doc: fix product link in hns3 guide
+* doc: fix QinQ flow rules in testpmd guide
+* doc: update flow mark action in mlx5 guide
+* eal/arm: fix debug build with gcc for 128-bit atomics
+* eal: fix MCS lock header include
+* eal: fix reciprocal header include
+* eal/linux: fix handling of error events from epoll
+* ethdev: fix max Rx packet length check
+* ethdev: fix missing header include
+* eventdev: fix a return value comment
+* examples/eventdev: add info output for main core
+* examples/eventdev: check CPU core enabling
+* examples/eventdev: move ethdev stop to the end
+* examples/l3fwd: remove limitation on Tx queue count
+* fbarray: fix overlap check
+* fib: fix missing header includes
+* ip_frag: remove padding length of fragment
+* ipsec: fix missing header include
+* lib/power: fix make build error
+* lpm: fix vector IPv4 lookup
+* mbuf: add C++ include guard for dynamic fields header
+* mbuf: fix missing header include
+* mem: exclude unused memory from core dump
+* net/af_xdp: remove useless assignment
+* net/avp: remove always true condition
+* net/bnxt: disable end of packet padding for Rx
+* net/bnxt: fix cleanup on mutex init failure
+* net/bnxt: fix doorbell write ordering
+* net/bnxt: fix fallback mbuf allocation logic
+* net/bnxt: fix FW version log
+* net/bnxt: fix max rings computation
+* net/bnxt: fix memory leak when mapping fails
+* net/bnxt: fix null termination of Rx mbuf chain
+* net/bnxt: fix outer UDP checksum Rx offload capability
+* net/bnxt: fix Rx rings in RSS redirection table
+* net/bnxt: fix VNIC config on Rx queue stop
+* net/bnxt: fix VNIC RSS configure function
+* net/bnxt: propagate FW command failure to application
+* net/bnxt: release HWRM lock in error
+* net/bonding: fix PCI address comparison on non-PCI ports
+* net/bonding: fix port id validity check on parsing
+* net/bonding: remove local variable shadowing outer one
+* net/cxgbe: fix jumbo frame flag condition
+* net/dpaa2: fix jumbo frame flag condition for MTU set
+* net/dpaa: fix jumbo frame flag condition for MTU set
+* net/e1000: fix flow control mode setting
+* net/e1000: fix jumbo frame flag condition for MTU set
+* net/ena: flush Rx buffers memory pool cache
+* net/enetc: fix jumbo frame flag condition for MTU set
+* net/enic: fix filter log message
+* net/enic: fix filter type used for flow API
+* net/hns3: adjust format specifier for enum
+* net/hns3: fix data overwriting during register dump
+* net/hns3: fix dump register out of range
+* net/hns3: fix error code in xstats
+* net/hns3: fix firmware exceptions by concurrent commands
+* net/hns3: fix flow director rule residue on malloc failure
+* net/hns3: fix interception with flow director
+* net/hns3: fix jumbo frame flag condition for MTU set
+* net/hns3: fix memory leak on secondary process exit
+* net/hns3: fix register length when dumping registers
+* net/hns3: fix Rx/Tx errors stats
+* net/hns3: fix VF query link status in dev init
+* net/hns3: fix VF reset on mailbox failure
+* net/hns3: fix xstats with id and names
+* net/hns3: remove MPLS from supported flow items
+* net/hns3: use new opcode for clearing hardware resource
+* net/hns3: validate requested maximum Rx frame length
+* net/i40e: add null input checks
+* net/i40e: fix global register recovery
+* net/i40e: fix jumbo frame flag condition
+* net/i40e: fix L4 checksum flag
+* net/i40e: fix returned code for RSS hardware failure
+* net/i40e: fix Rx bytes statistics
+* net/i40e: fix stats counters
+* net/i40e: fix VLAN stripping in VF
+* net/i40e: fix X722 for 802.1ad frames ability
+* net/iavf: fix jumbo frame flag condition
+* net/iavf: fix vector mapping with queue
+* net/ice/base: fix memory handling
+* net/ice/base: fix null pointer dereference
+* net/ice/base: fix tunnel destroy
+* net/ice: check Rx queue number on RSS init
+* net/ice: disable IPv4 checksum offload in vector Tx
+* net/ice: enlarge Rx queue rearm threshold to 64
+* net/ice: fix jumbo frame flag condition
+* net/ice: fix outer checksum flags
+* net/ice: fix outer UDP Tx checksum offload
+* net/ice: fix RSS lookup table initialization
+* net/ipn3ke: fix jumbo frame flag condition for MTU set
+* net/ixgbe: add new flag of stripped VLAN for NEON
+* net/ixgbe: detect failed VF MTU set
+* net/ixgbe: disable NFS filtering
+* net/ixgbe: enable IXGBE NEON vector PMD when CHECKSUM need to checksum
+* net/ixgbe: fix configuration of max frame size
+* net/ixgbe: fix flex bytes flow director rule
+* net/ixgbe: fix jumbo frame flag condition
+* net/ixgbe: fix UDP zero checksum on x86
+* net/ixgbe: support bad checksum flag for NEON
+* net/ixgbe: support good checksum flag for NEON
+* net/liquidio: fix jumbo frame flag condition for MTU set
+* net/mlx4: fix handling of probing failure
+* net/mlx4: fix port attach in secondary process
+* net/mlx5: fix comparison sign in flow engine
+* net/mlx5: fix crash on secondary process port close
+* net/mlx5: fix leak on Rx queue creation failure
+* net/mlx5: fix leak on Tx queue creation failure
+* net/mlx5: refuse empty VLAN in flow pattern
+* net/mvneta: check allocation in Rx queue flush
+* net/mvpp2: fix frame size checking
+* net/mvpp2: fix stack corruption
+* net/mvpp2: remove CRC length from MRU validation
+* net/mvpp2: remove debug log on fast-path
+* net/mvpp2: remove VLAN flush
+* net/netvsc: ignore unsupported packet on sync command
+* net/nfp: fix jumbo frame flag condition for MTU set
+* net/nfp: read chip model from PluDevice register
+* net/octeontx2: fix corruption in segments list
+* net/octeontx2: fix jumbo frame flag condition for MTU
+* net/octeontx2: fix PF flow action for Tx
+* net/octeontx: fix build with SVE
+* net/pcap: fix byte stats for drop Tx
+* net/pcap: fix infinite Rx with large files
+* net/pcap: remove local variable shadowing outer one
+* net/qede: fix jumbo frame flag condition for MTU set
+* net/qede: fix promiscuous enable
+* net/sfc: fix generic byte statistics to exclude FCS bytes
+* net/sfc: fix jumbo frame flag condition for MTU set
+* net/sfc: fix TSO and checksum offloads for EF10
+* net/thunderx: fix jumbo frame flag condition for MTU set
+* net/virtio-user: fix run closing stdin and close callfd
+* power: clean up includes
+* power: create guest channel public header file
+* power: export guest channel header file
+* power: fix missing header includes
+* power: make channel message functions public
+* power: rename constants
+* power: rename public structs
+* Revert "app/testpmd: release flows left before port stop"
+* rib: fix insertion in some cases
+* rib: fix missing header include
+* rib: fix missing header includes
+* app/testpmd: fix setting maximum packet length
+* net/mlx5: fix port attach in secondary process
+* net/mlx5: fix VXLAN decap on non-VXLAN flow
+* mempool: fix panic on dump or audit
+* mem: fix build
+* usertools: fix binding built-in kernel driver
+* test/distributor: fix return buffer queue overload
+* test/event_crypto: set cipher operation in transform
+* test: fix buffer overflow in Tx burst
+* test: fix terminal settings on exit
+* test/ipsec: fix result code for not supported
+* test/mcslock: remove unneeded per lcore copy
+* usertools: fix Python compatibility issue
+* vhost: fix packed ring dequeue offloading
+* vhost: fix vid allocation race
+
+19.11.7 Validation
+~~~~~~~~~~~~~~~~~~
+
+* Red Hat(R) Testing
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 5.2
+      * X540-AT2 NIC(ixgbe, 10G)
+      * Tested on 19.11.7-RC1
+
+   * Tests
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size): PASS
+      * Guest with device assignment(PF) throughput testing(2M hugepage size) : PASS
+      * Guest with device assignment(VF) throughput testing: PASS
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing: PASS
+      * PVP vhost-user 2Q throughput testing: PASS
+      * PVP vhost-user 1Q - cross numa node throughput testing: PASS
+      * Guest with vhost-user 2 queues throughput testing: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect: PASS
+      * PVP 1Q live migration testing: PASS
+      * PVP 1Q cross numa node live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M): PASS
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing: PASS
+      * Host PF + DPDK testing: PASS
+      * Host VF + DPDK testing: PASS
+
+* Nvidia (R) Testing
+
+   * functional tests on Mellanox hardware
+
+      * NIC: ConnectX-4 Lx / OS: RHEL7.4 / Driver: MLNX_OFED_LINUX-5.2-2.2.0.0 Firmware: 14.29.2002
+      * NIC: ConnectX-5 / OS: RHEL7.4 / Driver: MLNX_OFED_LINUX-5.2-2.2.0.0 Firmware: 16.29.2002
+
+   * Basic functionality:
+
+      * Send and receive multiple types of traffic.
+      * testpmd xstats counter test.
+      * testpmd timestamp test.
+      * Changing/checking link status through testpmd.
+      * RTE flow tests: Items: eth / vlan / ipv4 / ipv6 / tcp / udp / icmp / gre / nvgre / vxlan ip in ip / mplsoudp / mplsogre
+      * Actions: drop / queue / rss / mark / flag / jump / count / raw_encap / raw_decap / vxlan_encap / vxlan_decap / NAT / dec_ttl
+      * Some RSS tests.
+      * VLAN filtering, stripping and insertion tests.
+      * Checksum and TSO tests.
+      * ptype tests.
+      * link_status_interrupt example application tests.
+      * l3fwd-power example application tests.
+      * Multi-process example applications tests.
+
+   * Compilation tests with multiple configurations in the following OS/driver combinations are also passing:
+
+      * Ubuntu 20.04.2 with MLNX_OFED_LINUX-5.2-2.2.0.0.
+      * Ubuntu 20.04.2 with rdma-core master (a1a9ffb).
+      * Ubuntu 20.04.2 with rdma-core v28.0.
+      * Ubuntu 18.04.5 with rdma-core v17.1.
+      * Ubuntu 18.04.5 with rdma-core master (a1a9ffb) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * Fedora 32 with rdma-core v33.0.
+      * CentOS 7 7.9.2009 with rdma-core master (a1a9ffb).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.2-2.2.0.0.
+      * CentOS 8 8.3.2011 with rdma-core master (a1a9ffb).
+      * OpenSUSE Leap 15.2 with rdma-core v27.1.
+
+* Intel(R) Testing
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * PF (i40e)
+      * PF (ixgbe)
+      * VF (i40e)
+      * VF (ixgbe)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+* Intel(R) Testing with Open vSwitch
+
+   * OVS testing with OVS 2.14.3
+
+      * I40e: Performance Tests Jumbo frames RSS
+      * Niantic: Performance Tests Jumbo frames RSS
+      * Ice: Performance Tests Jumbo frames RSS
+      * Vhost: Port addition, deletion, jumbo frames and RSS multi-queue tests.
+
+* Canonical(R) Testing
+
+   * Build tests on Ubuntu 21.04
+   * OVS-DPDK tests on x86_64
+
+      * performance tests
+
+         * test guest-openvswitch for OVS-5CPU  => Pass
+         * test guest-dpdk-vhost-user-client-multiq for OVSDPDK-VUC  => Pass
+
+      * VUC endurance tests
+
+         * start stop guests (client)  => Pass
+         * add/remove ports (client)  => Pass
+
+19.11.7 Known Issues
+~~~~~~~~~~~~~~~~~~~~
+
+* The UDP fragmentation offload feature of Virtio-net device can not be turned on in the VM. Bug: https://bugzilla.kernel.org/show_bug.cgi?id=207075
+
+* mlx5 VLAN packets will not do RSS. Bug: https://bugs.dpdk.org/show_bug.cgi?id=661
+
+19.11.8 Release Notes
+---------------------
+
+19.11.8 Fixes
+~~~~~~~~~~~~~
+
+* Regenerate meson.build changes required due to reverts
+* Revert "Revert "Revert "build: always link whole DPDK static libraries"""
+* Revert "Revert "Revert "build/pkg-config: improve static linking flags"""
+* Revert "Revert "Revert "build/pkg-config: move pkg-config file creation"""
+* Revert "Revert "Revert "build/pkg-config: output drivers first for static build"""
+* Revert "Revert "Revert "build/pkg-config: prevent overlinking"""
+* Revert "Revert "Revert "devtools: test static linkage with pkg-config"""
+
+19.11.8 Validation
+~~~~~~~~~~~~~~~~~~
+
+* Intel(R) Testing
+
+   * Builds
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * PF (i40e)
+      * PF (ixgbe)
+      * VF (i40e)
+      * VF (ixgbe)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+* Intel(R) Testing with Open vSwitch
+
+   * OVS build and link testing with OVS 2.13 (make based)
+   * OVS build and link testing with OVS 2.14 (make based)
+
+* Canonical(R) Testing
+
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.04 (meson based)
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.10 (meson based)
+   * OVS-DPDK tests on x86_64
+
+19.11.9 Release Notes
+---------------------
+
+19.11.9 Fixes
+~~~~~~~~~~~~~
+
+* app/bbdev: fix HARQ error messages
+* app/crypto-perf: check memory allocation
+* app/eventdev: fix lcore parsing skipping last core
+* app/eventdev: fix overflow in lcore list parsing
+* app: fix exit messages
+* app/testpmd: fix bitmap of link speeds when force speed
+* app/testpmd: fix build with musl
+* app/testpmd: fix DCB forwarding configuration
+* app/testpmd: fix DCB re-configuration
+* app/testpmd: fix forward lcores number for DCB
+* app/testpmd: fix max queue number for Tx offloads
+* app/testpmd: fix NVGRE encap configuration
+* app/testpmd: fix segment number check
+* app/testpmd: fix Tx/Rx descriptor query error log
+* app/testpmd: remove unnecessary UDP tunnel check
+* bpf: fix JSLT validation
+* build: detect execinfo library on Linux
+* build: exclude meson files from examples installation
+* buildtools: fix build with busybox
+* bus/dpaa: fix 64-bit arch detection
+* bus/dpaa: fix build with musl
+* bus/dpaa: fix statistics reading
+* bus/fslmc: fix random portal hangs with qbman 5.0
+* bus/fslmc: remove unused debug macro
+* common/dpaax/caamflib: fix build with musl
+* common/dpaax: fix possible null pointer access
+* common/iavf: use pad byte to specify MAC type
+* common/qat: increase IM buffer size for GEN3
+* common/sfc_efx/base: limit reported MCDI response length
+* compress/qat: enable compression on GEN3
+* config/ppc: reduce number of cores and NUMA nodes
+* crypto/dpaa2_sec: fix close and uninit functions
+* crypto/dpaa_sec: affine the thread portal affinity
+* crypto/qat: fix null authentication request
+* crypto/qat: fix offset for out-of-place scatter-gather
+* doc: fix build with Sphinx 4
+* doc: fix HiSilicon copyright syntax
+* doc: fix multiport syntax in nfp guide
+* doc: fix names of UIO drivers
+* doc: fix sphinx rtd theme import in GHA
+* drivers/crypto: fix build with -fno-common
+* drivers/net: check process type in close operation
+* eal: add C++ include guard for reciprocal header
+* eal/arm64: fix platform register bit
+* eal: fix comment of OS-specific header files
+* eal: fix hang in control thread creation
+* eal: fix race in control thread creation
+* eal: fix service core list parsing
+* eal/windows: add cleanup function stub
+* eal/windows: fix default thread priority
+* ethdev: add missing buses in device iterator
+* ethdev: fix redundant flow after RSS expansion
+* ethdev: update flow item GTP QFI definition
+* ethdev: validate input in EEPROM info
+* ethdev: validate input in module EEPROM dump
+* ethdev: validate input in register info
+* eventdev: fix case to initiate crypto adapter service
+* eventdev: fix memory leakage on thread creation failure
+* eventdev: remove redundant thread name setting
+* event/dpaa2: remove unused macros
+* event/octeontx2: fix device reconfigure for single slot
+* examples: add eal cleanup to examples
+* examples/bbdev: fix header include for musl
+* examples/ethtool: remove unused parsing
+* examples/flow_classify: fix NUMA check of port and core
+* examples/l2fwd-cat: fix NUMA check of port and core
+* examples/l2fwd-crypto: fix packet length while decryption
+* examples/l2fwd-crypto: skip masked devices
+* examples/l3fwd: fix LPM IPv6 subnets
+* examples/l3fwd-power: fix empty poll thresholds
+* examples/packet_ordering: fix port configuration
+* examples/ptpclient: remove wrong comment
+* examples/rxtx_callbacks: fix port ID format specifier
+* examples/skeleton: fix NUMA check of port and core
+* examples/timer: fix time interval
+* examples/vhost: check memory table query
+* examples/vhost_crypto: remove unused short option
+* fbarray: fix log message on truncation error
+* net/mlx5: fix flow split combined with counter
+* ipc: check malloc sync reply result
+* ipc: use monotonic clock
+* kni: fix compilation on SLES15-SP3
+* license: fix typos
+* log/linux: make default output stderr
+* mbuf: check shared memory before dumping dynamic space
+* mem: fix freeing segments in --huge-unlink mode
+* net/af_xdp: fix error handling during Rx queue setup
+* net/ark: refactor Rx buffer recovery
+* net/ark: update packet director initial state
+* net/bnx2x: fix build with GCC 11
+* net/bnx2x: fix build with GCC 11
+* net/bnxt: check PCI config read
+* net/bnxt: drop unused attribute
+* net/bnxt: fix build failures after merging patches
+* net/bnxt: fix configuring LRO
+* net/bnxt: fix device readiness check
+* net/bnxt: fix double free in port start failure
+* net/bnxt: fix dynamic VNIC count
+* net/bnxt: fix firmware fatal error handling
+* net/bnxt: fix FW readiness check during recovery
+* net/bnxt: fix handling of null flow mask
+* net/bnxt: fix health check alarm cancellation
+* net/bnxt: fix HWRM and FW incompatibility handling
+* net/bnxt: fix link state operations
+* net/bnxt: fix memory allocation for command response
+* net/bnxt: fix mismatched type comparison in MAC restore
+* net/bnxt: fix PCI write check
+* net/bnxt: fix PTP support for Thor
+* net/bnxt: fix queues per VNIC
+* net/bnxt: fix ring count calculation for Thor
+* net/bnxt: fix RSS context cleanup
+* net/bnxt: fix Rx and Tx timestamps
+* net/bnxt: fix Rx buffer posting
+* net/bnxt: fix Rx descriptor status
+* net/bnxt: fix Rx queue count
+* net/bnxt: fix Rx timestamp when FIFO pending bit is set
+* net/bnxt: fix single PF per port check
+* net/bnxt: fix timesync when PTP is not supported
+* net/bnxt: fix Tx length hint threshold
+* net/bnxt: fix Tx timestamp init
+* net/bnxt: fix VF info allocation
+* net/bnxt: fix VNIC configuration
+* net/bnxt: fix xstats get
+* net/bnxt: prevent device access in error state
+* net/bnxt: refactor multi-queue Rx configuration
+* net/bnxt: remove unnecessary forward declarations
+* net/bnxt: remove unused function parameters
+* net/bnxt: remove unused macro
+* net/bnxt: reset filter indices on free
+* net/bnxt: use prefix on global function
+* net/bonding: fix adding itself as its slave
+* net/bonding: fix LACP system address check
+* net/bonding: fix leak on remove
+* net/bonding: fix socket ID check
+* net/cxgbe: remove use of uint type
+* net/dpaa2: fix getting link status
+* net/e1000/base: fix timeout for shadow RAM write
+* net/e1000: fix flow error message object
+* net/e1000: fix max Rx packet size
+* net/e1000: fix Rx error counter for bad length
+* net/e1000: remove MTU setting limitation
+* net/ena/base: fix type conversions by explicit casting
+* net/ena: fix releasing Tx ring mbufs
+* net/ena: remove endian swap functions
+* net/ena: switch memcpy to optimized version
+* net/failsafe: fix RSS hash offload reporting
+* net/failsafe: report minimum and maximum MTU
+* net: fix comment in IPv6 header
+* net/hinic: fix crash in secondary process
+* net/hns3: clear hash map on flow director clear
+* net/hns3: delete redundant blank line
+* net/hns3: fix DCB mode check
+* net/hns3: fix DCB reconfiguration
+* net/hns3: fix flow control exception
+* net/hns3: fix flow control mode
+* net/hns3: fix flow counter value
+* net/hns3: fix FLR miss detection
+* net/hns3: fix handling link update
+* net/hns3: fix HW buffer size on MTU update
+* net/hns3: fix mailbox error message
+* net/hns3: fix MTU config complexity
+* net/hns3: fix ordering in secondary process initialization
+* net/hns3: fix processing Tx offload flags
+* net/hns3: fix querying flow director counter for out param
+* net/hns3: fix requested FC mode rollback
+* net/hns3: fix rollback after setting PVID failure
+* net/hns3: fix secondary process request start/stop Rx/Tx
+* net/hns3: fix typos on comments
+* net/hns3: fix VF mailbox head field
+* net/hns3: fix VMDq mode check
+* net/hns3: log time delta in decimal format
+* net/hns3: remove meaningless packet buffer rollback
+* net/hns3: remove unused macro
+* net/hns3: remove unused macros
+* net/hns3: remove unused macros
+* net/hns3: remove unused mailbox macro and struct
+* net/hns3: remove unused VMDq code
+* net/hns3: return error on PCI config write failure
+* net/hns3: support get device version when dump register
+* net/hns3: update HiSilicon copyright syntax
+* net/i40e: announce request queue capability in PF
+* net/i40e: fix input set field mask
+* net/i40e: fix IPv4 fragment offload
+* net/i40e: fix lack of MAC type when set MAC address
+* net/i40e: fix negative VEB index
+* net/i40e: fix parsing packet type for NEON
+* net/i40e: fix primary MAC type when starting port
+* net/i40e: fix VF RSS configuration
+* net/i40e: remove redundant VSI check in Tx queue setup
+* net/i40evf: fix packet loss for X722
+* net/iavf: fix lack of MAC type when set MAC address
+* net/iavf: fix primary MAC type when starting port
+* net/iavf: fix TSO max segment size
+* net/iavf: fix Tx context descriptor
+* net/iavf: fix VF to PF command failure handling
+* net/ice/base: cleanup filter list on error
+* net/ice/base: fix build with GCC 11
+* net/ice/base: fix memory allocation for MAC addresses
+* net/ice/base: fix memory allocation wrapper
+* net/ice/base: fix payload indicator on ptype
+* net/ice: check some functions return
+* net/ice: fix disabling promiscuous mode
+* net/ice: fix fast mbuf freeing
+* net/ice: fix illegal access when removing MAC filter
+* net/ice: fix VLAN filter with PF
+* net/ice: fix VSI array out of bounds access
+* net/ixgbe: fix RSS RETA being reset after port start
+* net/ixgbe: fix Rx errors statistics for UDP checksum
+* net/kni: check init result
+* net/memif: fix Tx bps statistics for zero-copy
+* net/mlx4: fix buffer leakage on device close
+* net/mlx4: fix leak when configured repeatedly
+* net/mlx4: fix RSS action with null hash key
+* net/mlx4: fix secondary process initialization ordering
+* net/mlx5: fix drop action for Direct Rules/Verbs
+* net/mlx5: fix leak when configured repeatedly
+* net/mlx5: fix metadata item validation for ingress flows
+* net/mlx5: fix probing device in legacy bonding mode
+* net/mlx5: fix Rx metadata leftovers
+* net/mlx5: fix Rx segmented packets on mbuf starvation
+* net/mlx5: fix secondary process initialization ordering
+* net/mlx5: remove drop queue function prototypes
+* net/mlx5: support RSS expansion for IPv6 GRE
+* net/nfp: fix reporting of RSS capabilities
+* net/octeontx2: fix VLAN filter
+* net/pcap: fix format string
+* net/qede: accept bigger RSS table
+* net/qede: reduce log verbosity
+* net/tap: check ioctl on restore
+* net/tap: fix build with GCC 11
+* net/tap: fix interrupt vector array size
+* net/virtio: fix interrupt unregistering for listening socket
+* net/virtio: fix vectorized Rx queue rearm
+* power: do not skip saving original P-state governor
+* power: fix sanity checks for guest channel read
+* power: remove duplicated symbols from map file
+* power: save original ACPI governor always
+* raw/ntb: check memory allocations
+* raw/ntb: check SPAD user index
+* raw/skeleton: add missing check after setting attribute
+* Revert "kni: fix compilation on SLES15-SP3"
+* service: clean references to removed symbol
+* stack: allow lock-free only on relevant architectures
+* test/bpf: fix error message
+* test: check flow classifier creation
+* test: check thread creation
+* test/cmdline: fix inputs array
+* test/cmdline: silence clang 12 warning
+* test/crypto: fix auth-cipher compare length in OOP
+* test/crypto: fix build with GCC 11
+* test/distributor: fix burst flush on worker quit
+* test/distributor: fix worker notification in burst mode
+* test/event: fix timeout accuracy
+* test: fix autotest handling of skipped tests
+* test: fix build with GCC 11
+* test: fix division by zero
+* test: fix TCP header initialization
+* test/kni: check init result
+* test/kni: fix a comment
+* test/mempool: fix object initializer
+* test/power: add delay before checking CPU frequency
+* test/power: add turbo mode to frequency check
+* test/power: fix CPU frequency check
+* test/power: fix low frequency test when turbo enabled
+* test/power: fix turbo test
+* test/power: round CPU frequency to check
+* test: proceed if timer subsystem already initialized
+* test/table: fix build with GCC 11
+* test/timer: check memzone allocation
+* vdpa/ifc: check PCI config read
+* vfio: do not merge contiguous areas
+* vfio: fix API description
+* vfio: fix DMA mapping granularity for IOVA as VA
+* vfio: fix duplicated user mem map
+* vfio: fix stdbool usage without include
+* vhost: fix batch dequeue potential buffer overflow
+* vhost: fix initialization of temporary header
+* vhost: fix packed ring potential buffer overflow
+* vhost: fix queue initialization
+* vhost: fix split ring potential buffer overflow
+
+19.11.9 Validation
+~~~~~~~~~~~~~~~~~~
+
+* [Intel(R) Testing](http://mails.dpdk.org/archives/stable/2021-July/032349.html)
+
+   * Builds
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * PF (i40e)
+      * PF (ixgbe)
+      * VF (i40e)
+      * VF (ixgbe)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+* [Intel(R) Testing with Open vSwitch](http://mails.dpdk.org/archives/stable/2021-June/031702.html)
+
+   * OVS build and link testing with OVS 2.13 (make based)
+   * OVS build and link testing with OVS 2.14 (make based)
+   * VSPERF tests
+
+     * phy2phy_tput
+     * pvp_tput
+     * pvp_cont
+     * pvvp_tput
+     * pvpv_cont
+     * ovsdpdk_jumbo_p2p
+     * ovsdpdk_jumbo_pvp
+     * ovsdpdk_jumbo_p2p_upper_bound
+     * ovsdpdk_mq_pvp_rxqs_testpmd
+     * ovsdpdk_mq_pvp_rxqs_linux_bridge
+
+* [Canonical(R) Testing](http://mails.dpdk.org/archives/stable/2021-July/031997.html)
+
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.04 (meson based)
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.10 (meson based)
+   * Functional and performance tests based on OVS-DPDK on x86_64
+   * Autopkgtests for DPDK and OpenvSwitch
+
+* [Red Hat(R) Testing](http://mails.dpdk.org/archives/stable/2021-June/031619.html)
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 6.0
+      * X540-AT2 NIC(ixgbe, 10G)
+      * Tested on 19.11.9-RC3
+
+   * Tests
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size): PASS
+      * Guest with device assignment(PF) throughput testing(2M hugepage size) : PASS
+      * Guest with device assignment(VF) throughput testing: PASS
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing: PASS
+      * PVP vhost-user 2Q throughput testing: PASS
+      * PVP vhost-user 1Q - cross numa node throughput testing: PASS
+      * Guest with vhost-user 2 queues throughput testing: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect: PASS
+      * PVP 1Q live migration testing: PASS
+      * PVP 1Q cross numa node live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M): PASS
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing: PASS
+      * Host PF + DPDK testing: PASS
+      * Host VF + DPDK testing: PASS
+
+* [Nvidia (R) Testing](http://mails.dpdk.org/archives/stable/2021-July/032381.html)
+
+   * functional tests on Mellanox hardware
+
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.3-1.0.0.1 / Firmware: 14.30.1004
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.3-1.0.0.1 / Firmware: 16.30.1004
+
+   * Basic functionality:
+
+      * Send and receive multiple types of traffic.
+      * testpmd xstats counter test.
+      * testpmd timestamp test.
+      * Changing/checking link status through testpmd.
+      * RTE flow tests: Items: eth / vlan / ipv4 / ipv6 / tcp / udp / icmp / gre / nvgre / vxlan ip in ip / mplsoudp / mplsogre
+      * Actions: drop / queue / rss / mark / flag / jump / count / raw_encap / raw_decap / vxlan_encap / vxlan_decap / NAT / dec_ttl
+      * Some RSS tests.
+      * VLAN filtering, stripping and insertion tests.
+      * Checksum and TSO tests.
+      * ptype tests.
+      * link_status_interrupt example application tests.
+      * l3fwd-power example application tests.
+      * Multi-process example applications tests.
+
+   * Compilation tests with multiple configurations in the following OS/driver combinations are also passing:
+
+      * Ubuntu 20.04.2 with MLNX_OFED_LINUX-5.3-1.0.0.1.
+      * Ubuntu 20.04.2 with rdma-core master (a66e2a5).
+      * Ubuntu 20.04.2 with rdma-core v28.0.
+      * Ubuntu 18.04.5 with rdma-core v17.1.
+      * Ubuntu 18.04.5 with rdma-core master (a66e2a5) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * Fedora 34 with rdma-core v35.0.
+      * Fedora 35 (Rawhide) with rdma-core v35.0 (only with gcc).
+      * CentOS 7 7.9.2009 with rdma-core master (a66e2a5).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.3-1.0.0.1.
+      * CentOS 8 8.3.2011 with rdma-core master (7f2d460).
+      * OpenSUSE Leap 15.3 with rdma-core v31.0.
+
+19.11.9 Known Issues
+~~~~~~~~~~~~~~~~~~~~
+
+This time there are a few issues which were identified in the tests. But none
+of them is an in-place regression. So far they are all issues with newer
+compilers, toolchains and kernels that happen to be incompatible with the
+19.11.x code.
+
+* Due to a kernel patch backport in SUSE Linux Enterprise Server 15 SP3
+  [compilation of kni fails there](https://bugs.dpdk.org/show_bug.cgi?id=728).
+  A fix would break existing SP2 installation and
+  [further options are discussed](http://mails.dpdk.org/archives/stable/2021-June/031210.html)
+
+* A [Build issue with clang 12.0.1](https://bugs.dpdk.org/show_bug.cgi?id=745)
+
+* A make [build issue with Fedora 34 with GCC11](https://bugs.dpdk.org/show_bug.cgi?id=744)
+
+* Meson based [build issues with ICC-19.1.1](https://bugs.dpdk.org/show_bug.cgi?id=747)
+
+19.11.10 Release Notes
+----------------------
+
+19.11.10 Fixes
+~~~~~~~~~~~~~~
+
+* app/crypto-perf: fix out-of-place mempool allocation
+* app/test: fix IPv6 header initialization
+* app/testpmd: change port link speed without stopping all
+* app/testpmd: fix help string for port reset
+* app/testpmd: fix IPv4 checksum
+* app/testpmd: fix MAC address after port reset
+* app/testpmd: fix offloads for newly attached port
+* app/testpmd: fix Tx checksum calculation for tunnel
+* bitmap: fix buffer overrun in bitmap init
+* bus: clarify log for non-NUMA-aware devices
+* bus/dpaa: fix freeing in FMAN interface destructor
+* common/mlx5: fix compatibility with OFED port query API
+* common/mlx5: fix Netlink port name padding in probing
+* common/mlx5: use new port query API if available
+* cryptodev: fix freeing after device release
+* crypto/mvsam: fix AES-GCM session parameters
+* crypto/mvsam: fix capabilities
+* crypto/mvsam: fix options parsing
+* crypto/mvsam: fix session data reset
+* crypto/octeontx: fix freeing after device release
+* crypto/qat: fix Arm build with special memcpy
+* devtools: fix file listing in maintainers check
+* distributor: fix 128-bit write alignment
+* doc: add limitation for ConnectX-4 with L2 in mlx5 guide
+* doc: announce common prefix for ethdev
+* doc: fix default burst size in testpmd
+* doc: fix spelling
+* drivers/net: fix memzone allocations for DMA memory
+* ethdev: fix doc of flow action
+* eventdev: fix event port setup in tx adapter
+* flow_classify: fix leaking rules on delete
+* (github-cpaelzer-stable/19.11) telemetry: fix race in telemetry control thread creation
+* (HEAD -> 19.11, tag: v19.11.10-rc2, origin-stable/19.11) version: 19.11.10-rc2
+* ipc: stop mp control thread on cleanup
+* kni: fix crash on userspace VA for segmented packets
+* kni: fix mbuf allocation for kernel side use
+* mempool/octeontx2: fix shift calculation
+* net/bnxt: check access to possible null pointer
+* net/bnxt: cleanup code
+* net/bnxt: clear cached statistics
+* net/bnxt: detect bad opaque in Rx completion
+* net/bnxt: fix auto-negotiation on Whitney+
+* net/bnxt: fix check for PTP support in FW
+* net/bnxt: fix error handling in VNIC prepare
+* net/bnxt: fix error messages in VNIC prepare
+* net/bnxt: fix missing barriers in completion handling
+* net/bnxt: fix nested lock during bonding
+* net/bnxt: fix ring and context memory allocation
+* net/bnxt: fix Rx burst size constraint
+* net/bnxt: fix Rx interrupt setting
+* net/bnxt: fix scalar Tx completion handling
+* net/bnxt: fix Tx descriptor status implementation
+* net/bnxt: fix typo in log message
+* net/bnxt: improve probing log message
+* net/bnxt: invoke device removal event on recovery failure
+* net/bnxt: remove unnecessary code
+* net/bnxt: remove unnecessary comment
+* net/bnxt: set flow error after tunnel redirection free
+* net/bnxt: set flow error when free filter not available
+* net/bnxt: use common function to free VNIC resource
+* net/bnxt: workaround spurious zero stats in Thor
+* net/bonding: check flow setting
+* net/bonding: fix error message on flow verify
+* net/ena: enable multi-segment in Tx offload flags
+* net/ena: trigger reset on Tx prepare failure
+* net/hinic/base: fix LRO
+* net/hinic: increase protection of the VLAN
+* net/hns3: fix delay for waiting to stop Rx/Tx
+* net/hns3: fix filter parsing comment
+* net/hns3: fix Tx prepare after stop
+* net/hns3: fix VLAN strip log
+* net/hns3: increase VF reset retry maximum
+* net/i40e: fix descriptor scan on Arm
+* net/i40e: fix multi-process shared data
+* net/iavf: fix RSS key access out of bound
+* net/iavf: fix Tx threshold check
+* net/ice/base: fix first profile mask
+* net/ice/base: revert change of first profile mask
+* net/ice: fix default RSS key generation
+* net/ice: fix memzone leak when firmware is missing
+* net/ixgbe: fix flow entry access after freeing
+* net/mlx5: fix incorrect r/w lock usage in DMA unmap
+* net/mlx5: fix IPIP multi-tunnel validation
+* net/mlx5: fix match MPLS over GRE with key
+* net/mlx5: fix MPLS RSS expansion
+* net/mlx5: fix overflow in mempool argument
+* net/mlx5: fix representor interrupt handler
+* net/mlx5: fix RoCE LAG bond device probing
+* net/mlx5: fix RSS flow item expansion for GRE key
+* net/mlx5: fix Rx/Tx queue checks
+* net/mlx5: fix switchdev mode recognition
+* net/mlx5: fix typo in vectorized Rx comments
+* net/mlx5: limit implicit MPLS RSS expansion over GRE
+* net/mlx5: limit inner RSS expansion for MPLS
+* net/mlx5: remove redundant operations in NEON Rx
+* net/mlx5: remove unsupported flow item MPLS over IP
+* net/mlx5: workaround drop action with old kernel
+* net/mvpp2: fix configured state dependency
+* net/mvpp2: fix port speed overflow
+* net/octeontx2: fix default MCAM allocation size
+* net/octeontx2: fix flow creation limit on CN98xx
+* net/octeontx2: use runtime LSO format indices
+* net/octeontx/base: fix debug build with clang
+* net/pfe: remove unnecessary null check
+* net/sfc: fix MAC stats lock in xstats query by ID
+* net/sfc: fix MAC stats update for stopped device
+* net/sfc: fix reading adapter state without locking
+* net/sfc: fix xstats query by ID according to ethdev
+* net/sfc: fix xstats query by unsorted list of IDs
+* net/softnic: fix connection memory leak
+* net/softnic: fix memory leak as profile is freed
+* net/virtio: fix aarch32 build
+* net/virtio: fix refill order in packed ring datapath
+* net/virtio: report maximum MTU in device info
+* power: fix namespace for internal struct
+* rib: fix max depth IPv6 lookup
+* (tag: v19.11.10-rc1) version: 19.11.10-rc1
+* test/crypto: fix mbuf reset after null check
+* test/crypto: fix mempool size for session-less
+* test/crypto: fix typo in AES case
+* test/crypto: fix typo in ESN case
+* test/mbuf: fix virtual address conversion
+* tests/eal: fix memory leak
+* vhost/crypto: check request pointer before dereference
+* vhost: fix crash on reconnect
+* vhost: fix missing guest pages table NUMA realloc
+* vhost: fix missing memory table NUMA realloc
+* vhost: utilize dynamic memory allocator
+
+19.11.10 Validation
+~~~~~~~~~~~~~~~~~~~
+
+* [Intel(R) Testing](http://mails.dpdk.org/archives/stable/2021-August/033130.html)
+
+   * Builds
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * PF (i40e)
+      * PF (ixgbe)
+      * VF (i40e)
+      * VF (ixgbe)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+* [Intel(R) Testing with Open vSwitch]
+
+   * OVS build and link testing with OVS 2.13 (make based)
+   * OVS build and link testing with OVS 2.14 (make based)
+   * VSPERF tests
+
+     * phy2phy_tput
+     * pvp_tput
+     * pvp_cont
+     * pvvp_tput
+     * pvpv_cont
+     * ovsdpdk_jumbo_p2p
+     * ovsdpdk_jumbo_pvp
+     * ovsdpdk_jumbo_p2p_upper_bound
+     * ovsdpdk_mq_pvp_rxqs_testpmd
+     * ovsdpdk_mq_pvp_rxqs_linux_bridge
+
+* [Canonical(R) Testing](http://mails.dpdk.org/archives/stable/2021-August/033126.html)
+
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.04 (meson based)
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.10 (meson based)
+   * Functional and performance tests based on OVS-DPDK on x86_64
+   * Autopkgtests for DPDK and OpenvSwitch
+
+* [Red Hat(R) Testing](http://mails.dpdk.org/archives/stable/2021-September/033218.html)
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 6.0
+      * X540-AT2 NIC(ixgbe, 10G)
+      * Tested on 19.11.9-RC3
+
+   * Tests
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size): PASS
+      * Guest with device assignment(PF) throughput testing(2M hugepage size) : PASS
+      * Guest with device assignment(VF) throughput testing: PASS
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing: PASS
+      * PVP vhost-user 2Q throughput testing: PASS
+      * PVP vhost-user 1Q - cross numa node throughput testing: PASS
+      * Guest with vhost-user 2 queues throughput testing: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect: PASS
+      * PVP 1Q live migration testing: PASS
+      * PVP 1Q cross numa node live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M): PASS
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing: PASS
+      * Host PF + DPDK testing: PASS
+      * Host VF + DPDK testing: PASS
+
+* [Nvidia (R) Testing](http://mails.dpdk.org/archives/stable/2021-August/033131.html)
+
+   * functional tests on Mellanox hardware
+
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.4-1.0.3.0 / Firmware: 14.31.1014
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / kernel: 5.14.0-rc7 / Driver: rdma-core v36.0 / Firmware: 14.31.1014
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.4-1.0.3.0 / Firmware: 16.31.1014
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / kernel: 5.14.0-rc7 / Driver: v36.0 / Firmware: 16.31.1014
+
+   * Basic functionality:
+
+      * Send and receive multiple types of traffic.
+      * testpmd xstats counter test.
+      * testpmd timestamp test.
+      * Changing/checking link status through testpmd.
+      * RTE flow tests: Items: eth / vlan / ipv4 / ipv6 / tcp / udp / icmp / gre / nvgre / vxlan ip in ip / mplsoudp / mplsogre
+      * Actions: drop / queue / rss / mark / flag / jump / count / raw_encap / raw_decap / vxlan_encap / vxlan_decap / NAT / dec_ttl
+      * Some RSS tests.
+      * VLAN filtering, stripping and insertion tests.
+      * Checksum and TSO tests.
+      * ptype tests.
+      * link_status_interrupt example application tests.
+      * l3fwd-power example application tests.
+      * Multi-process example applications tests.
+
+   * Compilation tests with multiple configurations in the following OS/driver combinations are also passing:
+
+      * Ubuntu 20.04.2 with MLNX_OFED_LINUX-5.4-1.0.3.0.
+      * Ubuntu 20.04.2 with rdma-core master (64d1ae5).
+      * Ubuntu 20.04.2 with rdma-core v28.0.
+      * Ubuntu 18.04.5 with rdma-core v17.1.
+      * Ubuntu 18.04.5 with rdma-core master (5b0f5b2) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * Fedora 34 with rdma-core v36.0.
+      * Fedora 35 (Rawhide) with rdma-core v36.0 (only with gcc).
+      * CentOS 7 7.9.2009 with rdma-core master (64d1ae5).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.4-1.0.3.0.
+      * CentOS 8 8.3.2011 with rdma-core master (64d1ae5).
+      * OpenSUSE Leap 15.3 with rdma-core v31.0.
+
+19.11.10 Known Issues
+~~~~~~~~~~~~~~~~~~~~~
+
+A few issues are still present, but none of them is an in-place regression.
+So far they are all issues with newer compilers, toolchains and kernels that
+happen to be incompatible with the 19.11.x code.
+
+* Due to a kernel patch backport in SUSE Linux Enterprise Server 15 SP3
+  [compilation of kni fails there](https://bugs.dpdk.org/show_bug.cgi?id=728).
+  A fix would break existing SP2 installation and
+  [further options are discussed](http://mails.dpdk.org/archives/stable/2021-June/031210.html)
+
+* A [Build issue with clang 12.0.1](https://bugs.dpdk.org/show_bug.cgi?id=745)
+
+* A make [build issue with Fedora 34 with GCC11](https://bugs.dpdk.org/show_bug.cgi?id=744)
+
+* Meson based [build issues with ICC-19.1.1](https://bugs.dpdk.org/show_bug.cgi?id=747)
+
+19.11.11 Release Notes
+----------------------
+
+19.11.11 Fixes
+~~~~~~~~~~~~~~
+
+* app/crypto-perf: fix AAD template copy overrun
+* app/eventdev: fix terminal colour after control-c exit
+* app/testpmd: fix access to DSCP table entries
+* app/testpmd: fix check without outer checksum
+* app/testpmd: fix DCB in VT configuration
+* app/testpmd: fix dump of Tx offload flags
+* app/testpmd: fix hexadecimal parser with odd length
+* app/testpmd: fix hex string parser in flow commands
+* app/testpmd: fix packet burst spreading stats
+* app/testpmd: fix RSS key length
+* app/testpmd: fix RSS type display
+* app/testpmd: fix Tx retry in flowgen engine
+* app/testpmd: remove unused header file
+* app/testpmd: retain all original dev conf when config DCB
+* bitrate: fix calculation to match API description
+* bitrate: fix registration to match API description
+* bpf: allow self-xor operation
+* bus/fslmc: remove unused device count
+* bus/vmbus: fix leak on device scan
+* bus/vmbus: fix ring buffer mapping in secondary process
+* common/cpt: fix KASUMI input length
+* common/dpaax/caamflib: fix IV for short MAC-I in SNOW3G
+* common/dpaax: fix physical address conversion
+* common/iavf: fix ARQ resource leak
+* common/qat: fix queue pairs number
+* config/ppc: ignore GCC 11 psabi warnings
+* contigmem: update for FreeBSD 13
+* cryptodev: fix stringop-overflow build failure with gcc 10
+* crypto/openssl: fix CCM processing 0 length source
+* crypto/qat: fix status in RSA decryption
+* crypto/qat: fix uncleared cookies after operation
+* doc: capitalise PMD
+* doc: describe timestamp limitations for mlx5
+* doc: fix default mempool option in guides
+* doc: fix emulated device names in e1000 guide
+* doc: fix numbers power of 2 in LPM6 guide
+* doc: remove repeated repeated words
+* doc: strip build artefacts for examples file list
+* drivers/crypto: fix IPsec TTL decrement option
+* drivers/net: fix typo in vector Rx comment
+* drivers/net: fix vector Rx comments
+* eal: fix device iterator when no bus is selected
+* eal/freebsd: fix incorrect variable name
+* eal/freebsd: ignore in-memory option
+* eal/freebsd: lock memory device to prevent conflicts
+* eal/freebsd: update CPU macro for FreeBSD 13
+* eal/linux: fix uevent message parsing
+* eal/linux: remove unused variable for socket memory
+* eal/ppc: ignore GCC 10 stringop-overflow warnings
+* eal: reset lcore task callback and argument
+* eal/x86: avoid cast-align warning in memcpy functions
+* eal/x86: fix some CPU extended features definitions
+* efd: allow more CPU sockets in table creation
+* ethdev: fix crash on owner delete
+* ethdev: fix PCI device release in secondary process
+* ethdev: fix typos
+* ethdev: fix xstats by ID API documentation
+* eventdev/eth_rx: fix WRR buffer overrun
+* eventdev/eth_tx: fix queue delete logic
+* event/sw: remove unused inflight events count
+* examples/fips_validation: fix device start
+* examples/fips_validation: remove unused allocation
+* examples/l3fwd-power: fix early shutdown
+* examples/multi_process: fix Rx packets distribution
+* examples/ntb: fix build dependency
+* examples/performance-thread: fix build with ASan
+* examples/performance-thread: fix build with clang 12.0.1
+* examples/performance-thread: remove unused hits count
+* examples/ptpclient: fix delay request message
+* examples/service_cores: fix lcore count check
+* fix PMD wording
+* fix spelling in comments and doxygen
+* hash: fix Doxygen comment of Toeplitz file
+* (HEAD -> 19.11) net/ice: build failure with make and clang < 13
+* igb_uio: fix build for switch fall through
+* interrupt: fix request notifier interrupt processing
+* kni: check error code of allmulticast mode switch
+* kni: fix build for SLES15-SP3
+* kni: fix build for SLES15-SP3 (Make)
+* kni: update kernel API to set random MAC address
+* lpm6: fix buffer overflow
+* mbuf: avoid cast-align warning in data offset macro
+* mbuf: enforce no option for dynamic fields and flags
+* mbuf: fix dump of dynamic fields and flags
+* mbuf: fix typo in comment
+* mem: fix dynamic hugepage mapping in container
+* net/af_packet: fix ignoring full ring on Tx
+* net/af_xdp: disable secondary process support
+* net: avoid cast-align warning in VLAN insert function
+* net/axgbe: fix unreleased lock in I2C transfer
+* net/bnxt: check FW capability for VLAN offloads
+* net/bnxt: fix double allocation of ring groups
+* net/bnxt: fix firmware version query
+* net/bnxt: fix function driver register/unregister
+* net/bnxt: fix memzone free for Tx and Rx rings
+* net/bnxt: fix ring group free
+* net/bnxt: fix Rx next consumer index in mbuf alloc fail
+* net/bnxt: fix tunnel port accounting
+* net/bnxt: fix Tx queue startup state
+* net/bnxt: fix VLAN indication in Rx mbuf
+* net/bonding: fix dedicated queue mode in vector burst
+* net/bonding: fix RSS key length
+* net/ena: advertise scattered Rx capability
+* net/ena: fix offload capabilities verification
+* net/ena: fix per-queue offload capabilities
+* net/enic: avoid error message when no advanced filtering
+* net/enic: fix filter mode detection
+* net/failsafe: fix secondary process probe
+* net: fix aliasing in checksum computation
+* net: fix checksum API documentation
+* net/hinic/base: remove some unused variables
+* net/hns3: fix input parameters of MAC functions
+* net/hns3: simplify queue DMA address arithmetic
+* net/i40e/base: fix AOC media type
+* net/i40e/base: fix function name in comments
+* net/i40e/base: fix PF reset
+* net/i40e/base: fix PHY identifiers for 2.5G and 5G adapters
+* net/i40e/base: fix potentially uninitialized variables
+* net/i40e/base: fix resource leakage
+* net/i40e/base: fix update link data for X722
+* net/i40e/base: fix using checksum before check
+* net/i40e: build failure with make and clang < 13
+* net/i40e: build failure with make and clang 13
+* net/i40e: fix 32-bit build
+* net/i40e: fix device startup resource release
+* net/i40e: fix forward outer IPv6 VXLAN
+* net/i40e: fix mbuf leak
+* net/i40e: fix risk in descriptor read in NEON Rx
+* net/i40e: fix risk in descriptor read in scalar Rx
+* net/i40e: fix Rx packet statistics
+* net/i40e: support 25G AOC/ACC cables
+* net/iavf: fix mbuf leak
+* net/iavf: fix overflow in maximum packet length config
+* net/iavf: fix Rx queue buffer size alignment
+* net/ice/base: fix typo in comment
+* net/ice: build failure with make and clang 13
+* net/ice: fix memzone leak after device init failure
+* net/ice: fix memzone leak on queue re-configure
+* net/ice: save rule on switch filter creation
+* net/ixgbe: build failure with make and clang < 13
+* net/ixgbe: build failure with make and clang 13
+* net/ixgbe: fix hash handle leak
+* net/ixgbe: fix MAC resource leak
+* net/ixgbe: fix mbuf leak
+* net/ixgbe: fix port initialization if MTU config fails
+* net/ixgbe: fix queue release
+* net/ixgbe: fix queue resource leak
+* net/ixgbe: fix Rx multicast statistics after reset
+* net/liquidio: remove unused counter
+* net/memif: fix chained mbuf determination
+* net/mlx4: fix empty Ethernet spec with VLAN
+* net/mlx5: fix Altivec Rx
+* net/mlx5: fix flow tables double release
+* net/mlx5: fix GENEVE and VXLAN-GPE flow item matching
+* net/mlx5: fix GENEVE protocol type translation
+* net/mlx5: fix GRE flow item matching
+* net/mlx5: fix GRE protocol type translation
+* net/mlx5: fix metadata and meter split shared tag
+* net/mlx5: fix MPLS tunnel outer layer overwrite
+* net/mlx5: fix RETA update without stopping device
+* net/mlx5: fix RSS expansion scheme for GRE header
+* net/mlx5: fix RSS RETA update
+* net/mlx5: fix VXLAN-GPE next protocol translation
+* net/nfp: fix minimum descriptor sizes
+* net/nfp: remove unused message length
+* net/octeontx2: fix MTU when PTP is enabled
+* net/pcap: fix resource leakage on port probe
+* net/qede/base: remove unused message size
+* net/qede: fix minsize build
+* net/softnic: fix useless address check
+* net/virtio: avoid unneeded link interrupt configuration
+* net/virtio: fix indirect descriptor reconnection
+* net/virtio: fix mbuf count on Rx queue setup
+* net/virtio-user: fix Rx interrupts with multi-queue
+* net/vmxnet3: fix build with clang 13
+* power: fix build with clang 13
+* remove repeated 'the' in the code
+* Revert "net/ena: trigger reset on Tx prepare failure"
+* rib: fix IPv6 depth mask
+* ring: fix Doxygen comment of internal function
+* stack: fix reload head when pop fails
+* (tag: 19.11.11-beta1) doc: fix typo in coding style
+* (tag: v19.11.11-rc1) version: 19.11.11-rc1
+* (tag: v19.11.11-rc2, origin-stable/19.11, github-cpaelzer-stable/19.11) version: 19.11.11-rc2
+* test/atomic: fix 128-bit atomic test with many cores
+* test/bpf: fix undefined behavior with clang
+* test/compress: fix buffer overflow
+* test/crypto: fix data lengths
+* test/crypto: fix unnecessary stats retrieval
+* test/crypto: skip plain text compare for null cipher
+* test/distributor: remove unused counter
+* test/event_crypto: fix event crypto metadata write
+* test/event: fix timer adapter creation test
+* test: fix ring PMD initialisation
+* test/func_reentrancy: free memzones after test
+* test/latency: fix loop boundary
+* test/mem: fix memory autotests on FreeBSD
+* test/power: fix CPU frequency when turbo enabled
+* test/red: fix typo in test description
+* test/service: fix some comment
+* vfio: fix FreeBSD clear group stub
+* vfio: fix FreeBSD documentation
+* vhost: add sanity check on inflight last index
+* vhost: clean IOTLB cache on vring stop
+* vhost: log socket path on adding connection
+
+19.11.11 Validation
+~~~~~~~~~~~~~~~~~~~
+
+* [Intel(R) Testing](http://mails.dpdk.org/archives/stable/2021-December/035423.html)
+
+   * Builds
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * PF (i40e)
+      * PF (ixgbe)
+      * VF (i40e)
+      * VF (ixgbe)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+* [Canonical(R) Testing](http://mails.dpdk.org/archives/stable/2022-January/035541.html)
+
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.04 (meson based)
+   * Functional and performance tests based on OVS-DPDK on x86_64
+   * Autopkgtests for DPDK and OpenvSwitch
+
+* [Red Hat(R) Testing](http://mails.dpdk.org/archives/stable/2021-December/035405.html)
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 6.0
+      * X540-AT2 NIC(ixgbe, 10G)
+      * Tested on 19.11.9-RC3
+
+   * Tests
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size): PASS
+      * Guest with device assignment(PF) throughput testing(2M hugepage size) : PASS
+      * Guest with device assignment(VF) throughput testing: PASS
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing: PASS
+      * PVP vhost-user 2Q throughput testing: PASS
+      * PVP vhost-user 1Q - cross numa node throughput testing: PASS
+      * Guest with vhost-user 2 queues throughput testing: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect: PASS
+      * PVP 1Q live migration testing: PASS
+      * PVP 1Q cross numa node live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M): PASS
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing: PASS
+      * Host PF + DPDK testing: PASS
+      * Host VF + DPDK testing: PASS
+
+* [Nvidia (R) Testing](http://mails.dpdk.org/archives/stable/2021-December/035526.html)
+
+   * functional tests on Mellanox hardware
+
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.5-1.0.3.2 / Firmware: 14.32.1010
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / kernel: 5.14.0-rc7 / Driver: rdma-core v36.0 / Firmware: 14.32.1010
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.5-1.0.3.2 / Firmware: 16.32.1010
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / kernel: 5.14.0-rc7 / Driver: v36.0 / Firmware: 16.32.1010
+
+   * Basic functionality:
+
+      * Send and receive multiple types of traffic.
+      * testpmd xstats counter test.
+      * testpmd timestamp test.
+      * Changing/checking link status through testpmd.
+      * RTE flow tests: Items: eth / vlan / ipv4 / ipv6 / tcp / udp / icmp / gre / nvgre / vxlan ip in ip / mplsoudp / mplsogre
+      * Actions: drop / queue / rss / mark / flag / jump / count / raw_encap / raw_decap / vxlan_encap / vxlan_decap / NAT / dec_ttl
+      * Some RSS tests.
+      * VLAN filtering, stripping and insertion tests.
+      * Checksum and TSO tests.
+      * ptype tests.
+      * link_status_interrupt example application tests.
+      * l3fwd-power example application tests.
+      * Multi-process example applications tests.
+
+   * Compilation tests with multiple configurations in the following OS/driver combinations are also passing:
+
+      * Ubuntu 20.04.2 with MLNX_OFED_LINUX-5.5-1.0.3.2.
+      * Ubuntu 20.04.2 with rdma-core master (c52b43e).
+      * Ubuntu 20.04.2 with rdma-core v28.0.
+      * Ubuntu 18.04.5 with rdma-core v17.1.
+      * Ubuntu 18.04.5 with rdma-core master (c52b43e) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * Fedora 35 with rdma-core v38.0 (only gcc passes).
+      * Fedora 36 (Rawhide) with rdma-core v38.0
+      * CentOS 7 7.9.2009 with rdma-core master (940f53f).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.5-1.0.3.2.
+      * CentOS 8 8.3.2011 with rdma-core master (940f53f).
+      * OpenSUSE Leap 15.3 with rdma-core v31.0.
+
+19.11.11 Known Issues
+~~~~~~~~~~~~~~~~~~~~~
+
+A few issues are still present, but none of them is an in-place regression.
+So far these are all issues with newer compilers, toolchains and kernels that
+happen to be incompatible with the older 19.11.x codebase.
+We are happy to state that this time not only more compile issues got
+identified, but also that a lot of them got fixed in 19.11.11.
+
+* Identified in 19.11.10 and 19.11.11-rc*, but fixed in this release:
+
+  * [performance-thread build failure with clang 12.0.1](https://bugs.dpdk.org/show_bug.cgi?id=745)
+  * [net/nfp fail with clang 13](https://bugs.dpdk.org/show_bug.cgi?id=904)
+  * [net/i40e fail with clang 13](https://bugs.dpdk.org/show_bug.cgi?id=901)
+  * [net/ice fail with clang 13](https://bugs.dpdk.org/show_bug.cgi?id=902)
+  * [net/ixgbe fail with clang 13](https://bugs.dpdk.org/show_bug.cgi?id=903)
+  * [FreeBSD13 issues with gcc 10.3.0 and clang 11](https://bugs.dpdk.org/show_bug.cgi?id=905)
+  * [gcc implicit-fallthrough](https://bugs.dpdk.org/show_bug.cgi?id=907)
+  * [gcc stringop-overflow](https://bugs.dpdk.org/show_bug.cgi?id=908)
+  * [make based build with FreeBSD13 and clang 11.0.1](https://bugs.dpdk.org/show_bug.cgi?id=913)
+  * [SUSE Linux Enterprise Server 15 SP3 kernels](https://bugs.dpdk.org/show_bug.cgi?id=812)
+
+* Remaining known issues in 19.11.11
+
+  * [Make based build issue with Fedora 34 and GCC11 - maybe-uninitialized](https://bugs.dpdk.org/show_bug.cgi?id=744)
+  * [Meson based build issue with ICC-19.1.1 - cast discards qualifiers from target type](https://bugs.dpdk.org/show_bug.cgi?id=747)
+  * [net/quede build fail with clang 13 - unused-but-set-variable](https://bugs.dpdk.org/show_bug.cgi?id=912)
+
+19.11.12 Release Notes
+----------------------
+
+
+19.11.12 Fixes
+~~~~~~~~~~~~~~
+
+* acl: add missing C++ guards
+* app/compress-perf: fix number of queue pairs to setup
+* app/compress-perf: fix socket ID type during init
+* app/pdump: abort on multi-core capture limit
+* app/testpmd: check starting port is not in bonding
+* app/testpmd: fix bonding mode set
+* app/testpmd: fix build without drivers
+* app/testpmd: fix dereference before null check
+* app/testpmd: fix show RSS RETA on Windows
+* build: fix warning about using -Wextra flag
+* build: fix warnings when running external commands
+* build: remove deprecated Meson functions
+* bus/dpaa: fix C++ include guard
+* bus/ifpga: remove useless check while browsing devices
+* common/mlx5: add Netlink event helpers
+* compressdev: add missing C++ guards
+* compressdev: fix missing space in log macro
+* compressdev: fix socket ID type
+* compress/octeontx: fix null pointer dereference
+* config/ppc: fix build with GCC >= 10
+* cryptodev: add backward-compatible enum
+* cryptodev: fix clang C++ include
+* cryptodev: fix RSA key type name
+* crypto/virtio: fix out-of-bounds access
+* devtools: fix comment detection in forbidden token check
+* distributor: fix potential overflow
+* doc: add dependency on examples for API doxygen
+* doc: fix FIPS guide
+* doc: fix KNI PMD name typo
+* doc: fix typos and punctuation in flow API guide
+* doc: remove obsolete vector Tx explanations from mlx5 guide
+* doc: replace broken links in mlx guides
+* drivers: remove warning with Meson 0.59
+* eal: fix C++ include
+* eal: fix missing C++ guards
+* eal/freebsd: add missing C++ include guards
+* eal/linux: fix illegal memory access in uevent handler
+* eal/linux: log hugepage create errors with filename
+* ethdev: add missing C++ guards
+* ethdev: fix cast for C++ compatibility
+* ethdev: fix doxygen comments for device info struct
+* eventdev: add missing C++ guards
+* eventdev/eth_tx: fix queue add error code
+* eventdev: fix C++ include
+* examples/distributor: reduce Tx queue number to 1
+* examples/flow_classify: fix failure message
+* examples/l2fwd-crypto: fix port mask overflow
+* examples/l3fwd: fix buffer overflow in Tx
+* (HEAD -> 19.11, origin-stable/19.11, github-cpaelzer-stable/19.11) Revert "common/qat: fix queue pairs number"
+* ipc: end multiprocess thread during cleanup
+* ipsec: fix C++ include
+* kni: add missing C++ guards
+* kni: fix freeing order in device release
+* kni: fix ioctl signature
+* maintainers: update for stable branches
+* net/af_xdp: add missing trailing newline in logs
+* net/af_xdp: ensure socket is deleted on Rx queue setup error
+* net/bnxt: cap maximum number of unicast MAC addresses
+* net/bnxt: fix a typo introduced in backport
+* net/bnxt: fix handling of VF configuration change
+* net/bnxt: fix memzone allocation per VNIC
+* net/bnxt: fix multicast address set
+* net/bnxt: fix queue stop operation
+* net/bnxt: fix xstats query
+* net/bnxt: get maximum supported multicast filters count
+* net/bnxt: handle ring cleanup in case of error
+* net/bnxt: restore RSS configuration after reset recovery
+* net/bonding: fix mode type mismatch
+* net/bonding: fix promiscuous and allmulticast state
+* net/bonding: fix reference count on mbufs
+* net/bonding: fix RSS with early configure
+* net/cxgbe: fix dangling pointer by mailbox access rework
+* net/cxgbe: remove useless address check
+* net/cxgbe: remove useless C++ include guard
+* net/dpaa2: remove useless C++ include guard
+* net/ena: fix checksum flag for L4
+* net/ena: fix meta descriptor DF flag setup
+* net/ena: remove unused enumeration
+* net/ena: remove unused offload variables
+* net/ena: skip timer if reset is triggered
+* net/hns3: fix max packet size rollback in PF
+* net/hns3: fix multi-process action register and unregister
+* net/hns3: fix residual MAC after setting default MAC
+* net/hns3: fix RSS key with null
+* net/hns3: fix RSS TC mode entry
+* net/hns3: fix secondary process reference count
+* net/hns3: fix using enum as boolean
+* net/hns3: fix VF RSS TC mode entry
+* net/hns3: increase time waiting for PF reset completion
+* net/hns3: remove duplicate macro definition
+* net/hns3: unregister MP action on close for secondary
+* net/iavf: count continuous DD bits for Arm
+* net/ice: build failure with make and GCC > 11
+* net/ice: fix link up when starting device
+* net/ixgbe: add vector Rx parameter check
+* net/ixgbe: check filter init failure
+* net/ixgbe: fix FSP check for X550EM devices
+* net/ixgbe: reset security context pointer on close
+* net/memif: remove pointer deference before null check
+* net/memif: remove unnecessary Rx interrupt stub
+* net/mlx5: fix committed bucket size
+* net/mlx5: fix initial link status detection
+* net/mlx5: fix link status change detection
+* net/mlx5: fix matcher priority with ICMP or ICMPv6
+* net/mlx5: fix maximum packet headers size for TSO
+* net/mlx5: fix modify port action validation
+* net/mlx5: fix netlink header path
+* net/mlx5: fix NIC egress flow mismatch in switchdev mode
+* net/mlx5: reject jump to root table
+* net/nfb: fix array indexes in deinit functions
+* net/nfb: fix multicast/promiscuous mode switching
+* net/nfp: remove useless range checks
+* net/sfc: demand Tx fast free offload on EF10 simple datapath
+* net/sfc: do not push fast free offload to default TxQ config
+* net/sfc: validate queue span when parsing flow action RSS
+* net/virtio: fix Tx queue 0 overriden by queue 128
+* net/virtio-user: check FD flags getting failure
+* pmdinfogen: fix compilation with Clang 3.4.2 on CentOS 7
+* raw/ifpga/base: fix port feature ID
+* raw/ifpga/base: fix SPI transaction
+* raw/ifpga: fix build with optimization
+* raw/ifpga: fix interrupt handle allocation
+* raw/ifpga: fix monitor thread
+* raw/ifpga: fix variable initialization in probing
+* raw/ntb: clear all valid doorbell bits on init
+* ring: fix error code when creating ring
+* stack: fix stubs header export
+* table: fix C++ include
+* (tag: 19.11.12-before-rc3-patches) net/bnxt: fix xstats names query overrun
+* (tag: 19.11.12-stable-from-rc3) vhost: add missing c++ guards
+* (tag: v19.11.12-rc1) version: 19.11.12-rc1
+* telemetry: add missing C++ guards
+* test/efd: fix sockets mask size
+* test/mbuf: fix mbuf data content check
+* test/mem: fix error check
+* vdpa/ifc: fix log info mismatch
+* vfio: cleanup the multiprocess sync handle
+* vhost: fix C++ include
+* vhost: fix FD leak with inflight messages
+* vhost: fix queue number check when setting inflight FD
+* vhost: fix unsafe vring addresses modifications
+
+19.11.12 Validation
+~~~~~~~~~~~~~~~~~~~
+
+* [Intel(R) Testing](http://mails.dpdk.org/archives/stable/2022-March/037534.html)
+
+   * Builds
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * PF (i40e)
+      * PF (ixgbe)
+      * VF (i40e)
+      * VF (ixgbe)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+* [Canonical(R) Testing](http://mails.dpdk.org/archives/stable/2022-March/037549.html)
+
+   * Build tests of DPDK & OVS 2.13.3 on Ubuntu 20.04 (meson based)
+   * Functional and performance tests based on OVS-DPDK on x86_64
+   * Autopkgtests for DPDK and OpenvSwitch
+
+* [Red Hat(R) Testing]( http://mails.dpdk.org/archives/stable/2022-April/037593.html )
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 6.2
+      * X540-AT2 NIC(ixgbe, 10G)
+      * Tested on 19.11.12-RC1
+
+   * Tests
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size): PASS
+      * Guest with device assignment(PF) throughput testing(2M hugepage size) : PASS
+      * Guest with device assignment(VF) throughput testing: PASS
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing: PASS
+      * PVP vhost-user 2Q throughput testing: PASS
+      * PVP vhost-user 1Q - cross numa node throughput testing: PASS
+      * Guest with vhost-user 2 queues throughput testing: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect: PASS
+      * PVP 1Q live migration testing: PASS
+      * PVP 1Q cross numa node live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M): PASS
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 4Q live migration testing: PASS
+      * Host PF + DPDK testing: PASS
+      * Host VF + DPDK testing: PASS
+
+* [Nvidia(R) Testing](http://mails.dpdk.org/archives/stable/2022-April/037579.html)
+
+   * functional tests on Mellanox hardware
+
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.5-1.0.3.2 / Firmware: 14.32.1010
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / Kernel: 5.17.0 / Driver: rdma-core v39.0 / Firmware: 14.32.1010
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.5-1.0.3.2 / Firmware: 16.32.1010
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / Kernel: 5.17.0 / Driver: v39.0 / Firmware: 16.32.1010
+
+   * Functionality:
+
+      * Send and receive multiple types of traffic.
+      * testpmd xstats counter test.
+      * testpmd timestamp test.
+      * Changing/checking link status through testpmd.
+      * RTE flow tests: Items: eth / vlan / ipv4 / ipv6 / tcp / udp / icmp / gre / nvgre / vxlan ip in ip / mplsoudp / mplsogre
+      * Actions: drop / queue / rss / mark / flag / jump / count / raw_encap / raw_decap / vxlan_encap / vxlan_decap / NAT / dec_ttl
+      * Some RSS tests.
+      * VLAN filtering, stripping and insertion tests.
+      * Checksum and TSO tests.
+      * ptype tests.
+      * link_status_interrupt example application tests.
+      * l3fwd-power example application tests.
+      * Multi-process example applications tests.
+
+   * Compilation tests with multiple configurations in the following OS/driver combinations are also passing:
+
+      * Ubuntu 20.04.4 with MLNX_OFED_LINUX-5.5-1.0.3.2.
+      * Ubuntu 20.04.4 with rdma-core v39.0.
+      * Ubuntu 20.04.4 with rdma-core v28.0.
+      * Ubuntu 18.04.6 with rdma-core v17.1.
+      * Ubuntu 18.04.6 with rdma-core master (91004ec) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * Fedora 35 with rdma-core v39.0.
+      * Fedora 37 (Rawhide) with rdma-core v39.0
+      * CentOS 7 7.9.2009 with rdma-core master (91004ec).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.5-1.0.3.2.
+      * CentOS 8 8.4.2105 with rdma-core master (91004ec).
+      * OpenSUSE Leap 15.3 with rdma-core v31.0.
+
+* [Broadcom(R) Testing](http://mails.dpdk.org/archives/stable/2022-April/037569.html)
+
+      * Basic functionality: Send and receive multiple types of traffic.
+      * Changing/checking link status through testpmd.
+      * RSS tests with tunnel and non-tunnel packets
+      * TSO tests with tunnel and non-tunnel packets
+      * VLAN filtering/strip tests.
+      * unicast/multicast MAC filtering tests
+      * statistics tests
+      * Rx/Tx Checksum offload tests
+      * MTU tests and jumbo frame tests
+      * Promiscuous/allmulti tests
+      * Basic flow offload tests
+      * Used: NIC: BCM57414 NetXtreme-E 10Gb/25Gb Ethernet Controller, Firmware: 222.0.112.0
+      * Used: NIC: BCM57508 NetXtreme-E 10Gb/25Gb/40Gb/50Gb/100Gb/200Gb Ethernet, Firmware : 222.0.112.0
+
+19.11.12 Known Issues
+~~~~~~~~~~~~~~~~~~~~~
+
+A few issues are still present, but none of them is an in-place regression.
+So far these are mostly issues with newer compilers, toolchains and kernels
+that happen to be incompatible with the older 19.11.x codebase.
+We are happy to state that - again - more of them got fixed in 19.11.12.
+
+* Identified up to 19.11.12-rc1, but fixed in this release:
+
+  * [Make based build issue with Fedora 34 and GCC11 - maybe-uninitialized](https://bugs.dpdk.org/show_bug.cgi?id=744)
+  * net/mlx5: fix netlink header path - build issue breaking some Ubuntu 16.04/18.04/20.04, openSUSE Leap 15.3, and CentOS 7/8 installations
+  * net/cxgbe: remove useless address check - reported by GCC 12
+  * [pmdinfogen build failure with clang 3.4.2](https://bugs.dpdk.org/show_bug.cgi?id=984)
+  * [net/bnxt: fix a typo introduced in backport](https://bugs.dpdk.org/show_bug.cgi?id=977)
+
+* Remaining known build issues in 19.11.12
+
+  * [Meson based build issue with ICC-19.1.1 - cast discards qualifiers from target type](https://bugs.dpdk.org/show_bug.cgi?id=747)
+  * [net/quede build fail with clang 13 - unused-but-set-variable](https://bugs.dpdk.org/show_bug.cgi?id=912)
+  * [net/ena build failure with gcc 12](https://bugs.dpdk.org/show_bug.cgi?id=991)
+  * [librte_eal build error with gcc 12](https://bugs.dpdk.org/show_bug.cgi?id=985)
+  * [net/qede build failure with make and clang 13](https://bugs.dpdk.org/show_bug.cgi?id=912)
+
+19.11.13 Release Notes
+----------------------
+
+
+19.11.13 Fixes
+~~~~~~~~~~~~~~
+
+* acl: fix rules with 8-byte field size
+* app/testpmd: check statistics query before printing
+* app/testpmd: fix bonding slave devices not released
+* app/testpmd: fix metering and policing command for RFC4115
+* app/testpmd: fix multicast address pool leak
+* app/testpmd: fix port status of bonding slave device
+* app/testpmd: fix supported RSS offload display
+* app/testpmd: perform SW IP checksum for GRO/GSO packets
+* app/testpmd: remove useless pointer checks
+* app/testpmd: replace hardcoded min mbuf number with macro
+* app/testpmd: revert MAC update in checksum forwarding
+* bus/fslmc: fix VFIO setup
+* common/cpt: fix build with GCC 12
+* common/dpaax: fix short MAC-I IV calculation for ZUC
+* config: fix C++ cross compiler for ARM
+* crypto/dpaa2_sec: fix buffer pool ID check
+* crypto/dpaa2_sec: fix operation status for simple FD
+* crypto/dpaa_sec: fix digest size
+* crypto/dpaa_sec: fix secondary process probing
+* crypto/qat: fix DOCSIS crash
+* crypto/scheduler: fix queue pair in scheduler failover
+* devtools: fix null test for NUMA systems
+* doc: fix grammar and formatting in compressdev guide
+* drivers/crypto: fix warnings for OpenSSL version
+* eal: fix C++ include for device event and DMA
+* eal/freebsd: fix use of newer cpuset macros
+* eal/windows: fix data race when creating threads
+* eal/x86: drop export of internal alignment macro
+* eal/x86: fix unaligned access for small memcpy
+* ethdev: clarify null location case in xstats get
+* ethdev: fix RSS update when RSS is disabled
+* ethdev: prohibit polling stopped queue
+* eventdev/eth_tx: fix adapter creation
+* eventdev/eth_tx: fix queue delete
+* examples/bond: fix invalid use of trylock
+* examples/distributor: fix distributor on Rx core
+* examples/fips_validation: handle empty payload
+* examples/ipsec-secgw: fix promiscuous mode option
+* examples/l2fwd-crypto: fix stats refresh rate
+* examples/link_status_interrupt: fix stats refresh rate
+* examples/vhost: fix crash when no VMDq
+* examples/vhost: fix retry logic on Rx path
+* kni: fix build
+* kni: fix build with Linux 5.18
+* kni: use dedicated function to set MAC address
+* kni: use dedicated function to set random MAC address
+* malloc: fix allocation of almost hugepage size
+* mem: skip attaching external memory in secondary process
+* net/bnxt: allow Tx only or Rx only
+* net/bnxt: cleanup MTU setting
+* net/bnxt: fix compatibility with some old firmwares
+* net/bnxt: fix freeing VNIC filters
+* net/bnxt: recheck FW readiness if in reset process
+* net/bnxt: remove unused macro
+* net/bonding: fix mbuf fast free usage
+* net/bonding: fix RSS inconsistency between ports
+* net/bonding: fix RSS key config with extended key length
+* net/bonding: fix stopping non-active slaves
+* net/cxgbe: fix port ID in Rx mbuf
+* net/cxgbe: fix Tx queue stuck with mbuf chain coalescing
+* net/dpaa: fix event queue detach
+* net/hns3: fix insecure way to query MAC statistics
+* net/hns3: fix xstats get return if xstats is null
+* net/hns3: remove duplicate definition
+* net/iavf: fix queue start exception handling
+* net/iavf: fix Rx queue interrupt setting
+* net/iavf: increase reset complete wait count
+* net/iavf: net/iavf: fix mbuf release in multi-process
+* net/ice/base: fix getting sched node from ID type
+* net/ice: fix build with GCC 12
+* net/ice: fix meson build error with gcc11.2
+* net/ipn3ke: fix xstats get return if xstats is null
+* net/ixgbe: add option for link up check on pin SDP3
+* net/memif: fix overwriting of head segment
+* net/mlx5: add minimum WQE size for striding RQ
+* net/mlx5: fix GTP handling in header modify action
+* net/mlx5: fix LRO validation in Rx setup
+* net/mlx5: fix mark enabling for Rx
+* net/mlx5: fix MPRQ stride devargs adjustment
+* net/mlx5: fix Rx queue recovery mechanism (CVE-2022-28199)
+* net/mlx5: fix Tx when inlining is impossible
+* net/mlx5: improve stride parameter names
+* net/mvpp2: fix xstats get return if xstats is null
+* net/netvsc: fix calculation of checksums based on mbuf flag
+* net/netvsc: fix vmbus device reference in multi-process
+* net/nfp: fix disabling VLAN stripping
+* net/nfp: fix initialization
+* net/nfp: remove unneeded header inclusion
+* net/octeontx: fix port close
+* net/qede: fix build with GCC 12
+* net/vhost: fix access to freed memory
+* net/vhost: fix deadlock on vring state change
+* net/vhost: fix TSO feature default disablement
+* net/virtio-user: fix socket non-blocking mode
+* raw/ifpga: remove virtual devices on close
+* raw/ifpga: unregister interrupt on close
+* Revert "net/iavf: fix Rx queue interrupt setting"
+* Revert "net/mlx5: fix RSS expansion scheme for GRE header"
+* rib: fix traversal with /32 route
+* service: fix lingering active status
+* test: avoid hang if queues are full and Tx fails
+* test/bonding: fix RSS test when disable RSS
+* test: check memory allocation for CRC
+* test/crypto: fix authentication IV for ZUC SGL
+* test/crypto: fix cipher offset for ZUC
+* test/crypto: fix null check for ZUC authentication
+* test/crypto: fix SNOW3G vector IV format
+* test/crypto: fix ZUC vector IV format
+* test/hash: fix out of bound access
+* test/ipsec: fix build with GCC 12
+* test/table: fix buffer overflow on lpm entry
+* vdpa/ifc/base: fix null pointer dereference
+* vdpa/ifc: fix build with GCC 12
+* version: 19.11.13-rc1
+* version: 19.11.13-rc2
+* version: 19.11.13-rc3
+* vhost: add some trailing newline in log messages
+* vhost/crypto: fix build with GCC 12
+* vhost/crypto: fix descriptor processing
+* vhost: discard too small descriptor chains (CVE-2022-2132)
+* vhost: fix header spanned across more than two descriptors (CVE-2022-2132)
+* vhost: fix missing enqueue pseudo-header calculation
+* vhost: fix missing virtqueue lock protection
+
+19.11.13 Validation
+~~~~~~~~~~~~~~~~~~~
+
+* Red Hat(R) Testing
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 6.2
+      * X540-AT2 NIC(ixgbe, 10G)
+
+   * Functionality
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size)
+      * Guest with device assignment(PF) throughput testing(2M hugepage size)
+      * Guest with device assignment(VF) throughput testing
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing
+      * PVP vhost-user 2Q throughput testing
+      * PVP vhost-user 1Q cross numa node  throughput testing
+      * Guest with vhost-user 2 queues throughput testing
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect
+      * PVP 1Q live migration testing
+      * PVP 1Q cross numa node live migration testing
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M)
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing
+      * Guest with ovs+dpdk+vhost-user 4Q live migration testing
+      * Host PF + DPDK testing
+      * Host VF + DPDK testing
+
+
+* Intel(R) Testing
+
+   * Basic Intel(R) NIC(ixgbe, i40e and ice) testing
+      * PF (i40e)
+      * PF (ixgbe)
+      * PF (ice)
+      * VF (i40e)
+      * VF (ixgbe)
+      * VF (ice)
+      * Compile Testing
+      * Intel NIC single core/NIC performance
+      * Power and IPsec
+
+   * Basic cryptodev and virtio testing
+
+      * vhost/virtio basic loopback, PVP and performance test
+      * cryptodev Function/Performance
+
+
+* Nvidia(R) Testing
+
+   * Basic functionality with testpmd
+
+      * Tx/Rx
+      * xstats
+      * Timestamps
+      * Link status
+      * RTE flow and flow_director
+      * RSS
+      * VLAN filtering, stripping and insertion
+      * Checksum/TSO
+      * ptype
+      * link_status_interrupt example application
+      * l3fwd-power example application
+      * Multi-process example applications
+
+   * Build tests
+
+      * Ubuntu 20.04.4 with MLNX_OFED_LINUX-5.7-1.0.2.0.
+      * Ubuntu 20.04.4 with rdma-core master (23a0021).
+      * Ubuntu 20.04.4 with rdma-core v28.0.
+      * Ubuntu 18.04.6 with rdma-core v17.1.
+      * Ubuntu 18.04.6 with rdma-core master (23a0021) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * Fedora 35 with rdma-core v39.0 (with gcc only).
+      * Fedora 37 (Rawhide) with rdma-core v39.0 (with clang only).
+      * CentOS 7 7.9.2009 with rdma-core master (23a0021).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.7-1.0.2.0.
+      * CentOS 8 8.4.2105 with rdma-core master (23a0021).
+      * OpenSUSE Leap 15.4 with rdma-core v38.1.
+
+   * ConnectX-5
+
+      * Ubuntu 20.04
+      * Driver MLNX_OFED_LINUX-5.5-1.0.3.2
+      * fw 16.32.1010
+
+   * ConnectX-4 Lx
+
+      * Ubuntu 20.04
+      * Driver MLNX_OFED_LINUX-5.5-1.0.3.2
+      * fw 14.32.1010
+
+19.11.13 Known Issues
+~~~~~~~~~~~~~~~~~~~~~
+
+* Compilation
+
+   * Building this release with certain new compiler toolchains is not
+     supported. See individual bugzilla items for details.
+   * https://bugs.dpdk.org/show_bug.cgi?id=985
+   * https://bugs.dpdk.org/show_bug.cgi?id=912
+   * https://bugs.dpdk.org/show_bug.cgi?id=991
+   * https://bugs.dpdk.org/show_bug.cgi?id=1063
+   * https://bugs.dpdk.org/show_bug.cgi?id=1064

@@ -16,6 +16,10 @@
 #include <fsl_bman.h>
 #include <netcfg.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define DPAA_MEMPOOL_OPS_NAME	"dpaa"
 
 #define DEV_TO_DPAA_DEVICE(ptr)	\

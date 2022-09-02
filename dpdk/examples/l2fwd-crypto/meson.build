@@ -7,7 +7,7 @@
 # DPDK instance, use 'make'
 
 deps += 'cryptodev'
-if dpdk_conf.has('RTE_LIBRTE_PMD_CRYPTO_SCHEDULER')
+if dpdk_conf.has('RTE_LIBRTE_CRYPTO_SCHEDULER_PMD')
 	deps += 'pmd_crypto_scheduler'
 endif
 allow_experimental_apis = true

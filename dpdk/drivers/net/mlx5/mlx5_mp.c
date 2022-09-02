@@ -119,6 +119,8 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 	const struct mlx5_mp_param *param =
 		(const struct mlx5_mp_param *)mp_msg->param;
 	struct rte_eth_dev *dev;
+	struct mlx5_proc_priv *ppriv;
+	struct mlx5_priv *priv;
 	int ret;
 
 	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
@@ -128,12 +130,27 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 		return -rte_errno;
 	}
 	dev = &rte_eth_devices[param->port_id];
+	priv = dev->data->dev_private;
 	switch (param->type) {
 	case MLX5_MP_REQ_START_RXTX:
 		DRV_LOG(INFO, "port %u starting datapath", dev->data->port_id);
-		rte_mb();
 		dev->rx_pkt_burst = mlx5_select_rx_function(dev);
 		dev->tx_pkt_burst = mlx5_select_tx_function(dev);
+		ppriv = (struct mlx5_proc_priv *)dev->process_private;
+		/* If Tx queue number changes, re-initialize UAR. */
+		if (ppriv->uar_table_sz != priv->txqs_n) {
+			mlx5_tx_uar_uninit_secondary(dev);
+			mlx5_proc_priv_uninit(dev);
+			ret = mlx5_proc_priv_init(dev);
+			if (ret)
+				return -rte_errno;
+			ret = mlx5_tx_uar_init_secondary(dev, mp_msg->fds[0]);
+			if (ret) {
+				mlx5_proc_priv_uninit(dev);
+				return -rte_errno;
+			}
+		}
+		rte_mb();
 		mp_init_msg(dev, &mp_res, param->type);
 		res->result = 0;
 		ret = rte_mp_reply(&mp_res, peer);
@@ -172,6 +189,7 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum mlx5_mp_req_type type)
 	struct rte_mp_reply mp_rep;
 	struct mlx5_mp_param *res;
 	struct timespec ts = {.tv_sec = MLX5_MP_REQ_TIMEOUT_SEC, .tv_nsec = 0};
+	struct mlx5_priv *priv = dev->data->dev_private;
 	int ret;
 	int i;
 
@@ -184,6 +202,10 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum mlx5_mp_req_type type)
 		return;
 	}
 	mp_init_msg(dev, &mp_req, type);
+	if (type == MLX5_MP_REQ_START_RXTX) {
+		mp_req.num_fds = 1;
+		mp_req.fds[0] = ((struct ibv_context *)priv->sh->ctx)->cmd_fd;
+	}
 	ret = rte_mp_request_sync(&mp_req, &mp_rep, &ts);
 	if (ret) {
 		if (rte_errno != ENOTSUP)

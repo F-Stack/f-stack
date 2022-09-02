@@ -74,7 +74,7 @@
  * rte_eth_rx_queue_setup()), it must call rte_eth_dev_stop() first to stop the
  * device and then do the reconfiguration before calling rte_eth_dev_start()
  * again. The transmit and receive functions should not be invoked when the
- * device is stopped.
+ * device or the queue is stopped.
  *
  * Please note that some configuration is not stored between calls to
  * rte_eth_dev_stop()/rte_eth_dev_start(). The following configuration will
@@ -1227,7 +1227,7 @@ struct rte_eth_switch_info {
  * device, etc...
  */
 struct rte_eth_dev_info {
-	struct rte_device *device; /** Generic device information */
+	struct rte_device *device; /**< Generic device information */
 	const char *driver_name; /**< Device Driver name. */
 	unsigned int if_index; /**< Index to bound host interface, or 0 if none.
 		Use if_indextoname() to translate into an interface name. */
@@ -1241,8 +1241,8 @@ struct rte_eth_dev_info {
 	uint16_t max_rx_queues; /**< Maximum number of RX queues. */
 	uint16_t max_tx_queues; /**< Maximum number of TX queues. */
 	uint32_t max_mac_addrs; /**< Maximum number of MAC addresses. */
-	uint32_t max_hash_mac_addrs;
 	/** Maximum number of hash MAC addresses for MTA and UTA. */
+	uint32_t max_hash_mac_addrs;
 	uint16_t max_vfs; /**< Maximum number of VFs. */
 	uint16_t max_vmdq_pools; /**< Maximum number of VMDq pools. */
 	uint64_t rx_offload_capa;
@@ -2363,9 +2363,13 @@ int rte_eth_xstats_get_names(uint16_t port_id,
  * @param xstats
  *   A pointer to a table of structure of type *rte_eth_xstat*
  *   to be filled with device statistics ids and values.
- *   This parameter can be set to NULL if n is 0.
+ *   This parameter can be set to NULL if and only if n is 0.
  * @param n
  *   The size of the xstats array (number of elements).
+ *   If lower than the required number of elements, the function returns
+ *   the required number of elements.
+ *   If equal to zero, the xstats must be NULL, the function returns the
+ *   required number of elements.
  * @return
  *   - A positive value lower or equal to n: success. The return value
  *     is the number of entries filled in the stats table.
@@ -2384,21 +2388,23 @@ int rte_eth_xstats_get(uint16_t port_id, struct rte_eth_xstat *xstats,
  * @param port_id
  *   The port identifier of the Ethernet device.
  * @param xstats_names
- *   An rte_eth_xstat_name array of at least *size* elements to
- *   be filled. If set to NULL, the function returns the required number
- *   of elements.
- * @param ids
- *   IDs array given by app to retrieve specific statistics
+ *   Array to be filled in with names of requested device statistics.
+ *   Must not be NULL if @p ids are specified (not NULL).
  * @param size
- *   The size of the xstats_names array (number of elements).
+ *   Number of elements in @p xstats_names array (if not NULL) and in
+ *   @p ids array (if not NULL). Must be 0 if both array pointers are NULL.
+ * @param ids
+ *   IDs array given by app to retrieve specific statistics. May be NULL to
+ *   retrieve names of all available statistics or, if @p xstats_names is
+ *   NULL as well, just the number of available statistics.
  * @return
  *   - A positive value lower or equal to size: success. The return value
  *     is the number of entries filled in the stats table.
- *   - A positive value higher than size: error, the given statistics table
+ *   - A positive value higher than size: success. The given statistics table
  *     is too small. The return value corresponds to the size that should
  *     be given to succeed. The entries in the table are not valid and
  *     shall not be used by the caller.
- *   - A negative value on error (invalid port id).
+ *   - A negative value on error.
  */
 int
 rte_eth_xstats_get_names_by_id(uint16_t port_id,
@@ -2411,22 +2417,23 @@ rte_eth_xstats_get_names_by_id(uint16_t port_id,
  * @param port_id
  *   The port identifier of the Ethernet device.
  * @param ids
- *   A pointer to an ids array passed by application. This tells which
- *   statistics values function should retrieve. This parameter
- *   can be set to NULL if size is 0. In this case function will retrieve
- *   all available statistics.
+ *   IDs array given by app to retrieve specific statistics. May be NULL to
+ *   retrieve all available statistics or, if @p values is NULL as well,
+ *   just the number of available statistics.
  * @param values
- *   A pointer to a table to be filled with device statistics values.
+ *   Array to be filled in with requested device statistics.
+ *   Must not be NULL if ids are specified (not NULL).
  * @param size
- *   The size of the ids array (number of elements).
+ *   Number of elements in @p values array (if not NULL) and in @p ids
+ *   array (if not NULL). Must be 0 if both array pointers are NULL.
  * @return
  *   - A positive value lower or equal to size: success. The return value
  *     is the number of entries filled in the stats table.
- *   - A positive value higher than size: error, the given statistics table
+ *   - A positive value higher than size: success: The given statistics table
  *     is too small. The return value corresponds to the size that should
  *     be given to succeed. The entries in the table are not valid and
  *     shall not be used by the caller.
- *   - A negative value on error (invalid port id).
+ *   - A negative value on error.
  */
 int rte_eth_xstats_get_by_id(uint16_t port_id, const uint64_t *ids,
 			     uint64_t *values, unsigned int size);
@@ -3853,6 +3860,7 @@ int rte_eth_tx_burst_mode_get(uint16_t port_id, uint16_t queue_id,
  *   - (0) if successful.
  *   - (-ENOTSUP) if hardware doesn't support.
  *   - (-ENODEV) if *port_id* invalid.
+ *   - (-EINVAL) if bad parameter.
  *   - (-EIO) if device is removed.
  *   - others depends on the specific operations implementation.
  */
@@ -3883,6 +3891,7 @@ int rte_eth_dev_get_eeprom_length(uint16_t port_id);
  * @return
  *   - (0) if successful.
  *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-EINVAL) if bad parameter.
  *   - (-ENODEV) if *port_id* invalid.
  *   - (-EIO) if device is removed.
  *   - others depends on the specific operations implementation.
@@ -3900,6 +3909,7 @@ int rte_eth_dev_get_eeprom(uint16_t port_id, struct rte_dev_eeprom_info *info);
  * @return
  *   - (0) if successful.
  *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-EINVAL) if bad parameter.
  *   - (-ENODEV) if *port_id* invalid.
  *   - (-EIO) if device is removed.
  *   - others depends on the specific operations implementation.
@@ -3920,6 +3930,7 @@ int rte_eth_dev_set_eeprom(uint16_t port_id, struct rte_dev_eeprom_info *info);
  *   - (0) if successful.
  *   - (-ENOTSUP) if hardware doesn't support.
  *   - (-ENODEV) if *port_id* invalid.
+ *   - (-EINVAL) if bad parameter.
  *   - (-EIO) if device is removed.
  *   - others depends on the specific operations implementation.
  */
@@ -3942,6 +3953,7 @@ rte_eth_dev_get_module_info(uint16_t port_id,
  * @return
  *   - (0) if successful.
  *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-EINVAL) if bad parameter.
  *   - (-ENODEV) if *port_id* invalid.
  *   - (-EIO) if device is removed.
  *   - others depends on the specific operations implementation.

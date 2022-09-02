@@ -18,10 +18,12 @@ apps = [
 	'test-pmd',
 	'test-sad']
 
-# for BSD only
-lib_execinfo = cc.find_library('execinfo', required: false)
 
 default_cflags = machine_args
+default_ldflags = []
+if get_option('default_library') == 'static' and not is_windows
+	default_ldflags += ['-Wl,--export-dynamic']
+endif
 
 foreach app:apps
 	build = true
@@ -30,6 +32,7 @@ foreach app:apps
 	sources = []
 	includes = []
 	cflags = default_cflags
+	ldflags = default_ldflags
 	objs = [] # other object files to link against, used e.g. for
 	          # instruction-set optimized versions of code
 
@@ -46,7 +49,6 @@ foreach app:apps
 			dep_objs += get_variable(get_option('default_library')
 				 + '_rte_' + d)
 		endforeach
-		dep_objs += lib_execinfo
 
 		link_libs = []
 		if get_option('default_library') == 'static'
@@ -60,8 +62,10 @@ foreach app:apps
 		executable('dpdk-' + name,
 				sources,
 				c_args: cflags,
+				link_args: ldflags,
 				link_whole: link_libs,
 				dependencies: dep_objs,
+				include_directories: includes,
 				install_rpath: join_paths(get_option('prefix'),
 						 driver_install_path),
 				install: true)

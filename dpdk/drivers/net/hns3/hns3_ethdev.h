@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #ifndef _HNS3_ETHDEV_H_
@@ -120,7 +120,6 @@ struct hns3_tc_queue_info {
 };
 
 struct hns3_cfg {
-	uint8_t vmdq_vport_num;
 	uint8_t tc_num;
 	uint16_t tqp_desc_num;
 	uint16_t rx_buf_len;
@@ -145,7 +144,6 @@ enum hns3_media_type {
 
 struct hns3_mac {
 	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
-	bool default_addr_setted; /* whether default addr(mac_addr) is set */
 	uint8_t media_type;
 	uint8_t phy_addr;
 	uint8_t link_duplex  : 1; /* ETH_LINK_[HALF/FULL]_DUPLEX */
@@ -363,6 +361,7 @@ struct hns3_hw {
 	struct hns3_tqp_stats tqp_stats;
 	/* Include Mac stats | Rx stats | Tx stats */
 	struct hns3_mac_stats mac_stats;
+	uint32_t mac_stats_reg_num;
 	uint32_t fw_version;
 
 	uint16_t num_msi;
@@ -382,8 +381,7 @@ struct hns3_hw {
 
 	uint8_t num_tc;             /* Total number of enabled TCs */
 	uint8_t hw_tc_map;
-	enum hns3_fc_mode current_mode;
-	enum hns3_fc_mode requested_mode;
+	enum hns3_fc_mode requested_fc_mode; /* FC mode requested by user */
 	struct hns3_dcb_info dcb_info;
 	enum hns3_fc_status current_fc_status; /* current flow control status */
 	struct hns3_tc_queue_info tc_queue[HNS3_MAX_TC_NUM];

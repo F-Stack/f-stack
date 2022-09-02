@@ -57,4 +57,4 @@ endforeach
 base_lib = static_library('qede_base', sources,
 	dependencies: static_rte_net,
 	c_args: c_args)
-base_objs = base_lib.extract_all_objects()
+base_objs = base_lib.extract_all_objects(recursive: true)

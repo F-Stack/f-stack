@@ -118,6 +118,10 @@ cryptodev_fips_validate_app_int(void)
 	if (ret < 0)
 		goto error_exit;
 
+	ret = rte_cryptodev_start(env.dev_id);
+	if (ret < 0)
+		goto error_exit;
+
 	return 0;
 
 error_exit:
@@ -432,6 +436,9 @@ main(int argc, char *argv[])
 exit:
 	fips_test_clear();
 	cryptodev_fips_validate_app_uninit();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return ret;
 
@@ -1370,7 +1377,6 @@ fips_mct_sha_test(void)
 	int ret;
 	uint32_t i, j;
 
-	val.val = rte_malloc(NULL, (MAX_DIGEST_SIZE*SHA_MD_BLOCK), 0);
 	for (i = 0; i < SHA_MD_BLOCK; i++)
 		md[i].val = rte_malloc(NULL, (MAX_DIGEST_SIZE*2), 0);
 

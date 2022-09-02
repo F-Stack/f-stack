@@ -23,6 +23,8 @@
 #define RTE_PORT_CLOSED         (uint16_t)2
 #define RTE_PORT_HANDLING       (uint16_t)3
 
+extern uint8_t cl_quit;
+
 /*
  * It is used to allocate the memory for hash key.
  * The hash key size is NIC dependent.
@@ -52,6 +54,8 @@
 
 #define NUMA_NO_CONFIG 0xFF
 #define UMA_NO_CONFIG  0xFF
+
+#define MIN_TOTAL_NUM_MBUFS 1024
 
 typedef uint8_t  lcoreid_t;
 typedef uint16_t portid_t;
@@ -86,7 +90,7 @@ enum {
  * that are recorded for each forwarding stream.
  */
 struct pkt_burst_stats {
-	unsigned int pkt_burst_spread[MAX_PKT_BURST];
+	unsigned int pkt_burst_spread[MAX_PKT_BURST + 1];
 };
 #endif
 
@@ -183,7 +187,8 @@ struct rte_port {
 	struct rte_eth_txconf   tx_conf[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue tx configuration */
 	struct rte_ether_addr   *mc_addr_pool; /**< pool of multicast addrs */
 	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
-	uint8_t                 slave_flag; /**< bonding slave port */
+	uint8_t                 slave_flag : 1, /**< bonding slave port */
+				bond_flag : 1;  /**< port is bond device */
 	struct port_flow        *flow_list; /**< Associated flows. */
 	const struct rte_eth_rxtx_callback *rx_dump_cb[RTE_MAX_QUEUES_PER_PORT+1];
 	const struct rte_eth_rxtx_callback *tx_dump_cb[RTE_MAX_QUEUES_PER_PORT+1];
@@ -404,7 +409,6 @@ extern uint64_t noisy_lkup_num_reads;
 extern uint64_t noisy_lkup_num_reads_writes;
 
 extern uint8_t dcb_config;
-extern uint8_t dcb_test;
 
 extern uint16_t mbuf_data_size; /**< Mbuf data space size. */
 extern uint32_t param_total_num_mbufs;
@@ -732,6 +736,7 @@ int port_flow_create(portid_t port_id,
 		     const struct rte_flow_attr *attr,
 		     const struct rte_flow_item *pattern,
 		     const struct rte_flow_action *actions);
+int mcast_addr_pool_destroy(portid_t port_id);
 int port_flow_destroy(portid_t port_id, uint32_t n, const uint32_t *rule);
 int port_flow_flush(portid_t port_id);
 int port_flow_query(portid_t port_id, uint32_t rule,
@@ -820,7 +825,9 @@ int set_vf_rate_limit(portid_t port_id, uint16_t vf, uint16_t rate,
 
 void port_rss_hash_conf_show(portid_t port_id, int show_rss_key);
 void port_rss_hash_key_update(portid_t port_id, char rss_type[],
-			      uint8_t *hash_key, uint hash_key_len);
+			      uint8_t *hash_key, uint8_t hash_key_len);
+const char *rsstypes_to_str(uint64_t rss_type);
+
 int rx_queue_id_is_invalid(queueid_t rxq_id);
 int tx_queue_id_is_invalid(queueid_t txq_id);
 void setup_gro(const char *onoff, portid_t port_id);
@@ -882,6 +889,8 @@ uint16_t tx_pkt_set_md(uint16_t port_id, __rte_unused uint16_t queue,
 		       __rte_unused void *user_param);
 void add_tx_md_callback(portid_t portid);
 void remove_tx_md_callback(portid_t portid);
+
+int update_jumbo_frame_offload(portid_t portid);
 
 /*
  * Work-around of a compilation error with ICC on invocations of the

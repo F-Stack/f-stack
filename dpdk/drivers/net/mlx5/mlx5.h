@@ -12,6 +12,7 @@
 #include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <linux/netlink.h>
 #include <sys/queue.h>
 
 /* Verbs header. */
@@ -192,6 +193,7 @@ struct mlx5_hca_qos_attr {
 struct mlx5_hca_attr {
 	uint32_t eswitch_manager:1;
 	uint32_t flow_counters_dump:1;
+	uint32_t log_min_stride_wqe_sz:5;
 	uint8_t flow_counter_bulk_alloc_bitmap;
 	uint32_t eth_net_offloads:1;
 	uint32_t eth_virt:1;
@@ -266,10 +268,14 @@ struct mlx5_dev_config {
 	unsigned int dest_tir:1; /* Whether advanced DR API is available. */
 	struct {
 		unsigned int enabled:1; /* Whether MPRQ is enabled. */
-		unsigned int stride_num_n; /* Number of strides. */
-		unsigned int stride_size_n; /* Size of a stride. */
-		unsigned int min_stride_size_n; /* Min size of a stride. */
-		unsigned int max_stride_size_n; /* Max size of a stride. */
+		unsigned int log_stride_num; /* Log number of strides. */
+		unsigned int log_stride_size; /* Log size of a stride. */
+		unsigned int log_min_stride_size; /* Log min size of a stride.*/
+		unsigned int log_max_stride_size; /* Log max size of a stride.*/
+		unsigned int log_min_stride_num; /* Log min num of strides. */
+		unsigned int log_max_stride_num; /* Log max num of strides. */
+		unsigned int log_min_stride_wqe_size;
+		/* Log min WQE size, (size of single stride)*(num of strides).*/
 		unsigned int max_memcpy_len;
 		/* Maximum packet size to memcpy Rx packets. */
 		unsigned int min_rxqs_num;
@@ -574,6 +580,7 @@ struct mlx5_flow_counter_mng {
 struct mlx5_ibv_shared_port {
 	uint32_t ih_port_id;
 	uint32_t devx_ih_port_id;
+	uint32_t nl_ih_port_id;
 	/*
 	 * Interrupt handler port_id. Used by shared interrupt
 	 * handler to find the corresponding rte_eth device
@@ -679,7 +686,7 @@ struct mlx5_ibv_shared {
 #endif
 	struct mlx5_hlist *flow_tbls;
 	/* Direct Rules tables for FDB, NIC TX+RX */
-	void *esw_drop_action; /* Pointer to DR E-Switch drop action. */
+	void *dr_drop_action; /* Pointer to DR drop action, any domain. */
 	void *pop_vlan_action; /* Pointer to DR pop VLAN action. */
 	LIST_HEAD(encap_decap, mlx5_flow_dv_encap_decap_resource) encaps_decaps;
 	LIST_HEAD(modify_cmd, mlx5_flow_dv_modify_hdr_resource) modify_cmds;
@@ -692,6 +699,7 @@ struct mlx5_ibv_shared {
 	/* Shared interrupt handler section. */
 	struct rte_intr_handle intr_handle; /* Interrupt handler for device. */
 	struct rte_intr_handle intr_handle_devx; /* DEVX interrupt handler. */
+	struct rte_intr_handle intr_handle_nl; /* Netlink interrupt handler. */
 	struct mlx5dv_devx_cmd_comp *devx_comp; /* DEVX async comp obj. */
 	struct mlx5_devx_obj *tis; /* TIS object. */
 	struct mlx5_devx_obj *td; /* Transport domain. */
@@ -699,7 +707,10 @@ struct mlx5_ibv_shared {
 	struct mlx5_ibv_shared_port port[]; /* per device port data array. */
 };
 
-/* Per-process private structure. */
+/*
+ * Per-process private structure.
+ * Caution, secondary process may rebuild the struct during port start.
+ */
 struct mlx5_proc_priv {
 	size_t uar_table_sz;
 	/* Size of UAR register table. */
@@ -733,6 +744,8 @@ struct mlx5_priv {
 	unsigned int counter_fallback:1; /* Use counter fallback management. */
 	unsigned int mtr_en:1; /* Whether support meter. */
 	unsigned int mtr_reg_share:1; /* Whether support meter REG_C share. */
+	uint32_t mark_enabled:1; /* If mark action is enabled on rxqs. */
+	unsigned int root_verbs_drop_action; /* Root uses verbs drop action. */
 	uint16_t domain_id; /* Switch domain identifier. */
 	uint16_t vport_id; /* Associated VF vport index (if any). */
 	uint32_t vport_meta_tag; /* Used for vport index match ove VF LAG. */
@@ -799,6 +812,7 @@ int64_t mlx5_get_dbr(struct rte_eth_dev *dev,
 		     struct mlx5_devx_dbr_page **dbr_page);
 int32_t mlx5_release_dbr(struct rte_eth_dev *dev, uint32_t umem_id,
 			 uint64_t offset);
+void mlx5_proc_priv_uninit(struct rte_eth_dev *dev);
 int mlx5_udp_tunnel_port_add(struct rte_eth_dev *dev,
 			      struct rte_eth_udp_tunnel *udp_tunnel);
 uint16_t mlx5_eth_find_next(uint16_t port_id, struct rte_pci_device *pci_dev);
@@ -835,6 +849,7 @@ int mlx5_dev_to_pci_addr(const char *dev_path,
 void mlx5_dev_link_status_handler(void *arg);
 void mlx5_dev_interrupt_handler(void *arg);
 void mlx5_dev_interrupt_handler_devx(void *arg);
+void mlx5_dev_interrupt_handler_nl(void *arg);
 void mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev);
 void mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev);
 int mlx5_set_link_down(struct rte_eth_dev *dev);
@@ -962,8 +977,6 @@ int mlx5_ctrl_flow(struct rte_eth_dev *dev,
 		   struct rte_flow_item_eth *eth_spec,
 		   struct rte_flow_item_eth *eth_mask);
 struct rte_flow *mlx5_flow_create_esw_table_zero_flow(struct rte_eth_dev *dev);
-int mlx5_flow_create_drop_queue(struct rte_eth_dev *dev);
-void mlx5_flow_delete_drop_queue(struct rte_eth_dev *dev);
 void mlx5_flow_async_pool_query_handle(struct mlx5_ibv_shared *sh,
 				       uint64_t async_id, int status);
 void mlx5_set_query_alarm(struct mlx5_ibv_shared *sh);
@@ -988,7 +1001,9 @@ void mlx5_mp_uninit_secondary(void);
 
 /* mlx5_nl.c */
 
-int mlx5_nl_init(int protocol);
+typedef void (mlx5_nl_event_cb)(struct nlmsghdr *hdr, void *user_data);
+
+int mlx5_nl_init(int protocol, int groups);
 int mlx5_nl_mac_addr_add(struct rte_eth_dev *dev, struct rte_ether_addr *mac,
 			 uint32_t index);
 int mlx5_nl_mac_addr_remove(struct rte_eth_dev *dev, struct rte_ether_addr *mac,
@@ -1003,6 +1018,8 @@ int mlx5_nl_vf_mac_addr_modify(struct rte_eth_dev *dev,
 			       struct rte_ether_addr *mac, int vf_index);
 int mlx5_nl_switch_info(int nl, unsigned int ifindex,
 			struct mlx5_switch_info *info);
+int mlx5_nl_read_events(int nlsk_fd, mlx5_nl_event_cb *cb, void *cb_arg);
+int mlx5_nl_parse_link_status_update(struct nlmsghdr *hdr, uint32_t *ifindex);
 
 struct mlx5_vlan_vmwa_context *mlx5_vlan_vmwa_init(struct rte_eth_dev *dev,
 						   uint32_t ifindex);

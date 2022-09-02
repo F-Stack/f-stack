@@ -379,7 +379,7 @@ static int lcore_main(__attribute__((unused)) void *arg1)
 	bond_ip = BOND_IP_1 | (BOND_IP_2 << 8) |
 				(BOND_IP_3 << 16) | (BOND_IP_4 << 24);
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 
 	while (global_flag_stru_p->LcoreMainIsRunning) {
 		rte_spinlock_unlock(&global_flag_stru_p->lock);
@@ -460,7 +460,7 @@ static int lcore_main(__attribute__((unused)) void *arg1)
 			if (is_free == 0)
 				rte_pktmbuf_free(pkts[i]);
 		}
-		rte_spinlock_trylock(&global_flag_stru_p->lock);
+		rte_spinlock_lock(&global_flag_stru_p->lock);
 	}
 	rte_spinlock_unlock(&global_flag_stru_p->lock);
 	printf("BYE lcore_main\n");
@@ -575,7 +575,7 @@ static void cmd_start_parsed(__attribute__((unused)) void *parsed_result,
 {
 	int slave_core_id = rte_lcore_id();
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0) {
 		if (rte_eal_get_lcore_state(global_flag_stru_p->LcoreMainCore)
 		    != WAIT) {
@@ -595,7 +595,7 @@ static void cmd_start_parsed(__attribute__((unused)) void *parsed_result,
 	if ((slave_core_id >= RTE_MAX_LCORE) || (slave_core_id == 0))
 		return;
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	global_flag_stru_p->LcoreMainIsRunning = 1;
 	rte_spinlock_unlock(&global_flag_stru_p->lock);
 	cmdline_printf(cl,
@@ -663,7 +663,7 @@ static void cmd_stop_parsed(__attribute__((unused)) void *parsed_result,
 			    struct cmdline *cl,
 			    __attribute__((unused)) void *data)
 {
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0)	{
 		cmdline_printf(cl,
 					"lcore_main not running on core:%d\n",
@@ -704,7 +704,7 @@ static void cmd_quit_parsed(__attribute__((unused)) void *parsed_result,
 			    struct cmdline *cl,
 			    __attribute__((unused)) void *data)
 {
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0)	{
 		cmdline_printf(cl,
 					"lcore_main not running on core:%d\n",
@@ -766,7 +766,7 @@ static void cmd_show_parsed(__attribute__((unused)) void *parsed_result,
 		printf("\n");
 	}
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	cmdline_printf(cl,
 			"Active_slaves:%d "
 			"packets received:Tot:%d Arp:%d IPv4:%d\n",
@@ -879,5 +879,9 @@ main(int argc, char *argv[])
 	prompt(NULL);
 
 	rte_delay_ms(100);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

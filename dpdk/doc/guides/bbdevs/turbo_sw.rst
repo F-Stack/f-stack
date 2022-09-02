@@ -156,7 +156,7 @@ Example:
   the SDK libraries as mentioned above.
   For AVX2 machine it is possible to only enable CONFIG_RTE_BBDEV_SDK_AVX2
   for limited 4G functionality.
-  If no flag are set the PMD driver will still build but its capabilities
+  If no flag are set the PMD will still build but its capabilities
   will be limited accordingly.
 
 To use the PMD in an application, user must:

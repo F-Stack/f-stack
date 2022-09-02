@@ -369,7 +369,7 @@ cflags += ['-DALLOW_INTERNAL_API']
 
 test_dep_objs = []
 if dpdk_conf.has('RTE_LIBRTE_COMPRESSDEV')
-	compress_test_dep = dependency('zlib', required: false)
+	compress_test_dep = dependency('zlib', required: false, method: 'pkg-config')
 	if compress_test_dep.found()
 		test_dep_objs += compress_test_dep
 		test_sources += 'test_compressdev.c'
@@ -378,7 +378,7 @@ if dpdk_conf.has('RTE_LIBRTE_COMPRESSDEV')
 	endif
 endif
 
-if dpdk_conf.has('RTE_LIBRTE_PMD_CRYPTO_SCHEDULER')
+if dpdk_conf.has('RTE_LIBRTE_CRYPTO_SCHEDULER_PMD')
 	driver_test_names += 'cryptodev_scheduler_autotest'
 	test_deps += 'pmd_crypto_scheduler'
 endif
@@ -387,11 +387,10 @@ foreach d:test_deps
 	def_lib = get_option('default_library')
 	test_dep_objs += get_variable(def_lib + '_rte_' + d)
 endforeach
-test_dep_objs += cc.find_library('execinfo', required: false)
 
 link_libs = []
 if get_option('default_library') == 'static'
-	link_libs = dpdk_static_libraries + dpdk_drivers
+	link_libs = dpdk_drivers
 endif
 
 dpdk_test = executable('dpdk-test',
@@ -406,7 +405,7 @@ dpdk_test = executable('dpdk-test',
 has_hugepage = true
 if is_linux
 	check_hugepage = run_command('cat',
-				     '/proc/sys/vm/nr_hugepages')
+				     '/proc/sys/vm/nr_hugepages', check: false)
 	if (check_hugepage.returncode() != 0 or
 	    check_hugepage.stdout().strip() == '0')
 		has_hugepage = false

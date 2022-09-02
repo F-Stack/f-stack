@@ -137,7 +137,7 @@ rte_ring_create(const char *name, unsigned count, int socket_id,
 
 	ring_size = rte_ring_get_memsize(count);
 	if (ring_size < 0) {
-		rte_errno = ring_size;
+		rte_errno = -ring_size;
 		return NULL;
 	}
 

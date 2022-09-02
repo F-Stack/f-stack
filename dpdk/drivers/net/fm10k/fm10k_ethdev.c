@@ -266,7 +266,7 @@ rx_queue_clean(struct fm10k_rx_queue *q)
 	for (i = 0; i < q->nb_fake_desc; ++i)
 		q->hw_ring[q->nb_desc + i] = zero;
 
-	/* vPMD driver has a different way of releasing mbufs. */
+	/* vPMD has a different way of releasing mbufs. */
 	if (q->rx_using_sse) {
 		fm10k_rx_queue_release_mbufs_vec(q);
 		return;
@@ -2803,6 +2803,8 @@ fm10k_dev_close(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle = &pdev->intr_handle;
 
 	PMD_INIT_FUNC_TRACE();
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	fm10k_mbx_lock(hw);
 	hw->mac.ops.update_lport_state(hw, hw->mac.dglort_map,
@@ -3258,14 +3260,7 @@ static int
 eth_fm10k_dev_uninit(struct rte_eth_dev *dev)
 {
 	PMD_INIT_FUNC_TRACE();
-
-	/* only uninitialize in the primary process */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
-
-	/* safe to close dev here */
 	fm10k_dev_close(dev);
-
 	return 0;
 }
 

@@ -236,6 +236,10 @@ port_init(uint16_t port)
 
 		return retval;
 	}
+	if (dev_info.max_vmdq_pools == 0) {
+		RTE_LOG(ERR, VHOST_PORT, "Failed to get VMDq info.\n");
+		return -1;
+	}
 
 	rxconf = &dev_info.default_rxconf;
 	txconf = &dev_info.default_txconf;
@@ -1047,24 +1051,6 @@ drain_eth_rx(struct vhost_dev *vdev)
 	if (!rx_count)
 		return;
 
-	/*
-	 * When "enable_retry" is set, here we wait and retry when there
-	 * is no enough free slots in the queue to hold @rx_count packets,
-	 * to diminish packet loss.
-	 */
-	if (enable_retry &&
-	    unlikely(rx_count > rte_vhost_avail_entries(vdev->vid,
-			VIRTIO_RXQ))) {
-		uint32_t retry;
-
-		for (retry = 0; retry < burst_rx_retry_num; retry++) {
-			rte_delay_us(burst_rx_delay_time);
-			if (rx_count <= rte_vhost_avail_entries(vdev->vid,
-					VIRTIO_RXQ))
-				break;
-		}
-	}
-
 	if (builtin_net_driver) {
 		enqueue_count = vs_enqueue_pkts(vdev, VIRTIO_RXQ,
 						pkts, rx_count);
@@ -1072,6 +1058,28 @@ drain_eth_rx(struct vhost_dev *vdev)
 		enqueue_count = rte_vhost_enqueue_burst(vdev->vid, VIRTIO_RXQ,
 						pkts, rx_count);
 	}
+
+	/* Retry if necessary */
+	if (enable_retry && unlikely(enqueue_count < rx_count)) {
+		uint32_t retry = 0;
+
+		while (enqueue_count < rx_count &&
+			retry++ < burst_rx_retry_num) {
+			rte_delay_us(burst_rx_delay_time);
+			if (builtin_net_driver) {
+				enqueue_count += vs_enqueue_pkts(vdev,
+					VIRTIO_RXQ, &pkts[enqueue_count],
+					rx_count - enqueue_count);
+			} else {
+				enqueue_count += rte_vhost_enqueue_burst(
+						vdev->vid,
+						VIRTIO_RXQ,
+						&pkts[enqueue_count],
+						rx_count - enqueue_count);
+			}
+		}
+	}
+
 	if (enable_stats) {
 		rte_atomic64_add(&vdev->stats.rx_total_atomic, rx_count);
 		rte_atomic64_add(&vdev->stats.rx_atomic, enqueue_count);
@@ -1571,6 +1579,8 @@ main(int argc, char *argv[])
 	RTE_LCORE_FOREACH_SLAVE(lcore_id)
 		rte_eal_wait_lcore(lcore_id);
 
-	return 0;
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
+	return 0;
 }

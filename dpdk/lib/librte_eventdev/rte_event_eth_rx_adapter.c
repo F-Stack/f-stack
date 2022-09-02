@@ -1294,12 +1294,11 @@ rxa_create_intr_thread(struct rte_event_eth_rx_adapter *rx_adapter)
 
 	err = rte_ctrl_thread_create(&rx_adapter->rx_intr_thread, thread_name,
 				NULL, rxa_intr_thread, rx_adapter);
-	if (!err) {
-		rte_thread_setname(rx_adapter->rx_intr_thread, thread_name);
+	if (!err)
 		return 0;
-	}
 
 	RTE_EDEV_LOG_ERR("Failed to create interrupt thread err = %d\n", err);
+	rte_free(rx_adapter->epoll_events);
 error:
 	rte_ring_free(rx_adapter->intr_ring);
 	rx_adapter->intr_ring = NULL;
@@ -2245,6 +2244,11 @@ rte_event_eth_rx_adapter_queue_del(uint8_t id, uint16_t eth_dev_id,
 		rx_adapter->eth_rx_poll = rx_poll;
 		rx_adapter->wrr_sched = rx_wrr;
 		rx_adapter->wrr_len = nb_wrr;
+		/*
+		 * reset next poll start position (wrr_pos) to avoid buffer
+		 * overrun when wrr_len is reduced in case of queue delete
+		 */
+		rx_adapter->wrr_pos = 0;
 		rx_adapter->num_intr_vec += num_intr_vec;
 
 		if (dev_info->nb_dev_queues == 0) {

@@ -54,14 +54,14 @@ automatically when the port is started if allowed by the current configuration.
 RX Requirements for Vector Mode
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Vector mode receive will be enabled if the following constrainsts are met:
+Vector mode receive will be enabled if the following constraints are met:
    * Packets must fit within a single mbuf (no scatter RX).
    * LRO offload must be disabled.
 
 TX Requirements for Vector Mode
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Vector mode transmit will be enabled if the following constrainsts are met:
+Vector mode transmit will be enabled if the following constraints are met:
    * Packets must be contained within a single mbuf (no gather TX).
    * All transmit offloads other than VLAN insertion must be disabled.
 
@@ -123,7 +123,7 @@ Chipsets and adapters supported by the bnxt PMD include:
     <https://www.broadcom.com/products/ethernet-connectivity/smartnic/>`_
     of the `Broadcom website <http://www.broadcom.com/>`_.
 
-  * **Broadcom StrataGX® BCM5871X Series of Communucations Processors**
+  * **Broadcom StrataGX® BCM5871X Series of Communications Processors**
 
     These ARM based processors target a broad range of networking applications
     including virtual CPE (vCPE) and NFV appliances, 10G service routers and

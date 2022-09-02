@@ -198,25 +198,26 @@ mlx4_free_verbs_buf(void *ptr, void *data __rte_unused)
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int
+int
 mlx4_proc_priv_init(struct rte_eth_dev *dev)
 {
 	struct mlx4_proc_priv *ppriv;
 	size_t ppriv_size;
 
+	mlx4_proc_priv_uninit(dev);
 	/*
 	 * UAR register table follows the process private structure. BlueFlame
 	 * registers for Tx queues are stored in the table.
 	 */
 	ppriv_size = sizeof(struct mlx4_proc_priv) +
 		     dev->data->nb_tx_queues * sizeof(void *);
-	ppriv = rte_malloc_socket("mlx4_proc_priv", ppriv_size,
-				  RTE_CACHE_LINE_SIZE, dev->device->numa_node);
+	ppriv = rte_zmalloc_socket("mlx4_proc_priv", ppriv_size,
+				   RTE_CACHE_LINE_SIZE, dev->device->numa_node);
 	if (!ppriv) {
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
-	ppriv->uar_table_sz = ppriv_size;
+	ppriv->uar_table_sz = dev->data->nb_tx_queues;
 	dev->process_private = ppriv;
 	return 0;
 }
@@ -227,7 +228,7 @@ mlx4_proc_priv_init(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+void
 mlx4_proc_priv_uninit(struct rte_eth_dev *dev)
 {
 	if (!dev->process_private)
@@ -376,6 +377,8 @@ mlx4_dev_close(struct rte_eth_dev *dev)
 	struct mlx4_priv *priv = dev->data->dev_private;
 	unsigned int i;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 	DEBUG("%p: closing device \"%s\"",
 	      (void *)dev,
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
@@ -767,6 +770,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	struct ibv_context *attr_ctx = NULL;
 	struct ibv_device_attr device_attr;
 	struct ibv_device_attr_ex device_attr_ex;
+	struct rte_eth_dev *prev_dev = NULL;
 	struct mlx4_conf conf = {
 		.ports.present = 0,
 		.mr_ext_memseg_en = 1,
@@ -881,7 +885,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				ERROR("can not attach rte ethdev");
 				rte_errno = ENOMEM;
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			priv = eth_dev->data->dev_private;
 			if (!priv->verbs_alloc_ctx.enabled) {
@@ -890,24 +894,24 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				      " from Verbs");
 				rte_errno = ENOTSUP;
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			eth_dev->device = &pci_dev->device;
 			eth_dev->dev_ops = &mlx4_dev_sec_ops;
 			err = mlx4_proc_priv_init(eth_dev);
 			if (err)
-				goto error;
+				goto err_secondary;
 			/* Receive command fd from primary process. */
 			err = mlx4_mp_req_verbs_cmd_fd(eth_dev);
 			if (err < 0) {
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			/* Remap UAR for Tx queues. */
 			err = mlx4_tx_uar_init_secondary(eth_dev, err);
 			if (err) {
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			/*
 			 * Ethdev pointer is still required as input since
@@ -919,7 +923,14 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			claim_zero(mlx4_glue->close_device(ctx));
 			rte_eth_copy_pci_info(eth_dev, pci_dev);
 			rte_eth_dev_probing_finish(eth_dev);
+			prev_dev = eth_dev;
 			continue;
+err_secondary:
+			claim_zero(mlx4_glue->close_device(ctx));
+			rte_eth_dev_release_port(eth_dev);
+			if (prev_dev)
+				rte_eth_dev_release_port(prev_dev);
+			break;
 		}
 		/* Check port status. */
 		err = mlx4_glue->query_port(ctx, port, &port_attr);
@@ -1094,6 +1105,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				 priv, mem_event_cb);
 		rte_rwlock_write_unlock(&mlx4_shared_data->mem_event_rwlock);
 		rte_eth_dev_probing_finish(eth_dev);
+		prev_dev = eth_dev;
 		continue;
 port_error:
 		rte_free(priv);
@@ -1108,14 +1120,10 @@ port_error:
 			eth_dev->data->mac_addrs = NULL;
 			rte_eth_dev_release_port(eth_dev);
 		}
+		if (prev_dev)
+			mlx4_dev_close(prev_dev);
 		break;
 	}
-	/*
-	 * XXX if something went wrong in the loop above, there is a resource
-	 * leak (ctx, pd, priv, dpdk ethdev) but we can do nothing about it as
-	 * long as the dpdk does not provide a way to deallocate a ethdev and a
-	 * way to enumerate the registered ethdevs to free the previous ones.
-	 */
 error:
 	if (attr_ctx)
 		claim_zero(mlx4_glue->close_device(attr_ctx));

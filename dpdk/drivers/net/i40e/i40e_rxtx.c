@@ -66,6 +66,7 @@
 		PKT_TX_QINQ_PKT |       \
 		PKT_TX_VLAN_PKT |	\
 		PKT_TX_TUNNEL_MASK |	\
+		PKT_TX_OUTER_UDP_CKSUM |	\
 		I40E_TX_IEEE1588_TMST)
 
 #define I40E_TX_OFFLOAD_NOTSUP_MASK \
@@ -417,7 +418,7 @@ i40e_rx_scan_hw_ring(struct i40e_rx_queue *rxq)
 	uint16_t pkt_len;
 	uint64_t qword1;
 	uint32_t rx_status;
-	int32_t s[I40E_LOOK_AHEAD], nb_dd;
+	int32_t s[I40E_LOOK_AHEAD], var, nb_dd;
 	int32_t i, j, nb_rx = 0;
 	uint64_t pkt_flags;
 	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
@@ -450,8 +451,18 @@ i40e_rx_scan_hw_ring(struct i40e_rx_queue *rxq)
 		rte_smp_rmb();
 
 		/* Compute how many status bits were set */
-		for (j = 0, nb_dd = 0; j < I40E_LOOK_AHEAD; j++)
-			nb_dd += s[j] & (1 << I40E_RX_DESC_STATUS_DD_SHIFT);
+		for (j = 0, nb_dd = 0; j < I40E_LOOK_AHEAD; j++) {
+			var = s[j] & (1 << I40E_RX_DESC_STATUS_DD_SHIFT);
+#ifdef RTE_ARCH_ARM
+			/* For Arm platforms, only compute continuous status bits */
+			if (var)
+				nb_dd += 1;
+			else
+				break;
+#else
+			nb_dd += var;
+#endif
+		}
 
 		nb_rx += nb_dd;
 
@@ -692,6 +703,12 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			break;
 		}
 
+		/**
+		 * Use acquire fence to ensure that qword1 which includes DD
+		 * bit is loaded before loading of other descriptor words.
+		 */
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+
 		rxd = *rxdp;
 		nb_hold++;
 		rxe = &sw_ring[rx_id];
@@ -807,6 +824,12 @@ i40e_recv_scattered_pkts(void *rx_queue,
 			dev->data->rx_mbuf_alloc_failed++;
 			break;
 		}
+
+		/**
+		 * Use acquire fence to ensure that qword1 which includes DD
+		 * bit is loaded before loading of other descriptor words.
+		 */
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		rxd = *rxdp;
 		nb_hold++;
@@ -2186,8 +2209,6 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
 		vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
-		if (!vsi)
-			return -EINVAL;
 		reg_idx = queue_idx;
 	} else {
 		pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
@@ -2479,6 +2500,10 @@ i40e_reset_rx_queue(struct i40e_rx_queue *rxq)
 #endif /* RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC */
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
+
+	if (rxq->pkt_first_seg != NULL)
+		rte_pktmbuf_free(rxq->pkt_first_seg);
+
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
 
@@ -2689,23 +2714,23 @@ i40e_rx_queue_config(struct i40e_rx_queue *rxq)
 		RTE_MIN((uint32_t)(hw->func_caps.rx_buf_chain_len *
 			rxq->rx_buf_len), data->dev_conf.rxmode.max_rx_pkt_len);
 	if (data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
-		if (rxq->max_pkt_len <= RTE_ETHER_MAX_LEN ||
+		if (rxq->max_pkt_len <= I40E_ETH_MAX_LEN ||
 			rxq->max_pkt_len > I40E_FRAME_SIZE_MAX) {
 			PMD_DRV_LOG(ERR, "maximum packet length must "
 				    "be larger than %u and smaller than %u,"
 				    "as jumbo frame is enabled",
-				    (uint32_t)RTE_ETHER_MAX_LEN,
+				    (uint32_t)I40E_ETH_MAX_LEN,
 				    (uint32_t)I40E_FRAME_SIZE_MAX);
 			return I40E_ERR_CONFIG;
 		}
 	} else {
 		if (rxq->max_pkt_len < RTE_ETHER_MIN_LEN ||
-			rxq->max_pkt_len > RTE_ETHER_MAX_LEN) {
+			rxq->max_pkt_len > I40E_ETH_MAX_LEN) {
 			PMD_DRV_LOG(ERR, "maximum packet length must be "
 				    "larger than %u and smaller than %u, "
 				    "as jumbo frame is disabled",
 				    (uint32_t)RTE_ETHER_MIN_LEN,
-				    (uint32_t)RTE_ETHER_MAX_LEN);
+				    (uint32_t)I40E_ETH_MAX_LEN);
 			return I40E_ERR_CONFIG;
 		}
 	}
@@ -2847,7 +2872,7 @@ i40e_fdir_setup_tx_resources(struct i40e_pf *pf)
 		return I40E_ERR_BAD_PTR;
 	}
 
-	dev = pf->adapter->eth_dev;
+	dev = &rte_eth_devices[pf->dev_data->port_id];
 
 	/* Allocate the TX queue data structure. */
 	txq = rte_zmalloc_socket("i40e fdir tx queue",
@@ -2903,7 +2928,7 @@ i40e_fdir_setup_rx_resources(struct i40e_pf *pf)
 		return I40E_ERR_BAD_PTR;
 	}
 
-	dev = pf->adapter->eth_dev;
+	dev = &rte_eth_devices[pf->dev_data->port_id];
 
 	/* Allocate the RX queue data structure. */
 	rxq = rte_zmalloc_socket("i40e fdir rx queue",

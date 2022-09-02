@@ -18,6 +18,12 @@ error_cflags = ['-Wno-unused-value',
 		'-Wno-unused-variable',
 		'-Wno-unused-parameter',
 ]
+
+# Bugzilla ID: 678
+if (toolchain == 'gcc' and cc.version().version_compare('>=11.0.0'))
+    error_cflags += ['-Wno-array-bounds']
+endif
+
 c_args = cflags
 
 foreach flag: error_cflags
@@ -29,4 +35,4 @@ endforeach
 base_lib = static_library('ice_base', sources,
 	dependencies: static_rte_eal,
 	c_args: c_args)
-base_objs = base_lib.extract_all_objects()
+base_objs = base_lib.extract_all_objects(recursive: true)

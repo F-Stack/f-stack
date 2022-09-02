@@ -114,8 +114,10 @@ init_shared_mem(void)
 	} else {
 		mz = rte_memzone_lookup(RTE_MBUF_DYN_MZNAME);
 	}
-	if (mz == NULL)
+	if (mz == NULL) {
+		RTE_LOG(ERR, MBUF, "Failed to get mbuf dyn shared memory\n");
 		return -1;
+	}
 
 	shm = mz->addr;
 
@@ -495,6 +497,10 @@ rte_mbuf_dynflag_register_bitnum(const struct rte_mbuf_dynflag *params,
 {
 	int ret;
 
+	if (params->flags != 0) {
+		rte_errno = EINVAL;
+		return -1;
+	}
 	if (req >= RTE_SIZEOF_FIELD(struct rte_mbuf, ol_flags) * CHAR_BIT &&
 			req != UINT_MAX) {
 		rte_errno = EINVAL;
@@ -524,7 +530,11 @@ void rte_mbuf_dyn_dump(FILE *out)
 	size_t i;
 
 	rte_mcfg_tailq_write_lock();
-	init_shared_mem();
+	if (shm == NULL && init_shared_mem() < 0) {
+		rte_mcfg_tailq_write_unlock();
+		return;
+	}
+
 	fprintf(out, "Reserved fields:\n");
 	mbuf_dynfield_list = RTE_TAILQ_CAST(
 		mbuf_dynfield_tailq.head, mbuf_dynfield_list);

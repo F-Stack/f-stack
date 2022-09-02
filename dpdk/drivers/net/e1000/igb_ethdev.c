@@ -1544,6 +1544,9 @@ eth_igb_close(struct rte_eth_dev *dev)
 	struct e1000_filter_info *filter_info =
 		E1000_DEV_PRIVATE_TO_FILTER_INFO(dev->data->dev_private);
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+
 	eth_igb_stop(dev);
 
 	e1000_phy_hw_reset(hw);
@@ -1849,8 +1852,7 @@ eth_igb_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 
 	/* Rx Errors */
 	rte_stats->imissed = stats->mpc;
-	rte_stats->ierrors = stats->crcerrs +
-	                     stats->rlec + stats->ruc + stats->roc +
+	rte_stats->ierrors = stats->crcerrs + stats->rlec +
 	                     stats->rxerrc + stats->algnerrc + stats->cexterr;
 
 	/* Tx Errors */
@@ -2711,8 +2713,7 @@ igb_vlan_hw_extend_disable(struct rte_eth_dev *dev)
 	/* Update maximum packet length */
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
 		E1000_WRITE_REG(hw, E1000_RLPML,
-			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-						VLAN_TAG_SIZE);
+				dev->data->dev_conf.rxmode.max_rx_pkt_len);
 }
 
 static void
@@ -2731,7 +2732,7 @@ igb_vlan_hw_extend_enable(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
 		E1000_WRITE_REG(hw, E1000_RLPML,
 			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-						2 * VLAN_TAG_SIZE);
+						VLAN_TAG_SIZE);
 }
 
 static int
@@ -3087,6 +3088,7 @@ eth_igb_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	uint32_t rx_buf_size;
 	uint32_t max_high_water;
 	uint32_t rctl;
+	uint32_t ctrl;
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	if (fc_conf->autoneg != hw->mac.autoneg)
@@ -3124,6 +3126,39 @@ eth_igb_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 			rctl &= ~E1000_RCTL_PMCF;
 
 		E1000_WRITE_REG(hw, E1000_RCTL, rctl);
+
+		/*
+		 * check if we want to change flow control mode - driver doesn't have native
+		 * capability to do that, so we'll write the registers ourselves
+		 */
+		ctrl = E1000_READ_REG(hw, E1000_CTRL);
+
+		/*
+		 * set or clear E1000_CTRL_RFCE and E1000_CTRL_TFCE bits depending
+		 * on configuration
+		 */
+		switch (fc_conf->mode) {
+		case RTE_FC_NONE:
+			ctrl &= ~E1000_CTRL_RFCE & ~E1000_CTRL_TFCE;
+			break;
+		case RTE_FC_RX_PAUSE:
+			ctrl |= E1000_CTRL_RFCE;
+			ctrl &= ~E1000_CTRL_TFCE;
+			break;
+		case RTE_FC_TX_PAUSE:
+			ctrl |= E1000_CTRL_TFCE;
+			ctrl &= ~E1000_CTRL_RFCE;
+			break;
+		case RTE_FC_FULL:
+			ctrl |= E1000_CTRL_RFCE | E1000_CTRL_TFCE;
+			break;
+		default:
+			PMD_INIT_LOG(ERR, "invalid flow control mode");
+			return -EINVAL;
+		}
+
+		E1000_WRITE_REG(hw, E1000_CTRL, ctrl);
+
 		E1000_WRITE_FLUSH(hw);
 
 		return 0;
@@ -3389,6 +3424,9 @@ igbvf_dev_close(struct rte_eth_dev *dev)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
 
 	e1000_reset_hw(hw);
 
@@ -4534,16 +4572,20 @@ eth_igb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 			frame_size > dev_info.max_rx_pktlen)
 		return -EINVAL;
 
-	/* refuse mtu that requires the support of scattered packets when this
-	 * feature has not been enabled before. */
-	if (!dev->data->scattered_rx &&
-	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM)
+	/*
+	 * If device is started, refuse mtu that requires the support of
+	 * scattered packets when this feature has not been enabled before.
+	 */
+	if (dev->data->dev_started && !dev->data->scattered_rx &&
+	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR, "Stop port first.");
 		return -EINVAL;
+	}
 
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > RTE_ETHER_MAX_LEN) {
+	if (frame_size > E1000_ETH_MAX_LEN) {
 		dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 		rctl |= E1000_RCTL_LPE;
@@ -5480,9 +5522,6 @@ eth_igb_get_module_eeprom(struct rte_eth_dev *dev,
 	uint16_t dataword[RTE_ETH_MODULE_SFF_8472_LEN / 2 + 1];
 	u16 first_word, last_word;
 	int i = 0;
-
-	if (info->length == 0)
-		return -EINVAL;
 
 	first_word = info->offset >> 1;
 	last_word = (info->offset + info->length - 1) >> 1;

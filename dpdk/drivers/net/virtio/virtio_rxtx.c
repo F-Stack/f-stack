@@ -474,13 +474,35 @@ virtqueue_enqueue_recv_refill(struct virtqueue *vq, struct rte_mbuf **cookie,
 	return 0;
 }
 
+static inline void
+virtqueue_refill_single_packed(struct virtqueue *vq,
+			       struct vring_packed_desc *dp,
+			       struct rte_mbuf *cookie)
+{
+	uint16_t flags = vq->vq_packed.cached_flags;
+	struct virtio_hw *hw = vq->hw;
+
+	dp->addr = VIRTIO_MBUF_ADDR(cookie, vq) +
+			RTE_PKTMBUF_HEADROOM - hw->vtnet_hdr_size;
+	dp->len = cookie->buf_len -
+		RTE_PKTMBUF_HEADROOM + hw->vtnet_hdr_size;
+
+	virtqueue_store_flags_packed(dp, flags,
+				     hw->weak_barriers);
+
+	if (++vq->vq_avail_idx >= vq->vq_nentries) {
+		vq->vq_avail_idx -= vq->vq_nentries;
+		vq->vq_packed.cached_flags ^=
+			VRING_PACKED_DESC_F_AVAIL_USED;
+		flags = vq->vq_packed.cached_flags;
+	}
+}
+
 static inline int
-virtqueue_enqueue_recv_refill_packed(struct virtqueue *vq,
+virtqueue_enqueue_recv_refill_packed_init(struct virtqueue *vq,
 				     struct rte_mbuf **cookie, uint16_t num)
 {
 	struct vring_packed_desc *start_dp = vq->vq_packed.ring.desc;
-	uint16_t flags = vq->vq_packed.cached_flags;
-	struct virtio_hw *hw = vq->hw;
 	struct vq_desc_extra *dxp;
 	uint16_t idx;
 	int i;
@@ -496,24 +518,34 @@ virtqueue_enqueue_recv_refill_packed(struct virtqueue *vq,
 		dxp->cookie = (void *)cookie[i];
 		dxp->ndescs = 1;
 
-		start_dp[idx].addr = VIRTIO_MBUF_ADDR(cookie[i], vq) +
-				RTE_PKTMBUF_HEADROOM - hw->vtnet_hdr_size;
-		start_dp[idx].len = cookie[i]->buf_len - RTE_PKTMBUF_HEADROOM
-					+ hw->vtnet_hdr_size;
+		virtqueue_refill_single_packed(vq, &start_dp[idx], cookie[i]);
+	}
+	vq->vq_free_cnt = (uint16_t)(vq->vq_free_cnt - num);
+	return 0;
+}
 
-		vq->vq_desc_head_idx = dxp->next;
-		if (vq->vq_desc_head_idx == VQ_RING_DESC_CHAIN_END)
-			vq->vq_desc_tail_idx = vq->vq_desc_head_idx;
+static inline int
+virtqueue_enqueue_recv_refill_packed(struct virtqueue *vq,
+				     struct rte_mbuf **cookie, uint16_t num)
+{
+	struct vring_packed_desc *start_dp = vq->vq_packed.ring.desc;
+	struct vq_desc_extra *dxp;
+	uint16_t idx, did;
+	int i;
 
-		virtqueue_store_flags_packed(&start_dp[idx], flags,
-					     hw->weak_barriers);
+	if (unlikely(vq->vq_free_cnt == 0))
+		return -ENOSPC;
+	if (unlikely(vq->vq_free_cnt < num))
+		return -EMSGSIZE;
 
-		if (++vq->vq_avail_idx >= vq->vq_nentries) {
-			vq->vq_avail_idx -= vq->vq_nentries;
-			vq->vq_packed.cached_flags ^=
-				VRING_PACKED_DESC_F_AVAIL_USED;
-			flags = vq->vq_packed.cached_flags;
-		}
+	for (i = 0; i < num; i++) {
+		idx = vq->vq_avail_idx;
+		did = start_dp[idx].id;
+		dxp = &vq->vq_descx[did];
+		dxp->cookie = (void *)cookie[i];
+		dxp->ndescs = 1;
+
+		virtqueue_refill_single_packed(vq, &start_dp[idx], cookie[i]);
 	}
 	vq->vq_free_cnt = (uint16_t)(vq->vq_free_cnt - num);
 	return 0;
@@ -1008,10 +1040,11 @@ virtio_dev_rx_queue_setup_finish(struct rte_eth_dev *dev, uint16_t queue_idx)
 				if (unlikely(error)) {
 					for (i = 0; i < free_cnt; i++)
 						rte_pktmbuf_free(pkts[i]);
+				} else {
+					nbufs += free_cnt;
 				}
 			}
 
-			nbufs += free_cnt;
 			vq_update_avail_idx(vq);
 		}
 	} else {
@@ -1022,7 +1055,7 @@ virtio_dev_rx_queue_setup_finish(struct rte_eth_dev *dev, uint16_t queue_idx)
 
 			/* Enqueue allocated buffers */
 			if (vtpci_packed_queue(vq->hw))
-				error = virtqueue_enqueue_recv_refill_packed(vq,
+				error = virtqueue_enqueue_recv_refill_packed_init(vq,
 						&m, 1);
 			else
 				error = virtqueue_enqueue_recv_refill(vq,
@@ -1059,7 +1092,7 @@ virtio_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			unsigned int socket_id __rte_unused,
 			const struct rte_eth_txconf *tx_conf)
 {
-	uint8_t vtpci_queue_idx = 2 * queue_idx + VTNET_SQ_TQ_QUEUE_IDX;
+	uint16_t vtpci_queue_idx = 2 * queue_idx + VTNET_SQ_TQ_QUEUE_IDX;
 	struct virtio_hw *hw = dev->data->dev_private;
 	struct virtqueue *vq = hw->vqs[vtpci_queue_idx];
 	struct virtnet_tx *txvq;
@@ -1103,7 +1136,7 @@ int
 virtio_dev_tx_queue_setup_finish(struct rte_eth_dev *dev,
 				uint16_t queue_idx)
 {
-	uint8_t vtpci_queue_idx = 2 * queue_idx + VTNET_SQ_TQ_QUEUE_IDX;
+	uint16_t vtpci_queue_idx = 2 * queue_idx + VTNET_SQ_TQ_QUEUE_IDX;
 	struct virtio_hw *hw = dev->data->dev_private;
 	struct virtqueue *vq = hw->vqs[vtpci_queue_idx];
 

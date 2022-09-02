@@ -24,6 +24,10 @@
 #define MAX_TX_QUEUES		16
 #define MAX_DPNI		8
 
+#define DPAA2_ETH_MAX_LEN (RTE_ETHER_MTU + \
+			   RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
+			   VLAN_TAG_SIZE)
+
 /*default tc to be used for ,congestion, distribution etc configuration. */
 #define DPAA2_DEF_TC		0
 

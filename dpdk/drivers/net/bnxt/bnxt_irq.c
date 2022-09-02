@@ -21,15 +21,18 @@ void bnxt_int_handler(void *param)
 {
 	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)param;
 	struct bnxt *bp = eth_dev->data->dev_private;
-	struct bnxt_cp_ring_info *cpr = bp->async_cp_ring;
+	uint32_t cons, raw_cons, cp_ring_size;
+	struct bnxt_cp_ring_info *cpr;
 	struct cmpl_base *cmp;
-	uint32_t raw_cons;
-	uint32_t cons;
 
+	if (bp == NULL)
+		return;
+	cpr = bp->async_cp_ring;
 	if (cpr == NULL)
 		return;
 
 	raw_cons = cpr->cp_raw_cons;
+	cp_ring_size = cpr->cp_ring_struct->ring_size;
 	pthread_mutex_lock(&bp->def_cp_lock);
 	while (1) {
 		if (!cpr || !cpr->cp_ring_struct || !cpr->cp_db.doorbell) {
@@ -45,7 +48,7 @@ void bnxt_int_handler(void *param)
 		cons = RING_CMP(cpr->cp_ring_struct, raw_cons);
 		cmp = &cpr->cp_desc_ring[cons];
 
-		if (!CMP_VALID(cmp, raw_cons, cpr->cp_ring_struct))
+		if (!bnxt_cpr_cmp_valid(cmp, raw_cons, cp_ring_size))
 			break;
 
 		bnxt_event_hwrm_resp_handler(bp, cmp);

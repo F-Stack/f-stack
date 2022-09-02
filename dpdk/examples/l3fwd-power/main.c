@@ -1578,7 +1578,7 @@ parse_ep_config(const char *q_arg)
 	int hgh_edpi;
 
 	ep_med_edpi = EMPTY_POLL_MED_THRESHOLD;
-	ep_hgh_edpi = EMPTY_POLL_MED_THRESHOLD;
+	ep_hgh_edpi = EMPTY_POLL_HGH_THRESHOLD;
 
 	strlcpy(s, p, sizeof(s));
 
@@ -1601,7 +1601,7 @@ parse_ep_config(const char *q_arg)
 		if (med_edpi > 0)
 			ep_med_edpi = med_edpi;
 
-		if (med_edpi > 0)
+		if (hgh_edpi > 0)
 			ep_hgh_edpi = hgh_edpi;
 
 	} else {
@@ -2216,15 +2216,15 @@ main(int argc, char **argv)
 	uint8_t num_telstats = RTE_DIM(telstats_strings);
 	const char *ptr_strings[num_telstats];
 
-	/* catch SIGINT and restore cpufreq governor to ondemand */
-	signal(SIGINT, signal_exit_now);
-
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid EAL parameters\n");
 	argc -= ret;
 	argv += ret;
+
+	/* catch SIGINT and restore cpufreq governor to ondemand */
+	signal(SIGINT, signal_exit_now);
 
 	/* init RTE timer library to be used late */
 	rte_timer_subsystem_init();

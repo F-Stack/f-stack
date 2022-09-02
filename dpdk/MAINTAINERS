@@ -73,6 +73,8 @@ T: git://dpdk.org/next/dpdk-next-pipeline
 Stable Branches
 M: Luca Boccassi <bluca@debian.org>
 M: Kevin Traynor <ktraynor@redhat.com>
+M: Christian Ehrhardt <christian.ehrhardt@canonical.com>
+M: Xueming Li <xuemingl@nvidia.com>
 T: git://dpdk.org/dpdk-stable
 
 Security Issues
@@ -131,8 +133,6 @@ F: config/rte_config.h
 F: buildtools/call-sphinx-build.py
 F: buildtools/gen-pmdinfo-cfile.sh
 F: buildtools/map_to_def.py
-F: buildtools/list-dir-globs.py
-F: buildtools/pkg-config/
 F: buildtools/symlink-drivers-solibs.sh
 
 Public CI

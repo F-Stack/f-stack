@@ -1136,7 +1136,7 @@ test_refcnt_mbuf(void)
 
 	rte_eal_mp_wait_lcore();
 
-	/* check that we porcessed all references */
+	/* check that we processed all references */
 	tref = 0;
 	master = rte_get_master_lcore();
 
@@ -2011,8 +2011,6 @@ test_pktmbuf_read_from_offset(struct rte_mempool *pktmbuf_pool)
 			NULL);
 	if (data_copy == NULL)
 		GOTO_FAIL("%s: Error in reading packet data!\n", __func__);
-	if (strlen(data_copy) != MBUF_TEST_DATA_LEN2 - 5)
-		GOTO_FAIL("%s: Incorrect data length!\n", __func__);
 	for (off = 0; off < MBUF_TEST_DATA_LEN2 - 5; off++) {
 		if (data_copy[off] != (char)0xcc)
 			GOTO_FAIL("Data corrupted at offset %u", off);
@@ -2034,8 +2032,6 @@ test_pktmbuf_read_from_offset(struct rte_mempool *pktmbuf_pool)
 	data_copy = rte_pktmbuf_read(m, hdr_len, 0, NULL);
 	if (data_copy == NULL)
 		GOTO_FAIL("%s: Error in reading packet data!\n", __func__);
-	if (strlen(data_copy) != MBUF_TEST_DATA_LEN2)
-		GOTO_FAIL("%s: Corrupted data content!\n", __func__);
 	for (off = 0; off < MBUF_TEST_DATA_LEN2; off++) {
 		if (data_copy[off] != (char)0xcc)
 			GOTO_FAIL("Data corrupted at offset %u", off);
@@ -2344,7 +2340,7 @@ test_pktmbuf_ext_shinfo_init_helper(struct rte_mempool *pktmbuf_pool)
 	if (rte_mbuf_refcnt_read(m) != 1)
 		GOTO_FAIL("%s: Invalid refcnt in mbuf\n", __func__);
 
-	buf_iova = rte_mempool_virt2iova(ext_buf_addr);
+	buf_iova = rte_mem_virt2iova(ext_buf_addr);
 	rte_pktmbuf_attach_extbuf(m, ext_buf_addr, buf_iova, buf_len,
 		ret_shinfo);
 	if (m->ol_flags != EXT_ATTACHED_MBUF)
@@ -2444,6 +2440,16 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 		.align = 3,
 		.flags = 0,
 	};
+	const struct rte_mbuf_dynfield dynfield_fail_flag = {
+		.name = "test-dynfield",
+		.size = sizeof(uint8_t),
+		.align = __alignof__(uint8_t),
+		.flags = 1,
+	};
+	const struct rte_mbuf_dynflag dynflag_fail_flag = {
+		.name = "test-dynflag",
+		.flags = 1,
+	};
 	const struct rte_mbuf_dynflag dynflag = {
 		.name = "test-dynflag",
 		.flags = 0,
@@ -2504,6 +2510,14 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 				offsetof(struct rte_mbuf, ol_flags));
 	if (ret != -1)
 		GOTO_FAIL("dynamic field creation should fail (not avail)");
+
+	ret = rte_mbuf_dynfield_register(&dynfield_fail_flag);
+	if (ret != -1)
+		GOTO_FAIL("dynamic field creation should fail (invalid flag)");
+
+	ret = rte_mbuf_dynflag_register(&dynflag_fail_flag);
+	if (ret != -1)
+		GOTO_FAIL("dynamic flag creation should fail (invalid flag)");
 
 	flag = rte_mbuf_dynflag_register(&dynflag);
 	if (flag == -1)

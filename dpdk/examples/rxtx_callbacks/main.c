@@ -295,7 +295,7 @@ main(int argc, char *argv[])
 	/* initialize all ports */
 	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu8"\n",
+			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16"\n",
 					portid);
 
 	if (rte_lcore_count() > 1)
@@ -304,5 +304,9 @@ main(int argc, char *argv[])
 
 	/* call lcore_main on master core only */
 	lcore_main();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

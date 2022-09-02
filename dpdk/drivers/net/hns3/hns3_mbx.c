@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2019 HiSilicon Limited.
  */
 
 #include <errno.h>
@@ -184,6 +184,7 @@ hns3_send_mbx_msg(struct hns3_hw *hw, uint16_t code, uint16_t subcode,
 		hw->mbx_resp.head++;
 		ret = hns3_cmd_send(hw, &desc, 1);
 		if (ret) {
+			hw->mbx_resp.head--;
 			rte_spinlock_unlock(&hw->mbx_resp.lock);
 			hns3_err(hw, "VF failed(=%d) to send mbx message to PF",
 				 ret);
@@ -314,8 +315,8 @@ hns3_link_fail_parse(struct hns3_hw *hw, uint8_t link_fail_code)
 }
 
 static void
-hns3_handle_link_change_event(struct hns3_hw *hw,
-			      struct hns3_mbx_pf_to_vf_cmd *req)
+hns3pf_handle_link_change_event(struct hns3_hw *hw,
+				struct hns3_mbx_vf_to_pf_cmd *req)
 {
 #define LINK_STATUS_OFFSET     1
 #define LINK_FAIL_CODE_OFFSET  2
@@ -382,11 +383,17 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 			hns3_mbx_handler(hw);
 			break;
 		case HNS3_MBX_PUSH_LINK_STATUS:
-			hns3_handle_link_change_event(hw, req);
+			/*
+			 * This message is reported by the firmware and is
+			 * reported in 'struct hns3_mbx_vf_to_pf_cmd' format.
+			 * Therefore, we should cast the req variable to
+			 * 'struct hns3_mbx_vf_to_pf_cmd' and then process it.
+			 */
+			hns3pf_handle_link_change_event(hw,
+				(struct hns3_mbx_vf_to_pf_cmd *)req);
 			break;
 		default:
-			hns3_err(hw,
-				 "VF received unsupported(%d) mbx msg from PF",
+			hns3_err(hw, "received unsupported(%d) mbx msg",
 				 req->msg[0]);
 			break;
 		}

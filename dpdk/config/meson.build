@@ -22,8 +22,8 @@ is_ms_linker = is_windows and (cc.get_id() == 'clang')
 # depending on the configuration options
 pver = meson.project_version().split('.')
 major_version = '@0@.@1@'.format(pver.get(0), pver.get(1))
-abi_version = run_command(find_program('cat', 'more'),
-	abi_version_file).stdout().strip()
+abi_version = run_command(find_program('cat', 'more'), abi_version_file,
+		check: true).stdout().strip()
 # experimental libraries are versioned as 0.majorminor versions, e.g. 0.201
 ever = abi_version.split('.')
 experimental_abi_version = '0.@0@@1@'.format(ever.get(0), ever.get(1))
@@ -121,11 +121,8 @@ if cc.find_library('m', required : false).found()
 	dpdk_extra_ldflags += '-lm'
 endif
 
-# for linux link against dl, for bsd execinfo
 if is_linux
 	link_lib = 'dl'
-elif is_freebsd
-	link_lib = 'execinfo'
 else
 	link_lib = ''
 endif
@@ -146,6 +143,14 @@ if numa_dep.found() and cc.has_header('numaif.h')
 	dpdk_extra_ldflags += '-lnuma'
 endif
 
+# Some false positives can trigger at LTO stage, so this warning needs to be
+# disabled on the linker as well for gcc 10.
+# Fixed in gcc-11 and not present <gcc-10
+# https://bugs.dpdk.org/show_bug.cgi?id=908
+if cc.get_id() == 'gcc' and cc.version().version_compare('>=10.0') and cc.version().version_compare('<11.0')
+	add_project_link_arguments('-Wno-stringop-overflow', language: 'c')
+endif
+
 has_libfdt = 0
 fdt_dep = cc.find_library('libfdt', required: false)
 if fdt_dep.found() and cc.has_header('fdt.h')
@@ -155,8 +160,14 @@ if fdt_dep.found() and cc.has_header('fdt.h')
 	dpdk_extra_ldflags += '-lfdt'
 endif
 
+libexecinfo = cc.find_library('libexecinfo', required: false)
+if libexecinfo.found() and cc.has_header('execinfo.h')
+	add_project_link_arguments('-lexecinfo', language: 'c')
+	dpdk_extra_ldflags += '-lexecinfo'
+endif
+
 # check for libbsd
-libbsd = dependency('libbsd', required: false)
+libbsd = dependency('libbsd', required: false, method: 'pkg-config')
 if libbsd.found()
 	dpdk_conf.set('RTE_USE_LIBBSD', 1)
 endif
@@ -176,10 +187,9 @@ endif
 add_project_arguments('-include', 'rte_config.h', language: 'c')
 
 # enable extra warnings and disable any unwanted warnings
+# -Wall is added by default at warning level 1, and -Wextra
+# at warning level 2 (DPDK default)
 warning_flags = [
-	# -Wall is added by meson by default, so add -Wextra only
-	'-Wextra',
-
 	# additional warnings in alphabetical order
 	'-Wcast-qual',
 	'-Wdeprecated',
@@ -279,4 +289,13 @@ if get_option('b_lto')
 		add_project_arguments('-Wno-lto-type-mismatch', language: 'c')
 		add_project_link_arguments('-Wno-lto-type-mismatch', language: 'c')
 	endif
+endif
+
+if get_option('default_library') == 'both'
+	error( '''
+    Unsupported value "both" for "default_library" option.
+
+    NOTE: DPDK always builds both shared and static libraries.  Please set
+    "default_library" to either "static" or "shared" to select default linkage
+    for apps and any examples.''')
 endif

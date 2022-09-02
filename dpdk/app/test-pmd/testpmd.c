@@ -60,6 +60,9 @@
 #ifdef RTE_LIBRTE_LATENCY_STATS
 #include <rte_latencystats.h>
 #endif
+#ifdef RTE_LIBRTE_PMD_BOND
+#include <rte_eth_bond.h>
+#endif
 
 #include "testpmd.h"
 
@@ -206,6 +209,7 @@ uint16_t stats_period; /**< Period to show statistics (disabled by default) */
  * option. Set flag to exit stats period loop after received SIGINT/SIGTERM.
  */
 uint8_t f_quit;
+uint8_t cl_quit; /* Quit testpmd from cmdline. */
 
 /*
  * Configuration of packet segments used by the "txonly" processing engine.
@@ -227,9 +231,6 @@ uint16_t mb_mempool_cache = DEF_MBUF_CACHE; /**< Size of mbuf mempool cache. */
 
 /* current configuration is in DCB or not,0 means it is not in DCB mode */
 uint8_t dcb_config = 0;
-
-/* Whether the dcb is in testing status */
-uint8_t dcb_test = 0;
 
 /*
  * Configurable number of RX/TX queues.
@@ -421,8 +422,11 @@ lcoreid_t latencystats_lcore_id = -1;
  * Ethernet device configuration.
  */
 struct rte_eth_rxmode rx_mode = {
-	.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-		/**< Default maximum frame length. */
+	/* Default maximum frame length.
+	 * Zero is converted to "RTE_ETHER_MTU + PMD Ethernet overhead"
+	 * in init_config().
+	 */
+	.max_rx_pkt_len = 0,
 };
 
 struct rte_eth_txmode tx_mode = {
@@ -1290,22 +1294,68 @@ check_nb_hairpinq(queueid_t hairpinq)
 }
 
 static void
+init_config_port_offloads(portid_t pid, uint32_t socket_id)
+{
+	struct rte_port *port = &ports[pid];
+	uint16_t data_size;
+	int ret;
+	int i;
+
+	port->dev_conf.txmode = tx_mode;
+	port->dev_conf.rxmode = rx_mode;
+
+	ret = eth_dev_info_get_print_err(pid, &port->dev_info);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE, "rte_eth_dev_info_get() failed\n");
+
+	ret = update_jumbo_frame_offload(pid);
+	if (ret != 0)
+		printf("Updating jumbo frame offload failed for port %u\n",
+			pid);
+
+	if (!(port->dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE))
+		port->dev_conf.txmode.offloads &=
+			~DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	/* Apply Rx offloads configuration */
+	for (i = 0; i < port->dev_info.max_rx_queues; i++)
+		port->rx_conf[i].offloads = port->dev_conf.rxmode.offloads;
+	/* Apply Tx offloads configuration */
+	for (i = 0; i < port->dev_info.max_tx_queues; i++)
+		port->tx_conf[i].offloads = port->dev_conf.txmode.offloads;
+
+	/* set flag to initialize port/queue */
+	port->need_reconfig = 1;
+	port->need_reconfig_queues = 1;
+	port->socket_id = socket_id;
+	port->tx_metadata = 0;
+
+	/*
+	 * Check for maximum number of segments per MTU.
+	 * Accordingly update the mbuf data size.
+	 */
+	if (port->dev_info.rx_desc_lim.nb_mtu_seg_max != UINT16_MAX &&
+	    port->dev_info.rx_desc_lim.nb_mtu_seg_max != 0) {
+		data_size = rx_mode.max_rx_pkt_len /
+			port->dev_info.rx_desc_lim.nb_mtu_seg_max;
+
+		if ((data_size + RTE_PKTMBUF_HEADROOM) > mbuf_data_size) {
+			mbuf_data_size = data_size + RTE_PKTMBUF_HEADROOM;
+			TESTPMD_LOG(WARNING, "Configured mbuf size %hu\n",
+				    mbuf_data_size);
+		}
+	}
+}
+
+static void
 init_config(void)
 {
 	portid_t pid;
-	struct rte_port *port;
 	struct rte_mempool *mbp;
 	unsigned int nb_mbuf_per_pool;
 	lcoreid_t  lc_id;
-	uint8_t port_per_socket[RTE_MAX_NUMA_NODES];
 	struct rte_gro_param gro_param;
 	uint32_t gso_types;
-	uint16_t data_size;
-	bool warning = 0;
-	int k;
-	int ret;
-
-	memset(port_per_socket,0,RTE_MAX_NUMA_NODES);
 
 	/* Configuration of logical cores. */
 	fwd_lcores = rte_zmalloc("testpmd: fwd_lcores",
@@ -1327,25 +1377,12 @@ init_config(void)
 	}
 
 	RTE_ETH_FOREACH_DEV(pid) {
-		port = &ports[pid];
-		/* Apply default TxRx configuration for all ports */
-		port->dev_conf.txmode = tx_mode;
-		port->dev_conf.rxmode = rx_mode;
+		uint32_t socket_id;
 
-		ret = eth_dev_info_get_print_err(pid, &port->dev_info);
-		if (ret != 0)
-			rte_exit(EXIT_FAILURE,
-				 "rte_eth_dev_info_get() failed\n");
-
-		if (!(port->dev_info.tx_offload_capa &
-		      DEV_TX_OFFLOAD_MBUF_FAST_FREE))
-			port->dev_conf.txmode.offloads &=
-				~DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 		if (numa_support) {
-			if (port_numa[pid] != NUMA_NO_CONFIG)
-				port_per_socket[port_numa[pid]]++;
-			else {
-				uint32_t socket_id = rte_eth_dev_socket_id(pid);
+			socket_id = port_numa[pid];
+			if (port_numa[pid] == NUMA_NO_CONFIG) {
+				socket_id = rte_eth_dev_socket_id(pid);
 
 				/*
 				 * if socket_id is invalid,
@@ -1353,44 +1390,14 @@ init_config(void)
 				 */
 				if (check_socket_id(socket_id) < 0)
 					socket_id = socket_ids[0];
-				port_per_socket[socket_id]++;
 			}
+		} else {
+			socket_id = (socket_num == UMA_NO_CONFIG) ?
+				    0 : socket_num;
 		}
-
-		/* Apply Rx offloads configuration */
-		for (k = 0; k < port->dev_info.max_rx_queues; k++)
-			port->rx_conf[k].offloads =
-				port->dev_conf.rxmode.offloads;
-		/* Apply Tx offloads configuration */
-		for (k = 0; k < port->dev_info.max_tx_queues; k++)
-			port->tx_conf[k].offloads =
-				port->dev_conf.txmode.offloads;
-
-		/* set flag to initialize port/queue */
-		port->need_reconfig = 1;
-		port->need_reconfig_queues = 1;
-		port->tx_metadata = 0;
-
-		/* Check for maximum number of segments per MTU. Accordingly
-		 * update the mbuf data size.
-		 */
-		if (port->dev_info.rx_desc_lim.nb_mtu_seg_max != UINT16_MAX &&
-				port->dev_info.rx_desc_lim.nb_mtu_seg_max != 0) {
-			data_size = rx_mode.max_rx_pkt_len /
-				port->dev_info.rx_desc_lim.nb_mtu_seg_max;
-
-			if ((data_size + RTE_PKTMBUF_HEADROOM) >
-							mbuf_data_size) {
-				mbuf_data_size = data_size +
-						 RTE_PKTMBUF_HEADROOM;
-				warning = 1;
-			}
-		}
+		/* Apply default TxRx configuration for all ports */
+		init_config_port_offloads(pid, socket_id);
 	}
-
-	if (warning)
-		TESTPMD_LOG(WARNING, "Configured mbuf size %hu\n",
-			    mbuf_data_size);
 
 	/*
 	 * Create pools of mbuf.
@@ -1474,7 +1481,7 @@ init_config(void)
 #if defined RTE_LIBRTE_PMD_SOFTNIC
 	if (strcmp(cur_fwd_eng->fwd_mode_name, "softnic") == 0) {
 		RTE_ETH_FOREACH_DEV(pid) {
-			port = &ports[pid];
+			struct rte_port *port = &ports[pid];
 			const char *driver = port->dev_info.driver_name;
 
 			if (strcmp(driver, "net_softnic") == 0)
@@ -1489,21 +1496,8 @@ init_config(void)
 void
 reconfig(portid_t new_port_id, unsigned socket_id)
 {
-	struct rte_port *port;
-	int ret;
-
 	/* Reconfiguration of Ethernet ports. */
-	port = &ports[new_port_id];
-
-	ret = eth_dev_info_get_print_err(new_port_id, &port->dev_info);
-	if (ret != 0)
-		return;
-
-	/* set flag to initialize port/queue */
-	port->need_reconfig = 1;
-	port->need_reconfig_queues = 1;
-	port->socket_id = socket_id;
-
+	init_config_port_offloads(new_port_id, socket_id);
 	init_port_config();
 }
 
@@ -1615,7 +1609,7 @@ pkt_burst_stats_display(const char *rx_tx, struct pkt_burst_stats *pbs)
 	total_burst = 0;
 	burst_stats[0] = burst_stats[1] = burst_stats[2] = 0;
 	pktnb_stats[0] = pktnb_stats[1] = pktnb_stats[2] = 0;
-	for (nb_pkt = 0; nb_pkt < MAX_PKT_BURST; nb_pkt++) {
+	for (nb_pkt = 0; nb_pkt < MAX_PKT_BURST + 1; nb_pkt++) {
 		nb_burst = pbs->pkt_burst_spread[nb_pkt];
 		if (nb_burst == 0)
 			continue;
@@ -1715,6 +1709,7 @@ fwd_stats_display(void)
 	struct rte_port *port;
 	streamid_t sm_id;
 	portid_t pt_id;
+	int ret;
 	int i;
 
 	memset(ports_stats, 0, sizeof(ports_stats));
@@ -1747,7 +1742,13 @@ fwd_stats_display(void)
 		pt_id = fwd_ports_ids[i];
 		port = &ports[pt_id];
 
-		rte_eth_stats_get(pt_id, &stats);
+		ret = rte_eth_stats_get(pt_id, &stats);
+		if (ret != 0) {
+			fprintf(stderr,
+				"%s: Error: failed to get stats (port %u): %d",
+				__func__, pt_id, ret);
+			continue;
+		}
 		stats.ipackets -= port->stats.ipackets;
 		stats.opackets -= port->stats.opackets;
 		stats.ibytes -= port->stats.ibytes;
@@ -1893,11 +1894,16 @@ fwd_stats_reset(void)
 {
 	streamid_t sm_id;
 	portid_t pt_id;
+	int ret;
 	int i;
 
 	for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++) {
 		pt_id = fwd_ports_ids[i];
-		rte_eth_stats_get(pt_id, &ports[pt_id].stats);
+		ret = rte_eth_stats_get(pt_id, &ports[pt_id].stats);
+		if (ret != 0)
+			fprintf(stderr,
+				"%s: Error: failed to clear stats (port %u):%d",
+				__func__, pt_id, ret);
 	}
 	for (sm_id = 0; sm_id < cur_fwd_config.nb_fwd_streams; sm_id++) {
 		struct fwd_stream *fs = fwd_streams[sm_id];
@@ -2097,8 +2103,7 @@ start_packet_forwarding(int with_tx_first)
 		return;
 	}
 
-
-	if(dcb_test) {
+	if (dcb_config) {
 		for (i = 0; i < nb_fwd_ports; i++) {
 			pt_id = fwd_ports_ids[i];
 			port = &ports[pt_id];
@@ -2306,6 +2311,38 @@ setup_hairpin_queues(portid_t pi)
 	return 0;
 }
 
+static int
+change_bonding_slave_port_status(portid_t bond_pid, bool is_stop)
+{
+#ifdef RTE_LIBRTE_PMD_BOND
+
+	portid_t slave_pids[RTE_MAX_ETHPORTS];
+	struct rte_port *port;
+	int num_slaves;
+	portid_t slave_pid;
+	int i;
+
+	num_slaves = rte_eth_bond_slaves_get(bond_pid, slave_pids,
+						RTE_MAX_ETHPORTS);
+	if (num_slaves < 0) {
+		fprintf(stderr, "Failed to get slave list for port = %u\n",
+			bond_pid);
+		return num_slaves;
+	}
+
+	for (i = 0; i < num_slaves; i++) {
+		slave_pid = slave_pids[i];
+		port = &ports[slave_pid];
+		port->port_status =
+			is_stop ? RTE_PORT_STOPPED : RTE_PORT_STARTED;
+	}
+#else
+	RTE_SET_USED(bond_pid);
+	RTE_SET_USED(is_stop);
+#endif
+	return 0;
+}
+
 int
 start_port(portid_t pid)
 {
@@ -2313,17 +2350,21 @@ start_port(portid_t pid)
 	portid_t pi;
 	queueid_t qi;
 	struct rte_port *port;
-	struct rte_ether_addr mac_addr;
 	struct rte_eth_hairpin_cap cap;
 
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return 0;
 
-	if(dcb_config)
-		dcb_test = 1;
 	RTE_ETH_FOREACH_DEV(pi) {
 		if (pid != pi && pid != (portid_t)RTE_PORT_ALL)
 			continue;
+
+		if (port_is_bonding_slave(pi)) {
+			fprintf(stderr,
+				"Please remove port %d from bonded device.\n",
+				pi);
+			continue;
+		}
 
 		need_check_link_status = 0;
 		port = &ports[pi];
@@ -2474,16 +2515,28 @@ start_port(portid_t pid)
 							"stopped\n", pi);
 			continue;
 		}
+		/*
+		 * Starting a bonded port also starts all slaves under the
+		 * bonded device. So if this port is bond device, we need
+		 * to modify the port status of these slaves.
+		 */
+		if (port->bond_flag == 1) {
+			if (change_bonding_slave_port_status(pi, false) != 0)
+				continue;
+		}
 
 		if (rte_atomic16_cmpset(&(port->port_status),
 			RTE_PORT_HANDLING, RTE_PORT_STARTED) == 0)
 			printf("Port %d can not be set into started\n", pi);
 
-		if (eth_macaddr_get_print_err(pi, &mac_addr) == 0)
+		if (eth_macaddr_get_print_err(pi, &port->eth_addr) == 0)
 			printf("Port %d: %02X:%02X:%02X:%02X:%02X:%02X\n", pi,
-				mac_addr.addr_bytes[0], mac_addr.addr_bytes[1],
-				mac_addr.addr_bytes[2], mac_addr.addr_bytes[3],
-				mac_addr.addr_bytes[4], mac_addr.addr_bytes[5]);
+				port->eth_addr.addr_bytes[0],
+				port->eth_addr.addr_bytes[1],
+				port->eth_addr.addr_bytes[2],
+				port->eth_addr.addr_bytes[3],
+				port->eth_addr.addr_bytes[4],
+				port->eth_addr.addr_bytes[5]);
 
 		/* at least one port started, need checking link status */
 		need_check_link_status = 1;
@@ -2504,11 +2557,6 @@ stop_port(portid_t pid)
 	portid_t pi;
 	struct rte_port *port;
 	int need_check_link_status = 0;
-
-	if (dcb_test) {
-		dcb_test = 0;
-		dcb_config = 0;
-	}
 
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return;
@@ -2535,6 +2583,18 @@ stop_port(portid_t pid)
 			continue;
 
 		rte_eth_dev_stop(pi);
+
+		/*
+		 * Stopping a bonded port also stops all slaves under the bonded
+		 * device. So if this port is bond device, we need to modify the
+		 * port status of these slaves.
+		 */
+		if (port->bond_flag == 1) {
+			if (change_bonding_slave_port_status(pi, true) != 0) {
+				RTE_LOG(ERR, EAL, "Fail to change bonding slave port status %u\n",
+					pi);
+			}
+		}
 
 		if (rte_atomic16_cmpset(&(port->port_status),
 			RTE_PORT_HANDLING, RTE_PORT_STOPPED) == 0)
@@ -2569,11 +2629,36 @@ remove_invalid_ports(void)
 	nb_cfg_ports = nb_fwd_ports;
 }
 
+static void
+clear_bonding_slave_device(portid_t *slave_pids, uint16_t num_slaves)
+{
+	struct rte_port *port;
+	portid_t slave_pid;
+	uint16_t i;
+
+	for (i = 0; i < num_slaves; i++) {
+		slave_pid = slave_pids[i];
+		if (port_is_started(slave_pid) == 1) {
+			rte_eth_dev_stop(slave_pid);
+			port = &ports[slave_pid];
+			port->port_status = RTE_PORT_STOPPED;
+		}
+
+		clear_port_slave_flag(slave_pid);
+
+		/* Close slave device when testpmd quit or is killed. */
+		if (cl_quit == 1 || f_quit == 1)
+			rte_eth_dev_close(slave_pid);
+	}
+}
+
 void
 close_port(portid_t pid)
 {
 	portid_t pi;
 	struct rte_port *port;
+	portid_t slave_pids[RTE_MAX_ETHPORTS];
+	int num_slaves = 0;
 
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return;
@@ -2609,7 +2694,20 @@ close_port(portid_t pid)
 
 		if (port->flow_list)
 			port_flow_flush(pi);
+
+#ifdef RTE_LIBRTE_PMD_BOND
+		if (port->bond_flag == 1)
+			num_slaves = rte_eth_bond_slaves_get(pi,
+					slave_pids, RTE_MAX_ETHPORTS);
+#endif
+		mcast_addr_pool_destroy(pi);
 		rte_eth_dev_close(pi);
+		/*
+		 * If this port is bonded device, all slaves under the
+		 * device need to be removed or closed.
+		 */
+		if (port->bond_flag == 1 && num_slaves > 0)
+			clear_bonding_slave_device(slave_pids, num_slaves);
 
 		remove_invalid_ports();
 
@@ -3240,6 +3338,80 @@ rxtx_port_config(struct rte_port *port)
 	}
 }
 
+/*
+ * Helper function to arrange max_rx_pktlen value and JUMBO_FRAME offload,
+ * MTU is also aligned if JUMBO_FRAME offload is not set.
+ *
+ * port->dev_info should be set before calling this function.
+ *
+ * return 0 on success, negative on error
+ */
+int
+update_jumbo_frame_offload(portid_t portid)
+{
+	struct rte_port *port = &ports[portid];
+	uint32_t eth_overhead;
+	uint64_t rx_offloads;
+	int ret;
+	bool on;
+
+	/* Update the max_rx_pkt_len to have MTU as RTE_ETHER_MTU */
+	if (port->dev_info.max_mtu != UINT16_MAX &&
+	    port->dev_info.max_rx_pktlen > port->dev_info.max_mtu)
+		eth_overhead = port->dev_info.max_rx_pktlen -
+				port->dev_info.max_mtu;
+	else
+		eth_overhead = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+
+	rx_offloads = port->dev_conf.rxmode.offloads;
+
+	/* Default config value is 0 to use PMD specific overhead */
+	if (port->dev_conf.rxmode.max_rx_pkt_len == 0)
+		port->dev_conf.rxmode.max_rx_pkt_len = RTE_ETHER_MTU + eth_overhead;
+
+	if (port->dev_conf.rxmode.max_rx_pkt_len <= RTE_ETHER_MTU + eth_overhead) {
+		rx_offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
+		on = false;
+	} else {
+		if ((port->dev_info.rx_offload_capa & DEV_RX_OFFLOAD_JUMBO_FRAME) == 0) {
+			printf("Frame size (%u) is not supported by port %u\n",
+				port->dev_conf.rxmode.max_rx_pkt_len,
+				portid);
+			return -1;
+		}
+		rx_offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+		on = true;
+	}
+
+	if (rx_offloads != port->dev_conf.rxmode.offloads) {
+		uint16_t qid;
+
+		port->dev_conf.rxmode.offloads = rx_offloads;
+
+		/* Apply JUMBO_FRAME offload configuration to Rx queue(s) */
+		for (qid = 0; qid < port->dev_info.nb_rx_queues; qid++) {
+			if (on)
+				port->rx_conf[qid].offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+			else
+				port->rx_conf[qid].offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
+		}
+	}
+
+	/* If JUMBO_FRAME is set MTU conversion done by ethdev layer,
+	 * if unset do it here
+	 */
+	if ((rx_offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) == 0) {
+		ret = rte_eth_dev_set_mtu(portid,
+				port->dev_conf.rxmode.max_rx_pkt_len - eth_overhead);
+		if (ret)
+			printf("Failed to set MTU to %u for port %u\n",
+				port->dev_conf.rxmode.max_rx_pkt_len - eth_overhead,
+				portid);
+	}
+
+	return 0;
+}
+
 void
 init_port_config(void)
 {
@@ -3416,18 +3588,21 @@ init_port_dcb_config(portid_t pid,
 
 	rte_port = &ports[pid];
 
-	memset(&port_conf, 0, sizeof(struct rte_eth_conf));
-	/* Enter DCB configuration status */
-	dcb_config = 1;
-
-	port_conf.rxmode = rte_port->dev_conf.rxmode;
-	port_conf.txmode = rte_port->dev_conf.txmode;
+	/* retain the original device configuration. */
+	memcpy(&port_conf, &rte_port->dev_conf, sizeof(struct rte_eth_conf));
 
 	/*set configuration of DCB in vt mode and DCB in non-vt mode*/
 	retval = get_eth_dcb_conf(pid, &port_conf, dcb_mode, num_tcs, pfc_en);
 	if (retval < 0)
 		return retval;
 	port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_FILTER;
+	/* remove RSS HASH offload for DCB in vt mode */
+	if (port_conf.rxmode.mq_mode == ETH_MQ_RX_VMDQ_DCB) {
+		port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_RSS_HASH;
+		for (i = 0; i < nb_rxq; i++)
+			rte_port->rx_conf[i].offloads &=
+				~DEV_RX_OFFLOAD_RSS_HASH;
+	}
 
 	/* re-configure the device . */
 	retval = rte_eth_dev_configure(pid, nb_rxq, nb_rxq, &port_conf);
@@ -3487,6 +3662,9 @@ init_port_dcb_config(portid_t pid,
 	map_port_queue_stats_mapping_registers(pid, rte_port);
 
 	rte_port->dcb_flag = 1;
+
+	/* Enter DCB configuration status */
+	dcb_config = 1;
 
 	return 0;
 }
