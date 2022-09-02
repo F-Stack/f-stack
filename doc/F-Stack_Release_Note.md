@@ -2,6 +2,64 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2022.09 F-Stack v1.22
+
+  1. Freebsd
+
+- Upgrade to FreeBSD-releng-13.0,  support RACK and BBR.
+
+  1. F-Stack lib:
+
+  - Support extra tcp stacks, RACK and BBR. Significantly improves the performance of large file transfer(more than 10 times) in high latency and packet loss scenarios. Thanks @FireAngell.
+  - F-Stack support HPTS for RACK and BBR.
+  - lo port is added 127.0.0.1 when freebsd init.
+  - Fix #643. Fix a VXLAN issue. Thanks @agerguo
+  - FF_USE_PAGE_ARRAY compatible DPDK 19.11.
+  - Optimize random function in ff_compat.c @dingyuan
+  - Enable net.inet.tcp.delayed_ack by default to improve concurrent performance.
+  - Support zero copy while call `ff_write`, disable by default.
+  - Fix the bonding issue. @Lorisy @agerguo
+  - Fix the issue that `ff_netstat -r` can't show gateway6.
+  - Fix compile error of micro_thread with gcc 8.3. @Xin Wang
+  - to avoid compiling errors when gcc version >= 10. @ZZMarquis
+  - Support FDIR. @hawkxiang
+  - fix use after free issue in mbuf free. @Jianfeng Tan
+  - Fix #568, Insufficient condition in ff_rte_frm_extcl function. @freak82
+  - Add IPv6 net addr parameters in config. @zengyi1001
+  - Add ff_regist_pcblddr_fun to regist a pcb lddr function in F-Stack to select source IP when as client.
+  - modify struct linux_sockaddr same to struct sockaddr in linux.
+  - Support IPPROTO_IPV6's `IPV6_V6ONLY` and `IPV6_RECVPKTINFO`. @hawkxiang
+  - Support set multi virtual IPv4/IPv6 net addrs in config.ini.
+  - Add support for multiple pci_whitelist in config.ini. @ibtisam-tariq
+  - Add support to set interface name of each port in config.ini. @ibtisam-tariq
+  - ff_syscall_wrapper.c: add linux_cmsghdr and its support in recvmsg add support for `IP_RECVTTL` and `IP_RECVTOS`. @FidaullahNoonari-emumba
+  - Added F-Stack FreeBSD 13.0 support. @guhaoyu2005
+  - Add IP_MINTTL flag in ff_syscall_wrapper.c. @FidaullahNoonari-emumba
+  - alows user to set dpdk log level from config.ini file. @Jawad-Hussain-23
+  - Fix ff_syscall_wrapper.c: in ff_recvfrom() in case of zero *fromlen, *from will not be filled with garbadge values. @Sarosh Arif
+
+  2. DPDK:
+
+  - Upgrade to DPDK-20.11.6(LTS).
+  - MLX5: modify if_indextoname syscall to support F-Stack tools.
+
+3. ff tools
+
+- Fix bug of ff_ipc_msg_free in ff tools.
+- The ff_traffic and ff_top's -P argument support bigger than 38.
+
+4. APP
+
+- Redis: Upgrade to Redis-6.2.6. @GlareR
+
+5. examples
+
+- Enable INET6 by default in helloworld.
+
+
+
+
+
 2022.09 F-Stack v1.21.2(LTS)
 
  1. F-Stack lib:
