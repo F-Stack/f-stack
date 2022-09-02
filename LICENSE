@@ -18,7 +18,8 @@ inih(https://github.com/benhoyt/inih).
 
 1.DPDK
 
-BSD 3-Clause, Copyright(c) 2010-2017 Intel Corporation.All rights reserved.
+The DPDK uses the Open Source BSD-3-Clause license for the core libraries and
+drivers. The kernel components are naturally GPL-2.0 licensed.
 
 2.FreeBSD
 
