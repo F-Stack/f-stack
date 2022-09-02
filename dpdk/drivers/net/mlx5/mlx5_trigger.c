@@ -13,6 +13,7 @@
 #include <mlx5_malloc.h>
 
 #include "mlx5.h"
+#include "mlx5_flow.h"
 #include "mlx5_mr.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
@@ -155,12 +156,29 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 				mlx5_mr_update_mp(dev, &rxq_ctrl->rxq.mr_ctrl,
 						  rxq_ctrl->rxq.mprq_mp);
 			} else {
+				struct rte_mempool *mp;
+				uint32_t flags;
 				uint32_t s;
 
-				for (s = 0; s < rxq_ctrl->rxq.rxseg_n; s++)
+				/*
+				 * The pinned external buffer should be
+				 * registered for DMA operations by application.
+				 * The mem_list of the pool contains
+				 * the list of chunks with mbuf structures
+				 * w/o built-in data buffers
+				 * and DMA actually does not happen there,
+				 * no need to create MR for these chunks.
+				 */
+				for (s = 0; s < rxq_ctrl->rxq.rxseg_n; s++) {
+					mp = rxq_ctrl->rxq.rxseg[s].mp;
+					flags = rte_pktmbuf_priv_flags(mp);
+					if (flags &
+					    RTE_PKTMBUF_POOL_F_PINNED_EXT_BUF)
+						continue;
 					mlx5_mr_update_mp
 						(dev, &rxq_ctrl->rxq.mr_ctrl,
-						rxq_ctrl->rxq.rxseg[s].mp);
+						 mp);
+				}
 			}
 			ret = rxq_alloc_elts(rxq_ctrl);
 			if (ret)
@@ -180,6 +198,7 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 		ret = priv->obj_ops.rxq_obj_new(dev, i);
 		if (ret) {
 			mlx5_free(rxq_ctrl->obj);
+			rxq_ctrl->obj = NULL;
 			goto error;
 		}
 		DRV_LOG(DEBUG, "Port %u rxq %u updated with %p.",
@@ -226,12 +245,11 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (!txq_ctrl)
 			continue;
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN ||
+		    txq_ctrl->hairpin_conf.peers[0].port != self_port) {
 			mlx5_txq_release(dev, i);
 			continue;
 		}
-		if (txq_ctrl->hairpin_conf.peers[0].port != self_port)
-			continue;
 		if (txq_ctrl->hairpin_conf.manual_bind) {
 			mlx5_txq_release(dev, i);
 			return 0;
@@ -245,13 +263,12 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (!txq_ctrl)
 			continue;
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		/* Skip hairpin queues with other peer ports. */
+		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN ||
+		    txq_ctrl->hairpin_conf.peers[0].port != self_port) {
 			mlx5_txq_release(dev, i);
 			continue;
 		}
-		/* Skip hairpin queues with other peer ports. */
-		if (txq_ctrl->hairpin_conf.peers[0].port != self_port)
-			continue;
 		if (!txq_ctrl->obj) {
 			rte_errno = ENOMEM;
 			DRV_LOG(ERR, "port %u no txq object found: %d",
@@ -813,7 +830,7 @@ error:
 
 /*
  * Unbind the hairpin port pair, HW configuration of both devices will be clear
- * and status will be reset for all the queues used between the them.
+ * and status will be reset for all the queues used between them.
  * This function only supports to unbind the Tx from one Rx.
  *
  * @param dev
@@ -1066,6 +1083,12 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 			dev->data->port_id, strerror(rte_errno));
 		goto error;
 	}
+	if ((priv->config.devx && priv->config.dv_flow_en &&
+	    priv->config.dest_tir) && priv->obj_ops.lb_dummy_queue_create) {
+		ret = priv->obj_ops.lb_dummy_queue_create(dev);
+		if (ret)
+			goto error;
+	}
 	ret = mlx5_txq_start(dev);
 	if (ret) {
 		DRV_LOG(ERR, "port %u Tx queue allocation failed: %s",
@@ -1129,10 +1152,17 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 		priv->sh->port[priv->dev_port - 1].ih_port_id =
 					(uint32_t)dev->data->port_id;
 	} else {
-		DRV_LOG(INFO, "port %u starts without LSC and RMV interrupts.",
+		DRV_LOG(INFO, "port %u starts without RMV interrupts.",
+			dev->data->port_id);
+		dev->data->dev_conf.intr_conf.rmv = 0;
+	}
+	if (priv->sh->intr_handle_nl.fd >= 0) {
+		priv->sh->port[priv->dev_port - 1].nl_ih_port_id =
+					(uint32_t)dev->data->port_id;
+	} else {
+		DRV_LOG(INFO, "port %u starts without LSC interrupts.",
 			dev->data->port_id);
 		dev->data->dev_conf.intr_conf.lsc = 0;
-		dev->data->dev_conf.intr_conf.rmv = 0;
 	}
 	if (priv->sh->intr_handle_devx.fd >= 0)
 		priv->sh->port[priv->dev_port - 1].devx_ih_port_id =
@@ -1146,6 +1176,8 @@ error:
 	mlx5_traffic_disable(dev);
 	mlx5_txq_stop(dev);
 	mlx5_rxq_stop(dev);
+	if (priv->obj_ops.lb_dummy_queue_release)
+		priv->obj_ops.lb_dummy_queue_release(dev);
 	mlx5_txpp_stop(dev); /* Stop last. */
 	rte_errno = ret; /* Restore rte_errno. */
 	return -rte_errno;
@@ -1178,11 +1210,15 @@ mlx5_dev_stop(struct rte_eth_dev *dev)
 	mlx5_traffic_disable(dev);
 	/* All RX queue flags will be cleared in the flush interface. */
 	mlx5_flow_list_flush(dev, &priv->flows, true);
+	mlx5_shared_action_flush(dev);
 	mlx5_rx_intr_vec_disable(dev);
 	priv->sh->port[priv->dev_port - 1].ih_port_id = RTE_MAX_ETHPORTS;
 	priv->sh->port[priv->dev_port - 1].devx_ih_port_id = RTE_MAX_ETHPORTS;
+	priv->sh->port[priv->dev_port - 1].nl_ih_port_id = RTE_MAX_ETHPORTS;
 	mlx5_txq_stop(dev);
 	mlx5_rxq_stop(dev);
+	if (priv->obj_ops.lb_dummy_queue_release)
+		priv->obj_ops.lb_dummy_queue_release(dev);
 	mlx5_txpp_stop(dev);
 
 	return 0;

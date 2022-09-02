@@ -49,6 +49,9 @@
 #include <process.h>
 #include <fmlib/fm_ext.h>
 
+#define CHECK_INTERVAL         100  /* 100ms */
+#define MAX_REPEAT_TIME        90   /* 9s (90 * 100ms) in total */
+
 /* Supported Rx offloads */
 static uint64_t dev_rx_offloads_sup =
 		DEV_RX_OFFLOAD_JUMBO_FRAME |
@@ -184,7 +187,7 @@ dpaa_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > DPAA_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads |=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -535,9 +538,11 @@ dpaa_fw_version_get(struct rte_eth_dev *dev __rte_unused,
 
 	ret = snprintf(fw_version, fw_size, "SVR:%x-fman-v%x",
 		       svr_ver, fman_ip_rev);
-	ret += 1; /* add the size of '\0' */
+	if (ret < 0)
+		return -EINVAL;
 
-	if (fw_size < (uint32_t)ret)
+	ret += 1; /* add the size of '\0' */
+	if (fw_size < (size_t)ret)
 		return ret;
 	else
 		return 0;
@@ -669,23 +674,30 @@ dpaa_dev_tx_burst_mode_get(struct rte_eth_dev *dev,
 }
 
 static int dpaa_eth_link_update(struct rte_eth_dev *dev,
-				int wait_to_complete __rte_unused)
+				int wait_to_complete)
 {
 	struct dpaa_if *dpaa_intf = dev->data->dev_private;
 	struct rte_eth_link *link = &dev->data->dev_link;
 	struct fman_if *fif = dev->process_private;
 	struct __fman_if *__fif = container_of(fif, struct __fman_if, __if);
 	int ret, ioctl_version;
+	uint8_t count;
 
 	PMD_INIT_FUNC_TRACE();
 
 	ioctl_version = dpaa_get_ioctl_version_number();
 
-
 	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC) {
-		ret = dpaa_get_link_status(__fif->node_name, link);
-		if (ret)
-			return ret;
+		for (count = 0; count <= MAX_REPEAT_TIME; count++) {
+			ret = dpaa_get_link_status(__fif->node_name, link);
+			if (ret)
+				return ret;
+			if (link->link_status == ETH_LINK_DOWN &&
+			    wait_to_complete)
+				rte_delay_ms(CHECK_INTERVAL);
+			else
+				break;
+		}
 	} else {
 		link->link_status = dpaa_intf->valid;
 	}
@@ -1036,7 +1048,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 				   QM_FQCTRL_CTXASTASHING |
 				   QM_FQCTRL_PREFERINCACHE;
 		opts.fqd.context_a.stashing.exclusive = 0;
-		/* In muticore scenario stashing becomes a bottleneck on LS1046.
+		/* In multicore scenario stashing becomes a bottleneck on LS1046.
 		 * So do not enable stashing in this case
 		 */
 		if (dpaa_svr_family != SVR_LS1046A_FAMILY)
@@ -1195,23 +1207,17 @@ int
 dpaa_eth_eventq_detach(const struct rte_eth_dev *dev,
 		int eth_rx_queue_id)
 {
-	struct qm_mcc_initfq opts;
+	struct qm_mcc_initfq opts = {0};
 	int ret;
 	u32 flags = 0;
 	struct dpaa_if *dpaa_intf = dev->data->dev_private;
 	struct qman_fq *rxq = &dpaa_intf->rx_queues[eth_rx_queue_id];
 
-	dpaa_poll_queue_default_config(&opts);
-
-	if (dpaa_intf->cgr_rx) {
-		opts.we_mask |= QM_INITFQ_WE_CGID;
-		opts.fqd.cgid = dpaa_intf->cgr_rx[eth_rx_queue_id].cgrid;
-		opts.fqd.fq_ctrl |= QM_FQCTRL_CGE;
-	}
-
+	qman_retire_fq(rxq, NULL);
+	qman_oos_fq(rxq);
 	ret = qman_init_fq(rxq, flags, &opts);
 	if (ret) {
-		DPAA_PMD_ERR("init rx fqid %d failed with ret: %d",
+		DPAA_PMD_ERR("detach rx fqid %d failed with ret: %d",
 			     rxq->fqid, ret);
 	}
 
@@ -1867,7 +1873,7 @@ dpaa_dev_init(struct rte_eth_dev *eth_dev)
 
 	dpaa_intf->name = dpaa_device->name;
 
-	/* save fman_if & cfg in the interface struture */
+	/* save fman_if & cfg in the interface structure */
 	eth_dev->process_private = fman_intf;
 	dpaa_intf->ifid = dev_id;
 	dpaa_intf->cfg = cfg;
@@ -2176,7 +2182,7 @@ rte_dpaa_probe(struct rte_dpaa_driver *dpaa_drv,
 		if (dpaa_svr_family == SVR_LS1043A_FAMILY)
 			dpaa_push_mode_max_queue = 0;
 
-		/* if push mode queues to be enabled. Currenly we are allowing
+		/* if push mode queues to be enabled. Currently we are allowing
 		 * only one queue per thread.
 		 */
 		if (getenv("DPAA_PUSH_QUEUES_NUMBER")) {
@@ -2218,8 +2224,6 @@ rte_dpaa_probe(struct rte_dpaa_driver *dpaa_drv,
 
 	if (dpaa_drv->drv_flags & RTE_DPAA_DRV_INTR_LSC)
 		eth_dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC;
-
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* Invoke PMD device initialization function */
 	diag = dpaa_dev_init(eth_dev);

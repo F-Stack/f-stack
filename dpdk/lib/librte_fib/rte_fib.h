@@ -19,6 +19,8 @@
  * for IPv4 Longest Prefix Match
  */
 
+#include <stdint.h>
+
 #include <rte_compat.h>
 
 #ifdef __cplusplus
@@ -195,7 +197,7 @@ rte_fib_lookup_bulk(struct rte_fib *fib, uint32_t *ips,
  *   FIB object handle
  * @return
  *   Pointer on the dataplane struct on success
- *   NULL othervise
+ *   NULL otherwise
  */
 __rte_experimental
 void *
@@ -208,7 +210,7 @@ rte_fib_get_dp(struct rte_fib *fib);
  *   FIB object handle
  * @return
  *   Pointer on the RIB on success
- *   NULL othervise
+ *   NULL otherwise
  */
 __rte_experimental
 struct rte_rib *

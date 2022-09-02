@@ -1809,7 +1809,8 @@ static u32 qed_grc_dump_addr_range(struct ecore_hwfn *p_hwfn,
 				   u8 split_id)
 {
 	struct dbg_tools_data *dev_data = &p_hwfn->dbg_info;
-	u8 port_id = 0, pf_id = 0, vf_id = 0, fid = 0;
+	u8 port_id = 0, pf_id = 0;
+	u16 vf_id = 0, fid = 0;
 	bool read_using_dmae = false;
 	u32 thresh;
 
@@ -3522,7 +3523,7 @@ static enum dbg_status qed_grc_dump(struct ecore_hwfn *p_hwfn,
 
 	/* Dump MCP HW Dump */
 	if (qed_grc_is_included(p_hwfn, DBG_GRC_PARAM_DUMP_MCP_HW_DUMP) &&
-	    !qed_grc_get_param(p_hwfn, DBG_GRC_PARAM_NO_MCP) && 1)
+	    !qed_grc_get_param(p_hwfn, DBG_GRC_PARAM_NO_MCP))
 		offset += qed_grc_dump_mcp_hw_dump(p_hwfn,
 						   p_ptt,
 						   dump_buf + offset, dump);
@@ -5983,7 +5984,7 @@ static char *qed_get_buf_ptr(void *buf, u32 offset)
 /* Reads a param from the specified buffer. Returns the number of dwords read.
  * If the returned str_param is NULL, the param is numeric and its value is
  * returned in num_param.
- * Otheriwise, the param is a string and its pointer is returned in str_param.
+ * Otherwise, the param is a string and its pointer is returned in str_param.
  */
 static u32 qed_read_param(u32 *dump_buf,
 			  const char **param_name,
@@ -7558,7 +7559,7 @@ static enum dbg_status format_feature(struct ecore_hwfn *p_hwfn,
 		text_buf[i] = '\n';
 
 
-	/* Free the old dump_buf and point the dump_buf to the newly allocagted
+	/* Free the old dump_buf and point the dump_buf to the newly allocated
 	 * and formatted text buffer.
 	 */
 	OSAL_VFREE(p_hwfn, feature->dump_buf);

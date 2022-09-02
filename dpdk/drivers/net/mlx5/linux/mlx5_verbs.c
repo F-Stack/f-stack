@@ -134,7 +134,6 @@ mlx5_ibv_modify_qp(struct mlx5_txq_obj *obj, enum mlx5_txq_modify_type type,
 		.qp_state = IBV_QPS_RESET,
 		.port_num = dev_port,
 	};
-	int attr_mask = (IBV_QP_STATE | IBV_QP_PORT);
 	int ret;
 
 	if (type != MLX5_TXQ_MOD_RST2RDY) {
@@ -148,10 +147,8 @@ mlx5_ibv_modify_qp(struct mlx5_txq_obj *obj, enum mlx5_txq_modify_type type,
 		if (type == MLX5_TXQ_MOD_RDY2RST)
 			return 0;
 	}
-	if (type == MLX5_TXQ_MOD_ERR2RDY)
-		attr_mask = IBV_QP_STATE;
 	mod.qp_state = IBV_QPS_INIT;
-	ret = mlx5_glue->modify_qp(obj->qp, &mod, attr_mask);
+	ret = mlx5_glue->modify_qp(obj->qp, &mod, IBV_QP_STATE | IBV_QP_PORT);
 	if (ret) {
 		DRV_LOG(ERR, "Cannot change Tx QP state to INIT %s",
 			strerror(errno));
@@ -213,13 +210,22 @@ mlx5_rxq_ibv_cq_create(struct rte_eth_dev *dev, uint16_t idx)
 	if (priv->config.cqe_comp && !rxq_data->hw_timestamp) {
 		cq_attr.mlx5.comp_mask |=
 				MLX5DV_CQ_INIT_ATTR_MASK_COMPRESSED_CQE;
+		rxq_data->byte_mask = UINT32_MAX;
 #ifdef HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT
-		cq_attr.mlx5.cqe_comp_res_format =
-				mlx5_rxq_mprq_enabled(rxq_data) ?
-				MLX5DV_CQE_RES_FORMAT_CSUM_STRIDX :
-				MLX5DV_CQE_RES_FORMAT_HASH;
+		if (mlx5_rxq_mprq_enabled(rxq_data)) {
+			cq_attr.mlx5.cqe_comp_res_format =
+					MLX5DV_CQE_RES_FORMAT_CSUM_STRIDX;
+			rxq_data->mcqe_format =
+					MLX5_CQE_RESP_FORMAT_CSUM_STRIDX;
+		} else {
+			cq_attr.mlx5.cqe_comp_res_format =
+					MLX5DV_CQE_RES_FORMAT_HASH;
+			rxq_data->mcqe_format =
+					MLX5_CQE_RESP_FORMAT_HASH;
+		}
 #else
 		cq_attr.mlx5.cqe_comp_res_format = MLX5DV_CQE_RES_FORMAT_HASH;
+		rxq_data->mcqe_format = MLX5_CQE_RESP_FORMAT_HASH;
 #endif
 		/*
 		 * For vectorized Rx, it must not be doubled in order to
@@ -234,7 +240,7 @@ mlx5_rxq_ibv_cq_create(struct rte_eth_dev *dev, uint16_t idx)
 			dev->data->port_id);
 	}
 #ifdef HAVE_IBV_MLX5_MOD_CQE_128B_PAD
-	if (priv->config.cqe_pad) {
+	if (RTE_CACHE_LINE_SIZE == 128) {
 		cq_attr.mlx5.comp_mask |= MLX5DV_CQ_INIT_ATTR_MASK_FLAGS;
 		cq_attr.mlx5.flags |= MLX5DV_CQ_INIT_ATTR_FLAGS_CQE_PAD;
 	}
@@ -308,8 +314,8 @@ mlx5_rxq_ibv_wq_create(struct rte_eth_dev *dev, uint16_t idx)
 
 		wq_attr.mlx5.comp_mask |= MLX5DV_WQ_INIT_ATTR_MASK_STRIDING_RQ;
 		*mprq_attr = (struct mlx5dv_striding_rq_init_attr){
-			.single_stride_log_num_of_bytes = rxq_data->strd_sz_n,
-			.single_wqe_log_num_of_strides = rxq_data->strd_num_n,
+			.single_stride_log_num_of_bytes = rxq_data->log_strd_sz,
+			.single_wqe_log_num_of_strides = rxq_data->log_strd_num,
 			.two_byte_shift_en = MLX5_MPRQ_TWO_BYTE_SHIFT,
 		};
 	}
@@ -366,8 +372,6 @@ mlx5_rxq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 
 	MLX5_ASSERT(rxq_data);
 	MLX5_ASSERT(tmpl);
-	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_RX_QUEUE;
-	priv->verbs_alloc_ctx.obj = rxq_ctrl;
 	tmpl->rxq_ctrl = rxq_ctrl;
 	if (rxq_ctrl->irq) {
 		tmpl->ibv_channel =
@@ -438,7 +442,6 @@ mlx5_rxq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	rxq_data->cq_arm_sn = 0;
 	mlx5_rxq_initialize(rxq_data);
 	rxq_data->cq_ci = 0;
-	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	dev->data->rx_queue_state[idx] = RTE_ETH_QUEUE_STATE_STARTED;
 	rxq_ctrl->wqn = ((struct ibv_wq *)(tmpl->wq))->wq_num;
 	return 0;
@@ -451,7 +454,6 @@ error:
 	if (tmpl->ibv_channel)
 		claim_zero(mlx5_glue->destroy_comp_channel(tmpl->ibv_channel));
 	rte_errno = ret; /* Restore rte_errno. */
-	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	return -rte_errno;
 }
 
@@ -932,8 +934,6 @@ mlx5_txq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	MLX5_ASSERT(txq_data);
 	MLX5_ASSERT(txq_obj);
 	txq_obj->txq_ctrl = txq_ctrl;
-	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_TX_QUEUE;
-	priv->verbs_alloc_ctx.obj = txq_ctrl;
 	if (mlx5_getenv_int("MLX5_ENABLE_CQE_COMPRESSION")) {
 		DRV_LOG(ERR, "Port %u MLX5_ENABLE_CQE_COMPRESSION "
 			"must never be set.", dev->data->port_id);
@@ -1024,22 +1024,19 @@ mlx5_txq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 		}
 	}
 #endif
-	txq_ctrl->bf_reg = qp.bf.reg;
 	if (qp.comp_mask & MLX5DV_QP_MASK_UAR_MMAP_OFFSET) {
 		txq_ctrl->uar_mmap_offset = qp.uar_mmap_offset;
 		DRV_LOG(DEBUG, "Port %u: uar_mmap_offset 0x%" PRIx64 ".",
 			dev->data->port_id, txq_ctrl->uar_mmap_offset);
 	} else {
 		DRV_LOG(ERR,
-			"Port %u failed to retrieve UAR info, invalid"
-			" libmlx5.so",
+			"Port %u failed to retrieve UAR info, invalid libmlx5.so",
 			dev->data->port_id);
 		rte_errno = EINVAL;
 		goto error;
 	}
-	txq_uar_init(txq_ctrl);
+	txq_uar_init(txq_ctrl, qp.bf.reg);
 	dev->data->tx_queue_state[idx] = RTE_ETH_QUEUE_STATE_STARTED;
-	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	return 0;
 error:
 	ret = rte_errno; /* Save rte_errno before cleanup. */
@@ -1047,9 +1044,127 @@ error:
 		claim_zero(mlx5_glue->destroy_cq(txq_obj->cq));
 	if (txq_obj->qp)
 		claim_zero(mlx5_glue->destroy_qp(txq_obj->qp));
-	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	rte_errno = ret; /* Restore rte_errno. */
 	return -rte_errno;
+}
+
+/*
+ * Create the dummy QP with minimal resources for loopback.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_rxq_ibv_obj_dummy_lb_create(struct rte_eth_dev *dev)
+{
+#if defined(HAVE_IBV_DEVICE_TUNNEL_SUPPORT) && defined(HAVE_IBV_FLOW_DV_SUPPORT)
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_dev_ctx_shared *sh = priv->sh;
+	struct ibv_context *ctx = sh->ctx;
+	struct mlx5dv_qp_init_attr qp_init_attr = {0};
+	struct {
+		struct ibv_cq_init_attr_ex ibv;
+		struct mlx5dv_cq_init_attr mlx5;
+	} cq_attr = {{0}};
+
+	if (dev->data->dev_conf.lpbk_mode) {
+		/* Allow packet sent from NIC loop back w/o source MAC check. */
+		qp_init_attr.comp_mask |=
+				MLX5DV_QP_INIT_ATTR_MASK_QP_CREATE_FLAGS;
+		qp_init_attr.create_flags |=
+				MLX5DV_QP_CREATE_TIR_ALLOW_SELF_LOOPBACK_UC;
+	} else {
+		return 0;
+	}
+	/* Only need to check refcnt, 0 after "sh" is allocated. */
+	if (!!(__atomic_fetch_add(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED))) {
+		MLX5_ASSERT(sh->self_lb.ibv_cq && sh->self_lb.qp);
+		priv->lb_used = 1;
+		return 0;
+	}
+	cq_attr.ibv = (struct ibv_cq_init_attr_ex){
+		.cqe = 1,
+		.channel = NULL,
+		.comp_mask = 0,
+	};
+	cq_attr.mlx5 = (struct mlx5dv_cq_init_attr){
+		.comp_mask = 0,
+	};
+	/* Only CQ is needed, no WQ(RQ) is required in this case. */
+	sh->self_lb.ibv_cq = mlx5_glue->cq_ex_to_cq(mlx5_glue->dv_create_cq(ctx,
+							&cq_attr.ibv,
+							&cq_attr.mlx5));
+	if (!sh->self_lb.ibv_cq) {
+		DRV_LOG(ERR, "Port %u cannot allocate CQ for loopback.",
+			dev->data->port_id);
+		rte_errno = errno;
+		goto error;
+	}
+	sh->self_lb.qp = mlx5_glue->dv_create_qp(ctx,
+				&(struct ibv_qp_init_attr_ex){
+					.qp_type = IBV_QPT_RAW_PACKET,
+					.comp_mask = IBV_QP_INIT_ATTR_PD,
+					.pd = sh->pd,
+					.send_cq = sh->self_lb.ibv_cq,
+					.recv_cq = sh->self_lb.ibv_cq,
+					.cap.max_recv_wr = 1,
+				},
+				&qp_init_attr);
+	if (!sh->self_lb.qp) {
+		DRV_LOG(DEBUG, "Port %u cannot allocate QP for loopback.",
+			dev->data->port_id);
+		rte_errno = errno;
+		goto error;
+	}
+	priv->lb_used = 1;
+	return 0;
+error:
+	if (sh->self_lb.ibv_cq) {
+		claim_zero(mlx5_glue->destroy_cq(sh->self_lb.ibv_cq));
+		sh->self_lb.ibv_cq = NULL;
+	}
+	(void)__atomic_sub_fetch(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED);
+	return -rte_errno;
+#else
+	RTE_SET_USED(dev);
+	return 0;
+#endif
+}
+
+/*
+ * Release the dummy queue resources for loopback.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_rxq_ibv_obj_dummy_lb_release(struct rte_eth_dev *dev)
+{
+#if defined(HAVE_IBV_DEVICE_TUNNEL_SUPPORT) && defined(HAVE_IBV_FLOW_DV_SUPPORT)
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_dev_ctx_shared *sh = priv->sh;
+
+	if (!priv->lb_used)
+		return;
+	MLX5_ASSERT(__atomic_load_n(&sh->self_lb.refcnt, __ATOMIC_RELAXED));
+	if (!(__atomic_sub_fetch(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED))) {
+		if (sh->self_lb.qp) {
+			claim_zero(mlx5_glue->destroy_qp(sh->self_lb.qp));
+			sh->self_lb.qp = NULL;
+		}
+		if (sh->self_lb.ibv_cq) {
+			claim_zero(mlx5_glue->destroy_cq(sh->self_lb.ibv_cq));
+			sh->self_lb.ibv_cq = NULL;
+		}
+	}
+	priv->lb_used = 0;
+#else
+	RTE_SET_USED(dev);
+	return;
+#endif
 }
 
 /**
@@ -1081,4 +1196,6 @@ struct mlx5_obj_ops ibv_obj_ops = {
 	.txq_obj_new = mlx5_txq_ibv_obj_new,
 	.txq_obj_modify = mlx5_ibv_modify_qp,
 	.txq_obj_release = mlx5_txq_ibv_obj_release,
+	.lb_dummy_queue_create = NULL,
+	.lb_dummy_queue_release = NULL,
 };

@@ -276,6 +276,7 @@ virtio_user_dev_init_notify(struct virtio_user_dev *dev)
 		}
 		kickfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 		if (kickfd < 0) {
+			close(callfd);
 			PMD_DRV_LOG(ERR, "kickfd error, %s", strerror(errno));
 			break;
 		}
@@ -284,7 +285,7 @@ virtio_user_dev_init_notify(struct virtio_user_dev *dev)
 	}
 
 	if (i < VIRTIO_MAX_VIRTQUEUES) {
-		for (j = 0; j <= i; ++j) {
+		for (j = 0; j < i; ++j) {
 			close(dev->callfds[j]);
 			close(dev->kickfds[j]);
 		}
@@ -311,7 +312,7 @@ virtio_user_fill_intr_handle(struct virtio_user_dev *dev)
 	}
 
 	for (i = 0; i < dev->max_queue_pairs; ++i)
-		eth_dev->intr_handle->efds[i] = dev->callfds[i];
+		eth_dev->intr_handle->efds[i] = dev->callfds[2 * i];
 	eth_dev->intr_handle->nb_efd = dev->max_queue_pairs;
 	eth_dev->intr_handle->max_intr = dev->max_queue_pairs + 1;
 	eth_dev->intr_handle->type = RTE_INTR_HANDLE_VDEV;
@@ -439,11 +440,14 @@ virtio_user_dev_setup(struct virtio_user_dev *dev)
 	 1ULL << VIRTIO_F_RING_PACKED		|	\
 	 1ULL << VHOST_USER_F_PROTOCOL_FEATURES)
 
-#define VIRTIO_USER_SUPPORTED_PROTOCOL_FEATURES		\
+#define VHOST_USER_SUPPORTED_PROTOCOL_FEATURES		\
 	(1ULL << VHOST_USER_PROTOCOL_F_MQ |		\
 	 1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK |	\
 	 1ULL << VHOST_USER_PROTOCOL_F_STATUS)
 
+#define VHOST_VDPA_SUPPORTED_PROTOCOL_FEATURES		\
+	(1ULL << VHOST_BACKEND_F_IOTLB_MSG_V2	|	\
+	1ULL << VHOST_BACKEND_F_IOTLB_BATCH)
 int
 virtio_user_dev_init(struct virtio_user_dev *dev, char *path, int queues,
 		     int cq, int queue_size, const char *mac, char **ifname,
@@ -462,8 +466,12 @@ virtio_user_dev_init(struct virtio_user_dev *dev, char *path, int queues,
 	dev->mac_specified = 0;
 	dev->frontend_features = 0;
 	dev->unsupported_features = ~VIRTIO_USER_SUPPORTED_FEATURES;
-	dev->protocol_features = VIRTIO_USER_SUPPORTED_PROTOCOL_FEATURES;
 	dev->backend_type = backend_type;
+
+	if (dev->backend_type == VIRTIO_USER_BACKEND_VHOST_USER)
+		dev->protocol_features = VHOST_USER_SUPPORTED_PROTOCOL_FEATURES;
+	else if (dev->backend_type == VIRTIO_USER_BACKEND_VHOST_VDPA)
+		dev->protocol_features = VHOST_VDPA_SUPPORTED_PROTOCOL_FEATURES;
 
 	parse_mac(dev, mac);
 
@@ -497,8 +505,8 @@ virtio_user_dev_init(struct virtio_user_dev *dev, char *path, int queues,
 		}
 
 
-		if (dev->device_features &
-				(1ULL << VHOST_USER_F_PROTOCOL_FEATURES)) {
+		if ((dev->device_features & (1ULL << VHOST_USER_F_PROTOCOL_FEATURES)) ||
+				(dev->backend_type == VIRTIO_USER_BACKEND_VHOST_VDPA)) {
 			if (dev->ops->send_request(dev,
 					VHOST_USER_GET_PROTOCOL_FEATURES,
 					&protocol_features))
@@ -591,6 +599,12 @@ void
 virtio_user_dev_uninit(struct virtio_user_dev *dev)
 {
 	uint32_t i;
+	struct rte_eth_dev *eth_dev = &rte_eth_devices[dev->port_id];
+
+	if (eth_dev->intr_handle) {
+		free(eth_dev->intr_handle);
+		eth_dev->intr_handle = NULL;
+	}
 
 	virtio_user_stop_device(dev);
 

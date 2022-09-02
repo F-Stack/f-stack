@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #ifndef _HNS3_RXTX_H_
@@ -20,7 +20,7 @@
 #define HNS3_DEFAULT_TX_RS_THRESH	32
 #define HNS3_TX_FAST_FREE_AHEAD		64
 
-#define HNS3_DEFAULT_RX_BURST		32
+#define HNS3_DEFAULT_RX_BURST		64
 #if (HNS3_DEFAULT_RX_BURST > 64)
 #error "PMD HNS3: HNS3_DEFAULT_RX_BURST must <= 64\n"
 #endif
@@ -102,9 +102,6 @@
 #define HNS3_RXD_LUM_B				9
 #define HNS3_RXD_CRCP_B				10
 #define HNS3_RXD_L3L4P_B			11
-#define HNS3_RXD_TSIND_S			12
-#define HNS3_RXD_TSIND_M			(0x7 << HNS3_RXD_TSIND_S)
-#define HNS3_RXD_LKBK_B				15
 #define HNS3_RXD_GRO_SIZE_S			16
 #define HNS3_RXD_GRO_SIZE_M			(0x3fff << HNS3_RXD_GRO_SIZE_S)
 
@@ -306,7 +303,7 @@ struct hns3_rx_queue {
 	 * should not be transitted to the upper-layer application. For hardware
 	 * network engine whose vlan mode is HNS3_HW_SHIFT_AND_DISCARD_MODE,
 	 * such as kunpeng 930, PVID will not be reported to the BDs. So, PMD
-	 * driver does not need to perform PVID-related operation in Rx. At this
+	 * does not need to perform PVID-related operation in Rx. At this
 	 * point, the pvid_sw_discard_en will be false.
 	 */
 	bool pvid_sw_discard_en;
@@ -388,6 +385,22 @@ struct hns3_tx_queue {
 	 */
 	uint8_t tso_mode;
 	/*
+	 * udp checksum mode.
+	 * value range:
+	 *      HNS3_SPECIAL_PORT_HW_CKSUM_MODE/HNS3_SPECIAL_PORT_SW_CKSUM_MODE
+	 *
+	 *  - HNS3_SPECIAL_PORT_SW_CKSUM_MODE
+	 *     In this mode, HW can not do checksum for special UDP port like
+	 *     4789, 4790, 6081 for non-tunnel UDP packets and UDP tunnel
+	 *     packets without the PKT_TX_TUNEL_MASK in the mbuf. So, PMD need
+	 *     do the checksum for these packets to avoid a checksum error.
+	 *
+	 *  - HNS3_SPECIAL_PORT_HW_CKSUM_MODE
+	 *     In this mode, HW does not have the preceding problems and can
+	 *     directly calculate the checksum of these UDP packets.
+	 */
+	uint8_t udp_cksum_mode;
+	/*
 	 * The minimum length of the packet supported by hardware in the Tx
 	 * direction.
 	 */
@@ -404,12 +417,14 @@ struct hns3_tx_queue {
 	 * PVID will overwrite the outer VLAN field of Tx BD. For the hardware
 	 * network engine whose vlan mode is HNS3_HW_SHIFT_AND_DISCARD_MODE,
 	 * such as kunpeng 930, if the PVID is set, the hardware will shift the
-	 * VLAN field automatically. So, PMD driver does not need to do
+	 * VLAN field automatically. So, PMD does not need to do
 	 * PVID-related operations in Tx. And pvid_sw_shift_en will be false at
 	 * this point.
 	 */
 	bool pvid_sw_shift_en;
 	bool enabled;           /* indicate if Tx queue has been enabled */
+	/* check whether the mbuf fast free offload is enabled */
+	uint16_t mbuf_fast_free_en:1;
 
 	/*
 	 * The following items are used for the abnormal errors statistics in
@@ -502,7 +517,7 @@ hns3_handle_bdinfo(struct hns3_rx_queue *rxq, struct rte_mbuf *rxm,
 
 	/*
 	 * If packet len bigger than mtu when recv with no-scattered algorithm,
-	 * the first n bd will without FE bit, we need process this sisution.
+	 * the first n bd will without FE bit, we need process this situation.
 	 * Note: we don't need add statistic counter because latest BD which
 	 *       with FE bit will mark HNS3_RXD_L2E_B bit.
 	 */
@@ -580,25 +595,21 @@ hns3_rx_calc_ptype(struct hns3_rx_queue *rxq, const uint32_t l234_info,
 		   const uint32_t ol_info)
 {
 	const struct hns3_ptype_table * const ptype_tbl = rxq->ptype_tbl;
-	uint32_t l2id, l3id, l4id;
-	uint32_t ol3id, ol4id, ol2id;
+	uint32_t ol3id, ol4id;
+	uint32_t l3id, l4id;
 
 	ol4id = hns3_get_field(ol_info, HNS3_RXD_OL4ID_M, HNS3_RXD_OL4ID_S);
 	ol3id = hns3_get_field(ol_info, HNS3_RXD_OL3ID_M, HNS3_RXD_OL3ID_S);
-	ol2id = hns3_get_field(ol_info, HNS3_RXD_OVLAN_M, HNS3_RXD_OVLAN_S);
-	l2id = hns3_get_field(l234_info, HNS3_RXD_VLAN_M, HNS3_RXD_VLAN_S);
 	l3id = hns3_get_field(l234_info, HNS3_RXD_L3ID_M, HNS3_RXD_L3ID_S);
 	l4id = hns3_get_field(l234_info, HNS3_RXD_L4ID_M, HNS3_RXD_L4ID_S);
 
 	if (unlikely(ptype_tbl->ol4table[ol4id]))
-		return ptype_tbl->inner_l2table[l2id] |
-			ptype_tbl->inner_l3table[l3id] |
+		return ptype_tbl->inner_l3table[l3id] |
 			ptype_tbl->inner_l4table[l4id] |
 			ptype_tbl->ol3table[ol3id] |
-			ptype_tbl->ol4table[ol4id] | ptype_tbl->ol2table[ol2id];
+			ptype_tbl->ol4table[ol4id];
 	else
-		return ptype_tbl->l2l3table[l2id][l3id] |
-			ptype_tbl->l4table[l4id];
+		return ptype_tbl->l3table[l3id] | ptype_tbl->l4table[l4id];
 }
 
 void hns3_dev_rx_queue_release(void *queue);
@@ -653,6 +664,7 @@ int hns3_tx_burst_mode_get(struct rte_eth_dev *dev,
 const uint32_t *hns3_dev_supported_ptypes_get(struct rte_eth_dev *dev);
 void hns3_init_rx_ptype_tble(struct rte_eth_dev *dev);
 void hns3_set_rxtx_function(struct rte_eth_dev *eth_dev);
+uint32_t hns3_get_tqp_intr_reg_offset(uint16_t tqp_intr_id);
 void hns3_set_queue_intr_gl(struct hns3_hw *hw, uint16_t queue_id,
 			    uint8_t gl_idx, uint16_t gl_value);
 void hns3_set_queue_intr_rl(struct hns3_hw *hw, uint16_t queue_id,

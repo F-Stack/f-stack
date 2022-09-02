@@ -624,7 +624,7 @@ print_usage(void)
 		"(if -f is not specified)>]\n"
 		"[-r <percentage ratio of random ip's to lookup"
 		"(if -t is not specified)>]\n"
-		"[-c <do comarison with LPM library>]\n"
+		"[-c <do comparison with LPM library>]\n"
 		"[-6 <do tests with ipv6 (default ipv4)>]\n"
 		"[-s <shuffle randomly generated routes>]\n"
 		"[-a <check nexthops for all ipv4 address space"
@@ -641,7 +641,7 @@ print_usage(void)
 		"[-g <number of tbl8's for dir24_8 or trie FIBs>]\n"
 		"[-w <path to the file to dump routing table>]\n"
 		"[-u <path to the file to dump ip's for lookup>]\n"
-		"[-v <type of loookup function:"
+		"[-v <type of lookup function:"
 		"\ts1, s2, s3 (3 types of scalar), v (vector) -"
 		" for DIR24_8 based FIB\n"
 		"\ts, v - for TRIE based ipv6 FIB>]\n",
@@ -711,6 +711,10 @@ parse_opts(int argc, char **argv)
 				print_usage();
 				rte_exit(-EINVAL, "Invalid option -n\n");
 			}
+
+			if (config.nb_routes < config.print_fract)
+				config.print_fract = config.nb_routes;
+
 			break;
 		case 'd':
 			distrib_string = optarg;
@@ -1240,6 +1244,10 @@ main(int argc, char **argv)
 		config.nb_routes = 0;
 		while (fgets(line, sizeof(line), fr) != NULL)
 			config.nb_routes++;
+
+		if (config.nb_routes < config.print_fract)
+			config.print_fract = config.nb_routes;
+
 		rewind(fr);
 	}
 

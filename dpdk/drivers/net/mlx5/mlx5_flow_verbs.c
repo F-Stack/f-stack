@@ -936,12 +936,47 @@ flow_verbs_item_gre_ip_protocol_update(struct ibv_flow_attr *attr,
 }
 
 /**
+ * Reserve space for GRE spec in spec buffer.
+ *
+ * @param[in,out] dev_flow
+ *   Pointer to dev_flow structure.
+ *
+ * @return
+ *   Pointer to reserved space in spec buffer.
+ */
+static uint8_t *
+flow_verbs_reserve_gre(struct mlx5_flow *dev_flow)
+{
+	uint8_t *buffer;
+	struct mlx5_flow_verbs_workspace *verbs = &dev_flow->verbs;
+#ifndef HAVE_IBV_DEVICE_MPLS_SUPPORT
+	unsigned int size = sizeof(struct ibv_flow_spec_tunnel);
+	struct ibv_flow_spec_tunnel tunnel = {
+		.type = IBV_FLOW_SPEC_VXLAN_TUNNEL,
+		.size = size,
+	};
+#else
+	unsigned int size = sizeof(struct ibv_flow_spec_gre);
+	struct ibv_flow_spec_gre tunnel = {
+		.type = IBV_FLOW_SPEC_GRE,
+		.size = size,
+	};
+#endif
+
+	buffer = verbs->specs + verbs->size;
+	flow_verbs_spec_add(verbs, &tunnel, size);
+	return buffer;
+}
+
+/**
  * Convert the @p item into a Verbs specification. This function assumes that
- * the input is valid and that there is space to insert the requested item
- * into the flow.
+ * the input is valid and that Verbs specification will be placed in
+ * the pre-reserved space.
  *
  * @param[in, out] dev_flow
  *   Pointer to dev_flow structure.
+ * @param[in, out] gre_spec
+ *   Pointer to space reserved for GRE spec.
  * @param[in] item
  *   Item specification.
  * @param[in] item_flags
@@ -949,6 +984,7 @@ flow_verbs_item_gre_ip_protocol_update(struct ibv_flow_attr *attr,
  */
 static void
 flow_verbs_translate_item_gre(struct mlx5_flow *dev_flow,
+			      uint8_t *gre_spec,
 			      const struct rte_flow_item *item __rte_unused,
 			      uint64_t item_flags)
 {
@@ -960,6 +996,7 @@ flow_verbs_translate_item_gre(struct mlx5_flow *dev_flow,
 		.size = size,
 	};
 #else
+	static const struct rte_flow_item_gre empty_gre = {0,};
 	const struct rte_flow_item_gre *spec = item->spec;
 	const struct rte_flow_item_gre *mask = item->mask;
 	unsigned int size = sizeof(struct ibv_flow_spec_gre);
@@ -968,17 +1005,29 @@ flow_verbs_translate_item_gre(struct mlx5_flow *dev_flow,
 		.size = size,
 	};
 
-	if (!mask)
-		mask = &rte_flow_item_gre_mask;
-	if (spec) {
-		tunnel.val.c_ks_res0_ver = spec->c_rsvd0_ver;
-		tunnel.val.protocol = spec->protocol;
-		tunnel.mask.c_ks_res0_ver = mask->c_rsvd0_ver;
-		tunnel.mask.protocol = mask->protocol;
-		/* Remove unwanted bits from values. */
-		tunnel.val.c_ks_res0_ver &= tunnel.mask.c_ks_res0_ver;
+	if (!spec) {
+		spec = &empty_gre;
+		mask = &empty_gre;
+	} else {
+		if (!mask)
+			mask = &rte_flow_item_gre_mask;
+	}
+	tunnel.val.c_ks_res0_ver = spec->c_rsvd0_ver;
+	tunnel.val.protocol = spec->protocol;
+	tunnel.mask.c_ks_res0_ver = mask->c_rsvd0_ver;
+	tunnel.mask.protocol = mask->protocol;
+	/* Remove unwanted bits from values. */
+	tunnel.val.c_ks_res0_ver &= tunnel.mask.c_ks_res0_ver;
+	tunnel.val.key &= tunnel.mask.key;
+	if (tunnel.mask.protocol) {
 		tunnel.val.protocol &= tunnel.mask.protocol;
-		tunnel.val.key &= tunnel.mask.key;
+	} else {
+		tunnel.val.protocol = mlx5_translate_tunnel_etypes(item_flags);
+		if (tunnel.val.protocol) {
+			tunnel.mask.protocol = 0xFFFF;
+			tunnel.val.protocol =
+				rte_cpu_to_be_16(tunnel.val.protocol);
+		}
 	}
 #endif
 	if (item_flags & MLX5_FLOW_LAYER_OUTER_L3_IPV4)
@@ -989,7 +1038,8 @@ flow_verbs_translate_item_gre(struct mlx5_flow *dev_flow,
 		flow_verbs_item_gre_ip_protocol_update(&verbs->attr,
 						       IBV_FLOW_SPEC_IPV6,
 						       IPPROTO_GRE);
-	flow_verbs_spec_add(verbs, &tunnel, size);
+	MLX5_ASSERT(gre_spec);
+	memcpy(gre_spec, &tunnel, size);
 }
 
 /**
@@ -1247,6 +1297,7 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 	uint64_t last_item = 0;
 	uint8_t next_protocol = 0xff;
 	uint16_t ether_type = 0;
+	bool is_empty_vlan = false;
 
 	if (items == NULL)
 		return -1;
@@ -1274,6 +1325,8 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 				ether_type &=
 					((const struct rte_flow_item_eth *)
 					 items->mask)->type;
+				if (ether_type == RTE_BE16(RTE_ETHER_TYPE_VLAN))
+					is_empty_vlan = true;
 				ether_type = rte_be_to_cpu_16(ether_type);
 			} else {
 				ether_type = 0;
@@ -1299,6 +1352,7 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 			} else {
 				ether_type = 0;
 			}
+			is_empty_vlan = false;
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
 			ret = mlx5_flow_validate_item_ipv4
@@ -1410,6 +1464,10 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 		}
 		item_flags |= last_item;
 	}
+	if (is_empty_vlan)
+		return rte_flow_error_set(error, ENOTSUP,
+						 RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+		    "VLAN matching without vid specification is not supported");
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
 		switch (actions->type) {
 		case RTE_FLOW_ACTION_TYPE_VOID:
@@ -1701,6 +1759,8 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_workspace *wks = mlx5_flow_get_thread_workspace();
 	struct mlx5_flow_rss_desc *rss_desc;
+	const struct rte_flow_item *tunnel_item = NULL;
+	uint8_t *gre_spec = NULL;
 
 	MLX5_ASSERT(wks);
 	rss_desc = &wks->rss_desc;
@@ -1715,12 +1775,12 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 		case RTE_FLOW_ACTION_TYPE_FLAG:
 			flow_verbs_translate_action_flag(dev_flow, actions);
 			action_flags |= MLX5_FLOW_ACTION_FLAG;
-			dev_flow->handle->mark = 1;
+			wks->mark = 1;
 			break;
 		case RTE_FLOW_ACTION_TYPE_MARK:
 			flow_verbs_translate_action_mark(dev_flow, actions);
 			action_flags |= MLX5_FLOW_ACTION_MARK;
-			dev_flow->handle->mark = 1;
+			wks->mark = 1;
 			break;
 		case RTE_FLOW_ACTION_TYPE_DROP:
 			flow_verbs_translate_action_drop(dev_flow, actions);
@@ -1803,8 +1863,9 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 			flow_verbs_translate_item_tcp(dev_flow, items,
 						      item_flags);
 			subpriority = MLX5_PRIORITY_MAP_L4;
-			dev_flow->hash_fields |=
-				mlx5_flow_hashfields_adjust
+			if (dev_flow->hash_fields != 0)
+				dev_flow->hash_fields |=
+					mlx5_flow_hashfields_adjust
 					(rss_desc, tunnel, ETH_RSS_TCP,
 					 (IBV_RX_HASH_SRC_PORT_TCP |
 					  IBV_RX_HASH_DST_PORT_TCP));
@@ -1815,8 +1876,9 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 			flow_verbs_translate_item_udp(dev_flow, items,
 						      item_flags);
 			subpriority = MLX5_PRIORITY_MAP_L4;
-			dev_flow->hash_fields |=
-				mlx5_flow_hashfields_adjust
+			if (dev_flow->hash_fields != 0)
+				dev_flow->hash_fields |=
+					mlx5_flow_hashfields_adjust
 					(rss_desc, tunnel, ETH_RSS_UDP,
 					 (IBV_RX_HASH_SRC_PORT_UDP |
 					  IBV_RX_HASH_DST_PORT_UDP));
@@ -1836,10 +1898,10 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 			item_flags |= MLX5_FLOW_LAYER_VXLAN_GPE;
 			break;
 		case RTE_FLOW_ITEM_TYPE_GRE:
-			flow_verbs_translate_item_gre(dev_flow, items,
-						      item_flags);
+			gre_spec = flow_verbs_reserve_gre(dev_flow);
 			subpriority = MLX5_TUNNEL_PRIO_GET(rss_desc);
 			item_flags |= MLX5_FLOW_LAYER_GRE;
+			tunnel_item = items;
 			break;
 		case RTE_FLOW_ITEM_TYPE_MPLS:
 			flow_verbs_translate_item_mpls(dev_flow, items,
@@ -1853,6 +1915,9 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 						  NULL, "item not supported");
 		}
 	}
+	if (item_flags & MLX5_FLOW_LAYER_GRE)
+		flow_verbs_translate_item_gre(dev_flow, gre_spec,
+					      tunnel_item, item_flags);
 	dev_flow->handle->layers = item_flags;
 	/* Other members of attr will be ignored. */
 	dev_flow->verbs.attr.priority =

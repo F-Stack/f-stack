@@ -428,7 +428,7 @@ signal_exit_now(int sigtype)
 
 }
 
-/*  Freqency scale down timer callback */
+/*  Frequency scale down timer callback */
 static void
 power_timer_cb(__rte_unused struct rte_timer *tim,
 			  __rte_unused void *arg)
@@ -1716,7 +1716,7 @@ parse_ep_config(const char *q_arg)
 	int hgh_edpi;
 
 	ep_med_edpi = EMPTY_POLL_MED_THRESHOLD;
-	ep_hgh_edpi = EMPTY_POLL_MED_THRESHOLD;
+	ep_hgh_edpi = EMPTY_POLL_HGH_THRESHOLD;
 
 	strlcpy(s, p, sizeof(s));
 
@@ -1739,7 +1739,7 @@ parse_ep_config(const char *q_arg)
 		if (med_edpi > 0)
 			ep_med_edpi = med_edpi;
 
-		if (med_edpi > 0)
+		if (hgh_edpi > 0)
 			ep_hgh_edpi = hgh_edpi;
 
 	} else {
@@ -2320,7 +2320,7 @@ update_telemetry(__rte_unused struct rte_timer *tim,
 	ret = rte_metrics_update_values(RTE_METRICS_GLOBAL, telstats_index,
 					values, RTE_DIM(values));
 	if (ret < 0)
-		RTE_LOG(WARNING, POWER, "failed to update metrcis\n");
+		RTE_LOG(WARNING, POWER, "failed to update metrics\n");
 }
 
 static int
@@ -2464,15 +2464,15 @@ main(int argc, char **argv)
 	uint16_t portid;
 	const char *ptr_strings[NUM_TELSTATS];
 
-	/* catch SIGINT and restore cpufreq governor to ondemand */
-	signal(SIGINT, signal_exit_now);
-
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid EAL parameters\n");
 	argc -= ret;
 	argv += ret;
+
+	/* catch SIGINT and restore cpufreq governor to ondemand */
+	signal(SIGINT, signal_exit_now);
 
 	/* init RTE timer library to be used late */
 	rte_timer_subsystem_init();

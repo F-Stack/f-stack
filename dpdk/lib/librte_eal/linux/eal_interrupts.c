@@ -563,7 +563,7 @@ rte_intr_callback_unregister_pending(const struct rte_intr_handle *intr_handle,
 
 	rte_spinlock_lock(&intr_lock);
 
-	/* check if the insterrupt source for the fd is existent */
+	/* check if the interrupt source for the fd is existent */
 	TAILQ_FOREACH(src, &intr_sources, next)
 		if (src->intr_handle.fd == intr_handle->fd)
 			break;
@@ -613,7 +613,7 @@ rte_intr_callback_unregister(const struct rte_intr_handle *intr_handle,
 
 	rte_spinlock_lock(&intr_lock);
 
-	/* check if the insterrupt source for the fd is existent */
+	/* check if the interrupt source for the fd is existent */
 	TAILQ_FOREACH(src, &intr_sources, next)
 		if (src->intr_handle.fd == intr_handle->fd)
 			break;
@@ -906,17 +906,14 @@ eal_intr_process_interrupts(struct epoll_event *events, int nfds)
 			bytes_read = sizeof(buf.timerfd_num);
 			break;
 #ifdef VFIO_PRESENT
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+		case RTE_INTR_HANDLE_VFIO_REQ:
+#endif
 		case RTE_INTR_HANDLE_VFIO_MSIX:
 		case RTE_INTR_HANDLE_VFIO_MSI:
 		case RTE_INTR_HANDLE_VFIO_LEGACY:
 			bytes_read = sizeof(buf.vfio_intr_count);
 			break;
-#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
-		case RTE_INTR_HANDLE_VFIO_REQ:
-			bytes_read = 0;
-			call = true;
-			break;
-#endif
 #endif
 		case RTE_INTR_HANDLE_VDEV:
 		case RTE_INTR_HANDLE_EXT:
@@ -1241,7 +1238,7 @@ eal_epoll_process_event(struct epoll_event *evs, unsigned int n,
 		events[count].status        = RTE_EPOLL_VALID;
 		events[count].fd            = rev->fd;
 		events[count].epfd          = rev->epfd;
-		events[count].epdata.event  = rev->epdata.event;
+		events[count].epdata.event  = evs[i].events;
 		events[count].epdata.data   = rev->epdata.data;
 		if (rev->epdata.cb_fun)
 			rev->epdata.cb_fun(rev->fd,

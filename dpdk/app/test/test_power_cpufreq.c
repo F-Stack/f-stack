@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <string.h>
 #include <inttypes.h>
+#include <rte_cycles.h>
 
 #include "test.h"
 
@@ -34,37 +35,86 @@ test_power_caps(void)
 #define TEST_POWER_LCORE_INVALID ((unsigned)RTE_MAX_LCORE)
 #define TEST_POWER_FREQS_NUM_MAX ((unsigned)RTE_MAX_LCORE_FREQS)
 
-#define TEST_POWER_SYSFILE_CUR_FREQ \
+/* macros used for rounding frequency to nearest 100000 */
+#define TEST_FREQ_ROUNDING_DELTA 50000
+#define TEST_ROUND_FREQ_TO_N_100000 100000
+
+#define TEST_POWER_SYSFILE_CPUINFO_FREQ \
 	"/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_cur_freq"
+#define TEST_POWER_SYSFILE_SCALING_FREQ \
+	"/sys/devices/system/cpu/cpu%u/cpufreq/scaling_cur_freq"
 
 static uint32_t total_freq_num;
 static uint32_t freqs[TEST_POWER_FREQS_NUM_MAX];
 
 static int
-check_cur_freq(unsigned lcore_id, uint32_t idx)
+check_cur_freq(unsigned int lcore_id, uint32_t idx, bool turbo)
 {
 #define TEST_POWER_CONVERT_TO_DECIMAL 10
+#define MAX_LOOP 100
 	FILE *f;
 	char fullpath[PATH_MAX];
 	char buf[BUFSIZ];
+	enum power_management_env env;
 	uint32_t cur_freq;
+	uint32_t freq_conv;
 	int ret = -1;
+	int i;
 
 	if (snprintf(fullpath, sizeof(fullpath),
-		TEST_POWER_SYSFILE_CUR_FREQ, lcore_id) < 0) {
+		TEST_POWER_SYSFILE_CPUINFO_FREQ, lcore_id) < 0) {
 		return 0;
 	}
 	f = fopen(fullpath, "r");
 	if (f == NULL) {
-		return 0;
+		if (snprintf(fullpath, sizeof(fullpath),
+			TEST_POWER_SYSFILE_SCALING_FREQ, lcore_id) < 0) {
+			return 0;
+		}
+		f = fopen(fullpath, "r");
+		if (f == NULL) {
+			return 0;
+		}
 	}
-	if (fgets(buf, sizeof(buf), f) == NULL) {
-		goto fail_get_cur_freq;
-	}
-	cur_freq = strtoul(buf, NULL, TEST_POWER_CONVERT_TO_DECIMAL);
-	ret = (freqs[idx] == cur_freq ? 0 : -1);
+	for (i = 0; i < MAX_LOOP; i++) {
+		fflush(f);
+		if (fgets(buf, sizeof(buf), f) == NULL)
+			goto fail_all;
 
-fail_get_cur_freq:
+		cur_freq = strtoul(buf, NULL, TEST_POWER_CONVERT_TO_DECIMAL);
+		freq_conv = cur_freq;
+
+		env = rte_power_get_env();
+
+		if (env == PM_ENV_PSTATE_CPUFREQ) {
+			/* convert the frequency to nearest 100000 value
+			 * Ex: if cur_freq=1396789 then freq_conv=1400000
+			 * Ex: if cur_freq=800030 then freq_conv=800000
+			 */
+			unsigned int freq_conv = 0;
+			freq_conv = (cur_freq + TEST_FREQ_ROUNDING_DELTA)
+						/ TEST_ROUND_FREQ_TO_N_100000;
+			freq_conv = freq_conv * TEST_ROUND_FREQ_TO_N_100000;
+		}
+
+		if (turbo)
+			ret = (freqs[idx] <= freq_conv ? 0 : -1);
+		else
+			ret = (freqs[idx] == freq_conv ? 0 : -1);
+
+		if (ret == 0)
+			break;
+
+		if (fseek(f, 0, SEEK_SET) < 0) {
+			printf("Fail to set file position indicator to 0\n");
+			goto fail_all;
+		}
+
+		/* wait for the value to be updated */
+		rte_delay_ms(10);
+	}
+
+fail_all:
 	fclose(f);
 
 	return ret;
@@ -143,7 +193,7 @@ check_power_get_freq(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, count);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, count, false);
 	if (ret < 0)
 		return -1;
 
@@ -193,7 +243,7 @@ check_power_set_freq(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 1);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 1, false);
 	if (ret < 0)
 		return -1;
 
@@ -205,6 +255,8 @@ static int
 check_power_freq_down(void)
 {
 	int ret;
+
+	rte_power_freq_enable_turbo(TEST_POWER_LCORE_ID);
 
 	/* test with an invalid lcore id */
 	ret = rte_power_freq_down(TEST_POWER_LCORE_INVALID);
@@ -229,7 +281,7 @@ check_power_freq_down(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 1);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 1, false);
 	if (ret < 0)
 		return -1;
 
@@ -248,7 +300,7 @@ check_power_freq_down(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, 1);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, 1, false);
 	if (ret < 0)
 		return -1;
 
@@ -284,7 +336,7 @@ check_power_freq_up(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 2);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 2, false);
 	if (ret < 0)
 		return -1;
 
@@ -303,7 +355,7 @@ check_power_freq_up(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, 0);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, 0, true);
 	if (ret < 0)
 		return -1;
 
@@ -331,7 +383,7 @@ check_power_freq_max(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, 0);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, 0, true);
 	if (ret < 0)
 		return -1;
 
@@ -359,7 +411,7 @@ check_power_freq_min(void)
 	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 1);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, total_freq_num - 1, false);
 	if (ret < 0)
 		return -1;
 
@@ -391,9 +443,15 @@ check_power_turbo(void)
 				TEST_POWER_LCORE_ID);
 		return -1;
 	}
+	ret = rte_power_freq_max(TEST_POWER_LCORE_ID);
+	if (ret < 0) {
+		printf("Fail to scale up the freq to max on lcore %u\n",
+						TEST_POWER_LCORE_ID);
+		return -1;
+	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, 0);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, 0, true);
 	if (ret < 0)
 		return -1;
 
@@ -410,9 +468,15 @@ check_power_turbo(void)
 				TEST_POWER_LCORE_ID);
 		return -1;
 	}
+	ret = rte_power_freq_max(TEST_POWER_LCORE_ID);
+	if (ret < 0) {
+		printf("Fail to scale up the freq to max on lcore %u\n",
+						TEST_POWER_LCORE_ID);
+		return -1;
+	}
 
 	/* Check the current frequency */
-	ret = check_cur_freq(TEST_POWER_LCORE_ID, 1);
+	ret = check_cur_freq(TEST_POWER_LCORE_ID, 1, false);
 	if (ret < 0)
 		return -1;
 
@@ -596,7 +660,7 @@ test_power_cpufreq(void)
 	/* test of exit power management for an invalid lcore */
 	ret = rte_power_exit(TEST_POWER_LCORE_INVALID);
 	if (ret == 0) {
-		printf("Unpectedly exit power management successfully for "
+		printf("Unexpectedly exit power management successfully for "
 				"lcore %u\n", TEST_POWER_LCORE_INVALID);
 		rte_power_unset_env();
 		return -1;

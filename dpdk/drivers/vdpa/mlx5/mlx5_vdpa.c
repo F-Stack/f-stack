@@ -82,7 +82,7 @@ mlx5_vdpa_get_queue_num(struct rte_vdpa_device *vdev, uint32_t *queue_num)
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -1;
 	}
-	*queue_num = priv->caps.max_num_virtio_queues;
+	*queue_num = priv->caps.max_num_virtio_queues / 2;
 	return 0;
 }
 
@@ -139,7 +139,7 @@ mlx5_vdpa_set_vring_state(int vid, int vring, int state)
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -EINVAL;
 	}
-	if (vring >= (int)priv->caps.max_num_virtio_queues * 2) {
+	if (vring >= (int)priv->caps.max_num_virtio_queues) {
 		DRV_LOG(ERR, "Too big vring id: %d.", vring);
 		return -E2BIG;
 	}
@@ -281,10 +281,10 @@ mlx5_vdpa_dev_close(int vid)
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -1;
 	}
-	if (priv->configured)
-		ret |= mlx5_vdpa_lm_log(priv);
 	mlx5_vdpa_err_event_unset(priv);
 	mlx5_vdpa_cqe_event_unset(priv);
+	if (priv->configured)
+		ret |= mlx5_vdpa_lm_log(priv);
 	mlx5_vdpa_steer_unset(priv);
 	mlx5_vdpa_virtqs_release(priv);
 	mlx5_vdpa_event_qp_global_release(priv);
@@ -295,6 +295,8 @@ mlx5_vdpa_dev_close(int vid)
 	}
 	priv->configured = 0;
 	priv->vid = 0;
+	/* The mutex may stay locked after event thread cancel - initiate it. */
+	pthread_mutex_init(&priv->vq_config_lock, NULL);
 	DRV_LOG(INFO, "vDPA device %d was closed.", vid);
 	return ret;
 }
@@ -502,7 +504,7 @@ mlx5_vdpa_get_ib_device_match(struct rte_pci_addr *addr)
 static int
 mlx5_vdpa_nl_roce_disable(const char *addr)
 {
-	int nlsk_fd = mlx5_nl_init(NETLINK_GENERIC);
+	int nlsk_fd = mlx5_nl_init(NETLINK_GENERIC, 0);
 	int devlink_id;
 	int enable;
 	int ret;
@@ -684,6 +686,7 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct mlx5_vdpa_priv *priv = NULL;
 	struct ibv_context *ctx = NULL;
 	struct mlx5_hca_attr attr;
+	int retry;
 	int ret;
 
 	ibv = mlx5_vdpa_get_ib_device_match(&pci_dev->addr);
@@ -723,7 +726,7 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		DRV_LOG(DEBUG, "No capability to support virtq statistics.");
 	priv = rte_zmalloc("mlx5 vDPA device private", sizeof(*priv) +
 			   sizeof(struct mlx5_vdpa_virtq) *
-			   attr.vdpa.max_num_virtio_queues * 2,
+			   attr.vdpa.max_num_virtio_queues,
 			   RTE_CACHE_LINE_SIZE);
 	if (!priv) {
 		DRV_LOG(ERR, "Failed to allocate private memory.");
@@ -733,11 +736,19 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	priv->caps = attr.vdpa;
 	priv->log_max_rqt_size = attr.log_max_rqt_size;
 	priv->num_lag_ports = attr.num_lag_ports;
+	priv->qp_ts_format = attr.qp_ts_format;
 	if (attr.num_lag_ports == 0)
 		priv->num_lag_ports = 1;
 	priv->ctx = ctx;
 	priv->pci_dev = pci_dev;
-	priv->var = mlx5_glue->dv_alloc_var(ctx, 0);
+	for (retry = 0; retry < 7; retry++) {
+		priv->var = mlx5_glue->dv_alloc_var(priv->ctx, 0);
+		if (priv->var != NULL)
+			break;
+		DRV_LOG(WARNING, "Failed to allocate VAR, retry %d.\n", retry);
+		/* Wait Qemu release VAR during vdpa restart, 0.1 sec based. */
+		usleep(100000U << retry);
+	}
 	if (!priv->var) {
 		DRV_LOG(ERR, "Failed to allocate VAR %u.\n", errno);
 		goto error;
@@ -802,6 +813,8 @@ mlx5_vdpa_pci_remove(struct rte_pci_device *pci_dev)
 			mlx5_glue->dv_free_var(priv->var);
 			priv->var = NULL;
 		}
+		if (priv->vdev)
+			rte_vdpa_unregister_device(priv->vdev);
 		mlx5_glue->close_device(priv->ctx);
 		pthread_mutex_destroy(&priv->vq_config_lock);
 		rte_free(priv);

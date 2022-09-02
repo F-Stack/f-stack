@@ -64,6 +64,8 @@ T: git://dpdk.org/next/dpdk-next-eventdev
 Stable Branches
 M: Luca Boccassi <bluca@debian.org>
 M: Kevin Traynor <ktraynor@redhat.com>
+M: Christian Ehrhardt <christian.ehrhardt@canonical.com>
+M: Xueming Li <xuemingl@nvidia.com>
 T: git://dpdk.org/dpdk-stable
 
 Security Issues
@@ -103,12 +105,14 @@ F: buildtools/gen-pmdinfo-cfile.sh
 F: buildtools/list-dir-globs.py
 F: buildtools/pkg-config/
 F: buildtools/symlink-drivers-solibs.sh
+F: buildtools/symlink-drivers-solibs.py
 F: devtools/test-meson-builds.sh
 
 Public CI
 M: Aaron Conole <aconole@redhat.com>
 M: Michael Santana <maicolgabriel@hotmail.com>
 F: .travis.yml
+F: .github/workflows/build.yml
 F: .ci/
 
 ABI Policy & Versioning

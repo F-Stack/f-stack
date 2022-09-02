@@ -212,7 +212,7 @@ static inline unsigned int fl_cap(const struct sge_fl *fl)
  * @fl: the Free List
  *
  * Tests specified Free List to see whether the number of buffers
- * available to the hardware has falled below our "starvation"
+ * available to the hardware has fallen below our "starvation"
  * threshold.
  */
 static inline bool fl_starving(const struct adapter *adapter,
@@ -682,7 +682,7 @@ static void write_sgl(struct rte_mbuf *mbuf, struct sge_txq *q,
  * @q: the Tx queue
  * @n: number of new descriptors to give to HW
  *
- * Ring the doorbel for a Tx queue.
+ * Ring the doorbell for a Tx queue.
  */
 static inline void ring_tx_db(struct adapter *adap, struct sge_txq *q)
 {
@@ -793,9 +793,9 @@ static inline void txq_advance(struct sge_txq *q, unsigned int n)
 
 #define MAX_COALESCE_LEN 64000
 
-static inline int wraps_around(struct sge_txq *q, int ndesc)
+static inline bool wraps_around(struct sge_txq *q, int ndesc)
 {
-	return (q->pidx + ndesc) > q->size ? 1 : 0;
+	return (q->pidx + ndesc) > q->size ? true : false;
 }
 
 static void tx_timer_cb(void *data)
@@ -846,7 +846,6 @@ static inline void ship_tx_pkt_coalesce_wr(struct adapter *adap,
 
 	/* fill the pkts WR header */
 	wr = (void *)&q->desc[q->pidx];
-	wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS2_WR));
 	vmwr = (void *)&q->desc[q->pidx];
 
 	wr_mid = V_FW_WR_LEN16(DIV_ROUND_UP(q->coalesce.flits, 2));
@@ -856,8 +855,11 @@ static inline void ship_tx_pkt_coalesce_wr(struct adapter *adap,
 	wr->npkt = q->coalesce.idx;
 	wr->r3 = 0;
 	if (is_pf4(adap)) {
-		wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS2_WR));
 		wr->type = q->coalesce.type;
+		if (likely(wr->type != 0))
+			wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS2_WR));
+		else
+			wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS_WR));
 	} else {
 		wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS_VM_WR));
 		vmwr->r4 = 0;
@@ -881,7 +883,7 @@ static inline void ship_tx_pkt_coalesce_wr(struct adapter *adap,
 }
 
 /**
- * should_tx_packet_coalesce - decides wether to coalesce an mbuf or not
+ * should_tx_packet_coalesce - decides whether to coalesce an mbuf or not
  * @txq: tx queue where the mbuf is sent
  * @mbuf: mbuf to be sent
  * @nflits: return value for number of flits needed
@@ -936,13 +938,16 @@ static inline int should_tx_packet_coalesce(struct sge_eth_txq *txq,
 		ndesc = DIV_ROUND_UP(q->coalesce.flits + flits, 8);
 		credits = txq_avail(q) - ndesc;
 
+		if (unlikely(wraps_around(q, ndesc)))
+			return 0;
+
 		/* If we are wrapping or this is last mbuf then, send the
 		 * already coalesced mbufs and let the non-coalesce pass
 		 * handle the mbuf.
 		 */
-		if (unlikely(credits < 0 || wraps_around(q, ndesc))) {
+		if (unlikely(credits < 0)) {
 			ship_tx_pkt_coalesce_wr(adap, txq);
-			return 0;
+			return -EBUSY;
 		}
 
 		/* If the max coalesce len or the max WR len is reached
@@ -966,8 +971,12 @@ new:
 	ndesc = flits_to_desc(q->coalesce.flits + flits);
 	credits = txq_avail(q) - ndesc;
 
-	if (unlikely(credits < 0 || wraps_around(q, ndesc)))
+	if (unlikely(wraps_around(q, ndesc)))
 		return 0;
+
+	if (unlikely(credits < 0))
+		return -EBUSY;
+
 	q->coalesce.flits += wr_size / sizeof(__be64);
 	q->coalesce.type = type;
 	q->coalesce.ptr = (unsigned char *)&q->desc[q->pidx] +
@@ -1110,7 +1119,7 @@ int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
 	unsigned int flits, ndesc, cflits;
 	int l3hdr_len, l4hdr_len, eth_xtra_len;
 	int len, last_desc;
-	int credits;
+	int should_coal, credits;
 	u32 wr_mid;
 	u64 cntrl, *end;
 	bool v6;
@@ -1141,9 +1150,9 @@ out_free:
 	/* align the end of coalesce WR to a 512 byte boundary */
 	txq->q.coalesce.max = (8 - (txq->q.pidx & 7)) * 8;
 
-	if (!((m->ol_flags & PKT_TX_TCP_SEG) ||
-			m->pkt_len > RTE_ETHER_MAX_LEN)) {
-		if (should_tx_packet_coalesce(txq, mbuf, &cflits, adap)) {
+	if ((m->ol_flags & PKT_TX_TCP_SEG) == 0) {
+		should_coal = should_tx_packet_coalesce(txq, mbuf, &cflits, adap);
+		if (should_coal > 0) {
 			if (unlikely(map_mbuf(mbuf, addr) < 0)) {
 				dev_warn(adap, "%s: mapping err for coalesce\n",
 					 __func__);
@@ -1152,8 +1161,8 @@ out_free:
 			}
 			return tx_do_packet_coalesce(txq, mbuf, cflits, adap,
 						     pi, addr, nb_pkts);
-		} else {
-			return -EBUSY;
+		} else if (should_coal < 0) {
+			return should_coal;
 		}
 	}
 
@@ -1200,8 +1209,7 @@ out_free:
 		end = (u64 *)vmwr + flits;
 	}
 
-	len = 0;
-	len += sizeof(*cpl);
+	len = sizeof(*cpl);
 
 	/* Coalescing skipped and we send through normal path */
 	if (!(m->ol_flags & PKT_TX_TCP_SEG)) {
@@ -1849,7 +1857,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		 * for its status page) along with the associated software
 		 * descriptor ring.  The free list size needs to be a multiple
 		 * of the Egress Queue Unit and at least 2 Egress Units larger
-		 * than the SGE's Egress Congrestion Threshold
+		 * than the SGE's Egress Congestion Threshold
 		 * (fl_starve_thres - 1).
 		 */
 		if (fl->size < s->fl_starve_thres - 1 + 2 * 8)
@@ -1913,7 +1921,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	iq->stat = (void *)&iq->desc[iq->size * 8];
 	iq->eth_dev = eth_dev;
 	iq->handler = hnd;
-	iq->port_id = pi->pidx;
+	iq->port_id = eth_dev->data->port_id;
 	iq->mb_pool = mp;
 
 	/* set offset to -1 to distinguish ingress queues without FL */

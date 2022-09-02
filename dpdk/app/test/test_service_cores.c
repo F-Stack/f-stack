@@ -66,7 +66,7 @@ static int32_t dummy_mt_unsafe_cb(void *args)
 		rte_delay_ms(250);
 		rte_atomic32_clear((rte_atomic32_t *)atomic_lock);
 	} else {
-		/* 2nd thread will fail to take lock, so set pass flag */
+		/* 2nd thread will fail to take lock, so clear pass flag */
 		*pass_test = 0;
 	}
 
@@ -314,9 +314,15 @@ service_attr_get(void)
 	TEST_ASSERT_EQUAL(1, cycles_gt_zero,
 			"attr_get() failed to get cycles (expected > zero)");
 
-	rte_service_lcore_stop(slcore_id);
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 0),
+			"Disabling valid service and core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_stop(slcore_id),
+			"Failed to stop service lcore");
 
 	wait_slcore_inactive(slcore_id);
+
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			  "Service lcore not stopped after waiting.");
 
 	TEST_ASSERT_EQUAL(0, rte_service_attr_get(id, attr_calls, &attr_value),
 			"Valid attr_get() call didn't return success");

@@ -219,7 +219,7 @@ vhost_crypto_parse_args(int argc, char **argv)
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "s:",
+	while ((opt = getopt_long(argc, argvopt, "",
 				  lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -455,6 +455,9 @@ free_resource(void)
 	}
 
 	memset(&options, 0, sizeof(options));
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 }
 
 int

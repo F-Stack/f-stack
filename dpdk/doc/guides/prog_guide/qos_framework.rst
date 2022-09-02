@@ -737,7 +737,7 @@ Strict priority scheduling of traffic classes within the same pipe is implemente
 which selects the queues in ascending order.
 Therefore, queue 0 (associated with TC 0, highest priority TC) is handled before
 queue 1 (TC 1, lower priority than TC 0),
-which is handled before queue 2 (TC 2, lower priority than TC 1) and it conitnues until queues of all TCs except the
+which is handled before queue 2 (TC 2, lower priority than TC 1) and it continues until queues of all TCs except the
 lowest priority TC are handled. At last, queues 12..15 (best effort TC, lowest priority TC) are handled.
 
 Upper Limit Enforcement
@@ -1191,12 +1191,12 @@ In the case of severe congestion, the dropper resorts to tail drop.
 This occurs when a packet queue has reached maximum capacity and cannot store any more packets.
 In this situation, all arriving packets are dropped.
 
-The flow through the dropper is illustrated in :numref:`figure_flow_tru_droppper`.
+The flow through the dropper is illustrated in :numref:`figure_flow_tru_dropper`.
 The RED/WRED algorithm is exercised first and tail drop second.
 
-.. _figure_flow_tru_droppper:
+.. _figure_flow_tru_dropper:
 
-.. figure:: img/flow_tru_droppper.*
+.. figure:: img/flow_tru_dropper.*
 
    Flow Through the Dropper
 

@@ -159,6 +159,7 @@ mlx5_regex_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_errno = ENOMEM;
 		goto dev_error;
 	}
+	priv->sq_ts_format = attr.sq_ts_format;
 	priv->ctx = ctx;
 	priv->nb_engines = 2; /* attr.regexp_num_of_engines */
 	/* Default RXP programming mode to Shared. */
@@ -247,8 +248,6 @@ mlx5_regex_pci_remove(struct rte_pci_device *pci_dev)
 			rte_regexdev_unregister(priv->regexdev);
 		if (priv->ctx)
 			mlx5_glue->close_device(priv->ctx);
-		if (priv->regexdev)
-			rte_regexdev_unregister(priv->regexdev);
 		rte_free(priv);
 	}
 	return 0;

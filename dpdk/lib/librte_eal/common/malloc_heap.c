@@ -397,7 +397,7 @@ try_expand_heap_primary(struct malloc_heap *heap, uint64_t pg_sz,
 	bool callback_triggered = false;
 
 	alloc_sz = RTE_ALIGN_CEIL(align + elt_size +
-			MALLOC_ELEM_TRAILER_LEN, pg_sz);
+			MALLOC_ELEM_OVERHEAD, pg_sz);
 	n_segs = alloc_sz / pg_sz;
 
 	/* we can't know in advance how many pages we'll need, so we malloc */
@@ -691,6 +691,26 @@ malloc_heap_alloc_on_heap_id(const char *type, size_t size,
 alloc_unlock:
 	rte_spinlock_unlock(&(heap->lock));
 	return ret;
+}
+
+static unsigned int
+malloc_get_numa_socket(void)
+{
+	const struct internal_config *conf = eal_get_internal_configuration();
+	unsigned int socket_id = rte_socket_id();
+	unsigned int idx;
+
+	if (socket_id != (unsigned int)SOCKET_ID_ANY)
+		return socket_id;
+
+	/* for control threads, return first socket where memory is available */
+	for (idx = 0; idx < rte_socket_count(); idx++) {
+		socket_id = rte_socket_id_by_idx(idx);
+		if (conf->socket_mem[socket_id] != 0)
+			return socket_id;
+	}
+
+	return rte_socket_id_by_idx(0);
 }
 
 void *

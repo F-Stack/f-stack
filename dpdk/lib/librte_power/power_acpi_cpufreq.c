@@ -152,6 +152,9 @@ power_set_governor_userspace(struct rte_power_info *pi)
 	/* Strip off terminating '\n' */
 	strtok(buf, "\n");
 
+	/* Save the original governor */
+	rte_strscpy(pi->governor_ori, buf, sizeof(pi->governor_ori));
+
 	/* Check if current governor is userspace */
 	if (strncmp(buf, POWER_GOVERNOR_USERSPACE,
 			sizeof(POWER_GOVERNOR_USERSPACE)) == 0) {
@@ -160,8 +163,6 @@ power_set_governor_userspace(struct rte_power_info *pi)
 				"already userspace\n", pi->lcore_id);
 		goto out;
 	}
-	/* Save the original governor */
-	strlcpy(pi->governor_ori, buf, sizeof(pi->governor_ori));
 
 	/* Write 'userspace' to the governor */
 	val = fseek(f, 0, SEEK_SET);
@@ -225,7 +226,7 @@ power_get_available_freqs(struct rte_power_info *pi)
 		goto out;
 	}
 
-	/* Store the available frequncies into power context */
+	/* Store the available frequencies into power context */
 	for (i = 0, pi->nb_freqs = 0; i < count; i++) {
 		POWER_DEBUG_TRACE("Lcore %u frequency[%d]: %s\n", pi->lcore_id,
 				i, freqs[i]);

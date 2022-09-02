@@ -5,6 +5,10 @@
 #ifndef _RTE_ETHDEV_DRIVER_H_
 #define _RTE_ETHDEV_DRIVER_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @file
  *
@@ -73,7 +77,7 @@ typedef int (*eth_is_removed_t)(struct rte_eth_dev *dev);
  * @retval -E_RTE_SECONDARY
  *   Function was called from a secondary process instance and not supported.
  * @retval -ETIMEDOUT
- *   Attempt to enable promiscuos mode failed because of timeout.
+ *   Attempt to enable promiscuous mode failed because of timeout.
  * @retval -EAGAIN
  *   Failed to enable promiscuous mode.
  */
@@ -98,7 +102,7 @@ typedef int (*eth_promiscuous_enable_t)(struct rte_eth_dev *dev);
  * @retval -E_RTE_SECONDARY
  *   Function was called from a secondary process instance and not supported.
  * @retval -ETIMEDOUT
- *   Attempt to disable promiscuos mode failed because of timeout.
+ *   Attempt to disable promiscuous mode failed because of timeout.
  * @retval -EAGAIN
  *   Failed to disable promiscuous mode.
  */
@@ -920,13 +924,6 @@ struct eth_dev_ops {
 };
 
 /**
- * RX/TX queue states
- */
-#define RTE_ETH_QUEUE_STATE_STOPPED 0
-#define RTE_ETH_QUEUE_STATE_STARTED 1
-#define RTE_ETH_QUEUE_STATE_HAIRPIN 2
-
-/**
  * @internal
  * Check if the selected Rx queue is hairpin queue.
  *
@@ -1325,6 +1322,24 @@ int
 rte_eth_hairpin_queue_peer_bind(uint16_t cur_port, uint16_t cur_queue,
 				struct rte_hairpin_peer_info *peer_info,
 				uint32_t direction);
+
+/**
+ * @internal
+ * Get rte_eth_dev from device name. The device name should be specified
+ * as below:
+ * - PCIe address (Domain:Bus:Device.Function), for example 0000:2:00.0
+ * - SoC device name, for example fsl-gmac0
+ * - vdev dpdk name, for example net_[pcap0|null0|tap0]
+ *
+ * @param name
+ *   PCI address or name of the device
+ * @return
+ *   - rte_eth_dev if successful
+ *   - NULL on failure
+ */
+__rte_internal
+struct rte_eth_dev*
+rte_eth_dev_get_by_name(const char *name);
 
 /**
  * @internal

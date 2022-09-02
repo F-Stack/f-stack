@@ -63,7 +63,7 @@ unsigned int eal_socket_numa_node(unsigned int socket_id);
  * @param arg
  *  Argument to the called function.
  * @return
- *  0 on success, netagive error code on failure.
+ *  0 on success, negative error code on failure.
  */
 int eal_intr_thread_schedule(void (*func)(void *arg), void *arg);
 
@@ -73,6 +73,11 @@ int eal_intr_thread_schedule(void (*func)(void *arg), void *arg);
  * @return 0 on success, (-1) on failure.
  */
 int eal_mem_virt2iova_init(void);
+
+/**
+ * Cleanup resources used for virtual to physical address translation.
+ */
+void eal_mem_virt2iova_cleanup(void);
 
 /**
  * Locate Win32 memory management routines in system libraries.

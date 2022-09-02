@@ -118,6 +118,18 @@ The following is an overview of some key Vhost API functions:
 
     It is disabled by default.
 
+  - ``RTE_VHOST_USER_NET_COMPLIANT_OL_FLAGS``
+
+    Since v16.04, the vhost library forwards checksum and gso requests for
+    packets received from a virtio driver by filling Tx offload metadata in
+    the mbuf. This behavior is inconsistent with other drivers but it is left
+    untouched for existing applications that might rely on it.
+
+    This flag disables the legacy behavior and instead ask vhost to simply
+    populate Rx offload metadata in the mbuf.
+
+    It is disabled by default.
+
 * ``rte_vhost_driver_set_features(path, features)``
 
   This function sets the feature bits the vhost-user driver supports. The
@@ -287,7 +299,7 @@ vhost-user implementation has two options:
 
      * The vhost supported features must be exactly the same before and
        after the restart. For example, if TSO is disabled and then enabled,
-       nothing will work and issues undefined might happen.
+       nothing will work and undefined issues might happen.
 
 No matter which mode is used, once a connection is established, DPDK
 vhost-user will start receiving and processing vhost messages from QEMU.
@@ -318,12 +330,12 @@ Guest memory requirement
 
 * Memory pre-allocation
 
-  For non-async data path, guest memory pre-allocation is not a
-  must. This can help save of memory. If users really want the guest memory
-  to be pre-allocated (e.g., for performance reason), we can add option
-  ``-mem-prealloc`` when starting QEMU. Or, we can lock all memory at vhost
-  side which will force memory to be allocated when mmap at vhost side;
-  option --mlockall in ovs-dpdk is an example in hand.
+  For non-async data path guest memory pre-allocation is not a
+  must but can help save memory. To do this we can add option
+  ``-mem-prealloc`` when starting QEMU, or we can lock all memory at vhost
+  side which will force memory to be allocated when it calls mmap
+  (option --mlockall in ovs-dpdk is an example in hand).
+
 
   For async data path, we force the VM memory to be pre-allocated at vhost
   lib when mapping the guest memory; and also we need to lock the memory to
@@ -331,8 +343,8 @@ Guest memory requirement
 
 * Memory sharing
 
-  Make sure ``share=on`` QEMU option is given. vhost-user will not work with
-  a QEMU version without shared memory mapping.
+  Make sure ``share=on`` QEMU option is given. The vhost-user will not work with
+  a QEMU instance without shared memory mapping.
 
 Vhost supported vSwitch reference
 ---------------------------------

@@ -223,6 +223,7 @@ nfp_net_rx_queue_release(void *rx_queue)
 
 	if (rxq) {
 		nfp_net_rx_queue_release_mbufs(rxq);
+		rte_memzone_free(rxq->tz);
 		rte_free(rxq->rxbufs);
 		rte_free(rxq);
 	}
@@ -259,6 +260,7 @@ nfp_net_tx_queue_release(void *tx_queue)
 
 	if (txq) {
 		nfp_net_tx_queue_release_mbufs(txq);
+		rte_memzone_free(txq->tz);
 		rte_free(txq->txbufs);
 		rte_free(txq);
 	}
@@ -542,10 +544,6 @@ nfp_set_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 				  " port enabled");
 		return -EBUSY;
 	}
-
-	if ((hw->ctrl & NFP_NET_CFG_CTRL_ENABLE) &&
-	    !(hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR))
-		return -EBUSY;
 
 	/* Writing new MAC to the specific port BAR address */
 	nfp_net_write_mac(hw, (uint8_t *)mac_addr);
@@ -892,10 +890,14 @@ nfp_net_close(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		nfp_net_reset_tx_queue(
 			(struct nfp_net_txq *)dev->data->tx_queues[i]);
+		nfp_net_tx_queue_release(
+			(struct nfp_net_txq *)dev->data->tx_queues[i]);
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		nfp_net_reset_rx_queue(
+			(struct nfp_net_rxq *)dev->data->rx_queues[i]);
+		nfp_net_rx_queue_release(
 			(struct nfp_net_rxq *)dev->data->rx_queues[i]);
 	}
 
@@ -907,8 +909,12 @@ nfp_net_close(struct rte_eth_dev *dev)
 				     nfp_net_dev_interrupt_handler,
 				     (void *)dev);
 
+	/* Cancel possible impending LSC work here before releasing the port*/
+	rte_eal_alarm_cancel(nfp_net_dev_interrupt_delayed_handler,
+			     (void *)dev);
+
 	/*
-	 * The ixgbe PMD driver disables the pcie master on the
+	 * The ixgbe PMD disables the pcie master on the
 	 * device. The i40e does not...
 	 */
 
@@ -1220,9 +1226,6 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 					     DEV_RX_OFFLOAD_UDP_CKSUM |
 					     DEV_RX_OFFLOAD_TCP_CKSUM;
 
-	dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_JUMBO_FRAME |
-				     DEV_RX_OFFLOAD_RSS_HASH;
-
 	if (hw->cap & NFP_NET_CFG_CTRL_TXVLAN)
 		dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT;
 
@@ -1271,15 +1274,22 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_mtu_seg_max = NFP_TX_MAX_MTU_SEG,
 	};
 
-	dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
-					   ETH_RSS_NONFRAG_IPV4_TCP |
-					   ETH_RSS_NONFRAG_IPV4_UDP |
-					   ETH_RSS_IPV6 |
-					   ETH_RSS_NONFRAG_IPV6_TCP |
-					   ETH_RSS_NONFRAG_IPV6_UDP;
+	/* All NFP devices support jumbo frames */
+	dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 
-	dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
-	dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
+	if (hw->cap & NFP_NET_CFG_CTRL_RSS) {
+		dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_RSS_HASH;
+
+		dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
+						   ETH_RSS_NONFRAG_IPV4_TCP |
+						   ETH_RSS_NONFRAG_IPV4_UDP |
+						   ETH_RSS_IPV6 |
+						   ETH_RSS_NONFRAG_IPV6_TCP |
+						   ETH_RSS_NONFRAG_IPV6_UDP;
+
+		dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
+		dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
+	}
 
 	dev_info->speed_capa = ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
 			       ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G |
@@ -1508,7 +1518,7 @@ nfp_net_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	}
 
 	/* switch to jumbo mode if needed */
-	if ((uint32_t)mtu > RTE_ETHER_MAX_LEN)
+	if ((uint32_t)mtu > RTE_ETHER_MTU)
 		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		dev->data->dev_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
@@ -1604,6 +1614,11 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	/* Saving physical and virtual addresses for the RX ring */
 	rxq->dma = (uint64_t)tz->iova;
 	rxq->rxds = (struct nfp_net_rx_desc *)tz->addr;
+
+	/* Also save the pointer to the memzone struct so it can be freed
+	 * if needed
+	 */
+	rxq->tz = tz;
 
 	/* mbuf pointers array for referencing mbufs linked to RX descriptors */
 	rxq->rxbufs = rte_zmalloc_socket("rxq->rxbufs",
@@ -1744,6 +1759,11 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		nfp_net_tx_queue_release(txq);
 		return -ENOMEM;
 	}
+
+	/* Save the pointer to the memzone struct so it can be freed
+	 * if needed
+	 */
+	txq->tz = tz;
 
 	txq->tx_count = nb_desc;
 	txq->tx_free_thresh = tx_free_thresh;
@@ -2373,22 +2393,25 @@ nfp_net_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	uint32_t new_ctrl, update;
 	struct nfp_net_hw *hw;
+	struct rte_eth_conf *dev_conf;
 	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	new_ctrl = 0;
+	dev_conf = &dev->data->dev_conf;
+	new_ctrl = hw->ctrl;
 
-	/* Enable vlan strip if it is not configured yet */
-	if ((mask & ETH_VLAN_STRIP_OFFLOAD) &&
-	    !(hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN))
-		new_ctrl = hw->ctrl | NFP_NET_CFG_CTRL_RXVLAN;
+	/*
+	 * Vlan stripping setting
+	 * Enable or disable VLAN stripping
+	 */
+	if (mask & ETH_VLAN_STRIP_MASK) {
+		if (dev_conf->rxmode.offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+			new_ctrl |= NFP_NET_CFG_CTRL_RXVLAN;
+		else
+			new_ctrl &= ~NFP_NET_CFG_CTRL_RXVLAN;
+	}
 
-	/* Disable vlan strip just if it is configured */
-	if (!(mask & ETH_VLAN_STRIP_OFFLOAD) &&
-	    (hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN))
-		new_ctrl = hw->ctrl & ~NFP_NET_CFG_CTRL_RXVLAN;
-
-	if (new_ctrl == 0)
+	if (new_ctrl == hw->ctrl)
 		return 0;
 
 	update = NFP_NET_CFG_UPDATE_GEN;
@@ -3036,7 +3059,7 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 	off_t offset, nfp_offset;
 	uint32_t cpp_id, pos, len;
 	uint32_t tmpbuf[16];
-	size_t count, curlen, totlen = 0;
+	size_t count, curlen;
 	int err = 0;
 
 	PMD_CPP_LOG(DEBUG, "%s: offset size %zu, count_size: %zu\n", __func__,
@@ -3113,7 +3136,6 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 		}
 
 		nfp_offset += pos;
-		totlen += pos;
 		nfp_cpp_area_release(area);
 		nfp_cpp_area_free(area);
 
@@ -3138,7 +3160,7 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 	off_t offset, nfp_offset;
 	uint32_t cpp_id, pos, len;
 	uint32_t tmpbuf[16];
-	size_t count, curlen, totlen = 0;
+	size_t count, curlen;
 	int err = 0;
 
 	PMD_CPP_LOG(DEBUG, "%s: offset size %zu, count_size: %zu\n", __func__,
@@ -3214,7 +3236,6 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 		}
 
 		nfp_offset += pos;
-		totlen += pos;
 		nfp_cpp_area_release(area);
 		nfp_cpp_area_free(area);
 

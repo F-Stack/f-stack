@@ -79,6 +79,7 @@ struct mlx5_hca_attr {
 	uint32_t eswitch_manager:1;
 	uint32_t flow_counters_dump:1;
 	uint32_t log_max_rqt_size:5;
+	uint32_t log_min_stride_wqe_sz:5;
 	uint32_t parse_graph_flex_node:1;
 	uint8_t flow_counter_bulk_alloc_bitmap;
 	uint32_t eth_net_offloads:1;
@@ -112,9 +113,16 @@ struct mlx5_hca_attr {
 	uint32_t dev_freq_khz; /* Timestamp counter frequency, kHz. */
 	uint32_t scatter_fcs_w_decap_disable:1;
 	uint32_t flow_hit_aso:1; /* General obj type FLOW_HIT_ASO supported. */
+	uint32_t roce:1;
+	uint32_t rq_ts_format:2;
+	uint32_t sq_ts_format:2;
+	uint32_t qp_ts_format:2;
 	uint32_t regex:1;
 	uint32_t regexp_num_of_engines;
 	uint32_t log_max_ft_sampler_num:8;
+	uint32_t cqe_compression:1;
+	uint32_t mini_cqe_resp_flow_tag:1;
+	uint32_t mini_cqe_resp_l3_l4_tag:1;
 	struct mlx5_hca_qos_attr qos;
 	struct mlx5_hca_vdpa_attr vdpa;
 };
@@ -158,6 +166,7 @@ struct mlx5_devx_create_rq_attr {
 	uint32_t state:4;
 	uint32_t flush_in_error_en:1;
 	uint32_t hairpin:1;
+	uint32_t ts_format:2;
 	uint32_t user_index:24;
 	uint32_t cqn:24;
 	uint32_t counter_set_id:8;
@@ -241,6 +250,7 @@ struct mlx5_devx_create_sq_attr {
 	uint32_t hairpin:1;
 	uint32_t non_wire:1;
 	uint32_t static_sq_wq:1;
+	uint32_t ts_format:2;
 	uint32_t user_index:24;
 	uint32_t cqn:24;
 	uint32_t packet_pacing_rate_limit_index:16;
@@ -267,7 +277,6 @@ struct mlx5_devx_cq_attr {
 	uint32_t cqe_comp_en:1;
 	uint32_t mini_cqe_res_format:2;
 	uint32_t mini_cqe_res_format_ext:2;
-	uint32_t cqe_size:3;
 	uint32_t log_cq_size:5;
 	uint32_t log_page_size:5;
 	uint32_t uar_page_id;
@@ -322,6 +331,7 @@ struct mlx5_devx_qp_attr {
 	uint32_t rq_size:17; /* Must be power of 2. */
 	uint32_t log_rq_stride:3;
 	uint32_t sq_size:17; /* Must be power of 2. */
+	uint32_t ts_format:2;
 	uint32_t dbr_umem_valid:1;
 	uint32_t dbr_umem_id;
 	uint64_t dbr_address;
@@ -500,4 +510,13 @@ __rte_internal
 struct mlx5_devx_obj *mlx5_devx_cmd_create_flow_hit_aso_obj(void *ctx,
 							    uint32_t pd);
 
+
+__rte_internal
+int mlx5_devx_cmd_wq_query(void *wq, uint32_t *counter_set_id);
+
+__rte_internal
+struct mlx5_devx_obj *mlx5_devx_cmd_queue_counter_alloc(void *ctx);
+__rte_internal
+int mlx5_devx_cmd_queue_counter_query(struct mlx5_devx_obj *dcs, int clear,
+				      uint32_t *out_of_buffers);
 #endif /* RTE_PMD_MLX5_DEVX_CMDS_H_ */

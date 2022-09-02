@@ -490,7 +490,6 @@ af_xdp_tx_zc(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 			if (!xsk_ring_prod__reserve(&txq->tx, 1, &idx_tx)) {
 				rte_pktmbuf_free(local_mbuf);
-				kick_tx(txq, cq);
 				goto out;
 			}
 
@@ -514,10 +513,9 @@ af_xdp_tx_zc(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		tx_bytes += mbuf->pkt_len;
 	}
 
-	kick_tx(txq, cq);
-
 out:
 	xsk_ring_prod__submit(&txq->tx, count);
+	kick_tx(txq, cq);
 
 	txq->stats.tx_pkts += count;
 	txq->stats.tx_bytes += tx_bytes;
@@ -633,67 +631,6 @@ find_internal_resource(struct pmd_internals *port_int)
 		return NULL;
 
 	return list;
-}
-
-/* Check if the netdev,qid context already exists */
-static inline bool
-ctx_exists(struct pkt_rx_queue *rxq, const char *ifname,
-		struct pkt_rx_queue *list_rxq, const char *list_ifname)
-{
-	bool exists = false;
-
-	if (rxq->xsk_queue_idx == list_rxq->xsk_queue_idx &&
-			!strncmp(ifname, list_ifname, IFNAMSIZ)) {
-		AF_XDP_LOG(ERR, "ctx %s,%i already exists, cannot share umem\n",
-					ifname, rxq->xsk_queue_idx);
-		exists = true;
-	}
-
-	return exists;
-}
-
-/* Get a pointer to an existing UMEM which overlays the rxq's mb_pool */
-static inline int
-get_shared_umem(struct pkt_rx_queue *rxq, const char *ifname,
-			struct xsk_umem_info **umem)
-{
-	struct internal_list *list;
-	struct pmd_internals *internals;
-	int i = 0, ret = 0;
-	struct rte_mempool *mb_pool = rxq->mb_pool;
-
-	if (mb_pool == NULL)
-		return ret;
-
-	pthread_mutex_lock(&internal_list_lock);
-
-	TAILQ_FOREACH(list, &internal_list, next) {
-		internals = list->eth_dev->data->dev_private;
-		for (i = 0; i < internals->queue_cnt; i++) {
-			struct pkt_rx_queue *list_rxq =
-						&internals->rx_queues[i];
-			if (rxq == list_rxq)
-				continue;
-			if (mb_pool == internals->rx_queues[i].mb_pool) {
-				if (ctx_exists(rxq, ifname, list_rxq,
-						internals->if_name)) {
-					ret = -1;
-					goto out;
-				}
-				if (__atomic_load_n(
-					&internals->rx_queues[i].umem->refcnt,
-							__ATOMIC_ACQUIRE)) {
-					*umem = internals->rx_queues[i].umem;
-					goto out;
-				}
-			}
-		}
-	}
-
-out:
-	pthread_mutex_unlock(&internal_list_lock);
-
-	return ret;
 }
 
 static int
@@ -840,7 +777,6 @@ xdp_umem_destroy(struct xsk_umem_info *umem)
 #endif
 
 	rte_free(umem);
-	umem = NULL;
 }
 
 static int
@@ -923,6 +859,66 @@ static inline uintptr_t get_base_addr(struct rte_mempool *mp, uint64_t *align)
 	return aligned_addr;
 }
 
+/* Check if the netdev,qid context already exists */
+static inline bool
+ctx_exists(struct pkt_rx_queue *rxq, const char *ifname,
+		struct pkt_rx_queue *list_rxq, const char *list_ifname)
+{
+	bool exists = false;
+
+	if (rxq->xsk_queue_idx == list_rxq->xsk_queue_idx &&
+			!strncmp(ifname, list_ifname, IFNAMSIZ)) {
+		AF_XDP_LOG(ERR, "ctx %s,%i already exists, cannot share umem\n",
+					ifname, rxq->xsk_queue_idx);
+		exists = true;
+	}
+
+	return exists;
+}
+
+/* Get a pointer to an existing UMEM which overlays the rxq's mb_pool */
+static inline int
+get_shared_umem(struct pkt_rx_queue *rxq, const char *ifname,
+			struct xsk_umem_info **umem)
+{
+	struct internal_list *list;
+	struct pmd_internals *internals;
+	int i = 0, ret = 0;
+	struct rte_mempool *mb_pool = rxq->mb_pool;
+
+	if (mb_pool == NULL)
+		return ret;
+
+	pthread_mutex_lock(&internal_list_lock);
+
+	TAILQ_FOREACH(list, &internal_list, next) {
+		internals = list->eth_dev->data->dev_private;
+		for (i = 0; i < internals->queue_cnt; i++) {
+			struct pkt_rx_queue *list_rxq =
+						&internals->rx_queues[i];
+			if (rxq == list_rxq)
+				continue;
+			if (mb_pool == internals->rx_queues[i].mb_pool) {
+				if (ctx_exists(rxq, ifname, list_rxq,
+						internals->if_name)) {
+					ret = -1;
+					goto out;
+				}
+				if (__atomic_load_n(&internals->rx_queues[i].umem->refcnt,
+						    __ATOMIC_ACQUIRE)) {
+					*umem = internals->rx_queues[i].umem;
+					goto out;
+				}
+			}
+		}
+	}
+
+out:
+	pthread_mutex_unlock(&internal_list_lock);
+
+	return ret;
+}
+
 static struct
 xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 				  struct pkt_rx_queue *rxq)
@@ -962,7 +958,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 		umem = rte_zmalloc_socket("umem", sizeof(*umem), 0,
 					  rte_socket_id());
 		if (umem == NULL) {
-			AF_XDP_LOG(ERR, "Failed to allocate umem info");
+			AF_XDP_LOG(ERR, "Failed to allocate umem info\n");
 			return NULL;
 		}
 
@@ -975,7 +971,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 		ret = xsk_umem__create(&umem->umem, base_addr, umem_size,
 				&rxq->fq, &rxq->cq, &usr_config);
 		if (ret) {
-			AF_XDP_LOG(ERR, "Failed to create umem");
+			AF_XDP_LOG(ERR, "Failed to create umem\n");
 			goto err;
 		}
 		umem->buffer = base_addr;
@@ -1009,7 +1005,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 
 	umem = rte_zmalloc_socket("umem", sizeof(*umem), 0, rte_socket_id());
 	if (umem == NULL) {
-		AF_XDP_LOG(ERR, "Failed to allocate umem info");
+		AF_XDP_LOG(ERR, "Failed to allocate umem info\n");
 		return NULL;
 	}
 
@@ -1045,7 +1041,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 			       &usr_config);
 
 	if (ret) {
-		AF_XDP_LOG(ERR, "Failed to create umem");
+		AF_XDP_LOG(ERR, "Failed to create umem\n");
 		goto err;
 	}
 	umem->mz = mz;
@@ -1129,7 +1125,7 @@ xsk_configure(struct pmd_internals *internals, struct pkt_rx_queue *rxq,
 		if (ret) {
 			AF_XDP_LOG(ERR, "Failed to load custom XDP program %s\n",
 					internals->prog_path);
-			goto err;
+			goto out_umem;
 		}
 		internals->custom_prog_configured = 1;
 	}
@@ -1145,25 +1141,27 @@ xsk_configure(struct pmd_internals *internals, struct pkt_rx_queue *rxq,
 
 	if (ret) {
 		AF_XDP_LOG(ERR, "Failed to create xsk socket.\n");
-		goto err;
+		goto out_umem;
 	}
 
 #if defined(XDP_UMEM_UNALIGNED_CHUNK_FLAG)
-	if (rte_pktmbuf_alloc_bulk(rxq->umem->mb_pool, fq_bufs, reserve_size)) {
+	ret = rte_pktmbuf_alloc_bulk(rxq->umem->mb_pool, fq_bufs, reserve_size);
+	if (ret) {
 		AF_XDP_LOG(DEBUG, "Failed to get enough buffers for fq.\n");
-		goto err;
+		goto out_xsk;
 	}
 #endif
 	ret = reserve_fill_queue(rxq->umem, reserve_size, fq_bufs, &rxq->fq);
 	if (ret) {
-		xsk_socket__delete(rxq->xsk);
 		AF_XDP_LOG(ERR, "Failed to reserve fill queue.\n");
-		goto err;
+		goto out_xsk;
 	}
 
 	return 0;
 
-err:
+out_xsk:
+	xsk_socket__delete(rxq->xsk);
+out_umem:
 	if (__atomic_sub_fetch(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE) == 0)
 		xdp_umem_destroy(rxq->umem);
 
@@ -1599,16 +1597,11 @@ rte_pmd_af_xdp_probe(struct rte_vdev_device *dev)
 		rte_vdev_device_name(dev));
 
 	name = rte_vdev_device_name(dev);
-	if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
-		strlen(rte_vdev_device_args(dev)) == 0) {
-		eth_dev = rte_eth_dev_attach_secondary(name);
-		if (eth_dev == NULL) {
-			AF_XDP_LOG(ERR, "Failed to probe %s\n", name);
-			return -EINVAL;
-		}
-		eth_dev->dev_ops = &ops;
-		rte_eth_dev_probing_finish(eth_dev);
-		return 0;
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		AF_XDP_LOG(ERR, "Failed to probe %s. "
+				"AF_XDP PMD does not support secondary processes.\n",
+				name);
+		return -ENOTSUP;
 	}
 
 	kvlist = rte_kvargs_parse(rte_vdev_device_args(dev), valid_arguments);

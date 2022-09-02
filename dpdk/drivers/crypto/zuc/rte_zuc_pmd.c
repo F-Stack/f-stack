@@ -11,7 +11,6 @@
 #include <rte_cpuflags.h>
 
 #include "zuc_pmd_private.h"
-#define ZUC_MAX_BURST 16
 #define BYTE_LEN 8
 
 static uint8_t cryptodev_driver_id;
@@ -238,11 +237,11 @@ process_zuc_hash_op(struct zuc_qp *qp, struct rte_crypto_op **ops,
 {
 	unsigned int i;
 	uint8_t processed_ops = 0;
-	uint8_t *src[ZUC_MAX_BURST];
+	uint8_t *src[ZUC_MAX_BURST] = { 0 };
 	uint32_t *dst[ZUC_MAX_BURST];
-	uint32_t length_in_bits[ZUC_MAX_BURST];
-	uint8_t *iv[ZUC_MAX_BURST];
-	const void *hash_keys[ZUC_MAX_BURST];
+	uint32_t length_in_bits[ZUC_MAX_BURST] = { 0 };
+	uint8_t *iv[ZUC_MAX_BURST] = { 0 };
+	const void *hash_keys[ZUC_MAX_BURST] = { 0 };
 	struct zuc_session *sess;
 
 	for (i = 0; i < num_ops; i++) {
@@ -264,7 +263,7 @@ process_zuc_hash_op(struct zuc_qp *qp, struct rte_crypto_op **ops,
 
 		hash_keys[i] = sess->pKey_hash;
 		if (sess->auth_op == RTE_CRYPTO_AUTH_OP_VERIFY)
-			dst[i] = (uint32_t *)qp->temp_digest;
+			dst[i] = (uint32_t *)qp->temp_digest[i];
 		else
 			dst[i] = (uint32_t *)ops[i]->sym->auth.digest.data;
 
@@ -359,11 +358,11 @@ static uint16_t
 zuc_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 		uint16_t nb_ops)
 {
-	struct rte_crypto_op *c_ops[ZUC_MAX_BURST];
 	struct rte_crypto_op *curr_c_op;
 
 	struct zuc_session *curr_sess;
 	struct zuc_session *sessions[ZUC_MAX_BURST];
+	struct rte_crypto_op *int_c_ops[ZUC_MAX_BURST];
 	enum zuc_operation prev_zuc_op = ZUC_OP_NOT_SUPPORTED;
 	enum zuc_operation curr_zuc_op;
 	struct zuc_qp *qp = queue_pair;
@@ -390,11 +389,11 @@ zuc_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 		 */
 		if (burst_size == 0) {
 			prev_zuc_op = curr_zuc_op;
-			c_ops[0] = curr_c_op;
+			int_c_ops[0] = curr_c_op;
 			sessions[0] = curr_sess;
 			burst_size++;
 		} else if (curr_zuc_op == prev_zuc_op) {
-			c_ops[burst_size] = curr_c_op;
+			int_c_ops[burst_size] = curr_c_op;
 			sessions[burst_size] = curr_sess;
 			burst_size++;
 			/*
@@ -402,7 +401,7 @@ zuc_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 			 * process them, and start a new batch.
 			 */
 			if (burst_size == ZUC_MAX_BURST) {
-				processed_ops = process_ops(c_ops, curr_zuc_op,
+				processed_ops = process_ops(int_c_ops, curr_zuc_op,
 						sessions, qp, burst_size,
 						&enqueued_ops);
 				if (processed_ops < burst_size) {
@@ -417,7 +416,7 @@ zuc_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 			 * Different operation type, process the ops
 			 * of the previous type.
 			 */
-			processed_ops = process_ops(c_ops, prev_zuc_op,
+			processed_ops = process_ops(int_c_ops, prev_zuc_op,
 					sessions, qp, burst_size,
 					&enqueued_ops);
 			if (processed_ops < burst_size) {
@@ -428,7 +427,7 @@ zuc_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 			burst_size = 0;
 			prev_zuc_op = curr_zuc_op;
 
-			c_ops[0] = curr_c_op;
+			int_c_ops[0] = curr_c_op;
 			sessions[0] = curr_sess;
 			burst_size++;
 		}
@@ -436,7 +435,7 @@ zuc_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 
 	if (burst_size != 0) {
 		/* Process the crypto ops of the last operation type. */
-		processed_ops = process_ops(c_ops, prev_zuc_op,
+		processed_ops = process_ops(int_c_ops, prev_zuc_op,
 				sessions, qp, burst_size,
 				&enqueued_ops);
 	}

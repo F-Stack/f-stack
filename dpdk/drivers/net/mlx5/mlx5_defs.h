@@ -59,7 +59,7 @@
 #define MLX5_MAX_XSTATS 32
 
 /* Maximum Packet headers size (L2+L3+L4) for TSO. */
-#define MLX5_MAX_TSO_HEADER (128u + 34u)
+#define MLX5_MAX_TSO_HEADER 192U
 
 /* Inline data size required by NICs. */
 #define MLX5_INLINE_HSIZE_NONE 0
@@ -138,10 +138,10 @@
 #endif
 
 /* Log 2 of the default number of strides per WQE for Multi-Packet RQ. */
-#define MLX5_MPRQ_STRIDE_NUM_N 6U
+#define MLX5_MPRQ_DEFAULT_LOG_STRIDE_NUM 6U
 
 /* Log 2 of the default size of a stride per WQE for Multi-Packet RQ. */
-#define MLX5_MPRQ_STRIDE_SIZE_N 11U
+#define MLX5_MPRQ_DEFAULT_LOG_STRIDE_SIZE 11U
 
 /* Two-byte shift is disabled for Multi-Packet RQ. */
 #define MLX5_MPRQ_TWO_BYTE_SHIFT 0

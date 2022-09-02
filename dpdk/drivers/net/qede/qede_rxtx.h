@@ -71,6 +71,7 @@
 				 + (QEDE_LLC_SNAP_HDR_LEN) + 2)
 
 #define QEDE_MAX_ETHER_HDR_LEN	(RTE_ETHER_HDR_LEN + QEDE_ETH_OVERHEAD)
+#define QEDE_ETH_MAX_LEN	(RTE_ETHER_MTU + QEDE_MAX_ETHER_HDR_LEN)
 
 #define QEDE_RSS_OFFLOAD_ALL    (ETH_RSS_IPV4			|\
 				 ETH_RSS_NONFRAG_IPV4_TCP	|\
@@ -241,7 +242,7 @@ struct qede_fastpath {
 	struct qede_tx_queue *txq;
 };
 
-/* This structure holds the inforation of fast path queues
+/* This structure holds the information of fast path queues
  * belonging to individual engines in CMT mode.
  */
 struct qede_fastpath_cmt {

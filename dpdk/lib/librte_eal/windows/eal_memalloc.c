@@ -18,7 +18,7 @@ eal_memalloc_get_seg_fd(int list_idx, int seg_idx)
 	RTE_SET_USED(list_idx);
 	RTE_SET_USED(seg_idx);
 	EAL_LOG_NOT_IMPLEMENTED();
-	return -1;
+	return -ENOTSUP;
 }
 
 int
@@ -29,7 +29,7 @@ eal_memalloc_get_seg_fd_offset(int list_idx, int seg_idx, size_t *offset)
 	RTE_SET_USED(seg_idx);
 	RTE_SET_USED(offset);
 	EAL_LOG_NOT_IMPLEMENTED();
-	return -1;
+	return -ENOTSUP;
 }
 
 static int
@@ -100,16 +100,11 @@ alloc_seg(struct rte_memseg *ms, void *requested_addr, int socket_id,
 	 */
 	*(volatile int *)addr = *(volatile int *)addr;
 
-	/* Only try to obtain IOVA if it's available, so that applications
-	 * that do not need IOVA can use this allocator.
-	 */
-	if (rte_eal_using_phys_addrs()) {
-		iova = rte_mem_virt2iova(addr);
-		if (iova == RTE_BAD_IOVA) {
-			RTE_LOG(DEBUG, EAL,
-				"Cannot get IOVA of allocated segment\n");
-			goto error;
-		}
+	iova = rte_mem_virt2iova(addr);
+	if (iova == RTE_BAD_IOVA) {
+		RTE_LOG(DEBUG, EAL,
+			"Cannot get IOVA of allocated segment\n");
+		goto error;
 	}
 
 	/* Only "Ex" function can handle hugepages. */
@@ -434,7 +429,7 @@ eal_memalloc_sync_with_primary(void)
 {
 	/* No multi-process support. */
 	EAL_LOG_NOT_IMPLEMENTED();
-	return -1;
+	return -ENOTSUP;
 }
 
 int

@@ -840,7 +840,7 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 
 	/*
 	 * A. load first Qword (8bytes) in one loop.
-	 * B. copy 4 mbuf pointers from elts ring to returing pkts.
+	 * B. copy 4 mbuf pointers from elts ring to returning pkts.
 	 * C. load remaining CQE data and extract necessary fields.
 	 *    Final 16bytes cqes[] extracted from original 64bytes CQE has the
 	 *    following structure:
@@ -974,10 +974,10 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 			(vector unsigned short)cqe_tmp1, cqe_sel_mask1);
 		cqe_tmp2 = (vector unsigned char)(vector unsigned long){
 			*(__rte_aligned(8) unsigned long *)
-			&cq[pos + p3].rsvd3[9], 0LL};
+			&cq[pos + p3].rsvd4[2], 0LL};
 		cqe_tmp1 = (vector unsigned char)(vector unsigned long){
 			*(__rte_aligned(8) unsigned long *)
-			&cq[pos + p2].rsvd3[9], 0LL};
+			&cq[pos + p2].rsvd4[2], 0LL};
 		cqes[3] = (vector unsigned char)
 			vec_sel((vector unsigned short)cqes[3],
 			(vector unsigned short)cqe_tmp2,
@@ -1037,10 +1037,10 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 			(vector unsigned short)cqe_tmp1, cqe_sel_mask1);
 		cqe_tmp2 = (vector unsigned char)(vector unsigned long){
 			*(__rte_aligned(8) unsigned long *)
-			&cq[pos + p1].rsvd3[9], 0LL};
+			&cq[pos + p1].rsvd4[2], 0LL};
 		cqe_tmp1 = (vector unsigned char)(vector unsigned long){
 			*(__rte_aligned(8) unsigned long *)
-			&cq[pos].rsvd3[9], 0LL};
+			&cq[pos].rsvd4[2], 0LL};
 		cqes[1] = (vector unsigned char)
 			vec_sel((vector unsigned short)cqes[1],
 			(vector unsigned short)cqe_tmp2, cqe_sel_mask2);
@@ -1221,22 +1221,23 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		if (rxq->dynf_meta) {
 			uint64_t flag = rxq->flow_meta_mask;
 			int32_t offs = rxq->flow_meta_offset;
-			uint32_t metadata;
+			uint32_t metadata, mask;
 
-			/* This code is subject for futher optimization. */
-			metadata = cq[pos].flow_table_metadata;
+			mask = rxq->flow_meta_port_mask;
+			/* This code is subject for further optimization. */
+			metadata = cq[pos].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos], offs, uint32_t *) =
 								metadata;
 			pkts[pos]->ol_flags |= metadata ? flag : 0ULL;
-			metadata = cq[pos + 1].flow_table_metadata;
+			metadata = cq[pos + 1].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos + 1], offs, uint32_t *) =
 								metadata;
 			pkts[pos + 1]->ol_flags |= metadata ? flag : 0ULL;
-			metadata = cq[pos + 2].flow_table_metadata;
+			metadata = cq[pos + 2].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos + 2], offs, uint32_t *) =
 								metadata;
 			pkts[pos + 2]->ol_flags |= metadata ? flag : 0ULL;
-			metadata = cq[pos + 3].flow_table_metadata;
+			metadata = cq[pos + 3].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos + 3], offs, uint32_t *) =
 								metadata;
 			pkts[pos + 3]->ol_flags |= metadata ? flag : 0ULL;

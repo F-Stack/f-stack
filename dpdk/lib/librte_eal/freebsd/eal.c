@@ -521,6 +521,10 @@ eal_parse_args(int argc, char **argv)
 			goto out;
 		}
 
+		/* eal_log_level_parse() already handled this option */
+		if (opt == OPT_LOG_LEVEL_NUM)
+			continue;
+
 		ret = eal_parse_common_option(opt, optarg, internal_conf);
 		/* common parser is not happy */
 		if (ret < 0) {
@@ -671,6 +675,8 @@ rte_eal_init(int argc, char **argv)
 	const struct rte_config *config = rte_eal_get_configuration();
 	struct internal_config *internal_conf =
 		eal_get_internal_configuration();
+	bool has_phys_addr;
+	enum rte_iova_mode iova_mode;
 
 	/* checks if the machine is adequate */
 	if (!rte_cpu_is_supported()) {
@@ -712,6 +718,10 @@ rte_eal_init(int argc, char **argv)
 
 	/* FreeBSD always uses legacy memory model */
 	internal_conf->legacy_mem = true;
+	if (internal_conf->in_memory) {
+		RTE_LOG(WARNING, EAL, "Warning: ignoring unsupported flag, '%s'\n", OPT_IN_MEMORY);
+		internal_conf->in_memory = false;
+	}
 
 	if (eal_plugins_init() < 0) {
 		rte_eal_init_alert("Cannot init plugins");
@@ -767,19 +777,30 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
-	/* if no EAL option "--iova-mode=<pa|va>", use bus IOVA scheme */
-	if (internal_conf->iova_mode == RTE_IOVA_DC) {
-		/* autodetect the IOVA mapping mode (default is RTE_IOVA_PA) */
-		enum rte_iova_mode iova_mode = rte_bus_get_iommu_class();
-
-		if (iova_mode == RTE_IOVA_DC)
-			iova_mode = RTE_IOVA_PA;
-		rte_eal_get_configuration()->iova_mode = iova_mode;
-	} else {
-		rte_eal_get_configuration()->iova_mode =
-			internal_conf->iova_mode;
+	/*
+	 * PA are only available for hugepages via contigmem.
+	 * If contigmem is inaccessible, rte_eal_hugepage_init() will fail
+	 * with a message describing the cause.
+	 */
+	has_phys_addr = internal_conf->no_hugetlbfs == 0;
+	iova_mode = internal_conf->iova_mode;
+	if (iova_mode == RTE_IOVA_PA && !has_phys_addr) {
+		rte_eal_init_alert("Cannot use IOVA as 'PA' since physical addresses are not available");
+		rte_errno = EINVAL;
+		return -1;
 	}
-
+	if (iova_mode == RTE_IOVA_DC) {
+		RTE_LOG(DEBUG, EAL, "Specific IOVA mode is not requested, autodetecting\n");
+		if (has_phys_addr) {
+			RTE_LOG(DEBUG, EAL, "Selecting IOVA mode according to bus requests\n");
+			iova_mode = rte_bus_get_iommu_class();
+			if (iova_mode == RTE_IOVA_DC)
+				iova_mode = RTE_IOVA_PA;
+		} else {
+			iova_mode = RTE_IOVA_VA;
+		}
+	}
+	rte_eal_get_configuration()->iova_mode = iova_mode;
 	RTE_LOG(INFO, EAL, "Selected IOVA mode '%s'\n",
 		rte_eal_iova_mode() == RTE_IOVA_PA ? "PA" : "VA");
 
@@ -906,7 +927,7 @@ rte_eal_init(int argc, char **argv)
 	ret = rte_service_init();
 	if (ret) {
 		rte_eal_init_alert("rte_service_init() failed");
-		rte_errno = ENOEXEC;
+		rte_errno = -ret;
 		return -1;
 	}
 
@@ -922,7 +943,7 @@ rte_eal_init(int argc, char **argv)
 	 */
 	ret = rte_service_start_with_defaults();
 	if (ret < 0 && ret != -ENOTSUP) {
-		rte_errno = ENOEXEC;
+		rte_errno = -ret;
 		return -1;
 	}
 
@@ -993,6 +1014,7 @@ int rte_vfio_setup_device(__rte_unused const char *sysfs_base,
 		      __rte_unused int *vfio_dev_fd,
 		      __rte_unused struct vfio_device_info *device_info)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
@@ -1000,11 +1022,13 @@ int rte_vfio_release_device(__rte_unused const char *sysfs_base,
 			__rte_unused const char *dev_addr,
 			__rte_unused int fd)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
 int rte_vfio_enable(__rte_unused const char *modname)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
@@ -1020,7 +1044,8 @@ int rte_vfio_noiommu_is_enabled(void)
 
 int rte_vfio_clear_group(__rte_unused int vfio_group_fd)
 {
-	return 0;
+	rte_errno = ENOTSUP;
+	return -1;
 }
 
 int
@@ -1028,30 +1053,35 @@ rte_vfio_get_group_num(__rte_unused const char *sysfs_base,
 		       __rte_unused const char *dev_addr,
 		       __rte_unused int *iommu_group_num)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
 int
 rte_vfio_get_container_fd(void)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
 int
 rte_vfio_get_group_fd(__rte_unused int iommu_group_num)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
 int
 rte_vfio_container_create(void)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
 int
 rte_vfio_container_destroy(__rte_unused int container_fd)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
@@ -1059,6 +1089,7 @@ int
 rte_vfio_container_group_bind(__rte_unused int container_fd,
 		__rte_unused int iommu_group_num)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
@@ -1066,6 +1097,7 @@ int
 rte_vfio_container_group_unbind(__rte_unused int container_fd,
 		__rte_unused int iommu_group_num)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
@@ -1075,6 +1107,7 @@ rte_vfio_container_dma_map(__rte_unused int container_fd,
 			__rte_unused uint64_t iova,
 			__rte_unused uint64_t len)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }
 
@@ -1084,5 +1117,6 @@ rte_vfio_container_dma_unmap(__rte_unused int container_fd,
 			__rte_unused uint64_t iova,
 			__rte_unused uint64_t len)
 {
+	rte_errno = ENOTSUP;
 	return -1;
 }

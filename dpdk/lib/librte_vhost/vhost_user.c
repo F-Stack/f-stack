@@ -474,8 +474,8 @@ vhost_user_set_vring_num(struct virtio_net **pdev,
 }
 
 /*
- * Reallocate virtio_dev and vhost_virtqueue data structure to make them on the
- * same numa node as the memory of vring descriptor.
+ * Reallocate virtio_dev, vhost_virtqueue and related data structures to
+ * make them on the same numa node as the memory of vring descriptor.
  */
 #ifdef RTE_LIBRTE_VHOST_NUMA
 static struct virtio_net*
@@ -489,11 +489,15 @@ numa_realloc(struct virtio_net *dev, int index)
 	struct batch_copy_elem *new_batch_copy_elems;
 	int ret;
 
-	if (dev->flags & VIRTIO_DEV_RUNNING)
-		return dev;
-
 	old_dev = dev;
 	vq = old_vq = dev->virtqueue[index];
+
+	/*
+	 * If VQ is ready, it is too late to reallocate, it certainly already
+	 * happened anyway on VHOST_USER_SET_VRING_ADRR.
+	 */
+	if (vq->ready)
+		return dev;
 
 	ret = get_mempolicy(&newnode, NULL, 0, old_vq->desc,
 			    MPOL_F_NODE | MPOL_F_ADDR);
@@ -549,6 +553,9 @@ numa_realloc(struct virtio_net *dev, int index)
 		rte_free(old_vq);
 	}
 
+	if (dev->flags & VIRTIO_DEV_RUNNING)
+		goto out;
+
 	/* check if we need to reallocate dev */
 	ret = get_mempolicy(&oldnode, NULL, 0, old_dev,
 			    MPOL_F_NODE | MPOL_F_ADDR);
@@ -558,6 +565,10 @@ numa_realloc(struct virtio_net *dev, int index)
 		goto out;
 	}
 	if (oldnode != newnode) {
+		struct rte_vhost_memory *old_mem;
+		struct guest_page *old_gp;
+		ssize_t mem_size, gp_size;
+
 		VHOST_LOG_CONFIG(INFO,
 			"reallocate dev from %d to %d node\n",
 			oldnode, newnode);
@@ -569,6 +580,29 @@ numa_realloc(struct virtio_net *dev, int index)
 
 		memcpy(dev, old_dev, sizeof(*dev));
 		rte_free(old_dev);
+
+		mem_size = sizeof(struct rte_vhost_memory) +
+			sizeof(struct rte_vhost_mem_region) * dev->mem->nregions;
+		old_mem = dev->mem;
+		dev->mem = rte_malloc_socket(NULL, mem_size, 0, newnode);
+		if (!dev->mem) {
+			dev->mem = old_mem;
+			goto out;
+		}
+
+		memcpy(dev->mem, old_mem, mem_size);
+		rte_free(old_mem);
+
+		gp_size = dev->max_guest_pages * sizeof(*dev->guest_pages);
+		old_gp = dev->guest_pages;
+		dev->guest_pages = rte_malloc_socket(NULL, gp_size, RTE_CACHE_LINE_SIZE, newnode);
+		if (!dev->guest_pages) {
+			dev->guest_pages = old_gp;
+			goto out;
+		}
+
+		memcpy(dev->guest_pages, old_gp, gp_size);
+		rte_free(old_gp);
 	}
 
 out:
@@ -869,7 +903,7 @@ vhost_user_set_vring_base(struct virtio_net **pdev,
 
 static int
 add_one_guest_page(struct virtio_net *dev, uint64_t guest_phys_addr,
-		   uint64_t host_phys_addr, uint64_t size)
+		   uint64_t host_iova, uint64_t size)
 {
 	struct guest_page *page, *last_page;
 	struct guest_page *old_pages;
@@ -890,7 +924,7 @@ add_one_guest_page(struct virtio_net *dev, uint64_t guest_phys_addr,
 	if (dev->nr_guest_pages > 0) {
 		last_page = &dev->guest_pages[dev->nr_guest_pages - 1];
 		/* merge if the two pages are continuous */
-		if (host_phys_addr == last_page->host_phys_addr +
+		if (host_iova == last_page->host_iova +
 				      last_page->size) {
 			last_page->size += size;
 			return 0;
@@ -899,7 +933,7 @@ add_one_guest_page(struct virtio_net *dev, uint64_t guest_phys_addr,
 
 	page = &dev->guest_pages[dev->nr_guest_pages++];
 	page->guest_phys_addr = guest_phys_addr;
-	page->host_phys_addr  = host_phys_addr;
+	page->host_iova  = host_iova;
 	page->size = size;
 
 	return 0;
@@ -912,14 +946,14 @@ add_guest_pages(struct virtio_net *dev, struct rte_vhost_mem_region *reg,
 	uint64_t reg_size = reg->size;
 	uint64_t host_user_addr  = reg->host_user_addr;
 	uint64_t guest_phys_addr = reg->guest_phys_addr;
-	uint64_t host_phys_addr;
+	uint64_t host_iova;
 	uint64_t size;
 
-	host_phys_addr = rte_mem_virt2iova((void *)(uintptr_t)host_user_addr);
+	host_iova = rte_mem_virt2iova((void *)(uintptr_t)host_user_addr);
 	size = page_size - (guest_phys_addr & (page_size - 1));
 	size = RTE_MIN(size, reg_size);
 
-	if (add_one_guest_page(dev, guest_phys_addr, host_phys_addr, size) < 0)
+	if (add_one_guest_page(dev, guest_phys_addr, host_iova, size) < 0)
 		return -1;
 
 	host_user_addr  += size;
@@ -928,9 +962,9 @@ add_guest_pages(struct virtio_net *dev, struct rte_vhost_mem_region *reg,
 
 	while (reg_size > 0) {
 		size = RTE_MIN(reg_size, page_size);
-		host_phys_addr = rte_mem_virt2iova((void *)(uintptr_t)
+		host_iova = rte_mem_virt2iova((void *)(uintptr_t)
 						  host_user_addr);
-		if (add_one_guest_page(dev, guest_phys_addr, host_phys_addr,
+		if (add_one_guest_page(dev, guest_phys_addr, host_iova,
 				size) < 0)
 			return -1;
 
@@ -962,11 +996,11 @@ dump_guest_pages(struct virtio_net *dev)
 		VHOST_LOG_CONFIG(INFO,
 			"guest physical page region %u\n"
 			"\t guest_phys_addr: %" PRIx64 "\n"
-			"\t host_phys_addr : %" PRIx64 "\n"
+			"\t host_iova      : %" PRIx64 "\n"
 			"\t size           : %" PRIx64 "\n",
 			i,
 			page->guest_phys_addr,
-			page->host_phys_addr,
+			page->host_iova,
 			page->size);
 	}
 }
@@ -1416,6 +1450,9 @@ vhost_user_get_inflight_fd(struct virtio_net **pdev,
 	int fd, i, j;
 	void *addr;
 
+	if (validate_msg_fds(msg, 0) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
+
 	if (msg->size != sizeof(msg->payload.inflight)) {
 		VHOST_LOG_CONFIG(ERR,
 			"invalid get_inflight_fd message size is %d\n",
@@ -1508,6 +1545,9 @@ vhost_user_set_inflight_fd(struct virtio_net **pdev, VhostUserMsg *msg,
 	struct vhost_virtqueue *vq;
 	void *addr;
 	int fd, i;
+
+	if (validate_msg_fds(msg, 1) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
 
 	fd = msg->fds[0];
 	if (msg->size != sizeof(msg->payload.inflight) || fd < 0) {
@@ -1876,9 +1916,6 @@ vhost_user_set_vring_kick(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	 */
 	if (!(dev->features & (1ULL << VHOST_USER_F_PROTOCOL_FEATURES))) {
 		vq->enabled = 1;
-		if (dev->notify_ops->vring_state_changed)
-			dev->notify_ops->vring_state_changed(
-				dev->vid, file.index, 1);
 	}
 
 	if (vq->ready) {
@@ -1980,6 +2017,8 @@ vhost_user_get_vring_base(struct virtio_net **pdev,
 
 	msg->size = sizeof(msg->payload.state);
 	msg->fd_num = 0;
+
+	vhost_user_iotlb_flush_all(vq);
 
 	vring_invalidate(dev, vq);
 
@@ -2346,8 +2385,11 @@ vhost_user_iotlb_msg(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			vhost_user_iotlb_cache_insert(vq, imsg->iova, vva,
 					len, imsg->perm);
 
-			if (is_vring_iotlb(dev, vq, imsg))
+			if (is_vring_iotlb(dev, vq, imsg)) {
+				rte_spinlock_lock(&vq->access_lock);
 				*pdev = dev = translate_ring_addresses(dev, i);
+				rte_spinlock_unlock(&vq->access_lock);
+			}
 		}
 		break;
 	case VHOST_IOTLB_INVALIDATE:
@@ -2360,8 +2402,11 @@ vhost_user_iotlb_msg(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			vhost_user_iotlb_cache_remove(vq, imsg->iova,
 					imsg->size);
 
-			if (is_vring_iotlb(dev, vq, imsg))
+			if (is_vring_iotlb(dev, vq, imsg)) {
+				rte_spinlock_lock(&vq->access_lock);
 				vring_invalidate(dev, vq);
+				rte_spinlock_unlock(&vq->access_lock);
+			}
 		}
 		break;
 	default:
@@ -2646,11 +2691,15 @@ vhost_user_check_and_alloc_queue_pair(struct virtio_net *dev,
 		break;
 	case VHOST_USER_SET_VRING_NUM:
 	case VHOST_USER_SET_VRING_BASE:
+	case VHOST_USER_GET_VRING_BASE:
 	case VHOST_USER_SET_VRING_ENABLE:
 		vring_idx = msg->payload.state.index;
 		break;
 	case VHOST_USER_SET_VRING_ADDR:
 		vring_idx = msg->payload.addr.index;
+		break;
+	case VHOST_USER_SET_INFLIGHT_FD:
+		vring_idx = msg->payload.inflight.num_queues - 1;
 		break;
 	default:
 		return 0;
@@ -2740,7 +2789,6 @@ vhost_user_msg_handler(int vid, int fd)
 		return -1;
 	}
 
-	ret = 0;
 	request = msg.request.master;
 	if (request > VHOST_USER_NONE && request < VHOST_USER_MAX &&
 			vhost_message_str[request]) {
@@ -2861,9 +2909,6 @@ skip_to_post_handle:
 		}
 	}
 
-	if (unlock_required)
-		vhost_user_unlock_all_queue_pairs(dev);
-
 	/* If message was not handled at this stage, treat it as an error */
 	if (!handled) {
 		VHOST_LOG_CONFIG(ERR,
@@ -2885,9 +2930,11 @@ skip_to_post_handle:
 	} else if (ret == RTE_VHOST_MSG_RESULT_ERR) {
 		VHOST_LOG_CONFIG(ERR,
 			"vhost message handling failed.\n");
-		return -1;
+		ret = -1;
+		goto unlock;
 	}
 
+	ret = 0;
 	for (i = 0; i < dev->nr_vring; i++) {
 		struct vhost_virtqueue *vq = dev->virtqueue[i];
 		bool cur_ready = vq_is_ready(dev, vq);
@@ -2898,8 +2945,11 @@ skip_to_post_handle:
 		}
 	}
 
+unlock:
+	if (unlock_required)
+		vhost_user_unlock_all_queue_pairs(dev);
 
-	if (!virtio_is_ready(dev))
+	if (ret != 0 || !virtio_is_ready(dev))
 		goto out;
 
 	/*
@@ -2926,7 +2976,7 @@ skip_to_post_handle:
 	}
 
 out:
-	return 0;
+	return ret;
 }
 
 static int process_slave_message_reply(struct virtio_net *dev,

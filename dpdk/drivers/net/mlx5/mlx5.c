@@ -37,13 +37,11 @@
 #include "mlx5_autoconf.h"
 #include "mlx5_mr.h"
 #include "mlx5_flow.h"
+#include "mlx5_flow_os.h"
 #include "rte_pmd_mlx5.h"
 
 /* Device parameter to enable RX completion queue compression. */
 #define MLX5_RXQ_CQE_COMP_EN "rxq_cqe_comp_en"
-
-/* Device parameter to enable RX completion entry padding to 128B. */
-#define MLX5_RXQ_CQE_PAD_EN "rxq_cqe_pad_en"
 
 /* Device parameter to enable padding Rx packet to cacheline size. */
 #define MLX5_RXQ_PKT_PAD_EN "rxq_pkt_pad_en"
@@ -413,8 +411,8 @@ mlx5_flow_aso_age_mng_close(struct mlx5_dev_ctx_shared *sh)
 			for (j = 0; j < MLX5_COUNTERS_PER_POOL; ++j)
 				if (pool->actions[j].dr_action)
 					claim_zero
-						(mlx5_glue->destroy_flow_action
-						  (pool->actions[j].dr_action));
+					    (mlx5_flow_os_destroy_flow_action
+					      (pool->actions[j].dr_action));
 			mlx5_free(pool);
 		}
 		mlx5_free(sh->aso_age_mng->pools);
@@ -479,8 +477,7 @@ mlx5_flow_destroy_counter_stat_mem_mng(struct mlx5_counter_stats_mem_mng *mng)
 	uint8_t *mem = (uint8_t *)(uintptr_t)mng->raws[0].data;
 
 	LIST_REMOVE(mng, next);
-	claim_zero(mlx5_devx_cmd_destroy(mng->dm));
-	claim_zero(mlx5_glue->devx_umem_dereg(mng->umem));
+	mlx5_os_wrapped_mkey_destroy(&mng->wm);
 	mlx5_free(mem);
 }
 
@@ -521,7 +518,7 @@ mlx5_flow_counters_mng_close(struct mlx5_dev_ctx_shared *sh)
 
 				if (cnt->action)
 					claim_zero
-					 (mlx5_glue->destroy_flow_action
+					 (mlx5_flow_os_destroy_flow_action
 					  (cnt->action));
 				if (fallback && MLX5_POOL_GET_CNT
 				    (pool, j)->dcs_when_free)
@@ -551,11 +548,13 @@ mlx5_age_event_prepare(struct mlx5_dev_ctx_shared *sh)
 		age_info = &sh->port[i].age_info;
 		if (!MLX5_AGE_GET(age_info, MLX5_AGE_EVENT_NEW))
 			continue;
-		if (MLX5_AGE_GET(age_info, MLX5_AGE_TRIGGER))
+		MLX5_AGE_UNSET(age_info, MLX5_AGE_EVENT_NEW);
+		if (MLX5_AGE_GET(age_info, MLX5_AGE_TRIGGER)) {
+			MLX5_AGE_UNSET(age_info, MLX5_AGE_TRIGGER);
 			rte_eth_dev_callback_process
 				(&rte_eth_devices[sh->port[i].devx_ih_port_id],
 				RTE_ETH_EVENT_FLOW_AGED, NULL);
-		age_info->flags = 0;
+		}
 	}
 }
 
@@ -564,7 +563,7 @@ mlx5_age_event_prepare(struct mlx5_dev_ctx_shared *sh)
  *
  * @param[in] sh
  *   Pointer to mlx5_dev_ctx_shared object.
- * @param[in] sh
+ * @param[in] config
  *   Pointer to user dev config.
  */
 static void
@@ -769,7 +768,7 @@ mlx5_alloc_rxtx_uars(struct mlx5_dev_ctx_shared *sh,
 			 * the UAR mapping type into account on UAR setup
 			 * on queue creation.
 			 */
-			DRV_LOG(WARNING, "Failed to allocate Tx DevX UAR (BF)");
+			DRV_LOG(DEBUG, "Failed to allocate Tx DevX UAR (BF)");
 			uar_mapping = MLX5DV_UAR_ALLOC_TYPE_NC;
 			sh->tx_uar = mlx5_glue->devx_alloc_uar
 							(sh->ctx, uar_mapping);
@@ -782,7 +781,7 @@ mlx5_alloc_rxtx_uars(struct mlx5_dev_ctx_shared *sh,
 			 * If Verbs/kernel does not support "Non-Cached"
 			 * try the "Write-Combining".
 			 */
-			DRV_LOG(WARNING, "Failed to allocate Tx DevX UAR (NC)");
+			DRV_LOG(DEBUG, "Failed to allocate Tx DevX UAR (NC)");
 			uar_mapping = MLX5DV_UAR_ALLOC_TYPE_BF;
 			sh->tx_uar = mlx5_glue->devx_alloc_uar
 							(sh->ctx, uar_mapping);
@@ -801,7 +800,7 @@ mlx5_alloc_rxtx_uars(struct mlx5_dev_ctx_shared *sh,
 		 * IB device context, on context closure all UARs
 		 * will be freed, should be no memory/object leakage.
 		 */
-		DRV_LOG(WARNING, "Retrying to allocate Tx DevX UAR");
+		DRV_LOG(DEBUG, "Retrying to allocate Tx DevX UAR");
 		sh->tx_uar = NULL;
 	}
 	/* Check whether we finally succeeded with valid UAR allocation. */
@@ -822,7 +821,7 @@ mlx5_alloc_rxtx_uars(struct mlx5_dev_ctx_shared *sh,
 			 * should be no datapath noticeable impact,
 			 * can try "Non-Cached" mapping safely.
 			 */
-			DRV_LOG(WARNING, "Failed to allocate Rx DevX UAR (BF)");
+			DRV_LOG(DEBUG, "Failed to allocate Rx DevX UAR (BF)");
 			uar_mapping = MLX5DV_UAR_ALLOC_TYPE_NC;
 			sh->devx_rx_uar = mlx5_glue->devx_alloc_uar
 							(sh->ctx, uar_mapping);
@@ -841,7 +840,7 @@ mlx5_alloc_rxtx_uars(struct mlx5_dev_ctx_shared *sh,
 		 * IB device context, on context closure all UARs
 		 * will be freed, should be no memory/object leakage.
 		 */
-		DRV_LOG(WARNING, "Retrying to allocate Rx DevX UAR");
+		DRV_LOG(DEBUG, "Retrying to allocate Rx DevX UAR");
 		sh->devx_rx_uar = NULL;
 	}
 	/* Check whether we finally succeeded with valid UAR allocation. */
@@ -929,6 +928,7 @@ mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
 	for (i = 0; i < sh->max_port; i++) {
 		sh->port[i].ih_port_id = RTE_MAX_ETHPORTS;
 		sh->port[i].devx_ih_port_id = RTE_MAX_ETHPORTS;
+		sh->port[i].nl_ih_port_id = RTE_MAX_ETHPORTS;
 	}
 	sh->pd = mlx5_glue->alloc_pd(sh->ctx);
 	if (sh->pd == NULL) {
@@ -1021,6 +1021,8 @@ error:
 	MLX5_ASSERT(sh);
 	if (sh->cnt_id_tbl)
 		mlx5_l3t_destroy(sh->cnt_id_tbl);
+	if (sh->share_cache.cache.table)
+		mlx5_mr_btree_free(&sh->share_cache.cache);
 	if (sh->tis)
 		claim_zero(mlx5_devx_cmd_destroy(sh->tis));
 	if (sh->td)
@@ -1077,6 +1079,10 @@ mlx5_free_shared_dev_ctx(struct mlx5_dev_ctx_shared *sh)
 	mlx5_mr_release_cache(&sh->share_cache);
 	/* Remove context from the global device list. */
 	LIST_REMOVE(sh, next);
+	/* Release resources on the last device removal. */
+	if (LIST_EMPTY(&mlx5_dev_ctx_list)) {
+		mlx5_os_net_cleanup();
+	}
 	pthread_mutex_unlock(&mlx5_dev_ctx_list_mutex);
 	/*
 	 *  Ensure there is no async event handler installed.
@@ -1128,6 +1134,7 @@ mlx5_free_table_hash_list(struct mlx5_priv *priv)
 	if (!sh->flow_tbls)
 		return;
 	mlx5_hlist_destroy(sh->flow_tbls);
+	sh->flow_tbls = NULL;
 }
 
 /**
@@ -1243,20 +1250,23 @@ mlx5_proc_priv_init(struct rte_eth_dev *dev)
 	struct mlx5_proc_priv *ppriv;
 	size_t ppriv_size;
 
+	mlx5_proc_priv_uninit(dev);
 	/*
 	 * UAR register table follows the process private structure. BlueFlame
 	 * registers for Tx queues are stored in the table.
 	 */
 	ppriv_size =
 		sizeof(struct mlx5_proc_priv) + priv->txqs_n * sizeof(void *);
-	ppriv = mlx5_malloc(MLX5_MEM_RTE, ppriv_size, RTE_CACHE_LINE_SIZE,
-			    dev->device->numa_node);
+	ppriv = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, ppriv_size,
+			    RTE_CACHE_LINE_SIZE, dev->device->numa_node);
 	if (!ppriv) {
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
-	ppriv->uar_table_sz = ppriv_size;
+	ppriv->uar_table_sz = priv->txqs_n;
 	dev->process_private = ppriv;
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		priv->sh->pppriv = ppriv;
 	return 0;
 }
 
@@ -1266,7 +1276,7 @@ mlx5_proc_priv_init(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+void
 mlx5_proc_priv_uninit(struct rte_eth_dev *dev)
 {
 	if (!dev->process_private)
@@ -1334,6 +1344,11 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		priv->rxqs_n = 0;
 		priv->rxqs = NULL;
 	}
+	if (priv->representor) {
+		/* Each representor has a dedicated interrupts handler */
+		mlx5_free(dev->intr_handle);
+		dev->intr_handle = NULL;
+	}
 	if (priv->txqs != NULL) {
 		/* XXX race condition if mlx5_tx_burst() is still running. */
 		usleep(1000);
@@ -1343,6 +1358,10 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		priv->txqs = NULL;
 	}
 	mlx5_proc_priv_uninit(dev);
+	if (priv->q_counters) {
+		mlx5_devx_cmd_destroy(priv->q_counters);
+		priv->q_counters = NULL;
+	}
 	if (priv->drop_queue.hrxq)
 		mlx5_drop_action_destroy(dev);
 	if (priv->mreg_cp_tbl)
@@ -1393,7 +1412,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	/*
 	 * Free the shared context in last turn, because the cleanup
 	 * routines above may use some shared fields, like
-	 * mlx5_os_mac_addr_flush() uses ibdev_path for retrieveing
+	 * mlx5_os_mac_addr_flush() uses ibdev_path for retrieving
 	 * ifindex if Netlink fails.
 	 */
 	mlx5_free_shared_dev_ctx(priv->sh);
@@ -1425,6 +1444,156 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	dev->data->mac_addrs = NULL;
 	return 0;
 }
+
+const struct eth_dev_ops mlx5_dev_ops = {
+	.dev_configure = mlx5_dev_configure,
+	.dev_start = mlx5_dev_start,
+	.dev_stop = mlx5_dev_stop,
+	.dev_set_link_down = mlx5_set_link_down,
+	.dev_set_link_up = mlx5_set_link_up,
+	.dev_close = mlx5_dev_close,
+	.promiscuous_enable = mlx5_promiscuous_enable,
+	.promiscuous_disable = mlx5_promiscuous_disable,
+	.allmulticast_enable = mlx5_allmulticast_enable,
+	.allmulticast_disable = mlx5_allmulticast_disable,
+	.link_update = mlx5_link_update,
+	.stats_get = mlx5_stats_get,
+	.stats_reset = mlx5_stats_reset,
+	.xstats_get = mlx5_xstats_get,
+	.xstats_reset = mlx5_xstats_reset,
+	.xstats_get_names = mlx5_xstats_get_names,
+	.fw_version_get = mlx5_fw_version_get,
+	.dev_infos_get = mlx5_dev_infos_get,
+	.read_clock = mlx5_txpp_read_clock,
+	.dev_supported_ptypes_get = mlx5_dev_supported_ptypes_get,
+	.vlan_filter_set = mlx5_vlan_filter_set,
+	.rx_queue_setup = mlx5_rx_queue_setup,
+	.rx_hairpin_queue_setup = mlx5_rx_hairpin_queue_setup,
+	.tx_queue_setup = mlx5_tx_queue_setup,
+	.tx_hairpin_queue_setup = mlx5_tx_hairpin_queue_setup,
+	.rx_queue_release = mlx5_rx_queue_release,
+	.tx_queue_release = mlx5_tx_queue_release,
+	.rx_queue_start = mlx5_rx_queue_start,
+	.rx_queue_stop = mlx5_rx_queue_stop,
+	.tx_queue_start = mlx5_tx_queue_start,
+	.tx_queue_stop = mlx5_tx_queue_stop,
+	.flow_ctrl_get = mlx5_dev_get_flow_ctrl,
+	.flow_ctrl_set = mlx5_dev_set_flow_ctrl,
+	.mac_addr_remove = mlx5_mac_addr_remove,
+	.mac_addr_add = mlx5_mac_addr_add,
+	.mac_addr_set = mlx5_mac_addr_set,
+	.set_mc_addr_list = mlx5_set_mc_addr_list,
+	.mtu_set = mlx5_dev_set_mtu,
+	.vlan_strip_queue_set = mlx5_vlan_strip_queue_set,
+	.vlan_offload_set = mlx5_vlan_offload_set,
+	.reta_update = mlx5_dev_rss_reta_update,
+	.reta_query = mlx5_dev_rss_reta_query,
+	.rss_hash_update = mlx5_rss_hash_update,
+	.rss_hash_conf_get = mlx5_rss_hash_conf_get,
+	.filter_ctrl = mlx5_dev_filter_ctrl,
+	.rxq_info_get = mlx5_rxq_info_get,
+	.txq_info_get = mlx5_txq_info_get,
+	.rx_burst_mode_get = mlx5_rx_burst_mode_get,
+	.tx_burst_mode_get = mlx5_tx_burst_mode_get,
+	.rx_queue_intr_enable = mlx5_rx_intr_enable,
+	.rx_queue_intr_disable = mlx5_rx_intr_disable,
+	.is_removed = mlx5_is_removed,
+	.udp_tunnel_port_add  = mlx5_udp_tunnel_port_add,
+	.get_module_info = mlx5_get_module_info,
+	.get_module_eeprom = mlx5_get_module_eeprom,
+	.hairpin_cap_get = mlx5_hairpin_cap_get,
+	.mtr_ops_get = mlx5_flow_meter_ops_get,
+	.hairpin_bind = mlx5_hairpin_bind,
+	.hairpin_unbind = mlx5_hairpin_unbind,
+	.hairpin_get_peer_ports = mlx5_hairpin_get_peer_ports,
+	.hairpin_queue_peer_update = mlx5_hairpin_queue_peer_update,
+	.hairpin_queue_peer_bind = mlx5_hairpin_queue_peer_bind,
+	.hairpin_queue_peer_unbind = mlx5_hairpin_queue_peer_unbind,
+};
+
+/* Available operations from secondary process. */
+const struct eth_dev_ops mlx5_dev_sec_ops = {
+	.stats_get = mlx5_stats_get,
+	.stats_reset = mlx5_stats_reset,
+	.xstats_get = mlx5_xstats_get,
+	.xstats_reset = mlx5_xstats_reset,
+	.xstats_get_names = mlx5_xstats_get_names,
+	.fw_version_get = mlx5_fw_version_get,
+	.dev_infos_get = mlx5_dev_infos_get,
+	.read_clock = mlx5_txpp_read_clock,
+	.rx_queue_start = mlx5_rx_queue_start,
+	.rx_queue_stop = mlx5_rx_queue_stop,
+	.tx_queue_start = mlx5_tx_queue_start,
+	.tx_queue_stop = mlx5_tx_queue_stop,
+	.rxq_info_get = mlx5_rxq_info_get,
+	.txq_info_get = mlx5_txq_info_get,
+	.rx_burst_mode_get = mlx5_rx_burst_mode_get,
+	.tx_burst_mode_get = mlx5_tx_burst_mode_get,
+	.get_module_info = mlx5_get_module_info,
+	.get_module_eeprom = mlx5_get_module_eeprom,
+};
+
+/* Available operations in flow isolated mode. */
+const struct eth_dev_ops mlx5_dev_ops_isolate = {
+	.dev_configure = mlx5_dev_configure,
+	.dev_start = mlx5_dev_start,
+	.dev_stop = mlx5_dev_stop,
+	.dev_set_link_down = mlx5_set_link_down,
+	.dev_set_link_up = mlx5_set_link_up,
+	.dev_close = mlx5_dev_close,
+	.promiscuous_enable = mlx5_promiscuous_enable,
+	.promiscuous_disable = mlx5_promiscuous_disable,
+	.allmulticast_enable = mlx5_allmulticast_enable,
+	.allmulticast_disable = mlx5_allmulticast_disable,
+	.link_update = mlx5_link_update,
+	.stats_get = mlx5_stats_get,
+	.stats_reset = mlx5_stats_reset,
+	.xstats_get = mlx5_xstats_get,
+	.xstats_reset = mlx5_xstats_reset,
+	.xstats_get_names = mlx5_xstats_get_names,
+	.fw_version_get = mlx5_fw_version_get,
+	.dev_infos_get = mlx5_dev_infos_get,
+	.read_clock = mlx5_txpp_read_clock,
+	.dev_supported_ptypes_get = mlx5_dev_supported_ptypes_get,
+	.vlan_filter_set = mlx5_vlan_filter_set,
+	.rx_queue_setup = mlx5_rx_queue_setup,
+	.rx_hairpin_queue_setup = mlx5_rx_hairpin_queue_setup,
+	.tx_queue_setup = mlx5_tx_queue_setup,
+	.tx_hairpin_queue_setup = mlx5_tx_hairpin_queue_setup,
+	.rx_queue_release = mlx5_rx_queue_release,
+	.tx_queue_release = mlx5_tx_queue_release,
+	.rx_queue_start = mlx5_rx_queue_start,
+	.rx_queue_stop = mlx5_rx_queue_stop,
+	.tx_queue_start = mlx5_tx_queue_start,
+	.tx_queue_stop = mlx5_tx_queue_stop,
+	.flow_ctrl_get = mlx5_dev_get_flow_ctrl,
+	.flow_ctrl_set = mlx5_dev_set_flow_ctrl,
+	.mac_addr_remove = mlx5_mac_addr_remove,
+	.mac_addr_add = mlx5_mac_addr_add,
+	.mac_addr_set = mlx5_mac_addr_set,
+	.set_mc_addr_list = mlx5_set_mc_addr_list,
+	.mtu_set = mlx5_dev_set_mtu,
+	.vlan_strip_queue_set = mlx5_vlan_strip_queue_set,
+	.vlan_offload_set = mlx5_vlan_offload_set,
+	.filter_ctrl = mlx5_dev_filter_ctrl,
+	.rxq_info_get = mlx5_rxq_info_get,
+	.txq_info_get = mlx5_txq_info_get,
+	.rx_burst_mode_get = mlx5_rx_burst_mode_get,
+	.tx_burst_mode_get = mlx5_tx_burst_mode_get,
+	.rx_queue_intr_enable = mlx5_rx_intr_enable,
+	.rx_queue_intr_disable = mlx5_rx_intr_disable,
+	.is_removed = mlx5_is_removed,
+	.get_module_info = mlx5_get_module_info,
+	.get_module_eeprom = mlx5_get_module_eeprom,
+	.hairpin_cap_get = mlx5_hairpin_cap_get,
+	.mtr_ops_get = mlx5_flow_meter_ops_get,
+	.hairpin_bind = mlx5_hairpin_bind,
+	.hairpin_unbind = mlx5_hairpin_unbind,
+	.hairpin_get_peer_ports = mlx5_hairpin_get_peer_ports,
+	.hairpin_queue_peer_update = mlx5_hairpin_queue_peer_update,
+	.hairpin_queue_peer_bind = mlx5_hairpin_queue_peer_bind,
+	.hairpin_queue_peer_unbind = mlx5_hairpin_queue_peer_unbind,
+};
 
 /**
  * Verify and store value for device argument.
@@ -1472,16 +1641,14 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 		}
 		config->cqe_comp = !!tmp;
 		config->cqe_comp_fmt = tmp;
-	} else if (strcmp(MLX5_RXQ_CQE_PAD_EN, key) == 0) {
-		config->cqe_pad = !!tmp;
 	} else if (strcmp(MLX5_RXQ_PKT_PAD_EN, key) == 0) {
 		config->hw_padding = !!tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_EN, key) == 0) {
 		config->mprq.enabled = !!tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_LOG_STRIDE_NUM, key) == 0) {
-		config->mprq.stride_num_n = tmp;
+		config->mprq.log_stride_num = tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_LOG_STRIDE_SIZE, key) == 0) {
-		config->mprq.stride_size_n = tmp;
+		config->mprq.log_stride_size = tmp;
 	} else if (strcmp(MLX5_RX_MPRQ_MAX_MEMCPY_LEN, key) == 0) {
 		config->mprq.max_memcpy_len = tmp;
 	} else if (strcmp(MLX5_RXQS_MIN_MPRQ, key) == 0) {
@@ -1569,7 +1736,7 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 		if (tmp != MLX5_RCM_NONE &&
 		    tmp != MLX5_RCM_LIGHT &&
 		    tmp != MLX5_RCM_AGGR) {
-			DRV_LOG(ERR, "Unrecognize %s: \"%s\"", key, val);
+			DRV_LOG(ERR, "Unrecognized %s: \"%s\"", key, val);
 			rte_errno = EINVAL;
 			return -rte_errno;
 		}
@@ -1579,9 +1746,9 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 	} else if (strcmp(MLX5_DECAP_EN, key) == 0) {
 		config->decap_en = !!tmp;
 	} else {
-		DRV_LOG(WARNING, "%s: unknown parameter", key);
-		rte_errno = EINVAL;
-		return -rte_errno;
+		DRV_LOG(WARNING,
+			"%s: unknown parameter, maybe it's for another class.",
+			key);
 	}
 	return 0;
 }
@@ -1600,72 +1767,25 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 int
 mlx5_args(struct mlx5_dev_config *config, struct rte_devargs *devargs)
 {
-	const char **params = (const char *[]){
-		MLX5_RXQ_CQE_COMP_EN,
-		MLX5_RXQ_CQE_PAD_EN,
-		MLX5_RXQ_PKT_PAD_EN,
-		MLX5_RX_MPRQ_EN,
-		MLX5_RX_MPRQ_LOG_STRIDE_NUM,
-		MLX5_RX_MPRQ_LOG_STRIDE_SIZE,
-		MLX5_RX_MPRQ_MAX_MEMCPY_LEN,
-		MLX5_RXQS_MIN_MPRQ,
-		MLX5_TXQ_INLINE,
-		MLX5_TXQ_INLINE_MIN,
-		MLX5_TXQ_INLINE_MAX,
-		MLX5_TXQ_INLINE_MPW,
-		MLX5_TXQS_MIN_INLINE,
-		MLX5_TXQS_MAX_VEC,
-		MLX5_TXQ_MPW_EN,
-		MLX5_TXQ_MPW_HDR_DSEG_EN,
-		MLX5_TXQ_MAX_INLINE_LEN,
-		MLX5_TX_DB_NC,
-		MLX5_TX_PP,
-		MLX5_TX_SKEW,
-		MLX5_TX_VEC_EN,
-		MLX5_RX_VEC_EN,
-		MLX5_L3_VXLAN_EN,
-		MLX5_VF_NL_EN,
-		MLX5_DV_ESW_EN,
-		MLX5_DV_FLOW_EN,
-		MLX5_DV_XMETA_EN,
-		MLX5_LACP_BY_USER,
-		MLX5_MR_EXT_MEMSEG_EN,
-		MLX5_REPRESENTOR,
-		MLX5_MAX_DUMP_FILES_NUM,
-		MLX5_LRO_TIMEOUT_USEC,
-		MLX5_CLASS_ARG_NAME,
-		MLX5_HP_BUF_SIZE,
-		MLX5_RECLAIM_MEM,
-		MLX5_SYS_MEM_EN,
-		MLX5_DECAP_EN,
-		NULL,
-	};
 	struct rte_kvargs *kvlist;
 	int ret = 0;
-	int i;
 
 	if (devargs == NULL)
 		return 0;
 	/* Following UGLY cast is done to pass checkpatch. */
-	kvlist = rte_kvargs_parse(devargs->args, params);
+	kvlist = rte_kvargs_parse(devargs->args, NULL);
 	if (kvlist == NULL) {
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
 	/* Process parameters. */
-	for (i = 0; (params[i] != NULL); ++i) {
-		if (rte_kvargs_count(kvlist, params[i])) {
-			ret = rte_kvargs_process(kvlist, params[i],
-						 mlx5_args_check, config);
-			if (ret) {
-				rte_errno = EINVAL;
-				rte_kvargs_free(kvlist);
-				return -rte_errno;
-			}
-		}
+	ret = rte_kvargs_process(kvlist, NULL, mlx5_args_check, config);
+	if (ret) {
+		rte_errno = EINVAL;
+		ret = -rte_errno;
 	}
 	rte_kvargs_free(kvlist);
-	return 0;
+	return ret;
 }
 
 /**
@@ -1822,17 +1942,17 @@ mlx5_set_metadata_mask(struct rte_eth_dev *dev)
 		break;
 	}
 	if (sh->dv_mark_mask && sh->dv_mark_mask != mark)
-		DRV_LOG(WARNING, "metadata MARK mask mismatche %08X:%08X",
+		DRV_LOG(WARNING, "metadata MARK mask mismatch %08X:%08X",
 				 sh->dv_mark_mask, mark);
 	else
 		sh->dv_mark_mask = mark;
 	if (sh->dv_meta_mask && sh->dv_meta_mask != meta)
-		DRV_LOG(WARNING, "metadata META mask mismatche %08X:%08X",
+		DRV_LOG(WARNING, "metadata META mask mismatch %08X:%08X",
 				 sh->dv_meta_mask, meta);
 	else
 		sh->dv_meta_mask = meta;
 	if (sh->dv_regc0_mask && sh->dv_regc0_mask != reg_c0)
-		DRV_LOG(WARNING, "metadata reg_c0 mask mismatche %08X:%08X",
+		DRV_LOG(WARNING, "metadata reg_c0 mask mismatch %08X:%08X",
 				 sh->dv_meta_mask, reg_c0);
 	else
 		sh->dv_regc0_mask = reg_c0;

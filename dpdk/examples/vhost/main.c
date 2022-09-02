@@ -20,6 +20,7 @@
 #include <rte_log.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
+#include <rte_net.h>
 #include <rte_vhost.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
@@ -31,6 +32,8 @@
 #ifndef MAX_QUEUES
 #define MAX_QUEUES 128
 #endif
+
+#define NUM_MBUFS_DEFAULT 0x24000
 
 /* the maximum number of external ports supported */
 #define MAX_SUP_PORTS 1
@@ -58,6 +61,9 @@
 
 /* Maximum long option length for option parsing. */
 #define MAX_LONG_OPT_SZ 64
+
+/* number of mbufs in all pools - if specified on command-line. */
+static int total_num_mbufs = NUM_MBUFS_DEFAULT;
 
 /* mask of enabled ports */
 static uint32_t enabled_port_mask = 0;
@@ -109,7 +115,7 @@ static uint32_t burst_rx_retry_num = BURST_RX_RETRIES;
 static char *socket_files;
 static int nb_sockets;
 
-/* empty vmdq configuration structure. Filled in programatically */
+/* empty VMDq configuration structure. Filled in programmatically */
 static struct rte_eth_conf vmdq_conf_default = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_VMDQ_ONLY,
@@ -117,7 +123,7 @@ static struct rte_eth_conf vmdq_conf_default = {
 		/*
 		 * VLAN strip is necessary for 1G NIC such as I350,
 		 * this fixes bug of ipv4 forwarding in guest can't
-		 * forward pakets from one virtio dev to another virtio dev.
+		 * forward packets from one virtio dev to another virtio dev.
 		 */
 		.offloads = DEV_RX_OFFLOAD_VLAN_STRIP,
 	},
@@ -248,6 +254,10 @@ port_init(uint16_t port)
 			port, strerror(-retval));
 
 		return retval;
+	}
+	if (dev_info.max_vmdq_pools == 0) {
+		RTE_LOG(ERR, VHOST_PORT, "Failed to get VMDq info.\n");
+		return -1;
 	}
 
 	rxconf = &dev_info.default_rxconf;
@@ -452,7 +462,7 @@ us_vhost_usage(const char *prgname)
 	"		--nb-devices ND\n"
 	"		-p PORTMASK: Set mask for ports to be used by application\n"
 	"		--vm2vm [0|1|2]: disable/software(default)/hardware vm2vm comms\n"
-	"		--rx-retry [0|1]: disable/enable(default) retries on rx. Enable retry if destintation queue is full\n"
+	"		--rx-retry [0|1]: disable/enable(default) retries on Rx. Enable retry if destination queue is full\n"
 	"		--rx-retry-delay [0-N]: timeout(in usecond) between retries on RX. This makes effect only if retries on rx enabled\n"
 	"		--rx-retry-num [0-N]: the number of retries on rx. This makes effect only if retries on rx enabled\n"
 	"		--mergeable [0|1]: disable(default)/enable RX mergeable buffers\n"
@@ -462,7 +472,8 @@ us_vhost_usage(const char *prgname)
 	"		--tso [0|1] disable/enable TCP segment offload.\n"
 	"		--client register a vhost-user socket as client mode.\n"
 	"		--dma-type register dma type for your vhost async driver. For example \"ioat\" for now.\n"
-	"		--dmas register dma channel for specific vhost device.\n",
+	"		--dmas register dma channel for specific vhost device.\n"
+	"		--total-num-mbufs [0-N] set the number of mbufs to be allocated in mbuf pools, the default value is 147456.\n",
 	       prgname);
 }
 
@@ -490,7 +501,7 @@ us_vhost_parse_args(int argc, char **argv)
 		{"builtin-net-driver", no_argument, &builtin_net_driver, 1},
 		{"dma-type", required_argument, NULL, 0},
 		{"dmas", required_argument, NULL, 0},
-		{NULL, 0, 0, 0},
+		{"total-num-mbufs", required_argument, NULL, 0},
 	};
 
 	/* Parse command line */
@@ -652,6 +663,21 @@ us_vhost_parse_args(int argc, char **argv)
 					return -1;
 				}
 				async_vhost_driver = 1;
+			}
+
+
+			if (!strncmp(long_option[option_index].name,
+						"total-num-mbufs", MAX_LONG_OPT_SZ)) {
+				ret = parse_num_opt(optarg, INT32_MAX);
+				if (ret == -1) {
+					RTE_LOG(INFO, VHOST_CONFIG,
+						"Invalid argument for total-num-mbufs [0..N]\n");
+					us_vhost_usage(prgname);
+					return -1;
+				}
+
+				if (total_num_mbufs < ret)
+					total_num_mbufs = ret;
 			}
 
 			break;
@@ -911,33 +937,34 @@ find_local_dest(struct vhost_dev *vdev, struct rte_mbuf *m,
 	return 0;
 }
 
-static uint16_t
-get_psd_sum(void *l3_hdr, uint64_t ol_flags)
-{
-	if (ol_flags & PKT_TX_IPV4)
-		return rte_ipv4_phdr_cksum(l3_hdr, ol_flags);
-	else /* assume ethertype == RTE_ETHER_TYPE_IPV6 */
-		return rte_ipv6_phdr_cksum(l3_hdr, ol_flags);
-}
-
 static void virtio_tx_offload(struct rte_mbuf *m)
 {
+	struct rte_net_hdr_lens hdr_lens;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
+	uint32_t ptype;
 	void *l3_hdr;
-	struct rte_ipv4_hdr *ipv4_hdr = NULL;
-	struct rte_tcp_hdr *tcp_hdr = NULL;
-	struct rte_ether_hdr *eth_hdr =
-		rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-	l3_hdr = (char *)eth_hdr + m->l2_len;
+	ptype = rte_net_get_ptype(m, &hdr_lens, RTE_PTYPE_ALL_MASK);
+	m->l2_len = hdr_lens.l2_len;
+	m->l3_len = hdr_lens.l3_len;
+	m->l4_len = hdr_lens.l4_len;
 
-	if (m->ol_flags & PKT_TX_IPV4) {
+	l3_hdr = rte_pktmbuf_mtod_offset(m, void *, m->l2_len);
+	tcp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *,
+		m->l2_len + m->l3_len);
+
+	m->ol_flags |= PKT_TX_TCP_SEG;
+	if ((ptype & RTE_PTYPE_L3_MASK) == RTE_PTYPE_L3_IPV4) {
+		m->ol_flags |= PKT_TX_IPV4;
+		m->ol_flags |= PKT_TX_IP_CKSUM;
 		ipv4_hdr = l3_hdr;
 		ipv4_hdr->hdr_checksum = 0;
-		m->ol_flags |= PKT_TX_IP_CKSUM;
+		tcp_hdr->cksum = rte_ipv4_phdr_cksum(l3_hdr, m->ol_flags);
+	} else { /* assume ethertype == RTE_ETHER_TYPE_IPV6 */
+		m->ol_flags |= PKT_TX_IPV6;
+		tcp_hdr->cksum = rte_ipv6_phdr_cksum(l3_hdr, m->ol_flags);
 	}
-
-	tcp_hdr = (struct rte_tcp_hdr *)((char *)l3_hdr + m->l3_len);
-	tcp_hdr->cksum = get_psd_sum(l3_hdr, m->ol_flags);
 }
 
 static inline void
@@ -1039,7 +1066,7 @@ queue2nic:
 		m->vlan_tci = vlan_tag;
 	}
 
-	if (m->ol_flags & PKT_TX_TCP_SEG)
+	if (m->ol_flags & PKT_RX_LRO)
 		virtio_tx_offload(m);
 
 	tx_q->m_table[tx_q->len++] = m;
@@ -1190,7 +1217,7 @@ switch_worker(void *arg __rte_unused)
 	struct vhost_dev *vdev;
 	struct mbuf_table *tx_q;
 
-	RTE_LOG(INFO, VHOST_DATA, "Procesing on Core %u started\n", lcore_id);
+	RTE_LOG(INFO, VHOST_DATA, "Processing on Core %u started\n", lcore_id);
 
 	tx_q = &lcore_tx_queue[lcore_id];
 	for (i = 0; i < rte_lcore_count(); i++) {
@@ -1234,7 +1261,7 @@ switch_worker(void *arg __rte_unused)
 
 /*
  * Remove a device from the specific data core linked list and from the
- * main linked list. Synchonization  occurs through the use of the
+ * main linked list. Synchronization  occurs through the use of the
  * lcore dev_removal_flag. Device is made volatile here to avoid re-ordering
  * of dev->remove=1 which can cause an infinite loop in the rte_pause loop.
  */
@@ -1442,57 +1469,6 @@ sigint_handler(__rte_unused int signum)
 }
 
 /*
- * While creating an mbuf pool, one key thing is to figure out how
- * many mbuf entries is enough for our use. FYI, here are some
- * guidelines:
- *
- * - Each rx queue would reserve @nr_rx_desc mbufs at queue setup stage
- *
- * - For each switch core (A CPU core does the packet switch), we need
- *   also make some reservation for receiving the packets from virtio
- *   Tx queue. How many is enough depends on the usage. It's normally
- *   a simple calculation like following:
- *
- *       MAX_PKT_BURST * max packet size / mbuf size
- *
- *   So, we definitely need allocate more mbufs when TSO is enabled.
- *
- * - Similarly, for each switching core, we should serve @nr_rx_desc
- *   mbufs for receiving the packets from physical NIC device.
- *
- * - We also need make sure, for each switch core, we have allocated
- *   enough mbufs to fill up the mbuf cache.
- */
-static void
-create_mbuf_pool(uint16_t nr_port, uint32_t nr_switch_core, uint32_t mbuf_size,
-	uint32_t nr_queues, uint32_t nr_rx_desc, uint32_t nr_mbuf_cache)
-{
-	uint32_t nr_mbufs;
-	uint32_t nr_mbufs_per_core;
-	uint32_t mtu = 1500;
-
-	if (mergeable)
-		mtu = 9000;
-	if (enable_tso)
-		mtu = 64 * 1024;
-
-	nr_mbufs_per_core  = (mtu + mbuf_size) * MAX_PKT_BURST /
-			(mbuf_size - RTE_PKTMBUF_HEADROOM);
-	nr_mbufs_per_core += nr_rx_desc;
-	nr_mbufs_per_core  = RTE_MAX(nr_mbufs_per_core, nr_mbuf_cache);
-
-	nr_mbufs  = nr_queues * nr_rx_desc;
-	nr_mbufs += nr_mbufs_per_core * nr_switch_core;
-	nr_mbufs *= nr_port;
-
-	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", nr_mbufs,
-					    nr_mbuf_cache, 0, mbuf_size,
-					    rte_socket_id());
-	if (mbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
-}
-
-/*
  * Main function, does initialisation and calls the per-lcore functions.
  */
 int
@@ -1503,7 +1479,7 @@ main(int argc, char *argv[])
 	int ret, i;
 	uint16_t portid;
 	static pthread_t tid;
-	uint64_t flags = 0;
+	uint64_t flags = RTE_VHOST_USER_NET_COMPLIANT_OL_FLAGS;
 
 	signal(SIGINT, sigint_handler);
 
@@ -1550,8 +1526,11 @@ main(int argc, char *argv[])
 	 * many queues here. We probably should only do allocation for
 	 * those queues we are going to use.
 	 */
-	create_mbuf_pool(valid_num_ports, rte_lcore_count() - 1, MBUF_DATA_SIZE,
-			 MAX_QUEUES, RTE_TEST_RX_DESC_DEFAULT, MBUF_CACHE_SIZE);
+	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", total_num_mbufs,
+					    MBUF_CACHE_SIZE, 0, MBUF_DATA_SIZE,
+					    rte_socket_id());
+	if (mbuf_pool == NULL)
+		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	if (vm2vm_mode == VM2VM_HARDWARE) {
 		/* Enable VT loop back to let L2 switch to do it. */
@@ -1647,6 +1626,8 @@ main(int argc, char *argv[])
 	RTE_LCORE_FOREACH_WORKER(lcore_id)
 		rte_eal_wait_lcore(lcore_id);
 
-	return 0;
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
+	return 0;
 }

@@ -1345,7 +1345,7 @@ enum ice_status ice_sched_query_res_alloc(struct ice_hw *hw)
 			 ice_memdup(hw, buf->layer_props,
 				    (hw->num_tx_sched_layers *
 				     sizeof(*hw->layer_info)),
-				    ICE_DMA_TO_DMA);
+				    ICE_NONDMA_TO_NONDMA);
 	if (!hw->layer_info) {
 		status = ICE_ERR_NO_MEMORY;
 		goto sched_query_out;
@@ -4728,12 +4728,12 @@ ice_sched_get_node_by_id_type(struct ice_port_info *pi, u32 id,
 
 	case ICE_AGG_TYPE_Q:
 		/* The current implementation allows single queue to modify */
-		node = ice_sched_get_node(pi, id);
+		node = ice_sched_find_node_by_teid(pi->root, id);
 		break;
 
 	case ICE_AGG_TYPE_QG:
 		/* The current implementation allows single qg to modify */
-		child_node = ice_sched_get_node(pi, id);
+		child_node = ice_sched_find_node_by_teid(pi->root, id);
 		if (!child_node)
 			break;
 		node = child_node->parent;

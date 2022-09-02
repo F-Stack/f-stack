@@ -3,6 +3,8 @@
     Copyright 2017 Mellanox Technologies, Ltd
     All rights reserved.
 
+.. include:: <isonum.txt>
+
 .. _linux_gsg_linux_drivers:
 
 Linux Drivers
@@ -24,6 +26,16 @@ To make use of VFIO, the ``vfio-pci`` module must be loaded:
 
 VFIO kernel is usually present by default in all distributions,
 however please consult your distributions documentation to make sure that is the case.
+
+For DMA mapping of either external memory or hugepages, VFIO interface is used.
+VFIO does not support partial unmap of once mapped memory. Hence DPDK's memory is
+mapped in hugepage granularity or system page granularity. Number of DMA
+mappings is limited by kernel with user locked memory limit of a process (rlimit)
+for system/hugepage memory. Another per-container overall limit applicable both
+for external memory and system memory was added in kernel 5.1 defined by
+VFIO module parameter ``dma_entry_limit`` with a default value of 64K.
+When application is out of DMA entries, these limits need to be adjusted to
+increase the allowed limit.
 
 Since Linux version 5.7,
 the ``vfio-pci`` module supports the creation of virtual functions.
@@ -83,7 +95,7 @@ The token will be used for all PF and VF ports within the application.
 
 To make use of full VFIO functionality,
 both kernel and BIOS must support and be configured
-to use IO virtualization (such as Intel® VT-d).
+to use IO virtualization (such as Intel\ |reg| VT-d).
 
 .. note::
 
@@ -155,6 +167,11 @@ It can be loaded as shown below:
 
    sudo modprobe uio
    sudo insmod igb_uio.ko
+
+.. note::
+
+    For some devices which lack support for legacy interrupts, e.g. virtual function
+    (VF) devices, the ``igb_uio`` module may be needed in place of ``uio_pci_generic``.
 
 .. note::
 
@@ -319,7 +336,7 @@ Please refer to earlier sections on how to configure kernel parameters
 correctly for your system.
 
 If the kernel is configured correctly, one also has to make sure that
-the BIOS configuration has virtualization features (such as Intel® VT-d).
+the BIOS configuration has virtualization features (such as Intel\ |reg| VT-d).
 There is no standard way to check if the platform is configured correctly,
 so please check with your platform documentation to see if it has such features,
 and how to enable them.

@@ -160,7 +160,7 @@ uint32_t single_sa_idx;
 /* mask of enabled ports */
 static uint32_t enabled_port_mask;
 static uint64_t enabled_cryptodev_mask = UINT64_MAX;
-static int32_t promiscuous_on = 1;
+static int32_t promiscuous_on;
 static int32_t numa_on = 1; /**< NUMA is enabled by default. */
 static uint32_t nb_lcores;
 static uint32_t single_sa;
@@ -255,7 +255,7 @@ struct socket_ctx socket_ctx[NB_SOCKETS];
 /*
  * Determine is multi-segment support required:
  *  - either frame buffer size is smaller then mtu
- *  - or reassmeble support is requested
+ *  - or reassemble support is requested
  */
 static int
 multi_seg_required(void)
@@ -291,6 +291,8 @@ adjust_ipv6_pktlen(struct rte_mbuf *m, const struct rte_ipv6_hdr *iph,
 }
 
 #if (STATS_INTERVAL > 0)
+
+struct ipsec_core_statistics core_statistics[RTE_MAX_LCORE];
 
 /* Print out statistics on packet distribution */
 static void
@@ -1936,7 +1938,7 @@ add_mapping(struct rte_hash *map, const char *str, uint16_t cdev_id,
 
 	ret = rte_hash_add_key_data(map, &key, (void *)i);
 	if (ret < 0) {
-		printf("Faled to insert cdev mapping for (lcore %u, "
+		printf("Failed to insert cdev mapping for (lcore %u, "
 				"cdev %u, qp %u), errno %d\n",
 				key.lcore_id, ipsec_ctx->tbl[i].id,
 				ipsec_ctx->tbl[i].qp, ret);
@@ -1969,7 +1971,7 @@ add_cdev_mapping(struct rte_cryptodev_info *dev_info, uint16_t cdev_id,
 		str = "Inbound";
 	}
 
-	/* Required cryptodevs with operation chainning */
+	/* Required cryptodevs with operation chaining */
 	if (!(dev_info->feature_flags &
 				RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING))
 		return ret;
@@ -2138,7 +2140,7 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 			"Error during getting device (port %u) info: %s\n",
 			portid, strerror(-ret));
 
-	/* limit allowed HW offloafs, as user requested */
+	/* limit allowed HW offloads, as user requested */
 	dev_info.rx_offload_capa &= dev_rx_offload;
 	dev_info.tx_offload_capa &= dev_tx_offload;
 
@@ -2188,7 +2190,7 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 			local_port_conf.rxmode.offloads)
 		rte_exit(EXIT_FAILURE,
 			"Error: port %u required RX offloads: 0x%" PRIx64
-			", avaialbe RX offloads: 0x%" PRIx64 "\n",
+			", available RX offloads: 0x%" PRIx64 "\n",
 			portid, local_port_conf.rxmode.offloads,
 			dev_info.rx_offload_capa);
 
@@ -2196,7 +2198,7 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 			local_port_conf.txmode.offloads)
 		rte_exit(EXIT_FAILURE,
 			"Error: port %u required TX offloads: 0x%" PRIx64
-			", avaialbe TX offloads: 0x%" PRIx64 "\n",
+			", available TX offloads: 0x%" PRIx64 "\n",
 			portid, local_port_conf.txmode.offloads,
 			dev_info.tx_offload_capa);
 
@@ -2207,7 +2209,7 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)
 		local_port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
 
-	printf("port %u configurng rx_offloads=0x%" PRIx64
+	printf("port %u configuring rx_offloads=0x%" PRIx64
 		", tx_offloads=0x%" PRIx64 "\n",
 		portid, local_port_conf.rxmode.offloads,
 		local_port_conf.txmode.offloads);
@@ -2929,13 +2931,14 @@ main(int32_t argc, char **argv)
 		if ((enabled_port_mask & (1 << portid)) == 0)
 			continue;
 
-		/* Create flow before starting the device */
-		create_default_ipsec_flow(portid, req_rx_offloads[portid]);
-
 		ret = rte_eth_dev_start(portid);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_dev_start: "
 					"err=%d, port=%d\n", ret, portid);
+
+		/* Create flow after starting the device */
+		create_default_ipsec_flow(portid, req_rx_offloads[portid]);
+
 		/*
 		 * If enabled, put device in promiscuous mode.
 		 * This allows IO forwarding mode to forward packets
@@ -3037,6 +3040,9 @@ main(int32_t argc, char **argv)
 		rte_eth_dev_close(portid);
 		printf(" Done\n");
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 	printf("Bye...\n");
 
 	return 0;

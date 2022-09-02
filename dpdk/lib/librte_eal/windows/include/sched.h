@@ -28,6 +28,7 @@ extern "C" {
 typedef struct _rte_cpuset_s {
 	long long _bits[_NUM_SETS(CPU_SETSIZE)];
 } rte_cpuset_t;
+#define RTE_HAS_CPUSET
 
 #define CPU_SET(b, s) ((s)->_bits[_WHICH_SET(b)] |= (1LL << _WHICH_BIT(b)))
 
@@ -48,7 +49,7 @@ count_cpu(rte_cpuset_t *s)
 	unsigned int _i;
 	int count = 0;
 
-	for (_i = 0; _i < _NUM_SETS(CPU_SETSIZE); _i++)
+	for (_i = 0; _i < CPU_SETSIZE; _i++)
 		if (CPU_ISSET(_i, s) != 0LL)
 			count++;
 	return count;

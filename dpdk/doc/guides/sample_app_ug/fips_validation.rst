@@ -77,11 +77,12 @@ Compiling the Application
     .. code-block:: console
 
          dos2unix AES/req/*
-         dos2unix AES_GCM/req/*
+         dos2unix GCM/req/*
          dos2unix CCM/req/*
          dos2unix CMAC/req/*
          dos2unix HMAC/req/*
          dos2unix TDES/req/*
+         dos2unix SHA/req/*
 
 Running the Application
 -----------------------
@@ -113,7 +114,7 @@ where,
   * mbuf-dataroom: By default the application creates mbuf pool with maximum
     possible data room (65535 bytes). If the user wants to test scatter-gather
     list feature of the PMD he or she may set this value to reduce the dataroom
-    size so that the input data may be dividied into multiple chained mbufs.
+    size so that the input data may be divided into multiple chained mbufs.
 
 
 To run the application in linux environment to test one AES FIPS test data

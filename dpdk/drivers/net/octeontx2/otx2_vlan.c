@@ -306,12 +306,12 @@ nix_vlan_mcam_config(struct rte_eth_dev *eth_dev,
 			(0xF & ~(NPC_LT_LB_CTAG ^ NPC_LT_LB_STAG_QINQ))
 							<< mkex->lb_lt_offset;
 
-		mcam_data = ((uint32_t)vlan_id << 16);
-		mcam_mask = (BIT_ULL(16) - 1) << 16;
+		mcam_data = (uint16_t)vlan_id;
+		mcam_mask = (BIT_ULL(16) - 1);
 		otx2_mbox_memcpy(key_data + mkex->lb_xtract.key_off,
-				     &mcam_data, mkex->lb_xtract.len + 1);
+				     &mcam_data, mkex->lb_xtract.len);
 		otx2_mbox_memcpy(key_mask + mkex->lb_xtract.key_off,
-				     &mcam_mask, mkex->lb_xtract.len + 1);
+				     &mcam_mask, mkex->lb_xtract.len);
 	}
 
 	/* Adds LB STAG flag to MCAM KW */
@@ -953,7 +953,7 @@ static void nix_vlan_reinstall_vlan_filters(struct rte_eth_dev *eth_dev)
 	struct vlan_entry *entry;
 	int rc;
 
-	/* VLAN filters can't be set without setting filtern on */
+	/* VLAN filters can't be set without setting filters on */
 	rc = nix_vlan_handle_default_rx_entry(eth_dev, false, true, true);
 	if (rc) {
 		otx2_err("Failed to reinstall vlan filters");

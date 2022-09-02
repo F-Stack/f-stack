@@ -218,7 +218,7 @@ evt_parse_plcores(struct evt_options *opt, const char *corelist)
 {
 	int ret;
 
-	ret = parse_lcores_list(opt->plcores, corelist);
+	ret = parse_lcores_list(opt->plcores, RTE_MAX_LCORE, corelist);
 	if (ret == -E2BIG)
 		evt_err("duplicate lcores in plcores");
 
@@ -230,7 +230,7 @@ evt_parse_work_lcores(struct evt_options *opt, const char *corelist)
 {
 	int ret;
 
-	ret = parse_lcores_list(opt->wlcores, corelist);
+	ret = parse_lcores_list(opt->wlcores, RTE_MAX_LCORE, corelist);
 	if (ret == -E2BIG)
 		evt_err("duplicate lcores in wlcores");
 
@@ -278,7 +278,7 @@ usage(char *program)
 		"\t--deq_tmo_nsec     : global dequeue timeout\n"
 		"\t--prod_type_ethdev : use ethernet device as producer.\n"
 		"\t--prod_type_timerdev : use event timer device as producer.\n"
-		"\t                     expity_nsec would be the timeout\n"
+		"\t                     expiry_nsec would be the timeout\n"
 		"\t                     in ns.\n"
 		"\t--prod_type_timerdev_burst : use timer device as producer\n"
 		"\t                             burst mode.\n"

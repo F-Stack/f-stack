@@ -71,7 +71,6 @@ iavf_read_msg_from_pf(struct iavf_adapter *adapter, uint16_t buf_len,
 {
 	struct iavf_hw *hw = IAVF_DEV_PRIVATE_TO_HW(adapter);
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
-	struct rte_eth_dev *dev = adapter->eth_dev;
 	struct iavf_arq_event_info event;
 	enum iavf_aq_result result = IAVF_MSG_NON;
 	enum virtchnl_ops opcode;
@@ -113,7 +112,7 @@ iavf_read_msg_from_pf(struct iavf_adapter *adapter, uint16_t buf_len,
 				speed = vpe->event_data.link_event.link_speed;
 				vf->link_speed = iavf_convert_link_speed(speed);
 			}
-			iavf_dev_link_update(dev, 0);
+			iavf_dev_link_update(vf->eth_dev, 0);
 			PMD_DRV_LOG(INFO, "Link status update:%s",
 					vf->link_up ? "up" : "down");
 			break;
@@ -180,7 +179,7 @@ iavf_execute_vf_cmd(struct iavf_adapter *adapter, struct iavf_cmd_info *args)
 						   args->out_buffer);
 			if (result == IAVF_MSG_CMD)
 				break;
-			rte_delay_ms(ASQ_DELAY_MS);
+			iavf_msec_delay(ASQ_DELAY_MS);
 		} while (i++ < MAX_TRY_TIMES);
 		if (i >= MAX_TRY_TIMES ||
 		    vf->cmd_retval != VIRTCHNL_STATUS_SUCCESS) {
@@ -206,7 +205,7 @@ iavf_execute_vf_cmd(struct iavf_adapter *adapter, struct iavf_cmd_info *args)
 				err = -1;
 				break;
 			}
-			rte_delay_ms(ASQ_DELAY_MS);
+			iavf_msec_delay(ASQ_DELAY_MS);
 			/* If don't read msg or read sys event, continue */
 		} while (i++ < MAX_TRY_TIMES);
 		if (i >= MAX_TRY_TIMES ||
@@ -224,16 +223,22 @@ iavf_execute_vf_cmd(struct iavf_adapter *adapter, struct iavf_cmd_info *args)
 		do {
 			if (vf->pend_cmd == VIRTCHNL_OP_UNKNOWN)
 				break;
-			rte_delay_ms(ASQ_DELAY_MS);
+			iavf_msec_delay(ASQ_DELAY_MS);
 			/* If don't read msg or read sys event, continue */
 		} while (i++ < MAX_TRY_TIMES);
-		/* If there's no response is received, clear command */
-		if (i >= MAX_TRY_TIMES  ||
-		    vf->cmd_retval != VIRTCHNL_STATUS_SUCCESS) {
-			err = -1;
-			PMD_DRV_LOG(ERR, "No response or return failure (%d)"
-				    " for cmd %d", vf->cmd_retval, args->ops);
+
+		if (i >= MAX_TRY_TIMES) {
+			PMD_DRV_LOG(ERR, "No response for cmd %d", args->ops);
 			_clear_cmd(vf);
+			err = -EIO;
+		} else if (vf->cmd_retval ==
+			   VIRTCHNL_STATUS_ERR_NOT_SUPPORTED) {
+			PMD_DRV_LOG(ERR, "Cmd %d not supported", args->ops);
+			err = -ENOTSUP;
+		} else if (vf->cmd_retval != VIRTCHNL_STATUS_SUCCESS) {
+			PMD_DRV_LOG(ERR, "Return failure %d for cmd %d",
+				    vf->cmd_retval, args->ops);
+			err = -EINVAL;
 		}
 		break;
 	}
@@ -421,7 +426,7 @@ iavf_check_api_version(struct iavf_adapter *adapter)
 	    (vf->virtchnl_version.major == VIRTCHNL_VERSION_MAJOR_START &&
 	     vf->virtchnl_version.minor < VIRTCHNL_VERSION_MINOR_START)) {
 		PMD_INIT_LOG(ERR, "VIRTCHNL API version should not be lower"
-			     " than (%u.%u) to support Adapative VF",
+			     " than (%u.%u) to support Adaptive VF",
 			     VIRTCHNL_VERSION_MAJOR_START,
 			     VIRTCHNL_VERSION_MAJOR_START);
 		return -1;
@@ -532,8 +537,8 @@ iavf_enable_queues(struct iavf_adapter *adapter)
 	memset(&queue_select, 0, sizeof(queue_select));
 	queue_select.vsi_id = vf->vsi_res->vsi_id;
 
-	queue_select.rx_queues = BIT(adapter->eth_dev->data->nb_rx_queues) - 1;
-	queue_select.tx_queues = BIT(adapter->eth_dev->data->nb_tx_queues) - 1;
+	queue_select.rx_queues = BIT(adapter->dev_data->nb_rx_queues) - 1;
+	queue_select.tx_queues = BIT(adapter->dev_data->nb_tx_queues) - 1;
 
 	args.ops = VIRTCHNL_OP_ENABLE_QUEUES;
 	args.in_args = (u8 *)&queue_select;
@@ -560,8 +565,8 @@ iavf_disable_queues(struct iavf_adapter *adapter)
 	memset(&queue_select, 0, sizeof(queue_select));
 	queue_select.vsi_id = vf->vsi_res->vsi_id;
 
-	queue_select.rx_queues = BIT(adapter->eth_dev->data->nb_rx_queues) - 1;
-	queue_select.tx_queues = BIT(adapter->eth_dev->data->nb_tx_queues) - 1;
+	queue_select.rx_queues = BIT(adapter->dev_data->nb_rx_queues) - 1;
+	queue_select.tx_queues = BIT(adapter->dev_data->nb_tx_queues) - 1;
 
 	args.ops = VIRTCHNL_OP_DISABLE_QUEUES;
 	args.in_args = (u8 *)&queue_select;
@@ -631,12 +636,12 @@ iavf_enable_queues_lv(struct iavf_adapter *adapter)
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_TX].type = VIRTCHNL_QUEUE_TYPE_TX;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_TX].start_queue_id = 0;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_TX].num_queues =
-		adapter->eth_dev->data->nb_tx_queues;
+		adapter->dev_data->nb_tx_queues;
 
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_RX].type = VIRTCHNL_QUEUE_TYPE_RX;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_RX].start_queue_id = 0;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_RX].num_queues =
-		adapter->eth_dev->data->nb_rx_queues;
+		adapter->dev_data->nb_rx_queues;
 
 	args.ops = VIRTCHNL_OP_ENABLE_QUEUES_V2;
 	args.in_args = (u8 *)queue_select;
@@ -644,12 +649,12 @@ iavf_enable_queues_lv(struct iavf_adapter *adapter)
 	args.out_buffer = vf->aq_resp;
 	args.out_size = IAVF_AQ_BUF_SZ;
 	err = iavf_execute_vf_cmd(adapter, &args);
-	if (err) {
+	if (err)
 		PMD_DRV_LOG(ERR,
 			    "Failed to execute command of OP_ENABLE_QUEUES_V2");
-		return err;
-	}
-	return 0;
+
+	rte_free(queue_select);
+	return err;
 }
 
 int
@@ -675,12 +680,12 @@ iavf_disable_queues_lv(struct iavf_adapter *adapter)
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_TX].type = VIRTCHNL_QUEUE_TYPE_TX;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_TX].start_queue_id = 0;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_TX].num_queues =
-		adapter->eth_dev->data->nb_tx_queues;
+		adapter->dev_data->nb_tx_queues;
 
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_RX].type = VIRTCHNL_QUEUE_TYPE_RX;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_RX].start_queue_id = 0;
 	queue_chunk[VIRTCHNL_QUEUE_TYPE_RX].num_queues =
-		adapter->eth_dev->data->nb_rx_queues;
+		adapter->dev_data->nb_rx_queues;
 
 	args.ops = VIRTCHNL_OP_DISABLE_QUEUES_V2;
 	args.in_args = (u8 *)queue_select;
@@ -688,12 +693,12 @@ iavf_disable_queues_lv(struct iavf_adapter *adapter)
 	args.out_buffer = vf->aq_resp;
 	args.out_size = IAVF_AQ_BUF_SZ;
 	err = iavf_execute_vf_cmd(adapter, &args);
-	if (err) {
+	if (err)
 		PMD_DRV_LOG(ERR,
 			    "Failed to execute command of OP_DISABLE_QUEUES_V2");
-		return err;
-	}
-	return 0;
+
+	rte_free(queue_select);
+	return err;
 }
 
 int
@@ -737,6 +742,8 @@ iavf_switch_queue_lv(struct iavf_adapter *adapter, uint16_t qid,
 	if (err)
 		PMD_DRV_LOG(ERR, "Failed to execute command of %s",
 			    on ? "OP_ENABLE_QUEUES_V2" : "OP_DISABLE_QUEUES_V2");
+
+	rte_free(queue_select);
 	return err;
 }
 
@@ -809,9 +816,9 @@ iavf_configure_queues(struct iavf_adapter *adapter,
 		uint16_t num_queue_pairs, uint16_t index)
 {
 	struct iavf_rx_queue **rxq =
-		(struct iavf_rx_queue **)adapter->eth_dev->data->rx_queues;
+		(struct iavf_rx_queue **)adapter->dev_data->rx_queues;
 	struct iavf_tx_queue **txq =
-		(struct iavf_tx_queue **)adapter->eth_dev->data->tx_queues;
+		(struct iavf_tx_queue **)adapter->dev_data->tx_queues;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
 	struct virtchnl_vsi_queue_config_info *vc_config;
 	struct virtchnl_queue_pair_info *vc_qp;
@@ -835,7 +842,7 @@ iavf_configure_queues(struct iavf_adapter *adapter,
 		vc_qp->txq.queue_id = i;
 
 		/* Virtchnnl configure tx queues by pairs */
-		if (i < adapter->eth_dev->data->nb_tx_queues) {
+		if (i < adapter->dev_data->nb_tx_queues) {
 			vc_qp->txq.ring_len = txq[i]->nb_tx_desc;
 			vc_qp->txq.dma_ring_addr = txq[i]->tx_ring_phys_addr;
 		}
@@ -844,7 +851,7 @@ iavf_configure_queues(struct iavf_adapter *adapter,
 		vc_qp->rxq.queue_id = i;
 		vc_qp->rxq.max_pkt_size = vf->max_pkt_len;
 
-		if (i >= adapter->eth_dev->data->nb_rx_queues)
+		if (i >= adapter->dev_data->nb_rx_queues)
 			continue;
 
 		/* Virtchnnl configure rx queues by pairs */
@@ -913,7 +920,7 @@ iavf_config_irq_map(struct iavf_adapter *adapter)
 		return -ENOMEM;
 
 	map_info->num_vectors = vf->nb_msix;
-	for (i = 0; i < adapter->eth_dev->data->nb_rx_queues; i++) {
+	for (i = 0; i < adapter->dev_data->nb_rx_queues; i++) {
 		vecmap =
 		    &map_info->vecmap[vf->qv_map[i].vector_id - vf->msix_base];
 		vecmap->vsi_id = vf->vsi_res->vsi_id;
@@ -992,7 +999,7 @@ iavf_add_del_all_mac_addr(struct iavf_adapter *adapter, bool add)
 		j = 0;
 		len = sizeof(struct virtchnl_ether_addr_list);
 		for (i = begin; i < IAVF_NUM_MACADDR_MAX; i++, next_begin++) {
-			addr = &adapter->eth_dev->data->mac_addrs[i];
+			addr = &adapter->dev_data->mac_addrs[i];
 			if (rte_is_zero_ether_addr(addr))
 				continue;
 			len += sizeof(struct virtchnl_ether_addr);
@@ -1009,11 +1016,14 @@ iavf_add_del_all_mac_addr(struct iavf_adapter *adapter, bool add)
 		}
 
 		for (i = begin; i < next_begin; i++) {
-			addr = &adapter->eth_dev->data->mac_addrs[i];
+			addr = &adapter->dev_data->mac_addrs[i];
 			if (rte_is_zero_ether_addr(addr))
 				continue;
 			rte_memcpy(list->list[j].addr, addr->addr_bytes,
 				   sizeof(addr->addr_bytes));
+			list->list[j].type = (j == 0 ?
+					      VIRTCHNL_ETHER_ADDR_PRIMARY :
+					      VIRTCHNL_ETHER_ADDR_EXTRA);
 			PMD_DRV_LOG(DEBUG, "add/rm mac:%x:%x:%x:%x:%x:%x",
 				    addr->addr_bytes[0], addr->addr_bytes[1],
 				    addr->addr_bytes[2], addr->addr_bytes[3],
@@ -1096,8 +1106,8 @@ iavf_config_promisc(struct iavf_adapter *adapter,
 		PMD_DRV_LOG(ERR,
 			    "fail to execute command CONFIG_PROMISCUOUS_MODE");
 
-		if (err == IAVF_NOT_SUPPORTED)
-			return -ENOTSUP;
+		if (err == -ENOTSUP)
+			return err;
 
 		return -EAGAIN;
 	}
@@ -1109,7 +1119,7 @@ iavf_config_promisc(struct iavf_adapter *adapter,
 
 int
 iavf_add_del_eth_addr(struct iavf_adapter *adapter, struct rte_ether_addr *addr,
-		     bool add)
+		     bool add, uint8_t type)
 {
 	struct virtchnl_ether_addr_list *list;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
@@ -1121,6 +1131,7 @@ iavf_add_del_eth_addr(struct iavf_adapter *adapter, struct rte_ether_addr *addr,
 	list = (struct virtchnl_ether_addr_list *)cmd_buffer;
 	list->vsi_id = vf->vsi_res->vsi_id;
 	list->num_elements = 1;
+	list->list[0].type = type;
 	rte_memcpy(list->list[0].addr, addr->addr_bytes,
 		   sizeof(addr->addr_bytes));
 
@@ -1292,7 +1303,7 @@ iavf_fdir_check(struct iavf_adapter *adapter,
 
 	err = iavf_execute_vf_cmd(adapter, &args);
 	if (err) {
-		PMD_DRV_LOG(ERR, "fail to check flow direcotor rule");
+		PMD_DRV_LOG(ERR, "fail to check flow director rule");
 		return err;
 	}
 
@@ -1375,6 +1386,7 @@ iavf_add_del_mc_addr_list(struct iavf_adapter *adapter,
 
 		memcpy(list->list[i].addr, mc_addrs[i].addr_bytes,
 			sizeof(list->list[i].addr));
+		list->list[i].type = VIRTCHNL_ETHER_ADDR_EXTRA;
 	}
 
 	args.ops = add ? VIRTCHNL_OP_ADD_ETH_ADDR : VIRTCHNL_OP_DEL_ETH_ADDR;
@@ -1395,9 +1407,10 @@ iavf_add_del_mc_addr_list(struct iavf_adapter *adapter,
 }
 
 int
-iavf_request_queues(struct iavf_adapter *adapter, uint16_t num)
+iavf_request_queues(struct rte_eth_dev *dev, uint16_t num)
 {
-	struct rte_eth_dev *dev = adapter->eth_dev;
+	struct iavf_adapter *adapter =
+		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf =  IAVF_DEV_PRIVATE_TO_VF(adapter);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct virtchnl_vf_res_request vfres;

@@ -25,8 +25,7 @@ otx2_ipsec_po_out_rlen_get(struct otx2_sec_session_ipsec_lp *sess,
 }
 
 static __rte_always_inline struct cpt_request_info *
-alloc_request_struct(char *maddr, void *cop, int mdata_len,
-		     enum rte_security_ipsec_tunnel_type tunnel_type)
+alloc_request_struct(char *maddr, void *cop, int mdata_len)
 {
 	struct cpt_request_info *req;
 	struct cpt_meta_info *meta;
@@ -48,7 +47,6 @@ alloc_request_struct(char *maddr, void *cop, int mdata_len,
 	op[1] = (uintptr_t)cop;
 	op[2] = (uintptr_t)req;
 	op[3] = mdata_len;
-	op[4] = tunnel_type;
 
 	return req;
 }
@@ -61,16 +59,12 @@ process_outb_sa(struct rte_crypto_op *cop,
 	uint32_t dlen, rlen, extend_head, extend_tail;
 	struct rte_crypto_sym_op *sym_op = cop->sym;
 	struct rte_mbuf *m_src = sym_op->m_src;
-	struct otx2_ipsec_po_sa_ctl *ctl_wrd;
 	struct cpt_request_info *req = NULL;
 	struct otx2_ipsec_po_out_hdr *hdr;
-	struct otx2_ipsec_po_out_sa *sa;
 	int hdr_len, mdata_len, ret = 0;
 	vq_cmd_word0_t word0;
 	char *mdata, *data;
 
-	sa = &sess->out_sa;
-	ctl_wrd = &sa->ctl;
 	hdr_len = sizeof(*hdr);
 
 	dlen = rte_pktmbuf_pkt_len(m_src) + hdr_len;
@@ -88,8 +82,7 @@ process_outb_sa(struct rte_crypto_op *cop,
 	}
 
 	mdata += extend_tail; /* mdata follows encrypted data */
-	req = alloc_request_struct(mdata, (void *)cop, mdata_len,
-		sess->tunnel_type);
+	req = alloc_request_struct(mdata, (void *)cop, mdata_len);
 
 	data = rte_pktmbuf_prepend(m_src, extend_head);
 	if (unlikely(data == NULL)) {
@@ -107,14 +100,8 @@ process_outb_sa(struct rte_crypto_op *cop,
 	hdr = (struct otx2_ipsec_po_out_hdr *)rte_pktmbuf_adj(m_src,
 							RTE_ETHER_HDR_LEN);
 
-	if (ctl_wrd->enc_type == OTX2_IPSEC_FP_SA_ENC_AES_GCM) {
-		memcpy(&hdr->iv[0], &sa->iv.gcm.nonce, 4);
-		memcpy(&hdr->iv[4], rte_crypto_op_ctod_offset(cop, uint8_t *,
-			sess->iv_offset), sess->iv_length);
-	} else if (ctl_wrd->auth_type == OTX2_IPSEC_FP_SA_ENC_AES_CBC) {
-		memcpy(&hdr->iv[0], rte_crypto_op_ctod_offset(cop, uint8_t *,
-			sess->iv_offset), sess->iv_length);
-	}
+	memcpy(&hdr->iv[0], rte_crypto_op_ctod_offset(cop, uint8_t *,
+		sess->iv_offset), sess->iv_length);
 
 	/* Prepare CPT instruction */
 	word0.u64 = sess->ucmd_w0;
@@ -159,8 +146,7 @@ process_inb_sa(struct rte_crypto_op *cop,
 		goto exit;
 	}
 
-	req = alloc_request_struct(mdata, (void *)cop, mdata_len,
-		sess->tunnel_type);
+	req = alloc_request_struct(mdata, (void *)cop, mdata_len);
 
 	/* Prepare CPT instruction */
 	word0.u64 = sess->ucmd_w0;

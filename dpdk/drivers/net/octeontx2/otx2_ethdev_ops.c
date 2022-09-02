@@ -17,7 +17,8 @@ otx2_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	struct nix_frs_cfg *req;
 	int rc;
 
-	frame_size += NIX_TIMESYNC_RX_OFFSET * otx2_ethdev_is_ptp_en(dev);
+	if (dev->configured && otx2_ethdev_is_ptp_en(dev))
+		frame_size += NIX_TIMESYNC_RX_OFFSET;
 
 	/* Check if MTU is within the allowed range */
 	if (frame_size < NIX_MIN_FRS || frame_size > NIX_MAX_FRS)
@@ -58,7 +59,7 @@ otx2_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	if (rc)
 		return rc;
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > NIX_L2_MAX_LEN)
 		dev->rx_offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		dev->rx_offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
@@ -453,7 +454,7 @@ otx2_nix_fw_version_get(struct rte_eth_dev *eth_dev, char *fw_version,
 	rc = strlcpy(fw_version, (char *)dev->mkex_pfl_name, rc);
 
 	rc += 1; /* Add the size of '\0' */
-	if (fw_size < (uint32_t)rc)
+	if (fw_size < (size_t)rc)
 		return rc;
 
 	return 0;
@@ -533,8 +534,7 @@ otx2_nix_get_module_eeprom(struct rte_eth_dev *eth_dev,
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 	struct cgx_fw_data *rsp;
 
-	if (!info->data || !info->length ||
-	    (info->offset + info->length > SFP_EEPROM_SIZE))
+	if (info->offset + info->length > SFP_EEPROM_SIZE)
 		return -EINVAL;
 
 	rsp = nix_get_fwdata(dev);
@@ -561,6 +561,11 @@ otx2_nix_info_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *devinfo)
 	devinfo->max_vfs = pci_dev->max_vfs;
 	devinfo->max_mtu = devinfo->max_rx_pktlen - NIX_L2_OVERHEAD;
 	devinfo->min_mtu = devinfo->min_rx_bufsize - NIX_L2_OVERHEAD;
+	if (dev->configured && otx2_ethdev_is_ptp_en(dev)) {
+		devinfo->max_mtu -=  NIX_TIMESYNC_RX_OFFSET;
+		devinfo->min_mtu -=  NIX_TIMESYNC_RX_OFFSET;
+		devinfo->max_rx_pktlen -= NIX_TIMESYNC_RX_OFFSET;
+	}
 
 	devinfo->rx_offload_capa = dev->rx_offload_capa;
 	devinfo->tx_offload_capa = dev->tx_offload_capa;

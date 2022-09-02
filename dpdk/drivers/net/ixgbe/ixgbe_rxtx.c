@@ -1441,7 +1441,8 @@ rx_desc_status_to_pkt_flags(uint32_t rx_status, uint64_t vlan_flags)
 }
 
 static inline uint64_t
-rx_desc_error_to_pkt_flags(uint32_t rx_status)
+rx_desc_error_to_pkt_flags(uint32_t rx_status, uint16_t pkt_info,
+			   uint8_t rx_udp_csum_zero_err)
 {
 	uint64_t pkt_flags;
 
@@ -1457,6 +1458,15 @@ rx_desc_error_to_pkt_flags(uint32_t rx_status)
 	};
 	pkt_flags = error_to_pkt_flags_map[(rx_status >>
 		IXGBE_RXDADV_ERR_CKSUM_BIT) & IXGBE_RXDADV_ERR_CKSUM_MSK];
+
+	/* Mask out the bad UDP checksum error if the hardware has UDP zero
+	 * checksum error issue, so that the software application will then
+	 * have to recompute the checksum itself if needed.
+	 */
+	if ((rx_status & IXGBE_RXDADV_ERR_TCPE) &&
+	    (pkt_info & IXGBE_RXDADV_PKTTYPE_UDP) &&
+	    rx_udp_csum_zero_err)
+		pkt_flags &= ~PKT_RX_L4_CKSUM_BAD;
 
 	if ((rx_status & IXGBE_RXD_STAT_OUTERIPCS) &&
 	    (rx_status & IXGBE_RXDADV_ERR_OUTERIPER)) {
@@ -1544,7 +1554,9 @@ ixgbe_rx_scan_hw_ring(struct ixgbe_rx_queue *rxq)
 			/* convert descriptor fields to rte mbuf flags */
 			pkt_flags = rx_desc_status_to_pkt_flags(s[j],
 				vlan_flags);
-			pkt_flags |= rx_desc_error_to_pkt_flags(s[j]);
+			pkt_flags |= rx_desc_error_to_pkt_flags(s[j],
+					(uint16_t)pkt_info[j],
+					rxq->rx_udp_csum_zero_err);
 			pkt_flags |= ixgbe_rxd_pkt_info_to_pkt_flags
 					((uint16_t)pkt_info[j]);
 			mb->ol_flags = pkt_flags;
@@ -1877,7 +1889,9 @@ ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rxm->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
 
 		pkt_flags = rx_desc_status_to_pkt_flags(staterr, vlan_flags);
-		pkt_flags = pkt_flags | rx_desc_error_to_pkt_flags(staterr);
+		pkt_flags = pkt_flags |
+			rx_desc_error_to_pkt_flags(staterr, (uint16_t)pkt_info,
+						   rxq->rx_udp_csum_zero_err);
 		pkt_flags = pkt_flags |
 			ixgbe_rxd_pkt_info_to_pkt_flags((uint16_t)pkt_info);
 		rxm->ol_flags = pkt_flags;
@@ -1909,7 +1923,7 @@ ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	 * register.
 	 * Update the RDT with the value of the last processed RX descriptor
 	 * minus 1, to guarantee that the RDT register is never equal to the
-	 * RDH register, which creates a "full" ring situtation from the
+	 * RDH register, which creates a "full" ring situation from the
 	 * hardware point of view...
 	 */
 	nb_hold = (uint16_t) (nb_hold + rxq->nb_rx_hold);
@@ -1970,7 +1984,8 @@ ixgbe_fill_cluster_head_buf(
 	head->vlan_tci = rte_le_to_cpu_16(desc->wb.upper.vlan);
 	pkt_info = rte_le_to_cpu_32(desc->wb.lower.lo_dword.data);
 	pkt_flags = rx_desc_status_to_pkt_flags(staterr, rxq->vlan_flags);
-	pkt_flags |= rx_desc_error_to_pkt_flags(staterr);
+	pkt_flags |= rx_desc_error_to_pkt_flags(staterr, (uint16_t)pkt_info,
+						rxq->rx_udp_csum_zero_err);
 	pkt_flags |= ixgbe_rxd_pkt_info_to_pkt_flags((uint16_t)pkt_info);
 	head->ol_flags = pkt_flags;
 	head->packet_type =
@@ -2257,7 +2272,7 @@ next_desc:
 	 * register.
 	 * Update the RDT with the value of the last processed RX descriptor
 	 * minus 1, to guarantee that the RDT register is never equal to the
-	 * RDH register, which creates a "full" ring situtation from the
+	 * RDH register, which creates a "full" ring situation from the
 	 * hardware point of view...
 	 */
 	if (!bulk_alloc && nb_hold > rxq->rx_free_thresh) {
@@ -2434,6 +2449,7 @@ ixgbe_tx_queue_release(struct ixgbe_tx_queue *txq)
 	if (txq != NULL && txq->ops != NULL) {
 		txq->ops->release_mbufs(txq);
 		txq->ops->free_swring(txq);
+		rte_memzone_free(txq->mz);
 		rte_free(txq);
 	}
 }
@@ -2619,7 +2635,7 @@ ixgbe_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	 */
 	tx_free_thresh = (uint16_t)((tx_conf->tx_free_thresh) ?
 			tx_conf->tx_free_thresh : DEFAULT_TX_FREE_THRESH);
-	/* force tx_rs_thresh to adapt an aggresive tx_free_thresh */
+	/* force tx_rs_thresh to adapt an aggressive tx_free_thresh */
 	tx_rs_thresh = (DEFAULT_TX_RS_THRESH + tx_free_thresh > nb_desc) ?
 			nb_desc - tx_free_thresh : DEFAULT_TX_RS_THRESH;
 	if (tx_conf->tx_rs_thresh > 0)
@@ -2715,6 +2731,7 @@ ixgbe_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	txq->mz = tz;
 	txq->nb_tx_desc = nb_desc;
 	txq->tx_rs_thresh = tx_rs_thresh;
 	txq->tx_free_thresh = tx_free_thresh;
@@ -2839,6 +2856,7 @@ ixgbe_rx_queue_release(struct ixgbe_rx_queue *rxq)
 		ixgbe_rx_queue_release_mbufs(rxq);
 		rte_free(rxq->sw_ring);
 		rte_free(rxq->sw_sc_ring);
+		rte_memzone_free(rxq->mz);
 		rte_free(rxq);
 	}
 }
@@ -2933,6 +2951,10 @@ ixgbe_reset_rx_queue(struct ixgbe_adapter *adapter, struct ixgbe_rx_queue *rxq)
 	rxq->rx_free_trigger = (uint16_t)(rxq->rx_free_thresh - 1);
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
+
+	if (rxq->pkt_first_seg != NULL)
+		rte_pktmbuf_free(rxq->pkt_first_seg);
+
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
 
@@ -3092,6 +3114,13 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		rxq->pkt_type_mask = IXGBE_PACKET_TYPE_MASK_82599;
 
 	/*
+	 * 82599 errata, UDP frames with a 0 checksum can be marked as checksum
+	 * errors.
+	 */
+	if (hw->mac.type == ixgbe_mac_82599EB)
+		rxq->rx_udp_csum_zero_err = 1;
+
+	/*
 	 * Allocate RX ring hardware descriptors. A memzone large enough to
 	 * handle the maximum ring size is allocated in order to allow for
 	 * resizing in later calls to the queue setup function.
@@ -3103,6 +3132,7 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	rxq->mz = rz;
 	/*
 	 * Zero init all the descriptors in the ring.
 	 */
@@ -3374,14 +3404,12 @@ ixgbe_dev_free_queues(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		ixgbe_dev_rx_queue_release(dev->data->rx_queues[i]);
 		dev->data->rx_queues[i] = NULL;
-		rte_eth_dma_zone_free(dev, "rx_ring", i);
 	}
 	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		ixgbe_dev_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
-		rte_eth_dma_zone_free(dev, "tx_ring", i);
 	}
 	dev->data->nb_tx_queues = 0;
 }
@@ -4792,7 +4820,7 @@ ixgbe_set_rx_function(struct rte_eth_dev *dev)
 				     dev->data->port_id);
 			dev->rx_pkt_burst = ixgbe_recv_pkts_lro_bulk_alloc;
 		} else {
-			PMD_INIT_LOG(DEBUG, "Using Regualr (non-vector, "
+			PMD_INIT_LOG(DEBUG, "Using Regular (non-vector, "
 					    "single allocation) "
 					    "Scattered Rx callback "
 					    "(port=%d).",
@@ -4898,15 +4926,11 @@ ixgbe_set_rsc(struct rte_eth_dev *dev)
 	/* RFCTL configuration  */
 	rfctl = IXGBE_READ_REG(hw, IXGBE_RFCTL);
 	if ((rsc_capable) && (rx_conf->offloads & DEV_RX_OFFLOAD_TCP_LRO))
-		/*
-		 * Since NFS packets coalescing is not supported - clear
-		 * RFCTL.NFSW_DIS and RFCTL.NFSR_DIS when RSC is
-		 * enabled.
-		 */
-		rfctl &= ~(IXGBE_RFCTL_RSC_DIS | IXGBE_RFCTL_NFSW_DIS |
-			   IXGBE_RFCTL_NFSR_DIS);
+		rfctl &= ~IXGBE_RFCTL_RSC_DIS;
 	else
 		rfctl |= IXGBE_RFCTL_RSC_DIS;
+	/* disable NFS filtering */
+	rfctl |= IXGBE_RFCTL_NFSW_DIS | IXGBE_RFCTL_NFSR_DIS;
 	IXGBE_WRITE_REG(hw, IXGBE_RFCTL, rfctl);
 
 	/* If LRO hasn't been requested - we are done here. */
@@ -5135,7 +5159,7 @@ ixgbe_dev_rx_init(struct rte_eth_dev *dev)
 	/*
 	 * Setup the Checksum Register.
 	 * Disable Full-Packet Checksum which is mutually exclusive with RSS.
-	 * Enable IP/L4 checkum computation by hardware if requested to do so.
+	 * Enable IP/L4 checksum computation by hardware if requested to do so.
 	 */
 	rxcsum = IXGBE_READ_REG(hw, IXGBE_RXCSUM);
 	rxcsum |= IXGBE_RXCSUM_PCSD;
@@ -5634,8 +5658,10 @@ ixgbevf_dev_rx_init(struct rte_eth_dev *dev)
 	 * ixgbevf_rlpml_set_vf even if jumbo frames are not used. This way,
 	 * VF packets received can work in all cases.
 	 */
-	ixgbevf_rlpml_set_vf(hw,
-		(uint16_t)dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	if (ixgbevf_rlpml_set_vf(hw,
+	    (uint16_t)dev->data->dev_conf.rxmode.max_rx_pkt_len))
+		PMD_INIT_LOG(ERR, "Set max packet length to %d failed.",
+			     dev->data->dev_conf.rxmode.max_rx_pkt_len);
 
 	/*
 	 * Assume no header split and no VLAN strip support

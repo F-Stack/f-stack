@@ -683,7 +683,7 @@ dpaa_sec_deq(struct dpaa_sec_qp *qp, struct rte_crypto_op **ops, int nb_ops)
 		}
 		ops[pkts++] = op;
 
-		/* report op status to sym->op and then free the ctx memeory */
+		/* report op status to sym->op and then free the ctx memory */
 		rte_mempool_put(ctx->ctx_pool, (void *)ctx);
 
 		qman_dqrr_consume(fq, dq);
@@ -1716,6 +1716,13 @@ dpaa_sec_enqueue_burst(void *qp, struct rte_crypto_op **ops,
 	uint32_t index, flags[DPAA_SEC_BURST] = {0};
 	struct qman_fq *inq[DPAA_SEC_BURST];
 
+	if (unlikely(!DPAA_PER_LCORE_PORTAL)) {
+		if (rte_dpaa_portal_init((void *)0)) {
+			DPAA_SEC_ERR("Failure in affining portal");
+			return 0;
+		}
+	}
+
 	while (nb_ops) {
 		frames_to_send = (nb_ops > DPAA_SEC_BURST) ?
 				DPAA_SEC_BURST : nb_ops;
@@ -1915,6 +1922,13 @@ dpaa_sec_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 {
 	uint16_t num_rx;
 	struct dpaa_sec_qp *dpaa_qp = (struct dpaa_sec_qp *)qp;
+
+	if (unlikely(!DPAA_PER_LCORE_PORTAL)) {
+		if (rte_dpaa_portal_init((void *)0)) {
+			DPAA_SEC_ERR("Failure in affining portal");
+			return 0;
+		}
+	}
 
 	num_rx = dpaa_sec_deq(dpaa_qp, ops, nb_ops);
 
@@ -2785,12 +2799,14 @@ dpaa_sec_set_ipsec_session(__rte_unused struct rte_cryptodev *dev,
 			session->encap_pdb.ip_hdr_len =
 						sizeof(struct rte_ipv6_hdr);
 		}
+
 		session->encap_pdb.options =
 			(IPVERSION << PDBNH_ESP_ENCAP_SHIFT) |
 			PDBOPTS_ESP_OIHI_PDB_INL |
 			PDBOPTS_ESP_IVSRC |
-			PDBHMO_ESP_ENCAP_DTTL |
 			PDBHMO_ESP_SNR;
+		if (ipsec_xform->options.dec_ttl)
+			session->encap_pdb.options |= PDBHMO_ESP_ENCAP_DTTL;
 		if (ipsec_xform->options.esn)
 			session->encap_pdb.options |= PDBOPTS_ESP_ESN;
 		session->encap_pdb.spi = ipsec_xform->spi;
@@ -2865,11 +2881,13 @@ dpaa_sec_set_pdcp_session(struct rte_cryptodev *dev,
 	/* find xfrm types */
 	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER) {
 		cipher_xform = &xform->cipher;
-		if (xform->next != NULL)
+		if (xform->next != NULL &&
+			xform->next->type == RTE_CRYPTO_SYM_XFORM_AUTH)
 			auth_xform = &xform->next->auth;
 	} else if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH) {
 		auth_xform = &xform->auth;
-		if (xform->next != NULL)
+		if (xform->next != NULL &&
+			xform->next->type == RTE_CRYPTO_SYM_XFORM_CIPHER)
 			cipher_xform = &xform->next->cipher;
 	} else {
 		DPAA_SEC_ERR("Invalid crypto type");
@@ -3427,23 +3445,24 @@ cryptodev_dpaa_sec_probe(struct rte_dpaa_driver *dpaa_drv __rte_unused,
 
 	int retval;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
 	snprintf(cryptodev_name, sizeof(cryptodev_name), "%s", dpaa_dev->name);
 
 	cryptodev = rte_cryptodev_pmd_allocate(cryptodev_name, rte_socket_id());
 	if (cryptodev == NULL)
 		return -ENOMEM;
 
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-		cryptodev->data->dev_private = rte_zmalloc_socket(
-					"cryptodev private structure",
-					sizeof(struct dpaa_sec_dev_private),
-					RTE_CACHE_LINE_SIZE,
-					rte_socket_id());
+	cryptodev->data->dev_private = rte_zmalloc_socket(
+				"cryptodev private structure",
+				sizeof(struct dpaa_sec_dev_private),
+				RTE_CACHE_LINE_SIZE,
+				rte_socket_id());
 
-		if (cryptodev->data->dev_private == NULL)
-			rte_panic("Cannot allocate memzone for private "
-					"device data");
-	}
+	if (cryptodev->data->dev_private == NULL)
+		rte_panic("Cannot allocate memzone for private "
+				"device data");
 
 	dpaa_dev->crypto_dev = cryptodev;
 	cryptodev->device = &dpaa_dev->device;
@@ -3483,8 +3502,7 @@ cryptodev_dpaa_sec_probe(struct rte_dpaa_driver *dpaa_drv __rte_unused,
 	retval = -ENXIO;
 out:
 	/* In case of error, cleanup is done */
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-		rte_free(cryptodev->data->dev_private);
+	rte_free(cryptodev->data->dev_private);
 
 	rte_cryptodev_pmd_release_device(cryptodev);
 

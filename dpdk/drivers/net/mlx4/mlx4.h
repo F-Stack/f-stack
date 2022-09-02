@@ -74,7 +74,7 @@ enum mlx4_mp_req_type {
 	MLX4_MP_REQ_STOP_RXTX,
 };
 
-/* Pameters for IPC. */
+/* Parameters for IPC. */
 struct mlx4_mp_param {
 	enum mlx4_mp_req_type type;
 	int port_id;
@@ -196,6 +196,10 @@ struct mlx4_priv {
 
 #define PORT_ID(priv) ((priv)->dev_data->port_id)
 #define ETH_DEV(priv) (&rte_eth_devices[PORT_ID(priv)])
+
+int mlx4_proc_priv_init(struct rte_eth_dev *dev);
+void mlx4_proc_priv_uninit(struct rte_eth_dev *dev);
+
 
 /* mlx4_ethdev.c */
 

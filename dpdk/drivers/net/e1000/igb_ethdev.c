@@ -745,7 +745,6 @@ eth_igb_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	hw->hw_addr= (void *)pci_dev->mem_resource[0].addr;
 
@@ -940,7 +939,6 @@ eth_igbvf_dev_init(struct rte_eth_dev *eth_dev)
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
@@ -1160,7 +1158,7 @@ eth_igb_configure(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
 		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
-	/* multipe queue mode checking */
+	/* multiple queue mode checking */
 	ret  = igb_check_mq_mode(dev);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "igb_check_mq_mode fails with %d.",
@@ -1277,7 +1275,7 @@ eth_igb_start(struct rte_eth_dev *dev)
 		}
 	}
 
-	/* confiugre msix for rx interrupt */
+	/* configure MSI-X for Rx interrupt */
 	eth_igb_configure_msix_intr(dev);
 
 	/* Configure for OS presence */
@@ -1827,8 +1825,7 @@ eth_igb_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 
 	/* Rx Errors */
 	rte_stats->imissed = stats->mpc;
-	rte_stats->ierrors = stats->crcerrs +
-	                     stats->rlec + stats->ruc + stats->roc +
+	rte_stats->ierrors = stats->crcerrs + stats->rlec +
 	                     stats->rxerrc + stats->algnerrc + stats->cexterr;
 
 	/* Tx Errors */
@@ -2162,9 +2159,11 @@ eth_igb_fw_version_get(struct rte_eth_dev *dev, char *fw_version,
 		}
 		break;
 	}
+	if (ret < 0)
+		return -EINVAL;
 
 	ret += 1; /* add the size of '\0' */
-	if (fw_size < (u32)ret)
+	if (fw_size < (size_t)ret)
 		return ret;
 	else
 		return 0;
@@ -2689,8 +2688,7 @@ igb_vlan_hw_extend_disable(struct rte_eth_dev *dev)
 	/* Update maximum packet length */
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
 		E1000_WRITE_REG(hw, E1000_RLPML,
-			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-						VLAN_TAG_SIZE);
+				dev->data->dev_conf.rxmode.max_rx_pkt_len);
 }
 
 static void
@@ -2709,7 +2707,7 @@ igb_vlan_hw_extend_enable(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
 		E1000_WRITE_REG(hw, E1000_RLPML,
 			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-						2 * VLAN_TAG_SIZE);
+						VLAN_TAG_SIZE);
 }
 
 static int
@@ -2839,7 +2837,7 @@ eth_igb_interrupt_get_status(struct rte_eth_dev *dev)
 }
 
 /*
- * It executes link_update after knowing an interrupt is prsent.
+ * It executes link_update after knowing an interrupt is present.
  *
  * @param dev
  *  Pointer to struct rte_eth_dev.
@@ -2909,7 +2907,7 @@ eth_igb_interrupt_action(struct rte_eth_dev *dev,
  * @param handle
  *  Pointer to interrupt handle.
  * @param param
- *  The address of parameter (struct rte_eth_dev *) regsitered before.
+ *  The address of parameter (struct rte_eth_dev *) registered before.
  *
  * @return
  *  void
@@ -3064,6 +3062,7 @@ eth_igb_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	uint32_t rx_buf_size;
 	uint32_t max_high_water;
 	uint32_t rctl;
+	uint32_t ctrl;
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	if (fc_conf->autoneg != hw->mac.autoneg)
@@ -3101,6 +3100,39 @@ eth_igb_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 			rctl &= ~E1000_RCTL_PMCF;
 
 		E1000_WRITE_REG(hw, E1000_RCTL, rctl);
+
+		/*
+		 * check if we want to change flow control mode - driver doesn't have native
+		 * capability to do that, so we'll write the registers ourselves
+		 */
+		ctrl = E1000_READ_REG(hw, E1000_CTRL);
+
+		/*
+		 * set or clear E1000_CTRL_RFCE and E1000_CTRL_TFCE bits depending
+		 * on configuration
+		 */
+		switch (fc_conf->mode) {
+		case RTE_FC_NONE:
+			ctrl &= ~E1000_CTRL_RFCE & ~E1000_CTRL_TFCE;
+			break;
+		case RTE_FC_RX_PAUSE:
+			ctrl |= E1000_CTRL_RFCE;
+			ctrl &= ~E1000_CTRL_TFCE;
+			break;
+		case RTE_FC_TX_PAUSE:
+			ctrl |= E1000_CTRL_TFCE;
+			ctrl &= ~E1000_CTRL_RFCE;
+			break;
+		case RTE_FC_FULL:
+			ctrl |= E1000_CTRL_RFCE | E1000_CTRL_TFCE;
+			break;
+		default:
+			PMD_INIT_LOG(ERR, "invalid flow control mode");
+			return -EINVAL;
+		}
+
+		E1000_WRITE_REG(hw, E1000_CTRL, ctrl);
+
 		E1000_WRITE_FLUSH(hw);
 
 		return 0;
@@ -3775,7 +3807,7 @@ igb_inject_2uple_filter(struct rte_eth_dev *dev,
  *
  * @param
  * dev: Pointer to struct rte_eth_dev.
- * ntuple_filter: ponter to the filter that will be added.
+ * ntuple_filter: pointer to the filter that will be added.
  *
  * @return
  *    - On success, zero.
@@ -3856,7 +3888,7 @@ igb_delete_2tuple_filter(struct rte_eth_dev *dev,
  *
  * @param
  * dev: Pointer to struct rte_eth_dev.
- * ntuple_filter: ponter to the filter that will be removed.
+ * ntuple_filter: pointer to the filter that will be removed.
  *
  * @return
  *    - On success, zero.
@@ -4214,7 +4246,7 @@ igb_inject_5tuple_filter_82576(struct rte_eth_dev *dev,
  *
  * @param
  * dev: Pointer to struct rte_eth_dev.
- * ntuple_filter: ponter to the filter that will be added.
+ * ntuple_filter: pointer to the filter that will be added.
  *
  * @return
  *    - On success, zero.
@@ -4301,7 +4333,7 @@ igb_delete_5tuple_filter_82576(struct rte_eth_dev *dev,
  *
  * @param
  * dev: Pointer to struct rte_eth_dev.
- * ntuple_filter: ponter to the filter that will be removed.
+ * ntuple_filter: pointer to the filter that will be removed.
  *
  * @return
  *    - On success, zero.
@@ -4360,16 +4392,20 @@ eth_igb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 			frame_size > dev_info.max_rx_pktlen)
 		return -EINVAL;
 
-	/* refuse mtu that requires the support of scattered packets when this
-	 * feature has not been enabled before. */
-	if (!dev->data->scattered_rx &&
-	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM)
+	/*
+	 * If device is started, refuse mtu that requires the support of
+	 * scattered packets when this feature has not been enabled before.
+	 */
+	if (dev->data->dev_started && !dev->data->scattered_rx &&
+	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR, "Stop port first.");
 		return -EINVAL;
+	}
 
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > RTE_ETHER_MAX_LEN) {
+	if (frame_size > E1000_ETH_MAX_LEN) {
 		dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 		rctl |= E1000_RCTL_LPE;
@@ -4850,7 +4886,7 @@ igb_timesync_disable(struct rte_eth_dev *dev)
 	/* Disable L2 filtering of IEEE1588/802.1AS Ethernet frame types. */
 	E1000_WRITE_REG(hw, E1000_ETQF(E1000_ETQF_FILTER_1588), 0);
 
-	/* Stop incrementating the System Time registers. */
+	/* Stop incrementing the System Time registers. */
 	E1000_WRITE_REG(hw, E1000_TIMINCA, 0);
 
 	return 0;
@@ -5097,9 +5133,6 @@ eth_igb_get_module_eeprom(struct rte_eth_dev *dev,
 	uint16_t dataword[RTE_ETH_MODULE_SFF_8472_LEN / 2 + 1];
 	u16 first_word, last_word;
 	int i = 0;
-
-	if (info->length == 0)
-		return -EINVAL;
 
 	first_word = info->offset >> 1;
 	last_word = (info->offset + info->length - 1) >> 1;
@@ -5400,9 +5433,3 @@ RTE_PMD_REGISTER_KMOD_DEP(net_e1000_igb, "* igb_uio | uio_pci_generic | vfio-pci
 RTE_PMD_REGISTER_PCI(net_e1000_igb_vf, rte_igbvf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_e1000_igb_vf, pci_id_igbvf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_e1000_igb_vf, "* igb_uio | vfio-pci");
-
-/* see e1000_logs.c */
-RTE_INIT(e1000_init_log)
-{
-	e1000_igb_init_log();
-}

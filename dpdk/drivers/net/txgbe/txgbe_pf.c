@@ -109,7 +109,7 @@ int txgbe_pf_host_init(struct rte_eth_dev *eth_dev)
 		nb_queue = 4;
 		RTE_ETH_DEV_SRIOV(eth_dev).active = ETH_32_POOLS;
 	} else {
-		nb_queue = 8;
+		nb_queue = 4;
 		RTE_ETH_DEV_SRIOV(eth_dev).active = ETH_16_POOLS;
 	}
 
@@ -237,7 +237,7 @@ int txgbe_pf_host_configure(struct rte_eth_dev *eth_dev)
 
 	wr32(hw, TXGBE_PSRCTL, TXGBE_PSRCTL_LBENA);
 
-	/* clear VMDq map to perment rar 0 */
+	/* clear VMDq map to permanent rar 0 */
 	hw->mac.clear_vmdq(hw, 0, BIT_MASK32);
 
 	/* clear VMDq map to scan rar 127 */

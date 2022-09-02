@@ -713,7 +713,8 @@ fill:
 			flow->internal = 1;
 			continue;
 		}
-		if (flow->promisc || flow->allmulti) {
+		if ((item->type != RTE_FLOW_ITEM_TYPE_VLAN && flow->promisc) ||
+		    flow->allmulti) {
 			msg = "mlx4 does not support additional matching"
 				" criteria combined with indiscriminate"
 				" matching on Ethernet headers";
@@ -791,7 +792,8 @@ fill:
 			rss = action->conf;
 			/* Default RSS configuration if none is provided. */
 			if (rss->key_len) {
-				rss_key = rss->key;
+				rss_key = rss->key ?
+					  rss->key : mlx4_rss_hash_key_default;
 				rss_key_len = rss->key_len;
 			} else {
 				rss_key = mlx4_rss_hash_key_default;

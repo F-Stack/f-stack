@@ -17,6 +17,7 @@
 #include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
+#include <rte_bitops.h>
 
 #include "i40e_logs.h"
 #include "base/i40e_prototype.h"
@@ -28,6 +29,28 @@
 #include "rte_pmd_i40e.h"
 
 #define I40E_CFG_CRCSTRIP_DEFAULT 1
+
+/* Supported RSS offloads */
+#define I40E_DEFAULT_RSS_HENA ( \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_SCTP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_TCP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_OTHER) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_FRAG_IPV4) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_TCP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_SCTP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_OTHER) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_FRAG_IPV6) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_L2_PAYLOAD))
+
+#define I40E_DEFAULT_RSS_HENA_EXPANDED (I40E_DEFAULT_RSS_HENA | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP))
 
 static int
 i40e_pf_host_switch_queues(struct i40e_pf_vf *vf,
@@ -321,7 +344,7 @@ i40e_pf_host_process_cmd_get_vf_resource(struct i40e_pf_vf *vf, uint8_t *msg,
 		vf->request_caps = *(uint32_t *)msg;
 
 	/* enable all RSS by default,
-	 * doesn't support hena setting by virtchnnl yet.
+	 * doesn't support hena setting by virtchnl yet.
 	 */
 	if (vf->request_caps & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
 		I40E_WRITE_REG(hw, I40E_VFQF_HENA1(0, vf->vf_idx),
@@ -333,6 +356,10 @@ i40e_pf_host_process_cmd_get_vf_resource(struct i40e_pf_vf *vf, uint8_t *msg,
 
 	vf_res->vf_cap_flags = vf->request_caps &
 				   I40E_VIRTCHNL_OFFLOAD_CAPS;
+
+	if (vf->request_caps & VIRTCHNL_VF_OFFLOAD_REQ_QUEUES)
+		vf_res->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_REQ_QUEUES;
+
 	/* For X722, it supports write back on ITR
 	 * without binding queue to interrupt vector.
 	 */
@@ -571,14 +598,14 @@ i40e_pf_config_irq_link_list(struct i40e_pf_vf *vf,
 	tempmap = vvm->rxq_map;
 	for (i = 0; i < sizeof(vvm->rxq_map) * BITS_PER_CHAR; i++) {
 		if (tempmap & 0x1)
-			linklistmap |= (1 << (2 * i));
+			linklistmap |= RTE_BIT64(2 * i);
 		tempmap >>= 1;
 	}
 
 	tempmap = vvm->txq_map;
 	for (i = 0; i < sizeof(vvm->txq_map) * BITS_PER_CHAR; i++) {
 		if (tempmap & 0x1)
-			linklistmap |= (1 << (2 * i + 1));
+			linklistmap |= RTE_BIT64(2 * i + 1);
 		tempmap >>= 1;
 	}
 
@@ -699,7 +726,7 @@ i40e_pf_host_process_cmd_config_irq_map(struct i40e_pf_vf *vf,
 		if ((map->rxq_map < qbit_max) && (map->txq_map < qbit_max)) {
 			i40e_pf_config_irq_link_list(vf, map);
 		} else {
-			/* configured queue size excceed limit */
+			/* configured queue size exceed limit */
 			ret = I40E_ERR_PARAM;
 			goto send_msg;
 		}
@@ -1284,6 +1311,37 @@ i40e_pf_host_process_cmd_request_queues(struct i40e_pf_vf *vf, uint8_t *msg)
 				(u8 *)vfres, sizeof(*vfres));
 }
 
+static void
+i40e_pf_host_process_cmd_get_rss_hena(struct i40e_pf_vf *vf)
+{
+	struct virtchnl_rss_hena vrh = {0};
+	struct i40e_pf *pf = vf->pf;
+
+	if (pf->adapter->hw.mac.type == I40E_MAC_X722)
+		vrh.hena = I40E_DEFAULT_RSS_HENA_EXPANDED;
+	else
+		vrh.hena = I40E_DEFAULT_RSS_HENA;
+
+	i40e_pf_host_send_msg_to_vf(vf, VIRTCHNL_OP_GET_RSS_HENA_CAPS,
+				    I40E_SUCCESS, (uint8_t *)&vrh, sizeof(vrh));
+}
+
+static void
+i40e_pf_host_process_cmd_set_rss_hena(struct i40e_pf_vf *vf, uint8_t *msg)
+{
+	struct virtchnl_rss_hena *vrh =
+		(struct virtchnl_rss_hena *)msg;
+	struct i40e_hw *hw = &vf->pf->adapter->hw;
+
+	i40e_write_rx_ctl(hw, I40E_VFQF_HENA1(0, vf->vf_idx),
+			  (uint32_t)vrh->hena);
+	i40e_write_rx_ctl(hw, I40E_VFQF_HENA1(1, vf->vf_idx),
+			  (uint32_t)(vrh->hena >> 32));
+
+	i40e_pf_host_send_msg_to_vf(vf, VIRTCHNL_OP_SET_RSS_HENA,
+				    I40E_SUCCESS, NULL, 0);
+}
+
 void
 i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 			   uint16_t abs_vf_id, uint32_t opcode,
@@ -1453,6 +1511,14 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 	case VIRTCHNL_OP_REQUEST_QUEUES:
 		PMD_DRV_LOG(INFO, "OP_REQUEST_QUEUES received");
 		i40e_pf_host_process_cmd_request_queues(vf, msg);
+		break;
+	case VIRTCHNL_OP_GET_RSS_HENA_CAPS:
+		PMD_DRV_LOG(INFO, "OP_GET_RSS_HENA_CAPS received");
+		i40e_pf_host_process_cmd_get_rss_hena(vf);
+		break;
+	case VIRTCHNL_OP_SET_RSS_HENA:
+		PMD_DRV_LOG(INFO, "OP_SET_RSS_HENA received");
+		i40e_pf_host_process_cmd_set_rss_hena(vf, msg);
 		break;
 
 	/* Don't add command supported below, which will

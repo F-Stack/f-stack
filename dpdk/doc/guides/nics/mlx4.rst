@@ -14,7 +14,7 @@ the `Mellanox website <http://www.mellanox.com>`_. Help is also provided by
 the `Mellanox community <http://community.mellanox.com/welcome>`_.
 
 There is also a `section dedicated to this poll mode driver
-<http://www.mellanox.com/page/products_dyn?product_family=209&mtag=pmd_for_dpdk>`_.
+<https://developer.nvidia.com/networking/dpdk>`_.
 
 
 Implementation details
@@ -178,7 +178,7 @@ DPDK and must be installed separately:
 
   - mlx4_core: hardware driver managing Mellanox ConnectX-3 devices.
   - mlx4_en: Ethernet device driver that provides kernel network interfaces.
-  - mlx4_ib: InifiniBand device driver.
+  - mlx4_ib: InfiniBand device driver.
   - ib_uverbs: user space driver for verbs (entry point for libibverbs).
 
 - **Firmware update**
@@ -219,7 +219,7 @@ Mellanox OFED as a fallback
 - `Mellanox OFED`_ version: **4.4, 4.5, 4.6**.
 - firmware version: **2.42.5000** and above.
 
-.. _`Mellanox OFED`: http://www.mellanox.com/page/products_dyn?product_family=26&mtag=linux_sw_drivers
+.. _`Mellanox OFED`: https://network.nvidia.com/products/infiniband-drivers/linux/mlnx_ofed/
 
 .. note::
 

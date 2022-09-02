@@ -53,8 +53,11 @@ static struct rte_ether_addr cfg_ether_dst =
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
 
+/* Use this type to inform GCC that ip_sum violates aliasing rules. */
+typedef unaligned_uint16_t alias_int16_t __attribute__((__may_alias__));
+
 static inline uint16_t
-ip_sum(const unaligned_uint16_t *hdr, int hdr_len)
+ip_sum(const alias_int16_t *hdr, int hdr_len)
 {
 	uint32_t sum = 0;
 
@@ -150,7 +153,7 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 							   next_flow);
 		ip_hdr->total_length	= RTE_CPU_TO_BE_16(pkt_size -
 							   sizeof(*eth_hdr));
-		ip_hdr->hdr_checksum	= ip_sum((unaligned_uint16_t *)ip_hdr,
+		ip_hdr->hdr_checksum	= ip_sum((const alias_int16_t *)ip_hdr,
 						 sizeof(*ip_hdr));
 
 		/* Initialize UDP header. */
@@ -178,12 +181,12 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	/*
 	 * Retry if necessary
 	 */
-	if (unlikely(nb_tx < nb_rx) && fs->retry_enabled) {
+	if (unlikely(nb_tx < nb_pkt) && fs->retry_enabled) {
 		retry = 0;
-		while (nb_tx < nb_rx && retry++ < burst_tx_retry_num) {
+		while (nb_tx < nb_pkt && retry++ < burst_tx_retry_num) {
 			rte_delay_us(burst_tx_delay_time);
 			nb_tx += rte_eth_tx_burst(fs->tx_port, fs->tx_queue,
-					&pkts_burst[nb_tx], nb_rx - nb_tx);
+					&pkts_burst[nb_tx], nb_pkt - nb_tx);
 		}
 	}
 	fs->tx_packets += nb_tx;
@@ -203,9 +206,22 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	get_end_cycles(fs, start_tsc);
 }
 
+static void
+flowgen_stream_init(struct fwd_stream *fs)
+{
+	bool rx_stopped, tx_stopped;
+
+	rx_stopped = ports[fs->rx_port].rxq[fs->rx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	tx_stopped = ports[fs->tx_port].txq[fs->tx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	fs->disabled = rx_stopped || tx_stopped;
+}
+
 struct fwd_engine flow_gen_engine = {
 	.fwd_mode_name  = "flowgen",
 	.port_fwd_begin = NULL,
 	.port_fwd_end   = NULL,
+	.stream_init    = flowgen_stream_init,
 	.packet_fwd     = pkt_burst_flow_gen,
 };

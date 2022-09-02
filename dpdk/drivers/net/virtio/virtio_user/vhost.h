@@ -86,6 +86,14 @@ enum vhost_user_request {
 	VHOST_USER_MAX
 };
 
+#ifndef VHOST_BACKEND_F_IOTLB_MSG_V2
+#define VHOST_BACKEND_F_IOTLB_MSG_V2 1
+#endif
+
+#ifndef VHOST_BACKEND_F_IOTLB_BATCH
+#define VHOST_BACKEND_F_IOTLB_BATCH 2
+#endif
+
 extern const char * const vhost_msg_strings[VHOST_USER_MAX];
 
 struct vhost_memory_region {

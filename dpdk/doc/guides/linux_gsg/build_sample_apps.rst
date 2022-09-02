@@ -66,7 +66,7 @@ The EAL options are as follows:
 
 * ``-d``:
   Add a driver or driver directory to be loaded.
-  The application should use this option to load the pmd drivers
+  The application should use this option to load the PMDs
   that are built as shared libraries.
 
 * ``-m MB``:
@@ -82,7 +82,7 @@ The EAL options are as follows:
 * ``--huge-dir``:
   The directory where hugetlbfs is mounted.
 
-* ``mbuf-pool-ops-name``:
+* ``--mbuf-pool-ops-name``:
   Pool ops name for mbuf to use.
 
 * ``--file-prefix``:

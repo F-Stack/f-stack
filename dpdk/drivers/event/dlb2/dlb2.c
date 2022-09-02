@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/fcntl.h>
+#include <fcntl.h>
 
 #include <rte_common.h>
 #include <rte_config.h>
@@ -1858,7 +1858,7 @@ dlb2_event_queue_detach_ldb(struct dlb2_eventdev *dlb2,
 	}
 
 	/* This is expected with eventdev API!
-	 * It blindly attemmpts to unmap all queues.
+	 * It blindly attempts to unmap all queues.
 	 */
 	if (i == DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
 		DLB2_LOG_DBG("dlb2: ignoring LB QID %d not mapped for qm_port %d.\n",

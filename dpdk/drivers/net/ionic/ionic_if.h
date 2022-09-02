@@ -604,7 +604,7 @@ enum ionic_txq_desc_opcode {
  *
  *                      Offload 16-bit checksum computation to hardware.
  *                      If @csum_l3 is set then the packet's L3 checksum is
- *                      updated. Similarly, if @csum_l4 is set the the L4
+ *                      updated. Similarly, if @csum_l4 is set the L4
  *                      checksum is updated. If @encap is set then encap header
  *                      checksums are also updated.
  *
@@ -1788,7 +1788,7 @@ struct ionic_fw_control_cmd {
 };
 
 /**
- * struct ionic_fw_control_comp - Firmware control copletion
+ * struct ionic_fw_control_comp - Firmware control completion
  * @opcode:    opcode
  * @slot:      slot where the firmware was installed
  */

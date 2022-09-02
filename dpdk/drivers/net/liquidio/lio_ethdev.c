@@ -481,7 +481,7 @@ lio_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 		return -1;
 	}
 
-	if (frame_len > RTE_ETHER_MAX_LEN)
+	if (frame_len > LIO_ETH_MAX_LEN)
 		eth_dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -2094,7 +2094,6 @@ lio_eth_dev_init(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	rte_eth_copy_pci_info(eth_dev, pdev);
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	if (pdev->mem_resource[0].addr) {
 		lio_dev->hw_addr = pdev->mem_resource[0].addr;

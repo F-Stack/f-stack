@@ -28,7 +28,8 @@ table_test table_tests[] = {
 			APP_METADATA_OFFSET(0));			\
 	key = RTE_MBUF_METADATA_UINT8_PTR(mbuf,			\
 			APP_METADATA_OFFSET(32));			\
-	memset(key, 0, 32);						\
+	if (mbuf->priv_size + mbuf->buf_len >= 64)			\
+		memset(key, 0, 32);					\
 	k32 = (uint32_t *) key;						\
 	k32[0] = (value);						\
 	*signature = pipeline_test_hash(key, NULL, 0, 0);			\
@@ -289,10 +290,10 @@ test_table_lpm(void)
 	struct rte_mbuf *mbufs[RTE_PORT_IN_BURST_SIZE_MAX];
 	void *table;
 	char *entries[RTE_PORT_IN_BURST_SIZE_MAX];
-	char entry;
+	uint64_t entry;
 	void *entry_ptr;
 	int key_found;
-	uint32_t entry_size = 1;
+	uint32_t entry_size = sizeof(entry);
 
 	/* Initialize params and create tables */
 	struct rte_table_lpm_params lpm_params = {
@@ -354,7 +355,7 @@ test_table_lpm(void)
 	struct rte_table_lpm_key lpm_key;
 	lpm_key.ip = 0xadadadad;
 
-	table = rte_table_lpm_ops.f_create(&lpm_params, 0, 1);
+	table = rte_table_lpm_ops.f_create(&lpm_params, 0, entry_size);
 	if (table == NULL)
 		return -9;
 
@@ -455,10 +456,10 @@ test_table_lpm_ipv6(void)
 	struct rte_mbuf *mbufs[RTE_PORT_IN_BURST_SIZE_MAX];
 	void *table;
 	char *entries[RTE_PORT_IN_BURST_SIZE_MAX];
-	char entry;
+	uint64_t entry;
 	void *entry_ptr;
 	int key_found;
-	uint32_t entry_size = 1;
+	uint32_t entry_size = sizeof(entry);
 
 	/* Initialize params and create tables */
 	struct rte_table_lpm_ipv6_params lpm_params = {

@@ -1095,6 +1095,8 @@ static void
 fs_dev_merge_info(struct rte_eth_dev_info *info,
 		  const struct rte_eth_dev_info *sinfo)
 {
+	info->min_mtu = RTE_MAX(info->min_mtu, sinfo->min_mtu);
+	info->max_mtu = RTE_MIN(info->max_mtu, sinfo->max_mtu);
 	info->max_rx_pktlen = RTE_MIN(info->max_rx_pktlen, sinfo->max_rx_pktlen);
 	info->max_rx_queues = RTE_MIN(info->max_rx_queues, sinfo->max_rx_queues);
 	info->max_tx_queues = RTE_MIN(info->max_tx_queues, sinfo->max_tx_queues);
@@ -1163,6 +1165,8 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 	int ret;
 
 	/* Use maximum upper bounds by default */
+	infos->min_mtu = RTE_ETHER_MIN_MTU;
+	infos->max_mtu = UINT16_MAX;
 	infos->max_rx_pktlen = UINT32_MAX;
 	infos->max_rx_queues = RTE_MAX_QUEUES_PER_PORT;
 	infos->max_tx_queues = RTE_MAX_QUEUES_PER_PORT;
@@ -1192,7 +1196,8 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 		DEV_RX_OFFLOAD_JUMBO_FRAME |
 		DEV_RX_OFFLOAD_SCATTER |
 		DEV_RX_OFFLOAD_TIMESTAMP |
-		DEV_RX_OFFLOAD_SECURITY;
+		DEV_RX_OFFLOAD_SECURITY |
+		DEV_RX_OFFLOAD_RSS_HASH;
 
 	infos->rx_queue_offload_capa =
 		DEV_RX_OFFLOAD_VLAN_STRIP |
@@ -1209,7 +1214,8 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 		DEV_RX_OFFLOAD_JUMBO_FRAME |
 		DEV_RX_OFFLOAD_SCATTER |
 		DEV_RX_OFFLOAD_TIMESTAMP |
-		DEV_RX_OFFLOAD_SECURITY;
+		DEV_RX_OFFLOAD_SECURITY |
+		DEV_RX_OFFLOAD_RSS_HASH;
 
 	infos->tx_offload_capa =
 		DEV_TX_OFFLOAD_MULTI_SEGS |

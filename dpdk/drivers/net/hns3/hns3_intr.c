@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #include <rte_alarm.h>
@@ -1345,16 +1345,12 @@ enable_tm_err_intr(struct hns3_adapter *hns, bool en)
 	}
 
 	/* configure TM QCN hw errors */
-	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_TM_QCN_MEM_INT_CFG, true);
-	ret = hns3_cmd_send(hw, &desc, 1);
-	if (ret) {
-		hns3_err(hw, "fail to read TM QCN CFG status, ret = %d\n", ret);
-		return ret;
-	}
-
-	hns3_cmd_reuse_desc(&desc, false);
-	if (en)
+	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_TM_QCN_MEM_INT_CFG, false);
+	desc.data[0] = rte_cpu_to_le_32(HNS3_TM_QCN_ERR_INT_TYPE);
+	if (en) {
+		desc.data[0] |= rte_cpu_to_le_32(HNS3_TM_QCN_FIFO_INT_EN);
 		desc.data[1] = rte_cpu_to_le_32(HNS3_TM_QCN_MEM_ERR_INT_EN);
+	}
 
 	ret = hns3_cmd_send(hw, &desc, 1);
 	if (ret)
@@ -1791,7 +1787,8 @@ hns3_schedule_reset(struct hns3_adapter *hns)
 		return;
 	if (rte_atomic16_read(&hns->hw.reset.schedule) == SCHEDULE_DEFERRED)
 		rte_eal_alarm_cancel(hw->reset.ops->reset_service, hns);
-	rte_atomic16_set(&hns->hw.reset.schedule, SCHEDULE_REQUESTED);
+	else
+		rte_atomic16_set(&hns->hw.reset.schedule, SCHEDULE_REQUESTED);
 
 	rte_eal_alarm_set(SWITCH_CONTEXT_US, hw->reset.ops->reset_service, hns);
 }
@@ -1829,7 +1826,7 @@ hns3_wait_callback(void *param)
 		 * Check if the current time exceeds the deadline
 		 * or a pending reset coming, or reset during close.
 		 */
-		msec = get_timeofday_ms();
+		msec = hns3_clock_gettime_ms();
 		if (msec > data->end_ms || is_reset_pending(hns) ||
 		    hw->adapter_state == HNS3_NIC_CLOSING) {
 			done = false;
@@ -1941,7 +1938,7 @@ hns3_clear_reset_level(struct hns3_hw *hw, uint64_t *levels)
 	if (merge_cnt != hw->reset.stats.merge_cnt)
 		hns3_warn(hw,
 			  "No need to do low-level reset after %s reset. "
-			  "merge cnt: %" PRIx64 " total merge cnt: %" PRIx64,
+			  "merge cnt: %" PRIu64 " total merge cnt: %" PRIu64,
 			  reset_string[hw->reset.level],
 			  hw->reset.stats.merge_cnt - merge_cnt,
 			  hw->reset.stats.merge_cnt);
@@ -1950,7 +1947,7 @@ hns3_clear_reset_level(struct hns3_hw *hw, uint64_t *levels)
 static bool
 hns3_reset_err_handle(struct hns3_adapter *hns)
 {
-#define MAX_RESET_FAIL_CNT 5
+#define MAX_RESET_FAIL_CNT 30
 
 	struct hns3_hw *hw = &hns->hw;
 
@@ -1961,7 +1958,7 @@ hns3_reset_err_handle(struct hns3_adapter *hns)
 		hw->reset.attempts = 0;
 		hw->reset.stats.fail_cnt++;
 		hns3_warn(hw, "%s reset fail because new Reset is pending "
-			      "attempts:%" PRIx64,
+			      "attempts:%" PRIu64,
 			  reset_string[hw->reset.level],
 			  hw->reset.stats.fail_cnt);
 		hw->reset.level = HNS3_NONE_RESET;
@@ -1988,10 +1985,10 @@ hns3_reset_err_handle(struct hns3_adapter *hns)
 reset_fail:
 	hw->reset.attempts = 0;
 	hw->reset.stats.fail_cnt++;
-	hns3_warn(hw, "%s reset fail fail_cnt:%" PRIx64 " success_cnt:%" PRIx64
-		  " global_cnt:%" PRIx64 " imp_cnt:%" PRIx64
-		  " request_cnt:%" PRIx64 " exec_cnt:%" PRIx64
-		  " merge_cnt:%" PRIx64 "adapter_state:%d",
+	hns3_warn(hw, "%s reset fail fail_cnt:%" PRIu64 " success_cnt:%" PRIu64
+		  " global_cnt:%" PRIu64 " imp_cnt:%" PRIu64
+		  " request_cnt:%" PRIu64 " exec_cnt:%" PRIu64
+		  " merge_cnt:%" PRIu64 "adapter_state:%d",
 		  reset_string[hw->reset.level], hw->reset.stats.fail_cnt,
 		  hw->reset.stats.success_cnt, hw->reset.stats.global_cnt,
 		  hw->reset.stats.imp_cnt, hw->reset.stats.request_cnt,
@@ -2014,7 +2011,7 @@ hns3_reset_pre(struct hns3_adapter *hns)
 		rte_atomic16_set(&hns->hw.reset.resetting, 1);
 		hw->reset.stage = RESET_STAGE_DOWN;
 		ret = hw->reset.ops->stop_service(hns);
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		if (ret) {
 			hns3_warn(hw, "Reset step1 down fail=%d time=%ld.%.6ld",
 				  ret, tv.tv_sec, tv.tv_usec);
@@ -2026,7 +2023,7 @@ hns3_reset_pre(struct hns3_adapter *hns)
 	}
 	if (hw->reset.stage == RESET_STAGE_PREWAIT) {
 		ret = hw->reset.ops->prepare_reset(hns);
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		if (ret) {
 			hns3_warn(hw,
 				  "Reset step2 prepare wait fail=%d time=%ld.%.6ld",
@@ -2044,7 +2041,7 @@ hns3_reset_pre(struct hns3_adapter *hns)
 static int
 hns3_reset_post(struct hns3_adapter *hns)
 {
-#define TIMEOUT_RETRIES_CNT	5
+#define TIMEOUT_RETRIES_CNT	30
 	struct hns3_hw *hw = &hns->hw;
 	struct timeval tv_delta;
 	struct timeval tv;
@@ -2064,7 +2061,7 @@ hns3_reset_post(struct hns3_adapter *hns)
 		}
 		ret = hw->reset.ops->reinit_dev(hns);
 		rte_spinlock_unlock(&hw->lock);
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		if (ret) {
 			hns3_warn(hw, "Reset step5 devinit fail=%d retries=%d",
 				  ret, hw->reset.retries);
@@ -2082,7 +2079,7 @@ hns3_reset_post(struct hns3_adapter *hns)
 		rte_spinlock_lock(&hw->lock);
 		ret = hw->reset.ops->restore_conf(hns);
 		rte_spinlock_unlock(&hw->lock);
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		if (ret) {
 			hns3_warn(hw,
 				  "Reset step6 restore fail=%d retries=%d",
@@ -2105,22 +2102,21 @@ hns3_reset_post(struct hns3_adapter *hns)
 		rte_spinlock_lock(&hw->lock);
 		hw->reset.ops->start_service(hns);
 		rte_spinlock_unlock(&hw->lock);
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		timersub(&tv, &hw->reset.start_time, &tv_delta);
-		hns3_warn(hw, "%s reset done fail_cnt:%" PRIx64
-			  " success_cnt:%" PRIx64 " global_cnt:%" PRIx64
-			  " imp_cnt:%" PRIx64 " request_cnt:%" PRIx64
-			  " exec_cnt:%" PRIx64 " merge_cnt:%" PRIx64,
+		hns3_warn(hw, "%s reset done fail_cnt:%" PRIu64
+			  " success_cnt:%" PRIu64 " global_cnt:%" PRIu64
+			  " imp_cnt:%" PRIu64 " request_cnt:%" PRIu64
+			  " exec_cnt:%" PRIu64 " merge_cnt:%" PRIu64,
 			  reset_string[hw->reset.level],
 			  hw->reset.stats.fail_cnt, hw->reset.stats.success_cnt,
 			  hw->reset.stats.global_cnt, hw->reset.stats.imp_cnt,
 			  hw->reset.stats.request_cnt, hw->reset.stats.exec_cnt,
 			  hw->reset.stats.merge_cnt);
 		hns3_warn(hw,
-			  "%s reset done delta %ld ms time=%ld.%.6ld",
+			  "%s reset done delta %" PRIu64 " ms time=%ld.%.6ld",
 			  reset_string[hw->reset.level],
-			  tv_delta.tv_sec * MSEC_PER_SEC +
-			  tv_delta.tv_usec / USEC_PER_MSEC,
+			  hns3_clock_calctime_ms(&tv_delta),
 			  tv.tv_sec, tv.tv_usec);
 		hw->reset.level = HNS3_NONE_RESET;
 	}
@@ -2160,7 +2156,7 @@ hns3_reset_process(struct hns3_adapter *hns, enum hns3_reset_level new_level)
 	if (hw->reset.level == HNS3_NONE_RESET) {
 		hw->reset.level = new_level;
 		hw->reset.stats.exec_cnt++;
-		gettimeofday(&hw->reset.start_time, NULL);
+		hns3_clock_gettime(&hw->reset.start_time);
 		hns3_warn(hw, "Start %s reset time=%ld.%.6ld",
 			  reset_string[hw->reset.level],
 			  hw->reset.start_time.tv_sec,
@@ -2168,7 +2164,7 @@ hns3_reset_process(struct hns3_adapter *hns, enum hns3_reset_level new_level)
 	}
 
 	if (is_reset_pending(hns)) {
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		hns3_warn(hw,
 			  "%s reset is aborted by high level time=%ld.%.6ld",
 			  reset_string[hw->reset.level], tv.tv_sec, tv.tv_usec);
@@ -2186,7 +2182,7 @@ hns3_reset_process(struct hns3_adapter *hns, enum hns3_reset_level new_level)
 		ret = hns3_reset_req_hw_reset(hns);
 		if (ret == -EAGAIN)
 			return ret;
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		hns3_warn(hw,
 			  "Reset step3 request IMP reset success time=%ld.%.6ld",
 			  tv.tv_sec, tv.tv_usec);
@@ -2197,7 +2193,7 @@ hns3_reset_process(struct hns3_adapter *hns, enum hns3_reset_level new_level)
 		ret = hw->reset.ops->wait_hardware_ready(hns);
 		if (ret)
 			goto retry;
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		hns3_warn(hw, "Reset step4 reset wait success time=%ld.%.6ld",
 			  tv.tv_sec, tv.tv_usec);
 		hw->reset.stage = RESET_STAGE_DEV_INIT;
@@ -2225,12 +2221,11 @@ err:
 		rte_spinlock_unlock(&hw->lock);
 		rte_atomic16_clear(&hns->hw.reset.resetting);
 		hw->reset.stage = RESET_STAGE_NONE;
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		timersub(&tv, &hw->reset.start_time, &tv_delta);
-		hns3_warn(hw, "%s reset fail delta %ld ms time=%ld.%.6ld",
+		hns3_warn(hw, "%s reset fail delta %" PRIu64 " ms time=%ld.%.6ld",
 			  reset_string[hw->reset.level],
-			  tv_delta.tv_sec * MSEC_PER_SEC +
-			  tv_delta.tv_usec / USEC_PER_MSEC,
+			  hns3_clock_calctime_ms(&tv_delta),
 			  tv.tv_sec, tv.tv_usec);
 		hw->reset.level = HNS3_NONE_RESET;
 	}
@@ -2262,7 +2257,7 @@ hns3_reset_abort(struct hns3_adapter *hns)
 	rte_eal_alarm_cancel(hns3_wait_callback, hw->reset.wait_data);
 
 	if (hw->reset.level != HNS3_NONE_RESET) {
-		gettimeofday(&tv, NULL);
+		hns3_clock_gettime(&tv);
 		hns3_err(hw, "Failed to terminate reset: %s time=%ld.%.6ld",
 			 reset_string[hw->reset.level], tv.tv_sec, tv.tv_usec);
 	}

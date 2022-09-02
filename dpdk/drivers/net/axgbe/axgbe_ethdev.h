@@ -125,6 +125,12 @@
 /* MDIO port types */
 #define AXGMAC_MAX_C22_PORT		3
 
+/* The max frame size with default MTU */
+#define AXGBE_ETH_MAX_LEN ( \
+	RTE_ETHER_MTU + \
+	RTE_ETHER_HDR_LEN + \
+	RTE_ETHER_CRC_LEN)
+
 /* Helper macro for descriptor handling
  *  Always use AXGBE_GET_DESC_DATA to access the descriptor data
  *  since the index is free-running and needs to be and-ed
@@ -623,7 +629,7 @@ struct axgbe_port {
 
 	unsigned int kr_redrv;
 
-	/* Auto-negotiation atate machine support */
+	/* Auto-negotiation state machine support */
 	unsigned int an_int;
 	unsigned int an_status;
 	enum axgbe_an an_result;

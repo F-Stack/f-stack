@@ -233,7 +233,7 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 			0 /*SOCKET_ID_ANY*/);
 	if (retval < 0)
 		rte_exit(EXIT_FAILURE,
-				"Faled to create bond port\n");
+				"Failed to create bond port\n");
 
 	BOND_PORT = retval;
 
@@ -376,7 +376,7 @@ static int lcore_main(__rte_unused void *arg1)
 	bond_ip = BOND_IP_1 | (BOND_IP_2 << 8) |
 				(BOND_IP_3 << 16) | (BOND_IP_4 << 24);
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 
 	while (global_flag_stru_p->LcoreMainIsRunning) {
 		rte_spinlock_unlock(&global_flag_stru_p->lock);
@@ -408,7 +408,7 @@ static int lcore_main(__rte_unused void *arg1)
 						struct rte_ether_hdr *);
 			ether_type = eth_hdr->ether_type;
 			if (ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
-				printf("VLAN taged frame, offset:");
+				printf("VLAN tagged frame, offset:");
 			offset = get_vlan_offset(eth_hdr, &ether_type);
 			if (offset > 0)
 				printf("%d\n", offset);
@@ -457,7 +457,7 @@ static int lcore_main(__rte_unused void *arg1)
 			if (is_free == 0)
 				rte_pktmbuf_free(pkts[i]);
 		}
-		rte_spinlock_trylock(&global_flag_stru_p->lock);
+		rte_spinlock_lock(&global_flag_stru_p->lock);
 	}
 	rte_spinlock_unlock(&global_flag_stru_p->lock);
 	printf("BYE lcore_main\n");
@@ -572,7 +572,7 @@ static void cmd_start_parsed(__rte_unused void *parsed_result,
 {
 	int worker_core_id = rte_lcore_id();
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0) {
 		if (rte_eal_get_lcore_state(global_flag_stru_p->LcoreMainCore)
 		    != WAIT) {
@@ -592,7 +592,7 @@ static void cmd_start_parsed(__rte_unused void *parsed_result,
 	if ((worker_core_id >= RTE_MAX_LCORE) || (worker_core_id == 0))
 		return;
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	global_flag_stru_p->LcoreMainIsRunning = 1;
 	rte_spinlock_unlock(&global_flag_stru_p->lock);
 	cmdline_printf(cl,
@@ -660,7 +660,7 @@ static void cmd_stop_parsed(__rte_unused void *parsed_result,
 			    struct cmdline *cl,
 			    __rte_unused void *data)
 {
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0)	{
 		cmdline_printf(cl,
 					"lcore_main not running on core:%d\n",
@@ -701,7 +701,7 @@ static void cmd_quit_parsed(__rte_unused void *parsed_result,
 			    struct cmdline *cl,
 			    __rte_unused void *data)
 {
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0)	{
 		cmdline_printf(cl,
 					"lcore_main not running on core:%d\n",
@@ -763,7 +763,7 @@ static void cmd_show_parsed(__rte_unused void *parsed_result,
 		printf("\n");
 	}
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	cmdline_printf(cl,
 			"Active_slaves:%d "
 			"packets received:Tot:%d Arp:%d IPv4:%d\n",
@@ -876,5 +876,9 @@ main(int argc, char *argv[])
 	prompt(NULL);
 
 	rte_delay_ms(100);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

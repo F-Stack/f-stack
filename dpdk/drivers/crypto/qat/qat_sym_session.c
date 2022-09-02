@@ -2,6 +2,8 @@
  * Copyright(c) 2015-2019 Intel Corporation
  */
 
+#define OPENSSL_API_COMPAT 0x10100000L
+
 #include <openssl/sha.h>	/* Needed to calculate pre-compute values */
 #include <openssl/aes.h>	/* Needed to calculate pre-compute values */
 #include <openssl/md5.h>	/* Needed to calculate pre-compute values */
@@ -101,8 +103,10 @@ bpi_cipher_ctx_init(enum rte_crypto_cipher_algorithm cryptodev_algo,
 	return 0;
 
 ctx_init_err:
-	if (*ctx != NULL)
+	if (*ctx != NULL) {
 		EVP_CIPHER_CTX_free(*ctx);
+		*ctx = NULL;
+	}
 	return ret;
 }
 
@@ -1189,6 +1193,9 @@ static int partial_hash_compute(enum icp_qat_hw_auth_algo hash_alg,
 	uint32_t *hash_state_out_be32;
 	uint64_t *hash_state_out_be64;
 	int i;
+
+	/* Initialize to avoid gcc warning */
+	memset(digest, 0, sizeof(digest));
 
 	digest_size = qat_hash_get_digest_size(hash_alg);
 	if (digest_size <= 0)

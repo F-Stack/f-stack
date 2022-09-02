@@ -107,7 +107,7 @@ static struct rte_memseg_list local_memsegs[RTE_MAX_MEMSEG_LISTS];
 
 static sigjmp_buf huge_jmpenv;
 
-static void __rte_unused huge_sigbus_handler(int signo __rte_unused)
+static void huge_sigbus_handler(int signo __rte_unused)
 {
 	siglongjmp(huge_jmpenv, 1);
 }
@@ -116,7 +116,7 @@ static void __rte_unused huge_sigbus_handler(int signo __rte_unused)
  * non-static local variable in the stack frame calling sigsetjmp might be
  * clobbered by a call to longjmp.
  */
-static int __rte_unused huge_wrap_sigsetjmp(void)
+static int huge_wrap_sigsetjmp(void)
 {
 	return sigsetjmp(huge_jmpenv, 1);
 }
@@ -124,7 +124,7 @@ static int __rte_unused huge_wrap_sigsetjmp(void)
 static struct sigaction huge_action_old;
 static int huge_need_recover;
 
-static void __rte_unused
+static void
 huge_register_sigbus(void)
 {
 	sigset_t mask;
@@ -139,7 +139,7 @@ huge_register_sigbus(void)
 	huge_need_recover = !sigaction(SIGBUS, &action, &huge_action_old);
 }
 
-static void __rte_unused
+static void
 huge_recover_sigbus(void)
 {
 	if (huge_need_recover) {
@@ -308,8 +308,8 @@ get_seg_fd(char *path, int buflen, struct hugepage_info *hi,
 		if (fd < 0) {
 			fd = open(path, O_CREAT | O_RDWR, 0600);
 			if (fd < 0) {
-				RTE_LOG(ERR, EAL, "%s(): open failed: %s\n",
-					__func__, strerror(errno));
+				RTE_LOG(ERR, EAL, "%s(): open '%s' failed: %s\n",
+					__func__, path, strerror(errno));
 				return -1;
 			}
 			/* take out a read lock and keep it indefinitely */
@@ -346,8 +346,8 @@ get_seg_fd(char *path, int buflen, struct hugepage_info *hi,
 
 			fd = open(path, O_CREAT | O_RDWR, 0600);
 			if (fd < 0) {
-				RTE_LOG(DEBUG, EAL, "%s(): open failed: %s\n",
-					__func__, strerror(errno));
+				RTE_LOG(ERR, EAL, "%s(): open '%s' failed: %s\n",
+					__func__, path, strerror(errno));
 				return -1;
 			}
 			/* take out a read lock */
@@ -576,6 +576,8 @@ alloc_seg(struct rte_memseg *ms, void *addr, int socket_id,
 		mmap_flags = MAP_SHARED | MAP_POPULATE | MAP_FIXED;
 	}
 
+	huge_register_sigbus();
+
 	/*
 	 * map the segment, and populate page tables, the kernel fills
 	 * this segment with zeros if it's a new page.
@@ -651,6 +653,8 @@ alloc_seg(struct rte_memseg *ms, void *addr, int socket_id,
 				__func__);
 #endif
 
+	huge_recover_sigbus();
+
 	ms->addr = addr;
 	ms->hugepage_sz = alloc_sz;
 	ms->len = alloc_sz;
@@ -664,6 +668,7 @@ alloc_seg(struct rte_memseg *ms, void *addr, int socket_id,
 mapped:
 	munmap(addr, alloc_sz);
 unmapped:
+	huge_recover_sigbus();
 	flags = EAL_RESERVE_FORCE_ADDRESS;
 	new_addr = eal_get_virtual_area(addr, &alloc_sz, alloc_sz, 0, flags);
 	if (new_addr != addr) {
@@ -709,7 +714,6 @@ free_seg(struct rte_memseg *ms, struct hugepage_info *hi,
 	uint64_t map_offset;
 	char path[PATH_MAX];
 	int fd, ret = 0;
-	bool exit_early;
 	const struct internal_config *internal_conf =
 		eal_get_internal_configuration();
 
@@ -725,17 +729,8 @@ free_seg(struct rte_memseg *ms, struct hugepage_info *hi,
 
 	eal_mem_set_dump(ms->addr, ms->len, false);
 
-	exit_early = false;
-
 	/* if we're using anonymous hugepages, nothing to be done */
-	if (internal_conf->in_memory && !memfd_create_supported)
-		exit_early = true;
-
-	/* if we've already unlinked the page, nothing needs to be done */
-	if (!internal_conf->in_memory && internal_conf->hugepage_unlink)
-		exit_early = true;
-
-	if (exit_early) {
+	if (internal_conf->in_memory && !memfd_create_supported) {
 		memset(ms, 0, sizeof(*ms));
 		return 0;
 	}
@@ -761,7 +756,7 @@ free_seg(struct rte_memseg *ms, struct hugepage_info *hi,
 		/* if we're able to take out a write lock, we're the last one
 		 * holding onto this page.
 		 */
-		if (!internal_conf->in_memory) {
+		if (!internal_conf->in_memory && !internal_conf->hugepage_unlink) {
 			ret = lock(fd, LOCK_EX);
 			if (ret >= 0) {
 				/* no one else is using this page */

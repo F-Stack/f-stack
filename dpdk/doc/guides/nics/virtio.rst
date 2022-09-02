@@ -17,7 +17,7 @@ With this enhancement, virtio could achieve quite promising performance.
 For basic qemu-KVM installation and other Intel EM poll mode driver in guest VM,
 please refer to Chapter "Driver for VM Emulated Devices".
 
-In this chapter, we will demonstrate usage of virtio PMD driver with two backends,
+In this chapter, we will demonstrate usage of virtio PMD with two backends,
 standard qemu vhost back end and vhost kni back end.
 
 Virtio Implementation in DPDK
@@ -40,7 +40,7 @@ end if necessary.
 Features and Limitations of virtio PMD
 --------------------------------------
 
-In this release, the virtio PMD driver provides the basic functionality of packet reception and transmission.
+In this release, the virtio PMD provides the basic functionality of packet reception and transmission.
 
 *   It supports merge-able buffers per packet when receiving packets and scattered buffer per packet
     when transmitting packets. The packet size supported is from 64 to 1518.
@@ -71,7 +71,7 @@ In this release, the virtio PMD driver provides the basic functionality of packe
 
 *   Virtio supports software vlan stripping and inserting.
 
-*   Virtio supports using port IO to get PCI resource when uio/igb_uio module is not available.
+*   Virtio supports using port IO to get PCI resource when UIO module is not available.
 
 Prerequisites
 -------------
@@ -103,7 +103,8 @@ Host2VM communication example
 
         insmod rte_kni.ko
 
-    Other basic DPDK preparations like hugepage enabling, uio port binding are not listed here.
+    Other basic DPDK preparations like hugepage enabling,
+    UIO port binding are not listed here.
     Please refer to the *DPDK Getting Started Guide* for detailed instructions.
 
 #.  Launch the kni user application:
@@ -508,7 +509,7 @@ are shown in below table:
    Split virtqueue in-order non-mergeable path  virtio_recv_pkts_inorder          virtio_xmit_pkts_inorder
    Split virtqueue vectorized Rx path           virtio_recv_pkts_vec              virtio_xmit_pkts
    Packed virtqueue mergeable path              virtio_recv_mergeable_pkts_packed virtio_xmit_pkts_packed
-   Packed virtqueue non-meregable path          virtio_recv_pkts_packed           virtio_xmit_pkts_packed
+   Packed virtqueue non-mergeable path          virtio_recv_pkts_packed           virtio_xmit_pkts_packed
    Packed virtqueue in-order mergeable path     virtio_recv_mergeable_pkts_packed virtio_xmit_pkts_packed
    Packed virtqueue in-order non-mergeable path virtio_recv_pkts_packed           virtio_xmit_pkts_packed
    Packed virtqueue vectorized Rx path          virtio_recv_pkts_packed_vec       virtio_xmit_pkts_packed

@@ -27,16 +27,21 @@ Deprecation Notices
 
 * rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
   not allow for writing optimized code for all the CPU architectures supported
-  in DPDK. DPDK will adopt C11 atomic operations semantics and provide wrappers
-  using C11 atomic built-ins. These wrappers must be used for patches that
-  need to be merged in 20.08 onwards. This change will not introduce any
-  performance degradation.
+  in DPDK. DPDK has adopted the atomic operations from
+  https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html. These
+  operations must be used for patches that need to be merged in 20.08 onwards.
+  This change will not introduce any performance degradation.
 
 * rte_smp_*mb: These APIs provide full barrier functionality. However, many
-  use cases do not require full barriers. To support such use cases, DPDK will
-  adopt C11 barrier semantics and provide wrappers using C11 atomic built-ins.
-  These wrappers must be used for patches that need to be merged in 20.08
-  onwards. This change will not introduce any performance degradation.
+  use cases do not require full barriers. To support such use cases, DPDK has
+  adopted atomic operations from
+  https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html. These
+  operations and a new wrapper ``rte_atomic_thread_fence`` instead of
+  ``__atomic_thread_fence`` must be used for patches that need to be merged in
+  20.08 onwards. This change will not introduce any performance degradation.
+
+* mempool: The mempool API macros ``MEMPOOL_PG_*`` are deprecated and
+  will be removed in DPDK 22.11.
 
 * lib: will fix extending some enum/define breaking the ABI. There are multiple
   samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
@@ -126,12 +131,6 @@ Deprecation Notices
   Specifically the support for the following Broadcom PCI IDs will be removed
   from the release: ``0x16c8, 0x16c9, 0x16ca, 0x16ce, 0x16cf, 0x16df,``
   ``0x16d0, 0x16d1, 0x16d2, 0x16d4, 0x16d5, 0x16e7, 0x16e8, 0x16e9``.
-
-* sched: To allow more traffic classes, flexible mapping of pipe queues to
-  traffic classes, and subport level configuration of pipes and queues
-  changes will be made to macros, data structures and API functions defined
-  in "rte_sched.h". These changes are aligned to improvements suggested in the
-  RFC https://mails.dpdk.org/archives/dev/2018-November/120035.html.
 
 * metrics: The function ``rte_metrics_init`` will have a non-void return
   in order to notify errors instead of calling ``rte_exit``.

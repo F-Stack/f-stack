@@ -69,7 +69,6 @@ struct rxq_zip {
 struct mlx5_mprq_buf {
 	struct rte_mempool *mp;
 	uint16_t refcnt; /* Atomically accessed refcnt. */
-	uint8_t pad[RTE_PKTMBUF_HEADROOM]; /* Headroom for the first packet. */
 	struct rte_mbuf_ext_shared_info shinfos[];
 	/*
 	 * Shared information per stride.
@@ -119,14 +118,14 @@ struct mlx5_rxq_data {
 	unsigned int elts_n:4; /* Log 2 of Mbufs. */
 	unsigned int rss_hash:1; /* RSS hash result is enabled. */
 	unsigned int mark:1; /* Marked flow available on the queue. */
-	unsigned int strd_num_n:5; /* Log 2 of the number of stride. */
-	unsigned int strd_sz_n:4; /* Log 2 of stride size. */
+	unsigned int log_strd_num:5; /* Log 2 of the number of stride. */
+	unsigned int log_strd_sz:4; /* Log 2 of stride size. */
 	unsigned int strd_shift_en:1; /* Enable 2bytes shift on a stride. */
 	unsigned int err_state:2; /* enum mlx5_rxq_err_state. */
 	unsigned int strd_scatter_en:1; /* Scattered packets from a stride. */
 	unsigned int lro:1; /* Enable LRO. */
 	unsigned int dynf_meta:1; /* Dynamic metadata is configured. */
-	unsigned int mcqe_format:3; /* Dynamic metadata is configured. */
+	unsigned int mcqe_format:3; /* CQE compression format. */
 	volatile uint32_t *rq_db;
 	volatile uint32_t *cq_db;
 	uint16_t port_id;
@@ -154,6 +153,7 @@ struct mlx5_rxq_data {
 	struct mlx5_dev_ctx_shared *sh; /* Shared context. */
 	uint16_t idx; /* Queue index. */
 	struct mlx5_rxq_stats stats;
+	struct mlx5_rxq_stats stats_reset; /* stats on last reset. */
 	rte_xmm_t mbuf_initializer; /* Default rearm/flags for vectorized Rx. */
 	struct rte_mbuf fake_mbuf; /* elts padding for vectorized Rx. */
 	void *cq_uar; /* Verbs CQ user access region. */
@@ -168,6 +168,7 @@ struct mlx5_rxq_data {
 	uint64_t timestamp_rx_flag; /* Dynamic mbuf flag for timestamp. */
 	uint64_t flow_meta_mask;
 	int32_t flow_meta_offset;
+	uint32_t flow_meta_port_mask;
 	uint32_t rxseg_n; /* Number of split segment descriptions. */
 	struct mlx5_eth_rxseg rxseg[MLX5_MAX_RXQ_NSEG];
 	/* Buffer split segment descriptions - sizes, offsets, pools. */
@@ -189,7 +190,6 @@ struct mlx5_rxq_ctrl {
 	enum mlx5_rxq_type type; /* Rxq type. */
 	unsigned int socket; /* CPU socket ID for allocations. */
 	unsigned int irq:1; /* Whether IRQ is enabled. */
-	uint32_t flow_mark_n; /* Number of Mark/Flag flows using this Queue. */
 	uint32_t flow_tunnels_n[MLX5_FLOW_TUNNEL]; /* Tunnels counters. */
 	uint32_t wqn; /* WQ number. */
 	uint16_t dump_file_n; /* Number of dump files. */
@@ -272,6 +272,7 @@ struct mlx5_txq_data {
 	int32_t ts_offset; /* Timestamp field dynamic offset. */
 	struct mlx5_dev_ctx_shared *sh; /* Shared context. */
 	struct mlx5_txq_stats stats; /* TX queue counters. */
+	struct mlx5_txq_stats stats_reset; /* stats on last reset. */
 #ifndef RTE_ARCH_64
 	rte_spinlock_t *uar_lock;
 	/* UAR access lock required for 32bit implementations */
@@ -337,7 +338,7 @@ struct mlx5_rxq_ctrl *mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx,
 				   uint16_t desc, unsigned int socket,
 				   const struct rte_eth_rxconf *conf,
 				   const struct rte_eth_rxseg_split *rx_seg,
-				   uint16_t n_seg);
+				   uint16_t n_seg, bool is_extmem);
 struct mlx5_rxq_ctrl *mlx5_rxq_hairpin_new
 	(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	 const struct rte_eth_hairpin_conf *hairpin_conf);
@@ -396,7 +397,7 @@ int mlx5_tx_hairpin_queue_setup
 	(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	 const struct rte_eth_hairpin_conf *hairpin_conf);
 void mlx5_tx_queue_release(void *dpdk_txq);
-void txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl);
+void txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl, void *bf_reg);
 int mlx5_tx_uar_init_secondary(struct rte_eth_dev *dev, int fd);
 void mlx5_tx_uar_uninit_secondary(struct rte_eth_dev *dev);
 int mlx5_txq_obj_verify(struct rte_eth_dev *dev);
@@ -748,7 +749,7 @@ mlx5_timestamp_set(struct rte_mbuf *mbuf, int offset,
 static __rte_always_inline void
 mprq_buf_replace(struct mlx5_rxq_data *rxq, uint16_t rq_idx)
 {
-	const uint32_t strd_n = 1 << rxq->strd_num_n;
+	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
 	struct mlx5_mprq_buf *rep = rxq->mprq_repl;
 	volatile struct mlx5_wqe_data_seg *wqe =
 		&((volatile struct mlx5_wqe_mprq *)rxq->wqes)[rq_idx].dseg;
@@ -806,8 +807,8 @@ static __rte_always_inline enum mlx5_rqx_code
 mprq_buf_to_pkt(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt, uint32_t len,
 		struct mlx5_mprq_buf *buf, uint16_t strd_idx, uint16_t strd_cnt)
 {
-	const uint32_t strd_n = 1 << rxq->strd_num_n;
-	const uint16_t strd_sz = 1 << rxq->strd_sz_n;
+	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
+	const uint16_t strd_sz = RTE_BIT32(rxq->log_strd_sz);
 	const uint16_t strd_shift =
 		MLX5_MPRQ_STRIDE_SHIFT_BYTE * rxq->strd_shift_en;
 	const int32_t hdrm_overlap =
@@ -890,7 +891,7 @@ mprq_buf_to_pkt(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt, uint32_t len,
 					  buf_len, shinfo);
 		/* Set mbuf head-room. */
 		SET_DATA_OFF(pkt, RTE_PKTMBUF_HEADROOM);
-		MLX5_ASSERT(pkt->ol_flags == EXT_ATTACHED_MBUF);
+		MLX5_ASSERT(pkt->ol_flags & EXT_ATTACHED_MBUF);
 		MLX5_ASSERT(rte_pktmbuf_tailroom(pkt) >=
 			len - (hdrm_overlap > 0 ? hdrm_overlap : 0));
 		DATA_LEN(pkt) = len;

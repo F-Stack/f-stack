@@ -303,7 +303,6 @@ static int
 rte_fslmc_scan(void)
 {
 	int ret;
-	int device_count = 0;
 	char fslmc_dirpath[PATH_MAX];
 	DIR *dir;
 	struct dirent *entry;
@@ -337,7 +336,6 @@ rte_fslmc_scan(void)
 			/* Error in parsing directory - exit gracefully */
 			goto scan_fail_cleanup;
 		}
-		device_count += 1;
 	}
 
 	closedir(dir);
@@ -529,7 +527,7 @@ rte_fslmc_driver_unregister(struct rte_dpaa2_driver *driver)
 
 	fslmc_bus = driver->fslmc_bus;
 
-	/* Cleanup the PA->VA Translation table; From whereever this function
+	/* Cleanup the PA->VA Translation table; From wherever this function
 	 * is called from.
 	 */
 	if (rte_eal_iova_mode() == RTE_IOVA_PA)

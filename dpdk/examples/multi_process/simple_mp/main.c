@@ -4,7 +4,7 @@
 
 /*
  * This sample application is a simple multi-process application which
- * demostrates sharing of queues and memory pools between processes, and
+ * demonstrates sharing of queues and memory pools between processes, and
  * using those queues/pools for communication between the processes.
  *
  * Application is designed to run with two processes, a primary and a
@@ -121,5 +121,9 @@ main(int argc, char **argv)
 	cmdline_stdin_exit(cl);
 
 	rte_eal_mp_wait_lcore();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

@@ -3,10 +3,8 @@
 # Copyright(c) 2010-2015 Intel Corporation
 
 from docutils import nodes
-from distutils.version import LooseVersion
+from packaging.version import Version
 from sphinx import __version__ as sphinx_version
-from sphinx.highlighting import PygmentsBridge
-from pygments.formatters.latex import LatexFormatter
 from os import listdir
 from os import environ
 from os.path import basename
@@ -20,7 +18,6 @@ try:
     import sphinx_rtd_theme
 
     html_theme = "sphinx_rtd_theme"
-    html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 except:
     print('Install the sphinx ReadTheDocs theme for improved html documentation '
           'layout: https://sphinx-rtd-theme.readthedocs.io/',
@@ -31,8 +28,10 @@ stop_on_error = ('-W' in argv)
 
 project = 'Data Plane Development Kit'
 html_logo = '../logo/DPDK_logo_vertical_rev_small.png'
-latex_logo = '../logo/DPDK_logo_horizontal_tag.png'
-html_add_permalinks = ""
+if Version(sphinx_version) >= Version('3.5'):
+    html_permalinks = False
+else:
+    html_add_permalinks = ""
 html_show_copyright = False
 highlight_language = 'none'
 
@@ -46,46 +45,6 @@ feature_str_len = 30
 
 # Figures, tables and code-blocks automatically numbered if they have caption
 numfig = True
-
-latex_documents = [
-    ('index',
-     'doc.tex',
-     '',
-     '',
-     'manual')
-]
-
-# Latex directives to be included directly in the latex/pdf docs.
-custom_latex_preamble = r"""
-\usepackage{textalpha}
-\RecustomVerbatimEnvironment{Verbatim}{Verbatim}{xleftmargin=5mm}
-\usepackage{etoolbox}
-\robustify\(
-\robustify\)
-"""
-
-# Configuration for the latex/pdf docs.
-latex_elements = {
-    'papersize': 'a4paper',
-    'pointsize': '11pt',
-    # remove blank pages
-    'classoptions': ',openany,oneside',
-    'babel': '\\usepackage[english]{babel}',
-    # customize Latex formatting
-    'preamble': custom_latex_preamble
-}
-
-
-# Override the default Latex formatter in order to modify the
-# code/verbatim blocks.
-class CustomLatexFormatter(LatexFormatter):
-    def __init__(self, **options):
-        super(CustomLatexFormatter, self).__init__(**options)
-        # Use the second smallest font size for code/verbatim blocks.
-        self.verboptions = r'formatcom=\footnotesize'
-
-# Replace the default latex formatter.
-PygmentsBridge.latex_formatter = CustomLatexFormatter
 
 # Configuration for man pages
 man_pages = [("testpmd_app_ug/run_app", "testpmd",
@@ -426,7 +385,7 @@ def setup(app):
                             'Features availability in bbdev drivers',
                             'Feature')
 
-    if LooseVersion(sphinx_version) < LooseVersion('1.3.1'):
+    if Version(sphinx_version) < Version('1.3.1'):
         print('Upgrade sphinx to version >= 1.3.1 for '
               'improved Figure/Table number handling.',
               file=stderr)

@@ -15,6 +15,7 @@
 #include <rte_eal.h>
 #include <rte_tailq.h>
 #include <rte_devargs.h>
+#include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
 #include <rte_memory.h>
@@ -112,7 +113,9 @@ vmbus_probe_one_driver(struct rte_vmbus_driver *dr,
 	dev->driver = dr;
 
 	if (dev->device.numa_node < 0) {
-		VMBUS_LOG(WARNING, "  Invalid NUMA socket, default to 0");
+		if (rte_socket_count() > 1)
+			VMBUS_LOG(INFO, "Device %s is not NUMA-aware, defaulting socket to 0",
+					guid);
 		dev->device.numa_node = 0;
 	}
 
@@ -131,7 +134,7 @@ vmbus_probe_one_driver(struct rte_vmbus_driver *dr,
 
 /*
  * If device class GUID matches, call the probe function of
- * registere drivers for the vmbus device.
+ * register drivers for the vmbus device.
  * Return -1 if initialization failed,
  * and 1 if no driver found for this device.
  */

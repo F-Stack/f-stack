@@ -137,12 +137,14 @@ dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
 if dpdk_conf.get('RTE_ARCH_32')
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 64)
 	dpdk_conf.set('RTE_ARCH_ARMv7', 1)
+	dpdk_conf.set('RTE_ARCH', 'armv7')
 	# the minimum architecture supported, armv7-a, needs the following,
 	# mk/machine/armv7a/rte.vars.mk sets it too
 	machine_args += '-mfpu=neon'
 else
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 128)
 	dpdk_conf.set('RTE_ARCH_ARM64', 1)
+	dpdk_conf.set('RTE_ARCH', 'armv8')
 
 	machine = []
 	cmd_generic = ['generic', '', '', 'default', '']
@@ -156,7 +158,7 @@ else
 		# 'Primary Part number', 'Revision']
 		detect_vendor = find_program(join_paths(
 				meson.current_source_dir(), 'armv8_machine.py'))
-		cmd = run_command(detect_vendor.path())
+		cmd = run_command(detect_vendor.path(), check: false)
 		if cmd.returncode() == 0
 			cmd_output = cmd.stdout().to_lower().strip().split(' ')
 		endif

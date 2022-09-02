@@ -456,6 +456,7 @@ main_loop(__rte_unused void *args)
 #define PACKET_SIZE 64
 #define FRAME_GAP 12
 #define MAC_PREAMBLE 8
+#define MAX_RETRY_COUNT 5
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
 	unsigned i, portid, nb_rx = 0, nb_tx = 0;
@@ -463,6 +464,8 @@ main_loop(__rte_unused void *args)
 	int pkt_per_port;
 	uint64_t diff_tsc;
 	uint64_t packets_per_second, total_packets;
+	int retry_cnt = 0;
+	int free_pkt = 0;
 
 	lcore_id = rte_lcore_id();
 	conf = &lcore_conf[lcore_id];
@@ -480,10 +483,19 @@ main_loop(__rte_unused void *args)
 			nb_tx = RTE_MIN(MAX_PKT_BURST, num);
 			nb_tx = rte_eth_tx_burst(portid, 0,
 						&tx_burst[idx], nb_tx);
+			if (nb_tx == 0)
+				retry_cnt++;
 			num -= nb_tx;
 			idx += nb_tx;
+			if (retry_cnt == MAX_RETRY_COUNT) {
+				retry_cnt = 0;
+				break;
+			}
 		}
 	}
+	for (free_pkt = idx; free_pkt < (MAX_TRAFFIC_BURST * conf->nb_ports);
+			free_pkt++)
+		rte_pktmbuf_free(tx_burst[free_pkt]);
 	printf("Total packets inject to prime ports = %u\n", idx);
 
 	packets_per_second = (link_mbps * 1000 * 1000) /
@@ -606,10 +618,10 @@ timeout:
 static int
 exec_burst(uint32_t flags, int lcore)
 {
-	unsigned i, portid, nb_tx = 0;
+	unsigned int portid, nb_tx = 0;
 	struct lcore_conf *conf;
 	uint32_t pkt_per_port;
-	int num, idx = 0;
+	int num, i, idx = 0;
 	int diff_tsc;
 
 	conf = &lcore_conf[lcore];
@@ -628,16 +640,14 @@ exec_burst(uint32_t flags, int lcore)
 		rte_atomic64_set(&start, 1);
 
 	/* start xmit */
+	i = 0;
 	while (num) {
 		nb_tx = RTE_MIN(MAX_PKT_BURST, num);
-		for (i = 0; i < conf->nb_ports; i++) {
-			portid = conf->portlist[i];
-			nb_tx = rte_eth_tx_burst(portid, 0,
-					 &tx_burst[idx], nb_tx);
-			idx += nb_tx;
-			num -= nb_tx;
-		}
-
+		portid = conf->portlist[i];
+		nb_tx = rte_eth_tx_burst(portid, 0, &tx_burst[idx], nb_tx);
+		idx += nb_tx;
+		num -= nb_tx;
+		i = (i >= conf->nb_ports - 1) ? 0 : (i + 1);
 	}
 
 	sleep(5);
@@ -755,7 +765,7 @@ test_pmd_perf(void)
 				"rte_eth_dev_start: err=%d, port=%d\n",
 				ret, portid);
 
-		/* always eanble promiscuous */
+		/* always enable promiscuous */
 		ret = rte_eth_promiscuous_enable(portid);
 		if (ret != 0)
 			rte_exit(EXIT_FAILURE,

@@ -8,7 +8,7 @@
  *
  * @file dpdk/pmd/nfp_net_pmd.h
  *
- * Netronome NFP_NET PMD driver
+ * Netronome NFP_NET PMD
  */
 
 #ifndef _NFP_NET_PMD_H_
@@ -28,10 +28,10 @@ struct nfp_net_adapter;
  * DPDK uses uint16_t variables for these values
  */
 #define NFP_NET_MAX_TX_DESC (32 * 1024)
-#define NFP_NET_MIN_TX_DESC 64
+#define NFP_NET_MIN_TX_DESC 256
 
 #define NFP_NET_MAX_RX_DESC (32 * 1024)
-#define NFP_NET_MIN_RX_DESC 64
+#define NFP_NET_MIN_RX_DESC 256
 
 /* Descriptor alignment */
 #define NFP_ALIGN_RING_DESC 128
@@ -235,6 +235,9 @@ struct nfp_net_txq {
 	 */
 	struct nfp_net_tx_desc *txds;
 
+	/* Pointer to the memzone for the ring */
+	const struct rte_memzone *tz;
+
 	/*
 	 * At this point 48 bytes have been used for all the fields in the
 	 * TX critical path. We have room for 8 bytes and still all placed
@@ -369,6 +372,9 @@ struct nfp_net_rxq {
 
 	/* DMA address of the queue */
 	__le64 dma;
+
+	/* Pointer to the memzone for the ring */
+	const struct rte_memzone *tz;
 
 	/*
 	 * Queue information: @qidx is the queue index from Linux's

@@ -28,6 +28,7 @@
 #include <rte_lpm6.h>
 
 #include "l3fwd.h"
+#include "l3fwd_common.h"
 #include "l3fwd_event.h"
 
 struct ipv4_l3fwd_lpm_route {
@@ -42,7 +43,10 @@ struct ipv6_l3fwd_lpm_route {
 	uint8_t  if_out;
 };
 
-/* 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735). */
+/*
+ * 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735).
+ * 198.18.{0-7}.0/24 = Port {0-7}
+ */
 static const struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 	{RTE_IPV4(198, 18, 0, 0), 24, 0},
 	{RTE_IPV4(198, 18, 1, 0), 24, 1},
@@ -54,16 +58,19 @@ static const struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 	{RTE_IPV4(198, 18, 7, 0), 24, 7},
 };
 
-/* 2001:0200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180) */
+/*
+ * 2001:200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180).
+ * 2001:200:0:{0-7}::/64 = Port {0-7}
+ */
 static const struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 48, 0},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}, 48, 1},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0}, 48, 2},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0}, 48, 3},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0}, 48, 4},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0}, 48, 5},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0}, 48, 6},
-	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0}, 48, 7},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 0},
+	{{32, 1, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 1},
+	{{32, 1, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 2},
+	{{32, 1, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 3},
+	{{32, 1, 2, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 4},
+	{{32, 1, 2, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 5},
+	{{32, 1, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 6},
+	{{32, 1, 2, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 7},
 };
 
 #define IPV4_L3FWD_LPM_MAX_RULES         1024
@@ -266,30 +273,17 @@ lpm_process_event_pkt(const struct lcore_conf *lconf, struct rte_mbuf *mbuf)
 
 	struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(mbuf,
 			struct rte_ether_hdr *);
-#ifdef DO_RFC_1812_CHECKS
-	struct rte_ipv4_hdr *ipv4_hdr;
-	if (RTE_ETH_IS_IPV4_HDR(mbuf->packet_type)) {
-		/* Handle IPv4 headers.*/
-		ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf,
-				struct rte_ipv4_hdr *,
-				sizeof(struct rte_ether_hdr));
 
-		if (is_valid_ipv4_pkt(ipv4_hdr, mbuf->pkt_len)
-				< 0) {
-			mbuf->port = BAD_PORT;
-			continue;
-		}
-		/* Update time to live and header checksum */
-		--(ipv4_hdr->time_to_live);
-		++(ipv4_hdr->hdr_checksum);
-	}
-#endif
 	/* dst addr */
 	*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[mbuf->port];
 
 	/* src addr */
 	rte_ether_addr_copy(&ports_eth_addr[mbuf->port],
 			&eth_hdr->s_addr);
+
+	rfc1812_process(rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *,
+						sizeof(struct rte_ether_hdr)),
+			&mbuf->port, mbuf->packet_type);
 #endif
 	return mbuf->port;
 }

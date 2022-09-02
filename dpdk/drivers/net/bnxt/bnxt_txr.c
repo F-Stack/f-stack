@@ -37,6 +37,9 @@ void bnxt_free_tx_rings(struct bnxt *bp)
 		rte_free(txq->cp_ring->cp_ring_struct);
 		rte_free(txq->cp_ring);
 
+		rte_memzone_free(txq->mz);
+		txq->mz = NULL;
+
 		rte_free(txq);
 		bp->tx_queues[i] = NULL;
 	}
@@ -178,7 +181,7 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	txbd->flags_type |= TX_BD_SHORT_FLAGS_COAL_NOW;
 	txbd->flags_type |= TX_BD_LONG_FLAGS_NO_CMPL;
 	txbd->len = tx_pkt->data_len;
-	if (tx_pkt->pkt_len >= 2014)
+	if (tx_pkt->pkt_len >= 2048)
 		txbd->flags_type |= TX_BD_LONG_FLAGS_LHINT_GTE2K;
 	else
 		txbd->flags_type |= lhint_arr[tx_pkt->pkt_len >> 9];
@@ -427,30 +430,26 @@ static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
 
 static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 {
+	uint32_t nb_tx_pkts = 0, cons, ring_mask, opaque;
 	struct bnxt_cp_ring_info *cpr = txq->cp_ring;
 	uint32_t raw_cons = cpr->cp_raw_cons;
-	uint32_t cons;
-	uint32_t nb_tx_pkts = 0;
+	struct bnxt_ring *cp_ring_struct;
 	struct tx_cmpl *txcmp;
-	struct cmpl_base *cp_desc_ring = cpr->cp_desc_ring;
-	struct bnxt_ring *cp_ring_struct = cpr->cp_ring_struct;
-	uint32_t ring_mask = cp_ring_struct->ring_mask;
-	uint32_t opaque = 0;
 
 	if (bnxt_tx_bds_in_hw(txq) < txq->tx_free_thresh)
 		return 0;
 
+	cp_ring_struct = cpr->cp_ring_struct;
+	ring_mask = cp_ring_struct->ring_mask;
+
 	do {
 		cons = RING_CMPL(ring_mask, raw_cons);
 		txcmp = (struct tx_cmpl *)&cpr->cp_desc_ring[cons];
-		rte_prefetch_non_temporal(&cp_desc_ring[(cons + 2) &
-							ring_mask]);
 
-		if (!CMPL_VALID(txcmp, cpr->valid))
+		if (!bnxt_cpr_cmp_valid(txcmp, raw_cons, ring_mask + 1))
 			break;
-		opaque = rte_cpu_to_le_32(txcmp->opaque);
-		NEXT_CMPL(cpr, cons, cpr->valid, 1);
-		rte_prefetch0(&cp_desc_ring[cons]);
+
+		opaque = rte_le_to_cpu_32(txcmp->opaque);
 
 		if (CMP_TYPE(txcmp) == TX_CMPL_TYPE_TX_L2)
 			nb_tx_pkts += opaque;
@@ -458,8 +457,10 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 			RTE_LOG_DP(ERR, PMD,
 					"Unhandled CMP type %02x\n",
 					CMP_TYPE(txcmp));
-		raw_cons = cons;
+		raw_cons = NEXT_RAW_CMP(raw_cons);
 	} while (nb_tx_pkts < ring_mask);
+
+	cpr->valid = !!(raw_cons & cp_ring_struct->ring_size);
 
 	if (nb_tx_pkts) {
 		if (txq->offloads & DEV_TX_OFFLOAD_MBUF_FAST_FREE)

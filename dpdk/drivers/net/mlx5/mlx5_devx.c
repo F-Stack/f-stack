@@ -23,7 +23,7 @@
 #include "mlx5_utils.h"
 #include "mlx5_devx.h"
 #include "mlx5_flow.h"
-
+#include "mlx5_flow_os.h"
 
 /**
  * Modify RQ vlan stripping offload
@@ -339,6 +339,7 @@ mlx5_rxq_create_devx_rq_resources(struct rte_eth_dev *dev, uint16_t idx)
 	rq_attr.mem_rq_type = MLX5_RQC_MEM_RQ_TYPE_MEMORY_RQ_INLINE;
 	rq_attr.flush_in_error_en = 1;
 	mlx5_devx_create_rq_attr_fill(rxq_data, cqn, &rq_attr);
+	rq_attr.ts_format = mlx5_ts_format_conv(priv->sh->rq_ts_format);
 	/* Fill WQ attributes for this RQ. */
 	if (mlx5_rxq_mprq_enabled(rxq_data)) {
 		rq_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC_STRIDING_RQ;
@@ -347,11 +348,11 @@ mlx5_rxq_create_devx_rq_resources(struct rte_eth_dev *dev, uint16_t idx)
 		 * 512*2^single_wqe_log_num_of_strides.
 		 */
 		rq_attr.wq_attr.single_wqe_log_num_of_strides =
-				rxq_data->strd_num_n -
+				rxq_data->log_strd_num -
 				MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
 		/* Stride size = (2^single_stride_log_num_of_bytes)*64B. */
 		rq_attr.wq_attr.single_stride_log_num_of_bytes =
-				rxq_data->strd_sz_n -
+				rxq_data->log_strd_sz -
 				MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES;
 		wqe_size = sizeof(struct mlx5_wqe_mprq);
 	} else {
@@ -391,6 +392,7 @@ mlx5_rxq_create_devx_rq_resources(struct rte_eth_dev *dev, uint16_t idx)
 			  (uintptr_t)rxq_ctrl->rq_dbr_offset);
 	/* Create RQ using DevX API. */
 	mlx5_devx_wq_attr_fill(priv, rxq_ctrl, &rq_attr.wq_attr);
+	rq_attr.counter_set_id = priv->counter_set_id;
 	rq = mlx5_devx_cmd_create_rq(priv->sh->ctx, &rq_attr, rxq_ctrl->socket);
 	if (!rq)
 		goto error;
@@ -486,8 +488,6 @@ mlx5_rxq_create_devx_cq_resources(struct rte_eth_dev *dev, uint16_t idx)
 			"Port %u Rx CQE compression is disabled for LRO.",
 			dev->data->port_id);
 	}
-	if (priv->config.cqe_pad)
-		cq_attr.cqe_size = MLX5_CQE_SIZE_128B;
 	log_cqe_n = log2above(cqe_n);
 	cq_size = sizeof(struct mlx5_cqe) * (1 << log_cqe_n);
 	buf = rte_calloc_socket(__func__, 1, cq_size, page_size,
@@ -601,6 +601,7 @@ mlx5_rxq_obj_hairpin_new(struct rte_eth_dev *dev, uint16_t idx)
 	attr.wq_attr.log_hairpin_num_packets =
 			attr.wq_attr.log_hairpin_data_sz -
 			MLX5_HAIRPIN_QUEUE_STRIDE;
+	attr.counter_set_id = priv->counter_set_id;
 	tmpl->rq = mlx5_devx_cmd_create_rq(priv->sh->ctx, &attr,
 					   rxq_ctrl->socket);
 	if (!tmpl->rq) {
@@ -942,9 +943,8 @@ mlx5_devx_hrxq_new(struct rte_eth_dev *dev, struct mlx5_hrxq *hrxq,
 		goto error;
 	}
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
-	hrxq->action = mlx5_glue->dv_create_flow_action_dest_devx_tir
-							       (hrxq->tir->obj);
-	if (!hrxq->action) {
+	if (mlx5_flow_os_create_flow_action_dest_devx_tir(hrxq->tir,
+							  &hrxq->action)) {
 		rte_errno = errno;
 		goto error;
 	}
@@ -1263,8 +1263,6 @@ mlx5_txq_create_devx_cq_resources(struct rte_eth_dev *dev, uint16_t idx)
 		DRV_LOG(ERR, "Failed to allocate CQ door-bell.");
 		goto error;
 	}
-	cq_attr.cqe_size = (sizeof(struct mlx5_cqe) == 128) ?
-			    MLX5_CQE_SIZE_128B : MLX5_CQE_SIZE_64B;
 	cq_attr.uar_page_id = mlx5_os_get_devx_uar_page_id(priv->sh->tx_uar);
 	cq_attr.eqn = priv->sh->eqn;
 	cq_attr.q_umem_valid = 1;
@@ -1304,12 +1302,15 @@ error:
  *   Pointer to Ethernet device.
  * @param idx
  *   Queue index in DPDK Tx queue array.
+ * @param[in] log_desc_n
+ *   Log of number of descriptors in queue.
  *
  * @return
  *   Number of WQEs in SQ, 0 otherwise and rte_errno is set.
  */
 static uint32_t
-mlx5_txq_create_devx_sq_resources(struct rte_eth_dev *dev, uint16_t idx)
+mlx5_txq_create_devx_sq_resources(struct rte_eth_dev *dev, uint16_t idx,
+				  uint16_t log_desc_n)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_data *txq_data = (*priv->txqs)[idx];
@@ -1329,7 +1330,7 @@ mlx5_txq_create_devx_sq_resources(struct rte_eth_dev *dev, uint16_t idx)
 		rte_errno = ENOMEM;
 		return 0;
 	}
-	wqe_n = RTE_MIN(1UL << txq_data->elts_n,
+	wqe_n = RTE_MIN(1UL << log_desc_n,
 			(uint32_t)priv->sh->device_attr.max_qp_wr);
 	txq_obj->sq_buf = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO,
 				      wqe_n * sizeof(struct mlx5_wqe),
@@ -1371,6 +1372,7 @@ mlx5_txq_create_devx_sq_resources(struct rte_eth_dev *dev, uint16_t idx)
 	sq_attr.allow_multi_pkt_send_wqe = !!priv->config.mps;
 	sq_attr.allow_swp = !!priv->config.swp;
 	sq_attr.min_wqe_inline_mode = priv->config.hca_attr.vport_inline_mode;
+	sq_attr.ts_format = mlx5_ts_format_conv(priv->sh->sq_ts_format);
 	sq_attr.wq_attr.uar_page =
 				mlx5_os_get_devx_uar_page_id(priv->sh->tx_uar);
 	sq_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC;
@@ -1430,9 +1432,8 @@ mlx5_txq_devx_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 #else
 	struct mlx5_dev_ctx_shared *sh = priv->sh;
 	struct mlx5_txq_obj *txq_obj = txq_ctrl->obj;
-	void *reg_addr;
-	uint32_t cqe_n;
-	uint32_t wqe_n;
+	uint32_t cqe_n, log_desc_n;
+	uint32_t wqe_n, wqe_size;
 	int ret = 0;
 
 	MLX5_ASSERT(txq_data);
@@ -1453,8 +1454,29 @@ mlx5_txq_devx_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	txq_data->cq_db = (volatile uint32_t *)(txq_obj->cq_dbrec_page->dbrs +
 						txq_obj->cq_dbrec_offset);
 	*txq_data->cq_db = 0;
+	/*
+	 * Adjust the amount of WQEs depending on inline settings.
+	 * The number of descriptors should be enough to handle
+	 * the specified number of packets. If queue is being created
+	 * with Verbs the rdma-core does queue size adjustment
+	 * internally in the mlx5_calc_sq_size(), we do the same
+	 * for the queue being created with DevX at this point.
+	 */
+	wqe_size = txq_data->tso_en ?
+		   RTE_ALIGN(txq_ctrl->max_tso_header, MLX5_WSEG_SIZE) : 0;
+	wqe_size += sizeof(struct mlx5_wqe_cseg) +
+		    sizeof(struct mlx5_wqe_eseg) +
+		    sizeof(struct mlx5_wqe_dseg);
+	if (txq_data->inlen_send)
+		wqe_size = RTE_MAX(wqe_size, sizeof(struct mlx5_wqe_cseg) +
+					     sizeof(struct mlx5_wqe_eseg) +
+					     RTE_ALIGN(txq_data->inlen_send +
+						       sizeof(uint32_t),
+						       MLX5_WSEG_SIZE));
+	wqe_size = RTE_ALIGN(wqe_size, MLX5_WQE_SIZE) / MLX5_WQE_SIZE;
 	/* Create Send Queue object with DevX. */
-	wqe_n = mlx5_txq_create_devx_sq_resources(dev, idx);
+	log_desc_n = log2above((1UL << txq_data->elts_n) * wqe_size);
+	wqe_n = mlx5_txq_create_devx_sq_resources(dev, idx, log_desc_n);
 	if (!wqe_n) {
 		rte_errno = errno;
 		goto error;
@@ -1493,13 +1515,10 @@ mlx5_txq_devx_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	if (!priv->sh->tdn)
 		priv->sh->tdn = priv->sh->td->id;
 #endif
-	MLX5_ASSERT(sh->tx_uar);
-	reg_addr = mlx5_os_get_devx_uar_reg_addr(sh->tx_uar);
-	MLX5_ASSERT(reg_addr);
-	txq_ctrl->bf_reg = reg_addr;
+	MLX5_ASSERT(sh->tx_uar && mlx5_os_get_devx_uar_reg_addr(sh->tx_uar));
 	txq_ctrl->uar_mmap_offset =
 				mlx5_os_get_devx_uar_mmap_offset(sh->tx_uar);
-	txq_uar_init(txq_ctrl);
+	txq_uar_init(txq_ctrl, mlx5_os_get_devx_uar_reg_addr(sh->tx_uar));
 	dev->data->tx_queue_state[idx] = RTE_ETH_QUEUE_STATE_STARTED;
 	return 0;
 error:
@@ -1547,4 +1566,6 @@ struct mlx5_obj_ops devx_obj_ops = {
 	.txq_obj_new = mlx5_txq_devx_obj_new,
 	.txq_obj_modify = mlx5_devx_modify_sq,
 	.txq_obj_release = mlx5_txq_devx_obj_release,
+	.lb_dummy_queue_create = NULL,
+	.lb_dummy_queue_release = NULL,
 };

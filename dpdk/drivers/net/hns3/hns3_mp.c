@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #include <rte_eal.h>
@@ -12,7 +12,8 @@
 #include "hns3_rxtx.h"
 #include "hns3_mp.h"
 
-static bool hns3_inited;
+/* local data for primary or secondary process. */
+struct hns3_process_local_data process_data;
 
 /*
  * Initialize IPC message.
@@ -86,8 +87,8 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 	case HNS3_MP_REQ_START_RXTX:
 		PMD_INIT_LOG(INFO, "port %u starting datapath",
 			     dev->data->port_id);
-		rte_mb();
 		hns3_set_rxtx_function(dev);
+		rte_mb();
 		mp_init_msg(dev, &mp_res, param->type);
 		res->result = 0;
 		ret = rte_mp_reply(&mp_res, peer);
@@ -130,9 +131,11 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum hns3_mp_req_type type)
 	int ret;
 	int i;
 
-	if (!hw->secondary_cnt)
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY ||
+		__atomic_load_n(&hw->secondary_cnt, __ATOMIC_RELAXED) == 0)
 		return;
 	if (type != HNS3_MP_REQ_START_RXTX && type != HNS3_MP_REQ_STOP_RXTX) {
+
 		hns3_err(hw, "port %u unknown request (req_type %d)",
 			 dev->data->port_id, type);
 		return;
@@ -196,25 +199,27 @@ int hns3_mp_init_primary(void)
 {
 	int ret;
 
-	if (!hns3_inited) {
-		/* primary is allowed to not support IPC */
-		ret = rte_mp_action_register(HNS3_MP_NAME, mp_primary_handle);
-		if (ret && rte_errno != ENOTSUP)
-			return ret;
+	if (process_data.init_done)
+		return 0;
 
-		hns3_inited = true;
-	}
+	/* primary is allowed to not support IPC */
+	ret = rte_mp_action_register(HNS3_MP_NAME, mp_primary_handle);
+	if (ret && rte_errno != ENOTSUP)
+		return ret;
+
+	process_data.init_done = true;
 
 	return 0;
 }
 
-/*
- * Un-initialize by primary process.
- */
-void hns3_mp_uninit_primary(void)
+void hns3_mp_uninit(void)
 {
-	if (hns3_inited)
+	process_data.eth_dev_cnt--;
+
+	if (process_data.eth_dev_cnt == 0) {
 		rte_mp_action_unregister(HNS3_MP_NAME);
+		process_data.init_done = false;
+	}
 }
 
 /*
@@ -224,13 +229,14 @@ int hns3_mp_init_secondary(void)
 {
 	int ret;
 
-	if (!hns3_inited) {
-		ret = rte_mp_action_register(HNS3_MP_NAME, mp_secondary_handle);
-		if (ret)
-			return ret;
+	if (process_data.init_done)
+		return 0;
 
-		hns3_inited = true;
-	}
+	ret = rte_mp_action_register(HNS3_MP_NAME, mp_secondary_handle);
+	if (ret)
+		return ret;
+
+	process_data.init_done = true;
 
 	return 0;
 }

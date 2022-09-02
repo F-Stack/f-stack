@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <rte_ethdev.h>
 #include <rte_latencystats.h>
 #include "rte_lcore.h"
 #include "rte_metrics.h"
@@ -80,7 +81,7 @@ static int test_latencystats_get_names(void)
 	/* Success Test: Valid names and size */
 	size = NUM_STATS;
 	ret = rte_latencystats_get_names(names, size);
-	for (i = 0; i <= NUM_STATS; i++) {
+	for (i = 0; i < NUM_STATS; i++) {
 		if (strcmp(lat_stats_strings[i].name, names[i].name) == 0)
 			printf(" %s\n", names[i].name);
 		else
@@ -158,12 +159,21 @@ static int test_latency_packet_forward(void)
 		printf("allocate mbuf pool Failed\n");
 		return TEST_FAILED;
 	}
+	ret = test_dev_start(portid, mp);
+	if (ret < 0) {
+		printf("test_dev_start(%hu, %p) failed, error code: %d\n",
+			portid, mp, ret);
+		return TEST_FAILED;
+	}
+
 	ret = test_packet_forward(pbuf, portid, QUEUE_ID);
 	if (ret < 0)
 		printf("send pkts Failed\n");
+
+	rte_eth_dev_stop(portid);
 	test_put_mbuf_to_pool(mp, pbuf);
 
-	return TEST_SUCCESS;
+	return (ret >= 0) ? TEST_SUCCESS : TEST_FAILED;
 }
 
 static struct

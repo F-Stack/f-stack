@@ -434,13 +434,16 @@ enum {
 
 	/* first long only option value must be >= 256, so that we won't
 	 * conflict with short options */
-	CMD_LINE_OPT_MIN_NUM = 256,
+	CMD_LINE_OPT_MAC_UPDATING_NUM = 256,
+	CMD_LINE_OPT_NO_MAC_UPDATING_NUM,
 	CMD_LINE_OPT_PORTMAP_NUM,
 };
 
 static const struct option lgopts[] = {
-	{ CMD_LINE_OPT_MAC_UPDATING, no_argument, &mac_updating, 1},
-	{ CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating, 0},
+	{ CMD_LINE_OPT_MAC_UPDATING, no_argument, 0,
+		CMD_LINE_OPT_MAC_UPDATING_NUM},
+	{ CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, 0,
+		CMD_LINE_OPT_NO_MAC_UPDATING_NUM},
 	{ CMD_LINE_OPT_PORTMAP_CONFIG, 1, 0, CMD_LINE_OPT_PORTMAP_NUM},
 	{NULL, 0, 0, 0}
 };
@@ -500,6 +503,14 @@ l2fwd_parse_args(int argc, char **argv)
 				l2fwd_usage(prgname);
 				return -1;
 			}
+			break;
+
+		case CMD_LINE_OPT_MAC_UPDATING_NUM:
+			mac_updating = 1;
+			break;
+
+		case CMD_LINE_OPT_NO_MAC_UPDATING_NUM:
+			mac_updating = 0;
 			break;
 
 		default:
@@ -903,6 +914,9 @@ main(int argc, char **argv)
 		rte_eth_dev_close(portid);
 		printf(" Done\n");
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 	printf("Bye...\n");
 
 	return ret;

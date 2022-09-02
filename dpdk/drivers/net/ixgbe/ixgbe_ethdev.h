@@ -68,7 +68,7 @@
 #define IXGBE_LPBK_NONE   0x0 /* Default value. Loopback is disabled. */
 #define IXGBE_LPBK_TX_RX  0x1 /* Tx->Rx loopback operation is enabled. */
 /* X540-X550 specific loopback operations */
-#define IXGBE_MII_AUTONEG_ENABLE        0x1000 /* Auto-negociation enable (default = 1) */
+#define IXGBE_MII_AUTONEG_ENABLE        0x1000 /* Auto-negotiation enable (default = 1) */
 
 #define IXGBE_MAX_JUMBO_FRAME_SIZE      0x2600 /* Maximum Jumbo frame size. */
 
@@ -103,6 +103,9 @@
 
 /* The overhead from MTU to max frame size. */
 #define IXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
+
+/* The max frame size with default MTU */
+#define IXGBE_ETH_MAX_LEN  (RTE_ETHER_MTU + IXGBE_ETH_OVERHEAD)
 
 /* bit of VXLAN tunnel type | 7 bits of zeros  | 8 bits of zeros*/
 #define IXGBE_FDIR_VXLAN_TUNNEL_TYPE    0x8000
@@ -506,6 +509,9 @@ struct ixgbe_adapter {
 
 	/* For RSS reta table update */
 	uint8_t rss_reta_updated;
+
+	/* Used for limiting SDP3 TX_DISABLE checks */
+	uint8_t sdp3_no_tx_disable;
 
 	/* Used for VF link sync with PF's physical and logical (by checking
 	 * mailbox status) link status.

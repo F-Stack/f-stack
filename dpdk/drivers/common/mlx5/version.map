@@ -21,7 +21,7 @@ INTERNAL {
 	mlx5_devx_cmd_create_tis;
 	mlx5_devx_cmd_create_virtio_q_counters;
 	mlx5_devx_cmd_create_virtq;
-        mlx5_devx_cmd_create_flow_hit_aso_obj;
+	mlx5_devx_cmd_create_flow_hit_aso_obj;
 	mlx5_devx_cmd_destroy;
 	mlx5_devx_cmd_flow_counter_alloc;
 	mlx5_devx_cmd_flow_counter_query;
@@ -38,7 +38,10 @@ INTERNAL {
 	mlx5_devx_cmd_query_parse_samples;
 	mlx5_devx_cmd_query_virtio_q_counters;
 	mlx5_devx_cmd_query_virtq;
+	mlx5_devx_cmd_queue_counter_alloc;
+	mlx5_devx_cmd_queue_counter_query;
 	mlx5_devx_cmd_register_read;
+	mlx5_devx_cmd_wq_query;
 	mlx5_devx_get_out_command_status;
 	mlx5_devx_alloc_uar;
 
@@ -66,6 +69,7 @@ INTERNAL {
 	mlx5_mr_create_primary;
 	mlx5_mr_flush_local_cache;
 	mlx5_mr_free;
+	mlx5_free_mr_by_addr;
 
 	mlx5_nl_allmulti;
 	mlx5_nl_devlink_family_id_get;
@@ -85,6 +89,9 @@ INTERNAL {
 	mlx5_nl_vlan_vmwa_create;
 	mlx5_nl_vlan_vmwa_delete;
 
+	mlx5_os_wrapped_mkey_create;
+	mlx5_os_wrapped_mkey_destroy;
+
 	mlx5_release_dbr;
 
 	mlx5_translate_port_name;
@@ -96,4 +103,7 @@ INTERNAL {
 	mlx5_free;
 
 	mlx5_pci_driver_register;
+
+	mlx5_nl_parse_link_status_update;
+	mlx5_nl_read_events;
 };

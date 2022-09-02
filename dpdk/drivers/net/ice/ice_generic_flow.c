@@ -2323,7 +2323,9 @@ ice_flow_flush(struct rte_eth_dev *dev,
 		ret = ice_flow_destroy(dev, p_flow, error);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Failed to flush flows");
-			return -EINVAL;
+			if (ret != -EAGAIN)
+				ret = -EINVAL;
+			return ret;
 		}
 	}
 
@@ -2360,15 +2362,16 @@ ice_flow_query(struct rte_eth_dev *dev,
 			ret = flow->engine->query_count(ad, flow, count, error);
 			break;
 		default:
-			return rte_flow_error_set(error, ENOTSUP,
+			ret = rte_flow_error_set(error, ENOTSUP,
 					RTE_FLOW_ERROR_TYPE_ACTION,
 					actions,
 					"action not supported");
+			goto out;
 		}
 	}
 
+out:
 	rte_spinlock_unlock(&pf->flow_ops_lock);
-
 	return ret;
 }
 
@@ -2379,7 +2382,7 @@ ice_flow_redirect(struct ice_adapter *ad,
 	struct ice_pf *pf = &ad->pf;
 	struct rte_flow *p_flow;
 	void *temp;
-	int ret;
+	int ret = 0;
 
 	rte_spinlock_lock(&pf->flow_ops_lock);
 
@@ -2389,11 +2392,11 @@ ice_flow_redirect(struct ice_adapter *ad,
 		ret = p_flow->engine->redirect(ad, p_flow, rd);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Failed to redirect flows");
-			return ret;
+			break;
 		}
 	}
 
 	rte_spinlock_unlock(&pf->flow_ops_lock);
 
-	return 0;
+	return ret;
 }

@@ -78,6 +78,7 @@ static uint16_t mlx5_tx_burst_##func(void *txq, \
 }
 
 #define MLX5_TXOFF_INFO(func, olx) {mlx5_tx_burst_##func, olx},
+	struct mlx5_txq_stats stats_reset; /* stats on last reset. */
 
 static __rte_always_inline uint32_t
 rxq_cq_to_pkt_type(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe,
@@ -465,7 +466,7 @@ rx_queue_count(struct mlx5_rxq_data *rxq)
 	const unsigned int cqe_n = (1 << rxq->cqe_n);
 	const unsigned int sges_n = (1 << rxq->sges_n);
 	const unsigned int elts_n = (1 << rxq->elts_n);
-	const unsigned int strd_n = (1 << rxq->strd_num_n);
+	const unsigned int strd_n = RTE_BIT32(rxq->log_strd_num);
 	const unsigned int cqe_cnt = cqe_n - 1;
 	unsigned int cq_ci, used;
 
@@ -566,8 +567,8 @@ mlx5_rxq_info_get(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 	qinfo->conf.offloads = dev->data->dev_conf.rxmode.offloads;
 	qinfo->scattered_rx = dev->data->scattered_rx;
 	qinfo->nb_desc = mlx5_rxq_mprq_enabled(rxq) ?
-		(1 << rxq->elts_n) * (1 << rxq->strd_num_n) :
-		(1 << rxq->elts_n);
+		RTE_BIT32(rxq->elts_n) * RTE_BIT32(rxq->log_strd_num) :
+		RTE_BIT32(rxq->elts_n);
 }
 
 /**
@@ -872,10 +873,10 @@ mlx5_rxq_initialize(struct mlx5_rxq_data *rxq)
 
 			scat = &((volatile struct mlx5_wqe_mprq *)
 				rxq->wqes)[i].dseg;
-			addr = (uintptr_t)mlx5_mprq_buf_addr(buf,
-							 1 << rxq->strd_num_n);
-			byte_count = (1 << rxq->strd_sz_n) *
-					(1 << rxq->strd_num_n);
+			addr = (uintptr_t)mlx5_mprq_buf_addr
+					(buf, RTE_BIT32(rxq->log_strd_num));
+			byte_count = RTE_BIT32(rxq->log_strd_sz) *
+				     RTE_BIT32(rxq->log_strd_num);
 		} else {
 			struct rte_mbuf *buf = (*rxq->elts)[i];
 
@@ -899,7 +900,7 @@ mlx5_rxq_initialize(struct mlx5_rxq_data *rxq)
 		.ai = 0,
 	};
 	rxq->elts_ci = mlx5_rxq_mprq_enabled(rxq) ?
-		(wqe_n >> rxq->sges_n) * (1 << rxq->strd_num_n) : 0;
+		(wqe_n >> rxq->sges_n) * RTE_BIT32(rxq->log_strd_num) : 0;
 	/* Update doorbell counter. */
 	rxq->rq_ci = wqe_n >> rxq->sges_n;
 	rte_io_wmb();
@@ -982,6 +983,11 @@ mlx5_queue_state_modify(struct rte_eth_dev *dev,
 	return ret;
 }
 
+/* Must be negative. */
+#define MLX5_ERROR_CQE_RET (-1)
+/* Must not be negative. */
+#define MLX5_RECOVERY_ERROR_RET 0
+
 /**
  * Handle a Rx error.
  * The function inserts the RQ state to reset when the first error CQE is
@@ -996,7 +1002,7 @@ mlx5_queue_state_modify(struct rte_eth_dev *dev,
  *   0 when called from non-vectorized Rx burst.
  *
  * @return
- *   -1 in case of recovery error, otherwise the CQE status.
+ *   MLX5_RECOVERY_ERROR_RET in case of recovery error, otherwise the CQE status.
  */
 int
 mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
@@ -1004,7 +1010,7 @@ mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
 	const uint16_t cqe_n = 1 << rxq->cqe_n;
 	const uint16_t cqe_mask = cqe_n - 1;
 	const uint16_t wqe_n = 1 << rxq->elts_n;
-	const uint16_t strd_n = 1 << rxq->strd_num_n;
+	const uint16_t strd_n = RTE_BIT32(rxq->log_strd_num);
 	struct mlx5_rxq_ctrl *rxq_ctrl =
 			container_of(rxq, struct mlx5_rxq_ctrl, rxq);
 	union {
@@ -1025,7 +1031,7 @@ mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
 		sm.queue_id = rxq->idx;
 		sm.state = IBV_WQS_RESET;
 		if (mlx5_queue_state_modify(ETH_DEV(rxq_ctrl->priv), &sm))
-			return -1;
+			return MLX5_RECOVERY_ERROR_RET;
 		if (rxq_ctrl->dump_file_n <
 		    rxq_ctrl->priv->config.max_dump_files_num) {
 			MKSTR(err_str, "Unexpected CQE error syndrome "
@@ -1066,7 +1072,7 @@ mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
 			sm.state = IBV_WQS_RDY;
 			if (mlx5_queue_state_modify(ETH_DEV(rxq_ctrl->priv),
 						    &sm))
-				return -1;
+				return MLX5_RECOVERY_ERROR_RET;
 			if (vec) {
 				const uint32_t elts_n =
 					mlx5_rxq_mprq_enabled(rxq) ?
@@ -1094,7 +1100,7 @@ mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
 							rte_pktmbuf_free_seg
 								(*elt);
 						}
-						return -1;
+						return MLX5_RECOVERY_ERROR_RET;
 					}
 				}
 				for (i = 0; i < (int)elts_n; ++i) {
@@ -1113,7 +1119,7 @@ mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
 		}
 		return ret;
 	default:
-		return -1;
+		return MLX5_RECOVERY_ERROR_RET;
 	}
 }
 
@@ -1131,7 +1137,9 @@ mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec)
  *   written.
  *
  * @return
- *   0 in case of empty CQE, otherwise the packet size in bytes.
+ *   0 in case of empty CQE, MLX5_ERROR_CQE_RET in case of error CQE,
+ *   otherwise the packet size in regular RxQ, and striding byte
+ *   count format in mprq case.
  */
 static inline int
 mlx5_rx_poll_len(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe,
@@ -1198,8 +1206,8 @@ mlx5_rx_poll_len(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe,
 					     rxq->err_state)) {
 					ret = mlx5_rx_err_handle(rxq, 0);
 					if (ret == MLX5_CQE_STATUS_HW_OWN ||
-					    ret == -1)
-						return 0;
+					    ret == MLX5_RECOVERY_ERROR_RET)
+						return MLX5_ERROR_CQE_RET;
 				} else {
 					return 0;
 				}
@@ -1338,10 +1346,15 @@ rxq_cq_to_mbuf(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt,
 			}
 		}
 	}
-	if (rxq->dynf_meta && cqe->flow_table_metadata) {
-		pkt->ol_flags |= rxq->flow_meta_mask;
-		*RTE_MBUF_DYNFIELD(pkt, rxq->flow_meta_offset, uint32_t *) =
-			cqe->flow_table_metadata;
+	if (rxq->dynf_meta) {
+		uint32_t meta = cqe->flow_table_metadata &
+				rxq->flow_meta_port_mask;
+
+		if (meta) {
+			pkt->ol_flags |= rxq->flow_meta_mask;
+			*RTE_MBUF_DYNFIELD(pkt, rxq->flow_meta_offset,
+						uint32_t *) = meta;
+		}
 	}
 	if (rxq->csum)
 		pkt->ol_flags |= rxq_cq_to_ol_flags(cqe);
@@ -1430,13 +1443,18 @@ mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 				rte_mbuf_raw_free(pkt);
 				pkt = rep;
 			}
+			rq_ci >>= sges_n;
+			++rq_ci;
+			rq_ci <<= sges_n;
 			break;
 		}
 		if (!pkt) {
 			cqe = &(*rxq->cqes)[rxq->cq_ci & cqe_cnt];
 			len = mlx5_rx_poll_len(rxq, cqe, cqe_cnt, &mcqe);
-			if (!len) {
+			if (len <= 0) {
 				rte_mbuf_raw_free(rep);
+				if (unlikely(len == MLX5_ERROR_CQE_RET))
+					rq_ci = rxq->rq_ci << sges_n;
 				break;
 			}
 			pkt = seg;
@@ -1643,8 +1661,8 @@ uint16_t
 mlx5_rx_burst_mprq(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
 	struct mlx5_rxq_data *rxq = dpdk_rxq;
-	const uint32_t strd_n = 1 << rxq->strd_num_n;
-	const uint32_t strd_sz = 1 << rxq->strd_sz_n;
+	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
+	const uint32_t strd_sz = RTE_BIT32(rxq->log_strd_sz);
 	const uint32_t cq_mask = (1 << rxq->cqe_n) - 1;
 	const uint32_t wq_mask = (1 << rxq->elts_n) - 1;
 	volatile struct mlx5_cqe *cqe = &(*rxq->cqes)[rxq->cq_ci & cq_mask];
@@ -1673,8 +1691,13 @@ mlx5_rx_burst_mprq(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		}
 		cqe = &(*rxq->cqes)[rxq->cq_ci & cq_mask];
 		ret = mlx5_rx_poll_len(rxq, cqe, cq_mask, &mcqe);
-		if (!ret)
+		if (ret == 0)
 			break;
+		if (unlikely(ret == MLX5_ERROR_CQE_RET)) {
+			rq_ci = rxq->rq_ci;
+			consumed_strd = rxq->consumed_strd;
+			break;
+		}
 		byte_cnt = ret;
 		len = (byte_cnt & MLX5_MPRQ_LEN_MASK) >> MLX5_MPRQ_LEN_SHIFT;
 		MLX5_ASSERT((int)len >= (rxq->crc_present << 2));
@@ -2576,7 +2599,6 @@ mlx5_tx_mseg_memcpy(uint8_t *pdst,
 	uint8_t *psrc;
 
 	MLX5_ASSERT(len);
-	MLX5_ASSERT(must <= len);
 	do {
 		/* Allow zero length packets, must check first. */
 		dlen = rte_pktmbuf_data_len(loc->mbuf);
@@ -2603,9 +2625,11 @@ mlx5_tx_mseg_memcpy(uint8_t *pdst,
 				if (diff <= rte_pktmbuf_data_len(loc->mbuf)) {
 					/*
 					 * Copy only the minimal required
-					 * part of the data buffer.
+					 * part of the data buffer. Limit amount
+					 * of data to be copied to the length of
+					 * available space.
 					 */
-					len = diff;
+					len = RTE_MIN(len, diff);
 				}
 			}
 			continue;
@@ -2735,7 +2759,8 @@ mlx5_tx_eseg_mdat(struct mlx5_txq_data *__rte_restrict txq,
 		 * Copying may be interrupted inside the routine
 		 * if run into no inline hint flag.
 		 */
-		copy = tlen >= txq->inlen_mode ? 0 : (txq->inlen_mode - tlen);
+		copy = tso ? inlen : txq->inlen_mode;
+		copy = tlen >= copy ? 0 : (copy - tlen);
 		copy = mlx5_tx_mseg_memcpy(pdst, loc, part, copy, olx);
 		tlen += copy;
 		if (likely(inlen <= tlen) || copy < part) {
@@ -3229,7 +3254,6 @@ mlx5_tx_packet_multi_tso(struct mlx5_txq_data *__rte_restrict txq,
 		     inlen <= MLX5_ESEG_MIN_INLINE_SIZE ||
 		     inlen > (dlen + vlan)))
 		return MLX5_TXCMP_CODE_ERROR;
-	MLX5_ASSERT(inlen >= txq->inlen_mode);
 	/*
 	 * Check whether there are enough free WQEBBs:
 	 * - Control Segment
@@ -3448,6 +3472,8 @@ mlx5_tx_packet_multi_inline(struct mlx5_txq_data *__rte_restrict txq,
 		unsigned int nxlen;
 		uintptr_t start;
 
+		mbuf = loc->mbuf;
+		nxlen = rte_pktmbuf_data_len(mbuf);
 		/*
 		 * Packet length exceeds the allowed inline
 		 * data length, check whether the minimal
@@ -3457,29 +3483,26 @@ mlx5_tx_packet_multi_inline(struct mlx5_txq_data *__rte_restrict txq,
 			MLX5_ASSERT(txq->inlen_mode >=
 				    MLX5_ESEG_MIN_INLINE_SIZE);
 			MLX5_ASSERT(txq->inlen_mode <= txq->inlen_send);
-			inlen = txq->inlen_mode;
-		} else {
-			if (loc->mbuf->ol_flags & PKT_TX_DYNF_NOINLINE ||
-			    !vlan || txq->vlan_en) {
-				/*
-				 * VLAN insertion will be done inside by HW.
-				 * It is not utmost effective - VLAN flag is
-				 * checked twice, but we should proceed the
-				 * inlining length correctly and take into
-				 * account the VLAN header being inserted.
-				 */
-				return mlx5_tx_packet_multi_send
-							(txq, loc, olx);
-			}
+			inlen = RTE_MIN(txq->inlen_mode, inlen);
+		} else if (vlan && !txq->vlan_en) {
+			/*
+			 * VLAN insertion is requested and hardware does not
+			 * support the offload, will do with software inline.
+			 */
 			inlen = MLX5_ESEG_MIN_INLINE_SIZE;
+		} else if (mbuf->ol_flags & PKT_TX_DYNF_NOINLINE ||
+			   nxlen > txq->inlen_send) {
+			return mlx5_tx_packet_multi_send(txq, loc, olx);
+		} else {
+			goto do_first;
 		}
+		if (mbuf->ol_flags & PKT_TX_DYNF_NOINLINE)
+			goto do_build;
 		/*
 		 * Now we know the minimal amount of data is requested
 		 * to inline. Check whether we should inline the buffers
 		 * from the chain beginning to eliminate some mbufs.
 		 */
-		mbuf = loc->mbuf;
-		nxlen = rte_pktmbuf_data_len(mbuf);
 		if (unlikely(nxlen <= txq->inlen_send)) {
 			/* We can inline first mbuf at least. */
 			if (nxlen < inlen) {
@@ -3501,11 +3524,14 @@ mlx5_tx_packet_multi_inline(struct mlx5_txq_data *__rte_restrict txq,
 					goto do_align;
 				}
 			}
+do_first:
 			do {
 				inlen = nxlen;
 				mbuf = NEXT(mbuf);
 				/* There should be not end of packet. */
 				MLX5_ASSERT(mbuf);
+				if (mbuf->ol_flags & PKT_TX_DYNF_NOINLINE)
+					break;
 				nxlen = inlen + rte_pktmbuf_data_len(mbuf);
 			} while (unlikely(nxlen < txq->inlen_send));
 		}
@@ -3533,6 +3559,7 @@ do_align:
 	 * Estimate the number of Data Segments conservatively,
 	 * supposing no any mbufs is being freed during inlining.
 	 */
+do_build:
 	MLX5_ASSERT(inlen <= txq->inlen_send);
 	ds = NB_SEGS(loc->mbuf) + 2 + (inlen -
 				       MLX5_ESEG_MIN_INLINE_SIZE +
@@ -3541,7 +3568,7 @@ do_align:
 	if (unlikely(loc->wqe_free < ((ds + 3) / 4)))
 		return MLX5_TXCMP_CODE_EXIT;
 	/* Check for maximal WQE size. */
-	if (unlikely((MLX5_WQE_SIZE_MAX / MLX5_WSEG_SIZE) < ((ds + 3) / 4)))
+	if (unlikely((MLX5_WQE_SIZE_MAX / MLX5_WSEG_SIZE) < ds))
 		return MLX5_TXCMP_CODE_ERROR;
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	/* Update sent data bytes/packets counters. */

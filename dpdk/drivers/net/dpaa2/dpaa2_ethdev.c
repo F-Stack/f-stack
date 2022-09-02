@@ -31,6 +31,8 @@
 
 #define DRIVER_LOOPBACK_MODE "drv_loopback"
 #define DRIVER_NO_PREFETCH_MODE "drv_no_prefetch"
+#define CHECK_INTERVAL         100  /* 100ms */
+#define MAX_REPEAT_TIME        90   /* 9s (90 * 100ms) in total */
 
 /* Supported Rx offloads */
 static uint64_t dev_rx_offloads_sup =
@@ -141,7 +143,7 @@ dpaa2_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	PMD_INIT_FUNC_TRACE();
 
 	if (mask & ETH_VLAN_FILTER_MASK) {
-		/* VLAN Filter not avaialble */
+		/* VLAN Filter not available */
 		if (!priv->max_vlan_filters) {
 			DPAA2_PMD_INFO("VLAN filter not available");
 			return -ENOTSUP;
@@ -223,9 +225,11 @@ dpaa2_fw_version_get(struct rte_eth_dev *dev,
 		       mc_ver_info.major,
 		       mc_ver_info.minor,
 		       mc_ver_info.revision);
+	if (ret < 0)
+		return -EINVAL;
 
 	ret += 1; /* add the size of '\0' */
-	if (fw_size < (uint32_t)ret)
+	if (fw_size < (size_t)ret)
 		return ret;
 	else
 		return 0;
@@ -886,7 +890,7 @@ dpaa2_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		cong_notif_cfg.units = DPNI_CONGESTION_UNIT_FRAMES;
 		cong_notif_cfg.threshold_entry = nb_tx_desc;
 		/* Notify that the queue is not congested when the data in
-		 * the queue is below this thershold.
+		 * the queue is below this threshold.
 		 */
 		cong_notif_cfg.threshold_exit = nb_tx_desc - 24;
 		cong_notif_cfg.message_ctx = 0;
@@ -1035,7 +1039,7 @@ dpaa2_supported_ptypes_get(struct rte_eth_dev *dev)
  * Dpaa2 link Interrupt handler
  *
  * @param param
- *  The address of parameter (struct rte_eth_dev *) regsitered before.
+ *  The address of parameter (struct rte_eth_dev *) registered before.
  *
  * @return
  *  void
@@ -1209,7 +1213,12 @@ dpaa2_dev_stop(struct rte_eth_dev *dev)
 	struct fsl_mc_io *dpni = (struct fsl_mc_io *)dev->process_private;
 	int ret;
 	struct rte_eth_link link;
-	struct rte_intr_handle *intr_handle = dev->intr_handle;
+	struct rte_device *rdev = dev->device;
+	struct rte_intr_handle *intr_handle;
+	struct rte_dpaa2_device *dpaa2_dev;
+
+	dpaa2_dev = container_of(rdev, struct rte_dpaa2_device, device);
+	intr_handle = &dpaa2_dev->intr_handle;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1420,7 +1429,7 @@ dpaa2_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (mtu < RTE_ETHER_MIN_MTU || frame_size > DPAA2_MAX_RX_PKT_LEN)
 		return -EINVAL;
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > DPAA2_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads |=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -1805,23 +1814,32 @@ error:
 /* return 0 means link status changed, -1 means not changed */
 static int
 dpaa2_dev_link_update(struct rte_eth_dev *dev,
-			int wait_to_complete __rte_unused)
+		      int wait_to_complete)
 {
 	int ret;
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
 	struct fsl_mc_io *dpni = (struct fsl_mc_io *)dev->process_private;
 	struct rte_eth_link link;
 	struct dpni_link_state state = {0};
+	uint8_t count;
 
 	if (dpni == NULL) {
 		DPAA2_PMD_ERR("dpni is NULL");
 		return 0;
 	}
 
-	ret = dpni_get_link_state(dpni, CMD_PRI_LOW, priv->token, &state);
-	if (ret < 0) {
-		DPAA2_PMD_DEBUG("error: dpni_get_link_state %d", ret);
-		return -1;
+	for (count = 0; count <= MAX_REPEAT_TIME; count++) {
+		ret = dpni_get_link_state(dpni, CMD_PRI_LOW, priv->token,
+					  &state);
+		if (ret < 0) {
+			DPAA2_PMD_DEBUG("error: dpni_get_link_state %d", ret);
+			return -1;
+		}
+		if (state.up == ETH_LINK_DOWN &&
+		    wait_to_complete)
+			rte_delay_ms(CHECK_INTERVAL);
+		else
+			break;
 	}
 
 	memset(&link, 0, sizeof(struct rte_eth_link));
@@ -2196,7 +2214,7 @@ int dpaa2_eth_eventq_attach(const struct rte_eth_dev *dev,
 		ocfg.oa = 1;
 		/* Late arrival window size disabled */
 		ocfg.olws = 0;
-		/* ORL resource exhaustaion advance NESN disabled */
+		/* ORL resource exhaustion advance NESN disabled */
 		ocfg.oeane = 0;
 		/* Loose ordering enabled */
 		ocfg.oloe = 1;
@@ -2673,13 +2691,13 @@ dpaa2_dev_init(struct rte_eth_dev *eth_dev)
 	}
 	eth_dev->tx_pkt_burst = dpaa2_dev_tx;
 
-	/*Init fields w.r.t. classficaition*/
+	/* Init fields w.r.t. classification */
 	memset(&priv->extract.qos_key_extract, 0,
 		sizeof(struct dpaa2_key_extract));
 	priv->extract.qos_extract_param = (size_t)rte_malloc(NULL, 256, 64);
 	if (!priv->extract.qos_extract_param) {
 		DPAA2_PMD_ERR(" Error(%d) in allocation resources for flow "
-			    " classificaiton ", ret);
+			    " classification ", ret);
 		goto init_err;
 	}
 	priv->extract.qos_key_extract.key_info.ipv4_src_offset =
@@ -2697,7 +2715,7 @@ dpaa2_dev_init(struct rte_eth_dev *eth_dev)
 		priv->extract.tc_extract_param[i] =
 			(size_t)rte_malloc(NULL, 256, 64);
 		if (!priv->extract.tc_extract_param[i]) {
-			DPAA2_PMD_ERR(" Error(%d) in allocation resources for flow classificaiton",
+			DPAA2_PMD_ERR(" Error(%d) in allocation resources for flow classification",
 				     ret);
 			goto init_err;
 		}

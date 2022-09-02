@@ -223,7 +223,7 @@ struct ipn3ke_hw_cap {
 };
 
 /**
- * Strucute to store private data for each representor instance
+ * Structure to store private data for each representor instance
  */
 struct ipn3ke_rpst {
 	TAILQ_ENTRY(ipn3ke_rpst) next;       /**< Next in device list. */
@@ -237,7 +237,7 @@ struct ipn3ke_rpst {
 	uint16_t i40e_pf_eth_port_id;
 	struct rte_eth_link ori_linfo;
 	struct ipn3ke_tm_internals tm;
-	/**< Private data store of assocaiated physical function */
+	/**< Private data store of associated physical function */
 	struct rte_ether_addr mac_addr;
 };
 
@@ -640,6 +640,7 @@ ipn3ke_tm_ops_get(struct rte_eth_dev *ethdev,
  */
 #define IPN3KE_ETH_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + IPN3KE_VLAN_TAG_SIZE * 2)
+#define IPN3KE_ETH_MAX_LEN (RTE_ETHER_MTU + IPN3KE_ETH_OVERHEAD)
 
 #define IPN3KE_MAC_FRAME_SIZE_MAX    9728
 #define IPN3KE_MAC_RX_FRAME_MAXLENGTH    0x00AE

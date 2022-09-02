@@ -71,7 +71,7 @@ void *helloworld_pthread(void *arg)
 	print_count++;
 
 	/* yield thread to give opportunity for lock contention */
-	pthread_yield();
+	sched_yield();
 
 	/* retrieve arg from TLS */
 	uint64_t thread_no = (uint64_t) pthread_getspecific(key);
@@ -258,5 +258,9 @@ int main(int argc, char **argv)
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		rte_eal_wait_lcore(lcore_id);
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

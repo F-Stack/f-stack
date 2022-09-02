@@ -102,7 +102,8 @@ static void txgbe_dev_link_status_print(struct rte_eth_dev *dev);
 static int txgbe_dev_lsc_interrupt_setup(struct rte_eth_dev *dev, uint8_t on);
 static int txgbe_dev_macsec_interrupt_setup(struct rte_eth_dev *dev);
 static int txgbe_dev_rxq_interrupt_setup(struct rte_eth_dev *dev);
-static int txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev);
+static int txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
+				      struct rte_intr_handle *handle);
 static int txgbe_dev_interrupt_action(struct rte_eth_dev *dev,
 				      struct rte_intr_handle *handle);
 static void txgbe_dev_interrupt_handler(void *param);
@@ -365,7 +366,7 @@ txgbe_dev_queue_stats_mapping_set(struct rte_eth_dev *eth_dev,
 	if (hw->mac.type != txgbe_mac_raptor)
 		return -ENOSYS;
 
-	if (stat_idx & !QMAP_FIELD_RESERVED_BITS_MASK)
+	if (stat_idx & ~QMAP_FIELD_RESERVED_BITS_MASK)
 		return -EIO;
 
 	PMD_INIT_LOG(DEBUG, "Setting port %d, %s queue_id %d to stat index %d",
@@ -977,7 +978,6 @@ txgbe_vlan_hw_extend_disable(struct rte_eth_dev *dev)
 
 	ctrl = rd32(hw, TXGBE_PORTCTL);
 	ctrl &= ~TXGBE_PORTCTL_VLANEXT;
-	ctrl &= ~TXGBE_PORTCTL_QINQ;
 	wr32(hw, TXGBE_PORTCTL, ctrl);
 }
 
@@ -985,17 +985,38 @@ static void
 txgbe_vlan_hw_extend_enable(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
-	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
-	struct rte_eth_txmode *txmode = &dev->data->dev_conf.txmode;
 	uint32_t ctrl;
 
 	PMD_INIT_FUNC_TRACE();
 
 	ctrl  = rd32(hw, TXGBE_PORTCTL);
 	ctrl |= TXGBE_PORTCTL_VLANEXT;
-	if (rxmode->offloads & DEV_RX_OFFLOAD_QINQ_STRIP ||
-	    txmode->offloads & DEV_TX_OFFLOAD_QINQ_INSERT)
-		ctrl |= TXGBE_PORTCTL_QINQ;
+	wr32(hw, TXGBE_PORTCTL, ctrl);
+}
+
+static void
+txgbe_qinq_hw_strip_disable(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	uint32_t ctrl;
+
+	PMD_INIT_FUNC_TRACE();
+
+	ctrl = rd32(hw, TXGBE_PORTCTL);
+	ctrl &= ~TXGBE_PORTCTL_QINQ;
+	wr32(hw, TXGBE_PORTCTL, ctrl);
+}
+
+static void
+txgbe_qinq_hw_strip_enable(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	uint32_t ctrl;
+
+	PMD_INIT_FUNC_TRACE();
+
+	ctrl  = rd32(hw, TXGBE_PORTCTL);
+	ctrl |= TXGBE_PORTCTL_QINQ | TXGBE_PORTCTL_VLANEXT;
 	wr32(hw, TXGBE_PORTCTL, ctrl);
 }
 
@@ -1060,6 +1081,13 @@ txgbe_vlan_offload_config(struct rte_eth_dev *dev, int mask)
 			txgbe_vlan_hw_extend_enable(dev);
 		else
 			txgbe_vlan_hw_extend_disable(dev);
+	}
+
+	if (mask & ETH_QINQ_STRIP_MASK) {
+		if (rxmode->offloads & DEV_RX_OFFLOAD_QINQ_STRIP)
+			txgbe_qinq_hw_strip_enable(dev);
+		else
+			txgbe_qinq_hw_strip_disable(dev);
 	}
 
 	return 0;
@@ -1452,7 +1480,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 		}
 	}
 
-	/* confiugre msix for sleep until rx interrupt */
+	/* configure msix for sleep until rx interrupt */
 	txgbe_configure_msix(dev);
 
 	/* initialize transmission unit */
@@ -1881,6 +1909,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 
 	hw_stats->rx_bytes += rd64(hw, TXGBE_DMARXOCTL);
 	hw_stats->tx_bytes += rd64(hw, TXGBE_DMATXOCTL);
+	hw_stats->rx_dma_drop += rd32(hw, TXGBE_DMARXDROP);
 	hw_stats->rx_drop_packets += rd32(hw, TXGBE_PBRXDROP);
 
 	/* MAC Stats */
@@ -2029,7 +2058,8 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	}
 
 	/* Rx Errors */
-	stats->imissed  = hw_stats->rx_total_missed_packets;
+	stats->imissed  = hw_stats->rx_total_missed_packets +
+			  hw_stats->rx_dma_drop;
 	stats->ierrors  = hw_stats->rx_crc_errors +
 			  hw_stats->rx_mac_short_packet_dropped +
 			  hw_stats->rx_length_errors +
@@ -2311,9 +2341,11 @@ txgbe_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 
 	etrack_id = (eeprom_verh << 16) | eeprom_verl;
 	ret = snprintf(fw_version, fw_size, "0x%08x", etrack_id);
+	if (ret < 0)
+		return -EINVAL;
 
 	ret += 1; /* add the size of '\0' */
-	if (fw_size < (u32)ret)
+	if (fw_size < (size_t)ret)
 		return ret;
 	else
 		return 0;
@@ -2638,11 +2670,16 @@ txgbe_dev_macsec_interrupt_setup(struct rte_eth_dev *dev)
  *  - On failure, a negative value.
  */
 static int
-txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev)
+txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
+				struct rte_intr_handle *intr_handle)
 {
 	uint32_t eicr;
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_interrupt *intr = TXGBE_DEV_INTR(dev);
+
+	if (intr_handle->type != RTE_INTR_HANDLE_UIO &&
+			intr_handle->type != RTE_INTR_HANDLE_VFIO_MSIX)
+		wr32(hw, TXGBE_PX_INTA, 1);
 
 	/* clear all cause mask */
 	txgbe_disable_intr(hw);
@@ -2846,7 +2883,7 @@ txgbe_dev_interrupt_handler(void *param)
 {
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
 
-	txgbe_dev_interrupt_get_status(dev);
+	txgbe_dev_interrupt_get_status(dev, dev->intr_handle);
 	txgbe_dev_interrupt_action(dev, dev->intr_handle);
 }
 
@@ -3385,7 +3422,7 @@ txgbe_set_ivar_map(struct txgbe_hw *hw, int8_t direction,
 		wr32(hw, TXGBE_IVARMISC, tmp);
 	} else {
 		/* rx or tx causes */
-		/* Workround for ICR lost */
+		/* Workaround for ICR lost */
 		idx = ((16 * (queue & 1)) + (8 * direction));
 		tmp = rd32(hw, TXGBE_IVAR(queue >> 1));
 		tmp &= ~(0xFF << idx);
@@ -3684,7 +3721,7 @@ txgbe_timesync_disable(struct rte_eth_dev *dev)
 	/* Disable L2 filtering of IEEE1588/802.1AS Ethernet frame types. */
 	wr32(hw, TXGBE_ETFLT(TXGBE_ETF_ID_1588), 0);
 
-	/* Stop incrementating the System Time registers. */
+	/* Stop incrementing the System Time registers. */
 	wr32(hw, TXGBE_TSTIMEINC, 0);
 
 	return 0;

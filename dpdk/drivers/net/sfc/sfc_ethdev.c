@@ -46,14 +46,6 @@ sfc_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 	int ret;
 	int rc;
 
-	/*
-	 * Return value of the callback is likely supposed to be
-	 * equal to or greater than 0, nevertheless, if an error
-	 * occurs, it will be desirable to pass it to the caller
-	 */
-	if ((fw_version == NULL) || (fw_size == 0))
-		return -EINVAL;
-
 	rc = efx_nic_get_fw_version(sa->nic, &enfi);
 	if (rc != 0)
 		return -rc;
@@ -94,7 +86,6 @@ sfc_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
 	struct sfc_rss *rss = &sas->rss;
 	struct sfc_mae *mae = &sa->mae;
-	uint64_t txq_offloads_def = 0;
 
 	sfc_log_init(sa, "entry");
 
@@ -145,11 +136,6 @@ sfc_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	 */
 	dev_info->tx_offload_capa = sfc_tx_get_dev_offload_caps(sa) |
 				    dev_info->tx_queue_offload_capa;
-
-	if (dev_info->tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
-		txq_offloads_def |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-
-	dev_info->default_txconf.offloads |= txq_offloads_def;
 
 	if (rss->context_type != EFX_RX_SCALE_UNAVAILABLE) {
 		uint64_t rte_hf = 0;
@@ -612,9 +598,9 @@ sfc_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	uint64_t *mac_stats;
 	int ret;
 
-	rte_spinlock_lock(&port->mac_stats_lock);
+	sfc_adapter_lock(sa);
 
-	ret = sfc_port_update_mac_stats(sa);
+	ret = sfc_port_update_mac_stats(sa, B_FALSE);
 	if (ret != 0)
 		goto unlock;
 
@@ -640,10 +626,19 @@ sfc_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			mac_stats[EFX_MAC_VADAPTER_TX_BROADCAST_BYTES];
 		stats->imissed = mac_stats[EFX_MAC_VADAPTER_RX_BAD_PACKETS];
 		stats->oerrors = mac_stats[EFX_MAC_VADAPTER_TX_BAD_PACKETS];
+
+		/* CRC is included in these stats, but shouldn't be */
+		stats->ibytes -= stats->ipackets * RTE_ETHER_CRC_LEN;
+		stats->obytes -= stats->opackets * RTE_ETHER_CRC_LEN;
 	} else {
 		stats->opackets = mac_stats[EFX_MAC_TX_PKTS];
 		stats->ibytes = mac_stats[EFX_MAC_RX_OCTETS];
 		stats->obytes = mac_stats[EFX_MAC_TX_OCTETS];
+
+		/* CRC is included in these stats, but shouldn't be */
+		stats->ibytes -= mac_stats[EFX_MAC_RX_PKTS] * RTE_ETHER_CRC_LEN;
+		stats->obytes -= mac_stats[EFX_MAC_TX_PKTS] * RTE_ETHER_CRC_LEN;
+
 		/*
 		 * Take into account stats which are whenever supported
 		 * on EF10. If some stat is not supported by current
@@ -676,7 +671,7 @@ sfc_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	}
 
 unlock:
-	rte_spinlock_unlock(&port->mac_stats_lock);
+	sfc_adapter_unlock(sa);
 	SFC_ASSERT(ret >= 0);
 	return -ret;
 }
@@ -688,18 +683,23 @@ sfc_stats_reset(struct rte_eth_dev *dev)
 	struct sfc_port *port = &sa->port;
 	int rc;
 
+	sfc_adapter_lock(sa);
+
 	if (sa->state != SFC_ADAPTER_STARTED) {
 		/*
 		 * The operation cannot be done if port is not started; it
 		 * will be scheduled to be done during the next port start
 		 */
 		port->mac_stats_reset_pending = B_TRUE;
+		sfc_adapter_unlock(sa);
 		return 0;
 	}
 
 	rc = sfc_port_reset_mac_stats(sa);
 	if (rc != 0)
 		sfc_err(sa, "failed to reset statistics (rc = %d)", rc);
+
+	sfc_adapter_unlock(sa);
 
 	SFC_ASSERT(rc >= 0);
 	return -rc;
@@ -716,9 +716,9 @@ sfc_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	unsigned int i;
 	int nstats = 0;
 
-	rte_spinlock_lock(&port->mac_stats_lock);
+	sfc_adapter_lock(sa);
 
-	rc = sfc_port_update_mac_stats(sa);
+	rc = sfc_port_update_mac_stats(sa, B_FALSE);
 	if (rc != 0) {
 		SFC_ASSERT(rc > 0);
 		nstats = -rc;
@@ -738,7 +738,7 @@ sfc_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	}
 
 unlock:
-	rte_spinlock_unlock(&port->mac_stats_lock);
+	sfc_adapter_unlock(sa);
 
 	return nstats;
 }
@@ -773,19 +773,16 @@ sfc_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
 	struct sfc_port *port = &sa->port;
 	uint64_t *mac_stats;
-	unsigned int nb_supported = 0;
-	unsigned int nb_written = 0;
 	unsigned int i;
 	int ret;
 	int rc;
 
-	if (unlikely(values == NULL) ||
-	    unlikely((ids == NULL) && (n < port->mac_stats_nb_supported)))
-		return port->mac_stats_nb_supported;
+	if (unlikely(ids == NULL || values == NULL))
+		return -EINVAL;
 
-	rte_spinlock_lock(&port->mac_stats_lock);
+	sfc_adapter_lock(sa);
 
-	rc = sfc_port_update_mac_stats(sa);
+	rc = sfc_port_update_mac_stats(sa, B_FALSE);
 	if (rc != 0) {
 		SFC_ASSERT(rc > 0);
 		ret = -rc;
@@ -794,20 +791,22 @@ sfc_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
 
 	mac_stats = port->mac_stats_buf;
 
-	for (i = 0; (i < EFX_MAC_NSTATS) && (nb_written < n); ++i) {
-		if (!EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, i))
-			continue;
+	SFC_ASSERT(port->mac_stats_nb_supported <=
+		   RTE_DIM(port->mac_stats_by_id));
 
-		if ((ids == NULL) || (ids[nb_written] == nb_supported))
-			values[nb_written++] = mac_stats[i];
-
-		++nb_supported;
+	for (i = 0; i < n; i++) {
+		if (ids[i] < port->mac_stats_nb_supported) {
+			values[i] = mac_stats[port->mac_stats_by_id[ids[i]]];
+		} else {
+			ret = i;
+			goto unlock;
+		}
 	}
 
-	ret = nb_written;
+	ret = n;
 
 unlock:
-	rte_spinlock_unlock(&port->mac_stats_lock);
+	sfc_adapter_unlock(sa);
 
 	return ret;
 }
@@ -819,29 +818,39 @@ sfc_xstats_get_names_by_id(struct rte_eth_dev *dev,
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
 	struct sfc_port *port = &sa->port;
-	unsigned int nb_supported = 0;
-	unsigned int nb_written = 0;
+	unsigned int nb_supported;
 	unsigned int i;
 
-	if (unlikely(xstats_names == NULL) ||
-	    unlikely((ids == NULL) && (size < port->mac_stats_nb_supported)))
-		return port->mac_stats_nb_supported;
+	if (unlikely(xstats_names == NULL && ids != NULL) ||
+	    unlikely(xstats_names != NULL && ids == NULL))
+		return -EINVAL;
 
-	for (i = 0; (i < EFX_MAC_NSTATS) && (nb_written < size); ++i) {
-		if (!EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, i))
-			continue;
+	sfc_adapter_lock(sa);
 
-		if ((ids == NULL) || (ids[nb_written] == nb_supported)) {
-			char *name = xstats_names[nb_written++].name;
-
-			strlcpy(name, efx_mac_stat_name(sa->nic, i),
-				sizeof(xstats_names[0].name));
-		}
-
-		++nb_supported;
+	if (unlikely(xstats_names == NULL && ids == NULL)) {
+		nb_supported = port->mac_stats_nb_supported;
+		sfc_adapter_unlock(sa);
+		return nb_supported;
 	}
 
-	return nb_written;
+	SFC_ASSERT(port->mac_stats_nb_supported <=
+		   RTE_DIM(port->mac_stats_by_id));
+
+	for (i = 0; i < size; i++) {
+		if (ids[i] < port->mac_stats_nb_supported) {
+			strlcpy(xstats_names[i].name,
+				efx_mac_stat_name(sa->nic,
+						 port->mac_stats_by_id[ids[i]]),
+				sizeof(xstats_names[0].name));
+		} else {
+			sfc_adapter_unlock(sa);
+			return i;
+		}
+	}
+
+	sfc_adapter_unlock(sa);
+
+	return size;
 }
 
 static int
@@ -1017,7 +1026,7 @@ sfc_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	 * The driver does not use it, but other PMDs update jumbo frame
 	 * flag and max_rx_pkt_len when MTU is set.
 	 */
-	if (mtu > RTE_ETHER_MAX_LEN) {
+	if (mtu > RTE_ETHER_MTU) {
 		struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 		rxmode->offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	}
@@ -2197,7 +2206,6 @@ sfc_eth_dev_init(struct rte_eth_dev *dev)
 
 	/* Copy PCI device info to the dev->data */
 	rte_eth_copy_pci_info(dev, pci_dev);
-	dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 	dev->data->dev_flags |= RTE_ETH_DEV_FLOW_OPS_THREAD_SAFE;
 
 	rc = sfc_kvargs_parse(sa);

@@ -163,7 +163,7 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"Display:\n"
 			"--------\n\n"
 
-			"show port (info|stats|summary|xstats|fdir|stat_qmap|dcb_tc|cap) (port_id|all)\n"
+			"show port (info|stats|summary|xstats|fdir|dcb_tc|cap) (port_id|all)\n"
 			"    Display information for port_id, or all.\n\n"
 
 			"show port port_id (module_eeprom|eeprom)\n"
@@ -177,7 +177,7 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"show port (port_id) rss-hash [key]\n"
 			"    Display the RSS hash functions and RSS hash key of port\n\n"
 
-			"clear port (info|stats|xstats|fdir|stat_qmap) (port_id|all)\n"
+			"clear port (info|stats|xstats|fdir) (port_id|all)\n"
 			"    Clear information for port_id, or all.\n\n"
 
 			"show (rxq|txq) info (port_id) (queue_id)\n"
@@ -547,7 +547,7 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"    Set the option to enable display of RX and TX bursts.\n"
 
 			"set port (port_id) vf (vf_id) rx|tx on|off\n"
-			"    Enable/Disable a VF receive/tranmit from a port\n\n"
+			"    Enable/Disable a VF receive/transmit from a port\n\n"
 
 			"set port (port_id) vf (vf_id) rxmode (AUPE|ROPE|BAM"
 			"|MPE) (on|off)\n"
@@ -1225,7 +1225,7 @@ cmdline_parse_token_string_t cmd_operate_port_all_all =
 cmdline_parse_inst_t cmd_operate_port = {
 	.f = cmd_operate_port_parsed,
 	.data = NULL,
-	.help_str = "port start|stop|close all: Start/Stop/Close/Reset all ports",
+	.help_str = "port start|stop|close|reset all: Start/Stop/Close/Reset all ports",
 	.tokens = {
 		(void *)&cmd_operate_port_all_cmd,
 		(void *)&cmd_operate_port_all_port,
@@ -1272,7 +1272,7 @@ cmdline_parse_token_num_t cmd_operate_specific_port_id =
 cmdline_parse_inst_t cmd_operate_specific_port = {
 	.f = cmd_operate_specific_port_parsed,
 	.data = NULL,
-	.help_str = "port start|stop|close <port_id>: Start/Stop/Close/Reset port_id",
+	.help_str = "port start|stop|close|reset <port_id>: Start/Stop/Close/Reset port_id",
 	.tokens = {
 		(void *)&cmd_operate_specific_port_cmd,
 		(void *)&cmd_operate_specific_port_port,
@@ -1521,6 +1521,9 @@ parse_and_check_speed_duplex(char *speedstr, char *duplexstr, uint32_t *speed)
 		}
 	}
 
+	if (*speed != ETH_LINK_SPEED_AUTONEG)
+		*speed |= ETH_LINK_SPEED_FIXED;
+
 	return 0;
 }
 
@@ -1604,13 +1607,13 @@ cmd_config_speed_specific_parsed(void *parsed_result,
 	struct cmd_config_speed_specific *res = parsed_result;
 	uint32_t link_speed;
 
-	if (!all_ports_stopped()) {
-		printf("Please stop all ports first\n");
-		return;
-	}
-
 	if (port_id_is_invalid(res->id, ENABLED_WARN))
 		return;
+
+	if (!port_is_stopped(res->id)) {
+		printf("Please stop port %d first\n", res->id);
+		return;
+	}
 
 	if (parse_and_check_speed_duplex(res->value1, res->value2,
 			&link_speed) < 0)
@@ -1877,7 +1880,9 @@ cmd_config_max_pkt_len_parsed(void *parsed_result,
 				__rte_unused void *data)
 {
 	struct cmd_config_max_pkt_len_result *res = parsed_result;
+	uint32_t max_rx_pkt_len_backup = 0;
 	portid_t pid;
+	int ret;
 
 	if (!all_ports_stopped()) {
 		printf("Please stop all ports first\n");
@@ -1886,7 +1891,6 @@ cmd_config_max_pkt_len_parsed(void *parsed_result,
 
 	RTE_ETH_FOREACH_DEV(pid) {
 		struct rte_port *port = &ports[pid];
-		uint64_t rx_offloads = port->dev_conf.rxmode.offloads;
 
 		if (!strcmp(res->name, "max-pkt-len")) {
 			if (res->value < RTE_ETHER_MIN_LEN) {
@@ -1897,12 +1901,18 @@ cmd_config_max_pkt_len_parsed(void *parsed_result,
 			if (res->value == port->dev_conf.rxmode.max_rx_pkt_len)
 				return;
 
+			ret = eth_dev_info_get_print_err(pid, &port->dev_info);
+			if (ret != 0) {
+				printf("rte_eth_dev_info_get() failed for port %u\n",
+					pid);
+				return;
+			}
+
+			max_rx_pkt_len_backup = port->dev_conf.rxmode.max_rx_pkt_len;
+
 			port->dev_conf.rxmode.max_rx_pkt_len = res->value;
-			if (res->value > RTE_ETHER_MAX_LEN)
-				rx_offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-			else
-				rx_offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
-			port->dev_conf.rxmode.offloads = rx_offloads;
+			if (update_jumbo_frame_offload(pid) != 0)
+				port->dev_conf.rxmode.max_rx_pkt_len = max_rx_pkt_len_backup;
 		} else {
 			printf("Unknown parameter\n");
 			return;
@@ -2547,8 +2557,10 @@ cmd_config_rxtx_queue_parsed(void *parsed_result,
 			__rte_unused void *data)
 {
 	struct cmd_config_rxtx_queue *res = parsed_result;
+	struct rte_port *port;
 	uint8_t isrx;
 	uint8_t isstart;
+	uint8_t *state;
 	int ret = 0;
 
 	if (test_done == 0) {
@@ -2596,8 +2608,15 @@ cmd_config_rxtx_queue_parsed(void *parsed_result,
 	else
 		ret = rte_eth_dev_tx_queue_stop(res->portid, res->qid);
 
-	if (ret == -ENOTSUP)
-		printf("Function not supported in PMD driver\n");
+	if (ret == -ENOTSUP) {
+		fprintf(stderr, "Function not supported in PMD\n");
+		return;
+	}
+
+	port = &ports[res->portid];
+	state = isrx ? &port->rxq[res->qid].state : &port->txq[res->qid].state;
+	*state = isstart ? RTE_ETH_QUEUE_STATE_STARTED :
+			   RTE_ETH_QUEUE_STATE_STOPPED;
 }
 
 cmdline_parse_token_string_t cmd_config_rxtx_queue_port =
@@ -2666,11 +2685,11 @@ cmd_config_deferred_start_rxtx_queue_parsed(void *parsed_result,
 
 	ison = !strcmp(res->state, "on");
 
-	if (isrx && port->rx_conf[res->qid].rx_deferred_start != ison) {
-		port->rx_conf[res->qid].rx_deferred_start = ison;
+	if (isrx && port->rxq[res->qid].conf.rx_deferred_start != ison) {
+		port->rxq[res->qid].conf.rx_deferred_start = ison;
 		needreconfig = 1;
-	} else if (!isrx && port->tx_conf[res->qid].tx_deferred_start != ison) {
-		port->tx_conf[res->qid].tx_deferred_start = ison;
+	} else if (!isrx && port->txq[res->qid].conf.tx_deferred_start != ison) {
+		port->txq[res->qid].conf.tx_deferred_start = ison;
 		needreconfig = 1;
 	}
 
@@ -2789,7 +2808,7 @@ cmd_setup_rxtx_queue_parsed(
 				     res->qid,
 				     port->nb_rx_desc[res->qid],
 				     socket_id,
-				     &port->rx_conf[res->qid],
+				     &port->rxq[res->qid].conf,
 				     mp);
 		if (ret)
 			printf("Failed to setup RX queue\n");
@@ -2798,11 +2817,15 @@ cmd_setup_rxtx_queue_parsed(
 		if (!numa_support || socket_id == NUMA_NO_CONFIG)
 			socket_id = port->socket_id;
 
+		if (port->nb_tx_desc[res->qid] < tx_pkt_nb_segs) {
+			printf("Failed to setup TX queue: not enough descriptors\n");
+			return;
+		}
 		ret = rte_eth_tx_queue_setup(res->portid,
 					     res->qid,
 					     port->nb_tx_desc[res->qid],
 					     socket_id,
-					     &port->tx_conf[res->qid]);
+					     &port->txq[res->qid].conf);
 		if (ret)
 			printf("Failed to setup TX queue\n");
 	}
@@ -3007,7 +3030,7 @@ showport_parse_reta_config(struct rte_eth_rss_reta_entry64 *conf,
 		return -1;
 	}
 	for (i = 0; i < ret; i++)
-		conf[i].mask = (uint64_t)strtoul(str_fld[i], &end, 0);
+		conf[i].mask = (uint64_t)strtoull(str_fld[i], &end, 0);
 
 	return 0;
 }
@@ -3537,7 +3560,7 @@ parse_item_list(char* str, const char* item_name, unsigned int max_items,
 		return nb_item;
 
 	/*
-	 * Then, check that all values in the list are differents.
+	 * Then, check that all values in the list are different.
 	 * No optimization here...
 	 */
 	for (i = 0; i < nb_item; i++) {
@@ -3782,6 +3805,7 @@ cmd_set_rxoffs_parsed(void *parsed_result,
 				  MAX_SEGS_BUFFER_SPLIT, seg_offsets, 0);
 	if (nb_segs > 0)
 		set_rx_pkt_offsets(seg_offsets, nb_segs);
+	cmd_reconfig_device_queue(RTE_PORT_ALL, 0, 1);
 }
 
 cmdline_parse_token_string_t cmd_set_rxoffs_keyword =
@@ -3828,6 +3852,7 @@ cmd_set_rxpkts_parsed(void *parsed_result,
 				  MAX_SEGS_BUFFER_SPLIT, seg_lengths, 0);
 	if (nb_segs > 0)
 		set_rx_pkt_segments(seg_lengths, nb_segs);
+	cmd_reconfig_device_queue(RTE_PORT_ALL, 0, 1);
 }
 
 cmdline_parse_token_string_t cmd_set_rxpkts_keyword =
@@ -4552,8 +4577,8 @@ cmd_config_queue_tx_offloads(struct rte_port *port)
 	int k;
 
 	/* Apply queue tx offloads configuration */
-	for (k = 0; k < port->dev_info.max_rx_queues; k++)
-		port->tx_conf[k].offloads =
+	for (k = 0; k < port->dev_info.max_tx_queues; k++)
+		port->txq[k].conf.offloads =
 			port->dev_conf.txmode.offloads;
 }
 
@@ -5755,6 +5780,19 @@ static void cmd_set_bonding_mode_parsed(void *parsed_result,
 {
 	struct cmd_set_bonding_mode_result *res = parsed_result;
 	portid_t port_id = res->port_id;
+	struct rte_port *port = &ports[port_id];
+
+	/*
+	 * Bonding mode changed means resources of device changed, like whether
+	 * started rte timer or not. Device should be restarted when resources
+	 * of device changed.
+	 */
+	if (port->port_status != RTE_PORT_STOPPED) {
+		fprintf(stderr,
+			"\t Error: Can't set bonding mode when port %d is not stopped\n",
+			port_id);
+		return;
+	}
 
 	/* Set the bonding mode for the relevant port. */
 	if (0 != rte_eth_bond_mode_set(port_id, res->value))
@@ -6299,6 +6337,7 @@ static void cmd_create_bonded_device_parsed(void *parsed_result,
 			printf("Failed to enable promiscuous mode for port %u: %s - ignore\n",
 				port_id, rte_strerror(-ret));
 
+		ports[port_id].bond_flag = 1;
 		ports[port_id].need_setup = 0;
 		ports[port_id].port_status = RTE_PORT_STOPPED;
 	}
@@ -7555,9 +7594,6 @@ static void cmd_showportall_parsed(void *parsed_result,
 		RTE_ETH_FOREACH_DEV(i)
 			fdir_get_infos(i);
 #endif
-	else if (!strcmp(res->what, "stat_qmap"))
-		RTE_ETH_FOREACH_DEV(i)
-			nic_stats_mapping_display(i);
 	else if (!strcmp(res->what, "dcb_tc"))
 		RTE_ETH_FOREACH_DEV(i)
 			port_dcb_info_display(i);
@@ -7573,14 +7609,14 @@ cmdline_parse_token_string_t cmd_showportall_port =
 	TOKEN_STRING_INITIALIZER(struct cmd_showportall_result, port, "port");
 cmdline_parse_token_string_t cmd_showportall_what =
 	TOKEN_STRING_INITIALIZER(struct cmd_showportall_result, what,
-				 "info#summary#stats#xstats#fdir#stat_qmap#dcb_tc#cap");
+				 "info#summary#stats#xstats#fdir#dcb_tc#cap");
 cmdline_parse_token_string_t cmd_showportall_all =
 	TOKEN_STRING_INITIALIZER(struct cmd_showportall_result, all, "all");
 cmdline_parse_inst_t cmd_showportall = {
 	.f = cmd_showportall_parsed,
 	.data = NULL,
 	.help_str = "show|clear port "
-		"info|summary|stats|xstats|fdir|stat_qmap|dcb_tc|cap all",
+		"info|summary|stats|xstats|fdir|dcb_tc|cap all",
 	.tokens = {
 		(void *)&cmd_showportall_show,
 		(void *)&cmd_showportall_port,
@@ -7622,8 +7658,6 @@ static void cmd_showport_parsed(void *parsed_result,
 	else if (!strcmp(res->what, "fdir"))
 		 fdir_get_infos(res->portnum);
 #endif
-	else if (!strcmp(res->what, "stat_qmap"))
-		nic_stats_mapping_display(res->portnum);
 	else if (!strcmp(res->what, "dcb_tc"))
 		port_dcb_info_display(res->portnum);
 	else if (!strcmp(res->what, "cap"))
@@ -7637,7 +7671,7 @@ cmdline_parse_token_string_t cmd_showport_port =
 	TOKEN_STRING_INITIALIZER(struct cmd_showport_result, port, "port");
 cmdline_parse_token_string_t cmd_showport_what =
 	TOKEN_STRING_INITIALIZER(struct cmd_showport_result, what,
-				 "info#summary#stats#xstats#fdir#stat_qmap#dcb_tc#cap");
+				 "info#summary#stats#xstats#fdir#dcb_tc#cap");
 cmdline_parse_token_num_t cmd_showport_portnum =
 	TOKEN_NUM_INITIALIZER(struct cmd_showport_result, portnum, RTE_UINT16);
 
@@ -7645,7 +7679,7 @@ cmdline_parse_inst_t cmd_showport = {
 	.f = cmd_showport_parsed,
 	.data = NULL,
 	.help_str = "show|clear port "
-		"info|summary|stats|xstats|fdir|stat_qmap|dcb_tc|cap "
+		"info|summary|stats|xstats|fdir|dcb_tc|cap "
 		"<port_id>",
 	.tokens = {
 		(void *)&cmd_showport_show,
@@ -8199,6 +8233,7 @@ static void cmd_quit_parsed(__rte_unused void *parsed_result,
 			    __rte_unused void *data)
 {
 	cmdline_quit(cl);
+	cl_quit = 1;
 }
 
 cmdline_parse_token_string_t cmd_quit_quit =
@@ -8715,6 +8750,7 @@ cmd_set_vf_rxmode_parsed(void *parsed_result,
 	}
 
 	RTE_SET_USED(is_on);
+	RTE_SET_USED(vf_rxmode);
 
 #ifdef RTE_NET_IXGBE
 	if (ret == -ENOTSUP)
@@ -9092,7 +9128,7 @@ cmdline_parse_inst_t cmd_vf_rate_limit = {
 
 /* *** CONFIGURE TUNNEL UDP PORT *** */
 struct cmd_tunnel_udp_config {
-	cmdline_fixed_string_t cmd;
+	cmdline_fixed_string_t rx_vxlan_port;
 	cmdline_fixed_string_t what;
 	uint16_t udp_port;
 	portid_t port_id;
@@ -9108,9 +9144,7 @@ cmd_tunnel_udp_config_parsed(void *parsed_result,
 	int ret;
 
 	tunnel_udp.udp_port = res->udp_port;
-
-	if (!strcmp(res->cmd, "rx_vxlan_port"))
-		tunnel_udp.prot_type = RTE_TUNNEL_TYPE_VXLAN;
+	tunnel_udp.prot_type = RTE_TUNNEL_TYPE_VXLAN;
 
 	if (!strcmp(res->what, "add"))
 		ret = rte_eth_dev_udp_tunnel_port_add(res->port_id,
@@ -9123,9 +9157,9 @@ cmd_tunnel_udp_config_parsed(void *parsed_result,
 		printf("udp tunneling add error: (%s)\n", strerror(-ret));
 }
 
-cmdline_parse_token_string_t cmd_tunnel_udp_config_cmd =
+cmdline_parse_token_string_t cmd_tunnel_udp_config_rx_vxlan_port =
 	TOKEN_STRING_INITIALIZER(struct cmd_tunnel_udp_config,
-				cmd, "rx_vxlan_port");
+				rx_vxlan_port, "rx_vxlan_port");
 cmdline_parse_token_string_t cmd_tunnel_udp_config_what =
 	TOKEN_STRING_INITIALIZER(struct cmd_tunnel_udp_config,
 				what, "add#rm");
@@ -9142,7 +9176,7 @@ cmdline_parse_inst_t cmd_tunnel_udp_config = {
 	.help_str = "rx_vxlan_port add|rm <udp_port> <port_id>: "
 		"Add/Remove a tunneling UDP port filter",
 	.tokens = {
-		(void *)&cmd_tunnel_udp_config_cmd,
+		(void *)&cmd_tunnel_udp_config_rx_vxlan_port,
 		(void *)&cmd_tunnel_udp_config_what,
 		(void *)&cmd_tunnel_udp_config_udp_port,
 		(void *)&cmd_tunnel_udp_config_port_id,
@@ -9548,7 +9582,7 @@ dump_socket_mem(FILE *f)
 	fprintf(f,
 		"Total   : size(M) total: %.6lf alloc: %.6lf(%.3lf%%) free: %.6lf \tcount alloc: %-4u free: %u\n",
 		(double)total / (1024 * 1024), (double)alloc / (1024 * 1024),
-		(double)alloc * 100 / (double)total,
+		total ? ((double)alloc * 100 / (double)total) : 0,
 		(double)free / (1024 * 1024),
 		n_alloc, n_free);
 	if (last_allocs)
@@ -14026,7 +14060,7 @@ no_print_return:
 		free(proto);
 #endif
 	if (ret == -ENOTSUP)
-		printf("Function not supported in PMD driver\n");
+		fprintf(stderr, "Function not supported in PMD\n");
 	close_file(pkg);
 }
 
@@ -15389,7 +15423,7 @@ cmd_rx_offload_get_configuration_parsed(
 
 	nb_rx_queues = dev_info.nb_rx_queues;
 	for (q = 0; q < nb_rx_queues; q++) {
-		queue_offloads = port->rx_conf[q].offloads;
+		queue_offloads = port->rxq[q].conf.offloads;
 		printf("  Queue[%2d] :", q);
 		print_rx_offloads(queue_offloads);
 		printf("\n");
@@ -15508,11 +15542,11 @@ cmd_config_per_port_rx_offload_parsed(void *parsed_result,
 	if (!strcmp(res->on_off, "on")) {
 		port->dev_conf.rxmode.offloads |= single_offload;
 		for (q = 0; q < nb_rx_queues; q++)
-			port->rx_conf[q].offloads |= single_offload;
+			port->rxq[q].conf.offloads |= single_offload;
 	} else {
 		port->dev_conf.rxmode.offloads &= ~single_offload;
 		for (q = 0; q < nb_rx_queues; q++)
-			port->rx_conf[q].offloads &= ~single_offload;
+			port->rxq[q].conf.offloads &= ~single_offload;
 	}
 
 	cmd_reconfig_device_queue(port_id, 1, 1);
@@ -15616,9 +15650,9 @@ cmd_config_per_queue_rx_offload_parsed(void *parsed_result,
 	}
 
 	if (!strcmp(res->on_off, "on"))
-		port->rx_conf[queue_id].offloads |= single_offload;
+		port->rxq[queue_id].conf.offloads |= single_offload;
 	else
-		port->rx_conf[queue_id].offloads &= ~single_offload;
+		port->rxq[queue_id].conf.offloads &= ~single_offload;
 
 	cmd_reconfig_device_queue(port_id, 1, 1);
 }
@@ -15800,7 +15834,7 @@ cmd_tx_offload_get_configuration_parsed(
 
 	nb_tx_queues = dev_info.nb_tx_queues;
 	for (q = 0; q < nb_tx_queues; q++) {
-		queue_offloads = port->tx_conf[q].offloads;
+		queue_offloads = port->txq[q].conf.offloads;
 		printf("  Queue[%2d] :", q);
 		print_tx_offloads(queue_offloads);
 		printf("\n");
@@ -15923,11 +15957,11 @@ cmd_config_per_port_tx_offload_parsed(void *parsed_result,
 	if (!strcmp(res->on_off, "on")) {
 		port->dev_conf.txmode.offloads |= single_offload;
 		for (q = 0; q < nb_tx_queues; q++)
-			port->tx_conf[q].offloads |= single_offload;
+			port->txq[q].conf.offloads |= single_offload;
 	} else {
 		port->dev_conf.txmode.offloads &= ~single_offload;
 		for (q = 0; q < nb_tx_queues; q++)
-			port->tx_conf[q].offloads &= ~single_offload;
+			port->txq[q].conf.offloads &= ~single_offload;
 	}
 
 	cmd_reconfig_device_queue(port_id, 1, 1);
@@ -16034,9 +16068,9 @@ cmd_config_per_queue_tx_offload_parsed(void *parsed_result,
 	}
 
 	if (!strcmp(res->on_off, "on"))
-		port->tx_conf[queue_id].offloads |= single_offload;
+		port->txq[queue_id].conf.offloads |= single_offload;
 	else
-		port->tx_conf[queue_id].offloads &= ~single_offload;
+		port->txq[queue_id].conf.offloads &= ~single_offload;
 
 	cmd_reconfig_device_queue(port_id, 1, 1);
 }
@@ -16440,17 +16474,17 @@ cmd_set_port_fec_mode_parsed(
 {
 	struct cmd_set_port_fec_mode *res = parsed_result;
 	uint16_t port_id = res->port_id;
-	uint32_t mode;
+	uint32_t fec_capa;
 	int ret;
 
-	ret = parse_fec_mode(res->fec_value, &mode);
+	ret = parse_fec_mode(res->fec_value, &fec_capa);
 	if (ret < 0) {
 		printf("Unknown fec mode: %s for Port %d\n", res->fec_value,
 			port_id);
 		return;
 	}
 
-	ret = rte_eth_fec_set(port_id, mode);
+	ret = rte_eth_fec_set(port_id, fec_capa);
 	if (ret == -ENOTSUP) {
 		printf("Function not implemented\n");
 		return;
@@ -16611,7 +16645,8 @@ cmd_show_rx_tx_desc_status_parsed(void *parsed_result,
 		rc = rte_eth_rx_descriptor_status(res->cmd_pid, res->cmd_qid,
 					     res->cmd_did);
 		if (rc < 0) {
-			printf("Invalid queueid = %d\n", res->cmd_qid);
+			printf("Invalid input: queue id = %d, desc id = %d\n",
+			       res->cmd_qid, res->cmd_did);
 			return;
 		}
 		if (rc == RTE_ETH_RX_DESC_AVAIL)
@@ -16624,7 +16659,8 @@ cmd_show_rx_tx_desc_status_parsed(void *parsed_result,
 		rc = rte_eth_tx_descriptor_status(res->cmd_pid, res->cmd_qid,
 					     res->cmd_did);
 		if (rc < 0) {
-			printf("Invalid queueid = %d\n", res->cmd_qid);
+			printf("Invalid input: queue id = %d, desc id = %d\n",
+			       res->cmd_qid, res->cmd_did);
 			return;
 		}
 		if (rc == RTE_ETH_TX_DESC_FULL)
@@ -16962,6 +16998,7 @@ cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_show_port_meter_cap,
 	(cmdline_parse_inst_t *)&cmd_add_port_meter_profile_srtcm,
 	(cmdline_parse_inst_t *)&cmd_add_port_meter_profile_trtcm,
+	(cmdline_parse_inst_t *)&cmd_add_port_meter_profile_trtcm_rfc4115,
 	(cmdline_parse_inst_t *)&cmd_del_port_meter_profile,
 	(cmdline_parse_inst_t *)&cmd_create_port_meter,
 	(cmdline_parse_inst_t *)&cmd_enable_port_meter,
@@ -17112,6 +17149,7 @@ cmdline_read_from_file(const char *filename)
 void
 prompt(void)
 {
+	int ret;
 	/* initialize non-constant commands */
 	cmd_set_fwd_mode_init();
 	cmd_set_fwd_retry_mode_init();
@@ -17119,15 +17157,23 @@ prompt(void)
 	testpmd_cl = cmdline_stdin_new(main_ctx, "testpmd> ");
 	if (testpmd_cl == NULL)
 		return;
+
+	ret = atexit(prompt_exit);
+	if (ret != 0)
+		printf("Cannot set exit function for cmdline\n");
+
 	cmdline_interact(testpmd_cl);
-	cmdline_stdin_exit(testpmd_cl);
+	if (ret != 0)
+		cmdline_stdin_exit(testpmd_cl);
 }
 
 void
 prompt_exit(void)
 {
-	if (testpmd_cl != NULL)
+	if (testpmd_cl != NULL) {
 		cmdline_quit(testpmd_cl);
+		cmdline_stdin_exit(testpmd_cl);
+	}
 }
 
 static void

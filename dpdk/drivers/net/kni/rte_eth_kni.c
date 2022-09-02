@@ -124,7 +124,7 @@ eth_kni_start(struct rte_eth_dev *dev)
 	struct pmd_internals *internals = dev->data->dev_private;
 	uint16_t port_id = dev->data->port_id;
 	struct rte_mempool *mb_pool;
-	struct rte_kni_conf conf;
+	struct rte_kni_conf conf = {{0}};
 	const char *name = dev->device->name + 4; /* remove net_ */
 
 	mb_pool = internals->rx_queues[0].mb_pool;
@@ -211,6 +211,9 @@ eth_kni_close(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	ret = eth_kni_dev_stop(eth_dev);
+	if (ret)
+		PMD_LOG(WARNING, "Not able to stop kni for %s",
+			eth_dev->data->name);
 
 	/* mac_addrs must not be freed alone because part of dev_private */
 	eth_dev->data->mac_addrs = NULL;
@@ -406,8 +409,13 @@ eth_kni_create(struct rte_vdev_device *vdev,
 static int
 kni_init(void)
 {
-	if (is_kni_initialized == 0)
-		rte_kni_init(MAX_KNI_PORTS);
+	int ret;
+
+	if (is_kni_initialized == 0) {
+		ret = rte_kni_init(MAX_KNI_PORTS);
+		if (ret < 0)
+			return ret;
+	}
 
 	is_kni_initialized++;
 

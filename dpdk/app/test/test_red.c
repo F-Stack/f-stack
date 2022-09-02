@@ -1049,7 +1049,7 @@ static struct test_queue ft6_tqueue = {
 static struct test_config func_test6_config = {
 	.ifname = "functional test 6 interface",
 	.msg = "functional test 6 : use several queues (each with its own run-time data),\n"
-	"		    use several RED configurations (such that each configuration is sharte_red by multiple queues),\n"
+	"		    use several RED configurations (such that each configuration is shared by multiple queues),\n"
 	"		    increase average queue size to target level,\n"
 	"		    dequeue all packets until queue is empty,\n"
 	"		    confirm that average queue size is computed correctly while queue is empty\n"
@@ -1566,10 +1566,10 @@ static void ovfl_check_avg(uint32_t avg)
 }
 
 static struct test_config ovfl_test1_config = {
-	.ifname = "queue avergage overflow test interface",
+	.ifname = "queue average overflow test interface",
 	.msg = "overflow test 1 : use one RED configuration,\n"
 	"		  increase average queue size to target level,\n"
-	"		  check maximum number of bits requirte_red to represent avg_s\n\n",
+	"		  check maximum number of bits required to represent avg_s\n\n",
 	.htxt = "avg queue size  "
 	"wq_log2  "
 	"fraction bits  "
@@ -1757,12 +1757,12 @@ test_invalid_parameters(void)
 		printf("%i: rte_red_config_init should have failed!\n", __LINE__);
 		return -1;
 	}
-	/* min_treshold == max_treshold */
+	/* min_threshold == max_threshold */
 	if (rte_red_config_init(&config, 0, 1, 1, 0) == 0) {
 		printf("%i: rte_red_config_init should have failed!\n", __LINE__);
 		return -1;
 	}
-	/* min_treshold > max_treshold */
+	/* min_threshold > max_threshold */
 	if (rte_red_config_init(&config, 0, 2, 1, 0) == 0) {
 		printf("%i: rte_red_config_init should have failed!\n", __LINE__);
 		return -1;

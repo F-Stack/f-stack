@@ -58,7 +58,7 @@ rte_malloc(const char *type, size_t size, unsigned align)
 	__rte_alloc_size(2);
 
 /**
- * Allocate zero'ed memory from the heap.
+ * Allocate zeroed memory from the heap.
  *
  * Equivalent to rte_malloc() except that the memory zone is
  * initialised with zeros. In NUMA systems, the memory allocated resides on the
@@ -160,7 +160,7 @@ rte_realloc(void *ptr, size_t size, unsigned int align)
 __rte_experimental
 void *
 rte_realloc_socket(void *ptr, size_t size, unsigned int align, int socket)
-	__rte_alloc_size(2, 3);
+	__rte_alloc_size(2);
 
 /**
  * This function allocates memory from the huge-page area of memory. The memory
@@ -190,7 +190,7 @@ rte_malloc_socket(const char *type, size_t size, unsigned align, int socket)
 	__rte_alloc_size(2);
 
 /**
- * Allocate zero'ed memory from the heap.
+ * Allocate zeroed memory from the heap.
  *
  * Equivalent to rte_malloc() except that the memory zone is
  * initialised with zeros.

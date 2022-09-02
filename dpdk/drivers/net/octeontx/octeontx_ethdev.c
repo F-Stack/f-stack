@@ -25,6 +25,11 @@
 #include "octeontx_rxtx.h"
 #include "octeontx_logs.h"
 
+/* Useful in stopping/closing event device if no of
+ * eth ports are using it.
+ */
+uint16_t evdev_refcnt;
+
 struct evdev_priv_data {
 	OFFLOAD_FLAGS; /*Sequence should not be changed */
 } __rte_cache_aligned;
@@ -490,7 +495,11 @@ octeontx_dev_close(struct rte_eth_dev *dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	rte_event_dev_close(nic->evdev);
+	/* Stopping/closing event device once all eth ports are closed. */
+	if (__atomic_sub_fetch(&evdev_refcnt, 1, __ATOMIC_ACQUIRE) == 0) {
+		rte_event_dev_stop(nic->evdev);
+		rte_event_dev_close(nic->evdev);
+	}
 
 	octeontx_dev_flow_ctrl_fini(dev);
 
@@ -552,7 +561,7 @@ octeontx_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	if (rc)
 		return rc;
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > OCCTX_L2_MAX_LEN)
 		nic->rx_offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		nic->rx_offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
@@ -680,8 +689,6 @@ octeontx_dev_stop(struct rte_eth_dev *dev)
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
-
-	rte_event_dev_stop(nic->evdev);
 
 	ret = octeontx_port_stop(nic);
 	if (ret < 0) {
@@ -867,7 +874,6 @@ octeontx_dev_info(struct rte_eth_dev *dev,
 
 	dev_info->max_mac_addrs =
 				octeontx_bgx_port_mac_entries_get(nic->port_id);
-	dev_info->max_rx_pktlen = PKI_MAX_PKTLEN;
 	dev_info->max_rx_queues = 1;
 	dev_info->max_tx_queues = PKO_MAX_NUM_DQ;
 	dev_info->min_rx_bufsize = 0;
@@ -1103,7 +1109,7 @@ octeontx_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 
 	/* Verify queue index */
 	if (qidx >= dev->data->nb_rx_queues) {
-		octeontx_log_err("QID %d not supporteded (0 - %d available)\n",
+		octeontx_log_err("QID %d not supported (0 - %d available)\n",
 				qidx, (dev->data->nb_rx_queues - 1));
 		return -ENOTSUP;
 	}
@@ -1347,6 +1353,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	nic->pko_vfid = pko_vfid;
 	nic->port_id = port;
 	nic->evdev = evdev;
+	__atomic_add_fetch(&evdev_refcnt, 1, __ATOMIC_ACQUIRE);
 
 	res = octeontx_port_open(nic);
 	if (res < 0)
@@ -1375,7 +1382,6 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	data->promiscuous = 0;
 	data->all_multicast = 0;
 	data->scattered_rx = 0;
-	data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* Get maximum number of supported MAC entries */
 	max_entries = octeontx_bgx_port_mac_entries_get(nic->port_id);
@@ -1597,6 +1603,7 @@ octeontx_probe(struct rte_vdev_device *dev)
 		}
 	}
 
+	__atomic_store_n(&evdev_refcnt, 0, __ATOMIC_RELEASE);
 	/*
 	 * Do 1:1 links for ports & queues. All queues would be mapped to
 	 * one port. If there are more ports than queues, then some ports

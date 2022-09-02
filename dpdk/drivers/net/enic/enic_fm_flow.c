@@ -1670,7 +1670,7 @@ enic_fm_dump_tcam_actions(const struct fm_action *fm_action)
 	/* Remove trailing comma */
 	if (buf[0])
 		*(bp - 1) = '\0';
-	ENICPMD_LOG(DEBUG, "       Acions: %s", buf);
+	ENICPMD_LOG(DEBUG, "       Actions: %s", buf);
 }
 
 static int
@@ -2188,7 +2188,7 @@ enic_action_handle_get(struct enic_flowman *fm, struct fm_action *action_in,
 	if (ret < 0 && ret != -ENOENT)
 		return rte_flow_error_set(error, -ret,
 				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-				   NULL, "enic: rte_hash_lookup(aciton)");
+				   NULL, "enic: rte_hash_lookup(action)");
 
 	if (ret == -ENOENT) {
 		/* Allocate a new action on the NIC. */
@@ -2196,11 +2196,11 @@ enic_action_handle_get(struct enic_flowman *fm, struct fm_action *action_in,
 		memcpy(fma, action_in, sizeof(*fma));
 
 		ah = calloc(1, sizeof(*ah));
-		memcpy(&ah->key, action_in, sizeof(struct fm_action));
 		if (ah == NULL)
 			return rte_flow_error_set(error, ENOMEM,
 					   RTE_FLOW_ERROR_TYPE_HANDLE,
 					   NULL, "enic: calloc(fm-action)");
+		memcpy(&ah->key, action_in, sizeof(struct fm_action));
 		args[0] = FM_ACTION_ALLOC;
 		args[1] = fm->cmd.pa;
 		ret = flowman_cmd(fm, args, 2);
@@ -2259,7 +2259,7 @@ __enic_fm_flow_add_entry(struct enic_flowman *fm,
 
 	ENICPMD_FUNC_TRACE();
 
-	/* Get or create an aciton handle. */
+	/* Get or create an action handle. */
 	ret = enic_action_handle_get(fm, action_in, error, &ah);
 	if (ret)
 		return ret;
@@ -2886,7 +2886,7 @@ enic_fm_init(struct enic *enic)
 	rc = enic_fm_init_actions(fm);
 	if (rc) {
 		ENICPMD_LOG(ERR, "cannot create action hash, error:%d", rc);
-		goto error_tables;
+		goto error_counters;
 	}
 	/*
 	 * One default exact match table for each direction. We hold onto
@@ -2895,7 +2895,7 @@ enic_fm_init(struct enic *enic)
 	rc = enic_fet_alloc(fm, 1, NULL, 128, &fm->default_ig_fet);
 	if (rc) {
 		ENICPMD_LOG(ERR, "cannot alloc default IG exact match table");
-		goto error_counters;
+		goto error_actions;
 	}
 	fm->default_ig_fet->ref = 1;
 	rc = enic_fet_alloc(fm, 0, NULL, 128, &fm->default_eg_fet);
@@ -2910,6 +2910,8 @@ enic_fm_init(struct enic *enic)
 
 error_ig_fet:
 	enic_fet_free(fm, fm->default_ig_fet);
+error_actions:
+	rte_hash_free(fm->action_hash);
 error_counters:
 	enic_fm_free_all_counters(fm);
 error_tables:

@@ -2243,82 +2243,6 @@ i40e_flow_check_raw_item(const struct rte_flow_item *item,
 	return 0;
 }
 
-static int
-i40e_flow_set_fdir_inset(struct i40e_pf *pf,
-			 enum i40e_filter_pctype pctype,
-			 uint64_t input_set)
-{
-	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
-	uint64_t inset_reg = 0;
-	uint32_t mask_reg[I40E_INSET_MASK_NUM_REG] = {0};
-	int i, num;
-
-	/* Check if the input set is valid */
-	if (i40e_validate_input_set(pctype, RTE_ETH_FILTER_FDIR,
-				    input_set) != 0) {
-		PMD_DRV_LOG(ERR, "Invalid input set");
-		return -EINVAL;
-	}
-
-	/* Check if the configuration is conflicted */
-	if (pf->fdir.inset_flag[pctype] &&
-	    memcmp(&pf->fdir.input_set[pctype], &input_set, sizeof(uint64_t)))
-		return -1;
-
-	if (pf->fdir.inset_flag[pctype] &&
-	    !memcmp(&pf->fdir.input_set[pctype], &input_set, sizeof(uint64_t)))
-		return 0;
-
-	num = i40e_generate_inset_mask_reg(input_set, mask_reg,
-					   I40E_INSET_MASK_NUM_REG);
-	if (num < 0)
-		return -EINVAL;
-
-	if (pf->support_multi_driver) {
-		for (i = 0; i < num; i++)
-			if (i40e_read_rx_ctl(hw,
-					I40E_GLQF_FD_MSK(i, pctype)) !=
-					mask_reg[i]) {
-				PMD_DRV_LOG(ERR, "Input set setting is not"
-						" supported with"
-						" `support-multi-driver`"
-						" enabled!");
-				return -EPERM;
-			}
-		for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
-			if (i40e_read_rx_ctl(hw,
-					I40E_GLQF_FD_MSK(i, pctype)) != 0) {
-				PMD_DRV_LOG(ERR, "Input set setting is not"
-						" supported with"
-						" `support-multi-driver`"
-						" enabled!");
-				return -EPERM;
-			}
-
-	} else {
-		for (i = 0; i < num; i++)
-			i40e_check_write_reg(hw, I40E_GLQF_FD_MSK(i, pctype),
-				mask_reg[i]);
-		/*clear unused mask registers of the pctype */
-		for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
-			i40e_check_write_reg(hw,
-					I40E_GLQF_FD_MSK(i, pctype), 0);
-	}
-
-	inset_reg |= i40e_translate_input_set_reg(hw->mac.type, input_set);
-
-	i40e_check_write_reg(hw, I40E_PRTQF_FD_INSET(pctype, 0),
-			     (uint32_t)(inset_reg & UINT32_MAX));
-	i40e_check_write_reg(hw, I40E_PRTQF_FD_INSET(pctype, 1),
-			     (uint32_t)((inset_reg >>
-					 I40E_32_BIT_WIDTH) & UINT32_MAX));
-
-	I40E_WRITE_FLUSH(hw);
-
-	pf->fdir.input_set[pctype] = input_set;
-	pf->fdir.inset_flag[pctype] = 1;
-	return 0;
-}
 
 static uint8_t
 i40e_flow_fdir_get_pctype_value(struct i40e_pf *pf,
@@ -2433,7 +2357,7 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 	const struct rte_flow_item *item = pattern;
 	const struct rte_flow_item_eth *eth_spec, *eth_mask;
 	const struct rte_flow_item_vlan *vlan_spec, *vlan_mask;
-	const struct rte_flow_item_ipv4 *ipv4_spec, *ipv4_mask;
+	const struct rte_flow_item_ipv4 *ipv4_spec, *ipv4_last, *ipv4_mask;
 	const struct rte_flow_item_ipv6 *ipv6_spec, *ipv6_mask;
 	const struct rte_flow_item_tcp *tcp_spec, *tcp_mask;
 	const struct rte_flow_item_udp *udp_spec, *udp_mask;
@@ -2446,7 +2370,6 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 
 	uint8_t pctype = 0;
 	uint64_t input_set = I40E_INSET_NONE;
-	uint16_t frag_off;
 	enum rte_flow_item_type item_type;
 	enum rte_flow_item_type next_type;
 	enum rte_flow_item_type l3 = RTE_FLOW_ITEM_TYPE_END;
@@ -2472,7 +2395,7 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 	memset(len_arr, 0, sizeof(len_arr));
 	filter->input.flow_ext.customized_pctype = false;
 	for (; item->type != RTE_FLOW_ITEM_TYPE_END; item++) {
-		if (item->last) {
+		if (item->last && item->type != RTE_FLOW_ITEM_TYPE_IPV4) {
 			rte_flow_error_set(error, EINVAL,
 					   RTE_FLOW_ERROR_TYPE_ITEM,
 					   item,
@@ -2611,15 +2534,40 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 			l3 = RTE_FLOW_ITEM_TYPE_IPV4;
 			ipv4_spec = item->spec;
 			ipv4_mask = item->mask;
+			ipv4_last = item->last;
 			pctype = I40E_FILTER_PCTYPE_NONF_IPV4_OTHER;
 			layer_idx = I40E_FLXPLD_L3_IDX;
 
+			if (ipv4_last) {
+				if (!ipv4_spec || !ipv4_mask || !outer_ip) {
+					rte_flow_error_set(error, EINVAL,
+						RTE_FLOW_ERROR_TYPE_ITEM,
+						item,
+						"Not support range");
+					return -rte_errno;
+				}
+				/* Only fragment_offset supports range */
+				if (ipv4_last->hdr.version_ihl ||
+				    ipv4_last->hdr.type_of_service ||
+				    ipv4_last->hdr.total_length ||
+				    ipv4_last->hdr.packet_id ||
+				    ipv4_last->hdr.time_to_live ||
+				    ipv4_last->hdr.next_proto_id ||
+				    ipv4_last->hdr.hdr_checksum ||
+				    ipv4_last->hdr.src_addr ||
+				    ipv4_last->hdr.dst_addr) {
+					rte_flow_error_set(error, EINVAL,
+						   RTE_FLOW_ERROR_TYPE_ITEM,
+						   item,
+						   "Not support range");
+					return -rte_errno;
+				}
+			}
 			if (ipv4_spec && ipv4_mask && outer_ip) {
 				/* Check IPv4 mask and update input set */
 				if (ipv4_mask->hdr.version_ihl ||
 				    ipv4_mask->hdr.total_length ||
 				    ipv4_mask->hdr.packet_id ||
-				    ipv4_mask->hdr.fragment_offset ||
 				    ipv4_mask->hdr.hdr_checksum) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2640,11 +2588,56 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 					input_set |= I40E_INSET_IPV4_PROTO;
 
 				/* Check if it is fragment. */
-				frag_off = ipv4_spec->hdr.fragment_offset;
-				frag_off = rte_be_to_cpu_16(frag_off);
-				if (frag_off & RTE_IPV4_HDR_OFFSET_MASK ||
-				    frag_off & RTE_IPV4_HDR_MF_FLAG)
-					pctype = I40E_FILTER_PCTYPE_FRAG_IPV4;
+				uint16_t frag_mask =
+					ipv4_mask->hdr.fragment_offset;
+				uint16_t frag_spec =
+					ipv4_spec->hdr.fragment_offset;
+				uint16_t frag_last = 0;
+				if (ipv4_last)
+					frag_last =
+					ipv4_last->hdr.fragment_offset;
+				if (frag_mask) {
+					frag_mask = rte_be_to_cpu_16(frag_mask);
+					frag_spec = rte_be_to_cpu_16(frag_spec);
+					frag_last = rte_be_to_cpu_16(frag_last);
+					/* frag_off mask has to be 0x3fff */
+					if (frag_mask !=
+					    (RTE_IPV4_HDR_OFFSET_MASK |
+					    RTE_IPV4_HDR_MF_FLAG)) {
+						rte_flow_error_set(error,
+						   EINVAL,
+						   RTE_FLOW_ERROR_TYPE_ITEM,
+						   item,
+						   "Invalid IPv4 fragment_offset mask");
+						return -rte_errno;
+					}
+					/*
+					 * non-frag rule:
+					 * mask=0x3fff,spec=0
+					 * frag rule:
+					 * mask=0x3fff,spec=0x8,last=0x2000
+					 */
+					if (frag_spec ==
+					    (1 << RTE_IPV4_HDR_FO_SHIFT) &&
+					    frag_last == RTE_IPV4_HDR_MF_FLAG) {
+						pctype =
+						  I40E_FILTER_PCTYPE_FRAG_IPV4;
+					} else if (frag_spec || frag_last) {
+						rte_flow_error_set(error,
+						   EINVAL,
+						   RTE_FLOW_ERROR_TYPE_ITEM,
+						   item,
+						   "Invalid IPv4 fragment_offset rule");
+						return -rte_errno;
+					}
+				} else if (frag_spec || frag_last) {
+					rte_flow_error_set(error,
+						EINVAL,
+						RTE_FLOW_ERROR_TYPE_ITEM,
+						item,
+						"Invalid fragment_offset");
+					return -rte_errno;
+				}
 
 				if (input_set & (I40E_INSET_DMAC | I40E_INSET_SMAC)) {
 					if (input_set & (I40E_INSET_IPV4_SRC |
@@ -3050,12 +3043,15 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				rte_flow_error_set(error, EINVAL,
 					   RTE_FLOW_ERROR_TYPE_ITEM,
 					   item,
-					   "Exceeds maxmial payload limit.");
+					   "Exceeds maximal payload limit.");
 				return -rte_errno;
 			}
 
 			for (i = 0; i < raw_spec->length; i++) {
 				j = i + next_dst_off;
+				if (j >= RTE_ETH_FDIR_MAX_FLEXLEN ||
+						j >= I40E_FDIR_MAX_FLEX_LEN)
+					break;
 				filter->input.flow_ext.flexbytes[j] =
 					raw_spec->pattern[i];
 				filter->input.flow_ext.flex_mask[j] =
@@ -3069,6 +3065,7 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 			       &flex_pit, sizeof(struct i40e_fdir_flex_pit));
 			filter->input.flow_ext.layer_idx = layer_idx;
 			filter->input.flow_ext.raw_id = raw_id;
+			filter->input.flow_ext.is_flex_flow = true;
 			break;
 		case RTE_FLOW_ITEM_TYPE_VF:
 			vf_spec = item->spec;
@@ -3142,18 +3139,17 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 
 	/* If customized pctype is not used, set fdir configuration.*/
 	if (!filter->input.flow_ext.customized_pctype) {
-		ret = i40e_flow_set_fdir_inset(pf, pctype, input_set);
-		if (ret == -1) {
+		/* Check if the input set is valid */
+		if (i40e_validate_input_set(pctype, RTE_ETH_FILTER_FDIR,
+						input_set) != 0) {
 			rte_flow_error_set(error, EINVAL,
-					   RTE_FLOW_ERROR_TYPE_ITEM, item,
-					   "Conflict with the first rule's input set.");
-			return -rte_errno;
-		} else if (ret == -EINVAL) {
-			rte_flow_error_set(error, EINVAL,
-					   RTE_FLOW_ERROR_TYPE_ITEM, item,
-					   "Invalid pattern mask.");
+					   RTE_FLOW_ERROR_TYPE_ITEM,
+					   item,
+					   "Invalid input set");
 			return -rte_errno;
 		}
+
+		filter->input.flow_ext.input_set = input_set;
 	}
 
 	filter->input.pctype = pctype;
@@ -5468,7 +5464,7 @@ i40e_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 static int
 i40e_flow_flush_fdir_filter(struct i40e_pf *pf)
 {
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
+	struct rte_eth_dev *dev = &rte_eth_devices[pf->dev_data->port_id];
 	struct i40e_fdir_info *fdir_info = &pf->fdir;
 	struct i40e_fdir_filter *fdir_filter;
 	enum i40e_filter_pctype pctype;
@@ -5511,9 +5507,12 @@ i40e_flow_flush_fdir_filter(struct i40e_pf *pf)
 
 		for (pctype = I40E_FILTER_PCTYPE_NONF_IPV4_UDP;
 		     pctype <= I40E_FILTER_PCTYPE_L2_PAYLOAD; pctype++) {
-			pf->fdir.inset_flag[pctype] = 0;
+			pf->fdir.flow_count[pctype] = 0;
 			pf->fdir.flex_mask_flag[pctype] = 0;
 		}
+
+		for (i = 0; i < I40E_MAX_FLXPLD_LAYER; i++)
+			pf->fdir.flex_pit_flag[i] = 0;
 
 		/* Disable FDIR processing as all FDIR rules are now flushed */
 		i40e_fdir_rx_proc_enable(dev, 0);

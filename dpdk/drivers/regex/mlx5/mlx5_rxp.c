@@ -115,11 +115,10 @@ mlx5_regex_info_get(struct rte_regexdev *dev __rte_unused,
 	info->max_payload_size = MLX5_REGEX_MAX_PAYLOAD_SIZE;
 	info->max_rules_per_group = MLX5_REGEX_MAX_RULES_PER_GROUP;
 	info->max_groups = MLX5_REGEX_MAX_GROUPS;
-	info->max_queue_pairs = 1;
 	info->regexdev_capa = RTE_REGEXDEV_SUPP_PCRE_GREEDY_F |
 			      RTE_REGEXDEV_CAPA_QUEUE_PAIR_OOS_F;
 	info->rule_flags = 0;
-	info->max_queue_pairs = 10;
+	info->max_queue_pairs = UINT16_MAX;
 	return 0;
 }
 
@@ -892,7 +891,7 @@ rxp_db_setup(struct mlx5_regex_priv *priv)
 
 	/* Setup database memories for both RXP engines + reprogram memory. */
 	for (i = 0; i < (priv->nb_engines + MLX5_RXP_EM_COUNT); i++) {
-		priv->db[i].ptr = rte_malloc("", MLX5_MAX_DB_SIZE, 0);
+		priv->db[i].ptr = rte_malloc("", MLX5_MAX_DB_SIZE, 1 << 21);
 		if (!priv->db[i].ptr) {
 			DRV_LOG(ERR, "Failed to alloc db memory!");
 			ret = ENODEV;
@@ -990,7 +989,7 @@ mlx5_regex_configure(struct rte_regexdev *dev,
 	dev->data->dev_conf.nb_queue_pairs = priv->nb_queues;
 	priv->qps = rte_zmalloc(NULL, sizeof(struct mlx5_regex_qp) *
 				priv->nb_queues, 0);
-	if (!priv->nb_queues) {
+	if (!priv->qps) {
 		DRV_LOG(ERR, "can't allocate qps memory");
 		rte_errno = ENOMEM;
 		return -rte_errno;

@@ -109,7 +109,7 @@ static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf = port_conf_default;
-	const uint16_t rxRings = 1, txRings = rte_lcore_count() - 1;
+	const uint16_t rxRings = 1, txRings = 1;
 	int retval;
 	uint16_t q;
 	uint16_t nb_rxd = RX_RING_SIZE;
@@ -265,8 +265,8 @@ lcore_rx(struct lcore_params *p)
  * packets are then send straight to the tx core.
  */
 #if 0
-	rte_distributor_process(d, bufs, nb_rx);
-	const uint16_t nb_ret = rte_distributor_returned_pktsd,
+		rte_distributor_process(p->d, bufs, nb_rx);
+		const uint16_t nb_ret = rte_distributor_returned_pkts(p->d,
 			bufs, BURST_SIZE*2);
 
 		app_stats.rx.returned_pkts += nb_ret;
@@ -931,6 +931,9 @@ main(int argc, char *argv[])
 
 	rte_free(pd);
 	rte_free(pr);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

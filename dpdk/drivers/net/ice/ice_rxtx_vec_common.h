@@ -7,6 +7,10 @@
 
 #include "ice_rxtx.h"
 
+#ifndef __INTEL_COMPILER
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#endif
+
 static inline uint16_t
 ice_rx_reassemble_packets(struct ice_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 			  uint16_t nb_bufs, uint8_t *split_flags)
@@ -190,8 +194,8 @@ _ice_tx_queue_release_mbufs_vec(struct ice_tx_queue *txq)
 	 */
 	i = txq->tx_next_dd - txq->tx_rs_thresh + 1;
 
-#ifdef CC_AVX512_SUPPORT
-	struct rte_eth_dev *dev = txq->vsi->adapter->eth_dev;
+#ifdef __AVX512VL__
+	struct rte_eth_dev *dev = &rte_eth_devices[txq->vsi->adapter->pf.dev_data->port_id];
 
 	if (dev->tx_pkt_burst == ice_xmit_pkts_vec_avx512) {
 		struct ice_vec_tx_entry *swr = (void *)txq->sw_ring;
@@ -266,6 +270,7 @@ ice_rx_vec_queue_default(struct ice_rx_queue *rxq)
 #define ICE_NO_VECTOR_FLAGS (				 \
 		DEV_TX_OFFLOAD_MULTI_SEGS |		 \
 		DEV_TX_OFFLOAD_VLAN_INSERT |		 \
+		DEV_TX_OFFLOAD_IPV4_CKSUM |		 \
 		DEV_TX_OFFLOAD_SCTP_CKSUM |		 \
 		DEV_TX_OFFLOAD_UDP_CKSUM |		 \
 		DEV_TX_OFFLOAD_TCP_TSO |		 \

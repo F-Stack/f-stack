@@ -9,13 +9,11 @@
 extern "C" {
 #endif
 
-#include "channel_commands.h"
-
-struct channel_packet *get_policy(void);
+struct rte_power_channel_packet *get_policy(void);
 
 int set_policy_mac(int port, int idx);
 
-int set_policy_defaults(struct channel_packet *pkt);
+int set_policy_defaults(struct rte_power_channel_packet *pkt);
 
 void run_cli(__rte_unused void *arg);
 

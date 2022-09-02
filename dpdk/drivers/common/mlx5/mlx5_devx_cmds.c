@@ -53,8 +53,8 @@ mlx5_devx_cmd_register_read(void *ctx, uint16_t reg_id, uint32_t arg,
 	MLX5_SET(access_register_in, in, register_id, reg_id);
 	MLX5_SET(access_register_in, in, argument, arg);
 	rc = mlx5_glue->devx_general_cmd(ctx, in, sizeof(in), out,
-					 MLX5_ST_SZ_DW(access_register_out) *
-					 sizeof(uint32_t) + dw_cnt);
+					 MLX5_ST_SZ_BYTES(access_register_out) +
+					 sizeof(uint32_t) * dw_cnt);
 	if (rc)
 		goto error;
 	status = MLX5_GET(access_register_out, out, status);
@@ -518,10 +518,9 @@ mlx5_devx_cmd_query_parse_samples(struct mlx5_devx_obj *flex_obj,
 	return ret;
 }
 
-
 struct mlx5_devx_obj *
 mlx5_devx_cmd_create_flex_parser(void *ctx,
-			      struct mlx5_devx_graph_node_attr *data)
+				 struct mlx5_devx_graph_node_attr *data)
 {
 	uint32_t in[MLX5_ST_SZ_DW(create_flex_parser_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(general_obj_out_cmd_hdr)] = {0};
@@ -545,12 +544,18 @@ mlx5_devx_cmd_create_flex_parser(void *ctx,
 		 MLX5_GENERAL_OBJ_TYPE_FLEX_PARSE_GRAPH);
 	MLX5_SET(parse_graph_flex, flex, header_length_mode,
 		 data->header_length_mode);
+	MLX5_SET64(parse_graph_flex, flex, modify_field_select,
+		   data->modify_field_select);
 	MLX5_SET(parse_graph_flex, flex, header_length_base_value,
 		 data->header_length_base_value);
 	MLX5_SET(parse_graph_flex, flex, header_length_field_offset,
 		 data->header_length_field_offset);
 	MLX5_SET(parse_graph_flex, flex, header_length_field_shift,
 		 data->header_length_field_shift);
+	MLX5_SET(parse_graph_flex, flex, next_header_field_offset,
+		 data->next_header_field_offset);
+	MLX5_SET(parse_graph_flex, flex, next_header_field_size,
+		 data->next_header_field_size);
 	MLX5_SET(parse_graph_flex, flex, header_length_field_mask,
 		 data->header_length_field_mask);
 	for (i = 0; i < MLX5_GRAPH_NODE_SAMPLE_NUM; i++) {
@@ -648,6 +653,7 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 	uint32_t out[MLX5_ST_SZ_DW(query_hca_cap_out)] = {0};
 	void *hcattr;
 	int status, syndrome, rc, i;
+	bool hca_cap_2_sup;
 
 	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
 	MLX5_SET(query_hca_cap_in, in, op_mod,
@@ -667,6 +673,7 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 		return -1;
 	}
 	hcattr = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
+	hca_cap_2_sup = MLX5_GET(cmd_hca_cap, hcattr, hca_cap_2);
 	attr->flow_counter_bulk_alloc_bitmap =
 			MLX5_GET(cmd_hca_cap, hcattr, flow_counter_bulk_alloc);
 	attr->flow_counters_dump = MLX5_GET(cmd_hca_cap, hcattr,
@@ -714,12 +721,46 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 				      device_frequency_khz);
 	attr->scatter_fcs_w_decap_disable =
 		MLX5_GET(cmd_hca_cap, hcattr, scatter_fcs_w_decap_disable);
+	attr->roce = MLX5_GET(cmd_hca_cap, hcattr, roce);
+	attr->rq_ts_format = MLX5_GET(cmd_hca_cap, hcattr, rq_ts_format);
+	attr->sq_ts_format = MLX5_GET(cmd_hca_cap, hcattr, sq_ts_format);
 	attr->regex = MLX5_GET(cmd_hca_cap, hcattr, regexp);
 	attr->regexp_num_of_engines = MLX5_GET(cmd_hca_cap, hcattr,
 					       regexp_num_of_engines);
 	attr->flow_hit_aso = !!(MLX5_GET64(cmd_hca_cap, hcattr,
 					   general_obj_types) &
 				MLX5_GENERAL_OBJ_TYPES_CAP_FLOW_HIT_ASO);
+	attr->cqe_compression = MLX5_GET(cmd_hca_cap, hcattr, cqe_compression);
+	attr->mini_cqe_resp_flow_tag = MLX5_GET(cmd_hca_cap, hcattr,
+						mini_cqe_resp_flow_tag);
+	attr->mini_cqe_resp_l3_l4_tag = MLX5_GET(cmd_hca_cap, hcattr,
+						 mini_cqe_resp_l3_l4_tag);
+	if (hca_cap_2_sup) {
+		memset(in, 0, sizeof(in));
+		memset(out, 0, sizeof(out));
+		MLX5_SET(query_hca_cap_in, in, opcode,
+			 MLX5_CMD_OP_QUERY_HCA_CAP);
+		MLX5_SET(query_hca_cap_in, in, op_mod,
+			 MLX5_GET_HCA_CAP_OP_MOD_GENERAL_DEVICE_2 |
+			 MLX5_HCA_CAP_OPMOD_GET_CUR);
+		rc = mlx5_glue->devx_general_cmd(ctx, in, sizeof(in),
+						 out, sizeof(out));
+		if (rc)
+			goto error;
+		status = MLX5_GET(query_hca_cap_out, out, status);
+		syndrome = MLX5_GET(query_hca_cap_out, out, syndrome);
+		if (status) {
+			DRV_LOG(DEBUG,
+				"Failed to query DevX HCA capabilities 2,"
+				" status %x, syndrome = %x", status, syndrome);
+			return -1;
+		}
+		hcattr = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
+		attr->log_min_stride_wqe_sz = MLX5_GET(cmd_hca_cap_2, hcattr,
+						       log_min_stride_wqe_sz);
+	}
+	if (attr->log_min_stride_wqe_sz == 0)
+		attr->log_min_stride_wqe_sz = MLX5_MPRQ_LOG_MIN_STRIDE_WQE_SIZE;
 	if (attr->qos.sup) {
 		MLX5_SET(query_hca_cap_in, in, op_mod,
 			 MLX5_GET_HCA_CAP_OP_MOD_QOS_CAP |
@@ -834,9 +875,32 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 	attr->tunnel_stateless_gtp = MLX5_GET
 					(per_protocol_networking_offload_caps,
 					 hcattr, tunnel_stateless_gtp);
-	if (attr->wqe_inline_mode != MLX5_CAP_INLINE_MODE_VPORT_CONTEXT)
-		return 0;
-	if (attr->eth_virt) {
+	/* Query HCA attribute for ROCE. */
+	if (attr->roce) {
+		memset(in, 0, sizeof(in));
+		memset(out, 0, sizeof(out));
+		MLX5_SET(query_hca_cap_in, in, opcode,
+			 MLX5_CMD_OP_QUERY_HCA_CAP);
+		MLX5_SET(query_hca_cap_in, in, op_mod,
+			 MLX5_GET_HCA_CAP_OP_MOD_ROCE |
+			 MLX5_HCA_CAP_OPMOD_GET_CUR);
+		rc = mlx5_glue->devx_general_cmd(ctx, in, sizeof(in),
+						 out, sizeof(out));
+		if (rc)
+			goto error;
+		status = MLX5_GET(query_hca_cap_out, out, status);
+		syndrome = MLX5_GET(query_hca_cap_out, out, syndrome);
+		if (status) {
+			DRV_LOG(DEBUG,
+				"Failed to query devx HCA ROCE capabilities, "
+				"status %x, syndrome = %x", status, syndrome);
+			return -1;
+		}
+		hcattr = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
+		attr->qp_ts_format = MLX5_GET(roce_caps, hcattr, qp_ts_format);
+	}
+	if (attr->eth_virt &&
+	    attr->wqe_inline_mode == MLX5_CAP_INLINE_MODE_VPORT_CONTEXT) {
 		rc = mlx5_devx_cmd_query_nic_vport_context(ctx, 0, attr);
 		if (rc) {
 			attr->eth_virt = 0;
@@ -977,6 +1041,7 @@ mlx5_devx_cmd_create_rq(void *ctx,
 	MLX5_SET(rqc, rq_ctx, cqn, rq_attr->cqn);
 	MLX5_SET(rqc, rq_ctx, counter_set_id, rq_attr->counter_set_id);
 	MLX5_SET(rqc, rq_ctx, rmpn, rq_attr->rmpn);
+	MLX5_SET(sqc, rq_ctx, ts_format, rq_attr->ts_format);
 	wq_ctx = MLX5_ADDR_OF(rqc, rq_ctx, wq);
 	wq_attr = &rq_attr->wq_attr;
 	devx_cmd_fill_wq_data(wq_ctx, wq_attr);
@@ -1349,6 +1414,7 @@ mlx5_devx_cmd_create_sq(void *ctx,
 		 sq_attr->packet_pacing_rate_limit_index);
 	MLX5_SET(sqc, sq_ctx, tis_lst_sz, sq_attr->tis_lst_sz);
 	MLX5_SET(sqc, sq_ctx, tis_num_0, sq_attr->tis_num);
+	MLX5_SET(sqc, sq_ctx, ts_format, sq_attr->ts_format);
 	wq_ctx = MLX5_ADDR_OF(sqc, sq_ctx, wq);
 	wq_attr = &sq_attr->wq_attr;
 	devx_cmd_fill_wq_data(wq_ctx, wq_attr);
@@ -1497,7 +1563,7 @@ mlx5_devx_cmd_create_td(void *ctx)
  *   Pointer to file stream.
  *
  * @return
- *   0 on success, a nagative value otherwise.
+ *   0 on success, a negative value otherwise.
  */
 int
 mlx5_devx_cmd_flow_dump(void *fdb_domain __rte_unused,
@@ -1558,7 +1624,8 @@ mlx5_devx_cmd_create_cq(void *ctx, struct mlx5_devx_cq_attr *attr)
 	} else {
 		MLX5_SET64(cqc, cqctx, dbr_addr, attr->db_addr);
 	}
-	MLX5_SET(cqc, cqctx, cqe_sz, attr->cqe_size);
+	MLX5_SET(cqc, cqctx, cqe_sz, (RTE_CACHE_LINE_SIZE == 128) ?
+				     MLX5_CQE_SIZE_128B : MLX5_CQE_SIZE_64B);
 	MLX5_SET(cqc, cqctx, cc, attr->use_first_only);
 	MLX5_SET(cqc, cqctx, oi, attr->overrun_ignore);
 	MLX5_SET(cqc, cqctx, log_cq_size, attr->log_cq_size);
@@ -1571,7 +1638,6 @@ mlx5_devx_cmd_create_cq(void *ctx, struct mlx5_devx_cq_attr *attr)
 		 attr->mini_cqe_res_format);
 	MLX5_SET(cqc, cqctx, mini_cqe_res_format_ext,
 		 attr->mini_cqe_res_format_ext);
-	MLX5_SET(cqc, cqctx, cqe_sz, attr->cqe_size);
 	if (attr->q_umem_valid) {
 		MLX5_SET(create_cq_in, in, cq_umem_valid, attr->q_umem_valid);
 		MLX5_SET(create_cq_in, in, cq_umem_id, attr->q_umem_id);
@@ -1795,6 +1861,7 @@ mlx5_devx_cmd_create_qp(void *ctx,
 	MLX5_SET(create_qp_in, in, opcode, MLX5_CMD_OP_CREATE_QP);
 	MLX5_SET(qpc, qpc, st, MLX5_QP_ST_RC);
 	MLX5_SET(qpc, qpc, pd, attr->pd);
+	MLX5_SET(qpc, qpc, ts_format, attr->ts_format);
 	if (attr->uar_index) {
 		MLX5_SET(qpc, qpc, pm_state, MLX5_QP_PM_MIGRATED);
 		MLX5_SET(qpc, qpc, uar_page, attr->uar_index);
@@ -1908,7 +1975,7 @@ mlx5_devx_cmd_modify_qp_state(struct mlx5_devx_obj *qp, uint32_t qp_st_mod_op,
 	case MLX5_CMD_OP_RTR2RTS_QP:
 		qpc = MLX5_ADDR_OF(rtr2rts_qp_in, &in, qpc);
 		MLX5_SET(rtr2rts_qp_in, &in, qpn, qp->id);
-		MLX5_SET(qpc, qpc, primary_address_path.ack_timeout, 14);
+		MLX5_SET(qpc, qpc, primary_address_path.ack_timeout, 16);
 		MLX5_SET(qpc, qpc, log_ack_req_freq, 0);
 		MLX5_SET(qpc, qpc, retry_count, 7);
 		MLX5_SET(qpc, qpc, rnr_retry, 7);
@@ -2043,4 +2110,105 @@ mlx5_devx_cmd_create_flow_hit_aso_obj(void *ctx, uint32_t pd)
 	}
 	flow_hit_aso_obj->id = MLX5_GET(general_obj_out_cmd_hdr, out, obj_id);
 	return flow_hit_aso_obj;
+}
+
+int
+mlx5_devx_cmd_wq_query(void *wq, uint32_t *counter_set_id)
+{
+#ifdef HAVE_IBV_FLOW_DV_SUPPORT
+	uint32_t in[MLX5_ST_SZ_DW(query_rq_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(query_rq_out)] = {0};
+	int rc;
+	void *rq_ctx;
+
+	MLX5_SET(query_rq_in, in, opcode, MLX5_CMD_OP_QUERY_RQ);
+	MLX5_SET(query_rq_in, in, rqn, ((struct ibv_wq *)wq)->wq_num);
+	rc = mlx5_glue->devx_wq_query(wq, in, sizeof(in), out, sizeof(out));
+	if (rc) {
+		rte_errno = errno;
+		DRV_LOG(ERR, "Failed to query WQ counter set ID using DevX - "
+			"rc = %d, errno = %d.", rc, errno);
+		return -rc;
+	};
+	rq_ctx = MLX5_ADDR_OF(query_rq_out, out, rq_context);
+	*counter_set_id = MLX5_GET(rqc, rq_ctx, counter_set_id);
+	return 0;
+#else
+	(void)wq;
+	(void)counter_set_id;
+	return -ENOTSUP;
+#endif
+}
+
+/*
+ * Allocate queue counters via devx interface.
+ *
+ * @param[in] ctx
+ *   Context returned from mlx5 open_device() glue function.
+ *
+ * @return
+ *   Pointer to counter object on success, a NULL value otherwise and
+ *   rte_errno is set.
+ */
+struct mlx5_devx_obj *
+mlx5_devx_cmd_queue_counter_alloc(void *ctx)
+{
+	struct mlx5_devx_obj *dcs = mlx5_malloc(MLX5_MEM_ZERO, sizeof(*dcs), 0,
+						SOCKET_ID_ANY);
+	uint32_t in[MLX5_ST_SZ_DW(alloc_q_counter_in)]   = {0};
+	uint32_t out[MLX5_ST_SZ_DW(alloc_q_counter_out)] = {0};
+
+	if (!dcs) {
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+	MLX5_SET(alloc_q_counter_in, in, opcode, MLX5_CMD_OP_ALLOC_Q_COUNTER);
+	dcs->obj = mlx5_glue->devx_obj_create(ctx, in, sizeof(in), out,
+					      sizeof(out));
+	if (!dcs->obj) {
+		DRV_LOG(DEBUG, "Can't allocate q counter set by DevX - error "
+			"%d.", errno);
+		rte_errno = errno;
+		mlx5_free(dcs);
+		return NULL;
+	}
+	dcs->id = MLX5_GET(alloc_q_counter_out, out, counter_set_id);
+	return dcs;
+}
+
+/**
+ * Query queue counters values.
+ *
+ * @param[in] dcs
+ *   devx object of the queue counter set.
+ * @param[in] clear
+ *   Whether hardware should clear the counters after the query or not.
+ *  @param[out] out_of_buffers
+ *   Number of dropped occurred due to lack of WQE for the associated QPs/RQs.
+ *
+ * @return
+ *   0 on success, a negative value otherwise.
+ */
+int
+mlx5_devx_cmd_queue_counter_query(struct mlx5_devx_obj *dcs, int clear,
+				  uint32_t *out_of_buffers)
+{
+	uint32_t out[MLX5_ST_SZ_BYTES(query_q_counter_out)] = {0};
+	uint32_t in[MLX5_ST_SZ_DW(query_q_counter_in)] = {0};
+	int rc;
+
+	MLX5_SET(query_q_counter_in, in, opcode,
+		 MLX5_CMD_OP_QUERY_Q_COUNTER);
+	MLX5_SET(query_q_counter_in, in, op_mod, 0);
+	MLX5_SET(query_q_counter_in, in, counter_set_id, dcs->id);
+	MLX5_SET(query_q_counter_in, in, clear, !!clear);
+	rc = mlx5_glue->devx_obj_query(dcs->obj, in, sizeof(in), out,
+				       sizeof(out));
+	if (rc) {
+		DRV_LOG(ERR, "Failed to query devx q counter set - rc %d", rc);
+		rte_errno = rc;
+		return -rc;
+	}
+	*out_of_buffers = MLX5_GET(query_q_counter_out, out, out_of_buffer);
+	return 0;
 }

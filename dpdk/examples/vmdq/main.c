@@ -61,7 +61,7 @@ static uint32_t num_queues = 8;
 static uint32_t num_pools = 8;
 static uint8_t rss_enable;
 
-/* empty vmdq configuration structure. Filled in programatically */
+/* empty vmdq configuration structure. Filled in programmatically */
 static const struct rte_eth_conf vmdq_conf_default = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_VMDQ_ONLY,
@@ -658,6 +658,9 @@ main(int argc, char *argv[])
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

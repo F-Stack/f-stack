@@ -5,9 +5,14 @@
 #ifndef _RTE_VDPA_H_DEV_
 #define _RTE_VDPA_H_DEV_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdbool.h>
 
 #include "rte_vhost.h"
+#include "rte_vdpa.h"
 
 #define RTE_VHOST_QUEUE_ALL UINT16_MAX
 
@@ -133,5 +138,9 @@ rte_vhost_host_notifier_ctrl(int vid, uint16_t qid, bool enable);
  */
 int
 rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_VDPA_DEV_H_ */

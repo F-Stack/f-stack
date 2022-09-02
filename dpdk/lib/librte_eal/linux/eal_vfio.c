@@ -70,6 +70,7 @@ static const struct vfio_iommu_type iommu_types[] = {
 	{
 		.type_id = RTE_VFIO_TYPE1,
 		.name = "Type 1",
+		.partial_unmap = false,
 		.dma_map_func = &vfio_type1_dma_map,
 		.dma_user_map_func = &vfio_type1_dma_mem_map
 	},
@@ -77,6 +78,7 @@ static const struct vfio_iommu_type iommu_types[] = {
 	{
 		.type_id = RTE_VFIO_SPAPR,
 		.name = "sPAPR",
+		.partial_unmap = true,
 		.dma_map_func = &vfio_spapr_dma_map,
 		.dma_user_map_func = &vfio_spapr_dma_mem_map
 	},
@@ -84,6 +86,7 @@ static const struct vfio_iommu_type iommu_types[] = {
 	{
 		.type_id = RTE_VFIO_NOIOMMU,
 		.name = "No-IOMMU",
+		.partial_unmap = true,
 		.dma_map_func = &vfio_noiommu_dma_map,
 		.dma_user_map_func = &vfio_noiommu_dma_mem_map
 	},
@@ -168,6 +171,10 @@ adjust_map(struct user_mem_map *src, struct user_mem_map *end,
 static int
 merge_map(struct user_mem_map *left, struct user_mem_map *right)
 {
+	/* merge the same maps into one */
+	if (memcmp(left, right, sizeof(struct user_mem_map)) == 0)
+		goto out;
+
 	if (left->addr + left->len != right->addr)
 		return 0;
 	if (left->iova + left->len != right->iova)
@@ -175,6 +182,7 @@ merge_map(struct user_mem_map *left, struct user_mem_map *right)
 
 	left->len += right->len;
 
+out:
 	memset(right, 0, sizeof(*right));
 
 	return 1;
@@ -517,85 +525,49 @@ static void
 vfio_mem_event_callback(enum rte_mem_event type, const void *addr, size_t len,
 		void *arg __rte_unused)
 {
-	rte_iova_t iova_start, iova_expected;
 	struct rte_memseg_list *msl;
 	struct rte_memseg *ms;
 	size_t cur_len = 0;
-	uint64_t va_start;
 
 	msl = rte_mem_virt2memseg_list(addr);
 
 	/* for IOVA as VA mode, no need to care for IOVA addresses */
 	if (rte_eal_iova_mode() == RTE_IOVA_VA && msl->external == 0) {
 		uint64_t vfio_va = (uint64_t)(uintptr_t)addr;
-		if (type == RTE_MEM_EVENT_ALLOC)
-			vfio_dma_mem_map(default_vfio_cfg, vfio_va, vfio_va,
-					len, 1);
-		else
-			vfio_dma_mem_map(default_vfio_cfg, vfio_va, vfio_va,
-					len, 0);
+		uint64_t page_sz = msl->page_sz;
+
+		/* Maintain granularity of DMA map/unmap to memseg size */
+		for (; cur_len < len; cur_len += page_sz) {
+			if (type == RTE_MEM_EVENT_ALLOC)
+				vfio_dma_mem_map(default_vfio_cfg, vfio_va,
+						 vfio_va, page_sz, 1);
+			else
+				vfio_dma_mem_map(default_vfio_cfg, vfio_va,
+						 vfio_va, page_sz, 0);
+			vfio_va += page_sz;
+		}
+
 		return;
 	}
 
 	/* memsegs are contiguous in memory */
 	ms = rte_mem_virt2memseg(addr, msl);
-
-	/*
-	 * This memory is not guaranteed to be contiguous, but it still could
-	 * be, or it could have some small contiguous chunks. Since the number
-	 * of VFIO mappings is limited, and VFIO appears to not concatenate
-	 * adjacent mappings, we have to do this ourselves.
-	 *
-	 * So, find contiguous chunks, then map them.
-	 */
-	va_start = ms->addr_64;
-	iova_start = iova_expected = ms->iova;
 	while (cur_len < len) {
-		bool new_contig_area = ms->iova != iova_expected;
-		bool last_seg = (len - cur_len) == ms->len;
-		bool skip_last = false;
-
-		/* only do mappings when current contiguous area ends */
-		if (new_contig_area) {
-			if (type == RTE_MEM_EVENT_ALLOC)
-				vfio_dma_mem_map(default_vfio_cfg, va_start,
-						iova_start,
-						iova_expected - iova_start, 1);
-			else
-				vfio_dma_mem_map(default_vfio_cfg, va_start,
-						iova_start,
-						iova_expected - iova_start, 0);
-			va_start = ms->addr_64;
-			iova_start = ms->iova;
-		}
 		/* some memory segments may have invalid IOVA */
 		if (ms->iova == RTE_BAD_IOVA) {
 			RTE_LOG(DEBUG, EAL, "Memory segment at %p has bad IOVA, skipping\n",
 					ms->addr);
-			skip_last = true;
+			goto next;
 		}
-		iova_expected = ms->iova + ms->len;
+		if (type == RTE_MEM_EVENT_ALLOC)
+			vfio_dma_mem_map(default_vfio_cfg, ms->addr_64,
+					ms->iova, ms->len, 1);
+		else
+			vfio_dma_mem_map(default_vfio_cfg, ms->addr_64,
+					ms->iova, ms->len, 0);
+next:
 		cur_len += ms->len;
 		++ms;
-
-		/*
-		 * don't count previous segment, and don't attempt to
-		 * dereference a potentially invalid pointer.
-		 */
-		if (skip_last && !last_seg) {
-			iova_expected = iova_start = ms->iova;
-			va_start = ms->addr_64;
-		} else if (!skip_last && last_seg) {
-			/* this is the last segment and we're not skipping */
-			if (type == RTE_MEM_EVENT_ALLOC)
-				vfio_dma_mem_map(default_vfio_cfg, va_start,
-						iova_start,
-						iova_expected - iova_start, 1);
-			else
-				vfio_dma_mem_map(default_vfio_cfg, va_start,
-						iova_start,
-						iova_expected - iova_start, 0);
-		}
 	}
 }
 
@@ -1391,6 +1363,12 @@ vfio_type1_dma_mem_map(int vfio_container_fd, uint64_t vaddr, uint64_t iova,
 			RTE_LOG(ERR, EAL, "  cannot clear DMA remapping, error %i (%s)\n",
 					errno, strerror(errno));
 			return -1;
+		} else if (dma_unmap.size != len) {
+			RTE_LOG(ERR, EAL, "  unexpected size %"PRIu64" of DMA "
+				"remapping cleared instead of %"PRIu64"\n",
+				(uint64_t)dma_unmap.size, len);
+			rte_errno = EIO;
+			return -1;
 		}
 	}
 
@@ -1866,6 +1844,12 @@ container_dma_unmap(struct vfio_config *vfio_cfg, uint64_t vaddr, uint64_t iova,
 		/* we're partially unmapping a previously mapped region, so we
 		 * need to split entry into two.
 		 */
+		if (!vfio_cfg->vfio_iommu_type->partial_unmap) {
+			RTE_LOG(DEBUG, EAL, "DMA partial unmap unsupported\n");
+			rte_errno = ENOTSUP;
+			ret = -1;
+			goto out;
+		}
 		if (user_mem_maps->n_maps == VFIO_MAX_USER_MEM_MAPS) {
 			RTE_LOG(ERR, EAL, "Not enough space to store partial mapping\n");
 			rte_errno = ENOMEM;

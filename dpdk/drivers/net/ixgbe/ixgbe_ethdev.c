@@ -128,6 +128,13 @@
 #define IXGBE_EXVET_VET_EXT_SHIFT              16
 #define IXGBE_DMATXCTL_VT_MASK                 0xFFFF0000
 
+#define IXGBE_DEVARG_FIBER_SDP3_NOT_TX_DISABLE	"fiber_sdp3_no_tx_disable"
+
+static const char * const ixgbe_valid_arguments[] = {
+	IXGBE_DEVARG_FIBER_SDP3_NOT_TX_DISABLE,
+	NULL
+};
+
 #define IXGBEVF_DEVARG_PFLINK_FULLCHK		"pflink_fullchk"
 
 static const char * const ixgbevf_valid_arguments[] = {
@@ -355,6 +362,8 @@ static int ixgbe_dev_udp_tunnel_port_del(struct rte_eth_dev *dev,
 static int ixgbe_filter_restore(struct rte_eth_dev *dev);
 static void ixgbe_l2_tunnel_conf(struct rte_eth_dev *dev);
 static int ixgbe_wait_for_link_up(struct ixgbe_hw *hw);
+static int devarg_handle_int(__rte_unused const char *key, const char *value,
+			     void *extra_args);
 
 /*
  * Define VF Stats MACRO for Non "cleared on read" register
@@ -788,6 +797,20 @@ ixgbe_is_sfp(struct ixgbe_hw *hw)
 	case ixgbe_phy_sfp_passive_unknown:
 		return 1;
 	default:
+		/* x550em devices may be SFP, check media type */
+		switch (hw->mac.type) {
+		case ixgbe_mac_X550EM_x:
+		case ixgbe_mac_X550EM_a:
+			switch (ixgbe_get_media_type(hw)) {
+			case ixgbe_media_type_fiber:
+			case ixgbe_media_type_fiber_qsfp:
+				return 1;
+			default:
+				break;
+			}
+		default:
+			break;
+		}
 		return 0;
 	}
 }
@@ -1025,6 +1048,29 @@ ixgbe_swfw_lock_reset(struct ixgbe_hw *hw)
 	ixgbe_release_swfw_semaphore(hw, mask);
 }
 
+static void
+ixgbe_parse_devargs(struct ixgbe_adapter *adapter,
+		      struct rte_devargs *devargs)
+{
+	struct rte_kvargs *kvlist;
+	uint16_t sdp3_no_tx_disable;
+
+	if (devargs == NULL)
+		return;
+
+	kvlist = rte_kvargs_parse(devargs->args, ixgbe_valid_arguments);
+	if (kvlist == NULL)
+		return;
+
+	if (rte_kvargs_count(kvlist, IXGBE_DEVARG_FIBER_SDP3_NOT_TX_DISABLE) == 1 &&
+	    rte_kvargs_process(kvlist, IXGBE_DEVARG_FIBER_SDP3_NOT_TX_DISABLE,
+			       devarg_handle_int, &sdp3_no_tx_disable) == 0 &&
+	    sdp3_no_tx_disable == 1)
+		adapter->sdp3_no_tx_disable = 1;
+
+	rte_kvargs_free(kvlist);
+}
+
 /*
  * This function is based on code in ixgbe_attach() in base/ixgbe.c.
  * It returns 0 on success.
@@ -1089,6 +1135,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	}
 
 	rte_atomic32_clear(&ad->link_thread_running);
+	ixgbe_parse_devargs(eth_dev->data->dev_private,
+			    pci_dev->device.devargs);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
@@ -1218,6 +1266,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		PMD_INIT_LOG(ERR,
 			     "Failed to allocate %d bytes needed to store MAC addresses",
 			     RTE_ETHER_ADDR_LEN * IXGBE_VMDQ_NUM_UC_MAC);
+		rte_free(eth_dev->data->mac_addrs);
+		eth_dev->data->mac_addrs = NULL;
 		return -ENOMEM;
 	}
 
@@ -1229,13 +1279,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	/* initialize PF if max_vfs not zero */
 	ret = ixgbe_pf_host_init(eth_dev);
-	if (ret) {
-		rte_free(eth_dev->data->mac_addrs);
-		eth_dev->data->mac_addrs = NULL;
-		rte_free(eth_dev->data->hash_mac_addrs);
-		eth_dev->data->hash_mac_addrs = NULL;
-		return ret;
-	}
+	if (ret)
+		goto err_pf_host_init;
 
 	ctrl_ext = IXGBE_READ_REG(hw, IXGBE_CTRL_EXT);
 	/* let hardware know driver is loaded */
@@ -1274,10 +1319,14 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	TAILQ_INIT(&filter_info->fivetuple_list);
 
 	/* initialize flow director filter list & hash */
-	ixgbe_fdir_filter_init(eth_dev);
+	ret = ixgbe_fdir_filter_init(eth_dev);
+	if (ret)
+		goto err_fdir_filter_init;
 
 	/* initialize l2 tunnel filter list & hash */
-	ixgbe_l2_tn_filter_init(eth_dev);
+	ret = ixgbe_l2_tn_filter_init(eth_dev);
+	if (ret)
+		goto err_l2_tn_filter_init;
 
 	/* initialize flow filter lists */
 	ixgbe_filterlist_init();
@@ -1289,6 +1338,21 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	ixgbe_tm_conf_init(eth_dev);
 
 	return 0;
+
+err_l2_tn_filter_init:
+	ixgbe_fdir_filter_uninit(eth_dev);
+err_fdir_filter_init:
+	ixgbe_disable_intr(hw);
+	rte_intr_disable(intr_handle);
+	rte_intr_callback_unregister(intr_handle,
+		ixgbe_dev_interrupt_handler, eth_dev);
+	ixgbe_pf_host_uninit(eth_dev);
+err_pf_host_init:
+	rte_free(eth_dev->data->mac_addrs);
+	eth_dev->data->mac_addrs = NULL;
+	rte_free(eth_dev->data->hash_mac_addrs);
+	eth_dev->data->hash_mac_addrs = NULL;
+	return ret;
 }
 
 static int
@@ -1393,6 +1457,7 @@ static int ixgbe_fdir_filter_init(struct rte_eth_dev *eth_dev)
 	if (!fdir_info->hash_map) {
 		PMD_INIT_LOG(ERR,
 			     "Failed to allocate memory for fdir hash map!");
+		rte_hash_free(fdir_info->hash_handle);
 		return -ENOMEM;
 	}
 	fdir_info->mask_added = FALSE;
@@ -1429,6 +1494,7 @@ static int ixgbe_l2_tn_filter_init(struct rte_eth_dev *eth_dev)
 	if (!l2_tn_info->hash_map) {
 		PMD_INIT_LOG(ERR,
 			"Failed to allocate memory for L2 TN hash map!");
+		rte_hash_free(l2_tn_info->hash_handle);
 		return -ENOMEM;
 	}
 	l2_tn_info->e_tag_en = FALSE;
@@ -1670,6 +1736,8 @@ eth_ixgbevf_dev_init(struct rte_eth_dev *eth_dev)
 
 	default:
 		PMD_INIT_LOG(ERR, "VF Initialization Failure: %d", diag);
+		rte_free(eth_dev->data->mac_addrs);
+		eth_dev->data->mac_addrs = NULL;
 		return -EIO;
 	}
 
@@ -2377,7 +2445,7 @@ ixgbe_dev_configure(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
 		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
-	/* multipe queue mode checking */
+	/* multiple queue mode checking */
 	ret  = ixgbe_check_mq_mode(dev);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "ixgbe_check_mq_mode fails with %d.",
@@ -2607,7 +2675,7 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 		}
 	}
 
-	/* confiugre msix for sleep until rx interrupt */
+	/* configure MSI-X for sleep until Rx interrupt */
 	ixgbe_configure_msix(dev);
 
 	/* initialize transmission unit */
@@ -2914,7 +2982,7 @@ ixgbe_dev_set_link_up(struct rte_eth_dev *dev)
 	if (hw->mac.type == ixgbe_mac_82599EB) {
 #ifdef RTE_LIBRTE_IXGBE_BYPASS
 		if (hw->device_id == IXGBE_DEV_ID_82599_BYPASS) {
-			/* Not suported in bypass mode */
+			/* Not supported in bypass mode */
 			PMD_INIT_LOG(ERR, "Set link up is not supported "
 				     "by device id 0x%x", hw->device_id);
 			return -ENOTSUP;
@@ -2945,7 +3013,7 @@ ixgbe_dev_set_link_down(struct rte_eth_dev *dev)
 	if (hw->mac.type == ixgbe_mac_82599EB) {
 #ifdef RTE_LIBRTE_IXGBE_BYPASS
 		if (hw->device_id == IXGBE_DEV_ID_82599_BYPASS) {
-			/* Not suported in bypass mode */
+			/* Not supported in bypass mode */
 			PMD_INIT_LOG(ERR, "Set link down is not supported "
 				     "by device id 0x%x", hw->device_id);
 			return -ENOTSUP;
@@ -3035,6 +3103,7 @@ ixgbe_dev_close(struct rte_eth_dev *dev)
 
 #ifdef RTE_LIB_SECURITY
 	rte_free(dev->security_ctx);
+	dev->security_ctx = NULL;
 #endif
 
 	return ret;
@@ -3337,6 +3406,13 @@ ixgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			  hw_stats->rfc +
 			  hw_stats->fccrc +
 			  hw_stats->fclast;
+
+	/*
+	 * 82599 errata, UDP frames with a 0 checksum can be marked as checksum
+	 * errors.
+	 */
+	if (hw->mac.type != ixgbe_mac_82599EB)
+		stats->ierrors += hw_stats->xec;
 
 	/* Tx Errors */
 	stats->oerrors  = 0;
@@ -3784,6 +3860,7 @@ ixgbevf_dev_stats_reset(struct rte_eth_dev *dev)
 	hw_stats->vfgorc = 0;
 	hw_stats->vfgptc = 0;
 	hw_stats->vfgotc = 0;
+	hw_stats->vfmprc = 0;
 
 	return 0;
 }
@@ -3801,9 +3878,11 @@ ixgbe_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 
 	etrack_id = (eeprom_verh << 16) | eeprom_verl;
 	ret = snprintf(fw_version, fw_size, "0x%08x", etrack_id);
+	if (ret < 0)
+		return -EINVAL;
 
 	ret += 1; /* add the size of '\0' */
-	if (fw_size < (u32)ret)
+	if (fw_size < (size_t)ret)
 		return ret;
 	else
 		return 0;
@@ -4233,7 +4312,8 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 		return rte_eth_linkstatus_set(dev, &link);
 	}
 
-	if (ixgbe_get_media_type(hw) == ixgbe_media_type_fiber) {
+	if (ixgbe_get_media_type(hw) == ixgbe_media_type_fiber &&
+	    !ad->sdp3_no_tx_disable) {
 		esdp_reg = IXGBE_READ_REG(hw, IXGBE_ESDP);
 		if ((esdp_reg & IXGBE_ESDP_SDP3))
 			link_up = 0;
@@ -4600,7 +4680,7 @@ ixgbe_dev_interrupt_action(struct rte_eth_dev *dev)
  * @param handle
  *  Pointer to interrupt handle.
  * @param param
- *  The address of parameter (struct rte_eth_dev *) regsitered before.
+ *  The address of parameter (struct rte_eth_dev *) registered before.
  *
  * @return
  *  void
@@ -4656,7 +4736,7 @@ ixgbe_dev_interrupt_delayed_handler(void *param)
  * @param handle
  *  Pointer to interrupt handle.
  * @param param
- *  The address of parameter (struct rte_eth_dev *) regsitered before.
+ *  The address of parameter (struct rte_eth_dev *) registered before.
  *
  * @return
  *  void
@@ -5007,10 +5087,18 @@ ixgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
 	uint32_t reta, r;
 	uint16_t idx, shift;
 	struct ixgbe_adapter *adapter = dev->data->dev_private;
+	struct rte_eth_dev_data *dev_data = dev->data;
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t reta_reg;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (!dev_data->dev_started) {
+		PMD_DRV_LOG(ERR,
+			"port %d must be started before rss reta update",
+			 dev_data->port_id);
+		return -EIO;
+	}
 
 	if (!ixgbe_rss_update_sp(hw->mac.type)) {
 		PMD_DRV_LOG(ERR, "RSS reta update is not supported on this "
@@ -5173,7 +5261,7 @@ ixgbe_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	hlreg0 = IXGBE_READ_REG(hw, IXGBE_HLREG0);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > RTE_ETHER_MAX_LEN) {
+	if (frame_size > IXGBE_ETH_MAX_LEN) {
 		dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 		hlreg0 |= IXGBE_HLREG0_JUMBOEN;
@@ -5340,8 +5428,10 @@ ixgbevf_dev_start(struct rte_eth_dev *dev)
 		 * now only one vector is used for Rx queue
 		 */
 		intr_vector = 1;
-		if (rte_intr_efd_enable(intr_handle, intr_vector))
+		if (rte_intr_efd_enable(intr_handle, intr_vector)) {
+			ixgbe_dev_clear_queues(dev);
 			return -1;
+		}
 	}
 
 	if (rte_intr_dp_is_en(intr_handle) && !intr_handle->intr_vec) {
@@ -5351,6 +5441,7 @@ ixgbevf_dev_start(struct rte_eth_dev *dev)
 		if (intr_handle->intr_vec == NULL) {
 			PMD_INIT_LOG(ERR, "Failed to allocate %d rx_queues"
 				     " intr_vec", dev->data->nb_rx_queues);
+			ixgbe_dev_clear_queues(dev);
 			return -ENOMEM;
 		}
 	}
@@ -6106,7 +6197,7 @@ ixgbevf_configure_msix(struct rte_eth_dev *dev)
 	/* Configure all RX queues of VF */
 	for (q_idx = 0; q_idx < dev->data->nb_rx_queues; q_idx++) {
 		/* Force all queue use vector 0,
-		 * as IXGBE_VF_MAXMSIVECOTR = 1
+		 * as IXGBE_VF_MAXMSIVECTOR = 1
 		 */
 		ixgbevf_set_ivar_map(hw, 0, q_idx, vector_idx);
 		intr_handle->intr_vec[q_idx] = vector_idx;
@@ -6454,7 +6545,7 @@ ixgbe_inject_5tuple_filter(struct rte_eth_dev *dev,
  * @param
  * dev: Pointer to struct rte_eth_dev.
  * index: the index the filter allocates.
- * filter: ponter to the filter that will be added.
+ * filter: pointer to the filter that will be added.
  * rx_queue: the queue id the filter assigned to.
  *
  * @return
@@ -6555,7 +6646,8 @@ ixgbevf_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	 * prior to 3.11.33 which contains the following change:
 	 * "ixgbe: Enable jumbo frames support w/ SR-IOV"
 	 */
-	ixgbevf_rlpml_set_vf(hw, max_frame);
+	if (ixgbevf_rlpml_set_vf(hw, max_frame))
+		return -EINVAL;
 
 	/* update max frame size */
 	dev->data->dev_conf.rxmode.max_rx_pkt_len = max_frame;
@@ -7088,7 +7180,7 @@ ixgbe_timesync_disable(struct rte_eth_dev *dev)
 	/* Disable L2 filtering of IEEE1588/802.1AS Ethernet frame types. */
 	IXGBE_WRITE_REG(hw, IXGBE_ETQF(IXGBE_ETQF_FILTER_1588), 0);
 
-	/* Stop incrementating the System Time registers. */
+	/* Stop incrementing the System Time registers. */
 	IXGBE_WRITE_REG(hw, IXGBE_TIMINCA, 0);
 
 	return 0;
@@ -7330,9 +7422,6 @@ ixgbe_get_module_eeprom(struct rte_eth_dev *dev,
 	uint8_t databyte = 0xFF;
 	uint8_t *data = info->data;
 	uint32_t i = 0;
-
-	if (info->length == 0)
-		return -EINVAL;
 
 	for (i = info->offset; i < info->offset + info->length; i++) {
 		if (i < RTE_ETH_MODULE_SFF_8079_LEN)
@@ -8444,6 +8533,8 @@ ixgbe_dev_macsec_register_disable(struct rte_eth_dev *dev)
 RTE_PMD_REGISTER_PCI(net_ixgbe, rte_ixgbe_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_ixgbe, pci_id_ixgbe_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_ixgbe, "* igb_uio | uio_pci_generic | vfio-pci");
+RTE_PMD_REGISTER_PARAM_STRING(net_ixgbe,
+			      IXGBE_DEVARG_FIBER_SDP3_NOT_TX_DISABLE "=<0|1>");
 RTE_PMD_REGISTER_PCI(net_ixgbe_vf, rte_ixgbevf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_ixgbe_vf, pci_id_ixgbevf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_ixgbe_vf, "* igb_uio | vfio-pci");

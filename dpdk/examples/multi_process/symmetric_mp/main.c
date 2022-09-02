@@ -3,7 +3,7 @@
  */
 
 /*
- * Sample application demostrating how to do packet I/O in a multi-process
+ * Sample application demonstrating how to do packet I/O in a multi-process
  * environment. The same code can be run as a primary process and as a
  * secondary process, just with a different proc-id parameter in each case
  * (apart from the EAL flag to indicate a secondary process).
@@ -471,6 +471,9 @@ main(int argc, char **argv)
 	RTE_LOG(INFO, APP, "Finished Process Init.\n");
 
 	rte_eal_mp_remote_launch(lcore_main, NULL, CALL_MAIN);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

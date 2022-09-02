@@ -27,14 +27,9 @@
 #define ACC100VF_DRIVER_NAME           intel_acc100_vf
 
 /* ACC100 PCI vendor & device IDs */
-#define RTE_ACC100_VENDOR_ID           (0x8086)
-#define RTE_ACC100_PF_DEVICE_ID        (0x0d5c)
-#define RTE_ACC100_VF_DEVICE_ID        (0x0d5d)
-
-/* Define as 1 to use only a single FEC engine */
-#ifndef RTE_ACC100_SINGLE_FEC
-#define RTE_ACC100_SINGLE_FEC 0
-#endif
+#define ACC100_VENDOR_ID           (0x8086)
+#define ACC100_PF_DEVICE_ID        (0x0d5c)
+#define ACC100_VF_DEVICE_ID        (0x0d5d)
 
 /* Values used in filling in descriptors */
 #define ACC100_DMA_DESC_TYPE           2
@@ -113,6 +108,7 @@
 #define ACC100_SW_RING_MEM_ALLOC_ATTEMPTS 5
 #define ACC100_MAX_QUEUE_DEPTH            1024
 #define ACC100_DMA_MAX_NUM_POINTERS       14
+#define ACC100_DMA_MAX_NUM_POINTERS_IN    7
 #define ACC100_DMA_DESC_PADDING           8
 #define ACC100_FCW_PADDING                12
 #define ACC100_DESC_FCW_OFFSET            192
@@ -152,6 +148,12 @@
 #define ACC100_CFG_QMGR_HI_P    0x0F0F
 #define ACC100_CFG_PCI_AXI      0xC003
 #define ACC100_CFG_PCI_BRIDGE   0x40006033
+#define ACC100_QUAD_NUMS        4
+#define ACC100_LANES_PER_QUAD   4
+#define ACC100_PCIE_LANE_OFFSET 0x200
+#define ACC100_PCIE_QUAD_OFFSET 0x2000
+#define ACC100_PCS_EQ           0x6007
+#define ACC100_ADAPT            0x8400
 #define ACC100_ENGINE_OFFSET    0x1000
 #define ACC100_RESET_HI         0x20100
 #define ACC100_RESET_LO         0x20000
@@ -159,6 +161,15 @@
 #define ACC100_ENGINES_MAX      9
 #define ACC100_LONG_WAIT        1000
 #define ACC100_GPEX_AXIMAP_NUM  17
+#define ACC100_CLOCK_GATING_EN  0x30000
+#define ACC100_FABRIC_MODE      0xB
+/* DDR Size per VF - 512MB by default
+ * Can be increased up to 4 GB with single PF/VF
+ */
+#define ACC100_HARQ_DDR         (512 * 1)
+#define ACC100_PRQ_DDR_VER       0x10092020
+#define ACC100_MS_IN_US         (1000)
+#define ACC100_DDR_TRAINING_MAX (5000)
 
 /* ACC100 DMA Descriptor triplet */
 struct acc100_dma_triplet {

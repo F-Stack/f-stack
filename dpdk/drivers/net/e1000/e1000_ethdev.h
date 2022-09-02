@@ -97,12 +97,12 @@
  */
 #define E1000_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
 				VLAN_TAG_SIZE)
-
+#define E1000_ETH_MAX_LEN (RTE_ETHER_MTU + E1000_ETH_OVERHEAD)
 /*
  * Maximum number of Ring Descriptors.
  *
  * Since RDLEN/TDLEN should be multiple of 128 bytes, the number of ring
- * desscriptors should meet the following condition:
+ * descriptors should meet the following condition:
  * (num_ring_desc * sizeof(struct e1000_rx/tx_desc)) % 128 == 0
  */
 #define	E1000_MIN_RING_DESC	32
@@ -251,7 +251,7 @@ struct igb_rte_flow_rss_conf {
 };
 
 /*
- * Structure to store filters'info.
+ * Structure to store filters' info.
  */
 struct e1000_filter_info {
 	uint8_t ethertype_mask; /* Bit mask for every used ethertype filter */

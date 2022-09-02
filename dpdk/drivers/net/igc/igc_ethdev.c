@@ -341,6 +341,9 @@ eth_igc_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+
 	ret  = igc_check_mq_mode(dev);
 	if (ret != 0)
 		return ret;
@@ -986,15 +989,20 @@ eth_igc_start(struct rte_eth_dev *dev)
 		hw->mac.autoneg = 1;
 	} else {
 		int num_speeds = 0;
-		bool autoneg = (*speeds & ETH_LINK_SPEED_FIXED) == 0;
 
-		/* Reset */
+		if (*speeds & ETH_LINK_SPEED_FIXED) {
+			PMD_DRV_LOG(ERR,
+				    "Force speed mode currently not supported");
+			igc_dev_clear_queues(dev);
+			return -EINVAL;
+		}
+
 		hw->phy.autoneg_advertised = 0;
+		hw->mac.autoneg = 1;
 
 		if (*speeds & ~(ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
 				ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-				ETH_LINK_SPEED_1G | ETH_LINK_SPEED_2_5G |
-				ETH_LINK_SPEED_FIXED)) {
+				ETH_LINK_SPEED_1G | ETH_LINK_SPEED_2_5G)) {
 			num_speeds = -1;
 			goto error_invalid_config;
 		}
@@ -1022,19 +1030,8 @@ eth_igc_start(struct rte_eth_dev *dev)
 			hw->phy.autoneg_advertised |= ADVERTISE_2500_FULL;
 			num_speeds++;
 		}
-		if (num_speeds == 0 || (!autoneg && num_speeds > 1))
+		if (num_speeds == 0)
 			goto error_invalid_config;
-
-		/* Set/reset the mac.autoneg based on the link speed,
-		 * fixed or not
-		 */
-		if (!autoneg) {
-			hw->mac.autoneg = 0;
-			hw->mac.forced_speed_duplex =
-					hw->phy.autoneg_advertised;
-		} else {
-			hw->mac.autoneg = 1;
-		}
 	}
 
 	igc_setup_link(hw);
@@ -1240,8 +1237,15 @@ eth_igc_dev_init(struct rte_eth_dev *dev)
 	 * has already done this work. Only check we don't need a different
 	 * RX function.
 	 */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		dev->rx_pkt_burst = igc_recv_pkts;
+		if (dev->data->scattered_rx)
+			dev->rx_pkt_burst = igc_recv_scattered_pkts;
+
+		dev->tx_pkt_burst = igc_xmit_pkts;
+		dev->tx_pkt_prepare = eth_igc_prep_pkts;
 		return 0;
+	}
 
 	rte_eth_copy_pci_info(dev, pci_dev);
 	dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
@@ -1473,9 +1477,11 @@ eth_igc_fw_version_get(struct rte_eth_dev *dev, char *fw_version,
 				 fw.eep_build);
 		}
 	}
+	if (ret < 0)
+		return -EINVAL;
 
 	ret += 1; /* add the size of '\0' */
-	if (fw_size < (u32)ret)
+	if (fw_size < (size_t)ret)
 		return ret;
 	else
 		return 0;
@@ -1590,12 +1596,14 @@ eth_igc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 
 	/*
-	 * refuse mtu that requires the support of scattered packets when
-	 * this feature has not been enabled before.
+	 * If device is started, refuse mtu that requires the support of
+	 * scattered packets when this feature has not been enabled before.
 	 */
-	if (!dev->data->scattered_rx &&
-	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM)
+	if (dev->data->dev_started && !dev->data->scattered_rx &&
+	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR, "Stop port first.");
 		return -EINVAL;
+	}
 
 	rctl = IGC_READ_REG(hw, IGC_RCTL);
 
@@ -1899,8 +1907,7 @@ eth_igc_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 
 	/* Rx Errors */
 	rte_stats->imissed = stats->mpc;
-	rte_stats->ierrors = stats->crcerrs +
-			stats->rlec + stats->ruc + stats->roc +
+	rte_stats->ierrors = stats->crcerrs + stats->rlec +
 			stats->rxerrc + stats->algnerrc;
 
 	/* Tx Errors */

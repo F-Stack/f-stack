@@ -119,8 +119,8 @@ stats_mem_init(struct cluster *cluster,
 	cluster_node_size = RTE_ALIGN(cluster_node_size, RTE_CACHE_LINE_SIZE);
 
 	stats = realloc(NULL, sz);
-	memset(stats, 0, sz);
 	if (stats) {
+		memset(stats, 0, sz);
 		stats->fn = fn;
 		stats->cluster_node_size = cluster_node_size;
 		stats->max_nodes = 0;
@@ -165,6 +165,7 @@ stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
 	stats = realloc(stats, stats->sz + stats->cluster_node_size);
 	if (stats == NULL)
 		SET_ERR_JMP(ENOMEM, err, "Realloc failed");
+	*stats_in = NULL;
 
 	/* Clear the new struct cluster_node area */
 	cluster = RTE_PTR_ADD(stats, stats->sz),
@@ -174,7 +175,7 @@ stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
 	cluster->stat.hz = rte_get_timer_hz();
 	node = graph_node_id_to_ptr(graph, id);
 	if (node == NULL)
-		SET_ERR_JMP(ENOENT, err, "Failed to find node %s in graph %s",
+		SET_ERR_JMP(ENOENT, free, "Failed to find node %s in graph %s",
 			    graph_node->node->name, graph->name);
 	cluster->nodes[cluster->nb_nodes++] = node;
 
@@ -183,6 +184,8 @@ stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
 	*stats_in = stats;
 
 	return 0;
+free:
+	free(stats);
 err:
 	return -rte_errno;
 }

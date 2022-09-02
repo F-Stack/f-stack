@@ -1385,14 +1385,14 @@ static const struct rte_flow_item_meta rte_flow_item_meta_mask = {
  */
 struct rte_flow_item_gtp_psc {
 	uint8_t pdu_type; /**< PDU type. */
-	uint8_t qfi; /**< QoS flow identifier. */
+	uint8_t qfi; /**< PPP, RQI, QoS flow identifier. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_GTP_PSC. */
 #ifndef __cplusplus
 static const struct rte_flow_item_gtp_psc
 rte_flow_item_gtp_psc_mask = {
-	.qfi = 0x3f,
+	.qfi = 0xff,
 };
 #endif
 
@@ -2819,7 +2819,7 @@ rte_flow_dynf_metadata_set(struct rte_mbuf *m, uint32_t v)
 	*RTE_FLOW_DYNF_METADATA(m) = v;
 }
 
-/*
+/**
  * Definition of a single action.
  *
  * A list of actions is terminated by a END action.
@@ -3088,7 +3088,7 @@ enum rte_flow_conv_op {
  *   Perform verbose error reporting if not NULL. PMDs initialize this
  *   structure in case of error only.
  * @return
- *   0 on success, a nagative value otherwise.
+ *   0 on success, a negative value otherwise.
  */
 __rte_experimental
 int
@@ -3449,7 +3449,7 @@ rte_flow_conv(enum rte_flow_conv_op op,
  *
  * RTE_ETH_EVENT_FLOW_AGED event will be triggered when at least one new aged
  * out flow was detected after the last call to rte_flow_get_aged_flows.
- * This function can be called to get the aged flows usynchronously from the
+ * This function can be called to get the aged flows asynchronously from the
  * event callback or synchronously regardless the event.
  * This is not safe to call rte_flow_get_aged_flows function with other flow
  * functions from multiple threads simultaneously.

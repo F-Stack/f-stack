@@ -228,7 +228,7 @@ struct rte_sched_port {
 	int socket;
 
 	/* Timing */
-	uint64_t time_cpu_cycles;     /* Current CPU time measured in CPU cyles */
+	uint64_t time_cpu_cycles;     /* Current CPU time measured in CPU cycles */
 	uint64_t time_cpu_bytes;      /* Current CPU time measured in bytes */
 	uint64_t time;                /* Current NIC TX time measured in bytes */
 	struct rte_reciprocal inv_cycles_per_byte; /* CPU cycles per byte */
@@ -579,7 +579,7 @@ rte_sched_subport_config_qsize(struct rte_sched_subport *subport)
 
 	subport->qsize_add[0] = 0;
 
-	/* Strict prority traffic class */
+	/* Strict priority traffic class */
 	for (i = 1; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
 		subport->qsize_add[i] = subport->qsize_add[i-1] + subport->qsize[i-1];
 
@@ -961,9 +961,9 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 	/* Allocate memory to store the subport profile */
 	port->subport_profiles  = rte_zmalloc_socket("subport_profile", size2,
 					RTE_CACHE_LINE_SIZE, params->socket);
-	if (port == NULL) {
+	if (port->subport_profiles == NULL) {
 		RTE_LOG(ERR, SCHED, "%s: Memory allocation fails\n", __func__);
-
+		rte_free(port);
 		return NULL;
 	}
 
@@ -1090,6 +1090,7 @@ rte_sched_subport_config(struct rte_sched_port *port,
 	uint32_t n_subport_pipe_queues, i;
 	uint32_t size0, size1, bmp_mem_size;
 	int status;
+	int ret;
 
 	/* Check user parameters */
 	if (port == NULL) {
@@ -1101,17 +1102,16 @@ rte_sched_subport_config(struct rte_sched_port *port,
 	if (subport_id >= port->n_subports_per_port) {
 		RTE_LOG(ERR, SCHED,
 			"%s: Incorrect value for subport id\n", __func__);
-
-		rte_sched_free_memory(port, n_subports);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	if (subport_profile_id >= port->n_max_subport_profiles) {
 		RTE_LOG(ERR, SCHED, "%s: "
 			"Number of subport profile exceeds the max limit\n",
 			__func__);
-		rte_sched_free_memory(port, n_subports);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	/** Memory is allocated only on first invocation of the api for a
@@ -1127,9 +1127,8 @@ rte_sched_subport_config(struct rte_sched_port *port,
 			RTE_LOG(NOTICE, SCHED,
 				"%s: Port scheduler params check failed (%d)\n",
 				__func__, status);
-
-			rte_sched_free_memory(port, n_subports);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto out;
 		}
 
 		/* Determine the amount of memory to allocate */
@@ -1143,9 +1142,8 @@ rte_sched_subport_config(struct rte_sched_port *port,
 		if (s == NULL) {
 			RTE_LOG(ERR, SCHED,
 				"%s: Memory allocation fails\n", __func__);
-
-			rte_sched_free_memory(port, n_subports);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto out;
 		}
 
 		n_subports++;
@@ -1185,12 +1183,11 @@ rte_sched_subport_config(struct rte_sched_port *port,
 				    params->red_params[i][j].min_th,
 				    params->red_params[i][j].max_th,
 				    params->red_params[i][j].maxp_inv) != 0) {
-					rte_sched_free_memory(port, n_subports);
-
 					RTE_LOG(NOTICE, SCHED,
 					"%s: RED configuration init fails\n",
 					__func__);
-					return -EINVAL;
+					ret = -EINVAL;
+					goto out;
 				}
 			}
 		}
@@ -1238,9 +1235,8 @@ rte_sched_subport_config(struct rte_sched_port *port,
 		if (s->bmp == NULL) {
 			RTE_LOG(ERR, SCHED,
 				"%s: Subport bitmap init error\n", __func__);
-
-			rte_sched_free_memory(port, n_subports);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto out;
 		}
 
 		for (i = 0; i < RTE_SCHED_PORT_N_GRINDERS; i++)
@@ -1249,7 +1245,6 @@ rte_sched_subport_config(struct rte_sched_port *port,
 #ifdef RTE_SCHED_SUBPORT_TC_OV
 		/* TC oversubscription */
 		s->tc_ov_wm_min = port->mtu;
-		s->tc_ov_wm = s->tc_ov_wm_max;
 		s->tc_ov_period_id = 0;
 		s->tc_ov = 0;
 		s->tc_ov_n = 0;
@@ -1277,6 +1272,7 @@ rte_sched_subport_config(struct rte_sched_port *port,
 #ifdef RTE_SCHED_SUBPORT_TC_OV
 		s->tc_ov_wm_max = rte_sched_time_ms_to_bytes(profile->tc_period,
 							s->pipe_tc_be_rate_max);
+		s->tc_ov_wm = s->tc_ov_wm_max;
 #endif
 		s->profile = subport_profile_id;
 
@@ -1285,6 +1281,11 @@ rte_sched_subport_config(struct rte_sched_port *port,
 	rte_sched_port_log_subport_profile(port, subport_profile_id);
 
 	return 0;
+
+out:
+	rte_sched_free_memory(port, n_subports);
+
+	return ret;
 }
 
 int
@@ -1299,6 +1300,7 @@ rte_sched_pipe_config(struct rte_sched_port *port,
 	struct rte_sched_pipe_profile *params;
 	uint32_t n_subports = subport_id + 1;
 	uint32_t deactivate, profile, i;
+	int ret;
 
 	/* Check user parameters */
 	profile = (uint32_t) pipe_profile;
@@ -1313,26 +1315,23 @@ rte_sched_pipe_config(struct rte_sched_port *port,
 	if (subport_id >= port->n_subports_per_port) {
 		RTE_LOG(ERR, SCHED,
 			"%s: Incorrect value for parameter subport id\n", __func__);
-
-		rte_sched_free_memory(port, n_subports);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	s = port->subports[subport_id];
 	if (pipe_id >= s->n_pipes_per_subport_enabled) {
 		RTE_LOG(ERR, SCHED,
 			"%s: Incorrect value for parameter pipe id\n", __func__);
-
-		rte_sched_free_memory(port, n_subports);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	if (!deactivate && profile >= s->n_pipe_profiles) {
 		RTE_LOG(ERR, SCHED,
 			"%s: Incorrect value for parameter pipe profile\n", __func__);
-
-		rte_sched_free_memory(port, n_subports);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	sp = port->subport_profiles + s->profile;
@@ -1406,6 +1405,11 @@ rte_sched_pipe_config(struct rte_sched_port *port,
 	}
 
 	return 0;
+
+out:
+	rte_sched_free_memory(port, n_subports);
+
+	return ret;
 }
 
 int

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #ifndef _HNS3_INTR_H_
@@ -74,6 +74,8 @@
 #define HNS3_NCSI_ERR_INT_EN			0x3
 
 #define HNS3_TM_SCH_ECC_ERR_INT_EN		0x3
+#define HNS3_TM_QCN_ERR_INT_TYPE		0x29
+#define HNS3_TM_QCN_FIFO_INT_EN			0xFFFF00
 #define HNS3_TM_QCN_MEM_ERR_INT_EN		0xFFFFFF
 
 #define HNS3_RESET_PROCESS_MS			200

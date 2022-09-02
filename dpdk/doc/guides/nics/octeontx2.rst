@@ -153,7 +153,7 @@ Runtime Config Options
 
       -a 0002:02:00.0,max_sqb_count=64
 
-   With the above configuration, each send queue's decscriptor buffer count is
+   With the above configuration, each send queue's descriptor buffer count is
    limited to a maximum of 64 buffers.
 
 - ``Switch header enable`` (default ``none``)
@@ -242,7 +242,7 @@ configure the following features:
 #. Hierarchical scheduling
 #. Single rate - Two color, Two rate - Three color shaping
 
-Both DWRR and Static Priority(SP) hierarchial scheduling is supported.
+Both DWRR and Static Priority(SP) hierarchical scheduling is supported.
 
 Every parent can have atmost 10 SP Children and unlimited DWRR children.
 
@@ -256,7 +256,7 @@ Limitations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The OCTEON TX2 SoC family NIC has inbuilt HW assisted external mempool manager.
-``net_octeontx2`` pmd only works with ``mempool_octeontx2`` mempool handler
+``net_octeontx2`` PMD only works with ``mempool_octeontx2`` mempool handler
 as it is performance wise most effective way for packet allocation and Tx buffer
 recycling on OCTEON TX2 SoC platform.
 
@@ -269,7 +269,7 @@ the host interface irrespective of the offload configuration.
 Multicast MAC filtering
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-``net_octeontx2`` pmd supports multicast mac filtering feature only on physical
+``net_octeontx2`` PMD supports multicast mac filtering feature only on physical
 function devices.
 
 SDP interface support
@@ -278,7 +278,7 @@ OCTEON TX2 SDP interface support is limited to PF device, No VF support.
 
 Inline Protocol Processing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-``net_octeontx2`` pmd doesn't support the following features for packets to be
+``net_octeontx2`` PMD doesn't support the following features for packets to be
 inline protocol processed.
 - TSO offload
 - VLAN/QinQ offload

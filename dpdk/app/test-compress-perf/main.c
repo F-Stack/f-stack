@@ -67,7 +67,7 @@ comp_perf_check_capabilities(struct comp_test_data *test_data, uint8_t cdev_id)
 
 	uint64_t comp_flags = cap->comp_feature_flags;
 
-	/* Huffman enconding */
+	/* Huffman encoding */
 	if (test_data->huffman_enc == RTE_COMP_HUFFMAN_FIXED &&
 			(comp_flags & RTE_COMP_FF_HUFFMAN_FIXED) == 0) {
 		RTE_LOG(ERR, USER1,
@@ -168,7 +168,7 @@ comp_perf_initialize_compressdev(struct comp_test_data *test_data,
 		cdev_id = enabled_cdevs[i];
 
 		struct rte_compressdev_info cdev_info;
-		uint8_t socket_id = rte_compressdev_socket_id(cdev_id);
+		int socket_id = rte_compressdev_socket_id(cdev_id);
 
 		rte_compressdev_info_get(cdev_id, &cdev_info);
 		if (cdev_info.max_nb_queue_pairs &&
@@ -194,6 +194,7 @@ comp_perf_initialize_compressdev(struct comp_test_data *test_data,
 			.max_nb_priv_xforms = NUM_MAX_XFORMS,
 			.max_nb_streams = 0
 		};
+		test_data->nb_qps = config.nb_queue_pairs;
 
 		if (rte_compressdev_configure(cdev_id, &config) < 0) {
 			RTE_LOG(ERR, USER1, "Device configuration failed\n");

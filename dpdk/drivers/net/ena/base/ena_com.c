@@ -587,7 +587,7 @@ err:
 	return ret;
 }
 
-/**
+/*
  * Set the LLQ configurations of the firmware
  *
  * The driver provides only the enabled feature values to the device,
@@ -1078,7 +1078,7 @@ static void ena_com_hash_key_fill_default_key(struct ena_com_dev *ena_dev)
 	/* The key buffer is stored in the device in an array of
 	 * uint32 elements.
 	 */
-	hash_key->keys_num = ENA_ADMIN_RSS_KEY_PARTS;
+	hash_key->key_parts = ENA_ADMIN_RSS_KEY_PARTS;
 }
 
 static int ena_com_hash_key_allocate(struct ena_com_dev *ena_dev)
@@ -1151,7 +1151,7 @@ static int ena_com_indirect_table_allocate(struct ena_com_dev *ena_dev,
 	int ret;
 
 	ret = ena_com_get_feature(ena_dev, &get_resp,
-				  ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG, 0);
+				  ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG, 0);
 	if (unlikely(ret))
 		return ret;
 
@@ -1366,7 +1366,7 @@ int ena_com_execute_admin_command(struct ena_com_admin_queue *admin_queue,
 			ena_trc_err("Failed to submit command [%ld]\n",
 				    PTR_ERR(comp_ctx));
 
-		return PTR_ERR(comp_ctx);
+		return (int)PTR_ERR(comp_ctx);
 	}
 
 	ret = ena_com_wait_and_process_admin_cq(comp_ctx, admin_queue);
@@ -1586,7 +1586,7 @@ int ena_com_set_aenq_config(struct ena_com_dev *ena_dev, u32 groups_flag)
 int ena_com_get_dma_width(struct ena_com_dev *ena_dev)
 {
 	u32 caps = ena_com_reg_bar_read32(ena_dev, ENA_REGS_CAPS_OFF);
-	int width;
+	u32 width;
 
 	if (unlikely(caps == ENA_MMIO_READ_TIMEOUT)) {
 		ena_trc_err("Reg read timeout occurred\n");
@@ -1655,6 +1655,22 @@ int ena_com_validate_version(struct ena_com_dev *ena_dev)
 	return 0;
 }
 
+static void
+ena_com_free_ena_admin_queue_comp_ctx(struct ena_com_dev *ena_dev,
+				      struct ena_com_admin_queue *admin_queue)
+
+{
+	if (!admin_queue->comp_ctx)
+		return;
+
+	ENA_WAIT_EVENTS_DESTROY(admin_queue);
+	ENA_MEM_FREE(ena_dev->dmadev,
+		     admin_queue->comp_ctx,
+		     (admin_queue->q_depth * sizeof(struct ena_comp_ctx)));
+
+	admin_queue->comp_ctx = NULL;
+}
+
 void ena_com_admin_destroy(struct ena_com_dev *ena_dev)
 {
 	struct ena_com_admin_queue *admin_queue = &ena_dev->admin_queue;
@@ -1663,14 +1679,8 @@ void ena_com_admin_destroy(struct ena_com_dev *ena_dev)
 	struct ena_com_aenq *aenq = &ena_dev->aenq;
 	u16 size;
 
-	if (admin_queue->comp_ctx) {
-		ENA_WAIT_EVENT_DESTROY(admin_queue->comp_ctx->wait_event);
-		ENA_MEM_FREE(ena_dev->dmadev,
-			     admin_queue->comp_ctx,
-			     (admin_queue->q_depth * sizeof(struct ena_comp_ctx)));
-	}
+	ena_com_free_ena_admin_queue_comp_ctx(ena_dev, admin_queue);
 
-	admin_queue->comp_ctx = NULL;
 	size = ADMIN_SQ_SIZE(admin_queue->q_depth);
 	if (sq->entries)
 		ENA_MEM_FREE_COHERENT(ena_dev->dmadev, size, sq->entries,
@@ -1961,6 +1971,7 @@ int ena_com_get_dev_attr_feat(struct ena_com_dev *ena_dev,
 
 	memcpy(&get_feat_ctx->dev_attr, &get_resp.u.dev_attr,
 	       sizeof(get_resp.u.dev_attr));
+
 	ena_dev->supported_features = get_resp.u.dev_attr.supported_features;
 
 	if (ena_dev->supported_features & BIT(ENA_ADMIN_MAX_QUEUES_EXT)) {
@@ -2028,7 +2039,7 @@ int ena_com_get_dev_attr_feat(struct ena_com_dev *ena_dev,
 		return rc;
 
 	rc = ena_com_get_feature(ena_dev, &get_resp,
-				 ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG, 0);
+				 ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG, 0);
 	if (!rc)
 		memcpy(&get_feat_ctx->ind_table, &get_resp.u.ind_table,
 		       sizeof(get_resp.u.ind_table));
@@ -2090,9 +2101,9 @@ void ena_com_aenq_intr_handler(struct ena_com_dev *dev, void *data)
 		timestamp = (u64)aenq_common->timestamp_low |
 			((u64)aenq_common->timestamp_high << 32);
 		ENA_TOUCH(timestamp); /* In case debug is disabled */
-		ena_trc_dbg("AENQ! Group[%x] Syndrom[%x] timestamp: [%" ENA_PRIu64 "s]\n",
+		ena_trc_dbg("AENQ! Group[%x] Syndrome[%x] timestamp: [%" ENA_PRIu64 "s]\n",
 			    aenq_common->group,
-			    aenq_common->syndrom,
+			    aenq_common->syndrome,
 			    timestamp);
 
 		/* Handle specific event*/
@@ -2263,7 +2274,7 @@ int ena_com_set_dev_mtu(struct ena_com_dev *ena_dev, int mtu)
 	cmd.aq_common_descriptor.opcode = ENA_ADMIN_SET_FEATURE;
 	cmd.aq_common_descriptor.flags = 0;
 	cmd.feat_common.feature_id = ENA_ADMIN_MTU;
-	cmd.u.mtu.mtu = mtu;
+	cmd.u.mtu.mtu = (u32)mtu;
 
 	ret = ena_com_execute_admin_command(admin_queue,
 					    (struct ena_admin_aq_entry *)&cmd,
@@ -2394,7 +2405,7 @@ int ena_com_fill_hash_function(struct ena_com_dev *ena_dev,
 			}
 			memcpy(hash_key->key, key, key_len);
 			rss->hash_init_val = init_val;
-			hash_key->keys_num = key_len / sizeof(u32);
+			hash_key->key_parts = key_len / sizeof(hash_key->key[0]);
 		}
 		break;
 	case ENA_ADMIN_CRC32:
@@ -2449,7 +2460,8 @@ int ena_com_get_hash_key(struct ena_com_dev *ena_dev, u8 *key)
 		ena_dev->rss.hash_key;
 
 	if (key)
-		memcpy(key, hash_key->key, (size_t)(hash_key->keys_num) << 2);
+		memcpy(key, hash_key->key,
+		       (size_t)(hash_key->key_parts) * sizeof(hash_key->key[0]));
 
 	return 0;
 }
@@ -2644,9 +2656,9 @@ int ena_com_indirect_table_set(struct ena_com_dev *ena_dev)
 	int ret;
 
 	if (!ena_com_check_supported_feature_id(ena_dev,
-						ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG)) {
+						ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG)) {
 		ena_trc_dbg("Feature %d isn't supported\n",
-			    ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG);
+			    ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG);
 		return ENA_COM_UNSUPPORTED;
 	}
 
@@ -2661,7 +2673,7 @@ int ena_com_indirect_table_set(struct ena_com_dev *ena_dev)
 	cmd.aq_common_descriptor.opcode = ENA_ADMIN_SET_FEATURE;
 	cmd.aq_common_descriptor.flags =
 		ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK;
-	cmd.feat_common.feature_id = ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG;
+	cmd.feat_common.feature_id = ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG;
 	cmd.u.ind_table.size = rss->tbl_log_size;
 	cmd.u.ind_table.inline_index = 0xFFFFFFFF;
 
@@ -2673,7 +2685,7 @@ int ena_com_indirect_table_set(struct ena_com_dev *ena_dev)
 		return ret;
 	}
 
-	cmd.control_buffer.length = (1ULL << rss->tbl_log_size) *
+	cmd.control_buffer.length = (u32)(1ULL << rss->tbl_log_size) *
 		sizeof(struct ena_admin_rss_ind_table_entry);
 
 	ret = ena_com_execute_admin_command(admin_queue,
@@ -2695,11 +2707,11 @@ int ena_com_indirect_table_get(struct ena_com_dev *ena_dev, u32 *ind_tbl)
 	u32 tbl_size;
 	int i, rc;
 
-	tbl_size = (1ULL << rss->tbl_log_size) *
+	tbl_size = (u32)(1ULL << rss->tbl_log_size) *
 		sizeof(struct ena_admin_rss_ind_table_entry);
 
 	rc = ena_com_get_feature_ex(ena_dev, &get_resp,
-				    ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG,
+				    ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG,
 				    rss->rss_ind_tbl_dma_addr,
 				    tbl_size, 0);
 	if (unlikely(rc))

@@ -504,9 +504,7 @@ ice_dcf_send_aq_cmd(void *dcf_hw, struct ice_aq_desc *desc,
 	}
 
 	do {
-		if ((!desc_cmd.pending && !buff_cmd.pending) ||
-		    (!desc_cmd.pending && desc_cmd.v_ret != IAVF_SUCCESS) ||
-		    (!buff_cmd.pending && buff_cmd.v_ret != IAVF_SUCCESS))
+		if (!desc_cmd.pending && !buff_cmd.pending)
 			break;
 
 		rte_delay_ms(ICE_DCF_ARQ_CHECK_TIME);
@@ -531,15 +529,26 @@ int
 ice_dcf_handle_vsi_update_event(struct ice_dcf_hw *hw)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(hw->eth_dev);
-	int err = 0;
+	int i = 0;
+	int err = -1;
 
 	rte_spinlock_lock(&hw->vc_cmd_send_lock);
 
 	rte_intr_disable(&pci_dev->intr_handle);
 	ice_dcf_disable_irq0(hw);
 
-	if (ice_dcf_get_vf_resource(hw) || ice_dcf_get_vf_vsi_map(hw) < 0)
-		err = -1;
+	for (;;) {
+		if (ice_dcf_get_vf_resource(hw) == 0 &&
+		    ice_dcf_get_vf_vsi_map(hw) >= 0) {
+			err = 0;
+			break;
+		}
+
+		if (++i >= ICE_DCF_ARQ_MAX_RETRIES)
+			break;
+
+		rte_delay_ms(ICE_DCF_ARQ_CHECK_TIME);
+	}
 
 	rte_intr_enable(&pci_dev->intr_handle);
 	ice_dcf_enable_irq0(hw);
@@ -817,7 +826,7 @@ ice_dcf_init_rss(struct ice_dcf_hw *hw)
 			j = 0;
 		hw->rss_lut[i] = j;
 	}
-	/* send virtchnnl ops to configure rss*/
+	/* send virtchnl ops to configure RSS */
 	ret = ice_dcf_configure_rss_lut(hw);
 	if (ret)
 		return ret;
@@ -830,7 +839,7 @@ ice_dcf_init_rss(struct ice_dcf_hw *hw)
 
 #define IAVF_RXDID_LEGACY_0 0
 #define IAVF_RXDID_LEGACY_1 1
-#define IAVF_RXDID_COMMS_GENERIC 16
+#define IAVF_RXDID_COMMS_OVS_1 22
 
 int
 ice_dcf_configure_queues(struct ice_dcf_hw *hw)
@@ -865,11 +874,11 @@ ice_dcf_configure_queues(struct ice_dcf_hw *hw)
 		}
 		vc_qp->rxq.vsi_id = hw->vsi_res->vsi_id;
 		vc_qp->rxq.queue_id = i;
-		vc_qp->rxq.max_pkt_size = rxq[i]->max_pkt_len;
 
 		if (i >= hw->eth_dev->data->nb_rx_queues)
 			continue;
 
+		vc_qp->rxq.max_pkt_size = rxq[i]->max_pkt_len;
 		vc_qp->rxq.ring_len = rxq[i]->nb_rx_desc;
 		vc_qp->rxq.dma_ring_addr = rxq[i]->rx_ring_dma;
 		vc_qp->rxq.databuffer_size = rxq[i]->rx_buf_len;
@@ -878,8 +887,8 @@ ice_dcf_configure_queues(struct ice_dcf_hw *hw)
 		if (hw->vf_res->vf_cap_flags &
 		    VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC &&
 		    hw->supported_rxdid &
-		    BIT(IAVF_RXDID_COMMS_GENERIC)) {
-			vc_qp->rxq.rxdid = IAVF_RXDID_COMMS_GENERIC;
+		    BIT(IAVF_RXDID_COMMS_OVS_1)) {
+			vc_qp->rxq.rxdid = IAVF_RXDID_COMMS_OVS_1;
 			PMD_DRV_LOG(NOTICE, "request RXDID == %d in "
 				    "Queue[%d]", vc_qp->rxq.rxdid, i);
 		} else {

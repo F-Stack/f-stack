@@ -16,6 +16,7 @@
  * gives packet per second measurement.
  */
 
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -591,6 +592,7 @@ args_parse(int argc, char **argv)
 		{ "raw-decap",                  1, 0, 0 },
 		{ "vxlan-encap",                0, 0, 0 },
 		{ "vxlan-decap",                0, 0, 0 },
+		{ 0, 0, 0, 0 },
 	};
 
 	RTE_ETH_FOREACH_DEV(i)
@@ -606,7 +608,7 @@ args_parse(int argc, char **argv)
 		case 0:
 			if (strcmp(lgopts[opt_idx].name, "help") == 0) {
 				usage(argv[0]);
-				rte_exit(EXIT_SUCCESS, "Displayed help\n");
+				exit(EXIT_SUCCESS);
 			}
 
 			if (strcmp(lgopts[opt_idx].name, "group") == 0) {
@@ -614,7 +616,7 @@ args_parse(int argc, char **argv)
 				if (n >= 0)
 					flow_group = n;
 				else
-					rte_exit(EXIT_SUCCESS,
+					rte_exit(EXIT_FAILURE,
 						"flow group should be >= 0\n");
 				printf("group %d / ", flow_group);
 			}
@@ -634,7 +636,7 @@ args_parse(int argc, char **argv)
 				if (n > 0)
 					hairpin_queues_num = n;
 				else
-					rte_exit(EXIT_SUCCESS,
+					rte_exit(EXIT_FAILURE,
 						"Hairpin queues should be > 0\n");
 
 				flow_actions[actions_idx++] =
@@ -647,7 +649,7 @@ args_parse(int argc, char **argv)
 				if (n > 0)
 					hairpin_queues_num = n;
 				else
-					rte_exit(EXIT_SUCCESS,
+					rte_exit(EXIT_FAILURE,
 						"Hairpin queues should be > 0\n");
 
 				flow_actions[actions_idx++] =
@@ -671,11 +673,9 @@ args_parse(int argc, char **argv)
 							break;
 						}
 						/* Reached last item with no match */
-						if (i == (RTE_DIM(flow_options) - 1)) {
-							fprintf(stderr, "Invalid encap item: %s\n", token);
-							usage(argv[0]);
-							rte_exit(EXIT_SUCCESS, "Invalid encap item\n");
-						}
+						if (i == (RTE_DIM(flow_options) - 1))
+							rte_exit(EXIT_FAILURE,
+								"Invalid encap item: %s\n", token);
 					}
 					token = strtok(NULL, ",");
 				}
@@ -693,15 +693,13 @@ args_parse(int argc, char **argv)
 					for (i = 0; i < RTE_DIM(flow_options); i++) {
 						if (strcmp(flow_options[i].str, token) == 0) {
 							printf("%s,", token);
-							encap_data |= flow_options[i].mask;
+							decap_data |= flow_options[i].mask;
 							break;
 						}
 						/* Reached last item with no match */
-						if (i == (RTE_DIM(flow_options) - 1)) {
-							fprintf(stderr, "Invalid decap item: %s\n", token);
-							usage(argv[0]);
-							rte_exit(EXIT_SUCCESS, "Invalid decap item\n");
-						}
+						if (i == (RTE_DIM(flow_options) - 1))
+							rte_exit(EXIT_FAILURE,
+								"Invalid decap item %s\n", token);
 					}
 					token = strtok(NULL, ",");
 				}
@@ -714,9 +712,9 @@ args_parse(int argc, char **argv)
 				if (n >= DEFAULT_RULES_BATCH)
 					rules_batch = n;
 				else {
-					printf("\n\nrules_batch should be >= %d\n",
+					rte_exit(EXIT_FAILURE,
+						"rules_batch should be >= %d\n",
 						DEFAULT_RULES_BATCH);
-					rte_exit(EXIT_SUCCESS, " ");
 				}
 			}
 			if (strcmp(lgopts[opt_idx].name,
@@ -725,7 +723,8 @@ args_parse(int argc, char **argv)
 				if (n >= (int) rules_batch)
 					rules_count = n;
 				else {
-					printf("\n\nrules_count should be >= %d\n",
+					rte_exit(EXIT_FAILURE,
+						"rules_count should be >= %d\n",
 						rules_batch);
 				}
 			}
@@ -752,9 +751,9 @@ args_parse(int argc, char **argv)
 			}
 			break;
 		default:
-			fprintf(stderr, "Invalid option: %s\n", argv[optind]);
 			usage(argv[0]);
-			rte_exit(EXIT_SUCCESS, "Invalid option\n");
+			rte_exit(EXIT_FAILURE, "Invalid option: %s\n",
+					argv[optind - 1]);
 			break;
 		}
 	}
@@ -853,7 +852,7 @@ destroy_flows(int port_id, struct rte_flow **flow_list)
 		memset(&error, 0x33, sizeof(error));
 		if (rte_flow_destroy(port_id, flow_list[i], &error)) {
 			print_flow_error(error);
-			rte_exit(EXIT_FAILURE, "Error in deleting flow");
+			rte_exit(EXIT_FAILURE, "Error in deleting flow\n");
 		}
 
 		if (i && !((i + 1) % rules_batch)) {
@@ -924,7 +923,7 @@ flows_handler(void)
 	flow_list = rte_zmalloc("flow_list",
 		(sizeof(struct rte_flow *) * rules_count) + 1, 0);
 	if (flow_list == NULL)
-		rte_exit(EXIT_FAILURE, "No Memory available!");
+		rte_exit(EXIT_FAILURE, "No Memory available!\n");
 
 	for (port_id = 0; port_id < nr_ports; port_id++) {
 		/* If port outside portmask */
@@ -947,7 +946,7 @@ flows_handler(void)
 
 			if (flow == NULL) {
 				print_flow_error(error);
-				rte_exit(EXIT_FAILURE, "error in creating flow");
+				rte_exit(EXIT_FAILURE, "Error in creating flow\n");
 			}
 			flow_list[flow_index++] = flow;
 		}
@@ -968,7 +967,7 @@ flows_handler(void)
 
 			if (!flow) {
 				print_flow_error(error);
-				rte_exit(EXIT_FAILURE, "error in creating flow");
+				rte_exit(EXIT_FAILURE, "Error in creating flow\n");
 			}
 
 			flow_list[flow_index++] = flow;
@@ -1046,36 +1045,6 @@ do_tx(struct lcore_info *li, uint16_t cnt, uint16_t tx_port,
 		rte_pktmbuf_free(li->pkts[i]);
 }
 
-/*
- * Method to convert numbers into pretty numbers that easy
- * to read. The design here is to add comma after each three
- * digits and set all of this inside buffer.
- *
- * For example if n = 1799321, the output will be
- * 1,799,321 after this method which is easier to read.
- */
-static char *
-pretty_number(uint64_t n, char *buf)
-{
-	char p[6][4];
-	int i = 0;
-	int off = 0;
-
-	while (n > 1000) {
-		sprintf(p[i], "%03d", (int)(n % 1000));
-		n /= 1000;
-		i += 1;
-	}
-
-	sprintf(p[i++], "%d", (int)n);
-
-	while (i--)
-		off += sprintf(buf + off, "%s,", p[i]);
-	buf[strlen(buf) - 1] = '\0';
-
-	return buf;
-}
-
 static void
 packet_per_second_stats(void)
 {
@@ -1087,7 +1056,7 @@ packet_per_second_stats(void)
 	old = rte_zmalloc("old",
 		sizeof(struct lcore_info) * MAX_LCORES, 0);
 	if (old == NULL)
-		rte_exit(EXIT_FAILURE, "No Memory available!");
+		rte_exit(EXIT_FAILURE, "No Memory available!\n");
 
 	memcpy(old, lcore_infos,
 		sizeof(struct lcore_info) * MAX_LCORES);
@@ -1097,7 +1066,6 @@ packet_per_second_stats(void)
 		uint64_t total_rx_pkts = 0;
 		uint64_t total_tx_drops = 0;
 		uint64_t tx_delta, rx_delta, drops_delta;
-		char buf[3][32];
 		int nr_valid_core = 0;
 
 		sleep(1);
@@ -1122,10 +1090,8 @@ packet_per_second_stats(void)
 			tx_delta    = li->tx_pkts  - oli->tx_pkts;
 			rx_delta    = li->rx_pkts  - oli->rx_pkts;
 			drops_delta = li->tx_drops - oli->tx_drops;
-			printf("%6d %16s %16s %16s\n", i,
-				pretty_number(tx_delta,    buf[0]),
-				pretty_number(drops_delta, buf[1]),
-				pretty_number(rx_delta,    buf[2]));
+			printf("%6d %'16"PRId64" %'16"PRId64" %'16"PRId64"\n",
+				i, tx_delta, drops_delta, rx_delta);
 
 			total_tx_pkts  += tx_delta;
 			total_rx_pkts  += rx_delta;
@@ -1136,10 +1102,9 @@ packet_per_second_stats(void)
 		}
 
 		if (nr_valid_core > 1) {
-			printf("%6s %16s %16s %16s\n", "total",
-				pretty_number(total_tx_pkts,  buf[0]),
-				pretty_number(total_tx_drops, buf[1]),
-				pretty_number(total_rx_pkts,  buf[2]));
+			printf("%6s %'16"PRId64" %'16"PRId64" %'16"PRId64"\n",
+				"total", total_tx_pkts, total_tx_drops,
+				total_rx_pkts);
 			nr_lines += 1;
 		}
 
@@ -1442,6 +1407,9 @@ main(int argc, char **argv)
 	argv += ret;
 	if (argc > 1)
 		args_parse(argc, argv);
+
+	/* For more fancy, localised integer formatting. */
+	setlocale(LC_NUMERIC, "");
 
 	init_port();
 

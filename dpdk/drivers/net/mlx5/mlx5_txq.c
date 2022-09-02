@@ -109,19 +109,26 @@ mlx5_get_tx_port_offloads(struct rte_eth_dev *dev)
 	if (config->tx_pp)
 		offloads |= DEV_TX_OFFLOAD_SEND_ON_TIMESTAMP;
 	if (config->swp) {
-		if (config->hw_csum)
+		if (config->swp & MLX5_SW_PARSING_CSUM_CAP)
 			offloads |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
-		if (config->tso)
+		if (config->swp & MLX5_SW_PARSING_TSO_CAP)
 			offloads |= (DEV_TX_OFFLOAD_IP_TNL_TSO |
 				     DEV_TX_OFFLOAD_UDP_TNL_TSO);
 	}
 	if (config->tunnel_en) {
 		if (config->hw_csum)
 			offloads |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
-		if (config->tso)
-			offloads |= (DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-				     DEV_TX_OFFLOAD_GRE_TNL_TSO |
-				     DEV_TX_OFFLOAD_GENEVE_TNL_TSO);
+		if (config->tso) {
+			if (config->tunnel_en &
+				MLX5_TUNNELED_OFFLOADS_VXLAN_CAP)
+				offloads |= DEV_TX_OFFLOAD_VXLAN_TNL_TSO;
+			if (config->tunnel_en &
+				MLX5_TUNNELED_OFFLOADS_GRE_CAP)
+				offloads |= DEV_TX_OFFLOAD_GRE_TNL_TSO;
+			if (config->tunnel_en &
+				MLX5_TUNNELED_OFFLOADS_GENEVE_CAP)
+				offloads |= DEV_TX_OFFLOAD_GENEVE_TNL_TSO;
+		}
 	}
 	return offloads;
 }
@@ -519,9 +526,11 @@ txq_uar_ncattr_init(struct mlx5_txq_ctrl *txq_ctrl, size_t page_size)
  *
  * @param txq_ctrl
  *   Pointer to Tx queue control structure.
+ * @param bf_reg
+ *   BlueFlame register from Verbs UAR.
  */
 void
-txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl)
+txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl, void *bf_reg)
 {
 	struct mlx5_priv *priv = txq_ctrl->priv;
 	struct mlx5_proc_priv *ppriv = MLX5_PROC_PRIV(PORT_ID(priv));
@@ -538,7 +547,7 @@ txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl)
 		return;
 	MLX5_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	MLX5_ASSERT(ppriv);
-	ppriv->uar_table[txq_ctrl->txq.idx] = txq_ctrl->bf_reg;
+	ppriv->uar_table[txq_ctrl->txq.idx] = bf_reg;
 	txq_uar_ncattr_init(txq_ctrl, page_size);
 #ifndef RTE_ARCH_64
 	/* Assign an UAR lock according to UAR page number */
@@ -567,6 +576,7 @@ txq_uar_init_secondary(struct mlx5_txq_ctrl *txq_ctrl, int fd)
 {
 	struct mlx5_priv *priv = txq_ctrl->priv;
 	struct mlx5_proc_priv *ppriv = MLX5_PROC_PRIV(PORT_ID(priv));
+	struct mlx5_proc_priv *primary_ppriv = priv->sh->pppriv;
 	struct mlx5_txq_data *txq = &txq_ctrl->txq;
 	void *addr;
 	uintptr_t uar_va;
@@ -585,20 +595,18 @@ txq_uar_init_secondary(struct mlx5_txq_ctrl *txq_ctrl, int fd)
 	 * As rdma-core, UARs are mapped in size of OS page
 	 * size. Ref to libmlx5 function: mlx5_init_context()
 	 */
-	uar_va = (uintptr_t)txq_ctrl->bf_reg;
+	uar_va = (uintptr_t)primary_ppriv->uar_table[txq->idx];
 	offset = uar_va & (page_size - 1); /* Offset in page. */
 	addr = rte_mem_map(NULL, page_size, RTE_PROT_WRITE, RTE_MAP_SHARED,
-			    fd, txq_ctrl->uar_mmap_offset);
+			   fd, txq_ctrl->uar_mmap_offset);
 	if (!addr) {
-		DRV_LOG(ERR,
-			"port %u mmap failed for BF reg of txq %u",
+		DRV_LOG(ERR, "Port %u mmap failed for BF reg of txq %u.",
 			txq->port_id, txq->idx);
 		rte_errno = ENXIO;
 		return -rte_errno;
 	}
 	addr = RTE_PTR_ADD(addr, offset);
 	ppriv->uar_table[txq->idx] = addr;
-	txq_uar_ncattr_init(txq_ctrl, page_size);
 	return 0;
 }
 
@@ -634,18 +642,23 @@ txq_uar_uninit_secondary(struct mlx5_txq_ctrl *txq_ctrl)
 void
 mlx5_tx_uar_uninit_secondary(struct rte_eth_dev *dev)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_txq_data *txq;
-	struct mlx5_txq_ctrl *txq_ctrl;
+	struct mlx5_proc_priv *ppriv = (struct mlx5_proc_priv *)
+					dev->process_private;
+	const size_t page_size = rte_mem_page_size();
+	void *addr;
 	unsigned int i;
 
+	if (page_size == (size_t)-1) {
+		DRV_LOG(ERR, "Failed to get mem page size");
+		return;
+	}
 	MLX5_ASSERT(rte_eal_process_type() == RTE_PROC_SECONDARY);
-	for (i = 0; i != priv->txqs_n; ++i) {
-		if (!(*priv->txqs)[i])
+	for (i = 0; i != ppriv->uar_table_sz; ++i) {
+		if (!ppriv->uar_table[i])
 			continue;
-		txq = (*priv->txqs)[i];
-		txq_ctrl = container_of(txq, struct mlx5_txq_ctrl, txq);
-		txq_uar_uninit_secondary(txq_ctrl);
+		addr = ppriv->uar_table[i];
+		rte_mem_unmap(RTE_PTR_ALIGN_FLOOR(addr, page_size), page_size);
+
 	}
 }
 
@@ -965,11 +978,21 @@ txq_set_params(struct mlx5_txq_ctrl *txq_ctrl)
 						    MLX5_MAX_TSO_HEADER);
 		txq_ctrl->txq.tso_en = 1;
 	}
-	txq_ctrl->txq.tunnel_en = config->tunnel_en | config->swp;
-	txq_ctrl->txq.swp_en = ((DEV_TX_OFFLOAD_IP_TNL_TSO |
-				 DEV_TX_OFFLOAD_UDP_TNL_TSO |
-				 DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) &
-				txq_ctrl->txq.offloads) && config->swp;
+	if (((DEV_TX_OFFLOAD_VXLAN_TNL_TSO & txq_ctrl->txq.offloads) &&
+	    (config->tunnel_en & MLX5_TUNNELED_OFFLOADS_VXLAN_CAP)) |
+	   ((DEV_TX_OFFLOAD_GRE_TNL_TSO & txq_ctrl->txq.offloads) &&
+	    (config->tunnel_en & MLX5_TUNNELED_OFFLOADS_GRE_CAP)) |
+	   ((DEV_TX_OFFLOAD_GENEVE_TNL_TSO & txq_ctrl->txq.offloads) &&
+	    (config->tunnel_en & MLX5_TUNNELED_OFFLOADS_GENEVE_CAP)) |
+	   (config->swp  & MLX5_SW_PARSING_TSO_CAP))
+		txq_ctrl->txq.tunnel_en = 1;
+	txq_ctrl->txq.swp_en = (((DEV_TX_OFFLOAD_IP_TNL_TSO |
+				  DEV_TX_OFFLOAD_UDP_TNL_TSO) &
+				  txq_ctrl->txq.offloads) && (config->swp &
+				  MLX5_SW_PARSING_TSO_CAP)) |
+				((DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM &
+				 txq_ctrl->txq.offloads) && (config->swp &
+				 MLX5_SW_PARSING_CSUM_CAP));
 }
 
 /**
@@ -1146,6 +1169,7 @@ mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	LIST_INSERT_HEAD(&priv->txqsctrl, tmpl, next);
 	return tmpl;
 error:
+	mlx5_mr_btree_free(&tmpl->txq.mr_ctrl.cache_bh);
 	mlx5_free(tmpl);
 	return NULL;
 }
@@ -1232,7 +1256,7 @@ mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *txq_ctrl;
 
-	if (!(*priv->txqs)[idx])
+	if (priv->txqs == NULL || (*priv->txqs)[idx] == NULL)
 		return 0;
 	txq_ctrl = container_of((*priv->txqs)[idx], struct mlx5_txq_ctrl, txq);
 	if (__atomic_sub_fetch(&txq_ctrl->refcnt, 1, __ATOMIC_RELAXED) > 1)

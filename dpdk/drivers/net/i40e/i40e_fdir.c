@@ -116,7 +116,7 @@ i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
 #endif
 	rx_ctx.dtype = i40e_header_split_none;
 	rx_ctx.hsplit_0 = I40E_HEADER_SPLIT_NONE;
-	rx_ctx.rxmax = RTE_ETHER_MAX_LEN;
+	rx_ctx.rxmax = I40E_ETH_MAX_LEN;
 	rx_ctx.tphrdesc_ena = 1;
 	rx_ctx.tphwdesc_ena = 1;
 	rx_ctx.tphdata_ena = 1;
@@ -141,7 +141,7 @@ i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
 		I40E_QRX_TAIL(rxq->vsi->base_queue);
 
 	rte_wmb();
-	/* Init the RX tail regieter. */
+	/* Init the RX tail register. */
 	I40E_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
 
 	return err;
@@ -159,7 +159,7 @@ i40e_fdir_setup(struct i40e_pf *pf)
 	int err = I40E_SUCCESS;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 	const struct rte_memzone *mz = NULL;
-	struct rte_eth_dev *eth_dev = pf->adapter->eth_dev;
+	struct rte_eth_dev *eth_dev = &rte_eth_devices[pf->dev_data->port_id];
 	uint16_t i;
 
 	if ((pf->flags & I40E_FLAG_FDIR) == 0) {
@@ -283,7 +283,6 @@ i40e_fdir_teardown(struct i40e_pf *pf)
 {
 	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
 	struct i40e_vsi *vsi;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
 
 	vsi = pf->fdir.fdir_vsi;
 	if (!vsi)
@@ -301,10 +300,8 @@ i40e_fdir_teardown(struct i40e_pf *pf)
 		PMD_DRV_LOG(DEBUG, "Failed to do FDIR RX switch off");
 
 	i40e_dev_rx_queue_release(pf->fdir.rxq);
-	rte_eth_dma_zone_free(dev, "fdir_rx_ring", pf->fdir.rxq->queue_id);
 	pf->fdir.rxq = NULL;
 	i40e_dev_tx_queue_release(pf->fdir.txq);
-	rte_eth_dma_zone_free(dev, "fdir_tx_ring", pf->fdir.txq->queue_id);
 	pf->fdir.txq = NULL;
 	i40e_vsi_release(vsi);
 	pf->fdir.fdir_vsi = NULL;
@@ -355,6 +352,7 @@ i40e_init_flx_pld(struct i40e_pf *pf)
 			I40E_PRTQF_FLX_PIT(index + 1), 0x0000FC29);/*non-used*/
 		I40E_WRITE_REG(hw,
 			I40E_PRTQF_FLX_PIT(index + 2), 0x0000FC2A);/*non-used*/
+		pf->fdir.flex_pit_flag[i] = 0;
 	}
 
 	/* initialize the masks */
@@ -431,7 +429,7 @@ i40e_check_fdir_flex_payload(const struct rte_eth_flex_payload_cfg *flex_cfg)
 
 	for (i = 0; i < I40E_FDIR_MAX_FLEX_LEN; i++) {
 		if (flex_cfg->src_offset[i] >= I40E_MAX_FLX_SOURCE_OFF) {
-			PMD_DRV_LOG(ERR, "exceeds maxmial payload limit.");
+			PMD_DRV_LOG(ERR, "exceeds maximal payload limit.");
 			return -EINVAL;
 		}
 	}
@@ -439,7 +437,7 @@ i40e_check_fdir_flex_payload(const struct rte_eth_flex_payload_cfg *flex_cfg)
 	memset(flex_pit, 0, sizeof(flex_pit));
 	num = i40e_srcoff_to_flx_pit(flex_cfg->src_offset, flex_pit);
 	if (num > I40E_MAX_FLXPLD_FIED) {
-		PMD_DRV_LOG(ERR, "exceeds maxmial number of flex fields.");
+		PMD_DRV_LOG(ERR, "exceeds maximal number of flex fields.");
 		return -EINVAL;
 	}
 	for (i = 0; i < num; i++) {
@@ -949,7 +947,7 @@ i40e_flow_fdir_construct_pkt(struct i40e_pf *pf,
 	uint8_t pctype = fdir_input->pctype;
 	struct i40e_customized_pctype *cus_pctype;
 
-	/* raw pcket template - just copy contents of the raw packet */
+	/* raw packet template - just copy contents of the raw packet */
 	if (fdir_input->flow_ext.pkt_template) {
 		memcpy(raw_pkt, fdir_input->flow.raw_flow.packet,
 		       fdir_input->flow.raw_flow.length);
@@ -1513,8 +1511,6 @@ i40e_flow_set_fdir_flex_pit(struct i40e_pf *pf,
 		I40E_WRITE_REG(hw, I40E_PRTQF_FLX_PIT(field_idx), flx_pit);
 		min_next_off++;
 	}
-
-	pf->fdir.flex_pit_flag[layer_idx] = 1;
 }
 
 static int
@@ -1587,6 +1583,86 @@ i40e_flow_set_fdir_flex_msk(struct i40e_pf *pf,
 	}
 
 	pf->fdir.flex_mask_flag[pctype] = 1;
+}
+
+static int
+i40e_flow_set_fdir_inset(struct i40e_pf *pf,
+			 enum i40e_filter_pctype pctype,
+			 uint64_t input_set)
+{
+	uint32_t mask_reg[I40E_INSET_MASK_NUM_REG] = {0};
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	uint64_t inset_reg = 0;
+	int i, num;
+
+	/* Check if the input set is valid */
+	if (i40e_validate_input_set(pctype, RTE_ETH_FILTER_FDIR,
+				    input_set) != 0) {
+		PMD_DRV_LOG(ERR, "Invalid input set");
+		return -EINVAL;
+	}
+
+	/* Check if the configuration is conflicted */
+	if (pf->fdir.flow_count[pctype] &&
+	    memcmp(&pf->fdir.input_set[pctype], &input_set, sizeof(uint64_t))) {
+		PMD_DRV_LOG(ERR, "Conflict with the first rule's input set.");
+		return -EINVAL;
+	}
+
+	if (pf->fdir.flow_count[pctype] &&
+	    !memcmp(&pf->fdir.input_set[pctype], &input_set, sizeof(uint64_t)))
+		return 0;
+
+	num = i40e_generate_inset_mask_reg(hw, input_set, mask_reg,
+						 I40E_INSET_MASK_NUM_REG);
+	if (num < 0) {
+		PMD_DRV_LOG(ERR, "Invalid pattern mask.");
+		return -EINVAL;
+	}
+
+	if (pf->support_multi_driver) {
+		for (i = 0; i < num; i++)
+			if (i40e_read_rx_ctl(hw,
+					I40E_GLQF_FD_MSK(i, pctype)) !=
+					mask_reg[i]) {
+				PMD_DRV_LOG(ERR, "Input set setting is not"
+						" supported with"
+						" `support-multi-driver`"
+						" enabled!");
+				return -EPERM;
+			}
+		for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
+			if (i40e_read_rx_ctl(hw,
+					I40E_GLQF_FD_MSK(i, pctype)) != 0) {
+				PMD_DRV_LOG(ERR, "Input set setting is not"
+						" supported with"
+						" `support-multi-driver`"
+						" enabled!");
+				return -EPERM;
+			}
+
+	} else {
+		for (i = 0; i < num; i++)
+			i40e_check_write_reg(hw, I40E_GLQF_FD_MSK(i, pctype),
+				mask_reg[i]);
+		/*clear unused mask registers of the pctype */
+		for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
+			i40e_check_write_reg(hw,
+					I40E_GLQF_FD_MSK(i, pctype), 0);
+	}
+
+	inset_reg |= i40e_translate_input_set_reg(hw->mac.type, input_set);
+
+	i40e_check_write_reg(hw, I40E_PRTQF_FD_INSET(pctype, 0),
+			     (uint32_t)(inset_reg & UINT32_MAX));
+	i40e_check_write_reg(hw, I40E_PRTQF_FD_INSET(pctype, 1),
+			     (uint32_t)((inset_reg >>
+					 I40E_32_BIT_WIDTH) & UINT32_MAX));
+
+	I40E_WRITE_FLUSH(hw);
+
+	pf->fdir.input_set[pctype] = input_set;
+	return 0;
 }
 
 static inline unsigned char *
@@ -1686,7 +1762,16 @@ i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
 	i40e_fdir_filter_convert(filter, &check_filter);
 
 	if (add) {
-		if (!filter->input.flow_ext.customized_pctype) {
+		/* configure the input set for common PCTYPEs*/
+		if (!filter->input.flow_ext.customized_pctype &&
+		    !filter->input.flow_ext.pkt_template) {
+			ret = i40e_flow_set_fdir_inset(pf, pctype,
+					filter->input.flow_ext.input_set);
+			if (ret < 0)
+				return ret;
+		}
+
+		if (filter->input.flow_ext.is_flex_flow) {
 			for (i = 0; i < filter->input.flow_ext.raw_id; i++) {
 				layer_idx = filter->input.flow_ext.layer_idx;
 				field_idx = layer_idx * I40E_MAX_FLXPLD_FIED + i;
@@ -1738,11 +1823,14 @@ i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
 				fdir_info->fdir_guarantee_free_space > 0)
 			wait_status = false;
 	} else {
+		if (filter->input.flow_ext.is_flex_flow)
+			layer_idx = filter->input.flow_ext.layer_idx;
+
 		node = i40e_sw_fdir_filter_lookup(fdir_info,
 				&check_filter.fdir.input);
 		if (!node) {
 			PMD_DRV_LOG(ERR,
-				    "There's no corresponding flow firector filter!");
+				    "There's no corresponding flow director filter!");
 			return -EINVAL;
 		}
 
@@ -1785,12 +1873,25 @@ i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
 		goto error_op;
 	}
 
+	if (filter->input.flow_ext.is_flex_flow) {
+		if (add) {
+			fdir_info->flex_flow_count[layer_idx]++;
+			pf->fdir.flex_pit_flag[layer_idx] = 1;
+		} else {
+			fdir_info->flex_flow_count[layer_idx]--;
+			if (!fdir_info->flex_flow_count[layer_idx])
+				pf->fdir.flex_pit_flag[layer_idx] = 0;
+		}
+	}
+
 	if (add) {
+		fdir_info->flow_count[pctype]++;
 		fdir_info->fdir_actual_cnt++;
 		if (fdir_info->fdir_invalprio == 1 &&
 				fdir_info->fdir_guarantee_free_space > 0)
 			fdir_info->fdir_guarantee_free_space--;
 	} else {
+		fdir_info->flow_count[pctype]--;
 		fdir_info->fdir_actual_cnt--;
 		if (fdir_info->fdir_invalprio == 1 &&
 				fdir_info->fdir_guarantee_free_space <

@@ -396,8 +396,6 @@ if cc.has_argument('-Wno-format-truncation')
     cflags += '-Wno-format-truncation'
 endif
 
-# specify -D_GNU_SOURCE unconditionally
-cflags += '-D_GNU_SOURCE'
 # Strict-aliasing rules are violated by uint8_t[] to context size casts.
 cflags += '-fno-strict-aliasing'
 
@@ -406,7 +404,7 @@ cflags += ['-DALLOW_INTERNAL_API']
 
 test_dep_objs = []
 if dpdk_conf.has('RTE_LIB_COMPRESSDEV')
-	compress_test_dep = dependency('zlib', required: false)
+	compress_test_dep = dependency('zlib', required: false, method: 'pkg-config')
 	if compress_test_dep.found()
 		test_dep_objs += compress_test_dep
 		test_sources += 'test_compressdev.c'
@@ -424,7 +422,6 @@ foreach d:test_deps
 	def_lib = get_option('default_library')
 	test_dep_objs += get_variable(def_lib + '_rte_' + d)
 endforeach
-test_dep_objs += cc.find_library('execinfo', required: false)
 
 link_libs = []
 if get_option('default_library') == 'static'
@@ -440,7 +437,7 @@ dpdk_test = executable('dpdk-test',
 			 driver_install_path),
 	install: true)
 
-has_hugepage = run_command('has-hugepage.sh').stdout().strip() != '0'
+has_hugepage = run_command('has-hugepage.sh', check: true).stdout().strip() != '0'
 message('hugepage availability: @0@'.format(has_hugepage))
 
 # some perf tests (eg: memcpy perf autotest)take very long

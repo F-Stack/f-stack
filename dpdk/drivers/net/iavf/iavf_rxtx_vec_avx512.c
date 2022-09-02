@@ -13,7 +13,7 @@
 #define IAVF_DESCS_PER_LOOP_AVX 8
 #define PKTLEN_SHIFT 10
 
-static inline void
+static __rte_always_inline void
 iavf_rxq_rearm(struct iavf_rx_queue *rxq)
 {
 	int i;
@@ -24,6 +24,9 @@ iavf_rxq_rearm(struct iavf_rx_queue *rxq)
 	struct rte_mbuf **rxp = &rxq->sw_ring[rxq->rxrearm_start];
 
 	rxdp = rxq->rx_ring + rxq->rxrearm_start;
+
+	if (unlikely(!cache))
+		return iavf_rxq_rearm_common(rxq, true);
 
 	/* We need to pull 'n' more MBUFs into the software ring from mempool
 	 * We inline the mempool function here, so we can vectorize the copy
@@ -380,7 +383,7 @@ _iavf_recv_raw_pkts_vec_avx512(struct iavf_rx_queue *rxq,
 								len4_7);
 		__m512i mb4_7 = _mm512_shuffle_epi8(desc4_7, shuf_msk);
 
-		mb4_7 = _mm512_add_epi16(mb4_7, crc_adjust);
+		mb4_7 = _mm512_add_epi32(mb4_7, crc_adjust);
 		/**
 		 * to get packet types, shift 64-bit values down 30 bits
 		 * and so ptype is in lower 8-bits in each
@@ -411,7 +414,7 @@ _iavf_recv_raw_pkts_vec_avx512(struct iavf_rx_queue *rxq,
 								len0_3);
 		__m512i mb0_3 = _mm512_shuffle_epi8(desc0_3, shuf_msk);
 
-		mb0_3 = _mm512_add_epi16(mb0_3, crc_adjust);
+		mb0_3 = _mm512_add_epi32(mb0_3, crc_adjust);
 		/* get the packet types */
 		const __m512i ptypes0_3 = _mm512_srli_epi64(desc0_3, 30);
 		const __m256i ptypes2_3 = _mm512_extracti64x4_epi64(ptypes0_3, 1);
@@ -638,7 +641,10 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 					struct rte_mbuf **rx_pkts,
 					uint16_t nb_pkts, uint8_t *split_packet)
 {
-	const uint32_t *type_table = rxq->vsi->adapter->ptype_tbl;
+	struct iavf_adapter *adapter = rxq->vsi->adapter;
+
+	uint64_t offloads = adapter->dev_data->dev_conf.rxmode.offloads;
+	const uint32_t *type_table = adapter->ptype_tbl;
 
 	const __m256i mbuf_init = _mm256_set_epi64x(0, 0, 0,
 						    rxq->mbuf_initializer);
@@ -869,7 +875,7 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 		 */
 		__m512i mb4_7 = _mm512_shuffle_epi8(raw_desc4_7, shuf_msk);
 
-		mb4_7 = _mm512_add_epi16(mb4_7, crc_adjust);
+		mb4_7 = _mm512_add_epi32(mb4_7, crc_adjust);
 		/**
 		 * to get packet types, ptype is located in bit16-25
 		 * of each 128bits
@@ -898,7 +904,7 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 		 */
 		__m512i mb0_3 = _mm512_shuffle_epi8(raw_desc0_3, shuf_msk);
 
-		mb0_3 = _mm512_add_epi16(mb0_3, crc_adjust);
+		mb0_3 = _mm512_add_epi32(mb0_3, crc_adjust);
 		/**
 		 * to get packet types, ptype is located in bit16-25
 		 * of each 128bits
@@ -1011,8 +1017,7 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 		 * needs to load 2nd 16B of each desc for RSS hash parsing,
 		 * will cause performance drop to get into this context.
 		 */
-		if (rxq->vsi->adapter->eth_dev->data->dev_conf.rxmode.offloads &
-		    DEV_RX_OFFLOAD_RSS_HASH) {
+		if (offloads & DEV_RX_OFFLOAD_RSS_HASH) {
 			/* load bottom half of every 32B desc */
 			const __m128i raw_desc_bh7 =
 				_mm_load_si128
@@ -1676,7 +1681,7 @@ iavf_xmit_pkts_vec_avx512(void *tx_queue, struct rte_mbuf **tx_pkts,
 	return nb_tx;
 }
 
-static inline void
+void __rte_cold
 iavf_tx_queue_release_mbufs_avx512(struct iavf_tx_queue *txq)
 {
 	unsigned int i;
@@ -1696,13 +1701,9 @@ iavf_tx_queue_release_mbufs_avx512(struct iavf_tx_queue *txq)
 	}
 }
 
-static const struct iavf_txq_ops avx512_vec_txq_ops = {
-	.release_mbufs = iavf_tx_queue_release_mbufs_avx512,
-};
-
 int __rte_cold
 iavf_txq_vec_setup_avx512(struct iavf_tx_queue *txq)
 {
-	txq->ops = &avx512_vec_txq_ops;
+	txq->rel_mbufs_type = IAVF_REL_MBUFS_AVX512_VEC;
 	return 0;
 }

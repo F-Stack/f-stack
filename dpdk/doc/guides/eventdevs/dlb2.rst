@@ -178,20 +178,20 @@ A DLB2 eventdev contains one load-balanced and one directed credit pool. These
 pools' sizes are controlled by the nb_events_limit field in struct
 rte_event_dev_config. The load-balanced pool is sized to contain
 nb_events_limit credits, and the directed pool is sized to contain
-nb_events_limit/4 credits. The directed pool size can be overridden with the
-num_dir_credits vdev argument, like so:
+nb_events_limit/2 credits. The directed pool size can be overridden with the
+num_dir_credits devargs argument, like so:
 
     .. code-block:: console
 
-       --vdev=dlb1_event,num_dir_credits=<value>
+       --allow ea:00.0,num_dir_credits=<value>
 
 This can be used if the default allocation is too low or too high for the
-specific application needs. The PMD also supports a vdev arg that limits the
+specific application needs. The PMD also supports a devarg that limits the
 max_num_events reported by rte_event_dev_info_get():
 
     .. code-block:: console
 
-       --vdev=dlb1_event,max_num_events=<value>
+       --allow ea:00.0,max_num_events=<value>
 
 By default, max_num_events is reported as the total available load-balanced
 credits. If multiple DLB2-based applications are being used, it may be desirable
@@ -266,8 +266,8 @@ queue A.
 Due to this, workers should stop retrying after a time, release the events it
 is attempting to enqueue, and dequeue more events. It is important that the
 worker release the events and don't simply set them aside to retry the enqueue
-again later, because the port has limited history list size (by default, twice
-the port's dequeue_depth).
+again later, because the port has limited history list size (by default, same
+as port's dequeue_depth).
 
 Priority
 ~~~~~~~~
@@ -314,27 +314,6 @@ The PMD does not support the following configuration sequences:
 This sequence is not supported because the event device must be reconfigured
 before its ports or queues can be.
 
-Deferred Scheduling
-~~~~~~~~~~~~~~~~~~~
-
-The DLB2 PMD's default behavior for managing a CQ is to "pop" the CQ once per
-dequeued event before returning from rte_event_dequeue_burst(). This frees the
-corresponding entries in the CQ, which enables the DLB2 to schedule more events
-to it.
-
-To support applications seeking finer-grained scheduling control -- for example
-deferring scheduling to get the best possible priority scheduling and
-load-balancing -- the PMD supports a deferred scheduling mode. In this mode,
-the CQ entry is not popped until the *subsequent* rte_event_dequeue_burst()
-call. This mode only applies to load-balanced event ports with dequeue depth of
-1.
-
-To enable deferred scheduling, use the defer_sched vdev argument like so:
-
-    .. code-block:: console
-
-       --vdev=dlb1_event,defer_sched=on
-
 Atomic Inflights Allocation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -351,17 +330,10 @@ scheduled. The likelihood of this case depends on the eventdev configuration,
 traffic behavior, event processing latency, potential for a worker to be
 interrupted or otherwise delayed, etc.
 
-By default, the PMD allocates 16 buffer entries for each load-balanced queue,
-which provides an even division across all 128 queues but potentially wastes
+By default, the PMD allocates 64 buffer entries for each load-balanced queue,
+which provides an even division across all 32 queues but potentially wastes
 buffer space (e.g. if not all queues are used, or aren't used for atomic
 scheduling).
-
-The PMD provides a dev arg to override the default per-queue allocation. To
-increase a vdev's per-queue atomic-inflight allocation to (for example) 64:
-
-    .. code-block:: console
-
-       --vdev=dlb1_event,atm_inflights=64
 
 QID Depth Threshold
 ~~~~~~~~~~~~~~~~~~~
@@ -379,14 +351,14 @@ Per queue threshold metrics are tracked in the DLB2 xstats, and are also
 returned in the impl_opaque field of each received event.
 
 The per qid threshold can be specified as part of the device args, and
-can be applied to all queue, a range of queues, or a single queue, as
+can be applied to all queues, a range of queues, or a single queue, as
 shown below.
 
     .. code-block:: console
 
-       --vdev=dlb2_event,qid_depth_thresh=all:<threshold_value>
-       --vdev=dlb2_event,qid_depth_thresh=qidA-qidB:<threshold_value>
-       --vdev=dlb2_event,qid_depth_thresh=qid:<threshold_value>
+       --allow ea:00.0,qid_depth_thresh=all:<threshold_value>
+       --allow ea:00.0,qid_depth_thresh=qidA-qidB:<threshold_value>
+       --allow ea:00.0,qid_depth_thresh=qid:<threshold_value>
 
 Class of service
 ~~~~~~~~~~~~~~~~
@@ -408,4 +380,4 @@ Class of service can be specified in the devargs, as follows
 
     .. code-block:: console
 
-       --vdev=dlb2_event,cos=<0..4>
+       --allow ea:00.0,cos=<0..4>

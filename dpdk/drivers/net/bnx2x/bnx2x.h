@@ -681,13 +681,13 @@ struct bnx2x_slowpath {
 }; /* struct bnx2x_slowpath */
 
 /*
- * Port specifc data structure.
+ * Port specific data structure.
  */
 struct bnx2x_port {
     /*
      * Port Management Function (for 57711E only).
      * When this field is set the driver instance is
-     * responsible for managing port specifc
+     * responsible for managing port specific
      * configurations such as handling link attentions.
      */
     uint32_t pmf;
@@ -732,7 +732,7 @@ struct bnx2x_port {
 
     /*
      * MCP scratchpad address for port specific statistics.
-     * The device is responsible for writing statistcss
+     * The device is responsible for writing statistics
      * back to the MCP for use with management firmware such
      * as UMP/NC-SI.
      */
@@ -937,8 +937,8 @@ struct bnx2x_devinfo {
  * already registered for this port (which means that the user wants storage
  * services).
  * 2. During cnic-related load, to know if offload mode is already configured
- * in the HW or needs to be configrued. Since the transition from nic-mode to
- * offload-mode in HW causes traffic coruption, nic-mode is configured only
+ * in the HW or needs to be configured. Since the transition from nic-mode to
+ * offload-mode in HW causes traffic corruption, nic-mode is configured only
  * in ports on which storage services where never requested.
  */
 #define CONFIGURE_NIC_MODE(sc) (!CHIP_IS_E1x(sc) && !CNIC_ENABLED(sc))
@@ -1902,18 +1902,19 @@ bnx2x_hc_ack_sb(struct bnx2x_softc *sc, uint8_t sb_id, uint8_t storm,
 {
 	uint32_t hc_addr = (HC_REG_COMMAND_REG + SC_PORT(sc) * 32 +
 			COMMAND_REG_INT_ACK);
-	struct igu_ack_register igu_ack;
-	uint32_t *val = NULL;
+	union {
+		struct igu_ack_register igu_ack;
+		uint32_t val;
+	} val;
 
-	igu_ack.status_block_index = index;
-	igu_ack.sb_id_and_flags =
+	val.igu_ack.status_block_index = index;
+	val.igu_ack.sb_id_and_flags =
 		((sb_id << IGU_ACK_REGISTER_STATUS_BLOCK_ID_SHIFT) |
 		 (storm << IGU_ACK_REGISTER_STORM_ID_SHIFT) |
 		 (update << IGU_ACK_REGISTER_UPDATE_INDEX_SHIFT) |
 		 (op << IGU_ACK_REGISTER_INTERRUPT_MODE_SHIFT));
 
-	val = (uint32_t *)&igu_ack;
-	REG_WR(sc, hc_addr, *val);
+	REG_WR(sc, hc_addr, val.val);
 
 	/* Make sure that ACK is written */
 	mb();

@@ -331,7 +331,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 		else
 			dev->kdrv = RTE_PCI_KDRV_UNKNOWN;
 	} else {
-		dev->kdrv = RTE_PCI_KDRV_NONE;
+		free(dev);
 		return 0;
 	}
 	/* device is valid, add in list (sorted) */
@@ -569,7 +569,7 @@ pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 
 	/* Check for a PowerNV platform */
 	while (getline(&line, &len, fp) != -1) {
-		if (strstr(line, "platform") != NULL)
+		if (strstr(line, "platform") == NULL)
 			continue;
 
 		if (strstr(line, "PowerNV") != NULL) {

@@ -677,7 +677,7 @@ enetc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > ENETC_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads &=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -884,8 +884,6 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 	eth_dev->dev_ops = &enetc_ops;
 	eth_dev->rx_pkt_burst = &enetc_recv_pkts;
 	eth_dev->tx_pkt_burst = &enetc_xmit_pkts;
-
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* Retrieving and storing the HW base address of device */
 	hw->hw.reg = (void *)pci_dev->mem_resource[0].addr;

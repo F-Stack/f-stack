@@ -715,10 +715,11 @@ eth_vhost_install_intr(struct rte_eth_dev *dev)
 }
 
 static void
-update_queuing_status(struct rte_eth_dev *dev)
+update_queuing_status(struct rte_eth_dev *dev, bool wait_queuing)
 {
 	struct pmd_internal *internal = dev->data->dev_private;
 	struct vhost_queue *vq;
+	struct rte_vhost_vring_state *state;
 	unsigned int i;
 	int allow_queuing = 1;
 
@@ -729,13 +730,18 @@ update_queuing_status(struct rte_eth_dev *dev)
 	    rte_atomic32_read(&internal->dev_attached) == 0)
 		allow_queuing = 0;
 
+	state = vring_states[dev->data->port_id];
+
 	/* Wait until rx/tx_pkt_burst stops accessing vhost device */
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		vq = dev->data->rx_queues[i];
 		if (vq == NULL)
 			continue;
-		rte_atomic32_set(&vq->allow_queuing, allow_queuing);
-		while (rte_atomic32_read(&vq->while_queuing))
+		if (allow_queuing && state->cur[vq->virtqueue_id])
+			rte_atomic32_set(&vq->allow_queuing, 1);
+		else
+			rte_atomic32_set(&vq->allow_queuing, 0);
+		while (wait_queuing && rte_atomic32_read(&vq->while_queuing))
 			rte_pause();
 	}
 
@@ -743,8 +749,11 @@ update_queuing_status(struct rte_eth_dev *dev)
 		vq = dev->data->tx_queues[i];
 		if (vq == NULL)
 			continue;
-		rte_atomic32_set(&vq->allow_queuing, allow_queuing);
-		while (rte_atomic32_read(&vq->while_queuing))
+		if (allow_queuing && state->cur[vq->virtqueue_id])
+			rte_atomic32_set(&vq->allow_queuing, 1);
+		else
+			rte_atomic32_set(&vq->allow_queuing, 0);
+		while (wait_queuing && rte_atomic32_read(&vq->while_queuing))
 			rte_pause();
 	}
 }
@@ -826,7 +835,7 @@ new_device(int vid)
 	eth_dev->data->dev_link.link_status = ETH_LINK_UP;
 
 	rte_atomic32_set(&internal->dev_attached, 1);
-	update_queuing_status(eth_dev);
+	update_queuing_status(eth_dev, false);
 
 	VHOST_LOG(INFO, "Vhost device %d created\n", vid);
 
@@ -856,7 +865,7 @@ destroy_device(int vid)
 	internal = eth_dev->data->dev_private;
 
 	rte_atomic32_set(&internal->dev_attached, 0);
-	update_queuing_status(eth_dev);
+	update_queuing_status(eth_dev, true);
 
 	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 
@@ -962,6 +971,8 @@ vring_state_changed(int vid, uint16_t vring, int enable)
 	state->cur[vring] = enable;
 	state->max_vring = RTE_MAX(vring, state->max_vring);
 	rte_spinlock_unlock(&state->lock);
+
+	update_queuing_status(eth_dev, false);
 
 	VHOST_LOG(INFO, "vring%u is %s\n",
 			vring, enable ? "enabled" : "disabled");
@@ -1148,7 +1159,7 @@ eth_dev_start(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_atomic32_set(&internal->started, 1);
-	update_queuing_status(eth_dev);
+	update_queuing_status(eth_dev, false);
 
 	return 0;
 }
@@ -1160,7 +1171,7 @@ eth_dev_stop(struct rte_eth_dev *dev)
 
 	dev->data->dev_started = 0;
 	rte_atomic32_set(&internal->started, 0);
-	update_queuing_status(dev);
+	update_queuing_status(dev, true);
 
 	return 0;
 }
@@ -1593,11 +1604,11 @@ rte_pmd_vhost_probe(struct rte_vdev_device *dev)
 				&open_int, &tso);
 		if (ret < 0)
 			goto out_free;
+	}
 
-		if (tso == 0) {
-			disable_flags |= (1ULL << VIRTIO_NET_F_HOST_TSO4);
-			disable_flags |= (1ULL << VIRTIO_NET_F_HOST_TSO6);
-		}
+	if (tso == 0) {
+		disable_flags |= (1ULL << VIRTIO_NET_F_HOST_TSO4);
+		disable_flags |= (1ULL << VIRTIO_NET_F_HOST_TSO6);
 	}
 
 	if (rte_kvargs_count(kvlist, ETH_VHOST_LINEAR_BUF) == 1) {

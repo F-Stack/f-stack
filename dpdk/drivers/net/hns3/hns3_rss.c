@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #include <rte_ethdev.h>
@@ -9,10 +9,8 @@
 #include "hns3_ethdev.h"
 #include "hns3_logs.h"
 
-/*
- * The hash key used for rss initialization.
- */
-static const uint8_t hns3_hash_key[] = {
+/* Default hash keys */
+const uint8_t hns3_hash_key[] = {
 	0x6D, 0x5A, 0x56, 0xDA, 0x25, 0x5B, 0x0E, 0xC2,
 	0x41, 0x67, 0x25, 0x3D, 0x43, 0xA3, 0x8F, 0xB0,
 	0xD0, 0xCA, 0x2B, 0xCB, 0xAE, 0x7B, 0x30, 0xB4,
@@ -152,10 +150,6 @@ static const struct {
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_IP_D) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_TCP_S) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_TCP_D) },
-	{ ETH_RSS_NONFRAG_IPV4_TCP, BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_IP_S) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_IP_D) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_TCP_S) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV4_TCP_EN_TCP_D) },
 	{ ETH_RSS_NONFRAG_IPV4_UDP, BIT_ULL(HNS3_RSS_FIELD_IPV4_UDP_EN_IP_S) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_UDP_EN_IP_D) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_UDP_EN_UDP_S) |
@@ -242,31 +236,6 @@ hns3_set_rss_algo_key(struct hns3_hw *hw, const uint8_t *key)
 }
 
 /*
- * Used to configure the tuple selection for RSS hash input.
- */
-static int
-hns3_set_rss_input_tuple(struct hns3_hw *hw)
-{
-	struct hns3_rss_conf *rss_config = &hw->rss_info;
-	struct hns3_rss_input_tuple_cmd *req;
-	struct hns3_cmd_desc desc_tuple;
-	int ret;
-
-	hns3_cmd_setup_basic_desc(&desc_tuple, HNS3_OPC_RSS_INPUT_TUPLE, false);
-
-	req = (struct hns3_rss_input_tuple_cmd *)desc_tuple.data;
-
-	req->tuple_field =
-		rte_cpu_to_le_64(rss_config->rss_tuple_sets.rss_tuple_fields);
-
-	ret = hns3_cmd_send(hw, &desc_tuple, 1);
-	if (ret)
-		hns3_err(hw, "Configure RSS input tuple mode failed %d", ret);
-
-	return ret;
-}
-
-/*
  * rss_indirection_table command function, opcode:0x0D07.
  * Used to configure the indirection table of rss.
  */
@@ -312,7 +281,7 @@ hns3_set_rss_indir_table(struct hns3_hw *hw, uint16_t *indir, uint16_t size)
 
 	/* Update redirection table of hw */
 	memcpy(hw->rss_info.rss_indirection_tbl, indir,
-	       sizeof(hw->rss_info.rss_indirection_tbl));
+	       sizeof(uint16_t) * size);
 
 	return 0;
 }
@@ -324,13 +293,13 @@ hns3_rss_reset_indir_table(struct hns3_hw *hw)
 	int ret;
 
 	lut = rte_zmalloc("hns3_rss_lut",
-			  HNS3_RSS_IND_TBL_SIZE * sizeof(uint16_t), 0);
+			  hw->rss_ind_tbl_size * sizeof(uint16_t), 0);
 	if (lut == NULL) {
 		hns3_err(hw, "No hns3_rss_lut memory can be allocated");
 		return -ENOMEM;
 	}
 
-	ret = hns3_set_rss_indir_table(hw, lut, HNS3_RSS_IND_TBL_SIZE);
+	ret = hns3_set_rss_indir_table(hw, lut, hw->rss_ind_tbl_size);
 	if (ret)
 		hns3_err(hw, "RSS uninit indir table failed: %d", ret);
 	rte_free(lut);
@@ -339,8 +308,7 @@ hns3_rss_reset_indir_table(struct hns3_hw *hw)
 }
 
 int
-hns3_set_rss_tuple_by_rss_hf(struct hns3_hw *hw,
-			     struct hns3_rss_tuple_cfg *tuple, uint64_t rss_hf)
+hns3_set_rss_tuple_by_rss_hf(struct hns3_hw *hw, uint64_t rss_hf)
 {
 	struct hns3_rss_input_tuple_cmd *req;
 	struct hns3_cmd_desc desc;
@@ -385,7 +353,8 @@ hns3_set_rss_tuple_by_rss_hf(struct hns3_hw *hw,
 		return ret;
 	}
 
-	tuple->rss_tuple_fields = rte_le_to_cpu_64(req->tuple_field);
+	/* Update supported flow types when set tuple success */
+	hw->rss_info.conf.types = rss_hf;
 
 	return 0;
 }
@@ -403,55 +372,36 @@ int
 hns3_dev_rss_hash_update(struct rte_eth_dev *dev,
 			 struct rte_eth_rss_conf *rss_conf)
 {
-	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
-	struct hns3_rss_tuple_cfg *tuple = &hw->rss_info.rss_tuple_sets;
-	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
+	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint64_t rss_hf_bk = hw->rss_info.conf.types;
 	uint8_t key_len = rss_conf->rss_key_len;
 	uint64_t rss_hf = rss_conf->rss_hf;
 	uint8_t *key = rss_conf->rss_key;
 	int ret;
 
-	if (hw->rss_dis_flag)
+	if (key && key_len != HNS3_RSS_KEY_SIZE) {
+		hns3_err(hw, "the hash key len(%u) is invalid, must be %u",
+			 key_len, HNS3_RSS_KEY_SIZE);
 		return -EINVAL;
-
-	rte_spinlock_lock(&hw->lock);
-	ret = hns3_set_rss_tuple_by_rss_hf(hw, tuple, rss_hf);
-	if (ret)
-		goto conf_err;
-
-	if (rss_cfg->conf.types && rss_hf == 0) {
-		/* Disable RSS, reset indirection table by local variable */
-		ret = hns3_rss_reset_indir_table(hw);
-		if (ret)
-			goto conf_err;
-	} else if (rss_hf && rss_cfg->conf.types == 0) {
-		/* Enable RSS, restore indirection table by hw's config */
-		ret = hns3_set_rss_indir_table(hw, rss_cfg->rss_indirection_tbl,
-					       HNS3_RSS_IND_TBL_SIZE);
-		if (ret)
-			goto conf_err;
 	}
 
-	/* Update supported flow types when set tuple success */
-	rss_cfg->conf.types = rss_hf;
+	rte_spinlock_lock(&hw->lock);
+	ret = hns3_set_rss_tuple_by_rss_hf(hw, rss_hf);
+	if (ret)
+		goto set_tuple_fail;
 
 	if (key) {
-		if (key_len != HNS3_RSS_KEY_SIZE) {
-			hns3_err(hw, "The hash key len(%u) is invalid",
-				 key_len);
-			ret = -EINVAL;
-			goto conf_err;
-		}
 		ret = hns3_set_rss_algo_key(hw, key);
 		if (ret)
-			goto conf_err;
+			goto set_algo_key_fail;
 	}
 	rte_spinlock_unlock(&hw->lock);
 
 	return 0;
 
-conf_err:
+set_algo_key_fail:
+	(void)hns3_set_rss_tuple_by_rss_hf(hw, rss_hf_bk);
+set_tuple_fail:
 	rte_spinlock_unlock(&hw->lock);
 	return ret;
 }
@@ -505,15 +455,15 @@ hns3_dev_rss_reta_update(struct rte_eth_dev *dev,
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
-	uint16_t i, indir_size = HNS3_RSS_IND_TBL_SIZE; /* Table size is 512 */
-	uint16_t indirection_tbl[HNS3_RSS_IND_TBL_SIZE];
+	uint16_t indirection_tbl[HNS3_RSS_IND_TBL_SIZE_MAX];
 	uint16_t idx, shift;
+	uint16_t i;
 	int ret;
 
-	if (reta_size != indir_size || reta_size > ETH_RSS_RETA_SIZE_512) {
+	if (reta_size != hw->rss_ind_tbl_size) {
 		hns3_err(hw, "The size of hash lookup table configured (%u)"
 			 "doesn't match the number hardware can supported"
-			 "(%u)", reta_size, indir_size);
+			 "(%u)", reta_size, hw->rss_ind_tbl_size);
 		return -EINVAL;
 	}
 	rte_spinlock_lock(&hw->lock);
@@ -536,7 +486,7 @@ hns3_dev_rss_reta_update(struct rte_eth_dev *dev,
 	}
 
 	ret = hns3_set_rss_indir_table(hw, indirection_tbl,
-				       HNS3_RSS_IND_TBL_SIZE);
+				       hw->rss_ind_tbl_size);
 
 	rte_spinlock_unlock(&hw->lock);
 	return ret;
@@ -561,13 +511,13 @@ hns3_dev_rss_reta_query(struct rte_eth_dev *dev,
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
-	uint16_t i, indir_size = HNS3_RSS_IND_TBL_SIZE; /* Table size is 512 */
 	uint16_t idx, shift;
+	uint16_t i;
 
-	if (reta_size != indir_size || reta_size > ETH_RSS_RETA_SIZE_512) {
+	if (reta_size != hw->rss_ind_tbl_size) {
 		hns3_err(hw, "The size of hash lookup table configured (%u)"
 			 " doesn't match the number hardware can supported"
-			 "(%u)", reta_size, indir_size);
+			 "(%u)", reta_size, hw->rss_ind_tbl_size);
 		return -EINVAL;
 	}
 	rte_spinlock_lock(&hw->lock);
@@ -582,33 +532,59 @@ hns3_dev_rss_reta_query(struct rte_eth_dev *dev,
 	return 0;
 }
 
-/*
- * Used to configure the tc_size and tc_offset.
- */
+static void
+hns3_set_rss_tc_mode_entry(struct hns3_hw *hw, uint8_t *tc_valid,
+			   uint16_t *tc_size, uint16_t *tc_offset,
+			   uint8_t tc_num)
+{
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+	uint16_t rss_size = hw->alloc_rss_size;
+	uint16_t roundup_size;
+	uint16_t i;
+
+	roundup_size = roundup_pow_of_two(rss_size);
+	roundup_size = ilog2(roundup_size);
+
+	for (i = 0; i < tc_num; i++) {
+		if (hns->is_vf) {
+			/*
+			 * For packets with VLAN priorities destined for the VF,
+			 * hardware still assign Rx queue based on the Up-to-TC
+			 * mapping PF configured. But VF has only one TC. If
+			 * other TC don't enable, it causes that the priority
+			 * packets that aren't destined for TC0 aren't received
+			 * by RSS hash but is destined for queue 0. So driver
+			 * has to enable the unused TC by using TC0 queue
+			 * mapping configuration.
+			 */
+			tc_valid[i] = (hw->hw_tc_map & BIT(i)) ?
+					!!(hw->hw_tc_map & BIT(i)) : 1;
+			tc_size[i] = roundup_size;
+			tc_offset[i] = (hw->hw_tc_map & BIT(i)) ?
+					rss_size * i : 0;
+		} else {
+			tc_valid[i] = !!(hw->hw_tc_map & BIT(i));
+			tc_size[i] = tc_valid[i] ? roundup_size : 0;
+			tc_offset[i] = tc_valid[i] ? rss_size * i : 0;
+		}
+	}
+}
+
 static int
 hns3_set_rss_tc_mode(struct hns3_hw *hw)
 {
-	uint16_t rss_size = hw->alloc_rss_size;
 	struct hns3_rss_tc_mode_cmd *req;
 	uint16_t tc_offset[HNS3_MAX_TC_NUM];
 	uint8_t tc_valid[HNS3_MAX_TC_NUM];
 	uint16_t tc_size[HNS3_MAX_TC_NUM];
 	struct hns3_cmd_desc desc;
-	uint16_t roundup_size;
 	uint16_t i;
 	int ret;
 
+	hns3_set_rss_tc_mode_entry(hw, tc_valid, tc_size,
+				   tc_offset, HNS3_MAX_TC_NUM);
+
 	req = (struct hns3_rss_tc_mode_cmd *)desc.data;
-
-	roundup_size = roundup_pow_of_two(rss_size);
-	roundup_size = ilog2(roundup_size);
-
-	for (i = 0; i < HNS3_MAX_TC_NUM; i++) {
-		tc_valid[i] = !!(hw->hw_tc_map & BIT(i));
-		tc_size[i] = roundup_size;
-		tc_offset[i] = rss_size * i;
-	}
-
 	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_RSS_TC_MODE, false);
 	for (i = 0; i < HNS3_MAX_TC_NUM; i++) {
 		uint16_t mode = 0;
@@ -667,12 +643,12 @@ hns3_set_default_rss_args(struct hns3_hw *hw)
 	memcpy(rss_cfg->key, hns3_hash_key, HNS3_RSS_KEY_SIZE);
 
 	/* Initialize RSS indirection table */
-	for (i = 0; i < HNS3_RSS_IND_TBL_SIZE; i++)
+	for (i = 0; i < hw->rss_ind_tbl_size; i++)
 		rss_cfg->rss_indirection_tbl[i] = i % queue_num;
 }
 
 /*
- * RSS initialization for hns3 pmd driver.
+ * RSS initialization for hns3 PMD.
  */
 int
 hns3_config_rss(struct hns3_adapter *hns)
@@ -680,7 +656,8 @@ hns3_config_rss(struct hns3_adapter *hns)
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
 	uint8_t *hash_key = rss_cfg->key;
-	int ret, ret1;
+	uint64_t rss_hf;
+	int ret;
 
 	enum rte_eth_rx_mq_mode mq_mode = hw->data->dev_conf.rxmode.mq_mode;
 
@@ -696,55 +673,34 @@ hns3_config_rss(struct hns3_adapter *hns)
 		break;
 	}
 
-	/* When RSS is off, redirect the packet queue 0 */
-	if (((uint32_t)mq_mode & ETH_MQ_RX_RSS_FLAG) == 0)
-		hns3_rss_uninit(hns);
-
 	/* Configure RSS hash algorithm and hash key offset */
 	ret = hns3_set_rss_algo_key(hw, hash_key);
 	if (ret)
 		return ret;
 
-	/* Configure the tuple selection for RSS hash input */
-	ret = hns3_set_rss_input_tuple(hw);
+	ret = hns3_set_rss_indir_table(hw, rss_cfg->rss_indirection_tbl,
+				       hw->rss_ind_tbl_size);
+	if (ret)
+		return ret;
+
+	ret = hns3_set_rss_tc_mode(hw);
 	if (ret)
 		return ret;
 
 	/*
-	 * When RSS is off, it doesn't need to configure rss redirection table
-	 * to hardware.
+	 * When muli-queue RSS mode flag is not set or unsupported tuples are
+	 * set, disable all tuples.
 	 */
-	if (((uint32_t)mq_mode & ETH_MQ_RX_RSS_FLAG)) {
-		ret = hns3_set_rss_indir_table(hw, rss_cfg->rss_indirection_tbl,
-					       HNS3_RSS_IND_TBL_SIZE);
-		if (ret)
-			goto rss_tuple_uninit;
-	}
+	rss_hf = hw->rss_info.conf.types;
+	if (!((uint32_t)mq_mode & ETH_MQ_RX_RSS_FLAG) ||
+	    !(rss_hf & HNS3_ETH_RSS_SUPPORT))
+		rss_hf = 0;
 
-	ret = hns3_set_rss_tc_mode(hw);
-	if (ret)
-		goto rss_indir_table_uninit;
-
-	return ret;
-
-rss_indir_table_uninit:
-	if (((uint32_t)mq_mode & ETH_MQ_RX_RSS_FLAG)) {
-		ret1 = hns3_rss_reset_indir_table(hw);
-		if (ret1 != 0)
-			return ret;
-	}
-
-rss_tuple_uninit:
-	hns3_rss_tuple_uninit(hw);
-
-	/* Disable RSS */
-	hw->rss_info.conf.types = 0;
-
-	return ret;
+	return hns3_set_rss_tuple_by_rss_hf(hw, rss_hf);
 }
 
 /*
- * RSS uninitialization for hns3 pmd driver.
+ * RSS uninitialization for hns3 PMD.
  */
 void
 hns3_rss_uninit(struct hns3_adapter *hns)

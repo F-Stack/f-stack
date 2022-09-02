@@ -26,6 +26,10 @@
 
 #define DPAA2_RX_DEFAULT_NBDESC 512
 
+#define DPAA2_ETH_MAX_LEN (RTE_ETHER_MTU + \
+			   RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
+			   VLAN_TAG_SIZE)
+
 /*default tc to be used for ,congestion, distribution etc configuration. */
 #define DPAA2_DEF_TC		0
 
@@ -55,6 +59,8 @@
 
 /* Disable RX tail drop, default is enable */
 #define DPAA2_RX_TAILDROP_OFF	0x04
+/* Tx confirmation enabled */
+#define DPAA2_TX_CONF_ENABLE	0x06
 
 #define DPAA2_RSS_OFFLOAD_ALL ( \
 	ETH_RSS_L2_PAYLOAD | \
@@ -103,7 +109,7 @@ extern int dpaa2_timestamp_dynfield_offset;
 
 #define DPAA2_FLOW_MAX_KEY_SIZE		16
 
-/*Externaly defined*/
+/* Externally defined */
 extern const struct rte_flow_ops dpaa2_flow_ops;
 extern enum rte_filter_type dpaa2_filter_type;
 

@@ -112,7 +112,7 @@ The command line options are:
     Set the data size of the mbufs used to N bytes, where N < 65536.
     The default value is 2048. If multiple mbuf-size values are specified the
     extra memory pools will be created for allocating mbufs to receive packets
-    with buffer splittling features.
+    with buffer splitting features.
 
 *   ``--total-num-mbufs=N``
 
@@ -524,8 +524,10 @@ The command line options are:
 
 *   ``--hairpin-mode=0xXX``
 
-    Set the hairpin port mode with bitmask, only valid when hairpin queues number is set.
-    bit 4 - explicit Tx flow rule
-    bit 1 - two hairpin ports paired
-    bit 0 - two hairpin ports loop
+    Set the hairpin port mode with bitmask, only valid when hairpin queues number is set::
+
+	bit 4 - explicit Tx flow rule
+	bit 1 - two hairpin ports paired
+	bit 0 - two hairpin ports loop
+
     The default value is 0. Hairpin will use single port mode and implicit Tx flow mode.

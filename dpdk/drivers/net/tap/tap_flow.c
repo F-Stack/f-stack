@@ -961,7 +961,7 @@ add_action(struct rte_flow *flow, size_t *act_index, struct action_data *adata)
 }
 
 /**
- * Helper function to send a serie of TC actions to the kernel
+ * Helper function to send a series of TC actions to the kernel
  *
  * @param[in] flow
  *   Pointer to rte flow containing the netlink message
@@ -1300,10 +1300,16 @@ tap_flow_validate(struct rte_eth_dev *dev,
 static void
 tap_flow_set_handle(struct rte_flow *flow)
 {
+	union {
+		struct rte_flow *flow;
+		const void *key;
+	} tmp;
 	uint32_t handle = 0;
 
+	tmp.flow = flow;
+
 	if (sizeof(flow) > 4)
-		handle = rte_jhash(&flow, sizeof(flow), 1);
+		handle = rte_jhash(tmp.key, sizeof(flow), 1);
 	else
 		handle = (uintptr_t)flow;
 	/* must be at least 1 to avoid letting the kernel choose one for us */
@@ -2011,7 +2017,7 @@ static int bpf_rss_key(enum bpf_rss_key_e cmd, __u32 *key_idx)
 			break;
 
 		/*
-		 * Subtract offest to restore real key index
+		 * Subtract offset to restore real key index
 		 * If a non RSS flow is falsely trying to release map
 		 * entry 0 - the offset subtraction will calculate the real
 		 * map index as an out-of-range value and the release operation

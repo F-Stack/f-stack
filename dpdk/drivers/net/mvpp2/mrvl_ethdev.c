@@ -398,12 +398,18 @@ mrvl_dev_configure(struct rte_eth_dev *dev)
 	    dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_RSS) {
 		MRVL_LOG(WARNING, "Disabling hash for 1 rx queue");
 		priv->ppio_params.inqs_params.hash_type = PP2_PPIO_HASH_T_NONE;
-
+		priv->configured = 1;
 		return 0;
 	}
 
-	return mrvl_configure_rss(priv,
-				  &dev->data->dev_conf.rx_adv_conf.rss_conf);
+	ret = mrvl_configure_rss(priv,
+			&dev->data->dev_conf.rx_adv_conf.rss_conf);
+	if (ret < 0)
+		return ret;
+
+	priv->configured = 1;
+
+	return 0;
 }
 
 /**
@@ -441,10 +447,10 @@ mrvl_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	 * when this feature has not been enabled/supported so far
 	 * (TODO check scattered_rx flag here once scattered RX is supported).
 	 */
-	if (mru + MRVL_PKT_OFFS > mbuf_data_size) {
-		mru = mbuf_data_size - MRVL_PKT_OFFS;
+	if (mru - RTE_ETHER_CRC_LEN + MRVL_PKT_OFFS > mbuf_data_size) {
+		mru = mbuf_data_size + RTE_ETHER_CRC_LEN - MRVL_PKT_OFFS;
 		mtu = MRVL_PP2_MRU_TO_MTU(mru);
-		MRVL_LOG(WARNING, "MTU too big, max MTU possible limitted "
+		MRVL_LOG(WARNING, "MTU too big, max MTU possible limited "
 			"by current mbuf size: %u. Set MTU to %u, MRU to %u",
 			mbuf_data_size, mtu, mru);
 	}
@@ -671,18 +677,6 @@ mrvl_dev_start(struct rte_eth_dev *dev)
 		priv->uc_mc_flushed = 1;
 	}
 
-	if (!priv->vlan_flushed) {
-		ret = pp2_ppio_flush_vlan(priv->ppio);
-		if (ret) {
-			MRVL_LOG(ERR, "Failed to flush vlan list");
-			/*
-			 * TODO
-			 * once pp2_ppio_flush_vlan() is supported jump to out
-			 * goto out;
-			 */
-		}
-		priv->vlan_flushed = 1;
-	}
 	ret = mrvl_mtu_set(dev, dev->data->mtu);
 	if (ret)
 		MRVL_LOG(ERR, "Failed to set MTU to %d", dev->data->mtu);
@@ -1382,13 +1376,14 @@ mrvl_xstats_get(struct rte_eth_dev *dev,
 {
 	struct mrvl_priv *priv = dev->data->dev_private;
 	struct pp2_ppio_statistics ppio_stats;
-	unsigned int i;
+	unsigned int i, count;
 
-	if (!stats)
-		return 0;
+	count = RTE_DIM(mrvl_xstats_tbl);
+	if (n < count)
+		return count;
 
 	pp2_ppio_get_statistics(priv->ppio, &ppio_stats, 0);
-	for (i = 0; i < n && i < RTE_DIM(mrvl_xstats_tbl); i++) {
+	for (i = 0; i < count; i++) {
 		uint64_t val;
 
 		if (mrvl_xstats_tbl[i].size == sizeof(uint32_t))
@@ -1404,7 +1399,7 @@ mrvl_xstats_get(struct rte_eth_dev *dev,
 		stats[i].value = val;
 	}
 
-	return n;
+	return count;
 }
 
 /**
@@ -1614,8 +1609,8 @@ mrvl_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 static int
 mrvl_fill_bpool(struct mrvl_rxq *rxq, int num)
 {
-	struct buff_release_entry entries[MRVL_PP2_RXD_MAX];
-	struct rte_mbuf *mbufs[MRVL_PP2_RXD_MAX];
+	struct buff_release_entry entries[num];
+	struct rte_mbuf *mbufs[num];
 	int i, ret;
 	unsigned int core_id;
 	struct pp2_hif *hif;
@@ -1711,7 +1706,8 @@ mrvl_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		return -EFAULT;
 	}
 
-	frame_size = buf_size - RTE_PKTMBUF_HEADROOM - MRVL_PKT_EFFEC_OFFS;
+	frame_size = buf_size - RTE_PKTMBUF_HEADROOM -
+		     MRVL_PKT_EFFEC_OFFS + RTE_ETHER_CRC_LEN;
 	if (frame_size < max_rx_pkt_len) {
 		MRVL_LOG(WARNING,
 			"Mbuf size must be increased to %u bytes to hold up "
@@ -2171,7 +2167,6 @@ mrvl_desc_to_packet_type_and_offset(struct pp2_ppio_desc *desc,
 		*l4_offset = *l3_offset + MRVL_ARP_LENGTH;
 		break;
 	default:
-		MRVL_LOG(DEBUG, "Failed to recognise l3 packet type");
 		break;
 	}
 
@@ -2183,7 +2178,6 @@ mrvl_desc_to_packet_type_and_offset(struct pp2_ppio_desc *desc,
 		packet_type |= RTE_PTYPE_L4_UDP;
 		break;
 	default:
-		MRVL_LOG(DEBUG, "Failed to recognise l4 packet type");
 		break;
 	}
 
@@ -2253,10 +2247,9 @@ mrvl_rx_pkt_burst(void *rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 	ret = pp2_ppio_recv(q->priv->ppio, q->priv->rxq_map[q->queue_id].tc,
 			    q->priv->rxq_map[q->queue_id].inq, descs, &nb_pkts);
-	if (unlikely(ret < 0)) {
-		MRVL_LOG(ERR, "Failed to receive packets");
+	if (unlikely(ret < 0))
 		return 0;
-	}
+
 	mrvl_port_bpool_size[bpool->pp2_id][bpool->id][core_id] -= nb_pkts;
 
 	for (i = 0; i < nb_pkts; i++) {
@@ -2319,20 +2312,12 @@ mrvl_rx_pkt_burst(void *rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		if (unlikely(num <= q->priv->bpool_min_size ||
 			     (!rx_done && num < q->priv->bpool_init_size))) {
-			ret = mrvl_fill_bpool(q, MRVL_BURST_SIZE);
-			if (ret)
-				MRVL_LOG(ERR, "Failed to fill bpool");
+			mrvl_fill_bpool(q, MRVL_BURST_SIZE);
 		} else if (unlikely(num > q->priv->bpool_max_size)) {
 			int i;
 			int pkt_to_remove = num - q->priv->bpool_init_size;
 			struct rte_mbuf *mbuf;
 			struct pp2_buff_inf buff;
-
-			MRVL_LOG(DEBUG,
-				"port-%d:%d: bpool %d oversize - remove %d buffers (pool size: %d -> %d)",
-				bpool->pp2_id, q->priv->ppio->port_id,
-				bpool->id, pkt_to_remove, num,
-				q->priv->bpool_init_size);
 
 			for (i = 0; i < pkt_to_remove; i++) {
 				ret = pp2_bpool_get_buff(hif, bpool, &buff);
@@ -2526,12 +2511,8 @@ mrvl_tx_pkt_burst(void *txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				       sq, q->queue_id, 0);
 
 	sq_free_size = MRVL_PP2_TX_SHADOWQ_SIZE - sq->size - 1;
-	if (unlikely(nb_pkts > sq_free_size)) {
-		MRVL_LOG(DEBUG,
-			"No room in shadow queue for %d packets! %d packets will be sent.",
-			nb_pkts, sq_free_size);
+	if (unlikely(nb_pkts > sq_free_size))
 		nb_pkts = sq_free_size;
-	}
 
 	for (i = 0; i < nb_pkts; i++) {
 		struct rte_mbuf *mbuf = tx_pkts[i];
@@ -2648,10 +2629,6 @@ mrvl_tx_sg_pkt_burst(void *txq, struct rte_mbuf **tx_pkts,
 		 */
 		if (unlikely(total_descs > sq_free_size)) {
 			total_descs -= nb_segs;
-			RTE_LOG(DEBUG, PMD,
-				"No room in shadow queue for %d packets! "
-				"%d packets will be sent.\n",
-				nb_pkts, i);
 			break;
 		}
 

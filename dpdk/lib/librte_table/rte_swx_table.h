@@ -127,12 +127,6 @@ typedef uint64_t
  * progress and it is passed as a parameter to the lookup operation. This allows
  * for multiple concurrent lookup operations into the same table.
  *
- * @param[in] params
- *   Table creation parameters.
- * @param[in] entries
- *   Entries to be added to the table at creation time.
- * @param[in] args
- *   Any additional table create arguments. It may be NULL.
  * @return
  *   Table memory footprint in bytes, on success, or zero, on error.
  */
@@ -211,7 +205,7 @@ typedef int
  * operations into the same table.
  *
  * The typical reason an implementation may choose to split the table lookup
- * operation into multiple steps is to hide the latency of the inherrent memory
+ * operation into multiple steps is to hide the latency of the inherent memory
  * read operations: before a read operation with the source data likely not in
  * the CPU cache, the source data prefetch is issued and the table lookup
  * operation is postponed in favor of some other unrelated work, which the CPU

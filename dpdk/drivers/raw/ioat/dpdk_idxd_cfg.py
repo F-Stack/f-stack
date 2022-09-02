@@ -29,24 +29,31 @@ class SysfsDir:
                 f.write(str(contents))
 
 
+def get_drv_dir(dtype):
+    "Get the sysfs path for the driver, either 'idxd' or 'user'"
+    drv_dir = "/sys/bus/dsa/drivers/" + dtype
+    if not os.path.exists(drv_dir):
+        return "/sys/bus/dsa/drivers/dsa"
+    return drv_dir
+
+
 def configure_dsa(dsa_id, queues):
     "Configure the DSA instance with appropriate number of queues"
     dsa_dir = SysfsDir(f"/sys/bus/dsa/devices/dsa{dsa_id}")
-    drv_dir = SysfsDir("/sys/bus/dsa/drivers/dsa")
 
     max_groups = dsa_dir.read_int("max_groups")
     max_engines = dsa_dir.read_int("max_engines")
     max_queues = dsa_dir.read_int("max_work_queues")
-    max_tokens = dsa_dir.read_int("max_tokens")
-
-    # we want one engine per group
-    nb_groups = min(max_engines, max_groups)
-    for grp in range(nb_groups):
-        dsa_dir.write_values({f"engine{dsa_id}.{grp}/group_id": grp})
+    max_work_queues_size = dsa_dir.read_int("max_work_queues_size")
 
     nb_queues = min(queues, max_queues)
     if queues > nb_queues:
         print(f"Setting number of queues to max supported value: {max_queues}")
+
+    # we want one engine per group, and no more engines than queues
+    nb_groups = min(max_engines, max_groups, nb_queues)
+    for grp in range(nb_groups):
+        dsa_dir.write_values({f"engine{dsa_id}.{grp}/group_id": grp})
 
     # configure each queue
     for q in range(nb_queues):
@@ -56,12 +63,16 @@ def configure_dsa(dsa_id, queues):
                              "mode": "dedicated",
                              "name": f"dpdk_wq{dsa_id}.{q}",
                              "priority": 1,
-                             "size": int(max_tokens / nb_queues)})
+                             "max_batch_size": 1024,
+                             "size": int(max_work_queues_size / nb_queues)})
 
     # enable device and then queues
-    drv_dir.write_values({"bind": f"dsa{dsa_id}"})
+    idxd_dir = SysfsDir(get_drv_dir("idxd"))
+    idxd_dir.write_values({"bind": f"dsa{dsa_id}"})
+
+    user_dir = SysfsDir(get_drv_dir("user"))
     for q in range(nb_queues):
-        drv_dir.write_values({"bind": f"wq{dsa_id}.{q}"})
+        user_dir.write_values({"bind": f"wq{dsa_id}.{q}"})
 
 
 def main(args):

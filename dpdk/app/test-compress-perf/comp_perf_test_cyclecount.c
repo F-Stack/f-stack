@@ -76,7 +76,6 @@ cperf_cyclecount_op_setup(struct rte_comp_op **ops,
 
 	for (iter = 0; iter < num_iter; iter++) {
 		uint32_t remaining_ops = mem->total_bufs;
-		uint32_t total_deq_ops = 0;
 		uint32_t total_enq_ops = 0;
 		uint16_t num_enq = 0;
 		uint16_t num_deq = 0;
@@ -136,7 +135,6 @@ cperf_cyclecount_op_setup(struct rte_comp_op **ops,
 			/* instead of the real dequeue operation */
 			num_deq = num_ops;
 
-			total_deq_ops += num_deq;
 			rte_mempool_put_bulk(mem->op_pool,
 					     (void **)ops, num_deq);
 		}
@@ -177,16 +175,17 @@ main_loop(struct cperf_cyclecount_ctx *ctx, enum rte_comp_xform_type type)
 
 	/* one array for both enqueue and dequeue */
 	ops = rte_zmalloc_socket(NULL,
-		2 * mem->total_bufs * sizeof(struct rte_comp_op *),
+		(test_data->burst_sz + mem->total_bufs) *
+		sizeof(struct rte_comp_op *),
 		0, rte_socket_id());
 
 	if (ops == NULL) {
 		RTE_LOG(ERR, USER1,
-			"Can't allocate memory for ops strucures\n");
+			"Can't allocate memory for ops structures\n");
 		return -1;
 	}
 
-	deq_ops = &ops[mem->total_bufs];
+	deq_ops = &ops[test_data->burst_sz];
 
 	if (type == RTE_COMP_COMPRESS) {
 		xform = (struct rte_comp_xform) {
@@ -275,7 +274,7 @@ main_loop(struct cperf_cyclecount_ctx *ctx, enum rte_comp_xform_type type)
 			/* Allocate compression operations */
 			if (ops_needed && rte_mempool_get_bulk(
 						mem->op_pool,
-						(void **)ops,
+						(void **)&ops[ops_unused],
 						ops_needed) != 0) {
 				RTE_LOG(ERR, USER1,
 				      "Could not allocate enough operations\n");

@@ -883,28 +883,26 @@ sso_configure_ports(const struct rte_eventdev *event_dev)
 		struct otx2_ssogws *ws;
 		uintptr_t base;
 
-		/* Free memory prior to re-allocation if needed */
 		if (event_dev->data->ports[i] != NULL) {
 			ws = event_dev->data->ports[i];
-			rte_free(ssogws_get_cookie(ws));
-			ws = NULL;
-		}
+		} else {
+			/* Allocate event port memory */
+			ws = rte_zmalloc_socket("otx2_sso_ws",
+						sizeof(struct otx2_ssogws) +
+						RTE_CACHE_LINE_SIZE,
+						RTE_CACHE_LINE_SIZE,
+						event_dev->data->socket_id);
+			if (ws == NULL) {
+				otx2_err("Failed to alloc memory for port=%d",
+					 i);
+				rc = -ENOMEM;
+				break;
+			}
 
-		/* Allocate event port memory */
-		ws = rte_zmalloc_socket("otx2_sso_ws",
-					sizeof(struct otx2_ssogws) +
-					RTE_CACHE_LINE_SIZE,
-					RTE_CACHE_LINE_SIZE,
-					event_dev->data->socket_id);
-		if (ws == NULL) {
-			otx2_err("Failed to alloc memory for port=%d", i);
-			rc = -ENOMEM;
-			break;
+			/* First cache line is reserved for cookie */
+			ws = (struct otx2_ssogws *)
+				((uint8_t *)ws + RTE_CACHE_LINE_SIZE);
 		}
-
-		/* First cache line is reserved for cookie */
-		ws = (struct otx2_ssogws *)
-			((uint8_t *)ws + RTE_CACHE_LINE_SIZE);
 
 		ws->port = i;
 		base = dev->bar2 + (RVU_BLOCK_ADDR_SSOW << 20 | i << 12);
@@ -983,7 +981,7 @@ sso_xaq_allocate(struct otx2_sso_evdev *dev)
 
 	dev->fc_iova = mz->iova;
 	dev->fc_mem = mz->addr;
-
+	*dev->fc_mem = 0;
 	aura = (struct npa_aura_s *)((uintptr_t)dev->fc_mem + OTX2_ALIGN);
 	memset(aura, 0, sizeof(struct npa_aura_s));
 
@@ -1054,6 +1052,19 @@ sso_ggrp_alloc_xaq(struct otx2_sso_evdev *dev)
 	req = otx2_mbox_alloc_msg_sso_hw_setconfig(mbox);
 	req->npa_pf_func = otx2_npa_pf_func_get();
 	req->npa_aura_id = npa_lf_aura_handle_to_aura(dev->xaq_pool->pool_id);
+	req->hwgrps = dev->nb_event_queues;
+
+	return otx2_mbox_process(mbox);
+}
+
+static int
+sso_ggrp_free_xaq(struct otx2_sso_evdev *dev)
+{
+	struct otx2_mbox *mbox = dev->mbox;
+	struct sso_release_xaq *req;
+
+	otx2_sso_dbg("Freeing XAQ for GGRPs");
+	req = otx2_mbox_alloc_msg_sso_hw_release_xaq_aura(mbox);
 	req->hwgrps = dev->nb_event_queues;
 
 	return otx2_mbox_process(mbox);
@@ -1449,6 +1460,8 @@ sso_cleanup(struct rte_eventdev *event_dev, uint8_t enable)
 			ssogws_reset((struct otx2_ssogws *)&ws->ws_state[1]);
 			ws->swtag_req = 0;
 			ws->vws = 0;
+			ws->fc_mem = dev->fc_mem;
+			ws->xaq_lmt = dev->xaq_lmt;
 			ws->ws_state[0].cur_grp = 0;
 			ws->ws_state[0].cur_tt = SSO_SYNC_EMPTY;
 			ws->ws_state[1].cur_grp = 0;
@@ -1459,6 +1472,8 @@ sso_cleanup(struct rte_eventdev *event_dev, uint8_t enable)
 			ws = event_dev->data->ports[i];
 			ssogws_reset(ws);
 			ws->swtag_req = 0;
+			ws->fc_mem = dev->fc_mem;
+			ws->xaq_lmt = dev->xaq_lmt;
 			ws->cur_grp = 0;
 			ws->cur_tt = SSO_SYNC_EMPTY;
 		}
@@ -1505,28 +1520,30 @@ int
 sso_xae_reconfigure(struct rte_eventdev *event_dev)
 {
 	struct otx2_sso_evdev *dev = sso_pmd_priv(event_dev);
-	struct rte_mempool *prev_xaq_pool;
 	int rc = 0;
 
 	if (event_dev->data->dev_started)
 		sso_cleanup(event_dev, 0);
 
-	prev_xaq_pool = dev->xaq_pool;
+	rc = sso_ggrp_free_xaq(dev);
+	if (rc < 0) {
+		otx2_err("Failed to free XAQ\n");
+		return rc;
+	}
+
+	rte_mempool_free(dev->xaq_pool);
 	dev->xaq_pool = NULL;
 	rc = sso_xaq_allocate(dev);
 	if (rc < 0) {
 		otx2_err("Failed to alloc xaq pool %d", rc);
-		rte_mempool_free(prev_xaq_pool);
 		return rc;
 	}
 	rc = sso_ggrp_alloc_xaq(dev);
 	if (rc < 0) {
 		otx2_err("Failed to alloc xaq to ggrp %d", rc);
-		rte_mempool_free(prev_xaq_pool);
 		return rc;
 	}
 
-	rte_mempool_free(prev_xaq_pool);
 	rte_mb();
 	if (event_dev->data->dev_started)
 		sso_cleanup(event_dev, 1);

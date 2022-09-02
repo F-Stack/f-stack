@@ -14,7 +14,7 @@
 
 #define IAVF_AQ_LEN               32
 #define IAVF_AQ_BUF_SZ            4096
-#define IAVF_RESET_WAIT_CNT       50
+#define IAVF_RESET_WAIT_CNT       500
 #define IAVF_BUF_SIZE_MIN         1024
 #define IAVF_FRAME_SIZE_MAX       9728
 #define IAVF_QUEUE_BASE_ADDR_UNIT 128
@@ -66,6 +66,7 @@
 #define IAVF_VLAN_TAG_SIZE               4
 #define IAVF_ETH_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + IAVF_VLAN_TAG_SIZE * 2)
+#define IAVF_ETH_MAX_LEN (RTE_ETHER_MTU + IAVF_ETH_OVERHEAD)
 
 #define IAVF_32_BIT_WIDTH (CHAR_BIT * 4)
 #define IAVF_48_BIT_WIDTH (CHAR_BIT * 6)
@@ -135,7 +136,7 @@ struct iavf_info {
 	uint64_t supported_rxdid;
 	uint8_t *proto_xtr; /* proto xtr type for all queues */
 	volatile enum virtchnl_ops pend_cmd; /* pending command not finished */
-	uint32_t cmd_retval; /* return value of the cmd response from PF */
+	int cmd_retval; /* return value of the cmd response from PF */
 	uint8_t *aq_resp; /* buffer to store the adminq response from PF */
 
 	/* Event from pf */
@@ -165,6 +166,8 @@ struct iavf_info {
 	struct iavf_fdir_info fdir; /* flow director info */
 	/* indicate large VF support enabled or not */
 	bool lv_enabled;
+
+	struct rte_eth_dev *eth_dev;
 };
 
 #define IAVF_MAX_PKT_TYPE 1024
@@ -193,14 +196,14 @@ struct iavf_devargs {
 /* Structure to store private data for each VF instance. */
 struct iavf_adapter {
 	struct iavf_hw hw;
-	struct rte_eth_dev *eth_dev;
+	struct rte_eth_dev_data *dev_data;
 	struct iavf_info vf;
 
 	bool rx_bulk_alloc_allowed;
 	/* For vector PMD */
 	bool rx_vec_allowed;
 	bool tx_vec_allowed;
-	const uint32_t *ptype_tbl;
+	uint32_t ptype_tbl[IAVF_MAX_PKT_TYPE] __rte_cache_min_aligned;
 	bool stopped;
 	uint16_t fdir_ref_cnt;
 	struct iavf_devargs devargs;
@@ -219,8 +222,6 @@ struct iavf_adapter {
 	(&(((struct iavf_vsi *)vsi)->adapter->hw))
 #define IAVF_VSI_TO_VF(vsi) \
 	(&(((struct iavf_vsi *)vsi)->adapter->vf))
-#define IAVF_VSI_TO_ETH_DEV(vsi) \
-	(((struct iavf_vsi *)vsi)->adapter->eth_dev)
 
 static inline void
 iavf_init_adminq_parameter(struct iavf_hw *hw)
@@ -254,7 +255,7 @@ struct iavf_cmd_info {
  * _atomic_set_cmd successfully.
  */
 static inline void
-_notify_cmd(struct iavf_info *vf, uint32_t msg_ret)
+_notify_cmd(struct iavf_info *vf, int msg_ret)
 {
 	vf->cmd_retval = msg_ret;
 	rte_wmb();
@@ -313,7 +314,7 @@ int iavf_query_stats(struct iavf_adapter *adapter,
 int iavf_config_promisc(struct iavf_adapter *adapter, bool enable_unicast,
 		       bool enable_multicast);
 int iavf_add_del_eth_addr(struct iavf_adapter *adapter,
-			 struct rte_ether_addr *addr, bool add);
+			 struct rte_ether_addr *addr, bool add, uint8_t type);
 int iavf_add_del_vlan(struct iavf_adapter *adapter, uint16_t vlanid, bool add);
 int iavf_fdir_add(struct iavf_adapter *adapter, struct iavf_fdir_conf *filter);
 int iavf_fdir_del(struct iavf_adapter *adapter, struct iavf_fdir_conf *filter);
@@ -324,6 +325,6 @@ int iavf_add_del_rss_cfg(struct iavf_adapter *adapter,
 int iavf_add_del_mc_addr_list(struct iavf_adapter *adapter,
 			struct rte_ether_addr *mc_addrs,
 			uint32_t mc_addrs_num, bool add);
-int iavf_request_queues(struct iavf_adapter *adapter, uint16_t num);
+int iavf_request_queues(struct rte_eth_dev *dev, uint16_t num);
 int iavf_get_max_rss_queue_region(struct iavf_adapter *adapter);
 #endif /* _IAVF_ETHDEV_H_ */

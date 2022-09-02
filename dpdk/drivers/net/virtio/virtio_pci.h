@@ -259,15 +259,22 @@ struct virtio_hw {
 	uint8_t     use_inorder_rx;
 	uint8_t     use_inorder_tx;
 	uint8_t     weak_barriers;
+	bool        rx_ol_scatter;
 	bool        has_tx_offload;
 	bool        has_rx_offload;
 	uint16_t    port_id;
 	uint8_t     mac_addr[RTE_ETHER_ADDR_LEN];
+	/*
+	 * Speed is specified via 'speed' devarg or
+	 * negotiated via VIRTIO_NET_F_SPEED_DUPLEX
+	 */
+	bool get_speed_via_feat;
 	uint32_t    notify_off_multiplier;
 	uint32_t    speed;  /* link speed in MB */
 	uint8_t     duplex;
 	uint8_t     *isr;
 	uint16_t    *notify_base;
+	size_t      max_rx_pkt_len;
 	struct virtio_pci_common_cfg *common_cfg;
 	struct virtio_net_config *dev_cfg;
 	void	    *virtio_user_dev;

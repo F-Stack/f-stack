@@ -696,7 +696,7 @@ assign_stream_to_lcores(void)
 			break;
 	}
 
-	/* Print packet forwading config. */
+	/* Print packet forwarding config. */
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		conf = &fwd_lcore_conf[lcore_id];
 
@@ -1497,6 +1497,9 @@ main(int argc, char **argv)
 	} else {
 		start_pkt_fwd();
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

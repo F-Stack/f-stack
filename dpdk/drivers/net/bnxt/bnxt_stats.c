@@ -506,8 +506,47 @@ void bnxt_free_stats(struct bnxt *bp)
 	}
 }
 
+static void bnxt_fill_rte_eth_stats(struct rte_eth_stats *stats,
+				    struct bnxt_ring_stats *ring_stats,
+				    unsigned int i, bool rx)
+{
+	if (rx) {
+		stats->q_ipackets[i] = ring_stats->rx_ucast_pkts;
+		stats->q_ipackets[i] += ring_stats->rx_mcast_pkts;
+		stats->q_ipackets[i] += ring_stats->rx_bcast_pkts;
+
+		stats->ipackets += stats->q_ipackets[i];
+
+		stats->q_ibytes[i] = ring_stats->rx_ucast_bytes;
+		stats->q_ibytes[i] += ring_stats->rx_mcast_bytes;
+		stats->q_ibytes[i] += ring_stats->rx_bcast_bytes;
+
+		stats->ibytes += stats->q_ibytes[i];
+
+		stats->q_errors[i] = ring_stats->rx_discard_pkts;
+		stats->q_errors[i] += ring_stats->rx_error_pkts;
+
+		stats->imissed += ring_stats->rx_discard_pkts;
+		stats->ierrors += ring_stats->rx_error_pkts;
+	} else {
+		stats->q_opackets[i] = ring_stats->tx_ucast_pkts;
+		stats->q_opackets[i] += ring_stats->tx_mcast_pkts;
+		stats->q_opackets[i] += ring_stats->tx_bcast_pkts;
+
+		stats->opackets += stats->q_opackets[i];
+
+		stats->q_obytes[i] = ring_stats->tx_ucast_bytes;
+		stats->q_obytes[i] += ring_stats->tx_mcast_bytes;
+		stats->q_obytes[i] += ring_stats->tx_bcast_bytes;
+
+		stats->obytes += stats->q_obytes[i];
+
+		stats->oerrors += ring_stats->tx_discard_pkts;
+	}
+}
+
 int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,
-			   struct rte_eth_stats *bnxt_stats)
+		      struct rte_eth_stats *bnxt_stats)
 {
 	int rc = 0;
 	unsigned int i;
@@ -527,11 +566,14 @@ int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,
 	for (i = 0; i < num_q_stats; i++) {
 		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
 		struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
+		struct bnxt_ring_stats ring_stats = {0};
 
-		rc = bnxt_hwrm_ctx_qstats(bp, cpr->hw_stats_ctx_id, i,
-				     bnxt_stats, 1);
+		rc = bnxt_hwrm_ring_stats(bp, cpr->hw_stats_ctx_id, i,
+					  &ring_stats, true);
 		if (unlikely(rc))
 			return rc;
+
+		bnxt_fill_rte_eth_stats(bnxt_stats, &ring_stats, i, true);
 		bnxt_stats->rx_nombuf +=
 				rte_atomic64_read(&rxq->rx_mbuf_alloc_fail);
 	}
@@ -542,15 +584,27 @@ int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,
 	for (i = 0; i < num_q_stats; i++) {
 		struct bnxt_tx_queue *txq = bp->tx_queues[i];
 		struct bnxt_cp_ring_info *cpr = txq->cp_ring;
+		struct bnxt_ring_stats ring_stats = {0};
 
-		rc = bnxt_hwrm_ctx_qstats(bp, cpr->hw_stats_ctx_id, i,
-				     bnxt_stats, 0);
+		rc = bnxt_hwrm_ring_stats(bp, cpr->hw_stats_ctx_id, i,
+					  &ring_stats, false);
 		if (unlikely(rc))
 			return rc;
+
+		bnxt_fill_rte_eth_stats(bnxt_stats, &ring_stats, i, false);
 	}
 
-	rc = bnxt_hwrm_func_qstats(bp, 0xffff, bnxt_stats, NULL);
 	return rc;
+}
+
+static void bnxt_clear_prev_stat(struct bnxt *bp)
+{
+	/*
+	 * Clear the cached values of stats returned by HW in the previous
+	 * get operation.
+	 */
+	memset(bp->prev_rx_ring_stats, 0, sizeof(struct bnxt_ring_stats) * bp->rx_cp_nr_rings);
+	memset(bp->prev_tx_ring_stats, 0, sizeof(struct bnxt_ring_stats) * bp->tx_cp_nr_rings);
 }
 
 int bnxt_stats_reset_op(struct rte_eth_dev *eth_dev)
@@ -575,7 +629,43 @@ int bnxt_stats_reset_op(struct rte_eth_dev *eth_dev)
 		rte_atomic64_clear(&rxq->rx_mbuf_alloc_fail);
 	}
 
+	bnxt_clear_prev_stat(bp);
+
 	return ret;
+}
+
+static void bnxt_fill_func_qstats(struct hwrm_func_qstats_output *func_qstats,
+				  struct bnxt_ring_stats *ring_stats,
+				  bool rx)
+{
+	if (rx) {
+		func_qstats->rx_ucast_pkts += ring_stats->rx_ucast_pkts;
+		func_qstats->rx_mcast_pkts += ring_stats->rx_mcast_pkts;
+		func_qstats->rx_bcast_pkts += ring_stats->rx_bcast_pkts;
+
+		func_qstats->rx_ucast_bytes += ring_stats->rx_ucast_bytes;
+		func_qstats->rx_mcast_bytes += ring_stats->rx_mcast_bytes;
+		func_qstats->rx_bcast_bytes += ring_stats->rx_bcast_bytes;
+
+		func_qstats->rx_discard_pkts += ring_stats->rx_discard_pkts;
+		func_qstats->rx_drop_pkts += ring_stats->rx_error_pkts;
+
+		func_qstats->rx_agg_pkts += ring_stats->rx_agg_pkts;
+		func_qstats->rx_agg_bytes += ring_stats->rx_agg_bytes;
+		func_qstats->rx_agg_events += ring_stats->rx_agg_events;
+		func_qstats->rx_agg_aborts += ring_stats->rx_agg_aborts;
+	} else {
+		func_qstats->tx_ucast_pkts += ring_stats->tx_ucast_pkts;
+		func_qstats->tx_mcast_pkts += ring_stats->tx_mcast_pkts;
+		func_qstats->tx_bcast_pkts += ring_stats->tx_bcast_pkts;
+
+		func_qstats->tx_ucast_bytes += ring_stats->tx_ucast_bytes;
+		func_qstats->tx_mcast_bytes += ring_stats->tx_mcast_bytes;
+		func_qstats->tx_bcast_bytes += ring_stats->tx_bcast_bytes;
+
+		func_qstats->tx_drop_pkts += ring_stats->tx_error_pkts;
+		func_qstats->tx_discard_pkts += ring_stats->tx_discard_pkts;
+	}
 }
 
 int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
@@ -594,12 +684,48 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 	if (rc)
 		return rc;
 
-	if (xstats == NULL)
-		return 0;
+	stat_count = RTE_DIM(bnxt_rx_stats_strings) +
+		RTE_DIM(bnxt_tx_stats_strings) +
+		RTE_DIM(bnxt_func_stats_strings) +
+		RTE_DIM(bnxt_rx_ext_stats_strings) +
+		RTE_DIM(bnxt_tx_ext_stats_strings) +
+		bnxt_flow_stats_cnt(bp);
 
-	memset(xstats, 0, sizeof(*xstats));
+	if (n < stat_count || xstats == NULL)
+		return stat_count;
 
-	bnxt_hwrm_func_qstats(bp, 0xffff, NULL, &func_qstats);
+	for (i = 0; i < bp->rx_cp_nr_rings; i++) {
+		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
+		struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
+		struct bnxt_ring_stats ring_stats = {0};
+
+		if (!rxq->rx_started)
+			continue;
+
+		rc = bnxt_hwrm_ring_stats(bp, cpr->hw_stats_ctx_id, i,
+					  &ring_stats, true);
+		if (unlikely(rc))
+			return rc;
+
+		bnxt_fill_func_qstats(&func_qstats, &ring_stats, true);
+	}
+
+	for (i = 0; i < bp->tx_cp_nr_rings; i++) {
+		struct bnxt_tx_queue *txq = bp->tx_queues[i];
+		struct bnxt_cp_ring_info *cpr = txq->cp_ring;
+		struct bnxt_ring_stats ring_stats = {0};
+
+		if (!txq->tx_started)
+			continue;
+
+		rc = bnxt_hwrm_ring_stats(bp, cpr->hw_stats_ctx_id, i,
+					  &ring_stats, false);
+		if (unlikely(rc))
+			return rc;
+
+		bnxt_fill_func_qstats(&func_qstats, &ring_stats, false);
+	}
+
 	bnxt_hwrm_port_qstats(bp);
 	bnxt_hwrm_ext_port_qstats(bp);
 	rx_port_stats_ext_cnt = RTE_MIN(RTE_DIM(bnxt_rx_ext_stats_strings),
@@ -609,17 +735,7 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 					(bp->fw_tx_port_stats_ext_size /
 					 stat_size));
 
-	count = RTE_DIM(bnxt_rx_stats_strings) +
-		RTE_DIM(bnxt_tx_stats_strings) +
-		RTE_DIM(bnxt_func_stats_strings) +
-		RTE_DIM(bnxt_rx_ext_stats_strings) +
-		RTE_DIM(bnxt_tx_ext_stats_strings) +
-		bnxt_flow_stats_cnt(bp);
-
-	stat_count = count;
-
-	if (n < count)
-		return count;
+	memset(xstats, 0, sizeof(*xstats) * n);
 
 	count = 0;
 	for (i = 0; i < RTE_DIM(bnxt_rx_stats_strings); i++) {
@@ -642,12 +758,10 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 
 	for (i = 0; i < RTE_DIM(bnxt_func_stats_strings); i++) {
 		xstats[count].id = count;
-		xstats[count].value =
-			rte_le_to_cpu_64(*(uint64_t *)((char *)&func_qstats +
-					 bnxt_func_stats_strings[i].offset));
+		xstats[count].value = *(uint64_t *)((char *)&func_qstats +
+					 bnxt_func_stats_strings[i].offset);
 		count++;
 	}
-
 
 	for (i = 0; i < rx_port_stats_ext_cnt; i++) {
 		uint64_t *rx_stats_ext = (uint64_t *)bp->hw_rx_port_stats_ext;
@@ -726,7 +840,7 @@ int bnxt_flow_stats_cnt(struct bnxt *bp)
 
 int bnxt_dev_xstats_get_names_op(struct rte_eth_dev *eth_dev,
 		struct rte_eth_xstat_name *xstats_names,
-		__rte_unused unsigned int limit)
+		unsigned int size)
 {
 	struct bnxt *bp = (struct bnxt *)eth_dev->data->dev_private;
 	const unsigned int stat_cnt = RTE_DIM(bnxt_rx_stats_strings) +
@@ -742,63 +856,62 @@ int bnxt_dev_xstats_get_names_op(struct rte_eth_dev *eth_dev,
 	if (rc)
 		return rc;
 
-	if (xstats_names != NULL) {
-		count = 0;
+	if (xstats_names == NULL || size < stat_cnt)
+		return stat_cnt;
 
-		for (i = 0; i < RTE_DIM(bnxt_rx_stats_strings); i++) {
-			strlcpy(xstats_names[count].name,
-				bnxt_rx_stats_strings[i].name,
+	for (i = 0; i < RTE_DIM(bnxt_rx_stats_strings); i++) {
+		strlcpy(xstats_names[count].name,
+			bnxt_rx_stats_strings[i].name,
+			sizeof(xstats_names[count].name));
+		count++;
+	}
+
+	for (i = 0; i < RTE_DIM(bnxt_tx_stats_strings); i++) {
+		strlcpy(xstats_names[count].name,
+			bnxt_tx_stats_strings[i].name,
+			sizeof(xstats_names[count].name));
+		count++;
+	}
+
+	for (i = 0; i < RTE_DIM(bnxt_func_stats_strings); i++) {
+		strlcpy(xstats_names[count].name,
+			bnxt_func_stats_strings[i].name,
+			sizeof(xstats_names[count].name));
+		count++;
+	}
+
+	for (i = 0; i < RTE_DIM(bnxt_rx_ext_stats_strings); i++) {
+		strlcpy(xstats_names[count].name,
+			bnxt_rx_ext_stats_strings[i].name,
+			sizeof(xstats_names[count].name));
+
+		count++;
+	}
+
+	for (i = 0; i < RTE_DIM(bnxt_tx_ext_stats_strings); i++) {
+		strlcpy(xstats_names[count].name,
+			bnxt_tx_ext_stats_strings[i].name,
+			sizeof(xstats_names[count].name));
+
+		count++;
+	}
+
+	if (bp->fw_cap & BNXT_FW_CAP_ADV_FLOW_COUNTERS &&
+	    bp->fw_cap & BNXT_FW_CAP_ADV_FLOW_MGMT &&
+	    BNXT_FLOW_XSTATS_EN(bp)) {
+		for (i = 0; i < bp->max_l2_ctx; i++) {
+			char buf[RTE_ETH_XSTATS_NAME_SIZE];
+
+			sprintf(buf, "flow_%d_bytes", i);
+			strlcpy(xstats_names[count].name, buf,
 				sizeof(xstats_names[count].name));
 			count++;
-		}
 
-		for (i = 0; i < RTE_DIM(bnxt_tx_stats_strings); i++) {
-			strlcpy(xstats_names[count].name,
-				bnxt_tx_stats_strings[i].name,
-				sizeof(xstats_names[count].name));
-			count++;
-		}
-
-		for (i = 0; i < RTE_DIM(bnxt_func_stats_strings); i++) {
-			strlcpy(xstats_names[count].name,
-				bnxt_func_stats_strings[i].name,
-				sizeof(xstats_names[count].name));
-			count++;
-		}
-
-		for (i = 0; i < RTE_DIM(bnxt_rx_ext_stats_strings); i++) {
-			strlcpy(xstats_names[count].name,
-				bnxt_rx_ext_stats_strings[i].name,
+			sprintf(buf, "flow_%d_packets", i);
+			strlcpy(xstats_names[count].name, buf,
 				sizeof(xstats_names[count].name));
 
 			count++;
-		}
-
-		for (i = 0; i < RTE_DIM(bnxt_tx_ext_stats_strings); i++) {
-			strlcpy(xstats_names[count].name,
-				bnxt_tx_ext_stats_strings[i].name,
-				sizeof(xstats_names[count].name));
-
-			count++;
-		}
-
-		if (bp->fw_cap & BNXT_FW_CAP_ADV_FLOW_COUNTERS &&
-		    bp->fw_cap & BNXT_FW_CAP_ADV_FLOW_MGMT &&
-		    BNXT_FLOW_XSTATS_EN(bp)) {
-			for (i = 0; i < bp->max_l2_ctx; i++) {
-				char buf[RTE_ETH_XSTATS_NAME_SIZE];
-
-				sprintf(buf, "flow_%d_bytes", i);
-				strlcpy(xstats_names[count].name, buf,
-					sizeof(xstats_names[count].name));
-				count++;
-
-				sprintf(buf, "flow_%d_packets", i);
-				strlcpy(xstats_names[count].name, buf,
-					sizeof(xstats_names[count].name));
-
-				count++;
-			}
 		}
 	}
 
@@ -824,6 +937,8 @@ int bnxt_dev_xstats_reset_op(struct rte_eth_dev *eth_dev)
 	if (ret != 0)
 		PMD_DRV_LOG(ERR, "Failed to reset xstats: %s\n",
 			    strerror(-ret));
+
+	bnxt_clear_prev_stat(bp);
 
 	return ret;
 }

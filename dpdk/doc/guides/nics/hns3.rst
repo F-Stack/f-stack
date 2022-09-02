@@ -1,12 +1,12 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2018-2019 Hisilicon Limited.
+    Copyright(c) 2018-2019 HiSilicon Limited.
 
 HNS3 Poll Mode Driver
 ===============================
 
 The hns3 PMD (**librte_net_hns3**) provides poll mode driver support
-for the inbuilt Hisilicon Network Subsystem(HNS) network engine
-found in the Hisilicon Kunpeng 920 SoC.
+for the inbuilt HiSilicon Network Subsystem(HNS) network engine
+found in the HiSilicon Kunpeng 920 SoC.
 
 Features
 --------
@@ -41,7 +41,7 @@ Features of the HNS3 PMD are:
 Prerequisites
 -------------
 - Get the information about Kunpeng920 chip using
-  `<http://www.hisilicon.com/en/Products/ProductList/Kunpeng>`_.
+  `<https://www.hisilicon.com/en/products/Kunpeng>`_.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 

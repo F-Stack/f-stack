@@ -6,6 +6,10 @@
 #ifndef _RTE_KNI_COMMON_H_
 #define _RTE_KNI_COMMON_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef __KERNEL__
 #include <linux/if.h>
 #include <asm/barrier.h>
@@ -48,6 +52,7 @@ struct rte_kni_request {
 		uint8_t promiscusity;/**< 1: promisc mode enable, 0: disable */
 		uint8_t allmulti;    /**< 1: all-multicast mode enable, 0: disable */
 	};
+	int32_t async : 1;            /**< 1: request is asynchronous */
 	int32_t result;               /**< Result for processing request */
 } __attribute__((__packed__));
 
@@ -134,5 +139,9 @@ struct rte_kni_device_info {
 #define RTE_KNI_IOCTL_TEST    _IOWR(0, 1, int)
 #define RTE_KNI_IOCTL_CREATE  _IOWR(0, 2, struct rte_kni_device_info)
 #define RTE_KNI_IOCTL_RELEASE _IOWR(0, 3, struct rte_kni_device_info)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_KNI_COMMON_H_ */

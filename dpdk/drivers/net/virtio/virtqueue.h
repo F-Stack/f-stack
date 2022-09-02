@@ -210,7 +210,7 @@ struct virtio_net_ctrl_mac {
  * Control link announce acknowledgement
  *
  * The command VIRTIO_NET_CTRL_ANNOUNCE_ACK is used to indicate that
- * driver has recevied the notification; device would clear the
+ * driver has received the notification; device would clear the
  * VIRTIO_NET_S_ANNOUNCE bit in the status field after it receives
  * this command.
  */
@@ -290,7 +290,7 @@ struct virtqueue {
 	struct vq_desc_extra vq_descx[0];
 };
 
-/* If multiqueue is provided by host, then we suppport it. */
+/* If multiqueue is provided by host, then we support it. */
 #define VIRTIO_NET_CTRL_MQ   4
 #define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET        0
 #define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MIN        1
@@ -642,19 +642,25 @@ virtqueue_xmit_offload(struct virtio_net_hdr *hdr,
 			bool offload)
 {
 	if (offload) {
+		uint16_t o_l23_len =
+			(cookie->ol_flags & PKT_TX_TUNNEL_MASK) ?
+			cookie->outer_l2_len + cookie->outer_l3_len : 0;
+
 		if (cookie->ol_flags & PKT_TX_TCP_SEG)
 			cookie->ol_flags |= PKT_TX_TCP_CKSUM;
 
 		switch (cookie->ol_flags & PKT_TX_L4_MASK) {
 		case PKT_TX_UDP_CKSUM:
-			hdr->csum_start = cookie->l2_len + cookie->l3_len;
+			hdr->csum_start = o_l23_len +
+					  cookie->l2_len + cookie->l3_len;
 			hdr->csum_offset = offsetof(struct rte_udp_hdr,
 				dgram_cksum);
 			hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
 			break;
 
 		case PKT_TX_TCP_CKSUM:
-			hdr->csum_start = cookie->l2_len + cookie->l3_len;
+			hdr->csum_start = o_l23_len +
+					  cookie->l2_len + cookie->l3_len;
 			hdr->csum_offset = offsetof(struct rte_tcp_hdr, cksum);
 			hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
 			break;
@@ -673,6 +679,7 @@ virtqueue_xmit_offload(struct virtio_net_hdr *hdr,
 				VIRTIO_NET_HDR_GSO_TCPV4;
 			hdr->gso_size = cookie->tso_segsz;
 			hdr->hdr_len =
+				o_l23_len +
 				cookie->l2_len +
 				cookie->l3_len +
 				cookie->l4_len;
@@ -735,6 +742,9 @@ virtqueue_enqueue_xmit_packed(struct virtnet_tx *txvq, struct rte_mbuf *cookie,
 			RTE_PTR_DIFF(&txr[idx].tx_packed_indir, txr);
 		start_dp[idx].len   = (seg_num + 1) *
 			sizeof(struct vring_packed_desc);
+		/* Packed descriptor id needs to be restored when inorder. */
+		if (in_order)
+			start_dp[idx].id = idx;
 		/* reset flags for indirect desc */
 		head_flags = VRING_DESC_F_INDIRECT;
 		head_flags |= vq->vq_packed.cached_flags;
@@ -828,25 +838,26 @@ vq_ring_free_id_packed(struct virtqueue *vq, uint16_t id)
 }
 
 static void
-virtio_xmit_cleanup_inorder_packed(struct virtqueue *vq, int num)
+virtio_xmit_cleanup_inorder_packed(struct virtqueue *vq, uint16_t num)
 {
 	uint16_t used_idx, id, curr_id, free_cnt = 0;
 	uint16_t size = vq->vq_nentries;
 	struct vring_packed_desc *desc = vq->vq_packed.ring.desc;
 	struct vq_desc_extra *dxp;
+	int nb = num;
 
 	used_idx = vq->vq_used_cons_idx;
 	/* desc_is_used has a load-acquire or rte_io_rmb inside
 	 * and wait for used desc in virtqueue.
 	 */
-	while (num > 0 && desc_is_used(&desc[used_idx], vq)) {
+	while (nb > 0 && desc_is_used(&desc[used_idx], vq)) {
 		id = desc[used_idx].id;
 		do {
 			curr_id = used_idx;
 			dxp = &vq->vq_descx[used_idx];
 			used_idx += dxp->ndescs;
 			free_cnt += dxp->ndescs;
-			num -= dxp->ndescs;
+			nb -= dxp->ndescs;
 			if (used_idx >= size) {
 				used_idx -= size;
 				vq->vq_packed.used_wrap_counter ^= 1;
@@ -862,7 +873,7 @@ virtio_xmit_cleanup_inorder_packed(struct virtqueue *vq, int num)
 }
 
 static void
-virtio_xmit_cleanup_normal_packed(struct virtqueue *vq, int num)
+virtio_xmit_cleanup_normal_packed(struct virtqueue *vq, uint16_t num)
 {
 	uint16_t used_idx, id;
 	uint16_t size = vq->vq_nentries;
@@ -892,7 +903,7 @@ virtio_xmit_cleanup_normal_packed(struct virtqueue *vq, int num)
 
 /* Cleanup from completed transmits. */
 static inline void
-virtio_xmit_cleanup_packed(struct virtqueue *vq, int num, int in_order)
+virtio_xmit_cleanup_packed(struct virtqueue *vq, uint16_t num, int in_order)
 {
 	if (in_order)
 		virtio_xmit_cleanup_inorder_packed(vq, num);

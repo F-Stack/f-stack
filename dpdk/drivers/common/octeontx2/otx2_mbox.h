@@ -90,7 +90,7 @@ struct mbox_msghdr {
 #define OTX2_MBOX_RSP_SIG (0xbeef)
 	/* Signature, for validating corrupted msgs */
 	uint16_t __otx2_io sig;
-#define OTX2_MBOX_VERSION (0x000a)
+#define OTX2_MBOX_VERSION (0x000b)
 	/* Version of msg's structure for this ID */
 	uint16_t __otx2_io ver;
 	/* Offset of next msg within mailbox region */
@@ -177,6 +177,8 @@ M(SSO_GRP_GET_STATS,	0x609, sso_grp_get_stats, sso_info_req,		\
 				sso_grp_stats)				\
 M(SSO_HWS_GET_STATS,	0x610, sso_hws_get_stats, sso_info_req,		\
 				sso_hws_stats)				\
+M(SSO_HW_RELEASE_XAQ,	0x611, sso_hw_release_xaq_aura,			\
+				sso_release_xaq, msg_rsp)		\
 /* TIM mbox IDs (range 0x800 - 0x9FF) */				\
 M(TIM_LF_ALLOC,		0x800, tim_lf_alloc, tim_lf_alloc_req,		\
 				tim_lf_alloc_rsp)			\
@@ -366,6 +368,15 @@ struct npc_set_pkind {
 #define PKIND_RX		BIT_ULL(1)
 	uint8_t __otx2_io dir;
 	uint8_t __otx2_io pkind; /* valid only in case custom flag */
+	uint8_t __otx2_io var_len_off;
+	/* Offset of custom header length field.
+	 * Valid only for pkind NPC_RX_CUSTOM_PRE_L2_PKIND
+	 */
+	uint8_t __otx2_io var_len_off_mask; /* Mask for length with in offset */
+	uint8_t __otx2_io shift_dir;
+	/* Shift direction to get length of the
+	 * header at var_len_off
+	 */
 };
 
 /* Structure for requesting resource provisioning.
@@ -1174,6 +1185,11 @@ struct sso_hw_setconfig {
 	struct mbox_msghdr hdr;
 	uint32_t __otx2_io npa_aura_id;
 	uint16_t __otx2_io npa_pf_func;
+	uint16_t __otx2_io hwgrps;
+};
+
+struct sso_release_xaq {
+	struct mbox_msghdr hdr;
 	uint16_t __otx2_io hwgrps;
 };
 

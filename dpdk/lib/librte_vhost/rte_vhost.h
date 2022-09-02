@@ -21,10 +21,12 @@
 extern "C" {
 #endif
 
+#ifndef __cplusplus
 /* These are not C++-aware. */
 #include <linux/vhost.h>
 #include <linux/virtio_ring.h>
 #include <linux/virtio_net.h>
+#endif
 
 #define RTE_VHOST_USER_CLIENT		(1ULL << 0)
 #define RTE_VHOST_USER_NO_RECONNECT	(1ULL << 1)
@@ -36,6 +38,7 @@ extern "C" {
 /* support only linear buffers (no chained mbufs) */
 #define RTE_VHOST_USER_LINEARBUF_SUPPORT	(1ULL << 6)
 #define RTE_VHOST_USER_ASYNC_COPY	(1ULL << 7)
+#define RTE_VHOST_USER_NET_COMPLIANT_OL_FLAGS	(1ULL << 8)
 
 /* Features. */
 #ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
@@ -760,7 +763,7 @@ rte_vhost_get_vhost_ring_inflight(int vid, uint16_t vring_idx,
 /**
  * Set split inflight descriptor.
  *
- * This function save descriptors that has been comsumed in available
+ * This function save descriptors that has been consumed in available
  * ring
  *
  * @param vid
@@ -780,7 +783,7 @@ rte_vhost_set_inflight_desc_split(int vid, uint16_t vring_idx,
 /**
  * Set packed inflight descriptor and get corresponding inflight entry
  *
- * This function save descriptors that has been comsumed
+ * This function save descriptors that has been consumed
  *
  * @param vid
  *  vhost device ID

@@ -1427,7 +1427,7 @@ rte_pmd_i40e_set_tc_strict_prio(uint16_t port, uint8_t tc_map)
 	/* Get all TCs' bandwidth. */
 	for (i = 0; i < I40E_MAX_TRAFFIC_CLASS; i++) {
 		if (veb->enabled_tc & BIT_ULL(i)) {
-			/* For rubust, if bandwidth is 0, use 1 instead. */
+			/* For robust, if bandwidth is 0, use 1 instead. */
 			if (veb->bw_info.bw_ets_share_credits[i])
 				ets_data.tc_bw_share_credits[i] =
 					veb->bw_info.bw_ets_share_credits[i];
@@ -2366,6 +2366,9 @@ rte_pmd_i40e_add_vf_mac_addr(uint16_t port, uint16_t vf_id,
 	struct i40e_mac_filter_info mac_filter;
 	int ret;
 
+	if (mac_addr == NULL)
+		return -EINVAL;
+
 	if (i40e_validate_mac_addr((u8 *)mac_addr) != I40E_SUCCESS)
 		return -EINVAL;
 
@@ -3041,6 +3044,9 @@ int rte_pmd_i40e_flow_add_del_packet_template(
 	struct i40e_fdir_filter_conf filter_conf;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	if (conf == NULL)
+		return -EINVAL;
 
 	if (!is_i40e_supported(dev))
 		return -ENOTSUP;

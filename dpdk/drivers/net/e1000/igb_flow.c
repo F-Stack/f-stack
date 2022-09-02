@@ -57,7 +57,7 @@ struct igb_flex_filter_list igb_filter_flex_list;
 struct igb_rss_filter_list igb_filter_rss_list;
 
 /**
- * Please aware there's an asumption for all the parsers.
+ * Please be aware there's an assumption for all the parsers.
  * rte_flow_item is using big endian, rte_flow_attr and
  * rte_flow_action are using CPU order.
  * Because the pattern is used to describe the packets,
@@ -350,7 +350,7 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 		memset(filter, 0, sizeof(struct rte_eth_ntuple_filter));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ACTION,
-			item, "Not supported action.");
+			act, "Not supported action.");
 		return -rte_errno;
 	}
 	filter->queue =
@@ -1608,7 +1608,7 @@ out:
 
 /**
  * Check if the flow rule is supported by igb.
- * It only checkes the format. Don't guarantee the rule can be programmed into
+ * It only checks the format. Don't guarantee the rule can be programmed into
  * the HW. Because there can be no enough room for the rule.
  */
 static int

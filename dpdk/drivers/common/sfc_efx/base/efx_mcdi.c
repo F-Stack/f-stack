@@ -516,6 +516,9 @@ efx_mcdi_finish_response(
 	bytes = MIN(emrp->emr_out_length_used, emrp->emr_out_length);
 	efx_mcdi_read_response(enp, emrp->emr_out_buf, resp_off, bytes);
 
+	/* Report bytes copied to caller (response message may be larger) */
+	emrp->emr_out_length_used = bytes;
+
 #if EFSYS_OPT_MCDI_LOGGING
 	if (emtp->emt_logger != NULL) {
 		emtp->emt_logger(emtp->emt_context,
@@ -2291,6 +2294,11 @@ efx_mcdi_get_workarounds(
 		goto fail1;
 	}
 
+	if (req.emr_out_length_used < MC_CMD_GET_WORKAROUNDS_OUT_LEN) {
+		rc = EMSGSIZE;
+		goto fail2;
+	}
+
 	if (implementedp != NULL) {
 		*implementedp =
 		    MCDI_OUT_DWORD(req, GET_WORKAROUNDS_OUT_IMPLEMENTED);
@@ -2302,6 +2310,8 @@ efx_mcdi_get_workarounds(
 
 	return (0);
 
+fail2:
+	EFSYS_PROBE(fail2);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 

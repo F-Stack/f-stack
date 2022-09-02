@@ -97,22 +97,34 @@ void
 mlx5_translate_port_name(const char *port_name_in,
 			 struct mlx5_switch_info *port_info_out)
 {
-	char pf_c1, pf_c2, vf_c1, vf_c2, eol;
+	char ctrl = 0, pf_c1, pf_c2, vf_c1, vf_c2, eol;
 	char *end;
 	int sc_items;
 
-	/*
-	 * Check for port-name as a string of the form pf0vf0
-	 * (support kernel ver >= 5.0 or OFED ver >= 4.6).
-	 */
+	sc_items = sscanf(port_name_in, "%c%d",
+			  &ctrl, &port_info_out->ctrl_num);
+	if (sc_items == 2 && ctrl == 'c') {
+		port_name_in++; /* 'c' */
+		port_name_in += snprintf(NULL, 0, "%d",
+					  port_info_out->ctrl_num);
+	}
+	/* Check for port-name as a string of the form pf0vf0 or pf0sf0 */
 	sc_items = sscanf(port_name_in, "%c%c%d%c%c%d%c",
 			  &pf_c1, &pf_c2, &port_info_out->pf_num,
 			  &vf_c1, &vf_c2, &port_info_out->port_name, &eol);
-	if (sc_items == 6 &&
-	    pf_c1 == 'p' && pf_c2 == 'f' &&
-	    vf_c1 == 'v' && vf_c2 == 'f') {
-		port_info_out->name_type = MLX5_PHYS_PORT_NAME_TYPE_PFVF;
-		return;
+	if (sc_items == 6 && pf_c1 == 'p' && pf_c2 == 'f') {
+		if (vf_c1 == 'v' && vf_c2 == 'f') {
+			/* Kernel ver >= 5.0 or OFED ver >= 4.6 */
+			port_info_out->name_type =
+					MLX5_PHYS_PORT_NAME_TYPE_PFVF;
+			return;
+		}
+		if (vf_c1 == 's' && vf_c2 == 'f') {
+			/* Kernel ver >= 5.11 or OFED ver >= 5.1 */
+			port_info_out->name_type =
+					MLX5_PHYS_PORT_NAME_TYPE_PFSF;
+			return;
+		}
 	}
 	/*
 	 * Check for port-name as a string of the form p0
@@ -411,3 +423,59 @@ glue_error:
 	mlx5_glue = NULL;
 }
 
+
+/*
+ * Create direct mkey using the kernel ibv_reg_mr API and wrap it with a new
+ * indirect mkey created by the DevX API.
+ * This mkey should be used for DevX commands requesting mkey as a parameter.
+ */
+int
+mlx5_os_wrapped_mkey_create(void *ctx, void *pd, uint32_t pdn, void *addr,
+			    size_t length, struct mlx5_pmd_wrapped_mr *pmd_mr)
+{
+	struct mlx5_klm klm = {
+		.byte_count = length,
+		.address = (uintptr_t)addr,
+	};
+	struct mlx5_devx_mkey_attr mkey_attr = {
+		.pd = pdn,
+		.klm_array = &klm,
+		.klm_num = 1,
+	};
+	struct mlx5_devx_obj *mkey;
+	struct ibv_mr *ibv_mr = mlx5_glue->reg_mr(pd, addr, length,
+						  IBV_ACCESS_LOCAL_WRITE |
+						  (haswell_broadwell_cpu ? 0 :
+						  IBV_ACCESS_RELAXED_ORDERING));
+
+	if (!ibv_mr) {
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	klm.mkey = ibv_mr->lkey;
+	mkey_attr.addr = (uintptr_t)addr;
+	mkey_attr.size = length;
+	mkey = mlx5_devx_cmd_mkey_create(ctx, &mkey_attr);
+	if (!mkey) {
+		claim_zero(mlx5_glue->dereg_mr(ibv_mr));
+		return -rte_errno;
+	}
+	pmd_mr->addr = addr;
+	pmd_mr->len = length;
+	pmd_mr->obj = (void *)ibv_mr;
+	pmd_mr->imkey = mkey;
+	pmd_mr->lkey = mkey->id;
+	return 0;
+}
+
+void
+mlx5_os_wrapped_mkey_destroy(struct mlx5_pmd_wrapped_mr *pmd_mr)
+{
+	if (!pmd_mr)
+		return;
+	if (pmd_mr->imkey)
+		claim_zero(mlx5_devx_cmd_destroy(pmd_mr->imkey));
+	if (pmd_mr->obj)
+		claim_zero(mlx5_glue->dereg_mr(pmd_mr->obj));
+	memset(pmd_mr, 0, sizeof(*pmd_mr));
+}

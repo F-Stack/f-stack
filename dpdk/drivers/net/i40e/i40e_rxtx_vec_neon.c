@@ -151,7 +151,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, uint64x2_t descs[4],
 					      vreinterpretq_u8_u32(l3_l4e)));
 	/* then we shift left 1 bit */
 	l3_l4e = vshlq_n_u32(l3_l4e, 1);
-	/* we need to mask out the reduntant bits */
+	/* we need to mask out the redundant bits */
 	l3_l4e = vandq_u32(l3_l4e, cksum_mask);
 
 	vlan0 = vorrq_u32(vlan0, rss);
@@ -280,22 +280,30 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 
 		int32x4_t len_shl = {0, 0, 0, PKTLEN_SHIFT};
 
-		/* B.1 load 1 mbuf point */
+		/* B.1 load 2 mbuf point */
 		mbp1 = vld1q_u64((uint64_t *)&sw_ring[pos]);
 		/* Read desc statuses backwards to avoid race condition */
-		/* A.1 load 4 pkts desc */
+		/* A.1 load desc[3] */
 		descs[3] =  vld1q_u64((uint64_t *)(rxdp + 3));
 
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		vst1q_u64((uint64_t *)&rx_pkts[pos], mbp1);
 
-		/* B.1 load 1 mbuf point */
+		/* B.1 load 2 mbuf point */
 		mbp2 = vld1q_u64((uint64_t *)&sw_ring[pos + 2]);
 
+		/* A.1 load desc[2-0] */
 		descs[2] =  vld1q_u64((uint64_t *)(rxdp + 2));
-		/* B.1 load 2 mbuf point */
 		descs[1] =  vld1q_u64((uint64_t *)(rxdp + 1));
 		descs[0] =  vld1q_u64((uint64_t *)(rxdp));
+
+		/* Use acquire fence to order loads of descriptor qwords */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		/* A.2 reload qword0 to make it ordered after qword1 load */
+		descs[3] = vld1q_lane_u64((uint64_t *)(rxdp + 3), descs[3], 0);
+		descs[2] = vld1q_lane_u64((uint64_t *)(rxdp + 2), descs[2], 0);
+		descs[1] = vld1q_lane_u64((uint64_t *)(rxdp + 1), descs[1], 0);
+		descs[0] = vld1q_lane_u64((uint64_t *)(rxdp), descs[0], 0);
 
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		vst1q_u64((uint64_t *)&rx_pkts[pos + 2], mbp2);
@@ -310,10 +318,16 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 		/* pkt 3,4 shift the pktlen field to be 16-bit aligned*/
 		uint32x4_t len3 = vshlq_u32(vreinterpretq_u32_u64(descs[3]),
 					    len_shl);
-		descs[3] = vreinterpretq_u64_u32(len3);
+		descs[3] = vreinterpretq_u64_u16(vsetq_lane_u16
+				(vgetq_lane_u16(vreinterpretq_u16_u32(len3), 7),
+				 vreinterpretq_u16_u64(descs[3]),
+				 7));
 		uint32x4_t len2 = vshlq_u32(vreinterpretq_u32_u64(descs[2]),
 					    len_shl);
-		descs[2] = vreinterpretq_u64_u32(len2);
+		descs[2] = vreinterpretq_u64_u16(vsetq_lane_u16
+				(vgetq_lane_u16(vreinterpretq_u16_u32(len2), 7),
+				 vreinterpretq_u16_u64(descs[2]),
+				 7));
 
 		/* D.1 pkt 3,4 convert format from desc to pktmbuf */
 		pkt_mb4 = vqtbl1q_u8(vreinterpretq_u8_u64(descs[3]), shuf_msk);
@@ -341,10 +355,16 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 		/* pkt 1,2 shift the pktlen field to be 16-bit aligned*/
 		uint32x4_t len1 = vshlq_u32(vreinterpretq_u32_u64(descs[1]),
 					    len_shl);
-		descs[1] = vreinterpretq_u64_u32(len1);
+		descs[1] = vreinterpretq_u64_u16(vsetq_lane_u16
+				(vgetq_lane_u16(vreinterpretq_u16_u32(len1), 7),
+				 vreinterpretq_u16_u64(descs[1]),
+				 7));
 		uint32x4_t len0 = vshlq_u32(vreinterpretq_u32_u64(descs[0]),
 					    len_shl);
-		descs[0] = vreinterpretq_u64_u32(len0);
+		descs[0] = vreinterpretq_u64_u16(vsetq_lane_u16
+				(vgetq_lane_u16(vreinterpretq_u16_u32(len0), 7),
+				 vreinterpretq_u16_u64(descs[0]),
+				 7));
 
 		/* D.1 pkt 1,2 convert format from desc to pktmbuf */
 		pkt_mb2 = vqtbl1q_u8(vreinterpretq_u8_u64(descs[1]), shuf_msk);
@@ -375,7 +395,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 			eop_bits = vmvnq_u8(vreinterpretq_u8_u16(staterr));
 			eop_bits = vandq_u8(eop_bits, eop_check);
 			/* the staterr values are not in order, as the count
-			 * count of dd bits doesn't care. However, for end of
+			 * of dd bits doesn't care. However, for end of
 			 * packet tracking, we do care, so shuffle. This also
 			 * compresses the 32-bit values to 8-bit
 			 */
@@ -407,7 +427,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 		vst1q_u8((void *)&rx_pkts[pos]->rx_descriptor_fields1,
 			 pkt_mb1);
 		desc_to_ptype_v(descs, &rx_pkts[pos], ptype_tbl);
-		/* C.4 calc avaialbe number of desc */
+		/* C.4 calc available number of desc */
 		if (unlikely(stat == 0)) {
 			nb_pkts_recd += RTE_I40E_DESCS_PER_LOOP;
 		} else {

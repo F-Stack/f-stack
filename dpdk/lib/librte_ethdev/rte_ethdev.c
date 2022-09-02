@@ -254,7 +254,9 @@ rte_eth_iterator_init(struct rte_dev_iterator *iter, const char *devargs_str)
 	}
 
 	/* Convert bus args to new syntax for use with new API dev_iterate. */
-	if (strcmp(iter->bus->name, "vdev") == 0) {
+	if ((strcmp(iter->bus->name, "vdev") == 0) ||
+		(strcmp(iter->bus->name, "fslmc") == 0) ||
+		(strcmp(iter->bus->name, "dpaa_bus") == 0)) {
 		bus_param_key = "name";
 	} else if (strcmp(iter->bus->name, "pci") == 0) {
 		bus_param_key = "addr";
@@ -716,10 +718,13 @@ rte_eth_dev_owner_delete(const uint64_t owner_id)
 	rte_spinlock_lock(&eth_dev_shared_data->ownership_lock);
 
 	if (eth_is_valid_owner_id(owner_id)) {
-		for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++)
-			if (rte_eth_devices[port_id].data->owner.id == owner_id)
-				memset(&rte_eth_devices[port_id].data->owner, 0,
+		for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
+			struct rte_eth_dev_data *data =
+				rte_eth_devices[port_id].data;
+			if (data != NULL && data->owner.id == owner_id)
+				memset(&data->owner, 0,
 				       sizeof(struct rte_eth_dev_owner));
+		}
 		RTE_ETHDEV_LOG(NOTICE,
 			"All port owners owned by %016"PRIx64" identifier have removed\n",
 			owner_id);
@@ -832,6 +837,17 @@ rte_eth_dev_get_port_by_name(const char *name, uint16_t *port_id)
 		}
 
 	return -ENODEV;
+}
+
+struct rte_eth_dev *
+rte_eth_dev_get_by_name(const char *name)
+{
+	uint16_t pid;
+
+	if (rte_eth_dev_get_port_by_name(name, &pid))
+		return NULL;
+
+	return &rte_eth_devices[pid];
 }
 
 static int
@@ -1292,8 +1308,10 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_conf orig_conf;
+	uint16_t overhead_len;
 	int diag;
 	int ret;
+	uint16_t old_mtu;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 
@@ -1319,9 +1337,19 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 		memcpy(&dev->data->dev_conf, dev_conf,
 		       sizeof(dev->data->dev_conf));
 
+	/* Backup mtu for rollback */
+	old_mtu = dev->data->mtu;
+
 	ret = rte_eth_dev_info_get(port_id, &dev_info);
 	if (ret != 0)
 		goto rollback;
+
+	/* Get the real Ethernet overhead length */
+	if (dev_info.max_mtu != UINT16_MAX &&
+	    dev_info.max_rx_pktlen > dev_info.max_mtu)
+		overhead_len = dev_info.max_rx_pktlen - dev_info.max_mtu;
+	else
+		overhead_len = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
 	/* If number of queues specified by application for both Rx and Tx is
 	 * zero, use driver preferred values. This cannot be done individually
@@ -1409,12 +1437,17 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 			ret = -EINVAL;
 			goto rollback;
 		}
+
+		/* Scale the MTU size to adapt max_rx_pkt_len */
+		dev->data->mtu = dev->data->dev_conf.rxmode.max_rx_pkt_len -
+				overhead_len;
 	} else {
-		if (dev_conf->rxmode.max_rx_pkt_len < RTE_ETHER_MIN_LEN ||
-			dev_conf->rxmode.max_rx_pkt_len > RTE_ETHER_MAX_LEN)
+		uint16_t pktlen = dev_conf->rxmode.max_rx_pkt_len;
+		if (pktlen < RTE_ETHER_MIN_MTU + overhead_len ||
+		    pktlen > RTE_ETHER_MTU + overhead_len)
 			/* Use default value */
 			dev->data->dev_conf.rxmode.max_rx_pkt_len =
-							RTE_ETHER_MAX_LEN;
+						RTE_ETHER_MTU + overhead_len;
 	}
 
 	/*
@@ -1549,6 +1582,8 @@ reset_queues:
 	eth_dev_tx_queue_config(dev, 0);
 rollback:
 	memcpy(&dev->data->dev_conf, &orig_conf, sizeof(dev->data->dev_conf));
+	if (old_mtu != dev->data->mtu)
+		dev->data->mtu = old_mtu;
 
 	rte_ethdev_trace_configure(port_id, nb_rx_q, nb_tx_q, dev_conf, ret);
 	return ret;
@@ -1750,8 +1785,9 @@ rte_eth_dev_stop(uint16_t port_id)
 		return 0;
 	}
 
-	dev->data->dev_started = 0;
 	ret = (*dev->dev_ops->dev_stop)(dev);
+	if (ret == 0)
+		dev->data->dev_started = 0;
 	rte_ethdev_trace_stop(port_id, ret);
 
 	return ret;
@@ -1793,6 +1829,18 @@ rte_eth_dev_close(uint16_t port_id)
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	dev = &rte_eth_devices[port_id];
 
+	/*
+	 * Secondary process needs to close device to release process private
+	 * resources. But secondary process should not be obliged to wait
+	 * for device stop before closing ethdev.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
+			dev->data->dev_started) {
+		RTE_ETHDEV_LOG(ERR, "Cannot close started device (port %u)\n",
+			       port_id);
+		return -EINVAL;
+	}
+
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->dev_close, -ENOTSUP);
 	*lasterr = (*dev->dev_ops->dev_close)(dev);
 	if (*lasterr != 0)
@@ -1801,7 +1849,7 @@ rte_eth_dev_close(uint16_t port_id)
 	rte_ethdev_trace_close(port_id);
 	*lasterr = rte_eth_dev_release_port(dev);
 
-	return eth_err(port_id, firsterr);
+	return firsterr;
 }
 
 int
@@ -3129,7 +3177,8 @@ rte_eth_xstats_get(uint16_t port_id, struct rte_eth_xstat *xstats,
 	int ret;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
-
+	if (xstats == NULL && n > 0)
+		return -EINVAL;
 	dev = &rte_eth_devices[port_id];
 
 	nb_rxqs = RTE_MIN(dev->data->nb_rx_queues, RTE_ETHDEV_QUEUE_STAT_CNTRS);
@@ -3146,7 +3195,7 @@ rte_eth_xstats_get(uint16_t port_id, struct rte_eth_xstat *xstats,
 		 * xstats struct.
 		 */
 		xcount = (*dev->dev_ops->xstats_get)(dev,
-				     xstats ? xstats + count : NULL,
+				     (n > count) ? xstats + count : NULL,
 				     (n > count) ? n - count : 0);
 
 		if (xcount < 0)
@@ -3773,6 +3822,7 @@ rte_eth_dev_rss_reta_update(uint16_t port_id,
 			    struct rte_eth_rss_reta_entry64 *reta_conf,
 			    uint16_t reta_size)
 {
+	enum rte_eth_rx_mq_mode mq_mode;
 	struct rte_eth_dev *dev;
 	int ret;
 
@@ -3789,6 +3839,12 @@ rte_eth_dev_rss_reta_update(uint16_t port_id,
 				dev->data->nb_rx_queues);
 	if (ret < 0)
 		return ret;
+
+	mq_mode = dev->data->dev_conf.rxmode.mq_mode;
+	if (!(mq_mode & ETH_MQ_RX_RSS_FLAG)) {
+		RTE_ETHDEV_LOG(ERR, "Multi-queue RSS mode isn't enabled.\n");
+		return -ENOTSUP;
+	}
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->reta_update, -ENOTSUP);
 	return eth_err(port_id, (*dev->dev_ops->reta_update)(dev, reta_conf,
@@ -3822,6 +3878,7 @@ rte_eth_dev_rss_hash_update(uint16_t port_id,
 {
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info = { .flow_type_rss_offloads = 0, };
+	enum rte_eth_rx_mq_mode mq_mode;
 	int ret;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
@@ -3841,6 +3898,13 @@ rte_eth_dev_rss_hash_update(uint16_t port_id,
 			dev_info.flow_type_rss_offloads);
 		return -EINVAL;
 	}
+
+	mq_mode = dev->data->dev_conf.rxmode.mq_mode;
+	if (!(mq_mode & ETH_MQ_RX_RSS_FLAG)) {
+		RTE_ETHDEV_LOG(ERR, "Multi-queue RSS mode isn't enabled.\n");
+		return -ENOTSUP;
+	}
+
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->rss_hash_update, -ENOTSUP);
 	return eth_err(port_id, (*dev->dev_ops->rss_hash_update)(dev,
 								 rss_conf));
@@ -5239,6 +5303,8 @@ rte_eth_dev_get_reg_info(uint16_t port_id, struct rte_dev_reg_info *info)
 	struct rte_eth_dev *dev;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	if (info == NULL)
+		return -EINVAL;
 
 	dev = &rte_eth_devices[port_id];
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->get_reg, -ENOTSUP);
@@ -5263,6 +5329,8 @@ rte_eth_dev_get_eeprom(uint16_t port_id, struct rte_dev_eeprom_info *info)
 	struct rte_eth_dev *dev;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	if (info == NULL)
+		return -EINVAL;
 
 	dev = &rte_eth_devices[port_id];
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->get_eeprom, -ENOTSUP);
@@ -5275,6 +5343,8 @@ rte_eth_dev_set_eeprom(uint16_t port_id, struct rte_dev_eeprom_info *info)
 	struct rte_eth_dev *dev;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	if (info == NULL)
+		return -EINVAL;
 
 	dev = &rte_eth_devices[port_id];
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->set_eeprom, -ENOTSUP);
@@ -5288,6 +5358,8 @@ rte_eth_dev_get_module_info(uint16_t port_id,
 	struct rte_eth_dev *dev;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	if (modinfo == NULL)
+		return -EINVAL;
 
 	dev = &rte_eth_devices[port_id];
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->get_module_info, -ENOTSUP);
@@ -5301,6 +5373,8 @@ rte_eth_dev_get_module_eeprom(uint16_t port_id,
 	struct rte_eth_dev *dev;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	if (info == NULL || info->data == NULL || info->length == 0)
+		return -EINVAL;
 
 	dev = &rte_eth_devices[port_id];
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->get_module_eeprom, -ENOTSUP);
@@ -5576,6 +5650,8 @@ eth_dev_add_port_queue_stats(struct rte_tel_data *d, uint64_t *q_stats,
 {
 	int q;
 	struct rte_tel_data *q_data = rte_tel_data_alloc();
+	if (q_data == NULL)
+		return;
 	rte_tel_data_start_array(q_data, RTE_TEL_U64_VAL);
 	for (q = 0; q < RTE_ETHDEV_QUEUE_STAT_CNTRS; q++)
 		rte_tel_data_add_array_u64(q_data, q_stats[q]);
@@ -5669,6 +5745,7 @@ eth_dev_handle_port_xstats(const char *cmd __rte_unused,
 	for (i = 0; i < num_xstats; i++)
 		rte_tel_data_add_dict_u64(d, xstat_names[i].name,
 				eth_xstats[i].value);
+	free(eth_xstats);
 	return 0;
 }
 
@@ -5692,7 +5769,7 @@ eth_dev_handle_port_link_status(const char *cmd __rte_unused,
 	if (!rte_eth_dev_is_valid_port(port_id))
 		return -1;
 
-	ret = rte_eth_link_get(port_id, &link);
+	ret = rte_eth_link_get_nowait(port_id, &link);
 	if (ret < 0)
 		return -1;
 

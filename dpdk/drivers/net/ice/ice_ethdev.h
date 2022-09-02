@@ -50,7 +50,7 @@
 #define ICE_PKG_FILE_SEARCH_PATH_UPDATES "/lib/firmware/updates/intel/ice/ddp/"
 #define ICE_MAX_PKG_FILENAME_SIZE   256
 
-#define MAX_ACL_ENTRIES    512
+#define MAX_ACL_NORMAL_ENTRIES    256
 
 /**
  * vlan_id is a 12 bit number.
@@ -135,6 +135,7 @@
  */
 #define ICE_ETH_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + ICE_VLAN_TAG_SIZE * 2)
+#define ICE_ETH_MAX_LEN (RTE_ETHER_MTU + ICE_ETH_OVERHEAD)
 
 #define ICE_RXTX_BYTES_HIGH(bytes) ((bytes) & ~ICE_40_BIT_MASK)
 #define ICE_RXTX_BYTES_LOW(bytes) ((bytes) & ICE_40_BIT_MASK)
@@ -221,7 +222,7 @@ struct ice_vsi {
 	 * needs to add, HW needs to know the layout that VSIs are organized.
 	 * Besides that, VSI isan element and can't switch packets, which needs
 	 * to add new component VEB to perform switching. So, a new VSI needs
-	 * to specify the the uplink VSI (Parent VSI) before created. The
+	 * to specify the uplink VSI (Parent VSI) before created. The
 	 * uplink VSI will check whether it had a VEB to switch packets. If no,
 	 * it will try to create one. Then, uplink VSI will move the new VSI
 	 * into its' sib_vsi_list to manage all the downlink VSI.
@@ -399,7 +400,7 @@ struct ice_acl_conf {
 struct ice_acl_info {
 	struct ice_acl_conf conf;
 	struct rte_bitmap *slots;
-	uint64_t hw_entry_id[MAX_ACL_ENTRIES];
+	uint64_t hw_entry_id[MAX_ACL_NORMAL_ENTRIES];
 };
 
 struct ice_pf {
@@ -466,7 +467,6 @@ struct ice_devargs {
 struct ice_adapter {
 	/* Common for both PF and VF */
 	struct ice_hw hw;
-	struct rte_eth_dev *eth_dev;
 	struct ice_pf pf;
 	bool rx_bulk_alloc_allowed;
 	bool rx_vec_allowed;
@@ -478,6 +478,14 @@ struct ice_adapter {
 	struct ice_devargs devargs;
 	enum ice_pkg_type active_pkg_type; /* loaded ddp package type */
 	uint16_t fdir_ref_cnt;
+	/* True if DCF state of the associated PF is on */
+	bool dcf_state_on;
+#ifdef RTE_ARCH_X86
+	bool rx_use_avx2;
+	bool rx_use_avx512;
+	bool tx_use_avx2;
+	bool tx_use_avx512;
+#endif
 };
 
 struct ice_vsi_vlan_pvid_info {
@@ -511,8 +519,6 @@ struct ice_vsi_vlan_pvid_info {
 	(&(((struct ice_vsi *)vsi)->adapter->hw))
 #define ICE_VSI_TO_PF(vsi) \
 	(&(((struct ice_vsi *)vsi)->adapter->pf))
-#define ICE_VSI_TO_ETH_DEV(vsi) \
-	(((struct ice_vsi *)vsi)->adapter->eth_dev)
 
 /* ICE_PF_TO */
 #define ICE_PF_TO_HW(pf) \

@@ -5,13 +5,15 @@
 #include <rte_errno.h>
 #include <rte_log.h>
 #include <rte_eal.h>
+#include <rte_memory.h>
 
 #include "private.h"
 #include "pci_netuio.h"
 
 #include <devpkey.h>
+#include <regstr.h>
 
-#ifdef RTE_TOOLCHAIN_GCC
+#if defined RTE_TOOLCHAIN_GCC && (__MINGW64_VERSION_MAJOR < 8)
 #include <devpropdef.h>
 DEFINE_DEVPROPKEY(DEVPKEY_Device_Numa_Node, 0x540b947e, 0x8b40, 0x45bc,
 	0xa8, 0xa2, 0x6a, 0x0b, 0x89, 0x4c, 0xbd, 0xa2, 3);
@@ -22,20 +24,22 @@ DEFINE_DEVPROPKEY(DEVPKEY_Device_Numa_Node, 0x540b947e, 0x8b40, 0x45bc,
  * the registry hive for PCI devices.
  */
 
-/* The functions below are not implemented on Windows,
+/* Some of the functions below are not implemented on Windows,
  * but need to be defined for compilation purposes
  */
 
 /* Map pci device */
 int
-rte_pci_map_device(struct rte_pci_device *dev __rte_unused)
+rte_pci_map_device(struct rte_pci_device *dev)
 {
-	/* This function is not implemented on Windows.
-	 * We really should short-circuit the call to these functions by
-	 * clearing the RTE_PCI_DRV_NEED_MAPPING flag
-	 * in the rte_pci_driver flags.
+	/* Only return success for devices bound to netuio.
+	 * Devices that are bound to netuio are mapped at
+	 * the bus probing stage.
 	 */
-	return 0;
+	if (dev->kdrv == RTE_PCI_KDRV_NET_UIO)
+		return 0;
+	else
+		return -1;
 }
 
 /* Unmap pci device */
@@ -201,14 +205,14 @@ get_device_resource_info(HDEVINFO dev_info,
 	int ret;
 
 	switch (dev->kdrv) {
-	case RTE_PCI_KDRV_NONE:
-		/* mem_resource - Unneeded for RTE_PCI_KDRV_NONE */
+	case RTE_PCI_KDRV_UNKNOWN:
+		/* bifurcated driver case - mem_resource is unneeded */
 		dev->mem_resource[0].phys_addr = 0;
 		dev->mem_resource[0].len = 0;
 		dev->mem_resource[0].addr = NULL;
 		break;
-	case RTE_PCI_KDRV_NIC_UIO:
-		/* get device info from netuio kernel driver */
+	case RTE_PCI_KDRV_NET_UIO:
+		/* get device info from NetUIO kernel driver */
 		ret = get_netuio_device_info(dev_info, dev_info_data, dev);
 		if (ret != 0) {
 			RTE_LOG(DEBUG, EAL,
@@ -230,10 +234,17 @@ get_device_resource_info(HDEVINFO dev_info,
 	}
 
 	/* Get NUMA node using DEVPKEY_Device_Numa_Node */
+	dev->device.numa_node = SOCKET_ID_ANY;
 	res = SetupDiGetDevicePropertyW(dev_info, dev_info_data,
 		&DEVPKEY_Device_Numa_Node, &property_type,
 		(BYTE *)&numa_node, sizeof(numa_node), NULL, 0);
 	if (!res) {
+		DWORD error = GetLastError();
+		if (error == ERROR_NOT_FOUND) {
+			/* On older CPUs, NUMA is not bound to PCIe locality. */
+			dev->device.numa_node = 0;
+			return ERROR_SUCCESS;
+		}
 		RTE_LOG_WIN32_ERR("SetupDiGetDevicePropertyW"
 			"(DEVPKEY_Device_Numa_Node)");
 		return -1;
@@ -293,9 +304,9 @@ set_kernel_driver_type(PSP_DEVINFO_DATA device_info_data,
 {
 	/* set kernel driver type based on device class */
 	if (IsEqualGUID(&(device_info_data->ClassGuid), &GUID_DEVCLASS_NETUIO))
-		dev->kdrv = RTE_PCI_KDRV_NIC_UIO;
+		dev->kdrv = RTE_PCI_KDRV_NET_UIO;
 	else
-		dev->kdrv = RTE_PCI_KDRV_NONE;
+		dev->kdrv = RTE_PCI_KDRV_UNKNOWN;
 }
 
 static int
@@ -303,7 +314,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 {
 	struct rte_pci_device *dev;
 	int ret = -1;
-	char  pci_device_info[PATH_MAX];
+	char  pci_device_info[REGSTR_VAL_MAX_HCID_LEN];
 	struct rte_pci_addr addr;
 	struct rte_pci_id pci_id;
 
@@ -314,7 +325,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 	memset(dev, 0, sizeof(*dev));
 
 	ret = get_pci_hardware_id(dev_info, device_info_data,
-		pci_device_info, PATH_MAX);
+		pci_device_info, sizeof(pci_device_info));
 	if (ret != 0)
 		goto end;
 

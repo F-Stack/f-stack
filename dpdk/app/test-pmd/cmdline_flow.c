@@ -2003,7 +2003,7 @@ static const struct token token_list[] = {
 	},
 	[TUNNEL_DESTROY] = {
 		.name = "destroy",
-		.help = "destroy tunel",
+		.help = "destroy tunnel",
 		.next = NEXT(NEXT_ENTRY(TUNNEL_DESTROY_ID),
 			     NEXT_ENTRY(PORT_ID)),
 		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
@@ -2011,7 +2011,7 @@ static const struct token token_list[] = {
 	},
 	[TUNNEL_DESTROY_ID] = {
 		.name = "id",
-		.help = "tunnel identifier to testroy",
+		.help = "tunnel identifier to destroy",
 		.next = NEXT(NEXT_ENTRY(UNSIGNED)),
 		.args = ARGS(ARGS_ENTRY(struct tunnel_ops, id)),
 		.call = parse_tunnel,
@@ -3403,7 +3403,10 @@ static const struct token token_list[] = {
 		.name = "key",
 		.help = "RSS hash key",
 		.next = NEXT(action_rss, NEXT_ENTRY(HEX)),
-		.args = ARGS(ARGS_ENTRY_ARB(0, 0),
+		.args = ARGS(ARGS_ENTRY_ARB
+			     (offsetof(struct action_rss_data, conf) +
+			      offsetof(struct rte_flow_action_rss, key),
+			      sizeof(((struct rte_flow_action_rss *)0)->key)),
 			     ARGS_ENTRY_ARB
 			     (offsetof(struct action_rss_data, conf) +
 			      offsetof(struct rte_flow_action_rss, key_len),
@@ -5200,6 +5203,8 @@ parse_vc_action_nvgre_encap(struct context *ctx, const struct token *token,
 		       .src_addr = nvgre_encap_conf.ipv4_src,
 		       .dst_addr = nvgre_encap_conf.ipv4_dst,
 		},
+		.item_nvgre.c_k_s_rsvd0_ver = RTE_BE16(0x2000),
+		.item_nvgre.protocol = RTE_BE16(RTE_ETHER_TYPE_TEB),
 		.item_nvgre.flow_id = 0,
 	};
 	memcpy(action_nvgre_encap_data->item_eth.dst.addr_bytes,
@@ -6406,31 +6411,32 @@ error:
 static int
 parse_hex_string(const char *src, uint8_t *dst, uint32_t *size)
 {
-	char *c = NULL;
-	uint32_t i, len;
-	char tmp[3];
+	const uint8_t *head = dst;
+	uint32_t left;
 
-	/* Check input parameters */
-	if ((src == NULL) ||
-		(dst == NULL) ||
-		(size == NULL) ||
-		(*size == 0))
+	if (*size == 0)
 		return -1;
 
+	left = *size;
+
 	/* Convert chars to bytes */
-	for (i = 0, len = 0; i < *size; i += 2) {
-		snprintf(tmp, 3, "%s", src + i);
-		dst[len++] = strtoul(tmp, &c, 16);
-		if (*c != 0) {
-			len--;
-			dst[len] = 0;
-			*size = len;
+	while (left) {
+		char tmp[3], *end = tmp;
+		uint32_t read_lim = left & 1 ? 1 : 2;
+
+		snprintf(tmp, read_lim + 1, "%s", src);
+		*dst = strtoul(tmp, &end, 16);
+		if (*end) {
+			*dst = 0;
+			*size = (uint32_t)(dst - head);
 			return -1;
 		}
+		left -= read_lim;
+		src += read_lim;
+		dst++;
 	}
-	dst[len] = 0;
-	*size = len;
-
+	*dst = 0;
+	*size = (uint32_t)(dst - head);
 	return 0;
 }
 
@@ -6474,9 +6480,12 @@ parse_hex(struct context *ctx, const struct token *token,
 		hexlen -= 2;
 	}
 	if (hexlen > length)
-		return -1;
+		goto error;
 	ret = parse_hex_string(str, hex_tmp, &hexlen);
 	if (ret < 0)
+		goto error;
+	/* Check the converted binary fits into data buffer. */
+	if (hexlen > size)
 		goto error;
 	/* Let parse_int() fill length information first. */
 	ret = snprintf(tmp, sizeof(tmp), "%u", hexlen);

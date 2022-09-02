@@ -65,8 +65,13 @@ ifcvf_init_hw(struct ifcvf_hw *hw, PCI_DEV *dev)
 			hw->common_cfg = get_cap_addr(hw, &cap);
 			break;
 		case IFCVF_PCI_CAP_NOTIFY_CFG:
-			PCI_READ_CONFIG_DWORD(dev, &hw->notify_off_multiplier,
+			ret = PCI_READ_CONFIG_DWORD(dev,
+					&hw->notify_off_multiplier,
 					pos + sizeof(cap));
+			if (ret < 0) {
+				DEBUGOUT("failed to read notify_off_multiplier\n");
+				return -1;
+			}
 			hw->notify_base = get_cap_addr(hw, &cap);
 			hw->notify_region = cap.bar;
 			break;
@@ -89,12 +94,14 @@ next:
 		return -1;
 	}
 
-	DEBUGOUT("capability mapping:\ncommon cfg: %p\n"
-			"notify base: %p\nisr cfg: %p\ndevice cfg: %p\n"
-			"multiplier: %u\n",
-			hw->common_cfg, hw->dev_cfg,
-			hw->isr, hw->notify_base,
-			hw->notify_off_multiplier);
+	DEBUGOUT("capability mapping:\n"
+		 "common cfg: %p\n"
+		 "notify base: %p\n"
+		 "isr cfg: %p\n"
+		 "device cfg: %p\n"
+		 "multiplier: %u\n",
+		 hw->common_cfg, hw->notify_base, hw->isr, hw->dev_cfg,
+		 hw->notify_off_multiplier);
 
 	return 0;
 }

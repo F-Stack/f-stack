@@ -5,11 +5,17 @@
 #ifndef _RTE_VDPA_H_
 #define _RTE_VDPA_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @file
  *
  * Device specific vhost lib
  */
+
+#include <stdint.h>
 
 /** Maximum name length for statistics counters */
 #define RTE_VDPA_STATS_NAME_SIZE 64
@@ -181,4 +187,9 @@ rte_vdpa_get_stats(struct rte_vdpa_device *dev, uint16_t qid,
  */
 int
 rte_vdpa_reset_stats(struct rte_vdpa_device *dev, uint16_t qid);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* _RTE_VDPA_H_ */

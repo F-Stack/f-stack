@@ -170,25 +170,34 @@ struct rte_thread_ctrl_params {
 	void *(*start_routine)(void *);
 	void *arg;
 	pthread_barrier_t configured;
+	unsigned int refcnt;
 };
+
+static void ctrl_params_free(struct rte_thread_ctrl_params *params)
+{
+	if (__atomic_sub_fetch(&params->refcnt, 1, __ATOMIC_ACQ_REL) == 0) {
+		(void)pthread_barrier_destroy(&params->configured);
+		free(params);
+	}
+}
 
 static void *ctrl_thread_init(void *arg)
 {
-	int ret;
 	struct internal_config *internal_conf =
 		eal_get_internal_configuration();
 	rte_cpuset_t *cpuset = &internal_conf->ctrl_cpuset;
 	struct rte_thread_ctrl_params *params = arg;
-	void *(*start_routine)(void *) = params->start_routine;
+	void *(*start_routine)(void *);
 	void *routine_arg = params->arg;
 
 	__rte_thread_init(rte_lcore_id(), cpuset);
 
-	ret = pthread_barrier_wait(&params->configured);
-	if (ret == PTHREAD_BARRIER_SERIAL_THREAD) {
-		pthread_barrier_destroy(&params->configured);
-		free(params);
-	}
+	pthread_barrier_wait(&params->configured);
+	start_routine = params->start_routine;
+	ctrl_params_free(params);
+
+	if (start_routine == NULL)
+		return NULL;
 
 	return start_routine(routine_arg);
 }
@@ -210,14 +219,15 @@ rte_ctrl_thread_create(pthread_t *thread, const char *name,
 
 	params->start_routine = start_routine;
 	params->arg = arg;
+	params->refcnt = 2;
 
-	pthread_barrier_init(&params->configured, NULL, 2);
+	ret = pthread_barrier_init(&params->configured, NULL, 2);
+	if (ret != 0)
+		goto fail_no_barrier;
 
 	ret = pthread_create(thread, attr, ctrl_thread_init, (void *)params);
-	if (ret != 0) {
-		free(params);
-		return -ret;
-	}
+	if (ret != 0)
+		goto fail_with_barrier;
 
 	if (name != NULL) {
 		ret = rte_thread_setname(*thread, name);
@@ -227,25 +237,25 @@ rte_ctrl_thread_create(pthread_t *thread, const char *name,
 	}
 
 	ret = pthread_setaffinity_np(*thread, sizeof(*cpuset), cpuset);
-	if (ret)
-		goto fail;
+	if (ret != 0)
+		params->start_routine = NULL;
 
-	ret = pthread_barrier_wait(&params->configured);
-	if (ret == PTHREAD_BARRIER_SERIAL_THREAD) {
-		pthread_barrier_destroy(&params->configured);
-		free(params);
-	}
+	pthread_barrier_wait(&params->configured);
+	ctrl_params_free(params);
 
-	return 0;
+	if (ret != 0)
+		/* start_routine has been set to NULL above; */
+		/* ctrl thread will exit immediately */
+		pthread_join(*thread, NULL);
 
-fail:
-	if (PTHREAD_BARRIER_SERIAL_THREAD ==
-	    pthread_barrier_wait(&params->configured)) {
-		pthread_barrier_destroy(&params->configured);
-		free(params);
-	}
-	pthread_cancel(*thread);
-	pthread_join(*thread, NULL);
+	return -ret;
+
+fail_with_barrier:
+	(void)pthread_barrier_destroy(&params->configured);
+
+fail_no_barrier:
+	free(params);
+
 	return -ret;
 }
 

@@ -64,7 +64,7 @@ struct rte_compressdev *
 rte_compressdev_pmd_get_named_dev(const char *name);
 
 /**
- * Definitions of all functions exported by a driver through the
+ * Definitions of all functions exported by a driver through
  * the generic structure of type *comp_dev_ops* supplied in the
  * *rte_compressdev* structure associated with a device.
  */
@@ -138,6 +138,8 @@ typedef void (*compressdev_stats_reset_t)(struct rte_compressdev *dev);
  *
  * @param dev
  *   Compress device
+ * @param dev_info
+ *   Compress device information to populate
  */
 typedef void (*compressdev_info_get_t)(struct rte_compressdev *dev,
 				struct rte_compressdev_info *dev_info);
@@ -317,7 +319,7 @@ rte_compressdev_pmd_release_device(struct rte_compressdev *dev);
  * PMD assist function to parse initialisation arguments for comp driver
  * when creating a new comp PMD device instance.
  *
- * PMD driver should set default values for that PMD before calling function,
+ * PMD should set default values for that PMD before calling function,
  * these default values will be over-written with successfully parsed values
  * from args string.
  *

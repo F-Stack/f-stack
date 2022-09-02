@@ -69,12 +69,6 @@
 
 #define HINIC_VLAN_FILTER_EN		(1U << 0)
 
-#define HINIC_MTU_TO_PKTLEN(mtu)	\
-	((mtu) + ETH_HLEN + ETH_CRC_LEN)
-
-#define HINIC_PKTLEN_TO_MTU(pktlen)	\
-	((pktlen) - (ETH_HLEN + ETH_CRC_LEN))
-
 /* lro numer limit for one packet */
 #define HINIC_LRO_WQE_NUM_DEFAULT	8
 
@@ -261,7 +255,7 @@ static int hinic_vlan_offload_set(struct rte_eth_dev *dev, int mask);
  * Interrupt handler triggered by NIC  for handling
  * specific event.
  *
- * @param: The address of parameter (struct rte_eth_dev *) regsitered before.
+ * @param: The address of parameter (struct rte_eth_dev *) registered before.
  */
 static void hinic_dev_interrupt_handler(void *param)
 {
@@ -342,7 +336,7 @@ static int hinic_dev_configure(struct rte_eth_dev *dev)
 		return err;
 	}
 
-	/* init vlan offoad */
+	/* init VLAN offload */
 	err = hinic_vlan_offload_set(dev,
 				ETH_VLAN_STRIP_MASK | ETH_VLAN_FILTER_MASK);
 	if (err) {
@@ -1556,7 +1550,7 @@ static int hinic_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 
 	/* update max frame size */
 	frame_size = HINIC_MTU_TO_PKTLEN(mtu);
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > HINIC_ETH_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -1613,6 +1607,9 @@ static int hinic_vlan_filter_set(struct rte_eth_dev *dev,
 
 	if (vlan_id > RTE_ETHER_MAX_VLAN_ID)
 		return -EINVAL;
+
+	if (vlan_id == 0)
+		return 0;
 
 	func_id = hinic_global_func_id(nic_dev->hwdev);
 
@@ -3082,6 +3079,10 @@ static const struct eth_dev_ops hinic_pmd_vf_ops = {
 	.filter_ctrl                   = hinic_dev_filter_ctrl,
 };
 
+static const struct eth_dev_ops hinic_dev_sec_ops = {
+	.dev_infos_get                 = hinic_dev_infos_get,
+};
+
 static int hinic_func_init(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev;
@@ -3096,6 +3097,7 @@ static int hinic_func_init(struct rte_eth_dev *eth_dev)
 
 	/* EAL is SECONDARY and eth_dev is already created */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		eth_dev->dev_ops = &hinic_dev_sec_ops;
 		PMD_DRV_LOG(INFO, "Initialize %s in secondary process",
 			    eth_dev->data->name);
 

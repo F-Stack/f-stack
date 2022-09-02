@@ -8,7 +8,7 @@
 
 /**
  * @file
- * This file contains definion of RTE mbuf structure itself,
+ * This file contains definition of RTE mbuf structure itself,
  * packet offload flags and some related macros.
  * For majority of DPDK entities, it is not recommended to include
  * this file directly, use include <rte_mbuf.h> instead.
@@ -17,8 +17,9 @@
  */
 
 #include <stdint.h>
+
 #include <rte_compat.h>
-#include <generic/rte_atomic.h>
+#include <rte_byteorder.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -495,7 +496,12 @@ struct rte_mbuf {
 	 * or non-atomic) is controlled by the RTE_MBUF_REFCNT_ATOMIC flag.
 	 */
 	uint16_t refcnt;
-	uint16_t nb_segs;         /**< Number of segments. */
+
+	/**
+	 * Number of segments. Only valid for the first segment of an mbuf
+	 * chain.
+	 */
+	uint16_t nb_segs;
 
 	/** Input port (16 bits to support more than 256 virtual ports).
 	 * The event eth Tx adapter uses this field to specify the output port.
@@ -591,7 +597,11 @@ struct rte_mbuf {
 	/* second cache line - fields only used in slow path or on TX */
 	RTE_MARKER cacheline1 __rte_cache_min_aligned;
 
-	struct rte_mbuf *next;    /**< Next segment of scattered packet. */
+	/**
+	 * Next segment of scattered packet. Must be NULL in the last segment or
+	 * in case of non-segmented packet.
+	 */
+	struct rte_mbuf *next;
 
 	/* fields to support TX offloads */
 	RTE_STD_C11
@@ -709,7 +719,7 @@ struct rte_mbuf_ext_shared_info {
  *   The type to cast the result into.
  */
 #define rte_pktmbuf_mtod_offset(m, t, o)	\
-	((t)((char *)(m)->buf_addr + (m)->data_off + (o)))
+	((t)(void *)((char *)(m)->buf_addr + (m)->data_off + (o)))
 
 /**
  * A macro that points to the start of the data in the mbuf.

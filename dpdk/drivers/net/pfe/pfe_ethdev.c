@@ -582,11 +582,6 @@ pfe_eth_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 	struct rte_eth_link link, old;
 	unsigned int lstatus = 1;
 
-	if (dev == NULL) {
-		PFE_PMD_ERR("Invalid device in link_update.\n");
-		return 0;
-	}
-
 	memset(&old, 0, sizeof(old));
 	memset(&link, 0, sizeof(struct rte_eth_link));
 
@@ -793,7 +788,7 @@ pfe_eth_init(struct rte_vdev_device *vdev, struct pfe *pfe, int id)
 	if (eth_dev == NULL)
 		return -ENOMEM;
 
-	/* Extract pltform data */
+	/* Extract platform data */
 	pfe_info = (struct ls1012a_pfe_platform_data *)&pfe->platform_data;
 	if (!pfe_info) {
 		PFE_PMD_ERR("pfe missing additional platform data");
@@ -854,8 +849,6 @@ pfe_eth_init(struct rte_vdev_device *vdev, struct pfe *pfe, int id)
 
 	eth_dev->data->nb_rx_queues = 1;
 	eth_dev->data->nb_tx_queues = 1;
-
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* For link status, open the PFE CDEV; Error from this function
 	 * is silently ignored; In case of error, the link status will not

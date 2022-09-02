@@ -63,7 +63,7 @@ QEMU can then be started using the following parameters:
         -device virtio-crypto-pci,id=crypto0,cryptodev=cryptodev0
     [...]
 
-Secondly bind the uio_generic driver for the virtio-crypto device.
+Secondly bind the uio_pci_generic driver for the virtio-crypto device.
 For example, 0000:00:04.0 is the domain, bus, device and function
 number of the virtio-crypto device:
 
@@ -73,7 +73,7 @@ number of the virtio-crypto device:
     echo -n 0000:00:04.0 > /sys/bus/pci/drivers/virtio-pci/unbind
     echo "1af4 1054" > /sys/bus/pci/drivers/uio_pci_generic/new_id
 
-Finally the front-end virtio crypto PMD driver can be installed.
+Finally the front-end virtio crypto PMD can be installed.
 
 Tests
 -----

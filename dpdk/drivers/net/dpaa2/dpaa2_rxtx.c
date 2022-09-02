@@ -139,8 +139,10 @@ dpaa2_dev_rx_parse_slow(struct rte_mbuf *mbuf,
 			annotation->word3, annotation->word4);
 
 #if defined(RTE_LIBRTE_IEEE1588)
-	if (BIT_ISSET_AT_POS(annotation->word1, DPAA2_ETH_FAS_PTP))
+	if (BIT_ISSET_AT_POS(annotation->word1, DPAA2_ETH_FAS_PTP)) {
 		mbuf->ol_flags |= PKT_RX_IEEE1588_PTP;
+		mbuf->ol_flags |= PKT_RX_IEEE1588_TMST;
+	}
 #endif
 
 	if (BIT_ISSET_AT_POS(annotation->word3, L2_VLAN_1_PRESENT)) {
@@ -585,7 +587,7 @@ dpaa2_dev_prefetch_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	rte_prefetch0((void *)(size_t)(dq_storage + 1));
 
 	/* Prepare next pull descriptor. This will give space for the
-	 * prefething done on DQRR entries
+	 * prefetching done on DQRR entries
 	 */
 	q_storage->toggle ^= 1;
 	dq_storage1 = q_storage->dq_storage[q_storage->toggle];
@@ -640,7 +642,10 @@ dpaa2_dev_prefetch_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		else
 			bufs[num_rx] = eth_fd_to_mbuf(fd, eth_data->port_id);
 #if defined(RTE_LIBRTE_IEEE1588)
-		priv->rx_timestamp = *dpaa2_timestamp_dynfield(bufs[num_rx]);
+		if (bufs[num_rx]->ol_flags & PKT_RX_IEEE1588_TMST) {
+			priv->rx_timestamp =
+				*dpaa2_timestamp_dynfield(bufs[num_rx]);
+		}
 #endif
 
 		if (eth_data->dev_conf.rxmode.offloads &
@@ -767,6 +772,9 @@ dpaa2_dev_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	const struct qbman_fd *fd;
 	struct qbman_pull_desc pulldesc;
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
+#if defined(RTE_LIBRTE_IEEE1588)
+	struct dpaa2_dev_priv *priv = eth_data->dev_private;
+#endif
 
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
@@ -853,6 +861,13 @@ dpaa2_dev_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				bufs[num_rx] = eth_fd_to_mbuf(fd,
 							eth_data->port_id);
 
+#if defined(RTE_LIBRTE_IEEE1588)
+		if (bufs[num_rx]->ol_flags & PKT_RX_IEEE1588_TMST) {
+			priv->rx_timestamp =
+				*dpaa2_timestamp_dynfield(bufs[num_rx]);
+		}
+#endif
+
 		if (eth_data->dev_conf.rxmode.offloads &
 				DEV_RX_OFFLOAD_VLAN_STRIP) {
 			rte_vlan_strip(bufs[num_rx]);
@@ -888,6 +903,8 @@ uint16_t dpaa2_dev_tx_conf(void *queue)
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
 	struct dpaa2_dev_priv *priv = eth_data->dev_private;
 	struct dpaa2_annot_hdr *annotation;
+	void *v_addr;
+	struct rte_mbuf *mbuf;
 #endif
 
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
@@ -972,10 +989,16 @@ uint16_t dpaa2_dev_tx_conf(void *queue)
 			num_tx_conf++;
 			num_pulled++;
 #if defined(RTE_LIBRTE_IEEE1588)
-			annotation = (struct dpaa2_annot_hdr *)((size_t)
-				DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd)) +
-				DPAA2_FD_PTA_SIZE);
-			priv->tx_timestamp = annotation->word2;
+			v_addr = DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd));
+			mbuf = DPAA2_INLINE_MBUF_FROM_BUF(v_addr,
+				rte_dpaa2_bpid_info[DPAA2_GET_FD_BPID(fd)].meta_data_size);
+
+			if (mbuf->ol_flags & PKT_TX_IEEE1588_TMST) {
+				annotation = (struct dpaa2_annot_hdr *)((size_t)
+					DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd)) +
+					DPAA2_FD_PTA_SIZE);
+				priv->tx_timestamp = annotation->word2;
+			}
 #endif
 		} while (pending);
 
@@ -1050,8 +1073,11 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	 * corresponding to last packet transmitted for reading
 	 * the timestamp
 	 */
-	priv->next_tx_conf_queue = dpaa2_q->tx_conf_queue;
-	dpaa2_dev_tx_conf(dpaa2_q->tx_conf_queue);
+	if ((*bufs)->ol_flags & PKT_TX_IEEE1588_TMST) {
+		priv->next_tx_conf_queue = dpaa2_q->tx_conf_queue;
+		dpaa2_dev_tx_conf(dpaa2_q->tx_conf_queue);
+		priv->tx_timestamp = 0;
+	}
 #endif
 
 	/*Prepare enqueue descriptor*/
@@ -1339,7 +1365,7 @@ dpaa2_dev_tx_ordered(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 			if (*dpaa2_seqn(*bufs)) {
 				/* Use only queue 0 for Tx in case of atomic/
 				 * ordered packets as packets can get unordered
-				 * when being tranmitted out from the interface
+				 * when being transmitted out from the interface
 				 */
 				dpaa2_set_enqueue_descriptor(order_sendq,
 							     (*bufs),
@@ -1566,7 +1592,7 @@ dpaa2_dev_loopback_rx(void *queue,
 	rte_prefetch0((void *)(size_t)(dq_storage + 1));
 
 	/* Prepare next pull descriptor. This will give space for the
-	 * prefething done on DQRR entries
+	 * prefetching done on DQRR entries
 	 */
 	q_storage->toggle ^= 1;
 	dq_storage1 = q_storage->dq_storage[q_storage->toggle];

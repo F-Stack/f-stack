@@ -32,7 +32,7 @@
 
 /* While processing submitted and completed descriptors (rx and tx path
  * respectively) in a loop it is desired to:
- *  - perform batch submissions while populating sumbissmion queue
+ *  - perform batch submissions while populating submission queue
  *  - avoid blocking transmission of other packets during cleanup phase
  * Hence the utilization ratio of 1/8 of a queue size or max value if the size
  * of the ring is very big - like 8k Rx rings.
@@ -100,6 +100,10 @@ struct ena_ring {
 
 	enum ena_ring_type type;
 	enum ena_admin_placement_policy_type tx_mem_queue_type;
+
+	/* Indicate there are Tx packets pushed to the device and wait for db */
+	bool pkts_without_db;
+
 	/* Holds the empty requests for TX/RX OOO completions */
 	union {
 		uint16_t *empty_tx_reqs;
@@ -198,9 +202,8 @@ struct ena_stats_eni {
 };
 
 struct ena_offloads {
-	bool tso4_supported;
-	bool tx_csum_supported;
-	bool rx_csum_supported;
+	uint32_t tx_offloads;
+	uint32_t rx_offloads;
 };
 
 /* board specific private data structure */
@@ -242,11 +245,6 @@ struct ena_adapter {
 
 	struct ena_driver_stats *drv_stats;
 	enum ena_adapter_state state;
-
-	uint64_t tx_supported_offloads;
-	uint64_t tx_selected_offloads;
-	uint64_t rx_supported_offloads;
-	uint64_t rx_selected_offloads;
 
 	bool link_status;
 

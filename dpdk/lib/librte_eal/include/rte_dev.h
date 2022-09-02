@@ -8,7 +8,7 @@
 /**
  * @file
  *
- * RTE PMD Driver Registration Interface
+ * RTE PMD Registration Interface
  *
  * This file manages the list of device drivers.
  */
@@ -327,10 +327,6 @@ rte_dev_iterator_next(struct rte_dev_iterator *it);
 	     dev != NULL; \
 	     dev = rte_dev_iterator_next(it))
 
-#ifdef __cplusplus
-}
-#endif
-
 /**
  * @warning
  * @b EXPERIMENTAL: this API may change without prior notice
@@ -502,5 +498,9 @@ __rte_experimental
 int
 rte_dev_dma_unmap(struct rte_device *dev, void *addr, uint64_t iova,
 		  size_t len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_DEV_H_ */

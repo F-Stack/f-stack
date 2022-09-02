@@ -40,6 +40,13 @@
 
 #include "testpmd.h"
 
+struct tx_timestamp {
+	rte_be32_t signature;
+	rte_be16_t pkt_idx;
+	rte_be16_t queue_idx;
+	rte_be64_t ts;
+};
+
 /* use RFC863 Discard Protocol */
 uint16_t tx_udp_src_port = 9;
 uint16_t tx_udp_dst_port = 9;
@@ -53,14 +60,10 @@ uint32_t tx_ip_dst_addr = (198U << 24) | (18 << 16) | (0 << 8) | 2;
 static struct rte_ipv4_hdr pkt_ip_hdr; /**< IP header of transmitted packets. */
 RTE_DEFINE_PER_LCORE(uint8_t, _ip_var); /**< IP address variation */
 static struct rte_udp_hdr pkt_udp_hdr; /**< UDP header of tx packets. */
-RTE_DEFINE_PER_LCORE(uint64_t, timestamp_qskew);
-					/**< Timestamp offset per queue */
-RTE_DEFINE_PER_LCORE(uint32_t, timestamp_idone); /**< Timestamp init done. */
 
 static uint64_t timestamp_mask; /**< Timestamp dynamic flag mask */
 static int32_t timestamp_off; /**< Timestamp dynamic field offset */
 static bool timestamp_enable; /**< Timestamp enable */
-static uint32_t timestamp_init_req; /**< Timestamp initialization request. */
 static uint64_t timestamp_initial[RTE_MAX_ETHPORTS];
 
 static void
@@ -168,14 +171,14 @@ update_pkt_header(struct rte_mbuf *pkt, uint32_t total_pkt_len)
 					sizeof(struct rte_ether_hdr) +
 					sizeof(struct rte_ipv4_hdr) +
 					sizeof(struct rte_udp_hdr)));
-	/* updata udp pkt length */
+	/* update UDP packet length */
 	udp_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_udp_hdr *,
 				sizeof(struct rte_ether_hdr) +
 				sizeof(struct rte_ipv4_hdr));
 	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct rte_udp_hdr));
 	udp_hdr->dgram_len = RTE_CPU_TO_BE_16(pkt_len);
 
-	/* updata ip pkt length and csum */
+	/* update IP packet length and checksum */
 	ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
 				sizeof(struct rte_ether_hdr));
 	ip_hdr->hdr_checksum = 0;
@@ -188,7 +191,7 @@ static inline bool
 pkt_burst_prepare(struct rte_mbuf *pkt, struct rte_mempool *mbp,
 		struct rte_ether_hdr *eth_hdr, const uint16_t vlan_tci,
 		const uint16_t vlan_tci_outer, const uint64_t ol_flags,
-		const uint16_t idx, const struct fwd_stream *fs)
+		const uint16_t idx, struct fwd_stream *fs)
 {
 	struct rte_mbuf *pkt_segs[RTE_MAX_SEGS_PER_PKT];
 	struct rte_mbuf *pkt_seg;
@@ -256,16 +259,10 @@ pkt_burst_prepare(struct rte_mbuf *pkt, struct rte_mempool *mbp,
 		update_pkt_header(pkt, pkt_len);
 
 	if (unlikely(timestamp_enable)) {
-		uint64_t skew = RTE_PER_LCORE(timestamp_qskew);
-		struct {
-			rte_be32_t signature;
-			rte_be16_t pkt_idx;
-			rte_be16_t queue_idx;
-			rte_be64_t ts;
-		} timestamp_mark;
+		uint64_t skew = fs->ts_skew;
+		struct tx_timestamp timestamp_mark;
 
-		if (unlikely(timestamp_init_req !=
-				RTE_PER_LCORE(timestamp_idone))) {
+		if (!skew) {
 			struct rte_eth_dev *dev = &rte_eth_devices[fs->tx_port];
 			unsigned int txqs_n = dev->data->nb_tx_queues;
 			uint64_t phase = tx_pkt_times_inter * fs->tx_queue /
@@ -276,8 +273,7 @@ pkt_burst_prepare(struct rte_mbuf *pkt, struct rte_mempool *mbp,
 			 */
 			skew = timestamp_initial[fs->tx_port] +
 			       tx_pkt_times_inter + phase;
-			RTE_PER_LCORE(timestamp_qskew) = skew;
-			RTE_PER_LCORE(timestamp_idone) = timestamp_init_req;
+			fs->ts_skew = skew;
 		}
 		timestamp_mark.pkt_idx = rte_cpu_to_be_16(idx);
 		timestamp_mark.queue_idx = rte_cpu_to_be_16(fs->tx_queue);
@@ -287,14 +283,14 @@ pkt_burst_prepare(struct rte_mbuf *pkt, struct rte_mempool *mbp,
 			pkt->ol_flags |= timestamp_mask;
 			*RTE_MBUF_DYNFIELD
 				(pkt, timestamp_off, uint64_t *) = skew;
-			RTE_PER_LCORE(timestamp_qskew) = skew;
+			fs->ts_skew = skew;
 			timestamp_mark.ts = rte_cpu_to_be_64(skew);
 		} else if (tx_pkt_times_intra) {
 			skew +=	tx_pkt_times_intra;
 			pkt->ol_flags |= timestamp_mask;
 			*RTE_MBUF_DYNFIELD
 				(pkt, timestamp_off, uint64_t *) = skew;
-			RTE_PER_LCORE(timestamp_qskew) = skew;
+			fs->ts_skew = skew;
 			timestamp_mark.ts = rte_cpu_to_be_64(skew);
 		} else {
 			timestamp_mark.ts = RTE_BE64(0);
@@ -423,22 +419,31 @@ pkt_burst_transmit(struct fwd_stream *fs)
 	get_end_cycles(fs, start_tsc);
 }
 
-static void
+static int
 tx_only_begin(portid_t pi)
 {
-	uint16_t pkt_data_len;
+	uint16_t pkt_hdr_len, pkt_data_len;
 	int dynf;
 
-	pkt_data_len = (uint16_t) (tx_pkt_length - (
-					sizeof(struct rte_ether_hdr) +
-					sizeof(struct rte_ipv4_hdr) +
-					sizeof(struct rte_udp_hdr)));
+	pkt_hdr_len = (uint16_t)(sizeof(struct rte_ether_hdr) +
+				 sizeof(struct rte_ipv4_hdr) +
+				 sizeof(struct rte_udp_hdr));
+	pkt_data_len = tx_pkt_length - pkt_hdr_len;
+
+	if ((tx_pkt_split == TX_PKT_SPLIT_RND || txonly_multi_flow) &&
+	    tx_pkt_seg_lengths[0] < pkt_hdr_len) {
+		TESTPMD_LOG(ERR,
+			    "Random segment number or multiple flow is enabled, "
+			    "but tx_pkt_seg_lengths[0] %u < %u (needed)\n",
+			    tx_pkt_seg_lengths[0], pkt_hdr_len);
+		return -EINVAL;
+	}
+
 	setup_pkt_udp_ip_headers(&pkt_ip_hdr, &pkt_udp_hdr, pkt_data_len);
 
 	timestamp_enable = false;
 	timestamp_mask = 0;
 	timestamp_off = -1;
-	RTE_PER_LCORE(timestamp_qskew) = 0;
 	dynf = rte_mbuf_dynflag_lookup
 				(RTE_MBUF_DYNFLAG_TX_TIMESTAMP_NAME, NULL);
 	if (dynf >= 0)
@@ -451,15 +456,54 @@ tx_only_begin(portid_t pi)
 			   timestamp_mask &&
 			   timestamp_off >= 0 &&
 			   !rte_eth_read_clock(pi, &timestamp_initial[pi]);
-	if (timestamp_enable)
-		timestamp_init_req++;
+
+	if (timestamp_enable) {
+		pkt_hdr_len += sizeof(struct tx_timestamp);
+
+		if (tx_pkt_split == TX_PKT_SPLIT_RND) {
+			if (tx_pkt_seg_lengths[0] < pkt_hdr_len) {
+				TESTPMD_LOG(ERR,
+					    "Time stamp and random segment number are enabled, "
+					    "but tx_pkt_seg_lengths[0] %u < %u (needed)\n",
+					    tx_pkt_seg_lengths[0], pkt_hdr_len);
+				return -EINVAL;
+			}
+		} else {
+			uint16_t total = 0;
+			uint8_t i;
+
+			for (i = 0; i < tx_pkt_nb_segs; i++) {
+				total += tx_pkt_seg_lengths[i];
+				if (total >= pkt_hdr_len)
+					break;
+			}
+
+			if (total < pkt_hdr_len) {
+				TESTPMD_LOG(ERR,
+					    "Not enough Tx segment space for time stamp info, "
+					    "total %u < %u (needed)\n",
+					    total, pkt_hdr_len);
+				return -EINVAL;
+			}
+		}
+	}
+
 	/* Make sure all settings are visible on forwarding cores.*/
 	rte_wmb();
+	return 0;
+}
+
+static void
+tx_only_stream_init(struct fwd_stream *fs)
+{
+	fs->disabled = ports[fs->tx_port].txq[fs->tx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
 }
 
 struct fwd_engine tx_only_engine = {
 	.fwd_mode_name  = "txonly",
 	.port_fwd_begin = tx_only_begin,
 	.port_fwd_end   = NULL,
+	.stream_init    = tx_only_stream_init,
 	.packet_fwd     = pkt_burst_transmit,
 };

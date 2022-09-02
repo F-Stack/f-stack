@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #ifndef _HNS3_FDIR_H_
@@ -149,7 +149,7 @@ struct hns3_fdir_rule {
 	uint32_t flags;
 	uint32_t fd_id; /* APP marked unique value for this rule. */
 	uint8_t action;
-	/* VF id, avaiblable when flags with HNS3_RULE_FLAG_VF_ID. */
+	/* VF id, available when flags with HNS3_RULE_FLAG_VF_ID. */
 	uint8_t vf_id;
 	/*
 	 * equal 0 when action is drop.
@@ -189,17 +189,10 @@ TAILQ_HEAD(hns3_fdir_rule_list, hns3_fdir_rule_ele);
 TAILQ_HEAD(hns3_rss_filter_list, hns3_rss_conf_ele);
 TAILQ_HEAD(hns3_flow_mem_list, hns3_flow_mem);
 
-struct hns3_process_private {
-	struct hns3_fdir_rule_list fdir_list;
-	struct hns3_rss_filter_list filter_rss_list;
-	struct hns3_flow_mem_list flow_list;
-};
-
 /*
  *  A structure used to define fields of a FDIR related info.
  */
 struct hns3_fdir_info {
-	rte_spinlock_t flows_lock;
 	struct hns3_fdir_rule_list fdir_list;
 	struct hns3_fdir_rule_ele **hash_map;
 	struct rte_hash *hash_handle;
@@ -220,7 +213,8 @@ int hns3_fdir_filter_program(struct hns3_adapter *hns,
 			     struct hns3_fdir_rule *rule, bool del);
 int hns3_clear_all_fdir_filter(struct hns3_adapter *hns);
 int hns3_get_count(struct hns3_hw *hw, uint32_t id, uint64_t *value);
-void hns3_filterlist_init(struct rte_eth_dev *dev);
+void hns3_flow_init(struct rte_eth_dev *dev);
+void hns3_flow_uninit(struct rte_eth_dev *dev);
 int hns3_restore_all_fdir_filter(struct hns3_adapter *hns);
 
 #endif /* _HNS3_FDIR_H_ */

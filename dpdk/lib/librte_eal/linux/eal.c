@@ -561,7 +561,6 @@ eal_parse_socket_arg(char *strval, volatile uint64_t *socket_arg)
 	char * arg[RTE_MAX_NUMA_NODES];
 	char *end;
 	int arg_num, i, len;
-	uint64_t total_mem = 0;
 
 	len = strnlen(strval, SOCKET_MEM_STRLEN);
 	if (len == SOCKET_MEM_STRLEN) {
@@ -593,7 +592,6 @@ eal_parse_socket_arg(char *strval, volatile uint64_t *socket_arg)
 				(arg[i][0] == '\0') || (end == NULL) || (*end != '\0'))
 			return -1;
 		val <<= 20;
-		total_mem += val;
 		socket_arg[i] = val;
 	}
 
@@ -703,6 +701,10 @@ eal_parse_args(int argc, char **argv)
 			ret = -1;
 			goto out;
 		}
+
+		/* eal_log_level_parse() already handled this option */
+		if (opt == OPT_LOG_LEVEL_NUM)
+			continue;
 
 		ret = eal_parse_common_option(opt, optarg, internal_conf);
 		/* common parser is not happy */
@@ -1273,7 +1275,7 @@ rte_eal_init(int argc, char **argv)
 	ret = rte_service_init();
 	if (ret) {
 		rte_eal_init_alert("rte_service_init() failed");
-		rte_errno = ENOEXEC;
+		rte_errno = -ret;
 		return -1;
 	}
 
@@ -1295,7 +1297,7 @@ rte_eal_init(int argc, char **argv)
 	 */
 	ret = rte_service_start_with_defaults();
 	if (ret < 0 && ret != -ENOTSUP) {
-		rte_errno = ENOEXEC;
+		rte_errno = -ret;
 		return -1;
 	}
 
@@ -1358,7 +1360,11 @@ rte_eal_cleanup(void)
 
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
 		rte_memseg_walk(mark_freeable, NULL);
+
 	rte_service_finalize();
+#ifdef VFIO_PRESENT
+	vfio_mp_sync_cleanup();
+#endif
 	rte_mp_channel_cleanup();
 	rte_trace_save();
 	eal_trace_fini();

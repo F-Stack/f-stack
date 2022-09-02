@@ -77,9 +77,10 @@ static void
 nfb_nc_rxmac_deinit(struct nc_rxmac *rxmac[RTE_MAX_NC_RXMAC],
 	uint16_t max_rxmac)
 {
-	for (; max_rxmac > 0; --max_rxmac) {
-		nc_rxmac_close(rxmac[max_rxmac]);
-		rxmac[max_rxmac] = NULL;
+	uint16_t i;
+	for (i = 0; i < max_rxmac; i++) {
+		nc_rxmac_close(rxmac[i]);
+		rxmac[i] = NULL;
 	}
 }
 
@@ -95,9 +96,10 @@ static void
 nfb_nc_txmac_deinit(struct nc_txmac *txmac[RTE_MAX_NC_TXMAC],
 	uint16_t max_txmac)
 {
-	for (; max_txmac > 0; --max_txmac) {
-		nc_txmac_close(txmac[max_txmac]);
-		txmac[max_txmac] = NULL;
+	uint16_t i;
+	for (i = 0; i < max_txmac; i++) {
+		nc_txmac_close(txmac[i]);
+		txmac[i] = NULL;
 	}
 }
 
@@ -514,7 +516,6 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 
 	data->promiscuous = nfb_eth_promiscuous_get(dev);
 	data->all_multicast = nfb_eth_allmulticast_get(dev);
-	internals->rx_filter_original = data->promiscuous;
 
 	dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 

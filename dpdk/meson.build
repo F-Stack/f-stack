@@ -5,14 +5,20 @@ project('DPDK', 'C',
 	# Get version number from file.
 	# Fallback to "more" for Windows compatibility.
 	version: run_command(find_program('cat', 'more'),
-		files('VERSION')).stdout().strip(),
+		files('VERSION'), check: true).stdout().strip(),
 	license: 'BSD',
-	default_options: ['buildtype=release', 'default_library=static'],
+	default_options: [
+		'buildtype=release',
+		'default_library=static',
+		'warning_level=2',
+	],
 	meson_version: '>= 0.47.1'
 )
 
 # set up some global vars for compiler, platform, configuration, etc.
 cc = meson.get_compiler('c')
+dpdk_source_root = meson.current_source_dir()
+dpdk_build_root = meson.current_build_dir()
 dpdk_conf = configuration_data()
 dpdk_libraries = []
 dpdk_static_libraries = []
@@ -61,7 +67,7 @@ subdir('doc')
 subdir('examples')
 install_subdir('examples',
 	install_dir: get_option('datadir') + '/dpdk',
-	exclude_files: 'meson.build')
+	exclude_files: ex_file_excludes)
 
 # build kernel modules if enabled
 if get_option('enable_kmods')

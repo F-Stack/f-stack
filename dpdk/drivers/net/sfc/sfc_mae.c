@@ -68,10 +68,7 @@ sfc_mae_attach(struct sfc_adapter *sa)
 	sfc_log_init(sa, "assign RTE switch port");
 	switch_port_request.type = SFC_MAE_SWITCH_PORT_INDEPENDENT;
 	switch_port_request.entity_mportp = &entity_mport;
-	/*
-	 * As of now, the driver does not support representors, so
-	 * RTE ethdev MPORT simply matches that of the entity.
-	 */
+	/* RTE ethdev MPORT matches that of the entity for independent ports. */
 	switch_port_request.ethdev_mportp = &entity_mport;
 	switch_port_request.ethdev_port_id = sas->port_id;
 	rc = sfc_mae_assign_switch_port(mae->switch_domain_id,
@@ -221,6 +218,7 @@ sfc_mae_outer_rule_enable(struct sfc_adapter *sa,
 		if (fw_rsrc->refcnt == 0) {
 			(void)efx_mae_outer_rule_remove(sa->nic,
 							&fw_rsrc->rule_id);
+			fw_rsrc->rule_id.id = EFX_MAE_RSRC_ID_INVALID;
 		}
 		return rc;
 	}
@@ -1395,7 +1393,6 @@ sfc_mae_rule_parse_item_tunnel(const struct rte_flow_item *item,
 	uint8_t supp_mask[sizeof(uint64_t)];
 	const uint8_t *spec = NULL;
 	const uint8_t *mask = NULL;
-	const void *def_mask;
 	int rc;
 
 	/*
@@ -1417,12 +1414,11 @@ sfc_mae_rule_parse_item_tunnel(const struct rte_flow_item *item,
 	 * sfc_mae_rule_encap_parse_init(). Default mask
 	 * was also picked by that helper. Use it here.
 	 */
-	def_mask = ctx_mae->tunnel_def_mask;
-
 	rc = sfc_flow_parse_init(item,
 				 (const void **)&spec, (const void **)&mask,
-				 (const void *)&supp_mask, def_mask,
-				 sizeof(def_mask), error);
+				 (const void *)&supp_mask,
+				 ctx_mae->tunnel_def_mask,
+				 ctx_mae->tunnel_def_mask_size,  error);
 	if (rc != 0)
 		return rc;
 
@@ -1577,12 +1573,12 @@ sfc_mae_rule_process_outer(struct sfc_adapter *sa,
 			   struct sfc_mae_outer_rule **rulep,
 			   struct rte_flow_error *error)
 {
-	struct sfc_mae_outer_rule *rule;
+	efx_mae_rule_id_t invalid_rule_id = { .id = EFX_MAE_RSRC_ID_INVALID };
 	int rc;
 
 	if (ctx->encap_type == EFX_TUNNEL_PROTOCOL_NONE) {
 		*rulep = NULL;
-		return 0;
+		goto no_or_id;
 	}
 
 	SFC_ASSERT(ctx->match_spec_outer != NULL);
@@ -1610,21 +1606,27 @@ sfc_mae_rule_process_outer(struct sfc_adapter *sa,
 	/* The spec has now been tracked by the outer rule entry. */
 	ctx->match_spec_outer = NULL;
 
+no_or_id:
 	/*
-	 * Depending on whether we reuse an existing outer rule or create a
-	 * new one (see above), outer rule ID is either a valid value or
-	 * EFX_MAE_RSRC_ID_INVALID. Set it in the action rule match
-	 * specification (and the full mask, too) in order to have correct
-	 * class comparisons of the new rule with existing ones.
-	 * Also, action rule match specification will be validated shortly,
-	 * and having the full mask set for outer rule ID indicates that we
-	 * will use this field, and support for this field has to be checked.
+	 * In MAE, lookup sequence comprises outer parse, outer rule lookup,
+	 * inner parse (when some outer rule is hit) and action rule lookup.
+	 * If the currently processed flow does not come with an outer rule,
+	 * its action rule must be available only for packets which miss in
+	 * outer rule table. Set OR_ID match field to 0xffffffff/0xffffffff
+	 * in the action rule specification; this ensures correct behaviour.
+	 *
+	 * If, on the other hand, this flow does have an outer rule, its ID
+	 * may be unknown at the moment (not yet allocated), but OR_ID mask
+	 * has to be set to 0xffffffff anyway for correct class comparisons.
+	 * When the outer rule has been allocated, this match field will be
+	 * overridden by sfc_mae_outer_rule_enable() to use the right value.
 	 */
-	rule = *rulep;
 	rc = efx_mae_match_spec_outer_rule_id_set(ctx->match_spec_action,
-						  &rule->fw_rsrc.rule_id);
+						  &invalid_rule_id);
 	if (rc != 0) {
-		sfc_mae_outer_rule_del(sa, *rulep);
+		if (*rulep != NULL)
+			sfc_mae_outer_rule_del(sa, *rulep);
+
 		*rulep = NULL;
 
 		return rte_flow_error_set(error, rc,
@@ -1656,20 +1658,20 @@ sfc_mae_rule_encap_parse_init(struct sfc_adapter *sa,
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
 			ctx->encap_type = EFX_TUNNEL_PROTOCOL_VXLAN;
 			ctx->tunnel_def_mask = &rte_flow_item_vxlan_mask;
-			RTE_BUILD_BUG_ON(sizeof(ctx->tunnel_def_mask) !=
-					 sizeof(rte_flow_item_vxlan_mask));
+			ctx->tunnel_def_mask_size =
+				sizeof(rte_flow_item_vxlan_mask);
 			break;
 		case RTE_FLOW_ITEM_TYPE_GENEVE:
 			ctx->encap_type = EFX_TUNNEL_PROTOCOL_GENEVE;
 			ctx->tunnel_def_mask = &rte_flow_item_geneve_mask;
-			RTE_BUILD_BUG_ON(sizeof(ctx->tunnel_def_mask) !=
-					 sizeof(rte_flow_item_geneve_mask));
+			ctx->tunnel_def_mask_size =
+				sizeof(rte_flow_item_geneve_mask);
 			break;
 		case RTE_FLOW_ITEM_TYPE_NVGRE:
 			ctx->encap_type = EFX_TUNNEL_PROTOCOL_NVGRE;
 			ctx->tunnel_def_mask = &rte_flow_item_nvgre_mask;
-			RTE_BUILD_BUG_ON(sizeof(ctx->tunnel_def_mask) !=
-					 sizeof(rte_flow_item_nvgre_mask));
+			ctx->tunnel_def_mask_size =
+				sizeof(rte_flow_item_nvgre_mask);
 			break;
 		case RTE_FLOW_ITEM_TYPE_END:
 			break;
@@ -2001,6 +2003,9 @@ sfc_mae_rule_parse_action_port_id(struct sfc_adapter *sa,
 	uint16_t port_id;
 	int rc;
 
+	if (conf->id > UINT16_MAX)
+		return EOVERFLOW;
+
 	port_id = (conf->original != 0) ? sas->port_id : conf->id;
 
 	rc = sfc_mae_switch_port_by_ethdev(mae->switch_domain_id,
@@ -2103,6 +2108,8 @@ sfc_mae_rule_parse_actions(struct sfc_adapter *sa,
 	efx_mae_actions_t *spec;
 	int rc;
 
+	rte_errno = 0;
+
 	if (actions == NULL) {
 		return rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ACTION_NUM, NULL,
@@ -2146,7 +2153,7 @@ fail_rule_parse_action:
 	efx_mae_action_set_spec_fini(sa->nic, spec);
 
 fail_action_set_spec_init:
-	if (rc > 0) {
+	if (rc > 0 && rte_errno == 0) {
 		rc = rte_flow_error_set(error, rc,
 			RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 			NULL, "Failed to process the action");

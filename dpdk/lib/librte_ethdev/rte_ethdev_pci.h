@@ -6,6 +6,10 @@
 #ifndef _RTE_ETHDEV_PCI_H_
 #define _RTE_ETHDEV_PCI_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <rte_malloc.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
@@ -46,8 +50,9 @@ rte_eth_copy_pci_info(struct rte_eth_dev *eth_dev,
 }
 
 static inline int
-eth_dev_pci_specific_init(struct rte_eth_dev *eth_dev, void *bus_device) {
-	struct rte_pci_device *pci_dev = bus_device;
+eth_dev_pci_specific_init(struct rte_eth_dev *eth_dev, void *bus_device)
+{
+	struct rte_pci_device *pci_dev = (struct rte_pci_device *)bus_device;
 
 	if (!pci_dev)
 		return -ENODEV;
@@ -151,6 +156,16 @@ rte_eth_dev_pci_generic_remove(struct rte_pci_device *pci_dev,
 	if (!eth_dev)
 		return 0;
 
+	/*
+	 * In secondary process, a released eth device can be found by its name
+	 * in shared memory.
+	 * If the state of the eth device is RTE_ETH_DEV_UNUSED, it means the
+	 * eth device has been released.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
+	    eth_dev->state == RTE_ETH_DEV_UNUSED)
+		return 0;
+
 	if (dev_uninit) {
 		ret = dev_uninit(eth_dev);
 		if (ret)
@@ -160,5 +175,9 @@ rte_eth_dev_pci_generic_remove(struct rte_pci_device *pci_dev,
 	rte_eth_dev_release_port(eth_dev);
 	return 0;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_ETHDEV_PCI_H_ */

@@ -24,7 +24,8 @@ endif
 libnames = [ 'mlx4', 'ibverbs' ]
 libs = []
 foreach libname:libnames
-	lib = dependency('lib' + libname, static:static_ibverbs, required:false)
+	lib = dependency('lib' + libname, static:static_ibverbs,
+			required:false, method: 'pkg-config')
 	if not lib.found() and not static_ibverbs
 		lib = cc.find_library(libname, required:false)
 	endif
@@ -41,7 +42,7 @@ foreach libname:libnames
 endforeach
 if static_ibverbs or dlopen_ibverbs
 	# Build without adding shared libs to Requires.private
-	ibv_cflags = run_command(pkgconf, '--cflags', 'libibverbs').stdout()
+	ibv_cflags = run_command(pkgconf, '--cflags', 'libibverbs', check:true).stdout()
 	ext_deps += declare_dependency(compile_args: ibv_cflags.split())
 endif
 if static_ibverbs

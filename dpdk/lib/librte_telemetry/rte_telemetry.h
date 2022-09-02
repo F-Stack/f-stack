@@ -4,13 +4,20 @@
 
 #include <stdint.h>
 #include <sched.h>
+
 #include <rte_compat.h>
+#include <rte_os.h>
 
 #ifndef _RTE_TELEMETRY_H_
 #define _RTE_TELEMETRY_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** Maximum number of telemetry callbacks. */
 #define TELEMETRY_MAX_CALLBACKS 64
+
 /** Maximum length for string used in object. */
 #define RTE_TEL_MAX_STRING_LEN 64
 /** Maximum length of string. */
@@ -290,6 +297,8 @@ __rte_experimental
 int
 rte_telemetry_register_cmd(const char *cmd, telemetry_cb fn, const char *help);
 
+#ifdef RTE_HAS_CPUSET
+
 /**
  * @internal
  * Initialize Telemetry.
@@ -311,6 +320,8 @@ __rte_experimental
 int
 rte_telemetry_init(const char *runtime_dir, rte_cpuset_t *cpuset,
 		const char **err_str);
+
+#endif /* RTE_HAS_CPUSET */
 
 /**
  * Get a pointer to a container with memory allocated. The container is to be
@@ -334,5 +345,9 @@ rte_tel_data_alloc(void);
 __rte_experimental
 void
 rte_tel_data_free(struct rte_tel_data *data);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

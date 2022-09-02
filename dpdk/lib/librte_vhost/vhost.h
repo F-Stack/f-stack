@@ -27,15 +27,17 @@
 #include "rte_vhost_async.h"
 
 /* Used to indicate that the device is running on a data core */
-#define VIRTIO_DEV_RUNNING 1
+#define VIRTIO_DEV_RUNNING ((uint32_t)1 << 0)
 /* Used to indicate that the device is ready to operate */
-#define VIRTIO_DEV_READY 2
+#define VIRTIO_DEV_READY ((uint32_t)1 << 1)
 /* Used to indicate that the built-in vhost net device backend is enabled */
-#define VIRTIO_DEV_BUILTIN_VIRTIO_NET 4
+#define VIRTIO_DEV_BUILTIN_VIRTIO_NET ((uint32_t)1 << 2)
 /* Used to indicate that the device has its own data path and configured */
-#define VIRTIO_DEV_VDPA_CONFIGURED 8
+#define VIRTIO_DEV_VDPA_CONFIGURED ((uint32_t)1 << 3)
 /* Used to indicate that the feature negotiation failed */
-#define VIRTIO_DEV_FEATURES_FAILED 16
+#define VIRTIO_DEV_FEATURES_FAILED ((uint32_t)1 << 4)
+/* Used to indicate that the virtio_net tx code should fill TX ol_flags */
+#define VIRTIO_DEV_LEGACY_OL_FLAGS ((uint32_t)1 << 5)
 
 /* Backend value set by guest. */
 #define VIRTIO_DEV_STOPPED -1
@@ -331,7 +333,7 @@ struct vring_packed_desc_event {
 
 struct guest_page {
 	uint64_t guest_phys_addr;
-	uint64_t host_phys_addr;
+	uint64_t host_iova;
 	uint64_t size;
 };
 
@@ -563,6 +565,20 @@ static __rte_always_inline int guest_page_addrcmp(const void *p1,
 	return 0;
 }
 
+static __rte_always_inline int guest_page_rangecmp(const void *p1, const void *p2)
+{
+	const struct guest_page *page1 = (const struct guest_page *)p1;
+	const struct guest_page *page2 = (const struct guest_page *)p2;
+
+	if (page1->guest_phys_addr >= page2->guest_phys_addr) {
+		if (page1->guest_phys_addr < page2->guest_phys_addr + page2->size)
+			return 0;
+		else
+			return 1;
+	} else
+		return -1;
+}
+
 static __rte_always_inline rte_iova_t
 gpa_to_first_hpa(struct virtio_net *dev, uint64_t gpa,
 	uint64_t gpa_size, uint64_t *hpa_size)
@@ -573,20 +589,20 @@ gpa_to_first_hpa(struct virtio_net *dev, uint64_t gpa,
 
 	*hpa_size = gpa_size;
 	if (dev->nr_guest_pages >= VHOST_BINARY_SEARCH_THRESH) {
-		key.guest_phys_addr = gpa & ~(dev->guest_pages[0].size - 1);
+		key.guest_phys_addr = gpa;
 		page = bsearch(&key, dev->guest_pages, dev->nr_guest_pages,
-			       sizeof(struct guest_page), guest_page_addrcmp);
+			       sizeof(struct guest_page), guest_page_rangecmp);
 		if (page) {
 			if (gpa + gpa_size <=
 					page->guest_phys_addr + page->size) {
 				return gpa - page->guest_phys_addr +
-					page->host_phys_addr;
+					page->host_iova;
 			} else if (gpa < page->guest_phys_addr +
 						page->size) {
 				*hpa_size = page->guest_phys_addr +
 					page->size - gpa;
 				return gpa - page->guest_phys_addr +
-					page->host_phys_addr;
+					page->host_iova;
 			}
 		}
 	} else {
@@ -597,13 +613,13 @@ gpa_to_first_hpa(struct virtio_net *dev, uint64_t gpa,
 				if (gpa + gpa_size <=
 					page->guest_phys_addr + page->size) {
 					return gpa - page->guest_phys_addr +
-						page->host_phys_addr;
+						page->host_iova;
 				} else if (gpa < page->guest_phys_addr +
 							page->size) {
 					*hpa_size = page->guest_phys_addr +
 						page->size - gpa;
 					return gpa - page->guest_phys_addr +
-						page->host_phys_addr;
+						page->host_iova;
 				}
 			}
 		}
@@ -672,7 +688,7 @@ int alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx);
 void vhost_attach_vdpa_device(int vid, struct rte_vdpa_device *dev);
 
 void vhost_set_ifname(int, const char *if_name, unsigned int if_len);
-void vhost_set_builtin_virtio_net(int vid, bool enable);
+void vhost_setup_virtio_net(int vid, bool enable, bool legacy_ol_flags);
 void vhost_enable_extbuf(int vid);
 void vhost_enable_linearbuf(int vid);
 int vhost_enable_guest_notification(struct virtio_net *dev,

@@ -20,18 +20,18 @@ if arch_subdir == 'x86'
 					      c_args: [cflags, '-mavx512f', '-mavx512bw', '-mavx512vl'])
 			objs += virtio_avx512_lib.extract_objects('virtio_rxtx_packed_avx.c')
 			if (toolchain == 'gcc' and cc.version().version_compare('>=8.3.0'))
-				cflags += '-DVHOST_GCC_UNROLL_PRAGMA'
+				cflags += '-DVIRTIO_GCC_UNROLL_PRAGMA'
 			elif (toolchain == 'clang' and cc.version().version_compare('>=3.7.0'))
-				cflags += '-DVHOST_CLANG_UNROLL_PRAGMA'
+				cflags += '-DVIRTIO_CLANG_UNROLL_PRAGMA'
 			elif (toolchain == 'icc' and cc.version().version_compare('>=16.0.0'))
-				cflags += '-DVHOST_ICC_UNROLL_PRAGMA'
+				cflags += '-DVIRTIO_ICC_UNROLL_PRAGMA'
 			endif
 		endif
 	endif
 	sources += files('virtio_rxtx_simple_sse.c')
 elif arch_subdir == 'ppc'
 	sources += files('virtio_rxtx_simple_altivec.c')
-elif arch_subdir == 'arm' and host_machine.cpu_family().startswith('aarch64')
+elif arch_subdir == 'arm' and dpdk_conf.get('RTE_ARCH_64')
 	sources += files('virtio_rxtx_simple_neon.c')
 endif
 

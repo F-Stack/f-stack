@@ -27,11 +27,11 @@
 	uint32_t tmp, of;						       \
 									       \
 	of = vgetq_lane_u32((rss_flags), (pi)) |			       \
-		   bnxt_ol_flags_table[vgetq_lane_u32((ol_idx), (pi))];	       \
+		   rxr->ol_flags_table[vgetq_lane_u32((ol_idx), (pi))];	       \
 									       \
 	tmp = vgetq_lane_u32((errors), (pi));				       \
 	if (tmp)							       \
-		of |= bnxt_ol_flags_err_table[tmp];			       \
+		of |= rxr->ol_flags_err_table[tmp];			       \
 	(ol_flags) = of;						       \
 }
 
@@ -58,7 +58,8 @@
 
 static void
 descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
-	       uint64x2_t mb_init, struct rte_mbuf **mbuf)
+	       uint64x2_t mb_init, struct rte_mbuf **mbuf,
+	       struct bnxt_rx_ring_info *rxr)
 {
 	const uint8x16_t shuf_msk = {
 		0xFF, 0xFF, 0xFF, 0xFF,    /* pkt_type (zeroes) */
@@ -79,7 +80,7 @@ descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
 	const uint32x4_t flags2_index_mask = vdupq_n_u32(0x1F);
 	const uint32x4_t flags2_error_mask = vdupq_n_u32(0x0F);
 	uint32x4_t flags_type, flags2, index, errors, rss_flags;
-	uint32x4_t tmp, ptype_idx;
+	uint32x4_t tmp, ptype_idx, is_tunnel;
 	uint64x2_t t0, t1;
 	uint32_t ol_flags;
 
@@ -116,10 +117,14 @@ descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
 						    vget_low_u64(t1)));
 
 	/* Compute ol_flags and checksum error indexes for four packets. */
+	is_tunnel = vandq_u32(flags2, vdupq_n_u32(4));
+	is_tunnel = vshlq_n_u32(is_tunnel, 3);
 	errors = vandq_u32(vshrq_n_u32(errors, 4), flags2_error_mask);
 	errors = vandq_u32(errors, flags2);
 
 	index = vbicq_u32(flags2, errors);
+	errors = vorrq_u32(errors, vshrq_n_u32(is_tunnel, 1));
+	index = vorrq_u32(index, is_tunnel);
 
 	/* Update mbuf rearm_data for four packets. */
 	GET_OL_FLAGS(rss_flags, index, errors, 0, ol_flags);
@@ -146,9 +151,8 @@ descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
 	vst1q_u32((uint32_t *)&mbuf[3]->rx_descriptor_fields1, tmp);
 }
 
-uint16_t
-bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-		   uint16_t nb_pkts)
+static uint16_t
+recv_burst_vec_neon(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
 	struct bnxt_rx_queue *rxq = rx_queue;
 	struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
@@ -172,9 +176,6 @@ bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 	if (rxq->rxrearm_nb >= rxq->rx_free_thresh)
 		bnxt_rxq_rearm(rxq, rxr);
-
-	/* Return no more than RTE_BNXT_MAX_RX_BURST per call. */
-	nb_pkts = RTE_MIN(nb_pkts, RTE_BNXT_MAX_RX_BURST);
 
 	cons = raw_cons & (cp_ring_size - 1);
 	mbcons = (raw_cons / 2) & (rx_ring_size - 1);
@@ -224,25 +225,38 @@ bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		}
 
 		/*
-		 * Load the four current descriptors into SSE registers in
-		 * reverse order to ensure consistent state.
+		 * Load the four current descriptors into NEON registers.
+		 * IO barriers are used to ensure consistent state.
 		 */
 		rxcmp1[3] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 7]);
 		rte_io_rmb();
+		/* Reload lower 64b of descriptors to make it ordered after info3_v. */
+		rxcmp1[3] = vreinterpretq_u32_u64(vld1q_lane_u64
+				((void *)&cpr->cp_desc_ring[cons + 7],
+				vreinterpretq_u64_u32(rxcmp1[3]), 0));
 		rxcmp[3] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 6]);
 
 		rxcmp1[2] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 5]);
 		rte_io_rmb();
+		rxcmp1[2] = vreinterpretq_u32_u64(vld1q_lane_u64
+				((void *)&cpr->cp_desc_ring[cons + 5],
+				vreinterpretq_u64_u32(rxcmp1[2]), 0));
 		rxcmp[2] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 4]);
 
 		t1 = vreinterpretq_u64_u32(vzip2q_u32(rxcmp1[2], rxcmp1[3]));
 
 		rxcmp1[1] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 3]);
 		rte_io_rmb();
+		rxcmp1[1] = vreinterpretq_u32_u64(vld1q_lane_u64
+				((void *)&cpr->cp_desc_ring[cons + 3],
+				vreinterpretq_u64_u32(rxcmp1[1]), 0));
 		rxcmp[1] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 2]);
 
 		rxcmp1[0] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 1]);
 		rte_io_rmb();
+		rxcmp1[0] = vreinterpretq_u32_u64(vld1q_lane_u64
+				((void *)&cpr->cp_desc_ring[cons + 1],
+				vreinterpretq_u64_u32(rxcmp1[0]), 0));
 		rxcmp[0] = vld1q_u32((void *)&cpr->cp_desc_ring[cons + 0]);
 
 		t0 = vreinterpretq_u64_u32(vzip2q_u32(rxcmp1[0], rxcmp1[1]));
@@ -286,7 +300,8 @@ bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			goto out;
 		}
 
-		descs_to_mbufs(rxcmp, rxcmp1, mb_init, &rx_pkts[nb_rx_pkts]);
+		descs_to_mbufs(rxcmp, rxcmp1, mb_init, &rx_pkts[nb_rx_pkts],
+			       rxr);
 		nb_rx_pkts += num_valid;
 
 		if (num_valid < RTE_BNXT_DESCS_PER_LOOP)
@@ -308,6 +323,27 @@ out:
 	return nb_rx_pkts;
 }
 
+uint16_t
+bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
+{
+	uint16_t cnt = 0;
+
+	while (nb_pkts > RTE_BNXT_MAX_RX_BURST) {
+		uint16_t burst;
+
+		burst = recv_burst_vec_neon(rx_queue, rx_pkts + cnt,
+					    RTE_BNXT_MAX_RX_BURST);
+
+		cnt += burst;
+		nb_pkts -= burst;
+
+		if (burst < RTE_BNXT_MAX_RX_BURST)
+			return cnt;
+	}
+
+	return cnt + recv_burst_vec_neon(rx_queue, rx_pkts + cnt, nb_pkts);
+}
+
 static void
 bnxt_handle_tx_cp_vec(struct bnxt_tx_queue *txq)
 {
@@ -324,7 +360,7 @@ bnxt_handle_tx_cp_vec(struct bnxt_tx_queue *txq)
 		cons = RING_CMPL(ring_mask, raw_cons);
 		txcmp = (struct tx_cmpl *)&cp_desc_ring[cons];
 
-		if (!CMP_VALID(txcmp, raw_cons, cp_ring_struct))
+		if (!bnxt_cpr_cmp_valid(txcmp, raw_cons, ring_mask + 1))
 			break;
 
 		if (likely(CMP_TYPE(txcmp) == TX_CMPL_TYPE_TX_L2))

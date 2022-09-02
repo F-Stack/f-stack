@@ -93,7 +93,7 @@ Additionally the event mode introduces two submodes of processing packets:
   protocol use case, the worker thread resembles l2fwd worker thread as the IPsec
   processing is done entirely in HW. This mode can be used to benchmark the raw
   performance of the HW. The driver submode is selected with --single-sa option
-  (used also by poll mode). When --single-sa option is used in conjution with event
+  (used also by poll mode). When --single-sa option is used in conjunction with event
   mode then index passed to --single-sa is ignored.
 
 * App submode: This submode has all the features currently implemented with the
@@ -106,7 +106,8 @@ Constraints
 
 *  No IPv6 options headers.
 *  No AH mode.
-*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, HMAC-SHA1 and NULL.
+*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, HMAC-SHA1,
+   HMAC-SHA256 and NULL.
 *  Each SA must be handle by a unique lcore (*1 RX queue per port*).
 
 Compiling the Application
@@ -421,7 +422,7 @@ where each options means:
 
    * *protect <SA_idx>*: the specified traffic is protected by SA rule
      with id SA_idx
-   * *bypass*: the specified traffic traffic is bypassed
+   * *bypass*: the specified traffic is bypassed
    * *discard*: the specified traffic is discarded
 
 ``<priority>``
@@ -564,6 +565,7 @@ where each options means:
 
     * *null*: NULL algorithm
     * *sha1-hmac*: HMAC SHA1 algorithm
+    * *sha256-hmac*: HMAC SHA256 algorithm
 
 ``<auth_key>``
 

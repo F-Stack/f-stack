@@ -186,7 +186,6 @@ struct mrvl_priv {
 	uint8_t bpool_bit;
 	uint8_t rss_hf_tcp;
 	uint8_t uc_mc_flushed;
-	uint8_t vlan_flushed;
 	uint8_t isolated;
 	uint8_t multiseg;
 
@@ -209,9 +208,10 @@ struct mrvl_priv {
 	LIST_HEAD(shaper_profiles, mrvl_tm_shaper_profile) shaper_profiles;
 	LIST_HEAD(nodes, mrvl_tm_node) nodes;
 	uint64_t rate_max;
+
+	uint8_t configured; /** indicates if device has been configured */
 };
 
-/** Flow operations forward declaration. */
 extern const struct rte_flow_ops mrvl_flow_ops;
 
 /** Meter operations forward declaration. */

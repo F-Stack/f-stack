@@ -7,7 +7,7 @@
 #include "i40e_prototype.h"
 
 /**
- * i40e_init_nvm_ops - Initialize NVM function pointers
+ * i40e_init_nvm - Initialize NVM function pointers
  * @hw: pointer to the HW structure
  *
  * Setup the function pointers and the NVM info structure. Should be called
@@ -755,10 +755,11 @@ enum i40e_status_code i40e_update_nvm_checksum(struct i40e_hw *hw)
 	DEBUGFUNC("i40e_update_nvm_checksum");
 
 	ret_code = i40e_calc_nvm_checksum(hw, &checksum);
-	le_sum = CPU_TO_LE16(checksum);
-	if (ret_code == I40E_SUCCESS)
+	if (ret_code == I40E_SUCCESS) {
+		le_sum = CPU_TO_LE16(checksum);
 		ret_code = i40e_write_nvm_aq(hw, 0x00, I40E_SR_SW_CHECKSUM_WORD,
 					     1, &le_sum, true);
+	}
 
 	return ret_code;
 }

@@ -228,9 +228,9 @@ eal_save_args(int argc, char **argv)
 		return -1;
 
 	for (i = 0; i < argc; i++) {
-		eal_args[i] = strdup(argv[i]);
 		if (strcmp(argv[i], "--") == 0)
 			break;
+		eal_args[i] = strdup(argv[i]);
 	}
 	eal_args[i++] = NULL; /* always finish with NULL */
 
@@ -494,6 +494,43 @@ out:
 	return retval;
 }
 
+static int
+is_shared_build(void)
+{
+#define EAL_SO "librte_eal.so"
+	char soname[32];
+	size_t len, minlen = strlen(EAL_SO);
+
+	len = strlcpy(soname, EAL_SO"."ABI_VERSION, sizeof(soname));
+	if (len > sizeof(soname)) {
+		RTE_LOG(ERR, EAL, "Shared lib name too long in shared build check\n");
+		len = sizeof(soname) - 1;
+	}
+
+	while (len >= minlen) {
+		void *handle;
+
+		/* check if we have this .so loaded, if so - shared build */
+		RTE_LOG(DEBUG, EAL, "Checking presence of .so '%s'\n", soname);
+		handle = dlopen(soname, RTLD_LAZY | RTLD_NOLOAD);
+		if (handle != NULL) {
+			RTE_LOG(INFO, EAL, "Detected shared linkage of DPDK\n");
+			dlclose(handle);
+			return 1;
+		}
+
+		/* remove any version numbers off the end to retry */
+		while (len-- > 0)
+			if (soname[len] == '.') {
+				soname[len] = '\0';
+				break;
+			}
+	}
+
+	RTE_LOG(INFO, EAL, "Detected static linkage of DPDK\n");
+	return 0;
+}
+
 int
 eal_plugins_init(void)
 {
@@ -505,7 +542,7 @@ eal_plugins_init(void)
 	 * (Using dlopen with NOLOAD flag on EAL, will return NULL if the EAL
 	 * shared library is not already loaded i.e. it's statically linked.)
 	 */
-	if (dlopen("librte_eal.so."ABI_VERSION, RTLD_LAZY | RTLD_NOLOAD) != NULL &&
+	if (is_shared_build() &&
 			*default_solib_dir != '\0' &&
 			stat(default_solib_dir, &sb) == 0 &&
 			S_ISDIR(sb.st_mode))
@@ -724,10 +761,10 @@ static int
 eal_parse_service_corelist(const char *corelist)
 {
 	struct rte_config *cfg = rte_eal_get_configuration();
-	int i, idx = 0;
+	int i;
 	unsigned count = 0;
 	char *end = NULL;
-	int min, max;
+	uint32_t min, max, idx;
 	uint32_t taken_lcore_count = 0;
 
 	if (corelist == NULL)
@@ -750,6 +787,8 @@ eal_parse_service_corelist(const char *corelist)
 		errno = 0;
 		idx = strtoul(corelist, &end, 10);
 		if (errno || end == NULL)
+			return -1;
+		if (idx >= RTE_MAX_LCORE)
 			return -1;
 		while (isblank(*end))
 			end++;

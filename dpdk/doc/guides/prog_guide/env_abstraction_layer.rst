@@ -204,8 +204,8 @@ variables:
 * ``RTE_MAX_MEMSEG_LISTS`` controls how many segment lists can DPDK have
 * ``RTE_MAX_MEM_MB_PER_LIST`` controls how much megabytes of memory each
   segment list can address
-* ``RTE_MAX_MEMSEG_PER_LIST`` controls how many segments each segment can
-  have
+* ``RTE_MAX_MEMSEG_PER_LIST`` controls how many segments each segment list
+  can have
 * ``RTE_MAX_MEMSEG_PER_TYPE`` controls how many segments each memory type
   can have (where "type" is defined as "page size + NUMA node" combination)
 * ``RTE_MAX_MEM_MB_PER_TYPE`` controls how much megabytes of memory each
@@ -433,7 +433,7 @@ and decides on a preferred IOVA mode.
 
 - if all buses report RTE_IOVA_PA, then the preferred IOVA mode is RTE_IOVA_PA,
 - if all buses report RTE_IOVA_VA, then the preferred IOVA mode is RTE_IOVA_VA,
-- if all buses report RTE_IOVA_DC, no bus expressed a preferrence, then the
+- if all buses report RTE_IOVA_DC, no bus expressed a preference, then the
   preferred mode is RTE_IOVA_DC,
 - if the buses disagree (at least one wants RTE_IOVA_PA and at least one wants
   RTE_IOVA_VA), then the preferred IOVA mode is RTE_IOVA_DC (see below with the
@@ -465,7 +465,7 @@ devices would fail anyway.
     - By default, the mempool, first asks for IOVA-contiguous memory using
       ``RTE_MEMZONE_IOVA_CONTIG``. This is slow in RTE_IOVA_PA mode and it may
       affect the application boot time.
-    - It is easy to enable large amount of IOVA-contiguous memory use-cases
+    - It is easy to enable large amount of IOVA-contiguous memory use cases
       with IOVA in VA mode.
 
     It is expected that all PCI drivers work in both RTE_IOVA_PA and
@@ -658,7 +658,7 @@ Known Issues
 + rte_ring
 
   rte_ring supports multi-producer enqueue and multi-consumer dequeue.
-  However, it is non-preemptive, this has a knock on effect of making rte_mempool non-preemptable.
+  However, it is non-preemptive, this has a knock on effect of making rte_mempool non-preemptible.
 
   .. note::
 

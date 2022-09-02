@@ -3,6 +3,7 @@
  */
 
 #include "ice_rxtx_vec_common.h"
+#include "ice_rxtx_common_avx.h"
 
 #include <x86intrin.h>
 
@@ -10,126 +11,10 @@
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #endif
 
-static inline void
+static __rte_always_inline void
 ice_rxq_rearm(struct ice_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	/* Pull 'n' more MBUFs into the software ring */
-	if (rte_mempool_get_bulk(rxq->mp,
-				 (void *)rxep,
-				 ICE_RXQ_REARM_THRESH) < 0) {
-		if (rxq->rxrearm_nb + ICE_RXQ_REARM_THRESH >=
-		    rxq->nb_rx_desc) {
-			__m128i dma_addr0;
-
-			dma_addr0 = _mm_setzero_si128();
-			for (i = 0; i < ICE_DESCS_PER_LOOP; i++) {
-				rxep[i].mbuf = &rxq->fake_mbuf;
-				_mm_store_si128((__m128i *)&rxdp[i].read,
-						dma_addr0);
-			}
-		}
-		rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-			ICE_RXQ_REARM_THRESH;
-		return;
-	}
-
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-	struct rte_mbuf *mb0, *mb1;
-	__m128i dma_addr0, dma_addr1;
-	__m128i hdr_room = _mm_set_epi64x(RTE_PKTMBUF_HEADROOM,
-			RTE_PKTMBUF_HEADROOM);
-	/* Initialize the mbufs in vector, process 2 mbufs in one loop */
-	for (i = 0; i < ICE_RXQ_REARM_THRESH; i += 2, rxep += 2) {
-		__m128i vaddr0, vaddr1;
-
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-
-		/* load buf_addr(lo 64bit) and buf_iova(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_iova) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
-
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0 = _mm_unpackhi_epi64(vaddr0, vaddr0);
-		dma_addr1 = _mm_unpackhi_epi64(vaddr1, vaddr1);
-
-		/* add headroom to pa values */
-		dma_addr0 = _mm_add_epi64(dma_addr0, hdr_room);
-		dma_addr1 = _mm_add_epi64(dma_addr1, hdr_room);
-
-		/* flush desc with pa dma_addr */
-		_mm_store_si128((__m128i *)&rxdp++->read, dma_addr0);
-		_mm_store_si128((__m128i *)&rxdp++->read, dma_addr1);
-	}
-#else
-	struct rte_mbuf *mb0, *mb1, *mb2, *mb3;
-	__m256i dma_addr0_1, dma_addr2_3;
-	__m256i hdr_room = _mm256_set1_epi64x(RTE_PKTMBUF_HEADROOM);
-	/* Initialize the mbufs in vector, process 4 mbufs in one loop */
-	for (i = 0; i < ICE_RXQ_REARM_THRESH;
-			i += 4, rxep += 4, rxdp += 4) {
-		__m128i vaddr0, vaddr1, vaddr2, vaddr3;
-		__m256i vaddr0_1, vaddr2_3;
-
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-		mb2 = rxep[2].mbuf;
-		mb3 = rxep[3].mbuf;
-
-		/* load buf_addr(lo 64bit) and buf_iova(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_iova) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
-		vaddr2 = _mm_loadu_si128((__m128i *)&mb2->buf_addr);
-		vaddr3 = _mm_loadu_si128((__m128i *)&mb3->buf_addr);
-
-		/**
-		 * merge 0 & 1, by casting 0 to 256-bit and inserting 1
-		 * into the high lanes. Similarly for 2 & 3
-		 */
-		vaddr0_1 =
-			_mm256_inserti128_si256(_mm256_castsi128_si256(vaddr0),
-						vaddr1, 1);
-		vaddr2_3 =
-			_mm256_inserti128_si256(_mm256_castsi128_si256(vaddr2),
-						vaddr3, 1);
-
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0_1 = _mm256_unpackhi_epi64(vaddr0_1, vaddr0_1);
-		dma_addr2_3 = _mm256_unpackhi_epi64(vaddr2_3, vaddr2_3);
-
-		/* add headroom to pa values */
-		dma_addr0_1 = _mm256_add_epi64(dma_addr0_1, hdr_room);
-		dma_addr2_3 = _mm256_add_epi64(dma_addr2_3, hdr_room);
-
-		/* flush desc with pa dma_addr */
-		_mm256_store_si256((__m256i *)&rxdp->read, dma_addr0_1);
-		_mm256_store_si256((__m256i *)&(rxdp + 2)->read, dma_addr2_3);
-	}
-
-#endif
-
-	rxq->rxrearm_start += ICE_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
-		rxq->rxrearm_start = 0;
-
-	rxq->rxrearm_nb -= ICE_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
-
-	/* Update the tail pointer on the NIC */
-	ICE_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
+	return ice_rxq_rearm_common(rxq, false);
 }
 
 static inline __m256i
@@ -251,43 +136,88 @@ _ice_recv_raw_pkts_vec_avx2(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 * bit13 is for VLAN indication.
 	 */
 	const __m256i flags_mask =
-		 _mm256_set1_epi32((7 << 4) | (1 << 12) | (1 << 13));
+		 _mm256_set1_epi32((0xF << 4) | (1 << 12) | (1 << 13));
 	/**
 	 * data to be shuffled by the result of the flags mask shifted by 4
 	 * bits.  This gives use the l3_l4 flags.
 	 */
-	const __m256i l3_l4_flags_shuf = _mm256_set_epi8(0, 0, 0, 0, 0, 0, 0, 0,
-			/* shift right 1 bit to make sure it not exceed 255 */
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
-			 PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
-			 PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD |
-			 PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD |
-			 PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
-			/* second 128-bits */
-			0, 0, 0, 0, 0, 0, 0, 0,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
-			 PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
-			 PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD |
-			 PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD |
-			 PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
-			(PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1);
+	const __m256i l3_l4_flags_shuf =
+		_mm256_set_epi8((PKT_RX_OUTER_L4_CKSUM_BAD >> 20 |
+		 PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD |
+		  PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_BAD  |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_BAD  |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		/**
+		 * second 128-bits
+		 * shift right 20 bits to use the low two bits to indicate
+		 * outer checksum status
+		 * shift right 1 bit to make sure it not exceed 255
+		 */
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_BAD  |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_BAD  |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_BAD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_EIP_CKSUM_BAD |
+		 PKT_RX_L4_CKSUM_GOOD | PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_BAD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_BAD) >> 1,
+		(PKT_RX_OUTER_L4_CKSUM_GOOD >> 20 | PKT_RX_L4_CKSUM_GOOD |
+		 PKT_RX_IP_CKSUM_GOOD) >> 1);
 	const __m256i cksum_mask =
-		 _mm256_set1_epi32(PKT_RX_IP_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD |
-				   PKT_RX_L4_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD |
-				   PKT_RX_EIP_CKSUM_BAD);
+		 _mm256_set1_epi32(PKT_RX_IP_CKSUM_MASK |
+				   PKT_RX_L4_CKSUM_MASK |
+				   PKT_RX_EIP_CKSUM_BAD |
+				   PKT_RX_OUTER_L4_CKSUM_MASK);
 	/**
 	 * data to be shuffled by result of flag mask, shifted down 12.
 	 * If RSS(bit12)/VLAN(bit13) are set,
@@ -469,6 +399,15 @@ _ice_recv_raw_pkts_vec_avx2(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		__m256i l3_l4_flags = _mm256_shuffle_epi8(l3_l4_flags_shuf,
 				_mm256_srli_epi32(flag_bits, 4));
 		l3_l4_flags = _mm256_slli_epi32(l3_l4_flags, 1);
+
+		__m256i l4_outer_mask = _mm256_set1_epi32(0x6);
+		__m256i l4_outer_flags =
+				_mm256_and_si256(l3_l4_flags, l4_outer_mask);
+		l4_outer_flags = _mm256_slli_epi32(l4_outer_flags, 20);
+
+		__m256i l3_l4_mask = _mm256_set1_epi32(~0x6);
+		l3_l4_flags = _mm256_and_si256(l3_l4_flags, l3_l4_mask);
+		l3_l4_flags = _mm256_or_si256(l3_l4_flags, l4_outer_flags);
 		l3_l4_flags = _mm256_and_si256(l3_l4_flags, cksum_mask);
 		/* set rss and vlan flags */
 		const __m256i rss_vlan_flag_bits =
@@ -528,7 +467,7 @@ _ice_recv_raw_pkts_vec_avx2(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		 * needs to load 2nd 16B of each desc for RSS hash parsing,
 		 * will cause performance drop to get into this context.
 		 */
-		if (rxq->vsi->adapter->eth_dev->data->dev_conf.rxmode.offloads &
+		if (rxq->vsi->adapter->pf.dev_data->dev_conf.rxmode.offloads &
 				DEV_RX_OFFLOAD_RSS_HASH) {
 			/* load bottom half of every 32B desc */
 			const __m128i raw_desc_bh7 =

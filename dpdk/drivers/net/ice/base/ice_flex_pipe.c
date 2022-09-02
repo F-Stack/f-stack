@@ -1597,8 +1597,12 @@ static enum ice_prof_type
 ice_get_sw_prof_type(struct ice_hw *hw, struct ice_fv *fv)
 {
 	u16 i;
+	bool valid_prof = false;
 
 	for (i = 0; i < hw->blk[ICE_BLK_SW].es.fvw; i++) {
+		if (fv->ew[i].off != ICE_NAN_OFFSET)
+			valid_prof = true;
+
 		/* UDP tunnel will have UDP_OF protocol ID and VNI offset */
 		if (fv->ew[i].prot_id == (u8)ICE_PROT_UDP_OF &&
 		    fv->ew[i].off == ICE_VNI_OFFSET)
@@ -1613,7 +1617,7 @@ ice_get_sw_prof_type(struct ice_hw *hw, struct ice_fv *fv)
 			return ICE_PROF_TUN_PPPOE;
 	}
 
-	return ICE_PROF_NON_TUN;
+	return valid_prof ? ICE_PROF_NON_TUN : ICE_PROF_INVALID;
 }
 
 /**
@@ -1629,11 +1633,6 @@ ice_get_sw_fv_bitmap(struct ice_hw *hw, enum ice_prof_type req_profs,
 	struct ice_pkg_enum state;
 	struct ice_seg *ice_seg;
 	struct ice_fv *fv;
-
-	if (req_profs == ICE_PROF_ALL) {
-		ice_bitmap_set(bm, 0, ICE_MAX_NUM_PROFILES);
-		return;
-	}
 
 	ice_memset(&state, 0, sizeof(state), ICE_NONDMA_MEM);
 	ice_zero_bitmap(bm, ICE_MAX_NUM_PROFILES);
@@ -2156,7 +2155,7 @@ enum ice_status ice_destroy_tunnel(struct ice_hw *hw, u16 port, bool all)
 	u16 count = 0;
 	u16 index;
 	u16 size;
-	u16 i;
+	u16 i, j;
 
 	ice_acquire_lock(&hw->tnl_lock);
 
@@ -2196,30 +2195,31 @@ enum ice_status ice_destroy_tunnel(struct ice_hw *hw, u16 port, bool all)
 					  size);
 	if (!sect_rx)
 		goto ice_destroy_tunnel_err;
-	sect_rx->count = CPU_TO_LE16(1);
+	sect_rx->count = CPU_TO_LE16(count);
 
 	sect_tx = (struct ice_boost_tcam_section *)
 		ice_pkg_buf_alloc_section(bld, ICE_SID_TXPARSER_BOOST_TCAM,
 					  size);
 	if (!sect_tx)
 		goto ice_destroy_tunnel_err;
-	sect_tx->count = CPU_TO_LE16(1);
+	sect_tx->count = CPU_TO_LE16(count);
 
 	/* copy original boost entry to update package buffer, one copy to Rx
 	 * section, another copy to the Tx section
 	 */
-	for (i = 0; i < hw->tnl.count && i < ICE_TUNNEL_MAX_ENTRIES; i++)
+	for (i = 0, j = 0; i < hw->tnl.count && i < ICE_TUNNEL_MAX_ENTRIES; i++)
 		if (hw->tnl.tbl[i].valid && hw->tnl.tbl[i].in_use &&
 		    (all || hw->tnl.tbl[i].port == port)) {
-			ice_memcpy(sect_rx->tcam + i,
+			ice_memcpy(sect_rx->tcam + j,
 				   hw->tnl.tbl[i].boost_entry,
 				   sizeof(*sect_rx->tcam),
 				   ICE_NONDMA_TO_NONDMA);
-			ice_memcpy(sect_tx->tcam + i,
+			ice_memcpy(sect_tx->tcam + j,
 				   hw->tnl.tbl[i].boost_entry,
 				   sizeof(*sect_tx->tcam),
 				   ICE_NONDMA_TO_NONDMA);
 			hw->tnl.tbl[i].marked = true;
+			j++;
 		}
 
 	status = ice_update_pkg(hw, ice_pkg_buf(bld), 1);
@@ -2252,7 +2252,7 @@ ice_destroy_tunnel_end:
  * @off: variable to receive the protocol offset
  */
 enum ice_status
-ice_find_prot_off(struct ice_hw *hw, enum ice_block blk, u8 prof, u16 fv_idx,
+ice_find_prot_off(struct ice_hw *hw, enum ice_block blk, u8 prof, u8 fv_idx,
 		  u8 *prot, u16 *off)
 {
 	struct ice_fv_word *fv_ext;
@@ -3124,7 +3124,7 @@ static void ice_init_prof_masks(struct ice_hw *hw, enum ice_block blk)
 	per_pf = ICE_PROF_MASK_COUNT / hw->dev_caps.num_funcs;
 
 	hw->blk[blk].masks.count = per_pf;
-	hw->blk[blk].masks.first = hw->pf_id * per_pf;
+	hw->blk[blk].masks.first = hw->logical_pf_id * per_pf;
 
 	ice_memset(hw->blk[blk].masks.masks, 0,
 		   sizeof(hw->blk[blk].masks.masks), ICE_NONDMA_MEM);

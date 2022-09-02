@@ -139,7 +139,7 @@ struct bond_dev_private {
 
 	uint16_t slave_count;			/**< Number of bonded slaves */
 	struct bond_slave_details slaves[RTE_MAX_ETHPORTS];
-	/**< Arary of bonded slaves details */
+	/**< Array of bonded slaves details */
 
 	struct mode8023ad_private mode4;
 	uint16_t tlb_slaves_order[RTE_MAX_ETHPORTS];
@@ -212,7 +212,7 @@ int
 valid_bonded_port_id(uint16_t port_id);
 
 int
-valid_slave_port_id(uint16_t port_id, uint8_t mode);
+valid_slave_port_id(struct bond_dev_private *internals, uint16_t port_id);
 
 void
 deactivate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id);
@@ -240,7 +240,7 @@ slave_remove_mac_addresses(struct rte_eth_dev *bonded_eth_dev,
 		uint16_t slave_port_id);
 
 int
-bond_ethdev_mode_set(struct rte_eth_dev *eth_dev, int mode);
+bond_ethdev_mode_set(struct rte_eth_dev *eth_dev, uint8_t mode);
 
 int
 slave_configure(struct rte_eth_dev *bonded_eth_dev,

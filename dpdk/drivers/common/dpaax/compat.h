@@ -10,10 +10,6 @@
 #define __COMPAT_H
 
 #include <sched.h>
-
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -34,7 +30,6 @@
 #include <assert.h>
 #include <dirent.h>
 #include <inttypes.h>
-#include <error.h>
 #include <rte_byteorder.h>
 #include <rte_atomic.h>
 #include <rte_spinlock.h>

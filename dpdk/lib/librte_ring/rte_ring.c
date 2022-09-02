@@ -75,7 +75,7 @@ rte_ring_get_memsize_elem(unsigned int esize, unsigned int count)
 		return -EINVAL;
 	}
 
-	sz = sizeof(struct rte_ring) + count * esize;
+	sz = sizeof(struct rte_ring) + (ssize_t)count * esize;
 	sz = RTE_ALIGN(sz, RTE_CACHE_LINE_SIZE);
 	return sz;
 }
@@ -267,7 +267,7 @@ rte_ring_create_elem(const char *name, unsigned int esize, unsigned int count,
 
 	ring_size = rte_ring_get_memsize_elem(esize, count);
 	if (ring_size < 0) {
-		rte_errno = ring_size;
+		rte_errno = -ring_size;
 		return NULL;
 	}
 

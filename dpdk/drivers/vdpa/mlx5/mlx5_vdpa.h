@@ -67,10 +67,10 @@ struct mlx5_vdpa_event_qp {
 
 struct mlx5_vdpa_query_mr {
 	SLIST_ENTRY(mlx5_vdpa_query_mr) next;
-	void *addr;
-	uint64_t length;
-	struct mlx5dv_devx_umem *umem;
-	struct mlx5_devx_obj *mkey;
+	union {
+		struct ibv_mr *mr;
+		struct mlx5_devx_obj *mkey;
+	};
 	int is_indirect;
 };
 
@@ -154,11 +154,13 @@ struct mlx5_vdpa_priv {
 	struct mlx5_devx_obj *tiss[16]; /* TIS list for each LAG port. */
 	uint16_t nr_virtqs;
 	uint8_t num_lag_ports;
+	uint8_t qp_ts_format;
 	uint64_t features; /* Negotiated features. */
 	uint16_t log_max_rqt_size;
 	struct mlx5_vdpa_steer steer;
 	struct mlx5dv_var *var;
 	void *virtq_db_addr;
+	struct mlx5_pmd_wrapped_mr lm_mr;
 	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr) mr_list;
 	struct mlx5_vdpa_virtq virtqs[];
 };

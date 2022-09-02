@@ -47,17 +47,20 @@ efx_mae_get_capabilities(
 
 	maep->em_encap_types_supported = 0;
 
-	if (MCDI_OUT_DWORD(req, MAE_GET_CAPS_OUT_ENCAP_TYPE_VXLAN) == 1) {
+	if (MCDI_OUT_DWORD_FIELD(req, MAE_GET_CAPS_OUT_ENCAP_TYPES_SUPPORTED,
+	    MAE_GET_CAPS_OUT_ENCAP_TYPE_VXLAN) != 0) {
 		maep->em_encap_types_supported |=
 		    (1U << EFX_TUNNEL_PROTOCOL_VXLAN);
 	}
 
-	if (MCDI_OUT_DWORD(req, MAE_GET_CAPS_OUT_ENCAP_TYPE_GENEVE) == 1) {
+	if (MCDI_OUT_DWORD_FIELD(req, MAE_GET_CAPS_OUT_ENCAP_TYPES_SUPPORTED,
+	    MAE_GET_CAPS_OUT_ENCAP_TYPE_GENEVE) != 0) {
 		maep->em_encap_types_supported |=
 		    (1U << EFX_TUNNEL_PROTOCOL_GENEVE);
 	}
 
-	if (MCDI_OUT_DWORD(req, MAE_GET_CAPS_OUT_ENCAP_TYPE_NVGRE) == 1) {
+	if (MCDI_OUT_DWORD_FIELD(req, MAE_GET_CAPS_OUT_ENCAP_TYPES_SUPPORTED,
+	    MAE_GET_CAPS_OUT_ENCAP_TYPE_NVGRE) != 0) {
 		maep->em_encap_types_supported |=
 		    (1U << EFX_TUNNEL_PROTOCOL_NVGRE);
 	}
@@ -107,17 +110,22 @@ efx_mae_get_outer_rule_caps(
 		goto fail2;
 	}
 
+	if (req.emr_out_length_used < MC_CMD_MAE_GET_OR_CAPS_OUT_LENMIN) {
+		rc = EMSGSIZE;
+		goto fail3;
+	}
+
 	mcdi_field_ncaps = MCDI_OUT_DWORD(req, MAE_GET_OR_CAPS_OUT_COUNT);
 
 	if (req.emr_out_length_used <
 	    MC_CMD_MAE_GET_OR_CAPS_OUT_LEN(mcdi_field_ncaps)) {
 		rc = EMSGSIZE;
-		goto fail3;
+		goto fail4;
 	}
 
 	if (mcdi_field_ncaps > field_ncaps) {
 		rc = EMSGSIZE;
-		goto fail4;
+		goto fail5;
 	}
 
 	for (i = 0; i < mcdi_field_ncaps; ++i) {
@@ -145,6 +153,8 @@ efx_mae_get_outer_rule_caps(
 
 	return (0);
 
+fail5:
+	EFSYS_PROBE(fail5);
 fail4:
 	EFSYS_PROBE(fail4);
 fail3:
@@ -189,17 +199,22 @@ efx_mae_get_action_rule_caps(
 		goto fail2;
 	}
 
-	mcdi_field_ncaps = MCDI_OUT_DWORD(req, MAE_GET_OR_CAPS_OUT_COUNT);
-
-	if (req.emr_out_length_used <
-	    MC_CMD_MAE_GET_AR_CAPS_OUT_LEN(mcdi_field_ncaps)) {
+	if (req.emr_out_length_used < MC_CMD_MAE_GET_AR_CAPS_OUT_LENMIN) {
 		rc = EMSGSIZE;
 		goto fail3;
 	}
 
-	if (mcdi_field_ncaps > field_ncaps) {
+	mcdi_field_ncaps = MCDI_OUT_DWORD(req, MAE_GET_AR_CAPS_OUT_COUNT);
+
+	if (req.emr_out_length_used <
+	    MC_CMD_MAE_GET_AR_CAPS_OUT_LEN(mcdi_field_ncaps)) {
 		rc = EMSGSIZE;
 		goto fail4;
+	}
+
+	if (mcdi_field_ncaps > field_ncaps) {
+		rc = EMSGSIZE;
+		goto fail5;
 	}
 
 	for (i = 0; i < mcdi_field_ncaps; ++i) {
@@ -227,6 +242,8 @@ efx_mae_get_action_rule_caps(
 
 	return (0);
 
+fail5:
+	EFSYS_PROBE(fail5);
 fail4:
 	EFSYS_PROBE(fail4);
 fail3:
@@ -463,6 +480,10 @@ typedef enum efx_mae_field_endianness_e {
  * The information in it is meant to be used internally by
  * APIs for addressing a given field in a mask-value pairs
  * structure and for validation purposes.
+ *
+ * A field may have an alternative one. This structure
+ * has additional members to reference the alternative
+ * field's mask. See efx_mae_match_spec_is_valid().
  */
 typedef struct efx_mae_mv_desc_s {
 	efx_mae_field_cap_id_t		emmd_field_cap_id;
@@ -472,6 +493,14 @@ typedef struct efx_mae_mv_desc_s {
 	size_t				emmd_mask_size;
 	size_t				emmd_mask_offset;
 
+	/*
+	 * Having the alternative field's mask size set to 0
+	 * means that there's no alternative field specified.
+	 */
+	size_t				emmd_alt_mask_size;
+	size_t				emmd_alt_mask_offset;
+
+	/* Primary field and the alternative one are of the same endianness. */
 	efx_mae_field_endianness_t	emmd_endianness;
 } efx_mae_mv_desc_t;
 
@@ -485,6 +514,7 @@ static const efx_mae_mv_desc_t __efx_mae_action_rule_mv_desc_set[] = {
 		MAE_FIELD_MASK_VALUE_PAIRS_##_name##_OFST,		\
 		MAE_FIELD_MASK_VALUE_PAIRS_##_name##_MASK_LEN,		\
 		MAE_FIELD_MASK_VALUE_PAIRS_##_name##_MASK_OFST,		\
+		0, 0 /* no alternative field */,			\
 		_endianness						\
 	}
 
@@ -522,6 +552,21 @@ static const efx_mae_mv_desc_t __efx_mae_outer_rule_mv_desc_set[] = {
 		MAE_ENC_FIELD_PAIRS_##_name##_OFST,			\
 		MAE_ENC_FIELD_PAIRS_##_name##_MASK_LEN,			\
 		MAE_ENC_FIELD_PAIRS_##_name##_MASK_OFST,		\
+		0, 0 /* no alternative field */,			\
+		_endianness						\
+	}
+
+/* Same as EFX_MAE_MV_DESC(), but also indicates an alternative field. */
+#define	EFX_MAE_MV_DESC_ALT(_name, _alt_name, _endianness)		\
+	[EFX_MAE_FIELD_##_name] =					\
+	{								\
+		EFX_MAE_FIELD_ID_##_name,				\
+		MAE_ENC_FIELD_PAIRS_##_name##_LEN,			\
+		MAE_ENC_FIELD_PAIRS_##_name##_OFST,			\
+		MAE_ENC_FIELD_PAIRS_##_name##_MASK_LEN,			\
+		MAE_ENC_FIELD_PAIRS_##_name##_MASK_OFST,		\
+		MAE_ENC_FIELD_PAIRS_##_alt_name##_MASK_LEN,		\
+		MAE_ENC_FIELD_PAIRS_##_alt_name##_MASK_OFST,		\
 		_endianness						\
 	}
 
@@ -533,16 +578,17 @@ static const efx_mae_mv_desc_t __efx_mae_outer_rule_mv_desc_set[] = {
 	EFX_MAE_MV_DESC(ENC_VLAN0_PROTO_BE, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_VLAN1_TCI_BE, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_VLAN1_PROTO_BE, EFX_MAE_FIELD_BE),
-	EFX_MAE_MV_DESC(ENC_SRC_IP4_BE, EFX_MAE_FIELD_BE),
-	EFX_MAE_MV_DESC(ENC_DST_IP4_BE, EFX_MAE_FIELD_BE),
+	EFX_MAE_MV_DESC_ALT(ENC_SRC_IP4_BE, ENC_SRC_IP6_BE, EFX_MAE_FIELD_BE),
+	EFX_MAE_MV_DESC_ALT(ENC_DST_IP4_BE, ENC_DST_IP6_BE, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_IP_PROTO, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_IP_TOS, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_IP_TTL, EFX_MAE_FIELD_BE),
-	EFX_MAE_MV_DESC(ENC_SRC_IP6_BE, EFX_MAE_FIELD_BE),
-	EFX_MAE_MV_DESC(ENC_DST_IP6_BE, EFX_MAE_FIELD_BE),
+	EFX_MAE_MV_DESC_ALT(ENC_SRC_IP6_BE, ENC_SRC_IP4_BE, EFX_MAE_FIELD_BE),
+	EFX_MAE_MV_DESC_ALT(ENC_DST_IP6_BE, ENC_DST_IP4_BE, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_L4_SPORT_BE, EFX_MAE_FIELD_BE),
 	EFX_MAE_MV_DESC(ENC_L4_DPORT_BE, EFX_MAE_FIELD_BE),
 
+#undef EFX_MAE_MV_DESC_ALT
 #undef EFX_MAE_MV_DESC
 };
 
@@ -564,7 +610,13 @@ efx_mae_mport_by_phy_port(
 	    MAE_MPORT_SELECTOR_PPORT_ID, phy_port);
 
 	memset(mportp, 0, sizeof (*mportp));
-	mportp->sel = dword.ed_u32[0];
+	/*
+	 * The constructed DWORD is little-endian,
+	 * but the resulting value is meant to be
+	 * passed to MCDIs, where it will undergo
+	 * host-order to little endian conversion.
+	 */
+	mportp->sel = EFX_DWORD_FIELD(dword, EFX_DWORD_0);
 
 	return (0);
 
@@ -601,7 +653,13 @@ efx_mae_mport_by_pcie_function(
 	    MAE_MPORT_SELECTOR_FUNC_VF_ID, vf);
 
 	memset(mportp, 0, sizeof (*mportp));
-	mportp->sel = dword.ed_u32[0];
+	/*
+	 * The constructed DWORD is little-endian,
+	 * but the resulting value is meant to be
+	 * passed to MCDIs, where it will undergo
+	 * host-order to little endian conversion.
+	 */
+	mportp->sel = EFX_DWORD_FIELD(dword, EFX_DWORD_0);
 
 	return (0);
 
@@ -644,28 +702,54 @@ efx_mae_match_spec_field_set(
 		goto fail1;
 	}
 
-	if (field_id >= desc_set_nentries) {
+	if ((unsigned int)field_id >= desc_set_nentries) {
 		rc = EINVAL;
 		goto fail2;
 	}
 
-	if (value_size != descp->emmd_value_size) {
+	if (descp->emmd_mask_size == 0) {
+		/* The ID points to a gap in the array of field descriptors. */
 		rc = EINVAL;
 		goto fail3;
 	}
 
-	if (mask_size != descp->emmd_mask_size) {
+	if (value_size != descp->emmd_value_size) {
 		rc = EINVAL;
 		goto fail4;
 	}
 
+	if (mask_size != descp->emmd_mask_size) {
+		rc = EINVAL;
+		goto fail5;
+	}
+
 	if (descp->emmd_endianness == EFX_MAE_FIELD_BE) {
+		unsigned int i;
+
 		/*
 		 * The mask/value are in network (big endian) order.
 		 * The MCDI request field is also big endian.
 		 */
-		memcpy(mvp + descp->emmd_value_offset, value, value_size);
-		memcpy(mvp + descp->emmd_mask_offset, mask, mask_size);
+
+		EFSYS_ASSERT3U(value_size, ==, mask_size);
+
+		for (i = 0; i < value_size; ++i) {
+			uint8_t *v_bytep = mvp + descp->emmd_value_offset + i;
+			uint8_t *m_bytep = mvp + descp->emmd_mask_offset + i;
+
+			/*
+			 * Apply the mask (which may be all-zeros) to the value.
+			 *
+			 * If this API is provided with some value to set for a
+			 * given field in one specification and with some other
+			 * value to set for this field in another specification,
+			 * then, if the two masks are all-zeros, the field will
+			 * avoid being counted as a mismatch when comparing the
+			 * specifications using efx_mae_match_specs_equal() API.
+			 */
+			*v_bytep = value[i] & mask[i];
+			*m_bytep = mask[i];
+		}
 	} else {
 		efx_dword_t dword;
 
@@ -700,6 +784,8 @@ efx_mae_match_spec_field_set(
 
 	return (0);
 
+fail5:
+	EFSYS_PROBE(fail5);
 fail4:
 	EFSYS_PROBE(fail4);
 fail3:
@@ -760,7 +846,7 @@ efx_mae_match_specs_equal(
 	    ((_mask)[(_bit) / (_mask_page_nbits)] &			\
 		    (1ULL << ((_bit) & ((_mask_page_nbits) - 1))))
 
-static inline				boolean_t
+static					boolean_t
 efx_mask_is_prefix(
 	__in				size_t mask_nbytes,
 	__in_bcount(mask_nbytes)	const uint8_t *maskp)
@@ -780,7 +866,7 @@ efx_mask_is_prefix(
 	return B_TRUE;
 }
 
-static inline				boolean_t
+static					boolean_t
 efx_mask_is_all_ones(
 	__in				size_t mask_nbytes,
 	__in_bcount(mask_nbytes)	const uint8_t *maskp)
@@ -794,7 +880,7 @@ efx_mask_is_all_ones(
 	return (t == (uint8_t)(~0));
 }
 
-static inline				boolean_t
+static					boolean_t
 efx_mask_is_all_zeros(
 	__in				size_t mask_nbytes,
 	__in_bcount(mask_nbytes)	const uint8_t *maskp)
@@ -844,17 +930,29 @@ efx_mae_match_spec_is_valid(
 	if (field_caps == NULL)
 		return (B_FALSE);
 
-	for (field_id = 0; field_id < desc_set_nentries; ++field_id) {
+	for (field_id = 0; (unsigned int)field_id < desc_set_nentries;
+	     ++field_id) {
 		const efx_mae_mv_desc_t *descp = &desc_setp[field_id];
 		efx_mae_field_cap_id_t field_cap_id = descp->emmd_field_cap_id;
+		const uint8_t *alt_m_buf = mvp + descp->emmd_alt_mask_offset;
 		const uint8_t *m_buf = mvp + descp->emmd_mask_offset;
+		size_t alt_m_size = descp->emmd_alt_mask_size;
 		size_t m_size = descp->emmd_mask_size;
 
 		if (m_size == 0)
 			continue; /* Skip array gap */
 
-		if (field_cap_id >= field_ncaps)
-			break;
+		if ((unsigned int)field_cap_id >= field_ncaps) {
+			/*
+			 * The FW has not reported capability status for
+			 * this field. Make sure that its mask is zeroed.
+			 */
+			is_valid = efx_mask_is_all_zeros(m_size, m_buf);
+			if (is_valid != B_FALSE)
+				continue;
+			else
+				break;
+		}
 
 		switch (field_caps[field_cap_id].emfc_support) {
 		case MAE_FIELD_SUPPORTED_MATCH_MASK:
@@ -869,6 +967,19 @@ efx_mae_match_spec_is_valid(
 			break;
 		case MAE_FIELD_SUPPORTED_MATCH_ALWAYS:
 			is_valid = efx_mask_is_all_ones(m_size, m_buf);
+
+			if ((is_valid == B_FALSE) && (alt_m_size != 0)) {
+				/*
+				 * This field has an alternative one. The FW
+				 * reports ALWAYS for both implying that one
+				 * of them is required to have all-ones mask.
+				 *
+				 * The primary field's mask is incorrect; go
+				 * on to check that of the alternative field.
+				 */
+				is_valid = efx_mask_is_all_ones(alt_m_size,
+								alt_m_buf);
+			}
 			break;
 		case MAE_FIELD_SUPPORTED_MATCH_NEVER:
 		case MAE_FIELD_UNSUPPORTED:
@@ -1274,7 +1385,13 @@ efx_mae_action_set_populate_drop(
 	EFX_POPULATE_DWORD_1(dword,
 	    MAE_MPORT_SELECTOR_FLAT, MAE_MPORT_SELECTOR_NULL);
 
-	mport.sel = dword.ed_u32[0];
+	/*
+	 * The constructed DWORD is little-endian,
+	 * but the resulting value is meant to be
+	 * passed to MCDIs, where it will undergo
+	 * host-order to little endian conversion.
+	 */
+	mport.sel = EFX_DWORD_FIELD(dword, EFX_DWORD_0);
 
 	arg = (const uint8_t *)&mport.sel;
 
@@ -1350,21 +1467,36 @@ efx_mae_match_specs_class_cmp(
 		return (0);
 	}
 
-	for (field_id = 0; field_id < desc_set_nentries; ++field_id) {
+	for (field_id = 0; (unsigned int)field_id < desc_set_nentries;
+	     ++field_id) {
 		const efx_mae_mv_desc_t *descp = &desc_setp[field_id];
 		efx_mae_field_cap_id_t field_cap_id = descp->emmd_field_cap_id;
+		const uint8_t *lmaskp = mvpl + descp->emmd_mask_offset;
+		const uint8_t *rmaskp = mvpr + descp->emmd_mask_offset;
+		size_t mask_size = descp->emmd_mask_size;
+		const uint8_t *lvalp = mvpl + descp->emmd_value_offset;
+		const uint8_t *rvalp = mvpr + descp->emmd_value_offset;
+		size_t value_size = descp->emmd_value_size;
 
-		if (descp->emmd_mask_size == 0)
+		if (mask_size == 0)
 			continue; /* Skip array gap */
 
-		if (field_cap_id >= field_ncaps)
-			break;
+		if ((unsigned int)field_cap_id >= field_ncaps) {
+			/*
+			 * The FW has not reported capability status for this
+			 * field. It's unknown whether any difference between
+			 * the two masks / values affects the class. The only
+			 * case when the class must be the same is when these
+			 * mask-value pairs match. Otherwise, report mismatch.
+			 */
+			if ((memcmp(lmaskp, rmaskp, mask_size) == 0) &&
+			    (memcmp(lvalp, rvalp, value_size) == 0))
+				continue;
+			else
+				break;
+		}
 
 		if (field_caps[field_cap_id].emfc_mask_affects_class) {
-			const uint8_t *lmaskp = mvpl + descp->emmd_mask_offset;
-			const uint8_t *rmaskp = mvpr + descp->emmd_mask_offset;
-			size_t mask_size = descp->emmd_mask_size;
-
 			if (memcmp(lmaskp, rmaskp, mask_size) != 0) {
 				have_same_class = B_FALSE;
 				break;
@@ -1372,10 +1504,6 @@ efx_mae_match_specs_class_cmp(
 		}
 
 		if (field_caps[field_cap_id].emfc_match_affects_class) {
-			const uint8_t *lvalp = mvpl + descp->emmd_value_offset;
-			const uint8_t *rvalp = mvpr + descp->emmd_value_offset;
-			size_t value_size = descp->emmd_value_size;
-
 			if (memcmp(lvalp, rvalp, value_size) != 0) {
 				have_same_class = B_FALSE;
 				break;
@@ -1536,15 +1664,22 @@ efx_mae_outer_rule_remove(
 		goto fail2;
 	}
 
+	if (req.emr_out_length_used < MC_CMD_MAE_OUTER_RULE_REMOVE_OUT_LENMIN) {
+		rc = EMSGSIZE;
+		goto fail3;
+	}
+
 	if (MCDI_OUT_DWORD(req, MAE_OUTER_RULE_REMOVE_OUT_REMOVED_OR_ID) !=
 	    or_idp->id) {
 		/* Firmware failed to remove the outer rule. */
 		rc = EAGAIN;
-		goto fail3;
+		goto fail4;
 	}
 
 	return (0);
 
+fail4:
+	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:
@@ -1740,15 +1875,22 @@ efx_mae_action_set_free(
 		goto fail2;
 	}
 
+	if (req.emr_out_length_used < MC_CMD_MAE_ACTION_SET_FREE_OUT_LENMIN) {
+		rc = EMSGSIZE;
+		goto fail3;
+	}
+
 	if (MCDI_OUT_DWORD(req, MAE_ACTION_SET_FREE_OUT_FREED_AS_ID) !=
 	    aset_idp->id) {
 		/* Firmware failed to free the action set. */
 		rc = EAGAIN;
-		goto fail3;
+		goto fail4;
 	}
 
 	return (0);
 
+fail4:
+	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:
@@ -1890,15 +2032,23 @@ efx_mae_action_rule_remove(
 		goto fail2;
 	}
 
+	if (req.emr_out_length_used <
+	    MC_CMD_MAE_ACTION_RULE_DELETE_OUT_LENMIN) {
+		rc = EMSGSIZE;
+		goto fail3;
+	}
+
 	if (MCDI_OUT_DWORD(req, MAE_ACTION_RULE_DELETE_OUT_DELETED_AR_ID) !=
 	    ar_idp->id) {
 		/* Firmware failed to delete the action rule. */
 		rc = EAGAIN;
-		goto fail3;
+		goto fail4;
 	}
 
 	return (0);
 
+fail4:
+	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:

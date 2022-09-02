@@ -34,7 +34,7 @@
 #define DEFAULT_TX_RS_THRESH     32
 #define DEFAULT_TX_FREE_THRESH   32
 
-#define IAVF_MIN_TSO_MSS          256
+#define IAVF_MIN_TSO_MSS          88
 #define IAVF_MAX_TSO_MSS          9668
 #define IAVF_TSO_MAX_SEG          UINT8_MAX
 #define IAVF_TX_MAX_MTU_SEG       8
@@ -166,6 +166,7 @@ struct iavf_rx_queue {
 	struct rte_mbuf *pkt_last_seg;  /* last segment of current packet */
 	struct rte_mbuf fake_mbuf;      /* dummy mbuf */
 	uint8_t rxdid;
+	uint8_t rel_mbufs_type;
 
 	/* used for VPMD */
 	uint16_t rxrearm_nb;       /* number of remaining to be re-armed */
@@ -193,8 +194,6 @@ struct iavf_rx_queue {
 	uint8_t proto_xtr; /* protocol extraction type */
 	uint64_t xtr_ol_flag;
 		/* flexible descriptor metadata extraction offload flag */
-	iavf_rxd_to_pkt_fields_t rxd_to_pkt_fields;
-				/* handle flexible descriptor by RXDID */
 };
 
 struct iavf_tx_entry {
@@ -222,6 +221,7 @@ struct iavf_tx_queue {
 	uint16_t last_desc_cleaned;    /* last desc have been cleaned*/
 	uint16_t free_thresh;
 	uint16_t rs_thresh;
+	uint8_t rel_mbufs_type;
 
 	uint16_t port_id;
 	uint16_t queue_id;
@@ -324,6 +324,12 @@ struct iavf_32b_rx_flex_desc_comms_ovs {
 		} flex;
 		__le32 ts_high;
 	} flex_ts;
+};
+
+enum iavf_rxtx_rel_mbufs_type {
+	IAVF_REL_MBUFS_DEFAULT		= 0,
+	IAVF_REL_MBUFS_SSE_VEC		= 1,
+	IAVF_REL_MBUFS_AVX512_VEC	= 2,
 };
 
 /* Receive Flex Descriptor profile IDs: There are a total
@@ -484,7 +490,10 @@ int iavf_txq_vec_setup_avx512(struct iavf_tx_queue *txq);
 
 uint8_t iavf_proto_xtr_type_to_rxdid(uint8_t xtr_type);
 
-const uint32_t *iavf_get_default_ptype_table(void);
+void iavf_set_default_ptype_table(struct rte_eth_dev *dev);
+void iavf_tx_queue_release_mbufs_avx512(struct iavf_tx_queue *txq);
+void iavf_rx_queue_release_mbufs_sse(struct iavf_rx_queue *rxq);
+void iavf_tx_queue_release_mbufs_sse(struct iavf_tx_queue *txq);
 
 static inline
 void iavf_dump_rx_descriptor(struct iavf_rx_queue *rxq,
@@ -540,8 +549,8 @@ void iavf_dump_tx_descriptor(const struct iavf_tx_queue *txq,
 
 #define FDIR_PROC_ENABLE_PER_QUEUE(ad, on) do { \
 	int i; \
-	for (i = 0; i < (ad)->eth_dev->data->nb_rx_queues; i++) { \
-		struct iavf_rx_queue *rxq = (ad)->eth_dev->data->rx_queues[i]; \
+	for (i = 0; i < (ad)->dev_data->nb_rx_queues; i++) { \
+		struct iavf_rx_queue *rxq = (ad)->dev_data->rx_queues[i]; \
 		if (!rxq) \
 			continue; \
 		rxq->fdir_enabled = on; \

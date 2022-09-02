@@ -24,6 +24,8 @@
 #define RTE_PORT_CLOSED         (uint16_t)2
 #define RTE_PORT_HANDLING       (uint16_t)3
 
+extern uint8_t cl_quit;
+
 /*
  * It is used to allocate the memory for hash key.
  * The hash key size is NIC dependent.
@@ -64,6 +66,8 @@
 #define NUMA_NO_CONFIG 0xFF
 #define UMA_NO_CONFIG  0xFF
 
+#define MIN_TOTAL_NUM_MBUFS 1024
+
 typedef uint8_t  lcoreid_t;
 typedef uint16_t portid_t;
 typedef uint16_t queueid_t;
@@ -92,7 +96,7 @@ enum {
  * that are recorded for each forwarding stream.
  */
 struct pkt_burst_stats {
-	unsigned int pkt_burst_spread[MAX_PKT_BURST];
+	unsigned int pkt_burst_spread[MAX_PKT_BURST + 1];
 };
 
 /** Information for a given RSS type. */
@@ -126,6 +130,7 @@ struct fwd_stream {
 	portid_t   tx_port;   /**< forwarding port of received packets */
 	queueid_t  tx_queue;  /**< TX queue to send forwarded packets */
 	streamid_t peer_addr; /**< index of peer ethernet address of packets */
+	bool       disabled;  /**< the stream is disabled and should not run */
 
 	unsigned int retry_enabled;
 
@@ -137,6 +142,7 @@ struct fwd_stream {
 	uint64_t rx_bad_l4_csum ; /**< received packets has bad l4 checksum */
 	uint64_t rx_bad_outer_l4_csum;
 	/**< received packets has bad outer l4 checksum */
+	uint64_t ts_skew; /**< TX scheduling timestamp */
 	unsigned int gro_times;	/**< GRO operation times */
 	uint64_t     core_cycles; /**< used for RX and TX processing */
 	struct pkt_burst_stats rx_burst_stats;
@@ -192,6 +198,18 @@ struct tunnel_ops {
 	uint32_t items:1;
 };
 
+/** RX queue configuration and state. */
+struct port_rxqueue {
+	struct rte_eth_rxconf conf;
+	uint8_t state; /**< RTE_ETH_QUEUE_STATE_* value. */
+};
+
+/** TX queue configuration and state. */
+struct port_txqueue {
+	struct rte_eth_txconf conf;
+	uint8_t state; /**< RTE_ETH_QUEUE_STATE_* value. */
+};
+
 /**
  * The data structure associated with each port.
  */
@@ -206,8 +224,6 @@ struct rte_port {
 	uint16_t                tunnel_tso_segsz; /**< Segmentation offload MSS for tunneled pkts. */
 	uint16_t                tx_vlan_id;/**< The tag ID */
 	uint16_t                tx_vlan_id_outer;/**< The outer tag ID */
-	uint8_t                 tx_queue_stats_mapping_enabled;
-	uint8_t                 rx_queue_stats_mapping_enabled;
 	volatile uint16_t        port_status;    /**< port started or not */
 	uint8_t                 need_setup;     /**< port just attached */
 	uint8_t                 need_reconfig;  /**< need reconfiguring port or not */
@@ -216,11 +232,12 @@ struct rte_port {
 	uint8_t                 dcb_flag;   /**< enable dcb */
 	uint16_t                nb_rx_desc[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue rx desc number */
 	uint16_t                nb_tx_desc[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue tx desc number */
-	struct rte_eth_rxconf   rx_conf[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue rx configuration */
-	struct rte_eth_txconf   tx_conf[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue tx configuration */
+	struct port_rxqueue     rxq[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue Rx config and state */
+	struct port_txqueue     txq[RTE_MAX_QUEUES_PER_PORT+1]; /**< per queue Tx config and state */
 	struct rte_ether_addr   *mc_addr_pool; /**< pool of multicast addrs */
 	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
-	uint8_t                 slave_flag; /**< bonding slave port */
+	uint8_t                 slave_flag : 1, /**< bonding slave port */
+				bond_flag : 1; /**< port is bond device */
 	struct port_flow        *flow_list; /**< Associated flows. */
 	struct port_shared_action *actions_list;
 	/**< Associated shared actions. */
@@ -268,14 +285,16 @@ struct fwd_lcore {
  *     Forwards packets unchanged on the same port.
  *     Check that sent IEEE1588 PTP packets are timestamped by the hardware.
  */
-typedef void (*port_fwd_begin_t)(portid_t pi);
+typedef int (*port_fwd_begin_t)(portid_t pi);
 typedef void (*port_fwd_end_t)(portid_t pi);
+typedef void (*stream_init_t)(struct fwd_stream *fs);
 typedef void (*packet_fwd_t)(struct fwd_stream *fs);
 
 struct fwd_engine {
 	const char       *fwd_mode_name; /**< Forwarding mode name. */
 	port_fwd_begin_t port_fwd_begin; /**< NULL if nothing special to do. */
 	port_fwd_end_t   port_fwd_end;   /**< NULL if nothing special to do. */
+	stream_init_t    stream_init;    /**< NULL if nothing special to do. */
 	packet_fwd_t     packet_fwd;     /**< Mandatory. */
 };
 
@@ -325,25 +344,6 @@ enum dcb_mode_enable
 	DCB_VT_ENABLED,
 	DCB_ENABLED
 };
-
-#define MAX_TX_QUEUE_STATS_MAPPINGS 1024 /* MAX_PORT of 32 @ 32 tx_queues/port */
-#define MAX_RX_QUEUE_STATS_MAPPINGS 4096 /* MAX_PORT of 32 @ 128 rx_queues/port */
-
-struct queue_stats_mappings {
-	portid_t port_id;
-	uint16_t queue_id;
-	uint8_t stats_counter_id;
-} __rte_cache_aligned;
-
-extern struct queue_stats_mappings tx_queue_stats_mappings_array[];
-extern struct queue_stats_mappings rx_queue_stats_mappings_array[];
-
-/* Assign both tx and rx queue stats mappings to the same default values */
-extern struct queue_stats_mappings *tx_queue_stats_mappings;
-extern struct queue_stats_mappings *rx_queue_stats_mappings;
-
-extern uint16_t nb_tx_queue_stats_mappings;
-extern uint16_t nb_rx_queue_stats_mappings;
 
 extern uint8_t xstats_hide_zero; /**< Hide zero values for xstats display */
 
@@ -444,7 +444,6 @@ extern uint64_t noisy_lkup_num_reads;
 extern uint64_t noisy_lkup_num_reads_writes;
 
 extern uint8_t dcb_config;
-extern uint8_t dcb_test;
 
 extern uint32_t mbuf_data_size_n;
 extern uint16_t mbuf_data_size[MAX_SEGS_BUFFER_SPLIT];
@@ -790,7 +789,6 @@ void nic_stats_display(portid_t port_id);
 void nic_stats_clear(portid_t port_id);
 void nic_xstats_display(portid_t port_id);
 void nic_xstats_clear(portid_t port_id);
-void nic_stats_mapping_display(portid_t port_id);
 void device_infos_display(const char *identifier);
 void port_infos_display(portid_t port_id);
 void port_summary_display(portid_t port_id);
@@ -843,6 +841,7 @@ int port_flow_create(portid_t port_id,
 int port_shared_action_query(portid_t port_id, uint32_t id);
 void update_age_action_context(const struct rte_flow_action *actions,
 		     struct port_flow *pf);
+int mcast_addr_pool_destroy(portid_t port_id);
 int port_flow_destroy(portid_t port_id, uint32_t n, const uint32_t *rule);
 int port_flow_flush(portid_t port_id);
 int port_flow_dump(portid_t port_id, const char *file_name);
@@ -901,7 +900,7 @@ void show_tx_pkt_segments(void);
 void set_tx_pkt_times(unsigned int *tx_times);
 void show_tx_pkt_times(void);
 void set_tx_pkt_split(const char *name);
-int parse_fec_mode(const char *name, enum rte_eth_fec_mode *mode);
+int parse_fec_mode(const char *name, uint32_t *fec_capa);
 void show_fec_capability(uint32_t num, struct rte_eth_fec_capa *speed_fec_capa);
 void set_nb_pkt_per_burst(uint16_t pkt_burst);
 char *list_pkt_forwarding_modes(void);
@@ -956,7 +955,7 @@ int set_vf_rate_limit(portid_t port_id, uint16_t vf, uint16_t rate,
 
 void port_rss_hash_conf_show(portid_t port_id, int show_rss_key);
 void port_rss_hash_key_update(portid_t port_id, char rss_type[],
-			      uint8_t *hash_key, uint hash_key_len);
+			      uint8_t *hash_key, uint8_t hash_key_len);
 int rx_queue_id_is_invalid(queueid_t rxq_id);
 int tx_queue_id_is_invalid(queueid_t txq_id);
 void setup_gro(const char *onoff, portid_t port_id);
@@ -1027,6 +1026,9 @@ uint16_t tx_pkt_set_dynf(uint16_t port_id, __rte_unused uint16_t queue,
 			 __rte_unused void *user_param);
 void add_tx_dynf_callback(portid_t portid);
 void remove_tx_dynf_callback(portid_t portid);
+int update_jumbo_frame_offload(portid_t portid);
+const char *rsstypes_to_str(uint64_t rss_type);
+
 
 /*
  * Work-around of a compilation error with ICC on invocations of the

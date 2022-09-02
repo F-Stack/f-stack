@@ -6,12 +6,12 @@
   * This is a simple functional test for rte_smp_mb() implementation.
   * I.E. make sure that LOAD and STORE operations that precede the
   * rte_smp_mb() call are globally visible across the lcores
-  * before the the LOAD and STORE operations that follows it.
+  * before the LOAD and STORE operations that follows it.
   * The test uses simple implementation of Peterson's lock algorithm
   * (https://en.wikipedia.org/wiki/Peterson%27s_algorithm)
   * for two execution units to make sure that rte_smp_mb() prevents
   * store-load reordering to happen.
-  * Also when executed on a single lcore could be used as a approxiamate
+  * Also when executed on a single lcore could be used as a approximate
   * estimation of number of cycles particular implementation of rte_smp_mb()
   * will take.
   */
@@ -66,7 +66,7 @@ struct plock_test {
 struct lcore_plock_test {
 	struct plock_test *pt[2]; /* shared, lock-protected data */
 	uint64_t sum[2];          /* local copy of the shared data */
-	uint64_t iter;            /* number of iterations to perfom */
+	uint64_t iter;            /* number of iterations to perform */
 	uint32_t lc;              /* given lcore id */
 };
 

@@ -2,6 +2,7 @@
  * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dlfcn.h>
@@ -321,6 +322,7 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 	ark->rqpacing =
 		(struct ark_rqpace_t *)(ark->bar0 + ARK_RCPACING_BASE);
 	ark->started = 0;
+	ark->pkt_dir_v = ARK_PKT_DIR_INIT_VAL;
 
 	ARK_PMD_LOG(INFO, "Sys Ctrl Const = 0x%x  HW Commit_ID: %08x\n",
 		      ark->sysctrl.t32[4],
@@ -584,6 +586,7 @@ delay_pg_start(void *arg)
 	 * perform a blind sleep here to ensure that the external test
 	 * application has time to setup the test before we generate packets
 	 */
+	pthread_detach(pthread_self());
 	usleep(100000);
 	ark_pktgen_run(ark->pg);
 	return NULL;

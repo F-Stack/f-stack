@@ -1,6 +1,8 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
+.. include:: <isonum.txt>
+
 .. _Enabling_Additional_Functionality:
 
 Enabling Additional Functionality
@@ -64,13 +66,62 @@ The application can then determine what action to take, if any, if the HPET is n
 Running DPDK Applications Without Root Privileges
 -------------------------------------------------
 
-In order to run DPDK as non-root, the following Linux filesystem objects'
-permissions should be adjusted to ensure that the Linux account being used to
-run the DPDK application has access to them:
+The following sections describe generic requirements and configuration
+for running DPDK applications as non-root.
+There may be additional requirements documented for some drivers.
 
-*   All directories which serve as hugepage mount points, for example, ``/dev/hugepages``
+Hugepages
+~~~~~~~~~
 
-*   If the HPET is to be used,  ``/dev/hpet``
+Hugepages must be reserved as root before running the application as non-root,
+for example::
+
+  sudo dpdk-hugepages.py --reserve 1G
+
+If multi-process is not required, running with ``--in-memory``
+bypasses the need to access hugepage mount point and files within it.
+Otherwise, hugepage directory must be made accessible
+for writing to the unprivileged user.
+A good way for managing multiple applications using hugepages
+is to mount the filesystem with group permissions
+and add a supplementary group to each application or container.
+
+One option is to mount manually::
+
+  mount -t hugetlbfs -o pagesize=1G,uid=`id -u`,gid=`id -g` nodev $HOME/huge-1G
+
+In production environment, the OS can manage mount points
+(`systemd example <https://github.com/systemd/systemd/blob/main/units/dev-hugepages.mount>`_).
+
+The ``hugetlb`` filesystem has additional options to guarantee or limit
+the amount of memory that is possible to allocate using the mount point.
+Refer to the `documentation <https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt>`_.
+
+.. note::
+
+   Using ``vfio-pci`` kernel driver, if applicable, can eliminate the need
+   for physical addresses and therefore eliminate the permission requirements
+   described below.
+
+If the driver requires using physical addresses (PA),
+the executable file must be granted additional capabilities:
+
+* ``SYS_ADMIN`` to read ``/proc/self/pagemaps``
+* ``IPC_LOCK`` to lock hugepages in memory
+
+.. code-block:: console
+
+   setcap cap_ipc_lock,cap_sys_admin+ep <executable>
+
+If physical addresses are not accessible,
+the following message will appear during EAL initialization::
+
+  EAL: rte_mem_virt2phy(): cannot open /proc/self/pagemap: Permission denied
+
+It is harmless in case PA are not needed.
+
+Resource Limits
+~~~~~~~~~~~~~~~
 
 When running as non-root user, there may be some additional resource limits
 that are imposed by the system. Specifically, the following resource limits may
@@ -85,8 +136,10 @@ need to be adjusted in order to ensure normal DPDK operation:
 The above limits can usually be adjusted by editing
 ``/etc/security/limits.conf`` file, and rebooting.
 
-Additionally, depending on which kernel driver is in use, the relevant
-resources also should be accessible by the user running the DPDK application.
+Device Control
+~~~~~~~~~~~~~~
+
+If the HPET is to be used, ``/dev/hpet`` permissions must be adjusted.
 
 For ``vfio-pci`` kernel driver, the following Linux file system objects'
 permissions should be adjusted:
@@ -96,38 +149,18 @@ permissions should be adjusted:
 * The directories under ``/dev/vfio`` that correspond to IOMMU group numbers of
   devices intended to be used by DPDK, for example, ``/dev/vfio/50``
 
-.. note::
-
-    The instructions below will allow running DPDK with ``igb_uio`` or
-    ``uio_pci_generic`` drivers as non-root with older Linux kernel versions.
-    However, since version 4.0, the kernel does not allow unprivileged processes
-    to read the physical address information from the pagemaps file, making it
-    impossible for those processes to be used by non-privileged users. In such
-    cases, using the VFIO driver is recommended.
-
-For ``igb_uio`` or ``uio_pci_generic`` kernel drivers, the following Linux file
-system objects' permissions should be adjusted:
-
-*   The userspace-io device files in  ``/dev``, for example,  ``/dev/uio0``, ``/dev/uio1``, and so on
-
-*   The userspace-io sysfs config and resource files, for example for ``uio0``::
-
-       /sys/class/uio/uio0/device/config
-       /sys/class/uio/uio0/device/resource*
-
-
 Power Management and Power Saving Functionality
 -----------------------------------------------
 
-Enhanced Intel SpeedStep® Technology must be enabled in the platform BIOS if the power management feature of DPDK is to be used.
+Enhanced Intel SpeedStep\ |reg| Technology must be enabled in the platform BIOS if the power management feature of DPDK is to be used.
 Otherwise, the sys file folder ``/sys/devices/system/cpu/cpu0/cpufreq`` will not exist, and the CPU frequency- based power management cannot be used.
 Consult the relevant BIOS documentation to determine how these settings can be accessed.
 
-For example, on some Intel reference platform BIOS variants, the path to Enhanced Intel SpeedStep® Technology is::
+For example, on some Intel reference platform BIOS variants, the path to Enhanced Intel SpeedStep\ |reg| Technology is::
 
    Advanced
      -> Processor Configuration
-     -> Enhanced Intel SpeedStep® Tech
+     -> Enhanced Intel SpeedStep\ |reg| Tech
 
 In addition, C3 and C6 should be enabled as well for power management. The path of C3 and C6 on the same platform BIOS is::
 

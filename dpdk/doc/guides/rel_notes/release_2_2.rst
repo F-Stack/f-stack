@@ -10,8 +10,8 @@ New Features
 * **Introduce ARMv7 and ARMv8 architectures.**
 
   * It is now possible to build DPDK for the ARMv7 and ARMv8 platforms.
-  * ARMv7 can be tested with virtual PMD drivers.
-  * ARMv8 can be tested with virtual and physical PMD drivers.
+  * ARMv7 can be tested with virtual PMDs.
+  * ARMv8 can be tested with virtual and physical PMDs.
 
 * **Enabled freeing of ring.**
 
@@ -322,7 +322,7 @@ Drivers
 
   Several customers have reported a link flap issue on 82579. The symptoms
   are random and intermittent link losses when 82579 is connected to specific
-  switches. the Issue was root caused as an inter-operability problem between
+  switches. the Issue was root caused as an interoperability problem between
   the NIC and at least some Broadcom PHYs in the Energy Efficient Ethernet
   wake mechanism.
 

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <inttypes.h>
@@ -301,14 +302,13 @@ proc_info_parse_args(int argc, char **argv)
 			} else if (!strncmp(long_option[option_index].name,
 					"xstats-ids",
 					MAX_LONG_OPT_SZ))	{
-				nb_xstats_ids = parse_xstats_ids(optarg,
+				int ret = parse_xstats_ids(optarg,
 						xstats_ids, MAX_NB_XSTATS_IDS);
-
-				if (nb_xstats_ids <= 0) {
+				if (ret <= 0) {
 					printf("xstats-id list parse error.\n");
 					return -1;
 				}
-
+				nb_xstats_ids = ret;
 			}
 			break;
 		default:
@@ -420,11 +420,9 @@ static void collectd_resolve_cnt_type(char *cnt_type, size_t cnt_type_len,
 	} else if ((type_end != NULL) &&
 		   (strncmp(cnt_name, "flow_", strlen("flow_"))) == 0) {
 		if (strncmp(type_end, "_filters", strlen("_filters")) == 0)
-			strlcpy(cnt_type, "operations", cnt_type_len);
+			strlcpy(cnt_type, "filter_result", cnt_type_len);
 		else if (strncmp(type_end, "_errors", strlen("_errors")) == 0)
 			strlcpy(cnt_type, "errors", cnt_type_len);
-		else if (strncmp(type_end, "_filters", strlen("_filters")) == 0)
-			strlcpy(cnt_type, "filter_result", cnt_type_len);
 	} else if ((type_end != NULL) &&
 		   (strncmp(cnt_name, "mac_", strlen("mac_"))) == 0) {
 		if (strncmp(type_end, "_errors", strlen("_errors")) == 0)
@@ -613,7 +611,7 @@ metrics_display(int port_id)
 
 	names =  rte_malloc(NULL, sizeof(struct rte_metric_name) * len, 0);
 	if (names == NULL) {
-		printf("Cannot allocate memory for metrcis names\n");
+		printf("Cannot allocate memory for metrics names\n");
 		rte_free(metrics);
 		return;
 	}
@@ -648,10 +646,15 @@ metrics_display(int port_id)
 }
 
 static void
-show_security_context(uint16_t portid)
+show_security_context(uint16_t portid, bool inline_offload)
 {
-	void *p_ctx = rte_eth_dev_get_sec_ctx(portid);
+	void *p_ctx;
 	const struct rte_security_capability *s_cap;
+
+	if (inline_offload)
+		p_ctx = rte_eth_dev_get_sec_ctx(portid);
+	else
+		p_ctx = rte_cryptodev_get_sec_ctx(portid);
 
 	if (p_ctx == NULL)
 		return;
@@ -859,7 +862,7 @@ show_port(void)
 		}
 
 #ifdef RTE_LIB_SECURITY
-		show_security_context(i);
+		show_security_context(i, true);
 #endif
 	}
 }
@@ -1086,7 +1089,7 @@ show_tm(void)
 				caplevel.n_nodes_max,
 				caplevel.n_nodes_nonleaf_max,
 				caplevel.n_nodes_leaf_max);
-			printf("\t  -- indetical: non leaf %u leaf %u\n",
+			printf("\t  -- identical: non leaf %u leaf %u\n",
 				caplevel.non_leaf_nodes_identical,
 				caplevel.leaf_nodes_identical);
 
@@ -1210,7 +1213,6 @@ show_crypto(void)
 
 		display_crypto_feature_info(dev_info.feature_flags);
 
-		memset(&stats, 0, sizeof(0));
 		if (rte_cryptodev_stats_get(i, &stats) == 0) {
 			printf("\t  -- stats\n");
 			printf("\t\t  + enqueue count (%"PRIu64")"
@@ -1224,7 +1226,7 @@ show_crypto(void)
 		}
 
 #ifdef RTE_LIB_SECURITY
-		show_security_context(i);
+		show_security_context(i, false);
 #endif
 	}
 }
@@ -1241,7 +1243,7 @@ show_ring(char *name)
 			printf("  - Name (%s) on socket (%d)\n"
 				"  - flags:\n"
 				"\t  -- Single Producer Enqueue (%u)\n"
-				"\t  -- Single Consmer Dequeue (%u)\n",
+				"\t  -- Single Consumer Dequeue (%u)\n",
 				ptr->name,
 				ptr->memzone->socket_id,
 				ptr->flags & RING_F_SP_ENQ,
@@ -1268,8 +1270,6 @@ show_ring(char *name)
 static void
 show_mempool(char *name)
 {
-	uint64_t flags = 0;
-
 	snprintf(bdr_str, MAX_STRING_LEN, " show - MEMPOOL ");
 	STATS_BDR_STR(10, bdr_str);
 
@@ -1277,8 +1277,8 @@ show_mempool(char *name)
 		struct rte_mempool *ptr = rte_mempool_lookup(name);
 		if (ptr != NULL) {
 			struct rte_mempool_ops *ops;
+			uint64_t flags = ptr->flags;
 
-			flags = ptr->flags;
 			ops = rte_mempool_get_ops(ptr->ops_index);
 			printf("  - Name: %s on socket %d\n"
 				"  - flags:\n"
@@ -1403,10 +1403,10 @@ main(int argc, char **argv)
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
-	/* If no port mask was specified, then show non-owned ports */
+	/* If no port mask was specified, then show all non-owned ports */
 	if (enabled_port_mask == 0) {
 		RTE_ETH_FOREACH_DEV(i)
-			enabled_port_mask = 1ul << i;
+			enabled_port_mask |= 1ul << i;
 	}
 
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {

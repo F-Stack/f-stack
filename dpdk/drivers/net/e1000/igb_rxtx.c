@@ -112,6 +112,7 @@ struct igb_rx_queue {
 	uint8_t             drop_en;  /**< If not 0, set SRRCTL.Drop_En. */
 	uint32_t            flags;      /**< RX flags. */
 	uint64_t	    offloads;   /**< offloads of DEV_RX_OFFLOAD_* */
+	const struct rte_memzone *mz;
 };
 
 /**
@@ -150,7 +151,7 @@ union igb_tx_offload {
 	(TX_MACIP_LEN_CMP_MASK | TX_TCP_LEN_CMP_MASK | TX_TSO_MSS_CMP_MASK)
 
 /**
- * Strucutre to check if new context need be built
+ * Structure to check if new context need be built
  */
 struct igb_advctx_info {
 	uint64_t flags;           /**< ol_flags related to context build. */
@@ -186,6 +187,7 @@ struct igb_tx_queue {
 	struct igb_advctx_info ctx_cache[IGB_CTX_NUM];
 	/**< Hardware context history.*/
 	uint64_t	       offloads; /**< offloads of DEV_TX_OFFLOAD_* */
+	const struct rte_memzone *mz;
 };
 
 #if 1
@@ -966,7 +968,7 @@ eth_igb_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	 * register.
 	 * Update the RDT with the value of the last processed RX descriptor
 	 * minus 1, to guarantee that the RDT register is never equal to the
-	 * RDH register, which creates a "full" ring situtation from the
+	 * RDH register, which creates a "full" ring situation from the
 	 * hardware point of view...
 	 */
 	nb_hold = (uint16_t) (nb_hold + rxq->nb_rx_hold);
@@ -1228,7 +1230,7 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	 * register.
 	 * Update the RDT with the value of the last processed RX descriptor
 	 * minus 1, to guarantee that the RDT register is never equal to the
-	 * RDH register, which creates a "full" ring situtation from the
+	 * RDH register, which creates a "full" ring situation from the
 	 * hardware point of view...
 	 */
 	nb_hold = (uint16_t) (nb_hold + rxq->nb_rx_hold);
@@ -1251,7 +1253,7 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
  * Maximum number of Ring Descriptors.
  *
  * Since RDLEN/TDLEN should be multiple of 128bytes, the number of ring
- * desscriptors should meet the following condition:
+ * descriptors should meet the following condition:
  *      (num_ring_desc * sizeof(struct e1000_rx/tx_desc)) % 128 == 0
  */
 
@@ -1276,6 +1278,7 @@ igb_tx_queue_release(struct igb_tx_queue *txq)
 	if (txq != NULL) {
 		igb_tx_queue_release_mbufs(txq);
 		rte_free(txq->sw_ring);
+		rte_memzone_free(txq->mz);
 		rte_free(txq);
 	}
 }
@@ -1348,7 +1351,7 @@ igb_tx_done_cleanup(struct igb_tx_queue *txq, uint32_t free_cnt)
 						sw_ring[tx_id].last_id = tx_id;
 					}
 
-					/* Move to next segemnt. */
+					/* Move to next segment. */
 					tx_id = sw_ring[tx_id].next_id;
 
 				} while (tx_id != tx_next);
@@ -1381,7 +1384,7 @@ igb_tx_done_cleanup(struct igb_tx_queue *txq, uint32_t free_cnt)
 
 			/* Walk the list and find the next mbuf, if any. */
 			do {
-				/* Move to next segemnt. */
+				/* Move to next segment. */
 				tx_id = sw_ring[tx_id].next_id;
 
 				if (sw_ring[tx_id].mbuf)
@@ -1545,6 +1548,7 @@ eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	txq->mz = tz;
 	txq->nb_tx_desc = nb_desc;
 	txq->pthresh = tx_conf->tx_thresh.pthresh;
 	txq->hthresh = tx_conf->tx_thresh.hthresh;
@@ -1601,6 +1605,7 @@ igb_rx_queue_release(struct igb_rx_queue *rxq)
 	if (rxq != NULL) {
 		igb_rx_queue_release_mbufs(rxq);
 		rte_free(rxq->sw_ring);
+		rte_memzone_free(rxq->mz);
 		rte_free(rxq);
 	}
 }
@@ -1746,6 +1751,8 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 		igb_rx_queue_release(rxq);
 		return -ENOMEM;
 	}
+
+	rxq->mz = rz;
 	rxq->rdt_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_RDT(rxq->reg_idx));
 	rxq->rdh_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_RDH(rxq->reg_idx));
 	rxq->rx_ring_phys_addr = rz->iova;
@@ -1885,14 +1892,12 @@ igb_dev_free_queues(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		eth_igb_rx_queue_release(dev->data->rx_queues[i]);
 		dev->data->rx_queues[i] = NULL;
-		rte_eth_dma_zone_free(dev, "rx_ring", i);
 	}
 	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		eth_igb_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
-		rte_eth_dma_zone_free(dev, "tx_ring", i);
 	}
 	dev->data->nb_tx_queues = 0;
 }
@@ -2160,7 +2165,7 @@ igb_vmdq_rx_hw_configure(struct rte_eth_dev *dev)
 
 	igb_rss_disable(dev);
 
-	/* RCTL: eanble VLAN filter */
+	/* RCTL: enable VLAN filter */
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 	rctl |= E1000_RCTL_VFE;
 	E1000_WRITE_REG(hw, E1000_RCTL, rctl);
@@ -2343,15 +2348,18 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 	 * Configure support of jumbo frames, if any.
 	 */
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
+		uint32_t max_len = dev->data->dev_conf.rxmode.max_rx_pkt_len;
+
 		rctl |= E1000_RCTL_LPE;
 
 		/*
 		 * Set maximum packet length by default, and might be updated
 		 * together with enabling/disabling dual VLAN.
 		 */
-		E1000_WRITE_REG(hw, E1000_RLPML,
-			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-						VLAN_TAG_SIZE);
+		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_EXTEND)
+			max_len += VLAN_TAG_SIZE;
+
+		E1000_WRITE_REG(hw, E1000_RLPML, max_len);
 	} else
 		rctl &= ~E1000_RCTL_LPE;
 

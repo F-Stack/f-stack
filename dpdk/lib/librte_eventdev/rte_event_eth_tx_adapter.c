@@ -224,7 +224,7 @@ txa_service_data_init(void)
 	if (txa_service_data_array == NULL) {
 		txa_service_data_array =
 				txa_memzone_array_get("txa_service_data_array",
-					sizeof(int),
+					sizeof(*txa_service_data_array),
 					RTE_EVENT_ETH_TX_ADAPTER_MAX_INSTANCE);
 		if (txa_service_data_array == NULL)
 			return -ENOMEM;
@@ -286,7 +286,6 @@ txa_service_conf_cb(uint8_t __rte_unused id, uint8_t dev_id,
 		return ret;
 	}
 
-	pc->event_port_cfg = 0;
 	ret = rte_event_port_setup(dev_id, port_id, pc);
 	if (ret) {
 		RTE_EDEV_LOG_ERR("failed to setup event port %u\n",
@@ -761,10 +760,8 @@ txa_service_queue_add(uint8_t id,
 
 	rte_spinlock_lock(&txa->tx_lock);
 
-	if (txa_service_is_queue_added(txa, eth_dev, tx_queue_id)) {
-		rte_spinlock_unlock(&txa->tx_lock);
-		return 0;
-	}
+	if (txa_service_is_queue_added(txa, eth_dev, tx_queue_id))
+		goto ret_unlock;
 
 	ret = txa_service_queue_array_alloc(txa, eth_dev->data->port_id);
 	if (ret)
@@ -776,6 +773,8 @@ txa_service_queue_add(uint8_t id,
 
 	tdi = &txa->txa_ethdev[eth_dev->data->port_id];
 	tqi = txa_service_queue(txa, eth_dev->data->port_id, tx_queue_id);
+	if (tqi == NULL)
+		goto err_unlock;
 
 	txa_retry = &tqi->txa_retry;
 	txa_retry->id = txa->id;
@@ -791,6 +790,10 @@ txa_service_queue_add(uint8_t id,
 	tdi->nb_queues++;
 	txa->nb_queues++;
 
+ret_unlock:
+	rte_spinlock_unlock(&txa->tx_lock);
+	return 0;
+
 err_unlock:
 	if (txa->nb_queues == 0) {
 		txa_service_queue_array_free(txa,
@@ -799,7 +802,7 @@ err_unlock:
 	}
 
 	rte_spinlock_unlock(&txa->tx_lock);
-	return 0;
+	return -1;
 }
 
 static int
@@ -819,7 +822,7 @@ txa_service_queue_del(uint8_t id,
 		uint16_t i, q, nb_queues;
 		int ret = 0;
 
-		nb_queues = txa->nb_queues;
+		nb_queues = txa->txa_ethdev[port_id].nb_queues;
 		if (nb_queues == 0)
 			return 0;
 
@@ -842,9 +845,10 @@ txa_service_queue_del(uint8_t id,
 
 	txa = txa_service_id_to_data(id);
 
+	rte_spinlock_lock(&txa->tx_lock);
 	tqi = txa_service_queue(txa, port_id, tx_queue_id);
 	if (tqi == NULL || !tqi->added)
-		return 0;
+		goto ret_unlock;
 
 	tb = tqi->tx_buf;
 	tqi->added = 0;
@@ -854,6 +858,9 @@ txa_service_queue_del(uint8_t id,
 	txa->txa_ethdev[port_id].nb_queues--;
 
 	txa_service_queue_array_free(txa, port_id);
+
+ret_unlock:
+	rte_spinlock_unlock(&txa->tx_lock);
 	return 0;
 }
 

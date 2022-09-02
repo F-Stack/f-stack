@@ -25,6 +25,7 @@
 #include <rte_spinlock.h>
 
 #include <sys/time.h>
+#include <rte_memcpy.h>
 
 typedef uint64_t u64;
 typedef uint32_t u32;
@@ -51,6 +52,7 @@ typedef uint64_t dma_addr_t;
 #define ENA_COM_FAULT	-EFAULT
 #define ENA_COM_TRY_AGAIN	-EAGAIN
 #define ENA_COM_UNSUPPORTED    -EOPNOTSUPP
+#define ENA_COM_EIO    -EIO
 
 #define ____cacheline_aligned __rte_cache_aligned
 
@@ -61,7 +63,11 @@ typedef uint64_t dma_addr_t;
 #define ENA_UDELAY(x) rte_delay_us_block(x)
 
 #define ENA_TOUCH(x) ((void)(x))
-#define memcpy_toio memcpy
+/* Avoid nested declaration on arm64, as it may define rte_memcpy as memcpy. */
+#if defined(RTE_ARCH_X86)
+#undef memcpy
+#define memcpy rte_memcpy
+#endif
 #define wmb rte_wmb
 #define rmb rte_rmb
 #define mb rte_mb
@@ -288,7 +294,7 @@ extern rte_atomic32_t ena_alloc_cnt;
 #define ENA_TIME_EXPIRE(timeout)  (timeout < rte_get_timer_cycles())
 #define ENA_GET_SYSTEM_TIMEOUT(timeout_us)				\
     (timeout_us * rte_get_timer_hz() / 1000000 + rte_get_timer_cycles())
-#define ENA_WAIT_EVENT_DESTROY(waitqueue) ((void)(waitqueue))
+#define ENA_WAIT_EVENTS_DESTROY(admin_queue) ((void)(admin_queue))
 
 #ifndef READ_ONCE
 #define READ_ONCE(var) (*((volatile typeof(var) *)(&(var))))

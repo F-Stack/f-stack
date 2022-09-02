@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #ifndef _HNS3_CMD_H_
@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #define HNS3_CMDQ_TX_TIMEOUT		30000
+#define HNS3_CMDQ_CLEAR_WAIT_TIME	200
 #define HNS3_CMDQ_RX_INVLD_B		0
 #define HNS3_CMDQ_RX_OUTVLD_B		1
 #define HNS3_CMD_DESC_ALIGNMENT		4096
@@ -54,13 +55,6 @@ enum hns3_cmd_return_status {
 	HNS3_CMD_INVALID        = 11,
 };
 
-enum hns3_cmd_status {
-	HNS3_STATUS_SUCCESS     = 0,
-	HNS3_ERR_CSQ_FULL       = -1,
-	HNS3_ERR_CSQ_TIMEOUT    = -2,
-	HNS3_ERR_CSQ_ERROR      = -3,
-};
-
 struct hns3_misc_vector {
 	uint8_t *addr;
 	int vector_irq;
@@ -70,7 +64,7 @@ struct hns3_cmq {
 	struct hns3_cmq_ring csq;
 	struct hns3_cmq_ring crq;
 	uint16_t tx_timeout;
-	enum hns3_cmd_status last_status;
+	enum hns3_cmd_return_status last_status;
 };
 
 enum hns3_opcode_type {
@@ -203,7 +197,10 @@ enum hns3_opcode_type {
 	HNS3_OPC_FD_COUNTER_OP          = 0x1205,
 
 	/* Clear hardware state command */
-	HNS3_OPC_CLEAR_HW_STATE         = 0x700A,
+	HNS3_OPC_CLEAR_HW_STATE         = 0x700B,
+
+	/* Firmware stats command */
+	HNS3_OPC_FIRMWARE_COMPAT_CFG    = 0x701A,
 
 	/* SFP command */
 	HNS3_OPC_SFP_GET_SPEED          = 0x7104,
@@ -291,11 +288,16 @@ enum HNS3_CAPS_BITS {
 	HNS3_CAPS_HW_PAD_B,
 	HNS3_CAPS_STASH_B,
 };
+
+enum HNS3_API_CAP_BITS {
+	HNS3_API_CAP_FLEX_RSS_TBL_B,
+};
+
 #define HNS3_QUERY_CAP_LENGTH		3
 struct hns3_query_version_cmd {
 	uint32_t firmware;
 	uint32_t hardware;
-	uint32_t rsv;
+	uint32_t api_caps;
 	uint32_t caps[HNS3_QUERY_CAP_LENGTH]; /* capabilities of device */
 };
 
@@ -423,8 +425,6 @@ struct hns3_umv_spc_alc_cmd {
 #define HNS3_CFG_RD_LEN_BYTES		16
 #define HNS3_CFG_RD_LEN_UNIT		4
 
-#define HNS3_CFG_VMDQ_S			0
-#define HNS3_CFG_VMDQ_M			GENMASK(7, 0)
 #define HNS3_CFG_TC_NUM_S		8
 #define HNS3_CFG_TC_NUM_M		GENMASK(15, 8)
 #define HNS3_CFG_TQP_DESC_N_S		16
@@ -557,7 +557,6 @@ struct hns3_cfg_gro_status_cmd {
 
 #define HNS3_RSS_HASH_KEY_OFFSET_B	4
 
-#define HNS3_RSS_CFG_TBL_SIZE	16
 #define HNS3_RSS_HASH_KEY_NUM	16
 /* Configure the algorithm mode and Hash Key, opcode:0x0D01 */
 struct hns3_rss_generic_config_cmd {
@@ -630,6 +629,13 @@ enum hns3_promisc_type {
 	HNS3_UNICAST	= 1,
 	HNS3_MULTICAST	= 2,
 	HNS3_BROADCAST	= 3,
+};
+
+#define HNS3_LINK_EVENT_REPORT_EN_B	0
+#define HNS3_NCSI_ERROR_REPORT_EN_B	1
+struct hns3_firmware_compat_cmd {
+	uint32_t compat;
+	uint8_t rsv[20];
 };
 
 #define HNS3_MAC_TX_EN_B		6
@@ -775,12 +781,16 @@ enum hns3_int_gl_idx {
 #define HNS3_TQP_ID_M		GENMASK(12, 2)
 #define HNS3_INT_GL_IDX_S	13
 #define HNS3_INT_GL_IDX_M	GENMASK(14, 13)
+#define HNS3_TQP_INT_ID_L_S	0
+#define HNS3_TQP_INT_ID_L_M	GENMASK(7, 0)
+#define HNS3_TQP_INT_ID_H_S	8
+#define HNS3_TQP_INT_ID_H_M	GENMASK(15, 8)
 struct hns3_ctrl_vector_chain_cmd {
-	uint8_t int_vector_id;
+	uint8_t int_vector_id;    /* the low order of the interrupt id */
 	uint8_t int_cause_num;
 	uint16_t tqp_type_and_id[HNS3_VECTOR_ELEMENTS_PER_CMD];
 	uint8_t vfid;
-	uint8_t rsv;
+	uint8_t int_vector_id_h;  /* the high order of the interrupt id */
 };
 
 struct hns3_config_max_frm_size_cmd {
@@ -801,7 +811,8 @@ enum hns3_mac_vlan_add_resp_code {
 	HNS3_ADD_MC_OVERFLOW,      /* ADD failed for MC overflow */
 };
 
-#define HNS3_MC_MAC_VLAN_ADD_DESC_NUM	3
+#define HNS3_MC_MAC_VLAN_OPS_DESC_NUM   3
+#define HNS3_UC_MAC_VLAN_OPS_DESC_NUM   1
 
 #define HNS3_MAC_VLAN_BIT0_EN_B		0
 #define HNS3_MAC_VLAN_BIT1_EN_B		1
@@ -836,10 +847,16 @@ struct hns3_reset_tqp_queue_cmd {
 
 #define HNS3_CFG_RESET_MAC_B		3
 #define HNS3_CFG_RESET_FUNC_B		7
+#define HNS3_CFG_RESET_RCB_B		1
 struct hns3_reset_cmd {
 	uint8_t mac_func_reset;
 	uint8_t fun_reset_vfid;
-	uint8_t rsv[22];
+	uint8_t fun_reset_rcb;
+	uint8_t rsv1;
+	uint16_t fun_reset_rcb_vqid_start;
+	uint16_t fun_reset_rcb_vqid_num;
+	uint8_t fun_reset_rcb_return_status;
+	uint8_t rsv2[15];
 };
 
 #define HNS3_QUERY_DEV_SPECS_BD_NUM		4

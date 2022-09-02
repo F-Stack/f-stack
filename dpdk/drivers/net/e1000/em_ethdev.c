@@ -265,7 +265,6 @@ eth_em_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 	hw->device_id = pci_dev->id.device_id;
@@ -975,8 +974,7 @@ eth_em_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 
 	/* Rx Errors */
 	rte_stats->imissed = stats->mpc;
-	rte_stats->ierrors = stats->crcerrs +
-	                     stats->rlec + stats->ruc + stats->roc +
+	rte_stats->ierrors = stats->crcerrs + stats->rlec +
 	                     stats->rxerrc + stats->algnerrc + stats->cexterr;
 
 	/* Tx Errors */
@@ -1066,8 +1064,8 @@ eth_em_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	/*
 	 * Starting with 631xESB hw supports 2 TX/RX queues per port.
-	 * Unfortunatelly, all these nics have just one TX context.
-	 * So we have few choises for TX:
+	 * Unfortunately, all these nics have just one TX context.
+	 * So we have few choices for TX:
 	 * - Use just one TX queue.
 	 * - Allow cksum offload only for one TX queue.
 	 * - Don't allow TX cksum offload at all.
@@ -1076,7 +1074,7 @@ eth_em_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	 * (Multiple Receive Queues are mutually exclusive with UDP
 	 * fragmentation and are not supported when a legacy receive
 	 * descriptor format is used).
-	 * Which means separate RX routinies - as legacy nics (82540, 82545)
+	 * Which means separate RX routines - as legacy nics (82540, 82545)
 	 * don't support extended RXD.
 	 * To avoid it we support just one RX queue for now (no RSS).
 	 */
@@ -1564,7 +1562,7 @@ eth_em_interrupt_get_status(struct rte_eth_dev *dev)
 }
 
 /*
- * It executes link_update after knowing an interrupt is prsent.
+ * It executes link_update after knowing an interrupt is present.
  *
  * @param dev
  *  Pointer to struct rte_eth_dev.
@@ -1622,7 +1620,7 @@ eth_em_interrupt_action(struct rte_eth_dev *dev,
  * @param handle
  *  Pointer to interrupt handle.
  * @param param
- *  The address of parameter (struct rte_eth_dev *) regsitered before.
+ *  The address of parameter (struct rte_eth_dev *) registered before.
  *
  * @return
  *  void
@@ -1799,24 +1797,27 @@ eth_em_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (ret != 0)
 		return ret;
 
-	frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN +
-		VLAN_TAG_SIZE;
+	frame_size = mtu + E1000_ETH_OVERHEAD;
 
 	/* check that mtu is within the allowed range */
 	if (mtu < RTE_ETHER_MIN_MTU || frame_size > dev_info.max_rx_pktlen)
 		return -EINVAL;
 
-	/* refuse mtu that requires the support of scattered packets when this
-	 * feature has not been enabled before. */
-	if (!dev->data->scattered_rx &&
-	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM)
+	/*
+	 * If device is started, refuse mtu that requires the support of
+	 * scattered packets when this feature has not been enabled before.
+	 */
+	if (dev->data->dev_started && !dev->data->scattered_rx &&
+	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR, "Stop port first.");
 		return -EINVAL;
+	}
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > RTE_ETHER_MAX_LEN) {
+	if (frame_size > E1000_ETH_MAX_LEN) {
 		dev->data->dev_conf.rxmode.offloads |=
 			DEV_RX_OFFLOAD_JUMBO_FRAME;
 		rctl |= E1000_RCTL_LPE;
@@ -1847,9 +1848,3 @@ eth_em_set_mc_addr_list(struct rte_eth_dev *dev,
 RTE_PMD_REGISTER_PCI(net_e1000_em, rte_em_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_e1000_em, pci_id_em_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_e1000_em, "* igb_uio | uio_pci_generic | vfio-pci");
-
-/* see e1000_logs.c */
-RTE_INIT(igb_init_log)
-{
-	e1000_igb_init_log();
-}

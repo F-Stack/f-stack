@@ -35,12 +35,12 @@ typedef CRITICAL_SECTION pthread_mutex_t;
 typedef SYNCHRONIZATION_BARRIER pthread_barrier_t;
 
 #define pthread_barrier_init(barrier, attr, count) \
-	InitializeSynchronizationBarrier(barrier, count, -1)
+	!InitializeSynchronizationBarrier(barrier, count, -1)
 #define pthread_barrier_wait(barrier) EnterSynchronizationBarrier(barrier, \
 	SYNCHRONIZATION_BARRIER_FLAGS_BLOCK_ONLY)
 #define pthread_barrier_destroy(barrier) \
-	DeleteSynchronizationBarrier(barrier)
-#define pthread_cancel(thread) TerminateThread((HANDLE) thread, 0)
+	!DeleteSynchronizationBarrier(barrier)
+#define pthread_cancel(thread) !TerminateThread((HANDLE) thread, 0)
 
 /* pthread function overrides */
 #define pthread_self() \
@@ -137,10 +137,16 @@ pthread_create(void *threadid, const void *threadattr, void *threadfunc,
 	hThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)threadfunc,
 		args, 0, (LPDWORD)threadid);
 	if (hThread) {
-		SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
-		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
+		SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+		SetThreadPriority(hThread, THREAD_PRIORITY_NORMAL);
 	}
 	return ((hThread != NULL) ? 0 : E_FAIL);
+}
+
+static inline int
+pthread_detach(__rte_unused pthread_t thread)
+{
+	return 0;
 }
 
 static inline int

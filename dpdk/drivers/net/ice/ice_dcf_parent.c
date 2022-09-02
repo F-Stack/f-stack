@@ -111,8 +111,13 @@ static void*
 ice_dcf_vsi_update_service_handler(void *param)
 {
 	struct ice_dcf_hw *hw = param;
+	struct ice_dcf_adapter *adapter =
+		container_of(hw, struct ice_dcf_adapter, real_hw);
+	struct ice_adapter *parent_adapter = &adapter->parent;
 
+	pthread_detach(pthread_self());
 	usleep(ICE_DCF_VSI_UPDATE_SERVICE_INTERVAL);
+
 
 	rte_spinlock_lock(&vsi_update_lock);
 
@@ -120,6 +125,8 @@ ice_dcf_vsi_update_service_handler(void *param)
 		struct ice_dcf_adapter *dcf_ad =
 			container_of(hw, struct ice_dcf_adapter, real_hw);
 
+		__atomic_store_n(&parent_adapter->dcf_state_on, true,
+				 __ATOMIC_RELAXED);
 		ice_dcf_update_vf_vsi_map(&dcf_ad->parent.hw,
 					  hw->num_vfs, hw->vf_vsi_map);
 	}
@@ -135,6 +142,9 @@ ice_dcf_handle_pf_event_msg(struct ice_dcf_hw *dcf_hw,
 {
 	struct virtchnl_pf_event *pf_msg = (struct virtchnl_pf_event *)msg;
 	pthread_t thread;
+	struct ice_dcf_adapter *adapter =
+		container_of(dcf_hw, struct ice_dcf_adapter, real_hw);
+	struct ice_adapter *parent_adapter = &adapter->parent;
 
 	if (msglen < sizeof(struct virtchnl_pf_event)) {
 		PMD_DRV_LOG(DEBUG, "Invalid event message length : %u", msglen);
@@ -159,6 +169,8 @@ ice_dcf_handle_pf_event_msg(struct ice_dcf_hw *dcf_hw,
 			    pf_msg->event_data.vf_vsi_map.vsi_id);
 		pthread_create(&thread, NULL,
 			       ice_dcf_vsi_update_service_handler, dcf_hw);
+		__atomic_store_n(&parent_adapter->dcf_state_on, false,
+				 __ATOMIC_RELAXED);
 		break;
 	default:
 		PMD_DRV_LOG(ERR, "Unknown event received %u", pf_msg->event);
@@ -208,7 +220,7 @@ ice_dcf_init_parent_hw(struct ice_hw *hw)
 		goto err_unroll_alloc;
 
 	/* Initialize port_info struct with link information */
-	status = ice_aq_get_link_info(hw->port_info, false, NULL, NULL);
+	status = ice_aq_get_link_info(hw->port_info, true, NULL, NULL);
 	if (status)
 		goto err_unroll_alloc;
 
@@ -361,7 +373,6 @@ ice_dcf_init_parent_adapter(struct rte_eth_dev *eth_dev)
 	const struct rte_ether_addr *mac;
 	int err;
 
-	parent_adapter->eth_dev = eth_dev;
 	parent_adapter->pf.adapter = parent_adapter;
 	parent_adapter->pf.dev_data = eth_dev->data;
 	/* create a dummy main_vsi */

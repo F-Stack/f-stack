@@ -25,6 +25,9 @@
 #define IAVF_FDIR_IPV6_TC_OFFSET 20
 #define IAVF_IPV6_TC_MASK  (0xFF << IAVF_FDIR_IPV6_TC_OFFSET)
 
+#define IAVF_GTPU_EH_DWLINK 0
+#define IAVF_GTPU_EH_UPLINK 1
+
 #define IAVF_FDIR_INSET_ETH (\
 	IAVF_INSET_ETHERTYPE)
 
@@ -284,7 +287,7 @@ iavf_fdir_parse_action_qregion(struct iavf_adapter *ad,
 		}
 	}
 
-	if (rss->queue[rss->queue_num - 1] >= ad->eth_dev->data->nb_rx_queues) {
+	if (rss->queue[rss->queue_num - 1] >= ad->dev_data->nb_rx_queues) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ACTION, act,
 				"Invalid queue region indexes.");
@@ -364,7 +367,7 @@ iavf_fdir_parse_action(struct iavf_adapter *ad,
 			filter_action->act_conf.queue.index = act_q->index;
 
 			if (filter_action->act_conf.queue.index >=
-				ad->eth_dev->data->nb_rx_queues) {
+				ad->dev_data->nb_rx_queues) {
 				rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ACTION,
 					actions, "Invalid queue for FDIR.");
@@ -807,7 +810,14 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 
 			hdr = &filter->add_fltr.rule_cfg.proto_hdrs.proto_hdr[layer];
 
-			VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, GTPU_EH);
+			if (!gtp_psc_spec)
+				VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, GTPU_EH);
+			else if ((gtp_psc_mask->qfi) && !(gtp_psc_mask->pdu_type))
+				VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, GTPU_EH);
+			else if (gtp_psc_spec->pdu_type == IAVF_GTPU_EH_UPLINK)
+				VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, GTPU_EH_PDU_UP);
+			else if (gtp_psc_spec->pdu_type == IAVF_GTPU_EH_DWLINK)
+				VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, GTPU_EH_PDU_DWN);
 
 			if (gtp_psc_spec && gtp_psc_mask) {
 				if (gtp_psc_mask->qfi == UINT8_MAX) {

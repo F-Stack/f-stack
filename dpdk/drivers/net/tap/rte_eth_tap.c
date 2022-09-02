@@ -67,6 +67,7 @@
 
 /* IPC key for queue fds sync */
 #define TAP_MP_KEY "tap_mp_sync_queues"
+#define TAP_MP_REQ_START_RXTX "tap_mp_req_start_rxtx"
 
 #define TAP_IOV_DEFAULT_MAX 1024
 
@@ -342,15 +343,21 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 				rte_pktmbuf_data_len(mbuf))
 			return;
 	} else {
-		/* IPv6 extensions are not supported */
+		/* - RTE_PTYPE_L3_IPV4_EXT_UNKNOWN cannot happen because
+		 *   mbuf->packet_type is filled by rte_net_get_ptype() which
+		 *   never returns this value.
+		 * - IPv6 extensions are not supported.
+		 */
 		return;
 	}
 	if (l4 == RTE_PTYPE_L4_UDP || l4 == RTE_PTYPE_L4_TCP) {
+		int cksum_ok;
+
 		l4_hdr = rte_pktmbuf_mtod_offset(mbuf, void *, l2_len + l3_len);
 		/* Don't verify checksum for multi-segment packets. */
 		if (mbuf->nb_segs > 1)
 			return;
-		if (l3 == RTE_PTYPE_L3_IPV4) {
+		if (l3 == RTE_PTYPE_L3_IPV4 || l3 == RTE_PTYPE_L3_IPV4_EXT) {
 			if (l4 == RTE_PTYPE_L4_UDP) {
 				udp_hdr = (struct rte_udp_hdr *)l4_hdr;
 				if (udp_hdr->dgram_cksum == 0) {
@@ -363,13 +370,13 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 					return;
 				}
 			}
-			cksum = ~rte_ipv4_udptcp_cksum(l3_hdr, l4_hdr);
-		} else if (l3 == RTE_PTYPE_L3_IPV6) {
-			cksum = ~rte_ipv6_udptcp_cksum(l3_hdr, l4_hdr);
+			cksum = rte_ipv4_udptcp_cksum(l3_hdr, l4_hdr);
+		} else { /* l3 == RTE_PTYPE_L3_IPV6, checked above */
+			cksum = rte_ipv6_udptcp_cksum(l3_hdr, l4_hdr);
 		}
-		mbuf->ol_flags |= cksum ?
-			PKT_RX_L4_CKSUM_BAD :
-			PKT_RX_L4_CKSUM_GOOD;
+		cksum_ok = (cksum == 0) || (cksum == 0xffff);
+		mbuf->ol_flags |= cksum_ok ?
+			PKT_RX_L4_CKSUM_GOOD : PKT_RX_L4_CKSUM_BAD;
 	}
 }
 
@@ -544,7 +551,7 @@ tap_tx_l4_cksum(uint16_t *l4_cksum, uint16_t l4_phdr_cksum,
 	}
 }
 
-/* Accumaulate L4 raw checksums */
+/* Accumulate L4 raw checksums */
 static void
 tap_tx_l4_add_rcksum(char *l4_data, unsigned int l4_len, uint16_t *l4_cksum,
 			uint32_t *l4_raw_cksum)
@@ -900,9 +907,47 @@ tap_link_set_up(struct rte_eth_dev *dev)
 }
 
 static int
+tap_mp_req_on_rxtx(struct rte_eth_dev *dev)
+{
+	struct rte_mp_msg msg;
+	struct ipc_queues *request_param = (struct ipc_queues *)msg.param;
+	int err;
+	int fd_iterator = 0;
+	struct pmd_process_private *process_private = dev->process_private;
+	int i;
+
+	memset(&msg, 0, sizeof(msg));
+	strlcpy(msg.name, TAP_MP_REQ_START_RXTX, sizeof(msg.name));
+	strlcpy(request_param->port_name, dev->data->name, sizeof(request_param->port_name));
+	msg.len_param = sizeof(*request_param);
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		msg.fds[fd_iterator++] = process_private->txq_fds[i];
+		msg.num_fds++;
+		request_param->txq_count++;
+	}
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		msg.fds[fd_iterator++] = process_private->rxq_fds[i];
+		msg.num_fds++;
+		request_param->rxq_count++;
+	}
+
+	err = rte_mp_sendmsg(&msg);
+	if (err < 0) {
+		TAP_LOG(ERR, "Failed to send start req to secondary %d",
+			rte_errno);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
 tap_dev_start(struct rte_eth_dev *dev)
 {
 	int err, i;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		tap_mp_req_on_rxtx(dev);
 
 	err = tap_intr_handle_set(dev, 1);
 	if (err)
@@ -918,6 +963,34 @@ tap_dev_start(struct rte_eth_dev *dev)
 		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	return err;
+}
+
+static int
+tap_mp_req_start_rxtx(const struct rte_mp_msg *request, __rte_unused const void *peer)
+{
+	struct rte_eth_dev *dev;
+	const struct ipc_queues *request_param =
+		(const struct ipc_queues *)request->param;
+	int fd_iterator;
+	int queue;
+	struct pmd_process_private *process_private;
+
+	dev = rte_eth_dev_get_by_name(request_param->port_name);
+	if (!dev) {
+		TAP_LOG(ERR, "Failed to get dev for %s",
+			request_param->port_name);
+		return -1;
+	}
+	process_private = dev->process_private;
+	fd_iterator = 0;
+	TAP_LOG(DEBUG, "tap_attach rx_q:%d tx_q:%d\n", request_param->rxq_count,
+		request_param->txq_count);
+	for (queue = 0; queue < request_param->txq_count; queue++)
+		process_private->txq_fds[queue] = request->fds[fd_iterator++];
+	for (queue = 0; queue < request_param->rxq_count; queue++)
+		process_private->rxq_fds[queue] = request->fds[fd_iterator++];
+
+	return 0;
 }
 
 /* This function gets called when the current port gets stopped.
@@ -1104,6 +1177,9 @@ tap_dev_close(struct rte_eth_dev *dev)
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
 		rte_free(dev->process_private);
+		if (tap_devices_count == 1)
+			rte_mp_action_unregister(TAP_MP_REQ_START_RXTX);
+		tap_devices_count--;
 		return 0;
 	}
 
@@ -1133,8 +1209,11 @@ tap_dev_close(struct rte_eth_dev *dev)
 
 	if (internals->remote_if_index) {
 		/* Restore initial remote state */
-		ioctl(internals->ioctl_sock, SIOCSIFFLAGS,
+		int ret = ioctl(internals->ioctl_sock, SIOCSIFFLAGS,
 				&internals->remote_initial_flags);
+		if (ret)
+			TAP_LOG(ERR, "restore remote state failed: %d", ret);
+
 	}
 
 	rte_mempool_free(internals->gso_ctx_mp);
@@ -2455,6 +2534,16 @@ rte_pmd_tap_probe(struct rte_vdev_device *dev)
 		ret = tap_mp_attach_queues(name, eth_dev);
 		if (ret != 0)
 			return -1;
+
+		if (!tap_devices_count) {
+			ret = rte_mp_action_register(TAP_MP_REQ_START_RXTX, tap_mp_req_start_rxtx);
+			if (ret < 0 && rte_errno != ENOTSUP) {
+				TAP_LOG(ERR, "tap: Failed to register IPC callback: %s",
+					strerror(rte_errno));
+				return -1;
+			}
+		}
+		tap_devices_count++;
 		rte_eth_dev_probing_finish(eth_dev);
 		return 0;
 	}
