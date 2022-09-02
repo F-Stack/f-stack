@@ -2,6 +2,24 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2022.09 F-Stack v1.21.2(LTS)
+
+      1. F-Stack lib:
+
+  - Fix #643. Fix a VXLAN issue. Thanks @agerguo
+  - FF_USE_PAGE_ARRAY compatible DPDK 19.11.
+  - Optimize random function in ff_compat.c @dingyuan
+  - Enable net.inet.tcp.delayed_ack by default to improve concurrent performance.
+  - Support zero copy while call `ff_write`, disable by default.
+  - Fix the bonding issue. @Lorisy
+  - Fix the issue that `ff_netstat -r` can't show gateway6.
+
+      2. DPDK:
+
+  - Upgrade to DPDK-19.11.13(LTS).
+
+
+
 2021.09 F-Stack v1.21.1
 
    1. F-Stack lib:
@@ -11,6 +29,8 @@
    2. DPDK:
 
   - MLX5: modify if_indextoname syscall to support F-Stack tools.
+
+
 
 2021.01 F-Stack v1.21
 
