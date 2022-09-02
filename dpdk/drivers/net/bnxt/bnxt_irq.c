@@ -25,6 +25,7 @@ void bnxt_int_handler(void *param)
 	struct bnxt_cp_ring_info *cpr;
 	struct cmpl_base *cmp;
 
+
 	if (bp == NULL)
 		return;
 	cpr = bp->async_cp_ring;
@@ -32,7 +33,6 @@ void bnxt_int_handler(void *param)
 		return;
 
 	raw_cons = cpr->cp_raw_cons;
-	cp_ring_size = cpr->cp_ring_struct->ring_size;
 	pthread_mutex_lock(&bp->def_cp_lock);
 	while (1) {
 		if (!cpr || !cpr->cp_ring_struct || !cpr->cp_db.doorbell) {
@@ -45,6 +45,7 @@ void bnxt_int_handler(void *param)
 			return;
 		}
 
+		cp_ring_size = cpr->cp_ring_struct->ring_size;
 		cons = RING_CMP(cpr->cp_ring_struct, raw_cons);
 		cmp = &cpr->cp_desc_ring[cons];
 

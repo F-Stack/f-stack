@@ -4,7 +4,7 @@
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -39,6 +39,7 @@
 #include "sys/socket.h"
 #include "netdb.h"
 
+/* FIXME: to support IPv6 */
 /* Just conver numeric hostname to int and not do anything else. */
 int
 getaddrinfo(const char *hostname, const char *servername,

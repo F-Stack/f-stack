@@ -21,6 +21,7 @@
 #include <rte_jhash.h>
 #include <rte_hash_crc.h>
 #include <rte_tailq.h>
+#include <rte_vect.h>
 
 #include "rte_efd.h"
 #if defined(RTE_ARCH_X86)
@@ -207,7 +208,7 @@ struct efd_offline_chunk_rules {
 struct efd_online_group_entry {
 	efd_hashfunc_t hash_idx[RTE_EFD_VALUE_NUM_BITS];
 	efd_lookuptbl_t lookup_table[RTE_EFD_VALUE_NUM_BITS];
-} __attribute__((__packed__));
+} __rte_packed;
 
 /**
  * A single chunk record, containing EFD_TARGET_CHUNK_NUM_RULES rules.
@@ -223,7 +224,7 @@ struct efd_online_chunk {
 
 	struct efd_online_group_entry groups[EFD_CHUNK_NUM_GROUPS];
 	/**< Array of all the groups in the chunk. */
-} __attribute__((__packed__));
+} __rte_packed;
 
 /**
  * EFD table structure
@@ -494,7 +495,7 @@ efd_search_hash(struct rte_efd_table * const table,
 
 struct rte_efd_table *
 rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
-		uint64_t online_cpu_socket_bitmask, uint8_t offline_cpu_socket)
+		uint8_t online_cpu_socket_bitmask, uint8_t offline_cpu_socket)
 {
 	struct rte_efd_table *table = NULL;
 	uint8_t *key_array = NULL;
@@ -645,7 +646,9 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	 * For less than 4 bits, scalar function performs better
 	 * than vectorised version
 	 */
-	if (RTE_EFD_VALUE_NUM_BITS > 3 && rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2))
+	if (RTE_EFD_VALUE_NUM_BITS > 3
+			&& rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2)
+			&& rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
 		table->lookup_fn = EFD_LOOKUP_AVX2;
 	else
 #endif
@@ -655,7 +658,8 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	 * than vectorised version
 	 */
 	if (RTE_EFD_VALUE_NUM_BITS > 16 &&
-	    rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON))
+	    rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON) &&
+			rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128)
 		table->lookup_fn = EFD_LOOKUP_NEON;
 	else
 #endif
@@ -1161,7 +1165,7 @@ rte_efd_update(struct rte_efd_table * const table, const unsigned int socket_id,
 {
 	uint32_t chunk_id = 0, group_id = 0, bin_id = 0;
 	uint8_t new_bin_choice = 0;
-	struct efd_online_group_entry entry;
+	struct efd_online_group_entry entry = {{0}};
 
 	int status = efd_compute_update(table, socket_id, key, value,
 			&chunk_id, &group_id, &bin_id,

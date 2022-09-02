@@ -91,7 +91,7 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			virtqueue_notify(vq);
 	}
 
-	nb_used = VIRTQUEUE_NUSED(vq);
+	nb_used = virtqueue_nused(vq);
 
 	rte_compiler_barrier();
 

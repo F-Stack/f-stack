@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010-2011 Alexander V. Chernikov <melifaro@ipfw.ru>
  * Copyright (c) 2004-2005 Gleb Smirnoff <glebius@FreeBSD.org>
  * Copyright (c) 2001-2003 Roman V. Palagin <romanp@unshadow.net>
@@ -31,6 +33,7 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_route.h"
 
@@ -218,7 +221,6 @@ static const struct ng_cmdlist ng_netflow_cmds[] = {
        { 0 }
 };
 
-
 /* Netgraph node type descriptor */
 static struct ng_type ng_netflow_typestruct = {
 	.version =	NG_ABI_VERSION,
@@ -338,7 +340,6 @@ ng_netflow_newhook(node_p node, hook_p hook, const char *name)
 		iface->out = hook;
 
 	} else if (strcmp(name, NG_NETFLOW_HOOK_EXPORT) == 0) {
-
 		if (priv->export != NULL)
 			return (EISCONN);
 
@@ -352,7 +353,6 @@ ng_netflow_newhook(node_p node, hook_p hook, const char *name)
 		callout_reset(&priv->exp_callout, (1*hz), &ng_netflow_expire,
 		    (void *)priv);
 	} else if (strcmp(name, NG_NETFLOW_HOOK_EXPORT9) == 0) {
-
 		if (priv->export9 != NULL)
 			return (EISCONN);
 
@@ -498,7 +498,7 @@ ng_netflow_rcvmsg (node_p node, item_p item, hook_p lasthook)
 				ERROUT(EINVAL);
 			
 			priv->ifaces[set->iface].info.conf = set->conf;
-	
+
 			break;
 		    }
 		case NGM_NETFLOW_SETTEMPLATE:
@@ -636,7 +636,7 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 			    MTAG_NETFLOW_CALLED, mtag);
 		}
 	}
-	
+
 	if (bypass) {
 		if (out == NULL)
 			ERROUT(ENOTCONN);
@@ -644,7 +644,7 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 		NG_FWD_ITEM_HOOK(error, item, out);
 		return (error);
 	}
-	
+
 	if (iface->info.conf &
 	    (NG_NETFLOW_CONF_ONCE | NG_NETFLOW_CONF_THISONCE)) {
 		mtag = m_tag_alloc(MTAG_NETFLOW, MTAG_NETFLOW_CALLED,
@@ -701,12 +701,14 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 		/* Make sure this is IP frame. */
 		etype = ntohs(eh->ether_type);
 		switch (etype) {
+#ifdef INET
 		case ETHERTYPE_IP:
 			M_CHECK(sizeof(struct ip));
 			eh = mtod(m, struct ether_header *);
 			ip = (struct ip *)(eh + 1);
 			l3_off = sizeof(struct ether_header);
 			break;
+#endif
 #ifdef INET6
 		case ETHERTYPE_IPV6:
 			/*
@@ -731,9 +733,11 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 			l3_off = sizeof(struct ether_vlan_header);
 
 			if (etype == ETHERTYPE_IP) {
+#ifdef INET
 				M_CHECK(sizeof(struct ip));
 				ip = (struct ip *)(evh + 1);
 				break;
+#endif
 #ifdef INET6
 			} else if (etype == ETHERTYPE_IPV6) {
 				M_CHECK(sizeof(struct ip6_hdr));
@@ -761,6 +765,9 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 			M_CHECK(sizeof(struct ip6_hdr) - sizeof(struct ip));
 			ip6 = mtod(m, struct ip6_hdr *);
 		}
+#endif
+#ifndef INET
+		ip = NULL;
 #endif
 		break;
 	default:
@@ -916,7 +923,7 @@ loopend:
 			src_if_index = m->m_pkthdr.rcvif->if_index;
 	} else
 		src_if_index = iface->info.ifinfo_index;
-	
+
 	/* Check packet FIB */
 	fib = M_GETFIB(m);
 	if (fib >= priv->maxfibs) {
@@ -936,17 +943,22 @@ loopend:
 		fe = priv_to_fib(priv, fib);
 	}
 
+#ifdef INET
 	if (ip != NULL)
 		error = ng_netflow_flow_add(priv, fe, ip, upper_ptr,
 		    upper_proto, flags, src_if_index);
-#ifdef INET6		
-	else if (ip6 != NULL)
+#endif
+#if defined(INET6) && defined(INET)
+	else
+#endif
+#ifdef INET6
+	if (ip6 != NULL)
 		error = ng_netflow_flow6_add(priv, fe, ip6, upper_ptr,
 		    upper_proto, flags, src_if_index);
 #endif
 	else
 		goto bypass;
-	
+
 	acct = 1;
 bypass:
 	if (out != NULL) {

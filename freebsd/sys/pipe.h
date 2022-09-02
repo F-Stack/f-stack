@@ -25,7 +25,7 @@
 #define _SYS_PIPE_H_
 
 #ifndef _KERNEL
-#error "no user-servicable parts inside"
+#error "no user-serviceable parts inside"
 #endif
 
 /*
@@ -95,7 +95,11 @@ struct pipemapping {
 #define PIPE_LWANT	0x200	/* Process wants exclusive access to pointers/data. */
 #define PIPE_DIRECTW	0x400	/* Pipe direct write active. */
 #define PIPE_DIRECTOK	0x800	/* Direct mode ok. */
-#define PIPE_NAMED	0x1000	/* Is a named pipe. */
+
+/*
+ * Bits in pipe_type.
+ */
+#define PIPE_TYPE_NAMED	0x001	/* Is a named pipe. */
 
 /*
  * Per-pipe data structure.
@@ -103,7 +107,7 @@ struct pipemapping {
  */
 struct pipe {
 	struct	pipebuf pipe_buffer;	/* data storage */
-	struct	pipemapping pipe_map;	/* pipe mapping for direct I/O */
+	struct	pipemapping pipe_pages;	/* wired pages for direct I/O */
 	struct	selinfo pipe_sel;	/* for compat with select */
 	struct	timespec pipe_atime;	/* time of last access */
 	struct	timespec pipe_mtime;	/* time of last modify */
@@ -111,9 +115,11 @@ struct pipe {
 	struct	sigio *pipe_sigio;	/* information for async I/O */
 	struct	pipe *pipe_peer;	/* link with other direction */
 	struct	pipepair *pipe_pair;	/* container structure pointer */
-	u_int	pipe_state;		/* pipe status info */
+	u_short	pipe_state;		/* pipe status info */
+	u_char	pipe_type;		/* pipe type info */
+	u_char	pipe_present;		/* still present? */
+	int	pipe_waiters;		/* pipelock waiters */
 	int	pipe_busy;		/* busy flag, mostly to handle rundown sanely */
-	int	pipe_present;		/* still present? */
 	int	pipe_wgen;		/* writer generation for named pipe */
 	ino_t	pipe_ino;		/* fake inode for stat(2) */
 };
@@ -142,6 +148,6 @@ struct pipepair {
 #define PIPE_LOCK_ASSERT(pipe, type)  mtx_assert(PIPE_MTX(pipe), (type))
 
 void	pipe_dtor(struct pipe *dpipe);
-void	pipe_named_ctor(struct pipe **ppipe, struct thread *td);
+int	pipe_named_ctor(struct pipe **ppipe, struct thread *td);
 void	pipeselwakeup(struct pipe *cpipe);
 #endif /* !_SYS_PIPE_H_ */

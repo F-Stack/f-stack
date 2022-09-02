@@ -18,8 +18,7 @@
 #include "process.h"
 #include "test_pdump.h"
 
-#define launch_p(ARGV) process_dup(ARGV, \
-		sizeof(ARGV)/(sizeof(ARGV[0])), __func__)
+#define launch_p(ARGV) process_dup(ARGV, RTE_DIM(ARGV), __func__)
 
 struct rte_ring *ring_server;
 uint16_t portid;
@@ -58,8 +57,7 @@ run_pdump_client_tests(void)
 	if (ret < 0)
 		return -1;
 	mp->flags = 0x0000;
-	ring_client = rte_ring_create("SR0", RING_SIZE, rte_socket_id(),
-				      RING_F_SP_ENQ | RING_F_SC_DEQ);
+	ring_client = rte_ring_create("SR0", RING_SIZE, rte_socket_id(), 0);
 	if (ring_client == NULL) {
 		printf("rte_ring_create SR0 failed");
 		return -1;
@@ -71,9 +69,6 @@ run_pdump_client_tests(void)
 		return -1;
 	}
 	rte_eth_dev_probing_finish(eth_dev);
-
-	ring_client->prod.single = 0;
-	ring_client->cons.single = 0;
 
 	printf("\n***** flags = RTE_PDUMP_FLAG_TX *****\n");
 
@@ -197,7 +192,7 @@ run_pdump_server_tests(void)
 	};
 
 	snprintf(coremask, sizeof(coremask), "%x",
-		 (1 << rte_get_master_lcore()));
+		 (1 << rte_get_main_lcore()));
 
 	ret = test_pdump_init();
 	ret |= launch_p(argv1);

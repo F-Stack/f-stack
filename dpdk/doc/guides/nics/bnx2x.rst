@@ -4,7 +4,7 @@
 BNX2X Poll Mode Driver
 ======================
 
-The BNX2X poll mode driver library (**librte_pmd_bnx2x**) implements support
+The BNX2X poll mode driver library (**librte_net_bnx2x**) implements support
 for **QLogic 578xx** 10/20 Gbps family of adapters as well as their virtual
 functions (VF) in SR-IOV context. It is supported on several standard Linux
 distros like RHEL and SLES. It is compile-tested under FreeBSD OS.
@@ -75,30 +75,23 @@ Prerequisites
 Pre-Installation Configuration
 ------------------------------
 
-Config File Options
-~~~~~~~~~~~~~~~~~~~
+Config Options
+~~~~~~~~~~~~~~
 
-The following options can be modified in the ``.config`` file. Please note that
+The following options can be enabled with Meson flags. Please note that
 enabling debugging options may affect system performance.
 
-- ``CONFIG_RTE_LIBRTE_BNX2X_PMD`` (default **n**)
-
-  Toggle compilation of bnx2x driver. To use bnx2x PMD set this config parameter
-  to 'y'. Also, in order for firmware binary to load user will need zlib devel
-  package installed.
-
-- ``CONFIG_RTE_LIBRTE_BNX2X_DEBUG_TX`` (default **n**)
+- ``RTE_LIBRTE_BNX2X_DEBUG_TX`` (default **disabled**)
 
   Toggle display of transmit fast path run-time messages.
 
-- ``CONFIG_RTE_LIBRTE_BNX2X_DEBUG_RX`` (default **n**)
+- ``RTE_LIBRTE_BNX2X_DEBUG_RX`` (default **disabled**)
 
   Toggle display of receive fast path run-time messages.
 
-- ``CONFIG_RTE_LIBRTE_BNX2X_DEBUG_PERIODIC`` (default **n**)
+- ``RTE_LIBRTE_BNX2X_DEBUG_PERIODIC`` (default **disabled**)
 
   Toggle display of register reads and writes.
-
 
 .. _bnx2x_driver-compilation:
 
@@ -107,6 +100,23 @@ Driver compilation and testing
 
 Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
 for details.
+
+Jumbo: Limitation
+-----------------
+
+Rx descriptor limit for number of segments per MTU is set to 1.
+PMD doesn't support Jumbo Rx scatter gather. Some applications can
+adjust mbuf_size based on this param and max_pkt_len.
+
+For others, PMD detects the condition where Rx packet length cannot
+be held by configured mbuf size and logs the message.
+
+Example output:
+
+   .. code-block:: console
+
+      [...]
+      [bnx2x_recv_pkts:397(04:00.0:dpdk-port-0)] mbuf size 2048 is not enough to hold Rx packet length more than 2046
 
 SR-IOV: Prerequisites and sample Application Notes
 --------------------------------------------------

@@ -21,23 +21,25 @@
 
 #include <x86/x86_smp.h>
 
-extern int pmap_pcid_enabled;
-extern int invpcid_works;
-
 /* global symbols in mpboot.S */
 extern char			mptramp_start[];
-extern char			mptramp_end[];
 extern u_int32_t		mptramp_pagetables;
 
 /* IPI handlers */
 inthand_t
-	IDTVEC(invltlb_pcid),	/* TLB shootdowns - global, pcid */
-	IDTVEC(invltlb_invpcid),/* TLB shootdowns - global, invpcid */
-	IDTVEC(justreturn);	/* interrupt CPU with minimum overhead */
+	IDTVEC(justreturn),	/* interrupt CPU with minimum overhead */
+	IDTVEC(justreturn1_pti),
+	IDTVEC(invlop_pti),
+	IDTVEC(invlop),
+	IDTVEC(ipi_intr_bitmap_handler_pti),
+	IDTVEC(ipi_swi_pti),
+	IDTVEC(cpustop_pti),
+	IDTVEC(cpususpend_pti),
+	IDTVEC(rendezvous_pti);
 
-void	invltlb_pcid_handler(void);
-void	invltlb_invpcid_handler(void);
+void	invlop_handler(void);
 int	native_start_all_aps(void);
+void	mp_bootaddress(vm_paddr_t *, unsigned int *);
 
 #endif /* !LOCORE */
 #endif /* SMP */

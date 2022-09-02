@@ -10,6 +10,13 @@
 #include "../virtio_pci.h"
 #include "../virtio_ring.h"
 
+enum virtio_user_backend_type {
+	VIRTIO_USER_BACKEND_UNKNOWN,
+	VIRTIO_USER_BACKEND_VHOST_USER,
+	VIRTIO_USER_BACKEND_VHOST_KERNEL,
+	VIRTIO_USER_BACKEND_VHOST_VDPA,
+};
+
 struct virtio_user_queue {
 	uint16_t used_idx;
 	bool avail_wrap_counter;
@@ -17,6 +24,7 @@ struct virtio_user_queue {
 };
 
 struct virtio_user_dev {
+	enum virtio_user_backend_type backend_type;
 	/* for vhost_user backend */
 	int		vhostfd;
 	int		listenfd;   /* listening fd */
@@ -40,6 +48,7 @@ struct virtio_user_dev {
 	uint64_t	device_features; /* supported features by device */
 	uint64_t	frontend_features; /* enabled frontend features */
 	uint64_t	unsupported_features; /* unsupported features mask */
+	uint64_t	protocol_features; /* negotiated protocol features */
 	uint8_t		status;
 	uint16_t	net_status;
 	uint16_t	port_id;
@@ -57,16 +66,20 @@ struct virtio_user_dev {
 	bool		started;
 };
 
-int is_vhost_user_by_type(const char *path);
+int virtio_user_dev_set_features(struct virtio_user_dev *dev);
 int virtio_user_start_device(struct virtio_user_dev *dev);
 int virtio_user_stop_device(struct virtio_user_dev *dev);
 int virtio_user_dev_init(struct virtio_user_dev *dev, char *path, int queues,
 			 int cq, int queue_size, const char *mac, char **ifname,
 			 int server, int mrg_rxbuf, int in_order,
-			 int packed_vq);
+			 int packed_vq,
+			 enum virtio_user_backend_type backend_type);
 void virtio_user_dev_uninit(struct virtio_user_dev *dev);
 void virtio_user_handle_cq(struct virtio_user_dev *dev, uint16_t queue_idx);
 void virtio_user_handle_cq_packed(struct virtio_user_dev *dev,
 				  uint16_t queue_idx);
 uint8_t virtio_user_handle_mq(struct virtio_user_dev *dev, uint16_t q_pairs);
+int virtio_user_dev_set_status(struct virtio_user_dev *dev, uint8_t status);
+int virtio_user_dev_update_status(struct virtio_user_dev *dev);
+extern const char * const virtio_user_backend_strings[];
 #endif

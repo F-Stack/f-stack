@@ -22,6 +22,7 @@ poll mode crypto driver support for the following hardware accelerator devices:
 * ``Intel QuickAssist Technology DH895xCC``
 * ``Intel QuickAssist Technology C62x``
 * ``Intel QuickAssist Technology C3xxx``
+* ``Intel QuickAssist Technology 200xx``
 * ``Intel QuickAssist Technology D15xx``
 * ``Intel QuickAssist Technology C4xxx``
 
@@ -75,7 +76,11 @@ Supported AEAD algorithms:
 
 * ``RTE_CRYPTO_AEAD_AES_GCM``
 * ``RTE_CRYPTO_AEAD_AES_CCM``
+* ``RTE_CRYPTO_AEAD_CHACHA20_POLY1305``
 
+Protocol offloads:
+
+* ``RTE_SECURITY_PROTOCOL_DOCSIS``
 
 Supported Chains
 ~~~~~~~~~~~~~~~~
@@ -122,10 +127,16 @@ Limitations
   optimisations in the GEN3 device. And if a GCM session is initialised on a
   GEN3 device, then attached to an op sent to a GEN1/GEN2 device, it will not be
   enqueued to the device and will be marked as failed. The simplest way to
-  mitigate this is to use the bdf whitelist to avoid mixing devices of different
+  mitigate this is to use the PCI allowlist to avoid mixing devices of different
   generations in the same process if planning to use for GCM.
 * The mixed algo feature on GEN2 is not supported by all kernel drivers. Check
   the notes under the Available Kernel Drivers table below for specific details.
+* Out-of-place is not supported for combined Crypto-CRC DOCSIS security
+  protocol.
+* ``RTE_CRYPTO_CIPHER_DES_DOCSISBPI`` is not supported for combined Crypto-CRC
+  DOCSIS security protocol.
+* Multi-segment buffers are not supported for combined Crypto-CRC DOCSIS
+  security protocol.
 
 Extra notes on KASUMI F9
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -196,27 +207,6 @@ Configuring and Building the DPDK QAT PMDs
 Further information on configuring, building and installing DPDK is described
 :doc:`here <../linux_gsg/build_dpdk>`.
 
-
-Quick instructions for QAT cryptodev PMD are as follows:
-
-.. code-block:: console
-
-	cd to the top-level DPDK directory
-	make defconfig
-	sed -i 's,\(CONFIG_RTE_LIBRTE_PMD_QAT_SYM\)=n,\1=y,' build/.config
-	or/and
-	sed -i 's,\(CONFIG_RTE_LIBRTE_PMD_QAT_ASYM\)=n,\1=y,' build/.config
-	make
-
-Quick instructions for QAT compressdev PMD are as follows:
-
-.. code-block:: console
-
-	cd to the top-level DPDK directory
-	make defconfig
-	make
-
-
 .. _building_qat_config:
 
 Build Configuration
@@ -226,38 +216,32 @@ These are the build configuration options affecting QAT, and their default value
 
 .. code-block:: console
 
-	CONFIG_RTE_LIBRTE_PMD_QAT=y
-	CONFIG_RTE_LIBRTE_PMD_QAT_SYM=n
-	CONFIG_RTE_LIBRTE_PMD_QAT_ASYM=n
-	CONFIG_RTE_PMD_QAT_MAX_PCI_DEVICES=48
-	CONFIG_RTE_PMD_QAT_COMP_IM_BUFFER_SIZE=65536
-
-CONFIG_RTE_LIBRTE_PMD_QAT must be enabled for any QAT PMD to be built.
+	RTE_PMD_QAT_MAX_PCI_DEVICES=48
+	RTE_PMD_QAT_COMP_IM_BUFFER_SIZE=65536
 
 Both QAT SYM PMD and QAT ASYM PMD have an external dependency on libcrypto, so are not
-built by default. CONFIG_RTE_LIBRTE_PMD_QAT_SYM/ASYM should be enabled to build them.
+built by default.
 
-The QAT compressdev PMD has no external dependencies, so needs no configuration
-options and is built by default.
+The QAT compressdev PMD has no external dependencies, so is built by default.
 
 The number of VFs per PF varies - see table below. If multiple QAT packages are
-installed on a platform then CONFIG_RTE_PMD_QAT_MAX_PCI_DEVICES should be
+installed on a platform then RTE_PMD_QAT_MAX_PCI_DEVICES should be
 adjusted to the number of VFs which the QAT common code will need to handle.
 
 .. Note::
 
         There are separate config items (not QAT-specific) for max cryptodevs
-        CONFIG_RTE_CRYPTO_MAX_DEVS and max compressdevs CONFIG_RTE_COMPRESS_MAX_DEVS,
+        RTE_CRYPTO_MAX_DEVS and max compressdevs RTE_COMPRESS_MAX_DEVS,
         if necessary these should be adjusted to handle the total of QAT and other
         devices which the process will use. In particular for crypto, where each
         QAT VF may expose two crypto devices, sym and asym, it may happen that the
         number of devices will be bigger than MAX_DEVS and the process will show an error
-        during PMD initialisation. To avoid this problem CONFIG_RTE_CRYPTO_MAX_DEVS may be
-        increased or -w, pci-whitelist domain:bus:devid:func option may be used.
+        during PMD initialisation. To avoid this problem RTE_CRYPTO_MAX_DEVS may be
+        increased or -a, allow domain:bus:devid:func option may be used.
 
 
 QAT compression PMD needs intermediate buffers to support Deflate compression
-with Dynamic Huffman encoding. CONFIG_RTE_PMD_QAT_COMP_IM_BUFFER_SIZE
+with Dynamic Huffman encoding. RTE_PMD_QAT_COMP_IM_BUFFER_SIZE
 specifies the size of a single buffer, the PMD will allocate a multiple of these,
 plus some extra space for associated meta-data. For GEN2 devices, 20 buffers are
 allocated while for GEN1 devices, 12 buffers are allocated, plus 1472 bytes overhead.
@@ -265,8 +249,11 @@ allocated while for GEN1 devices, 12 buffers are allocated, plus 1472 bytes over
 .. Note::
 
 	If the compressed output of a Deflate operation using Dynamic Huffman
-        Encoding is too big to fit in an intermediate buffer, then the
-	operation will fall back to fixed compression rather than failing the operation.
+	Encoding is too big to fit in an intermediate buffer, then the
+	operation will be split into smaller operations and their results will
+	be merged afterwards.
+	This is not possible if any checksum calculation was requested - in such
+	case the code falls back to fixed compression.
 	To avoid this less performant case, applications should configure
 	the intermediate buffer size to be larger than the expected input data size
 	(compressed output size is usually unknown, so the only option is to make
@@ -277,22 +264,24 @@ Running QAT PMD with minimum threshold for burst size
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If only a small number or packets can be enqueued. Each enqueue causes an expensive MMIO write.
-These MMIO write occurrences can be optimised by setting any of the following parameters
+These MMIO write occurrences can be optimised by setting any of the following parameters:
+
 - qat_sym_enq_threshold
 - qat_asym_enq_threshold
 - qat_comp_enq_threshold
+
 When any of these parameters is set rte_cryptodev_enqueue_burst function will
 return 0 (thereby avoiding an MMIO) if the device is congested and number of packets
 possible to enqueue is smaller.
-
 To use this feature the user must set the parameter on process start as a device additional parameter::
 
-      example: -w 03:01.1,qat_sym_enq_threshold=32,qat_comp_enq_threshold=16
+  -a 03:01.1,qat_sym_enq_threshold=32,qat_comp_enq_threshold=16
 
 All parameters can be used with the same device regardless of order. Parameters are separated
 by comma. When the same parameter is used more than once first occurrence of the parameter
 is used.
 Maximum threshold that can be set is 32.
+
 
 Device and driver naming
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -312,7 +301,7 @@ The "rte_cryptodev_devices_get()" returns the devices exposed by either of these
 
 	The cryptodev driver name is passed to the dpdk-test-crypto-perf tool in the "-devtype" parameter.
 
-	The qat crypto device name is in the format of the slave parameter passed to the crypto scheduler.
+	The qat crypto device name is in the format of the worker parameter passed to the crypto scheduler.
 
 * The qat compressdev driver name is "compress_qat".
   The rte_compressdev_devices_get() returns the devices exposed by this driver.
@@ -378,7 +367,9 @@ to see the full table)
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | Yes | Yes | "   | "        | 01.org/4.2.0+ | "             | "          | "      | "    | "      | "      |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
-   | Yes | No  | No  | 2   | D15xx    | p             | qat_d15xx     | d15xx      | 6f54   | 1    | 6f55   | 16     |
+   | Yes | No  | No  | 2   | 200xx    | p             | qat_200xx     | 200xx      | 18ee   | 1    | 18ef   | 16     |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | No  | No  | 2   | D15xx    | 01.org/4.2.0+ | qat_d15xx     | d15xx      | 6f54   | 1    | 6f55   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | No  | No  | 3   | C4xxx    | p             | qat_c4xxx     | c4xxx      | 18a0   | 1    | 18a1   | 128    |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
@@ -444,7 +435,7 @@ Check that the VFs are available for use. For example ``lspci -d:37c9`` should
 list 48 VF devices available for a ``C62x`` device.
 
 To complete the installation follow the instructions in
-`Binding the available VFs to the DPDK UIO driver`_.
+`Binding the available VFs to the vfio-pci driver`_.
 
 .. Note::
 
@@ -464,7 +455,6 @@ To complete the installation follow the instructions in
 
       insmod ./drivers/crypto/qat/qat_common/intel_qat.ko
       insmod ./drivers/crypto/qat/qat_dh895xcc/qat_dh895xcc.ko
-
 
 .. Note::
 
@@ -516,7 +506,8 @@ Confirm the presence of 48 VF devices - 16 per PF::
     lspci -d:37c9
 
 
-To complete the installation - follow instructions in `Binding the available VFs to the DPDK UIO driver`_.
+To complete the installation - follow instructions in
+`Binding the available VFs to the vfio-pci driver`_.
 
 .. Note::
 
@@ -566,10 +557,21 @@ To complete the installation - follow instructions in `Binding the available VFs
       sudo yum install kernel-devel-`uname -r`
 
 
-Binding the available VFs to the DPDK UIO driver
+Binding the available VFs to the vfio-pci driver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Unbind the VFs from the stock driver so they can be bound to the uio driver.
+Note:
+
+* Please note that due to security issues, the usage of older DPDK igb_uio
+  driver is not recommended. This document shows how to use the more secure
+  vfio-pci driver.
+* If QAT fails to bind to vfio-pci on Linux kernel 5.9+, please see the
+  QATE-39220 and QATE-7495 issues in
+  `01.org doc <https://01.org/sites/default/files/downloads/336211-015-qatsoftwareforlinux-rn-hwv1.7-final.pdf>`_
+  which details the constraint about trusted guests and add `disable_denylist=1`
+  to the vfio-pci params to use QAT. See also `this patch description <https://lkml.org/lkml/2020/7/23/1155>`_.
+
+Unbind the VFs from the stock driver so they can be bound to the vfio-pci driver.
 
 For an Intel(R) QuickAssist Technology DH895xCC device
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -577,10 +579,10 @@ For an Intel(R) QuickAssist Technology DH895xCC device
 The unbind command below assumes ``BDFs`` of ``03:01.00-03:04.07``, if your
 VFs are different adjust the unbind command below::
 
+    cd to the top-level DPDK directory
     for device in $(seq 1 4); do \
         for fn in $(seq 0 7); do \
-            echo -n 0000:03:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:03\:0${device}.${fn}/driver/unbind; \
+            usertools/dpdk-devbind.py -u 0000:03:0${device}.${fn}; \
         done; \
     done
 
@@ -591,78 +593,64 @@ The unbind command below assumes ``BDFs`` of ``1a:01.00-1a:02.07``,
 ``3d:01.00-3d:02.07`` and ``3f:01.00-3f:02.07``, if your VFs are different
 adjust the unbind command below::
 
+    cd to the top-level DPDK directory
     for device in $(seq 1 2); do \
         for fn in $(seq 0 7); do \
-            echo -n 0000:1a:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:1a\:0${device}.${fn}/driver/unbind; \
-
-            echo -n 0000:3d:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:3d\:0${device}.${fn}/driver/unbind; \
-
-            echo -n 0000:3f:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:3f\:0${device}.${fn}/driver/unbind; \
+            usertools/dpdk-devbind.py -u 0000:1a:0${device}.${fn}; \
+            usertools/dpdk-devbind.py -u 0000:3d:0${device}.${fn}; \
+            usertools/dpdk-devbind.py -u 0000:3f:0${device}.${fn}; \
         done; \
     done
 
-For Intel(R) QuickAssist Technology C3xxx or D15xx device
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For Intel(R) QuickAssist Technology C3xxx or 200xx or D15xx device
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The unbind command below assumes ``BDFs`` of ``01:01.00-01:02.07``, if your
 VFs are different adjust the unbind command below::
 
+    cd to the top-level DPDK directory
     for device in $(seq 1 2); do \
         for fn in $(seq 0 7); do \
-            echo -n 0000:01:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:01\:0${device}.${fn}/driver/unbind; \
+            usertools/dpdk-devbind.py -u 0000:01:0${device}.${fn}; \
         done; \
     done
 
-Bind to the DPDK uio driver
+Bind to the vfio-pci driver
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Install the DPDK igb_uio driver, bind the VF PCI Device id to it and use lspci
-to confirm the VF devices are now in use by igb_uio kernel driver,
+Load the vfio-pci driver, bind the VF PCI Device id to it using the
+``dpdk-devbind.py`` script then use the ``--status`` option
+to confirm the VF devices are now in use by vfio-pci kernel driver,
 e.g. for the C62x device::
 
     cd to the top-level DPDK directory
-    modprobe uio
-    insmod ./build/kmod/igb_uio.ko
-    echo "8086 37c9" > /sys/bus/pci/drivers/igb_uio/new_id
-    lspci -vvd:37c9
+    modprobe vfio-pci
+    usertools/dpdk-devbind.py -b vfio-pci 0000:03:01.1
+    usertools/dpdk-devbind.py --status
 
-
-Another way to bind the VFs to the DPDK UIO driver is by using the
-``dpdk-devbind.py`` script::
-
-    cd to the top-level DPDK directory
-    ./usertools/dpdk-devbind.py -b igb_uio 0000:03:01.1
+Use ``modprobe vfio-pci disable_denylist=1`` from kernel 5.9 onwards.
+See note in the section `Binding the available VFs to the vfio-pci driver`_
+above.
 
 Testing
 ~~~~~~~
 
 QAT SYM crypto PMD can be tested by running the test application::
 
-    make defconfig
-    make -j
-    cd ./build/app
-    ./test -l1 -n1 -w <your qat bdf>
+    cd ./<build_dir>/app/test
+    ./dpdk-test -l1 -n1 -a <your qat bdf>
     RTE>>cryptodev_qat_autotest
 
 QAT ASYM crypto PMD can be tested by running the test application::
 
-    make defconfig
-    make -j
-    cd ./build/app
-    ./test -l1 -n1 -w <your qat bdf>
+    cd ./<build_dir>/app/test
+    ./dpdk-test -l1 -n1 -a <your qat bdf>
     RTE>>cryptodev_qat_asym_autotest
 
 QAT compression PMD can be tested by running the test application::
 
-    make defconfig
-    sed -i 's,\(CONFIG_RTE_COMPRESSDEV_TEST\)=n,\1=y,' build/.config
-    make -j
-    cd ./build/app
-    ./test -l1 -n1 -w <your qat bdf>
+    cd ./<build_dir>/app/test
+    ./dpdk-test -l1 -n1 -a <your qat bdf>
     RTE>>compressdev_autotest
 
 
@@ -686,7 +674,7 @@ the process cmdline, e.g. using any of the following::
 
     The global RTE_LOG_DP_LEVEL overrides data-path trace so must be set to
     RTE_LOG_DEBUG to see all the trace. This variable is in config/rte_config.h
-    for meson build and config/common_base for gnu make.
+    for meson build.
     Also the dynamic global log level overrides both sets of trace, so e.g. no
     QAT trace would display in this case::
 

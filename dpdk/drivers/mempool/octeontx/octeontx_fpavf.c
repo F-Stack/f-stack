@@ -46,20 +46,20 @@ struct octeontx_mbox_fpa_cfg {
 	uint64_t	aura_cfg;
 };
 
-struct __attribute__((__packed__)) gen_req {
+struct __rte_packed gen_req {
 	uint32_t	value;
 };
 
-struct __attribute__((__packed__)) idn_req {
+struct __rte_packed idn_req {
 	uint8_t	domain_id;
 };
 
-struct __attribute__((__packed__)) gen_resp {
+struct __rte_packed gen_resp {
 	uint16_t	domain_id;
 	uint16_t	vfid;
 };
 
-struct __attribute__((__packed__)) dcfg_resp {
+struct __rte_packed dcfg_resp {
 	uint8_t	sso_count;
 	uint8_t	ssow_count;
 	uint8_t	fpa_count;
@@ -105,15 +105,7 @@ struct octeontx_fpadev {
 
 static struct octeontx_fpadev fpadev;
 
-int octeontx_logtype_fpavf;
-int octeontx_logtype_fpavf_mbox;
-
-RTE_INIT(otx_pool_init_log)
-{
-	octeontx_logtype_fpavf = rte_log_register("pmd.mempool.octeontx");
-	if (octeontx_logtype_fpavf >= 0)
-		rte_log_set_level(octeontx_logtype_fpavf, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(octeontx_logtype_fpavf, pmd.mempool.octeontx, NOTICE);
 
 /* lock is taken by caller */
 static int
@@ -677,7 +669,7 @@ octeontx_fpa_bufpool_destroy(uintptr_t handle, int node_id)
 			break;
 		}
 
-		/* Imsert it into an ordered linked list */
+		/* Insert it into an ordered linked list */
 		for (curr = &head; curr[0] != NULL; curr = curr[0]) {
 			if ((uintptr_t)node <= (uintptr_t)curr[0])
 				break;
@@ -713,7 +705,7 @@ octeontx_fpa_bufpool_destroy(uintptr_t handle, int node_id)
 
 	ret = octeontx_fpapf_aura_detach(gpool);
 	if (ret) {
-		fpavf_log_err("Failed to dettach gaura %u. error code=%d\n",
+		fpavf_log_err("Failed to detach gaura %u. error code=%d\n",
 			      gpool, ret);
 	}
 

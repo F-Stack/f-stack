@@ -261,10 +261,10 @@ NgAllocRecvData(int ds, u_char **buf, char *hook)
 	socklen_t optlen;
 
 	optlen = sizeof(len);
-        if (getsockopt(ds, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
+	if (getsockopt(ds, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
 #else
-        len = NGCTL_DEFAULT_RCVBUF;
-        if (
+	len = NGCTL_DEFAULT_RCVBUF;
+	if (
 #endif
 	    (*buf = malloc(len)) == NULL)
 		return (-1);

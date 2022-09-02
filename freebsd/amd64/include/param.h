@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2002 David E. O'Brien.  All rights reserved.
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -39,7 +41,6 @@
  * $FreeBSD$
  */
 
-
 #ifndef _AMD64_INCLUDE_PARAM_H_
 #define	_AMD64_INCLUDE_PARAM_H_
 
@@ -48,7 +49,6 @@
 /*
  * Machine dependent constants for AMD64.
  */
-
 
 #define __HAVE_ACPI
 #define __PCI_REROUTE_INTERRUPT
@@ -63,7 +63,7 @@
 #define	MACHINE_ARCH32	"i386"
 #endif
 
-#if defined(SMP) || defined(KLD_MODULE)
+#ifdef SMP
 #ifndef MAXCPU
 #define MAXCPU		256
 #endif
@@ -89,7 +89,7 @@
  * CACHE_LINE_SIZE is the compile-time maximum cache line size for an
  * architecture.  It should be used with appropriate caution.
  */
-#define	CACHE_LINE_SHIFT	7
+#define	CACHE_LINE_SHIFT	6
 #define	CACHE_LINE_SIZE		(1 << CACHE_LINE_SHIFT)
 
 /* Size of the level 1 page table units */
@@ -116,6 +116,12 @@
 #define	PML4SHIFT	39		/* LOG2(NBPML4) */
 #define	NBPML4		(1UL<<PML4SHIFT)/* bytes/page map lev4 table */
 #define	PML4MASK	(NBPML4-1)
+/* Size of the level 5 page-map level-5 table units */
+#define	NPML5EPG	(PAGE_SIZE/(sizeof (pml5_entry_t)))
+#define	NPML5EPGSHIFT	9		/* LOG2(NPML5EPG) */
+#define	PML5SHIFT	48		/* LOG2(NBPML5) */
+#define	NBPML5		(1UL<<PML5SHIFT)/* bytes/page map lev5 table */
+#define	PML5MASK	(NBPML5-1)
 
 #define	MAXPAGESIZES	3	/* maximum number of supported page sizes */
 
@@ -151,5 +157,9 @@
 
 #define	INKERNEL(va) (((va) >= DMAP_MIN_ADDRESS && (va) < DMAP_MAX_ADDRESS) \
     || ((va) >= VM_MIN_KERNEL_ADDRESS && (va) < VM_MAX_KERNEL_ADDRESS))
+
+#ifdef SMP
+#define SC_TABLESIZE    1024                     /* Must be power of 2. */
+#endif
 
 #endif /* !_AMD64_INCLUDE_PARAM_H_ */

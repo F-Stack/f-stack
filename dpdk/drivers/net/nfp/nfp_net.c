@@ -50,7 +50,7 @@
 #include <errno.h>
 
 /* Prototypes */
-static void nfp_net_close(struct rte_eth_dev *dev);
+static int nfp_net_close(struct rte_eth_dev *dev);
 static int nfp_net_configure(struct rte_eth_dev *dev);
 static void nfp_net_dev_interrupt_handler(void *param);
 static void nfp_net_dev_interrupt_delayed_handler(void *param);
@@ -80,7 +80,7 @@ static int nfp_net_start(struct rte_eth_dev *dev);
 static int nfp_net_stats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_stats *stats);
 static int nfp_net_stats_reset(struct rte_eth_dev *dev);
-static void nfp_net_stop(struct rte_eth_dev *dev);
+static int nfp_net_stop(struct rte_eth_dev *dev);
 static uint16_t nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts);
 
@@ -223,6 +223,7 @@ nfp_net_rx_queue_release(void *rx_queue)
 
 	if (rxq) {
 		nfp_net_rx_queue_release_mbufs(rxq);
+		rte_memzone_free(rxq->tz);
 		rte_free(rxq->rxbufs);
 		rte_free(rxq);
 	}
@@ -259,6 +260,7 @@ nfp_net_tx_queue_release(void *tx_queue)
 
 	if (txq) {
 		nfp_net_tx_queue_release_mbufs(txq);
+		rte_memzone_free(txq->tz);
 		rte_free(txq->txbufs);
 		rte_free(txq);
 	}
@@ -543,10 +545,6 @@ nfp_set_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 		return -EBUSY;
 	}
 
-	if ((hw->ctrl & NFP_NET_CFG_CTRL_ENABLE) &&
-	    !(hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR))
-		return -EBUSY;
-
 	/* Writing new MAC to the specific port BAR address */
 	nfp_net_write_mac(hw, (uint8_t *)mac_addr);
 
@@ -788,7 +786,7 @@ error:
 }
 
 /* Stop device: disable rx and tx functions to allow for reconfiguring. */
-static void
+static int
 nfp_net_stop(struct rte_eth_dev *dev)
 {
 	int i;
@@ -819,6 +817,8 @@ nfp_net_stop(struct rte_eth_dev *dev)
 			nfp_eth_set_configured(dev->process_private,
 					       hw->pf_port_idx, 0);
 	}
+
+	return 0;
 }
 
 /* Set the link up. */
@@ -864,7 +864,7 @@ nfp_net_set_link_down(struct rte_eth_dev *dev)
 }
 
 /* Reset and stop device. The device can not be restarted. */
-static void
+static int
 nfp_net_close(struct rte_eth_dev *dev)
 {
 	struct nfp_net_hw *hw;
@@ -872,7 +872,7 @@ nfp_net_close(struct rte_eth_dev *dev)
 	int i;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
 	PMD_INIT_LOG(DEBUG, "Close");
 
@@ -890,10 +890,14 @@ nfp_net_close(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		nfp_net_reset_tx_queue(
 			(struct nfp_net_txq *)dev->data->tx_queues[i]);
+		nfp_net_tx_queue_release(
+			(struct nfp_net_txq *)dev->data->tx_queues[i]);
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		nfp_net_reset_rx_queue(
+			(struct nfp_net_rxq *)dev->data->rx_queues[i]);
+		nfp_net_rx_queue_release(
 			(struct nfp_net_rxq *)dev->data->rx_queues[i]);
 	}
 
@@ -905,10 +909,16 @@ nfp_net_close(struct rte_eth_dev *dev)
 				     nfp_net_dev_interrupt_handler,
 				     (void *)dev);
 
+	/* Cancel possible impending LSC work here before releasing the port*/
+	rte_eal_alarm_cancel(nfp_net_dev_interrupt_delayed_handler,
+			     (void *)dev);
+
 	/*
-	 * The ixgbe PMD driver disables the pcie master on the
+	 * The ixgbe PMD disables the pcie master on the
 	 * device. The i40e does not...
 	 */
+
+	return 0;
 }
 
 static int
@@ -1398,9 +1408,9 @@ nfp_net_dev_link_status_print(struct rte_eth_dev *dev)
 		PMD_DRV_LOG(INFO, " Port %d: Link Down",
 			    dev->data->port_id);
 
-	PMD_DRV_LOG(INFO, "PCI Address: %04d:%02d:%02d:%d",
-		pci_dev->addr.domain, pci_dev->addr.bus,
-		pci_dev->addr.devid, pci_dev->addr.function);
+	PMD_DRV_LOG(INFO, "PCI Address: " PCI_PRI_FMT,
+		    pci_dev->addr.domain, pci_dev->addr.bus,
+		    pci_dev->addr.devid, pci_dev->addr.function);
 }
 
 /* Interrupt configuration and handling */
@@ -1481,7 +1491,7 @@ nfp_net_dev_interrupt_delayed_handler(void *param)
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
 
 	nfp_net_link_update(dev, 0);
-	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
 
 	nfp_net_dev_link_status_print(dev);
 
@@ -1604,6 +1614,11 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	/* Saving physical and virtual addresses for the RX ring */
 	rxq->dma = (uint64_t)tz->iova;
 	rxq->rxds = (struct nfp_net_rx_desc *)tz->addr;
+
+	/* Also save the pointer to the memzone struct so it can be freed
+	 * if needed
+	 */
+	rxq->tz = tz;
 
 	/* mbuf pointers array for referencing mbufs linked to RX descriptors */
 	rxq->rxbufs = rte_zmalloc_socket("rxq->rxbufs",
@@ -1744,6 +1759,11 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		nfp_net_tx_queue_release(txq);
 		return -ENOMEM;
 	}
+
+	/* Save the pointer to the memzone struct so it can be freed
+	 * if needed
+	 */
+	txq->tz = tz;
 
 	txq->tx_count = nb_desc;
 	txq->tx_free_thresh = tx_free_thresh;
@@ -2729,7 +2749,6 @@ static const struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.rss_hash_conf_get	= nfp_net_rss_hash_conf_get,
 	.rx_queue_setup		= nfp_net_rx_queue_setup,
 	.rx_queue_release	= nfp_net_rx_queue_release,
-	.rx_queue_count		= nfp_net_rx_queue_count,
 	.tx_queue_setup		= nfp_net_tx_queue_setup,
 	.tx_queue_release	= nfp_net_tx_queue_release,
 	.rx_queue_intr_enable   = nfp_rx_queue_intr_enable,
@@ -2813,6 +2832,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	}
 
 	eth_dev->dev_ops = &nfp_net_eth_dev_ops;
+	eth_dev->rx_queue_count = nfp_net_rx_queue_count;
 	eth_dev->rx_pkt_burst = &nfp_net_recv_pkts;
 	eth_dev->tx_pkt_burst = &nfp_net_xmit_pkts;
 
@@ -2922,7 +2942,6 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
 	hw->mtu = RTE_ETHER_MTU;
-	hw->flbufsz = RTE_ETHER_MTU;
 
 	/* VLAN insertion is incompatible with LSOv2 */
 	if (hw->cap & NFP_NET_CFG_CTRL_LSO2)
@@ -2995,6 +3014,8 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 
 	if (!(hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR))
 		eth_dev->data->dev_flags |= RTE_ETH_DEV_NOLIVE_MAC_ADDR;
+
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	PMD_INIT_LOG(INFO, "port %d VendorID=0x%x DeviceID=0x%x "
 		     "mac=%02x:%02x:%02x:%02x:%02x:%02x",
@@ -3641,7 +3662,7 @@ static int nfp_pf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	 * interface. Here we avoid this telling to the CPP init code to
 	 * use a lock file if UIO is being used.
 	 */
-	if (dev->kdrv == RTE_KDRV_VFIO)
+	if (dev->kdrv == RTE_PCI_KDRV_VFIO)
 		cpp = nfp_cpp_from_device_name(dev, 0);
 	else
 		cpp = nfp_cpp_from_device_name(dev, 1);
@@ -3708,9 +3729,6 @@ error:
 	return ret;
 }
 
-int nfp_logtype_init;
-int nfp_logtype_driver;
-
 static const struct rte_pci_id pci_id_nfp_pf_net_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
@@ -3749,6 +3767,8 @@ static int eth_nfp_pci_remove(struct rte_pci_device *pci_dev)
 	int port = 0;
 
 	eth_dev = rte_eth_dev_allocated(pci_dev->device.name);
+	if (eth_dev == NULL)
+		return 0; /* port already released */
 	if ((pci_dev->id.device_id == PCI_DEVICE_ID_NFP4000_PF_NIC) ||
 	    (pci_dev->id.device_id == PCI_DEVICE_ID_NFP6000_PF_NIC)) {
 		port = get_pf_port_number(eth_dev->data->name);
@@ -3794,16 +3814,8 @@ RTE_PMD_REGISTER_PCI_TABLE(net_nfp_pf, pci_id_nfp_pf_net_map);
 RTE_PMD_REGISTER_PCI_TABLE(net_nfp_vf, pci_id_nfp_vf_net_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_nfp_pf, "* igb_uio | uio_pci_generic | vfio");
 RTE_PMD_REGISTER_KMOD_DEP(net_nfp_vf, "* igb_uio | uio_pci_generic | vfio");
-
-RTE_INIT(nfp_init_log)
-{
-	nfp_logtype_init = rte_log_register("pmd.net.nfp.init");
-	if (nfp_logtype_init >= 0)
-		rte_log_set_level(nfp_logtype_init, RTE_LOG_NOTICE);
-	nfp_logtype_driver = rte_log_register("pmd.net.nfp.driver");
-	if (nfp_logtype_driver >= 0)
-		rte_log_set_level(nfp_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(nfp_logtype_init, pmd.net.nfp.init, NOTICE);
+RTE_LOG_REGISTER(nfp_logtype_driver, pmd.net.nfp.driver, NOTICE);
 /*
  * Local variables:
  * c-file-style: "Linux"

@@ -1,7 +1,9 @@
-/*	$FreeBSD: releng/11.0/usr.sbin/ndp/ndp.c 292465 2015-12-19 09:18:01Z ume $	*/
+/*	$FreeBSD$	*/
 /*	$KAME: ndp.c,v 1.104 2003/06/27 07:48:39 itojun Exp $	*/
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, 1998, and 1999 WIDE Project.
  * All rights reserved.
  *
@@ -44,7 +46,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -107,13 +109,15 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-#ifdef FSTACK
+#ifndef FSTACK
+#include "gmt2local.h"
+#else
 #include <time.h>
+
 #include "rtioctl.h"
 #include "ff_ipc.h"
 #include "ff_api.h"
-
+    
 #ifndef __unused
 #define __unused __attribute__((__unused__))
 
@@ -123,11 +127,11 @@
 #endif
 
 int32_t gmt2local(time_t);
-#define SA_SIZE_NDP(sa)						\
-	(  (((struct sockaddr *)(sa))->sa_len == 0) ?	\
-	sizeof(long)		:				\
+/*#define SA_SIZE_NDP(sa)						\
+	(  (((struct sockaddr *)(sa))->sa_len == 0) ?   \
+	sizeof(long)        :               \
 	1 + ( (((struct sockaddr *)(sa))->sa_len - 1) | (sizeof(long) - 1) ) )
-
+*/
 #ifndef	ALIGNBYTES
 /*
  * On systems with a routing socket, ALIGNBYTES should match the value
@@ -141,10 +145,11 @@ int32_t gmt2local(time_t);
 
 #endif
 
-#define NEXTADDR(w, s) \
-	if (rtm->rtm_addrs & (w)) { \
-		bcopy((char *)&s, cp, sizeof(s)); cp += SA_SIZE_NDP(&s);}
-
+#define	NEXTADDR(w, s)					\
+	if (rtm->rtm_addrs & (w)) {			\
+		bcopy((char *)&s, cp, sizeof(s));	\
+		cp += SA_SIZE(&s);			\
+	}
 
 static pid_t pid;
 static int nflag;
@@ -180,13 +185,14 @@ static void setdefif(char *);
 static char *sec2str(time_t);
 static void ts_print(const struct timeval *);
 
-static char *rtpref_str[] = {
+static const char *rtpref_str[] = {
 	"medium",		/* 00 */
 	"high",			/* 01 */
 	"rsv",			/* 10 */
 	"low"			/* 11 */
 };
 
+#ifdef FSTACK
 int32_t
 gmt2local(time_t t)
 {
@@ -214,6 +220,7 @@ gmt2local(time_t t)
 
 	return (dt);
 }
+#endif
 
 int
 main(int argc, char **argv)
@@ -310,7 +317,7 @@ main(int argc, char **argv)
 			/*NOTREACHED*/
 		} else if (argc == 1) {
 			if (strcmp(*argv, "delete") == 0 ||
-				if_nametoindex(*argv))
+			    if_nametoindex(*argv))
 				setdefif(*argv);
 			else
 				errx(1, "invalid interface %s", *argv);
@@ -399,7 +406,7 @@ file(char *name)
 		if (*p == '\n' || *p == '\0')
 			continue;
 		i = sscanf(line, "%49s %49s %49s %49s %49s",
-			arg[0], arg[1], arg[2], arg[3], arg[4]);
+		    arg[0], arg[1], arg[2], arg[3], arg[4]);
 		if (i < 2) {
 			warnx("bad line: %s", line);
 			retval = 1;
@@ -475,7 +482,7 @@ set(int argc, char **argv)
 	}
 	sin->sin6_addr = ((struct sockaddr_in6 *)res->ai_addr)->sin6_addr;
 	sin->sin6_scope_id =
-		((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
+	    ((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
 	ea = (u_char *)LLADDR(&sdl_m);
 	if (ndp_ether_aton(eaddr, ea) == 0)
 		sdl_m.sdl_alen = 6;
@@ -498,7 +505,7 @@ set(int argc, char **argv)
 	sdl = (struct sockaddr_dl *)(ALIGN(sin->sin6_len) + (char *)sin);
 	if (IN6_ARE_ADDR_EQUAL(&sin->sin6_addr, &sin_m.sin6_addr)) {
 		if (sdl->sdl_family == AF_LINK &&
-			!(rtm->rtm_flags & RTF_GATEWAY)) {
+		    !(rtm->rtm_flags & RTF_GATEWAY)) {
 			switch (sdl->sdl_type) {
 			case IFT_ETHER: case IFT_FDDI: case IFT_ISO88023:
 			case IFT_ISO88024: case IFT_ISO88025:
@@ -536,18 +543,18 @@ get(char *host)
 	gai_error = getaddrinfo(host, NULL, &hints, &res);
 	if (gai_error) {
 		fprintf(stderr, "ndp: %s: %s\n", host,
-			gai_strerror(gai_error));
+		    gai_strerror(gai_error));
 		return;
 	}
 	sin->sin6_addr = ((struct sockaddr_in6 *)res->ai_addr)->sin6_addr;
 	sin->sin6_scope_id =
-		((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
+	    ((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
 	dump(sin, 0);
 	if (found_entry == 0) {
 #ifndef FSTACK
 		getnameinfo((struct sockaddr *)sin, sin->sin6_len, host_buf,
-			sizeof(host_buf), NULL ,0,
-			(nflag ? NI_NUMERICHOST : 0));
+		    sizeof(host_buf), NULL ,0,
+		    (nflag ? NI_NUMERICHOST : 0));
 #else
 		inet_ntop(AF_INET6_LINUX, &sin->sin6_addr, host_buf, sizeof(host_buf));
 #endif
@@ -577,12 +584,12 @@ delete(char *host)
 	gai_error = getaddrinfo(host, NULL, &hints, &res);
 	if (gai_error) {
 		fprintf(stderr, "ndp: %s: %s\n", host,
-			gai_strerror(gai_error));
+		    gai_strerror(gai_error));
 		return 1;
 	}
 	sin->sin6_addr = ((struct sockaddr_in6 *)res->ai_addr)->sin6_addr;
 	sin->sin6_scope_id =
-		((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
+	    ((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
 	if (rtmsg(RTM_GET) < 0) {
 		errx(1, "RTM_GET(%s) failed", host);
 		/* NOTREACHED */
@@ -591,7 +598,7 @@ delete(char *host)
 	sdl = (struct sockaddr_dl *)(ALIGN(sin->sin6_len) + (char *)sin);
 	if (IN6_ARE_ADDR_EQUAL(&sin->sin6_addr, &sin_m.sin6_addr)) {
 		if (sdl->sdl_family == AF_LINK &&
-			!(rtm->rtm_flags & RTF_GATEWAY)) {
+		    !(rtm->rtm_flags & RTF_GATEWAY)) {
 			goto delete;
 		}
 		fprintf(stderr, "delete: cannot delete non-NDP entry\n");
@@ -603,18 +610,18 @@ delete:
 		printf("cannot locate %s\n", host);
 		return (1);
 	}
-		/* 
-		 * need to reinit the field because it has rt_key
-		 * but we want the actual address
-		 */
+	/*
+	 * need to reinit the field because it has rt_key
+	 * but we want the actual address
+	 */
 	NEXTADDR(RTA_DST, sin_m);
 	rtm->rtm_flags |= RTF_LLDATA;
 	if (rtmsg(RTM_DELETE) == 0) {
 #ifndef FSTACK
 		getnameinfo((struct sockaddr *)sin,
-			sin->sin6_len, host_buf,
-			sizeof(host_buf), NULL, 0,
-			(nflag ? NI_NUMERICHOST : 0));
+		    sin->sin6_len, host_buf,
+		    sizeof(host_buf), NULL, 0,
+		    (nflag ? NI_NUMERICHOST : 0));
 #else
 		inet_ntop(AF_INET6_LINUX, &sin->sin6_addr, host_buf, sizeof(host_buf));
 #endif
@@ -640,9 +647,8 @@ dump(struct sockaddr_in6 *addr, int cflag)
 	struct rt_msghdr *rtm;
 	struct sockaddr_in6 *sin;
 	struct sockaddr_dl *sdl;
-	extern int h_errno;
 	struct timeval now;
-	u_long expire;
+	time_t expire;
 	int addrwidth;
 	int llwidth;
 	int ifwidth;
@@ -652,8 +658,8 @@ dump(struct sockaddr_in6 *addr, int cflag)
 	/* Print header */
 	if (!tflag && !cflag)
 		printf("%-*.*s %-*.*s %*.*s %-9.9s %1s %5s\n",
-			W_ADDR, W_ADDR, "Neighbor", W_LL, W_LL, "Linklayer Address",
-			W_IF, W_IF, "Netif", "Expire", "S", "Flags");
+		    W_ADDR, W_ADDR, "Neighbor", W_LL, W_LL, "Linklayer Address",
+		    W_IF, W_IF, "Netif", "Expire", "S", "Flags");
 
 again:;
 	mib[0] = CTL_NET;
@@ -682,7 +688,8 @@ again:;
 
 		rtm = (struct rt_msghdr *)next;
 		sin = (struct sockaddr_in6 *)(rtm + 1);
-		sdl = (struct sockaddr_dl *)((char *)sin + ALIGN(sin->sin6_len));
+		sdl = (struct sockaddr_dl *)((char *)sin +
+		    ALIGN(sin->sin6_len));
 
 		/*
 		 * Some OSes can produce a route that has the LINK flag but
@@ -705,21 +712,21 @@ again:;
 
 		if (addr) {
 			if (IN6_ARE_ADDR_EQUAL(&addr->sin6_addr,
-				&sin->sin6_addr) == 0 ||
-				addr->sin6_scope_id != sin->sin6_scope_id)
+			    &sin->sin6_addr) == 0 ||
+			    addr->sin6_scope_id != sin->sin6_scope_id)
 				continue;
 			found_entry = 1;
 		} else if (IN6_IS_ADDR_MULTICAST(&sin->sin6_addr))
 			continue;
 		if (IN6_IS_ADDR_LINKLOCAL(&sin->sin6_addr) ||
-			IN6_IS_ADDR_MC_LINKLOCAL(&sin->sin6_addr)) {
+		    IN6_IS_ADDR_MC_LINKLOCAL(&sin->sin6_addr)) {
 			/* XXX: should scope id be filled in the kernel? */
 			if (sin->sin6_scope_id == 0)
 				sin->sin6_scope_id = sdl->sdl_index;
 		}
 #ifndef FSTACK
 		getnameinfo((struct sockaddr *)sin, sin->sin6_len, host_buf,
-			sizeof(host_buf), NULL, 0, (nflag ? NI_NUMERICHOST : 0));
+		    sizeof(host_buf), NULL, 0, (nflag ? NI_NUMERICHOST : 0));
 #else
 		inet_ntop(AF_INET6_LINUX, &sin->sin6_addr, host_buf, sizeof(host_buf));
 #endif
@@ -748,14 +755,16 @@ again:;
 		if (W_ADDR + W_LL - addrwidth > llwidth)
 			llwidth = W_ADDR + W_LL - addrwidth;
 		ifname = if_indextoname(sdl->sdl_index, ifix_buf);
-		if (!ifname)
-			ifname = "?";
+		if (ifname == NULL) {
+			strlcpy(ifix_buf, "?", sizeof(ifix_buf));
+			ifname = ifix_buf;
+		}
 		ifwidth = strlen(ifname);
 		if (W_ADDR + W_LL + W_IF - addrwidth - llwidth > ifwidth)
 			ifwidth = W_ADDR + W_LL + W_IF - addrwidth - llwidth;
 
 		printf("%-*.*s %-*.*s %*.*s", addrwidth, addrwidth, host_buf,
-			llwidth, llwidth, ether_str(sdl), ifwidth, ifwidth, ifname);
+		    llwidth, llwidth, ether_str(sdl), ifwidth, ifwidth, ifname);
 
 		/* Print neighbor discovery specific information */
 		expire = rtm->rtm_rmx.rmx_expire;
@@ -803,21 +812,21 @@ again:;
 		 */
 		if ((rtm->rtm_addrs & RTA_NETMASK) == 0) {
 			snprintf(flgbuf, sizeof(flgbuf), "%s%s",
-				isrouter ? "R" : "",
-				(rtm->rtm_flags & RTF_ANNOUNCE) ? "p" : "");
+			    isrouter ? "R" : "",
+			    (rtm->rtm_flags & RTF_ANNOUNCE) ? "p" : "");
 		} else {
-#if 0	/* W and P are mystery even for us */
+#if 0			/* W and P are mystery even for us */
 			sin = (struct sockaddr_in6 *)
-				(sdl->sdl_len + (char *)sdl);
+			    (sdl->sdl_len + (char *)sdl);
 			snprintf(flgbuf, sizeof(flgbuf), "%s%s%s%s",
-				isrouter ? "R" : "",
-				!IN6_IS_ADDR_UNSPECIFIED(&sin->sin6_addr) ? "P" : "",
-				(sin->sin6_len != sizeof(struct sockaddr_in6)) ? "W" : "",
-				(rtm->rtm_flags & RTF_ANNOUNCE) ? "p" : "");
+			    isrouter ? "R" : "",
+			    !IN6_IS_ADDR_UNSPECIFIED(&sin->sin6_addr) ? "P" : "",
+			    (sin->sin6_len != sizeof(struct sockaddr_in6)) ? "W" : "",
+			    (rtm->rtm_flags & RTF_ANNOUNCE) ? "p" : "");
 #else
 			snprintf(flgbuf, sizeof(flgbuf), "%s%s",
-				isrouter ? "R" : "",
-				(rtm->rtm_flags & RTF_ANNOUNCE) ? "p" : "");
+			    isrouter ? "R" : "",
+			    (rtm->rtm_flags & RTF_ANNOUNCE) ? "p" : "");
 #endif
 		}
 		printf(" %s", flgbuf);
@@ -842,22 +851,22 @@ static struct in6_nbrinfo *
 getnbrinfo(struct in6_addr *addr, int ifindex, int warning)
 {
 	static struct in6_nbrinfo nbi;
-	int s;
+	int sock;
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
 		err(1, "socket");
 
 	bzero(&nbi, sizeof(nbi));
 	if_indextoname(ifindex, nbi.ifname);
 	nbi.addr = *addr;
-	if (ioctl(s, SIOCGNBRINFO_IN6, (caddr_t)&nbi) < 0) {
+	if (ioctl(sock, SIOCGNBRINFO_IN6, (caddr_t)&nbi) < 0) {
 		if (warning)
 			warn("ioctl(SIOCGNBRINFO_IN6)");
-		close(s);
+		close(sock);
 		return(NULL);
 	}
 
-	close(s);
+	close(sock);
 	return(&nbi);
 }
 
@@ -868,7 +877,7 @@ ether_str(struct sockaddr_dl *sdl)
 
 	if (sdl->sdl_alen == ETHER_ADDR_LEN) {
 		strlcpy(hbuf, ether_ntoa((struct ether_addr *)LLADDR(sdl)),
-			sizeof(hbuf));
+		    sizeof(hbuf));
 	} else if (sdl->sdl_alen) {
 		int n = sdl->sdl_nlen > 0 ? sdl->sdl_nlen + 1 : 0;
 		snprintf(hbuf, sizeof(hbuf), "%s", link_ntoa(sdl) + n);
@@ -884,7 +893,7 @@ ndp_ether_aton(char *a, u_char *n)
 	int i, o[6];
 
 	i = sscanf(a, "%x:%x:%x:%x:%x:%x", &o[0], &o[1], &o[2],
-		&o[3], &o[4], &o[5]);
+	    &o[3], &o[4], &o[5]);
 	if (i != 6) {
 		fprintf(stderr, "ndp: invalid Ethernet address '%s'\n", a);
 		return (1);
@@ -950,12 +959,6 @@ rtmsg(int cmd)
 			rtm->rtm_inits = RTV_EXPIRE;
 		}
 		rtm->rtm_flags |= (RTF_HOST | RTF_STATIC | RTF_LLDATA);
-#if 0 /* we don't support ipv6addr/128 type proxying */
-		if (rtm->rtm_flags & RTF_ANNOUNCE) {
-			rtm->rtm_flags &= ~RTF_HOST;
-			rtm->rtm_addrs |= RTA_NETMASK;
-		}
-#endif
 		/* FALLTHROUGH */
 	case RTM_GET:
 		rtm->rtm_addrs |= RTA_DST;
@@ -963,10 +966,6 @@ rtmsg(int cmd)
 
 	NEXTADDR(RTA_DST, sin_m);
 	NEXTADDR(RTA_GATEWAY, sdl_m);
-#if 0 /* we don't support ipv6addr/128 type proxying */
-	memset(&so_mask.sin6_addr, 0xff, sizeof(so_mask.sin6_addr));
-	NEXTADDR(RTA_NETMASK, so_mask);
-#endif
 
 	rtm->rtm_msglen = cp - (char *)&m_rtmsg;
 doit:
@@ -982,13 +981,14 @@ doit:
 	}
 	do {
 		l = read(s, (char *)&m_rtmsg, sizeof(m_rtmsg));
-	} while (l > 0 && (rtm->rtm_seq != seq || rtm->rtm_pid != pid));
+	} while (l > 0 && (rtm->rtm_type != cmd || rtm->rtm_seq != seq ||
+	    rtm->rtm_pid != pid));
 #else
 	l = rtioctl((char *)&m_rtmsg, l, sizeof(m_rtmsg));
 #endif
 	if (l < 0)
 		(void) fprintf(stderr, "ndp: read from routing socket: %s\n",
-			strerror(errno));
+		    strerror(errno));
 	return (0);
 }
 
@@ -996,23 +996,23 @@ static void
 ifinfo(char *ifname, int argc, char **argv)
 {
 	struct in6_ndireq nd;
-	int i, s;
+	int i, sock;
 	u_int32_t newflags;
 #ifdef IPV6CTL_USETEMPADDR
 	u_int8_t nullbuf[8];
 #endif
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0) {
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0) {
 		err(1, "socket");
 		/* NOTREACHED */
 	}
 	bzero(&nd, sizeof(nd));
 	strlcpy(nd.ifname, ifname, sizeof(nd.ifname));
-	if (ioctl(s, SIOCGIFINFO_IN6, (caddr_t)&nd) < 0) {
+	if (ioctl(sock, SIOCGIFINFO_IN6, (caddr_t)&nd) < 0) {
 		err(1, "ioctl(SIOCGIFINFO_IN6)");
 		/* NOTREACHED */
 	}
-#define ND nd.ndi
+#define	ND nd.ndi
 	newflags = ND.flags;
 	for (i = 0; i < argc; i++) {
 		int clear = 0;
@@ -1023,35 +1023,33 @@ ifinfo(char *ifname, int argc, char **argv)
 			cp++;
 		}
 
-#define SETFLAG(s, f) \
-	do {\
-		if (strcmp(cp, (s)) == 0) {\
-			if (clear)\
-				newflags &= ~(f);\
-			else\
-				newflags |= (f);\
-		}\
-	} while (0)
+#define	SETFLAG(s, f) do {			\
+	if (strcmp(cp, (s)) == 0) {		\
+		if (clear)			\
+			newflags &= ~(f);	\
+		else				\
+			newflags |= (f);	\
+	}					\
+} while (0)
 /*
  * XXX: this macro is not 100% correct, in that it matches "nud" against
  *      "nudbogus".  But we just let it go since this is minor.
  */
-#define SETVALUE(f, v) \
-	do { \
-		char *valptr; \
-		unsigned long newval; \
-		v = 0; /* unspecified */ \
-		if (strncmp(cp, f, strlen(f)) == 0) { \
-			valptr = strchr(cp, '='); \
-			if (valptr == NULL) \
-				err(1, "syntax error in %s field", (f)); \
-			errno = 0; \
-			newval = strtoul(++valptr, NULL, 0); \
-			if (errno) \
-				err(1, "syntax error in %s's value", (f)); \
-			v = newval; \
-		} \
-	} while (0)
+#define	SETVALUE(f, v) do {						\
+	char *valptr;							\
+	unsigned long newval;						\
+	v = 0; /* unspecified */					\
+	if (strncmp(cp, f, strlen(f)) == 0) {				\
+		valptr = strchr(cp, '=');				\
+		if (valptr == NULL)					\
+			err(1, "syntax error in %s field", (f));	\
+		errno = 0;						\
+		newval = strtoul(++valptr, NULL, 0);			\
+		if (errno)						\
+			err(1, "syntax error in %s's value", (f));	\
+		v = newval;						\
+	}								\
+} while (0)
 
 		SETFLAG("disabled", ND6_IFF_IFDISABLED);
 		SETFLAG("nud", ND6_IFF_PERFORMNUD);
@@ -1069,7 +1067,7 @@ ifinfo(char *ifname, int argc, char **argv)
 		SETVALUE("curhlim", ND.chlim);
 
 		ND.flags = newflags;
-		if (ioctl(s, SIOCSIFINFO_IN6, (caddr_t)&nd) < 0) {
+		if (ioctl(sock, SIOCSIFINFO_IN6, (caddr_t)&nd) < 0) {
 			err(1, "ioctl(SIOCSIFINFO_IN6)");
 			/* NOTREACHED */
 		}
@@ -1082,7 +1080,7 @@ ifinfo(char *ifname, int argc, char **argv)
 		/* NOTREACHED */
 	}
 
-	if (ioctl(s, SIOCGIFINFO_IN6, (caddr_t)&nd) < 0) {
+	if (ioctl(sock, SIOCGIFINFO_IN6, (caddr_t)&nd) < 0) {
 		err(1, "ioctl(SIOCGIFINFO_IN6)");
 		/* NOTREACHED */
 	}
@@ -1090,7 +1088,7 @@ ifinfo(char *ifname, int argc, char **argv)
 	printf(", maxmtu=%d", ND.maxmtu);
 	printf(", curhlim=%d", ND.chlim);
 	printf(", basereachable=%ds%dms",
-		ND.basereachable / 1000, ND.basereachable % 1000);
+	    ND.basereachable / 1000, ND.basereachable % 1000);
 	printf(", reachable=%ds", ND.reachable);
 	printf(", retrans=%ds%dms", ND.retrans / 1000, ND.retrans % 1000);
 #ifdef IPV6CTL_USETEMPADDR
@@ -1120,7 +1118,7 @@ ifinfo(char *ifname, int argc, char **argv)
 				printf("%02x", rbuf[j]);
 		}
 	}
-#endif
+#endif /* IPV6CTL_USETEMPADDR */
 	if (ND.flags) {
 		printf("\nFlags: ");
 #ifdef ND6_IFF_IFDISABLED
@@ -1145,7 +1143,7 @@ ifinfo(char *ifname, int argc, char **argv)
 	putc('\n', stdout);
 #undef ND
 
-	close(s);
+	close(sock);
 }
 
 #ifndef ND_RA_FLAG_RTPREF_MASK	/* XXX: just for compilation on *BSD release */
@@ -1182,19 +1180,21 @@ rtrlist()
 		int rtpref;
 #ifndef FSTACK
 		if (getnameinfo((struct sockaddr *)&p->rtaddr,
-			p->rtaddr.sin6_len, host_buf, sizeof(host_buf), NULL, 0,
-			(nflag ? NI_NUMERICHOST : 0)) != 0)
-			strlcpy(host_buf, "?", sizeof(host_buf));
+		    p->rtaddr.sin6_len, host_buf, sizeof(host_buf), NULL, 0,
+		    (nflag ? NI_NUMERICHOST : 0)) != 0)
 #else
 		if (inet_ntop(AF_INET6_LINUX, &p->rtaddr.sin6_addr, host_buf, sizeof(host_buf)) == NULL)
-			strlcpy(host_buf, "?", sizeof(host_buf));
 #endif
+			strlcpy(host_buf, "?", sizeof(host_buf));
 
 		printf("%s if=%s", host_buf,
-			if_indextoname(p->if_index, ifix_buf));
+		    if_indextoname(p->if_index, ifix_buf));
 		printf(", flags=%s%s",
-			p->flags & ND_RA_FLAG_MANAGED ? "M" : "",
-			p->flags & ND_RA_FLAG_OTHER   ? "O" : "");
+		    p->flags & ND_RA_FLAG_MANAGED ? "M" : "",
+		    p->flags & ND_RA_FLAG_OTHER   ? "O" : "");
+#ifdef DRAFT_IETF_6MAN_IPV6ONLY_FLAG
+		printf("%s", p->flags & ND_RA_FLAG_IPV6_ONLY ? "S" : "");
+#endif
 		rtpref = ((p->flags & ND_RA_FLAG_RTPREF_MASK) >> 3) & 0xff;
 		printf(", pref=%s", rtpref_str[rtpref]);
 
@@ -1203,7 +1203,7 @@ rtrlist()
 			printf(", expire=Never\n");
 		else
 			printf(", expire=%s\n",
-				sec2str(p->expire - now.tv_sec));
+			    sec2str(p->expire - now.tv_sec));
 	}
 	free(buf);
 }
@@ -1241,14 +1241,14 @@ plist()
 		n = (struct in6_prefix *)&advrtr[p->advrtrs];
 #ifndef FSTACK
 		if (getnameinfo((struct sockaddr *)&p->prefix,
-			p->prefix.sin6_len, namebuf, sizeof(namebuf),
-			NULL, 0, niflags) != 0)
+		    p->prefix.sin6_len, namebuf, sizeof(namebuf),
+		    NULL, 0, niflags) != 0)
 #else
 		inet_ntop(AF_INET6_LINUX, &p->prefix.sin6_addr, namebuf, sizeof(namebuf));
 #endif
 			strlcpy(namebuf, "?", sizeof(namebuf));
 		printf("%s/%d if=%s\n", namebuf, p->prefixlen,
-			if_indextoname(p->if_index, ifix_buf));
+		    if_indextoname(p->if_index, ifix_buf));
 
 		gettimeofday(&now, 0);
 		/*
@@ -1256,16 +1256,16 @@ plist()
 		 * by origin.  notify the difference to the users.
 		 */
 		printf("flags=%s%s%s%s%s",
-			p->raflags.onlink ? "L" : "",
-			p->raflags.autonomous ? "A" : "",
-			(p->flags & NDPRF_ONLINK) != 0 ? "O" : "",
-			(p->flags & NDPRF_DETACHED) != 0 ? "D" : "",
+		    p->raflags.onlink ? "L" : "",
+		    p->raflags.autonomous ? "A" : "",
+		    (p->flags & NDPRF_ONLINK) != 0 ? "O" : "",
+		    (p->flags & NDPRF_DETACHED) != 0 ? "D" : "",
 #ifdef NDPRF_HOME
-			(p->flags & NDPRF_HOME) != 0 ? "H" : ""
+		    (p->flags & NDPRF_HOME) != 0 ? "H" : ""
 #else
-			""
+		    ""
 #endif
-			);
+		    );
 		if (p->vltime == ND6_INFINITE_LIFETIME)
 			printf(" vltime=infinity");
 		else
@@ -1278,7 +1278,7 @@ plist()
 			printf(", expire=Never");
 		else if (p->expire >= now.tv_sec)
 			printf(", expire=%s",
-				sec2str(p->expire - now.tv_sec));
+			    sec2str(p->expire - now.tv_sec));
 		else
 			printf(", expired");
 		printf(", ref=%d", p->refcnt);
@@ -1297,17 +1297,16 @@ plist()
 				struct in6_nbrinfo *nbi;
 #ifndef FSTACK
 				if (getnameinfo((struct sockaddr *)sin6,
-					sin6->sin6_len, namebuf, sizeof(namebuf),
-					NULL, 0, ninflags) != 0)
-					strlcpy(namebuf, "?", sizeof(namebuf));
+				    sin6->sin6_len, namebuf, sizeof(namebuf),
+				    NULL, 0, ninflags) != 0)
 #else
 				if (inet_ntop(AF_INET6_LINUX, &sin6->sin6_addr, namebuf, sizeof(namebuf)) == NULL)
-					strlcpy(namebuf, "?", sizeof(namebuf));
 #endif
+					strlcpy(namebuf, "?", sizeof(namebuf));
 				printf("    %s", namebuf);
 
 				nbi = getnbrinfo(&sin6->sin6_addr,
-					p->if_index, 0);
+				    p->if_index, 0);
 				if (nbi) {
 					switch (nbi->state) {
 					case ND6_LLINFO_REACHABLE:
@@ -1333,43 +1332,45 @@ static void
 pfx_flush()
 {
 	char dummyif[IFNAMSIZ+8];
-	int s;
+	int sock;
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
 		err(1, "socket");
 	strlcpy(dummyif, "lo0", sizeof(dummyif)); /* dummy */
-	if (ioctl(s, SIOCSPFXFLUSH_IN6, (caddr_t)&dummyif) < 0)
+	if (ioctl(sock, SIOCSPFXFLUSH_IN6, (caddr_t)&dummyif) < 0)
 		err(1, "ioctl(SIOCSPFXFLUSH_IN6)");
+
+	close(sock);
 }
 
 static void
 rtr_flush()
 {
 	char dummyif[IFNAMSIZ+8];
-	int s;
+	int sock;
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
 		err(1, "socket");
 	strlcpy(dummyif, "lo0", sizeof(dummyif)); /* dummy */
-	if (ioctl(s, SIOCSRTRFLUSH_IN6, (caddr_t)&dummyif) < 0)
+	if (ioctl(sock, SIOCSRTRFLUSH_IN6, (caddr_t)&dummyif) < 0)
 		err(1, "ioctl(SIOCSRTRFLUSH_IN6)");
 
-	close(s);
+	close(sock);
 }
 
 static void
 harmonize_rtr()
 {
 	char dummyif[IFNAMSIZ+8];
-	int s;
+	int sock;
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
 		err(1, "socket");
 	strlcpy(dummyif, "lo0", sizeof(dummyif)); /* dummy */
-	if (ioctl(s, SIOCSNDFLUSH_IN6, (caddr_t)&dummyif) < 0)
+	if (ioctl(sock, SIOCSNDFLUSH_IN6, (caddr_t)&dummyif) < 0)
 		err(1, "ioctl(SIOCSNDFLUSH_IN6)");
 
-	close(s);
+	close(sock);
 }
 
 #ifdef SIOCSDEFIFACE_IN6	/* XXX: check SIOCGDEFIFACE_IN6 as well? */
@@ -1378,6 +1379,7 @@ setdefif(char *ifname)
 {
 	struct in6_ndifreq ndifreq;
 	unsigned int ifindex;
+	int sock;
 
 	if (strcasecmp(ifname, "delete") == 0)
 		ifindex = 0;
@@ -1386,16 +1388,16 @@ setdefif(char *ifname)
 			err(1, "failed to resolve i/f index for %s", ifname);
 	}
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
 		err(1, "socket");
 
 	strlcpy(ndifreq.ifname, "lo0", sizeof(ndifreq.ifname)); /* dummy */
 	ndifreq.ifindex = ifindex;
 
-	if (ioctl(s, SIOCSDEFIFACE_IN6, (caddr_t)&ndifreq) < 0)
+	if (ioctl(sock, SIOCSDEFIFACE_IN6, (caddr_t)&ndifreq) < 0)
 		err(1, "ioctl(SIOCSDEFIFACE_IN6)");
 
-	close(s);
+	close(sock);
 }
 
 static void
@@ -1403,14 +1405,15 @@ getdefif()
 {
 	struct in6_ndifreq ndifreq;
 	char ifname[IFNAMSIZ+8];
+	int sock;
 
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
+	if ((sock = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
 		err(1, "socket");
 
 	memset(&ndifreq, 0, sizeof(ndifreq));
 	strlcpy(ndifreq.ifname, "lo0", sizeof(ndifreq.ifname)); /* dummy */
 
-	if (ioctl(s, SIOCGDEFIFACE_IN6, (caddr_t)&ndifreq) < 0)
+	if (ioctl(sock, SIOCGDEFIFACE_IN6, (caddr_t)&ndifreq) < 0)
 		err(1, "ioctl(SIOCGDEFIFACE_IN6)");
 
 	if (ndifreq.ifindex == 0)
@@ -1418,13 +1421,13 @@ getdefif()
 	else {
 		if ((if_indextoname(ndifreq.ifindex, ifname)) == NULL)
 			err(1, "failed to resolve ifname for index %lu",
-				ndifreq.ifindex);
+			    ndifreq.ifindex);
 		printf("ND default interface = %s\n", ifname);
 	}
 
-	close(s);
+	close(sock);
 }
-#endif
+#endif /* SIOCSDEFIFACE_IN6 */
 
 static char *
 sec2str(time_t total)
@@ -1474,12 +1477,12 @@ sec2str(time_t total)
 static void
 ts_print(const struct timeval *tvp)
 {
-	int s;
+	int sec;
 
 	/* Default */
-	s = (tvp->tv_sec + thiszone) % 86400;
+	sec = (tvp->tv_sec + thiszone) % 86400;
 	(void)printf("%02d:%02d:%02d.%06u ",
-		s / 3600, (s % 3600) / 60, s % 60, (u_int32_t)tvp->tv_usec);
+	    sec / 3600, (sec % 3600) / 60, sec % 60, (u_int32_t)tvp->tv_usec);
 }
 
 #undef NEXTADDR

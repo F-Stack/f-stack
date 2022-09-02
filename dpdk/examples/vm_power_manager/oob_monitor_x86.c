@@ -96,11 +96,11 @@ apply_policy(int core)
 	g_branch_misses = miss_diff;
 
 	if (hits_diff < (INTERVAL*100)) {
-		/* Likely no workload running on this core. Skip. */
-		return -1.0;
+		/* Likely no workload running on this core. */
+		ratio = 0.0;
+	} else {
+		ratio = (float)miss_diff * (float)100 / (float)hits_diff;
 	}
-
-	ratio = (float)miss_diff * (float)100 / (float)hits_diff;
 
 	/*
 	 * Store the last few directions that the ratio indicates
@@ -109,7 +109,7 @@ apply_policy(int core)
 	 * down. Each core_details struct has it's own array.
 	 */
 	freq_window_idx = ci->cd[core].freq_window_idx;
-	if (ratio > ci->branch_ratio_threshold)
+	if (ratio > ci->cd[core].branch_ratio_threshold)
 		ci->cd[core].freq_directions[freq_window_idx] = 1;
 	else
 		ci->cd[core].freq_directions[freq_window_idx] = 0;

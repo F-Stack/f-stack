@@ -21,7 +21,7 @@ fi
 
 if ldd $testpmd | grep -q librte_ ; then
 	export LD_LIBRARY_PATH=$build/lib:$LD_LIBRARY_PATH
-	libs='-d librte_mempool_ring.so -d librte_pmd_null.so'
+	libs="-d $build/drivers"
 else
 	libs=
 fi
@@ -29,5 +29,5 @@ fi
 (sleep 1 && echo stop) |
 # testpmd only needs 20M, make it x2 (default number of cores) for NUMA systems
 $testpmd -c $coremask --no-huge -m 40 \
-	$libs -w 0:0.0 --vdev net_null1 --vdev net_null2 $eal_options -- \
+	$libs -a 0:0.0 --vdev net_null1 --vdev net_null2 $eal_options -- \
 	--no-mlockall --total-num-mbufs=2048 $testpmd_options -ia

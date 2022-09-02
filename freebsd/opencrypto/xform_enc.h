@@ -33,14 +33,12 @@
 
 #include <sys/malloc.h>
 #include <sys/errno.h>
-#include <crypto/blowfish/blowfish.h>
-#include <crypto/des/des.h>
 #include <crypto/rijndael/rijndael.h>
 #include <crypto/camellia/camellia.h>
-#include <opencrypto/cast.h>
-#include <opencrypto/skipjack.h>
 #include <opencrypto/cryptodev.h>
-#include <opencrypto/xform_userland.h>
+#ifdef _STANDALONE
+#include <stand.h>
+#endif
 
 #define AESICM_BLOCKSIZE	AES_BLOCK_LEN
 #define	AES_XTS_BLOCKSIZE	16
@@ -51,42 +49,51 @@
 struct enc_xform {
 	int type;
 	char *name;
-	u_int16_t blocksize;
-	u_int16_t ivsize;
-	u_int16_t minkey, maxkey;
-	void (*encrypt) (caddr_t, u_int8_t *);
-	void (*decrypt) (caddr_t, u_int8_t *);
-	int (*setkey) (u_int8_t **, u_int8_t *, int len);
-	void (*zerokey) (u_int8_t **);
-	void (*reinit) (caddr_t, u_int8_t *);
+	size_t ctxsize;
+	uint16_t blocksize;	/* Required input block size -- 1 for stream ciphers. */
+	uint16_t native_blocksize;	/* Used for stream ciphers. */
+	uint16_t ivsize;
+	uint16_t minkey, maxkey;
+
+	/*
+	 * Encrypt/decrypt a single block.  For stream ciphers this
+	 * encrypts/decrypts a single "native" block.
+	 */
+	void (*encrypt) (void *, const uint8_t *, uint8_t *);
+	void (*decrypt) (void *, const uint8_t *, uint8_t *);
+	int (*setkey) (void *, const uint8_t *, int len);
+	void (*reinit) (void *, const uint8_t *);
+
+	/*
+	 * For stream ciphers, encrypt/decrypt the final partial block
+	 * of 'len' bytes.
+	 */
+	void (*encrypt_last) (void *, const uint8_t *, uint8_t *, size_t len);
+	void (*decrypt_last) (void *, const uint8_t *, uint8_t *, size_t len);
 };
 
 
 extern struct enc_xform enc_xform_null;
-extern struct enc_xform enc_xform_des;
-extern struct enc_xform enc_xform_3des;
-extern struct enc_xform enc_xform_blf;
-extern struct enc_xform enc_xform_cast5;
-extern struct enc_xform enc_xform_skipjack;
 extern struct enc_xform enc_xform_rijndael128;
 extern struct enc_xform enc_xform_aes_icm;
 extern struct enc_xform enc_xform_aes_nist_gcm;
 extern struct enc_xform enc_xform_aes_nist_gmac;
 extern struct enc_xform enc_xform_aes_xts;
-extern struct enc_xform enc_xform_arc4;
 extern struct enc_xform enc_xform_camellia;
+extern struct enc_xform enc_xform_chacha20;
+extern struct enc_xform enc_xform_ccm;
 
 struct aes_icm_ctx {
-	u_int32_t	ac_ek[4*(RIJNDAEL_MAXNR + 1)];
-	/* ac_block is initalized to IV */
-	u_int8_t	ac_block[AESICM_BLOCKSIZE];
+	uint32_t	ac_ek[4*(RIJNDAEL_MAXNR + 1)];
+	/* ac_block is initialized to IV */
+	uint8_t		ac_block[AESICM_BLOCKSIZE];
 	int		ac_nr;
 };
 
 struct aes_xts_ctx {
 	rijndael_ctx key1;
 	rijndael_ctx key2;
-	u_int8_t tweak[AES_XTS_BLOCKSIZE];
+	uint8_t tweak[AES_XTS_BLOCKSIZE];
 };
 
 #endif /* _CRYPTO_XFORM_ENC_H_ */

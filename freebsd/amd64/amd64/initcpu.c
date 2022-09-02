@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) KATO Takenori, 1997, 1998.
  * 
  * All rights reserved.  Unpublished rights reserved under the copyright
@@ -40,6 +42,7 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/cputypes.h>
 #include <machine/md_var.h>
+#include <machine/psl.h>
 #include <machine/specialreg.h>
 
 #include <vm/vm.h>
@@ -48,6 +51,11 @@ __FBSDID("$FreeBSD$");
 static int	hw_instruction_sse;
 SYSCTL_INT(_hw, OID_AUTO, instruction_sse, CTLFLAG_RD,
     &hw_instruction_sse, 0, "SIMD/MMX2 instructions available in CPU");
+static int	lower_sharedpage_init;
+int		hw_lower_amd64_sharedpage;
+SYSCTL_INT(_hw, OID_AUTO, lower_amd64_sharedpage, CTLFLAG_RDTUN,
+    &hw_lower_amd64_sharedpage, 0,
+   "Lower sharedpage to work around Ryzen issue with executing code near the top of user memory");
 /*
  * -1: automatic (default)
  *  0: keep enable CLFLUSH
@@ -59,6 +67,23 @@ static void
 init_amd(void)
 {
 	uint64_t msr;
+
+	/*
+	 * C1E renders the local APIC timer dead, so we disable it by
+	 * reading the Interrupt Pending Message register and clearing
+	 * both C1eOnCmpHalt (bit 28) and SmiOnCmpHalt (bit 27).
+	 *
+	 * Reference:
+	 *   "BIOS and Kernel Developer's Guide for AMD NPT Family 0Fh Processors"
+	 *   #32559 revision 3.00+
+	 *
+	 * Detect the presence of C1E capability mostly on latest
+	 * dual-cores (or future) k8 family.  Affected models range is
+	 * taken from Linux sources.
+	 */
+	if ((CPUID_TO_FAMILY(cpu_id) == 0xf ||
+	    CPUID_TO_FAMILY(cpu_id) == 0x10) && (cpu_feature2 & CPUID2_HV) == 0)
+		cpu_amdc1e_bug = 1;
 
 	/*
 	 * Work around Erratum 721 for Family 10h and 12h processors.
@@ -78,7 +103,7 @@ init_amd(void)
 	case 0x10:
 	case 0x12:
 		if ((cpu_feature2 & CPUID2_HV) == 0)
-			wrmsr(0xc0011029, rdmsr(0xc0011029) | 1);
+			wrmsr(MSR_DE_CFG, rdmsr(MSR_DE_CFG) | 1);
 		break;
 	}
 
@@ -92,6 +117,81 @@ init_amd(void)
 			msr = rdmsr(MSR_NB_CFG1);
 			msr |= (uint64_t)1 << 54;
 			wrmsr(MSR_NB_CFG1, msr);
+		}
+	}
+
+	/*
+	 * BIOS may configure Family 10h processors to convert WC+ cache type
+	 * to CD.  That can hurt performance of guest VMs using nested paging.
+	 * The relevant MSR bit is not documented in the BKDG,
+	 * the fix is borrowed from Linux.
+	 */
+	if (CPUID_TO_FAMILY(cpu_id) == 0x10) {
+		if ((cpu_feature2 & CPUID2_HV) == 0) {
+			msr = rdmsr(0xc001102a);
+			msr &= ~((uint64_t)1 << 24);
+			wrmsr(0xc001102a, msr);
+		}
+	}
+
+	/*
+	 * Work around Erratum 793: Specific Combination of Writes to Write
+	 * Combined Memory Types and Locked Instructions May Cause Core Hang.
+	 * See Revision Guide for AMD Family 16h Models 00h-0Fh Processors,
+	 * revision 3.04 or later, publication 51810.
+	 */
+	if (CPUID_TO_FAMILY(cpu_id) == 0x16 && CPUID_TO_MODEL(cpu_id) <= 0xf) {
+		if ((cpu_feature2 & CPUID2_HV) == 0) {
+			msr = rdmsr(MSR_LS_CFG);
+			msr |= (uint64_t)1 << 15;
+			wrmsr(MSR_LS_CFG, msr);
+		}
+	}
+
+	/* Ryzen erratas. */
+	if (CPUID_TO_FAMILY(cpu_id) == 0x17 && CPUID_TO_MODEL(cpu_id) == 0x1 &&
+	    (cpu_feature2 & CPUID2_HV) == 0) {
+		/* 1021 */
+		msr = rdmsr(MSR_DE_CFG);
+		msr |= 0x2000;
+		wrmsr(MSR_DE_CFG, msr);
+
+		/* 1033 */
+		msr = rdmsr(MSR_LS_CFG);
+		msr |= 0x10;
+		wrmsr(MSR_LS_CFG, msr);
+
+		/* 1049 */
+		msr = rdmsr(0xc0011028);
+		msr |= 0x10;
+		wrmsr(0xc0011028, msr);
+
+		/* 1095 */
+		msr = rdmsr(MSR_LS_CFG);
+		msr |= 0x200000000000000;
+		wrmsr(MSR_LS_CFG, msr);
+	}
+
+	/*
+	 * Work around a problem on Ryzen that is triggered by executing
+	 * code near the top of user memory, in our case the signal
+	 * trampoline code in the shared page on amd64.
+	 *
+	 * This function is executed once for the BSP before tunables take
+	 * effect so the value determined here can be overridden by the
+	 * tunable.  This function is then executed again for each AP and
+	 * also on resume.  Set a flag the first time so that value set by
+	 * the tunable is not overwritten.
+	 *
+	 * The stepping and/or microcode versions should be checked after
+	 * this issue is fixed by AMD so that we don't use this mode if not
+	 * needed.
+	 */
+	if (lower_sharedpage_init == 0) {
+		lower_sharedpage_init = 1;
+		if (CPUID_TO_FAMILY(cpu_id) == 0x17 ||
+		    CPUID_TO_FAMILY(cpu_id) == 0x18) {
+			hw_lower_amd64_sharedpage = 1;
 		}
 	}
 }
@@ -136,6 +236,18 @@ init_via(void)
 }
 
 /*
+ * The value for the TSC_AUX MSR and rdtscp/rdpid on the invoking CPU.
+ *
+ * Caller should prevent CPU migration.
+ */
+u_int
+cpu_auxmsr(void)
+{
+	KASSERT((read_rflags() & PSL_I) == 0, ("context switch possible"));
+	return (PCPU_GET(cpuid));
+}
+
+/*
  * Initialize CPU control registers
  */
 void
@@ -152,28 +264,56 @@ initializecpu(void)
 	if (cpu_stdext_feature & CPUID_STDEXT_FSGSBASE)
 		cr4 |= CR4_FSGSBASE;
 
+	if (cpu_stdext_feature2 & CPUID_STDEXT2_PKU)
+		cr4 |= CR4_PKE;
+
 	/*
+	 * If SMEP is present, we only need to flush RSB (by default)
+	 * on context switches, to prevent cross-process ret2spec
+	 * attacks.  Do it automatically if ibrs_disable is set, to
+	 * complete the mitigation.
+	 *
 	 * Postpone enabling the SMEP on the boot CPU until the page
 	 * tables are switched from the boot loader identity mapping
 	 * to the kernel tables.  The boot loader enables the U bit in
 	 * its tables.
 	 */
-	if (!IS_BSP() && (cpu_stdext_feature & CPUID_STDEXT_SMEP))
-		cr4 |= CR4_SMEP;
+	if (IS_BSP()) {
+		if (cpu_stdext_feature & CPUID_STDEXT_SMEP &&
+		    !TUNABLE_INT_FETCH(
+		    "machdep.mitigations.cpu_flush_rsb_ctxsw",
+		    &cpu_flush_rsb_ctxsw) &&
+		    hw_ibrs_disable)
+			cpu_flush_rsb_ctxsw = 1;
+	} else {
+		if (cpu_stdext_feature & CPUID_STDEXT_SMEP)
+			cr4 |= CR4_SMEP;
+		if (cpu_stdext_feature & CPUID_STDEXT_SMAP)
+			cr4 |= CR4_SMAP;
+	}
 	load_cr4(cr4);
-	if ((amd_feature & AMDID_NX) != 0) {
+	if (IS_BSP() && (amd_feature & AMDID_NX) != 0) {
 		msr = rdmsr(MSR_EFER) | EFER_NXE;
 		wrmsr(MSR_EFER, msr);
 		pg_nx = PG_NX;
 	}
+	hw_ibrs_recalculate(false);
+	hw_ssb_recalculate(false);
+	amd64_syscall_ret_flush_l1d_recalc();
+	x86_rngds_mitg_recalculate(false);
 	switch (cpu_vendor_id) {
 	case CPU_VENDOR_AMD:
+	case CPU_VENDOR_HYGON:
 		init_amd();
 		break;
 	case CPU_VENDOR_CENTAUR:
 		init_via();
 		break;
 	}
+
+	if ((amd_feature & AMDID_RDTSCP) != 0 ||
+	    (cpu_stdext_feature2 & CPUID_STDEXT2_RDPID) != 0)
+		wrmsr(MSR_TSC_AUX, cpu_auxmsr());
 }
 
 void

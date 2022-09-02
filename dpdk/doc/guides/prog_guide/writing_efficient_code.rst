@@ -168,7 +168,13 @@ but with the added cost of lower throughput.
 Locks and Atomic Operations
 ---------------------------
 
-Atomic operations imply a lock prefix before the instruction,
+This section describes some key considerations when using locks and atomic
+operations in the DPDK environment.
+
+Locks
+~~~~~
+
+On x86, atomic operations imply a lock prefix before the instruction,
 causing the processor's LOCK# signal to be asserted during execution of the following instruction.
 This has a big impact on performance in a multicore environment.
 
@@ -176,6 +182,57 @@ Performance can be improved by avoiding lock mechanisms in the data plane.
 It can often be replaced by other solutions like per-lcore variables.
 Also, some locking techniques are more efficient than others.
 For instance, the Read-Copy-Update (RCU) algorithm can frequently replace simple rwlocks.
+
+Atomic Operations: Use C11 Atomic Builtins
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DPDK generic rte_atomic operations are implemented by __sync builtins. These
+__sync builtins result in full barriers on aarch64, which are unnecessary
+in many use cases. They can be replaced by __atomic builtins that conform to
+the C11 memory model and provide finer memory order control.
+
+So replacing the rte_atomic operations with __atomic builtins might improve
+performance for aarch64 machines.
+
+Some typical optimization cases are listed below:
+
+Atomicity
+^^^^^^^^^
+
+Some use cases require atomicity alone, the ordering of the memory operations
+does not matter. For example, the packet statistics counters need to be
+incremented atomically but do not need any particular memory ordering.
+So, RELAXED memory ordering is sufficient.
+
+One-way Barrier
+^^^^^^^^^^^^^^^
+
+Some use cases allow for memory reordering in one way while requiring memory
+ordering in the other direction.
+
+For example, the memory operations before the spinlock lock are allowed to
+move to the critical section, but the memory operations in the critical section
+are not allowed to move above the lock. In this case, the full memory barrier
+in the compare-and-swap operation can be replaced with ACQUIRE memory order.
+On the other hand, the memory operations after the spinlock unlock are allowed
+to move to the critical section, but the memory operations in the critical
+section are not allowed to move below the unlock. So the full barrier in the
+store operation can use RELEASE memory order.
+
+Reader-Writer Concurrency
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Lock-free reader-writer concurrency is one of the common use cases in DPDK.
+
+The payload or the data that the writer wants to communicate to the reader,
+can be written with RELAXED memory order. However, the guard variable should
+be written with RELEASE memory order. This ensures that the store to guard
+variable is observable only after the store to payload is observable.
+
+Correspondingly, on the reader side, the guard variable should be read
+with ACQUIRE memory order. The payload or the data the writer communicated,
+can be read with RELAXED memory order. This ensures that, if the store to
+guard variable is observable, the store to payload is also observable.
 
 Coding Considerations
 ---------------------
@@ -202,8 +259,7 @@ For instance:
 Setting the Target CPU Type
 ---------------------------
 
-The DPDK supports CPU microarchitecture-specific optimizations by means of CONFIG_RTE_MACHINE option
-in the DPDK configuration file.
+The DPDK supports CPU microarchitecture-specific optimizations by means of RTE_MACHINE option.
 The degree of optimization depends on the compiler's ability to optimize for a specific microarchitecture,
 therefore it is preferable to use the latest compiler versions whenever possible.
 
@@ -217,5 +273,3 @@ main() function and checks if the current machine is suitable for running the bi
 Along with compiler optimizations,
 a set of preprocessor defines are automatically added to the build process (regardless of the compiler version).
 These defines correspond to the instruction sets that the target CPU should be able to support.
-For example, a binary compiled for any SSE4.2-capable processor will have RTE_MACHINE_CPUFLAG_SSE4_2 defined,
-thus enabling compile-time code path selection for different platforms.

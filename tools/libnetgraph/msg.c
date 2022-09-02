@@ -49,14 +49,34 @@ __FBSDID("$FreeBSD$");
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stdarg.h>
+#ifndef FSTACK
+#include <stdatomic.h>
+#endif
 #include <netgraph/ng_message.h>
 #include <netgraph/ng_socket.h>
 
 #include "netgraph.h"
 #include "internal.h"
 
+#ifdef FSTACK
+#define	_Atomic(T)		T volatile
+
+#ifndef __ATOMIC_SEQ_CST
+#define __ATOMIC_SEQ_CST		5
+#endif
+
+typedef enum {
+	memory_order_seq_cst = __ATOMIC_SEQ_CST
+} memory_order;
+
+#define	atomic_fetch_add(object, operand)				\
+	atomic_fetch_add_explicit(object, operand, memory_order_seq_cst)
+#define	atomic_fetch_add_explicit(object, operand, order)		\
+	 __atomic_fetch_add(object, operand, order)
+#endif
+
 /* Next message token value */
-static int	gMsgId;
+static _Atomic(unsigned int) gMsgId;
 
 /* For delivering both messages and replies */
 static int	NgDeliverMsg(int cs, const char *path,
@@ -77,9 +97,7 @@ NgSendMsg(int cs, const char *path,
 	memset(&msg, 0, sizeof(msg));
 	msg.header.version = NG_VERSION;
 	msg.header.typecookie = cookie;
-	if (++gMsgId < 0)
-		gMsgId = 1;
-	msg.header.token = gMsgId;
+	msg.header.token = atomic_fetch_add(&gMsgId, 1) & INT_MAX;
 	msg.header.flags = NGF_ORIG;
 	msg.header.cmd = cmd;
 	snprintf((char *)msg.header.cmdstr, NG_CMDSTRSIZ, "cmd%d", cmd);
@@ -148,9 +166,7 @@ NgSendAsciiMsg(int cs, const char *path, const char *fmt, ...)
 
 	/* Now send binary version */
 	binary = (struct ng_mesg *)reply->data;
-	if (++gMsgId < 0)
-		gMsgId = 1;
-	binary->header.token = gMsgId;
+	binary->header.token = atomic_fetch_add(&gMsgId, 1) & INT_MAX;
 	binary->header.version = NG_VERSION;
 	if (NgDeliverMsg(cs,
 	    path, binary, binary->data, binary->header.arglen) < 0) {

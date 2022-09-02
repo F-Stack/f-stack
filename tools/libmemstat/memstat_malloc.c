@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Robert N. M. Watson
  * All rights reserved.
  *
@@ -49,10 +51,22 @@
 #include "memstat_internal.h"
 
 #ifndef FSTACK
+static int memstat_malloc_zone_count;
+static int memstat_malloc_zone_sizes[32];
+
+static int	memstat_malloc_zone_init(void);
+static int	memstat_malloc_zone_init_kvm(kvm_t *kvm);
+
 static struct nlist namelist[] = {
 #define	X_KMEMSTATISTICS	0
 	{ .n_name = "_kmemstatistics" },
-#define	X_MP_MAXCPUS		1
+#define	X_KMEMZONES		1
+	{ .n_name = "_kmemzones" },
+#define	X_NUMZONES		2
+	{ .n_name = "_numzones" },
+#define	X_VM_MALLOC_ZONE_COUNT	3
+	{ .n_name = "_vm_malloc_zone_count" },
+#define	X_MP_MAXCPUS		4
 	{ .n_name = "_mp_maxcpus" },
 	{ .n_name = "" },
 };
@@ -116,6 +130,13 @@ retry:
 		list->mtl_error = MEMSTAT_ERROR_DATAERROR;
 		return (-1);
 	}
+
+#ifndef FSTACK
+	if (memstat_malloc_zone_init() == -1) {
+		list->mtl_error = MEMSTAT_ERROR_VERSION;
+		return (-1);
+	}
+#endif
 
 	size = sizeof(*mthp) + count * (sizeof(*mthp) + sizeof(*mtsp) *
 	    maxcpus);
@@ -286,14 +307,27 @@ kread_symbol(kvm_t *kvm, int index, void *address, size_t size,
 	return (0);
 }
 
+static int
+kread_zpcpu(kvm_t *kvm, u_long base, void *buf, size_t size, int cpu)
+{
+	ssize_t ret;
+
+	ret = kvm_read_zpcpu(kvm, base, buf, size, cpu);
+	if (ret < 0)
+		return (MEMSTAT_ERROR_KVM);
+	if ((size_t)ret != size)
+		return (MEMSTAT_ERROR_KVM_SHORTREAD);
+	return (0);
+}
+
 int
 memstat_kvm_malloc(struct memory_type_list *list, void *kvm_handle)
 {
 	struct memory_type *mtp;
 	void *kmemstatistics;
-	int hint_dontsearch, j, mp_maxcpus, ret;
+	int hint_dontsearch, j, mp_maxcpus, mp_ncpus, ret;
 	char name[MEMTYPE_MAXNAME];
-	struct malloc_type_stats *mts, *mtsp;
+	struct malloc_type_stats mts;
 	struct malloc_type_internal *mtip;
 	struct malloc_type type, *typep;
 	kvm_t *kvm;
@@ -327,17 +361,18 @@ memstat_kvm_malloc(struct memory_type_list *list, void *kvm_handle)
 		return (-1);
 	}
 
-	mts = malloc(sizeof(struct malloc_type_stats) * mp_maxcpus);
-	if (mts == NULL) {
-		list->mtl_error = MEMSTAT_ERROR_NOMEMORY;
+	ret = memstat_malloc_zone_init_kvm(kvm);
+	if (ret != 0) {
+		list->mtl_error = ret;
 		return (-1);
 	}
+
+	mp_ncpus = kvm_getncpus(kvm);
 
 	for (typep = kmemstatistics; typep != NULL; typep = type.ks_next) {
 		ret = kread(kvm, typep, &type, sizeof(type), 0);
 		if (ret != 0) {
 			_memstat_mtl_empty(list);
-			free(mts);
 			list->mtl_error = ret;
 			return (-1);
 		}
@@ -345,24 +380,20 @@ memstat_kvm_malloc(struct memory_type_list *list, void *kvm_handle)
 		    MEMTYPE_MAXNAME);
 		if (ret != 0) {
 			_memstat_mtl_empty(list);
-			free(mts);
 			list->mtl_error = ret;
 			return (-1);
+		}
+		if (type.ks_version != M_VERSION) {
+			warnx("type %s with unsupported version %lu; skipped",
+			    name, type.ks_version);
+			continue;
 		}
 
 		/*
 		 * Since our compile-time value for MAXCPU may differ from the
 		 * kernel's, we populate our own array.
 		 */
-		mtip = type.ks_handle;
-		ret = kread(kvm, mtip->mti_stats, mts, mp_maxcpus *
-		    sizeof(struct malloc_type_stats), 0);
-		if (ret != 0) {
-			_memstat_mtl_empty(list);
-			free(mts);
-			list->mtl_error = ret;
-			return (-1);
-		}
+		mtip = &type.ks_mti;
 
 		if (hint_dontsearch == 0) {
 			mtp = memstat_mtl_find(list, ALLOCATOR_MALLOC, name);
@@ -373,7 +404,6 @@ memstat_kvm_malloc(struct memory_type_list *list, void *kvm_handle)
 			    name, mp_maxcpus);
 		if (mtp == NULL) {
 			_memstat_mtl_empty(list);
-			free(mts);
 			list->mtl_error = MEMSTAT_ERROR_NOMEMORY;
 			return (-1);
 		}
@@ -383,29 +413,145 @@ memstat_kvm_malloc(struct memory_type_list *list, void *kvm_handle)
 		 * be kept in sync.
 		 */
 		_memstat_mt_reset_stats(mtp, mp_maxcpus);
-		for (j = 0; j < mp_maxcpus; j++) {
-			mtsp = &mts[j];
-			mtp->mt_memalloced += mtsp->mts_memalloced;
-			mtp->mt_memfreed += mtsp->mts_memfreed;
-			mtp->mt_numallocs += mtsp->mts_numallocs;
-			mtp->mt_numfrees += mtsp->mts_numfrees;
-			mtp->mt_sizemask |= mtsp->mts_size;
+		for (j = 0; j < mp_ncpus; j++) {
+			ret = kread_zpcpu(kvm, (u_long)mtip->mti_stats, &mts,
+			    sizeof(mts), j);
+			if (ret != 0) {
+				_memstat_mtl_empty(list);
+				list->mtl_error = ret;
+				return (-1);
+			}
+			mtp->mt_memalloced += mts.mts_memalloced;
+			mtp->mt_memfreed += mts.mts_memfreed;
+			mtp->mt_numallocs += mts.mts_numallocs;
+			mtp->mt_numfrees += mts.mts_numfrees;
+			mtp->mt_sizemask |= mts.mts_size;
 
 			mtp->mt_percpu_alloc[j].mtp_memalloced =
-			    mtsp->mts_memalloced;
+			    mts.mts_memalloced;
 			mtp->mt_percpu_alloc[j].mtp_memfreed =
-			    mtsp->mts_memfreed;
+			    mts.mts_memfreed;
 			mtp->mt_percpu_alloc[j].mtp_numallocs =
-			    mtsp->mts_numallocs;
+			    mts.mts_numallocs;
 			mtp->mt_percpu_alloc[j].mtp_numfrees =
-			    mtsp->mts_numfrees;
+			    mts.mts_numfrees;
 			mtp->mt_percpu_alloc[j].mtp_sizemask =
-			    mtsp->mts_size;
+			    mts.mts_size;
+		}
+		for (; j < mp_maxcpus; j++) {
+			bzero(&mtp->mt_percpu_alloc[j],
+			    sizeof(mtp->mt_percpu_alloc[0]));
 		}
 
 		mtp->mt_bytes = mtp->mt_memalloced - mtp->mt_memfreed;
 		mtp->mt_count = mtp->mt_numallocs - mtp->mt_numfrees;
 	}
+
+	return (0);
+}
+
+static int
+memstat_malloc_zone_init(void)
+{
+	size_t size;
+
+	size = sizeof(memstat_malloc_zone_count);
+	if (sysctlbyname("vm.malloc.zone_count", &memstat_malloc_zone_count,
+	    &size, NULL, 0) < 0) {
+		return (-1);
+	}
+
+	if (memstat_malloc_zone_count > (int)nitems(memstat_malloc_zone_sizes)) {
+		return (-1);
+	}
+
+	size = sizeof(memstat_malloc_zone_sizes);
+	if (sysctlbyname("vm.malloc.zone_sizes", &memstat_malloc_zone_sizes,
+	    &size, NULL, 0) < 0) {
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Copied from kern_malloc.c
+ *
+ * kz_zone is an array sized at compilation time, the size is exported in
+ * "numzones". Below we need to iterate kz_size.
+ */
+struct memstat_kmemzone {
+	int kz_size;
+	const char *kz_name;
+	void *kz_zone[1];
+};
+
+static int
+memstat_malloc_zone_init_kvm(kvm_t *kvm)
+{
+	struct memstat_kmemzone *kmemzones, *kz;
+	int numzones, objsize, allocsize, ret;
+	int i;
+
+	ret = kread_symbol(kvm, X_VM_MALLOC_ZONE_COUNT,
+	    &memstat_malloc_zone_count, sizeof(memstat_malloc_zone_count), 0);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	ret = kread_symbol(kvm, X_NUMZONES, &numzones, sizeof(numzones), 0);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	objsize = __offsetof(struct memstat_kmemzone, kz_zone) +
+	    sizeof(void *) * numzones;
+
+	allocsize = objsize * memstat_malloc_zone_count;
+	kmemzones = malloc(allocsize);
+	if (kmemzones == NULL) {
+		return (MEMSTAT_ERROR_NOMEMORY);
+	}
+	ret = kread_symbol(kvm, X_KMEMZONES, kmemzones, allocsize, 0);
+	if (ret != 0) {
+		free(kmemzones);
+		return (ret);
+	}
+
+	kz = kmemzones;
+	for (i = 0; i < (int)nitems(memstat_malloc_zone_sizes); i++) {
+		memstat_malloc_zone_sizes[i] = kz->kz_size;
+		kz = (struct memstat_kmemzone *)((char *)kz + objsize);
+	}
+
+	free(kmemzones);
+	return (0);
+}
+
+size_t
+memstat_malloc_zone_get_count(void)
+{
+
+	return (memstat_malloc_zone_count);
+}
+
+size_t
+memstat_malloc_zone_get_size(size_t n)
+{
+
+	if (n >= nitems(memstat_malloc_zone_sizes)) {
+		return (-1);
+	}
+
+	return (memstat_malloc_zone_sizes[n]);
+}
+
+int
+memstat_malloc_zone_used(const struct memory_type *mtp, size_t n)
+{
+
+	if (memstat_get_sizemask(mtp) & (1 << n))
+		return (1);
 
 	return (0);
 }

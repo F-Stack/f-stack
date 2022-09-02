@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 Riccardo Panicucci, Universita` di Pisa
  * All rights reserved
  *
@@ -32,13 +34,16 @@
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/mbuf.h>
 #include <sys/module.h>
+#include <sys/rwlock.h>
 #include <net/if.h>	/* IFNAMSIZ */
 #include <netinet/in.h>
 #include <netinet/ip_var.h>		/* ipfw_rule_ref */
 #include <netinet/ip_fw.h>	/* flow_id */
 #include <netinet/ip_dummynet.h>
+#include <netpfil/ipfw/ip_fw_private.h>
 #include <netpfil/ipfw/dn_heap.h>
 #include <netpfil/ipfw/ip_dn_private.h>
 #ifdef NEW_AQM
@@ -202,7 +207,6 @@ prio_free_queue(struct dn_queue *q)
 	return 0;
 }
 
-
 static struct dn_alg prio_desc = {
 	_SI( .type = ) DN_SCHED_PRIO,
 	_SI( .name = ) "PRIO",
@@ -230,6 +234,5 @@ static struct dn_alg prio_desc = {
 	_SI( .getconfig = )  NULL,
 #endif
 };
-
 
 DECLARE_DNSCHED_MODULE(dn_prio, &prio_desc);

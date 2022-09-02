@@ -38,8 +38,13 @@
 
 #define ICE_FDIR_PKT_LEN	512
 
+#define ICE_RXDID_COMMS_OVS	22
+
 typedef void (*ice_rx_release_mbufs_t)(struct ice_rx_queue *rxq);
 typedef void (*ice_tx_release_mbufs_t)(struct ice_tx_queue *txq);
+typedef void (*ice_rxd_to_pkt_fields_t)(struct ice_rx_queue *rxq,
+					struct rte_mbuf *mb,
+					volatile union ice_rx_flex_desc *rxdp);
 
 struct ice_rx_entry {
 	struct rte_mbuf *mbuf;
@@ -68,6 +73,7 @@ struct ice_rx_queue {
 
 	uint16_t port_id; /* device port ID */
 	uint8_t crc_len; /* 0 if CRC stripped, 4 otherwise */
+	uint8_t fdir_enabled; /* 0 if FDIR disabled, 1 when enabled */
 	uint16_t queue_id; /* RX queue index */
 	uint16_t reg_idx; /* RX queue register index */
 	uint8_t drop_en; /* if not 0, set register bit */
@@ -79,6 +85,8 @@ struct ice_rx_queue {
 	bool q_set; /* indicate if rx queue has been configured */
 	bool rx_deferred_start; /* don't start this queue in dev start */
 	uint8_t proto_xtr; /* Protocol extraction from flexible descriptor */
+	uint64_t xtr_ol_flag; /* Protocol extraction offload flag */
+	uint32_t rxdid; /* Receive Flex Descriptor profile ID */
 	ice_rx_release_mbufs_t rx_rel_mbufs;
 	const struct rte_memzone *mz;
 };
@@ -87,6 +95,10 @@ struct ice_tx_entry {
 	struct rte_mbuf *mbuf;
 	uint16_t next_id;
 	uint16_t last_id;
+};
+
+struct ice_vec_tx_entry {
+	struct rte_mbuf *mbuf;
 };
 
 struct ice_tx_queue {
@@ -137,6 +149,46 @@ union ice_tx_offload {
 	};
 };
 
+/* Rx Flex Descriptor for Comms Package Profile
+ * RxDID Profile ID 22 (swap Hash and FlowID)
+ * Flex-field 0: Flow ID lower 16-bits
+ * Flex-field 1: Flow ID upper 16-bits
+ * Flex-field 2: RSS hash lower 16-bits
+ * Flex-field 3: RSS hash upper 16-bits
+ * Flex-field 4: AUX0
+ * Flex-field 5: AUX1
+ */
+struct ice_32b_rx_flex_desc_comms_ovs {
+	/* Qword 0 */
+	u8 rxdid;
+	u8 mir_id_umb_cast;
+	__le16 ptype_flexi_flags0;
+	__le16 pkt_len;
+	__le16 hdr_len_sph_flex_flags1;
+
+	/* Qword 1 */
+	__le16 status_error0;
+	__le16 l2tag1;
+	__le32 flow_id;
+
+	/* Qword 2 */
+	__le16 status_error1;
+	u8 flexi_flags2;
+	u8 ts_low;
+	__le16 l2tag2_1st;
+	__le16 l2tag2_2nd;
+
+	/* Qword 3 */
+	__le32 rss_hash;
+	union {
+		struct {
+			__le16 aux0;
+			__le16 aux1;
+		} flex;
+		__le32 ts_high;
+	} flex_ts;
+};
+
 int ice_rx_queue_setup(struct rte_eth_dev *dev,
 		       uint16_t queue_idx,
 		       uint16_t nb_desc,
@@ -158,7 +210,6 @@ int ice_fdir_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int ice_fdir_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 void ice_rx_queue_release(void *rxq);
 void ice_tx_queue_release(void *txq);
-void ice_clear_queues(struct rte_eth_dev *dev);
 void ice_free_queues(struct rte_eth_dev *dev);
 int ice_fdir_setup_tx_resources(struct ice_pf *pf);
 int ice_fdir_setup_rx_resources(struct ice_pf *pf);
@@ -185,6 +236,8 @@ int ice_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int ice_tx_descriptor_status(void *tx_queue, uint16_t offset);
 void ice_set_default_ptype_table(struct rte_eth_dev *dev);
 const uint32_t *ice_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+void ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq,
+					  uint32_t rxdid);
 
 int ice_rx_vec_dev_check(struct rte_eth_dev *dev);
 int ice_tx_vec_dev_check(struct rte_eth_dev *dev);
@@ -203,5 +256,43 @@ uint16_t ice_recv_scattered_pkts_vec_avx2(void *rx_queue,
 					  uint16_t nb_pkts);
 uint16_t ice_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 				uint16_t nb_pkts);
+uint16_t ice_recv_pkts_vec_avx512(void *rx_queue, struct rte_mbuf **rx_pkts,
+				  uint16_t nb_pkts);
+uint16_t ice_recv_scattered_pkts_vec_avx512(void *rx_queue,
+					    struct rte_mbuf **rx_pkts,
+					    uint16_t nb_pkts);
+uint16_t ice_xmit_pkts_vec_avx512(void *tx_queue, struct rte_mbuf **tx_pkts,
+				  uint16_t nb_pkts);
 int ice_fdir_programming(struct ice_pf *pf, struct ice_fltr_desc *fdir_desc);
+int ice_tx_done_cleanup(void *txq, uint32_t free_cnt);
+
+#define FDIR_PARSING_ENABLE_PER_QUEUE(ad, on) do { \
+	int i; \
+	for (i = 0; i < (ad)->pf.dev_data->nb_rx_queues; i++) { \
+		struct ice_rx_queue *rxq = (ad)->pf.dev_data->rx_queues[i]; \
+		if (!rxq) \
+			continue; \
+		rxq->fdir_enabled = on; \
+	} \
+	PMD_DRV_LOG(DEBUG, "FDIR processing on RX set to %d", on); \
+} while (0)
+
+/* Enable/disable flow director parsing from Rx descriptor in data path. */
+static inline
+void ice_fdir_rx_parsing_enable(struct ice_adapter *ad, bool on)
+{
+	if (on) {
+		/* Enable flow director parsing from Rx descriptor */
+		FDIR_PARSING_ENABLE_PER_QUEUE(ad, on);
+		ad->fdir_ref_cnt++;
+	} else {
+		if (ad->fdir_ref_cnt >= 1) {
+			ad->fdir_ref_cnt--;
+
+			if (ad->fdir_ref_cnt == 0)
+				FDIR_PARSING_ENABLE_PER_QUEUE(ad, on);
+		}
+	}
+}
+
 #endif /* _ICE_RXTX_H_ */

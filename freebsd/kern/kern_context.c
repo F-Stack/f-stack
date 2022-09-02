@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Daniel M. Eischen <deischen@freebsd.org>
  * All rights reserved.
  *
@@ -68,11 +70,11 @@ sys_getcontext(struct thread *td, struct getcontext_args *uap)
 	if (uap->ucp == NULL)
 		ret = EINVAL;
 	else {
+		bzero(&uc, sizeof(ucontext_t));
 		get_mcontext(td, &uc.uc_mcontext, GET_MC_CLEAR_RET);
 		PROC_LOCK(td->td_proc);
 		uc.uc_sigmask = td->td_sigmask;
 		PROC_UNLOCK(td->td_proc);
-		bzero(uc.__spare__, sizeof(uc.__spare__));
 		ret = copyout(&uc, uap->ucp, UC_COPY_SIZE);
 	}
 	return (ret);
@@ -82,7 +84,7 @@ int
 sys_setcontext(struct thread *td, struct setcontext_args *uap)
 {
 	ucontext_t uc;
-	int ret;	
+	int ret;
 
 	if (uap->ucp == NULL)
 		ret = EINVAL;
@@ -103,13 +105,13 @@ int
 sys_swapcontext(struct thread *td, struct swapcontext_args *uap)
 {
 	ucontext_t uc;
-	int ret;	
+	int ret;
 
 	if (uap->oucp == NULL || uap->ucp == NULL)
 		ret = EINVAL;
 	else {
+		bzero(&uc, sizeof(ucontext_t));
 		get_mcontext(td, &uc.uc_mcontext, GET_MC_CLEAR_RET);
-		bzero(uc.__spare__, sizeof(uc.__spare__));
 		PROC_LOCK(td->td_proc);
 		uc.uc_sigmask = td->td_sigmask;
 		PROC_UNLOCK(td->td_proc);

@@ -30,7 +30,11 @@ static const char rcsid[] =
 
 #include "ifconfig.h"
 
-char lacpbuf[120];	/* LACP peer '[(a,a,a),(p,p,p)]' */
+static struct iflaggparam params = {
+	.lagg_type = LAGG_TYPE_DEFAULT,
+};
+
+static char lacpbuf[120];	/* LACP peer '[(a,a,a),(p,p,p)]' */
 
 static void
 setlaggport(const char *val, int d, int s, const struct afswtch *afp)
@@ -41,9 +45,17 @@ setlaggport(const char *val, int d, int s, const struct afswtch *afp)
 	strlcpy(rp.rp_ifname, name, sizeof(rp.rp_ifname));
 	strlcpy(rp.rp_portname, val, sizeof(rp.rp_portname));
 
-	/* Don't choke if the port is already in this lagg. */
-	if (ioctl(s, SIOCSLAGGPORT, &rp) && errno != EEXIST)
-		err(1, "SIOCSLAGGPORT");
+	/*
+	 * Do not exit with an error here.  Doing so permits a
+	 * failed NIC to take down an entire lagg.
+	 *
+	 * Don't error at all if the port is already in the lagg.
+	 */
+	if (ioctl(s, SIOCSLAGGPORT, &rp) && errno != EEXIST) {
+		warnx("%s %s: SIOCSLAGGPORT: %s",
+		    name, val, strerror(errno));
+		exit_code = 1;
+	}
 }
 
 static void
@@ -106,10 +118,13 @@ setlaggrr_limit(const char *val, int d, int s, const struct afswtch *afp)
 	
 	bzero(&ro, sizeof(ro));
 	strlcpy(ro.ro_ifname, name, sizeof(ro.ro_ifname));
-	ro.ro_bkt = (int)strtol(val, NULL, 10);
+	ro.ro_opts = LAGG_OPT_RR_LIMIT;
+	ro.ro_bkt = (uint32_t)strtoul(val, NULL, 10);
+	if (ro.ro_bkt == 0)
+		errx(1, "Invalid round-robin stride: %s", val);
 
 	if (ioctl(s, SIOCSLAGGOPTS, &ro) != 0)
-		err(1, "SIOCSLAGG");
+		err(1, "SIOCSLAGGOPTS");
 }
 
 static void
@@ -122,14 +137,16 @@ setlaggsetopt(const char *val, int d, int s, const struct afswtch *afp)
 	switch (ro.ro_opts) {
 	case LAGG_OPT_USE_FLOWID:
 	case -LAGG_OPT_USE_FLOWID:
+	case LAGG_OPT_USE_NUMA:
+	case -LAGG_OPT_USE_NUMA:
 	case LAGG_OPT_LACP_STRICT:
 	case -LAGG_OPT_LACP_STRICT:
 	case LAGG_OPT_LACP_TXTEST:
 	case -LAGG_OPT_LACP_TXTEST:
 	case LAGG_OPT_LACP_RXTEST:
 	case -LAGG_OPT_LACP_RXTEST:
-	case LAGG_OPT_LACP_TIMEOUT:
-	case -LAGG_OPT_LACP_TIMEOUT:
+	case LAGG_OPT_LACP_FAST_TIMO:
+	case -LAGG_OPT_LACP_FAST_TIMO:
 		break;
 	default:
 		err(1, "Invalid lagg option");
@@ -200,23 +217,16 @@ static void
 lagg_status(int s)
 {
 	struct lagg_protos lpr[] = LAGG_PROTOS;
-	struct lagg_reqport rp, rpbuf[LAGG_MAX_PORTS];
+	struct lagg_reqport rpbuf[LAGG_MAX_PORTS];
 	struct lagg_reqall ra;
 	struct lagg_reqopts ro;
 	struct lagg_reqflags rf;
 	struct lacp_opreq *lp;
 	const char *proto = "<unknown>";
-	int i, isport = 0;
+	int i;
 
-	bzero(&rp, sizeof(rp));
 	bzero(&ra, sizeof(ra));
 	bzero(&ro, sizeof(ro));
-
-	strlcpy(rp.rp_ifname, name, sizeof(rp.rp_ifname));
-	strlcpy(rp.rp_portname, name, sizeof(rp.rp_portname));
-
-	if (ioctl(s, SIOCGLAGGPORT, &rp) == 0)
-		isport = 1;
 
 	strlcpy(ra.ra_ifname, name, sizeof(ra.ra_ifname));
 	ra.ra_size = sizeof(rpbuf);
@@ -257,8 +267,6 @@ lagg_status(int s)
 				sep = ",";
 			}
 		}
-		if (isport)
-			printf(" laggdev %s", rp.rp_ifname);
 		putchar('\n');
 		if (verbose) {
 			printf("\tlagg options:\n");
@@ -297,21 +305,52 @@ lagg_status(int s)
 	}
 }
 
+static
+DECL_CMD_FUNC(setlaggtype, arg, d)
+{
+	static const struct lagg_types lt[] = LAGG_TYPES;
+	int i;
+
+	for (i = 0; i < nitems(lt); i++) {
+		if (strcmp(arg, lt[i].lt_name) == 0) {
+			params.lagg_type = lt[i].lt_value;
+			return;
+		}
+	}
+	errx(1, "invalid lagg type: %s", arg);
+}
+
+static void
+lagg_create(int s, struct ifreq *ifr)
+{
+	ifr->ifr_data = (caddr_t) &params;
+#ifndef FSTACK
+	ioctl_ifcreate(s, ifr);
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(params);
+	ioctl_va(s, SIOCIFCREATE2, &ifr, 3, offset, ifr.ifr_data, clen);
+#endif
+}
+
 static struct cmd lagg_cmds[] = {
+	DEF_CLONE_CMD_ARG("laggtype",   setlaggtype),
 	DEF_CMD_ARG("laggport",		setlaggport),
 	DEF_CMD_ARG("-laggport",	unsetlaggport),
 	DEF_CMD_ARG("laggproto",	setlaggproto),
 	DEF_CMD_ARG("lagghash",		setlagghash),
 	DEF_CMD("use_flowid",	LAGG_OPT_USE_FLOWID,	setlaggsetopt),
 	DEF_CMD("-use_flowid",	-LAGG_OPT_USE_FLOWID,	setlaggsetopt),
+	DEF_CMD("use_numa",	LAGG_OPT_USE_NUMA,	setlaggsetopt),
+	DEF_CMD("-use_numa",	-LAGG_OPT_USE_NUMA,	setlaggsetopt),
 	DEF_CMD("lacp_strict",	LAGG_OPT_LACP_STRICT,	setlaggsetopt),
 	DEF_CMD("-lacp_strict",	-LAGG_OPT_LACP_STRICT,	setlaggsetopt),
 	DEF_CMD("lacp_txtest",	LAGG_OPT_LACP_TXTEST,	setlaggsetopt),
 	DEF_CMD("-lacp_txtest",	-LAGG_OPT_LACP_TXTEST,	setlaggsetopt),
 	DEF_CMD("lacp_rxtest",	LAGG_OPT_LACP_RXTEST,	setlaggsetopt),
 	DEF_CMD("-lacp_rxtest",	-LAGG_OPT_LACP_RXTEST,	setlaggsetopt),
-	DEF_CMD("lacp_fast_timeout",	LAGG_OPT_LACP_TIMEOUT,	setlaggsetopt),
-	DEF_CMD("-lacp_fast_timeout",	-LAGG_OPT_LACP_TIMEOUT,	setlaggsetopt),
+	DEF_CMD("lacp_fast_timeout",	LAGG_OPT_LACP_FAST_TIMO,	setlaggsetopt),
+	DEF_CMD("-lacp_fast_timeout",	-LAGG_OPT_LACP_FAST_TIMO,	setlaggsetopt),
 	DEF_CMD_ARG("flowid_shift",	setlaggflowidshift),
 	DEF_CMD_ARG("rr_limit",		setlaggrr_limit),
 };
@@ -329,4 +368,5 @@ lagg_ctor(void)
 	for (i = 0; i < nitems(lagg_cmds);  i++)
 		cmd_register(&lagg_cmds[i]);
 	af_register(&af_lagg);
+	clone_setdefcallback_prefix("lagg", lagg_create);
 }

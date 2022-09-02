@@ -11,6 +11,7 @@
 #include <rte_bus_pci.h>
 #include <rte_ethdev_driver.h>
 #include <rte_ethdev_pci.h>
+#include <rte_geneve.h>
 #include <rte_kvargs.h>
 #include <rte_string_fns.h>
 
@@ -20,8 +21,6 @@
 #include "vnic_rq.h"
 #include "vnic_enet.h"
 #include "enic.h"
-
-int enic_pmd_logtype;
 
 /*
  * The set of PCI devices this driver supports
@@ -68,60 +67,10 @@ static const struct vic_speed_capa {
 
 #define ENIC_DEVARG_DISABLE_OVERLAY "disable-overlay"
 #define ENIC_DEVARG_ENABLE_AVX2_RX "enable-avx2-rx"
-#define ENIC_DEVARG_GENEVE_OPT "geneve-opt"
 #define ENIC_DEVARG_IG_VLAN_REWRITE "ig-vlan-rewrite"
+#define ENIC_DEVARG_REPRESENTOR "representor"
 
-RTE_INIT(enicpmd_init_log)
-{
-	enic_pmd_logtype = rte_log_register("pmd.net.enic");
-	if (enic_pmd_logtype >= 0)
-		rte_log_set_level(enic_pmd_logtype, RTE_LOG_INFO);
-}
-
-static int
-enicpmd_fdir_ctrl_func(struct rte_eth_dev *eth_dev,
-			enum rte_filter_op filter_op, void *arg)
-{
-	struct enic *enic = pmd_priv(eth_dev);
-	int ret = 0;
-
-	ENICPMD_FUNC_TRACE();
-	if (filter_op == RTE_ETH_FILTER_NOP)
-		return 0;
-
-	if (arg == NULL && filter_op != RTE_ETH_FILTER_FLUSH)
-		return -EINVAL;
-
-	switch (filter_op) {
-	case RTE_ETH_FILTER_ADD:
-	case RTE_ETH_FILTER_UPDATE:
-		ret = enic_fdir_add_fltr(enic,
-			(struct rte_eth_fdir_filter *)arg);
-		break;
-
-	case RTE_ETH_FILTER_DELETE:
-		ret = enic_fdir_del_fltr(enic,
-			(struct rte_eth_fdir_filter *)arg);
-		break;
-
-	case RTE_ETH_FILTER_STATS:
-		enic_fdir_stats_get(enic, (struct rte_eth_fdir_stats *)arg);
-		break;
-
-	case RTE_ETH_FILTER_FLUSH:
-		dev_warning(enic, "unsupported operation %u", filter_op);
-		ret = -ENOTSUP;
-		break;
-	case RTE_ETH_FILTER_INFO:
-		enic_fdir_info_get(enic, (struct rte_eth_fdir_info *)arg);
-		break;
-	default:
-		dev_err(enic, "unknown operation %u", filter_op);
-		ret = -EINVAL;
-		break;
-	}
-	return ret;
-}
+RTE_LOG_REGISTER(enic_pmd_logtype, pmd.net.enic, INFO);
 
 static int
 enicpmd_dev_filter_ctrl(struct rte_eth_dev *dev,
@@ -134,12 +83,6 @@ enicpmd_dev_filter_ctrl(struct rte_eth_dev *dev,
 
 	ENICPMD_FUNC_TRACE();
 
-	/*
-	 * Currently, when Geneve with options offload is enabled, host
-	 * cannot insert match-action rules.
-	 */
-	if (enic->geneve_opt_enabled)
-		return -ENOTSUP;
 	switch (filter_type) {
 	case RTE_ETH_FILTER_GENERIC:
 		if (filter_op != RTE_ETH_FILTER_GET)
@@ -148,9 +91,6 @@ enicpmd_dev_filter_ctrl(struct rte_eth_dev *dev,
 			*(const void **)arg = &enic_fm_flow_ops;
 		else
 			*(const void **)arg = &enic_flow_ops;
-		break;
-	case RTE_ETH_FILTER_FDIR:
-		ret = enicpmd_fdir_ctrl_func(dev, filter_op, arg);
 		break;
 	default:
 		dev_warning(enic, "Filter type (%d) not supported",
@@ -434,33 +374,37 @@ static int enicpmd_dev_start(struct rte_eth_dev *eth_dev)
 /*
  * Stop device: disable rx and tx functions to allow for reconfiguring.
  */
-static void enicpmd_dev_stop(struct rte_eth_dev *eth_dev)
+static int enicpmd_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct rte_eth_link link;
 	struct enic *enic = pmd_priv(eth_dev);
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
 	ENICPMD_FUNC_TRACE();
 	enic_disable(enic);
 
 	memset(&link, 0, sizeof(link));
 	rte_eth_linkstatus_set(eth_dev, &link);
+
+	return 0;
 }
 
 /*
  * Stop device.
  */
-static void enicpmd_dev_close(struct rte_eth_dev *eth_dev)
+static int enicpmd_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct enic *enic = pmd_priv(eth_dev);
 
 	ENICPMD_FUNC_TRACE();
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
 	enic_remove(enic);
+
+	return 0;
 }
 
 static int enicpmd_dev_link_update(struct rte_eth_dev *eth_dev,
@@ -931,7 +875,7 @@ static void enicpmd_dev_rxq_info_get(struct rte_eth_dev *dev,
 
 	ENICPMD_FUNC_TRACE();
 	sop_queue_idx = enic_rte_rq_idx_to_sop_idx(rx_queue_id);
-	data_queue_idx = enic_rte_rq_idx_to_data_idx(rx_queue_id);
+	data_queue_idx = enic_rte_rq_idx_to_data_idx(rx_queue_id, enic);
 	rq_sop = &enic->rq[sop_queue_idx];
 	rq_data = &enic->rq[data_queue_idx]; /* valid if data_queue_enable */
 	qinfo->mp = rq_sop->mp;
@@ -967,6 +911,49 @@ static void enicpmd_dev_txq_info_get(struct rte_eth_dev *dev,
 	/* tx_thresh, and all the other fields are not applicable for enic */
 }
 
+static int enicpmd_dev_rx_burst_mode_get(struct rte_eth_dev *dev,
+					 __rte_unused uint16_t queue_id,
+					 struct rte_eth_burst_mode *mode)
+{
+	eth_rx_burst_t pkt_burst = dev->rx_pkt_burst;
+	struct enic *enic = pmd_priv(dev);
+	const char *info_str = NULL;
+	int ret = -EINVAL;
+
+	ENICPMD_FUNC_TRACE();
+	if (enic->use_noscatter_vec_rx_handler)
+		info_str = "Vector AVX2 No Scatter";
+	else if (pkt_burst == enic_noscatter_recv_pkts)
+		info_str = "Scalar No Scatter";
+	else if (pkt_burst == enic_recv_pkts)
+		info_str = "Scalar";
+	if (info_str) {
+		strlcpy(mode->info, info_str, sizeof(mode->info));
+		ret = 0;
+	}
+	return ret;
+}
+
+static int enicpmd_dev_tx_burst_mode_get(struct rte_eth_dev *dev,
+					 __rte_unused uint16_t queue_id,
+					 struct rte_eth_burst_mode *mode)
+{
+	eth_tx_burst_t pkt_burst = dev->tx_pkt_burst;
+	const char *info_str = NULL;
+	int ret = -EINVAL;
+
+	ENICPMD_FUNC_TRACE();
+	if (pkt_burst == enic_simple_xmit_pkts)
+		info_str = "Scalar Simplified";
+	else if (pkt_burst == enic_xmit_pkts)
+		info_str = "Scalar";
+	if (info_str) {
+		strlcpy(mode->info, info_str, sizeof(mode->info));
+		ret = 0;
+	}
+	return ret;
+}
+
 static int enicpmd_dev_rx_queue_intr_enable(struct rte_eth_dev *eth_dev,
 					    uint16_t rx_queue_id)
 {
@@ -990,26 +977,32 @@ static int enicpmd_dev_rx_queue_intr_disable(struct rte_eth_dev *eth_dev,
 static int udp_tunnel_common_check(struct enic *enic,
 				   struct rte_eth_udp_tunnel *tnl)
 {
-	if (tnl->prot_type != RTE_TUNNEL_TYPE_VXLAN)
+	if (tnl->prot_type != RTE_TUNNEL_TYPE_VXLAN &&
+	    tnl->prot_type != RTE_TUNNEL_TYPE_GENEVE)
 		return -ENOTSUP;
 	if (!enic->overlay_offload) {
-		ENICPMD_LOG(DEBUG, " vxlan (overlay offload) is not "
-			     "supported\n");
+		ENICPMD_LOG(DEBUG, " overlay offload is not supported\n");
 		return -ENOTSUP;
 	}
 	return 0;
 }
 
-static int update_vxlan_port(struct enic *enic, uint16_t port)
+static int update_tunnel_port(struct enic *enic, uint16_t port, bool vxlan)
 {
-	if (vnic_dev_overlay_offload_cfg(enic->vdev,
-					 OVERLAY_CFG_VXLAN_PORT_UPDATE,
-					 port)) {
-		ENICPMD_LOG(DEBUG, " failed to update vxlan port\n");
+	uint8_t cfg;
+
+	cfg = vxlan ? OVERLAY_CFG_VXLAN_PORT_UPDATE :
+		OVERLAY_CFG_GENEVE_PORT_UPDATE;
+	if (vnic_dev_overlay_offload_cfg(enic->vdev, cfg, port)) {
+		ENICPMD_LOG(DEBUG, " failed to update tunnel port\n");
 		return -EINVAL;
 	}
-	ENICPMD_LOG(DEBUG, " updated vxlan port to %u\n", port);
-	enic->vxlan_port = port;
+	ENICPMD_LOG(DEBUG, " updated %s port to %u\n",
+		    vxlan ? "vxlan" : "geneve", port);
+	if (vxlan)
+		enic->vxlan_port = port;
+	else
+		enic->geneve_port = port;
 	return 0;
 }
 
@@ -1017,34 +1010,48 @@ static int enicpmd_dev_udp_tunnel_port_add(struct rte_eth_dev *eth_dev,
 					   struct rte_eth_udp_tunnel *tnl)
 {
 	struct enic *enic = pmd_priv(eth_dev);
+	uint16_t port;
+	bool vxlan;
 	int ret;
 
 	ENICPMD_FUNC_TRACE();
 	ret = udp_tunnel_common_check(enic, tnl);
 	if (ret)
 		return ret;
+	vxlan = (tnl->prot_type == RTE_TUNNEL_TYPE_VXLAN);
+	if (vxlan)
+		port = enic->vxlan_port;
+	else
+		port = enic->geneve_port;
 	/*
-	 * The NIC has 1 configurable VXLAN port number. "Adding" a new port
-	 * number replaces it.
+	 * The NIC has 1 configurable port number per tunnel type.
+	 * "Adding" a new port number replaces it.
 	 */
-	if (tnl->udp_port == enic->vxlan_port || tnl->udp_port == 0) {
+	if (tnl->udp_port == port || tnl->udp_port == 0) {
 		ENICPMD_LOG(DEBUG, " %u is already configured or invalid\n",
 			     tnl->udp_port);
 		return -EINVAL;
 	}
-	return update_vxlan_port(enic, tnl->udp_port);
+	return update_tunnel_port(enic, tnl->udp_port, vxlan);
 }
 
 static int enicpmd_dev_udp_tunnel_port_del(struct rte_eth_dev *eth_dev,
 					   struct rte_eth_udp_tunnel *tnl)
 {
 	struct enic *enic = pmd_priv(eth_dev);
+	uint16_t port;
+	bool vxlan;
 	int ret;
 
 	ENICPMD_FUNC_TRACE();
 	ret = udp_tunnel_common_check(enic, tnl);
 	if (ret)
 		return ret;
+	vxlan = (tnl->prot_type == RTE_TUNNEL_TYPE_VXLAN);
+	if (vxlan)
+		port = enic->vxlan_port;
+	else
+		port = enic->geneve_port;
 	/*
 	 * Clear the previously set port number and restore the
 	 * hardware default port number. Some drivers disable VXLAN
@@ -1052,12 +1059,13 @@ static int enicpmd_dev_udp_tunnel_port_del(struct rte_eth_dev *eth_dev,
 	 * enic does not do that as VXLAN is part of overlay offload,
 	 * which is tied to inner RSS and TSO.
 	 */
-	if (tnl->udp_port != enic->vxlan_port) {
-		ENICPMD_LOG(DEBUG, " %u is not a configured vxlan port\n",
+	if (tnl->udp_port != port) {
+		ENICPMD_LOG(DEBUG, " %u is not a configured tunnel port\n",
 			     tnl->udp_port);
 		return -EINVAL;
 	}
-	return update_vxlan_port(enic, RTE_VXLAN_DEFAULT_PORT);
+	port = vxlan ? RTE_VXLAN_DEFAULT_PORT : RTE_GENEVE_DEFAULT_PORT;
+	return update_tunnel_port(enic, port, vxlan);
 }
 
 static int enicpmd_dev_fw_version_get(struct rte_eth_dev *eth_dev,
@@ -1068,16 +1076,21 @@ static int enicpmd_dev_fw_version_get(struct rte_eth_dev *eth_dev,
 	int ret;
 
 	ENICPMD_FUNC_TRACE();
-	if (fw_version == NULL || fw_size <= 0)
-		return -EINVAL;
+
 	enic = pmd_priv(eth_dev);
 	ret = vnic_dev_fw_info(enic->vdev, &info);
 	if (ret)
 		return ret;
-	snprintf(fw_version, fw_size, "%s %s",
+	ret = snprintf(fw_version, fw_size, "%s %s",
 		 info->fw_version, info->fw_build);
-	fw_version[fw_size - 1] = '\0';
-	return 0;
+	if (ret < 0)
+		return -EINVAL;
+
+	ret += 1; /* add the size of '\0' */
+	if (fw_size < (size_t)ret)
+		return ret;
+	else
+		return 0;
 }
 
 static const struct eth_dev_ops enicpmd_eth_dev_ops = {
@@ -1108,14 +1121,14 @@ static const struct eth_dev_ops enicpmd_eth_dev_ops = {
 	.tx_queue_stop        = enicpmd_dev_tx_queue_stop,
 	.rx_queue_setup       = enicpmd_dev_rx_queue_setup,
 	.rx_queue_release     = enicpmd_dev_rx_queue_release,
-	.rx_queue_count       = enicpmd_dev_rx_queue_count,
-	.rx_descriptor_done   = NULL,
 	.tx_queue_setup       = enicpmd_dev_tx_queue_setup,
 	.tx_queue_release     = enicpmd_dev_tx_queue_release,
 	.rx_queue_intr_enable = enicpmd_dev_rx_queue_intr_enable,
 	.rx_queue_intr_disable = enicpmd_dev_rx_queue_intr_disable,
 	.rxq_info_get         = enicpmd_dev_rxq_info_get,
 	.txq_info_get         = enicpmd_dev_txq_info_get,
+	.rx_burst_mode_get    = enicpmd_dev_rx_burst_mode_get,
+	.tx_burst_mode_get    = enicpmd_dev_tx_burst_mode_get,
 	.dev_led_on           = NULL,
 	.dev_led_off          = NULL,
 	.flow_ctrl_get        = NULL,
@@ -1156,8 +1169,6 @@ static int enic_parse_zero_one(const char *key,
 		enic->disable_overlay = b;
 	if (strcmp(key, ENIC_DEVARG_ENABLE_AVX2_RX) == 0)
 		enic->enable_avx2_rx = b;
-	if (strcmp(key, ENIC_DEVARG_GENEVE_OPT) == 0)
-		enic->geneve_opt_request = b;
 	return 0;
 }
 
@@ -1199,8 +1210,8 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 	static const char *const valid_keys[] = {
 		ENIC_DEVARG_DISABLE_OVERLAY,
 		ENIC_DEVARG_ENABLE_AVX2_RX,
-		ENIC_DEVARG_GENEVE_OPT,
 		ENIC_DEVARG_IG_VLAN_REWRITE,
+		ENIC_DEVARG_REPRESENTOR,
 		NULL};
 	struct enic *enic = pmd_priv(dev);
 	struct rte_kvargs *kvlist;
@@ -1209,7 +1220,6 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 
 	enic->disable_overlay = false;
 	enic->enable_avx2_rx = false;
-	enic->geneve_opt_request = false;
 	enic->ig_vlan_rewrite_mode = IG_VLAN_REWRITE_MODE_PASS_THRU;
 	if (!dev->device->devargs)
 		return 0;
@@ -1220,8 +1230,6 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 			       enic_parse_zero_one, enic) < 0 ||
 	    rte_kvargs_process(kvlist, ENIC_DEVARG_ENABLE_AVX2_RX,
 			       enic_parse_zero_one, enic) < 0 ||
-	    rte_kvargs_process(kvlist, ENIC_DEVARG_GENEVE_OPT,
-			       enic_parse_zero_one, enic) < 0 ||
 	    rte_kvargs_process(kvlist, ENIC_DEVARG_IG_VLAN_REWRITE,
 			       enic_parse_ig_vlan_rewrite, enic) < 0) {
 		rte_kvargs_free(kvlist);
@@ -1231,10 +1239,9 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 	return 0;
 }
 
-/* Initialize the driver
- * It returns 0 on success.
- */
-static int eth_enicpmd_dev_init(struct rte_eth_dev *eth_dev)
+/* Initialize the driver for PF */
+static int eth_enic_dev_init(struct rte_eth_dev *eth_dev,
+			     void *init_params __rte_unused)
 {
 	struct rte_pci_device *pdev;
 	struct rte_pci_addr *addr;
@@ -1242,8 +1249,8 @@ static int eth_enicpmd_dev_init(struct rte_eth_dev *eth_dev)
 	int err;
 
 	ENICPMD_FUNC_TRACE();
-
 	eth_dev->dev_ops = &enicpmd_eth_dev_ops;
+	eth_dev->rx_queue_count = enicpmd_dev_rx_queue_count;
 	eth_dev->rx_pkt_burst = &enic_recv_pkts;
 	eth_dev->tx_pkt_burst = &enic_xmit_pkts;
 	eth_dev->tx_pkt_prepare = &enic_prep_pkts;
@@ -1256,8 +1263,6 @@ static int eth_enicpmd_dev_init(struct rte_eth_dev *eth_dev)
 	enic->port_id = eth_dev->data->port_id;
 	enic->rte_dev = eth_dev;
 	enic->dev_data = eth_dev->data;
-	/* Let rte_eth_dev_close() release the port resources */
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	pdev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	rte_eth_copy_pci_info(eth_dev, pdev);
@@ -1270,19 +1275,108 @@ static int eth_enicpmd_dev_init(struct rte_eth_dev *eth_dev)
 	err = enic_check_devargs(eth_dev);
 	if (err)
 		return err;
-	return enic_probe(enic);
+	err = enic_probe(enic);
+	if (!err && enic->fm) {
+		err = enic_fm_allocate_switch_domain(enic);
+		if (err)
+			ENICPMD_LOG(ERR, "failed to allocate switch domain id");
+	}
+	return err;
+}
+
+static int eth_enic_dev_uninit(struct rte_eth_dev *eth_dev)
+{
+	struct enic *enic = pmd_priv(eth_dev);
+	int err;
+
+	ENICPMD_FUNC_TRACE();
+	eth_dev->device = NULL;
+	eth_dev->intr_handle = NULL;
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+	err = rte_eth_switch_domain_free(enic->switch_domain_id);
+	if (err)
+		ENICPMD_LOG(WARNING, "failed to free switch domain: %d", err);
+	return 0;
 }
 
 static int eth_enic_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_probe(pci_dev, sizeof(struct enic),
-		eth_enicpmd_dev_init);
+	char name[RTE_ETH_NAME_MAX_LEN];
+	struct rte_eth_devargs eth_da = { .nb_representor_ports = 0 };
+	struct rte_eth_dev *pf_ethdev;
+	struct enic *pf_enic;
+	int i, retval;
+
+	ENICPMD_FUNC_TRACE();
+	if (pci_dev->device.devargs) {
+		retval = rte_eth_devargs_parse(pci_dev->device.devargs->args,
+				&eth_da);
+		if (retval)
+			return retval;
+	}
+	retval = rte_eth_dev_create(&pci_dev->device, pci_dev->device.name,
+		sizeof(struct enic),
+		eth_dev_pci_specific_init, pci_dev,
+		eth_enic_dev_init, NULL);
+	if (retval || eth_da.nb_representor_ports < 1)
+		return retval;
+
+	/* Probe VF representor */
+	pf_ethdev = rte_eth_dev_allocated(pci_dev->device.name);
+	if (pf_ethdev == NULL)
+		return -ENODEV;
+	/* Representors require flowman */
+	pf_enic = pmd_priv(pf_ethdev);
+	if (pf_enic->fm == NULL) {
+		ENICPMD_LOG(ERR, "VF representors require flowman");
+		return -ENOTSUP;
+	}
+	/*
+	 * For now representors imply switchdev, as firmware does not support
+	 * legacy mode SR-IOV
+	 */
+	pf_enic->switchdev_mode = 1;
+	/* Calculate max VF ID before initializing representor*/
+	pf_enic->max_vf_id = 0;
+	for (i = 0; i < eth_da.nb_representor_ports; i++) {
+		pf_enic->max_vf_id = RTE_MAX(pf_enic->max_vf_id,
+					     eth_da.representor_ports[i]);
+	}
+	for (i = 0; i < eth_da.nb_representor_ports; i++) {
+		struct enic_vf_representor representor;
+
+		representor.vf_id = eth_da.representor_ports[i];
+				representor.switch_domain_id =
+			pmd_priv(pf_ethdev)->switch_domain_id;
+		representor.pf = pmd_priv(pf_ethdev);
+		snprintf(name, sizeof(name), "net_%s_representor_%d",
+			pci_dev->device.name, eth_da.representor_ports[i]);
+		retval = rte_eth_dev_create(&pci_dev->device, name,
+			sizeof(struct enic_vf_representor), NULL, NULL,
+			enic_vf_representor_init, &representor);
+		if (retval) {
+			ENICPMD_LOG(ERR, "failed to create enic vf representor %s",
+				    name);
+			return retval;
+		}
+	}
+	return 0;
 }
 
 static int eth_enic_pci_remove(struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+	struct rte_eth_dev *ethdev;
+
+	ENICPMD_FUNC_TRACE();
+	ethdev = rte_eth_dev_allocated(pci_dev->device.name);
+	if (!ethdev)
+		return -ENODEV;
+	if (ethdev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR)
+		return rte_eth_dev_destroy(ethdev, enic_vf_representor_uninit);
+	else
+		return rte_eth_dev_destroy(ethdev, eth_enic_dev_uninit);
 }
 
 static struct rte_pci_driver rte_enic_pmd = {
@@ -1303,5 +1397,4 @@ RTE_PMD_REGISTER_KMOD_DEP(net_enic, "* igb_uio | uio_pci_generic | vfio-pci");
 RTE_PMD_REGISTER_PARAM_STRING(net_enic,
 	ENIC_DEVARG_DISABLE_OVERLAY "=0|1 "
 	ENIC_DEVARG_ENABLE_AVX2_RX "=0|1 "
-	ENIC_DEVARG_GENEVE_OPT "=0|1 "
 	ENIC_DEVARG_IG_VLAN_REWRITE "=trunk|untag|priority|pass");

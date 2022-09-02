@@ -2,6 +2,8 @@
 __FBSDID("$FreeBSD$");
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 Hans Petter Selasky. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -81,7 +83,8 @@ __FBSDID("$FreeBSD$");
 #ifdef USB_DEBUG
 static int octusbdebug = 0;
 
-static SYSCTL_NODE(_hw_usb, OID_AUTO, octusb, CTLFLAG_RW, 0, "OCTUSB");
+static SYSCTL_NODE(_hw_usb, OID_AUTO, octusb, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "OCTUSB");
 SYSCTL_INT(_hw_usb_octusb, OID_AUTO, debug, CTLFLAG_RWTUN,
     &octusbdebug, 0, "OCTUSB debug level");
 #endif
@@ -290,7 +293,6 @@ octusb_host_control_header_tx(struct octusb_td *td)
 	}
 	/* do control IN request */
 	if (td->qh->fixup_buf[0] & UE_DIR_IN) {
-
 		struct octusb_softc *sc;
 
 		/* get softc */
@@ -398,7 +400,6 @@ octusb_host_control_status_tx(struct octusb_td *td)
 	}
 	/* do control IN request */
 	if (!(td->qh->fixup_buf[0] & UE_DIR_IN)) {
-
 		struct octusb_softc *sc;
 
 		/* get softc */
@@ -544,7 +545,6 @@ octusb_non_control_data_rx(struct octusb_td *td)
 	got_short = 0;
 
 	if (td->qh->fixup_complete != 0) {
-
 		/* invalidate data */
 		usb_pc_cpu_invalidate(td->qh->fixup_pc);
 
@@ -766,7 +766,6 @@ octusb_standard_done(struct usb_xfer *xfer)
 	xfer->td_transfer_cache = xfer->td_transfer_first;
 
 	if (xfer->flags_int.control_xfr) {
-
 		if (xfer->flags_int.control_hdr)
 			error = octusb_standard_done_sub(xfer);
 
@@ -776,7 +775,6 @@ octusb_standard_done(struct usb_xfer *xfer)
 			goto done;
 	}
 	while (xfer->aframes != xfer->nframes) {
-
 		error = octusb_standard_done_sub(xfer);
 
 		xfer->aframes++;
@@ -829,7 +827,6 @@ octusb_start_standard_chain(struct usb_xfer *xfer)
 
 	/* poll one time */
 	if (octusb_xfer_do_fifo(xfer)) {
-
 		/* put transfer on interrupt queue */
 		usbd_transfer_enqueue(&xfer->xroot->bus->intr_q, xfer);
 
@@ -1016,9 +1013,7 @@ octusb_setup_standard_chain(struct usb_xfer *xfer)
 	/* check if we should prepend a setup message */
 
 	if (xfer->flags_int.control_xfr) {
-
 		if (xfer->flags_int.control_hdr) {
-
 			temp.func = &octusb_host_control_header_tx;
 			temp.len = xfer->frlengths[0];
 			temp.pc = xfer->frbuffers + 0;
@@ -1057,7 +1052,6 @@ octusb_setup_standard_chain(struct usb_xfer *xfer)
 		temp.pc = xfer->frbuffers + x;
 	}
 	while (x != xfer->nframes) {
-
 		/* DATA0 or DATA1 message */
 
 		temp.len = xfer->frlengths[x];
@@ -1074,13 +1068,11 @@ octusb_setup_standard_chain(struct usb_xfer *xfer)
 			}
 		}
 		if (temp.len == 0) {
-
 			/* make sure that we send an USB packet */
 
 			temp.short_pkt = 0;
 
 		} else {
-
 			/* regular data transfer */
 
 			temp.short_pkt = (xfer->flags.force_short_xfer) ? 0 : 1;
@@ -1101,7 +1093,6 @@ octusb_setup_standard_chain(struct usb_xfer *xfer)
 
 	if (xfer->flags_int.control_xfr &&
 	    !xfer->flags_int.control_act) {
-
 		temp.func = &octusb_host_control_status_tx;
 		temp.len = 0;
 		temp.pc = NULL;

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013-2015 Sandvine Inc.
  * All rights reserved.
  *
@@ -254,4 +256,3 @@ struct pci_iov_arg
 #define	IOV_GET_SCHEMA	_IOWR('p', 12, struct pci_iov_schema)
 
 #endif
-

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 Ben Gray <ben.r.gray@gmail.com>.
  * Copyright (c) 2014 Luiz Otavio O Souza <loos@freebsd.org>.
  * All rights reserved.
@@ -37,11 +39,6 @@
  * incorporate that sometime in the future.  The idea being that for transaction
  * larger than a certain size the DMA engine is used, for anything less the
  * normal interrupt/fifo driven option is used.
- *
- *
- * WARNING: This driver uses mtx_sleep and interrupts to perform transactions,
- * which means you can't do a transaction during startup before the interrupts
- * have been enabled.  Hint - the freebsd function config_intrhook_establish().
  */
 
 #include <sys/cdefs.h>
@@ -66,8 +63,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include <arm/ti/ti_cpuid.h>
-#include <arm/ti/ti_prcm.h>
-#include <arm/ti/ti_hwmods.h>
+#include <arm/ti/ti_sysc.h>
 #include <arm/ti/ti_i2c.h>
 
 #include <dev/iicbus/iiconf.h>
@@ -82,7 +78,6 @@ __FBSDID("$FreeBSD$");
 struct ti_i2c_softc
 {
 	device_t		sc_dev;
-	clk_ident_t		clk_id;
 	struct resource*	sc_irq_res;
 	struct resource*	sc_mem_res;
 	device_t		sc_iicbus;
@@ -392,7 +387,6 @@ ti_i2c_transfer(device_t dev, struct iic_msg *msgs, uint32_t nmsgs)
 	err = 0;
 	repstart = 0;
 	for (i = 0; i < nmsgs; i++) {
-
 		sc->sc_buffer = &msgs[i];
 		sc->sc_buffer_pos = 0;
 		sc->sc_error = 0;
@@ -703,7 +697,7 @@ ti_i2c_activate(device_t dev)
 	 * 1. Enable the functional and interface clocks (see Section
 	 * 23.1.5.1.1.1.1).
 	 */
-	err = ti_prcm_clk_enable(sc->clk_id);
+	err = ti_sysc_clock_enable(device_get_parent(dev));
 	if (err)
 		return (err);
 
@@ -738,8 +732,6 @@ ti_i2c_deactivate(device_t dev)
 		sc->sc_irq_h = NULL;
 	}
 
-	bus_generic_detach(sc->sc_dev);
-
 	/* Unmap the I2C controller registers. */
 	if (sc->sc_mem_res != NULL) {
 		bus_release_resource(dev, SYS_RES_MEMORY, 0, sc->sc_mem_res);
@@ -753,7 +745,7 @@ ti_i2c_deactivate(device_t dev)
 	}
 
 	/* Finally disable the functional and interface clocks. */
-	ti_prcm_clk_disable(sc->clk_id);
+	ti_sysc_clock_disable(device_get_parent(dev));
 }
 
 static int
@@ -823,7 +815,6 @@ static int
 ti_i2c_attach(device_t dev)
 {
 	int err, rid;
-	phandle_t node;
 	struct ti_i2c_softc *sc;
 	struct sysctl_ctx_list *ctx;
 	struct sysctl_oid_list *tree;
@@ -831,15 +822,6 @@ ti_i2c_attach(device_t dev)
 
  	sc = device_get_softc(dev);
 	sc->sc_dev = dev;
-
-	/* Get the i2c device id from FDT. */
-	node = ofw_bus_get_node(dev);
-	/* i2c ti,hwmods bindings is special: it start with index 1 */
-	sc->clk_id = ti_hwmods_get_clock(dev);
-	if (sc->clk_id == INVALID_CLK_IDENT) {
-		device_printf(dev, "failed to get device id using ti,hwmod\n");
-		return (ENXIO);
-	}
 
 	/* Get the memory resource for the register mapping. */
 	rid = 0;
@@ -909,8 +891,8 @@ ti_i2c_attach(device_t dev)
 		goto out;
 	}
 
-	/* Probe and attach the iicbus */
-	bus_generic_attach(dev);
+	/* Probe and attach the iicbus when interrupts are available. */
+	err = bus_delayed_attach_children(dev);
 
 out:
 	if (err) {
@@ -928,11 +910,18 @@ ti_i2c_detach(device_t dev)
 	int rv;
 
  	sc = device_get_softc(dev);
-	ti_i2c_deactivate(dev);
-	TI_I2C_LOCK_DESTROY(sc);
-	if (sc->sc_iicbus &&
+
+	if ((rv = bus_generic_detach(dev)) != 0) {
+		device_printf(dev, "cannot detach child devices\n");
+		return (rv);
+	}
+
+    if (sc->sc_iicbus &&
 	    (rv = device_delete_child(dev, sc->sc_iicbus)) != 0)
 		return (rv);
+
+	ti_i2c_deactivate(dev);
+	TI_I2C_LOCK_DESTROY(sc);
 
 	return (0);
 }
@@ -984,5 +973,5 @@ static devclass_t ti_i2c_devclass;
 DRIVER_MODULE(ti_iic, simplebus, ti_i2c_driver, ti_i2c_devclass, 0, 0);
 DRIVER_MODULE(iicbus, ti_iic, iicbus_driver, iicbus_devclass, 0, 0);
 
-MODULE_DEPEND(ti_iic, ti_prcm, 1, 1, 1);
+MODULE_DEPEND(ti_iic, ti_sysc, 1, 1, 1);
 MODULE_DEPEND(ti_iic, iicbus, 1, 1, 1);

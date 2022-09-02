@@ -1,6 +1,7 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Edward Tomasz Napierala under sponsorship
  * from the FreeBSD Foundation.
@@ -56,6 +57,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/queue.h>
 #include <sys/racct.h>
+#include <sys/rctl.h>
 #include <sys/refcount.h>
 #include <sys/rwlock.h>
 #include <sys/sysproto.h>
@@ -81,10 +83,8 @@ loginclass_hold(struct loginclass *lc)
 void
 loginclass_free(struct loginclass *lc)
 {
-	int old;
 
-	old = lc->lc_refcount;
-	if (old > 1 && atomic_cmpset_int(&lc->lc_refcount, old, old - 1))
+	if (refcount_release_if_not_last(&lc->lc_refcount))
 		return;
 
 	rw_wlock(&loginclasses_lock);
@@ -134,6 +134,12 @@ loginclass_find(const char *name)
 
 	if (name[0] == '\0' || strlen(name) >= MAXLOGNAME)
 		return (NULL);
+
+	lc = curthread->td_ucred->cr_loginclass;
+	if (strcmp(name, lc->lc_name) == 0) {
+		loginclass_hold(lc);
+		return (lc);
+	}
 
 	rw_rlock(&loginclasses_lock);
 	lc = loginclass_lookup(name);
@@ -222,9 +228,14 @@ sys_setloginclass(struct thread *td, struct setloginclass_args *uap)
 	oldcred = crcopysafe(p, newcred);
 	newcred->cr_loginclass = newlc;
 	proc_set_cred(p, newcred);
-	PROC_UNLOCK(p);
 #ifdef RACCT
 	racct_proc_ucred_changed(p, oldcred, newcred);
+	crhold(newcred);
+#endif
+	PROC_UNLOCK(p);
+#ifdef RCTL
+	rctl_proc_ucred_changed(p, newcred);
+	crfree(newcred);
 #endif
 	loginclass_free(oldcred->cr_loginclass);
 	crfree(oldcred);

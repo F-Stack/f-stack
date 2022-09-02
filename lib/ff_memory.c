@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -422,7 +422,7 @@ static inline struct rte_mbuf*     ff_bsd_to_rte(void *m, int total)
         }
         ff_next_mbuf(&p_bsdbuf, &data, &len);        // p_bsdbuf move to next mbuf.
         cur->buf_addr = data;
-        cur->buf_physaddr = ff_mem_virt2phy((const void*)(cur->buf_addr));
+        cur->buf_iova = ff_mem_virt2phy((const void*)(cur->buf_addr));
         cur->data_off = 0;
         cur->data_len = len;        
 

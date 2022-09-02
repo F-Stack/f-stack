@@ -1,4 +1,6 @@
 /*- 
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009 The FreeBSD Foundation 
  * All rights reserved. 
  * 
@@ -88,7 +90,6 @@ enum {
 
 /* Authentication Protocol Identifier */
 enum {
-	
 	IEEE80211_MESHCONF_AUTH_DISABLED	= 0,
 	/* Simultaneous Authenticaction of Equals */
 	IEEE80211_MESHCONF_AUTH_SEA		= 1,

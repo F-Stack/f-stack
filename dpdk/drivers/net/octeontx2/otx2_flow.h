@@ -54,6 +54,10 @@ enum {
 #define OTX2_FLOW_ACT_COUNT   (1 << 7)
 #define OTX2_FLOW_ACT_PF      (1 << 8)
 #define OTX2_FLOW_ACT_VF      (1 << 9)
+#define OTX2_FLOW_ACT_VLAN_STRIP (1 << 10)
+#define OTX2_FLOW_ACT_VLAN_INSERT (1 << 11)
+#define OTX2_FLOW_ACT_VLAN_ETHTYPE_INSERT (1 << 12)
+#define OTX2_FLOW_ACT_VLAN_PCP_INSERT (1 << 13)
 
 /* terminating actions */
 #define OTX2_FLOW_ACT_TERM    (OTX2_FLOW_ACT_DROP  | \
@@ -136,14 +140,6 @@ struct npc_get_datax_cfg {
 	struct npc_xtract_info flag_xtract[NPC_MAX_LD][NPC_MAX_LT];
 };
 
-struct otx2_mcam_ents_info {
-	/* Current max & min values of mcam index */
-	uint32_t max_id;
-	uint32_t min_id;
-	uint32_t free_ent;
-	uint32_t live_ent;
-};
-
 struct rte_flow {
 	uint8_t  nix_intf;
 	uint32_t  mcam_id;
@@ -153,14 +149,23 @@ struct rte_flow {
 	uint64_t mcam_data[OTX2_MAX_MCAM_WIDTH_DWORDS];
 	uint64_t mcam_mask[OTX2_MAX_MCAM_WIDTH_DWORDS];
 	uint64_t npc_action;
+	uint64_t vtag_action;
 	TAILQ_ENTRY(rte_flow) next;
 };
 
 TAILQ_HEAD(otx2_flow_list, rte_flow);
 
+struct otx2_prio_flow_entry {
+	struct rte_flow *flow;
+	TAILQ_ENTRY(otx2_prio_flow_entry) next;
+};
+
+TAILQ_HEAD(otx2_prio_flow_list_head, otx2_prio_flow_entry);
+
 /* Accessed from ethdev private - otx2_eth_dev */
 struct otx2_npc_flow_info {
 	rte_atomic32_t mark_actions;
+	uint32_t vtag_actions;
 	uint32_t keyx_supp_nmask[NPC_MAX_INTF];/* nibble mask */
 	uint32_t keyx_len[NPC_MAX_INTF];	/* per intf key len in bits */
 	uint32_t datax_len[NPC_MAX_INTF];	/* per intf data len in bits */
@@ -169,22 +174,9 @@ struct otx2_npc_flow_info {
 	otx2_dxcfg_t prx_dxcfg;			/* intf, lid, lt, extract */
 	otx2_fxcfg_t prx_fxcfg;			/* Flag extract */
 	otx2_ld_flags_t prx_lfcfg;		/* KEX LD_Flags CFG */
-	/* mcam entry info per priority level: both free & in-use */
-	struct otx2_mcam_ents_info *flow_entry_info;
-	/* Bitmap of free preallocated entries in ascending index &
-	 * descending priority
-	 */
-	struct rte_bitmap **free_entries;
-	/* Bitmap of free preallocated entries in descending index &
-	 * ascending priority
-	 */
-	struct rte_bitmap **free_entries_rev;
-	/* Bitmap of live entries in ascending index & descending priority */
-	struct rte_bitmap **live_entries;
-	/* Bitmap of live entries in descending index & ascending priority */
-	struct rte_bitmap **live_entries_rev;
 	/* Priority bucket wise tail queue of all rte_flow resources */
 	struct otx2_flow_list *flow_list;
+	struct otx2_prio_flow_list_head *prio_flow_list;
 	uint32_t rss_grps;  /* rss groups supported */
 	struct rte_bitmap *rss_grp_entries;
 	uint16_t channel; /*rx channel */
@@ -206,6 +198,7 @@ struct otx2_parse_state {
 	uint8_t flags[NPC_MAX_LID];
 	uint8_t *mcam_data; /* point to flow->mcam_data + key_len */
 	uint8_t *mcam_mask; /* point to flow->mcam_mask + key_len */
+	bool is_vf;
 };
 
 struct otx2_flow_item_info {
@@ -393,4 +386,7 @@ int otx2_flow_parse_actions(struct rte_eth_dev *dev,
 int otx2_flow_free_all_resources(struct otx2_eth_dev *hw);
 
 int otx2_flow_parse_mpls(struct otx2_parse_state *pst, int lid);
+
+void otx2_delete_prio_list_entry(struct otx2_npc_flow_info *flow_info,
+				 struct rte_flow *flow);
 #endif /* __OTX2_FLOW_H__ */

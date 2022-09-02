@@ -66,7 +66,7 @@
 
 #if !defined(NETGRAPH_MPPC_COMPRESSION) && !defined(NETGRAPH_MPPC_ENCRYPTION)
 #ifdef KLD_MODULE
-/* XXX NETGRAPH_MPPC_COMPRESSION isn't functional yet */
+#define NETGRAPH_MPPC_COMPRESSION
 #define NETGRAPH_MPPC_ENCRYPTION
 #else
 /* This case is indicative of an error in sys/conf files */
@@ -81,7 +81,6 @@ static MALLOC_DEFINE(M_NETGRAPH_MPPC, "netgraph_mppc", "netgraph mppc node");
 #endif
 
 #ifdef NETGRAPH_MPPC_COMPRESSION
-/* XXX this file doesn't exist yet, but hopefully someday it will... */
 #include <net/mppc.h>
 #endif
 #ifdef NETGRAPH_MPPC_ENCRYPTION
@@ -108,7 +107,8 @@ static MALLOC_DEFINE(M_NETGRAPH_MPPC, "netgraph_mppc", "netgraph mppc node");
  */
 #define MPPE_MAX_REKEY		1000
 
-SYSCTL_NODE(_net_graph, OID_AUTO, mppe, CTLFLAG_RW, 0, "MPPE");
+SYSCTL_NODE(_net_graph, OID_AUTO, mppe, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "MPPE");
 
 static int mppe_block_on_max_rekey = 0;
 SYSCTL_INT(_net_graph_mppe, OID_AUTO, block_on_max_rekey, CTLFLAG_RWTUN,
@@ -543,7 +543,7 @@ err1:
 			&destCnt, d->history, flags, 0);
 
 		/* Check return value */
-		KASSERT(rtn != MPPC_INVALID, ("%s: invalid", __func__));
+		/* KASSERT(rtn != MPPC_INVALID, ("%s: invalid", __func__)); */
 		if ((rtn & MPPC_EXPANDED) == 0
 		    && (rtn & MPPC_COMP_OK) == MPPC_COMP_OK) {
 			outlen -= destCnt;     
@@ -734,7 +734,6 @@ ng_mppc_decompress(node_p node, struct mbuf **datap)
 		}
 #endif
 	} else {
-
 		/* Are we expecting encryption? */
 		if ((d->cfg.bits & MPPE_BITS) != 0) {
 			log(LOG_ERR, "%s: rec'd unexpectedly %s packet",
@@ -805,7 +804,7 @@ failed:
 			&sourceCnt, &destCnt, d->history, flags);
 
 		/* Check return value */
-		KASSERT(rtn != MPPC_INVALID, ("%s: invalid", __func__));
+		/* KASSERT(rtn != MPPC_INVALID, ("%s: invalid", __func__)); */
 		if ((rtn & MPPC_DEST_EXHAUSTED) != 0
 		    || (rtn & MPPC_DECOMP_OK) != MPPC_DECOMP_OK) {
 			log(LOG_ERR, "%s: decomp returned 0x%x",
@@ -820,7 +819,7 @@ failed:
 		if (ina)
 			free(inbuf, M_NETGRAPH_MPPC);
 		outlen -= destCnt;
-	
+
 		m_copyback(m, 0, outlen, (caddr_t)outbuf);
 		if (m->m_pkthdr.len < outlen) {
 			m_freem(m);
@@ -904,4 +903,3 @@ ng_mppc_updatekey(u_int32_t bits,
 	rc4_init(rc4, key, keylen);
 }
 #endif
-

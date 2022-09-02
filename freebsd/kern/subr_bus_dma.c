@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 EMC Corp.
  * All rights reserved.
  *
@@ -31,6 +33,7 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_bus.h"
+#include "opt_iommu.h"
 
 #include <sys/param.h>
 #include <sys/conf.h>
@@ -38,6 +41,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/bio.h>
 #include <sys/bus.h>
 #include <sys/callout.h>
+#include <sys/ktr.h>
 #include <sys/mbuf.h>
 #include <sys/memdesc.h>
 #include <sys/proc.h>
@@ -50,6 +54,8 @@ __FBSDID("$FreeBSD$");
 
 #include <cam/cam.h>
 #include <cam/cam_ccb.h>
+
+#include <opencrypto/cryptodev.h>
 
 #include <machine/bus.h>
 
@@ -108,6 +114,65 @@ _bus_dmamap_load_plist(bus_dma_tag_t dmat, bus_dmamap_t map,
 }
 
 /*
+ * Load an unmapped mbuf
+ */
+static int
+_bus_dmamap_load_mbuf_epg(bus_dma_tag_t dmat, bus_dmamap_t map,
+    struct mbuf *m, bus_dma_segment_t *segs, int *nsegs, int flags)
+{
+	int error, i, off, len, pglen, pgoff, seglen, segoff;
+
+	M_ASSERTEXTPG(m);
+
+	len = m->m_len;
+	error = 0;
+
+	/* Skip over any data removed from the front. */
+	off = mtod(m, vm_offset_t);
+
+	if (m->m_epg_hdrlen != 0) {
+		if (off >= m->m_epg_hdrlen) {
+			off -= m->m_epg_hdrlen;
+		} else {
+			seglen = m->m_epg_hdrlen - off;
+			segoff = off;
+			seglen = min(seglen, len);
+			off = 0;
+			len -= seglen;
+			error = _bus_dmamap_load_buffer(dmat, map,
+			    &m->m_epg_hdr[segoff], seglen, kernel_pmap,
+			    flags, segs, nsegs);
+		}
+	}
+	pgoff = m->m_epg_1st_off;
+	for (i = 0; i < m->m_epg_npgs && error == 0 && len > 0; i++) {
+		pglen = m_epg_pagelen(m, i, pgoff);
+		if (off >= pglen) {
+			off -= pglen;
+			pgoff = 0;
+			continue;
+		}
+		seglen = pglen - off;
+		segoff = pgoff + off;
+		off = 0;
+		seglen = min(seglen, len);
+		len -= seglen;
+		error = _bus_dmamap_load_phys(dmat, map,
+		    m->m_epg_pa[i] + segoff, seglen, flags, segs, nsegs);
+		pgoff = 0;
+	};
+	if (len != 0 && error == 0) {
+		KASSERT((off + len) <= m->m_epg_trllen,
+		    ("off + len > trail (%d + %d > %d)", off, len,
+		    m->m_epg_trllen));
+		error = _bus_dmamap_load_buffer(dmat, map,
+		    &m->m_epg_trail[off], len, kernel_pmap, flags, segs,
+		    nsegs);
+	}
+	return (error);
+}
+
+/*
  * Load an mbuf chain.
  */
 static int
@@ -120,9 +185,13 @@ _bus_dmamap_load_mbuf_sg(bus_dma_tag_t dmat, bus_dmamap_t map,
 	error = 0;
 	for (m = m0; m != NULL && error == 0; m = m->m_next) {
 		if (m->m_len > 0) {
-			error = _bus_dmamap_load_buffer(dmat, map, m->m_data,
-			    m->m_len, kernel_pmap, flags | BUS_DMA_LOAD_MBUF,
-			    segs, nsegs);
+			if ((m->m_flags & M_EXTPG) != 0)
+				error = _bus_dmamap_load_mbuf_epg(dmat,
+				    map, m, segs, nsegs, flags);
+			else
+				error = _bus_dmamap_load_buffer(dmat, map,
+				    m->m_data, m->m_len, kernel_pmap,
+				    flags | BUS_DMA_LOAD_MBUF, segs, nsegs);
 		}
 	}
 	CTR5(KTR_BUSDMA, "%s: tag %p tag flags 0x%x error %d nsegs %d",
@@ -216,6 +285,16 @@ _bus_dmamap_load_ccb(bus_dma_tag_t dmat, bus_dmamap_t map, union ccb *ccb,
 		data_ptr = ataio->data_ptr;
 		dxfer_len = ataio->dxfer_len;
 		sglist_cnt = 0;
+		break;
+	}
+	case XPT_NVME_IO:
+	case XPT_NVME_ADMIN: {
+		struct ccb_nvmeio *nvmeio;
+
+		nvmeio = &ccb->nvmeio;
+		data_ptr = nvmeio->data_ptr;
+		dxfer_len = nvmeio->dxfer_len;
+		sglist_cnt = nvmeio->sglist_cnt;
 		break;
 	}
 	default:
@@ -557,3 +636,171 @@ bus_dmamap_load_mem(bus_dma_tag_t dmat, bus_dmamap_t map,
 
 	return (0);
 }
+
+int
+bus_dmamap_load_crp_buffer(bus_dma_tag_t dmat, bus_dmamap_t map,
+    struct crypto_buffer *cb, bus_dmamap_callback_t *callback,
+    void *callback_arg, int flags)
+{
+	bus_dma_segment_t *segs;
+	int error;
+	int nsegs;
+
+	flags |= BUS_DMA_NOWAIT;
+	nsegs = -1;
+	error = 0;
+	switch (cb->cb_type) {
+	case CRYPTO_BUF_CONTIG:
+		error = _bus_dmamap_load_buffer(dmat, map, cb->cb_buf,
+		    cb->cb_buf_len, kernel_pmap, flags, NULL, &nsegs);
+		break;
+	case CRYPTO_BUF_MBUF:
+		error = _bus_dmamap_load_mbuf_sg(dmat, map, cb->cb_mbuf,
+		    NULL, &nsegs, flags);
+		break;
+	case CRYPTO_BUF_UIO:
+		error = _bus_dmamap_load_uio(dmat, map, cb->cb_uio, &nsegs,
+		    flags);
+		break;
+	case CRYPTO_BUF_VMPAGE:
+		error = _bus_dmamap_load_ma(dmat, map, cb->cb_vm_page,
+		    cb->cb_vm_page_len, cb->cb_vm_page_offset, flags, NULL,
+		    &nsegs);
+		break;
+	default:
+		error = EINVAL;
+	}
+	nsegs++;
+
+	CTR5(KTR_BUSDMA, "%s: tag %p tag flags 0x%x error %d nsegs %d",
+	    __func__, dmat, flags, error, nsegs);
+
+	if (error == EINPROGRESS)
+		return (error);
+
+	segs = _bus_dmamap_complete(dmat, map, NULL, nsegs, error);
+	if (error)
+		(*callback)(callback_arg, segs, 0, error);
+	else
+		(*callback)(callback_arg, segs, nsegs, 0);
+
+	/*
+	 * Return ENOMEM to the caller so that it can pass it up the stack.
+	 * This error only happens when NOWAIT is set, so deferral is disabled.
+	 */
+	if (error == ENOMEM)
+		return (error);
+
+	return (0);
+}
+
+int
+bus_dmamap_load_crp(bus_dma_tag_t dmat, bus_dmamap_t map, struct cryptop *crp,
+    bus_dmamap_callback_t *callback, void *callback_arg, int flags)
+{
+	return (bus_dmamap_load_crp_buffer(dmat, map, &crp->crp_buf, callback,
+	    callback_arg, flags));
+}
+
+void
+bus_dma_template_init(bus_dma_template_t *t, bus_dma_tag_t parent)
+{
+
+	if (t == NULL)
+		return;
+
+	t->parent = parent;
+	t->alignment = 1;
+	t->boundary = 0;
+	t->lowaddr = t->highaddr = BUS_SPACE_MAXADDR;
+	t->maxsize = t->maxsegsize = BUS_SPACE_MAXSIZE;
+	t->nsegments = BUS_SPACE_UNRESTRICTED;
+	t->lockfunc = NULL;
+	t->lockfuncarg = NULL;
+	t->flags = 0;
+}
+
+int
+bus_dma_template_tag(bus_dma_template_t *t, bus_dma_tag_t *dmat)
+{
+
+	if (t == NULL || dmat == NULL)
+		return (EINVAL);
+
+	return (bus_dma_tag_create(t->parent, t->alignment, t->boundary,
+	    t->lowaddr, t->highaddr, NULL, NULL, t->maxsize,
+	    t->nsegments, t->maxsegsize, t->flags, t->lockfunc, t->lockfuncarg,
+	    dmat));
+}
+
+void
+bus_dma_template_fill(bus_dma_template_t *t, bus_dma_param_t *kv, u_int count)
+{
+	bus_dma_param_t *pkv;
+
+	while (count) {
+		pkv = &kv[--count];
+		switch (pkv->key) {
+		case BD_PARAM_PARENT:
+			t->parent = pkv->ptr;
+			break;
+		case BD_PARAM_ALIGNMENT:
+			t->alignment = pkv->num;
+			break;
+		case BD_PARAM_BOUNDARY:
+			t->boundary = pkv->num;
+			break;
+		case BD_PARAM_LOWADDR:
+			t->lowaddr = pkv->pa;
+			break;
+		case BD_PARAM_HIGHADDR:
+			t->highaddr = pkv->pa;
+			break;
+		case BD_PARAM_MAXSIZE:
+			t->maxsize = pkv->num;
+			break;
+		case BD_PARAM_NSEGMENTS:
+			t->nsegments = pkv->num;
+			break;
+		case BD_PARAM_MAXSEGSIZE:
+			t->maxsegsize = pkv->num;
+			break;
+		case BD_PARAM_FLAGS:
+			t->flags = pkv->num;
+			break;
+		case BD_PARAM_LOCKFUNC:
+			t->lockfunc = pkv->ptr;
+			break;
+		case BD_PARAM_LOCKFUNCARG:
+			t->lockfuncarg = pkv->ptr;
+			break;
+		case BD_PARAM_NAME:
+			t->name = pkv->ptr;
+			break;
+		case BD_PARAM_INVALID:
+		default:
+			KASSERT(0, ("Invalid key %d\n", pkv->key));
+			break;
+		}
+	}
+	return;
+}
+
+#ifndef IOMMU
+bool bus_dma_iommu_set_buswide(device_t dev);
+int bus_dma_iommu_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map,
+    vm_paddr_t start, vm_size_t length, int flags);
+
+bool
+bus_dma_iommu_set_buswide(device_t dev)
+{
+	return (false);
+}
+
+int
+bus_dma_iommu_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map,
+    vm_paddr_t start, vm_size_t length, int flags)
+{
+	return (0);
+}
+#endif

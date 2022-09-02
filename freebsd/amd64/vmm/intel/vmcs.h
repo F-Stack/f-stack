@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -30,6 +32,9 @@
 #define	_VMCS_H_
 
 #ifdef _KERNEL
+
+struct vm_snapshot_meta;
+
 struct vmcs {
 	uint32_t	identifier;
 	uint32_t	abort_code;
@@ -53,6 +58,16 @@ int	vmcs_getdesc(struct vmcs *vmcs, int running, int ident,
 		     struct seg_desc *desc);
 int	vmcs_setdesc(struct vmcs *vmcs, int running, int ident,
 		     struct seg_desc *desc);
+#ifdef BHYVE_SNAPSHOT
+int	vmcs_getany(struct vmcs *vmcs, int running, int ident, uint64_t *val);
+int	vmcs_setany(struct vmcs *vmcs, int running, int ident, uint64_t val);
+int	vmcs_snapshot_reg(struct vmcs *vmcs, int running, int ident,
+			  struct vm_snapshot_meta *meta);
+int	vmcs_snapshot_desc(struct vmcs *vmcs, int running, int seg,
+			   struct vm_snapshot_meta *meta);
+int	vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
+			  struct vm_snapshot_meta *meta);
+#endif
 
 /*
  * Avoid header pollution caused by inline use of 'vtophys()' in vmx_cpufunc.h
@@ -336,6 +351,14 @@ vmcs_write(uint32_t encoding, uint64_t val)
 #define EXIT_REASON_WBINVD		54
 #define EXIT_REASON_XSETBV		55
 #define	EXIT_REASON_APIC_WRITE		56
+#define	EXIT_REASON_RDRAND		57
+#define	EXIT_REASON_INVPCID		58
+#define	EXIT_REASON_VMFUNC		59
+#define	EXIT_REASON_ENCLS		60
+#define	EXIT_REASON_RDSEED		61
+#define	EXIT_REASON_PM_LOG_FULL		62
+#define	EXIT_REASON_XSAVES		63
+#define	EXIT_REASON_XRSTORS		64
 
 /*
  * NMI unblocking due to IRET.

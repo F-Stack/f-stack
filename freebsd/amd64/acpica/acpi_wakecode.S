@@ -34,7 +34,7 @@
 #include <machine/specialreg.h>
 #include <machine/timerreg.h>
 
-#include "assym.s"
+#include "assym.inc"
 
 /*
  * Resume entry point for real mode.
@@ -148,19 +148,28 @@ wakeup_32:
 	mov	$bootdata32 - bootgdt, %eax
 	mov	%ax, %ds
 
-	/* Turn on the PAE bit for when paging is enabled */
+	/*
+	 * Turn on the PAE bit and optionally the LA57 bit for when paging
+	 * is later enabled.
+	 */
 	mov	%cr4, %eax
 	orl	$CR4_PAE, %eax
-	mov	%eax, %cr4
+	leal	wakeup_pagetables - wakeup_start(%ebx), %ecx
+	movl	(%ecx), %ecx
+	testl	$0x1, %ecx
+	je	1f
+	orl	$CR4_LA57, %eax
+1:	mov	%eax, %cr4
 
 	/*
 	 * Enable EFER.LME so that we get long mode when all the prereqs are
 	 * in place.  In this case, it turns on when CR0_PG is finally enabled.
-	 * Pick up a few other EFER bits that we'll use need we're here.
+	 * Also it picks up a few other EFER bits that we'll use need we're
+	 * here, like SYSCALL and NX enable.
 	 */
 	movl	$MSR_EFER, %ecx
-	rdmsr
-	orl	$EFER_LME | EFER_SCE, %eax
+	movl	wakeup_efer - wakeup_start(%ebx), %eax
+	movl	wakeup_efer + 4 - wakeup_start(%ebx), %edx
 	wrmsr
 
 	/*
@@ -173,6 +182,7 @@ wakeup_32:
 	 */
 	leal	wakeup_pagetables - wakeup_start(%ebx), %eax
 	movl	(%eax), %eax
+	andl	$~0x1, %eax
 	mov	%eax, %cr3
 
 	/*
@@ -275,6 +285,8 @@ bootgdtdesc:
 wakeup_pcb:
 	.quad	0
 wakeup_ret:
+	.quad	0
+wakeup_efer:
 	.quad	0
 wakeup_gdt:
 	.word	0

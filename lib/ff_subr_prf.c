@@ -57,6 +57,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/cons.h>
 #include <sys/uio.h>
 #include <sys/ctype.h>
+#include <sys/sbuf.h>
 
 #ifdef DDB
 #include <ddb/ddb.h>
@@ -572,3 +573,16 @@ vprintf(const char *fmt, va_list ap)
 
     return (retval);
 }
+
+void
+vlog(int level, const char *fmt, va_list ap)
+{
+    (void)vprintf(fmt, ap);
+}
+
+int
+sbuf_printf_drain(void *arg, const char *data, int len)
+{
+    return 0;
+}
+

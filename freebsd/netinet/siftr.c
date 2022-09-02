@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007-2009
  * 	Swinburne University of Technology, Melbourne, Australia.
  * Copyright (c) 2009-2010, The FreeBSD Foundation
@@ -92,10 +94,12 @@ __FBSDID("$FreeBSD$");
 #include <netinet/in_systm.h>
 #include <netinet/in_var.h>
 #include <netinet/ip.h>
+#include <netinet/ip_var.h>
 #include <netinet/tcp_var.h>
 
 #ifdef SIFTR_IPV6
 #include <netinet/ip6.h>
+#include <netinet/ip6_var.h>
 #include <netinet6/in6_pcb.h>
 #endif /* SIFTR_IPV6 */
 
@@ -150,8 +154,6 @@ __FBSDID("$FreeBSD$");
 #endif
 
 /* useful macros */
-#define CAST_PTR_INT(X) (*((int*)(X)))
-
 #define UPPER_SHORT(X)	(((X) & 0xFFFF0000) >> 16)
 #define LOWER_SHORT(X)	((X) & 0x0000FFFF)
 
@@ -170,8 +172,11 @@ static MALLOC_DEFINE(M_SIFTR_HASHNODE, "siftr_hashnode",
 struct pkt_node {
 	/* Timestamp of pkt as noted in the pfil hook. */
 	struct timeval		tval;
-	/* Direction pkt is travelling; either PFIL_IN or PFIL_OUT. */
-	uint8_t			direction;
+	/* Direction pkt is travelling. */
+	enum {
+		DIR_IN = 0,
+		DIR_OUT = 1,
+	}			direction;
 	/* IP version pkt_node relates to; either INP_IPV4 or INP_IPV6. */
 	uint8_t			ipver;
 	/* Hash of the pkt which triggered the log message. */
@@ -230,9 +235,9 @@ struct pkt_node {
 	/* Number of segments currently in the reassembly queue. */
 	int			t_segqlen;
 	/* Flowid for the connection. */
-	u_int			flowid;	
+	u_int			flowid;
 	/* Flow type for the connection. */
-	u_int			flowtype;	
+	u_int			flowtype;
 	/* Link to next pkt_node in the list. */
 	STAILQ_ENTRY(pkt_node)	nodes;
 };
@@ -266,12 +271,13 @@ struct siftr_stats
 	uint32_t nskip_out_dejavu;
 };
 
-static DPCPU_DEFINE(struct siftr_stats, ss);
+DPCPU_DEFINE_STATIC(struct siftr_stats, ss);
 
 static volatile unsigned int siftr_exit_pkt_manager_thread = 0;
 static unsigned int siftr_enabled = 0;
 static unsigned int siftr_pkts_per_log = 1;
 static unsigned int siftr_generate_hashes = 0;
+static uint16_t     siftr_port_filter = 0;
 /* static unsigned int siftr_binary_log = 0; */
 static char siftr_logfile[PATH_MAX] = "/var/log/siftr.log";
 static char siftr_logfile_shadow[PATH_MAX] = "/var/log/siftr.log";
@@ -283,31 +289,28 @@ static struct alq *siftr_alq = NULL;
 static struct mtx siftr_pkt_queue_mtx;
 static struct mtx siftr_pkt_mgr_mtx;
 static struct thread *siftr_pkt_manager_thr = NULL;
-/*
- * pfil.h defines PFIL_IN as 1 and PFIL_OUT as 2,
- * which we use as an index into this array.
- */
-static char direction[3] = {'\0', 'i','o'};
+static char direction[2] = {'i','o'};
 
 /* Required function prototypes. */
 static int siftr_sysctl_enabled_handler(SYSCTL_HANDLER_ARGS);
 static int siftr_sysctl_logfile_name_handler(SYSCTL_HANDLER_ARGS);
 
-
 /* Declare the net.inet.siftr sysctl tree and populate it. */
 
 SYSCTL_DECL(_net_inet_siftr);
 
-SYSCTL_NODE(_net_inet, OID_AUTO, siftr, CTLFLAG_RW, NULL,
+SYSCTL_NODE(_net_inet, OID_AUTO, siftr, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
     "siftr related settings");
 
-SYSCTL_PROC(_net_inet_siftr, OID_AUTO, enabled, CTLTYPE_UINT|CTLFLAG_RW,
+SYSCTL_PROC(_net_inet_siftr, OID_AUTO, enabled,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
     &siftr_enabled, 0, &siftr_sysctl_enabled_handler, "IU",
     "switch siftr module operations on/off");
 
-SYSCTL_PROC(_net_inet_siftr, OID_AUTO, logfile, CTLTYPE_STRING|CTLFLAG_RW,
-    &siftr_logfile_shadow, sizeof(siftr_logfile_shadow), &siftr_sysctl_logfile_name_handler,
-    "A", "file to save siftr log messages to");
+SYSCTL_PROC(_net_inet_siftr, OID_AUTO, logfile,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &siftr_logfile_shadow,
+    sizeof(siftr_logfile_shadow), &siftr_sysctl_logfile_name_handler, "A",
+    "file to save siftr log messages to");
 
 SYSCTL_UINT(_net_inet_siftr, OID_AUTO, ppl, CTLFLAG_RW,
     &siftr_pkts_per_log, 1,
@@ -317,12 +320,15 @@ SYSCTL_UINT(_net_inet_siftr, OID_AUTO, genhashes, CTLFLAG_RW,
     &siftr_generate_hashes, 0,
     "enable packet hash generation");
 
+SYSCTL_U16(_net_inet_siftr, OID_AUTO, port_filter, CTLFLAG_RW,
+    &siftr_port_filter, 0,
+    "enable packet filter on a TCP port");
+
 /* XXX: TODO
 SYSCTL_UINT(_net_inet_siftr, OID_AUTO, binary, CTLFLAG_RW,
     &siftr_binary_log, 0,
     "write log files in binary instead of ascii");
 */
-
 
 /* Begin functions. */
 
@@ -402,7 +408,7 @@ siftr_process_pkt(struct pkt_node * pkt_node)
 			LIST_INSERT_HEAD(counter_list, hash_node, nodes);
 		} else {
 			/* Malloc failed. */
-			if (pkt_node->direction == PFIL_IN)
+			if (pkt_node->direction == DIR_IN)
 				ss->nskip_in_malloc++;
 			else
 				ss->nskip_out_malloc++;
@@ -552,7 +558,6 @@ siftr_process_pkt(struct pkt_node * pkt_node)
 	alq_post_flags(siftr_alq, log_buf, 0);
 }
 
-
 static void
 siftr_pkt_manager_thread(void *arg)
 {
@@ -630,7 +635,6 @@ siftr_pkt_manager_thread(void *arg)
 	kthread_exit();
 }
 
-
 static uint32_t
 hash_pkt(struct mbuf *m, uint32_t offset)
 {
@@ -660,7 +664,6 @@ hash_pkt(struct mbuf *m, uint32_t offset)
 
 	return (hash);
 }
-
 
 /*
  * Check if a given mbuf has the SIFTR mbuf tag. If it does, log the fact that
@@ -696,7 +699,6 @@ siftr_chkreinject(struct mbuf *m, int dir, struct siftr_stats *ss)
 	return (0);
 }
 
-
 /*
  * Look up an inpcb for a packet. Return the inpcb pointer if found, or NULL
  * otherwise.
@@ -708,7 +710,7 @@ siftr_findinpcb(int ipver, struct ip *ip, struct mbuf *m, uint16_t sport,
 	struct inpcb *inp;
 
 	/* We need the tcbinfo lock. */
-	INP_INFO_UNLOCK_ASSERT(&V_tcbinfo);
+	INP_INFO_WUNLOCK_ASSERT(&V_tcbinfo);
 
 	if (dir == PFIL_IN)
 		inp = (ipver == INP_IPV4 ?
@@ -750,7 +752,6 @@ siftr_findinpcb(int ipver, struct ip *ip, struct mbuf *m, uint16_t sport,
 
 	return (inp);
 }
-
 
 static inline void
 siftr_siftdata(struct pkt_node *pn, struct inpcb *inp, struct tcpcb *tp,
@@ -805,7 +806,7 @@ siftr_siftdata(struct pkt_node *pn, struct inpcb *inp, struct tcpcb *tp,
 		INP_RUNLOCK(inp);
 
 	pn->ipver = ipver;
-	pn->direction = dir;
+	pn->direction = (dir == PFIL_IN ? DIR_IN : DIR_OUT);
 
 	/*
 	 * Significantly more accurate than using getmicrotime(), but slower!
@@ -817,7 +818,6 @@ siftr_siftdata(struct pkt_node *pn, struct inpcb *inp, struct tcpcb *tp,
 
 }
 
-
 /*
  * pfil hook that is called for each IPv4 packet making its way through the
  * stack in either direction.
@@ -826,9 +826,9 @@ siftr_siftdata(struct pkt_node *pn, struct inpcb *inp, struct tcpcb *tp,
  * It's very important to use the M_NOWAIT flag with all function calls
  * that support it so that they won't sleep, otherwise you get a panic.
  */
-static int
-siftr_chkpkt(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+static pfil_return_t
+siftr_chkpkt(struct mbuf **m, struct ifnet *ifp, int flags,
+    void *ruleset __unused, struct inpcb *inp)
 {
 	struct pkt_node *pn;
 	struct ip *ip;
@@ -836,9 +836,10 @@ siftr_chkpkt(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
 	struct tcpcb *tp;
 	struct siftr_stats *ss;
 	unsigned int ip_hl;
-	int inp_locally_locked;
+	int inp_locally_locked, dir;
 
 	inp_locally_locked = 0;
+	dir = PFIL_DIR(flags);
 	ss = DPCPU_PTR(ss);
 
 	/*
@@ -904,6 +905,16 @@ siftr_chkpkt(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
 		else
 			ss->nskip_out_tcpcb++;
 
+		goto inp_unlock;
+	}
+
+	/*
+	 * Only pkts selected by the tcp port filter
+	 * can be inserted into the pkt_queue
+	 */
+	if ((siftr_port_filter != 0) &&
+	    (siftr_port_filter != ntohs(inp->inp_lport)) &&
+	    (siftr_port_filter != ntohs(inp->inp_fport))) {
 		goto inp_unlock;
 	}
 
@@ -992,15 +1003,12 @@ inp_unlock:
 		INP_RUNLOCK(inp);
 
 ret:
-	/* Returning 0 ensures pfil will not discard the pkt */
-	return (0);
+	return (PFIL_PASS);
 }
-
 
 #ifdef SIFTR_IPV6
 static int
-siftr_chkpkt6(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+siftr_chkpkt6(struct mbuf **m, struct ifnet *ifp, int flags, struct inpcb *inp)
 {
 	struct pkt_node *pn;
 	struct ip6_hdr *ip6;
@@ -1008,9 +1016,10 @@ siftr_chkpkt6(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
 	struct tcpcb *tp;
 	struct siftr_stats *ss;
 	unsigned int ip6_hl;
-	int inp_locally_locked;
+	int inp_locally_locked, dir;
 
 	inp_locally_locked = 0;
+	dir = PFIL_DIR(flags);
 	ss = DPCPU_PTR(ss);
 
 	/*
@@ -1083,6 +1092,16 @@ siftr_chkpkt6(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
 		goto inp_unlock6;
 	}
 
+	/*
+	 * Only pkts selected by the tcp port filter
+	 * can be inserted into the pkt_queue
+	 */
+	if ((siftr_port_filter != 0) &&
+	    (siftr_port_filter != ntohs(inp->inp_lport)) &&
+	    (siftr_port_filter != ntohs(inp->inp_fport))) {
+		goto inp_unlock6;
+	}
+
 	pn = malloc(sizeof(struct pkt_node), M_SIFTR_PKTNODE, M_NOWAIT|M_ZERO);
 
 	if (pn == NULL) {
@@ -1113,37 +1132,53 @@ ret6:
 }
 #endif /* #ifdef SIFTR_IPV6 */
 
-
+VNET_DEFINE_STATIC(pfil_hook_t, siftr_inet_hook);
+#define	V_siftr_inet_hook	VNET(siftr_inet_hook)
+#ifdef INET6
+VNET_DEFINE_STATIC(pfil_hook_t, siftr_inet6_hook);
+#define	V_siftr_inet6_hook	VNET(siftr_inet6_hook)
+#endif
 static int
 siftr_pfil(int action)
 {
-	struct pfil_head *pfh_inet;
-#ifdef SIFTR_IPV6
-	struct pfil_head *pfh_inet6;
-#endif
+	struct pfil_hook_args pha;
+	struct pfil_link_args pla;
+
+	pha.pa_version = PFIL_VERSION;
+	pha.pa_flags = PFIL_IN | PFIL_OUT;
+	pha.pa_modname = "siftr";
+	pha.pa_ruleset = NULL;
+	pha.pa_rulname = "default";
+
+	pla.pa_version = PFIL_VERSION;
+	pla.pa_flags = PFIL_IN | PFIL_OUT |
+	    PFIL_HEADPTR | PFIL_HOOKPTR;
+
 	VNET_ITERATOR_DECL(vnet_iter);
 
 	VNET_LIST_RLOCK();
 	VNET_FOREACH(vnet_iter) {
 		CURVNET_SET(vnet_iter);
-		pfh_inet = pfil_head_get(PFIL_TYPE_AF, AF_INET);
-#ifdef SIFTR_IPV6
-		pfh_inet6 = pfil_head_get(PFIL_TYPE_AF, AF_INET6);
-#endif
 
 		if (action == HOOK) {
-			pfil_add_hook(siftr_chkpkt, NULL,
-			    PFIL_IN | PFIL_OUT | PFIL_WAITOK, pfh_inet);
+			pha.pa_func = siftr_chkpkt;
+			pha.pa_type = PFIL_TYPE_IP4;
+			V_siftr_inet_hook = pfil_add_hook(&pha);
+			pla.pa_hook = V_siftr_inet_hook;
+			pla.pa_head = V_inet_pfil_head;
+			(void)pfil_link(&pla);
 #ifdef SIFTR_IPV6
-			pfil_add_hook(siftr_chkpkt6, NULL,
-			    PFIL_IN | PFIL_OUT | PFIL_WAITOK, pfh_inet6);
+			pha.pa_func = siftr_chkpkt6;
+			pha.pa_type = PFIL_TYPE_IP6;
+			V_siftr_inet6_hook = pfil_add_hook(&pha);
+			pla.pa_hook = V_siftr_inet6_hook;
+			pla.pa_head = V_inet6_pfil_head;
+			(void)pfil_link(&pla);
 #endif
 		} else if (action == UNHOOK) {
-			pfil_remove_hook(siftr_chkpkt, NULL,
-			    PFIL_IN | PFIL_OUT | PFIL_WAITOK, pfh_inet);
+			pfil_remove_hook(V_siftr_inet_hook);
 #ifdef SIFTR_IPV6
-			pfil_remove_hook(siftr_chkpkt6, NULL,
-			    PFIL_IN | PFIL_OUT | PFIL_WAITOK, pfh_inet6);
+			pfil_remove_hook(V_siftr_inet6_hook);
 #endif
 		}
 		CURVNET_RESTORE();
@@ -1152,7 +1187,6 @@ siftr_pfil(int action)
 
 	return (0);
 }
-
 
 static int
 siftr_sysctl_logfile_name_handler(SYSCTL_HANDLER_ARGS)
@@ -1199,10 +1233,10 @@ siftr_manage_ops(uint8_t action)
 	struct timeval tval;
 	struct flow_hash_node *counter, *tmp_counter;
 	struct sbuf *s;
-	int i, key_index, ret, error;
+	int i, key_index, error;
 	uint32_t bytes_to_write, total_skipped_pkts;
 	uint16_t lport, fport;
-	uint8_t *key, ipver;
+	uint8_t *key, ipver __unused;
 
 #ifdef SIFTR_IPV6
 	uint32_t laddr[4];
@@ -1219,7 +1253,7 @@ siftr_manage_ops(uint8_t action)
 	if ((s = sbuf_new(NULL, NULL, 200, SBUF_AUTOEXTEND)) == NULL)
 		return (-1);
 
-	if (action == SIFTR_ENABLE) {
+	if (action == SIFTR_ENABLE && siftr_pkt_manager_thr == NULL) {
 		/*
 		 * Create our alq
 		 * XXX: We should abort if alq_open fails!
@@ -1233,7 +1267,7 @@ siftr_manage_ops(uint8_t action)
 
 		siftr_exit_pkt_manager_thread = 0;
 
-		ret = kthread_add(&siftr_pkt_manager_thread, NULL, NULL,
+		kthread_add(&siftr_pkt_manager_thread, NULL, NULL,
 		    &siftr_pkt_manager_thr, RFNOWAIT, 0,
 		    "siftr_pkt_manager_thr");
 
@@ -1424,7 +1458,8 @@ siftr_manage_ops(uint8_t action)
 
 		alq_close(siftr_alq);
 		siftr_alq = NULL;
-	}
+	} else
+		error = EINVAL;
 
 	sbuf_delete(s);
 
@@ -1436,35 +1471,36 @@ siftr_manage_ops(uint8_t action)
 	return (error);
 }
 
-
 static int
 siftr_sysctl_enabled_handler(SYSCTL_HANDLER_ARGS)
 {
-	if (req->newptr == NULL)
-		goto skip;
+	int error;
+	uint32_t new;
 
-	/* If the value passed in isn't 0 or 1, return an error. */
-	if (CAST_PTR_INT(req->newptr) != 0 && CAST_PTR_INT(req->newptr) != 1)
-		return (1);
-
-	/* If we are changing state (0 to 1 or 1 to 0). */
-	if (CAST_PTR_INT(req->newptr) != siftr_enabled )
-		if (siftr_manage_ops(CAST_PTR_INT(req->newptr))) {
-			siftr_manage_ops(SIFTR_DISABLE);
-			return (1);
+	new = siftr_enabled;
+	error = sysctl_handle_int(oidp, &new, 0, req);
+	if (error == 0 && req->newptr != NULL) {
+		if (new > 1)
+			return (EINVAL);
+		else if (new != siftr_enabled) {
+			if ((error = siftr_manage_ops(new)) == 0) {
+				siftr_enabled = new;
+			} else {
+				siftr_manage_ops(SIFTR_DISABLE);
+			}
 		}
+	}
 
-skip:
-	return (sysctl_handle_int(oidp, arg1, arg2, req));
+	return (error);
 }
-
 
 static void
 siftr_shutdown_handler(void *arg)
 {
-	siftr_manage_ops(SIFTR_DISABLE);
+	if (siftr_enabled == 1) {
+		siftr_manage_ops(SIFTR_DISABLE);
+	}
 }
-
 
 /*
  * Module is being unloaded or machine is shutting down. Take care of cleanup.
@@ -1480,7 +1516,6 @@ deinit_siftr(void)
 
 	return (0);
 }
-
 
 /*
  * Module has just been loaded into the kernel.
@@ -1505,7 +1540,6 @@ init_siftr(void)
 
 	return (0);
 }
-
 
 /*
  * This is the function that is called to load and unload the module.
@@ -1544,7 +1578,6 @@ siftr_load_handler(module_t mod, int what, void *arg)
 
 	return (ret);
 }
-
 
 static moduledata_t siftr_mod = {
 	.name = "siftr",

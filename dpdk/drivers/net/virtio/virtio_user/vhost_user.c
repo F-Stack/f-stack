@@ -32,6 +32,7 @@ struct vhost_user_msg {
 
 #define VHOST_USER_VERSION_MASK     0x3
 #define VHOST_USER_REPLY_MASK       (0x1 << 2)
+#define VHOST_USER_NEED_REPLY_MASK  (0x1 << 3)
 	uint32_t flags;
 	uint32_t size; /* the following payload size */
 	union {
@@ -43,7 +44,7 @@ struct vhost_user_msg {
 		struct vhost_memory memory;
 	} payload;
 	int fds[VHOST_MEMORY_MAX_NREGIONS];
-} __attribute((packed));
+} __rte_packed;
 
 #define VHOST_USER_HDR_SIZE offsetof(struct vhost_user_msg, payload.u64)
 #define VHOST_USER_PAYLOAD_SIZE \
@@ -241,6 +242,10 @@ const char * const vhost_msg_strings[] = {
 	[VHOST_USER_SET_VRING_KICK] = "VHOST_SET_VRING_KICK",
 	[VHOST_USER_SET_MEM_TABLE] = "VHOST_SET_MEM_TABLE",
 	[VHOST_USER_SET_VRING_ENABLE] = "VHOST_SET_VRING_ENABLE",
+	[VHOST_USER_GET_PROTOCOL_FEATURES] = "VHOST_USER_GET_PROTOCOL_FEATURES",
+	[VHOST_USER_SET_PROTOCOL_FEATURES] = "VHOST_USER_SET_PROTOCOL_FEATURES",
+	[VHOST_USER_SET_STATUS] = "VHOST_SET_STATUS",
+	[VHOST_USER_GET_STATUS] = "VHOST_GET_STATUS",
 };
 
 static int
@@ -251,6 +256,7 @@ vhost_user_sock(struct virtio_user_dev *dev,
 	struct vhost_user_msg msg;
 	struct vhost_vring_file *file = 0;
 	int need_reply = 0;
+	int has_reply_ack = 0;
 	int fds[VHOST_MEMORY_MAX_NREGIONS];
 	int fd_num = 0;
 	int len;
@@ -263,18 +269,43 @@ vhost_user_sock(struct virtio_user_dev *dev,
 	if (dev->is_server && vhostfd < 0)
 		return -1;
 
+	if (dev->protocol_features & (1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK))
+		has_reply_ack = 1;
+
 	msg.request = req;
 	msg.flags = VHOST_USER_VERSION;
 	msg.size = 0;
 
 	switch (req) {
+	case VHOST_USER_GET_STATUS:
+		if (!(dev->status & VIRTIO_CONFIG_STATUS_FEATURES_OK) ||
+		    (!(dev->protocol_features &
+				(1ULL << VHOST_USER_PROTOCOL_F_STATUS))))
+			return -ENOTSUP;
+		/* Fallthrough */
 	case VHOST_USER_GET_FEATURES:
+	case VHOST_USER_GET_PROTOCOL_FEATURES:
 		need_reply = 1;
 		break;
 
-	case VHOST_USER_SET_FEATURES:
+	case VHOST_USER_SET_STATUS:
+		if (!(dev->status & VIRTIO_CONFIG_STATUS_FEATURES_OK) ||
+		    (!(dev->protocol_features &
+				(1ULL << VHOST_USER_PROTOCOL_F_STATUS))))
+			return -ENOTSUP;
+
+		if (has_reply_ack)
+			msg.flags |= VHOST_USER_NEED_REPLY_MASK;
+		/* Fallthrough */
+	case VHOST_USER_SET_PROTOCOL_FEATURES:
 	case VHOST_USER_SET_LOG_BASE:
 		msg.payload.u64 = *((__u64 *)arg);
+		msg.size = sizeof(m.payload.u64);
+		break;
+
+	case VHOST_USER_SET_FEATURES:
+		msg.payload.u64 = *((__u64 *)arg) | (dev->device_features &
+			(1ULL << VHOST_USER_F_PROTOCOL_FEATURES));
 		msg.size = sizeof(m.payload.u64);
 		break;
 
@@ -289,6 +320,9 @@ vhost_user_sock(struct virtio_user_dev *dev,
 		msg.size = sizeof(m.payload.memory.nregions);
 		msg.size += sizeof(m.payload.memory.padding);
 		msg.size += fd_num * sizeof(struct vhost_memory_region);
+
+		if (has_reply_ack)
+			msg.flags |= VHOST_USER_NEED_REPLY_MASK;
 		break;
 
 	case VHOST_USER_SET_LOG_FD:
@@ -337,7 +371,7 @@ vhost_user_sock(struct virtio_user_dev *dev,
 		return -1;
 	}
 
-	if (need_reply) {
+	if (need_reply || msg.flags & VHOST_USER_NEED_REPLY_MASK) {
 		if (vhost_user_read(vhostfd, &msg) < 0) {
 			PMD_DRV_LOG(ERR, "Received msg failed: %s",
 				    strerror(errno));
@@ -351,6 +385,8 @@ vhost_user_sock(struct virtio_user_dev *dev,
 
 		switch (req) {
 		case VHOST_USER_GET_FEATURES:
+		case VHOST_USER_GET_STATUS:
+		case VHOST_USER_GET_PROTOCOL_FEATURES:
 			if (msg.size != sizeof(m.payload.u64)) {
 				PMD_DRV_LOG(ERR, "Received bad msg size");
 				return -1;
@@ -366,8 +402,18 @@ vhost_user_sock(struct virtio_user_dev *dev,
 			       sizeof(struct vhost_vring_state));
 			break;
 		default:
-			PMD_DRV_LOG(ERR, "Received unexpected msg type");
-			return -1;
+			/* Reply-ack handling */
+			if (msg.size != sizeof(m.payload.u64)) {
+				PMD_DRV_LOG(ERR, "Received bad msg size");
+				return -1;
+			}
+
+			if (msg.payload.u64 != 0) {
+				PMD_DRV_LOG(ERR, "Slave replied NACK");
+				return -1;
+			}
+
+			break;
 		}
 	}
 

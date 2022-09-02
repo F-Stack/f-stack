@@ -5,7 +5,7 @@
 MLX4 poll mode driver library
 =============================
 
-The MLX4 poll mode driver library (**librte_pmd_mlx4**) implements support
+The MLX4 poll mode driver library (**librte_net_mlx4**) implements support
 for **Mellanox ConnectX-3** and **Mellanox ConnectX-3 Pro** 10/40 Gbps adapters
 as well as their virtual functions (VF) in SR-IOV context.
 
@@ -16,24 +16,19 @@ the `Mellanox community <http://community.mellanox.com/welcome>`_.
 There is also a `section dedicated to this poll mode driver
 <https://developer.nvidia.com/networking/dpdk>`_.
 
-.. note::
-
-   Due to external dependencies, this driver is disabled by default. It must
-   be enabled manually by setting ``CONFIG_RTE_LIBRTE_MLX4_PMD=y`` and
-   recompiling DPDK.
 
 Implementation details
 ----------------------
 
 Most Mellanox ConnectX-3 devices provide two ports but expose a single PCI
-bus address, thus unlike most drivers, librte_pmd_mlx4 registers itself as a
+bus address, thus unlike most drivers, librte_net_mlx4 registers itself as a
 PCI driver that allocates one Ethernet device per detected port.
 
-For this reason, one cannot white/blacklist a single port without also
-white/blacklisting the others on the same device.
+For this reason, one cannot block (or allow) a single port without also
+blocking (or allowing) the others on the same device.
 
 Besides its dependency on libibverbs (that implies libmlx4 and associated
-kernel support), librte_pmd_mlx4 relies heavily on system calls for control
+kernel support), librte_net_mlx4 relies heavily on system calls for control
 operations such as querying/updating the MTU and flow control parameters.
 
 For security reasons and robustness, this driver only deals with virtual
@@ -48,7 +43,7 @@ long as they share the same MAC address.
 
 The :ref:`flow_isolated_mode` is supported.
 
-Compiling librte_pmd_mlx4 causes DPDK to be linked against libibverbs.
+Compiling librte_net_mlx4 causes DPDK to be linked against libibverbs.
 
 Configuration
 -------------
@@ -56,45 +51,19 @@ Configuration
 Compilation options
 ~~~~~~~~~~~~~~~~~~~
 
-These options can be modified in the ``.config`` file.
+The ibverbs libraries can be linked with this PMD in a number of ways,
+configured by the ``ibverbs_link`` build option:
 
-- ``CONFIG_RTE_LIBRTE_MLX4_PMD`` (default **n**)
+- ``shared`` (default): the PMD depends on some .so files.
 
-  Toggle compilation of librte_pmd_mlx4 itself.
+- ``dlopen``: Split the dependencies glue in a separate library
+  loaded when needed by dlopen.
+  It make dependencies on libibverbs and libmlx4 optional,
+  and has no performance impact.
 
-- ``CONFIG_RTE_IBVERBS_LINK_DLOPEN`` (default **n**)
-
-  Build PMD with additional code to make it loadable without hard
-  dependencies on **libibverbs** nor **libmlx4**, which may not be installed
-  on the target system.
-
-  In this mode, their presence is still required for it to run properly,
-  however their absence won't prevent a DPDK application from starting (with
-  ``CONFIG_RTE_BUILD_SHARED_LIB`` disabled) and they won't show up as
-  missing with ``ldd(1)``.
-
-  It works by moving these dependencies to a purpose-built rdma-core "glue"
-  plug-in which must either be installed in a directory whose name is based
-  on ``CONFIG_RTE_EAL_PMD_PATH`` suffixed with ``-glue`` if set, or in a
-  standard location for the dynamic linker (e.g. ``/lib``) if left to the
-  default empty string (``""``).
-
-  This option has no performance impact.
-
-- ``CONFIG_RTE_IBVERBS_LINK_STATIC`` (default **n**)
-
-  Embed static flavor of the dependencies **libibverbs** and **libmlx4**
+- ``static``: Embed static flavor of the dependencies libibverbs and libmlx4
   in the PMD shared library or the executable static binary.
 
-- ``CONFIG_RTE_LIBRTE_MLX4_DEBUG`` (default **n**)
-
-  Toggle debugging code and stricter compilation flags. Enabling this option
-  adds additional run-time checks and debugging messages at the cost of
-  lower performance.
-
-This option is available in meson:
-
-- ``ibverbs_link`` can be ``static``, ``shared``, or ``dlopen``.
 
 Environment variables
 ~~~~~~~~~~~~~~~~~~~~~
@@ -104,14 +73,11 @@ Environment variables
   A list of directories in which to search for the rdma-core "glue" plug-in,
   separated by colons or semi-colons.
 
-  Only matters when compiled with ``CONFIG_RTE_IBVERBS_LINK_DLOPEN``
-  enabled and most useful when ``CONFIG_RTE_EAL_PMD_PATH`` is also set,
-  since ``LD_LIBRARY_PATH`` has no effect in this case.
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~
 
-- librte_pmd_mlx4 brings kernel network interfaces up during initialization
+- librte_net_mlx4 brings kernel network interfaces up during initialization
   because it is affected by their state. Forcing them down prevents packets
   reception.
 
@@ -138,7 +104,7 @@ Kernel module parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 The **mlx4_core** kernel module has several parameters that affect the
-behavior and/or the performance of librte_pmd_mlx4. Some of them are described
+behavior and/or the performance of librte_net_mlx4. Some of them are described
 below.
 
 - **num_vfs** (integer or triplet, optionally prefixed by device address
@@ -185,7 +151,7 @@ DPDK and must be installed separately:
 
 - **libibverbs** (provided by rdma-core package)
 
-  User space verbs framework used by librte_pmd_mlx4. This library provides
+  User space verbs framework used by librte_net_mlx4. This library provides
   a generic interface between the kernel and low-level user space drivers
   such as libmlx4.
 
@@ -212,7 +178,7 @@ DPDK and must be installed separately:
 
   - mlx4_core: hardware driver managing Mellanox ConnectX-3 devices.
   - mlx4_en: Ethernet device driver that provides kernel network interfaces.
-  - mlx4_ib: InifiniBand device driver.
+  - mlx4_ib: InfiniBand device driver.
   - ib_uverbs: user space driver for verbs (entry point for libibverbs).
 
 - **Firmware update**
@@ -244,13 +210,6 @@ Current RDMA core package and Linux kernel (recommended)
     ninja
 
 .. _`RDMA core installation documentation`: https://raw.githubusercontent.com/linux-rdma/rdma-core/master/README.md
-
-If rdma-core libraries are built but not installed, DPDK makefile can link them,
-thanks to these environment variables:
-
-   - ``EXTRA_CFLAGS=-I/path/to/rdma-core/build/include``
-   - ``EXTRA_LDFLAGS=-L/path/to/rdma-core/build/lib``
-   - ``PKG_CONFIG_PATH=/path/to/rdma-core/build/lib/pkgconfig``
 
 .. _Mellanox_OFED_as_a_fallback:
 
@@ -335,8 +294,8 @@ Quick Start Guide
 
         service openibd restart
 
-4. Compile DPDK and you are ready to go. See instructions on
-   :ref:`Development Kit Build System <Development_Kit_Build_System>`
+4. Install DPDK and you are ready to go.
+   See :doc:`compilation instructions <../linux_gsg/build_dpdk>`.
 
 Performance tuning
 ------------------
@@ -394,7 +353,7 @@ Usage example
 -------------
 
 This section demonstrates how to launch **testpmd** with Mellanox ConnectX-3
-devices managed by librte_pmd_mlx4.
+devices managed by librte_net_mlx4.
 
 #. Load the kernel modules::
 
@@ -422,7 +381,7 @@ devices managed by librte_pmd_mlx4.
       eth4
       eth5
 
-#. Optionally, retrieve their PCI bus addresses for whitelisting::
+#. Optionally, retrieve their PCI bus addresses to be used with the allow argument::
 
       {
           for intf in eth2 eth3 eth4 eth5;
@@ -430,14 +389,14 @@ devices managed by librte_pmd_mlx4.
               (cd "/sys/class/net/${intf}/device/" && pwd -P);
           done;
       } |
-      sed -n 's,.*/\(.*\),-w \1,p'
+      sed -n 's,.*/\(.*\),-a \1,p'
 
    Example output::
 
-      -w 0000:83:00.0
-      -w 0000:83:00.0
-      -w 0000:84:00.0
-      -w 0000:84:00.0
+      -a 0000:83:00.0
+      -a 0000:83:00.0
+      -a 0000:84:00.0
+      -a 0000:84:00.0
 
    .. note::
 
@@ -450,39 +409,39 @@ devices managed by librte_pmd_mlx4.
 
 #. Start testpmd with basic parameters::
 
-      testpmd -l 8-15 -n 4 -w 0000:83:00.0 -w 0000:84:00.0 -- --rxq=2 --txq=2 -i
+      testpmd -l 8-15 -n 4 -a 0000:83:00.0 -a 0000:84:00.0 -- --rxq=2 --txq=2 -i
 
    Example output::
 
       [...]
       EAL: PCI device 0000:83:00.0 on NUMA socket 1
-      EAL:   probe driver: 15b3:1007 librte_pmd_mlx4
-      PMD: librte_pmd_mlx4: PCI information matches, using device "mlx4_0" (VF: false)
-      PMD: librte_pmd_mlx4: 2 port(s) detected
-      PMD: librte_pmd_mlx4: port 1 MAC address is 00:02:c9:b5:b7:50
-      PMD: librte_pmd_mlx4: port 2 MAC address is 00:02:c9:b5:b7:51
+      EAL:   probe driver: 15b3:1007 librte_net_mlx4
+      PMD: librte_net_mlx4: PCI information matches, using device "mlx4_0" (VF: false)
+      PMD: librte_net_mlx4: 2 port(s) detected
+      PMD: librte_net_mlx4: port 1 MAC address is 00:02:c9:b5:b7:50
+      PMD: librte_net_mlx4: port 2 MAC address is 00:02:c9:b5:b7:51
       EAL: PCI device 0000:84:00.0 on NUMA socket 1
-      EAL:   probe driver: 15b3:1007 librte_pmd_mlx4
-      PMD: librte_pmd_mlx4: PCI information matches, using device "mlx4_1" (VF: false)
-      PMD: librte_pmd_mlx4: 2 port(s) detected
-      PMD: librte_pmd_mlx4: port 1 MAC address is 00:02:c9:b5:ba:b0
-      PMD: librte_pmd_mlx4: port 2 MAC address is 00:02:c9:b5:ba:b1
+      EAL:   probe driver: 15b3:1007 librte_net_mlx4
+      PMD: librte_net_mlx4: PCI information matches, using device "mlx4_1" (VF: false)
+      PMD: librte_net_mlx4: 2 port(s) detected
+      PMD: librte_net_mlx4: port 1 MAC address is 00:02:c9:b5:ba:b0
+      PMD: librte_net_mlx4: port 2 MAC address is 00:02:c9:b5:ba:b1
       Interactive-mode selected
       Configuring Port 0 (socket 0)
-      PMD: librte_pmd_mlx4: 0x867d60: TX queues number update: 0 -> 2
-      PMD: librte_pmd_mlx4: 0x867d60: RX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867d60: TX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867d60: RX queues number update: 0 -> 2
       Port 0: 00:02:C9:B5:B7:50
       Configuring Port 1 (socket 0)
-      PMD: librte_pmd_mlx4: 0x867da0: TX queues number update: 0 -> 2
-      PMD: librte_pmd_mlx4: 0x867da0: RX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867da0: TX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867da0: RX queues number update: 0 -> 2
       Port 1: 00:02:C9:B5:B7:51
       Configuring Port 2 (socket 0)
-      PMD: librte_pmd_mlx4: 0x867de0: TX queues number update: 0 -> 2
-      PMD: librte_pmd_mlx4: 0x867de0: RX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867de0: TX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867de0: RX queues number update: 0 -> 2
       Port 2: 00:02:C9:B5:BA:B0
       Configuring Port 3 (socket 0)
-      PMD: librte_pmd_mlx4: 0x867e20: TX queues number update: 0 -> 2
-      PMD: librte_pmd_mlx4: 0x867e20: RX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867e20: TX queues number update: 0 -> 2
+      PMD: librte_net_mlx4: 0x867e20: RX queues number update: 0 -> 2
       Port 3: 00:02:C9:B5:BA:B1
       Checking link statuses...
       Port 0 Link Up - speed 10000 Mbps - full-duplex

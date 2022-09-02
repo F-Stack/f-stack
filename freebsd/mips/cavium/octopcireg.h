@@ -1,4 +1,6 @@
 /***********************license start************************************
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2005-2007 Cavium Networks (support@cavium.com). All rights
  * reserved.
  *
@@ -87,7 +89,6 @@ typedef union
         uint64_t    addr        : 32;
     } s;
 } octeon_pci_io_space_address_t;
-
 
 #define CVMX_OCT_SUBDID_PCI_CFG     1
 #define CVMX_OCT_SUBDID_PCI_IO      2

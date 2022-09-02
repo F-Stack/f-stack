@@ -72,7 +72,7 @@
 
 #ifdef RTE_MBUF_REFCNT_ATOMIC
 
-static volatile uint32_t refcnt_stop_slaves;
+static volatile uint32_t refcnt_stop_workers;
 static unsigned refcnt_lcore[RTE_MAX_LCORE];
 
 #endif
@@ -310,8 +310,17 @@ fail:
 	return -1;
 }
 
+static uint16_t
+testclone_refcnt_read(struct rte_mbuf *m)
+{
+	return RTE_MBUF_HAS_PINNED_EXTBUF(m) ?
+	       rte_mbuf_ext_refcnt_read(m->shinfo) :
+	       rte_mbuf_refcnt_read(m);
+}
+
 static int
-testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool)
+testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool,
+				struct rte_mempool *clone_pool)
 {
 	struct rte_mbuf *m = NULL;
 	struct rte_mbuf *clone = NULL;
@@ -331,7 +340,7 @@ testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool)
 	*data = MAGIC_DATA;
 
 	/* clone the allocated mbuf */
-	clone = rte_pktmbuf_clone(m, pktmbuf_pool);
+	clone = rte_pktmbuf_clone(m, clone_pool);
 	if (clone == NULL)
 		GOTO_FAIL("cannot clone data\n");
 
@@ -339,7 +348,7 @@ testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool)
 	if (*data != MAGIC_DATA)
 		GOTO_FAIL("invalid data in clone\n");
 
-	if (rte_mbuf_refcnt_read(m) != 2)
+	if (testclone_refcnt_read(m) != 2)
 		GOTO_FAIL("invalid refcnt in m\n");
 
 	/* free the clone */
@@ -358,7 +367,7 @@ testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool)
 	data = rte_pktmbuf_mtod(m->next, unaligned_uint32_t *);
 	*data = MAGIC_DATA;
 
-	clone = rte_pktmbuf_clone(m, pktmbuf_pool);
+	clone = rte_pktmbuf_clone(m, clone_pool);
 	if (clone == NULL)
 		GOTO_FAIL("cannot clone data\n");
 
@@ -370,15 +379,15 @@ testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool)
 	if (*data != MAGIC_DATA)
 		GOTO_FAIL("invalid data in clone->next\n");
 
-	if (rte_mbuf_refcnt_read(m) != 2)
+	if (testclone_refcnt_read(m) != 2)
 		GOTO_FAIL("invalid refcnt in m\n");
 
-	if (rte_mbuf_refcnt_read(m->next) != 2)
+	if (testclone_refcnt_read(m->next) != 2)
 		GOTO_FAIL("invalid refcnt in m->next\n");
 
 	/* try to clone the clone */
 
-	clone2 = rte_pktmbuf_clone(clone, pktmbuf_pool);
+	clone2 = rte_pktmbuf_clone(clone, clone_pool);
 	if (clone2 == NULL)
 		GOTO_FAIL("cannot clone the clone\n");
 
@@ -390,10 +399,10 @@ testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool)
 	if (*data != MAGIC_DATA)
 		GOTO_FAIL("invalid data in clone2->next\n");
 
-	if (rte_mbuf_refcnt_read(m) != 3)
+	if (testclone_refcnt_read(m) != 3)
 		GOTO_FAIL("invalid refcnt in m\n");
 
-	if (rte_mbuf_refcnt_read(m->next) != 3)
+	if (testclone_refcnt_read(m->next) != 3)
 		GOTO_FAIL("invalid refcnt in m->next\n");
 
 	/* free mbuf */
@@ -418,7 +427,8 @@ fail:
 }
 
 static int
-test_pktmbuf_copy(struct rte_mempool *pktmbuf_pool)
+test_pktmbuf_copy(struct rte_mempool *pktmbuf_pool,
+		  struct rte_mempool *clone_pool)
 {
 	struct rte_mbuf *m = NULL;
 	struct rte_mbuf *copy = NULL;
@@ -458,11 +468,14 @@ test_pktmbuf_copy(struct rte_mempool *pktmbuf_pool)
 	copy = NULL;
 
 	/* same test with a cloned mbuf */
-	clone = rte_pktmbuf_clone(m, pktmbuf_pool);
+	clone = rte_pktmbuf_clone(m, clone_pool);
 	if (clone == NULL)
 		GOTO_FAIL("cannot clone data\n");
 
-	if (!RTE_MBUF_CLONED(clone))
+	if ((!RTE_MBUF_HAS_PINNED_EXTBUF(m) &&
+	     !RTE_MBUF_CLONED(clone)) ||
+	    (RTE_MBUF_HAS_PINNED_EXTBUF(m) &&
+	     !RTE_MBUF_HAS_EXTBUF(clone)))
 		GOTO_FAIL("clone did not give a cloned mbuf\n");
 
 	copy = rte_pktmbuf_copy(clone, pktmbuf_pool, 0, UINT32_MAX);
@@ -987,7 +1000,7 @@ test_pktmbuf_free_segment(struct rte_mempool *pktmbuf_pool)
 #ifdef RTE_MBUF_REFCNT_ATOMIC
 
 static int
-test_refcnt_slave(void *arg)
+test_refcnt_worker(void *arg)
 {
 	unsigned lcore, free;
 	void *mp = 0;
@@ -997,7 +1010,7 @@ test_refcnt_slave(void *arg)
 	printf("%s started at lcore %u\n", __func__, lcore);
 
 	free = 0;
-	while (refcnt_stop_slaves == 0) {
+	while (refcnt_stop_workers == 0) {
 		if (rte_ring_dequeue(refcnt_mbuf_ring, &mp) == 0) {
 			free++;
 			rte_pktmbuf_free(mp);
@@ -1025,7 +1038,7 @@ test_refcnt_iter(unsigned int lcore, unsigned int iter,
 	/* For each mbuf in the pool:
 	 * - allocate mbuf,
 	 * - increment it's reference up to N+1,
-	 * - enqueue it N times into the ring for slave cores to free.
+	 * - enqueue it N times into the ring for worker cores to free.
 	 */
 	for (i = 0, n = rte_mempool_avail_count(refcnt_pool);
 	    i != n && (m = rte_pktmbuf_alloc(refcnt_pool)) != NULL;
@@ -1049,7 +1062,7 @@ test_refcnt_iter(unsigned int lcore, unsigned int iter,
 		rte_panic("(lcore=%u, iter=%u): was able to allocate only "
 		          "%u from %u mbufs\n", lcore, iter, i, n);
 
-	/* wait till slave lcores  will consume all mbufs */
+	/* wait till worker lcores  will consume all mbufs */
 	while (!rte_ring_empty(refcnt_mbuf_ring))
 		;
 
@@ -1070,7 +1083,7 @@ test_refcnt_iter(unsigned int lcore, unsigned int iter,
 }
 
 static int
-test_refcnt_master(struct rte_mempool *refcnt_pool,
+test_refcnt_main(struct rte_mempool *refcnt_pool,
 		   struct rte_ring *refcnt_mbuf_ring)
 {
 	unsigned i, lcore;
@@ -1081,7 +1094,7 @@ test_refcnt_master(struct rte_mempool *refcnt_pool,
 	for (i = 0; i != REFCNT_MAX_ITER; i++)
 		test_refcnt_iter(lcore, i, refcnt_pool, refcnt_mbuf_ring);
 
-	refcnt_stop_slaves = 1;
+	refcnt_stop_workers = 1;
 	rte_wmb();
 
 	printf("%s finished at lcore %u\n", __func__, lcore);
@@ -1094,7 +1107,7 @@ static int
 test_refcnt_mbuf(void)
 {
 #ifdef RTE_MBUF_REFCNT_ATOMIC
-	unsigned int master, slave, tref;
+	unsigned int main_lcore, worker, tref;
 	int ret = -1;
 	struct rte_mempool *refcnt_pool = NULL;
 	struct rte_ring *refcnt_mbuf_ring = NULL;
@@ -1113,39 +1126,38 @@ test_refcnt_mbuf(void)
 					      SOCKET_ID_ANY);
 	if (refcnt_pool == NULL) {
 		printf("%s: cannot allocate " MAKE_STRING(refcnt_pool) "\n",
-		    __func__);
+		       __func__);
 		return -1;
 	}
 
 	refcnt_mbuf_ring = rte_ring_create("refcnt_mbuf_ring",
-			rte_align32pow2(REFCNT_RING_SIZE), SOCKET_ID_ANY,
-					RING_F_SP_ENQ);
+					   rte_align32pow2(REFCNT_RING_SIZE), SOCKET_ID_ANY,
+					   RING_F_SP_ENQ);
 	if (refcnt_mbuf_ring == NULL) {
 		printf("%s: cannot allocate " MAKE_STRING(refcnt_mbuf_ring)
-		    "\n", __func__);
+		       "\n", __func__);
 		goto err;
 	}
 
-	refcnt_stop_slaves = 0;
+	refcnt_stop_workers = 0;
 	memset(refcnt_lcore, 0, sizeof (refcnt_lcore));
 
-	rte_eal_mp_remote_launch(test_refcnt_slave, refcnt_mbuf_ring,
-				 SKIP_MASTER);
+	rte_eal_mp_remote_launch(test_refcnt_worker, refcnt_mbuf_ring, SKIP_MAIN);
 
-	test_refcnt_master(refcnt_pool, refcnt_mbuf_ring);
+	test_refcnt_main(refcnt_pool, refcnt_mbuf_ring);
 
 	rte_eal_mp_wait_lcore();
 
 	/* check that we processed all references */
 	tref = 0;
-	master = rte_get_master_lcore();
+	main_lcore = rte_get_main_lcore();
 
-	RTE_LCORE_FOREACH_SLAVE(slave)
-		tref += refcnt_lcore[slave];
+	RTE_LCORE_FOREACH_WORKER(worker)
+		tref += refcnt_lcore[worker];
 
-	if (tref != refcnt_lcore[master])
+	if (tref != refcnt_lcore[main_lcore])
 		rte_panic("referenced mbufs: %u, freed mbufs: %u\n",
-		          tref, refcnt_lcore[master]);
+			  tref, refcnt_lcore[main_lcore]);
 
 	rte_mempool_dump(stdout, refcnt_pool);
 	rte_ring_dump(stdout, refcnt_mbuf_ring);
@@ -1162,6 +1174,8 @@ err:
 }
 
 #include <unistd.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 
 /* use fork() to test mbuf errors panic */
@@ -1174,9 +1188,14 @@ verify_mbuf_check_panics(struct rte_mbuf *buf)
 	pid = fork();
 
 	if (pid == 0) {
+		struct rlimit rl;
+
+		/* No need to generate a coredump when panicking. */
+		rl.rlim_cur = rl.rlim_max = 0;
+		setrlimit(RLIMIT_CORE, &rl);
 		rte_mbuf_sanity_check(buf, 1); /* should panic */
 		exit(0);  /* return normally if it doesn't panic */
-	} else if (pid < 0){
+	} else if (pid < 0) {
 		printf("Fork Failed\n");
 		return -1;
 	}
@@ -1199,6 +1218,7 @@ test_failing_mbuf_sanity_check(struct rte_mempool *pktmbuf_pool)
 	buf = rte_pktmbuf_alloc(pktmbuf_pool);
 	if (buf == NULL)
 		return -1;
+
 	printf("Checking good mbuf initially\n");
 	if (verify_mbuf_check_panics(buf) != -1)
 		return -1;
@@ -1608,7 +1628,6 @@ test_get_rx_ol_flag_name(void)
 		VAL_NAME(PKT_RX_FDIR_FLX),
 		VAL_NAME(PKT_RX_QINQ_STRIPPED),
 		VAL_NAME(PKT_RX_LRO),
-		VAL_NAME(PKT_RX_TIMESTAMP),
 		VAL_NAME(PKT_RX_SEC_OFFLOAD),
 		VAL_NAME(PKT_RX_SEC_OFFLOAD_FAILED),
 		VAL_NAME(PKT_RX_OUTER_L4_CKSUM_BAD),
@@ -2282,16 +2301,16 @@ fail:
 
 /* Define a free call back function to be used for external buffer */
 static void
-ext_buf_free_callback_fn(void *addr __rte_unused, void *opaque)
+ext_buf_free_callback_fn(void *addr, void *opaque)
 {
-	void *ext_buf_addr = opaque;
+	bool *freed = opaque;
 
-	if (ext_buf_addr == NULL) {
+	if (addr == NULL) {
 		printf("External buffer address is invalid\n");
 		return;
 	}
-	rte_free(ext_buf_addr);
-	ext_buf_addr = NULL;
+	rte_free(addr);
+	*freed = true;
 	printf("External buffer freed via callback\n");
 }
 
@@ -2315,6 +2334,7 @@ test_pktmbuf_ext_shinfo_init_helper(struct rte_mempool *pktmbuf_pool)
 	void *ext_buf_addr = NULL;
 	uint16_t buf_len = EXT_BUF_TEST_DATA_LEN +
 				sizeof(struct rte_mbuf_ext_shared_info);
+	bool freed = false;
 
 	/* alloc a mbuf */
 	m = rte_pktmbuf_alloc(pktmbuf_pool);
@@ -2330,7 +2350,7 @@ test_pktmbuf_ext_shinfo_init_helper(struct rte_mempool *pktmbuf_pool)
 		GOTO_FAIL("%s: External buffer allocation failed\n", __func__);
 
 	ret_shinfo = rte_pktmbuf_ext_shinfo_init_helper(ext_buf_addr, &buf_len,
-		ext_buf_free_callback_fn, ext_buf_addr);
+		ext_buf_free_callback_fn, &freed);
 	if (ret_shinfo == NULL)
 		GOTO_FAIL("%s: Shared info initialization failed!\n", __func__);
 
@@ -2363,26 +2383,35 @@ test_pktmbuf_ext_shinfo_init_helper(struct rte_mempool *pktmbuf_pool)
 
 	if (rte_mbuf_ext_refcnt_read(ret_shinfo) != 2)
 		GOTO_FAIL("%s: Invalid ext_buf ref_cnt\n", __func__);
+	if (freed)
+		GOTO_FAIL("%s: extbuf should not be freed\n", __func__);
 
 	/* test to manually update ext_buf_ref_cnt from 2 to 3*/
 	rte_mbuf_ext_refcnt_update(ret_shinfo, 1);
 	if (rte_mbuf_ext_refcnt_read(ret_shinfo) != 3)
 		GOTO_FAIL("%s: Update ext_buf ref_cnt failed\n", __func__);
+	if (freed)
+		GOTO_FAIL("%s: extbuf should not be freed\n", __func__);
 
 	/* reset the ext_refcnt before freeing the external buffer */
 	rte_mbuf_ext_refcnt_set(ret_shinfo, 2);
 	if (rte_mbuf_ext_refcnt_read(ret_shinfo) != 2)
 		GOTO_FAIL("%s: set ext_buf ref_cnt failed\n", __func__);
+	if (freed)
+		GOTO_FAIL("%s: extbuf should not be freed\n", __func__);
 
 	/* detach the external buffer from mbufs */
 	rte_pktmbuf_detach_extbuf(m);
 	/* check if ref cnt is decremented */
 	if (rte_mbuf_ext_refcnt_read(ret_shinfo) != 1)
 		GOTO_FAIL("%s: Invalid ext_buf ref_cnt\n", __func__);
+	if (freed)
+		GOTO_FAIL("%s: extbuf should not be freed\n", __func__);
 
 	rte_pktmbuf_detach_extbuf(clone);
-	if (rte_mbuf_ext_refcnt_read(ret_shinfo) != 0)
-		GOTO_FAIL("%s: Invalid ext_buf ref_cnt\n", __func__);
+	if (!freed)
+		GOTO_FAIL("%s: extbuf should be freed\n", __func__);
+	freed = false;
 
 	rte_pktmbuf_free(m);
 	m = NULL;
@@ -2404,6 +2433,120 @@ fail:
 		rte_free(ext_buf_addr);
 		ext_buf_addr = NULL;
 	}
+	return -1;
+}
+
+/*
+ * Test the mbuf pool with pinned external data buffers
+ *  - Allocate memory zone for external buffer
+ *  - Create the mbuf pool with pinned external buffer
+ *  - Check the created pool with relevant mbuf pool unit tests
+ */
+static int
+test_pktmbuf_ext_pinned_buffer(struct rte_mempool *std_pool)
+{
+
+	struct rte_pktmbuf_extmem ext_mem;
+	struct rte_mempool *pinned_pool = NULL;
+	const struct rte_memzone *mz = NULL;
+
+	printf("Test mbuf pool with external pinned data buffers\n");
+
+	/* Allocate memzone for the external data buffer */
+	mz = rte_memzone_reserve("pinned_pool",
+				 NB_MBUF * MBUF_DATA_SIZE,
+				 SOCKET_ID_ANY,
+				 RTE_MEMZONE_2MB | RTE_MEMZONE_SIZE_HINT_ONLY);
+	if (mz == NULL)
+		GOTO_FAIL("%s: Memzone allocation failed\n", __func__);
+
+	/* Create the mbuf pool with pinned external data buffer */
+	ext_mem.buf_ptr = mz->addr;
+	ext_mem.buf_iova = mz->iova;
+	ext_mem.buf_len = mz->len;
+	ext_mem.elt_size = MBUF_DATA_SIZE;
+
+	pinned_pool = rte_pktmbuf_pool_create_extbuf("test_pinned_pool",
+				NB_MBUF, MEMPOOL_CACHE_SIZE, 0,
+				MBUF_DATA_SIZE,	SOCKET_ID_ANY,
+				&ext_mem, 1);
+	if (pinned_pool == NULL)
+		GOTO_FAIL("%s: Mbuf pool with pinned external"
+			  " buffer creation failed\n", __func__);
+	/* test multiple mbuf alloc */
+	if (test_pktmbuf_pool(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_mbuf_pool(pinned) failed\n",
+			  __func__);
+
+	/* do it another time to check that all mbufs were freed */
+	if (test_pktmbuf_pool(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_mbuf_pool(pinned) failed (2)\n",
+			  __func__);
+
+	/* test that the data pointer on a packet mbuf is set properly */
+	if (test_pktmbuf_pool_ptr(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_pktmbuf_pool_ptr(pinned) failed\n",
+			  __func__);
+
+	/* test data manipulation in mbuf with non-ascii data */
+	if (test_pktmbuf_with_non_ascii_data(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_pktmbuf_with_non_ascii_data(pinned)"
+			  " failed\n", __func__);
+
+	/* test free pktmbuf segment one by one */
+	if (test_pktmbuf_free_segment(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_pktmbuf_free_segment(pinned) failed\n",
+			  __func__);
+
+	if (testclone_testupdate_testdetach(pinned_pool, std_pool) < 0)
+		GOTO_FAIL("%s: testclone_and_testupdate(pinned) failed\n",
+			  __func__);
+
+	if (test_pktmbuf_copy(pinned_pool, std_pool) < 0)
+		GOTO_FAIL("%s: test_pktmbuf_copy(pinned) failed\n",
+			  __func__);
+
+	if (test_failing_mbuf_sanity_check(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_failing_mbuf_sanity_check(pinned)"
+			  " failed\n", __func__);
+
+	if (test_mbuf_linearize_check(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_mbuf_linearize_check(pinned) failed\n",
+			  __func__);
+
+	/* test for allocating a bulk of mbufs with various sizes */
+	if (test_pktmbuf_alloc_bulk(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_rte_pktmbuf_alloc_bulk(pinned) failed\n",
+			  __func__);
+
+	/* test for allocating a bulk of mbufs with various sizes */
+	if (test_neg_pktmbuf_alloc_bulk(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_neg_rte_pktmbuf_alloc_bulk(pinned)"
+			  " failed\n", __func__);
+
+	/* test to read mbuf packet */
+	if (test_pktmbuf_read(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_rte_pktmbuf_read(pinned) failed\n",
+			  __func__);
+
+	/* test to read mbuf packet from offset */
+	if (test_pktmbuf_read_from_offset(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_rte_pktmbuf_read_from_offset(pinned)"
+			  " failed\n", __func__);
+
+	/* test to read data from chain of mbufs with data segments */
+	if (test_pktmbuf_read_from_chain(pinned_pool) < 0)
+		GOTO_FAIL("%s: test_rte_pktmbuf_read_from_chain(pinned)"
+			  " failed\n", __func__);
+
+	RTE_SET_USED(std_pool);
+	rte_mempool_free(pinned_pool);
+	rte_memzone_free(mz);
+	return 0;
+
+fail:
+	rte_mempool_free(pinned_pool);
+	rte_memzone_free(mz);
 	return -1;
 }
 
@@ -2565,6 +2708,70 @@ fail:
 	return -1;
 }
 
+/* check that m->nb_segs and m->next are reset on mbuf free */
+static int
+test_nb_segs_and_next_reset(void)
+{
+	struct rte_mbuf *m0 = NULL, *m1 = NULL, *m2 = NULL;
+	struct rte_mempool *pool = NULL;
+
+	pool = rte_pktmbuf_pool_create("test_mbuf_reset",
+			3, 0, 0, MBUF_DATA_SIZE, SOCKET_ID_ANY);
+	if (pool == NULL)
+		GOTO_FAIL("Failed to create mbuf pool");
+
+	/* alloc mbufs */
+	m0 = rte_pktmbuf_alloc(pool);
+	m1 = rte_pktmbuf_alloc(pool);
+	m2 = rte_pktmbuf_alloc(pool);
+	if (m0 == NULL || m1 == NULL || m2 == NULL)
+		GOTO_FAIL("Failed to allocate mbuf");
+
+	/* append data in all of them */
+	if (rte_pktmbuf_append(m0, 500) == NULL ||
+			rte_pktmbuf_append(m1, 500) == NULL ||
+			rte_pktmbuf_append(m2, 500) == NULL)
+		GOTO_FAIL("Failed to append data in mbuf");
+
+	/* chain them in one mbuf m0 */
+	rte_pktmbuf_chain(m1, m2);
+	rte_pktmbuf_chain(m0, m1);
+	if (m0->nb_segs != 3 || m0->next != m1 || m1->next != m2 ||
+			m2->next != NULL) {
+		m1 = m2 = NULL;
+		GOTO_FAIL("Failed to chain mbufs");
+	}
+
+	/* split m0 chain in two, between m1 and m2 */
+	m0->nb_segs = 2;
+	m1->next = NULL;
+	m2->nb_segs = 1;
+
+	/* free the 2 mbuf chains m0 and m2  */
+	rte_pktmbuf_free(m0);
+	rte_pktmbuf_free(m2);
+
+	/* realloc the 3 mbufs */
+	m0 = rte_mbuf_raw_alloc(pool);
+	m1 = rte_mbuf_raw_alloc(pool);
+	m2 = rte_mbuf_raw_alloc(pool);
+	if (m0 == NULL || m1 == NULL || m2 == NULL)
+		GOTO_FAIL("Failed to reallocate mbuf");
+
+	/* ensure that m->next and m->nb_segs are reset allocated mbufs */
+	if (m0->nb_segs != 1 || m0->next != NULL ||
+			m1->nb_segs != 1 || m1->next != NULL ||
+			m2->nb_segs != 1 || m2->next != NULL)
+		GOTO_FAIL("nb_segs or next was not reset properly");
+
+	return 0;
+
+fail:
+	if (pool != NULL)
+		rte_mempool_free(pool);
+	return -1;
+}
+
 static int
 test_mbuf(void)
 {
@@ -2653,12 +2860,12 @@ test_mbuf(void)
 		goto err;
 	}
 
-	if (testclone_testupdate_testdetach(pktmbuf_pool) < 0) {
+	if (testclone_testupdate_testdetach(pktmbuf_pool, pktmbuf_pool) < 0) {
 		printf("testclone_and_testupdate() failed \n");
 		goto err;
 	}
 
-	if (test_pktmbuf_copy(pktmbuf_pool) < 0) {
+	if (test_pktmbuf_copy(pktmbuf_pool, pktmbuf_pool) < 0) {
 		printf("test_pktmbuf_copy() failed\n");
 		goto err;
 	}
@@ -2746,6 +2953,18 @@ test_mbuf(void)
 	/* test to initialize shared info. at the end of external buffer */
 	if (test_pktmbuf_ext_shinfo_init_helper(pktmbuf_pool) < 0) {
 		printf("test_pktmbuf_ext_shinfo_init_helper() failed\n");
+		goto err;
+	}
+
+	/* test the mbuf pool with pinned external data buffers */
+	if (test_pktmbuf_ext_pinned_buffer(pktmbuf_pool) < 0) {
+		printf("test_pktmbuf_ext_pinned_buffer() failed\n");
+		goto err;
+	}
+
+	/* test reset of m->nb_segs and m->next on mbuf free */
+	if (test_nb_segs_and_next_reset() < 0) {
+		printf("test_nb_segs_and_next_reset() failed\n");
 		goto err;
 	}
 

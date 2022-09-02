@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
  *
@@ -53,7 +55,7 @@
  * in the normal case (where there are no options and the header length is
  * therefore always exactly five 32-bit words.
  */
-#if defined(__GNUCLIKE_ASM) && !defined(__INTEL_COMPILER)
+#if defined(__GNUCLIKE_ASM)
 #if defined(IPVERSION) && (IPVERSION == 4)
 static __inline u_int
 in_cksum_hdr(const struct ip *ip)
@@ -135,7 +137,7 @@ in_pseudo(u_int sum, u_int b, u_int c)
 #endif
 
 #ifdef _KERNEL
-#if !defined(__GNUCLIKE_ASM) || defined(__INTEL_COMPILER)
+#if !defined(__GNUCLIKE_ASM)
 #if defined(IPVERSION) && (IPVERSION == 4)
 u_int in_cksum_hdr(const struct ip *ip);
 #endif

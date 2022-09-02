@@ -83,4 +83,3 @@ extern void	_NgDebugBytes(const u_char *ptr, int size);
 
 #endif
 
-

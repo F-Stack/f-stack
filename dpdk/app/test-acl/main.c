@@ -81,6 +81,14 @@ static const struct acl_alg acl_alg[] = {
 		.name = "altivec",
 		.alg = RTE_ACL_CLASSIFY_ALTIVEC,
 	},
+	{
+		.name = "avx512x16",
+		.alg = RTE_ACL_CLASSIFY_AVX512X16,
+	},
+	{
+		.name = "avx512x32",
+		.alg = RTE_ACL_CLASSIFY_AVX512X32,
+	},
 };
 
 static struct {
@@ -376,8 +384,8 @@ parse_cb_ipv4_trace(char *str, struct ipv4_5tuple *v)
 }
 
 /*
- * Parses IPV6 address, exepcts the following format:
- * XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX (where X - is a hexedecimal digit).
+ * Parse IPv6 address, expects the following format:
+ * XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX (where X is a hexadecimal digit).
  */
 static int
 parse_ipv6_addr(const char *in, const char **end, uint32_t v[IPV6_ADDR_U32],
@@ -858,13 +866,14 @@ search_ip5tuples_once(uint32_t categories, uint32_t step, const char *alg)
 }
 
 static int
-search_ip5tuples(__attribute__((unused)) void *arg)
+search_ip5tuples(__rte_unused void *arg)
 {
 	uint64_t pkt, start, tm;
 	uint32_t i, lcore;
+	long double st;
 
 	lcore = rte_lcore_id();
-	start = rte_rdtsc();
+	start = rte_rdtsc_precise();
 	pkt = 0;
 
 	for (i = 0; i != config.iter_num; i++) {
@@ -872,12 +881,16 @@ search_ip5tuples(__attribute__((unused)) void *arg)
 			config.trace_step, config.alg.name);
 	}
 
-	tm = rte_rdtsc() - start;
+	tm = rte_rdtsc_precise() - start;
+
+	st = (long double)tm / rte_get_timer_hz();
 	dump_verbose(DUMP_NONE, stdout,
 		"%s  @lcore %u: %" PRIu32 " iterations, %" PRIu64 " pkts, %"
-		PRIu32 " categories, %" PRIu64 " cycles, %#Lf cycles/pkt\n",
-		__func__, lcore, i, pkt, config.run_categories,
-		tm, (pkt == 0) ? 0 : (long double)tm / pkt);
+		PRIu32 " categories, %" PRIu64 " cycles (%.2Lf sec), "
+		"%.2Lf cycles/pkt, %.2Lf pkt/sec\n",
+		__func__, lcore, i, pkt,
+		config.run_categories, tm, st,
+		(pkt == 0) ? 0 : (long double)tm / pkt, pkt / st);
 
 	return 0;
 }
@@ -948,7 +961,7 @@ print_usage(const char *prgname)
 			"should be either 1 or multiple of %zu, "
 			"but not greater then %u]\n"
 		"[--" OPT_MAX_SIZE
-			"=<size limit (in bytes) for runtime ACL strucutures> "
+			"=<size limit (in bytes) for runtime ACL structures> "
 			"leave 0 for default behaviour]\n"
 		"[--" OPT_ITER_NUM "=<number of iterations to perform>]\n"
 		"[--" OPT_VERBOSE "=<verbose level>]\n"
@@ -1085,7 +1098,7 @@ main(int argc, char **argv)
 	if (config.trace_file != NULL)
 		tracef_init();
 
-	RTE_LCORE_FOREACH_SLAVE(lcore)
+	RTE_LCORE_FOREACH_WORKER(lcore)
 		 rte_eal_remote_launch(search_ip5tuples, NULL, lcore);
 
 	search_ip5tuples(NULL);

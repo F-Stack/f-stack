@@ -139,7 +139,7 @@ struct bond_dev_private {
 
 	uint16_t slave_count;			/**< Number of bonded slaves */
 	struct bond_slave_details slaves[RTE_MAX_ETHPORTS];
-	/**< Arary of bonded slaves details */
+	/**< Array of bonded slaves details */
 
 	struct mode8023ad_private mode4;
 	uint16_t tlb_slaves_order[RTE_MAX_ETHPORTS];
@@ -316,10 +316,10 @@ bond_tlb_enable(struct bond_dev_private *internals);
 void
 bond_tlb_activate_slave(struct bond_dev_private *internals);
 
-void
+int
 bond_ethdev_stop(struct rte_eth_dev *eth_dev);
 
-void
+int
 bond_ethdev_close(struct rte_eth_dev *dev);
 
 #endif

@@ -175,7 +175,7 @@ legacy_get_isr(struct virtio_hw *hw)
 	return dst;
 }
 
-/* Enable one vector (0) for Link State Intrerrupt */
+/* Enable one vector (0) for Link State Interrupt */
 static uint16_t
 legacy_set_config_irq(struct virtio_hw *hw, uint16_t vec)
 {
@@ -416,9 +416,34 @@ modern_del_queue(struct virtio_hw *hw, struct virtqueue *vq)
 }
 
 static void
-modern_notify_queue(struct virtio_hw *hw __rte_unused, struct virtqueue *vq)
+modern_notify_queue(struct virtio_hw *hw, struct virtqueue *vq)
 {
-	rte_write16(vq->vq_queue_index, vq->notify_addr);
+	uint32_t notify_data;
+
+	if (!vtpci_with_feature(hw, VIRTIO_F_NOTIFICATION_DATA)) {
+		rte_write16(vq->vq_queue_index, vq->notify_addr);
+		return;
+	}
+
+	if (vtpci_with_feature(hw, VIRTIO_F_RING_PACKED)) {
+		/*
+		 * Bit[0:15]: vq queue index
+		 * Bit[16:30]: avail index
+		 * Bit[31]: avail wrap counter
+		 */
+		notify_data = ((uint32_t)(!!(vq->vq_packed.cached_flags &
+				VRING_PACKED_DESC_F_AVAIL)) << 31) |
+				((uint32_t)vq->vq_avail_idx << 16) |
+				vq->vq_queue_index;
+	} else {
+		/*
+		 * Bit[0:15]: vq queue index
+		 * Bit[16:31]: avail index
+		 */
+		notify_data = ((uint32_t)vq->vq_avail_idx << 16) |
+				vq->vq_queue_index;
+	}
+	rte_write32(notify_data, vq->notify_addr);
 }
 
 const struct virtio_pci_ops modern_ops = {
@@ -657,7 +682,7 @@ next:
  * Return -1:
  *   if there is error mapping with VFIO/UIO.
  *   if port map error when driver type is KDRV_NONE.
- *   if whitelisted but driver type is KDRV_UNKNOWN.
+ *   if marked as allowed but driver type is KDRV_UNKNOWN.
  * Return 1 if kernel driver is managing the device.
  * Return 0 on success.
  */
@@ -679,7 +704,7 @@ vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw)
 	PMD_INIT_LOG(INFO, "trying with legacy virtio pci.");
 	if (rte_pci_ioport_map(dev, 0, VTPCI_IO(hw)) < 0) {
 		rte_pci_unmap_device(dev);
-		if (dev->kdrv == RTE_KDRV_UNKNOWN &&
+		if (dev->kdrv == RTE_PCI_KDRV_UNKNOWN &&
 		    (!dev->device.devargs ||
 		     dev->device.devargs->bus !=
 		     rte_bus_find_by_name("pci"))) {

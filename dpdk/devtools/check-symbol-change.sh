@@ -25,7 +25,7 @@ build_map_changes()
 
 		# Triggering this rule, which starts a line and ends it
 		# with a { identifies a versioned section.  The section name is
-		# the rest of the line with the + and { symbols remvoed.
+		# the rest of the line with the + and { symbols removed.
 		# Triggering this rule sets in_sec to 1, which actives the
 		# symbol rule below
 		/^.*{/ {
@@ -35,7 +35,7 @@ build_map_changes()
 			}
 		}
 
-		# This rule idenfies the end of a section, and disables the
+		# This rule identifies the end of a section, and disables the
 		# symbol rule
 		/.*}/ {in_sec=0}
 
@@ -77,6 +77,10 @@ build_map_changes()
 
 }
 
+is_stable_section() {
+	[ "$1" != 'EXPERIMENTAL' ] && [ "$1" != 'INTERNAL' ]
+}
+
 check_for_rule_violations()
 {
 	local mapdb="$1"
@@ -96,7 +100,7 @@ check_for_rule_violations()
 				# Just inform the user of this occurrence, but
 				# don't flag it as an error
 				echo -n "INFO: symbol $symname is added but "
-				echo -n "patch has insuficient context "
+				echo -n "patch has insufficient context "
 				echo -n "to determine the section name "
 				echo -n "please ensure the version is "
 				echo "EXPERIMENTAL"
@@ -106,15 +110,14 @@ check_for_rule_violations()
 			oldsecname=$(sed -n \
 			"s#$mname $symname \(.*\) del#\1#p" "$mapdb")
 
-			# A symbol can not enter a non experimental
-			# section directly
+			# A symbol can not enter a stable section directly
 			if [ -z "$oldsecname" ]
 			then
-				if [ "$secname" = 'EXPERIMENTAL' ]
+				if ! is_stable_section $secname
 				then
 					echo -n "INFO: symbol $symname has "
 					echo -n "been added to the "
-					echo -n "EXPERIMENTAL section of the "
+					echo -n "$secname section of the "
 					echo "version map"
 					continue
 				else
@@ -135,9 +138,9 @@ check_for_rule_violations()
 			fi
 
 			# This symbol is moving between two sections (the
-			# original section is not experimental).
+			# original section is a stable section).
 			# This can be legit, just warn.
-			if [ "$oldsecname" != 'EXPERIMENTAL' ]
+			if is_stable_section $oldsecname
 			then
 				echo -n "INFO: symbol $symname is being "
 				echo -n "moved from $oldsecname to $secname. "
@@ -148,9 +151,9 @@ check_for_rule_violations()
 		else
 
 			if ! grep -q "$mname $symname .* add" "$mapdb" && \
-			   [ "$secname" != "EXPERIMENTAL" ]
+			   is_stable_section $secname
 			then
-				# Just inform users that non-experimenal
+				# Just inform users that stable
 				# symbols need to go through a deprecation
 				# process
 				echo -n "INFO: symbol $symname is being "

@@ -1,6 +1,8 @@
 /*	$NetBSD: kgdb_machdep.c,v 1.11 2005/12/24 22:45:35 perry Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 2004 Marcel Moolenaar
  * All rights reserved.
  *
@@ -113,7 +115,7 @@ gdb_cpu_getreg(int regnum, size_t *regsz)
 		register_t *zero_ptr = &kdb_frame->zero;
 		return zero_ptr + regnum;
 	}
-	
+
 	switch (regnum) {
 	/* 
 	 * S0..S7

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -26,12 +28,14 @@
  * $FreeBSD$
  */
 
+#include "opt_bhyve_snapshot.h"
 #include "opt_ddb.h"
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/pcpu.h>
 
@@ -40,6 +44,7 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/segments.h>
 #include <machine/vmm.h>
+#include <machine/vmm_snapshot.h>
 #include "vmm_host.h"
 #include "vmx_cpufunc.h"
 #include "vmcs.h"
@@ -49,6 +54,12 @@ __FBSDID("$FreeBSD$");
 #ifdef DDB
 #include <ddb/ddb.h>
 #endif
+
+SYSCTL_DECL(_hw_vmm_vmx);
+
+static int no_flush_rsb;
+SYSCTL_INT(_hw_vmm_vmx, OID_AUTO, no_flush_rsb, CTLFLAG_RW,
+    &no_flush_rsb, 0, "Do not flush RSB upon vmexit");
 
 static uint64_t
 vmcs_fix_regval(uint32_t encoding, uint64_t val)
@@ -111,6 +122,8 @@ vmcs_field_encoding(int ident)
 		return (VMCS_GUEST_PDPTE2);
 	case VM_REG_GUEST_PDPTE3:
 		return (VMCS_GUEST_PDPTE3);
+	case VM_REG_GUEST_ENTRY_INST_LENGTH:
+		return (VMCS_ENTRY_INST_LENGTH);
 	default:
 		return (-1);
 	}
@@ -359,7 +372,7 @@ vmcs_init(struct vmcs *vmcs)
 	cr0 = vmm_get_host_cr0();
 	if ((error = vmwrite(VMCS_HOST_CR0, cr0)) != 0)
 		goto done;
-	
+
 	cr4 = vmm_get_host_cr4() | CR4_VMXE;
 	if ((error = vmwrite(VMCS_HOST_CR4, cr4)) != 0)
 		goto done;
@@ -401,8 +414,15 @@ vmcs_init(struct vmcs *vmcs)
 		goto done;
 
 	/* instruction pointer */
-	if ((error = vmwrite(VMCS_HOST_RIP, (u_long)vmx_exit_guest)) != 0)
-		goto done;
+	if (no_flush_rsb) {
+		if ((error = vmwrite(VMCS_HOST_RIP,
+		    (u_long)vmx_exit_guest)) != 0)
+			goto done;
+	} else {
+		if ((error = vmwrite(VMCS_HOST_RIP,
+		    (u_long)vmx_exit_guest_flush_rsb)) != 0)
+			goto done;
+	}
 
 	/* link pointer */
 	if ((error = vmwrite(VMCS_LINK_POINTER, ~0)) != 0)
@@ -411,6 +431,128 @@ done:
 	VMCLEAR(vmcs);
 	return (error);
 }
+
+#ifdef BHYVE_SNAPSHOT
+int
+vmcs_getany(struct vmcs *vmcs, int running, int ident, uint64_t *val)
+{
+	int error;
+
+	if (!running)
+		VMPTRLD(vmcs);
+
+	error = vmread(ident, val);
+
+	if (!running)
+		VMCLEAR(vmcs);
+
+	return (error);
+}
+
+int
+vmcs_setany(struct vmcs *vmcs, int running, int ident, uint64_t val)
+{
+	int error;
+
+	if (!running)
+		VMPTRLD(vmcs);
+
+	error = vmwrite(ident, val);
+
+	if (!running)
+		VMCLEAR(vmcs);
+
+	return (error);
+}
+
+int
+vmcs_snapshot_reg(struct vmcs *vmcs, int running, int ident,
+		  struct vm_snapshot_meta *meta)
+{
+	int ret;
+	uint64_t val;
+
+	if (meta->op == VM_SNAPSHOT_SAVE) {
+		ret = vmcs_getreg(vmcs, running, ident, &val);
+		if (ret != 0)
+			goto done;
+
+		SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+	} else if (meta->op == VM_SNAPSHOT_RESTORE) {
+		SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+
+		ret = vmcs_setreg(vmcs, running, ident, val);
+		if (ret != 0)
+			goto done;
+	} else {
+		ret = EINVAL;
+		goto done;
+	}
+
+done:
+	return (ret);
+}
+
+int
+vmcs_snapshot_desc(struct vmcs *vmcs, int running, int seg,
+		   struct vm_snapshot_meta *meta)
+{
+	int ret;
+	struct seg_desc desc;
+
+	if (meta->op == VM_SNAPSHOT_SAVE) {
+		ret = vmcs_getdesc(vmcs, running, seg, &desc);
+		if (ret != 0)
+			goto done;
+
+		SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
+	} else if (meta->op == VM_SNAPSHOT_RESTORE) {
+		SNAPSHOT_VAR_OR_LEAVE(desc.base, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(desc.limit, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(desc.access, meta, ret, done);
+
+		ret = vmcs_setdesc(vmcs, running, seg, &desc);
+		if (ret != 0)
+			goto done;
+	} else {
+		ret = EINVAL;
+		goto done;
+	}
+
+done:
+	return (ret);
+}
+
+int
+vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
+		  struct vm_snapshot_meta *meta)
+{
+	int ret;
+	uint64_t val;
+
+	if (meta->op == VM_SNAPSHOT_SAVE) {
+		ret = vmcs_getany(vmcs, running, ident, &val);
+		if (ret != 0)
+			goto done;
+
+		SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+	} else if (meta->op == VM_SNAPSHOT_RESTORE) {
+		SNAPSHOT_VAR_OR_LEAVE(val, meta, ret, done);
+
+		ret = vmcs_setany(vmcs, running, ident, val);
+		if (ret != 0)
+			goto done;
+	} else {
+		ret = EINVAL;
+		goto done;
+	}
+
+done:
+	return (ret);
+}
+#endif
 
 #ifdef DDB
 extern int vmxon_enabled[];

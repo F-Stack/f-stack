@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1997 Peter Wemm.
  * All rights reserved.
  *
@@ -149,6 +151,7 @@ extern	int printkeys;
 extern	int newaddr;
 extern	int verbose;
 extern	int printifname;
+extern	int exit_code;
 
 void	setifcap(const char *, int value, int s, const struct afswtch *);
 
@@ -157,8 +160,10 @@ void	printb(const char *s, unsigned value, const char *bits);
 
 void	ifmaybeload(const char *name);
 
+typedef int  clone_match_func(const char *);
 typedef void clone_callback_func(int, struct ifreq *);
-void	clone_setdefcallback(const char *, clone_callback_func *);
+void	clone_setdefcallback_prefix(const char *, clone_callback_func *);
+void	clone_setdefcallback_filter(clone_match_func *, clone_callback_func *);
 
 void	sfp_status(int s, struct ifreq *ifr, int verbose);
 
@@ -170,3 +175,4 @@ struct ifmediareq *ifmedia_getstate(int s);
 
 void print_vhid(const struct ifaddrs *, const char *);
 
+void ioctl_ifcreate(int s, struct ifreq *);

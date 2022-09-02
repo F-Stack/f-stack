@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -36,8 +38,9 @@ int	ppt_setup_msi(struct vm *vm, int vcpu, int bus, int slot, int func,
 		      uint64_t addr, uint64_t msg, int numvec);
 int	ppt_setup_msix(struct vm *vm, int vcpu, int bus, int slot, int func,
 		int idx, uint64_t addr, uint64_t msg, uint32_t vector_control);
+int	ppt_disable_msix(struct vm *vm, int bus, int slot, int func);
 int	ppt_assigned_devices(struct vm *vm);
-boolean_t ppt_is_mmio(struct vm *vm, vm_paddr_t gpa);
+bool	ppt_is_mmio(struct vm *vm, vm_paddr_t gpa);
 
 /*
  * Returns the number of devices sequestered by the ppt driver for assignment

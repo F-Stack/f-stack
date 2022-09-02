@@ -111,10 +111,12 @@ int dpaa2_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 {
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
 
-	if (priv->next_tx_conf_queue)
-		dpaa2_dev_tx_conf(priv->next_tx_conf_queue);
-	else
+	if (priv->next_tx_conf_queue) {
+		while (!priv->tx_timestamp)
+			dpaa2_dev_tx_conf(priv->next_tx_conf_queue);
+	} else {
 		return -1;
+	}
 	*timestamp = rte_ns_to_timespec(priv->tx_timestamp);
 
 	return 0;
@@ -148,7 +150,7 @@ dpaa2_create_dprtc_device(int vdev_fd __rte_unused,
 	}
 
 	/* Open the dprtc object */
-	dprtc_dev->dprtc.regs = rte_mcp_ptr_list[MC_PORTAL_INDEX];
+	dprtc_dev->dprtc.regs = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
 	ret = dprtc_open(&dprtc_dev->dprtc, CMD_PRI_LOW, dprtc_id,
 			  &dprtc_dev->token);
 	if (ret) {

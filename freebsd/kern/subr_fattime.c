@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Poul-Henning Kamp
  * All rights reserved.
  *
@@ -133,9 +135,9 @@ static const struct {
 	{ NOV + 3 * YEAR + 1, ENC(3, 12) }
 };
 
-
 void
-timespec2fattime(struct timespec *tsp, int utc, uint16_t *ddp, uint16_t *dtp, uint8_t *dhp)
+timespec2fattime(const struct timespec *tsp, int utc, uint16_t *ddp,
+    uint16_t *dtp, uint8_t *dhp)
 {
 	time_t t1;
 	unsigned t2, l, m;
@@ -215,7 +217,8 @@ static const uint16_t daytab[64] = {
 };
 
 void
-fattime2timespec(unsigned dd, unsigned dt, unsigned dh, int utc, struct timespec *tsp)
+fattime2timespec(unsigned dd, unsigned dt, unsigned dh, int utc,
+    struct timespec *tsp)
 {
 	unsigned day;
 

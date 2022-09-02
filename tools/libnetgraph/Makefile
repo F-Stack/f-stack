@@ -3,8 +3,8 @@
 
 TOPDIR?=${CURDIR}/../..
 
-ifeq ($(FF_DPDK),)
-        FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+$(error "no installation of DPDK found, maybe you shuld export environment variable `PKG_CONFIG_PATH`")
 endif
 
 PACKAGE=lib${LIB}
@@ -14,11 +14,9 @@ MAN=		netgraph.3
 
 SHLIB_MAJOR=	4
 
-DPDK_CFLAGS= -g -Wall -Werror -include ${FF_DPDK}/include/rte_config.h
-DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3
-DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
-DPDK_CFLAGS+= -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2
-DPDK_CFLAGS+= -I${FF_DPDK}/include
+PKGCONF ?= pkg-config
+
+DPDK_CFLAGS= -g -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 CFLAGS+= ${DPDK_CFLAGS}
 CFLAGS+= -I${TOPDIR}/lib
@@ -30,7 +28,7 @@ MLINKS+=	netgraph.3 NgMkSockNode.3
 MLINKS+=	netgraph.3 NgNameNode.3
 MLINKS+=	netgraph.3 NgSendMsg.3
 MLINKS+=	netgraph.3 NgSendAsciiMsg.3
-MLINKS+=	netgraph.3 NgSendMsgReply.3
+MLINKS+=	netgraph.3 NgSendReplyMsg.3
 MLINKS+=	netgraph.3 NgRecvMsg.3
 MLINKS+=	netgraph.3 NgAllocRecvMsg.3
 MLINKS+=	netgraph.3 NgRecvAsciiMsg.3
@@ -42,5 +40,3 @@ MLINKS+=	netgraph.3 NgSetDebug.3
 MLINKS+=	netgraph.3 NgSetErrLog.3
 
 include ${TOPDIR}/tools/lib.mk
-
-

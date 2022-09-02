@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003-2012 Broadcom Corporation
  * All Rights Reserved
  *
@@ -97,7 +99,6 @@ nlm_write_ucore_##name(unsigned int v)				\
 {								\
 	nlm_write_ucore_reg(reg, v);				\
 } struct __hack
-
 
 NLM_DEFINE_UCORE(obufdone,		UCORE_OUTBUF_DONE);
 NLM_DEFINE_UCORE(rxpktrdy,		UCORE_RX_PKT_RDY);

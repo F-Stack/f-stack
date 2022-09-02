@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2017-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -51,6 +51,11 @@ void sfc_dp_queue_init(struct sfc_dp_queue *dpq,
 		       uint16_t port_id, uint16_t queue_id,
 		       const struct rte_pci_addr *pci_addr);
 
+/* Maximum datapath log level to be included in build. */
+#ifndef SFC_DP_LOG_LEVEL
+#define SFC_DP_LOG_LEVEL	RTE_LOG_NOTICE
+#endif
+
 /*
  * Helper macro to define datapath logging macros and have uniform
  * logging.
@@ -60,6 +65,8 @@ void sfc_dp_queue_init(struct sfc_dp_queue *dpq,
 		const struct sfc_dp_queue *_dpq = (dpq);		\
 		const struct rte_pci_addr *_addr = &(_dpq)->pci_addr;	\
 									\
+		if (RTE_LOG_ ## level > SFC_DP_LOG_LEVEL)		\
+			break;						\
 		SFC_GENERIC_LOG(level,					\
 			RTE_FMT("%s " PCI_PRI_FMT			\
 				" #%" PRIu16 ".%" PRIu16 ": "		\
@@ -81,6 +88,9 @@ struct sfc_dp {
 	unsigned int			hw_fw_caps;
 #define SFC_DP_HW_FW_CAP_EF10				0x1
 #define SFC_DP_HW_FW_CAP_RX_ES_SUPER_BUFFER		0x2
+#define SFC_DP_HW_FW_CAP_RX_EFX				0x4
+#define SFC_DP_HW_FW_CAP_TX_EFX				0x8
+#define SFC_DP_HW_FW_CAP_EF100				0x10
 };
 
 /** List of datapath variants */

@@ -46,29 +46,9 @@
 static void
 usage(char* progname)
 {
-	printf("usage: %s [EAL options] -- "
-#ifdef RTE_LIBRTE_CMDLINE
-	       "[--interactive|-i] "
-	       "[--cmdline-file=FILENAME] "
-#endif
-	       "[--help|-h] | [--auto-start|-a] | ["
-	       "--tx-first | --stats-period=PERIOD | "
-	       "--coremask=COREMASK --portmask=PORTMASK --numa "
-	       "--mbuf-size= | --total-num-mbufs= | "
-	       "--nb-cores= | --nb-ports= | "
-#ifdef RTE_LIBRTE_CMDLINE
-	       "--eth-peers-configfile= | "
-	       "--eth-peer=X,M:M:M:M:M:M | "
-	       "--tx-ip=SRC,DST | --tx-udp=PORT | "
-#endif
-	       "--pkt-filter-mode= |"
-	       "--rss-ip | --rss-udp | "
-	       "--rxpt= | --rxht= | --rxwt= | --rxfreet= | "
-	       "--txpt= | --txht= | --txwt= | --txfreet= | "
-	       "--txrst= | --tx-offloads= | | --rx-offloads= | "
-	       "--vxlan-gpe-port= ]\n",
+	printf("\nUsage: %s [EAL options] -- [testpmd options]\n\n",
 	       progname);
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 	printf("  --interactive: run in interactive mode.\n");
 	printf("  --cmdline-file: execute cli commands before startup.\n");
 #endif
@@ -84,13 +64,15 @@ usage(char* progname)
 	printf("  --nb-ports=N: set the number of forwarding ports "
 	       "(1 <= N <= %d).\n", nb_ports);
 	printf("  --coremask=COREMASK: hexadecimal bitmask of cores running "
-	       "the packet forwarding test. The master lcore is reserved for "
+	       "the packet forwarding test. The main lcore is reserved for "
 	       "command line parsing only, and cannot be masked on for "
 	       "packet forwarding.\n");
 	printf("  --portmask=PORTMASK: hexadecimal bitmask of ports used "
 	       "by the packet forwarding test.\n");
+	printf("  --portlist=PORTLIST: list of forwarding ports\n");
 	printf("  --numa: enable NUMA-aware allocation of RX/TX rings and of "
 	       "RX memory buffers (mbufs).\n");
+	printf("  --no-numa: disable NUMA-aware allocation.\n");
 	printf("  --port-numa-config=(port,socket)[,(port,socket)]: "
 	       "specify the socket on which the memory pool "
 	       "used by the port will be allocated.\n");
@@ -100,13 +82,15 @@ usage(char* progname)
 	       "(flag: 1 for RX; 2 for TX; 3 for RX and TX).\n");
 	printf("  --socket-num=N: set socket from which all memory is allocated "
 	       "in NUMA mode.\n");
-	printf("  --mbuf-size=N: set the data size of mbuf to N bytes.\n");
+	printf("  --mbuf-size=N,[N1[,..Nn]: set the data size of mbuf to "
+	       "N bytes. If multiple numbers are specified the extra pools "
+	       "will be created to receive with packet split features\n");
 	printf("  --total-num-mbufs=N: set the number of mbufs to be allocated "
 	       "in mbuf pools.\n");
 	printf("  --max-pkt-len=N: set the maximum size of packet to N bytes.\n");
 	printf("  --max-lro-pkt-size=N: set the maximum LRO aggregated packet "
 	       "size to N bytes.\n");
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 	printf("  --eth-peers-configfile=name: config file with ethernet addresses "
 	       "of peer ports.\n");
 	printf("  --eth-peer=X,M:M:M:M:M:M: set the MAC address of the X peer "
@@ -123,11 +107,12 @@ usage(char* progname)
 	       "the packet will be enqueued into the rx drop-queue. "
 	       "If the drop-queue doesn't exist, the packet is dropped. "
 	       "By default drop-queue=127.\n");
-#ifdef RTE_LIBRTE_LATENCY_STATS
-	printf("  --latencystats=N: enable latency and jitter statistcs "
+#ifdef RTE_LIB_LATENCYSTATS
+	printf("  --latencystats=N: enable latency and jitter statistics "
 	       "monitoring on forwarding lcore id N.\n");
 #endif
 	printf("  --disable-crc-strip: disable CRC stripping by hardware.\n");
+	printf("  --enable-scatter: enable scattered Rx.\n");
 	printf("  --enable-lro: enable large receive offload.\n");
 	printf("  --enable-rx-cksum: enable rx hardware checksum offload.\n");
 	printf("  --enable-rx-timestamp: enable rx hardware timestamp offload.\n");
@@ -142,8 +127,12 @@ usage(char* progname)
 	       "is default).\n");
 	printf("  --forward-mode=N: set forwarding mode (N: %s).\n",
 	       list_pkt_forwarding_modes());
+	printf("  --forward-mode=5tswap: set forwarding mode to "
+			"swap L2,L3,L4 for MAC, IPv4/IPv6 and TCP/UDP only.\n");
 	printf("  --rss-ip: set RSS functions to IPv4/IPv6 only .\n");
 	printf("  --rss-udp: set RSS functions to IPv4/IPv6 + UDP.\n");
+	printf("  --rss-level-inner: set RSS hash level to innermost\n");
+	printf("  --rss-level-outer: set RSS hash level to outermost\n");
 	printf("  --rxq=N: set the number of RX queues per port to N.\n");
 	printf("  --rxd=N: set the number of descriptors in RX rings to N.\n");
 	printf("  --txq=N: set the number of TX queues per port to N.\n");
@@ -164,17 +153,15 @@ usage(char* progname)
 	       "(0 <= N <= value of txd).\n");
 	printf("  --txrst=N: set the transmit RS bit threshold of TX rings to N "
 	       "(0 <= N <= value of txd).\n");
-	printf("  --tx-queue-stats-mapping=(port,queue,mapping)[,(port,queue,mapping]: "
-	       "tx queues statistics counters mapping "
-	       "(0 <= mapping <= %d).\n", RTE_ETHDEV_QUEUE_STAT_CNTRS - 1);
-	printf("  --rx-queue-stats-mapping=(port,queue,mapping)[,(port,queue,mapping]: "
-	       "rx queues statistics counters mapping "
-	       "(0 <= mapping <= %d).\n", RTE_ETHDEV_QUEUE_STAT_CNTRS - 1);
 	printf("  --no-flush-rx: Don't flush RX streams before forwarding."
 	       " Used mainly with PCAP drivers.\n");
+	printf("  --rxoffs=X[,Y]*: set RX segment offsets for split.\n");
+	printf("  --rxpkts=X[,Y]*: set RX segment sizes to split.\n");
 	printf("  --txpkts=X[,Y]*: set TX segment sizes"
 		" or total packet length.\n");
 	printf("  --txonly-multi-flow: generate multiple flows in txonly mode\n");
+	printf("  --tx-ip=src,dst: IP addresses in Tx-only mode\n");
+	printf("  --tx-udp=src[,dst]: UDP ports in Tx-only mode\n");
 	printf("  --disable-link-check: disable check on link status when "
 	       "starting/stopping ports.\n");
 	printf("  --disable-device-start: do not automatically start port\n");
@@ -182,9 +169,9 @@ usage(char* progname)
 	printf("  --no-rmv-interrupt: disable device removal interrupt.\n");
 	printf("  --bitrate-stats=N: set the logical core N to perform "
 		"bit-rate calculation.\n");
-	printf("  --print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>: "
+	printf("  --print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|flow_aged|all>: "
 	       "enable print of designated event or all of them.\n");
-	printf("  --mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>: "
+	printf("  --mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|flow_aged|all>: "
 	       "disable print of designated event or all of them.\n");
 	printf("  --flow-isolate-all: "
 	       "requests flow API isolated mode on all ports at initialization time.\n");
@@ -192,6 +179,7 @@ usage(char* progname)
 	printf("  --rx-offloads=0xXXXXXXXX: hexadecimal bitmask of RX queue offloads\n");
 	printf("  --hot-plug: enable hot plug for device.\n");
 	printf("  --vxlan-gpe-port=N: UPD port of tunnel VXLAN-GPE\n");
+	printf("  --geneve-parsed-port=N: UPD port to parse GENEVE tunnel protocol\n");
 	printf("  --mlockall: lock all memory\n");
 	printf("  --no-mlockall: do not lock all memory\n");
 	printf("  --mp-alloc <native|anon|xmem|xmemhuge>: mempool allocation method.\n"
@@ -204,12 +192,19 @@ usage(char* progname)
 	printf("  --noisy-lkup-memory=N: allocate N MB of VNF memory\n");
 	printf("  --noisy-lkup-num-writes=N: do N random writes per packet\n");
 	printf("  --noisy-lkup-num-reads=N: do N random reads per packet\n");
-	printf("  --noisy-lkup-num-writes=N: do N random reads and writes per packet\n");
+	printf("  --noisy-lkup-num-reads-writes=N: do N random reads and writes per packet\n");
 	printf("  --no-iova-contig: mempool memory can be IOVA non contiguous. "
 	       "valid only with --mp-alloc=anon\n");
+	printf("  --rx-mq-mode=0xX: hexadecimal bitmask of RX mq mode can be "
+	       "enabled\n");
+	printf("  --record-core-cycles: enable measurement of CPU cycles.\n");
+	printf("  --record-burst-stats: enable display of RX and TX bursts.\n");
+	printf("  --hairpin-mode=0xXX: bitmask set the hairpin port mode.\n"
+	       "    0x10 - explicit Tx rule, 0x02 - hairpin ports paired\n"
+	       "    0x01 - hairpin ports loop, 0x00 - hairpin port self\n");
 }
 
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 static int
 init_peer_eth_addrs(char *config_filename)
 {
@@ -276,93 +271,6 @@ parse_fwd_portmask(const char *portmask)
 		rte_exit(EXIT_FAILURE, "Invalid fwd port mask\n");
 	else
 		set_fwd_ports_mask((uint64_t) pm);
-}
-
-
-static int
-parse_queue_stats_mapping_config(const char *q_arg, int is_rx)
-{
-	char s[256];
-	const char *p, *p0 = q_arg;
-	char *end;
-	enum fieldnames {
-		FLD_PORT = 0,
-		FLD_QUEUE,
-		FLD_STATS_COUNTER,
-		_NUM_FLD
-	};
-	unsigned long int_fld[_NUM_FLD];
-	char *str_fld[_NUM_FLD];
-	int i;
-	unsigned size;
-
-	/* reset from value set at definition */
-	is_rx ? (nb_rx_queue_stats_mappings = 0) : (nb_tx_queue_stats_mappings = 0);
-
-	while ((p = strchr(p0,'(')) != NULL) {
-		++p;
-		if((p0 = strchr(p,')')) == NULL)
-			return -1;
-
-		size = p0 - p;
-		if(size >= sizeof(s))
-			return -1;
-
-		snprintf(s, sizeof(s), "%.*s", size, p);
-		if (rte_strsplit(s, sizeof(s), str_fld, _NUM_FLD, ',') != _NUM_FLD)
-			return -1;
-		for (i = 0; i < _NUM_FLD; i++){
-			errno = 0;
-			int_fld[i] = strtoul(str_fld[i], &end, 0);
-			if (errno != 0 || end == str_fld[i] || int_fld[i] > 255)
-				return -1;
-		}
-		/* Check mapping field is in correct range (0..RTE_ETHDEV_QUEUE_STAT_CNTRS-1) */
-		if (int_fld[FLD_STATS_COUNTER] >= RTE_ETHDEV_QUEUE_STAT_CNTRS) {
-			printf("Stats counter not in the correct range 0..%d\n",
-					RTE_ETHDEV_QUEUE_STAT_CNTRS - 1);
-			return -1;
-		}
-
-		if (!is_rx) {
-			if ((nb_tx_queue_stats_mappings >=
-						MAX_TX_QUEUE_STATS_MAPPINGS)) {
-				printf("exceeded max number of TX queue "
-						"statistics mappings: %hu\n",
-						nb_tx_queue_stats_mappings);
-				return -1;
-			}
-			tx_queue_stats_mappings_array[nb_tx_queue_stats_mappings].port_id =
-				(uint8_t)int_fld[FLD_PORT];
-			tx_queue_stats_mappings_array[nb_tx_queue_stats_mappings].queue_id =
-				(uint8_t)int_fld[FLD_QUEUE];
-			tx_queue_stats_mappings_array[nb_tx_queue_stats_mappings].stats_counter_id =
-				(uint8_t)int_fld[FLD_STATS_COUNTER];
-			++nb_tx_queue_stats_mappings;
-		}
-		else {
-			if ((nb_rx_queue_stats_mappings >=
-						MAX_RX_QUEUE_STATS_MAPPINGS)) {
-				printf("exceeded max number of RX queue "
-						"statistics mappings: %hu\n",
-						nb_rx_queue_stats_mappings);
-				return -1;
-			}
-			rx_queue_stats_mappings_array[nb_rx_queue_stats_mappings].port_id =
-				(uint8_t)int_fld[FLD_PORT];
-			rx_queue_stats_mappings_array[nb_rx_queue_stats_mappings].queue_id =
-				(uint8_t)int_fld[FLD_QUEUE];
-			rx_queue_stats_mappings_array[nb_rx_queue_stats_mappings].stats_counter_id =
-				(uint8_t)int_fld[FLD_STATS_COUNTER];
-			++nb_rx_queue_stats_mappings;
-		}
-
-	}
-/* Reassign the rx/tx_queue_stats_mappings pointer to point to this newly populated array rather */
-/* than to the default array (that was set at its definition) */
-	is_rx ? (rx_queue_stats_mappings = rx_queue_stats_mappings_array) :
-		(tx_queue_stats_mappings = tx_queue_stats_mappings_array);
-	return 0;
 }
 
 static void
@@ -540,6 +448,8 @@ parse_event_printing_config(const char *optarg, int enable)
 		mask = UINT32_C(1) << RTE_ETH_EVENT_NEW;
 	else if (!strcmp(optarg, "dev_released"))
 		mask = UINT32_C(1) << RTE_ETH_EVENT_DESTROY;
+	else if (!strcmp(optarg, "flow_aged"))
+		mask = UINT32_C(1) << RTE_ETH_EVENT_FLOW_AGED;
 	else if (!strcmp(optarg, "all"))
 		mask = ~UINT32_C(0);
 	else {
@@ -570,7 +480,7 @@ launch_args_parse(int argc, char** argv)
 
 	static struct option lgopts[] = {
 		{ "help",			0, 0, 0 },
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 		{ "interactive",		0, 0, 0 },
 		{ "cmdline-file",		1, 0, 0 },
 		{ "auto-start",			0, 0, 0 },
@@ -579,14 +489,14 @@ launch_args_parse(int argc, char** argv)
 #endif
 		{ "tx-first",			0, 0, 0 },
 		{ "stats-period",		1, 0, 0 },
-		{ "ports",			1, 0, 0 },
 		{ "nb-cores",			1, 0, 0 },
 		{ "nb-ports",			1, 0, 0 },
 		{ "coremask",			1, 0, 0 },
 		{ "portmask",			1, 0, 0 },
+		{ "portlist",			1, 0, 0 },
 		{ "numa",			0, 0, 0 },
 		{ "no-numa",			0, 0, 0 },
-		{ "mp-anon",			0, 0, 0 },
+		{ "mp-anon",			0, 0, 0 }, /* deprecated */
 		{ "port-numa-config",           1, 0, 0 },
 		{ "ring-numa-config",           1, 0, 0 },
 		{ "socket-num",			1, 0, 0 },
@@ -598,10 +508,10 @@ launch_args_parse(int argc, char** argv)
 		{ "pkt-filter-report-hash",     1, 0, 0 },
 		{ "pkt-filter-size",            1, 0, 0 },
 		{ "pkt-filter-drop-queue",      1, 0, 0 },
-#ifdef RTE_LIBRTE_LATENCY_STATS
+#ifdef RTE_LIB_LATENCYSTATS
 		{ "latencystats",               1, 0, 0 },
 #endif
-#ifdef RTE_LIBRTE_BITRATE
+#ifdef RTE_LIB_BITRATESTATS
 		{ "bitrate-stats",              1, 0, 0 },
 #endif
 		{ "disable-crc-strip",          0, 0, 0 },
@@ -620,11 +530,14 @@ launch_args_parse(int argc, char** argv)
 		{ "forward-mode",               1, 0, 0 },
 		{ "rss-ip",			0, 0, 0 },
 		{ "rss-udp",			0, 0, 0 },
+		{ "rss-level-outer",		0, 0, 0 },
+		{ "rss-level-inner",		0, 0, 0 },
 		{ "rxq",			1, 0, 0 },
 		{ "txq",			1, 0, 0 },
 		{ "rxd",			1, 0, 0 },
 		{ "txd",			1, 0, 0 },
 		{ "hairpinq",			1, 0, 0 },
+		{ "hairpin-mode",		1, 0, 0 },
 		{ "burst",			1, 0, 0 },
 		{ "mbcache",			1, 0, 0 },
 		{ "txpt",			1, 0, 0 },
@@ -636,10 +549,10 @@ launch_args_parse(int argc, char** argv)
 		{ "rxht",			1, 0, 0 },
 		{ "rxwt",			1, 0, 0 },
 		{ "rxfreet",                    1, 0, 0 },
-		{ "tx-queue-stats-mapping",	1, 0, 0 },
-		{ "rx-queue-stats-mapping",	1, 0, 0 },
 		{ "no-flush-rx",	0, 0, 0 },
 		{ "flow-isolate-all",	        0, 0, 0 },
+		{ "rxoffs",			1, 0, 0 },
+		{ "rxpkts",			1, 0, 0 },
 		{ "txpkts",			1, 0, 0 },
 		{ "txonly-multi-flow",		0, 0, 0 },
 		{ "disable-link-check",		0, 0, 0 },
@@ -652,6 +565,7 @@ launch_args_parse(int argc, char** argv)
 		{ "rx-offloads",		1, 0, 0 },
 		{ "hot-plug",			0, 0, 0 },
 		{ "vxlan-gpe-port",		1, 0, 0 },
+		{ "geneve-parsed-port",		1, 0, 0 },
 		{ "mlockall",			0, 0, 0 },
 		{ "no-mlockall",		0, 0, 0 },
 		{ "mp-alloc",			1, 0, 0 },
@@ -664,12 +578,15 @@ launch_args_parse(int argc, char** argv)
 		{ "noisy-lkup-num-reads",	1, 0, 0 },
 		{ "noisy-lkup-num-reads-writes", 1, 0, 0 },
 		{ "no-iova-contig",             0, 0, 0 },
+		{ "rx-mq-mode",                 1, 0, 0 },
+		{ "record-core-cycles",         0, 0, 0 },
+		{ "record-burst-stats",         0, 0, 0 },
 		{ 0, 0, 0, 0 },
 	};
 
 	argvopt = argv;
 
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 #define SHORTOPTS "i"
 #else
 #define SHORTOPTS ""
@@ -677,7 +594,7 @@ launch_args_parse(int argc, char** argv)
 	while ((opt = getopt_long(argc, argvopt, SHORTOPTS "ah",
 				 lgopts, &opt_idx)) != EOF) {
 		switch (opt) {
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 		case 'i':
 			printf("Interactive-mode selected\n");
 			interactive = 1;
@@ -693,7 +610,7 @@ launch_args_parse(int argc, char** argv)
 				usage(argv[0]);
 				exit(EXIT_SUCCESS);
 			}
-#ifdef RTE_LIBRTE_CMDLINE
+#ifdef RTE_LIB_CMDLINE
 			if (!strcmp(lgopts[opt_idx].name, "interactive")) {
 				printf("Interactive-mode selected\n");
 				interactive = 1;
@@ -822,6 +739,8 @@ launch_args_parse(int argc, char** argv)
 				parse_fwd_coremask(optarg);
 			if (!strcmp(lgopts[opt_idx].name, "portmask"))
 				parse_fwd_portmask(optarg);
+			if (!strcmp(lgopts[opt_idx].name, "portlist"))
+				parse_fwd_portlist(optarg);
 			if (!strcmp(lgopts[opt_idx].name, "no-numa"))
 				numa_support = 0;
 			if (!strcmp(lgopts[opt_idx].name, "numa"))
@@ -838,6 +757,8 @@ launch_args_parse(int argc, char** argv)
 					mp_alloc_type = MP_ALLOC_XMEM;
 				else if (!strcmp(optarg, "xmemhuge"))
 					mp_alloc_type = MP_ALLOC_XMEM_HUGE;
+				else if (!strcmp(optarg, "xbuf"))
+					mp_alloc_type = MP_ALLOC_XBUF;
 				else
 					rte_exit(EXIT_FAILURE,
 						"mp-alloc %s invalid - must be: "
@@ -864,12 +785,22 @@ launch_args_parse(int argc, char** argv)
 				}
 			}
 			if (!strcmp(lgopts[opt_idx].name, "mbuf-size")) {
-				n = atoi(optarg);
-				if (n > 0 && n <= 0xFFFF)
-					mbuf_data_size = (uint16_t) n;
-				else
+				unsigned int mb_sz[MAX_SEGS_BUFFER_SPLIT];
+				unsigned int nb_segs, i;
+
+				nb_segs = parse_item_list(optarg, "mbuf-size",
+					MAX_SEGS_BUFFER_SPLIT, mb_sz, 0);
+				if (nb_segs <= 0)
 					rte_exit(EXIT_FAILURE,
-						 "mbuf-size should be > 0 and < 65536\n");
+						 "bad mbuf-size\n");
+				for (i = 0; i < nb_segs; i++) {
+					if (mb_sz[i] <= 0 || mb_sz[i] > 0xFFFF)
+						rte_exit(EXIT_FAILURE,
+							 "mbuf-size should be "
+							 "> 0 and < 65536\n");
+					mbuf_data_size[i] = (uint16_t) mb_sz[i];
+				}
+				mbuf_data_size_n = nb_segs;
 			}
 			if (!strcmp(lgopts[opt_idx].name, "total-num-mbufs")) {
 				n = atoi(optarg);
@@ -954,7 +885,7 @@ launch_args_parse(int argc, char** argv)
 						 "drop queue %d invalid - must"
 						 "be >= 0 \n", n);
 			}
-#ifdef RTE_LIBRTE_LATENCY_STATS
+#ifdef RTE_LIB_LATENCYSTATS
 			if (!strcmp(lgopts[opt_idx].name,
 				    "latencystats")) {
 				n = atoi(optarg);
@@ -967,7 +898,7 @@ launch_args_parse(int argc, char** argv)
 						 " must be >= 0\n", n);
 			}
 #endif
-#ifdef RTE_LIBRTE_BITRATE
+#ifdef RTE_LIB_BITRATESTATS
 			if (!strcmp(lgopts[opt_idx].name, "bitrate-stats")) {
 				n = atoi(optarg);
 				if (n >= 0) {
@@ -1032,6 +963,10 @@ launch_args_parse(int argc, char** argv)
 				rss_hf = ETH_RSS_IP;
 			if (!strcmp(lgopts[opt_idx].name, "rss-udp"))
 				rss_hf = ETH_RSS_UDP;
+			if (!strcmp(lgopts[opt_idx].name, "rss-level-inner"))
+				rss_hf |= ETH_RSS_LEVEL_INNERMOST;
+			if (!strcmp(lgopts[opt_idx].name, "rss-level-outer"))
+				rss_hf |= ETH_RSS_LEVEL_OUTERMOST;
 			if (!strcmp(lgopts[opt_idx].name, "rxq")) {
 				n = atoi(optarg);
 				if (n >= 0 && check_nb_rxq((queueid_t)n) == 0)
@@ -1078,6 +1013,17 @@ launch_args_parse(int argc, char** argv)
 			if (!nb_rxq && !nb_txq) {
 				rte_exit(EXIT_FAILURE, "Either rx or tx queues should "
 						"be non-zero\n");
+			}
+			if (!strcmp(lgopts[opt_idx].name, "hairpin-mode")) {
+				char *end = NULL;
+				unsigned int n;
+
+				errno = 0;
+				n = strtoul(optarg, &end, 0);
+				if (errno != 0 || end == optarg)
+					rte_exit(EXIT_FAILURE, "hairpin mode invalid\n");
+				else
+					hairpin_mode = (uint16_t)n;
 			}
 			if (!strcmp(lgopts[opt_idx].name, "burst")) {
 				n = atoi(optarg);
@@ -1214,17 +1160,31 @@ launch_args_parse(int argc, char** argv)
 				else
 					rte_exit(EXIT_FAILURE, "rxfreet must be >= 0\n");
 			}
-			if (!strcmp(lgopts[opt_idx].name, "tx-queue-stats-mapping")) {
-				if (parse_queue_stats_mapping_config(optarg, TX)) {
-					rte_exit(EXIT_FAILURE,
-						 "invalid TX queue statistics mapping config entered\n");
-				}
+			if (!strcmp(lgopts[opt_idx].name, "rxoffs")) {
+				unsigned int seg_off[MAX_SEGS_BUFFER_SPLIT];
+				unsigned int nb_offs;
+
+				nb_offs = parse_item_list
+						(optarg, "rxpkt offsets",
+						 MAX_SEGS_BUFFER_SPLIT,
+						 seg_off, 0);
+				if (nb_offs > 0)
+					set_rx_pkt_offsets(seg_off, nb_offs);
+				else
+					rte_exit(EXIT_FAILURE, "bad rxoffs\n");
 			}
-			if (!strcmp(lgopts[opt_idx].name, "rx-queue-stats-mapping")) {
-				if (parse_queue_stats_mapping_config(optarg, RX)) {
-					rte_exit(EXIT_FAILURE,
-						 "invalid RX queue statistics mapping config entered\n");
-				}
+			if (!strcmp(lgopts[opt_idx].name, "rxpkts")) {
+				unsigned int seg_len[MAX_SEGS_BUFFER_SPLIT];
+				unsigned int nb_segs;
+
+				nb_segs = parse_item_list
+						(optarg, "rxpkt segments",
+						 MAX_SEGS_BUFFER_SPLIT,
+						 seg_len, 0);
+				if (nb_segs > 0)
+					set_rx_pkt_segments(seg_len, nb_segs);
+				else
+					rte_exit(EXIT_FAILURE, "bad rxpkts\n");
 			}
 			if (!strcmp(lgopts[opt_idx].name, "txpkts")) {
 				unsigned seg_lengths[RTE_MAX_SEGS_PER_PKT];
@@ -1278,6 +1238,15 @@ launch_args_parse(int argc, char** argv)
 				else
 					rte_exit(EXIT_FAILURE,
 						 "vxlan-gpe-port must be >= 0\n");
+			}
+			if (!strcmp(lgopts[opt_idx].name,
+				    "geneve-parsed-port")) {
+				n = atoi(optarg);
+				if (n >= 0)
+					geneve_udp_port = (uint16_t)n;
+				else
+					rte_exit(EXIT_FAILURE,
+						 "geneve-parsed-port must be >= 0\n");
 			}
 			if (!strcmp(lgopts[opt_idx].name, "print-event"))
 				if (parse_event_printing_config(optarg, 1)) {
@@ -1351,6 +1320,21 @@ launch_args_parse(int argc, char** argv)
 			}
 			if (!strcmp(lgopts[opt_idx].name, "no-iova-contig"))
 				mempool_flags = MEMPOOL_F_NO_IOVA_CONTIG;
+
+			if (!strcmp(lgopts[opt_idx].name, "rx-mq-mode")) {
+				char *end = NULL;
+				n = strtoul(optarg, &end, 16);
+				if (n >= 0 && n <= ETH_MQ_RX_VMDQ_DCB_RSS)
+					rx_mq_mode = (enum rte_eth_rx_mq_mode)n;
+				else
+					rte_exit(EXIT_FAILURE,
+						 "rx-mq-mode must be >= 0 and <= %d\n",
+						 ETH_MQ_RX_VMDQ_DCB_RSS);
+			}
+			if (!strcmp(lgopts[opt_idx].name, "record-core-cycles"))
+				record_core_cycles = 1;
+			if (!strcmp(lgopts[opt_idx].name, "record-burst-stats"))
+				record_burst_stats = 1;
 			break;
 		case 'h':
 			usage(argv[0]);

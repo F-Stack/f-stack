@@ -216,48 +216,35 @@ const char * num_invalid_strs[] = {
 		"\0",
 };
 
-#define NUM_POSITIVE_STRS_SIZE \
-	(sizeof(num_valid_positive_strs) / sizeof(num_valid_positive_strs[0]))
-#define NUM_NEGATIVE_STRS_SIZE \
-	(sizeof(num_valid_negative_strs) / sizeof(num_valid_negative_strs[0]))
-#define NUM_POSITIVE_GARBAGE_STRS_SIZE \
-	(sizeof(num_garbage_positive_strs) / sizeof(num_garbage_positive_strs[0]))
-#define NUM_NEGATIVE_GARBAGE_STRS_SIZE \
-	(sizeof(num_garbage_negative_strs) / sizeof(num_garbage_negative_strs[0]))
-#define NUM_INVALID_STRS_SIZE \
-	(sizeof(num_invalid_strs) / sizeof(num_invalid_strs[0]))
-
-
-
 static int
 can_parse_unsigned(uint64_t expected_result, enum cmdline_numtype type)
 {
 	switch (type) {
-	case UINT8:
+	case RTE_UINT8:
 		if (expected_result > UINT8_MAX)
 			return 0;
 		break;
-	case UINT16:
+	case RTE_UINT16:
 		if (expected_result > UINT16_MAX)
 			return 0;
 		break;
-	case UINT32:
+	case RTE_UINT32:
 		if (expected_result > UINT32_MAX)
 			return 0;
 		break;
-	case INT8:
+	case RTE_INT8:
 		if (expected_result > INT8_MAX)
 			return 0;
 		break;
-	case INT16:
+	case RTE_INT16:
 		if (expected_result > INT16_MAX)
 			return 0;
 		break;
-	case INT32:
+	case RTE_INT32:
 		if (expected_result > INT32_MAX)
 			return 0;
 		break;
-	case INT64:
+	case RTE_INT64:
 		if (expected_result > INT64_MAX)
 			return 0;
 		break;
@@ -271,31 +258,31 @@ static int
 can_parse_signed(int64_t expected_result, enum cmdline_numtype type)
 {
 	switch (type) {
-	case UINT8:
+	case RTE_UINT8:
 		if (expected_result > UINT8_MAX || expected_result < 0)
 			return 0;
 		break;
-	case UINT16:
+	case RTE_UINT16:
 		if (expected_result > UINT16_MAX || expected_result < 0)
 			return 0;
 		break;
-	case UINT32:
+	case RTE_UINT32:
 		if (expected_result > UINT32_MAX || expected_result < 0)
 			return 0;
 		break;
-	case UINT64:
+	case RTE_UINT64:
 		if (expected_result < 0)
 			return 0;
 		break;
-	case INT8:
+	case RTE_INT8:
 		if (expected_result > INT8_MAX || expected_result < INT8_MIN)
 			return 0;
 		break;
-	case INT16:
+	case RTE_INT16:
 		if (expected_result > INT16_MAX || expected_result < INT16_MIN)
 			return 0;
 		break;
-	case INT32:
+	case RTE_INT32:
 		if (expected_result > INT32_MAX || expected_result < INT32_MIN)
 			return 0;
 		break;
@@ -315,7 +302,7 @@ test_parse_num_invalid_param(void)
 	int ret = 0;
 
 	/* set up a token */
-	token.num_data.type = UINT32;
+	token.num_data.type = RTE_UINT32;
 
 	/* copy string to buffer */
 	strlcpy(buf, num_valid_positive_strs[0].str, sizeof(buf));
@@ -388,11 +375,11 @@ test_parse_num_invalid_data(void)
 	cmdline_parse_token_num_t token;
 
 	/* cycle through all possible parsed types */
-	for (type = UINT8; type <= INT64; type++) {
+	for (type = RTE_UINT8; type <= RTE_INT64; type++) {
 		token.num_data.type = type;
 
 		/* test full strings */
-		for (i = 0; i < NUM_INVALID_STRS_SIZE; i++) {
+		for (i = 0; i < RTE_DIM(num_invalid_strs); i++) {
 
 			memset(&result, 0, sizeof(uint64_t));
 			memset(&buf, 0, sizeof(buf));
@@ -427,11 +414,11 @@ test_parse_num_valid(void)
 	/** valid strings **/
 
 	/* cycle through all possible parsed types */
-	for (type = UINT8; type <= INT64; type++) {
+	for (type = RTE_UINT8; type <= RTE_INT64; type++) {
 		token.num_data.type = type;
 
 		/* test positive strings */
-		for (i = 0; i < NUM_POSITIVE_STRS_SIZE; i++) {
+		for (i = 0; i < RTE_DIM(num_valid_positive_strs); i++) {
 			result = 0;
 			memset(&buf, 0, sizeof(buf));
 
@@ -459,7 +446,7 @@ test_parse_num_valid(void)
 		}
 
 		/* test negative strings */
-		for (i = 0; i < NUM_NEGATIVE_STRS_SIZE; i++) {
+		for (i = 0; i < RTE_DIM(num_valid_negative_strs); i++) {
 			result = 0;
 			memset(&buf, 0, sizeof(buf));
 
@@ -481,13 +468,13 @@ test_parse_num_valid(void)
 			if (ret > 0) {
 				/* detect negative */
 				switch (type) {
-				case INT8:
+				case RTE_INT8:
 					result = (int8_t) result;
 					break;
-				case INT16:
+				case RTE_INT16:
 					result = (int16_t) result;
 					break;
-				case INT32:
+				case RTE_INT32:
 					result = (int32_t) result;
 					break;
 				default:
@@ -505,11 +492,11 @@ test_parse_num_valid(void)
 	/** garbage strings **/
 
 	/* cycle through all possible parsed types */
-	for (type = UINT8; type <= INT64; type++) {
+	for (type = RTE_UINT8; type <= RTE_INT64; type++) {
 		token.num_data.type = type;
 
 		/* test positive garbage strings */
-		for (i = 0; i < NUM_POSITIVE_GARBAGE_STRS_SIZE; i++) {
+		for (i = 0; i < RTE_DIM(num_garbage_positive_strs); i++) {
 			result = 0;
 			memset(&buf, 0, sizeof(buf));
 
@@ -537,7 +524,7 @@ test_parse_num_valid(void)
 		}
 
 		/* test negative strings */
-		for (i = 0; i < NUM_NEGATIVE_GARBAGE_STRS_SIZE; i++) {
+		for (i = 0; i < RTE_DIM(num_garbage_negative_strs); i++) {
 			result = 0;
 			memset(&buf, 0, sizeof(buf));
 
@@ -559,15 +546,15 @@ test_parse_num_valid(void)
 			if (ret > 0) {
 				/* detect negative */
 				switch (type) {
-				case INT8:
+				case RTE_INT8:
 					if (result & (INT8_MAX + 1))
 						result |= 0xFFFFFFFFFFFFFF00ULL;
 					break;
-				case INT16:
+				case RTE_INT16:
 					if (result & (INT16_MAX + 1))
 						result |= 0xFFFFFFFFFFFF0000ULL;
 					break;
-				case INT32:
+				case RTE_INT32:
 					if (result & (INT32_MAX + 1ULL))
 						result |= 0xFFFFFFFF00000000ULL;
 					break;

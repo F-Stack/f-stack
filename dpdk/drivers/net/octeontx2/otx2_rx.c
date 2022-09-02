@@ -130,16 +130,22 @@ nix_recv_pkts_vector(void *rx_queue, struct rte_mbuf **rx_pkts,
 	const uintptr_t desc = rxq->desc;
 	uint8x16_t f0, f1, f2, f3;
 	uint32_t head = rxq->head;
+	uint16_t pkts_left;
 
 	pkts = nix_rx_nb_pkts(rxq, wdata, pkts, qmask);
+	pkts_left = pkts & (NIX_DESCS_PER_LOOP - 1);
+
 	/* Packets has to be floor-aligned to NIX_DESCS_PER_LOOP */
 	pkts = RTE_ALIGN_FLOOR(pkts, NIX_DESCS_PER_LOOP);
 
 	while (packets < pkts) {
-		/* Get the CQ pointers, since the ring size is multiple of
-		 * 4, We can avoid checking the wrap around of head
-		 * value after the each access unlike scalar version.
-		 */
+		/* Exit loop if head is about to wrap and become unaligned */
+		if (((head + NIX_DESCS_PER_LOOP - 1) & qmask) <
+				NIX_DESCS_PER_LOOP) {
+			pkts_left += (pkts - packets);
+			break;
+		}
+
 		const uintptr_t cq0 = desc + CQE_SZ(head);
 
 		/* Prefetch N desc ahead */
@@ -184,17 +190,21 @@ nix_recv_pkts_vector(void *rx_queue, struct rte_mbuf **rx_pkts,
 		f3 = vqtbl1q_u8(cq3_w8, shuf_msk);
 
 		/* Load CQE word0 and word 1 */
-		uint64x2_t cq0_w0 = vld1q_u64((uint64_t *)(cq0 + CQE_SZ(0)));
-		uint64x2_t cq1_w0 = vld1q_u64((uint64_t *)(cq0 + CQE_SZ(1)));
-		uint64x2_t cq2_w0 = vld1q_u64((uint64_t *)(cq0 + CQE_SZ(2)));
-		uint64x2_t cq3_w0 = vld1q_u64((uint64_t *)(cq0 + CQE_SZ(3)));
+		uint64_t cq0_w0 = ((uint64_t *)(cq0 + CQE_SZ(0)))[0];
+		uint64_t cq0_w1 = ((uint64_t *)(cq0 + CQE_SZ(0)))[1];
+		uint64_t cq1_w0 = ((uint64_t *)(cq0 + CQE_SZ(1)))[0];
+		uint64_t cq1_w1 = ((uint64_t *)(cq0 + CQE_SZ(1)))[1];
+		uint64_t cq2_w0 = ((uint64_t *)(cq0 + CQE_SZ(2)))[0];
+		uint64_t cq2_w1 = ((uint64_t *)(cq0 + CQE_SZ(2)))[1];
+		uint64_t cq3_w0 = ((uint64_t *)(cq0 + CQE_SZ(3)))[0];
+		uint64_t cq3_w1 = ((uint64_t *)(cq0 + CQE_SZ(3)))[1];
 
 		if (flags & NIX_RX_OFFLOAD_RSS_F) {
 			/* Fill rss in the rx_descriptor_fields1 */
-			f0 = vsetq_lane_u32(vgetq_lane_u32(cq0_w0, 0), f0, 3);
-			f1 = vsetq_lane_u32(vgetq_lane_u32(cq1_w0, 0), f1, 3);
-			f2 = vsetq_lane_u32(vgetq_lane_u32(cq2_w0, 0), f2, 3);
-			f3 = vsetq_lane_u32(vgetq_lane_u32(cq3_w0, 0), f3, 3);
+			f0 = vsetq_lane_u32(cq0_w0, f0, 3);
+			f1 = vsetq_lane_u32(cq1_w0, f1, 3);
+			f2 = vsetq_lane_u32(cq2_w0, f2, 3);
+			f3 = vsetq_lane_u32(cq3_w0, f3, 3);
 			ol_flags0 = PKT_RX_RSS_HASH;
 			ol_flags1 = PKT_RX_RSS_HASH;
 			ol_flags2 = PKT_RX_RSS_HASH;
@@ -206,25 +216,21 @@ nix_recv_pkts_vector(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		if (flags & NIX_RX_OFFLOAD_PTYPE_F) {
 			/* Fill packet_type in the rx_descriptor_fields1 */
-			f0 = vsetq_lane_u32(nix_ptype_get(lookup_mem,
-					    vgetq_lane_u64(cq0_w0, 1)), f0, 0);
-			f1 = vsetq_lane_u32(nix_ptype_get(lookup_mem,
-					    vgetq_lane_u64(cq1_w0, 1)), f1, 0);
-			f2 = vsetq_lane_u32(nix_ptype_get(lookup_mem,
-					    vgetq_lane_u64(cq2_w0, 1)), f2, 0);
-			f3 = vsetq_lane_u32(nix_ptype_get(lookup_mem,
-					    vgetq_lane_u64(cq3_w0, 1)), f3, 0);
+			f0 = vsetq_lane_u32(nix_ptype_get(lookup_mem, cq0_w1),
+					    f0, 0);
+			f1 = vsetq_lane_u32(nix_ptype_get(lookup_mem, cq1_w1),
+					    f1, 0);
+			f2 = vsetq_lane_u32(nix_ptype_get(lookup_mem, cq2_w1),
+					    f2, 0);
+			f3 = vsetq_lane_u32(nix_ptype_get(lookup_mem, cq3_w1),
+					    f3, 0);
 		}
 
 		if (flags & NIX_RX_OFFLOAD_CHECKSUM_F) {
-			ol_flags0 |= nix_rx_olflags_get(lookup_mem,
-						vgetq_lane_u64(cq0_w0, 1));
-			ol_flags1 |= nix_rx_olflags_get(lookup_mem,
-						vgetq_lane_u64(cq1_w0, 1));
-			ol_flags2 |= nix_rx_olflags_get(lookup_mem,
-						vgetq_lane_u64(cq2_w0, 1));
-			ol_flags3 |= nix_rx_olflags_get(lookup_mem,
-						vgetq_lane_u64(cq3_w0, 1));
+			ol_flags0 |= nix_rx_olflags_get(lookup_mem, cq0_w1);
+			ol_flags1 |= nix_rx_olflags_get(lookup_mem, cq1_w1);
+			ol_flags2 |= nix_rx_olflags_get(lookup_mem, cq2_w1);
+			ol_flags3 |= nix_rx_olflags_get(lookup_mem, cq3_w1);
 		}
 
 		if (flags & NIX_RX_OFFLOAD_VLAN_STRIP_F) {
@@ -303,9 +309,13 @@ nix_recv_pkts_vector(void *rx_queue, struct rte_mbuf **rx_pkts,
 	rxq->head = head;
 	rxq->available -= packets;
 
-	rte_cio_wmb();
+	rte_io_wmb();
 	/* Free all the CQs that we've processed */
 	otx2_write64((rxq->wdata | packets), rxq->cq_door);
+
+	if (unlikely(pkts_left))
+		packets += nix_recv_pkts(rx_queue, &rx_pkts[packets],
+					 pkts_left, flags);
 
 	return packets;
 }
@@ -326,15 +336,15 @@ nix_recv_pkts_vector(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 #endif
 
-#define R(name, f5, f4, f3, f2, f1, f0, flags)				\
-static uint16_t __rte_noinline	__hot					       \
+#define R(name, f6, f5, f4, f3, f2, f1, f0, flags)			       \
+static uint16_t __rte_noinline	__rte_hot					       \
 otx2_nix_recv_pkts_ ## name(void *rx_queue,				       \
 			struct rte_mbuf **rx_pkts, uint16_t pkts)	       \
 {									       \
 	return nix_recv_pkts(rx_queue, rx_pkts, pkts, (flags));		       \
 }									       \
 									       \
-static uint16_t __rte_noinline	__hot					       \
+static uint16_t __rte_noinline	__rte_hot					       \
 otx2_nix_recv_pkts_mseg_ ## name(void *rx_queue,			       \
 			struct rte_mbuf **rx_pkts, uint16_t pkts)	       \
 {									       \
@@ -342,7 +352,7 @@ otx2_nix_recv_pkts_mseg_ ## name(void *rx_queue,			       \
 			     (flags) | NIX_RX_MULTI_SEG_F);		       \
 }									       \
 									       \
-static uint16_t __rte_noinline	__hot					       \
+static uint16_t __rte_noinline	__rte_hot					       \
 otx2_nix_recv_pkts_vec_ ## name(void *rx_queue,				       \
 			struct rte_mbuf **rx_pkts, uint16_t pkts)	       \
 {									       \
@@ -357,12 +367,13 @@ NIX_RX_FASTPATH_MODES
 
 static inline void
 pick_rx_func(struct rte_eth_dev *eth_dev,
-	     const eth_rx_burst_t rx_burst[2][2][2][2][2][2])
+	     const eth_rx_burst_t rx_burst[2][2][2][2][2][2][2])
 {
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 
-	/* [TSTMP] [MARK] [VLAN] [CKSUM] [PTYPE] [RSS] */
+	/* [SEC] [TSTMP] [MARK] [VLAN] [CKSUM] [PTYPE] [RSS] */
 	eth_dev->rx_pkt_burst = rx_burst
+		[!!(dev->rx_offload_flags & NIX_RX_OFFLOAD_SECURITY_F)]
 		[!!(dev->rx_offload_flags & NIX_RX_OFFLOAD_TSTAMP_F)]
 		[!!(dev->rx_offload_flags & NIX_RX_OFFLOAD_MARK_UPDATE_F)]
 		[!!(dev->rx_offload_flags & NIX_RX_OFFLOAD_VLAN_STRIP_F)]
@@ -376,25 +387,25 @@ otx2_eth_set_rx_function(struct rte_eth_dev *eth_dev)
 {
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 
-	const eth_rx_burst_t nix_eth_rx_burst[2][2][2][2][2][2] = {
-#define R(name, f5, f4, f3, f2, f1, f0, flags)				\
-	[f5][f4][f3][f2][f1][f0] =  otx2_nix_recv_pkts_ ## name,
+	const eth_rx_burst_t nix_eth_rx_burst[2][2][2][2][2][2][2] = {
+#define R(name, f6, f5, f4, f3, f2, f1, f0, flags)			\
+	[f6][f5][f4][f3][f2][f1][f0] =  otx2_nix_recv_pkts_ ## name,
 
 NIX_RX_FASTPATH_MODES
 #undef R
 	};
 
-	const eth_rx_burst_t nix_eth_rx_burst_mseg[2][2][2][2][2][2] = {
-#define R(name, f5, f4, f3, f2, f1, f0, flags)				\
-	[f5][f4][f3][f2][f1][f0] =  otx2_nix_recv_pkts_mseg_ ## name,
+	const eth_rx_burst_t nix_eth_rx_burst_mseg[2][2][2][2][2][2][2] = {
+#define R(name, f6, f5, f4, f3, f2, f1, f0, flags)			\
+	[f6][f5][f4][f3][f2][f1][f0] =  otx2_nix_recv_pkts_mseg_ ## name,
 
 NIX_RX_FASTPATH_MODES
 #undef R
 	};
 
-	const eth_rx_burst_t nix_eth_rx_vec_burst[2][2][2][2][2][2] = {
-#define R(name, f5, f4, f3, f2, f1, f0, flags)				\
-	[f5][f4][f3][f2][f1][f0] =  otx2_nix_recv_pkts_vec_ ## name,
+	const eth_rx_burst_t nix_eth_rx_vec_burst[2][2][2][2][2][2][2] = {
+#define R(name, f6, f5, f4, f3, f2, f1, f0, flags)			\
+	[f6][f5][f4][f3][f2][f1][f0] =  otx2_nix_recv_pkts_vec_ ## name,
 
 NIX_RX_FASTPATH_MODES
 #undef R
@@ -414,6 +425,6 @@ NIX_RX_FASTPATH_MODES
 	/* Copy multi seg version with no offload for tear down sequence */
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
 		dev->rx_pkt_burst_no_offload =
-			nix_eth_rx_burst_mseg[0][0][0][0][0][0];
+			nix_eth_rx_burst_mseg[0][0][0][0][0][0][0];
 	rte_mb();
 }

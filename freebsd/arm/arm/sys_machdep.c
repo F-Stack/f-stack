@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
  *
@@ -46,6 +48,7 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/cpu.h>
 #include <machine/sysarch.h>
+#include <machine/machdep.h>
 #include <machine/vmparam.h>
 
 #ifndef _SYS_SYSPROTO_H_
@@ -59,19 +62,15 @@ struct sysarch_args {
 static int arm32_sync_icache (struct thread *, void *);
 static int arm32_drain_writebuf(struct thread *, void *);
 
-#if __ARM_ARCH >= 6
 static int
 sync_icache(uintptr_t addr, size_t len)
 {
 	size_t size;
 	vm_offset_t rv;
 
-	/*
-	 * Align starting address to even number because value of "1"
-	 * is used as return value for success.
-	 */
-	len += addr & 1;
-	addr &= ~1;
+	 /* Align starting address to cacheline size */
+	len += addr & cpuinfo.dcache_line_mask;
+	addr &= ~cpuinfo.dcache_line_mask;
 
 	/* Break whole range to pages. */
 	do {
@@ -95,7 +94,6 @@ sync_icache(uintptr_t addr, size_t len)
 	bpb_inv_all();
 	return (1);
 }
-#endif
 
 static int
 arm32_sync_icache(struct thread *td, void *args)
@@ -103,9 +101,7 @@ arm32_sync_icache(struct thread *td, void *args)
 	struct arm_sync_icache_args ua;
 	int error;
 	ksiginfo_t ksi;
-#if __ARM_ARCH >= 6
 	vm_offset_t rv;
-#endif
 
 	if ((error = copyin(args, &ua, sizeof(ua))) != 0)
 		return (error);
@@ -129,7 +125,6 @@ arm32_sync_icache(struct thread *td, void *args)
 		return (EINVAL);
 	}
 
-#if __ARM_ARCH >= 6
 	rv = sync_icache(ua.addr, ua.len);
 	if (rv != 1) {
 		ksiginfo_init_trap(&ksi);
@@ -139,9 +134,6 @@ arm32_sync_icache(struct thread *td, void *args)
 		trapsignal(td, &ksi);
 		return (EINVAL);
 	}
-#else
-	cpu_icache_sync_range(ua.addr, ua.len);
-#endif
 
 	td->td_retval[0] = 0;
 	return (0);
@@ -152,12 +144,8 @@ arm32_drain_writebuf(struct thread *td, void *args)
 {
 	/* No args. */
 
-#if __ARM_ARCH < 6
-	cpu_drain_writebuf();
-#else
 	dsb();
 	cpu_l2cache_drain_writebuf();
-#endif
 	td->td_retval[0] = 0;
 	return (0);
 }
@@ -166,12 +154,7 @@ static int
 arm32_set_tp(struct thread *td, void *args)
 {
 
-	td->td_md.md_tp = (register_t)args;
-#if __ARM_ARCH >= 6
 	set_tls(args);
-#else
-	*(register_t *)ARM_TP_ADDRESS = (register_t)args;
-#endif
 	return (0);
 }
 
@@ -179,18 +162,12 @@ static int
 arm32_get_tp(struct thread *td, void *args)
 {
 
-#if __ARM_ARCH >= 6
-	td->td_retval[0] = td->td_md.md_tp;
-#else
-	td->td_retval[0] = *(register_t *)ARM_TP_ADDRESS;
-#endif
+	td->td_retval[0] = (register_t)get_tls();
 	return (0);
 }
 
 int
-sysarch(td, uap)
-	struct thread *td;
-	register struct sysarch_args *uap;
+sysarch(struct thread *td, struct sysarch_args *uap)
 {
 	int error;
 
@@ -206,6 +183,7 @@ sysarch(td, uap)
 		case ARM_DRAIN_WRITEBUF:
 		case ARM_SET_TP:
 		case ARM_GET_TP:
+		case ARM_GET_VFPSTATE:
 			break;
 
 		default:
@@ -230,6 +208,9 @@ sysarch(td, uap)
 		break;
 	case ARM_GET_TP:
 		error = arm32_get_tp(td, uap->parms);
+		break;
+	case ARM_GET_VFPSTATE:
+		error = arm_get_vfpstate(td, uap->parms);
 		break;
 	default:
 		error = EINVAL;

@@ -18,6 +18,7 @@ extern int ntb_logtype;
 
 /* Device IDs */
 #define NTB_INTEL_DEV_ID_B2B_SKX    0x201C
+#define NTB_INTEL_DEV_ID_B2B_ICX    0x347E
 
 /* Reserved to app to use. */
 #define NTB_SPAD_USER               "spad_user_"
@@ -94,7 +95,7 @@ enum ntb_spad_idx {
  * @spad_write: Write val to local/peer spad register.
  * @db_read: Read doorbells status.
  * @db_clear: Clear local doorbells.
- * @db_set_mask: Set bits in db mask, preventing db interrpts generated
+ * @db_set_mask: Set bits in db mask, preventing db interrupts generated
  * for those db bits.
  * @peer_db_set: Set doorbell bit to generate peer interrupt for that bit.
  * @vector_bind: Bind vector source [intr] to msix vector [msix].

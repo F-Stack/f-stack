@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Thomas Skibo
  * All rights reserved.
  *
@@ -52,7 +54,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/resource.h>
 #include <machine/stdarg.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
@@ -79,7 +80,8 @@ extern void (*zynq7_cpu_reset);
 
 #define ZYNQ_DEFAULT_PS_CLK_FREQUENCY	33333333	/* 33.3 Mhz */
 
-SYSCTL_NODE(_hw, OID_AUTO, zynq, CTLFLAG_RD, 0, "Xilinx Zynq-7000");
+SYSCTL_NODE(_hw, OID_AUTO, zynq, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "Xilinx Zynq-7000");
 
 static char zynq_bootmode[64];
 SYSCTL_STRING(_hw_zynq, OID_AUTO, bootmode, CTLFLAG_RD, zynq_bootmode, 0,
@@ -497,7 +499,7 @@ zy7_pl_fclk_enabled(int unit)
 }
 
 int
-zy7_pl_level_shifters_enabled()
+zy7_pl_level_shifters_enabled(void)
 {
 	struct zy7_slcr_softc *sc = zy7_slcr_softc_p;
 
@@ -514,7 +516,7 @@ zy7_pl_level_shifters_enabled()
 }
 
 void
-zy7_pl_level_shifters_enable()
+zy7_pl_level_shifters_enable(void)
 {
 	struct zy7_slcr_softc *sc = zy7_slcr_softc_p;
 
@@ -529,7 +531,7 @@ zy7_pl_level_shifters_enable()
 }
 
 void
-zy7_pl_level_shifters_disable()
+zy7_pl_level_shifters_disable(void)
 {
 	struct zy7_slcr_softc *sc = zy7_slcr_softc_p;
 
@@ -621,8 +623,8 @@ zy7_slcr_attach(device_t dev)
 
 	/* Derive PLL frequencies from PS_CLK. */
 	node = ofw_bus_get_node(dev);
-	if (OF_getprop(node, "clock-frequency", &cell, sizeof(cell)) > 0)
-		ps_clk_frequency = fdt32_to_cpu(cell);
+	if (OF_getencprop(node, "clock-frequency", &cell, sizeof(cell)) > 0)
+		ps_clk_frequency = cell;
 	else
 		ps_clk_frequency = ZYNQ_DEFAULT_PS_CLK_FREQUENCY;
 

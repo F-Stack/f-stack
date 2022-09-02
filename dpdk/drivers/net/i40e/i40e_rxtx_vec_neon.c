@@ -72,7 +72,7 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
 			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
 
-	rte_cio_wmb();
+	rte_io_wmb();
 	/* Update the tail pointer on the NIC */
 	I40E_PCI_REG_WRITE_RELAXED(rxq->qrx_tail, rx_id);
 }
@@ -151,7 +151,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, uint64x2_t descs[4],
 					      vreinterpretq_u8_u32(l3_l4e)));
 	/* then we shift left 1 bit */
 	l3_l4e = vshlq_n_u32(l3_l4e, 1);
-	/* we need to mask out the reduntant bits */
+	/* we need to mask out the redundant bits */
 	l3_l4e = vandq_u32(l3_l4e, cksum_mask);
 
 	vlan0 = vorrq_u32(vlan0, rss);
@@ -172,8 +172,8 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, uint64x2_t descs[4],
 #define I40E_UINT16_BIT (CHAR_BIT * sizeof(uint16_t))
 
 static inline void
-desc_to_ptype_v(uint64x2_t descs[4], struct rte_mbuf **rx_pkts,
-		uint32_t *ptype_tbl)
+desc_to_ptype_v(uint64x2_t descs[4], struct rte_mbuf **__rte_restrict rx_pkts,
+		uint32_t *__rte_restrict ptype_tbl)
 {
 	int i;
 	uint8_t ptype;
@@ -195,7 +195,8 @@ desc_to_ptype_v(uint64x2_t descs[4], struct rte_mbuf **rx_pkts,
  * - floor align nb_pkts to a RTE_I40E_DESCS_PER_LOOP power-of-two
  */
 static inline uint16_t
-_recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
+_recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
+		   struct rte_mbuf **__rte_restrict rx_pkts,
 		   uint16_t nb_pkts, uint8_t *split_packet)
 {
 	volatile union i40e_rx_desc *rxdp;
@@ -296,16 +297,16 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		descs[1] =  vld1q_u64((uint64_t *)(rxdp + 1));
 		descs[0] =  vld1q_u64((uint64_t *)(rxdp));
 
-		/* B.2 copy 2 mbuf point into rx_pkts  */
-		vst1q_u64((uint64_t *)&rx_pkts[pos + 2], mbp2);
-
 		/* Use acquire fence to order loads of descriptor qwords */
-		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 		/* A.2 reload qword0 to make it ordered after qword1 load */
 		descs[3] = vld1q_lane_u64((uint64_t *)(rxdp + 3), descs[3], 0);
 		descs[2] = vld1q_lane_u64((uint64_t *)(rxdp + 2), descs[2], 0);
 		descs[1] = vld1q_lane_u64((uint64_t *)(rxdp + 1), descs[1], 0);
 		descs[0] = vld1q_lane_u64((uint64_t *)(rxdp), descs[0], 0);
+
+		/* B.2 copy 2 mbuf point into rx_pkts  */
+		vst1q_u64((uint64_t *)&rx_pkts[pos + 2], mbp2);
 
 		if (split_packet) {
 			rte_mbuf_prefetch_part2(rx_pkts[pos]);
@@ -426,7 +427,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		vst1q_u8((void *)&rx_pkts[pos]->rx_descriptor_fields1,
 			 pkt_mb1);
 		desc_to_ptype_v(descs, &rx_pkts[pos], ptype_tbl);
-		/* C.4 calc avaialbe number of desc */
+		/* C.4 calc available number of desc */
 		if (unlikely(stat == 0)) {
 			nb_pkts_recd += RTE_I40E_DESCS_PER_LOOP;
 		} else {
@@ -450,8 +451,8 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
  *   numbers of DD bits
  */
 uint16_t
-i40e_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-		   uint16_t nb_pkts)
+i40e_recv_pkts_vec(void *__rte_restrict rx_queue,
+		struct rte_mbuf **__rte_restrict rx_pkts, uint16_t nb_pkts)
 {
 	return _recv_raw_pkts_vec(rx_queue, rx_pkts, nb_pkts, NULL);
 }
@@ -538,8 +539,8 @@ vtx1(volatile struct i40e_tx_desc *txdp,
 }
 
 static inline void
-vtx(volatile struct i40e_tx_desc *txdp,
-		struct rte_mbuf **pkt, uint16_t nb_pkts,  uint64_t flags)
+vtx(volatile struct i40e_tx_desc *txdp, struct rte_mbuf **pkt,
+		uint16_t nb_pkts,  uint64_t flags)
 {
 	int i;
 
@@ -548,8 +549,8 @@ vtx(volatile struct i40e_tx_desc *txdp,
 }
 
 uint16_t
-i40e_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
-			  uint16_t nb_pkts)
+i40e_xmit_fixed_burst_vec(void *__rte_restrict tx_queue,
+	struct rte_mbuf **__rte_restrict tx_pkts, uint16_t nb_pkts)
 {
 	struct i40e_tx_queue *txq = (struct i40e_tx_queue *)tx_queue;
 	volatile struct i40e_tx_desc *txdp;
@@ -609,31 +610,31 @@ i40e_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	txq->tx_tail = tx_id;
 
-	rte_cio_wmb();
+	rte_io_wmb();
 	I40E_PCI_REG_WRITE_RELAXED(txq->qtx_tail, tx_id);
 
 	return nb_pkts;
 }
 
-void __attribute__((cold))
+void __rte_cold
 i40e_rx_queue_release_mbufs_vec(struct i40e_rx_queue *rxq)
 {
 	_i40e_rx_queue_release_mbufs_vec(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 i40e_rxq_vec_setup(struct i40e_rx_queue *rxq)
 {
 	return i40e_rxq_vec_setup_default(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 i40e_txq_vec_setup(struct i40e_tx_queue __rte_unused *txq)
 {
 	return 0;
 }
 
-int __attribute__((cold))
+int __rte_cold
 i40e_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 {
 	return i40e_rx_vec_dev_conf_condition_check_default(dev);

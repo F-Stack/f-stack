@@ -6,147 +6,63 @@
 Compiling the DPDK Target from Source
 =====================================
 
-System Requirements
--------------------
+Prerequisites
+-------------
 
-The DPDK and its applications require the GNU make system (gmake)
-to build on FreeBSD. Optionally, gcc may also be used in place of clang
-to build the DPDK, in which case it too must be installed prior to
-compiling the DPDK. The installation of these tools is covered in this
-section.
+The following FreeBSD packages are required to build DPDK:
 
-Compiling the DPDK requires the FreeBSD kernel sources, which should be
-included during the installation of FreeBSD on the development platform.
-The DPDK also requires the use of FreeBSD ports to compile and function.
+* meson
+* ninja
+* pkgconf
 
-To use the FreeBSD ports system, it is required to update and extract the FreeBSD
-ports tree by issuing the following commands:
+These can be installed using (as root)::
 
-.. code-block:: console
+  pkg install meson pkgconf
 
-    portsnap fetch
-    portsnap extract
+To compile the required kernel modules for memory management and working
+with physical NIC devices, the kernel sources for FreeBSD also
+need to be installed. If not already present on the system, these can be
+installed via commands like the following, for FreeBSD 12.1 on x86_64::
 
-If the environment requires proxies for external communication, these can be set
-using:
+  fetch http://ftp.freebsd.org/pub/FreeBSD/releases/amd64/12.1-RELEASE/src.txz
+  tar -C / -xJvf src.txz
 
-.. code-block:: console
+To enable the telemetry library in DPDK, the jansson library also needs to
+be installed, and can be installed via::
 
-    setenv http_proxy <my_proxy_host>:<port>
-    setenv ftp_proxy <my_proxy_host>:<port>
+  pkg install jansson
 
-The FreeBSD ports below need to be installed prior to building the DPDK.
-In general these can be installed using the following set of commands::
+Individual drivers may have additional requirements. Consult the relevant
+driver guide for any driver-specific requirements of interest.
 
-   cd /usr/ports/<port_location>
+Building DPDK
+-------------
 
-   make config-recursive
+The following commands can be used to build and install DPDK on a system.
+The final, install, step generally needs to be run as root::
 
-   make install
+  meson build
+  cd build
+  ninja
+  ninja install
 
-   make clean
-
-Each port location can be found using::
-
-   whereis <port_name>
-
-The ports required and their locations are as follows:
-
-* dialog4ports: ``/usr/ports/ports-mgmt/dialog4ports``
-
-* GNU make(gmake): ``/usr/ports/devel/gmake``
-
-* coreutils: ``/usr/ports/sysutils/coreutils``
-
-For compiling and using the DPDK with gcc, the compiler must be installed
-from the ports collection:
-
-* gcc: version 4.9 is recommended ``/usr/ports/lang/gcc49``.
-  Ensure that ``CPU_OPTS`` is selected (default is OFF).
-
-When running the make config-recursive command, a dialog may be presented to the
-user. For the installation of the DPDK, the default options were used.
+This will install the DPDK libraries and drivers to `/usr/local/lib` with a
+pkg-config file `libdpdk.pc` installed to `/usr/local/lib/pkgconfig`. The
+DPDK test applications, such as `dpdk-testpmd` are installed to
+`/usr/local/bin`. To use these applications, it is recommended that the
+`contigmem` and `nic_uio` kernel modules be loaded first, as described in
+the next section.
 
 .. note::
 
-    To avoid multiple dialogs being presented to the user during make install,
-    it is advisable before running the make install command to re-run the
-    make config-recursive command until no more dialogs are seen.
+        It is recommended that pkg-config be used to query information
+        about the compiler and linker flags needed to build applications
+        against DPDK.  In some cases, the path `/usr/local/lib/pkgconfig`
+        may not be in the default search paths for `.pc` files, which means
+        that queries for DPDK information may fail. This can be fixed by
+        setting the appropriate path in `PKG_CONFIG_PATH` environment
+        variable.
 
-
-Install the DPDK and Browse Sources
------------------------------------
-
-First, uncompress the archive and move to the DPDK source directory:
-
-.. code-block:: console
-
-    unzip DPDK-<version>.zip
-    cd DPDK-<version>
-
-The DPDK is composed of several directories:
-
-*   lib: Source code of DPDK libraries
-
-*   app: Source code of DPDK applications (automatic tests)
-
-*   examples: Source code of DPDK applications
-
-*   config, buildtools, mk: Framework-related makefiles, scripts and configuration
-
-Installation of the DPDK Target Environments
---------------------------------------------
-
-The format of a DPDK target is::
-
-   ARCH-MACHINE-EXECENV-TOOLCHAIN
-
-Where:
-
-* ``ARCH`` is: ``x86_64``
-
-* ``MACHINE`` is: ``native``
-
-* ``EXECENV`` is: ``freebsd``
-
-* ``TOOLCHAIN`` is: ``gcc`` | ``clang``
-
-The configuration files for the DPDK targets can be found in the DPDK/config
-directory in the form of::
-
-    defconfig_ARCH-MACHINE-EXECENV-TOOLCHAIN
-
-.. note::
-
-   Configuration files are provided with the ``RTE_MACHINE`` optimization level set.
-   Within the configuration files, the ``RTE_MACHINE`` configuration value is set
-   to native, which means that the compiled software is tuned for the platform
-   on which it is built.  For more information on this setting, and its
-   possible values, see the *DPDK Programmers Guide*.
-
-To make the target, use ``gmake install T=<target>``.
-
-For example to compile for FreeBSD use:
-
-.. code-block:: console
-
-    gmake install T=x86_64-native-freebsd-clang
-
-.. note::
-
-   If the compiler binary to be used does not correspond to that given in the
-   TOOLCHAIN part of the target, the compiler command may need to be explicitly
-   specified. For example, if compiling for gcc, where the gcc binary is called
-   gcc4.9, the command would need to be ``gmake install T=<target> CC=gcc4.9``.
-
-Browsing the Installed DPDK Environment Target
-----------------------------------------------
-
-Once a target is created, it contains all the libraries and header files for the
-DPDK environment that are required to build customer applications.
-In addition, the test and testpmd applications are built under the build/app
-directory, which may be used for testing.  A kmod directory is also present that
-contains the kernel modules to install.
 
 .. _loading_contigmem:
 
@@ -157,26 +73,25 @@ To run a DPDK application, physically contiguous memory is required.
 In the absence of non-transparent superpages, the included sources for the
 contigmem kernel module provides the ability to present contiguous blocks of
 memory for the DPDK to use. The contigmem module must be loaded into the
-running kernel before any DPDK is run.  The module is found in the kmod
-sub-directory of the DPDK target directory.
+running kernel before any DPDK is run. Once DPDK is installed on the
+system, the module can be found in the `/boot/modules` directory.
 
 The amount of physically contiguous memory along with the number of physically
 contiguous blocks to be reserved by the module can be set at runtime prior to
-module loading using:
-
-.. code-block:: console
+module loading using::
 
     kenv hw.contigmem.num_buffers=n
     kenv hw.contigmem.buffer_size=m
 
 The kernel environment variables can also be specified during boot by placing the
-following in ``/boot/loader.conf``::
+following in ``/boot/loader.conf``:
 
-    hw.contigmem.num_buffers=n hw.contigmem.buffer_size=m
+.. code-block:: shell
 
-The variables can be inspected using the following command:
+    hw.contigmem.num_buffers=n
+    hw.contigmem.buffer_size=m
 
-.. code-block:: console
+The variables can be inspected using the following command::
 
     sysctl -a hw.contigmem
 
@@ -184,18 +99,19 @@ Where n is the number of blocks and m is the size in bytes of each area of
 contiguous memory.  A default of two buffers of size 1073741824 bytes (1 Gigabyte)
 each is set during module load if they are not specified in the environment.
 
-The module can then be loaded using kldload (assuming that the current directory
-is the DPDK target directory):
+The module can then be loaded using kldload::
 
-.. code-block:: console
-
-    kldload ./kmod/contigmem.ko
+    kldload contigmem
 
 It is advisable to include the loading of the contigmem module during the boot
 process to avoid issues with potential memory fragmentation during later system
-up time.  This can be achieved by copying the module to the ``/boot/kernel/``
-directory and placing the following into ``/boot/loader.conf``::
+up time.  This can be achieved by placing lines similar to the following into
+``/boot/loader.conf``:
 
+.. code-block:: shell
+
+    hw.contigmem.num_buffers=1
+    hw.contigmem.buffer_size=1073741824
     contigmem_load="YES"
 
 .. note::
@@ -204,17 +120,13 @@ directory and placing the following into ``/boot/loader.conf``::
     ``hw.contigmem.num_buffers`` and ``hw.contigmem.buffer_size`` if the default values
     are not to be used.
 
-An error such as:
+An error such as::
 
-.. code-block:: console
-
-    kldload: can't load ./x86_64-native-freebsd-gcc/kmod/contigmem.ko:
+    kldload: can't load <build_dir>/kernel/freebsd/contigmem.ko:
              Exec format error
 
 is generally attributed to not having enough contiguous memory
-available and can be verified via dmesg or ``/var/log/messages``:
-
-.. code-block:: console
+available and can be verified via dmesg or ``/var/log/messages``::
 
     kernel: contigmalloc failed for buffer <n>
 
@@ -226,13 +138,9 @@ Loading the DPDK nic_uio Module
 -------------------------------
 
 After loading the contigmem module, the ``nic_uio`` module must also be loaded into the
-running kernel prior to running any DPDK application.  This module must
-be loaded using the kldload command as shown below (assuming that the current
-directory is the DPDK target directory).
+running kernel prior to running any DPDK application, e.g. using::
 
-.. code-block:: console
-
-    kldload ./kmod/nic_uio.ko
+    kldload nic_uio
 
 .. note::
 
@@ -243,8 +151,9 @@ directory is the DPDK target directory).
 Currently loaded modules can be seen by using the ``kldstat`` command and a module
 can be removed from the running kernel by using ``kldunload <module_name>``.
 
-To load the module during boot, copy the ``nic_uio`` module to ``/boot/kernel``
-and place the following into ``/boot/loader.conf``::
+To load the module during boot place the following into ``/boot/loader.conf``:
+
+.. code-block:: shell
 
     nic_uio_load="YES"
 
@@ -268,7 +177,7 @@ Binding Network Ports to the nic_uio Module
 Device ownership can be viewed using the pciconf -l command. The example below shows
 four Intel® 82599 network ports under ``if_ixgbe`` module ownership.
 
-.. code-block:: console
+.. code-block:: none
 
     pciconf -l
     ix0@pci0:1:0:0: class=0x020000 card=0x00038086 chip=0x10fb8086 rev=0x01 hdr=0x00
@@ -294,7 +203,7 @@ To avoid building a custom kernel, the ``nic_uio`` module can detach a network p
 from its current device driver. This is achieved by setting the ``hw.nic_uio.bdfs``
 kernel environment variable prior to loading ``nic_uio``, as follows::
 
-    hw.nic_uio.bdfs="b:d:f,b:d:f,..."
+    kenv hw.nic_uio.bdfs="b:d:f,b:d:f,..."
 
 Where a comma separated list of selectors is set, the list must not contain any
 whitespace.
@@ -306,7 +215,9 @@ upon loading, use the following command::
 
 The variable can also be specified during boot by placing the following into
 ``/boot/loader.conf``, before the previously-described ``nic_uio_load`` line - as
-shown::
+shown:
+
+.. code-block:: shell
 
     hw.nic_uio.bdfs="2:0:0,2:0:1"
     nic_uio_load="YES"
@@ -325,9 +236,7 @@ value, and reload the two drivers - first the original kernel driver, and then
 the ``nic_uio driver``. Note: the latter does not need to be reloaded unless there are
 ports that are still to be bound to it.
 
-Example commands to perform these steps are shown below:
-
-.. code-block:: console
+Example commands to perform these steps are shown below::
 
     kldunload nic_uio
     kldunload <original_driver>

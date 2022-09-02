@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1988, 1991 The Regents of the University of California.
  * All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -51,17 +53,26 @@ typedef	void	(*systrace_probe_func_t)(struct syscall_args *,
 		    enum systrace_probe_t, int);
 typedef	void	(*systrace_args_func_t)(int, void *, uint64_t *, int *);
 
+#ifdef _KERNEL
 extern systrace_probe_func_t	systrace_probe_func;
+extern bool			systrace_enabled;
+
+#ifdef KDTRACE_HOOKS
+#define	SYSTRACE_ENABLED()	(systrace_enabled)
+#else
+#define SYSTRACE_ENABLED()	(0)
+#endif
+#endif /* _KERNEL */
 
 struct sysent {			/* system call table */
-	int	sy_narg;	/* number of arguments */
 	sy_call_t *sy_call;	/* implementing function */
-	au_event_t sy_auevent;	/* audit event associated with syscall */
 	systrace_args_func_t sy_systrace_args_func;
 				/* optional argument conversion function. */
+	u_int8_t sy_narg;	/* number of arguments */
+	u_int8_t sy_flags;	/* General flags for system calls. */
+	au_event_t sy_auevent;	/* audit event associated with syscall */
 	u_int32_t sy_entry;	/* DTrace entry ID for systrace. */
 	u_int32_t sy_return;	/* DTrace return ID for systrace. */
-	u_int32_t sy_flags;	/* General flags for system calls. */
 	u_int32_t sy_thrcnt;
 };
 
@@ -83,6 +94,7 @@ struct sysent {			/* system call table */
 #endif
 
 struct image_params;
+struct proc;
 struct __sigset;
 struct trapframe;
 struct vnode;
@@ -90,12 +102,9 @@ struct vnode;
 struct sysentvec {
 	int		sv_size;	/* number of entries */
 	struct sysent	*sv_table;	/* pointer to sysent */
-	u_int		sv_mask;	/* optional mask to index */
-	int		sv_errsize;	/* size of errno translation table */
-	int 		*sv_errtbl;	/* errno translation table */
 	int		(*sv_transtrap)(int, int);
 					/* translate trap-to-signal mapping */
-	int		(*sv_fixup)(register_t **, struct image_params *);
+	int		(*sv_fixup)(uintptr_t *, struct image_params *);
 					/* stack fixup function */
 	void		(*sv_sendsig)(void (*)(int), struct ksiginfo *, struct __sigset *);
 			    		/* send signal */
@@ -105,22 +114,24 @@ struct sysentvec {
 	int		(*sv_coredump)(struct thread *, struct vnode *, off_t, int);
 					/* function to dump core, or NULL */
 	int		(*sv_imgact_try)(struct image_params *);
+	void		(*sv_stackgap)(struct image_params *, uintptr_t *);
+	int		(*sv_copyout_auxargs)(struct image_params *,
+			    uintptr_t);
 	int		sv_minsigstksz;	/* minimum signal stack size */
-	int		sv_pagesize;	/* pagesize */
 	vm_offset_t	sv_minuser;	/* VM_MIN_ADDRESS */
 	vm_offset_t	sv_maxuser;	/* VM_MAXUSER_ADDRESS */
 	vm_offset_t	sv_usrstack;	/* USRSTACK */
 	vm_offset_t	sv_psstrings;	/* PS_STRINGS */
 	int		sv_stackprot;	/* vm protection for stack */
-	register_t	*(*sv_copyout_strings)(struct image_params *);
+	int		(*sv_copyout_strings)(struct image_params *,
+			    uintptr_t *);
 	void		(*sv_setregs)(struct thread *, struct image_params *,
-			    u_long);
+			    uintptr_t);
 	void		(*sv_fixlimit)(struct rlimit *, int);
 	u_long		*sv_maxssiz;
 	u_int		sv_flags;
 	void		(*sv_set_syscall_retval)(struct thread *, int);
-	int		(*sv_fetch_syscall_args)(struct thread *, struct
-			    syscall_args *);
+	int		(*sv_fetch_syscall_args)(struct thread *);
 	const char	**sv_syscallnames;
 	vm_offset_t	sv_timekeep_base;
 	vm_offset_t	sv_shared_page_base;
@@ -130,6 +141,13 @@ struct sysentvec {
 	void		(*sv_schedtail)(struct thread *);
 	void		(*sv_thread_detach)(struct thread *);
 	int		(*sv_trap)(struct thread *);
+	u_long		*sv_hwcap;	/* Value passed in AT_HWCAP. */
+	u_long		*sv_hwcap2;	/* Value passed in AT_HWCAP2. */
+	const char	*(*sv_machine_arch)(struct proc *);
+	vm_offset_t	sv_fxrng_gen_base;
+	void		(*sv_onexec)(struct proc *, struct image_params *);
+	void		(*sv_onexit)(struct proc *);
+	void		(*sv_ontdexit)(struct thread *td);
 };
 
 #define	SV_ILP32	0x000100	/* 32-bit executable. */
@@ -138,11 +156,11 @@ struct sysentvec {
 #define	SV_AOUT		0x008000	/* a.out executable. */
 #define	SV_SHP		0x010000	/* Shared page. */
 #define	SV_CAPSICUM	0x020000	/* Force cap_enter() on startup. */
-#define	SV_TIMEKEEP	0x040000
+#define	SV_TIMEKEEP	0x040000	/* Shared page timehands. */
+#define	SV_ASLR		0x080000	/* ASLR allowed. */
+#define	SV_RNG_SEED_VER	0x100000	/* random(4) reseed generation. */
 
 #define	SV_ABI_MASK	0xff
-#define	SV_ABI_ERRNO(p, e)	((p)->p_sysent->sv_errsize <= 0 ? e :	\
-	((e) >= (p)->p_sysent->sv_errsize ? -1 : (p)->p_sysent->sv_errtbl[e]))
 #define	SV_PROC_FLAG(p, x)	((p)->p_sysent->sv_flags & (x))
 #define	SV_PROC_ABI(p)		((p)->p_sysent->sv_flags & SV_ABI_MASK)
 #define	SV_CURPROC_FLAG(x)	SV_PROC_FLAG(curproc, x)
@@ -158,10 +176,6 @@ extern struct sysentvec aout_sysvec;
 extern struct sysent sysent[];
 extern const char *syscallnames[];
 
-#if defined(__amd64__)
-extern int i386_read_exec;
-#endif
-
 #define	NO_SYSCALL (-1)
 
 struct module;
@@ -175,13 +189,21 @@ struct syscall_module_data {
 	int	flags;			/* flags for syscall_register */
 };
 
-#define	MAKE_SYSENT(syscallname)				\
-static struct sysent syscallname##_sysent = {			\
-	(sizeof(struct syscallname ## _args )			\
+/* separate initialization vector so it can be used in a substructure */
+#define SYSENT_INIT_VALS(_syscallname) {			\
+	.sy_narg = (sizeof(struct _syscallname ## _args )	\
 	    / sizeof(register_t)),				\
-	(sy_call_t *)& sys_##syscallname,	       		\
-	SYS_AUE_##syscallname					\
-}
+	.sy_call = (sy_call_t *)&sys_##_syscallname,		\
+	.sy_auevent = SYS_AUE_##_syscallname,			\
+	.sy_systrace_args_func = NULL,				\
+	.sy_entry = 0,						\
+	.sy_return = 0,						\
+	.sy_flags = 0,						\
+	.sy_thrcnt = 0						\
+}							
+
+#define	MAKE_SYSENT(syscallname)				\
+static struct sysent syscallname##_sysent = SYSENT_INIT_VALS(syscallname);
 
 #define	MAKE_SYSENT_COMPAT(syscallname)				\
 static struct sysent syscallname##_sysent = {			\
@@ -223,34 +245,48 @@ struct syscall_helper_data {
 	int syscall_no;
 	int registered;
 };
-#define SYSCALL_INIT_HELPER(syscallname) {			\
+#define SYSCALL_INIT_HELPER_F(syscallname, flags) {		\
     .new_sysent = {						\
 	.sy_narg = (sizeof(struct syscallname ## _args )	\
 	    / sizeof(register_t)),				\
 	.sy_call = (sy_call_t *)& sys_ ## syscallname,		\
-	.sy_auevent = SYS_AUE_##syscallname			\
+	.sy_auevent = SYS_AUE_##syscallname,			\
+	.sy_flags = (flags)					\
     },								\
     .syscall_no = SYS_##syscallname				\
 }
-#define SYSCALL_INIT_HELPER_COMPAT(syscallname) {		\
+#define SYSCALL_INIT_HELPER_COMPAT_F(syscallname, flags) {	\
     .new_sysent = {						\
 	.sy_narg = (sizeof(struct syscallname ## _args )	\
 	    / sizeof(register_t)),				\
 	.sy_call = (sy_call_t *)& syscallname,			\
-	.sy_auevent = SYS_AUE_##syscallname			\
+	.sy_auevent = SYS_AUE_##syscallname,			\
+	.sy_flags = (flags)					\
     },								\
     .syscall_no = SYS_##syscallname				\
 }
+#define SYSCALL_INIT_HELPER(syscallname)			\
+    SYSCALL_INIT_HELPER_F(syscallname, 0)
+#define SYSCALL_INIT_HELPER_COMPAT(syscallname)			\
+    SYSCALL_INIT_HELPER_COMPAT_F(syscallname, 0)
 #define SYSCALL_INIT_LAST {					\
     .syscall_no = NO_SYSCALL					\
 }
 
-int	syscall_register(int *offset, struct sysent *new_sysent,
-	    struct sysent *old_sysent, int flags);
-int	syscall_deregister(int *offset, struct sysent *old_sysent);
 int	syscall_module_handler(struct module *mod, int what, void *arg);
 int	syscall_helper_register(struct syscall_helper_data *sd, int flags);
 int	syscall_helper_unregister(struct syscall_helper_data *sd);
+/* Implementation, exposed for COMPAT code */
+int	kern_syscall_register(struct sysent *sysents, int *offset,
+	    struct sysent *new_sysent, struct sysent *old_sysent, int flags);
+int	kern_syscall_deregister(struct sysent *sysents, int offset,
+	    const struct sysent *old_sysent);
+int	kern_syscall_module_handler(struct sysent *sysents,
+	    struct module *mod, int what, void *arg);
+int	kern_syscall_helper_register(struct sysent *sysents,
+	    struct syscall_helper_data *sd, int flags);
+int	kern_syscall_helper_unregister(struct sysent *sysents,
+	    struct syscall_helper_data *sd);
 
 struct proc;
 const char *syscallname(struct proc *p, u_int code);
@@ -268,6 +304,7 @@ int shared_page_alloc(int size, int align);
 int shared_page_fill(int size, int align, const void *data);
 void shared_page_write(int base, int size, const void *data);
 void exec_sysvec_init(void *param);
+void exec_sysvec_init_secondary(struct sysentvec *sv, struct sysentvec *sv2);
 void exec_inittk(void);
 
 #define INIT_SYSENTVEC(name, sv)					\

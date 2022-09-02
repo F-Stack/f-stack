@@ -905,10 +905,17 @@ so-called layer 2.5 pattern items such as ``RTE_FLOW_ITEM_TYPE_VLAN``. In
 the latter case, ``type`` refers to that of the outer header, with the inner
 EtherType/TPID provided by the subsequent pattern item. This is the same
 order as on the wire.
+If the ``type`` field contains a TPID value, then only tagged packets with the
+specified TPID will match the pattern.
+The field ``has_vlan`` can be used to match any type of tagged packets,
+instead of using the ``type`` field.
+If the ``type`` and ``has_vlan`` fields are not specified, then both tagged
+and untagged packets will match the pattern.
 
 - ``dst``: destination MAC.
 - ``src``: source MAC.
 - ``type``: EtherType or TPID.
+- ``has_vlan``: packet header contains at least one VLAN.
 - Default ``mask`` matches destination and source addresses only.
 
 Item: ``VLAN``
@@ -919,9 +926,16 @@ Matches an 802.1Q/ad VLAN tag.
 The corresponding standard outer EtherType (TPID) values are
 ``RTE_ETHER_TYPE_VLAN`` or ``RTE_ETHER_TYPE_QINQ``. It can be overridden by the
 preceding pattern item.
+If a ``VLAN`` item is present in the pattern, then only tagged packets will
+match the pattern.
+The field ``has_more_vlan`` can be used to match any type of tagged packets,
+instead of using the ``inner_type field``.
+If the ``inner_type`` and ``has_more_vlan`` fields are not specified,
+then any tagged packets will match the pattern.
 
 - ``tci``: tag control information.
 - ``inner_type``: inner EtherType or TPID.
+- ``has_more_vlan``: packet header contains at least one more VLAN, after this VLAN.
 - Default ``mask`` matches the VID part of TCI only (lower 12 bits).
 
 Item: ``IPV4``
@@ -939,11 +953,25 @@ Item: ``IPV6``
 
 Matches an IPv6 header.
 
-Note: IPv6 options are handled by dedicated pattern items, see `Item:
-IPV6_EXT`_.
+Dedicated flags indicate if header contains specific extension headers.
+To match on packets containing a specific extension header, an application
+should match on the dedicated flag set to 1.
+To match on packets not containing a specific extension header, an application
+should match on the dedicated flag clear to 0.
+In case application doesn't care about the existence of a specific extension
+header, it should not specify the dedicated flag for matching.
 
 - ``hdr``: IPv6 header definition (``rte_ip.h``).
-- Default ``mask`` matches source and destination addresses only.
+- ``has_hop_ext``: header contains Hop-by-Hop Options extension header.
+- ``has_route_ext``: header contains Routing extension header.
+- ``has_frag_ext``: header contains Fragment extension header.
+- ``has_auth_ext``: header contains Authentication extension header.
+- ``has_esp_ext``: header contains Encapsulation Security Payload extension header.
+- ``has_dest_ext``: header contains Destination Options extension header.
+- ``has_mobil_ext``: header contains Mobility extension header.
+- ``has_hip_ext``: header contains Host Identity Protocol extension header.
+- ``has_shim6_ext``: header contains Shim6 Protocol extension header.
+- Default ``mask`` matches ``hdr`` source and destination addresses only.
 
 Item: ``ICMP``
 ^^^^^^^^^^^^^^
@@ -1170,6 +1198,18 @@ Normally preceded by any of:
 - `Item: IPV6`_
 - `Item: IPV6_EXT`_
 
+Item: ``IPV6_FRAG_EXT``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Matches the presence of IPv6 fragment extension header.
+
+- ``hdr``: IPv6 fragment extension header definition (``rte_ip.h``).
+
+Normally preceded by any of:
+
+- `Item: IPV6`_
+- `Item: IPV6_EXT`_
+
 Item: ``ICMP6``
 ^^^^^^^^^^^^^^^
 
@@ -1297,7 +1337,7 @@ Matches a network service header (RFC 8300).
 - ``ttl``: maximum SFF hopes (6 bits).
 - ``length``: total length in 4 bytes words (6 bits).
 - ``reserved1``: reserved1 bits (4 bits).
-- ``mdtype``: ndicates format of NSH header (4 bits).
+- ``mdtype``: indicates format of NSH header (4 bits).
 - ``next_proto``: indicates protocol type of encap data (8 bits).
 - ``spi``: service path identifier (3 bytes).
 - ``sindex``: service index (1 byte).
@@ -1336,6 +1376,32 @@ Broadcom switches.
 
 - Default ``mask`` matches classification and vlan.
 
+Item: ``L2TPV3OIP``
+^^^^^^^^^^^^^^^^^^^
+
+Matches a L2TPv3 over IP header.
+
+- ``session_id``: L2TPv3 over IP session identifier.
+- Default ``mask`` matches session_id only.
+
+Item: ``PFCP``
+^^^^^^^^^^^^^^
+
+Matches a PFCP Header.
+
+- ``s_field``: S field.
+- ``msg_type``: message type.
+- ``msg_len``: message length.
+- ``seid``: session endpoint identifier.
+- Default ``mask`` matches s_field and seid.
+
+Item: ``ECPRI``
+^^^^^^^^^^^^^^^
+
+Matches a eCPRI header.
+
+- ``hdr``: eCPRI header definition (``rte_ecpri.h``).
+- Default ``mask`` matches nothing, for all eCPRI messages.
 
 Actions
 ~~~~~~~
@@ -1658,17 +1724,20 @@ that counter.
 For ports within the same switch domain then the counter id namespace extends
 to all ports within that switch domain.
 
+The shared flag is DEPRECATED and ``SHARED`` ``COUNT`` action should be used
+to make shared counters.
+
 .. _table_rte_flow_action_count:
 
 .. table:: COUNT
 
-   +------------+---------------------+
-   | Field      | Value               |
-   +============+=====================+
-   | ``shared`` | shared counter flag |
-   +------------+---------------------+
-   | ``id``     | counter id          |
-   +------------+---------------------+
+   +------------+---------------------------------+
+   | Field      | Value                           |
+   +============+=================================+
+   | ``shared`` | DEPRECATED, shared counter flag |
+   +------------+---------------------------------+
+   | ``id``     | counter id                      |
+   +------------+---------------------------------+
 
 Query structure to retrieve and reset flow rule counters:
 
@@ -1701,6 +1770,19 @@ field does not disable RSS in a flow rule. Doing so instead requests safe
 unspecified "best-effort" settings from the underlying PMD, which depending
 on the flow rule, may result in anything ranging from empty (single queue)
 to all-inclusive RSS.
+
+If non-applicable for matching packets RSS types are requested,
+these RSS types are simply ignored. For example, it happens if:
+
+- Hashing of both TCP and UDP ports is requested
+  (only one can be present in a packet).
+
+- Requested RSS types contradict to flow rule pattern
+  (e.g. pattern has UDP item, but RSS types contain TCP).
+
+If requested RSS hash types are not supported by the Ethernet device at all
+(not reported in ``dev_info.flow_type_rss_offloads``),
+the flow creation will fail.
 
 Note: RSS hash result is stored in the ``hash.rss`` mbuf field which
 overlaps ``hash.fdir.lo``. Since `Action: MARK`_ sets the ``hash.fdir.hi``
@@ -2546,6 +2628,9 @@ set, unpredictable value will be seen depending on driver implementation. For
 loopback/hairpin packet, metadata set on Rx/Tx may or may not be propagated to
 the other path depending on HW capability.
 
+In hairpin case with Tx explicit flow mode, metadata could (not mandatory) be
+used to connect the Rx and Tx flows if it can be propagated from Rx to Tx path.
+
 .. _table_rte_flow_action_set_meta:
 
 .. table:: SET_META
@@ -2558,6 +2643,129 @@ the other path depending on HW capability.
    | ``mask`` | bit-mask applies to "data" |
    +----------+----------------------------+
 
+Action: ``SET_IPV4_DSCP``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set IPv4 DSCP.
+
+Modify DSCP in IPv4 header.
+
+It must be used with RTE_FLOW_ITEM_TYPE_IPV4 in pattern.
+Otherwise, RTE_FLOW_ERROR_TYPE_ACTION error will be returned.
+
+.. _table_rte_flow_action_set_ipv4_dscp:
+
+.. table:: SET_IPV4_DSCP
+
+   +-----------+---------------------------------+
+   | Field     | Value                           |
+   +===========+=================================+
+   | ``dscp``  | DSCP in low 6 bits, rest ignore |
+   +-----------+---------------------------------+
+
+Action: ``SET_IPV6_DSCP``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set IPv6 DSCP.
+
+Modify DSCP in IPv6 header.
+
+It must be used with RTE_FLOW_ITEM_TYPE_IPV6 in pattern.
+Otherwise, RTE_FLOW_ERROR_TYPE_ACTION error will be returned.
+
+.. _table_rte_flow_action_set_ipv6_dscp:
+
+.. table:: SET_IPV6_DSCP
+
+   +-----------+---------------------------------+
+   | Field     | Value                           |
+   +===========+=================================+
+   | ``dscp``  | DSCP in low 6 bits, rest ignore |
+   +-----------+---------------------------------+
+
+Action: ``AGE``
+^^^^^^^^^^^^^^^
+
+Set ageing timeout configuration to a flow.
+
+Event RTE_ETH_EVENT_FLOW_AGED will be reported if
+timeout passed without any matching on the flow.
+
+.. _table_rte_flow_action_age:
+
+.. table:: AGE
+
+   +--------------+---------------------------------+
+   | Field        | Value                           |
+   +==============+=================================+
+   | ``timeout``  | 24 bits timeout value           |
+   +--------------+---------------------------------+
+   | ``reserved`` | 8 bits reserved, must be zero   |
+   +--------------+---------------------------------+
+   | ``context``  | user input flow context         |
+   +--------------+---------------------------------+
+
+Query structure to retrieve ageing status information of a
+shared AGE action, or a flow rule using the AGE action:
+
+.. _table_rte_flow_query_age:
+
+.. table:: AGE query
+
+   +------------------------------+-----+----------------------------------------+
+   | Field                        | I/O | Value                                  |
+   +==============================+=====+========================================+
+   | ``aged``                     | out | Aging timeout expired                  |
+   +------------------------------+-----+----------------------------------------+
+   | ``sec_since_last_hit_valid`` | out | ``sec_since_last_hit`` value is valid  |
+   +------------------------------+-----+----------------------------------------+
+   | ``sec_since_last_hit``       | out | Seconds since last traffic hit         |
+   +------------------------------+-----+----------------------------------------+
+
+Action: ``SAMPLE``
+^^^^^^^^^^^^^^^^^^
+
+Adds a sample action to a matched flow.
+
+The matching packets will be duplicated with the specified ``ratio`` and
+applied with own set of actions with a fate action, the packets sampled
+equals is '1/ratio'. All the packets continue to the target destination.
+
+When the ``ratio`` is set to 1 then the packets will be 100% mirrored.
+``actions`` represent the different set of actions for the sampled or mirrored
+packets, and must have a fate action.
+
+.. _table_rte_flow_action_sample:
+
+.. table:: SAMPLE
+
+   +--------------+---------------------------------+
+   | Field        | Value                           |
+   +==============+=================================+
+   | ``ratio``    | 32 bits sample ratio value      |
+   +--------------+---------------------------------+
+   | ``actions``  | sub-action list for sampling    |
+   +--------------+---------------------------------+
+
+Action: ``SHARED``
+^^^^^^^^^^^^^^^^^^
+
+Flow utilize shared action by handle as returned from
+``rte_flow_shared_action_create()``.
+
+The behaviour of the shared action defined by ``action`` argument of type
+``struct rte_flow_action`` passed to ``rte_flow_shared_action_create()``.
+
+.. _table_rte_flow_shared_action:
+
+.. table:: SHARED
+
+   +---------------+
+   | Field         |
+   +===============+
+   | no properties |
+   +---------------+
+
 Negative types
 ~~~~~~~~~~~~~~
 
@@ -2569,6 +2777,9 @@ run-time. PMDs may encounter them as a result but must not accept negative
 identifiers they are not aware of.
 
 A method to generate them remains to be defined.
+
+Application may use PMD dynamic items or actions in flow rules. In that case
+size of configuration object in dynamic element must be a pointer size.
 
 Planned types
 ~~~~~~~~~~~~~
@@ -2923,6 +3134,84 @@ operations include:
 - Duplication of a complete flow rule description.
 - Pattern item or action name retrieval.
 
+Tunneled traffic offload
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+rte_flow API provides the building blocks for vendor-agnostic flow
+classification offloads. The rte_flow "patterns" and "actions"
+primitives are fine-grained, thus enabling DPDK applications the
+flexibility to offload network stacks and complex pipelines.
+Applications wishing to offload tunneled traffic are required to use
+the rte_flow primitives, such as group, meta, mark, tag, and others to
+model their high-level objects.  The hardware model design for
+high-level software objects is not trivial.  Furthermore, an optimal
+design is often vendor-specific.
+
+When hardware offloads tunneled traffic in multi-group logic,
+partially offloaded packets may arrive to the application after they
+were modified in hardware. In this case, the application may need to
+restore the original packet headers. Consider the following sequence:
+The application decaps a packet in one group and jumps to a second
+group where it tries to match on a 5-tuple, that will miss and send
+the packet to the application. In this case, the application does not
+receive the original packet but a modified one. Also, in this case,
+the application cannot match on the outer header fields, such as VXLAN
+vni and 5-tuple.
+
+There are several possible ways to use rte_flow "patterns" and
+"actions" to resolve the issues above. For example:
+
+1 Mapping headers to a hardware registers using the
+rte_flow_action_mark/rte_flow_action_tag/rte_flow_set_meta objects.
+
+2 Apply the decap only at the last offload stage after all the
+"patterns" were matched and the packet will be fully offloaded.
+
+Every approach has its pros and cons and is highly dependent on the
+hardware vendor.  For example, some hardware may have a limited number
+of registers while other hardware could not support inner actions and
+must decap before accessing inner headers.
+
+The tunnel offload model resolves these issues. The model goals are:
+
+1 Provide a unified application API to offload tunneled traffic that
+is capable to match on outer headers after decap.
+
+2 Allow the application to restore the outer header of partially
+offloaded packets.
+
+The tunnel offload model does not introduce new elements to the
+existing RTE flow model and is implemented as a set of helper
+functions.
+
+For the application to work with the tunnel offload API it
+has to adjust flow rules in multi-table tunnel offload in the
+following way:
+
+1 Remove explicit call to decap action and replace it with PMD actions
+obtained from rte_flow_tunnel_decap_and_set() helper.
+
+2 Add PMD items obtained from rte_flow_tunnel_match() helper to all
+other rules in the tunnel offload sequence.
+
+The model requirements:
+
+Software application must initialize
+rte_tunnel object with tunnel parameters before calling
+rte_flow_tunnel_decap_set() & rte_flow_tunnel_match().
+
+PMD actions array obtained in rte_flow_tunnel_decap_set() must be
+released by application with rte_flow_action_release() call.
+
+PMD items array obtained with rte_flow_tunnel_match() must be released
+by application with rte_flow_item_release() call.  Application can
+release PMD items and actions after rule was created. However, if the
+application needs to create additional rule for the same tunnel it
+will need to obtain PMD items again.
+
+Application cannot destroy rte_tunnel object before it releases all
+PMD actions & PMD items referencing that tunnel.
+
 Caveats
 -------
 
@@ -2938,19 +3227,17 @@ Caveats
 - API operations are synchronous and blocking (``EAGAIN`` cannot be
   returned).
 
-- There is no provision for re-entrancy/multi-thread safety, although nothing
-  should prevent different devices from being configured at the same
-  time. PMDs may protect their control path functions accordingly.
-
 - Stopping the data path (TX/RX) should not be necessary when managing flow
   rules. If this cannot be achieved naturally or with workarounds (such as
   temporarily replacing the burst function pointers), an appropriate error
   code must be returned (``EBUSY``).
 
-- PMDs, not applications, are responsible for maintaining flow rules
-  configuration when stopping and restarting a port or performing other
-  actions which may affect them. They can only be destroyed explicitly by
-  applications.
+- Applications, not PMDs, are responsible for maintaining flow rules
+  configuration when closing, stopping or restarting a port or performing other
+  actions which may affect them.
+  Applications must assume that after port close, stop or restart all flows
+  related to that port are not valid, hardware rules are destroyed and relevant
+  PMD resources are released.
 
 For devices exposing multiple ports sharing global settings affected by flow
 rules:
@@ -2992,6 +3279,14 @@ This interface additionally defines the following helper function:
 
 - ``rte_flow_ops_get()``: get generic flow operations structure from a
   port.
+
+If PMD interfaces don't support re-entrancy/multi-thread safety,
+the rte_flow API functions will protect threads by mutex per port.
+The application can check whether ``RTE_ETH_DEV_FLOW_OPS_THREAD_SAFE``
+is set in ``dev_flags``, meaning the PMD is thread-safe regarding rte_flow,
+so the API level protection is disabled.
+Please note that this API-level mutex protects only rte_flow functions,
+other control path functions are not in scope.
 
 More will be added over time.
 

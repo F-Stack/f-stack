@@ -169,80 +169,48 @@ int otx2_npa_lf_obj_ref(void)
 	return cnt ? 0 : -EINVAL;
 }
 
-/**
- * @internal
- */
-int otx2_logtype_base;
-/**
- * @internal
- */
-int otx2_logtype_mbox;
-/**
- * @internal
- */
-int otx2_logtype_npa;
-/**
- * @internal
- */
-int otx2_logtype_nix;
-/**
- * @internal
- */
-int otx2_logtype_npc;
-/**
- * @internal
- */
-int otx2_logtype_tm;
-/**
- * @internal
- */
-int otx2_logtype_sso;
-/**
- * @internal
- */
-int otx2_logtype_tim;
-/**
- * @internal
- */
-int otx2_logtype_dpi;
-
-RTE_INIT(otx2_log_init);
-static void
-otx2_log_init(void)
+static int
+parse_npa_lock_mask(const char *key, const char *value, void *extra_args)
 {
-	otx2_logtype_base = rte_log_register("pmd.octeontx2.base");
-	if (otx2_logtype_base >= 0)
-		rte_log_set_level(otx2_logtype_base, RTE_LOG_NOTICE);
+	RTE_SET_USED(key);
+	uint64_t val;
 
-	otx2_logtype_mbox = rte_log_register("pmd.octeontx2.mbox");
-	if (otx2_logtype_mbox >= 0)
-		rte_log_set_level(otx2_logtype_mbox, RTE_LOG_NOTICE);
+	val = strtoull(value, NULL, 16);
 
-	otx2_logtype_npa = rte_log_register("pmd.mempool.octeontx2");
-	if (otx2_logtype_npa >= 0)
-		rte_log_set_level(otx2_logtype_npa, RTE_LOG_NOTICE);
+	*(uint64_t *)extra_args = val;
 
-	otx2_logtype_nix = rte_log_register("pmd.net.octeontx2");
-	if (otx2_logtype_nix >= 0)
-		rte_log_set_level(otx2_logtype_nix, RTE_LOG_NOTICE);
-
-	otx2_logtype_npc = rte_log_register("pmd.net.octeontx2.flow");
-	if (otx2_logtype_npc >= 0)
-		rte_log_set_level(otx2_logtype_npc, RTE_LOG_NOTICE);
-
-	otx2_logtype_tm = rte_log_register("pmd.net.octeontx2.tm");
-	if (otx2_logtype_tm >= 0)
-		rte_log_set_level(otx2_logtype_tm, RTE_LOG_NOTICE);
-
-	otx2_logtype_sso = rte_log_register("pmd.event.octeontx2");
-	if (otx2_logtype_sso >= 0)
-		rte_log_set_level(otx2_logtype_sso, RTE_LOG_NOTICE);
-
-	otx2_logtype_tim = rte_log_register("pmd.event.octeontx2.timer");
-	if (otx2_logtype_tim >= 0)
-		rte_log_set_level(otx2_logtype_tim, RTE_LOG_NOTICE);
-
-	otx2_logtype_dpi = rte_log_register("pmd.raw.octeontx2.dpi");
-	if (otx2_logtype_dpi >= 0)
-		rte_log_set_level(otx2_logtype_dpi, RTE_LOG_NOTICE);
+	return 0;
 }
+
+/*
+ * @internal
+ * Parse common device arguments
+ */
+void otx2_parse_common_devargs(struct rte_kvargs *kvlist)
+{
+
+	struct otx2_idev_cfg *idev;
+	uint64_t npa_lock_mask = 0;
+
+	idev = otx2_intra_dev_get_cfg();
+
+	if (idev == NULL)
+		return;
+
+	rte_kvargs_process(kvlist, OTX2_NPA_LOCK_MASK,
+			&parse_npa_lock_mask, &npa_lock_mask);
+
+	idev->npa_lock_mask = npa_lock_mask;
+}
+
+RTE_LOG_REGISTER(otx2_logtype_base, pmd.octeontx2.base, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_mbox, pmd.octeontx2.mbox, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_npa, pmd.mempool.octeontx2, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_nix, pmd.net.octeontx2, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_npc, pmd.net.octeontx2.flow, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_tm, pmd.net.octeontx2.tm, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_sso, pmd.event.octeontx2, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_tim, pmd.event.octeontx2.timer, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_dpi, pmd.raw.octeontx2.dpi, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_ep, pmd.raw.octeontx2.ep, NOTICE);
+RTE_LOG_REGISTER(otx2_logtype_ree, pmd.regex.octeontx2, NOTICE);

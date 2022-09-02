@@ -10,7 +10,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -32,30 +32,31 @@
 #ifndef _NETINET_IN_FIB_H_
 #define	_NETINET_IN_FIB_H_
 
-/* Basic nexthop info used for uRPF/mtu checks */
-struct nhop4_basic {
-	struct ifnet	*nh_ifp;	/* Logical egress interface */
-	uint16_t	nh_mtu;		/* nexthop mtu */
-	uint16_t	nh_flags;	/* nhop flags */
-	struct in_addr	nh_addr;	/* GW/DST IPv4 address */
+struct route_in {
+	/* common fields shared among all 'struct route' */
+	struct nhop_object *ro_nh;
+	struct	llentry *ro_lle;
+	char		*ro_prepend;
+	uint16_t	ro_plen;
+	uint16_t	ro_flags;
+	uint16_t	ro_mtu;	/* saved ro_rt mtu */
+	uint16_t	spare;
+	/* custom sockaddr */
+	struct sockaddr_in ro_dst4;
 };
 
-/* Extended nexthop info used for control protocols */
-struct nhop4_extended {
-	struct ifnet	*nh_ifp;	/* Logical egress interface */
-	uint16_t	nh_mtu;		/* nexthop mtu */
-	uint16_t	nh_flags;	/* nhop flags */
-	uint8_t		spare[4];
-	struct in_addr	nh_addr;	/* GW/DST IPv4 address */
-	struct in_addr	nh_src;		/* default source IPv4 address */
-	uint64_t	spare2[2];
-};
+struct rtentry;
+struct route_nhop_data;
 
-int fib4_lookup_nh_basic(uint32_t fibnum, struct in_addr dst, uint32_t flags,
-    uint32_t flowid, struct nhop4_basic *pnh4);
-int fib4_lookup_nh_ext(uint32_t fibnum, struct in_addr dst, uint32_t flags,
-    uint32_t flowid, struct nhop4_extended *pnh4);
-void fib4_free_nh_ext(uint32_t fibnum, struct nhop4_extended *pnh4);
-
+struct nhop_object *fib4_lookup(uint32_t fibnum, struct in_addr dst,
+    uint32_t scopeid, uint32_t flags, uint32_t flowid);
+int fib4_check_urpf(uint32_t fibnum, struct in_addr dst, uint32_t scopeid,
+    uint32_t flags, const struct ifnet *src_if);
+struct rtentry *fib4_lookup_rt(uint32_t fibnum, struct in_addr dst, uint32_t scopeid,
+    uint32_t flags, struct route_nhop_data *nrd);
+struct nhop_object *fib4_lookup_debugnet(uint32_t fibnum, struct in_addr dst,
+    uint32_t scopeid, uint32_t flags);
+uint32_t fib4_calc_software_hash(struct in_addr src, struct in_addr dst,
+    unsigned short src_port, unsigned short dst_port, char proto,
+    uint32_t *phashtype);
 #endif
-

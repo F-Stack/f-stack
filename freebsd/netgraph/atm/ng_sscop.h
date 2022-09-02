@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
  * 	All rights reserved.
@@ -64,7 +66,6 @@ enum {
 	  { "flags",		&ng_parse_uint32_type },	\
 	  { NULL }						\
 	}
-
 
 struct ng_sscop_setparam {
 	uint32_t		mask;

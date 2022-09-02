@@ -102,7 +102,7 @@
  * Maximum number of Ring Descriptors.
  *
  * Since RDLEN/TDLEN should be multiple of 128 bytes, the number of ring
- * desscriptors should meet the following condition:
+ * descriptors should meet the following condition:
  * (num_ring_desc * sizeof(struct e1000_rx/tx_desc)) % 128 == 0
  */
 #define	E1000_MIN_RING_DESC	32
@@ -251,7 +251,7 @@ struct igb_rte_flow_rss_conf {
 };
 
 /*
- * Structure to store filters'info.
+ * Structure to store filters' info.
  */
 struct e1000_filter_info {
 	uint8_t ethertype_mask; /* Bit mask for every used ethertype filter */
@@ -331,10 +331,28 @@ struct igb_eth_syn_filter_ele {
 	struct rte_eth_syn_filter filter_info;
 };
 
+#define IGB_FLEX_FILTER_MAXLEN	128	/**< bytes to use in flex filter. */
+#define IGB_FLEX_FILTER_MASK_SIZE	\
+	(RTE_ALIGN(IGB_FLEX_FILTER_MAXLEN, CHAR_BIT) / CHAR_BIT)
+					/**< mask bytes in flex filter. */
+
+/**
+ * A structure used to define the flex filter entry
+ * to support RTE_ETH_FILTER_FLEXIBLE data representation.
+ */
+struct igb_flex_filter {
+	uint16_t len;
+	uint8_t bytes[IGB_FLEX_FILTER_MAXLEN]; /**< flex bytes in big endian. */
+	uint8_t mask[IGB_FLEX_FILTER_MASK_SIZE];
+		/**< if mask bit is 1b, do not compare corresponding byte. */
+	uint8_t priority;
+	uint16_t queue;       /**< Queue assigned to when match. */
+};
+
 /* flex filter list structure */
 struct igb_flex_filter_ele {
 	TAILQ_ENTRY(igb_flex_filter_ele) entries;
-	struct rte_eth_flex_filter filter_info;
+	struct igb_flex_filter filter_info;
 };
 
 /* rss filter  list structure */
@@ -515,7 +533,7 @@ int eth_igb_syn_filter_set(struct rte_eth_dev *dev,
 			struct rte_eth_syn_filter *filter,
 			bool add);
 int eth_igb_add_del_flex_filter(struct rte_eth_dev *dev,
-			struct rte_eth_flex_filter *filter,
+			struct igb_flex_filter *filter,
 			bool add);
 int igb_rss_conf_init(struct rte_eth_dev *dev,
 		      struct igb_rte_flow_rss_conf *out,

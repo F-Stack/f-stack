@@ -11,6 +11,7 @@
 
 #include "base/ice_common.h"
 #include "base/ice_adminq_cmd.h"
+#include "base/ice_flow.h"
 
 #define ICE_VLAN_TAG_SIZE        4
 
@@ -41,6 +42,15 @@
 #define ICE_RX_VEC_ID            RTE_INTR_VEC_RXTX_OFFSET
 
 #define ICE_MAX_PKT_TYPE  1024
+
+/* DDP package search path */
+#define ICE_PKG_FILE_DEFAULT "/lib/firmware/intel/ice/ddp/ice.pkg"
+#define ICE_PKG_FILE_UPDATES "/lib/firmware/updates/intel/ice/ddp/ice.pkg"
+#define ICE_PKG_FILE_SEARCH_PATH_DEFAULT "/lib/firmware/intel/ice/ddp/"
+#define ICE_PKG_FILE_SEARCH_PATH_UPDATES "/lib/firmware/updates/intel/ice/ddp/"
+#define ICE_MAX_PKG_FILENAME_SIZE   256
+
+#define MAX_ACL_NORMAL_ENTRIES    256
 
 /**
  * vlan_id is a 12 bit number.
@@ -105,11 +115,13 @@
 		       ICE_FLAG_VF_MAC_BY_PF)
 
 #define ICE_RSS_OFFLOAD_ALL ( \
+	ETH_RSS_IPV4 | \
 	ETH_RSS_FRAG_IPV4 | \
 	ETH_RSS_NONFRAG_IPV4_TCP | \
 	ETH_RSS_NONFRAG_IPV4_UDP | \
 	ETH_RSS_NONFRAG_IPV4_SCTP | \
 	ETH_RSS_NONFRAG_IPV4_OTHER | \
+	ETH_RSS_IPV6 | \
 	ETH_RSS_FRAG_IPV6 | \
 	ETH_RSS_NONFRAG_IPV6_TCP | \
 	ETH_RSS_NONFRAG_IPV6_UDP | \
@@ -127,6 +139,9 @@
 
 #define ICE_RXTX_BYTES_HIGH(bytes) ((bytes) & ~ICE_40_BIT_MASK)
 #define ICE_RXTX_BYTES_LOW(bytes) ((bytes) & ICE_40_BIT_MASK)
+
+/* Max number of flexible descriptor rxdid */
+#define ICE_FLEX_DESC_RXDID_MAX_NUM 64
 
 /* DDP package type */
 enum ice_pkg_type {
@@ -254,6 +269,8 @@ enum proto_xtr_type {
 	PROTO_XTR_IPV6,
 	PROTO_XTR_IPV6_FLOW,
 	PROTO_XTR_TCP,
+	PROTO_XTR_IP_OFFSET,
+	PROTO_XTR_MAX /* The last one */
 };
 
 enum ice_fdir_tunnel_type {
@@ -277,6 +294,8 @@ struct ice_fdir_filter_conf {
 	struct rte_flow_action_count act_count;
 
 	uint64_t input_set;
+	uint64_t outer_input_set; /* only for tunnel packets outer fields */
+	uint32_t mark_flag;
 };
 
 #define ICE_MAX_FDIR_FILTER_NUM		(1024 * 16)
@@ -350,6 +369,40 @@ struct ice_fdir_info {
 	struct ice_fdir_counter_pool_container counter;
 };
 
+#define ICE_HASH_GTPU_CTX_EH_IP		0
+#define ICE_HASH_GTPU_CTX_EH_IP_UDP	1
+#define ICE_HASH_GTPU_CTX_EH_IP_TCP	2
+#define ICE_HASH_GTPU_CTX_UP_IP		3
+#define ICE_HASH_GTPU_CTX_UP_IP_UDP	4
+#define ICE_HASH_GTPU_CTX_UP_IP_TCP	5
+#define ICE_HASH_GTPU_CTX_DW_IP		6
+#define ICE_HASH_GTPU_CTX_DW_IP_UDP	7
+#define ICE_HASH_GTPU_CTX_DW_IP_TCP	8
+#define ICE_HASH_GTPU_CTX_MAX		9
+
+struct ice_hash_gtpu_ctx {
+	struct ice_rss_hash_cfg ctx[ICE_HASH_GTPU_CTX_MAX];
+};
+
+struct ice_hash_ctx {
+	struct ice_hash_gtpu_ctx gtpu4;
+	struct ice_hash_gtpu_ctx gtpu6;
+};
+
+struct ice_acl_conf {
+	struct ice_fdir_fltr input;
+	uint64_t input_set;
+};
+
+/**
+ * A structure used to define fields of ACL related info.
+ */
+struct ice_acl_info {
+	struct ice_acl_conf conf;
+	struct rte_bitmap *slots;
+	uint64_t hw_entry_id[MAX_ACL_NORMAL_ENTRIES];
+};
+
 struct ice_pf {
 	struct ice_adapter *adapter; /* The adapter this PF associate to */
 	struct ice_vsi *main_vsi; /* pointer to main VSI structure */
@@ -373,6 +426,8 @@ struct ice_pf {
 	uint16_t fdir_nb_qps; /* The number of queue pairs of Flow Director */
 	uint16_t fdir_qp_offset;
 	struct ice_fdir_info fdir; /* flow director info */
+	struct ice_acl_info acl; /* ACL info */
+	struct ice_hash_ctx hash_ctx;
 	uint16_t hw_prof_cnt[ICE_FLTR_PTYPE_MAX][ICE_FD_HW_SEG_MAX];
 	uint16_t fdir_fltr_cnt[ICE_FLTR_PTYPE_MAX][ICE_FD_HW_SEG_MAX];
 	struct ice_hw_port_stats stats_offset;
@@ -383,12 +438,15 @@ struct ice_pf {
 	bool offset_loaded;
 	bool adapter_stopped;
 	struct ice_flow_list flow_list;
+	rte_spinlock_t flow_ops_lock;
 	struct ice_parser_list rss_parser_list;
 	struct ice_parser_list perm_parser_list;
 	struct ice_parser_list dist_parser_list;
 	bool init_link_up;
 	uint64_t old_rx_bytes;
 	uint64_t old_tx_bytes;
+	uint64_t supported_rxdid; /* bitmap for supported RXDID */
+	uint64_t rss_hf;
 };
 
 #define ICE_MAX_QUEUE_NUM  2048
@@ -400,7 +458,6 @@ struct ice_devargs {
 	int safe_mode_support;
 	uint8_t proto_xtr_dflt;
 	int pipe_mode_support;
-	int flow_mark_support;
 	uint8_t proto_xtr[ICE_MAX_QUEUE_NUM];
 };
 
@@ -410,7 +467,6 @@ struct ice_devargs {
 struct ice_adapter {
 	/* Common for both PF and VF */
 	struct ice_hw hw;
-	struct rte_eth_dev *eth_dev;
 	struct ice_pf pf;
 	bool rx_bulk_alloc_allowed;
 	bool rx_vec_allowed;
@@ -421,6 +477,15 @@ struct ice_adapter {
 	bool is_safe_mode;
 	struct ice_devargs devargs;
 	enum ice_pkg_type active_pkg_type; /* loaded ddp package type */
+	uint16_t fdir_ref_cnt;
+	/* True if DCF state of the associated PF is on */
+	bool dcf_state_on;
+#ifdef RTE_ARCH_X86
+	bool rx_use_avx2;
+	bool rx_use_avx512;
+	bool tx_use_avx2;
+	bool tx_use_avx512;
+#endif
 };
 
 struct ice_vsi_vlan_pvid_info {
@@ -454,8 +519,6 @@ struct ice_vsi_vlan_pvid_info {
 	(&(((struct ice_vsi *)vsi)->adapter->hw))
 #define ICE_VSI_TO_PF(vsi) \
 	(&(((struct ice_vsi *)vsi)->adapter->pf))
-#define ICE_VSI_TO_ETH_DEV(vsi) \
-	(((struct ice_vsi *)vsi)->adapter->eth_dev)
 
 /* ICE_PF_TO */
 #define ICE_PF_TO_HW(pf) \
@@ -465,6 +528,7 @@ struct ice_vsi_vlan_pvid_info {
 #define ICE_PF_TO_ETH_DEV(pf) \
 	(((struct ice_pf *)pf)->adapter->eth_dev)
 
+enum ice_pkg_type ice_load_pkg_type(struct ice_hw *hw);
 struct ice_vsi *
 ice_setup_vsi(struct ice_pf *pf, enum ice_vsi_type type);
 int
@@ -472,6 +536,10 @@ ice_release_vsi(struct ice_vsi *vsi);
 void ice_vsi_enable_queues_intr(struct ice_vsi *vsi);
 void ice_vsi_disable_queues_intr(struct ice_vsi *vsi);
 void ice_vsi_queues_bind_intr(struct ice_vsi *vsi);
+int ice_add_rss_cfg_wrap(struct ice_pf *pf, uint16_t vsi_id,
+			 struct ice_rss_hash_cfg *cfg);
+int ice_rem_rss_cfg_wrap(struct ice_pf *pf, uint16_t vsi_id,
+			 struct ice_rss_hash_cfg *cfg);
 
 static inline int
 ice_align_floor(int n)

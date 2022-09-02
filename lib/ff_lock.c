@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -153,11 +153,13 @@ rw_sysinit(void *arg)
     rw_init((struct rwlock *)args->ra_rw, args->ra_desc);
 }
 
+#if 0
 void
 rw_sysinit_flags(void *arg)
 {
     rw_sysinit(arg);
 }
+#endif
 
 void
 ff_rw_init_flags(struct lock_object *lo, const char *name, int opts)
@@ -232,11 +234,13 @@ rm_sysinit(void *arg)
     rm_init((struct rmlock *)args->ra_rm, args->ra_desc);
 }
 
+#if 0
 void
 rm_sysinit_flags(void *arg)
 {
     rm_sysinit(arg);
 }
+#endif
 
 void
 rm_destroy(struct rmlock *rm)
@@ -291,7 +295,7 @@ sx_init_flags(struct sx *sx, const char *description, int opts)
     int flags;
 
     MPASS((opts & ~(SX_QUIET | SX_RECURSE | SX_NOWITNESS | SX_DUPOK |
-        SX_NOPROFILE | SX_NOADAPTIVE)) == 0);
+        SX_NOPROFILE | SX_NEW)) == 0);
 
     flags = LO_SLEEPABLE | LO_UPGRADABLE;
     if (opts & SX_DUPOK)
@@ -304,9 +308,12 @@ sx_init_flags(struct sx *sx, const char *description, int opts)
         flags |= LO_RECURSABLE;
     if (opts & SX_QUIET)
         flags |= LO_QUIET;
+    if (opts & SX_NEW)
+        flags |= LO_NEW;
 
-    flags |= opts & SX_NOADAPTIVE;
     lock_init(&sx->lock_object, &lock_class_sx, description, NULL, flags);
+    //sx->sx_lock = SX_LOCK_UNLOCKED;
+    //sx->sx_recurse = 0;
 }
 
 void

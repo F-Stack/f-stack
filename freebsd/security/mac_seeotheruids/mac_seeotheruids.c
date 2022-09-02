@@ -63,7 +63,8 @@
 
 SYSCTL_DECL(_security_mac);
 
-static SYSCTL_NODE(_security_mac, OID_AUTO, seeotheruids, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_security_mac, OID_AUTO, seeotheruids,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TrustedBSD mac_seeotheruids policy controls");
 
 static int	seeotheruids_enabled = 1;
@@ -123,7 +124,7 @@ seeotheruids_check(struct ucred *cr1, struct ucred *cr2)
 		return (0);
 
 	if (suser_privileged) {
-		if (priv_check_cred(cr1, PRIV_SEEOTHERUIDS, 0) == 0)
+		if (priv_check_cred(cr1, PRIV_SEEOTHERUIDS) == 0)
 			return (0);
 	}
 

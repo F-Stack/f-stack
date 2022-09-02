@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -41,7 +43,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -98,6 +100,7 @@ struct nd_ifinfo;
 struct scope6_id;
 struct lltable;
 struct mld_ifsoftc;
+struct in6_multi;
 
 struct in6_ifextra {
 	counter_u64_t *in6_ifstat;
@@ -111,6 +114,10 @@ struct in6_ifextra {
 #define	LLTABLE6(ifp)	(((struct in6_ifextra *)(ifp)->if_afdata[AF_INET6])->lltable)
 
 #ifdef _KERNEL
+
+SLIST_HEAD(in6_multi_head, in6_multi);
+MALLOC_DECLARE(M_IP6MADDR);
+
 struct	in6_ifaddr {
 	struct	ifaddr ia_ifa;		/* protocol-independent info */
 #define	ia_ifp		ia_ifa.ifa_ifp
@@ -120,7 +127,7 @@ struct	in6_ifaddr {
 	struct	sockaddr_in6 ia_dstaddr; /* space for destination addr */
 	struct	sockaddr_in6 ia_prefixmask; /* prefix mask */
 	u_int32_t ia_plen;		/* prefix length */
-	TAILQ_ENTRY(in6_ifaddr)	ia_link;	/* list of IPv6 addresses */
+	CK_STAILQ_ENTRY(in6_ifaddr)	ia_link;	/* list of IPv6 addresses */
 	int	ia6_flags;
 
 	struct in6_addrlifetime ia6_lifetime;
@@ -135,12 +142,12 @@ struct	in6_ifaddr {
 	/* multicast addresses joined from the kernel */
 	LIST_HEAD(, in6_multi_mship) ia6_memberships;
 	/* entry in bucket of inet6 addresses */
-	LIST_ENTRY(in6_ifaddr) ia6_hash;
+	CK_LIST_ENTRY(in6_ifaddr) ia6_hash;
 };
 
 /* List of in6_ifaddr's. */
-TAILQ_HEAD(in6_ifaddrhead, in6_ifaddr);
-LIST_HEAD(in6_ifaddrlisthead, in6_ifaddr);
+CK_STAILQ_HEAD(in6_ifaddrhead, in6_ifaddr);
+CK_LIST_HEAD(in6_ifaddrlisthead, in6_ifaddr);
 #endif	/* _KERNEL */
 
 /* control structure to manage address selection policy */
@@ -595,7 +602,59 @@ struct in6_mfilter {
 	struct ip6_msource_tree	im6f_sources; /* source list for (S,G) */
 	u_long			im6f_nsrc;    /* # of source entries */
 	uint8_t			im6f_st[2];   /* state before/at commit */
+	struct in6_multi       *im6f_in6m;    /* associated multicast address */
+	STAILQ_ENTRY(in6_mfilter) im6f_entry; /* list entry */
 };
+
+/*
+ * Helper types and functions for IPv4 multicast filters.
+ */
+STAILQ_HEAD(ip6_mfilter_head, in6_mfilter);
+
+struct in6_mfilter *ip6_mfilter_alloc(int mflags, int st0, int st1);
+void ip6_mfilter_free(struct in6_mfilter *);
+
+static inline void
+ip6_mfilter_init(struct ip6_mfilter_head *head)
+{
+
+	STAILQ_INIT(head);
+}
+
+static inline struct in6_mfilter *
+ip6_mfilter_first(const struct ip6_mfilter_head *head)
+{
+
+	return (STAILQ_FIRST(head));
+}
+
+static inline void
+ip6_mfilter_insert(struct ip6_mfilter_head *head, struct in6_mfilter *imf)
+{
+
+	STAILQ_INSERT_TAIL(head, imf, im6f_entry);
+}
+
+static inline void
+ip6_mfilter_remove(struct ip6_mfilter_head *head, struct in6_mfilter *imf)
+{
+
+	STAILQ_REMOVE(head, imf, in6_mfilter, im6f_entry);
+}
+
+#define	IP6_MFILTER_FOREACH(imf, head) \
+	STAILQ_FOREACH(imf, head, im6f_entry)
+
+static inline size_t
+ip6_mfilter_count(struct ip6_mfilter_head *head)
+{
+	struct in6_mfilter *imf;
+	size_t num = 0;
+
+	STAILQ_FOREACH(imf, head, im6f_entry)
+		num++;
+	return (num);
+}
 
 /*
  * Legacy KAME IPv6 multicast membership descriptor.
@@ -628,7 +687,6 @@ struct in6_multi_mship {
  * w/o breaking the ABI for ifmcstat.
  */
 struct in6_multi {
-	LIST_ENTRY(in6_multi) in6m_entry; /* list glue */
 	struct	in6_addr in6m_addr;	/* IPv6 multicast address */
 	struct	ifnet *in6m_ifp;	/* back pointer to ifnet */
 	struct	ifmultiaddr *in6m_ifma;	/* back pointer to ifmultiaddr */
@@ -639,6 +697,7 @@ struct in6_multi {
 	/* New fields for MLDv2 follow. */
 	struct mld_ifsoftc	*in6m_mli;	/* MLD info */
 	SLIST_ENTRY(in6_multi)	 in6m_nrele;	/* to-be-released by MLD */
+	SLIST_ENTRY(in6_multi)	 in6m_defer;	/* deferred MLDv1 */
 	struct ip6_msource_tree	 in6m_srcs;	/* tree of sources */
 	u_long			 in6m_nsrc;	/* # of tree entries */
 
@@ -663,6 +722,8 @@ struct in6_multi {
 		uint16_t	iss_rec;	/* # of recorded sources */
 	}			in6m_st[2];	/* state at t0, t1 */
 };
+
+void in6m_disconnect_locked(struct in6_multi_head *inmh, struct in6_multi *inm);
 
 /*
  * Helper function to derive the filter mode on a source entry
@@ -692,18 +753,40 @@ im6s_get_mode(const struct in6_multi *inm, const struct ip6_msource *ims,
  * consumers of IN_*_MULTI() macros should acquire the locks before
  * calling them; users of the in_{add,del}multi() functions should not.
  */
-extern struct mtx in6_multi_mtx;
-#define	IN6_MULTI_LOCK()		mtx_lock(&in6_multi_mtx)
-#define	IN6_MULTI_UNLOCK()		mtx_unlock(&in6_multi_mtx)
-#define	IN6_MULTI_LOCK_ASSERT()		mtx_assert(&in6_multi_mtx, MA_OWNED)
-#define	IN6_MULTI_UNLOCK_ASSERT()	mtx_assert(&in6_multi_mtx, MA_NOTOWNED)
+extern struct mtx in6_multi_list_mtx;
+extern struct sx in6_multi_sx;
+
+#define	IN6_MULTI_LIST_LOCK()		mtx_lock(&in6_multi_list_mtx)
+#define	IN6_MULTI_LIST_UNLOCK()	mtx_unlock(&in6_multi_list_mtx)
+#define	IN6_MULTI_LIST_LOCK_ASSERT()	mtx_assert(&in6_multi_list_mtx, MA_OWNED)
+#define	IN6_MULTI_LIST_UNLOCK_ASSERT() mtx_assert(&in6_multi_list_mtx, MA_NOTOWNED)
+
+#define	IN6_MULTI_LOCK()		sx_xlock(&in6_multi_sx)
+#define	IN6_MULTI_UNLOCK()	sx_xunlock(&in6_multi_sx)
+#define	IN6_MULTI_LOCK_ASSERT()	sx_assert(&in6_multi_sx, SA_XLOCKED)
+#define	IN6_MULTI_UNLOCK_ASSERT() sx_assert(&in6_multi_sx, SA_XUNLOCKED)
+
+/*
+ * Get the in6_multi pointer from a ifmultiaddr.
+ * Returns NULL if ifmultiaddr is no longer valid.
+ */
+static __inline struct in6_multi *
+in6m_ifmultiaddr_get_inm(struct ifmultiaddr *ifma)
+{
+
+	NET_EPOCH_ASSERT();
+
+	return ((ifma->ifma_addr->sa_family != AF_INET6 ||	
+	    (ifma->ifma_flags & IFMA_F_ENQUEUED) == 0) ? NULL :
+	    ifma->ifma_protospec);
+}
 
 /*
  * Look up an in6_multi record for an IPv6 multicast address
  * on the interface ifp.
  * If no record found, return NULL.
  *
- * SMPng: The IN6_MULTI_LOCK and IF_ADDR_LOCK on ifp must be held.
+ * SMPng: The IN6_MULTI_LOCK and must be held and must be in network epoch.
  */
 static __inline struct in6_multi *
 in6m_lookup_locked(struct ifnet *ifp, const struct in6_addr *mcaddr)
@@ -711,36 +794,31 @@ in6m_lookup_locked(struct ifnet *ifp, const struct in6_addr *mcaddr)
 	struct ifmultiaddr *ifma;
 	struct in6_multi *inm;
 
-	IN6_MULTI_LOCK_ASSERT();
-	IF_ADDR_LOCK_ASSERT(ifp);
-
-	inm = NULL;
-	TAILQ_FOREACH(ifma, &((ifp)->if_multiaddrs), ifma_link) {
-		if (ifma->ifma_addr->sa_family == AF_INET6) {
-			inm = (struct in6_multi *)ifma->ifma_protospec;
-			if (IN6_ARE_ADDR_EQUAL(&inm->in6m_addr, mcaddr))
-				break;
-			inm = NULL;
-		}
+	CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+		inm = in6m_ifmultiaddr_get_inm(ifma);
+		if (inm == NULL)
+			continue;
+		if (IN6_ARE_ADDR_EQUAL(&inm->in6m_addr, mcaddr))
+			return (inm);
 	}
-	return (inm);
+	return (NULL);
 }
 
 /*
  * Wrapper for in6m_lookup_locked().
  *
- * SMPng: Assumes that neithr the IN6_MULTI_LOCK() or IF_ADDR_LOCK() are held.
+ * SMPng: Assumes network epoch entered and that IN6_MULTI_LOCK() isn't held.
  */
 static __inline struct in6_multi *
 in6m_lookup(struct ifnet *ifp, const struct in6_addr *mcaddr)
 {
 	struct in6_multi *inm;
 
-	IN6_MULTI_LOCK();
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ASSERT();
+
+	IN6_MULTI_LIST_LOCK();
 	inm = in6m_lookup_locked(ifp, mcaddr);
-	IF_ADDR_RUNLOCK(ifp);
-	IN6_MULTI_UNLOCK();
+	IN6_MULTI_LIST_UNLOCK();
 
 	return (inm);
 }
@@ -750,35 +828,53 @@ static __inline void
 in6m_acquire_locked(struct in6_multi *inm)
 {
 
-	IN6_MULTI_LOCK_ASSERT();
+	IN6_MULTI_LIST_LOCK_ASSERT();
 	++inm->in6m_refcount;
+}
+
+static __inline void
+in6m_acquire(struct in6_multi *inm)
+{
+	IN6_MULTI_LIST_LOCK();
+	in6m_acquire_locked(inm);
+	IN6_MULTI_LIST_UNLOCK();
+}
+
+static __inline void
+in6m_rele_locked(struct in6_multi_head *inmh, struct in6_multi *inm)
+{
+	KASSERT(inm->in6m_refcount > 0, ("refcount == %d inm: %p", inm->in6m_refcount, inm));
+	IN6_MULTI_LIST_LOCK_ASSERT();
+
+	if (--inm->in6m_refcount == 0) {
+		MPASS(inm->in6m_ifp == NULL);
+		inm->in6m_ifma->ifma_protospec = NULL;
+		MPASS(inm->in6m_ifma->ifma_llifma == NULL);
+		SLIST_INSERT_HEAD(inmh, inm, in6m_nrele);
+	}
 }
 
 struct ip6_moptions;
 struct sockopt;
+struct inpcbinfo;
+struct rib_head;
 
 /* Multicast KPIs. */
 int	im6o_mc_filter(const struct ip6_moptions *, const struct ifnet *,
 	    const struct sockaddr *, const struct sockaddr *);
-int	in6_mc_join(struct ifnet *, const struct in6_addr *,
+int in6_joingroup(struct ifnet *, const struct in6_addr *,
 	    struct in6_mfilter *, struct in6_multi **, int);
-int	in6_mc_join_locked(struct ifnet *, const struct in6_addr *,
-	    struct in6_mfilter *, struct in6_multi **, int);
-int	in6_mc_leave(struct in6_multi *, struct in6_mfilter *);
-int	in6_mc_leave_locked(struct in6_multi *, struct in6_mfilter *);
+int	in6_leavegroup(struct in6_multi *, struct in6_mfilter *);
+int	in6_leavegroup_locked(struct in6_multi *, struct in6_mfilter *);
 void	in6m_clear_recorded(struct in6_multi *);
 void	in6m_commit(struct in6_multi *);
 void	in6m_print(const struct in6_multi *);
 int	in6m_record_source(struct in6_multi *, const struct in6_addr *);
-void	in6m_release_locked(struct in6_multi *);
+void	in6m_release_list_deferred(struct in6_multi_head *);
+void	in6m_release_wait(void *);
 void	ip6_freemoptions(struct ip6_moptions *);
 int	ip6_getmoptions(struct inpcb *, struct sockopt *);
 int	ip6_setmoptions(struct inpcb *, struct sockopt *);
-
-/* Legacy KAME multicast KPIs. */
-struct in6_multi_mship *
-	in6_joingroup(struct ifnet *, struct in6_addr *, int *, int);
-int	in6_leavegroup(struct in6_multi_mship *);
 
 /* flags to in6_update_ifa */
 #define IN6_IFAUPDATE_DADDELAY	0x1 /* first time to configure an address */
@@ -791,11 +887,14 @@ int	in6_update_ifa(struct ifnet *, struct in6_aliasreq *,
 void	in6_prepare_ifra(struct in6_aliasreq *, const struct in6_addr *,
 	const struct in6_addr *);
 void	in6_purgeaddr(struct ifaddr *);
+void	in6_purgeifaddr(struct in6_ifaddr *);
 int	in6if_do_dad(struct ifnet *);
 void	in6_savemkludge(struct in6_ifaddr *);
 void	*in6_domifattach(struct ifnet *);
 void	in6_domifdetach(struct ifnet *, void *);
 int	in6_domifmtu(struct ifnet *);
+struct rib_head *in6_inithead(uint32_t fibnum);
+void	in6_detachhead(struct rib_head *rh);
 void	in6_setmaxmtu(void);
 int	in6_if2idlen(struct ifnet *);
 struct in6_ifaddr *in6ifa_ifpforlinklocal(struct ifnet *, int);
@@ -819,13 +918,7 @@ void	in6_newaddrmsg(struct in6_ifaddr *, int);
 /*
  * Extended API for IPv6 FIB support.
  */
-void	in6_rtredirect(struct sockaddr *, struct sockaddr *, struct sockaddr *,
-	    int, struct sockaddr *, u_int);
-int	in6_rtrequest(int, struct sockaddr *, struct sockaddr *,
-	    struct sockaddr *, int, struct rtentry **, u_int);
-void	in6_rtalloc(struct route_in6 *, u_int);
-void	in6_rtalloc_ign(struct route_in6 *, u_long, u_int);
-struct rtentry *in6_rtalloc1(struct sockaddr *, int, u_long, u_int);
+struct mbuf *ip6_tryforward(struct mbuf *);
 #endif /* _KERNEL */
 
 #endif /* _NETINET6_IN6_VAR_H_ */

@@ -1,7 +1,8 @@
 /*************************************************************************
+SPDX-License-Identifier: BSD-3-Clause
+
 Copyright (c) 2003-2007  Cavium Networks (support@cavium.com). All rights
 reserved.
-
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are
@@ -59,7 +60,7 @@ __FBSDID("$FreeBSD$");
 #if defined(CONFIG_CAVIUM_OCTEON_NUM_PACKET_BUFFERS) && CONFIG_CAVIUM_OCTEON_NUM_PACKET_BUFFERS
 int num_packet_buffers = CONFIG_CAVIUM_OCTEON_NUM_PACKET_BUFFERS;
 #else
-int num_packet_buffers = 1024;
+int num_packet_buffers = 2048;
 #endif
 TUNABLE_INT("hw.octe.num_packet_buffers", &num_packet_buffers);
 /*
@@ -249,7 +250,6 @@ static void cvm_oct_configure_common_hw(device_t bus)
 		return;
         }
 
-
 #ifdef SMP
 	{
 		cvmx_ciu_intx0_t en;
@@ -266,7 +266,6 @@ static void cvm_oct_configure_common_hw(device_t bus)
 	}
 #endif
 }
-
 
 /**
  * Free a work queue entry received in a intercept callback.
@@ -292,7 +291,6 @@ int cvm_oct_free_work(void *work_queue_entry)
 
 	return 0;
 }
-
 
 /**
  * Module/ driver initialization. Creates the linux network
@@ -377,7 +375,6 @@ int cvm_oct_init_module(device_t bus)
 			TASK_INIT(&priv->link_task, 0, cvm_oct_update_link, priv);
 
 			switch (priv->imode) {
-
 			/* These types don't support ports to IPD/PKO */
 			case CVMX_HELPER_INTERFACE_MODE_DISABLED:
 			case CVMX_HELPER_INTERFACE_MODE_PCIE:
@@ -446,7 +443,7 @@ int cvm_oct_init_module(device_t bus)
 
 	if (INTERRUPT_LIMIT) {
 		/* Set the POW timer rate to give an interrupt at most INTERRUPT_LIMIT times per second */
-		cvmx_write_csr(CVMX_POW_WQ_INT_PC, cvmx_clock_get_rate(CVMX_CLOCK_CORE)/(INTERRUPT_LIMIT*16*256)<<8);
+		cvmx_write_csr(CVMX_POW_WQ_INT_PC, cvmx_clock_get_rate(CVMX_CLOCK_CORE)/((INTERRUPT_LIMIT+1)*16*256)<<8);
 
 		/* Enable POW timer interrupt. It will count when there are packets available */
 		cvmx_write_csr(CVMX_POW_WQ_INT_THRX(pow_receive_group), 0x1ful<<24);
@@ -460,7 +457,6 @@ int cvm_oct_init_module(device_t bus)
 
 	return 0;
 }
-
 
 /**
  * Module / driver shutdown

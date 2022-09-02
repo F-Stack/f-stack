@@ -148,16 +148,14 @@ fairq_pfattach(struct pf_altq *a)
 }
 
 int
-fairq_add_altq(struct pf_altq *a)
+fairq_add_altq(struct ifnet *ifp, struct pf_altq *a)
 {
 	struct fairq_if *pif;
-	struct ifnet *ifp;
 
-	if ((ifp = ifunit(a->ifname)) == NULL)
+	if (ifp == NULL)
 		return (EINVAL);
 	if (!ALTQ_IS_READY(&ifp->if_snd))
 		return (ENODEV);
-
 
 	pif = malloc(sizeof(struct fairq_if),
 			M_DEVBUF, M_WAITOK | M_ZERO);
@@ -229,7 +227,7 @@ fairq_remove_queue(struct pf_altq *a)
 }
 
 int
-fairq_getqstats(struct pf_altq *a, void *ubuf, int *nbytes)
+fairq_getqstats(struct pf_altq *a, void *ubuf, int *nbytes, int version)
 {
 	struct fairq_if *pif;
 	struct fairq_class *cl;

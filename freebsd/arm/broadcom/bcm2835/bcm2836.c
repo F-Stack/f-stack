@@ -36,7 +36,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/cpuset.h>
 #include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/module.h>
+#include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/rman.h>
 #ifdef SMP
@@ -53,26 +55,8 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus_subr.h>
 #include <dev/ofw/ofw_bus.h>
 
-#ifdef INTRNG
 #include "pic_if.h"
-#else
-#include <arm/broadcom/bcm2835/bcm2836.h>
 
-#define	ARM_LOCAL_BASE	0x40000000
-#define	ARM_LOCAL_SIZE	0x00001000
-
-#define	ARM_LOCAL_CONTROL		0x00
-#define	ARM_LOCAL_PRESCALER		0x08
-#define	 PRESCALER_19_2			0x80000000 /* 19.2 MHz */
-#define	ARM_LOCAL_INT_TIMER(n)		(0x40 + (n) * 4)
-#define	ARM_LOCAL_INT_MAILBOX(n)	(0x50 + (n) * 4)
-#define	ARM_LOCAL_INT_PENDING(n)	(0x60 + (n) * 4)
-#define	 INT_PENDING_MASK		0x011f
-#define	MAILBOX0_IRQ			4
-#define	MAILBOX0_IRQEN			(1 << 0)
-#endif
-
-#ifdef INTRNG
 #define	BCM_LINTC_CONTROL_REG		0x00
 #define	BCM_LINTC_PRESCALER_REG		0x08
 #define	BCM_LINTC_GPU_ROUTING_REG	0x0c
@@ -380,7 +364,11 @@ bcm_lintc_ipi_dispatch(struct bcm_lintc_softc *sc, u_int cpu,
 		 * and make sure that it's observed by everybody.
 		 */
 		bcm_lintc_write_4(sc, BCM_LINTC_MBOX0_CLR_REG(cpu), 1 << ipi);
+#if defined(__aarch64__)
+		dsb(sy);
+#else
 		dsb();
+#endif
 		intr_ipi_dispatch(ipi, tf);
 	}
 }
@@ -435,7 +423,7 @@ bcm_lintc_intr(void *arg)
 	reg &= ~BCM_LINTC_PENDING_MASK;
 	if (reg != 0)
 		device_printf(sc->bls_dev, "Unknown interrupt(s) %x\n", reg);
-	else if (num == 0)
+	else if (num == 0 && bootverbose)
 		device_printf(sc->bls_dev, "Spurious interrupt detected\n");
 
 	return (FILTER_HANDLED);
@@ -468,8 +456,10 @@ bcm_lintc_map_intr(device_t dev, struct intr_map_data *data,
 		return (ENOTSUP);
 
 	daf = (struct intr_map_data_fdt *)data;
-	if (daf->ncells != 1 || daf->cells[0] >= BCM_LINTC_NIRQS)
+	if (daf->ncells > 2 || daf->cells[0] >= BCM_LINTC_NIRQS)
 		return (EINVAL);
+
+	/* TODO: handle IRQ type here */
 
 	sc = device_get_softc(dev);
 	*isrcp = &sc->bls_isrcs[daf->cells[0]].bli_isrc;
@@ -670,6 +660,8 @@ bcm_lintc_probe(device_t dev)
 
 	if (!ofw_bus_is_compatible(dev, "brcm,bcm2836-l1-intc"))
 		return (ENXIO);
+	if (!ofw_bus_has_prop(dev, "interrupt-controller"))
+		return (ENXIO);
 	device_set_desc(dev, "BCM2836 Interrupt Controller");
 	return (BUS_PROBE_DEFAULT);
 }
@@ -742,172 +734,12 @@ static device_method_t bcm_lintc_methods[] = {
 };
 
 static driver_t bcm_lintc_driver = {
-	"local_intc",
+	"lintc",
 	bcm_lintc_methods,
 	sizeof(struct bcm_lintc_softc),
 };
 
 static devclass_t bcm_lintc_devclass;
 
-EARLY_DRIVER_MODULE(local_intc, simplebus, bcm_lintc_driver, bcm_lintc_devclass,
-    0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
-#else
-/*
- * A driver for features of the bcm2836.
- */
-
-struct bcm2836_softc {
-	device_t	 sc_dev;
-	struct resource *sc_mem;
-};
-
-static device_identify_t bcm2836_identify;
-static device_probe_t bcm2836_probe;
-static device_attach_t bcm2836_attach;
-
-struct bcm2836_softc *softc;
-
-static void
-bcm2836_identify(driver_t *driver, device_t parent)
-{
-
-	if (BUS_ADD_CHILD(parent, 0, "bcm2836", -1) == NULL)
-		device_printf(parent, "add child failed\n");
-}
-
-static int
-bcm2836_probe(device_t dev)
-{
-
-	if (softc != NULL)
-		return (ENXIO);
-
-	device_set_desc(dev, "Broadcom bcm2836");
-
-	return (BUS_PROBE_DEFAULT);
-}
-
-static int
-bcm2836_attach(device_t dev)
-{
-	int i, rid;
-
-	softc = device_get_softc(dev);
-	softc->sc_dev = dev;
-
-	rid = 0;
-	softc->sc_mem = bus_alloc_resource(dev, SYS_RES_MEMORY, &rid,
-	    ARM_LOCAL_BASE, ARM_LOCAL_BASE + ARM_LOCAL_SIZE, ARM_LOCAL_SIZE,
-	    RF_ACTIVE);
-	if (softc->sc_mem == NULL) {
-		device_printf(dev, "could not allocate memory resource\n");
-		return (ENXIO);
-	}
-
-	bus_write_4(softc->sc_mem, ARM_LOCAL_CONTROL, 0);
-	bus_write_4(softc->sc_mem, ARM_LOCAL_PRESCALER, PRESCALER_19_2);
-
-	for (i = 0; i < 4; i++)
-		bus_write_4(softc->sc_mem, ARM_LOCAL_INT_TIMER(i), 0);
-
-	for (i = 0; i < 4; i++)
-		bus_write_4(softc->sc_mem, ARM_LOCAL_INT_MAILBOX(i), 1);
-
-	return (0);
-}
-
-int
-bcm2836_get_next_irq(int last_irq)
-{
-	uint32_t reg;
-	int cpu;
-	int irq;
-
-	cpu = PCPU_GET(cpuid);
-
-	reg = bus_read_4(softc->sc_mem, ARM_LOCAL_INT_PENDING(cpu));
-	reg &= INT_PENDING_MASK;
-	if (reg == 0)
-		return (-1);
-
-	irq = ffs(reg) - 1;
-
-	return (irq);
-}
-
-void
-bcm2836_mask_irq(uintptr_t irq)
-{
-	uint32_t reg;
-#ifdef SMP
-	int cpu;
-#endif
-	int i;
-
-	if (irq < MAILBOX0_IRQ) {
-		for (i = 0; i < 4; i++) {
-			reg = bus_read_4(softc->sc_mem,
-			    ARM_LOCAL_INT_TIMER(i));
-			reg &= ~(1 << irq);
-			bus_write_4(softc->sc_mem,
-			    ARM_LOCAL_INT_TIMER(i), reg);
-		}
-#ifdef SMP
-	} else if (irq == MAILBOX0_IRQ) {
-		/* Mailbox 0 for IPI */
-		cpu = PCPU_GET(cpuid);
-		reg = bus_read_4(softc->sc_mem, ARM_LOCAL_INT_MAILBOX(cpu));
-		reg &= ~MAILBOX0_IRQEN;
-		bus_write_4(softc->sc_mem, ARM_LOCAL_INT_MAILBOX(cpu), reg);
-#endif
-	}
-}
-
-void
-bcm2836_unmask_irq(uintptr_t irq)
-{
-	uint32_t reg;
-#ifdef SMP
-	int cpu;
-#endif
-	int i;
-
-	if (irq < MAILBOX0_IRQ) {
-		for (i = 0; i < 4; i++) {
-			reg = bus_read_4(softc->sc_mem,
-			    ARM_LOCAL_INT_TIMER(i));
-			reg |= (1 << irq);
-			bus_write_4(softc->sc_mem,
-			    ARM_LOCAL_INT_TIMER(i), reg);
-		}
-#ifdef SMP
-	} else if (irq == MAILBOX0_IRQ) {
-		/* Mailbox 0 for IPI */
-		cpu = PCPU_GET(cpuid);
-		reg = bus_read_4(softc->sc_mem, ARM_LOCAL_INT_MAILBOX(cpu));
-		reg |= MAILBOX0_IRQEN;
-		bus_write_4(softc->sc_mem, ARM_LOCAL_INT_MAILBOX(cpu), reg);
-#endif
-	}
-}
-
-static device_method_t bcm2836_methods[] = {
-	/* Device interface */
-	DEVMETHOD(device_identify,	bcm2836_identify),
-	DEVMETHOD(device_probe,		bcm2836_probe),
-	DEVMETHOD(device_attach,	bcm2836_attach),
-
-	DEVMETHOD_END
-};
-
-static devclass_t bcm2836_devclass;
-
-static driver_t bcm2836_driver = {
-	"bcm2836",
-	bcm2836_methods,
-	sizeof(struct bcm2836_softc),
-};
-
-EARLY_DRIVER_MODULE(bcm2836, nexus, bcm2836_driver, bcm2836_devclass, 0, 0,
-    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
-#endif
+EARLY_DRIVER_MODULE(lintc, simplebus, bcm_lintc_driver, bcm_lintc_devclass,
+    0, 0, BUS_PASS_INTERRUPT);

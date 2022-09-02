@@ -2,6 +2,7 @@
  * Copyright (c) 2014 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
+ * Copyright (c) 2018 Joyent, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,6 +29,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_bhyve_snapshot.h"
+
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/queue.h>
@@ -38,6 +41,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 
 #include <machine/vmm.h>
+#include <machine/vmm_snapshot.h>
 
 #include "vmm_ktr.h"
 #include "vatpic.h"
@@ -74,11 +78,10 @@ struct vatpit_callout_arg {
 	int		channel_num;
 };
 
-
 struct channel {
 	int		mode;
 	uint16_t	initial;	/* initial counter value */
-	sbintime_t	now_sbt;	/* uptime when counter was loaded */
+	struct bintime	now_bt;		/* uptime when counter was loaded */
 	uint8_t		cr[2];
 	uint8_t		ol[2];
 	bool		slatched;	/* status latched */
@@ -87,7 +90,7 @@ struct channel {
 	int		olbyte;
 	int		frbyte;
 	struct callout	callout;
-	sbintime_t	callout_sbt;	/* target time */
+	struct bintime	callout_bt;	/* target time */
 	struct vatpit_callout_arg callout_arg;
 };
 
@@ -95,26 +98,41 @@ struct vatpit {
 	struct vm	*vm;
 	struct mtx	mtx;
 
-	sbintime_t	freq_sbt;
+	struct bintime	freq_bt;
 
 	struct channel	channel[3];
 };
 
 static void pit_timer_start_cntr0(struct vatpit *vatpit);
 
+static uint64_t
+vatpit_delta_ticks(struct vatpit *vatpit, struct channel *c)
+{
+	struct bintime delta;
+	uint64_t result;
+
+	binuptime(&delta);
+	bintime_sub(&delta, &c->now_bt);
+
+	result = delta.sec * PIT_8254_FREQ;
+	result += delta.frac / vatpit->freq_bt.frac;
+
+	return (result);
+}
+
 static int
 vatpit_get_out(struct vatpit *vatpit, int channel)
 {
 	struct channel *c;
-	sbintime_t delta_ticks;
+	uint64_t delta_ticks;
 	int out;
 
 	c = &vatpit->channel[channel];
 
 	switch (c->mode) {
 	case TIMER_INTTC:
-		delta_ticks = (sbinuptime() - c->now_sbt) / vatpit->freq_sbt;
-		out = ((c->initial - delta_ticks) <= 0);
+		delta_ticks = vatpit_delta_ticks(vatpit, c);
+		out = (delta_ticks >= c->initial);
 		break;
 	default:
 		out = 0;
@@ -164,24 +182,28 @@ static void
 pit_timer_start_cntr0(struct vatpit *vatpit)
 {
 	struct channel *c;
-	sbintime_t now, delta, precision;
+	struct bintime now, delta;
+	sbintime_t precision;
 
 	c = &vatpit->channel[0];
 	if (c->initial != 0) {
-		delta = c->initial * vatpit->freq_sbt;
-		precision = delta >> tc_precexp;
-		c->callout_sbt = c->callout_sbt + delta;
+		delta.sec = 0;
+		delta.frac = vatpit->freq_bt.frac * c->initial;
+		bintime_add(&c->callout_bt, &delta);
+		precision = bttosbt(delta) >> tc_precexp;
 
 		/*
-		 * Reset 'callout_sbt' if the time that the callout
+		 * Reset 'callout_bt' if the time that the callout
 		 * was supposed to fire is more than 'c->initial'
 		 * ticks in the past.
 		 */
-		now = sbinuptime();
-		if (c->callout_sbt < now)
-			c->callout_sbt = now + delta;
+		binuptime(&now);
+		if (bintime_cmp(&c->callout_bt, &now, <)) {
+			c->callout_bt = now;
+			bintime_add(&c->callout_bt, &delta);
+		}
 
-		callout_reset_sbt(&c->callout, c->callout_sbt,
+		callout_reset_sbt(&c->callout, bttosbt(c->callout_bt),
 		    precision, vatpit_callout_handler, &c->callout_arg,
 		    C_ABSOLUTE);
 	}
@@ -191,7 +213,7 @@ static uint16_t
 pit_update_counter(struct vatpit *vatpit, struct channel *c, bool latch)
 {
 	uint16_t lval;
-	sbintime_t delta_ticks;
+	uint64_t delta_ticks;
 
 	/* cannot latch a new value until the old one has been consumed */
 	if (latch && c->olbyte != 0)
@@ -207,12 +229,11 @@ pit_update_counter(struct vatpit *vatpit, struct channel *c, bool latch)
 		 * here.
 		 */
 		c->initial = TIMER_DIV(PIT_8254_FREQ, 100);
-		c->now_sbt = sbinuptime();
+		binuptime(&c->now_bt);
 		c->status &= ~TIMER_STS_NULLCNT;
 	}
 
-	delta_ticks = (sbinuptime() - c->now_sbt) / vatpit->freq_sbt;
-
+	delta_ticks = vatpit_delta_ticks(vatpit, c);
 	lval = c->initial - delta_ticks % c->initial;
 
 	if (latch) {
@@ -273,7 +294,6 @@ pit_readback(struct vatpit *vatpit, uint8_t cmd)
 
 	return (error);
 }
-
 
 static int
 vatpit_update_mode(struct vatpit *vatpit, uint8_t val)
@@ -383,10 +403,10 @@ vatpit_handler(struct vm *vm, int vcpuid, bool in, int port, int bytes,
 			c->frbyte = 0;
 			c->crbyte = 0;
 			c->initial = c->cr[0] | (uint16_t)c->cr[1] << 8;
-			c->now_sbt = sbinuptime();
+			binuptime(&c->now_bt);
 			/* Start an interval timer for channel 0 */
 			if (port == TIMER_CNTR0) {
-				c->callout_sbt = c->now_sbt;
+				c->callout_bt = c->now_bt;
 				pit_timer_start_cntr0(vatpit);
 			}
 			if (c->initial == 0)
@@ -423,7 +443,6 @@ struct vatpit *
 vatpit_init(struct vm *vm)
 {
 	struct vatpit *vatpit;
-	struct bintime bt;
 	struct vatpit_callout_arg *arg;
 	int i;
 
@@ -432,8 +451,7 @@ vatpit_init(struct vm *vm)
 
 	mtx_init(&vatpit->mtx, "vatpit lock", NULL, MTX_SPIN);
 
-	FREQ2BT(PIT_8254_FREQ, &bt);
-	vatpit->freq_sbt = bttosbt(bt);
+	FREQ2BT(PIT_8254_FREQ, &vatpit->freq_bt);
 
 	for (i = 0; i < 3; i++) {
 		callout_init(&vatpit->channel[i].callout, 1);
@@ -455,3 +473,42 @@ vatpit_cleanup(struct vatpit *vatpit)
 
 	free(vatpit, M_VATPIT);
 }
+
+#ifdef BHYVE_SNAPSHOT
+int
+vatpit_snapshot(struct vatpit *vatpit, struct vm_snapshot_meta *meta)
+{
+	int ret;
+	int i;
+	struct channel *channel;
+
+	SNAPSHOT_VAR_OR_LEAVE(vatpit->freq_bt.sec, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(vatpit->freq_bt.frac, meta, ret, done);
+
+	/* properly restore timers; they will NOT work currently */
+	printf("%s: snapshot restore does not reset timers!\r\n", __func__);
+
+	for (i = 0; i < nitems(vatpit->channel); i++) {
+		channel = &vatpit->channel[i];
+
+		SNAPSHOT_VAR_OR_LEAVE(channel->mode, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->initial, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->now_bt.sec, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->now_bt.frac, meta, ret, done);
+		SNAPSHOT_BUF_OR_LEAVE(channel->cr, sizeof(channel->cr),
+			meta, ret, done);
+		SNAPSHOT_BUF_OR_LEAVE(channel->ol, sizeof(channel->ol),
+			meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->slatched, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->status, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->crbyte, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->frbyte, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->callout_bt.sec, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(channel->callout_bt.frac, meta, ret,
+			done);
+	}
+
+done:
+	return (ret);
+}
+#endif

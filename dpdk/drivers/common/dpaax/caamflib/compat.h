@@ -33,11 +33,11 @@
 #endif
 
 #ifndef __always_unused
-#define __always_unused __attribute__((unused))
+#define __always_unused __rte_unused
 #endif
 
 #ifndef __maybe_unused
-#define __maybe_unused __attribute__((unused))
+#define __maybe_unused __rte_unused
 #endif
 
 #if !defined(pr_debug)

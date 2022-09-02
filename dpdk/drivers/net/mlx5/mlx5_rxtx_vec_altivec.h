@@ -6,7 +6,6 @@
 #ifndef RTE_PMD_MLX5_RXTX_VEC_ALTIVEC_H_
 #define RTE_PMD_MLX5_RXTX_VEC_ALTIVEC_H_
 
-#include <assert.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -17,13 +16,14 @@
 #include <rte_mempool.h>
 #include <rte_prefetch.h>
 
+#include <mlx5_prm.h>
+
+#include "mlx5_defs.h"
 #include "mlx5.h"
 #include "mlx5_utils.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_rxtx_vec.h"
 #include "mlx5_autoconf.h"
-#include "mlx5_defs.h"
-#include "mlx5_prm.h"
 
 #ifndef __INTEL_COMPILER
 #pragma GCC diagnostic ignored "-Wcast-qual"
@@ -33,18 +33,16 @@
 /**
  * Store free buffers to RX SW ring.
  *
- * @param rxq
- *   Pointer to RX queue structure.
+ * @param elts
+ *   Pointer to SW ring to be filled.
  * @param pkts
  *   Pointer to array of packets to be stored.
  * @param pkts_n
  *   Number of packets to be stored.
  */
 static inline void
-rxq_copy_mbuf_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t n)
+rxq_copy_mbuf_v(struct rte_mbuf **elts, struct rte_mbuf **pkts, uint16_t n)
 {
-	const uint16_t q_mask = (1 << rxq->elts_n) - 1;
-	struct rte_mbuf **elts = &(*rxq->elts)[rxq->rq_pi & q_mask];
 	unsigned int pos;
 	uint16_t p = n & -2;
 
@@ -110,7 +108,8 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 	const vector unsigned short rxdf_sel_mask =
 		(vector unsigned short){
 			0xffff, 0xffff, 0, 0, 0, 0xffff, 0, 0};
-	const uint32_t flow_tag = t_pkt->hash.fdir.hi;
+	vector unsigned char ol_flags = (vector unsigned char){0};
+	vector unsigned char ol_flags_mask = (vector unsigned char){0};
 	unsigned int pos;
 	unsigned int i;
 	unsigned int inv = 0;
@@ -155,9 +154,9 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		const vector unsigned long shmax = {64, 64};
 #endif
 
-		if (!(pos & 0x7) && pos + 8 < mcqe_n)
-			rte_prefetch0((void *)(cq + pos + 8));
-
+		for (i = 0; i < MLX5_VPMD_DESCS_PER_LOOP; ++i)
+			if (likely(pos + i < mcqe_n))
+				rte_prefetch0((void *)(cq + pos + i));
 		/* A.1 load mCQEs into a 128bit register. */
 		mcqe1 = (vector unsigned char)vec_vsx_ld(0,
 			(signed int const *)&mcq[pos % 8]);
@@ -233,11 +232,10 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 			vec_sel((vector unsigned long)shmask,
 			(vector unsigned long)invalid_mask, shmask);
 
-		mcqe1 = (vector unsigned char)
+		byte_cnt = (vector unsigned char)
+			vec_sel((vector unsigned short)
 			vec_sro((vector unsigned short)mcqe1,
 			(vector unsigned char){32}),
-		byte_cnt = (vector unsigned char)
-			vec_sel((vector unsigned short)mcqe1,
 			(vector unsigned short)mcqe2, mcqe_sel_mask);
 		byte_cnt = vec_perm(byte_cnt, zero, len_shuf_mask);
 		byte_cnt = (vector unsigned char)
@@ -257,11 +255,216 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 #endif
 
 		if (rxq->mark) {
-			/* E.1 store flow tag (rte_flow mark). */
-			elts[pos]->hash.fdir.hi = flow_tag;
-			elts[pos + 1]->hash.fdir.hi = flow_tag;
-			elts[pos + 2]->hash.fdir.hi = flow_tag;
-			elts[pos + 3]->hash.fdir.hi = flow_tag;
+			if (rxq->mcqe_format !=
+			    MLX5_CQE_RESP_FORMAT_FTAG_STRIDX) {
+				const uint32_t flow_tag = t_pkt->hash.fdir.hi;
+
+				/* E.1 store flow tag (rte_flow mark). */
+				elts[pos]->hash.fdir.hi = flow_tag;
+				elts[pos + 1]->hash.fdir.hi = flow_tag;
+				elts[pos + 2]->hash.fdir.hi = flow_tag;
+				elts[pos + 3]->hash.fdir.hi = flow_tag;
+			} else {
+				const vector unsigned char flow_mark_adj =
+					(vector unsigned char)
+					(vector unsigned int){
+					-1, -1, -1, -1};
+				const vector unsigned char flow_mark_shuf =
+					(vector unsigned char){
+					-1, -1, -1, -1,
+					-1, -1, -1, -1,
+					12,  8,  9, -1,
+					 4,  0,  1,  -1};
+				const vector unsigned char ft_mask =
+					(vector unsigned char)
+					(vector unsigned int){
+					0xffffff00, 0xffffff00,
+					0xffffff00, 0xffffff00};
+				const vector unsigned char fdir_flags =
+					(vector unsigned char)
+					(vector unsigned int){
+					PKT_RX_FDIR, PKT_RX_FDIR,
+					PKT_RX_FDIR, PKT_RX_FDIR};
+				const vector unsigned char fdir_all_flags =
+					(vector unsigned char)
+					(vector unsigned int){
+					PKT_RX_FDIR | PKT_RX_FDIR_ID,
+					PKT_RX_FDIR | PKT_RX_FDIR_ID,
+					PKT_RX_FDIR | PKT_RX_FDIR_ID,
+					PKT_RX_FDIR | PKT_RX_FDIR_ID};
+				vector unsigned char fdir_id_flags =
+					(vector unsigned char)
+					(vector unsigned int){
+					PKT_RX_FDIR_ID, PKT_RX_FDIR_ID,
+					PKT_RX_FDIR_ID, PKT_RX_FDIR_ID};
+				/* Extract flow_tag field. */
+				vector unsigned char ftag0 = vec_perm(mcqe1,
+							zero, flow_mark_shuf);
+				vector unsigned char ftag1 = vec_perm(mcqe2,
+							zero, flow_mark_shuf);
+				vector unsigned char ftag =
+					(vector unsigned char)
+					vec_mergel((vector unsigned int)ftag0,
+					(vector unsigned int)ftag1);
+				vector unsigned char invalid_mask =
+					(vector unsigned char)
+					vec_cmpeq((vector unsigned int)ftag,
+					(vector unsigned int)zero);
+
+				ol_flags_mask = (vector unsigned char)
+					vec_or((vector unsigned long)
+					ol_flags_mask,
+					(vector unsigned long)fdir_all_flags);
+
+				/* Set PKT_RX_FDIR if flow tag is non-zero. */
+				invalid_mask = (vector unsigned char)
+					vec_cmpeq((vector unsigned int)ftag,
+					(vector unsigned int)zero);
+				ol_flags = (vector unsigned char)
+					vec_or((vector unsigned long)ol_flags,
+					(vector unsigned long)
+					vec_andc((vector unsigned long)
+					fdir_flags,
+					(vector unsigned long)invalid_mask));
+				ol_flags_mask = (vector unsigned char)
+					vec_or((vector unsigned long)
+					ol_flags_mask,
+					(vector unsigned long)fdir_flags);
+
+				/* Mask out invalid entries. */
+				fdir_id_flags = (vector unsigned char)
+					vec_andc((vector unsigned long)
+					fdir_id_flags,
+					(vector unsigned long)invalid_mask);
+
+				/* Check if flow tag MLX5_FLOW_MARK_DEFAULT. */
+				ol_flags = (vector unsigned char)
+					vec_or((vector unsigned long)ol_flags,
+					(vector unsigned long)
+					vec_andc((vector unsigned long)
+					fdir_id_flags,
+					(vector unsigned long)
+					vec_cmpeq((vector unsigned int)ftag,
+					(vector unsigned int)ft_mask)));
+
+				ftag = (vector unsigned char)
+					((vector unsigned int)ftag +
+					(vector unsigned int)flow_mark_adj);
+				elts[pos]->hash.fdir.hi =
+					((vector unsigned int)ftag)[0];
+				elts[pos + 1]->hash.fdir.hi =
+					((vector unsigned int)ftag)[1];
+				elts[pos + 2]->hash.fdir.hi =
+					((vector unsigned int)ftag)[2];
+				elts[pos + 3]->hash.fdir.hi =
+					((vector unsigned int)ftag)[3];
+			}
+		}
+		if (unlikely(rxq->mcqe_format != MLX5_CQE_RESP_FORMAT_HASH)) {
+			if (rxq->mcqe_format ==
+			    MLX5_CQE_RESP_FORMAT_L34H_STRIDX) {
+				const uint8_t pkt_info =
+					(cq->pkt_info & 0x3) << 6;
+				const uint8_t pkt_hdr0 =
+					mcq[pos % 8].hdr_type;
+				const uint8_t pkt_hdr1 =
+					mcq[pos % 8 + 1].hdr_type;
+				const uint8_t pkt_hdr2 =
+					mcq[pos % 8 + 2].hdr_type;
+				const uint8_t pkt_hdr3 =
+					mcq[pos % 8 + 3].hdr_type;
+				const vector unsigned char vlan_mask =
+					(vector unsigned char)
+					(vector unsigned int) {
+					(PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED),
+					(PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED),
+					(PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED),
+					(PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED)};
+				const vector unsigned char cv_mask =
+					(vector unsigned char)
+					(vector unsigned int) {
+					MLX5_CQE_VLAN_STRIPPED,
+					MLX5_CQE_VLAN_STRIPPED,
+					MLX5_CQE_VLAN_STRIPPED,
+					MLX5_CQE_VLAN_STRIPPED};
+				vector unsigned char pkt_cv =
+					(vector unsigned char)
+					(vector unsigned int) {
+					pkt_hdr0 & 0x1, pkt_hdr1 & 0x1,
+					pkt_hdr2 & 0x1, pkt_hdr3 & 0x1};
+
+				ol_flags_mask = (vector unsigned char)
+					vec_or((vector unsigned long)
+					ol_flags_mask,
+					(vector unsigned long)vlan_mask);
+				ol_flags = (vector unsigned char)
+					vec_or((vector unsigned long)ol_flags,
+					(vector unsigned long)
+					vec_and((vector unsigned long)vlan_mask,
+					(vector unsigned long)
+					vec_cmpeq((vector unsigned int)pkt_cv,
+					(vector unsigned int)cv_mask)));
+				elts[pos]->packet_type =
+					mlx5_ptype_table[(pkt_hdr0 >> 2) |
+							 pkt_info];
+				elts[pos + 1]->packet_type =
+					mlx5_ptype_table[(pkt_hdr1 >> 2) |
+							 pkt_info];
+				elts[pos + 2]->packet_type =
+					mlx5_ptype_table[(pkt_hdr2 >> 2) |
+							 pkt_info];
+				elts[pos + 3]->packet_type =
+					mlx5_ptype_table[(pkt_hdr3 >> 2) |
+							 pkt_info];
+				if (rxq->tunnel) {
+					elts[pos]->packet_type |=
+						!!(((pkt_hdr0 >> 2) |
+						pkt_info) & (1 << 6));
+					elts[pos + 1]->packet_type |=
+						!!(((pkt_hdr1 >> 2) |
+						pkt_info) & (1 << 6));
+					elts[pos + 2]->packet_type |=
+						!!(((pkt_hdr2 >> 2) |
+						pkt_info) & (1 << 6));
+					elts[pos + 3]->packet_type |=
+						!!(((pkt_hdr3 >> 2) |
+						pkt_info) & (1 << 6));
+				}
+			}
+			const vector unsigned char hash_mask =
+				(vector unsigned char)(vector unsigned int) {
+					PKT_RX_RSS_HASH,
+					PKT_RX_RSS_HASH,
+					PKT_RX_RSS_HASH,
+					PKT_RX_RSS_HASH};
+			const vector unsigned char rearm_flags =
+				(vector unsigned char)(vector unsigned int) {
+				(uint32_t)t_pkt->ol_flags,
+				(uint32_t)t_pkt->ol_flags,
+				(uint32_t)t_pkt->ol_flags,
+				(uint32_t)t_pkt->ol_flags};
+
+			ol_flags_mask = (vector unsigned char)
+				vec_or((vector unsigned long)ol_flags_mask,
+				(vector unsigned long)hash_mask);
+			ol_flags = (vector unsigned char)
+				vec_or((vector unsigned long)ol_flags,
+				(vector unsigned long)
+				vec_andc((vector unsigned long)rearm_flags,
+				(vector unsigned long)ol_flags_mask));
+
+			elts[pos]->ol_flags =
+				((vector unsigned int)ol_flags)[0];
+			elts[pos + 1]->ol_flags =
+				((vector unsigned int)ol_flags)[1];
+			elts[pos + 2]->ol_flags =
+				((vector unsigned int)ol_flags)[2];
+			elts[pos + 3]->ol_flags =
+				((vector unsigned int)ol_flags)[3];
+			elts[pos]->hash.rss = 0;
+			elts[pos + 1]->hash.rss = 0;
+			elts[pos + 2]->hash.rss = 0;
+			elts[pos + 3]->hash.rss = 0;
 		}
 		if (rxq->dynf_meta) {
 			int32_t offs = rxq->flow_meta_offset;
@@ -270,7 +473,7 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 
 			/* Check if title packet has valid metadata. */
 			if (meta) {
-				assert(t_pkt->ol_flags &
+				MLX5_ASSERT(t_pkt->ol_flags &
 					    rxq->flow_meta_mask);
 				*RTE_MBUF_DYNFIELD(elts[pos], offs,
 							uint32_t *) = meta;
@@ -286,6 +489,8 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		pos += MLX5_VPMD_DESCS_PER_LOOP;
 		/* Move to next CQE and invalidate consumed CQEs. */
 		if (!(pos & 0x7) && pos < mcqe_n) {
+			if (pos + 8 < mcqe_n)
+				rte_prefetch0((void *)(cq + pos + 8));
 			mcq = (void *)&(cq + pos)->pkt_info;
 			for (i = 0; i < 8; ++i)
 				cq[inv++].op_own = MLX5_CQE_INVALIDATE;
@@ -301,7 +506,6 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 	rxq->stats.ibytes += rcvd_byte;
 #endif
 
-	rxq->cq_ci += mcqe_n;
 	return mcqe_n;
 }
 
@@ -328,13 +532,13 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 	vector unsigned char ol_flags = (vector unsigned char)
 		(vector unsigned int){
 			rxq->rss_hash * PKT_RX_RSS_HASH |
-				rxq->hw_timestamp * PKT_RX_TIMESTAMP,
+				rxq->hw_timestamp * rxq->timestamp_rx_flag,
 			rxq->rss_hash * PKT_RX_RSS_HASH |
-				rxq->hw_timestamp * PKT_RX_TIMESTAMP,
+				rxq->hw_timestamp * rxq->timestamp_rx_flag,
 			rxq->rss_hash * PKT_RX_RSS_HASH |
-				rxq->hw_timestamp * PKT_RX_TIMESTAMP,
+				rxq->hw_timestamp * rxq->timestamp_rx_flag,
 			rxq->rss_hash * PKT_RX_RSS_HASH |
-				rxq->hw_timestamp * PKT_RX_TIMESTAMP};
+				rxq->hw_timestamp * rxq->timestamp_rx_flag};
 	vector unsigned char cv_flags;
 	const vector unsigned char zero = (vector unsigned char){0};
 	const vector unsigned char ptype_mask =
@@ -363,9 +567,8 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD |
 		PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED};
 	const vector unsigned char mbuf_init =
-		(vector unsigned char)(vector unsigned long){
-		*(__attribute__((__aligned__(8))) unsigned long *)
-		&rxq->mbuf_initializer, 0LL};
+		(vector unsigned char)vec_vsx_ld
+			(0, (vector unsigned char *)&rxq->mbuf_initializer);
 	const vector unsigned short rearm_sel_mask =
 		(vector unsigned short){0, 0, 0, 0, 0xffff, 0xffff, 0, 0};
 	vector unsigned char rearm0, rearm1, rearm2, rearm3;
@@ -549,14 +752,17 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 		(vector unsigned char *)&pkts[3]->rearm_data);
 }
 
-
 /**
- * Receive burst of packets. An errored completion also consumes a mbuf, but the
- * packet_type is set to be RTE_PTYPE_ALL_MASK. Marked mbufs should be freed
- * before returning to application.
+ * Process a non-compressed completion and fill in mbufs in RX SW ring
+ * with data extracted from the title completion descriptor.
  *
  * @param rxq
  *   Pointer to RX queue structure.
+ * @param cq
+ *   Pointer to completion array having a non-compressed completion at first.
+ * @param elts
+ *   Pointer to SW ring to be filled. The first mbuf has to be pre-built from
+ *   the title completion descriptor to be copied to the rest of mbufs.
  * @param[out] pkts
  *   Array to store received packets.
  * @param pkts_n
@@ -564,28 +770,23 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
  * @param[out] err
  *   Pointer to a flag. Set non-zero value if pkts array has at least one error
  *   packet to handle.
- * @param[out] no_cq
- *  Pointer to a boolean. Set true if no new CQE seen.
+ * @param[out] comp
+ *   Pointer to a index. Set it to the first compressed completion if any.
  *
  * @return
- *   Number of packets received including errors (<= pkts_n).
+ *   Number of CQEs successfully processed.
  */
 static inline uint16_t
-rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
-	    uint64_t *err, bool *no_cq)
+rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
+		 struct rte_mbuf **elts, struct rte_mbuf **pkts,
+		 uint16_t pkts_n, uint64_t *err, uint64_t *comp)
 {
 	const uint16_t q_n = 1 << rxq->cqe_n;
 	const uint16_t q_mask = q_n - 1;
-	volatile struct mlx5_cqe *cq;
-	struct rte_mbuf **elts;
 	unsigned int pos;
-	uint64_t n;
-	uint16_t repl_n;
+	uint64_t n = 0;
 	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
 	uint16_t nocmp_n = 0;
-	uint16_t rcvd_pkt = 0;
-	unsigned int cq_idx = rxq->cq_ci & q_mask;
-	unsigned int elts_idx;
 	unsigned int ownership = !!(rxq->cq_ci & (q_mask + 1));
 	const vector unsigned char zero = (vector unsigned char){0};
 	const vector unsigned char ones = vec_splat_u8(-1);
@@ -636,41 +837,6 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		(vector unsigned short){0, 0, 0, 0, 0xffff, 0xffff, 0, 0};
 	const vector unsigned short cqe_sel_mask2 =
 		(vector unsigned short){0, 0, 0xffff, 0, 0, 0, 0, 0};
-
-	assert(rxq->sges_n == 0);
-	assert(rxq->cqe_n == rxq->elts_n);
-	cq = &(*rxq->cqes)[cq_idx];
-	rte_prefetch0(cq);
-	rte_prefetch0(cq + 1);
-	rte_prefetch0(cq + 2);
-	rte_prefetch0(cq + 3);
-	pkts_n = RTE_MIN(pkts_n, MLX5_VPMD_RX_MAX_BURST);
-
-	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
-	if (repl_n >= rxq->rq_repl_thresh)
-		mlx5_rx_replenish_bulk_mbuf(rxq, repl_n);
-	/* See if there're unreturned mbufs from compressed CQE. */
-	rcvd_pkt = rxq->decompressed;
-	if (rcvd_pkt > 0) {
-		rcvd_pkt = RTE_MIN(rcvd_pkt, pkts_n);
-		rxq_copy_mbuf_v(rxq, pkts, rcvd_pkt);
-		rxq->rq_pi += rcvd_pkt;
-		rxq->decompressed -= rcvd_pkt;
-		pkts += rcvd_pkt;
-	}
-	elts_idx = rxq->rq_pi & q_mask;
-	elts = &(*rxq->elts)[elts_idx];
-	/* Not to overflow pkts array. */
-	pkts_n = RTE_ALIGN_FLOOR(pkts_n - rcvd_pkt, MLX5_VPMD_DESCS_PER_LOOP);
-	/* Not to cross queue end. */
-	pkts_n = RTE_MIN(pkts_n, q_n - elts_idx);
-	pkts_n = RTE_MIN(pkts_n, q_n - cq_idx);
-	if (!pkts_n) {
-		*no_cq = !rcvd_pkt;
-		return rcvd_pkt;
-	}
-	/* At this point, there shouldn't be any remaining packets. */
-	assert(rxq->decompressed == 0);
 
 	/*
 	 * A. load first Qword (8bytes) in one loop.
@@ -756,13 +922,13 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		/* A.1 load cqes. */
 		p3 = (unsigned int)((vector unsigned short)p)[3];
 		cqes[3] = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos + p3].sop_drop_qpn, 0LL};
 		rte_compiler_barrier();
 
 		p2 = (unsigned int)((vector unsigned short)p)[2];
 		cqes[2] = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos + p2].sop_drop_qpn, 0LL};
 		rte_compiler_barrier();
 
@@ -775,19 +941,19 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		/* A.1 load a block having op_own. */
 		p1 = (unsigned int)((vector unsigned short)p)[1];
 		cqes[1] = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos + p1].sop_drop_qpn, 0LL};
 		rte_compiler_barrier();
 
 		cqes[0] = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos].sop_drop_qpn, 0LL};
 		rte_compiler_barrier();
 
 		/* B.2 copy mbuf pointers. */
 		*(vector unsigned char *)&pkts[pos] = mbp1;
 		*(vector unsigned char *)&pkts[pos + 2] = mbp2;
-		rte_cio_rmb();
+		rte_io_rmb();
 
 		/* C.1 load remaining CQE data and extract necessary fields. */
 		cqe_tmp2 = *(vector unsigned char *)
@@ -807,10 +973,10 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 			vec_sel((vector unsigned short)cqes[2],
 			(vector unsigned short)cqe_tmp1, cqe_sel_mask1);
 		cqe_tmp2 = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos + p3].rsvd4[2], 0LL};
 		cqe_tmp1 = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos + p2].rsvd4[2], 0LL};
 		cqes[3] = (vector unsigned char)
 			vec_sel((vector unsigned short)cqes[3],
@@ -870,10 +1036,10 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 			vec_sel((vector unsigned short)cqes[0],
 			(vector unsigned short)cqe_tmp1, cqe_sel_mask1);
 		cqe_tmp2 = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos + p1].rsvd4[2], 0LL};
 		cqe_tmp1 = (vector unsigned char)(vector unsigned long){
-			*(__attribute__((__aligned__(8))) unsigned long *)
+			*(__rte_aligned(8) unsigned long *)
 			&cq[pos].rsvd4[2], 0LL};
 		cqes[1] = (vector unsigned char)
 			vec_sel((vector unsigned short)cqes[1],
@@ -1024,14 +1190,33 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		/* D.5 fill in mbuf - rearm_data and packet_type. */
 		rxq_cq_to_ptype_oflags_v(rxq, cqes, opcode, &pkts[pos]);
 		if (rxq->hw_timestamp) {
-			pkts[pos]->timestamp =
-				rte_be_to_cpu_64(cq[pos].timestamp);
-			pkts[pos + 1]->timestamp =
-				rte_be_to_cpu_64(cq[pos + p1].timestamp);
-			pkts[pos + 2]->timestamp =
-				rte_be_to_cpu_64(cq[pos + p2].timestamp);
-			pkts[pos + 3]->timestamp =
-				rte_be_to_cpu_64(cq[pos + p3].timestamp);
+			int offset = rxq->timestamp_offset;
+			if (rxq->rt_timestamp) {
+				struct mlx5_dev_ctx_shared *sh = rxq->sh;
+				uint64_t ts;
+
+				ts = rte_be_to_cpu_64(cq[pos].timestamp);
+				mlx5_timestamp_set(pkts[pos], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+				ts = rte_be_to_cpu_64(cq[pos + p1].timestamp);
+				mlx5_timestamp_set(pkts[pos + 1], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+				ts = rte_be_to_cpu_64(cq[pos + p2].timestamp);
+				mlx5_timestamp_set(pkts[pos + 2], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+				ts = rte_be_to_cpu_64(cq[pos + p3].timestamp);
+				mlx5_timestamp_set(pkts[pos + 3], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+			} else {
+				mlx5_timestamp_set(pkts[pos], offset,
+					rte_be_to_cpu_64(cq[pos].timestamp));
+				mlx5_timestamp_set(pkts[pos + 1], offset,
+					rte_be_to_cpu_64(cq[pos + p1].timestamp));
+				mlx5_timestamp_set(pkts[pos + 2], offset,
+					rte_be_to_cpu_64(cq[pos + p2].timestamp));
+				mlx5_timestamp_set(pkts[pos + 3], offset,
+					rte_be_to_cpu_64(cq[pos + p3].timestamp));
+			}
 		}
 		if (rxq->dynf_meta) {
 			uint64_t flag = rxq->flow_meta_mask;
@@ -1039,7 +1224,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 			uint32_t metadata, mask;
 
 			mask = rxq->flow_meta_port_mask;
-			/* This code is subject for futher optimization. */
+			/* This code is subject for further optimization. */
 			metadata = cq[pos].flow_table_metadata & mask;
 			*RTE_MBUF_DYNFIELD(pkts[pos], offs, uint32_t *) =
 								metadata;
@@ -1083,40 +1268,13 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		if (n != MLX5_VPMD_DESCS_PER_LOOP)
 			break;
 	}
-	/* If no new CQE seen, return without updating cq_db. */
-	if (unlikely(!nocmp_n && comp_idx == MLX5_VPMD_DESCS_PER_LOOP)) {
-		*no_cq = true;
-		return rcvd_pkt;
-	}
-	/* Update the consumer indexes for non-compressed CQEs. */
-	assert(nocmp_n <= pkts_n);
-	rxq->cq_ci += nocmp_n;
-	rxq->rq_pi += nocmp_n;
-	rcvd_pkt += nocmp_n;
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	rxq->stats.ipackets += nocmp_n;
 	rxq->stats.ibytes += rcvd_byte;
 #endif
-	/* Decompress the last CQE if compressed. */
-	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP && comp_idx == n) {
-		assert(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));
-		rxq->decompressed =
-			rxq_cq_decompress_v(rxq, &cq[nocmp_n], &elts[nocmp_n]);
-		/* Return more packets if needed. */
-		if (nocmp_n < pkts_n) {
-			uint16_t n = rxq->decompressed;
-
-			n = RTE_MIN(n, pkts_n - nocmp_n);
-			rxq_copy_mbuf_v(rxq, &pkts[nocmp_n], n);
-			rxq->rq_pi += n;
-			rcvd_pkt += n;
-			rxq->decompressed -= n;
-		}
-	}
-	rte_compiler_barrier();
-	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
-	*no_cq = !rcvd_pkt;
-	return rcvd_pkt;
+	if (comp_idx == n)
+		*comp = comp_idx;
+	return nocmp_n;
 }
 
 #endif /* RTE_PMD_MLX5_RXTX_VEC_ALTIVEC_H_ */

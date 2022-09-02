@@ -29,11 +29,11 @@
 #endif
 static unsigned int test_socket_id;
 
-static inline uint64_t efd_get_all_sockets_bitmask(void)
+static inline uint8_t efd_get_all_sockets_bitmask(void)
 {
-	uint64_t all_cpu_sockets_bitmask = 0;
+	uint8_t all_cpu_sockets_bitmask = 0;
 	unsigned int i;
-	unsigned int next_lcore = rte_get_master_lcore();
+	unsigned int next_lcore = rte_get_main_lcore();
 	const int val_true = 1, val_false = 0;
 	for (i = 0; i < rte_lcore_count(); i++) {
 		all_cpu_sockets_bitmask |= 1 << rte_lcore_to_socket_id(next_lcore);

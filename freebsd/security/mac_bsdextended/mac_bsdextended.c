@@ -72,7 +72,8 @@ static struct mtx ugidfw_mtx;
 
 SYSCTL_DECL(_security_mac);
 
-static SYSCTL_NODE(_security_mac, OID_AUTO, bsdextended, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_security_mac, OID_AUTO, bsdextended,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TrustedBSD extended BSD MAC policy controls");
 
 static int	ugidfw_enabled = 1;
@@ -125,7 +126,7 @@ ugidfw_rule_valid(struct mac_bsdextended_rule *rule)
 		return (EINVAL);
 	if ((rule->mbr_object.mbo_neg | MBO_ALL_FLAGS) != MBO_ALL_FLAGS)
 		return (EINVAL);
-	if ((rule->mbr_object.mbo_neg | MBO_TYPE_DEFINED) &&
+	if (((rule->mbr_object.mbo_flags & MBO_TYPE_DEFINED) != 0) &&
 	    (rule->mbr_object.mbo_type | MBO_ALL_TYPE) != MBO_ALL_TYPE)
 		return (EINVAL);
 	if ((rule->mbr_mode | MBI_ALLPERM) != MBI_ALLPERM)
@@ -301,9 +302,8 @@ ugidfw_rulecheck(struct mac_bsdextended_rule *rule,
 	}
 
 	if (rule->mbr_object.mbo_flags & MBO_FSID_DEFINED) {
-		match = (bcmp(&(vp->v_mount->mnt_stat.f_fsid),
-		    &(rule->mbr_object.mbo_fsid),
-		    sizeof(rule->mbr_object.mbo_fsid)) == 0);
+		match = (fsidcmp(&vp->v_mount->mnt_stat.f_fsid,
+		    &rule->mbr_object.mbo_fsid) == 0);
 		if (rule->mbr_object.mbo_neg & MBO_FSID_DEFINED)
 			match = !match;
 		if (!match)
@@ -385,20 +385,19 @@ ugidfw_rulecheck(struct mac_bsdextended_rule *rule,
 	priv_granted = 0;
 	mac_granted = rule->mbr_mode;
 	if ((acc_mode & MBI_ADMIN) && (mac_granted & MBI_ADMIN) == 0 &&
-	    priv_check_cred(cred, PRIV_VFS_ADMIN, 0) == 0)
+	    priv_check_cred(cred, PRIV_VFS_ADMIN) == 0)
 		priv_granted |= MBI_ADMIN;
 	if ((acc_mode & MBI_EXEC) && (mac_granted & MBI_EXEC) == 0 &&
-	    priv_check_cred(cred, (vap->va_type == VDIR) ? PRIV_VFS_LOOKUP :
-	    PRIV_VFS_EXEC, 0) == 0)
+	    priv_check_cred(cred, (vap->va_type == VDIR) ? PRIV_VFS_LOOKUP : PRIV_VFS_EXEC) == 0)
 		priv_granted |= MBI_EXEC;
 	if ((acc_mode & MBI_READ) && (mac_granted & MBI_READ) == 0 &&
-	    priv_check_cred(cred, PRIV_VFS_READ, 0) == 0)
+	    priv_check_cred(cred, PRIV_VFS_READ) == 0)
 		priv_granted |= MBI_READ;
 	if ((acc_mode & MBI_STAT) && (mac_granted & MBI_STAT) == 0 &&
-	    priv_check_cred(cred, PRIV_VFS_STAT, 0) == 0)
+	    priv_check_cred(cred, PRIV_VFS_STAT) == 0)
 		priv_granted |= MBI_STAT;
 	if ((acc_mode & MBI_WRITE) && (mac_granted & MBI_WRITE) == 0 &&
-	    priv_check_cred(cred, PRIV_VFS_WRITE, 0) == 0)
+	    priv_check_cred(cred, PRIV_VFS_WRITE) == 0)
 		priv_granted |= MBI_WRITE;
 	/*
 	 * Is the access permitted?

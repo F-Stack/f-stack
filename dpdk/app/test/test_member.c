@@ -25,7 +25,7 @@ struct flow_key {
 	uint16_t port_src;
 	uint16_t port_dst;
 	uint8_t proto;
-} __attribute__((packed));
+} __rte_packed;
 
 /* Set ID Macros for multimatch test usage */
 #define M_MATCH_S 1	/* Not start with 0 since by default 0 means no match */
@@ -459,7 +459,7 @@ static int test_member_multimatch(void)
 						MAX_MATCH, set_ids_cache);
 		/*
 		 * For cache mode, keys overwrite when signature same.
-		 * the mutimatch should work like single match.
+		 * the multimatch should work like single match.
 		 */
 		TEST_ASSERT(ret_ht == M_MATCH_CNT && ret_vbf == M_MATCH_CNT &&
 				ret_cache == 1,

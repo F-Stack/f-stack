@@ -412,7 +412,8 @@ rte_rib6_insert(struct rte_rib6 *rib,
 }
 
 int
-rte_rib6_get_ip(struct rte_rib6_node *node, uint8_t ip[RTE_RIB6_IPV6_ADDR_SIZE])
+rte_rib6_get_ip(const struct rte_rib6_node *node,
+		uint8_t ip[RTE_RIB6_IPV6_ADDR_SIZE])
 {
 	if ((node == NULL) || (ip == NULL)) {
 		rte_errno = EINVAL;
@@ -423,7 +424,7 @@ rte_rib6_get_ip(struct rte_rib6_node *node, uint8_t ip[RTE_RIB6_IPV6_ADDR_SIZE])
 }
 
 int
-rte_rib6_get_depth(struct rte_rib6_node *node, uint8_t *depth)
+rte_rib6_get_depth(const struct rte_rib6_node *node, uint8_t *depth)
 {
 	if ((node == NULL) || (depth == NULL)) {
 		rte_errno = EINVAL;
@@ -440,7 +441,7 @@ rte_rib6_get_ext(struct rte_rib6_node *node)
 }
 
 int
-rte_rib6_get_nh(struct rte_rib6_node *node, uint64_t *nh)
+rte_rib6_get_nh(const struct rte_rib6_node *node, uint64_t *nh)
 {
 	if ((node == NULL) || (nh == NULL)) {
 		rte_errno = EINVAL;
@@ -462,7 +463,8 @@ rte_rib6_set_nh(struct rte_rib6_node *node, uint64_t nh)
 }
 
 struct rte_rib6 *
-rte_rib6_create(const char *name, int socket_id, struct rte_rib6_conf *conf)
+rte_rib6_create(const char *name, int socket_id,
+		const struct rte_rib6_conf *conf)
 {
 	char mem_name[RTE_RIB6_NAMESIZE];
 	struct rte_rib6 *rib = NULL;
@@ -471,8 +473,7 @@ rte_rib6_create(const char *name, int socket_id, struct rte_rib6_conf *conf)
 	struct rte_mempool *node_pool;
 
 	/* Check user arguments. */
-	if ((name == NULL) || (conf == NULL) ||
-			(conf->max_nodes == 0)) {
+	if (name == NULL || conf == NULL || conf->max_nodes <= 0) {
 		rte_errno = EINVAL;
 		return NULL;
 	}

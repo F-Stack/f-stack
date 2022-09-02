@@ -677,6 +677,7 @@ vmxnet3_guess_mss(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 	struct rte_ipv6_hdr *ipv6_hdr;
 	struct rte_tcp_hdr *tcp_hdr;
 	char *ptr;
+	uint8_t segs;
 
 	RTE_ASSERT(rcd->tcp);
 
@@ -690,8 +691,7 @@ vmxnet3_guess_mss(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 					- sizeof(struct rte_tcp_hdr);
 
 		ipv4_hdr = (struct rte_ipv4_hdr *)(ptr + hlen);
-		hlen += (ipv4_hdr->version_ihl & RTE_IPV4_HDR_IHL_MASK) *
-				RTE_IPV4_IHL_MULTIPLIER;
+		hlen += rte_ipv4_hdr_len(ipv4_hdr);
 	} else if (rcd->v6) {
 		if (unlikely(slen < hlen + sizeof(struct rte_ipv6_hdr)))
 			return hw->mtu - sizeof(struct rte_ipv6_hdr) -
@@ -714,9 +714,9 @@ vmxnet3_guess_mss(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 	tcp_hdr = (struct rte_tcp_hdr *)(ptr + hlen);
 	hlen += (tcp_hdr->data_off & 0xf0) >> 2;
 
-	if (rxm->udata64 > 1)
-		return (rte_pktmbuf_pkt_len(rxm) - hlen +
-				rxm->udata64 - 1) / rxm->udata64;
+	segs = *vmxnet3_segs_dynfield(rxm);
+	if (segs > 1)
+		return (rte_pktmbuf_pkt_len(rxm) - hlen + segs - 1) / segs;
 	else
 		return hw->mtu - hlen + sizeof(struct rte_ether_hdr);
 }
@@ -741,7 +741,7 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 					(const Vmxnet3_RxCompDescExt *)rcd;
 
 			rxm->tso_segsz = rcde->mss;
-			rxm->udata64 = rcde->segCnt;
+			*vmxnet3_segs_dynfield(rxm) = rcde->segCnt;
 			ol_flags |= PKT_RX_LRO;
 		}
 	} else { /* Offloads set in eop */

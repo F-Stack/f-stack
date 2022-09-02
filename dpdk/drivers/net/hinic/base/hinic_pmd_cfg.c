@@ -130,7 +130,7 @@ static void hinic_parse_pub_res_cap(struct service_cap *cap,
 		cap->max_rqs = dev_cap->nic_max_rq;
 	}
 
-	cap->chip_svc_type = CFG_SVC_NIC_BIT0;
+	cap->chip_svc_type = dev_cap->svc_cap_en;
 	cap->host_total_function = dev_cap->host_total_func;
 	cap->host_oq_id_mask_val = dev_cap->host_oq_id_mask_val;
 
@@ -143,6 +143,7 @@ static void hinic_parse_pub_res_cap(struct service_cap *cap,
 	PMD_DRV_LOG(INFO, "host_total_function: 0x%x, host_oq_id_mask_val: 0x%x, max_vf: 0x%x",
 		    cap->host_total_function, cap->host_oq_id_mask_val,
 		    cap->max_vf);
+	PMD_DRV_LOG(INFO, "chip_svc_type: 0x%x", cap->chip_svc_type);
 	PMD_DRV_LOG(INFO, "pf_num: 0x%x, pf_id_start: 0x%x, vf_num: 0x%x, vf_id_start: 0x%x",
 		    cap->pf_num, cap->pf_id_start,
 		    cap->vf_num, cap->vf_id_start);
@@ -181,7 +182,7 @@ static int get_cap_from_fw(struct hinic_hwdev *dev, enum func_type type)
 	if (err || dev_cap.mgmt_msg_head.status || !out_len) {
 		PMD_DRV_LOG(ERR, "Get capability from FW failed, err: %d, status: %d, out_len: %d",
 			err, dev_cap.mgmt_msg_head.status, out_len);
-		return -EFAULT;
+		return -EIO;
 	}
 
 	parse_dev_cap(dev, &dev_cap, type);
@@ -203,7 +204,7 @@ static int get_cap_from_pf(struct hinic_hwdev *dev, enum func_type type)
 	if (err || dev_cap.mgmt_msg_head.status || !out_len) {
 		PMD_DRV_LOG(ERR, "Get capability from PF failed, err: %d, status: %d, out_len: %d",
 				err, dev_cap.mgmt_msg_head.status, out_len);
-		return -EFAULT;
+		return -EIO;
 	}
 
 	parse_dev_cap(dev, &dev_cap, type);

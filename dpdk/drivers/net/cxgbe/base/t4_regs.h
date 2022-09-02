@@ -572,6 +572,10 @@
 
 #define A_TP_INGRESS_CONFIG 0x141
 
+#define S_USE_ENC_IDX    13
+#define V_USE_ENC_IDX(x) ((x) << S_USE_ENC_IDX)
+#define F_USE_ENC_IDX    V_USE_ENC_IDX(1U)
+
 #define S_VNIC    11
 #define V_VNIC(x) ((x) << S_VNIC)
 #define F_VNIC    V_VNIC(1U)
@@ -955,6 +959,18 @@
 #define S_HASHEN    20
 #define V_HASHEN(x) ((x) << S_HASHEN)
 #define F_HASHEN    V_HASHEN(1U)
+
+#define A_LE_DB_RSP_CODE_0 0x19c74
+
+#define S_TCAM_ACTV_HIT    0
+#define M_TCAM_ACTV_HIT    0x1fU
+#define G_TCAM_ACTV_HIT(x) (((x) >> S_TCAM_ACTV_HIT) & M_TCAM_ACTV_HIT)
+
+#define A_LE_DB_RSP_CODE_1 0x19c78
+
+#define S_HASH_ACTV_HIT    25
+#define M_HASH_ACTV_HIT    0x1fU
+#define G_HASH_ACTV_HIT(x) (((x) >> S_HASH_ACTV_HIT) & M_HASH_ACTV_HIT)
 
 #define A_LE_DB_TID_HASHBASE 0x19df8
 

@@ -15,9 +15,6 @@
 #include "lio_ethdev.h"
 #include "lio_rxtx.h"
 
-int lio_logtype_init;
-int lio_logtype_driver;
-
 /* Default RSS key in use */
 static uint8_t lio_rss_key[40] = {
 	0x6D, 0x5A, 0x56, 0xDA, 0x25, 0x5B, 0x0E, 0xC2,
@@ -1468,12 +1465,13 @@ dev_lsc_handle_error:
 }
 
 /* Stop device and disable input/output functions */
-static void
+static int
 lio_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct lio_device *lio_dev = LIO_DEV(eth_dev);
 
 	lio_dev_info(lio_dev, "Stopping port %d\n", eth_dev->data->port_id);
+	eth_dev->data->dev_started = 0;
 	lio_dev->intf_open = 0;
 	rte_mb();
 
@@ -1486,6 +1484,8 @@ lio_dev_stop(struct rte_eth_dev *eth_dev)
 
 	/* Clear recorded link status */
 	lio_dev->linfo.link.link_status64 = 0;
+
+	return 0;
 }
 
 static int
@@ -1553,23 +1553,24 @@ lio_dev_set_link_down(struct rte_eth_dev *eth_dev)
  * @return
  *    - nothing
  */
-static void
+static int
 lio_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct lio_device *lio_dev = LIO_DEV(eth_dev);
+	int ret = 0;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
 	lio_dev_info(lio_dev, "closing port %d\n", eth_dev->data->port_id);
 
 	if (lio_dev->intf_open)
-		lio_dev_stop(eth_dev);
+		ret = lio_dev_stop(eth_dev);
 
 	/* Reset ioq regs */
 	lio_dev->fn_list.setup_device_regs(lio_dev);
 
-	if (lio_dev->pci_dev->kdrv == RTE_KDRV_IGB_UIO) {
+	if (lio_dev->pci_dev->kdrv == RTE_PCI_KDRV_IGB_UIO) {
 		cn23xx_vf_ask_pf_to_do_flr(lio_dev);
 		rte_delay_ms(LIO_PCI_FLR_WAIT);
 	}
@@ -1587,6 +1588,8 @@ lio_dev_close(struct rte_eth_dev *eth_dev)
 
 	 /* Delete all queues */
 	lio_dev_clear_queues(eth_dev);
+
+	return ret;
 }
 
 /**
@@ -1704,6 +1707,7 @@ static int
 lio_reconf_queues(struct rte_eth_dev *eth_dev, int num_txq, int num_rxq)
 {
 	struct lio_device *lio_dev = LIO_DEV(eth_dev);
+	int ret;
 
 	if (lio_dev->nb_rx_queues != num_rxq ||
 	    lio_dev->nb_tx_queues != num_txq) {
@@ -1713,8 +1717,11 @@ lio_reconf_queues(struct rte_eth_dev *eth_dev, int num_txq, int num_rxq)
 		lio_dev->nb_tx_queues = num_txq;
 	}
 
-	if (lio_dev->intf_open)
-		lio_dev_stop(eth_dev);
+	if (lio_dev->intf_open) {
+		ret = lio_dev_stop(eth_dev);
+		if (ret != 0)
+			return ret;
+	}
 
 	/* Reset ioq registers */
 	if (lio_dev->fn_list.setup_device_regs(lio_dev)) {
@@ -2018,7 +2025,7 @@ lio_first_time_init(struct lio_device *lio_dev,
 		goto error;
 
 	/* Request and wait for device reset. */
-	if (pdev->kdrv == RTE_KDRV_IGB_UIO) {
+	if (pdev->kdrv == RTE_PCI_KDRV_IGB_UIO) {
 		cn23xx_vf_ask_pf_to_do_flr(lio_dev);
 		/* FLR wait time doubled as a precaution. */
 		rte_delay_ms(LIO_PCI_FLR_WAIT * 2);
@@ -2067,10 +2074,6 @@ lio_eth_dev_uninit(struct rte_eth_dev *eth_dev)
 
 	/* lio_free_sc_buffer_pool */
 	lio_free_sc_buffer_pool(lio_dev);
-
-	eth_dev->dev_ops = NULL;
-	eth_dev->rx_pkt_burst = NULL;
-	eth_dev->tx_pkt_burst = NULL;
 
 	return 0;
 }
@@ -2164,13 +2167,5 @@ static struct rte_pci_driver rte_liovf_pmd = {
 RTE_PMD_REGISTER_PCI(net_liovf, rte_liovf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_liovf, pci_id_liovf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_liovf, "* igb_uio | vfio-pci");
-
-RTE_INIT(lio_init_log)
-{
-	lio_logtype_init = rte_log_register("pmd.net.liquidio.init");
-	if (lio_logtype_init >= 0)
-		rte_log_set_level(lio_logtype_init, RTE_LOG_NOTICE);
-	lio_logtype_driver = rte_log_register("pmd.net.liquidio.driver");
-	if (lio_logtype_driver >= 0)
-		rte_log_set_level(lio_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(lio_logtype_init, pmd.net.liquidio.init, NOTICE);
+RTE_LOG_REGISTER(lio_logtype_driver, pmd.net.liquidio.driver, NOTICE);

@@ -51,6 +51,7 @@
 #define	cpu_getstack(td)	((td)->td_frame->tf_sp)
 #define	cpu_setstack(td, sp)	((td)->td_frame->tf_sp = (sp))
 #define	cpu_spinwait()		__asm __volatile("yield" ::: "memory")
+#define	cpu_lock_delay()	DELAY(1)
 
 /* Extract CPU affinity levels 0-3 */
 #define	CPU_AFF0(mpidr)	(u_int)(((mpidr) >> 0) & 0xff)
@@ -78,13 +79,34 @@
 #define	CPU_IMPL_MARVELL	0x56
 #define	CPU_IMPL_INTEL		0x69
 
-#define	CPU_PART_THUNDER	0x0A1
+/* ARM Part numbers */
 #define	CPU_PART_FOUNDATION	0xD00
 #define	CPU_PART_CORTEX_A53	0xD03
+#define	CPU_PART_CORTEX_A35	0xD04
+#define	CPU_PART_CORTEX_A55	0xD05
+#define	CPU_PART_CORTEX_A65	0xD06
 #define	CPU_PART_CORTEX_A57	0xD07
+#define	CPU_PART_CORTEX_A72	0xD08
+#define	CPU_PART_CORTEX_A73	0xD09
+#define	CPU_PART_CORTEX_A75	0xD0A
+#define	CPU_PART_CORTEX_A76	0xD0B
+#define	CPU_PART_NEOVERSE_N1	0xD0C
+#define	CPU_PART_CORTEX_A77	0xD0D
+#define	CPU_PART_CORTEX_A76AE	0xD0E
 
-#define	CPU_REV_THUNDER_1_0	0x00
-#define	CPU_REV_THUNDER_1_1	0x01
+/* Cavium Part numbers */
+#define	CPU_PART_THUNDERX	0x0A1
+#define	CPU_PART_THUNDERX_81XX	0x0A2
+#define	CPU_PART_THUNDERX_83XX	0x0A3
+#define	CPU_PART_THUNDERX2	0x0AF
+
+#define	CPU_REV_THUNDERX_1_0	0x00
+#define	CPU_REV_THUNDERX_1_1	0x01
+
+#define	CPU_REV_THUNDERX2_0	0x00
+
+/* APM / Ampere Part Number */
+#define CPU_PART_EMAG8180	0x000
 
 #define	CPU_IMPL(midr)	(((midr) >> 24) & 0xff)
 #define	CPU_PART(midr)	(((midr) >> 4) & 0xfff)
@@ -126,15 +148,14 @@
  * Revision(s):	Pass 1.0, Pass 1.1
  */
 #ifdef THUNDERX_PASS_1_1_ERRATA
-#define	CPU_MATCH_ERRATA_CAVIUM_THUNDER_1_1				\
+#define	CPU_MATCH_ERRATA_CAVIUM_THUNDERX_1_1				\
     (CPU_MATCH(CPU_IMPL_MASK | CPU_PART_MASK | CPU_REV_MASK,		\
-    CPU_IMPL_CAVIUM, CPU_PART_THUNDER, 0, CPU_REV_THUNDER_1_0) ||	\
+    CPU_IMPL_CAVIUM, CPU_PART_THUNDERX, 0, CPU_REV_THUNDERX_1_0) ||	\
     CPU_MATCH(CPU_IMPL_MASK | CPU_PART_MASK | CPU_REV_MASK,		\
-    CPU_IMPL_CAVIUM, CPU_PART_THUNDER, 0, CPU_REV_THUNDER_1_1))
+    CPU_IMPL_CAVIUM, CPU_PART_THUNDERX, 0, CPU_REV_THUNDERX_1_1))
 #else
-#define	CPU_MATCH_ERRATA_CAVIUM_THUNDER_1_1	0
+#define	CPU_MATCH_ERRATA_CAVIUM_THUNDERX_1_1	0
 #endif
-
 
 extern char btext[];
 extern char etext[];
@@ -144,9 +165,15 @@ extern uint64_t __cpu_affinity[];
 void	cpu_halt(void) __dead2;
 void	cpu_reset(void) __dead2;
 void	fork_trampoline(void);
-void	identify_cpu(void);
-void	print_cpu_features(u_int);
+void	identify_cache(uint64_t);
+void	identify_cpu(u_int);
+void	install_cpu_errata(void);
 void	swi_vm(void *v);
+
+/* Functions to read the sanitised view of the special registers */
+void	update_special_regs(u_int);
+bool	extract_user_id_field(u_int, u_int, uint8_t *);
+bool	get_kernel_reg(u_int, uint64_t *);
 
 #define	CPU_AFFINITY(cpu)	__cpu_affinity[(cpu)]
 #define	CPU_CURRENT_SOCKET				\

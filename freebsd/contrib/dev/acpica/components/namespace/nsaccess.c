@@ -4,9 +4,117 @@
  *
  ******************************************************************************/
 
-/*
- * Copyright (C) 2000 - 2016, Intel Corp.
+/******************************************************************************
+ *
+ * 1. Copyright Notice
+ *
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
+ *
+ * 2. License
+ *
+ * 2.1. This is your license from Intel Corp. under its intellectual property
+ * rights. You may have additional license terms from the party that provided
+ * you this software, covering your right to use that party's intellectual
+ * property rights.
+ *
+ * 2.2. Intel grants, free of charge, to any person ("Licensee") obtaining a
+ * copy of the source code appearing in this file ("Covered Code") an
+ * irrevocable, perpetual, worldwide license under Intel's copyrights in the
+ * base code distributed originally by Intel ("Original Intel Code") to copy,
+ * make derivatives, distribute, use and display any portion of the Covered
+ * Code in any form, with the right to sublicense such rights; and
+ *
+ * 2.3. Intel grants Licensee a non-exclusive and non-transferable patent
+ * license (with the right to sublicense), under only those claims of Intel
+ * patents that are infringed by the Original Intel Code, to make, use, sell,
+ * offer to sell, and import the Covered Code and derivative works thereof
+ * solely to the minimum extent necessary to exercise the above copyright
+ * license, and in no event shall the patent license extend to any additions
+ * to or modifications of the Original Intel Code. No other license or right
+ * is granted directly or by implication, estoppel or otherwise;
+ *
+ * The above copyright and patent license is granted only if the following
+ * conditions are met:
+ *
+ * 3. Conditions
+ *
+ * 3.1. Redistribution of Source with Rights to Further Distribute Source.
+ * Redistribution of source code of any substantial portion of the Covered
+ * Code or modification with rights to further distribute source must include
+ * the above Copyright Notice, the above License, this list of Conditions,
+ * and the following Disclaimer and Export Compliance provision. In addition,
+ * Licensee must cause all Covered Code to which Licensee contributes to
+ * contain a file documenting the changes Licensee made to create that Covered
+ * Code and the date of any change. Licensee must include in that file the
+ * documentation of any changes made by any predecessor Licensee. Licensee
+ * must include a prominent statement that the modification is derived,
+ * directly or indirectly, from Original Intel Code.
+ *
+ * 3.2. Redistribution of Source with no Rights to Further Distribute Source.
+ * Redistribution of source code of any substantial portion of the Covered
+ * Code or modification without rights to further distribute source must
+ * include the following Disclaimer and Export Compliance provision in the
+ * documentation and/or other materials provided with distribution. In
+ * addition, Licensee may not authorize further sublicense of source of any
+ * portion of the Covered Code, and must include terms to the effect that the
+ * license from Licensee to its licensee is limited to the intellectual
+ * property embodied in the software Licensee provides to its licensee, and
+ * not to intellectual property embodied in modifications its licensee may
+ * make.
+ *
+ * 3.3. Redistribution of Executable. Redistribution in executable form of any
+ * substantial portion of the Covered Code or modification must reproduce the
+ * above Copyright Notice, and the following Disclaimer and Export Compliance
+ * provision in the documentation and/or other materials provided with the
+ * distribution.
+ *
+ * 3.4. Intel retains all right, title, and interest in and to the Original
+ * Intel Code.
+ *
+ * 3.5. Neither the name Intel nor any other trademark owned or controlled by
+ * Intel shall be used in advertising or otherwise to promote the sale, use or
+ * other dealings in products derived from or relating to the Covered Code
+ * without prior written authorization from Intel.
+ *
+ * 4. Disclaimer and Export Compliance
+ *
+ * 4.1. INTEL MAKES NO WARRANTY OF ANY KIND REGARDING ANY SOFTWARE PROVIDED
+ * HERE. ANY SOFTWARE ORIGINATING FROM INTEL OR DERIVED FROM INTEL SOFTWARE
+ * IS PROVIDED "AS IS," AND INTEL WILL NOT PROVIDE ANY SUPPORT, ASSISTANCE,
+ * INSTALLATION, TRAINING OR OTHER SERVICES. INTEL WILL NOT PROVIDE ANY
+ * UPDATES, ENHANCEMENTS OR EXTENSIONS. INTEL SPECIFICALLY DISCLAIMS ANY
+ * IMPLIED WARRANTIES OF MERCHANTABILITY, NONINFRINGEMENT AND FITNESS FOR A
+ * PARTICULAR PURPOSE.
+ *
+ * 4.2. IN NO EVENT SHALL INTEL HAVE ANY LIABILITY TO LICENSEE, ITS LICENSEES
+ * OR ANY OTHER THIRD PARTY, FOR ANY LOST PROFITS, LOST DATA, LOSS OF USE OR
+ * COSTS OF PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES, OR FOR ANY INDIRECT,
+ * SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THIS AGREEMENT, UNDER ANY
+ * CAUSE OF ACTION OR THEORY OF LIABILITY, AND IRRESPECTIVE OF WHETHER INTEL
+ * HAS ADVANCE NOTICE OF THE POSSIBILITY OF SUCH DAMAGES. THESE LIMITATIONS
+ * SHALL APPLY NOTWITHSTANDING THE FAILURE OF THE ESSENTIAL PURPOSE OF ANY
+ * LIMITED REMEDY.
+ *
+ * 4.3. Licensee shall not export, either directly or indirectly, any of this
+ * software or system incorporating such software without first obtaining any
+ * required license or other approval from the U. S. Department of Commerce or
+ * any other agency or department of the United States Government. In the
+ * event Licensee exports any such software from the United States or
+ * re-exports any such software from a foreign destination, Licensee shall
+ * ensure that the distribution and export/re-export of the software is in
+ * compliance with all laws, regulations, orders, or other restrictions of the
+ * U.S. Export Administration Regulations. Licensee agrees that neither it nor
+ * any of its subsidiaries will export/re-export any technical data, process,
+ * software, or service, directly or indirectly, to any country for which the
+ * United States government or any agency thereof requires an export license,
+ * other governmental approval, or letter of assurance, without first obtaining
+ * such license, approval or letter.
+ *
+ *****************************************************************************
+ *
+ * Alternatively, you may choose to be licensed under the terms of the
+ * following license:
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -23,23 +131,23 @@
  *    of any contributors may be used to endorse or promote products derived
  *    from this software without specific prior written permission.
  *
- * Alternatively, this software may be distributed under the terms of the
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ * Alternatively, you may choose to be licensed under the terms of the
  * GNU General Public License ("GPL") version 2 as published by the Free
  * Software Foundation.
  *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
+ *****************************************************************************/
 
 #include <contrib/dev/acpica/include/acpi.h>
 #include <contrib/dev/acpica/include/accommon.h>
@@ -47,6 +155,9 @@
 #include <contrib/dev/acpica/include/acnamesp.h>
 #include <contrib/dev/acpica/include/acdispat.h>
 
+#ifdef ACPI_ASL_COMPILER
+    #include <contrib/dev/acpica/include/acdisasm.h>
+#endif
 
 #define _COMPONENT          ACPI_NAMESPACE
         ACPI_MODULE_NAME    ("nsaccess")
@@ -73,6 +184,7 @@ AcpiNsRootInitialize (
     ACPI_STATUS                 Status;
     const ACPI_PREDEFINED_NAMES *InitVal = NULL;
     ACPI_NAMESPACE_NODE         *NewNode;
+    ACPI_NAMESPACE_NODE         *PrevNode = NULL;
     ACPI_OPERAND_OBJECT         *ObjDesc;
     ACPI_STRING                 Val = NULL;
 
@@ -102,13 +214,30 @@ AcpiNsRootInitialize (
      */
     AcpiGbl_RootNode = &AcpiGbl_RootNodeStruct;
 
-    /* Enter the pre-defined names in the name table */
+    /* Enter the predefined names in the name table */
 
     ACPI_DEBUG_PRINT ((ACPI_DB_INFO,
         "Entering predefined entries into namespace\n"));
 
+    /*
+     * Create the initial (default) namespace.
+     * This namespace looks like something similar to this:
+     *
+     *   ACPI Namespace (from Namespace Root):
+     *    0  _GPE Scope        00203160 00
+     *    0  _PR_ Scope        002031D0 00
+     *    0  _SB_ Device       00203240 00 Notify Object: 0020ADD8
+     *    0  _SI_ Scope        002032B0 00
+     *    0  _TZ_ Device       00203320 00
+     *    0  _REV Integer      00203390 00 = 0000000000000002
+     *    0  _OS_ String       00203488 00 Len 14 "Microsoft Windows NT"
+     *    0  _GL_ Mutex        00203580 00 Object 002035F0
+     *    0  _OSI Method       00203678 00 Args 1 Len 0000 Aml 00000000
+     */
     for (InitVal = AcpiGbl_PreDefinedNames; InitVal->Name; InitVal++)
     {
+        Status = AE_OK;
+
         /* _OSI is optional for now, will be permanent later */
 
         if (!strcmp (InitVal->Name, "_OSI") && !AcpiGbl_CreateOsiMethod)
@@ -116,16 +245,34 @@ AcpiNsRootInitialize (
             continue;
         }
 
-        Status = AcpiNsLookup (NULL, ACPI_CAST_PTR (char, InitVal->Name),
-            InitVal->Type, ACPI_IMODE_LOAD_PASS2, ACPI_NS_NO_UPSEARCH,
-            NULL, &NewNode);
-        if (ACPI_FAILURE (Status))
+        /*
+         * Create, init, and link the new predefined name
+         * Note: No need to use AcpiNsLookup here because all the
+         * predefined names are at the root level. It is much easier to
+         * just create and link the new node(s) here.
+         */
+        NewNode = ACPI_ALLOCATE_ZEROED (sizeof (ACPI_NAMESPACE_NODE));
+        if (!NewNode)
         {
-            ACPI_EXCEPTION ((AE_INFO, Status,
-                "Could not create predefined name %s",
-                InitVal->Name));
-            continue;
+            Status = AE_NO_MEMORY;
+            goto UnlockAndExit;
         }
+
+        ACPI_COPY_NAMESEG (NewNode->Name.Ascii, InitVal->Name);
+        NewNode->DescriptorType = ACPI_DESC_TYPE_NAMED;
+        NewNode->Type = InitVal->Type;
+
+        if (!PrevNode)
+        {
+            AcpiGbl_RootNodeStruct.Child = NewNode;
+        }
+        else
+        {
+            PrevNode->Peer = NewNode;
+        }
+
+        NewNode->Parent = &AcpiGbl_RootNodeStruct;
+        PrevNode = NewNode;
 
         /*
          * Name entered successfully. If entry in PreDefinedNames[] specifies
@@ -175,7 +322,7 @@ AcpiNsRootInitialize (
 
                 NewNode->Value = ObjDesc->Method.ParamCount;
 #else
-                /* Mark this as a very SPECIAL method */
+                /* Mark this as a very SPECIAL method (_OSI) */
 
                 ObjDesc->Method.InfoFlags = ACPI_METHOD_INTERNAL_ONLY;
                 ObjDesc->Method.Dispatch.Implementation = AcpiUtOsiImplementation;
@@ -248,7 +395,6 @@ AcpiNsRootInitialize (
         }
     }
 
-
 UnlockAndExit:
     (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
 
@@ -299,6 +445,7 @@ AcpiNsLookup (
 {
     ACPI_STATUS             Status;
     char                    *Path = Pathname;
+    char                    *ExternalPath;
     ACPI_NAMESPACE_NODE     *PrefixNode;
     ACPI_NAMESPACE_NODE     *CurrentNode = NULL;
     ACPI_NAMESPACE_NODE     *ThisNode = NULL;
@@ -309,6 +456,7 @@ AcpiNsLookup (
     ACPI_OBJECT_TYPE        ThisSearchType;
     UINT32                  SearchParentFlag = ACPI_NS_SEARCH_PARENT;
     UINT32                  LocalFlags;
+    ACPI_INTERPRETER_MODE   LocalInterpreterMode;
 
 
     ACPI_FUNCTION_TRACE (NsLookup);
@@ -445,11 +593,21 @@ AcpiNsLookup (
                 ThisNode = ThisNode->Parent;
                 if (!ThisNode)
                 {
-                    /* Current scope has no parent scope */
+                    /*
+                     * Current scope has no parent scope. Externalize
+                     * the internal path for error message.
+                     */
+                    Status = AcpiNsExternalizeName (ACPI_UINT32_MAX, Pathname,
+                        NULL, &ExternalPath);
+                    if (ACPI_SUCCESS (Status))
+                    {
+                        ACPI_ERROR ((AE_INFO,
+                            "%s: Path has too many parent prefixes (^)",
+                            ExternalPath));
 
-                    ACPI_ERROR ((AE_INFO,
-                        "%s: Path has too many parent prefixes (^) "
-                        "- reached beyond root node", Pathname));
+                        ACPI_FREE (ExternalPath);
+                    }
+
                     return_ACPI_STATUS (AE_NOT_FOUND);
                 }
             }
@@ -505,7 +663,7 @@ AcpiNsLookup (
                 "Dual Pathname (2 segments, Flags=%X)\n", Flags));
             break;
 
-        case AML_MULTI_NAME_PREFIX_OP:
+        case AML_MULTI_NAME_PREFIX:
 
             /* More than one NameSeg, search rules do not apply */
 
@@ -548,6 +706,7 @@ AcpiNsLookup (
      */
     ThisSearchType = ACPI_TYPE_ANY;
     CurrentNode = ThisNode;
+
     while (NumSegments && CurrentNode)
     {
         NumSegments--;
@@ -582,6 +741,16 @@ AcpiNsLookup (
             }
         }
 
+        /* Handle opcodes that create a new NameSeg via a full NamePath */
+
+        LocalInterpreterMode = InterpreterMode;
+        if ((Flags & ACPI_NS_PREFIX_MUST_EXIST) && (NumSegments > 0))
+        {
+            /* Every element of the path must exist (except for the final NameSeg) */
+
+            LocalInterpreterMode = ACPI_IMODE_EXECUTE;
+        }
+
         /* Extract one ACPI name from the front of the pathname */
 
         ACPI_MOVE_32_TO_32 (&SimpleName, Path);
@@ -589,11 +758,18 @@ AcpiNsLookup (
         /* Try to find the single (4 character) ACPI name */
 
         Status = AcpiNsSearchAndEnter (SimpleName, WalkState, CurrentNode,
-            InterpreterMode, ThisSearchType, LocalFlags, &ThisNode);
+            LocalInterpreterMode, ThisSearchType, LocalFlags, &ThisNode);
         if (ACPI_FAILURE (Status))
         {
             if (Status == AE_NOT_FOUND)
             {
+#if !defined ACPI_ASL_COMPILER /* Note: iASL reports this error by itself, not needed here */
+                if (Flags & ACPI_NS_PREFIX_MUST_EXIST)
+                {
+                    AcpiOsPrintf (ACPI_MSG_BIOS_ERROR
+                        "Object does not exist: %4.4s\n", (char *) &SimpleName);
+                }
+#endif
                 /* Name not found in ACPI namespace */
 
                 ACPI_DEBUG_PRINT ((ACPI_DB_NAMES,
@@ -601,6 +777,39 @@ AcpiNsLookup (
                     (char *) &SimpleName, (char *) &CurrentNode->Name,
                     CurrentNode));
             }
+
+#ifdef ACPI_EXEC_APP
+            if ((Status == AE_ALREADY_EXISTS) &&
+                (ThisNode->Flags & ANOBJ_NODE_EARLY_INIT))
+            {
+                ThisNode->Flags &= ~ANOBJ_NODE_EARLY_INIT;
+                Status = AE_OK;
+            }
+#endif
+
+#ifdef ACPI_ASL_COMPILER
+            /*
+             * If this ACPI name already exists within the namespace as an
+             * external declaration, then mark the external as a conflicting
+             * declaration and proceed to process the current node as if it did
+             * not exist in the namespace. If this node is not processed as
+             * normal, then it could cause improper namespace resolution
+             * by failing to open a new scope.
+             */
+            if (AcpiGbl_DisasmFlag &&
+                (Status == AE_ALREADY_EXISTS) &&
+                ((ThisNode->Flags & ANOBJ_IS_EXTERNAL) ||
+                    (WalkState && WalkState->Opcode == AML_EXTERNAL_OP)))
+            {
+                ThisNode->Flags &= ~ANOBJ_IS_EXTERNAL;
+                ThisNode->Type = (UINT8)ThisSearchType;
+                if (WalkState->Opcode != AML_EXTERNAL_OP)
+                {
+                    AcpiDmMarkExternalConflict (ThisNode);
+                }
+                break;
+            }
+#endif
 
             *ReturnNode = ThisNode;
             return_ACPI_STATUS (Status);
@@ -677,7 +886,7 @@ AcpiNsLookup (
 
         /* Point to next name segment and make this node current */
 
-        Path += ACPI_NAME_SIZE;
+        Path += ACPI_NAMESEG_SIZE;
         CurrentNode = ThisNode;
     }
 
@@ -698,6 +907,13 @@ AcpiNsLookup (
             }
         }
     }
+
+#ifdef ACPI_EXEC_APP
+    if (Flags & ACPI_NS_EARLY_INIT)
+    {
+        ThisNode->Flags |= ANOBJ_NODE_EARLY_INIT;
+    }
+#endif
 
     *ReturnNode = ThisNode;
     return_ACPI_STATUS (AE_OK);

@@ -48,6 +48,9 @@
 #define WRITE_EXT_BKT 2
 
 #define NUM_TEST 3
+
+#define QSBR_REPORTING_INTERVAL 1024
+
 static unsigned int rwc_core_cnt[NUM_TEST] = {1, 2, 4};
 
 struct rwc_perf {
@@ -58,6 +61,7 @@ struct rwc_perf {
 	uint32_t w_ks_r_miss[2][NUM_TEST];
 	uint32_t multi_rw[NUM_TEST][2][NUM_TEST];
 	uint32_t w_ks_r_hit_extbkt[2][NUM_TEST];
+	uint32_t writer_add_del[NUM_TEST];
 };
 
 static struct rwc_perf rwc_lf_results, rwc_non_lf_results;
@@ -82,8 +86,10 @@ static struct {
 	struct rte_hash *h;
 } tbl_rwc_test_param;
 
-static rte_atomic64_t gread_cycles;
-static rte_atomic64_t greads;
+static uint64_t gread_cycles;
+static uint64_t greads;
+static uint64_t gwrite_cycles;
+static uint64_t gwrites;
 
 static volatile uint8_t writer_done;
 
@@ -98,7 +104,7 @@ get_short_sig(const hash_sig_t hash)
 }
 
 static inline uint32_t
-get_prim_bucket_index(__attribute__((unused)) const struct rte_hash *h,
+get_prim_bucket_index(__rte_unused const struct rte_hash *h,
 		      const hash_sig_t hash)
 {
 	uint32_t num_buckets;
@@ -109,7 +115,7 @@ get_prim_bucket_index(__attribute__((unused)) const struct rte_hash *h,
 }
 
 static inline uint32_t
-get_alt_bucket_index(__attribute__((unused)) const struct rte_hash *h,
+get_alt_bucket_index(__rte_unused const struct rte_hash *h,
 			uint32_t cur_bkt_idx, uint16_t sig)
 {
 	uint32_t num_buckets;
@@ -555,7 +561,7 @@ err:
 }
 
 static int
-test_rwc_reader(__attribute__((unused)) void *arg)
+test_rwc_reader(__rte_unused void *arg)
 {
 	uint32_t i, j;
 	int ret;
@@ -645,8 +651,8 @@ test_rwc_reader(__attribute__((unused)) void *arg)
 	} while (!writer_done);
 
 	cycles = rte_rdtsc_precise() - begin;
-	rte_atomic64_add(&gread_cycles, cycles);
-	rte_atomic64_add(&greads, read_cnt*loop_cnt);
+	__atomic_fetch_add(&gread_cycles, cycles, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&greads, read_cnt*loop_cnt, __ATOMIC_RELAXED);
 	return 0;
 }
 
@@ -678,7 +684,7 @@ write_keys(uint8_t write_type)
 }
 
 static int
-test_rwc_multi_writer(__attribute__((unused)) void *arg)
+test_rwc_multi_writer(__rte_unused void *arg)
 {
 	uint32_t i, offset;
 	uint32_t pos_core = (uint32_t)((uintptr_t)arg);
@@ -703,9 +709,6 @@ test_hash_add_no_ks_lookup_hit(struct rwc_perf *rwc_perf_results, int rwc_lf,
 	uint8_t write_type = WRITE_NO_KEY_SHIFT;
 	uint8_t read_type = READ_PASS_NO_KEY_SHIFTS;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Hash add - no key-shifts, read - hit\n");
@@ -721,8 +724,8 @@ test_hash_add_no_ks_lookup_hit(struct rwc_perf *rwc_perf_results, int rwc_lf,
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
 
-			rte_atomic64_clear(&greads);
-			rte_atomic64_clear(&gread_cycles);
+			__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&gread_cycles, 0, __ATOMIC_RELAXED);
 
 			rte_hash_reset(tbl_rwc_test_param.h);
 			writer_done = 0;
@@ -739,8 +742,8 @@ test_hash_add_no_ks_lookup_hit(struct rwc_perf *rwc_perf_results, int rwc_lf,
 					goto err;
 
 			unsigned long long cycles_per_lookup =
-				rte_atomic64_read(&gread_cycles) /
-				rte_atomic64_read(&greads);
+				__atomic_load_n(&gread_cycles, __ATOMIC_RELAXED)
+				/ __atomic_load_n(&greads, __ATOMIC_RELAXED);
 			rwc_perf_results->w_no_ks_r_hit[m][n]
 						= cycles_per_lookup;
 			printf("Cycles per lookup: %llu\n", cycles_per_lookup);
@@ -773,9 +776,6 @@ test_hash_add_no_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf,
 	uint8_t read_type = READ_FAIL;
 	int ret;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Hash add - no key-shifts, Hash lookup - miss\n");
@@ -791,8 +791,8 @@ test_hash_add_no_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf,
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
 
-			rte_atomic64_clear(&greads);
-			rte_atomic64_clear(&gread_cycles);
+			__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&gread_cycles, 0, __ATOMIC_RELAXED);
 
 			rte_hash_reset(tbl_rwc_test_param.h);
 			writer_done = 0;
@@ -811,8 +811,8 @@ test_hash_add_no_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf,
 					goto err;
 
 			unsigned long long cycles_per_lookup =
-				rte_atomic64_read(&gread_cycles) /
-				rte_atomic64_read(&greads);
+				__atomic_load_n(&gread_cycles, __ATOMIC_RELAXED)
+				/ __atomic_load_n(&greads, __ATOMIC_RELAXED);
 			rwc_perf_results->w_no_ks_r_miss[m][n]
 						= cycles_per_lookup;
 			printf("Cycles per lookup: %llu\n", cycles_per_lookup);
@@ -845,9 +845,6 @@ test_hash_add_ks_lookup_hit_non_sp(struct rwc_perf *rwc_perf_results,
 	uint8_t write_type;
 	uint8_t read_type = READ_PASS_NON_SHIFT_PATH;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Hash add - key shift, Hash lookup - hit"
@@ -864,8 +861,8 @@ test_hash_add_ks_lookup_hit_non_sp(struct rwc_perf *rwc_perf_results,
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
 
-			rte_atomic64_clear(&greads);
-			rte_atomic64_clear(&gread_cycles);
+			__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&gread_cycles, 0, __ATOMIC_RELAXED);
 
 			rte_hash_reset(tbl_rwc_test_param.h);
 			writer_done = 0;
@@ -887,8 +884,8 @@ test_hash_add_ks_lookup_hit_non_sp(struct rwc_perf *rwc_perf_results,
 					goto err;
 
 			unsigned long long cycles_per_lookup =
-				rte_atomic64_read(&gread_cycles) /
-				rte_atomic64_read(&greads);
+				__atomic_load_n(&gread_cycles, __ATOMIC_RELAXED)
+				/ __atomic_load_n(&greads, __ATOMIC_RELAXED);
 			rwc_perf_results->w_ks_r_hit_nsp[m][n]
 						= cycles_per_lookup;
 			printf("Cycles per lookup: %llu\n", cycles_per_lookup);
@@ -921,9 +918,6 @@ test_hash_add_ks_lookup_hit_sp(struct rwc_perf *rwc_perf_results, int rwc_lf,
 	uint8_t write_type;
 	uint8_t read_type = READ_PASS_SHIFT_PATH;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Hash add - key shift, Hash lookup - hit (shift-path)"
@@ -940,8 +934,9 @@ test_hash_add_ks_lookup_hit_sp(struct rwc_perf *rwc_perf_results, int rwc_lf,
 				goto finish;
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
-			rte_atomic64_clear(&greads);
-			rte_atomic64_clear(&gread_cycles);
+
+			__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&gread_cycles, 0, __ATOMIC_RELAXED);
 
 			rte_hash_reset(tbl_rwc_test_param.h);
 			writer_done = 0;
@@ -963,8 +958,8 @@ test_hash_add_ks_lookup_hit_sp(struct rwc_perf *rwc_perf_results, int rwc_lf,
 					goto err;
 
 			unsigned long long cycles_per_lookup =
-				rte_atomic64_read(&gread_cycles) /
-				rte_atomic64_read(&greads);
+				__atomic_load_n(&gread_cycles, __ATOMIC_RELAXED)
+				/ __atomic_load_n(&greads, __ATOMIC_RELAXED);
 			rwc_perf_results->w_ks_r_hit_sp[m][n]
 						= cycles_per_lookup;
 			printf("Cycles per lookup: %llu\n", cycles_per_lookup);
@@ -997,9 +992,6 @@ test_hash_add_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf, int
 	uint8_t write_type;
 	uint8_t read_type = READ_FAIL;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Hash add - key shift, Hash lookup - miss\n");
@@ -1015,8 +1007,8 @@ test_hash_add_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf, int
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
 
-			rte_atomic64_clear(&greads);
-			rte_atomic64_clear(&gread_cycles);
+			__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&gread_cycles, 0, __ATOMIC_RELAXED);
 
 			rte_hash_reset(tbl_rwc_test_param.h);
 			writer_done = 0;
@@ -1038,8 +1030,8 @@ test_hash_add_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf, int
 					goto err;
 
 			unsigned long long cycles_per_lookup =
-				rte_atomic64_read(&gread_cycles) /
-				rte_atomic64_read(&greads);
+				__atomic_load_n(&gread_cycles, __ATOMIC_RELAXED)
+				/ __atomic_load_n(&greads, __ATOMIC_RELAXED);
 			rwc_perf_results->w_ks_r_miss[m][n] = cycles_per_lookup;
 			printf("Cycles per lookup: %llu\n", cycles_per_lookup);
 		}
@@ -1071,9 +1063,6 @@ test_hash_multi_add_lookup(struct rwc_perf *rwc_perf_results, int rwc_lf,
 	uint8_t write_type;
 	uint8_t read_type = READ_PASS_SHIFT_PATH;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Multi-add-lookup\n");
@@ -1098,8 +1087,9 @@ test_hash_multi_add_lookup(struct rwc_perf *rwc_perf_results, int rwc_lf,
 				printf("\nNumber of readers: %u\n",
 				       rwc_core_cnt[n]);
 
-				rte_atomic64_clear(&greads);
-				rte_atomic64_clear(&gread_cycles);
+				__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+				__atomic_store_n(&gread_cycles, 0,
+						 __ATOMIC_RELAXED);
 
 				rte_hash_reset(tbl_rwc_test_param.h);
 				writer_done = 0;
@@ -1138,8 +1128,10 @@ test_hash_multi_add_lookup(struct rwc_perf *rwc_perf_results, int rwc_lf,
 						goto err;
 
 				unsigned long long cycles_per_lookup =
-					rte_atomic64_read(&gread_cycles)
-					/ rte_atomic64_read(&greads);
+					__atomic_load_n(&gread_cycles,
+							__ATOMIC_RELAXED) /
+					__atomic_load_n(&greads,
+							  __ATOMIC_RELAXED);
 				rwc_perf_results->multi_rw[m][k][n]
 					= cycles_per_lookup;
 				printf("Cycles per lookup: %llu\n",
@@ -1172,9 +1164,6 @@ test_hash_add_ks_lookup_hit_extbkt(struct rwc_perf *rwc_perf_results,
 	uint8_t write_type;
 	uint8_t read_type = READ_PASS_KEY_SHIFTS_EXTBKT;
 
-	rte_atomic64_init(&greads);
-	rte_atomic64_init(&gread_cycles);
-
 	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
 		goto err;
 	printf("\nTest: Hash add - key-shifts, read - hit (ext_bkt)\n");
@@ -1190,8 +1179,8 @@ test_hash_add_ks_lookup_hit_extbkt(struct rwc_perf *rwc_perf_results,
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
 
-			rte_atomic64_clear(&greads);
-			rte_atomic64_clear(&gread_cycles);
+			__atomic_store_n(&greads, 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&gread_cycles, 0, __ATOMIC_RELAXED);
 
 			rte_hash_reset(tbl_rwc_test_param.h);
 			write_type = WRITE_NO_KEY_SHIFT;
@@ -1222,8 +1211,8 @@ test_hash_add_ks_lookup_hit_extbkt(struct rwc_perf *rwc_perf_results,
 					goto err;
 
 			unsigned long long cycles_per_lookup =
-				rte_atomic64_read(&gread_cycles) /
-				rte_atomic64_read(&greads);
+				__atomic_load_n(&gread_cycles, __ATOMIC_RELAXED)
+				/ __atomic_load_n(&greads, __ATOMIC_RELAXED);
 			rwc_perf_results->w_ks_r_hit_extbkt[m][n]
 						= cycles_per_lookup;
 			printf("Cycles per lookup: %llu\n", cycles_per_lookup);
@@ -1237,6 +1226,163 @@ finish:
 err:
 	rte_eal_mp_wait_lcore();
 	rte_hash_free(tbl_rwc_test_param.h);
+	return -1;
+}
+
+static struct rte_rcu_qsbr *rv;
+
+/*
+ * Reader thread using rte_hash data structure with RCU
+ */
+static int
+test_hash_rcu_qsbr_reader(void *arg)
+{
+	unsigned int i, j;
+	uint32_t num_keys = tbl_rwc_test_param.count_keys_no_ks
+				- QSBR_REPORTING_INTERVAL;
+	uint32_t *keys = tbl_rwc_test_param.keys_no_ks;
+	uint32_t lcore_id = rte_lcore_id();
+	RTE_SET_USED(arg);
+
+	(void)rte_rcu_qsbr_thread_register(rv, lcore_id);
+	rte_rcu_qsbr_thread_online(rv, lcore_id);
+	do {
+		for (i = 0; i < num_keys; i += j) {
+			for (j = 0; j < QSBR_REPORTING_INTERVAL; j++)
+				rte_hash_lookup(tbl_rwc_test_param.h,
+						keys + i + j);
+			/* Update quiescent state counter */
+			rte_rcu_qsbr_quiescent(rv, lcore_id);
+		}
+	} while (!writer_done);
+	rte_rcu_qsbr_thread_offline(rv, lcore_id);
+	(void)rte_rcu_qsbr_thread_unregister(rv, lcore_id);
+
+	return 0;
+}
+
+/*
+ * Writer thread using rte_hash data structure with RCU
+ */
+static int
+test_hash_rcu_qsbr_writer(void *arg)
+{
+	uint32_t i, offset;
+	uint64_t begin, cycles;
+	uint8_t pos_core = (uint32_t)((uintptr_t)arg);
+	offset = pos_core * tbl_rwc_test_param.single_insert;
+
+	begin = rte_rdtsc_precise();
+	for (i = offset; i < offset + tbl_rwc_test_param.single_insert; i++) {
+		/* Delete element from the shared data structure */
+		rte_hash_del_key(tbl_rwc_test_param.h,
+					tbl_rwc_test_param.keys_no_ks + i);
+		rte_hash_add_key(tbl_rwc_test_param.h,
+				tbl_rwc_test_param.keys_no_ks + i);
+	}
+	cycles = rte_rdtsc_precise() - begin;
+	__atomic_fetch_add(&gwrite_cycles, cycles, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&gwrites, tbl_rwc_test_param.single_insert,
+			   __ATOMIC_RELAXED);
+	return 0;
+}
+
+/*
+ * Writer perf test with RCU QSBR in DQ mode:
+ * Writer(s) delete and add keys in the table.
+ * Readers lookup keys in the hash table
+ */
+static int
+test_hash_rcu_qsbr_writer_perf(struct rwc_perf *rwc_perf_results, int rwc_lf,
+				int htm, int ext_bkt)
+{
+	unsigned int n;
+	uint64_t i;
+	uint8_t write_type;
+	int use_jhash = 0;
+	struct rte_hash_rcu_config rcu_config = {0};
+	uint32_t sz;
+	uint8_t pos_core;
+
+	printf("\nTest: Writer perf with integrated RCU\n");
+
+	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
+		goto err;
+
+	sz = rte_rcu_qsbr_get_memsize(RTE_MAX_LCORE);
+	rv = (struct rte_rcu_qsbr *)rte_zmalloc(NULL, sz, RTE_CACHE_LINE_SIZE);
+	rcu_config.v = rv;
+
+	if (rte_hash_rcu_qsbr_add(tbl_rwc_test_param.h, &rcu_config) < 0) {
+		printf("RCU init in hash failed\n");
+		goto err;
+	}
+
+	for (n = 0; n < NUM_TEST; n++) {
+		unsigned int tot_lcore = rte_lcore_count();
+		if (tot_lcore < rwc_core_cnt[n] + 3)
+			goto finish;
+
+		/* Calculate keys added by each writer */
+		tbl_rwc_test_param.single_insert =
+			tbl_rwc_test_param.count_keys_no_ks /
+				rwc_core_cnt[n];
+		printf("\nNumber of writers: %u\n", rwc_core_cnt[n]);
+
+		__atomic_store_n(&gwrites, 0, __ATOMIC_RELAXED);
+		__atomic_store_n(&gwrite_cycles, 0, __ATOMIC_RELAXED);
+
+		rte_hash_reset(tbl_rwc_test_param.h);
+		rte_rcu_qsbr_init(rv, RTE_MAX_LCORE);
+
+		write_type = WRITE_NO_KEY_SHIFT;
+		if (write_keys(write_type) < 0)
+			goto err;
+		write_type = WRITE_KEY_SHIFT;
+		if (write_keys(write_type) < 0)
+			goto err;
+
+		/* Launch 2 readers */
+		for (i = 1; i <= 2; i++)
+			rte_eal_remote_launch(test_hash_rcu_qsbr_reader, NULL,
+					      enabled_core_ids[i]);
+		pos_core = 0;
+		/* Launch writer(s) */
+		for (; i <= rwc_core_cnt[n] + 2; i++) {
+			rte_eal_remote_launch(test_hash_rcu_qsbr_writer,
+				(void *)(uintptr_t)pos_core,
+				enabled_core_ids[i]);
+			pos_core++;
+		}
+
+		/* Wait for writers to complete */
+		for (i = 3; i <= rwc_core_cnt[n] + 2; i++)
+			rte_eal_wait_lcore(enabled_core_ids[i]);
+
+		writer_done = 1;
+
+		/* Wait for readers to complete */
+		rte_eal_mp_wait_lcore();
+
+		unsigned long long cycles_per_write_operation =
+			__atomic_load_n(&gwrite_cycles, __ATOMIC_RELAXED) /
+			__atomic_load_n(&gwrites, __ATOMIC_RELAXED);
+		rwc_perf_results->writer_add_del[n]
+					= cycles_per_write_operation;
+		printf("Cycles per write operation: %llu\n",
+				cycles_per_write_operation);
+	}
+
+finish:
+	rte_hash_free(tbl_rwc_test_param.h);
+	rte_free(rv);
+	return 0;
+
+err:
+	writer_done = 1;
+	rte_eal_mp_wait_lcore();
+	rte_hash_free(tbl_rwc_test_param.h);
+	rte_free(rv);
 	return -1;
 }
 
@@ -1298,6 +1444,9 @@ test_hash_readwrite_lf_perf_main(void)
 			return -1;
 		if (test_hash_add_ks_lookup_hit_extbkt(&rwc_lf_results, rwc_lf,
 							htm, ext_bkt) < 0)
+			return -1;
+		if (test_hash_rcu_qsbr_writer_perf(&rwc_lf_results, rwc_lf,
+						   htm, ext_bkt) < 0)
 			return -1;
 	}
 	printf("\nTest lookup with read-write concurrency lock free support"

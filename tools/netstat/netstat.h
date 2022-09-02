@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1992, 1993
  *	Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -45,6 +47,8 @@
 extern int	Aflag;	/* show addresses of protocol control block */
 extern int	aflag;	/* show all sockets (including servers) */
 extern int	bflag;	/* show i/f total bytes in/out */
+extern int	cflag;	/* show congestion control stats */
+extern int	Cflag;	/* show congestion control algo and stack */
 extern int	dflag;	/* show i/f dropped packets */
 extern int	gflag;	/* show group (multicast) routing or stats */
 extern int	hflag;	/* show counters in human readable format */
@@ -54,6 +58,7 @@ extern int	mflag;	/* show memory stats */
 extern int	noutputs;	/* how much outputs before we exit */
 extern int	numeric_addr;	/* show addresses numerically */
 extern int	numeric_port;	/* show ports numerically */
+extern int	Pflag;	/* show TCP log ID */
 extern int	rflag;	/* show routing tables (or routing stats) */
 extern int	Rflag;	/* show flowid / RSS information */
 extern int	sflag;	/* show protocol statistics */
@@ -106,7 +111,16 @@ void	ah_stats(u_long, const char *, int, int);
 void	ipcomp_stats(u_long, const char *, int, int);
 #endif
 
+#ifdef INET
+struct in_addr;
+
+char	*inetname(struct in_addr *);
+#endif
+
 #ifdef INET6
+struct in6_addr;
+
+char	*inet6name(struct in6_addr *);
 void	ip6_stats(u_long, const char *, int, int);
 void	ip6_ifstats(char *);
 void	icmp6_stats(u_long, const char *, int, int);
@@ -137,11 +151,14 @@ void	intpr(void (*)(char *), int);
 
 void	pr_family(int);
 void	rt_stats(void);
-void	flowtable_stats(void);
 
 char	*routename(struct sockaddr *, int);
 const char *netname(struct sockaddr *, struct sockaddr *);
 void	routepr(int, int);
+int	p_sockaddr(const char *name, struct sockaddr *sa,
+	    struct sockaddr *mask, int flags, int width);
+const char *fmt_sockaddr(struct sockaddr *sa, struct sockaddr *mask,
+	    int flags);
 
 #ifdef NETGRAPH
 void	netgraphprotopr(u_long, const char *, int, int);
@@ -152,3 +169,5 @@ void	unixpr(u_long, u_long, u_long, u_long, u_long, bool *);
 void	mroutepr(void);
 void	mrt_stats(void);
 void	bpf_stats(char *);
+void	nhops_print(int fibnum, int af);
+void	nhgrp_print(int fibnum, int af);

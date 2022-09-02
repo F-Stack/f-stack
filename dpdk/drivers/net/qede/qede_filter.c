@@ -130,14 +130,6 @@ const struct _qede_udp_tunn_types {
  */
 #define QEDE_MAX_FDIR_PKT_LEN			(86)
 
-static inline bool qede_valid_flow(uint16_t flow_type)
-{
-	return  ((flow_type == RTE_ETH_FLOW_NONFRAG_IPV4_TCP) ||
-		 (flow_type == RTE_ETH_FLOW_NONFRAG_IPV4_UDP) ||
-		 (flow_type == RTE_ETH_FLOW_NONFRAG_IPV6_TCP) ||
-		 (flow_type == RTE_ETH_FLOW_NONFRAG_IPV6_UDP));
-}
-
 static uint16_t
 qede_arfs_construct_pkt(struct rte_eth_dev *eth_dev,
 			struct qede_arfs_entry *arfs,
@@ -195,74 +187,6 @@ void qede_fdir_dealloc_resc(struct rte_eth_dev *eth_dev)
 			rte_free(tmp);
 		}
 	}
-}
-
-static int
-qede_fdir_to_arfs_filter(struct rte_eth_dev *eth_dev,
-			 struct rte_eth_fdir_filter *fdir,
-			 struct qede_arfs_entry *arfs)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct rte_eth_fdir_input *input;
-
-	static const uint8_t next_proto[] = {
-		[RTE_ETH_FLOW_NONFRAG_IPV4_TCP] = IPPROTO_TCP,
-		[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] = IPPROTO_UDP,
-		[RTE_ETH_FLOW_NONFRAG_IPV6_TCP] = IPPROTO_TCP,
-		[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] = IPPROTO_UDP,
-	};
-
-	input = &fdir->input;
-
-	DP_INFO(edev, "flow_type %d\n", input->flow_type);
-
-	switch (input->flow_type) {
-	case RTE_ETH_FLOW_NONFRAG_IPV4_TCP:
-	case RTE_ETH_FLOW_NONFRAG_IPV4_UDP:
-		/* fill the common ip header */
-		arfs->tuple.eth_proto = RTE_ETHER_TYPE_IPV4;
-		arfs->tuple.dst_ipv4 = input->flow.ip4_flow.dst_ip;
-		arfs->tuple.src_ipv4 = input->flow.ip4_flow.src_ip;
-		arfs->tuple.ip_proto = next_proto[input->flow_type];
-
-		/* UDP */
-		if (input->flow_type == RTE_ETH_FLOW_NONFRAG_IPV4_UDP) {
-			arfs->tuple.dst_port = input->flow.udp4_flow.dst_port;
-			arfs->tuple.src_port = input->flow.udp4_flow.src_port;
-		} else { /* TCP */
-			arfs->tuple.dst_port = input->flow.tcp4_flow.dst_port;
-			arfs->tuple.src_port = input->flow.tcp4_flow.src_port;
-		}
-		break;
-	case RTE_ETH_FLOW_NONFRAG_IPV6_TCP:
-	case RTE_ETH_FLOW_NONFRAG_IPV6_UDP:
-		arfs->tuple.eth_proto = RTE_ETHER_TYPE_IPV6;
-		arfs->tuple.ip_proto = next_proto[input->flow_type];
-		rte_memcpy(arfs->tuple.dst_ipv6,
-			   &input->flow.ipv6_flow.dst_ip,
-			   IPV6_ADDR_LEN);
-		rte_memcpy(arfs->tuple.src_ipv6,
-			   &input->flow.ipv6_flow.src_ip,
-			   IPV6_ADDR_LEN);
-
-		/* UDP */
-		if (input->flow_type == RTE_ETH_FLOW_NONFRAG_IPV6_UDP) {
-			arfs->tuple.dst_port = input->flow.udp6_flow.dst_port;
-			arfs->tuple.src_port = input->flow.udp6_flow.src_port;
-		} else { /* TCP */
-			arfs->tuple.dst_port = input->flow.tcp6_flow.dst_port;
-			arfs->tuple.src_port = input->flow.tcp6_flow.src_port;
-		}
-		break;
-	default:
-		DP_ERR(edev, "Unsupported flow_type %u\n",
-		       input->flow_type);
-		return -ENOTSUP;
-	}
-
-	arfs->rx_queue = fdir->action.rx_queue;
-	return 0;
 }
 
 static int
@@ -397,61 +321,6 @@ err1:
 	return rc;
 }
 
-static int
-qede_config_cmn_fdir_filter(struct rte_eth_dev *eth_dev,
-			    struct rte_eth_fdir_filter *fdir_filter,
-			    bool add)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct qede_arfs_entry *arfs = NULL;
-	int rc = 0;
-
-	arfs = rte_malloc(NULL, sizeof(struct qede_arfs_entry),
-				  RTE_CACHE_LINE_SIZE);
-	if (!arfs) {
-		DP_ERR(edev, "Did not allocate memory for arfs\n");
-		return -ENOMEM;
-	}
-
-	rc = qede_fdir_to_arfs_filter(eth_dev, fdir_filter, arfs);
-	if (rc < 0)
-		return rc;
-
-	rc = qede_config_arfs_filter(eth_dev, arfs, add);
-	if (rc < 0)
-		rte_free(arfs);
-
-	return rc;
-}
-
-static int
-qede_fdir_filter_add(struct rte_eth_dev *eth_dev,
-		     struct rte_eth_fdir_filter *fdir,
-		     bool add)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-
-	if (!qede_valid_flow(fdir->input.flow_type)) {
-		DP_ERR(edev, "invalid flow_type input\n");
-		return -EINVAL;
-	}
-
-	if (fdir->action.rx_queue >= QEDE_RSS_COUNT(eth_dev)) {
-		DP_ERR(edev, "invalid queue number %u\n",
-		       fdir->action.rx_queue);
-		return -EINVAL;
-	}
-
-	if (fdir->input.flow_ext.is_vf) {
-		DP_ERR(edev, "flowdir is not supported over VF\n");
-		return -EINVAL;
-	}
-
-	return qede_config_cmn_fdir_filter(eth_dev, fdir, add);
-}
-
 /* Fills the L3/L4 headers and returns the actual length  of flowdir packet */
 static uint16_t
 qede_arfs_construct_pkt(struct rte_eth_dev *eth_dev,
@@ -548,105 +417,6 @@ qede_arfs_construct_pkt(struct rte_eth_dev *eth_dev,
 	}
 
 	return len;
-}
-
-static int
-qede_fdir_filter_conf(struct rte_eth_dev *eth_dev,
-		      enum rte_filter_op filter_op,
-		      void *arg)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct rte_eth_fdir_filter *fdir;
-	int ret;
-
-	fdir = (struct rte_eth_fdir_filter *)arg;
-	switch (filter_op) {
-	case RTE_ETH_FILTER_NOP:
-		/* Typically used to query flowdir support */
-		if (ECORE_IS_CMT(edev)) {
-			DP_ERR(edev, "flowdir is not supported in 100G mode\n");
-			return -ENOTSUP;
-		}
-		return 0; /* means supported */
-	case RTE_ETH_FILTER_ADD:
-		ret = qede_fdir_filter_add(eth_dev, fdir, 1);
-	break;
-	case RTE_ETH_FILTER_DELETE:
-		ret = qede_fdir_filter_add(eth_dev, fdir, 0);
-	break;
-	case RTE_ETH_FILTER_FLUSH:
-	case RTE_ETH_FILTER_UPDATE:
-	case RTE_ETH_FILTER_INFO:
-		return -ENOTSUP;
-	break;
-	default:
-		DP_ERR(edev, "unknown operation %u", filter_op);
-		ret = -EINVAL;
-	}
-
-	return ret;
-}
-
-int qede_ntuple_filter_conf(struct rte_eth_dev *eth_dev,
-			    enum rte_filter_op filter_op,
-			    void *arg)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct rte_eth_ntuple_filter *ntuple;
-	struct rte_eth_fdir_filter fdir_entry;
-	struct rte_eth_tcpv4_flow *tcpv4_flow;
-	struct rte_eth_udpv4_flow *udpv4_flow;
-	bool add = false;
-
-	switch (filter_op) {
-	case RTE_ETH_FILTER_NOP:
-		/* Typically used to query fdir support */
-		if (ECORE_IS_CMT(edev)) {
-			DP_ERR(edev, "flowdir is not supported in 100G mode\n");
-			return -ENOTSUP;
-		}
-		return 0; /* means supported */
-	case RTE_ETH_FILTER_ADD:
-		add = true;
-	break;
-	case RTE_ETH_FILTER_DELETE:
-	break;
-	case RTE_ETH_FILTER_INFO:
-	case RTE_ETH_FILTER_GET:
-	case RTE_ETH_FILTER_UPDATE:
-	case RTE_ETH_FILTER_FLUSH:
-	case RTE_ETH_FILTER_SET:
-	case RTE_ETH_FILTER_STATS:
-	case RTE_ETH_FILTER_OP_MAX:
-		DP_ERR(edev, "Unsupported filter_op %d\n", filter_op);
-		return -ENOTSUP;
-	}
-	ntuple = (struct rte_eth_ntuple_filter *)arg;
-	/* Internally convert ntuple to fdir entry */
-	memset(&fdir_entry, 0, sizeof(fdir_entry));
-	if (ntuple->proto == IPPROTO_TCP) {
-		fdir_entry.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_TCP;
-		tcpv4_flow = &fdir_entry.input.flow.tcp4_flow;
-		tcpv4_flow->ip.src_ip = ntuple->src_ip;
-		tcpv4_flow->ip.dst_ip = ntuple->dst_ip;
-		tcpv4_flow->ip.proto = IPPROTO_TCP;
-		tcpv4_flow->src_port = ntuple->src_port;
-		tcpv4_flow->dst_port = ntuple->dst_port;
-	} else {
-		fdir_entry.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
-		udpv4_flow = &fdir_entry.input.flow.udp4_flow;
-		udpv4_flow->ip.src_ip = ntuple->src_ip;
-		udpv4_flow->ip.dst_ip = ntuple->dst_ip;
-		udpv4_flow->ip.proto = IPPROTO_TCP;
-		udpv4_flow->src_port = ntuple->src_port;
-		udpv4_flow->dst_port = ntuple->dst_port;
-	}
-
-	fdir_entry.action.rx_queue = ntuple->queue;
-
-	return qede_config_cmn_fdir_filter(eth_dev, &fdir_entry, add);
 }
 
 static int
@@ -747,36 +517,6 @@ qede_geneve_enable(struct rte_eth_dev *eth_dev, uint8_t clss,
 		qdev->geneve.udp_port = (enable) ? QEDE_GENEVE_DEF_PORT : 0;
 		DP_INFO(edev, "GENEVE is %s, UDP port = %d\n",
 			enable ? "enabled" : "disabled", qdev->geneve.udp_port);
-	} else {
-		DP_ERR(edev, "Failed to update tunn_clss %u\n",
-		       clss);
-	}
-
-	return rc;
-}
-
-static int
-qede_ipgre_enable(struct rte_eth_dev *eth_dev, uint8_t clss,
-		  bool enable)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	enum _ecore_status_t rc = ECORE_INVAL;
-	struct ecore_tunnel_info tunn;
-
-	memset(&tunn, 0, sizeof(struct ecore_tunnel_info));
-	tunn.ip_gre.b_update_mode = true;
-	tunn.ip_gre.b_mode_enabled = enable;
-	tunn.ip_gre.tun_cls = clss;
-	tunn.ip_gre.tun_cls = clss;
-	tunn.b_update_rx_cls = true;
-	tunn.b_update_tx_cls = true;
-
-	rc = qede_tunnel_update(qdev, &tunn);
-	if (rc == ECORE_SUCCESS) {
-		qdev->ipgre.enable = enable;
-		DP_INFO(edev, "IPGRE is %s\n",
-			enable ? "enabled" : "disabled");
 	} else {
 		DP_ERR(edev, "Failed to update tunn_clss %u\n",
 		       clss);
@@ -961,212 +701,8 @@ qede_udp_dst_port_add(struct rte_eth_dev *eth_dev,
 	return 0;
 }
 
-static void qede_get_ecore_tunn_params(uint32_t filter, uint32_t *type,
-				       uint32_t *clss, char *str)
-{
-	uint16_t j;
-	*clss = MAX_ECORE_TUNN_CLSS;
-
-	for (j = 0; j < RTE_DIM(qede_tunn_types); j++) {
-		if (filter == qede_tunn_types[j].rte_filter_type) {
-			*type = qede_tunn_types[j].qede_type;
-			*clss = qede_tunn_types[j].qede_tunn_clss;
-			strcpy(str, qede_tunn_types[j].string);
-			return;
-		}
-	}
-}
-
 static int
-qede_set_ucast_tunn_cmn_param(struct ecore_filter_ucast *ucast,
-			      const struct rte_eth_tunnel_filter_conf *conf,
-			      uint32_t type)
-{
-	/* Init commmon ucast params first */
-	qede_set_ucast_cmn_params(ucast);
-
-	/* Copy out the required fields based on classification type */
-	ucast->type = type;
-
-	switch (type) {
-	case ECORE_FILTER_VNI:
-		ucast->vni = conf->tenant_id;
-	break;
-	case ECORE_FILTER_INNER_VLAN:
-		ucast->vlan = conf->inner_vlan;
-	break;
-	case ECORE_FILTER_MAC:
-		memcpy(ucast->mac, conf->outer_mac.addr_bytes,
-		       RTE_ETHER_ADDR_LEN);
-	break;
-	case ECORE_FILTER_INNER_MAC:
-		memcpy(ucast->mac, conf->inner_mac.addr_bytes,
-		       RTE_ETHER_ADDR_LEN);
-	break;
-	case ECORE_FILTER_MAC_VNI_PAIR:
-		memcpy(ucast->mac, conf->outer_mac.addr_bytes,
-			RTE_ETHER_ADDR_LEN);
-		ucast->vni = conf->tenant_id;
-	break;
-	case ECORE_FILTER_INNER_MAC_VNI_PAIR:
-		memcpy(ucast->mac, conf->inner_mac.addr_bytes,
-			RTE_ETHER_ADDR_LEN);
-		ucast->vni = conf->tenant_id;
-	break;
-	case ECORE_FILTER_INNER_PAIR:
-		memcpy(ucast->mac, conf->inner_mac.addr_bytes,
-			RTE_ETHER_ADDR_LEN);
-		ucast->vlan = conf->inner_vlan;
-	break;
-	default:
-		return -EINVAL;
-	}
-
-	return ECORE_SUCCESS;
-}
-
-static int
-_qede_tunn_filter_config(struct rte_eth_dev *eth_dev,
-			 const struct rte_eth_tunnel_filter_conf *conf,
-			 __attribute__((unused)) enum rte_filter_op filter_op,
-			 enum ecore_tunn_clss *clss,
-			 bool add)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct ecore_filter_ucast ucast = {0};
-	enum ecore_filter_ucast_type type;
-	uint16_t filter_type = 0;
-	char str[80];
-	int rc;
-
-	filter_type = conf->filter_type;
-	/* Determine if the given filter classification is supported */
-	qede_get_ecore_tunn_params(filter_type, &type, clss, str);
-	if (*clss == MAX_ECORE_TUNN_CLSS) {
-		DP_ERR(edev, "Unsupported filter type\n");
-		return -EINVAL;
-	}
-	/* Init tunnel ucast params */
-	rc = qede_set_ucast_tunn_cmn_param(&ucast, conf, type);
-	if (rc != ECORE_SUCCESS) {
-		DP_ERR(edev, "Unsupported Tunnel filter type 0x%x\n",
-		conf->filter_type);
-		return rc;
-	}
-	DP_INFO(edev, "Rule: \"%s\", op %d, type 0x%x\n",
-		str, filter_op, ucast.type);
-
-	ucast.opcode = add ? ECORE_FILTER_ADD : ECORE_FILTER_REMOVE;
-
-	/* Skip MAC/VLAN if filter is based on VNI */
-	if (!(filter_type & ETH_TUNNEL_FILTER_TENID)) {
-		rc = qede_mac_int_ops(eth_dev, &ucast, add);
-		if (rc == 0 && add) {
-			/* Enable accept anyvlan */
-			qede_config_accept_any_vlan(qdev, true);
-		}
-	} else {
-		rc = qede_ucast_filter(eth_dev, &ucast, add);
-		if (rc == 0)
-			rc = ecore_filter_ucast_cmd(edev, &ucast,
-					    ECORE_SPQ_MODE_CB, NULL);
-	}
-
-	return rc;
-}
-
-static int
-qede_tunn_enable(struct rte_eth_dev *eth_dev, uint8_t clss,
-		 enum rte_eth_tunnel_type tunn_type, bool enable)
-{
-	int rc = -EINVAL;
-
-	switch (tunn_type) {
-	case RTE_TUNNEL_TYPE_VXLAN:
-		rc = qede_vxlan_enable(eth_dev, clss, enable);
-		break;
-	case RTE_TUNNEL_TYPE_GENEVE:
-		rc = qede_geneve_enable(eth_dev, clss, enable);
-		break;
-	case RTE_TUNNEL_TYPE_IP_IN_GRE:
-		rc = qede_ipgre_enable(eth_dev, clss, enable);
-		break;
-	default:
-		rc = -EINVAL;
-		break;
-	}
-
-	return rc;
-}
-
-static int
-qede_tunn_filter_config(struct rte_eth_dev *eth_dev,
-			enum rte_filter_op filter_op,
-			const struct rte_eth_tunnel_filter_conf *conf)
-{
-	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	enum ecore_tunn_clss clss = MAX_ECORE_TUNN_CLSS;
-	bool add;
-	int rc;
-
-	PMD_INIT_FUNC_TRACE(edev);
-
-	switch (filter_op) {
-	case RTE_ETH_FILTER_ADD:
-		add = true;
-		break;
-	case RTE_ETH_FILTER_DELETE:
-		add = false;
-		break;
-	default:
-		DP_ERR(edev, "Unsupported operation %d\n", filter_op);
-		return -EINVAL;
-	}
-
-	if (IS_VF(edev))
-		return qede_tunn_enable(eth_dev,
-					ECORE_TUNN_CLSS_MAC_VLAN,
-					conf->tunnel_type, add);
-
-	rc = _qede_tunn_filter_config(eth_dev, conf, filter_op, &clss, add);
-	if (rc != ECORE_SUCCESS)
-		return rc;
-
-	if (add) {
-		if (conf->tunnel_type == RTE_TUNNEL_TYPE_VXLAN) {
-			qdev->vxlan.num_filters++;
-			qdev->vxlan.filter_type = conf->filter_type;
-		} else { /* GENEVE */
-			qdev->geneve.num_filters++;
-			qdev->geneve.filter_type = conf->filter_type;
-		}
-
-		if (!qdev->vxlan.enable || !qdev->geneve.enable ||
-		    !qdev->ipgre.enable)
-			return qede_tunn_enable(eth_dev, clss,
-						conf->tunnel_type,
-						true);
-	} else {
-		if (conf->tunnel_type == RTE_TUNNEL_TYPE_VXLAN)
-			qdev->vxlan.num_filters--;
-		else /*GENEVE*/
-			qdev->geneve.num_filters--;
-
-		/* Disable VXLAN if VXLAN filters become 0 */
-		if (qdev->vxlan.num_filters == 0 ||
-		    qdev->geneve.num_filters == 0)
-			return qede_tunn_enable(eth_dev, clss,
-						conf->tunnel_type,
-						false);
-	}
-
-	return 0;
-}
-
-static int
-qede_flow_validate_attr(__attribute__((unused))struct rte_eth_dev *dev,
+qede_flow_validate_attr(__rte_unused struct rte_eth_dev *dev,
 			const struct rte_flow_attr *attr,
 			struct rte_flow_error *error)
 {
@@ -1216,7 +752,7 @@ qede_flow_validate_attr(__attribute__((unused))struct rte_eth_dev *dev,
 }
 
 static int
-qede_flow_parse_pattern(__attribute__((unused))struct rte_eth_dev *dev,
+qede_flow_parse_pattern(__rte_unused struct rte_eth_dev *dev,
 			const struct rte_flow_item pattern[],
 			struct rte_flow_error *error,
 			struct rte_flow *flow)
@@ -1482,10 +1018,32 @@ qede_flow_destroy(struct rte_eth_dev *eth_dev,
 	return rc;
 }
 
+static int
+qede_flow_flush(struct rte_eth_dev *eth_dev,
+		struct rte_flow_error *error)
+{
+	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
+	struct qede_arfs_entry *tmp = NULL;
+	int rc = 0;
+
+	while (!SLIST_EMPTY(&qdev->arfs_info.arfs_list_head)) {
+		tmp = SLIST_FIRST(&qdev->arfs_info.arfs_list_head);
+
+		rc = qede_config_arfs_filter(eth_dev, tmp, false);
+		if (rc < 0)
+			rte_flow_error_set(error, rc,
+					   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+					   "Failed to flush flow filter");
+	}
+
+	return rc;
+}
+
 const struct rte_flow_ops qede_flow_ops = {
 	.validate = qede_flow_validate,
 	.create = qede_flow_create,
 	.destroy = qede_flow_destroy,
+	.flush = qede_flow_flush,
 };
 
 int qede_dev_filter_ctrl(struct rte_eth_dev *eth_dev,
@@ -1495,35 +1053,8 @@ int qede_dev_filter_ctrl(struct rte_eth_dev *eth_dev,
 {
 	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct rte_eth_tunnel_filter_conf *filter_conf =
-			(struct rte_eth_tunnel_filter_conf *)arg;
 
 	switch (filter_type) {
-	case RTE_ETH_FILTER_TUNNEL:
-		switch (filter_conf->tunnel_type) {
-		case RTE_TUNNEL_TYPE_VXLAN:
-		case RTE_TUNNEL_TYPE_GENEVE:
-		case RTE_TUNNEL_TYPE_IP_IN_GRE:
-			DP_INFO(edev,
-				"Packet steering to the specified Rx queue"
-				" is not supported with UDP tunneling");
-			return(qede_tunn_filter_config(eth_dev, filter_op,
-						      filter_conf));
-		case RTE_TUNNEL_TYPE_TEREDO:
-		case RTE_TUNNEL_TYPE_NVGRE:
-		case RTE_L2_TUNNEL_TYPE_E_TAG:
-			DP_ERR(edev, "Unsupported tunnel type %d\n",
-				filter_conf->tunnel_type);
-			return -EINVAL;
-		case RTE_TUNNEL_TYPE_NONE:
-		default:
-			return 0;
-		}
-		break;
-	case RTE_ETH_FILTER_FDIR:
-		return qede_fdir_filter_conf(eth_dev, filter_op, arg);
-	case RTE_ETH_FILTER_NTUPLE:
-		return qede_ntuple_filter_conf(eth_dev, filter_op, arg);
 	case RTE_ETH_FILTER_GENERIC:
 		if (ECORE_IS_CMT(edev)) {
 			DP_ERR(edev, "flowdir is not supported in 100G mode\n");
@@ -1535,13 +1066,6 @@ int qede_dev_filter_ctrl(struct rte_eth_dev *eth_dev,
 
 		*(const void **)arg = &qede_flow_ops;
 		return 0;
-	case RTE_ETH_FILTER_MACVLAN:
-	case RTE_ETH_FILTER_ETHERTYPE:
-	case RTE_ETH_FILTER_FLEXIBLE:
-	case RTE_ETH_FILTER_SYN:
-	case RTE_ETH_FILTER_HASH:
-	case RTE_ETH_FILTER_L2_TUNNEL:
-	case RTE_ETH_FILTER_MAX:
 	default:
 		DP_ERR(edev, "Unsupported filter type %d\n",
 			filter_type);

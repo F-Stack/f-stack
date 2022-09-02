@@ -4,7 +4,7 @@
 OCTEON TX2 SSO Eventdev Driver
 ===============================
 
-The OCTEON TX2 SSO PMD (**librte_pmd_octeontx2_event**) provides poll mode
+The OCTEON TX2 SSO PMD (**librte_event_octeontx2**) provides poll mode
 eventdev driver support for the inbuilt event device found in the **Marvell OCTEON TX2**
 SoC family.
 
@@ -44,20 +44,9 @@ Prerequisites and Compilation procedure
 
    See :doc:`../platform/octeontx2` for setup information.
 
-Pre-Installation Configuration
-------------------------------
-
-Compile time Config Options
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The following option can be modified in the ``config`` file.
-
-- ``CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_EVENTDEV`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_octeontx2_event`` driver.
 
 Runtime Config Options
-~~~~~~~~~~~~~~~~~~~~~~
+----------------------
 
 - ``Maximum number of in-flight events`` (default ``8192``)
 
@@ -66,7 +55,7 @@ Runtime Config Options
   upper limit for in-flight events.
   For example::
 
-    -w 0002:0e:00.0,xae_cnt=16384
+    -a 0002:0e:00.0,xae_cnt=16384
 
 - ``Force legacy mode``
 
@@ -74,7 +63,7 @@ Runtime Config Options
   single workslot mode in SSO and disable the default dual workslot mode.
   For example::
 
-    -w 0002:0e:00.0,single_ws=1
+    -a 0002:0e:00.0,single_ws=1
 
 - ``Event Group QoS support``
 
@@ -89,16 +78,7 @@ Runtime Config Options
   default.
   For example::
 
-    -w 0002:0e:00.0,qos=[1-50-50-50]
-
-- ``Selftest``
-
-  The functionality of OCTEON TX2 eventdev can be verified using this option,
-  various unit and functional tests are run to verify the sanity.
-  The tests are run once the vdev creation is successfully complete.
-  For example::
-
-    -w 0002:0e:00.0,selftest=1
+    -a 0002:0e:00.0,qos=[1-50-50-50]
 
 - ``TIM disable NPA``
 
@@ -107,7 +87,7 @@ Runtime Config Options
   parameter disables NPA and uses software mempool to manage chunks
   For example::
 
-    -w 0002:0e:00.0,tim_disable_npa=1
+    -a 0002:0e:00.0,tim_disable_npa=1
 
 - ``TIM modify chunk slots``
 
@@ -118,7 +98,7 @@ Runtime Config Options
   to SSO. The default value is 255 and the max value is 4095.
   For example::
 
-    -w 0002:0e:00.0,tim_chnk_slots=1023
+    -a 0002:0e:00.0,tim_chnk_slots=1023
 
 - ``TIM enable arm/cancel statistics``
 
@@ -126,7 +106,7 @@ Runtime Config Options
   event timer adapter.
   For example::
 
-    -w 0002:0e:00.0,tim_stats_ena=1
+    -a 0002:0e:00.0,tim_stats_ena=1
 
 - ``TIM limit max rings reserved``
 
@@ -136,7 +116,7 @@ Runtime Config Options
   rings.
   For example::
 
-    -w 0002:0e:00.0,tim_rings_lmt=5
+    -a 0002:0e:00.0,tim_rings_lmt=5
 
 - ``TIM ring control internal parameters``
 
@@ -146,10 +126,20 @@ Runtime Config Options
   default values.
   For Example::
 
-    -w 0002:0e:00.0,tim_ring_ctl=[2-1023-1-0]
+    -a 0002:0e:00.0,tim_ring_ctl=[2-1023-1-0]
+
+- ``Lock NPA contexts in NDC``
+
+   Lock NPA aura and pool contexts in NDC cache.
+   The device args take hexadecimal bitmask where each bit represent the
+   corresponding aura/pool id.
+
+   For example::
+
+      -a 0002:0e:00.0,npa_lock_mask=0xf
 
 Debugging Options
-~~~~~~~~~~~~~~~~~
+-----------------
 
 .. _table_octeontx2_event_debug_options:
 

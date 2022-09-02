@@ -47,7 +47,6 @@ __FBSDID("$FreeBSD$");
 
 #include <dev/extres/clk/clk.h>
 #include <dev/extres/hwreset/hwreset.h>
-#include <dev/fdt/fdt_common.h>
 #include <dev/iicbus/iiconf.h>
 #include <dev/iicbus/iicbus.h>
 #include <dev/ofw/ofw_bus.h>
@@ -206,6 +205,7 @@ __FBSDID("$FreeBSD$");
 
 static struct ofw_compat_data compat_data[] = {
 	{"nvidia,tegra124-i2c",	1},
+	{"nvidia,tegra210-i2c",	1},
 	{NULL,			0}
 };
 enum tegra_i2c_xfer_type {
@@ -485,7 +485,6 @@ tegra_i2c_start_msg(struct tegra_i2c_softc *sc, struct iic_msg *msg,
 	   (1 << PACKET_HEADER0_PACKET_ID_SHIFT);
 	WR4(sc, I2C_TX_PACKET_FIFO, tmp);
 
-
 	/* Packet size. */
 	WR4(sc, I2C_TX_PACKET_FIFO, msg->len - 1);
 
@@ -666,12 +665,12 @@ tegra_i2c_attach(device_t dev)
 	}
 
 	/* FDT resources. */
-	rv = clk_get_by_ofw_name(dev, "div-clk", &sc->clk);
+	rv = clk_get_by_ofw_name(dev, 0, "div-clk", &sc->clk);
 	if (rv != 0) {
 		device_printf(dev, "Cannot get i2c clock: %d\n", rv);
 		goto fail;
 	}
-	rv = hwreset_get_by_ofw_name(sc->dev, "i2c", &sc->reset);
+	rv = hwreset_get_by_ofw_name(sc->dev, 0, "i2c", &sc->reset);
 	if (rv != 0) {
 		device_printf(sc->dev, "Cannot get i2c reset\n");
 		return (ENXIO);
@@ -680,7 +679,6 @@ tegra_i2c_attach(device_t dev)
 	    sizeof(sc->bus_freq));
 	if (rv != sizeof(sc->bus_freq)) {
 		sc->bus_freq = 100000;
-		goto fail;
 	}
 
 	/* Request maximum frequency for I2C block 136MHz (408MHz / 3). */
@@ -797,12 +795,8 @@ static device_method_t tegra_i2c_methods[] = {
 	DEVMETHOD_END
 };
 
-DEFINE_CLASS_0(iichb, tegra_i2c_driver, tegra_i2c_methods,
-    sizeof(struct tegra_i2c_softc));
 static devclass_t tegra_i2c_devclass;
+static DEFINE_CLASS_0(iichb, tegra_i2c_driver, tegra_i2c_methods,
+    sizeof(struct tegra_i2c_softc));
 EARLY_DRIVER_MODULE(tegra_iic, simplebus, tegra_i2c_driver, tegra_i2c_devclass,
-    0, 0, 73);
-extern devclass_t ofwiicbus_devclass;
-extern driver_t ofw_iicbus_driver;
-EARLY_DRIVER_MODULE(ofw_iicbus, tegra_iic, ofw_iicbus_driver,
-    ofwiicbus_devclass, 0, 0, BUS_PASS_BUS);
+    NULL, NULL, 73);

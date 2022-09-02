@@ -1191,12 +1191,12 @@ In the case of severe congestion, the dropper resorts to tail drop.
 This occurs when a packet queue has reached maximum capacity and cannot store any more packets.
 In this situation, all arriving packets are dropped.
 
-The flow through the dropper is illustrated in :numref:`figure_flow_tru_droppper`.
+The flow through the dropper is illustrated in :numref:`figure_flow_tru_dropper`.
 The RED/WRED algorithm is exercised first and tail drop second.
 
-.. _figure_flow_tru_droppper:
+.. _figure_flow_tru_dropper:
 
-.. figure:: img/flow_tru_droppper.*
+.. figure:: img/flow_tru_dropper.*
 
    Flow Through the Dropper
 
@@ -1525,15 +1525,7 @@ Integration with the DPDK QoS Scheduler
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 RED functionality in the DPDK QoS scheduler is disabled by default.
-To enable it, use the DPDK configuration parameter:
-
-::
-
-    CONFIG_RTE_SCHED_RED=y
-
-This parameter must be set to y.
-The parameter is found in the build configuration files in the DPDK/config directory,
-for example, DPDK/config/common_linux.
+The parameter is found in the build configuration files in the DPDK/config directory.
 RED configuration parameters are specified in the rte_red_params structure within the rte_sched_port_params structure
 that is passed to the scheduler on initialization.
 RED parameters are specified separately for four traffic classes and three packet colors (green, yellow and red)

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2013 Gleb Smirnoff <glebius@FreeBSD.org>
  * Copyright (c) 1983, 1988, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -393,10 +395,10 @@ intpr(void (*pfunc)(char *), int af)
 		case AF_LINK:
 		    {
 			struct sockaddr_dl *sdl;
-			char linknum[10];
+			char linknum[sizeof("<Link#32767>")];
 
 			sdl = (struct sockaddr_dl *)ifa->ifa_addr;
-			sprintf(linknum, "<Link#%d>", sdl->sdl_index);
+			snprintf(linknum, sizeof(linknum), "<Link#%d>", sdl->sdl_index);
 			xo_emit("{t:network/%-*.*s} ", net_len, net_len,
 			    linknum);
 			if (sdl->sdl_nlen == 0 &&
@@ -612,23 +614,20 @@ loop:
 	}
 #ifndef FSTACK
 	oldmask = sigblock(sigmask(SIGALRM));
+	while (!signalled)
+		sigpause(0);
+	signalled = false;
+	sigsetmask(oldmask);
 #else
 	sigset_t set;
 	sigemptyset(&set);
 	sigaddset(&set, SIGALRM);
 	sigprocmask(SIG_BLOCK, &set, &oldmask);
 	sigemptyset(&set);
-#endif
+
 	while (!signalled)
-#ifndef FSTACK
-		sigpause(0);
-#else
 		sigsuspend(&set);
-#endif
 	signalled = false;
-#ifndef FSTACK
-	sigsetmask(oldmask);
-#else
 	sigprocmask(SIG_SETMASK, &oldmask, NULL);
 #endif
 	line++;

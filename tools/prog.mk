@@ -1,5 +1,4 @@
-#
-# Derived from FreeBSD src/share/mk/bsd.prog.mk
+# # Derived from FreeBSD src/share/mk/bsd.prog.mk
 #
 
 ifdef DEBUG_FLAGS
@@ -27,6 +26,10 @@ ifndef TOPDIR
 $(error TOPDIR must be defined.)
 endif
 
+ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+$(error "no installation of DPDK found, maybe you shuld export environment variable `PKG_CONFIG_PATH`")
+endif
+
 ifndef SRCS
 ifdef PROG_CXX
 SRCS=   ${PROG}.cc
@@ -41,29 +44,26 @@ HEADERS+= $(filter %.h,${SRCS})
 OBJS+= $(patsubst %.c,%.o, $(filter %.c,${SRCS}))
 OBJS+= $(patsubst %.cc,%.o, $(filter %.cc,${SRCS}))
 
-ifeq ($(FF_DPDK),)
-	FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
-endif
+PKGCONF ?= pkg-config
 
-FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99
+FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99 $(shell $(PKGCONF) --cflags libdpdk)
 FF_PROG_CFLAGS+= -I${TOPDIR}/lib -I${TOPDIR}/tools/compat
 FF_PROG_CFLAGS+= -include${TOPDIR}/tools/compat/compat.h
 FF_PROG_CFLAGS+= -I${TOPDIR}/tools/compat/include -D__BSD_VISIBLE
-FF_PROG_CFLAGS+= -include ${FF_DPDK}/include/rte_config.h
-FF_PROG_CFLAGS+= -I${FF_DPDK}/include
+FF_PROG_CFLAGS+= -I${TOPDIR}/tools/libxo
 
 FF_PROG_LIBS:= -L${TOPDIR}/tools/compat -Wl,--whole-archive,-lffcompat,--no-whole-archive
-FF_PROG_LIBS+= -L${FF_DPDK}/lib -Wl,--whole-archive,-ldpdk,--no-whole-archive
+FF_PROG_LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
 FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma
 
 CFLAGS+= -Wno-unused-but-set-variable -Wno-unused-variable
 CFLAGS+= ${FF_PROG_CFLAGS}
 CXXFLAGS+= ${FF_PROG_CFLAGS}
 
-LIBS+= ${FF_PROG_LIBS}
-
 CFLAGS+= $(foreach n,${LIBADD},-I${TOPDIR}/tools/lib${n})
 LIBS+= $(foreach n,${LIBADD},-L${TOPDIR}/tools/lib${n} -l${n})
+
+LIBS+= ${FF_PROG_LIBS}
 
 CLEANFILES+= ${PROGDIR}/${PROG} ${OBJS}
 

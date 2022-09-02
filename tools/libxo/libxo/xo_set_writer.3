@@ -18,7 +18,7 @@
 .Sh SYNOPSIS
 .In libxo/xo.h
 .Ft void
-.Sy typedef int (*xo_write_func_t)(void *, const char *);
+.Sy typedef xo_ssize_t (*xo_write_func_t)(void *, const char *);
 .Pp
 .Sy typedef void (*xo_close_func_t)(void *);
 .Pp
@@ -54,3 +54,13 @@ flush any pending data associated with the opaque pointer.
 .Sh SEE ALSO
 .Xr xo_emit 3 ,
 .Xr libxo 3
+.Sh HISTORY
+The
+.Nm libxo
+library first appeared in
+.Fx 11.0 .
+.Sh AUTHORS
+.Nm libxo
+was written by
+.An Phil Shafer Aq Mt phil@freebsd.org .
+

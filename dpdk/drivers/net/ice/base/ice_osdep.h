@@ -27,6 +27,9 @@
 
 #include "../ice_logs.h"
 
+#ifndef __INTEL_NET_BASE_OSDEP__
+#define __INTEL_NET_BASE_OSDEP__
+
 #define INLINE inline
 #define STATIC static
 
@@ -38,17 +41,6 @@ typedef uint32_t        u32;
 typedef int32_t         s32;
 typedef uint64_t        u64;
 typedef uint64_t        s64;
-
-#define __iomem
-#define hw_dbg(hw, S, A...) do {} while (0)
-#define upper_32_bits(n) ((u32)(((n) >> 16) >> 16))
-#define lower_32_bits(n) ((u32)(n))
-#define low_16_bits(x)   ((x) & 0xFFFF)
-#define high_16_bits(x)  (((x) & 0xFFFF0000) >> 16)
-
-#ifndef ETH_ADDR_LEN
-#define ETH_ADDR_LEN                  6
-#endif
 
 #ifndef __le16
 #define __le16          uint16_t
@@ -69,34 +61,81 @@ typedef uint64_t        s64;
 #define __be64          uint64_t
 #endif
 
+#define min(a, b) RTE_MIN(a, b)
+#define max(a, b) RTE_MAX(a, b)
+
+#define FIELD_SIZEOF(t, f) RTE_SIZEOF_FIELD(t, f)
+#define ARRAY_SIZE(arr) RTE_DIM(arr)
+
+#define CPU_TO_LE16(o) rte_cpu_to_le_16(o)
+#define CPU_TO_LE32(s) rte_cpu_to_le_32(s)
+#define CPU_TO_LE64(h) rte_cpu_to_le_64(h)
+#define LE16_TO_CPU(a) rte_le_to_cpu_16(a)
+#define LE32_TO_CPU(c) rte_le_to_cpu_32(c)
+#define LE64_TO_CPU(k) rte_le_to_cpu_64(k)
+
+#define CPU_TO_BE16(o) rte_cpu_to_be_16(o)
+#define CPU_TO_BE32(o) rte_cpu_to_be_32(o)
+#define CPU_TO_BE64(o) rte_cpu_to_be_64(o)
+#define BE16_TO_CPU(o) rte_be_to_cpu_16(o)
+
+#define NTOHS(a) rte_be_to_cpu_16(a)
+#define NTOHL(a) rte_be_to_cpu_32(a)
+#define HTONS(a) rte_cpu_to_be_16(a)
+#define HTONL(a) rte_cpu_to_be_32(a)
+
+static __rte_always_inline uint32_t
+readl(volatile void *addr)
+{
+	return rte_le_to_cpu_32(rte_read32(addr));
+}
+
+static __rte_always_inline void
+writel(uint32_t value, volatile void *addr)
+{
+	rte_write32(rte_cpu_to_le_32(value), addr);
+}
+
+static __rte_always_inline void
+writel_relaxed(uint32_t value, volatile void *addr)
+{
+	rte_write32_relaxed(rte_cpu_to_le_32(value), addr);
+}
+
+static __rte_always_inline uint64_t
+readq(volatile void *addr)
+{
+	return rte_le_to_cpu_64(rte_read64(addr));
+}
+
+static __rte_always_inline void
+writeq(uint64_t value, volatile void *addr)
+{
+	rte_write64(rte_cpu_to_le_64(value), addr);
+}
+
+#define wr32(a, reg, value) writel((value), (a)->hw_addr + (reg))
+#define rd32(a, reg)        readl((a)->hw_addr + (reg))
+#define wr64(a, reg, value) writeq((value), (a)->hw_addr + (reg))
+#define rd64(a, reg)        readq((a)->hw_addr + (reg))
+
+#endif /* __INTEL_NET_BASE_OSDEP__ */
+
 #ifndef __always_unused
-#define __always_unused  __attribute__((unused))
+#define __always_unused  __rte_unused
 #endif
 #ifndef __maybe_unused
-#define __maybe_unused  __attribute__((unused))
+#define __maybe_unused  __rte_unused
 #endif
 #ifndef __packed
-#define __packed  __attribute__((packed))
+#define __packed  __rte_packed
 #endif
 
 #ifndef BIT_ULL
 #define BIT_ULL(a) (1ULL << (a))
 #endif
 
-#define FALSE           0
-#define TRUE            1
-#define false           0
-#define true            1
-
-#define min(a, b) RTE_MIN(a, b)
-#define max(a, b) RTE_MAX(a, b)
-
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#define FIELD_SIZEOF(t, f) (sizeof(((t *)0)->f))
 #define MAKEMASK(m, s) ((m) << (s))
-
-#define DEBUGOUT(S, A...) PMD_DRV_LOG_RAW(DEBUG, S, ##A)
-#define DEBUGFUNC(F) PMD_DRV_LOG_RAW(DEBUG, F)
 
 #define ice_debug(h, m, s, ...)					\
 do {								\
@@ -124,37 +163,17 @@ do {									\
 #define SNPRINTF ice_snprintf
 #endif
 
-#define ICE_PCI_REG(reg)     rte_read32(reg)
-#define ICE_PCI_REG_ADDR(a, reg) \
-	((volatile uint32_t *)((char *)(a)->hw_addr + (reg)))
-#define ICE_PCI_REG64(reg)     rte_read64(reg)
-#define ICE_PCI_REG_ADDR64(a, reg) \
-	((volatile uint64_t *)((char *)(a)->hw_addr + (reg)))
-static inline uint32_t ice_read_addr(volatile void *addr)
-{
-	return rte_le_to_cpu_32(ICE_PCI_REG(addr));
-}
+#define ICE_PCI_REG_WRITE(reg, value) writel(value, reg)
+#define ICE_PCI_REG_WC_WRITE(reg, value) rte_write32_wc(value, reg)
 
-static inline uint64_t ice_read_addr64(volatile void *addr)
-{
-	return rte_le_to_cpu_64(ICE_PCI_REG64(addr));
-}
-
-#define ICE_PCI_REG_WRITE(reg, value) \
-	rte_write32((rte_cpu_to_le_32(value)), reg)
+#define ICE_READ_REG(hw, reg)         rd32(hw, reg)
+#define ICE_WRITE_REG(hw, reg, value) wr32(hw, reg, value)
 
 #define ice_flush(a)   ICE_READ_REG((a), GLGEN_STAT)
 #define icevf_flush(a) ICE_READ_REG((a), VFGEN_RSTAT)
-#define ICE_READ_REG(hw, reg) ice_read_addr(ICE_PCI_REG_ADDR((hw), (reg)))
-#define ICE_WRITE_REG(hw, reg, value) \
-	ICE_PCI_REG_WRITE(ICE_PCI_REG_ADDR((hw), (reg)), (value))
 
-#define rd32(a, reg) ice_read_addr(ICE_PCI_REG_ADDR((a), (reg)))
-#define wr32(a, reg, value) \
-	ICE_PCI_REG_WRITE(ICE_PCI_REG_ADDR((a), (reg)), (value))
-#define flush(a) ice_read_addr(ICE_PCI_REG_ADDR((a), (GLGEN_STAT)))
+#define flush(a) ICE_READ_REG((a), GLGEN_STAT)
 #define div64_long(n, d) ((n) / (d))
-#define rd64(a, reg) ice_read_addr64(ICE_PCI_REG_ADDR64((a), (reg)))
 
 #define BITS_PER_BYTE       8
 
@@ -164,12 +183,12 @@ struct ice_dma_mem {
 	u64 pa;
 	u32 size;
 	const void *zone;
-} __attribute__((packed));
+} __rte_packed;
 
 struct ice_virt_mem {
 	void *va;
 	u32 size;
-} __attribute__((packed));
+} __rte_packed;
 
 #define ice_malloc(h, s)    rte_zmalloc(NULL, s, 0)
 #define ice_calloc(h, c, s) rte_calloc(NULL, c, s, 0)
@@ -177,21 +196,6 @@ struct ice_virt_mem {
 
 #define ice_memset(a, b, c, d) memset((a), (b), (c))
 #define ice_memcpy(a, b, c, d) rte_memcpy((a), (b), (c))
-
-#define CPU_TO_BE16(o) rte_cpu_to_be_16(o)
-#define CPU_TO_BE32(o) rte_cpu_to_be_32(o)
-#define CPU_TO_BE64(o) rte_cpu_to_be_64(o)
-#define CPU_TO_LE16(o) rte_cpu_to_le_16(o)
-#define CPU_TO_LE32(s) rte_cpu_to_le_32(s)
-#define CPU_TO_LE64(h) rte_cpu_to_le_64(h)
-#define LE16_TO_CPU(a) rte_le_to_cpu_16(a)
-#define LE32_TO_CPU(c) rte_le_to_cpu_32(c)
-#define LE64_TO_CPU(k) rte_le_to_cpu_64(k)
-
-#define NTOHS(a) rte_be_to_cpu_16(a)
-#define NTOHL(a) rte_be_to_cpu_32(a)
-#define HTONS(a) rte_cpu_to_be_16(a)
-#define HTONL(a) rte_cpu_to_be_32(a)
 
 /* SW spinlock */
 struct ice_lock {
@@ -217,7 +221,7 @@ ice_release_lock(struct ice_lock *sp)
 }
 
 static inline void
-ice_destroy_lock(__attribute__((unused)) struct ice_lock *sp)
+ice_destroy_lock(__rte_unused struct ice_lock *sp)
 {
 }
 
@@ -237,7 +241,7 @@ ice_memdup(__rte_unused struct ice_hw *hw, const void *src, size_t size,
 }
 
 static inline void *
-ice_alloc_dma_mem(__attribute__((unused)) struct ice_hw *hw,
+ice_alloc_dma_mem(__rte_unused struct ice_hw *hw,
 		  struct ice_dma_mem *mem, u64 size)
 {
 	static uint64_t ice_dma_memzone_id;
@@ -256,7 +260,7 @@ ice_alloc_dma_mem(__attribute__((unused)) struct ice_hw *hw,
 
 	mem->size = size;
 	mem->va = mz->addr;
-	mem->pa = mz->phys_addr;
+	mem->pa = mz->iova;
 	mem->zone = (const void *)mz;
 	PMD_DRV_LOG(DEBUG, "memzone %s allocated with physical address: "
 		    "%"PRIu64, mz->name, mem->pa);
@@ -265,7 +269,7 @@ ice_alloc_dma_mem(__attribute__((unused)) struct ice_hw *hw,
 }
 
 static inline void
-ice_free_dma_mem(__attribute__((unused)) struct ice_hw *hw,
+ice_free_dma_mem(__rte_unused struct ice_hw *hw,
 		 struct ice_dma_mem *mem)
 {
 	PMD_DRV_LOG(DEBUG, "memzone %s to be freed with physical address: "

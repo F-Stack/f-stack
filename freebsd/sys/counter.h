@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Gleb Smirnoff <glebius@FreeBSD.org>
  * All rights reserved.
  *
@@ -41,23 +43,51 @@ void		counter_u64_zero(counter_u64_t);
 uint64_t	counter_u64_fetch(counter_u64_t);
 
 #define	COUNTER_ARRAY_ALLOC(a, n, wait)	do {			\
-	for (int i = 0; i < (n); i++)				\
-		(a)[i] = counter_u64_alloc(wait);		\
+	for (int _i = 0; _i < (n); _i++)			\
+		(a)[_i] = counter_u64_alloc(wait);		\
 } while (0)
 
 #define	COUNTER_ARRAY_FREE(a, n)	do {			\
-	for (int i = 0; i < (n); i++)				\
-		counter_u64_free((a)[i]);			\
+	for (int _i = 0; _i < (n); _i++)			\
+		counter_u64_free((a)[_i]);			\
 } while (0)
 
 #define	COUNTER_ARRAY_COPY(a, dstp, n)	do {			\
-	for (int i = 0; i < (n); i++)				\
-		((uint64_t *)(dstp))[i] = counter_u64_fetch((a)[i]);\
+	for (int _i = 0; _i < (n); _i++)			\
+		((uint64_t *)(dstp))[_i] = counter_u64_fetch((a)[_i]);\
 } while (0)
 
 #define	COUNTER_ARRAY_ZERO(a, n)	do {			\
-	for (int i = 0; i < (n); i++)				\
-		counter_u64_zero((a)[i]);			\
+	for (int _i = 0; _i < (n); _i++)			\
+		counter_u64_zero((a)[_i]);			\
 } while (0)
+
+/*
+ * counter(9) based rate checking.
+ */
+struct counter_rate {
+	counter_u64_t	cr_rate;	/* Events since last second */
+	volatile int	cr_lock;	/* Lock to clean the struct */
+	int		cr_ticks;	/* Ticks on last clean */
+	int		cr_over;	/* Over limit since cr_ticks? */
+};
+
+int64_t	counter_ratecheck(struct counter_rate *, int64_t);
+
+#define	COUNTER_U64_SYSINIT(c)					\
+	SYSINIT(c##_counter_sysinit, SI_SUB_COUNTER,		\
+	    SI_ORDER_ANY, counter_u64_sysinit, &c);		\
+	SYSUNINIT(c##_counter_sysuninit, SI_SUB_COUNTER,	\
+	    SI_ORDER_ANY, counter_u64_sysuninit, &c)
+
+#ifndef FSTACK
+#define	COUNTER_U64_DEFINE_EARLY(c)				\
+	counter_u64_t __read_mostly c = EARLY_COUNTER;		\
+	COUNTER_U64_SYSINIT(c)
+#endif
+
+void counter_u64_sysinit(void *);
+void counter_u64_sysuninit(void *);
+
 #endif	/* _KERNEL */
 #endif	/* ! __SYS_COUNTER_H__ */

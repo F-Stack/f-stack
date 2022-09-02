@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1983, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -92,7 +94,7 @@ in_status(int s __unused, const struct ifaddrs *ifa)
 		sin = (struct sockaddr_in *)ifa->ifa_dstaddr;
 		if (sin == NULL)
 			sin = &null_sin;
-		printf(" --> %s ", inet_ntoa(sin->sin_addr));
+		printf(" --> %s", inet_ntoa(sin->sin_addr));
 	}
 
 	sin = (struct sockaddr_in *)ifa->ifa_netmask;
@@ -109,16 +111,16 @@ in_status(int s __unused, const struct ifaddrs *ifa)
 			if (cidr == 0)
 				break;
 		}
-		printf("/%d ", cidr);
+		printf("/%d", cidr);
 	} else if (f_inet != NULL && strcmp(f_inet, "dotted") == 0)
-		printf(" netmask %s ", inet_ntoa(sin->sin_addr));
+		printf(" netmask %s", inet_ntoa(sin->sin_addr));
 	else
-		printf(" netmask 0x%lx ", (unsigned long)ntohl(sin->sin_addr.s_addr));
+		printf(" netmask 0x%lx", (unsigned long)ntohl(sin->sin_addr.s_addr));
 
 	if (ifa->ifa_flags & IFF_BROADCAST) {
 		sin = (struct sockaddr_in *)ifa->ifa_broadaddr;
 		if (sin != NULL && sin->sin_addr.s_addr != 0)
-			printf("broadcast %s ", inet_ntoa(sin->sin_addr));
+			printf(" broadcast %s", inet_ntoa(sin->sin_addr));
 	}
 
 	print_vhid(ifa, " ");
@@ -202,7 +204,6 @@ in_status_tunnel(int s)
 		return;
 	if (sa->sa_family != AF_INET)
 		return;
-
 #ifndef FSTACK
 	if (getnameinfo(sa, sa->sa_len, src, sizeof(src), 0, 0, NI_NUMERICHOST) != 0)
 		src[0] = '\0';
@@ -215,7 +216,6 @@ in_status_tunnel(int s)
 		return;
 	if (sa->sa_family != AF_INET)
 		return;
-
 #ifndef FSTACK
 	if (getnameinfo(sa, sa->sa_len, dst, sizeof(dst), 0, 0, NI_NUMERICHOST) != 0)
 		dst[0] = '\0';

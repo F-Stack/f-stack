@@ -35,7 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/types.h>
 #include <sys/bus.h>
-#include <sys/callout.h>
+#include <sys/gpio.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -45,7 +45,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/rman.h>
 #include <sys/sysctl.h>
 #include <sys/taskqueue.h>
-#include <sys/time.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
@@ -55,13 +54,15 @@ __FBSDID("$FreeBSD$");
 #include <dev/extres/hwreset/hwreset.h>
 #include <dev/gpio/gpiobusvar.h>
 #include <dev/mmc/bridge.h>
-#include <dev/mmc/mmcreg.h>
 #include <dev/mmc/mmcbrvar.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 #include <dev/sdhci/sdhci.h>
+#include <dev/sdhci/sdhci_fdt_gpio.h>
 
 #include "sdhci_if.h"
+
+#include "opt_mmccam.h"
 
 /* Tegra SDHOST controller vendor register definitions */
 #define	SDMMC_VENDOR_CLOCK_CNTRL		0x100
@@ -94,6 +95,7 @@ __FBSDID("$FreeBSD$");
 /* Compatible devices. */
 static struct ofw_compat_data compat_data[] = {
 	{"nvidia,tegra124-sdhci",	1},
+	{"nvidia,tegra210-sdhci",	1},
 	{NULL,				0},
 };
 
@@ -107,9 +109,8 @@ struct tegra_sdhci_softc {
 	uint32_t		max_clk; /* Max possible freq */
 	clk_t			clk;
 	hwreset_t 		reset;
-	gpio_pin_t		gpio_cd;
-	gpio_pin_t		gpio_wp;
 	gpio_pin_t		gpio_power;
+	struct sdhci_fdt_gpio	*gpio;
 
 	int			force_card_present;
 	struct sdhci_slot	slot;
@@ -215,10 +216,19 @@ tegra_sdhci_intr(void *arg)
 }
 
 static int
-tegra_generic_get_ro(device_t brdev, device_t reqdev)
+tegra_sdhci_get_ro(device_t brdev, device_t reqdev)
 {
+	struct tegra_sdhci_softc *sc = device_get_softc(brdev);
 
-	return (0);
+	return (sdhci_fdt_gpio_get_readonly(sc->gpio));
+}
+
+static bool
+tegra_sdhci_get_card_present(device_t dev, struct sdhci_slot *slot)
+{
+	struct tegra_sdhci_softc *sc = device_get_softc(dev);
+
+	return (sdhci_fdt_gpio_get_present(sc->gpio));
 }
 
 static int
@@ -233,15 +243,12 @@ tegra_sdhci_probe(device_t dev)
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
 
-	if (ofw_bus_is_compatible(dev, "nvidia,tegra124-sdhci")) {
-		device_set_desc(dev, "Tegra SDHCI controller");
-	} else
-		return (ENXIO);
 	cd = ofw_bus_search_compatible(dev, compat_data);
 	if (cd->ocd_data == 0)
 		return (ENXIO);
 
 	node = ofw_bus_get_node(dev);
+	device_set_desc(dev, "Tegra SDHCI controller");
 
 	/* Allow dts to patch quirks, slots, and max-frequency. */
 	if ((OF_getencprop(node, "quirks", &cid, sizeof(cid))) > 0)
@@ -282,36 +289,29 @@ tegra_sdhci_attach(device_t dev)
 		goto fail;
 	}
 
-	if (bus_setup_intr(dev, sc->irq_res, INTR_TYPE_BIO | INTR_MPSAFE,
-	    NULL, tegra_sdhci_intr, sc, &sc->intr_cookie)) {
-		device_printf(dev, "cannot setup interrupt handler\n");
-		rv = ENXIO;
-		goto fail;
-	}
-
-	rv = hwreset_get_by_ofw_name(sc->dev, "sdhci", &sc->reset);
+	rv = hwreset_get_by_ofw_name(sc->dev, 0, "sdhci", &sc->reset);
 	if (rv != 0) {
 		device_printf(sc->dev, "Cannot get 'sdhci' reset\n");
 		goto fail;
 	}
-	rv = hwreset_deassert(sc->reset);
+	rv = hwreset_assert(sc->reset);
 	if (rv != 0) {
-		device_printf(dev, "Cannot unreset 'sdhci' reset\n");
+		device_printf(dev, "Cannot reset 'sdhci' reset\n");
 		goto fail;
 	}
 
-	gpio_pin_get_by_ofw_property(sc->dev, node, "cd-gpios", &sc->gpio_cd);
-	gpio_pin_get_by_ofw_property(sc->dev, node, "power-gpios", &sc->gpio_power);
-	gpio_pin_get_by_ofw_property(sc->dev, node, "wp-gpios", &sc->gpio_wp);
+	gpio_pin_get_by_ofw_property(sc->dev, node, "power-gpios",
+	    &sc->gpio_power);
 
-	rv = clk_get_by_ofw_index(dev, 0, &sc->clk);
-	if (rv != 0) {
-
-		device_printf(dev, "Cannot get clock\n");
-		goto fail;
+	if (OF_hasprop(node, "assigned-clocks")) {
+		rv = clk_set_assigned(sc->dev, node);
+		if (rv != 0) {
+			device_printf(dev, "Cannot set assigned clocks\n");
+			goto fail;
+		}
 	}
 
-	rv = clk_get_by_ofw_index(dev, 0, &sc->clk);
+	rv = clk_get_by_ofw_index(dev, 0, 0, &sc->clk);
 	if (rv != 0) {
 		device_printf(dev, "Cannot get clock\n");
 		goto fail;
@@ -330,8 +330,14 @@ tegra_sdhci_attach(device_t dev)
 		device_printf(dev, "Cannot get clock frequency\n");
 		goto fail;
 	}
+	DELAY(4000);
+	rv = hwreset_deassert(sc->reset);
+	if (rv != 0) {
+		device_printf(dev, "Cannot unreset 'sdhci' reset\n");
+		goto fail;
+	}
 	if (bootverbose)
-		device_printf(dev, " Base MMC clock: %lld\n", freq);
+		device_printf(dev, " Base MMC clock: %jd\n", (uintmax_t)freq);
 
 	/* Fill slot information. */
 	sc->max_clk = (int)freq;
@@ -369,10 +375,18 @@ tegra_sdhci_attach(device_t dev)
 	sc->slot.max_clk = sc->max_clk;
 	sc->slot.caps = sc->caps;
 
+	if (bus_setup_intr(dev, sc->irq_res, INTR_TYPE_BIO | INTR_MPSAFE,
+	    NULL, tegra_sdhci_intr, sc, &sc->intr_cookie)) {
+		device_printf(dev, "cannot setup interrupt handler\n");
+		rv = ENXIO;
+		goto fail;
+	}
 	rv = sdhci_init_slot(dev, &sc->slot, 0);
 	if (rv != 0) {
 		goto fail;
 	}
+
+	sc->gpio = sdhci_fdt_gpio_setup(sc->dev, &sc->slot);
 
 	bus_generic_probe(dev);
 	bus_generic_attach(dev);
@@ -382,18 +396,16 @@ tegra_sdhci_attach(device_t dev)
 	return (0);
 
 fail:
-	if (sc->gpio_cd != NULL)
-		gpio_pin_release(sc->gpio_cd);
-	if (sc->gpio_wp != NULL)
-		gpio_pin_release(sc->gpio_wp);
+	if (sc->gpio != NULL)
+		sdhci_fdt_gpio_teardown(sc->gpio);
+	if (sc->intr_cookie != NULL)
+		bus_teardown_intr(dev, sc->irq_res, sc->intr_cookie);
 	if (sc->gpio_power != NULL)
 		gpio_pin_release(sc->gpio_power);
 	if (sc->clk != NULL)
 		clk_release(sc->clk);
 	if (sc->reset != NULL)
 		hwreset_release(sc->reset);
-	if (sc->intr_cookie != NULL)
-		bus_teardown_intr(dev, sc->irq_res, sc->intr_cookie);
 	if (sc->irq_res != NULL)
 		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq_res);
 	if (sc->mem_res != NULL)
@@ -409,6 +421,7 @@ tegra_sdhci_detach(device_t dev)
 	struct sdhci_slot *slot = &sc->slot;
 
 	bus_generic_detach(dev);
+	sdhci_fdt_gpio_teardown(sc->gpio);
 	clk_release(sc->clk);
 	bus_teardown_intr(dev, sc->irq_res, sc->intr_cookie);
 	bus_release_resource(dev, SYS_RES_IRQ, rman_get_rid(sc->irq_res),
@@ -434,7 +447,7 @@ static device_method_t tegra_sdhci_methods[] = {
 	/* MMC bridge interface */
 	DEVMETHOD(mmcbr_update_ios,	sdhci_generic_update_ios),
 	DEVMETHOD(mmcbr_request,	sdhci_generic_request),
-	DEVMETHOD(mmcbr_get_ro,		tegra_generic_get_ro),
+	DEVMETHOD(mmcbr_get_ro,		tegra_sdhci_get_ro),
 	DEVMETHOD(mmcbr_acquire_host,	sdhci_generic_acquire_host),
 	DEVMETHOD(mmcbr_release_host,	sdhci_generic_release_host),
 
@@ -447,19 +460,17 @@ static device_method_t tegra_sdhci_methods[] = {
 	DEVMETHOD(sdhci_write_2,	tegra_sdhci_write_2),
 	DEVMETHOD(sdhci_write_4,	tegra_sdhci_write_4),
 	DEVMETHOD(sdhci_write_multi_4,	tegra_sdhci_write_multi_4),
+	DEVMETHOD(sdhci_get_card_present, tegra_sdhci_get_card_present),
 
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static devclass_t tegra_sdhci_devclass;
-
-static driver_t tegra_sdhci_driver = {
-	"sdhci_tegra",
-	tegra_sdhci_methods,
-	sizeof(struct tegra_sdhci_softc),
-};
-
+static DEFINE_CLASS_0(sdhci, tegra_sdhci_driver, tegra_sdhci_methods,
+    sizeof(struct tegra_sdhci_softc));
 DRIVER_MODULE(sdhci_tegra, simplebus, tegra_sdhci_driver, tegra_sdhci_devclass,
-    0, 0);
-MODULE_DEPEND(sdhci_tegra, sdhci, 1, 1, 1);
-DRIVER_MODULE(mmc, sdhci_tegra, mmc_driver, mmc_devclass, NULL, NULL);
+    NULL, NULL);
+SDHCI_DEPEND(sdhci_tegra);
+#ifndef MMCCAM
+MMC_DECLARE_BRIDGE(sdhci);
+#endif

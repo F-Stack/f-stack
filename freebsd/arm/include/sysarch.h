@@ -1,6 +1,8 @@
 /*	$NetBSD: sysarch.h,v 1.5 2003/09/11 09:40:12 kleink Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1996-1997 Mark Brinicombe.
  * All rights reserved.
  *
@@ -39,36 +41,13 @@
 
 #include <machine/armreg.h>
 
-/*
- * The ARM_TP_ADDRESS points to a special purpose page, which is used as local
- * store for the ARM per-thread data and Restartable Atomic Sequences support.
- * Put it just above the "high" vectors' page.
- * The cpu_switch() code assumes ARM_RAS_START is ARM_TP_ADDRESS + 4, and
- * ARM_RAS_END is ARM_TP_ADDRESS + 8, so if that ever changes, be sure to
- * update the cpu_switch() (and cpu_throw()) code as well.
- * In addition, code in arm/include/atomic.h and arm/arm/exception.S
- * assumes that ARM_RAS_END is at ARM_RAS_START+4, so be sure to update those
- * if ARM_RAS_END moves in relation to ARM_RAS_START (look for occurrences
- * of ldr/str rm,[rn, #4]).
- */
-
-/* ARM_TP_ADDRESS is needed for processors that don't support
- * the exclusive-access opcodes introduced with ARMv6K. */
-#if __ARM_ARCH <= 5
-#define ARM_TP_ADDRESS		(ARM_VECTORS_HIGH + 0x1000)
-#define ARM_RAS_START		(ARM_TP_ADDRESS + 4)
-#define ARM_RAS_END		(ARM_TP_ADDRESS + 8)
-#endif
-
 #ifndef LOCORE
 #ifndef __ASSEMBLER__
 
-#include <sys/cdefs.h>
-
 /*
- * Pickup definition of uintptr_t
+ * Pickup definition of various __types.
  */
-#include <sys/stdint.h>
+#include <sys/_types.h>
 
 /*
  * Architecture specific syscalls (arm)
@@ -78,16 +57,22 @@
 #define ARM_DRAIN_WRITEBUF	1
 #define ARM_SET_TP		2
 #define ARM_GET_TP		3
+#define ARM_GET_VFPSTATE	4
 
 struct arm_sync_icache_args {
-	uintptr_t	addr;		/* Virtual start address */
-	size_t		len;		/* Region size */
+	__uintptr_t	addr;		/* Virtual start address */
+	__size_t	len;		/* Region size */
+};
+
+struct arm_get_vfpstate_args {
+	__size_t	mc_vfp_size;
+	void 		*mc_vfp;
 };
 
 #ifndef _KERNEL
 __BEGIN_DECLS
-int	arm_sync_icache (u_int addr, int len);
-int	arm_drain_writebuf (void);
+int	arm_sync_icache(unsigned int, int);
+int	arm_drain_writebuf(void);
 int	sysarch(int, void *);
 __END_DECLS
 #endif

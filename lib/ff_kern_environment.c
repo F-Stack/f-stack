@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 1998 Michael Smith. All rights reserved.
  * Copyright (c) 2013 Patrick Kelsey. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,6 +50,7 @@ __FBSDID("$FreeBSD: release/9.1.0/sys/kern/kern_environment.c 225617 2011-09-16 
 #include <sys/sysproto.h>
 #include <sys/libkern.h>
 #include <sys/kenv.h>
+#include <sys/limits.h>
 
 #include "ff_host_interface.h"
 
@@ -57,8 +58,11 @@ static MALLOC_DEFINE(M_KENV, "kenv", "kernel environment");
 
 #define KENV_SIZE    512    /* Maximum number of environment strings */
 
-/* pointer to the static environment */
-char *kern_envp; /* NULL */
+/* pointer to the config-generated static environment */
+char *kern_envp;
+
+/* pointer to the md-static environment */
+char *md_envp;
 
 /* dynamic environment variables */
 char **kenvp = &kern_envp; /* points to a pointer to NULL */
@@ -67,7 +71,7 @@ struct mtx kenv_lock;  /* does not need initialization - it will not be used as 
 /*
  * No need to protect this with a mutex since SYSINITS are single threaded.
  */
-int dynamic_kenv = 0;
+bool dynamic_kenv = 0;
 
 char *
 kern_getenv(const char *name)
@@ -214,6 +218,254 @@ getenv_quad(const char *name, quad_t *data)
     return (1);
 }
 
+/*
+ * Internal functions for string lookup.
+ */
+static char *
+_getenv_dynamic_locked(const char *name, int *idx)
+{
+	char *cp;
+	int len, i;
+
+	len = strlen(name);
+	for (cp = kenvp[0], i = 0; cp != NULL; cp = kenvp[++i]) {
+		if ((strncmp(cp, name, len) == 0) &&
+		    (cp[len] == '=')) {
+			if (idx != NULL)
+				*idx = i;
+			return (cp + len + 1);
+		}
+	}
+	return (NULL);
+}
+
+static char *
+_getenv_dynamic(const char *name, int *idx)
+{
+
+	mtx_assert(&kenv_lock, MA_OWNED);
+	return (_getenv_dynamic_locked(name, idx));
+}
+
+/*
+ * Find the next entry after the one which (cp) falls within, return a
+ * pointer to its start or NULL if there are no more.
+ */
+static char *
+kernenv_next(char *cp)
+{
+
+	if (cp != NULL) {
+		while (*cp != 0)
+			cp++;
+		cp++;
+		if (*cp == 0)
+			cp = NULL;
+	}
+	return (cp);
+}
+
+static char *
+_getenv_static_from(char *chkenv, const char *name)
+{
+	char *cp, *ep;
+	int len;
+
+	for (cp = chkenv; cp != NULL; cp = kernenv_next(cp)) {
+		for (ep = cp; (*ep != '=') && (*ep != 0); ep++)
+			;
+		if (*ep != '=')
+			continue;
+		len = ep - cp;
+		ep++;
+		if (!strncmp(name, cp, len) && name[len] == 0)
+			return (ep);
+	}
+	return (NULL);
+}
+
+static char *
+_getenv_static(const char *name)
+{
+	char *val;
+
+	val = _getenv_static_from(md_envp, name);
+	if (val != NULL)
+		return (val);
+	val = _getenv_static_from(kern_envp, name);
+	if (val != NULL)
+		return (val);
+	return (NULL);
+}
+
+/*
+ * Return the internal kenv buffer for the variable name, if it exists.
+ * If the dynamic kenv is initialized and the name is present, return
+ * with kenv_lock held.
+ */
+static char *
+kenv_acquire(const char *name)
+{
+	char *value;
+
+	if (dynamic_kenv) {
+		mtx_lock(&kenv_lock);
+		value = _getenv_dynamic(name, NULL);
+		if (value == NULL)
+			mtx_unlock(&kenv_lock);
+		return (value);
+	} else
+		return (_getenv_static(name));
+}
+
+/*
+ * Undo a previous kenv_acquire() operation
+ */
+static void
+kenv_release(const char *buf)
+{
+	if ((buf != NULL) && dynamic_kenv)
+		mtx_unlock(&kenv_lock);
+}
+
+/*
+ * Return an array of integers at the given type size and signedness.
+ */
+int
+getenv_array(const char *name, void *pdata, int size, int *psize,
+    int type_size, bool allow_signed)
+{
+    uint8_t shift;
+    int64_t value;
+    int64_t old;
+    const char *buf;
+    char *end;
+    const char *ptr;
+    int n;
+    int rc;
+
+    rc = 0;              /* assume failure */
+
+    buf = kenv_acquire(name);
+    if (buf == NULL)
+        goto error;
+
+    /* get maximum number of elements */
+    size /= type_size;
+
+    n = 0;
+
+    for (ptr = buf; *ptr != 0; ) {
+        value = strtoq(ptr, &end, 0);
+
+        /* check if signed numbers are allowed */
+        if (value < 0 && !allow_signed)
+            goto error;
+
+        /* check for invalid value */
+        if (ptr == end)
+            goto error;
+        
+        /* check for valid suffix */
+        switch (*end) {
+        case 't':
+        case 'T':
+            shift = 40;
+            end++;
+            break;
+        case 'g':
+        case 'G':
+            shift = 30;
+            end++;
+            break;
+        case 'm':
+        case 'M':
+            shift = 20;
+            end++;
+            break;
+        case 'k':
+        case 'K':
+            shift = 10;
+            end++;
+            break;
+        case ' ':
+        case '\t':
+        case ',':
+        case 0:
+            shift = 0;
+            break;
+        default:
+            /* garbage after numeric value */
+            goto error;
+        }
+
+        /* skip till next value, if any */
+        while (*end == '\t' || *end == ',' || *end == ' ')
+            end++;
+
+        /* update pointer */
+        ptr = end;
+
+        /* apply shift */
+        old = value;
+        value <<= shift;
+
+        /* overflow check */
+        if ((value >> shift) != old)
+            goto error;
+
+        /* check for buffer overflow */
+        if (n >= size)
+            goto error;
+
+        /* store value according to type size */
+        switch (type_size) {
+        case 1:
+            if (allow_signed) {
+                if (value < SCHAR_MIN || value > SCHAR_MAX)
+                    goto error;
+            } else {
+                if (value < 0 || value > UCHAR_MAX)
+                    goto error;
+            }
+            ((uint8_t *)pdata)[n] = (uint8_t)value;
+            break;
+        case 2:
+            if (allow_signed) {
+                if (value < SHRT_MIN || value > SHRT_MAX)
+                    goto error;
+            } else {
+                if (value < 0 || value > USHRT_MAX)
+                    goto error;
+            }
+            ((uint16_t *)pdata)[n] = (uint16_t)value;
+            break;
+        case 4:
+            if (allow_signed) {
+                if (value < INT_MIN || value > INT_MAX)
+                    goto error;
+            } else {
+                if (value > UINT_MAX)
+                    goto error;
+            }
+            ((uint32_t *)pdata)[n] = (uint32_t)value;
+            break;
+        case 8:
+            ((uint64_t *)pdata)[n] = (uint64_t)value;
+            break;
+        default:
+            goto error;
+        }
+        n++;
+    }
+    *psize = n * type_size;
+
+    if (n != 0)
+        rc = 1;    /* success */
+error:
+    kenv_release(buf);
+    return (rc);
+}
 
 void
 tunable_int_init(void *data)

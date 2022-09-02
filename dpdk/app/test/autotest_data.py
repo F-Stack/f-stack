@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 
@@ -60,6 +61,12 @@ parallel_test_list = [
         "Name":    "Read/write lock autotest",
         "Command": "rwlock_autotest",
         "Func":    rwlock_autotest,
+        "Report":  None,
+    },
+    {
+        "Name":    "Lcores autotest",
+        "Command": "lcores_autotest",
+        "Func":    default_autotest,
         "Report":  None,
     },
     {
@@ -405,6 +412,12 @@ parallel_test_list = [
         "Report":  None,
     },
     {
+        "Name":    "Bitops test",
+        "Command": "bitops_autotest",
+        "Func":    default_autotest,
+        "Report":  None,
+    },
+    {
         "Name":    "Hash multiwriter autotest",
         "Command": "hash_multiwriter_autotest",
         "Func":    default_autotest,
@@ -664,8 +677,14 @@ non_parallel_test_list = [
         "Report":  None,
     },
     {
-        "Name":    "Hash read-write concurrency autotest",
-        "Command": "hash_readwrite_autotest",
+        "Name":    "Hash read-write concurrency functional autotest",
+        "Command": "hash_readwrite_func_autotest",
+        "Func":    default_autotest,
+        "Report":  None,
+    },
+    {
+        "Name":    "Hash read-write concurrency perf autotest",
+        "Command": "hash_readwrite_perf_autotest",
         "Func":    default_autotest,
         "Report":  None,
     },

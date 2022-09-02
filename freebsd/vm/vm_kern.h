@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: (BSD-3-Clause AND MIT-CMU)
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -61,18 +63,23 @@
  */
 
 #ifndef _VM_VM_KERN_H_
-#define _VM_VM_KERN_H_ 1
+#define	_VM_VM_KERN_H_
 
 /* Kernel memory management definitions. */
-extern vm_map_t kernel_map;
-extern vm_map_t exec_map;
-extern vm_map_t pipe_map;
+extern struct vm_map kernel_map_store;
+#define	kernel_map	(&kernel_map_store)
+extern struct vm_map exec_map_store;
+#define	exec_map	(&exec_map_store)
+extern struct vm_map pipe_map_store;
+#define	pipe_map	(&pipe_map_store)
 extern struct vmem *kernel_arena;
 extern struct vmem *kmem_arena;
 extern struct vmem *buffer_arena;
 extern struct vmem *transient_arena;
 extern struct vmem *memguard_arena;
-extern vm_offset_t swapbkva;
 extern u_long vm_kmem_size;
+extern u_int exec_map_entries;
+extern u_int exec_map_entry_size;
+extern vm_object_t kstack_object;
 
-#endif				/* _VM_VM_KERN_H_ */
+#endif /* _VM_VM_KERN_H_ */

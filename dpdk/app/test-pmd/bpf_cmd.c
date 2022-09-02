@@ -69,7 +69,7 @@ bpf_parse_flags(const char *str, struct rte_bpf_arg *arg, uint32_t *flags)
 
 	*flags = RTE_BPF_ETH_F_NONE;
 	arg->type = RTE_BPF_ARG_PTR;
-	arg->size = mbuf_data_size;
+	arg->size = mbuf_data_size[0];
 
 	for (i = 0; str[i] != 0; i++) {
 		v = toupper(str[i]);
@@ -78,7 +78,7 @@ bpf_parse_flags(const char *str, struct rte_bpf_arg *arg, uint32_t *flags)
 		else if (v == 'M') {
 			arg->type = RTE_BPF_ARG_PTR_MBUF;
 			arg->size = sizeof(struct rte_mbuf);
-			arg->buf_size = mbuf_data_size;
+			arg->buf_size = mbuf_data_size[0];
 		} else if (v == '-')
 			continue;
 		else
@@ -87,8 +87,8 @@ bpf_parse_flags(const char *str, struct rte_bpf_arg *arg, uint32_t *flags)
 }
 
 static void cmd_operate_bpf_ld_parsed(void *parsed_result,
-				__attribute__((unused)) struct cmdline *cl,
-				__attribute__((unused)) void *data)
+				__rte_unused struct cmdline *cl,
+				__rte_unused void *data)
 {
 	int32_t rc;
 	uint32_t flags;
@@ -124,9 +124,9 @@ cmdline_parse_token_string_t cmd_load_bpf_dir =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_ld_result,
 			dir, "rx#tx");
 cmdline_parse_token_num_t cmd_load_bpf_port =
-	TOKEN_NUM_INITIALIZER(struct cmd_bpf_ld_result, port, UINT8);
+	TOKEN_NUM_INITIALIZER(struct cmd_bpf_ld_result, port, RTE_UINT8);
 cmdline_parse_token_num_t cmd_load_bpf_queue =
-	TOKEN_NUM_INITIALIZER(struct cmd_bpf_ld_result, queue, UINT16);
+	TOKEN_NUM_INITIALIZER(struct cmd_bpf_ld_result, queue, RTE_UINT16);
 cmdline_parse_token_string_t cmd_load_bpf_flags =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_ld_result,
 			flags, NULL);
@@ -158,8 +158,8 @@ struct cmd_bpf_unld_result {
 };
 
 static void cmd_operate_bpf_unld_parsed(void *parsed_result,
-				__attribute__((unused)) struct cmdline *cl,
-				__attribute__((unused)) void *data)
+				__rte_unused struct cmdline *cl,
+				__rte_unused void *data)
 {
 	struct cmd_bpf_unld_result *res;
 
@@ -180,9 +180,9 @@ cmdline_parse_token_string_t cmd_unload_bpf_dir =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_unld_result,
 			dir, "rx#tx");
 cmdline_parse_token_num_t cmd_unload_bpf_port =
-	TOKEN_NUM_INITIALIZER(struct cmd_bpf_unld_result, port, UINT8);
+	TOKEN_NUM_INITIALIZER(struct cmd_bpf_unld_result, port, RTE_UINT8);
 cmdline_parse_token_num_t cmd_unload_bpf_queue =
-	TOKEN_NUM_INITIALIZER(struct cmd_bpf_unld_result, queue, UINT16);
+	TOKEN_NUM_INITIALIZER(struct cmd_bpf_unld_result, queue, RTE_UINT16);
 
 cmdline_parse_inst_t cmd_operate_bpf_unld_parse = {
 	.f = cmd_operate_bpf_unld_parsed,

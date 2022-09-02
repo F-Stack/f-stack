@@ -72,6 +72,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/conf.h>
 #include <sys/cpuset.h>
+#include <sys/eventhandler.h>
 
 #include <machine/cpu.h>
 
@@ -282,8 +283,7 @@ restart:
 }
 
 static int
-null_fetch_syscall_args(struct thread *td __unused,
-    struct syscall_args *sa __unused)
+null_fetch_syscall_args(struct thread *td __unused)
 {
 
     panic("null_fetch_syscall_args");
@@ -299,9 +299,6 @@ null_set_syscall_retval(struct thread *td __unused, int error __unused)
 struct sysentvec null_sysvec = {
     .sv_size    = 0,
     .sv_table    = NULL,
-    .sv_mask    = 0,
-    .sv_errsize    = 0,
-    .sv_errtbl    = NULL,
     .sv_transtrap    = NULL,
     .sv_fixup    = NULL,
     .sv_sendsig    = NULL,
@@ -311,7 +308,6 @@ struct sysentvec null_sysvec = {
     .sv_coredump    = NULL,
     .sv_imgact_try    = NULL,
     .sv_minsigstksz    = 0,
-    .sv_pagesize    = PAGE_SIZE,
     .sv_minuser    = VM_MIN_ADDRESS,
     .sv_maxuser    = VM_MAXUSER_ADDRESS,
     .sv_usrstack    = USRSTACK,
@@ -467,7 +463,7 @@ proc0_init(void *dummy __unused)
 #endif
 
     /* Create the file descriptor table. */
-    p->p_fd = fdinit(NULL, false);
+    p->p_fd = fdinit(NULL, false, NULL);
     p->p_fdtol = NULL;
 
 
@@ -485,7 +481,7 @@ proc0_init(void *dummy __unused)
     p->p_limit->pl_rlimit[RLIMIT_STACK].rlim_cur = dflssiz;
     p->p_limit->pl_rlimit[RLIMIT_STACK].rlim_max = maxssiz;
     /* Cast to avoid overflow on i386/PAE. */
-    pageablemem = ptoa((vm_paddr_t)vm_cnt.v_free_count);
+    pageablemem = ptoa((vm_paddr_t)vm_free_count());
     p->p_limit->pl_rlimit[RLIMIT_RSS].rlim_cur =
         p->p_limit->pl_rlimit[RLIMIT_RSS].rlim_max = pageablemem;
     p->p_limit->pl_rlimit[RLIMIT_MEMLOCK].rlim_cur = pageablemem / 3;
@@ -530,11 +526,13 @@ SYSINIT(p0init, SI_SUB_INTRINSIC, SI_ORDER_FIRST, proc0_init, NULL);
 static void
 proc0_post(void *dummy __unused)
 {
+#if 0
     struct timespec ts;
     /*
      * Give the ``random'' number generator a thump.
      */
     nanotime(&ts);
     srandom(ts.tv_sec ^ ts.tv_nsec);
+#endif
 }
 SYSINIT(p0post, SI_SUB_INTRINSIC_POST, SI_ORDER_FIRST, proc0_post, NULL);

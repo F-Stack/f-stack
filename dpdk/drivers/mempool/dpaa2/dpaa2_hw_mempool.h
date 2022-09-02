@@ -10,8 +10,6 @@
 
 #define DPAA2_MAX_BUF_POOLS	8
 
-#define DPAA2_INVALID_MBUF_SEQN	0
-
 struct buf_pool_cfg {
 	void *addr;
 	/**< The address from where DPAA2 will carve out the buffers */
@@ -61,6 +59,7 @@ struct dpaa2_bp_info {
 
 extern struct dpaa2_bp_info *rte_dpaa2_bpid_info;
 
+__rte_internal
 int rte_dpaa2_mbuf_alloc_bulk(struct rte_mempool *pool,
 		       void **obj_table, unsigned int count);
 

@@ -17,11 +17,11 @@
 .Lb libxo
 .Sh SYNOPSIS
 .In libxo/xo.h
-.Ft int
+.Ft xo_ssize_t
 .Fn xo_attr "const char *name" "const char *fmt" "..."
-.Ft int
+.Ft xo_ssize_t
 .Fn xo_attr_h "xo_handle_t *handle" "const char *name, const char *fmt" "..."
-.Ft int
+.Ft xo_ssize_t
 .Fn xo_attr_hv "xo_handle_t *handle" "const char *name" "const char *fmt" "va_list vap"
 .Sh DESCRIPTION
 The
@@ -58,3 +58,13 @@ already emitted in other form.
 .Sh SEE ALSO
 .Xr xo_emit 3 ,
 .Xr libxo 3
+.Sh HISTORY
+The
+.Nm libxo
+library first appeared in
+.Fx 11.0 .
+.Sh AUTHORS
+.Nm libxo
+was written by
+.An Phil Shafer Aq Mt phil@freebsd.org .
+

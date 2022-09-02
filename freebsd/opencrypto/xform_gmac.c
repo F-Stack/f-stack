@@ -55,45 +55,53 @@ __FBSDID("$FreeBSD$");
 
 /* Encryption instances */
 struct enc_xform enc_xform_aes_nist_gmac = {
-	CRYPTO_AES_NIST_GMAC, "AES-GMAC",
-	AES_ICM_BLOCK_LEN, AES_GCM_IV_LEN, AES_MIN_KEY, AES_MAX_KEY,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
+	.type = CRYPTO_AES_NIST_GMAC,
+	.name = "AES-GMAC",
+	.blocksize = AES_ICM_BLOCK_LEN,
+	.ivsize = AES_GCM_IV_LEN,
+	.minkey = AES_MIN_KEY,
+	.maxkey = AES_MAX_KEY,
 };
 
 /* Authentication instances */
 struct auth_hash auth_hash_nist_gmac_aes_128 = {
-	CRYPTO_AES_128_NIST_GMAC, "GMAC-AES-128",
-	AES_128_GMAC_KEY_LEN, AES_GMAC_HASH_LEN, sizeof(struct aes_gmac_ctx),
-	GMAC_BLOCK_LEN,
-	(void (*)(void *)) AES_GMAC_Init,
-	(void (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Setkey,
-	(void (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Reinit,
-	(int  (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Update,
-	(void (*)(u_int8_t *, void *)) AES_GMAC_Final
+	.type = CRYPTO_AES_NIST_GMAC,
+	.name = "GMAC-AES-128",
+	.keysize = AES_128_GMAC_KEY_LEN,
+	.hashsize = AES_GMAC_HASH_LEN,
+	.ctxsize = sizeof(struct aes_gmac_ctx),
+	.blocksize = GMAC_BLOCK_LEN,
+	.Init = AES_GMAC_Init,
+	.Setkey = AES_GMAC_Setkey,
+	.Reinit = AES_GMAC_Reinit,
+	.Update = AES_GMAC_Update,
+	.Final = AES_GMAC_Final,
 };
 
 struct auth_hash auth_hash_nist_gmac_aes_192 = {
-	CRYPTO_AES_192_NIST_GMAC, "GMAC-AES-192",
-	AES_192_GMAC_KEY_LEN, AES_GMAC_HASH_LEN, sizeof(struct aes_gmac_ctx),
-	GMAC_BLOCK_LEN,
-	(void (*)(void *)) AES_GMAC_Init,
-	(void (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Setkey,
-	(void (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Reinit,
-	(int  (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Update,
-	(void (*)(u_int8_t *, void *)) AES_GMAC_Final
+	.type = CRYPTO_AES_NIST_GMAC,
+	.name = "GMAC-AES-192",
+	.keysize = AES_192_GMAC_KEY_LEN,
+	.hashsize = AES_GMAC_HASH_LEN,
+	.ctxsize = sizeof(struct aes_gmac_ctx),
+	.blocksize = GMAC_BLOCK_LEN,
+	.Init = AES_GMAC_Init,
+	.Setkey = AES_GMAC_Setkey,
+	.Reinit = AES_GMAC_Reinit,
+	.Update = AES_GMAC_Update,
+	.Final = AES_GMAC_Final,
 };
 
 struct auth_hash auth_hash_nist_gmac_aes_256 = {
-	CRYPTO_AES_256_NIST_GMAC, "GMAC-AES-256",
-	AES_256_GMAC_KEY_LEN, AES_GMAC_HASH_LEN, sizeof(struct aes_gmac_ctx),
-	GMAC_BLOCK_LEN,
-	(void (*)(void *)) AES_GMAC_Init,
-	(void (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Setkey,
-	(void (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Reinit,
-	(int  (*)(void *, const u_int8_t *, u_int16_t)) AES_GMAC_Update,
-	(void (*)(u_int8_t *, void *)) AES_GMAC_Final
+	.type = CRYPTO_AES_NIST_GMAC,
+	.name = "GMAC-AES-256",
+	.keysize = AES_256_GMAC_KEY_LEN,
+	.hashsize = AES_GMAC_HASH_LEN,
+	.ctxsize = sizeof(struct aes_gmac_ctx),
+	.blocksize = GMAC_BLOCK_LEN,
+	.Init = AES_GMAC_Init,
+	.Setkey = AES_GMAC_Setkey,
+	.Reinit = AES_GMAC_Reinit,
+	.Update = AES_GMAC_Update,
+	.Final = AES_GMAC_Final,
 };

@@ -178,9 +178,13 @@ signal_handler(int signum)
 		return;
 	}
 
-	/* When we receive a RTMIN or SIGINT signal, stop kni processing */
-	if (signum == SIGRTMIN || signum == SIGINT){
-		printf("\nSIGRTMIN/SIGINT received. KNI processing stopping.\n");
+	/*
+	 * When we receive a RTMIN or SIGINT or SIGTERM signal,
+	 * stop kni processing
+	 */
+	if (signum == SIGRTMIN || signum == SIGINT || signum == SIGTERM) {
+		printf("\nSIGRTMIN/SIGINT/SIGTERM received. "
+			"KNI processing stopping.\n");
 		rte_atomic32_inc(&kni_stop);
 		return;
         }
@@ -657,6 +661,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status\n");
 	fflush(stdout);
@@ -676,14 +681,10 @@ check_all_ports_link_status(uint32_t port_mask)
 			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up - speed %uMbps - %s\n",
-						portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex"));
-				else
-					printf("Port %d Link Down\n", portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", portid,
+					link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -713,19 +714,15 @@ check_all_ports_link_status(uint32_t port_mask)
 static void
 log_link_state(struct rte_kni *kni, int prev, struct rte_eth_link *link)
 {
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 	if (kni == NULL || link == NULL)
 		return;
 
-	if (prev == ETH_LINK_DOWN && link->link_status == ETH_LINK_UP) {
-		RTE_LOG(INFO, APP, "%s NIC Link is Up %d Mbps %s %s.\n",
+	rte_eth_link_to_str(link_status_text, sizeof(link_status_text), link);
+	if (prev != link->link_status)
+		RTE_LOG(INFO, APP, "%s NIC %s\n",
 			rte_kni_get_name(kni),
-			link->link_speed,
-			link->link_autoneg ?  "(AutoNeg)" : "(Fixed)",
-			link->link_duplex ?  "Full Duplex" : "Half Duplex");
-	} else if (prev == ETH_LINK_UP && link->link_status == ETH_LINK_DOWN) {
-		RTE_LOG(INFO, APP, "%s NIC Link is Down.\n",
-			rte_kni_get_name(kni));
-	}
+			link_status_text);
 }
 
 /*
@@ -785,7 +782,12 @@ kni_change_mtu_(uint16_t port_id, unsigned int new_mtu)
 	RTE_LOG(INFO, APP, "Change MTU of port %d to %u\n", port_id, new_mtu);
 
 	/* Stop specific port */
-	rte_eth_dev_stop(port_id);
+	ret = rte_eth_dev_stop(port_id);
+	if (ret != 0) {
+		RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
+			port_id, rte_strerror(-ret));
+		return ret;
+	}
 
 	memcpy(&conf, &port_conf, sizeof(conf));
 	/* Set new MTU */
@@ -878,10 +880,23 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 	rte_atomic32_inc(&kni_pause);
 
 	if (if_up != 0) { /* Configure network interface up */
-		rte_eth_dev_stop(port_id);
+		ret = rte_eth_dev_stop(port_id);
+		if (ret != 0) {
+			RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
+				port_id, rte_strerror(-ret));
+			rte_atomic32_dec(&kni_pause);
+			return ret;
+		}
 		ret = rte_eth_dev_start(port_id);
-	} else /* Configure network interface down */
-		rte_eth_dev_stop(port_id);
+	} else { /* Configure network interface down */
+		ret = rte_eth_dev_stop(port_id);
+		if (ret != 0) {
+			RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
+				port_id, rte_strerror(-ret));
+			rte_atomic32_dec(&kni_pause);
+			return ret;
+		}
+	}
 
 	rte_atomic32_dec(&kni_pause);
 
@@ -952,7 +967,7 @@ kni_alloc(uint16_t port_id)
 		conf.mbuf_size = MAX_PACKET_SZ;
 		/*
 		 * The first KNI device associated to a port
-		 * is the master, for multiple kernel thread
+		 * is the main, for multiple kernel thread
 		 * environment.
 		 */
 		if (i == 0) {
@@ -1001,6 +1016,7 @@ static int
 kni_free_kni(uint16_t port_id)
 {
 	uint8_t i;
+	int ret;
 	struct kni_port_params **p = kni_port_params_array;
 
 	if (port_id >= RTE_MAX_ETHPORTS || !p[port_id])
@@ -1011,7 +1027,10 @@ kni_free_kni(uint16_t port_id)
 			printf("Fail to release kni\n");
 		p[port_id]->kni[i] = NULL;
 	}
-	rte_eth_dev_stop(port_id);
+	ret = rte_eth_dev_stop(port_id);
+	if (ret != 0)
+		RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
+			port_id, rte_strerror(-ret));
 
 	return 0;
 }
@@ -1027,11 +1046,12 @@ main(int argc, char** argv)
 	pthread_t kni_link_tid;
 	int pid;
 
-	/* Associate signal_hanlder function with USR signals */
+	/* Associate signal_handler function with USR signals */
 	signal(SIGUSR1, signal_handler);
 	signal(SIGUSR2, signal_handler);
 	signal(SIGRTMIN, signal_handler);
 	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
 
 	/* Initialise EAL */
 	ret = rte_eal_init(argc, argv);
@@ -1100,8 +1120,8 @@ main(int argc, char** argv)
 			"Could not create link status thread!\n");
 
 	/* Launch per-lcore function on every lcore */
-	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(i) {
 		if (rte_eal_wait_lcore(i) < 0)
 			return -1;
 	}

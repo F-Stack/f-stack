@@ -7,6 +7,10 @@
 
 #include "ice_rxtx.h"
 
+#ifndef __INTEL_COMPILER
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#endif
+
 static inline uint16_t
 ice_rx_reassemble_packets(struct ice_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 			  uint16_t nb_bufs, uint8_t *split_flags)
@@ -189,16 +193,38 @@ _ice_tx_queue_release_mbufs_vec(struct ice_tx_queue *txq)
 	 *  so need to free remains more carefully.
 	 */
 	i = txq->tx_next_dd - txq->tx_rs_thresh + 1;
-	if (txq->tx_tail < i) {
-		for (; i < txq->nb_tx_desc; i++) {
+
+#ifdef __AVX512VL__
+	struct rte_eth_dev *dev = &rte_eth_devices[txq->vsi->adapter->pf.dev_data->port_id];
+
+	if (dev->tx_pkt_burst == ice_xmit_pkts_vec_avx512) {
+		struct ice_vec_tx_entry *swr = (void *)txq->sw_ring;
+
+		if (txq->tx_tail < i) {
+			for (; i < txq->nb_tx_desc; i++) {
+				rte_pktmbuf_free_seg(swr[i].mbuf);
+				swr[i].mbuf = NULL;
+			}
+			i = 0;
+		}
+		for (; i < txq->tx_tail; i++) {
+			rte_pktmbuf_free_seg(swr[i].mbuf);
+			swr[i].mbuf = NULL;
+		}
+	} else
+#endif
+	{
+		if (txq->tx_tail < i) {
+			for (; i < txq->nb_tx_desc; i++) {
+				rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
+				txq->sw_ring[i].mbuf = NULL;
+			}
+			i = 0;
+		}
+		for (; i < txq->tx_tail; i++) {
 			rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
 			txq->sw_ring[i].mbuf = NULL;
 		}
-		i = 0;
-	}
-	for (; i < txq->tx_tail; i++) {
-		rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
-		txq->sw_ring[i].mbuf = NULL;
 	}
 }
 
@@ -271,12 +297,6 @@ ice_rx_vec_dev_check_default(struct rte_eth_dev *dev)
 {
 	int i;
 	struct ice_rx_queue *rxq;
-	struct ice_adapter *ad =
-		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
-
-	/* vPMD does not support flow mark. */
-	if (ad->devargs.flow_mark_support)
-		return -1;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxq = dev->data->rx_queues[i];

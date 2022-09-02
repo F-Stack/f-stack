@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -84,17 +84,16 @@ synch_setup(void *arg)
 }
 
 int
-_sleep(void *ident, struct lock_object *lock, int priority,
+_sleep(const void * _Nonnull chan, struct lock_object *lock, int priority,
     const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags)
 {
     //FIXME:we couldn't really sleep.
     return (EPERM);
 }
 
-
 //FIXME.
 int
-msleep_spin_sbt(void *ident, struct mtx *mtx, const char *wmesg,
+msleep_spin_sbt(const void * _Nonnull chan, struct mtx *mtx, const char *wmesg,
     sbintime_t sbt, sbintime_t pr, int flags)
 {
     return (0);
@@ -107,14 +106,14 @@ pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags)
 }
 
 void
-wakeup(void *chan)
+wakeup(const void *chan)
 {
 
 }
 
 
 void
-wakeup_one(void *chan)
+wakeup_one(const void *chan)
 {
 
 }
@@ -124,3 +123,10 @@ kern_yield(int prio)
 {
 
 }
+
+void
+wakeup_any(const void *ident)
+{
+
+}
+

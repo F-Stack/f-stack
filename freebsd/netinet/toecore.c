@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
  * Written by: Navdeep Parhar <np@FreeBSD.org>
@@ -32,6 +34,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet6.h"
 
 #include <sys/param.h>
+#include <sys/eventhandler.h>
 #include <sys/kernel.h>
 #include <sys/systm.h>
 #include <sys/malloc.h>
@@ -74,7 +77,7 @@ static eventhandler_tag lle_event_eh;
 
 static int
 toedev_connect(struct toedev *tod __unused, struct socket *so __unused,
-    struct rtentry *rt __unused, struct sockaddr *nam __unused)
+    struct nhop_object *nh __unused, struct sockaddr *nam __unused)
 {
 
 	return (ENOTSUP);
@@ -135,7 +138,7 @@ toedev_l2_update(struct toedev *tod __unused, struct ifnet *ifp __unused,
 
 static void
 toedev_route_redirect(struct toedev *tod __unused, struct ifnet *ifp __unused,
-    struct rtentry *rt0 __unused, struct rtentry *rt1 __unused)
+    struct nhop_object *nh0 __unused, struct nhop_object *nh1 __unused)
 {
 
 	return;
@@ -178,6 +181,22 @@ toedev_ctloutput(struct toedev *tod __unused, struct tcpcb *tp __unused,
 {
 
 	return;
+}
+
+static void
+toedev_tcp_info(struct toedev *tod __unused, struct tcpcb *tp __unused,
+    struct tcp_info *ti __unused)
+{
+
+	return;
+}
+
+static int
+toedev_alloc_tls_session(struct toedev *tod __unused, struct tcpcb *tp __unused,
+    struct ktls_session *tls __unused, int direction __unused)
+{
+
+	return (EINVAL);
 }
 
 /*
@@ -269,6 +288,8 @@ init_toedev(struct toedev *tod)
 	tod->tod_syncache_respond = toedev_syncache_respond;
 	tod->tod_offload_socket = toedev_offload_socket;
 	tod->tod_ctloutput = toedev_ctloutput;
+	tod->tod_tcp_info = toedev_tcp_info;
+	tod->tod_alloc_tls_session = toedev_alloc_tls_session;
 }
 
 /*
@@ -325,13 +346,13 @@ unregister_toedev(struct toedev *tod)
 
 void
 toe_syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
-    struct inpcb *inp, void *tod, void *todctx)
+    struct inpcb *inp, void *tod, void *todctx, uint8_t iptos)
 {
 	struct socket *lso = inp->inp_socket;
 
 	INP_WLOCK_ASSERT(inp);
 
-	syncache_add(inc, to, th, inp, &lso, NULL, tod, todctx);
+	syncache_add(inc, to, th, inp, &lso, NULL, tod, todctx, iptos);
 }
 
 int
@@ -339,7 +360,7 @@ toe_syncache_expand(struct in_conninfo *inc, struct tcpopt *to,
     struct tcphdr *th, struct socket **lsop)
 {
 
-	INP_INFO_RLOCK_ASSERT(&V_tcbinfo);
+	NET_EPOCH_ASSERT();
 
 	return (syncache_expand(inc, to, th, lsop, NULL));
 }
@@ -369,8 +390,6 @@ toe_4tuple_check(struct in_conninfo *inc, struct tcphdr *th, struct ifnet *ifp)
 		INP_WLOCK_ASSERT(inp);
 
 		if ((inp->inp_flags & INP_TIMEWAIT) && th != NULL) {
-
-			INP_INFO_RLOCK_ASSERT(&V_tcbinfo); /* for twcheck */
 			if (!tcp_twcheck(inp, NULL, th, NULL, 0))
 				return (EADDRINUSE);
 		} else {
@@ -389,7 +408,7 @@ toe_lle_event(void *arg __unused, struct llentry *lle, int evt)
 	struct ifnet *ifp;
 	struct sockaddr *sa;
 	uint8_t *lladdr;
-	uint16_t vtag;
+	uint16_t vid, pcp;
 	int family;
 	struct sockaddr_in6 sin6;
 
@@ -414,9 +433,9 @@ toe_lle_event(void *arg __unused, struct llentry *lle, int evt)
 	sa = (struct sockaddr *)&sin6;
 	lltable_fill_sa_entry(lle, sa);
 
-	vtag = 0xfff;
+	vid = 0xfff;
+	pcp = 0;
 	if (evt != LLENTRY_RESOLVED) {
-
 		/*
 		 * LLENTRY_TIMEDOUT, LLENTRY_DELETED, LLENTRY_EXPIRED all mean
 		 * this entry is going to be deleted.
@@ -424,17 +443,15 @@ toe_lle_event(void *arg __unused, struct llentry *lle, int evt)
 
 		lladdr = NULL;
 	} else {
-
 		KASSERT(lle->la_flags & LLE_VALID,
 		    ("%s: %p resolved but not valid?", __func__, lle));
 
 		lladdr = (uint8_t *)lle->ll_addr;
-#ifdef VLAN_TAG
-		VLAN_TAG(ifp, &vtag);
-#endif
+		VLAN_TAG(ifp, &vid);
+		VLAN_PCP(ifp, &pcp);
 	}
 
-	tod->tod_l2_update(tod, ifp, sa, lladdr, vtag);
+	tod->tod_l2_update(tod, ifp, sa, lladdr, EVL_MAKETAG(vid, pcp, 0));
 }
 
 /*
@@ -447,6 +464,7 @@ toe_l2_resolve(struct toedev *tod, struct ifnet *ifp, struct sockaddr *sa,
     uint8_t *lladdr, uint16_t *vtag)
 {
 	int rc;
+	uint16_t vid, pcp;
 
 	switch (sa->sa_family) {
 #ifdef INET
@@ -464,10 +482,16 @@ toe_l2_resolve(struct toedev *tod, struct ifnet *ifp, struct sockaddr *sa,
 	}
 
 	if (rc == 0) {
-#ifdef VLAN_TAG
-		if (VLAN_TAG(ifp, vtag) != 0)
-#endif
-			*vtag = 0xfff;
+		vid = 0xfff;
+		pcp = 0;
+		if (ifp->if_type == IFT_L2VLAN) {
+			VLAN_TAG(ifp, &vid);
+			VLAN_PCP(ifp, &pcp);
+		} else if (ifp->if_pcp != IFNET_PCP_NONE) {
+			vid = 0;
+			pcp = ifp->if_pcp;
+		}
+		*vtag = EVL_MAKETAG(vid, pcp, 0);
 	}
 
 	return (rc);
@@ -477,6 +501,7 @@ void
 toe_connect_failed(struct toedev *tod, struct inpcb *inp, int err)
 {
 
+	NET_EPOCH_ASSERT();
 	INP_WLOCK_ASSERT(inp);
 
 	if (!(inp->inp_flags & INP_DROPPED)) {
@@ -486,7 +511,6 @@ toe_connect_failed(struct toedev *tod, struct inpcb *inp, int err)
 		    ("%s: tp %p not offloaded.", __func__, tp));
 
 		if (err == EAGAIN) {
-
 			/*
 			 * Temporary failure during offload, take this PCB back.
 			 * Detach from the TOE driver and do the rest of what
@@ -500,8 +524,6 @@ toe_connect_failed(struct toedev *tod, struct inpcb *inp, int err)
 			tcp_timer_activate(tp, TT_KEEP, TP_KEEPINIT(tp));
 			(void) tp->t_fb->tfb_tcp_output(tp);
 		} else {
-
-			INP_INFO_RLOCK_ASSERT(&V_tcbinfo);
 			tp = tcp_drop(tp, err);
 			if (tp == NULL)
 				INP_WLOCK(inp);	/* re-acquire */

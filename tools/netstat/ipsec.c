@@ -1,6 +1,8 @@
 /*	$KAME: ipsec.c,v 1.33 2003/07/25 09:54:32 itojun Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2005 NTT Multimedia Communications Laboratories, Inc.
  * All rights reserved.
  *
@@ -65,7 +67,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -121,45 +123,26 @@ struct val2str {
 
 static struct val2str ipsec_ahnames[] = {
 	{ SADB_AALG_NONE, "none", },
-	{ SADB_AALG_MD5HMAC, "hmac-md5", },
 	{ SADB_AALG_SHA1HMAC, "hmac-sha1", },
-	{ SADB_X_AALG_MD5, "md5", },
-	{ SADB_X_AALG_SHA, "sha", },
 	{ SADB_X_AALG_NULL, "null", },
-#ifdef SADB_X_AALG_SHA2_256
 	{ SADB_X_AALG_SHA2_256, "hmac-sha2-256", },
-#endif
-#ifdef SADB_X_AALG_SHA2_384
 	{ SADB_X_AALG_SHA2_384, "hmac-sha2-384", },
-#endif
-#ifdef SADB_X_AALG_SHA2_512
 	{ SADB_X_AALG_SHA2_512, "hmac-sha2-512", },
-#endif
-#ifdef SADB_X_AALG_RIPEMD160HMAC
-	{ SADB_X_AALG_RIPEMD160HMAC, "hmac-ripemd160", },
-#endif
-#ifdef SADB_X_AALG_AES_XCBC_MAC
 	{ SADB_X_AALG_AES_XCBC_MAC, "aes-xcbc-mac", },
-#endif
+	{ SADB_X_AALG_TCP_MD5, "tcp-md5", },
+	{ SADB_X_AALG_AES128GMAC, "aes-gmac-128", },
+	{ SADB_X_AALG_AES192GMAC, "aes-gmac-192", },
+	{ SADB_X_AALG_AES256GMAC, "aes-gmac-256", },
 	{ -1, NULL },
 };
 
 static struct val2str ipsec_espnames[] = {
 	{ SADB_EALG_NONE, "none", },
-	{ SADB_EALG_DESCBC, "des-cbc", },
-	{ SADB_EALG_3DESCBC, "3des-cbc", },
 	{ SADB_EALG_NULL, "null", },
-	{ SADB_X_EALG_CAST128CBC, "cast128-cbc", },
-	{ SADB_X_EALG_BLOWFISHCBC, "blowfish-cbc", },
-#ifdef SADB_X_EALG_RIJNDAELCBC
-	{ SADB_X_EALG_RIJNDAELCBC, "rijndael-cbc", },
-#endif
-#ifdef SADB_X_EALG_AESCTR
+	{ SADB_X_EALG_AESCBC, "aes-cbc", },
 	{ SADB_X_EALG_AESCTR, "aes-ctr", },
-#endif
-#ifdef SADB_X_EALG_AESGCM16
 	{ SADB_X_EALG_AESGCM16, "aes-gcm-16", },
-#endif
+	{ SADB_X_EALG_AESGMAC, "aes-gmac", },
 	{ -1, NULL },
 };
 
@@ -180,6 +163,8 @@ print_ipsecstats(const struct ipsecstat *ipsecstat)
 
 #define	p(f, m) if (ipsecstat->f || sflag <= 1) \
 	xo_emit(m, (uintmax_t)ipsecstat->f, plural(ipsecstat->f))
+#define	p2(f, m) if (ipsecstat->f || sflag <= 1) \
+	xo_emit(m, (uintmax_t)ipsecstat->f, plurales(ipsecstat->f))
 
 	p(ips_in_polvio, "\t{:dropped-policy-violation/%ju} "
 	    "{N:/inbound packet%s violated process security policy}\n");
@@ -199,14 +184,15 @@ print_ipsecstats(const struct ipsecstat *ipsecstat)
 	    "{N:/invalid outbound packet%s}\n");
 	p(ips_out_bundlesa, "\t{:send-bundled-sa/%ju} "
 	    "{N:/outbound packet%s with bundled SAs}\n");
-	p(ips_mbcoalesced, "\t{:mbufs-coalesced-during-clone/%ju} "
-	    "{N:/mbuf%s coalesced during clone}\n");
-	p(ips_clcoalesced, "\t{:clusters-coalesced-during-clone/%ju} "
-	    "{N:/cluster%s coalesced during clone}\n");
+	p(ips_spdcache_hits, "\t{:spdcache-hits/%ju} "
+	    "{N:/spd cache hit%s}\n");
+	p2(ips_spdcache_misses, "\t{:spdcache-misses/%ju} "
+	    "{N:/spd cache miss%s}\n");
 	p(ips_clcopied, "\t{:clusters-copied-during-clone/%ju} "
 	    "{N:/cluster%s copied during clone}\n");
 	p(ips_mbinserted, "\t{:mbufs-inserted/%ju} "
 	    "{N:/mbuf%s inserted during makespace}\n");
+#undef p2
 #undef p
 	xo_close_container("ipsec-statistics");
 }

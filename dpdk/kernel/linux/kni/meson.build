@@ -29,8 +29,8 @@ custom_target('rte_kni',
 		'src=' + meson.current_source_dir(),
 		' '.join(['MODULE_CFLAGS=', kmod_cflags,'-include '])
 		+ dpdk_source_root + '/config/rte_config.h' +
-		' -I' + dpdk_source_root + '/lib/librte_eal/common/include' +
-		' -I' + dpdk_source_root + '/lib/librte_eal/linux/eal/include' +
+		' -I' + dpdk_source_root + '/lib/librte_eal/include' +
+		' -I' + dpdk_source_root + '/lib/librte_kni' +
 		' -I' + dpdk_build_root +
 		' -I' + meson.current_source_dir(),
 		'modules'],

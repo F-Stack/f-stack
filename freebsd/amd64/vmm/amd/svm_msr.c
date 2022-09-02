@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2014, Neel Natu (neel@freebsd.org)
  * All rights reserved.
  *
@@ -26,6 +28,8 @@
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
+
+#include "opt_bhyve_snapshot.h"
 
 #include <sys/param.h>
 #include <sys/errno.h>
@@ -120,9 +124,8 @@ svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
 	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
 	case MSR_MTRR64kBase:
 	case MSR_SYSCFG:
-		*result = 0;
-		break;
 	case MSR_AMDK8_IPM:
+	case MSR_EXTFEATURES:
 		*result = 0;
 		break;
 	default:
@@ -160,6 +163,13 @@ svm_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val, bool *retu)
 		/*
 		 * Ignore writes to microcode update register.
 		 */
+		break;
+#ifdef BHYVE_SNAPSHOT
+	case MSR_TSC:
+		error = svm_set_tsc_offset(sc, vcpu, val - rdtsc());
+		break;
+#endif
+	case MSR_EXTFEATURES:
 		break;
 	default:
 		error = EINVAL;

@@ -32,28 +32,48 @@ errors:
 docs:
 	@(cd doc ; ${MAKE} docs)
 
-
 DIST_FILES_DIR = ~/Dropbox/dist-files/
 GH_PAGES_DIR = gh-pages/
 GH_PAGES_DIR_VER = gh-pages/${PACKAGE_VERSION}
 PACKAGE_FILE = ${PACKAGE_TARNAME}-${PACKAGE_VERSION}.tar.gz
 
-upload: dist upload-docs
+XOHTML_FILES = \
+    ${top_srcdir}/xohtml/xohtml.css \
+    ${top_srcdir}/xohtml/xohtml.js \
+    ${top_srcdir}/xohtml/external/jquery.js \
+    ${top_srcdir}/xohtml/external/jquery.qtip.css \
+    ${top_srcdir}/xohtml/external/jquery.qtip.js
+
+upload: dist upload-docs upload-xohtml-files
 	@echo "Remember to run:"
 	@echo "        gt tag ${PACKAGE_VERSION}"
 
-upload-docs: docs
-	@echo "Uploading libxo-manual.html ... "
-	@-[ -d ${GH_PAGES_DIR} ] \
-		&& echo "Updating manual on gh-pages ..." \
-		&& mkdir -p ${GH_PAGES_DIR_VER} \
-		&& cp doc/libxo-manual.html ${GH_PAGES_DIR} \
-		&& cp doc/libxo-manual.html ${GH_PAGES_DIR_VER} \
+upload-docs: docs upload-html
+
+upload-html:
+	@echo "Uploading html ... "
+	@-[ -d ${GH_PAGES_DIR} -a -d doc/html ] \
+		&& echo "Updating html on gh-pages ..." \
+		&& mkdir -p ${GH_PAGES_DIR_VER}/html \
+		&& cp doc/top-link.html ${GH_PAGES_DIR}/libxo.html \
+		&& cp -r doc/html/* ${GH_PAGES_DIR_VER}/html/ \
 		&& (cd ${GH_PAGES_DIR} \
-			&& git add ${PACKAGE_VERSION} \
-			&& git add libxo-manual.html \
+			&& git add libxo.html \
+			&& git add ${PACKAGE_VERSION}/html \
 			&& git commit -m 'new docs' \
-                               libxo-manual.html ${PACKAGE_VERSION} \
+                               libxo.html ${PACKAGE_VERSION}/html \
+			&& git push origin gh-pages ) ; true
+
+upload-xohtml-files:
+	@echo "Uploading xohtml files ... "
+	@-[ -d ${GH_PAGES_DIR} ] \
+		&& echo "Updating xohtml files on gh-pages ..." \
+		&& mkdir -p ${GH_PAGES_DIR_VER}/xohtml \
+		&& cp ${XOHTML_FILES} ${GH_PAGES_DIR_VER}/xohtml \
+		&& (cd ${GH_PAGES_DIR} \
+			&& git add ${PACKAGE_VERSION}/xohtml \
+			&& git commit -m 'new xohtml files' \
+                               ${PACKAGE_VERSION}/xohtml \
 			&& git push origin gh-pages ) ; true
 
 pkgconfigdir=$(libdir)/pkgconfig
@@ -100,4 +120,25 @@ ANALYZE_DIR = ~/trash/libxo
 ANALYZE_CMD = scan-build-mp-3.6
 
 analyze:
+	${MAKE} clean
 	${ANALYZE_CMD} -o ${ANALYZE_DIR} ${MAKE}
+
+SANIFLAGS=-fno-omit-frame-pointer -g -O2
+
+sanitize-address:
+	${MAKE} clean
+	${MAKE} CFLAGS="-fsanitize=address ${SANIFLAGS}"
+	${MAKE} install
+	${MAKE} test
+
+sanitize-undefined:
+	${MAKE} clean
+	${MAKE} CFLAGS="-fsanitize=undefined ${SANIFLAGS}"
+	${MAKE} install
+	${MAKE} test
+
+sanitize-memory:
+	${MAKE} clean
+	${MAKE} CFLAGS="-fsanitize=memory ${SANIFLAGS}"
+	${MAKE} install
+	${MAKE} test

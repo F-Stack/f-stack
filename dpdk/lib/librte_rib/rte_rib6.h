@@ -44,12 +44,12 @@ struct rte_rib6_node;
 /** RIB configuration structure */
 struct rte_rib6_conf {
 	/**
-	 * Size of extension block inside rte_rib_node.
+	 * Size of extension block inside rte_rib6_node.
 	 * This space could be used to store additional user
 	 * defined data.
 	 */
 	size_t	ext_sz;
-	/* size of rte_rib_node's pool */
+	/* size of rte_rib6_node's pool */
 	int	max_nodes;
 };
 
@@ -82,7 +82,7 @@ rte_rib6_copy_addr(uint8_t *dst, const uint8_t *src)
  *  0 otherwise
  */
 static inline int
-rte_rib6_is_equal(uint8_t *ip1, uint8_t *ip2) {
+rte_rib6_is_equal(const uint8_t *ip1, const uint8_t *ip2) {
 	int i;
 
 	if ((ip1 == NULL) || (ip2 == NULL))
@@ -239,8 +239,8 @@ rte_rib6_insert(struct rte_rib6 *rib,
  */
 __rte_experimental
 int
-rte_rib6_get_ip(struct rte_rib6_node *node,
-	uint8_t ip[RTE_RIB6_IPV6_ADDR_SIZE]);
+rte_rib6_get_ip(const struct rte_rib6_node *node,
+		uint8_t ip[RTE_RIB6_IPV6_ADDR_SIZE]);
 
 /**
  * Get a depth from rte_rib6_node
@@ -255,7 +255,7 @@ rte_rib6_get_ip(struct rte_rib6_node *node,
  */
 __rte_experimental
 int
-rte_rib6_get_depth(struct rte_rib6_node *node, uint8_t *depth);
+rte_rib6_get_depth(const struct rte_rib6_node *node, uint8_t *depth);
 
 /**
  * Get ext field from the rte_rib6_node
@@ -284,7 +284,7 @@ rte_rib6_get_ext(struct rte_rib6_node *node);
  */
 __rte_experimental
 int
-rte_rib6_get_nh(struct rte_rib6_node *node, uint64_t *nh);
+rte_rib6_get_nh(const struct rte_rib6_node *node, uint64_t *nh);
 
 /**
  * Set nexthop into the rte_rib6_node
@@ -316,13 +316,14 @@ rte_rib6_set_nh(struct rte_rib6_node *node, uint64_t nh);
  */
 __rte_experimental
 struct rte_rib6 *
-rte_rib6_create(const char *name, int socket_id, struct rte_rib6_conf *conf);
+rte_rib6_create(const char *name, int socket_id,
+		const struct rte_rib6_conf *conf);
 
 /**
  * Find an existing RIB object and return a pointer to it.
  *
  * @param name
- *  Name of the rib object as passed to rte_rib_create()
+ *  Name of the rib object as passed to rte_rib6_create()
  * @return
  *  Pointer to RIB object on success
  *  NULL otherwise with rte_errno indicating reason for failure.

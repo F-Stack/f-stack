@@ -3,6 +3,7 @@
  */
 
 #include "ice_rxtx_vec_common.h"
+#include "ice_rxtx_common_avx.h"
 
 #include <x86intrin.h>
 
@@ -10,126 +11,29 @@
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #endif
 
-static inline void
+static __rte_always_inline void
 ice_rxq_rearm(struct ice_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
+	return ice_rxq_rearm_common(rxq, false);
+}
 
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
+static inline __m256i
+ice_flex_rxd_to_fdir_flags_vec_avx2(const __m256i fdir_id0_7)
+{
+#define FDID_MIS_MAGIC 0xFFFFFFFF
+	RTE_BUILD_BUG_ON(PKT_RX_FDIR != (1 << 2));
+	RTE_BUILD_BUG_ON(PKT_RX_FDIR_ID != (1 << 13));
+	const __m256i pkt_fdir_bit = _mm256_set1_epi32(PKT_RX_FDIR |
+			PKT_RX_FDIR_ID);
+	/* desc->flow_id field == 0xFFFFFFFF means fdir mismatch */
+	const __m256i fdir_mis_mask = _mm256_set1_epi32(FDID_MIS_MAGIC);
+	__m256i fdir_mask = _mm256_cmpeq_epi32(fdir_id0_7,
+			fdir_mis_mask);
+	/* this XOR op results to bit-reverse the fdir_mask */
+	fdir_mask = _mm256_xor_si256(fdir_mask, fdir_mis_mask);
+	const __m256i fdir_flags = _mm256_and_si256(fdir_mask, pkt_fdir_bit);
 
-	/* Pull 'n' more MBUFs into the software ring */
-	if (rte_mempool_get_bulk(rxq->mp,
-				 (void *)rxep,
-				 ICE_RXQ_REARM_THRESH) < 0) {
-		if (rxq->rxrearm_nb + ICE_RXQ_REARM_THRESH >=
-		    rxq->nb_rx_desc) {
-			__m128i dma_addr0;
-
-			dma_addr0 = _mm_setzero_si128();
-			for (i = 0; i < ICE_DESCS_PER_LOOP; i++) {
-				rxep[i].mbuf = &rxq->fake_mbuf;
-				_mm_store_si128((__m128i *)&rxdp[i].read,
-						dma_addr0);
-			}
-		}
-		rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-			ICE_RXQ_REARM_THRESH;
-		return;
-	}
-
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-	struct rte_mbuf *mb0, *mb1;
-	__m128i dma_addr0, dma_addr1;
-	__m128i hdr_room = _mm_set_epi64x(RTE_PKTMBUF_HEADROOM,
-			RTE_PKTMBUF_HEADROOM);
-	/* Initialize the mbufs in vector, process 2 mbufs in one loop */
-	for (i = 0; i < ICE_RXQ_REARM_THRESH; i += 2, rxep += 2) {
-		__m128i vaddr0, vaddr1;
-
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-
-		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_physaddr) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
-
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0 = _mm_unpackhi_epi64(vaddr0, vaddr0);
-		dma_addr1 = _mm_unpackhi_epi64(vaddr1, vaddr1);
-
-		/* add headroom to pa values */
-		dma_addr0 = _mm_add_epi64(dma_addr0, hdr_room);
-		dma_addr1 = _mm_add_epi64(dma_addr1, hdr_room);
-
-		/* flush desc with pa dma_addr */
-		_mm_store_si128((__m128i *)&rxdp++->read, dma_addr0);
-		_mm_store_si128((__m128i *)&rxdp++->read, dma_addr1);
-	}
-#else
-	struct rte_mbuf *mb0, *mb1, *mb2, *mb3;
-	__m256i dma_addr0_1, dma_addr2_3;
-	__m256i hdr_room = _mm256_set1_epi64x(RTE_PKTMBUF_HEADROOM);
-	/* Initialize the mbufs in vector, process 4 mbufs in one loop */
-	for (i = 0; i < ICE_RXQ_REARM_THRESH;
-			i += 4, rxep += 4, rxdp += 4) {
-		__m128i vaddr0, vaddr1, vaddr2, vaddr3;
-		__m256i vaddr0_1, vaddr2_3;
-
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-		mb2 = rxep[2].mbuf;
-		mb3 = rxep[3].mbuf;
-
-		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_physaddr) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
-		vaddr2 = _mm_loadu_si128((__m128i *)&mb2->buf_addr);
-		vaddr3 = _mm_loadu_si128((__m128i *)&mb3->buf_addr);
-
-		/**
-		 * merge 0 & 1, by casting 0 to 256-bit and inserting 1
-		 * into the high lanes. Similarly for 2 & 3
-		 */
-		vaddr0_1 =
-			_mm256_inserti128_si256(_mm256_castsi128_si256(vaddr0),
-						vaddr1, 1);
-		vaddr2_3 =
-			_mm256_inserti128_si256(_mm256_castsi128_si256(vaddr2),
-						vaddr3, 1);
-
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0_1 = _mm256_unpackhi_epi64(vaddr0_1, vaddr0_1);
-		dma_addr2_3 = _mm256_unpackhi_epi64(vaddr2_3, vaddr2_3);
-
-		/* add headroom to pa values */
-		dma_addr0_1 = _mm256_add_epi64(dma_addr0_1, hdr_room);
-		dma_addr2_3 = _mm256_add_epi64(dma_addr2_3, hdr_room);
-
-		/* flush desc with pa dma_addr */
-		_mm256_store_si256((__m256i *)&rxdp->read, dma_addr0_1);
-		_mm256_store_si256((__m256i *)&(rxdp + 2)->read, dma_addr2_3);
-	}
-
-#endif
-
-	rxq->rxrearm_start += ICE_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
-		rxq->rxrearm_start = 0;
-
-	rxq->rxrearm_nb -= ICE_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
-
-	/* Update the tail pointer on the NIC */
-	ICE_PCI_REG_WRITE(rxq->qrx_tail, rx_id);
+	return fdir_flags;
 }
 
 static inline uint16_t
@@ -191,8 +95,8 @@ _ice_recv_raw_pkts_vec_avx2(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	const __m256i shuf_msk =
 		_mm256_set_epi8
 			(/* first descriptor */
-			 15, 14,
-			 13, 12,	/* octet 12~15, 32 bits rss */
+			 0xFF, 0xFF,
+			 0xFF, 0xFF,	/* rss hash parsed separately */
 			 11, 10,	/* octet 10~11, 16 bits vlan_macip */
 			 5, 4,		/* octet 4~5, 16 bits data_len */
 			 0xFF, 0xFF,	/* skip hi 16 bits pkt_len, zero out */
@@ -200,8 +104,8 @@ _ice_recv_raw_pkts_vec_avx2(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			 0xFF, 0xFF,	/* pkt_type set as unknown */
 			 0xFF, 0xFF,	/*pkt_type set as unknown */
 			 /* second descriptor */
-			 15, 14,
-			 13, 12,	/* octet 12~15, 32 bits rss */
+			 0xFF, 0xFF,
+			 0xFF, 0xFF,	/* rss hash parsed separately */
 			 11, 10,	/* octet 10~11, 16 bits vlan_macip */
 			 5, 4,		/* octet 4~5, 16 bits data_len */
 			 0xFF, 0xFF,	/* skip hi 16 bits pkt_len, zero out */
@@ -513,8 +417,141 @@ _ice_recv_raw_pkts_vec_avx2(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 					    rss_vlan_flag_bits);
 
 		/* merge flags */
-		const __m256i mbuf_flags = _mm256_or_si256(l3_l4_flags,
+		__m256i mbuf_flags = _mm256_or_si256(l3_l4_flags,
 				rss_vlan_flags);
+
+		if (rxq->fdir_enabled) {
+			const __m256i fdir_id4_7 =
+				_mm256_unpackhi_epi32(raw_desc6_7, raw_desc4_5);
+
+			const __m256i fdir_id0_3 =
+				_mm256_unpackhi_epi32(raw_desc2_3, raw_desc0_1);
+
+			const __m256i fdir_id0_7 =
+				_mm256_unpackhi_epi64(fdir_id4_7, fdir_id0_3);
+
+			const __m256i fdir_flags =
+				ice_flex_rxd_to_fdir_flags_vec_avx2(fdir_id0_7);
+
+			/* merge with fdir_flags */
+			mbuf_flags = _mm256_or_si256(mbuf_flags, fdir_flags);
+
+			/* write to mbuf: have to use scalar store here */
+			rx_pkts[i + 0]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 3);
+
+			rx_pkts[i + 1]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 7);
+
+			rx_pkts[i + 2]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 2);
+
+			rx_pkts[i + 3]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 6);
+
+			rx_pkts[i + 4]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 1);
+
+			rx_pkts[i + 5]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 5);
+
+			rx_pkts[i + 6]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 0);
+
+			rx_pkts[i + 7]->hash.fdir.hi =
+				_mm256_extract_epi32(fdir_id0_7, 4);
+		} /* if() on fdir_enabled */
+
+#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+		/**
+		 * needs to load 2nd 16B of each desc for RSS hash parsing,
+		 * will cause performance drop to get into this context.
+		 */
+		if (rxq->vsi->adapter->pf.dev_data->dev_conf.rxmode.offloads &
+				DEV_RX_OFFLOAD_RSS_HASH) {
+			/* load bottom half of every 32B desc */
+			const __m128i raw_desc_bh7 =
+				_mm_load_si128
+					((void *)(&rxdp[7].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh6 =
+				_mm_load_si128
+					((void *)(&rxdp[6].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh5 =
+				_mm_load_si128
+					((void *)(&rxdp[5].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh4 =
+				_mm_load_si128
+					((void *)(&rxdp[4].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh3 =
+				_mm_load_si128
+					((void *)(&rxdp[3].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh2 =
+				_mm_load_si128
+					((void *)(&rxdp[2].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh1 =
+				_mm_load_si128
+					((void *)(&rxdp[1].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh0 =
+				_mm_load_si128
+					((void *)(&rxdp[0].wb.status_error1));
+
+			__m256i raw_desc_bh6_7 =
+				_mm256_inserti128_si256
+					(_mm256_castsi128_si256(raw_desc_bh6),
+					raw_desc_bh7, 1);
+			__m256i raw_desc_bh4_5 =
+				_mm256_inserti128_si256
+					(_mm256_castsi128_si256(raw_desc_bh4),
+					raw_desc_bh5, 1);
+			__m256i raw_desc_bh2_3 =
+				_mm256_inserti128_si256
+					(_mm256_castsi128_si256(raw_desc_bh2),
+					raw_desc_bh3, 1);
+			__m256i raw_desc_bh0_1 =
+				_mm256_inserti128_si256
+					(_mm256_castsi128_si256(raw_desc_bh0),
+					raw_desc_bh1, 1);
+
+			/**
+			 * to shift the 32b RSS hash value to the
+			 * highest 32b of each 128b before mask
+			 */
+			__m256i rss_hash6_7 =
+				_mm256_slli_epi64(raw_desc_bh6_7, 32);
+			__m256i rss_hash4_5 =
+				_mm256_slli_epi64(raw_desc_bh4_5, 32);
+			__m256i rss_hash2_3 =
+				_mm256_slli_epi64(raw_desc_bh2_3, 32);
+			__m256i rss_hash0_1 =
+				_mm256_slli_epi64(raw_desc_bh0_1, 32);
+
+			__m256i rss_hash_msk =
+				_mm256_set_epi32(0xFFFFFFFF, 0, 0, 0,
+						 0xFFFFFFFF, 0, 0, 0);
+
+			rss_hash6_7 = _mm256_and_si256
+					(rss_hash6_7, rss_hash_msk);
+			rss_hash4_5 = _mm256_and_si256
+					(rss_hash4_5, rss_hash_msk);
+			rss_hash2_3 = _mm256_and_si256
+					(rss_hash2_3, rss_hash_msk);
+			rss_hash0_1 = _mm256_and_si256
+					(rss_hash0_1, rss_hash_msk);
+
+			mb6_7 = _mm256_or_si256(mb6_7, rss_hash6_7);
+			mb4_5 = _mm256_or_si256(mb4_5, rss_hash4_5);
+			mb2_3 = _mm256_or_si256(mb2_3, rss_hash2_3);
+			mb0_1 = _mm256_or_si256(mb0_1, rss_hash0_1);
+		} /* if() on RSS hash parsing */
+#endif
+
 		/**
 		 * At this point, we have the 8 sets of flags in the low 16-bits
 		 * of each 32-bit value in vlan0.
@@ -743,7 +780,7 @@ ice_vtx1(volatile struct ice_tx_desc *txdp,
 		 ((uint64_t)pkt->data_len << ICE_TXD_QW1_TX_BUF_SZ_S));
 
 	__m128i descriptor = _mm_set_epi64x(high_qw,
-				pkt->buf_physaddr + pkt->data_off);
+				pkt->buf_iova + pkt->data_off);
 	_mm_store_si128((__m128i *)txdp, descriptor);
 }
 
@@ -782,15 +819,15 @@ ice_vtx(volatile struct ice_tx_desc *txdp,
 		__m256i desc2_3 =
 			_mm256_set_epi64x
 				(hi_qw3,
-				 pkt[3]->buf_physaddr + pkt[3]->data_off,
+				 pkt[3]->buf_iova + pkt[3]->data_off,
 				 hi_qw2,
-				 pkt[2]->buf_physaddr + pkt[2]->data_off);
+				 pkt[2]->buf_iova + pkt[2]->data_off);
 		__m256i desc0_1 =
 			_mm256_set_epi64x
 				(hi_qw1,
-				 pkt[1]->buf_physaddr + pkt[1]->data_off,
+				 pkt[1]->buf_iova + pkt[1]->data_off,
 				 hi_qw0,
-				 pkt[0]->buf_physaddr + pkt[0]->data_off);
+				 pkt[0]->buf_iova + pkt[0]->data_off);
 		_mm256_store_si256((void *)(txdp + 2), desc2_3);
 		_mm256_store_si256((void *)txdp, desc0_1);
 	}
@@ -864,7 +901,7 @@ ice_xmit_fixed_burst_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	txq->tx_tail = tx_id;
 
-	ICE_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	ICE_PCI_REG_WC_WRITE(txq->qtx_tail, txq->tx_tail);
 
 	return nb_pkts;
 }

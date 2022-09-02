@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -80,16 +82,18 @@ struct pcb {
 
 	u_int	pcb_flags;
 #define	PCB_DBREGS	0x02	/* process using debug registers */
+#define	PCB_KERNNPX_THR	0x04	/* fpu_kern_thread() */
 #define	PCB_NPXINITDONE	0x08	/* fpu state is initialized */
 #define	PCB_VM86CALL	0x10	/* in vm86 call */
 #define	PCB_NPXUSERINITDONE 0x20 /* user fpu state is initialized */
 #define	PCB_KERNNPX	0x40	/* kernel uses npx */
+#define	PCB_NPXNOSAVE	0x80	/* no save area for current FPU ctx */
 
 	uint16_t pcb_initial_npxcw;
 
 	caddr_t	pcb_onfault;	/* copyin/out fault recovery */
 	struct	pcb_ext	*pcb_ext;	/* optional pcb extension */
-	int	pcb_psl;	/* process status long */
+	int	pcb_waspsl;	/* unused padding for ABI and API compat */
 	u_long	pcb_vm86[2];	/* vm86bios scratch space */
 	union	savefpu *pcb_save;
 

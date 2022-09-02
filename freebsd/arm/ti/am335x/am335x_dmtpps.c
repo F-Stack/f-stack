@@ -43,15 +43,18 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_platform.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/conf.h>
 #include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/module.h>
 #include <sys/malloc.h>
+#include <sys/mutex.h>
 #include <sys/rman.h>
-#include <sys/taskqueue.h>
 #include <sys/timepps.h>
 #include <sys/timetc.h>
 #include <machine/bus.h>
@@ -59,9 +62,9 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
+#include <dev/extres/clk/clk.h>
 
-#include <arm/ti/ti_prcm.h>
-#include <arm/ti/ti_hwmods.h>
+#include <arm/ti/ti_sysc.h>
 #include <arm/ti/ti_pinmux.h>
 #include <arm/ti/am335x/am335x_scm_padconf.h>
 
@@ -78,10 +81,11 @@ struct dmtpps_softc {
 	uint32_t		tclr;		/* Cached TCLR register. */
 	struct timecounter	tc;
 	int			pps_curmode;	/* Edge mode now set in hw. */
-	struct task 		pps_task;	/* For pps_event handling. */
 	struct cdev *		pps_cdev;
 	struct pps_state	pps_state;
 	struct mtx		pps_mtx;
+	clk_t			clk_fck;
+	uint64_t		sysclk_freq;
 };
 
 static int dmtpps_tmr_num;	/* Set by probe() */
@@ -92,6 +96,7 @@ static struct ofw_compat_data compat_data[] = {
 	{"ti,am335x-timer-1ms", 1},
 	{NULL,                  0},
 };
+SIMPLEBUS_PNP_INFO(compat_data);
 
 /*
  * A table relating pad names to the hardware timer number they can be mux'd to.
@@ -163,7 +168,7 @@ dmtpps_translate_nickname(const char *nick)
  * fails that IS an error, return -1.
  */
 static int
-dmtpps_find_tmr_num_by_tunable()
+dmtpps_find_tmr_num_by_tunable(void)
 {
 	struct padinfo *pi;
 	char iname[20];
@@ -201,7 +206,7 @@ dmtpps_find_tmr_num_by_tunable()
  * input pin.  If so, return the timer number, if not return 0.
  */
 static int
-dmtpps_find_tmr_num_by_padconf()
+dmtpps_find_tmr_num_by_padconf(void)
 {
 	int err;
 	unsigned int padstate;
@@ -225,7 +230,7 @@ dmtpps_find_tmr_num_by_padconf()
  * configuration.  This is done just once, the first time probe() runs.
  */
 static int
-dmtpps_find_tmr_num()
+dmtpps_find_tmr_num(void)
 {
 	int tmr_num;
 
@@ -284,46 +289,27 @@ dmtpps_poll(struct timecounter *tc)
 	 * populates it from the current DMT_TCRR register) with the latched
 	 * value from the TCAR1 register.
 	 *
-	 * There is no locking here, by design.  pps_capture() writes into an
-	 * area of struct pps_state which is read only by pps_event().  The
-	 * synchronization of access to that area is temporal rather than
-	 * interlock based... we write in this routine and trigger the task that
-	 * will read the data, so no simultaneous access can occur.
-	 *
 	 * Note that we don't have the TCAR interrupt enabled, but the hardware
 	 * still provides the status bits in the "RAW" status register even when
 	 * they're masked from generating an irq.  However, when clearing the
 	 * TCAR status to re-arm the capture for the next second, we have to
 	 * write to the IRQ status register, not the RAW register.  Quirky.
+	 *
+	 * We do not need to hold a lock while capturing the pps data, because
+	 * it is captured into an area of the pps_state struct which is read
+	 * only by pps_event().  We do need to hold a lock while calling
+	 * pps_event(), because it manipulates data which is also accessed from
+	 * the ioctl(2) context by userland processes.
 	 */
 	if (DMTIMER_READ4(sc, DMT_IRQSTATUS_RAW) & DMT_IRQ_TCAR) {
 		pps_capture(&sc->pps_state);
 		sc->pps_state.capcount = DMTIMER_READ4(sc, DMT_TCAR1);
 		DMTIMER_WRITE4(sc, DMT_IRQSTATUS, DMT_IRQ_TCAR);
-		taskqueue_enqueue(taskqueue_fast, &sc->pps_task);
+
+		mtx_lock_spin(&sc->pps_mtx);
+		pps_event(&sc->pps_state, PPS_CAPTUREASSERT);
+		mtx_unlock_spin(&sc->pps_mtx);
 	}
-}
-
-static void
-dmtpps_event(void *arg, int pending)
-{
-	struct dmtpps_softc *sc;
-
-	sc = arg;
-
-	/* This is the task function that gets enqueued by poll_pps.  Once the
-	 * time has been captured by the timecounter polling code which runs in
-	 * primary interrupt context, the remaining (more expensive) work to
-	 * process the event is done later in a threaded context.
-	 *
-	 * Here there is an interlock that protects the event data in struct
-	 * pps_state.  That data can be accessed at any time from userland via
-	 * ioctl() calls so we must ensure that there is no read access to
-	 * partially updated data while pps_event() does its work.
-	 */
-	mtx_lock(&sc->pps_mtx);
-	pps_event(&sc->pps_state, PPS_CAPTUREASSERT);
-	mtx_unlock(&sc->pps_mtx);
 }
 
 static int
@@ -373,9 +359,9 @@ dmtpps_ioctl(struct cdev *dev, u_long cmd, caddr_t data,
 	sc = dev->si_drv1;
 
 	/* Let the kernel do the heavy lifting for ioctl. */
-	mtx_lock(&sc->pps_mtx);
+	mtx_lock_spin(&sc->pps_mtx);
 	err = pps_ioctl(cmd, data, &sc->pps_state);
-	mtx_unlock(&sc->pps_mtx);
+	mtx_unlock_spin(&sc->pps_mtx);
 	if (err != 0)
 		return (err);
 
@@ -401,6 +387,7 @@ dmtpps_probe(device_t dev)
 {
 	char strbuf[64];
 	int tmr_num;
+	uint64_t rev_address;
 
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
@@ -420,7 +407,33 @@ dmtpps_probe(device_t dev)
 	 * Figure out which hardware timer is being probed and see if it matches
 	 * the configured timer number determined earlier.
 	 */
-	tmr_num = ti_hwmods_get_unit(dev, "timer");
+	rev_address = ti_sysc_get_rev_address(device_get_parent(dev));
+	switch (rev_address) {
+		case DMTIMER1_1MS_REV:
+			tmr_num = 1;
+			break;
+		case DMTIMER2_REV:
+			tmr_num = 2;
+			break;
+		case DMTIMER3_REV:
+			tmr_num = 3;
+			break;
+		case DMTIMER4_REV:
+			tmr_num = 4;
+			break;
+		case DMTIMER5_REV:
+			tmr_num = 5;
+			break;
+		case DMTIMER6_REV:
+			tmr_num = 6;
+			break;
+		case DMTIMER7_REV:
+			tmr_num = 7;
+			break;
+		default:
+			return (ENXIO);
+        }
+
 	if (dmtpps_tmr_num != tmr_num)
 		return (ENXIO);
 
@@ -435,23 +448,74 @@ static int
 dmtpps_attach(device_t dev)
 {
 	struct dmtpps_softc *sc;
-	clk_ident_t timer_id;
-	int err, sysclk_freq;
+	struct make_dev_args mda;
+	int err;
+	clk_t sys_clkin;
+	uint64_t rev_address;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
 
-	/* Get the base clock frequency. */
-	err = ti_prcm_clk_get_source_freq(SYS_CLK, &sysclk_freq);
+	/* Figure out which hardware timer this is and set the name string. */
+	rev_address = ti_sysc_get_rev_address(device_get_parent(dev));
+	switch (rev_address) {
+		case DMTIMER1_1MS_REV:
+			sc->tmr_num = 1;
+			break;
+		case DMTIMER2_REV:
+			sc->tmr_num = 2;
+			break;
+		case DMTIMER3_REV:
+			sc->tmr_num = 3;
+			break;
+		case DMTIMER4_REV:
+			sc->tmr_num = 4;
+			break;
+		case DMTIMER5_REV:
+			sc->tmr_num = 5;
+			break;
+		case DMTIMER6_REV:
+			sc->tmr_num = 6;
+			break;
+		case DMTIMER7_REV:
+			sc->tmr_num = 7;
+			break;
+        }
+	snprintf(sc->tmr_name, sizeof(sc->tmr_name), "DMTimer%d", sc->tmr_num);
+
+	/* expect one clock */
+	err = clk_get_by_ofw_index(dev, 0, 0, &sc->clk_fck);
+	if (err != 0) {
+		device_printf(dev, "Cant find clock index 0. err: %d\n", err);
+		return (ENXIO);
+	}
+
+	err = clk_get_by_name(dev, "sys_clkin_ck@40", &sys_clkin);
+	if (err != 0) {
+		device_printf(dev, "Cant find sys_clkin_ck@40 err: %d\n", err);
+		return (ENXIO);
+	}
+
+	/* Select M_OSC as DPLL parent */
+	err = clk_set_parent_by_clk(sc->clk_fck, sys_clkin);
+	if (err != 0) {
+		device_printf(dev, "Cant set mux to CLK_M_OSC\n");
+		return (ENXIO);
+	}
 
 	/* Enable clocks and power on the device. */
-	if ((timer_id = ti_hwmods_get_clock(dev)) == INVALID_CLK_IDENT)
+	err = ti_sysc_clock_enable(device_get_parent(dev));
+	if (err != 0) {
+		device_printf(dev, "Cant enable sysc clkctrl, err %d\n", err);
 		return (ENXIO);
-	if ((err = ti_prcm_clk_set_source(timer_id, SYSCLK_CLK)) != 0)
-		return (err);
-	if ((err = ti_prcm_clk_enable(timer_id)) != 0)
-		return (err);
+	}
 
+	/* Get the base clock frequency. */
+	err = clk_get_freq(sc->clk_fck, &sc->sysclk_freq);
+	if (err != 0) {
+		device_printf(dev, "Cant get sysclk frequency, err %d\n", err);
+		return (ENXIO);
+	}
 	/* Request the memory resources. */
 	sc->mem_res = bus_alloc_resource_any(dev, SYS_RES_MEMORY,
 	    &sc->mem_rid, RF_ACTIVE);
@@ -459,9 +523,13 @@ dmtpps_attach(device_t dev)
 		return (ENXIO);
 	}
 
-	/* Figure out which hardware timer this is and set the name string. */
-	sc->tmr_num = ti_hwmods_get_unit(dev, "timer");
-	snprintf(sc->tmr_name, sizeof(sc->tmr_name), "DMTimer%d", sc->tmr_num);
+	/*
+	 * Configure the timer pulse/capture pin to input/capture mode.  This is
+	 * required in addition to configuring the pin as input with the pinmux
+	 * controller (which was done via fdt data or tunable at probe time).
+	 */
+	sc->tclr = DMT_TCLR_GPO_CFG;
+	DMTIMER_WRITE4(sc, DMT_TCLR, sc->tclr);
 
 	/* Set up timecounter hardware, start it. */
 	DMTIMER_WRITE4(sc, DMT_TSICR, DMT_TSICR_RESET);
@@ -477,7 +545,7 @@ dmtpps_attach(device_t dev)
 	sc->tc.tc_name           = sc->tmr_name;
 	sc->tc.tc_get_timecount  = dmtpps_get_timecount;
 	sc->tc.tc_counter_mask   = ~0u;
-	sc->tc.tc_frequency      = sysclk_freq;
+	sc->tc.tc_frequency      = sc->sysclk_freq;
 	sc->tc.tc_quality        = 1000;
 	sc->tc.tc_priv           = sc;
 
@@ -493,22 +561,27 @@ dmtpps_attach(device_t dev)
 	 * now, just say we can only capture assert events (the positive-going
 	 * edge of the pulse).
 	 */
-	mtx_init(&sc->pps_mtx, "dmtpps", NULL, MTX_DEF);
+	mtx_init(&sc->pps_mtx, "dmtpps", NULL, MTX_SPIN);
+	sc->pps_state.flags = PPSFLAG_MTX_SPIN;
 	sc->pps_state.ppscap = PPS_CAPTUREASSERT;
 	sc->pps_state.driver_abi = PPS_ABI_VERSION;
 	sc->pps_state.driver_mtx = &sc->pps_mtx;
 	pps_init_abi(&sc->pps_state);
 
-	/*
-	 * Init the task that does deferred pps_event() processing after
-	 * the polling routine has captured a pps pulse time.
-	 */
-	TASK_INIT(&sc->pps_task, 0, dmtpps_event, sc);
-
 	/* Create the PPS cdev. */
-	sc->pps_cdev = make_dev(&dmtpps_cdevsw, 0, UID_ROOT, GID_WHEEL, 0600,
-	    PPS_CDEV_NAME);
-	sc->pps_cdev->si_drv1 = sc;
+	make_dev_args_init(&mda);
+	mda.mda_flags = MAKEDEV_WAITOK;
+	mda.mda_devsw = &dmtpps_cdevsw;
+	mda.mda_cr = NULL;
+	mda.mda_uid = UID_ROOT;
+	mda.mda_gid = GID_WHEEL;
+	mda.mda_mode = 0600;
+	mda.mda_unit = device_get_unit(dev);
+	mda.mda_si_drv1 = sc;
+	if ((err = make_dev_s(&mda, &sc->pps_cdev, PPS_CDEV_NAME)) != 0) {
+		device_printf(dev, "Failed to create cdev %s\n", PPS_CDEV_NAME);
+		return (err);
+	}
 
 	if (bootverbose)
 		device_printf(sc->dev, "Using %s for PPS device /dev/%s\n",
@@ -545,5 +618,4 @@ static driver_t dmtpps_driver = {
 static devclass_t dmtpps_devclass;
 
 DRIVER_MODULE(am335x_dmtpps, simplebus, dmtpps_driver, dmtpps_devclass, 0, 0);
-MODULE_DEPEND(am335x_dmtpps, am335x_prcm, 1, 1, 1);
-
+MODULE_DEPEND(am335x_dmtpps, ti_sysc, 1, 1, 1);

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1995 Terrence R. Lambert
  * All rights reserved.
  *
@@ -52,6 +54,9 @@
 /* for intrhook below */
 #include <sys/queue.h>
 
+/* for timestamping SYSINITs; other files may assume this is included here */
+#include <sys/tslog.h>
+
 /* Global variables for the kernel. */
 
 /* 1.1 */
@@ -86,7 +91,8 @@ enum sysinit_sub_id {
 	SI_SUB_DONE		= 0x0000001,	/* processed*/
 	SI_SUB_TUNABLES		= 0x0700000,	/* establish tunable values */
 	SI_SUB_COPYRIGHT	= 0x0800001,	/* first use of console*/
-	SI_SUB_VM		= 0x1000000,	/* virtual memory system init*/
+	SI_SUB_VM		= 0x1000000,	/* virtual memory system init */
+	SI_SUB_COUNTER		= 0x1100000,	/* counter(9) is initialized */
 	SI_SUB_KMEM		= 0x1800000,	/* kernel memory*/
 	SI_SUB_HYPERVISOR	= 0x1A40000,	/*
 						 * Hypervisor detection and
@@ -118,6 +124,8 @@ enum sysinit_sub_id {
 	SI_SUB_SCHED_IDLE	= 0x2600000,	/* required idle procs */
 	SI_SUB_MBUF		= 0x2700000,	/* mbuf subsystem */
 	SI_SUB_INTR		= 0x2800000,	/* interrupt threads */
+	SI_SUB_TASKQ		= 0x2880000,	/* task queues */
+	SI_SUB_EPOCH		= 0x2888000,	/* epoch subsystem */
 #ifdef EARLY_AP_STARTUP
 	SI_SUB_SMP		= 0x2900000,	/* start the APs*/
 #endif
@@ -167,7 +175,6 @@ enum sysinit_sub_id {
 	SI_SUB_LAST		= 0xfffffff	/* final initialization */
 };
 
-
 /*
  * Some enumerated orders; "ANY" sorts last.
  */
@@ -176,10 +183,13 @@ enum sysinit_elem_order {
 	SI_ORDER_SECOND		= 0x0000001,	/* second*/
 	SI_ORDER_THIRD		= 0x0000002,	/* third*/
 	SI_ORDER_FOURTH		= 0x0000003,	/* fourth*/
+	SI_ORDER_FIFTH		= 0x0000004,	/* fifth*/
+	SI_ORDER_SIXTH		= 0x0000005,	/* sixth*/
+	SI_ORDER_SEVENTH	= 0x0000006,	/* seventh*/
+	SI_ORDER_EIGHTH		= 0x0000007,	/* eighth*/
 	SI_ORDER_MIDDLE		= 0x1000000,	/* somewhere in the middle */
 	SI_ORDER_ANY		= 0xfffffff	/* last*/
 };
-
 
 /*
  * A system initialization call instance
@@ -226,6 +236,35 @@ struct sysinit {
  * correct warnings when -Wcast-qual is used.
  *
  */
+#ifdef TSLOG
+struct sysinit_tslog {
+	sysinit_cfunc_t func;
+	const void * data;
+	const char * name;
+};
+static inline void
+sysinit_tslog_shim(const void * data)
+{
+	const struct sysinit_tslog * x = data;
+
+	TSRAW(curthread, TS_ENTER, "SYSINIT", x->name);
+	(x->func)(x->data);
+	TSRAW(curthread, TS_EXIT, "SYSINIT", x->name);
+}
+#define	C_SYSINIT(uniquifier, subsystem, order, func, ident)	\
+	static struct sysinit_tslog uniquifier ## _sys_init_tslog = {	\
+		func,						\
+		(ident),					\
+		#uniquifier					\
+	};							\
+	static struct sysinit uniquifier ## _sys_init = {	\
+		subsystem,					\
+		order,						\
+		sysinit_tslog_shim,				\
+		&uniquifier ## _sys_init_tslog			\
+	};							\
+	DATA_WSET(sysinit_set,uniquifier ## _sys_init)
+#else
 #define	C_SYSINIT(uniquifier, subsystem, order, func, ident)	\
 	static struct sysinit uniquifier ## _sys_init = {	\
 		subsystem,					\
@@ -233,7 +272,8 @@ struct sysinit {
 		func,						\
 		(ident)						\
 	};							\
-	DATA_SET(sysinit_set,uniquifier ## _sys_init)
+	DATA_WSET(sysinit_set,uniquifier ## _sys_init)
+#endif
 
 #define	SYSINIT(uniquifier, subsystem, order, func, ident)	\
 	C_SYSINIT(uniquifier, subsystem, order,			\
@@ -249,13 +289,15 @@ struct sysinit {
 		func,						\
 		(ident)						\
 	};							\
-	DATA_SET(sysuninit_set,uniquifier ## _sys_uninit)
+	DATA_WSET(sysuninit_set,uniquifier ## _sys_uninit)
 
 #define	SYSUNINIT(uniquifier, subsystem, order, func, ident)	\
 	C_SYSUNINIT(uniquifier, subsystem, order,		\
 	(sysinit_cfunc_t)(sysinit_nfunc_t)func, (void *)(ident))
 
 void	sysinit_add(struct sysinit **set, struct sysinit **set_end);
+
+#ifdef _KERNEL
 
 /*
  * Infrastructure for tunable 'constants'.  Value may be specified at compile
@@ -352,7 +394,7 @@ struct tunable_uint64 {
 	uint64_t *var;
 };
 #define	TUNABLE_UINT64(path, var)				\
-	static struct tunable_ulong __CONCAT(__tunable_uint64_, __LINE__) = { \
+	static struct tunable_uint64 __CONCAT(__tunable_uint64_, __LINE__) = { \
 		(path),						\
 		(var),						\
 	};							\
@@ -381,6 +423,25 @@ struct tunable_quad {
 
 #define	TUNABLE_QUAD_FETCH(path, var)	getenv_quad((path), (var))
 
+/*
+ * bool
+ */
+extern void tunable_bool_init(void *);
+struct tunable_bool {
+	const char *path;
+	bool *var;
+};
+#define	TUNABLE_BOOL(path, var) \
+	static struct tunable_bool __CONCAT(__tunable_bool_, __LINE__) = { \
+		(path),						\
+		(var),						\
+	};							\
+	SYSINIT(__CONCAT(__Tunable_init_, __LINE__),		\
+	    SI_SUB_TUNABLES, SI_ORDER_MIDDLE, tunable_bool_init, \
+	    &__CONCAT(__tunable_bool_, __LINE__))
+
+#define	TUNABLE_BOOL_FETCH(path, var)	getenv_bool((path), (var))
+
 extern void tunable_str_init(void *);
 struct tunable_str {
 	const char *path;
@@ -400,13 +461,18 @@ struct tunable_str {
 #define	TUNABLE_STR_FETCH(path, var, size)			\
 	getenv_string((path), (var), (size))
 
+#endif /* _KERNEL */
+
+typedef void (*ich_func_t)(void *_arg);
+
 struct intr_config_hook {
 	TAILQ_ENTRY(intr_config_hook) ich_links;
-	void	(*ich_func)(void *arg);
-	void	*ich_arg;
+	ich_func_t	ich_func;
+	void		*ich_arg;
 };
 
 int	config_intrhook_establish(struct intr_config_hook *hook);
 void	config_intrhook_disestablish(struct intr_config_hook *hook);
+void	config_intrhook_oneshot(ich_func_t _func, void *_arg);
 
 #endif /* !_SYS_KERNEL_H_*/

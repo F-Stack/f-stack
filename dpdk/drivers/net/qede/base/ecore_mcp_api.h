@@ -121,6 +121,10 @@ struct ecore_mcp_function_info {
 enum ecore_nvm_images {
 	ECORE_NVM_IMAGE_ISCSI_CFG,
 	ECORE_NVM_IMAGE_FCOE_CFG,
+	ECORE_NVM_IMAGE_MDUMP,
+	ECORE_NVM_IMAGE_NVM_CFG1,
+	ECORE_NVM_IMAGE_DEFAULT_CFG,
+	ECORE_NVM_IMAGE_NVM_META,
 };
 #endif
 
@@ -588,6 +592,18 @@ enum _ecore_status_t ecore_mcp_get_mfw_ver(struct ecore_hwfn *p_hwfn,
 					   u32 *p_running_bundle_id);
 
 /**
+ * @brief Get the MBI version value
+ *
+ * @param p_hwfn
+ * @param p_ptt
+ * @param p_mbi_ver - A pointer to a variable to be filled with the MBI version.
+ *
+ * @return int - 0 - operation was successful.
+ */
+int ecore_mcp_get_mbi_ver(struct ecore_hwfn *p_hwfn,
+			  struct ecore_ptt *p_ptt, u32 *p_mbi_ver);
+
+/**
  * @brief Get media type value of the port.
  *
  * @param p_dev      - ecore dev pointer
@@ -957,6 +973,39 @@ enum _ecore_status_t ecore_mcp_phy_read(struct ecore_dev *p_dev, u32 cmd,
  */
 enum _ecore_status_t ecore_mcp_nvm_read(struct ecore_dev *p_dev, u32 addr,
 			   u8 *p_buf, u32 len);
+
+struct ecore_nvm_image_att {
+	u32 start_addr;
+	u32 length;
+};
+
+/**
+ * @brief Allows reading a whole nvram image
+ *
+ * @param p_hwfn
+ * @param image_id - image to get attributes for
+ * @param p_image_att - image attributes structure into which to fill data
+ *
+ * @return enum _ecore_status_t - ECORE_SUCCESS - operation was successful.
+ */
+enum _ecore_status_t
+ecore_mcp_get_nvm_image_att(struct ecore_hwfn *p_hwfn,
+			    enum ecore_nvm_images image_id,
+			    struct ecore_nvm_image_att *p_image_att);
+
+/**
+ * @brief Allows reading a whole nvram image
+ *
+ * @param p_hwfn
+ * @param image_id - image requested for reading
+ * @param p_buffer - allocated buffer into which to fill data
+ * @param buffer_len - length of the allocated buffer.
+ *
+ * @return ECORE_SUCCESS if p_buffer now contains the nvram image.
+ */
+enum _ecore_status_t ecore_mcp_get_nvm_image(struct ecore_hwfn *p_hwfn,
+					     enum ecore_nvm_images image_id,
+					     u8 *p_buffer, u32 buffer_len);
 
 /**
  * @brief - Sends an NVM write command request to the MFW with

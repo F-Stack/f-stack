@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002-2008 Sam Leffler, Errno Consulting
  * All rights reserved.
  *
@@ -35,7 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h> 
 #include <sys/kernel.h>
 #include <sys/malloc.h>
- 
+
 #include <sys/socket.h>
 
 #include <net/if.h>
@@ -333,7 +335,7 @@ ieee80211_pwrsave(struct ieee80211_node *ni, struct mbuf *m)
 	if (psq->psq_len >= psq->psq_maxlen) {
 		psq->psq_drops++;
 		IEEE80211_PSQ_UNLOCK(psq);
-		IEEE80211_NOTE(vap, IEEE80211_MSG_ANY, ni,
+		IEEE80211_NOTE(vap, IEEE80211_MSG_POWER, ni,
 		    "pwr save q overflow, drops %d (size %d)",
 		    psq->psq_drops, psq->psq_len);
 #ifdef IEEE80211_DEBUG

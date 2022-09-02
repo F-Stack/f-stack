@@ -37,7 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/condvar.h>
- 
+
 #include <sys/socket.h>
 
 #include <net/if.h>
@@ -57,9 +57,11 @@ struct scan_state {
 	u_int			ss_iflags;	/* flags used internally */
 #define	ISCAN_MINDWELL 		0x0001		/* min dwell time reached */
 #define	ISCAN_DISCARD		0x0002		/* discard rx'd frames */
-#define	ISCAN_CANCEL		0x0004		/* cancel current scan */
-#define	ISCAN_ABORT		0x0008		/* end the scan immediately */
-#define	ISCAN_RUNNING		0x0010		/* scan was started */
+#define ISCAN_INTERRUPT		0x0004		/* interrupt current scan */
+#define	ISCAN_CANCEL		0x0008		/* cancel current scan */
+#define ISCAN_PAUSE		(ISCAN_INTERRUPT | ISCAN_CANCEL)
+#define	ISCAN_ABORT		0x0010		/* end the scan immediately */
+#define	ISCAN_RUNNING		0x0020		/* scan was started */
 
 	unsigned long		ss_chanmindwell;  /* min dwell on curchan */
 	unsigned long		ss_scanend;	/* time scan must stop */
@@ -230,7 +232,6 @@ ieee80211_swscan_start_scan_locked(const struct ieee80211_scanner *scan,
 	return 0;
 }
 
-
 /*
  * Start a scan unless one is already going.
  *
@@ -296,6 +297,11 @@ ieee80211_swscan_check_scan(const struct ieee80211_scanner *scan,
 			 * use.  Also discard any frames that might come
 			 * in while temporarily marked as scanning.
 			 */
+			IEEE80211_DPRINTF(vap, IEEE80211_MSG_SCAN,
+			    "cache hot; ic_lastscan=%d, scanvalid=%d, ticks=%d\n",
+			    ic->ic_lastscan,
+			    vap->iv_scanvalid,
+			    ticks);
 			SCAN_PRIVATE(ss)->ss_iflags |= ISCAN_DISCARD;
 			ic->ic_flags |= IEEE80211_F_SCAN;
 
@@ -305,6 +311,8 @@ ieee80211_swscan_check_scan(const struct ieee80211_scanner *scan,
 
 			ic->ic_flags &= ~IEEE80211_F_SCAN;
 			SCAN_PRIVATE(ss)->ss_iflags &= ~ISCAN_DISCARD;
+			IEEE80211_DPRINTF(vap, IEEE80211_MSG_SCAN,
+			    "%s: scan_end returned %d\n", __func__, result);
 			if (result) {
 				ieee80211_notify_scan_done(vap);
 				return 1;
@@ -410,32 +418,42 @@ ieee80211_swscan_bg_scan(const struct ieee80211_scanner *scan,
 	return (ic->ic_flags & IEEE80211_F_SCAN);
 }
 
+/*
+ * Taskqueue work to cancel a scan.
+ *
+ * Note: for offload scan devices, we may want to call into the
+ * driver to try and cancel scanning, however it may not be cancelable.
+ */
 static void
 cancel_scan(struct ieee80211vap *vap, int any, const char *func)
 {
 	struct ieee80211com *ic = vap->iv_ic;
 	struct ieee80211_scan_state *ss = ic->ic_scan;
+	struct scan_state *ss_priv = SCAN_PRIVATE(ss);
+	int signal;
 
 	IEEE80211_LOCK(ic);
+	signal = any ? ISCAN_PAUSE : ISCAN_CANCEL;
 	if ((ic->ic_flags & IEEE80211_F_SCAN) &&
 	    (any || ss->ss_vap == vap) &&
-	    (SCAN_PRIVATE(ss)->ss_iflags & ISCAN_CANCEL) == 0) {
+	    (ss_priv->ss_iflags & signal) == 0) {
 		IEEE80211_DPRINTF(vap, IEEE80211_MSG_SCAN,
-		    "%s: cancel %s scan\n", func,
+		    "%s: %s %s scan\n", func,
+		    any ? "pause" : "cancel",
 		    ss->ss_flags & IEEE80211_SCAN_ACTIVE ?
 			"active" : "passive");
 
 		/* clear bg scan NOPICK */
 		ss->ss_flags &= ~IEEE80211_SCAN_NOPICK;
-		/* mark cancel request and wake up the scan task */
-		scan_signal_locked(ss, ISCAN_CANCEL);
+		/* mark request and wake up the scan task */
+		scan_signal_locked(ss, signal);
 	} else {
 		IEEE80211_DPRINTF(vap, IEEE80211_MSG_SCAN,
-		    "%s: called; F_SCAN=%d, vap=%s, CANCEL=%d\n",
+		    "%s: called; F_SCAN=%d, vap=%s, signal=%d\n",
 			func,
 			!! (ic->ic_flags & IEEE80211_F_SCAN),
 			(ss->ss_vap == vap ? "match" : "nomatch"),
-			!! (SCAN_PRIVATE(ss)->ss_iflags & ISCAN_CANCEL));
+			!! (ss_priv->ss_iflags & signal));
 	}
 	IEEE80211_UNLOCK(ic);
 }
@@ -455,6 +473,11 @@ ieee80211_swscan_cancel_scan(struct ieee80211vap *vap)
 static void
 ieee80211_swscan_cancel_anyscan(struct ieee80211vap *vap)
 {
+
+	/* XXX for now - just don't do this per packet. */
+	if (vap->iv_flags_ext & IEEE80211_FEXT_SCAN_OFFLOAD)
+		return;
+
 	cancel_scan(vap, 1, __func__);
 }
 
@@ -504,6 +527,12 @@ ieee80211_swscan_probe_curchan(struct ieee80211vap *vap, int force)
 	struct ieee80211_scan_state *ss = ic->ic_scan;
 	struct ifnet *ifp = vap->iv_ifp;
 	int i;
+
+	/*
+	 * Full-offload scan devices don't require this.
+	 */
+	if (vap->iv_flags_ext & IEEE80211_FEXT_SCAN_OFFLOAD)
+		return;
 
 	/*
 	 * Send directed probe requests followed by any
@@ -611,7 +640,14 @@ scan_start(void *arg, int pending)
 		return;
 	}
 
-	if (vap->iv_opmode == IEEE80211_M_STA &&
+	/*
+	 * Put the station into power save mode.
+	 *
+	 * This is only required if we're not a full-offload devices;
+	 * those devices manage scan/traffic differently.
+	 */
+	if (((vap->iv_flags_ext & IEEE80211_FEXT_SCAN_OFFLOAD) == 0) &&
+	    vap->iv_opmode == IEEE80211_M_STA &&
 	    vap->iv_state == IEEE80211_S_RUN) {
 		if ((vap->iv_bss->ni_flags & IEEE80211_NODE_PWR_MGT) == 0) {
 			/* Enable station power save mode */
@@ -645,19 +681,32 @@ scan_curchan_task(void *arg, int pending)
 	struct ieee80211com *ic = ss->ss_ic;
 	struct ieee80211_channel *chan;
 	unsigned long maxdwell;
-	int scandone;
+	int scandone, scanstop;
 
 	IEEE80211_LOCK(ic);
 end:
+	/*
+	 * Note: only /end/ the scan if we're CANCEL rather than
+	 * CANCEL+INTERRUPT (ie, 'PAUSE').
+	 *
+	 * We can stop the scan if we hit cancel, but we shouldn't
+	 * call scan_end(ss, 1) if we're just PAUSEing the scan.
+	 */
 	scandone = (ss->ss_next >= ss->ss_last) ||
-	    (ss_priv->ss_iflags & ISCAN_CANCEL) != 0;
+	    ((ss_priv->ss_iflags & ISCAN_PAUSE) == ISCAN_CANCEL);
+	scanstop = (ss->ss_next >= ss->ss_last) ||
+	    ((ss_priv->ss_iflags & ISCAN_CANCEL) != 0);
 
 	IEEE80211_DPRINTF(ss->ss_vap, IEEE80211_MSG_SCAN,
-	    "%s: loop start; scandone=%d\n",
+	    "%s: loop start; scandone=%d, scanstop=%d, ss_iflags=0x%x, ss_next=%u, ss_last=%u\n",
 	    __func__,
-	    scandone);
+	    scandone,
+	    scanstop,
+	    (uint32_t) ss_priv->ss_iflags,
+	    (uint32_t) ss->ss_next,
+	    (uint32_t) ss->ss_last);
 
-	if (scandone || (ss->ss_flags & IEEE80211_SCAN_GOTPICK) ||
+	if (scanstop || (ss->ss_flags & IEEE80211_SCAN_GOTPICK) ||
 	    (ss_priv->ss_iflags & ISCAN_ABORT) ||
 	     ieee80211_time_after(ticks + ss->ss_mindwell, ss_priv->ss_scanend)) {
 		ss_priv->ss_iflags &= ~ISCAN_RUNNING;
@@ -757,11 +806,12 @@ scan_end(struct ieee80211_scan_state *ss, int scandone)
 	 * Since a cancellation may have occurred during one of the
 	 * driver calls (whilst unlocked), update scandone.
 	 */
-	if (scandone == 0 && (ss_priv->ss_iflags & ISCAN_CANCEL) != 0) {
+	if ((scandone == 0) && ((ss_priv->ss_iflags & ISCAN_PAUSE) == ISCAN_CANCEL)) {
 		/* XXX printf? */
 		if_printf(vap->iv_ifp,
-		    "%s: OOPS! scan cancelled during driver call (1)!\n",
-		    __func__);
+		    "%s: OOPS! scan cancelled during driver call (1) (ss_iflags=0x%x)!\n",
+		    __func__,
+		    ss_priv->ss_iflags);
 		scandone = 1;
 	}
 
@@ -826,11 +876,12 @@ scan_end(struct ieee80211_scan_state *ss, int scandone)
 	 * Since a cancellation may have occurred during one of the
 	 * driver calls (whilst unlocked), update scandone.
 	 */
-	if (scandone == 0 && (ss_priv->ss_iflags & ISCAN_CANCEL) != 0) {
+	if (scandone == 0 && (ss_priv->ss_iflags & ISCAN_PAUSE) == ISCAN_CANCEL) {
 		/* XXX printf? */
 		if_printf(vap->iv_ifp,
-		    "%s: OOPS! scan cancelled during driver call (2)!\n",
-		    __func__);
+		    "%s: OOPS! scan cancelled during driver call (2) (ss_iflags=0x%x)!\n",
+		    __func__,
+		    ss_priv->ss_iflags);
 		scandone = 1;
 	}
 
@@ -864,13 +915,27 @@ scan_done(struct ieee80211_scan_state *ss, int scandone)
 	 * waiting for us.
 	 */
 	if (scandone) {
-		vap->iv_sta_ps(vap, 0);
-		if (ss->ss_next >= ss->ss_last)
+		/*
+		 * If we're not a scan offload device, come back out of
+		 * station powersave.  Offload devices handle this themselves.
+		 */
+		if ((vap->iv_flags_ext & IEEE80211_FEXT_SCAN_OFFLOAD) == 0)
+			vap->iv_sta_ps(vap, 0);
+		if (ss->ss_next >= ss->ss_last) {
+			IEEE80211_DPRINTF(vap, IEEE80211_MSG_SCAN,
+			    "%s: Dropping out of scan; ss_next=%u, ss_last=%u\n",
+			    __func__,
+			    (uint32_t) ss->ss_next,
+			    (uint32_t) ss->ss_last);
 			ic->ic_flags_ext &= ~IEEE80211_FEXT_BGSCAN;
+		}
 
-		ieee80211_notify_scan_done(vap);
+		/* send 'scan done' event if not interrupted due to traffic. */
+		if (!(ss_priv->ss_iflags & ISCAN_INTERRUPT) ||
+		    (ss->ss_next >= ss->ss_last))
+			ieee80211_notify_scan_done(vap);
 	}
-	ss_priv->ss_iflags &= ~(ISCAN_CANCEL|ISCAN_ABORT);
+	ss_priv->ss_iflags &= ~(ISCAN_PAUSE | ISCAN_ABORT);
 	ss_priv->ss_scanend = 0;
 	ss->ss_flags &= ~(IEEE80211_SCAN_ONCE | IEEE80211_SCAN_PICK1ST);
 	IEEE80211_UNLOCK(ic);

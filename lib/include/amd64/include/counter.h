@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,6 +28,12 @@
 #define __FSTACK_MACHINE_COUNTER_H__
 
 #include <sys/pcpu.h>
+
+#define	EARLY_COUNTER   &pcpup->pc_early_dummy_counter
+
+#define	COUNTER_U64_DEFINE_EARLY(c)         \
+    counter_u64_t __read_mostly c = (void *)__offsetof(struct pcpu, pc_early_dummy_counter);        \
+    COUNTER_U64_SYSINIT(c)
 
 #define counter_enter()    do {} while (0)
 #define counter_exit()    do {} while (0)

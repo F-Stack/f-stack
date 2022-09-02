@@ -1,4 +1,6 @@
 <div class="line">
+  <div class="data" data-tag="name">em0  </div>
+  <div class="data">em0  </div>
   <div class="text">We are </div>
   <div class="text">{emit}</div>
   <div class="text">{ting}</div>
@@ -221,5 +223,20 @@
 </div>
 <div class="line">
   <div class="error">Shut 'er down, Clancey!  She's a-pumpin' mud!  &lt;&gt;!,"!&lt;&gt;
+</div>
+</div>
+<div class="line">
+  <div class="error">err message (1)</div>
+</div>
+<div class="line">
+  <div class="error">err message (2)
+</div>
+</div>
+<div class="line">
+  <div class="error">err message (1)
+</div>
+</div>
+<div class="line">
+  <div class="error">err message (2)
 </div>
 </div>

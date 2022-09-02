@@ -329,7 +329,8 @@ enic_noscatter_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return rx - rx_pkts;
 }
 
-static inline void enic_free_wq_bufs(struct vnic_wq *wq, u16 completed_index)
+static inline void enic_free_wq_bufs(struct vnic_wq *wq,
+				     uint16_t completed_index)
 {
 	struct rte_mbuf *buf;
 	struct rte_mbuf *m, *free[ENIC_MAX_WQ_DESCS];
@@ -371,7 +372,7 @@ static inline void enic_free_wq_bufs(struct vnic_wq *wq, u16 completed_index)
 
 unsigned int enic_cleanup_wq(__rte_unused struct enic *enic, struct vnic_wq *wq)
 {
-	u16 completed_index;
+	uint16_t completed_index;
 
 	completed_index = *((uint32_t *)wq->cqmsg_rz->addr) & 0xffff;
 
@@ -623,7 +624,7 @@ static void enqueue_simple_pkts(struct rte_mbuf **pkts,
 		 * The app should not send oversized
 		 * packets. tx_pkt_prepare includes a check as
 		 * well. But some apps ignore the device max size and
-		 * tx_pkt_prepare. Oversized packets cause WQ errrors
+		 * tx_pkt_prepare. Oversized packets cause WQ errors
 		 * and the NIC ends up disabling the whole WQ. So
 		 * truncate packets..
 		 */

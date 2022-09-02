@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2000-2001 Boris Popov
  * All rights reserved.
  *
@@ -40,7 +42,8 @@ __FBSDID("$FreeBSD$");
 
 SYSCTL_DECL(_kern_iconv);
 
-SYSCTL_NODE(_kern, OID_AUTO, iconv, CTLFLAG_RW, NULL, "kernel iconv interface");
+SYSCTL_NODE(_kern, OID_AUTO, iconv, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+    "kernel iconv interface");
 
 MALLOC_DEFINE(M_ICONV, "iconv", "ICONV structures");
 static MALLOC_DEFINE(M_ICONVDATA, "iconv_data", "ICONV data");
@@ -346,8 +349,10 @@ iconv_sysctl_drvlist(SYSCTL_HANDLER_ARGS)
 	return error;
 }
 
-SYSCTL_PROC(_kern_iconv, OID_AUTO, drvlist, CTLFLAG_RD | CTLTYPE_OPAQUE,
-	    NULL, 0, iconv_sysctl_drvlist, "S,xlat", "registered converters");
+SYSCTL_PROC(_kern_iconv, OID_AUTO, drvlist,
+    CTLFLAG_RD | CTLTYPE_OPAQUE | CTLFLAG_MPSAFE, NULL, 0,
+    iconv_sysctl_drvlist, "S,xlat",
+    "registered converters");
 
 /*
  * List all available charset pairs.
@@ -377,8 +382,10 @@ iconv_sysctl_cslist(SYSCTL_HANDLER_ARGS)
 	return error;
 }
 
-SYSCTL_PROC(_kern_iconv, OID_AUTO, cslist, CTLFLAG_RD | CTLTYPE_OPAQUE,
-	    NULL, 0, iconv_sysctl_cslist, "S,xlat", "registered charset pairs");
+SYSCTL_PROC(_kern_iconv, OID_AUTO, cslist,
+    CTLFLAG_RD | CTLTYPE_OPAQUE | CTLFLAG_MPSAFE, NULL, 0,
+    iconv_sysctl_cslist, "S,xlat",
+    "registered charset pairs");
 
 int
 iconv_add(const char *converter, const char *to, const char *from)
@@ -411,11 +418,11 @@ iconv_sysctl_add(SYSCTL_HANDLER_ARGS)
 		return EINVAL;
 	if (din.ia_datalen > ICONV_CSMAXDATALEN)
 		return EINVAL;
-	if (strlen(din.ia_from) >= ICONV_CSNMAXLEN)
+	if (strnlen(din.ia_from, sizeof(din.ia_from)) >= ICONV_CSNMAXLEN)
 		return EINVAL;
-	if (strlen(din.ia_to) >= ICONV_CSNMAXLEN)
+	if (strnlen(din.ia_to, sizeof(din.ia_to)) >= ICONV_CSNMAXLEN)
 		return EINVAL;
-	if (strlen(din.ia_converter) >= ICONV_CNVNMAXLEN)
+	if (strnlen(din.ia_converter, sizeof(din.ia_converter)) >= ICONV_CNVNMAXLEN)
 		return EINVAL;
 	if (iconv_lookupconv(din.ia_converter, &dcp) != 0)
 		return EINVAL;
@@ -444,8 +451,10 @@ bad:
 	return error;
 }
 
-SYSCTL_PROC(_kern_iconv, OID_AUTO, add, CTLFLAG_RW | CTLTYPE_OPAQUE,
-	    NULL, 0, iconv_sysctl_add, "S,xlat", "register charset pair");
+SYSCTL_PROC(_kern_iconv, OID_AUTO, add,
+    CTLFLAG_RW | CTLTYPE_OPAQUE | CTLFLAG_MPSAFE, NULL, 0,
+    iconv_sysctl_add, "S,xlat",
+    "register charset pair");
 
 /*
  * Default stubs for converters

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Bruno Ducrot
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,6 +45,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/cpu.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
+#include <sys/mutex.h>
 #include <sys/systm.h>
 
 #include <machine/bus.h>
@@ -97,7 +100,6 @@ static device_method_t smist_methods[] = {
 	DEVMETHOD(cpufreq_drv_get,	smist_get),
 	DEVMETHOD(cpufreq_drv_type,	smist_type),
 	DEVMETHOD(cpufreq_drv_settings,	smist_settings),
-
 	{0, 0}
 };
 

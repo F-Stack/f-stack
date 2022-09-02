@@ -40,6 +40,16 @@ struct test {
 	uint32_t service_id;
 };
 
+typedef uint8_t counter_dynfield_t;
+static int counter_dynfield_offset = -1;
+
+static inline counter_dynfield_t *
+counter_field(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf, \
+			counter_dynfield_offset, counter_dynfield_t *);
+}
+
 static struct rte_event release_ev;
 
 static inline struct rte_mbuf *
@@ -172,7 +182,6 @@ create_ports(struct test *t, int num_ports)
 			.new_event_threshold = 1024,
 			.dequeue_depth = 32,
 			.enqueue_depth = 64,
-			.disable_implicit_release = 0,
 	};
 	if (num_ports > MAX_PORTS)
 		return -1;
@@ -376,7 +385,7 @@ run_prio_packet_test(struct test *t)
 			printf("%d: gen of pkt failed\n", __LINE__);
 			return -1;
 		}
-		arp->seqn = MAGIC_SEQN[i];
+		*rte_event_pmd_selftest_seqn(arp) = MAGIC_SEQN[i];
 
 		ev = (struct rte_event){
 			.priority = PRIORITY[i],
@@ -415,7 +424,7 @@ run_prio_packet_test(struct test *t)
 		rte_event_dev_dump(evdev, stdout);
 		return -1;
 	}
-	if (ev.mbuf->seqn != MAGIC_SEQN[1]) {
+	if (*rte_event_pmd_selftest_seqn(ev.mbuf) != MAGIC_SEQN[1]) {
 		printf("%d: first packet out not highest priority\n",
 				__LINE__);
 		rte_event_dev_dump(evdev, stdout);
@@ -429,7 +438,7 @@ run_prio_packet_test(struct test *t)
 		rte_event_dev_dump(evdev, stdout);
 		return -1;
 	}
-	if (ev2.mbuf->seqn != MAGIC_SEQN[0]) {
+	if (*rte_event_pmd_selftest_seqn(ev2.mbuf) != MAGIC_SEQN[0]) {
 		printf("%d: second packet out not lower priority\n",
 				__LINE__);
 		rte_event_dev_dump(evdev, stdout);
@@ -473,7 +482,7 @@ test_single_directed_packet(struct test *t)
 	}
 
 	const uint32_t MAGIC_SEQN = 4711;
-	arp->seqn = MAGIC_SEQN;
+	*rte_event_pmd_selftest_seqn(arp) = MAGIC_SEQN;
 
 	/* generate pkt and enqueue */
 	err = rte_event_enqueue_burst(evdev, rx_enq, &ev, 1);
@@ -512,7 +521,7 @@ test_single_directed_packet(struct test *t)
 		return -1;
 	}
 
-	if (ev.mbuf->seqn != MAGIC_SEQN) {
+	if (*rte_event_pmd_selftest_seqn(ev.mbuf) != MAGIC_SEQN) {
 		printf("%d: error magic sequence number not dequeued\n",
 				__LINE__);
 		return -1;
@@ -930,7 +939,7 @@ xstats_tests(struct test *t)
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = arp;
 		ev.flow_id = 7;
-		arp->seqn = i;
+		*rte_event_pmd_selftest_seqn(arp) = i;
 
 		int err = rte_event_enqueue_burst(evdev, t->port[0], &ev, 1);
 		if (err != 1) {
@@ -1100,7 +1109,7 @@ xstats_tests(struct test *t)
 					NULL,
 					0);
 
-	/* Verify that the resetable stats are reset, and others are not */
+	/* Verify that the resettable stats are reset, and others are not */
 	static const uint64_t queue_expected_zero[] = {
 		0 /* rx */,
 		0 /* tx */,
@@ -1227,7 +1236,6 @@ port_reconfig_credits(struct test *t)
 				.new_event_threshold = 128,
 				.dequeue_depth = 32,
 				.enqueue_depth = 64,
-				.disable_implicit_release = 0,
 		};
 		if (rte_event_port_setup(evdev, 0, &port_conf) < 0) {
 			printf("%d Error setting up port\n", __LINE__);
@@ -1317,7 +1325,6 @@ port_single_lb_reconfig(struct test *t)
 		.new_event_threshold = 128,
 		.dequeue_depth = 32,
 		.enqueue_depth = 64,
-		.disable_implicit_release = 0,
 	};
 	if (rte_event_port_setup(evdev, 0, &port_conf) < 0) {
 		printf("%d Error setting up port\n", __LINE__);
@@ -1483,7 +1490,7 @@ xstats_id_reset_tests(struct test *t)
 		ev.queue_id = t->qid[i];
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = arp;
-		arp->seqn = i;
+		*rte_event_pmd_selftest_seqn(arp) = i;
 
 		int err = rte_event_enqueue_burst(evdev, t->port[0], &ev, 1);
 		if (err != 1) {
@@ -1871,7 +1878,7 @@ qid_priorities(struct test *t)
 		ev.queue_id = t->qid[i];
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = arp;
-		arp->seqn = i;
+		*rte_event_pmd_selftest_seqn(arp) = i;
 
 		int err = rte_event_enqueue_burst(evdev, t->port[0], &ev, 1);
 		if (err != 1) {
@@ -1892,7 +1899,7 @@ qid_priorities(struct test *t)
 		return -1;
 	}
 	for (i = 0; i < 3; i++) {
-		if (ev[i].mbuf->seqn != 2-i) {
+		if (*rte_event_pmd_selftest_seqn(ev[i].mbuf) != 2-i) {
 			printf(
 				"%d: qid priority test: seqn %d incorrectly prioritized\n",
 					__LINE__, i);
@@ -2369,7 +2376,7 @@ single_packet(struct test *t)
 	ev.mbuf = arp;
 	ev.queue_id = 0;
 	ev.flow_id = 3;
-	arp->seqn = MAGIC_SEQN;
+	*rte_event_pmd_selftest_seqn(arp) = MAGIC_SEQN;
 
 	err = rte_event_enqueue_burst(evdev, t->port[rx_enq], &ev, 1);
 	if (err != 1) {
@@ -2409,7 +2416,7 @@ single_packet(struct test *t)
 	}
 
 	err = test_event_dev_stats_get(evdev, &stats);
-	if (ev.mbuf->seqn != MAGIC_SEQN) {
+	if (*rte_event_pmd_selftest_seqn(ev.mbuf) != MAGIC_SEQN) {
 		printf("%d: magic sequence number not dequeued\n", __LINE__);
 		return -1;
 	}
@@ -2682,7 +2689,7 @@ parallel_basic(struct test *t, int check_order)
 		ev.queue_id = t->qid[0];
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = mbufs[i];
-		mbufs[i]->seqn = MAGIC_SEQN + i;
+		*rte_event_pmd_selftest_seqn(mbufs[i]) = MAGIC_SEQN + i;
 
 		/* generate pkt and enqueue */
 		err = rte_event_enqueue_burst(evdev, t->port[rx_port], &ev, 1);
@@ -2737,10 +2744,12 @@ parallel_basic(struct test *t, int check_order)
 	/* Check to see if the sequence numbers are in expected order */
 	if (check_order) {
 		for (j = 0 ; j < deq_pkts ; j++) {
-			if (deq_ev[j].mbuf->seqn != MAGIC_SEQN + j) {
-				printf(
-					"%d: Incorrect sequence number(%d) from port %d\n",
-					__LINE__, mbufs_out[j]->seqn, tx_port);
+			if (*rte_event_pmd_selftest_seqn(deq_ev[j].mbuf) !=
+					MAGIC_SEQN + j) {
+				printf("%d: Incorrect sequence number(%d) from port %d\n",
+					__LINE__,
+					*rte_event_pmd_selftest_seqn(mbufs_out[j]),
+					tx_port);
 				return -1;
 			}
 		}
@@ -2990,8 +2999,8 @@ worker_loopback_worker_fn(void *arg)
 			}
 
 			ev[i].queue_id = 0;
-			ev[i].mbuf->udata64++;
-			if (ev[i].mbuf->udata64 != 16) {
+			(*counter_field(ev[i].mbuf))++;
+			if (*counter_field(ev[i].mbuf) != 16) {
 				ev[i].op = RTE_EVENT_OP_FORWARD;
 				enqd = rte_event_enqueue_burst(evdev, port,
 						&ev[i], 1);
@@ -3031,7 +3040,7 @@ worker_loopback_producer_fn(void *arg)
 			m = rte_pktmbuf_alloc(t->mbuf_pool);
 		} while (m == NULL);
 
-		m->udata64 = 0;
+		*counter_field(m) = 0;
 
 		struct rte_event ev = {
 				.op = RTE_EVENT_OP_NEW,
@@ -3064,6 +3073,18 @@ worker_loopback(struct test *t, uint8_t disable_implicit_release)
 	int err;
 	int w_lcore, p_lcore;
 
+	static const struct rte_mbuf_dynfield counter_dynfield_desc = {
+		.name = "rte_event_sw_dynfield_selftest_counter",
+		.size = sizeof(counter_dynfield_t),
+		.align = __alignof__(counter_dynfield_t),
+	};
+	counter_dynfield_offset =
+		rte_mbuf_dynfield_register(&counter_dynfield_desc);
+	if (counter_dynfield_offset < 0) {
+		printf("Error registering mbuf field\n");
+		return -rte_errno;
+	}
+
 	if (init(t, 8, 2) < 0 ||
 			create_atomic_qids(t, 8) < 0) {
 		printf("%d: Error initializing device\n", __LINE__);
@@ -3079,7 +3100,8 @@ worker_loopback(struct test *t, uint8_t disable_implicit_release)
 	 * only be initialized once - and this needs to be set for multiple runs
 	 */
 	conf.new_event_threshold = 512;
-	conf.disable_implicit_release = disable_implicit_release;
+	conf.event_port_cfg = disable_implicit_release ?
+		RTE_EVENT_PORT_CFG_DISABLE_IMPL_REL : 0;
 
 	if (rte_event_port_setup(evdev, 0, &conf) < 0) {
 		printf("Error setting up RX port\n");
@@ -3108,7 +3130,7 @@ worker_loopback(struct test *t, uint8_t disable_implicit_release)
 
 	p_lcore = rte_get_next_lcore(
 			/* start core */ -1,
-			/* skip master */ 1,
+			/* skip main */ 1,
 			/* wrap */ 0);
 	w_lcore = rte_get_next_lcore(p_lcore, 1, 0);
 

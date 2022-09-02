@@ -22,8 +22,11 @@
 
 #include "fpga_lte_fec.h"
 
-/* Turbo SW PMD logging ID */
-static int fpga_lte_fec_logtype;
+#ifdef RTE_LIBRTE_BBDEV_DEBUG
+RTE_LOG_REGISTER(fpga_lte_fec_logtype, pmd.bb.fpga_lte_fec, DEBUG);
+#else
+RTE_LOG_REGISTER(fpga_lte_fec_logtype, pmd.bb.fpga_lte_fec, NOTICE);
+#endif
 
 /* Helper macro for logging */
 #define rte_bbdev_log(level, fmt, ...) \
@@ -114,7 +117,7 @@ enum {
 };
 
 /* FPGA LTE FEC DMA Encoding Request Descriptor */
-struct __attribute__((__packed__)) fpga_dma_enc_desc {
+struct __rte_packed fpga_dma_enc_desc {
 	uint32_t done:1,
 		rsrvd0:11,
 		error:4,
@@ -151,7 +154,7 @@ struct __attribute__((__packed__)) fpga_dma_enc_desc {
 };
 
 /* FPGA LTE FEC DMA Decoding Request Descriptor */
-struct __attribute__((__packed__)) fpga_dma_dec_desc {
+struct __rte_packed fpga_dma_dec_desc {
 	uint32_t done:1,
 		iter:5,
 		rsrvd0:2,
@@ -197,7 +200,7 @@ union fpga_dma_desc {
 };
 
 /* FPGA LTE FEC Ring Control Register */
-struct __attribute__((__packed__)) fpga_ring_ctrl_reg {
+struct __rte_packed fpga_ring_ctrl_reg {
 	uint64_t ring_base_addr;
 	uint64_t ring_head_addr;
 	uint16_t ring_size:11;
@@ -1248,14 +1251,14 @@ fpga_dma_desc_te_fill(struct rte_bbdev_enc_op *op,
 	desc->offset = desc_offset;
 	/* Set inbound data buffer address */
 	desc->in_addr_hi = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(input, in_offset) >> 32);
+			rte_pktmbuf_iova_offset(input, in_offset) >> 32);
 	desc->in_addr_lw = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(input, in_offset));
+			rte_pktmbuf_iova_offset(input, in_offset));
 
 	desc->out_addr_hi = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(output, out_offset) >> 32);
+			rte_pktmbuf_iova_offset(output, out_offset) >> 32);
 	desc->out_addr_lw = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(output, out_offset));
+			rte_pktmbuf_iova_offset(output, out_offset));
 
 	/* Save software context needed for dequeue */
 	desc->op_addr = op;
@@ -1299,9 +1302,9 @@ fpga_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 	desc->done = 0;
 	/* Set inbound data buffer address */
 	desc->in_addr_hi = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(input, in_offset) >> 32);
+			rte_pktmbuf_iova_offset(input, in_offset) >> 32);
 	desc->in_addr_lw = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(input, in_offset));
+			rte_pktmbuf_iova_offset(input, in_offset));
 	desc->in_len = in_length;
 	desc->k = k;
 	desc->crc_type = !check_bit(op->turbo_dec.op_flags,
@@ -1313,9 +1316,9 @@ fpga_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 	desc->max_iter = op->turbo_dec.iter_max * 2;
 	desc->offset = desc_offset;
 	desc->out_addr_hi = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(output, out_offset) >> 32);
+			rte_pktmbuf_iova_offset(output, out_offset) >> 32);
 	desc->out_addr_lw = (uint32_t)(
-			rte_pktmbuf_mtophys_offset(output, out_offset));
+			rte_pktmbuf_iova_offset(output, out_offset));
 
 	/* Save software context needed for dequeue */
 	desc->op_addr = op;
@@ -2091,7 +2094,7 @@ dequeue_enc_one_op_cb(struct fpga_queue *q, struct rte_bbdev_enc_op **op,
 	rte_bbdev_log_debug("DMA response desc %p", desc);
 
 	*op = desc->enc_req.op_addr;
-	/* Check the decriptor error field, return 1 on error */
+	/* Check the descriptor error field, return 1 on error */
 	desc_error = check_desc_error(desc->enc_req.error);
 	(*op)->status = desc_error << RTE_BBDEV_DATA_ERROR;
 
@@ -2133,7 +2136,7 @@ dequeue_enc_one_op_tb(struct fpga_queue *q, struct rte_bbdev_enc_op **op,
 	for (cb_idx = 0; cb_idx < cbs_in_op; ++cb_idx) {
 		desc = q->ring_addr + ((q->head_free_desc + desc_offset +
 				cb_idx) & q->sw_ring_wrap_mask);
-		/* Check the decriptor error field, return 1 on error */
+		/* Check the descriptor error field, return 1 on error */
 		desc_error = check_desc_error(desc->enc_req.error);
 		status |=  desc_error << RTE_BBDEV_DATA_ERROR;
 		rte_bbdev_log_debug("DMA response desc %p", desc);
@@ -2171,7 +2174,7 @@ dequeue_dec_one_op_cb(struct fpga_queue *q, struct rte_bbdev_dec_op **op,
 	(*op)->turbo_dec.iter_count = (desc->dec_req.iter + 2) >> 1;
 	/* crc_pass = 0 when decoder fails */
 	(*op)->status = !(desc->dec_req.crc_pass) << RTE_BBDEV_CRC_ERROR;
-	/* Check the decriptor error field, return 1 on error */
+	/* Check the descriptor error field, return 1 on error */
 	desc_error = check_desc_error(desc->enc_req.error);
 	(*op)->status |= desc_error << RTE_BBDEV_DATA_ERROR;
 	return 1;
@@ -2215,7 +2218,7 @@ dequeue_dec_one_op_tb(struct fpga_queue *q, struct rte_bbdev_dec_op **op,
 		iter_count = RTE_MAX(iter_count, (uint8_t) desc->dec_req.iter);
 		/* crc_pass = 0 when decoder fails, one fails all */
 		status |= !(desc->dec_req.crc_pass) << RTE_BBDEV_CRC_ERROR;
-		/* Check the decriptor error field, return 1 on error */
+		/* Check the descriptor error field, return 1 on error */
 		desc_error = check_desc_error(desc->enc_req.error);
 		status |= desc_error << RTE_BBDEV_DATA_ERROR;
 		rte_bbdev_log_debug("DMA response desc %p", desc);
@@ -2429,10 +2432,10 @@ fpga_lte_fec_remove(struct rte_pci_device *pci_dev)
 }
 
 static inline void
-set_default_fpga_conf(struct fpga_lte_fec_conf *def_conf)
+set_default_fpga_conf(struct rte_fpga_lte_fec_conf *def_conf)
 {
 	/* clear default configuration before initialization */
-	memset(def_conf, 0, sizeof(struct fpga_lte_fec_conf));
+	memset(def_conf, 0, sizeof(struct rte_fpga_lte_fec_conf));
 	/* Set pf mode to true */
 	def_conf->pf_mode_en = true;
 
@@ -2447,15 +2450,15 @@ set_default_fpga_conf(struct fpga_lte_fec_conf *def_conf)
 
 /* Initial configuration of FPGA LTE FEC device */
 int
-fpga_lte_fec_configure(const char *dev_name,
-		const struct fpga_lte_fec_conf *conf)
+rte_fpga_lte_fec_configure(const char *dev_name,
+		const struct rte_fpga_lte_fec_conf *conf)
 {
 	uint32_t payload_32, address;
 	uint16_t payload_16;
 	uint8_t payload_8;
 	uint16_t q_id, vf_id, total_q_id, total_ul_q_id, total_dl_q_id;
 	struct rte_bbdev *bbdev = rte_bbdev_get_named_dev(dev_name);
-	struct fpga_lte_fec_conf def_conf;
+	struct rte_fpga_lte_fec_conf def_conf;
 
 	if (bbdev == NULL) {
 		rte_bbdev_log(ERR,
@@ -2662,14 +2665,3 @@ RTE_PMD_REGISTER_PCI_TABLE(FPGA_LTE_FEC_PF_DRIVER_NAME,
 RTE_PMD_REGISTER_PCI(FPGA_LTE_FEC_VF_DRIVER_NAME, fpga_lte_fec_pci_vf_driver);
 RTE_PMD_REGISTER_PCI_TABLE(FPGA_LTE_FEC_VF_DRIVER_NAME,
 		pci_id_fpga_lte_fec_vf_map);
-
-RTE_INIT(fpga_lte_fec_init_log)
-{
-	fpga_lte_fec_logtype = rte_log_register("pmd.bb.fpga_lte_fec");
-	if (fpga_lte_fec_logtype >= 0)
-#ifdef RTE_LIBRTE_BBDEV_DEBUG
-		rte_log_set_level(fpga_lte_fec_logtype, RTE_LOG_DEBUG);
-#else
-		rte_log_set_level(fpga_lte_fec_logtype, RTE_LOG_NOTICE);
-#endif
-}

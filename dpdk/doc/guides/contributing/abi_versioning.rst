@@ -14,22 +14,22 @@ What is a library's soname?
 ---------------------------
 
 System libraries usually adopt the familiar major and minor version naming
-convention, where major versions (e.g. ``librte_eal 20.x, 21.x``) are presumed
+convention, where major versions (e.g. ``librte_eal 21.x, 22.x``) are presumed
 to be ABI incompatible with each other and minor versions (e.g. ``librte_eal
-20.1, 20.2``) are presumed to be ABI compatible. A library's `soname
+21.1, 21.2``) are presumed to be ABI compatible. A library's `soname
 <https://en.wikipedia.org/wiki/Soname>`_. is typically used to provide backward
 compatibility information about a given library, describing the lowest common
 denominator ABI supported by the library. The soname or logical name for the
 library, is typically comprised of the library's name and major version e.g.
-``librte_eal.so.20``.
+``librte_eal.so.21``.
 
 During an application's build process, a library's soname is noted as a runtime
 dependency of the application. This information is then used by the `dynamic
 linker <https://en.wikipedia.org/wiki/Dynamic_linker>`_ when resolving the
 applications dependencies at runtime, to load a library supporting the correct
 ABI version. The library loaded at runtime therefore, may be a minor revision
-supporting the same major ABI version (e.g. ``librte_eal.20.2``), as the library
-used to link the application (e.g ``librte_eal.20.0``).
+supporting the same major ABI version (e.g. ``librte_eal.21.2``), as the library
+used to link the application (e.g ``librte_eal.21.0``).
 
 .. _major_abi_versions:
 
@@ -58,62 +58,61 @@ persists over multiple releases.
 
 .. code-block:: none
 
- $ head ./lib/librte_acl/rte_acl_version.map
- DPDK_20 {
+ $ head ./lib/librte_acl/version.map
+ DPDK_21 {
         global:
  ...
 
- $ head ./lib/librte_eal/rte_eal_version.map
- DPDK_20 {
+ $ head ./lib/librte_eal/version.map
+ DPDK_21 {
         global:
  ...
 
 When an ABI change is made between major ABI versions to a given library, a new
 section is added to that library's version map describing the impending new ABI
 version, as described in the section :ref:`example_abi_macro_usage`. The
-library's soname and filename however do not change, e.g. ``libacl.so.20``, as
+library's soname and filename however do not change, e.g. ``libacl.so.21``, as
 ABI compatibility with the last major ABI version continues to be preserved for
 that library.
 
 .. code-block:: none
 
- $ head ./lib/librte_acl/rte_acl_version.map
- DPDK_20 {
-        global:
- ...
-
+ $ head ./lib/librte_acl/version.map
  DPDK_21 {
         global:
-
- } DPDK_20;
  ...
 
- $ head ./lib/librte_eal/rte_eal_version.map
- DPDK_20 {
+ DPDK_22 {
+        global:
+
+ } DPDK_21;
+ ...
+
+ $ head ./lib/librte_eal/version.map
+ DPDK_21 {
         global:
  ...
 
-However when a new ABI version is declared, for example DPDK ``21``, old
+However when a new ABI version is declared, for example DPDK ``22``, old
 depreciated functions may be safely removed at this point and the entire old
 major ABI version removed, see the section :ref:`deprecating_entire_abi` on
 how this may be done.
 
 .. code-block:: none
 
- $ head ./lib/librte_acl/rte_acl_version.map
- DPDK_21 {
+ $ head ./lib/librte_acl/version.map
+ DPDK_22 {
         global:
  ...
 
- $ head ./lib/librte_eal/rte_eal_version.map
- DPDK_21 {
+ $ head ./lib/librte_eal/version.map
+ DPDK_22 {
         global:
  ...
 
 At the same time, the major ABI version is changed atomically across all
 libraries by incrementing the major version in the ABI_VERSION file. This is
-done globally for all libraries that declare a stable ABI. For libraries marked
-as EXPERIMENTAL, their major ABI version is always set to 0.
+done globally for all libraries.
 
 Minor ABI versions
 ~~~~~~~~~~~~~~~~~~
@@ -135,7 +134,7 @@ linked to the DPDK.
 
 To support backward compatibility the ``rte_function_versioning.h``
 header file provides macros to use when updating exported functions. These
-macros are used in conjunction with the ``rte_<library>_version.map`` file for
+macros are used in conjunction with the ``version.map`` file for
 a given library to allow multiple versions of a symbol to exist in a shared
 library so that older binaries need not be immediately recompiled.
 
@@ -155,6 +154,11 @@ The macros exported are:
 * ``__vsym``:  Annotation to be used in a declaration of the internal symbol
   ``be`` to signal that it is being used as an implementation of a particular
   version of symbol ``b``.
+
+* ``VERSION_SYMBOL_EXPERIMENTAL(b, e)``: Creates a symbol version table entry
+  binding versioned symbol ``b@EXPERIMENTAL`` to the internal function ``be``.
+  The macro is used when a symbol matures to become part of the stable ABI, to
+  provide an alias to experimental until the next major ABI version.
 
 .. _example_abi_macro_usage:
 
@@ -212,7 +216,7 @@ library looks like this
 
 .. code-block:: none
 
-   DPDK_20 {
+   DPDK_21 {
         global:
 
         rte_acl_add_rules;
@@ -238,7 +242,7 @@ This file needs to be modified as follows
 
 .. code-block:: none
 
-   DPDK_20 {
+   DPDK_21 {
         global:
 
         rte_acl_add_rules;
@@ -260,15 +264,15 @@ This file needs to be modified as follows
         local: *;
    };
 
-   DPDK_21 {
+   DPDK_22 {
         global:
         rte_acl_create;
 
-   } DPDK_20;
+   } DPDK_21;
 
 The addition of the new block tells the linker that a new version node
-``DPDK_21`` is available, which contains the symbol rte_acl_create, and inherits
-the symbols from the DPDK_20 node. This list is directly translated into a
+``DPDK_22`` is available, which contains the symbol rte_acl_create, and inherits
+the symbols from the DPDK_21 node. This list is directly translated into a
 list of exported symbols when DPDK is compiled as a shared library.
 
 Next, we need to specify in the code which function maps to the rte_acl_create
@@ -281,7 +285,7 @@ with the public symbol name
  -struct rte_acl_ctx *
  -rte_acl_create(const struct rte_acl_param *param)
  +struct rte_acl_ctx * __vsym
- +rte_acl_create_v20(const struct rte_acl_param *param)
+ +rte_acl_create_v21(const struct rte_acl_param *param)
  {
         size_t sz;
         struct rte_acl_ctx *ctx;
@@ -290,7 +294,7 @@ with the public symbol name
 Note that the base name of the symbol was kept intact, as this is conducive to
 the macros used for versioning symbols and we have annotated the function as
 ``__vsym``, an implementation of a versioned symbol . That is our next step,
-mapping this new symbol name to the initial symbol name at version node 20.
+mapping this new symbol name to the initial symbol name at version node 21.
 Immediately after the function, we add the VERSION_SYMBOL macro.
 
 .. code-block:: c
@@ -298,26 +302,26 @@ Immediately after the function, we add the VERSION_SYMBOL macro.
    #include <rte_function_versioning.h>
 
    ...
-   VERSION_SYMBOL(rte_acl_create, _v20, 20);
+   VERSION_SYMBOL(rte_acl_create, _v21, 21);
 
 Remembering to also add the rte_function_versioning.h header to the requisite c
 file where these changes are being made. The macro instructs the linker to
-create a new symbol ``rte_acl_create@DPDK_20``, which matches the symbol created
+create a new symbol ``rte_acl_create@DPDK_21``, which matches the symbol created
 in older builds, but now points to the above newly named function. We have now
 mapped the original rte_acl_create symbol to the original function (but with a
 new name).
 
 Please see the section :ref:`Enabling versioning macros
 <enabling_versioning_macros>` to enable this macro in the meson/ninja build.
-Next, we need to create the new ``v21`` version of the symbol. We create a new
-function name, with the ``v21`` suffix, and implement it appropriately.
+Next, we need to create the new ``v22`` version of the symbol. We create a new
+function name, with the ``v22`` suffix, and implement it appropriately.
 
 .. code-block:: c
 
    struct rte_acl_ctx * __vsym
-   rte_acl_create_v21(const struct rte_acl_param *param, int debug);
+   rte_acl_create_v22(const struct rte_acl_param *param, int debug);
    {
-        struct rte_acl_ctx *ctx = rte_acl_create_v20(param);
+        struct rte_acl_ctx *ctx = rte_acl_create_v21(param);
 
         ctx->debug = debug;
 
@@ -326,7 +330,7 @@ function name, with the ``v21`` suffix, and implement it appropriately.
 
 This code serves as our new API call. Its the same as our old call, but adds the
 new parameter in place. Next we need to map this function to the new default
-symbol ``rte_acl_create@DPDK_21``. To do this, immediately after the function,
+symbol ``rte_acl_create@DPDK_22``. To do this, immediately after the function,
 we add the BIND_DEFAULT_SYMBOL macro.
 
 .. code-block:: c
@@ -334,10 +338,10 @@ we add the BIND_DEFAULT_SYMBOL macro.
    #include <rte_function_versioning.h>
 
    ...
-   BIND_DEFAULT_SYMBOL(rte_acl_create, _v21, 21);
+   BIND_DEFAULT_SYMBOL(rte_acl_create, _v22, 22);
 
 The macro instructs the linker to create the new default symbol
-``rte_acl_create@DPDK_21``, which points to the above newly named function.
+``rte_acl_create@DPDK_22``, which points to the above newly named function.
 
 We finally modify the prototype of the call in the public header file,
 such that it contains both versions of the symbol and the public API.
@@ -348,15 +352,15 @@ such that it contains both versions of the symbol and the public API.
    rte_acl_create(const struct rte_acl_param *param);
 
    struct rte_acl_ctx * __vsym
-   rte_acl_create_v20(const struct rte_acl_param *param);
+   rte_acl_create_v21(const struct rte_acl_param *param);
 
    struct rte_acl_ctx * __vsym
-   rte_acl_create_v21(const struct rte_acl_param *param, int debug);
+   rte_acl_create_v22(const struct rte_acl_param *param, int debug);
 
 
 And that's it, on the next shared library rebuild, there will be two versions of
-rte_acl_create, an old DPDK_20 version, used by previously built applications,
-and a new DPDK_21 version, used by future built applications.
+rte_acl_create, an old DPDK_21 version, used by previously built applications,
+and a new DPDK_22 version, used by future built applications.
 
 .. note::
 
@@ -381,21 +385,21 @@ this code in a position of no longer having a symbol simply named
 To correct this, we can simply map a function of our choosing back to the public
 symbol in the static build with the ``MAP_STATIC_SYMBOL`` macro.  Generally the
 assumption is that the most recent version of the symbol is the one you want to
-map.  So, back in the C file where, immediately after ``rte_acl_create_v21`` is
+map.  So, back in the C file where, immediately after ``rte_acl_create_v22`` is
 defined, we add this
 
 
 .. code-block:: c
 
    struct rte_acl_ctx * __vsym
-   rte_acl_create_v21(const struct rte_acl_param *param, int debug)
+   rte_acl_create_v22(const struct rte_acl_param *param, int debug)
    {
         ...
    }
-   MAP_STATIC_SYMBOL(struct rte_acl_ctx *rte_acl_create(const struct rte_acl_param *param, int debug), rte_acl_create_v21);
+   MAP_STATIC_SYMBOL(struct rte_acl_ctx *rte_acl_create(const struct rte_acl_param *param, int debug), rte_acl_create_v22);
 
 That tells the compiler that, when building a static library, any calls to the
-symbol ``rte_acl_create`` should be linked to ``rte_acl_create_v21``
+symbol ``rte_acl_create`` should be linked to ``rte_acl_create_v22``
 
 
 .. _enabling_versioning_macros:
@@ -403,8 +407,8 @@ symbol ``rte_acl_create`` should be linked to ``rte_acl_create_v21``
 Enabling versioning macros
 __________________________
 
-Finally, we need to indicate to the meson/ninja build system
-to enable versioning macros when building the
+Finally, we need to indicate to the :doc:`meson/ninja build system
+<../prog_guide/build-sdk-meson>` to enable versioning macros when building the
 library or driver. In the libraries or driver where we have added symbol
 versioning, in the ``meson.build`` file we add the following
 
@@ -415,6 +419,158 @@ versioning, in the ``meson.build`` file we add the following
 at the start of the head of the file. This will indicate to the tool-chain to
 enable the function version macros when building. There is no corresponding
 directive required for the ``make`` build system.
+
+
+.. _aliasing_experimental_symbols:
+
+Aliasing experimental symbols
+_____________________________
+
+In situations in which an ``experimental`` symbol has been stable for some time,
+and it becomes a candidate for promotion to the stable ABI. At this time, when
+promoting the symbol, the maintainer may choose to provide an alias to the
+``experimental`` symbol version, so as not to break consuming applications.
+This alias is then dropped in the next major ABI version.
+
+The process to provide an alias to ``experimental`` is similar to that, of
+:ref:`symbol versioning <example_abi_macro_usage>` described above.
+Assume we have an experimental function ``rte_acl_create`` as follows:
+
+.. code-block:: c
+
+   #include <rte_compat.h>
+
+   /*
+    * Create an acl context object for apps to
+    * manipulate
+    */
+   __rte_experimental
+   struct rte_acl_ctx *
+   rte_acl_create(const struct rte_acl_param *param)
+   {
+   ...
+   }
+
+In the map file, experimental symbols are listed as part of the ``EXPERIMENTAL``
+version node.
+
+.. code-block:: none
+
+   DPDK_21 {
+        global:
+        ...
+
+        local: *;
+   };
+
+   EXPERIMENTAL {
+        global:
+
+        rte_acl_create;
+   };
+
+When we promote the symbol to the stable ABI, we simply strip the
+``__rte_experimental`` annotation from the function and move the symbol from the
+``EXPERIMENTAL`` node, to the node of the next major ABI version as follow.
+
+.. code-block:: c
+
+   /*
+    * Create an acl context object for apps to
+    * manipulate
+    */
+   struct rte_acl_ctx *
+   rte_acl_create(const struct rte_acl_param *param)
+   {
+          ...
+   }
+
+We then update the map file, adding the symbol ``rte_acl_create``
+to the ``DPDK_22`` version node.
+
+.. code-block:: none
+
+   DPDK_21 {
+        global:
+        ...
+
+        local: *;
+   };
+
+   DPDK_22 {
+        global:
+
+        rte_acl_create;
+   } DPDK_21;
+
+
+Although there are strictly no guarantees or commitments associated with
+:ref:`experimental symbols <experimental_apis>`, a maintainer may wish to offer
+an alias to experimental. The process to add an alias to experimental,
+is similar to the symbol versioning process. Assuming we have an experimental
+symbol as before, we now add the symbol to both the ``EXPERIMENTAL``
+and ``DPDK_22`` version nodes.
+
+.. code-block:: c
+
+   #include <rte_compat.h>;
+   #include <rte_function_versioning.h>
+
+   /*
+    * Create an acl context object for apps to
+    * manipulate
+    */
+   struct rte_acl_ctx *
+   rte_acl_create(const struct rte_acl_param *param)
+   {
+   ...
+   }
+
+   __rte_experimental
+   struct rte_acl_ctx *
+   rte_acl_create_e(const struct rte_acl_param *param)
+   {
+      return rte_acl_create(param);
+   }
+   VERSION_SYMBOL_EXPERIMENTAL(rte_acl_create, _e);
+
+   struct rte_acl_ctx *
+   rte_acl_create_v22(const struct rte_acl_param *param)
+   {
+      return rte_acl_create(param);
+   }
+   BIND_DEFAULT_SYMBOL(rte_acl_create, _v22, 22);
+
+In the map file, we map the symbol to both the ``EXPERIMENTAL``
+and ``DPDK_22`` version nodes.
+
+.. code-block:: none
+
+   DPDK_21 {
+        global:
+        ...
+
+        local: *;
+   };
+
+   DPDK_22 {
+        global:
+
+        rte_acl_create;
+   } DPDK_21;
+
+   EXPERIMENTAL {
+        global:
+
+        rte_acl_create;
+   };
+
+.. note::
+
+   Please note, similar to :ref:`symbol versioning <example_abi_macro_usage>`,
+   when aliasing to experimental you will also need to take care of
+   :ref:`mapping static symbols <mapping_static_symbols>`.
+
 
 .. _abi_deprecation:
 
@@ -429,7 +585,7 @@ file:
 
 .. code-block:: none
 
-   DPDK_20 {
+   DPDK_21 {
         global:
 
         rte_acl_add_rules;
@@ -451,21 +607,21 @@ file:
         local: *;
    };
 
-   DPDK_21 {
+   DPDK_22 {
         global:
         rte_acl_create;
-   } DPDK_20;
+   } DPDK_21;
 
 
 Next remove the corresponding versioned export.
 
 .. code-block:: c
 
- -VERSION_SYMBOL(rte_acl_create, _v20, 20);
+ -VERSION_SYMBOL(rte_acl_create, _v21, 21);
 
 
 Note that the internal function definition could also be removed, but its used
-in our example by the newer version ``v21``, so we leave it in place and declare
+in our example by the newer version ``v22``, so we leave it in place and declare
 it as static. This is a coding style choice.
 
 .. _deprecating_entire_abi:
@@ -486,7 +642,7 @@ In the case of our map above, it would transform to look as follows
 
 .. code-block:: none
 
-   DPDK_21 {
+   DPDK_22 {
         global:
 
         rte_acl_add_rules;
@@ -514,53 +670,28 @@ symbols.
 
 .. code-block:: c
 
- -BIND_DEFAULT_SYMBOL(rte_acl_create, _v20, 20);
- +BIND_DEFAULT_SYMBOL(rte_acl_create, _v21, 21);
+ -BIND_DEFAULT_SYMBOL(rte_acl_create, _v21, 21);
+ +BIND_DEFAULT_SYMBOL(rte_acl_create, _v22, 22);
 
-Lastly, any VERSION_SYMBOL macros that point to the old version node should be
-removed, taking care to keep, where need old code in place to support newer
-versions of the symbol.
+Lastly, any VERSION_SYMBOL macros that point to the old version nodes
+should be removed, taking care to preserve any code that is shared
+with the new version node.
 
 
 Running the ABI Validator
 -------------------------
 
 The ``devtools`` directory in the DPDK source tree contains a utility program,
-``validate-abi.sh``, for validating the DPDK ABI based on the Linux `ABI
-Compliance Checker
-<http://ispras.linuxbase.org/index.php/ABI_compliance_checker>`_.
+``check-abi.sh``, for validating the DPDK ABI based on the libabigail
+`abidiff utility <https://sourceware.org/libabigail/manual/abidiff.html>`_.
 
-This has a dependency on the ``abi-compliance-checker`` and ``and abi-dumper``
-utilities which can be installed via a package manager. For example::
+The syntax of the ``check-abi.sh`` utility is::
 
-   sudo yum install abi-compliance-checker
-   sudo yum install abi-dumper
+   devtools/check-abi.sh <refdir> <newdir>
 
-The syntax of the ``validate-abi.sh`` utility is::
+Where <refdir> specifies the directory housing the reference build of DPDK,
+and <newdir> specifies the DPDK build directory to check the ABI of.
 
-   ./devtools/validate-abi.sh <REV1> <REV2>
-
-Where ``REV1`` and ``REV2`` are valid gitrevisions(7)
-https://www.kernel.org/pub/software/scm/git/docs/gitrevisions.html
-on the local repo.
-
-For example::
-
-   # Check between the previous and latest commit:
-   ./devtools/validate-abi.sh HEAD~1 HEAD
-
-   # Check on a specific compilation target:
-   ./devtools/validate-abi.sh -t x86_64-native-linux-gcc HEAD~1 HEAD
-
-   # Check between two tags:
-   ./devtools/validate-abi.sh v2.0.0 v2.1.0
-
-   # Check between git master and local topic-branch "vhost-hacking":
-   ./devtools/validate-abi.sh master vhost-hacking
-
-After the validation script completes (it can take a while since it need to
-compile both tags) it will create compatibility reports in the
-``./abi-check/compat_report`` directory. Listed incompatibilities can be found
-as follows::
-
-  grep -lr Incompatible abi-check/compat_reports/
+The ABI compatibility is automatically verified when using a build script
+from ``devtools``, if the variable ``DPDK_ABI_REF_VERSION`` is set with a tag,
+as described in :ref:`ABI check recommendations<integrated_abi_check>`.

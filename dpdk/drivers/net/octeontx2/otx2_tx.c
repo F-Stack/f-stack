@@ -40,8 +40,11 @@ nix_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			otx2_nix_xmit_prepare_tso(tx_pkts[i], flags);
 	}
 
-	/* Lets commit any changes in the packet */
-	rte_cio_wmb();
+	/* Lets commit any changes in the packet here as no further changes
+	 * to the packet will be done unless no fast free is enabled.
+	 */
+	if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+		rte_io_wmb();
 
 	for (i = 0; i < pkts; i++) {
 		otx2_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt);
@@ -78,8 +81,11 @@ nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 			otx2_nix_xmit_prepare_tso(tx_pkts[i], flags);
 	}
 
-	/* Lets commit any changes in the packet */
-	rte_cio_wmb();
+	/* Lets commit any changes in the packet here as no further changes
+	 * to the packet will be done unless no fast free is enabled.
+	 */
+	if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+		rte_io_wmb();
 
 	for (i = 0; i < pkts; i++) {
 		otx2_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt);
@@ -101,7 +107,7 @@ nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 #define NIX_DESCS_PER_LOOP	4
 static __rte_always_inline uint16_t
 nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
-		     uint16_t pkts, const uint16_t flags)
+		     uint16_t pkts, uint64_t *cmd, const uint16_t flags)
 {
 	uint64x2_t dataoff_iova0, dataoff_iova1, dataoff_iova2, dataoff_iova3;
 	uint64x2_t len_olflags0, len_olflags1, len_olflags2, len_olflags3;
@@ -116,22 +122,26 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint64x2_t ltypes01, ltypes23;
 	uint64x2_t xtmp128, ytmp128;
 	uint64x2_t xmask01, xmask23;
-	uint64x2_t mbuf01, mbuf23;
 	uint64x2_t cmd00, cmd01;
 	uint64x2_t cmd10, cmd11;
 	uint64x2_t cmd20, cmd21;
 	uint64x2_t cmd30, cmd31;
 	uint64_t lmt_status, i;
-
-	pkts = RTE_ALIGN_FLOOR(pkts, NIX_DESCS_PER_LOOP);
+	uint16_t pkts_left;
 
 	NIX_XMIT_FC_OR_RETURN(txq, pkts);
+
+	pkts_left = pkts & (NIX_DESCS_PER_LOOP - 1);
+	pkts = RTE_ALIGN_FLOOR(pkts, NIX_DESCS_PER_LOOP);
 
 	/* Reduce the cached count */
 	txq->fc_cache_pkts -= pkts;
 
-	/* Lets commit any changes in the packet */
-	rte_cio_wmb();
+	/* Lets commit any changes in the packet here as no further changes
+	 * to the packet will be done unless no fast free is enabled.
+	 */
+	if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+		rte_io_wmb();
 
 	senddesc01_w0 = vld1q_dup_u64(&txq->cmd[0]);
 	senddesc23_w0 = senddesc01_w0;
@@ -141,9 +151,6 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 	sgdesc23_w0 = sgdesc01_w0;
 
 	for (i = 0; i < pkts; i += NIX_DESCS_PER_LOOP) {
-		mbuf01 = vld1q_u64((uint64_t *)tx_pkts);
-		mbuf23 = vld1q_u64((uint64_t *)(tx_pkts + 2));
-
 		/* Clear lower 32bit of SEND_HDR_W0 and SEND_SG_W0 */
 		senddesc01_w0 = vbicq_u64(senddesc01_w0,
 					  vdupq_n_u64(0xFFFFFFFF));
@@ -153,13 +160,11 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 		senddesc23_w0 = senddesc01_w0;
 		sgdesc23_w0 = sgdesc01_w0;
 
-		tx_pkts = tx_pkts + NIX_DESCS_PER_LOOP;
-
 		/* Move mbufs to iova */
-		mbuf0 = (uint64_t *)vgetq_lane_u64(mbuf01, 0);
-		mbuf1 = (uint64_t *)vgetq_lane_u64(mbuf01, 1);
-		mbuf2 = (uint64_t *)vgetq_lane_u64(mbuf23, 0);
-		mbuf3 = (uint64_t *)vgetq_lane_u64(mbuf23, 1);
+		mbuf0 = (uint64_t *)tx_pkts[0];
+		mbuf1 = (uint64_t *)tx_pkts[1];
+		mbuf2 = (uint64_t *)tx_pkts[2];
+		mbuf3 = (uint64_t *)tx_pkts[3];
 
 		mbuf0 = (uint64_t *)((uintptr_t)mbuf0 +
 				     offsetof(struct rte_mbuf, buf_iova));
@@ -229,6 +234,10 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 							1, 0);
 			senddesc01_w0 = vorrq_u64(senddesc01_w0, xmask01);
 			senddesc23_w0 = vorrq_u64(senddesc23_w0, xmask23);
+			/* Ensuring mbuf fields which got updated in
+			 * otx2_nix_prefree_seg are written before LMTST.
+			 */
+			rte_io_wmb();
 		} else {
 			struct rte_mbuf *mbuf;
 			/* Mark mempool object as "put" since
@@ -931,7 +940,11 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			lmt_status = otx2_lmt_submit(io_addr);
 
 		} while (lmt_status == 0);
+		tx_pkts = tx_pkts + NIX_DESCS_PER_LOOP;
 	}
+
+	if (unlikely(pkts_left))
+		pkts += nix_xmit_pkts(tx_queue, tx_pkts, pkts_left, cmd, flags);
 
 	return pkts;
 }
@@ -939,18 +952,19 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 #else
 static __rte_always_inline uint16_t
 nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
-		     uint16_t pkts, const uint16_t flags)
+		     uint16_t pkts, uint64_t *cmd, const uint16_t flags)
 {
 	RTE_SET_USED(tx_queue);
 	RTE_SET_USED(tx_pkts);
 	RTE_SET_USED(pkts);
+	RTE_SET_USED(cmd);
 	RTE_SET_USED(flags);
 	return 0;
 }
 #endif
 
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			\
-static uint16_t __rte_noinline	__hot					\
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			\
+static uint16_t __rte_noinline	__rte_hot					\
 otx2_nix_xmit_pkts_ ## name(void *tx_queue,				\
 			struct rte_mbuf **tx_pkts, uint16_t pkts)	\
 {									\
@@ -966,8 +980,8 @@ otx2_nix_xmit_pkts_ ## name(void *tx_queue,				\
 NIX_TX_FASTPATH_MODES
 #undef T
 
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			\
-static uint16_t __rte_noinline	__hot					\
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			\
+static uint16_t __rte_noinline	__rte_hot					\
 otx2_nix_xmit_pkts_mseg_ ## name(void *tx_queue,			\
 			struct rte_mbuf **tx_pkts, uint16_t pkts)	\
 {									\
@@ -984,17 +998,19 @@ otx2_nix_xmit_pkts_mseg_ ## name(void *tx_queue,			\
 NIX_TX_FASTPATH_MODES
 #undef T
 
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			\
-static uint16_t __rte_noinline	__hot					\
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			\
+static uint16_t __rte_noinline	__rte_hot					\
 otx2_nix_xmit_pkts_vec_ ## name(void *tx_queue,				\
 			struct rte_mbuf **tx_pkts, uint16_t pkts)	\
 {									\
+	uint64_t cmd[sz];						\
+									\
 	/* VLAN, TSTMP, TSO is not supported by vec */			\
 	if ((flags) & NIX_TX_OFFLOAD_VLAN_QINQ_F ||			\
 	    (flags) & NIX_TX_OFFLOAD_TSTAMP_F ||			\
 	    (flags) & NIX_TX_OFFLOAD_TSO_F)				\
 		return 0;						\
-	return nix_xmit_pkts_vector(tx_queue, tx_pkts, pkts, (flags));	\
+	return nix_xmit_pkts_vector(tx_queue, tx_pkts, pkts, cmd, (flags)); \
 }
 
 NIX_TX_FASTPATH_MODES
@@ -1002,12 +1018,13 @@ NIX_TX_FASTPATH_MODES
 
 static inline void
 pick_tx_func(struct rte_eth_dev *eth_dev,
-	     const eth_tx_burst_t tx_burst[2][2][2][2][2][2])
+	     const eth_tx_burst_t tx_burst[2][2][2][2][2][2][2])
 {
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 
-	/* [TSTMP] [NOFF] [VLAN] [OL3_OL4_CSUM] [IL3_IL4_CSUM] */
+	/* [SEC] [TSTMP] [NOFF] [VLAN] [OL3_OL4_CSUM] [IL3_IL4_CSUM] */
 	eth_dev->tx_pkt_burst = tx_burst
+		[!!(dev->tx_offload_flags & NIX_TX_OFFLOAD_SECURITY_F)]
 		[!!(dev->tx_offload_flags & NIX_TX_OFFLOAD_TSO_F)]
 		[!!(dev->tx_offload_flags & NIX_TX_OFFLOAD_TSTAMP_F)]
 		[!!(dev->tx_offload_flags & NIX_TX_OFFLOAD_MBUF_NOFF_F)]
@@ -1021,25 +1038,25 @@ otx2_eth_set_tx_function(struct rte_eth_dev *eth_dev)
 {
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 
-	const eth_tx_burst_t nix_eth_tx_burst[2][2][2][2][2][2] = {
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			\
-	[f5][f4][f3][f2][f1][f0] =  otx2_nix_xmit_pkts_ ## name,
+	const eth_tx_burst_t nix_eth_tx_burst[2][2][2][2][2][2][2] = {
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			\
+	[f6][f5][f4][f3][f2][f1][f0] =  otx2_nix_xmit_pkts_ ## name,
 
 NIX_TX_FASTPATH_MODES
 #undef T
 	};
 
-	const eth_tx_burst_t nix_eth_tx_burst_mseg[2][2][2][2][2][2] = {
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			\
-	[f5][f4][f3][f2][f1][f0] =  otx2_nix_xmit_pkts_mseg_ ## name,
+	const eth_tx_burst_t nix_eth_tx_burst_mseg[2][2][2][2][2][2][2] = {
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			\
+	[f6][f5][f4][f3][f2][f1][f0] =  otx2_nix_xmit_pkts_mseg_ ## name,
 
 NIX_TX_FASTPATH_MODES
 #undef T
 	};
 
-	const eth_tx_burst_t nix_eth_tx_vec_burst[2][2][2][2][2][2] = {
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			\
-	[f5][f4][f3][f2][f1][f0] =  otx2_nix_xmit_pkts_vec_ ## name,
+	const eth_tx_burst_t nix_eth_tx_vec_burst[2][2][2][2][2][2][2] = {
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			\
+	[f6][f5][f4][f3][f2][f1][f0] =  otx2_nix_xmit_pkts_vec_ ## name,
 
 NIX_TX_FASTPATH_MODES
 #undef T

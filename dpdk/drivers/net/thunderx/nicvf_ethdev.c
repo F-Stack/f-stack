@@ -44,31 +44,16 @@
 #include "nicvf_svf.h"
 #include "nicvf_logs.h"
 
-int nicvf_logtype_mbox;
-int nicvf_logtype_init;
-int nicvf_logtype_driver;
-
-static void nicvf_dev_stop(struct rte_eth_dev *dev);
+static int nicvf_dev_stop(struct rte_eth_dev *dev);
 static void nicvf_dev_stop_cleanup(struct rte_eth_dev *dev, bool cleanup);
 static void nicvf_vf_stop(struct rte_eth_dev *dev, struct nicvf *nic,
 			  bool cleanup);
 static int nicvf_vlan_offload_config(struct rte_eth_dev *dev, int mask);
 static int nicvf_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 
-RTE_INIT(nicvf_init_log)
-{
-	nicvf_logtype_mbox = rte_log_register("pmd.net.thunderx.mbox");
-	if (nicvf_logtype_mbox >= 0)
-		rte_log_set_level(nicvf_logtype_mbox, RTE_LOG_NOTICE);
-
-	nicvf_logtype_init = rte_log_register("pmd.net.thunderx.init");
-	if (nicvf_logtype_init >= 0)
-		rte_log_set_level(nicvf_logtype_init, RTE_LOG_NOTICE);
-
-	nicvf_logtype_driver = rte_log_register("pmd.net.thunderx.driver");
-	if (nicvf_logtype_driver >= 0)
-		rte_log_set_level(nicvf_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(nicvf_logtype_mbox, pmd.net.thunderx.mbox, NOTICE);
+RTE_LOG_REGISTER(nicvf_logtype_init, pmd.net.thunderx.init, NOTICE);
+RTE_LOG_REGISTER(nicvf_logtype_driver, pmd.net.thunderx.driver, NOTICE);
 
 static void
 nicvf_link_status_update(struct nicvf *nic,
@@ -98,9 +83,9 @@ nicvf_interrupt(void *arg)
 			nicvf_link_status_update(nic, &link);
 			rte_eth_linkstatus_set(dev, &link);
 
-			_rte_eth_dev_callback_process(dev,
-						      RTE_ETH_EVENT_INTR_LSC,
-						      NULL);
+			rte_eth_dev_callback_process(dev,
+						     RTE_ETH_EVENT_INTR_LSC,
+						     NULL);
 		}
 	}
 
@@ -1782,6 +1767,7 @@ nicvf_dev_stop_cleanup(struct rte_eth_dev *dev, bool cleanup)
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
+	dev->data->dev_started = 0;
 
 	/* Teardown secondary vf first */
 	for (i = 0; i < nic->sqs_count; i++) {
@@ -1805,12 +1791,14 @@ nicvf_dev_stop_cleanup(struct rte_eth_dev *dev, bool cleanup)
 		PMD_INIT_LOG(ERR, "Failed to reclaim CPI config %d", ret);
 }
 
-static void
+static int
 nicvf_dev_stop(struct rte_eth_dev *dev)
 {
 	PMD_INIT_FUNC_TRACE();
 
 	nicvf_dev_stop_cleanup(dev, false);
+
+	return 0;
 }
 
 static void
@@ -1868,7 +1856,7 @@ nicvf_vf_stop(struct rte_eth_dev *dev, struct nicvf *nic, bool cleanup)
 	}
 }
 
-static void
+static int
 nicvf_dev_close(struct rte_eth_dev *dev)
 {
 	size_t i;
@@ -1876,7 +1864,7 @@ nicvf_dev_close(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
 	nicvf_dev_stop_cleanup(dev, true);
 	nicvf_periodic_alarm_stop(nicvf_interrupt, dev);
@@ -1887,6 +1875,8 @@ nicvf_dev_close(struct rte_eth_dev *dev)
 
 		nicvf_periodic_alarm_stop(nicvf_vf_interrupt, nic->snicvf[i]);
 	}
+
+	return 0;
 }
 
 static int
@@ -1992,6 +1982,37 @@ nicvf_dev_configure(struct rte_eth_dev *dev)
 	return 0;
 }
 
+static int
+nicvf_dev_set_link_up(struct rte_eth_dev *dev)
+{
+	struct nicvf *nic = nicvf_pmd_priv(dev);
+	int rc, i;
+
+	rc = nicvf_mbox_set_link_up_down(nic, true);
+	if (rc)
+		goto done;
+
+	/* Start tx queues  */
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		nicvf_dev_tx_queue_start(dev, i);
+
+done:
+	return rc;
+}
+
+static int
+nicvf_dev_set_link_down(struct rte_eth_dev *dev)
+{
+	struct nicvf *nic = nicvf_pmd_priv(dev);
+	int i;
+
+	/* Stop tx queues  */
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		nicvf_dev_tx_queue_stop(dev, i);
+
+	return nicvf_mbox_set_link_up_down(nic, false);
+}
+
 /* Initialize and register driver with DPDK Application */
 static const struct eth_dev_ops nicvf_eth_dev_ops = {
 	.dev_configure            = nicvf_dev_configure,
@@ -2016,9 +2037,10 @@ static const struct eth_dev_ops nicvf_eth_dev_ops = {
 	.tx_queue_stop            = nicvf_dev_tx_queue_stop,
 	.rx_queue_setup           = nicvf_dev_rx_queue_setup,
 	.rx_queue_release         = nicvf_dev_rx_queue_release,
-	.rx_queue_count           = nicvf_dev_rx_queue_count,
 	.tx_queue_setup           = nicvf_dev_tx_queue_setup,
 	.tx_queue_release         = nicvf_dev_tx_queue_release,
+	.dev_set_link_up          = nicvf_dev_set_link_up,
+	.dev_set_link_down        = nicvf_dev_set_link_down,
 	.get_reg                  = nicvf_dev_get_regs,
 };
 
@@ -2116,6 +2138,7 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	eth_dev->dev_ops = &nicvf_eth_dev_ops;
+	eth_dev->rx_queue_count = nicvf_dev_rx_queue_count;
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -2133,6 +2156,7 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	nic->device_id = pci_dev->id.device_id;
 	nic->vendor_id = pci_dev->id.vendor_id;

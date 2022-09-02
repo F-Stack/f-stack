@@ -12,14 +12,8 @@ AM_CFLAGS = -I${top_srcdir} -I${top_srcdir}/libxo
 
 # Ick: maintained by hand!
 TEST_CASES = \
-xo_01.sh
-
-X=\
-xo_02.sh \
-xo_03.sh \
-xo_04.sh \
-xo_05.sh \
-xo_06.sh
+xo_01.sh \
+xo_02.sh
 
 # TEST_CASES := $(shell cd ${srcdir} ; echo *.c )
 
@@ -51,8 +45,7 @@ all:
 XO=../../xo/xo
 
 TEST_ONE = \
-  LIBXO_OPTIONS=:W$$fmt \
-      ${CHECKER} sh ${srcdir}/$$base.sh ${XO} ${TEST_OPTS} \
+      ${CHECKER} sh ${srcdir}/$$base.sh "${XO} --libxo:W$$fmt" ${TEST_OPTS} \
       > out/$$base.$$fmt.out 2> out/$$base.$$fmt.err ; \
  ${DIFF} -Nu ${srcdir}/saved/$$base.$$fmt.out out/$$base.$$fmt.out ${S2O} ; \
  ${DIFF} -Nu ${srcdir}/saved/$$base.$$fmt.err out/$$base.$$fmt.err ${S2O}

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Jake Burkholder.
  * All rights reserved.
  *
@@ -67,7 +69,6 @@ sc_get_softc(int unit, int flags)
 	sc = &sc_softcs[unit];
 	sc->unit = unit;
 	if ((sc->flags & SC_INIT_DONE) == 0) {
-		sc->keyboard = -1;
 		sc->adapter = -1;
 		sc->cursor_char = SC_CURSOR_CHAR;
 		sc->mouse_char = SC_MOUSE_CHAR;
@@ -78,9 +79,6 @@ sc_get_softc(int unit, int flags)
 void
 sc_get_bios_values(bios_values_t *values)
 {
-	values->cursor_start = 0;
-	values->cursor_end = 32;
-	values->shift_state = 0;
 }
 
 int

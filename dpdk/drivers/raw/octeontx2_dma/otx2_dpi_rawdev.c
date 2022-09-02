@@ -60,7 +60,7 @@ dma_queue_finish(struct dpi_vf_s *dpivf)
 		reg = otx2_read64(dpivf->vf_bar0 + DPI_VDMA_SADDR);
 	}
 
-	if (otx2_dpi_queue_close(dpivf->vf_id) < 0)
+	if (otx2_dpi_queue_close(dpivf) < 0)
 		return -EACCES;
 
 	rte_mempool_put(dpivf->chunk_pool, dpivf->base_ptr);
@@ -201,6 +201,8 @@ otx2_dpi_rawdev_enqueue_bufs(struct rte_rawdev *dev,
 		index += 4;
 		hdr->s.fport = 0;
 		hdr->s.lport = 0;
+		if (ctx->xtype !=  DPI_XTYPE_INTERNAL_ONLY)
+			hdr->s.lport = ctx->pem_id;
 
 		/* For inbound case, src pointers are last pointers.
 		 * For all other cases, src pointers are first pointers.
@@ -294,7 +296,8 @@ otx2_dpi_rawdev_reset(struct rte_rawdev *dev)
 }
 
 static int
-otx2_dpi_rawdev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
+otx2_dpi_rawdev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config,
+		size_t config_size)
 {
 	struct dpi_rawdev_conf_s *conf = config;
 	struct dpi_vf_s *dpivf = NULL;
@@ -302,8 +305,8 @@ otx2_dpi_rawdev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
 	uintptr_t pool;
 	uint32_t gaura;
 
-	if (conf == NULL) {
-		otx2_dpi_dbg("NULL configuration");
+	if (conf == NULL || config_size != sizeof(*conf)) {
+		otx2_dpi_dbg("NULL or invalid configuration");
 		return -EINVAL;
 	}
 	dpivf = (struct dpi_vf_s *)dev->dev_private;
@@ -320,7 +323,7 @@ otx2_dpi_rawdev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
 	otx2_write64(0, dpivf->vf_bar0 + DPI_VDMA_REQQ_CTL);
 	otx2_write64(((uint64_t)buf >> 7) << 7,
 		     dpivf->vf_bar0 + DPI_VDMA_SADDR);
-	if (otx2_dpi_queue_open(dpivf->vf_id, DPI_CHUNK_SIZE, gaura) < 0) {
+	if (otx2_dpi_queue_open(dpivf, DPI_CHUNK_SIZE, gaura) < 0) {
 		otx2_err("Unable to open DPI VF %d", dpivf->vf_id);
 		rte_mempool_put(conf->chunk_pool, buf);
 		return -EACCES;
@@ -386,6 +389,7 @@ otx2_dpi_rawdev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	vf_id = ((pci_dev->addr.devid & 0x1F) << 3) |
 		 (pci_dev->addr.function & 0x7);
 	vf_id -= 1;
+	dpivf->dev = pci_dev;
 	dpivf->state = DPI_QUEUE_START;
 	dpivf->vf_id = vf_id;
 	dpivf->vf_bar0 = (uintptr_t)pci_dev->mem_resource[0].addr;

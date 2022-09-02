@@ -8,7 +8,7 @@
  *
  * @file dpdk/pmd/nfp_net_pmd.h
  *
- * Netronome NFP_NET PMD driver
+ * Netronome NFP_NET PMD
  */
 
 #ifndef _NFP_NET_PMD_H_
@@ -188,7 +188,7 @@ struct nfp_net_tx_desc {
 				__le16 vlan; /* VLAN tag to add if indicated */
 			};
 			__le16 data_len;    /* Length of frame + meta data */
-		} __attribute__((__packed__));
+		} __rte_packed;
 		__le32 vals[4];
 	};
 };
@@ -235,6 +235,9 @@ struct nfp_net_txq {
 	 */
 	struct nfp_net_tx_desc *txds;
 
+	/* Pointer to the memzone for the ring */
+	const struct rte_memzone *tz;
+
 	/*
 	 * At this point 48 bytes have been used for all the fields in the
 	 * TX critical path. We have room for 8 bytes and still all placed
@@ -249,7 +252,7 @@ struct nfp_net_txq {
 	int qidx;
 	int tx_qcidx;
 	__le64 dma;
-} __attribute__ ((__aligned__(64)));
+} __rte_aligned(64);
 
 /* RX and freelist descriptor format */
 #define PCIE_DESC_RX_DD                 (1 << 7)
@@ -284,7 +287,7 @@ struct nfp_net_rx_desc {
 			uint8_t dd;
 
 			__le32 dma_addr_lo;
-		} __attribute__((__packed__)) fld;
+		} __rte_packed fld;
 
 		/* RX descriptor */
 		struct {
@@ -294,7 +297,7 @@ struct nfp_net_rx_desc {
 
 			__le16 flags;
 			__le16 vlan;
-		} __attribute__((__packed__)) rxd;
+		} __rte_packed rxd;
 
 		__le32 vals[2];
 	};
@@ -370,6 +373,9 @@ struct nfp_net_rxq {
 	/* DMA address of the queue */
 	__le64 dma;
 
+	/* Pointer to the memzone for the ring */
+	const struct rte_memzone *tz;
+
 	/*
 	 * Queue information: @qidx is the queue index from Linux's
 	 * perspective.  @fl_qcidx is the index of the Queue
@@ -380,7 +386,7 @@ struct nfp_net_rxq {
 	int qidx;
 	int fl_qcidx;
 	int rx_qcidx;
-} __attribute__ ((__aligned__(64)));
+} __rte_aligned(64);
 
 struct nfp_net_hw {
 	/* Info from the firmware */

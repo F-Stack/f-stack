@@ -20,6 +20,32 @@
  * RX Queues
  */
 
+uint64_t bnxt_get_rx_port_offloads(struct bnxt *bp)
+{
+	uint64_t rx_offload_capa;
+
+	rx_offload_capa = DEV_RX_OFFLOAD_IPV4_CKSUM  |
+			  DEV_RX_OFFLOAD_UDP_CKSUM   |
+			  DEV_RX_OFFLOAD_TCP_CKSUM   |
+			  DEV_RX_OFFLOAD_KEEP_CRC    |
+			  DEV_RX_OFFLOAD_VLAN_FILTER |
+			  DEV_RX_OFFLOAD_VLAN_EXTEND |
+			  DEV_RX_OFFLOAD_TCP_LRO |
+			  DEV_RX_OFFLOAD_SCATTER |
+			  DEV_RX_OFFLOAD_RSS_HASH;
+
+	if (bp->flags & BNXT_FLAG_PTP_SUPPORTED)
+		rx_offload_capa |= DEV_RX_OFFLOAD_TIMESTAMP;
+	if (bp->vnic_cap_flags & BNXT_VNIC_CAP_VLAN_RX_STRIP)
+		rx_offload_capa |= DEV_RX_OFFLOAD_VLAN_STRIP;
+
+	if (BNXT_TUNNELED_OFFLOADS_CAP_ALL_EN(bp))
+		rx_offload_capa |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+				   DEV_RX_OFFLOAD_OUTER_UDP_CKSUM;
+
+	return rx_offload_capa;
+}
+
 void bnxt_free_rxq_stats(struct bnxt_rx_queue *rxq)
 {
 	if (rxq && rxq->cp_ring && rxq->cp_ring->hw_stats)
@@ -29,6 +55,7 @@ void bnxt_free_rxq_stats(struct bnxt_rx_queue *rxq)
 int bnxt_mq_rx_configure(struct bnxt *bp)
 {
 	struct rte_eth_conf *dev_conf = &bp->eth_dev->data->dev_conf;
+	struct rte_eth_rss_conf *rss = &bp->rss_conf;
 	const struct rte_eth_vmdq_rx_conf *conf =
 		    &dev_conf->rx_adv_conf.vmdq_rx_conf;
 	unsigned int i, j, nb_q_per_grp = 1, ring_idx = 0;
@@ -136,23 +163,19 @@ skip_filter_allocation:
 
 	bp->rx_num_qs_per_vnic = nb_q_per_grp;
 
-	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {
-		struct rte_eth_rss_conf *rss = &bp->rss_conf;
+	for (i = 0; i < bp->nr_vnics; i++) {
+		uint32_t lvl = ETH_RSS_LEVEL(rss->rss_hf);
 
-		for (i = 0; i < bp->nr_vnics; i++) {
-			vnic = &bp->vnic_info[i];
-			vnic->hash_type =
-				bnxt_rte_to_hwrm_hash_types(rss->rss_hf);
+		vnic = &bp->vnic_info[i];
+		vnic->hash_type = bnxt_rte_to_hwrm_hash_types(rss->rss_hf);
+		vnic->hash_mode = bnxt_rte_to_hwrm_hash_level(bp, rss->rss_hf, lvl);
 
-			/*
-			 * Use the supplied key if the key length is
-			 * acceptable and the rss_key is not NULL
-			 */
-			if (rss->rss_key &&
-			    rss->rss_key_len <= HW_HASH_KEY_SIZE)
-				memcpy(vnic->rss_hash_key,
-				       rss->rss_key, rss->rss_key_len);
-		}
+		/*
+		 * Use the supplied key if the key length is
+		 * acceptable and the rss_key is not NULL
+		 */
+		if (rss->rss_key && rss->rss_key_len <= HW_HASH_KEY_SIZE)
+			memcpy(vnic->rss_hash_key, rss->rss_key, rss->rss_key_len);
 	}
 
 	return rc;
@@ -165,7 +188,7 @@ err_out:
 
 void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 {
-	struct bnxt_sw_rx_bd *sw_ring;
+	struct rte_mbuf **sw_ring;
 	struct bnxt_tpa_info *tpa_info;
 	uint16_t i;
 
@@ -176,9 +199,10 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 	if (sw_ring) {
 		for (i = 0;
 		     i < rxq->rx_ring->rx_ring_struct->ring_size; i++) {
-			if (sw_ring[i].mbuf) {
-				rte_pktmbuf_free_seg(sw_ring[i].mbuf);
-				sw_ring[i].mbuf = NULL;
+			if (sw_ring[i]) {
+				if (sw_ring[i] != &rxq->fake_mbuf)
+					rte_pktmbuf_free_seg(sw_ring[i]);
+				sw_ring[i] = NULL;
 			}
 		}
 	}
@@ -187,9 +211,9 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 	if (sw_ring) {
 		for (i = 0;
 		     i < rxq->rx_ring->ag_ring_struct->ring_size; i++) {
-			if (sw_ring[i].mbuf) {
-				rte_pktmbuf_free_seg(sw_ring[i].mbuf);
-				sw_ring[i].mbuf = NULL;
+			if (sw_ring[i]) {
+				rte_pktmbuf_free_seg(sw_ring[i]);
+				sw_ring[i] = NULL;
 			}
 		}
 	}
@@ -279,7 +303,7 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 		return -EINVAL;
 	}
 
-	if (!nb_desc || nb_desc > MAX_RX_DESC_CNT) {
+	if (nb_desc < BNXT_MIN_RING_DESC || nb_desc > MAX_RX_DESC_CNT) {
 		PMD_DRV_LOG(ERR, "nb_desc %d is invalid\n", nb_desc);
 		return -EINVAL;
 	}
@@ -298,7 +322,8 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	rxq->bp = bp;
 	rxq->mb_pool = mp;
 	rxq->nb_rx_desc = nb_desc;
-	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
+	rxq->rx_free_thresh =
+		RTE_MIN(rte_align32pow2(nb_desc) / 4, RTE_BNXT_MAX_RX_BURST);
 
 	if (rx_conf->rx_drop_en != BNXT_DEFAULT_RX_DROP_EN)
 		PMD_DRV_LOG(NOTICE,
@@ -347,6 +372,10 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 		rxq->rx_started = true;
 	}
 	eth_dev->data->rx_queue_state[queue_idx] = queue_state;
+
+	/* Configure mtu if it is different from what was configured before */
+	if (!queue_idx)
+		bnxt_mtu_set_op(eth_dev, eth_dev->data->mtu);
 
 	return 0;
 err:
@@ -429,10 +458,11 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	if (rc)
 		return rc;
 
-	if (BNXT_CHIP_THOR(bp)) {
-		/* Reconfigure default receive ring and MRU. */
-		bnxt_hwrm_vnic_cfg(bp, rxq->vnic);
-	}
+	if (BNXT_HAS_RING_GRPS(bp))
+		rxq->vnic->dflt_ring_grp = bp->grp_info[rx_queue_id].fw_grp_id;
+	/* Reconfigure default receive ring and MRU. */
+	bnxt_hwrm_vnic_cfg(bp, rxq->vnic);
+
 	PMD_DRV_LOG(INFO, "Rx queue started %d\n", rx_queue_id);
 
 	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {

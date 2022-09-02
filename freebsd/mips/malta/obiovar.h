@@ -1,6 +1,8 @@
 /*	$NetBSD: obiovar.h,v 1.4 2003/06/16 17:40:53 thorpej Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2002, 2003 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -51,7 +53,7 @@ struct obio_softc {
 	int oba_irq;			/* XINT interrupt bit # */
 	struct rman oba_rman;
 	struct rman oba_irq_rman;
-	
+
 };
 extern struct bus_space obio_bs_tag;
 

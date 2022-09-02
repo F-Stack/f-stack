@@ -310,7 +310,7 @@ ixgbe_crypto_remove_sa(struct rte_eth_dev *dev,
 			return -1;
 		}
 
-		/* Disable and clear Rx SPI and key table table entryes*/
+		/* Disable and clear Rx SPI and key table table entries*/
 		reg_val = IPSRXIDX_WRITE | IPSRXIDX_TABLE_SPI | (sa_index << 3);
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXSPI, 0);
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXIPIDX, 0);
@@ -484,7 +484,8 @@ ixgbe_crypto_update_mb(void *device __rte_unused,
 			get_sec_session_private_data(session);
 	if (ic_session->op == IXGBE_OP_AUTHENTICATED_ENCRYPTION) {
 		union ixgbe_crypto_tx_desc_md *mdata =
-			(union ixgbe_crypto_tx_desc_md *)&m->udata64;
+			(union ixgbe_crypto_tx_desc_md *)
+				rte_security_dynfield(m);
 		mdata->enc = 1;
 		mdata->sa_idx = ic_session->sa_index;
 		mdata->pad_len = ixgbe_crypto_compute_pad_len(m);
@@ -751,5 +752,7 @@ ixgbe_ipsec_ctx_create(struct rte_eth_dev *dev)
 			return -ENOMEM;
 		}
 	}
+	if (rte_security_dynfield_register() < 0)
+		return -rte_errno;
 	return 0;
 }

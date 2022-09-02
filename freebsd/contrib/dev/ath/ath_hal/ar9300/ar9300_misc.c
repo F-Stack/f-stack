@@ -26,7 +26,9 @@
 #include "ar9300/ar9300.h"
 #include "ar9300/ar9300reg.h"
 #include "ar9300/ar9300phy.h"
+#include "ar9300/ar9300desc.h"
 
+static u_int32_t ar9300_read_loc_timer(struct ath_hal *ah);
 
 void
 ar9300_get_hw_hangs(struct ath_hal *ah, hal_hw_hangs_t *hangs)
@@ -647,11 +649,12 @@ ar9300_set_quiet(struct ath_hal *ah, u_int32_t period, u_int32_t duration,
     return status;
 #undef	TU_TO_USEC
 }
-#ifdef ATH_SUPPORT_DFS
+
+//#ifdef ATH_SUPPORT_DFS
 void
 ar9300_cac_tx_quiet(struct ath_hal *ah, HAL_BOOL enable)
 {
-    u32 reg1, reg2;
+    uint32_t reg1, reg2;
 
     reg1 = OS_REG_READ(ah, AR_MAC_PCU_OFFSET(MAC_PCU_MISC_MODE));
     reg2 = OS_REG_READ(ah, AR_MAC_PCU_OFFSET(MAC_PCU_QUIET_TIME_1));
@@ -669,7 +672,7 @@ ar9300_cac_tx_quiet(struct ath_hal *ah, HAL_BOOL enable)
                      reg2 | AR_QUIET1_QUIET_ACK_CTS_ENABLE);
     }
 }
-#endif /* ATH_SUPPORT_DFS */
+//#endif /* ATH_SUPPORT_DFS */
 
 void
 ar9300_set_pcu_config(struct ath_hal *ah)
@@ -947,6 +950,14 @@ ar9300_get_capability(struct ath_hal *ah, HAL_CAPABILITY_TYPE type,
             return (HAL_ENOTSUPP);
         (*result) = !! (ahp->ah_misc_mode & AR_PCU_TXOP_TBTT_LIMIT_ENA);
         return (HAL_OK);
+    case HAL_CAP_TOA_LOCATIONING:
+        if (capability == 0)
+            return HAL_OK;
+        if (capability == 2) {
+            *result = ar9300_read_loc_timer(ah);
+            return (HAL_OK);
+        }
+        return HAL_ENOTSUPP;
     default:
         return ath_hal_getcapability(ah, type, capability, result);
     }
@@ -1060,6 +1071,14 @@ ar9300_set_capability(struct ath_hal *ah, HAL_CAPABILITY_TYPE type,
         }
         return AH_TRUE;
 
+    case HAL_CAP_TOA_LOCATIONING:
+        if (capability == 0)
+            return AH_TRUE;
+        if (capability == 1) {
+            ar9300_update_loc_ctl_reg(ah, setting);
+            return AH_TRUE;
+        }
+        return AH_FALSE;
         /* fall thru... */
     default:
         return ath_hal_setcapability(ah, type, capability, setting, status);
@@ -1244,15 +1263,13 @@ ar9300_get_diag_state(struct ath_hal *ah, int request,
         if (ani == AH_NULL)
             return AH_FALSE;
         /* Convert ar9300 HAL to FreeBSD HAL ANI state */
-        /* XXX TODO: add all of these to the HAL ANI state structure */
         bzero(&ahp->ext_ani_state, sizeof(ahp->ext_ani_state));
-        /* XXX should this be OFDM or CCK noise immunity level? */
         ahp->ext_ani_state.noiseImmunityLevel = ani->ofdm_noise_immunity_level;
         ahp->ext_ani_state.spurImmunityLevel = ani->spur_immunity_level;
         ahp->ext_ani_state.firstepLevel = ani->firstep_level;
         ahp->ext_ani_state.ofdmWeakSigDetectOff = ani->ofdm_weak_sig_detect_off;
-        /* mrc_cck_off */
-        /* cck_noise_immunity_level */
+        ahp->ext_ani_state.mrcCck = !! ani->mrc_cck_off;
+        ahp->ext_ani_state.cckNoiseImmunityLevel = ani->cck_noise_immunity_level;
 
         ahp->ext_ani_state.listenTime = ani->listen_time;
 
@@ -1270,12 +1287,18 @@ ar9300_get_diag_state(struct ath_hal *ah, int request,
             0 : sizeof(HAL_ANI_STATS);
         return AH_TRUE;
     case HAL_DIAG_ANI_CMD:
+    {
+        HAL_ANI_CMD savefunc = ahp->ah_ani_function;
         if (argsize != 2*sizeof(u_int32_t)) {
             return AH_FALSE;
         }
+        /* temporarly allow all functions so we can override */
+        ahp->ah_ani_function = HAL_ANI_ALL;
         ar9300_ani_control(
             ah, ((const u_int32_t *)args)[0], ((const u_int32_t *)args)[1]);
+        ahp->ah_ani_function = savefunc;
         return AH_TRUE;
+    }
 #if 0
     case HAL_DIAG_TXCONT:
         /*AR9300_CONTTXMODE(ah, (struct ath_desc *)args, argsize );*/
@@ -3853,6 +3876,13 @@ HAL_BOOL
 ar9300SetDfs3StreamFix(struct ath_hal *ah, u_int32_t val)
 {
    return AH_FALSE;
+}
+
+static u_int32_t
+ar9300_read_loc_timer(struct ath_hal *ah)
+{
+
+    return OS_REG_READ(ah, AR_LOC_TIMER_REG);
 }
 
 HAL_BOOL

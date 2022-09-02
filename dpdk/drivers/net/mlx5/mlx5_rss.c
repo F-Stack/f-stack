@@ -7,23 +7,14 @@
 #include <stdint.h>
 #include <errno.h>
 #include <string.h>
-#include <assert.h>
-
-/* Verbs header. */
-/* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
-#include <infiniband/verbs.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include <rte_malloc.h>
 #include <rte_ethdev_driver.h>
 
-#include "mlx5.h"
+#include <mlx5_malloc.h>
+
 #include "mlx5_defs.h"
+#include "mlx5.h"
 #include "mlx5_rxtx.h"
 
 /**
@@ -58,8 +49,10 @@ mlx5_rss_hash_update(struct rte_eth_dev *dev,
 			rte_errno = EINVAL;
 			return -rte_errno;
 		}
-		priv->rss_conf.rss_key = rte_realloc(priv->rss_conf.rss_key,
-						     rss_conf->rss_key_len, 0);
+		priv->rss_conf.rss_key = mlx5_realloc(priv->rss_conf.rss_key,
+						      MLX5_MEM_RTE,
+						      rss_conf->rss_key_len,
+						      0, SOCKET_ID_ANY);
 		if (!priv->rss_conf.rss_key) {
 			rte_errno = ENOMEM;
 			return -rte_errno;
@@ -132,8 +125,9 @@ mlx5_rss_reta_index_resize(struct rte_eth_dev *dev, unsigned int reta_size)
 	if (priv->reta_idx_n == reta_size)
 		return 0;
 
-	mem = rte_realloc(priv->reta_idx,
-			  reta_size * sizeof((*priv->reta_idx)[0]), 0);
+	mem = mlx5_realloc(priv->reta_idx, MLX5_MEM_RTE,
+			   reta_size * sizeof((*priv->reta_idx)[0]), 0,
+			   SOCKET_ID_ANY);
 	if (!mem) {
 		rte_errno = ENOMEM;
 		return -rte_errno;
@@ -218,7 +212,7 @@ mlx5_dev_rss_reta_update(struct rte_eth_dev *dev,
 		pos = i % RTE_RETA_GROUP_SIZE;
 		if (((reta_conf[idx].mask >> pos) & 0x1) == 0)
 			continue;
-		assert(reta_conf[idx].reta[pos] < priv->rxqs_n);
+		MLX5_ASSERT(reta_conf[idx].reta[pos] < priv->rxqs_n);
 		(*priv->reta_idx)[i] = reta_conf[idx].reta[pos];
 	}
 	priv->skip_default_rss_reta = 1;

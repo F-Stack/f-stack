@@ -89,13 +89,12 @@ codel_pfattach(struct pf_altq *a)
 }
 
 int
-codel_add_altq(struct pf_altq *a)
+codel_add_altq(struct ifnet *ifp, struct pf_altq *a)
 {
 	struct codel_if	*cif;
-	struct ifnet	*ifp;
 	struct codel_opts	*opts;
 
-	if ((ifp = ifunit(a->ifname)) == NULL)
+	if (ifp == NULL)
 		return (EINVAL);
 	if (!ALTQ_IS_READY(&ifp->if_snd))
 		return (ENODEV);
@@ -156,7 +155,7 @@ codel_remove_altq(struct pf_altq *a)
 }
 
 int
-codel_getqstats(struct pf_altq *a, void *ubuf, int *nbytes)
+codel_getqstats(struct pf_altq *a, void *ubuf, int *nbytes, int version)
 {
 	struct codel_if *cif;
 	struct codel_ifstats stats;
@@ -246,7 +245,6 @@ codel_dequeue(struct ifaltq *ifq, int op)
 
 	if (op == ALTDQ_POLL)
 		return (qhead(cif->cl_q));
-
 
 	m = codel_getq(&cif->codel, cif->cl_q);
 	if (m != NULL) {

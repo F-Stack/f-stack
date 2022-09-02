@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2002 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -1016,4 +1018,3 @@ ng_h4_mod_event(module_t mod, int event, void *data)
 
 	return (error);
 } /* ng_h4_mod_event */
-

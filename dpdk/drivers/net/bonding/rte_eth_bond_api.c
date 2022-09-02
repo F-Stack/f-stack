@@ -243,7 +243,12 @@ slave_rte_flow_prepare(uint16_t slave_id, struct bond_dev_private *internals)
 	uint16_t slave_port_id = internals->slaves[slave_id].port_id;
 
 	if (internals->flow_isolated_valid != 0) {
-		rte_eth_dev_stop(slave_port_id);
+		if (rte_eth_dev_stop(slave_port_id) != 0) {
+			RTE_BOND_LOG(ERR, "Failed to stop device on port %u",
+				     slave_port_id);
+			return -1;
+		}
+
 		if (rte_flow_isolate(slave_port_id, internals->flow_isolated,
 		    &ferror)) {
 			RTE_BOND_LOG(ERR, "rte_flow_isolate failed for slave"
@@ -370,7 +375,7 @@ eth_bond_slave_inherit_dev_info_rx_next(struct bond_dev_private *internals,
 	 * value. Thus, the new internal value of default Rx queue offloads
 	 * has to be masked by rx_queue_offload_capa to make sure that only
 	 * commonly supported offloads are preserved from both the previous
-	 * value and the value being inhereted from the new slave device.
+	 * value and the value being inherited from the new slave device.
 	 */
 	rxconf_i->offloads = (rxconf_i->offloads | rxconf->offloads) &
 			     internals->rx_queue_offload_capa;
@@ -408,7 +413,7 @@ eth_bond_slave_inherit_dev_info_tx_next(struct bond_dev_private *internals,
 	 * value. Thus, the new internal value of default Tx queue offloads
 	 * has to be masked by tx_queue_offload_capa to make sure that only
 	 * commonly supported offloads are preserved from both the previous
-	 * value and the value being inhereted from the new slave device.
+	 * value and the value being inherited from the new slave device.
 	 */
 	txconf_i->offloads = (txconf_i->offloads | txconf->offloads) &
 			     internals->tx_queue_offload_capa;

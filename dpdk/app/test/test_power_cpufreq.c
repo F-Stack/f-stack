@@ -12,7 +12,7 @@
 
 #include "test.h"
 
-#ifndef RTE_LIBRTE_POWER
+#ifndef RTE_LIB_POWER
 
 static int
 test_power_cpufreq(void)
@@ -660,7 +660,7 @@ test_power_cpufreq(void)
 	/* test of exit power management for an invalid lcore */
 	ret = rte_power_exit(TEST_POWER_LCORE_INVALID);
 	if (ret == 0) {
-		printf("Unpectedly exit power management successfully for "
+		printf("Unexpectedly exit power management successfully for "
 				"lcore %u\n", TEST_POWER_LCORE_INVALID);
 		rte_power_unset_env();
 		return -1;

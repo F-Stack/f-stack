@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -31,7 +33,7 @@
 
 struct vm;
 
-boolean_t lapic_msr(u_int num);
+bool	lapic_msr(u_int num);
 int	lapic_rdmsr(struct vm *vm, int cpu, u_int msr, uint64_t *rval,
 	    bool *retu);
 int	lapic_wrmsr(struct vm *vm, int cpu, u_int msr, uint64_t wval,

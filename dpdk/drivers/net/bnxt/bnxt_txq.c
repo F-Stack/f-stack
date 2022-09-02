@@ -8,6 +8,7 @@
 #include <rte_malloc.h>
 
 #include "bnxt.h"
+#include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "bnxt_txq.h"
 #include "bnxt_txr.h"
@@ -15,6 +16,35 @@
 /*
  * TX Queues
  */
+
+uint64_t bnxt_get_tx_port_offloads(struct bnxt *bp)
+{
+	uint64_t tx_offload_capa;
+
+	tx_offload_capa = DEV_TX_OFFLOAD_IPV4_CKSUM  |
+			  DEV_TX_OFFLOAD_UDP_CKSUM   |
+			  DEV_TX_OFFLOAD_TCP_CKSUM   |
+			  DEV_TX_OFFLOAD_TCP_TSO     |
+			  DEV_TX_OFFLOAD_QINQ_INSERT |
+			  DEV_TX_OFFLOAD_MULTI_SEGS;
+
+	if (bp->fw_cap & BNXT_FW_CAP_VLAN_TX_INSERT)
+		tx_offload_capa |= DEV_TX_OFFLOAD_VLAN_INSERT;
+
+	if (BNXT_TUNNELED_OFFLOADS_CAP_ALL_EN(bp))
+		tx_offload_capa |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
+
+	if (BNXT_TUNNELED_OFFLOADS_CAP_VXLAN_EN(bp))
+		tx_offload_capa |= DEV_TX_OFFLOAD_VXLAN_TNL_TSO;
+	if (BNXT_TUNNELED_OFFLOADS_CAP_GRE_EN(bp))
+		tx_offload_capa |= DEV_TX_OFFLOAD_GRE_TNL_TSO;
+	if (BNXT_TUNNELED_OFFLOADS_CAP_NGE_EN(bp))
+		tx_offload_capa |= DEV_TX_OFFLOAD_GENEVE_TNL_TSO;
+	if (BNXT_TUNNELED_OFFLOADS_CAP_IPINIP_EN(bp))
+		tx_offload_capa |= DEV_TX_OFFLOAD_IPIP_TNL_TSO;
+
+	return tx_offload_capa;
+}
 
 void bnxt_free_txq_stats(struct bnxt_tx_queue *txq)
 {
@@ -105,7 +135,7 @@ int bnxt_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 		return -EINVAL;
 	}
 
-	if (!nb_desc || nb_desc > MAX_TX_DESC_CNT) {
+	if (nb_desc < BNXT_MIN_RING_DESC || nb_desc > MAX_TX_DESC_CNT) {
 		PMD_DRV_LOG(ERR, "nb_desc %d is invalid", nb_desc);
 		return -EINVAL;
 	}
@@ -134,7 +164,11 @@ int bnxt_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	}
 	txq->bp = bp;
 	txq->nb_tx_desc = nb_desc;
-	txq->tx_free_thresh = tx_conf->tx_free_thresh;
+	txq->tx_free_thresh =
+		RTE_MIN(rte_align32pow2(nb_desc) / 4, RTE_BNXT_MAX_TX_BURST);
+	txq->offloads = eth_dev->data->dev_conf.txmode.offloads |
+			tx_conf->offloads;
+
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
 
 	rc = bnxt_init_tx_ring_struct(txq, socket_id);

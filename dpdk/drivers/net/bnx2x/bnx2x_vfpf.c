@@ -73,7 +73,7 @@ bnx2x_add_tlv(__rte_unused struct bnx2x_softc *sc, void *tlvs_list,
 	tl->length = length;
 }
 
-/* Initiliaze header of the first tlv and clear mailbox*/
+/* Initialize header of the first TLV and clear mailbox */
 static void
 bnx2x_vf_prep(struct bnx2x_softc *sc, struct vf_first_tlv *first_tlv,
 	      uint16_t type, uint16_t length)
@@ -695,6 +695,64 @@ bnx2x_vf_set_rx_mode(struct bnx2x_softc *sc)
 
 	if (reply->status != BNX2X_VF_STATUS_SUCCESS) {
 		PMD_DRV_LOG(ERR, sc, "Failed to set RX mode");
+		rc = -EINVAL;
+	}
+
+out:
+	bnx2x_vf_finalize(sc, &query->first_tlv);
+
+	return rc;
+}
+
+int
+bnx2x_vfpf_set_mcast(struct bnx2x_softc *sc,
+					struct rte_ether_addr *mc_addrs,
+					uint32_t mc_addrs_num)
+{
+	struct vf_set_q_filters_tlv *query;
+	struct vf_common_reply_tlv *reply =
+			&sc->vf2pf_mbox->resp.common_reply;
+	int rc = 0;
+	uint32_t i = 0;
+	query = &sc->vf2pf_mbox->query[0].set_q_filters;
+	bnx2x_vf_prep(sc, &query->first_tlv, BNX2X_VF_TLV_SET_Q_FILTERS,
+				sizeof(*query));
+	/* We support PFVF_MAX_MULTICAST_PER_VF mcast addresses tops */
+	if (mc_addrs_num > VF_MAX_MULTICAST_PER_VF) {
+		PMD_DRV_LOG(ERR, sc,
+		"VF supports not more than %d multicast MAC addresses",
+		VF_MAX_MULTICAST_PER_VF);
+
+		rc = -EINVAL;
+		goto out;
+	}
+
+	for (i = 0; i < mc_addrs_num; i++) {
+		PMD_DRV_LOG(DEBUG, sc, "Adding mcast MAC:%x:%x:%x:%x:%x:%x",
+				mc_addrs[i].addr_bytes[0],
+				mc_addrs[i].addr_bytes[1],
+				mc_addrs[i].addr_bytes[2],
+				mc_addrs[i].addr_bytes[3],
+				mc_addrs[i].addr_bytes[4],
+				mc_addrs[i].addr_bytes[5]);
+		memcpy(query->multicast[i], mc_addrs[i].addr_bytes, ETH_ALEN);
+	}
+
+	query->vf_qid = 0;
+	query->flags = BNX2X_VF_MULTICAST_CHANGED;
+	query->multicast_cnt = i;
+
+	/* add list termination tlv */
+	bnx2x_add_tlv(sc, query, query->first_tlv.tl.length,
+				BNX2X_VF_TLV_LIST_END,
+				sizeof(struct channel_list_end_tlv));
+	rc = bnx2x_do_req4pf(sc, sc->vf2pf_mbox_mapping.paddr);
+	if (rc)
+		goto out;
+
+	if (reply->status != BNX2X_VF_STATUS_SUCCESS) {
+		PMD_DRV_LOG(ERR, sc, "Set Rx mode/multicast failed: %d",
+				reply->status);
 		rc = -EINVAL;
 	}
 

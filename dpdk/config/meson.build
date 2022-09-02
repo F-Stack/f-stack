@@ -22,11 +22,14 @@ is_ms_linker = is_windows and (cc.get_id() == 'clang')
 # depending on the configuration options
 pver = meson.project_version().split('.')
 major_version = '@0@.@1@'.format(pver.get(0), pver.get(1))
-abi_version = run_command(find_program('cat', 'more'), abi_version_file,
-		check: true).stdout().strip()
-# experimental libraries are versioned as 0.majorminor versions, e.g. 0.201
-ever = abi_version.split('.')
-experimental_abi_version = '0.@0@@1@'.format(ever.get(0), ever.get(1))
+abi_version = run_command(find_program('cat', 'more'),
+	abi_version_file, check: true).stdout().strip()
+
+# Libraries have the abi_version as the filename extension
+# and have the soname be all but the final part of the abi_version.
+# e.g. v20.1 => librte_foo.so.20.1
+#    sonames => librte_foo.so.20
+so_version = abi_version.split('.')[0]
 
 # extract all version information into the build configuration
 dpdk_conf.set('RTE_VER_YEAR', pver.get(0).to_int())
@@ -58,6 +61,10 @@ if not is_windows
 	meson.add_install_script('../buildtools/symlink-drivers-solibs.sh',
 			get_option('libdir'),
 			pmd_subdir_opt)
+elif meson.version().version_compare('>=0.55.0')
+	# 0.55.0 is required to use external program with add_install_script
+	meson.add_install_script(py3, '../buildtools/symlink-drivers-solibs.py',
+			get_option('libdir'), pmd_subdir_opt, get_option('bindir'))
 endif
 
 # set the machine type and cflags for it
@@ -103,13 +110,14 @@ dpdk_conf.set_quoted('RTE_TOOLCHAIN', toolchain)
 dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
 
 dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
+dpdk_conf.set('RTE_ARCH_32', cc.sizeof('void *') == 4)
 
 if not is_windows
 	add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
 endif
 
 # use pthreads if available for the platform
-if not is_ms_linker
+if not is_windows
 	add_project_link_arguments('-pthread', language: 'c')
 	dpdk_extra_ldflags += '-pthread'
 endif
@@ -143,14 +151,6 @@ if numa_dep.found() and cc.has_header('numaif.h')
 	dpdk_extra_ldflags += '-lnuma'
 endif
 
-# Some false positives can trigger at LTO stage, so this warning needs to be
-# disabled on the linker as well for gcc 10.
-# Fixed in gcc-11 and not present <gcc-10
-# https://bugs.dpdk.org/show_bug.cgi?id=908
-if cc.get_id() == 'gcc' and cc.version().version_compare('>=10.0') and cc.version().version_compare('<11.0')
-	add_project_link_arguments('-Wno-stringop-overflow', language: 'c')
-endif
-
 has_libfdt = 0
 fdt_dep = cc.find_library('libfdt', required: false)
 if fdt_dep.found() and cc.has_header('fdt.h')
@@ -181,6 +181,13 @@ endif
 if pcap_dep.found() and cc.has_header('pcap.h', dependencies: pcap_dep)
 	dpdk_conf.set('RTE_PORT_PCAP', 1)
 	dpdk_extra_ldflags += '-lpcap'
+endif
+
+# for clang 32-bit compiles we need libatomic for 64-bit atomic ops
+if cc.get_id() == 'clang' and dpdk_conf.get('RTE_ARCH_64') == false
+	atomic_dep = cc.find_library('atomic', required: true)
+	add_project_link_arguments('-latomic', language: 'c')
+	dpdk_extra_ldflags += '-latomic'
 endif
 
 # add -include rte_config to cflags
@@ -219,6 +226,12 @@ if not dpdk_conf.get('RTE_ARCH_64')
 # for 32-bit, don't warn about casting a 32-bit pointer to 64-bit int - it's fine!!
 	warning_flags += '-Wno-pointer-to-int-cast'
 endif
+if cc.get_id() == 'intel'
+	warning_ids = [181, 188, 2203, 2279, 2557, 3179, 3656]
+	foreach i:warning_ids
+		warning_flags += '-diag-disable=@0@'.format(i)
+	endforeach
+endif
 foreach arg: warning_flags
 	if cc.has_argument(arg)
 		add_project_arguments(arg, language: 'c')
@@ -230,6 +243,7 @@ dpdk_conf.set('RTE_MAX_LCORE', get_option('max_lcores'))
 dpdk_conf.set('RTE_MAX_NUMA_NODES', get_option('max_numa_nodes'))
 dpdk_conf.set('RTE_MAX_ETHPORTS', get_option('max_ethports'))
 dpdk_conf.set('RTE_LIBEAL_USE_HPET', get_option('use_hpet'))
+dpdk_conf.set('RTE_ENABLE_TRACE_FP', get_option('enable_trace_fp'))
 # values which have defaults which may be overridden
 dpdk_conf.set('RTE_MAX_VFIO_GROUPS', 64)
 dpdk_conf.set('RTE_DRIVER_MEMPOOL_BUCKET_SIZE_KB', 64)
@@ -242,20 +256,14 @@ endif
 
 
 compile_time_cpuflags = []
-if host_machine.cpu_family().startswith('x86')
-	arch_subdir = 'x86'
-elif host_machine.cpu_family().startswith('arm') or host_machine.cpu_family().startswith('aarch')
-	arch_subdir = 'arm'
-elif host_machine.cpu_family().startswith('ppc')
-	arch_subdir = 'ppc_64'
-endif
 subdir(arch_subdir)
 dpdk_conf.set('RTE_COMPILE_TIME_CPUFLAGS', ','.join(compile_time_cpuflags))
 
 # set the install path for the drivers
 dpdk_conf.set_quoted('RTE_EAL_PMD_PATH', eal_pmd_path)
 
-install_headers('rte_config.h', subdir: get_option('include_subdir_arch'))
+install_headers(['rte_config.h', 'rte_compatibility_defines.h'],
+		subdir: get_option('include_subdir_arch'))
 
 # enable VFIO only if it is linux OS
 dpdk_conf.set('RTE_EAL_VFIO', is_linux)
@@ -269,13 +277,20 @@ if is_freebsd
 endif
 
 if is_windows
-	# Minimum supported API is Windows 7.
-	add_project_arguments('-D_WIN32_WINNT=0x0601', language: 'c')
+	# VirtualAlloc2() is available since Windows 10 / Server 2019.
+	# It's essential for EAL, so we don't support older versions.
+	add_project_arguments('-D_WIN32_WINNT=0x0A00', language: 'c')
 
 	# Use MinGW-w64 stdio, because DPDK assumes ANSI-compliant formatting.
 	if cc.get_id() == 'gcc'
 		add_project_arguments('-D__USE_MINGW_ANSI_STDIO', language: 'c')
 	endif
+
+	# Disable secure CRT deprecated warnings for clang
+	if cc.get_id() == 'clang'
+		add_project_arguments('-D_CRT_SECURE_NO_WARNINGS', language: 'c')
+	endif
+
 endif
 
 if get_option('b_lto')

@@ -296,7 +296,7 @@ cpt_vq_init(struct cpt_vf *cptvf, uint8_t group)
 	/* CPT VF device initialization */
 	otx_cpt_vfvq_init(cptvf);
 
-	/* Send msg to PF to assign currnet Q to required group */
+	/* Send msg to PF to assign current Q to required group */
 	cptvf->vfgrp = group;
 	err = otx_cpt_send_vf_grp_msg(cptvf, group);
 	if (err) {
@@ -535,7 +535,7 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	len = chunks * RTE_ALIGN(sizeof(struct command_chunk), 8);
 
 	/* For pending queue */
-	len += qlen * RTE_ALIGN(sizeof(struct rid), 8);
+	len += qlen * sizeof(uintptr_t);
 
 	/* So that instruction queues start as pg size aligned */
 	len = RTE_ALIGN(len, pg_sz);
@@ -556,7 +556,7 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	}
 
 	mem = rz->addr;
-	dma_addr = rz->phys_addr;
+	dma_addr = rz->iova;
 	alloc_len = len;
 
 	memset(mem, 0, len);
@@ -570,14 +570,14 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	}
 
 	/* Pending queue setup */
-	cptvf->pqueue.rid_queue = (struct rid *)mem;
+	cptvf->pqueue.req_queue = (uintptr_t *)mem;
 	cptvf->pqueue.enq_tail = 0;
 	cptvf->pqueue.deq_head = 0;
 	cptvf->pqueue.pending_count = 0;
 
-	mem +=  qlen * RTE_ALIGN(sizeof(struct rid), 8);
-	len -=  qlen * RTE_ALIGN(sizeof(struct rid), 8);
-	dma_addr += qlen * RTE_ALIGN(sizeof(struct rid), 8);
+	mem +=  qlen * sizeof(uintptr_t);
+	len -=  qlen * sizeof(uintptr_t);
+	dma_addr += qlen * sizeof(uintptr_t);
 
 	/* Alignment wastage */
 	used_len = alloc_len - len;

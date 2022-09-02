@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2001 David E. O'Brien
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
@@ -52,32 +54,24 @@
 
 #define __PCI_REROUTE_INTERRUPT
 
-#if __ARM_ARCH >= 6
-#define	_V6_SUFFIX "v6"
-#else
-#define	_V6_SUFFIX ""
-#endif
-
-#ifdef __ARM_BIG_ENDIAN
-#define	_EB_SUFFIX "eb"
-#else
-#define	_EB_SUFFIX ""
-#endif
-
 #ifndef MACHINE
 #define	MACHINE		"arm"
 #endif
 #ifndef MACHINE_ARCH
-#define	MACHINE_ARCH	"arm" _V6_SUFFIX _EB_SUFFIX
+#if __ARM_ARCH >= 7
+#define	MACHINE_ARCH	"armv7"
+#else
+#define	MACHINE_ARCH	"armv6"
+#endif
 #endif
 
-#if defined(SMP) || defined(KLD_MODULE)
+#ifdef SMP
 #ifndef MAXCPU
 #define	MAXCPU		4
 #endif
 #else
 #define	MAXCPU		1
-#endif /* SMP || KLD_MODULE */
+#endif
 
 #ifndef MAXMEMDOM
 #define	MAXMEMDOM	1

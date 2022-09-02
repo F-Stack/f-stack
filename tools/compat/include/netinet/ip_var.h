@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -34,6 +36,7 @@
 #define	_NETINET_IP_VAR_H_
 
 #include <sys/queue.h>
+#include <sys/epoch.h>
 
 /*
  * Overlay for ip header used by other protocols (tcp, udp).
@@ -58,6 +61,7 @@ struct ipq {
 	u_char	ipq_ttl;		/* time for reass q to live */
 	u_char	ipq_p;			/* protocol of this fragment */
 	u_short	ipq_id;			/* sequence id for reassembly */
+	int	ipq_maxoff;		/* total length of packet */
 	struct mbuf *ipq_frags;		/* to ip headers of fragments */
 	struct	in_addr ipq_src,ipq_dst;
 	u_char	ipq_nfrags;		/* # frags in this packet */
@@ -78,6 +82,7 @@ struct ipoption {
 	char	ipopt_list[MAX_IPOPTLEN];	/* options proper */
 };
 
+#if defined(_NETINET_IN_VAR_H_) && defined(_KERNEL)
 /*
  * Structure attached to inpcb.ip_moptions and
  * passed to ip_output when IP multicast options are in use.
@@ -89,12 +94,11 @@ struct ip_moptions {
 	u_long	imo_multicast_vif;	/* vif num outgoing multicasts */
 	u_char	imo_multicast_ttl;	/* TTL for outgoing multicasts */
 	u_char	imo_multicast_loop;	/* 1 => hear sends if a member */
-	u_short	imo_num_memberships;	/* no. memberships this socket */
-	u_short	imo_max_memberships;	/* max memberships this socket */
-	struct	in_multi **imo_membership;	/* group memberships */
-	struct	in_mfilter *imo_mfilters;	/* source filters */
-	STAILQ_ENTRY(ip_moptions) imo_link;
+	struct ip_mfilter_head imo_head; /* group membership list */
 };
+#else
+struct ip_moptions;
+#endif
 
 struct	ipstat {
 	uint64_t ips_total;		/* total packets received */
@@ -162,6 +166,7 @@ void	kmod_ipstat_dec(int statnum);
 #define IP_ROUTETOIF		SO_DONTROUTE	/* 0x10 bypass routing tables */
 #define IP_ALLOWBROADCAST	SO_BROADCAST	/* 0x20 can send broadcast packets */
 #define	IP_NODEFAULTFLOWID	0x40		/* Don't set the flowid from inp */
+#define IP_NO_SND_TAG_RL	0x80		/* Don't send down the ratelimit tag */
 
 #ifdef __NO_STRICT_ALIGNMENT
 #define IP_HDR_ALIGNED_P(ip)	1
@@ -173,9 +178,11 @@ struct ip;
 struct inpcb;
 struct route;
 struct sockopt;
+struct inpcbinfo;
 
 VNET_DECLARE(int, ip_defttl);			/* default IP ttl */
 VNET_DECLARE(int, ipforwarding);		/* ip forwarding */
+VNET_DECLARE(int, ipsendredirects);
 #ifdef IPSTEALTH
 VNET_DECLARE(int, ipstealth);			/* stealth forwarding */
 #endif
@@ -191,6 +198,7 @@ extern struct	pr_usrreqs rip_usrreqs;
 #define	V_ip_id			VNET(ip_id)
 #define	V_ip_defttl		VNET(ip_defttl)
 #define	V_ipforwarding		VNET(ipforwarding)
+#define	V_ipsendredirects	VNET(ipsendredirects)
 #ifdef IPSTEALTH
 #define	V_ipstealth		VNET(ipstealth)
 #endif
@@ -236,8 +244,9 @@ extern int	(*ip_rsvp_vif)(struct socket *, struct sockopt *);
 extern void	(*ip_rsvp_force_done)(struct socket *);
 extern int	(*rsvp_input_p)(struct mbuf **, int *, int);
 
-VNET_DECLARE(struct pfil_head, inet_pfil_hook);	/* packet filter hooks */
-#define	V_inet_pfil_hook	VNET(inet_pfil_hook)
+VNET_DECLARE(struct pfil_head *, inet_pfil_head);
+#define	V_inet_pfil_head	VNET(inet_pfil_head)
+#define	PFIL_INET_NAME		"inet"
 
 void	in_delayed_cksum(struct mbuf *m);
 
@@ -286,13 +295,11 @@ VNET_DECLARE(ip_fw_ctl_ptr_t, ip_fw_ctl_ptr);
 #define	V_ip_fw_ctl_ptr		VNET(ip_fw_ctl_ptr)
 
 /* Divert hooks. */
-extern void	(*ip_divert_ptr)(struct mbuf *m, int incoming);
+extern void	(*ip_divert_ptr)(struct mbuf *m, bool incoming);
 /* ng_ipfw hooks -- XXX make it the same as divert and dummynet */
-extern int	(*ng_ipfw_input_p)(struct mbuf **, int,
-			struct ip_fw_args *, int);
-
+extern int	(*ng_ipfw_input_p)(struct mbuf **, struct ip_fw_args *, bool);
 extern int	(*ip_dn_ctl_ptr)(struct sockopt *);
-extern int	(*ip_dn_io_ptr)(struct mbuf **, int, struct ip_fw_args *);
+extern int	(*ip_dn_io_ptr)(struct mbuf **, struct ip_fw_args *);
 #endif /* _KERNEL */
 
 #endif /* !_NETINET_IP_VAR_H_ */

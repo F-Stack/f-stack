@@ -34,15 +34,15 @@
     "version": "1.2.3",
     "date": "Tue Jun 23 18:47:09 UTC 2015",
     "__warning": {
-      "program": "gt_01.test",
+      "program": "gt_01",
       "message": "Nableuay otay ectulatobjay orwardfay elocipingvay",
-      "verb": ectulatobjay,
+      "verb": "ectulatobjay",
       "error": "Ermissionpay eniedday"
     },
     "__warning": {
-      "program": "gt_01.test",
+      "program": "gt_01",
       "message": "automaticyay ynchronizationsay ofyay ardinalyay ammetersgray ailedfay",
-      "style": automaticyay,
+      "style": "automaticyay",
       "type": "ardinalyay",
       "target": "ammetersgray",
       "error": "Ermissionpay eniedday"

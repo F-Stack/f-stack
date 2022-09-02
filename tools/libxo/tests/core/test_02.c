@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, Juniper Networks, Inc.
+ * Copyright (c) 2014-2019, Juniper Networks, Inc.
  * All rights reserved.
  * This SOFTWARE is licensed under the LICENSE provided in the
  * ../Copyright file. By downloading, installing, copying, or otherwise
@@ -14,30 +14,33 @@
 #include <string.h>
 
 #include "xo.h"
+#include "xo_encoder.h"
 
 #include "xo_humanize.h"
 
 int
 main (int argc, char **argv)
 {
+    xo_set_program("test_02");
+
     argc = xo_parse_args(argc, argv);
     if (argc < 0)
 	return 1;
 
     for (argc = 1; argv[argc]; argc++) {
-	if (strcmp(argv[argc], "xml") == 0)
+	if (xo_streq(argv[argc], "xml"))
 	    xo_set_style(NULL, XO_STYLE_XML);
-	else if (strcmp(argv[argc], "json") == 0)
+	else if (xo_streq(argv[argc], "json"))
 	    xo_set_style(NULL, XO_STYLE_JSON);
-	else if (strcmp(argv[argc], "text") == 0)
+	else if (xo_streq(argv[argc], "text"))
 	    xo_set_style(NULL, XO_STYLE_TEXT);
-	else if (strcmp(argv[argc], "html") == 0)
+	else if (xo_streq(argv[argc], "html"))
 	    xo_set_style(NULL, XO_STYLE_HTML);
-	else if (strcmp(argv[argc], "pretty") == 0)
+	else if (xo_streq(argv[argc], "pretty"))
 	    xo_set_flags(NULL, XOF_PRETTY);
-	else if (strcmp(argv[argc], "xpath") == 0)
+	else if (xo_streq(argv[argc], "xpath"))
 	    xo_set_flags(NULL, XOF_XPATH);
-	else if (strcmp(argv[argc], "info") == 0)
+	else if (xo_streq(argv[argc], "info"))
 	    xo_set_flags(NULL, XOF_INFO);
     }
 
@@ -47,6 +50,12 @@ main (int argc, char **argv)
     xo_open_container_h(NULL, "top");
 
     xo_open_container("data");
+
+    xo_emit("{kt:name/%-*.*s}{eq:flags/0x%x}",
+	    5, 5, "em0", 34883);
+
+    xo_emit("{d:/%-*.*s}{etk:name}{eq:flags/0x%x}",
+	    5, 5, "em0", "em0", 34883);
 
     xo_emit("We are {{emit}}{{ting}} some {:what}\n", "braces");
 
@@ -137,6 +146,10 @@ main (int argc, char **argv)
 	       "ten yard penalty", "first down");
 
     xo_error("Shut 'er down, Clancey!  She's a-pumpin' mud!  <>!,\"!<>\n");
+    xo_error("err message (%d)", 1);
+    xo_error("err message (%d)\n", 2);
+    xo_errorn("err message (%d)", 1);
+    xo_errorn("err message (%d)\n", 2);
 
     xo_close_container("data");
 

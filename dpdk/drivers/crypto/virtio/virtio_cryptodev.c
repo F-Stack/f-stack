@@ -17,12 +17,6 @@
 #include "virtio_crypto_algs.h"
 #include "virtio_crypto_capabilities.h"
 
-int virtio_crypto_logtype_init;
-int virtio_crypto_logtype_session;
-int virtio_crypto_logtype_rx;
-int virtio_crypto_logtype_tx;
-int virtio_crypto_logtype_driver;
-
 static int virtio_crypto_dev_configure(struct rte_cryptodev *dev,
 		struct rte_cryptodev_config *config);
 static int virtio_crypto_dev_start(struct rte_cryptodev *dev);
@@ -417,7 +411,7 @@ virtio_crypto_queue_setup(struct rte_cryptodev *dev,
 	 * and only accepts 32 bit page frame number.
 	 * Check if the allocated physical memory exceeds 16TB.
 	 */
-	if ((mz->phys_addr + vq->vq_ring_size - 1)
+	if ((mz->iova + vq->vq_ring_size - 1)
 				>> (VIRTIO_PCI_QUEUE_ADDR_SHIFT + 32)) {
 		VIRTIO_CRYPTO_INIT_LOG_ERR("vring address shouldn't be "
 					"above 16TB!");
@@ -426,10 +420,10 @@ virtio_crypto_queue_setup(struct rte_cryptodev *dev,
 
 	memset(mz->addr, 0, sizeof(mz->len));
 	vq->mz = mz;
-	vq->vq_ring_mem = mz->phys_addr;
+	vq->vq_ring_mem = mz->iova;
 	vq->vq_ring_virt_mem = mz->addr;
 	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_ring_mem(physical): 0x%"PRIx64,
-					(uint64_t)mz->phys_addr);
+					(uint64_t)mz->iova);
 	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_ring_virt_mem: 0x%"PRIx64,
 					(uint64_t)(uintptr_t)mz->addr);
 
@@ -514,7 +508,6 @@ static struct rte_cryptodev_ops virtio_crypto_dev_ops = {
 
 	.queue_pair_setup                = virtio_crypto_qp_setup,
 	.queue_pair_release              = virtio_crypto_qp_release,
-	.queue_pair_count                = NULL,
 
 	/* Crypto related operations */
 	.sym_session_get_size		= virtio_crypto_sym_get_session_private_size,
@@ -742,7 +735,8 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 	cryptodev->dequeue_burst = virtio_crypto_pkt_rx_burst;
 
 	cryptodev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
-		RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING;
+		RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
+		RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT;
 
 	hw = cryptodev->data->dev_private;
 	hw->dev_id = cryptodev->data->dev_id;
@@ -1489,29 +1483,10 @@ RTE_PMD_REGISTER_PCI(CRYPTODEV_NAME_VIRTIO_PMD, rte_virtio_crypto_driver);
 RTE_PMD_REGISTER_CRYPTO_DRIVER(virtio_crypto_drv,
 	rte_virtio_crypto_driver.driver,
 	cryptodev_virtio_driver_id);
-
-RTE_INIT(virtio_crypto_init_log)
-{
-	virtio_crypto_logtype_init = rte_log_register("pmd.crypto.virtio.init");
-	if (virtio_crypto_logtype_init >= 0)
-		rte_log_set_level(virtio_crypto_logtype_init, RTE_LOG_NOTICE);
-
-	virtio_crypto_logtype_session =
-		rte_log_register("pmd.crypto.virtio.session");
-	if (virtio_crypto_logtype_session >= 0)
-		rte_log_set_level(virtio_crypto_logtype_session,
-				RTE_LOG_NOTICE);
-
-	virtio_crypto_logtype_rx = rte_log_register("pmd.crypto.virtio.rx");
-	if (virtio_crypto_logtype_rx >= 0)
-		rte_log_set_level(virtio_crypto_logtype_rx, RTE_LOG_NOTICE);
-
-	virtio_crypto_logtype_tx = rte_log_register("pmd.crypto.virtio.tx");
-	if (virtio_crypto_logtype_tx >= 0)
-		rte_log_set_level(virtio_crypto_logtype_tx, RTE_LOG_NOTICE);
-
-	virtio_crypto_logtype_driver =
-		rte_log_register("pmd.crypto.virtio.driver");
-	if (virtio_crypto_logtype_driver >= 0)
-		rte_log_set_level(virtio_crypto_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(virtio_crypto_logtype_init, pmd.crypto.virtio.init, NOTICE);
+RTE_LOG_REGISTER(virtio_crypto_logtype_session, pmd.crypto.virtio.session,
+		 NOTICE);
+RTE_LOG_REGISTER(virtio_crypto_logtype_rx, pmd.crypto.virtio.rx, NOTICE);
+RTE_LOG_REGISTER(virtio_crypto_logtype_tx, pmd.crypto.virtio.tx, NOTICE);
+RTE_LOG_REGISTER(virtio_crypto_logtype_driver, pmd.crypto.virtio.driver,
+		 NOTICE);

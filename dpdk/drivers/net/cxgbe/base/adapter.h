@@ -19,7 +19,6 @@
 #include "t4_regs_values.h"
 
 enum {
-	MAX_ETH_QSETS = 64,           /* # of Ethernet Tx/Rx queue sets */
 	MAX_CTRL_QUEUES = NCHAN,      /* # of control Tx queues */
 };
 
@@ -47,14 +46,21 @@ struct port_info {
 	u8     pidx;			/* port index for this PF */
 	u8     tx_chan;                 /* associated channel */
 
-	u8     n_rx_qsets;              /* # of rx qsets */
-	u8     n_tx_qsets;              /* # of tx qsets */
-	u8     first_qset;              /* index of first qset */
+	u16    n_rx_qsets;              /* # of rx qsets */
+	u16    n_tx_qsets;              /* # of tx qsets */
+	u16    first_rxqset;            /* index of first rxqset */
+	u16    first_txqset;            /* index of first txqset */
 
 	u16    *rss;                    /* rss table */
 	u8     rss_mode;                /* rss mode */
 	u16    rss_size;                /* size of VI's RSS table slice */
 	u64    rss_hf;			/* RSS Hash Function */
+
+	/* viid fields either returned by fw
+	 * or decoded by parsing viid by driver.
+	 */
+	u8 vin;
+	u8 vivld;
 };
 
 /* Enable or disable autonegotiation.  If this is set to enable,
@@ -156,6 +162,7 @@ struct sge_eth_rx_stats {	/* Ethernet rx queue statistics */
 };
 
 struct sge_eth_rxq {                /* a SW Ethernet Rx queue */
+	unsigned int flags;         /* flags for state of the queue */
 	struct sge_rspq rspq;
 	struct sge_fl fl;
 	struct sge_eth_rx_stats stats;
@@ -193,8 +200,12 @@ struct tx_sw_desc {                /* SW state per Tx descriptor */
 	struct tx_eth_coal_desc coalesce;
 };
 
-enum {
+enum cxgbe_txq_state {
 	EQ_STOPPED = (1 << 0),
+};
+
+enum cxgbe_rxq_state {
+	IQ_STOPPED = (1 << 0),
 };
 
 struct eth_coalesce {
@@ -268,8 +279,8 @@ struct sge_ctrl_txq {                /* State for an SGE control Tx queue */
 } __rte_cache_aligned;
 
 struct sge {
-	struct sge_eth_txq ethtxq[MAX_ETH_QSETS];
-	struct sge_eth_rxq ethrxq[MAX_ETH_QSETS];
+	struct sge_eth_txq *ethtxq;
+	struct sge_eth_rxq *ethrxq;
 	struct sge_rspq fw_evtq __rte_cache_aligned;
 	struct sge_ctrl_txq ctrlq[MAX_CTRL_QUEUES];
 
@@ -301,6 +312,8 @@ struct adapter_devargs {
 	bool keep_ovlan;
 	bool force_link_up;
 	bool tx_mode_latency;
+	u32 filtermode;
+	u32 filtermask;
 };
 
 struct adapter {
@@ -334,6 +347,7 @@ struct adapter {
 	unsigned int l2t_end;     /* Layer 2 table end */
 	struct clip_tbl *clipt;   /* CLIP table */
 	struct l2t_data *l2t;     /* Layer 2 table */
+	struct smt_data *smt;     /* Source mac table */
 	struct mpstcam_table *mpstcam;
 
 	struct tid_info tids;     /* Info used to access TID related tables */
@@ -810,8 +824,8 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *rspq, bool fwevtq,
 int t4_sge_eth_txq_start(struct sge_eth_txq *txq);
 int t4_sge_eth_txq_stop(struct sge_eth_txq *txq);
 void t4_sge_eth_txq_release(struct adapter *adap, struct sge_eth_txq *txq);
-int t4_sge_eth_rxq_start(struct adapter *adap, struct sge_rspq *rq);
-int t4_sge_eth_rxq_stop(struct adapter *adap, struct sge_rspq *rq);
+int t4_sge_eth_rxq_start(struct adapter *adap, struct sge_eth_rxq *rxq);
+int t4_sge_eth_rxq_stop(struct adapter *adap, struct sge_eth_rxq *rxq);
 void t4_sge_eth_rxq_release(struct adapter *adap, struct sge_eth_rxq *rxq);
 void t4_sge_eth_clear_queues(struct port_info *pi);
 void t4_sge_eth_release_queues(struct port_info *pi);

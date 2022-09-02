@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,7 +50,7 @@ struct vnode {
 };
 
 #define VOP_ADVLOCK(a, b, c, d, e) (0)
-#define VOP_UNLOCK(a, b)
+#define VOP_UNLOCK(a)
 static __inline int
 vn_lock(struct vnode *vp, int flags)
 {
@@ -87,7 +87,7 @@ vn_fullpath(struct thread *td, struct vnode *vp,
     return (0);
 }
 
-static __inline void    
+static __inline void
 cvtnstat(struct stat *sb, struct nstat *nsb)
 {
 
@@ -141,6 +141,24 @@ int vn_rdwr(enum uio_rw rw, struct vnode *vp, void *base,
     int len, off_t offset, enum uio_seg segflg, int ioflg,
     struct ucred *active_cred, struct ucred *file_cred, ssize_t *aresid,
     struct thread *td);
-    
+
+#define VFS_SMR_DECLARE     \
+        extern smr_t vfs_smr
+
+#define VFS_SMR()    vfs_smr
+#define vfs_smr_enter()    smr_enter(VFS_SMR())
+#define vfs_smr_exit()    smr_exit(VFS_SMR())
+#define vfs_smr_entered_load(ptr)    smr_entered_load((ptr), VFS_SMR())
+#define VFS_SMR_ASSERT_ENTERED()    SMR_ASSERT_ENTERED(VFS_SMR())
+
+static __inline void
+vrefact(struct vnode *vp)
+{
+
+}
+
+#define IO_SEQMAX   0x7F        /* seq heuristic max value */
+
+extern	u_int vn_lock_pair_pause_max;
 
 #endif    /* _FSTACK_SYS_VNODE_H_ */

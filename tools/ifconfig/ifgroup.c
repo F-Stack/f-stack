@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Max Laier. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,6 +44,10 @@ static const char rcsid[] =
 #include <unistd.h>
 
 #include "ifconfig.h"
+
+#ifdef FSTACK
+#include "ff_ipc.h"
+#endif
 
 /* ARGSUSED */
 static void
@@ -117,9 +123,9 @@ getifgroups(int s)
 		len -= sizeof(struct ifg_req);
 		if (strcmp(ifg->ifgrq_group, "all")) {
 			if (cnt == 0)
-				printf("\tgroups: ");
+				printf("\tgroups:");
 			cnt++;
-			printf("%s ", ifg->ifgrq_group);
+			printf(" %s", ifg->ifgrq_group);
 		}
 	}
 	if (cnt)
@@ -144,7 +150,14 @@ printgroup(const char *groupname)
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1) {
 		if (errno == EINVAL || errno == ENOTTY ||
 		    errno == ENOENT)
-			exit(0);
+#ifdef FSTACK
+		{
+			ff_ipc_exit();
+			exit(exit_code);
+		}
+#else
+			exit(exit_code);
+#endif
 		else
 			err(1, "SIOCGIFGMEMB");
 	}
@@ -170,7 +183,10 @@ printgroup(const char *groupname)
 	}
 	free(ifgr.ifgr_groups);
 
-	exit(0);
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
+	exit(exit_code);
 }
 
 static struct cmd group_cmds[] = {

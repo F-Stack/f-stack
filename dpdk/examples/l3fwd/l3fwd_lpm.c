@@ -28,6 +28,8 @@
 #include <rte_lpm6.h>
 
 #include "l3fwd.h"
+#include "l3fwd_common.h"
+#include "l3fwd_event.h"
 
 struct ipv4_l3fwd_lpm_route {
 	uint32_t ip;
@@ -45,7 +47,7 @@ struct ipv6_l3fwd_lpm_route {
  * 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735).
  * 198.18.{0-7}.0/24 = Port {0-7}
  */
-static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
+static const struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 	{RTE_IPV4(198, 18, 0, 0), 24, 0},
 	{RTE_IPV4(198, 18, 1, 0), 24, 1},
 	{RTE_IPV4(198, 18, 2, 0), 24, 2},
@@ -60,7 +62,7 @@ static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
  * 2001:200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180).
  * 2001:200:0:{0-7}::/64 = Port {0-7}
  */
-static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
+static const struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
 	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 0},
 	{{32, 1, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 1},
 	{{32, 1, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 2},
@@ -71,41 +73,40 @@ static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
 	{{32, 1, 2, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 7},
 };
 
-#define IPV4_L3FWD_LPM_NUM_ROUTES \
-	(sizeof(ipv4_l3fwd_lpm_route_array) / sizeof(ipv4_l3fwd_lpm_route_array[0]))
-#define IPV6_L3FWD_LPM_NUM_ROUTES \
-	(sizeof(ipv6_l3fwd_lpm_route_array) / sizeof(ipv6_l3fwd_lpm_route_array[0]))
-
 #define IPV4_L3FWD_LPM_MAX_RULES         1024
 #define IPV4_L3FWD_LPM_NUMBER_TBL8S (1 << 8)
 #define IPV6_L3FWD_LPM_MAX_RULES         1024
 #define IPV6_L3FWD_LPM_NUMBER_TBL8S (1 << 16)
 
-struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
-struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
+static struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
+static struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 
 static inline uint16_t
-lpm_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
+lpm_get_ipv4_dst_port(const struct rte_ipv4_hdr *ipv4_hdr,
+		      uint16_t portid,
+		      struct rte_lpm *ipv4_l3fwd_lookup_struct)
 {
+	uint32_t dst_ip = rte_be_to_cpu_32(ipv4_hdr->dst_addr);
 	uint32_t next_hop;
-	struct rte_lpm *ipv4_l3fwd_lookup_struct =
-		(struct rte_lpm *)lookup_struct;
 
-	return (uint16_t) ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct,
-		rte_be_to_cpu_32(((struct rte_ipv4_hdr *)ipv4_hdr)->dst_addr),
-		&next_hop) == 0) ? next_hop : portid);
+	if (rte_lpm_lookup(ipv4_l3fwd_lookup_struct, dst_ip, &next_hop) == 0)
+		return next_hop;
+	else
+		return portid;
 }
 
 static inline uint16_t
-lpm_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
+lpm_get_ipv6_dst_port(const struct rte_ipv6_hdr *ipv6_hdr,
+		      uint16_t portid,
+		      struct rte_lpm6 *ipv6_l3fwd_lookup_struct)
 {
+	const uint8_t *dst_ip = ipv6_hdr->dst_addr;
 	uint32_t next_hop;
-	struct rte_lpm6 *ipv6_l3fwd_lookup_struct =
-		(struct rte_lpm6 *)lookup_struct;
 
-	return (uint16_t) ((rte_lpm6_lookup(ipv6_l3fwd_lookup_struct,
-			((struct rte_ipv6_hdr *)ipv6_hdr)->dst_addr,
-			&next_hop) == 0) ?  next_hop : portid);
+	if (rte_lpm6_lookup(ipv6_l3fwd_lookup_struct, dst_ip, &next_hop) == 0)
+		return next_hop;
+	else
+		return portid;
 }
 
 static __rte_always_inline uint16_t
@@ -169,7 +170,7 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 
 #if defined(RTE_ARCH_X86)
 #include "l3fwd_lpm_sse.h"
-#elif defined RTE_MACHINE_CPUFLAG_NEON
+#elif defined __ARM_NEON
 #include "l3fwd_lpm_neon.h"
 #elif defined(RTE_ARCH_PPC_64)
 #include "l3fwd_lpm_altivec.h"
@@ -179,7 +180,7 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 
 /* main processing loop */
 int
-lpm_main_loop(__attribute__((unused)) void *dummy)
+lpm_main_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
@@ -246,7 +247,7 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 			if (nb_rx == 0)
 				continue;
 
-#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON \
+#if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
 			l3fwd_lpm_send_packets(nb_rx, pkts_burst,
 						portid, qconf);
@@ -257,6 +258,195 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 		}
 	}
 
+	return 0;
+}
+
+static __rte_always_inline uint16_t
+lpm_process_event_pkt(const struct lcore_conf *lconf, struct rte_mbuf *mbuf)
+{
+	mbuf->port = lpm_get_dst_port(lconf, mbuf, mbuf->port);
+
+#if defined RTE_ARCH_X86 || defined __ARM_NEON \
+	|| defined RTE_ARCH_PPC_64
+	process_packet(mbuf, &mbuf->port);
+#else
+
+	struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(mbuf,
+			struct rte_ether_hdr *);
+
+	/* dst addr */
+	*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[mbuf->port];
+
+	/* src addr */
+	rte_ether_addr_copy(&ports_eth_addr[mbuf->port],
+			&eth_hdr->s_addr);
+
+	rfc1812_process(rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *,
+						sizeof(struct rte_ether_hdr)),
+			&mbuf->port, mbuf->packet_type);
+#endif
+	return mbuf->port;
+}
+
+static __rte_always_inline void
+lpm_event_loop_single(struct l3fwd_event_resources *evt_rsrc,
+		const uint8_t flags)
+{
+	const int event_p_id = l3fwd_get_free_event_port(evt_rsrc);
+	const uint8_t tx_q_id = evt_rsrc->evq.event_q_id[
+		evt_rsrc->evq.nb_queues - 1];
+	const uint8_t event_d_id = evt_rsrc->event_d_id;
+	struct lcore_conf *lconf;
+	unsigned int lcore_id;
+	struct rte_event ev;
+
+	if (event_p_id < 0)
+		return;
+
+	lcore_id = rte_lcore_id();
+	lconf = &lcore_conf[lcore_id];
+
+	RTE_LOG(INFO, L3FWD, "entering %s on lcore %u\n", __func__, lcore_id);
+	while (!force_quit) {
+		if (!rte_event_dequeue_burst(event_d_id, event_p_id, &ev, 1, 0))
+			continue;
+
+		if (lpm_process_event_pkt(lconf, ev.mbuf) == BAD_PORT) {
+			rte_pktmbuf_free(ev.mbuf);
+			continue;
+		}
+
+		if (flags & L3FWD_EVENT_TX_ENQ) {
+			ev.queue_id = tx_q_id;
+			ev.op = RTE_EVENT_OP_FORWARD;
+			while (rte_event_enqueue_burst(event_d_id, event_p_id,
+						&ev, 1) && !force_quit)
+				;
+		}
+
+		if (flags & L3FWD_EVENT_TX_DIRECT) {
+			rte_event_eth_tx_adapter_txq_set(ev.mbuf, 0);
+			while (!rte_event_eth_tx_adapter_enqueue(event_d_id,
+						event_p_id, &ev, 1, 0) &&
+					!force_quit)
+				;
+		}
+	}
+}
+
+static __rte_always_inline void
+lpm_event_loop_burst(struct l3fwd_event_resources *evt_rsrc,
+		const uint8_t flags)
+{
+	const int event_p_id = l3fwd_get_free_event_port(evt_rsrc);
+	const uint8_t tx_q_id = evt_rsrc->evq.event_q_id[
+		evt_rsrc->evq.nb_queues - 1];
+	const uint8_t event_d_id = evt_rsrc->event_d_id;
+	const uint16_t deq_len = evt_rsrc->deq_depth;
+	struct rte_event events[MAX_PKT_BURST];
+	struct lcore_conf *lconf;
+	unsigned int lcore_id;
+	int i, nb_enq, nb_deq;
+
+	if (event_p_id < 0)
+		return;
+
+	lcore_id = rte_lcore_id();
+
+	lconf = &lcore_conf[lcore_id];
+
+	RTE_LOG(INFO, L3FWD, "entering %s on lcore %u\n", __func__, lcore_id);
+
+	while (!force_quit) {
+		/* Read events from RX queues */
+		nb_deq = rte_event_dequeue_burst(event_d_id, event_p_id,
+				events, deq_len, 0);
+		if (nb_deq == 0) {
+			rte_pause();
+			continue;
+		}
+
+		for (i = 0; i < nb_deq; i++) {
+			if (flags & L3FWD_EVENT_TX_ENQ) {
+				events[i].queue_id = tx_q_id;
+				events[i].op = RTE_EVENT_OP_FORWARD;
+			}
+
+			if (flags & L3FWD_EVENT_TX_DIRECT)
+				rte_event_eth_tx_adapter_txq_set(events[i].mbuf,
+								 0);
+
+			lpm_process_event_pkt(lconf, events[i].mbuf);
+		}
+
+		if (flags & L3FWD_EVENT_TX_ENQ) {
+			nb_enq = rte_event_enqueue_burst(event_d_id, event_p_id,
+					events, nb_deq);
+			while (nb_enq < nb_deq && !force_quit)
+				nb_enq += rte_event_enqueue_burst(event_d_id,
+						event_p_id, events + nb_enq,
+						nb_deq - nb_enq);
+		}
+
+		if (flags & L3FWD_EVENT_TX_DIRECT) {
+			nb_enq = rte_event_eth_tx_adapter_enqueue(event_d_id,
+					event_p_id, events, nb_deq, 0);
+			while (nb_enq < nb_deq && !force_quit)
+				nb_enq += rte_event_eth_tx_adapter_enqueue(
+						event_d_id, event_p_id,
+						events + nb_enq,
+						nb_deq - nb_enq, 0);
+		}
+	}
+}
+
+static __rte_always_inline void
+lpm_event_loop(struct l3fwd_event_resources *evt_rsrc,
+		 const uint8_t flags)
+{
+	if (flags & L3FWD_EVENT_SINGLE)
+		lpm_event_loop_single(evt_rsrc, flags);
+	if (flags & L3FWD_EVENT_BURST)
+		lpm_event_loop_burst(evt_rsrc, flags);
+}
+
+int __rte_noinline
+lpm_event_main_loop_tx_d(__rte_unused void *dummy)
+{
+	struct l3fwd_event_resources *evt_rsrc =
+					l3fwd_get_eventdev_rsrc();
+
+	lpm_event_loop(evt_rsrc, L3FWD_EVENT_TX_DIRECT | L3FWD_EVENT_SINGLE);
+	return 0;
+}
+
+int __rte_noinline
+lpm_event_main_loop_tx_d_burst(__rte_unused void *dummy)
+{
+	struct l3fwd_event_resources *evt_rsrc =
+					l3fwd_get_eventdev_rsrc();
+
+	lpm_event_loop(evt_rsrc, L3FWD_EVENT_TX_DIRECT | L3FWD_EVENT_BURST);
+	return 0;
+}
+
+int __rte_noinline
+lpm_event_main_loop_tx_q(__rte_unused void *dummy)
+{
+	struct l3fwd_event_resources *evt_rsrc =
+					l3fwd_get_eventdev_rsrc();
+
+	lpm_event_loop(evt_rsrc, L3FWD_EVENT_TX_ENQ | L3FWD_EVENT_SINGLE);
+	return 0;
+}
+
+int __rte_noinline
+lpm_event_main_loop_tx_q_burst(__rte_unused void *dummy)
+{
+	struct l3fwd_event_resources *evt_rsrc =
+					l3fwd_get_eventdev_rsrc();
+
+	lpm_event_loop(evt_rsrc, L3FWD_EVENT_TX_ENQ | L3FWD_EVENT_BURST);
 	return 0;
 }
 
@@ -283,7 +473,7 @@ setup_lpm(const int socketid)
 			socketid);
 
 	/* populate the LPM table */
-	for (i = 0; i < IPV4_L3FWD_LPM_NUM_ROUTES; i++) {
+	for (i = 0; i < RTE_DIM(ipv4_l3fwd_lpm_route_array); i++) {
 		struct in_addr in;
 
 		/* skip unused ports */
@@ -323,7 +513,7 @@ setup_lpm(const int socketid)
 			socketid);
 
 	/* populate the LPM table */
-	for (i = 0; i < IPV6_L3FWD_LPM_NUM_ROUTES; i++) {
+	for (i = 0; i < RTE_DIM(ipv6_l3fwd_lpm_route_array); i++) {
 
 		/* skip unused ports */
 		if ((1 << ipv6_l3fwd_lpm_route_array[i].if_out &

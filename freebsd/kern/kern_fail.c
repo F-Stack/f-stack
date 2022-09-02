@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009 Isilon Inc http://www.isilon.com/
  *
  * Redistribution and use in source and binary forms, with or without
@@ -401,6 +403,8 @@ fail_point_drain(struct fail_point *fp, int expected_ref)
 		wakeup(FP_PAUSE_CHANNEL(fp));
 		tsleep(&fp, PWAIT, "fail_point_drain", hz / 100);
 	}
+	if (fp->fp_callout)
+		callout_drain(fp->fp_callout);
 	fail_point_swap_settings(fp, entries);
 }
 
@@ -425,7 +429,7 @@ fail_point_sleep(struct fail_point *fp, int msecs,
 	int timo;
 
 	/* Convert from millisecs to ticks, rounding up */
-	timo = howmany(msecs * hz, 1000);
+	timo = howmany((int64_t)msecs * hz, 1000L);
 
 	if (timo > 0) {
 		if (!(fp->fp_flags & FAIL_POINT_USE_TIMEOUT_PATH)) {
@@ -440,8 +444,8 @@ fail_point_sleep(struct fail_point *fp, int msecs,
 			if (fp->fp_pre_sleep_fn)
 				fp->fp_pre_sleep_fn(fp->fp_pre_sleep_arg);
 
-			timeout(fp->fp_post_sleep_fn, fp->fp_post_sleep_arg,
-			    timo);
+			callout_reset(fp->fp_callout, timo,
+			    fp->fp_post_sleep_fn, fp->fp_post_sleep_arg);
 			*pret = FAIL_POINT_RC_QUEUED;
 		}
 	}
@@ -491,6 +495,20 @@ fail_point_init(struct fail_point *fp, const char *fmt, ...)
 	fp->fp_post_sleep_arg = NULL;
 }
 
+void
+fail_point_alloc_callout(struct fail_point *fp)
+{
+
+	/**
+	 * This assumes that calls to fail_point_use_timeout_path()
+	 * will not race.
+	 */
+	if (fp->fp_callout != NULL)
+		return;
+	fp->fp_callout = fp_malloc(sizeof(*fp->fp_callout), M_WAITOK);
+	callout_init(fp->fp_callout, CALLOUT_MPSAFE);
+}
+
 /**
  * Free the resources held by a fail_point, and wake any paused threads.
  * Thou shalt not allow threads to hit this fail point after you enter this
@@ -508,6 +526,10 @@ fail_point_destroy(struct fail_point *fp)
 		fp->fp_name = NULL;
 	}
 	fp->fp_flags = 0;
+	if (fp->fp_callout) {
+		fp_free(fp->fp_callout);
+		fp->fp_callout = NULL;
+	}
 
 	sx_xlock(&sx_fp_set);
 	fail_point_garbage_collect();
@@ -541,7 +563,6 @@ fail_point_eval_nontrivial(struct fail_point *fp, int *return_value)
 		goto abort;
 
 	TAILQ_FOREACH(ent, &fp_setting->fp_entry_queue, fe_entries) {
-
 		if (ent->fe_stale)
 			continue;
 
@@ -612,7 +633,7 @@ fail_point_eval_nontrivial(struct fail_point *fp, int *return_value)
 			break;
 
 		case FAIL_POINT_YIELD:
-			kern_yield(-1);
+			kern_yield(PRI_UNCHANGED);
 			break;
 
 		case FAIL_POINT_DELAY:
@@ -1109,7 +1130,8 @@ parse_type(struct fail_point_entry *ent, char *beg)
 }
 
 /* The fail point sysctl tree. */
-SYSCTL_NODE(_debug, OID_AUTO, fail_point, CTLFLAG_RW, 0, "fail points");
+SYSCTL_NODE(_debug, OID_AUTO, fail_point, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "fail points");
 
 /* Debugging/testing stuff for fail point */
 static int
@@ -1120,5 +1142,6 @@ sysctl_test_fail_point(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 SYSCTL_OID(_debug_fail_point, OID_AUTO, test_trigger_fail_point,
-        CTLTYPE_STRING | CTLFLAG_RD, NULL, 0, sysctl_test_fail_point, "A",
-        "Trigger test fail points");
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT, NULL, 0,
+    sysctl_test_fail_point, "A",
+    "Trigger test fail points");

@@ -30,7 +30,7 @@ static int
 testsuite_setup(void)
 {
 	slcore_id = rte_get_next_lcore(/* start core */ -1,
-				       /* skip master */ 1,
+				       /* skip main */ 1,
 				       /* wrap */ 0);
 
 	return TEST_SUCCESS;
@@ -117,6 +117,17 @@ unregister_all(void)
 	rte_eal_mp_wait_lcore();
 
 	return TEST_SUCCESS;
+}
+
+/* Wait until service lcore not active, or for 100x SERVICE_DELAY */
+static void
+wait_slcore_inactive(uint32_t slcore_id)
+{
+	int i;
+
+	for (i = 0; rte_service_lcore_may_be_active(slcore_id) == 1 &&
+			i < 100; i++)
+		rte_delay_ms(SERVICE_DELAY);
 }
 
 /* register a single dummy service */
@@ -303,7 +314,15 @@ service_attr_get(void)
 	TEST_ASSERT_EQUAL(1, cycles_gt_zero,
 			"attr_get() failed to get cycles (expected > zero)");
 
-	rte_service_lcore_stop(slcore_id);
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 0),
+			"Disabling valid service and core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_stop(slcore_id),
+			"Failed to stop service lcore");
+
+	wait_slcore_inactive(slcore_id);
+
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			  "Service lcore not stopped after waiting.");
 
 	TEST_ASSERT_EQUAL(0, rte_service_attr_get(id, attr_calls, &attr_value),
 			"Valid attr_get() call didn't return success");
@@ -362,6 +381,9 @@ service_lcore_attr_get(void)
 			"Service core add did not return zero");
 	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 1),
 			"Enabling valid service and core failed");
+	/* Ensure service is not active before starting */
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			"Not-active service core reported as active");
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_start(slcore_id),
 			"Starting service core failed");
 
@@ -382,7 +404,19 @@ service_lcore_attr_get(void)
 			lcore_attr_id, &lcore_attr_value),
 			"Invalid lcore attr didn't return -EINVAL");
 
-	rte_service_lcore_stop(slcore_id);
+	/* Ensure service is active */
+	TEST_ASSERT_EQUAL(1, rte_service_lcore_may_be_active(slcore_id),
+			"Active service core reported as not-active");
+
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 0),
+			"Disabling valid service and core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_stop(slcore_id),
+			"Failed to stop service lcore");
+
+	wait_slcore_inactive(slcore_id);
+
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			  "Service lcore not stopped after waiting.");
 
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_attr_reset_all(slcore_id),
 			  "Valid lcore_attr_reset_all() didn't return success");
@@ -533,12 +567,12 @@ service_lcore_add_del(void)
 	TEST_ASSERT_EQUAL(1, rte_service_lcore_count(),
 			"Service core count not equal to one");
 	uint32_t slcore_1 = rte_get_next_lcore(/* start core */ -1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_1),
 			"Service core add did not return zero");
 	uint32_t slcore_2 = rte_get_next_lcore(/* start core */ slcore_1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_2),
 			"Service core add did not return zero");
@@ -584,12 +618,12 @@ service_threaded_test(int mt_safe)
 
 	/* add next 2 cores */
 	uint32_t slcore_1 = rte_get_next_lcore(/* start core */ -1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_1),
 			"mt safe lcore add fail");
 	uint32_t slcore_2 = rte_get_next_lcore(/* start core */ slcore_1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_2),
 			"mt safe lcore add fail");
@@ -790,8 +824,19 @@ service_app_lcore_poll_impl(const int mt_safe)
 				"MT Unsafe: App core1 didn't return -EBUSY");
 	}
 
-	unregister_all();
+	/* Performance test: call in a loop, and measure tsc() */
+	const uint32_t perf_iters = (1 << 12);
+	uint64_t start = rte_rdtsc();
+	uint32_t i;
+	for (i = 0; i < perf_iters; i++) {
+		int err = service_run_on_app_core_func(&id);
+		TEST_ASSERT_EQUAL(0, err, "perf test: returned run failure");
+	}
+	uint64_t end = rte_rdtsc();
+	printf("perf test for %s: %0.1f cycles per call\n", mt_safe ?
+		"MT Safe" : "MT Unsafe", (end - start)/(float)perf_iters);
 
+	unregister_all();
 	return TEST_SUCCESS;
 }
 
@@ -900,6 +945,59 @@ service_may_be_active(void)
 	return unregister_all();
 }
 
+/* check service may be active when service is running on a second lcore */
+static int
+service_active_two_cores(void)
+{
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2))
+		return TEST_SKIPPED;
+
+	const uint32_t sid = 0;
+	int i;
+
+	uint32_t lcore = rte_get_next_lcore(/* start core */ -1,
+					    /* skip main */ 1,
+					    /* wrap */ 0);
+	uint32_t slcore = rte_get_next_lcore(/* start core */ lcore,
+					     /* skip main */ 1,
+					     /* wrap */ 0);
+
+	/* start the service on the second available lcore */
+	TEST_ASSERT_EQUAL(0, rte_service_runstate_set(sid, 1),
+			"Starting valid service failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore),
+			"Add service core failed when not in use before");
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(sid, slcore, 1),
+			"Enabling valid service on valid core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_start(slcore),
+			"Service core start after add failed");
+
+	/* ensures core really is running the service function */
+	TEST_ASSERT_EQUAL(1, service_lcore_running_check(),
+			"Service core expected to poll service but it didn't");
+
+	/* ensures that service may be active reports running state */
+	TEST_ASSERT_EQUAL(1, rte_service_may_be_active(sid),
+			"Service may be active did not report running state");
+
+	/* stop the service */
+	TEST_ASSERT_EQUAL(0, rte_service_runstate_set(sid, 0),
+			"Error: Service stop returned non-zero");
+
+	/* give the service 100ms to stop running */
+	for (i = 0; i < 100; i++) {
+		if (!rte_service_may_be_active(sid))
+			break;
+		rte_delay_ms(SERVICE_DELAY);
+	}
+
+	TEST_ASSERT_EQUAL(0, rte_service_may_be_active(sid),
+			  "Error: Service not stopped after 100ms");
+
+	return unregister_all();
+}
+
 static struct unit_test_suite service_tests  = {
 	.suite_name = "service core test suite",
 	.setup = testsuite_setup,
@@ -921,6 +1019,7 @@ static struct unit_test_suite service_tests  = {
 		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_safe),
 		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_unsafe),
 		TEST_CASE_ST(dummy_register, NULL, service_may_be_active),
+		TEST_CASE_ST(dummy_register, NULL, service_active_two_cores),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };

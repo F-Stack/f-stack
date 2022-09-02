@@ -25,6 +25,8 @@
  *
  */
 
+#include "opt_platform.h"
+
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -34,6 +36,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/sf_buf.h>
 #include <sys/signal.h>
+#include <sys/sysent.h>
 #include <sys/unistd.h>
 
 #include <vm/vm.h>
@@ -51,6 +54,10 @@ __FBSDID("$FreeBSD$");
 #ifdef VFP
 #include <machine/vfp.h>
 #endif
+
+uint32_t initial_fpcr = VFPCR_DN;
+
+#include <dev/psci/psci.h>
 
 /*
  * Finish a fork operation, with process p2 nearly set up.
@@ -73,6 +80,7 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 		 * this may not have happened.
 		 */
 		td1->td_pcb->pcb_tpidr_el0 = READ_SPECIALREG(tpidr_el0);
+		td1->td_pcb->pcb_tpidrro_el0 = READ_SPECIALREG(tpidrro_el0);
 #ifdef VFP
 		if ((td1->td_pcb->pcb_fpflags & PCB_FP_STARTED) != 0)
 			vfp_save_state(td1, td1->td_pcb);
@@ -85,34 +93,35 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	td2->td_pcb = pcb2;
 	bcopy(td1->td_pcb, pcb2, sizeof(*pcb2));
 
-	td2->td_pcb->pcb_l0addr =
-	    vtophys(vmspace_pmap(td2->td_proc->p_vmspace)->pm_l0);
-
 	tf = (struct trapframe *)STACKALIGN((struct trapframe *)pcb2 - 1);
 	bcopy(td1->td_frame, tf, sizeof(*tf));
 	tf->tf_x[0] = 0;
 	tf->tf_x[1] = 0;
-	tf->tf_spsr = 0;
+	tf->tf_spsr = td1->td_frame->tf_spsr & (PSR_M_32 | PSR_DAIF);
 
 	td2->td_frame = tf;
 
 	/* Set the return value registers for fork() */
 	td2->td_pcb->pcb_x[8] = (uintptr_t)fork_return;
 	td2->td_pcb->pcb_x[9] = (uintptr_t)td2;
-	td2->td_pcb->pcb_x[PCB_LR] = (uintptr_t)fork_trampoline;
+	td2->td_pcb->pcb_lr = (uintptr_t)fork_trampoline;
 	td2->td_pcb->pcb_sp = (uintptr_t)td2->td_frame;
+	td2->td_pcb->pcb_fpusaved = &td2->td_pcb->pcb_fpustate;
 	td2->td_pcb->pcb_vfpcpu = UINT_MAX;
+	td2->td_pcb->pcb_fpusaved->vfp_fpcr = initial_fpcr;
 
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
-	td2->td_md.md_saved_daif = 0;
+	td2->td_md.md_saved_daif = td1->td_md.md_saved_daif & ~DAIF_I_MASKED;
 }
 
 void
 cpu_reset(void)
 {
 
-	printf("cpu_reset");
+	psci_reset();
+
+	printf("cpu_reset failed");
 	while(1)
 		__asm volatile("wfi" ::: "memory");
 }
@@ -167,13 +176,15 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 
 	td->td_pcb->pcb_x[8] = (uintptr_t)fork_return;
 	td->td_pcb->pcb_x[9] = (uintptr_t)td;
-	td->td_pcb->pcb_x[PCB_LR] = (uintptr_t)fork_trampoline;
+	td->td_pcb->pcb_lr = (uintptr_t)fork_trampoline;
 	td->td_pcb->pcb_sp = (uintptr_t)td->td_frame;
+	td->td_pcb->pcb_fpflags &= ~(PCB_FP_STARTED | PCB_FP_KERN | PCB_FP_NOSAVE);
+	td->td_pcb->pcb_fpusaved = &td->td_pcb->pcb_fpustate;
 	td->td_pcb->pcb_vfpcpu = UINT_MAX;
 
 	/* Setup to release spin count in fork_exit(). */
 	td->td_md.md_spinlock_count = 1;
-	td->td_md.md_saved_daif = 0;
+	td->td_md.md_saved_daif = td0->td_md.md_saved_daif & ~DAIF_I_MASKED;
 }
 
 /*
@@ -186,7 +197,11 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 {
 	struct trapframe *tf = td->td_frame;
 
-	tf->tf_sp = STACKALIGN((uintptr_t)stack->ss_sp + stack->ss_size);
+	/* 32bits processes use r13 for sp */
+	if (td->td_frame->tf_spsr & PSR_M_32)
+		tf->tf_x[13] = STACKALIGN((uintptr_t)stack->ss_sp + stack->ss_size);
+	else
+		tf->tf_sp = STACKALIGN((uintptr_t)stack->ss_sp + stack->ss_size);
 	tf->tf_elr = (register_t)entry;
 	tf->tf_x[0] = (register_t)arg;
 }
@@ -200,9 +215,19 @@ cpu_set_user_tls(struct thread *td, void *tls_base)
 		return (EINVAL);
 
 	pcb = td->td_pcb;
-	pcb->pcb_tpidr_el0 = (register_t)tls_base;
-	if (td == curthread)
-		WRITE_SPECIALREG(tpidr_el0, tls_base);
+	if (td->td_frame->tf_spsr & PSR_M_32) {
+		/* 32bits arm stores the user TLS into tpidrro */
+		pcb->pcb_tpidrro_el0 = (register_t)tls_base;
+		pcb->pcb_tpidr_el0 = (register_t)tls_base;
+		if (td == curthread) {
+			WRITE_SPECIALREG(tpidrro_el0, tls_base);
+			WRITE_SPECIALREG(tpidr_el0, tls_base);
+		}
+	} else {
+		pcb->pcb_tpidr_el0 = (register_t)tls_base;
+		if (td == curthread)
+			WRITE_SPECIALREG(tpidr_el0, tls_base);
+	}
 
 	return (0);
 }
@@ -219,7 +244,7 @@ cpu_thread_alloc(struct thread *td)
 	td->td_pcb = (struct pcb *)(td->td_kstack +
 	    td->td_kstack_pages * PAGE_SIZE) - 1;
 	td->td_frame = (struct trapframe *)STACKALIGN(
-	    td->td_pcb - 1);
+	    (struct trapframe *)td->td_pcb - 1);
 }
 
 void
@@ -244,14 +269,26 @@ cpu_fork_kthread_handler(struct thread *td, void (*func)(void *), void *arg)
 
 	td->td_pcb->pcb_x[8] = (uintptr_t)func;
 	td->td_pcb->pcb_x[9] = (uintptr_t)arg;
-	td->td_pcb->pcb_x[PCB_LR] = (uintptr_t)fork_trampoline;
-	td->td_pcb->pcb_sp = (uintptr_t)td->td_frame;
-	td->td_pcb->pcb_vfpcpu = UINT_MAX;
 }
 
 void
 cpu_exit(struct thread *td)
 {
+}
+
+bool
+cpu_exec_vmspace_reuse(struct proc *p __unused, vm_map_t map __unused)
+{
+
+	return (true);
+}
+
+int
+cpu_procctl(struct thread *td __unused, int idtype __unused, id_t id __unused,
+    int com __unused, void *data __unused)
+{
+
+	return (EINVAL);
 }
 
 void

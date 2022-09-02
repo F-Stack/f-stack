@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2018-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -15,6 +15,8 @@
 #include "efx_types.h"
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
+
+#include "sfc_debug.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,7 +40,7 @@ sfc_ef10_rx_ev_to_offloads(const efx_qword_t rx_ev, struct rte_mbuf *m,
 		rte_cpu_to_le_64((1ull << ESF_DZ_RX_ECC_ERR_LBN) |
 				 (1ull << ESF_DZ_RX_ECRC_ERR_LBN) |
 				 (1ull << ESF_DZ_RX_PARSE_INCOMPLETE_LBN)))) {
-		/* Zero packet type is used as a marker to dicard bad packets */
+		/* Zero packet type is used as a marker to discard bad packets */
 		goto done;
 	}
 

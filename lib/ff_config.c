@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -191,6 +191,7 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
         }
     } else {
         fprintf(stderr, "freebsd conf section[%s] error\n", section);
+        free(newconf);
         return 0;
     }
 
@@ -367,6 +368,81 @@ parse_port_slave_list(struct ff_port_cfg *cfg, const char *v_str)
 }
 
 static int
+vip_cfg_handler(struct ff_port_cfg *cur)
+{
+    //vip cfg
+    int ret;
+    char *vip_addr_array[VIP_MAX_NUM];
+
+    ret = rte_strsplit(cur->vip_addr_str, strlen(cur->vip_addr_str), &vip_addr_array[0], VIP_MAX_NUM, ';');
+    if (ret <= 0) {
+        fprintf(stdout, "vip_cfg_handler nb_vip is 0, not set vip_addr or set invalid vip_addr %s\n",
+            cur->vip_addr_str);
+        return 1;
+    }
+
+    cur->nb_vip = ret;
+
+    cur->vip_addr_array = (char **)calloc(cur->nb_vip, sizeof(char *));
+    if (cur->vip_addr_array == NULL) {
+        fprintf(stderr, "vip_cfg_handler malloc failed\n");
+        goto err;
+    }
+
+    memcpy(cur->vip_addr_array, vip_addr_array, cur->nb_vip * sizeof(char *));
+
+    return 1;
+
+err:
+    cur->nb_vip = 0;
+    if (cur->vip_addr_array) {
+        free(cur->vip_addr_array);
+        cur->vip_addr_array = NULL;
+    }
+
+    return 0;
+}
+
+#ifdef INET6
+static int
+vip6_cfg_handler(struct ff_port_cfg *cur)
+{
+    //vip6 cfg
+    int ret;
+    char *vip_addr6_array[VIP_MAX_NUM];
+
+    ret = rte_strsplit(cur->vip_addr6_str, strlen(cur->vip_addr6_str),
+                                    &vip_addr6_array[0], VIP_MAX_NUM, ';');
+    if (ret == 0) {
+        fprintf(stdout, "vip6_cfg_handler nb_vip6 is 0, not set vip_addr6 or set invalid vip_addr6 %s\n",
+            cur->vip_addr6_str);
+        return 1;
+    }
+
+    cur->nb_vip6 = ret;
+
+    cur->vip_addr6_array = (char **) calloc(cur->nb_vip6, sizeof(char *));
+    if (cur->vip_addr6_array == NULL) {
+        fprintf(stderr, "vip6_cfg_handler malloc failed\n");
+        goto fail;
+    }
+
+    memcpy(cur->vip_addr6_array, vip_addr6_array, cur->nb_vip6 * sizeof(char *));
+
+    return 1;
+
+fail:
+    cur->nb_vip6 = 0;
+    if (cur->vip_addr6_array) {
+        free(cur->vip_addr6_array);
+        cur->vip_addr6_array = NULL;
+    }
+
+    return 0;
+}
+#endif
+
+static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
 
@@ -414,7 +490,9 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->port_id = portid;
     }
 
-    if (strcmp(name, "addr") == 0) {
+    if (strcmp(name, "ifc_name") == 0) {
+        cur->ifname = strdup(value);
+    } else if (strcmp(name, "addr") == 0) {
         cur->addr = strdup(value);
     } else if (strcmp(name, "netmask") == 0) {
         cur->netmask = strdup(value);
@@ -422,26 +500,33 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->broadcast = strdup(value);
     } else if (strcmp(name, "gateway") == 0) {
         cur->gateway = strdup(value);
-    } else if (strcmp(name, "pcap") == 0) {
-        cur->pcap = strdup(value);
     } else if (strcmp(name, "lcore_list") == 0) {
         return parse_port_lcore_list(cur, value);
     } else if (strcmp(name, "slave_port_list") == 0) {
         return parse_port_slave_list(cur, value);
+    } else if (strcmp(name, "vip_addr") == 0) {
+        cur->vip_addr_str = strdup(value);
+        if (cur->vip_addr_str) {
+            return vip_cfg_handler(cur);
+        }
+    } else if (strcmp(name, "vip_ifname") == 0) {
+        cur->vip_ifname = strdup(value);
     }
 
 #ifdef INET6
-    else if (0 == strcmp(name, "addr6"))
-    {
+    else if (0 == strcmp(name, "addr6")) {
         cur->addr6_str = strdup(value);
-    }
-    else if (0 == strcmp(name, "prefix_len"))
-    {
+    } else if (0 == strcmp(name, "prefix_len")) {
         cur->prefix_len = atoi(value);
-    }
-    else if (0 == strcmp(name, "gateway6"))
-    {
+    } else if (0 == strcmp(name, "gateway6")) {
         cur->gateway6_str = strdup(value);
+    } else if (strcmp(name, "vip_addr6") == 0) {
+        cur->vip_addr6_str = strdup(value);
+        if (cur->vip_addr6_str) {
+            return vip6_cfg_handler(cur);
+        }
+    } else if (0 == strcmp(name, "vip_prefix_len")) {
+        cur->vip_prefix_len = atoi(value);
     }
 #endif
 
@@ -571,7 +656,9 @@ ini_parse_handler(void* user, const char* section, const char* name,
     printf("[%s]: %s=%s\n", section, name, value);
 
     #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
-    if (MATCH("dpdk", "channel")) {
+    if (MATCH("dpdk", "log_level")) {
+        pconfig->dpdk.log_level = atoi(value);
+    } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
     } else if (MATCH("dpdk", "memory")) {
         pconfig->dpdk.memory = atoi(value);
@@ -640,9 +727,9 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return bond_cfg_handler(pconfig, section, name, value);
     } else if (strcmp(section, "pcap") == 0) {
         if (strcmp(name, "snaplen") == 0) {
-            pconfig->pcap.snap_len = (uint16_t)atoi(value);            
+            pconfig->pcap.snap_len = (uint16_t)atoi(value);
         } else if (strcmp(name, "savelen") == 0) {
-            pconfig->pcap.save_len = (uint32_t)atoi(value);            
+            pconfig->pcap.save_len = (uint32_t)atoi(value);
         } else if (strcmp(name, "enable") == 0) {
             pconfig->pcap.enable = (uint16_t)atoi(value);
         } else if (strcmp(name, "savepath") == 0) {
@@ -675,6 +762,10 @@ dpdk_args_setup(struct ff_config *cfg)
         sprintf(temp, "-m%d", cfg->dpdk.memory);
         dpdk_argv[n++] = strdup(temp);
     }
+    if (cfg->dpdk.log_level) {
+        sprintf(temp, "--log-level=%d", cfg->dpdk.log_level);
+        dpdk_argv[n++] = strdup(temp);
+    }
     if (cfg->dpdk.proc_type) {
         sprintf(temp, "--proc-type=%s", cfg->dpdk.proc_type);
         dpdk_argv[n++] = strdup(temp);
@@ -688,8 +779,14 @@ dpdk_args_setup(struct ff_config *cfg)
         dpdk_argv[n++] = strdup(temp);
     }
     if (cfg->dpdk.pci_whitelist) {
-        sprintf(temp, "--pci-whitelist=%s", cfg->dpdk.pci_whitelist);
-        dpdk_argv[n++] = strdup(temp);
+        char* token;
+        char* rest = cfg->dpdk.pci_whitelist;
+
+        while ((token = strtok_r(rest, ",", &rest))){
+            sprintf(temp, "--pci-whitelist=%s", token);
+            dpdk_argv[n++] = strdup(temp);
+        }
+
     }
 
     if (cfg->dpdk.nb_vdev) {

@@ -8,7 +8,7 @@ DPDK Documentation Guidelines
 
 This document outlines the guidelines for writing the DPDK Guides and API documentation in RST and Doxygen format.
 
-It also explains the structure of the DPDK documentation and shows how to build the Html and PDF versions of the documents.
+It also explains the structure of the DPDK documentation and how to build it.
 
 
 Structure of the Documentation
@@ -62,7 +62,7 @@ added to by the developer.
 
   The Release Notes document which features have been added in the current and previous releases of DPDK and highlight
   any known issues.
-  The Releases Notes also contain notifications of features that will change ABI compatibility in the next major release.
+  The Releases Notes also contain notifications of features that will change ABI compatibility in the next release.
 
   Developers should include updates to the Release Notes with patch sets that relate to any of the following sections:
 
@@ -136,16 +136,10 @@ Building the Documentation
 Dependencies
 ~~~~~~~~~~~~
 
-
 The following dependencies must be installed to build the documentation:
 
 * Doxygen.
-
 * Sphinx (also called python-sphinx).
-
-* TexLive (at least TexLive-core and the extra Latex support).
-
-* Inkscape.
 
 `Doxygen`_ generates documentation from commented source code.
 It can be installed as follows:
@@ -158,20 +152,16 @@ It can be installed as follows:
    # Red Hat/Fedora.
    sudo dnf     -y install doxygen
 
-`Sphinx`_ is a Python documentation tool for converting RST files to Html or to PDF (via LaTeX).
+`Sphinx`_ is a Python documentation tool for converting RST files to HTML.
 For full support with figure and table captioning the latest version of Sphinx can be installed as follows:
 
 .. code-block:: console
 
    # Ubuntu/Debian.
-   sudo apt-get -y install python-pip
-   sudo pip install --upgrade sphinx
-   sudo pip install --upgrade sphinx_rtd_theme
+   sudo apt-get -y install python3-sphinx python3-sphinx-rtd-theme
 
    # Red Hat/Fedora.
-   sudo dnf     -y install python-pip
-   sudo pip install --upgrade sphinx
-   sudo pip install --upgrade sphinx_rtd_theme
+   sudo dnf     -y install python3-sphinx python3-sphinx_rtd_theme
 
 For further information on getting started with Sphinx see the
 `Sphinx Getting Started <http://www.sphinx-doc.org/en/master/usage/quickstart.html>`_.
@@ -181,83 +171,22 @@ For further information on getting started with Sphinx see the
    To get full support for Figure and Table numbering it is best to install Sphinx 1.3.1 or later.
 
 
-`Inkscape`_ is a vector based graphics program which is used to create SVG images and also to convert SVG images to PDF images.
-It can be installed as follows:
-
-.. code-block:: console
-
-   # Ubuntu/Debian.
-   sudo apt-get -y install inkscape
-
-   # Red Hat/Fedora.
-   sudo dnf     -y install inkscape
-
-`TexLive <http://www.tug.org/texlive/>`_ is an installation package for Tex/LaTeX.
-It is used to generate the PDF versions of the documentation.
-The main required packages can be installed as follows:
-
-.. code-block:: console
-
-   # Ubuntu/Debian.
-   sudo apt-get -y install texlive-latex-extra texlive-lang-greek
-
-   # Red Hat/Fedora, selective install.
-   sudo dnf     -y install texlive-collection-latexextra texlive-greek-fontenc
-
-`Latexmk <http://personal.psu.edu/jcc8/software/latexmk-jcc/>`_ is a perl script
-for running LaTeX for resolving cross references,
-and it also runs auxiliary programs like bibtex, makeindex if necessary, and dvips.
-It has also a number of other useful capabilities (see man 1 latexmk).
-
-.. code-block:: console
-
-   # Ubuntu/Debian.
-   sudo apt-get -y install latexmk
-
-   # Red Hat/Fedora.
-   sudo dnf     -y install latexmk
-
-
 Build commands
 ~~~~~~~~~~~~~~
 
 The documentation is built using the standard DPDK build system.
-Some examples are shown below:
 
-* Generate all the documentation targets::
+To build the documentation::
 
-     make doc
+   ninja -C build doc
 
-* Generate the Doxygen API documentation in Html::
+See :doc:`../linux_gsg/build_dpdk` for more detail on compiling DPDK with meson.
 
-     make doc-api-html
-
-* Generate the guides documentation in Html::
-
-     make doc-guides-html
-
-* Generate the guides documentation in Pdf::
-
-     make doc-guides-pdf
-
-The output of these commands is generated in the ``build`` directory::
-
-   build/doc
-         |-- html
-         |   |-- api
-         |   +-- guides
-         |
-         +-- pdf
-             +-- guides
-
+The output is generated in the directories ``build/doc/html/{api,guides}``.
 
 .. Note::
 
    Make sure to fix any Sphinx or Doxygen warnings when adding or updating documentation.
-
-The documentation output files can be removed as follows::
-
-   make doc-clean
 
 
 Document Guidelines
@@ -278,7 +207,8 @@ Here are some guidelines in relation to the style of the documentation:
 RST Guidelines
 --------------
 
-The RST (reStructuredText) format is a plain text markup format that can be converted to Html, PDF or other formats.
+The RST (reStructuredText) format is a plain text markup format
+that can be converted to HTML or other formats.
 It is most closely associated with Python but it can be used to document any language.
 It is used in DPDK to document everything apart from the API.
 
@@ -301,14 +231,13 @@ Line Length
   words. Multiple sentences which are not separated by a blank line are joined
   automatically into paragraphs.
 
-* Lines in literal blocks **must** be less than 80 characters since
-  they are not wrapped by the document formatters and can exceed the page width
-  in PDF documents.
+* Lines in literal blocks should be less than 80 characters
+  since they are not wrapped by the document formatters.
 
   Long literal command lines can be shown wrapped with backslashes. For
   example::
 
-     testpmd -l 2-3 -n 4 \
+     dpdk-testpmd -l 2-3 -n 4 \
              --vdev=virtio_user0,path=/dev/vhost-net,queues=2,queue_size=1024 \
              -- -i --tx-offloads=0x0000002c --enable-lro --txq=2 --rxq=2 \
              --txd=1024 --rxd=1024
@@ -456,11 +385,11 @@ Code and Literal block sections
 * The default encoding for a literal block using the simplified ``::``
   directive is ``none``.
 
-* Lines in literal blocks must be less than 80 characters since they can exceed the page width when converted to PDF documentation.
-  For long literal lines that exceed that limit try to wrap the text at sensible locations.
+* Lines in literal blocks should be less than 80 characters.
+  For long literal lines, try to wrap the text at sensible locations.
   For example a long command line could be documented like this and still work if copied directly from the docs::
 
-     build/app/testpmd -l 0-2 -n3 --vdev=net_pcap0,iface=eth0     \
+     ./<build_dir>/app/dpdk-testpmd -l 0-2 -n3 --vdev=net_pcap0,iface=eth0    \
                                --vdev=net_pcap1,iface=eth1     \
                                -- -i --nb-cores=2 --nb-ports=2 \
                                   --total-num-mbufs=2048
@@ -522,7 +451,7 @@ Tables
 ~~~~~~
 
 * RST tables should be used sparingly.
-  They are hard to format and to edit, they are often rendered incorrectly in PDF format, and the same information
+  They are hard to format and to edit, and the same information
   can usually be shown just as clearly with a definition or bullet list.
 
 * Tables in the documentation should be formatted as follows:
@@ -551,8 +480,6 @@ Tables
   For example::
 
      The QOS configuration is shown in :numref:`table_qos_pipes`.
-
-* Tables should not include merged cells since they are not supported by the PDF renderer.
 
 
 .. _links:
@@ -722,7 +649,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
      /**< Virtual address of the first mempool object. */
      uintptr_t   elt_va_end;
      /**< Virtual address of the <size + 1> mempool object. */
-     phys_addr_t elt_pa[MEMPOOL_PG_NUM_DEFAULT];
+     phys_addr_t elt_pa[1];
      /**< Array of physical page addresses for the mempool buffer. */
 
   This doesn't have an effect on the rendered documentation but it is confusing for the developer reading the code.
@@ -741,11 +668,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
      /** Virtual address of the <size + 1> mempool object. */
      uintptr_t   elt_va_end;
      /** Array of physical page addresses for the mempool buffer. */
-     phys_addr_t elt_pa[MEMPOOL_PG_NUM_DEFAULT];
-
-* Check for Doxygen warnings in new code by checking the API documentation build::
-
-     make doc-api-html >/dev/null
+     phys_addr_t elt_pa[1];
 
 * Read the rendered section of the documentation that you have added for correctness, clarity and consistency
   with the surrounding text.

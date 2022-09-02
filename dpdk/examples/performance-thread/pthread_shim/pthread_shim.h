@@ -41,7 +41,7 @@
  *
  * The decision whether to invoke the real library function or the lthread
  * function is controlled by a per pthread flag that can be switched
- * on of off by the pthread_override_set() API described below. Typcially
+ * on of off by the pthread_override_set() API described below. Typically
  * this should be done as the first action of the initial lthread.
  *
  * N.B In general it would be poor practice to revert to invoke a real
@@ -55,7 +55,7 @@
  * An exiting lthread must not terminate the pthread it is running in
  * since this would mean terminating the lthread scheduler.
  * We override pthread_exit() with a macro because it is typically declared with
- * __attribute__((noreturn))
+ * __rte_noreturn
  */
 void pthread_exit_override(void *v);
 

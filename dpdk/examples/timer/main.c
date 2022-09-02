@@ -24,8 +24,8 @@ static struct rte_timer timer1;
 
 /* timer0 callback */
 static void
-timer0_cb(__attribute__((unused)) struct rte_timer *tim,
-	  __attribute__((unused)) void *arg)
+timer0_cb(__rte_unused struct rte_timer *tim,
+	  __rte_unused void *arg)
 {
 	static unsigned counter = 0;
 	unsigned lcore_id = rte_lcore_id();
@@ -40,8 +40,8 @@ timer0_cb(__attribute__((unused)) struct rte_timer *tim,
 
 /* timer1 callback */
 static void
-timer1_cb(__attribute__((unused)) struct rte_timer *tim,
-	  __attribute__((unused)) void *arg)
+timer1_cb(__rte_unused struct rte_timer *tim,
+	  __rte_unused void *arg)
 {
 	unsigned lcore_id = rte_lcore_id();
 	uint64_t hz;
@@ -54,8 +54,8 @@ timer1_cb(__attribute__((unused)) struct rte_timer *tim,
 	rte_timer_reset(tim, hz/3, SINGLE, lcore_id, timer1_cb, NULL);
 }
 
-static __attribute__((noreturn)) int
-lcore_mainloop(__attribute__((unused)) void *arg)
+static __rte_noreturn int
+lcore_mainloop(__rte_unused void *arg)
 {
 	uint64_t prev_tsc = 0, cur_tsc, diff_tsc;
 	unsigned lcore_id;
@@ -109,12 +109,12 @@ main(int argc, char **argv)
 	lcore_id = rte_get_next_lcore(lcore_id, 0, 1);
 	rte_timer_reset(&timer1, hz/3, SINGLE, lcore_id, timer1_cb, NULL);
 
-	/* call lcore_mainloop() on every slave lcore */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	/* call lcore_mainloop() on every worker lcore */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		rte_eal_remote_launch(lcore_mainloop, NULL, lcore_id);
 	}
 
-	/* call it on master lcore too */
+	/* call it on main lcore too */
 	(void) lcore_mainloop(NULL);
 
 	/* clean up the EAL */

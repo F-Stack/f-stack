@@ -11,6 +11,8 @@ sources = [
 	'ice_flow.c',
 	'ice_dcb.c',
 	'ice_fdir.c',
+	'ice_acl.c',
+	'ice_acl_ctrl.c',
 ]
 
 error_cflags = ['-Wno-unused-value',
@@ -18,7 +20,6 @@ error_cflags = ['-Wno-unused-value',
 		'-Wno-unused-variable',
 		'-Wno-unused-parameter',
 ]
-
 # Bugzilla ID: 678
 if (toolchain == 'gcc' and cc.version().version_compare('>=11.0.0'))
     error_cflags += ['-Wno-array-bounds']
@@ -35,4 +36,4 @@ endforeach
 base_lib = static_library('ice_base', sources,
 	dependencies: static_rte_eal,
 	c_args: c_args)
-base_objs = base_lib.extract_all_objects(recursive: true)
+base_objs = base_lib.extract_all_objects()

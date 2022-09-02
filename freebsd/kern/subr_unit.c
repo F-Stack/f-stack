@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Poul-Henning Kamp
  * All rights reserved.
  *
@@ -96,6 +98,19 @@ static struct mtx unitmtx;
 
 MTX_SYSINIT(unit, &unitmtx, "unit# allocation", MTX_DEF);
 
+#ifdef UNR64_LOCKED
+uint64_t
+alloc_unr64(struct unrhdr64 *unr64)
+{
+	uint64_t item;
+
+	mtx_lock(&unitmtx);
+	item = unr64->counter++;
+	mtx_unlock(&unitmtx);
+	return (item);
+}
+#endif
+
 #else /* ...USERLAND */
 
 #include <bitstring.h>
@@ -127,7 +142,6 @@ _Malloc(size_t foo, int line)
 #define Free(foo) free(foo)
 
 struct unrhdr;
-
 
 struct mtx {
 	int	state;
@@ -210,13 +224,12 @@ ub_full(struct unrb *ub, int len)
 	return (first_clear == -1);
 }
 
-
 #if defined(DIAGNOSTIC) || !defined(_KERNEL)
 /*
  * Consistency check function.
  *
  * Checks the internal consistency as well as we can.
- * 
+ *
  * Called at all boundaries of this API.
  */
 static void
@@ -240,7 +253,7 @@ check_unrhdr(struct unrhdr *uh, int line)
 			w = 0;
 			bit_count(ub->map, 0, up->len, &w);
 			y += w;
-		} else if (up->ptr != NULL) 
+		} else if (up->ptr != NULL)
 			y += up->len;
 	}
 	KASSERT (y == uh->busy,
@@ -260,7 +273,6 @@ check_unrhdr(struct unrhdr *uh __unused, int line __unused)
 }
 
 #endif
-
 
 /*
  * Userland memory management.  Just use calloc and keep track of how
@@ -366,6 +378,26 @@ delete_unrhdr(struct unrhdr *uh)
 	Free(uh);
 }
 
+void
+clear_unrhdr(struct unrhdr *uh)
+{
+	struct unr *up, *uq;
+
+	KASSERT(TAILQ_EMPTY(&uh->ppfree),
+	    ("unrhdr has postponed item for free"));
+	TAILQ_FOREACH_SAFE(up, &uh->head, list, uq) {
+		if (up->ptr != uh) {
+			Free(up->ptr);
+		}
+		Free(up);
+	}
+	uh->busy = 0;
+	uh->alloc = 0;
+	init_unrhdr(uh, uh->low, uh->high, uh->mtx);
+
+	check_unrhdr(uh, __LINE__);
+}
+
 static __inline int
 is_bitmap(struct unrhdr *uh, struct unr *up)
 {
@@ -375,7 +407,7 @@ is_bitmap(struct unrhdr *uh, struct unr *up)
 /*
  * Look for sequence of items which can be combined into a bitmap, if
  * multiple are present, take the one which saves most memory.
- * 
+ *
  * Return (1) if a sequence was found to indicate that another call
  * might be able to do more.  Return (0) if we found no suitable sequence.
  *
@@ -591,7 +623,7 @@ alloc_unrl(struct unrhdr *uh)
 	}
 
 	/*
-	 * We can always allocate from the first list element, so if we have 
+	 * We can always allocate from the first list element, so if we have
 	 * nothing on the list, we must have run out of unit numbers.
 	 */
 	if (up == NULL)
@@ -803,7 +835,7 @@ free_unrl(struct unrhdr *uh, u_int item, void **p1, void **p2)
 	/* Handle bitmap items */
 	if (is_bitmap(uh, up)) {
 		ub = up->ptr;
-		
+
 		KASSERT(bit_test(ub->map, item) != 0,
 		    ("UNR: Freeing free item %d (bitmap)\n", item));
 		bit_clear(ub->map, item);
@@ -909,7 +941,7 @@ print_unr(struct unrhdr *uh, struct unr *up)
 		for (x = 0; x < up->len; x++) {
 			if (bit_test(ub->map, x))
 				printf("#");
-			else 
+			else
 				printf(" ");
 		}
 		printf("]\n");
@@ -986,7 +1018,7 @@ main(int argc, char **argv)
 	long count = 10000;	/* Number of unrs to test */
 	long reps = 1, m;
 	int ch;
-	u_int i, x, j;
+	u_int i;
 
 	verbose = false;
 
@@ -999,7 +1031,7 @@ main(int argc, char **argv)
 				usage(argv);
 				exit(2);
 			}
-			
+
 			break;
 		case 'v':
 			verbose = true;
@@ -1009,8 +1041,6 @@ main(int argc, char **argv)
 			usage(argv);
 			exit(2);
 		}
-
-
 	}
 
 	setbuf(stdout, NULL);
@@ -1020,21 +1050,18 @@ main(int argc, char **argv)
 	a = calloc(count, sizeof(char));
 	if (a == NULL)
 		err(1, "calloc failed");
-	srandomdev();
 
 	printf("sizeof(struct unr) %zu\n", sizeof(struct unr));
 	printf("sizeof(struct unrb) %zu\n", sizeof(struct unrb));
 	printf("sizeof(struct unrhdr) %zu\n", sizeof(struct unrhdr));
 	printf("NBITS %lu\n", (unsigned long)NBITS);
-	x = 1;
 	for (m = 0; m < count * reps; m++) {
-		j = random();
-		i = (j >> 1) % count;
+		i = arc4random_uniform(count);
 #if 0
 		if (a[i] && (j & 1))
 			continue;
 #endif
-		if ((random() & 1) != 0)
+		if ((arc4random() & 1) != 0)
 			test_alloc_unr(uh, i, a);
 		else
 			test_alloc_unr_specific(uh, i, a);

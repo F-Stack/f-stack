@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2011 Kip Macy. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,6 +43,8 @@
 #include <sys/uio.h>
 #include <sys/file.h>
 #include <sys/capsicum.h>
+
+__read_frequently smr_t vfs_smr;
 
 void
 NDFREE(struct nameidata *ndp, const u_int flags)
@@ -88,6 +90,7 @@ vn_fill_kinfo_vnode(struct vnode *vp, struct kinfo_file *kif)
     return (0);
 }
 
+#if 0
 void
 NDINIT_ALL(struct nameidata *ndp, u_long op, u_long flags, enum uio_seg segflg,
     const char *namep, int dirfd, struct vnode *startdir, cap_rights_t *rightsp,
@@ -108,4 +111,5 @@ NDINIT_ALL(struct nameidata *ndp, u_long op, u_long flags, enum uio_seg segflg,
     filecaps_init(&ndp->ni_filecaps);
     ndp->ni_cnd.cn_thread = td;
 }
+#endif
 

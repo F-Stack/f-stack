@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -20,7 +22,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -206,31 +208,32 @@ uiomove_nofault(void *cp, int n, struct uio *uio)
 static int
 uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 {
-	struct thread *td;
 	struct iovec *iov;
 	size_t cnt;
 	int error, newflags, save;
 
-	td = curthread;
-	error = 0;
+	save = error = 0;
 
 	KASSERT(uio->uio_rw == UIO_READ || uio->uio_rw == UIO_WRITE,
 	    ("uiomove: mode"));
-	KASSERT(uio->uio_segflg != UIO_USERSPACE || uio->uio_td == td,
+	KASSERT(uio->uio_segflg != UIO_USERSPACE || uio->uio_td == curthread,
 	    ("uiomove proc"));
-	if (!nofault)
-		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
-		    "Calling uiomove()");
 
-	/* XXX does it make a sense to set TDP_DEADLKTREAT for UIO_SYSSPACE ? */
-	newflags = TDP_DEADLKTREAT;
-	if (uio->uio_segflg == UIO_USERSPACE && nofault) {
-		/*
-		 * Fail if a non-spurious page fault occurs.
-		 */
-		newflags |= TDP_NOFAULTING | TDP_RESETSPUR;
+	if (uio->uio_segflg == UIO_USERSPACE) {
+		newflags = TDP_DEADLKTREAT;
+		if (nofault) {
+			/*
+			 * Fail if a non-spurious page fault occurs.
+			 */
+			newflags |= TDP_NOFAULTING | TDP_RESETSPUR;
+		} else {
+			WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+			    "Calling uiomove()");
+		}
+		save = curthread_pflags_set(newflags);
+	} else {
+		KASSERT(nofault == 0, ("uiomove: nofault"));
 	}
-	save = curthread_pflags_set(newflags);
 
 	while (n > 0 && uio->uio_resid) {
 		iov = uio->uio_iov;
@@ -244,7 +247,6 @@ uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 			cnt = n;
 
 		switch (uio->uio_segflg) {
-
 		case UIO_USERSPACE:
 			maybe_yield();
 			if (uio->uio_rw == UIO_READ)
@@ -272,7 +274,8 @@ uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 		n -= cnt;
 	}
 out:
-	curthread_pflags_restore(save);
+	if (save)
+		curthread_pflags_restore(save);
 	return (error);
 }
 
@@ -320,7 +323,6 @@ again:
 		goto again;
 	}
 	switch (uio->uio_segflg) {
-
 	case UIO_USERSPACE:
 		if (subyte(iov->iov_base, c) < 0)
 			return (EFAULT);
@@ -339,44 +341,6 @@ again:
 	uio->uio_resid--;
 	uio->uio_offset++;
 	return (0);
-}
-
-int
-copyinfrom(const void * __restrict src, void * __restrict dst, size_t len,
-    int seg)
-{
-	int error = 0;
-
-	switch (seg) {
-	case UIO_USERSPACE:
-		error = copyin(src, dst, len);
-		break;
-	case UIO_SYSSPACE:
-		bcopy(src, dst, len);
-		break;
-	default:
-		panic("copyinfrom: bad seg %d\n", seg);
-	}
-	return (error);
-}
-
-int
-copyinstrfrom(const void * __restrict src, void * __restrict dst, size_t len,
-    size_t * __restrict copied, int seg)
-{
-	int error = 0;
-
-	switch (seg) {
-	case UIO_USERSPACE:
-		error = copyinstr(src, dst, len, copied);
-		break;
-	case UIO_SYSSPACE:
-		error = copystr(src, dst, len, copied);
-		break;
-	default:
-		panic("copyinstrfrom: bad seg %d\n", seg);
-	}
-	return (error);
 }
 
 int
@@ -468,10 +432,11 @@ copyout_map(struct thread *td, vm_offset_t *addr, size_t sz)
 
 	/* round size up to page boundary */
 	size = (vm_size_t)round_page(sz);
-
-	error = vm_mmap(&vms->vm_map, addr, size, VM_PROT_READ | VM_PROT_WRITE,
-	    VM_PROT_ALL, MAP_PRIVATE | MAP_ANON, OBJT_DEFAULT, NULL, 0);
-
+	if (size == 0)
+		return (EINVAL);
+	error = vm_mmap_object(&vms->vm_map, addr, size, VM_PROT_READ |
+	    VM_PROT_WRITE, VM_PROT_ALL, MAP_PRIVATE | MAP_ANON, NULL, 0,
+	    FALSE, td);
 	return (error);
 }
 
@@ -496,77 +461,6 @@ copyout_unmap(struct thread *td, vm_offset_t addr, size_t sz)
 	return (0);
 }
 
-#ifdef NO_FUEWORD
-/*
- * XXXKIB The temporal implementation of fue*() functions which do not
- * handle usermode -1 properly, mixing it with the fault code.  Keep
- * this until MD code is written.  Currently sparc64 and mips do not
- * have proper implementation.
- */
-
-int
-fueword(volatile const void *base, long *val)
-{
-	long res;
-
-	res = fuword(base);
-	if (res == -1)
-		return (-1);
-	*val = res;
-	return (0);
-}
-
-int
-fueword32(volatile const void *base, int32_t *val)
-{
-	int32_t res;
-
-	res = fuword32(base);
-	if (res == -1)
-		return (-1);
-	*val = res;
-	return (0);
-}
-
-#ifdef _LP64
-int
-fueword64(volatile const void *base, int64_t *val)
-{
-	int32_t res;
-
-	res = fuword64(base);
-	if (res == -1)
-		return (-1);
-	*val = res;
-	return (0);
-}
-#endif
-
-int
-casueword32(volatile uint32_t *base, uint32_t oldval, uint32_t *oldvalp,
-    uint32_t newval)
-{
-	int32_t ov;
-
-	ov = casuword32(base, oldval, newval);
-	if (ov == -1)
-		return (-1);
-	*oldvalp = ov;
-	return (0);
-}
-
-int
-casueword(volatile u_long *p, u_long oldval, u_long *oldvalp, u_long newval)
-{
-	u_long ov;
-
-	ov = casuword(p, oldval, newval);
-	if (ov == -1)
-		return (-1);
-	*oldvalp = ov;
-	return (0);
-}
-#else /* NO_FUEWORD */
 int32_t
 fuword32(volatile const void *addr)
 {
@@ -618,5 +512,3 @@ casuword(volatile u_long *addr, u_long old, u_long new)
 	rv = casueword(addr, old, &val, new);
 	return (rv == -1 ? -1 : val);
 }
-
-#endif /* NO_FUEWORD */

@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2010 Kip Macy All rights reserved.
  * Copyright (c) 2013 Patrick Kelsey. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -67,6 +67,7 @@ __FBSDID("$FreeBSD$");
 
 struct intr_event *clk_intr_event;
 
+#if 0
 void
 critical_enter(void)
 {
@@ -78,6 +79,7 @@ critical_exit(void)
 {
 
 }
+#endif
 
 int
 swi_add(struct intr_event **eventp, const char *name, driver_intr_t handler,

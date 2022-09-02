@@ -57,12 +57,90 @@
 #define IAVF_TX_OFFLOAD_NOTSUP_MASK \
 		(PKT_TX_OFFLOAD_MASK ^ IAVF_TX_OFFLOAD_MASK)
 
+/**
+ * Rx Flex Descriptors
+ * These descriptors are used instead of the legacy version descriptors
+ */
+union iavf_16b_rx_flex_desc {
+	struct {
+		__le64 pkt_addr; /* Packet buffer address */
+		__le64 hdr_addr; /* Header buffer address */
+				 /* bit 0 of hdr_addr is DD bit */
+	} read;
+	struct {
+		/* Qword 0 */
+		u8 rxdid; /* descriptor builder profile ID */
+		u8 mir_id_umb_cast; /* mirror=[5:0], umb=[7:6] */
+		__le16 ptype_flex_flags0; /* ptype=[9:0], ff0=[15:10] */
+		__le16 pkt_len; /* [15:14] are reserved */
+		__le16 hdr_len_sph_flex_flags1; /* header=[10:0] */
+						/* sph=[11:11] */
+						/* ff1/ext=[15:12] */
+
+		/* Qword 1 */
+		__le16 status_error0;
+		__le16 l2tag1;
+		__le16 flex_meta0;
+		__le16 flex_meta1;
+	} wb; /* writeback */
+};
+
+union iavf_32b_rx_flex_desc {
+	struct {
+		__le64 pkt_addr; /* Packet buffer address */
+		__le64 hdr_addr; /* Header buffer address */
+				 /* bit 0 of hdr_addr is DD bit */
+		__le64 rsvd1;
+		__le64 rsvd2;
+	} read;
+	struct {
+		/* Qword 0 */
+		u8 rxdid; /* descriptor builder profile ID */
+		u8 mir_id_umb_cast; /* mirror=[5:0], umb=[7:6] */
+		__le16 ptype_flex_flags0; /* ptype=[9:0], ff0=[15:10] */
+		__le16 pkt_len; /* [15:14] are reserved */
+		__le16 hdr_len_sph_flex_flags1; /* header=[10:0] */
+						/* sph=[11:11] */
+						/* ff1/ext=[15:12] */
+
+		/* Qword 1 */
+		__le16 status_error0;
+		__le16 l2tag1;
+		__le16 flex_meta0;
+		__le16 flex_meta1;
+
+		/* Qword 2 */
+		__le16 status_error1;
+		u8 flex_flags2;
+		u8 time_stamp_low;
+		__le16 l2tag2_1st;
+		__le16 l2tag2_2nd;
+
+		/* Qword 3 */
+		__le16 flex_meta2;
+		__le16 flex_meta3;
+		union {
+			struct {
+				__le16 flex_meta4;
+				__le16 flex_meta5;
+			} flex;
+			__le32 ts_high;
+		} flex_ts;
+	} wb; /* writeback */
+};
+
 /* HW desc structure, both 16-byte and 32-byte types are supported */
 #ifdef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 #define iavf_rx_desc iavf_16byte_rx_desc
+#define iavf_rx_flex_desc iavf_16b_rx_flex_desc
 #else
 #define iavf_rx_desc iavf_32byte_rx_desc
+#define iavf_rx_flex_desc iavf_32b_rx_flex_desc
 #endif
+
+typedef void (*iavf_rxd_to_pkt_fields_t)(struct iavf_rx_queue *rxq,
+				struct rte_mbuf *mb,
+				volatile union iavf_rx_flex_desc *rxdp);
 
 struct iavf_rxq_ops {
 	void (*release_mbufs)(struct iavf_rx_queue *rxq);
@@ -87,6 +165,7 @@ struct iavf_rx_queue {
 	struct rte_mbuf *pkt_first_seg; /* first segment of current packet */
 	struct rte_mbuf *pkt_last_seg;  /* last segment of current packet */
 	struct rte_mbuf fake_mbuf;      /* dummy mbuf */
+	uint8_t rxdid;
 	uint8_t rel_mbufs_type;
 
 	/* used for VPMD */
@@ -102,20 +181,29 @@ struct iavf_rx_queue {
 
 	uint16_t port_id;        /* device port ID */
 	uint8_t crc_len;        /* 0 if CRC stripped, 4 otherwise */
+	uint8_t fdir_enabled;   /* 0 if FDIR disabled, 1 when enabled */
 	uint16_t queue_id;      /* Rx queue index */
 	uint16_t rx_buf_len;    /* The packet buffer size */
 	uint16_t rx_hdr_len;    /* The header buffer size */
 	uint16_t max_pkt_len;   /* Maximum packet length */
+	struct iavf_vsi *vsi; /**< the VSI this queue belongs to */
 
 	bool q_set;             /* if rx queue has been configured */
 	bool rx_deferred_start; /* don't start this queue in dev start */
 	const struct iavf_rxq_ops *ops;
+	uint8_t proto_xtr; /* protocol extraction type */
+	uint64_t xtr_ol_flag;
+		/* flexible descriptor metadata extraction offload flag */
 };
 
 struct iavf_tx_entry {
 	struct rte_mbuf *mbuf;
 	uint16_t next_id;
 	uint16_t last_id;
+};
+
+struct iavf_tx_vec_entry {
+	struct rte_mbuf *mbuf;
 };
 
 /* Structure associated with each TX queue. */
@@ -158,11 +246,155 @@ union iavf_tx_offload {
 	};
 };
 
+/* Rx Flex Descriptor
+ * RxDID Profile ID 16-21
+ * Flex-field 0: RSS hash lower 16-bits
+ * Flex-field 1: RSS hash upper 16-bits
+ * Flex-field 2: Flow ID lower 16-bits
+ * Flex-field 3: Flow ID upper 16-bits
+ * Flex-field 4: AUX0
+ * Flex-field 5: AUX1
+ */
+struct iavf_32b_rx_flex_desc_comms {
+	/* Qword 0 */
+	u8 rxdid;
+	u8 mir_id_umb_cast;
+	__le16 ptype_flexi_flags0;
+	__le16 pkt_len;
+	__le16 hdr_len_sph_flex_flags1;
+
+	/* Qword 1 */
+	__le16 status_error0;
+	__le16 l2tag1;
+	__le32 rss_hash;
+
+	/* Qword 2 */
+	__le16 status_error1;
+	u8 flexi_flags2;
+	u8 ts_low;
+	__le16 l2tag2_1st;
+	__le16 l2tag2_2nd;
+
+	/* Qword 3 */
+	__le32 flow_id;
+	union {
+		struct {
+			__le16 aux0;
+			__le16 aux1;
+		} flex;
+		__le32 ts_high;
+	} flex_ts;
+};
+
+/* Rx Flex Descriptor
+ * RxDID Profile ID 22-23 (swap Hash and FlowID)
+ * Flex-field 0: Flow ID lower 16-bits
+ * Flex-field 1: Flow ID upper 16-bits
+ * Flex-field 2: RSS hash lower 16-bits
+ * Flex-field 3: RSS hash upper 16-bits
+ * Flex-field 4: AUX0
+ * Flex-field 5: AUX1
+ */
+struct iavf_32b_rx_flex_desc_comms_ovs {
+	/* Qword 0 */
+	u8 rxdid;
+	u8 mir_id_umb_cast;
+	__le16 ptype_flexi_flags0;
+	__le16 pkt_len;
+	__le16 hdr_len_sph_flex_flags1;
+
+	/* Qword 1 */
+	__le16 status_error0;
+	__le16 l2tag1;
+	__le32 flow_id;
+
+	/* Qword 2 */
+	__le16 status_error1;
+	u8 flexi_flags2;
+	u8 ts_low;
+	__le16 l2tag2_1st;
+	__le16 l2tag2_2nd;
+
+	/* Qword 3 */
+	__le32 rss_hash;
+	union {
+		struct {
+			__le16 aux0;
+			__le16 aux1;
+		} flex;
+		__le32 ts_high;
+	} flex_ts;
+};
+
 enum iavf_rxtx_rel_mbufs_type {
 	IAVF_REL_MBUFS_DEFAULT		= 0,
 	IAVF_REL_MBUFS_SSE_VEC		= 1,
 	IAVF_REL_MBUFS_AVX512_VEC	= 2,
 };
+
+/* Receive Flex Descriptor profile IDs: There are a total
+ * of 64 profiles where profile IDs 0/1 are for legacy; and
+ * profiles 2-63 are flex profiles that can be programmed
+ * with a specific metadata (profile 7 reserved for HW)
+ */
+enum iavf_rxdid {
+	IAVF_RXDID_LEGACY_0		= 0,
+	IAVF_RXDID_LEGACY_1		= 1,
+	IAVF_RXDID_FLEX_NIC		= 2,
+	IAVF_RXDID_FLEX_NIC_2		= 6,
+	IAVF_RXDID_HW			= 7,
+	IAVF_RXDID_COMMS_GENERIC	= 16,
+	IAVF_RXDID_COMMS_AUX_VLAN	= 17,
+	IAVF_RXDID_COMMS_AUX_IPV4	= 18,
+	IAVF_RXDID_COMMS_AUX_IPV6	= 19,
+	IAVF_RXDID_COMMS_AUX_IPV6_FLOW	= 20,
+	IAVF_RXDID_COMMS_AUX_TCP	= 21,
+	IAVF_RXDID_COMMS_OVS_1		= 22,
+	IAVF_RXDID_COMMS_OVS_2		= 23,
+	IAVF_RXDID_COMMS_AUX_IP_OFFSET	= 25,
+	IAVF_RXDID_LAST			= 63,
+};
+
+enum iavf_rx_flex_desc_status_error_0_bits {
+	/* Note: These are predefined bit offsets */
+	IAVF_RX_FLEX_DESC_STATUS0_DD_S = 0,
+	IAVF_RX_FLEX_DESC_STATUS0_EOF_S,
+	IAVF_RX_FLEX_DESC_STATUS0_HBO_S,
+	IAVF_RX_FLEX_DESC_STATUS0_L3L4P_S,
+	IAVF_RX_FLEX_DESC_STATUS0_XSUM_IPE_S,
+	IAVF_RX_FLEX_DESC_STATUS0_XSUM_L4E_S,
+	IAVF_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S,
+	IAVF_RX_FLEX_DESC_STATUS0_XSUM_EUDPE_S,
+	IAVF_RX_FLEX_DESC_STATUS0_LPBK_S,
+	IAVF_RX_FLEX_DESC_STATUS0_IPV6EXADD_S,
+	IAVF_RX_FLEX_DESC_STATUS0_RXE_S,
+	IAVF_RX_FLEX_DESC_STATUS0_CRCP_S,
+	IAVF_RX_FLEX_DESC_STATUS0_RSS_VALID_S,
+	IAVF_RX_FLEX_DESC_STATUS0_L2TAG1P_S,
+	IAVF_RX_FLEX_DESC_STATUS0_XTRMD0_VALID_S,
+	IAVF_RX_FLEX_DESC_STATUS0_XTRMD1_VALID_S,
+	IAVF_RX_FLEX_DESC_STATUS0_LAST /* this entry must be last!!! */
+};
+
+enum iavf_rx_flex_desc_status_error_1_bits {
+	/* Note: These are predefined bit offsets */
+	IAVF_RX_FLEX_DESC_STATUS1_CPM_S = 0, /* 4 bits */
+	IAVF_RX_FLEX_DESC_STATUS1_NAT_S = 4,
+	IAVF_RX_FLEX_DESC_STATUS1_CRYPTO_S = 5,
+	/* [10:6] reserved */
+	IAVF_RX_FLEX_DESC_STATUS1_L2TAG2P_S = 11,
+	IAVF_RX_FLEX_DESC_STATUS1_XTRMD2_VALID_S = 12,
+	IAVF_RX_FLEX_DESC_STATUS1_XTRMD3_VALID_S = 13,
+	IAVF_RX_FLEX_DESC_STATUS1_XTRMD4_VALID_S = 14,
+	IAVF_RX_FLEX_DESC_STATUS1_XTRMD5_VALID_S = 15,
+	IAVF_RX_FLEX_DESC_STATUS1_LAST /* this entry must be last!!! */
+};
+
+/* for iavf_32b_rx_flex_desc.ptype_flex_flags0 member */
+#define IAVF_RX_FLEX_DESC_PTYPE_M	(0x3FF) /* 10-bits */
+
+/* for iavf_32b_rx_flex_desc.pkt_len member */
+#define IAVF_RX_FLX_DESC_PKT_LEN_M	(0x3FFF) /* 14-bits */
 
 int iavf_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			   uint16_t queue_idx,
@@ -182,13 +414,20 @@ int iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			   const struct rte_eth_txconf *tx_conf);
 int iavf_dev_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 int iavf_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id);
+int iavf_dev_tx_done_cleanup(void *txq, uint32_t free_cnt);
 void iavf_dev_tx_queue_release(void *txq);
 void iavf_stop_queues(struct rte_eth_dev *dev);
 uint16_t iavf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		       uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_flex_rxd(void *rx_queue,
+				 struct rte_mbuf **rx_pkts,
+				 uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts(void *rx_queue,
 				 struct rte_mbuf **rx_pkts,
 				 uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_flex_rxd(void *rx_queue,
+					   struct rte_mbuf **rx_pkts,
+					   uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		       uint16_t nb_pkts);
 uint16_t iavf_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
@@ -205,16 +444,27 @@ int iavf_dev_tx_desc_status(void *tx_queue, uint16_t offset);
 
 uint16_t iavf_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			   uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_flex_rxd(void *rx_queue, struct rte_mbuf **rx_pkts,
+				     uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts_vec(void *rx_queue,
 				     struct rte_mbuf **rx_pkts,
 				     uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_flex_rxd(void *rx_queue,
+					       struct rte_mbuf **rx_pkts,
+					       uint16_t nb_pkts);
 uint16_t iavf_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts);
 uint16_t iavf_recv_pkts_vec_avx2(void *rx_queue, struct rte_mbuf **rx_pkts,
 				 uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_avx2_flex_rxd(void *rx_queue,
+					  struct rte_mbuf **rx_pkts,
+					  uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts_vec_avx2(void *rx_queue,
 					   struct rte_mbuf **rx_pkts,
 					   uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx2_flex_rxd(void *rx_queue,
+						    struct rte_mbuf **rx_pkts,
+						    uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 			    uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
@@ -223,6 +473,25 @@ int iavf_rx_vec_dev_check(struct rte_eth_dev *dev);
 int iavf_tx_vec_dev_check(struct rte_eth_dev *dev);
 int iavf_rxq_vec_setup(struct iavf_rx_queue *rxq);
 int iavf_txq_vec_setup(struct iavf_tx_queue *txq);
+uint16_t iavf_recv_pkts_vec_avx512(void *rx_queue, struct rte_mbuf **rx_pkts,
+				   uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_avx512_flex_rxd(void *rx_queue,
+					    struct rte_mbuf **rx_pkts,
+					    uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx512(void *rx_queue,
+					     struct rte_mbuf **rx_pkts,
+					     uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx512_flex_rxd(void *rx_queue,
+						      struct rte_mbuf **rx_pkts,
+						      uint16_t nb_pkts);
+uint16_t iavf_xmit_pkts_vec_avx512(void *tx_queue, struct rte_mbuf **tx_pkts,
+				   uint16_t nb_pkts);
+int iavf_txq_vec_setup_avx512(struct iavf_tx_queue *txq);
+
+uint8_t iavf_proto_xtr_type_to_rxdid(uint8_t xtr_type);
+
+void iavf_set_default_ptype_table(struct rte_eth_dev *dev);
+void iavf_tx_queue_release_mbufs_avx512(struct iavf_tx_queue *txq);
 void iavf_rx_queue_release_mbufs_sse(struct iavf_rx_queue *rxq);
 void iavf_tx_queue_release_mbufs_sse(struct iavf_tx_queue *txq);
 
@@ -276,6 +545,35 @@ void iavf_dump_tx_descriptor(const struct iavf_tx_queue *txq,
 	printf("Queue %d %s %d: QW0: 0x%016"PRIx64" QW1: 0x%016"PRIx64"\n",
 	       txq->queue_id, name, tx_id, tx_desc->buffer_addr,
 	       tx_desc->cmd_type_offset_bsz);
+}
+
+#define FDIR_PROC_ENABLE_PER_QUEUE(ad, on) do { \
+	int i; \
+	for (i = 0; i < (ad)->dev_data->nb_rx_queues; i++) { \
+		struct iavf_rx_queue *rxq = (ad)->dev_data->rx_queues[i]; \
+		if (!rxq) \
+			continue; \
+		rxq->fdir_enabled = on; \
+	} \
+	PMD_DRV_LOG(DEBUG, "FDIR processing on RX set to %d", on); \
+} while (0)
+
+/* Enable/disable flow director Rx processing in data path. */
+static inline
+void iavf_fdir_rx_proc_enable(struct iavf_adapter *ad, bool on)
+{
+	if (on) {
+		/* enable flow director processing */
+		FDIR_PROC_ENABLE_PER_QUEUE(ad, on);
+		ad->fdir_ref_cnt++;
+	} else {
+		if (ad->fdir_ref_cnt >= 1) {
+			ad->fdir_ref_cnt--;
+
+			if (ad->fdir_ref_cnt == 0)
+				FDIR_PROC_ENABLE_PER_QUEUE(ad, on);
+		}
+	}
 }
 
 #ifdef RTE_LIBRTE_IAVF_DEBUG_DUMP_DESC

@@ -1,6 +1,8 @@
 #!/usr/bin/awk -f
 
 #-
+# SPDX-License-Identifier: BSD-3-Clause
+#
 # Copyright (c) 1992, 1993
 #	The Regents of the University of California.  All rights reserved.
 #
@@ -12,7 +14,7 @@
 # 2. Redistributions in binary form must reproduce the above copyright
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
-# 4. Neither the name of the University nor the names of its contributors
+# 3. Neither the name of the University nor the names of its contributors
 #    may be used to endorse or promote products derived from this software
 #    without specific prior written permission.
 #
@@ -85,6 +87,24 @@ function add_debug_code(name, arg, pos, ind)
 	}
 }
 
+function add_debugpre(name)
+{
+	if (lockdata[name, "debugpre"]) {
+		printc("#ifdef DEBUG_VFS_LOCKS");
+		printc("\t"lockdata[name, "debugpre"]"(a);");
+		printc("#endif");
+	}
+}
+
+function add_debugpost(name)
+{
+	if (lockdata[name, "debugpost"]) {
+		printc("#ifdef DEBUG_VFS_LOCKS");
+		printc("\t"lockdata[name, "debugpost"]"(a, rc);");
+		printc("#endif");
+	}
+}
+
 function add_pre(name)
 {
 	if (lockdata[name, "pre"]) {
@@ -97,6 +117,15 @@ function add_post(name)
 	if (lockdata[name, "post"]) {
 		printc("\t"lockdata[name, "post"]"(a, rc);");
 	}
+}
+
+function can_inline(name)
+{
+	if (lockdata[name, "pre"])
+		return 0;
+	if (lockdata[name, "post"])
+		return 0;
+	return 1;
 }
 
 function find_arg_with_type (type)
@@ -137,9 +166,12 @@ if (!cfile && !hfile && !pfile && !qfile)
 if (!srcfile)
 	usage();
 
+# Avoid a literal generated file tag here.
+generated = "@" "generated";
+
 common_head = \
     "/*\n" \
-    " * This file is produced automatically.\n" \
+    " * This file is " generated " automatically.\n" \
     " * Do not modify anything in here by hand.\n" \
     " *\n" \
     " * Created from $FreeBSD$\n" \
@@ -179,6 +211,7 @@ if (cfile) {
 	    "struct vnodeop_desc vop_default_desc = {\n" \
 	    "	\"default\",\n" \
 	    "	0,\n" \
+	    "   0,\n" \
 	    "	(vop_bypass_t *)vop_panic,\n" \
 	    "	NULL,\n" \
 	    "	VDESC_NO_OFFSET,\n" \
@@ -207,7 +240,8 @@ while ((getline < srcfile) > 0) {
 
 	if ($1 ~ /^%!/) {
 		if (NF != 4 ||
-		    ($3 != "pre" && $3 != "post")) {
+		    ($3 != "pre" && $3 != "post" &&
+		     $3 != "debugpre" && $3 != "debugpost")) {
 			die("Invalid %s construction", "%!");
 			continue;
 		}
@@ -310,13 +344,25 @@ while ((getline < srcfile) > 0) {
 		printh("\ta.a_gen.a_desc = &" name "_desc;");
 		for (i = 0; i < numargs; ++i)
 			printh("\ta.a_" args[i] " = " args[i] ";");
+		if (can_inline(name)) {
+			printh("\n#if !defined(DEBUG_VFS_LOCKS) && !defined(INVARIANTS) && !defined(KTR)");
+			printh("\tif (!SDT_PROBES_ENABLED())");
+			printh("\t\treturn (" args[0]"->v_op->"name"(&a));");
+			printh("\telse");
+			printh("\t\treturn (" uname "_APV("args[0]"->v_op, &a));");
+			printh("#else");
+		}
 		printh("\treturn (" uname "_APV("args[0]"->v_op, &a));");
+		if (can_inline(name))
+			printh("#endif");
+
 		printh("}");
 
 		printh("");
 	}
 
 	if (cfile) {
+		funcarr[name] = 1;
 		# Print out the vop_F_vp_offsets structure.  This all depends
 		# on naming conventions and nothing else.
 		printc("static int " name "_vp_offsets[] = {");
@@ -355,22 +401,19 @@ while ((getline < srcfile) > 0) {
 		printc("");
 		printc("\tVNASSERT(a->a_gen.a_desc == &" name "_desc, a->a_" args[0]",");
 		printc("\t    (\"Wrong a_desc in " name "(%p, %p)\", a->a_" args[0]", a));");
-		printc("\twhile(vop != NULL && \\");
-		printc("\t    vop->"name" == NULL && vop->vop_bypass == NULL)")
-		printc("\t\tvop = vop->vop_default;")
 		printc("\tVNASSERT(vop != NULL, a->a_" args[0]", (\"No "name"(%p, %p)\", a->a_" args[0]", a));")
-		printc("\tSDT_PROBE2(vfs, vop, " name ", entry, a->a_" args[0] ", a);\n");
+		printc("\tKTR_START" ctrstr);
+		add_debugpre(name);
+		add_pre(name);
 		for (i = 0; i < numargs; ++i)
 			add_debug_code(name, args[i], "Entry", "\t");
-		printc("\tKTR_START" ctrstr);
-		add_pre(name);
-		printc("\tVFS_PROLOGUE(a->a_" args[0]"->v_mount);")
-		printc("\tif (vop->"name" != NULL)")
+		printc("\tif (!SDT_PROBES_ENABLED()) {");
 		printc("\t\trc = vop->"name"(a);")
-		printc("\telse")
-		printc("\t\trc = vop->vop_bypass(&a->a_gen);")
-		printc("\tVFS_EPILOGUE(a->a_" args[0]"->v_mount);")
-		printc("\tSDT_PROBE3(vfs, vop, " name ", return, a->a_" args[0] ", a, rc);\n");
+		printc("\t} else {")
+		printc("\t\tSDT_PROBE2(vfs, vop, " name ", entry, a->a_" args[0] ", a);");
+		printc("\t\trc = vop->"name"(a);")
+		printc("\t\tSDT_PROBE3(vfs, vop, " name ", return, a->a_" args[0] ", a, rc);");
+		printc("\t}")
 		printc("\tif (rc == 0) {");
 		for (i = 0; i < numargs; ++i)
 			add_debug_code(name, args[i], "OK", "\t\t");
@@ -379,6 +422,7 @@ while ((getline < srcfile) > 0) {
 			add_debug_code(name, args[i], "Error", "\t\t");
 		printc("\t}");
 		add_post(name);
+		add_debugpost(name);
 		printc("\tKTR_STOP" ctrstr);
 		printc("\treturn (rc);");
 		printc("}\n");
@@ -400,6 +444,8 @@ while ((getline < srcfile) > 0) {
 			releflags = "0";
 		printc("\t" releflags vppwillrele ",");
 
+		# index in struct vop_vector
+		printc("\t__offsetof(struct vop_vector, " name "),");
 		# function to call
 		printc("\t(vop_bypass_t *)" uname "_AP,");
 		# vp offsets
@@ -416,9 +462,49 @@ while ((getline < srcfile) > 0) {
 		printc("};\n");
 	}
 }
- 
-if (pfile)
+
+if (cfile) {
+	printc("void");
+	printc("vfs_vector_op_register(struct vop_vector *orig_vop)");
+	printc("{");
+	printc("\tstruct vop_vector *vop;");
+	printc("");
+	printc("\tif (orig_vop->registered)");
+	printc("\t\tpanic(\"%s: vop_vector %p already registered\",")
+	printc("\t\t    __func__, orig_vop);");
+	printc("");
+	for (name in funcarr) {
+		printc("\tvop = orig_vop;");
+		printc("\twhile (vop != NULL && \\");
+		printc("\t    vop->"name" == NULL && vop->vop_bypass == NULL)")
+		printc("\t\tvop = vop->vop_default;")
+		printc("\tif (vop != NULL)");
+		printc("\t\torig_vop->"name" = vop->"name";");
+		printc("");
+	}
+	printc("\tvop = orig_vop;");
+	printc("\twhile (vop != NULL && vop->vop_bypass == NULL)")
+	printc("\t\tvop = vop->vop_default;")
+	printc("\tif (vop != NULL)");
+	printc("\t\torig_vop->vop_bypass = vop->vop_bypass;");
+	printc("");
+	for (name in funcarr) {
+		printc("\tif (orig_vop->"name" == NULL)");
+		printc("\t\torig_vop->"name" = (void *)orig_vop->vop_bypass;");
+	}
+	printc("");
+	printc("\torig_vop->registered = true;");
+	printc("}")
+}
+
+if (hfile) {
+	printh("void vfs_vector_op_register(struct vop_vector *orig_vop);");
+}
+
+if (pfile) {
+	printp("\tbool\tregistered;")
 	printp("};")
+}
  
 if (hfile)
 	close(hfile);

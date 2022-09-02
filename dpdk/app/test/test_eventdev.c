@@ -559,10 +559,10 @@ test_eventdev_port_setup(void)
 	if (!(info.event_dev_cap &
 	      RTE_EVENT_DEV_CAP_IMPLICIT_RELEASE_DISABLE)) {
 		pconf.enqueue_depth = info.max_event_port_enqueue_depth;
-		pconf.disable_implicit_release = 1;
+		pconf.event_port_cfg = RTE_EVENT_PORT_CFG_DISABLE_IMPL_REL;
 		ret = rte_event_port_setup(TEST_DEV_ID, 0, &pconf);
 		TEST_ASSERT(ret == -EINVAL, "Expected -EINVAL, %d", ret);
-		pconf.disable_implicit_release = 0;
+		pconf.event_port_cfg = 0;
 	}
 
 	ret = rte_event_port_setup(TEST_DEV_ID, info.max_event_ports,
@@ -1030,6 +1030,18 @@ test_eventdev_selftest_dpaa2(void)
 	return test_eventdev_selftest_impl("event_dpaa2", "");
 }
 
+static int
+test_eventdev_selftest_dlb(void)
+{
+	return test_eventdev_selftest_impl("dlb_event", "");
+}
+
+static int
+test_eventdev_selftest_dlb2(void)
+{
+	return test_eventdev_selftest_impl("dlb2_event", "");
+}
+
 REGISTER_TEST_COMMAND(eventdev_common_autotest, test_eventdev_common);
 REGISTER_TEST_COMMAND(eventdev_selftest_sw, test_eventdev_selftest_sw);
 REGISTER_TEST_COMMAND(eventdev_selftest_octeontx,
@@ -1037,3 +1049,5 @@ REGISTER_TEST_COMMAND(eventdev_selftest_octeontx,
 REGISTER_TEST_COMMAND(eventdev_selftest_octeontx2,
 		test_eventdev_selftest_octeontx2);
 REGISTER_TEST_COMMAND(eventdev_selftest_dpaa2, test_eventdev_selftest_dpaa2);
+REGISTER_TEST_COMMAND(eventdev_selftest_dlb, test_eventdev_selftest_dlb);
+REGISTER_TEST_COMMAND(eventdev_selftest_dlb2, test_eventdev_selftest_dlb2);

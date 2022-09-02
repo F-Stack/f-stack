@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 
@@ -105,7 +106,7 @@ def rwlock_autotest(child, test_name):
         index = child.expect(["Test OK",
                               "Test Failed",
                               "Hello from core ([0-9]*) !",
-                              "Global write lock taken on master "
+                              "Global write lock taken on main "
                               "core ([0-9]*)",
                               pexpect.TIMEOUT], timeout=10)
         # ok

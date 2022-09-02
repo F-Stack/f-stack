@@ -34,7 +34,7 @@
 #include <machine/specialreg.h>
 #include <machine/timerreg.h>
 
-#include "assym.s"
+#include "assym.inc"
 
 /*
  * Resume entry point.  The BIOS enters here in real mode after POST with
@@ -50,17 +50,19 @@
 	.code16
 wakeup_start:
 	/*
-	 * Set up segment registers for real mode, a small stack for
-	 * any calls we make, and clear any flags.
+	 * Set up segment registers for real mode and a small stack for
+	 * any calls we make.  Set up full 32-bit bootstrap kernel flags
+	 * since resumectx() doesn't restore flags.  PSL_KERNEL gives
+	 * bootstrap kernel flags (with interrupts disabled), not normal
+	 * kernel flags.
 	 */
 	cli				/* make sure no interrupts */
 	mov	%cs, %ax		/* copy %cs to %ds.  Remember these */
 	mov	%ax, %ds		/* are offsets rather than selectors */
 	mov	%ax, %ss
 	movw	$PAGE_SIZE, %sp
-	xorw	%ax, %ax
-	pushw	%ax
-	popfw
+	pushl	$PSL_KERNEL
+	popfl
 
 	/* To debug resume hangs, beep the speaker if the user requested. */
 	testb	$~0, resume_beep - wakeup_start
@@ -141,23 +143,31 @@ wakeup_32:
 	mov	$bootdata32 - bootgdt, %eax
 	mov	%ax, %ds
 
-	/* Get PCB and return address. */
-	movl	wakeup_pcb - wakeup_start(%ebx), %ecx
-	movl	wakeup_ret - wakeup_start(%ebx), %edx
-
-	/* Restore CR4 and CR3. */
-	movl	wakeup_cr4 - wakeup_start(%ebx), %eax
+	/* Restore EFER, CR4 and CR3. */
+	movl	wakeup_efer - wakeup_start(%ebx), %eax
+	movl	wakeup_efer - wakeup_start + 4(%ebx), %edx
+	cmpl	$0, %eax
+	jne	1f
+	cmpl	$0, %edx
+	je	2f
+1:	movl	$MSR_EFER, %ecx
+	wrmsr
+2:	movl	wakeup_cr4 - wakeup_start(%ebx), %eax
+	cmpl	$0, %eax
+	je	3f
 	mov	%eax, %cr4
-	movl	wakeup_cr3 - wakeup_start(%ebx), %eax
+3:	movl	wakeup_cr3 - wakeup_start(%ebx), %eax
 	mov	%eax, %cr3
+
+	/* Get PCB and return address. */
+	movl	wakeup_ret - wakeup_start(%ebx), %edx
+	movl	wakeup_pcb - wakeup_start(%ebx), %ecx
 
 	/* Enable paging. */
 	mov	%cr0, %eax
 	orl	$CR0_PG, %eax
 	mov	%eax, %cr0
 
-	jmp	1f
-1:
 	/* Jump to return address. */
 	jmp	*%edx
 
@@ -187,6 +197,9 @@ bootgdtdesc:
 	.long	bootgdt - wakeup_start	/* Offset plus %ds << 4 */
 
 	ALIGN_DATA
+wakeup_efer:
+	.long	0
+	.long	0
 wakeup_cr4:
 	.long	0
 wakeup_cr3:

@@ -37,8 +37,7 @@ struct rte_rib6;
 /** Type of FIB struct */
 enum rte_fib6_type {
 	RTE_FIB6_DUMMY,		/**< RIB6 tree based FIB */
-	RTE_FIB6_TRIE,		/**< TRIE based fib  */
-	RTE_FIB6_TYPE_MAX
+	RTE_FIB6_TRIE		/**< TRIE based fib  */
 };
 
 /** Modify FIB function */
@@ -55,10 +54,19 @@ enum rte_fib6_op {
 	RTE_FIB6_DEL,
 };
 
+/** Size of nexthop (1 << nh_sz) bits for TRIE based FIB */
 enum rte_fib_trie_nh_sz {
 	RTE_FIB6_TRIE_2B = 1,
 	RTE_FIB6_TRIE_4B,
 	RTE_FIB6_TRIE_8B
+};
+
+/** Type of lookup function implementation */
+enum rte_fib6_lookup_type {
+	RTE_FIB6_LOOKUP_DEFAULT,
+	/**< Selects the best implementation based on the max simd bitwidth */
+	RTE_FIB6_LOOKUP_TRIE_SCALAR, /**< Scalar lookup function implementation*/
+	RTE_FIB6_LOOKUP_TRIE_VECTOR_AVX512 /**< Vector implementation using AVX512 */
 };
 
 /** FIB configuration structure */
@@ -184,7 +192,7 @@ rte_fib6_lookup_bulk(struct rte_fib6 *fib,
  *   FIB6 object handle
  * @return
  *   Pointer on the dataplane struct on success
- *   NULL othervise
+ *   NULL otherwise
  */
 __rte_experimental
 void *
@@ -197,11 +205,27 @@ rte_fib6_get_dp(struct rte_fib6 *fib);
  *   FIB object handle
  * @return
  *   Pointer on the RIB6 on success
- *   NULL othervise
+ *   NULL otherwise
  */
 __rte_experimental
 struct rte_rib6 *
 rte_fib6_get_rib(struct rte_fib6 *fib);
+
+/**
+ * Set lookup function based on type
+ *
+ * @param fib
+ *   FIB object handle
+ * @param type
+ *   type of lookup function
+ *
+ * @return
+ *   0 on success
+ *   -EINVAL on failure
+ */
+__rte_experimental
+int
+rte_fib6_select_lookup(struct rte_fib6 *fib, enum rte_fib6_lookup_type type);
 
 #ifdef __cplusplus
 }

@@ -21,13 +21,55 @@
 #include "test_cryptodev_hash_test_vectors.h"
 
 static int
+verify_algo_support(const struct blockcipher_test_case *t,
+		const uint8_t dev_id, const uint32_t digest_len)
+{
+	int ret = 0;
+	const struct blockcipher_test_data *tdata = t->test_data;
+	struct rte_cryptodev_sym_capability_idx cap_idx;
+	const struct rte_cryptodev_symmetric_capability *capability;
+
+	if (t->op_mask & BLOCKCIPHER_TEST_OP_CIPHER) {
+		cap_idx.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+		cap_idx.algo.cipher = tdata->crypto_algo;
+		capability = rte_cryptodev_sym_capability_get(dev_id, &cap_idx);
+		if (capability == NULL)
+			return -1;
+
+		if (cap_idx.algo.cipher != RTE_CRYPTO_CIPHER_NULL)
+			ret = rte_cryptodev_sym_capability_check_cipher(capability,
+							tdata->cipher_key.len,
+							tdata->iv.len);
+		if (ret != 0)
+			return -1;
+	}
+
+	if (t->op_mask & BLOCKCIPHER_TEST_OP_AUTH) {
+		cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
+		cap_idx.algo.auth = tdata->auth_algo;
+		capability = rte_cryptodev_sym_capability_get(dev_id, &cap_idx);
+		if (capability == NULL)
+			return -1;
+
+		if (cap_idx.algo.auth != RTE_CRYPTO_AUTH_NULL)
+			ret = rte_cryptodev_sym_capability_check_auth(capability,
+							tdata->auth_key.len,
+							digest_len,
+							0);
+		if (ret != 0)
+			return -1;
+	}
+
+	return 0;
+}
+
+static int
 test_blockcipher_one_case(const struct blockcipher_test_case *t,
 	struct rte_mempool *mbuf_pool,
 	struct rte_mempool *op_mpool,
 	struct rte_mempool *sess_mpool,
 	struct rte_mempool *sess_priv_mpool,
 	uint8_t dev_id,
-	int driver_id,
 	char *test_msg)
 {
 	struct rte_mbuf *ibuf = NULL;
@@ -46,51 +88,29 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 	uint8_t cipher_key[tdata->cipher_key.len];
 	uint8_t auth_key[tdata->auth_key.len];
 	uint32_t buf_len = tdata->ciphertext.len;
-	uint32_t digest_len = 0;
+	uint32_t digest_len = tdata->digest.len;
 	char *buf_p = NULL;
 	uint8_t src_pattern = 0xa5;
 	uint8_t dst_pattern = 0xb6;
 	uint8_t tmp_src_buf[MBUF_SIZE];
 	uint8_t tmp_dst_buf[MBUF_SIZE];
 
-	int openssl_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_OPENSSL_PMD));
-	int ccp_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_CCP_PMD));
-	int scheduler_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_SCHEDULER_PMD));
-	int armv8_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_ARMV8_PMD));
-	int aesni_mb_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_AESNI_MB_PMD));
-	int qat_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD));
-	int dpaa2_sec_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_DPAA2_SEC_PMD));
-	int dpaa_sec_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_DPAA_SEC_PMD));
-	int caam_jr_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_CAAM_JR_PMD));
-	int mrvl_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_MVSAM_PMD));
-	int virtio_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_VIRTIO_PMD));
-	int octeontx_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_OCTEONTX_SYM_PMD));
-	int octeontx2_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_OCTEONTX2_PMD));
-	int null_pmd = rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_NULL_PMD));
-	int nitrox_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_NITROX_PMD));
-
 	int nb_segs = 1;
 	uint32_t nb_iterates = 0;
 
 	rte_cryptodev_info_get(dev_id, &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
 
+	if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_SESSIONLESS) {
+		if (!(feat_flags & RTE_CRYPTODEV_FF_SYM_SESSIONLESS)) {
+			printf("Device doesn't support sessionless operations "
+				"Test Skipped.\n");
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+				"SKIPPED");
+			return TEST_SKIPPED;
+		}
+	}
 	if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_SG) {
-		uint64_t feat_flags = dev_info.feature_flags;
 		uint64_t oop_flag = RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT;
 
 		if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_OOP) {
@@ -98,18 +118,51 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 				printf("Device doesn't support out-of-place "
 					"scatter-gather in input mbuf. "
 					"Test Skipped.\n");
-				return 0;
+				snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+					"SKIPPED");
+				return TEST_SKIPPED;
 			}
 		} else {
 			if (!(feat_flags & RTE_CRYPTODEV_FF_IN_PLACE_SGL)) {
 				printf("Device doesn't support in-place "
 					"scatter-gather mbufs. "
 					"Test Skipped.\n");
-				return 0;
+				snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+					"SKIPPED");
+				return TEST_SKIPPED;
 			}
 		}
 
 		nb_segs = 3;
+	}
+
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST &&
+		!(feat_flags & RTE_CRYPTODEV_FF_SYM_RAW_DP)) {
+		printf("Device doesn't support raw data-path APIs. "
+			"Test Skipped.\n");
+		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "SKIPPED");
+		return TEST_SKIPPED;
+	}
+
+	if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_OOP) {
+		uint64_t oop_flags = RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_OOP_LB_IN_SGL_OUT |
+			RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT;
+		if (!(feat_flags & oop_flags)) {
+			printf("Device doesn't support out-of-place operations."
+				"Test Skipped.\n");
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+				"SKIPPED");
+			return TEST_SKIPPED;
+		}
+		if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+			printf("Raw Data Path APIs do not support OOP, "
+				"Test Skipped.\n");
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "SKIPPED");
+			status = TEST_SKIPPED;
+			goto error_exit;
+		}
 	}
 
 	if (tdata->cipher_key.len)
@@ -119,29 +172,13 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 		memcpy(auth_key, tdata->auth_key.data,
 			tdata->auth_key.len);
 
-	if (driver_id == dpaa2_sec_pmd ||
-			driver_id == dpaa_sec_pmd ||
-			driver_id == caam_jr_pmd ||
-			driver_id == qat_pmd ||
-			driver_id == openssl_pmd ||
-			driver_id == armv8_pmd ||
-			driver_id == mrvl_pmd ||
-			driver_id == ccp_pmd ||
-			driver_id == virtio_pmd ||
-			driver_id == octeontx_pmd ||
-			driver_id == octeontx2_pmd ||
-			driver_id == null_pmd ||
-			driver_id == nitrox_pmd) { /* Fall through */
-		digest_len = tdata->digest.len;
-	} else if (driver_id == aesni_mb_pmd ||
-			driver_id == scheduler_pmd) {
-		digest_len = tdata->digest.truncated_len;
-	} else {
-		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
-			"line %u FAILED: %s",
-			__LINE__, "Unsupported PMD type");
-		status = TEST_FAILED;
-		goto error_exit;
+	/* Check if PMD is capable of performing that test */
+	if (verify_algo_support(t, dev_id, digest_len) < 0) {
+		RTE_LOG(DEBUG, USER1,
+			"Device does not support this algorithm."
+			"Test Skipped.\n");
+		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "SKIPPED");
+		return TEST_SKIPPED;
 	}
 
 	/* preparing data */
@@ -357,7 +394,11 @@ iterate:
 		cipher_xform->cipher.key.data = cipher_key;
 		cipher_xform->cipher.key.length = tdata->cipher_key.len;
 		cipher_xform->cipher.iv.offset = IV_OFFSET;
-		cipher_xform->cipher.iv.length = tdata->iv.len;
+
+		if (tdata->crypto_algo == RTE_CRYPTO_CIPHER_NULL)
+			cipher_xform->cipher.iv.length = 0;
+		else
+			cipher_xform->cipher.iv.length = tdata->iv.len;
 
 		sym_op->cipher.data.offset = tdata->cipher_offset;
 		sym_op->cipher.data.length = tdata->ciphertext.len -
@@ -405,9 +446,14 @@ iterate:
 			nb_iterates == 0) {
 		sess = rte_cryptodev_sym_session_create(sess_mpool);
 
-		rte_cryptodev_sym_session_init(dev_id, sess, init_xform,
-				sess_priv_mpool);
-		if (!sess) {
+		status = rte_cryptodev_sym_session_init(dev_id, sess,
+				init_xform, sess_priv_mpool);
+		if (status == -ENOTSUP) {
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "UNSUPPORTED");
+			status = TEST_SKIPPED;
+			goto error_exit;
+		}
+		if (!sess || status < 0) {
 			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "line %u "
 				"FAILED: %s", __LINE__,
 				"Session creation failed");
@@ -431,25 +477,36 @@ iterate:
 	}
 
 	/* Process crypto operation */
-	if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
-		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
-			"line %u FAILED: %s",
-			__LINE__, "Error sending packet for encryption");
-		status = TEST_FAILED;
-		goto error_exit;
-	}
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		uint8_t is_cipher = 0, is_auth = 0;
+		if (t->op_mask & BLOCKCIPHER_TEST_OP_CIPHER)
+			is_cipher = 1;
+		if (t->op_mask & BLOCKCIPHER_TEST_OP_AUTH)
+			is_auth = 1;
 
-	op = NULL;
+		process_sym_raw_dp_op(dev_id, 0, op, is_cipher, is_auth, 0,
+				tdata->iv.len);
+	} else {
+		if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+				"line %u FAILED: %s",
+				__LINE__, "Error sending packet for encryption");
+			status = TEST_FAILED;
+			goto error_exit;
+		}
 
-	while (rte_cryptodev_dequeue_burst(dev_id, 0, &op, 1) == 0)
-		rte_pause();
+		op = NULL;
 
-	if (!op) {
-		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
-			"line %u FAILED: %s",
-			__LINE__, "Failed to process sym crypto op");
-		status = TEST_FAILED;
-		goto error_exit;
+		while (rte_cryptodev_dequeue_burst(dev_id, 0, &op, 1) == 0)
+			rte_pause();
+
+		if (!op) {
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+				"line %u FAILED: %s",
+				__LINE__, "Failed to process sym crypto op");
+			status = TEST_FAILED;
+			goto error_exit;
+		}
 	}
 
 	debug_hexdump(stdout, "m_src(after):",
@@ -687,46 +744,13 @@ test_blockcipher_all_tests(struct rte_mempool *mbuf_pool,
 	struct rte_mempool *sess_mpool,
 	struct rte_mempool *sess_priv_mpool,
 	uint8_t dev_id,
-	int driver_id,
 	enum blockcipher_test_type test_type)
 {
 	int status, overall_status = TEST_SUCCESS;
 	uint32_t i, test_index = 0;
 	char test_msg[BLOCKCIPHER_TEST_MSG_LEN + 1];
 	uint32_t n_test_cases = 0;
-	uint32_t target_pmd_mask = 0;
 	const struct blockcipher_test_case *tcs = NULL;
-
-	int openssl_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_OPENSSL_PMD));
-	int ccp_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_CCP_PMD));
-	int dpaa2_sec_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_DPAA2_SEC_PMD));
-	int dpaa_sec_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_DPAA_SEC_PMD));
-	int caam_jr_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_CAAM_JR_PMD));
-	int scheduler_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_SCHEDULER_PMD));
-	int armv8_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_ARMV8_PMD));
-	int aesni_mb_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_AESNI_MB_PMD));
-	int qat_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD));
-	int mrvl_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_MVSAM_PMD));
-	int virtio_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_VIRTIO_PMD));
-	int octeontx_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_OCTEONTX_SYM_PMD));
-	int octeontx2_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_OCTEONTX2_PMD));
-	int null_pmd = rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_NULL_PMD));
-	int nitrox_pmd = rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_NITROX_PMD));
 
 	switch (test_type) {
 	case BLKCIPHER_AES_CHAIN_TYPE:
@@ -773,55 +797,18 @@ test_blockcipher_all_tests(struct rte_mempool *mbuf_pool,
 		break;
 	}
 
-	if (driver_id == aesni_mb_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_MB;
-	else if (driver_id == qat_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_QAT;
-	else if (driver_id == openssl_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL;
-	else if (driver_id == armv8_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_ARMV8;
-	else if (driver_id == scheduler_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER;
-	else if (driver_id == dpaa2_sec_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC;
-	else if (driver_id == ccp_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_CCP;
-	else if (driver_id == dpaa_sec_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC;
-	else if (driver_id == caam_jr_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR;
-	else if (driver_id == mrvl_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_MVSAM;
-	else if (driver_id == virtio_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_VIRTIO;
-	else if (driver_id == octeontx_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX;
-	else if (driver_id == octeontx2_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX2;
-	else if (driver_id == null_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_NULL;
-	else if (driver_id == nitrox_pmd)
-		target_pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_NITROX;
-	else
-		TEST_ASSERT(0, "Unrecognized cryptodev type");
-
 	for (i = 0; i < n_test_cases; i++) {
 		const struct blockcipher_test_case *tc = &tcs[i];
 
-		if (!(tc->pmd_mask & target_pmd_mask))
-			continue;
-
 		status = test_blockcipher_one_case(tc, mbuf_pool, op_mpool,
-			sess_mpool, sess_priv_mpool, dev_id, driver_id,
+			sess_mpool, sess_priv_mpool, dev_id,
 			test_msg);
 
 		printf("  %u) TestCase %s %s\n", test_index ++,
 			tc->test_descr, test_msg);
 
-		if (status != TEST_SUCCESS) {
-			if (overall_status == TEST_SUCCESS)
-				overall_status = status;
+		if (status == TEST_FAILED) {
+			overall_status = status;
 
 			if (tc->feature_mask & BLOCKCIPHER_TEST_FEATURE_STOPPER)
 				break;

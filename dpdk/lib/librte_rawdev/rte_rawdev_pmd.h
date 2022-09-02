@@ -138,12 +138,15 @@ rte_rawdev_pmd_is_valid_dev(uint8_t dev_id)
  *   Raw device pointer
  * @param dev_info
  *   Raw device information structure
+ * @param dev_private_size
+ *   The size of the structure pointed to by dev_info->dev_private
  *
  * @return
- *   Returns 0 on success
+ *   Returns 0 on success, negative error code on failure
  */
-typedef void (*rawdev_info_get_t)(struct rte_rawdev *dev,
-				  rte_rawdev_obj_t dev_info);
+typedef int (*rawdev_info_get_t)(struct rte_rawdev *dev,
+				  rte_rawdev_obj_t dev_info,
+				  size_t dev_private_size);
 
 /**
  * Configure a device.
@@ -152,12 +155,15 @@ typedef void (*rawdev_info_get_t)(struct rte_rawdev *dev,
  *   Raw device pointer
  * @param config
  *   Void object containing device specific configuration
+ * @param config_size
+ *   Size of the memory allocated for the configuration
  *
  * @return
  *   Returns 0 on success
  */
 typedef int (*rawdev_configure_t)(const struct rte_rawdev *dev,
-				  rte_rawdev_obj_t config);
+				  rte_rawdev_obj_t config,
+				  size_t config_size);
 
 /**
  * Start a configured device.
@@ -210,11 +216,16 @@ typedef int (*rawdev_reset_t)(struct rte_rawdev *dev);
  *   Raw device queue index
  * @param[out] queue_conf
  *   Raw device queue configuration structure
+ * @param queue_conf_size
+ *   Size of the memory allocated for the configuration
  *
+ * @return
+ *   Returns 0 on success, negative errno on failure
  */
-typedef void (*rawdev_queue_conf_get_t)(struct rte_rawdev *dev,
+typedef int (*rawdev_queue_conf_get_t)(struct rte_rawdev *dev,
 					uint16_t queue_id,
-					rte_rawdev_obj_t queue_conf);
+					rte_rawdev_obj_t queue_conf,
+					size_t queue_conf_size);
 
 /**
  * Setup an raw queue.
@@ -225,13 +236,16 @@ typedef void (*rawdev_queue_conf_get_t)(struct rte_rawdev *dev,
  *   Rawqueue index
  * @param queue_conf
  *   Rawqueue configuration structure
+ * @param queue_conf_size
+ *   Size of the memory allocated for the configuration
  *
  * @return
  *   Returns 0 on success.
  */
 typedef int (*rawdev_queue_setup_t)(struct rte_rawdev *dev,
 				    uint16_t queue_id,
-				    rte_rawdev_obj_t queue_conf);
+				    rte_rawdev_obj_t queue_conf,
+				    size_t queue_conf_size);
 
 /**
  * Release resources allocated by given raw queue.
@@ -255,7 +269,7 @@ typedef int (*rawdev_queue_release_t)(struct rte_rawdev *dev,
  * This function helps in getting queue count supported, independently. It
  * can help in cases where iterator needs to be implemented.
  *
- * @param
+ * @param dev
  *   Raw device pointer
  * @return
  *   Number of queues; 0 is assumed to be a valid response.
@@ -271,7 +285,7 @@ typedef uint16_t (*rawdev_queue_count_t)(struct rte_rawdev *dev);
  *
  * @param dev
  *   Raw device pointer
- * @param bufs
+ * @param buffers
  *   array of buffers
  * @param count
  *   number of buffers passed
@@ -295,7 +309,7 @@ typedef int (*rawdev_enqueue_bufs_t)(struct rte_rawdev *dev,
  *
  * @param dev
  *   Raw device pointer
- * @param bufs
+ * @param buffers
  *   array of buffers
  * @param count
  *   Max buffers expected to be dequeued
@@ -436,7 +450,7 @@ typedef uint64_t (*rawdev_xstats_get_by_name_t)(const struct rte_rawdev *dev,
  *
  * @param dev
  *   Raw device pointer
- * @param status
+ * @param status_info
  *   void block containing device specific status information
  * @return
  *   0 for success,
@@ -464,8 +478,8 @@ typedef int (*rawdev_firmware_version_get_t)(struct rte_rawdev *dev,
  *
  * @param dev
  *   Raw device pointer
- * @param firmware_file
- *   file pointer to firmware area
+ * @param firmware_buf
+ *   Pointer to firmware image
  * @return
  *   >0, ~0: for successful load
  *   <0: for failure

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -91,12 +93,10 @@ struct racct;
  * (a) Constant from inception
  * (b) Lockless, updated using atomics
  * (c) Locked by global uihashtbl_lock
- * (d) Locked by the ui_vmsize_mtx
  */
 struct uidinfo {
 	LIST_ENTRY(uidinfo) ui_hash;	/* (c) hash chain of uidinfos */
-	struct mtx ui_vmsize_mtx;
-	vm_ooffset_t ui_vmsize;		/* (d) swap reservation by uid */
+	u_long ui_vmsize;	/* (b) pages of swap reservation by uid */
 	long	ui_sbsize;		/* (b) socket buffer space consumed */
 	long	ui_proccnt;		/* (b) number of processes */
 	long	ui_ptscnt;		/* (b) number of pseudo-terminals */
@@ -108,9 +108,6 @@ struct uidinfo {
 	struct racct *ui_racct;		/* (a) resource accounting */
 #endif
 };
-
-#define	UIDINFO_VMSIZE_LOCK(ui)		mtx_lock(&((ui)->ui_vmsize_mtx))
-#define	UIDINFO_VMSIZE_UNLOCK(ui)	mtx_unlock(&((ui)->ui_vmsize_mtx))
 
 struct proc;
 struct rusage_ext;
@@ -126,16 +123,31 @@ int	 chgsbsize(struct uidinfo *uip, u_int *hiwat, u_int to,
 	    rlim_t maxval);
 int	 chgptscnt(struct uidinfo *uip, int diff, rlim_t maxval);
 int	 chgumtxcnt(struct uidinfo *uip, int diff, rlim_t maxval);
-int	 fuswintr(void *base);
 int	 kern_proc_setrlimit(struct thread *td, struct proc *p, u_int which,
 	    struct rlimit *limp);
 struct plimit
 	*lim_alloc(void);
 void	 lim_copy(struct plimit *dst, struct plimit *src);
 rlim_t	 lim_cur(struct thread *td, int which);
+#ifndef FSTACK
+#define lim_cur(td, which)	({					\
+	rlim_t _rlim;							\
+	struct thread *_td = (td);					\
+	int _which = (which);						\
+	if (__builtin_constant_p(which) && which != RLIMIT_DATA &&	\
+	    which != RLIMIT_STACK && which != RLIMIT_VMEM) {		\
+		_rlim = td->td_limit->pl_rlimit[which].rlim_cur;	\
+	} else {							\
+		_rlim = lim_cur(_td, _which);				\
+	}								\
+	_rlim;								\
+})
+#endif
+
 rlim_t	 lim_cur_proc(struct proc *p, int which);
 void	 lim_fork(struct proc *p1, struct proc *p2);
 void	 lim_free(struct plimit *limp);
+void	 lim_freen(struct plimit *limp, int n);
 struct plimit
 	*lim_hold(struct plimit *limp);
 rlim_t	 lim_max(struct thread *td, int which);
@@ -150,7 +162,7 @@ void	 rufetchcalc(struct proc *p, struct rusage *ru, struct timeval *up,
 	    struct timeval *sp);
 void	 rufetchtd(struct thread *td, struct rusage *ru);
 void	 ruxagg(struct proc *p, struct thread *td);
-int	 suswintr(void *base, int word);
+void	 ruxagg_locked(struct proc *p, struct thread *td);
 struct uidinfo
 	*uifind(uid_t uid);
 void	 uifree(struct uidinfo *uip);

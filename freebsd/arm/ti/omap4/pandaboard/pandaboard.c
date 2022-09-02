@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2011
  *	Ben Gray <ben.r.gray@gmail.com>.
  * All rights reserved.
@@ -42,6 +44,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/fdt.h>
 
 #include <arm/ti/omap4/omap4_reg.h>
+#include <arm/ti/omap4/pandaboard/pandaboard.h>
 
 /* Registers in the SCRM that control the AUX clocks */
 #define SCRM_ALTCLKSRC			     (0x110)
@@ -111,8 +114,8 @@ __FBSDID("$FreeBSD$");
  *	RETURNS:
  *	nothing.
  */
-static void
-usb_hub_init(void)
+void
+pandaboard_usb_hub_init(void)
 {
 	bus_space_handle_t scrm_addr, gpio1_addr, gpio2_addr, scm_addr;
 
@@ -129,8 +132,6 @@ usb_hub_init(void)
 	    OMAP44XX_SCM_PADCONF_SIZE, 0, &scm_addr) != 0)
 		panic("Couldn't map SCM Padconf registers");
 
-	
-
 	/* Need to set FREF_CLK3_OUT to 19.2 MHz and pump it out on pin GPIO_WK31.
 	 * We know the SYS_CLK is 38.4Mhz and therefore to get the needed 19.2Mhz,
 	 * just use a 2x divider and ensure the SYS_CLK is used as the source.
@@ -145,14 +146,12 @@ usb_hub_init(void)
 	 */
 	REG_WRITE16(scm_addr + CONTROL_WKUP_PAD0_FREF_CLK3_OUT, 0x0000);
 
-
 	/* Disable the power to the USB hub, drive GPIO1 low */
 	REG_WRITE32(gpio1_addr + GPIO1_OE, REG_READ32(gpio1_addr + 
 	    GPIO1_OE) & ~(1UL << 1));
 	REG_WRITE32(gpio1_addr + GPIO1_CLEARDATAOUT, (1UL << 1));
 	REG_WRITE16(scm_addr + CONTROL_CORE_PAD1_KPD_COL2, 0x0003);
-	
-	
+
 	/* Reset the USB PHY and Hub using GPIO_62 */
 	REG_WRITE32(gpio2_addr + GPIO2_OE, 
 	    REG_READ32(gpio2_addr + GPIO2_OE) & ~(1UL << 30));
@@ -161,7 +160,6 @@ usb_hub_init(void)
 	DELAY(10);
 	REG_WRITE32(gpio2_addr + GPIO2_SETDATAOUT, (1UL << 30));
 
-	
 	/* Enable power to the hub (GPIO_1) */
 	REG_WRITE32(gpio1_addr + GPIO1_SETDATAOUT, (1UL << 1));
 	bus_space_unmap(fdtbus_bs_tag, scrm_addr, OMAP44XX_SCRM_SIZE);
@@ -169,39 +167,3 @@ usb_hub_init(void)
 	bus_space_unmap(fdtbus_bs_tag, gpio2_addr, OMAP44XX_GPIO2_SIZE);
 	bus_space_unmap(fdtbus_bs_tag, scm_addr, OMAP44XX_SCM_PADCONF_SIZE);
 }
-
-/**
- *	board_init - initialises the pandaboard
- *	@dummy: ignored
- * 
- *	This function is called before any of the driver are initialised, which is
- *	annoying because it means we can't use the SCM, PRCM and GPIO modules which
- *	would really be useful.
- *
- *	So we don't have:
- *	   - any drivers
- *	   - no interrupts
- *
- *	What we do have:
- *	   - virt/phys mappings from the devmap (see omap4.c)
- *	   - 
- *
- *
- *	So we are hamstrung without the useful drivers and we have to go back to
- *	direct register manupulation. Luckly we don't have to do to much, basically
- *	just setup the usb hub/ethernet.
- *
- */
-static void
-board_init(void *dummy)
-{
-	/* Initialise the USB phy and hub */
-	usb_hub_init();
-	
-	/*
-	 * XXX Board identification e.g. read out from FPGA or similar should
-	 * go here
-	 */
-}
-
-SYSINIT(board_init, SI_SUB_CPU, SI_ORDER_THIRD, board_init, NULL);

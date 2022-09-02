@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,19 +30,31 @@
 #define _FSTACK_VM_UMA_INT_H_
 
 #include <sys/mutex.h>
+#include <sys/sx.h>
 
 #define vtoslab   vtoslab_native
-#define vsetslab  vsetslab_native
+#define vtozoneslab vtozoneslab_native
+#define vsetzoneslab  vsetzoneslab_native
 #include_next <vm/uma_int.h>
 #undef vtoslab
-#undef vsetslab
+#undef vtozoneslab
+#undef vsetzoneslab
 
 #undef UMA_MD_SMALL_ALLOC
 
 #define critical_enter() do {} while(0)
 #define critical_exit()  do {} while(0)
 
+#define sleepq_lock(w) do {} while(0)
+#define sleepq_release(w) do {} while(0)
+#define sleepq_add(a, b, c, d, e) do {} while(0)
+#define sleepq_wait(w, p) do {} while(0)
+
+#define _vm_map_unlock(sx, arg) do {} while(0)
+
 extern int uma_page_mask;
+
+extern int __read_mostly vm_ndomains;
 
 #define UMA_PAGE_HASH(va) (((va) >> PAGE_SHIFT) & uma_page_mask)
 
@@ -50,6 +62,7 @@ typedef struct uma_page {
     LIST_ENTRY(uma_page) list_entry;
     vm_offset_t up_va;
     uma_slab_t up_slab;
+    uma_zone_t up_zone;
 } *uma_page_t;
 
 LIST_HEAD(uma_page_head, uma_page);
@@ -63,13 +76,28 @@ vtoslab(vm_offset_t va)
 
     hash_list = &uma_page_slab_hash[UMA_PAGE_HASH(va)];
     LIST_FOREACH(up, hash_list, list_entry)
-            if (up->up_va == va)
-                    return (up->up_slab);
+        if (up->up_va == va)
+            return (up->up_slab);
     return (NULL);
 }
 
 static __inline void
-vsetslab(vm_offset_t va, uma_slab_t slab)
+vtozoneslab(vm_offset_t va, uma_zone_t *zone, uma_slab_t *slab)
+{       
+    struct uma_page_head *hash_list;
+    uma_page_t up;
+
+    hash_list = &uma_page_slab_hash[UMA_PAGE_HASH(va)];
+    LIST_FOREACH(up, hash_list, list_entry)
+        if (up->up_va == va)
+            break;
+
+    *slab = up->up_slab;
+    *zone = up->up_zone;
+}
+
+static __inline void
+vsetzoneslab(vm_offset_t va, uma_zone_t zone, uma_slab_t slab)
 {
     struct uma_page_head *hash_list;
     uma_page_t up;
@@ -80,12 +108,14 @@ vsetslab(vm_offset_t va, uma_slab_t slab)
 
     if (up != NULL) {
         up->up_slab = slab;
+        up->up_zone = zone;
         return;
     }
 
     up = malloc(sizeof(*up), M_DEVBUF, M_WAITOK);
     up->up_va = va;
     up->up_slab = slab;
+    up->up_zone = zone;
     LIST_INSERT_HEAD(hash_list, up, list_entry);
 }
 

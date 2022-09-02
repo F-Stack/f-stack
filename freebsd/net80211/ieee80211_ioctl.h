@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Atsushi Onoe
  * Copyright (c) 2002-2009 Sam Leffler, Errno Consulting
  * All rights reserved.
@@ -84,7 +86,11 @@ struct ieee80211_nodestats {
 	uint32_t	ns_tx_deauth_code;	/* last deauth reason */
 	uint32_t	ns_tx_disassoc;		/* disassociations */
 	uint32_t	ns_tx_disassoc_code;	/* last disassociation reason */
-	uint32_t	ns_spare[8];
+
+	/* Hardware A-MSDU decode */
+	uint32_t	ns_rx_amsdu_more;	/* RX decap A-MSDU, more coming from A-MSDU */
+	uint32_t	ns_rx_amsdu_more_end;	/* RX decap A-MSDU (or any other frame), no more coming */
+	uint32_t	ns_spare[6];
 };
 
 /*
@@ -365,7 +371,6 @@ enum {
 	IEEE80211_HWMP_ROOTMODE_RANN		= 3,	/* use RANN elemid */
 };
 
-
 /*
  * Set the active channel list by IEEE channel #: each channel
  * to be marked active is set in a bit vector.  Note this list is
@@ -556,6 +561,7 @@ struct ieee80211_devcaps_req {
 	uint32_t	dc_drivercaps;		/* general driver caps */
 	uint32_t	dc_cryptocaps;		/* hardware crypto support */
 	uint32_t	dc_htcaps;		/* HT/802.11n support */
+	uint32_t	dc_vhtcaps;		/* VHT/802.11ac capabilities */
 	struct ieee80211req_chaninfo dc_chaninfo;
 };
 #define	IEEE80211_DEVCAPS_SIZE(_nchan) \
@@ -703,6 +709,11 @@ struct ieee80211req {
 #define	IEEE80211_IOC_GREENFIELD	112	/* Greenfield (on, off) */
 #define	IEEE80211_IOC_STBC		113	/* STBC Tx/RX (on, off) */
 #define	IEEE80211_IOC_LDPC		114	/* LDPC Tx/RX (on, off) */
+#define	IEEE80211_IOC_UAPSD		115	/* UAPSD (on, off) */
+#define	IEEE80211_IOC_UAPSD_INFO	116	/* UAPSD (SP, per-AC enable) */
+
+/* VHT */
+#define	IEEE80211_IOC_VHTCONF		130	/* VHT config (off, on; widths) */
 
 #define	IEEE80211_IOC_MESH_ID		170	/* mesh identifier */
 #define	IEEE80211_IOC_MESH_AP		171	/* accepting peerings */
@@ -731,6 +742,9 @@ struct ieee80211req {
 #define	IEEE80211_IOC_QUIET_OFFSET	207	/* Quiet Offset */
 #define	IEEE80211_IOC_QUIET_DUR		208	/* Quiet Duration */
 #define	IEEE80211_IOC_QUIET_COUNT	209	/* Quiet Count */
+
+#define	IEEE80211_IOC_IC_NAME		210	/* HW device name. */
+
 /*
  * Parameters for controlling a scan requested with
  * IEEE80211_IOC_SCAN_REQ.

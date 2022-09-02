@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -41,6 +43,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet6.h"
 
 #include <sys/param.h>
+#include <sys/systm.h>
 #include <sys/dirent.h>
 #include <sys/jail.h>
 #include <sys/kernel.h>
@@ -49,20 +52,24 @@ __FBSDID("$FreeBSD$");
 #include <sys/mbuf.h>
 #include <sys/mount.h>
 #include <sys/mutex.h>
-#include <sys/rwlock.h>
+#include <sys/rmlock.h>
 #include <sys/refcount.h>
 #include <sys/signalvar.h>
 #include <sys/socket.h>
-#include <sys/systm.h>
 #include <sys/vnode.h>
 
 #include <netinet/in.h>
 #include <net/radix.h>
 
+#include <rpc/types.h>
+#include <rpc/auth.h>
+
 static MALLOC_DEFINE(M_NETADDR, "export_host", "Export host address structure");
 
+#if defined(INET) || defined(INET6)
 static struct radix_node_head *vfs_create_addrlist_af(
 		    struct radix_node_head **prnh, int off);
+#endif
 static void	vfs_free_addrlist(struct netexport *nep);
 static int	vfs_free_netcred(struct radix_node *rn, void *w);
 static void	vfs_free_addrlist_af(struct radix_node_head **prnh);
@@ -75,7 +82,7 @@ static struct netcred *vfs_export_lookup(struct mount *, struct sockaddr *);
  */
 struct netcred {
 	struct	radix_node netc_rnodes[2];
-	int	netc_exflags;
+	uint64_t netc_exflags;
 	struct	ucred *netc_anon;
 	int	netc_numsecflavors;
 	int	netc_secflavors[MAXSECFLAVORS];
@@ -98,9 +105,9 @@ static int
 vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
     struct export_args *argp)
 {
-	register struct netcred *np;
-	register struct radix_node_head *rnh;
-	register int i;
+	struct netcred *np;
+	struct radix_node_head *rnh;
+	int i;
 	struct radix_node *rn;
 	struct sockaddr *saddr, *smask = NULL;
 #if defined(INET6) || defined(INET)
@@ -108,19 +115,18 @@ vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
 #endif
 	int error;
 
+	KASSERT(argp->ex_numsecflavors > 0,
+	    ("%s: numsecflavors <= 0", __func__));
+	KASSERT(argp->ex_numsecflavors < MAXSECFLAVORS,
+	    ("%s: numsecflavors >= MAXSECFLAVORS", __func__));
+
 	/*
-	 * XXX: This routine converts from a `struct xucred'
-	 * (argp->ex_anon) to a `struct ucred' (np->netc_anon).  This
+	 * XXX: This routine converts from a uid plus gid list
+	 * to a `struct ucred' (np->netc_anon).  This
 	 * operation is questionable; for example, what should be done
 	 * with fields like cr_uidinfo and cr_prison?  Currently, this
 	 * routine does not touch them (leaves them as NULL).
 	 */
-	if (argp->ex_anon.cr_version != XUCRED_VERSION) {
-		vfs_mount_error(mp, "ex_anon.cr_version: %d != %d",
-		    argp->ex_anon.cr_version, XUCRED_VERSION);
-		return (EINVAL);
-	}
-
 	if (argp->ex_addrlen == 0) {
 		if (mp->mnt_flag & MNT_DEFEXPORTED) {
 			vfs_mount_error(mp,
@@ -130,9 +136,9 @@ vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
 		np = &nep->ne_defexported;
 		np->netc_exflags = argp->ex_flags;
 		np->netc_anon = crget();
-		np->netc_anon->cr_uid = argp->ex_anon.cr_uid;
-		crsetgroups(np->netc_anon, argp->ex_anon.cr_ngroups,
-		    argp->ex_anon.cr_groups);
+		np->netc_anon->cr_uid = argp->ex_uid;
+		crsetgroups(np->netc_anon, argp->ex_ngroups,
+		    argp->ex_groups);
 		np->netc_anon->cr_prison = &prison0;
 		prison_hold(np->netc_anon->cr_prison);
 		np->netc_numsecflavors = argp->ex_numsecflavors;
@@ -209,9 +215,9 @@ vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
 	}
 	np->netc_exflags = argp->ex_flags;
 	np->netc_anon = crget();
-	np->netc_anon->cr_uid = argp->ex_anon.cr_uid;
-	crsetgroups(np->netc_anon, argp->ex_anon.cr_ngroups,
-	    argp->ex_anon.cr_groups);
+	np->netc_anon->cr_uid = argp->ex_uid;
+	crsetgroups(np->netc_anon, argp->ex_ngroups,
+	    argp->ex_groups);
 	np->netc_anon->cr_prison = &prison0;
 	prison_hold(np->netc_anon->cr_prison);
 	np->netc_numsecflavors = argp->ex_numsecflavors;
@@ -239,6 +245,7 @@ vfs_free_netcred(struct radix_node *rn, void *w)
 	return (0);
 }
 
+#if defined(INET) || defined(INET6)
 static struct radix_node_head *
 vfs_create_addrlist_af(struct radix_node_head **prnh, int off)
 {
@@ -248,6 +255,7 @@ vfs_create_addrlist_af(struct radix_node_head **prnh, int off)
 	RADIX_NODE_HEAD_LOCK_INIT(*prnh);
 	return (*prnh);
 }
+#endif
 
 static void
 vfs_free_addrlist_af(struct radix_node_head **prnh)
@@ -294,8 +302,12 @@ vfs_export(struct mount *mp, struct export_args *argp)
 	struct netexport *nep;
 	int error;
 
-	if (argp->ex_numsecflavors < 0
-	    || argp->ex_numsecflavors >= MAXSECFLAVORS)
+	if ((argp->ex_flags & (MNT_DELEXPORT | MNT_EXPORTED)) == 0)
+		return (EINVAL);
+
+	if ((argp->ex_flags & MNT_EXPORTED) != 0 &&
+	    (argp->ex_numsecflavors < 0
+	    || argp->ex_numsecflavors >= MAXSECFLAVORS))
 		return (EINVAL);
 
 	error = 0;
@@ -331,6 +343,10 @@ vfs_export(struct mount *mp, struct export_args *argp)
 			MNT_ILOCK(mp);
 			mp->mnt_flag |= MNT_EXPUBLIC;
 			MNT_IUNLOCK(mp);
+		}
+		if (argp->ex_numsecflavors == 0) {
+			argp->ex_numsecflavors = 1;
+			argp->ex_secflavors[0] = AUTH_SYS;
 		}
 		if ((error = vfs_hang_addrlist(mp, nep, argp)))
 			goto out;
@@ -406,7 +422,7 @@ vfs_setpublicfs(struct mount *mp, struct netexport *nep,
 	 * If an indexfile was specified, pull it in.
 	 */
 	if (argp->ex_indexfile != NULL) {
-		if (nfs_pub.np_index != NULL)
+		if (nfs_pub.np_index == NULL)
 			nfs_pub.np_index = malloc(MAXNAMLEN + 1, M_TEMP,
 			    M_WAITOK);
 		error = copyinstr(argp->ex_indexfile, nfs_pub.np_index,
@@ -443,45 +459,47 @@ vfs_setpublicfs(struct mount *mp, struct netexport *nep,
 static struct netcred *
 vfs_export_lookup(struct mount *mp, struct sockaddr *nam)
 {
+	RADIX_NODE_HEAD_RLOCK_TRACKER;
 	struct netexport *nep;
-	register struct netcred *np;
-	register struct radix_node_head *rnh;
+	struct netcred *np = NULL;
+	struct radix_node_head *rnh;
 	struct sockaddr *saddr;
 
 	nep = mp->mnt_export;
 	if (nep == NULL)
 		return (NULL);
-	np = NULL;
-	if (mp->mnt_flag & MNT_EXPORTED) {
-		/*
-		 * Lookup in the export list first.
-		 */
-		if (nam != NULL) {
-			saddr = nam;
-			rnh = NULL;
-			switch (saddr->sa_family) {
-			case AF_INET:
-				rnh = nep->ne4;
-				break;
-			case AF_INET6:
-				rnh = nep->ne6;
-				break;
-			}
-			if (rnh != NULL) {
-				RADIX_NODE_HEAD_RLOCK(rnh);
-				np = (struct netcred *)
-				    (*rnh->rnh_matchaddr)(saddr, &rnh->rh);
-				RADIX_NODE_HEAD_RUNLOCK(rnh);
-				if (np && np->netc_rnodes->rn_flags & RNF_ROOT)
-					np = NULL;
-			}
+	if ((mp->mnt_flag & MNT_EXPORTED) == 0)
+		return (NULL);
+
+	/*
+	 * Lookup in the export list
+	 */
+	if (nam != NULL) {
+		saddr = nam;
+		rnh = NULL;
+		switch (saddr->sa_family) {
+		case AF_INET:
+			rnh = nep->ne4;
+			break;
+		case AF_INET6:
+			rnh = nep->ne6;
+			break;
 		}
-		/*
-		 * If no address match, use the default if it exists.
-		 */
-		if (np == NULL && mp->mnt_flag & MNT_DEFEXPORTED)
-			np = &nep->ne_defexported;
+		if (rnh != NULL) {
+			RADIX_NODE_HEAD_RLOCK(rnh);
+			np = (struct netcred *) (*rnh->rnh_matchaddr)(saddr, &rnh->rh);
+			RADIX_NODE_HEAD_RUNLOCK(rnh);
+			if (np != NULL && (np->netc_rnodes->rn_flags & RNF_ROOT) != 0)
+				return (NULL);
+		}
 	}
+
+	/*
+	 * If no address match, use the default if it exists.
+	 */
+	if (np == NULL && (mp->mnt_flag & MNT_DEFEXPORTED) != 0)
+		return (&nep->ne_defexported);
+
 	return (np);
 }
 
@@ -494,9 +512,9 @@ vfs_export_lookup(struct mount *mp, struct sockaddr *nam)
  * Verify that a host should have access to a filesystem.
  */
 
-int 
-vfs_stdcheckexp(struct mount *mp, struct sockaddr *nam, int *extflagsp,
-    struct ucred **credanonp, int *numsecflavors, int **secflavors)
+int
+vfs_stdcheckexp(struct mount *mp, struct sockaddr *nam, uint64_t *extflagsp,
+    struct ucred **credanonp, int *numsecflavors, int *secflavors)
 {
 	struct netcred *np;
 
@@ -510,11 +528,16 @@ vfs_stdcheckexp(struct mount *mp, struct sockaddr *nam, int *extflagsp,
 	*extflagsp = np->netc_exflags;
 	if ((*credanonp = np->netc_anon) != NULL)
 		crhold(*credanonp);
-	if (numsecflavors)
+	if (numsecflavors) {
 		*numsecflavors = np->netc_numsecflavors;
-	if (secflavors)
-		*secflavors = np->netc_secflavors;
+		KASSERT(*numsecflavors > 0,
+		    ("%s: numsecflavors <= 0", __func__));
+		KASSERT(*numsecflavors < MAXSECFLAVORS,
+		    ("%s: numsecflavors >= MAXSECFLAVORS", __func__));
+	}
+	if (secflavors && np->netc_numsecflavors > 0)
+		memcpy(secflavors, np->netc_secflavors, np->netc_numsecflavors *
+		    sizeof(int));
 	lockmgr(&mp->mnt_explock, LK_RELEASE, NULL);
 	return (0);
 }
-

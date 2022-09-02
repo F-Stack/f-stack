@@ -20,13 +20,6 @@ should be downloaded from https://core.dpdk.org/download/
 Configuration information
 -------------------------
 
-- **DPDK Configuration Parameters**
-
-  The following configuration options are available for the ENIC PMD:
-
-  - **CONFIG_RTE_LIBRTE_ENIC_PMD** (default y): Enables or disables inclusion
-    of the ENIC PMD driver in the DPDK compilation.
-
 - **vNIC Configuration Parameters**
 
   - **Number of Queues**
@@ -187,7 +180,7 @@ or ``vfio`` in non-IOMMU mode.
 
 In the VM, the kernel enic driver may be automatically bound to the VF during
 boot. Unbinding it currently hangs due to a known issue with the driver. To
-work around the issue, blacklist the enic module as follows.
+work around the issue, block the enic module as follows.
 Please see :ref:`Limitations <enic_limitations>` for limitations in
 the use of SR-IOV.
 
@@ -301,35 +294,31 @@ inner and outer packets can be IPv4 or IPv6.
 
   RSS hash calculation, therefore queue selection, is done on inner packets.
 
-In order to enable overlay offload, the 'Enable VXLAN' box should be checked
+In order to enable overlay offload, enable VXLAN and/or Geneve on vNIC
 via CIMC or UCSM followed by a reboot of the server. When PMD successfully
-enables overlay offload, it prints the following message on the console.
+enables overlay offload, it prints one of the following messages on the console.
 
 .. code-block:: console
 
-    Overlay offload is enabled
+    Overlay offload is enabled (VxLAN)
+    Overlay offload is enabled (Geneve)
+    Overlay offload is enabled (VxLAN, Geneve)
 
 By default, PMD enables overlay offload if hardware supports it. To disable
 it, set ``devargs`` parameter ``disable-overlay=1``. For example::
 
-    -w 12:00.0,disable-overlay=1
+    -a 12:00.0,disable-overlay=1
 
-By default, the NIC uses 4789 as the VXLAN port. The user may change
-it through ``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as
-the current NIC has a single VXLAN port number, the user cannot
-configure multiple port numbers.
+By default, the NIC uses 4789 and 6081 as the VXLAN and Geneve ports,
+respectively. The user may change them through
+``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as the current
+NIC has a single VXLAN port number and a single Geneve port number,
+the user cannot configure multiple port numbers for each tunnel type.
 
-Geneve headers with non-zero options are not supported by default. To
-use Geneve with options, update the VIC firmware to the latest version
-and then set ``devargs`` parameter ``geneve-opt=1``. When Geneve with
-options is enabled, flow API cannot be used as the features are
-currently mutually exclusive. When this feature is successfully
-enabled, PMD prints the following message.
-
-.. code-block:: console
-
-    Geneve with options is enabled
-
+Geneve offload support has evolved over VIC models. On older models,
+Geneve offload and advanced filters are mutually exclusive.  This is
+enforced by UCSM and CIMC, which only allow one of the two features
+to be selected at one time. Newer VIC models do not have this restriction.
 
 Ingress VLAN Rewrite
 --------------------
@@ -378,7 +367,7 @@ vectorized handler, take the following steps.
   PMD consider the vectorized handler when selecting the receive handler.
   For example::
 
-    -w 12:00.0,enable-avx2-rx=1
+    -a 12:00.0,enable-avx2-rx=1
 
   As the current implementation is intended for field trials, by default, the
   vectorized handler is not considered (``enable-avx2-rx=0``).
@@ -427,7 +416,7 @@ DPDK as untagged packets. In this case mbuf->vlan_tci and the PKT_RX_VLAN and
 PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
 ``devargs`` parameter ``ig-vlan-rewrite=untag``. For example::
 
-    -w 12:00.0,ig-vlan-rewrite=untag
+    -a 12:00.0,ig-vlan-rewrite=untag
 
 - **SR-IOV**
 
@@ -437,7 +426,7 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
   - VF devices are not usable directly from the host. They can  only be used
     as assigned devices on VM instances.
   - Currently, unbind of the ENIC kernel mode driver 'enic.ko' on the VM
-    instance may hang. As a workaround, enic.ko should be blacklisted or removed
+    instance may hang. As a workaround, enic.ko should be blocked or removed
     from the boot process.
   - pci_generic cannot be used as the uio module in the VM. igb_uio or
     vfio in non-IOMMU mode can be used.
@@ -459,6 +448,10 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
     packets and then receive them normally. These require 1400 series VIC adapters
     and latest firmware.
   - RAW items are limited to matching UDP tunnel headers like VXLAN.
+  - For 1400 VICs, all flows using the RSS action on a port use same hash
+    configuration. The RETA is ignored. The queues used in the RSS group must be
+    sequential. There is a performance hit if the number of queues is not a power of 2.
+    Only level 0 (outer header) RSS is allowed.
 
 - **Statistics**
 
@@ -578,11 +571,6 @@ The following command could be used to do this.
 The value depends on the memory configuration of the application, DPDK and
 PMD.  Typically, the limit has to be raised to higher than 2GB.
 e.g., 2621440
-
-The compilation of any unused drivers can be disabled using the
-configuration file in config/ directory (e.g., config/common_linux).
-This would help in bringing down the time taken for building the
-libraries and the initialization time of the application.
 
 Additional Reference
 --------------------

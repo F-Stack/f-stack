@@ -5,7 +5,7 @@ AMD CCP Poll Mode Driver
 ========================
 
 This code provides the initial implementation of the ccp poll mode driver.
-The CCP poll mode driver library (librte_pmd_ccp) implements support for
+The CCP poll mode driver library (**librte_crypto_ccp**) implements support for
 AMD’s cryptographic co-processor (CCP). The CCP PMD is a virtual crypto
 poll mode driver which schedules crypto operations to one or more available
 CCP hardware engines on the platform. The CCP PMD provides poll mode crypto
@@ -56,10 +56,8 @@ AEAD algorithms:
 Installation
 ------------
 
-To compile ccp PMD, it has to be enabled in the config/common_base file and openssl
-packages have to be installed in the build environment.
-
-* ``CONFIG_RTE_LIBRTE_PMD_CCP=y``
+To compile ccp PMD, openssl packages have to be installed in the build
+environment.
 
 For Ubuntu 16.04 LTS use below to install openssl in the build system:
 
@@ -75,9 +73,8 @@ Initialization
 Bind the CCP devices to DPDK UIO driver module before running the CCP PMD stack.
 e.g. for the 0x1456 device::
 
-	cd to the top-level DPDK directory
 	modprobe uio
-	insmod ./build/kmod/igb_uio.ko
+	insmod igb_uio.ko
 	echo "1022 1456" > /sys/bus/pci/drivers/igb_uio/new_id
 
 Another way to bind the CCP devices to DPDK UIO driver is by using the ``dpdk-devbind.py`` script.
@@ -85,8 +82,6 @@ The following command assumes ``BFD`` as ``0000:09:00.2``::
 
 	cd to the top-level DPDK directory
 	./usertools/dpdk-devbind.py -b igb_uio 0000:09:00.2
-
-In order to enable the ccp crypto PMD, user must set CONFIG_RTE_LIBRTE_PMD_CCP=y in config/common_base.
 
 To use the PMD in an application, user must:
 
@@ -109,7 +104,7 @@ To validate ccp PMD, l2fwd-crypto example can be used with following command:
 
 .. code-block:: console
 
-        sudo ./build/l2fwd-crypto -l 1 -n 4 --vdev "crypto_ccp" -- -p 0x1
+        sudo ./<build_dir>/examples/dpdk-l2fwd-crypto -l 1 -n 4 --vdev "crypto_ccp" -- -p 0x1
         --chain CIPHER_HASH --cipher_op ENCRYPT --cipher_algo aes-cbc
         --cipher_key 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f
         --cipher_iv 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:ff
@@ -124,7 +119,7 @@ following:
 
 .. code-block:: console
 
-        sudo ./build/l2fwd-crypto -l 1 -n 4 --vdev "crypto_ccp,ccp_auth_opt=1" -- -p 0x1
+        sudo ./<build_dir>/examples/dpdk-l2fwd-crypto -l 1 -n 4 --vdev "crypto_ccp,ccp_auth_opt=1" -- -p 0x1
         --chain CIPHER_HASH --cipher_op ENCRYPT --cipher_algo aes-cbc
         --cipher_key 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f
         --cipher_iv 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:ff

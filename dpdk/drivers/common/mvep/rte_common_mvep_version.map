@@ -1,8 +1,0 @@
-DPDK_20.0 {
-	global:
-
-	rte_mvep_deinit;
-	rte_mvep_init;
-
-	local: *;
-};

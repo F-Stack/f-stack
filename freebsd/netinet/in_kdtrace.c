@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Mark Johnston <markj@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
@@ -36,6 +38,7 @@ __FBSDID("$FreeBSD$");
 SDT_PROVIDER_DEFINE(ip);
 SDT_PROVIDER_DEFINE(tcp);
 SDT_PROVIDER_DEFINE(udp);
+SDT_PROVIDER_DEFINE(udplite);
 
 SDT_PROBE_DEFINE6_XLATE(ip, , , receive,
     "void *", "pktinfo_t *",
@@ -56,28 +59,28 @@ SDT_PROBE_DEFINE6_XLATE(ip, , , send,
 SDT_PROBE_DEFINE5_XLATE(tcp, , , accept__established,
     "void *", "pktinfo_t *",
     "struct tcpcb *", "csinfo_t *",
-    "uint8_t *", "ipinfo_t *",
+    "struct mbuf *", "ipinfo_t *",
     "struct tcpcb *", "tcpsinfo_t *" ,
     "struct tcphdr *", "tcpinfoh_t *");
 
 SDT_PROBE_DEFINE5_XLATE(tcp, , , accept__refused,
     "void *", "pktinfo_t *",
     "struct tcpcb *", "csinfo_t *",
-    "uint8_t *", "ipinfo_t *",
+    "struct mbuf *", "ipinfo_t *",
     "struct tcpcb *", "tcpsinfo_t *" ,
     "struct tcphdr *", "tcpinfo_t *");
 
 SDT_PROBE_DEFINE5_XLATE(tcp, , , connect__established,
     "void *", "pktinfo_t *",
     "struct tcpcb *", "csinfo_t *",
-    "uint8_t *", "ipinfo_t *",
+    "struct mbuf *", "ipinfo_t *",
     "struct tcpcb *", "tcpsinfo_t *" ,
     "struct tcphdr *", "tcpinfoh_t *");
 
 SDT_PROBE_DEFINE5_XLATE(tcp, , , connect__refused,
     "void *", "pktinfo_t *",
     "struct tcpcb *", "csinfo_t *",
-    "uint8_t *", "ipinfo_t *",
+    "struct mbuf *", "ipinfo_t *",
     "struct tcpcb *", "tcpsinfo_t *" ,
     "struct tcphdr *", "tcpinfoh_t *");
 
@@ -91,7 +94,7 @@ SDT_PROBE_DEFINE5_XLATE(tcp, , , connect__request,
 SDT_PROBE_DEFINE5_XLATE(tcp, , , receive,
     "void *", "pktinfo_t *",
     "struct tcpcb *", "csinfo_t *",
-    "uint8_t *", "ipinfo_t *",
+    "struct mbuf *", "ipinfo_t *",
     "struct tcpcb *", "tcpsinfo_t *" ,
     "struct tcphdr *", "tcpinfoh_t *");
 
@@ -107,13 +110,13 @@ SDT_PROBE_DEFINE1_XLATE(tcp, , , siftr,
 
 SDT_PROBE_DEFINE3_XLATE(tcp, , , debug__input,
     "struct tcpcb *", "tcpsinfo_t *" ,
-    "struct tcphdr *", "tcpinfo_t *",
+    "struct tcphdr *", "tcpinfoh_t *",
     "uint8_t *", "ipinfo_t *");
 
 SDT_PROBE_DEFINE3_XLATE(tcp, , , debug__output,
     "struct tcpcb *", "tcpsinfo_t *" ,
     "struct tcphdr *", "tcpinfo_t *",
-    "uint8_t *", "ipinfo_t *");
+    "struct mbuf *", "ipinfo_t *");
 
 SDT_PROBE_DEFINE2_XLATE(tcp, , , debug__user,
     "struct tcpcb *", "tcpsinfo_t *" ,
@@ -121,8 +124,8 @@ SDT_PROBE_DEFINE2_XLATE(tcp, , , debug__user,
 
 SDT_PROBE_DEFINE3_XLATE(tcp, , , debug__drop,
     "struct tcpcb *", "tcpsinfo_t *" ,
-    "struct tcphdr *", "tcpinfo_t *",
-    "uint8_t *", "ipinfo_t *");
+    "struct tcphdr *", "tcpinfoh_t *",
+    "struct mbuf *", "ipinfo_t *");
 
 SDT_PROBE_DEFINE6_XLATE(tcp, , , state__change,
     "void *", "void *",
@@ -153,3 +156,17 @@ SDT_PROBE_DEFINE5_XLATE(udp, , , send,
     "uint8_t *", "ipinfo_t *",
     "struct inpcb *", "udpsinfo_t *",
     "struct udphdr *", "udpinfo_t *");
+
+SDT_PROBE_DEFINE5_XLATE(udplite, , , receive,
+    "void *", "pktinfo_t *",
+    "struct inpcb *", "csinfo_t *",
+    "uint8_t *", "ipinfo_t *",
+    "struct inpcb *", "udplitesinfo_t *",
+    "struct udphdr *", "udpliteinfo_t *");
+
+SDT_PROBE_DEFINE5_XLATE(udplite, , , send,
+    "void *", "pktinfo_t *",
+    "struct inpcb *", "csinfo_t *",
+    "uint8_t *", "ipinfo_t *",
+    "struct inpcb *", "udplitesinfo_t *",
+    "struct udphdr *", "udpliteinfo_t *");

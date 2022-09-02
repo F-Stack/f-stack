@@ -61,7 +61,7 @@ static uint32_t num_queues = 8;
 static uint32_t num_pools = 8;
 static uint8_t rss_enable;
 
-/* empty vmdq configuration structure. Filled in programatically */
+/* empty vmdq configuration structure. Filled in programmatically */
 static const struct rte_eth_conf vmdq_conf_default = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_VMDQ_ONLY,
@@ -370,10 +370,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -485,7 +482,7 @@ sighup_handler(int signum)
  * and writing to OUTPUT_PORT
  */
 static int
-lcore_main(__attribute__((__unused__)) void *dummy)
+lcore_main(__rte_unused void *dummy)
 {
 	const uint16_t lcore_id = (uint16_t)rte_lcore_id();
 	const uint16_t num_cores = (uint16_t)rte_lcore_count();
@@ -533,7 +530,7 @@ lcore_main(__attribute__((__unused__)) void *dummy)
 
 	for (;;) {
 		struct rte_mbuf *buf[MAX_PKT_BURST];
-		const uint16_t buf_size = sizeof(buf) / sizeof(buf[0]);
+		const uint16_t buf_size = RTE_DIM(buf);
 
 		for (p = 0; p < num_ports; p++) {
 			const uint8_t sport = ports[p];
@@ -656,8 +653,8 @@ main(int argc, char *argv[])
 	}
 
 	/* call lcore_main() on every lcore */
-	rte_eal_mp_remote_launch(lcore_main, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	rte_eal_mp_remote_launch(lcore_main, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

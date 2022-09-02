@@ -18,9 +18,6 @@ error_cflags = ['-Wno-sign-compare', '-Wno-unused-value',
 		'-Wno-unused-parameter',
 ]
 c_args = cflags
-if allow_experimental_apis
-	c_args += '-DALLOW_EXPERIMENTAL_API'
-endif
 foreach flag: error_cflags
 	if cc.has_argument(flag)
 		c_args += flag
@@ -30,4 +27,4 @@ endforeach
 base_lib = static_library('i40e_base', sources,
 	dependencies: static_rte_eal,
 	c_args: c_args)
-base_objs = base_lib.extract_all_objects(recursive: true)
+base_objs = base_lib.extract_all_objects()

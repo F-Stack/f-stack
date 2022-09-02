@@ -77,13 +77,13 @@ void	NgSetErrLog(void (*)(const char *fmt, ...),
 
 int ng_socket(int domain, int type, int protocol);
 int ng_connect(int sockfd, const struct sockaddr *addr,
-        socklen_t addrlen);
+	    socklen_t addrlen);
 int ng_bind(int sockfd, const struct sockaddr *addr,
-        socklen_t addrlen);
+	    socklen_t addrlen);
 ssize_t ng_sendto(int sockfd, const void *buf, size_t len, int flags,
-        const struct sockaddr *dest_addr, socklen_t addrlen);
+	    const struct sockaddr *dest_addr, socklen_t addrlen);
 ssize_t ng_recvfrom(int sockfd, void *buf, size_t len, int flags,
-        struct sockaddr *src_addr, socklen_t *addrlen);
+	    struct sockaddr *src_addr, socklen_t *addrlen);
 int ng_close(int fd);
 #endif
 

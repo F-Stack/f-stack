@@ -11,7 +11,7 @@ arm_force_default_march = (machine == 'default')
 flags_common_default = [
 	# Accelarate rte_memcpy. Be sure to run unit test (memcpy_perf_autotest)
 	# to determine the best threshold in code. Refer to notes in source file
-	# (lib/librte_eal/common/include/arch/arm/rte_memcpy_64.h) for more info.
+	# (lib/librte_eal/arm/include/rte_memcpy_64.h) for more info.
 	['RTE_ARCH_ARM64_MEMCPY', false],
 	#	['RTE_ARM64_MEMCPY_ALIGNED_THRESHOLD', 2048],
 	#	['RTE_ARM64_MEMCPY_UNALIGNED_THRESHOLD', 512],
@@ -21,11 +21,11 @@ flags_common_default = [
 	#	['RTE_ARM64_MEMCPY_ALIGN_MASK', 0xF],
 	#	['RTE_ARM64_MEMCPY_STRICT_ALIGN', false],
 
-	['RTE_LIBRTE_FM10K_PMD', false],
-	['RTE_LIBRTE_SFC_EFX_PMD', false],
-	['RTE_LIBRTE_AVP_PMD', false],
+	['RTE_NET_FM10K', false],
+	['RTE_NET_AVP', false],
 
 	['RTE_SCHED_VECTOR', false],
+	['RTE_ARM_USE_WFE', false],
 ]
 
 flags_generic = [
@@ -62,12 +62,6 @@ flags_armada = [
 	['RTE_MAX_LCORE', 16]]
 
 flags_default_extra = []
-flags_n1sdp_extra = [
-	['RTE_MACHINE', '"n1sdp"'],
-	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 4],
-	['RTE_EAL_NUMA_AWARE_HUGEPAGES', false],
-	['RTE_LIBRTE_VHOST_NUMA', false]]
 flags_thunderx_extra = [
 	['RTE_MACHINE', '"thunderx"'],
 	['RTE_USE_C11_MEM_MODEL', false]]
@@ -81,13 +75,23 @@ flags_thunderx2_extra = [
 flags_octeontx2_extra = [
 	['RTE_MACHINE', '"octeontx2"'],
 	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 24],
+	['RTE_MAX_LCORE', 36],
 	['RTE_ARM_FEATURE_ATOMICS', true],
 	['RTE_EAL_IGB_UIO', false],
 	['RTE_USE_C11_MEM_MODEL', true]]
+flags_n1generic_extra = [
+	['RTE_MACHINE', '"neoverse-n1"'],
+	['RTE_MAX_LCORE', 64],
+	['RTE_CACHE_LINE_SIZE', 64],
+	['RTE_ARM_FEATURE_ATOMICS', true],
+	['RTE_USE_C11_MEM_MODEL', true],
+	['RTE_MAX_MEM_MB', 1048576],
+	['RTE_MAX_NUMA_NODES', 1],
+	['RTE_EAL_NUMA_AWARE_HUGEPAGES', false],
+	['RTE_LIBRTE_VHOST_NUMA', false]]
 
 machine_args_generic = [
-	['default', ['-march=armv8-a+crc']],
+	['default', ['-march=armv8-a+crc', '-moutline-atomics']],
 	['native', ['-march=native']],
 	['0xd03', ['-mcpu=cortex-a53']],
 	['0xd04', ['-mcpu=cortex-a35']],
@@ -96,7 +100,7 @@ machine_args_generic = [
 	['0xd09', ['-mcpu=cortex-a73']],
 	['0xd0a', ['-mcpu=cortex-a75']],
 	['0xd0b', ['-mcpu=cortex-a76']],
-	['0xd0c', ['-march=armv8.2-a+crc+crypto', '-mcpu=neoverse-n1'], flags_n1sdp_extra]]
+	['0xd0c', ['-march=armv8.2-a+crypto', '-mcpu=neoverse-n1'], flags_n1generic_extra]]
 
 machine_args_cavium = [
 	['default', ['-march=armv8-a+crc+crypto','-mcpu=thunderx']],
@@ -127,18 +131,20 @@ impl_0x56 = ['Marvell ARMADA', flags_armada, machine_args_generic]
 impl_0x69 = ['Intel', flags_generic, machine_args_generic]
 impl_dpaa = ['NXP DPAA', flags_dpaa, machine_args_generic]
 
+dpdk_conf.set('RTE_ARCH_ARM', 1)
 dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
 
-if not dpdk_conf.get('RTE_ARCH_64')
+if dpdk_conf.get('RTE_ARCH_32')
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 64)
-	dpdk_conf.set('RTE_ARCH_ARM', 1)
 	dpdk_conf.set('RTE_ARCH_ARMv7', 1)
+	dpdk_conf.set('RTE_ARCH', 'armv7')
 	# the minimum architecture supported, armv7-a, needs the following,
 	# mk/machine/armv7a/rte.vars.mk sets it too
 	machine_args += '-mfpu=neon'
 else
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 128)
 	dpdk_conf.set('RTE_ARCH_ARM64', 1)
+	dpdk_conf.set('RTE_ARCH', 'armv8')
 
 	machine = []
 	cmd_generic = ['generic', '', '', 'default', '']
@@ -207,20 +213,14 @@ message(machine_args)
 
 if (cc.get_define('__ARM_NEON', args: machine_args) != '' or
     cc.get_define('__aarch64__', args: machine_args) != '')
-	dpdk_conf.set('RTE_MACHINE_CPUFLAG_NEON', 1)
 	compile_time_cpuflags += ['RTE_CPUFLAG_NEON']
 endif
 
 if cc.get_define('__ARM_FEATURE_CRC32', args: machine_args) != ''
-	dpdk_conf.set('RTE_MACHINE_CPUFLAG_CRC32', 1)
 	compile_time_cpuflags += ['RTE_CPUFLAG_CRC32']
 endif
 
 if cc.get_define('__ARM_FEATURE_CRYPTO', args: machine_args) != ''
-	dpdk_conf.set('RTE_MACHINE_CPUFLAG_AES', 1)
-	dpdk_conf.set('RTE_MACHINE_CPUFLAG_PMULL', 1)
-	dpdk_conf.set('RTE_MACHINE_CPUFLAG_SHA1', 1)
-	dpdk_conf.set('RTE_MACHINE_CPUFLAG_SHA2', 1)
 	compile_time_cpuflags += ['RTE_CPUFLAG_AES', 'RTE_CPUFLAG_PMULL',
 	'RTE_CPUFLAG_SHA1', 'RTE_CPUFLAG_SHA2']
 endif

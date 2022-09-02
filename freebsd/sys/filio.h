@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1990, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -38,6 +40,7 @@
 #ifndef	_SYS_FILIO_H_
 #define	_SYS_FILIO_H_
 
+#include <sys/_types.h>
 #include <sys/ioccom.h>
 
 /* Generic file-descriptor ioctl's. */
@@ -60,5 +63,27 @@ struct fiodgname_arg {
 /* Handle lseek SEEK_DATA and SEEK_HOLE for holey file knowledge. */
 #define	FIOSEEKDATA	_IOWR('f', 97, off_t)	/* SEEK_DATA */
 #define	FIOSEEKHOLE	_IOWR('f', 98, off_t)	/* SEEK_HOLE */
+struct fiobmap2_arg {
+	__daddr_t	bn;
+	int		runp;
+	int		runb;
+};
+/* Get the file's bmap info for the logical block bn. */
+#define	FIOBMAP2	_IOWR('f', 99, struct fiobmap2_arg)
+/* POSIX shm largepage set/get config */
+#define	FIOSSHMLPGCNF	_IOW('f', 100, struct shm_largepage_conf)
+#define	FIOGSHMLPGCNF	_IOR('f', 101, struct shm_largepage_conf)
+
+#ifdef _KERNEL
+#ifdef COMPAT_FREEBSD32
+struct fiodgname_arg32 {
+	int		len;
+	uint32_t	buf;	/* (void *) */
+};
+#define	FIODGNAME_32	_IOC_NEWTYPE(FIODGNAME, struct fiodgname_arg32)
+#endif
+
+void	*fiodgname_buf_get_ptr(void *fgnp, u_long com);
+#endif
 
 #endif /* !_SYS_FILIO_H_ */

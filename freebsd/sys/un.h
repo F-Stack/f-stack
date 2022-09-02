@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -42,19 +44,30 @@ typedef	__sa_family_t	sa_family_t;
 #endif
 
 /*
+ * Historically, (struct sockaddr) needed to fit inside an mbuf.
+ * For this reason, UNIX domain sockets were therefore limited to
+ * 104 bytes. While this limit is no longer necessary, it is kept for
+ * binary compatibility reasons.
+ */
+#define	SUNPATHLEN	104
+
+/*
  * Definitions for UNIX IPC domain.
  */
 struct sockaddr_un {
 	unsigned char	sun_len;	/* sockaddr len including null */
 	sa_family_t	sun_family;	/* AF_UNIX */
-	char	sun_path[104];		/* path name (gag) */
+	char	sun_path[SUNPATHLEN];	/* path name (gag) */
 };
 
 #if __BSD_VISIBLE
 
+#define	SOL_LOCAL		0	/* Options for local socket */
+
 /* Socket options. */
 #define	LOCAL_PEERCRED		1	/* retrieve peer credentials */
 #define	LOCAL_CREDS		2	/* pass credentials to receiver */
+#define	LOCAL_CREDS_PERSISTENT	3	/* pass credentials to receiver */
 #define	LOCAL_CONNWAIT		4	/* connects block until accepted */
 
 /* Start of reserved space for third-party socket options. */

@@ -19,6 +19,7 @@
 #include <rte_random.h>
 #include <rte_bus_vdev.h>
 #include <rte_test.h>
+#include <rte_fslmc.h>
 
 #include "dpaa2_eventdev.h"
 #include "dpaa2_eventdev_logs.h"
@@ -117,7 +118,7 @@ _eventdev_setup(int mode)
 	struct rte_event_dev_info info;
 	const char *pool_name = "evdev_dpaa2_test_pool";
 
-	/* Create and destrory pool for each test case to make it standalone */
+	/* Create and destroy pool for each test case to make it standalone */
 	eventdev_test_mempool = rte_pktmbuf_pool_create(pool_name,
 					MAX_EVENTS,
 					0 /*MBUF_CACHE_SIZE*/,
@@ -274,7 +275,8 @@ check_excess_events(uint8_t port)
 		valid_event = rte_event_dequeue_burst(evdev, port, &ev, 1, 0);
 
 		RTE_TEST_ASSERT_SUCCESS(valid_event,
-				"Unexpected valid event=%d", ev.mbuf->seqn);
+				"Unexpected valid event=%d",
+				*dpaa2_seqn(ev.mbuf));
 	}
 	return 0;
 }
@@ -490,8 +492,8 @@ wait_workers_to_join(int lcore, const rte_atomic32_t *count)
 
 
 static int
-launch_workers_and_wait(int (*master_worker)(void *),
-			int (*slave_workers)(void *), uint32_t total_events,
+launch_workers_and_wait(int (*main_worker)(void *),
+			int (*workers)(void *), uint32_t total_events,
 			uint8_t nb_workers, uint8_t sched_type)
 {
 	uint8_t port = 0;
@@ -526,9 +528,9 @@ launch_workers_and_wait(int (*master_worker)(void *),
 
 	w_lcore = rte_get_next_lcore(
 			/* start core */ -1,
-			/* skip master */ 1,
+			/* skip main */ 1,
 			/* wrap */ 0);
-	rte_eal_remote_launch(master_worker, &param[0], w_lcore);
+	rte_eal_remote_launch(main_worker, &param[0], w_lcore);
 
 	for (port = 1; port < nb_workers; port++) {
 		param[port].total_events = &atomic_total_events;
@@ -537,7 +539,7 @@ launch_workers_and_wait(int (*master_worker)(void *),
 		param[port].dequeue_tmo_ticks = dequeue_tmo_ticks;
 		rte_smp_wmb();
 		w_lcore = rte_get_next_lcore(w_lcore, 1, 0);
-		rte_eal_remote_launch(slave_workers, &param[port], w_lcore);
+		rte_eal_remote_launch(workers, &param[port], w_lcore);
 	}
 
 	ret = wait_workers_to_join(w_lcore, &atomic_total_events);

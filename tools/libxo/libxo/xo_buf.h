@@ -28,7 +28,7 @@
 typedef struct xo_buffer_s {
     char *xb_bufp;		/* Buffer memory */
     char *xb_curp;		/* Current insertion point */
-    unsigned xb_size;		/* Size of buffer */
+    ssize_t xb_size;		/* Size of buffer */
 } xo_buffer_t;
 
 /*
@@ -72,14 +72,14 @@ xo_buf_is_empty (xo_buffer_t *xbp)
 /*
  * Return the current offset
  */
-static inline unsigned
+static inline ssize_t
 xo_buf_offset (xo_buffer_t *xbp)
 {
     return xbp ? (xbp->xb_curp - xbp->xb_bufp) : 0;
 }
 
 static inline char *
-xo_buf_data (xo_buffer_t *xbp, unsigned offset)
+xo_buf_data (xo_buffer_t *xbp, ssize_t offset)
 {
     if (xbp == NULL)
 	return NULL;
@@ -111,10 +111,15 @@ xo_buf_cleanup (xo_buffer_t *xbp)
  * return 0 to tell the caller they are in trouble.
  */
 static inline int
-xo_buf_has_room (xo_buffer_t *xbp, int len)
+xo_buf_has_room (xo_buffer_t *xbp, ssize_t len)
 {
     if (xbp->xb_curp + len >= xbp->xb_bufp + xbp->xb_size) {
-	int sz = xbp->xb_size + XO_BUFSIZ;
+	/*
+	 * Find out how much new space we need, round it up to XO_BUFSIZ
+	 */
+	ssize_t sz = (xbp->xb_curp + len) - xbp->xb_bufp;
+	sz = (sz + XO_BUFSIZ - 1) & ~(XO_BUFSIZ - 1);
+
 	char *bp = xo_realloc(xbp->xb_bufp, sz);
 	if (bp == NULL)
 	    return 0;
@@ -131,9 +136,9 @@ xo_buf_has_room (xo_buffer_t *xbp, int len)
  * Append the given string to the given buffer
  */
 static inline void
-xo_buf_append (xo_buffer_t *xbp, const char *str, int len)
+xo_buf_append (xo_buffer_t *xbp, const char *str, ssize_t len)
 {
-    if (!xo_buf_has_room(xbp, len))
+    if (str == NULL || len == 0 || !xo_buf_has_room(xbp, len))
 	return;
 
     memcpy(xbp->xb_curp, str, len);
@@ -146,7 +151,7 @@ xo_buf_append (xo_buffer_t *xbp, const char *str, int len)
 static inline void
 xo_buf_append_str (xo_buffer_t *xbp, const char *str)
 {
-    int len = strlen(str);
+    ssize_t len = strlen(str);
 
     if (!xo_buf_has_room(xbp, len))
 	return;

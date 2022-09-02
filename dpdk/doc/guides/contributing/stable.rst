@@ -25,10 +25,11 @@ Release to indicate longer term support.
 Stable Releases
 ---------------
 
-Any major release of DPDK can be designated as a Stable Release if a
+Any release of DPDK can be designated as a Stable Release if a
 maintainer volunteers to maintain it and there is a commitment from major
-contributors to validate it before releases. If a release is to be designated
-as a Stable Release, it should be done by 1 month after the master release.
+contributors to validate it before releases.
+If a version is to be a "Stable Release", it should be designated as such
+within one month of that version being initially released.
 
 A Stable Release is used to backport fixes from an ``N`` release back to an
 ``N-1`` release, for example, from 16.11 to 16.07.
@@ -62,7 +63,8 @@ longer depending on the number and criticality of the backported
 fixes. Releases should be coordinated with the validation engineers to ensure
 that a tagged release has been tested.
 
-The current maintained LTS branches are 17.11 and 18.11.
+For a list of the currently maintained stable/LTS branches please see
+the latest `stable roadmap <https://core.dpdk.org/roadmap/#stable>`_.
 
 At the end of the 2 years, a final X.11.N release will be made and at that
 point the LTS branch will no longer be maintained with no further releases.
@@ -71,7 +73,7 @@ point the LTS branch will no longer be maintained with no further releases.
 What changes should be backported
 ---------------------------------
 
-Backporting should be limited to bug fixes. All patches accepted on the master
+Backporting should be limited to bug fixes. All patches accepted on the main
 branch with a Fixes: tag should be backported to the relevant stable/LTS
 branches, unless the submitter indicates otherwise. If there are exceptions,
 they will be discussed on the mailing lists.
@@ -95,7 +97,7 @@ Features should not be backported to stable releases. It may be acceptable, in
 limited cases, to back port features for the LTS release where:
 
 * There is a justifiable use case (for example a new PMD).
-* The change is noninvasive.
+* The change is non-invasive.
 * The work of preparing the backport is done by the proposer.
 * There is support within the community.
 
@@ -106,7 +108,7 @@ The Stable Mailing List
 The Stable and LTS release are coordinated on the stable@dpdk.org mailing
 list.
 
-All fix patches to the master branch that are candidates for backporting
+All fix patches to the main branch that are candidates for backporting
 should also be CCed to the `stable@dpdk.org <https://mails.dpdk.org/listinfo/stable>`_
 mailing list.
 

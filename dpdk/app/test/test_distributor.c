@@ -10,12 +10,22 @@
 #include <rte_errno.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 #include <rte_distributor.h>
 #include <rte_string_fns.h>
 
 #define ITER_POWER 20 /* log 2 of how many iterations we do when timing. */
 #define BURST 32
 #define BIG_BATCH 1024
+
+typedef uint32_t seq_dynfield_t;
+static int seq_dynfield_offset = -1;
+
+static inline seq_dynfield_t *
+seq_field(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf, seq_dynfield_offset, seq_dynfield_t *);
+}
 
 struct worker_params {
 	char name[64];
@@ -367,7 +377,7 @@ handle_work_for_shutdown_test(void *arg)
 	if (num > 0) {
 		zero_unset = RTE_MAX_LCORE;
 		__atomic_compare_exchange_n(&zero_idx, &zero_unset, id,
-			0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+			false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 	}
 	zero_id = __atomic_load_n(&zero_idx, __ATOMIC_ACQUIRE);
 
@@ -381,7 +391,7 @@ handle_work_for_shutdown_test(void *arg)
 		if (num > 0) {
 			zero_unset = RTE_MAX_LCORE;
 			__atomic_compare_exchange_n(&zero_idx, &zero_unset, id,
-				0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+				false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 		}
 		zero_id = __atomic_load_n(&zero_idx, __ATOMIC_ACQUIRE);
 	}
@@ -567,6 +577,146 @@ test_flush_with_worker_shutdown(struct worker_params *wp,
 	return 0;
 }
 
+static int
+handle_and_mark_work(void *arg)
+{
+	struct rte_mbuf *buf[8] __rte_cache_aligned;
+	struct worker_params *wp = arg;
+	struct rte_distributor *db = wp->dist;
+	unsigned int num, i;
+	unsigned int id = __atomic_fetch_add(&worker_idx, 1, __ATOMIC_RELAXED);
+	num = rte_distributor_get_pkt(db, id, buf, NULL, 0);
+	while (!quit) {
+		__atomic_fetch_add(&worker_stats[id].handled_packets, num,
+				__ATOMIC_RELAXED);
+		for (i = 0; i < num; i++)
+			*seq_field(buf[i]) += id + 1;
+		num = rte_distributor_get_pkt(db, id,
+				buf, buf, num);
+	}
+	__atomic_fetch_add(&worker_stats[id].handled_packets, num,
+			__ATOMIC_RELAXED);
+	rte_distributor_return_pkt(db, id, buf, num);
+	return 0;
+}
+
+/* sanity_mark_test sends packets to workers which mark them.
+ * Every packet has also encoded sequence number.
+ * The returned packets are sorted and verified if they were handled
+ * by proper workers.
+ */
+static int
+sanity_mark_test(struct worker_params *wp, struct rte_mempool *p)
+{
+	const unsigned int buf_count = 24;
+	const unsigned int burst = 8;
+	const unsigned int shift = 12;
+	const unsigned int seq_shift = 10;
+
+	struct rte_distributor *db = wp->dist;
+	struct rte_mbuf *bufs[buf_count];
+	struct rte_mbuf *returns[buf_count];
+	unsigned int i, count, id;
+	unsigned int sorted[buf_count], seq;
+	unsigned int failed = 0;
+	unsigned int processed;
+
+	printf("=== Marked packets test ===\n");
+	clear_packet_count();
+	if (rte_mempool_get_bulk(p, (void *)bufs, buf_count) != 0) {
+		printf("line %d: Error getting mbufs from pool\n", __LINE__);
+		return -1;
+	}
+
+	/* bufs' hashes will be like these below, but shifted left.
+	 * The shifting is for avoiding collisions with backlogs
+	 * and in-flight tags left by previous tests.
+	 * [1, 1, 1, 1, 1, 1, 1, 1
+	 *  1, 1, 1, 1, 2, 2, 2, 2
+	 *  2, 2, 2, 2, 1, 1, 1, 1]
+	 */
+	for (i = 0; i < burst; i++) {
+		bufs[0 * burst + i]->hash.usr = 1 << shift;
+		bufs[1 * burst + i]->hash.usr = ((i < burst / 2) ? 1 : 2)
+			<< shift;
+		bufs[2 * burst + i]->hash.usr = ((i < burst / 2) ? 2 : 1)
+			<< shift;
+	}
+	/* Assign a sequence number to each packet. The sequence is shifted,
+	 * so that lower bits will hold mark from worker.
+	 */
+	for (i = 0; i < buf_count; i++)
+		*seq_field(bufs[i]) = i << seq_shift;
+
+	count = 0;
+	for (i = 0; i < buf_count/burst; i++) {
+		processed = 0;
+		while (processed < burst)
+			processed += rte_distributor_process(db,
+				&bufs[i * burst + processed],
+				burst - processed);
+		count += rte_distributor_returned_pkts(db, &returns[count],
+			buf_count - count);
+	}
+
+	do {
+		rte_distributor_flush(db);
+		count += rte_distributor_returned_pkts(db, &returns[count],
+			buf_count - count);
+	} while (count < buf_count);
+
+	for (i = 0; i < rte_lcore_count() - 1; i++)
+		printf("Worker %u handled %u packets\n", i,
+			__atomic_load_n(&worker_stats[i].handled_packets,
+					__ATOMIC_RELAXED));
+
+	/* Sort returned packets by sent order (sequence numbers). */
+	for (i = 0; i < buf_count; i++) {
+		seq = *seq_field(returns[i]) >> seq_shift;
+		id = *seq_field(returns[i]) - (seq << seq_shift);
+		sorted[seq] = id;
+	}
+
+	/* Verify that packets [0-11] and [20-23] were processed
+	 * by the same worker
+	 */
+	for (i = 1; i < 12; i++) {
+		if (sorted[i] != sorted[0]) {
+			printf("Packet number %u processed by worker %u,"
+				" but should be processes by worker %u\n",
+				i, sorted[i], sorted[0]);
+			failed = 1;
+		}
+	}
+	for (i = 20; i < 24; i++) {
+		if (sorted[i] != sorted[0]) {
+			printf("Packet number %u processed by worker %u,"
+				" but should be processes by worker %u\n",
+				i, sorted[i], sorted[0]);
+			failed = 1;
+		}
+	}
+	/* And verify that packets [12-19] were processed
+	 * by the another worker
+	 */
+	for (i = 13; i < 20; i++) {
+		if (sorted[i] != sorted[12]) {
+			printf("Packet number %u processed by worker %u,"
+				" but should be processes by worker %u\n",
+				i, sorted[i], sorted[12]);
+			failed = 1;
+		}
+	}
+
+	rte_mempool_put_bulk(p, (void *)bufs, buf_count);
+
+	if (failed)
+		return -1;
+
+	printf("Marked packets test passed\n");
+	return 0;
+}
+
 static
 int test_error_distributor_create_name(void)
 {
@@ -667,6 +817,18 @@ test_distributor(void)
 	static struct rte_mempool *p;
 	int i;
 
+	static const struct rte_mbuf_dynfield seq_dynfield_desc = {
+		.name = "test_distributor_dynfield_seq",
+		.size = sizeof(seq_dynfield_t),
+		.align = __alignof__(seq_dynfield_t),
+	};
+	seq_dynfield_offset =
+		rte_mbuf_dynfield_register(&seq_dynfield_desc);
+	if (seq_dynfield_offset < 0) {
+		printf("Error registering mbuf field\n");
+		return TEST_FAILED;
+	}
+
 	if (rte_lcore_count() < 2) {
 		printf("Not enough cores for distributor_autotest, expecting at least 2\n");
 		return TEST_SKIPPED;
@@ -724,13 +886,13 @@ test_distributor(void)
 					sizeof(worker_params.name));
 
 		rte_eal_mp_remote_launch(handle_work,
-				&worker_params, SKIP_MASTER);
+				&worker_params, SKIP_MAIN);
 		if (sanity_test(&worker_params, p) < 0)
 			goto err;
 		quit_workers(&worker_params, p);
 
 		rte_eal_mp_remote_launch(handle_work_with_free_mbufs,
-				&worker_params, SKIP_MASTER);
+				&worker_params, SKIP_MAIN);
 		if (sanity_test_with_mbuf_alloc(&worker_params, p) < 0)
 			goto err;
 		quit_workers(&worker_params, p);
@@ -738,7 +900,7 @@ test_distributor(void)
 		if (rte_lcore_count() > 2) {
 			rte_eal_mp_remote_launch(handle_work_for_shutdown_test,
 					&worker_params,
-					SKIP_MASTER);
+					SKIP_MAIN);
 			if (sanity_test_with_worker_shutdown(&worker_params,
 					p) < 0)
 				goto err;
@@ -746,9 +908,15 @@ test_distributor(void)
 
 			rte_eal_mp_remote_launch(handle_work_for_shutdown_test,
 					&worker_params,
-					SKIP_MASTER);
+					SKIP_MAIN);
 			if (test_flush_with_worker_shutdown(&worker_params,
 					p) < 0)
+				goto err;
+			quit_workers(&worker_params, p);
+
+			rte_eal_mp_remote_launch(handle_and_mark_work,
+					&worker_params, SKIP_MAIN);
+			if (sanity_mark_test(&worker_params, p) < 0)
 				goto err;
 			quit_workers(&worker_params, p);
 

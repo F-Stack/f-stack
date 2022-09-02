@@ -2,7 +2,7 @@
 # Copyright(c) 2019 Intel Corporation
 
 #
-# Add the experimenatal APIs called from this PMD
+# Add the experimental APIs called from this PMD
 #  rte_eth_switch_domain_alloc()
 #  rte_eth_dev_create()
 #  rte_eth_dev_destroy()
@@ -12,16 +12,13 @@
 if has_libfdt == 0
 	build = false
 	reason = 'missing dependency, "libfdt"'
+	subdir_done()
 endif
 
-if build
-	allow_experimental_apis = true
+includes += include_directories('../../raw/ifpga')
 
-	includes += include_directories('../../raw/ifpga')
-
-	sources += files('ipn3ke_ethdev.c',
-		'ipn3ke_representor.c',
-		'ipn3ke_tm.c',
-		'ipn3ke_flow.c')
-	deps += ['bus_ifpga', 'ethdev', 'sched']
-endif
+sources += files('ipn3ke_ethdev.c',
+	'ipn3ke_representor.c',
+	'ipn3ke_tm.c',
+	'ipn3ke_flow.c')
+deps += ['bus_ifpga', 'ethdev', 'sched']

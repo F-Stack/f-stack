@@ -34,6 +34,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/kdb.h>
+
 #include <machine/pcb.h>
 #include <ddb/ddb.h>
 #include <ddb/db_sym.h>
@@ -53,19 +54,18 @@ int
 db_md_clr_watchpoint(db_expr_t addr, db_expr_t size)
 {
 
-	return (dbg_remove_watchpoint(addr, size, DBG_FROM_EL1));
+	return (dbg_remove_watchpoint(NULL, addr, size));
 }
 
 int
 db_md_set_watchpoint(db_expr_t addr, db_expr_t size)
 {
 
-	return (dbg_setup_watchpoint(addr, size, DBG_FROM_EL1,
-	    HW_BREAKPOINT_RW));
+	return (dbg_setup_watchpoint(NULL, addr, size, HW_BREAKPOINT_RW));
 }
 
 static void
-db_stack_trace_cmd(struct unwind_state *frame)
+db_stack_trace_cmd(struct thread *td, struct unwind_state *frame)
 {
 	c_db_sym_t sym;
 	const char *name;
@@ -73,11 +73,9 @@ db_stack_trace_cmd(struct unwind_state *frame)
 	db_expr_t offset;
 
 	while (1) {
-		uint64_t pc = frame->pc;
-		int ret;
+		uintptr_t pc = frame->pc;
 
-		ret = unwind_frame(frame);
-		if (ret < 0)
+		if (!unwind_frame(td, frame))
 			break;
 
 		sym = db_search_symbol(pc, DB_STGY_ANY, &offset);
@@ -109,10 +107,10 @@ db_trace_thread(struct thread *thr, int count)
 	if (thr != curthread) {
 		ctx = kdb_thr_ctx(thr);
 
-		frame.sp = (uint64_t)ctx->pcb_sp;
-		frame.fp = (uint64_t)ctx->pcb_x[29];
-		frame.pc = (uint64_t)ctx->pcb_x[30];
-		db_stack_trace_cmd(&frame);
+		frame.sp = (uintptr_t)ctx->pcb_sp;
+		frame.fp = (uintptr_t)ctx->pcb_x[29];
+		frame.pc = (uintptr_t)ctx->pcb_lr;
+		db_stack_trace_cmd(thr, &frame);
 	} else
 		db_trace_self();
 	return (0);
@@ -122,12 +120,12 @@ void
 db_trace_self(void)
 {
 	struct unwind_state frame;
-	uint64_t sp;
+	uintptr_t sp;
 
 	__asm __volatile("mov %0, sp" : "=&r" (sp));
 
 	frame.sp = sp;
-	frame.fp = (uint64_t)__builtin_frame_address(0);
-	frame.pc = (uint64_t)db_trace_self;
-	db_stack_trace_cmd(&frame);
+	frame.fp = (uintptr_t)__builtin_frame_address(0);
+	frame.pc = (uintptr_t)db_trace_self;
+	db_stack_trace_cmd(curthread, &frame);
 }

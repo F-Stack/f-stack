@@ -40,8 +40,6 @@ unsigned int pfe_svr = SVR_LS1012A_REV1;
 static void *cbus_emac_base[3];
 static void *cbus_gpi_base[3];
 
-int pfe_logtype_pmd;
-
 /* pfe_gemac_init
  */
 static int
@@ -375,44 +373,43 @@ pfe_eth_close_cdev(struct pfe_eth_priv_s *priv)
 	}
 }
 
-static void
+static int
 pfe_eth_stop(struct rte_eth_dev *dev/*, int wake*/)
 {
 	struct pfe_eth_priv_s *priv = dev->data->dev_private;
+
+	dev->data->dev_started = 0;
 
 	gemac_disable(priv->EMAC_baseaddr);
 	gpi_disable(priv->GPI_baseaddr);
 
 	dev->rx_pkt_burst = &pfe_dummy_recv_pkts;
 	dev->tx_pkt_burst = &pfe_dummy_xmit_pkts;
+
+	return 0;
 }
 
-static void
-pfe_eth_exit(struct rte_eth_dev *dev, struct pfe *pfe)
+static int
+pfe_eth_close(struct rte_eth_dev *dev)
 {
+	int ret;
 	PMD_INIT_FUNC_TRACE();
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+	if (!dev)
+		return -1;
 
-	pfe_eth_stop(dev);
+	if (!g_pfe)
+		return -1;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = pfe_eth_stop(dev);
 	/* Close the device file for link status */
 	pfe_eth_close_cdev(dev->data->dev_private);
 
-	rte_eth_dev_release_port(dev);
-	pfe->nb_devs--;
-}
-
-static void
-pfe_eth_close(struct rte_eth_dev *dev)
-{
-	if (!dev)
-		return;
-
-	if (!g_pfe)
-		return;
-
-	pfe_eth_exit(dev, g_pfe);
+	munmap(g_pfe->cbus_baseaddr, g_pfe->cbus_size);
+	g_pfe->nb_devs--;
 
 	if (g_pfe->nb_devs == 0) {
 		pfe_hif_exit(g_pfe);
@@ -420,6 +417,8 @@ pfe_eth_close(struct rte_eth_dev *dev)
 		rte_free(g_pfe);
 		g_pfe = NULL;
 	}
+
+	return ret;
 }
 
 static int
@@ -668,8 +667,7 @@ pfe_allmulticast_enable(struct rte_eth_dev *dev)
 static int
 pfe_link_down(struct rte_eth_dev *dev)
 {
-	pfe_eth_stop(dev);
-	return 0;
+	return pfe_eth_stop(dev);
 }
 
 static int
@@ -790,7 +788,7 @@ pfe_eth_init(struct rte_vdev_device *vdev, struct pfe *pfe, int id)
 	if (eth_dev == NULL)
 		return -ENOMEM;
 
-	/* Extract pltform data */
+	/* Extract platform data */
 	pfe_info = (struct ls1012a_pfe_platform_data *)&pfe->platform_data;
 	if (!pfe_info) {
 		PFE_PMD_ERR("pfe missing additional platform data");
@@ -844,7 +842,9 @@ pfe_eth_init(struct rte_vdev_device *vdev, struct pfe *pfe, int id)
 
 	eth_dev->data->mtu = 1500;
 	eth_dev->dev_ops = &ops;
-	pfe_eth_stop(eth_dev);
+	err = pfe_eth_stop(eth_dev);
+	if (err != 0)
+		goto err0;
 	pfe_gemac_init(priv);
 
 	eth_dev->data->nb_rx_queues = 1;
@@ -1142,6 +1142,7 @@ pmd_pfe_remove(struct rte_vdev_device *vdev)
 {
 	const char *name;
 	struct rte_eth_dev *eth_dev = NULL;
+	int ret = 0;
 
 	name = rte_vdev_device_name(vdev);
 	if (name == NULL)
@@ -1153,19 +1154,12 @@ pmd_pfe_remove(struct rte_vdev_device *vdev)
 		return 0;
 
 	eth_dev = rte_eth_dev_allocated(name);
-	if (eth_dev == NULL)
-		return -ENODEV;
-
-	pfe_eth_exit(eth_dev, g_pfe);
-	munmap(g_pfe->cbus_baseaddr, g_pfe->cbus_size);
-
-	if (g_pfe->nb_devs == 0) {
-		pfe_hif_exit(g_pfe);
-		pfe_hif_lib_exit(g_pfe);
-		rte_free(g_pfe);
-		g_pfe = NULL;
+	if (eth_dev) {
+		pfe_eth_close(eth_dev);
+		ret = rte_eth_dev_release_port(eth_dev);
 	}
-	return 0;
+
+	return ret;
 }
 
 static
@@ -1176,10 +1170,4 @@ struct rte_vdev_driver pmd_pfe_drv = {
 
 RTE_PMD_REGISTER_VDEV(PFE_NAME_PMD, pmd_pfe_drv);
 RTE_PMD_REGISTER_PARAM_STRING(PFE_NAME_PMD, PFE_VDEV_GEM_ID_ARG "=<int> ");
-
-RTE_INIT(pfe_pmd_init_log)
-{
-	pfe_logtype_pmd = rte_log_register("pmd.net.pfe");
-	if (pfe_logtype_pmd >= 0)
-		rte_log_set_level(pfe_logtype_pmd, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(pfe_logtype_pmd, pmd.net.pfe, NOTICE);

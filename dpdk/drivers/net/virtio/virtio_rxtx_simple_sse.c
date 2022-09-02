@@ -91,9 +91,7 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			virtqueue_notify(vq);
 	}
 
-	nb_used = VIRTQUEUE_NUSED(vq);
-
-	rte_compiler_barrier();
+	nb_used = virtqueue_nused(vq);
 
 	if (unlikely(nb_used == 0))
 		return 0;

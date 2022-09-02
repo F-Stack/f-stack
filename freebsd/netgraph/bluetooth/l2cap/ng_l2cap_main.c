@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -755,4 +757,3 @@ ng_l2cap_destroy_channels(ng_l2cap_p l2cap)
 	while (!LIST_EMPTY(&l2cap->chan_list))
 		ng_l2cap_free_chan(LIST_FIRST(&l2cap->chan_list));
 } /* ng_l2cap_destroy_channels_by_hook */
-

@@ -86,7 +86,6 @@ struct vdump_args {
 	int error;
 };
 
-
 static uint32_t
 hash_table_value(struct namedobj_instance *ni, const void *key, uint32_t kopt)
 {
@@ -363,7 +362,7 @@ rollback_table_values(struct tableop_state *ts)
  */
 static int
 alloc_table_vidx(struct ip_fw_chain *ch, struct tableop_state *ts,
-    struct namedobj_instance *vi, uint16_t *pvidx)
+    struct namedobj_instance *vi, uint16_t *pvidx, uint8_t flags)
 {
 	int error, vlimit;
 	uint16_t vidx;
@@ -372,7 +371,6 @@ alloc_table_vidx(struct ip_fw_chain *ch, struct tableop_state *ts,
 
 	error = ipfw_objhash_alloc_idx(vi, &vidx);
 	if (error != 0) {
-
 		/*
 		 * We need to resize array. This involves
 		 * lock/unlock, so we need to check "modified"
@@ -384,16 +382,12 @@ alloc_table_vidx(struct ip_fw_chain *ch, struct tableop_state *ts,
 	}
 
 	vlimit = ts->ta->vlimit;
-	if (vlimit != 0 && vidx >= vlimit) {
-
+	if (vlimit != 0 && vidx >= vlimit && !(flags & IPFW_CTF_ATOMIC)) {
 		/*
 		 * Algorithm is not able to store given index.
 		 * We have to rollback state, start using
 		 * per-table value array or return error
 		 * if we're already using it.
-		 *
-		 * TODO: do not rollback state if
-		 * atomicity is not required.
 		 */
 		if (ts->vshared != 0) {
 			/* shared -> per-table  */
@@ -426,9 +420,10 @@ ipfw_garbage_table_values(struct ip_fw_chain *ch, struct table_config *tc,
 	 * either (1) we are successful / partially successful,
 	 * in that case we need
 	 * * to ignore ADDED entries values
-	 * * rollback every other values (either UPDATED since
-	 *   old value has been stored there, or some failure like
-	 *   EXISTS or LIMIT or simply "ignored" case.
+	 * * rollback every other values if atomicity is not
+	 * * required (either UPDATED since old value has been
+	 *   stored there, or some failure like EXISTS or LIMIT
+	 *   or simply "ignored" case.
 	 *
 	 * (2): atomic rollback of partially successful operation
 	 * in that case we simply need to unref all entries.
@@ -447,7 +442,6 @@ ipfw_garbage_table_values(struct ip_fw_chain *ch, struct table_config *tc,
 		ptei = &tei[i];
 
 		if (ptei->value == 0) {
-
 			/*
 			 * We may be deleting non-existing record.
 			 * Skip.
@@ -473,7 +467,8 @@ ipfw_garbage_table_values(struct ip_fw_chain *ch, struct table_config *tc,
  * Success: return 0.
  */
 int
-ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts)
+ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts,
+    uint8_t flags)
 {
 	int error, i, found;
 	struct namedobj_instance *vi;
@@ -551,7 +546,6 @@ ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts)
 	tc_unref(tc);
 	del_toperation_state(ch, ts);
 	if (ts->modified != 0) {
-
 		/*
 		 * In general, we should free all state/indexes here
 		 * and return. However, we keep allocated state instead
@@ -577,7 +571,7 @@ ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts)
 		}
 
 		/* May perform UH unlock/lock */
-		error = alloc_table_vidx(ch, ts, vi, &vidx);
+		error = alloc_table_vidx(ch, ts, vi, &vidx, flags);
 		if (error != 0) {
 			ts->opstate.func(ts->tc, &ts->opstate);
 			return (error);
@@ -805,4 +799,3 @@ ipfw_table_value_destroy(struct ip_fw_chain *ch, int last)
 	ipfw_objhash_foreach(CHAIN_TO_VI(ch), destroy_value, ch);
 	ipfw_objhash_destroy(CHAIN_TO_VI(ch));
 }
-

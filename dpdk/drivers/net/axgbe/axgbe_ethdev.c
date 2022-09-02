@@ -7,33 +7,168 @@
 #include "axgbe_ethdev.h"
 #include "axgbe_common.h"
 #include "axgbe_phy.h"
+#include "axgbe_regs.h"
+#include "rte_time.h"
+
+#include "eal_filesystem.h"
 
 static int eth_axgbe_dev_init(struct rte_eth_dev *eth_dev);
-static int eth_axgbe_dev_uninit(struct rte_eth_dev *eth_dev);
 static int  axgbe_dev_configure(struct rte_eth_dev *dev);
 static int  axgbe_dev_start(struct rte_eth_dev *dev);
-static void axgbe_dev_stop(struct rte_eth_dev *dev);
+static int  axgbe_dev_stop(struct rte_eth_dev *dev);
 static void axgbe_dev_interrupt_handler(void *param);
-static void axgbe_dev_close(struct rte_eth_dev *dev);
+static int axgbe_dev_close(struct rte_eth_dev *dev);
 static int axgbe_dev_promiscuous_enable(struct rte_eth_dev *dev);
 static int axgbe_dev_promiscuous_disable(struct rte_eth_dev *dev);
 static int axgbe_dev_allmulticast_enable(struct rte_eth_dev *dev);
 static int axgbe_dev_allmulticast_disable(struct rte_eth_dev *dev);
+static int axgbe_dev_mac_addr_set(struct rte_eth_dev *dev,
+				  struct rte_ether_addr *mac_addr);
+static int axgbe_dev_mac_addr_add(struct rte_eth_dev *dev,
+				  struct rte_ether_addr *mac_addr,
+				  uint32_t index,
+				  uint32_t vmdq);
+static void axgbe_dev_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
+static int axgbe_dev_set_mc_addr_list(struct rte_eth_dev *dev,
+				      struct rte_ether_addr *mc_addr_set,
+				      uint32_t nb_mc_addr);
+static int axgbe_dev_uc_hash_table_set(struct rte_eth_dev *dev,
+				       struct rte_ether_addr *mac_addr,
+				       uint8_t add);
+static int axgbe_dev_uc_all_hash_table_set(struct rte_eth_dev *dev,
+					   uint8_t add);
 static int axgbe_dev_link_update(struct rte_eth_dev *dev,
 				 int wait_to_complete);
+static int axgbe_dev_get_regs(struct rte_eth_dev *dev,
+			      struct rte_dev_reg_info *regs);
 static int axgbe_dev_stats_get(struct rte_eth_dev *dev,
 				struct rte_eth_stats *stats);
 static int axgbe_dev_stats_reset(struct rte_eth_dev *dev);
+static int axgbe_dev_xstats_get(struct rte_eth_dev *dev,
+				struct rte_eth_xstat *stats,
+				unsigned int n);
+static int
+axgbe_dev_xstats_get_names(struct rte_eth_dev *dev,
+			   struct rte_eth_xstat_name *xstats_names,
+			   unsigned int size);
+static int
+axgbe_dev_xstats_get_by_id(struct rte_eth_dev *dev,
+			   const uint64_t *ids,
+			   uint64_t *values,
+			   unsigned int n);
+static int
+axgbe_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
+				 struct rte_eth_xstat_name *xstats_names,
+				 const uint64_t *ids,
+				 unsigned int size);
+static int axgbe_dev_xstats_reset(struct rte_eth_dev *dev);
+static int axgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
+			  struct rte_eth_rss_reta_entry64 *reta_conf,
+			  uint16_t reta_size);
+static int axgbe_dev_rss_reta_query(struct rte_eth_dev *dev,
+			 struct rte_eth_rss_reta_entry64 *reta_conf,
+			 uint16_t reta_size);
+static int axgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
+				     struct rte_eth_rss_conf *rss_conf);
+static int axgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
+				       struct rte_eth_rss_conf *rss_conf);
 static int  axgbe_dev_info_get(struct rte_eth_dev *dev,
 			       struct rte_eth_dev_info *dev_info);
+static int axgbe_flow_ctrl_get(struct rte_eth_dev *dev,
+				struct rte_eth_fc_conf *fc_conf);
+static int axgbe_flow_ctrl_set(struct rte_eth_dev *dev,
+				struct rte_eth_fc_conf *fc_conf);
+static int axgbe_priority_flow_ctrl_set(struct rte_eth_dev *dev,
+				struct rte_eth_pfc_conf *pfc_conf);
+static void axgbe_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_rxq_info *qinfo);
+static void axgbe_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_txq_info *qinfo);
+const uint32_t *axgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+static int axgb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
+
+static int
+axgbe_timesync_enable(struct rte_eth_dev *dev);
+static int
+axgbe_timesync_disable(struct rte_eth_dev *dev);
+static int
+axgbe_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
+			struct timespec *timestamp, uint32_t flags);
+static int
+axgbe_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
+			struct timespec *timestamp);
+static int
+axgbe_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta);
+static int
+axgbe_timesync_read_time(struct rte_eth_dev *dev,
+			struct timespec *timestamp);
+static int
+axgbe_timesync_write_time(struct rte_eth_dev *dev,
+			const struct timespec *timestamp);
+static void
+axgbe_set_tstamp_time(struct axgbe_port *pdata, unsigned int sec,
+			unsigned int nsec);
+static void
+axgbe_update_tstamp_addend(struct axgbe_port *pdata,
+			unsigned int addend);
+
+struct axgbe_xstats {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+	int offset;
+};
+
+#define AXGMAC_MMC_STAT(_string, _var)                           \
+	{ _string,                                              \
+	  offsetof(struct axgbe_mmc_stats, _var),       \
+	}
+
+static const struct axgbe_xstats axgbe_xstats_strings[] = {
+	AXGMAC_MMC_STAT("tx_bytes", txoctetcount_gb),
+	AXGMAC_MMC_STAT("tx_packets", txframecount_gb),
+	AXGMAC_MMC_STAT("tx_unicast_packets", txunicastframes_gb),
+	AXGMAC_MMC_STAT("tx_broadcast_packets", txbroadcastframes_gb),
+	AXGMAC_MMC_STAT("tx_multicast_packets", txmulticastframes_gb),
+	AXGMAC_MMC_STAT("tx_vlan_packets", txvlanframes_g),
+	AXGMAC_MMC_STAT("tx_64_byte_packets", tx64octets_gb),
+	AXGMAC_MMC_STAT("tx_65_to_127_byte_packets", tx65to127octets_gb),
+	AXGMAC_MMC_STAT("tx_128_to_255_byte_packets", tx128to255octets_gb),
+	AXGMAC_MMC_STAT("tx_256_to_511_byte_packets", tx256to511octets_gb),
+	AXGMAC_MMC_STAT("tx_512_to_1023_byte_packets", tx512to1023octets_gb),
+	AXGMAC_MMC_STAT("tx_1024_to_max_byte_packets", tx1024tomaxoctets_gb),
+	AXGMAC_MMC_STAT("tx_underflow_errors", txunderflowerror),
+	AXGMAC_MMC_STAT("tx_pause_frames", txpauseframes),
+
+	AXGMAC_MMC_STAT("rx_bytes", rxoctetcount_gb),
+	AXGMAC_MMC_STAT("rx_packets", rxframecount_gb),
+	AXGMAC_MMC_STAT("rx_unicast_packets", rxunicastframes_g),
+	AXGMAC_MMC_STAT("rx_broadcast_packets", rxbroadcastframes_g),
+	AXGMAC_MMC_STAT("rx_multicast_packets", rxmulticastframes_g),
+	AXGMAC_MMC_STAT("rx_vlan_packets", rxvlanframes_gb),
+	AXGMAC_MMC_STAT("rx_64_byte_packets", rx64octets_gb),
+	AXGMAC_MMC_STAT("rx_65_to_127_byte_packets", rx65to127octets_gb),
+	AXGMAC_MMC_STAT("rx_128_to_255_byte_packets", rx128to255octets_gb),
+	AXGMAC_MMC_STAT("rx_256_to_511_byte_packets", rx256to511octets_gb),
+	AXGMAC_MMC_STAT("rx_512_to_1023_byte_packets", rx512to1023octets_gb),
+	AXGMAC_MMC_STAT("rx_1024_to_max_byte_packets", rx1024tomaxoctets_gb),
+	AXGMAC_MMC_STAT("rx_undersize_packets", rxundersize_g),
+	AXGMAC_MMC_STAT("rx_oversize_packets", rxoversize_g),
+	AXGMAC_MMC_STAT("rx_crc_errors", rxcrcerror),
+	AXGMAC_MMC_STAT("rx_crc_errors_small_packets", rxrunterror),
+	AXGMAC_MMC_STAT("rx_crc_errors_giant_packets", rxjabbererror),
+	AXGMAC_MMC_STAT("rx_length_errors", rxlengtherror),
+	AXGMAC_MMC_STAT("rx_out_of_range_errors", rxoutofrangetype),
+	AXGMAC_MMC_STAT("rx_fifo_overflow_errors", rxfifooverflow),
+	AXGMAC_MMC_STAT("rx_watchdog_errors", rxwatchdogerror),
+	AXGMAC_MMC_STAT("rx_pause_frames", rxpauseframes),
+};
+
+#define AXGBE_XSTATS_COUNT        ARRAY_SIZE(axgbe_xstats_strings)
 
 /* The set of PCI devices this driver supports */
 #define AMD_PCI_VENDOR_ID       0x1022
+#define AMD_PCI_RV_ROOT_COMPLEX_ID	0x15d0
 #define AMD_PCI_AXGBE_DEVICE_V2A 0x1458
 #define AMD_PCI_AXGBE_DEVICE_V2B 0x1459
-
-int axgbe_logtype_init;
-int axgbe_logtype_driver;
 
 static const struct rte_pci_id pci_id_axgbe_map[] = {
 	{RTE_PCI_DEVICE(AMD_PCI_VENDOR_ID, AMD_PCI_AXGBE_DEVICE_V2A)},
@@ -86,14 +221,44 @@ static const struct eth_dev_ops axgbe_eth_dev_ops = {
 	.promiscuous_disable  = axgbe_dev_promiscuous_disable,
 	.allmulticast_enable  = axgbe_dev_allmulticast_enable,
 	.allmulticast_disable = axgbe_dev_allmulticast_disable,
+	.mac_addr_set         = axgbe_dev_mac_addr_set,
+	.mac_addr_add         = axgbe_dev_mac_addr_add,
+	.mac_addr_remove      = axgbe_dev_mac_addr_remove,
+	.set_mc_addr_list     = axgbe_dev_set_mc_addr_list,
+	.uc_hash_table_set    = axgbe_dev_uc_hash_table_set,
+	.uc_all_hash_table_set = axgbe_dev_uc_all_hash_table_set,
 	.link_update          = axgbe_dev_link_update,
+	.get_reg	      = axgbe_dev_get_regs,
 	.stats_get            = axgbe_dev_stats_get,
 	.stats_reset          = axgbe_dev_stats_reset,
+	.xstats_get	      = axgbe_dev_xstats_get,
+	.xstats_reset	      = axgbe_dev_xstats_reset,
+	.xstats_get_names     = axgbe_dev_xstats_get_names,
+	.xstats_get_names_by_id = axgbe_dev_xstats_get_names_by_id,
+	.xstats_get_by_id     = axgbe_dev_xstats_get_by_id,
+	.reta_update          = axgbe_dev_rss_reta_update,
+	.reta_query           = axgbe_dev_rss_reta_query,
+	.rss_hash_update      = axgbe_dev_rss_hash_update,
+	.rss_hash_conf_get    = axgbe_dev_rss_hash_conf_get,
 	.dev_infos_get        = axgbe_dev_info_get,
 	.rx_queue_setup       = axgbe_dev_rx_queue_setup,
 	.rx_queue_release     = axgbe_dev_rx_queue_release,
 	.tx_queue_setup       = axgbe_dev_tx_queue_setup,
 	.tx_queue_release     = axgbe_dev_tx_queue_release,
+	.flow_ctrl_get        = axgbe_flow_ctrl_get,
+	.flow_ctrl_set        = axgbe_flow_ctrl_set,
+	.priority_flow_ctrl_set = axgbe_priority_flow_ctrl_set,
+	.rxq_info_get                 = axgbe_rxq_info_get,
+	.txq_info_get                 = axgbe_txq_info_get,
+	.dev_supported_ptypes_get     = axgbe_dev_supported_ptypes_get,
+	.mtu_set		= axgb_mtu_set,
+	.timesync_enable              = axgbe_timesync_enable,
+	.timesync_disable             = axgbe_timesync_disable,
+	.timesync_read_rx_timestamp   = axgbe_timesync_read_rx_timestamp,
+	.timesync_read_tx_timestamp   = axgbe_timesync_read_tx_timestamp,
+	.timesync_adjust_time         = axgbe_timesync_adjust_time,
+	.timesync_read_time           = axgbe_timesync_read_time,
+	.timesync_write_time          = axgbe_timesync_write_time,
 };
 
 static int axgbe_phy_reset(struct axgbe_port *pdata)
@@ -110,7 +275,7 @@ static int axgbe_phy_reset(struct axgbe_port *pdata)
  * @param handle
  *  Pointer to interrupt handle.
  * @param param
- *  The address of parameter (struct rte_eth_dev *) regsitered before.
+ *  The address of parameter (struct rte_eth_dev *) registered before.
  *
  * @return
  *  void
@@ -125,12 +290,14 @@ axgbe_dev_interrupt_handler(void *param)
 	pdata->phy_if.an_isr(pdata);
 	/*DMA related interrupts*/
 	dma_isr = AXGMAC_IOREAD(pdata, DMA_ISR);
+	PMD_DRV_LOG(DEBUG, "DMA_ISR=%#010x\n", dma_isr);
 	if (dma_isr) {
 		if (dma_isr & 1) {
 			dma_ch_isr =
 				AXGMAC_DMA_IOREAD((struct axgbe_rx_queue *)
 						  pdata->rx_queues[0],
 						  DMA_CH_SR);
+			PMD_DRV_LOG(DEBUG, "DMA_CH0_ISR=%#010x\n", dma_ch_isr);
 			AXGMAC_DMA_IOWRITE((struct axgbe_rx_queue *)
 					   pdata->rx_queues[0],
 					   DMA_CH_SR, dma_ch_isr);
@@ -173,6 +340,10 @@ axgbe_dev_start(struct rte_eth_dev *dev)
 {
 	struct axgbe_port *pdata = dev->data->dev_private;
 	int ret;
+	struct rte_eth_dev_data *dev_data = dev->data;
+	uint16_t max_pkt_len = dev_data->dev_conf.rxmode.max_rx_pkt_len;
+
+	dev->dev_ops = &axgbe_eth_dev_ops;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -201,13 +372,23 @@ axgbe_dev_start(struct rte_eth_dev *dev)
 	axgbe_dev_enable_tx(dev);
 	axgbe_dev_enable_rx(dev);
 
-	axgbe_clear_bit(AXGBE_STOPPED, &pdata->dev_state);
-	axgbe_clear_bit(AXGBE_DOWN, &pdata->dev_state);
+	rte_bit_relaxed_clear32(AXGBE_STOPPED, &pdata->dev_state);
+	rte_bit_relaxed_clear32(AXGBE_DOWN, &pdata->dev_state);
+	if ((dev_data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_SCATTER) ||
+				max_pkt_len > pdata->rx_buf_size)
+		dev_data->scattered_rx = 1;
+
+	/*  Scatter Rx handling */
+	if (dev_data->scattered_rx)
+		dev->rx_pkt_burst = &eth_axgbe_recv_scattered_pkts;
+	else
+		dev->rx_pkt_burst = &axgbe_recv_pkts;
+
 	return 0;
 }
 
 /* Stop device: disable rx and tx functions to allow for reconfiguring. */
-static void
+static int
 axgbe_dev_stop(struct rte_eth_dev *dev)
 {
 	struct axgbe_port *pdata = dev->data->dev_private;
@@ -216,24 +397,19 @@ axgbe_dev_stop(struct rte_eth_dev *dev)
 
 	rte_intr_disable(&pdata->pci_dev->intr_handle);
 
-	if (axgbe_test_bit(AXGBE_STOPPED, &pdata->dev_state))
-		return;
+	if (rte_bit_relaxed_get32(AXGBE_STOPPED, &pdata->dev_state))
+		return 0;
 
-	axgbe_set_bit(AXGBE_STOPPED, &pdata->dev_state);
+	rte_bit_relaxed_set32(AXGBE_STOPPED, &pdata->dev_state);
 	axgbe_dev_disable_tx(dev);
 	axgbe_dev_disable_rx(dev);
 
 	pdata->phy_if.phy_stop(pdata);
 	pdata->hw_if.exit(pdata);
 	memset(&dev->data->dev_link, 0, sizeof(struct rte_eth_link));
-	axgbe_set_bit(AXGBE_DOWN, &pdata->dev_state);
-}
+	rte_bit_relaxed_set32(AXGBE_DOWN, &pdata->dev_state);
 
-/* Clear all resources like TX/RX queues. */
-static void
-axgbe_dev_close(struct rte_eth_dev *dev)
-{
-	axgbe_dev_clear_queues(dev);
+	return 0;
 }
 
 static int
@@ -288,6 +464,263 @@ axgbe_dev_allmulticast_disable(struct rte_eth_dev *dev)
 	return 0;
 }
 
+static int
+axgbe_dev_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+
+	/* Set Default MAC Addr */
+	axgbe_set_mac_addn_addr(pdata, (u8 *)mac_addr, 0);
+
+	return 0;
+}
+
+static int
+axgbe_dev_mac_addr_add(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr,
+			      uint32_t index, uint32_t pool __rte_unused)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+
+	if (index > hw_feat->addn_mac) {
+		PMD_DRV_LOG(ERR, "Invalid Index %d\n", index);
+		return -EINVAL;
+	}
+	axgbe_set_mac_addn_addr(pdata, (u8 *)mac_addr, index);
+	return 0;
+}
+
+static int
+axgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
+			  struct rte_eth_rss_reta_entry64 *reta_conf,
+			  uint16_t reta_size)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	unsigned int i, idx, shift;
+	int ret;
+
+	if (!pdata->rss_enable) {
+		PMD_DRV_LOG(ERR, "RSS not enabled\n");
+		return -ENOTSUP;
+	}
+
+	if (reta_size == 0 || reta_size > AXGBE_RSS_MAX_TABLE_SIZE) {
+		PMD_DRV_LOG(ERR, "reta_size %d is not supported\n", reta_size);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_RETA_GROUP_SIZE;
+		shift = i % RTE_RETA_GROUP_SIZE;
+		if ((reta_conf[idx].mask & (1ULL << shift)) == 0)
+			continue;
+		pdata->rss_table[i] = reta_conf[idx].reta[shift];
+	}
+
+	/* Program the lookup table */
+	ret = axgbe_write_rss_lookup_table(pdata);
+	return ret;
+}
+
+static int
+axgbe_dev_rss_reta_query(struct rte_eth_dev *dev,
+			 struct rte_eth_rss_reta_entry64 *reta_conf,
+			 uint16_t reta_size)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	unsigned int i, idx, shift;
+
+	if (!pdata->rss_enable) {
+		PMD_DRV_LOG(ERR, "RSS not enabled\n");
+		return -ENOTSUP;
+	}
+
+	if (reta_size == 0 || reta_size > AXGBE_RSS_MAX_TABLE_SIZE) {
+		PMD_DRV_LOG(ERR, "reta_size %d is not supported\n", reta_size);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_RETA_GROUP_SIZE;
+		shift = i % RTE_RETA_GROUP_SIZE;
+		if ((reta_conf[idx].mask & (1ULL << shift)) == 0)
+			continue;
+		reta_conf[idx].reta[shift] = pdata->rss_table[i];
+	}
+	return 0;
+}
+
+static int
+axgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
+			  struct rte_eth_rss_conf *rss_conf)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	int ret;
+
+	if (!pdata->rss_enable) {
+		PMD_DRV_LOG(ERR, "RSS not enabled\n");
+		return -ENOTSUP;
+	}
+
+	if (rss_conf == NULL) {
+		PMD_DRV_LOG(ERR, "rss_conf value isn't valid\n");
+		return -EINVAL;
+	}
+
+	if (rss_conf->rss_key != NULL &&
+	    rss_conf->rss_key_len == AXGBE_RSS_HASH_KEY_SIZE) {
+		rte_memcpy(pdata->rss_key, rss_conf->rss_key,
+		       AXGBE_RSS_HASH_KEY_SIZE);
+		/* Program the hash key */
+		ret = axgbe_write_rss_hash_key(pdata);
+		if (ret != 0)
+			return ret;
+	}
+
+	pdata->rss_hf = rss_conf->rss_hf & AXGBE_RSS_OFFLOAD;
+
+	if (pdata->rss_hf & (ETH_RSS_IPV4 | ETH_RSS_IPV6))
+		AXGMAC_SET_BITS(pdata->rss_options, MAC_RSSCR, IP2TE, 1);
+	if (pdata->rss_hf &
+	    (ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV6_TCP))
+		AXGMAC_SET_BITS(pdata->rss_options, MAC_RSSCR, TCP4TE, 1);
+	if (pdata->rss_hf &
+	    (ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_NONFRAG_IPV6_UDP))
+		AXGMAC_SET_BITS(pdata->rss_options, MAC_RSSCR, UDP4TE, 1);
+
+	/* Set the RSS options */
+	AXGMAC_IOWRITE(pdata, MAC_RSSCR, pdata->rss_options);
+
+	return 0;
+}
+
+static int
+axgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
+			    struct rte_eth_rss_conf *rss_conf)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+
+	if (!pdata->rss_enable) {
+		PMD_DRV_LOG(ERR, "RSS not enabled\n");
+		return -ENOTSUP;
+	}
+
+	if (rss_conf == NULL) {
+		PMD_DRV_LOG(ERR, "rss_conf value isn't valid\n");
+		return -EINVAL;
+	}
+
+	if (rss_conf->rss_key != NULL &&
+	    rss_conf->rss_key_len >= AXGBE_RSS_HASH_KEY_SIZE) {
+		rte_memcpy(rss_conf->rss_key, pdata->rss_key,
+		       AXGBE_RSS_HASH_KEY_SIZE);
+	}
+	rss_conf->rss_key_len = AXGBE_RSS_HASH_KEY_SIZE;
+	rss_conf->rss_hf = pdata->rss_hf;
+	return 0;
+}
+
+static void
+axgbe_dev_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+
+	if (index > hw_feat->addn_mac) {
+		PMD_DRV_LOG(ERR, "Invalid Index %d\n", index);
+		return;
+	}
+	axgbe_set_mac_addn_addr(pdata, NULL, index);
+}
+
+static int
+axgbe_dev_set_mc_addr_list(struct rte_eth_dev *dev,
+				      struct rte_ether_addr *mc_addr_set,
+				      uint32_t nb_mc_addr)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+	uint32_t index = 1; /* 0 is always default mac */
+	uint32_t i;
+
+	if (nb_mc_addr > hw_feat->addn_mac) {
+		PMD_DRV_LOG(ERR, "Invalid Index %d\n", nb_mc_addr);
+		return -EINVAL;
+	}
+
+	/* clear unicast addresses */
+	for (i = 1; i < hw_feat->addn_mac; i++) {
+		if (rte_is_zero_ether_addr(&dev->data->mac_addrs[i]))
+			continue;
+		memset(&dev->data->mac_addrs[i], 0,
+		       sizeof(struct rte_ether_addr));
+	}
+
+	while (nb_mc_addr--)
+		axgbe_set_mac_addn_addr(pdata, (u8 *)mc_addr_set++, index++);
+
+	return 0;
+}
+
+static int
+axgbe_dev_uc_hash_table_set(struct rte_eth_dev *dev,
+			    struct rte_ether_addr *mac_addr, uint8_t add)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+
+	if (!hw_feat->hash_table_size) {
+		PMD_DRV_LOG(ERR, "MAC Hash Table not supported\n");
+		return -ENOTSUP;
+	}
+
+	axgbe_set_mac_hash_table(pdata, (u8 *)mac_addr, add);
+
+	if (pdata->uc_hash_mac_addr > 0) {
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HPF, 1);
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HUC, 1);
+	} else {
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HPF, 0);
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HUC, 0);
+	}
+	return 0;
+}
+
+static int
+axgbe_dev_uc_all_hash_table_set(struct rte_eth_dev *dev, uint8_t add)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+	uint32_t index;
+
+	if (!hw_feat->hash_table_size) {
+		PMD_DRV_LOG(ERR, "MAC Hash Table not supported\n");
+		return -ENOTSUP;
+	}
+
+	for (index = 0; index < pdata->hash_table_count; index++) {
+		if (add)
+			pdata->uc_hash_table[index] = ~0;
+		else
+			pdata->uc_hash_table[index] = 0;
+
+		PMD_DRV_LOG(DEBUG, "%s MAC hash table at Index %#x\n",
+			    add ? "set" : "clear", index);
+
+		AXGMAC_IOWRITE(pdata, MAC_HTR(index),
+			       pdata->uc_hash_table[index]);
+	}
+
+	if (add) {
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HPF, 1);
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HUC, 1);
+	} else {
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HPF, 0);
+		AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, HUC, 0);
+	}
+	return 0;
+}
+
 /* return 0 means link status changed, -1 means not changed */
 static int
 axgbe_dev_link_update(struct rte_eth_dev *dev,
@@ -316,12 +749,360 @@ axgbe_dev_link_update(struct rte_eth_dev *dev,
 }
 
 static int
+axgbe_dev_get_regs(struct rte_eth_dev *dev, struct rte_dev_reg_info *regs)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+
+	if (regs->data == NULL) {
+		regs->length = axgbe_regs_get_count(pdata);
+		regs->width = sizeof(uint32_t);
+		return 0;
+	}
+
+	/* Only full register dump is supported */
+	if (regs->length &&
+	    regs->length != (uint32_t)axgbe_regs_get_count(pdata))
+		return -ENOTSUP;
+
+	regs->version = pdata->pci_dev->id.vendor_id << 16 |
+			pdata->pci_dev->id.device_id;
+	axgbe_regs_dump(pdata, regs->data);
+	return 0;
+}
+static void axgbe_read_mmc_stats(struct axgbe_port *pdata)
+{
+	struct axgbe_mmc_stats *stats = &pdata->mmc_stats;
+
+	/* Freeze counters */
+	AXGMAC_IOWRITE_BITS(pdata, MMC_CR, MCF, 1);
+
+	/* Tx counters */
+	stats->txoctetcount_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TXOCTETCOUNT_GB_LO);
+	stats->txoctetcount_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXOCTETCOUNT_GB_HI) << 32);
+
+	stats->txframecount_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TXFRAMECOUNT_GB_LO);
+	stats->txframecount_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXFRAMECOUNT_GB_HI) << 32);
+
+	stats->txbroadcastframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_TXBROADCASTFRAMES_G_LO);
+	stats->txbroadcastframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXBROADCASTFRAMES_G_HI) << 32);
+
+	stats->txmulticastframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_TXMULTICASTFRAMES_G_LO);
+	stats->txmulticastframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXMULTICASTFRAMES_G_HI) << 32);
+
+	stats->tx64octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TX64OCTETS_GB_LO);
+	stats->tx64octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TX64OCTETS_GB_HI) << 32);
+
+	stats->tx65to127octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TX65TO127OCTETS_GB_LO);
+	stats->tx65to127octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TX65TO127OCTETS_GB_HI) << 32);
+
+	stats->tx128to255octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TX128TO255OCTETS_GB_LO);
+	stats->tx128to255octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TX128TO255OCTETS_GB_HI) << 32);
+
+	stats->tx256to511octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TX256TO511OCTETS_GB_LO);
+	stats->tx256to511octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TX256TO511OCTETS_GB_HI) << 32);
+
+	stats->tx512to1023octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TX512TO1023OCTETS_GB_LO);
+	stats->tx512to1023octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TX512TO1023OCTETS_GB_HI) << 32);
+
+	stats->tx1024tomaxoctets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TX1024TOMAXOCTETS_GB_LO);
+	stats->tx1024tomaxoctets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TX1024TOMAXOCTETS_GB_HI) << 32);
+
+	stats->txunicastframes_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TXUNICASTFRAMES_GB_LO);
+	stats->txunicastframes_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXUNICASTFRAMES_GB_HI) << 32);
+
+	stats->txmulticastframes_gb +=
+		AXGMAC_IOREAD(pdata, MMC_TXMULTICASTFRAMES_GB_LO);
+	stats->txmulticastframes_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXMULTICASTFRAMES_GB_HI) << 32);
+
+	stats->txbroadcastframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_TXBROADCASTFRAMES_GB_LO);
+	stats->txbroadcastframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXBROADCASTFRAMES_GB_HI) << 32);
+
+	stats->txunderflowerror +=
+		AXGMAC_IOREAD(pdata, MMC_TXUNDERFLOWERROR_LO);
+	stats->txunderflowerror +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXUNDERFLOWERROR_HI) << 32);
+
+	stats->txoctetcount_g +=
+		AXGMAC_IOREAD(pdata, MMC_TXOCTETCOUNT_G_LO);
+	stats->txoctetcount_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXOCTETCOUNT_G_HI) << 32);
+
+	stats->txframecount_g +=
+		AXGMAC_IOREAD(pdata, MMC_TXFRAMECOUNT_G_LO);
+	stats->txframecount_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXFRAMECOUNT_G_HI) << 32);
+
+	stats->txpauseframes +=
+		AXGMAC_IOREAD(pdata, MMC_TXPAUSEFRAMES_LO);
+	stats->txpauseframes +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXPAUSEFRAMES_HI) << 32);
+
+	stats->txvlanframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_TXVLANFRAMES_G_LO);
+	stats->txvlanframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_TXVLANFRAMES_G_HI) << 32);
+
+	/* Rx counters */
+	stats->rxframecount_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RXFRAMECOUNT_GB_LO);
+	stats->rxframecount_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXFRAMECOUNT_GB_HI) << 32);
+
+	stats->rxoctetcount_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RXOCTETCOUNT_GB_LO);
+	stats->rxoctetcount_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXOCTETCOUNT_GB_HI) << 32);
+
+	stats->rxoctetcount_g +=
+		AXGMAC_IOREAD(pdata, MMC_RXOCTETCOUNT_G_LO);
+	stats->rxoctetcount_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXOCTETCOUNT_G_HI) << 32);
+
+	stats->rxbroadcastframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_RXBROADCASTFRAMES_G_LO);
+	stats->rxbroadcastframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXBROADCASTFRAMES_G_HI) << 32);
+
+	stats->rxmulticastframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_RXMULTICASTFRAMES_G_LO);
+	stats->rxmulticastframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXMULTICASTFRAMES_G_HI) << 32);
+
+	stats->rxcrcerror +=
+		AXGMAC_IOREAD(pdata, MMC_RXCRCERROR_LO);
+	stats->rxcrcerror +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXCRCERROR_HI) << 32);
+
+	stats->rxrunterror +=
+		AXGMAC_IOREAD(pdata, MMC_RXRUNTERROR);
+
+	stats->rxjabbererror +=
+		AXGMAC_IOREAD(pdata, MMC_RXJABBERERROR);
+
+	stats->rxundersize_g +=
+		AXGMAC_IOREAD(pdata, MMC_RXUNDERSIZE_G);
+
+	stats->rxoversize_g +=
+		AXGMAC_IOREAD(pdata, MMC_RXOVERSIZE_G);
+
+	stats->rx64octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RX64OCTETS_GB_LO);
+	stats->rx64octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RX64OCTETS_GB_HI) << 32);
+
+	stats->rx65to127octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RX65TO127OCTETS_GB_LO);
+	stats->rx65to127octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RX65TO127OCTETS_GB_HI) << 32);
+
+	stats->rx128to255octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RX128TO255OCTETS_GB_LO);
+	stats->rx128to255octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RX128TO255OCTETS_GB_HI) << 32);
+
+	stats->rx256to511octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RX256TO511OCTETS_GB_LO);
+	stats->rx256to511octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RX256TO511OCTETS_GB_HI) << 32);
+
+	stats->rx512to1023octets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RX512TO1023OCTETS_GB_LO);
+	stats->rx512to1023octets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RX512TO1023OCTETS_GB_HI) << 32);
+
+	stats->rx1024tomaxoctets_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RX1024TOMAXOCTETS_GB_LO);
+	stats->rx1024tomaxoctets_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RX1024TOMAXOCTETS_GB_HI) << 32);
+
+	stats->rxunicastframes_g +=
+		AXGMAC_IOREAD(pdata, MMC_RXUNICASTFRAMES_G_LO);
+	stats->rxunicastframes_g +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXUNICASTFRAMES_G_HI) << 32);
+
+	stats->rxlengtherror +=
+		AXGMAC_IOREAD(pdata, MMC_RXLENGTHERROR_LO);
+	stats->rxlengtherror +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXLENGTHERROR_HI) << 32);
+
+	stats->rxoutofrangetype +=
+		AXGMAC_IOREAD(pdata, MMC_RXOUTOFRANGETYPE_LO);
+	stats->rxoutofrangetype +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXOUTOFRANGETYPE_HI) << 32);
+
+	stats->rxpauseframes +=
+		AXGMAC_IOREAD(pdata, MMC_RXPAUSEFRAMES_LO);
+	stats->rxpauseframes +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXPAUSEFRAMES_HI) << 32);
+
+	stats->rxfifooverflow +=
+		AXGMAC_IOREAD(pdata, MMC_RXFIFOOVERFLOW_LO);
+	stats->rxfifooverflow +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXFIFOOVERFLOW_HI) << 32);
+
+	stats->rxvlanframes_gb +=
+		AXGMAC_IOREAD(pdata, MMC_RXVLANFRAMES_GB_LO);
+	stats->rxvlanframes_gb +=
+	((uint64_t)AXGMAC_IOREAD(pdata, MMC_RXVLANFRAMES_GB_HI) << 32);
+
+	stats->rxwatchdogerror +=
+		AXGMAC_IOREAD(pdata, MMC_RXWATCHDOGERROR);
+
+	/* Un-freeze counters */
+	AXGMAC_IOWRITE_BITS(pdata, MMC_CR, MCF, 0);
+}
+
+static int
+axgbe_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,
+		     unsigned int n)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	unsigned int i;
+
+	if (n < AXGBE_XSTATS_COUNT)
+		return AXGBE_XSTATS_COUNT;
+
+	axgbe_read_mmc_stats(pdata);
+
+	for (i = 0; i < AXGBE_XSTATS_COUNT; i++) {
+		stats[i].id = i;
+		stats[i].value = *(u64 *)((uint8_t *)&pdata->mmc_stats +
+				axgbe_xstats_strings[i].offset);
+	}
+
+	return AXGBE_XSTATS_COUNT;
+}
+
+static int
+axgbe_dev_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
+			   struct rte_eth_xstat_name *xstats_names,
+			   unsigned int n)
+{
+	unsigned int i;
+
+	if (n >= AXGBE_XSTATS_COUNT && xstats_names) {
+		for (i = 0; i < AXGBE_XSTATS_COUNT; ++i) {
+			snprintf(xstats_names[i].name,
+				 RTE_ETH_XSTATS_NAME_SIZE, "%s",
+				 axgbe_xstats_strings[i].name);
+		}
+	}
+
+	return AXGBE_XSTATS_COUNT;
+}
+
+static int
+axgbe_dev_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
+			   uint64_t *values, unsigned int n)
+{
+	unsigned int i;
+	uint64_t values_copy[AXGBE_XSTATS_COUNT];
+
+	if (!ids) {
+		struct axgbe_port *pdata = dev->data->dev_private;
+
+		if (n < AXGBE_XSTATS_COUNT)
+			return AXGBE_XSTATS_COUNT;
+
+		axgbe_read_mmc_stats(pdata);
+
+		for (i = 0; i < AXGBE_XSTATS_COUNT; i++) {
+			values[i] = *(u64 *)((uint8_t *)&pdata->mmc_stats +
+					axgbe_xstats_strings[i].offset);
+		}
+
+		return i;
+	}
+
+	axgbe_dev_xstats_get_by_id(dev, NULL, values_copy, AXGBE_XSTATS_COUNT);
+
+	for (i = 0; i < n; i++) {
+		if (ids[i] >= AXGBE_XSTATS_COUNT) {
+			PMD_DRV_LOG(ERR, "id value isn't valid\n");
+			return -1;
+		}
+		values[i] = values_copy[ids[i]];
+	}
+	return n;
+}
+
+static int
+axgbe_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
+				 struct rte_eth_xstat_name *xstats_names,
+				 const uint64_t *ids,
+				 unsigned int size)
+{
+	struct rte_eth_xstat_name xstats_names_copy[AXGBE_XSTATS_COUNT];
+	unsigned int i;
+
+	if (!ids)
+		return axgbe_dev_xstats_get_names(dev, xstats_names, size);
+
+	axgbe_dev_xstats_get_names(dev, xstats_names_copy, size);
+
+	for (i = 0; i < size; i++) {
+		if (ids[i] >= AXGBE_XSTATS_COUNT) {
+			PMD_DRV_LOG(ERR, "id value isn't valid\n");
+			return -1;
+		}
+		strcpy(xstats_names[i].name, xstats_names_copy[ids[i]].name);
+	}
+	return size;
+}
+
+static int
+axgbe_dev_xstats_reset(struct rte_eth_dev *dev)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_mmc_stats *stats = &pdata->mmc_stats;
+
+	/* MMC registers are configured for reset on read */
+	axgbe_read_mmc_stats(pdata);
+
+	/* Reset stats */
+	memset(stats, 0, sizeof(*stats));
+
+	return 0;
+}
+
+static int
 axgbe_dev_stats_get(struct rte_eth_dev *dev,
 		    struct rte_eth_stats *stats)
 {
 	struct axgbe_rx_queue *rxq;
 	struct axgbe_tx_queue *txq;
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct axgbe_mmc_stats *mmc_stats = &pdata->mmc_stats;
 	unsigned int i;
+
+	axgbe_read_mmc_stats(pdata);
+
+	stats->imissed = mmc_stats->rxfifooverflow;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxq = dev->data->rx_queues[i];
@@ -329,13 +1110,18 @@ axgbe_dev_stats_get(struct rte_eth_dev *dev,
 		stats->ipackets += rxq->pkts;
 		stats->q_ibytes[i] = rxq->bytes;
 		stats->ibytes += rxq->bytes;
+		stats->rx_nombuf += rxq->rx_mbuf_alloc_failed;
+		stats->q_errors[i] = rxq->errors + rxq->rx_mbuf_alloc_failed;
+		stats->ierrors += rxq->errors;
 	}
+
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		txq = dev->data->tx_queues[i];
 		stats->q_opackets[i] = txq->pkts;
 		stats->opackets += txq->pkts;
 		stats->q_obytes[i] = txq->bytes;
 		stats->obytes += txq->bytes;
+		stats->oerrors += txq->errors;
 	}
 
 	return 0;
@@ -353,6 +1139,7 @@ axgbe_dev_stats_reset(struct rte_eth_dev *dev)
 		rxq->pkts = 0;
 		rxq->bytes = 0;
 		rxq->errors = 0;
+		rxq->rx_mbuf_alloc_failed = 0;
 	}
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		txq = dev->data->tx_queues[i];
@@ -373,13 +1160,16 @@ axgbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_tx_queues = pdata->tx_ring_count;
 	dev_info->min_rx_bufsize = AXGBE_RX_MIN_BUF_SIZE;
 	dev_info->max_rx_pktlen = AXGBE_RX_MAX_BUF_SIZE;
-	dev_info->max_mac_addrs = AXGBE_MAX_MAC_ADDRS;
+	dev_info->max_mac_addrs = pdata->hw_feat.addn_mac + 1;
+	dev_info->max_hash_mac_addrs = pdata->hw_feat.hash_table_size;
 	dev_info->speed_capa =  ETH_LINK_SPEED_10G;
 
 	dev_info->rx_offload_capa =
 		DEV_RX_OFFLOAD_IPV4_CKSUM |
 		DEV_RX_OFFLOAD_UDP_CKSUM  |
 		DEV_RX_OFFLOAD_TCP_CKSUM  |
+		DEV_RX_OFFLOAD_JUMBO_FRAME	|
+		DEV_RX_OFFLOAD_SCATTER	  |
 		DEV_RX_OFFLOAD_KEEP_CRC;
 
 	dev_info->tx_offload_capa =
@@ -404,6 +1194,567 @@ axgbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.tx_free_thresh = AXGBE_TX_FREE_THRESH,
 	};
 
+	return 0;
+}
+
+static int
+axgbe_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct xgbe_fc_info fc = pdata->fc;
+	unsigned int reg, reg_val = 0;
+
+	reg = MAC_Q0TFCR;
+	reg_val = AXGMAC_IOREAD(pdata, reg);
+	fc.low_water[0] =  AXGMAC_MTL_IOREAD_BITS(pdata, 0, MTL_Q_RQFCR, RFA);
+	fc.high_water[0] =  AXGMAC_MTL_IOREAD_BITS(pdata, 0, MTL_Q_RQFCR, RFD);
+	fc.pause_time[0] = AXGMAC_GET_BITS(reg_val, MAC_Q0TFCR, PT);
+	fc.autoneg = pdata->pause_autoneg;
+
+	if (pdata->rx_pause && pdata->tx_pause)
+		fc.mode = RTE_FC_FULL;
+	else if (pdata->rx_pause)
+		fc.mode = RTE_FC_RX_PAUSE;
+	else if (pdata->tx_pause)
+		fc.mode = RTE_FC_TX_PAUSE;
+	else
+		fc.mode = RTE_FC_NONE;
+
+	fc_conf->high_water =  (1024 + (fc.low_water[0] << 9)) / 1024;
+	fc_conf->low_water =  (1024 + (fc.high_water[0] << 9)) / 1024;
+	fc_conf->pause_time = fc.pause_time[0];
+	fc_conf->send_xon = fc.send_xon;
+	fc_conf->mode = fc.mode;
+
+	return 0;
+}
+
+static int
+axgbe_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct xgbe_fc_info fc = pdata->fc;
+	unsigned int reg, reg_val = 0;
+	reg = MAC_Q0TFCR;
+
+	pdata->pause_autoneg = fc_conf->autoneg;
+	pdata->phy.pause_autoneg = pdata->pause_autoneg;
+	fc.send_xon = fc_conf->send_xon;
+	AXGMAC_MTL_IOWRITE_BITS(pdata, 0, MTL_Q_RQFCR, RFA,
+			AXGMAC_FLOW_CONTROL_VALUE(1024 * fc_conf->high_water));
+	AXGMAC_MTL_IOWRITE_BITS(pdata, 0, MTL_Q_RQFCR, RFD,
+			AXGMAC_FLOW_CONTROL_VALUE(1024 * fc_conf->low_water));
+	AXGMAC_SET_BITS(reg_val, MAC_Q0TFCR, PT, fc_conf->pause_time);
+	AXGMAC_IOWRITE(pdata, reg, reg_val);
+	fc.mode = fc_conf->mode;
+
+	if (fc.mode == RTE_FC_FULL) {
+		pdata->tx_pause = 1;
+		pdata->rx_pause = 1;
+	} else if (fc.mode == RTE_FC_RX_PAUSE) {
+		pdata->tx_pause = 0;
+		pdata->rx_pause = 1;
+	} else if (fc.mode == RTE_FC_TX_PAUSE) {
+		pdata->tx_pause = 1;
+		pdata->rx_pause = 0;
+	} else {
+		pdata->tx_pause = 0;
+		pdata->rx_pause = 0;
+	}
+
+	if (pdata->tx_pause != (unsigned int)pdata->phy.tx_pause)
+		pdata->hw_if.config_tx_flow_control(pdata);
+
+	if (pdata->rx_pause != (unsigned int)pdata->phy.rx_pause)
+		pdata->hw_if.config_rx_flow_control(pdata);
+
+	pdata->hw_if.config_flow_control(pdata);
+	pdata->phy.tx_pause = pdata->tx_pause;
+	pdata->phy.rx_pause = pdata->rx_pause;
+
+	return 0;
+}
+
+static int
+axgbe_priority_flow_ctrl_set(struct rte_eth_dev *dev,
+		struct rte_eth_pfc_conf *pfc_conf)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct xgbe_fc_info fc = pdata->fc;
+	uint8_t tc_num;
+
+	tc_num = pdata->pfc_map[pfc_conf->priority];
+
+	if (pfc_conf->priority >= pdata->hw_feat.tc_cnt) {
+		PMD_INIT_LOG(ERR, "Max supported  traffic class: %d\n",
+				pdata->hw_feat.tc_cnt);
+	return -EINVAL;
+	}
+
+	pdata->pause_autoneg = pfc_conf->fc.autoneg;
+	pdata->phy.pause_autoneg = pdata->pause_autoneg;
+	fc.send_xon = pfc_conf->fc.send_xon;
+	AXGMAC_MTL_IOWRITE_BITS(pdata, tc_num, MTL_Q_RQFCR, RFA,
+		AXGMAC_FLOW_CONTROL_VALUE(1024 * pfc_conf->fc.high_water));
+	AXGMAC_MTL_IOWRITE_BITS(pdata, tc_num, MTL_Q_RQFCR, RFD,
+		AXGMAC_FLOW_CONTROL_VALUE(1024 * pfc_conf->fc.low_water));
+
+	switch (tc_num) {
+	case 0:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM0R,
+				PSTC0, pfc_conf->fc.pause_time);
+		break;
+	case 1:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM0R,
+				PSTC1, pfc_conf->fc.pause_time);
+		break;
+	case 2:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM0R,
+				PSTC2, pfc_conf->fc.pause_time);
+		break;
+	case 3:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM0R,
+				PSTC3, pfc_conf->fc.pause_time);
+		break;
+	case 4:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM1R,
+				PSTC4, pfc_conf->fc.pause_time);
+		break;
+	case 5:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM1R,
+				PSTC5, pfc_conf->fc.pause_time);
+		break;
+	case 7:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM1R,
+				PSTC6, pfc_conf->fc.pause_time);
+		break;
+	case 6:
+		AXGMAC_IOWRITE_BITS(pdata, MTL_TCPM1R,
+				PSTC7, pfc_conf->fc.pause_time);
+		break;
+	}
+
+	fc.mode = pfc_conf->fc.mode;
+
+	if (fc.mode == RTE_FC_FULL) {
+		pdata->tx_pause = 1;
+		pdata->rx_pause = 1;
+		AXGMAC_IOWRITE_BITS(pdata, MAC_RFCR, PFCE, 1);
+	} else if (fc.mode == RTE_FC_RX_PAUSE) {
+		pdata->tx_pause = 0;
+		pdata->rx_pause = 1;
+		AXGMAC_IOWRITE_BITS(pdata, MAC_RFCR, PFCE, 1);
+	} else if (fc.mode == RTE_FC_TX_PAUSE) {
+		pdata->tx_pause = 1;
+		pdata->rx_pause = 0;
+		AXGMAC_IOWRITE_BITS(pdata, MAC_RFCR, PFCE, 0);
+	} else {
+		pdata->tx_pause = 0;
+		pdata->rx_pause = 0;
+		AXGMAC_IOWRITE_BITS(pdata, MAC_RFCR, PFCE, 0);
+	}
+
+	if (pdata->tx_pause != (unsigned int)pdata->phy.tx_pause)
+		pdata->hw_if.config_tx_flow_control(pdata);
+
+	if (pdata->rx_pause != (unsigned int)pdata->phy.rx_pause)
+		pdata->hw_if.config_rx_flow_control(pdata);
+	pdata->hw_if.config_flow_control(pdata);
+	pdata->phy.tx_pause = pdata->tx_pause;
+	pdata->phy.rx_pause = pdata->rx_pause;
+
+	return 0;
+}
+
+void
+axgbe_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_rxq_info *qinfo)
+{
+	struct   axgbe_rx_queue *rxq;
+
+	rxq = dev->data->rx_queues[queue_id];
+	qinfo->mp = rxq->mb_pool;
+	qinfo->scattered_rx = dev->data->scattered_rx;
+	qinfo->nb_desc = rxq->nb_desc;
+	qinfo->conf.rx_free_thresh = rxq->free_thresh;
+}
+
+void
+axgbe_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_txq_info *qinfo)
+{
+	struct  axgbe_tx_queue *txq;
+
+	txq = dev->data->tx_queues[queue_id];
+	qinfo->nb_desc = txq->nb_desc;
+	qinfo->conf.tx_free_thresh = txq->free_thresh;
+}
+const uint32_t *
+axgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+{
+	static const uint32_t ptypes[] = {
+		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L2_ETHER_TIMESYNC,
+		RTE_PTYPE_L2_ETHER_LLDP,
+		RTE_PTYPE_L2_ETHER_ARP,
+		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_L4_FRAG,
+		RTE_PTYPE_L4_ICMP,
+		RTE_PTYPE_L4_NONFRAG,
+		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_TUNNEL_GRENAT,
+		RTE_PTYPE_TUNNEL_IP,
+		RTE_PTYPE_INNER_L2_ETHER,
+		RTE_PTYPE_INNER_L2_ETHER_VLAN,
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L4_FRAG,
+		RTE_PTYPE_INNER_L4_ICMP,
+		RTE_PTYPE_INNER_L4_NONFRAG,
+		RTE_PTYPE_INNER_L4_SCTP,
+		RTE_PTYPE_INNER_L4_TCP,
+		RTE_PTYPE_INNER_L4_UDP,
+		RTE_PTYPE_UNKNOWN
+	};
+
+	if (dev->rx_pkt_burst == axgbe_recv_pkts)
+		return ptypes;
+	return NULL;
+}
+
+static int axgb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
+{
+	struct rte_eth_dev_info dev_info;
+	struct axgbe_port *pdata = dev->data->dev_private;
+	uint32_t frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+	unsigned int val = 0;
+	axgbe_dev_info_get(dev, &dev_info);
+	/* check that mtu is within the allowed range */
+	if (mtu < RTE_ETHER_MIN_MTU || frame_size > dev_info.max_rx_pktlen)
+		return -EINVAL;
+	/* mtu setting is forbidden if port is start */
+	if (dev->data->dev_started) {
+		PMD_DRV_LOG(ERR, "port %d must be stopped before configuration",
+				dev->data->port_id);
+		return -EBUSY;
+	}
+	if (frame_size > AXGBE_ETH_MAX_LEN) {
+		dev->data->dev_conf.rxmode.offloads |=
+			DEV_RX_OFFLOAD_JUMBO_FRAME;
+		val = 1;
+	} else {
+		dev->data->dev_conf.rxmode.offloads &=
+			~DEV_RX_OFFLOAD_JUMBO_FRAME;
+		val = 0;
+	}
+	AXGMAC_IOWRITE_BITS(pdata, MAC_RCR, JE, val);
+	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
+	return 0;
+}
+
+static void
+axgbe_update_tstamp_time(struct axgbe_port *pdata,
+		unsigned int sec, unsigned int nsec, int addsub)
+{
+	unsigned int count = 100;
+	uint32_t sub_val = 0;
+	uint32_t sub_val_sec = 0xFFFFFFFF;
+	uint32_t sub_val_nsec = 0x3B9ACA00;
+
+	if (addsub) {
+		if (sec)
+			sub_val = sub_val_sec - (sec - 1);
+		else
+			sub_val = sec;
+
+		AXGMAC_IOWRITE(pdata, MAC_STSUR, sub_val);
+		sub_val = sub_val_nsec - nsec;
+		AXGMAC_IOWRITE(pdata, MAC_STNUR, sub_val);
+		AXGMAC_IOWRITE_BITS(pdata, MAC_STNUR, ADDSUB, 1);
+	} else {
+		AXGMAC_IOWRITE(pdata, MAC_STSUR, sec);
+		AXGMAC_IOWRITE_BITS(pdata, MAC_STNUR, ADDSUB, 0);
+		AXGMAC_IOWRITE(pdata, MAC_STNUR, nsec);
+	}
+	AXGMAC_IOWRITE_BITS(pdata, MAC_TSCR, TSUPDT, 1);
+	/* Wait for time update to complete */
+	while (--count && AXGMAC_IOREAD_BITS(pdata, MAC_TSCR, TSUPDT))
+		rte_delay_ms(1);
+}
+
+static inline uint64_t
+div_u64_rem(uint64_t dividend, uint32_t divisor, uint32_t *remainder)
+{
+	*remainder = dividend % divisor;
+	return dividend / divisor;
+}
+
+static inline uint64_t
+div_u64(uint64_t dividend, uint32_t divisor)
+{
+	uint32_t remainder;
+	return div_u64_rem(dividend, divisor, &remainder);
+}
+
+static int
+axgbe_adjfreq(struct axgbe_port *pdata, int64_t delta)
+{
+	uint64_t adjust;
+	uint32_t addend, diff;
+	unsigned int neg_adjust = 0;
+
+	if (delta < 0) {
+		neg_adjust = 1;
+		delta = -delta;
+	}
+	adjust = (uint64_t)pdata->tstamp_addend;
+	adjust *= delta;
+	diff = (uint32_t)div_u64(adjust, 1000000000UL);
+	addend = (neg_adjust) ? pdata->tstamp_addend - diff :
+				pdata->tstamp_addend + diff;
+	pdata->tstamp_addend = addend;
+	axgbe_update_tstamp_addend(pdata, addend);
+	return 0;
+}
+
+static int
+axgbe_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	struct timespec timestamp_delta;
+
+	axgbe_adjfreq(pdata, delta);
+	pdata->systime_tc.nsec += delta;
+
+	if (delta < 0) {
+		delta = -delta;
+		timestamp_delta = rte_ns_to_timespec(delta);
+		axgbe_update_tstamp_time(pdata, timestamp_delta.tv_sec,
+				timestamp_delta.tv_nsec, 1);
+	} else {
+		timestamp_delta = rte_ns_to_timespec(delta);
+		axgbe_update_tstamp_time(pdata, timestamp_delta.tv_sec,
+				timestamp_delta.tv_nsec, 0);
+	}
+	return 0;
+}
+
+static int
+axgbe_timesync_read_time(struct rte_eth_dev *dev,
+		struct timespec *timestamp)
+{
+	uint64_t nsec;
+	struct axgbe_port *pdata = dev->data->dev_private;
+
+	nsec = AXGMAC_IOREAD(pdata, MAC_STSR);
+	nsec *= NSEC_PER_SEC;
+	nsec += AXGMAC_IOREAD(pdata, MAC_STNR);
+	*timestamp = rte_ns_to_timespec(nsec);
+	return 0;
+}
+static int
+axgbe_timesync_write_time(struct rte_eth_dev *dev,
+				    const struct timespec *timestamp)
+{
+	unsigned int count = 100;
+	struct axgbe_port *pdata = dev->data->dev_private;
+
+	AXGMAC_IOWRITE(pdata, MAC_STSUR, timestamp->tv_sec);
+	AXGMAC_IOWRITE(pdata, MAC_STNUR, timestamp->tv_nsec);
+	AXGMAC_IOWRITE_BITS(pdata, MAC_TSCR, TSUPDT, 1);
+	/* Wait for time update to complete */
+	while (--count && AXGMAC_IOREAD_BITS(pdata, MAC_TSCR, TSUPDT))
+		rte_delay_ms(1);
+	if (!count)
+		PMD_DRV_LOG(ERR, "Timed out update timestamp\n");
+	return 0;
+}
+
+static void
+axgbe_update_tstamp_addend(struct axgbe_port *pdata,
+		uint32_t addend)
+{
+	unsigned int count = 100;
+
+	AXGMAC_IOWRITE(pdata, MAC_TSAR, addend);
+	AXGMAC_IOWRITE_BITS(pdata, MAC_TSCR, TSADDREG, 1);
+
+	/* Wait for addend update to complete */
+	while (--count && AXGMAC_IOREAD_BITS(pdata, MAC_TSCR, TSADDREG))
+		rte_delay_ms(1);
+	if (!count)
+		PMD_DRV_LOG(ERR, "Timed out updating timestamp addend register\n");
+}
+
+static void
+axgbe_set_tstamp_time(struct axgbe_port *pdata, unsigned int sec,
+		unsigned int nsec)
+{
+	unsigned int count = 100;
+
+	/*System Time Sec Update*/
+	AXGMAC_IOWRITE(pdata, MAC_STSUR, sec);
+	/*System Time nanoSec Update*/
+	AXGMAC_IOWRITE(pdata, MAC_STNUR, nsec);
+	/*Initialize Timestamp*/
+	AXGMAC_IOWRITE_BITS(pdata, MAC_TSCR, TSINIT, 1);
+
+	/* Wait for time update to complete */
+	while (--count && AXGMAC_IOREAD_BITS(pdata, MAC_TSCR, TSINIT))
+		rte_delay_ms(1);
+	if (!count)
+		PMD_DRV_LOG(ERR, "Timed out initializing timestamp\n");
+}
+
+static int
+axgbe_timesync_enable(struct rte_eth_dev *dev)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	unsigned int mac_tscr = 0;
+	uint64_t dividend;
+	struct timespec timestamp;
+	uint64_t nsec;
+
+	/* Set one nano-second accuracy */
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSCTRLSSR, 1);
+
+	/* Set fine timestamp update */
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSCFUPDT, 1);
+
+	/* Overwrite earlier timestamps */
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TXTSSTSM, 1);
+
+	AXGMAC_IOWRITE(pdata, MAC_TSCR, mac_tscr);
+
+	/* Enabling processing of ptp over eth pkt */
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSIPENA, 1);
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSVER2ENA, 1);
+	/* Enable timestamp for all pkts*/
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSENALL, 1);
+
+	/* enabling timestamp */
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSENA, 1);
+	AXGMAC_IOWRITE(pdata, MAC_TSCR, mac_tscr);
+
+	/* Exit if timestamping is not enabled */
+	if (!AXGMAC_GET_BITS(mac_tscr, MAC_TSCR, TSENA)) {
+		PMD_DRV_LOG(ERR, "Exiting as timestamp is not enabled\n");
+		return 0;
+	}
+
+	/* Sub-second Increment Value*/
+	AXGMAC_IOWRITE_BITS(pdata, MAC_SSIR, SSINC, AXGBE_TSTAMP_SSINC);
+	/* Sub-nanosecond Increment Value */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_SSIR, SNSINC, AXGBE_TSTAMP_SNSINC);
+
+	pdata->ptpclk_rate = AXGBE_V2_PTP_CLOCK_FREQ;
+	dividend = 50000000;
+	dividend <<= 32;
+	pdata->tstamp_addend = div_u64(dividend, pdata->ptpclk_rate);
+
+	axgbe_update_tstamp_addend(pdata, pdata->tstamp_addend);
+	axgbe_set_tstamp_time(pdata, 0, 0);
+
+	/* Initialize the timecounter */
+	memset(&pdata->systime_tc, 0, sizeof(struct rte_timecounter));
+
+	pdata->systime_tc.cc_mask = AXGBE_CYCLECOUNTER_MASK;
+	pdata->systime_tc.cc_shift = 0;
+	pdata->systime_tc.nsec_mask = 0;
+
+	PMD_DRV_LOG(DEBUG, "Initializing system time counter with realtime\n");
+
+	/* Updating the counter once with clock real time */
+	clock_gettime(CLOCK_REALTIME, &timestamp);
+	nsec = rte_timespec_to_ns(&timestamp);
+	nsec = rte_timecounter_update(&pdata->systime_tc, nsec);
+	axgbe_set_tstamp_time(pdata, timestamp.tv_sec, timestamp.tv_nsec);
+	return 0;
+}
+
+static int
+axgbe_timesync_disable(struct rte_eth_dev *dev)
+{
+	struct axgbe_port *pdata = dev->data->dev_private;
+	unsigned int mac_tscr = 0;
+
+	/*disable timestamp for all pkts*/
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSENALL, 0);
+	/*disable the addened register*/
+	AXGMAC_IOWRITE_BITS(pdata, MAC_TSCR, TSADDREG, 0);
+	/* disable timestamp update */
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSCFUPDT, 0);
+	/*disable time stamp*/
+	AXGMAC_SET_BITS(mac_tscr, MAC_TSCR, TSENA, 0);
+	return 0;
+}
+
+static int
+axgbe_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
+				struct timespec *timestamp, uint32_t flags)
+{
+	uint64_t nsec = 0;
+	volatile union axgbe_rx_desc *desc;
+	uint16_t idx, pmt;
+	struct axgbe_rx_queue *rxq = *dev->data->rx_queues;
+
+	idx = AXGBE_GET_DESC_IDX(rxq, rxq->cur);
+	desc = &rxq->desc[idx];
+
+	while (AXGMAC_GET_BITS_LE(desc->write.desc3, RX_NORMAL_DESC3, OWN))
+		rte_delay_ms(1);
+	if (AXGMAC_GET_BITS_LE(desc->write.desc3, RX_NORMAL_DESC3, CTXT)) {
+		if (AXGMAC_GET_BITS_LE(desc->write.desc3, RX_CONTEXT_DESC3, TSA) &&
+				!AXGMAC_GET_BITS_LE(desc->write.desc3,
+					RX_CONTEXT_DESC3, TSD)) {
+			pmt = AXGMAC_GET_BITS_LE(desc->write.desc3,
+					RX_CONTEXT_DESC3, PMT);
+			nsec = rte_le_to_cpu_32(desc->write.desc1);
+			nsec *= NSEC_PER_SEC;
+			nsec += rte_le_to_cpu_32(desc->write.desc0);
+			if (nsec != 0xffffffffffffffffULL) {
+				if (pmt == 0x01)
+					*timestamp = rte_ns_to_timespec(nsec);
+				PMD_DRV_LOG(DEBUG,
+					"flags = 0x%x nsec = %"PRIu64"\n",
+					flags, nsec);
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int
+axgbe_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
+				struct timespec *timestamp)
+{
+	uint64_t nsec;
+	struct axgbe_port *pdata = dev->data->dev_private;
+	unsigned int tx_snr, tx_ssr;
+
+	rte_delay_us(5);
+	if (pdata->vdata->tx_tstamp_workaround) {
+		tx_snr = AXGMAC_IOREAD(pdata, MAC_TXSNR);
+		tx_ssr = AXGMAC_IOREAD(pdata, MAC_TXSSR);
+
+	} else {
+		tx_ssr = AXGMAC_IOREAD(pdata, MAC_TXSSR);
+		tx_snr = AXGMAC_IOREAD(pdata, MAC_TXSNR);
+	}
+	if (AXGMAC_GET_BITS(tx_snr, MAC_TXSNR, TXTSSTSMIS)) {
+		PMD_DRV_LOG(DEBUG, "Waiting for TXTSSTSMIS\n");
+		return 0;
+	}
+	nsec = tx_ssr;
+	nsec *= NSEC_PER_SEC;
+	nsec += tx_snr;
+	PMD_DRV_LOG(DEBUG, "nsec = %"PRIu64" tx_ssr = %d tx_snr = %d\n",
+			nsec, tx_ssr, tx_snr);
+	*timestamp = rte_ns_to_timespec(nsec);
 	return 0;
 }
 
@@ -575,6 +1926,29 @@ static void axgbe_default_config(struct axgbe_port *pdata)
 }
 
 /*
+ * Return PCI root complex device id on success else 0
+ */
+static uint16_t
+get_pci_rc_devid(void)
+{
+	char pci_sysfs[PATH_MAX];
+	const struct rte_pci_addr pci_rc_addr = {0, 0, 0, 0};
+	unsigned long device_id;
+
+	snprintf(pci_sysfs, sizeof(pci_sysfs), "%s/" PCI_PRI_FMT "/device",
+		 rte_pci_get_sysfs_path(), pci_rc_addr.domain,
+		 pci_rc_addr.bus, pci_rc_addr.devid, pci_rc_addr.function);
+
+	/* get device id */
+	if (eal_parse_sysfs_value(pci_sysfs, &device_id) < 0) {
+		PMD_INIT_LOG(ERR, "Error in reading PCI sysfs\n");
+		return 0;
+	}
+
+	return (uint16_t)device_id;
+}
+
+/*
  * It returns 0 on success.
  */
 static int
@@ -584,10 +1958,13 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 	struct axgbe_port *pdata;
 	struct rte_pci_device *pci_dev;
 	uint32_t reg, mac_lo, mac_hi;
+	uint32_t len;
 	int ret;
 
 	eth_dev->dev_ops = &axgbe_eth_dev_ops;
-	eth_dev->rx_pkt_burst = &axgbe_recv_pkts;
+
+	eth_dev->rx_descriptor_status = axgbe_dev_rx_descriptor_status;
+	eth_dev->tx_descriptor_status = axgbe_dev_tx_descriptor_status;
 
 	/*
 	 * For secondary processes, we don't initialise any further as primary
@@ -596,14 +1973,27 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+
 	pdata = eth_dev->data->dev_private;
 	/* initial state */
-	axgbe_set_bit(AXGBE_DOWN, &pdata->dev_state);
-	axgbe_set_bit(AXGBE_STOPPED, &pdata->dev_state);
+	rte_bit_relaxed_set32(AXGBE_DOWN, &pdata->dev_state);
+	rte_bit_relaxed_set32(AXGBE_STOPPED, &pdata->dev_state);
 	pdata->eth_dev = eth_dev;
 
 	pci_dev = RTE_DEV_TO_PCI(eth_dev->device);
 	pdata->pci_dev = pci_dev;
+
+	/*
+	 * Use root complex device ID to differentiate RV AXGBE vs SNOWY AXGBE
+	 */
+	if ((get_pci_rc_devid()) == AMD_PCI_RV_ROOT_COMPLEX_ID) {
+		pdata->xpcs_window_def_reg = PCS_V2_RV_WINDOW_DEF;
+		pdata->xpcs_window_sel_reg = PCS_V2_RV_WINDOW_SELECT;
+	} else {
+		pdata->xpcs_window_def_reg = PCS_V2_WINDOW_DEF;
+		pdata->xpcs_window_sel_reg = PCS_V2_WINDOW_SELECT;
+	}
 
 	pdata->xgmac_regs =
 		(void *)pci_dev->mem_resource[AXGBE_AXGMAC_BAR].addr;
@@ -620,14 +2010,13 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 		pdata->vdata = &axgbe_v2b;
 
 	/* Configure the PCS indirect addressing support */
-	reg = XPCS32_IOREAD(pdata, PCS_V2_WINDOW_DEF);
+	reg = XPCS32_IOREAD(pdata, pdata->xpcs_window_def_reg);
 	pdata->xpcs_window = XPCS_GET_BITS(reg, PCS_V2_WINDOW_DEF, OFFSET);
 	pdata->xpcs_window <<= 6;
 	pdata->xpcs_window_size = XPCS_GET_BITS(reg, PCS_V2_WINDOW_DEF, SIZE);
 	pdata->xpcs_window_size = 1 << (pdata->xpcs_window_size + 7);
 	pdata->xpcs_window_mask = pdata->xpcs_window_size - 1;
-	pdata->xpcs_window_def_reg = PCS_V2_WINDOW_DEF;
-	pdata->xpcs_window_sel_reg = PCS_V2_WINDOW_SELECT;
+
 	PMD_INIT_LOG(DEBUG,
 		     "xpcs window :%x, size :%x, mask :%x ", pdata->xpcs_window,
 		     pdata->xpcs_window_size, pdata->xpcs_window_mask);
@@ -643,12 +2032,25 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 	pdata->mac_addr.addr_bytes[4] = mac_hi & 0xff;
 	pdata->mac_addr.addr_bytes[5] = (mac_hi >> 8)  &  0xff;
 
-	eth_dev->data->mac_addrs = rte_zmalloc("axgbe_mac_addr",
-					       RTE_ETHER_ADDR_LEN, 0);
+	len = RTE_ETHER_ADDR_LEN * AXGBE_MAX_MAC_ADDRS;
+	eth_dev->data->mac_addrs = rte_zmalloc("axgbe_mac_addr", len, 0);
+
 	if (!eth_dev->data->mac_addrs) {
 		PMD_INIT_LOG(ERR,
-			     "Failed to alloc %u bytes needed to store MAC addr tbl",
-			     RTE_ETHER_ADDR_LEN);
+			     "Failed to alloc %u bytes needed to "
+			     "store MAC addresses", len);
+		return -ENOMEM;
+	}
+
+	/* Allocate memory for storing hash filter MAC addresses */
+	len = RTE_ETHER_ADDR_LEN * AXGBE_MAX_HASH_MAC_ADDRS;
+	eth_dev->data->hash_mac_addrs = rte_zmalloc("axgbe_hash_mac_addr",
+						    len, 0);
+
+	if (eth_dev->data->hash_mac_addrs == NULL) {
+		PMD_INIT_LOG(ERR,
+			     "Failed to allocate %d bytes needed to "
+			     "store MAC addresses", len);
 		return -ENOMEM;
 	}
 
@@ -727,7 +2129,7 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 }
 
 static int
-eth_axgbe_dev_uninit(struct rte_eth_dev *eth_dev)
+axgbe_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev;
 
@@ -737,9 +2139,6 @@ eth_axgbe_dev_uninit(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	pci_dev = RTE_DEV_TO_PCI(eth_dev->device);
-	eth_dev->dev_ops = NULL;
-	eth_dev->rx_pkt_burst = NULL;
-	eth_dev->tx_pkt_burst = NULL;
 	axgbe_dev_clear_queues(eth_dev);
 
 	/* disable uio intr before callback unregister */
@@ -760,7 +2159,7 @@ static int eth_axgbe_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 static int eth_axgbe_pci_remove(struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_remove(pci_dev, eth_axgbe_dev_uninit);
+	return rte_eth_dev_pci_generic_remove(pci_dev, axgbe_dev_close);
 }
 
 static struct rte_pci_driver rte_axgbe_pmd = {
@@ -773,13 +2172,5 @@ static struct rte_pci_driver rte_axgbe_pmd = {
 RTE_PMD_REGISTER_PCI(net_axgbe, rte_axgbe_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_axgbe, pci_id_axgbe_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_axgbe, "* igb_uio | uio_pci_generic | vfio-pci");
-
-RTE_INIT(axgbe_init_log)
-{
-	axgbe_logtype_init = rte_log_register("pmd.net.axgbe.init");
-	if (axgbe_logtype_init >= 0)
-		rte_log_set_level(axgbe_logtype_init, RTE_LOG_NOTICE);
-	axgbe_logtype_driver = rte_log_register("pmd.net.axgbe.driver");
-	if (axgbe_logtype_driver >= 0)
-		rte_log_set_level(axgbe_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(axgbe_logtype_init, pmd.net.axgbe.init, NOTICE);
+RTE_LOG_REGISTER(axgbe_logtype_driver, pmd.net.axgbe.driver, NOTICE);

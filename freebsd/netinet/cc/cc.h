@@ -51,9 +51,7 @@
 #ifndef _NETINET_CC_CC_H_
 #define _NETINET_CC_CC_H_
 
-#if !defined(_KERNEL)
-#error "no user-servicable parts inside"
-#endif
+#ifdef _KERNEL
 
 /* Global CC vars. */
 extern STAILQ_HEAD(cc_head, cc_algo) cc_list;
@@ -63,6 +61,12 @@ extern struct cc_algo newreno_cc_algo;
 /* Per-netstack bits. */
 VNET_DECLARE(struct cc_algo *, default_cc_ptr);
 #define	V_default_cc_ptr VNET(default_cc_ptr)
+
+VNET_DECLARE(int, cc_do_abe);
+#define	V_cc_do_abe			VNET(cc_do_abe)
+
+VNET_DECLARE(int, cc_abe_frlossreduce);
+#define	V_cc_abe_frlossreduce		VNET(cc_abe_frlossreduce)
 
 /* Define the new net.inet.tcp.cc sysctl tree. */
 SYSCTL_DECL(_net_inet_tcp_cc);
@@ -86,12 +90,13 @@ struct cc_var {
 		struct tcpcb		*tcp;
 		struct sctp_nets	*sctp;
 	} ccvc;
+	uint16_t	nsegs; /* # segments coalesced into current chain. */
 };
 
 /* cc_var flags. */
 #define	CCF_ABC_SENTAWND	0x0001	/* ABC counted cwnd worth of bytes? */
 #define	CCF_CWND_LIMITED	0x0002	/* Are we currently cwnd limited? */
-#define	CCF_DELACK		0x0004	/* Is this ack delayed? */
+#define	CCF_UNUSED1		0x0004	/* unused */
 #define	CCF_ACKNOW		0x0008	/* Will this ack be sent now? */
 #define	CCF_IPHDR_CE		0x0010	/* Does this packet set CE bit? */
 #define	CCF_TCPHDR_CWR		0x0020	/* Does this packet set CWR bit? */
@@ -101,6 +106,7 @@ struct cc_var {
 #define	CC_DUPACK	0x0002	/* Duplicate ACK. */
 #define	CC_PARTIALACK	0x0004	/* Not yet. */
 #define	CC_SACK		0x0008	/* Not yet. */
+#endif /* _KERNEL */
 
 /*
  * Congestion signal types passed to the cong_signal() hook. The highest order 8
@@ -114,6 +120,7 @@ struct cc_var {
 
 #define	CC_SIGPRIVMASK	0xFF000000	/* Mask to check if sig is private. */
 
+#ifdef _KERNEL
 /*
  * Structure to hold data and function pointers that together represent a
  * congestion control algorithm.
@@ -175,4 +182,7 @@ extern struct rwlock cc_list_lock;
 #define	CC_LIST_WUNLOCK()	rw_wunlock(&cc_list_lock)
 #define	CC_LIST_LOCK_ASSERT()	rw_assert(&cc_list_lock, RA_LOCKED)
 
+#define CC_ALGOOPT_LIMIT	2048
+
+#endif /* _KERNEL */
 #endif /* _NETINET_CC_CC_H_ */

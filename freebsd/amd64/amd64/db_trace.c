@@ -27,8 +27,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kdb.h>
@@ -125,7 +123,6 @@ db_frame(struct db_variable *vp, db_expr_t *valuep, int op)
 #define	TRAP		1
 #define	INTERRUPT	2
 #define	SYSCALL		3
-#define	TRAP_INTERRUPT	5
 
 static void db_nextframe(struct amd64_frame **, db_addr_t *, struct thread *);
 static void db_print_stack_entry(const char *, db_addr_t, void *);
@@ -200,30 +197,27 @@ db_nextframe(struct amd64_frame **fp, db_addr_t *ip, struct thread *td)
 	if (name != NULL) {
 		if (strcmp(name, "calltrap") == 0 ||
 		    strcmp(name, "fork_trampoline") == 0 ||
+		    strcmp(name, "mchk_calltrap") == 0 ||
 		    strcmp(name, "nmi_calltrap") == 0 ||
 		    strcmp(name, "Xdblfault") == 0)
 			frame_type = TRAP;
 		else if (strncmp(name, "Xatpic_intr", 11) == 0 ||
 		    strncmp(name, "Xapic_isr", 9) == 0 ||
+		    strcmp(name, "Xxen_intr_upcall") == 0 ||
 		    strcmp(name, "Xtimerint") == 0 ||
 		    strcmp(name, "Xipi_intr_bitmap_handler") == 0 ||
 		    strcmp(name, "Xcpustop") == 0 ||
 		    strcmp(name, "Xcpususpend") == 0 ||
 		    strcmp(name, "Xrendezvous") == 0)
 			frame_type = INTERRUPT;
-		else if (strcmp(name, "Xfast_syscall") == 0)
+		else if (strcmp(name, "Xfast_syscall") == 0 ||
+		    strcmp(name, "Xfast_syscall_pti") == 0 ||
+		    strcmp(name, "fast_syscall_common") == 0)
 			frame_type = SYSCALL;
 #ifdef COMPAT_FREEBSD32
 		else if (strcmp(name, "Xint0x80_syscall") == 0)
 			frame_type = SYSCALL;
 #endif
-		/* XXX: These are interrupts with trap frames. */
-		else if (strcmp(name, "Xtimerint") == 0 ||
-		    strcmp(name, "Xcpustop") == 0 ||
-		    strcmp(name, "Xcpususpend") == 0 ||
-		    strcmp(name, "Xrendezvous") == 0 ||
-		    strcmp(name, "Xipi_intr_bitmap_handler") == 0)
-			frame_type = TRAP_INTERRUPT;
 	}
 
 	/*
@@ -255,7 +249,6 @@ db_nextframe(struct amd64_frame **fp, db_addr_t *ip, struct thread *td)
 			db_printf("--- syscall");
 			decode_syscall(tf->tf_rax, td);
 			break;
-		case TRAP_INTERRUPT:
 		case INTERRUPT:
 			db_printf("--- interrupt");
 			break;
@@ -335,7 +328,8 @@ db_backtrace(struct thread *td, struct trapframe *tf, struct amd64_frame *frame,
 					/* Probably an assembler symbol. */
 					actframe = (void *)(tf->tf_rsp - 8);
 				}
-			} else if (strcmp(name, "fork_trampoline") == 0) {
+			} else if (name != NULL &&
+			    strcmp(name, "fork_trampoline") == 0) {
 				/*
 				 * Don't try to walk back on a stack for a
 				 * process that hasn't actually been run yet.
@@ -460,7 +454,6 @@ amd64_set_watch(watchnum, watchaddr, size, access, d)
 	return (watchnum);
 }
 
-
 int
 amd64_clr_watch(watchnum, d)
 	int watchnum;
@@ -475,7 +468,6 @@ amd64_clr_watch(watchnum, d)
 
 	return (0);
 }
-
 
 int
 db_md_set_watchpoint(addr, size)
@@ -544,7 +536,6 @@ db_md_clr_watchpoint(addr, size)
 			if (DBREG_DRX((d), i) >= addr &&
 			    DBREG_DRX((d), i) < addr + size)
 				amd64_clr_watch(i, d);
-
 		}
 	}
 
@@ -560,7 +551,6 @@ db_md_clr_watchpoint(addr, size)
 	return (0);
 }
 
-
 static const char *
 watchtype_str(type)
 	int type;
@@ -573,9 +563,8 @@ watchtype_str(type)
 	}
 }
 
-
 void
-db_md_list_watchpoints()
+db_md_list_watchpoints(void)
 {
 	struct dbreg d;
 	int i, len, type;
@@ -595,7 +584,7 @@ db_md_list_watchpoints()
 				len++;
 			db_printf("  %-5d  %-8s  %10s  %3d  ",
 			    i, "enabled", watchtype_str(type), len);
-			db_printsym((db_addr_t)DBREG_DRX((&d), i), DB_STGY_ANY);
+			db_printsym((db_addr_t)DBREG_DRX(&d, i), DB_STGY_ANY);
 			db_printf("\n");
 		} else {
 			db_printf("  %-5d  disabled\n", i);
@@ -603,9 +592,9 @@ db_md_list_watchpoints()
 	}
 
 	db_printf("\ndebug register values:\n");
-	for (i = 0; i < 8; i++) {
-		db_printf("  dr%d 0x%016lx\n", i, DBREG_DRX((&d), i));
-	}
+	for (i = 0; i < 8; i++)
+		if (i != 4 && i != 5)
+			db_printf("  dr%d 0x%016lx\n", i, DBREG_DRX(&d, i));
 	db_printf("\n");
 }
 

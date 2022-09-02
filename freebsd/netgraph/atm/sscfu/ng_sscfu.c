@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
  * 	All rights reserved.
@@ -89,7 +91,6 @@ static const struct ng_parse_type ng_sscfu_getdefparam_type = {
 	&ng_parse_struct_type,
 	ng_sscfu_getdefparam_type_info
 };
-
 
 static const struct ng_cmdlist ng_sscfu_cmdlist[] = {
 	{
@@ -222,10 +223,8 @@ ng_sscfu_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	NGI_GET_MSG(item, msg);
 
 	switch (msg->header.typecookie) {
-
 	  case NGM_GENERIC_COOKIE:
 		switch (msg->header.cmd) {
-
 		  case NGM_TEXT_STATUS:
 			NG_MKRESPONSE(resp, msg, NG_TEXTRESPONSE, M_NOWAIT);
 			if (resp == NULL) {
@@ -244,7 +243,6 @@ ng_sscfu_rcvmsg(node_p node, item_p item, hook_p lasthook)
 
 	  case NGM_SSCFU_COOKIE:
 		switch (msg->header.cmd) {
-
 		  case NGM_SSCFU_GETDEFPARAM:
 		    {
 			struct ng_sscfu_getdefparam *p;
@@ -590,7 +588,6 @@ ng_sscfu_mod_event(module_t mod, int event, void *data)
 	int error = 0;
 
 	switch (event) {
-
 	  case MOD_LOAD:
 		break;
 

@@ -20,7 +20,6 @@
 
 #define DES_BLOCK_SIZE 8
 
-int openssl_logtype_driver;
 static uint8_t cryptodev_driver_id;
 
 #if (OPENSSL_VERSION_NUMBER < 0x10100000L)
@@ -2209,7 +2208,8 @@ cryptodev_openssl_create(const char *name,
 			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
 			RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_EXP |
-			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT;
+			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT |
+			RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
 
 	internals = dev->data->dev_private;
 
@@ -2280,8 +2280,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_OPENSSL_PMD,
 	"socket_id=<int>");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(openssl_crypto_drv,
 		cryptodev_openssl_pmd_drv.driver, cryptodev_driver_id);
-
-RTE_INIT(openssl_init_log)
-{
-	openssl_logtype_driver = rte_log_register("pmd.crypto.openssl");
-}
+RTE_LOG_REGISTER(openssl_logtype_driver, pmd.crypto.openssl, INFO);

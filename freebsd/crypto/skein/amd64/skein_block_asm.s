@@ -6,29 +6,33 @@
 #
 # This code is released to the public domain.
 #----------------------------------------------------------------
+# $FreeBSD$
 #
     .text
     .altmacro
+#ifndef __clang__
     .psize 0,128                            #list file has no page boundaries
+#endif
 #
 _MASK_ALL_  =  (256+512+1024)               #all three algorithm bits
 _MAX_FRAME_ =  240
 #
 #################
-.ifndef SKEIN_USE_ASM
+#ifndef SKEIN_USE_ASM
 _USE_ASM_         = _MASK_ALL_
-.else
+#else
 _USE_ASM_         = SKEIN_USE_ASM
-.endif
+#endif
 #################
-.ifndef SKEIN_LOOP                          #configure loop unrolling
+#configure loop unrolling
+#ifndef SKEIN_LOOP
 _SKEIN_LOOP       =   2                     #default is fully unrolled for 256/512, twice for 1024
-.else
+#else
 _SKEIN_LOOP       = SKEIN_LOOP
   .irp _NN_,%_SKEIN_LOOP                #only display loop unrolling if default changed on command line
-.print  "+++ SKEIN_LOOP = \_NN_"
+#.print  "+++ SKEIN_LOOP = \_NN_"
   .endr
-.endif
+#endif
 # the unroll counts (0 --> fully unrolled)
 SKEIN_UNROLL_256  = (_SKEIN_LOOP / 100) % 10
 SKEIN_UNROLL_512  = (_SKEIN_LOOP /  10) % 10
@@ -37,7 +41,7 @@ SKEIN_UNROLL_1024 = (_SKEIN_LOOP      ) % 10
 SKEIN_ASM_UNROLL  = 0
   .irp _NN_,256,512,1024
     .if (SKEIN_UNROLL_\_NN_) == 0
-SKEIN_ASM_UNROLL  = SKEIN_ASM_UNROLL + \_NN_
+SKEIN_ASM_UNROLL  = (SKEIN_ASM_UNROLL) + \_NN_
     .endif
   .endr
 #################
@@ -52,7 +56,7 @@ ROUNDS_512  = 8*((((SKEIN_ROUNDS /  10) + 5) % 10) + 5)
 ROUNDS_1024 = 8*((((SKEIN_ROUNDS      ) + 5) % 10) + 5)
 # only display rounds if default size is changed on command line
 .irp _NN_,256,512,1024
-  .if _USE_ASM_ && \_NN_
+  .if _USE_ASM_ & \_NN_
     .irp _RR_,%(ROUNDS_\_NN_)
       .if _NN_ < 1024
 .print  "+++ SKEIN_ROUNDS_\_NN_  = \_RR_"
@@ -239,9 +243,8 @@ RC_1024_7_7 = 20
 # Output: <reg> <<< RC_BlkSize_roundNum_mixNum, BlkSize=256/512/1024
 #
 .macro RotL64   reg,BLK_SIZE,ROUND_NUM,MIX_NUM
-_RCNT_ = RC_\BLK_SIZE&_\ROUND_NUM&_\MIX_NUM
-  .if _RCNT_  #is there anything to do?
-    rolq    $_RCNT_,%\reg
+  .if RC_\BLK_SIZE\()_\ROUND_NUM\()_\MIX_NUM  #is there anything to do?
+    rolq    $RC_\BLK_SIZE\()_\ROUND_NUM\()_\MIX_NUM,%\reg
   .endif
 .endm
 #
@@ -274,7 +277,7 @@ _STK_OFFS_  =   0                   #starting offset from rsp
     StackVar    X_stk  ,8*(WCNT)    #local context vars
     StackVar    ksTwk  ,8*3         #key schedule: tweak words
     StackVar    ksKey  ,8*(WCNT)+8  #key schedule: key   words
-  .if (SKEIN_ASM_UNROLL && (\BLK_BITS)) == 0
+  .if ((SKEIN_ASM_UNROLL) & (\BLK_BITS)) == 0
     StackVar    ksRot ,16*(\KS_CNT) #leave space for "rotation" to happen
   .endif
     StackVar    Wcopy  ,8*(WCNT)    #copy of input block    
@@ -333,7 +336,7 @@ __STK_FRM_OFFS_\BLK_BITS = FRAME_OFFS
 #----------------------------------------------------------------
 #
 .macro Reset_Stack
-    addq    $LOCAL_SIZE,%rsp        #get rid of locals (wipe??)
+    addq    $LOCAL_SIZE,%rsp        #get rid of locals (wipe?)
   .irp _reg_,r15,r14,r13,r12,rbx,rbp
     popq    %\_reg_                 #restore caller's regs
 _PushCnt_ = _PushCnt_ - 1
@@ -394,15 +397,15 @@ _NN_ = _NN_ - 1
 .macro Skein_Debug_Round BLK_BITS,R,RDI_OFFS,afterOp
     # call the appropriate (local) debug "function"
     pushq   %rdx                    #save rdx, so we can use it for round "number"
-  .if (SKEIN_ASM_UNROLL && \BLK_BITS) || (\R >= SKEIN_RND_SPECIAL)
+  .if ((SKEIN_ASM_UNROLL) & \BLK_BITS) || (\R >= SKEIN_RND_SPECIAL)
     movq    $\R,%rdx
   .else                             #compute round number using edi
 _rOffs_ = \RDI_OFFS + 0
    .if \BLK_BITS == 1024
     movq    rIdx_offs+8(%rsp),%rdx  #get rIdx off the stack (adjust for pushq rdx above)
-    leaq    1+(((\R)-1) && 3)+_rOffs_(,%rdx,4),%rdx
+    leaq    1+(((\R)-1) & 3)+_rOffs_(,%rdx,4),%rdx
    .else
-    leaq    1+(((\R)-1) && 3)+_rOffs_(,%rdi,4),%rdx
+    leaq    1+(((\R)-1) & 3)+_rOffs_(,%rdi,4),%rdx
    .endif
   .endif
     call    Skein_Debug_Round_\BLK_BITS
@@ -530,7 +533,7 @@ Skein_256_block_loop:
     Skein_Debug_Round 256,SKEIN_RND_KEY_INITIAL
 .endif
 #
-.if ((SKEIN_ASM_UNROLL & 256) == 0)
+.if (((SKEIN_ASM_UNROLL) & 256) == 0)
     movq    %r8 ,ksKey+40+F_O(%rbp)  #save key schedule on stack for looping code
     movq    %r9 ,ksKey+ 8+F_O(%rbp)    
     movq    %r10,ksKey+16+F_O(%rbp)    
@@ -546,7 +549,7 @@ Skein_256_block_loop:
     #
     # now the key schedule is computed. Start the rounds
     #
-.if SKEIN_ASM_UNROLL & 256
+.if (SKEIN_ASM_UNROLL) & 256
 _UNROLL_CNT =   ROUNDS_256/8
 .else
 _UNROLL_CNT =   SKEIN_UNROLL_256
@@ -563,20 +566,20 @@ _Rbase_ = 0
     addReg  rax, rbx
     RotL64  rbx, 256,%((4*_Rbase_+0) % 8),0
     addReg  rcx, rdx
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     movq ksKey+8*1+F_O(%rbp,%rdi,8),%r8
                 .endif
     xorReg  rbx, rax
     RotL64  rdx, 256,%((4*_Rbase_+0) % 8),1
     xorReg  rdx, rcx
-  .if SKEIN_ASM_UNROLL & 256
+  .if (SKEIN_ASM_UNROLL) & 256
     .irp _r0_,%( 8+(_Rbase_+3) % 5)
     .irp _r1_,%(13+(_Rbase_+2) % 3)
       leaq   (%r\_r0_,%r\_r1_),%rdi    #precompute key injection value for %rcx
     .endr
     .endr
   .endif
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     movq ksTwk+8*1+F_O(%rbp,%rdi,8),%r13
                 .endif
     Skein_Debug_Round 256,%(4*_Rbase_+1)
@@ -585,17 +588,17 @@ _Rbase_ = 0
     addReg  rax, rdx
     RotL64  rdx, 256,%((4*_Rbase_+1) % 8),0
     xorReg  rdx, rax
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     movq ksKey+8*2+F_O(%rbp,%rdi,8),%r9
                 .endif
     addReg  rcx, rbx
     RotL64  rbx, 256,%((4*_Rbase_+1) % 8),1
     xorReg  rbx, rcx
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     movq ksKey+8*4+F_O(%rbp,%rdi,8),%r11
                 .endif
     Skein_Debug_Round 256,%(4*_Rbase_+2)
- .if SKEIN_ASM_UNROLL & 256
+ .if (SKEIN_ASM_UNROLL) & 256
     .irp _r0_,%( 8+(_Rbase_+2) % 5)
     .irp _r1_,%(13+(_Rbase_+1) % 3)
       leaq   (%r\_r0_,%r\_r1_),%rsi     #precompute key injection value for %rbx
@@ -606,13 +609,13 @@ _Rbase_ = 0
     addReg  rax, rbx
     RotL64  rbx, 256,%((4*_Rbase_+2) % 8),0
     addReg  rcx, rdx
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     movq ksKey+8*3+F_O(%rbp,%rdi,8),%r10
                 .endif
     xorReg  rbx, rax
     RotL64  rdx, 256,%((4*_Rbase_+2) % 8),1
     xorReg  rdx, rcx
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     movq %r8,ksKey+8*6+F_O(%rbp,%rdi,8)  #"rotate" the key
                     leaq 1(%r11,%rdi),%r11               #precompute key + tweak
                 .endif
@@ -621,7 +624,7 @@ _Rbase_ = 0
     addReg  rax, rdx
     RotL64  rdx, 256,%((4*_Rbase_+3) % 8),0
     addReg  rcx, rbx
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     addq      ksTwk+8*2+F_O(%rbp,%rdi,8),%r10  #precompute key + tweak
                     movq %r13,ksTwk+8*4+F_O(%rbp,%rdi,8)       #"rotate" the tweak
                 .endif
@@ -629,12 +632,12 @@ _Rbase_ = 0
     RotL64  rbx, 256,%((4*_Rbase_+3) % 8),1
     xorReg  rbx, rcx
     Skein_Debug_Round 256,%(4*_Rbase_+4)
-                .if (SKEIN_ASM_UNROLL & 256) == 0
+                .if ((SKEIN_ASM_UNROLL) & 256) == 0
                     addReg r9 ,r13           #precompute key+tweak
                 .endif
       #inject key schedule words
 _Rbase_ = _Rbase_+1
-  .if SKEIN_ASM_UNROLL & 256
+  .if (SKEIN_ASM_UNROLL) & 256
     addReg    rax,r,%(8+((_Rbase_+0) % 5))
     addReg    rbx,rsi
     addReg    rcx,rdi
@@ -649,7 +652,7 @@ _Rbase_ = _Rbase_+1
     Skein_Debug_Round 256,SKEIN_RND_KEY_INJECT
 .endr #rept _UNROLL_CNT
 #
-.if (SKEIN_ASM_UNROLL & 256) == 0
+.if ((SKEIN_ASM_UNROLL) & 256) == 0
     cmpq    $2*(ROUNDS_256/8),%rdi
     jb      Skein_256_round_loop
 .endif # (SKEIN_ASM_UNROLL & 256) == 0
@@ -723,22 +726,22 @@ C_label Skein_256_Unroll_Cnt
 .macro R_512_OneRound rn0,rn1,rn2,rn3,rn4,rn5,rn6,rn7,_Rn_,op1,op2,op3,op4
 #
     addReg      r\rn0, r\rn1
-    RotL64      r\rn1, 512,%((_Rn_) % 8),0
+    RotL64      r\rn1, 512,%((\_Rn_) % 8),0
     xorReg      r\rn1, r\rn0
-            op1
+            \op1
     addReg      r\rn2, r\rn3
-    RotL64      r\rn3, 512,%((_Rn_) % 8),1
+    RotL64      r\rn3, 512,%((\_Rn_) % 8),1
     xorReg      r\rn3, r\rn2
-            op2
+            \op2
     addReg      r\rn4, r\rn5
-    RotL64      r\rn5, 512,%((_Rn_) % 8),2
+    RotL64      r\rn5, 512,%((\_Rn_) % 8),2
     xorReg      r\rn5, r\rn4
-            op3
+            \op3
     addReg      r\rn6, r\rn7
-    RotL64      r\rn7, 512,%((_Rn_) % 8),3
+    RotL64      r\rn7, 512,%((\_Rn_) % 8),3
     xorReg      r\rn7, r\rn6
-            op4
-    Skein_Debug_Round 512,%(_Rn_+1),-4
+            \op4
+    Skein_Debug_Round 512,%(\_Rn_+1),-4
 #
 .endm #R_512_OneRound
 #
@@ -746,13 +749,13 @@ C_label Skein_256_Unroll_Cnt
 # MACRO: eight rounds for 512-bit blocks
 #
 .macro R_512_FourRounds _RR_    #RR = base round number (0 % 8)
-  .if (SKEIN_ASM_UNROLL && 512)
+  .if ((SKEIN_ASM_UNROLL) & 512)
     # here for fully unrolled case.
-    _II_ = ((_RR_)/4) + 1       #key injection counter
-    R_512_OneRound  8, 9,10,11,12,13,14,15,%((_RR_)+0),<movq ksKey+8*(((_II_)+3) % 9)+F_O(%rbp),%rax>,,<movq ksKey+8*(((_II_)+4) % 9)+F_O(%rbp),%rbx>
-    R_512_OneRound 10, 9,12,15,14,13, 8,11,%((_RR_)+1),<movq ksKey+8*(((_II_)+5) % 9)+F_O(%rbp),%rcx>,,<movq ksKey+8*(((_II_)+6) % 9)+F_O(%rbp),%rdx>
-    R_512_OneRound 12, 9,14,11, 8,13,10,15,%((_RR_)+2),<movq ksKey+8*(((_II_)+7) % 9)+F_O(%rbp),%rsi>,,<addq ksTwk+8*(((_II_)+0) % 3)+F_O(%rbp),%rcx>
-    R_512_OneRound 14, 9, 8,15,10,13,12,11,%((_RR_)+3),<addq ksTwk+8*(((_II_)+1) % 3)+F_O(%rbp),%rdx>,
+    _II_ = ((\_RR_)/4) + 1       #key injection counter
+    R_512_OneRound  8, 9,10,11,12,13,14,15,%((\_RR_)+0),<movq ksKey+8*(((_II_)+3) % 9)+F_O(%rbp),%rax>,,<movq ksKey+8*(((_II_)+4) % 9)+F_O(%rbp),%rbx>
+    R_512_OneRound 10, 9,12,15,14,13, 8,11,%((\_RR_)+1),<movq ksKey+8*(((_II_)+5) % 9)+F_O(%rbp),%rcx>,,<movq ksKey+8*(((_II_)+6) % 9)+F_O(%rbp),%rdx>
+    R_512_OneRound 12, 9,14,11, 8,13,10,15,%((\_RR_)+2),<movq ksKey+8*(((_II_)+7) % 9)+F_O(%rbp),%rsi>,,<addq ksTwk+8*(((_II_)+0) % 3)+F_O(%rbp),%rcx>
+    R_512_OneRound 14, 9, 8,15,10,13,12,11,%((\_RR_)+3),<addq ksTwk+8*(((_II_)+1) % 3)+F_O(%rbp),%rdx>,
     # inject the key schedule
     addq    ksKey+8*(((_II_)+0)%9)+F_O(%rbp),%r8
     addReg   r11, rax
@@ -765,10 +768,10 @@ C_label Skein_256_Unroll_Cnt
   .else
     # here for looping case                                                    #"rotate" key/tweak schedule (move up on stack)
     incq    %rdi                 #bump key injection counter
-    R_512_OneRound  8, 9,10,11,12,13,14,15,%((_RR_)+0),<movq ksKey+8*6+F_O(%rbp,%rdi,8),%rdx>,<movq      ksTwk-8*1+F_O(%rbp,%rdi,8),%rax>,<movq      ksKey-8*1+F_O(%rbp,%rdi,8),%rsi>
-    R_512_OneRound 10, 9,12,15,14,13, 8,11,%((_RR_)+1),<movq ksKey+8*5+F_O(%rbp,%rdi,8),%rcx>,<movq %rax,ksTwk+8*2+F_O(%rbp,%rdi,8)     >,<movq %rsi,ksKey+8*8+F_O(%rbp,%rdi,8)>
-    R_512_OneRound 12, 9,14,11, 8,13,10,15,%((_RR_)+2),<movq ksKey+8*4+F_O(%rbp,%rdi,8),%rbx>,<addq      ksTwk+8*1+F_O(%rbp,%rdi,8),%rdx>,<movq      ksKey+8*7+F_O(%rbp,%rdi,8),%rsi>    
-    R_512_OneRound 14, 9, 8,15,10,13,12,11,%((_RR_)+3),<movq ksKey+8*3+F_O(%rbp,%rdi,8),%rax>,<addq      ksTwk+8*0+F_O(%rbp,%rdi,8),%rcx>
+    R_512_OneRound  8, 9,10,11,12,13,14,15,%((\_RR_)+0),<movq ksKey+8*6+F_O(%rbp,%rdi,8),%rdx>,<movq      ksTwk-8*1+F_O(%rbp,%rdi,8),%rax>,<movq      ksKey-8*1+F_O(%rbp,%rdi,8),%rsi>
+    R_512_OneRound 10, 9,12,15,14,13, 8,11,%((\_RR_)+1),<movq ksKey+8*5+F_O(%rbp,%rdi,8),%rcx>,<movq %rax,ksTwk+8*2+F_O(%rbp,%rdi,8)     >,<movq %rsi,ksKey+8*8+F_O(%rbp,%rdi,8)>
+    R_512_OneRound 12, 9,14,11, 8,13,10,15,%((\_RR_)+2),<movq ksKey+8*4+F_O(%rbp,%rdi,8),%rbx>,<addq      ksTwk+8*1+F_O(%rbp,%rdi,8),%rdx>,<movq      ksKey+8*7+F_O(%rbp,%rdi,8),%rsi>
+    R_512_OneRound 14, 9, 8,15,10,13,12,11,%((\_RR_)+3),<movq ksKey+8*3+F_O(%rbp,%rdi,8),%rax>,<addq      ksTwk+8*0+F_O(%rbp,%rdi,8),%rcx>
     # inject the key schedule
     addq    ksKey+8*0+F_O(%rbp,%rdi,8),%r8
     addReg   r11, rax
@@ -813,9 +816,9 @@ Skein_512_block_loop:
     movq    %rbx,ksTwk+ 8+F_O(%rbp)
     movq    %rcx,ksTwk+16+F_O(%rbp)
     .irp _Rn_,8,9,10,11,12,13,14,15
-      movq  X_VARS+8*(_Rn_-8)(%rdi),%r\_Rn_
+      movq  X_VARS+8*(\_Rn_-8)(%rdi),%r\_Rn_
       xorq  %r\_Rn_,%rdx              #compute overall parity
-      movq  %r\_Rn_,ksKey+8*(_Rn_-8)+F_O(%rbp)
+      movq  %r\_Rn_,ksKey+8*(\_Rn_-8)+F_O(%rbp)
     .endr                             #load state into %r8 ..%r15, compute parity
       movq  %rdx,ksKey+8*(8)+F_O(%rbp)#save key schedule parity
 
@@ -852,7 +855,7 @@ Skein_512_block_loop:
 
 .if _SKEIN_DEBUG
     .irp _Rn_,8,9,10,11,12,13,14,15   #save values on stack for debug output
-      movq  %r\_Rn_,X_stk+8*(_Rn_-8)(%rsp)
+      movq  %r\_Rn_,X_stk+8*(\_Rn_-8)(%rsp)
     .endr
 
     Skein_Debug_Block 512             #debug dump
@@ -864,12 +867,12 @@ Skein_512_block_loop:
     #################
     # now the key schedule is computed. Start the rounds
     #
-.if SKEIN_ASM_UNROLL & 512
+.if (SKEIN_ASM_UNROLL) & 512
 _UNROLL_CNT =   ROUNDS_512/8
 .else
 _UNROLL_CNT =   SKEIN_UNROLL_512
   .if ((ROUNDS_512/8) % _UNROLL_CNT)
-    .err "Invalid SKEIN_UNROLL_512"
+    .error "Invalid SKEIN_UNROLL_512"
   .endif
     xorq    %rdi,%rdi                 #rdi = round counter
 Skein_512_round_loop:
@@ -881,7 +884,7 @@ _Rbase_ = 0
 _Rbase_ = _Rbase_+1
 .endr #rept _UNROLL_CNT
 #
-.if (SKEIN_ASM_UNROLL & 512) == 0
+.if ((SKEIN_ASM_UNROLL) & 512) == 0
     cmpq    $2*(ROUNDS_512/8),%rdi
     jb      Skein_512_round_loop
     movq    ctxPtr +F_O(%rbp),%rdi           #restore rdi --> context
@@ -890,12 +893,12 @@ _Rbase_ = _Rbase_+1
     #################
     # feedforward:   ctx->X[i] = X[i] ^ w[i], {i=0..7}
     .irp _Rn_,8,9,10,11,12,13,14,15
-  .if (_Rn_ == 8)
+  .if (\_Rn_ == 8)
     movq    $FIRST_MASK64,%rbx
   .endif
-      xorq  Wcopy+8*(_Rn_-8)+F_O(%rbp),%r\_Rn_  #feedforward XOR
-      movq  %r\_Rn_,X_VARS+8*(_Rn_-8)(%rdi)     #and store result
-  .if (_Rn_ == 14)
+      xorq  Wcopy+8*(\_Rn_-8)+F_O(%rbp),%r\_Rn_  #feedforward XOR
+      movq  %r\_Rn_,X_VARS+8*(\_Rn_-8)(%rdi)     #and store result
+  .if (\_Rn_ == 14)
     andq    TWEAK+ 8(%rdi),%rbx
   .endif
     .endr
@@ -916,7 +919,7 @@ Skein_Debug_Round_512:
     pushq   %rsi                     #save two regs for BLK_BITS-specific parms
     pushq   %rdi
   .irp _Rn_,8,9,10,11,12,13,14,15    #save X[] state on stack so debug routines can access it
-    movq    %r\_Rn_,X_stk+8*(_Rn_-8)+F_O(%rbp)
+    movq    %r\_Rn_,X_stk+8*(\_Rn_-8)+F_O(%rbp)
   .endr
     movq    ctxPtr+F_O(%rbp),%rsi    #ctx_hdr_ptr
     movq    $512,%rdi                #now <rdi,rsi,rdx> are set for the call
@@ -967,50 +970,50 @@ rIdx_offs = tmpStk_1024
 #
 .macro r1024_Mix w0,w1,reg0,reg1,_RN0_,_Rn1_,op1
     addReg      \reg0 , \reg1                      #perform the MIX
-    RotL64      \reg1 , 1024,%((_RN0_) % 8),_Rn1_
+    RotL64      \reg1 , 1024,%((\_RN0_) % 8),\_Rn1_
     xorReg      \reg1 , \reg0
-.if ((_RN0_) && 3) == 3         #time to do key injection?
+.if ((\_RN0_) & 3) == 3        #time to do key injection?
  .if _SKEIN_DEBUG
-    movq       %\reg0 , xDebug_1024+8*w0(%rsp)     #save intermediate values for Debug_Round
-    movq       %\reg1 , xDebug_1024+8*w1(%rsp)     # (before inline key injection)
+    movq       %\reg0 , xDebug_1024+8*\w0(%rsp)    #save intermediate values for Debug_Round
+    movq       %\reg1 , xDebug_1024+8*\w1(%rsp)    # (before inline key injection)
  .endif
-_II_ = ((_RN0_)/4)+1            #injection count
- .if SKEIN_ASM_UNROLL && 1024   #here to do fully unrolled key injection
-    addq        ksKey+ 8*((_II_+w0) % 17)(%rsp),%\reg0
-    addq        ksKey+ 8*((_II_+w1) % 17)(%rsp),%\reg1
-  .if     w1 == 13                                 #tweak injection
+_II_ = ((\_RN0_)/4)+1           #injection count
+ .if (SKEIN_ASM_UNROLL) & 1024   #here to do fully unrolled key injection
+    addq        ksKey+ 8*((_II_+\w0) % 17)(%rsp),%\reg0
+    addq        ksKey+ 8*((_II_+\w1) % 17)(%rsp),%\reg1
+  .if     \w1 == 13                                #tweak injection
     addq        ksTwk+ 8*((_II_+ 0) %  3)(%rsp),%\reg1
-  .elseif w0 == 14
+  .elseif \w0 == 14
     addq        ksTwk+ 8*((_II_+ 1) %  3)(%rsp),%\reg0
-  .elseif w1 == 15
+  .elseif \w1 == 15
     addq        $_II_, %\reg1                      #(injection counter)
   .endif
  .else                          #here to do looping  key injection
-  .if  (w0 == 0)
-    movq        %rdi, X_stk+8*w0(%rsp)             #if so, store N0 so we can use reg as index
+  .if  (\w0 == 0)
+    movq        %rdi, X_stk+8*\w0(%rsp)            #if so, store N0 so we can use reg as index
     movq         rIdx_offs(%rsp),%rdi              #get the injection counter index into rdi
   .else
-    addq         ksKey+8+8*w0(%rsp,%rdi,8),%\reg0  #even key injection
+    addq         ksKey+8+8*\w0(%rsp,%rdi,8),%\reg0 #even key injection
   .endif
-  .if     w1 == 13                                 #tweak injection
+  .if     \w1 == 13                                #tweak injection
     addq         ksTwk+8+8* 0(%rsp,%rdi,8),%\reg1  
-  .elseif w0 == 14
+  .elseif \w0 == 14
     addq         ksTwk+8+8* 1(%rsp,%rdi,8),%\reg0  
-  .elseif w1 == 15
+  .elseif \w1 == 15
     addReg      \reg1,rdi,,,1                      #(injection counter)
   .endif
-    addq         ksKey+8+8*w1(%rsp,%rdi,8),%\reg1  #odd key injection
+    addq         ksKey+8+8*\w1(%rsp,%rdi,8),%\reg1 #odd key injection
  .endif
 .endif
     # insert the op provided, .if any
-    op1
+    \op1
 .endm
 #################
 # MACRO: four rounds for 1024-bit blocks
 #
 .macro r1024_FourRounds _RR_    #RR = base round number (0 mod 4)
     # should be here with X4 set properly, X6 stored on stack
-_Rn_ = (_RR_) + 0
+_Rn_ = (\_RR_) + 0
         r1024_Mix  0, 1,rdi,rsi,_Rn_,0
         r1024_Mix  2, 3,rbp,rax,_Rn_,1
         r1024_Mix  4, 5,rcx,rbx,_Rn_,2,<movq %rcx,X_stk+8*4(%rsp)>       #save X4  on  stack (x4/x6 alternate)
@@ -1022,7 +1025,7 @@ _Rn_ = (_RR_) + 0
     .if _SKEIN_DEBUG
       Skein_Debug_Round 1024,%(_Rn_+1)
     .endif
-_Rn_ = (_RR_) + 1
+_Rn_ = (\_RR_) + 1
         r1024_Mix  0, 9,rdi,r9 ,_Rn_,0
         r1024_Mix  2,13,rbp,r13,_Rn_,1
         r1024_Mix  6,11,rcx,r11,_Rn_,2,<movq %rcx,X_stk+8*6(%rsp)>       #save X6  on  stack (x4/x6 alternate)
@@ -1034,7 +1037,7 @@ _Rn_ = (_RR_) + 1
     .if _SKEIN_DEBUG
       Skein_Debug_Round 1024,%(_Rn_+1)
     .endif
-_Rn_ = (_RR_) + 2
+_Rn_ = (\_RR_) + 2
         r1024_Mix  0, 7,rdi,rdx,_Rn_,0
         r1024_Mix  2, 5,rbp,rbx,_Rn_,1
         r1024_Mix  4, 3,rcx,rax,_Rn_,2,<movq %rcx,X_stk+8*4(%rsp)>       #save X4  on  stack (x4/x6 alternate)
@@ -1046,7 +1049,7 @@ _Rn_ = (_RR_) + 2
     .if _SKEIN_DEBUG
       Skein_Debug_Round 1024,%(_Rn_+1)
     .endif
-_Rn_ = (_RR_) + 3
+_Rn_ = (\_RR_) + 3
         r1024_Mix  0,15,rdi,r15,_Rn_,0
         r1024_Mix  2,11,rbp,r11,_Rn_,1
         r1024_Mix  6,13,rcx,r13,_Rn_,2,<movq %rcx,X_stk+8*6(%rsp)>       #save X6  on  stack (x4/x6 alternate)
@@ -1059,7 +1062,7 @@ _Rn_ = (_RR_) + 3
       Skein_Debug_Round 1024,%(_Rn_+1)
     .endif
 
-  .if (SKEIN_ASM_UNROLL && 1024) == 0           #here with rdi == rIdx, X0 on stack
+  .if ((SKEIN_ASM_UNROLL) & 1024) == 0           #here with rdi == rIdx, X0 on stack
     #"rotate" the key schedule on the stack
 i8 = o1K_r8
 i0 = o1K_rdi
@@ -1095,7 +1098,7 @@ Skein1024_block_loop:
     #   R8 ..R15         = X8..X15    (state words)
     #   RBP              = temp (used for X0 and X2)
     #
-  .if (SKEIN_ASM_UNROLL & 1024) == 0
+  .if ((SKEIN_ASM_UNROLL) & 1024) == 0
     xorq    %rax,%rax                      #init loop index on the stack
     movq    %rax,rIdx_offs(%rsp)
   .endif
@@ -1115,13 +1118,13 @@ Skein1024_block_loop:
 
     # the logic here assumes the set {rdi,rsi,rbp,rax} = X[0,1,2,3]
     .irp _rN_,0,1,2,3,4,6                  #process the "initial" words, using r14/r15 as temps
-      movq       X_VARS+8*_rN_(%rdi),%r14  #get state word
-      movq              8*_rN_(%rsi),%r15  #get msg   word
+      movq       X_VARS+8*\_rN_(%rdi),%r14 #get state word
+      movq              8*\_rN_(%rsi),%r15 #get msg   word
       xorq  %r14,%rax                      #update key schedule overall parity
-      movq  %r14,ksKey +8*_rN_+F_O(%rbp)   #save key schedule word on stack
-      movq  %r15,Wcopy +8*_rN_+F_O(%rbp)   #save local msg Wcopy 
+      movq  %r14,ksKey +8*\_rN_+F_O(%rbp)  #save key schedule word on stack
+      movq  %r15,Wcopy +8*\_rN_+F_O(%rbp)  #save local msg Wcopy
       addq  %r15,%r14                      #do the initial key injection
-      movq  %r14,X_stk +8*_rN_    (%rsp)   #save initial state var on stack
+      movq  %r14,X_stk +8*\_rN_    (%rsp)  #save initial state var on stack
     .endr
     # now process the rest, using the "real" registers 
     #     (MUST do it in reverse order to inject tweaks r8/r9 first)
@@ -1134,9 +1137,9 @@ _oo_ = o1K_\_rr_                           #offset assocated with the register
       movq  %rcx,Wcopy+8*_oo_+F_O(%rbp)    #save copy of msg word for feedforward
       addq  %rcx,%\_rr_                    #do the initial  key  injection
       .if    _oo_ == 13                    #do the initial tweak injection
-        addReg _rr_,r8                     #          (only in words 13/14)
+        addReg \_rr_,r8                    #          (only in words 13/14)
       .elseif _oo_ == 14
-        addReg _rr_,r9 
+        addReg \_rr_,r9
       .endif
     .endr
     movq    %rax,ksKey+8*WCNT+F_O(%rbp)    #save key schedule parity
@@ -1156,7 +1159,7 @@ _oo_ = o1K_\_rr_                           #offset assocated with the register
     #################
     # now the key schedule is computed. Start the rounds
     #
-.if SKEIN_ASM_UNROLL & 1024
+.if (SKEIN_ASM_UNROLL) & 1024
 _UNROLL_CNT =   ROUNDS_1024/8
 .else
 _UNROLL_CNT =   SKEIN_UNROLL_1024
@@ -1172,7 +1175,7 @@ _Rbase_ = 0
 _Rbase_ = _Rbase_+1
 .endr #rept _UNROLL_CNT
 #
-.if (SKEIN_ASM_UNROLL & 1024) == 0
+.if ((SKEIN_ASM_UNROLL) & 1024) == 0
     cmpq    $2*(ROUNDS_1024/8),tmpStk_1024(%rsp) #see .if we are done
     jb      Skein1024_round_loop    
 .endif
@@ -1325,4 +1328,6 @@ _SP_OFFS_ = _SP_OFFS_-8
     ret
 .endif
 #----------------------------------------------------------------
+    .section .note.GNU-stack,"",@progbits
+
     .end

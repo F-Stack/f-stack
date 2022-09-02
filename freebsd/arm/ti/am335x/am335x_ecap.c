@@ -41,7 +41,6 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/bus.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -191,7 +190,6 @@ am335x_ecap_detach(device_t dev)
 	PWM_UNLOCK(sc);
 
 	PWM_LOCK_DESTROY(sc);
-
 
 	return (0);
 }

@@ -5,5 +5,7 @@ TOPDIR?=${CURDIR}/../..
 
 PROG=arp
 
+LIBADD += xo util
+
 include ${TOPDIR}/tools/prog.mk
 

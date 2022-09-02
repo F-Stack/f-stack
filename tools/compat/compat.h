@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -104,5 +104,7 @@ long long strtonum(const char *numstr, long long minval,
 const char *getprogname(void);
 
 extern int optreset;
+
+int	 fnmatch(const char *, const char *, int);
 
 #endif

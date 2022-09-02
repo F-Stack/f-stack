@@ -424,10 +424,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -582,7 +579,7 @@ lcore_main(void *arg)
 
 	for (;;) {
 		struct rte_mbuf *buf[MAX_PKT_BURST];
-		const uint16_t buf_size = sizeof(buf) / sizeof(buf[0]);
+		const uint16_t buf_size = RTE_DIM(buf);
 		for (p = 0; p < num_ports; p++) {
 			const uint8_t src = ports[p];
 			const uint8_t dst = ports[p ^ 1]; /* 0 <-> 1, 2 <-> 3 etc */
@@ -702,12 +699,12 @@ main(int argc, char *argv[])
 			rte_exit(EXIT_FAILURE, "Cannot initialize network ports\n");
 	}
 
-	/* call lcore_main() on every slave lcore */
+	/* call lcore_main() on every worker lcore */
 	i = 0;
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		rte_eal_remote_launch(lcore_main, (void*)i++, lcore_id);
 	}
-	/* call on master too */
+	/* call on main too */
 	(void) lcore_main((void*)i);
 
 	/* clean up the EAL */

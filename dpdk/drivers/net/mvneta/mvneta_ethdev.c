@@ -34,8 +34,6 @@
 /** Maximum length of a match string */
 #define MVNETA_MATCH_LEN 16
 
-int mvneta_logtype;
-
 static const char * const valid_args[] = {
 	MVNETA_IFACE_NAME_ARG,
 	NULL
@@ -253,7 +251,7 @@ mvneta_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	    (mru + MRVL_NETA_PKT_OFFS > mbuf_data_size)) {
 		mru = mbuf_data_size - MRVL_NETA_PKT_OFFS;
 		mtu = MRVL_NETA_MRU_TO_MTU(mru);
-		MVNETA_LOG(WARNING, "MTU too big, max MTU possible limitted by"
+		MVNETA_LOG(WARNING, "MTU too big, max MTU possible limited by"
 			" current mbuf size: %u. Set MTU to %u, MRU to %u",
 			mbuf_data_size, mtu, mru);
 	}
@@ -410,19 +408,23 @@ out:
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 mvneta_dev_stop(struct rte_eth_dev *dev)
 {
 	struct mvneta_priv *priv = dev->data->dev_private;
 
+	dev->data->dev_started = 0;
+
 	if (!priv->ppio)
-		return;
+		return 0;
 
 	mvneta_dev_set_link_down(dev);
 	mvneta_flush_queues(dev);
 	neta_ppio_deinit(priv->ppio);
 
 	priv->ppio = NULL;
+
+	return 0;
 }
 
 /**
@@ -431,17 +433,17 @@ mvneta_dev_stop(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 mvneta_dev_close(struct rte_eth_dev *dev)
 {
 	struct mvneta_priv *priv = dev->data->dev_private;
-	int i;
+	int i, ret = 0;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
 	if (priv->ppio)
-		mvneta_dev_stop(dev);
+		ret = mvneta_dev_stop(dev);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		mvneta_rx_queue_release(dev->data->rx_queues[i]);
@@ -460,6 +462,8 @@ mvneta_dev_close(struct rte_eth_dev *dev)
 		mvneta_neta_deinit();
 		rte_mvep_deinit(MVEP_MOD_T_NETA);
 	}
+
+	return ret;
 }
 
 /**
@@ -832,14 +836,10 @@ mvneta_eth_dev_create(struct rte_vdev_device *vdev, const char *name)
 	memcpy(eth_dev->data->mac_addrs[0].addr_bytes,
 	       req.ifr_addr.sa_data, RTE_ETHER_ADDR_LEN);
 
-	eth_dev->data->kdrv = RTE_KDRV_NONE;
 	eth_dev->device = &vdev->device;
 	eth_dev->rx_pkt_burst = mvneta_rx_pkt_burst;
 	mvneta_set_tx_function(eth_dev);
 	eth_dev->dev_ops = &mvneta_ops;
-
-	/* Flag to call rte_eth_dev_release_port() in rte_eth_dev_close(). */
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	rte_eth_dev_probing_finish(eth_dev);
 	return 0;
@@ -968,14 +968,15 @@ static int
 rte_pmd_mvneta_remove(struct rte_vdev_device *vdev)
 {
 	uint16_t port_id;
+	int ret = 0;
 
 	RTE_ETH_FOREACH_DEV(port_id) {
 		if (rte_eth_devices[port_id].device != &vdev->device)
 			continue;
-		rte_eth_dev_close(port_id);
+		ret |= rte_eth_dev_close(port_id);
 	}
 
-	return 0;
+	return ret == 0 ? 0 : -EIO;
 }
 
 static struct rte_vdev_driver pmd_mvneta_drv = {
@@ -985,10 +986,4 @@ static struct rte_vdev_driver pmd_mvneta_drv = {
 
 RTE_PMD_REGISTER_VDEV(net_mvneta, pmd_mvneta_drv);
 RTE_PMD_REGISTER_PARAM_STRING(net_mvneta, "iface=<ifc>");
-
-RTE_INIT(mvneta_init_log)
-{
-	mvneta_logtype = rte_log_register("pmd.net.mvneta");
-	if (mvneta_logtype >= 0)
-		rte_log_set_level(mvneta_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(mvneta_logtype, pmd.net.mvneta, NOTICE);

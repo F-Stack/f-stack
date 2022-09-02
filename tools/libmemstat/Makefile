@@ -3,7 +3,6 @@
 TOPDIR?=${CURDIR}/../..
 include ${TOPDIR}/tools/opts.mk
 
-PACKAGE=lib${LIB}
 WARNS?=		3
 LIB=		memstat
 SHLIB_MAJOR=	3
@@ -31,5 +30,3 @@ MLINKS+=	libmemstat.3 memstat_kvm_malloc.3
 MLINKS+=	libmemstat.3 memstat_kvm_uma.3
 
 include ${TOPDIR}/tools/lib.mk
-
-

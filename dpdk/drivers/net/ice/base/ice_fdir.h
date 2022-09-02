@@ -7,6 +7,78 @@
 
 #include "ice_common.h"
 
+#define ICE_FDIR_IP_PROTOCOLS
+#define ICE_IP_PROTO_TCP		6
+#define ICE_IP_PROTO_UDP		17
+#define ICE_IP_PROTO_SCTP		132
+#define ICE_IP_PROTO_IP			0
+#define ICE_IP_PROTO_ESP		50
+
+#define ICE_FDIR_TUN_PKT_OFF		50
+#define ICE_FDIR_MAX_RAW_PKT_SIZE	(512 + ICE_FDIR_TUN_PKT_OFF)
+#define ICE_FDIR_BUF_FULL_MARGIN	10
+
+/* macros for offsets into packets for flow director programming */
+#define ICE_IPV4_SRC_ADDR_OFFSET	26
+#define ICE_IPV4_DST_ADDR_OFFSET	30
+#define ICE_IPV4_TCP_SRC_PORT_OFFSET	34
+#define ICE_IPV4_TCP_DST_PORT_OFFSET	36
+#define ICE_IPV4_UDP_SRC_PORT_OFFSET	34
+#define ICE_IPV4_UDP_DST_PORT_OFFSET	36
+#define ICE_IPV4_SCTP_SRC_PORT_OFFSET	34
+#define ICE_IPV4_SCTP_DST_PORT_OFFSET	36
+#define ICE_IPV4_PROTO_OFFSET		23
+#define ICE_IPV6_SRC_ADDR_OFFSET	22
+#define ICE_IPV6_DST_ADDR_OFFSET	38
+#define ICE_IPV6_TCP_SRC_PORT_OFFSET	54
+#define ICE_IPV6_TCP_DST_PORT_OFFSET	56
+#define ICE_IPV6_UDP_SRC_PORT_OFFSET	54
+#define ICE_IPV6_UDP_DST_PORT_OFFSET	56
+#define ICE_IPV6_SCTP_SRC_PORT_OFFSET	54
+#define ICE_IPV6_SCTP_DST_PORT_OFFSET	56
+
+#define ICE_MAC_ETHTYPE_OFFSET		12
+#define ICE_IPV4_TOS_OFFSET		15
+#define ICE_IPV4_TTL_OFFSET		22
+#define ICE_IPV6_TC_OFFSET		14
+#define ICE_IPV6_HLIM_OFFSET		21
+#define ICE_IPV6_PROTO_OFFSET		20
+#define ICE_IPV4_GTPU_TEID_OFFSET	46
+#define ICE_IPV4_GTPU_QFI_OFFSET	56
+#define ICE_IPV6_GTPU_TEID_OFFSET	66
+#define ICE_IPV6_GTPU_QFI_OFFSET	76
+#define ICE_IPV4_L2TPV3_SESS_ID_OFFSET	34
+#define ICE_IPV6_L2TPV3_SESS_ID_OFFSET	54
+#define ICE_IPV4_ESP_SPI_OFFSET		34
+#define ICE_IPV6_ESP_SPI_OFFSET		54
+#define ICE_IPV4_AH_SPI_OFFSET		38
+#define ICE_IPV6_AH_SPI_OFFSET		58
+#define ICE_IPV4_NAT_T_ESP_SPI_OFFSET	42
+#define ICE_IPV6_NAT_T_ESP_SPI_OFFSET	62
+
+#define ICE_FDIR_MAX_FLTRS		16384
+
+/* IP v4 has 2 flag bits that enable fragment processing: DF and MF. DF
+ * requests that the packet not be fragmented. MF indicates that a packet has
+ * been fragmented.
+ */
+#define ICE_FDIR_IPV4_PKT_FLAG_DF		0x20
+#define ICE_FDIR_IPV4_PKT_FLAG_MF		0x40
+
+enum ice_fltr_prgm_desc_dest {
+	ICE_FLTR_PRGM_DESC_DEST_DROP_PKT,
+	ICE_FLTR_PRGM_DESC_DEST_DIRECT_PKT_QINDEX,
+	ICE_FLTR_PRGM_DESC_DEST_DIRECT_PKT_QGROUP,
+	ICE_FLTR_PRGM_DESC_DEST_DIRECT_PKT_OTHER,
+};
+
+enum ice_fltr_prgm_desc_fd_status {
+	ICE_FLTR_PRGM_DESC_FD_STATUS_NONE,
+	ICE_FLTR_PRGM_DESC_FD_STATUS_FD_ID,
+	ICE_FLTR_PRGM_DESC_FD_STATUS_FD_ID_4FLEX_BYTES,
+	ICE_FLTR_PRGM_DESC_FD_STATUS_8FLEX_BYTES,
+};
+
 /* Flow Director (FD) Filter Programming descriptor */
 struct ice_fd_fltr_desc_ctx {
 	u32 fdid;
@@ -32,85 +104,6 @@ struct ice_fd_fltr_desc_ctx {
 	u8 swap;
 	u8 fdid_prio;
 	u8 fdid_mdid;
-};
-
-enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id);
-enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id);
-void
-ice_set_fd_desc_val(struct ice_fd_fltr_desc_ctx *fd_fltr_ctx,
-		    struct ice_fltr_desc *fdir_desc);
-void ice_set_dflt_val_fd_desc(struct ice_fd_fltr_desc_ctx *fd_fltr_ctx);
-enum ice_status
-ice_alloc_fd_guar_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr);
-enum ice_status
-ice_free_fd_guar_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr);
-enum ice_status
-ice_alloc_fd_shrd_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr);
-enum ice_status
-ice_free_fd_shrd_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr);
-enum ice_status ice_clear_vsi_fd_table(struct ice_hw *hw, u16 vsi_num);
-enum ice_status ice_clear_pf_fd_table(struct ice_hw *hw);
-
-#define ICE_FDIR_IP_PROTOCOLS
-#define ICE_IP_PROTO_TCP		6
-#define ICE_IP_PROTO_UDP		17
-#define ICE_IP_PROTO_SCTP		132
-#define ICE_IP_PROTO_IP			0
-#define ICE_IP_PROTO_ESP		50
-
-#define ICE_FDIR_TUN_PKT_OFF		50
-#define ICE_FDIR_MAX_RAW_PKT_SIZE	(512 + ICE_FDIR_TUN_PKT_OFF)
-#define ICE_FDIR_BUF_FULL_MARGIN	10
-#define ICE_FDIR_BUF_HEAD_ROOM		32
-
-/* macros for offsets into packets for flow director programming */
-#define ICE_IPV4_SRC_ADDR_OFFSET	26
-#define ICE_IPV4_DST_ADDR_OFFSET	30
-#define ICE_IPV4_TCP_SRC_PORT_OFFSET	34
-#define ICE_IPV4_TCP_DST_PORT_OFFSET	36
-#define ICE_IPV4_UDP_SRC_PORT_OFFSET	34
-#define ICE_IPV4_UDP_DST_PORT_OFFSET	36
-#define ICE_IPV4_SCTP_SRC_PORT_OFFSET	34
-#define ICE_IPV4_SCTP_DST_PORT_OFFSET	36
-#define ICE_IPV4_PROTO_OFFSET		23
-#define ICE_IPV6_SRC_ADDR_OFFSET	22
-#define ICE_IPV6_DST_ADDR_OFFSET	38
-#define ICE_IPV6_TCP_SRC_PORT_OFFSET	54
-#define ICE_IPV6_TCP_DST_PORT_OFFSET	56
-#define ICE_IPV6_UDP_SRC_PORT_OFFSET	54
-#define ICE_IPV6_UDP_DST_PORT_OFFSET	56
-#define ICE_IPV6_SCTP_SRC_PORT_OFFSET	54
-#define ICE_IPV6_SCTP_DST_PORT_OFFSET	56
-
-#define ICE_IPV4_TOS_OFFSET		15
-#define ICE_IPV4_TTL_OFFSET		22
-#define ICE_IPV6_TC_OFFSET		14
-#define ICE_IPV6_HLIM_OFFSET		21
-#define ICE_IPV6_PROTO_OFFSET		20
-#define ICE_IPV4_GTPU_TEID_OFFSET	46
-#define ICE_IPV4_GTPU_QFI_OFFSET	56
-
-#define ICE_FDIR_MAX_FLTRS		16384
-
-/* IP v4 has 2 flag bits that enable fragment processing: DF and MF. DF
- * requests that the packet not be fragmented. MF indicates that a packet has
- * been fragmented.
- */
-#define ICE_FDIR_IPV4_PKT_FLAG_DF		0x20
-#define ICE_FDIR_IPV4_PKT_FLAG_MF		0x40
-
-enum ice_fltr_prgm_desc_dest {
-	ICE_FLTR_PRGM_DESC_DEST_DROP_PKT,
-	ICE_FLTR_PRGM_DESC_DEST_DIRECT_PKT_QINDEX,
-	ICE_FLTR_PRGM_DESC_DEST_DIRECT_PKT_QGROUP,
-	ICE_FLTR_PRGM_DESC_DEST_DIRECT_PKT_OTHER,
-};
-
-enum ice_fltr_prgm_desc_fd_status {
-	ICE_FLTR_PRGM_DESC_FD_STATUS_NONE,
-	ICE_FLTR_PRGM_DESC_FD_STATUS_FD_ID,
-	ICE_FLTR_PRGM_DESC_FD_STATUS_FD_ID_4FLEX_BYTES,
-	ICE_FLTR_PRGM_DESC_FD_STATUS_8FLEX_BYTES,
 };
 
 #define ICE_FLTR_PRGM_FLEX_WORD_SIZE	sizeof(__be16)
@@ -166,8 +159,14 @@ struct ice_fdir_udp_gtp {
 	u8 next_ext;
 };
 
+struct ice_fdir_l2tpv3 {
+	__be32 session_id;
+};
+
 struct ice_fdir_extra {
 	u8 dst_mac[ETH_ALEN];	/* dest MAC address */
+	u8 src_mac[ETH_ALEN];	/* src MAC address */
+	__be16 ether_type;      /* for NON_IP_L2 */
 	u32 usr_def[2];		/* user data */
 	__be16 vlan_type;	/* VLAN ethertype */
 	__be16 vlan_tag;	/* VLAN tag info */
@@ -182,8 +181,20 @@ struct ice_fdir_fltr {
 		struct ice_fdir_v6 v6;
 	} ip, mask;
 
+	/* for tunnel outer part */
+	union {
+		struct ice_fdir_v4 v4;
+		struct ice_fdir_v6 v6;
+	} ip_outer, mask_outer;
+
+	struct ice_fdir_extra ext_data_outer;
+	struct ice_fdir_extra ext_mask_outer;
+
 	struct ice_fdir_udp_gtp gtpu_data;
 	struct ice_fdir_udp_gtp gtpu_mask;
+
+	struct ice_fdir_l2tpv3 l2tpv3_data;
+	struct ice_fdir_l2tpv3 l2tpv3_mask;
 
 	struct ice_fdir_extra ext_data;
 	struct ice_fdir_extra ext_mask;
@@ -202,11 +213,14 @@ struct ice_fdir_fltr {
 	u8 cnt_ena;
 	u8 fltr_status;
 	u16 cnt_index;
-	u8 fdid_prio;
 	u32 fltr_id;
+	u8 fdid_prio;
+	u8 comp_report;
+	/* Set to true for an ACL filter */
+	bool acl_fltr;
 };
 
-/* Dummy packet filter definition structure. */
+/* Dummy packet filter definition structure */
 struct ice_fdir_base_pkt {
 	enum ice_fltr_ptype flow;
 	u16 pkt_len;
@@ -215,6 +229,17 @@ struct ice_fdir_base_pkt {
 	const u8 *tun_pkt;
 };
 
+enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id);
+enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id);
+enum ice_status
+ice_alloc_fd_guar_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr);
+enum ice_status
+ice_free_fd_guar_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr);
+enum ice_status
+ice_alloc_fd_shrd_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr);
+enum ice_status
+ice_free_fd_shrd_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr);
+enum ice_status ice_clear_pf_fd_table(struct ice_hw *hw);
 void
 ice_fdir_get_prgm_desc(struct ice_hw *hw, struct ice_fdir_fltr *input,
 		       struct ice_fltr_desc *fdesc, bool add);
@@ -223,17 +248,13 @@ ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
 			  u8 *pkt, bool frag, bool tun);
 enum ice_status
 ice_fdir_get_prgm_pkt(struct ice_fdir_fltr *input, u8 *pkt, bool frag);
-enum ice_status
-ice_add_del_fdir(struct ice_hw *hw, struct ice_fdir_fltr *input, bool add);
 int ice_get_fdir_cnt_all(struct ice_hw *hw);
 bool ice_fdir_is_dup_fltr(struct ice_hw *hw, struct ice_fdir_fltr *input);
-enum ice_status
-ice_update_fdir_list_entry(struct ice_hw *hw, struct ice_fdir_fltr *input,
-			   u16 sw_idx);
 bool ice_fdir_has_frag(enum ice_fltr_ptype flow);
 struct ice_fdir_fltr *
 ice_fdir_find_fltr_by_idx(struct ice_hw *hw, u32 fltr_idx);
 void
-ice_fdir_update_cntrs(struct ice_hw *hw, enum ice_fltr_ptype flow, bool add);
+ice_fdir_update_cntrs(struct ice_hw *hw, enum ice_fltr_ptype flow,
+		      bool acl_fltr, bool add);
 void ice_fdir_list_add_fltr(struct ice_hw *hw, struct ice_fdir_fltr *input);
 #endif /* _ICE_FDIR_H_ */

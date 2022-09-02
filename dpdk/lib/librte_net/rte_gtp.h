@@ -32,14 +32,14 @@ struct rte_gtp_hdr {
 	uint8_t msg_type;     /**< GTP message type */
 	uint16_t plen;        /**< Total payload length */
 	uint32_t teid;        /**< Tunnel endpoint ID */
-} __attribute__((__packed__));
+} __rte_packed;
 
 /** GTP header length */
 #define RTE_ETHER_GTP_HLEN \
 	(sizeof(struct rte_udp_hdr) + sizeof(struct rte_gtp_hdr))
-/* GTP next protocal type */
-#define RTE_GTP_TYPE_IPV4 0x40 /**< GTP next protocal type IPv4 */
-#define RTE_GTP_TYPE_IPV6 0x60 /**< GTP next protocal type IPv6 */
+/* GTP next protocol type */
+#define RTE_GTP_TYPE_IPV4 0x40 /**< GTP next protocol type IPv4 */
+#define RTE_GTP_TYPE_IPV6 0x60 /**< GTP next protocol type IPv6 */
 /* GTP destination port number */
 #define RTE_GTPC_UDP_PORT 2123 /**< GTP-C UDP destination port */
 #define RTE_GTPU_UDP_PORT 2152 /**< GTP-U UDP destination port */

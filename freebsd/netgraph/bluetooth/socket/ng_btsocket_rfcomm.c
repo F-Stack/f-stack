@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2003 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -203,8 +205,9 @@ static int					ng_btsocket_rfcomm_curpps;
 
 /* Sysctl tree */
 SYSCTL_DECL(_net_bluetooth_rfcomm_sockets);
-static SYSCTL_NODE(_net_bluetooth_rfcomm_sockets, OID_AUTO, stream, CTLFLAG_RW,
-	0, "Bluetooth STREAM RFCOMM sockets family");
+static SYSCTL_NODE(_net_bluetooth_rfcomm_sockets, OID_AUTO, stream,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Bluetooth STREAM RFCOMM sockets family");
 SYSCTL_UINT(_net_bluetooth_rfcomm_sockets_stream, OID_AUTO, debug_level,
 	CTLFLAG_RW,
 	&ng_btsocket_rfcomm_debug_level, NG_BTSOCKET_INFO_LEVEL,
@@ -737,7 +740,7 @@ ng_btsocket_rfcomm_detach(struct socket *so)
 		ng_btsocket_rfcomm_task_wakeup();
 		break;
 	}
-	
+
 	while (pcb->state != NG_BTSOCKET_RFCOMM_DLC_CLOSED)
 		msleep(&pcb->state, &pcb->pcb_mtx, PZERO, "rf_det", 0);
 
@@ -974,7 +977,7 @@ ng_btsocket_rfcomm_send(struct socket *so, int flags, struct mbuf *m,
 	/* Put the packet on the socket's send queue and wakeup RFCOMM task */
 	sbappend(&pcb->so->so_snd, m, flags);
 	m = NULL;
-	
+
 	if (!(pcb->flags & NG_BTSOCKET_RFCOMM_DLC_SENDING)) {
 		pcb->flags |= NG_BTSOCKET_RFCOMM_DLC_SENDING;
 		error = ng_btsocket_rfcomm_task_wakeup();
@@ -1149,7 +1152,7 @@ ng_btsocket_rfcomm_connect_ind(ng_btsocket_rfcomm_session_p s, int channel)
 {
 	ng_btsocket_rfcomm_pcb_p	 pcb = NULL, pcb1 = NULL;
 	ng_btsocket_l2cap_pcb_p		 l2pcb = NULL;
-	struct socket			*so1 = NULL;
+	struct socket			*so1;
 
 	mtx_assert(&s->session_mtx, MA_OWNED);
 
@@ -1171,11 +1174,9 @@ ng_btsocket_rfcomm_connect_ind(ng_btsocket_rfcomm_session_p s, int channel)
 
 	mtx_lock(&pcb->pcb_mtx);
 
-	if (pcb->so->so_qlen <= pcb->so->so_qlimit) {
-		CURVNET_SET(pcb->so->so_vnet);
-		so1 = sonewconn(pcb->so, 0);
-		CURVNET_RESTORE();
-	}
+	CURVNET_SET(pcb->so->so_vnet);
+	so1 = sonewconn(pcb->so, 0);
+	CURVNET_RESTORE();
 
 	mtx_unlock(&pcb->pcb_mtx);
 
@@ -1405,46 +1406,24 @@ bad:
 static int
 ng_btsocket_rfcomm_session_accept(ng_btsocket_rfcomm_session_p s0)
 {
-	struct socket			*l2so = NULL;
+	struct socket			*l2so;
 	struct sockaddr_l2cap		*l2sa = NULL;
 	ng_btsocket_l2cap_pcb_t		*l2pcb = NULL;
 	ng_btsocket_rfcomm_session_p	 s = NULL;
-	int				 error = 0;
+	int				 error;
 
 	mtx_assert(&ng_btsocket_rfcomm_sessions_mtx, MA_OWNED);
 	mtx_assert(&s0->session_mtx, MA_OWNED);
 
-	/* Check if there is a complete L2CAP connection in the queue */
-	if ((error = s0->l2so->so_error) != 0) {
+	SOLISTEN_LOCK(s0->l2so);
+	error = solisten_dequeue(s0->l2so, &l2so, 0);
+	if (error == EWOULDBLOCK)
+		return (error);
+	if (error) {
 		NG_BTSOCKET_RFCOMM_ERR(
 "%s: Could not accept connection on L2CAP socket, error=%d\n", __func__, error);
-		s0->l2so->so_error = 0;
-
 		return (error);
 	}
-
-	ACCEPT_LOCK();
-	if (TAILQ_EMPTY(&s0->l2so->so_comp)) {
-		ACCEPT_UNLOCK();
-		if (s0->l2so->so_rcv.sb_state & SBS_CANTRCVMORE)
-			return (ECONNABORTED);
-		return (EWOULDBLOCK);
-	}
-
-	/* Accept incoming L2CAP connection */
-	l2so = TAILQ_FIRST(&s0->l2so->so_comp);
-	if (l2so == NULL)
-		panic("%s: l2so == NULL\n", __func__);
-
-	TAILQ_REMOVE(&s0->l2so->so_comp, l2so, so_list);
-	s0->l2so->so_qlen --;
-	l2so->so_qstate &= ~SQ_COMP;
-	l2so->so_head = NULL;
-	SOCK_LOCK(l2so);
-	soref(l2so);
-	l2so->so_state |= SS_NBIO;
-	SOCK_UNLOCK(l2so);
-	ACCEPT_UNLOCK();
 
 	error = soaccept(l2so, (struct sockaddr **) &l2sa);
 	if (error != 0) {
@@ -1616,7 +1595,7 @@ ng_btsocket_rfcomm_session_receive(ng_btsocket_rfcomm_session_p s)
 
 			return (error);
 		}
-	
+
 		more = (m->m_nextpkt != NULL);
 		m->m_nextpkt = NULL;
 
@@ -1730,7 +1709,6 @@ ng_btsocket_rfcomm_session_process_pcb(ng_btsocket_rfcomm_session_p s)
 		pcb_next = LIST_NEXT(pcb, session_next);
 
 		switch (pcb->state) {
-
 		/*
 		 * If DLC in W4_CONNECT state then we should check for both
 		 * timeout and detach.
@@ -2380,13 +2358,12 @@ ng_btsocket_rfcomm_receive_uih(ng_btsocket_rfcomm_session_p s, int dlci,
 
 			error = EMSGSIZE;
 		} else if (m0->m_pkthdr.len > sbspace(&pcb->so->so_rcv)) {
- 
 			/*
 			 * This is really bad. Receive queue on socket does
 			 * not have enough space for the packet. We do not
 			 * have any other choice but drop the packet. 
 			 */
- 
+
 			NG_BTSOCKET_RFCOMM_ERR(
 "%s: Not enough space in socket receive queue. Dropping UIH for dlci=%d, " \
 "state=%d, flags=%#x, len=%d, space=%ld\n",
@@ -3579,4 +3556,3 @@ ng_btsocket_rfcomm_prepare_packet(struct sockbuf *sb, int length)
 
 	return (top);
 } /* ng_btsocket_rfcomm_prepare_packet */
-

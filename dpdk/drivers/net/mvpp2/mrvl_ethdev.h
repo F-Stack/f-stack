@@ -212,7 +212,6 @@ struct mrvl_priv {
 	uint8_t configured; /** indicates if device has been configured */
 };
 
-/** Flow operations forward declaration. */
 extern const struct rte_flow_ops mrvl_flow_ops;
 
 /** Meter operations forward declaration. */

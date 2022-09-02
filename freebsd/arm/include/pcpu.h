@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1999 Luoqi Chen <luoqi@freebsd.org>
  * All rights reserved.
  *
@@ -32,7 +34,8 @@
 
 #ifdef _KERNEL
 
-#include <machine/cpuconf.h>
+#include <sys/_lock.h>
+#include <sys/_mutex.h>
 
 #define	ALT_STACK_SIZE	128
 
@@ -40,23 +43,30 @@ struct vmspace;
 
 #endif	/* _KERNEL */
 
-#if __ARM_ARCH >= 6
+/* Branch predictor hardening method */
+#define PCPU_BP_HARDEN_KIND_NONE		0
+#define PCPU_BP_HARDEN_KIND_BPIALL		1
+#define PCPU_BP_HARDEN_KIND_ICIALLU		2
+
 #define PCPU_MD_FIELDS							\
 	unsigned int pc_vfpsid;						\
 	unsigned int pc_vfpmvfr0;					\
 	unsigned int pc_vfpmvfr1;					\
 	struct pmap *pc_curpmap;					\
+	struct mtx pc_cmap_lock;					\
+	void *pc_cmap1_pte2p;						\
+	void *pc_cmap2_pte2p;						\
+	caddr_t pc_cmap1_addr;						\
+	caddr_t pc_cmap2_addr;						\
 	vm_offset_t pc_qmap_addr;					\
-	void *pc_qmap_pte;						\
+	void *pc_qmap_pte2p;						\
 	unsigned int pc_dbreg[32];					\
 	int pc_dbreg_cmd;						\
-	char __pad[1]
-#else
-#define PCPU_MD_FIELDS							\
-	vm_offset_t qmap_addr;						\
-	void *pc_qmap_pte;						\
-	char __pad[149]
-#endif
+	int pc_bp_harden_kind;						\
+	uint32_t pc_original_actlr;					\
+	uint64_t pc_clock;						\
+	uint32_t pc_mpidr;						\
+	char __pad[135]
 
 #ifdef _KERNEL
 
@@ -68,7 +78,6 @@ struct pcpu;
 
 extern struct pcpu *pcpup;
 
-#if __ARM_ARCH >= 6
 #define CPU_MASK (0xf)
 
 #ifndef SMP
@@ -97,13 +106,13 @@ set_curthread(struct thread *td)
 	__asm __volatile("mcr p15, 0, %0, c13, c0, 4" : : "r" (td));
 }
 
-
 static inline void *
 get_tls(void)
 {
 	void *tls;
 
-	__asm __volatile("mrc p15, 0, %0, c13, c0, 3" : "=r" (tls));
+	/* TPIDRURW contains the authoritative value. */
+	__asm __volatile("mrc p15, 0, %0, c13, c0, 2" : "=r" (tls));
 	return (tls);
 }
 
@@ -111,14 +120,19 @@ static inline void
 set_tls(void *tls)
 {
 
-	__asm __volatile("mcr p15, 0, %0, c13, c0, 3" : : "r" (tls));
+	/*
+	 * Update both TPIDRURW and TPIDRURO. TPIDRURW needs to be written
+	 * first to ensure that a context switch between the two writes will
+	 * still give the desired result of updating both.
+	 */
+	__asm __volatile(
+	    "mcr p15, 0, %0, c13, c0, 2\n"
+	    "mcr p15, 0, %0, c13, c0, 3\n"
+	     : : "r" (tls));
 }
 
 #define curthread get_curthread()
 
-#else
-#define get_pcpu()	pcpup
-#endif
 
 #define	PCPU_GET(member)	(get_pcpu()->pc_ ## member)
 #define	PCPU_ADD(member, value)	(get_pcpu()->pc_ ## member += (value))

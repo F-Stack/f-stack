@@ -1,5 +1,6 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2016-2017 Intel Corporation.
+    Copyright (C) 2020 Marvell International Ltd.
 
 IPsec Security Gateway Sample Application
 =========================================
@@ -61,13 +62,52 @@ The Path for the IPsec Outbound traffic is:
 *  Routing.
 *  Write packet to port.
 
+The application supports two modes of operation: poll mode and event mode.
+
+* In the poll mode a core receives packets from statically configured list
+  of eth ports and eth ports' queues.
+
+* In the event mode a core receives packets as events. After packet processing
+  is done core submits them back as events to an event device. This enables
+  multicore scaling and HW assisted scheduling by making use of the event device
+  capabilities. The event mode configuration is predefined. All packets reaching
+  given eth port will arrive at the same event queue. All event queues are mapped
+  to all event ports. This allows all cores to receive traffic from all ports.
+  Since the underlying event device might have varying capabilities, the worker
+  threads can be drafted differently to maximize performance. For example, if an
+  event device - eth device pair has Tx internal port, then application can call
+  rte_event_eth_tx_adapter_enqueue() instead of regular rte_event_enqueue_burst().
+  So a thread which assumes that the device pair has internal port will not be the
+  right solution for another pair. The infrastructure added for the event mode aims
+  to help application to have multiple worker threads by maximizing performance from
+  every type of event device without affecting existing paths/use cases. The worker
+  to be used will be determined by the operating conditions and the underlying device
+  capabilities. **Currently the application provides non-burst, internal port worker
+  threads and supports inline protocol only.** It also provides infrastructure for
+  non-internal port however does not define any worker threads.
+
+Additionally the event mode introduces two submodes of processing packets:
+
+* Driver submode: This submode has bare minimum changes in the application to support
+  IPsec. There are no lookups, no routing done in the application. And for inline
+  protocol use case, the worker thread resembles l2fwd worker thread as the IPsec
+  processing is done entirely in HW. This mode can be used to benchmark the raw
+  performance of the HW. The driver submode is selected with --single-sa option
+  (used also by poll mode). When --single-sa option is used in conjunction with event
+  mode then index passed to --single-sa is ignored.
+
+* App submode: This submode has all the features currently implemented with the
+  application (non librte_ipsec path). All the lookups, routing follows existing
+  methods and report numbers that can be compared against regular poll mode
+  benchmark numbers.
 
 Constraints
 -----------
 
 *  No IPv6 options headers.
 *  No AH mode.
-*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, HMAC-SHA1 and NULL.
+*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, HMAC-SHA1,
+   HMAC-SHA256 and NULL.
 *  Each SA must be handle by a unique lcore (*1 RX queue per port*).
 
 Compiling the Application
@@ -77,12 +117,6 @@ To compile the sample application see :doc:`compiling`.
 
 The application is located in the ``ipsec-secgw`` sub-directory.
 
-#. [Optional] Build the application for debugging:
-   This option adds some extra flags, disables compiler optimizations and
-   is verbose::
-
-       make DEBUG=1
-
 
 Running the Application
 -----------------------
@@ -90,16 +124,22 @@ Running the Application
 The application has a number of command line options::
 
 
-   ./build/ipsec-secgw [EAL options] --
+   ./<build_dir>/examples/dpdk-ipsec-secgw [EAL options] --
                         -p PORTMASK -P -u PORTMASK -j FRAMESIZE
                         -l -w REPLAY_WINDOW_SIZE -e -a
-                        --config (port,queue,lcore)[,(port,queue,lcore]
+                        -c SAD_CACHE_SIZE
+                        -s NUMBER_OF_MBUFS_IN_PACKET_POOL
+                        -f CONFIG_FILE_PATH
+                        --config (port,queue,lcore)[,(port,queue,lcore)]
                         --single-sa SAIDX
+                        --cryptodev_mask MASK
+                        --transfer-mode MODE
+                        --event-schedule-type TYPE
                         --rxoffload MASK
                         --txoffload MASK
-                        --mtu MTU
                         --reassemble NUM
-                        -f CONFIG_FILE_PATH
+                        --mtu MTU
+                        --frag-ttl FRAG_TTL_NS
 
 Where:
 
@@ -132,12 +172,42 @@ Where:
 *   ``-a``: enables Security Association sequence number atomic behavior
     (available only with librte_ipsec code path).
 
-*   ``--config (port,queue,lcore)[,(port,queue,lcore)]``: determines which queues
-    from which ports are mapped to which cores.
+*   ``-c``: specifies the SAD cache size. Stores the most recent SA in a per
+    lcore cache. Cache represents flat array containing SA's indexed by SPI.
+    Zero value disables cache.
+    Default value: 128.
 
-*   ``--single-sa SAIDX``: use a single SA for outbound traffic, bypassing the SP
-    on both Inbound and Outbound. This option is meant for debugging/performance
-    purposes.
+*   ``-s``: sets number of mbufs in packet pool, if not provided number of mbufs
+    will be calculated based on number of cores, eth ports and crypto queues.
+
+*   ``-f CONFIG_FILE_PATH``: the full path of text-based file containing all
+    configuration items for running the application (See Configuration file
+    syntax section below). ``-f CONFIG_FILE_PATH`` **must** be specified.
+    **ONLY** the UNIX format configuration file is accepted.
+
+*   ``--config (port,queue,lcore)[,(port,queue,lcore)]``: in poll mode determines
+    which queues from which ports are mapped to which cores. In event mode this
+    option is not used as packets are dynamically scheduled to cores by HW.
+
+*   ``--single-sa SAIDX``: in poll mode use a single SA for outbound traffic,
+    bypassing the SP on both Inbound and Outbound. This option is meant for
+    debugging/performance purposes. In event mode selects driver submode, SA index
+    value is ignored.
+
+*   ``--cryptodev_mask MASK``: hexadecimal bitmask of the crypto devices
+    to configure.
+
+*   ``--transfer-mode MODE``: sets operating mode of the application
+    "poll"  : packet transfer via polling (default)
+    "event" : Packet transfer via event device
+
+*   ``--event-schedule-type TYPE``: queue schedule type, applies only when
+    --transfer-mode is set to event.
+    "ordered"  : Ordered (default)
+    "atomic"   : Atomic
+    "parallel" : Parallel
+    When --event-schedule-type is set as RTE_SCHED_TYPE_ORDERED/ATOMIC, event
+    device will ensure the ordering. Ordering will be lost when tried in PARALLEL.
 
 *   ``--rxoffload MASK``: RX HW offload capabilities to enable/use on this port
     (bitmask of DEV_RX_OFFLOAD_* values). It is an optional parameter and
@@ -148,6 +218,10 @@ Where:
     (bitmask of DEV_TX_OFFLOAD_* values). It is an optional parameter and
     allows user to disable some of the TX HW offload capabilities.
     By default all HW TX offloads are enabled.
+
+*   ``--reassemble NUM``: max number of entries in reassemble fragment table.
+    Zero value disables reassembly functionality.
+    Default value: 0.
 
 *   ``--mtu MTU``: MTU value (in bytes) on all attached ethernet ports.
     Outgoing packets with length bigger then MTU will be fragmented.
@@ -161,26 +235,17 @@ Where:
     Should be lower for low number of reassembly buckets.
     Valid values: from 1 ns to 10 s. Default value: 10000000 (10 s).
 
-*   ``--reassemble NUM``: max number of entries in reassemble fragment table.
-    Zero value disables reassembly functionality.
-    Default value: 0.
-
-*   ``-f CONFIG_FILE_PATH``: the full path of text-based file containing all
-    configuration items for running the application (See Configuration file
-    syntax section below). ``-f CONFIG_FILE_PATH`` **must** be specified.
-    **ONLY** the UNIX format configuration file is accepted.
-
 
 The mapping of lcores to port/queues is similar to other l3fwd applications.
 
-For example, given the following command line::
+For example, given the following command line to run application in poll mode::
 
-    ./build/ipsec-secgw -l 20,21 -n 4 --socket-mem 0,2048       \
-           --vdev "crypto_null" -- -p 0xf -P -u 0x3      \
+    ./<build_dir>/examples/dpdk-ipsec-secgw -l 20,21 -n 4 --socket-mem 0,2048       \
+           --vdev "crypto_null" -- -p 0xf -P -u 0x3             \
            --config="(0,0,20),(1,0,20),(2,0,21),(3,0,21)"       \
-           -f /path/to/config_file                              \
+           -f /path/to/config_file --transfer-mode poll         \
 
-where each options means:
+where each option means:
 
 *   The ``-l`` option enables cores 20 and 21.
 
@@ -194,7 +259,7 @@ where each options means:
 
 *   The ``-P`` option enables promiscuous mode.
 
-*   The ``-u`` option sets ports 1 and 2 as unprotected, leaving 2 and 3 as protected.
+*   The ``-u`` option sets ports 0 and 1 as unprotected, leaving 2 and 3 as protected.
 
 *   The ``--config`` option enables one queue per port with the following mapping:
 
@@ -222,6 +287,33 @@ where each options means:
     **note** the parser only accepts UNIX format text file. Other formats
     such as DOS/MAC format will cause a parse error.
 
+*   The ``--transfer-mode`` option selects poll mode for processing packets.
+
+Similarly for example, given the following command line to run application in
+event app mode::
+
+    ./<build_dir>/examples/dpdk-ipsec-secgw -c 0x3 -- -P -p 0x3 -u 0x1       \
+           -f /path/to/config_file --transfer-mode event \
+           --event-schedule-type parallel                \
+
+where each option means:
+
+*   The ``-c`` option selects cores 0 and 1 to run on.
+
+*   The ``-P`` option enables promiscuous mode.
+
+*   The ``-p`` option enables ports (detected) 0 and 1.
+
+*   The ``-u`` option sets ports 0 as unprotected, leaving 1 as protected.
+
+*   The ``-f /path/to/config_file`` option has the same behavior as in poll
+    mode example.
+
+*   The ``--transfer-mode`` option selects event mode for processing packets.
+
+*   The ``--event-schedule-type`` option selects parallel ordering of event queues.
+
+
 Refer to the *DPDK Getting Started Guide* for general information on running
 applications and the Environment Abstraction Layer (EAL) options.
 
@@ -232,15 +324,15 @@ This means that if the application is using a single core and both hardware
 and software crypto devices are detected, hardware devices will be used.
 
 A way to achieve the case where you want to force the use of virtual crypto
-devices is to whitelist the Ethernet devices needed and therefore implicitly
-blacklisting all hardware crypto devices.
+devices is to only use the Ethernet devices needed (via the allow flag)
+and therefore implicitly blocking all hardware crypto devices.
 
 For example, something like the following command line:
 
 .. code-block:: console
 
-    ./build/ipsec-secgw -l 20,21 -n 4 --socket-mem 0,2048 \
-            -w 81:00.0 -w 81:00.1 -w 81:00.2 -w 81:00.3 \
+    ./<build_dir>/examples/dpdk-ipsec-secgw -l 20,21 -n 4 --socket-mem 0,2048 \
+            -a 81:00.0 -a 81:00.1 -a 81:00.2 -a 81:00.3 \
             --vdev "crypto_aesni_mb" --vdev "crypto_null" \
 	    -- \
             -p 0xf -P -u 0x3 --config="(0,0,20),(1,0,20),(2,0,21),(3,0,21)" \
@@ -251,7 +343,7 @@ Configurations
 --------------
 
 The following sections provide the syntax of configurations to initialize
-your SP, SA, Routing and Neighbour tables.
+your SP, SA, Routing, Flow and Neighbour tables.
 Configurations shall be specified in the configuration file to be passed to
 the application. The file is then parsed by the application. The successful
 parsing will result in the appropriate rules being applied to the tables
@@ -272,7 +364,7 @@ General rule syntax
 
 The parse treats one line in the configuration file as one configuration
 item (unless the line concatenation symbol exists). Every configuration
-item shall follow the syntax of either SP, SA, Routing or Neighbour
+item shall follow the syntax of either SP, SA, Routing, Flow or Neighbour
 rules specified below.
 
 The configuration parser supports the following special symbols:
@@ -409,6 +501,7 @@ The SA rule syntax is shown as follows:
 
     sa <dir> <spi> <cipher_algo> <cipher_key> <auth_algo> <auth_key>
     <mode> <src_ip> <dst_ip> <action_type> <port_id> <fallback>
+    <flow-direction> <port_id> <queue_id>
 
 where each options means:
 
@@ -441,6 +534,7 @@ where each options means:
 
    * *null*: NULL algorithm
    * *aes-128-cbc*: AES-CBC 128-bit algorithm
+   * *aes-192-cbc*: AES-CBC 192-bit algorithm
    * *aes-256-cbc*: AES-CBC 256-bit algorithm
    * *aes-128-ctr*: AES-CTR 128-bit algorithm
    * *3des-cbc*: 3DES-CBC 192-bit algorithm
@@ -471,6 +565,7 @@ where each options means:
 
     * *null*: NULL algorithm
     * *sha1-hmac*: HMAC SHA1 algorithm
+    * *sha256-hmac*: HMAC SHA256 algorithm
 
 ``<auth_key>``
 
@@ -496,6 +591,8 @@ where each options means:
  * Available options:
 
    * *aes-128-gcm*: AES-GCM 128-bit algorithm
+   * *aes-192-gcm*: AES-GCM 192-bit algorithm
+   * *aes-256-gcm*: AES-GCM 256-bit algorithm
 
  * Syntax: *cipher_algo <your algorithm>*
 
@@ -507,11 +604,12 @@ where each options means:
    Must be followed by <aead_algo> option
 
  * Syntax: Hexadecimal bytes (0x0-0xFF) concatenate by colon symbol ':'.
-   The number of bytes should be as same as the specified AEAD algorithm
-   key size.
+   Last 4 bytes of the provided key will be used as 'salt' and so, the
+   number of bytes should be same as the sum of specified AEAD algorithm
+   key size and salt size (4 bytes).
 
    For example: *aead_key A1:B2:C3:D4:A1:B2:C3:D4:A1:B2:C3:D4:
-   A1:B2:C3:D4*
+   A1:B2:C3:D4:A1:B2:C3:D4*
 
 ``<mode>``
 
@@ -601,6 +699,18 @@ where each options means:
 
    * *fallback lookaside-none*
 
+``<flow-direction>``
+
+ * Option for redirecting a specific inbound ipsec flow of a port to a specific
+   queue of that port.
+
+ * Optional: Yes.
+
+ * Available options:
+
+   * *port_id*: Port ID of the NIC for which the SA is configured.
+   * *queue_id*: Queue ID to which traffic should be redirected.
+
 Example SA rules:
 
 .. code-block:: console
@@ -629,6 +739,9 @@ Example SA rules:
     aead_key de:ad:be:ef:de:ad:be:ef:de:ad:be:ef:de:ad:be:ef:de:ad:be:ef \
     mode ipv4-tunnel src 172.16.2.5 dst 172.16.1.5 \
     type inline-crypto-offload port_id 0
+
+    sa in 117 cipher_algo null auth_algo null mode ipv4-tunnel src 172.16.2.7 \
+    dst 172.16.1.7 flow-direction 0 2
 
 Routing rule syntax
 ^^^^^^^^^^^^^^^^^^^
@@ -691,6 +804,80 @@ Example SP rules:
 
     rt ipv6 dst 1111:1111:1111:1111:1111:1111:1111:5555/116 port 0
 
+Flow rule syntax
+^^^^^^^^^^^^^^^^
+
+Flow rule enables the usage of hardware classification capabilities to match specific
+ingress traffic and redirect the packets to the specified queue. This feature is
+optional and relies on hardware ``rte_flow`` support.
+
+The flow rule syntax is shown as follows:
+
+.. code-block:: console
+
+    flow <ip_ver> <src_ip> <dst_ip> <port> <queue>
+
+
+where each options means:
+
+``<ip_ver>``
+
+ * IP protocol version
+
+ * Optional: No
+
+ * Available options:
+
+   * *ipv4*: IP protocol version 4
+   * *ipv6*: IP protocol version 6
+
+``<src_ip>``
+
+ * The source IP address and mask
+
+ * Optional: Yes, default address 0.0.0.0 and mask of 0 will be used
+
+ * Syntax:
+
+   * *src X.X.X.X/Y* for IPv4
+   * *src XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/Y* for IPv6
+
+``<dst_ip>``
+
+ * The destination IP address and mask
+
+ * Optional: Yes, default address 0.0.0.0 and mask of 0 will be used
+
+ * Syntax:
+
+   * *dst X.X.X.X/Y* for IPv4
+   * *dst XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/Y* for IPv6
+
+``<port>``
+
+ * The traffic input port id
+
+ * Optional: yes, default input port 0 will be used
+
+ * Syntax: *port X*
+
+``<queue>``
+
+ * The traffic input queue id
+
+ * Optional: yes, default input queue 0 will be used
+
+ * Syntax: *queue X*
+
+Example flow rules:
+
+.. code-block:: console
+
+    flow ipv4 dst 172.16.1.5/32 port 0 queue 0
+
+    flow ipv6 dst 1111:1111:1111:1111:1111:1111:1111:5555/116 port 1 queue 0
+
+
 Neighbour rule syntax
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -744,19 +931,21 @@ The user must setup the following environment variables:
 
 *   ``REMOTE_IFACE``: interface name for the test-port on the DUT.
 
-*   ``ETH_DEV``: ethernet device to be used on the SUT by DPDK ('-w <pci-id>')
+*   ``ETH_DEV``: ethernet device to be used on the SUT by DPDK ('-a <pci-id>')
 
 Also the user can optionally setup:
 
 *   ``SGW_LCORE``: lcore to run ipsec-secgw on (default value is 0)
 
-*   ``CRYPTO_DEV``: crypto device to be used ('-w <pci-id>'). If none specified
+*   ``CRYPTO_DEV``: crypto device to be used ('-a <pci-id>'). If none specified
     appropriate vdevs will be created by the script
 
-*   ``MULTI_SEG_TEST``: ipsec-secgw option to enable reassembly support and
-    specify size of reassembly table (e.g.
-    ``MULTI_SEG_TEST='--reassemble 128'``). This option must be set for
-    fallback session tests.
+Scripts can be used for multiple test scenarios. To check all available
+options run:
+
+.. code-block:: console
+
+    /bin/bash run_test.sh -h
 
 Note that most of the tests require the appropriate crypto PMD/device to be
 available.
@@ -800,17 +989,40 @@ SUT OS(TAP)--(plain)-->(TAP)psec-secgw(NIC1)--(IPsec)-->(NIC1)DUT OS
 
 It then tries to perform some data transfer using the scheme described above.
 
-usage
+Usage
 ~~~~~
 
-In the ipsec-secgw/test directory
+In the ipsec-secgw/test directory run
 
-to run one test for IPv4 or IPv6
+/bin/bash run_test.sh <options> <ipsec_mode>
 
-/bin/bash linux_test(4|6).sh <ipsec_mode>
+Available options:
 
-to run all tests for IPv4 or IPv6
+*   ``-4`` Perform tests with use of IPv4. One or both [-46] options needs to be
+    selected.
 
-/bin/bash run_test.sh -4|-6
+*   ``-6`` Perform tests with use of IPv6. One or both [-46] options needs to be
+    selected.
 
-For the list of available modes please refer to run_test.sh.
+*   ``-m`` Add IPSec tunnel mixed IP version tests - outer IP version different
+    than inner. Inner IP version will match selected option [-46].
+
+*   ``-i`` Run tests in inline mode. Regular tests will not be invoked.
+
+*   ``-f`` Run tests for fallback mechanism. Regular tests will not be invoked.
+
+*   ``-l`` Run tests in legacy mode only. It cannot be used with options [-fsc].
+    On default library mode is used.
+
+*   ``-s`` Run all tests with reassembly support. On default only tests for
+    fallback mechanism use reassembly support.
+
+*   ``-c`` Run tests with use of cpu-crypto. For inline tests it will not be
+    applied. On default lookaside-none is used.
+
+*   ``-p`` Perform packet validation tests. Option [-46] is not required.
+
+*   ``-h`` Show usage.
+
+If <ipsec_mode> is specified, only tests for that mode will be invoked. For the
+list of available modes please refer to run_test.sh.

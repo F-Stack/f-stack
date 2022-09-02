@@ -6,7 +6,6 @@
 #ifndef RTE_PMD_MLX5_RXTX_VEC_NEON_H_
 #define RTE_PMD_MLX5_RXTX_VEC_NEON_H_
 
-#include <assert.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -16,31 +15,30 @@
 #include <rte_mempool.h>
 #include <rte_prefetch.h>
 
+#include <mlx5_prm.h>
+
+#include "mlx5_defs.h"
 #include "mlx5.h"
 #include "mlx5_utils.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_rxtx_vec.h"
 #include "mlx5_autoconf.h"
-#include "mlx5_defs.h"
-#include "mlx5_prm.h"
 
 #pragma GCC diagnostic ignored "-Wcast-qual"
 
 /**
  * Store free buffers to RX SW ring.
  *
- * @param rxq
- *   Pointer to RX queue structure.
+ * @param elts
+ *   Pointer to SW ring to be filled.
  * @param pkts
  *   Pointer to array of packets to be stored.
  * @param pkts_n
  *   Number of packets to be stored.
  */
 static inline void
-rxq_copy_mbuf_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t n)
+rxq_copy_mbuf_v(struct rte_mbuf **elts, struct rte_mbuf **pkts, uint16_t n)
 {
-	const uint16_t q_mask = (1 << rxq->elts_n) - 1;
-	struct rte_mbuf **elts = &(*rxq->elts)[rxq->rq_pi & q_mask];
 	unsigned int pos;
 	uint16_t p = n & -2;
 
@@ -113,7 +111,8 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		rxq->crc_present * RTE_ETHER_CRC_LEN, 0,
 		0, 0
 	};
-	const uint32_t flow_tag = t_pkt->hash.fdir.hi;
+	uint32x4_t ol_flags = {0, 0, 0, 0};
+	uint32x4_t ol_flags_mask = {0, 0, 0, 0};
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	uint32_t rcvd_byte = 0;
 #endif
@@ -146,8 +145,9 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 					     sizeof(uint16_t) * 8) : 0);
 #endif
 
-		if (!(pos & 0x7) && pos + 8 < mcqe_n)
-			rte_prefetch0((void *)(cq + pos + 8));
+		for (i = 0; i < MLX5_VPMD_DESCS_PER_LOOP; ++i)
+			if (likely(pos + i < mcqe_n))
+				rte_prefetch0((void *)(cq + pos + i));
 		__asm__ volatile (
 		/* A.1 load mCQEs into a 128bit register. */
 		"ld1 {v16.16b - v17.16b}, [%[mcq]] \n\t"
@@ -199,11 +199,139 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		rcvd_byte += vget_lane_u64(vpaddl_u32(vpaddl_u16(byte_cnt)), 0);
 #endif
 		if (rxq->mark) {
-			/* E.1 store flow tag (rte_flow mark). */
-			elts[pos]->hash.fdir.hi = flow_tag;
-			elts[pos + 1]->hash.fdir.hi = flow_tag;
-			elts[pos + 2]->hash.fdir.hi = flow_tag;
-			elts[pos + 3]->hash.fdir.hi = flow_tag;
+			if (rxq->mcqe_format !=
+			    MLX5_CQE_RESP_FORMAT_FTAG_STRIDX) {
+				const uint32_t flow_tag = t_pkt->hash.fdir.hi;
+
+				/* E.1 store flow tag (rte_flow mark). */
+				elts[pos]->hash.fdir.hi = flow_tag;
+				elts[pos + 1]->hash.fdir.hi = flow_tag;
+				elts[pos + 2]->hash.fdir.hi = flow_tag;
+				elts[pos + 3]->hash.fdir.hi = flow_tag;
+			}  else {
+				const uint32x4_t flow_mark_adj = {
+					-1, -1, -1, -1 };
+				const uint8x16_t flow_mark_shuf = {
+					28, 24, 25, -1,
+					20, 16, 17, -1,
+					12,  8,  9, -1,
+					 4,  0,  1, -1};
+				/* Extract flow_tag field. */
+				const uint32x4_t ft_mask =
+					vdupq_n_u32(MLX5_FLOW_MARK_DEFAULT);
+				const uint32x4_t fdir_flags =
+					vdupq_n_u32(PKT_RX_FDIR);
+				const uint32x4_t fdir_all_flags =
+					vdupq_n_u32(PKT_RX_FDIR |
+						    PKT_RX_FDIR_ID);
+				uint32x4_t fdir_id_flags =
+					vdupq_n_u32(PKT_RX_FDIR_ID);
+				uint32x4_t invalid_mask, ftag;
+
+				__asm__ volatile
+				/* A.1 load mCQEs into a 128bit register. */
+				("ld1 {v16.16b - v17.16b}, [%[mcq]]\n\t"
+				/* Extract flow_tag. */
+				 "tbl %[ftag].16b, {v16.16b - v17.16b}, %[flow_mark_shuf].16b\n\t"
+				: [ftag]"=&w"(ftag)
+				: [mcq]"r"(p),
+				  [flow_mark_shuf]"w"(flow_mark_shuf)
+				: "memory", "v16", "v17");
+				invalid_mask = vceqzq_u32(ftag);
+				ol_flags_mask = vorrq_u32(ol_flags_mask,
+							  fdir_all_flags);
+				/* Set PKT_RX_FDIR if flow tag is non-zero. */
+				ol_flags = vorrq_u32(ol_flags,
+					vbicq_u32(fdir_flags, invalid_mask));
+				/* Mask out invalid entries. */
+				fdir_id_flags = vbicq_u32(fdir_id_flags,
+							  invalid_mask);
+				/* Check if flow tag MLX5_FLOW_MARK_DEFAULT. */
+				ol_flags = vorrq_u32(ol_flags,
+					vbicq_u32(fdir_id_flags,
+						  vceqq_u32(ftag, ft_mask)));
+				ftag = vaddq_u32(ftag, flow_mark_adj);
+				elts[pos]->hash.fdir.hi =
+					vgetq_lane_u32(ftag, 3);
+				elts[pos + 1]->hash.fdir.hi =
+					vgetq_lane_u32(ftag, 2);
+				elts[pos + 2]->hash.fdir.hi =
+					vgetq_lane_u32(ftag, 1);
+				elts[pos + 3]->hash.fdir.hi =
+					vgetq_lane_u32(ftag, 0);
+				}
+		}
+		if (unlikely(rxq->mcqe_format !=
+			     MLX5_CQE_RESP_FORMAT_HASH)) {
+			if (rxq->mcqe_format ==
+			    MLX5_CQE_RESP_FORMAT_L34H_STRIDX) {
+				const uint8_t pkt_info =
+					(cq->pkt_info & 0x3) << 6;
+				const uint8_t pkt_hdr0 =
+					mcq[pos % 8].hdr_type;
+				const uint8_t pkt_hdr1 =
+					mcq[pos % 8 + 1].hdr_type;
+				const uint8_t pkt_hdr2 =
+					mcq[pos % 8 + 2].hdr_type;
+				const uint8_t pkt_hdr3 =
+					mcq[pos % 8 + 3].hdr_type;
+				const uint32x4_t vlan_mask =
+					vdupq_n_u32(PKT_RX_VLAN |
+						    PKT_RX_VLAN_STRIPPED);
+				const uint32x4_t cv_mask =
+					vdupq_n_u32(MLX5_CQE_VLAN_STRIPPED);
+				const uint32x4_t pkt_cv = {
+					pkt_hdr0 & 0x1, pkt_hdr1 & 0x1,
+					pkt_hdr2 & 0x1, pkt_hdr3 & 0x1};
+
+				ol_flags_mask = vorrq_u32(ol_flags_mask,
+							  vlan_mask);
+				ol_flags = vorrq_u32(ol_flags,
+						vandq_u32(vlan_mask,
+						vceqq_u32(pkt_cv, cv_mask)));
+				elts[pos]->packet_type =
+					mlx5_ptype_table[(pkt_hdr0 >> 2) |
+							 pkt_info];
+				elts[pos + 1]->packet_type =
+					mlx5_ptype_table[(pkt_hdr1 >> 2) |
+							 pkt_info];
+				elts[pos + 2]->packet_type =
+					mlx5_ptype_table[(pkt_hdr2 >> 2) |
+							 pkt_info];
+				elts[pos + 3]->packet_type =
+					mlx5_ptype_table[(pkt_hdr3 >> 2) |
+							 pkt_info];
+				if (rxq->tunnel) {
+					elts[pos]->packet_type |=
+						!!(((pkt_hdr0 >> 2) |
+						pkt_info) & (1 << 6));
+					elts[pos + 1]->packet_type |=
+						!!(((pkt_hdr1 >> 2) |
+						pkt_info) & (1 << 6));
+					elts[pos + 2]->packet_type |=
+						!!(((pkt_hdr2 >> 2) |
+						pkt_info) & (1 << 6));
+					elts[pos + 3]->packet_type |=
+						!!(((pkt_hdr3 >> 2) |
+						pkt_info) & (1 << 6));
+				}
+			}
+			const uint32x4_t hash_flags =
+				vdupq_n_u32(PKT_RX_RSS_HASH);
+			const uint32x4_t rearm_flags =
+				vdupq_n_u32((uint32_t)t_pkt->ol_flags);
+
+			ol_flags_mask = vorrq_u32(ol_flags_mask, hash_flags);
+			ol_flags = vorrq_u32(ol_flags,
+					vbicq_u32(rearm_flags, ol_flags_mask));
+			elts[pos]->ol_flags = vgetq_lane_u32(ol_flags, 3);
+			elts[pos + 1]->ol_flags = vgetq_lane_u32(ol_flags, 2);
+			elts[pos + 2]->ol_flags = vgetq_lane_u32(ol_flags, 1);
+			elts[pos + 3]->ol_flags = vgetq_lane_u32(ol_flags, 0);
+			elts[pos]->hash.rss = 0;
+			elts[pos + 1]->hash.rss = 0;
+			elts[pos + 2]->hash.rss = 0;
+			elts[pos + 3]->hash.rss = 0;
 		}
 		if (rxq->dynf_meta) {
 			int32_t offs = rxq->flow_meta_offset;
@@ -212,7 +340,7 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 
 			/* Check if title packet has valid metadata. */
 			if (meta) {
-				assert(t_pkt->ol_flags &
+				MLX5_ASSERT(t_pkt->ol_flags &
 					    rxq->flow_meta_mask);
 				*RTE_MBUF_DYNFIELD(elts[pos], offs,
 							uint32_t *) = meta;
@@ -227,6 +355,8 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		pos += MLX5_VPMD_DESCS_PER_LOOP;
 		/* Move to next CQE and invalidate consumed CQEs. */
 		if (!(pos & 0x7) && pos < mcqe_n) {
+			if (pos + 8 < mcqe_n)
+				rte_prefetch0((void *)(cq + pos + 8));
 			mcq = (void *)&(cq + pos)->pkt_info;
 			for (i = 0; i < 8; ++i)
 				cq[inv++].op_own = MLX5_CQE_INVALIDATE;
@@ -239,7 +369,6 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 	rxq->stats.ipackets += mcqe_n;
 	rxq->stats.ibytes += rcvd_byte;
 #endif
-	rxq->cq_ci += mcqe_n;
 	return mcqe_n;
 }
 
@@ -268,7 +397,7 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 	uint32x4_t pinfo, cv_flags;
 	uint32x4_t ol_flags =
 		vdupq_n_u32(rxq->rss_hash * PKT_RX_RSS_HASH |
-			    rxq->hw_timestamp * PKT_RX_TIMESTAMP);
+			    rxq->hw_timestamp * rxq->timestamp_rx_flag);
 	const uint32x4_t ptype_ol_mask = { 0x106, 0x106, 0x106, 0x106 };
 	const uint8x16_t cv_flag_sel = {
 		0,
@@ -283,8 +412,8 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 	const uint32x4_t cv_mask =
 		vdupq_n_u32(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD |
 			    PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
-	const uint64x1_t mbuf_init = vld1_u64(&rxq->mbuf_initializer);
-	const uint64x1_t r32_mask = vcreate_u64(0xffffffff);
+	const uint64x2_t mbuf_init = vld1q_u64
+				((const uint64_t *)&rxq->mbuf_initializer);
 	uint64x2_t rearm0, rearm1, rearm2, rearm3;
 	uint8_t pt_idx0, pt_idx1, pt_idx2, pt_idx3;
 
@@ -345,18 +474,19 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 	/* Merge to ol_flags. */
 	ol_flags = vorrq_u32(ol_flags, cv_flags);
 	/* Merge mbuf_init and ol_flags, and store. */
-	rearm0 = vcombine_u64(mbuf_init,
-			      vshr_n_u64(vget_high_u64(vreinterpretq_u64_u32(
-						       ol_flags)), 32));
-	rearm1 = vcombine_u64(mbuf_init,
-			      vand_u64(vget_high_u64(vreinterpretq_u64_u32(
-						     ol_flags)), r32_mask));
-	rearm2 = vcombine_u64(mbuf_init,
-			      vshr_n_u64(vget_low_u64(vreinterpretq_u64_u32(
-						      ol_flags)), 32));
-	rearm3 = vcombine_u64(mbuf_init,
-			      vand_u64(vget_low_u64(vreinterpretq_u64_u32(
-						    ol_flags)), r32_mask));
+	rearm0 = vreinterpretq_u64_u32(vsetq_lane_u32
+					(vgetq_lane_u32(ol_flags, 3),
+					 vreinterpretq_u32_u64(mbuf_init), 2));
+	rearm1 = vreinterpretq_u64_u32(vsetq_lane_u32
+					(vgetq_lane_u32(ol_flags, 2),
+					 vreinterpretq_u32_u64(mbuf_init), 2));
+	rearm2 = vreinterpretq_u64_u32(vsetq_lane_u32
+					(vgetq_lane_u32(ol_flags, 1),
+					 vreinterpretq_u32_u64(mbuf_init), 2));
+	rearm3 = vreinterpretq_u64_u32(vsetq_lane_u32
+					(vgetq_lane_u32(ol_flags, 0),
+					 vreinterpretq_u32_u64(mbuf_init), 2));
+
 	vst1q_u64((void *)&pkts[0]->rearm_data, rearm0);
 	vst1q_u64((void *)&pkts[1]->rearm_data, rearm1);
 	vst1q_u64((void *)&pkts[2]->rearm_data, rearm2);
@@ -364,12 +494,16 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 }
 
 /**
- * Receive burst of packets. An errored completion also consumes a mbuf, but the
- * packet_type is set to be RTE_PTYPE_ALL_MASK. Marked mbufs should be freed
- * before returning to application.
+ * Process a non-compressed completion and fill in mbufs in RX SW ring
+ * with data extracted from the title completion descriptor.
  *
  * @param rxq
  *   Pointer to RX queue structure.
+ * @param cq
+ *   Pointer to completion array having a non-compressed completion at first.
+ * @param elts
+ *   Pointer to SW ring to be filled. The first mbuf has to be pre-built from
+ *   the title completion descriptor to be copied to the rest of mbufs.
  * @param[out] pkts
  *   Array to store received packets.
  * @param pkts_n
@@ -377,28 +511,23 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
  * @param[out] err
  *   Pointer to a flag. Set non-zero value if pkts array has at least one error
  *   packet to handle.
- * @param[out] no_cq
- *   Pointer to a boolean. Set true if no new CQE seen.
+ * @param[out] comp
+ *   Pointer to a index. Set it to the first compressed completion if any.
  *
  * @return
- *   Number of packets received including errors (<= pkts_n).
+ *   Number of CQEs successfully processed.
  */
 static inline uint16_t
-rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
-	    uint64_t *err, bool *no_cq)
+rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
+		 struct rte_mbuf **elts, struct rte_mbuf **pkts,
+		 uint16_t pkts_n, uint64_t *err, uint64_t *comp)
 {
 	const uint16_t q_n = 1 << rxq->cqe_n;
 	const uint16_t q_mask = q_n - 1;
-	volatile struct mlx5_cqe *cq;
-	struct rte_mbuf **elts;
 	unsigned int pos;
-	uint64_t n;
-	uint16_t repl_n;
+	uint64_t n = 0;
 	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
 	uint16_t nocmp_n = 0;
-	uint16_t rcvd_pkt = 0;
-	unsigned int cq_idx = rxq->cq_ci & q_mask;
-	unsigned int elts_idx;
 	const uint16x4_t ownership = vdup_n_u16(!(rxq->cq_ci & (q_mask + 1)));
 	const uint16x4_t owner_check = vcreate_u16(0x0001000100010001);
 	const uint16x4_t opcode_check = vcreate_u16(0x00f000f000f000f0);
@@ -459,39 +588,6 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	};
 	const uint32x4_t flow_mark_adj = { 0, 0, 0, rxq->mark * (-1) };
 
-	assert(rxq->sges_n == 0);
-	assert(rxq->cqe_n == rxq->elts_n);
-	cq = &(*rxq->cqes)[cq_idx];
-	rte_prefetch_non_temporal(cq);
-	rte_prefetch_non_temporal(cq + 1);
-	rte_prefetch_non_temporal(cq + 2);
-	rte_prefetch_non_temporal(cq + 3);
-	pkts_n = RTE_MIN(pkts_n, MLX5_VPMD_RX_MAX_BURST);
-	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
-	if (repl_n >= rxq->rq_repl_thresh)
-		mlx5_rx_replenish_bulk_mbuf(rxq, repl_n);
-	/* See if there're unreturned mbufs from compressed CQE. */
-	rcvd_pkt = rxq->decompressed;
-	if (rcvd_pkt > 0) {
-		rcvd_pkt = RTE_MIN(rcvd_pkt, pkts_n);
-		rxq_copy_mbuf_v(rxq, pkts, rcvd_pkt);
-		rxq->rq_pi += rcvd_pkt;
-		pkts += rcvd_pkt;
-		rxq->decompressed -= rcvd_pkt;
-	}
-	elts_idx = rxq->rq_pi & q_mask;
-	elts = &(*rxq->elts)[elts_idx];
-	/* Not to overflow pkts array. */
-	pkts_n = RTE_ALIGN_FLOOR(pkts_n - rcvd_pkt, MLX5_VPMD_DESCS_PER_LOOP);
-	/* Not to cross queue end. */
-	pkts_n = RTE_MIN(pkts_n, q_n - elts_idx);
-	pkts_n = RTE_MIN(pkts_n, q_n - cq_idx);
-	if (!pkts_n) {
-		*no_cq = !rcvd_pkt;
-		return rcvd_pkt;
-	}
-	/* At this point, there shouldn't be any remained packets. */
-	assert(rxq->decompressed == 0);
 	/*
 	 * Note that vectors have reverse order - {v3, v2, v1, v0}, because
 	 * there's no instruction to count trailing zeros. __builtin_clzl() is
@@ -550,7 +646,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		/* B.0 (CQE 0) load a block having op_own. */
 		c0 = vld1q_u64((uint64_t *)(p0 + 48));
 		/* Synchronize for loading the rest of blocks. */
-		rte_cio_rmb();
+		rte_io_rmb();
 		/* Prefetch next 4 CQEs. */
 		if (pkts_n - pos >= 2 * MLX5_VPMD_DESCS_PER_LOOP) {
 			unsigned int next = pos + MLX5_VPMD_DESCS_PER_LOOP;
@@ -692,25 +788,48 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		rxq_cq_to_ptype_oflags_v(rxq, ptype_info, flow_tag,
 					 opcode, &elts[pos]);
 		if (rxq->hw_timestamp) {
-			elts[pos]->timestamp =
-				rte_be_to_cpu_64(
-					container_of(p0, struct mlx5_cqe,
-						     pkt_info)->timestamp);
-			elts[pos + 1]->timestamp =
-				rte_be_to_cpu_64(
-					container_of(p1, struct mlx5_cqe,
-						     pkt_info)->timestamp);
-			elts[pos + 2]->timestamp =
-				rte_be_to_cpu_64(
-					container_of(p2, struct mlx5_cqe,
-						     pkt_info)->timestamp);
-			elts[pos + 3]->timestamp =
-				rte_be_to_cpu_64(
-					container_of(p3, struct mlx5_cqe,
-						     pkt_info)->timestamp);
+			int offset = rxq->timestamp_offset;
+			if (rxq->rt_timestamp) {
+				struct mlx5_dev_ctx_shared *sh = rxq->sh;
+				uint64_t ts;
+
+				ts = rte_be_to_cpu_64
+					(container_of(p0, struct mlx5_cqe,
+						      pkt_info)->timestamp);
+				mlx5_timestamp_set(elts[pos], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+				ts = rte_be_to_cpu_64
+					(container_of(p1, struct mlx5_cqe,
+						      pkt_info)->timestamp);
+				mlx5_timestamp_set(elts[pos + 1], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+				ts = rte_be_to_cpu_64
+					(container_of(p2, struct mlx5_cqe,
+						      pkt_info)->timestamp);
+				mlx5_timestamp_set(elts[pos + 2], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+				ts = rte_be_to_cpu_64
+					(container_of(p3, struct mlx5_cqe,
+						      pkt_info)->timestamp);
+				mlx5_timestamp_set(elts[pos + 3], offset,
+					mlx5_txpp_convert_rx_ts(sh, ts));
+			} else {
+				mlx5_timestamp_set(elts[pos], offset,
+					rte_be_to_cpu_64(container_of(p0,
+					struct mlx5_cqe, pkt_info)->timestamp));
+				mlx5_timestamp_set(elts[pos + 1], offset,
+					rte_be_to_cpu_64(container_of(p1,
+					struct mlx5_cqe, pkt_info)->timestamp));
+				mlx5_timestamp_set(elts[pos + 2], offset,
+					rte_be_to_cpu_64(container_of(p2,
+					struct mlx5_cqe, pkt_info)->timestamp));
+				mlx5_timestamp_set(elts[pos + 3], offset,
+					rte_be_to_cpu_64(container_of(p3,
+					struct mlx5_cqe, pkt_info)->timestamp));
+			}
 		}
 		if (rxq->dynf_meta) {
-			/* This code is subject for futher optimization. */
+			/* This code is subject for further optimization. */
 			int32_t offs = rxq->flow_meta_offset;
 			uint32_t mask = rxq->flow_meta_port_mask;
 
@@ -751,40 +870,13 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		if (n != MLX5_VPMD_DESCS_PER_LOOP)
 			break;
 	}
-	/* If no new CQE seen, return without updating cq_db. */
-	if (unlikely(!nocmp_n && comp_idx == MLX5_VPMD_DESCS_PER_LOOP)) {
-		*no_cq = true;
-		return rcvd_pkt;
-	}
-	/* Update the consumer indexes for non-compressed CQEs. */
-	assert(nocmp_n <= pkts_n);
-	rxq->cq_ci += nocmp_n;
-	rxq->rq_pi += nocmp_n;
-	rcvd_pkt += nocmp_n;
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	rxq->stats.ipackets += nocmp_n;
 	rxq->stats.ibytes += rcvd_byte;
 #endif
-	/* Decompress the last CQE if compressed. */
-	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP && comp_idx == n) {
-		assert(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));
-		rxq->decompressed = rxq_cq_decompress_v(rxq, &cq[nocmp_n],
-							&elts[nocmp_n]);
-		/* Return more packets if needed. */
-		if (nocmp_n < pkts_n) {
-			uint16_t n = rxq->decompressed;
-
-			n = RTE_MIN(n, pkts_n - nocmp_n);
-			rxq_copy_mbuf_v(rxq, &pkts[nocmp_n], n);
-			rxq->rq_pi += n;
-			rcvd_pkt += n;
-			rxq->decompressed -= n;
-		}
-	}
-	rte_cio_wmb();
-	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
-	*no_cq = !rcvd_pkt;
-	return rcvd_pkt;
+	if (comp_idx == n)
+		*comp = comp_idx;
+	return nocmp_n;
 }
 
 #endif /* RTE_PMD_MLX5_RXTX_VEC_NEON_H_ */

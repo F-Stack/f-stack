@@ -9,7 +9,7 @@
  *
  * Copyright (c) 2010 Kip Macy. All rights reserved.
  * Copyright (c) 2013 Patrick Kelsey. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,7 @@
  *
  *  From: @(#)kern_clock.c  8.5 (Berkeley) 1/21/94
  *
- * Derived in part from libplebnet's pn_kern_timeout.c and libuinet's uinet_timecounter.c. 
+ * Derived in part from libplebnet's pn_kern_timeout.c and libuinet's uinet_timecounter.c.
  *
  */
 
@@ -393,7 +393,7 @@ softclock_call_cc(struct callout *c, struct callout_cpu *cc,
     struct lock_object *c_lock;
     uintptr_t lock_status;
     int c_iflags;
-#if defined(DIAGNOSTIC) || defined(CALLOUT_PROFILING) 
+#if defined(DIAGNOSTIC) || defined(CALLOUT_PROFILING)
     sbintime_t sbt1, sbt2;
     struct timespec ts2;
     static sbintime_t maxdt = 2 * SBT_1MS;    /* 2 msec */
@@ -420,7 +420,7 @@ softclock_call_cc(struct callout *c, struct callout_cpu *cc,
         c->c_iflags = CALLOUT_LOCAL_ALLOC;
     else
         c->c_iflags &= ~CALLOUT_PENDING;
-    
+
     cc_exec_curr(cc, direct) = c;
     cc_exec_cancel(cc, direct) = false;
     cc_exec_drain(cc, direct) = NULL;
@@ -491,7 +491,7 @@ skip:
     cc_exec_curr(cc, direct) = NULL;
     if (cc_exec_drain(cc, direct)) {
         void (*drain)(void *);
-        
+
         drain = cc_exec_drain(cc, direct);
         cc_exec_drain(cc, direct) = NULL;
         CC_UNLOCK(cc);
@@ -608,6 +608,7 @@ softclock(void *arg)
     CC_UNLOCK(cc);
 }
 
+#if 0
 /*
  * timeout --
  *    Execute a function after a specified length of time.
@@ -670,6 +671,7 @@ callout_handle_init(struct callout_handle *handle)
 {
     handle->callout = NULL;
 }
+#endif
 
 /*
  * New interface; clients allocate their own callout structures.
@@ -704,7 +706,7 @@ callout_reset_tick_on(struct callout *c, int to_ticks,
         panic("Invalid CPU in callout %d", cpu);
     }
 
-    /* 
+    /*
      * This flag used to be added by callout_cc_add, but the
      * first time you call this we could end up with the
      * wrong direct flag if we don't do it before we add.
@@ -720,7 +722,7 @@ callout_reset_tick_on(struct callout *c, int to_ticks,
     /*
      * Don't allow migration of pre-allocated callouts lest they
      * become unbalanced or handle the case where the user does
-     * not care. 
+     * not care.
      */
     if ((c->c_iflags & CALLOUT_LOCAL_ALLOC) ||
         ignore_cpu) {
@@ -922,7 +924,7 @@ again:
             }
         } else if (use_lock &&
                !cc_exec_cancel(cc, direct) && (drain == NULL)) {
-            
+
             /*
              * The current callout is waiting for its
              * lock which we hold.  Cancel the callout
@@ -1037,18 +1039,18 @@ _callout_init_lock(struct callout *c, struct lock_object *lock, int flags)
 }
 
 #ifdef APM_FIXUP_CALLTODO
-/* 
- * Adjust the kernel calltodo timeout list.  This routine is used after 
- * an APM resume to recalculate the calltodo timer list values with the 
- * number of hz's we have been sleeping.  The next hardclock() will detect 
+/*
+ * Adjust the kernel calltodo timeout list.  This routine is used after
+ * an APM resume to recalculate the calltodo timer list values with the
+ * number of hz's we have been sleeping.  The next hardclock() will detect
  * that there are fired timers and run softclock() to execute them.
  *
  * Please note, I have not done an exhaustive analysis of what code this
  * might break.  I am motivated to have my select()'s and alarm()'s that
  * have expired during suspend firing upon resume so that the applications
  * which set the timer can do the maintanence the timer was for as close
- * as possible to the originally intended time.  Testing this code for a 
- * week showed that resuming from a suspend resulted in 22 to 25 timers 
+ * as possible to the originally intended time.  Testing this code for a
+ * week showed that resuming from a suspend resulted in 22 to 25 timers
  * firing, which seemed independent on whether the suspend was 2 hours or
  * 2 days.  Your milage may vary.   - Ken Key <key@cs.utk.edu>
  */
@@ -1058,7 +1060,7 @@ adjust_timeout_calltodo(struct timeval *time_change)
     register struct callout *p;
     unsigned long delta_ticks;
 
-    /* 
+    /*
      * How many ticks were we asleep?
      * (stolen from tvtohz()).
      */
@@ -1078,7 +1080,7 @@ adjust_timeout_calltodo(struct timeval *time_change)
     if (delta_ticks > INT_MAX)
         delta_ticks = INT_MAX;
 
-    /* 
+    /*
      * Now rip through the timer calltodo list looking for timers
      * to expire.
      */
@@ -1203,7 +1205,7 @@ ff_hardclock(void)
 {
     atomic_add_int(&ticks, 1);
     callout_tick();
-    tc_ticktock(1);
+    tc_ticktock((hz + 999)/1000);
     cpu_tick_calibration();
 
 #ifdef DEVICE_POLLING

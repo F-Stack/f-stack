@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Adrian Chadd <adrian@FreeBSD.org>
  * All rights reserved.
  *
@@ -52,8 +54,6 @@ __FBSDID("$FreeBSD$");
 #define	ar933x_setreg(bas, reg, value)    \
 	bus_space_write_4((bas)->bst, (bas)->bsh, reg, value)
 
-
-
 static int
 ar933x_drain(struct uart_bas *bas, int what)
 {
@@ -76,7 +76,6 @@ ar933x_drain(struct uart_bas *bas, int what)
 	if (what & UART_DRAIN_RECEIVER) {
 		limit=10*4096;
 		while (--limit) {
-
 			/* XXX duplicated from ar933x_getc() */
 			/* XXX TODO: refactor! */
 
@@ -190,7 +189,6 @@ ar933x_param(struct uart_bas *bas, int baudrate, int databits, int stopbits,
 	uart_barrier(bas);
 	return (0);
 }
-
 
 /*
  * Low-level UART interface.

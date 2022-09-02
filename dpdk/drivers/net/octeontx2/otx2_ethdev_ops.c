@@ -454,7 +454,7 @@ otx2_nix_fw_version_get(struct rte_eth_dev *eth_dev, char *fw_version,
 	rc = strlcpy(fw_version, (char *)dev->mkex_pfl_name, rc);
 
 	rc += 1; /* Add the size of '\0' */
-	if (fw_size < (uint32_t)rc)
+	if (fw_size < (size_t)rc)
 		return rc;
 
 	return 0;
@@ -610,9 +610,17 @@ otx2_nix_info_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *devinfo)
 
 	/* Auto negotiation disabled */
 	devinfo->speed_capa = ETH_LINK_SPEED_FIXED;
-	devinfo->speed_capa |= ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
-				ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G |
-				ETH_LINK_SPEED_50G | ETH_LINK_SPEED_100G;
+	if (!otx2_dev_is_vf_or_sdp(dev) && !otx2_dev_is_lbk(dev)) {
+		devinfo->speed_capa |= ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
+			ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G;
+
+		/* 50G and 100G to be supported for board version C0
+		 * and above.
+		 */
+		if (!otx2_dev_is_Ax(dev))
+			devinfo->speed_capa |= ETH_LINK_SPEED_50G |
+					       ETH_LINK_SPEED_100G;
+	}
 
 	devinfo->dev_capa = RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 				RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;

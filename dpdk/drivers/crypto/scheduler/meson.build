@@ -2,7 +2,7 @@
 # Copyright(c) 2018 Luca Boccassi <bluca@debian.org>
 
 deps += ['bus_vdev', 'reorder']
-name = 'crypto_scheduler'
+fmt_name = 'crypto_scheduler'
 sources = files(
 	'rte_cryptodev_scheduler.c',
 	'scheduler_failover.c',
@@ -13,7 +13,7 @@ sources = files(
 	'scheduler_roundrobin.c',
 )
 
-install_headers(
+headers = files(
 	'rte_cryptodev_scheduler.h',
 	'rte_cryptodev_scheduler_operations.h',
 )

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -46,15 +48,17 @@ LIST_HEAD(callout_list, callout);
 SLIST_HEAD(callout_slist, callout);
 TAILQ_HEAD(callout_tailq, callout);
 
+typedef void callout_func_t(void *);
+
 struct callout {
 	union {
 		LIST_ENTRY(callout) le;
 		SLIST_ENTRY(callout) sle;
 		TAILQ_ENTRY(callout) tqe;
 	} c_links;
-	int c_time;                 /* ticks to the event */
+	int c_time;			/* ticks to the event */
 	void	*c_arg;				/* function argument */
-	void	(*c_func)(void *);		/* function to call */
+	callout_func_t *c_func;			/* function to call */
 	struct lock_object *c_lock;		/* lock to handle */
 	short	c_flags;			/* User State */
 	short	c_iflags;			/* Internal State */

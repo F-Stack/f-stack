@@ -40,10 +40,10 @@ EAL_REGISTER_TAILQ(rte_fib_tailq)
 struct rte_fib {
 	char			name[RTE_FIB_NAMESIZE];
 	enum rte_fib_type	type;	/**< Type of FIB struct */
-	struct rte_rib		*rib;	/**< RIB helper datastruct */
+	struct rte_rib		*rib;	/**< RIB helper datastructure */
 	void			*dp;	/**< pointer to the dataplane struct*/
-	rte_fib_lookup_fn_t	lookup;	/**< fib lookup function */
-	rte_fib_modify_fn_t	modify; /**< modify fib datastruct */
+	rte_fib_lookup_fn_t	lookup;	/**< FIB lookup function */
+	rte_fib_modify_fn_t	modify; /**< modify FIB datastructure */
 	uint64_t		def_nh;
 };
 
@@ -107,7 +107,8 @@ init_dataplane(struct rte_fib *fib, __rte_unused int socket_id,
 		fib->dp = dir24_8_create(dp_name, socket_id, conf);
 		if (fib->dp == NULL)
 			return -rte_errno;
-		fib->lookup = dir24_8_get_lookup_fn(conf);
+		fib->lookup = dir24_8_get_lookup_fn(fib->dp,
+			RTE_FIB_LOOKUP_DEFAULT);
 		fib->modify = dir24_8_modify;
 		return 0;
 	default:
@@ -158,7 +159,7 @@ rte_fib_create(const char *name, int socket_id, struct rte_fib_conf *conf)
 
 	/* Check user arguments. */
 	if ((name == NULL) || (conf == NULL) ||	(conf->max_routes < 0) ||
-			(conf->type >= RTE_FIB_TYPE_MAX)) {
+			(conf->type > RTE_FIB_DIR24_8)) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -316,4 +317,22 @@ struct rte_rib *
 rte_fib_get_rib(struct rte_fib *fib)
 {
 	return (fib == NULL) ? NULL : fib->rib;
+}
+
+int
+rte_fib_select_lookup(struct rte_fib *fib,
+	enum rte_fib_lookup_type type)
+{
+	rte_fib_lookup_fn_t fn;
+
+	switch (fib->type) {
+	case RTE_FIB_DIR24_8:
+		fn = dir24_8_get_lookup_fn(fib->dp, type);
+		if (fn == NULL)
+			return -EINVAL;
+		fib->lookup = fn;
+		return 0;
+	default:
+		return -EINVAL;
+	}
 }

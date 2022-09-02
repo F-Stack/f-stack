@@ -46,7 +46,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/intr.h>
 #include <machine/resource.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/gpio/gpiobusvar.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
@@ -138,6 +137,7 @@ struct tegra_gpio_softc {
 
 static struct ofw_compat_data compat_data[] = {
 	{"nvidia,tegra124-gpio", 1},
+	{"nvidia,tegra210-gpio", 1},
 	{NULL,			0}
 };
 
@@ -426,7 +426,6 @@ tegra_gpio_intr(void *arg)
 				device_printf(sc->dev,
 				    "Stray irq %u disabled\n", irq);
 			}
-
 		}
 	}
 
@@ -470,7 +469,6 @@ tegra_gpio_pic_detach(struct tegra_gpio_softc *sc)
 	device_printf(sc->dev, "%s: not implemented yet\n", __func__);
 	return (EBUSY);
 }
-
 
 static void
 tegra_gpio_pic_disable_intr(device_t dev, struct intr_irqsrc *isrc)
@@ -535,7 +533,6 @@ tegra_gpio_pic_map_fdt(struct tegra_gpio_softc *sc, u_int ncells,
 		*regp = reg;
 	return (0);
 }
-
 
 static int
 tegra_gpio_pic_map_gpio(struct tegra_gpio_softc *sc, u_int gpio_pin_num,
@@ -885,20 +882,8 @@ static device_method_t tegra_gpio_methods[] = {
 	DEVMETHOD_END
 };
 
-static driver_t tegra_gpio_driver = {
-	"tegra_gpio",
-	tegra_gpio_methods,
-	sizeof(struct tegra_gpio_softc),
-};
 static devclass_t tegra_gpio_devclass;
-
+static DEFINE_CLASS_0(gpio, tegra_gpio_driver, tegra_gpio_methods,
+    sizeof(struct tegra_gpio_softc));
 EARLY_DRIVER_MODULE(tegra_gpio, simplebus, tegra_gpio_driver,
-    tegra_gpio_devclass, 0, 0, 70);
-
-extern devclass_t ofwgpiobus_devclass;
-extern driver_t ofw_gpiobus_driver;
-EARLY_DRIVER_MODULE(ofw_gpiobus, tegra_gpio, ofw_gpiobus_driver,
-    ofwgpiobus_devclass, 0, 0, BUS_PASS_BUS);
-extern devclass_t gpioc_devclass;
-extern driver_t gpioc_driver;
-DRIVER_MODULE(gpioc, tegra_gpio, gpioc_driver, gpioc_devclass, 0, 0);
+    tegra_gpio_devclass, NULL, NULL, 70);

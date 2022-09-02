@@ -56,6 +56,12 @@ can be specified when the module is loaded to control its behavior:
                     off   Interfaces will be created with carrier state set to off.
                     on    Interfaces will be created with carrier state set to on.
                      (charp)
+    parm:           enable_bifurcated: Enable request processing support for
+                    bifurcated drivers, which means releasing rtnl_lock before calling
+                    userspace callback and supporting async requests (default=off):
+                    on    Enable request processing support for bifurcated drivers.
+                     (charp)
+
 
 Loading the ``rte_kni`` kernel module without any optional parameters is
 the typical way a DPDK application gets packets into and out of the kernel
@@ -65,7 +71,7 @@ disabled, and the default carrier state of KNI interfaces is set to *off*.
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko
 
 .. _kni_loopback_mode:
 
@@ -77,14 +83,14 @@ by specifying the ``lo_mode`` parameter:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko lo_mode=lo_mode_fifo
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko lo_mode=lo_mode_fifo
 
 The ``lo_mode_fifo`` loopback option will loop back ring enqueue/dequeue
 operations in kernel space.
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko lo_mode=lo_mode_fifo_skb
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko lo_mode=lo_mode_fifo_skb
 
 The ``lo_mode_fifo_skb`` loopback option will loop back ring enqueue/dequeue
 operations and sk buffer copies in kernel space.
@@ -105,7 +111,7 @@ Single kernel thread mode is enabled as follows:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko kthread_mode=single
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko kthread_mode=single
 
 This mode will create only one kernel thread for all KNI interfaces to
 receive data on the kernel side.  By default, this kernel thread is not
@@ -122,7 +128,7 @@ kernel thread mode is enabled as follows:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko kthread_mode=multiple
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko kthread_mode=multiple
 
 This mode will create a separate kernel thread for each KNI interface to
 receive data on the kernel side.  The core affinity of each ``kni_thread``
@@ -163,16 +169,38 @@ To set the default carrier state to *on*:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko carrier=on
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko carrier=on
 
 To set the default carrier state to *off*:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko carrier=off
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko carrier=off
 
 If the ``carrier`` parameter is not specified, the default carrier state
 of KNI interfaces will be set to *off*.
+
+.. _kni_bifurcated_device_support:
+
+Bifurcated Device Support
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+User callbacks are executed while kernel module holds the ``rtnl`` lock, this
+causes a deadlock when callbacks run control commands on another Linux kernel
+network interface.
+
+Bifurcated devices has kernel network driver part and to prevent deadlock for
+them ``enable_bifurcated`` is used.
+
+To enable bifurcated device support:
+
+.. code-block:: console
+
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko enable_bifurcated=on
+
+Enabling bifurcated device support releases ``rtnl`` lock before calling
+callback and locks it back after callback. Also enables asynchronous request to
+support callbacks that requires rtnl lock to work (interface down).
 
 KNI Creation and Deletion
 -------------------------

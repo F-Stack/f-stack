@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997, Stefan Esser <se@freebsd.org>
  * All rights reserved.
  *
@@ -195,7 +197,7 @@ legacy_pcib_is_host_bridge(int bus, int slot, int func,
 		 * For the 450nx chipset, there is a whole bundle of
 		 * things pretending to be host bridges. The MIOC will
 		 * be seen first and isn't really a pci bridge (the
-		 * actual busses are attached to the PXB's). We need to
+		 * actual buses are attached to the PXB's). We need to
 		 * read the registers of the MIOC to figure out the
 		 * bus numbers for the PXB channels.
 		 *
@@ -395,7 +397,6 @@ legacy_pcib_identify(driver_t *driver, device_t parent)
 		devclass_get_device(pci_devclass, 0))
 		return;
 
-
 	bus = 0;
  retry:
 	for (slot = 0; slot <= PCI_SLOTMAX; slot++) {
@@ -566,7 +567,7 @@ legacy_pcib_write_ivar(device_t dev, device_t child, int which,
  *
  * If no memory preference is given, use upper 32MB slot most BIOSes
  * use for their memory window.  This is typically only used on older
- * laptops that don't have PCI busses behind a PCI bridge, so assuming
+ * laptops that don't have PCI buses behind a PCI bridge, so assuming
  * > 32MB is likely OK.
  *	
  * However, this can cause problems for other chipsets, so we make
@@ -663,6 +664,7 @@ static device_method_t legacy_pcib_methods[] = {
 	DEVMETHOD(pcib_alloc_msix,	legacy_pcib_alloc_msix),
 	DEVMETHOD(pcib_release_msix,	pcib_release_msix),
 	DEVMETHOD(pcib_map_msi,		legacy_pcib_map_msi),
+	DEVMETHOD(pcib_request_feature,	pcib_request_feature_allow),
 
 	DEVMETHOD_END
 };
@@ -672,7 +674,6 @@ static devclass_t hostb_devclass;
 DEFINE_CLASS_0(pcib, legacy_pcib_driver, legacy_pcib_methods, 1);
 DRIVER_MODULE(pcib, legacy, legacy_pcib_driver, hostb_devclass, 0, 0);
 
-
 /*
  * Install placeholder to claim the resources owned by the
  * PCI bus interface.  This could be used to extract the
@@ -680,8 +681,7 @@ DRIVER_MODULE(pcib, legacy, legacy_pcib_driver, hostb_devclass, 0, 0);
  * ID is available and the PCI BIOS isn't, but for now we just
  * eat the PnP ID and do nothing else.
  *
- * XXX we should silence this probe, as it will generally confuse
- * people.
+ * we silence this probe, as it will generally confuse people.
  */
 static struct isa_pnp_id pcibus_pnp_ids[] = {
 	{ 0x030ad041 /* PNP0A03 */, "PCI Bus" },
@@ -723,7 +723,7 @@ DRIVER_MODULE(pcibus_pnp, isa, pcibus_pnp_driver, pcibus_pnp_devclass, 0, 0);
 
 #ifdef __HAVE_PIR
 /*
- * Provide a PCI-PCI bridge driver for PCI busses behind PCI-PCI bridges
+ * Provide a PCI-PCI bridge driver for PCI buses behind PCI-PCI bridges
  * that appear in the PCIBIOS Interrupt Routing Table to use the routing
  * table for interrupt routing when possible.
  */
@@ -735,7 +735,6 @@ static device_method_t pcibios_pcib_pci_methods[] = {
 
 	/* pcib interface */
 	DEVMETHOD(pcib_route_interrupt,	legacy_pcib_route_interrupt),
-
 	{0, 0}
 };
 
@@ -744,6 +743,7 @@ static devclass_t pcib_devclass;
 DEFINE_CLASS_1(pcib, pcibios_pcib_driver, pcibios_pcib_pci_methods,
     sizeof(struct pcib_softc), pcib_driver);
 DRIVER_MODULE(pcibios_pcib, pci, pcibios_pcib_driver, pcib_devclass, 0, 0);
+ISA_PNP_INFO(pcibus_pnp_ids);
 
 static int
 pcibios_pcib_probe(device_t dev)

@@ -45,7 +45,7 @@ endif
 C_DIALECT= -std=c99
 NOSTDINC= -nostdinc
 
-INCLUDES= -undef -imacros ${IMACROS_FILE} ${NOSTDINC} ${INCLMAGIC} -I. -I$S
+INCLUDES= -undef -imacros ${IMACROS_FILE} ${NOSTDINC} ${INCLMAGIC} -I. -I$S -I. -I$C
 
 CFLAGS=	${COPTFLAGS} ${C_DIALECT} ${DEBUG} ${CWARNFLAGS}
 KERNEL_CFLAGS= -D__FreeBSD__ -D_KERNEL -DHAVE_KERNEL_OPTION_HEADERS -include opt_global.h -fno-builtin

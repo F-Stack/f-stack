@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, Juniper Networks, Inc.
+ * Copyright (c) 2014-2019, Juniper Networks, Inc.
  * All rights reserved.
  * This SOFTWARE is licensed under the LICENSE provided in the
  * ../Copyright file. By downloading, installing, copying, or otherwise
@@ -9,10 +9,12 @@
  */
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "xo.h"
+#include "xo_encoder.h"
 
 int
 main (int argc, char **argv)
@@ -48,27 +50,30 @@ main (int argc, char **argv)
 	{ "sold", "number", "Number of items sold" },
 	{ XO_INFO_NULL },
     };
+
+    char name[] = "test_01.test";  /* test trimming of xo_program */
+    argv[0] = name;
     
     argc = xo_parse_args(argc, argv);
     if (argc < 0)
 	return 1;
 
     for (argc = 1; argv[argc]; argc++) {
-	if (strcmp(argv[argc], "xml") == 0)
+	if (xo_streq(argv[argc], "xml"))
 	    xo_set_style(NULL, XO_STYLE_XML);
-	else if (strcmp(argv[argc], "json") == 0)
+	else if (xo_streq(argv[argc], "json"))
 	    xo_set_style(NULL, XO_STYLE_JSON);
-	else if (strcmp(argv[argc], "text") == 0)
+	else if (xo_streq(argv[argc], "text"))
 	    xo_set_style(NULL, XO_STYLE_TEXT);
-	else if (strcmp(argv[argc], "html") == 0)
+	else if (xo_streq(argv[argc], "html"))
 	    xo_set_style(NULL, XO_STYLE_HTML);
-	else if (strcmp(argv[argc], "pretty") == 0)
+	else if (xo_streq(argv[argc], "pretty"))
 	    xo_set_flags(NULL, XOF_PRETTY);
-	else if (strcmp(argv[argc], "xpath") == 0)
+	else if (xo_streq(argv[argc], "xpath"))
 	    xo_set_flags(NULL, XOF_XPATH);
-	else if (strcmp(argv[argc], "info") == 0)
+	else if (xo_streq(argv[argc], "info"))
 	    xo_set_flags(NULL, XOF_INFO);
-        else if (strcmp(argv[argc], "error") == 0) {
+        else if (xo_streq(argv[argc], "error")) {
             close(-1);
             xo_err(1, "error detected");
         }
@@ -78,6 +83,18 @@ main (int argc, char **argv)
     xo_set_flags(NULL, XOF_KEYS);
 
     xo_open_container_h(NULL, "top");
+
+    xo_emit("static {:type/ethernet} {:type/bridge} {:type/%4du} {:type/%3d}",
+	    18, 24);
+
+    xo_emit("anchor {[:/%d}{:address/%p}..{:port/%u}{]:}\n", 18, NULL, 1);
+    xo_emit("anchor {[:18}{:address/%p}..{:port/%u}{]:}\n", NULL, 1);
+    xo_emit("anchor {[:/18}{:address/%p}..{:port/%u}{]:}\n", NULL, 1);
+
+    xo_emit("df {:used-percent/%5.0f}{U:%%}\n", (double) 12);
+
+    xo_emit("{e:kve_start/%#jx}", (uintmax_t) 0xdeadbeef);
+    xo_emit("{e:kve_end/%#jx}", (uintmax_t) 0xcabb1e);
 
     xo_emit("testing argument modifier {a:}.{a:}...\n",
 	    "host", "my-box", "domain", "example.com");
@@ -173,6 +190,44 @@ main (int argc, char **argv)
     xo_close_list("item");
     xo_close_container("data4");
 
+    xo_attr("test", "value");
+    xo_open_container("data");
+    xo_open_list("item");
+    xo_attr("test2", "value2");
+
+    xo_emit("{T:Item/%-10s}{T:Total Sold/%12s}{T:In Stock/%12s}"
+	    "{T:On Order/%12s}{T:SKU/%5s}\n");
+
+    for (ip = list; ip->i_title; ip++) {
+	xo_open_instance("item");
+	xo_attr("test3", "value3");
+
+	xo_emit("{keq:sku/%s-%u/%s-000-%u}"
+		"{k:name/%-10s/%s}{n:sold/%12u/%u}",
+		ip->i_sku_base, ip->i_sku_num,
+		ip->i_title, ip->i_sold);
+
+	if (ip->i_onorder < 5)
+	    xo_emit("Extra: {:extra}", "special");
+
+	if (ip->i_instock & 1)
+	    xo_emit("{:in-stock/%12u/%u}", ip->i_instock);
+	xo_emit("{:on-order/%12u/%u}", ip->i_onorder);
+	if (!(ip->i_instock & 1))
+	    xo_emit("{:in-stock/%12u/%u}", ip->i_instock);
+
+	xo_emit("{qkd:sku/%5s-000-%u/%s-000-%u}\n",
+		ip->i_sku_base, ip->i_sku_num);
+
+	xo_close_instance("item");
+    }
+
+    xo_close_list("item");
+    xo_close_container("data");
+
+    xo_emit("\n\n");
+
+
     xo_emit("X{P:}X", "epic fail");
     xo_emit("X{T:}X", "epic fail");
     xo_emit("X{N:}X", "epic fail");
@@ -185,6 +240,8 @@ main (int argc, char **argv)
 	    "{t:user/%s}  {t:group/%s}  \n",
 	    "mode", "octal", "links",
 	    "user", "group", "extra1", "extra2", "extra3");
+
+    xo_emit("{e:pre/%s}{t:links/%-*u}{t:post/%-*s}\n", "that", 8, 3, 8, "this");
 
     xo_emit("{t:mode/%s}{e:mode_octal/%03o} {t:links/%*u} "
 	    "{t:user/%-*s}  {t:group/%-*s}  \n",

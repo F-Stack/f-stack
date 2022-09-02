@@ -250,7 +250,7 @@ main(int argc, char **argv)
 	rte_eal_mp_remote_launch(
 		thread_main,
 		NULL,
-		SKIP_MASTER);
+		SKIP_MAIN);
 
 	/* Script */
 	if (app.script_name)
@@ -266,7 +266,4 @@ main(int argc, char **argv)
 
 		kni_handle_request();
 	}
-
-	/* clean up the EAL */
-	rte_eal_cleanup();
 }

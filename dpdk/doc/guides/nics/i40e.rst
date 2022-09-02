@@ -4,7 +4,7 @@
 I40E Poll Mode Driver
 ======================
 
-The i40e PMD (librte_pmd_i40e) provides poll mode driver support for
+The i40e PMD (**librte_net_i40e**) provides poll mode driver support for
 10/25/40 Gbps Intel® Ethernet 700 Series Network Adapters based on
 the Intel Ethernet Controller X710/XL710/XXV710 and Intel Ethernet
 Connection X722 (only support part of features).
@@ -43,6 +43,8 @@ Features of the i40e PMD are:
 - Dynamic Device Personalization (DDP)
 - Queue region configuration
 - Virtual Function Port Representors
+- Malicious Device Drive event catch and notify
+- Generic flow API
 
 Prerequisites
 -------------
@@ -58,6 +60,21 @@ Prerequisites
 - Upgrade the NVM/FW version following the `Intel® Ethernet NVM Update Tool Quick Usage Guide for Linux
   <https://www-ssl.intel.com/content/www/us/en/embedded/products/networking/nvm-update-tool-quick-linux-usage-guide.html>`_ and `Intel® Ethernet NVM Update Tool: Quick Usage Guide for EFI <https://www.intel.com/content/www/us/en/embedded/products/networking/nvm-update-tool-quick-efi-usage-guide.html>`_ if needed.
 
+- For information about supported media, please refer to this document: `Intel® Ethernet Controller X710/XXV710/XL710 Feature Support Matrix
+  <http://www.intel.com/content/dam/www/public/us/en/documents/release-notes/xl710-ethernet-controller-feature-matrix.pdf>`_.
+
+   .. Note::
+
+      * Some adapters based on the Intel(R) Ethernet Controller 700 Series only
+        support Intel Ethernet Optics modules. On these adapters, other modules are not
+        supported and will not function.
+
+      * For connections based on Intel(R) Ethernet Controller 700 Series,
+        support is dependent on your system board. Please see your vendor for details.
+
+      * In all cases Intel recommends using Intel Ethernet Optics; other modules
+        may function but are not validated by Intel. Contact Intel for supported media types.
+
 Recommended Matching List
 -------------------------
 
@@ -66,9 +83,27 @@ avoid the compatibility issues with i40e PMD. Here is the suggested matching
 list which has been tested and verified. The detailed information can refer
 to chapter Tested Platforms/Tested NICs in release notes.
 
+For X710/XL710/XXV710,
+
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    22.03     |         2.17.15       |       8.30       |
+   +--------------+-----------------------+------------------+
+   |    21.11     |         2.17.4        |       8.30       |
+   +--------------+-----------------------+------------------+
+   |    21.08     |         2.15.9        |       8.30       |
+   +--------------+-----------------------+------------------+
+   |    21.05     |         2.15.9        |       8.30       |
+   +--------------+-----------------------+------------------+
+   |    20.11     |         2.14.13       |       8.00       |
+   +--------------+-----------------------+------------------+
+   |    20.08     |         2.12.6        |       7.30       |
+   +--------------+-----------------------+------------------+
+   |    20.05     |         2.11.27       |       7.30       |
+   +--------------+-----------------------+------------------+
+   |    20.02     |         2.10.19       |       7.20       |
+   +--------------+-----------------------+------------------+
    |    19.11     |         2.9.21        |       7.00       |
    +--------------+-----------------------+------------------+
    |    19.08     |         2.8.43        |       7.00       |
@@ -100,41 +135,53 @@ to chapter Tested Platforms/Tested NICs in release notes.
    |    16.04     |         1.4.25        |       5.02       |
    +--------------+-----------------------+------------------+
 
+
+For X722,
+
+   +--------------+-----------------------+------------------+
+   | DPDK version | Kernel driver version | Firmware version |
+   +==============+=======================+==================+
+   |    22.03     |         2.17.15       |       5.50       |
+   +--------------+-----------------------+------------------+
+   |    21.11     |         2.17.4        |       5.30       |
+   +--------------+-----------------------+------------------+
+   |    21.08     |         2.15.9        |       5.30       |
+   +--------------+-----------------------+------------------+
+   |    21.05     |         2.15.9        |       5.30       |
+   +--------------+-----------------------+------------------+
+   |    20.11     |         2.13.10       |       5.00       |
+   +--------------+-----------------------+------------------+
+   |    20.08     |         2.12.6        |       4.11       |
+   +--------------+-----------------------+------------------+
+   |    20.05     |         2.11.27       |       4.11       |
+   +--------------+-----------------------+------------------+
+   |    20.02     |         2.10.19       |       4.11       |
+   +--------------+-----------------------+------------------+
+   |    19.11     |         2.9.21        |       4.10       |
+   +--------------+-----------------------+------------------+
+   |    19.08     |         2.9.21        |       4.10       |
+   +--------------+-----------------------+------------------+
+   |    19.05     |         2.7.29        |       3.33       |
+   +--------------+-----------------------+------------------+
+   |    19.02     |         2.7.26        |       3.33       |
+   +--------------+-----------------------+------------------+
+   |    18.11     |         2.4.6         |       3.33       |
+   +--------------+-----------------------+------------------+
+
+
 Pre-Installation Configuration
 ------------------------------
 
 Config File Options
 ~~~~~~~~~~~~~~~~~~~
 
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
+The following options can be modified in the ``config/rte_config.h`` file.
 
-- ``CONFIG_RTE_LIBRTE_I40E_PMD`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_i40e`` driver.
-
-- ``CONFIG_RTE_LIBRTE_I40E_DEBUG_*`` (default ``n``)
-
-  Toggle display of generic debugging messages.
-
-- ``CONFIG_RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC`` (default ``y``)
-
-  Toggle bulk allocation for RX.
-
-- ``CONFIG_RTE_LIBRTE_I40E_INC_VECTOR`` (default ``n``)
-
-  Toggle the use of Vector PMD instead of normal RX/TX path.
-  To enable vPMD for RX, bulk allocation for Rx must be allowed.
-
-- ``CONFIG_RTE_LIBRTE_I40E_16BYTE_RX_DESC`` (default ``n``)
-
-  Toggle to use a 16-byte RX descriptor, by default the RX descriptor is 32 byte.
-
-- ``CONFIG_RTE_LIBRTE_I40E_QUEUE_NUM_PER_PF`` (default ``64``)
+- ``RTE_LIBRTE_I40E_QUEUE_NUM_PER_PF`` (default ``64``)
 
   Number of queues reserved for PF.
 
-- ``CONFIG_RTE_LIBRTE_I40E_QUEUE_NUM_PER_VM`` (default ``4``)
+- ``RTE_LIBRTE_I40E_QUEUE_NUM_PER_VM`` (default ``4``)
 
   Number of queues reserved for each VMDQ Pool.
 
@@ -145,7 +192,7 @@ Runtime Config Options
 
   The number of reserved queue per VF is determined by its host PF. If the
   PCI address of an i40e PF is aaaa:bb.cc, the number of reserved queues per
-  VF can be configured with EAL parameter like -w aaaa:bb.cc,queue-num-per-vf=n.
+  VF can be configured with EAL parameter like -a aaaa:bb.cc,queue-num-per-vf=n.
   The value n can be 1, 2, 4, 8 or 16. If no such parameter is configured, the
   number of reserved queues per VF is 4 by default. If VF request more than
   reserved queues per VF, PF will able to allocate max to 16 queues after a VF
@@ -158,7 +205,7 @@ Runtime Config Options
   Adapter with both Linux kernel and DPDK PMD. To fix this issue, ``devargs``
   parameter ``support-multi-driver`` is introduced, for example::
 
-    -w 84:00.0,support-multi-driver=1
+    -a 84:00.0,support-multi-driver=1
 
   With the above configuration, DPDK PMD will not change global registers, and
   will switch PF interrupt from IntN to Int0 to avoid interrupt conflict between
@@ -173,7 +220,7 @@ Runtime Config Options
   port representors for on initialization of the PF PMD by passing the VF IDs of
   the VFs which are required.::
 
-  -w DBDF,representor=[0,1,4]
+  -a DBDF,representor=[0,1,4]
 
   Currently hot-plugging of representor ports is not supported so all required
   representors must be specified on the creation of the PF.
@@ -185,7 +232,7 @@ Runtime Config Options
   since it can get better perf in some real work loading cases. So ``devargs`` param
   ``use-latest-supported-vec`` is introduced, for example::
 
-  -w 84:00.0,use-latest-supported-vec=1
+  -a 84:00.0,use-latest-supported-vec=1
 
 - ``Enable validation for VF message`` (default ``not enabled``)
 
@@ -195,7 +242,7 @@ Runtime Config Options
   Format -- "maximal-message@period-seconds:ignore-seconds"
   For example::
 
-  -w 84:00.0,vf_msg_cfg=80@120:180
+  -a 84:00.0,vf_msg_cfg=80@120:180
 
 Vector RX Pre-conditions
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -305,7 +352,7 @@ To start ``testpmd``, and add vlan 10 to port 0:
 
 .. code-block:: console
 
-    ./app/testpmd -l 0-15 -n 4 -- -i --forward-mode=mac
+    ./<build_dir>/app/dpdk-testpmd -l 0-15 -n 4 -- -i --forward-mode=mac
     ...
 
     testpmd> set promisc 0 off
@@ -340,16 +387,17 @@ Start ``testpmd`` with ``--disable-rss`` and ``--pkt-filter-mode=perfect``:
 
 .. code-block:: console
 
-   ./app/testpmd -l 0-15 -n 4 -- -i --disable-rss --pkt-filter-mode=perfect \
-                 --rxq=8 --txq=8 --nb-cores=8 --nb-ports=1
+   ./<build_dir>/app/dpdk-testpmd -l 0-15 -n 4 -- -i --disable-rss \
+                 --pkt-filter-mode=perfect --rxq=8 --txq=8 --nb-cores=8 \
+                 --nb-ports=1
 
 Add a rule to direct ``ipv4-udp`` packet whose ``dst_ip=2.2.2.5, src_ip=2.2.2.3, src_port=32, dst_port=32`` to queue 1:
 
 .. code-block:: console
 
-   testpmd> flow_director_filter 0 mode IP add flow ipv4-udp  \
-            src 2.2.2.3 32 dst 2.2.2.5 32 vlan 0 flexbytes () \
-	    fwd pf queue 1 fd_id 1
+   testpmd> flow create 0 ingress pattern eth / ipv4 src is 2.2.2.3 \
+            dst is 2.2.2.5 / udp src is 32 dst is 32 / end \
+            actions mark id 1 / queue index 1 / end
 
 Check the flow director status:
 
@@ -398,12 +446,6 @@ Check the flow director status:
      f_add:	    0	        f_remove:      0
 
 
-Delete all flow director rules on a port:
-
-.. code-block:: console
-
-   testpmd> flush_flow_director 0
-
 Floating VEB
 ~~~~~~~~~~~~~
 
@@ -430,7 +472,7 @@ no physical uplink on the associated NIC port.
 To enable this feature, the user should pass a ``devargs`` parameter to the
 EAL, for example::
 
-    -w 84:00.0,enable_floating_veb=1
+    -a 84:00.0,enable_floating_veb=1
 
 In this configuration the PMD will use the floating VEB feature for all the
 VFs created by this PF device.
@@ -438,7 +480,7 @@ VFs created by this PF device.
 Alternatively, the user can specify which VFs need to connect to this floating
 VEB using the ``floating_veb_list`` argument::
 
-    -w 84:00.0,enable_floating_veb=1,floating_veb_list=1;3-4
+    -a 84:00.0,enable_floating_veb=1,floating_veb_list=1;3-4
 
 In this example ``VF1``, ``VF3`` and ``VF4`` connect to the floating VEB,
 while other VFs connect to the normal VEB.
@@ -459,7 +501,7 @@ which is used to configure hardware by downloading a profile to support
 protocols/filters which are not supported by default. The DDP
 functionality requires a NIC firmware version of 6.0 or greater.
 
-Current implementation supports GTP-C/GTP-U/PPPoE/PPPoL2TP,
+Current implementation supports GTP-C/GTP-U/PPPoE/PPPoL2TP/ESP,
 steering can be used with rte_flow API.
 
 GTPv1 package is released, and it can be downloaded from
@@ -467,6 +509,9 @@ https://downloadcenter.intel.com/download/27587.
 
 PPPoE package is released, and it can be downloaded from
 https://downloadcenter.intel.com/download/28040.
+
+ESP-AH package is released, and it can be downloaded from
+https://downloadcenter.intel.com/download/29446.
 
 Load a profile which supports GTP and store backup profile:
 
@@ -527,6 +572,42 @@ details please refer to :doc:`../testpmd_app_ug/index`.
    testpmd> set port (port_id) queue-region flush (on|off)
    testpmd> show port (port_id) queue-region
 
+Generic flow API
+~~~~~~~~~~~~~~~~~~~
+
+- ``RSS Flow``
+
+  RSS Flow supports to set hash input set, hash function, enable hash
+  and configure queues.
+  For example:
+  Configure queues as queue 0, 1, 2, 3.
+
+  .. code-block:: console
+
+    testpmd> flow create 0 ingress pattern end actions rss types end \
+      queues 0 1 2 3 end / end
+
+  Enable hash and set input set for ipv4-tcp.
+
+  .. code-block:: console
+
+    testpmd> flow create 0 ingress pattern eth / ipv4 / tcp / end \
+      actions rss types ipv4-tcp l3-src-only end queues end / end
+
+  Set symmetric hash enable for flow type ipv4-tcp.
+
+  .. code-block:: console
+
+    testpmd> flow create 0 ingress pattern eth / ipv4 / tcp / end \
+      actions rss types ipv4-tcp end queues end func symmetric_toeplitz / end
+
+  Set hash function as simple xor.
+
+  .. code-block:: console
+
+    testpmd> flow create 0 ingress pattern end actions rss types end \
+      queues end func simple_xor / end
+
 Limitations or Known issues
 ---------------------------
 
@@ -547,8 +628,8 @@ L2 Payload flow type in flow director cannot be used to classify MPLS packet
 as with previous firmware versions. Meanwhile, the Ethertype filter can be
 used to classify MPLS packet by using a command in testpmd like:
 
-   testpmd> ethertype_filter 0 add mac_ignr 00:00:00:00:00:00 ethertype \
-            0x8847 fwd queue <M>
+   testpmd> flow create 0 ingress pattern eth type is 0x8847 / end \
+            actions queue index <M> / end
 
 16 Byte RX Descriptor setting on DPDK VF
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -560,8 +641,7 @@ For all available versions of the i40e driver, these drivers don't support 16
 byte RX descriptor. If the Linux i40e kernel driver is used as host driver,
 while DPDK i40e PMD is used as the VF driver, DPDK cannot choose 16 byte receive
 descriptor. The reason is that the RX descriptor is already set to 32 byte by
-the i40e kernel driver. That is to say, user should keep
-``CONFIG_RTE_LIBRTE_I40E_16BYTE_RX_DESC=n`` in config file.
+the i40e kernel driver.
 In the future, if the Linux i40e driver supports 16 byte RX descriptor, user
 should make sure the DPDK VF uses the same RX descriptor mode, 16 byte or 32
 byte, as the PF driver.
@@ -661,6 +741,13 @@ with DPDK, then the configuration will also impact port B in the NIC with
 kernel driver, which don't want to use the TPID.
 So PMD reports warning to clarify what is changed by writing global register.
 
+Cloud Filter
+~~~~~~~~~~~~
+
+When programming cloud filters for IPv4/6_UDP/TCP/SCTP with SRC port only or DST port only,
+it will make any cloud filter using inner_vlan or tunnel key invalid. Default configuration will be
+recovered only by NIC core reset.
+
 High Performance of Small Packets on 40GbE NIC
 ----------------------------------------------
 
@@ -674,7 +761,9 @@ Use 16 Bytes RX Descriptor Size
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 As i40e PMD supports both 16 and 32 bytes RX descriptor sizes, and 16 bytes size can provide helps to high performance of small packets.
-Configuration of ``CONFIG_RTE_LIBRTE_I40E_16BYTE_RX_DESC`` in config files can be changed to use 16 bytes size RX descriptors.
+In ``config/rte_config.h`` set the following to use 16 bytes size RX descriptors::
+
+   #define RTE_LIBRTE_I40E_16BYTE_RX_DESC 1
 
 Input set requirement of each pctype for FDIR
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -684,6 +773,13 @@ For example, if creating 2 rte_flow rules with different input set for one PCTYP
 it will fail and return the info "Conflict with the first rule's input set",
 which means the current rule's input set conflicts with the first rule's.
 Remove the first rule if want to change the input set of the PCTYPE.
+
+PF reset fail after QinQ set with FW >= 8.4
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If upgrade FW to version 8.4 and higher, after set MAC VLAN filter and configure outer VLAN on PF, kill
+DPDK process will cause the card crash.
+
 
 Example of getting best performance with l3fwd example
 ------------------------------------------------------
@@ -727,7 +823,7 @@ See :numref:`figure_intel_perf_test_setup` for the performance test setup.
 
 7. The command line of running l3fwd would be something like the following::
 
-      ./l3fwd -l 18-21 -n 4 -w 82:00.0 -w 85:00.0 \
+      ./dpdk-l3fwd -l 18-21 -n 4 -a 82:00.0 -a 85:00.0 \
               -- -p 0x3 --config '(0,0,18),(0,1,19),(1,0,20),(1,1,21)'
 
    This means that the application uses core 18 for port 0, queue pair 0 forwarding, core 19 for port 0, queue pair 1 forwarding,

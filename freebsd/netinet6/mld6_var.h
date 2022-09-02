@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2009 Bruce Simpson.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -134,7 +136,6 @@ struct mld_ifsoftc {
 	uint32_t mli_qi;	/* MLDv2 Query Interval (s) */
 	uint32_t mli_qri;	/* MLDv2 Query Response Interval (s) */
 	uint32_t mli_uri;	/* MLDv2 Unsolicited Report Interval (s) */
-	SLIST_HEAD(,in6_multi)	mli_relinmhead; /* released groups */
 	struct mbufq	 mli_gq;	/* queue of general query responses */
 };
 
@@ -159,13 +160,14 @@ struct mld_ifsoftc {
 #define MLD_IFINFO(ifp) \
 	(((struct in6_ifextra *)(ifp)->if_afdata[AF_INET6])->mld_ifinfo)
 
+struct in6_multi_head;
 int	mld_change_state(struct in6_multi *, const int);
 struct mld_ifsoftc *
 	mld_domifattach(struct ifnet *);
 void	mld_domifdetach(struct ifnet *);
 void	mld_fasttimo(void);
-void	mld_ifdetach(struct ifnet *);
-int	mld_input(struct mbuf *, int, int);
+void	mld_ifdetach(struct ifnet *, struct in6_multi_head *);
+int	mld_input(struct mbuf **, int, int);
 void	mld_slowtimo(void);
 
 #ifdef SYSCTL_DECL

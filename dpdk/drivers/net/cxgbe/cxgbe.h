@@ -55,6 +55,25 @@
 			   DEV_RX_OFFLOAD_SCATTER | \
 			   DEV_RX_OFFLOAD_RSS_HASH)
 
+/* Devargs filtermode and filtermask representation */
+enum cxgbe_devargs_filter_mode_flags {
+	CXGBE_DEVARGS_FILTER_MODE_PHYSICAL_PORT = (1 << 0),
+	CXGBE_DEVARGS_FILTER_MODE_PF_VF = (1 << 1),
+
+	CXGBE_DEVARGS_FILTER_MODE_ETHERNET_DSTMAC = (1 << 2),
+	CXGBE_DEVARGS_FILTER_MODE_ETHERNET_ETHTYPE = (1 << 3),
+	CXGBE_DEVARGS_FILTER_MODE_VLAN_INNER = (1 << 4),
+	CXGBE_DEVARGS_FILTER_MODE_VLAN_OUTER = (1 << 5),
+	CXGBE_DEVARGS_FILTER_MODE_IP_TOS = (1 << 6),
+	CXGBE_DEVARGS_FILTER_MODE_IP_PROTOCOL = (1 << 7),
+	CXGBE_DEVARGS_FILTER_MODE_MAX = (1 << 8),
+};
+
+enum cxgbe_filter_vnic_mode {
+	CXGBE_FILTER_VNIC_MODE_NONE,
+	CXGBE_FILTER_VNIC_MODE_PFVF,
+	CXGBE_FILTER_VNIC_MODE_OVLAN,
+};
 
 /* Common PF and VF devargs */
 #define CXGBE_DEVARG_CMN_KEEP_OVLAN "keep_ovlan"
@@ -62,6 +81,10 @@
 
 /* VF only devargs */
 #define CXGBE_DEVARG_VF_FORCE_LINK_UP "force_link_up"
+
+/* Filter Mode/Mask devargs */
+#define CXGBE_DEVARG_PF_FILTER_MODE "filtermode"
+#define CXGBE_DEVARG_PF_FILTER_MASK "filtermask"
 
 bool cxgbe_force_linkup(struct adapter *adap);
 int cxgbe_probe(struct adapter *adapter);
@@ -79,7 +102,8 @@ int cxgbe_poll_for_completion(struct sge_rspq *q, unsigned int us,
 int cxgbe_link_start(struct port_info *pi);
 int cxgbe_setup_sge_fwevtq(struct adapter *adapter);
 int cxgbe_setup_sge_ctrl_txq(struct adapter *adapter);
-void cxgbe_cfg_queues(struct rte_eth_dev *eth_dev);
+int cxgbe_cfg_queues(struct rte_eth_dev *eth_dev);
+void cxgbe_cfg_queues_free(struct adapter *adapter);
 int cxgbe_cfg_queue_count(struct rte_eth_dev *eth_dev);
 int cxgbe_init_rss(struct adapter *adap);
 int cxgbe_setup_rss(struct port_info *pi);

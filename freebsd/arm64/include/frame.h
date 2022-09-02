@@ -45,7 +45,8 @@ struct trapframe {
 	uint64_t tf_sp;
 	uint64_t tf_lr;
 	uint64_t tf_elr;
-	uint64_t tf_spsr;
+	uint32_t tf_spsr;
+	uint32_t tf_esr;
 	uint64_t tf_x[30];
 };
 
@@ -55,7 +56,7 @@ struct arm64_frame {
 };
 
 /*
- * Signal frame, pushedonto the user stack
+ * Signal frame, pushed onto the user stack.
  */
 struct sigframe {
 	siginfo_t       sf_si;          /* actual saved siginfo */
@@ -63,11 +64,19 @@ struct sigframe {
 };
 
 /*
- * There is no fixed frame layout, other than to be 16-byte aligned
+ * There is no fixed frame layout, other than to be 16-byte aligned.
  */
 struct frame {
 	int dummy;
 };
+
+#ifdef COMPAT_FREEBSD32
+struct sigframe32 {
+	struct siginfo32		sf_si;
+	ucontext32_t			sf_uc;
+	mcontext32_vfp_t		sf_vfp;
+};
+#endif /* COMPAT_FREEBSD32 */
 
 #endif /* !LOCORE */
 

@@ -16,10 +16,10 @@ See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 
 Read DPDK Quick Started Guide or run the command below
 
-	cd /data/f-stack/dpdk/tools
-	./dpdk-setup.sh 
-
-Compile with x86_64-native-linuxapp-gcc
+	cd /data/f-stack/dpdk
+	meson -Denable_kmods=true build
+	ninja -C build
+	ninja -C build install
 
 ## Set hugepage
 
@@ -44,17 +44,28 @@ The mount point can be made permanent across reboots, by adding the following li
 ## offload NIC
 
     modprobe uio
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on
+    insmod /data/f-stack/dpdk/build/kernel/linux/igb_uio/igb_uio.ko
+    insmod /data/f-stack/dpdk/build/kernel/linux/kni/rte_kni.ko carrier=on
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
 ## Compile  lib
 
+    # Upgrade pkg-config while version < 0.28
+    cd /data/
+    wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+    tar xzvf pkg-config-0.29.2.tar.gz
+    cd pkg-config-0.29.2
+    ./configure --with-internal-glib
+    make
+    make install
+    mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+    ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
+
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
-    cd ../../
+    export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
+    cd /data/f-stack
     cd lib
     make
 
@@ -70,7 +81,9 @@ The mount point can be made permanent across reboots, by adding the following li
 
 ### Compile Redis
 
-	cd app/redis-5.0.5/
+	cd app/redis-6.2.6/deps/jemalloc
+	./autogen.sh
+	cd app/redis-6.2.6/
 	make
 	# run with start.sh
 	./start.sh -b ./redis-server -o /path/to/redis.conf

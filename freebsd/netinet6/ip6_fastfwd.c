@@ -40,6 +40,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/route.h>
+#include <net/route/nhop.h>
 #include <net/pfil.h>
 #include <net/vnet.h>
 
@@ -55,30 +56,35 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/nd6.h>
 
 static int
-ip6_findroute(struct nhop6_basic *pnh, const struct sockaddr_in6 *dst,
+ip6_findroute(struct nhop_object **pnh, const struct sockaddr_in6 *dst,
     struct mbuf *m)
 {
+	struct nhop_object *nh;
 
-	if (fib6_lookup_nh_basic(M_GETFIB(m), &dst->sin6_addr,
-	    dst->sin6_scope_id, 0, dst->sin6_flowinfo, pnh) != 0) {
+	nh = fib6_lookup(M_GETFIB(m), &dst->sin6_addr,
+	    dst->sin6_scope_id, NHR_NONE, m->m_pkthdr.flowid);
+       if (nh == NULL) {
 		IP6STAT_INC(ip6s_noroute);
 		IP6STAT_INC(ip6s_cantforward);
 		icmp6_error(m, ICMP6_DST_UNREACH,
 		    ICMP6_DST_UNREACH_NOROUTE, 0);
 		return (EHOSTUNREACH);
 	}
-	if (pnh->nh_flags & NHF_BLACKHOLE) {
+	if (nh->nh_flags & NHF_BLACKHOLE) {
 		IP6STAT_INC(ip6s_cantforward);
 		m_freem(m);
 		return (EHOSTUNREACH);
 	}
 
-	if (pnh->nh_flags & NHF_REJECT) {
+	if (nh->nh_flags & NHF_REJECT) {
 		IP6STAT_INC(ip6s_cantforward);
 		icmp6_error(m, ICMP6_DST_UNREACH,
 		    ICMP6_DST_UNREACH_REJECT, 0);
 		return (EHOSTUNREACH);
 	}
+
+	*pnh = nh;
+
 	return (0);
 }
 
@@ -86,7 +92,7 @@ struct mbuf*
 ip6_tryforward(struct mbuf *m)
 {
 	struct sockaddr_in6 dst;
-	struct nhop6_basic nh;
+	struct nhop_object *nh;
 	struct m_tag *fwd_tag;
 	struct ip6_hdr *ip6;
 	struct ifnet *rcvif;
@@ -97,7 +103,8 @@ ip6_tryforward(struct mbuf *m)
 	 * Fallback conditions to ip6_input for slow path processing.
 	 */
 	ip6 = mtod(m, struct ip6_hdr *);
-	if (ip6->ip6_nxt == IPPROTO_HOPOPTS ||
+	if ((m->m_flags & (M_BCAST | M_MCAST)) != 0 ||
+	    ip6->ip6_nxt == IPPROTO_HOPOPTS ||
 	    IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst) ||
 	    IN6_IS_ADDR_LINKLOCAL(&ip6->ip6_dst) ||
 	    IN6_IS_ADDR_LINKLOCAL(&ip6->ip6_src) ||
@@ -155,10 +162,10 @@ ip6_tryforward(struct mbuf *m)
 	/*
 	 * Incoming packet firewall processing.
 	 */
-	if (!PFIL_HOOKED(&V_inet6_pfil_hook))
+	if (!PFIL_HOOKED_IN(V_inet6_pfil_head))
 		goto passin;
-	if (pfil_run_hooks(&V_inet6_pfil_hook, &m, rcvif, PFIL_IN,
-	    NULL) != 0 || m == NULL)
+	if (pfil_run_hooks(V_inet6_pfil_head, &m, rcvif, PFIL_IN, NULL) !=
+	    PFIL_PASS)
 		goto dropin;
 	/*
 	 * If packet filter sets the M_FASTFWD_OURS flag, this means
@@ -194,25 +201,34 @@ passin:
 		in6_ifstat_inc(rcvif, ifs6_in_noroute);
 		goto dropin;
 	}
-	/*
-	 * We used slow path processing for packets with scoped addresses.
-	 * So, scope checks aren't needed here.
-	 */
-	if (m->m_pkthdr.len > nh.nh_mtu) {
-		in6_ifstat_inc(nh.nh_ifp, ifs6_in_toobig);
-		icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh.nh_mtu);
-		m = NULL;
-		goto dropout;
+	if (!PFIL_HOOKED_OUT(V_inet6_pfil_head)) {
+		if (m->m_pkthdr.len > nh->nh_mtu) {
+			in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+			icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh->nh_mtu);
+			m = NULL;
+			goto dropout;
+		}
+		goto passout;
 	}
 
 	/*
 	 * Outgoing packet firewall processing.
 	 */
-	if (!PFIL_HOOKED(&V_inet6_pfil_hook))
-		goto passout;
-	if (pfil_run_hooks(&V_inet6_pfil_hook, &m, nh.nh_ifp, PFIL_OUT,
-	    NULL) != 0 || m == NULL)
+	if (pfil_run_hooks(V_inet6_pfil_head, &m, nh->nh_ifp, PFIL_OUT |
+	    PFIL_FWD, NULL) != PFIL_PASS)
 		goto dropout;
+
+	/*
+	 * We used slow path processing for packets with scoped addresses.
+	 * So, scope checks aren't needed here.
+	 */
+	if (m->m_pkthdr.len > nh->nh_mtu) {
+		in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+		icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh->nh_mtu);
+		m = NULL;
+		goto dropout;
+	}
+
 	/*
 	 * If packet filter sets the M_FASTFWD_OURS flag, this means
 	 * that new destination or next hop is our local address.
@@ -262,23 +278,17 @@ passout:
 	}
 
 	m_clrprotoflags(m);	/* Avoid confusing lower layers. */
-	IP_PROBE(send, NULL, NULL, ip6, nh.nh_ifp, NULL, ip6);
+	IP_PROBE(send, NULL, NULL, ip6, nh->nh_ifp, NULL, ip6);
 
-	/*
-	 * XXX: we need to use destination address with embedded scope
-	 * zone id, because LLTABLE uses such form of addresses for lookup.
-	 */
-	dst.sin6_addr = nh.nh_addr;
-	if (IN6_IS_SCOPE_LINKLOCAL(&dst.sin6_addr))
-		dst.sin6_addr.s6_addr16[1] = htons(nh.nh_ifp->if_index & 0xffff);
-
-	error = (*nh.nh_ifp->if_output)(nh.nh_ifp, m,
+	if (nh->nh_flags & NHF_GATEWAY)
+		dst.sin6_addr = nh->gw6_sa.sin6_addr;
+	error = (*nh->nh_ifp->if_output)(nh->nh_ifp, m,
 	    (struct sockaddr *)&dst, NULL);
 	if (error != 0) {
-		in6_ifstat_inc(nh.nh_ifp, ifs6_out_discard);
+		in6_ifstat_inc(nh->nh_ifp, ifs6_out_discard);
 		IP6STAT_INC(ip6s_cantforward);
 	} else {
-		in6_ifstat_inc(nh.nh_ifp, ifs6_out_forward);
+		in6_ifstat_inc(nh->nh_ifp, ifs6_out_forward);
 		IP6STAT_INC(ip6s_forward);
 	}
 	return (NULL);
@@ -286,7 +296,7 @@ dropin:
 	in6_ifstat_inc(rcvif, ifs6_in_discard);
 	goto drop;
 dropout:
-	in6_ifstat_inc(nh.nh_ifp, ifs6_out_discard);
+	in6_ifstat_inc(nh->nh_ifp, ifs6_out_discard);
 drop:
 	if (m != NULL)
 		m_freem(m);

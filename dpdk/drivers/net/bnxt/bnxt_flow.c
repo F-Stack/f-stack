@@ -10,12 +10,15 @@
 #include <rte_flow.h>
 #include <rte_flow_driver.h>
 #include <rte_tailq.h>
+#include <rte_alarm.h>
+#include <rte_cycles.h>
 
 #include "bnxt.h"
 #include "bnxt_filter.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "bnxt_rxq.h"
+#include "bnxt_rxr.h"
 #include "bnxt_vnic.h"
 #include "hsi_struct_def_dpdk.h"
 
@@ -77,7 +80,7 @@ bnxt_flow_non_void_action(const struct rte_flow_action *cur)
 
 static int
 bnxt_filter_type_check(const struct rte_flow_item pattern[],
-		       struct rte_flow_error *error __rte_unused)
+		       struct rte_flow_error *error)
 {
 	const struct rte_flow_item *item =
 		bnxt_flow_non_void_item(pattern);
@@ -576,7 +579,7 @@ bnxt_validate_and_parse_flow_type(struct bnxt *bp,
 			}
 
 			/* Check if VNI is masked. */
-			if (vxlan_spec && vxlan_mask) {
+			if (vxlan_mask != NULL) {
 				vni_masked =
 					!!memcmp(vxlan_mask->vni, vni_mask,
 						 RTE_DIM(vni_mask));
@@ -1061,6 +1064,7 @@ bnxt_update_filter_flags_en(struct bnxt_filter_info *filter,
 	}
 	filter->fw_l2_filter_id = filter1->fw_l2_filter_id;
 	filter->l2_ref_cnt = filter1->l2_ref_cnt;
+	filter->flow_id = filter1->flow_id;
 	PMD_DRV_LOG(DEBUG,
 		"l2_filter: %p fw_l2_filter_id %" PRIx64 " l2_ref_cnt %u\n",
 		filter1, filter->fw_l2_filter_id, filter->l2_ref_cnt);
@@ -1103,6 +1107,8 @@ bnxt_validate_and_parse_flow(struct rte_eth_dev *dev,
 		filter->flags = HWRM_CFA_EM_FLOW_ALLOC_INPUT_FLAGS_PATH_RX;
 
 	use_ntuple = bnxt_filter_type_check(pattern, error);
+
+start:
 	switch (act->type) {
 	case RTE_FLOW_ACTION_TYPE_QUEUE:
 		/* Allow this flow. Redirect to a VNIC. */
@@ -1244,6 +1250,7 @@ use_vnic:
 		}
 
 		filter->fw_l2_filter_id = filter1->fw_l2_filter_id;
+		filter->flow_id = filter1->flow_id;
 		filter->flags = HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_FLAGS_METER;
 		break;
 	case RTE_FLOW_ACTION_TYPE_VF:
@@ -1312,6 +1319,7 @@ use_vnic:
 		}
 
 		filter->fw_l2_filter_id = filter1->fw_l2_filter_id;
+		filter->flow_id = filter1->flow_id;
 		break;
 	case RTE_FLOW_ACTION_TYPE_RSS:
 		rss = (const struct rte_flow_action_rss *)act->conf;
@@ -1319,7 +1327,6 @@ use_vnic:
 		vnic_id = attr->group;
 
 		BNXT_VALID_VNIC_OR_RET(bp, vnic_id);
-
 		vnic = &bp->vnic_info[vnic_id];
 
 		/* Check if requested RSS config matches RSS config of VNIC
@@ -1412,6 +1419,8 @@ use_vnic:
 		if (vnic->rx_queue_cnt > 1) {
 			vnic->hash_type =
 				bnxt_rte_to_hwrm_hash_types(rss->types);
+			vnic->hash_mode =
+			bnxt_rte_to_hwrm_hash_level(bp, rss->types, rss->level);
 
 			if (!rss->key_len) {
 				/* If hash key has not been specified,
@@ -1450,6 +1459,29 @@ vnic_found:
 		PMD_DRV_LOG(DEBUG, "L2 filter created\n");
 		bnxt_update_filter_flags_en(filter, filter1, use_ntuple);
 		break;
+	case RTE_FLOW_ACTION_TYPE_MARK:
+		if (bp->mark_table == NULL) {
+			rte_flow_error_set(error,
+					   ENOMEM,
+					   RTE_FLOW_ERROR_TYPE_ACTION,
+					   act,
+					   "Mark table not allocated.");
+			rc = -rte_errno;
+			goto ret;
+		}
+
+		if (bp->flags & BNXT_FLAG_RX_VECTOR_PKT_MODE) {
+			PMD_DRV_LOG(DEBUG,
+				    "Disabling vector processing for mark\n");
+			bp->eth_dev->rx_pkt_burst = bnxt_recv_pkts;
+			bp->flags &= ~BNXT_FLAG_RX_VECTOR_PKT_MODE;
+		}
+
+		filter->valid_flags |= BNXT_FLOW_MARK_FLAG;
+		filter->mark = ((const struct rte_flow_action_mark *)
+				act->conf)->id;
+		PMD_DRV_LOG(DEBUG, "Mark the flow %d\n", filter->mark);
+		break;
 	default:
 		rte_flow_error_set(error,
 				   EINVAL,
@@ -1462,20 +1494,17 @@ vnic_found:
 
 done:
 	act = bnxt_flow_non_void_action(++act);
-	if (act->type != RTE_FLOW_ACTION_TYPE_END) {
-		rte_flow_error_set(error,
-				   EINVAL,
-				   RTE_FLOW_ERROR_TYPE_ACTION,
-				   act,
-				   "Invalid action.");
-		rc = -rte_errno;
-		goto ret;
-	}
+	while (act->type != RTE_FLOW_ACTION_TYPE_END)
+		goto start;
 
 	return rc;
 ret:
 
-	//TODO: Cleanup according to ACTION TYPE.
+	if (filter1) {
+		bnxt_hwrm_clear_l2_filter(bp, filter1);
+		bnxt_free_filter(bp, filter1);
+	}
+
 	if (rte_errno)  {
 		if (vnic && STAILQ_EMPTY(&vnic->filter))
 			vnic->rx_queue_cnt = 0;
@@ -1652,6 +1681,51 @@ bnxt_match_filter(struct bnxt *bp, struct bnxt_filter_info *nf)
 	return 0;
 }
 
+static void
+bnxt_setup_flow_counter(struct bnxt *bp)
+{
+	if (bp->fw_cap & BNXT_FW_CAP_ADV_FLOW_COUNTERS &&
+	    !(bp->flags & BNXT_FLAG_FC_THREAD) && BNXT_FLOW_XSTATS_EN(bp)) {
+		rte_eal_alarm_set(US_PER_S * BNXT_FC_TIMER,
+				  bnxt_flow_cnt_alarm_cb,
+				  (void *)bp);
+		bp->flags |= BNXT_FLAG_FC_THREAD;
+	}
+}
+
+void bnxt_flow_cnt_alarm_cb(void *arg)
+{
+	int rc = 0;
+	struct bnxt *bp = arg;
+
+	if (!bp->flow_stat->rx_fc_out_tbl.va) {
+		PMD_DRV_LOG(ERR, "bp->flow_stat->rx_fc_out_tbl.va is NULL?\n");
+		bnxt_cancel_fc_thread(bp);
+		return;
+	}
+
+	if (!bp->flow_stat->flow_count) {
+		bnxt_cancel_fc_thread(bp);
+		return;
+	}
+
+	if (!bp->eth_dev->data->dev_started) {
+		bnxt_cancel_fc_thread(bp);
+		return;
+	}
+
+	rc = bnxt_flow_stats_req(bp);
+	if (rc) {
+		PMD_DRV_LOG(ERR, "Flow stat alarm not rescheduled.\n");
+		return;
+	}
+
+	rte_eal_alarm_set(US_PER_S * BNXT_FC_TIMER,
+			  bnxt_flow_cnt_alarm_cb,
+			  (void *)bp);
+}
+
+
 static struct rte_flow *
 bnxt_flow_create(struct rte_eth_dev *dev,
 		 const struct rte_flow_attr *attr,
@@ -1665,7 +1739,7 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 	bool update_flow = false;
 	struct rte_flow *flow;
 	int ret = 0;
-	uint32_t tun_type;
+	uint32_t tun_type, flow_id;
 
 	if (BNXT_VF(bp) && !BNXT_VF_IS_TRUSTED(bp)) {
 		rte_flow_error_set(error, EINVAL,
@@ -1798,9 +1872,34 @@ done:
 			goto free_flow;
 		}
 
+		if (filter->valid_flags & BNXT_FLOW_MARK_FLAG) {
+			PMD_DRV_LOG(DEBUG,
+				    "Mark action: mark id 0x%x, flow id 0x%x\n",
+				    filter->mark, filter->flow_id);
+
+			/* TCAM and EM should be 16-bit only.
+			 * Other modes not supported.
+			 */
+			flow_id = filter->flow_id & BNXT_FLOW_ID_MASK;
+			if (bp->mark_table[flow_id].valid) {
+				rte_flow_error_set(error, EEXIST,
+						   RTE_FLOW_ERROR_TYPE_HANDLE,
+						   NULL,
+						   "Flow with mark id exists");
+				bnxt_clear_one_vnic_filter(bp, filter);
+				goto free_filter;
+			}
+			bp->mark_table[flow_id].valid = true;
+			bp->mark_table[flow_id].mark_id = filter->mark;
+		}
+
 		STAILQ_INSERT_TAIL(&vnic->filter, filter, next);
 		STAILQ_INSERT_TAIL(&vnic->flow_list, flow, next);
+
+		if (BNXT_FLOW_XSTATS_EN(bp))
+			bp->flow_stat->flow_count++;
 		bnxt_release_flow_lock(bp);
+		bnxt_setup_flow_counter(bp);
 		PMD_DRV_LOG(DEBUG, "Successfully created flow.\n");
 		return flow;
 	}
@@ -1883,6 +1982,7 @@ _bnxt_flow_destroy(struct bnxt *bp,
 	struct bnxt_filter_info *filter;
 	struct bnxt_vnic_info *vnic;
 	int ret = 0;
+	uint32_t flow_id;
 
 	filter = flow->filter;
 	vnic = flow->vnic;
@@ -1899,6 +1999,13 @@ _bnxt_flow_destroy(struct bnxt *bp,
 	ret = bnxt_match_filter(bp, filter);
 	if (ret == 0)
 		PMD_DRV_LOG(ERR, "Could not find matching flow\n");
+
+	if (filter->valid_flags & BNXT_FLOW_MARK_FLAG) {
+		flow_id = filter->flow_id & BNXT_FLOW_ID_MASK;
+		memset(&bp->mark_table[flow_id], 0,
+		       sizeof(bp->mark_table[flow_id]));
+		filter->flow_id = 0;
+	}
 
 	ret = bnxt_clear_one_vnic_filter(bp, filter);
 
@@ -1917,6 +2024,8 @@ done:
 		bnxt_free_filter(bp, filter);
 		STAILQ_REMOVE(&vnic->flow_list, flow, rte_flow, next);
 		rte_free(flow);
+		if (BNXT_FLOW_XSTATS_EN(bp))
+			bp->flow_stat->flow_count--;
 
 		/* If this was the last flow associated with this vnic,
 		 * switch the queue back to RSS pool.
@@ -1965,6 +2074,12 @@ bnxt_flow_destroy(struct rte_eth_dev *dev,
 	return ret;
 }
 
+void bnxt_cancel_fc_thread(struct bnxt *bp)
+{
+	bp->flags &= ~BNXT_FLAG_FC_THREAD;
+	rte_eal_alarm_cancel(bnxt_flow_cnt_alarm_cb, (void *)bp);
+}
+
 static int
 bnxt_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 {
@@ -1991,6 +2106,8 @@ bnxt_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 				break;
 		}
 	}
+
+	bnxt_cancel_fc_thread(bp);
 	bnxt_release_flow_lock(bp);
 
 	return ret;

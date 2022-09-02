@@ -12,7 +12,6 @@
 #include <signal.h>
 #include <limits.h>
 
-#include <rte_atomic.h>
 #include <rte_memcpy.h>
 #include <rte_memory.h>
 #include <rte_string_fns.h>
@@ -59,6 +58,7 @@
 		"/sys/devices/system/cpu/cpu%u/cpufreq/scaling_available_frequencies"
 #define POWER_SYSFILE_SETSPEED   \
 		"/sys/devices/system/cpu/cpu%u/cpufreq/scaling_setspeed"
+#define POWER_ACPI_DRIVER "acpi-cpufreq"
 
 /*
  * MSR related
@@ -78,26 +78,26 @@ enum power_state {
 /**
  * Power info per lcore.
  */
-struct acpi_power_info {
+struct rte_power_info {
 	unsigned int lcore_id;                   /**< Logical core id */
 	uint32_t freqs[RTE_MAX_LCORE_FREQS]; /**< Frequency array */
 	uint32_t nb_freqs;                   /**< number of available freqs */
 	FILE *f;                             /**< FD of scaling_setspeed */
 	char governor_ori[32];               /**< Original governor name */
 	uint32_t curr_idx;                   /**< Freq index in freqs array */
-	volatile uint32_t state;             /**< Power in use state */
+	uint32_t state;                      /**< Power in use state */
 	uint16_t turbo_available;            /**< Turbo Boost available */
 	uint16_t turbo_enable;               /**< Turbo Boost enable/disable */
 } __rte_cache_aligned;
 
-static struct acpi_power_info lcore_power_info[RTE_MAX_LCORE];
+static struct rte_power_info lcore_power_info[RTE_MAX_LCORE];
 
 /**
  * It is to set specific freq for specific logical core, according to the index
  * of supported frequencies.
  */
 static int
-set_freq_internal(struct acpi_power_info *pi, uint32_t idx)
+set_freq_internal(struct rte_power_info *pi, uint32_t idx)
 {
 	if (idx >= RTE_MAX_LCORE_FREQS || idx >= pi->nb_freqs) {
 		RTE_LOG(ERR, POWER, "Invalid frequency index %u, which "
@@ -133,7 +133,7 @@ set_freq_internal(struct acpi_power_info *pi, uint32_t idx)
  * governor will be saved for rolling back.
  */
 static int
-power_set_governor_userspace(struct acpi_power_info *pi)
+power_set_governor_userspace(struct rte_power_info *pi)
 {
 	FILE *f;
 	int ret = -1;
@@ -189,7 +189,7 @@ out:
  * sys file.
  */
 static int
-power_get_available_freqs(struct acpi_power_info *pi)
+power_get_available_freqs(struct rte_power_info *pi)
 {
 	FILE *f;
 	int ret = -1, i, count;
@@ -259,7 +259,7 @@ out:
  * It is to fopen the sys file for the future setting the lcore frequency.
  */
 static int
-power_init_for_setting_freq(struct acpi_power_info *pi)
+power_init_for_setting_freq(struct rte_power_info *pi)
 {
 	FILE *f;
 	char fullpath[PATH_MAX];
@@ -291,9 +291,16 @@ out:
 }
 
 int
+power_acpi_cpufreq_check_supported(void)
+{
+	return cpufreq_check_scaling_driver(POWER_ACPI_DRIVER);
+}
+
+int
 power_acpi_cpufreq_init(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
+	uint32_t exp_state;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Lcore id %u can not exceeds %u\n",
@@ -302,8 +309,16 @@ power_acpi_cpufreq_init(unsigned int lcore_id)
 	}
 
 	pi = &lcore_power_info[lcore_id];
-	if (rte_atomic32_cmpset(&(pi->state), POWER_IDLE, POWER_ONGOING)
-			== 0) {
+	exp_state = POWER_IDLE;
+	/* The power in use state works as a guard variable between
+	 * the CPU frequency control initialization and exit process.
+	 * The ACQUIRE memory ordering here pairs with the RELEASE
+	 * ordering below as lock to make sure the frequency operations
+	 * in the critical section are done under the correct state.
+	 */
+	if (!__atomic_compare_exchange_n(&(pi->state), &exp_state,
+					POWER_ONGOING, 0,
+					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
 		RTE_LOG(INFO, POWER, "Power management of lcore %u is "
 				"in use\n", lcore_id);
 		return -1;
@@ -340,12 +355,16 @@ power_acpi_cpufreq_init(unsigned int lcore_id)
 
 	RTE_LOG(INFO, POWER, "Initialized successfully for lcore %u "
 			"power management\n", lcore_id);
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_USED);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_USED,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return 0;
 
 fail:
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_UNKNOWN);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_UNKNOWN,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return -1;
 }
@@ -355,7 +374,7 @@ fail:
  * needed by writing the sys file.
  */
 static int
-power_set_governor_original(struct acpi_power_info *pi)
+power_set_governor_original(struct rte_power_info *pi)
 {
 	FILE *f;
 	int ret = -1;
@@ -401,7 +420,8 @@ out:
 int
 power_acpi_cpufreq_exit(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
+	uint32_t exp_state;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Lcore id %u can not exceeds %u\n",
@@ -409,8 +429,16 @@ power_acpi_cpufreq_exit(unsigned int lcore_id)
 		return -1;
 	}
 	pi = &lcore_power_info[lcore_id];
-	if (rte_atomic32_cmpset(&(pi->state), POWER_USED, POWER_ONGOING)
-			== 0) {
+	exp_state = POWER_USED;
+	/* The power in use state works as a guard variable between
+	 * the CPU frequency control initialization and exit process.
+	 * The ACQUIRE memory ordering here pairs with the RELEASE
+	 * ordering below as lock to make sure the frequency operations
+	 * in the critical section are done under the correct state.
+	 */
+	if (!__atomic_compare_exchange_n(&(pi->state), &exp_state,
+					POWER_ONGOING, 0,
+					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
 		RTE_LOG(INFO, POWER, "Power management of lcore %u is "
 				"not used\n", lcore_id);
 		return -1;
@@ -430,12 +458,16 @@ power_acpi_cpufreq_exit(unsigned int lcore_id)
 	RTE_LOG(INFO, POWER, "Power management of lcore %u has exited from "
 			"'userspace' mode and been set back to the "
 			"original\n", lcore_id);
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_IDLE);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_IDLE,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return 0;
 
 fail:
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_UNKNOWN);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_UNKNOWN,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return -1;
 }
@@ -443,7 +475,7 @@ fail:
 uint32_t
 power_acpi_cpufreq_freqs(unsigned int lcore_id, uint32_t *freqs, uint32_t num)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -490,7 +522,7 @@ power_acpi_cpufreq_set_freq(unsigned int lcore_id, uint32_t index)
 int
 power_acpi_cpufreq_freq_down(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -508,7 +540,7 @@ power_acpi_cpufreq_freq_down(unsigned int lcore_id)
 int
 power_acpi_cpufreq_freq_up(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -549,7 +581,7 @@ power_acpi_cpufreq_freq_max(unsigned int lcore_id)
 int
 power_acpi_cpufreq_freq_min(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -566,7 +598,7 @@ power_acpi_cpufreq_freq_min(unsigned int lcore_id)
 int
 power_acpi_turbo_status(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -582,7 +614,7 @@ power_acpi_turbo_status(unsigned int lcore_id)
 int
 power_acpi_enable_turbo(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -615,7 +647,7 @@ power_acpi_enable_turbo(unsigned int lcore_id)
 int
 power_acpi_disable_turbo(unsigned int lcore_id)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");
@@ -642,7 +674,7 @@ power_acpi_disable_turbo(unsigned int lcore_id)
 int power_acpi_get_capabilities(unsigned int lcore_id,
 		struct rte_power_core_capabilities *caps)
 {
-	struct acpi_power_info *pi;
+	struct rte_power_info *pi;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Invalid lcore ID\n");

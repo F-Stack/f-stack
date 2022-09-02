@@ -2,6 +2,18 @@
 
 Compile ff tools
 
+    # Upgrade pkg-config while version < 0.28
+    #wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+    #tar xzvf pkg-config-0.29.2.tar.gz
+    #cd pkg-config-0.29.2
+    #./configure --with-internal-glib
+    #make
+    #make install
+    #mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+    #ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
+
+    export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
+
     make
 
 Install ff tools, all ff tools will be installed to `/usr/local/bin/f-stack/`, and some soft link will be created in `/usr/local/bin`, such as `ff_top`,`ff_traffic`, etc.
@@ -133,18 +145,18 @@ Examples:
 # netstat
 Usage:
 ```
-   netstat -P <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]
-   netstat -P <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]
-   netstat -P <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]
-   netstat -P <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]
-   netstat -P <f-stack proc_id> -i | -I interface -s [-46s]
+   netstat -t <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]
+   netstat -t <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]
+   netstat -t <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]
+   netstat -t <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]
+   netstat -t <f-stack proc_id> -i | -I interface -s [-46s]
            [-f protocol_family | -p protocol]
-   netstat -P <f-stack proc_id> -B [-z] [-I interface]
-   netstat -P <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]
-   netstat -P <f-stack proc_id> -rs [-s]
-   netstat -P <f-stack proc_id> -g [-46W] [-f address_family]
-   netstat -P <f-stack proc_id> -gs [-46s] [-f address_family]
-   netstat -P <f-stack proc_id> -Q
+   netstat -t <f-stack proc_id> -B [-z] [-I interface]
+   netstat -t <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]
+   netstat -t <f-stack proc_id> -rs [-s]
+   netstat -t <f-stack proc_id> -g [-46W] [-f address_family]
+   netstat -t <f-stack proc_id> -gs [-46s] [-f address_family]
+   netstat -t <f-stack proc_id> -Q
 ```
 
 Unsupported commands or features:

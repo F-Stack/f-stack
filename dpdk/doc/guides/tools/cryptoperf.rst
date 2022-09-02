@@ -30,22 +30,9 @@ On hardware devices the throughput measurement is not necessarily the maximum
 possible for the device, e.g. it may be necessary to use multiple cores to keep
 the hardware accelerator fully loaded and so measure maximum throughput.
 
-Compiling the Application
--------------------------
 
-**Step 1: PMD setting**
-
-The ``dpdk-test-crypto-perf`` tool depends on crypto device drivers PMD which
-are disabled by default in the build configuration file ``common_base``.
-The crypto device drivers PMD which should be tested can be enabled by setting::
-
-   CONFIG_RTE_LIBRTE_PMD_<name>=y
-
-Setting example for open ssl PMD::
-
-   CONFIG_RTE_LIBRTE_PMD_OPENSSL=y
-
-**Step 2: Linearization setting**
+Linearization setting
+---------------------
 
 It is possible linearized input segmented packets just before crypto operation
 for devices which doesn't support scatter-gather, and allows to measure
@@ -56,16 +43,6 @@ To set on the linearization options add below definition to the
 
    #define CPERF_LINEARIZATION_ENABLE
 
-**Step 3: Build the application**
-
-Execute the ``dpdk-setup.sh`` script to build the DPDK library together with the
-``dpdk-test-crypto-perf`` application.
-
-Initially, the user must select a DPDK target to choose the correct target type
-and compiler options to use when building the libraries.
-The user must have all libraries, modules, updates and compilers installed
-in the system prior to this,
-as described in the earlier chapters in this Getting Started Guide.
 
 Running the Application
 -----------------------
@@ -88,9 +65,9 @@ See the DPDK Getting Started Guides for more information on these options.
         Set the hexadecimal bitmask of the cores to run on. The corelist is a
         list cores to use.
 
-*   ``-w <PCI>``
+*   ``-a <PCI>``
 
-        Add a PCI device in white list.
+        Add a PCI device in allow list.
 
 *   ``--vdev <driver><id>``
 
@@ -193,6 +170,7 @@ The following are the application command-line options:
            auth-then-cipher
            aead
            pdcp
+           docsis
 
         For GCM/CCM algorithms you should use aead flag.
 
@@ -342,6 +320,14 @@ The following are the application command-line options:
 
         Set PDCP domain to specify Control/user plane.
 
+* ``--docsis-hdr-sz <n>``
+
+        Set DOCSIS header size(n) in bytes.
+
+* ``--pdcp-ses-hfn-en``
+
+        Enable fixed session based HFN instead of per packet HFN.
+
 Test Vector File
 ~~~~~~~~~~~~~~~~
 
@@ -408,7 +394,7 @@ Call application for performance throughput test of single Aesni MB PMD
 for cipher encryption aes-cbc and auth generation sha1-hmac,
 one million operations, burst size 32, packet size 64::
 
-   dpdk-test-crypto-perf -l 6-7 --vdev crypto_aesni_mb -w 0000:00:00.0 --
+   dpdk-test-crypto-perf -l 6-7 --vdev crypto_aesni_mb -a 0000:00:00.0 --
    --ptest throughput --devtype crypto_aesni_mb --optype cipher-then-auth
    --cipher-algo aes-cbc --cipher-op encrypt --cipher-key-sz 16 --auth-algo
    sha1-hmac --auth-op generate --auth-key-sz 64 --digest-sz 12
@@ -418,7 +404,7 @@ Call application for performance latency test of two Aesni MB PMD executed
 on two cores for cipher encryption aes-cbc, ten operations in silent mode::
 
    dpdk-test-crypto-perf -l 4-7 --vdev crypto_aesni_mb1
-   --vdev crypto_aesni_mb2 -w 0000:00:00.0 -- --devtype crypto_aesni_mb
+   --vdev crypto_aesni_mb2 -a 0000:00:00.0 -- --devtype crypto_aesni_mb
    --cipher-algo aes-cbc --cipher-key-sz 16 --cipher-iv-sz 16
    --cipher-op encrypt --optype cipher-only --silent
    --ptest latency --total-ops 10
@@ -428,7 +414,7 @@ for cipher encryption aes-gcm and auth generation aes-gcm,ten operations
 in silent mode, test vector provide in file "test_aes_gcm.data"
 with packet verification::
 
-   dpdk-test-crypto-perf -l 4-7 --vdev crypto_openssl -w 0000:00:00.0 --
+   dpdk-test-crypto-perf -l 4-7 --vdev crypto_openssl -a 0000:00:00.0 --
    --devtype crypto_openssl --aead-algo aes-gcm --aead-key-sz 16
    --aead-iv-sz 16 --aead-op encrypt --aead-aad-sz 16 --digest-sz 16
    --optype aead --silent --ptest verify --total-ops 10

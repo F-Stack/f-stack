@@ -5,6 +5,7 @@
 #include <rte_common.h>
 #include <rte_memzone.h>
 
+#include "otx2_common.h"
 #include "otx2_ethdev.h"
 
 /* NIX_RX_PARSE_S's ERRCODE + ERRLEV (12 bits) */
@@ -12,7 +13,9 @@
 #define ERR_ARRAY_SZ			((BIT(ERRCODE_ERRLEN_WIDTH)) *\
 					sizeof(uint32_t))
 
-#define LOOKUP_ARRAY_SZ			(PTYPE_ARRAY_SZ + ERR_ARRAY_SZ)
+#define SA_TBL_SZ			(RTE_MAX_ETHPORTS * sizeof(uint64_t))
+#define LOOKUP_ARRAY_SZ			(PTYPE_ARRAY_SZ + ERR_ARRAY_SZ +\
+					SA_TBL_SZ)
 
 const uint32_t *
 otx2_nix_supported_ptypes_get(struct rte_eth_dev *eth_dev)
@@ -166,14 +169,14 @@ nix_create_non_tunnel_ptype_array(uint16_t *ptype)
 		case NPC_LT_LD_NVGRE:
 			val |= RTE_PTYPE_TUNNEL_NVGRE;
 			break;
-		case NPC_LT_LD_ESP:
-			val |= RTE_PTYPE_TUNNEL_ESP;
-			break;
 		}
 
 		switch (le) {
 		case NPC_LT_LE_VXLAN:
 			val |= RTE_PTYPE_TUNNEL_VXLAN;
+			break;
+		case NPC_LT_LE_ESP:
+			val |= RTE_PTYPE_TUNNEL_ESP;
 			break;
 		case NPC_LT_LE_VXLANGPE:
 			val |= RTE_PTYPE_TUNNEL_VXLAN_GPE;
@@ -267,7 +270,9 @@ nix_create_rx_ol_flags_array(void *mem)
 
 		switch (errlev) {
 		case NPC_ERRLEV_RE:
-			/* Mark all errors as BAD checksum errors */
+			/* Mark all errors as BAD checksum errors
+			 * including Outer L2 length mismatch error
+			 */
 			if (errcode) {
 				val |= PKT_RX_IP_CKSUM_BAD;
 				val |= PKT_RX_L4_CKSUM_BAD;
@@ -292,18 +297,26 @@ nix_create_rx_ol_flags_array(void *mem)
 				val |= PKT_RX_IP_CKSUM_GOOD;
 			break;
 		case NPC_ERRLEV_NIX:
-			val |= PKT_RX_IP_CKSUM_GOOD;
-			if (errcode == NIX_RX_PERRCODE_OL4_CHK) {
+			if (errcode == NIX_RX_PERRCODE_OL4_CHK ||
+			    errcode == NIX_RX_PERRCODE_OL4_LEN ||
+			    errcode == NIX_RX_PERRCODE_OL4_PORT) {
+				val |= PKT_RX_IP_CKSUM_GOOD;
+				val |= PKT_RX_L4_CKSUM_BAD;
 				val |= PKT_RX_OUTER_L4_CKSUM_BAD;
+			} else if (errcode == NIX_RX_PERRCODE_IL4_CHK ||
+				   errcode == NIX_RX_PERRCODE_IL4_LEN ||
+				   errcode == NIX_RX_PERRCODE_IL4_PORT) {
+				val |= PKT_RX_IP_CKSUM_GOOD;
 				val |= PKT_RX_L4_CKSUM_BAD;
-			} else if (errcode == NIX_RX_PERRCODE_IL4_CHK) {
-				val |= PKT_RX_L4_CKSUM_BAD;
+			} else if (errcode == NIX_RX_PERRCODE_IL3_LEN ||
+				   errcode == NIX_RX_PERRCODE_OL3_LEN) {
+				val |= PKT_RX_IP_CKSUM_BAD;
 			} else {
+				val |= PKT_RX_IP_CKSUM_GOOD;
 				val |= PKT_RX_L4_CKSUM_GOOD;
 			}
 			break;
 		}
-
 		ol_flags[idx] = val;
 	}
 }
@@ -311,9 +324,13 @@ nix_create_rx_ol_flags_array(void *mem)
 void *
 otx2_nix_fastpath_lookup_mem_get(void)
 {
-	const char name[] = "otx2_nix_fastpath_lookup_mem";
+	const char name[] = OTX2_NIX_FASTPATH_LOOKUP_MEM;
 	const struct rte_memzone *mz;
 	void *mem;
+
+	/* SA_TBL starts after PTYPE_ARRAY & ERR_ARRAY */
+	RTE_BUILD_BUG_ON(OTX2_NIX_SA_TBL_START != (PTYPE_ARRAY_SZ +
+						   ERR_ARRAY_SZ));
 
 	mz = rte_memzone_lookup(name);
 	if (mz != NULL)

@@ -681,13 +681,13 @@ struct bnx2x_slowpath {
 }; /* struct bnx2x_slowpath */
 
 /*
- * Port specifc data structure.
+ * Port specific data structure.
  */
 struct bnx2x_port {
     /*
      * Port Management Function (for 57711E only).
      * When this field is set the driver instance is
-     * responsible for managing port specifc
+     * responsible for managing port specific
      * configurations such as handling link attentions.
      */
     uint32_t pmf;
@@ -732,7 +732,7 @@ struct bnx2x_port {
 
     /*
      * MCP scratchpad address for port specific statistics.
-     * The device is responsible for writing statistcss
+     * The device is responsible for writing statistics
      * back to the MCP for use with management firmware such
      * as UMP/NC-SI.
      */
@@ -937,8 +937,8 @@ struct bnx2x_devinfo {
  * already registered for this port (which means that the user wants storage
  * services).
  * 2. During cnic-related load, to know if offload mode is already configured
- * in the HW or needs to be configrued. Since the transition from nic-mode to
- * offload-mode in HW causes traffic coruption, nic-mode is configured only
+ * in the HW or needs to be configured. Since the transition from nic-mode to
+ * offload-mode in HW causes traffic corruption, nic-mode is configured only
  * in ports on which storage services where never requested.
  */
 #define CONFIGURE_NIC_MODE(sc) (!CHIP_IS_E1x(sc) && !CNIC_ENABLED(sc))
@@ -1000,8 +1000,8 @@ struct bnx2x_sp_objs {
  * link parameters twice.
  */
 struct bnx2x_link_report_data {
-	uint16_t      line_speed;        /* Effective line speed */
-	unsigned long link_report_flags; /* BNX2X_LINK_REPORT_XXX flags */
+	uint16_t line_speed;        /* Effective line speed */
+	uint32_t link_report_flags; /* BNX2X_LINK_REPORT_XXX flags */
 };
 
 enum {
@@ -1232,7 +1232,7 @@ struct bnx2x_softc {
 	/* slow path */
 	struct bnx2x_dma      sp_dma;
 	struct bnx2x_slowpath *sp;
-	unsigned long       sp_state;
+	uint32_t	    sp_state;
 
 	/* slow path queue */
 	struct bnx2x_dma spq_dma;
@@ -1376,6 +1376,10 @@ struct bnx2x_softc {
 	uint8_t prio_to_cos[BNX2X_MAX_PRIORITY];
 
 	int panic;
+	/* Array of Multicast addrs */
+	struct rte_ether_addr mc_addrs[VF_MAX_MULTICAST_PER_VF];
+	/* Multicast mac addresses number */
+	uint16_t mc_addrs_num;
 }; /* struct bnx2x_softc */
 
 /* IOCTL sub-commands for edebug and firmware upgrade */
@@ -1812,10 +1816,6 @@ static const uint32_t dmae_reg_go_c[] = {
 #define PCI_PM_D0    1
 #define PCI_PM_D3hot 2
 
-int  bnx2x_test_bit(int nr, volatile unsigned long * addr);
-void bnx2x_set_bit(unsigned int nr, volatile unsigned long * addr);
-void bnx2x_clear_bit(int nr, volatile unsigned long * addr);
-int  bnx2x_test_and_clear_bit(int nr, volatile unsigned long * addr);
 int  bnx2x_cmpxchg(volatile int *addr, int old, int new);
 
 int bnx2x_dma_alloc(struct bnx2x_softc *sc, size_t size,

@@ -27,8 +27,6 @@
 
 #define VDEV_MP_KEY	"bus_vdev_mp"
 
-int vdev_logtype_bus;
-
 /* Forward declare to access virtual bus name */
 static struct rte_bus rte_vdev_bus;
 
@@ -134,6 +132,56 @@ vdev_parse(const char *name, void *addr)
 	    addr != NULL)
 		*out = driver;
 	return driver == NULL;
+}
+
+static int
+vdev_dma_map(struct rte_device *dev, void *addr, uint64_t iova, size_t len)
+{
+	struct rte_vdev_device *vdev = RTE_DEV_TO_VDEV(dev);
+	const struct rte_vdev_driver *driver;
+
+	if (!vdev) {
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	if (!vdev->device.driver) {
+		VDEV_LOG(DEBUG, "no driver attach to device %s", dev->name);
+		return 1;
+	}
+
+	driver = container_of(vdev->device.driver, const struct rte_vdev_driver,
+			driver);
+
+	if (driver->dma_map)
+		return driver->dma_map(vdev, addr, iova, len);
+
+	return 0;
+}
+
+static int
+vdev_dma_unmap(struct rte_device *dev, void *addr, uint64_t iova, size_t len)
+{
+	struct rte_vdev_device *vdev = RTE_DEV_TO_VDEV(dev);
+	const struct rte_vdev_driver *driver;
+
+	if (!vdev) {
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	if (!vdev->device.driver) {
+		VDEV_LOG(DEBUG, "no driver attach to device %s", dev->name);
+		return 1;
+	}
+
+	driver = container_of(vdev->device.driver, const struct rte_vdev_driver,
+			driver);
+
+	if (driver->dma_unmap)
+		return driver->dma_unmap(vdev, addr, iova, len);
+
+	return 0;
 }
 
 static int
@@ -450,7 +498,7 @@ scan:
 			 * by calling rte_devargs_insert() with
 			 *     devargs.bus = rte_bus_find_by_name("vdev");
 			 *     devargs.type = RTE_DEVTYPE_VIRTUAL;
-			 *     devargs.policy = RTE_DEV_WHITELISTED;
+			 *     devargs.policy = RTE_DEV_ALLOWED;
 			 */
 			custom_scan->callback(custom_scan->user_arg);
 	}
@@ -553,14 +601,10 @@ static struct rte_bus rte_vdev_bus = {
 	.plug = vdev_plug,
 	.unplug = vdev_unplug,
 	.parse = vdev_parse,
+	.dma_map = vdev_dma_map,
+	.dma_unmap = vdev_dma_unmap,
 	.dev_iterate = rte_vdev_dev_iterate,
 };
 
 RTE_REGISTER_BUS(vdev, rte_vdev_bus);
-
-RTE_INIT(vdev_init_log)
-{
-	vdev_logtype_bus = rte_log_register("bus.vdev");
-	if (vdev_logtype_bus >= 0)
-		rte_log_set_level(vdev_logtype_bus, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(vdev_logtype_bus, bus.vdev, NOTICE);

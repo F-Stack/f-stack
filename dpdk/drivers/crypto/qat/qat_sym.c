@@ -64,7 +64,8 @@ qat_bpicipher_preprocess(struct qat_sym_session *ctx,
 		last_block = (uint8_t *) rte_pktmbuf_mtod_offset(sym_op->m_src,
 				uint8_t *, last_block_offset);
 
-		if (unlikely(sym_op->m_dst != NULL))
+		if (unlikely((sym_op->m_dst != NULL)
+				&& (sym_op->m_dst != sym_op->m_src)))
 			/* out-of-place operation (OOP) */
 			dst = (uint8_t *) rte_pktmbuf_mtod_offset(sym_op->m_dst,
 						uint8_t *, last_block_offset);
@@ -150,7 +151,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		void *op_cookie, enum qat_device_gen qat_dev_gen)
 {
 	int ret = 0;
-	struct qat_sym_session *ctx;
+	struct qat_sym_session *ctx = NULL;
 	struct icp_qat_fw_la_cipher_req_params *cipher_param;
 	struct icp_qat_fw_la_auth_req_params *auth_param;
 	register struct icp_qat_fw_la_bulk_req *qat_req;
@@ -179,10 +180,32 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		QAT_DP_LOG(ERR, "QAT PMD only supports session oriented"
 				" requests, op (%p) is sessionless.", op);
 		return -EINVAL;
-	}
-
-	ctx = (struct qat_sym_session *)get_sym_session_private_data(
+	} else if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+		ctx = (struct qat_sym_session *)get_sym_session_private_data(
 				op->sym->session, qat_sym_driver_id);
+#ifdef RTE_LIB_SECURITY
+	} else {
+		ctx = (struct qat_sym_session *)get_sec_session_private_data(
+				op->sym->sec_session);
+		if (likely(ctx)) {
+			if (unlikely(ctx->bpi_ctx == NULL)) {
+				QAT_DP_LOG(ERR, "QAT PMD only supports security"
+						" operation requests for"
+						" DOCSIS, op (%p) is not for"
+						" DOCSIS.", op);
+				return -EINVAL;
+			} else if (unlikely(((op->sym->m_dst != NULL) &&
+					(op->sym->m_dst != op->sym->m_src)) ||
+					op->sym->m_src->nb_segs > 1)) {
+				QAT_DP_LOG(ERR, "OOP and/or multi-segment"
+						" buffers not supported for"
+						" DOCSIS security.");
+				op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+				return -EINVAL;
+			}
+		}
+#endif
+	}
 
 	if (unlikely(ctx == NULL)) {
 		QAT_DP_LOG(ERR, "Session was not created for this device");
@@ -244,7 +267,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			cipher_ofs = op->sym->cipher.data.offset >> 3;
 
 		} else if (ctx->bpi_ctx) {
-			/* DOCSIS - only send complete blocks to device
+			/* DOCSIS - only send complete blocks to device.
 			 * Process any partial block using CFB mode.
 			 * Even if 0 complete blocks, still send this to device
 			 * to get into rx queue for post-process and dequeuing
@@ -345,7 +368,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 				ICP_QAT_HW_AUTH_ALGO_AES_CBC_MAC) {
 
 			/* In case of AES-CCM this may point to user selected
-			 * memory or iv offset in cypto_op
+			 * memory or iv offset in crypto_op
 			 */
 			uint8_t *aad_data = op->sym->aead.aad.data;
 			/* This is true AAD length, it not includes 18 bytes of
@@ -432,7 +455,8 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		min_ofs = op->sym->aead.data.offset;
 	}
 
-	if (op->sym->m_src->next || (op->sym->m_dst && op->sym->m_dst->next))
+	if (op->sym->m_src->nb_segs > 1 ||
+			(op->sym->m_dst && op->sym->m_dst->nb_segs > 1))
 		do_sgl = 1;
 
 	/* adjust for chain case */
@@ -442,7 +466,8 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	if (unlikely(min_ofs >= rte_pktmbuf_data_len(op->sym->m_src) && do_sgl))
 		min_ofs = 0;
 
-	if (unlikely(op->sym->m_dst != NULL)) {
+	if (unlikely((op->sym->m_dst != NULL) &&
+			(op->sym->m_dst != op->sym->m_src))) {
 		/* Out-of-place operation (OOP)
 		 * Don't align DMA start. DMA the minimum data-set
 		 * so as not to overwrite data in dest buffer
@@ -571,7 +596,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			return ret;
 		}
 
-		if (likely(op->sym->m_dst == NULL))
+		if (in_place)
 			qat_req->comn_mid.dest_data_addr =
 				qat_req->comn_mid.src_data_addr =
 				cookie->qat_sgl_src_phys_addr;

@@ -7,9 +7,6 @@
 #include "dpaax_iova_table.h"
 #include "dpaax_logs.h"
 
-/* Global dpaax logger identifier */
-int dpaax_logger;
-
 /* Global table reference */
 struct dpaax_iova_table *dpaax_iova_table_p;
 
@@ -264,7 +261,7 @@ dpaax_iova_table_depopulate(void)
 	rte_free(dpaax_iova_table_p->entries);
 	dpaax_iova_table_p = NULL;
 
-	DPAAX_DEBUG("IOVA Table cleanedup");
+	DPAAX_DEBUG("IOVA Table cleaned");
 }
 
 int
@@ -445,7 +442,7 @@ dpaax_memevent_walk_memsegs(const struct rte_memseg_list *msl __rte_unused,
 			    void *arg __rte_unused)
 {
 	DPAAX_DEBUG("Walking for %p (pa=%"PRIu64") and len %zu",
-		    ms->addr, ms->phys_addr, len);
+		    ms->addr, ms->iova, len);
 	dpaax_iova_table_update(rte_mem_virt2phy(ms->addr), ms->addr, len);
 	return 0;
 }
@@ -465,9 +462,4 @@ dpaax_handle_memevents(void)
 					       dpaax_memevent_cb, NULL);
 }
 
-RTE_INIT(dpaax_log)
-{
-	dpaax_logger = rte_log_register("pmd.common.dpaax");
-	if (dpaax_logger >= 0)
-		rte_log_set_level(dpaax_logger, RTE_LOG_ERR);
-}
+RTE_LOG_REGISTER(dpaax_logger, pmd.common.dpaax, ERR);

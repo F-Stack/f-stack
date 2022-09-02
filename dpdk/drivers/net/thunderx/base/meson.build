@@ -8,12 +8,9 @@ sources = [
 ]
 
 c_args = cflags
-if allow_experimental_apis
-	c_args += '-DALLOW_EXPERIMENTAL_API'
-endif
 base_lib = static_library('nicvf_base', sources,
 	c_args: c_args,
 	dependencies: static_rte_ethdev
 )
 
-base_objs = base_lib.extract_all_objects(recursive: true)
+base_objs = base_lib.extract_all_objects()

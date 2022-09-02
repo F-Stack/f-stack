@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -147,7 +147,7 @@ racct_get_limit(struct proc *p, int resource)
 #endif
 
 int
-kern_openat(struct thread *td, int fd, char *path, enum uio_seg pathseg,
+kern_openat(struct thread *td, int fd, const char *path, enum uio_seg pathseg,
     int flags, int mode)
 {
     return (-1);
@@ -302,18 +302,25 @@ arc4random(void)
     return (uint32_t)rand_r(&seed);
 }
 
+#if 0
 void
 random_harvest_queue(const void *entropy, u_int size,
-    u_int bits, enum random_entropy_source origin)
+    enum random_entropy_source origin)
 {
     ;
 }
+#endif
 
-u_int
+void
 read_random(void *buf, u_int count)
 {
     arc4rand(buf, count, 0);
-    return (count);
+}
+
+void
+arc4random_buf(void *ptr, size_t len)
+{
+    arc4rand(ptr, len, 0);
 }
 
 int

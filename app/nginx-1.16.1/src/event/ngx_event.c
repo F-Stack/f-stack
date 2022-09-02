@@ -203,10 +203,10 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_uint_t  flags;
     ngx_msec_t  timer, delta;
 #if (NGX_HAVE_FSTACK)
-        static ngx_msec_t initial; //msec
+    static ngx_msec_t initial; //msec
 #endif
 
-        if (ngx_timer_resolution) {
+    if (ngx_timer_resolution) {
         timer = NGX_TIMER_INFINITE;
         flags = 0;
 

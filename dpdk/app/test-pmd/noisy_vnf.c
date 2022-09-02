@@ -154,6 +154,7 @@ pkt_burst_noisy_vnf(struct fwd_stream *fs)
 
 	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue,
 			pkts_burst, nb_pkt_per_burst);
+	inc_rx_burst_stats(fs, nb_rx);
 	if (unlikely(nb_rx == 0))
 		goto flush;
 	fs->rx_packets += nb_rx;
@@ -164,6 +165,7 @@ pkt_burst_noisy_vnf(struct fwd_stream *fs)
 				pkts_burst, nb_rx);
 		if (unlikely(nb_tx < nb_rx) && fs->retry_enabled)
 			nb_tx += do_retry(nb_rx, nb_tx, pkts_burst, fs);
+		inc_tx_burst_stats(fs, nb_tx);
 		fs->tx_packets += nb_tx;
 		fs->fwd_dropped += drop_pkts(pkts_burst, nb_rx, nb_tx);
 		return;
@@ -187,6 +189,7 @@ pkt_burst_noisy_vnf(struct fwd_stream *fs)
 					nb_deqd);
 			if (unlikely(nb_tx < nb_rx) && fs->retry_enabled)
 				nb_tx += do_retry(nb_rx, nb_tx, tmp_pkts, fs);
+			inc_tx_burst_stats(fs, nb_tx);
 			fs->fwd_dropped += drop_pkts(tmp_pkts, nb_deqd, nb_tx);
 		}
 	}
@@ -211,6 +214,7 @@ flush:
 					 tmp_pkts, nb_deqd);
 		if (unlikely(sent < nb_deqd) && fs->retry_enabled)
 			nb_tx += do_retry(nb_rx, nb_tx, tmp_pkts, fs);
+		inc_tx_burst_stats(fs, nb_tx);
 		fs->fwd_dropped += drop_pkts(tmp_pkts, nb_deqd, sent);
 		ncf->prev_time = rte_get_timer_cycles();
 	}
@@ -227,7 +231,7 @@ noisy_fwd_end(portid_t pi)
 	rte_free(noisy_cfg[pi]);
 }
 
-static void
+static int
 noisy_fwd_begin(portid_t pi)
 {
 	struct noisy_config *n;
@@ -269,11 +273,26 @@ noisy_fwd_begin(portid_t pi)
 		rte_exit(EXIT_FAILURE,
 			 "--noisy-lkup-memory-size must be > 0\n");
 	}
+
+	return 0;
+}
+
+static void
+stream_init_noisy_vnf(struct fwd_stream *fs)
+{
+	bool rx_stopped, tx_stopped;
+
+	rx_stopped = ports[fs->rx_port].rxq[fs->rx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	tx_stopped = ports[fs->tx_port].txq[fs->tx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	fs->disabled = rx_stopped || tx_stopped;
 }
 
 struct fwd_engine noisy_vnf_engine = {
 	.fwd_mode_name  = "noisy",
 	.port_fwd_begin = noisy_fwd_begin,
 	.port_fwd_end   = noisy_fwd_end,
+	.stream_init    = stream_init_noisy_vnf,
 	.packet_fwd     = pkt_burst_noisy_vnf,
 };

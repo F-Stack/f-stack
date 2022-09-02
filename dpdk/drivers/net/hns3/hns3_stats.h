@@ -1,18 +1,16 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 HiSilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #ifndef _HNS3_STATS_H_
 #define _HNS3_STATS_H_
 
-#define HNS3_VALUES_BYTES		8
-
 /* TQP stats */
 struct hns3_tqp_stats {
 	uint64_t rcb_tx_ring_pktnum_rcd; /* Total num of transmitted packets */
 	uint64_t rcb_rx_ring_pktnum_rcd; /* Total num of received packets */
-	uint64_t rcb_tx_ring_pktnum[HNS3_MAX_TQP_NUM_PER_FUNC];
-	uint64_t rcb_rx_ring_pktnum[HNS3_MAX_TQP_NUM_PER_FUNC];
+	uint64_t *rcb_rx_ring_pktnum;
+	uint64_t *rcb_tx_ring_pktnum;
 };
 
 /* mac stats, Statistics counters collected by the MAC, opcode id: 0x0032 */
@@ -134,7 +132,7 @@ int hns3_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats);
 int hns3_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 			unsigned int n);
 int hns3_dev_xstats_reset(struct rte_eth_dev *dev);
-int hns3_dev_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
+int hns3_dev_xstats_get_names(struct rte_eth_dev *dev,
 			      struct rte_eth_xstat_name *xstats_names,
 			      __rte_unused unsigned int size);
 int hns3_dev_xstats_get_by_id(struct rte_eth_dev *dev,
@@ -146,5 +144,9 @@ int hns3_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
 				    const uint64_t *ids,
 				    uint32_t size);
 int hns3_stats_reset(struct rte_eth_dev *dev);
+void hns3_error_int_stats_add(struct hns3_adapter *hns, const char *err);
+int hns3_tqp_stats_init(struct hns3_hw *hw);
+void hns3_tqp_stats_uninit(struct hns3_hw *hw);
 int hns3_query_mac_stats_reg_num(struct hns3_hw *hw);
+
 #endif /* _HNS3_STATS_H_ */

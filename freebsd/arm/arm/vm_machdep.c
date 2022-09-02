@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1982, 1986 The Regents of the University of California.
  * Copyright (c) 1989, 1990 William Jolitz
  * Copyright (c) 1994 John Dyson
@@ -40,8 +42,6 @@
  *	Utah $Hdr: vm_machdep.c 1.16.1.1 89/06/23$
  */
 
-#include "opt_compat.h"
-
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -82,8 +82,8 @@ __FBSDID("$FreeBSD$");
  * struct switchframe and trapframe must both be a multiple of 8
  * for correct stack alignment.
  */
-CTASSERT(sizeof(struct switchframe) == 48);
-CTASSERT(sizeof(struct trapframe) == 80);
+_Static_assert((sizeof(struct switchframe) % 8) == 0, "Bad alignment");
+_Static_assert((sizeof(struct trapframe) % 8) == 0, "Bad alignment");
 
 uint32_t initial_fpscr = VFPSCR_DN | VFPSCR_FZ;
 
@@ -93,8 +93,7 @@ uint32_t initial_fpscr = VFPSCR_DN | VFPSCR_FZ;
  * ready to run and return to user mode.
  */
 void
-cpu_fork(register struct thread *td1, register struct proc *p2,
-    struct thread *td2, int flags)
+cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 {
 	struct pcb *pcb2;
 	struct trapframe *tf;
@@ -106,10 +105,13 @@ cpu_fork(register struct thread *td1, register struct proc *p2,
 	/* Point the pcb to the top of the stack */
 	pcb2 = (struct pcb *)
 	    (td2->td_kstack + td2->td_kstack_pages * PAGE_SIZE) - 1;
-#ifdef __XSCALE__
-#ifndef CPU_XSCALE_CORE3
-	pmap_use_minicache(td2->td_kstack, td2->td_kstack_pages * PAGE_SIZE);
-#endif
+#ifdef VFP
+	/* Store actual state of VFP */
+	if (curthread == td1) {
+		critical_enter();
+		vfp_store(&td1->td_pcb->pcb_vfpstate, false);
+		critical_exit();
+	}
 #endif
 	td2->td_pcb = pcb2;
 
@@ -134,6 +136,7 @@ cpu_fork(register struct thread *td1, register struct proc *p2,
 	pcb2->pcb_regs.sf_r5 = (register_t)td2;
 	pcb2->pcb_regs.sf_lr = (register_t)fork_trampoline;
 	pcb2->pcb_regs.sf_sp = STACKALIGN(td2->td_frame);
+	pcb2->pcb_regs.sf_tpidrurw = (register_t)get_tls();
 
 	pcb2->pcb_vfpcpu = -1;
 	pcb2->pcb_vfpstate.fpscr = initial_fpscr;
@@ -143,15 +146,9 @@ cpu_fork(register struct thread *td1, register struct proc *p2,
 	tf->tf_r0 = 0;
 	tf->tf_r1 = 0;
 
-
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
 	td2->td_md.md_saved_cspr = PSR_SVC32_MODE;
-#if __ARM_ARCH >= 6
-	td2->td_md.md_tp = td1->td_md.md_tp;
-#else
-	td2->td_md.md_tp = *(register_t *)ARM_TP_ADDRESS;
-#endif
 }
 
 void
@@ -168,40 +165,12 @@ void
 cpu_set_syscall_retval(struct thread *td, int error)
 {
 	struct trapframe *frame;
-	int fixup;
-#ifdef __ARMEB__
-	u_int call;
-#endif
 
 	frame = td->td_frame;
-	fixup = 0;
-
-#ifdef __ARMEB__
-	/*
-	 * __syscall returns an off_t while most other syscalls return an
-	 * int. As an off_t is 64-bits and an int is 32-bits we need to
-	 * place the returned data into r1. As the lseek and freebsd6_lseek
-	 * syscalls also return an off_t they do not need this fixup.
-	 */
-	call = frame->tf_r7;
-	if (call == SYS___syscall) {
-		register_t *ap = &frame->tf_r0;
-		register_t code = ap[_QUAD_LOWWORD];
-		if (td->td_proc->p_sysent->sv_mask)
-			code &= td->td_proc->p_sysent->sv_mask;
-		fixup = (code != SYS_lseek);
-	}
-#endif
-
 	switch (error) {
 	case 0:
-		if (fixup) {
-			frame->tf_r0 = 0;
-			frame->tf_r1 = td->td_retval[0];
-		} else {
-			frame->tf_r0 = td->td_retval[0];
-			frame->tf_r1 = td->td_retval[1];
-		}
+		frame->tf_r0 = td->td_retval[0];
+		frame->tf_r1 = td->td_retval[1];
 		frame->tf_spsr &= ~PSR_C;   /* carry bit */
 		break;
 	case ERESTART:
@@ -272,16 +241,9 @@ int
 cpu_set_user_tls(struct thread *td, void *tls_base)
 {
 
-	td->td_md.md_tp = (register_t)tls_base;
-	if (td == curthread) {
-		critical_enter();
-#if __ARM_ARCH >= 6
+	td->td_pcb->pcb_regs.sf_tpidrurw = (register_t)tls_base;
+	if (td == curthread)
 		set_tls(tls_base);
-#else
-		*(register_t *)ARM_TP_ADDRESS = (register_t)tls_base;
-#endif
-		critical_exit();
-	}
 	return (0);
 }
 
@@ -301,12 +263,6 @@ cpu_thread_alloc(struct thread *td)
 	 * the ARM EABI.
 	 */
 	td->td_frame = (struct trapframe *)((caddr_t)td->td_pcb) - 1;
-
-#ifdef __XSCALE__
-#ifndef CPU_XSCALE_CORE3
-	pmap_use_minicache(td->td_kstack, td->td_kstack_pages * PAGE_SIZE);
-#endif
-#endif
 }
 
 void
@@ -348,3 +304,17 @@ cpu_exit(struct thread *td)
 {
 }
 
+bool
+cpu_exec_vmspace_reuse(struct proc *p __unused, vm_map_t map __unused)
+{
+
+	return (true);
+}
+
+int
+cpu_procctl(struct thread *td __unused, int idtype __unused, id_t id __unused,
+    int com __unused, void *data __unused)
+{
+
+	return (EINVAL);
+}

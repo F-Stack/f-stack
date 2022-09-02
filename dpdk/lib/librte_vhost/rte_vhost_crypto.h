@@ -9,6 +9,14 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
+#include <rte_compat.h>
+
+/* pre-declare structs to avoid including full headers */
+struct rte_mempool;
+struct rte_crypto_op;
+
 #define VHOST_CRYPTO_MBUF_POOL_SIZE		(8192)
 #define VHOST_CRYPTO_MAX_BURST_SIZE		(64)
 #define VHOST_CRYPTO_MAX_DATA_SIZE		(4096)
@@ -23,6 +31,18 @@ enum rte_vhost_crypto_zero_copy {
 	RTE_VHOST_CRYPTO_ZERO_COPY_ENABLE = 1,
 	RTE_VHOST_CRYPTO_MAX_ZERO_COPY_OPTIONS
 };
+
+/**
+ * Start vhost crypto driver
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @return
+ *  0 on success, -1 on failure
+ */
+__rte_experimental
+int
+rte_vhost_crypto_driver_start(const char *path);
 
 /**
  *  Create Vhost-crypto instance

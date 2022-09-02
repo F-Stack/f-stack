@@ -132,7 +132,7 @@ int bnxt_alloc_vnic_attributes(struct bnxt *bp, bool reconfig)
 		vnic = &bp->vnic_info[i];
 
 		snprintf(mz_name, RTE_MEMZONE_NAMESIZE,
-			 "bnxt_%04x:%02x:%02x:%02x_vnicattr_%d", pdev->addr.domain,
+			 "bnxt_" PCI_PRI_FMT "_vnicattr_%d", pdev->addr.domain,
 			 pdev->addr.bus, pdev->addr.devid, pdev->addr.function, i);
 		mz_name[RTE_MEMZONE_NAMESIZE - 1] = 0;
 		mz = rte_memzone_lookup(mz_name);
@@ -158,7 +158,6 @@ int bnxt_alloc_vnic_attributes(struct bnxt *bp, bool reconfig)
 
 		vnic->rss_hash_key = (void *)((char *)vnic->rss_table + rss_table_size);
 		vnic->rss_hash_key_dma_addr = vnic->rss_table_dma_addr + rss_table_size;
-
 		if (!reconfig) {
 			bnxt_prandom_bytes(vnic->rss_hash_key, HW_HASH_KEY_SIZE);
 			memcpy(bp->rss_conf.rss_key, vnic->rss_hash_key, HW_HASH_KEY_SIZE);
@@ -244,4 +243,70 @@ uint16_t bnxt_rte_to_hwrm_hash_types(uint64_t rte_type)
 		hwrm_type |= HWRM_VNIC_RSS_CFG_INPUT_HASH_TYPE_UDP_IPV6;
 
 	return hwrm_type;
+}
+
+int bnxt_rte_to_hwrm_hash_level(struct bnxt *bp, uint64_t hash_f, uint32_t lvl)
+{
+	uint32_t mode = HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_DEFAULT;
+	bool l3 = (hash_f & (ETH_RSS_IPV4 | ETH_RSS_IPV6));
+	bool l4 = (hash_f & (ETH_RSS_NONFRAG_IPV4_UDP |
+			     ETH_RSS_NONFRAG_IPV6_UDP |
+			     ETH_RSS_NONFRAG_IPV4_TCP |
+			     ETH_RSS_NONFRAG_IPV6_TCP));
+	bool l3_only = l3 && !l4;
+	bool l3_and_l4 = l3 && l4;
+
+	/* If FW has not advertised capability to configure outer/inner
+	 * RSS hashing , just log a message. HW will work in default RSS mode.
+	 */
+	if (!(bp->vnic_cap_flags & BNXT_VNIC_CAP_OUTER_RSS)) {
+		PMD_DRV_LOG(ERR, "RSS hash level cannot be configured\n");
+		return mode;
+	}
+
+	switch (lvl) {
+	case BNXT_RSS_LEVEL_INNERMOST:
+		if (l3_and_l4 || l4)
+			mode =
+			HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_INNERMOST_4;
+		else if (l3_only)
+			mode =
+			HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_INNERMOST_2;
+		break;
+	case BNXT_RSS_LEVEL_OUTERMOST:
+		if (l3_and_l4 || l4)
+			mode =
+			HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_OUTERMOST_4;
+		else if (l3_only)
+			mode =
+			HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_OUTERMOST_2;
+		break;
+	default:
+		mode = HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_DEFAULT;
+		break;
+	}
+
+	return mode;
+}
+
+uint64_t bnxt_hwrm_to_rte_rss_level(struct bnxt *bp, uint32_t mode)
+{
+	uint64_t rss_level = 0;
+
+	/* If FW has not advertised capability to configure inner/outer RSS
+	 * return default hash mode.
+	 */
+	if (!(bp->vnic_cap_flags & BNXT_VNIC_CAP_OUTER_RSS))
+		return ETH_RSS_LEVEL_PMD_DEFAULT;
+
+	if (mode == HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_OUTERMOST_2 ||
+	    mode == HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_OUTERMOST_4)
+		rss_level |= ETH_RSS_LEVEL_OUTERMOST;
+	else if (mode == HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_INNERMOST_2 ||
+		 mode == HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_INNERMOST_4)
+		rss_level |= ETH_RSS_LEVEL_INNERMOST;
+	else
+		rss_level |= ETH_RSS_LEVEL_PMD_DEFAULT;
+
+	return rss_level;
 }

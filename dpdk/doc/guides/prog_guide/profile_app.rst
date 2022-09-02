@@ -36,9 +36,15 @@ for details about application profiling.
 Profiling with VTune
 ~~~~~~~~~~~~~~~~~~~~
 
-To allow VTune attaching to the DPDK application, reconfigure and recompile
-the DPDK with ``CONFIG_RTE_ETHDEV_RXTX_CALLBACKS`` and
-``CONFIG_RTE_ETHDEV_PROFILE_WITH_VTUNE`` enabled.
+To allow VTune attaching to the DPDK application, reconfigure a DPDK build
+folder by passing ``-Dc_args=-DRTE_ETHDEV_PROFILE_WITH_VTUNE`` meson option
+and recompile the DPDK:
+
+.. code-block:: console
+
+   meson build
+   meson configure build -Dc_args=-DRTE_ETHDEV_PROFILE_WITH_VTUNE
+   ninja -C build
 
 
 Profiling on ARM64
@@ -57,11 +63,16 @@ For more derails refer to the
 `ARM64 specific PMU events enumeration <http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.100095_0002_04_en/way1382543438508.html>`_.
 
 
-High-resolution cycle counter
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Low-resolution generic counter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The default ``cntvct_el0`` based ``rte_rdtsc()`` provides a portable means to
-get a wall clock counter in user space. Typically it runs at <= 100MHz.
+get a wall clock counter in user space. Typically it runs at a lower clock frequency than the CPU clock frequency.
+Cycles counted using this method should be scaled to CPU clock frequency.
+
+
+High-resolution cycle counter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The alternative method to enable ``rte_rdtsc()`` for a high resolution wall
 clock counter is through the ARMv8 PMU subsystem. The PMU cycle counter runs
@@ -71,8 +82,7 @@ cycle counter for user space access by configuring the PMU from the privileged
 mode (kernel space).
 
 By default the ``rte_rdtsc()`` implementation uses a portable ``cntvct_el0``
-scheme.  Application can choose the PMU based implementation with
-``CONFIG_RTE_ARM_EAL_RDTSC_USE_PMU``.
+scheme.
 
 The example below shows the steps to configure the PMU based cycle counter on
 an ARMv8 machine.
@@ -83,10 +93,8 @@ an ARMv8 machine.
     cd armv8_pmu_cycle_counter_el0
     make
     sudo insmod pmu_el0_cycle_counter.ko
-    cd $DPDK_DIR
-    make config T=arm64-armv8a-linux-gcc
-    echo "CONFIG_RTE_ARM_EAL_RDTSC_USE_PMU=y" >> build/.config
-    make
+
+Please refer to :doc:`../linux_gsg/build_dpdk` for details on compiling DPDK with meson.
 
 .. warning::
 

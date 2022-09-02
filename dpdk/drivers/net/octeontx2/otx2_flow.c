@@ -3,26 +3,18 @@
  */
 
 #include "otx2_ethdev.h"
+#include "otx2_ethdev_sec.h"
 #include "otx2_flow.h"
+
+enum flow_vtag_cfg_dir { VTAG_TX, VTAG_RX };
 
 int
 otx2_flow_free_all_resources(struct otx2_eth_dev *hw)
 {
 	struct otx2_npc_flow_info *npc = &hw->npc_flow;
 	struct otx2_mbox *mbox = hw->mbox;
-	struct otx2_mcam_ents_info *info;
-	struct rte_bitmap *bmap;
 	struct rte_flow *flow;
-	int entry_count = 0;
 	int rc, idx;
-
-	for (idx = 0; idx < npc->flow_max_priority; idx++) {
-		info = &npc->flow_entry_info[idx];
-		entry_count += info->live_ent;
-	}
-
-	if (entry_count == 0)
-		return 0;
 
 	/* Free all MCAM entries allocated */
 	rc = otx2_flow_mcam_free_all_entries(mbox);
@@ -30,18 +22,18 @@ otx2_flow_free_all_resources(struct otx2_eth_dev *hw)
 	/* Free any MCAM counters and delete flow list */
 	for (idx = 0; idx < npc->flow_max_priority; idx++) {
 		while ((flow = TAILQ_FIRST(&npc->flow_list[idx])) != NULL) {
-			if (flow->ctr_id != NPC_COUNTER_NONE)
+			if (flow->ctr_id != NPC_COUNTER_NONE) {
+				rc |= otx2_flow_mcam_clear_counter(mbox,
+							     flow->ctr_id);
 				rc |= otx2_flow_mcam_free_counter(mbox,
 							     flow->ctr_id);
+			}
+
+			otx2_delete_prio_list_entry(npc, flow);
 
 			TAILQ_REMOVE(&npc->flow_list[idx], flow, next);
 			rte_free(flow);
-			bmap = npc->live_entries[flow->priority];
-			rte_bitmap_clear(bmap, flow->mcam_id);
 		}
-		info = &npc->flow_entry_info[idx];
-		info->free_ent = 0;
-		info->live_ent = 0;
 	}
 	return rc;
 }
@@ -301,6 +293,21 @@ flow_free_rss_action(struct rte_eth_dev *eth_dev,
 	return 0;
 }
 
+static int
+flow_update_sec_tt(struct rte_eth_dev *eth_dev,
+		   const struct rte_flow_action actions[])
+{
+	int rc = 0;
+
+	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+		if (actions->type == RTE_FLOW_ACTION_TYPE_SECURITY) {
+			rc = otx2_eth_sec_update_tag_type(eth_dev);
+			break;
+		}
+	}
+
+	return rc;
+}
 
 static int
 flow_parse_meta_items(__rte_unused struct otx2_parse_state *pst)
@@ -446,6 +453,109 @@ otx2_flow_validate(struct rte_eth_dev *dev,
 			       &parse_state);
 }
 
+static int
+flow_program_vtag_action(struct rte_eth_dev *eth_dev,
+			 const struct rte_flow_action actions[],
+			 struct rte_flow *flow)
+{
+	uint16_t vlan_id = 0, vlan_ethtype = RTE_ETHER_TYPE_VLAN;
+	struct otx2_eth_dev *dev = eth_dev->data->dev_private;
+	union {
+		uint64_t reg;
+		struct nix_tx_vtag_action_s act;
+	} tx_vtag_action;
+	struct otx2_mbox *mbox = dev->mbox;
+	struct nix_vtag_config *vtag_cfg;
+	struct nix_vtag_config_rsp *rsp;
+	bool vlan_insert_action = false;
+	uint64_t rx_vtag_action = 0;
+	uint8_t vlan_pcp = 0;
+	int rc;
+
+	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+		if (actions->type == RTE_FLOW_ACTION_TYPE_OF_POP_VLAN) {
+			if (dev->npc_flow.vtag_actions == 1) {
+				vtag_cfg =
+					otx2_mbox_alloc_msg_nix_vtag_cfg(mbox);
+				vtag_cfg->cfg_type = VTAG_RX;
+				vtag_cfg->rx.strip_vtag = 1;
+				/* Always capture */
+				vtag_cfg->rx.capture_vtag = 1;
+				vtag_cfg->vtag_size = NIX_VTAGSIZE_T4;
+				vtag_cfg->rx.vtag_type = 0;
+
+				rc = otx2_mbox_process(mbox);
+				if (rc)
+					return rc;
+			}
+
+			rx_vtag_action |= (NIX_RX_VTAGACTION_VTAG_VALID << 15);
+			rx_vtag_action |= (NPC_LID_LB << 8);
+			rx_vtag_action |= NIX_RX_VTAGACTION_VTAG0_RELPTR;
+			flow->vtag_action = rx_vtag_action;
+		} else if (actions->type ==
+			   RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID) {
+			const struct rte_flow_action_of_set_vlan_vid *vtag =
+				(const struct rte_flow_action_of_set_vlan_vid *)
+					actions->conf;
+			vlan_id = rte_be_to_cpu_16(vtag->vlan_vid);
+			if (vlan_id > 0xfff) {
+				otx2_err("Invalid vlan_id for set vlan action");
+				return -EINVAL;
+			}
+			vlan_insert_action = true;
+		} else if (actions->type == RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN) {
+			const struct rte_flow_action_of_push_vlan *ethtype =
+				(const struct rte_flow_action_of_push_vlan *)
+					actions->conf;
+			vlan_ethtype = rte_be_to_cpu_16(ethtype->ethertype);
+			if (vlan_ethtype != RTE_ETHER_TYPE_VLAN &&
+			    vlan_ethtype != RTE_ETHER_TYPE_QINQ) {
+				otx2_err("Invalid ethtype specified for push"
+					 " vlan action");
+				return -EINVAL;
+			}
+			vlan_insert_action = true;
+		} else if (actions->type ==
+			   RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP) {
+			const struct rte_flow_action_of_set_vlan_pcp *pcp =
+				(const struct rte_flow_action_of_set_vlan_pcp *)
+					actions->conf;
+			vlan_pcp = pcp->vlan_pcp;
+			if (vlan_pcp > 0x7) {
+				otx2_err("Invalid PCP value for pcp action");
+				return -EINVAL;
+			}
+			vlan_insert_action = true;
+		}
+	}
+
+	if (vlan_insert_action) {
+		vtag_cfg = otx2_mbox_alloc_msg_nix_vtag_cfg(mbox);
+		vtag_cfg->cfg_type = VTAG_TX;
+		vtag_cfg->vtag_size = NIX_VTAGSIZE_T4;
+		vtag_cfg->tx.vtag0 =
+			((vlan_ethtype << 16) | (vlan_pcp << 13) | vlan_id);
+		vtag_cfg->tx.cfg_vtag0 = 1;
+		rc = otx2_mbox_process_msg(mbox, (void *)&rsp);
+		if (rc)
+			return rc;
+
+		tx_vtag_action.reg = 0;
+		tx_vtag_action.act.vtag0_def = rsp->vtag0_idx;
+		if (tx_vtag_action.act.vtag0_def < 0) {
+			otx2_err("Failed to config TX VTAG action");
+			return -EINVAL;
+		}
+		tx_vtag_action.act.vtag0_lid = NPC_LID_LA;
+		tx_vtag_action.act.vtag0_op = NIX_TX_VTAGOP_INSERT;
+		tx_vtag_action.act.vtag0_relptr =
+			NIX_TX_VTAGACTION_VTAG0_RELPTR;
+		flow->vtag_action = tx_vtag_action.reg;
+	}
+	return 0;
+}
+
 static struct rte_flow *
 otx2_flow_create(struct rte_eth_dev *dev,
 		 const struct rte_flow_attr *attr,
@@ -475,6 +585,17 @@ otx2_flow_create(struct rte_eth_dev *dev,
 	if (rc != 0)
 		goto err_exit;
 
+	rc = flow_program_vtag_action(dev, actions, flow);
+	if (rc != 0) {
+		rte_flow_error_set(error, EIO,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				   NULL,
+				   "Failed to program vlan action");
+		goto err_exit;
+	}
+
+	parse_state.is_vf = otx2_dev_is_vf(hw);
+
 	rc = flow_program_npc(&parse_state, mbox, &hw->npc_flow);
 	if (rc != 0) {
 		rte_flow_error_set(error, EIO,
@@ -493,6 +614,16 @@ otx2_flow_create(struct rte_eth_dev *dev,
 		goto err_exit;
 	}
 
+	if (hw->rx_offloads & DEV_RX_OFFLOAD_SECURITY) {
+		rc = flow_update_sec_tt(dev, actions);
+		if (rc != 0) {
+			rte_flow_error_set(error, EIO,
+					   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					   NULL,
+					   "Failed to update tt with sec act");
+			goto err_exit;
+		}
+	}
 
 	list = &hw->npc_flow.flow_list[flow->priority];
 	/* List in ascending order of mcam entries */
@@ -519,7 +650,6 @@ otx2_flow_destroy(struct rte_eth_dev *dev,
 	struct otx2_eth_dev *hw = dev->data->dev_private;
 	struct otx2_npc_flow_info *npc = &hw->npc_flow;
 	struct otx2_mbox *mbox = hw->mbox;
-	struct rte_bitmap *bmap;
 	uint16_t match_id;
 	int rc;
 
@@ -534,6 +664,17 @@ otx2_flow_destroy(struct rte_eth_dev *dev,
 		if (rte_atomic32_sub_return(&npc->mark_actions, 1) == 0) {
 			hw->rx_offload_flags &= ~NIX_RX_OFFLOAD_MARK_UPDATE_F;
 			otx2_eth_set_rx_function(dev);
+		}
+	}
+
+	if (flow->nix_intf == OTX2_INTF_RX && flow->vtag_action) {
+		npc->vtag_actions--;
+		if (npc->vtag_actions == 0) {
+			if (hw->vlan_info.strip_on == 0) {
+				hw->rx_offload_flags &=
+					~NIX_RX_OFFLOAD_VLAN_STRIP_F;
+				otx2_eth_set_rx_function(dev);
+			}
 		}
 	}
 
@@ -555,8 +696,7 @@ otx2_flow_destroy(struct rte_eth_dev *dev,
 
 	TAILQ_REMOVE(&npc->flow_list[flow->priority], flow, next);
 
-	bmap = npc->live_entries[flow->priority];
-	rte_bitmap_clear(bmap, flow->mcam_id);
+	otx2_delete_prio_list_entry(npc, flow);
 
 	rte_free(flow);
 	return 0;
@@ -824,9 +964,9 @@ static int otx2_mcam_tot_entries(struct otx2_eth_dev *dev)
 int
 otx2_flow_init(struct otx2_eth_dev *hw)
 {
-	uint8_t *mem = NULL, *nix_mem = NULL, *npc_mem = NULL;
 	struct otx2_npc_flow_info *npc = &hw->npc_flow;
-	uint32_t bmap_sz, tot_mcam_entries = 0;
+	uint32_t bmap_sz, tot_mcam_entries = 0, sz = 0;
+	uint8_t *nix_mem = NULL;
 	int rc = 0, idx;
 
 	rc = flow_fetch_kex_cfg(hw);
@@ -836,63 +976,10 @@ otx2_flow_init(struct otx2_eth_dev *hw)
 	}
 
 	rte_atomic32_init(&npc->mark_actions);
+	npc->vtag_actions = 0;
 
 	tot_mcam_entries = otx2_mcam_tot_entries(hw);
 	npc->mcam_entries = tot_mcam_entries >> npc->keyw[NPC_MCAM_RX];
-	/* Free, free_rev, live and live_rev entries */
-	bmap_sz = rte_bitmap_get_memory_footprint(npc->mcam_entries);
-	mem = rte_zmalloc(NULL, 4 * bmap_sz * npc->flow_max_priority,
-			  RTE_CACHE_LINE_SIZE);
-	if (mem == NULL) {
-		otx2_err("Bmap alloc failed");
-		rc = -ENOMEM;
-		return rc;
-	}
-
-	npc->flow_entry_info = rte_zmalloc(NULL, npc->flow_max_priority
-					   * sizeof(struct otx2_mcam_ents_info),
-					   0);
-	if (npc->flow_entry_info == NULL) {
-		otx2_err("flow_entry_info alloc failed");
-		rc = -ENOMEM;
-		goto err;
-	}
-
-	npc->free_entries = rte_zmalloc(NULL, npc->flow_max_priority
-					* sizeof(struct rte_bitmap *),
-					0);
-	if (npc->free_entries == NULL) {
-		otx2_err("free_entries alloc failed");
-		rc = -ENOMEM;
-		goto err;
-	}
-
-	npc->free_entries_rev = rte_zmalloc(NULL, npc->flow_max_priority
-					* sizeof(struct rte_bitmap *),
-					0);
-	if (npc->free_entries_rev == NULL) {
-		otx2_err("free_entries_rev alloc failed");
-		rc = -ENOMEM;
-		goto err;
-	}
-
-	npc->live_entries = rte_zmalloc(NULL, npc->flow_max_priority
-					* sizeof(struct rte_bitmap *),
-					0);
-	if (npc->live_entries == NULL) {
-		otx2_err("live_entries alloc failed");
-		rc = -ENOMEM;
-		goto err;
-	}
-
-	npc->live_entries_rev = rte_zmalloc(NULL, npc->flow_max_priority
-					* sizeof(struct rte_bitmap *),
-					0);
-	if (npc->live_entries_rev == NULL) {
-		otx2_err("live_entries_rev alloc failed");
-		rc = -ENOMEM;
-		goto err;
-	}
 
 	npc->flow_list = rte_zmalloc(NULL, npc->flow_max_priority
 					* sizeof(struct otx2_flow_list),
@@ -903,30 +990,17 @@ otx2_flow_init(struct otx2_eth_dev *hw)
 		goto err;
 	}
 
-	npc_mem = mem;
+	sz = npc->flow_max_priority * sizeof(struct otx2_prio_flow_list_head);
+	npc->prio_flow_list = rte_zmalloc(NULL, sz, 0);
+	if (npc->prio_flow_list == NULL) {
+		otx2_err("prio_flow_list alloc failed");
+		rc = -ENOMEM;
+		goto err;
+	}
+
 	for (idx = 0; idx < npc->flow_max_priority; idx++) {
 		TAILQ_INIT(&npc->flow_list[idx]);
-
-		npc->free_entries[idx] =
-			rte_bitmap_init(npc->mcam_entries, mem, bmap_sz);
-		mem += bmap_sz;
-
-		npc->free_entries_rev[idx] =
-			rte_bitmap_init(npc->mcam_entries, mem, bmap_sz);
-		mem += bmap_sz;
-
-		npc->live_entries[idx] =
-			rte_bitmap_init(npc->mcam_entries, mem, bmap_sz);
-		mem += bmap_sz;
-
-		npc->live_entries_rev[idx] =
-			rte_bitmap_init(npc->mcam_entries, mem, bmap_sz);
-		mem += bmap_sz;
-
-		npc->flow_entry_info[idx].free_ent = 0;
-		npc->flow_entry_info[idx].live_ent = 0;
-		npc->flow_entry_info[idx].max_id = 0;
-		npc->flow_entry_info[idx].min_id = ~(0);
+		TAILQ_INIT(&npc->prio_flow_list[idx]);
 	}
 
 	npc->rss_grps = NIX_RSS_GRPS;
@@ -951,18 +1025,8 @@ otx2_flow_init(struct otx2_eth_dev *hw)
 err:
 	if (npc->flow_list)
 		rte_free(npc->flow_list);
-	if (npc->live_entries_rev)
-		rte_free(npc->live_entries_rev);
-	if (npc->live_entries)
-		rte_free(npc->live_entries);
-	if (npc->free_entries_rev)
-		rte_free(npc->free_entries_rev);
-	if (npc->free_entries)
-		rte_free(npc->free_entries);
-	if (npc->flow_entry_info)
-		rte_free(npc->flow_entry_info);
-	if (npc_mem)
-		rte_free(npc_mem);
+	if (npc->prio_flow_list)
+		rte_free(npc->prio_flow_list);
 	return rc;
 }
 
@@ -980,16 +1044,11 @@ otx2_flow_fini(struct otx2_eth_dev *hw)
 
 	if (npc->flow_list)
 		rte_free(npc->flow_list);
-	if (npc->live_entries_rev)
-		rte_free(npc->live_entries_rev);
-	if (npc->live_entries)
-		rte_free(npc->live_entries);
-	if (npc->free_entries_rev)
-		rte_free(npc->free_entries_rev);
-	if (npc->free_entries)
-		rte_free(npc->free_entries);
-	if (npc->flow_entry_info)
-		rte_free(npc->flow_entry_info);
+
+	if (npc->prio_flow_list) {
+		rte_free(npc->prio_flow_list);
+		npc->prio_flow_list = NULL;
+	}
 
 	return 0;
 }

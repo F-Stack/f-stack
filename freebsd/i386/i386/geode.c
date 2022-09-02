@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003-2004 Poul-Henning Kamp
  * All rights reserved.
  *
@@ -31,6 +33,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/timetc.h>
 #include <sys/bus.h>
+#include <sys/eventhandler.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
 #include <sys/watchdog.h>
@@ -136,7 +139,6 @@ cs5536_led_func(void *ptr, int onoff)
 	else
 		outl(a, 1 << (bit + 16));
 }
-
 
 static unsigned
 geode_get_timecount(struct timecounter *tc)
@@ -371,7 +373,7 @@ static device_method_t geode_methods[] = {
 	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
 	{0, 0}
 };
- 
+
 static driver_t geode_driver = {
 	"geode",
 	geode_methods,

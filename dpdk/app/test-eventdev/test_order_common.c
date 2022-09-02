@@ -46,12 +46,10 @@ order_producer(void *arg)
 		if (m == NULL)
 			continue;
 
-		const uint32_t flow = (uintptr_t)m % nb_flows;
+		const flow_id_t flow = (uintptr_t)m % nb_flows;
 		/* Maintain seq number per flow */
-		m->seqn = producer_flow_seq[flow]++;
-
-		ev.flow_id = flow;
-		ev.mbuf = m;
+		*order_mbuf_seqn(t, m) = producer_flow_seq[flow]++;
+		order_flow_id_save(t, flow, m, &ev);
 
 		while (rte_event_enqueue_burst(dev_id, port, &ev, 1) != 1) {
 			if (t->err)
@@ -68,19 +66,21 @@ int
 order_opt_check(struct evt_options *opt)
 {
 	if (opt->prod_type != EVT_PROD_TYPE_SYNT) {
-		evt_err("Invalid producer type");
-		return -EINVAL;
+		evt_err("Invalid producer type '%s' valid producer '%s'",
+			evt_prod_id_to_name(opt->prod_type),
+			evt_prod_id_to_name(EVT_PROD_TYPE_SYNT));
+		return -1;
 	}
 
-	/* 1 producer + N workers + 1 master */
+	/* 1 producer + N workers + main */
 	if (rte_lcore_count() < 3) {
 		evt_err("test need minimum 3 lcores");
 		return -1;
 	}
 
 	/* Validate worker lcores */
-	if (evt_lcores_has_overlap(opt->wlcores, rte_get_master_lcore())) {
-		evt_err("worker lcores overlaps with master lcore");
+	if (evt_lcores_has_overlap(opt->wlcores, rte_get_main_lcore())) {
+		evt_err("worker lcores overlaps with main lcore");
 		return -1;
 	}
 
@@ -115,8 +115,8 @@ order_opt_check(struct evt_options *opt)
 	}
 
 	/* Validate producer lcore */
-	if (plcore == (int)rte_get_master_lcore()) {
-		evt_err("producer lcore and master lcore should be different");
+	if (plcore == (int)rte_get_main_lcore()) {
+		evt_err("producer lcore and main lcore should be different");
 		return -1;
 	}
 	if (!rte_lcore_is_enabled(plcore)) {
@@ -135,6 +135,17 @@ int
 order_test_setup(struct evt_test *test, struct evt_options *opt)
 {
 	void *test_order;
+	struct test_order *t;
+	static const struct rte_mbuf_dynfield flow_id_dynfield_desc = {
+		.name = "test_event_dynfield_flow_id",
+		.size = sizeof(flow_id_t),
+		.align = __alignof__(flow_id_t),
+	};
+	static const struct rte_mbuf_dynfield seqn_dynfield_desc = {
+		.name = "test_event_dynfield_seqn",
+		.size = sizeof(seqn_t),
+		.align = __alignof__(seqn_t),
+	};
 
 	test_order = rte_zmalloc_socket(test->name, sizeof(struct test_order),
 				RTE_CACHE_LINE_SIZE, opt->socket_id);
@@ -143,8 +154,21 @@ order_test_setup(struct evt_test *test, struct evt_options *opt)
 		goto nomem;
 	}
 	test->test_priv = test_order;
+	t = evt_test_priv(test);
 
-	struct test_order *t = evt_test_priv(test);
+	t->flow_id_dynfield_offset =
+		rte_mbuf_dynfield_register(&flow_id_dynfield_desc);
+	if (t->flow_id_dynfield_offset < 0) {
+		evt_err("failed to register mbuf field");
+		return -rte_errno;
+	}
+
+	t->seqn_dynfield_offset =
+		rte_mbuf_dynfield_register(&seqn_dynfield_desc);
+	if (t->seqn_dynfield_offset < 0) {
+		evt_err("failed to register mbuf field");
+		return -rte_errno;
+	}
 
 	t->producer_flow_seq = rte_zmalloc_socket("test_producer_flow_seq",
 				 sizeof(*t->producer_flow_seq) * opt->nb_flows,
@@ -229,7 +253,7 @@ void
 order_opt_dump(struct evt_options *opt)
 {
 	evt_dump_producer_lcores(opt);
-	evt_dump("nb_wrker_lcores", "%d", evt_nr_active_lcores(opt->wlcores));
+	evt_dump("nb_worker_lcores", "%d", evt_nr_active_lcores(opt->wlcores));
 	evt_dump_worker_lcores(opt);
 	evt_dump("nb_evdev_ports", "%d", order_nb_event_ports(opt));
 }
@@ -243,7 +267,7 @@ order_launch_lcores(struct evt_test *test, struct evt_options *opt,
 
 	int wkr_idx = 0;
 	/* launch workers */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (!(opt->wlcores[lcore_id]))
 			continue;
 

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1988, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -37,15 +39,11 @@
 #ifdef	_KERNEL
 #include <sys/lock.h>
 #include <sys/mutex.h>
-#include <sys/rwlock.h>
+#include <sys/rmlock.h>
 #include <sys/systm.h>
 #include <sys/malloc.h>
 #include <sys/syslog.h>
 #include <net/radix.h>
-#include "opt_mpath.h"
-#ifdef RADIX_MPATH
-#include <net/radix_mpath.h>
-#endif
 #else /* !_KERNEL */
 #include <stdio.h>
 #include <strings.h>
@@ -75,7 +73,6 @@ static char rn_ones[RADIX_MAX_KEY_LEN] = {
 	-1, -1, -1, -1, -1, -1, -1, -1,
 	-1, -1, -1, -1, -1, -1, -1, -1,
 };
-
 
 static int	rn_lexobetter(void *m_arg, void *n_arg);
 static struct radix_mask *
@@ -486,7 +483,7 @@ on1:
 	return (tt);
 }
 
-struct radix_node *
+static struct radix_node *
 rn_addmask(void *n_arg, struct radix_mask_head *maskhead, int search, int skip)
 {
 	unsigned char *netmask = n_arg;
@@ -627,21 +624,6 @@ rn_addroute(void *v_arg, void *n_arg, struct radix_head *head,
 	saved_tt = tt = rn_insert(v, head, &keyduplicated, treenodes);
 	if (keyduplicated) {
 		for (t = tt; tt; t = tt, tt = tt->rn_dupedkey) {
-#ifdef RADIX_MPATH
-			/* permit multipath, if enabled for the family */
-			if (rn_mpath_capable(head) && netmask == tt->rn_mask) {
-				/*
-				 * go down to the end of multipaths, so that
-				 * new entry goes into the end of rn_dupedkey
-				 * chain.
-				 */
-				do {
-					t = tt;
-					tt = tt->rn_dupedkey;
-				} while (tt && t->rn_mask == tt->rn_mask);
-				break;
-			}
-#endif
 			if (tt->rn_mask == netmask)
 				return (0);
 			if (netmask == 0 ||
@@ -747,10 +729,8 @@ on2:
 		if (m->rm_flags & RNF_NORMAL) {
 			mmask = m->rm_leaf->rn_mask;
 			if (tt->rn_flags & RNF_NORMAL) {
-#if !defined(RADIX_MPATH)
 			    log(LOG_ERR,
 			        "Non-unique normal route, mask not entered\n");
-#endif
 				return (tt);
 			}
 		} else
@@ -1057,7 +1037,6 @@ rn_walktree_from(struct radix_head *h, void *a, void *m,
 			/* printf("root, stopping"); */
 			stopping = 1;
 		}
-
 	}
 	return (0);
 }
@@ -1132,7 +1111,7 @@ rn_detachhead_internal(struct radix_head *head)
 
 	KASSERT((head != NULL),
 	    ("%s: head already freed", __func__));
-	
+
 	/* Free <left,root,right> nodes. */
 	R_Free(head);
 }
@@ -1208,4 +1187,3 @@ rn_detachhead(void **head)
 
 	return (1);
 }
-

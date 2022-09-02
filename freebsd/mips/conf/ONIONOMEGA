@@ -14,7 +14,7 @@
 #NO_UNIVERSE
 
 # Include the default AR933x parameters
-include         "AR933X_BASE"
+include         "std.AR933X"
 
 ident           ONIONOMEGA
 
@@ -45,7 +45,7 @@ device		arswitch
 options 	AR71XX_ENV_UBOOT
 
 # uzip - to boot natively from flash
-device		geom_uzip
+device		xz
 options 	GEOM_UZIP
 
 # Used for the static uboot partition map

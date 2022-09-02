@@ -5,7 +5,7 @@
 #
 
 # Include the default AR934x parameters
-include         "AR934X_BASE"
+include         "std.AR934X"
 
 #NO_UNIVERSE
 
@@ -38,14 +38,13 @@ device		arswitch
 options 	AR71XX_ENV_UBOOT
 
 # uzip - to boot natively from flash
-device		geom_uzip
+device		xz
 options 	GEOM_UZIP
 
 # Used for the static uboot partition map
 device          geom_map
 
 # yes, this board has a PCI connected atheros device
-device		ath_pci
 options 	AR71XX_ATH_EEPROM
 device		firmware		# Used by the above
 options 	ATH_EEPROM_FIRMWARE

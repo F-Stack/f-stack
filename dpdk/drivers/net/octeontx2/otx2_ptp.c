@@ -239,6 +239,14 @@ otx2_nix_timesync_enable(struct rte_eth_dev *eth_dev)
 	dev->tstamp.tx_tstamp_iova = ts->iova;
 	dev->tstamp.tx_tstamp = ts->addr;
 
+	rc = rte_mbuf_dyn_rx_timestamp_register(
+			&dev->tstamp.tstamp_dynfield_offset,
+			&dev->tstamp.rx_tstamp_dynflag);
+	if (rc != 0) {
+		otx2_err("Failed to register Rx timestamp field/flag");
+		return -rte_errno;
+	}
+
 	/* System time should be already on by default */
 	nix_start_timecounters(eth_dev);
 
@@ -432,7 +440,7 @@ otx2_nix_read_clock(struct rte_eth_dev *eth_dev, uint64_t *clock)
 	/* This API returns the raw PTP HI clock value. Since LFs doesn't
 	 * have direct access to PTP registers and it requires mbox msg
 	 * to AF for this value. In fastpath reading this value for every
-	 * packet (which involes mbox call) becomes very expensive, hence
+	 * packet (which involves mbox call) becomes very expensive, hence
 	 * we should be able to derive PTP HI clock value from tsc by
 	 * using freq_mult and clk_delta calculated during configure stage.
 	 */

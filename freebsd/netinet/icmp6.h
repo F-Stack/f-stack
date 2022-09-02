@@ -2,6 +2,8 @@
 /*	$KAME: icmp6.h,v 1.46 2001/04/27 15:09:48 itojun Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -42,7 +44,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -242,6 +244,10 @@ struct nd_router_advert {	/* router advertisement */
 #define ND_RA_FLAG_RTPREF_LOW	0x18 /* 00011000 */
 #define ND_RA_FLAG_RTPREF_RSV	0x10 /* 00010000 */
 
+#ifdef EXPERIMENTAL
+#define	ND_RA_FLAG_IPV6_ONLY	0x02 /* draft-ietf-6man-ipv6only-flag */
+#endif
+
 #define nd_ra_router_lifetime	nd_ra_hdr.icmp6_data16[1]
 
 struct nd_neighbor_solicit {	/* neighbor solicitation */
@@ -338,7 +344,7 @@ struct nd_opt_mtu {		/* MTU option */
 #define	ND_OPT_NONCE_LEN	((1 * 8) - 2)
 #if ((ND_OPT_NONCE_LEN + 2) % 8) != 0
 #error "(ND_OPT_NONCE_LEN + 2) must be a multiple of 8."
-#endif 
+#endif
 struct nd_opt_nonce {		/* nonce option */
 	u_int8_t	nd_opt_nonce_type;
 	u_int8_t	nd_opt_nonce_len;
@@ -601,7 +607,7 @@ struct icmp6stat {
 	 * for netinet6 code, it is already available in icp6s_outhist[].
 	 */
 	uint64_t icp6s_reflect;
-	uint64_t icp6s_inhist[256];	
+	uint64_t icp6s_inhist[256];
 	uint64_t icp6s_nd_toomanyopt;	/* too many ND options */
 	struct icmp6errstat icp6s_outerrhist;
 #define icp6s_odst_unreach_noroute \
@@ -626,9 +632,15 @@ struct icmp6stat {
 	uint64_t icp6s_nd_badopt;	/* bad ND options */
 	uint64_t icp6s_badns;		/* bad neighbor solicitation */
 	uint64_t icp6s_badna;		/* bad neighbor advertisement */
-	uint64_t icp6s_badrs;		/* bad router advertisement */
+	uint64_t icp6s_badrs;		/* bad router solicitation */
 	uint64_t icp6s_badra;		/* bad router advertisement */
 	uint64_t icp6s_badredirect;	/* bad redirect message */
+	uint64_t icp6s_overflowdefrtr;	/* Too many default routers. */
+	uint64_t icp6s_overflowprfx;	/* Too many prefixes. */
+	uint64_t icp6s_overflownndp;	/* Too many neighbour entries. */
+	uint64_t icp6s_overflowredirect;/* Too many redirects. */
+	uint64_t icp6s_invlhlim;	/* Invalid hop limit. */
+	uint64_t icp6s_spare[32];
 };
 
 #ifdef _KERNEL
@@ -681,11 +693,9 @@ void	kmod_icmp6stat_inc(int statnum);
 #define ICMPV6CTL_NODEINFO_OLDMCPREFIX	25
 #define ICMPV6CTL_MAXID		26
 
-#define RTF_PROBEMTU	RTF_PROTO1
-
 #ifdef _KERNEL
 # ifdef __STDC__
-struct	rtentry;
+struct	nhop_object;
 struct	rttimer;
 struct	in6_multi;
 # endif
@@ -695,10 +705,9 @@ void	icmp6_error2(struct mbuf *, int, int, int, struct ifnet *);
 int	icmp6_input(struct mbuf **, int *, int);
 void	icmp6_fasttimo(void);
 void	icmp6_slowtimo(void);
-void	icmp6_reflect(struct mbuf *, size_t);
 void	icmp6_prepare(struct mbuf *);
 void	icmp6_redirect_input(struct mbuf *, int);
-void	icmp6_redirect_output(struct mbuf *, struct rtentry *);
+void	icmp6_redirect_output(struct mbuf *, struct nhop_object *);
 
 struct	ip6ctlparam;
 void	icmp6_mtudisc_update(struct ip6ctlparam *, int);

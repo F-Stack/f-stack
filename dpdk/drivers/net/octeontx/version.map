@@ -1,0 +1,7 @@
+DPDK_21 {
+	global:
+
+	rte_octeontx_pchan_map;
+
+	local: *;
+};

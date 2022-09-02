@@ -27,15 +27,15 @@
 #include <rte_spinlock.h>
 #include <rte_malloc.h>
 
-#ifdef RTE_LIBRTE_HASH
+#ifdef RTE_LIB_HASH
 #include <rte_hash.h>
 #include <rte_fbk_hash.h>
 #include <rte_jhash.h>
-#endif /* RTE_LIBRTE_HASH */
+#endif /* RTE_LIB_HASH */
 
-#ifdef RTE_LIBRTE_LPM
+#ifdef RTE_LIB_LPM
 #include <rte_lpm.h>
-#endif /* RTE_LIBRTE_LPM */
+#endif /* RTE_LIB_LPM */
 
 #include <rte_string_fns.h>
 
@@ -57,8 +57,8 @@ typedef void (*case_clean_t)(unsigned lcore_id);
 static rte_atomic32_t obj_count = RTE_ATOMIC32_INIT(0);
 static rte_atomic32_t synchro = RTE_ATOMIC32_INIT(0);
 
-#define WAIT_SYNCHRO_FOR_SLAVES()   do{ \
-	if (lcore_self != rte_get_master_lcore())                  \
+#define WAIT_SYNCHRO_FOR_WORKERS()   do { \
+	if (lcore_self != rte_get_main_lcore())                  \
 		while (rte_atomic32_read(&synchro) == 0);        \
 } while(0)
 
@@ -66,11 +66,11 @@ static rte_atomic32_t synchro = RTE_ATOMIC32_INIT(0);
  * rte_eal_init only init once
  */
 static int
-test_eal_init_once(__attribute__((unused)) void *arg)
+test_eal_init_once(__rte_unused void *arg)
 {
 	unsigned lcore_self =  rte_lcore_id();
 
-	WAIT_SYNCHRO_FOR_SLAVES();
+	WAIT_SYNCHRO_FOR_WORKERS();
 
 	rte_atomic32_set(&obj_count, 1); /* silent the check in the caller */
 	if (rte_eal_init(0, NULL) != -1)
@@ -103,14 +103,14 @@ ring_clean(unsigned int lcore_id)
 }
 
 static int
-ring_create_lookup(__attribute__((unused)) void *arg)
+ring_create_lookup(__rte_unused void *arg)
 {
 	unsigned lcore_self = rte_lcore_id();
 	struct rte_ring * rp;
 	char ring_name[MAX_STRING_SIZE];
 	int i;
 
-	WAIT_SYNCHRO_FOR_SLAVES();
+	WAIT_SYNCHRO_FOR_WORKERS();
 
 	/* create the same ring simultaneously on all threads */
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
@@ -137,7 +137,7 @@ ring_create_lookup(__attribute__((unused)) void *arg)
 }
 
 static void
-my_obj_init(struct rte_mempool *mp, __attribute__((unused)) void *arg,
+my_obj_init(struct rte_mempool *mp, __rte_unused void *arg,
 	    void *obj, unsigned i)
 {
 	uint32_t *objnum = obj;
@@ -166,14 +166,14 @@ mempool_clean(unsigned int lcore_id)
 }
 
 static int
-mempool_create_lookup(__attribute__((unused)) void *arg)
+mempool_create_lookup(__rte_unused void *arg)
 {
 	unsigned lcore_self = rte_lcore_id();
 	struct rte_mempool * mp;
 	char mempool_name[MAX_STRING_SIZE];
 	int i;
 
-	WAIT_SYNCHRO_FOR_SLAVES();
+	WAIT_SYNCHRO_FOR_WORKERS();
 
 	/* create the same mempool simultaneously on all threads */
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
@@ -207,7 +207,7 @@ mempool_create_lookup(__attribute__((unused)) void *arg)
 	return 0;
 }
 
-#ifdef RTE_LIBRTE_HASH
+#ifdef RTE_LIB_HASH
 static void
 hash_clean(unsigned lcore_id)
 {
@@ -228,7 +228,7 @@ hash_clean(unsigned lcore_id)
 }
 
 static int
-hash_create_free(__attribute__((unused)) void *arg)
+hash_create_free(__rte_unused void *arg)
 {
 	unsigned lcore_self = rte_lcore_id();
 	struct rte_hash *handle;
@@ -243,7 +243,7 @@ hash_create_free(__attribute__((unused)) void *arg)
 		.socket_id = 0,
 	};
 
-	WAIT_SYNCHRO_FOR_SLAVES();
+	WAIT_SYNCHRO_FOR_WORKERS();
 
 	/* create the same hash simultaneously on all threads */
 	hash_params.name = "fr_test_once";
@@ -296,7 +296,7 @@ fbk_clean(unsigned lcore_id)
 }
 
 static int
-fbk_create_free(__attribute__((unused)) void *arg)
+fbk_create_free(__rte_unused void *arg)
 {
 	unsigned lcore_self = rte_lcore_id();
 	struct rte_fbk_hash_table *handle;
@@ -311,7 +311,7 @@ fbk_create_free(__attribute__((unused)) void *arg)
 		.init_val = RTE_FBK_HASH_INIT_VAL_DEFAULT,
 	};
 
-	WAIT_SYNCHRO_FOR_SLAVES();
+	WAIT_SYNCHRO_FOR_WORKERS();
 
 	/* create the same fbk hash table simultaneously on all threads */
 	fbk_params.name = "fr_test_once";
@@ -343,9 +343,9 @@ fbk_create_free(__attribute__((unused)) void *arg)
 
 	return 0;
 }
-#endif /* RTE_LIBRTE_HASH */
+#endif /* RTE_LIB_HASH */
 
-#ifdef RTE_LIBRTE_LPM
+#ifdef RTE_LIB_LPM
 static void
 lpm_clean(unsigned int lcore_id)
 {
@@ -366,7 +366,7 @@ lpm_clean(unsigned int lcore_id)
 }
 
 static int
-lpm_create_free(__attribute__((unused)) void *arg)
+lpm_create_free(__rte_unused void *arg)
 {
 	unsigned lcore_self = rte_lcore_id();
 	struct rte_lpm *lpm;
@@ -378,7 +378,7 @@ lpm_create_free(__attribute__((unused)) void *arg)
 	char lpm_name[MAX_STRING_SIZE];
 	int i;
 
-	WAIT_SYNCHRO_FOR_SLAVES();
+	WAIT_SYNCHRO_FOR_WORKERS();
 
 	/* create the same lpm simultaneously on all threads */
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
@@ -407,7 +407,7 @@ lpm_create_free(__attribute__((unused)) void *arg)
 
 	return 0;
 }
-#endif /* RTE_LIBRTE_LPM */
+#endif /* RTE_LIB_LPM */
 
 struct test_case{
 	case_func_t    func;
@@ -422,13 +422,13 @@ struct test_case test_cases[] = {
 	{ ring_create_lookup,     NULL,  ring_clean,   "ring create/lookup" },
 	{ mempool_create_lookup,  NULL,  mempool_clean,
 			"mempool create/lookup" },
-#ifdef RTE_LIBRTE_HASH
+#ifdef RTE_LIB_HASH
 	{ hash_create_free,       NULL,  hash_clean,   "hash create/free" },
 	{ fbk_create_free,        NULL,  fbk_clean,    "fbk create/free" },
-#endif /* RTE_LIBRTE_HASH */
-#ifdef RTE_LIBRTE_LPM
+#endif /* RTE_LIB_HASH */
+#ifdef RTE_LIB_LPM
 	{ lpm_create_free,        NULL,  lpm_clean,    "lpm create/free" },
-#endif /* RTE_LIBRTE_LPM */
+#endif /* RTE_LIB_LPM */
 };
 
 /**
@@ -437,10 +437,10 @@ struct test_case test_cases[] = {
 static int
 launch_test(struct test_case *pt_case)
 {
+	unsigned int lcore_id;
+	unsigned int cores;
+	unsigned int count;
 	int ret = 0;
-	unsigned lcore_id;
-	unsigned cores = RTE_MIN(rte_lcore_count(), MAX_LCORES);
-	unsigned count;
 
 	if (pt_case->func == NULL)
 		return -1;
@@ -448,7 +448,8 @@ launch_test(struct test_case *pt_case)
 	rte_atomic32_set(&obj_count, 0);
 	rte_atomic32_set(&synchro, 0);
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	cores = RTE_MIN(rte_lcore_count(), MAX_LCORES);
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (cores == 1)
 			break;
 		cores--;
@@ -460,12 +461,12 @@ launch_test(struct test_case *pt_case)
 	if (pt_case->func(pt_case->arg) < 0)
 		ret = -1;
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			ret = -1;
 	}
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH(lcore_id) {
 		if (pt_case->clean != NULL)
 			pt_case->clean(lcore_id);
 	}
@@ -496,7 +497,7 @@ test_func_reentrancy(void)
 	else if (rte_lcore_count() > MAX_LCORES)
 		printf("Too many lcores, some cores will be disabled\n");
 
-	for (case_id = 0; case_id < sizeof(test_cases)/sizeof(struct test_case); case_id ++) {
+	for (case_id = 0; case_id < RTE_DIM(test_cases); case_id++) {
 		pt_case = &test_cases[case_id];
 		if (pt_case->func == NULL)
 			continue;

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Ruslan Ermilov
  * All rights reserved.
  *
@@ -78,7 +80,6 @@ static struct ng_type ng_hub_typestruct = {
 	.cmdlist =	ng_hub_cmdlist,
 };
 NETGRAPH_INIT(hub, &ng_hub_typestruct);
-
 
 static int
 ng_hub_constructor(node_p node)

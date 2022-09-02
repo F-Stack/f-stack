@@ -14,12 +14,24 @@ $ git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
 # compile dpdk
 $ cd /data/f-stack/dpdk
-$ make config T=x86_64-native-linuxapp-gcc
+$ meson -Denable_kmods=true build
+$ ninja -C build
+$ ninja -C build install
+
+# Upgrade pkg-config while version < 0.28
+$ cd /data
+$ wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+$ tar xzvf pkg-config-0.29.2.tar.gz
+$ cd pkg-config-0.29.2
+$ ./configure --with-internal-glib
 $ make
+$ make install
+$ mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+$ ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
 
 # Compile f-stack lib
 $ export FF_PATH=/data/f-stack
-$ export FF_DPDK=/data/f-stack/dpdk/build
+$ export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
 $ cd /data/f-stack/lib
 $ make
 
@@ -30,7 +42,9 @@ $ make
 $ make install
 
 # Compile Redis
-$ cd ../redis-5.0.5
+$ cd app/redis-6.2.6/deps/jemalloc
+$ ./autogen.sh
+$ cd ../redis-6.2.6
 $ make
 
 # Compile f-stack tools
@@ -44,7 +58,7 @@ $ make
 
 ## Compile tools in Ubuntu
 
-- remove '\\' in statement printf at f-stack/tools/netstat/Makefile line 70, now it should be: 
+- remove '\\' in statement printf at f-stack/tools/netstat/Makefile line 70, now it should be:
 
 ```
 -   printf("\#define\tN%s\t%s\n", toupper($$2), i++);
@@ -53,7 +67,7 @@ $ make
 
 ## Compile dpdk in virtual machine
 
-- f-stack/dpdk/lib/librte_eal/linuxapp/igb_uio/igb_uio.c line 279:
+- f-stack/dpdk/kernel/linux/igb_uio/igb_uio.c line 274:
 ```
 
 -   if (pci_intx_mask_supported(udev->pdev)) {

@@ -14,12 +14,14 @@ apps = [
 	'test-compress-perf',
 	'test-crypto-perf',
 	'test-eventdev',
+	'test-fib',
+	'test-flow-perf',
 	'test-pipeline',
 	'test-pmd',
+	'test-regex',
 	'test-sad']
 
-
-default_cflags = machine_args
+default_cflags = machine_args + ['-DALLOW_EXPERIMENTAL_API']
 default_ldflags = []
 if get_option('default_library') == 'static' and not is_windows
 	default_ldflags += ['-Wl,--export-dynamic']
@@ -28,7 +30,6 @@ endif
 foreach app:apps
 	build = true
 	name = app
-	allow_experimental_apis = false
 	sources = []
 	includes = []
 	cflags = default_cflags
@@ -39,7 +40,7 @@ foreach app:apps
 	# use "deps" for internal DPDK dependencies, and "ext_deps" for
 	# external package/library requirements
 	ext_deps = []
-	deps = dpdk_app_link_libraries
+	deps = []
 
 	subdir(name)
 
@@ -53,10 +54,6 @@ foreach app:apps
 		link_libs = []
 		if get_option('default_library') == 'static'
 			link_libs = dpdk_static_libraries + dpdk_drivers
-		endif
-
-		if allow_experimental_apis
-			cflags += '-DALLOW_EXPERIMENTAL_API'
 		endif
 
 		executable('dpdk-' + name,

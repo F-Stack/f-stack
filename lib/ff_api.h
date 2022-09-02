@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -41,7 +41,7 @@ extern "C" {
 
 struct linux_sockaddr {
     short sa_family;
-    char sa_data[126];
+    char sa_data[14];
 };
 
 #define AF_INET6_LINUX    10
@@ -106,10 +106,10 @@ int ff_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 int ff_poll(struct pollfd fds[], nfds_t nfds, int timeout);
 
 int ff_kqueue(void);
-int ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
+int ff_kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents, const struct timespec *timeout);
-int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges, 
-    void *eventlist, int nevents, const struct timespec *timeout, 
+int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
+    void *eventlist, int nevents, const struct timespec *timeout,
     void (*do_each)(void **, struct kevent *));
 
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);

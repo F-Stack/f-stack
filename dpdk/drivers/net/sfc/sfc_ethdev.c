@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -46,14 +46,6 @@ sfc_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 	int ret;
 	int rc;
 
-	/*
-	 * Return value of the callback is likely supposed to be
-	 * equal to or greater than 0, nevertheless, if an error
-	 * occurs, it will be desirable to pass it to the caller
-	 */
-	if ((fw_version == NULL) || (fw_size == 0))
-		return -EINVAL;
-
 	rc = efx_nic_get_fw_version(sa->nic, &enfi);
 	if (rc != 0)
 		return -rc;
@@ -93,6 +85,7 @@ sfc_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	struct sfc_adapter_shared *sas = sfc_adapter_shared_by_eth_dev(dev);
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
 	struct sfc_rss *rss = &sas->rss;
+	struct sfc_mae *mae = &sa->mae;
 
 	sfc_log_init(sa, "entry");
 
@@ -100,6 +93,8 @@ sfc_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_mtu = EFX_MAC_SDU_MAX;
 
 	dev_info->max_rx_pktlen = EFX_MAC_PDU_MAX;
+
+	dev_info->max_vfs = sa->sriov.num_vfs;
 
 	/* Autonegotiation may be disabled */
 	dev_info->speed_capa = ETH_LINK_SPEED_FIXED;
@@ -178,6 +173,12 @@ sfc_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	dev_info->dev_capa = RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 			     RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;
+
+	if (mae->status == SFC_MAE_STATUS_SUPPORTED) {
+		dev_info->switch_info.name = dev->device->driver->name;
+		dev_info->switch_info.domain_id = mae->switch_domain_id;
+		dev_info->switch_info.port_id = mae->switch_port_id;
+	}
 
 	return 0;
 }
@@ -268,7 +269,7 @@ sfc_dev_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 	return ret;
 }
 
-static void
+static int
 sfc_dev_stop(struct rte_eth_dev *dev)
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
@@ -280,6 +281,8 @@ sfc_dev_stop(struct rte_eth_dev *dev)
 	sfc_adapter_unlock(sa);
 
 	sfc_log_init(sa, "done");
+
+	return 0;
 }
 
 static int
@@ -316,14 +319,10 @@ static void
 sfc_eth_dev_secondary_clear_ops(struct rte_eth_dev *dev)
 {
 	free(dev->process_private);
-	dev->process_private = NULL;
-	dev->dev_ops = NULL;
-	dev->tx_pkt_prepare = NULL;
-	dev->tx_pkt_burst = NULL;
-	dev->rx_pkt_burst = NULL;
+	rte_eth_dev_release_port(dev);
 }
 
-static void
+static int
 sfc_dev_close(struct rte_eth_dev *dev)
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
@@ -332,7 +331,7 @@ sfc_dev_close(struct rte_eth_dev *dev)
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
 		sfc_eth_dev_secondary_clear_ops(dev);
-		return;
+		return 0;
 	}
 
 	sfc_adapter_lock(sa);
@@ -353,7 +352,7 @@ sfc_dev_close(struct rte_eth_dev *dev)
 	}
 
 	/*
-	 * Cleanup all resources in accordance with RTE_ETH_DEV_CLOSE_REMOVE.
+	 * Cleanup all resources.
 	 * Rollback primary process sfc_eth_dev_init() below.
 	 */
 
@@ -372,8 +371,9 @@ sfc_dev_close(struct rte_eth_dev *dev)
 	/* Required for logging, so cleanup last */
 	sa->eth_dev = NULL;
 
-	dev->process_private = NULL;
 	free(sa);
+
+	return 0;
 }
 
 static int
@@ -403,8 +403,16 @@ sfc_dev_filter_set(struct rte_eth_dev *dev, enum sfc_dev_filter_mode mode,
 		} else if ((sa->state == SFC_ADAPTER_STARTED) &&
 			   ((rc = sfc_set_rx_mode(sa)) != 0)) {
 			*toggle = !(enabled);
-			sfc_warn(sa, "Failed to %s %s mode",
-				 ((enabled) ? "enable" : "disable"), desc);
+			sfc_warn(sa, "Failed to %s %s mode, rc = %d",
+				 ((enabled) ? "enable" : "disable"), desc, rc);
+
+			/*
+			 * For promiscuous and all-multicast filters a
+			 * permission failure should be reported as an
+			 * unsupported filter.
+			 */
+			if (rc == EPERM)
+				rc = ENOTSUP;
 		}
 	}
 
@@ -959,7 +967,8 @@ sfc_check_scatter_on_all_rx_queues(struct sfc_adapter *sa, size_t pdu)
 
 		if (!sfc_rx_check_scatter(pdu, sa->rxq_ctrl[i].buf_size,
 					  encp->enc_rx_prefix_size,
-					  scatter_enabled, &error)) {
+					  scatter_enabled,
+					  encp->enc_rx_scatter_max, &error)) {
 			sfc_err(sa, "MTU check for RxQ %u failed: %s", i,
 				error);
 			return EINVAL;
@@ -1055,6 +1064,9 @@ sfc_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 
 	sfc_adapter_lock(sa);
 
+	if (rte_is_same_ether_addr(mac_addr, &port->default_mac_addr))
+		goto unlock;
+
 	/*
 	 * Copy the address to the device private data so that
 	 * it could be recalled in the case of adapter restart.
@@ -1093,12 +1105,12 @@ sfc_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 		 * has no effect on received traffic, therefore
 		 * we also need to update unicast filters
 		 */
-		rc = sfc_set_rx_mode(sa);
+		rc = sfc_set_rx_mode_unchecked(sa);
 		if (rc != 0) {
 			sfc_err(sa, "cannot set filter (rc = %u)", rc);
 			/* Rollback the old address */
 			(void)efx_mac_addr_set(sa->nic, old_addr->addr_bytes);
-			(void)sfc_set_rx_mode(sa);
+			(void)sfc_set_rx_mode_unchecked(sa);
 		}
 	} else {
 		sfc_warn(sa, "cannot set MAC address with filters installed");
@@ -1749,33 +1761,6 @@ sfc_dev_filter_ctrl(struct rte_eth_dev *dev, enum rte_filter_type filter_type,
 	sfc_log_init(sa, "entry");
 
 	switch (filter_type) {
-	case RTE_ETH_FILTER_NONE:
-		sfc_err(sa, "Global filters configuration not supported");
-		break;
-	case RTE_ETH_FILTER_MACVLAN:
-		sfc_err(sa, "MACVLAN filters not supported");
-		break;
-	case RTE_ETH_FILTER_ETHERTYPE:
-		sfc_err(sa, "EtherType filters not supported");
-		break;
-	case RTE_ETH_FILTER_FLEXIBLE:
-		sfc_err(sa, "Flexible filters not supported");
-		break;
-	case RTE_ETH_FILTER_SYN:
-		sfc_err(sa, "SYN filters not supported");
-		break;
-	case RTE_ETH_FILTER_NTUPLE:
-		sfc_err(sa, "NTUPLE filters not supported");
-		break;
-	case RTE_ETH_FILTER_TUNNEL:
-		sfc_err(sa, "Tunnel filters not supported");
-		break;
-	case RTE_ETH_FILTER_FDIR:
-		sfc_err(sa, "Flow Director filters not supported");
-		break;
-	case RTE_ETH_FILTER_HASH:
-		sfc_err(sa, "Hash filters not supported");
-		break;
 	case RTE_ETH_FILTER_GENERIC:
 		if (filter_op != RTE_ETH_FILTER_GET) {
 			rc = EINVAL;
@@ -1861,10 +1846,6 @@ static const struct eth_dev_ops sfc_eth_dev_ops = {
 	.tx_queue_stop			= sfc_tx_queue_stop,
 	.rx_queue_setup			= sfc_rx_queue_setup,
 	.rx_queue_release		= sfc_rx_queue_release,
-	.rx_queue_count			= sfc_rx_queue_count,
-	.rx_descriptor_done		= sfc_rx_descriptor_done,
-	.rx_descriptor_status		= sfc_rx_descriptor_status,
-	.tx_descriptor_status		= sfc_tx_descriptor_status,
 	.rx_queue_intr_enable		= sfc_rx_queue_intr_enable,
 	.rx_queue_intr_disable		= sfc_rx_queue_intr_disable,
 	.tx_queue_setup			= sfc_tx_queue_setup,
@@ -1929,6 +1910,11 @@ sfc_eth_dev_set_ops(struct rte_eth_dev *dev)
 	case EFX_FAMILY_MEDFORD:
 	case EFX_FAMILY_MEDFORD2:
 		avail_caps |= SFC_DP_HW_FW_CAP_EF10;
+		avail_caps |= SFC_DP_HW_FW_CAP_RX_EFX;
+		avail_caps |= SFC_DP_HW_FW_CAP_TX_EFX;
+		break;
+	case EFX_FAMILY_RIVERHEAD:
+		avail_caps |= SFC_DP_HW_FW_CAP_EF100;
 		break;
 	default:
 		break;
@@ -2019,6 +2005,10 @@ sfc_eth_dev_set_ops(struct rte_eth_dev *dev)
 	dev->tx_pkt_prepare = dp_tx->pkt_prepare;
 	dev->tx_pkt_burst = dp_tx->pkt_burst;
 
+	dev->rx_queue_count = sfc_rx_queue_count;
+	dev->rx_descriptor_done = sfc_rx_descriptor_done;
+	dev->rx_descriptor_status = sfc_rx_descriptor_status;
+	dev->tx_descriptor_status = sfc_tx_descriptor_status;
 	dev->dev_ops = &sfc_eth_dev_ops;
 
 	return 0;
@@ -2059,10 +2049,6 @@ sfc_eth_dev_clear_ops(struct rte_eth_dev *dev)
 
 static const struct eth_dev_ops sfc_eth_dev_secondary_ops = {
 	.dev_supported_ptypes_get	= sfc_dev_supported_ptypes_get,
-	.rx_queue_count			= sfc_rx_queue_count,
-	.rx_descriptor_done		= sfc_rx_descriptor_done,
-	.rx_descriptor_status		= sfc_rx_descriptor_status,
-	.tx_descriptor_status		= sfc_tx_descriptor_status,
 	.reta_query			= sfc_dev_rss_reta_query,
 	.rss_hash_conf_get		= sfc_dev_rss_hash_conf_get,
 	.rxq_info_get			= sfc_rx_queue_info_get,
@@ -2127,6 +2113,10 @@ sfc_eth_dev_secondary_init(struct rte_eth_dev *dev, uint32_t logtype_main)
 	dev->rx_pkt_burst = dp_rx->pkt_burst;
 	dev->tx_pkt_prepare = dp_tx->pkt_prepare;
 	dev->tx_pkt_burst = dp_tx->pkt_burst;
+	dev->rx_queue_count = sfc_rx_queue_count;
+	dev->rx_descriptor_done = sfc_rx_descriptor_done;
+	dev->rx_descriptor_status = sfc_rx_descriptor_status;
+	dev->tx_descriptor_status = sfc_tx_descriptor_status;
 	dev->dev_ops = &sfc_eth_dev_secondary_ops;
 
 	return 0;
@@ -2147,10 +2137,12 @@ sfc_register_dp(void)
 	/* Register once */
 	if (TAILQ_EMPTY(&sfc_dp_head)) {
 		/* Prefer EF10 datapath */
+		sfc_dp_register(&sfc_dp_head, &sfc_ef100_rx.dp);
 		sfc_dp_register(&sfc_dp_head, &sfc_ef10_essb_rx.dp);
 		sfc_dp_register(&sfc_dp_head, &sfc_ef10_rx.dp);
 		sfc_dp_register(&sfc_dp_head, &sfc_efx_rx.dp);
 
+		sfc_dp_register(&sfc_dp_head, &sfc_ef100_tx.dp);
 		sfc_dp_register(&sfc_dp_head, &sfc_ef10_tx.dp);
 		sfc_dp_register(&sfc_dp_head, &sfc_efx_tx.dp);
 		sfc_dp_register(&sfc_dp_head, &sfc_ef10_simple_tx.dp);
@@ -2167,6 +2159,7 @@ sfc_eth_dev_init(struct rte_eth_dev *dev)
 	int rc;
 	const efx_nic_cfg_t *encp;
 	const struct rte_ether_addr *from;
+	int ret;
 
 	sfc_register_dp();
 
@@ -2178,6 +2171,18 @@ sfc_eth_dev_init(struct rte_eth_dev *dev)
 		return -sfc_eth_dev_secondary_init(dev, logtype_main);
 
 	/* Required for logging */
+	ret = snprintf(sas->log_prefix, sizeof(sas->log_prefix),
+			"PMD: sfc_efx " PCI_PRI_FMT " #%" PRIu16 ": ",
+			pci_dev->addr.domain, pci_dev->addr.bus,
+			pci_dev->addr.devid, pci_dev->addr.function,
+			dev->data->port_id);
+	if (ret < 0 || ret >= (int)sizeof(sas->log_prefix)) {
+		SFC_GENERIC_LOG(ERR,
+			"reserved log prefix is too short for " PCI_PRI_FMT,
+			pci_dev->addr.domain, pci_dev->addr.bus,
+			pci_dev->addr.devid, pci_dev->addr.function);
+		return -EINVAL;
+	}
 	sas->pci_addr = pci_dev->addr;
 	sas->port_id = dev->data->port_id;
 
@@ -2201,14 +2206,13 @@ sfc_eth_dev_init(struct rte_eth_dev *dev)
 
 	/* Copy PCI device info to the dev->data */
 	rte_eth_copy_pci_info(dev, pci_dev);
+	dev->data->dev_flags |= RTE_ETH_DEV_FLOW_OPS_THREAD_SAFE;
 
 	rc = sfc_kvargs_parse(sa);
 	if (rc != 0)
 		goto fail_kvargs_parse;
 
 	sfc_log_init(sa, "entry");
-
-	dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	dev->data->mac_addrs = rte_zmalloc("sfc", RTE_ETHER_ADDR_LEN, 0);
 	if (dev->data->mac_addrs == NULL) {
@@ -2290,6 +2294,7 @@ static const struct rte_pci_id pci_id_sfc_efx_map[] = {
 	{ RTE_PCI_DEVICE(EFX_PCI_VENID_SFC, EFX_PCI_DEVID_MEDFORD_VF) },
 	{ RTE_PCI_DEVICE(EFX_PCI_VENID_SFC, EFX_PCI_DEVID_MEDFORD2) },
 	{ RTE_PCI_DEVICE(EFX_PCI_VENID_SFC, EFX_PCI_DEVID_MEDFORD2_VF) },
+	{ RTE_PCI_DEVICE(EFX_PCI_VENID_XILINX, EFX_PCI_DEVID_RIVERHEAD) },
 	{ .vendor_id = 0 /* sentinel */ }
 };
 

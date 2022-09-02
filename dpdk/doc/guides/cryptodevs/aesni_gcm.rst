@@ -1,13 +1,18 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2016-2019 Intel Corporation.
+    Copyright(c) 2016-2020 Intel Corporation.
 
 AES-NI GCM Crypto Poll Mode Driver
 ==================================
 
 
-The AES-NI GCM PMD (**librte_pmd_aesni_gcm**) provides poll mode crypto driver
+The AES-NI GCM PMD (**librte_crypto_aesni_gcm**) provides poll mode crypto driver
 support for utilizing Intel multi buffer library (see AES-NI Multi-buffer PMD documentation
 to learn more about it, including installation).
+
+The AES-NI GCM PMD supports synchronous mode of operation with
+``rte_cryptodev_sym_cpu_crypto_process`` function call for both AES-GCM and
+GMAC, however GMAC support is limited to one segment per operation. Please
+refer to ``rte_crypto`` programmer's guide for more detail.
 
 Features
 --------
@@ -26,8 +31,6 @@ Limitations
 -----------
 
 * In out-of-place operations, chained destination mbufs are not supported.
-* Chained mbufs are only supported by RTE_CRYPTO_AEAD_AES_GCM algorithm,
-  not RTE_CRYPTO_AUTH_AES_GMAC.
 * Cipher only is not supported.
 
 
@@ -37,18 +40,19 @@ Installation
 To build DPDK with the AESNI_GCM_PMD the user is required to download the multi-buffer
 library from `here <https://github.com/01org/intel-ipsec-mb>`_
 and compile it on their user system before building DPDK.
-The latest version of the library supported by this PMD is v0.53, which
-can be downloaded in `<https://github.com/01org/intel-ipsec-mb/archive/v0.53.zip>`_.
+The latest version of the library supported by this PMD is v0.55, which
+can be downloaded in `<https://github.com/01org/intel-ipsec-mb/archive/v0.55.zip>`_.
 
 .. code-block:: console
 
     make
     make install
 
-The library requires NASM to be built. Depending on the library version, it might require a minimum NASM version (e.g. v0.53 requires at least NASM 2.13.03).
+The library requires NASM to be built. Depending on the library version, it might
+require a minimum NASM version (e.g. v0.54 requires at least NASM 2.14).
 
-NASM is packaged for different OS. However, on some OS the version is too old, so a manual installation is required.
-In that case, NASM can be downloaded from
+NASM is packaged for different OS. However, on some OS the version is too old,
+so a manual installation is required. In that case, NASM can be downloaded from
 `NASM website <https://www.nasm.us/pub/nasm/releasebuilds/?C=M;O=D>`_.
 Once it is downloaded, extract it and follow these steps:
 
@@ -57,6 +61,13 @@ Once it is downloaded, extract it and follow these steps:
     ./configure
     make
     make install
+
+.. note::
+
+   Compilation of the Multi-Buffer library is broken when GCC < 5.0, if library <= v0.53.
+   If a lower GCC version than 5.0, the workaround proposed by the following link
+   should be used: `<https://github.com/intel/intel-ipsec-mb/issues/40>`_.
+
 
 As a reference, the following table shows a mapping between the past DPDK versions
 and the external crypto libraries supported by them:
@@ -72,7 +83,7 @@ and the external crypto libraries supported by them:
    17.02 - 17.05  ISA-L Crypto v2.18
    17.08 - 18.02  Multi-buffer library 0.46 - 0.48
    18.05 - 19.02  Multi-buffer library 0.49 - 0.52
-   19.05+         Multi-buffer library 0.52 - 0.53
+   19.05+         Multi-buffer library 0.52 - 0.55
    =============  ================================
 
 
@@ -82,8 +93,6 @@ Initialization
 In order to enable this virtual crypto PMD, user must:
 
 * Build the multi buffer library (explained in Installation section).
-
-* Set CONFIG_RTE_LIBRTE_PMD_AESNI_GCM=y in config/common_base.
 
 To use the PMD in an application, user must:
 
@@ -104,5 +113,5 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_aesni_gcm,socket_id=0,max_nb_sessions=128" \
+    ./dpdk-l2fwd-crypto -l 1 -n 4 --vdev="crypto_aesni_gcm,socket_id=0,max_nb_sessions=128" \
     -- -p 1 --cdev SW --chain AEAD --aead_algo "aes-gcm"

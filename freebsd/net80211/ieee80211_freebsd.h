@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003-2008 Sam Leffler, Errno Consulting
  * All rights reserved.
  *
@@ -36,6 +38,22 @@
 #include <sys/rwlock.h>
 #include <sys/sysctl.h>
 #include <sys/taskqueue.h>
+#include <sys/time.h>
+
+#include <net/debugnet.h>
+
+/*
+ * priv(9) NET80211 checks.
+ */
+struct ieee80211vap;
+int ieee80211_priv_check_vap_getkey(u_long, struct ieee80211vap *,
+    struct ifnet *);
+int ieee80211_priv_check_vap_manage(u_long, struct ieee80211vap *,
+    struct ifnet *);
+int ieee80211_priv_check_vap_setmac(u_long, struct ieee80211vap *,
+    struct ifnet *);
+int ieee80211_priv_check_create_vap(u_long, struct ieee80211vap *,
+    struct ifnet *);
 
 /*
  * Common state locking definitions.
@@ -149,7 +167,7 @@ typedef struct mtx ieee80211_psq_lock_t;
 	IF_UNLOCK(ifq);						\
 } while (0)
 #endif /* IF_PREPEND_LIST */
- 
+
 /*
  * Age queue definitions.
  */
@@ -222,6 +240,11 @@ typedef struct mtx ieee80211_rt_lock_t;
  */
 #include <machine/atomic.h>
 
+struct ieee80211vap;
+int	ieee80211_com_vincref(struct ieee80211vap *);
+void	ieee80211_com_vdecref(struct ieee80211vap *);
+void	ieee80211_com_vdetach(struct ieee80211vap *);
+
 #define ieee80211_node_initref(_ni) \
 	do { ((_ni)->ni_refcnt = 1); } while (0)
 #define ieee80211_node_incref(_ni) \
@@ -233,24 +256,23 @@ int	ieee80211_node_dectestref(struct ieee80211_node *ni);
 #define	ieee80211_node_refcnt(_ni)	(_ni)->ni_refcnt
 
 struct ifqueue;
-struct ieee80211vap;
 void	ieee80211_drain_ifq(struct ifqueue *);
 void	ieee80211_flush_ifq(struct ifqueue *, struct ieee80211vap *);
 
 void	ieee80211_vap_destroy(struct ieee80211vap *);
+const char *	ieee80211_get_vap_ifname(struct ieee80211vap *);
 
 #define	IFNET_IS_UP_RUNNING(_ifp) \
 	(((_ifp)->if_flags & IFF_UP) && \
 	 ((_ifp)->if_drv_flags & IFF_DRV_RUNNING))
 
-/* XXX TODO: cap these at 1, as hz may not be 1000 */
-#define	msecs_to_ticks(ms)	(((ms)*hz)/1000)
-#define	ticks_to_msecs(t)	(1000*(t) / hz)
+#define	msecs_to_ticks(ms)	MSEC_2_TICKS(ms)
+#define	ticks_to_msecs(t)	TICKS_2_MSEC(t)
 #define	ticks_to_secs(t)	((t) / hz)
 
-#define ieee80211_time_after(a,b) 	((long)(b) - (long)(a) < 0)
+#define ieee80211_time_after(a,b) 	((int)(b) - (int)(a) < 0)
 #define ieee80211_time_before(a,b)	ieee80211_time_after(b,a)
-#define ieee80211_time_after_eq(a,b)	((long)(a) - (long)(b) >= 0)
+#define ieee80211_time_after_eq(a,b)	((int)(a) - (int)(b) >= 0)
 #define ieee80211_time_before_eq(a,b)	ieee80211_time_after_eq(b,a)
 
 struct mbuf *ieee80211_getmgtframe(uint8_t **frm, int headroom, int pktlen);
@@ -330,6 +352,8 @@ void	ieee80211_process_callback(struct ieee80211_node *, struct mbuf *, int);
 /* See below; this is after the bpf_params definition */
 
 #define	NET80211_TAG_RECV_PARAMS	2
+
+#define	NET80211_TAG_TOA_PARAMS		3
 
 struct ieee80211com;
 int	ieee80211_parent_xmitpkt(struct ieee80211com *, struct mbuf *);
@@ -483,6 +507,36 @@ typedef int ieee80211_ioctl_setfunc(struct ieee80211vap *,
     struct ieee80211req *);
 SET_DECLARE(ieee80211_ioctl_setset, ieee80211_ioctl_setfunc);
 #define	IEEE80211_IOCTL_SET(_name, _set) TEXT_SET(ieee80211_ioctl_setset, _set)
+
+#ifdef DEBUGNET
+typedef void debugnet80211_init_t(struct ieee80211com *, int *nrxr, int *ncl,
+    int *clsize);
+typedef void debugnet80211_event_t(struct ieee80211com *, enum debugnet_ev);
+typedef int debugnet80211_poll_t(struct ieee80211com *, int);
+
+struct debugnet80211_methods {
+	debugnet80211_init_t		*dn8_init;
+	debugnet80211_event_t		*dn8_event;
+	debugnet80211_poll_t		*dn8_poll;
+};
+
+#define	DEBUGNET80211_DEFINE(driver)					\
+	static debugnet80211_init_t driver##_debugnet80211_init;		\
+	static debugnet80211_event_t driver##_debugnet80211_event;	\
+	static debugnet80211_poll_t driver##_debugnet80211_poll;		\
+									\
+	static struct debugnet80211_methods driver##_debugnet80211_methods = { \
+		.dn8_init = driver##_debugnet80211_init,			\
+		.dn8_event = driver##_debugnet80211_event,		\
+		.dn8_poll = driver##_debugnet80211_poll,			\
+	}
+#define DEBUGNET80211_SET(ic, driver)					\
+	(ic)->ic_debugnet_meth = &driver##_debugnet80211_methods
+#else
+#define DEBUGNET80211_DEFINE(driver)
+#define DEBUGNET80211_SET(ic, driver)
+#endif /* DEBUGNET */
+
 #endif /* _KERNEL */
 
 /* XXX this stuff belongs elsewhere */
@@ -620,42 +674,35 @@ int	ieee80211_add_xmit_params(struct mbuf *m,
 int	ieee80211_get_xmit_params(struct mbuf *m,
 	    struct ieee80211_bpf_params *);
 
-#define	IEEE80211_MAX_CHAINS		3
-#define	IEEE80211_MAX_EVM_PILOTS	6
+struct ieee80211_rx_params;
+struct ieee80211_rx_stats;
 
-#define	IEEE80211_R_NF		0x0000001	/* global NF value valid */
-#define	IEEE80211_R_RSSI	0x0000002	/* global RSSI value valid */
-#define	IEEE80211_R_C_CHAIN	0x0000004	/* RX chain count valid */
-#define	IEEE80211_R_C_NF	0x0000008	/* per-chain NF value valid */
-#define	IEEE80211_R_C_RSSI	0x0000010	/* per-chain RSSI value valid */
-#define	IEEE80211_R_C_EVM	0x0000020	/* per-chain EVM valid */
-#define	IEEE80211_R_C_HT40	0x0000040	/* RX'ed packet is 40mhz, pilots 4,5 valid */
-#define	IEEE80211_R_FREQ	0x0000080	/* Freq value populated, MHz */
-#define	IEEE80211_R_IEEE	0x0000100	/* IEEE value populated */
-#define	IEEE80211_R_BAND	0x0000200	/* Frequency band populated */
-
-struct ieee80211_rx_stats {
-	uint32_t r_flags;		/* IEEE80211_R_* flags */
-	uint8_t c_chain;		/* number of RX chains involved */
-	int16_t	c_nf_ctl[IEEE80211_MAX_CHAINS];	/* per-chain NF */
-	int16_t	c_nf_ext[IEEE80211_MAX_CHAINS];	/* per-chain NF */
-	int16_t	c_rssi_ctl[IEEE80211_MAX_CHAINS];	/* per-chain RSSI */
-	int16_t	c_rssi_ext[IEEE80211_MAX_CHAINS];	/* per-chain RSSI */
-	uint8_t nf;			/* global NF */
-	uint8_t rssi;			/* global RSSI */
-	uint8_t evm[IEEE80211_MAX_CHAINS][IEEE80211_MAX_EVM_PILOTS];
-					/* per-chain, per-pilot EVM values */
-	uint16_t c_freq;
-	uint8_t c_ieee;
-};
-
-struct ieee80211_rx_params {
-	struct ieee80211_rx_stats params;
-};
 int	ieee80211_add_rx_params(struct mbuf *m,
 	    const struct ieee80211_rx_stats *rxs);
 int	ieee80211_get_rx_params(struct mbuf *m,
 	    struct ieee80211_rx_stats *rxs);
+const struct ieee80211_rx_stats * ieee80211_get_rx_params_ptr(struct mbuf *m);
+
+struct ieee80211_toa_params {
+	int request_id;
+};
+int	ieee80211_add_toa_params(struct mbuf *m,
+	    const struct ieee80211_toa_params *p);
+int	ieee80211_get_toa_params(struct mbuf *m,
+	    struct ieee80211_toa_params *p);
+
+#define	IEEE80211_F_SURVEY_TIME		0x00000001
+#define	IEEE80211_F_SURVEY_TIME_BUSY	0x00000002
+#define	IEEE80211_F_SURVEY_NOISE_DBM	0x00000004
+#define	IEEE80211_F_SURVEY_TSC		0x00000008
+struct ieee80211_channel_survey {
+	uint32_t s_flags;
+	uint32_t s_time;
+	uint32_t s_time_busy;
+	int32_t s_noise;
+	uint64_t s_tsc;
+};
+
 #endif /* _KERNEL */
 
 /*

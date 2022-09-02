@@ -12,6 +12,10 @@
 
 struct bnxt_db_info;
 
+#define CMPL_VALID(cmp, v)						\
+	(!!(rte_le_to_cpu_32(((struct cmpl_base *)(cmp))->info3_v) &	\
+	    CMPL_BASE_V) == !(v))
+
 #define NQ_CMP_VALID(nqcmp, raw_cons, ring)		\
 	(!!((nqcmp)->v & rte_cpu_to_le_32(NQ_CN_V)) ==	\
 	 !((raw_cons) & ((ring)->ring_size)))
@@ -150,7 +154,7 @@ bnxt_cpr_cmp_valid(const void *cmpl, uint32_t raw_cons, uint32_t ring_size)
 	expected = !(raw_cons & ring_size);
 	valid = !!(rte_le_to_cpu_32(c->info3_v) & CMPL_BASE_V);
 	if (valid == expected) {
-		rte_smp_rmb();
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 		return true;
 	}
 	return false;

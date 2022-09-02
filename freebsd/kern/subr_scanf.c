@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -41,6 +43,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/ctype.h>
 #include <sys/limits.h>
+#include <sys/stddef.h>
 
 /*
  * Note that stdarg.h and the ANSI style va_start macro is used for both
@@ -59,6 +62,9 @@ __FBSDID("$FreeBSD$");
 #define	POINTER		0x10	/* weird %p pointer (`fake hex') */
 #define	NOSKIP		0x20	/* do not skip blanks */
 #define	QUAD		0x400
+#define	INTMAXT		0x800	/* j: intmax_t */
+#define	PTRDIFFT	0x1000	/* t: ptrdiff_t */
+#define	SIZET		0x2000	/* z: size_t */
 #define	SHORTSHORT	0x4000	/** hh: char */
 
 /*
@@ -91,7 +97,7 @@ sscanf(const char *ibuf, const char *fmt, ...)
 {
 	va_list ap;
 	int ret;
-	
+
 	va_start(ap, fmt);
 	ret = vsscanf(ibuf, fmt, ap);
 	va_end(ap);
@@ -122,7 +128,7 @@ vsscanf(const char *inp, char const *fmt0, va_list ap)
 		{ 10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
 
 	inr = strlen(inp);
-	
+
 	nassigned = 0;
 	nconversions = 0;
 	nread = 0;
@@ -160,6 +166,9 @@ literal:
 		case '*':
 			flags |= SUPPRESS;
 			goto again;
+		case 'j':
+			flags |= INTMAXT;
+			goto again;
 		case 'l':
 			if (flags & LONG){
 				flags &= ~LONG;
@@ -170,6 +179,12 @@ literal:
 			goto again;
 		case 'q':
 			flags |= QUAD;
+			goto again;
+		case 't':
+			flags |= PTRDIFFT;
+			goto again;
+		case 'z':
+			flags |= SIZET;
 			goto again;
 		case 'h':
 			if (flags & SHORT){
@@ -254,6 +269,12 @@ literal:
 				*va_arg(ap, long *) = nread;
 			else if (flags & QUAD)
 				*va_arg(ap, quad_t *) = nread;
+			else if (flags & INTMAXT)
+				*va_arg(ap, intmax_t *) = nread;
+			else if (flags & SIZET)
+				*va_arg(ap, size_t *) = nread;
+			else if (flags & PTRDIFFT)
+				*va_arg(ap, ptrdiff_t *) = nread;
 			else
 				*va_arg(ap, int *) = nread;
 			continue;
@@ -288,7 +309,6 @@ literal:
 		 * Do the conversion.
 		 */
 		switch (c) {
-
 		case CT_CHAR:
 			/* scan arbitrary characters (sets NOSKIP) */
 			if (width == 0)
@@ -413,7 +433,6 @@ literal:
 				 * if we accept it as a part of number.
 				 */
 				switch (c) {
-
 				/*
 				 * The digit 0 is always legal, but is
 				 * special.  For %i conversions, if no
@@ -531,6 +550,12 @@ literal:
 					*va_arg(ap, long *) = res;
 				else if (flags & QUAD)
 					*va_arg(ap, quad_t *) = res;
+				else if (flags & INTMAXT)
+					*va_arg(ap, intmax_t *) = res;
+				else if (flags & PTRDIFFT)
+					*va_arg(ap, ptrdiff_t *) = res;
+				else if (flags & SIZET)
+					*va_arg(ap, size_t *) = res;
 				else
 					*va_arg(ap, int *) = res;
 				nassigned++;
@@ -538,7 +563,6 @@ literal:
 			nread += p - buf;
 			nconversions++;
 			break;
-
 		}
 	}
 input_failure:
@@ -586,7 +610,6 @@ __sccl(char *tab, const u_char *fmt)
 doswitch:
 		n = *fmt++;		/* and examine the next */
 		switch (n) {
-
 		case 0:			/* format ended too soon */
 			return (fmt - 1);
 
@@ -638,4 +661,3 @@ doswitch:
 	}
 	/* NOTREACHED */
 }
-

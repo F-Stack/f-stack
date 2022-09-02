@@ -7,18 +7,9 @@
 #include <errno.h>
 #include <string.h>
 
-/* Verbs header. */
-/* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
-#include <infiniband/verbs.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
-
 #include <rte_ethdev_driver.h>
 
+#include <mlx5_glue.h>
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
@@ -47,7 +38,7 @@ mlx5_promiscuous_enable(struct rte_eth_dev *dev)
 		return 0;
 	}
 	if (priv->config.vf) {
-		ret = mlx5_nl_promisc(dev, 1);
+		ret = mlx5_os_set_promisc(dev, 1);
 		if (ret)
 			return ret;
 	}
@@ -80,7 +71,7 @@ mlx5_promiscuous_disable(struct rte_eth_dev *dev)
 
 	dev->data->promiscuous = 0;
 	if (priv->config.vf) {
-		ret = mlx5_nl_promisc(dev, 0);
+		ret = mlx5_os_set_promisc(dev, 0);
 		if (ret)
 			return ret;
 	}
@@ -120,7 +111,7 @@ mlx5_allmulticast_enable(struct rte_eth_dev *dev)
 		return 0;
 	}
 	if (priv->config.vf) {
-		ret = mlx5_nl_allmulti(dev, 1);
+		ret = mlx5_os_set_allmulti(dev, 1);
 		if (ret)
 			goto error;
 	}
@@ -153,7 +144,7 @@ mlx5_allmulticast_disable(struct rte_eth_dev *dev)
 
 	dev->data->all_multicast = 0;
 	if (priv->config.vf) {
-		ret = mlx5_nl_allmulti(dev, 0);
+		ret = mlx5_os_set_allmulti(dev, 0);
 		if (ret)
 			goto error;
 	}

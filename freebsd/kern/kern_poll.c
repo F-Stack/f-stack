@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2002 Luigi Rizzo
  *
  * Supported by: the Xorp Project (www.xorp.org)
@@ -35,6 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/kthread.h>
 #include <sys/proc.h>
+#include <sys/epoch.h>
 #include <sys/eventhandler.h>
 #include <sys/resourcevar.h>
 #include <sys/socket.h>			/* needed by net/if.h		*/
@@ -98,8 +101,8 @@ static uint32_t poll_burst = 5;
 static uint32_t poll_burst_max = 150;	/* good for 100Mbit net and HZ=1000 */
 static uint32_t poll_each_burst = 5;
 
-static SYSCTL_NODE(_kern, OID_AUTO, polling, CTLFLAG_RW, 0,
-	"Device polling parameters");
+static SYSCTL_NODE(_kern, OID_AUTO, polling, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Device polling parameters");
 
 SYSCTL_UINT(_kern_polling, OID_AUTO, burst, CTLFLAG_RD,
 	&poll_burst, 0, "Current polling burst size");
@@ -129,8 +132,10 @@ static int poll_burst_max_sysctl(SYSCTL_HANDLER_ARGS)
 
 	return (0);
 }
-SYSCTL_PROC(_kern_polling, OID_AUTO, burst_max, CTLTYPE_UINT | CTLFLAG_RW,
-	0, sizeof(uint32_t), poll_burst_max_sysctl, "I", "Max Polling burst size");
+SYSCTL_PROC(_kern_polling, OID_AUTO, burst_max,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, sizeof(uint32_t),
+    poll_burst_max_sysctl, "I",
+    "Max Polling burst size");
 
 static int poll_each_burst_sysctl(SYSCTL_HANDLER_ARGS)
 {
@@ -153,9 +158,10 @@ static int poll_each_burst_sysctl(SYSCTL_HANDLER_ARGS)
 
 	return (0);
 }
-SYSCTL_PROC(_kern_polling, OID_AUTO, each_burst, CTLTYPE_UINT | CTLFLAG_RW,
-	0, sizeof(uint32_t), poll_each_burst_sysctl, "I",
-	"Max size of each burst");
+SYSCTL_PROC(_kern_polling, OID_AUTO, each_burst,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, sizeof(uint32_t),
+    poll_each_burst_sysctl, "I",
+    "Max size of each burst");
 
 static uint32_t poll_in_idle_loop=0;	/* do we poll in idle loop ? */
 SYSCTL_UINT(_kern_polling, OID_AUTO, idle_poll, CTLFLAG_RW,
@@ -179,9 +185,10 @@ static int user_frac_sysctl(SYSCTL_HANDLER_ARGS)
 
 	return (0);
 }
-SYSCTL_PROC(_kern_polling, OID_AUTO, user_frac, CTLTYPE_UINT | CTLFLAG_RW,
-	0, sizeof(uint32_t), user_frac_sysctl, "I",
-	"Desired user fraction of cpu time");
+SYSCTL_PROC(_kern_polling, OID_AUTO, user_frac,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, sizeof(uint32_t),
+    user_frac_sysctl, "I",
+    "Desired user fraction of cpu time");
 
 static uint32_t reg_frac_count = 0;
 static uint32_t reg_frac = 20 ;
@@ -204,9 +211,10 @@ static int reg_frac_sysctl(SYSCTL_HANDLER_ARGS)
 
 	return (0);
 }
-SYSCTL_PROC(_kern_polling, OID_AUTO, reg_frac, CTLTYPE_UINT | CTLFLAG_RW,
-	0, sizeof(uint32_t), reg_frac_sysctl, "I",
-	"Every this many cycles check registers");
+SYSCTL_PROC(_kern_polling, OID_AUTO, reg_frac,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, sizeof(uint32_t),
+    reg_frac_sysctl, "I",
+    "Every this many cycles check registers");
 
 static uint32_t short_ticks;
 SYSCTL_UINT(_kern_polling, OID_AUTO, short_ticks, CTLFLAG_RD,
@@ -244,7 +252,6 @@ static uint32_t idlepoll_sleeping; /* idlepoll is sleeping */
 SYSCTL_UINT(_kern_polling, OID_AUTO, idlepoll_sleeping, CTLFLAG_RD,
 	&idlepoll_sleeping, 0, "idlepoll is sleeping");
 
-
 #define POLL_LIST_LEN  128
 struct pollrec {
 	poll_handler_t	*handler;
@@ -269,7 +276,6 @@ init_device_poll(void)
 	    SHUTDOWN_PRI_LAST);
 }
 SYSINIT(device_poll, SI_SUB_SOFTINTR, SI_ORDER_MIDDLE, init_device_poll, NULL);
-
 
 /*
  * Hook from hardclock. Tries to schedule a netisr, but keeps track
@@ -330,6 +336,7 @@ hardclock_device_poll(void)
 static void
 ether_poll(int count)
 {
+	struct epoch_tracker et;
 	int i;
 
 	mtx_lock(&poll_mtx);
@@ -337,8 +344,10 @@ ether_poll(int count)
 	if (count > poll_each_burst)
 		count = poll_each_burst;
 
+	NET_EPOCH_ENTER(et);
 	for (i = 0 ; i < poll_handlers ; i++)
 		pr[i].handler(pr[i].ifp, POLL_ONLY, count);
+	NET_EPOCH_EXIT(et);
 
 	mtx_unlock(&poll_mtx);
 }
@@ -426,6 +435,8 @@ netisr_poll(void)
 {
 	int i, cycles;
 	enum poll_cmd arg = POLL_ONLY;
+
+	NET_EPOCH_ASSERT();
 
 	if (poll_handlers == 0)
 		return;
@@ -555,8 +566,7 @@ poll_idle(void)
 			idlepoll_sleeping = 0;
 			ether_poll(poll_each_burst);
 			thread_lock(td);
-			mi_switch(SW_VOL, NULL);
-			thread_unlock(td);
+			mi_switch(SW_VOL);
 		} else {
 			idlepoll_sleeping = 1;
 			tsleep(&idlepoll_sleeping, 0, "pollid", hz * 3);

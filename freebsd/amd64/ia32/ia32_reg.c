@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Peter Wemm
  * All rights reserved.
  *
@@ -29,8 +31,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
-
 #include <sys/param.h>
 #include <sys/exec.h>
 #include <sys/fcntl.h>
@@ -41,7 +41,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/mutex.h>
 #include <sys/mman.h>
 #include <sys/namei.h>
-#include <sys/pioctl.h>
 #include <sys/proc.h>
 #include <sys/procfs.h>
 #include <sys/resourcevar.h>
@@ -105,6 +104,8 @@ fill_regs32(struct thread *td, struct reg32 *regs)
 	regs->r_eflags = tp->tf_rflags;
 	regs->r_esp = tp->tf_rsp;
 	regs->r_ss = tp->tf_ss;
+	regs->r_err = 0;
+	regs->r_trapno = 0;
 	return (0);
 }
 
@@ -144,7 +145,11 @@ fill_fpregs32(struct thread *td, struct fpreg32 *regs)
 	struct save87 *sv_87;
 	struct env87 *penv_87;
 	struct envxmm *penv_xmm;
-	int i;
+	struct fpacc87 *fx_reg;
+	int i, st;
+	uint64_t mantissa;
+	uint16_t tw, exp;
+	uint8_t ab_tw;
 
 	bzero(regs, sizeof(*regs));
 	sv_87 = (struct save87 *)regs;
@@ -152,11 +157,11 @@ fill_fpregs32(struct thread *td, struct fpreg32 *regs)
 	fpugetregs(td);
 	sv_fpu = get_pcb_user_save_td(td);
 	penv_xmm = &sv_fpu->sv_env;
-	
+
 	/* FPU control/status */
 	penv_87->en_cw = penv_xmm->en_cw;
 	penv_87->en_sw = penv_xmm->en_sw;
-	penv_87->en_tw = penv_xmm->en_tw;
+
 	/*
 	 * XXX for en_fip/fcs/foo/fos, check if the fxsave format
 	 * uses the old-style layout for 32 bit user apps.  If so,
@@ -170,9 +175,39 @@ fill_fpregs32(struct thread *td, struct fpreg32 *regs)
 	/* Entry into the kernel always sets TF_HASSEGS */
 	penv_87->en_fos = td->td_frame->tf_ds;
 
-	/* FPU registers */
-	for (i = 0; i < 8; ++i)
-		sv_87->sv_ac[i] = sv_fpu->sv_fp[i].fp_acc;
+	/*
+	 * FPU registers and tags.
+	 * For ST(i), i = fpu_reg - top; we start with fpu_reg=7.
+	 */
+	st = 7 - ((penv_xmm->en_sw >> 11) & 7);
+	ab_tw = penv_xmm->en_tw;
+	tw = 0;
+	for (i = 0x80; i != 0; i >>= 1) {
+		sv_87->sv_ac[st] = sv_fpu->sv_fp[st].fp_acc;
+		tw <<= 2;
+		if ((ab_tw & i) != 0) {
+			/* Non-empty - we need to check ST(i) */
+			fx_reg = &sv_fpu->sv_fp[st].fp_acc;
+			/* The first 64 bits contain the mantissa. */
+			mantissa = *((uint64_t *)fx_reg->fp_bytes);
+			/*
+			 * The final 16 bits contain the sign bit and the exponent.
+			 * Mask the sign bit since it is of no consequence to these
+			 * tests.
+			 */
+			exp = *((uint16_t *)&fx_reg->fp_bytes[8]) & 0x7fff;
+			if (exp == 0) {
+				if (mantissa == 0)
+					tw |= 1; /* Zero */
+				else
+					tw |= 2; /* Denormal */
+			} else if (exp == 0x7fff)
+				tw |= 2; /* Infinity or NaN */
+		} else
+			tw |= 3; /* Empty */
+		st = (st - 1) & 7;
+	}
+	penv_87->en_tw = tw;
 
 	return (0);
 }
@@ -189,15 +224,19 @@ set_fpregs32(struct thread *td, struct fpreg32 *regs)
 	/* FPU control/status */
 	penv_xmm->en_cw = penv_87->en_cw;
 	penv_xmm->en_sw = penv_87->en_sw;
-	penv_xmm->en_tw = penv_87->en_tw;
 	penv_xmm->en_rip = penv_87->en_fip;
 	/* penv_87->en_fcs and en_fos ignored, see above */
 	penv_xmm->en_opcode = penv_87->en_opcode;
 	penv_xmm->en_rdp = penv_87->en_foo;
 
-	/* FPU registers */
-	for (i = 0; i < 8; ++i)
+	/* FPU registers and tags */
+	penv_xmm->en_tw = 0;
+	for (i = 0; i < 8; ++i) {
 		sv_fpu->sv_fp[i].fp_acc = sv_87->sv_ac[i];
+		if ((penv_87->en_tw & (3 << i * 2)) != (3 << i * 2))
+			penv_xmm->en_tw |= 1 << i;
+	}
+
 	for (i = 8; i < 16; ++i)
 		bzero(&sv_fpu->sv_fp[i].fp_acc, sizeof(sv_fpu->sv_fp[i].fp_acc));
 	fpuuserinited(td);

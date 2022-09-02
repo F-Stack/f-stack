@@ -2,7 +2,7 @@
  *
  * Copyright 2011 Freescale Semiconductor, Inc.
  * All rights reserved.
- * Copyright 2019 NXP
+ * Copyright 2019-2020 NXP
  *
  */
 
@@ -10,10 +10,6 @@
 #define __COMPAT_H
 
 #include <sched.h>
-
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -59,10 +55,10 @@
 #define __packed	__rte_packed
 #endif
 #ifndef noinline
-#define noinline	__attribute__((noinline))
+#define noinline	__rte_noinline
 #endif
 #define L1_CACHE_BYTES 64
-#define ____cacheline_aligned __attribute__((aligned(L1_CACHE_BYTES)))
+#define ____cacheline_aligned __rte_aligned(L1_CACHE_BYTES)
 #define __stringify_1(x) #x
 #define __stringify(x)	__stringify_1(x)
 
@@ -149,7 +145,8 @@ static inline void out_be32(volatile void *__p, u32 val)
 #define dcbt_ro(p) __builtin_prefetch(p, 0)
 #define dcbt_rw(p) __builtin_prefetch(p, 1)
 
-#if defined(RTE_ARCH_ARM64)
+#if defined(RTE_ARCH_ARM)
+#if defined(RTE_ARCH_64)
 #define dcbz(p) { asm volatile("dc zva, %0" : : "r" (p) : "memory"); }
 #define dcbz_64(p) dcbz(p)
 #define dcbf(p) { asm volatile("dc cvac, %0" : : "r"(p) : "memory"); }
@@ -162,13 +159,14 @@ static inline void out_be32(volatile void *__p, u32 val)
 		asm volatile("prfm pldl1keep, [%0, #64]" : : "r" (p));	\
 	} while (0)
 
-#elif defined(RTE_ARCH_ARM)
+#else /* RTE_ARCH_32 */
 #define dcbz(p) memset((p), 0, 32)
 #define dcbz_64(p) memset((p), 0, 64)
 #define dcbf(p)	RTE_SET_USED(p)
 #define dcbf_64(p) dcbf(p)
 #define dccivac(p)	RTE_SET_USED(p)
 #define dcbit_ro(p)	RTE_SET_USED(p)
+#endif
 
 #else
 #define dcbz(p)	RTE_SET_USED(p)
@@ -388,5 +386,8 @@ static inline unsigned long get_zeroed_page(gfp_t __foo __rte_unused)
 #define atomic_inc_return(v)    rte_atomic32_add_return(v, 1)
 #define atomic_dec_return(v)    rte_atomic32_sub_return(v, 1)
 #define atomic_sub_and_test(i, v) (rte_atomic32_sub_return(v, i) == 0)
+
+/* Interface name len*/
+#define IF_NAME_MAX_LEN 16
 
 #endif /* __COMPAT_H */

@@ -46,6 +46,13 @@ enum ice_protocol_type {
 	ICE_NVGRE,
 	ICE_GTP,
 	ICE_PPPOE,
+	ICE_PFCP,
+	ICE_L2TPV3,
+	ICE_ESP,
+	ICE_AH,
+	ICE_NAT_T,
+	ICE_GTP_NO_PAY,
+	ICE_VLAN_EX,
 	ICE_PROTOCOL_LAST
 };
 
@@ -53,14 +60,55 @@ enum ice_sw_tunnel_type {
 	ICE_NON_TUN = 0,
 	ICE_SW_TUN_AND_NON_TUN,
 	ICE_SW_TUN_VXLAN_GPE,
-	ICE_SW_TUN_GENEVE,
-	ICE_SW_TUN_VXLAN,
+	ICE_SW_TUN_GENEVE,      /* GENEVE matches only non-VLAN pkts */
+	ICE_SW_TUN_GENEVE_VLAN, /* GENEVE matches both VLAN and non-VLAN pkts */
+	ICE_SW_TUN_VXLAN,	/* VXLAN matches only non-VLAN pkts */
+	ICE_SW_TUN_VXLAN_VLAN,  /* VXLAN matches both VLAN and non-VLAN pkts */
 	ICE_SW_TUN_NVGRE,
 	ICE_SW_TUN_UDP, /* This means all "UDP" tunnel types: VXLAN-GPE, VXLAN
 			 * and GENEVE
 			 */
+	ICE_SW_IPV4_TCP,
+	ICE_SW_IPV4_UDP,
+	ICE_SW_IPV6_TCP,
+	ICE_SW_IPV6_UDP,
 	ICE_SW_TUN_GTP,
+	ICE_SW_TUN_IPV4_GTPU_NO_PAY,
+	ICE_SW_TUN_IPV6_GTPU_NO_PAY,
+	ICE_SW_TUN_IPV4_GTPU_IPV4,
+	ICE_SW_TUN_IPV4_GTPU_IPV6,
+	ICE_SW_TUN_IPV6_GTPU_IPV4,
+	ICE_SW_TUN_IPV6_GTPU_IPV6,
 	ICE_SW_TUN_PPPOE,
+	ICE_SW_TUN_PPPOE_PAY,
+	ICE_SW_TUN_PPPOE_IPV4,
+	ICE_SW_TUN_PPPOE_IPV4_TCP,
+	ICE_SW_TUN_PPPOE_IPV4_UDP,
+	ICE_SW_TUN_PPPOE_IPV6,
+	ICE_SW_TUN_PPPOE_IPV6_TCP,
+	ICE_SW_TUN_PPPOE_IPV6_UDP,
+	ICE_SW_TUN_IPV4_ESP,
+	ICE_SW_TUN_IPV6_ESP,
+	ICE_SW_TUN_IPV4_AH,
+	ICE_SW_TUN_IPV6_AH,
+	ICE_SW_TUN_IPV4_NAT_T,
+	ICE_SW_TUN_IPV6_NAT_T,
+	ICE_SW_TUN_IPV4_L2TPV3,
+	ICE_SW_TUN_IPV6_L2TPV3,
+	ICE_SW_TUN_PROFID_IPV6_ESP,
+	ICE_SW_TUN_PROFID_IPV6_AH,
+	ICE_SW_TUN_PROFID_MAC_IPV6_L2TPV3,
+	ICE_SW_TUN_PROFID_IPV6_NAT_T,
+	ICE_SW_TUN_PROFID_IPV4_PFCP_NODE,
+	ICE_SW_TUN_PROFID_IPV4_PFCP_SESSION,
+	ICE_SW_TUN_PROFID_IPV6_PFCP_NODE,
+	ICE_SW_TUN_PROFID_IPV6_PFCP_SESSION,
+	ICE_SW_TUN_AND_NON_TUN_QINQ,
+	ICE_NON_TUN_QINQ,
+	ICE_SW_TUN_PPPOE_QINQ,
+	ICE_SW_TUN_PPPOE_PAY_QINQ,
+	ICE_SW_TUN_PPPOE_IPV4_QINQ,
+	ICE_SW_TUN_PPPOE_IPV6_QINQ,
 	ICE_ALL_TUNNELS /* All tunnel types including NVGRE */
 };
 
@@ -104,6 +152,7 @@ enum ice_prot_id {
 	ICE_PROT_VRRP_F		= 101,
 	ICE_PROT_OSPF		= 102,
 	ICE_PROT_PPPOE		= 103,
+	ICE_PROT_L2TPV3		= 104,
 	ICE_PROT_ATAOE_OF	= 114,
 	ICE_PROT_CTRL_OF	= 116,
 	ICE_PROT_LLDP_OF	= 117,
@@ -115,9 +164,11 @@ enum ice_prot_id {
 
 #define ICE_VNI_OFFSET		12 /* offset of VNI from ICE_PROT_UDP_OF */
 
+#define ICE_NAN_OFFSET		511
 #define ICE_MAC_OFOS_HW		1
 #define ICE_MAC_IL_HW		4
 #define ICE_ETYPE_OL_HW		9
+#define ICE_VLAN_OF_HW		16
 #define ICE_VLAN_OL_HW		17
 #define ICE_IPV4_OFOS_HW	32
 #define ICE_IPV4_IL_HW		33
@@ -125,8 +176,11 @@ enum ice_prot_id {
 #define ICE_IPV6_IL_HW		41
 #define ICE_TCP_IL_HW		49
 #define ICE_UDP_ILOS_HW		53
+#define ICE_ESP_HW			88
+#define ICE_AH_HW			89
 #define ICE_SCTP_IL_HW		96
 #define ICE_PPPOE_HW		103
+#define ICE_L2TPV3_HW		104
 
 /* ICE_UDP_OF is used to identify all 3 tunnel types
  * VXLAN, GENEVE and VXLAN_GPE. To differentiate further
@@ -138,7 +192,9 @@ enum ice_prot_id {
 
 #define ICE_MDID_SIZE 2
 #define ICE_TUN_FLAG_MDID 21
+#define ICE_TUN_FLAG_MDID_OFF (ICE_MDID_SIZE * ICE_TUN_FLAG_MDID)
 #define ICE_TUN_FLAG_MASK 0xFF
+#define ICE_TUN_FLAG_VLAN_MASK 0x01
 #define ICE_TUN_FLAG_FV_IND 2
 
 #define ICE_PROTOCOL_MAX_ENTRIES 16
@@ -222,7 +278,6 @@ struct ice_udp_tnl_hdr {
 	__be32 vni;	/* only use lower 24-bits */
 };
 
-#pragma pack(1)
 struct ice_udp_gtp_hdr {
 	u8 flags;
 	u8 msg_type;
@@ -244,7 +299,37 @@ struct ice_pppoe_hdr {
 	__be16 length;
 	__be16 ppp_prot_id; /* control and data only */
 };
-#pragma pack()
+
+struct ice_pfcp_hdr {
+	u8 flags;
+	u8 msg_type;
+	__be16 length;
+	__be64 seid;
+	__be32 seq;
+	u8 spare;
+};
+
+struct ice_l2tpv3_sess_hdr {
+	__be32 session_id;
+	__be64 cookie;
+};
+
+struct ice_esp_hdr {
+	__be32 spi;
+	__be32 seq;
+};
+
+struct ice_ah_hdr {
+	u8 next_hdr;
+	u8 paylen;
+	__be16 rsrvd;
+	__be32 spi;
+	__be32 seq;
+};
+
+struct ice_nat_t_hdr {
+	struct ice_esp_hdr esp;
+};
 
 struct ice_nvgre {
 	__be16 flags;
@@ -264,6 +349,11 @@ union ice_prot_hdr {
 	struct ice_nvgre nvgre_hdr;
 	struct ice_udp_gtp_hdr gtp_hdr;
 	struct ice_pppoe_hdr pppoe_hdr;
+	struct ice_pfcp_hdr pfcp_hdr;
+	struct ice_l2tpv3_sess_hdr l2tpv3_sess_hdr;
+	struct ice_esp_hdr esp_hdr;
+	struct ice_ah_hdr ah_hdr;
+	struct ice_nat_t_hdr nat_t_hdr;
 };
 
 /* This is mapping table entry that maps every word within a given protocol
@@ -304,7 +394,7 @@ struct ice_recp_grp_entry {
 #define ICE_INVAL_CHAIN_IND 0xFF
 	u16 rid;
 	u8 chain_idx;
-	u16 fv_idx[ICE_NUM_WORDS_RECIPE];
+	u8 fv_idx[ICE_NUM_WORDS_RECIPE];
 	u16 fv_mask[ICE_NUM_WORDS_RECIPE];
 	struct ice_pref_recipe_group r_group;
 };

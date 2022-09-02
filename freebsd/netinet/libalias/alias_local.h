@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Charles Mott <cm@linktel.net>
  * All rights reserved.
  *
@@ -70,6 +72,12 @@
 #define	GET_ALIAS_PORT		-1
 #define	GET_ALIAS_ID		GET_ALIAS_PORT
 
+#ifdef _KERNEL
+#define INET_NTOA_BUF(buf) (buf)
+#else
+#define INET_NTOA_BUF(buf) (buf), sizeof(buf)
+#endif
+
 struct proxy_entry;
 
 struct libalias {
@@ -119,7 +127,7 @@ struct libalias {
 
 	int		deleteAllLinks;	/* If equal to zero, DeleteLink()  */
 	/* will not remove permanent links */
-	
+
 	/* log descriptor        */ 
 #ifdef  _KERNEL
 	char           *logDesc;        
@@ -164,10 +172,10 @@ struct libalias {
 #ifdef  _KERNEL
 	/* timing queue for keeping track of association timeouts */
 	struct sctp_nat_timer sctpNatTimer;
-	
+
 	/* size of hash table used in this instance */
 	u_int sctpNatTableSize;
-	
+
 /* 
  * local look up table sorted by l_vtag/l_port 
  */
@@ -176,7 +184,7 @@ struct libalias {
  * global look up table sorted by g_vtag/g_port 
  */
 	LIST_HEAD(sctpNatTableG, sctp_nat_assoc) *sctpTableGlobal;
-	
+
 	/* 
 	 * avoid races in libalias: every public function has to use it.
 	 */
@@ -223,7 +231,6 @@ struct libalias {
 			cksum = (u_short) acc; \
 		} \
 	} while (0)
-
 
 /* Prototypes */
 
@@ -315,8 +322,8 @@ FindNewPortGroup(struct libalias *la, struct in_addr _dst_addr, struct in_addr _
     u_char _proto, u_char _align);
 void		GetFragmentAddr(struct alias_link *_lnk, struct in_addr *_src_addr);
 void		SetFragmentAddr(struct alias_link *_lnk, struct in_addr _src_addr);
-void		GetFragmentPtr(struct alias_link *_lnk, char **_fptr);
-void		SetFragmentPtr(struct alias_link *_lnk, char *fptr);
+void		GetFragmentPtr(struct alias_link *_lnk, void **_fptr);
+void		SetFragmentPtr(struct alias_link *_lnk, void *fptr);
 void		SetStateIn(struct alias_link *_lnk, int _state);
 void		SetStateOut(struct alias_link *_lnk, int _state);
 int		GetStateIn (struct alias_link *_lnk);

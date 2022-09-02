@@ -36,7 +36,9 @@
 	 1ULL << VIRTIO_F_IN_ORDER        |	\
 	 1ULL << VIRTIO_F_RING_PACKED	  |	\
 	 1ULL << VIRTIO_F_IOMMU_PLATFORM  |	\
-	 1ULL << VIRTIO_F_ORDER_PLATFORM)
+	 1ULL << VIRTIO_F_ORDER_PLATFORM  |	\
+	 1ULL << VIRTIO_F_NOTIFICATION_DATA | \
+	 1ULL << VIRTIO_NET_F_SPEED_DUPLEX)
 
 #define VIRTIO_PMD_SUPPORTED_GUEST_FEATURES	\
 	(VIRTIO_PMD_DEFAULT_GUEST_FEATURES |	\
@@ -103,6 +105,12 @@ uint16_t virtio_xmit_pkts_inorder(void *tx_queue, struct rte_mbuf **tx_pkts,
 uint16_t virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
 
+uint16_t virtio_recv_pkts_packed_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+		uint16_t nb_pkts);
+
+uint16_t virtio_xmit_pkts_packed_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts);
+
 int eth_virtio_dev_init(struct rte_eth_dev *eth_dev);
 
 void virtio_interrupt_handler(void *param);
@@ -111,5 +119,10 @@ int virtio_dev_pause(struct rte_eth_dev *dev);
 void virtio_dev_resume(struct rte_eth_dev *dev);
 int virtio_inject_pkts(struct rte_eth_dev *dev, struct rte_mbuf **tx_pkts,
 		int nb_pkts);
+
+bool virtio_rx_check_scatter(uint16_t max_rx_pkt_len, uint16_t rx_buf_size,
+			bool rx_scatter_enabled, const char **error);
+
+uint16_t virtio_rx_mem_pool_buf_size(struct rte_mempool *mp);
 
 #endif /* _VIRTIO_ETHDEV_H_ */

@@ -41,14 +41,6 @@
 #include "ifpga_rawdev.h"
 #include "ipn3ke_rawdev_api.h"
 
-#define RTE_PCI_EXT_CAP_ID_ERR           0x01	/* Advanced Error Reporting */
-#define RTE_PCI_CFG_SPACE_SIZE           256
-#define RTE_PCI_CFG_SPACE_EXP_SIZE       4096
-#define RTE_PCI_EXT_CAP_ID(header)       (int)(header & 0x0000ffff)
-#define RTE_PCI_EXT_CAP_NEXT(header)     ((header >> 20) & 0xffc)
-
-int ifpga_rawdev_logtype;
-
 #define PCI_VENDOR_ID_INTEL          0x8086
 /* PCI Device ID */
 #define PCIE_DEVICE_ID_PF_INT_5_X    0xBCBD
@@ -84,8 +76,8 @@ ifpga_rawdev_allocate(struct rte_rawdev *rawdev);
 static int set_surprise_link_check_aer(
 		struct ifpga_rawdev *ifpga_rdev, int force_disable);
 static int ifpga_pci_find_next_ext_capability(unsigned int fd,
-		int start, int cap);
-static int ifpga_pci_find_ext_capability(unsigned int fd, int cap);
+					      int start, uint32_t cap);
+static int ifpga_pci_find_ext_capability(unsigned int fd, uint32_t cap);
 static void fme_interrupt_handler(void *param);
 
 struct ifpga_rawdev *
@@ -149,8 +141,8 @@ ifpga_rawdev_allocate(struct rte_rawdev *rawdev)
 	return dev;
 }
 
-static int ifpga_pci_find_next_ext_capability(unsigned int fd,
-int start, int cap)
+static int
+ifpga_pci_find_next_ext_capability(unsigned int fd, int start, uint32_t cap)
 {
 	uint32_t header;
 	int ttl;
@@ -188,7 +180,8 @@ int start, int cap)
 	return 0;
 }
 
-static int ifpga_pci_find_ext_capability(unsigned int fd, int cap)
+static int
+ifpga_pci_find_ext_capability(unsigned int fd, uint32_t cap)
 {
 	return ifpga_pci_find_next_ext_capability(fd, 0, cap);
 }
@@ -218,6 +211,7 @@ static int ifpga_get_dev_vendor_id(const char *bdf,
 
 	return 0;
 }
+
 static int ifpga_rawdev_fill_info(struct ifpga_rawdev *ifpga_dev)
 {
 	struct opae_adapter *adapter = NULL;
@@ -397,7 +391,7 @@ ifpga_monitor_sensor(struct rte_rawdev *raw_dev,
 
 			if (HIGH_WARN(sensor, value) ||
 				LOW_WARN(sensor, value)) {
-				IFPGA_RAWDEV_PMD_INFO("%s reach theshold %d\n",
+				IFPGA_RAWDEV_PMD_INFO("%s reach threshold %d\n",
 					sensor->name, value);
 				*gsd_start = true;
 				break;
@@ -408,7 +402,7 @@ ifpga_monitor_sensor(struct rte_rawdev *raw_dev,
 		if (!strcmp(sensor->name, "12V AUX Voltage")) {
 			if (value < AUX_VOLTAGE_WARN) {
 				IFPGA_RAWDEV_PMD_INFO(
-					"%s reach theshold %d mV\n",
+					"%s reach threshold %d mV\n",
 					sensor->name, value);
 				*gsd_start = true;
 				break;
@@ -456,12 +450,12 @@ static int set_surprise_link_check_aer(
 		pos = ifpga_pci_find_ext_capability(fd, RTE_PCI_EXT_CAP_ID_ERR);
 		if (!pos)
 			goto end;
-		/* save previout ECAP_AER+0x08 */
+		/* save previous ECAP_AER+0x08 */
 		ret = pread(fd, &data, sizeof(data), pos+0x08);
 		if (ret == -1)
 			goto end;
 		ifpga_rdev->aer_old[0] = data;
-		/* save previout ECAP_AER+0x14 */
+		/* save previous ECAP_AER+0x14 */
 		ret = pread(fd, &data, sizeof(data), pos+0x14);
 		if (ret == -1)
 			goto end;
@@ -512,7 +506,7 @@ ifpga_rawdev_gsd_handle(__rte_unused void *param)
 	int gsd_enable, ret;
 #define MS 1000
 
-	while (ifpga_monitor_refcnt) {
+	while (__atomic_load_n(&ifpga_monitor_refcnt, __ATOMIC_RELAXED)) {
 		gsd_enable = 0;
 		for (i = 0; i < IFPGA_RAWDEV_NUM; i++) {
 			ifpga_rdev = &ifpga_rawdevices[i];
@@ -549,9 +543,9 @@ ifpga_monitor_start_func(struct ifpga_rawdev *dev)
 
 	dev->poll_enabled = 1;
 
-	if (ifpga_monitor_refcnt++ == 0) {
-		ret = rte_ctrl_thread_create(&ifpga_monitor_start_thread,
-			"ifpga-monitor", NULL,
+	if (!__atomic_fetch_add(&ifpga_monitor_refcnt, 1, __ATOMIC_RELAXED)) {
+		ret = pthread_create(&ifpga_monitor_start_thread,
+			NULL,
 			ifpga_rawdev_gsd_handle, NULL);
 		if (ret) {
 			ifpga_monitor_start_thread = 0;
@@ -563,6 +557,7 @@ ifpga_monitor_start_func(struct ifpga_rawdev *dev)
 
 	return 0;
 }
+
 static int
 ifpga_monitor_stop_func(struct ifpga_rawdev *dev)
 {
@@ -573,7 +568,7 @@ ifpga_monitor_stop_func(struct ifpga_rawdev *dev)
 
 	dev->poll_enabled = 0;
 
-	if ((--ifpga_monitor_refcnt == 0) &&
+	if (!__atomic_sub_fetch(&ifpga_monitor_refcnt, 1, __ATOMIC_RELAXED) &&
 		ifpga_monitor_start_thread) {
 		ret = pthread_cancel(ifpga_monitor_start_thread);
 		if (ret)
@@ -627,9 +622,10 @@ ifpga_fill_afu_dev(struct opae_accelerator *acc,
 	return 0;
 }
 
-static void
+static int
 ifpga_rawdev_info_get(struct rte_rawdev *dev,
-				     rte_rawdev_obj_t dev_info)
+		      rte_rawdev_obj_t dev_info,
+		      size_t dev_info_size)
 {
 	struct opae_adapter *adapter;
 	struct opae_accelerator *acc;
@@ -641,14 +637,14 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 
 	IFPGA_RAWDEV_PMD_FUNC_TRACE();
 
-	if (!dev_info) {
+	if (!dev_info || dev_info_size != sizeof(*afu_dev)) {
 		IFPGA_RAWDEV_PMD_ERR("Invalid request");
-		return;
+		return -EINVAL;
 	}
 
 	adapter = ifpga_rawdev_get_priv(dev);
 	if (!adapter)
-		return;
+		return -ENOENT;
 
 	afu_dev = dev_info;
 	afu_dev->rawdev = dev;
@@ -660,7 +656,7 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 
 		if (ifpga_fill_afu_dev(acc, afu_dev)) {
 			IFPGA_RAWDEV_PMD_ERR("cannot get info\n");
-			return;
+			return -ENOENT;
 		}
 	}
 
@@ -670,21 +666,21 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 		/* get LineSide BAR Index */
 		if (opae_manager_get_eth_group_region_info(mgr, 0,
 			&opae_lside_eth_info)) {
-			return;
+			return -ENOENT;
 		}
 		lside_bar_idx = opae_lside_eth_info.mem_idx;
 
 		/* get NICSide BAR Index */
 		if (opae_manager_get_eth_group_region_info(mgr, 1,
 			&opae_nside_eth_info)) {
-			return;
+			return -ENOENT;
 		}
 		nside_bar_idx = opae_nside_eth_info.mem_idx;
 
 		if (lside_bar_idx >= PCI_MAX_RESOURCE ||
 			nside_bar_idx >= PCI_MAX_RESOURCE ||
 			lside_bar_idx == nside_bar_idx)
-			return;
+			return -ENOENT;
 
 		/* fill LineSide BAR Index */
 		afu_dev->mem_resource[lside_bar_idx].phys_addr =
@@ -702,11 +698,13 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 		afu_dev->mem_resource[nside_bar_idx].addr =
 			opae_nside_eth_info.addr;
 	}
+	return 0;
 }
 
 static int
 ifpga_rawdev_configure(const struct rte_rawdev *dev,
-		rte_rawdev_obj_t config)
+		rte_rawdev_obj_t config,
+		size_t config_size __rte_unused)
 {
 	IFPGA_RAWDEV_PMD_FUNC_TRACE();
 
@@ -1413,7 +1411,6 @@ ifpga_unregister_msix_irq(struct ifpga_rawdev *dev, enum ifpga_irq_type type,
 
 	rte_intr_efd_disable(*intr_handle);
 
-
 	rc = rte_intr_callback_unregister(*intr_handle, handler, arg);
 	if (rc < 0) {
 		IFPGA_RAWDEV_PMD_ERR("Failed to unregister %s interrupt %d\n",
@@ -1438,7 +1435,7 @@ ifpga_register_msix_irq(struct ifpga_rawdev *dev, int port_id,
 	struct opae_adapter *adapter;
 	struct opae_manager *mgr;
 	struct opae_accelerator *acc;
-	int i;
+	int i = 0;
 
 	if (!dev || !dev->rawdev)
 		return -ENODEV;
@@ -1529,7 +1526,7 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 	}
 
 	memset(name, 0, sizeof(name));
-	snprintf(name, RTE_RAWDEV_NAME_MAX_LEN, "IFPGA:%02x:%02x.%x",
+	snprintf(name, RTE_RAWDEV_NAME_MAX_LEN, IFPGA_RAWDEV_NAME_FMT,
 		pci_dev->addr.bus, pci_dev->addr.devid, pci_dev->addr.function);
 
 	IFPGA_RAWDEV_PMD_INFO("Init %s on NUMA node %d", name, rte_socket_id());
@@ -1633,7 +1630,7 @@ ifpga_rawdev_destroy(struct rte_pci_device *pci_dev)
 	}
 
 	memset(name, 0, sizeof(name));
-	snprintf(name, RTE_RAWDEV_NAME_MAX_LEN, "IFPGA:%x:%02x.%x",
+	snprintf(name, RTE_RAWDEV_NAME_MAX_LEN, IFPGA_RAWDEV_NAME_FMT,
 		pci_dev->addr.bus, pci_dev->addr.devid, pci_dev->addr.function);
 
 	IFPGA_RAWDEV_PMD_INFO("Closing %s on NUMA node %d",
@@ -1678,13 +1675,7 @@ static struct rte_pci_driver rte_ifpga_rawdev_pmd = {
 RTE_PMD_REGISTER_PCI(ifpga_rawdev_pci_driver, rte_ifpga_rawdev_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(ifpga_rawdev_pci_driver, rte_ifpga_rawdev_pmd);
 RTE_PMD_REGISTER_KMOD_DEP(ifpga_rawdev_pci_driver, "* igb_uio | uio_pci_generic | vfio-pci");
-
-RTE_INIT(ifpga_rawdev_init_log)
-{
-	ifpga_rawdev_logtype = rte_log_register("driver.raw.init");
-	if (ifpga_rawdev_logtype >= 0)
-		rte_log_set_level(ifpga_rawdev_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(ifpga_rawdev_logtype, driver.raw.init, NOTICE);
 
 static const char * const valid_args[] = {
 #define IFPGA_ARG_NAME         "ifpga"
@@ -1765,7 +1756,8 @@ ifpga_vdev_parse_devargs(struct rte_devargs *devargs,
 	ret = 0;
 
 end:
-	rte_kvargs_free(kvlist);
+	if (kvlist)
+		rte_kvargs_free(kvlist);
 
 	return ret;
 }

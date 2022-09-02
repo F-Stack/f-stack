@@ -10,6 +10,34 @@
 #include "ssovf_evdev.h"
 #include "octeontx_rxtx.h"
 
+/* Alignment */
+#define OCCTX_ALIGN  128
+
+/* Fastpath lookup */
+#define OCCTX_FASTPATH_LOOKUP_MEM	"octeontx_fastpath_lookup_mem"
+
+/* WQE's ERRCODE + ERRLEV (11 bits) */
+#define ERRCODE_ERRLEN_WIDTH		11
+#define ERR_ARRAY_SZ			((BIT(ERRCODE_ERRLEN_WIDTH)) *\
+					sizeof(uint32_t))
+
+#define LOOKUP_ARRAY_SZ			(ERR_ARRAY_SZ)
+
+#define OCCTX_EC_IP4_NOT		0x41
+#define OCCTX_EC_IP4_CSUM		0x42
+#define OCCTX_EC_L4_CSUM		0x62
+
+enum OCCTX_ERRLEV_E {
+	OCCTX_ERRLEV_RE = 0,
+	OCCTX_ERRLEV_LA = 1,
+	OCCTX_ERRLEV_LB = 2,
+	OCCTX_ERRLEV_LC = 3,
+	OCCTX_ERRLEV_LD = 4,
+	OCCTX_ERRLEV_LE = 5,
+	OCCTX_ERRLEV_LF = 6,
+	OCCTX_ERRLEV_LG = 7,
+};
+
 enum {
 	SSO_SYNC_ORDERED,
 	SSO_SYNC_ATOMIC,
@@ -17,14 +45,53 @@ enum {
 	SSO_SYNC_EMPTY
 };
 
-#ifndef __hot
-#define __hot	__attribute__((hot))
-#endif
-
 /* SSO Operations */
 
+static __rte_always_inline uint32_t
+ssovf_octeontx_rx_olflags_get(const void * const lookup_mem, const uint64_t in)
+{
+	const uint32_t * const ol_flags = (const uint32_t *)lookup_mem;
+
+	return ol_flags[(in & 0x7ff)];
+}
+
+static __rte_always_inline void
+ssovf_octeontx_wqe_xtract_mseg(octtx_wqe_t *wqe,
+			       struct rte_mbuf *mbuf)
+{
+	octtx_pki_buflink_t *buflink;
+	rte_iova_t *iova_list;
+	uint8_t nb_segs;
+	uint64_t bytes_left = wqe->s.w1.len - wqe->s.w5.size;
+
+	nb_segs = wqe->s.w0.bufs;
+
+	buflink = (octtx_pki_buflink_t *)((uintptr_t)wqe->s.w3.addr -
+					  sizeof(octtx_pki_buflink_t));
+
+	while (--nb_segs) {
+		iova_list = (rte_iova_t *)(uintptr_t)(buflink->w1.s.addr);
+		mbuf->next = (struct rte_mbuf *)(rte_iova_t *)(iova_list - 2)
+			      - (OCTTX_PACKET_LATER_SKIP / 128);
+		mbuf = mbuf->next;
+
+		mbuf->data_off = sizeof(octtx_pki_buflink_t);
+
+		__mempool_check_cookies(mbuf->pool, (void **)&mbuf, 1, 1);
+		if (nb_segs == 1)
+			mbuf->data_len = bytes_left;
+		else
+			mbuf->data_len = buflink->w0.s.size;
+
+		bytes_left = bytes_left - buflink->w0.s.size;
+		buflink = (octtx_pki_buflink_t *)(rte_iova_t *)(iova_list - 2);
+
+	}
+}
+
 static __rte_always_inline struct rte_mbuf *
-ssovf_octeontx_wqe_to_pkt(uint64_t work, uint16_t port_info)
+ssovf_octeontx_wqe_to_pkt(uint64_t work, uint16_t port_info,
+			  const uint16_t flag, const void *lookup_mem)
 {
 	struct rte_mbuf *mbuf;
 	octtx_wqe_t *wqe = (octtx_wqe_t *)(uintptr_t)work;
@@ -35,10 +102,31 @@ ssovf_octeontx_wqe_to_pkt(uint64_t work, uint16_t port_info)
 	mbuf->packet_type =
 		ptype_table[wqe->s.w2.lcty][wqe->s.w2.lety][wqe->s.w2.lfty];
 	mbuf->data_off = RTE_PTR_DIFF(wqe->s.w3.addr, mbuf->buf_addr);
-	mbuf->pkt_len = wqe->s.w1.len;
-	mbuf->data_len = mbuf->pkt_len;
-	mbuf->nb_segs = 1;
 	mbuf->ol_flags = 0;
+	mbuf->pkt_len = wqe->s.w1.len;
+
+	if (!!(flag & OCCTX_RX_OFFLOAD_CSUM_F))
+		mbuf->ol_flags = ssovf_octeontx_rx_olflags_get(lookup_mem,
+							       wqe->w[2]);
+
+	if (!!(flag & OCCTX_RX_MULTI_SEG_F)) {
+		mbuf->nb_segs = wqe->s.w0.bufs;
+		mbuf->data_len = wqe->s.w5.size;
+		ssovf_octeontx_wqe_xtract_mseg(wqe, mbuf);
+	} else {
+		mbuf->nb_segs = 1;
+		mbuf->data_len = mbuf->pkt_len;
+	}
+
+	if (!!(flag & OCCTX_RX_VLAN_FLTR_F)) {
+		if (likely(wqe->s.w2.vv)) {
+			mbuf->ol_flags |= PKT_RX_VLAN;
+			mbuf->vlan_tci =
+				ntohs(*((uint16_t *)((char *)mbuf->buf_addr +
+					mbuf->data_off + wqe->s.w4.vlptr + 2)));
+		}
+	}
+
 	mbuf->port = rte_octeontx_pchan_map[port_info >> 4][port_info & 0xF];
 	rte_mbuf_refcnt_set(mbuf, 1);
 
@@ -49,14 +137,29 @@ static __rte_always_inline void
 ssovf_octeontx_wqe_free(uint64_t work)
 {
 	octtx_wqe_t *wqe = (octtx_wqe_t *)(uintptr_t)work;
-	struct rte_mbuf *mbuf;
+	uint8_t nb_segs = wqe->s.w0.bufs;
+	octtx_pki_buflink_t *buflink;
+	struct rte_mbuf *mbuf, *head;
+	rte_iova_t *iova_list;
 
 	mbuf = (struct rte_mbuf *)((uintptr_t)wqe - OCTTX_PACKET_WQE_SKIP);
-	rte_pktmbuf_free(mbuf);
+	buflink = (octtx_pki_buflink_t *)((uintptr_t)wqe->s.w3.addr -
+					  sizeof(octtx_pki_buflink_t));
+	head = mbuf;
+	while (--nb_segs) {
+		iova_list = (rte_iova_t *)(uintptr_t)(buflink->w1.s.addr);
+		mbuf = (struct rte_mbuf *)(rte_iova_t *)(iova_list - 2)
+			- (OCTTX_PACKET_LATER_SKIP / 128);
+
+		mbuf->next = NULL;
+		rte_pktmbuf_free(mbuf);
+		buflink = (octtx_pki_buflink_t *)(rte_iova_t *)(iova_list - 2);
+	}
+	rte_pktmbuf_free(head);
 }
 
 static __rte_always_inline uint16_t
-ssows_get_work(struct ssows *ws, struct rte_event *ev)
+ssows_get_work(struct ssows *ws, struct rte_event *ev, const uint16_t flag)
 {
 	uint64_t get_work0, get_work1;
 	uint64_t sched_type_queue;
@@ -71,7 +174,7 @@ ssows_get_work(struct ssows *ws, struct rte_event *ev)
 
 	if (get_work1 && ev->event_type == RTE_EVENT_TYPE_ETHDEV) {
 		ev->mbuf = ssovf_octeontx_wqe_to_pkt(get_work1,
-				(ev->event >> 20) & 0x7F);
+				(ev->event >> 20) & 0x7F, flag, ws->lookup_mem);
 	} else if (unlikely((get_work0 & 0xFFFFFFFF) == 0xFFFFFFFF)) {
 		ssovf_octeontx_wqe_free(get_work1);
 		return 0;

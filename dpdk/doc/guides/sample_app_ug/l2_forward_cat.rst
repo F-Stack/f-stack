@@ -70,13 +70,13 @@ To run the example in a ``linux`` environment and enable CAT on cpus 0-2:
 
 .. code-block:: console
 
-    ./build/l2fwd-cat -l 1 -n 4 -- --l3ca="0x3@(0-2)"
+    ./<build_dir>/examples/dpdk-l2fwd-cat -l 1 -n 4 -- --l3ca="0x3@(0-2)"
 
 or to enable CAT and CDP on cpus 1,3:
 
 .. code-block:: console
 
-    ./build/l2fwd-cat -l 1 -n 4 -- --l3ca="(0x00C00,0x00300)@(1,3)"
+    ./<build_dir>/examples/dpdk-l2fwd-cat -l 1 -n 4 -- --l3ca="(0x00C00,0x00300)@(1,3)"
 
 If CDP is not supported it will fail with following error message:
 
@@ -198,7 +198,7 @@ queried for system CPU information and L3CA capabilities via
 ``pqos_cap_get(...)`` and ``pqos_cap_get_type(..., PQOS_CAP_TYPE_L3CA, ...)``
 calls. When all capability and topology information is collected, the requested
 CAT configuration is validated. A check is then performed (on per socket basis)
-for a sufficient number of unassociated COS. COS are selected and
+for a sufficient number of un-associated COS. COS are selected and
 configured via the ``pqos_l3ca_set(...)`` call. Finally, COS are associated to
 relevant CPUs via ``pqos_l3ca_assoc_set(...)`` calls.
 

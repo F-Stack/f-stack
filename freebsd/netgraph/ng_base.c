@@ -55,6 +55,7 @@
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/proc.h>
+#include <sys/epoch.h>
 #include <sys/queue.h>
 #include <sys/refcount.h>
 #include <sys/rwlock.h>
@@ -179,12 +180,12 @@ static struct rwlock	ng_typelist_lock;
 
 /* Hash related definitions. */
 LIST_HEAD(nodehash, ng_node);
-static VNET_DEFINE(struct nodehash *, ng_ID_hash);
-static VNET_DEFINE(u_long, ng_ID_hmask);
-static VNET_DEFINE(u_long, ng_nodes);
-static VNET_DEFINE(struct nodehash *, ng_name_hash);
-static VNET_DEFINE(u_long, ng_name_hmask);
-static VNET_DEFINE(u_long, ng_named_nodes);
+VNET_DEFINE_STATIC(struct nodehash *, ng_ID_hash);
+VNET_DEFINE_STATIC(u_long, ng_ID_hmask);
+VNET_DEFINE_STATIC(u_long, ng_nodes);
+VNET_DEFINE_STATIC(struct nodehash *, ng_name_hash);
+VNET_DEFINE_STATIC(u_long, ng_name_hmask);
+VNET_DEFINE_STATIC(u_long, ng_named_nodes);
 #define	V_ng_ID_hash		VNET(ng_ID_hash)
 #define	V_ng_ID_hmask		VNET(ng_ID_hmask)
 #define	V_ng_nodes		VNET(ng_nodes)
@@ -377,7 +378,7 @@ ng_alloc_node(void)
 #define TRAP_ERROR()
 #endif
 
-static VNET_DEFINE(ng_ID_t, nextID) = 1;
+VNET_DEFINE_STATIC(ng_ID_t, nextID) = 1;
 #define	V_nextID			VNET(nextID)
 
 #ifdef INVARIANTS
@@ -1179,7 +1180,7 @@ ng_destroy_hook(hook_p hook)
 		/*
 		 * Set the peer to point to ng_deadhook
 		 * from this moment on we are effectively independent it.
-		 * send it an rmhook message of it's own.
+		 * send it an rmhook message of its own.
 		 */
 		peer->hk_peer = &ng_deadhook;	/* They no longer know us */
 		hook->hk_peer = &ng_deadhook;	/* Nor us, them */
@@ -1425,7 +1426,7 @@ ng_con_part2(node_p node, item_p item, hook_p hook)
 	LIST_INSERT_HEAD(&node->nd_hooks, hook, hk_hooks);
 	node->nd_numhooks++;
 	NG_HOOK_REF(hook);	/* one for the node */
-	
+
 	/*
 	 * We now have a symmetrical situation, where both hooks have been
 	 * linked to their nodes, the newhook methods have been called
@@ -1576,7 +1577,6 @@ ng_mkpeer(node_p node, const char *name, const char *name2, char *type)
 
 	if ((error == 0) && hook2->hk_node->nd_type->connect) {
 		error = (*hook2->hk_node->nd_type->connect) (hook2);
-
 	}
 
 	/*
@@ -1598,7 +1598,7 @@ ng_mkpeer(node_p node, const char *name, const char *name2, char *type)
 /************************************************************************
 		Utility routines to send self messages
 ************************************************************************/
-	
+
 /* Shut this node down as soon as everyone is clear of it */
 /* Should add arg "immediately" to jump the queue */
 int
@@ -2665,7 +2665,7 @@ ng_generic_msg(node_p here, item_p item, hook_p lasthook)
 		IDHASH_RLOCK();
 		/* Get response struct. */
 		NG_MKRESPONSE(resp, msg, sizeof(*nl) +
-		    (V_ng_nodes * sizeof(struct nodeinfo)), M_NOWAIT | M_ZERO);
+		    (V_ng_nodes * sizeof(struct nodeinfo)), M_NOWAIT);
 		if (resp == NULL) {
 			IDHASH_RUNLOCK();
 			error = ENOMEM;
@@ -3005,7 +3005,7 @@ void
 ng_free_item(item_p item)
 {
 	/*
-	 * The item may hold resources on it's own. We need to free
+	 * The item may hold resources on its own. We need to free
 	 * these before we can free the item. What they are depends upon
 	 * what kind of item it is. it is important that nodes zero
 	 * out pointers to resources that they remove from the item
@@ -3166,12 +3166,10 @@ vnet_netgraph_uninit(const void *unused __unused)
 		/* Attempt to kill it only if it is a regular node */
 		if (node != NULL) {
 			if (node == last_killed) {
-				/* This should never happen */
-				printf("ng node %s needs NGF_REALLY_DIE\n",
-				    node->nd_name);
 				if (node->nd_flags & NGF_REALLY_DIE)
 					panic("ng node %s won't die",
 					    node->nd_name);
+				/* The node persisted itself.  Try again. */
 				node->nd_flags |= NGF_REALLY_DIE;
 			}
 			ng_rmnode(node, NULL, NULL, 0);
@@ -3249,7 +3247,8 @@ static moduledata_t netgraph_mod = {
 	(NULL)
 };
 DECLARE_MODULE(netgraph, netgraph_mod, SI_SUB_NETGRAPH, SI_ORDER_FIRST);
-SYSCTL_NODE(_net, OID_AUTO, graph, CTLFLAG_RW, 0, "netgraph Family");
+SYSCTL_NODE(_net, OID_AUTO, graph, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "netgraph Family");
 SYSCTL_INT(_net_graph, OID_AUTO, abi_version, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, NG_ABI_VERSION,"");
 SYSCTL_INT(_net_graph, OID_AUTO, msg_version, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, NG_VERSION, "");
 
@@ -3383,8 +3382,10 @@ sysctl_debug_ng_dump_items(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-SYSCTL_PROC(_debug, OID_AUTO, ng_dump_items, CTLTYPE_INT | CTLFLAG_RW,
-    0, sizeof(int), sysctl_debug_ng_dump_items, "I", "Number of allocated items");
+SYSCTL_PROC(_debug, OID_AUTO, ng_dump_items,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, 0, sizeof(int),
+    sysctl_debug_ng_dump_items, "I",
+    "Number of allocated items");
 #endif	/* NETGRAPH_DEBUG */
 
 /***********************************************************************
@@ -3398,6 +3399,7 @@ static void
 ngthread(void *arg)
 {
 	for (;;) {
+		struct epoch_tracker et;
 		node_p  node;
 
 		/* Get node from the worklist. */
@@ -3418,6 +3420,7 @@ ngthread(void *arg)
 		 * that lets us be sure that the node still exists.
 		 * Let the reference go at the last minute.
 		 */
+		NET_EPOCH_ENTER(et);
 		for (;;) {
 			item_p item;
 			int rw;
@@ -3435,6 +3438,7 @@ ngthread(void *arg)
 				NG_NODE_UNREF(node);
 			}
 		}
+		NET_EPOCH_EXIT(et);
 		NG_NODE_UNREF(node);
 		CURVNET_RESTORE();
 	}
@@ -3577,7 +3581,7 @@ ng_address_hook(node_p here, item_p item, hook_p hook, ng_ID_t retaddr)
 	ITEM_DEBUG_CHECKS;
 	/*
 	 * Quick sanity check..
-	 * Since a hook holds a reference on it's node, once we know
+	 * Since a hook holds a reference on its node, once we know
 	 * that the peer is still connected (even if invalid,) we know
 	 * that the peer node is present, though maybe invalid.
 	 */
@@ -3768,11 +3772,14 @@ ng_send_fn2(node_p node, hook_p hook, item_p pitem, ng_item_fn2 *fn, void *arg1,
 static void
 ng_callout_trampoline(void *arg)
 {
+	struct epoch_tracker et;
 	item_p item = arg;
 
+	NET_EPOCH_ENTER(et);
 	CURVNET_SET(NGI_NODE(item)->nd_vnet);
 	ng_snd_item(item, 0);
 	CURVNET_RESTORE();
+	NET_EPOCH_EXIT(et);
 }
 
 int
@@ -3801,7 +3808,7 @@ ng_callout(struct callout *c, node_p node, hook_p hook, int ticks,
 	return (0);
 }
 
-/* A special modified version of untimeout() */
+/* A special modified version of callout_stop() */
 int
 ng_uncallout(struct callout *c, node_p node)
 {
@@ -3815,7 +3822,7 @@ ng_uncallout(struct callout *c, node_p node)
 	item = c->c_arg;
 	/* Do an extra check */
 	if ((rval > 0) && (c->c_func == &ng_callout_trampoline) &&
-	    (NGI_NODE(item) == node)) {
+	    (item != NULL) && (NGI_NODE(item) == node)) {
 		/*
 		 * We successfully removed it from the queue before it ran
 		 * So now we need to unreference everything that was
@@ -3825,7 +3832,11 @@ ng_uncallout(struct callout *c, node_p node)
 	}
 	c->c_arg = NULL;
 
-	return (rval);
+	/*
+	 * Callers only want to know if the callout was cancelled and
+	 * not draining or stopped.
+	 */
+	return (rval > 0);
 }
 
 /*

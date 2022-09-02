@@ -139,7 +139,7 @@ xo_encoder_list_add (const char *name)
 
     xo_encoder_node_t *xep = xo_realloc(NULL, sizeof(*xep));
     if (xep) {
-	int len = strlen(name) + 1;
+	ssize_t len = strlen(name) + 1;
 	xep->xe_name = xo_realloc(NULL, len);
 	if (xep->xe_name == NULL) {
 	    xo_free(xep);
@@ -199,7 +199,7 @@ xo_encoder_find (const char *name)
     xo_encoder_list_init(&xo_encoders);
 
     XO_ENCODER_LIST_FOREACH(xep, &xo_encoders) {
-	if (strcmp(xep->xe_name, name) == 0)
+	if (xo_streq(xep->xe_name, name))
 	    return xep;
     }
 
@@ -241,7 +241,7 @@ xo_encoder_discover (const char *name)
 	    bzero(&xei, sizeof(xei));
 
 	    xei.xei_version = XO_ENCODER_VERSION;
-	    int rc = func(&xei);
+	    ssize_t rc = func(&xei);
 	    if (rc == 0 && xei.xei_handler) {
 		xep = xo_encoder_list_add(name);
 		if (xep) {
@@ -290,9 +290,39 @@ xo_encoder_init (xo_handle_t *xop, const char *name)
 {
     xo_encoder_setup();
 
+    char opts_char = '\0';
+    const char *col_opts = strchr(name, ':');
+    const char *plus_opts = strchr(name, '+');
+
+    /*
+     * Find the option-separating character (plus or colon) which
+     * appears first in the options string.
+     */
+    const char *opts = (col_opts == NULL) ? plus_opts
+	: (plus_opts == NULL) ? col_opts
+	: (plus_opts < col_opts) ? plus_opts : col_opts;
+
+    if (opts) {
+	opts_char = *opts;
+
+	/* Make a writable copy of the name */
+	size_t len = strlen(name);
+	char *copy = alloca(len + 1);
+	memcpy(copy, name, len);
+	copy[len] = '\0';
+
+	char *opts_copy = copy + (opts - name); /* Move to ':' */
+	*opts_copy++ = '\0';			/* Trim it off */
+
+	opts = opts_copy;	/* Use copy as options */
+	name = copy;		/* Use trimmed copy as name */
+    }
+
     /* Can't have names containing '/' or ':' */
-    if (strchr(name, '/') != NULL || strchr(name, ':') != NULL)
+    if (strchr(name, '/') != NULL || strchr(name, ':') != NULL) {
+	xo_failure(xop, "invalid encoder name: %s", name);
 	return -1;
+    }
 
    /*
      * First we look on the list of known (registered) encoders.
@@ -302,13 +332,24 @@ xo_encoder_init (xo_handle_t *xop, const char *name)
     xo_encoder_node_t *xep = xo_encoder_find(name);
     if (xep == NULL) {
 	xep = xo_encoder_discover(name);
-	if (xep == NULL)
+	if (xep == NULL) {
+	    xo_failure(xop, "encoder not founde: %s", name);
 	    return -1;
+	}
     }
 
     xo_set_encoder(xop, xep->xe_handler);
 
-    return xo_encoder_handle(xop, XO_OP_CREATE, NULL, NULL);
+    int rc = xo_encoder_handle(xop, XO_OP_CREATE, name, NULL, 0);
+    if (rc == 0 && opts != NULL) {
+	xo_encoder_op_t op;
+
+	/* Encoder API is limited, so we're stuck with two different options */
+	op = (opts_char == '+') ? XO_OP_OPTIONS_PLUS : XO_OP_OPTIONS;
+	rc = xo_encoder_handle(xop, op, name, opts, 0);
+    }
+
+    return rc;
 }
 
 /*
@@ -334,7 +375,7 @@ xo_encoder_create (const char *name, xo_xof_flags_t flags)
 
 int
 xo_encoder_handle (xo_handle_t *xop, xo_encoder_op_t op,
-		  const char *name, const char *value)
+		   const char *name, const char *value, xo_xff_flags_t flags)
 {
     void *private = xo_get_private(xop);
     xo_encoder_func_t func = xo_get_encoder(xop);
@@ -342,7 +383,7 @@ xo_encoder_handle (xo_handle_t *xop, xo_encoder_op_t op,
     if (func == NULL)
 	return -1;
 
-    return func(xop, op, name, value, private);
+    return func(xop, op, name, value, private, flags);
 }
 
 const char *
@@ -366,6 +407,7 @@ xo_encoder_op_name (xo_encoder_op_t op)
 	/* 14 */ "destroy",
 	/* 15 */ "attr",
 	/* 16 */ "version",
+	/* 17 */ "options",
     };
 
     if (op > sizeof(names) / sizeof(names[0]))

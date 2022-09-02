@@ -1,6 +1,10 @@
 {
   "top": {
     "data": {
+      "name": "em0",
+      "flags": "0x8843",
+      "name": "em0",
+      "flags": "0x8843",
       "what": "braces",
       "length": "abcdef",
       "fd": -1,
@@ -34,7 +38,7 @@
       "unknown": 1010,
       "min": 15,
       "cur": 20,
-      "max": 30,
+      "max": 125,
       "min": 15,
       "cur": 20,
       "max": 125,
@@ -67,7 +71,7 @@
         "message": "two more errors"
       },
       "__warning": {
-        "message": this is an warning
+        "message": "this is an warning"
       },
       "__warning": {
         "message": "two more warnings"
@@ -76,6 +80,18 @@
       "test": 4,
       "error": {
         "message": "Shut 'er down, Clancey!  She's a-pumpin' mud!  <>!,\"!<>\n"
+      },
+      "error": {
+        "message": "err message (1)"
+      },
+      "error": {
+        "message": "err message (2)\n"
+      },
+      "error": {
+        "message": "err message (1)\n"
+      },
+      "error": {
+        "message": "err message (2)\n"
       }
     }
   }

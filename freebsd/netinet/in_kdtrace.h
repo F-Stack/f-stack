@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Mark Johnston <markj@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,6 +34,8 @@
 	SDT_PROBE6(ip, , , probe, arg0, arg1, arg2, arg3, arg4, arg5)
 #define	UDP_PROBE(probe, arg0, arg1, arg2, arg3, arg4)			\
 	SDT_PROBE5(udp, , , probe, arg0, arg1, arg2, arg3, arg4)
+#define	UDPLITE_PROBE(probe, arg0, arg1, arg2, arg3, arg4)		\
+	SDT_PROBE5(udplite, , , probe, arg0, arg1, arg2, arg3, arg4)
 #define	TCP_PROBE1(probe, arg0)						\
 	SDT_PROBE1(tcp, , , probe, arg0)
 #define	TCP_PROBE2(probe, arg0, arg1)					\
@@ -48,6 +52,7 @@
 SDT_PROVIDER_DECLARE(ip);
 SDT_PROVIDER_DECLARE(tcp);
 SDT_PROVIDER_DECLARE(udp);
+SDT_PROVIDER_DECLARE(udplite);
 
 SDT_PROBE_DECLARE(ip, , , receive);
 SDT_PROBE_DECLARE(ip, , , send);
@@ -69,5 +74,8 @@ SDT_PROBE_DECLARE(tcp, , , receive__autoresize);
 
 SDT_PROBE_DECLARE(udp, , , receive);
 SDT_PROBE_DECLARE(udp, , , send);
+
+SDT_PROBE_DECLARE(udplite, , , receive);
+SDT_PROBE_DECLARE(udplite, , , send);
 
 #endif

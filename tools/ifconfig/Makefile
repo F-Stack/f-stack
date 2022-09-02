@@ -43,6 +43,10 @@ SRCS+=	ifgre.c			# GRE keys etc
 SRCS+=	ifgif.c			# GIF reversed header workaround
 
 ifneq (${MK_SFP_SUPPORT},"no")
+SRCS+=	ifipsec.c		# IPsec VTI
+endif
+
+ifneq (${MK_SFP_SUPPORT},"no")
 SRCS+=	sfp.c			# SFP/SFP+ information
 LIBADD+=	m
 endif
@@ -63,6 +67,10 @@ ifneq (${MK_LAGG_SUPPORT},"no")
 SRCS+=	iflagg.c   # lagg support
 endif
 
+ifneq (${MK_EXPERIMENTAL},"no")
+CFLAGS+= -DDRAFT_IETF_6MAN_IPV6ONLY_FLAG
+CFLAGS+= -DEXPERIMENTAL
+endif
 ifneq (${MK_INET6_SUPPORT},"no")
 CFLAGS+= -DINET6
 endif
@@ -70,11 +78,9 @@ ifneq (${MK_INET_SUPPORT},"no")
 CFLAGS+= -DINET
 endif
 ifneq (${MK_JAIL},"no")
-ifndef (RELEASE_CRUNCH)
 ifndef (RESCUE)
 CFLAGS+= -DJAIL
 LIBADD+=	jail
-endif
 endif
 endif
 
@@ -84,5 +90,4 @@ CFLAGS+= -Wall -Wmissing-prototypes -Wcast-qual -Wwrite-strings -Wnested-externs
 WARNS?=	2
 
 include ${TOPDIR}/tools/prog.mk
-
 

@@ -1,6 +1,8 @@
 /*	$NetBSD: gtreg.h,v 1.2 2005/12/24 20:07:03 perry Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 1997, 1998, 2001 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -31,8 +33,6 @@
  *
  * $FreeBSD$
  */
-
-
 
 #define GT_REGVAL(x)	*((volatile u_int32_t *) \
 			    (MIPS_PHYS_TO_KSEG1(MALTA_CORECTRL_BASE + (x))))

@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2016 Jared McNeill <jmcneill@invisible.ca>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -126,7 +125,6 @@ static kobj_method_t a10hdmiaudio_mixer_methods[] = {
 	KOBJMETHOD_END
 };
 MIXER_DECLARE(a10hdmiaudio_mixer);
-
 
 /*
  * Channel interface
@@ -345,7 +343,6 @@ static kobj_method_t a10hdmiaudio_chan_methods[] = {
 	KOBJMETHOD_END
 };
 CHANNEL_DECLARE(a10hdmiaudio_chan);
-
 
 /*
  * Device interface

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2001-2007, by Cisco Systems, Inc. All rights reserved.
  * Copyright (c) 2008-2012, by Randall Stewart. All rights reserved.
  * Copyright (c) 2008-2012, by Michael Tuexen. All rights reserved.
@@ -55,13 +57,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet/icmp6.h>
 #include <netinet/udp.h>
 
-#ifdef IPSEC
-#include <netipsec/ipsec.h>
-#include <netipsec/ipsec6.h>
-#endif				/* IPSEC */
-
-extern struct protosw inetsw[];
-
 int
 sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 {
@@ -74,11 +69,7 @@ sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 	struct sctphdr *sh;
 	struct sctp_chunkhdr *ch;
 	int length, offset;
-
-#if !defined(SCTP_WITH_NO_CSUM)
 	uint8_t compute_crc;
-
-#endif
 	uint32_t mflowid;
 	uint8_t mflowtype;
 	uint16_t fibnum;
@@ -112,13 +103,15 @@ sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 	SCTP_STAT_INCR_COUNTER64(sctps_inpackets);
 	/* Get IP, SCTP, and first chunk header together in the first mbuf. */
 	offset = iphlen + sizeof(struct sctphdr) + sizeof(struct sctp_chunkhdr);
-	ip6 = mtod(m, struct ip6_hdr *);
-	IP6_EXTHDR_GET(sh, struct sctphdr *, m, iphlen,
-	    (int)(sizeof(struct sctphdr) + sizeof(struct sctp_chunkhdr)));
-	if (sh == NULL) {
-		SCTP_STAT_INCR(sctps_hdrops);
-		return (IPPROTO_DONE);
+	if (m->m_len < offset) {
+		m = m_pullup(m, offset);
+		if (m == NULL) {
+			SCTP_STAT_INCR(sctps_hdrops);
+			return (IPPROTO_DONE);
+		}
 	}
+	ip6 = mtod(m, struct ip6_hdr *);
+	sh = (struct sctphdr *)(mtod(m, caddr_t)+iphlen);
 	ch = (struct sctp_chunkhdr *)((caddr_t)sh + sizeof(struct sctphdr));
 	offset -= sizeof(struct sctp_chunkhdr);
 	memset(&src, 0, sizeof(struct sockaddr_in6));
@@ -149,9 +142,6 @@ sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 		goto out;
 	}
 	ecn_bits = ((ntohl(ip6->ip6_flow) >> 20) & 0x000000ff);
-#if defined(SCTP_WITH_NO_CSUM)
-	SCTP_STAT_INCR(sctps_recvnocrc);
-#else
 	if (m->m_pkthdr.csum_flags & CSUM_SCTP_VALID) {
 		SCTP_STAT_INCR(sctps_recvhwcrc);
 		compute_crc = 0;
@@ -159,14 +149,11 @@ sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 		SCTP_STAT_INCR(sctps_recvswcrc);
 		compute_crc = 1;
 	}
-#endif
 	sctp_common_input_processing(&m, iphlen, offset, length,
 	    (struct sockaddr *)&src,
 	    (struct sockaddr *)&dst,
 	    sh, ch,
-#if !defined(SCTP_WITH_NO_CSUM)
 	    compute_crc,
-#endif
 	    ecn_bits,
 	    mflowtype, mflowid, fibnum,
 	    vrf_id, port);
@@ -176,7 +163,6 @@ out:
 	}
 	return (IPPROTO_DONE);
 }
-
 
 int
 sctp6_input(struct mbuf **i_pak, int *offp, int proto SCTP_UNUSED)
@@ -190,12 +176,8 @@ sctp6_notify(struct sctp_inpcb *inp,
     struct sctp_nets *net,
     uint8_t icmp6_type,
     uint8_t icmp6_code,
-    uint16_t next_mtu)
+    uint32_t next_mtu)
 {
-#if defined(__APPLE__) || defined(SCTP_SO_LOCK_TESTING)
-	struct socket *so;
-
-#endif
 	int timer_stopped;
 
 	switch (icmp6_type) {
@@ -219,24 +201,17 @@ sctp6_notify(struct sctp_inpcb *inp,
 		/* Treat it like an ABORT. */
 		if (icmp6_code == ICMP6_PARAMPROB_NEXTHEADER) {
 			sctp_abort_notification(stcb, 1, 0, NULL, SCTP_SO_NOT_LOCKED);
-#if defined(__APPLE__) || defined(SCTP_SO_LOCK_TESTING)
-			so = SCTP_INP_SO(inp);
-			atomic_add_int(&stcb->asoc.refcnt, 1);
-			SCTP_TCB_UNLOCK(stcb);
-			SCTP_SOCKET_LOCK(so, 1);
-			SCTP_TCB_LOCK(stcb);
-			atomic_subtract_int(&stcb->asoc.refcnt, 1);
-#endif
 			(void)sctp_free_assoc(inp, stcb, SCTP_NORMAL_PROC,
 			    SCTP_FROM_SCTP_USRREQ + SCTP_LOC_2);
-#if defined(__APPLE__) || defined(SCTP_SO_LOCK_TESTING)
-			SCTP_SOCKET_UNLOCK(so, 1);
-#endif
 		} else {
 			SCTP_TCB_UNLOCK(stcb);
 		}
 		break;
 	case ICMP6_PACKET_TOO_BIG:
+		if (net->dest_state & SCTP_ADDR_NO_PMTUD) {
+			SCTP_TCB_UNLOCK(stcb);
+			break;
+		}
 		if (SCTP_OS_TIMER_PENDING(&net->pmtu_timer.timer)) {
 			timer_stopped = 1;
 			sctp_timer_stop(SCTP_TIMER_TYPE_PATHMTURAISE, inp, stcb, net,
@@ -245,10 +220,15 @@ sctp6_notify(struct sctp_inpcb *inp,
 			timer_stopped = 0;
 		}
 		/* Update the path MTU. */
+		if (net->port) {
+			next_mtu -= sizeof(struct udphdr);
+		}
 		if (net->mtu > next_mtu) {
 			net->mtu = next_mtu;
 			if (net->port) {
-				net->mtu -= sizeof(struct udphdr);
+				sctp_hc_set_mtu(&net->ro._l_addr, inp->fibnum, next_mtu + sizeof(struct udphdr));
+			} else {
+				sctp_hc_set_mtu(&net->ro._l_addr, inp->fibnum, next_mtu);
 			}
 		}
 		/* Update the association MTU */
@@ -281,6 +261,7 @@ sctp6_ctlinput(int cmd, struct sockaddr *pktdst, void *d)
 	    pktdst->sa_len != sizeof(struct sockaddr_in6)) {
 		return;
 	}
+
 	if ((unsigned)cmd >= PRC_NCMDS) {
 		return;
 	}
@@ -304,16 +285,18 @@ sctp6_ctlinput(int cmd, struct sockaddr *pktdst, void *d)
 		if (ip6cp->ip6c_m == NULL) {
 			return;
 		}
+
 		/*
 		 * Check if we can safely examine the ports and the
 		 * verification tag of the SCTP common header.
 		 */
 		if (ip6cp->ip6c_m->m_pkthdr.len <
-		    (int32_t) (ip6cp->ip6c_off + offsetof(struct sctphdr, checksum))) {
+		    (int32_t)(ip6cp->ip6c_off + offsetof(struct sctphdr, checksum))) {
 			return;
 		}
+
 		/* Copy out the port numbers and the verification tag. */
-		bzero(&sh, sizeof(sh));
+		memset(&sh, 0, sizeof(sh));
 		m_copydata(ip6cp->ip6c_m,
 		    ip6cp->ip6c_off,
 		    sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t),
@@ -391,7 +374,7 @@ sctp6_ctlinput(int cmd, struct sockaddr *pktdst, void *d)
 			sctp6_notify(inp, stcb, net,
 			    ip6cp->ip6c_icmp6->icmp6_type,
 			    ip6cp->ip6c_icmp6->icmp6_code,
-			    (uint16_t) ntohl(ip6cp->ip6c_icmp6->icmp6_mtu));
+			    ntohl(ip6cp->ip6c_icmp6->icmp6_mtu));
 		} else {
 			if ((stcb == NULL) && (inp != NULL)) {
 				/* reduce inp's ref-count */
@@ -474,15 +457,16 @@ out:
 	return (error);
 }
 
-SYSCTL_PROC(_net_inet6_sctp6, OID_AUTO, getcred, CTLTYPE_OPAQUE | CTLFLAG_RW,
-    0, 0,
-    sctp6_getcred, "S,ucred", "Get the ucred of a SCTP6 connection");
-
+SYSCTL_PROC(_net_inet6_sctp6, OID_AUTO, getcred,
+    CTLTYPE_OPAQUE | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    0, 0, sctp6_getcred, "S,ucred",
+    "Get the ucred of a SCTP6 connection");
 
 /* This is the same as the sctp_abort() could be made common */
 static void
 sctp6_abort(struct socket *so)
 {
+	struct epoch_tracker et;
 	struct sctp_inpcb *inp;
 	uint32_t flags;
 
@@ -491,6 +475,7 @@ sctp6_abort(struct socket *so)
 		SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
 		return;
 	}
+	NET_EPOCH_ENTER(et);
 sctp_must_try_again:
 	flags = inp->sctp_flags;
 #ifdef SCTP_LOG_CLOSING
@@ -519,13 +504,13 @@ sctp_must_try_again:
 			goto sctp_must_try_again;
 		}
 	}
+	NET_EPOCH_EXIT(et);
 	return;
 }
 
 static int
 sctp6_attach(struct socket *so, int proto SCTP_UNUSED, struct thread *p SCTP_UNUSED)
 {
-	struct in6pcb *inp6;
 	int error;
 	struct sctp_inpcb *inp;
 	uint32_t vrf_id = SCTP_DEFAULT_VRFID;
@@ -535,6 +520,7 @@ sctp6_attach(struct socket *so, int proto SCTP_UNUSED, struct thread *p SCTP_UNU
 		SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
 		return (EINVAL);
 	}
+
 	if (so->so_snd.sb_hiwat == 0 || so->so_rcv.sb_hiwat == 0) {
 		error = SCTP_SORESERVE(so, SCTP_BASE_SYSCTL(sctp_sendspace), SCTP_BASE_SYSCTL(sctp_recvspace));
 		if (error)
@@ -546,23 +532,18 @@ sctp6_attach(struct socket *so, int proto SCTP_UNUSED, struct thread *p SCTP_UNU
 	inp = (struct sctp_inpcb *)so->so_pcb;
 	SCTP_INP_WLOCK(inp);
 	inp->sctp_flags |= SCTP_PCB_FLAGS_BOUND_V6;	/* I'm v6! */
-	inp6 = (struct in6pcb *)inp;
 
-	inp6->inp_vflag |= INP_IPV6;
-	inp6->in6p_hops = -1;	/* use kernel default */
-	inp6->in6p_cksum = -1;	/* just to be sure */
+	inp->ip_inp.inp.inp_vflag |= INP_IPV6;
+	inp->ip_inp.inp.in6p_hops = -1;	/* use kernel default */
+	inp->ip_inp.inp.in6p_cksum = -1;	/* just to be sure */
 #ifdef INET
 	/*
 	 * XXX: ugly!! IPv4 TTL initialization is necessary for an IPv6
 	 * socket as well, because the socket may be bound to an IPv6
 	 * wildcard address, which may match an IPv4-mapped IPv6 address.
 	 */
-	inp6->inp_ip_ttl = MODULE_GLOBAL(ip_defttl);
+	inp->ip_inp.inp.inp_ip_ttl = MODULE_GLOBAL(ip_defttl);
 #endif
-	/*
-	 * Hmm what about the IPSEC stuff that is missing here but in
-	 * sctp_attach()?
-	 */
 	SCTP_INP_WUNLOCK(inp);
 	return (0);
 }
@@ -571,7 +552,6 @@ static int
 sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 {
 	struct sctp_inpcb *inp;
-	struct in6pcb *inp6;
 	int error;
 	u_char vflagsav;
 
@@ -580,6 +560,7 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 		SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
 		return (EINVAL);
 	}
+
 	if (addr) {
 		switch (addr->sa_family) {
 #ifdef INET
@@ -603,17 +584,16 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 			return (EINVAL);
 		}
 	}
-	inp6 = (struct in6pcb *)inp;
-	vflagsav = inp6->inp_vflag;
-	inp6->inp_vflag &= ~INP_IPV4;
-	inp6->inp_vflag |= INP_IPV6;
-	if ((addr != NULL) && (SCTP_IPV6_V6ONLY(inp6) == 0)) {
+	vflagsav = inp->ip_inp.inp.inp_vflag;
+	inp->ip_inp.inp.inp_vflag &= ~INP_IPV4;
+	inp->ip_inp.inp.inp_vflag |= INP_IPV6;
+	if ((addr != NULL) && (SCTP_IPV6_V6ONLY(inp) == 0)) {
 		switch (addr->sa_family) {
 #ifdef INET
 		case AF_INET:
 			/* binding v4 addr to v6 socket, so reset flags */
-			inp6->inp_vflag |= INP_IPV4;
-			inp6->inp_vflag &= ~INP_IPV6;
+			inp->ip_inp.inp.inp_vflag |= INP_IPV4;
+			inp->ip_inp.inp.inp_vflag &= ~INP_IPV6;
 			break;
 #endif
 #ifdef INET6
@@ -624,15 +604,15 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 				sin6_p = (struct sockaddr_in6 *)addr;
 
 				if (IN6_IS_ADDR_UNSPECIFIED(&sin6_p->sin6_addr)) {
-					inp6->inp_vflag |= INP_IPV4;
+					inp->ip_inp.inp.inp_vflag |= INP_IPV4;
 				}
 #ifdef INET
 				if (IN6_IS_ADDR_V4MAPPED(&sin6_p->sin6_addr)) {
 					struct sockaddr_in sin;
 
 					in6_sin6_2_sin(&sin, sin6_p);
-					inp6->inp_vflag |= INP_IPV4;
-					inp6->inp_vflag &= ~INP_IPV6;
+					inp->ip_inp.inp.inp_vflag |= INP_IPV4;
+					inp->ip_inp.inp.inp_vflag &= ~INP_IPV6;
 					error = sctp_inpcb_bind(so, (struct sockaddr *)&sin, NULL, p);
 					goto out;
 				}
@@ -668,10 +648,9 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 	error = sctp_inpcb_bind(so, addr, NULL, p);
 out:
 	if (error != 0)
-		inp6->inp_vflag = vflagsav;
+		inp->ip_inp.inp.inp_vflag = vflagsav;
 	return (error);
 }
-
 
 static void
 sctp6_close(struct socket *so)
@@ -688,22 +667,18 @@ sctp6_disconnect(struct socket *so)
 	return (sctp_disconnect(so));
 }
 
-
 int
 sctp_sendm(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
     struct mbuf *control, struct thread *p);
-
 
 static int
 sctp6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
     struct mbuf *control, struct thread *p)
 {
 	struct sctp_inpcb *inp;
-	struct in6pcb *inp6;
 
 #ifdef INET
 	struct sockaddr_in6 *sin6;
-
 #endif				/* INET */
 	/* No SPL needed since sctp_output does this */
 
@@ -717,7 +692,6 @@ sctp6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 		SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
 		return (EINVAL);
 	}
-	inp6 = (struct in6pcb *)inp;
 	/*
 	 * For the TCP model we may get a NULL addr, if we are a connected
 	 * socket thats ok.
@@ -737,7 +711,7 @@ sctp6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 	}
 #ifdef INET
 	sin6 = (struct sockaddr_in6 *)addr;
-	if (SCTP_IPV6_V6ONLY(inp6)) {
+	if (SCTP_IPV6_V6ONLY(inp)) {
 		/*
 		 * if IPV6_V6ONLY flag, we discard datagrams destined to a
 		 * v4 addr or v4-mapped addr
@@ -787,9 +761,12 @@ connected_type:
 		 * optionaly switch back to this code (by changing back the
 		 * defininitions but this is not advisable.
 		 */
+		struct epoch_tracker et;
 		int ret;
 
+		NET_EPOCH_ENTER(et);
 		ret = sctp_output(inp, inp->pkt, addr, inp->control, p, flags);
+		NET_EPOCH_EXIT(et);
 		inp->pkt = NULL;
 		inp->control = NULL;
 		return (ret);
@@ -801,21 +778,16 @@ connected_type:
 static int
 sctp6_connect(struct socket *so, struct sockaddr *addr, struct thread *p)
 {
+	struct epoch_tracker et;
 	uint32_t vrf_id;
 	int error = 0;
 	struct sctp_inpcb *inp;
 	struct sctp_tcb *stcb;
-
 #ifdef INET
-	struct in6pcb *inp6;
 	struct sockaddr_in6 *sin6;
 	union sctp_sockstore store;
-
 #endif
 
-#ifdef INET
-	inp6 = (struct in6pcb *)so->so_pcb;
-#endif
 	inp = (struct sctp_inpcb *)so->so_pcb;
 	if (inp == NULL) {
 		SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, ECONNRESET);
@@ -873,7 +845,7 @@ sctp6_connect(struct socket *so, struct sockaddr *addr, struct thread *p)
 	}
 #ifdef INET
 	sin6 = (struct sockaddr_in6 *)addr;
-	if (SCTP_IPV6_V6ONLY(inp6)) {
+	if (SCTP_IPV6_V6ONLY(inp)) {
 		/*
 		 * if IPV6_V6ONLY flag, ignore connections destined to a v4
 		 * addr or v4-mapped addr
@@ -901,7 +873,7 @@ sctp6_connect(struct socket *so, struct sockaddr *addr, struct thread *p)
 	if (inp->sctp_flags & SCTP_PCB_FLAGS_CONNECTED) {
 		stcb = LIST_FIRST(&inp->sctp_asoc_list);
 		if (stcb) {
-			SCTP_TCB_UNLOCK(stcb);
+			SCTP_TCB_LOCK(stcb);
 		}
 		SCTP_INP_RUNLOCK(inp);
 	} else {
@@ -927,7 +899,8 @@ sctp6_connect(struct socket *so, struct sockaddr *addr, struct thread *p)
 	/* We are GOOD to go */
 	stcb = sctp_aloc_assoc(inp, addr, &error, 0, vrf_id,
 	    inp->sctp_ep.pre_open_stream_count,
-	    inp->sctp_ep.port, p);
+	    inp->sctp_ep.port, p,
+	    SCTP_INITIALIZE_AUTH_PARAMS);
 	SCTP_ASOC_CREATE_UNLOCK(inp);
 	if (stcb == NULL) {
 		/* Gak! no memory */
@@ -938,14 +911,12 @@ sctp6_connect(struct socket *so, struct sockaddr *addr, struct thread *p)
 		/* Set the connected flag so we can queue data */
 		soisconnecting(so);
 	}
-	stcb->asoc.state = SCTP_STATE_COOKIE_WAIT;
+	SCTP_SET_STATE(stcb, SCTP_STATE_COOKIE_WAIT);
 	(void)SCTP_GETTIME_TIMEVAL(&stcb->asoc.time_entered);
-
-	/* initialize authentication parameters for the assoc */
-	sctp_initialize_auth_params(inp, stcb);
-
+	NET_EPOCH_ENTER(et);
 	sctp_send_initiate(inp, stcb, SCTP_SO_LOCKED);
 	SCTP_TCB_UNLOCK(stcb);
+	NET_EPOCH_EXIT(et);
 	return (error);
 }
 
@@ -1012,7 +983,7 @@ sctp6_getaddr(struct socket *so, struct sockaddr **addr)
 				return (ENOENT);
 			}
 			vrf_id = inp->def_vrf_id;
-			sctp_ifa = sctp_source_address_selection(inp, stcb, (sctp_route_t *) & net->ro, net, 0, vrf_id);
+			sctp_ifa = sctp_source_address_selection(inp, stcb, (sctp_route_t *)&net->ro, net, 0, vrf_id);
 			if (sctp_ifa) {
 				sin6->sin6_addr = sctp_ifa->address.sin6.sin6_addr;
 			}
@@ -1118,13 +1089,14 @@ sctp6_peeraddr(struct socket *so, struct sockaddr **addr)
 static int
 sctp6_in6getaddr(struct socket *so, struct sockaddr **nam)
 {
-	struct in6pcb *inp6 = sotoin6pcb(so);
+	struct inpcb *inp = sotoinpcb(so);
 	int error;
 
-	if (inp6 == NULL) {
+	if (inp == NULL) {
 		SCTP_LTRACE_ERR_RET(NULL, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
 		return (EINVAL);
 	}
+
 	/* allow v6 addresses precedence */
 	error = sctp6_getaddr(so, nam);
 #ifdef INET
@@ -1149,17 +1121,17 @@ sctp6_in6getaddr(struct socket *so, struct sockaddr **nam)
 	return (error);
 }
 
-
 static int
 sctp6_getpeeraddr(struct socket *so, struct sockaddr **nam)
 {
-	struct in6pcb *inp6 = sotoin6pcb(so);
+	struct inpcb *inp = sotoinpcb(so);
 	int error;
 
-	if (inp6 == NULL) {
+	if (inp == NULL) {
 		SCTP_LTRACE_ERR_RET(NULL, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
 		return (EINVAL);
 	}
+
 	/* allow v6 addresses precedence */
 	error = sctp6_peeraddr(so, nam);
 #ifdef INET

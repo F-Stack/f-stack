@@ -11,7 +11,7 @@
   * (https://en.wikipedia.org/wiki/Peterson%27s_algorithm)
   * for two execution units to make sure that rte_smp_mb() prevents
   * store-load reordering to happen.
-  * Also when executed on a single lcore could be used as a approxiamate
+  * Also when executed on a single lcore could be used as a approximate
   * estimation of number of cycles particular implementation of rte_smp_mb()
   * will take.
   */
@@ -236,7 +236,7 @@ plock_test(uint64_t iter, enum plock_use_type utype)
 
 	/* test phase - start and wait for completion on each active lcore */
 
-	rte_eal_mp_remote_launch(plock_test1_lcore, lpt, CALL_MASTER);
+	rte_eal_mp_remote_launch(plock_test1_lcore, lpt, CALL_MAIN);
 	rte_eal_mp_wait_lcore();
 
 	/* validation phase - make sure that shared and local data match */

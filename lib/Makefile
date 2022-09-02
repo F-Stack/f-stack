@@ -1,6 +1,6 @@
 # 
 # Copyright (c) 2013 Patrick Kelsey. All rights reserved.
-# Copyright (C) 2017 THL A29 Limited, a Tencent company.
+# Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
 # All rights reserved.
 #
 # Derived in part from libuinet's Makefile.
@@ -11,6 +11,7 @@
 
 TOPDIR?=${CURDIR}/..
 S=${TOPDIR}/freebsd
+C=${TOPDIR}/freebsd/contrib/ck/include
 MACHINE_INCLUDES_ROOT:=${CURDIR}/machine_include
 OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
@@ -19,44 +20,44 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.21
+F-STACK_VERSION=1.22
+TGT_OS=$(shell uname)
+ifeq ($(TGT_OS),FreeBSD)
+CC=gcc
+endif
 
 HOST_OS:=$(shell uname -s)
 
-#DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
+# No DPDK KNI support on FreeBSD
+ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
+endif
+
 #FF_FLOW_ISOLATE=1
+
+# NETGRAPH drivers ipfw
 #FF_NETGRAPH=1
 #FF_IPFW=1
+
 #FF_USE_PAGE_ARRAY=1
 #FF_ZC_SEND=1
 FF_INET6=1
 
+# TCPHPTS drivers rack and bbr
+FF_TCPHPTS=1
+FF_EXTRA_TCP_STACKS=1
 
 include ${TOPDIR}/mk/kern.pre.mk
 
-ifeq ($(FF_DPDK),)
-ifeq (${MACHINE_CPUARCH},aarch64)
-    FF_DPDK=${TOPDIR}/dpdk/build
-else
-    FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
-endif
+ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+$(error "no installation of DPDK found, maybe you shuld export environment variable `PKG_CONFIG_PATH`")
 endif
 
-ifdef RTE_SDK
-ifeq (${MACHINE_CPUARCH},aarch64) 
-    FF_DPDK=${RTE_SDK}/build
-else
-    FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
-endif
-endif
+PKGCONF ?= pkg-config
 
-DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror -include ${FF_DPDK}/include/rte_config.h
-DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3
-DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
-DPDK_CFLAGS+= -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2
-DPDK_CFLAGS+= -I${FF_DPDK}/include
+DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
@@ -65,6 +66,11 @@ INCLUDES+= -I./opt
 
 # Include search path for files that only include host OS headers
 HOST_INCLUDES= -I.
+# Use libepoll shim on FreeBSD
+ifeq ($(TGT_OS),FreeBSD)
+HOST_INCLUDES+= -I/usr/local/include/libepoll-shim
+endif
+
 ifndef DEBUG
 HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb -Wno-format-truncation
 else
@@ -94,9 +100,26 @@ ifdef FF_USE_PAGE_ARRAY
 HOST_CFLAGS+= -DFF_USE_PAGE_ARRAY
 endif
 
+HOST_CFLAGS+= -DINET
+CFLAGS+= -DINET
+
+GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
+ifeq "$(GCCVERGE10)" "1" 
+    CFLAGS+= -Wno-error=stringop-overflow
+endif 
+
+GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
+ifeq "$(GCCVERGE11)" "1" 
+    CFLAGS+= -Wno-error=stringop-overread
+endif
+
 ifdef FF_INET6
 HOST_CFLAGS+= -DINET6
 CFLAGS+= -DINET6
+endif
+
+ifdef FF_TCPHPTS
+CFLAGS+= -DTCPHPTS -DRATELIMIT
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -165,6 +188,7 @@ endif
 
 VPATH+= $S/${MACHINE_CPUARCH}/${MACHINE_CPUARCH}
 VPATH+= $S/kern
+VPATH+= $S/x86
 VPATH+= $S/crypto
 VPATH+= $S/crypto/aesni
 VPATH+= $S/crypto/blowfish
@@ -174,6 +198,7 @@ VPATH+= $S/crypto/rijndael
 VPATH+= $S/crypto/sha2
 VPATH+= $S/crypto/siphash
 VPATH+= $S/net
+VPATH+= $S/net/route
 ifdef FF_NETGRAPH
 VPATH+= $S/netgraph
 endif
@@ -182,6 +207,9 @@ VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
 ifdef FF_INET6
 VPATH+= $S/netinet6
+endif
+ifdef FF_EXTRA_TCP_STACKS
+VPATH+= $S/netinet/tcp_stacks
 endif
 VPATH+= $S/netipsec
 ifdef FF_IPFW
@@ -203,6 +231,7 @@ FF_SRCS+=                     \
 	ff_kern_subr.c        \
 	ff_kern_synch.c       \
 	ff_kern_timeout.c     \
+	ff_subr_epoch.c       \
 	ff_lock.c             \
 	ff_syscall_wrapper.c  \
 	ff_subr_prf.c         \
@@ -291,6 +320,7 @@ KERN_SRCS+=                 \
 	subr_sbuf.c         \
 	subr_taskqueue.c    \
 	subr_unit.c         \
+	subr_smr.c          \
 	sys_capability.c    \
 	sys_generic.c       \
 	sys_socket.c        \
@@ -315,23 +345,20 @@ KERN_MSRCS+=		\
 ifeq (${MACHINE_CPUARCH},arm64)
 LIBKERN_SRCS+=		 \
 	bcd.c		 \
-	crc32.c          \
 	inet_ntoa.c	 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
 	strnlen.c        \
-	zlib.c		 \
 	fls.c		 \
 	flsl.c
 else
 LIBKERN_SRCS+=		 \
 	bcd.c		 \
-	crc32.c          \
+	gsb_crc32.c	 \
 	inet_ntoa.c	 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
-	strnlen.c        \
-	zlib.c		 
+	strnlen.c
 endif
 
 
@@ -363,6 +390,14 @@ NET_SRCS+=		 \
 	raw_cb.c	 \
 	raw_usrreq.c	 \
 	route.c		 \
+	route_ctl.c	 \
+	route_tables.c	 \
+	route_helpers.c	 \
+	route_ifaddrs.c	 \
+	route_temporal.c \
+	nhop_utils.c	 \
+	nhop.c		 \
+	nhop_ctl.c	 \
 	rtsock.c         \
 	slcompress.c
 
@@ -435,7 +470,6 @@ NETINET_SRCS+=		\
 	ip_output.c	\
 	raw_ip.c	\
 	tcp_debug.c	\
-	tcp_fastopen.c	\
 	tcp_hostcache.c	\
 	tcp_input.c	\
 	tcp_lro.c	\
@@ -495,11 +529,32 @@ NETINET6_SRCS+=		\
 	#ip6_ipsec.c
 	#sctp6_usrreq.c
 	#in6_rss.c
+
+ifdef FF_TCPHPTS
+EXTRA_TCP_STACKS_SRCS+=		\
+	tcp_hpts.c
+endif
+
+ifdef FF_EXTRA_TCP_STACKS
+EXTRA_TCP_STACKS_SRCS+=		\
+	subr_filter.c		\
+	tcp_ratelimit.c		\
+	arc4random_uniform.c	\
+	sack_filter.c		\
+	rack_bbr_common.c	\
+	rack.c			\
+	bbr.c
+endif
+
+ 
+ifneq ($(TGT_OS),FreeBSD)
 ifndef FF_KNI
 FF_HOST_SRCS+=         \
         ff_dpdk_kni.c
-endif
-endif
+endif		#FF_KNI
+endif		#FreeBSD OS Check
+
+endif		#INET6
 
 ifdef FF_IPFW
 NETIPFW_SRCS+=             \
@@ -574,7 +629,7 @@ MSRCS+= $(patsubst %.m,%.c,${OPENCRYPTO_MSRCS})
 ASM_SRCS = ${CRYPTO_ASM_SRCS}
 
 SRCS=  ${FF_SRCS} ${CRYPTO_SRCS} ${KERN_SRCS} ${LIBKERN_SRCS} ${MACHINE_SRCS}
-SRCS+= ${MSRCS} ${NET_SRCS} ${NETGRAPH_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS}
+SRCS+= ${MSRCS} ${NET_SRCS} ${NETGRAPH_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS} ${EXTRA_TCP_STACKS_SRCS}
 SRCS+= ${NETIPSEC_SRCS} ${NETIPFW_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
 
 # If witness is enabled.

@@ -1,5 +1,18 @@
 {
   "top": {
+    "type": "ethernet",
+    "type": "bridge",
+    "type": "18u",
+    "type": 24,
+    "address": "0x0",
+    "port": 1,
+    "address": "0x0",
+    "port": 1,
+    "address": "0x0",
+    "port": 1,
+    "used-percent": 12,
+    "kve_start": "0xdeadbeef",
+    "kve_end": "0xcabb1e",
     "host": "my-box",
     "domain": "example.com",
     "host": "my-box",
@@ -108,6 +121,48 @@
         "water"
       ]
     },
+    "data": {
+      "item": [
+        {
+          "sku": "GRO-000-415",
+          "name": "gum",
+          "sold": 1412,
+          "on-order": 10,
+          "in-stock": 54
+        },
+        {
+          "sku": "HRD-000-212",
+          "name": "rope",
+          "sold": 85,
+          "extra": "special",
+          "on-order": 2,
+          "in-stock": 4
+        },
+        {
+          "sku": "HRD-000-517",
+          "name": "ladder",
+          "sold": 0,
+          "extra": "special",
+          "on-order": 1,
+          "in-stock": 2
+        },
+        {
+          "sku": "HRD-000-632",
+          "name": "bolt",
+          "sold": 4123,
+          "on-order": 42,
+          "in-stock": 144
+        },
+        {
+          "sku": "GRO-000-2331",
+          "name": "water",
+          "sold": 17,
+          "extra": "special",
+          "on-order": 2,
+          "in-stock": 14
+        }
+      ]
+    },
     "cost": 425,
     "cost": 455,
     "mode": "mode",
@@ -115,6 +170,9 @@
     "links": "links",
     "user": "user",
     "group": "group",
+    "pre": "that",
+    "links": 3,
+    "post": "this",
     "mode": "/some/file",
     "mode_octal": 640,
     "links": 1,

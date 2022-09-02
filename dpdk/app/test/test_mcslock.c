@@ -28,7 +28,7 @@
  * These tests are derived from spin lock test cases.
  *
  * - The functional test takes all of these locks and launches the
- *   ''test_mcslock_per_core()'' function on each core (except the master).
+ *   ''test_mcslock_per_core()'' function on each core (except the main).
  *
  *   - The function takes the global lock, display something, then releases
  *     the global lock on each core.
@@ -46,7 +46,7 @@ static unsigned int count;
 static rte_atomic32_t synchro;
 
 static int
-test_mcslock_per_core(__attribute__((unused)) void *arg)
+test_mcslock_per_core(__rte_unused void *arg)
 {
 	/* Per core me node. */
 	rte_mcslock_t ml_me;
@@ -119,9 +119,9 @@ test_mcslock_perf(void)
 	printf("\nTest with lock on %u cores...\n", (rte_lcore_count()));
 
 	rte_atomic32_set(&synchro, 0);
-	rte_eal_mp_remote_launch(load_loop_fn, &lock, SKIP_MASTER);
+	rte_eal_mp_remote_launch(load_loop_fn, &lock, SKIP_MAIN);
 
-	/* start synchro and launch test on master */
+	/* start synchro and launch test on main */
 	rte_atomic32_set(&synchro, 1);
 	load_loop_fn(&lock);
 
@@ -144,14 +144,14 @@ test_mcslock_perf(void)
  * return immediately.
  */
 static int
-test_mcslock_try(__attribute__((unused)) void *arg)
+test_mcslock_try(__rte_unused void *arg)
 {
 	/**< Per core me node. */
 	rte_mcslock_t ml_me;
 	rte_mcslock_t ml_try_me;
 
-	/* Locked ml_try in the master lcore, so it should fail
-	 * when trying to lock it in the slave lcore.
+	/* Locked ml_try in the main lcore, so it should fail
+	 * when trying to lock it in the worker lcore.
 	 */
 	if (rte_mcslock_trylock(&p_ml_try, &ml_try_me) == 0) {
 		rte_mcslock_lock(&p_ml, &ml_me);
@@ -181,20 +181,20 @@ test_mcslock(void)
 	 * Test mcs lock & unlock on each core
 	 */
 
-	/* slave cores should be waiting: print it */
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	/* worker cores should be waiting: print it */
+	RTE_LCORE_FOREACH_WORKER(i) {
 		printf("lcore %d state: %d\n", i,
 				(int) rte_eal_get_lcore_state(i));
 	}
 
 	rte_mcslock_lock(&p_ml, &ml_me);
 
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	RTE_LCORE_FOREACH_WORKER(i) {
 		rte_eal_remote_launch(test_mcslock_per_core, NULL, i);
 	}
 
-	/* slave cores should be busy: print it */
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	/* worker cores should be busy: print it */
+	RTE_LCORE_FOREACH_WORKER(i) {
 		printf("lcore %d state: %d\n", i,
 				(int) rte_eal_get_lcore_state(i));
 	}
@@ -206,19 +206,19 @@ test_mcslock(void)
 	/*
 	 * Test if it could return immediately from try-locking a locked object.
 	 * Here it will lock the mcs lock object first, then launch all the
-	 * slave lcores to trylock the same mcs lock object.
-	 * All the slave lcores should give up try-locking a locked object and
+	 * worker lcores to trylock the same mcs lock object.
+	 * All the worker lcores should give up try-locking a locked object and
 	 * return immediately, and then increase the "count" initialized with
 	 * zero by one per times.
 	 * We can check if the "count" is finally equal to the number of all
-	 * slave lcores to see if the behavior of try-locking a locked
+	 * worker lcores to see if the behavior of try-locking a locked
 	 * mcslock object is correct.
 	 */
 	if (rte_mcslock_trylock(&p_ml_try, &ml_try_me) == 0)
 		return -1;
 
 	count = 0;
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	RTE_LCORE_FOREACH_WORKER(i) {
 		rte_eal_remote_launch(test_mcslock_try, NULL, i);
 	}
 	rte_eal_mp_wait_lcore();

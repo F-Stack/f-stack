@@ -1,5 +1,9 @@
 <top>
   <data>
+    <name>em0</name>
+    <flags>0x8843</flags>
+    <name>em0</name>
+    <flags>0x8843</flags>
     <what>braces</what>
   <message>abcdef
 </message>
@@ -39,7 +43,7 @@
     <unknown>1010</unknown>
     <min>15</min>
     <cur>20</cur>
-    <max>30</max>
+    <max>125</max>
     <min>15</min>
     <cur>20</cur>
     <max>125</max>
@@ -81,6 +85,21 @@
 </message>
     <error>
       <message>Shut 'er down, Clancey!  She's a-pumpin' mud!  &lt;&gt;!,"!&lt;&gt;
+</message>
+    </error>
+    <error>
+      <message>err message (1)</message>
+    </error>
+    <error>
+      <message>err message (2)
+</message>
+    </error>
+    <error>
+      <message>err message (1)
+</message>
+    </error>
+    <error>
+      <message>err message (2)
 </message>
     </error>
   </data>

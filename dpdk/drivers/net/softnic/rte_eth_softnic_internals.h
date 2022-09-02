@@ -28,14 +28,15 @@
 #include "conn.h"
 
 #define NAME_SIZE                                            64
+#define SOFTNIC_PATH_MAX                                     4096
 
 /**
  * PMD Parameters
  */
 
 struct pmd_params {
-	const char *name;
-	const char *firmware;
+	char name[NAME_SIZE];
+	char firmware[SOFTNIC_PATH_MAX];
 	uint16_t conn_port;
 	uint32_t cpu_id;
 	int sc; /**< Service cores. */
@@ -164,11 +165,18 @@ TAILQ_HEAD(softnic_link_list, softnic_link);
 #ifndef TM_MAX_PIPE_PROFILE
 #define TM_MAX_PIPE_PROFILE				256
 #endif
+
+#ifndef TM_MAX_SUBPORT_PROFILE
+#define TM_MAX_SUBPORT_PROFILE				256
+#endif
+
 struct tm_params {
 	struct rte_sched_port_params port_params;
-
 	struct rte_sched_subport_params subport_params[TM_MAX_SUBPORTS];
-
+	struct rte_sched_subport_profile_params
+		subport_profile[TM_MAX_SUBPORT_PROFILE];
+	uint32_t n_subport_profiles;
+	uint32_t subport_to_profile[TM_MAX_SUBPORT_PROFILE];
 	struct rte_sched_pipe_params pipe_profiles[TM_MAX_PIPE_PROFILE];
 	uint32_t n_pipe_profiles;
 	uint32_t pipe_to_profile[TM_MAX_SUBPORTS * TM_MAX_PIPES_PER_SUBPORT];
@@ -547,7 +555,7 @@ TAILQ_HEAD(pipeline_list, pipeline);
 #endif
 
 /**
- * Master thead: data plane thread context
+ * Main thread: data plane thread context
  */
 struct softnic_thread {
 	struct rte_ring *msgq_req;

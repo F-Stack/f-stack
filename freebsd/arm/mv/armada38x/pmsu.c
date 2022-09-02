@@ -69,7 +69,6 @@ static device_method_t pmsu_methods[] = {
 	DEVMETHOD(device_probe,		pmsu_probe),
 	DEVMETHOD(device_attach,	pmsu_attach),
 	DEVMETHOD(device_detach,	pmsu_detach),
-
 	{ 0, 0 }
 };
 
@@ -146,7 +145,8 @@ pmsu_boot_secondary_cpu(void)
 	    pmap_kextract((vm_offset_t)mpentry));
 
 	dcache_wbinv_poc_all();
-	armv7_sev();
+	dsb();
+	sev();
 
 	bus_space_unmap(fdtbus_bs_tag, vaddr, MV_PMSU_REGS_LEN);
 

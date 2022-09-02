@@ -22,7 +22,7 @@ struct ips_tbl_entry {
  * in previous test_lpm6_routes.h . Because this table has only 1000
  * lines, keeping it doesn't make LPM6 test case so large and also
  * make the algorithm to generate rule table unnecessary and the
- * algorithm to genertate test input IPv6 and associated expected
+ * algorithm to generate test input IPv6 and associated expected
  * next_hop much simple.
  */
 
@@ -1029,8 +1029,7 @@ static struct rules_tbl_entry large_route_table[] = {
 	{{234, 149, 220, 106, 0, 144, 214, 128, 35, 102, 0, 0, 0, 0, 0, 0}, 79, 106},
 };
 
-#define  NUM_ROUTE_ENTRIES \
-	(sizeof(large_route_table) / sizeof(large_route_table[0]))
+#define  NUM_ROUTE_ENTRIES RTE_DIM(large_route_table)
 
 #define  NUM_IPS_ENTRIES (NUM_ROUTE_ENTRIES * 100)
 

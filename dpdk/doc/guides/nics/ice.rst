@@ -4,59 +4,55 @@
 ICE Poll Mode Driver
 ======================
 
-The ice PMD (librte_pmd_ice) provides poll mode driver support for
-10/25 Gbps Intel® Ethernet 810 Series Network Adapters based on
-the Intel Ethernet Controller E810.
-
+The ice PMD (**librte_net_ice**) provides poll mode driver support for
+10/25/50/100 Gbps Intel® Ethernet 800 Series Network Adapters based on
+the Intel Ethernet Controller E810 and Intel Ethernet Connection E822/E823.
 
 Prerequisites
 -------------
-
-- Identifying your adapter using `Intel Support
-  <http://www.intel.com/support>`_ and get the latest NVM/FW images.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
 - To get better performance on Intel platforms, please follow the "How to get best performance with NICs on Intel platforms"
   section of the :ref:`Getting Started Guide for Linux <linux_gsg>`.
 
+- Please follow the matching list to download specific kernel driver, firmware and DDP package from
+  `https://www.intel.com/content/www/us/en/search.html?ws=text#q=e810&t=Downloads&layout=table`.
+
+- To understand what is DDP package and how it works, please review `Intel® Ethernet Controller E810 Dynamic
+  Device Personalization (DDP) for Telecommunications Technology Guide <https://cdrdv2.intel.com/v1/dl/getContent/617015>`_.
+
+- To understand DDP for COMMs usage with DPDK, please review `Intel® Ethernet 800 Series Telecommunication (Comms)
+  Dynamic Device Personalization (DDP) Package <https://cdrdv2.intel.com/v1/dl/getContent/618651>`_.
+
+
 Recommended Matching List
 -------------------------
 
-It is highly recommended to upgrade the ice kernel driver and firmware and
-DDP packages to avoid the compatibility issues with ice PMD. Here is the
-suggested matching list.
+It is highly recommended to upgrade the ice kernel driver, firmware and DDP package
+to avoid the compatibility issues with ice PMD.
+Here is the suggested matching list which has been tested and verified.
+The detailed information can refer to chapter Tested Platforms/Tested NICs in release notes.
 
-   +----------------------+-----------------------+------------------+----------------+-------------------+
-   |     DPDK version     | Kernel driver version | Firmware version | DDP OS Package | DDP COMMS Package |
-   +======================+=======================+==================+================+===================+
-   |        19.11         |        0.12.25        |     1.1.16.39    |      1.3.4     |       1.3.10      |
-   +----------------------+-----------------------+------------------+----------------+-------------------+
-   | 19.08 (experimental) |        0.10.1         |     1.1.12.7     |      1.2.0     |        N/A        |
-   +----------------------+-----------------------+------------------+----------------+-------------------+
-   | 19.05 (experimental) |        0.9.4          |     1.1.10.16    |      1.1.0     |        N/A        |
-   +----------------------+-----------------------+------------------+----------------+-------------------+
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    DPDK   | Kernel Driver | OS Default DDP  | COMMS DDP | Wireless DDP | Firmware  |
+   +===========+===============+=================+===========+==============+===========+
+   |    20.11  |     1.3.2     |      1.3.20     |  1.3.24   |      N/A     |    2.3    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.02  |     1.4.11    |      1.3.24     |  1.3.28   |    1.3.4     |    2.4    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.05  |     1.6.5     |      1.3.26     |  1.3.30   |    1.3.6     |    3.0    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.08  |     1.7.16    |      1.3.27     |  1.3.31   |    1.3.7     |    3.1    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.11  |     1.7.16    |      1.3.27     |  1.3.31   |    1.3.7     |    3.1    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    22.03  |     1.8.3     |      1.3.28     |  1.3.35   |    1.3.8     |    3.2    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
 
 Pre-Installation Configuration
 ------------------------------
 
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_ICE_PMD`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_ice`` driver.
-
-- ``CONFIG_RTE_LIBRTE_ICE_DEBUG_*`` (default ``n``)
-
-  Toggle display of generic debugging messages.
-
-- ``CONFIG_RTE_LIBRTE_ICE_16BYTE_RX_DESC`` (default ``n``)
-
-  Toggle to use a 16-byte RX descriptor, by default the RX descriptor is 32 byte.
 
 Runtime Config Options
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -67,7 +63,7 @@ Runtime Config Options
   But if user intend to use the device without OS package, user can take ``devargs``
   parameter ``safe-mode-support``, for example::
 
-    -w 80:00.0,safe-mode-support=1
+    -a 80:00.0,safe-mode-support=1
 
   Then the driver will be initialized successfully and the device will enter Safe Mode.
   NOTE: In Safe mode, only very limited features are available, features like RSS,
@@ -78,7 +74,7 @@ Runtime Config Options
   In pipeline mode, a flow can be set at one specific stage by setting parameter
   ``priority``. Currently, we support two stages: priority = 0 or !0. Flows with
   priority 0 located at the first pipeline stage which typically be used as a firewall
-  to drop the packet on a blacklist(we called it permission stage). At this stage,
+  to drop the packet on a blocklist(we called it permission stage). At this stage,
   flow rules are created for the device's exact match engine: switch. Flows with priority
   !0 located at the second stage, typically packets are classified here and be steered to
   specific queue or queue group (we called it distribution stage), At this stage, flow
@@ -90,19 +86,7 @@ Runtime Config Options
   use pipeline mode by setting ``devargs`` parameter ``pipeline-mode-support``,
   for example::
 
-    -w 80:00.0,pipeline-mode-support=1
-
-- ``Flow Mark Support`` (default ``0``)
-
-  This is a hint to the driver to select the data path that supports flow mark extraction
-  by default.
-  NOTE: This is an experimental devarg, it will be removed when any of below conditions
-  is ready.
-  1) all data paths support flow mark (currently vPMD does not)
-  2) a new offload like RTE_DEV_RX_OFFLOAD_FLOW_MARK be introduced as a standard way to hint.
-  Example::
-
-    -w 80:00.0,flow-mark-support=1
+    -a 80:00.0,pipeline-mode-support=1
 
 - ``Protocol extraction for per queue``
 
@@ -111,26 +95,26 @@ Runtime Config Options
 
   The argument format is::
 
-      -w 18:00.0,proto_xtr=<queues:protocol>[<queues:protocol>...]
-      -w 18:00.0,proto_xtr=<protocol>
+      -a 18:00.0,proto_xtr=<queues:protocol>[<queues:protocol>...]
+      -a 18:00.0,proto_xtr=<protocol>
 
   Queues are grouped by ``(`` and ``)`` within the group. The ``-`` character
   is used as a range separator and ``,`` is used as a single number separator.
   The grouping ``()`` can be omitted for single element group. If no queues are
   specified, PMD will use this protocol extraction type for all queues.
 
-  Protocol is : ``vlan, ipv4, ipv6, ipv6_flow, tcp``.
+  Protocol is : ``vlan, ipv4, ipv6, ipv6_flow, tcp, ip_offset``.
 
   .. code-block:: console
 
-    testpmd -w 18:00.0,proto_xtr='[(1,2-3,8-9):tcp,10-13:vlan]'
+    dpdk-testpmd -a 18:00.0,proto_xtr='[(1,2-3,8-9):tcp,10-13:vlan]'
 
   This setting means queues 1, 2-3, 8-9 are TCP extraction, queues 10-13 are
   VLAN extraction, other queues run with no protocol extraction.
 
   .. code-block:: console
 
-    testpmd -w 18:00.0,proto_xtr=vlan,proto_xtr='[(1,2-3,8-9):tcp,10-23:ipv6]'
+    dpdk-testpmd -a 18:00.0,proto_xtr=vlan,proto_xtr='[(1,2-3,8-9):tcp,10-23:ipv6]'
 
   This setting means queues 1, 2-3, 8-9 are TCP extraction, queues 10-23 are
   IPv6 extraction, other queues use the default VLAN extraction.
@@ -200,6 +184,18 @@ Runtime Config Options
 
   TCPHDR2 - Reserved
 
+  .. table:: Protocol extraction : ``ip_offset``
+
+   +----------------------------+----------------------------+
+   |           IPHDR2           |           IPHDR1           |
+   +============================+============================+
+   |       IPv6 HDR Offset      |       IPv4 HDR Offset      |
+   +----------------------------+----------------------------+
+
+  IPHDR1 - Outer/Single IPv4 Header offset.
+
+  IPHDR2 - Outer/Single IPv6 Header offset.
+
   Use ``rte_net_ice_dynf_proto_xtr_metadata_get`` to access the protocol
   extraction metadata, and use ``RTE_PKT_RX_DYNF_PROTO_XTR_*`` to get the
   metadata type of ``struct rte_mbuf::ol_flags``.
@@ -225,9 +221,12 @@ are chosen based on 2 conditions.
 - ``CPU``
   On the X86 platform, the driver checks if the CPU supports AVX2.
   If it's supported, AVX2 paths will be chosen. If not, SSE is chosen.
+  If the CPU supports AVX512 and EAL argument ``--force-max-simd-bitwidth``
+  is set to 512, AVX512 paths will be chosen.
 
 - ``Offload features``
-  The supported HW offload features are described in the document ice_vec.ini.
+  The supported HW offload features are described in the document ice.ini,
+  A value "P" means the offload feature is not supported by vector path.
   If any not supported features are used, ICE vector PMD is disabled and the
   normal paths are chosen.
 
@@ -239,6 +238,53 @@ is just this port's MAC address. If SW tries to send such packets, HW will
 report a MDD event and drop the packets.
 
 The APPs based on DPDK should avoid providing such packets.
+
+Device Config Function (DCF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This section demonstrates ICE DCF PMD, which shares the core module with ICE
+PMD and iAVF PMD.
+
+A DCF (Device Config Function) PMD bounds to the device's trusted VF with ID 0,
+it can act as a sole controlling entity to exercise advance functionality (such
+as switch, ACL) for the rest VFs.
+
+The DCF PMD needs to advertise and acquire DCF capability which allows DCF to
+send AdminQ commands that it would like to execute over to the PF and receive
+responses for the same from PF.
+
+.. _figure_ice_dcf:
+
+.. figure:: img/ice_dcf.*
+
+   DCF Communication flow.
+
+#. Create the VFs::
+
+      echo 4 > /sys/bus/pci/devices/0000\:18\:00.0/sriov_numvfs
+
+#. Enable the VF0 trust on::
+
+      ip link set dev enp24s0f0 vf 0 trust on
+
+#. Bind the VF0,  and run testpmd with 'cap=dcf' devarg::
+
+      dpdk-testpmd -l 22-25 -n 4 -a 18:01.0,cap=dcf -- -i
+
+#. Monitor the VF2 interface network traffic::
+
+      tcpdump -e -nn -i enp24s1f2
+
+#. Create one flow to redirect the traffic to VF2 by DCF::
+
+      flow create 0 priority 0 ingress pattern eth / ipv4 src is 192.168.0.2 \
+      dst is 192.168.0.3 / end actions vf id 2 / end
+
+#. Send the packet, and it should be displayed on tcpdump::
+
+      sendp(Ether(src='3c:fd:fe:aa:bb:78', dst='00:00:00:01:02:03')/IP(src=' \
+      192.168.0.2', dst="192.168.0.3")/TCP(flags='S')/Raw(load='XXXXXXXXXX'), \
+      iface="enp24s0f0", count=10)
 
 Sample Application Notes
 ------------------------
@@ -252,7 +298,7 @@ To start ``testpmd``, and add vlan 10 to port 0:
 
 .. code-block:: console
 
-    ./app/testpmd -l 0-15 -n 4 -- -i
+    ./app/dpdk-testpmd -l 0-15 -n 4 -- -i
     ...
 
     testpmd> rx_vlan add 10 0
@@ -280,8 +326,3 @@ is stored in ``ice_adapter->active_pkg_type``.
 
 A symbolic link to the DDP package file is also ok. The same package
 file is used by both the kernel driver and the DPDK PMD.
-
-19.02 limitation
-~~~~~~~~~~~~~~~~
-
-Ice code released in 19.02 is for evaluation only.

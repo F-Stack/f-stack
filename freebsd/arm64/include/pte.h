@@ -39,33 +39,66 @@ typedef	uint64_t	pt_entry_t;		/* page table entry */
 #endif
 
 /* Block and Page attributes */
-/* TODO: Add the upper attributes */
-#define	ATTR_MASK_H	UINT64_C(0xfff0000000000000)
-#define	ATTR_MASK_L	UINT64_C(0x0000000000000fff)
-#define	ATTR_MASK	(ATTR_MASK_H | ATTR_MASK_L)
+#define	ATTR_MASK_H		UINT64_C(0xfffc000000000000)
+#define	ATTR_MASK_L		UINT64_C(0x0000000000000fff)
+#define	ATTR_MASK		(ATTR_MASK_H | ATTR_MASK_L)
 /* Bits 58:55 are reserved for software */
-#define	ATTR_SW_MANAGED	(1UL << 56)
-#define	ATTR_SW_WIRED	(1UL << 55)
-#define	ATTR_nG		(1 << 11)
-#define	ATTR_AF		(1 << 10)
-#define	ATTR_SH(x)	((x) << 8)
-#define	 ATTR_SH_MASK	ATTR_SH(3)
-#define	 ATTR_SH_NS	0		/* Non-shareable */
-#define	 ATTR_SH_OS	2		/* Outer-shareable */
-#define	 ATTR_SH_IS	3		/* Inner-shareable */
-#define	ATTR_AP_RW_BIT	(1 << 7)
-#define	ATTR_AP(x)	((x) << 6)
-#define	 ATTR_AP_MASK	ATTR_AP(3)
-#define	 ATTR_AP_RW	(0 << 1)
-#define	 ATTR_AP_RO	(1 << 1)
-#define	 ATTR_AP_USER	(1 << 0)
-#define	ATTR_NS		(1 << 5)
-#define	ATTR_IDX(x)	((x) << 2)
-#define	ATTR_IDX_MASK	(7 << 2)
+#define	ATTR_SW_UNUSED2		(1UL << 58)
+#define	ATTR_SW_UNUSED1		(1UL << 57)
+#define	ATTR_SW_MANAGED		(1UL << 56)
+#define	ATTR_SW_WIRED		(1UL << 55)
+
+#define	ATTR_S1_UXN		(1UL << 54)
+#define	ATTR_S1_PXN		(1UL << 53)
+#define	ATTR_S1_XN		(ATTR_S1_PXN | ATTR_S1_UXN)
+
+#define	ATTR_S2_XN(x)		((x) << 53)
+#define	 ATTR_S2_XN_MASK	ATTR_S2_XN(3UL)
+#define	 ATTR_S2_XN_NONE	0UL	/* Allow execution at EL0 & EL1 */
+#define	 ATTR_S2_XN_EL1		1UL	/* Allow execution at EL0 */
+#define	 ATTR_S2_XN_ALL		2UL	/* No execution */
+#define	 ATTR_S2_XN_EL0		3UL	/* Allow execution at EL1 */
+
+#define	ATTR_CONTIGUOUS		(1UL << 52)
+#define	ATTR_DBM		(1UL << 51)
+#define	ATTR_S1_nG		(1 << 11)
+#define	ATTR_AF			(1 << 10)
+#define	ATTR_SH(x)		((x) << 8)
+#define	 ATTR_SH_MASK		ATTR_SH(3)
+#define	 ATTR_SH_NS		0		/* Non-shareable */
+#define	 ATTR_SH_OS		2		/* Outer-shareable */
+#define	 ATTR_SH_IS		3		/* Inner-shareable */
+
+#define	ATTR_S1_AP_RW_BIT	(1 << 7)
+#define	ATTR_S1_AP(x)		((x) << 6)
+#define	 ATTR_S1_AP_MASK	ATTR_S1_AP(3)
+#define	 ATTR_S1_AP_RW		(0 << 1)
+#define	 ATTR_S1_AP_RO		(1 << 1)
+#define	 ATTR_S1_AP_USER	(1 << 0)
+#define	ATTR_S1_NS		(1 << 5)
+#define	ATTR_S1_IDX(x)		((x) << 2)
+#define	ATTR_S1_IDX_MASK	(7 << 2)
+
+#define	ATTR_S2_S2AP(x)		((x) << 6)
+#define	 ATTR_S2_S2AP_MASK	3
+#define	 ATTR_S2_S2AP_READ	1
+#define	 ATTR_S2_S2AP_WRITE	2
+
+#define	ATTR_S2_MEMATTR(x)		((x) << 2)
+#define	 ATTR_S2_MEMATTR_MASK		ATTR_S2_MEMATTR(0xf)
+#define	 ATTR_S2_MEMATTR_DEVICE_nGnRnE	0x0
+#define	 ATTR_S2_MEMATTR_NC		0xf
+#define	 ATTR_S2_MEMATTR_WT		0xa
+#define	 ATTR_S2_MEMATTR_WB		0xf
 
 #define	ATTR_DEFAULT	(ATTR_AF | ATTR_SH(ATTR_SH_IS))
 
-#define	ATTR_DESCR_MASK	3
+#define	ATTR_DESCR_MASK		3
+#define	ATTR_DESCR_VALID	1
+#define	ATTR_DESCR_TYPE_MASK	2
+#define	ATTR_DESCR_TYPE_TABLE	2
+#define	ATTR_DESCR_TYPE_PAGE	2
+#define	ATTR_DESCR_TYPE_BLOCK	0
 
 /* Level 0 table, 512GiB per entry */
 #define	L0_SHIFT	39
@@ -104,6 +137,8 @@ typedef	uint64_t	pt_entry_t;		/* page table entry */
 	/* 0x2 also marks an invalid address */
 #define	L3_PAGE		0x3
 
+#define	PMAP_MAPDEV_EARLY_SIZE	(L2_SIZE * 8)
+
 #define	L0_ENTRIES_SHIFT 9
 #define	L0_ENTRIES	(1 << L0_ENTRIES_SHIFT)
 #define	L0_ADDR_MASK	(L0_ENTRIES - 1)
@@ -112,6 +147,11 @@ typedef	uint64_t	pt_entry_t;		/* page table entry */
 #define	Ln_ENTRIES	(1 << Ln_ENTRIES_SHIFT)
 #define	Ln_ADDR_MASK	(Ln_ENTRIES - 1)
 #define	Ln_TABLE_MASK	((1 << 12) - 1)
+
+#define	pmap_l0_index(va)	(((va) >> L0_SHIFT) & L0_ADDR_MASK)
+#define	pmap_l1_index(va)	(((va) >> L1_SHIFT) & Ln_ADDR_MASK)
+#define	pmap_l2_index(va)	(((va) >> L2_SHIFT) & Ln_ADDR_MASK)
+#define	pmap_l3_index(va)	(((va) >> L3_SHIFT) & Ln_ADDR_MASK)
 
 #endif /* !_MACHINE_PTE_H_ */
 

@@ -1,7 +1,14 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1999-2009 Apple Inc.
- * Copyright (c) 2005 Robert N. M. Watson
+ * Copyright (c) 2005, 2016-2017 Robert N. M. Watson
  * All rights reserved.
+ *
+ * Portions of this software were developed by BAE Systems, the University of
+ * Cambridge Computer Laboratory, and Memorial University under DARPA/AFRL
+ * contract FA8650-15-C-7558 ("CADETS"), as part of the DARPA Transparent
+ * Computing (TC) research program.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -42,6 +49,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/rwlock.h>
 #include <sys/sem.h>
 #include <sys/sbuf.h>
+#include <sys/sx.h>
 #include <sys/syscall.h>
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
@@ -51,30 +59,6 @@ __FBSDID("$FreeBSD$");
 #include <bsm/audit_kevents.h>
 #include <security/audit/audit.h>
 #include <security/audit/audit_private.h>
-
-/*
- * Hash table functions for the audit event number to event class mask
- * mapping.
- */
-#define	EVCLASSMAP_HASH_TABLE_SIZE	251
-struct evclass_elem {
-	au_event_t event;
-	au_class_t class;
-	LIST_ENTRY(evclass_elem) entry;
-};
-struct evclass_list {
-	LIST_HEAD(, evclass_elem) head;
-};
-
-static MALLOC_DEFINE(M_AUDITEVCLASS, "audit_evclass", "Audit event class");
-static struct rwlock		evclass_lock;
-static struct evclass_list	evclass_hash[EVCLASSMAP_HASH_TABLE_SIZE];
-
-#define	EVCLASS_LOCK_INIT()	rw_init(&evclass_lock, "evclass_lock")
-#define	EVCLASS_RLOCK()		rw_rlock(&evclass_lock)
-#define	EVCLASS_RUNLOCK()	rw_runlock(&evclass_lock)
-#define	EVCLASS_WLOCK()		rw_wlock(&evclass_lock)
-#define	EVCLASS_WUNLOCK()	rw_wunlock(&evclass_lock)
 
 struct aue_open_event {
 	int		aoe_flags;
@@ -111,91 +95,31 @@ static const struct aue_open_event aue_openat[] = {
 	{ (O_WRONLY | O_TRUNC),				AUE_OPENAT_WT },
 };
 
-/*
- * Look up the class for an audit event in the class mapping table.
- */
-au_class_t
-au_event_class(au_event_t event)
-{
-	struct evclass_list *evcl;
-	struct evclass_elem *evc;
-	au_class_t class;
+static const int aue_msgsys[] = {
+	/* 0 */ AUE_MSGCTL,
+	/* 1 */ AUE_MSGGET,
+	/* 2 */ AUE_MSGSND,
+	/* 3 */ AUE_MSGRCV,
+};
+static const int aue_msgsys_count = sizeof(aue_msgsys) / sizeof(int);
 
-	EVCLASS_RLOCK();
-	evcl = &evclass_hash[event % EVCLASSMAP_HASH_TABLE_SIZE];
-	class = 0;
-	LIST_FOREACH(evc, &evcl->head, entry) {
-		if (evc->event == event) {
-			class = evc->class;
-			goto out;
-		}
-	}
-out:
-	EVCLASS_RUNLOCK();
-	return (class);
-}
+static const int aue_semsys[] = {
+	/* 0 */ AUE_SEMCTL,
+	/* 1 */ AUE_SEMGET,
+	/* 2 */ AUE_SEMOP,
+};
+static const int aue_semsys_count = sizeof(aue_semsys) / sizeof(int);
 
-/*
- * Insert a event to class mapping. If the event already exists in the
- * mapping, then replace the mapping with the new one.
- *
- * XXX There is currently no constraints placed on the number of mappings.
- * May want to either limit to a number, or in terms of memory usage.
- */
-void
-au_evclassmap_insert(au_event_t event, au_class_t class)
-{
-	struct evclass_list *evcl;
-	struct evclass_elem *evc, *evc_new;
-
-	/*
-	 * Pessimistically, always allocate storage before acquiring mutex.
-	 * Free if there is already a mapping for this event.
-	 */
-	evc_new = malloc(sizeof(*evc), M_AUDITEVCLASS, M_WAITOK);
-
-	EVCLASS_WLOCK();
-	evcl = &evclass_hash[event % EVCLASSMAP_HASH_TABLE_SIZE];
-	LIST_FOREACH(evc, &evcl->head, entry) {
-		if (evc->event == event) {
-			evc->class = class;
-			EVCLASS_WUNLOCK();
-			free(evc_new, M_AUDITEVCLASS);
-			return;
-		}
-	}
-	evc = evc_new;
-	evc->event = event;
-	evc->class = class;
-	LIST_INSERT_HEAD(&evcl->head, evc, entry);
-	EVCLASS_WUNLOCK();
-}
-
-void
-au_evclassmap_init(void)
-{
-	int i;
-
-	EVCLASS_LOCK_INIT();
-	for (i = 0; i < EVCLASSMAP_HASH_TABLE_SIZE; i++)
-		LIST_INIT(&evclass_hash[i].head);
-
-	/*
-	 * Set up the initial event to class mapping for system calls.
-	 *
-	 * XXXRW: Really, this should walk all possible audit events, not all
-	 * native ABI system calls, as there may be audit events reachable
-	 * only through non-native system calls.  It also seems a shame to
-	 * frob the mutex this early.
-	 */
-	for (i = 0; i < SYS_MAXSYSCALL; i++) {
-		if (sysent[i].sy_auevent != AUE_NULL)
-			au_evclassmap_insert(sysent[i].sy_auevent, 0);
-	}
-}
+static const int aue_shmsys[] = {
+	/* 0 */ AUE_SHMAT,
+	/* 1 */ AUE_SHMDT,
+	/* 2 */ AUE_SHMGET,
+	/* 3 */ AUE_SHMCTL,
+};
+static const int aue_shmsys_count = sizeof(aue_shmsys) / sizeof(int);
 
 /*
- * Check whether an event is aditable by comparing the mask of classes this
+ * Check whether an event is auditable by comparing the mask of classes this
  * event is part of against the given mask.
  */
 int
@@ -385,6 +309,43 @@ audit_semctl_to_event(int cmd)
 }
 
 /*
+ * Convert msgsys(2), semsys(2), and shmsys(2) system-call variations into
+ * audit events, if possible.
+ */
+au_event_t
+audit_msgsys_to_event(int which)
+{
+
+	if ((which >= 0) && (which < aue_msgsys_count))
+		return (aue_msgsys[which]);
+
+	/* Audit a bad command. */
+	return (AUE_MSGSYS);
+}
+
+au_event_t
+audit_semsys_to_event(int which)
+{
+
+	if ((which >= 0) && (which < aue_semsys_count))
+		return (aue_semsys[which]);
+
+	/* Audit a bad command. */
+	return (AUE_SEMSYS);
+}
+
+au_event_t
+audit_shmsys_to_event(int which)
+{
+
+	if ((which >= 0) && (which < aue_shmsys_count))
+		return (aue_shmsys[which]);
+
+	/* Audit a bad command. */
+	return (AUE_SHMSYS);
+}
+
+/*
  * Convert a command for the auditon() system call to a audit event.
  */
 au_event_t
@@ -460,57 +421,28 @@ auditon_command_event(int cmd)
  * leave the filename starting with '/' in the audit log in this case.
  */
 void
-audit_canon_path(struct thread *td, int dirfd, char *path, char *cpath)
+audit_canon_path_vp(struct thread *td, struct vnode *rdir, struct vnode *cdir,
+    char *path, char *cpath)
 {
-	struct vnode *cvnp, *rvnp;
+	struct vnode *vp;
 	char *rbuf, *fbuf, *copy;
-	struct filedesc *fdp;
 	struct sbuf sbf;
-	cap_rights_t rights;
-	int error, needslash;
+	int error;
 
 	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL, "%s: at %s:%d",
 	    __func__,  __FILE__, __LINE__);
 
 	copy = path;
-	rvnp = cvnp = NULL;
-	fdp = td->td_proc->p_fd;
-	FILEDESC_SLOCK(fdp);
-	/*
-	 * Make sure that we handle the chroot(2) case.  If there is an
-	 * alternate root directory, prepend it to the audited pathname.
-	 */
-	if (fdp->fd_rdir != NULL && fdp->fd_rdir != rootvnode) {
-		rvnp = fdp->fd_rdir;
-		vhold(rvnp);
-	}
-	/*
-	 * If the supplied path is relative, make sure we capture the current
-	 * working directory so we can prepend it to the supplied relative
-	 * path.
-	 */
-	if (*path != '/') {
-		if (dirfd == AT_FDCWD) {
-			cvnp = fdp->fd_cdir;
-			vhold(cvnp);
-		} else {
-			/* XXX: fgetvp() that vhold()s vnode instead of vref()ing it would be better */
-			error = fgetvp(td, dirfd, cap_rights_init(&rights), &cvnp);
-			if (error) {
-				FILEDESC_SUNLOCK(fdp);
-				cpath[0] = '\0';
-				if (rvnp != NULL)
-					vdrop(rvnp);
-				return;
-			}
-			vhold(cvnp);
-			vrele(cvnp);
-		}
-		needslash = (fdp->fd_rdir != cvnp);
+	if (*path == '/') {
+		vp = rdir;
 	} else {
-		needslash = 1;
+		if (cdir == NULL) {
+			cpath[0] = '\0';
+			return;
+		}
+		vp = cdir;
 	}
-	FILEDESC_SUNLOCK(fdp);
+	MPASS(vp != NULL);
 	/*
 	 * NB: We require that the supplied array be at least MAXPATHLEN bytes
 	 * long.  If this is not the case, then we can run into serious trouble.
@@ -518,6 +450,8 @@ audit_canon_path(struct thread *td, int dirfd, char *path, char *cpath)
 	(void) sbuf_new(&sbf, cpath, MAXPATHLEN, SBUF_FIXEDLEN);
 	/*
 	 * Strip leading forward slashes.
+	 *
+	 * Note this does nothing to fully canonicalize the path.
 	 */
 	while (*copy == '/')
 		copy++;
@@ -529,35 +463,25 @@ audit_canon_path(struct thread *td, int dirfd, char *path, char *cpath)
 	 * on Darwin.  As a result, this may need some additional attention
 	 * in the future.
 	 */
-	if (rvnp != NULL) {
-		error = vn_fullpath_global(td, rvnp, &rbuf, &fbuf);
-		vdrop(rvnp);
-		if (error) {
-			cpath[0] = '\0';
-			if (cvnp != NULL)
-				vdrop(cvnp);
-			return;
-		}
-		(void) sbuf_cat(&sbf, rbuf);
-		free(fbuf, M_TEMP);
+	error = vn_fullpath_global(vp, &rbuf, &fbuf);
+	if (error) {
+		cpath[0] = '\0';
+		return;
 	}
-	if (cvnp != NULL) {
-		error = vn_fullpath(td, cvnp, &rbuf, &fbuf);
-		vdrop(cvnp);
-		if (error) {
-			cpath[0] = '\0';
-			return;
-		}
-		(void) sbuf_cat(&sbf, rbuf);
-		free(fbuf, M_TEMP);
-	}
-	if (needslash)
+	(void) sbuf_cat(&sbf, rbuf);
+	/*
+	 * We are going to concatenate the resolved path with the passed path
+	 * with all slashes removed and we want them glued with a single slash.
+	 * However, if the directory is /, the slash is already there.
+	 */
+	if (rbuf[1] != '\0')
 		(void) sbuf_putc(&sbf, '/');
+	free(fbuf, M_TEMP);
 	/*
 	 * Now that we have processed any alternate root and relative path
 	 * names, add the supplied pathname.
 	 */
-        (void) sbuf_cat(&sbf, copy);
+	(void) sbuf_cat(&sbf, copy);
 	/*
 	 * One or more of the previous sbuf operations could have resulted in
 	 * the supplied buffer being overflowed.  Check to see if this is the
@@ -568,4 +492,41 @@ audit_canon_path(struct thread *td, int dirfd, char *path, char *cpath)
 		return;
 	}
 	sbuf_finish(&sbf);
+}
+
+void
+audit_canon_path(struct thread *td, int dirfd, char *path, char *cpath)
+{
+	struct vnode *cdir, *rdir;
+	struct pwd *pwd;
+	cap_rights_t rights;
+	int error;
+	bool vrele_cdir;
+
+	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL, "%s: at %s:%d",
+	    __func__,  __FILE__, __LINE__);
+
+	pwd = pwd_hold(td);
+	rdir = pwd->pwd_rdir;
+	cdir = NULL;
+	vrele_cdir = false;
+	if (*path != '/') {
+		if (dirfd == AT_FDCWD) {
+			cdir = pwd->pwd_cdir;
+		} else {
+			error = fgetvp(td, dirfd, cap_rights_init(&rights), &cdir);
+			if (error != 0) {
+				cpath[0] = '\0';
+				pwd_drop(pwd);
+				return;
+			}
+			vrele_cdir = true;
+		}
+	}
+
+	audit_canon_path_vp(td, rdir, cdir, path, cpath);
+
+	pwd_drop(pwd);
+	if (vrele_cdir)
+		vrele(cdir);
 }

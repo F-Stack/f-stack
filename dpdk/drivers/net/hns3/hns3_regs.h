@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 HiSilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #ifndef _HNS3_REGS_H_
@@ -26,6 +26,9 @@
 #define HNS3_VECTOR0_CMDQ_STAT_REG	0x27104
 
 #define HNS3_VECTOR0_OTHER_INT_STS_REG	0x20800
+
+#define HNS3_RAS_PF_OTHER_INT_STS_REG	0x20B00
+#define HNS3_RAS_REG_NFE_MASK		0xFF00
 
 #define HNS3_MISC_VECTOR_REG_BASE	0x20400
 #define HNS3_VECTOR0_OTER_EN_REG	0x20600
@@ -80,25 +83,40 @@
 #define HNS3_RING_TX_BD_ERR_REG			0x00074
 
 #define HNS3_RING_EN_REG			0x00090
+#define HNS3_RING_RX_EN_REG			0x00098
+#define HNS3_RING_TX_EN_REG			0x000d4
 
 #define HNS3_RING_EN_B				0
 
 #define HNS3_TQP_REG_OFFSET			0x80000
 #define HNS3_TQP_REG_SIZE			0x200
 
-/* bar registers for tqp interrupt */
-#define HNS3_TQP_INTR_CTRL_REG			0x20000
-#define HNS3_TQP_INTR_GL0_REG			0x20100
-#define HNS3_TQP_INTR_GL1_REG			0x20200
-#define HNS3_TQP_INTR_GL2_REG			0x20300
-#define HNS3_TQP_INTR_RL_REG			0x20900
+#define HNS3_TQP_EXT_REG_OFFSET			0x100
+#define HNS3_MIN_EXTEND_QUEUE_ID		1024
 
-#define HNS3_TQP_INTR_REG_SIZE			4
+/* bar registers for tqp interrupt */
+#define HNS3_TQP_INTR_REG_BASE			0x20000
+#define HNS3_TQP_INTR_EXT_REG_BASE		0x30000
+#define HNS3_TQP_INTR_CTRL_REG			0
+#define HNS3_TQP_INTR_GL0_REG			0x100
+#define HNS3_TQP_INTR_GL1_REG			0x200
+#define HNS3_TQP_INTR_GL2_REG			0x300
+#define HNS3_TQP_INTR_RL_REG			0x900
+#define HNS3_TQP_INTR_TX_QL_REG			0xe00
+#define HNS3_TQP_INTR_RX_QL_REG			0xf00
+#define HNS3_TQP_INTR_RL_EN_B			6
+
+#define HNS3_MIN_EXT_TQP_INTR_ID		64
+#define HNS3_TQP_INTR_LOW_ORDER_OFFSET		0x4
+#define HNS3_TQP_INTR_HIGH_ORDER_OFFSET		0x1000
+
 #define HNS3_TQP_INTR_GL_MAX			0x1FE0
 #define HNS3_TQP_INTR_GL_DEFAULT		20
+#define HNS3_TQP_INTR_GL_UNIT_1US		BIT(31)
 #define HNS3_TQP_INTR_RL_MAX			0xEC
 #define HNS3_TQP_INTR_RL_ENABLE_MASK		0x40
 #define HNS3_TQP_INTR_RL_DEFAULT		0
+#define HNS3_TQP_INTR_QL_DEFAULT		0
 
 /* gl_usec convert to hardware count, as writing each 1 represents 2us */
 #define HNS3_GL_USEC_TO_REG(gl_usec)		((gl_usec) >> 1)

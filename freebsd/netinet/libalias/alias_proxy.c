@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Charles Mott <cm@linktel.net>
  * All rights reserved.
  *
@@ -48,10 +50,8 @@ __FBSDID("$FreeBSD$");
     Rules are stored in a linear linked list, so lookup efficiency
     won't be too good for large lists.
 
-
     Initial development: April, 1998 (cjm)
 */
-
 
 /* System includes */
 #ifdef _KERNEL
@@ -111,13 +111,9 @@ struct proxy_entry {
 	struct proxy_entry *last;
 };
 
-
-
 /*
     File scope variables
 */
-
-
 
 /* Local (static) functions:
 
@@ -294,6 +290,7 @@ ProxyEncodeTcpStream(struct alias_link *lnk,
 	int slen;
 	char buffer[40];
 	struct tcphdr *tc;
+	char addrbuf[INET_ADDRSTRLEN];
 
 /* Compute pointer to tcp header */
 	tc = (struct tcphdr *)ip_next(pip);
@@ -305,7 +302,8 @@ ProxyEncodeTcpStream(struct alias_link *lnk,
 
 /* Translate destination address and port to string form */
 	snprintf(buffer, sizeof(buffer) - 2, "[DEST %s %d]",
-	    inet_ntoa(GetProxyAddress(lnk)), (u_int) ntohs(GetProxyPort(lnk)));
+	    inet_ntoa_r(GetProxyAddress(lnk), INET_NTOA_BUF(addrbuf)),
+	    (u_int) ntohs(GetProxyPort(lnk)));
 
 /* Pad string out to a multiple of two in length */
 	slen = strlen(buffer);
@@ -384,7 +382,7 @@ ProxyEncodeIpHeader(struct ip *pip,
 #define OPTION_LEN_BYTES  8
 #define OPTION_LEN_INT16  4
 #define OPTION_LEN_INT32  2
-	u_char option[OPTION_LEN_BYTES];
+	_Alignas(_Alignof(u_short)) u_char option[OPTION_LEN_BYTES];
 
 #ifdef LIBALIAS_DEBUG
 	fprintf(stdout, " ip cksum 1 = %x\n", (u_int) IpChecksum(pip));
@@ -447,7 +445,6 @@ ProxyEncodeIpHeader(struct ip *pip,
 	fprintf(stdout, "tcp cksum 2 = %x\n", (u_int) TcpChecksum(pip));
 #endif
 }
-
 
 /* Functions by other packet alias source files
 
@@ -515,7 +512,6 @@ ProxyModify(struct libalias *la, struct alias_link *lnk,
 		break;
 	}
 }
-
 
 /*
     Public API functions
@@ -718,7 +714,8 @@ LibAliasProxyRule(struct libalias *la, const char *cmd)
 				err = RuleNumberDelete(la, rule_to_delete);
 				if (err)
 					ret = -1;
-				ret = 0;
+				else
+					ret = 0;
 				goto getout;
 			}
 

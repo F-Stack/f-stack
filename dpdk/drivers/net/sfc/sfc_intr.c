@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
  */
 
 /*
- * At the momemt of writing DPDK v16.07 has notion of two types of
+ * At the moment of writing DPDK v16.07 has notion of two types of
  * interrupts: LSC (link status change) and RXQ (receive indication).
  * It allows to register interrupt callback for entire device which is
  * not intended to be used for receive indication (i.e. link status
@@ -89,9 +89,9 @@ exit:
 		sfc_notice(sa, "link status change event: link %s",
 			 sa->eth_dev->data->dev_link.link_status ?
 			 "UP" : "DOWN");
-		_rte_eth_dev_callback_process(sa->eth_dev,
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(sa->eth_dev,
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 	}
 }
 
@@ -131,9 +131,9 @@ sfc_intr_message_handler(void *cb_arg)
 exit:
 	if (lsc_seq != sa->port.lsc_seq) {
 		sfc_notice(sa, "link status change event");
-		_rte_eth_dev_callback_process(sa->eth_dev,
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(sa->eth_dev,
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 	}
 }
 

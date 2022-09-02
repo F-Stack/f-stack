@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2003-2011 Netlogic Microsystems (Netlogic). All rights
  * reserved.
  *
@@ -45,7 +47,6 @@
 #define USB_OHCI_INTERRUPT1_EN		0x04
 #define USB_OHCI_INTERRUPT2_EN		0x08
 #define USB_CTRL_INTERRUPT_EN		0x10
-
 
 #if !defined(LOCORE) && !defined(__ASSEMBLY__)
 

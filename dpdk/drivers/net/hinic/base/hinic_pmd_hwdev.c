@@ -298,7 +298,7 @@ void dma_pool_destroy(struct dma_pool *pool)
 		return;
 
 	if (rte_atomic32_read(&pool->inuse) != 0) {
-		PMD_DRV_LOG(ERR, "Leak memory, dma_pool:%s, inuse_count:%d",
+		PMD_DRV_LOG(ERR, "Leak memory, dma_pool: %s, inuse_count: %d",
 			    pool->name, rte_atomic32_read(&pool->inuse));
 	}
 
@@ -475,7 +475,7 @@ static int wait_for_flr_finish(struct hinic_hwif *hwif)
 		rte_delay_ms(10);
 	} while (time_before(jiffies, end));
 
-	return -EFAULT;
+	return -ETIMEDOUT;
 }
 
 #define HINIC_WAIT_CMDQ_IDLE_TIMEOUT		1000
@@ -681,17 +681,15 @@ int hinic_set_interrupt_cfg(struct hinic_hwdev *hwdev,
 	u16 out_size = sizeof(msix_cfg);
 	int err;
 
+	temp_info.msix_index = interrupt_info.msix_index;
+	err = hinic_get_interrupt_cfg(hwdev, &temp_info);
+	if (err)
+		return -EIO;
+
 	memset(&msix_cfg, 0, sizeof(msix_cfg));
 	msix_cfg.mgmt_msg_head.resp_aeq_num = HINIC_AEQ1;
 	msix_cfg.func_id = hinic_global_func_id(hwdev);
 	msix_cfg.msix_index = (u16)interrupt_info.msix_index;
-
-	temp_info.msix_index = interrupt_info.msix_index;
-
-	err = hinic_get_interrupt_cfg(hwdev, &temp_info);
-	if (err)
-		return -EINVAL;
-
 	msix_cfg.lli_credit_cnt = temp_info.lli_credit_limit;
 	msix_cfg.lli_tmier_cnt = temp_info.lli_timer_cfg;
 	msix_cfg.pending_cnt = temp_info.pending_limt;
@@ -1051,7 +1049,7 @@ int hinic_get_board_info(void *hwdev, struct hinic_board_info *info)
 	if (err || board_info.mgmt_msg_head.status || !out_size) {
 		PMD_DRV_LOG(ERR, "Failed to get board info, err: %d, status: 0x%x, out size: 0x%x",
 			err, board_info.mgmt_msg_head.status, out_size);
-		return -EFAULT;
+		return -EIO;
 	}
 
 	memcpy(info, &board_info.info, sizeof(*info));
@@ -1119,7 +1117,7 @@ hinic_show_sw_watchdog_timeout_info(void *buf_in, u16 in_size,
 		watchdog_info->is_overflow, watchdog_info->stack_top,
 		watchdog_info->stack_bottom);
 
-	PMD_DRV_LOG(ERR, "Mgmt pc: 0x%08x, lr: 0x%08x, cpsr:0x%08x",
+	PMD_DRV_LOG(ERR, "Mgmt pc: 0x%08x, lr: 0x%08x, cpsr: 0x%08x",
 		watchdog_info->pc, watchdog_info->lr, watchdog_info->cpsr);
 
 	PMD_DRV_LOG(ERR, "Mgmt register info");
@@ -1364,9 +1362,9 @@ static void hinic_lsc_process(struct hinic_hwdev *hwdev,
 	ret = hinic_link_event_process(hwdev, rte_dev, status);
 	/* check if link has changed, notify callback */
 	if (ret == 0)
-		_rte_eth_dev_callback_process(rte_dev,
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(rte_dev,
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 }
 
 void hinic_l2nic_async_event_handle(struct hinic_hwdev *hwdev,

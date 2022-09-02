@@ -188,7 +188,7 @@ ip_proto_name(uint16_t ip_proto)
 		"PIM",        /**< Protocol Independent Mcast */
 	};
 
-	if (ip_proto < sizeof(ip_proto_names) / sizeof(ip_proto_names[0]))
+	if (ip_proto < RTE_DIM(ip_proto_names))
 		return ip_proto_names[ip_proto];
 	switch (ip_proto) {
 #ifdef IPPROTO_PGM
@@ -293,27 +293,19 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 	uint32_t cksum;
 	uint8_t  i;
 	int l2_len;
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	uint64_t start_tsc;
-	uint64_t end_tsc;
-	uint64_t core_cycles;
-#endif
+	uint64_t start_tsc = 0;
 
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	start_tsc = rte_rdtsc();
-#endif
+	get_start_cycles(&start_tsc);
 
 	/*
 	 * First, receive a burst of packets.
 	 */
 	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue, pkts_burst,
 				 nb_pkt_per_burst);
+	inc_rx_burst_stats(fs, nb_rx);
 	if (unlikely(nb_rx == 0))
 		return;
 
-#ifdef RTE_TEST_PMD_RECORD_BURST_STATS
-	fs->rx_burst_stats.pkt_burst_spread[nb_rx]++;
-#endif
 	fs->rx_packets += nb_rx;
 	nb_replies = 0;
 	for (i = 0; i < nb_rx; i++) {
@@ -509,9 +501,7 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 			}
 		}
 		fs->tx_packets += nb_tx;
-#ifdef RTE_TEST_PMD_RECORD_BURST_STATS
-		fs->tx_burst_stats.pkt_burst_spread[nb_tx]++;
-#endif
+		inc_tx_burst_stats(fs, nb_tx);
 		if (unlikely(nb_tx < nb_replies)) {
 			fs->fwd_dropped += (nb_replies - nb_tx);
 			do {
@@ -520,16 +510,25 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 		}
 	}
 
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	end_tsc = rte_rdtsc();
-	core_cycles = (end_tsc - start_tsc);
-	fs->core_cycles = (uint64_t) (fs->core_cycles + core_cycles);
-#endif
+	get_end_cycles(fs, start_tsc);
+}
+
+static void
+icmpecho_stream_init(struct fwd_stream *fs)
+{
+	bool rx_stopped, tx_stopped;
+
+	rx_stopped = ports[fs->rx_port].rxq[fs->rx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	tx_stopped = ports[fs->tx_port].txq[fs->tx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	fs->disabled = rx_stopped || tx_stopped;
 }
 
 struct fwd_engine icmp_echo_engine = {
 	.fwd_mode_name  = "icmpecho",
 	.port_fwd_begin = NULL,
 	.port_fwd_end   = NULL,
+	.stream_init    = icmpecho_stream_init,
 	.packet_fwd     = reply_to_icmp_echo_rqsts,
 };

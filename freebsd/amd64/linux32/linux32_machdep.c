@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2004 Tim J. Robbins
  * Copyright (c) 2002 Doug Rabson
  * Copyright (c) 2000 Marcel Moolenaar
@@ -34,13 +36,12 @@ __FBSDID("$FreeBSD$");
 #include "opt_compat.h"
 
 #include <sys/param.h>
-#include <sys/kernel.h>
-#include <sys/systm.h>
 #include <sys/capsicum.h>
-#include <sys/file.h>
-#include <sys/fcntl.h>
 #include <sys/clock.h>
+#include <sys/fcntl.h>
+#include <sys/file.h>
 #include <sys/imgact.h>
+#include <sys/kernel.h>
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -52,28 +53,33 @@ __FBSDID("$FreeBSD$");
 #include <sys/resourcevar.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysproto.h>
+#include <sys/systm.h>
 #include <sys/unistd.h>
 #include <sys/wait.h>
 
 #include <machine/frame.h>
+#include <machine/md_var.h>
 #include <machine/pcb.h>
 #include <machine/psl.h>
 #include <machine/segments.h>
 #include <machine/specialreg.h>
+#include <x86/ifunc.h>
 
-#include <vm/vm.h>
 #include <vm/pmap.h>
+#include <vm/vm.h>
 #include <vm/vm_map.h>
+
+#include <security/audit/audit.h>
 
 #include <compat/freebsd32/freebsd32_util.h>
 #include <amd64/linux32/linux.h>
 #include <amd64/linux32/linux32_proto.h>
+#include <compat/linux/linux_emul.h>
 #include <compat/linux/linux_ipc.h>
 #include <compat/linux/linux_misc.h>
 #include <compat/linux/linux_mmap.h>
 #include <compat/linux/linux_signal.h>
 #include <compat/linux/linux_util.h>
-#include <compat/linux/linux_emul.h>
 
 static void	bsd_to_linux_rusage(struct rusage *ru, struct l_rusage *lru);
 
@@ -84,7 +90,6 @@ struct l_old_select_argv {
 	l_uintptr_t	exceptfds;
 	l_uintptr_t	timeout;
 } __packed;
-
 
 static void
 bsd_to_linux_rusage(struct rusage *ru, struct l_rusage *lru)
@@ -129,22 +134,18 @@ linux_execve(struct thread *td, struct linux_execve_args *args)
 
 	LCONVPATHEXIST(td, args->path, &path);
 
-#ifdef DEBUG
-	if (ldebug(execve))
-		printf(ARGS(execve, "%s"), path);
-#endif
-
 	error = freebsd32_exec_copyin_args(&eargs, path, UIO_SYSSPACE,
 	    args->argp, args->envp);
 	free(path, M_TEMP);
 	if (error == 0)
 		error = linux_common_execve(td, &eargs);
+	AUDIT_SYSCALL_EXIT(error == EJUSTRETURN ? 0 : error, td);
 	return (error);
 }
 
 CTASSERT(sizeof(struct l_iovec32) == 8);
 
-static int
+int
 linux32_copyinuio(struct l_iovec32 *iovp, l_ulong iovcnt, struct uio **uiop)
 {
 	struct l_iovec32 iov32;
@@ -255,7 +256,7 @@ linux_ipc(struct thread *td, struct linux_ipc_args *args)
 		struct linux_semop_args a;
 
 		a.semid = args->arg1;
-		a.tsops = args->ptr;
+		a.tsops = PTRIN(args->ptr);
 		a.nsops = args->arg2;
 		return (linux_semop(td, &a));
 	}
@@ -274,7 +275,7 @@ linux_ipc(struct thread *td, struct linux_ipc_args *args)
 		a.semid = args->arg1;
 		a.semnum = args->arg2;
 		a.cmd = args->arg3;
-		error = copyin(args->ptr, &a.arg, sizeof(a.arg));
+		error = copyin(PTRIN(args->ptr), &a.arg, sizeof(a.arg));
 		if (error)
 			return (error);
 		return (linux_semctl(td, &a));
@@ -283,7 +284,7 @@ linux_ipc(struct thread *td, struct linux_ipc_args *args)
 		struct linux_msgsnd_args a;
 
 		a.msqid = args->arg1;
-		a.msgp = args->ptr;
+		a.msgp = PTRIN(args->ptr);
 		a.msgsz = args->arg2;
 		a.msgflg = args->arg3;
 		return (linux_msgsnd(td, &a));
@@ -300,13 +301,13 @@ linux_ipc(struct thread *td, struct linux_ipc_args *args)
 
 			if (args->ptr == 0)
 				return (EINVAL);
-			error = copyin(args->ptr, &tmp, sizeof(tmp));
+			error = copyin(PTRIN(args->ptr), &tmp, sizeof(tmp));
 			if (error)
 				return (error);
 			a.msgp = PTRIN(tmp.msgp);
 			a.msgtyp = tmp.msgtyp;
 		} else {
-			a.msgp = args->ptr;
+			a.msgp = PTRIN(args->ptr);
 			a.msgtyp = args->arg5;
 		}
 		return (linux_msgrcv(td, &a));
@@ -323,22 +324,29 @@ linux_ipc(struct thread *td, struct linux_ipc_args *args)
 
 		a.msqid = args->arg1;
 		a.cmd = args->arg2;
-		a.buf = args->ptr;
+		a.buf = PTRIN(args->ptr);
 		return (linux_msgctl(td, &a));
 	}
 	case LINUX_SHMAT: {
 		struct linux_shmat_args a;
+		l_uintptr_t addr;
+		int error;
 
 		a.shmid = args->arg1;
-		a.shmaddr = args->ptr;
+		a.shmaddr = PTRIN(args->ptr);
 		a.shmflg = args->arg2;
-		a.raddr = PTRIN((l_uint)args->arg3);
-		return (linux_shmat(td, &a));
+		error = linux_shmat(td, &a);
+		if (error != 0)
+			return (error);
+		addr = td->td_retval[0];
+		error = copyout(&addr, PTRIN(args->arg3), sizeof(addr));
+		td->td_retval[0] = 0;
+		return (error);
 	}
 	case LINUX_SHMDT: {
 		struct linux_shmdt_args a;
 
-		a.shmaddr = args->ptr;
+		a.shmaddr = PTRIN(args->ptr);
 		return (linux_shmdt(td, &a));
 	}
 	case LINUX_SHMGET: {
@@ -354,7 +362,7 @@ linux_ipc(struct thread *td, struct linux_ipc_args *args)
 
 		a.shmid = args->arg1;
 		a.cmd = args->arg2;
-		a.buf = args->ptr;
+		a.buf = PTRIN(args->ptr);
 		return (linux_shmctl(td, &a));
 	}
 	default:
@@ -370,11 +378,6 @@ linux_old_select(struct thread *td, struct linux_old_select_args *args)
 	struct l_old_select_argv linux_args;
 	struct linux_select_args newsel;
 	int error;
-
-#ifdef DEBUG
-	if (ldebug(old_select))
-		printf(ARGS(old_select, "%p"), args->ptr);
-#endif
 
 	error = copyin(args->ptr, &linux_args, sizeof(linux_args));
 	if (error)
@@ -399,29 +402,18 @@ linux_set_cloned_tls(struct thread *td, void *desc)
 
 	error = copyin(desc, &info, sizeof(struct l_user_desc));
 	if (error) {
-		printf(LMSG("copyin failed!"));
+		linux_msg(td, "set_cloned_tls copyin info failed!");
 	} else {
 		/* We might copy out the entry_number as GUGS32_SEL. */
 		info.entry_number = GUGS32_SEL;
 		error = copyout(&info, desc, sizeof(struct l_user_desc));
 		if (error)
-			printf(LMSG("copyout failed!"));
+			linux_msg(td, "set_cloned_tls copyout info failed!");
 
 		a[0] = LINUX_LDT_entry_a(&info);
 		a[1] = LINUX_LDT_entry_b(&info);
 
 		memcpy(&sd, &a, sizeof(a));
-#ifdef DEBUG
-		if (ldebug(clone))
-			printf("Segment created in clone with "
-			    "CLONE_SETTLS: lobase: %x, hibase: %x, "
-			    "lolimit: %x, hilimit: %x, type: %i, "
-			    "dpl: %i, p: %i, xx: %i, long: %i, "
-			    "def32: %i, gran: %i\n", sd.sd_lobase,
-			    sd.sd_hibase, sd.sd_lolimit, sd.sd_hilimit,
-			    sd.sd_type, sd.sd_dpl, sd.sd_p, sd.sd_xx,
-			    sd.sd_long, sd.sd_def32, sd.sd_gran);
-#endif
 		pcb = td->td_pcb;
 		pcb->pcb_gsbase = (register_t)info.base_addr;
 		td->td_frame->tf_gs = GSEL(GUGS32_SEL, SEL_UPL);
@@ -450,13 +442,6 @@ int
 linux_mmap2(struct thread *td, struct linux_mmap2_args *args)
 {
 
-#ifdef DEBUG
-	if (ldebug(mmap2))
-		printf(ARGS(mmap2, "0x%08x, %d, %d, 0x%08x, %d, %d"),
-		    args->addr, args->len, args->prot,
-		    args->flags, args->fd, args->pgoff);
-#endif
-
 	return (linux_mmap_common(td, PTROUT(args->addr), args->len, args->prot,
 		args->flags, args->fd, (uint64_t)(uint32_t)args->pgoff *
 		PAGE_SIZE));
@@ -472,13 +457,6 @@ linux_mmap(struct thread *td, struct linux_mmap_args *args)
 	if (error)
 		return (error);
 
-#ifdef DEBUG
-	if (ldebug(mmap))
-		printf(ARGS(mmap, "0x%08x, %d, %d, 0x%08x, %d, %d"),
-		    linux_args.addr, linux_args.len, linux_args.prot,
-		    linux_args.flags, linux_args.fd, linux_args.pgoff);
-#endif
-
 	return (linux_mmap_common(td, linux_args.addr, linux_args.len,
 	    linux_args.prot, linux_args.flags, linux_args.fd,
 	    (uint32_t)linux_args.pgoff));
@@ -489,6 +467,13 @@ linux_mprotect(struct thread *td, struct linux_mprotect_args *uap)
 {
 
 	return (linux_mprotect_common(td, PTROUT(uap->addr), uap->len, uap->prot));
+}
+
+int
+linux_madvise(struct thread *td, struct linux_madvise_args *uap)
+{
+
+	return (linux_madvise_common(td, PTROUT(uap->addr), uap->len, uap->behav));
 }
 
 int
@@ -514,12 +499,6 @@ linux_sigaction(struct thread *td, struct linux_sigaction_args *args)
 	l_osigaction_t osa;
 	l_sigaction_t act, oact;
 	int error;
-
-#ifdef DEBUG
-	if (ldebug(sigaction))
-		printf(ARGS(sigaction, "%d, %p, %p"),
-		    args->sig, (void *)args->nsa, (void *)args->osa);
-#endif
 
 	if (args->nsa != NULL) {
 		error = copyin(args->nsa, &osa, sizeof(l_osigaction_t));
@@ -557,11 +536,6 @@ linux_sigsuspend(struct thread *td, struct linux_sigsuspend_args *args)
 	sigset_t sigmask;
 	l_sigset_t mask;
 
-#ifdef DEBUG
-	if (ldebug(sigsuspend))
-		printf(ARGS(sigsuspend, "%08lx"), (unsigned long)args->mask);
-#endif
-
 	LINUX_SIGEMPTYSET(mask);
 	mask.__mask = args->mask;
 	linux_to_bsd_sigset(&mask, &sigmask);
@@ -574,12 +548,6 @@ linux_rt_sigsuspend(struct thread *td, struct linux_rt_sigsuspend_args *uap)
 	l_sigset_t lmask;
 	sigset_t sigmask;
 	int error;
-
-#ifdef DEBUG
-	if (ldebug(rt_sigsuspend))
-		printf(ARGS(rt_sigsuspend, "%p, %d"),
-		    (void *)uap->newset, uap->sigsetsize);
-#endif
 
 	if (uap->sigsetsize != sizeof(l_sigset_t))
 		return (EINVAL);
@@ -598,11 +566,6 @@ linux_pause(struct thread *td, struct linux_pause_args *args)
 	struct proc *p = td->td_proc;
 	sigset_t sigmask;
 
-#ifdef DEBUG
-	if (ldebug(pause))
-		printf(ARGS(pause, ""));
-#endif
-
 	PROC_LOCK(p);
 	sigmask = td->td_sigmask;
 	PROC_UNLOCK(p);
@@ -615,11 +578,6 @@ linux_sigaltstack(struct thread *td, struct linux_sigaltstack_args *uap)
 	stack_t ss, oss;
 	l_stack_t lss;
 	int error;
-
-#ifdef DEBUG
-	if (ldebug(sigaltstack))
-		printf(ARGS(sigaltstack, "%p, %p"), uap->uss, uap->uoss);
-#endif
 
 	if (uap->uss != NULL) {
 		error = copyin(uap->uss, &lss, sizeof(l_stack_t));
@@ -643,22 +601,6 @@ linux_sigaltstack(struct thread *td, struct linux_sigaltstack_args *uap)
 }
 
 int
-linux_ftruncate64(struct thread *td, struct linux_ftruncate64_args *args)
-{
-	struct ftruncate_args sa;
-
-#ifdef DEBUG
-	if (ldebug(ftruncate64))
-		printf(ARGS(ftruncate64, "%u, %jd"), args->fd,
-		    (intmax_t)args->length);
-#endif
-
-	sa.fd = args->fd;
-	sa.length = args->length;
-	return sys_ftruncate(td, &sa);
-}
-
-int
 linux_gettimeofday(struct thread *td, struct linux_gettimeofday_args *uap)
 {
 	struct timeval atv;
@@ -673,8 +615,8 @@ linux_gettimeofday(struct thread *td, struct linux_gettimeofday_args *uap)
 		error = copyout(&atv32, uap->tp, sizeof(atv32));
 	}
 	if (error == 0 && uap->tzp != NULL) {
-		rtz.tz_minuteswest = tz_minuteswest;
-		rtz.tz_dsttime = tz_dsttime;
+		rtz.tz_minuteswest = 0;
+		rtz.tz_dsttime = 0;
 		error = copyout(&rtz, uap->tzp, sizeof(rtz));
 	}
 	return (error);
@@ -735,15 +677,6 @@ linux_set_thread_area(struct thread *td,
 	if (error)
 		return (error);
 
-#ifdef DEBUG
-	if (ldebug(set_thread_area))
-		printf(ARGS(set_thread_area, "%i, %x, %x, %i, %i, %i, "
-		    "%i, %i, %i"), info.entry_number, info.base_addr,
-		    info.limit, info.seg_32bit, info.contents,
-		    info.read_exec_only, info.limit_in_pages,
-		    info.seg_not_present, info.useable);
-#endif
-
 	/*
 	 * Semantics of Linux version: every thread in the system has array
 	 * of three TLS descriptors. 1st is GLIBC TLS, 2nd is WINE, 3rd unknown.
@@ -797,29 +730,55 @@ linux_set_thread_area(struct thread *td,
 	}
 
 	memcpy(&sd, &a, sizeof(a));
-#ifdef DEBUG
-	if (ldebug(set_thread_area))
-		printf("Segment created in set_thread_area: "
-		    "lobase: %x, hibase: %x, lolimit: %x, hilimit: %x, "
-		    "type: %i, dpl: %i, p: %i, xx: %i, long: %i, "
-		    "def32: %i, gran: %i\n",
-		    sd.sd_lobase,
-		    sd.sd_hibase,
-		    sd.sd_lolimit,
-		    sd.sd_hilimit,
-		    sd.sd_type,
-		    sd.sd_dpl,
-		    sd.sd_p,
-		    sd.sd_xx,
-		    sd.sd_long,
-		    sd.sd_def32,
-		    sd.sd_gran);
-#endif
-
 	pcb = td->td_pcb;
 	pcb->pcb_gsbase = (register_t)info.base_addr;
 	set_pcb_flags(pcb, PCB_32BIT);
 	update_gdt_gsbase(td, info.base_addr);
 
 	return (0);
+}
+
+int futex_xchgl_nosmap(int oparg, uint32_t *uaddr, int *oldval);
+int futex_xchgl_smap(int oparg, uint32_t *uaddr, int *oldval);
+DEFINE_IFUNC(, int, futex_xchgl, (int, uint32_t *, int *))
+{
+
+	return ((cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0 ?
+	    futex_xchgl_smap : futex_xchgl_nosmap);
+}
+
+int futex_addl_nosmap(int oparg, uint32_t *uaddr, int *oldval);
+int futex_addl_smap(int oparg, uint32_t *uaddr, int *oldval);
+DEFINE_IFUNC(, int, futex_addl, (int, uint32_t *, int *))
+{
+
+	return ((cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0 ?
+	    futex_addl_smap : futex_addl_nosmap);
+}
+
+int futex_orl_nosmap(int oparg, uint32_t *uaddr, int *oldval);
+int futex_orl_smap(int oparg, uint32_t *uaddr, int *oldval);
+DEFINE_IFUNC(, int, futex_orl, (int, uint32_t *, int *))
+{
+
+	return ((cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0 ?
+	    futex_orl_smap : futex_orl_nosmap);
+}
+
+int futex_andl_nosmap(int oparg, uint32_t *uaddr, int *oldval);
+int futex_andl_smap(int oparg, uint32_t *uaddr, int *oldval);
+DEFINE_IFUNC(, int, futex_andl, (int, uint32_t *, int *))
+{
+
+	return ((cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0 ?
+	    futex_andl_smap : futex_andl_nosmap);
+}
+
+int futex_xorl_nosmap(int oparg, uint32_t *uaddr, int *oldval);
+int futex_xorl_smap(int oparg, uint32_t *uaddr, int *oldval);
+DEFINE_IFUNC(, int, futex_xorl, (int, uint32_t *, int *))
+{
+
+	return ((cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0 ?
+	    futex_xorl_smap : futex_xorl_nosmap);
 }

@@ -22,9 +22,9 @@
 #ifndef _OPENSOLARIS_SYS_TYPES_H_ /* Avoid redefining this typedef */
 typedef unsigned int    uint_t;             /* native unsigned integer */
 #endif
-typedef u_int8_t        u08b_t;             /*  8-bit unsigned integer */
-typedef u_int32_t       uint_32t;           /* 32-bit unsigned integer */
-typedef u_int64_t       u64b_t;             /* 64-bit unsigned integer */
+typedef uint8_t         u08b_t;             /*  8-bit unsigned integer */
+typedef uint32_t        uint_32t;           /* 32-bit unsigned integer */
+typedef uint64_t        u64b_t;             /* 64-bit unsigned integer */
 
 #ifndef RotL_64
 #define RotL_64(x,N)    (((x) << (N)) | ((x) >> (64-(N))))
@@ -136,6 +136,16 @@ void    Skein_Get64_LSB_First(u64b_t *dst,const u08b_t *src,size_t wCnt)
 #define SKEIN256_End		_libmd_SKEIN256_End
 #define SKEIN512_End		_libmd_SKEIN512_End
 #define SKEIN1024_End		_libmd_SKEIN1024_End
+#endif
+#ifndef SKEIN256_Fd
+#define SKEIN256_Fd		_libmd_SKEIN256_Fd
+#define SKEIN512_Fd		_libmd_SKEIN512_Fd
+#define SKEIN1024_Fd		_libmd_SKEIN1024_Fd
+#endif
+#ifndef SKEIN256_FdChunk
+#define SKEIN256_FdChunk	_libmd_SKEIN256_FdChunk
+#define SKEIN512_FdChunk	_libmd_SKEIN512_FdChunk
+#define SKEIN1024_FdChunk	_libmd_SKEIN1024_FdChunk
 #endif
 #ifndef SKEIN256_File
 #define SKEIN256_File		_libmd_SKEIN256_File

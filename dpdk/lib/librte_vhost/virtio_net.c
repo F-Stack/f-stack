@@ -18,13 +18,14 @@
 #include <rte_arp.h>
 #include <rte_spinlock.h>
 #include <rte_malloc.h>
+#include <rte_vhost_async.h>
 
 #include "iotlb.h"
 #include "vhost.h"
 
-#define MAX_PKT_BURST 32
-
 #define MAX_BATCH_LEN 256
+
+#define VHOST_ASYNC_BATCH_THRESHOLD 32
 
 static  __rte_always_inline bool
 rxvq_is_mergeable(struct virtio_net *dev)
@@ -108,14 +109,38 @@ flush_shadow_used_ring_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	}
 	vq->last_used_idx += vq->shadow_used_idx;
 
-	rte_smp_wmb();
-
 	vhost_log_cache_sync(dev, vq);
 
-	*(volatile uint16_t *)&vq->used->idx += vq->shadow_used_idx;
+	__atomic_add_fetch(&vq->used->idx, vq->shadow_used_idx,
+			   __ATOMIC_RELEASE);
 	vq->shadow_used_idx = 0;
 	vhost_log_used_vring(dev, vq, offsetof(struct vring_used, idx),
 		sizeof(vq->used->idx));
+}
+
+static __rte_always_inline void
+async_flush_shadow_used_ring_split(struct virtio_net *dev,
+	struct vhost_virtqueue *vq)
+{
+	uint16_t used_idx = vq->last_used_idx & (vq->size - 1);
+
+	if (used_idx + vq->shadow_used_idx <= vq->size) {
+		do_flush_shadow_used_ring_split(dev, vq, used_idx, 0,
+					  vq->shadow_used_idx);
+	} else {
+		uint16_t size;
+
+		/* update used ring interval [used_idx, vq->size] */
+		size = vq->size - used_idx;
+		do_flush_shadow_used_ring_split(dev, vq, used_idx, 0, size);
+
+		/* update the left half used ring interval [0, left_size] */
+		do_flush_shadow_used_ring_split(dev, vq, 0, size,
+					  vq->shadow_used_idx - size);
+	}
+
+	vq->last_used_idx += vq->shadow_used_idx;
+	vq->shadow_used_idx = 0;
 }
 
 static __rte_always_inline void
@@ -827,7 +852,7 @@ copy_mbuf_to_desc(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	} else
 		hdr = (struct virtio_net_hdr_mrg_rxbuf *)(uintptr_t)hdr_addr;
 
-	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) RX: num merge buffers %d\n",
+	VHOST_LOG_DATA(DEBUG, "(%d) RX: num merge buffers %d\n",
 		dev->vid, num_buffers);
 
 	if (unlikely(buf_len < dev->vhost_hlen)) {
@@ -922,6 +947,210 @@ out:
 	return error;
 }
 
+static __rte_always_inline void
+async_fill_vec(struct iovec *v, void *base, size_t len)
+{
+	v->iov_base = base;
+	v->iov_len = len;
+}
+
+static __rte_always_inline void
+async_fill_iter(struct rte_vhost_iov_iter *it, size_t count,
+	struct iovec *vec, unsigned long nr_seg)
+{
+	it->offset = 0;
+	it->count = count;
+
+	if (count) {
+		it->iov = vec;
+		it->nr_segs = nr_seg;
+	} else {
+		it->iov = 0;
+		it->nr_segs = 0;
+	}
+}
+
+static __rte_always_inline void
+async_fill_desc(struct rte_vhost_async_desc *desc,
+	struct rte_vhost_iov_iter *src, struct rte_vhost_iov_iter *dst)
+{
+	desc->src = src;
+	desc->dst = dst;
+}
+
+static __rte_always_inline int
+async_mbuf_to_desc(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			struct rte_mbuf *m, struct buf_vector *buf_vec,
+			uint16_t nr_vec, uint16_t num_buffers,
+			struct iovec *src_iovec, struct iovec *dst_iovec,
+			struct rte_vhost_iov_iter *src_it,
+			struct rte_vhost_iov_iter *dst_it)
+{
+	uint32_t vec_idx = 0;
+	uint32_t mbuf_offset, mbuf_avail;
+	uint32_t buf_offset, buf_avail;
+	uint64_t buf_addr, buf_iova, buf_len;
+	uint32_t cpy_len, cpy_threshold;
+	uint64_t hdr_addr;
+	struct rte_mbuf *hdr_mbuf;
+	struct batch_copy_elem *batch_copy = vq->batch_copy_elems;
+	struct virtio_net_hdr_mrg_rxbuf tmp_hdr, *hdr = NULL;
+	int error = 0;
+	uint64_t mapped_len;
+
+	uint32_t tlen = 0;
+	int tvec_idx = 0;
+	void *host_iova;
+
+	if (unlikely(m == NULL)) {
+		error = -1;
+		goto out;
+	}
+
+	cpy_threshold = vq->async_threshold;
+
+	buf_addr = buf_vec[vec_idx].buf_addr;
+	buf_iova = buf_vec[vec_idx].buf_iova;
+	buf_len = buf_vec[vec_idx].buf_len;
+
+	if (unlikely(buf_len < dev->vhost_hlen && nr_vec <= 1)) {
+		error = -1;
+		goto out;
+	}
+
+	hdr_mbuf = m;
+	hdr_addr = buf_addr;
+	if (unlikely(buf_len < dev->vhost_hlen)) {
+		memset(&tmp_hdr, 0, sizeof(struct virtio_net_hdr_mrg_rxbuf));
+		hdr = &tmp_hdr;
+	} else
+		hdr = (struct virtio_net_hdr_mrg_rxbuf *)(uintptr_t)hdr_addr;
+
+	VHOST_LOG_DATA(DEBUG, "(%d) RX: num merge buffers %d\n",
+		dev->vid, num_buffers);
+
+	if (unlikely(buf_len < dev->vhost_hlen)) {
+		buf_offset = dev->vhost_hlen - buf_len;
+		vec_idx++;
+		buf_addr = buf_vec[vec_idx].buf_addr;
+		buf_iova = buf_vec[vec_idx].buf_iova;
+		buf_len = buf_vec[vec_idx].buf_len;
+		buf_avail = buf_len - buf_offset;
+	} else {
+		buf_offset = dev->vhost_hlen;
+		buf_avail = buf_len - dev->vhost_hlen;
+	}
+
+	mbuf_avail  = rte_pktmbuf_data_len(m);
+	mbuf_offset = 0;
+
+	while (mbuf_avail != 0 || m->next != NULL) {
+		/* done with current buf, get the next one */
+		if (buf_avail == 0) {
+			vec_idx++;
+			if (unlikely(vec_idx >= nr_vec)) {
+				error = -1;
+				goto out;
+			}
+
+			buf_addr = buf_vec[vec_idx].buf_addr;
+			buf_iova = buf_vec[vec_idx].buf_iova;
+			buf_len = buf_vec[vec_idx].buf_len;
+
+			buf_offset = 0;
+			buf_avail  = buf_len;
+		}
+
+		/* done with current mbuf, get the next one */
+		if (mbuf_avail == 0) {
+			m = m->next;
+
+			mbuf_offset = 0;
+			mbuf_avail  = rte_pktmbuf_data_len(m);
+		}
+
+		if (hdr_addr) {
+			virtio_enqueue_offload(hdr_mbuf, &hdr->hdr);
+			if (rxvq_is_mergeable(dev))
+				ASSIGN_UNLESS_EQUAL(hdr->num_buffers,
+						num_buffers);
+
+			if (unlikely(hdr == &tmp_hdr)) {
+				copy_vnet_hdr_to_desc(dev, vq, buf_vec, hdr);
+			} else {
+				PRINT_PACKET(dev, (uintptr_t)hdr_addr,
+						dev->vhost_hlen, 0);
+				vhost_log_cache_write_iova(dev, vq,
+						buf_vec[0].buf_iova,
+						dev->vhost_hlen);
+			}
+
+			hdr_addr = 0;
+		}
+
+		cpy_len = RTE_MIN(buf_avail, mbuf_avail);
+
+		while (unlikely(cpy_len && cpy_len >= cpy_threshold)) {
+			host_iova = (void *)(uintptr_t)gpa_to_first_hpa(dev,
+					buf_iova + buf_offset,
+					cpy_len, &mapped_len);
+
+			if (unlikely(!host_iova || mapped_len < cpy_threshold))
+				break;
+
+			async_fill_vec(src_iovec + tvec_idx,
+				(void *)(uintptr_t)rte_pktmbuf_iova_offset(m,
+				mbuf_offset), (size_t)mapped_len);
+
+			async_fill_vec(dst_iovec + tvec_idx,
+					host_iova, (size_t)mapped_len);
+
+			tlen += (uint32_t)mapped_len;
+			cpy_len -= (uint32_t)mapped_len;
+			mbuf_avail  -= (uint32_t)mapped_len;
+			mbuf_offset += (uint32_t)mapped_len;
+			buf_avail  -= (uint32_t)mapped_len;
+			buf_offset += (uint32_t)mapped_len;
+			tvec_idx++;
+		}
+
+		if (likely(cpy_len)) {
+			if (unlikely(vq->batch_copy_nb_elems >= vq->size)) {
+				rte_memcpy(
+				(void *)((uintptr_t)(buf_addr + buf_offset)),
+				rte_pktmbuf_mtod_offset(m, void *, mbuf_offset),
+				cpy_len);
+
+				PRINT_PACKET(dev,
+					(uintptr_t)(buf_addr + buf_offset),
+					cpy_len, 0);
+			} else {
+				batch_copy[vq->batch_copy_nb_elems].dst =
+				(void *)((uintptr_t)(buf_addr + buf_offset));
+				batch_copy[vq->batch_copy_nb_elems].src =
+				rte_pktmbuf_mtod_offset(m, void *, mbuf_offset);
+				batch_copy[vq->batch_copy_nb_elems].log_addr =
+					buf_iova + buf_offset;
+				batch_copy[vq->batch_copy_nb_elems].len =
+					cpy_len;
+				vq->batch_copy_nb_elems++;
+			}
+
+			mbuf_avail  -= cpy_len;
+			mbuf_offset += cpy_len;
+			buf_avail  -= cpy_len;
+			buf_offset += cpy_len;
+		}
+
+	}
+
+out:
+	async_fill_iter(src_it, tlen, src_iovec, tvec_idx);
+	async_fill_iter(dst_it, tlen, dst_iovec, tvec_idx);
+
+	return error;
+}
+
 static __rte_always_inline int
 vhost_enqueue_single_packed(struct virtio_net *dev,
 			    struct vhost_virtqueue *vq,
@@ -935,7 +1164,7 @@ vhost_enqueue_single_packed(struct virtio_net *dev,
 	uint16_t buf_id = 0;
 	uint32_t len = 0;
 	uint16_t desc_count;
-	uint32_t size = pkt->pkt_len + dev->vhost_hlen;
+	uint32_t size = pkt->pkt_len + sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	uint16_t num_buffers = 0;
 	uint32_t buffer_len[vq->size];
 	uint16_t buffer_buf_id[vq->size];
@@ -994,13 +1223,11 @@ virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	struct buf_vector buf_vec[BUF_VECTOR_MAX];
 	uint16_t avail_head;
 
-	avail_head = *((volatile uint16_t *)&vq->avail->idx);
-
 	/*
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	rte_smp_rmb();
+	avail_head = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE);
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
@@ -1011,14 +1238,14 @@ virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		if (unlikely(reserve_avail_buf_split(dev, vq,
 						pkt_len, buf_vec, &num_buffers,
 						avail_head, &nr_vec) < 0)) {
-			VHOST_LOG_DEBUG(VHOST_DATA,
+			VHOST_LOG_DATA(DEBUG,
 				"(%d) failed to get enough desc from vring\n",
 				dev->vid);
 			vq->shadow_used_idx -= num_buffers;
 			break;
 		}
 
-		VHOST_LOG_DEBUG(VHOST_DATA, "(%d) current index %d | end index %d\n",
+		VHOST_LOG_DATA(DEBUG, "(%d) current index %d | end index %d\n",
 			dev->vid, vq->last_avail_idx,
 			vq->last_avail_idx + num_buffers);
 
@@ -1052,7 +1279,7 @@ virtio_dev_rx_batch_packed(struct virtio_net *dev,
 	uint16_t avail_idx = vq->last_avail_idx;
 	uint64_t desc_addrs[PACKED_BATCH_SIZE];
 	struct virtio_net_hdr_mrg_rxbuf *hdrs[PACKED_BATCH_SIZE];
-	uint32_t buf_offset = dev->vhost_hlen;
+	uint32_t buf_offset = sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	uint64_t lens[PACKED_BATCH_SIZE];
 	uint16_t ids[PACKED_BATCH_SIZE];
 	uint16_t i;
@@ -1098,7 +1325,8 @@ virtio_dev_rx_batch_packed(struct virtio_net *dev,
 		rte_prefetch0((void *)(uintptr_t)desc_addrs[i]);
 		hdrs[i] = (struct virtio_net_hdr_mrg_rxbuf *)
 					(uintptr_t)desc_addrs[i];
-		lens[i] = pkts[i]->pkt_len + dev->vhost_hlen;
+		lens[i] = pkts[i]->pkt_len +
+			sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	}
 
 	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
@@ -1135,13 +1363,13 @@ virtio_dev_rx_single_packed(struct virtio_net *dev,
 	rte_smp_rmb();
 	if (unlikely(vhost_enqueue_single_packed(dev, vq, pkt, buf_vec,
 						 &nr_descs) < 0)) {
-		VHOST_LOG_DEBUG(VHOST_DATA,
+		VHOST_LOG_DATA(DEBUG,
 				"(%d) failed to get enough desc from vring\n",
 				dev->vid);
 		return -1;
 	}
 
-	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) current index %d | end index %d\n",
+	VHOST_LOG_DATA(DEBUG, "(%d) current index %d | end index %d\n",
 			dev->vid, vq->last_avail_idx,
 			vq->last_avail_idx + nr_descs);
 
@@ -1152,8 +1380,8 @@ virtio_dev_rx_single_packed(struct virtio_net *dev,
 
 static __rte_noinline uint32_t
 virtio_dev_rx_packed(struct virtio_net *dev,
-		     struct vhost_virtqueue *vq,
-		     struct rte_mbuf **pkts,
+		     struct vhost_virtqueue *__rte_restrict vq,
+		     struct rte_mbuf **__rte_restrict pkts,
 		     uint32_t count)
 {
 	uint32_t pkt_idx = 0;
@@ -1196,9 +1424,9 @@ virtio_dev_rx(struct virtio_net *dev, uint16_t queue_id,
 	struct vhost_virtqueue *vq;
 	uint32_t nb_tx = 0;
 
-	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) %s\n", dev->vid, __func__);
+	VHOST_LOG_DATA(DEBUG, "(%d) %s\n", dev->vid, __func__);
 	if (unlikely(!is_valid_virt_queue_idx(queue_id, 0, dev->nr_vring))) {
-		RTE_LOG(ERR, VHOST_DATA, "(%d) %s: invalid virtqueue idx %d.\n",
+		VHOST_LOG_DATA(ERR, "(%d) %s: invalid virtqueue idx %d.\n",
 			dev->vid, __func__, queue_id);
 		return 0;
 	}
@@ -1238,7 +1466,7 @@ out_access_unlock:
 
 uint16_t
 rte_vhost_enqueue_burst(int vid, uint16_t queue_id,
-	struct rte_mbuf **pkts, uint16_t count)
+	struct rte_mbuf **__rte_restrict pkts, uint16_t count)
 {
 	struct virtio_net *dev = get_device(vid);
 
@@ -1246,13 +1474,323 @@ rte_vhost_enqueue_burst(int vid, uint16_t queue_id,
 		return 0;
 
 	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
-		RTE_LOG(ERR, VHOST_DATA,
+		VHOST_LOG_DATA(ERR,
 			"(%d) %s: built-in vhost net backend is disabled.\n",
 			dev->vid, __func__);
 		return 0;
 	}
 
 	return virtio_dev_rx(dev, queue_id, pkts, count);
+}
+
+static __rte_always_inline uint16_t
+virtio_dev_rx_async_get_info_idx(uint16_t pkts_idx,
+	uint16_t vq_size, uint16_t n_inflight)
+{
+	return pkts_idx > n_inflight ? (pkts_idx - n_inflight) :
+		(vq_size - n_inflight + pkts_idx) & (vq_size - 1);
+}
+
+static __rte_noinline uint32_t
+virtio_dev_rx_async_submit_split(struct virtio_net *dev,
+	struct vhost_virtqueue *vq, uint16_t queue_id,
+	struct rte_mbuf **pkts, uint32_t count)
+{
+	uint32_t pkt_idx = 0, pkt_burst_idx = 0;
+	uint16_t num_buffers;
+	struct buf_vector buf_vec[BUF_VECTOR_MAX];
+	uint16_t avail_head;
+
+	struct rte_vhost_iov_iter *it_pool = vq->it_pool;
+	struct iovec *vec_pool = vq->vec_pool;
+	struct rte_vhost_async_desc tdes[MAX_PKT_BURST];
+	struct iovec *src_iovec = vec_pool;
+	struct iovec *dst_iovec = vec_pool + (VHOST_MAX_ASYNC_VEC >> 1);
+	struct rte_vhost_iov_iter *src_it = it_pool;
+	struct rte_vhost_iov_iter *dst_it = it_pool + 1;
+	uint16_t n_free_slot, slot_idx = 0;
+	uint16_t pkt_err = 0;
+	uint16_t segs_await = 0;
+	struct async_inflight_info *pkts_info = vq->async_pkts_info;
+	int n_pkts = 0;
+
+	avail_head = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE);
+
+	/*
+	 * The ordering between avail index and
+	 * desc reads needs to be enforced.
+	 */
+	rte_smp_rmb();
+
+	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
+
+	for (pkt_idx = 0; pkt_idx < count; pkt_idx++) {
+		uint32_t pkt_len = pkts[pkt_idx]->pkt_len + dev->vhost_hlen;
+		uint16_t nr_vec = 0;
+
+		if (unlikely(reserve_avail_buf_split(dev, vq,
+						pkt_len, buf_vec, &num_buffers,
+						avail_head, &nr_vec) < 0)) {
+			VHOST_LOG_DATA(DEBUG,
+				"(%d) failed to get enough desc from vring\n",
+				dev->vid);
+			vq->shadow_used_idx -= num_buffers;
+			break;
+		}
+
+		VHOST_LOG_DATA(DEBUG, "(%d) current index %d | end index %d\n",
+			dev->vid, vq->last_avail_idx,
+			vq->last_avail_idx + num_buffers);
+
+		if (async_mbuf_to_desc(dev, vq, pkts[pkt_idx],
+				buf_vec, nr_vec, num_buffers,
+				src_iovec, dst_iovec, src_it, dst_it) < 0) {
+			vq->shadow_used_idx -= num_buffers;
+			break;
+		}
+
+		slot_idx = (vq->async_pkts_idx + pkt_idx) & (vq->size - 1);
+		if (src_it->count) {
+			async_fill_desc(&tdes[pkt_burst_idx], src_it, dst_it);
+			pkt_burst_idx++;
+			pkts_info[slot_idx].descs = num_buffers;
+			pkts_info[slot_idx].segs = src_it->nr_segs;
+			src_iovec += src_it->nr_segs;
+			dst_iovec += dst_it->nr_segs;
+			src_it += 2;
+			dst_it += 2;
+			segs_await += src_it->nr_segs;
+		} else {
+			pkts_info[slot_idx].info = num_buffers;
+			vq->async_pkts_inflight_n++;
+		}
+
+		vq->last_avail_idx += num_buffers;
+
+		/*
+		 * conditions to trigger async device transfer:
+		 * - buffered packet number reaches transfer threshold
+		 * - this is the last packet in the burst enqueue
+		 * - unused async iov number is less than max vhost vector
+		 */
+		if (pkt_burst_idx >= VHOST_ASYNC_BATCH_THRESHOLD ||
+			(pkt_idx == count - 1 && pkt_burst_idx) ||
+			(VHOST_MAX_ASYNC_VEC / 2 - segs_await <
+			BUF_VECTOR_MAX)) {
+			n_pkts = vq->async_ops.transfer_data(dev->vid,
+					queue_id, tdes, 0, pkt_burst_idx);
+			src_iovec = vec_pool;
+			dst_iovec = vec_pool + (VHOST_MAX_ASYNC_VEC >> 1);
+			src_it = it_pool;
+			dst_it = it_pool + 1;
+			segs_await = 0;
+			vq->async_pkts_inflight_n += pkt_burst_idx;
+
+			if (unlikely(n_pkts < (int)pkt_burst_idx)) {
+				/*
+				 * log error packets number here and do actual
+				 * error processing when applications poll
+				 * completion
+				 */
+				pkt_err = pkt_burst_idx - n_pkts;
+				pkt_burst_idx = 0;
+				break;
+			}
+
+			pkt_burst_idx = 0;
+		}
+	}
+
+	if (pkt_burst_idx) {
+		n_pkts = vq->async_ops.transfer_data(dev->vid,
+				queue_id, tdes, 0, pkt_burst_idx);
+		vq->async_pkts_inflight_n += pkt_burst_idx;
+
+		if (unlikely(n_pkts < (int)pkt_burst_idx))
+			pkt_err = pkt_burst_idx - n_pkts;
+	}
+
+	do_data_copy_enqueue(dev, vq);
+
+	while (unlikely(pkt_err && pkt_idx)) {
+		if (pkts_info[slot_idx].segs)
+			pkt_err--;
+		vq->last_avail_idx -= pkts_info[slot_idx].descs;
+		vq->shadow_used_idx -= pkts_info[slot_idx].descs;
+		vq->async_pkts_inflight_n--;
+		slot_idx = (slot_idx - 1) & (vq->size - 1);
+		pkt_idx--;
+	}
+
+	n_free_slot = vq->size - vq->async_pkts_idx;
+	if (n_free_slot > pkt_idx) {
+		rte_memcpy(&vq->async_pkts_pending[vq->async_pkts_idx],
+			pkts, pkt_idx * sizeof(uintptr_t));
+		vq->async_pkts_idx += pkt_idx;
+	} else {
+		rte_memcpy(&vq->async_pkts_pending[vq->async_pkts_idx],
+			pkts, n_free_slot * sizeof(uintptr_t));
+		rte_memcpy(&vq->async_pkts_pending[0],
+			&pkts[n_free_slot],
+			(pkt_idx - n_free_slot) * sizeof(uintptr_t));
+		vq->async_pkts_idx = pkt_idx - n_free_slot;
+	}
+
+	if (likely(vq->shadow_used_idx))
+		async_flush_shadow_used_ring_split(dev, vq);
+
+	return pkt_idx;
+}
+
+uint16_t rte_vhost_poll_enqueue_completed(int vid, uint16_t queue_id,
+		struct rte_mbuf **pkts, uint16_t count)
+{
+	struct virtio_net *dev = get_device(vid);
+	struct vhost_virtqueue *vq;
+	uint16_t n_pkts_cpl = 0, n_pkts_put = 0, n_descs = 0;
+	uint16_t start_idx, pkts_idx, vq_size;
+	uint16_t n_inflight;
+	struct async_inflight_info *pkts_info;
+
+	if (!dev)
+		return 0;
+
+	VHOST_LOG_DATA(DEBUG, "(%d) %s\n", dev->vid, __func__);
+	if (unlikely(!is_valid_virt_queue_idx(queue_id, 0, dev->nr_vring))) {
+		VHOST_LOG_DATA(ERR, "(%d) %s: invalid virtqueue idx %d.\n",
+			dev->vid, __func__, queue_id);
+		return 0;
+	}
+
+	vq = dev->virtqueue[queue_id];
+
+	if (unlikely(!vq->async_registered)) {
+		VHOST_LOG_DATA(ERR, "(%d) %s: async not registered for queue id %d.\n",
+			dev->vid, __func__, queue_id);
+		return 0;
+	}
+
+	rte_spinlock_lock(&vq->access_lock);
+
+	n_inflight = vq->async_pkts_inflight_n;
+	pkts_idx = vq->async_pkts_idx;
+	pkts_info = vq->async_pkts_info;
+	vq_size = vq->size;
+	start_idx = virtio_dev_rx_async_get_info_idx(pkts_idx,
+		vq_size, vq->async_pkts_inflight_n);
+
+	if (count > vq->async_last_pkts_n)
+		n_pkts_cpl = vq->async_ops.check_completed_copies(vid,
+			queue_id, 0, count - vq->async_last_pkts_n);
+	n_pkts_cpl += vq->async_last_pkts_n;
+
+	rte_smp_wmb();
+
+	while (likely((n_pkts_put < count) && n_inflight)) {
+		uint16_t info_idx = (start_idx + n_pkts_put) & (vq_size - 1);
+		if (n_pkts_cpl && pkts_info[info_idx].segs)
+			n_pkts_cpl--;
+		else if (!n_pkts_cpl && pkts_info[info_idx].segs)
+			break;
+		n_pkts_put++;
+		n_inflight--;
+		n_descs += pkts_info[info_idx].descs;
+	}
+
+	vq->async_last_pkts_n = n_pkts_cpl;
+
+	if (n_pkts_put) {
+		vq->async_pkts_inflight_n = n_inflight;
+		if (likely(vq->enabled && vq->access_ok)) {
+			__atomic_add_fetch(&vq->used->idx,
+					n_descs, __ATOMIC_RELEASE);
+			vhost_vring_call_split(dev, vq);
+		}
+
+		if (start_idx + n_pkts_put <= vq_size) {
+			rte_memcpy(pkts, &vq->async_pkts_pending[start_idx],
+				n_pkts_put * sizeof(uintptr_t));
+		} else {
+			rte_memcpy(pkts, &vq->async_pkts_pending[start_idx],
+				(vq_size - start_idx) * sizeof(uintptr_t));
+			rte_memcpy(&pkts[vq_size - start_idx],
+				vq->async_pkts_pending,
+				(n_pkts_put + start_idx - vq_size) *
+				sizeof(uintptr_t));
+		}
+	}
+
+	rte_spinlock_unlock(&vq->access_lock);
+
+	return n_pkts_put;
+}
+
+static __rte_always_inline uint32_t
+virtio_dev_rx_async_submit(struct virtio_net *dev, uint16_t queue_id,
+	struct rte_mbuf **pkts, uint32_t count)
+{
+	struct vhost_virtqueue *vq;
+	uint32_t nb_tx = 0;
+
+	VHOST_LOG_DATA(DEBUG, "(%d) %s\n", dev->vid, __func__);
+	if (unlikely(!is_valid_virt_queue_idx(queue_id, 0, dev->nr_vring))) {
+		VHOST_LOG_DATA(ERR, "(%d) %s: invalid virtqueue idx %d.\n",
+			dev->vid, __func__, queue_id);
+		return 0;
+	}
+
+	vq = dev->virtqueue[queue_id];
+
+	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(vq->enabled == 0 || !vq->async_registered))
+		goto out_access_unlock;
+
+	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
+		vhost_user_iotlb_rd_lock(vq);
+
+	if (unlikely(vq->access_ok == 0))
+		if (unlikely(vring_translate(dev, vq) < 0))
+			goto out;
+
+	count = RTE_MIN((uint32_t)MAX_PKT_BURST, count);
+	if (count == 0)
+		goto out;
+
+	/* TODO: packed queue not implemented */
+	if (vq_is_packed(dev))
+		nb_tx = 0;
+	else
+		nb_tx = virtio_dev_rx_async_submit_split(dev,
+				vq, queue_id, pkts, count);
+
+out:
+	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
+		vhost_user_iotlb_rd_unlock(vq);
+
+out_access_unlock:
+	rte_spinlock_unlock(&vq->access_lock);
+
+	return nb_tx;
+}
+
+uint16_t
+rte_vhost_submit_enqueue_burst(int vid, uint16_t queue_id,
+		struct rte_mbuf **pkts, uint16_t count)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (!dev)
+		return 0;
+
+	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
+		VHOST_LOG_DATA(ERR,
+			"(%d) %s: built-in vhost net backend is disabled.\n",
+			dev->vid, __func__);
+		return 0;
+	}
+
+	return virtio_dev_rx_async_submit(dev, queue_id, pkts, count);
 }
 
 static inline bool
@@ -1269,14 +1807,17 @@ virtio_net_with_host_offload(struct virtio_net *dev)
 	return false;
 }
 
-static void
-parse_ethernet(struct rte_mbuf *m, uint16_t *l4_proto, void **l4_hdr)
+static int
+parse_headers(struct rte_mbuf *m, uint8_t *l4_proto)
 {
 	struct rte_ipv4_hdr *ipv4_hdr;
 	struct rte_ipv6_hdr *ipv6_hdr;
-	void *l3_hdr = NULL;
 	struct rte_ether_hdr *eth_hdr;
 	uint16_t ethertype;
+	uint16_t data_len = rte_pktmbuf_data_len(m);
+
+	if (data_len < sizeof(struct rte_ether_hdr))
+		return -EINVAL;
 
 	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
@@ -1284,6 +1825,10 @@ parse_ethernet(struct rte_mbuf *m, uint16_t *l4_proto, void **l4_hdr)
 	ethertype = rte_be_to_cpu_16(eth_hdr->ether_type);
 
 	if (ethertype == RTE_ETHER_TYPE_VLAN) {
+		if (data_len < sizeof(struct rte_ether_hdr) +
+				sizeof(struct rte_vlan_hdr))
+			goto error;
+
 		struct rte_vlan_hdr *vlan_hdr =
 			(struct rte_vlan_hdr *)(eth_hdr + 1);
 
@@ -1291,80 +1836,219 @@ parse_ethernet(struct rte_mbuf *m, uint16_t *l4_proto, void **l4_hdr)
 		ethertype = rte_be_to_cpu_16(vlan_hdr->eth_proto);
 	}
 
-	l3_hdr = (char *)eth_hdr + m->l2_len;
-
 	switch (ethertype) {
 	case RTE_ETHER_TYPE_IPV4:
-		ipv4_hdr = l3_hdr;
-		*l4_proto = ipv4_hdr->next_proto_id;
-		m->l3_len = (ipv4_hdr->version_ihl & 0x0f) * 4;
-		*l4_hdr = (char *)l3_hdr + m->l3_len;
+		if (data_len < m->l2_len + sizeof(struct rte_ipv4_hdr))
+			goto error;
+		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
+				m->l2_len);
+		m->l3_len = rte_ipv4_hdr_len(ipv4_hdr);
+		if (data_len < m->l2_len + m->l3_len)
+			goto error;
 		m->ol_flags |= PKT_TX_IPV4;
+		*l4_proto = ipv4_hdr->next_proto_id;
 		break;
 	case RTE_ETHER_TYPE_IPV6:
-		ipv6_hdr = l3_hdr;
-		*l4_proto = ipv6_hdr->proto;
+		if (data_len < m->l2_len + sizeof(struct rte_ipv6_hdr))
+			goto error;
+		ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv6_hdr *,
+				m->l2_len);
 		m->l3_len = sizeof(struct rte_ipv6_hdr);
-		*l4_hdr = (char *)l3_hdr + m->l3_len;
 		m->ol_flags |= PKT_TX_IPV6;
+		*l4_proto = ipv6_hdr->proto;
 		break;
 	default:
-		m->l3_len = 0;
-		*l4_proto = 0;
-		*l4_hdr = NULL;
-		break;
+		/* a valid L3 header is needed for further L4 parsing */
+		goto error;
 	}
+
+	/* both CSUM and GSO need a valid L4 header */
+	switch (*l4_proto) {
+	case IPPROTO_TCP:
+		if (data_len < m->l2_len + m->l3_len +
+				sizeof(struct rte_tcp_hdr))
+			goto error;
+		break;
+	case IPPROTO_UDP:
+		if (data_len < m->l2_len + m->l3_len +
+				sizeof(struct rte_udp_hdr))
+			goto error;
+		break;
+	case IPPROTO_SCTP:
+		if (data_len < m->l2_len + m->l3_len +
+				sizeof(struct rte_sctp_hdr))
+			goto error;
+		break;
+	default:
+		goto error;
+	}
+
+	return 0;
+
+error:
+	m->l2_len = 0;
+	m->l3_len = 0;
+	m->ol_flags = 0;
+	return -EINVAL;
 }
 
 static __rte_always_inline void
-vhost_dequeue_offload(struct virtio_net_hdr *hdr, struct rte_mbuf *m)
+vhost_dequeue_offload_legacy(struct virtio_net_hdr *hdr, struct rte_mbuf *m)
 {
-	uint16_t l4_proto = 0;
-	void *l4_hdr = NULL;
+	uint8_t l4_proto = 0;
 	struct rte_tcp_hdr *tcp_hdr = NULL;
+	uint16_t tcp_len;
+	uint16_t data_len = rte_pktmbuf_data_len(m);
 
-	if (hdr->flags == 0 && hdr->gso_type == VIRTIO_NET_HDR_GSO_NONE)
+	if (parse_headers(m, &l4_proto) < 0)
 		return;
 
-	parse_ethernet(m, &l4_proto, &l4_hdr);
 	if (hdr->flags == VIRTIO_NET_HDR_F_NEEDS_CSUM) {
 		if (hdr->csum_start == (m->l2_len + m->l3_len)) {
 			switch (hdr->csum_offset) {
 			case (offsetof(struct rte_tcp_hdr, cksum)):
-				if (l4_proto == IPPROTO_TCP)
-					m->ol_flags |= PKT_TX_TCP_CKSUM;
+				if (l4_proto != IPPROTO_TCP)
+					goto error;
+				m->ol_flags |= PKT_TX_TCP_CKSUM;
 				break;
 			case (offsetof(struct rte_udp_hdr, dgram_cksum)):
-				if (l4_proto == IPPROTO_UDP)
-					m->ol_flags |= PKT_TX_UDP_CKSUM;
+				if (l4_proto != IPPROTO_UDP)
+					goto error;
+				m->ol_flags |= PKT_TX_UDP_CKSUM;
 				break;
 			case (offsetof(struct rte_sctp_hdr, cksum)):
-				if (l4_proto == IPPROTO_SCTP)
-					m->ol_flags |= PKT_TX_SCTP_CKSUM;
+				if (l4_proto != IPPROTO_SCTP)
+					goto error;
+				m->ol_flags |= PKT_TX_SCTP_CKSUM;
 				break;
 			default:
-				break;
+				goto error;
 			}
+		} else {
+			goto error;
 		}
 	}
 
-	if (l4_hdr && hdr->gso_type != VIRTIO_NET_HDR_GSO_NONE) {
+	if (hdr->gso_type != VIRTIO_NET_HDR_GSO_NONE) {
 		switch (hdr->gso_type & ~VIRTIO_NET_HDR_GSO_ECN) {
 		case VIRTIO_NET_HDR_GSO_TCPV4:
 		case VIRTIO_NET_HDR_GSO_TCPV6:
-			tcp_hdr = l4_hdr;
+			if (l4_proto != IPPROTO_TCP)
+				goto error;
+			tcp_hdr = rte_pktmbuf_mtod_offset(m,
+					struct rte_tcp_hdr *,
+					m->l2_len + m->l3_len);
+			tcp_len = (tcp_hdr->data_off & 0xf0) >> 2;
+			if (data_len < m->l2_len + m->l3_len + tcp_len)
+				goto error;
 			m->ol_flags |= PKT_TX_TCP_SEG;
 			m->tso_segsz = hdr->gso_size;
-			m->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
+			m->l4_len = tcp_len;
 			break;
 		case VIRTIO_NET_HDR_GSO_UDP:
+			if (l4_proto != IPPROTO_UDP)
+				goto error;
 			m->ol_flags |= PKT_TX_UDP_SEG;
 			m->tso_segsz = hdr->gso_size;
 			m->l4_len = sizeof(struct rte_udp_hdr);
 			break;
 		default:
-			RTE_LOG(WARNING, VHOST_DATA,
+			VHOST_LOG_DATA(WARNING,
 				"unsupported gso type %u.\n", hdr->gso_type);
+			goto error;
+		}
+	}
+	return;
+
+error:
+	m->l2_len = 0;
+	m->l3_len = 0;
+	m->ol_flags = 0;
+}
+
+static __rte_always_inline void
+vhost_dequeue_offload(struct virtio_net_hdr *hdr, struct rte_mbuf *m,
+	bool legacy_ol_flags)
+{
+	struct rte_net_hdr_lens hdr_lens;
+	int l4_supported = 0;
+	uint32_t ptype;
+
+	if (hdr->flags == 0 && hdr->gso_type == VIRTIO_NET_HDR_GSO_NONE)
+		return;
+
+	if (legacy_ol_flags) {
+		vhost_dequeue_offload_legacy(hdr, m);
+		return;
+	}
+
+	m->ol_flags |= PKT_RX_IP_CKSUM_UNKNOWN;
+
+	ptype = rte_net_get_ptype(m, &hdr_lens, RTE_PTYPE_ALL_MASK);
+	m->packet_type = ptype;
+	if ((ptype & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_TCP ||
+	    (ptype & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_UDP ||
+	    (ptype & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_SCTP)
+		l4_supported = 1;
+
+	/* According to Virtio 1.1 spec, the device only needs to look at
+	 * VIRTIO_NET_HDR_F_NEEDS_CSUM in the packet transmission path.
+	 * This differs from the processing incoming packets path where the
+	 * driver could rely on VIRTIO_NET_HDR_F_DATA_VALID flag set by the
+	 * device.
+	 *
+	 * 5.1.6.2.1 Driver Requirements: Packet Transmission
+	 * The driver MUST NOT set the VIRTIO_NET_HDR_F_DATA_VALID and
+	 * VIRTIO_NET_HDR_F_RSC_INFO bits in flags.
+	 *
+	 * 5.1.6.2.2 Device Requirements: Packet Transmission
+	 * The device MUST ignore flag bits that it does not recognize.
+	 */
+	if (hdr->flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
+		uint32_t hdrlen;
+
+		hdrlen = hdr_lens.l2_len + hdr_lens.l3_len + hdr_lens.l4_len;
+		if (hdr->csum_start <= hdrlen && l4_supported != 0) {
+			m->ol_flags |= PKT_RX_L4_CKSUM_NONE;
+		} else {
+			/* Unknown proto or tunnel, do sw cksum. We can assume
+			 * the cksum field is in the first segment since the
+			 * buffers we provided to the host are large enough.
+			 * In case of SCTP, this will be wrong since it's a CRC
+			 * but there's nothing we can do.
+			 */
+			uint16_t csum = 0, off;
+
+			if (rte_raw_cksum_mbuf(m, hdr->csum_start,
+					rte_pktmbuf_pkt_len(m) - hdr->csum_start, &csum) < 0)
+				return;
+			if (likely(csum != 0xffff))
+				csum = ~csum;
+			off = hdr->csum_offset + hdr->csum_start;
+			if (rte_pktmbuf_data_len(m) >= off + 1)
+				*rte_pktmbuf_mtod_offset(m, uint16_t *, off) = csum;
+		}
+	}
+
+	if (hdr->gso_type != VIRTIO_NET_HDR_GSO_NONE) {
+		if (hdr->gso_size == 0)
+			return;
+
+		switch (hdr->gso_type & ~VIRTIO_NET_HDR_GSO_ECN) {
+		case VIRTIO_NET_HDR_GSO_TCPV4:
+		case VIRTIO_NET_HDR_GSO_TCPV6:
+			if ((ptype & RTE_PTYPE_L4_MASK) != RTE_PTYPE_L4_TCP)
+				break;
+			m->ol_flags |= PKT_RX_LRO | PKT_RX_L4_CKSUM_NONE;
+			m->tso_segsz = hdr->gso_size;
+			break;
+		case VIRTIO_NET_HDR_GSO_UDP:
+			if ((ptype & RTE_PTYPE_L4_MASK) != RTE_PTYPE_L4_UDP)
+				break;
+			m->ol_flags |= PKT_RX_LRO | PKT_RX_L4_CKSUM_NONE;
+			m->tso_segsz = hdr->gso_size;
+			break;
+		default:
 			break;
 		}
 	}
@@ -1394,10 +2078,11 @@ copy_vnet_hdr_from_desc(struct virtio_net_hdr *hdr,
 static __rte_always_inline int
 copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		  struct buf_vector *buf_vec, uint16_t nr_vec,
-		  struct rte_mbuf *m, struct rte_mempool *mbuf_pool)
+		  struct rte_mbuf *m, struct rte_mempool *mbuf_pool,
+		  bool legacy_ol_flags)
 {
 	uint32_t buf_avail, buf_offset;
-	uint64_t buf_addr, buf_iova, buf_len;
+	uint64_t buf_addr, buf_len;
 	uint32_t mbuf_avail, mbuf_offset;
 	uint32_t hdr_remain = dev->vhost_hlen;
 	uint32_t cpy_len;
@@ -1434,7 +2119,6 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	}
 
 	buf_addr = buf_vec[vec_idx].buf_addr;
-	buf_iova = buf_vec[vec_idx].buf_iova;
 	buf_len = buf_vec[vec_idx].buf_len;
 	buf_offset = hdr_remain;
 	buf_avail = buf_vec[vec_idx].buf_len - hdr_remain;
@@ -1446,48 +2130,23 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	mbuf_offset = 0;
 	mbuf_avail  = m->buf_len - RTE_PKTMBUF_HEADROOM;
 	while (1) {
-		uint64_t hpa;
-
 		cpy_len = RTE_MIN(buf_avail, mbuf_avail);
 
-		/*
-		 * A desc buf might across two host physical pages that are
-		 * not continuous. In such case (gpa_to_hpa returns 0), data
-		 * will be copied even though zero copy is enabled.
-		 */
-		if (unlikely(dev->dequeue_zero_copy && (hpa = gpa_to_hpa(dev,
-					buf_iova + buf_offset, cpy_len)))) {
-			cur->data_len = cpy_len;
-			cur->data_off = 0;
-			cur->buf_addr =
-				(void *)(uintptr_t)(buf_addr + buf_offset);
-			cur->buf_iova = hpa;
-
-			/*
-			 * In zero copy mode, one mbuf can only reference data
-			 * for one or partial of one desc buff.
-			 */
-			mbuf_avail = cpy_len;
-		} else {
-			if (likely(cpy_len > MAX_BATCH_LEN ||
-				   vq->batch_copy_nb_elems >= vq->size ||
-				   (hdr && cur == m))) {
-				rte_memcpy(rte_pktmbuf_mtod_offset(cur, void *,
-								   mbuf_offset),
-					   (void *)((uintptr_t)(buf_addr +
-							   buf_offset)),
-					   cpy_len);
-			} else {
-				batch_copy[vq->batch_copy_nb_elems].dst =
-					rte_pktmbuf_mtod_offset(cur, void *,
-								mbuf_offset);
-				batch_copy[vq->batch_copy_nb_elems].src =
+		if (likely(cpy_len > MAX_BATCH_LEN ||
+					vq->batch_copy_nb_elems >= vq->size ||
+					(hdr && cur == m))) {
+			rte_memcpy(rte_pktmbuf_mtod_offset(cur, void *,
+						mbuf_offset),
 					(void *)((uintptr_t)(buf_addr +
-								buf_offset));
-				batch_copy[vq->batch_copy_nb_elems].len =
-					cpy_len;
-				vq->batch_copy_nb_elems++;
-			}
+							buf_offset)), cpy_len);
+		} else {
+			batch_copy[vq->batch_copy_nb_elems].dst =
+				rte_pktmbuf_mtod_offset(cur, void *,
+						mbuf_offset);
+			batch_copy[vq->batch_copy_nb_elems].src =
+				(void *)((uintptr_t)(buf_addr + buf_offset));
+			batch_copy[vq->batch_copy_nb_elems].len = cpy_len;
+			vq->batch_copy_nb_elems++;
 		}
 
 		mbuf_avail  -= cpy_len;
@@ -1501,7 +2160,6 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 				break;
 
 			buf_addr = buf_vec[vec_idx].buf_addr;
-			buf_iova = buf_vec[vec_idx].buf_iova;
 			buf_len = buf_vec[vec_idx].buf_len;
 
 			buf_offset = 0;
@@ -1518,13 +2176,11 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		if (mbuf_avail == 0) {
 			cur = rte_pktmbuf_alloc(mbuf_pool);
 			if (unlikely(cur == NULL)) {
-				RTE_LOG(ERR, VHOST_DATA, "Failed to "
+				VHOST_LOG_DATA(ERR, "Failed to "
 					"allocate memory for mbuf.\n");
 				error = -1;
 				goto out;
 			}
-			if (unlikely(dev->dequeue_zero_copy))
-				rte_mbuf_refcnt_update(cur, 1);
 
 			prev->next = cur;
 			prev->data_len = mbuf_offset;
@@ -1541,42 +2197,11 @@ copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	m->pkt_len    += mbuf_offset;
 
 	if (hdr)
-		vhost_dequeue_offload(hdr, m);
+		vhost_dequeue_offload(hdr, m, legacy_ol_flags);
 
 out:
 
 	return error;
-}
-
-static __rte_always_inline struct zcopy_mbuf *
-get_zmbuf(struct vhost_virtqueue *vq)
-{
-	uint16_t i;
-	uint16_t last;
-	int tries = 0;
-
-	/* search [last_zmbuf_idx, zmbuf_size) */
-	i = vq->last_zmbuf_idx;
-	last = vq->zmbuf_size;
-
-again:
-	for (; i < last; i++) {
-		if (vq->zmbufs[i].in_use == 0) {
-			vq->last_zmbuf_idx = i + 1;
-			vq->zmbufs[i].in_use = 1;
-			return &vq->zmbufs[i];
-		}
-	}
-
-	tries++;
-	if (tries == 1) {
-		/* search [0, last_zmbuf_idx) */
-		i = 0;
-		last = vq->last_zmbuf_idx;
-		goto again;
-	}
-
-	return NULL;
 }
 
 static void
@@ -1610,7 +2235,7 @@ virtio_dev_extbuf_alloc(struct rte_mbuf *pkt, uint32_t size)
 						virtio_dev_extbuf_free, buf);
 	if (unlikely(shinfo == NULL)) {
 		rte_free(buf);
-		RTE_LOG(ERR, VHOST_DATA, "Failed to init shinfo\n");
+		VHOST_LOG_DATA(ERR, "Failed to init shinfo\n");
 		return -1;
 	}
 
@@ -1631,7 +2256,7 @@ virtio_dev_pktmbuf_alloc(struct virtio_net *dev, struct rte_mempool *mp,
 	struct rte_mbuf *pkt = rte_pktmbuf_alloc(mp);
 
 	if (unlikely(pkt == NULL)) {
-		RTE_LOG(ERR, VHOST_DATA,
+		VHOST_LOG_DATA(ERR,
 			"Failed to allocate memory for mbuf.\n");
 		return NULL;
 	}
@@ -1655,57 +2280,33 @@ virtio_dev_pktmbuf_alloc(struct virtio_net *dev, struct rte_mempool *mp,
 	return NULL;
 }
 
-static __rte_noinline uint16_t
+__rte_always_inline
+static uint16_t
 virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
-	struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count)
+	struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count,
+	bool legacy_ol_flags)
 {
 	uint16_t i;
 	uint16_t free_entries;
 	uint16_t dropped = 0;
 	static bool allocerr_warned;
 
-	if (unlikely(dev->dequeue_zero_copy)) {
-		struct zcopy_mbuf *zmbuf, *next;
-
-		for (zmbuf = TAILQ_FIRST(&vq->zmbuf_list);
-		     zmbuf != NULL; zmbuf = next) {
-			next = TAILQ_NEXT(zmbuf, next);
-
-			if (mbuf_is_consumed(zmbuf->mbuf)) {
-				update_shadow_used_ring_split(vq,
-						zmbuf->desc_idx, 0);
-				TAILQ_REMOVE(&vq->zmbuf_list, zmbuf, next);
-				restore_mbuf(zmbuf->mbuf);
-				rte_pktmbuf_free(zmbuf->mbuf);
-				put_zmbuf(zmbuf);
-				vq->nr_zmbuf -= 1;
-			}
-		}
-
-		if (likely(vq->shadow_used_idx)) {
-			flush_shadow_used_ring_split(dev, vq);
-			vhost_vring_call_split(dev, vq);
-		}
-	}
-
-	free_entries = *((volatile uint16_t *)&vq->avail->idx) -
-			vq->last_avail_idx;
-	if (free_entries == 0)
-		return 0;
-
 	/*
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	rte_smp_rmb();
+	free_entries = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE) -
+			vq->last_avail_idx;
+	if (free_entries == 0)
+		return 0;
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
-	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) %s\n", dev->vid, __func__);
+	VHOST_LOG_DATA(DEBUG, "(%d) %s\n", dev->vid, __func__);
 
 	count = RTE_MIN(count, MAX_PKT_BURST);
 	count = RTE_MIN(count, free_entries);
-	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) about to dequeue %u buffers\n",
+	VHOST_LOG_DATA(DEBUG, "(%d) about to dequeue %u buffers\n",
 			dev->vid, count);
 
 	for (i = 0; i < count; i++) {
@@ -1722,8 +2323,7 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 						VHOST_ACCESS_RO) < 0))
 			break;
 
-		if (likely(dev->dequeue_zero_copy == 0))
-			update_shadow_used_ring_split(vq, head_idx, 0);
+		update_shadow_used_ring_split(vq, head_idx, 0);
 
 		if (unlikely(buf_len <= dev->vhost_hlen)) {
 			dropped += 1;
@@ -1741,7 +2341,7 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			 * is required. Drop this packet.
 			 */
 			if (!allocerr_warned) {
-				RTE_LOG(ERR, VHOST_DATA,
+				VHOST_LOG_DATA(ERR,
 					"Failed mbuf alloc of size %d from %s on %s.\n",
 					buf_len, mbuf_pool->name, dev->ifname);
 				allocerr_warned = true;
@@ -1752,11 +2352,11 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		}
 
 		err = copy_desc_to_mbuf(dev, vq, buf_vec, nr_vec, pkts[i],
-				mbuf_pool);
+				mbuf_pool, legacy_ol_flags);
 		if (unlikely(err)) {
 			rte_pktmbuf_free(pkts[i]);
 			if (!allocerr_warned) {
-				RTE_LOG(ERR, VHOST_DATA,
+				VHOST_LOG_DATA(ERR,
 					"Failed to copy desc to mbuf on %s.\n",
 					dev->ifname);
 				allocerr_warned = true;
@@ -1765,45 +2365,37 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			i++;
 			break;
 		}
-
-		if (unlikely(dev->dequeue_zero_copy)) {
-			struct zcopy_mbuf *zmbuf;
-
-			zmbuf = get_zmbuf(vq);
-			if (!zmbuf) {
-				rte_pktmbuf_free(pkts[i]);
-				dropped += 1;
-				i++;
-				break;
-			}
-			zmbuf->mbuf = pkts[i];
-			zmbuf->desc_idx = head_idx;
-
-			/*
-			 * Pin lock the mbuf; we will check later to see
-			 * whether the mbuf is freed (when we are the last
-			 * user) or not. If that's the case, we then could
-			 * update the used ring safely.
-			 */
-			rte_mbuf_refcnt_update(pkts[i], 1);
-
-			vq->nr_zmbuf += 1;
-			TAILQ_INSERT_TAIL(&vq->zmbuf_list, zmbuf, next);
-		}
 	}
+
 	vq->last_avail_idx += i;
 
-	if (likely(dev->dequeue_zero_copy == 0)) {
-		do_data_copy_dequeue(vq);
-		if (unlikely(i < count))
-			vq->shadow_used_idx = i;
-		if (likely(vq->shadow_used_idx)) {
-			flush_shadow_used_ring_split(dev, vq);
-			vhost_vring_call_split(dev, vq);
-		}
+	do_data_copy_dequeue(vq);
+	if (unlikely(i < count))
+		vq->shadow_used_idx = i;
+	if (likely(vq->shadow_used_idx)) {
+		flush_shadow_used_ring_split(dev, vq);
+		vhost_vring_call_split(dev, vq);
 	}
 
 	return (i - dropped);
+}
+
+__rte_noinline
+static uint16_t
+virtio_dev_tx_split_legacy(struct virtio_net *dev,
+	struct vhost_virtqueue *vq, struct rte_mempool *mbuf_pool,
+	struct rte_mbuf **pkts, uint16_t count)
+{
+	return virtio_dev_tx_split(dev, vq, mbuf_pool, pkts, count, true);
+}
+
+__rte_noinline
+static uint16_t
+virtio_dev_tx_split_compliant(struct virtio_net *dev,
+	struct vhost_virtqueue *vq, struct rte_mempool *mbuf_pool,
+	struct rte_mbuf **pkts, uint16_t count)
+{
+	return virtio_dev_tx_split(dev, vq, mbuf_pool, pkts, count, false);
 }
 
 static __rte_always_inline int
@@ -1819,7 +2411,7 @@ vhost_reserve_avail_batch_packed(struct virtio_net *dev,
 	struct vring_packed_desc *descs = vq->desc_packed;
 	uint64_t lens[PACKED_BATCH_SIZE];
 	uint64_t buf_lens[PACKED_BATCH_SIZE];
-	uint32_t buf_offset = dev->vhost_hlen;
+	uint32_t buf_offset = sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	uint16_t flags, i;
 
 	if (unlikely(avail_idx & PACKED_BATCH_MASK))
@@ -1886,10 +2478,11 @@ static __rte_always_inline int
 virtio_dev_tx_batch_packed(struct virtio_net *dev,
 			   struct vhost_virtqueue *vq,
 			   struct rte_mempool *mbuf_pool,
-			   struct rte_mbuf **pkts)
+			   struct rte_mbuf **pkts,
+			   bool legacy_ol_flags)
 {
 	uint16_t avail_idx = vq->last_avail_idx;
-	uint32_t buf_offset = dev->vhost_hlen;
+	uint32_t buf_offset = sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	struct virtio_net_hdr *hdr;
 	uintptr_t desc_addrs[PACKED_BATCH_SIZE];
 	uint16_t ids[PACKED_BATCH_SIZE];
@@ -1910,7 +2503,7 @@ virtio_dev_tx_batch_packed(struct virtio_net *dev,
 	if (virtio_net_with_host_offload(dev)) {
 		vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
 			hdr = (struct virtio_net_hdr *)(desc_addrs[i]);
-			vhost_dequeue_offload(hdr, pkts[i]);
+			vhost_dequeue_offload(hdr, pkts[i], legacy_ol_flags);
 		}
 	}
 
@@ -1931,7 +2524,8 @@ vhost_dequeue_single_packed(struct virtio_net *dev,
 			    struct rte_mempool *mbuf_pool,
 			    struct rte_mbuf **pkts,
 			    uint16_t *buf_id,
-			    uint16_t *desc_count)
+			    uint16_t *desc_count,
+			    bool legacy_ol_flags)
 {
 	struct buf_vector buf_vec[BUF_VECTOR_MAX];
 	uint32_t buf_len;
@@ -1954,7 +2548,7 @@ vhost_dequeue_single_packed(struct virtio_net *dev,
 	*pkts = virtio_dev_pktmbuf_alloc(dev, mbuf_pool, buf_len);
 	if (unlikely(*pkts == NULL)) {
 		if (!allocerr_warned) {
-			RTE_LOG(ERR, VHOST_DATA,
+			VHOST_LOG_DATA(ERR,
 				"Failed mbuf alloc of size %d from %s on %s.\n",
 				buf_len, mbuf_pool->name, dev->ifname);
 			allocerr_warned = true;
@@ -1963,10 +2557,10 @@ vhost_dequeue_single_packed(struct virtio_net *dev,
 	}
 
 	err = copy_desc_to_mbuf(dev, vq, buf_vec, nr_vec, *pkts,
-				mbuf_pool);
+				mbuf_pool, legacy_ol_flags);
 	if (unlikely(err)) {
 		if (!allocerr_warned) {
-			RTE_LOG(ERR, VHOST_DATA,
+			VHOST_LOG_DATA(ERR,
 				"Failed to copy desc to mbuf on %s.\n",
 				dev->ifname);
 			allocerr_warned = true;
@@ -1982,14 +2576,15 @@ static __rte_always_inline int
 virtio_dev_tx_single_packed(struct virtio_net *dev,
 			    struct vhost_virtqueue *vq,
 			    struct rte_mempool *mbuf_pool,
-			    struct rte_mbuf **pkts)
+			    struct rte_mbuf **pkts,
+			    bool legacy_ol_flags)
 {
 
 	uint16_t buf_id, desc_count = 0;
 	int ret;
 
 	ret = vhost_dequeue_single_packed(dev, vq, mbuf_pool, pkts, &buf_id,
-					&desc_count);
+					&desc_count, legacy_ol_flags);
 
 	if (likely(desc_count > 0)) {
 		if (virtio_net_is_inorder(dev))
@@ -2005,168 +2600,14 @@ virtio_dev_tx_single_packed(struct virtio_net *dev,
 	return ret;
 }
 
-static __rte_always_inline int
-virtio_dev_tx_batch_packed_zmbuf(struct virtio_net *dev,
-				 struct vhost_virtqueue *vq,
-				 struct rte_mempool *mbuf_pool,
-				 struct rte_mbuf **pkts)
-{
-	struct zcopy_mbuf *zmbufs[PACKED_BATCH_SIZE];
-	uintptr_t desc_addrs[PACKED_BATCH_SIZE];
-	uint16_t ids[PACKED_BATCH_SIZE];
-	uint16_t i;
-
-	uint16_t avail_idx = vq->last_avail_idx;
-
-	if (vhost_reserve_avail_batch_packed(dev, vq, mbuf_pool, pkts,
-					     avail_idx, desc_addrs, ids))
-		return -1;
-
-	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
-		zmbufs[i] = get_zmbuf(vq);
-
-	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
-		if (!zmbufs[i])
-			goto free_pkt;
-	}
-
-	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
-		zmbufs[i]->mbuf = pkts[i];
-		zmbufs[i]->desc_idx = ids[i];
-		zmbufs[i]->desc_count = 1;
-	}
-
-	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
-		rte_mbuf_refcnt_update(pkts[i], 1);
-
-	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
-		TAILQ_INSERT_TAIL(&vq->zmbuf_list, zmbufs[i], next);
-
-	vq->nr_zmbuf += PACKED_BATCH_SIZE;
-	vq_inc_last_avail_packed(vq, PACKED_BATCH_SIZE);
-
-	return 0;
-
-free_pkt:
-	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
-		rte_pktmbuf_free(pkts[i]);
-
-	return -1;
-}
-
-static __rte_always_inline int
-virtio_dev_tx_single_packed_zmbuf(struct virtio_net *dev,
-				  struct vhost_virtqueue *vq,
-				  struct rte_mempool *mbuf_pool,
-				  struct rte_mbuf **pkts)
-{
-	uint16_t buf_id, desc_count;
-	struct zcopy_mbuf *zmbuf;
-
-	if (vhost_dequeue_single_packed(dev, vq, mbuf_pool, pkts, &buf_id,
-					&desc_count))
-		return -1;
-
-	zmbuf = get_zmbuf(vq);
-	if (!zmbuf) {
-		rte_pktmbuf_free(*pkts);
-		return -1;
-	}
-	zmbuf->mbuf = *pkts;
-	zmbuf->desc_idx = buf_id;
-	zmbuf->desc_count = desc_count;
-
-	rte_mbuf_refcnt_update(*pkts, 1);
-
-	vq->nr_zmbuf += 1;
-	TAILQ_INSERT_TAIL(&vq->zmbuf_list, zmbuf, next);
-
-	vq_inc_last_avail_packed(vq, desc_count);
-	return 0;
-}
-
-static __rte_always_inline void
-free_zmbuf(struct vhost_virtqueue *vq)
-{
-	struct zcopy_mbuf *next = NULL;
-	struct zcopy_mbuf *zmbuf;
-
-	for (zmbuf = TAILQ_FIRST(&vq->zmbuf_list);
-	     zmbuf != NULL; zmbuf = next) {
-		next = TAILQ_NEXT(zmbuf, next);
-
-		uint16_t last_used_idx = vq->last_used_idx;
-
-		if (mbuf_is_consumed(zmbuf->mbuf)) {
-			uint16_t flags;
-			flags = vq->desc_packed[last_used_idx].flags;
-			if (vq->used_wrap_counter) {
-				flags |= VRING_DESC_F_USED;
-				flags |= VRING_DESC_F_AVAIL;
-			} else {
-				flags &= ~VRING_DESC_F_USED;
-				flags &= ~VRING_DESC_F_AVAIL;
-			}
-
-			vq->desc_packed[last_used_idx].id = zmbuf->desc_idx;
-			vq->desc_packed[last_used_idx].len = 0;
-
-			rte_smp_wmb();
-			vq->desc_packed[last_used_idx].flags = flags;
-
-			vq_inc_last_used_packed(vq, zmbuf->desc_count);
-
-			TAILQ_REMOVE(&vq->zmbuf_list, zmbuf, next);
-			restore_mbuf(zmbuf->mbuf);
-			rte_pktmbuf_free(zmbuf->mbuf);
-			put_zmbuf(zmbuf);
-			vq->nr_zmbuf -= 1;
-		}
-	}
-}
-
-static __rte_noinline uint16_t
-virtio_dev_tx_packed_zmbuf(struct virtio_net *dev,
-			   struct vhost_virtqueue *vq,
-			   struct rte_mempool *mbuf_pool,
-			   struct rte_mbuf **pkts,
-			   uint32_t count)
-{
-	uint32_t pkt_idx = 0;
-	uint32_t remained = count;
-
-	free_zmbuf(vq);
-
-	do {
-		if (remained >= PACKED_BATCH_SIZE) {
-			if (!virtio_dev_tx_batch_packed_zmbuf(dev, vq,
-				mbuf_pool, &pkts[pkt_idx])) {
-				pkt_idx += PACKED_BATCH_SIZE;
-				remained -= PACKED_BATCH_SIZE;
-				continue;
-			}
-		}
-
-		if (virtio_dev_tx_single_packed_zmbuf(dev, vq, mbuf_pool,
-						      &pkts[pkt_idx]))
-			break;
-		pkt_idx++;
-		remained--;
-
-	} while (remained);
-
-	if (pkt_idx)
-		vhost_vring_call_packed(dev, vq);
-
-	return pkt_idx;
-}
-
-static __rte_noinline uint16_t
+__rte_always_inline
+static uint16_t
 virtio_dev_tx_packed(struct virtio_net *dev,
-		     struct vhost_virtqueue *vq,
+		     struct vhost_virtqueue *__rte_restrict vq,
 		     struct rte_mempool *mbuf_pool,
-		     struct rte_mbuf **pkts,
-		     uint32_t count)
+		     struct rte_mbuf **__rte_restrict pkts,
+		     uint32_t count,
+		     bool legacy_ol_flags)
 {
 	uint32_t pkt_idx = 0;
 	uint32_t remained = count;
@@ -2176,7 +2617,8 @@ virtio_dev_tx_packed(struct virtio_net *dev,
 
 		if (remained >= PACKED_BATCH_SIZE) {
 			if (!virtio_dev_tx_batch_packed(dev, vq, mbuf_pool,
-							&pkts[pkt_idx])) {
+							&pkts[pkt_idx],
+							legacy_ol_flags)) {
 				pkt_idx += PACKED_BATCH_SIZE;
 				remained -= PACKED_BATCH_SIZE;
 				continue;
@@ -2184,7 +2626,8 @@ virtio_dev_tx_packed(struct virtio_net *dev,
 		}
 
 		if (virtio_dev_tx_single_packed(dev, vq, mbuf_pool,
-						&pkts[pkt_idx]))
+						&pkts[pkt_idx],
+						legacy_ol_flags))
 			break;
 		pkt_idx++;
 		remained--;
@@ -2201,6 +2644,24 @@ virtio_dev_tx_packed(struct virtio_net *dev,
 	return pkt_idx;
 }
 
+__rte_noinline
+static uint16_t
+virtio_dev_tx_packed_legacy(struct virtio_net *dev,
+	struct vhost_virtqueue *__rte_restrict vq, struct rte_mempool *mbuf_pool,
+	struct rte_mbuf **__rte_restrict pkts, uint32_t count)
+{
+	return virtio_dev_tx_packed(dev, vq, mbuf_pool, pkts, count, true);
+}
+
+__rte_noinline
+static uint16_t
+virtio_dev_tx_packed_compliant(struct virtio_net *dev,
+	struct vhost_virtqueue *__rte_restrict vq, struct rte_mempool *mbuf_pool,
+	struct rte_mbuf **__rte_restrict pkts, uint32_t count)
+{
+	return virtio_dev_tx_packed(dev, vq, mbuf_pool, pkts, count, false);
+}
+
 uint16_t
 rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count)
@@ -2208,20 +2669,22 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	struct virtio_net *dev;
 	struct rte_mbuf *rarp_mbuf = NULL;
 	struct vhost_virtqueue *vq;
+	int16_t success = 1;
 
 	dev = get_device(vid);
 	if (!dev)
 		return 0;
 
 	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
-		RTE_LOG(ERR, VHOST_DATA,
+		VHOST_LOG_DATA(ERR,
 			"(%d) %s: built-in vhost net backend is disabled.\n",
 			dev->vid, __func__);
 		return 0;
 	}
 
 	if (unlikely(!is_valid_virt_queue_idx(queue_id, 1, dev->nr_vring))) {
-		RTE_LOG(ERR, VHOST_DATA, "(%d) %s: invalid virtqueue idx %d.\n",
+		VHOST_LOG_DATA(ERR,
+			"(%d) %s: invalid virtqueue idx %d.\n",
 			dev->vid, __func__, queue_id);
 		return 0;
 	}
@@ -2253,21 +2716,21 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	 *
 	 * broadcast_rarp shares a cacheline in the virtio_net structure
 	 * with some fields that are accessed during enqueue and
-	 * rte_atomic16_cmpset() causes a write if using cmpxchg. This could
-	 * result in false sharing between enqueue and dequeue.
+	 * __atomic_compare_exchange_n causes a write if performed compare
+	 * and exchange. This could result in false sharing between enqueue
+	 * and dequeue.
 	 *
 	 * Prevent unnecessary false sharing by reading broadcast_rarp first
-	 * and only performing cmpset if the read indicates it is likely to
-	 * be set.
+	 * and only performing compare and exchange if the read indicates it
+	 * is likely to be set.
 	 */
-	if (unlikely(rte_atomic16_read(&dev->broadcast_rarp) &&
-			rte_atomic16_cmpset((volatile uint16_t *)
-				&dev->broadcast_rarp.cnt, 1, 0))) {
+	if (unlikely(__atomic_load_n(&dev->broadcast_rarp, __ATOMIC_ACQUIRE) &&
+			__atomic_compare_exchange_n(&dev->broadcast_rarp,
+			&success, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))) {
 
 		rarp_mbuf = rte_net_make_rarp_packet(mbuf_pool, &dev->mac);
 		if (rarp_mbuf == NULL) {
-			RTE_LOG(ERR, VHOST_DATA,
-				"Failed to make RARP packet.\n");
+			VHOST_LOG_DATA(ERR, "Failed to make RARP packet.\n");
 			count = 0;
 			goto out;
 		}
@@ -2275,14 +2738,16 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	}
 
 	if (vq_is_packed(dev)) {
-		if (unlikely(dev->dequeue_zero_copy))
-			count = virtio_dev_tx_packed_zmbuf(dev, vq, mbuf_pool,
-							   pkts, count);
+		if (dev->flags & VIRTIO_DEV_LEGACY_OL_FLAGS)
+			count = virtio_dev_tx_packed_legacy(dev, vq, mbuf_pool, pkts, count);
 		else
-			count = virtio_dev_tx_packed(dev, vq, mbuf_pool, pkts,
-						     count);
-	} else
-		count = virtio_dev_tx_split(dev, vq, mbuf_pool, pkts, count);
+			count = virtio_dev_tx_packed_compliant(dev, vq, mbuf_pool, pkts, count);
+	} else {
+		if (dev->flags & VIRTIO_DEV_LEGACY_OL_FLAGS)
+			count = virtio_dev_tx_split_legacy(dev, vq, mbuf_pool, pkts, count);
+		else
+			count = virtio_dev_tx_split_compliant(dev, vq, mbuf_pool, pkts, count);
+	}
 
 out:
 	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))

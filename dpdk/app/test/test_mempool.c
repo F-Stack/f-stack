@@ -64,7 +64,7 @@ static rte_atomic32_t synchro;
  * other bytes are set to 0.
  */
 static void
-my_obj_init(struct rte_mempool *mp, __attribute__((unused)) void *arg,
+my_obj_init(struct rte_mempool *mp, __rte_unused void *arg,
 	    void *obj, unsigned i)
 {
 	uint32_t *objnum = obj;
@@ -287,17 +287,17 @@ static int test_mempool_single_consumer(void)
 }
 
 /*
- * test function for mempool test based on singple consumer and single producer,
+ * test function for mempool test based on single consumer and single producer,
  * can run on one lcore only
  */
 static int
-test_mempool_launch_single_consumer(__attribute__((unused)) void *arg)
+test_mempool_launch_single_consumer(__rte_unused void *arg)
 {
 	return test_mempool_single_consumer();
 }
 
 static void
-my_mp_init(struct rte_mempool *mp, __attribute__((unused)) void *arg)
+my_mp_init(struct rte_mempool *mp, __rte_unused void *arg)
 {
 	printf("mempool name is %s\n", mp->name);
 	/* nothing to be implemented here*/
@@ -305,7 +305,7 @@ my_mp_init(struct rte_mempool *mp, __attribute__((unused)) void *arg)
 }
 
 /*
- * it tests the mempool operations based on singple producer and single consumer
+ * it tests the mempool operations based on single producer and single consumer
  */
 static int
 test_mempool_sp_sc(void)

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
  *
@@ -28,10 +30,11 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_inet.h"
+#include "opt_inet6.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/types.h>
+#include <sys/eventhandler.h>
 #include <sys/mbuf.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
@@ -39,8 +42,11 @@ __FBSDID("$FreeBSD$");
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/route.h>
+#include <net/route/nhop.h>
 #include <netinet/in.h>
 #include <netinet/in_pcb.h>
+#include <netinet/in_fib.h>
+#include <netinet6/in6_fib.h>
 #include <netinet/tcp.h>
 #include <netinet/tcp_offload.h>
 #define	TCPOUTFLAGS
@@ -58,7 +64,8 @@ tcp_offload_connect(struct socket *so, struct sockaddr *nam)
 {
 	struct ifnet *ifp;
 	struct toedev *tod;
-	struct rtentry *rt;
+	struct nhop_object *nh;
+	struct epoch_tracker et;
 	int error = EOPNOTSUPP;
 
 	INP_WLOCK_ASSERT(sotoinpcb(so));
@@ -68,13 +75,27 @@ tcp_offload_connect(struct socket *so, struct sockaddr *nam)
 	if (registered_toedevs == 0)
 		return (error);
 
-	rt = rtalloc1(nam, 0, 0);
-	if (rt)
-		RT_UNLOCK(rt);
+	NET_EPOCH_ENTER(et);
+	nh = NULL;
+#ifdef INET
+	if (nam->sa_family == AF_INET)
+		nh = fib4_lookup(0, ((struct sockaddr_in *)nam)->sin_addr,
+		    NHR_NONE, 0, 0);
+#endif
+#if defined(INET) && defined(INET6)
 	else
+#endif
+#ifdef INET6
+	if (nam->sa_family == AF_INET6)
+		nh = fib6_lookup(0, &((struct sockaddr_in6 *)nam)->sin6_addr,
+		    NHR_NONE, 0, 0);
+#endif
+	if (nh == NULL) {
+		NET_EPOCH_EXIT(et);
 		return (EHOSTUNREACH);
+	}
 
-	ifp = rt->rt_ifp;
+	ifp = nh->nh_ifp;
 
 	if (nam->sa_family == AF_INET && !(ifp->if_capenable & IFCAP_TOE4))
 		goto done;
@@ -83,9 +104,9 @@ tcp_offload_connect(struct socket *so, struct sockaddr *nam)
 
 	tod = TOEDEV(ifp);
 	if (tod != NULL)
-		error = tod->tod_connect(tod, so, rt, nam);
+		error = tod->tod_connect(tod, so, nh, nam);
 done:
-	RTFREE(rt);
+	NET_EPOCH_EXIT(et);
 	return (error);
 }
 
@@ -163,6 +184,29 @@ tcp_offload_ctloutput(struct tcpcb *tp, int sopt_dir, int sopt_name)
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 
 	tod->tod_ctloutput(tod, tp, sopt_dir, sopt_name);
+}
+
+void
+tcp_offload_tcp_info(struct tcpcb *tp, struct tcp_info *ti)
+{
+	struct toedev *tod = tp->tod;
+
+	KASSERT(tod != NULL, ("%s: tp->tod is NULL, tp %p", __func__, tp));
+	INP_WLOCK_ASSERT(tp->t_inpcb);
+
+	tod->tod_tcp_info(tod, tp, ti);
+}
+
+int
+tcp_offload_alloc_tls_session(struct tcpcb *tp, struct ktls_session *tls,
+    int direction)
+{
+	struct toedev *tod = tp->tod;
+
+	KASSERT(tod != NULL, ("%s: tp->tod is NULL, tp %p", __func__, tp));
+	INP_WLOCK_ASSERT(tp->t_inpcb);
+
+	return (tod->tod_alloc_tls_session(tod, tp, tls, direction));
 }
 
 void

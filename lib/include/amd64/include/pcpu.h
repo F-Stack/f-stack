@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,6 +31,7 @@
 #include_next <machine/pcpu.h>
 
 #undef __curthread
+#undef get_pcpu
 #undef PCPU_GET
 #undef PCPU_ADD
 #undef PCPU_INC
@@ -39,6 +40,8 @@
 
 extern __thread struct thread *pcurthread;
 extern struct pcpu *pcpup;
+
+#define	get_pcpu()              (pcpup->pc_ ## prvspace)
 
 #define PCPU_GET(member)         (pcpup->pc_ ## member)
 #define PCPU_ADD(member, val)    (pcpup->pc_ ## member += (val))
@@ -52,10 +55,12 @@ __curthread_ff(void)
     return (pcurthread);
 }
 
-
+#ifndef __curthread
 #define __curthread __curthread_ff
+#endif
 
 #ifndef curthread
 #define curthread __curthread_ff()
 #endif
+
 #endif    /* _FSTACK_MACHINE_PCPU_H_ */

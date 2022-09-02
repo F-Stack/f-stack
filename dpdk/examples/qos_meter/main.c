@@ -166,8 +166,8 @@ app_pkt_handle(struct rte_mbuf *pkt, uint64_t time)
 }
 
 
-static __attribute__((noreturn)) int
-main_loop(__attribute__((unused)) void *dummy)
+static __rte_noreturn int
+main_loop(__rte_unused void *dummy)
 {
 	uint64_t current_time, last_time = rte_rdtsc();
 	uint32_t lcore_id = rte_lcore_id();
@@ -220,10 +220,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -457,8 +454,8 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Invalid configure flow table\n");
 
 	/* Launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

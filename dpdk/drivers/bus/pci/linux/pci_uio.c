@@ -25,6 +25,7 @@
 
 #include "eal_filesystem.h"
 #include "pci_init.h"
+#include "private.h"
 
 void *pci_map_addr = NULL;
 
@@ -248,7 +249,7 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 		goto error;
 	}
 
-	if (dev->kdrv == RTE_KDRV_IGB_UIO)
+	if (dev->kdrv == RTE_PCI_KDRV_IGB_UIO)
 		dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
 	else {
 		dev->intr_handle.type = RTE_INTR_HANDLE_UIO_INTX;
@@ -345,7 +346,7 @@ pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
 	mapaddr = pci_map_resource(pci_map_addr, fd, 0,
 			(size_t)dev->mem_resource[res_idx].len, 0);
 	close(fd);
-	if (mapaddr == MAP_FAILED)
+	if (mapaddr == NULL)
 		goto error;
 
 	pci_map_addr = RTE_PTR_ADD(mapaddr,
@@ -534,21 +535,33 @@ pci_uio_ioport_write(struct rte_pci_ioport *p,
 		if (len >= 4) {
 			size = 4;
 #if defined(RTE_ARCH_X86)
+#ifdef __GLIBC__
 			outl_p(*(const uint32_t *)s, reg);
+#else
+			outl(*(const uint32_t *)s, reg);
+#endif
 #else
 			*(volatile uint32_t *)reg = *(const uint32_t *)s;
 #endif
 		} else if (len >= 2) {
 			size = 2;
 #if defined(RTE_ARCH_X86)
+#ifdef __GLIBC__
 			outw_p(*(const uint16_t *)s, reg);
+#else
+			outw(*(const uint16_t *)s, reg);
+#endif
 #else
 			*(volatile uint16_t *)reg = *(const uint16_t *)s;
 #endif
 		} else {
 			size = 1;
 #if defined(RTE_ARCH_X86)
+#ifdef __GLIBC__
 			outb_p(*s, reg);
+#else
+			outb(*s, reg);
+#endif
 #else
 			*(volatile uint8_t *)reg = *s;
 #endif

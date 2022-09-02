@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -78,6 +78,7 @@ static int numa_on;
 
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
+static uint64_t usr_cb_tsc;
 
 static struct rte_timer freebsd_clock;
 
@@ -357,7 +358,7 @@ init_mem_pool(void)
         } else {
             printf("create mbuf pool on socket %d\n", socketid);
         }
-        
+
 #ifdef FF_USE_PAGE_ARRAY
         nb_mbuf = RTE_ALIGN_CEIL (
             nb_ports*nb_lcores*MAX_PKT_BURST    +
@@ -736,7 +737,7 @@ init_port_start(void)
             uint16_t q;
             for (q = 0; q < nb_queues; q++) {
                 if (numa_on) {
-                    uint16_t lcore_id = lcore_conf.port_cfgs[port_id].lcore_list[q];
+                    uint16_t lcore_id = lcore_conf.port_cfgs[u_port_id].lcore_list[q];
                     socketid = rte_lcore_to_socket_id(lcore_id);
                 }
                 mbuf_pool = pktmbuf_pool[socketid];
@@ -795,19 +796,9 @@ init_port_start(void)
     //RSS reta update will failed when enable flow isolate
     #ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
-                /* set HW rss hash function to Toeplitz. */
-                if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
-                    struct rte_eth_hash_filter_info info = {0};
-                    info.info_type = RTE_ETH_HASH_FILTER_GLOBAL_CONFIG;
-                    info.info.global_conf.hash_func = RTE_ETH_HASH_FUNCTION_TOEPLITZ;
-
-                    if (rte_eth_dev_filter_ctrl(port_id, RTE_ETH_FILTER_HASH,
-                        RTE_ETH_FILTER_SET, &info) < 0) {
-                        rte_exit(EXIT_FAILURE, "port[%d] set hash func failed\n",
-                            port_id);
-                    }
-                }
-
+                /*
+                 * FIXME: modify RSS set to FDIR
+                 */
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
     #endif
@@ -836,8 +827,8 @@ init_clock(void)
 {
     rte_timer_subsystem_init();
     uint64_t hz = rte_get_timer_hz();
-    uint64_t intrs = MS_PER_S/ff_global_cfg.freebsd.hz;
-    uint64_t tsc = (hz + MS_PER_S - 1) / MS_PER_S*intrs;
+    uint64_t intrs = US_PER_S / ff_global_cfg.freebsd.hz;
+    uint64_t tsc = (hz + US_PER_S - 1) / US_PER_S * intrs;
 
     rte_timer_init(&freebsd_clock);
     rte_timer_reset(&freebsd_clock, tsc, PERIODICAL,
@@ -875,7 +866,7 @@ port_flow_complain(struct rte_flow_error *error)
     const char *errstr;
     char buf[32];
     int err = rte_errno;
-    
+
     if ((unsigned int)error->type >= RTE_DIM(errstrlist) ||
         !errstrlist[error->type])
         errstr = "unknown type";
@@ -894,7 +885,7 @@ static int
 port_flow_isolate(uint16_t port_id, int set)
 {
     struct rte_flow_error error;
-    
+
     /* Poisoning to make sure PMDs update it in case of error. */
     memset(&error, 0x66, sizeof(error));
     if (rte_flow_isolate(port_id, set, &error))
@@ -1097,8 +1088,8 @@ ff_dpdk_init(int argc, char **argv)
 #ifdef FF_USE_PAGE_ARRAY
     ff_mmap_init();
 #endif
-    
-#ifdef FF_FLOW_ISOLATE 
+
+#ifdef FF_FLOW_ISOLATE
     // run once in primary process
     if (0 == lcore_conf.tx_queue_id[0]){
         ret = port_flow_isolate(0, 1);
@@ -1106,7 +1097,7 @@ ff_dpdk_init(int argc, char **argv)
             rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
     }
 #endif
-    
+
     ret = init_port_start();
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_start failed\n");
@@ -1114,8 +1105,8 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    //Only give a example usage: port_id=0, tcp_port= 80. 
-    //Recommend: 
+    //Only give a example usage: port_id=0, tcp_port= 80.
+    //Recommend:
     //1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
     //2. using config options `tcp_port` replace magic number of 80
     ret = init_flow(0, 80);
@@ -1192,7 +1183,8 @@ protocol_filter(const void *data, uint16_t len)
     if(ether_type == RTE_ETHER_TYPE_ARP)
         return FILTER_ARP;
 
-#ifdef INET6
+#if (!defined(__FreeBSD__) && defined(INET6) ) || \
+    ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
     if (ether_type == RTE_ETHER_TYPE_IPV6) {
         return ff_kni_proto_filter(data,
             len, ether_type);
@@ -1295,12 +1287,14 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
         if (!pkts_from_ring) {
-            ff_traffic.rx_packets++;
-            ff_traffic.rx_bytes += len;
+            ff_traffic.rx_packets += rtem->nb_segs;
+            ff_traffic.rx_bytes += rte_pktmbuf_pkt_len(rtem);
         }
 
         if (!pkts_from_ring && packet_dispatcher) {
+            uint64_t cur_tsc = rte_rdtsc();
             int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
+            usr_cb_tsc += rte_rdtsc() - cur_tsc;
             if (ret == FF_DISPATCH_RESPONSE) {
                 rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
 
@@ -1413,7 +1407,7 @@ process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
         process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
     }
 
-    return 0;
+    return nb_rb;
 }
 
 static inline void
@@ -1511,7 +1505,7 @@ handle_ipfw_msg(struct ff_msg *msg)
         case FF_IPFW_SET:
             ret = ff_setsockopt_freebsd(fd, msg->ipfw.level,
                 msg->ipfw.optname, msg->ipfw.optval,
-                *(msg->ipfw.optlen)); 
+                *(msg->ipfw.optlen));
             break;
         default:
             ret = -1;
@@ -1650,11 +1644,11 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     if (unlikely(ff_global_cfg.pcap.enable)) {
         uint16_t i;
         for (i = 0; i < n; i++) {
-            ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i], 
+            ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i],
                ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len);
         }
     }
-    
+
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
     ff_traffic.tx_packets += ret;
     uint16_t i;
@@ -1664,7 +1658,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
         if (qconf->tx_mbufs[port].bsd_m_table[i])
             ff_enq_tx_bsdmbuf(port, qconf->tx_mbufs[port].bsd_m_table[i], m_table[i]->nb_segs);
 #endif
-    }    
+    }
     if (unlikely(ret < n)) {
         do {
             rte_pktmbuf_free(m_table[ret]);
@@ -1706,7 +1700,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 #ifdef FF_USE_PAGE_ARRAY
     struct lcore_conf *qconf = &lcore_conf;
     int    len = 0;
-    
+
     len = ff_if_send_onepkt(ctx, m,total);
     if (unlikely(len == MAX_PKT_BURST)) {
         send_burst(qconf, MAX_PKT_BURST, ctx->port_id);
@@ -1858,6 +1852,7 @@ main_loop(void *arg)
         idle = 1;
         sys_tsc = 0;
         usr_tsc = 0;
+        usr_cb_tsc = 0;
 
         /*
          * TX burst queue drain
@@ -1894,7 +1889,7 @@ main_loop(void *arg)
             }
 #endif
 
-            process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
+            idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
@@ -1939,12 +1934,13 @@ main_loop(void *arg)
             end_tsc = idle_sleep_tsc;
         }
 
+        usr_tsc = usr_cb_tsc;
         if (usch_tsc == cur_tsc) {
-            usr_tsc = idle_sleep_tsc - div_tsc;
+            usr_tsc += idle_sleep_tsc - div_tsc;
         }
 
         if (!idle) {
-            sys_tsc = div_tsc - cur_tsc;
+            sys_tsc = div_tsc - cur_tsc - usr_cb_tsc;
             ff_top_status.sys_tsc += sys_tsc;
         }
 
@@ -1981,7 +1977,7 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
         sizeof(struct loop_routine), 0);
     lr->loop = loop;
     lr->arg = arg;
-    rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
+    rte_eal_mp_remote_launch(main_loop, lr, CALL_MAIN);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
 }

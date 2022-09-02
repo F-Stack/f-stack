@@ -1,7 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Brocade Communications Systems, Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Brocade Communications Systems, Inc.
  *   Author: Jan Blunck <jblunck@infradead.org>
  */
 
@@ -47,7 +45,6 @@ rte_eth_copy_pci_info(struct rte_eth_dev *eth_dev,
 		if (pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_RMV)
 			eth_dev->data->dev_flags |= RTE_ETH_DEV_INTR_RMV;
 
-		eth_dev->data->kdrv = pci_dev->kdrv;
 		eth_dev->data->numa_node = pci_dev->device.numa_node;
 	}
 }
@@ -115,16 +112,6 @@ rte_eth_dev_pci_allocate(struct rte_pci_device *dev, size_t private_data_size)
 	return eth_dev;
 }
 
-static inline void
-rte_eth_dev_pci_release(struct rte_eth_dev *eth_dev)
-{
-	eth_dev->device = NULL;
-	eth_dev->intr_handle = NULL;
-
-	/* free ether device */
-	rte_eth_dev_release_port(eth_dev);
-}
-
 typedef int (*eth_dev_pci_callback_t)(struct rte_eth_dev *eth_dev);
 
 /**
@@ -146,7 +133,7 @@ rte_eth_dev_pci_generic_probe(struct rte_pci_device *pci_dev,
 	RTE_FUNC_PTR_OR_ERR_RET(*dev_init, -EINVAL);
 	ret = dev_init(eth_dev);
 	if (ret)
-		rte_eth_dev_pci_release(eth_dev);
+		rte_eth_dev_release_port(eth_dev);
 	else
 		rte_eth_dev_probing_finish(eth_dev);
 
@@ -185,7 +172,7 @@ rte_eth_dev_pci_generic_remove(struct rte_pci_device *pci_dev,
 			return ret;
 	}
 
-	rte_eth_dev_pci_release(eth_dev);
+	rte_eth_dev_release_port(eth_dev);
 	return 0;
 }
 

@@ -1,7 +1,9 @@
 /*	$FreeBSD$ */
 /*	from $OpenBSD: ifconfig.c,v 1.82 2003/10/19 05:43:35 mcbride Exp $ */
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Michael Shalayeff. All rights reserved.
  * Copyright (c) 2003 Ryan McBride. All rights reserved.
  *
@@ -40,7 +42,9 @@
 #include <netinet/in_var.h>
 #include <netinet/ip_carp.h>
 
+#ifdef FSTACK
 #include <netinet6/in6_var.h>
+#endif
 
 #include <ctype.h>
 #include <stdio.h>
@@ -152,7 +156,7 @@ setcarp_callback(int s, void *arg __unused)
 	offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
 	clen = sizeof(carpr);
 	if (ioctl_va(s, SIOCGVH, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1
-		&& errno != ENOENT)
+	    && errno != ENOENT)
 #endif
 		err(1, "SIOCGVH");
 

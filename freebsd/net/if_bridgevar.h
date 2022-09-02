@@ -1,6 +1,8 @@
 /*	$NetBSD: if_bridgevar.h,v 1.4 2003/07/08 07:13:50 itojun Exp $	*/
 
 /*
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright 2001 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -267,62 +269,52 @@ struct ifbpstpconf {
 #define	ifbpstp_req	ifbpstp_ifbpstpu.ifbpstpu_req
 };
 
+#define STP_STATES \
+    "disabled",    \
+    "listening",   \
+    "learning",    \
+    "forwarding",  \
+    "blocking",    \
+    "discarding"
+
+#define STP_PROTOS \
+    "stp",         \
+    "-",           \
+    "rstp"
+
+#define STP_ROLES \
+    "disabled",   \
+    "root",       \
+    "designated", \
+    "alternate",  \
+    "backup"
+
+#define PV2ID(pv, epri, eaddr)	do { \
+	epri     = pv >> 48;         \
+	eaddr[0] = pv >> 40;         \
+	eaddr[1] = pv >> 32;         \
+	eaddr[2] = pv >> 24;         \
+	eaddr[3] = pv >> 16;         \
+	eaddr[4] = pv >> 8;          \
+	eaddr[5] = pv >> 0;          \
+} while (0)
+
 #ifdef _KERNEL
 
-#define BRIDGE_LOCK_INIT(_sc)		do {			\
-	mtx_init(&(_sc)->sc_mtx, "if_bridge", NULL, MTX_DEF);	\
-	cv_init(&(_sc)->sc_cv, "if_bridge_cv");			\
-} while (0)
-#define BRIDGE_LOCK_DESTROY(_sc)	do {	\
-	mtx_destroy(&(_sc)->sc_mtx);		\
-	cv_destroy(&(_sc)->sc_cv);		\
-} while (0)
-#define BRIDGE_LOCK(_sc)		mtx_lock(&(_sc)->sc_mtx)
-#define BRIDGE_UNLOCK(_sc)		mtx_unlock(&(_sc)->sc_mtx)
-#define BRIDGE_LOCK_ASSERT(_sc)		mtx_assert(&(_sc)->sc_mtx, MA_OWNED)
-#define	BRIDGE_LOCK2REF(_sc, _err)	do {	\
-	mtx_assert(&(_sc)->sc_mtx, MA_OWNED);	\
-	if ((_sc)->sc_iflist_xcnt > 0)		\
-		(_err) = EBUSY;			\
-	else					\
-		(_sc)->sc_iflist_ref++;		\
-	mtx_unlock(&(_sc)->sc_mtx);		\
-} while (0)
-#define	BRIDGE_UNREF(_sc)		do {				\
-	mtx_lock(&(_sc)->sc_mtx);					\
-	(_sc)->sc_iflist_ref--;						\
-	if (((_sc)->sc_iflist_xcnt > 0) && ((_sc)->sc_iflist_ref == 0))	\
-		cv_broadcast(&(_sc)->sc_cv);				\
-	mtx_unlock(&(_sc)->sc_mtx);					\
-} while (0)
-#define	BRIDGE_XLOCK(_sc)		do {		\
-	mtx_assert(&(_sc)->sc_mtx, MA_OWNED);		\
-	(_sc)->sc_iflist_xcnt++;			\
-	while ((_sc)->sc_iflist_ref > 0)		\
-		cv_wait(&(_sc)->sc_cv, &(_sc)->sc_mtx);	\
-} while (0)
-#define	BRIDGE_XDROP(_sc)		do {	\
-	mtx_assert(&(_sc)->sc_mtx, MA_OWNED);	\
-	(_sc)->sc_iflist_xcnt--;		\
-} while (0)
-
-#define BRIDGE_INPUT(_ifp, _m)		do {    	\
-	KASSERT(bridge_input_p != NULL,			\
+#define BRIDGE_INPUT(_ifp, _m)		do {			\
+		KASSERT((_ifp)->if_bridge_input != NULL,		\
 	    ("%s: if_bridge not loaded!", __func__));	\
-	_m = (*bridge_input_p)(_ifp, _m);		\
+	_m = (*(_ifp)->if_bridge_input)(_ifp, _m);			\
 	if (_m != NULL)					\
 		_ifp = _m->m_pkthdr.rcvif;		\
 } while (0)
 
 #define BRIDGE_OUTPUT(_ifp, _m, _err)	do {    		\
-	KASSERT(bridge_output_p != NULL,			\
+	KASSERT((_ifp)->if_bridge_output != NULL,		\
 	    ("%s: if_bridge not loaded!", __func__));		\
-	_err = (*bridge_output_p)(_ifp, _m, NULL, NULL);	\
+	_err = (*(_ifp)->if_bridge_output)(_ifp, _m, NULL, NULL);	\
 } while (0)
 
-extern	struct mbuf *(*bridge_input_p)(struct ifnet *, struct mbuf *);
-extern	int (*bridge_output_p)(struct ifnet *, struct mbuf *,
-		struct sockaddr *, struct rtentry *);
 extern	void (*bridge_dn_p)(struct mbuf *, struct ifnet *);
 
 #endif /* _KERNEL */

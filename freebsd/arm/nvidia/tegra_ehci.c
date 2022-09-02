@@ -65,8 +65,10 @@ __FBSDID("$FreeBSD$");
 
 /* Compatible devices. */
 #define	TEGRA124_EHCI		1
+#define	TEGRA210_EHCI		2
 static struct ofw_compat_data compat_data[] = {
 	{"nvidia,tegra124-ehci",	(uintptr_t)TEGRA124_EHCI},
+	{"nvidia,tegra210-ehci",	(uintptr_t)TEGRA210_EHCI},
 	{NULL,		 	0},
 };
 
@@ -174,21 +176,21 @@ tegra_ehci_attach(device_t dev)
 		goto out;
 	}
 
-	rv = hwreset_get_by_ofw_name(dev, "usb", &sc->reset);
+	rv = hwreset_get_by_ofw_name(dev, 0, "usb", &sc->reset);
 	if (rv != 0) {
 		device_printf(dev, "Cannot get reset\n");
 		rv = ENXIO;
 		goto out;
 	}
 
-	rv = phy_get_by_ofw_property(sc->dev, "nvidia,phy", &sc->phy);
+	rv = phy_get_by_ofw_property(sc->dev, 0, "nvidia,phy", &sc->phy);
 	if (rv != 0) {
 		device_printf(sc->dev, "Cannot get 'nvidia,phy' phy\n");
 		rv = ENXIO;
 		goto out;
 	}
 
-	rv = clk_get_by_ofw_index(sc->dev, 0, &sc->clk);
+	rv = clk_get_by_ofw_index(sc->dev, 0, 0, &sc->clk);
 	if (rv != 0) {
 		device_printf(dev, "Cannot get clock\n");
 		goto out;
@@ -214,7 +216,7 @@ tegra_ehci_attach(device_t dev)
 		goto out;
 	}
 
-	rv = phy_enable(sc->dev, sc->phy);
+	rv = phy_enable(sc->phy);
 	if (rv != 0) {
 		device_printf(dev, "Cannot enable phy: %d\n", rv);
 		goto out;
@@ -311,12 +313,8 @@ static device_method_t ehci_methods[] = {
 	DEVMETHOD_END
 };
 
-static driver_t ehci_driver = {
-	"ehci",
-	ehci_methods,
-	sizeof(struct tegra_ehci_softc)
-};
-
 static devclass_t ehci_devclass;
-DRIVER_MODULE(ehci, simplebus, ehci_driver, ehci_devclass, 0, 0);
-MODULE_DEPEND(ehci, usb, 1, 1, 1);
+static DEFINE_CLASS_0(ehci, ehci_driver, ehci_methods,
+    sizeof(struct tegra_ehci_softc));
+DRIVER_MODULE(tegra_ehci, simplebus, ehci_driver, ehci_devclass, NULL, NULL);
+MODULE_DEPEND(tegra_ehci, usb, 1, 1, 1);

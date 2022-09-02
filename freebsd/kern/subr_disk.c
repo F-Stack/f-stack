@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: Beerware
+ *
  * ----------------------------------------------------------------------------
  * "THE BEER-WARE LICENSE" (Revision 42):
  * <phk@FreeBSD.ORG> wrote this file.  As long as you retain this notice you
@@ -21,7 +23,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/bio.h>
 #include <sys/conf.h>
 #include <sys/disk.h>
+#include <sys/sysctl.h>
 #include <geom/geom_disk.h>
+
+static int bioq_batchsize = 128;
+SYSCTL_INT(_debug, OID_AUTO, bioq_batchsize, CTLFLAG_RW,
+    &bioq_batchsize, 0, "BIOQ batch size");
 
 /*-
  * Disk error is the preface to plaintive error messages
@@ -150,6 +157,8 @@ bioq_init(struct bio_queue_head *head)
 	TAILQ_INIT(&head->queue);
 	head->last_offset = 0;
 	head->insert_point = NULL;
+	head->total = 0;
+	head->batched = 0;
 }
 
 void
@@ -163,6 +172,9 @@ bioq_remove(struct bio_queue_head *head, struct bio *bp)
 		head->insert_point = NULL;
 
 	TAILQ_REMOVE(&head->queue, bp, bio_queue);
+	if (TAILQ_EMPTY(&head->queue))
+		head->batched = 0;
+	head->total--;
 }
 
 void
@@ -181,6 +193,8 @@ bioq_insert_head(struct bio_queue_head *head, struct bio *bp)
 	if (head->insert_point == NULL)
 		head->last_offset = bp->bio_offset;
 	TAILQ_INSERT_HEAD(&head->queue, bp, bio_queue);
+	head->total++;
+	head->batched = 0;
 }
 
 void
@@ -188,6 +202,8 @@ bioq_insert_tail(struct bio_queue_head *head, struct bio *bp)
 {
 
 	TAILQ_INSERT_TAIL(&head->queue, bp, bio_queue);
+	head->total++;
+	head->batched = 0;
 	head->insert_point = bp;
 	head->last_offset = bp->bio_offset;
 }
@@ -246,6 +262,22 @@ bioq_disksort(struct bio_queue_head *head, struct bio *bp)
 		return;
 	}
 
+	/*
+	 * We should only sort requests of types that have concept of offset.
+	 * Other types, such as BIO_FLUSH or BIO_ZONE, may imply some degree
+	 * of ordering even if strict ordering is not requested explicitly.
+	 */
+	if (bp->bio_cmd != BIO_READ && bp->bio_cmd != BIO_WRITE &&
+	    bp->bio_cmd != BIO_DELETE) {
+		bioq_insert_tail(head, bp);
+		return;
+	}
+
+	if (bioq_batchsize > 0 && head->batched > bioq_batchsize) {
+		bioq_insert_tail(head, bp);
+		return;
+	}
+
 	prev = NULL;
 	key = bioq_bio_key(head, bp);
 	cur = TAILQ_FIRST(&head->queue);
@@ -264,4 +296,6 @@ bioq_disksort(struct bio_queue_head *head, struct bio *bp)
 		TAILQ_INSERT_HEAD(&head->queue, bp, bio_queue);
 	else
 		TAILQ_INSERT_AFTER(&head->queue, prev, bp, bio_queue);
+	head->total++;
+	head->batched++;
 }

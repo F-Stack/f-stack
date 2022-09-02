@@ -957,7 +957,7 @@ dump_packets(void)
 			rte_exit(EXIT_FAILURE, "failed to wait\n");
 	}
 
-	/* master core */
+	/* main core */
 	while (!quit_signal)
 		;
 }

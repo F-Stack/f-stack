@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Alexander Motin <mav@alkar.net>
  * All rights reserved.
  *
@@ -80,4 +82,3 @@ enum {
 };
 
 #endif /* _NETGRAPH_NG_PRED1_H_ */
-

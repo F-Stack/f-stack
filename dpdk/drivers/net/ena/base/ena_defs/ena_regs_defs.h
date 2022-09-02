@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2015-2019 Amazon.com, Inc. or its affiliates.
+ * Copyright (c) 2015-2020 Amazon.com, Inc. or its affiliates.
  * All rights reserved.
  */
-
 #ifndef _ENA_REGS_H_
 #define _ENA_REGS_H_
 
@@ -22,6 +21,7 @@ enum ena_regs_reset_reason_types {
 	ENA_REGS_RESET_USER_TRIGGER                 = 12,
 	ENA_REGS_RESET_GENERIC                      = 13,
 	ENA_REGS_RESET_MISS_INTERRUPT               = 14,
+	ENA_REGS_RESET_LAST,
 };
 
 /* ena_registers offsets */
@@ -128,4 +128,4 @@ enum ena_regs_reset_reason_types {
 #define ENA_REGS_RSS_IND_ENTRY_UPDATE_CQ_IDX_SHIFT          16
 #define ENA_REGS_RSS_IND_ENTRY_UPDATE_CQ_IDX_MASK           0xffff0000
 
-#endif /*_ENA_REGS_H_ */
+#endif /* _ENA_REGS_H_ */

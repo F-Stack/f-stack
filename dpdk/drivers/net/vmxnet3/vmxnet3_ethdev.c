@@ -59,12 +59,14 @@
 	 DEV_RX_OFFLOAD_JUMBO_FRAME |   \
 	 DEV_RX_OFFLOAD_RSS_HASH)
 
+int vmxnet3_segs_dynfield_offset = -1;
+
 static int eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev);
 static int eth_vmxnet3_dev_uninit(struct rte_eth_dev *eth_dev);
 static int vmxnet3_dev_configure(struct rte_eth_dev *dev);
 static int vmxnet3_dev_start(struct rte_eth_dev *dev);
-static void vmxnet3_dev_stop(struct rte_eth_dev *dev);
-static void vmxnet3_dev_close(struct rte_eth_dev *dev);
+static int vmxnet3_dev_stop(struct rte_eth_dev *dev);
+static int vmxnet3_dev_close(struct rte_eth_dev *dev);
 static void vmxnet3_dev_set_rxmode(struct vmxnet3_hw *hw, uint32_t feature, int set);
 static int vmxnet3_dev_promiscuous_enable(struct rte_eth_dev *dev);
 static int vmxnet3_dev_promiscuous_disable(struct rte_eth_dev *dev);
@@ -87,15 +89,13 @@ static int vmxnet3_dev_info_get(struct rte_eth_dev *dev,
 				struct rte_eth_dev_info *dev_info);
 static const uint32_t *
 vmxnet3_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+static int vmxnet3_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 static int vmxnet3_dev_vlan_filter_set(struct rte_eth_dev *dev,
 				       uint16_t vid, int on);
 static int vmxnet3_dev_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 static int vmxnet3_mac_addr_set(struct rte_eth_dev *dev,
 				 struct rte_ether_addr *mac_addr);
 static void vmxnet3_interrupt_handler(void *param);
-
-int vmxnet3_logtype_init;
-int vmxnet3_logtype_driver;
 
 /*
  * The set of PCI devices this driver supports
@@ -124,6 +124,7 @@ static const struct eth_dev_ops vmxnet3_eth_dev_ops = {
 	.mac_addr_set         = vmxnet3_mac_addr_set,
 	.dev_infos_get        = vmxnet3_dev_info_get,
 	.dev_supported_ptypes_get = vmxnet3_dev_supported_ptypes_get,
+	.mtu_set              = vmxnet3_dev_mtu_set,
 	.vlan_filter_set      = vmxnet3_dev_vlan_filter_set,
 	.vlan_offload_set     = vmxnet3_dev_vlan_offload_set,
 	.rx_queue_setup       = vmxnet3_dev_rx_queue_setup,
@@ -234,6 +235,11 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	struct vmxnet3_hw *hw = eth_dev->data->dev_private;
 	uint32_t mac_hi, mac_lo, ver;
 	struct rte_eth_link link;
+	static const struct rte_mbuf_dynfield vmxnet3_segs_dynfield_desc = {
+		.name = VMXNET3_SEGS_DYNFIELD_NAME,
+		.size = sizeof(vmxnet3_segs_dynfield_t),
+		.align = __alignof__(vmxnet3_segs_dynfield_t),
+	};
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -243,6 +249,14 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	eth_dev->tx_pkt_prepare = vmxnet3_prep_pkts;
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 
+	/* extra mbuf field is required to guess MSS */
+	vmxnet3_segs_dynfield_offset =
+		rte_mbuf_dynfield_register(&vmxnet3_segs_dynfield_desc);
+	if (vmxnet3_segs_dynfield_offset < 0) {
+		PMD_INIT_LOG(ERR, "Cannot register mbuf field.");
+		return -rte_errno;
+	}
+
 	/*
 	 * for secondary processes, we don't initialize any further as primary
 	 * has already done this work.
@@ -251,6 +265,7 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->device_id = pci_dev->id.device_id;
@@ -322,9 +337,6 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 		     hw->perm_addr[0], hw->perm_addr[1], hw->perm_addr[2],
 		     hw->perm_addr[3], hw->perm_addr[4], hw->perm_addr[5]);
 
-	/* Flag to call rte_eth_dev_release_port() in rte_eth_dev_close(). */
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
-
 	/* Put device in Quiesce Mode */
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_QUIESCE_DEV);
 
@@ -371,11 +383,6 @@ eth_vmxnet3_dev_uninit(struct rte_eth_dev *eth_dev)
 		PMD_INIT_LOG(DEBUG, "Device has not been closed.");
 		return -EBUSY;
 	}
-
-	eth_dev->dev_ops = NULL;
-	eth_dev->rx_pkt_burst = NULL;
-	eth_dev->tx_pkt_burst = NULL;
-	eth_dev->tx_pkt_prepare = NULL;
 
 	return 0;
 }
@@ -818,7 +825,7 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 /*
  * Stop device: disable rx and tx functions to allow for reconfiguring.
  */
-static void
+static int
 vmxnet3_dev_stop(struct rte_eth_dev *dev)
 {
 	struct rte_eth_link link;
@@ -828,7 +835,7 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 
 	if (hw->adapter_stopped == 1) {
 		PMD_INIT_LOG(DEBUG, "Device already stopped.");
-		return;
+		return 0;
 	}
 
 	/* disable interrupts */
@@ -862,6 +869,9 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 	rte_eth_linkstatus_set(dev, &link);
 
 	hw->adapter_stopped = 1;
+	dev->data->dev_started = 0;
+
+	return 0;
 }
 
 static void
@@ -889,15 +899,18 @@ vmxnet3_free_queues(struct rte_eth_dev *dev)
 /*
  * Reset and stop device.
  */
-static void
+static int
 vmxnet3_dev_close(struct rte_eth_dev *dev)
 {
+	int ret;
 	PMD_INIT_FUNC_TRACE();
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return 0;
 
-	vmxnet3_dev_stop(dev);
+	ret = vmxnet3_dev_stop(dev);
 	vmxnet3_free_queues(dev);
+
+	return ret;
 }
 
 static void
@@ -1168,6 +1181,8 @@ vmxnet3_dev_info_get(struct rte_eth_dev *dev,
 	dev_info->max_tx_queues = VMXNET3_MAX_TX_QUEUES;
 	dev_info->min_rx_bufsize = 1518 + RTE_PKTMBUF_HEADROOM;
 	dev_info->max_rx_pktlen = 16384; /* includes CRC, cf MAXFRS register */
+	dev_info->min_mtu = VMXNET3_MIN_MTU;
+	dev_info->max_mtu = VMXNET3_MAX_MTU;
 	dev_info->speed_capa = ETH_LINK_SPEED_10G;
 	dev_info->max_mac_addrs = VMXNET3_MAX_MAC_ADDRS;
 
@@ -1211,6 +1226,18 @@ vmxnet3_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	if (dev->rx_pkt_burst == vmxnet3_recv_pkts)
 		return ptypes;
 	return NULL;
+}
+
+static int
+vmxnet3_dev_mtu_set(struct rte_eth_dev *dev, __rte_unused uint16_t mtu)
+{
+	if (dev->data->dev_started) {
+		PMD_DRV_LOG(ERR, "Port %d must be stopped to configure MTU",
+			    dev->data->port_id);
+		return -EBUSY;
+	}
+
+	return 0;
 }
 
 static int
@@ -1406,9 +1433,9 @@ vmxnet3_process_events(struct rte_eth_dev *dev)
 	if (events & VMXNET3_ECR_LINK) {
 		PMD_DRV_LOG(DEBUG, "Process events: VMXNET3_ECR_LINK event");
 		if (vmxnet3_dev_link_update(dev, 0) == 0)
-			_rte_eth_dev_callback_process(dev,
-						      RTE_ETH_EVENT_INTR_LSC,
-						      NULL);
+			rte_eth_dev_callback_process(dev,
+						     RTE_ETH_EVENT_INTR_LSC,
+						     NULL);
 	}
 
 	/* Check if there is an error on xmit/recv queues */
@@ -1450,13 +1477,5 @@ vmxnet3_interrupt_handler(void *param)
 RTE_PMD_REGISTER_PCI(net_vmxnet3, rte_vmxnet3_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_vmxnet3, pci_id_vmxnet3_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_vmxnet3, "* igb_uio | uio_pci_generic | vfio-pci");
-
-RTE_INIT(vmxnet3_init_log)
-{
-	vmxnet3_logtype_init = rte_log_register("pmd.net.vmxnet3.init");
-	if (vmxnet3_logtype_init >= 0)
-		rte_log_set_level(vmxnet3_logtype_init, RTE_LOG_NOTICE);
-	vmxnet3_logtype_driver = rte_log_register("pmd.net.vmxnet3.driver");
-	if (vmxnet3_logtype_driver >= 0)
-		rte_log_set_level(vmxnet3_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(vmxnet3_logtype_init, pmd.net.vmxnet3.init, NOTICE);
+RTE_LOG_REGISTER(vmxnet3_logtype_driver, pmd.net.vmxnet3.driver, NOTICE);

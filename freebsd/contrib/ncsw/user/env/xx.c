@@ -51,6 +51,7 @@
 #include <dev/dpaa/qman.h>
 #include <dev/dpaa/portals.h>
 
+#include <powerpc/mpc85xx/mpc85xx.h>
 #include "error_ext.h"
 #include "std_ext.h"
 #include "list_ext.h"
@@ -94,8 +95,6 @@ MTX_SYSINIT(XX_MallocTrackLockInit, &XX_MallocTrackLock,
 
 /* Interrupt info */
 #define XX_INTR_FLAG_PREALLOCATED	(1 << 0)
-#define XX_INTR_FLAG_BOUND		(1 << 1)
-#define XX_INTR_FLAG_FMAN_FIX		(1 << 2)
 
 struct XX_IntrInfo {
 	driver_intr_t	*handler;
@@ -119,23 +118,10 @@ struct XX_PortalInfo {
 	uint32_t	portal_ci_size[2][MAXCPU];
 	vm_offset_t	portal_ce_va[2];
 	vm_offset_t	portal_ci_va[2];
-	uint32_t	portal_intr[2][MAXCPU];
+	uintptr_t	portal_intr[2][MAXCPU];
 };
 
 static struct XX_PortalInfo XX_PInfo;
-
-/* The lower 9 bits, through emprical testing, tend to be 0. */
-#define	XX_MALLOC_TRACK_SHIFT	9
-
-typedef struct XX_MallocTrackStruct {
-	LIST_ENTRY(XX_MallocTrackStruct) entries;
-	physAddress_t pa;
-	void *va;
-} XX_MallocTrackStruct;
-
-LIST_HEAD(XX_MallocTrackerList, XX_MallocTrackStruct) *XX_MallocTracker;
-u_long XX_MallocHashMask;
-static XX_MallocTrackStruct * XX_FindTracker(physAddress_t pa);
 
 void
 XX_Exit(int status)
@@ -266,7 +252,6 @@ XX_FreeSmart(void *p)
 	KASSERT(XX_MallocSmartMap[start] > 0,
 	    ("XX_FreeSmart: Double or mid-block free!\n"));
 
-	XX_UntrackAddress(p);
 	/* Free region */
 	slices = XX_MallocSmartMap[start];
 	XX_MallocSmartMapClear(start, slices);
@@ -279,8 +264,6 @@ void
 XX_Free(void *p)
 {
 
-	if (p != NULL)
-		XX_UntrackAddress(p);
 	free(p, M_NETCOMMSW);
 }
 
@@ -298,46 +281,15 @@ XX_RestoreAllIntr(uint32_t flags)
 	intr_restore(flags);
 }
 
-t_Error
-XX_Call(uint32_t qid, t_Error (* f)(t_Handle), t_Handle id, t_Handle appId, uint16_t flags )
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-	return (E_OK);
-}
-
 static bool
-XX_IsPortalIntr(int irq)
+XX_IsPortalIntr(uintptr_t irq)
 {
 	int cpu, type;
 	/* Check interrupt numbers of all available portals */
-	for (cpu = 0, type = 0; XX_PInfo.portal_intr[type][cpu] != 0; cpu++) {
-		if (irq == XX_PInfo.portal_intr[type][cpu]) {
-			/* Found it! */
-			return (1);
-		}
-		if (XX_PInfo.portal_intr[type][cpu + 1] == 0) {
-			type++;
-			cpu = 0;
-		}
-	}
-
-	return (0);
-}
-
-void
-XX_FmanFixIntr(int irq)
-{
-
-	XX_IntrInfo[irq].flags |= XX_INTR_FLAG_FMAN_FIX;
-}
-
-static bool
-XX_FmanNeedsIntrFix(int irq)
-{
-
-	if (XX_IntrInfo[irq].flags & XX_INTR_FLAG_FMAN_FIX)
-		return (1);
+	for (type = 0; type < 2; type++)
+		for (cpu = 0; cpu < MAXCPU; cpu++)
+			if (irq == XX_PInfo.portal_intr[type][cpu])
+				return (1);
 
 	return (0);
 }
@@ -349,16 +301,6 @@ XX_Dispatch(void *arg)
 
 	info = arg;
 
-	/* Bind this thread to proper CPU when SMP has been already started. */
-	if ((info->flags & XX_INTR_FLAG_BOUND) == 0 && smp_started &&
-	    info->cpu >= 0) {
-		thread_lock(curthread);
-		sched_bind(curthread, info->cpu);
-		thread_unlock(curthread);
-
-		info->flags |= XX_INTR_FLAG_BOUND;
-	}
-
 	if (info->handler == NULL) {
 		printf("%s(): IRQ handler is NULL!\n", __func__);
 		return;
@@ -368,7 +310,7 @@ XX_Dispatch(void *arg)
 }
 
 t_Error
-XX_PreallocAndBindIntr(int irq, unsigned int cpu)
+XX_PreallocAndBindIntr(device_t dev, uintptr_t irq, unsigned int cpu)
 {
 	struct resource *r;
 	unsigned int inum;
@@ -381,6 +323,10 @@ XX_PreallocAndBindIntr(int irq, unsigned int cpu)
 	if (error != 0)
 		return (error);
 
+	error = bus_bind_intr(dev, r, cpu);
+	if (error != 0)
+		return (error);
+
 	XX_IntrInfo[inum].flags = XX_INTR_FLAG_PREALLOCATED;
 	XX_IntrInfo[inum].cpu = cpu;
 
@@ -388,7 +334,7 @@ XX_PreallocAndBindIntr(int irq, unsigned int cpu)
 }
 
 t_Error
-XX_DeallocIntr(int irq)
+XX_DeallocIntr(uintptr_t irq)
 {
 	struct resource *r;
 	unsigned int inum;
@@ -404,9 +350,9 @@ XX_DeallocIntr(int irq)
 }
 
 t_Error
-XX_SetIntr(int irq, t_Isr *f_Isr, t_Handle handle)
+XX_SetIntr(uintptr_t irq, t_Isr *f_Isr, t_Handle handle)
 {
-	struct device *dev;
+	device_t dev;
 	struct resource *r;
 	unsigned int flags;
 	int err;
@@ -434,28 +380,14 @@ XX_SetIntr(int irq, t_Isr *f_Isr, t_Handle handle)
 
 	err = bus_setup_intr(dev, r, flags, NULL, f_Isr, handle,
 		    &XX_IntrInfo[irq].cookie);
-	if (err)
-		goto finish;
 
-	/*
-	 * XXX: Bind FMan IRQ to CPU0. Current interrupt subsystem directs each
-	 * interrupt to all CPUs. Race between an interrupt assertion and
-	 * masking may occur and interrupt handler may be called multiple times
-	 * per one interrupt. FMan doesn't support such a situation. Workaround
-	 * is to bind FMan interrupt to one CPU0 only.
-	 */
-#ifdef SMP
-	if (XX_FmanNeedsIntrFix(irq))
-		err = powerpc_bind_intr(irq, 0);
-#endif
-finish:
 	return (err);
 }
 
 t_Error
-XX_FreeIntr(int irq)
+XX_FreeIntr(uintptr_t irq)
 {
-	struct device *dev;
+	device_t dev;
 	struct resource *r;
 
 	r = (struct resource *)irq;
@@ -477,7 +409,7 @@ XX_FreeIntr(int irq)
 }
 
 t_Error
-XX_EnableIntr(int irq)
+XX_EnableIntr(uintptr_t irq)
 {
 	struct resource *r;
 
@@ -490,7 +422,7 @@ XX_EnableIntr(int irq)
 }
 
 t_Error
-XX_DisableIntr(int irq)
+XX_DisableIntr(uintptr_t irq)
 {
 	struct resource *r;
 
@@ -615,71 +547,6 @@ XX_UnlockIntrSpinlock(t_Handle h_Spinlock, uint32_t intrFlags)
 }
 
 uint32_t
-XX_CurrentTime(void)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-	return (0);
-}
-
-
-t_Handle
-XX_CreateTimer(void)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-	return (NULL);
-}
-
-void
-XX_FreeTimer(t_Handle h_Timer)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-}
-
-void
-XX_StartTimer(t_Handle h_Timer,
-                   uint32_t msecs,
-                   bool     periodic,
-                   void     (*f_TimerExpired)(t_Handle),
-                   t_Handle h_Arg)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-}
-
-uint32_t
-XX_GetExpirationTime(t_Handle h_Timer)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-	return (0);
-}
-
-void
-XX_StopTimer(t_Handle h_Timer)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-}
-
-void
-XX_ModTimer(t_Handle h_Timer, uint32_t msecs)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-}
-
-int
-XX_TimerIsActive(t_Handle h_Timer)
-{
-	/* Not referenced */
-	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-	return (0);
-}
-
-uint32_t
 XX_Sleep(uint32_t msecs)
 {
 
@@ -734,7 +601,7 @@ XX_IpcInitSession(char destAddr[XX_IPC_MAX_ADDR_NAME_LENGTH],
 
 	/* Should not be called */
 	printf("NetCommSW: Unimplemented function %s() called!\n", __func__);
-	return (E_OK);
+	return (NULL);
 }
 
 t_Error
@@ -746,7 +613,6 @@ XX_IpcFreeSession(t_Handle h_Session)
 	return (E_OK);
 }
 
-extern void db_trace_self(void);
 physAddress_t
 XX_VirtToPhys(void *addr)
 {
@@ -758,6 +624,11 @@ XX_VirtToPhys(void *addr)
 	/* Handle NULL address */
 	if (addr == NULL)
 		return (-1);
+
+	/* Check CCSR */
+	if ((vm_offset_t)addr >= ccsrbar_va &&
+	    (vm_offset_t)addr < ccsrbar_va + ccsrbar_size)
+		return (((vm_offset_t)addr - ccsrbar_va) + ccsrbar_pa);
 
 	/* Handle BMAN mappings */
 	if (((vm_offset_t)addr >= XX_PInfo.portal_ce_va[BM_PORTAL]) &&
@@ -785,12 +656,17 @@ XX_VirtToPhys(void *addr)
 		return (XX_PInfo.portal_ci_pa[QM_PORTAL][cpu] +
 		    (vm_offset_t)addr - XX_PInfo.portal_ci_va[QM_PORTAL]);
 
-	paddr = pmap_kextract((vm_offset_t)addr);
-	if (!paddr)
-		printf("NetCommSW: "
-		    "Unable to translate virtual address 0x%08X!\n", addr);
+	if (PMAP_HAS_DMAP && (vm_offset_t)addr >= DMAP_BASE_ADDRESS &&
+	    (vm_offset_t)addr <= DMAP_MAX_ADDRESS)
+		return (DMAP_TO_PHYS((vm_offset_t)addr));
 	else
-	    XX_TrackAddress(addr);
+		paddr = pmap_kextract((vm_offset_t)addr);
+
+	if (paddr == 0)
+		printf("NetCommSW: "
+		    "Unable to translate virtual address %p!\n", addr);
+	else
+		pmap_track_page(kernel_pmap, (vm_offset_t)addr);
 
 	return (paddr);
 }
@@ -798,8 +674,14 @@ XX_VirtToPhys(void *addr)
 void *
 XX_PhysToVirt(physAddress_t addr)
 {
-	XX_MallocTrackStruct *ts;
+	struct pv_entry *pv;
+	vm_page_t page;
 	int cpu;
+
+	/* Check CCSR */
+	if (addr >= ccsrbar_pa && addr < ccsrbar_pa + ccsrbar_size)
+		return ((void *)((vm_offset_t)(addr - ccsrbar_pa) +
+		    ccsrbar_va));
 
 	cpu = PCPU_GET(cpuid);
 
@@ -829,15 +711,17 @@ XX_PhysToVirt(physAddress_t addr)
 		return ((void *)(XX_PInfo.portal_ci_va[QM_PORTAL] +
 		    (vm_offset_t)(addr - XX_PInfo.portal_ci_pa[QM_PORTAL][cpu])));
 
-	mtx_lock(&XX_MallocTrackLock);
-	ts = XX_FindTracker(addr);
-	mtx_unlock(&XX_MallocTrackLock);
+	page = PHYS_TO_VM_PAGE(addr);
+	pv = TAILQ_FIRST(&page->md.pv_list);
 
-	if (ts != NULL)
-		return ts->va;
+	if (pv != NULL)
+		return ((void *)(pv->pv_va + ((vm_offset_t)addr & PAGE_MASK)));
+
+	if (PMAP_HAS_DMAP)
+		return ((void *)(uintptr_t)PHYS_TO_DMAP(addr));
 
 	printf("NetCommSW: "
-	    "Unable to translate physical address 0x%08llX!\n", addr);
+	    "Unable to translate physical address 0x%09jx!\n", (uintmax_t)addr);
 
 	return (NULL);
 }
@@ -879,71 +763,4 @@ XX_PortalSetInfo(device_t dev)
 	XX_PInfo.portal_ci_va[type] = rman_get_bushandle(sc->sc_rres[1]);
 end:
 	free(dev_name, M_TEMP);
-}
-
-static XX_MallocTrackStruct *
-XX_FindTracker(physAddress_t pa)
-{
-	struct XX_MallocTrackerList *l;
-	XX_MallocTrackStruct *tp;
-
-	l = &XX_MallocTracker[(pa >> XX_MALLOC_TRACK_SHIFT) & XX_MallocHashMask];
-
-	LIST_FOREACH(tp, l, entries) {
-		if (tp->pa == pa)
-			return tp;
-	}
-
-	return NULL;
-}
-
-void
-XX_TrackInit(void)
-{
-	if (XX_MallocTracker == NULL) {
-		XX_MallocTracker = hashinit(64, M_NETCOMMSW_MT,
-		    &XX_MallocHashMask);
-	}
-}
-
-void
-XX_TrackAddress(void *addr)
-{
-	physAddress_t pa;
-	struct XX_MallocTrackerList *l;
-	XX_MallocTrackStruct *ts;
-	
-	pa = pmap_kextract((vm_offset_t)addr);
-
-	ts = malloc(sizeof(*ts), M_NETCOMMSW_MT, M_NOWAIT);
-	ts->va = addr;
-	ts->pa = pa;
-
-	l = &XX_MallocTracker[(pa >> XX_MALLOC_TRACK_SHIFT) & XX_MallocHashMask];
-
-	mtx_lock(&XX_MallocTrackLock);
-	if (XX_FindTracker(pa) != NULL)
-		free(ts, M_NETCOMMSW_MT);
-	else
-		LIST_INSERT_HEAD(l, ts, entries);
-	mtx_unlock(&XX_MallocTrackLock);
-}
-
-void
-XX_UntrackAddress(void *addr)
-{
-	physAddress_t pa;
-	XX_MallocTrackStruct *ts;
-	
-	pa = pmap_kextract((vm_offset_t)addr);
-
-	KASSERT(XX_MallocTracker != NULL,
-	    ("Untracking an address before it's even initialized!\n"));
-
-	mtx_lock(&XX_MallocTrackLock);
-	ts = XX_FindTracker(pa);
-	if (ts != NULL)
-		LIST_REMOVE(ts, entries);
-	mtx_unlock(&XX_MallocTrackLock);
-	free(ts, M_NETCOMMSW_MT);
 }

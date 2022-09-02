@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003-2012 Broadcom Corporation
  * All Rights Reserved
  *
@@ -28,10 +30,11 @@
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
+
+#include <sys/param.h>
 #include <sys/endian.h>
 #include <sys/systm.h>
 #include <sys/sockio.h>
-#include <sys/param.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
@@ -175,8 +178,8 @@ static int nlm_xlpge_resume(device_t);
 static int nlm_xlpge_shutdown(device_t);
 
 /* mii override functions */
-static int nlm_xlpge_mii_read(struct device *, int, int);
-static int nlm_xlpge_mii_write(struct device *, int, int, int);
+static int nlm_xlpge_mii_read(device_t, int, int);
+static int nlm_xlpge_mii_write(device_t, int, int, int);
 static void nlm_xlpge_mii_statchg(device_t);
 
 static device_method_t nlm_xlpge_methods[] = {
@@ -900,7 +903,6 @@ fail:
 	return (err);
 }
 
-
 static int
 nlm_xlpge_gmac_config_speed(struct nlm_xlpge_softc *sc)
 {
@@ -1001,7 +1003,6 @@ xlpge_read_mac_addr(struct nlm_xlpge_softc *sc)
 		nlm_nae_setup_mac_addr_xaui(sc->base_addr, sc->block,
 		    sc->port, sc->type, sc->dev_addr);
 }
-
 
 static int
 xlpge_mediachange(struct ifnet *ifp)
@@ -1157,10 +1158,10 @@ nlm_xlpge_setup_stats_sysctl(device_t dev, struct nlm_xlpge_softc *sc)
 	tree = device_get_sysctl_tree(dev);
 	child = SYSCTL_CHILDREN(tree);
 
-#define XLPGE_STAT(name, offset, desc) \
-	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, name,	\
-	    CTLTYPE_UINT | CTLFLAG_RD, sc, offset,	\
-	    xlpge_stats_sysctl, "IU", desc)
+#define XLPGE_STAT(name, offset, desc)				\
+	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, name,		\
+	    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,	\
+	    sc, offset,	xlpge_stats_sysctl, "IU", desc)
 
 	XLPGE_STAT("tr127", nlm_sgmii_stats_tr127, "TxRx 64 - 127 Bytes");
 	XLPGE_STAT("tr255", nlm_sgmii_stats_tr255, "TxRx 128 - 255 Bytes");
@@ -1290,7 +1291,7 @@ nlm_xlpge_shutdown(device_t dev)
  * miibus function with custom implementation
  */
 static int
-nlm_xlpge_mii_read(struct device *dev, int phyaddr, int regidx)
+nlm_xlpge_mii_read(device_t dev, int phyaddr, int regidx)
 {
 	struct nlm_xlpge_softc *sc;
 	int val;
@@ -1306,7 +1307,7 @@ nlm_xlpge_mii_read(struct device *dev, int phyaddr, int regidx)
 }
 
 static int
-nlm_xlpge_mii_write(struct device *dev, int phyaddr, int regidx, int val)
+nlm_xlpge_mii_write(device_t dev, int phyaddr, int regidx, int val)
 {
 	struct nlm_xlpge_softc *sc;
 

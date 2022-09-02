@@ -10,6 +10,25 @@
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #endif
 
+static inline __m128i
+ice_flex_rxd_to_fdir_flags_vec(const __m128i fdir_id0_3)
+{
+#define FDID_MIS_MAGIC 0xFFFFFFFF
+	RTE_BUILD_BUG_ON(PKT_RX_FDIR != (1 << 2));
+	RTE_BUILD_BUG_ON(PKT_RX_FDIR_ID != (1 << 13));
+	const __m128i pkt_fdir_bit = _mm_set1_epi32(PKT_RX_FDIR |
+			PKT_RX_FDIR_ID);
+	/* desc->flow_id field == 0xFFFFFFFF means fdir mismatch */
+	const __m128i fdir_mis_mask = _mm_set1_epi32(FDID_MIS_MAGIC);
+	__m128i fdir_mask = _mm_cmpeq_epi32(fdir_id0_3,
+			fdir_mis_mask);
+	/* this XOR op results to bit-reverse the fdir_mask */
+	fdir_mask = _mm_xor_si128(fdir_mask, fdir_mis_mask);
+	const __m128i fdir_flags = _mm_and_si128(fdir_mask, pkt_fdir_bit);
+
+	return fdir_flags;
+}
+
 static inline void
 ice_rxq_rearm(struct ice_rx_queue *rxq)
 {
@@ -78,7 +97,7 @@ ice_rxq_rearm(struct ice_rx_queue *rxq)
 			   (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
 
 	/* Update the tail pointer on the NIC */
-	ICE_PCI_REG_WRITE(rxq->qrx_tail, rx_id);
+	ICE_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
 }
 
 static inline void
@@ -183,7 +202,7 @@ ice_rx_desc_to_olflags_v(struct ice_rx_queue *rxq, __m128i descs[4],
 	__m128i l3_l4_mask = _mm_set_epi32(~0x6, ~0x6, ~0x6, ~0x6);
 	__m128i l3_l4_flags = _mm_and_si128(flags, l3_l4_mask);
 	flags = _mm_or_si128(l3_l4_flags, l4_outer_flags);
-	/* we need to mask out the reduntant bits introduced by RSS or
+	/* we need to mask out the redundant bits introduced by RSS or
 	 * VLAN fields.
 	 */
 	flags = _mm_and_si128(flags, cksum_mask);
@@ -194,6 +213,36 @@ ice_rx_desc_to_olflags_v(struct ice_rx_queue *rxq, __m128i descs[4],
 
 	/* merge the flags */
 	flags = _mm_or_si128(flags, rss_vlan);
+
+	if (rxq->fdir_enabled) {
+		const __m128i fdir_id0_1 =
+			_mm_unpackhi_epi32(descs[0], descs[1]);
+
+		const __m128i fdir_id2_3 =
+			_mm_unpackhi_epi32(descs[2], descs[3]);
+
+		const __m128i fdir_id0_3 =
+			_mm_unpackhi_epi64(fdir_id0_1, fdir_id2_3);
+
+		const __m128i fdir_flags =
+			ice_flex_rxd_to_fdir_flags_vec(fdir_id0_3);
+
+		/* merge with fdir_flags */
+		flags = _mm_or_si128(flags, fdir_flags);
+
+		/* write fdir_id to mbuf */
+		rx_pkts[0]->hash.fdir.hi =
+			_mm_extract_epi32(fdir_id0_3, 0);
+
+		rx_pkts[1]->hash.fdir.hi =
+			_mm_extract_epi32(fdir_id0_3, 1);
+
+		rx_pkts[2]->hash.fdir.hi =
+			_mm_extract_epi32(fdir_id0_3, 2);
+
+		rx_pkts[3]->hash.fdir.hi =
+			_mm_extract_epi32(fdir_id0_3, 3);
+	} /* if() on fdir_enabled */
 
 	/**
 	 * At this point, we have the 4 sets of flags in the low 16-bits
@@ -267,7 +316,8 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	const __m128i zero = _mm_setzero_si128();
 	/* mask to shuffle from desc. to mbuf */
 	const __m128i shuf_msk = _mm_set_epi8
-			(15, 14, 13, 12,  /* octet 12~15, 32 bits rss */
+			(0xFF, 0xFF,
+			 0xFF, 0xFF,  /* rss hash parsed separately */
 			 11, 10,      /* octet 10~11, 16 bits vlan_macip */
 			 5, 4,        /* octet 4~5, 16 bits data_len */
 			 0xFF, 0xFF,  /* skip high 16 bits pkt_len, zero out */
@@ -355,7 +405,7 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	     pos += ICE_DESCS_PER_LOOP,
 	     rxdp += ICE_DESCS_PER_LOOP) {
 		__m128i descs[ICE_DESCS_PER_LOOP];
-		__m128i pkt_mb1, pkt_mb2, pkt_mb3, pkt_mb4;
+		__m128i pkt_mb0, pkt_mb1, pkt_mb2, pkt_mb3;
 		__m128i staterr, sterr_tmp1, sterr_tmp2;
 		/* 2 64 bit or 4 32 bit mbuf pointers in one XMM reg. */
 		__m128i mbp1;
@@ -401,8 +451,12 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		rte_compiler_barrier();
 
 		/* D.1 pkt 3,4 convert format from desc to pktmbuf */
-		pkt_mb4 = _mm_shuffle_epi8(descs[3], shuf_msk);
-		pkt_mb3 = _mm_shuffle_epi8(descs[2], shuf_msk);
+		pkt_mb3 = _mm_shuffle_epi8(descs[3], shuf_msk);
+		pkt_mb2 = _mm_shuffle_epi8(descs[2], shuf_msk);
+
+		/* D.1 pkt 1,2 convert format from desc to pktmbuf */
+		pkt_mb1 = _mm_shuffle_epi8(descs[1], shuf_msk);
+		pkt_mb0 = _mm_shuffle_epi8(descs[0], shuf_msk);
 
 		/* C.1 4=>2 filter staterr info only */
 		sterr_tmp2 = _mm_unpackhi_epi32(descs[3], descs[2]);
@@ -412,12 +466,68 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		ice_rx_desc_to_olflags_v(rxq, descs, &rx_pkts[pos]);
 
 		/* D.2 pkt 3,4 set in_port/nb_seg and remove crc */
-		pkt_mb4 = _mm_add_epi16(pkt_mb4, crc_adjust);
 		pkt_mb3 = _mm_add_epi16(pkt_mb3, crc_adjust);
+		pkt_mb2 = _mm_add_epi16(pkt_mb2, crc_adjust);
 
-		/* D.1 pkt 1,2 convert format from desc to pktmbuf */
-		pkt_mb2 = _mm_shuffle_epi8(descs[1], shuf_msk);
-		pkt_mb1 = _mm_shuffle_epi8(descs[0], shuf_msk);
+		/* D.2 pkt 1,2 set in_port/nb_seg and remove crc */
+		pkt_mb1 = _mm_add_epi16(pkt_mb1, crc_adjust);
+		pkt_mb0 = _mm_add_epi16(pkt_mb0, crc_adjust);
+
+#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+		/**
+		 * needs to load 2nd 16B of each desc for RSS hash parsing,
+		 * will cause performance drop to get into this context.
+		 */
+		if (rxq->vsi->adapter->pf.dev_data->dev_conf.rxmode.offloads &
+				DEV_RX_OFFLOAD_RSS_HASH) {
+			/* load bottom half of every 32B desc */
+			const __m128i raw_desc_bh3 =
+				_mm_load_si128
+					((void *)(&rxdp[3].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh2 =
+				_mm_load_si128
+					((void *)(&rxdp[2].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh1 =
+				_mm_load_si128
+					((void *)(&rxdp[1].wb.status_error1));
+			rte_compiler_barrier();
+			const __m128i raw_desc_bh0 =
+				_mm_load_si128
+					((void *)(&rxdp[0].wb.status_error1));
+
+			/**
+			 * to shift the 32b RSS hash value to the
+			 * highest 32b of each 128b before mask
+			 */
+			__m128i rss_hash3 =
+				_mm_slli_epi64(raw_desc_bh3, 32);
+			__m128i rss_hash2 =
+				_mm_slli_epi64(raw_desc_bh2, 32);
+			__m128i rss_hash1 =
+				_mm_slli_epi64(raw_desc_bh1, 32);
+			__m128i rss_hash0 =
+				_mm_slli_epi64(raw_desc_bh0, 32);
+
+			__m128i rss_hash_msk =
+				_mm_set_epi32(0xFFFFFFFF, 0, 0, 0);
+
+			rss_hash3 = _mm_and_si128
+					(rss_hash3, rss_hash_msk);
+			rss_hash2 = _mm_and_si128
+					(rss_hash2, rss_hash_msk);
+			rss_hash1 = _mm_and_si128
+					(rss_hash1, rss_hash_msk);
+			rss_hash0 = _mm_and_si128
+					(rss_hash0, rss_hash_msk);
+
+			pkt_mb3 = _mm_or_si128(pkt_mb3, rss_hash3);
+			pkt_mb2 = _mm_or_si128(pkt_mb2, rss_hash2);
+			pkt_mb1 = _mm_or_si128(pkt_mb1, rss_hash1);
+			pkt_mb0 = _mm_or_si128(pkt_mb0, rss_hash0);
+		} /* if() on RSS hash parsing */
+#endif
 
 		/* C.2 get 4 pkts staterr value  */
 		staterr = _mm_unpacklo_epi32(sterr_tmp1, sterr_tmp2);
@@ -425,14 +535,10 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* D.3 copy final 3,4 data to rx_pkts */
 		_mm_storeu_si128
 			((void *)&rx_pkts[pos + 3]->rx_descriptor_fields1,
-			 pkt_mb4);
+			 pkt_mb3);
 		_mm_storeu_si128
 			((void *)&rx_pkts[pos + 2]->rx_descriptor_fields1,
-			 pkt_mb3);
-
-		/* D.2 pkt 1,2 set in_port/nb_seg and remove crc */
-		pkt_mb2 = _mm_add_epi16(pkt_mb2, crc_adjust);
-		pkt_mb1 = _mm_add_epi16(pkt_mb1, crc_adjust);
+			 pkt_mb2);
 
 		/* C* extract and record EOP bit */
 		if (split_packet) {
@@ -456,11 +562,11 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* D.3 copy final 1,2 data to rx_pkts */
 		_mm_storeu_si128
 			((void *)&rx_pkts[pos + 1]->rx_descriptor_fields1,
-			 pkt_mb2);
+			 pkt_mb1);
 		_mm_storeu_si128((void *)&rx_pkts[pos]->rx_descriptor_fields1,
-				 pkt_mb1);
+				 pkt_mb0);
 		ice_rx_desc_to_ptype_v(descs, &rx_pkts[pos], ptype_tbl);
-		/* C.4 calc avaialbe number of desc */
+		/* C.4 calc available number of desc */
 		var = __builtin_popcountll(_mm_cvtsi128_si64(staterr));
 		nb_pkts_recd += var;
 		if (likely(var != ICE_DESCS_PER_LOOP))
@@ -643,7 +749,7 @@ ice_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	txq->tx_tail = tx_id;
 
-	ICE_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	ICE_PCI_REG_WC_WRITE(txq->qtx_tail, txq->tx_tail);
 
 	return nb_pkts;
 }
@@ -669,7 +775,7 @@ ice_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 	return nb_tx;
 }
 
-int __attribute__((cold))
+int __rte_cold
 ice_rxq_vec_setup(struct ice_rx_queue *rxq)
 {
 	if (!rxq)
@@ -679,7 +785,7 @@ ice_rxq_vec_setup(struct ice_rx_queue *rxq)
 	return ice_rxq_vec_setup_default(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 ice_txq_vec_setup(struct ice_tx_queue __rte_unused *txq)
 {
 	if (!txq)
@@ -689,13 +795,13 @@ ice_txq_vec_setup(struct ice_tx_queue __rte_unused *txq)
 	return 0;
 }
 
-int __attribute__((cold))
+int __rte_cold
 ice_rx_vec_dev_check(struct rte_eth_dev *dev)
 {
 	return ice_rx_vec_dev_check_default(dev);
 }
 
-int __attribute__((cold))
+int __rte_cold
 ice_tx_vec_dev_check(struct rte_eth_dev *dev)
 {
 	return ice_tx_vec_dev_check_default(dev);

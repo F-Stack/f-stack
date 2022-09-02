@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 HiSilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
-
-#include <stdbool.h>
 
 #include <rte_eal.h>
 #include <rte_ethdev_driver.h>
@@ -81,7 +79,7 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 
 	if (!rte_eth_dev_is_valid_port(param->port_id)) {
 		rte_errno = ENODEV;
-		PMD_INIT_LOG(ERR, "port %u invalid port ID", param->port_id);
+		PMD_INIT_LOG(ERR, "port %d invalid port ID", param->port_id);
 		return -rte_errno;
 	}
 	dev = &rte_eth_devices[param->port_id];
@@ -137,6 +135,7 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum hns3_mp_req_type type)
 		__atomic_load_n(&hw->secondary_cnt, __ATOMIC_RELAXED) == 0)
 		return;
 	if (type != HNS3_MP_REQ_START_RXTX && type != HNS3_MP_REQ_STOP_RXTX) {
+
 		hns3_err(hw, "port %u unknown request (req_type %d)",
 			 dev->data->port_id, type);
 		return;

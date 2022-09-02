@@ -43,11 +43,20 @@
 extern "C" {
 #endif
 
-struct service_curve {
+struct service_curve_v0 {
 	u_int	m1;	/* slope of the first segment in bits/sec */
 	u_int	d;	/* the x-projection of the first segment in msec */
 	u_int	m2;	/* slope of the second segment in bits/sec */
 };
+
+struct service_curve_v1 {
+	u_int64_t	m1;   /* slope of the first segment in bits/sec */
+	u_int	d;	      /* the x-projection of the first segment in msec */
+	u_int64_t	m2;   /* slope of the second segment in bits/sec */
+};
+
+/* Latest version of struct service_curve_vX */
+#define HFSC_SERVICE_CURVE_VERSION	1
 
 /* special class handles */
 #define	HFSC_NULLCLASS_HANDLE	0
@@ -67,12 +76,12 @@ struct service_curve {
 #define	HFSC_UPPERLIMITSC	4
 #define	HFSC_DEFAULTSC		(HFSC_REALTIMESC|HFSC_LINKSHARINGSC)
 
-struct hfsc_classstats {
+struct hfsc_classstats_v0 {
 	u_int			class_id;
 	u_int32_t		class_handle;
-	struct service_curve	rsc;
-	struct service_curve	fsc;
-	struct service_curve	usc;	/* upper limit service curve */
+	struct service_curve_v0	rsc;
+	struct service_curve_v0	fsc;
+	struct service_curve_v0	usc;	/* upper limit service curve */
 
 	u_int64_t		total;	/* total work in bytes */
 	u_int64_t		cumul;	/* cumulative work in bytes
@@ -110,74 +119,54 @@ struct hfsc_classstats {
 	struct codel_stats	codel;
 };
 
-#ifdef ALTQ3_COMPAT
-struct hfsc_interface {
-	char	hfsc_ifname[IFNAMSIZ];  /* interface name (e.g., fxp0) */
-};
-
-struct hfsc_attach {
-	struct hfsc_interface	iface;
-	u_int			bandwidth;  /* link bandwidth in bits/sec */
-};
-
-struct hfsc_add_class {
-	struct hfsc_interface	iface;
-	u_int32_t		parent_handle;
-	struct service_curve	service_curve;
-	int			qlimit;
-	int			flags;
-
-	u_int32_t		class_handle;  /* return value */
-};
-
-struct hfsc_delete_class {
-	struct hfsc_interface	iface;
+struct hfsc_classstats_v1 {
+	u_int			class_id;
 	u_int32_t		class_handle;
+	struct service_curve_v1	rsc;
+	struct service_curve_v1	fsc;
+	struct service_curve_v1	usc;	/* upper limit service curve */
+
+	u_int64_t		total;	/* total work in bytes */
+	u_int64_t		cumul;	/* cumulative work in bytes
+					   done by real-time criteria */
+	u_int64_t		d;		/* deadline */
+	u_int64_t		e;		/* eligible time */
+	u_int64_t		vt;		/* virtual time */
+	u_int64_t		f;		/* fit time for upper-limit */
+
+	/* info helpful for debugging */
+	u_int64_t		initvt;		/* init virtual time */
+	u_int64_t		vtoff;		/* cl_vt_ipoff */
+	u_int64_t		cvtmax;		/* cl_maxvt */
+	u_int64_t		myf;		/* cl_myf */
+	u_int64_t		cfmin;		/* cl_mincf */
+	u_int64_t		cvtmin;		/* cl_mincvt */
+	u_int64_t		myfadj;		/* cl_myfadj */
+	u_int64_t		vtadj;		/* cl_vtadj */
+	u_int64_t		cur_time;
+	u_int32_t		machclk_freq;
+
+	u_int			qlength;
+	u_int			qlimit;
+	struct pktcntr		xmit_cnt;
+	struct pktcntr		drop_cnt;
+	u_int			period;
+
+	u_int			vtperiod;	/* vt period sequence no */
+	u_int			parentperiod;	/* parent's vt period seqno */
+	int			nactive;	/* number of active children */
+
+	/* codel, red and rio related info */
+	int			qtype;
+	struct redstats		red[3];
+	struct codel_stats	codel;
 };
 
-struct hfsc_modify_class {
-	struct hfsc_interface	iface;
-	u_int32_t		class_handle;
-	struct service_curve	service_curve;
-	int			sctype;
-};
-
-struct hfsc_add_filter {
-	struct hfsc_interface	iface;
-	u_int32_t		class_handle;
-	struct flow_filter	filter;
-
-	u_long			filter_handle;  /* return value */
-};
-
-struct hfsc_delete_filter {
-	struct hfsc_interface	iface;
-	u_long			filter_handle;
-};
-
-struct hfsc_class_stats {
-	struct hfsc_interface	iface;
-	int			nskip;		/* skip # of classes */
-	int			nclasses;	/* # of class stats (WR) */
-	u_int64_t		cur_time;	/* current time */
-	u_int32_t		machclk_freq;	/* machine clock frequency */
-	u_int			hif_classes;	/* # of classes in the tree */
-	u_int			hif_packets;	/* # of packets in the tree */
-	struct hfsc_classstats	*stats;		/* pointer to stats array */
-};
-
-#define	HFSC_IF_ATTACH		_IOW('Q', 1, struct hfsc_attach)
-#define	HFSC_IF_DETACH		_IOW('Q', 2, struct hfsc_interface)
-#define	HFSC_ENABLE		_IOW('Q', 3, struct hfsc_interface)
-#define	HFSC_DISABLE		_IOW('Q', 4, struct hfsc_interface)
-#define	HFSC_CLEAR_HIERARCHY	_IOW('Q', 5, struct hfsc_interface)
-#define	HFSC_ADD_CLASS		_IOWR('Q', 7, struct hfsc_add_class)
-#define	HFSC_DEL_CLASS		_IOW('Q', 8, struct hfsc_delete_class)
-#define	HFSC_MOD_CLASS		_IOW('Q', 9, struct hfsc_modify_class)
-#define	HFSC_ADD_FILTER		_IOWR('Q', 10, struct hfsc_add_filter)
-#define	HFSC_DEL_FILTER		_IOW('Q', 11, struct hfsc_delete_filter)
-#define	HFSC_GETSTATS		_IOWR('Q', 12, struct hfsc_class_stats)
-#endif /* ALTQ3_COMPAT */
+/*
+ * HFSC_STATS_VERSION is defined in altq.h to work around issues stemming
+ * from mixing of public-API and internal bits in each scheduler-specific
+ * header.
+ */
 
 #ifdef _KERNEL
 /*
@@ -192,7 +181,7 @@ struct hfsc_class_stats {
  *	representation.
  *	the slope values are scaled to avoid overflow.
  *	the inverse slope values as well as the y-projection of the 1st
- *	segment are kept in order to to avoid 64-bit divide operations
+ *	segment are kept in order to avoid 64-bit divide operations
  *	that are expensive on 32-bit architectures.
  *
  *  note: Intel Pentium TSC never wraps around in several thousands of years.
@@ -224,6 +213,7 @@ struct runtime_sc {
 
 struct hfsc_class {
 	u_int		cl_id;		/* class id (just for debug) */
+	u_int		cl_slot;	/* slot in hif class table */
 	u_int32_t	cl_handle;	/* class handle */
 	struct hfsc_if	*cl_hif;	/* back pointer to struct hfsc_if */
 	int		cl_flags;	/* misc flags */
@@ -309,6 +299,35 @@ struct hfsc_if {
 	struct acc_classifier	hif_classifier;
 #endif
 };
+
+/*
+ * Kernel code always wants the latest version - avoid a bunch of renames in
+ * the code to the current latest versioned name.
+ */
+#define	service_curve	__CONCAT(service_curve_v, HFSC_SERVICE_CURVE_VERSION)
+
+#else /* _KERNEL */
+
+#ifdef PFIOC_USE_LATEST
+/*
+ * Maintaining in-tree consumers of the ioctl interface is easier when that
+ * code can be written in terms old names that refer to the latest interface
+ * version as that reduces the required changes in the consumers to those
+ * that are functionally necessary to accommodate a new interface version.
+ */
+#define	hfsc_classstats	__CONCAT(hfsc_classstats_v, HFSC_STATS_VERSION)
+#define	service_curve	__CONCAT(service_curve_v, HFSC_SERVICE_CURVE_VERSION)
+
+#else
+/*
+ * When building out-of-tree code that is written for the old interface,
+ * such as may exist in ports for example, resolve the old struct tags to
+ * the v0 versions.
+ */
+#define	hfsc_classstats	__CONCAT(hfsc_classstats_v, 0)
+#define	service_curve	__CONCAT(service_curve_v, 0)
+
+#endif /* PFIOC_USE_LATEST */
 
 #endif /* _KERNEL */
 

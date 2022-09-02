@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
  *
@@ -84,7 +86,7 @@ static __inline int
 ttydevsw_open(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return (tp->t_devsw->tsw_open(tp));
@@ -94,7 +96,7 @@ static __inline void
 ttydevsw_close(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	tp->t_devsw->tsw_close(tp);
@@ -104,7 +106,7 @@ static __inline void
 ttydevsw_outwakeup(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	/* Prevent spurious wakeups. */
@@ -118,7 +120,7 @@ static __inline void
 ttydevsw_inwakeup(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	/* Prevent spurious wakeups. */
@@ -132,7 +134,7 @@ static __inline int
 ttydevsw_ioctl(struct tty *tp, u_long cmd, caddr_t data, struct thread *td)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return (tp->t_devsw->tsw_ioctl(tp, cmd, data, td));
@@ -143,7 +145,7 @@ ttydevsw_cioctl(struct tty *tp, int unit, u_long cmd, caddr_t data,
     struct thread *td)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return (tp->t_devsw->tsw_cioctl(tp, unit, cmd, data, td));
@@ -181,7 +183,7 @@ static __inline void
 ttydevsw_pktnotify(struct tty *tp, char event)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	tp->t_devsw->tsw_pktnotify(tp, event);
@@ -200,7 +202,7 @@ static __inline bool
 ttydevsw_busy(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return (tp->t_devsw->tsw_busy(tp));

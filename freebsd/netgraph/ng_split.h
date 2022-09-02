@@ -1,4 +1,5 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
  * Copyright (c) 1999-2000, Vitaly V Belekhov
  * All rights reserved.
@@ -28,7 +29,6 @@
  * $FreeBSD$
  *
  */
-
 
 #ifndef _NETGRAPH_NG_SPLIT_H_
 #define _NETGRAPH_NG_SPLIT_H_

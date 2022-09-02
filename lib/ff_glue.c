@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2010 Kip Macy. All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -53,6 +53,11 @@
 #include <sys/mbuf.h>
 #include <sys/smp.h>
 #include <sys/sched.h>
+#include <sys/vmmeter.h>
+#include <sys/unpcb.h>
+#include <sys/eventfd.h>
+#include <sys/linker.h>
+#include <sys/sleepqueue.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
@@ -60,12 +65,36 @@
 #include <vm/vm_object.h>
 #include <vm/vm_map.h>
 #include <vm/vm_extern.h>
+#include <vm/vm_domainset.h>
+#include <vm/vm_page.h>
+#include <vm/vm_pagequeue.h>
+
+#include <netinet/in_systm.h>
+
+#include <ck_epoch.h>
+#include <ck_stack.h>
 
 #include "ff_host_interface.h"
 
 int kstack_pages = KSTACK_PAGES;
 SYSCTL_INT(_kern, OID_AUTO, kstack_pages, CTLFLAG_RD, &kstack_pages, 0,
     "Kernel stack size in pages");
+
+int __read_mostly vm_ndomains = 1;
+SYSCTL_INT(_vm, OID_AUTO, ndomains, CTLFLAG_RD,
+    &vm_ndomains, 0, "Number of physical memory domains available.");
+
+#ifndef MAXMEMDOM
+#define MAXMEMDOM 1
+#endif
+
+struct domainset __read_mostly domainset_fixed[MAXMEMDOM];
+struct domainset __read_mostly domainset_prefer[MAXMEMDOM];
+struct domainset __read_mostly domainset_roundrobin;
+
+struct vm_domain vm_dom[MAXMEMDOM];
+
+domainset_t __exclusive_cache_line vm_min_domains;
 
 int bootverbose;
 
@@ -127,24 +156,28 @@ SYSCTL_INT(_kern_smp, OID_AUTO, maxcpus, CTLFLAG_RD|CTLFLAG_CAPRD, &mp_maxcpus,
 SYSCTL_PROC(_kern_smp, OID_AUTO, active, CTLFLAG_RD | CTLTYPE_INT, NULL, 0,
     sysctl_kern_smp_active, "I", "Indicates system is running in SMP mode");
 
-int smp_disabled = 0;	/* has smp been disabled? */
+int smp_disabled = 0;    /* has smp been disabled? */
 SYSCTL_INT(_kern_smp, OID_AUTO, disabled, CTLFLAG_RDTUN|CTLFLAG_CAPRD,
     &smp_disabled, 0, "SMP has been disabled from the loader");
 
-int smp_cpus = 1;	/* how many cpu's running */
+int smp_cpus = 1;    /* how many cpu's running */
 SYSCTL_INT(_kern_smp, OID_AUTO, cpus, CTLFLAG_RD|CTLFLAG_CAPRD, &smp_cpus, 0,
     "Number of CPUs online");
 
-int smp_topology = 0;	/* Which topology we're using. */
+int smp_topology = 0;    /* Which topology we're using. */
 SYSCTL_INT(_kern_smp, OID_AUTO, topology, CTLFLAG_RDTUN, &smp_topology, 0,
     "Topology override setting; 0 is default provided by hardware.");
 
+u_int vn_lock_pair_pause_max = 1; // ff_global_cfg.freebsd.hz / 100;
+SYSCTL_UINT(_debug, OID_AUTO, vn_lock_pair_pause_max, CTLFLAG_RW,
+    &vn_lock_pair_pause_max, 0,
+    "Max ticks for vn_lock_pair deadlock avoidance sleep");
 
 long first_page = 0;
 
 struct vmmeter vm_cnt;
-vm_map_t kernel_map=0;
-vm_map_t kmem_map=0;
+vm_map_t kernel_map = 0;
+vm_map_t kmem_map = 0;
 
 vmem_t *kernel_arena = NULL;
 vmem_t *kmem_arena = NULL;
@@ -163,17 +196,19 @@ int cpu_deepest_sleep = 0;    /* Deepest Cx state available. */
 int cpu_disable_c2_sleep = 0; /* Timer dies in C2. */
 int cpu_disable_c3_sleep = 0; /* Timer dies in C3. */
 
+u_char __read_frequently kdb_active = 0;
+
 static void timevalfix(struct timeval *);
 
 /* Extra care is taken with this sysctl because the data type is volatile */
 static int
 sysctl_kern_smp_active(SYSCTL_HANDLER_ARGS)
 {
-	int error, active;
+    int error, active;
 
-	active = smp_started;
-	error = SYSCTL_OUT(req, &active, sizeof(active));
-	return (error);
+    active = smp_started;
+    error = SYSCTL_OUT(req, &active, sizeof(active));
+    return (error);
 }
 
 void
@@ -206,7 +241,7 @@ prison_hold_locked(struct prison *pr)
 }
 
 int
-prison_if(struct ucred *cred, struct sockaddr *sa)
+prison_if(struct ucred *cred, const struct sockaddr *sa)
 {
     return (0);
 }
@@ -231,7 +266,7 @@ prison_equal_ip4(struct prison *pr1, struct prison *pr2)
 
 #ifdef INET6
 int
-prison_check_ip6(struct ucred *cred, struct in6_addr *ia)
+prison_check_ip6(const struct ucred *cred, const struct in6_addr *ia)
 {
     return (0);
 }
@@ -307,11 +342,13 @@ prison_saddrsel_ip6(struct ucred *cred, struct in6_addr *ia)
 }
 #endif
 
+#if 0
 int
 jailed(struct ucred *cred)
 {
     return (0);
 }
+#endif
 
 /*
  * Return 1 if the passed credential is in a jail and that jail does not
@@ -330,7 +367,7 @@ priv_check(struct thread *td, int priv)
 }
 
 int
-priv_check_cred(struct ucred *cred, int priv, int flags)
+priv_check_cred(struct ucred *cred, int priv)
 {
     return (0);
 }
@@ -576,6 +613,7 @@ copyout(const void *kaddr, void *uaddr, size_t len)
     return (0);
 }
 
+#if 0
 int
 copystr(const void *kfaddr, void *kdaddr, size_t len, size_t *done)
 {
@@ -587,8 +625,7 @@ copystr(const void *kfaddr, void *kdaddr, size_t len, size_t *done)
 
     return (0);
 }
-
-
+#endif
 
 int
 copyinstr(const void *uaddr, void *kaddr, size_t len, size_t *done)
@@ -777,13 +814,14 @@ pgfind(pid_t pgid)
 {
     return (NULL); 
 }
-       
+
+#if 0
 struct proc *
 zpfind(pid_t pid)
 {
     return (NULL);
 }
-
+#endif
 
 int
 p_cansee(struct thread *td, struct proc *p)
@@ -976,7 +1014,7 @@ kproc_exit(int ecode)
 }
 
 vm_offset_t
-kmem_malloc(struct vmem *vmem, vm_size_t bytes, int flags)
+kmem_malloc(vm_size_t bytes, int flags)
 {
     void *alloc = ff_mmap(NULL, bytes, ff_PROT_READ|ff_PROT_WRITE, ff_MAP_ANON|ff_MAP_PRIVATE, -1, 0);
     if ((flags & M_ZERO) && alloc != NULL)
@@ -985,16 +1023,16 @@ kmem_malloc(struct vmem *vmem, vm_size_t bytes, int flags)
 }
 
 void
-kmem_free(struct vmem *vmem, vm_offset_t addr, vm_size_t size)
+kmem_free(vm_offset_t addr, vm_size_t size)
 {
     ff_munmap((void *)addr, size);
 }
 
 vm_offset_t
-kmem_alloc_contig(struct vmem *vmem, vm_size_t size, int flags, vm_paddr_t low,
+kmem_alloc_contig(vm_size_t size, int flags, vm_paddr_t low,
     vm_paddr_t high, u_long alignment, vm_paddr_t boundary, vm_memattr_t memattr)
 {
-    return (kmem_malloc(vmem, size, flags));
+    return (kmem_malloc(size, flags));
 }
 
 void
@@ -1009,7 +1047,6 @@ malloc_uninit(void *data)
 {
     /* Nothing to do here */ 
 }
-
 
 void *
 malloc(unsigned long size, struct malloc_type *type, int flags)
@@ -1034,7 +1071,6 @@ free(void *addr, struct malloc_type *type)
 {
     ff_free(addr);
 }
-
 
 void *
 realloc(void *addr, unsigned long size, struct malloc_type *type,
@@ -1115,6 +1151,7 @@ foffset_lock(struct file *fp, int flags)
     return (res);
 }
 
+#if 0
 void
 sf_ext_free(void *arg1, void *arg2)
 {
@@ -1126,6 +1163,7 @@ sf_ext_free_nocache(void *arg1, void *arg2)
 {
     panic("sf_ext_free_nocache not implemented.\n");
 }
+#endif
 
 void
 sched_bind(struct thread *td, int cpu)
@@ -1151,30 +1189,270 @@ getcredhostid(struct ucred *cred, unsigned long *hostid)
 int
 groupmember(gid_t gid, struct ucred *cred)
 {
-	int l;
-	int h;
-	int m;
+    int l;
+    int h;
+    int m;
 
-	if (cred->cr_groups[0] == gid)
-		return(1);
+    if (cred->cr_groups[0] == gid)
+        return(1);
 
-	/*
-	 * If gid was not our primary group, perform a binary search
-	 * of the supplemental groups.  This is possible because we
-	 * sort the groups in crsetgroups().
-	 */
-	l = 1;
-	h = cred->cr_ngroups;
-	while (l < h) {
-		m = l + ((h - l) / 2);
-		if (cred->cr_groups[m] < gid)
-			l = m + 1; 
-		else
-			h = m; 
-	}
-	if ((l < cred->cr_ngroups) && (cred->cr_groups[l] == gid))
-		return (1);
+    /*
+     * If gid was not our primary group, perform a binary search
+     * of the supplemental groups.  This is possible because we
+     * sort the groups in crsetgroups().
+     */
+    l = 1;
+    h = cred->cr_ngroups;
+    while (l < h) {
+        m = l + ((h - l) / 2);
+        if (cred->cr_groups[m] < gid)
+            l = m + 1; 
+        else
+            h = m; 
+    }
+    if ((l < cred->cr_ngroups) && (cred->cr_groups[l] == gid))
+        return (1);
 
-	return (0);
+    return (0);
+}
+
+int
+vm_wait_doms(const domainset_t *wdoms, int mflags)
+{
+    return 0;
+}
+
+void
+vm_domainset_iter_policy_ref_init(struct vm_domainset_iter *di,
+    struct domainset_ref *dr, int *domain, int *flags)
+{
+    *domain = 0;
+}
+
+int
+vm_domainset_iter_policy(struct vm_domainset_iter *di, int *domain)
+{
+    //return (EJUSTRETURN);
+    return 0;
+}
+
+vm_offset_t
+kmem_malloc_domainset(struct domainset *ds, vm_size_t size, int flags)
+{
+    return (kmem_malloc(size, flags));
+}
+
+void *
+mallocarray(size_t nmemb, size_t size, struct malloc_type *type, int flags)
+{
+    return (malloc(size * nmemb, type, flags));
+}
+
+void
+getcredhostuuid(struct ucred *cred, char *buf, size_t size)
+{
+    mtx_lock(&cred->cr_prison->pr_mtx);
+    strlcpy(buf, cred->cr_prison->pr_hostuuid, size);
+    mtx_unlock(&cred->cr_prison->pr_mtx);
+}
+
+void
+getjailname(struct ucred *cred, char *name, size_t len)
+{
+    mtx_lock(&cred->cr_prison->pr_mtx);
+    strlcpy(name, cred->cr_prison->pr_name, len);
+    mtx_unlock(&cred->cr_prison->pr_mtx);
+}
+
+void *
+malloc_domainset(size_t size, struct malloc_type *mtp, struct domainset *ds,
+    int flags)
+{
+    return (malloc(size, mtp, flags));
+}
+
+void *
+malloc_exec(size_t size, struct malloc_type *mtp, int flags)
+{
+
+    return (malloc(size, mtp, flags));
+}
+
+int
+bus_get_domain(device_t dev, int *domain)
+{
+    return (-1);
+}
+
+void
+cru2xt(struct thread *td, struct xucred *xcr)
+{
+    cru2x(td->td_ucred, xcr);
+    xcr->cr_pid = td->td_proc->p_pid;
+}
+
+/*
+ * Set socket peer credentials at connection time.
+ *
+ * The client's PCB credentials are copied from its process structure.  The
+ * server's PCB credentials are copied from the socket on which it called
+ * listen(2).  uipc_listen cached that process's credentials at the time.
+ */
+void
+unp_copy_peercred(struct thread *td, struct unpcb *client_unp,
+    struct unpcb *server_unp, struct unpcb *listen_unp)
+{
+    cru2xt(td, &client_unp->unp_peercred);
+    client_unp->unp_flags |= UNP_HAVEPC;
+
+    memcpy(&server_unp->unp_peercred, &listen_unp->unp_peercred,
+        sizeof(server_unp->unp_peercred));
+    server_unp->unp_flags |= UNP_HAVEPC;
+    client_unp->unp_flags |= (listen_unp->unp_flags & UNP_WANTCRED_MASK);
+}
+
+int
+eventfd_create_file(struct thread *td, struct file *fp, uint32_t initval,
+    int flags)
+{
+    return (0);
+}
+
+void
+sched_prio(struct thread *td, u_char prio)
+{
+
+}
+
+/*
+ * The machine independent parts of context switching.
+ *
+ * The thread lock is required on entry and is no longer held on return.
+ */
+void
+mi_switch(int flags)
+{
+
+}
+
+int
+sched_is_bound(struct thread *td)
+{
+    return (1);
+}
+
+/*
+ * This function must not be called with-in read section.
+ */
+void
+ck_epoch_synchronize_wait(struct ck_epoch *global,
+    ck_epoch_wait_cb_t *cb, void *ct)
+{
+
+}
+
+bool
+ck_epoch_poll_deferred(struct ck_epoch_record *record, ck_stack_t *deferred)
+{
+    return (true);
+}
+
+void
+_ck_epoch_addref(struct ck_epoch_record *record,
+    struct ck_epoch_section *section)
+{
+
+}
+
+bool
+_ck_epoch_delref(struct ck_epoch_record *record,
+    struct ck_epoch_section *section)
+{
+    return true;
+}
+
+void
+ck_epoch_register(struct ck_epoch *global, struct ck_epoch_record *record,
+    void *ct)
+{
+
+}
+
+void
+ck_epoch_init(struct ck_epoch *global)
+{
+
+}
+
+#if 0
+void
+wakeup_any(const void *ident)
+{
+
+}
+#endif
+
+/*
+ * kmem_bootstrap_free:
+ *
+ * Free pages backing preloaded data (e.g., kernel modules) to the
+ * system.  Currently only supported on platforms that create a
+ * vm_phys segment for preloaded data.
+ */
+void
+kmem_bootstrap_free(vm_offset_t start, vm_size_t size)
+{
+
+}
+
+#if 0
+int
+elf_cpu_parse_dynamic(caddr_t loadbase __unused, Elf_Dyn *dynamic __unused)
+{
+    return (0);
+}
+#endif
+
+int
+pmap_change_prot(vm_offset_t va, vm_size_t size, vm_prot_t prot)
+{
+    return 0;
+}
+
+void *
+memset_early(void *buf, int c, size_t len)
+{
+    return (memset(buf, c, len));
+}
+
+int
+elf_reloc_late(linker_file_t lf, Elf_Addr relocbase, const void *data,
+    int type, elf_lookup_fn lookup)
+{
+    return (0);
+}
+
+bool
+elf_is_ifunc_reloc(Elf_Size r_info) 
+{
+    return (true);
+}
+
+void
+sleepq_chains_remove_matching(bool (*matches)(struct thread *))
+{
+
+}
+
+u_int
+vm_free_count(void)
+{
+    return vm_dom[0].vmd_free_count;
+}
+
+struct proc *
+pfind_any(pid_t pid)
+{
+    return (curproc);
 }
 

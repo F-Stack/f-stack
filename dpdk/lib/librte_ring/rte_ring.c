@@ -33,6 +33,7 @@
 #include <rte_tailq.h>
 
 #include "rte_ring.h"
+#include "rte_ring_elem.h"
 
 TAILQ_HEAD(rte_ring_list, rte_tailq_entry);
 
@@ -41,38 +42,145 @@ static struct rte_tailq_elem rte_ring_tailq = {
 };
 EAL_REGISTER_TAILQ(rte_ring_tailq)
 
+/* mask of all valid flag values to ring_create() */
+#define RING_F_MASK (RING_F_SP_ENQ | RING_F_SC_DEQ | RING_F_EXACT_SZ | \
+		     RING_F_MP_RTS_ENQ | RING_F_MC_RTS_DEQ |	       \
+		     RING_F_MP_HTS_ENQ | RING_F_MC_HTS_DEQ)
+
 /* true if x is a power of 2 */
 #define POWEROF2(x) ((((x)-1) & (x)) == 0)
 
+/* by default set head/tail distance as 1/8 of ring capacity */
+#define HTD_MAX_DEF	8
+
 /* return the size of memory occupied by a ring */
 ssize_t
-rte_ring_get_memsize(unsigned count)
+rte_ring_get_memsize_elem(unsigned int esize, unsigned int count)
 {
 	ssize_t sz;
+
+	/* Check if element size is a multiple of 4B */
+	if (esize % 4 != 0) {
+		RTE_LOG(ERR, RING, "element size is not a multiple of 4\n");
+
+		return -EINVAL;
+	}
 
 	/* count must be a power of 2 */
 	if ((!POWEROF2(count)) || (count > RTE_RING_SZ_MASK )) {
 		RTE_LOG(ERR, RING,
-			"Requested size is invalid, must be power of 2, and "
-			"do not exceed the size limit %u\n", RTE_RING_SZ_MASK);
+			"Requested number of elements is invalid, must be power of 2, and not exceed %u\n",
+			RTE_RING_SZ_MASK);
+
 		return -EINVAL;
 	}
 
-	sz = sizeof(struct rte_ring) + count * sizeof(void *);
+	sz = sizeof(struct rte_ring) + (ssize_t)count * esize;
 	sz = RTE_ALIGN(sz, RTE_CACHE_LINE_SIZE);
 	return sz;
+}
+
+/* return the size of memory occupied by a ring */
+ssize_t
+rte_ring_get_memsize(unsigned int count)
+{
+	return rte_ring_get_memsize_elem(sizeof(void *), count);
+}
+
+/*
+ * internal helper function to reset prod/cons head-tail values.
+ */
+static void
+reset_headtail(void *p)
+{
+	struct rte_ring_headtail *ht;
+	struct rte_ring_hts_headtail *ht_hts;
+	struct rte_ring_rts_headtail *ht_rts;
+
+	ht = p;
+	ht_hts = p;
+	ht_rts = p;
+
+	switch (ht->sync_type) {
+	case RTE_RING_SYNC_MT:
+	case RTE_RING_SYNC_ST:
+		ht->head = 0;
+		ht->tail = 0;
+		break;
+	case RTE_RING_SYNC_MT_RTS:
+		ht_rts->head.raw = 0;
+		ht_rts->tail.raw = 0;
+		break;
+	case RTE_RING_SYNC_MT_HTS:
+		ht_hts->ht.raw = 0;
+		break;
+	default:
+		/* unknown sync mode */
+		RTE_ASSERT(0);
+	}
 }
 
 void
 rte_ring_reset(struct rte_ring *r)
 {
-	r->prod.head = r->cons.head = 0;
-	r->prod.tail = r->cons.tail = 0;
+	reset_headtail(&r->prod);
+	reset_headtail(&r->cons);
+}
+
+/*
+ * helper function, calculates sync_type values for prod and cons
+ * based on input flags. Returns zero at success or negative
+ * errno value otherwise.
+ */
+static int
+get_sync_type(uint32_t flags, enum rte_ring_sync_type *prod_st,
+	enum rte_ring_sync_type *cons_st)
+{
+	static const uint32_t prod_st_flags =
+		(RING_F_SP_ENQ | RING_F_MP_RTS_ENQ | RING_F_MP_HTS_ENQ);
+	static const uint32_t cons_st_flags =
+		(RING_F_SC_DEQ | RING_F_MC_RTS_DEQ | RING_F_MC_HTS_DEQ);
+
+	switch (flags & prod_st_flags) {
+	case 0:
+		*prod_st = RTE_RING_SYNC_MT;
+		break;
+	case RING_F_SP_ENQ:
+		*prod_st = RTE_RING_SYNC_ST;
+		break;
+	case RING_F_MP_RTS_ENQ:
+		*prod_st = RTE_RING_SYNC_MT_RTS;
+		break;
+	case RING_F_MP_HTS_ENQ:
+		*prod_st = RTE_RING_SYNC_MT_HTS;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	switch (flags & cons_st_flags) {
+	case 0:
+		*cons_st = RTE_RING_SYNC_MT;
+		break;
+	case RING_F_SC_DEQ:
+		*cons_st = RTE_RING_SYNC_ST;
+		break;
+	case RING_F_MC_RTS_DEQ:
+		*cons_st = RTE_RING_SYNC_MT_RTS;
+		break;
+	case RING_F_MC_HTS_DEQ:
+		*cons_st = RTE_RING_SYNC_MT_HTS;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 int
-rte_ring_init(struct rte_ring *r, const char *name, unsigned count,
-	unsigned flags)
+rte_ring_init(struct rte_ring *r, const char *name, unsigned int count,
+	unsigned int flags)
 {
 	int ret;
 
@@ -84,14 +192,32 @@ rte_ring_init(struct rte_ring *r, const char *name, unsigned count,
 	RTE_BUILD_BUG_ON((offsetof(struct rte_ring, prod) &
 			  RTE_CACHE_LINE_MASK) != 0);
 
+	RTE_BUILD_BUG_ON(offsetof(struct rte_ring_headtail, sync_type) !=
+		offsetof(struct rte_ring_hts_headtail, sync_type));
+	RTE_BUILD_BUG_ON(offsetof(struct rte_ring_headtail, tail) !=
+		offsetof(struct rte_ring_hts_headtail, ht.pos.tail));
+
+	RTE_BUILD_BUG_ON(offsetof(struct rte_ring_headtail, sync_type) !=
+		offsetof(struct rte_ring_rts_headtail, sync_type));
+	RTE_BUILD_BUG_ON(offsetof(struct rte_ring_headtail, tail) !=
+		offsetof(struct rte_ring_rts_headtail, tail.val.pos));
+
+	/* future proof flags, only allow supported values */
+	if (flags & ~RING_F_MASK) {
+		RTE_LOG(ERR, RING,
+			"Unsupported flags requested %#x\n", flags);
+		return -EINVAL;
+	}
+
 	/* init the ring structure */
 	memset(r, 0, sizeof(*r));
 	ret = strlcpy(r->name, name, sizeof(r->name));
 	if (ret < 0 || ret >= (int)sizeof(r->name))
 		return -ENAMETOOLONG;
 	r->flags = flags;
-	r->prod.single = (flags & RING_F_SP_ENQ) ? __IS_SP : __IS_MP;
-	r->cons.single = (flags & RING_F_SC_DEQ) ? __IS_SC : __IS_MC;
+	ret = get_sync_type(flags, &r->prod.sync_type, &r->cons.sync_type);
+	if (ret != 0)
+		return ret;
 
 	if (flags & RING_F_EXACT_SZ) {
 		r->size = rte_align32pow2(count + 1);
@@ -108,16 +234,20 @@ rte_ring_init(struct rte_ring *r, const char *name, unsigned count,
 		r->mask = count - 1;
 		r->capacity = r->mask;
 	}
-	r->prod.head = r->cons.head = 0;
-	r->prod.tail = r->cons.tail = 0;
+
+	/* set default values for head-tail distance */
+	if (flags & RING_F_MP_RTS_ENQ)
+		rte_ring_set_prod_htd_max(r, r->capacity / HTD_MAX_DEF);
+	if (flags & RING_F_MC_RTS_DEQ)
+		rte_ring_set_cons_htd_max(r, r->capacity / HTD_MAX_DEF);
 
 	return 0;
 }
 
-/* create the ring */
+/* create the ring for a given element size */
 struct rte_ring *
-rte_ring_create(const char *name, unsigned count, int socket_id,
-		unsigned flags)
+rte_ring_create_elem(const char *name, unsigned int esize, unsigned int count,
+		int socket_id, unsigned int flags)
 {
 	char mz_name[RTE_MEMZONE_NAMESIZE];
 	struct rte_ring *r;
@@ -135,7 +265,7 @@ rte_ring_create(const char *name, unsigned count, int socket_id,
 	if (flags & RING_F_EXACT_SZ)
 		count = rte_align32pow2(count + 1);
 
-	ring_size = rte_ring_get_memsize(count);
+	ring_size = rte_ring_get_memsize_elem(esize, count);
 	if (ring_size < 0) {
 		rte_errno = -ring_size;
 		return NULL;
@@ -180,6 +310,15 @@ rte_ring_create(const char *name, unsigned count, int socket_id,
 	rte_mcfg_tailq_write_unlock();
 
 	return r;
+}
+
+/* create the ring */
+struct rte_ring *
+rte_ring_create(const char *name, unsigned int count, int socket_id,
+		unsigned int flags)
+{
+	return rte_ring_create_elem(name, sizeof(void *), count, socket_id,
+		flags);
 }
 
 /* free the ring */

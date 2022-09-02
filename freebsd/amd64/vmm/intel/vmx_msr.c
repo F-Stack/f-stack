@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -31,34 +33,31 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/proc.h>
 
 #include <machine/clock.h>
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
+#include <machine/pcb.h>
 #include <machine/specialreg.h>
 #include <machine/vmm.h>
 
 #include "vmx.h"
 #include "vmx_msr.h"
+#include "x86.h"
 
-static boolean_t
+static bool
 vmx_ctl_allows_one_setting(uint64_t msr_val, int bitpos)
 {
 
-	if (msr_val & (1UL << (bitpos + 32)))
-		return (TRUE);
-	else
-		return (FALSE);
+	return ((msr_val & (1UL << (bitpos + 32))) != 0);
 }
 
-static boolean_t
+static bool
 vmx_ctl_allows_zero_setting(uint64_t msr_val, int bitpos)
 {
 
-	if ((msr_val & (1UL << bitpos)) == 0)
-		return (TRUE);
-	else
-		return (FALSE);
+	return ((msr_val & (1UL << bitpos)) == 0);
 }
 
 uint32_t
@@ -85,16 +84,13 @@ vmx_set_ctlreg(int ctl_reg, int true_ctl_reg, uint32_t ones_mask,
 {
 	int i;
 	uint64_t val, trueval;
-	boolean_t true_ctls_avail, one_allowed, zero_allowed;
+	bool true_ctls_avail, one_allowed, zero_allowed;
 
 	/* We cannot ask the same bit to be set to both '1' and '0' */
 	if ((ones_mask ^ zeros_mask) != (ones_mask | zeros_mask))
 		return (EINVAL);
 
-	if (rdmsr(MSR_VMX_BASIC) & (1UL << 55))
-		true_ctls_avail = TRUE;
-	else
-		true_ctls_avail = FALSE;
+	true_ctls_avail = (rdmsr(MSR_VMX_BASIC) & (1UL << 55)) != 0;
 
 	val = rdmsr(ctl_reg);
 	if (true_ctls_avail)
@@ -356,12 +352,23 @@ vmx_msr_guest_enter(struct vmx *vmx, int vcpuid)
 {
 	uint64_t *guest_msrs = vmx->guest_msrs[vcpuid];
 
-	/* Save host MSRs (if any) and restore guest MSRs */
+	/* Save host MSRs (in particular, KGSBASE) and restore guest MSRs */
+	update_pcb_bases(curpcb);
 	wrmsr(MSR_LSTAR, guest_msrs[IDX_MSR_LSTAR]);
 	wrmsr(MSR_CSTAR, guest_msrs[IDX_MSR_CSTAR]);
 	wrmsr(MSR_STAR, guest_msrs[IDX_MSR_STAR]);
 	wrmsr(MSR_SF_MASK, guest_msrs[IDX_MSR_SF_MASK]);
 	wrmsr(MSR_KGSBASE, guest_msrs[IDX_MSR_KGSBASE]);
+}
+
+void
+vmx_msr_guest_enter_tsc_aux(struct vmx *vmx, int vcpuid)
+{
+	uint64_t guest_tsc_aux = vmx->guest_msrs[vcpuid][IDX_MSR_TSC_AUX];
+	uint32_t host_aux = cpu_auxmsr();
+
+	if (vmx_have_msr_tsc_aux(vmx) && guest_tsc_aux != host_aux)
+		wrmsr(MSR_TSC_AUX, guest_tsc_aux);
 }
 
 void
@@ -383,6 +390,23 @@ vmx_msr_guest_exit(struct vmx *vmx, int vcpuid)
 	wrmsr(MSR_SF_MASK, host_msrs[IDX_MSR_SF_MASK]);
 
 	/* MSR_KGSBASE will be restored on the way back to userspace */
+}
+
+void
+vmx_msr_guest_exit_tsc_aux(struct vmx *vmx, int vcpuid)
+{
+	uint64_t guest_tsc_aux = vmx->guest_msrs[vcpuid][IDX_MSR_TSC_AUX];
+	uint32_t host_aux = cpu_auxmsr();
+
+	if (vmx_have_msr_tsc_aux(vmx) && guest_tsc_aux != host_aux)
+		/*
+		 * Note that it is not necessary to save the guest value
+		 * here; vmx->guest_msrs[vcpuid][IDX_MSR_TSC_AUX] always
+		 * contains the current value since it is updated whenever
+		 * the guest writes to it (which is expected to be very
+		 * rare).
+		 */
+		wrmsr(MSR_TSC_AUX, host_aux);
 }
 
 int
@@ -432,7 +456,7 @@ vmx_wrmsr(struct vmx *vmx, int vcpuid, u_int num, uint64_t val, bool *retu)
 	uint64_t *guest_msrs;
 	uint64_t changed;
 	int error;
-	
+
 	guest_msrs = vmx->guest_msrs[vcpuid];
 	error = 0;
 
@@ -476,6 +500,17 @@ vmx_wrmsr(struct vmx *vmx, int vcpuid, u_int num, uint64_t val, bool *retu)
 		break;
 	case MSR_TSC:
 		error = vmx_set_tsc_offset(vmx, vcpuid, val - rdtsc());
+		break;
+	case MSR_TSC_AUX:
+		if (vmx_have_msr_tsc_aux(vmx))
+			/*
+			 * vmx_msr_guest_enter_tsc_aux() will apply this
+			 * value when it is called immediately before guest
+			 * entry.
+			 */
+			guest_msrs[IDX_MSR_TSC_AUX] = val;
+		else
+			vm_inject_gp(vmx->vm, vcpuid);
 		break;
 	default:
 		error = EINVAL;

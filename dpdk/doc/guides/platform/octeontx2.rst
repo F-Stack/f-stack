@@ -13,6 +13,7 @@ More information about OCTEON TX2 SoC can be found at `Marvell Official Website
 Supported OCTEON TX2 SoCs
 -------------------------
 
+- CN98xx
 - CN96xx
 - CN93xx
 
@@ -65,6 +66,8 @@ DPDK subsystem.
    | 8 | DPI | rte_rawdev                                                   |
    +---+-----+--------------------------------------------------------------+
    | 9 | SDP | rte_ethdev                                                   |
+   +---+-----+--------------------------------------------------------------+
+   | 10| REE | rte_regexdev                                                 |
    +---+-----+--------------------------------------------------------------+
 
 PF0 is called the administrative / admin function (AF) and has exclusive
@@ -154,6 +157,9 @@ This section lists dataplane H/W block(s) available in OCTEON TX2 SoC.
 
 #. **Crypto Device Driver**
    See :doc:`../cryptodevs/octeontx2` for CPT crypto device driver information.
+
+#. **Regex Device Driver**
+   See :doc:`../regexdevs/octeontx2` for REE regex device driver information.
 
 Procedure to Setup Platform
 ---------------------------
@@ -497,27 +503,6 @@ an x86 based platform.
 Native Compilation
 ~~~~~~~~~~~~~~~~~~
 
-make build
-^^^^^^^^^^
-
-.. code-block:: console
-
-        make config T=arm64-octeontx2-linux-gcc
-        make -j
-
-The example applications can be compiled using the following:
-
-.. code-block:: console
-
-        cd <dpdk directory>
-        export RTE_SDK=$PWD
-        export RTE_TARGET=build
-        cd examples/<application>
-        make -j
-
-meson build
-^^^^^^^^^^^
-
 .. code-block:: console
 
         meson build
@@ -527,17 +512,6 @@ Cross Compilation
 ~~~~~~~~~~~~~~~~~
 
 Refer to :doc:`../linux_gsg/cross_build_dpdk_for_arm64` for generic arm64 details.
-
-make build
-^^^^^^^^^^
-
-.. code-block:: console
-
-        make config T=arm64-octeontx2-linux-gcc
-        make -j CROSS=aarch64-marvell-linux-gnu- CONFIG_RTE_KNI_KMOD=n
-
-meson build
-^^^^^^^^^^^
 
 .. code-block:: console
 

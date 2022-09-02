@@ -9,121 +9,124 @@
  */
 
 #include <stdbool.h>
+#include <sys/queue.h>
 
+#include <rte_class.h>
 #include <rte_malloc.h>
+#include <rte_spinlock.h>
+#include <rte_tailq.h>
+
 #include "rte_vdpa.h"
+#include "rte_vdpa_dev.h"
 #include "vhost.h"
 
-static struct rte_vdpa_device *vdpa_devices[MAX_VHOST_DEVICE];
-static uint32_t vdpa_device_num;
+/** Double linked list of vDPA devices. */
+TAILQ_HEAD(vdpa_device_list, rte_vdpa_device);
 
-static bool
-is_same_vdpa_device(struct rte_vdpa_dev_addr *a,
-		struct rte_vdpa_dev_addr *b)
+static struct vdpa_device_list vdpa_device_list =
+		TAILQ_HEAD_INITIALIZER(vdpa_device_list);
+static rte_spinlock_t vdpa_device_list_lock = RTE_SPINLOCK_INITIALIZER;
+
+
+/* Unsafe, needs to be called with vdpa_device_list_lock held */
+static struct rte_vdpa_device *
+__vdpa_find_device_by_name(const char *name)
 {
-	bool ret = true;
+	struct rte_vdpa_device *dev, *ret = NULL;
 
-	if (a->type != b->type)
-		return false;
+	if (name == NULL)
+		return NULL;
 
-	switch (a->type) {
-	case PCI_ADDR:
-		if (a->pci_addr.domain != b->pci_addr.domain ||
-				a->pci_addr.bus != b->pci_addr.bus ||
-				a->pci_addr.devid != b->pci_addr.devid ||
-				a->pci_addr.function != b->pci_addr.function)
-			ret = false;
-		break;
-	default:
-		break;
+	TAILQ_FOREACH(dev, &vdpa_device_list, next) {
+		if (!strncmp(dev->device->name, name, RTE_DEV_NAME_MAX_LEN)) {
+			ret = dev;
+			break;
+		}
 	}
 
 	return ret;
 }
 
-int
-rte_vdpa_register_device(struct rte_vdpa_dev_addr *addr,
-		struct rte_vdpa_dev_ops *ops)
+struct rte_vdpa_device *
+rte_vdpa_find_device_by_name(const char *name)
 {
 	struct rte_vdpa_device *dev;
-	char device_name[MAX_VDPA_NAME_LEN];
-	int i;
 
-	if (vdpa_device_num >= MAX_VHOST_DEVICE || addr == NULL || ops == NULL)
-		return -1;
+	rte_spinlock_lock(&vdpa_device_list_lock);
+	dev = __vdpa_find_device_by_name(name);
+	rte_spinlock_unlock(&vdpa_device_list_lock);
 
-	for (i = 0; i < MAX_VHOST_DEVICE; i++) {
-		dev = vdpa_devices[i];
-		if (dev && is_same_vdpa_device(&dev->addr, addr))
-			return -1;
-	}
-
-	for (i = 0; i < MAX_VHOST_DEVICE; i++) {
-		if (vdpa_devices[i] == NULL)
-			break;
-	}
-
-	if (i == MAX_VHOST_DEVICE)
-		return -1;
-
-	snprintf(device_name, sizeof(device_name), "vdpa-dev-%d", i);
-	dev = rte_zmalloc(device_name, sizeof(struct rte_vdpa_device),
-			RTE_CACHE_LINE_SIZE);
-	if (!dev)
-		return -1;
-
-	memcpy(&dev->addr, addr, sizeof(struct rte_vdpa_dev_addr));
-	dev->ops = ops;
-	vdpa_devices[i] = dev;
-	vdpa_device_num++;
-
-	return i;
+	return dev;
 }
 
-int
-rte_vdpa_unregister_device(int did)
+struct rte_device *
+rte_vdpa_get_rte_device(struct rte_vdpa_device *vdpa_dev)
 {
-	if (did < 0 || did >= MAX_VHOST_DEVICE || vdpa_devices[did] == NULL)
-		return -1;
+	if (vdpa_dev == NULL)
+		return NULL;
 
-	rte_free(vdpa_devices[did]);
-	vdpa_devices[did] = NULL;
-	vdpa_device_num--;
-
-	return did;
-}
-
-int
-rte_vdpa_find_device_id(struct rte_vdpa_dev_addr *addr)
-{
-	struct rte_vdpa_device *dev;
-	int i;
-
-	if (addr == NULL)
-		return -1;
-
-	for (i = 0; i < MAX_VHOST_DEVICE; ++i) {
-		dev = vdpa_devices[i];
-		if (dev && is_same_vdpa_device(&dev->addr, addr))
-			return i;
-	}
-
-	return -1;
+	return vdpa_dev->device;
 }
 
 struct rte_vdpa_device *
-rte_vdpa_get_device(int did)
+rte_vdpa_register_device(struct rte_device *rte_dev,
+		struct rte_vdpa_dev_ops *ops)
 {
-	if (did < 0 || did >= MAX_VHOST_DEVICE)
+	struct rte_vdpa_device *dev;
+
+	if (ops == NULL)
 		return NULL;
 
-	return vdpa_devices[did];
+	/* Check mandatory ops are implemented */
+	if (!ops->get_queue_num || !ops->get_features ||
+			!ops->get_protocol_features || !ops->dev_conf ||
+			!ops->dev_close || !ops->set_vring_state ||
+			!ops->set_features) {
+		VHOST_LOG_CONFIG(ERR,
+				"Some mandatory vDPA ops aren't implemented\n");
+		return NULL;
+	}
+
+	rte_spinlock_lock(&vdpa_device_list_lock);
+	/* Check the device hasn't been register already */
+	dev = __vdpa_find_device_by_name(rte_dev->name);
+	if (dev) {
+		dev = NULL;
+		goto out_unlock;
+	}
+
+	dev = rte_zmalloc(NULL, sizeof(*dev), 0);
+	if (!dev)
+		goto out_unlock;
+
+	dev->device = rte_dev;
+	dev->ops = ops;
+	TAILQ_INSERT_TAIL(&vdpa_device_list, dev, next);
+out_unlock:
+	rte_spinlock_unlock(&vdpa_device_list_lock);
+
+	return dev;
 }
 
 int
-rte_vdpa_get_device_num(void)
+rte_vdpa_unregister_device(struct rte_vdpa_device *dev)
 {
-	return vdpa_device_num;
+	struct rte_vdpa_device *cur_dev, *tmp_dev;
+	int ret = -1;
+
+	rte_spinlock_lock(&vdpa_device_list_lock);
+	TAILQ_FOREACH_SAFE(cur_dev, &vdpa_device_list, next, tmp_dev) {
+		if (dev != cur_dev)
+			continue;
+
+		TAILQ_REMOVE(&vdpa_device_list, dev, next);
+		rte_free(dev);
+		ret = 0;
+		break;
+	}
+	rte_spinlock_unlock(&vdpa_device_list_lock);
+
+	return ret;
 }
 
 int
@@ -227,3 +230,124 @@ fail:
 		free_ind_table(idesc);
 	return -1;
 }
+
+int
+rte_vdpa_get_queue_num(struct rte_vdpa_device *dev, uint32_t *queue_num)
+{
+	if (dev == NULL || dev->ops == NULL || dev->ops->get_queue_num == NULL)
+		return -1;
+
+	return dev->ops->get_queue_num(dev, queue_num);
+}
+
+int
+rte_vdpa_get_features(struct rte_vdpa_device *dev, uint64_t *features)
+{
+	if (dev == NULL || dev->ops == NULL || dev->ops->get_features == NULL)
+		return -1;
+
+	return dev->ops->get_features(dev, features);
+}
+
+int
+rte_vdpa_get_protocol_features(struct rte_vdpa_device *dev, uint64_t *features)
+{
+	if (dev == NULL || dev->ops == NULL ||
+			dev->ops->get_protocol_features == NULL)
+		return -1;
+
+	return dev->ops->get_protocol_features(dev, features);
+}
+
+int
+rte_vdpa_get_stats_names(struct rte_vdpa_device *dev,
+		struct rte_vdpa_stat_name *stats_names,
+		unsigned int size)
+{
+	if (!dev)
+		return -EINVAL;
+
+	RTE_FUNC_PTR_OR_ERR_RET(dev->ops->get_stats_names, -ENOTSUP);
+
+	return dev->ops->get_stats_names(dev, stats_names, size);
+}
+
+int
+rte_vdpa_get_stats(struct rte_vdpa_device *dev, uint16_t qid,
+		struct rte_vdpa_stat *stats, unsigned int n)
+{
+	if (!dev || !stats || !n)
+		return -EINVAL;
+
+	RTE_FUNC_PTR_OR_ERR_RET(dev->ops->get_stats, -ENOTSUP);
+
+	return dev->ops->get_stats(dev, qid, stats, n);
+}
+
+int
+rte_vdpa_reset_stats(struct rte_vdpa_device *dev, uint16_t qid)
+{
+	if (!dev)
+		return -EINVAL;
+
+	RTE_FUNC_PTR_OR_ERR_RET(dev->ops->reset_stats, -ENOTSUP);
+
+	return dev->ops->reset_stats(dev, qid);
+}
+
+static int
+vdpa_dev_match(struct rte_vdpa_device *dev,
+	      const struct rte_device *rte_dev)
+{
+	if (dev->device == rte_dev)
+		return 0;
+
+	return -1;
+}
+
+/* Generic rte_vdpa_dev comparison function. */
+typedef int (*rte_vdpa_cmp_t)(struct rte_vdpa_device *,
+		const struct rte_device *rte_dev);
+
+static struct rte_vdpa_device *
+vdpa_find_device(const struct rte_vdpa_device *start, rte_vdpa_cmp_t cmp,
+		struct rte_device *rte_dev)
+{
+	struct rte_vdpa_device *dev;
+
+	rte_spinlock_lock(&vdpa_device_list_lock);
+	if (start == NULL)
+		dev = TAILQ_FIRST(&vdpa_device_list);
+	else
+		dev = TAILQ_NEXT(start, next);
+
+	while (dev != NULL) {
+		if (cmp(dev, rte_dev) == 0)
+			break;
+
+		dev = TAILQ_NEXT(dev, next);
+	}
+	rte_spinlock_unlock(&vdpa_device_list_lock);
+
+	return dev;
+}
+
+static void *
+vdpa_dev_iterate(const void *start,
+		const char *str,
+		const struct rte_dev_iterator *it)
+{
+	struct rte_vdpa_device *vdpa_dev = NULL;
+
+	RTE_SET_USED(str);
+
+	vdpa_dev = vdpa_find_device(start, vdpa_dev_match, it->device);
+
+	return vdpa_dev;
+}
+
+static struct rte_class rte_class_vdpa = {
+	.dev_iterate = vdpa_dev_iterate,
+};
+
+RTE_REGISTER_CLASS(vdpa, rte_class_vdpa);

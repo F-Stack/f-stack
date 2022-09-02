@@ -124,7 +124,6 @@ qat_comp_qp_setup(struct rte_compressdev *dev, uint16_t qp_id,
 	}
 
 	qat_qp_conf.hw = qp_hw_data;
-	qat_qp_conf.build_request = qat_comp_build_request;
 	qat_qp_conf.cookie_size = sizeof(struct qat_comp_op_cookie);
 	qat_qp_conf.nb_descriptors = max_inflight_ops;
 	qat_qp_conf.socket_id = socket_id;
@@ -145,6 +144,9 @@ qat_comp_qp_setup(struct rte_compressdev *dev, uint16_t qp_id,
 
 		struct qat_comp_op_cookie *cookie =
 				qp->op_cookies[i];
+
+		cookie->qp = qp;
+		cookie->cookie_index = i;
 
 		cookie->qat_sgl_src_d = rte_zmalloc_socket(NULL,
 					sizeof(struct qat_sgl) +
@@ -240,7 +242,7 @@ qat_comp_setup_inter_buffers(struct qat_comp_dev_private *comp_dev,
 	}
 
 	mz_start = (uint8_t *)memzone->addr;
-	mz_start_phys = memzone->phys_addr;
+	mz_start_phys = memzone->iova;
 	QAT_LOG(DEBUG, "Memzone %s: addr = %p, phys = 0x%"PRIx64
 			", size required %d, size created %zu",
 			inter_buff_mz_name, mz_start, mz_start_phys,
@@ -460,7 +462,7 @@ qat_comp_create_stream_pool(struct qat_comp_dev_private *comp_dev,
 		} else if (info.error) {
 			rte_mempool_obj_iter(mp, qat_comp_stream_destroy, NULL);
 			QAT_LOG(ERR,
-			     "Destoying mempool %s as at least one element failed initialisation",
+			     "Destroying mempool %s as at least one element failed initialisation",
 			     stream_pool_name);
 			rte_mempool_free(mp);
 			mp = NULL;
@@ -604,20 +606,6 @@ qat_comp_dev_info_get(struct rte_compressdev *dev,
 }
 
 static uint16_t
-qat_comp_pmd_enqueue_op_burst(void *qp, struct rte_comp_op **ops,
-		uint16_t nb_ops)
-{
-	return qat_enqueue_op_burst(qp, (void **)ops, nb_ops);
-}
-
-static uint16_t
-qat_comp_pmd_dequeue_op_burst(void *qp, struct rte_comp_op **ops,
-			      uint16_t nb_ops)
-{
-	return qat_dequeue_op_burst(qp, (void **)ops, nb_ops);
-}
-
-static uint16_t
 qat_comp_pmd_enq_deq_dummy_op_burst(void *qp __rte_unused,
 				    struct rte_comp_op **ops __rte_unused,
 				    uint16_t nb_ops __rte_unused)
@@ -646,7 +634,7 @@ static struct rte_compressdev_ops compress_qat_dummy_ops = {
 };
 
 static uint16_t
-qat_comp_pmd_dequeue_frst_op_burst(void *qp, struct rte_comp_op **ops,
+qat_comp_pmd_dequeue_first_op_burst(void *qp, struct rte_comp_op **ops,
 				   uint16_t nb_ops)
 {
 	uint16_t ret = qat_dequeue_op_burst(qp, (void **)ops, nb_ops);
@@ -667,7 +655,8 @@ qat_comp_pmd_dequeue_frst_op_burst(void *qp, struct rte_comp_op **ops,
 
 		} else {
 			tmp_qp->qat_dev->comp_dev->compressdev->dequeue_burst =
-					qat_comp_pmd_dequeue_op_burst;
+					(compressdev_dequeue_pkt_burst_t)
+					qat_dequeue_op_burst;
 		}
 	}
 	return ret;
@@ -742,8 +731,9 @@ qat_comp_dev_create(struct qat_pci_device *qat_pci_dev,
 
 	compressdev->dev_ops = &compress_qat_ops;
 
-	compressdev->enqueue_burst = qat_comp_pmd_enqueue_op_burst;
-	compressdev->dequeue_burst = qat_comp_pmd_dequeue_frst_op_burst;
+	compressdev->enqueue_burst = (compressdev_enqueue_pkt_burst_t)
+			qat_enqueue_comp_op_burst;
+	compressdev->dequeue_burst = qat_comp_pmd_dequeue_first_op_burst;
 
 	compressdev->feature_flags = RTE_COMPDEV_FF_HW_ACCELERATED;
 
@@ -801,8 +791,8 @@ qat_comp_dev_create(struct qat_pci_device *qat_pci_dev,
 					qat_dev_cmd_param[i].val;
 		i++;
 	}
-
 	qat_pci_dev->comp_dev = comp_dev;
+
 	QAT_LOG(DEBUG,
 		    "Created QAT COMP device %s as compressdev instance %d",
 			name, compressdev->data->dev_id);

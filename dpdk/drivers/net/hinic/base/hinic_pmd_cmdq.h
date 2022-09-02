@@ -9,7 +9,7 @@
 
 #define HINIC_SCMD_DATA_LEN		16
 
-/* hiovs PMD use 64, kernel l2nic use 4096 */
+/* PMD uses 64, kernel l2nic use 4096 */
 #define	HINIC_CMDQ_DEPTH		64
 
 #define	HINIC_CMDQ_BUF_SIZE		2048U

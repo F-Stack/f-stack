@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
  * Copyright (c) 1994 John S. Dyson
@@ -41,7 +43,6 @@
  * $FreeBSD$
  */
 
-
 #ifndef _MACHINE_VMPARAM_H_
 #define	_MACHINE_VMPARAM_H_ 1
 
@@ -52,7 +53,7 @@
 /*
  * Virtual memory related constants, all in bytes
  */
-#define	MAXTSIZ		(128UL*1024*1024)	/* max text size */
+#define	MAXTSIZ		(32768UL*1024*1024)	/* max text size */
 #ifndef DFLDSIZ
 #define	DFLDSIZ		(32768UL*1024*1024)	/* initial data size limit */
 #endif
@@ -69,12 +70,14 @@
 #define	SGROWSIZ	(128UL*1024)		/* amount to grow stack */
 #endif
 
+#ifndef FSTACK
 /*
  * We provide a machine specific single page allocator through the use
  * of the direct mapped segment.  This uses 2MB pages for reduced
  * TLB pressure.
  */
 #define	UMA_MD_SMALL_ALLOC
+#endif
 
 /*
  * The physical address space is densely populated.
@@ -108,7 +111,9 @@
 #define	VM_NFREELIST		3
 #define	VM_FREELIST_DEFAULT	0
 #define	VM_FREELIST_DMA32	1
-#define	VM_FREELIST_ISADMA	2
+#define	VM_FREELIST_LOWMEM	2
+
+#define VM_LOWMEM_BOUNDARY	(16 << 20)	/* 16MB ISA DMA limit */
 
 /*
  * Create the DMA32 free list only if the number of physical pages above
@@ -146,38 +151,59 @@
 #endif
 
 /*
+ * Kernel physical load address. Needs to be aligned at 2MB superpage
+ * boundary.
+ */
+#ifndef KERNLOAD
+#define	KERNLOAD	0x200000
+#endif
+
+/*
  * Virtual addresses of things.  Derived from the page directory and
  * page table indexes from pmap.h for precision.
  *
  * 0x0000000000000000 - 0x00007fffffffffff   user map
  * 0x0000800000000000 - 0xffff7fffffffffff   does not exist (hole)
  * 0xffff800000000000 - 0xffff804020100fff   recursive page table (512GB slot)
- * 0xffff804020101000 - 0xfffff7ffffffffff   unused
+ * 0xffff804020100fff - 0xffff807fffffffff   unused
+ * 0xffff808000000000 - 0xffff847fffffffff   large map (can be tuned up)
+ * 0xffff848000000000 - 0xfffff7ffffffffff   unused (large map extends there)
  * 0xfffff80000000000 - 0xfffffbffffffffff   4TB direct map
  * 0xfffffc0000000000 - 0xfffffdffffffffff   unused
  * 0xfffffe0000000000 - 0xffffffffffffffff   2TB kernel map
  *
  * Within the kernel map:
  *
+ * 0xfffffe0000000000                        vm_page_array
  * 0xffffffff80000000                        KERNBASE
  */
 
-#define	VM_MIN_KERNEL_ADDRESS	KVADDR(KPML4BASE, 0, 0, 0)
-#define	VM_MAX_KERNEL_ADDRESS	KVADDR(KPML4BASE + NKPML4E - 1, \
+#define	VM_MIN_KERNEL_ADDRESS	KV4ADDR(KPML4BASE, 0, 0, 0)
+#define	VM_MAX_KERNEL_ADDRESS	KV4ADDR(KPML4BASE + NKPML4E - 1, \
 					NPDPEPG-1, NPDEPG-1, NPTEPG-1)
 
-#define	DMAP_MIN_ADDRESS	KVADDR(DMPML4I, 0, 0, 0)
-#define	DMAP_MAX_ADDRESS	KVADDR(DMPML4I + NDMPML4E, 0, 0, 0)
+#define	DMAP_MIN_ADDRESS	KV4ADDR(DMPML4I, 0, 0, 0)
+#define	DMAP_MAX_ADDRESS	KV4ADDR(DMPML4I + NDMPML4E, 0, 0, 0)
 
-#define	KERNBASE		KVADDR(KPML4I, KPDPI, 0, 0)
+#define	LARGEMAP_MIN_ADDRESS	KV4ADDR(LMSPML4I, 0, 0, 0)
+#define	LARGEMAP_MAX_ADDRESS	KV4ADDR(LMEPML4I + 1, 0, 0, 0)
 
-#define	UPT_MAX_ADDRESS		KVADDR(PML4PML4I, PML4PML4I, PML4PML4I, PML4PML4I)
-#define	UPT_MIN_ADDRESS		KVADDR(PML4PML4I, 0, 0, 0)
+#define	KERNBASE		KV4ADDR(KPML4I, KPDPI, 0, 0)
 
-#define	VM_MAXUSER_ADDRESS	UVADDR(NUPML4E, 0, 0, 0)
+#define	UPT_MAX_ADDRESS		KV4ADDR(PML4PML4I, PML4PML4I, PML4PML4I, PML4PML4I)
+#define	UPT_MIN_ADDRESS		KV4ADDR(PML4PML4I, 0, 0, 0)
 
-#define	SHAREDPAGE		(VM_MAXUSER_ADDRESS - PAGE_SIZE)
-#define	USRSTACK		SHAREDPAGE
+#define	VM_MAXUSER_ADDRESS_LA57	UVADDR(NUPML5E, 0, 0, 0, 0)
+#define	VM_MAXUSER_ADDRESS_LA48	UVADDR(0, NUP4ML4E, 0, 0, 0)
+#define	VM_MAXUSER_ADDRESS	VM_MAXUSER_ADDRESS_LA57
+
+#define	SHAREDPAGE_LA57		(VM_MAXUSER_ADDRESS_LA57 - PAGE_SIZE)
+#define	SHAREDPAGE_LA48		(VM_MAXUSER_ADDRESS_LA48 - PAGE_SIZE)
+#define	USRSTACK_LA57		SHAREDPAGE_LA57
+#define	USRSTACK_LA48		SHAREDPAGE_LA48
+#define	USRSTACK		USRSTACK_LA48
+#define	PS_STRINGS_LA57		(USRSTACK_LA57 - sizeof(struct ps_strings))
+#define	PS_STRINGS_LA48		(USRSTACK_LA48 - sizeof(struct ps_strings))
 
 #define	VM_MAX_ADDRESS		UPT_MAX_ADDRESS
 #define	VM_MIN_ADDRESS		(0)
@@ -188,6 +214,7 @@
  * because the result is not actually accessed until later, but the early
  * vt fb startup needs to be reworked.
  */
+#define	PMAP_HAS_DMAP	1
 #define	PHYS_TO_DMAP(x)	({						\
 	KASSERT(dmaplimit == 0 || (x) < dmaplimit,			\
 	    ("physical address %#jx not covered by the DMAP",		\
@@ -200,6 +227,12 @@
 	    ("virtual address %#jx not covered by the DMAP",		\
 	    (uintmax_t)x));						\
 	(x) & ~DMAP_MIN_ADDRESS; })
+
+/*
+ * amd64 maps the page array into KVA so that it can be more easily
+ * allocated on the correct memory domains.
+ */
+#define	PMAP_HAS_PAGE_ARRAY	1
 
 /*
  * How many physical pages per kmem arena virtual page.
@@ -223,5 +256,21 @@
 #endif
 
 #define	ZERO_REGION_SIZE	(2 * 1024 * 1024)	/* 2MB */
+
+/*
+ * Use a fairly large batch size since we expect amd64 systems to have lots of
+ * memory.
+ */
+#define	VM_BATCHQUEUE_SIZE	31
+
+/*
+ * The pmap can create non-transparent large page mappings.
+ */
+#define	PMAP_HAS_LARGEPAGES	1
+
+/*
+ * Need a page dump array for minidump.
+ */
+#define MINIDUMP_PAGE_TRACKING	1
 
 #endif /* _MACHINE_VMPARAM_H_ */

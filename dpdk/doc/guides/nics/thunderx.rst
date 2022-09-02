@@ -4,7 +4,7 @@
 ThunderX NICVF Poll Mode Driver
 ===============================
 
-The ThunderX NICVF PMD (**librte_pmd_thunderx_nicvf**) provides poll mode driver
+The ThunderX NICVF PMD (**librte_net_thunderx**) provides poll mode driver
 support for the inbuilt NIC found in the **Cavium ThunderX** SoC family
 as well as their virtual functions (VF) in SR-IOV context.
 
@@ -25,6 +25,7 @@ Features of the ThunderX PMD are:
 - Port hardware statistics
 - Jumbo frames
 - Link state information
+- Setting up link state.
 - Scattered and gather for TX and RX
 - VLAN stripping
 - SR-IOV VF
@@ -42,26 +43,6 @@ Prerequisites
 -------------
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_PMD`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_thunderx_nicvf`` driver.
-
-- ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_RX`` (default ``n``)
-
-  Toggle asserts of receive fast path.
-
-- ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_TX`` (default ``n``)
-
-  Toggle asserts of transmit fast path.
 
 Driver compilation and testing
 ------------------------------
@@ -69,8 +50,7 @@ Driver compilation and testing
 Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
 for details.
 
-To compile the ThunderX NICVF PMD for Linux arm64 gcc,
-use arm64-thunderx-linux-gcc as target.
+Use config/arm/arm64-thunderx-linux-gcc as a meson cross-file when cross-compiling.
 
 Linux
 -----
@@ -155,7 +135,7 @@ This section provides instructions to configure SR-IOV with Linux OS.
       -netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup_thunder \
       -device virtio-net-device,netdev=net0 \
       -serial stdio \
-      -mem-path /dev/huge
+      -mem-path /dev/hugepages
 
 #. Enable **VFIO-NOIOMMU** mode (optional):
 
@@ -177,13 +157,13 @@ This section provides instructions to configure SR-IOV with Linux OS.
 
    .. code-block:: console
 
-      ./arm64-thunderx-linux-gcc/app/testpmd -l 0-3 -n 4 -w 0002:01:00.2 \
+      ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 -a 0002:01:00.2 \
         -- -i --no-flush-rx \
         --port-topology=loop
 
       ...
 
-      PMD: rte_nicvf_pmd_init(): librte_pmd_thunderx nicvf version 1.0
+      PMD: rte_nicvf_pmd_init(): librte_net_thunderx nicvf version 1.0
 
       ...
       EAL:   probe driver: 177d:11 rte_nicvf_pmd
@@ -242,6 +222,12 @@ driver' list, secondary VFs are on the remaining on the remaining part of the li
       Depending on the hardware used, the kernel driver sets a threshold ``vf_id``. VFs that try to attached with an id below or equal to
       this boundary are considered primary VFs. VFs that try to attach with an id above this boundary are considered secondary VFs.
 
+LBK HW Access
+~~~~~~~~~~~~~
+
+Loopback HW Unit (LBK) receives packets from NIC-RX and sends packets back to NIC-TX.
+The loopback block has N channels and contains data buffering that is shared across
+all channels. Four primary VFs are reserved as loopback ports.
 
 Example device binding
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -263,36 +249,40 @@ on a non-NUMA machine.
 
       Network devices using kernel driver
       ===================================
-      0000:01:10.0 'Device a026' if= drv=thunder-BGX unused=vfio-pci,uio_pci_generic
-      0000:01:10.1 'Device a026' if= drv=thunder-BGX unused=vfio-pci,uio_pci_generic
-      0002:01:00.0 'Device a01e' if= drv=thunder-nic unused=vfio-pci,uio_pci_generic
-      0002:01:00.1 'Device 0011' if=eth0 drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:00.2 'Device 0011' if=eth1 drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:00.3 'Device 0011' if=eth2 drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:00.4 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:00.5 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:00.6 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:00.7 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.0 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.1 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.2 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.3 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.4 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.5 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.6 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:01.7 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:02.0 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:02.1 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
-      0002:01:02.2 'Device 0011' if= drv=thunder-nicvf unused=vfio-pci,uio_pci_generic
+      0000:01:10.0 'THUNDERX BGX (Common Ethernet Interface) a026' if= drv=thunder-BGX unused=vfio-pci
+      0000:01:10.1 'THUNDERX BGX (Common Ethernet Interface) a026' if= drv=thunder-BGX unused=vfio-pci
+      0001:01:00.0 'THUNDERX Network Interface Controller a01e' if= drv=thunder-nic unused=vfio-pci
+      0001:01:00.1 'Device a034' if=eth0 drv=thunder-nicvf unused=vfio-pci
+      0001:01:00.2 'Device a034' if=eth1 drv=thunder-nicvf unused=vfio-pci
+      0001:01:00.3 'Device a034' if=eth2 drv=thunder-nicvf unused=vfio-pci
+      0001:01:00.4 'Device a034' if=eth3 drv=thunder-nicvf unused=vfio-pci
+      0001:01:00.5 'Device a034' if=eth4 drv=thunder-nicvf unused=vfio-pci
+      0001:01:00.6 'Device a034' if=lbk0 drv=thunder-nicvf unused=vfio-pci
+      0001:01:00.7 'Device a034' if=lbk1 drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.0 'Device a034' if=lbk2 drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.1 'Device a034' if=lbk3 drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.2 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.3 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.4 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.5 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.6 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:01.7 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:02.0 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:02.1 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
+      0001:01:02.2 'Device a034' if= drv=thunder-nicvf unused=vfio-pci
 
       Other network devices
       =====================
       0002:00:03.0 'Device a01f' unused=vfio-pci,uio_pci_generic
 
+   .. note::
+
+      Here total no of primary VFs = 5 (variable, depends on no of ethernet ports present) + 4 (fixed, loopback ports).
+      Ethernet ports are indicated as `if=eth0` while loopback ports as `if=lbk0`.
 
 We want to bind two physical interfaces with 24 queues each device, we attach two primary VFs
-and four secondary queues. In our example we choose two 10G interfaces eth1 (0002:01:00.2) and eth2 (0002:01:00.3).
-We will choose four secondary queue sets from the ending of the list (0002:01:01.7-0002:01:02.2).
+and four secondary VFs. In our example we choose two 10G interfaces eth1 (0002:01:00.2) and eth2 (0002:01:00.3).
+We will choose four secondary queue sets from the ending of the list (0001:01:01.2-0002:01:02.2).
 
 
 #. Bind two primary VFs to the ``vfio-pci`` driver:
@@ -313,6 +303,67 @@ We will choose four secondary queue sets from the ending of the list (0002:01:01
 
 The nicvf thunderx driver will make use of attached secondary VFs automatically during the interface configuration stage.
 
+Thunder-nic VF's
+~~~~~~~~~~~~~~~~
+
+Use sysfs to distinguish thunder-nic primary VFs and secondary VFs.
+   .. code-block:: console
+
+      ls -l /sys/bus/pci/drivers/thunder-nic/
+      total 0
+      drwxr-xr-x  2 root root     0 Jan 22 11:19 ./
+      drwxr-xr-x 86 root root     0 Jan 22 11:07 ../
+      lrwxrwxrwx  1 root root     0 Jan 22 11:19 0001:01:00.0 -> '../../../../devices/platform/soc@0/849000000000.pci/pci0001:00/0001:00:10.0/0001:01:00.0'/
+
+   .. code-block:: console
+
+      cat /sys/bus/pci/drivers/thunder-nic/0001\:01\:00.0/sriov_sqs_assignment
+      12
+      0 0001:01:00.1 vfio-pci +: 12 13
+      1 0001:01:00.2 thunder-nicvf -:
+      2 0001:01:00.3 thunder-nicvf -:
+      3 0001:01:00.4 thunder-nicvf -:
+      4 0001:01:00.5 thunder-nicvf -:
+      5 0001:01:00.6 thunder-nicvf -:
+      6 0001:01:00.7 thunder-nicvf -:
+      7 0001:01:01.0 thunder-nicvf -:
+      8 0001:01:01.1 thunder-nicvf -:
+      9 0001:01:01.2 thunder-nicvf -:
+      10 0001:01:01.3 thunder-nicvf -:
+      11 0001:01:01.4 thunder-nicvf -:
+      12 0001:01:01.5 vfio-pci: 0
+      13 0001:01:01.6 vfio-pci: 0
+      14 0001:01:01.7 thunder-nicvf: 255
+      15 0001:01:02.0 thunder-nicvf: 255
+      16 0001:01:02.1 thunder-nicvf: 255
+      17 0001:01:02.2 thunder-nicvf: 255
+      18 0001:01:02.3 thunder-nicvf: 255
+      19 0001:01:02.4 thunder-nicvf: 255
+      20 0001:01:02.5 thunder-nicvf: 255
+      21 0001:01:02.6 thunder-nicvf: 255
+      22 0001:01:02.7 thunder-nicvf: 255
+      23 0001:01:03.0 thunder-nicvf: 255
+      24 0001:01:03.1 thunder-nicvf: 255
+      25 0001:01:03.2 thunder-nicvf: 255
+      26 0001:01:03.3 thunder-nicvf: 255
+      27 0001:01:03.4 thunder-nicvf: 255
+      28 0001:01:03.5 thunder-nicvf: 255
+      29 0001:01:03.6 thunder-nicvf: 255
+      30 0001:01:03.7 thunder-nicvf: 255
+      31 0001:01:04.0 thunder-nicvf: 255
+
+Every column that ends with 'thunder-nicvf: number' can be used as secondary VF.
+In printout above all entres after '14 0001:01:01.7 thunder-nicvf: 255' can be used as secondary VF.
+
+Debugging Options
+-----------------
+
+EAL command option to change  log level
+   .. code-block:: console
+
+      --log-level=pmd.net.thunderx.driver:info
+      or
+      --log-level=pmd.net.thunderx.driver,7
 
 Module params
 --------------
@@ -326,7 +377,7 @@ This scheme is useful when application would like to insert vlan header without 
 Example:
    .. code-block:: console
 
-      -w 0002:01:00.2,skip_data_bytes=8
+      -a 0002:01:00.2,skip_data_bytes=8
 
 Limitations
 -----------

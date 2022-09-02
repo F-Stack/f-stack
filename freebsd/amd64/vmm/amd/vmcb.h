@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Anish Gupta (akgupt3@gmail.com)
  * All rights reserved.
  *
@@ -28,8 +30,6 @@
 
 #ifndef _VMCB_H_
 #define	_VMCB_H_
-
-struct svm_softc;
 
 #define BIT(n)			(1ULL << n)
 
@@ -71,8 +71,8 @@ struct svm_softc;
 #define	VMCB_INTCPT_INVD		BIT(22)
 #define	VMCB_INTCPT_PAUSE		BIT(23)
 #define	VMCB_INTCPT_HLT			BIT(24)
-#define	VMCB_INTCPT_INVPG		BIT(25)
-#define	VMCB_INTCPT_INVPGA		BIT(26)
+#define	VMCB_INTCPT_INVLPG		BIT(25)
+#define	VMCB_INTCPT_INVLPGA		BIT(26)
 #define	VMCB_INTCPT_IO			BIT(27)
 #define	VMCB_INTCPT_MSR			BIT(28)
 #define	VMCB_INTCPT_TASK_SWITCH		BIT(29)
@@ -134,12 +134,21 @@ struct svm_softc;
 #define	VMCB_EXIT_POPF			0x71
 #define	VMCB_EXIT_CPUID			0x72
 #define	VMCB_EXIT_IRET			0x74
+#define	VMCB_EXIT_INVD			0x76
 #define	VMCB_EXIT_PAUSE			0x77
 #define	VMCB_EXIT_HLT			0x78
+#define	VMCB_EXIT_INVLPGA		0x7A
 #define	VMCB_EXIT_IO			0x7B
 #define	VMCB_EXIT_MSR			0x7C
 #define	VMCB_EXIT_SHUTDOWN		0x7F
+#define	VMCB_EXIT_VMRUN			0x80
+#define	VMCB_EXIT_VMMCALL		0x81
+#define	VMCB_EXIT_VMLOAD		0x82
 #define	VMCB_EXIT_VMSAVE		0x83
+#define	VMCB_EXIT_STGI			0x84
+#define	VMCB_EXIT_CLGI			0x85
+#define	VMCB_EXIT_SKINIT		0x86
+#define	VMCB_EXIT_ICEBP			0x88
 #define	VMCB_EXIT_MONITOR		0x8A
 #define	VMCB_EXIT_MWAIT			0x8B
 #define	VMCB_EXIT_NPF			0x400
@@ -207,6 +216,10 @@ struct svm_softc;
 #define	VMCB_ACCESS_OFFSET(v)           ((v) & 0xFFF)
 
 #ifdef _KERNEL
+
+struct svm_softc;
+struct vm_snapshot_meta;
+
 /* VMCB save state area segment format */
 struct vmcb_segment {
 	uint16_t	selector;
@@ -246,8 +259,8 @@ struct vmcb_ctrl {
 	uint8_t :3;
 	uint8_t	v_intr_masking:1; /* Guest and host sharing of RFLAGS. */
 	uint8_t	:7;
-	uint8_t	v_intr_vector;	/* 0x65: Vector for virtual interrupt. */
-	uint8_t pad3[3];	/* Bit64-40 Reserved. */
+	uint8_t	v_intr_vector;	/* 0x64: Vector for virtual interrupt. */
+	uint8_t pad3[3];	/* 0x65-0x67 Reserved. */
 	uint64_t intr_shadow:1; /* 0x68: Interrupt shadow, section15.2.1 APM2 */
 	uint64_t :63;
 	uint64_t exitcode;	/* 0x70, Exitcode */
@@ -329,6 +342,14 @@ int	vmcb_write(struct svm_softc *sc, int vcpu, int ident, uint64_t val);
 int	vmcb_setdesc(void *arg, int vcpu, int ident, struct seg_desc *desc);
 int	vmcb_getdesc(void *arg, int vcpu, int ident, struct seg_desc *desc);
 int	vmcb_seg(struct vmcb *vmcb, int ident, struct vmcb_segment *seg);
+#ifdef BHYVE_SNAPSHOT
+int	vmcb_getany(struct svm_softc *sc, int vcpu, int ident, uint64_t *val);
+int	vmcb_setany(struct svm_softc *sc, int vcpu, int ident, uint64_t val);
+int	vmcb_snapshot_desc(void *arg, int vcpu, int reg,
+			   struct vm_snapshot_meta *meta);
+int	vmcb_snapshot_any(struct svm_softc *sc, int vcpu, int ident,
+			  struct vm_snapshot_meta *meta);
+#endif
 
 #endif /* _KERNEL */
 #endif /* _VMCB_H_ */

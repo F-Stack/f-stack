@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -51,6 +51,9 @@
 #undef mtx_destroy
 #undef mtx_owned
 
+#undef DROP_GIANT
+#undef PICKUP_GIANT
+
 #define DO_NOTHING do {} while(0)
 
 #define __mtx_lock(mp, tid, opts, file, line) DO_NOTHING
@@ -80,5 +83,8 @@ void ff_mtx_init(struct lock_object *lo, const char *name, const char *type, int
 #define mtx_destroy(m) DO_NOTHING
 
 #define mtx_owned(m)    (1)
+
+#define DROP_GIANT()    DO_NOTHING
+#define PICKUP_GIANT()  DO_NOTHING
 
 #endif    /* _FSTACK_SYS_MUTEX_H_ */

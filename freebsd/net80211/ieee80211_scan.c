@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002-2008 Sam Leffler, Errno Consulting
  * All rights reserved.
  *
@@ -37,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/condvar.h>
- 
+
 #include <sys/socket.h>
 
 #include <net/if.h>
@@ -68,6 +70,7 @@ __FBSDID("$FreeBSD$");
 #define	ROAM_RATE_HALF_DEFAULT		2*6	/* half-width 11a/g bss */
 #define	ROAM_RATE_QUARTER_DEFAULT	2*3	/* quarter-width 11a/g bss */
 #define	ROAM_MCS_11N_DEFAULT		(1 | IEEE80211_RATE_MCS) /* 11n bss */
+#define	ROAM_MCS_11AC_DEFAULT		(1 | IEEE80211_RATE_MCS) /* 11ac bss; XXX not used yet */
 
 void
 ieee80211_scan_attach(struct ieee80211com *ic)
@@ -116,19 +119,32 @@ static const struct ieee80211_roamparam defroam[IEEE80211_MODE_MAX] = {
 				    .rate = ROAM_MCS_11N_DEFAULT },
 	[IEEE80211_MODE_11NG]	= { .rssi = ROAM_RSSI_11B_DEFAULT,
 				    .rate = ROAM_MCS_11N_DEFAULT },
+	[IEEE80211_MODE_VHT_2GHZ]	= { .rssi = ROAM_RSSI_11B_DEFAULT,
+				    .rate = ROAM_MCS_11AC_DEFAULT },
+	[IEEE80211_MODE_VHT_5GHZ]	= { .rssi = ROAM_RSSI_11A_DEFAULT,
+				    .rate = ROAM_MCS_11AC_DEFAULT },
+
 };
 
 void
 ieee80211_scan_vattach(struct ieee80211vap *vap)
 {
 	struct ieee80211com *ic = vap->iv_ic;
+	int m;
 
 	vap->iv_bgscanidle = (IEEE80211_BGSCAN_IDLE_DEFAULT*1000)/hz;
 	vap->iv_bgscanintvl = IEEE80211_BGSCAN_INTVAL_DEFAULT*hz;
 	vap->iv_scanvalid = IEEE80211_SCAN_VALID_DEFAULT*hz;
 
 	vap->iv_roaming = IEEE80211_ROAMING_AUTO;
-	memcpy(vap->iv_roamparms, defroam, sizeof(defroam));
+
+	memset(vap->iv_roamparms, 0, sizeof(vap->iv_roamparms));
+	for (m = IEEE80211_MODE_AUTO + 1; m < IEEE80211_MODE_MAX; m++) {
+		if (isclr(ic->ic_modecaps, m))
+			continue;
+
+		memcpy(&vap->iv_roamparms[m], &defroam[m], sizeof(defroam[m]));
+	}
 
 	ic->ic_scan_methods->sc_vattach(vap);
 }
@@ -286,7 +302,7 @@ ieee80211_scan_dump(struct ieee80211_scan_state *ss)
 
 	if_printf(vap->iv_ifp, "scan set ");
 	ieee80211_scan_dump_channels(ss);
-	printf(" dwell min %lums max %lums\n",
+	printf(" dwell min %ums max %ums\n",
 	    ticks_to_msecs(ss->ss_mindwell), ticks_to_msecs(ss->ss_maxdwell));
 }
 #endif /* IEEE80211_DEBUG */
@@ -443,6 +459,9 @@ ieee80211_cancel_scan(struct ieee80211vap *vap)
 
 /*
  * Cancel any scan currently going on.
+ *
+ * This is called during normal 802.11 data path to cancel
+ * a scan so a newly arrived normal data packet can be sent.
  */
 void
 ieee80211_cancel_anyscan(struct ieee80211vap *vap)

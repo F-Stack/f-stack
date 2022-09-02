@@ -119,9 +119,6 @@ struct qat_pci_device *
 qat_pci_device_allocate(struct rte_pci_device *pci_dev,
 		struct qat_dev_cmd_param *qat_dev_cmd_param);
 
-int
-qat_pci_device_release(struct rte_pci_device *pci_dev);
-
 struct qat_pci_device *
 qat_get_qat_dev_from_pci_dev(struct rte_pci_device *pci_dev);
 

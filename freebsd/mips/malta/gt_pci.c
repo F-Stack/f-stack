@@ -1,6 +1,8 @@
 /*	$NetBSD: gt_pci.c,v 1.4 2003/07/15 00:24:54 lukem Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2001, 2002 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -229,7 +231,7 @@ gt_pci_intr(void *v)
 
 		event = sc->sc_eventstab[irq];
 
-		if (!event || TAILQ_EMPTY(&event->ie_handlers))
+		if (!event || CK_SLIST_EMPTY(&event->ie_handlers))
 			continue;
 
 		/* TODO: frame instead of NULL? */
@@ -314,7 +316,6 @@ gt_pci_attach(device_t dev)
 	sc->sc_ioh_icu1 = MIPS_PHYS_TO_KSEG1(sc->sc_io + IO_ICU1);
 	sc->sc_ioh_icu2 = MIPS_PHYS_TO_KSEG1(sc->sc_io + IO_ICU2);
 #endif	
-
 
 	/* All interrupts default to "masked off". */
 	sc->sc_imask = 0xffff;
@@ -678,7 +679,7 @@ gt_pci_activate_resource(device_t bus, device_t child, int type, int rid,
 {
 	bus_space_handle_t p;
 	int error;
-	
+
 	if ((type == SYS_RES_MEMORY) || (type == SYS_RES_IOPORT)) {
 		error = bus_space_map(rman_get_bustag(r),
 		    rman_get_bushandle(r), rman_get_size(r), 0, &p);
@@ -758,6 +759,7 @@ static device_method_t gt_pci_methods[] = {
 	DEVMETHOD(pcib_read_config,	gt_pci_read_config),
 	DEVMETHOD(pcib_write_config,	gt_pci_write_config),
 	DEVMETHOD(pcib_route_interrupt,	gt_pci_route_interrupt),
+	DEVMETHOD(pcib_request_feature,	pcib_request_feature_allow),
 
 	DEVMETHOD_END
 };

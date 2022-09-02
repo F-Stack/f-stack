@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -41,7 +43,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -68,7 +70,6 @@ __FBSDID("$FreeBSD$");
 #include "opt_ipsec.h"
 #include "opt_ipstealth.h"
 #include "opt_sctp.h"
-#include "opt_mpath.h"
 #include "opt_route.h"
 
 #include <sys/param.h>
@@ -88,9 +89,6 @@ __FBSDID("$FreeBSD$");
 #include <net/if_var.h>
 #include <net/radix.h>
 #include <net/route.h>
-#ifdef RADIX_MPATH
-#include <net/radix_mpath.h>
-#endif
 
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
@@ -120,11 +118,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet/sctp_var.h>
 #include <netinet6/sctp6_var.h>
 #endif /* SCTP */
-
-#ifdef IPSEC
-#include <netipsec/ipsec.h>
-#include <netipsec/ipsec6.h>
-#endif /* IPSEC */
 
 #include <netinet6/ip6protosw.h>
 
@@ -174,15 +167,15 @@ struct protosw inet6sw[] = {
 	.pr_type =		SOCK_STREAM,
 	.pr_domain =		&inet6domain,
 	.pr_protocol =		IPPROTO_TCP,
-	.pr_flags =		PR_CONNREQUIRED|PR_WANTRCVD|PR_LISTEN,
+	.pr_flags =		PR_CONNREQUIRED|PR_IMPLOPCL|PR_WANTRCVD|PR_LISTEN,
 	.pr_input =		tcp6_input,
 	.pr_ctlinput =		tcp6_ctlinput,
 	.pr_ctloutput =		tcp_ctloutput,
-#ifndef INET	/* don't call initialization and timeout routines twice */
+#ifndef INET	/* don't call initialization, timeout, and drain routines twice */
 	.pr_init =		tcp_init,
 	.pr_slowtimo =		tcp_slowtimo,
-#endif
 	.pr_drain =		tcp_drain,
+#endif
 	.pr_usrreqs =		&tcp6_usrreqs,
 },
 #ifdef SCTP
@@ -190,12 +183,12 @@ struct protosw inet6sw[] = {
 	.pr_type =		SOCK_SEQPACKET,
 	.pr_domain =		&inet6domain,
 	.pr_protocol =		IPPROTO_SCTP,
-	.pr_flags =		PR_WANTRCVD,
+	.pr_flags =		PR_WANTRCVD|PR_LASTHDR,
 	.pr_input =		sctp6_input,
 	.pr_ctlinput =		sctp6_ctlinput,
 	.pr_ctloutput =	sctp_ctloutput,
+#ifndef INET	/* Do not call initialization and drain routines twice. */
 	.pr_drain =		sctp_drain,
-#ifndef INET	/* Do not call initialization twice. */
 	.pr_init =		sctp_init,
 #endif
 	.pr_usrreqs =		&sctp6_usrreqs
@@ -204,11 +197,11 @@ struct protosw inet6sw[] = {
 	.pr_type =		SOCK_STREAM,
 	.pr_domain =		&inet6domain,
 	.pr_protocol =		IPPROTO_SCTP,
-	.pr_flags =		PR_CONNREQUIRED|PR_WANTRCVD,
+	.pr_flags =		PR_CONNREQUIRED|PR_WANTRCVD|PR_LASTHDR,
 	.pr_input =		sctp6_input,
 	.pr_ctlinput =		sctp6_ctlinput,
 	.pr_ctloutput =		sctp_ctloutput,
-	.pr_drain =		sctp_drain,
+	.pr_drain =		NULL, /* Covered by the SOCK_SEQPACKET entry. */
 	.pr_usrreqs =		&sctp6_usrreqs
 },
 #endif /* SCTP */
@@ -276,33 +269,6 @@ struct protosw inet6sw[] = {
 	.pr_input =		frag6_input,
 	.pr_usrreqs =		&nousrreqs
 },
-#ifdef IPSEC
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inet6domain,
-	.pr_protocol =		IPPROTO_AH,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		ipsec6_common_input,
-	.pr_usrreqs =		&nousrreqs,
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inet6domain,
-	.pr_protocol =		IPPROTO_ESP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-        .pr_input =		ipsec6_common_input,
-	.pr_ctlinput =		esp6_ctlinput,
-	.pr_usrreqs =		&nousrreqs,
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inet6domain,
-	.pr_protocol =		IPPROTO_IPCOMP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-        .pr_input =		ipsec6_common_input,
-	.pr_usrreqs =		&nousrreqs,
-},
-#endif /* IPSEC */
 #ifdef INET
 {
 	.pr_type =		SOCK_RAW,
@@ -312,7 +278,6 @@ struct protosw inet6sw[] = {
 	.pr_input =		encap6_input,
 	.pr_output =		rip6_output,
 	.pr_ctloutput =		rip6_ctloutput,
-	.pr_init =		encap_init,
 	.pr_usrreqs =		&rip6_usrreqs
 },
 #endif /* INET */
@@ -324,7 +289,6 @@ struct protosw inet6sw[] = {
 	.pr_input =		encap6_input,
 	.pr_output =		rip6_output,
 	.pr_ctloutput =		rip6_ctloutput,
-	.pr_init =		encap_init,
 	.pr_usrreqs =		&rip6_usrreqs
 },
 {
@@ -335,7 +299,6 @@ struct protosw inet6sw[] = {
 	.pr_input =		encap6_input,
 	.pr_output =		rip6_output,
 	.pr_ctloutput =		rip6_ctloutput,
-	.pr_init =		encap_init,
 	.pr_usrreqs =		&rip6_usrreqs
 },
 {
@@ -369,21 +332,12 @@ IP6PROTOSPACER,
 },
 };
 
-extern int in6_inithead(void **, int);
-#ifdef VIMAGE
-extern int in6_detachhead(void **, int);
-#endif
-
 struct domain inet6domain = {
 	.dom_family =		AF_INET6,
 	.dom_name =		"internet6",
 	.dom_protosw =		(struct protosw *)inet6sw,
 	.dom_protoswNPROTOSW =	(struct protosw *)&inet6sw[nitems(inet6sw)],
-#ifdef RADIX_MPATH
-	.dom_rtattach =		rn6_mpath_inithead,
-#else
 	.dom_rtattach =		in6_inithead,
-#endif
 #ifdef VIMAGE
 	.dom_rtdetach =		in6_detachhead,
 #endif
@@ -417,10 +371,6 @@ VNET_DEFINE(int, ip6_accept_rtadv) = 0;
 VNET_DEFINE(int, ip6_no_radr) = 0;
 VNET_DEFINE(int, ip6_norbit_raif) = 0;
 VNET_DEFINE(int, ip6_rfc6204w3) = 0;
-VNET_DEFINE(int, ip6_maxfragpackets);	/* initialized in frag6.c:frag6_init() */
-int ip6_maxfrags;		/* initialized in frag6.c:frag6_init() */
-VNET_DEFINE(int, ip6_maxfragbucketsize);/* initialized in frag6.c:frag6_init() */
-VNET_DEFINE(int, ip6_maxfragsperpacket); /* initialized in frag6.c:frag6_init() */
 VNET_DEFINE(int, ip6_log_interval) = 5;
 VNET_DEFINE(int, ip6_hdrnestlimit) = 15;/* How many header options will we
 					 * process? */
@@ -461,19 +411,25 @@ VNET_DEFINE(int, icmp6_nodeinfo_oldmcprefix) = 1;
 /*
  * sysctl related items.
  */
-SYSCTL_NODE(_net,	PF_INET6,	inet6,	CTLFLAG_RW,	0,
-	"Internet6 Family");
+SYSCTL_NODE(_net, PF_INET6, inet6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Internet6 Family");
 
 /* net.inet6 */
-SYSCTL_NODE(_net_inet6,	IPPROTO_IPV6,	ip6,	CTLFLAG_RW, 0,	"IP6");
-SYSCTL_NODE(_net_inet6,	IPPROTO_ICMPV6,	icmp6,	CTLFLAG_RW, 0,	"ICMP6");
-SYSCTL_NODE(_net_inet6,	IPPROTO_UDP,	udp6,	CTLFLAG_RW, 0,	"UDP6");
-SYSCTL_NODE(_net_inet6,	IPPROTO_TCP,	tcp6,	CTLFLAG_RW, 0,	"TCP6");
-#ifdef SCTP
-SYSCTL_NODE(_net_inet6,	IPPROTO_SCTP,	sctp6,	CTLFLAG_RW, 0,	"SCTP6");
+SYSCTL_NODE(_net_inet6,	IPPROTO_IPV6, ip6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "IP6");
+SYSCTL_NODE(_net_inet6,	IPPROTO_ICMPV6, icmp6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "ICMP6");
+SYSCTL_NODE(_net_inet6,	IPPROTO_UDP, udp6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "UDP6");
+SYSCTL_NODE(_net_inet6,	IPPROTO_TCP, tcp6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "TCP6");
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+SYSCTL_NODE(_net_inet6,	IPPROTO_SCTP, sctp6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "SCTP6");
 #endif
-#ifdef IPSEC
-SYSCTL_NODE(_net_inet6,	IPPROTO_ESP,	ipsec6,	CTLFLAG_RW, 0,	"IPSEC6");
+#if defined(IPSEC) || defined(IPSEC_SUPPORT)
+SYSCTL_NODE(_net_inet6,	IPPROTO_ESP, ipsec6, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "IPSEC6");
 #endif /* IPSEC */
 
 /* net.inet6.ip6 */
@@ -507,38 +463,18 @@ sysctl_ip6_tempvltime(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-static int
-sysctl_ip6_maxfragpackets(SYSCTL_HANDLER_ARGS)
-{
-	int error, val;
-
-	val = V_ip6_maxfragpackets;
-	error = sysctl_handle_int(oidp, &val, 0, req);
-	if (error != 0 || !req->newptr)
-		return (error);
-	V_ip6_maxfragpackets = val;
-	frag6_set_bucketsize();
-	return (0);
-}
-
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_FORWARDING, forwarding,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_forwarding), 0,
-	"Enable IPv6 forwarding between interfaces");
+	"Enable forwarding of IPv6 packets between interfaces");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_SENDREDIRECTS, redirect,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_sendredirects), 0,
-	"Send a redirect message when forwarding back to a source link");
+	"Send ICMPv6 redirects for unforwardable IPv6 packets");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_DEFHLIM, hlim,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_defhlim), 0,
-	"Default hop limit");
+	"Default hop limit to use for outgoing IPv6 packets");
 SYSCTL_VNET_PCPUSTAT(_net_inet6_ip6, IPV6CTL_STATS, stats, struct ip6stat,
 	ip6stat,
 	"IP6 statistics (struct ip6stat, netinet6/ip6_var.h)");
-SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_MAXFRAGPACKETS, maxfragpackets,
-	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW, NULL, 0,
-	sysctl_ip6_maxfragpackets, "I",
-	"Default maximum number of outstanding fragmented IPv6 packets. "
-	"A value of 0 means no fragmented packets will be accepted, while a "
-	"a value of -1 means no limit");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_ACCEPT_RTADV, accept_rtadv,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_accept_rtadv), 0,
 	"Default value of per-interface flag for accepting ICMPv6 RA messages");
@@ -560,7 +496,8 @@ SYSCTL_INT(_net_inet6_ip6, IPV6CTL_LOG_INTERVAL, log_interval,
 	"Frequency in seconds at which to log IPv6 forwarding errors");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_HDRNESTLIMIT, hdrnestlimit,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_hdrnestlimit), 0,
-	"Maximum allowed number of nested protocol headers");
+	"Default maximum number of IPv6 extension headers permitted on "
+	"incoming IPv6 packets, 0 for no artificial limit");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_DAD_COUNT, dad_count,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_dad_count), 0,
 	"Number of ICMPv6 NS messages sent during duplicate address detection");
@@ -569,7 +506,8 @@ SYSCTL_INT(_net_inet6_ip6, IPV6CTL_AUTO_FLOWLABEL, auto_flowlabel,
 	"Provide an IPv6 flowlabel in outbound packets");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_DEFMCASTHLIM, defmcasthlim,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_defmcasthlim), 0,
-	"Default hop limit for multicast packets");
+	"Default hop limit for IPv6 multicast packets originating from this "
+	"node");
 SYSCTL_STRING(_net_inet6_ip6, IPV6CTL_KAME_VERSION, kame_version,
 	CTLFLAG_RD, __KAME_VERSION, 0,
 	"KAME version string");
@@ -583,11 +521,11 @@ SYSCTL_INT(_net_inet6_ip6, IPV6CTL_USETEMPADDR, use_tempaddr,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_use_tempaddr), 0,
 	"Create RFC3041 temporary addresses for autoconfigured addresses");
 SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_TEMPPLTIME, temppltime,
-	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW,
+	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
 	NULL, 0, sysctl_ip6_temppltime, "I",
 	"Maximum preferred lifetime for temporary addresses");
 SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_TEMPVLTIME, tempvltime,
-	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW,
+	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
 	NULL, 0, sysctl_ip6_tempvltime, "I",
 	"Maximum valid lifetime for temporary addresses");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_V6ONLY, v6only,
@@ -606,17 +544,6 @@ SYSCTL_INT(_net_inet6_ip6, IPV6CTL_PREFER_TEMPADDR, prefer_tempaddr,
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_USE_DEFAULTZONE, use_defaultzone,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_use_defzone), 0,
 	"Use the default scope zone when none is specified");
-SYSCTL_INT(_net_inet6_ip6, IPV6CTL_MAXFRAGS, maxfrags,
-	CTLFLAG_RW, &ip6_maxfrags, 0,
-	"Maximum allowed number of outstanding IPv6 packet fragments. "
-	"A value of 0 means no fragmented packets will be accepted, while a "
-	"a value of -1 means no limit");
-SYSCTL_INT(_net_inet6_ip6, IPV6CTL_MAXFRAGBUCKETSIZE, maxfragbucketsize,
-	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_maxfragbucketsize), 0,
-	"Maximum number of reassembly queues per hash bucket");
-SYSCTL_INT(_net_inet6_ip6, IPV6CTL_MAXFRAGSPERPACKET, maxfragsperpacket,
-	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_maxfragsperpacket), 0,
-	"Maximum allowed number of fragments per packet");
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_MCAST_PMTU, mcast_pmtu,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip6_mcast_pmtu), 0,
 	"Enable path MTU discovery for multicast packets");
@@ -632,7 +559,7 @@ SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_REDIRACCEPT, rediraccept,
 	"Accept ICMPv6 redirect messages");
 SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_REDIRTIMEOUT, redirtimeout,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6_redirtimeout), 0,
-	""); /* XXX unused */
+	"Delay in seconds before expiring redirect route");
 SYSCTL_VNET_PCPUSTAT(_net_inet6_icmp6, ICMPV6CTL_STATS, stats,
 	struct icmp6stat, icmp6stat,
 	"ICMPv6 statistics (struct icmp6stat, netinet/icmp6.h)");
@@ -653,7 +580,7 @@ SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_ND6_USELOOPBACK, nd6_useloopback,
 	"Create a loopback route when configuring an IPv6 address");
 SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_NODEINFO, nodeinfo,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6_nodeinfo), 0,
-	"Mask of enabled RF4620 node information query types");
+	"Mask of enabled RFC4620 node information query types");
 SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_NODEINFO_OLDMCPREFIX,
 	nodeinfo_oldmcprefix, CTLFLAG_VNET | CTLFLAG_RW,
 	&VNET_NAME(icmp6_nodeinfo_oldmcprefix), 0,
@@ -672,3 +599,10 @@ SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_ND6_ONLINKNSRFC4861,
 	nd6_onlink_ns_rfc4861, CTLFLAG_VNET | CTLFLAG_RW,
 	&VNET_NAME(nd6_onlink_ns_rfc4861), 0,
 	"Accept 'on-link' ICMPv6 NS messages in compliance with RFC 4861");
+#ifdef EXPERIMENTAL
+SYSCTL_INT(_net_inet6_icmp6, OID_AUTO,
+	nd6_ignore_ipv6_only_ra, CTLFLAG_VNET | CTLFLAG_RW,
+	&VNET_NAME(nd6_ignore_ipv6_only_ra), 0,
+	"Ignore the 'IPv6-Only flag' in RA messages in compliance with "
+	"draft-ietf-6man-ipv6only-flag");
+#endif

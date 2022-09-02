@@ -17,11 +17,11 @@
 .Lb libxo
 .Sh SYNOPSIS
 .In libxo/xo.h
-.Ft int
+.Ft xo_ssize_t
 .Fn xo_emit "const char *fmt"  "..."
-.Ft int
+.Ft xo_ssize_t
 .Fn xo_emit_h "xo_handle_t *xop" "const char *fmt" "..."
-.Ft int
+.Ft xo_ssize_t
 .Fn xo_emit_hv "xo_handle_t *xop" "const char *fmt" "va_list vap"
 .Sh DESCRIPTION
 The
@@ -102,3 +102,13 @@ then the number of display columns consumed by the output will be returned.
 .Xr xo_open_list 3 ,
 .Xr xo_format 5 ,
 .Xr libxo 3
+.Sh HISTORY
+The
+.Nm libxo
+library first appeared in
+.Fx 11.0 .
+.Sh AUTHORS
+.Nm libxo
+was written by
+.An Phil Shafer Aq Mt phil@freebsd.org .
+

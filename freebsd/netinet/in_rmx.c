@@ -40,7 +40,9 @@ __FBSDID("$FreeBSD$");
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/route.h>
-#include <net/route_var.h>
+#include <net/route/route_ctl.h>
+#include <net/route/route_var.h>
+#include <net/route/nhop.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
@@ -49,92 +51,90 @@ __FBSDID("$FreeBSD$");
 #include <netinet/ip_icmp.h>
 #include <netinet/ip_var.h>
 
-extern int	in_inithead(void **head, int off);
-#ifdef VIMAGE
-extern int	in_detachhead(void **head, int off);
-#endif
-
-/*
- * Do what we need to do when inserting a route.
- */
-static struct radix_node *
-in_addroute(void *v_arg, void *n_arg, struct radix_head *head,
-    struct radix_node *treenodes)
+static int
+rib4_preadd(u_int fibnum, const struct sockaddr *addr, const struct sockaddr *mask,
+    struct nhop_object *nh)
 {
-	struct rtentry *rt = (struct rtentry *)treenodes;
-	struct sockaddr_in *sin = (struct sockaddr_in *)rt_key(rt);
+	const struct sockaddr_in *addr4 = (const struct sockaddr_in *)addr;
+	uint16_t nh_type;
+	int rt_flags;
 
-	/*
-	 * A little bit of help for both IP output and input:
-	 *   For host routes, we make sure that RTF_BROADCAST
-	 *   is set for anything that looks like a broadcast address.
-	 *   This way, we can avoid an expensive call to in_broadcast()
-	 *   in ip_output() most of the time (because the route passed
-	 *   to ip_output() is almost always a host route).
-	 *
-	 *   We also do the same for local addresses, with the thought
-	 *   that this might one day be used to speed up ip_input().
-	 *
-	 * We also mark routes to multicast addresses as such, because
-	 * it's easy to do and might be useful (but this is much more
-	 * dubious since it's so easy to inspect the address).
-	 */
-	if (rt->rt_flags & RTF_HOST) {
-		if (in_broadcast(sin->sin_addr, rt->rt_ifp)) {
-			rt->rt_flags |= RTF_BROADCAST;
-		} else if (satosin(rt->rt_ifa->ifa_addr)->sin_addr.s_addr ==
-		    sin->sin_addr.s_addr) {
-			rt->rt_flags |= RTF_LOCAL;
+	/* XXX: RTF_LOCAL && RTF_MULTICAST */
+
+	rt_flags = nhop_get_rtflags(nh);
+
+	if (rt_flags & RTF_HOST) {
+		/*
+		 * Backward compatibility:
+		 * if the destination is broadcast,
+		 * mark route as broadcast.
+		 * This behavior was useful when route cloning
+		 * was in place, so there was an explicit cloned
+		 * route for every broadcasted address.
+		 * Currently (2020-04) there is no kernel machinery
+		 * to do route cloning, though someone might explicitly
+		 * add these routes to support some cases with active-active
+		 * load balancing. Given that, retain this support.
+		 */
+		if (in_broadcast(addr4->sin_addr, nh->nh_ifp)) {
+			rt_flags |= RTF_BROADCAST;
+			nhop_set_rtflags(nh, rt_flags);
+			nh->nh_flags |= NHF_BROADCAST;
 		}
 	}
-	if (IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-		rt->rt_flags |= RTF_MULTICAST;
 
-	if (rt->rt_ifp != NULL) {
+	/*
+	 * Check route MTU:
+	 * inherit interface MTU if not set or
+	 * check if MTU is too large.
+	 */
+	if (nh->nh_mtu == 0) {
+		nh->nh_mtu = nh->nh_ifp->if_mtu;
+	} else if (nh->nh_mtu > nh->nh_ifp->if_mtu)
+		nh->nh_mtu = nh->nh_ifp->if_mtu;
 
-		/*
-		 * Check route MTU:
-		 * inherit interface MTU if not set or
-		 * check if MTU is too large.
-		 */
-		if (rt->rt_mtu == 0) {
-			rt->rt_mtu = rt->rt_ifp->if_mtu;
-		} else if (rt->rt_mtu > rt->rt_ifp->if_mtu)
-			rt->rt_mtu = rt->rt_ifp->if_mtu;
+	/* Ensure that default route nhop has special flag */
+	const struct sockaddr_in *mask4 = (const struct sockaddr_in *)mask;
+	if ((rt_flags & RTF_HOST) == 0 && mask4 != NULL &&
+	    mask4->sin_addr.s_addr == 0)
+		nh->nh_flags |= NHF_DEFAULT;
+
+	/* Set nhop type to basic per-AF nhop */
+	if (nhop_get_type(nh) == 0) {
+		if (nh->nh_flags & NHF_GATEWAY)
+			nh_type = NH_TYPE_IPV4_ETHER_NHOP;
+		else
+			nh_type = NH_TYPE_IPV4_ETHER_RSLV;
+
+		nhop_set_type(nh, nh_type);
 	}
 
-	return (rn_addroute(v_arg, n_arg, head, treenodes));
+	return (0);
 }
 
-static int _in_rt_was_here;
 /*
  * Initialize our routing tree.
  */
-int
-in_inithead(void **head, int off)
+struct rib_head *
+in_inithead(uint32_t fibnum)
 {
 	struct rib_head *rh;
 
-	rh = rt_table_init(32);
+	rh = rt_table_init(32, AF_INET, fibnum);
 	if (rh == NULL)
-		return (0);
+		return (NULL);
 
-	rh->rnh_addaddr = in_addroute;
-	*head = (void *)rh;
+	rh->rnh_preadd = rib4_preadd;
 
-	if (_in_rt_was_here == 0 ) {
-		_in_rt_was_here = 1;
-	}
-	return 1;
+	return (rh);
 }
 
 #ifdef VIMAGE
-int
-in_detachhead(void **head, int off)
+void
+in_detachhead(struct rib_head *rh)
 {
 
-	rt_table_destroy((struct rib_head *)(*head));
-	return (1);
+	rt_table_destroy(rh);
 }
 #endif
 
@@ -153,14 +153,15 @@ struct in_ifadown_arg {
 };
 
 static int
-in_ifadownkill(const struct rtentry *rt, void *xap)
+in_ifadownkill(const struct rtentry *rt, const struct nhop_object *nh,
+    void *xap)
 {
 	struct in_ifadown_arg *ap = xap;
 
-	if (rt->rt_ifa != ap->ifa)
+	if (nh->nh_ifa != ap->ifa)
 		return (0);
 
-	if ((rt->rt_flags & RTF_STATIC) != 0 && ap->del == 0)
+	if ((nhop_get_rtflags(nh) & RTF_STATIC) != 0 && ap->del == 0)
 		return (0);
 
 	return (1);
@@ -177,29 +178,6 @@ in_ifadown(struct ifaddr *ifa, int delete)
 	arg.ifa = ifa;
 	arg.del = delete;
 
-	rt_foreach_fib_walk_del(AF_INET, in_ifadownkill, &arg);
+	rib_foreach_table_walk_del(AF_INET, in_ifadownkill, &arg);
 	ifa->ifa_flags &= ~IFA_ROUTE;		/* XXXlocking? */
 }
-
-/*
- * inet versions of rt functions. These have fib extensions and 
- * for now will just reference the _fib variants.
- * eventually this order will be reversed,
- */
-void
-in_rtalloc_ign(struct route *ro, u_long ignflags, u_int fibnum)
-{
-	rtalloc_ign_fib(ro, ignflags, fibnum);
-}
-
-void
-in_rtredirect(struct sockaddr *dst,
-	struct sockaddr *gateway,
-	struct sockaddr *netmask,
-	int flags,
-	struct sockaddr *src,
-	u_int fibnum)
-{
-	rtredirect_fib(dst, gateway, netmask, flags, src, fibnum);
-}
- 
