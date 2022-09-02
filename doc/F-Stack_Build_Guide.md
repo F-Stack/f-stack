@@ -42,7 +42,9 @@ $ make
 $ make install
 
 # Compile Redis
-$ cd ../redis-5.0.5
+$ cd app/redis-6.2.6/deps/jemalloc
+$ ./autogen.sh
+$ cd ../redis-6.2.6
 $ make
 
 # Compile f-stack tools
