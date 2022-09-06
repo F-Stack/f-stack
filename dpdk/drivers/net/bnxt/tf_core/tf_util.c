@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2019 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -59,6 +59,12 @@ tf_tcam_tbl_2_str(enum tf_tcam_tbl_type tcam_type)
 		return "sp_tcam";
 	case TF_TCAM_TBL_TYPE_CT_RULE_TCAM:
 		return "ct_rule_tcam";
+#ifdef TF_TCAM_SHARED
+	case TF_TCAM_TBL_TYPE_WC_TCAM_HIGH:
+		return "wc_tcam_hi";
+	case TF_TCAM_TBL_TYPE_WC_TCAM_LOW:
+		return "wc_tcam_lo";
+#endif
 	default:
 		return "Invalid tcam table type";
 	}
@@ -70,6 +76,8 @@ tf_tbl_type_2_str(enum tf_tbl_type tbl_type)
 	switch (tbl_type) {
 	case TF_TBL_TYPE_FULL_ACT_RECORD:
 		return "Full Action record";
+	case TF_TBL_TYPE_COMPACT_ACT_RECORD:
+		return "Compact Action record";
 	case TF_TBL_TYPE_MCAST_GROUPS:
 		return "Multicast Groups";
 	case TF_TBL_TYPE_ACT_ENCAP_8B:
@@ -88,12 +96,16 @@ tf_tbl_type_2_str(enum tf_tbl_type tbl_type)
 		return "Source Properties SMAC IPv6";
 	case TF_TBL_TYPE_ACT_STATS_64:
 		return "Stats 64B";
-	case TF_TBL_TYPE_ACT_MODIFY_SPORT:
-		return "NAT Source Port";
-	case TF_TBL_TYPE_ACT_MODIFY_DPORT:
-		return "NAT Destination Port";
 	case TF_TBL_TYPE_ACT_MODIFY_IPV4:
-		return "NAT IPv4";
+		return "Modify IPv4";
+	case TF_TBL_TYPE_ACT_MODIFY_8B:
+		return "Modify 8B";
+	case TF_TBL_TYPE_ACT_MODIFY_16B:
+		return "Modify 16B";
+	case TF_TBL_TYPE_ACT_MODIFY_32B:
+		return "Modify 32B";
+	case TF_TBL_TYPE_ACT_MODIFY_64B:
+		return "Modify 64B";
 	case TF_TBL_TYPE_METER_PROF:
 		return "Meter Profile";
 	case TF_TBL_TYPE_METER_INST:
@@ -102,28 +114,16 @@ tf_tbl_type_2_str(enum tf_tbl_type tbl_type)
 		return "Mirror";
 	case TF_TBL_TYPE_UPAR:
 		return "UPAR";
-	case TF_TBL_TYPE_EPOCH0:
-		return "EPOCH0";
-	case TF_TBL_TYPE_EPOCH1:
-		return "EPOCH1";
 	case TF_TBL_TYPE_METADATA:
 		return "Metadata";
-	case TF_TBL_TYPE_CT_STATE:
-		return "Connection State";
-	case TF_TBL_TYPE_RANGE_PROF:
-		return "Range Profile";
-	case TF_TBL_TYPE_RANGE_ENTRY:
-		return "Range";
-	case TF_TBL_TYPE_LAG:
-		return "Link Aggregation";
-	case TF_TBL_TYPE_VNIC_SVIF:
-		return "VNIC SVIF";
 	case TF_TBL_TYPE_EM_FKB:
 		return "EM Flexible Key Builder";
 	case TF_TBL_TYPE_WC_FKB:
 		return "WC Flexible Key Builder";
 	case TF_TBL_TYPE_EXT:
 		return "External";
+	case TF_TBL_TYPE_METER_DROP_CNT:
+		return "Meter drop counter";
 	default:
 		return "Invalid tbl type";
 	}
@@ -143,34 +143,34 @@ tf_em_tbl_type_2_str(enum tf_em_tbl_type em_type)
 }
 
 const char *
-tf_device_module_type_subtype_2_str(enum tf_device_module_type dm_type,
-				    uint16_t mod_type)
+tf_module_subtype_2_str(enum tf_module_type module,
+			uint16_t subtype)
 {
-	switch (dm_type) {
-	case TF_DEVICE_MODULE_TYPE_IDENTIFIER:
-		return tf_ident_2_str(mod_type);
-	case TF_DEVICE_MODULE_TYPE_TABLE:
-		return tf_tbl_type_2_str(mod_type);
-	case TF_DEVICE_MODULE_TYPE_TCAM:
-		return tf_tcam_tbl_2_str(mod_type);
-	case TF_DEVICE_MODULE_TYPE_EM:
-		return tf_em_tbl_type_2_str(mod_type);
+	switch (module) {
+	case TF_MODULE_TYPE_IDENTIFIER:
+		return tf_ident_2_str(subtype);
+	case TF_MODULE_TYPE_TABLE:
+		return tf_tbl_type_2_str(subtype);
+	case TF_MODULE_TYPE_TCAM:
+		return tf_tcam_tbl_2_str(subtype);
+	case TF_MODULE_TYPE_EM:
+		return tf_em_tbl_type_2_str(subtype);
 	default:
-		return "Invalid Device Module type";
+		return "Invalid Module type";
 	}
 }
 
 const char *
-tf_device_module_type_2_str(enum tf_device_module_type dm_type)
+tf_module_2_str(enum tf_module_type module)
 {
-	switch (dm_type) {
-	case TF_DEVICE_MODULE_TYPE_IDENTIFIER:
+	switch (module) {
+	case TF_MODULE_TYPE_IDENTIFIER:
 		return "Identifier";
-	case TF_DEVICE_MODULE_TYPE_TABLE:
+	case TF_MODULE_TYPE_TABLE:
 		return "Table";
-	case TF_DEVICE_MODULE_TYPE_TCAM:
+	case TF_MODULE_TYPE_TCAM:
 		return "TCAM";
-	case TF_DEVICE_MODULE_TYPE_EM:
+	case TF_MODULE_TYPE_EM:
 		return "EM";
 	default:
 		return "Invalid Device Module type";

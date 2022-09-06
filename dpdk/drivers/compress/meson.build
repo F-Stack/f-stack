@@ -2,10 +2,14 @@
 # Copyright(c) 2018 Intel Corporation
 
 if is_windows
-	subdir_done()
+    subdir_done()
 endif
 
-drivers = ['isal', 'octeontx', 'zlib']
+drivers = [
+        'isal',
+        'mlx5',
+        'octeontx',
+        'zlib',
+]
 
 std_deps = ['compressdev'] # compressdev pulls in all other needed deps
-config_flag_fmt = 'RTE_LIBRTE_PMD_@0@'

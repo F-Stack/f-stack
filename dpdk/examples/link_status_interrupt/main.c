@@ -9,7 +9,6 @@
 #include <inttypes.h>
 #include <sys/types.h>
 #include <sys/queue.h>
-#include <netinet/in.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <ctype.h>
@@ -23,7 +22,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -67,26 +65,30 @@ static unsigned lsi_dst_ports[RTE_MAX_ETHPORTS] = {0};
 
 #define MAX_RX_QUEUE_PER_LCORE 16
 #define MAX_TX_QUEUE_PER_PORT 16
+/* List of queues must be polled for a give lcore. 8< */
 struct lcore_queue_conf {
 	unsigned n_rx_port;
 	unsigned rx_port_list[MAX_RX_QUEUE_PER_LCORE];
 	unsigned tx_queue_id;
 } __rte_cache_aligned;
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
+/* >8 End of list of queues to be polled. */
 
 struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 
+/* Global configuration stored in a static structure. 8< */
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.split_hdr_size = 0,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.intr_conf = {
 		.lsc = 1, /**< lsc interrupt feature enabled */
 	},
 };
+/* >8 End of global configuration stored in a static structure. */
 
 struct rte_mempool * lsi_pktmbuf_pool = NULL;
 
@@ -145,7 +147,7 @@ print_stats(void)
 			   link_get_err < 0 ? "0" :
 			   rte_eth_link_speed_to_str(link.link_speed),
 			   link_get_err < 0 ? "Link get failed" :
-			   (link.link_duplex == ETH_LINK_FULL_DUPLEX ? \
+			   (link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX ?
 					"full-duplex" : "half-duplex"),
 			   port_statistics[portid].tx,
 			   port_statistics[portid].rx,
@@ -167,6 +169,7 @@ print_stats(void)
 	fflush(stdout);
 }
 
+/* Replacing the source and destination MAC addresses. 8< */
 static void
 lsi_simple_forward(struct rte_mbuf *m, unsigned portid)
 {
@@ -179,17 +182,18 @@ lsi_simple_forward(struct rte_mbuf *m, unsigned portid)
 	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
+	tmp = &eth->dst_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	rte_ether_addr_copy(&lsi_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&lsi_ports_eth_addr[dst_port], &eth->src_addr);
 
 	buffer = tx_buffer[dst_port];
 	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
 	if (sent)
 		port_statistics[dst_port].tx += sent;
 }
+/* >8 End of replacing the source and destination MAC addresses. */
 
 /* main processing loop */
 static void
@@ -228,6 +232,7 @@ lsi_main_loop(void)
 
 	while (1) {
 
+		/* Draining TX queue in its main loop. 8< */
 		cur_tsc = rte_rdtsc();
 
 		/*
@@ -267,10 +272,9 @@ lsi_main_loop(void)
 
 			prev_tsc = cur_tsc;
 		}
+		/* >8 End of draining TX queue in its main loop. */
 
-		/*
-		 * Read packet from RX queues
-		 */
+		/* Read packet from RX queues. 8< */
 		for (i = 0; i < qconf->n_rx_port; i++) {
 
 			portid = qconf->rx_port_list[i];
@@ -285,6 +289,7 @@ lsi_main_loop(void)
 				lsi_simple_forward(m, portid);
 			}
 		}
+		/* >8 End of reading packet from RX queues. */
 	}
 }
 
@@ -439,6 +444,8 @@ lsi_parse_args(int argc, char **argv)
  * @return
  *  int.
  */
+
+/* lsi_event_callback 8< */
 static int
 lsi_event_callback(uint16_t port_id, enum rte_eth_event_type type, void *param,
 		    void *ret_param)
@@ -463,6 +470,7 @@ lsi_event_callback(uint16_t port_id, enum rte_eth_event_type type, void *param,
 
 	return 0;
 }
+/* >8 End of registering one or more callbacks. */
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
@@ -501,7 +509,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -557,9 +565,7 @@ main(int argc, char **argv)
 	if (nb_ports == 0)
 		rte_panic("No Ethernet port - bye\n");
 
-	/*
-	 * Each logical core is assigned a dedicated TX queue on each port.
-	 */
+	/* Each logical core is assigned a dedicated TX queue on each port. 8< */
 	for (portid = 0; portid < nb_ports; portid++) {
 		/* skip ports that are not enabled */
 		if ((lsi_enabled_port_mask & (1 << portid)) == 0)
@@ -575,6 +581,7 @@ main(int argc, char **argv)
 
 		nb_ports_in_mask++;
 	}
+	/* >8 End of assigning logical core. */
 	if (nb_ports_in_mask < 2 || nb_ports_in_mask % 2)
 		rte_exit(EXIT_FAILURE, "Current enabled port number is %u, "
 				"but it should be even and at least 2\n",
@@ -629,13 +636,15 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+		/* Configure RX and TX queues. 8< */
 		ret = rte_eth_dev_configure(portid, 1, 1, &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
 				  ret, (unsigned) portid);
+		/* >8 End of configure RX and TX queues. */
 
 		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
 						       &nb_txd);
@@ -649,8 +658,11 @@ main(int argc, char **argv)
 		 * lsc interrupt will be present, and below callback to
 		 * be registered will never be called.
 		 */
+
+		/* RTE callback register. 8< */
 		rte_eth_dev_callback_register(portid,
 			RTE_ETH_EVENT_INTR_LSC, lsi_event_callback, NULL);
+		/* >8 End of registering lsi interrupt callback. */
 
 		ret = rte_eth_macaddr_get(portid,
 				    &lsi_ports_eth_addr[portid]);
@@ -663,6 +675,7 @@ main(int argc, char **argv)
 		fflush(stdout);
 		rxq_conf = dev_info.default_rxconf;
 		rxq_conf.offloads = local_port_conf.rxmode.offloads;
+		/* RX queue initialization. 8< */
 		ret = rte_eth_rx_queue_setup(portid, 0, nb_rxd,
 					     rte_eth_dev_socket_id(portid),
 					     &rxq_conf,
@@ -670,8 +683,9 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup: err=%d, port=%u\n",
 				  ret, (unsigned) portid);
+		/* >8 End of RX queue initialization. */
 
-		/* init one TX queue logical core on each port */
+		/* init one TX queue logical core on each port. 8< */
 		fflush(stdout);
 		txq_conf = dev_info.default_txconf;
 		txq_conf.offloads = local_port_conf.txmode.offloads;
@@ -681,6 +695,7 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup: err=%d,port=%u\n",
 				  ret, (unsigned) portid);
+		/* >8 End of init one TX queue. */
 
 		/* Initialize TX buffers */
 		tx_buffer[portid] = rte_zmalloc_socket("tx_buffer",
@@ -712,14 +727,9 @@ main(int argc, char **argv)
 				"rte_eth_promiscuous_enable: err=%s, port=%u\n",
 				rte_strerror(-ret), portid);
 
-		printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n",
+		printf("Port %u, MAC address: " RTE_ETHER_ADDR_PRT_FMT "\n\n",
 				(unsigned) portid,
-				lsi_ports_eth_addr[portid].addr_bytes[0],
-				lsi_ports_eth_addr[portid].addr_bytes[1],
-				lsi_ports_eth_addr[portid].addr_bytes[2],
-				lsi_ports_eth_addr[portid].addr_bytes[3],
-				lsi_ports_eth_addr[portid].addr_bytes[4],
-				lsi_ports_eth_addr[portid].addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(&lsi_ports_eth_addr[portid]));
 
 		/* initialize port stats */
 		memset(&port_statistics, 0, sizeof(port_statistics));

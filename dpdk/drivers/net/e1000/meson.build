@@ -5,13 +5,13 @@ subdir('base')
 objs = [base_objs]
 
 sources = files(
-	'e1000_logs.c',
-	'em_ethdev.c',
-	'em_rxtx.c',
-	'igb_ethdev.c',
-	'igb_flow.c',
-	'igb_pf.c',
-	'igb_rxtx.c'
+        'e1000_logs.c',
+        'em_ethdev.c',
+        'em_rxtx.c',
+        'igb_ethdev.c',
+        'igb_flow.c',
+        'igb_pf.c',
+        'igb_rxtx.c',
 )
 
 includes += include_directories('base')

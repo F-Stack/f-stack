@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -248,6 +248,7 @@ sfc_ef10_tx_qpush(struct sfc_ef10_txq *txq, unsigned int added,
 	rte_io_wmb();
 
 	*(volatile efsys_uint128_t *)txq->doorbell = oword.eo_u128[0];
+	txq->dp.dpq.dbells++;
 }
 
 static unsigned int
@@ -340,7 +341,7 @@ sfc_ef10_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		 * the size limit. Perform the check in debug mode since MTU
 		 * more than 9k is not supported, but the limit here is 16k-1.
 		 */
-		if (!(m->ol_flags & PKT_TX_TCP_SEG)) {
+		if (!(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
 			struct rte_mbuf *m_seg;
 
 			for (m_seg = m; m_seg != NULL; m_seg = m_seg->next) {
@@ -370,7 +371,7 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		      unsigned int *added, unsigned int *dma_desc_space,
 		      bool *reap_done)
 {
-	size_t iph_off = ((m_seg->ol_flags & PKT_TX_TUNNEL_MASK) ?
+	size_t iph_off = ((m_seg->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
 			  m_seg->outer_l2_len + m_seg->outer_l3_len : 0) +
 			 m_seg->l2_len;
 	size_t tcph_off = iph_off + m_seg->l3_len;
@@ -488,10 +489,10 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 	 *
 	 * The same concern applies to outer UDP datagram length field.
 	 */
-	switch (m_seg->ol_flags & PKT_TX_TUNNEL_MASK) {
-	case PKT_TX_TUNNEL_VXLAN:
+	switch (m_seg->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
 		/* FALLTHROUGH */
-	case PKT_TX_TUNNEL_GENEVE:
+	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
 		sfc_tso_outer_udp_fix_len(first_m_seg, hdr_addr);
 		break;
 	default:
@@ -505,10 +506,10 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 	 * filled in in TSO mbuf. Use zero IPID if there is no IPv4 flag.
 	 * If the packet is still IPv4, HW will simply start from zero IPID.
 	 */
-	if (first_m_seg->ol_flags & PKT_TX_IPV4)
+	if (first_m_seg->ol_flags & RTE_MBUF_F_TX_IPV4)
 		packet_id = sfc_tso_ip4_get_ipid(hdr_addr, iph_off);
 
-	if (first_m_seg->ol_flags & PKT_TX_OUTER_IPV4)
+	if (first_m_seg->ol_flags & RTE_MBUF_F_TX_OUTER_IPV4)
 		outer_packet_id = sfc_tso_ip4_get_ipid(hdr_addr,
 						first_m_seg->outer_l2_len);
 
@@ -647,7 +648,7 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		if (likely(pktp + 1 != pktp_end))
 			rte_mbuf_prefetch_part1(pktp[1]);
 
-		if (m_seg->ol_flags & PKT_TX_TCP_SEG) {
+		if (m_seg->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			int rc;
 
 			rc = sfc_ef10_xmit_tso_pkt(txq, m_seg, &added,
@@ -804,7 +805,7 @@ sfc_ef10_simple_prepare_pkts(__rte_unused void *tx_queue,
 
 		/* ef10_simple does not support TSO and VLAN insertion */
 		if (unlikely(m->ol_flags &
-			     (PKT_TX_TCP_SEG | PKT_TX_VLAN_PKT))) {
+			     (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_VLAN))) {
 			rte_errno = ENOTSUP;
 			break;
 		}
@@ -941,6 +942,10 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (info->txq_entries != info->evq_entries)
 		goto fail_bad_args;
 
+	rc = ENOTSUP;
+	if (info->nic_dma_info->nb_regions > 0)
+		goto fail_nic_dma;
+
 	rc = ENOMEM;
 	txq = rte_zmalloc_socket("sfc-ef10-txq", sizeof(*txq),
 				 RTE_CACHE_LINE_SIZE, socket_id);
@@ -957,9 +962,9 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (txq->sw_ring == NULL)
 		goto fail_sw_ring_alloc;
 
-	if (info->offloads & (DEV_TX_OFFLOAD_TCP_TSO |
-			      DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-			      DEV_TX_OFFLOAD_GENEVE_TNL_TSO)) {
+	if (info->offloads & (RTE_ETH_TX_OFFLOAD_TCP_TSO |
+			      RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+			      RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO)) {
 		txq->tsoh = rte_calloc_socket("sfc-ef10-txq-tsoh",
 					      info->txq_entries,
 					      SFC_TSOH_STD_LEN,
@@ -994,6 +999,7 @@ fail_sw_ring_alloc:
 	rte_free(txq);
 
 fail_txq_alloc:
+fail_nic_dma:
 fail_bad_args:
 	return rc;
 }
@@ -1124,14 +1130,14 @@ struct sfc_dp_tx sfc_ef10_tx = {
 		.hw_fw_caps	= SFC_DP_HW_FW_CAP_EF10,
 	},
 	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
-	.dev_offload_capa	= DEV_TX_OFFLOAD_MULTI_SEGS,
-	.queue_offload_capa	= DEV_TX_OFFLOAD_IPV4_CKSUM |
-				  DEV_TX_OFFLOAD_UDP_CKSUM |
-				  DEV_TX_OFFLOAD_TCP_CKSUM |
-				  DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-				  DEV_TX_OFFLOAD_TCP_TSO |
-				  DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-				  DEV_TX_OFFLOAD_GENEVE_TNL_TSO,
+	.dev_offload_capa	= RTE_ETH_TX_OFFLOAD_MULTI_SEGS,
+	.queue_offload_capa	= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_TSO |
+				  RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+				  RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO,
 	.get_dev_info		= sfc_ef10_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,
@@ -1151,11 +1157,11 @@ struct sfc_dp_tx sfc_ef10_simple_tx = {
 		.type		= SFC_DP_TX,
 	},
 	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
-	.dev_offload_capa	= DEV_TX_OFFLOAD_MBUF_FAST_FREE,
-	.queue_offload_capa	= DEV_TX_OFFLOAD_IPV4_CKSUM |
-				  DEV_TX_OFFLOAD_UDP_CKSUM |
-				  DEV_TX_OFFLOAD_TCP_CKSUM |
-				  DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM,
+	.dev_offload_capa	= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+	.queue_offload_capa	= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM,
 	.get_dev_info		= sfc_ef10_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,

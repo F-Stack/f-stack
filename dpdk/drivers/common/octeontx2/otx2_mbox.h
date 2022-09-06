@@ -355,17 +355,35 @@ struct ready_msg_rsp {
 	uint16_t __otx2_io rclk_freq; /* RCLK frequency */
 };
 
+enum npc_pkind_type {
+	NPC_RX_CUSTOM_PRE_L2_PKIND = 55ULL,
+	NPC_RX_VLAN_EXDSA_PKIND = 56ULL,
+	NPC_RX_CHLEN24B_PKIND,
+	NPC_RX_CPT_HDR_PKIND,
+	NPC_RX_CHLEN90B_PKIND,
+	NPC_TX_HIGIG_PKIND,
+	NPC_RX_HIGIG_PKIND,
+	NPC_RX_EXDSA_PKIND,
+	NPC_RX_EDSA_PKIND,
+	NPC_TX_DEF_PKIND,
+};
+
+#define OTX2_PRIV_FLAGS_CH_LEN_90B 254
+#define OTX2_PRIV_FLAGS_CH_LEN_24B 255
+
 /* Struct to set pkind */
 struct npc_set_pkind {
 	struct mbox_msghdr hdr;
-#define OTX2_PRIV_FLAGS_DEFAULT  BIT_ULL(0)
-#define OTX2_PRIV_FLAGS_EDSA     BIT_ULL(1)
-#define OTX2_PRIV_FLAGS_HIGIG    BIT_ULL(2)
-#define OTX2_PRIV_FLAGS_LEN_90B  BIT_ULL(3)
-#define OTX2_PRIV_FLAGS_CUSTOM   BIT_ULL(63)
+#define OTX2_PRIV_FLAGS_DEFAULT	   BIT_ULL(0)
+#define OTX2_PRIV_FLAGS_EDSA	   BIT_ULL(1)
+#define OTX2_PRIV_FLAGS_HIGIG	   BIT_ULL(2)
+#define OTX2_PRIV_FLAGS_FDSA	   BIT_ULL(3)
+#define OTX2_PRIV_FLAGS_EXDSA	   BIT_ULL(4)
+#define OTX2_PRIV_FLAGS_VLAN_EXDSA BIT_ULL(5)
+#define OTX2_PRIV_FLAGS_CUSTOM	   BIT_ULL(63)
 	uint64_t __otx2_io mode;
-#define PKIND_TX		BIT_ULL(0)
-#define PKIND_RX		BIT_ULL(1)
+#define PKIND_TX BIT_ULL(0)
+#define PKIND_RX BIT_ULL(1)
 	uint8_t __otx2_io dir;
 	uint8_t __otx2_io pkind; /* valid only in case custom flag */
 	uint8_t __otx2_io var_len_off;

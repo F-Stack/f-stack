@@ -24,11 +24,11 @@
 #include <rte_memzone.h>
 #include <rte_pci.h>
 #include <rte_eventdev.h>
-#include <rte_eventdev_pmd_vdev.h>
+#include <eventdev_pmd_vdev.h>
 #include <rte_ethdev.h>
 #include <rte_event_eth_rx_adapter.h>
 #include <rte_event_eth_tx_adapter.h>
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_dpaa_bus.h>
 #include <rte_dpaa_logs.h>
 #include <rte_cycles.h>
@@ -46,7 +46,7 @@
  * Eventqueue = Channel Instance
  * 1 Eventdev can have N Eventqueue
  */
-RTE_LOG_REGISTER(dpaa_logtype_eventdev, pmd.event.dpaa, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa_logtype_eventdev, NOTICE);
 
 #define DISABLE_INTR_MODE "disable_intr"
 
@@ -356,7 +356,8 @@ dpaa_event_dev_info_get(struct rte_eventdev *dev,
 		RTE_EVENT_DEV_CAP_BURST_MODE |
 		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
 		RTE_EVENT_DEV_CAP_NONSEQ_MODE |
-		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID;
+		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
+		RTE_EVENT_DEV_CAP_MAINTENANCE_FREE;
 }
 
 static int
@@ -925,7 +926,7 @@ dpaa_eventdev_txa_enqueue(void *port,
 	return nb_events;
 }
 
-static struct rte_eventdev_ops dpaa_eventdev_ops = {
+static struct eventdev_ops dpaa_eventdev_ops = {
 	.dev_infos_get    = dpaa_event_dev_info_get,
 	.dev_configure    = dpaa_event_dev_configure,
 	.dev_start        = dpaa_event_dev_start,
@@ -1026,10 +1027,12 @@ dpaa_event_dev_create(const char *name, const char *params)
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
+		goto done;
 
 	priv->max_event_queues = DPAA_EVENT_MAX_QUEUES;
 
+done:
+	event_dev_probing_finish(eventdev);
 	return 0;
 fail:
 	return -EFAULT;

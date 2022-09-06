@@ -8,8 +8,8 @@
 
 #include <rte_string_fns.h>
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
 #include <rte_bus_vdev.h>
@@ -48,6 +48,7 @@ struct pkt_rx_queue {
 
 	struct rte_mempool *mb_pool;
 	uint16_t in_port;
+	uint8_t vlan_strip;
 
 	volatile unsigned long rx_pkts;
 	volatile unsigned long rx_bytes;
@@ -78,6 +79,7 @@ struct pmd_internals {
 
 	struct pkt_rx_queue *rx_queue;
 	struct pkt_tx_queue *tx_queue;
+	uint8_t vlan_strip;
 };
 
 static const char *valid_arguments[] = {
@@ -91,13 +93,13 @@ static const char *valid_arguments[] = {
 };
 
 static struct rte_eth_link pmd_link = {
-	.link_speed = ETH_SPEED_NUM_10G,
-	.link_duplex = ETH_LINK_FULL_DUPLEX,
-	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_FIXED,
+	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
+	.link_status = RTE_ETH_LINK_DOWN,
+	.link_autoneg = RTE_ETH_LINK_FIXED,
 };
 
-RTE_LOG_REGISTER(af_packet_logtype, pmd.net.packet, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(af_packet_logtype, NOTICE);
 
 #define PMD_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, af_packet_logtype, \
@@ -147,7 +149,10 @@ eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		/* check for vlan info */
 		if (ppd->tp_status & TP_STATUS_VLAN_VALID) {
 			mbuf->vlan_tci = ppd->tp_vlan_tci;
-			mbuf->ol_flags |= (PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
+			mbuf->ol_flags |= (RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED);
+
+			if (!pkt_q->vlan_strip && rte_vlan_insert(&mbuf))
+				PMD_LOG(ERR, "Failed to reinsert VLAN tag");
 		}
 
 		/* release incoming frame and advance ring buffer */
@@ -165,6 +170,26 @@ eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	pkt_q->rx_pkts += num_rx;
 	pkt_q->rx_bytes += num_rx_bytes;
 	return num_rx;
+}
+
+/*
+ * Check if there is an available frame in the ring
+ */
+static inline bool
+tx_ring_status_available(uint32_t tp_status)
+{
+	/*
+	 * We eliminate the timestamp status from the packet status.
+	 * This should only matter if timestamping is enabled on the socket,
+	 * but there is a bug in the kernel which is fixed in newer releases.
+	 *
+	 * See the following kernel commit for reference:
+	 *     commit 171c3b151118a2fe0fc1e2a9d1b5a1570cfe82d2
+	 *     net: packetmmap: fix only tx timestamp on request
+	 */
+	tp_status &= ~(TP_STATUS_TS_SOFTWARE | TP_STATUS_TS_RAW_HARDWARE);
+
+	return tp_status == TP_STATUS_AVAILABLE;
 }
 
 /*
@@ -204,7 +229,7 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		}
 
 		/* insert vlan info if necessary */
-		if (mbuf->ol_flags & PKT_TX_VLAN_PKT) {
+		if (mbuf->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			if (rte_vlan_insert(&mbuf)) {
 				rte_pktmbuf_free(mbuf);
 				continue;
@@ -212,7 +237,7 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		}
 
 		/* point at the next incoming frame */
-		if (ppd->tp_status != TP_STATUS_AVAILABLE) {
+		if (!tx_ring_status_available(ppd->tp_status)) {
 			if (poll(&pfd, 1, -1) < 0)
 				break;
 
@@ -235,7 +260,7 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		 *
 		 * This results in poll() returning POLLOUT.
 		 */
-		if (ppd->tp_status != TP_STATUS_AVAILABLE)
+		if (!tx_ring_status_available(ppd->tp_status))
 			break;
 
 		/* copy the tx frame data */
@@ -287,7 +312,7 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
-	dev->data->dev_link.link_status = ETH_LINK_UP;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 	return 0;
 }
 
@@ -317,13 +342,18 @@ eth_dev_stop(struct rte_eth_dev *dev)
 		internals->tx_queue[i].sockfd = -1;
 	}
 
-	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	return 0;
 }
 
 static int
 eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
 {
+	struct rte_eth_conf *dev_conf = &dev->data->dev_conf;
+	const struct rte_eth_rxmode *rxmode = &dev_conf->rxmode;
+	struct pmd_internals *internals = dev->data->dev_private;
+
+	internals->vlan_strip = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP);
 	return 0;
 }
 
@@ -334,12 +364,13 @@ eth_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	dev_info->if_index = internals->if_index;
 	dev_info->max_mac_addrs = 1;
-	dev_info->max_rx_pktlen = (uint32_t)ETH_FRAME_LEN;
+	dev_info->max_rx_pktlen = RTE_ETHER_MAX_LEN;
 	dev_info->max_rx_queues = (uint16_t)internals->nb_queues;
 	dev_info->max_tx_queues = (uint16_t)internals->nb_queues;
 	dev_info->min_rx_bufsize = 0;
-	dev_info->tx_offload_capa = DEV_TX_OFFLOAD_MULTI_SEGS |
-		DEV_TX_OFFLOAD_VLAN_INSERT;
+	dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
+		RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
+	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
 
 	return 0;
 }
@@ -429,11 +460,6 @@ eth_dev_close(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
-eth_queue_release(void *q __rte_unused)
-{
-}
-
 static int
 eth_link_update(struct rte_eth_dev *dev __rte_unused,
                 int wait_to_complete __rte_unused)
@@ -470,6 +496,7 @@ eth_rx_queue_setup(struct rte_eth_dev *dev,
 
 	dev->data->rx_queues[rx_queue_id] = pkt_q;
 	pkt_q->in_port = dev->data->port_id;
+	pkt_q->vlan_strip = internals->vlan_strip;
 
 	return 0;
 }
@@ -596,8 +623,6 @@ static const struct eth_dev_ops ops = {
 	.promiscuous_disable = eth_dev_promiscuous_disable,
 	.rx_queue_setup = eth_rx_queue_setup,
 	.tx_queue_setup = eth_tx_queue_setup,
-	.rx_queue_release = eth_queue_release,
-	.tx_queue_release = eth_queue_release,
 	.link_update = eth_link_update,
 	.stats_get = eth_stats_get,
 	.stats_reset = eth_stats_reset,
@@ -770,18 +795,18 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 			goto error;
 		}
 
+		if (qdisc_bypass) {
 #if defined(PACKET_QDISC_BYPASS)
-		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_QDISC_BYPASS,
-				&qdisc_bypass, sizeof(qdisc_bypass));
-		if (rc == -1) {
-			PMD_LOG_ERRNO(ERR,
-				"%s: could not set PACKET_QDISC_BYPASS on AF_PACKET socket for %s",
-				name, pair->value);
-			goto error;
-		}
-#else
-		RTE_SET_USED(qdisc_bypass);
+			rc = setsockopt(qsockfd, SOL_PACKET, PACKET_QDISC_BYPASS,
+					&qdisc_bypass, sizeof(qdisc_bypass));
+			if (rc == -1) {
+				PMD_LOG_ERRNO(ERR,
+					"%s: could not set PACKET_QDISC_BYPASS on AF_PACKET socket for %s",
+					name, pair->value);
+				goto error;
+			}
 #endif
+		}
 
 		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_RX_RING, req, sizeof(*req));
 		if (rc == -1) {

@@ -6,6 +6,7 @@
 #define _IGC_ETHDEV_H_
 
 #include <rte_ethdev.h>
+#include <rte_flow.h>
 
 #include "base/igc_osdep.h"
 #include "base/igc_hw.h"
@@ -35,6 +36,13 @@ extern "C" {
 #define IGC_HKEY_SIZE			(IGC_HKEY_REG_SIZE * IGC_HKEY_MAX_INDEX)
 
 /*
+ * The overhead from MTU to max frame size.
+ * Considering VLAN so tag needs to be counted.
+ */
+#define IGC_ETH_OVERHEAD		(RTE_ETHER_HDR_LEN + \
+					RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE * 2)
+
+/*
  * TDBA/RDBA should be aligned on 16 byte boundary. But TDLEN/RDLEN should be
  * multiple of 128 bytes. So we align TDBA/RDBA on 128 byte boundary.
  * This will also optimize cache line size effect.
@@ -58,38 +66,37 @@ extern "C" {
 #define IGC_TX_MAX_MTU_SEG	UINT8_MAX
 
 #define IGC_RX_OFFLOAD_ALL	(    \
-	DEV_RX_OFFLOAD_VLAN_STRIP  | \
-	DEV_RX_OFFLOAD_VLAN_FILTER | \
-	DEV_RX_OFFLOAD_VLAN_EXTEND | \
-	DEV_RX_OFFLOAD_IPV4_CKSUM  | \
-	DEV_RX_OFFLOAD_UDP_CKSUM   | \
-	DEV_RX_OFFLOAD_TCP_CKSUM   | \
-	DEV_RX_OFFLOAD_SCTP_CKSUM  | \
-	DEV_RX_OFFLOAD_JUMBO_FRAME | \
-	DEV_RX_OFFLOAD_KEEP_CRC    | \
-	DEV_RX_OFFLOAD_SCATTER     | \
-	DEV_RX_OFFLOAD_RSS_HASH)
+	RTE_ETH_RX_OFFLOAD_VLAN_STRIP  | \
+	RTE_ETH_RX_OFFLOAD_VLAN_FILTER | \
+	RTE_ETH_RX_OFFLOAD_VLAN_EXTEND | \
+	RTE_ETH_RX_OFFLOAD_IPV4_CKSUM  | \
+	RTE_ETH_RX_OFFLOAD_UDP_CKSUM   | \
+	RTE_ETH_RX_OFFLOAD_TCP_CKSUM   | \
+	RTE_ETH_RX_OFFLOAD_SCTP_CKSUM  | \
+	RTE_ETH_RX_OFFLOAD_KEEP_CRC    | \
+	RTE_ETH_RX_OFFLOAD_SCATTER     | \
+	RTE_ETH_RX_OFFLOAD_RSS_HASH)
 
 #define IGC_TX_OFFLOAD_ALL	(    \
-	DEV_TX_OFFLOAD_VLAN_INSERT | \
-	DEV_TX_OFFLOAD_IPV4_CKSUM  | \
-	DEV_TX_OFFLOAD_UDP_CKSUM   | \
-	DEV_TX_OFFLOAD_TCP_CKSUM   | \
-	DEV_TX_OFFLOAD_SCTP_CKSUM  | \
-	DEV_TX_OFFLOAD_TCP_TSO     | \
-	DEV_TX_OFFLOAD_UDP_TSO	   | \
-	DEV_TX_OFFLOAD_MULTI_SEGS)
+	RTE_ETH_TX_OFFLOAD_VLAN_INSERT | \
+	RTE_ETH_TX_OFFLOAD_IPV4_CKSUM  | \
+	RTE_ETH_TX_OFFLOAD_UDP_CKSUM   | \
+	RTE_ETH_TX_OFFLOAD_TCP_CKSUM   | \
+	RTE_ETH_TX_OFFLOAD_SCTP_CKSUM  | \
+	RTE_ETH_TX_OFFLOAD_TCP_TSO     | \
+	RTE_ETH_TX_OFFLOAD_UDP_TSO	   | \
+	RTE_ETH_TX_OFFLOAD_MULTI_SEGS)
 
 #define IGC_RSS_OFFLOAD_ALL	(    \
-	ETH_RSS_IPV4               | \
-	ETH_RSS_NONFRAG_IPV4_TCP   | \
-	ETH_RSS_NONFRAG_IPV4_UDP   | \
-	ETH_RSS_IPV6               | \
-	ETH_RSS_NONFRAG_IPV6_TCP   | \
-	ETH_RSS_NONFRAG_IPV6_UDP   | \
-	ETH_RSS_IPV6_EX            | \
-	ETH_RSS_IPV6_TCP_EX        | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4               | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP   | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP   | \
+	RTE_ETH_RSS_IPV6               | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP   | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP   | \
+	RTE_ETH_RSS_IPV6_EX            | \
+	RTE_ETH_RSS_IPV6_TCP_EX        | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 #define IGC_MAX_ETQF_FILTERS		3	/* etqf(3) is used for 1588 */
 #define IGC_ETQF_FILTER_1588		3

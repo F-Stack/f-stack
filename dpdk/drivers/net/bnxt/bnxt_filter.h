@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -43,6 +43,7 @@ struct bnxt_filter_info {
 #define HWRM_CFA_EM_FILTER	1
 #define HWRM_CFA_NTUPLE_FILTER	2
 #define HWRM_CFA_TUNNEL_REDIRECT_FILTER	3
+#define HWRM_CFA_CONFIG		4
 	uint8_t                 filter_type;
 	uint32_t                dst_id;
 

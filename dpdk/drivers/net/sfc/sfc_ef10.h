@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2017-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -99,7 +99,7 @@ sfc_ef10_ev_present(const efx_qword_t ev)
 
 static inline void
 sfc_ef10_rx_qpush(volatile void *doorbell, unsigned int added,
-		  unsigned int ptr_mask)
+		  unsigned int ptr_mask, uint32_t *dbell_counter)
 {
 	efx_dword_t dword;
 
@@ -118,6 +118,7 @@ sfc_ef10_rx_qpush(volatile void *doorbell, unsigned int added,
 	 * operations that follow it (i.e. doorbell write).
 	 */
 	rte_write32(dword.ed_u32[0], doorbell);
+	(*dbell_counter)++;
 }
 
 static inline void

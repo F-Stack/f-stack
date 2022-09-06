@@ -146,6 +146,72 @@ set_cipher_iv_ccm(uint16_t iv_length, uint16_t iv_offset,
 			iv_length);
 }
 
+/** Handle Single-Pass AES-GMAC on QAT GEN3 */
+static inline void
+handle_spc_gmac(struct qat_sym_session *ctx, struct rte_crypto_op *op,
+		struct qat_sym_op_cookie *cookie,
+		struct icp_qat_fw_la_bulk_req *qat_req)
+{
+	static const uint32_t ver_key_offset =
+			sizeof(struct icp_qat_hw_auth_setup) +
+			ICP_QAT_HW_GALOIS_128_STATE1_SZ +
+			ICP_QAT_HW_GALOIS_H_SZ + ICP_QAT_HW_GALOIS_LEN_A_SZ +
+			ICP_QAT_HW_GALOIS_E_CTR0_SZ +
+			sizeof(struct icp_qat_hw_cipher_config);
+	struct icp_qat_fw_cipher_cd_ctrl_hdr *cipher_cd_ctrl =
+			(void *) &qat_req->cd_ctrl;
+	struct icp_qat_fw_la_cipher_req_params *cipher_param =
+			(void *) &qat_req->serv_specif_rqpars;
+	uint32_t data_length = op->sym->auth.data.length;
+
+	/* Fill separate Content Descriptor for this op */
+	rte_memcpy(cookie->opt.spc_gmac.cd_cipher.key,
+			ctx->auth_op == ICP_QAT_HW_AUTH_GENERATE ?
+				ctx->cd.cipher.key :
+				RTE_PTR_ADD(&ctx->cd, ver_key_offset),
+			ctx->auth_key_length);
+	cookie->opt.spc_gmac.cd_cipher.cipher_config.val =
+			ICP_QAT_HW_CIPHER_CONFIG_BUILD(
+				ICP_QAT_HW_CIPHER_AEAD_MODE,
+				ctx->qat_cipher_alg,
+				ICP_QAT_HW_CIPHER_NO_CONVERT,
+				(ctx->auth_op == ICP_QAT_HW_AUTH_GENERATE ?
+					ICP_QAT_HW_CIPHER_ENCRYPT :
+					ICP_QAT_HW_CIPHER_DECRYPT));
+	QAT_FIELD_SET(cookie->opt.spc_gmac.cd_cipher.cipher_config.val,
+			ctx->digest_length,
+			QAT_CIPHER_AEAD_HASH_CMP_LEN_BITPOS,
+			QAT_CIPHER_AEAD_HASH_CMP_LEN_MASK);
+	cookie->opt.spc_gmac.cd_cipher.cipher_config.reserved =
+			ICP_QAT_HW_CIPHER_CONFIG_BUILD_UPPER(data_length);
+
+	/* Update the request */
+	qat_req->cd_pars.u.s.content_desc_addr =
+			cookie->opt.spc_gmac.cd_phys_addr;
+	qat_req->cd_pars.u.s.content_desc_params_sz = RTE_ALIGN_CEIL(
+			sizeof(struct icp_qat_hw_cipher_config) +
+			ctx->auth_key_length, 8) >> 3;
+	qat_req->comn_mid.src_length = data_length;
+	qat_req->comn_mid.dst_length = 0;
+
+	cipher_param->spc_aad_addr = 0;
+	cipher_param->spc_auth_res_addr = op->sym->auth.digest.phys_addr;
+	cipher_param->spc_aad_sz = data_length;
+	cipher_param->reserved = 0;
+	cipher_param->spc_auth_res_sz = ctx->digest_length;
+
+	qat_req->comn_hdr.service_cmd_id = ICP_QAT_FW_LA_CMD_CIPHER;
+	cipher_cd_ctrl->cipher_cfg_offset = 0;
+	ICP_QAT_FW_COMN_CURR_ID_SET(cipher_cd_ctrl, ICP_QAT_FW_SLICE_CIPHER);
+	ICP_QAT_FW_COMN_NEXT_ID_SET(cipher_cd_ctrl, ICP_QAT_FW_SLICE_DRAM_WR);
+	ICP_QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_SET(
+			qat_req->comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_SINGLE_PASS_PROTO);
+	ICP_QAT_FW_LA_PROTO_SET(
+			qat_req->comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_NO_PROTO);
+}
+
 int
 qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		void *op_cookie, enum qat_device_gen qat_dev_gen)
@@ -153,6 +219,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	int ret = 0;
 	struct qat_sym_session *ctx = NULL;
 	struct icp_qat_fw_la_cipher_req_params *cipher_param;
+	struct icp_qat_fw_la_cipher_20_req_params *cipher_param20;
 	struct icp_qat_fw_la_auth_req_params *auth_param;
 	register struct icp_qat_fw_la_bulk_req *qat_req;
 	uint8_t do_auth = 0, do_cipher = 0, do_aead = 0;
@@ -222,11 +289,13 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	rte_mov128((uint8_t *)qat_req, (const uint8_t *)&(ctx->fw_req));
 	qat_req->comn_mid.opaque_data = (uint64_t)(uintptr_t)op;
 	cipher_param = (void *)&qat_req->serv_specif_rqpars;
+	cipher_param20 = (void *)&qat_req->serv_specif_rqpars;
 	auth_param = (void *)((uint8_t *)cipher_param +
 			ICP_QAT_FW_HASH_REQUEST_PARAMETERS_OFFSET);
 
-	if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_HASH_CIPHER ||
-			ctx->qat_cmd == ICP_QAT_FW_LA_CMD_CIPHER_HASH) {
+	if ((ctx->qat_cmd == ICP_QAT_FW_LA_CMD_HASH_CIPHER ||
+			ctx->qat_cmd == ICP_QAT_FW_LA_CMD_CIPHER_HASH) &&
+			!ctx->is_gmac) {
 		/* AES-GCM or AES-CCM */
 		if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_GALOIS_128 ||
 			ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_GALOIS_64 ||
@@ -239,7 +308,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			do_auth = 1;
 			do_cipher = 1;
 		}
-	} else if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_AUTH) {
+	} else if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_AUTH || ctx->is_gmac) {
 		do_auth = 1;
 		do_cipher = 0;
 	} else if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_CIPHER) {
@@ -319,15 +388,6 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			auth_param->u1.aad_adr = 0;
 			auth_param->u2.aad_sz = 0;
 
-			/*
-			 * If len(iv)==12B fw computes J0
-			 */
-			if (ctx->auth_iv.length == 12) {
-				ICP_QAT_FW_LA_GCM_IV_LEN_FLAG_SET(
-					qat_req->comn_hdr.serv_specif_flags,
-					ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS);
-
-			}
 		} else {
 			auth_ofs = op->sym->auth.data.offset;
 			auth_len = op->sym->auth.data.length;
@@ -352,14 +412,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 				ICP_QAT_HW_AUTH_ALGO_GALOIS_128 ||
 				ctx->qat_hash_alg ==
 					ICP_QAT_HW_AUTH_ALGO_GALOIS_64) {
-			/*
-			 * If len(iv)==12B fw computes J0
-			 */
-			if (ctx->cipher_iv.length == 12) {
-				ICP_QAT_FW_LA_GCM_IV_LEN_FLAG_SET(
-					qat_req->comn_hdr.serv_specif_flags,
-					ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS);
-			}
+
 			set_cipher_iv(ctx->cipher_iv.length,
 					ctx->cipher_iv.offset,
 					cipher_param, op, qat_req);
@@ -514,13 +567,17 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		cipher_param->cipher_length = 0;
 	}
 
-	if (do_auth || do_aead) {
-		auth_param->auth_off = (uint32_t)rte_pktmbuf_iova_offset(
+	if (!ctx->is_single_pass) {
+		/* Do not let to overwrite spc_aad len */
+		if (do_auth || do_aead) {
+			auth_param->auth_off =
+				(uint32_t)rte_pktmbuf_iova_offset(
 				op->sym->m_src, auth_ofs) - src_buf_start;
-		auth_param->auth_len = auth_len;
-	} else {
-		auth_param->auth_off = 0;
-		auth_param->auth_len = 0;
+			auth_param->auth_len = auth_len;
+		} else {
+			auth_param->auth_off = 0;
+			auth_param->auth_len = 0;
+		}
 	}
 
 	qat_req->comn_mid.dst_length =
@@ -625,11 +682,23 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		qat_req->comn_mid.dest_data_addr = dst_buf_start;
 	}
 
-	/* Handle Single-Pass GCM */
 	if (ctx->is_single_pass) {
-		cipher_param->spc_aad_addr = op->sym->aead.aad.phys_addr;
-		cipher_param->spc_auth_res_addr =
+		if (ctx->is_ucs) {
+			/* GEN 4 */
+			cipher_param20->spc_aad_addr =
+				op->sym->aead.aad.phys_addr;
+			cipher_param20->spc_auth_res_addr =
 				op->sym->aead.digest.phys_addr;
+		} else {
+			cipher_param->spc_aad_addr =
+				op->sym->aead.aad.phys_addr;
+			cipher_param->spc_auth_res_addr =
+					op->sym->aead.digest.phys_addr;
+		}
+	} else if (ctx->is_single_pass_gmac &&
+		       op->sym->auth.data.length <= QAT_AES_GMAC_SPC_MAX_SIZE) {
+		/* Handle Single-Pass AES-GMAC */
+		handle_spc_gmac(ctx, op, cookie, qat_req);
 	}
 
 #if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG

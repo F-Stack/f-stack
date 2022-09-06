@@ -5,7 +5,7 @@
 APP = l3fwd
 
 # all source are stored in SRCS-y
-SRCS-y := main.c l3fwd_lpm.c l3fwd_em.c l3fwd_event.c
+SRCS-y := main.c l3fwd_lpm.c l3fwd_fib.c l3fwd_em.c l3fwd_event.c
 SRCS-y += l3fwd_event_generic.c l3fwd_event_internal_port.c
 
 PKGCONF ?= pkg-config
@@ -28,6 +28,14 @@ CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
+
+ifeq ($(MAKECMDGOALS),static)
+# check for broken pkg-config
+ifeq ($(shell echo $(LDFLAGS_STATIC) | grep 'whole-archive.*l:lib.*no-whole-archive'),)
+$(warning "pkg-config output list does not contain drivers between 'whole-archive'/'no-whole-archive' flags.")
+$(error "Cannot generate statically-linked binaries with this version of pkg-config")
+endif
+endif
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)

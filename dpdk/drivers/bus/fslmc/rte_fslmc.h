@@ -45,15 +45,12 @@ typedef uint32_t dpaa2_seqn_t;
 extern int dpaa2_seqn_dynfield_offset;
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Read dpaa2 sequence number from mbuf.
  *
  * @param mbuf Structure to read from.
  * @return pointer to dpaa2 sequence number.
  */
-__rte_experimental
+__rte_internal
 static inline dpaa2_seqn_t *
 dpaa2_seqn(struct rte_mbuf *mbuf)
 {
@@ -125,7 +122,7 @@ struct rte_dpaa2_device {
 	};
 	enum rte_dpaa2_dev_type dev_type;   /**< Device Type */
 	uint16_t object_id;                 /**< DPAA2 Object ID */
-	struct rte_intr_handle intr_handle; /**< Interrupt handle */
+	struct rte_intr_handle *intr_handle; /**< Interrupt handle */
 	struct rte_dpaa2_driver *driver;    /**< Associated driver */
 	char name[FSLMC_OBJECT_MAX_LEN];    /**< DPAA2 Object name*/
 };

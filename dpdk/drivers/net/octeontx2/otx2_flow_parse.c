@@ -489,13 +489,45 @@ flow_check_lc_ip_tunnel(struct otx2_parse_state *pst)
 		pst->tunnel = 1;
 }
 
+static int
+otx2_flow_raw_item_prepare(const struct rte_flow_item_raw *raw_spec,
+			   const struct rte_flow_item_raw *raw_mask,
+			   struct otx2_flow_item_info *info,
+			   uint8_t *spec_buf, uint8_t *mask_buf)
+{
+	uint32_t custom_hdr_size = 0;
+
+	memset(spec_buf, 0, NPC_MAX_RAW_ITEM_LEN);
+	memset(mask_buf, 0, NPC_MAX_RAW_ITEM_LEN);
+	custom_hdr_size = raw_spec->offset + raw_spec->length;
+
+	memcpy(spec_buf + raw_spec->offset, raw_spec->pattern,
+	       raw_spec->length);
+
+	if (raw_mask->pattern) {
+		memcpy(mask_buf + raw_spec->offset, raw_mask->pattern,
+		       raw_spec->length);
+	} else {
+		memset(mask_buf + raw_spec->offset, 0xFF, raw_spec->length);
+	}
+
+	info->len = custom_hdr_size;
+	info->spec = spec_buf;
+	info->mask = mask_buf;
+
+	return 0;
+}
+
 /* Outer IPv4, Outer IPv6, MPLS, ARP */
 int
 otx2_flow_parse_lc(struct otx2_parse_state *pst)
 {
+	uint8_t raw_spec_buf[NPC_MAX_RAW_ITEM_LEN];
+	uint8_t raw_mask_buf[NPC_MAX_RAW_ITEM_LEN];
 	uint8_t hw_mask[NPC_MAX_EXTRACT_DATA_LEN];
+	const struct rte_flow_item_raw *raw_spec;
 	struct otx2_flow_item_info info;
-	int lid, lt;
+	int lid, lt, len;
 	int rc;
 
 	if (pst->pattern->type == RTE_FLOW_ITEM_TYPE_MPLS)
@@ -531,6 +563,30 @@ otx2_flow_parse_lc(struct otx2_parse_state *pst)
 		info.len = sizeof(struct rte_flow_item_ipv6_ext);
 		info.hw_hdr_len = 40;
 		break;
+	case RTE_FLOW_ITEM_TYPE_RAW:
+		raw_spec = pst->pattern->spec;
+		if (!raw_spec->relative)
+			return 0;
+
+		len = raw_spec->length + raw_spec->offset;
+		if (len > NPC_MAX_RAW_ITEM_LEN) {
+			rte_flow_error_set(pst->error, EINVAL,
+					   RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+					   "Spec length too big");
+			return -rte_errno;
+		}
+
+		otx2_flow_raw_item_prepare((const struct rte_flow_item_raw *)
+					   pst->pattern->spec,
+					   (const struct rte_flow_item_raw *)
+					   pst->pattern->mask, &info,
+					   raw_spec_buf, raw_mask_buf);
+
+		lid = NPC_LID_LC;
+		lt = NPC_LT_LC_NGIO;
+		info.hw_mask = &hw_mask;
+		otx2_flow_get_hw_supp_mask(pst, &info, lid, lt);
+		break;
 	default:
 		/* No match at this layer */
 		return 0;
@@ -552,10 +608,13 @@ int
 otx2_flow_parse_lb(struct otx2_parse_state *pst)
 {
 	const struct rte_flow_item *pattern = pst->pattern;
+	uint8_t raw_spec_buf[NPC_MAX_RAW_ITEM_LEN];
+	uint8_t raw_mask_buf[NPC_MAX_RAW_ITEM_LEN];
 	const struct rte_flow_item *last_pattern;
+	const struct rte_flow_item_raw *raw_spec;
 	char hw_mask[NPC_MAX_EXTRACT_DATA_LEN];
 	struct otx2_flow_item_info info;
-	int lid, lt, lflags;
+	int lid, lt, lflags, len;
 	int nr_vlans = 0;
 	int rc;
 
@@ -638,13 +697,44 @@ otx2_flow_parse_lb(struct otx2_parse_state *pst)
 
 		info.def_mask = &rte_flow_item_e_tag_mask;
 		info.len = sizeof(struct rte_flow_item_e_tag);
+	} else if (pst->pattern->type == RTE_FLOW_ITEM_TYPE_RAW) {
+		raw_spec = pst->pattern->spec;
+		if (raw_spec->relative)
+			return 0;
+		len = raw_spec->length + raw_spec->offset;
+		if (len > NPC_MAX_RAW_ITEM_LEN) {
+			rte_flow_error_set(pst->error, EINVAL,
+					   RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+					   "Spec length too big");
+			return -rte_errno;
+		}
+
+		if (pst->npc->switch_header_type ==
+		    OTX2_PRIV_FLAGS_VLAN_EXDSA) {
+			lt = NPC_LT_LB_VLAN_EXDSA;
+		} else if (pst->npc->switch_header_type ==
+			   OTX2_PRIV_FLAGS_EXDSA) {
+			lt = NPC_LT_LB_EXDSA;
+		} else {
+			rte_flow_error_set(pst->error, ENOTSUP,
+					   RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+					   "exdsa or vlan_exdsa not enabled on"
+					   " port");
+			return -rte_errno;
+		}
+
+		otx2_flow_raw_item_prepare((const struct rte_flow_item_raw *)
+					   pst->pattern->spec,
+					   (const struct rte_flow_item_raw *)
+					   pst->pattern->mask, &info,
+					   raw_spec_buf, raw_mask_buf);
+
+		info.hw_hdr_len = 0;
 	} else {
 		return 0;
 	}
 
 	info.hw_mask = &hw_mask;
-	info.spec = NULL;
-	info.mask = NULL;
 	otx2_flow_get_hw_supp_mask(pst, &info, lid, lt);
 
 	rc = otx2_flow_parse_item_basic(pst->pattern, &info, pst->error);
@@ -655,6 +745,7 @@ otx2_flow_parse_lb(struct otx2_parse_state *pst)
 	pst->pattern = last_pattern;
 	return otx2_flow_update_parse_state(pst, &info, lid, lt, lflags);
 }
+
 
 int
 otx2_flow_parse_la(struct otx2_parse_state *pst)
@@ -761,7 +852,7 @@ parse_rss_action(struct rte_eth_dev *dev,
 					  attr, "No support of RSS in egress");
 	}
 
-	if (dev->data->dev_conf.rxmode.mq_mode != ETH_MQ_RX_RSS)
+	if (dev->data->dev_conf.rxmode.mq_mode != RTE_ETH_MQ_RX_RSS)
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ACTION,
 					  act, "multi-queue mode is disabled");
@@ -809,14 +900,15 @@ otx2_flow_parse_actions(struct rte_eth_dev *dev,
 {
 	struct otx2_eth_dev *hw = dev->data->dev_private;
 	struct otx2_npc_flow_info *npc = &hw->npc_flow;
-	const struct rte_flow_action_count *act_count;
 	const struct rte_flow_action_mark *act_mark;
 	const struct rte_flow_action_queue *act_q;
 	const struct rte_flow_action_vf *vf_act;
+	uint16_t pf_func, vf_id, port_id, pf_id;
+	char if_name[RTE_ETH_NAME_MAX_LEN];
 	bool vlan_insert_action = false;
+	struct rte_eth_dev *eth_dev;
 	const char *errmsg = NULL;
 	int sel_act, req_act = 0;
-	uint16_t pf_func, vf_id;
 	int errcode = 0;
 	int mark = 0;
 	int rq = 0;
@@ -853,15 +945,6 @@ otx2_flow_parse_actions(struct rte_eth_dev *dev,
 			break;
 
 		case RTE_FLOW_ACTION_TYPE_COUNT:
-			act_count =
-				(const struct rte_flow_action_count *)
-				actions->conf;
-
-			if (act_count->shared == 1) {
-				errmsg = "Shared Counters not supported";
-				errcode = ENOTSUP;
-				goto err_exit;
-			}
 			/* Indicates, need a counter */
 			flow->ctr_id = 1;
 			req_act |= OTX2_FLOW_ACT_COUNT;
@@ -890,6 +973,57 @@ otx2_flow_parse_actions(struct rte_eth_dev *dev,
 				pf_func &= (0xfc00);
 				pf_func = (pf_func | (vf_id + 1));
 			}
+			break;
+
+		case RTE_FLOW_ACTION_TYPE_PORT_ID:
+		case RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR:
+			if (actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
+				const struct rte_flow_action_port_id *port_act;
+
+				port_act = actions->conf;
+				port_id = port_act->id;
+			} else {
+				const struct rte_flow_action_ethdev *ethdev_act;
+
+				ethdev_act = actions->conf;
+				port_id = ethdev_act->port_id;
+			}
+			if (rte_eth_dev_get_name_by_port(port_id, if_name)) {
+				errmsg = "Name not found for output port id";
+				errcode = EINVAL;
+				goto err_exit;
+			}
+			eth_dev = rte_eth_dev_allocated(if_name);
+			if (!eth_dev) {
+				errmsg = "eth_dev not found for output port id";
+				errcode = EINVAL;
+				goto err_exit;
+			}
+			if (!otx2_ethdev_is_same_driver(eth_dev)) {
+				errmsg = "Output port id unsupported type";
+				errcode = ENOTSUP;
+				goto err_exit;
+			}
+			if (!otx2_dev_is_vf(otx2_eth_pmd_priv(eth_dev))) {
+				errmsg = "Output port should be VF";
+				errcode = ENOTSUP;
+				goto err_exit;
+			}
+			vf_id = otx2_eth_pmd_priv(eth_dev)->vf;
+			if (vf_id  >= hw->maxvf) {
+				errmsg = "Invalid vf for output port";
+				errcode = EINVAL;
+				goto err_exit;
+			}
+			pf_id = otx2_eth_pmd_priv(eth_dev)->pf;
+			if (pf_id != hw->pf) {
+				errmsg = "Output port unsupported PF";
+				errcode = ENOTSUP;
+				goto err_exit;
+			}
+			pf_func &= (0xfc00);
+			pf_func = (pf_func | (vf_id + 1));
+			req_act |= OTX2_FLOW_ACT_VF;
 			break;
 
 		case RTE_FLOW_ACTION_TYPE_QUEUE:
@@ -1052,7 +1186,7 @@ otx2_flow_parse_actions(struct rte_eth_dev *dev,
 		 *FLOW_KEY_ALG index. So, till we update the action with
 		 *flow_key_alg index, set the action to drop.
 		 */
-		if (dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_RSS)
+		if (dev->data->dev_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS)
 			flow->npc_action = NIX_RX_ACTIONOP_DROP;
 		else
 			flow->npc_action = NIX_RX_ACTIONOP_UCAST;

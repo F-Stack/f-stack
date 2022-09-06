@@ -24,8 +24,7 @@ static inline int qede_alloc_rx_buffer(struct qede_rx_queue *rxq)
 			   rte_mempool_in_use_count(rxq->mb_pool));
 		return -ENOMEM;
 	}
-	rxq->sw_rx_ring[idx].mbuf = new_mb;
-	rxq->sw_rx_ring[idx].page_offset = 0;
+	rxq->sw_rx_ring[idx] = new_mb;
 	mapping = rte_mbuf_data_iova_default(new_mb);
 	/* Advance PROD and get BD pointer */
 	rx_bd = (struct eth_rx_bd *)ecore_chain_produce(&rxq->rx_bd_ring);
@@ -65,8 +64,7 @@ static inline int qede_alloc_rx_bulk_mbufs(struct qede_rx_queue *rxq, int count)
 			rte_prefetch0(obj_p[i + 1]);
 
 		idx = rxq->sw_rx_prod & NUM_RX_BDS(rxq);
-		rxq->sw_rx_ring[idx].mbuf = mbuf;
-		rxq->sw_rx_ring[idx].page_offset = 0;
+		rxq->sw_rx_ring[idx] = mbuf;
 		mapping = rte_mbuf_data_iova_default(mbuf);
 		rx_bd = (struct eth_rx_bd *)
 			ecore_chain_produce(&rxq->rx_bd_ring);
@@ -218,7 +216,7 @@ qede_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qid,
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct qede_rx_queue *rxq;
-	uint16_t max_rx_pkt_len;
+	uint16_t max_rx_pktlen;
 	uint16_t bufsz;
 	int rc;
 
@@ -237,21 +235,21 @@ qede_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qid,
 		dev->data->rx_queues[qid] = NULL;
 	}
 
-	max_rx_pkt_len = (uint16_t)rxmode->max_rx_pkt_len;
+	max_rx_pktlen = dev->data->mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
 	/* Fix up RX buffer size */
 	bufsz = (uint16_t)rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM;
 	/* cache align the mbuf size to simplify rx_buf_size calculation */
 	bufsz = QEDE_FLOOR_TO_CACHE_LINE_SIZE(bufsz);
-	if ((rxmode->offloads & DEV_RX_OFFLOAD_SCATTER)	||
-	    (max_rx_pkt_len + QEDE_ETH_OVERHEAD) > bufsz) {
+	if ((rxmode->offloads & RTE_ETH_RX_OFFLOAD_SCATTER)	||
+	    (max_rx_pktlen + QEDE_ETH_OVERHEAD) > bufsz) {
 		if (!dev->data->scattered_rx) {
 			DP_INFO(edev, "Forcing scatter-gather mode\n");
 			dev->data->scattered_rx = 1;
 		}
 	}
 
-	rc = qede_calc_rx_buf_size(dev, bufsz, max_rx_pkt_len);
+	rc = qede_calc_rx_buf_size(dev, bufsz, max_rx_pktlen);
 	if (rc < 0)
 		return rc;
 
@@ -306,9 +304,9 @@ static void qede_rx_queue_release_mbufs(struct qede_rx_queue *rxq)
 
 	if (rxq->sw_rx_ring) {
 		for (i = 0; i < rxq->nb_rx_desc; i++) {
-			if (rxq->sw_rx_ring[i].mbuf) {
-				rte_pktmbuf_free(rxq->sw_rx_ring[i].mbuf);
-				rxq->sw_rx_ring[i].mbuf = NULL;
+			if (rxq->sw_rx_ring[i]) {
+				rte_pktmbuf_free(rxq->sw_rx_ring[i]);
+				rxq->sw_rx_ring[i] = NULL;
 			}
 		}
 	}
@@ -390,6 +388,7 @@ qede_alloc_tx_queue_mem(struct rte_eth_dev *dev,
 	struct ecore_dev *edev = &qdev->edev;
 	struct qede_tx_queue *txq;
 	int rc;
+	size_t sw_tx_ring_size;
 
 	txq = rte_zmalloc_socket("qede_tx_queue", sizeof(struct qede_tx_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
@@ -422,9 +421,9 @@ qede_alloc_tx_queue_mem(struct rte_eth_dev *dev,
 	}
 
 	/* Allocate software ring */
+	sw_tx_ring_size = sizeof(txq->sw_tx_ring) * txq->nb_tx_desc;
 	txq->sw_tx_ring = rte_zmalloc_socket("txq->sw_tx_ring",
-					     (sizeof(struct qede_tx_entry) *
-					      txq->nb_tx_desc),
+					     sw_tx_ring_size,
 					     RTE_CACHE_LINE_SIZE, socket_id);
 
 	if (!txq->sw_tx_ring) {
@@ -520,9 +519,9 @@ static void qede_tx_queue_release_mbufs(struct qede_tx_queue *txq)
 
 	if (txq->sw_tx_ring) {
 		for (i = 0; i < txq->nb_tx_desc; i++) {
-			if (txq->sw_tx_ring[i].mbuf) {
-				rte_pktmbuf_free(txq->sw_tx_ring[i].mbuf);
-				txq->sw_tx_ring[i].mbuf = NULL;
+			if (txq->sw_tx_ring[i]) {
+				rte_pktmbuf_free(txq->sw_tx_ring[i]);
+				txq->sw_tx_ring[i] = NULL;
 			}
 		}
 	}
@@ -714,9 +713,10 @@ qede_update_rx_prod(__rte_unused struct qede_dev *edev,
 {
 	uint16_t bd_prod = ecore_chain_get_prod_idx(&rxq->rx_bd_ring);
 	uint16_t cqe_prod = ecore_chain_get_prod_idx(&rxq->rx_comp_ring);
-	struct eth_rx_prod_data rx_prods = { 0 };
+	struct eth_rx_prod_data rx_prods;
 
 	/* Update producers */
+	memset(&rx_prods, 0, sizeof(rx_prods));
 	rx_prods.bd_prod = rte_cpu_to_le_16(bd_prod);
 	rx_prods.cqe_prod = rte_cpu_to_le_16(cqe_prod);
 
@@ -886,7 +886,7 @@ qede_free_tx_pkt(struct qede_tx_queue *txq)
 	uint16_t idx;
 
 	idx = TX_CONS(txq);
-	mbuf = txq->sw_tx_ring[idx].mbuf;
+	mbuf = txq->sw_tx_ring[idx];
 	if (mbuf) {
 		nb_segs = mbuf->nb_segs;
 		PMD_TX_LOG(DEBUG, txq, "nb_segs to free %u\n", nb_segs);
@@ -897,7 +897,7 @@ qede_free_tx_pkt(struct qede_tx_queue *txq)
 			nb_segs--;
 		}
 		rte_pktmbuf_free(mbuf);
-		txq->sw_tx_ring[idx].mbuf = NULL;
+		txq->sw_tx_ring[idx] = NULL;
 		txq->sw_tx_cons++;
 		PMD_TX_LOG(DEBUG, txq, "Freed tx packet\n");
 	} else {
@@ -915,8 +915,10 @@ qede_process_tx_compl(__rte_unused struct ecore_dev *edev,
 	uint16_t sw_tx_cons;
 #endif
 
-	rte_compiler_barrier();
 	hw_bd_cons = rte_le_to_cpu_16(*txq->hw_cons_ptr);
+	/* read barrier prevents speculative execution on stale data */
+	rte_rmb();
+
 #ifdef RTE_LIBRTE_QEDE_DEBUG_TX
 	sw_tx_cons = ecore_chain_get_cons_idx(&txq->tx_pbl);
 	PMD_TX_LOG(DEBUG, txq, "Tx Completions = %u\n",
@@ -1299,18 +1301,15 @@ static inline void qede_rx_bd_ring_consume(struct qede_rx_queue *rxq)
 
 static inline void
 qede_reuse_page(__rte_unused struct qede_dev *qdev,
-		struct qede_rx_queue *rxq, struct qede_rx_entry *curr_cons)
+		struct qede_rx_queue *rxq, struct rte_mbuf *curr_cons)
 {
 	struct eth_rx_bd *rx_bd_prod = ecore_chain_produce(&rxq->rx_bd_ring);
 	uint16_t idx = rxq->sw_rx_prod & NUM_RX_BDS(rxq);
-	struct qede_rx_entry *curr_prod;
 	dma_addr_t new_mapping;
 
-	curr_prod = &rxq->sw_rx_ring[idx];
-	*curr_prod = *curr_cons;
+	rxq->sw_rx_ring[idx] = curr_cons;
 
-	new_mapping = rte_mbuf_data_iova_default(curr_prod->mbuf) +
-		      curr_prod->page_offset;
+	new_mapping = rte_mbuf_data_iova_default(curr_cons);
 
 	rx_bd_prod->addr.hi = rte_cpu_to_le_32(U64_HI(new_mapping));
 	rx_bd_prod->addr.lo = rte_cpu_to_le_32(U64_LO(new_mapping));
@@ -1322,10 +1321,10 @@ static inline void
 qede_recycle_rx_bd_ring(struct qede_rx_queue *rxq,
 			struct qede_dev *qdev, uint8_t count)
 {
-	struct qede_rx_entry *curr_cons;
+	struct rte_mbuf *curr_cons;
 
 	for (; count > 0; count--) {
-		curr_cons = &rxq->sw_rx_ring[rxq->sw_rx_cons & NUM_RX_BDS(rxq)];
+		curr_cons = rxq->sw_rx_ring[rxq->sw_rx_cons & NUM_RX_BDS(rxq)];
 		qede_reuse_page(qdev, rxq, curr_cons);
 		qede_rx_bd_ring_consume(rxq);
 	}
@@ -1347,7 +1346,7 @@ qede_rx_process_tpa_cmn_cont_end_cqe(__rte_unused struct qede_dev *qdev,
 	if (rte_le_to_cpu_16(len)) {
 		tpa_info = &rxq->tpa_info[agg_index];
 		cons_idx = rxq->sw_rx_cons & NUM_RX_BDS(rxq);
-		curr_frag = rxq->sw_rx_ring[cons_idx].mbuf;
+		curr_frag = rxq->sw_rx_ring[cons_idx];
 		assert(curr_frag);
 		curr_frag->nb_segs = 1;
 		curr_frag->pkt_len = rte_le_to_cpu_16(len);
@@ -1479,7 +1478,7 @@ qede_process_sg_pkts(void *p_rxq,  struct rte_mbuf *rx_mb,
 			return -EINVAL;
 		}
 		sw_rx_index = rxq->sw_rx_cons & NUM_RX_BDS(rxq);
-		seg2 = rxq->sw_rx_ring[sw_rx_index].mbuf;
+		seg2 = rxq->sw_rx_ring[sw_rx_index];
 		qede_rx_bd_ring_consume(rxq);
 		pkt_len -= cur_size;
 		seg2->data_len = cur_size;
@@ -1599,7 +1598,7 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		/* Get the data from the SW ring */
 		sw_rx_index = rxq->sw_rx_cons & num_rx_bds;
-		rx_mb = rxq->sw_rx_ring[sw_rx_index].mbuf;
+		rx_mb = rxq->sw_rx_ring[sw_rx_index];
 		assert(rx_mb != NULL);
 
 		parse_flag = rte_le_to_cpu_16(fp_cqe->pars_flags.flags);
@@ -1620,9 +1619,9 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					    "L4 csum failed, flags = 0x%x\n",
 					    parse_flag);
 				rxq->rx_hw_errors++;
-				ol_flags |= PKT_RX_L4_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			} else {
-				ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			}
 
 			if (unlikely(qede_check_tunn_csum_l3(parse_flag))) {
@@ -1630,9 +1629,9 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					"Outer L3 csum failed, flags = 0x%x\n",
 					parse_flag);
 				rxq->rx_hw_errors++;
-				ol_flags |= PKT_RX_EIP_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD;
 			} else {
-				ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			}
 
 			flags = fp_cqe->tunnel_pars_flags.flags;
@@ -1665,31 +1664,31 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 				    "L4 csum failed, flags = 0x%x\n",
 				    parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_L4_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 		}
 		if (unlikely(qede_check_notunn_csum_l3(rx_mb, parse_flag))) {
 			PMD_RX_LOG(ERR, rxq, "IP csum failed, flags = 0x%x\n",
 				   parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_IP_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 		}
 
 		if (unlikely(CQE_HAS_VLAN(parse_flag) ||
 			     CQE_HAS_OUTER_VLAN(parse_flag))) {
 			/* Note: FW doesn't indicate Q-in-Q packet */
-			ol_flags |= PKT_RX_VLAN;
+			ol_flags |= RTE_MBUF_F_RX_VLAN;
 			if (qdev->vlan_strip_flg) {
-				ol_flags |= PKT_RX_VLAN_STRIPPED;
+				ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED;
 				rx_mb->vlan_tci = vlan_tci;
 			}
 		}
 
 		if (rss_enable) {
-			ol_flags |= PKT_RX_RSS_HASH;
+			ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 			rx_mb->hash.rss = rss_hash;
 		}
 
@@ -1698,7 +1697,7 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		/* Prefetch next mbuf while processing current one. */
 		preload_idx = rxq->sw_rx_cons & num_rx_bds;
-		rte_prefetch0(rxq->sw_rx_ring[preload_idx].mbuf);
+		rte_prefetch0(rxq->sw_rx_ring[preload_idx]);
 
 		/* Update rest of the MBUF fields */
 		rx_mb->data_off = offset + RTE_PKTMBUF_HEADROOM;
@@ -1819,7 +1818,7 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			tpa_info = &rxq->tpa_info[cqe_start_tpa->tpa_agg_index];
 			tpa_start_flg = true;
 			/* Mark it as LRO packet */
-			ol_flags |= PKT_RX_LRO;
+			ol_flags |= RTE_MBUF_F_RX_LRO;
 			/* In split mode,  seg_len is same as len_on_first_bd
 			 * and bw_ext_bd_len_list will be empty since there are
 			 * no additional buffers
@@ -1857,7 +1856,7 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		/* Get the data from the SW ring */
 		sw_rx_index = rxq->sw_rx_cons & NUM_RX_BDS(rxq);
-		rx_mb = rxq->sw_rx_ring[sw_rx_index].mbuf;
+		rx_mb = rxq->sw_rx_ring[sw_rx_index];
 		assert(rx_mb != NULL);
 
 		/* Handle regular CQE or TPA start CQE */
@@ -1890,9 +1889,9 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					    "L4 csum failed, flags = 0x%x\n",
 					    parse_flag);
 				rxq->rx_hw_errors++;
-				ol_flags |= PKT_RX_L4_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			} else {
-				ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			}
 
 			if (unlikely(qede_check_tunn_csum_l3(parse_flag))) {
@@ -1900,9 +1899,9 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					"Outer L3 csum failed, flags = 0x%x\n",
 					parse_flag);
 				  rxq->rx_hw_errors++;
-				  ol_flags |= PKT_RX_EIP_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD;
 			} else {
-				  ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			}
 
 			if (tpa_start_flg)
@@ -1939,32 +1938,32 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 				    "L4 csum failed, flags = 0x%x\n",
 				    parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_L4_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 		}
 		if (unlikely(qede_check_notunn_csum_l3(rx_mb, parse_flag))) {
 			PMD_RX_LOG(ERR, rxq, "IP csum failed, flags = 0x%x\n",
 				   parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_IP_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 		}
 
 		if (CQE_HAS_VLAN(parse_flag) ||
 		    CQE_HAS_OUTER_VLAN(parse_flag)) {
 			/* Note: FW doesn't indicate Q-in-Q packet */
-			ol_flags |= PKT_RX_VLAN;
+			ol_flags |= RTE_MBUF_F_RX_VLAN;
 			if (qdev->vlan_strip_flg) {
-				ol_flags |= PKT_RX_VLAN_STRIPPED;
+				ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED;
 				rx_mb->vlan_tci = vlan_tci;
 			}
 		}
 
 		/* RSS Hash */
 		if (qdev->rss_enable) {
-			ol_flags |= PKT_RX_RSS_HASH;
+			ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 			rx_mb->hash.rss = rss_hash;
 		}
 
@@ -1988,7 +1987,7 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		/* Prefetch next mbuf while processing current one. */
 		preload_idx = rxq->sw_rx_cons & NUM_RX_BDS(rxq);
-		rte_prefetch0(rxq->sw_rx_ring[preload_idx].mbuf);
+		rte_prefetch0(rxq->sw_rx_ring[preload_idx]);
 
 		/* Update rest of the MBUF fields */
 		rx_mb->data_off = offset + RTE_PKTMBUF_HEADROOM;
@@ -2160,7 +2159,7 @@ qede_xmit_prep_pkts(__rte_unused void *p_txq, struct rte_mbuf **tx_pkts,
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
 		ol_flags = m->ol_flags;
-		if (ol_flags & PKT_TX_TCP_SEG) {
+		if (ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			if (m->nb_segs >= ETH_TX_MAX_BDS_PER_LSO_PACKET) {
 				rte_errno = EINVAL;
 				break;
@@ -2178,14 +2177,14 @@ qede_xmit_prep_pkts(__rte_unused void *p_txq, struct rte_mbuf **tx_pkts,
 		}
 		if (ol_flags & QEDE_TX_OFFLOAD_NOTSUP_MASK) {
 			/* We support only limited tunnel protocols */
-			if (ol_flags & PKT_TX_TUNNEL_MASK) {
+			if (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 				uint64_t temp;
 
-				temp = ol_flags & PKT_TX_TUNNEL_MASK;
-				if (temp == PKT_TX_TUNNEL_VXLAN ||
-				    temp == PKT_TX_TUNNEL_GENEVE ||
-				    temp == PKT_TX_TUNNEL_MPLSINUDP ||
-				    temp == PKT_TX_TUNNEL_GRE)
+				temp = ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK;
+				if (temp == RTE_MBUF_F_TX_TUNNEL_VXLAN ||
+				    temp == RTE_MBUF_F_TX_TUNNEL_GENEVE ||
+				    temp == RTE_MBUF_F_TX_TUNNEL_MPLSINUDP ||
+				    temp == RTE_MBUF_F_TX_TUNNEL_GRE)
 					continue;
 			}
 
@@ -2242,7 +2241,7 @@ qede_xmit_pkts_regular(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct eth_tx_3rd_bd *bd3;
 	struct rte_mbuf *m_seg = NULL;
 	struct rte_mbuf *mbuf;
-	struct qede_tx_entry *sw_tx_ring;
+	struct rte_mbuf **sw_tx_ring;
 	uint16_t nb_tx_pkts;
 	uint16_t bd_prod;
 	uint16_t idx;
@@ -2293,19 +2292,19 @@ qede_xmit_pkts_regular(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			<< ETH_TX_DATA_1ST_BD_PKT_LEN_SHIFT;
 
 		/* Offload the IP checksum in the hardware */
-		if (tx_ol_flags & PKT_TX_IP_CKSUM)
+		if (tx_ol_flags & RTE_MBUF_F_TX_IP_CKSUM)
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
 
 		/* L4 checksum offload (tcp or udp) */
-		if ((tx_ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) &&
-		    (tx_ol_flags & (PKT_TX_UDP_CKSUM | PKT_TX_TCP_CKSUM)))
+		if ((tx_ol_flags & (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6)) &&
+		    (tx_ol_flags & (RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM)))
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_L4_CSUM_SHIFT;
 
 		/* Fill the entry in the SW ring and the BDs in the FW ring */
 		idx = TX_PROD(txq);
-		sw_tx_ring[idx].mbuf = mbuf;
+		sw_tx_ring[idx] = mbuf;
 
 		/* BD1 */
 		bd1 = (struct eth_tx_1st_bd *)ecore_chain_produce(&txq->tx_pbl);
@@ -2438,7 +2437,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 * offloads. Don't rely on pkt_type marked by Rx, instead use
 		 * tx_ol_flags to decide.
 		 */
-		tunn_flg = !!(tx_ol_flags & PKT_TX_TUNNEL_MASK);
+		tunn_flg = !!(tx_ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK);
 
 		if (tunn_flg) {
 			/* Check against max which is Tunnel IPv6 + ext */
@@ -2459,8 +2458,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			}
 
 			/* Outer IP checksum offload */
-			if (tx_ol_flags & (PKT_TX_OUTER_IP_CKSUM |
-					   PKT_TX_OUTER_IPV4)) {
+			if (tx_ol_flags & (RTE_MBUF_F_TX_OUTER_IP_CKSUM |
+					   RTE_MBUF_F_TX_OUTER_IPV4)) {
 				bd1_bd_flags_bf |=
 					ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_MASK <<
 					ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_SHIFT;
@@ -2472,8 +2471,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * and inner layers  lengths need to be provided in
 			 * mbuf.
 			 */
-			if ((tx_ol_flags & PKT_TX_TUNNEL_MASK) ==
-						PKT_TX_TUNNEL_MPLSINUDP) {
+			if ((tx_ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ==
+						RTE_MBUF_F_TX_TUNNEL_MPLSINUDP) {
 				mplsoudp_flg = true;
 #ifdef RTE_LIBRTE_QEDE_DEBUG_TX
 				qede_mpls_tunn_tx_sanity_check(mbuf, txq);
@@ -2506,18 +2505,18 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				    1 << ETH_TX_DATA_2ND_BD_TUNN_IPV6_EXT_SHIFT;
 
 				/* Mark inner IPv6 if present */
-				if (tx_ol_flags & PKT_TX_IPV6)
+				if (tx_ol_flags & RTE_MBUF_F_TX_IPV6)
 					bd2_bf1 |=
 						1 << ETH_TX_DATA_2ND_BD_TUNN_INNER_IPV6_SHIFT;
 
 				/* Inner L4 offsets */
-				if ((tx_ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) &&
-				     (tx_ol_flags & (PKT_TX_UDP_CKSUM |
-							PKT_TX_TCP_CKSUM))) {
+				if ((tx_ol_flags & (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6)) &&
+				     (tx_ol_flags & (RTE_MBUF_F_TX_UDP_CKSUM |
+							RTE_MBUF_F_TX_TCP_CKSUM))) {
 					/* Determines if BD3 is needed */
 					tunn_ipv6_ext_flg = true;
-					if ((tx_ol_flags & PKT_TX_L4_MASK) ==
-							PKT_TX_UDP_CKSUM) {
+					if ((tx_ol_flags & RTE_MBUF_F_TX_L4_MASK) ==
+							RTE_MBUF_F_TX_UDP_CKSUM) {
 						bd2_bf1 |=
 							1 << ETH_TX_DATA_2ND_BD_L4_UDP_SHIFT;
 					}
@@ -2535,7 +2534,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			} /* End MPLSoUDP */
 		} /* End Tunnel handling */
 
-		if (tx_ol_flags & PKT_TX_TCP_SEG) {
+		if (tx_ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			lso_flg = true;
 			if (unlikely(txq->nb_tx_avail <
 						ETH_TX_MIN_BDS_PER_LSO_PKT))
@@ -2552,7 +2551,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			bd1_bd_flags_bf |= 1 << ETH_TX_1ST_BD_FLAGS_LSO_SHIFT;
 			bd1_bd_flags_bf |=
 					1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
-			/* PKT_TX_TCP_SEG implies PKT_TX_TCP_CKSUM */
+			/* RTE_MBUF_F_TX_TCP_SEG implies RTE_MBUF_F_TX_TCP_CKSUM */
 			bd1_bd_flags_bf |=
 					1 << ETH_TX_1ST_BD_FLAGS_L4_CSUM_SHIFT;
 			mss = rte_cpu_to_le_16(mbuf->tso_segsz);
@@ -2569,14 +2568,14 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 
 		/* Descriptor based VLAN insertion */
-		if (tx_ol_flags & PKT_TX_VLAN_PKT) {
+		if (tx_ol_flags & RTE_MBUF_F_TX_VLAN) {
 			vlan = rte_cpu_to_le_16(mbuf->vlan_tci);
 			bd1_bd_flags_bf |=
 			    1 << ETH_TX_1ST_BD_FLAGS_VLAN_INSERTION_SHIFT;
 		}
 
 		/* Offload the IP checksum in the hardware */
-		if (tx_ol_flags & PKT_TX_IP_CKSUM) {
+		if (tx_ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
 			/* There's no DPDK flag to request outer-L4 csum
@@ -2584,8 +2583,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * csum offload is requested then we need to force
 			 * recalculation of L4 tunnel header csum also.
 			 */
-			if (tunn_flg && ((tx_ol_flags & PKT_TX_TUNNEL_MASK) !=
-							PKT_TX_TUNNEL_GRE)) {
+			if (tunn_flg && ((tx_ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) !=
+							RTE_MBUF_F_TX_TUNNEL_GRE)) {
 				bd1_bd_flags_bf |=
 					ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK <<
 					ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_SHIFT;
@@ -2593,8 +2592,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 
 		/* L4 checksum offload (tcp or udp) */
-		if ((tx_ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) &&
-		    (tx_ol_flags & (PKT_TX_UDP_CKSUM | PKT_TX_TCP_CKSUM))) {
+		if ((tx_ol_flags & (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6)) &&
+		    (tx_ol_flags & (RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM))) {
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_L4_CSUM_SHIFT;
 			/* There's no DPDK flag to request outer-L4 csum
@@ -2611,7 +2610,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		/* Fill the entry in the SW ring and the BDs in the FW ring */
 		idx = TX_PROD(txq);
-		txq->sw_tx_ring[idx].mbuf = mbuf;
+		txq->sw_tx_ring[idx] = mbuf;
 
 		/* BD1 */
 		bd1 = (struct eth_tx_1st_bd *)ecore_chain_produce(&txq->tx_pbl);

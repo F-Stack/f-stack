@@ -20,6 +20,7 @@
 #include <rte_io.h>
 
 #include "../i40e_logs.h"
+#include "i40e_status.h"
 
 #define INLINE inline
 #define STATIC static
@@ -67,6 +68,15 @@ typedef enum i40e_status_code i40e_status;
 #define false           0
 #define true            1
 
+/* Avoid macro redefinition warning on Windows */
+#ifdef RTE_EXEC_ENV_WINDOWS
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+#endif
 #define min(a,b) RTE_MIN(a,b)
 #define max(a,b) RTE_MAX(a,b)
 
@@ -152,7 +162,6 @@ static inline uint64_t i40e_read64_addr(volatile void *addr)
 	rte_write32_wc_relaxed((rte_cpu_to_le_32(value)), reg)
 
 #define I40E_WRITE_FLUSH(a) I40E_READ_REG(a, I40E_GLGEN_STAT)
-#define I40EVF_WRITE_FLUSH(a) I40E_READ_REG(a, I40E_VFGEN_RSTAT)
 
 #define I40E_READ_REG(hw, reg) i40e_read_addr(I40E_PCI_REG_ADDR((hw), (reg)))
 #define I40E_WRITE_REG(hw, reg, value) \
@@ -165,7 +174,7 @@ static inline uint64_t i40e_read64_addr(volatile void *addr)
 	I40E_PCI_REG_WRITE(I40E_PCI_REG_ADDR((a), (reg)), (value))
 #define flush(a) i40e_read_addr(I40E_PCI_REG_ADDR((a), (I40E_GLGEN_STAT)))
 
-#define ARRAY_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+#define ARRAY_SIZE(arr) RTE_DIM(arr)
 
 /* memory allocation tracking */
 struct i40e_dma_mem {

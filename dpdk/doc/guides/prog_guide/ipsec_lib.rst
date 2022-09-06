@@ -313,7 +313,20 @@ Supported features
 
 *  ESN and replay window.
 
-*  algorithms: 3DES-CBC, AES-CBC, AES-CTR, AES-GCM, HMAC-SHA1, NULL.
+*  NAT-T / UDP encapsulated ESP.
+
+*  TSO (only for inline crypto mode)
+
+*  algorithms: 3DES-CBC, AES-CBC, AES-CTR, AES-GCM, AES_CCM, CHACHA20_POLY1305,
+   AES_GMAC, HMAC-SHA1, NULL.
+
+
+Telemetry support
+------------------
+Telemetry support implements SA details and IPsec packet add data counters
+statistics. Per SA telemetry statistics can be enabled using
+``rte_ipsec_telemetry_sa_add`` and disabled using
+``rte_ipsec_telemetry_sa_del``. Note that these calls are not thread safe.
 
 
 Limitations

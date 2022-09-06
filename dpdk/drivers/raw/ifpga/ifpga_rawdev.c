@@ -544,10 +544,10 @@ ifpga_monitor_start_func(struct ifpga_rawdev *dev)
 	dev->poll_enabled = 1;
 
 	if (!__atomic_fetch_add(&ifpga_monitor_refcnt, 1, __ATOMIC_RELAXED)) {
-		ret = pthread_create(&ifpga_monitor_start_thread,
-			NULL,
-			ifpga_rawdev_gsd_handle, NULL);
-		if (ret) {
+		ret = rte_ctrl_thread_create(&ifpga_monitor_start_thread,
+					     "ifpga-monitor", NULL,
+					     ifpga_rawdev_gsd_handle, NULL);
+		if (ret != 0) {
 			ifpga_monitor_start_thread = 0;
 			IFPGA_RAWDEV_PMD_ERR(
 				"Fail to create ifpga monitor thread");
@@ -1417,7 +1417,7 @@ ifpga_unregister_msix_irq(struct ifpga_rawdev *dev, enum ifpga_irq_type type,
 			type == IFPGA_FME_IRQ ? "FME" : "AFU",
 			type == IFPGA_FME_IRQ ? 0 : vec_start);
 	} else {
-		rte_free(*intr_handle);
+		rte_intr_instance_free(*intr_handle);
 		*intr_handle = NULL;
 	}
 
@@ -1435,7 +1435,7 @@ ifpga_register_msix_irq(struct ifpga_rawdev *dev, int port_id,
 	struct opae_adapter *adapter;
 	struct opae_manager *mgr;
 	struct opae_accelerator *acc;
-	int i = 0;
+	int *intr_efds = NULL, nb_intr, i;
 
 	if (!dev || !dev->rawdev)
 		return -ENODEV;
@@ -1461,25 +1461,29 @@ ifpga_register_msix_irq(struct ifpga_rawdev *dev, int port_id,
 	if (*intr_handle)
 		return -EBUSY;
 
-	*intr_handle = rte_zmalloc(NULL, sizeof(struct rte_intr_handle), 0);
+	*intr_handle = rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_PRIVATE);
 	if (!(*intr_handle))
 		return -ENOMEM;
 
-	(*intr_handle)->type = RTE_INTR_HANDLE_VFIO_MSIX;
+	if (rte_intr_type_set(*intr_handle, RTE_INTR_HANDLE_VFIO_MSIX))
+		return -rte_errno;
 
 	ret = rte_intr_efd_enable(*intr_handle, count);
 	if (ret)
 		return -ENODEV;
 
-	(*intr_handle)->fd = (*intr_handle)->efds[0];
+	if (rte_intr_fd_set(*intr_handle,
+			rte_intr_efds_index_get(*intr_handle, 0)))
+		return -rte_errno;
 
 	IFPGA_RAWDEV_PMD_DEBUG("register %s irq, vfio_fd=%d, fd=%d\n",
-			name, (*intr_handle)->vfio_dev_fd,
-			(*intr_handle)->fd);
+			name, rte_intr_dev_fd_get(*intr_handle),
+			rte_intr_fd_get(*intr_handle));
 
 	if (type == IFPGA_FME_IRQ) {
 		struct fpga_fme_err_irq_set err_irq_set;
-		err_irq_set.evtfd = (*intr_handle)->efds[0];
+		err_irq_set.evtfd = rte_intr_efds_index_get(*intr_handle,
+								   0);
 
 		ret = opae_manager_ifpga_set_err_irq(mgr, &err_irq_set);
 		if (ret)
@@ -1489,20 +1493,33 @@ ifpga_register_msix_irq(struct ifpga_rawdev *dev, int port_id,
 		if (!acc)
 			return -EINVAL;
 
-		ret = opae_acc_set_irq(acc, vec_start, count,
-				(*intr_handle)->efds);
-		if (ret)
+		nb_intr = rte_intr_nb_intr_get(*intr_handle);
+
+		intr_efds = calloc(nb_intr, sizeof(int));
+		if (!intr_efds)
+			return -ENOMEM;
+
+		for (i = 0; i < nb_intr; i++)
+			intr_efds[i] = rte_intr_efds_index_get(*intr_handle, i);
+
+		ret = opae_acc_set_irq(acc, vec_start, count, intr_efds);
+		if (ret) {
+			free(intr_efds);
 			return -EINVAL;
+		}
 	}
 
 	/* register interrupt handler using DPDK API */
 	ret = rte_intr_callback_register(*intr_handle,
 			handler, (void *)arg);
-	if (ret)
+	if (ret) {
+		free(intr_efds);
 		return -EINVAL;
+	}
 
 	IFPGA_RAWDEV_PMD_INFO("success register %s interrupt\n", name);
 
+	free(intr_efds);
 	return 0;
 }
 
@@ -1569,7 +1586,7 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 	data->bus = pci_dev->addr.bus;
 	data->devid = pci_dev->addr.devid;
 	data->function = pci_dev->addr.function;
-	data->vfio_dev_fd = pci_dev->intr_handle.vfio_dev_fd;
+	data->vfio_dev_fd = rte_intr_dev_fd_get(pci_dev->intr_handle);
 
 	adapter = rawdev->dev_private;
 	/* create a opae_adapter based on above device data */
@@ -1675,7 +1692,7 @@ static struct rte_pci_driver rte_ifpga_rawdev_pmd = {
 RTE_PMD_REGISTER_PCI(ifpga_rawdev_pci_driver, rte_ifpga_rawdev_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(ifpga_rawdev_pci_driver, rte_ifpga_rawdev_pmd);
 RTE_PMD_REGISTER_KMOD_DEP(ifpga_rawdev_pci_driver, "* igb_uio | uio_pci_generic | vfio-pci");
-RTE_LOG_REGISTER(ifpga_rawdev_logtype, driver.raw.init, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(ifpga_rawdev_logtype, NOTICE);
 
 static const char * const valid_args[] = {
 #define IFPGA_ARG_NAME         "ifpga"
@@ -1876,3 +1893,33 @@ RTE_PMD_REGISTER_PARAM_STRING(ifpga_rawdev_cfg,
 	"ifpga=<string> "
 	"port=<int> "
 	"afu_bts=<path>");
+
+struct rte_pci_bus *ifpga_get_pci_bus(void)
+{
+	return rte_ifpga_rawdev_pmd.bus;
+}
+
+int ifpga_rawdev_partial_reconfigure(struct rte_rawdev *dev, int port,
+	const char *file)
+{
+	if (!dev) {
+		IFPGA_RAWDEV_PMD_ERR("Input parameter is invalid");
+		return -EINVAL;
+	}
+
+	return rte_fpga_do_pr(dev, port, file);
+}
+
+void ifpga_rawdev_cleanup(void)
+{
+	struct ifpga_rawdev *dev;
+	unsigned int i;
+
+	for (i = 0; i < IFPGA_RAWDEV_NUM; i++) {
+		dev = &ifpga_rawdevices[i];
+		if (dev->rawdev) {
+			rte_rawdev_pmd_release(dev->rawdev);
+			dev->rawdev = NULL;
+		}
+	}
+}

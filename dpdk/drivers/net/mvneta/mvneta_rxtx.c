@@ -304,18 +304,18 @@ mvneta_prepare_proto_info(uint64_t ol_flags,
 	 * default value
 	 */
 	*l3_type = NETA_OUTQ_L3_TYPE_IPV4;
-	*gen_l3_cksum = ol_flags & PKT_TX_IP_CKSUM ? 1 : 0;
+	*gen_l3_cksum = ol_flags & RTE_MBUF_F_TX_IP_CKSUM ? 1 : 0;
 
-	if (ol_flags & PKT_TX_IPV6) {
+	if (ol_flags & RTE_MBUF_F_TX_IPV6) {
 		*l3_type = NETA_OUTQ_L3_TYPE_IPV6;
 		/* no checksum for ipv6 header */
 		*gen_l3_cksum = 0;
 	}
 
-	if (ol_flags & PKT_TX_TCP_CKSUM) {
+	if (ol_flags & RTE_MBUF_F_TX_TCP_CKSUM) {
 		*l4_type = NETA_OUTQ_L4_TYPE_TCP;
 		*gen_l4_cksum = 1;
-	} else if (ol_flags & PKT_TX_UDP_CKSUM) {
+	} else if (ol_flags & RTE_MBUF_F_TX_UDP_CKSUM) {
 		*l4_type = NETA_OUTQ_L4_TYPE_UDP;
 		*gen_l4_cksum = 1;
 	} else {
@@ -342,15 +342,15 @@ mvneta_desc_to_ol_flags(struct neta_ppio_desc *desc)
 
 	status = neta_ppio_inq_desc_get_l3_pkt_error(desc);
 	if (unlikely(status != NETA_DESC_ERR_OK))
-		flags = PKT_RX_IP_CKSUM_BAD;
+		flags = RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else
-		flags = PKT_RX_IP_CKSUM_GOOD;
+		flags = RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 
 	status = neta_ppio_inq_desc_get_l4_pkt_error(desc);
 	if (unlikely(status != NETA_DESC_ERR_OK))
-		flags |= PKT_RX_L4_CKSUM_BAD;
+		flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 	else
-		flags |= PKT_RX_L4_CKSUM_GOOD;
+		flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 
 	return flags;
 }
@@ -708,19 +708,18 @@ mvneta_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	struct mvneta_priv *priv = dev->data->dev_private;
 	struct mvneta_rxq *rxq;
 	uint32_t frame_size, buf_size = rte_pktmbuf_data_room_size(mp);
-	uint32_t max_rx_pkt_len = dev->data->dev_conf.rxmode.max_rx_pkt_len;
+	uint32_t max_rx_pktlen = dev->data->mtu + RTE_ETHER_HDR_LEN;
 
 	frame_size = buf_size - RTE_PKTMBUF_HEADROOM - MVNETA_PKT_EFFEC_OFFS;
 
-	if (frame_size < max_rx_pkt_len) {
+	if (frame_size < max_rx_pktlen) {
 		MVNETA_LOG(ERR,
 			"Mbuf size must be increased to %u bytes to hold up "
 			"to %u bytes of data.",
-			buf_size + max_rx_pkt_len - frame_size,
-			max_rx_pkt_len);
-		dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
-		MVNETA_LOG(INFO, "Setting max rx pkt len to %u",
-			dev->data->dev_conf.rxmode.max_rx_pkt_len);
+			max_rx_pktlen + buf_size - frame_size,
+			max_rx_pktlen);
+		dev->data->mtu = frame_size - RTE_ETHER_HDR_LEN;
+		MVNETA_LOG(INFO, "Setting MTU to %u", dev->data->mtu);
 	}
 
 	if (dev->data->rx_queues[idx]) {
@@ -735,7 +734,7 @@ mvneta_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	rxq->priv = priv;
 	rxq->mp = mp;
 	rxq->cksum_enabled = dev->data->dev_conf.rxmode.offloads &
-			     DEV_RX_OFFLOAD_IPV4_CKSUM;
+			     RTE_ETH_RX_OFFLOAD_IPV4_CKSUM;
 	rxq->queue_id = idx;
 	rxq->port_id = dev->data->port_id;
 	rxq->size = desc;
@@ -796,13 +795,15 @@ mvneta_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 /**
  * DPDK callback to release the transmit queue.
  *
- * @param txq
- *   Generic transmit queue pointer.
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param qid
+ *   Transmit queue index.
  */
 void
-mvneta_tx_queue_release(void *txq)
+mvneta_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct mvneta_txq *q = txq;
+	struct mvneta_txq *q = dev->data->tx_queues[qid];
 
 	if (!q)
 		return;
@@ -959,13 +960,15 @@ mvneta_flush_queues(struct rte_eth_dev *dev)
 /**
  * DPDK callback to release the receive queue.
  *
- * @param rxq
- *   Generic receive queue pointer.
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param qid
+ *   Receive queue index.
  */
 void
-mvneta_rx_queue_release(void *rxq)
+mvneta_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct mvneta_rxq *q = rxq;
+	struct mvneta_rxq *q = dev->data->rx_queues[qid];
 
 	if (!q)
 		return;
@@ -978,7 +981,7 @@ mvneta_rx_queue_release(void *rxq)
 	if (q->priv->ppio)
 		mvneta_rx_queue_flush(q);
 
-	rte_free(rxq);
+	rte_free(q);
 }
 
 /**

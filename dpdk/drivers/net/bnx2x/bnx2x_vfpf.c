@@ -54,7 +54,7 @@ bnx2x_check_bull(struct bnx2x_softc *sc)
 	if (valid_bitmap & (1 << MAC_ADDR_VALID) && memcmp(bull->mac, sc->old_bulletin.mac, ETH_ALEN))
 		rte_memcpy(&sc->link_params.mac_addr, bull->mac, ETH_ALEN);
 	if (valid_bitmap & (1 << VLAN_VALID))
-		rte_memcpy(&bull->vlan, &sc->old_bulletin.vlan, VLAN_HLEN);
+		rte_memcpy(&bull->vlan, &sc->old_bulletin.vlan, RTE_VLAN_HLEN);
 
 	sc->old_bulletin = *bull;
 
@@ -728,13 +728,9 @@ bnx2x_vfpf_set_mcast(struct bnx2x_softc *sc,
 	}
 
 	for (i = 0; i < mc_addrs_num; i++) {
-		PMD_DRV_LOG(DEBUG, sc, "Adding mcast MAC:%x:%x:%x:%x:%x:%x",
-				mc_addrs[i].addr_bytes[0],
-				mc_addrs[i].addr_bytes[1],
-				mc_addrs[i].addr_bytes[2],
-				mc_addrs[i].addr_bytes[3],
-				mc_addrs[i].addr_bytes[4],
-				mc_addrs[i].addr_bytes[5]);
+		PMD_DRV_LOG(DEBUG, sc, "Adding mcast MAC:"
+				RTE_ETHER_ADDR_PRT_FMT,
+				RTE_ETHER_ADDR_BYTES(&mc_addrs[i]));
 		memcpy(query->multicast[i], mc_addrs[i].addr_bytes, ETH_ALEN);
 	}
 

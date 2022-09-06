@@ -2,57 +2,41 @@
  * Copyright(c) 2016-2020 Intel Corporation
  */
 
-#ifndef __DLB2_HW_TYPES_H
-#define __DLB2_HW_TYPES_H
+#ifndef __DLB2_HW_TYPES_NEW_H
+#define __DLB2_HW_TYPES_NEW_H
 
+#include "../../dlb2_priv.h"
 #include "dlb2_user.h"
 
 #include "dlb2_osdep_list.h"
 #include "dlb2_osdep_types.h"
+#include "dlb2_regs.h"
+
+#define DLB2_BITS_SET(x, val, mask)	(x = ((x) & ~(mask))     \
+				 | (((val) << (mask##_LOC)) & (mask)))
+#define DLB2_BITS_CLR(x, mask)	(x &= ~(mask))
+#define DLB2_BIT_SET(x, mask)	((x) |= (mask))
+#define DLB2_BITS_GET(x, mask)	(((x) & (mask)) >> (mask##_LOC))
 
 #define DLB2_MAX_NUM_VDEVS			16
-#define DLB2_MAX_NUM_DOMAINS			32
-#define DLB2_MAX_NUM_LDB_QUEUES			32 /* LDB == load-balanced */
-#define DLB2_MAX_NUM_DIR_QUEUES			64 /* DIR == directed */
-#define DLB2_MAX_NUM_LDB_PORTS			64
-#define DLB2_MAX_NUM_DIR_PORTS			64
-#define DLB2_MAX_NUM_LDB_CREDITS		(8 * 1024)
-#define DLB2_MAX_NUM_DIR_CREDITS		(2 * 1024)
-#define DLB2_MAX_NUM_HIST_LIST_ENTRIES		2048
-#define DLB2_MAX_NUM_AQED_ENTRIES		2048
-#define DLB2_MAX_NUM_QIDS_PER_LDB_CQ		8
 #define DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS	2
-#define DLB2_MAX_NUM_SEQUENCE_NUMBER_MODES	5
-#define DLB2_QID_PRIORITIES			8
 #define DLB2_NUM_ARB_WEIGHTS			8
+#define DLB2_MAX_NUM_AQED_ENTRIES		2048
 #define DLB2_MAX_WEIGHT				255
 #define DLB2_NUM_COS_DOMAINS			4
+#define DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS	2
+#define DLB2_MAX_NUM_SEQUENCE_NUMBER_MODES	5
 #define DLB2_MAX_CQ_COMP_CHECK_LOOPS		409600
-#define DLB2_MAX_QID_EMPTY_CHECK_LOOPS		(32 * 64 * 1024 * (800 / 30))
-#ifdef FPGA
-#define DLB2_HZ					2000000
-#else
-#define DLB2_HZ					800000000
-#endif
+#define DLB2_MAX_QID_EMPTY_CHECK_LOOPS		(4 * DLB2_MAX_NUM_LDB_CREDITS)
+
+#define DLB2_FUNC_BAR				0
+#define DLB2_CSR_BAR				2
 
 #define PCI_DEVICE_ID_INTEL_DLB2_PF 0x2710
 #define PCI_DEVICE_ID_INTEL_DLB2_VF 0x2711
 
-/* Interrupt related macros */
-#define DLB2_PF_NUM_NON_CQ_INTERRUPT_VECTORS 1
-#define DLB2_PF_NUM_CQ_INTERRUPT_VECTORS     64
-#define DLB2_PF_TOTAL_NUM_INTERRUPT_VECTORS \
-	(DLB2_PF_NUM_NON_CQ_INTERRUPT_VECTORS + \
-	 DLB2_PF_NUM_CQ_INTERRUPT_VECTORS)
-#define DLB2_PF_NUM_COMPRESSED_MODE_VECTORS \
-	(DLB2_PF_NUM_NON_CQ_INTERRUPT_VECTORS + 1)
-#define DLB2_PF_NUM_PACKED_MODE_VECTORS \
-	DLB2_PF_TOTAL_NUM_INTERRUPT_VECTORS
-#define DLB2_PF_COMPRESSED_MODE_CQ_VECTOR_ID \
-	DLB2_PF_NUM_NON_CQ_INTERRUPT_VECTORS
-
-/* DLB non-CQ interrupts (alarm, mailbox, WDT) */
-#define DLB2_INT_NON_CQ 0
+#define PCI_DEVICE_ID_INTEL_DLB2_5_PF 0x2714
+#define PCI_DEVICE_ID_INTEL_DLB2_5_VF 0x2715
 
 #define DLB2_ALARM_HW_SOURCE_SYS 0
 #define DLB2_ALARM_HW_SOURCE_DLB 1
@@ -64,18 +48,6 @@
 #define DLB2_ALARM_SYS_AID_ILLEGAL_HCW		5
 #define DLB2_ALARM_HW_CHP_AID_ILLEGAL_ENQ	1
 #define DLB2_ALARM_HW_CHP_AID_EXCESS_TOKEN_POPS 2
-
-#define DLB2_VF_NUM_NON_CQ_INTERRUPT_VECTORS 1
-#define DLB2_VF_NUM_CQ_INTERRUPT_VECTORS     31
-#define DLB2_VF_BASE_CQ_VECTOR_ID	     0
-#define DLB2_VF_LAST_CQ_VECTOR_ID	     30
-#define DLB2_VF_MBOX_VECTOR_ID		     31
-#define DLB2_VF_TOTAL_NUM_INTERRUPT_VECTORS \
-	(DLB2_VF_NUM_NON_CQ_INTERRUPT_VECTORS + \
-	 DLB2_VF_NUM_CQ_INTERRUPT_VECTORS)
-
-#define DLB2_VDEV_MAX_NUM_INTERRUPT_VECTORS (DLB2_MAX_NUM_LDB_PORTS + \
-					     DLB2_MAX_NUM_DIR_PORTS + 1)
 
 /*
  * Hardware-defined base addresses. Those prefixed 'DLB2_DRV' are only used by
@@ -97,7 +69,8 @@
 #define DLB2_DIR_PP_BASE       0x2000000
 #define DLB2_DIR_PP_STRIDE     0x1000
 #define DLB2_DIR_PP_BOUND      (DLB2_DIR_PP_BASE + \
-				DLB2_DIR_PP_STRIDE * DLB2_MAX_NUM_DIR_PORTS)
+				DLB2_DIR_PP_STRIDE * \
+				DLB2_MAX_NUM_DIR_PORTS_V2_5)
 #define DLB2_DIR_PP_OFFS(id)   (DLB2_DIR_PP_BASE + (id) * DLB2_PP_SIZE)
 
 struct dlb2_resource_id {
@@ -175,7 +148,7 @@ struct dlb2_dir_pq_pair {
 };
 
 enum dlb2_qid_map_state {
-	/* The slot doesn't contain a valid queue mapping */
+	/* The slot does not contain a valid queue mapping */
 	DLB2_QUEUE_UNMAPPED,
 	/* The slot contains a valid queue mapping */
 	DLB2_QUEUE_MAPPED,
@@ -208,6 +181,7 @@ struct dlb2_ldb_port {
 	u32 hist_list_entry_base;
 	u32 hist_list_entry_limit;
 	u32 ref_cnt;
+	u8 cq_depth;
 	u8 init_tkn_cnt;
 	u8 num_pending_removals;
 	u8 num_mappings;
@@ -225,7 +199,7 @@ struct dlb2_sn_group {
 
 static inline bool dlb2_sn_group_full(struct dlb2_sn_group *group)
 {
-	u32 mask[] = {
+	const u32 mask[] = {
 		0x0000ffff,  /* 64 SNs per queue */
 		0x000000ff,  /* 128 SNs per queue */
 		0x0000000f,  /* 256 SNs per queue */
@@ -237,7 +211,7 @@ static inline bool dlb2_sn_group_full(struct dlb2_sn_group *group)
 
 static inline int dlb2_sn_group_alloc_slot(struct dlb2_sn_group *group)
 {
-	u32 bound[6] = {16, 8, 4, 2, 1};
+	const u32 bound[] = {16, 8, 4, 2, 1};
 	u32 i;
 
 	for (i = 0; i < bound[group->mode]; i++) {
@@ -279,8 +253,15 @@ struct dlb2_hw_domain {
 	u32 avail_hist_list_entries;
 	u32 hist_list_entry_base;
 	u32 hist_list_entry_offset;
-	u32 num_ldb_credits;
-	u32 num_dir_credits;
+	union {
+		struct {
+			u32 num_ldb_credits;
+			u32 num_dir_credits;
+		};
+		struct {
+			u32 num_credits;
+		};
+	};
 	u32 num_avail_aqed_entries;
 	u32 num_used_aqed_entries;
 	struct dlb2_resource_id id;
@@ -303,8 +284,15 @@ struct dlb2_function_resources {
 	u32 num_avail_ldb_queues;
 	u32 num_avail_ldb_ports[DLB2_NUM_COS_DOMAINS];
 	u32 num_avail_dir_pq_pairs;
-	u32 num_avail_qed_entries;
-	u32 num_avail_dqed_entries;
+	union {
+		struct {
+			u32 num_avail_qed_entries;
+			u32 num_avail_dqed_entries;
+		};
+		struct {
+			u32 num_avail_entries;
+		};
+	};
 	u32 num_avail_aqed_entries;
 	u8 locked; /* (VDEV only) */
 };
@@ -327,7 +315,7 @@ struct dlb2_function_resources {
 struct dlb2_hw_resources {
 	struct dlb2_ldb_queue ldb_queues[DLB2_MAX_NUM_LDB_QUEUES];
 	struct dlb2_ldb_port ldb_ports[DLB2_MAX_NUM_LDB_PORTS];
-	struct dlb2_dir_pq_pair dir_pq_pairs[DLB2_MAX_NUM_DIR_PORTS];
+	struct dlb2_dir_pq_pair dir_pq_pairs[DLB2_MAX_NUM_DIR_PORTS_V2_5];
 	struct dlb2_sn_group sn_groups[DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS];
 };
 
@@ -344,11 +332,13 @@ struct dlb2_sw_mbox {
 };
 
 struct dlb2_hw {
+	uint8_t ver;
+
 	/* BAR 0 address */
-	void  *csr_kva;
+	void *csr_kva;
 	unsigned long csr_phys_addr;
 	/* BAR 2 address */
-	void  *func_kva;
+	void *func_kva;
 	unsigned long func_phys_addr;
 
 	/* Resource tracking */
@@ -364,4 +354,4 @@ struct dlb2_hw {
 	unsigned int pasid[DLB2_MAX_NUM_VDEVS];
 };
 
-#endif /* __DLB2_HW_TYPES_H */
+#endif /* __DLB2_HW_TYPES_NEW_H */

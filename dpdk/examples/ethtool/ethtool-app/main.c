@@ -98,7 +98,7 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 	int ret;
 
 	memset(&cfg_port, 0, sizeof(cfg_port));
-	cfg_port.txmode.mq_mode = ETH_MQ_TX_NONE;
+	cfg_port.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
 
 	for (idx_port = 0; idx_port < cnt_ports; idx_port++) {
 		struct app_port *ptr_port = &app_cfg->ports[idx_port];
@@ -172,8 +172,8 @@ static void process_frame(struct app_port *ptr_port,
 	struct rte_ether_hdr *ptr_mac_hdr;
 
 	ptr_mac_hdr = rte_pktmbuf_mtod(ptr_frame, struct rte_ether_hdr *);
-	rte_ether_addr_copy(&ptr_mac_hdr->s_addr, &ptr_mac_hdr->d_addr);
-	rte_ether_addr_copy(&ptr_port->mac_addr, &ptr_mac_hdr->s_addr);
+	rte_ether_addr_copy(&ptr_mac_hdr->src_addr, &ptr_mac_hdr->dst_addr);
+	rte_ether_addr_copy(&ptr_port->mac_addr, &ptr_mac_hdr->src_addr);
 }
 
 static int worker_main(__rte_unused void *ptr_data)
@@ -256,6 +256,22 @@ static int worker_main(__rte_unused void *ptr_data)
 	return 0;
 }
 
+static void close_ports(void)
+{
+	uint16_t portid;
+	int ret;
+
+	for (portid = 0; portid < app_cfg.cnt_ports; portid++) {
+		printf("Closing port %d...", portid);
+		ret = rte_eth_dev_stop(portid);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE, "rte_eth_dev_stop: err=%s, port=%u\n",
+				 strerror(-ret), portid);
+		rte_eth_dev_close(portid);
+		printf(" Done\n");
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int cnt_args_parsed;
@@ -298,6 +314,8 @@ int main(int argc, char **argv)
 		if (rte_eal_wait_lcore(id_core) < 0)
 			return -1;
 	}
+
+	close_ports();
 
 	/* clean up the EAL */
 	rte_eal_cleanup();

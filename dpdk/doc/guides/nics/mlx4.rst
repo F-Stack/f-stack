@@ -308,7 +308,7 @@ Performance tuning
    for better performance. For VMs, verify that the right CPU
    and NUMA node are pinned according to the above. Run::
 
-        lstopo-no-graphics
+        lstopo-no-graphics --merge
 
    to identify the NUMA node to which the PCIe adapter is connected.
 
@@ -405,11 +405,11 @@ devices managed by librte_net_mlx4.
 
 #. Request huge pages::
 
-      echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages/nr_hugepages
+      dpdk-hugepages.py --setup 2G
 
 #. Start testpmd with basic parameters::
 
-      testpmd -l 8-15 -n 4 -a 0000:83:00.0 -a 0000:84:00.0 -- --rxq=2 --txq=2 -i
+      dpdk-testpmd -l 8-15 -n 4 -a 0000:83:00.0 -a 0000:84:00.0 -- --rxq=2 --txq=2 -i
 
    Example output::
 

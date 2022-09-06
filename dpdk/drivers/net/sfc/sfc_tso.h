@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2018-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -9,6 +9,8 @@
 
 #ifndef _SFC_TSO_H
 #define _SFC_TSO_H
+
+#include <rte_udp.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,7 +59,7 @@ sfc_tso_innermost_ip_fix_len(const struct rte_mbuf *m, uint8_t *tsoh,
 	size_t field_ofst;
 	rte_be16_t len;
 
-	if (m->ol_flags & PKT_TX_IPV4) {
+	if (m->ol_flags & RTE_MBUF_F_TX_IPV4) {
 		field_ofst = offsetof(struct rte_ipv4_hdr, total_length);
 		len = rte_cpu_to_be_16(m->l3_len + ip_payload_len);
 	} else {

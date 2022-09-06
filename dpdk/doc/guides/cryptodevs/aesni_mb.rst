@@ -77,6 +77,7 @@ Limitations
   protocol.
 * RTE_CRYPTO_CIPHER_DES_DOCSISBPI is not supported for combined Crypto-CRC
   DOCSIS security protocol.
+* The only tag size supported for ZUC-EIA3-256 is 4 bytes.
 
 
 Installation
@@ -85,8 +86,8 @@ Installation
 To build DPDK with the AESNI_MB_PMD the user is required to download the multi-buffer
 library from `here <https://github.com/01org/intel-ipsec-mb>`_
 and compile it on their user system before building DPDK.
-The latest version of the library supported by this PMD is v0.55, which
-can be downloaded from `<https://github.com/01org/intel-ipsec-mb/archive/v0.55.zip>`_.
+The latest version of the library supported by this PMD is v1.1, which
+can be downloaded from `<https://github.com/01org/intel-ipsec-mb/archive/v1.1.zip>`_.
 
 .. code-block:: console
 
@@ -130,9 +131,12 @@ and the Multi-Buffer library version supported by them:
    18.02           0.48
    18.05 - 19.02   0.49 - 0.52
    19.05 - 19.08   0.52
-   19.11+          0.52 - 0.55
+   19.11 - 20.08   0.52 - 0.55
+   20.11 - 21.08   0.53 - 1.1*
+   21.11+          1.0  - 1.1*
    ==============  ============================
 
+\* Multi-buffer library 1.0 or newer only works for Meson but not Make build system.
 
 Initialization
 --------------

@@ -6,6 +6,7 @@
 #define _E1000_ETHDEV_H_
 
 #include <stdint.h>
+#include <sys/queue.h>
 
 #include <rte_flow.h>
 #include <rte_time.h>
@@ -81,15 +82,15 @@
 #define E1000_FTQF_QUEUE_ENABLE          0x00000100
 
 #define IGB_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 /*
  * The overhead from MTU to max frame size.
@@ -386,8 +387,8 @@ extern const struct rte_flow_ops igb_flow_ops;
 /*
  * RX/TX IGB function prototypes
  */
-void eth_igb_tx_queue_release(void *txq);
-void eth_igb_rx_queue_release(void *rxq);
+void eth_igb_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void eth_igb_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 void igb_dev_clear_queues(struct rte_eth_dev *dev);
 void igb_dev_free_queues(struct rte_eth_dev *dev);
 
@@ -399,10 +400,7 @@ int eth_igb_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		const struct rte_eth_rxconf *rx_conf,
 		struct rte_mempool *mb_pool);
 
-uint32_t eth_igb_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
-
-int eth_igb_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t eth_igb_rx_queue_count(void *rx_queue);
 
 int eth_igb_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_igb_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -462,24 +460,21 @@ uint32_t em_get_max_pktlen(struct rte_eth_dev *dev);
 /*
  * RX/TX EM function prototypes
  */
-void eth_em_tx_queue_release(void *txq);
-void eth_em_rx_queue_release(void *rxq);
+void eth_em_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void eth_em_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 void em_dev_clear_queues(struct rte_eth_dev *dev);
 void em_dev_free_queues(struct rte_eth_dev *dev);
 
-uint64_t em_get_rx_port_offloads_capa(struct rte_eth_dev *dev);
-uint64_t em_get_rx_queue_offloads_capa(struct rte_eth_dev *dev);
+uint64_t em_get_rx_port_offloads_capa(void);
+uint64_t em_get_rx_queue_offloads_capa(void);
 
 int eth_em_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
 		const struct rte_eth_rxconf *rx_conf,
 		struct rte_mempool *mb_pool);
 
-uint32_t eth_em_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
-
-int eth_em_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t eth_em_rx_queue_count(void *rx_queue);
 
 int eth_em_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_em_tx_descriptor_status(void *tx_queue, uint16_t offset);

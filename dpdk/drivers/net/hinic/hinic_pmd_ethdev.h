@@ -7,7 +7,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_ethdev_core.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "base/hinic_compat.h"
 #include "base/hinic_pmd_cfg.h"
@@ -35,9 +35,8 @@
 #define HINIC_MAX_MTU_SIZE              9600
 #define HINIC_MIN_MTU_SIZE              256
 
-#define HINIC_VLAN_TAG_SIZE             4
 #define HINIC_ETH_OVERHEAD \
-	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + HINIC_VLAN_TAG_SIZE * 2)
+	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_VLAN_HLEN * 2)
 
 #define HINIC_MIN_FRAME_SIZE        (HINIC_MIN_MTU_SIZE + HINIC_ETH_OVERHEAD)
 #define HINIC_MAX_JUMBO_FRAME_SIZE  (HINIC_MAX_MTU_SIZE + HINIC_ETH_OVERHEAD)

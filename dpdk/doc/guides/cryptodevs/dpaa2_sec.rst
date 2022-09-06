@@ -121,6 +121,8 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
 * ``RTE_CRYPTO_AUTH_MD5_HMAC``
+* ``RTE_CRYPTO_AUTH_AES_XCBC_MAC``
+* ``RTE_CRYPTO_AUTH_AES_CMAC``
 
 AEAD algorithms:
 
@@ -158,12 +160,6 @@ DPAA2_SEC driver has similar pre-requisites as described in :ref:`dpaa2_overview
 The following dependencies are not part of DPDK and must be installed separately:
 
 See :doc:`../platform/dpaa2` for setup information
-
-Currently supported by DPDK:
-
-- NXP SDK **19.09+**.
-- MC Firmware version **10.18.0** and higher.
-- Supported architectures:  **arm64 LE**.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 

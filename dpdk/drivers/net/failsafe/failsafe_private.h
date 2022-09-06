@@ -12,7 +12,7 @@
 
 #include <rte_atomic.h>
 #include <rte_dev.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_devargs.h>
 #include <rte_flow.h>
 #include <rte_interrupts.h>
@@ -166,7 +166,7 @@ struct fs_priv {
 	struct rte_ether_addr *mcast_addrs;
 	/* current capabilities */
 	struct rte_eth_dev_owner my_owner; /* Unique owner. */
-	struct rte_intr_handle intr_handle; /* Port interrupt handle. */
+	struct rte_intr_handle *intr_handle; /* Port interrupt handle. */
 	/*
 	 * Fail-safe state machine.
 	 * This level will be tracking state of the EAL and eth

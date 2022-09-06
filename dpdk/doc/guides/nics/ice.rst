@@ -8,8 +8,8 @@ The ice PMD (**librte_net_ice**) provides poll mode driver support for
 10/25/50/100 Gbps Intel® Ethernet 800 Series Network Adapters based on
 the Intel Ethernet Controller E810 and Intel Ethernet Connection E822/E823.
 
-Prerequisites
--------------
+Linux Prerequisites
+-------------------
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
@@ -24,6 +24,21 @@ Prerequisites
 
 - To understand DDP for COMMs usage with DPDK, please review `Intel® Ethernet 800 Series Telecommunication (Comms)
   Dynamic Device Personalization (DDP) Package <https://cdrdv2.intel.com/v1/dl/getContent/618651>`_.
+
+Windows Prerequisites
+---------------------
+
+- Follow the :doc:`guide for Windows <../windows_gsg/run_apps>`
+  to setup the basic DPDK environment.
+
+- Identify the Intel® Ethernet adapter and get the latest NVM/FW version.
+
+- To access any Intel® Ethernet hardware, load the NetUIO driver in place of existing built-in (inbox) driver.
+
+- To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+  <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
+- Loading of private Dynamic Device Personalization (DDP) package is not supported on Windows.
 
 
 Recommended Matching List
@@ -203,6 +218,34 @@ Runtime Config Options
   The ``rte_net_ice_dump_proto_xtr_metadata`` routine shows how to
   access the protocol extraction result in ``struct rte_mbuf``.
 
+- ``Hardware debug mask log support`` (default ``0``)
+
+  User can enable the related hardware debug mask such as ICE_DBG_NVM::
+
+    -a 0000:88:00.0,hw_debug_mask=0x80 --log-level=pmd.net.ice.driver:8
+
+  These ICE_DBG_XXX are defined in ``drivers/net/ice/base/ice_type.h``.
+
+- ``1PPS out support``
+
+  The E810 supports four single-ended GPIO signals (SDP[20:23]). The 1PPS
+  signal outputs via SDP[20:23]. User can select GPIO pin index flexibly.
+  Pin index 0 means SDP20, 1 means SDP21 and so on. For example::
+
+    -a af:00.0,pps_out='[pin:0]'
+
+- ``Low Rx latency`` (default ``0``)
+
+  vRAN workloads require low latency DPDK interface for the front haul
+  interface connection to Radio. By specifying ``1`` for parameter
+  ``rx_low_latency``, each completed Rx descriptor can be written immediately
+  to host memory and the Rx interrupt latency can be reduced to 2us::
+
+    -a 0000:88:00.0,rx_low_latency=1
+
+  As a trade-off, this configuration may cause the packet processing performance
+  degradation due to the PCI bandwidth limitation.
+
 Driver compilation and testing
 ------------------------------
 
@@ -326,3 +369,8 @@ is stored in ``ice_adapter->active_pkg_type``.
 
 A symbolic link to the DDP package file is also ok. The same package
 file is used by both the kernel driver and the DPDK PMD.
+
+   .. Note::
+
+      Windows support: The DDP package is not supported on Windows so,
+      loading of the package is disabled on Windows.

@@ -15,7 +15,7 @@ VALIDATE_NEW_API=$(dirname $(readlink -f $0))/check-symbol-change.sh
 # Codespell can also be enabled by setting DPDK_CHECKPATCH_CODESPELL to a valid path
 # to a dictionary.txt file if dictionary.txt is not in the default location.
 codespell=${DPDK_CHECKPATCH_CODESPELL:-enable}
-length=${DPDK_CHECKPATCH_LINE_LENGTH:-80}
+length=${DPDK_CHECKPATCH_LINE_LENGTH:-100}
 
 # override default Linux options
 options="--no-tree"
@@ -29,7 +29,7 @@ options="$options --max-line-length=$length"
 options="$options --show-types"
 options="$options --ignore=LINUX_VERSION_CODE,ENOSYS,\
 FILE_PATH_CHANGES,MAINTAINERS_STYLE,SPDX_LICENSE_TAG,\
-VOLATILE,PREFER_PACKED,PREFER_ALIGNED,PREFER_PRINTF,\
+VOLATILE,PREFER_PACKED,PREFER_ALIGNED,PREFER_PRINTF,STRLCPY,\
 PREFER_KERNEL_TYPES,PREFER_FALLTHROUGH,BIT_MACRO,CONST_STRUCT,\
 SPLIT_STRING,LONG_LINE_STRING,C99_COMMENT_TOLERANCE,\
 LINE_SPACING,PARENTHESIS_ALIGNMENT,NETWORKING_BLOCK_COMMENT_STYLE,\
@@ -66,6 +66,14 @@ check_forbidden_additions() { # <patch>
 		-v EXPRESSIONS="__attribute__" \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using compiler attribute directly' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# check %l or %ll format specifier
+	awk -v FOLDERS='lib drivers app examples' \
+		-v EXPRESSIONS='%ll*[xud]' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using %l format, prefer %PRI*64 if type is [u]int64_t' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -110,11 +118,27 @@ check_forbidden_additions() { # <patch>
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
+	# forbid use of __reserved which is a reserved keyword in Windows system headers
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS='\\<__reserved\\>' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using __reserved' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
 	# forbid use of experimental build flag except in examples
 	awk -v FOLDERS='lib drivers app' \
 		-v EXPRESSIONS='-DALLOW_EXPERIMENTAL_API allow_experimental_apis' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using experimental build flag for in-tree compilation' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# refrain from using RTE_LOG_REGISTER for drivers and libs
+	awk -v FOLDERS='lib drivers' \
+		-v EXPRESSIONS='\\<RTE_LOG_REGISTER\\>' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using RTE_LOG_REGISTER, prefer RTE_LOG_REGISTER_(DEFAULT|SUFFIX)' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -196,6 +220,15 @@ check_internal_tags() { # <patch>
 	}' || res=1
 
 	return $res
+}
+
+check_release_notes() { # <patch>
+	rel_notes_prefix=doc/guides/rel_notes/release_
+	IFS=. read year month release < VERSION
+	current_rel_notes=${rel_notes_prefix}${year}_${month}.rst
+
+	! grep -e '^--- a/'$rel_notes_prefix -e '^+++ b/'$rel_notes_prefix "$1" |
+		grep -v $current_rel_notes
 }
 
 number=0
@@ -283,6 +316,14 @@ check () { # <patch> <commit> <title>
 
 	! $verbose || printf '\nChecking __rte_internal tags:\n'
 	report=$(check_internal_tags "$tmpinput")
+	if [ $? -ne 0 ] ; then
+		$headline_printed || print_headline "$3"
+		printf '%s\n' "$report"
+		ret=1
+	fi
+
+	! $verbose || printf '\nChecking release notes updates:\n'
+	report=$(check_release_notes "$tmpinput")
 	if [ $? -ne 0 ] ; then
 		$headline_printed || print_headline "$3"
 		printf '%s\n' "$report"

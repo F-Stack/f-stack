@@ -29,7 +29,7 @@
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
 
@@ -54,30 +54,29 @@
 
 /* Supported Rx offloads */
 static uint64_t dev_rx_offloads_sup =
-		DEV_RX_OFFLOAD_JUMBO_FRAME |
-		DEV_RX_OFFLOAD_SCATTER;
+		RTE_ETH_RX_OFFLOAD_SCATTER;
 
 /* Rx offloads which cannot be disabled */
 static uint64_t dev_rx_offloads_nodis =
-		DEV_RX_OFFLOAD_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_UDP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_CKSUM |
-		DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_RSS_HASH;
+		RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 /* Supported Tx offloads */
 static uint64_t dev_tx_offloads_sup =
-		DEV_TX_OFFLOAD_MT_LOCKFREE |
-		DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+		RTE_ETH_TX_OFFLOAD_MT_LOCKFREE |
+		RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 /* Tx offloads which cannot be disabled */
 static uint64_t dev_tx_offloads_nodis =
-		DEV_TX_OFFLOAD_IPV4_CKSUM |
-		DEV_TX_OFFLOAD_UDP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_CKSUM |
-		DEV_TX_OFFLOAD_SCTP_CKSUM |
-		DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-		DEV_TX_OFFLOAD_MULTI_SEGS;
+		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+		RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 
 /* Keep track of whether QMAN and BMAN have been globally initialized */
 static int is_global_init;
@@ -167,8 +166,6 @@ dpaa_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (mtu < RTE_ETHER_MIN_MTU || frame_size > DPAA_MAX_RX_PKT_LEN)
-		return -EINVAL;
 	/*
 	 * Refuse mtu that requires the support of scattered packets
 	 * when this feature has not been enabled before.
@@ -187,15 +184,6 @@ dpaa_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 	}
 
-	if (frame_size > DPAA_ETH_MAX_LEN)
-		dev->data->dev_conf.rxmode.offloads |=
-						DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		dev->data->dev_conf.rxmode.offloads &=
-						~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
-	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
-
 	fman_if_set_maxfrm(dev->process_private, frame_size);
 
 	return 0;
@@ -213,13 +201,14 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	struct fman_if *fif = dev->process_private;
 	struct __fman_if *__fif;
 	struct rte_intr_handle *intr_handle;
+	uint32_t max_rx_pktlen;
 	int speed, duplex;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
 
 	dpaa_dev = container_of(rdev, struct rte_dpaa_device, device);
-	intr_handle = &dpaa_dev->intr_handle;
+	intr_handle = dpaa_dev->intr_handle;
 	__fif = container_of(fif, struct __fman_if, __if);
 
 	/* Rx offloads which are enabled by default */
@@ -238,28 +227,18 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 		tx_offloads, dev_tx_offloads_nodis);
 	}
 
-	if (rx_offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
-		uint32_t max_len;
-
-		DPAA_PMD_DEBUG("enabling jumbo");
-
-		if (dev->data->dev_conf.rxmode.max_rx_pkt_len <=
-		    DPAA_MAX_RX_PKT_LEN)
-			max_len = dev->data->dev_conf.rxmode.max_rx_pkt_len;
-		else {
-			DPAA_PMD_INFO("enabling jumbo override conf max len=%d "
-				"supported is %d",
-				dev->data->dev_conf.rxmode.max_rx_pkt_len,
-				DPAA_MAX_RX_PKT_LEN);
-			max_len = DPAA_MAX_RX_PKT_LEN;
-		}
-
-		fman_if_set_maxfrm(dev->process_private, max_len);
-		dev->data->mtu = max_len
-			- RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN - VLAN_TAG_SIZE;
+	max_rx_pktlen = eth_conf->rxmode.mtu + RTE_ETHER_HDR_LEN +
+			RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE;
+	if (max_rx_pktlen > DPAA_MAX_RX_PKT_LEN) {
+		DPAA_PMD_INFO("enabling jumbo override conf max len=%d "
+			"supported is %d",
+			max_rx_pktlen, DPAA_MAX_RX_PKT_LEN);
+		max_rx_pktlen = DPAA_MAX_RX_PKT_LEN;
 	}
 
-	if (rx_offloads & DEV_RX_OFFLOAD_SCATTER) {
+	fman_if_set_maxfrm(dev->process_private, max_rx_pktlen);
+
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER) {
 		DPAA_PMD_DEBUG("enabling scatter mode");
 		fman_if_set_sg(dev->process_private, 1);
 		dev->data->scattered_rx = 1;
@@ -276,13 +255,14 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	}
 
 	/* if the interrupts were configured on this devices*/
-	if (intr_handle && intr_handle->fd) {
+	if (intr_handle && rte_intr_fd_get(intr_handle)) {
 		if (dev->data->dev_conf.intr_conf.lsc != 0)
 			rte_intr_callback_register(intr_handle,
 					   dpaa_interrupt_handler,
 					   (void *)dev);
 
-		ret = dpaa_intr_enable(__fif->node_name, intr_handle->fd);
+		ret = dpaa_intr_enable(__fif->node_name,
+				       rte_intr_fd_get(intr_handle));
 		if (ret) {
 			if (dev->data->dev_conf.intr_conf.lsc != 0) {
 				rte_intr_callback_unregister(intr_handle,
@@ -304,43 +284,43 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 
 	/* Configure link only if link is UP*/
 	if (link->link_status) {
-		if (eth_conf->link_speeds == ETH_LINK_SPEED_AUTONEG) {
+		if (eth_conf->link_speeds == RTE_ETH_LINK_SPEED_AUTONEG) {
 			/* Start autoneg only if link is not in autoneg mode */
 			if (!link->link_autoneg)
 				dpaa_restart_link_autoneg(__fif->node_name);
-		} else if (eth_conf->link_speeds & ETH_LINK_SPEED_FIXED) {
-			switch (eth_conf->link_speeds & ~ETH_LINK_SPEED_FIXED) {
-			case ETH_LINK_SPEED_10M_HD:
-				speed = ETH_SPEED_NUM_10M;
-				duplex = ETH_LINK_HALF_DUPLEX;
+		} else if (eth_conf->link_speeds & RTE_ETH_LINK_SPEED_FIXED) {
+			switch (eth_conf->link_speeds &  RTE_ETH_LINK_SPEED_FIXED) {
+			case RTE_ETH_LINK_SPEED_10M_HD:
+				speed = RTE_ETH_SPEED_NUM_10M;
+				duplex = RTE_ETH_LINK_HALF_DUPLEX;
 				break;
-			case ETH_LINK_SPEED_10M:
-				speed = ETH_SPEED_NUM_10M;
-				duplex = ETH_LINK_FULL_DUPLEX;
+			case RTE_ETH_LINK_SPEED_10M:
+				speed = RTE_ETH_SPEED_NUM_10M;
+				duplex = RTE_ETH_LINK_FULL_DUPLEX;
 				break;
-			case ETH_LINK_SPEED_100M_HD:
-				speed = ETH_SPEED_NUM_100M;
-				duplex = ETH_LINK_HALF_DUPLEX;
+			case RTE_ETH_LINK_SPEED_100M_HD:
+				speed = RTE_ETH_SPEED_NUM_100M;
+				duplex = RTE_ETH_LINK_HALF_DUPLEX;
 				break;
-			case ETH_LINK_SPEED_100M:
-				speed = ETH_SPEED_NUM_100M;
-				duplex = ETH_LINK_FULL_DUPLEX;
+			case RTE_ETH_LINK_SPEED_100M:
+				speed = RTE_ETH_SPEED_NUM_100M;
+				duplex = RTE_ETH_LINK_FULL_DUPLEX;
 				break;
-			case ETH_LINK_SPEED_1G:
-				speed = ETH_SPEED_NUM_1G;
-				duplex = ETH_LINK_FULL_DUPLEX;
+			case RTE_ETH_LINK_SPEED_1G:
+				speed = RTE_ETH_SPEED_NUM_1G;
+				duplex = RTE_ETH_LINK_FULL_DUPLEX;
 				break;
-			case ETH_LINK_SPEED_2_5G:
-				speed = ETH_SPEED_NUM_2_5G;
-				duplex = ETH_LINK_FULL_DUPLEX;
+			case RTE_ETH_LINK_SPEED_2_5G:
+				speed = RTE_ETH_SPEED_NUM_2_5G;
+				duplex = RTE_ETH_LINK_FULL_DUPLEX;
 				break;
-			case ETH_LINK_SPEED_10G:
-				speed = ETH_SPEED_NUM_10G;
-				duplex = ETH_LINK_FULL_DUPLEX;
+			case RTE_ETH_LINK_SPEED_10G:
+				speed = RTE_ETH_SPEED_NUM_10G;
+				duplex = RTE_ETH_LINK_FULL_DUPLEX;
 				break;
 			default:
-				speed = ETH_SPEED_NUM_NONE;
-				duplex = ETH_LINK_FULL_DUPLEX;
+				speed = RTE_ETH_SPEED_NUM_NONE;
+				duplex = RTE_ETH_LINK_FULL_DUPLEX;
 				break;
 			}
 			/* Set link speed */
@@ -389,9 +369,13 @@ static void dpaa_interrupt_handler(void *param)
 	int bytes_read;
 
 	dpaa_dev = container_of(rdev, struct rte_dpaa_device, device);
-	intr_handle = &dpaa_dev->intr_handle;
+	intr_handle = dpaa_dev->intr_handle;
 
-	bytes_read = read(intr_handle->fd, &buf, sizeof(uint64_t));
+	if (rte_intr_fd_get(intr_handle) < 0)
+		return;
+
+	bytes_read = read(rte_intr_fd_get(intr_handle), &buf,
+			  sizeof(uint64_t));
 	if (bytes_read < 0)
 		DPAA_PMD_ERR("Error reading eventfd\n");
 	dpaa_eth_link_update(dev, 0);
@@ -461,7 +445,7 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 	}
 
 	dpaa_dev = container_of(rdev, struct rte_dpaa_device, device);
-	intr_handle = &dpaa_dev->intr_handle;
+	intr_handle = dpaa_dev->intr_handle;
 	__fif = container_of(fif, struct __fman_if, __if);
 
 	ret = dpaa_eth_dev_stop(dev);
@@ -470,7 +454,7 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 	if (link->link_status && !link->link_autoneg)
 		dpaa_restart_link_autoneg(__fif->node_name);
 
-	if (intr_handle && intr_handle->fd &&
+	if (intr_handle && rte_intr_fd_get(intr_handle) &&
 	    dev->data->dev_conf.intr_conf.lsc != 0) {
 		dpaa_intr_disable(__fif->node_name);
 		rte_intr_callback_unregister(intr_handle,
@@ -486,9 +470,6 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 	if (dpaa_intf->cgr_rx) {
 		for (loop = 0; loop < dpaa_intf->nb_rx_queues; loop++)
 			qman_delete_cgr(&dpaa_intf->cgr_rx[loop]);
-
-		qman_release_cgrid_range(dpaa_intf->cgr_rx[loop].cgrid,
-					 dpaa_intf->nb_rx_queues);
 	}
 
 	rte_free(dpaa_intf->cgr_rx);
@@ -497,9 +478,6 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 	if (dpaa_intf->cgr_tx) {
 		for (loop = 0; loop < MAX_DPAA_CORES; loop++)
 			qman_delete_cgr(&dpaa_intf->cgr_tx[loop]);
-
-		qman_release_cgrid_range(dpaa_intf->cgr_tx[loop].cgrid,
-					 MAX_DPAA_CORES);
 		rte_free(dpaa_intf->cgr_tx);
 		dpaa_intf->cgr_tx = NULL;
 	}
@@ -562,30 +540,30 @@ static int dpaa_eth_dev_info(struct rte_eth_dev *dev,
 	dev_info->max_mac_addrs = DPAA_MAX_MAC_FILTER;
 	dev_info->max_hash_mac_addrs = 0;
 	dev_info->max_vfs = 0;
-	dev_info->max_vmdq_pools = ETH_16_POOLS;
+	dev_info->max_vmdq_pools = RTE_ETH_16_POOLS;
 	dev_info->flow_type_rss_offloads = DPAA_RSS_OFFLOAD_ALL;
 
 	if (fif->mac_type == fman_mac_1g) {
-		dev_info->speed_capa = ETH_LINK_SPEED_10M_HD
-					| ETH_LINK_SPEED_10M
-					| ETH_LINK_SPEED_100M_HD
-					| ETH_LINK_SPEED_100M
-					| ETH_LINK_SPEED_1G;
+		dev_info->speed_capa = RTE_ETH_LINK_SPEED_10M_HD
+					| RTE_ETH_LINK_SPEED_10M
+					| RTE_ETH_LINK_SPEED_100M_HD
+					| RTE_ETH_LINK_SPEED_100M
+					| RTE_ETH_LINK_SPEED_1G;
 	} else if (fif->mac_type == fman_mac_2_5g) {
-		dev_info->speed_capa = ETH_LINK_SPEED_10M_HD
-					| ETH_LINK_SPEED_10M
-					| ETH_LINK_SPEED_100M_HD
-					| ETH_LINK_SPEED_100M
-					| ETH_LINK_SPEED_1G
-					| ETH_LINK_SPEED_2_5G;
+		dev_info->speed_capa = RTE_ETH_LINK_SPEED_10M_HD
+					| RTE_ETH_LINK_SPEED_10M
+					| RTE_ETH_LINK_SPEED_100M_HD
+					| RTE_ETH_LINK_SPEED_100M
+					| RTE_ETH_LINK_SPEED_1G
+					| RTE_ETH_LINK_SPEED_2_5G;
 	} else if (fif->mac_type == fman_mac_10g) {
-		dev_info->speed_capa = ETH_LINK_SPEED_10M_HD
-					| ETH_LINK_SPEED_10M
-					| ETH_LINK_SPEED_100M_HD
-					| ETH_LINK_SPEED_100M
-					| ETH_LINK_SPEED_1G
-					| ETH_LINK_SPEED_2_5G
-					| ETH_LINK_SPEED_10G;
+		dev_info->speed_capa = RTE_ETH_LINK_SPEED_10M_HD
+					| RTE_ETH_LINK_SPEED_10M
+					| RTE_ETH_LINK_SPEED_100M_HD
+					| RTE_ETH_LINK_SPEED_100M
+					| RTE_ETH_LINK_SPEED_1G
+					| RTE_ETH_LINK_SPEED_2_5G
+					| RTE_ETH_LINK_SPEED_10G;
 	} else {
 		DPAA_PMD_ERR("invalid link_speed: %s, %d",
 			     dpaa_intf->name, fif->mac_type);
@@ -618,13 +596,12 @@ dpaa_dev_rx_burst_mode_get(struct rte_eth_dev *dev,
 		uint64_t flags;
 		const char *output;
 	} rx_offload_map[] = {
-			{DEV_RX_OFFLOAD_JUMBO_FRAME, " Jumbo frame,"},
-			{DEV_RX_OFFLOAD_SCATTER, " Scattered,"},
-			{DEV_RX_OFFLOAD_IPV4_CKSUM, " IPV4 csum,"},
-			{DEV_RX_OFFLOAD_UDP_CKSUM, " UDP csum,"},
-			{DEV_RX_OFFLOAD_TCP_CKSUM, " TCP csum,"},
-			{DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM, " Outer IPV4 csum,"},
-			{DEV_RX_OFFLOAD_RSS_HASH, " RSS,"}
+			{RTE_ETH_RX_OFFLOAD_SCATTER, " Scattered,"},
+			{RTE_ETH_RX_OFFLOAD_IPV4_CKSUM, " IPV4 csum,"},
+			{RTE_ETH_RX_OFFLOAD_UDP_CKSUM, " UDP csum,"},
+			{RTE_ETH_RX_OFFLOAD_TCP_CKSUM, " TCP csum,"},
+			{RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM, " Outer IPV4 csum,"},
+			{RTE_ETH_RX_OFFLOAD_RSS_HASH, " RSS,"}
 	};
 
 	/* Update Rx offload info */
@@ -651,14 +628,14 @@ dpaa_dev_tx_burst_mode_get(struct rte_eth_dev *dev,
 		uint64_t flags;
 		const char *output;
 	} tx_offload_map[] = {
-			{DEV_TX_OFFLOAD_MT_LOCKFREE, " MT lockfree,"},
-			{DEV_TX_OFFLOAD_MBUF_FAST_FREE, " MBUF free disable,"},
-			{DEV_TX_OFFLOAD_IPV4_CKSUM, " IPV4 csum,"},
-			{DEV_TX_OFFLOAD_UDP_CKSUM, " UDP csum,"},
-			{DEV_TX_OFFLOAD_TCP_CKSUM, " TCP csum,"},
-			{DEV_TX_OFFLOAD_SCTP_CKSUM, " SCTP csum,"},
-			{DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM, " Outer IPV4 csum,"},
-			{DEV_TX_OFFLOAD_MULTI_SEGS, " Scattered,"}
+			{RTE_ETH_TX_OFFLOAD_MT_LOCKFREE, " MT lockfree,"},
+			{RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE, " MBUF free disable,"},
+			{RTE_ETH_TX_OFFLOAD_IPV4_CKSUM, " IPV4 csum,"},
+			{RTE_ETH_TX_OFFLOAD_UDP_CKSUM, " UDP csum,"},
+			{RTE_ETH_TX_OFFLOAD_TCP_CKSUM, " TCP csum,"},
+			{RTE_ETH_TX_OFFLOAD_SCTP_CKSUM, " SCTP csum,"},
+			{RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM, " Outer IPV4 csum,"},
+			{RTE_ETH_TX_OFFLOAD_MULTI_SEGS, " Scattered,"}
 	};
 
 	/* Update Tx offload info */
@@ -692,7 +669,7 @@ static int dpaa_eth_link_update(struct rte_eth_dev *dev,
 			ret = dpaa_get_link_status(__fif->node_name, link);
 			if (ret)
 				return ret;
-			if (link->link_status == ETH_LINK_DOWN &&
+			if (link->link_status == RTE_ETH_LINK_DOWN &&
 			    wait_to_complete)
 				rte_delay_ms(CHECK_INTERVAL);
 			else
@@ -703,15 +680,15 @@ static int dpaa_eth_link_update(struct rte_eth_dev *dev,
 	}
 
 	if (ioctl_version < 2) {
-		link->link_duplex = ETH_LINK_FULL_DUPLEX;
-		link->link_autoneg = ETH_LINK_AUTONEG;
+		link->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+		link->link_autoneg = RTE_ETH_LINK_AUTONEG;
 
 		if (fif->mac_type == fman_mac_1g)
-			link->link_speed = ETH_SPEED_NUM_1G;
+			link->link_speed = RTE_ETH_SPEED_NUM_1G;
 		else if (fif->mac_type == fman_mac_2_5g)
-			link->link_speed = ETH_SPEED_NUM_2_5G;
+			link->link_speed = RTE_ETH_SPEED_NUM_2_5G;
 		else if (fif->mac_type == fman_mac_10g)
-			link->link_speed = ETH_SPEED_NUM_10G;
+			link->link_speed = RTE_ETH_SPEED_NUM_10G;
 		else
 			DPAA_PMD_ERR("invalid link_speed: %s, %d",
 				     dpaa_intf->name, fif->mac_type);
@@ -821,8 +798,8 @@ dpaa_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
 static int
 dpaa_xstats_get_names_by_id(
 	struct rte_eth_dev *dev,
-	struct rte_eth_xstat_name *xstats_names,
 	const uint64_t *ids,
+	struct rte_eth_xstat_name *xstats_names,
 	unsigned int limit)
 {
 	unsigned int i, stat_cnt = RTE_DIM(dpaa_xstats_strings);
@@ -942,6 +919,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	u32 flags = 0;
 	int ret;
 	u32 buffsz = rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM;
+	uint32_t max_rx_pktlen;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -977,17 +955,23 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		}
 	}
 
+	if (dpaa_intf->bp_info && dpaa_intf->bp_info->bp &&
+	    dpaa_intf->bp_info->mp != mp) {
+		DPAA_PMD_WARN("Multiple pools on same interface not supported");
+		return -EINVAL;
+	}
+
+	max_rx_pktlen = dev->data->mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN +
+		VLAN_TAG_SIZE;
 	/* Max packet can fit in single buffer */
-	if (dev->data->dev_conf.rxmode.max_rx_pkt_len <= buffsz) {
+	if (max_rx_pktlen <= buffsz) {
 		;
 	} else if (dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_SCATTER) {
-		if (dev->data->dev_conf.rxmode.max_rx_pkt_len >
-			buffsz * DPAA_SGT_MAX_ENTRIES) {
-			DPAA_PMD_ERR("max RxPkt size %d too big to fit "
+			RTE_ETH_RX_OFFLOAD_SCATTER) {
+		if (max_rx_pktlen > buffsz * DPAA_SGT_MAX_ENTRIES) {
+			DPAA_PMD_ERR("Maximum Rx packet size %d too big to fit "
 				"MaxSGlist %d",
-				dev->data->dev_conf.rxmode.max_rx_pkt_len,
-				buffsz * DPAA_SGT_MAX_ENTRIES);
+				max_rx_pktlen, buffsz * DPAA_SGT_MAX_ENTRIES);
 			rte_errno = EOVERFLOW;
 			return -rte_errno;
 		}
@@ -995,8 +979,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		DPAA_PMD_WARN("The requested maximum Rx packet size (%u) is"
 		     " larger than a single mbuf (%u) and scattered"
 		     " mode has not been requested",
-		     dev->data->dev_conf.rxmode.max_rx_pkt_len,
-		     buffsz - RTE_PKTMBUF_HEADROOM);
+		     max_rx_pktlen, buffsz - RTE_PKTMBUF_HEADROOM);
 	}
 
 	dpaa_intf->bp_info = DPAA_MEMPOOL_TO_POOL_INFO(mp);
@@ -1034,8 +1017,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 
 	dpaa_intf->valid = 1;
 	DPAA_PMD_DEBUG("if:%s sg_on = %d, max_frm =%d", dpaa_intf->name,
-		fman_if_get_sg_enable(fif),
-		dev->data->dev_conf.rxmode.max_rx_pkt_len);
+		fman_if_get_sg_enable(fif), max_rx_pktlen);
 	/* checking if push mode only, no error check for now */
 	if (!rxq->is_static &&
 	    dpaa_push_mode_max_queue > dpaa_push_queue_idx) {
@@ -1095,26 +1077,38 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		rxq->qp = qp;
 
 		/* Set up the device interrupt handler */
-		if (!dev->intr_handle) {
+		if (dev->intr_handle == NULL) {
 			struct rte_dpaa_device *dpaa_dev;
 			struct rte_device *rdev = dev->device;
 
 			dpaa_dev = container_of(rdev, struct rte_dpaa_device,
 						device);
-			dev->intr_handle = &dpaa_dev->intr_handle;
-			dev->intr_handle->intr_vec = rte_zmalloc(NULL,
-					dpaa_push_mode_max_queue, 0);
-			if (!dev->intr_handle->intr_vec) {
+			dev->intr_handle = dpaa_dev->intr_handle;
+			if (rte_intr_vec_list_alloc(dev->intr_handle,
+					NULL, dpaa_push_mode_max_queue)) {
 				DPAA_PMD_ERR("intr_vec alloc failed");
 				return -ENOMEM;
 			}
-			dev->intr_handle->nb_efd = dpaa_push_mode_max_queue;
-			dev->intr_handle->max_intr = dpaa_push_mode_max_queue;
+			if (rte_intr_nb_efd_set(dev->intr_handle,
+					dpaa_push_mode_max_queue))
+				return -rte_errno;
+
+			if (rte_intr_max_intr_set(dev->intr_handle,
+					dpaa_push_mode_max_queue))
+				return -rte_errno;
 		}
 
-		dev->intr_handle->type = RTE_INTR_HANDLE_EXT;
-		dev->intr_handle->intr_vec[queue_idx] = queue_idx + 1;
-		dev->intr_handle->efds[queue_idx] = q_fd;
+		if (rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_EXT))
+			return -rte_errno;
+
+		if (rte_intr_vec_list_index_set(dev->intr_handle,
+						queue_idx, queue_idx + 1))
+			return -rte_errno;
+
+		if (rte_intr_efds_index_set(dev->intr_handle, queue_idx,
+						   q_fd))
+			return -rte_errno;
+
 		rxq->q_fd = q_fd;
 	}
 	rxq->bp_array = rte_dpaa_bpid_info;
@@ -1228,12 +1222,6 @@ dpaa_eth_eventq_detach(const struct rte_eth_dev *dev,
 }
 
 static
-void dpaa_eth_rx_queue_release(void *rxq __rte_unused)
-{
-	PMD_INIT_FUNC_TRACE();
-}
-
-static
 int dpaa_eth_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 			    uint16_t nb_desc __rte_unused,
 		unsigned int socket_id __rte_unused,
@@ -1266,23 +1254,17 @@ int dpaa_eth_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	return 0;
 }
 
-static void dpaa_eth_tx_queue_release(void *txq __rte_unused)
-{
-	PMD_INIT_FUNC_TRACE();
-}
-
 static uint32_t
-dpaa_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
+dpaa_dev_rx_queue_count(void *rx_queue)
 {
-	struct dpaa_if *dpaa_intf = dev->data->dev_private;
-	struct qman_fq *rxq = &dpaa_intf->rx_queues[rx_queue_id];
+	struct qman_fq *rxq = rx_queue;
 	u32 frm_cnt = 0;
 
 	PMD_INIT_FUNC_TRACE();
 
 	if (qman_query_fq_frm_cnt(rxq, &frm_cnt) == 0) {
-		DPAA_PMD_DEBUG("RX frame count for q(%d) is %u",
-			       rx_queue_id, frm_cnt);
+		DPAA_PMD_DEBUG("RX frame count for q(%p) is %u",
+			       rx_queue, frm_cnt);
 	}
 	return frm_cnt;
 }
@@ -1297,7 +1279,7 @@ static int dpaa_link_down(struct rte_eth_dev *dev)
 	__fif = container_of(fif, struct __fman_if, __if);
 
 	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
-		dpaa_update_link_status(__fif->node_name, ETH_LINK_DOWN);
+		dpaa_update_link_status(__fif->node_name, RTE_ETH_LINK_DOWN);
 	else
 		return dpaa_eth_dev_stop(dev);
 	return 0;
@@ -1313,7 +1295,7 @@ static int dpaa_link_up(struct rte_eth_dev *dev)
 	__fif = container_of(fif, struct __fman_if, __if);
 
 	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
-		dpaa_update_link_status(__fif->node_name, ETH_LINK_UP);
+		dpaa_update_link_status(__fif->node_name, RTE_ETH_LINK_UP);
 	else
 		dpaa_eth_dev_start(dev);
 	return 0;
@@ -1343,10 +1325,10 @@ dpaa_flow_ctrl_set(struct rte_eth_dev *dev,
 		return -EINVAL;
 	}
 
-	if (fc_conf->mode == RTE_FC_NONE) {
+	if (fc_conf->mode == RTE_ETH_FC_NONE) {
 		return 0;
-	} else if (fc_conf->mode == RTE_FC_TX_PAUSE ||
-		 fc_conf->mode == RTE_FC_FULL) {
+	} else if (fc_conf->mode == RTE_ETH_FC_TX_PAUSE ||
+		 fc_conf->mode == RTE_ETH_FC_FULL) {
 		fman_if_set_fc_threshold(dev->process_private,
 					 fc_conf->high_water,
 					 fc_conf->low_water,
@@ -1390,11 +1372,11 @@ dpaa_flow_ctrl_get(struct rte_eth_dev *dev,
 	}
 	ret = fman_if_get_fc_threshold(dev->process_private);
 	if (ret) {
-		fc_conf->mode = RTE_FC_TX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_TX_PAUSE;
 		fc_conf->pause_time =
 			fman_if_get_fc_quanta(dev->process_private);
 	} else {
-		fc_conf->mode = RTE_FC_NONE;
+		fc_conf->mode = RTE_ETH_FC_NONE;
 	}
 
 	return 0;
@@ -1517,12 +1499,19 @@ dpaa_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 {
 	struct dpaa_if *dpaa_intf = dev->data->dev_private;
 	struct qman_fq *rxq;
+	int ret;
 
 	rxq = dev->data->rx_queues[queue_id];
 
 	qinfo->mp = dpaa_intf->bp_info->mp;
 	qinfo->scattered_rx = dev->data->scattered_rx;
 	qinfo->nb_desc = rxq->nb_desc;
+
+	/* Report the HW Rx buffer length to user */
+	ret = fman_if_get_maxfrm(dev->process_private);
+	if (ret > 0)
+		qinfo->rx_buf_size = ret;
+
 	qinfo->conf.rx_free_thresh = 1;
 	qinfo->conf.rx_drop_en = 1;
 	qinfo->conf.rx_deferred_start = 0;
@@ -1558,8 +1547,6 @@ static struct eth_dev_ops dpaa_devops = {
 
 	.rx_queue_setup		  = dpaa_eth_rx_queue_setup,
 	.tx_queue_setup		  = dpaa_eth_tx_queue_setup,
-	.rx_queue_release	  = dpaa_eth_rx_queue_release,
-	.tx_queue_release	  = dpaa_eth_tx_queue_release,
 	.rx_burst_mode_get	  = dpaa_dev_rx_burst_mode_get,
 	.tx_burst_mode_get	  = dpaa_dev_tx_burst_mode_get,
 	.rxq_info_get		  = dpaa_rxq_info_get,
@@ -1650,10 +1637,10 @@ static int dpaa_fc_set_default(struct dpaa_if *dpaa_intf,
 	fc_conf = dpaa_intf->fc_conf;
 	ret = fman_if_get_fc_threshold(fman_intf);
 	if (ret) {
-		fc_conf->mode = RTE_FC_TX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_TX_PAUSE;
 		fc_conf->pause_time = fman_if_get_fc_quanta(fman_intf);
 	} else {
-		fc_conf->mode = RTE_FC_NONE;
+		fc_conf->mode = RTE_ETH_FC_NONE;
 	}
 
 	return 0;
@@ -2081,14 +2068,8 @@ dpaa_dev_init(struct rte_eth_dev *eth_dev)
 	/* copy the primary mac address */
 	rte_ether_addr_copy(&fman_intf->mac_addr, &eth_dev->data->mac_addrs[0]);
 
-	RTE_LOG(INFO, PMD, "net: dpaa: %s: %02x:%02x:%02x:%02x:%02x:%02x\n",
-		dpaa_device->name,
-		fman_intf->mac_addr.addr_bytes[0],
-		fman_intf->mac_addr.addr_bytes[1],
-		fman_intf->mac_addr.addr_bytes[2],
-		fman_intf->mac_addr.addr_bytes[3],
-		fman_intf->mac_addr.addr_bytes[4],
-		fman_intf->mac_addr.addr_bytes[5]);
+	RTE_LOG(INFO, PMD, "net: dpaa: %s: " RTE_ETHER_ADDR_PRT_FMT "\n",
+		dpaa_device->name, RTE_ETHER_ADDR_BYTES(&fman_intf->mac_addr));
 
 	if (!fman_intf->is_shared_mac) {
 		/* Configure error packet handling */
@@ -2296,4 +2277,4 @@ static struct rte_dpaa_driver rte_dpaa_pmd = {
 };
 
 RTE_PMD_REGISTER_DPAA(net_dpaa, rte_dpaa_pmd);
-RTE_LOG_REGISTER(dpaa_logtype_pmd, pmd.net.dpaa, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa_logtype_pmd, NOTICE);

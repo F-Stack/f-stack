@@ -9,13 +9,14 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <eventdev_pmd.h>
 #include <rte_alarm.h>
 #include <rte_branch_prediction.h>
 #include <rte_bus_vdev.h>
 #include <rte_cycles.h>
 #include <rte_debug.h>
-#include <rte_devargs.h>
 #include <rte_dev.h>
+#include <rte_devargs.h>
 #include <rte_kvargs.h>
 #include <rte_malloc.h>
 #include <rte_mbuf_pool_ops.h>
@@ -52,9 +53,9 @@ enum octeontx_link_speed {
 	OCTEONTX_LINK_SPEED_RESERVE2
 };
 
-RTE_LOG_REGISTER(otx_net_logtype_mbox, pmd.net.octeontx.mbox, NOTICE);
-RTE_LOG_REGISTER(otx_net_logtype_init, pmd.net.octeontx.init, NOTICE);
-RTE_LOG_REGISTER(otx_net_logtype_driver, pmd.net.octeontx.driver, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(otx_net_logtype_mbox, mbox, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(otx_net_logtype_init, init, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(otx_net_logtype_driver, driver, NOTICE);
 
 /* Parse integer from integer argument */
 static int
@@ -163,7 +164,7 @@ octeontx_link_status_print(struct rte_eth_dev *eth_dev,
 		octeontx_log_info("Port %u: Link Up - speed %u Mbps - %s",
 			  (eth_dev->data->port_id),
 			  link->link_speed,
-			  link->link_duplex == ETH_LINK_FULL_DUPLEX ?
+			  link->link_duplex == RTE_ETH_LINK_FULL_DUPLEX ?
 			  "full-duplex" : "half-duplex");
 	else
 		octeontx_log_info("Port %d: Link Down",
@@ -176,38 +177,38 @@ octeontx_link_status_update(struct octeontx_nic *nic,
 {
 	memset(link, 0, sizeof(*link));
 
-	link->link_status = nic->link_up ? ETH_LINK_UP : ETH_LINK_DOWN;
+	link->link_status = nic->link_up ? RTE_ETH_LINK_UP : RTE_ETH_LINK_DOWN;
 
 	switch (nic->speed) {
 	case OCTEONTX_LINK_SPEED_SGMII:
-		link->link_speed = ETH_SPEED_NUM_1G;
+		link->link_speed = RTE_ETH_SPEED_NUM_1G;
 		break;
 
 	case OCTEONTX_LINK_SPEED_XAUI:
-		link->link_speed = ETH_SPEED_NUM_10G;
+		link->link_speed = RTE_ETH_SPEED_NUM_10G;
 		break;
 
 	case OCTEONTX_LINK_SPEED_RXAUI:
 	case OCTEONTX_LINK_SPEED_10G_R:
-		link->link_speed = ETH_SPEED_NUM_10G;
+		link->link_speed = RTE_ETH_SPEED_NUM_10G;
 		break;
 	case OCTEONTX_LINK_SPEED_QSGMII:
-		link->link_speed = ETH_SPEED_NUM_5G;
+		link->link_speed = RTE_ETH_SPEED_NUM_5G;
 		break;
 	case OCTEONTX_LINK_SPEED_40G_R:
-		link->link_speed = ETH_SPEED_NUM_40G;
+		link->link_speed = RTE_ETH_SPEED_NUM_40G;
 		break;
 
 	case OCTEONTX_LINK_SPEED_RESERVE1:
 	case OCTEONTX_LINK_SPEED_RESERVE2:
 	default:
-		link->link_speed = ETH_SPEED_NUM_NONE;
+		link->link_speed = RTE_ETH_SPEED_NUM_NONE;
 		octeontx_log_err("incorrect link speed %d", nic->speed);
 		break;
 	}
 
-	link->link_duplex = ETH_LINK_FULL_DUPLEX;
-	link->link_autoneg = ETH_LINK_AUTONEG;
+	link->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	link->link_autoneg = RTE_ETH_LINK_AUTONEG;
 }
 
 static void
@@ -360,20 +361,20 @@ octeontx_tx_offload_flags(struct rte_eth_dev *eth_dev)
 	struct octeontx_nic *nic = octeontx_pmd_priv(eth_dev);
 	uint16_t flags = 0;
 
-	if (nic->tx_offloads & DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM ||
-	    nic->tx_offloads & DEV_TX_OFFLOAD_OUTER_UDP_CKSUM)
+	if (nic->tx_offloads & RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM ||
+	    nic->tx_offloads & RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM)
 		flags |= OCCTX_TX_OFFLOAD_OL3_OL4_CSUM_F;
 
-	if (nic->tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM ||
-	    nic->tx_offloads & DEV_TX_OFFLOAD_TCP_CKSUM ||
-	    nic->tx_offloads & DEV_TX_OFFLOAD_UDP_CKSUM ||
-	    nic->tx_offloads & DEV_TX_OFFLOAD_SCTP_CKSUM)
+	if (nic->tx_offloads & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM ||
+	    nic->tx_offloads & RTE_ETH_TX_OFFLOAD_TCP_CKSUM ||
+	    nic->tx_offloads & RTE_ETH_TX_OFFLOAD_UDP_CKSUM ||
+	    nic->tx_offloads & RTE_ETH_TX_OFFLOAD_SCTP_CKSUM)
 		flags |= OCCTX_TX_OFFLOAD_L3_L4_CSUM_F;
 
-	if (!(nic->tx_offloads & DEV_TX_OFFLOAD_MBUF_FAST_FREE))
+	if (!(nic->tx_offloads & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE))
 		flags |= OCCTX_TX_OFFLOAD_MBUF_NOFF_F;
 
-	if (nic->tx_offloads & DEV_TX_OFFLOAD_MULTI_SEGS)
+	if (nic->tx_offloads & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)
 		flags |= OCCTX_TX_MULTI_SEG_F;
 
 	return flags;
@@ -385,21 +386,21 @@ octeontx_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	struct octeontx_nic *nic = octeontx_pmd_priv(eth_dev);
 	uint16_t flags = 0;
 
-	if (nic->rx_offloads & (DEV_RX_OFFLOAD_TCP_CKSUM |
-			 DEV_RX_OFFLOAD_UDP_CKSUM))
+	if (nic->rx_offloads & (RTE_ETH_RX_OFFLOAD_TCP_CKSUM |
+			 RTE_ETH_RX_OFFLOAD_UDP_CKSUM))
 		flags |= OCCTX_RX_OFFLOAD_CSUM_F;
 
-	if (nic->rx_offloads & (DEV_RX_OFFLOAD_IPV4_CKSUM |
-				DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM))
+	if (nic->rx_offloads & (RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
+				RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM))
 		flags |= OCCTX_RX_OFFLOAD_CSUM_F;
 
-	if (nic->rx_offloads & DEV_RX_OFFLOAD_SCATTER) {
+	if (nic->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER) {
 		flags |= OCCTX_RX_MULTI_SEG_F;
 		eth_dev->data->scattered_rx = 1;
 		/* If scatter mode is enabled, TX should also be in multi
 		 * seg mode, else memory leak will occur
 		 */
-		nic->tx_offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
+		nic->tx_offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 	}
 
 	return flags;
@@ -428,18 +429,18 @@ octeontx_dev_configure(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
-	if (rxmode->mq_mode != ETH_MQ_RX_NONE &&
-		rxmode->mq_mode != ETH_MQ_RX_RSS) {
+	if (rxmode->mq_mode != RTE_ETH_MQ_RX_NONE &&
+		rxmode->mq_mode != RTE_ETH_MQ_RX_RSS) {
 		octeontx_log_err("unsupported rx qmode %d", rxmode->mq_mode);
 		return -EINVAL;
 	}
 
-	if (!(txmode->offloads & DEV_TX_OFFLOAD_MT_LOCKFREE)) {
+	if (!(txmode->offloads & RTE_ETH_TX_OFFLOAD_MT_LOCKFREE)) {
 		PMD_INIT_LOG(NOTICE, "cant disable lockfree tx");
-		txmode->offloads |= DEV_TX_OFFLOAD_MT_LOCKFREE;
+		txmode->offloads |= RTE_ETH_TX_OFFLOAD_MT_LOCKFREE;
 	}
 
-	if (conf->link_speeds & ETH_LINK_SPEED_FIXED) {
+	if (conf->link_speeds & RTE_ETH_LINK_SPEED_FIXED) {
 		octeontx_log_err("setting link speed/duplex not supported");
 		return -EINVAL;
 	}
@@ -533,23 +534,19 @@ octeontx_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	struct rte_eth_dev_data *data = eth_dev->data;
 	int rc = 0;
 
-	/* Check if MTU is within the allowed range */
-	if (frame_size < OCCTX_MIN_FRS || frame_size > OCCTX_MAX_FRS)
-		return -EINVAL;
-
 	buffsz = data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM;
 
 	/* Refuse MTU that requires the support of scattered packets
 	 * when this feature has not been enabled before.
 	 */
 	if (data->dev_started && frame_size > buffsz &&
-	    !(nic->rx_offloads & DEV_RX_OFFLOAD_SCATTER)) {
+	    !(nic->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)) {
 		octeontx_log_err("Scatter mode is disabled");
 		return -EINVAL;
 	}
 
 	/* Check <seg size> * <max_seg>  >= max_frame */
-	if ((nic->rx_offloads & DEV_RX_OFFLOAD_SCATTER)	&&
+	if ((nic->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)	&&
 	    (frame_size > buffsz * OCCTX_RX_NB_SEG_MAX))
 		return -EINVAL;
 
@@ -561,13 +558,6 @@ octeontx_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	if (rc)
 		return rc;
 
-	if (frame_size > OCCTX_L2_MAX_LEN)
-		nic->rx_offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		nic->rx_offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
-	/* Update max_rx_pkt_len */
-	data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
 	octeontx_log_info("Received pkt beyond  maxlen %d will be dropped",
 			  frame_size);
 
@@ -590,8 +580,8 @@ octeontx_recheck_rx_offloads(struct octeontx_rxq *rxq)
 	buffsz = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
 
 	/* Setup scatter mode if needed by jumbo */
-	if (data->dev_conf.rxmode.max_rx_pkt_len > buffsz) {
-		nic->rx_offloads |= DEV_RX_OFFLOAD_SCATTER;
+	if (data->mtu > buffsz) {
+		nic->rx_offloads |= RTE_ETH_RX_OFFLOAD_SCATTER;
 		nic->rx_offload_flags |= octeontx_rx_offload_flags(eth_dev);
 		nic->tx_offload_flags |= octeontx_tx_offload_flags(eth_dev);
 	}
@@ -602,8 +592,8 @@ octeontx_recheck_rx_offloads(struct octeontx_rxq *rxq)
 	evdev_priv->rx_offload_flags = nic->rx_offload_flags;
 	evdev_priv->tx_offload_flags = nic->tx_offload_flags;
 
-	/* Setup MTU based on max_rx_pkt_len */
-	nic->mtu = data->dev_conf.rxmode.max_rx_pkt_len - OCCTX_L2_OVERHEAD;
+	/* Setup MTU */
+	nic->mtu = data->mtu;
 
 	return 0;
 }
@@ -624,7 +614,7 @@ octeontx_dev_start(struct rte_eth_dev *dev)
 		octeontx_recheck_rx_offloads(rxq);
 	}
 
-	/* Setting up the mtu based on max_rx_pkt_len */
+	/* Setting up the mtu */
 	ret = octeontx_dev_mtu_set(dev, nic->mtu);
 	if (ret) {
 		octeontx_log_err("Failed to set default MTU size %d", ret);
@@ -861,10 +851,10 @@ octeontx_dev_info(struct rte_eth_dev *dev,
 	struct octeontx_nic *nic = octeontx_pmd_priv(dev);
 
 	/* Autonegotiation may be disabled */
-	dev_info->speed_capa = ETH_LINK_SPEED_FIXED;
-	dev_info->speed_capa |= ETH_LINK_SPEED_10M | ETH_LINK_SPEED_100M |
-			ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
-			ETH_LINK_SPEED_40G;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_FIXED;
+	dev_info->speed_capa |= RTE_ETH_LINK_SPEED_10M | RTE_ETH_LINK_SPEED_100M |
+			RTE_ETH_LINK_SPEED_1G | RTE_ETH_LINK_SPEED_10G |
+			RTE_ETH_LINK_SPEED_40G;
 
 	/* Min/Max MTU supported */
 	dev_info->min_rx_bufsize = OCCTX_MIN_FRS;
@@ -978,20 +968,18 @@ octeontx_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t qidx)
 }
 
 static void
-octeontx_dev_tx_queue_release(void *tx_queue)
+octeontx_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct octeontx_txq *txq = tx_queue;
 	int res;
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (txq) {
-		res = octeontx_dev_tx_queue_stop(txq->eth_dev, txq->queue_id);
+	if (dev->data->tx_queues[qid]) {
+		res = octeontx_dev_tx_queue_stop(dev, qid);
 		if (res < 0)
-			octeontx_log_err("failed stop tx_queue(%d)\n",
-				   txq->queue_id);
+			octeontx_log_err("failed stop tx_queue(%d)\n", qid);
 
-		rte_free(txq);
+		rte_free(dev->data->tx_queues[qid]);
 	}
 }
 
@@ -1020,7 +1008,7 @@ octeontx_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	if (dev->data->tx_queues[qidx] != NULL) {
 		PMD_TX_LOG(DEBUG, "freeing memory prior to re-allocation %d",
 				qidx);
-		octeontx_dev_tx_queue_release(dev->data->tx_queues[qidx]);
+		octeontx_dev_tx_queue_release(dev, qidx);
 		dev->data->tx_queues[qidx] = NULL;
 	}
 
@@ -1228,9 +1216,9 @@ octeontx_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 }
 
 static void
-octeontx_dev_rx_queue_release(void *rxq)
+octeontx_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	rte_free(rxq);
+	rte_free(dev->data->rx_queues[qid]);
 }
 
 static const uint32_t *
@@ -1377,7 +1365,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	nic->ev_ports = 1;
 	nic->print_flag = -1;
 
-	data->dev_link.link_status = ETH_LINK_DOWN;
+	data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	data->dev_started = 0;
 	data->promiscuous = 0;
 	data->all_multicast = 0;

@@ -11,7 +11,7 @@
 
 #define MAX_VHOST_DEVICE 1024
 #define IOAT_RING_SIZE 4096
-#define MAX_ENQUEUED_SIZE 256
+#define MAX_ENQUEUED_SIZE 4096
 
 struct dma_info {
 	struct rte_pci_addr addr;
@@ -27,12 +27,12 @@ struct dma_for_vhost {
 #ifdef RTE_RAW_IOAT
 int open_ioat(const char *value);
 
-uint32_t
+int32_t
 ioat_transfer_data_cb(int vid, uint16_t queue_id,
-		struct rte_vhost_async_desc *descs,
+		struct rte_vhost_iov_iter *iov_iter,
 		struct rte_vhost_async_status *opaque_data, uint16_t count);
 
-uint32_t
+int32_t
 ioat_check_completed_copies_cb(int vid, uint16_t queue_id,
 		struct rte_vhost_async_status *opaque_data,
 		uint16_t max_packets);
@@ -42,16 +42,16 @@ static int open_ioat(const char *value __rte_unused)
 	return -1;
 }
 
-static uint32_t
+static int32_t
 ioat_transfer_data_cb(int vid __rte_unused, uint16_t queue_id __rte_unused,
-		struct rte_vhost_async_desc *descs __rte_unused,
+		struct rte_vhost_iov_iter *iov_iter __rte_unused,
 		struct rte_vhost_async_status *opaque_data __rte_unused,
 		uint16_t count __rte_unused)
 {
 	return -1;
 }
 
-static uint32_t
+static int32_t
 ioat_check_completed_copies_cb(int vid __rte_unused,
 		uint16_t queue_id __rte_unused,
 		struct rte_vhost_async_status *opaque_data __rte_unused,

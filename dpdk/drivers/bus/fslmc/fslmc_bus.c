@@ -13,7 +13,7 @@
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_mbuf_dyn.h>
 
 #include <rte_fslmc.h>
@@ -45,8 +45,9 @@ cleanup_fslmc_device_list(void)
 	struct rte_dpaa2_device *dev;
 	struct rte_dpaa2_device *t_dev;
 
-	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, t_dev) {
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, t_dev) {
 		TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
+		rte_intr_instance_free(dev->intr_handle);
 		free(dev);
 		dev = NULL;
 	}
@@ -82,7 +83,7 @@ insert_in_device_list(struct rte_dpaa2_device *newdev)
 	struct rte_dpaa2_device *dev = NULL;
 	struct rte_dpaa2_device *tdev = NULL;
 
-	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, tdev) {
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, tdev) {
 		comp = compare_dpaa2_devname(newdev, dev);
 		if (comp < 0) {
 			TAILQ_INSERT_BEFORE(dev, newdev, next);
@@ -160,6 +161,15 @@ scan_one_fslmc_device(char *dev_name)
 
 	dev->device.bus = &rte_fslmc_bus.bus;
 
+	/* Allocate interrupt instance */
+	dev->intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_PRIVATE);
+	if (dev->intr_handle == NULL) {
+		DPAA2_BUS_ERR("Failed to allocate intr handle");
+		ret = -ENOMEM;
+		goto cleanup;
+	}
+
 	/* Parse the device name and ID */
 	t_ptr = strtok(dup_dev_name, ".");
 	if (!t_ptr) {
@@ -220,8 +230,10 @@ scan_one_fslmc_device(char *dev_name)
 cleanup:
 	if (dup_dev_name)
 		free(dup_dev_name);
-	if (dev)
+	if (dev) {
+		rte_intr_instance_free(dev->intr_handle);
 		free(dev);
+	}
 	return ret;
 }
 
@@ -664,4 +676,4 @@ struct rte_fslmc_bus rte_fslmc_bus = {
 };
 
 RTE_REGISTER_BUS(FSLMC_BUS_NAME, rte_fslmc_bus.bus);
-RTE_LOG_REGISTER(dpaa2_logtype_bus, bus.fslmc, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa2_logtype_bus, NOTICE);

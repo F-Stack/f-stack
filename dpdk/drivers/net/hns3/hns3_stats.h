@@ -106,6 +106,11 @@ struct hns3_mac_stats {
 	uint64_t mac_rx_ctrl_pkt_num;
 };
 
+struct hns3_rx_missed_stats {
+	uint64_t rpu_rx_drop_cnt;
+	uint64_t ssu_rx_drop_cnt;
+};
+
 /* store statistics names and its offset in stats structure */
 struct hns3_xstats_name_offset {
 	char name[RTE_ETH_XSTATS_NAME_SIZE];
@@ -123,10 +128,22 @@ struct hns3_reset_stats;
 	(offsetof(struct hns3_reset_stats, f))
 
 #define HNS3_RX_BD_ERROR_STATS_FIELD_OFFSET(f) \
-	(offsetof(struct hns3_rx_queue, f))
+	(offsetof(struct hns3_rx_bd_errors_stats, f))
 
-#define HNS3_TX_ERROR_STATS_FIELD_OFFSET(f) \
-	(offsetof(struct hns3_tx_queue, f))
+#define HNS3_RXQ_DFX_STATS_FIELD_OFFSET(f) \
+	(offsetof(struct hns3_rx_dfx_stats, f))
+
+#define HNS3_TXQ_DFX_STATS_FIELD_OFFSET(f) \
+	(offsetof(struct hns3_tx_dfx_stats, f))
+
+#define HNS3_RXQ_BASIC_STATS_FIELD_OFFSET(f) \
+	(offsetof(struct hns3_rx_basic_stats, f))
+
+#define HNS3_TXQ_BASIC_STATS_FIELD_OFFSET(f) \
+	(offsetof(struct hns3_tx_basic_stats, f))
+
+#define HNS3_IMISSED_STATS_FIELD_OFFSET(f) \
+	(offsetof(struct hns3_rx_missed_stats, f))
 
 int hns3_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats);
 int hns3_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
@@ -140,13 +157,13 @@ int hns3_dev_xstats_get_by_id(struct rte_eth_dev *dev,
 			      uint64_t *values,
 			      uint32_t size);
 int hns3_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
-				    struct rte_eth_xstat_name *xstats_names,
 				    const uint64_t *ids,
+				    struct rte_eth_xstat_name *xstats_names,
 				    uint32_t size);
 int hns3_stats_reset(struct rte_eth_dev *dev);
-void hns3_error_int_stats_add(struct hns3_adapter *hns, const char *err);
-int hns3_tqp_stats_init(struct hns3_hw *hw);
-void hns3_tqp_stats_uninit(struct hns3_hw *hw);
+int hns3_stats_init(struct hns3_hw *hw);
+void hns3_stats_uninit(struct hns3_hw *hw);
 int hns3_query_mac_stats_reg_num(struct hns3_hw *hw);
+void hns3_update_hw_stats(struct hns3_hw *hw);
 
 #endif /* _HNS3_STATS_H_ */

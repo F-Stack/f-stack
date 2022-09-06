@@ -53,6 +53,7 @@ enum hns3_cmd_return_status {
 	HNS3_CMD_HILINK_ERR     = 9,
 	HNS3_CMD_QUEUE_ILLEGAL  = 10,
 	HNS3_CMD_INVALID        = 11,
+	HNS3_CMD_ROH_CHECK_FAIL = 12
 };
 
 struct hns3_misc_vector {
@@ -87,15 +88,38 @@ enum hns3_opcode_type {
 	HNS3_OPC_QUERY_REG_NUM          = 0x0040,
 	HNS3_OPC_QUERY_32_BIT_REG       = 0x0041,
 	HNS3_OPC_QUERY_64_BIT_REG       = 0x0042,
+	HNS3_OPC_DFX_BD_NUM             = 0x0043,
+	HNS3_OPC_DFX_BIOS_COMMON_REG    = 0x0044,
+	HNS3_OPC_DFX_SSU_REG_0          = 0x0045,
+	HNS3_OPC_DFX_SSU_REG_1          = 0x0046,
+	HNS3_OPC_DFX_IGU_EGU_REG        = 0x0047,
+	HNS3_OPC_DFX_RPU_REG_0          = 0x0048,
+	HNS3_OPC_DFX_RPU_REG_1          = 0x0049,
+	HNS3_OPC_DFX_NCSI_REG           = 0x004A,
+	HNS3_OPC_DFX_RTC_REG            = 0x004B,
+	HNS3_OPC_DFX_PPP_REG            = 0x004C,
+	HNS3_OPC_DFX_RCB_REG            = 0x004D,
+	HNS3_OPC_DFX_TQP_REG            = 0x004E,
+	HNS3_OPC_DFX_SSU_REG_2          = 0x004F,
 
 	HNS3_OPC_QUERY_DEV_SPECS        = 0x0050,
 
+	HNS3_OPC_SSU_DROP_REG           = 0x0065,
+
 	/* MAC command */
 	HNS3_OPC_CONFIG_MAC_MODE        = 0x0301,
+	HNS3_OPC_CONFIG_AN_MODE         = 0x0304,
 	HNS3_OPC_QUERY_LINK_STATUS      = 0x0307,
 	HNS3_OPC_CONFIG_MAX_FRM_SIZE    = 0x0308,
 	HNS3_OPC_CONFIG_SPEED_DUP       = 0x0309,
+	HNS3_OPC_QUERY_MAC_TNL_INT      = 0x0310,
+	HNS3_OPC_MAC_TNL_INT_EN         = 0x0311,
+	HNS3_OPC_CLEAR_MAC_TNL_INT      = 0x0312,
 	HNS3_OPC_CONFIG_FEC_MODE        = 0x031A,
+
+	/* PTP command */
+	HNS3_OPC_PTP_INT_EN             = 0x0501,
+	HNS3_OPC_CFG_PTP_MODE           = 0x0507,
 
 	/* PFC/Pause commands */
 	HNS3_OPC_CFG_MAC_PAUSE_EN       = 0x0701,
@@ -137,6 +161,9 @@ enum hns3_opcode_type {
 	HNS3_OPC_TM_INTERNAL_STS        = 0x0850,
 	HNS3_OPC_TM_INTERNAL_CNT        = 0x0851,
 	HNS3_OPC_TM_INTERNAL_STS_1      = 0x0852,
+
+	HNS3_OPC_TM_PORT_LIMIT_RATE     = 0x0870,
+	HNS3_OPC_TM_TC_LIMIT_RATE       = 0x0871,
 
 	/* Mailbox cmd */
 	HNS3_OPC_MBX_VF_TO_PF           = 0x2001,
@@ -201,9 +228,13 @@ enum hns3_opcode_type {
 
 	/* Firmware stats command */
 	HNS3_OPC_FIRMWARE_COMPAT_CFG    = 0x701A,
+	/* Firmware control phy command */
+	HNS3_OPC_PHY_PARAM_CFG          = 0x7025,
 
 	/* SFP command */
-	HNS3_OPC_SFP_GET_SPEED          = 0x7104,
+	HNS3_OPC_GET_SFP_EEPROM         = 0x7100,
+	HNS3_OPC_GET_SFP_EXIST          = 0x7101,
+	HNS3_OPC_GET_SFP_INFO           = 0x7104,
 
 	/* Interrupts commands */
 	HNS3_OPC_ADD_RING_TO_VECTOR     = 0x1503,
@@ -224,6 +255,8 @@ enum hns3_opcode_type {
 	HNS3_OPC_QUERY_MSIX_INT_STS_BD_NUM      = 0x1513,
 	HNS3_OPC_QUERY_CLEAR_ALL_MPF_MSIX_INT   = 0x1514,
 	HNS3_OPC_QUERY_CLEAR_ALL_PF_MSIX_INT    = 0x1515,
+	HNS3_OPC_QUERY_ALL_ERR_BD_NUM           = 0x1516,
+	HNS3_OPC_QUERY_ALL_ERR_INFO             = 0x1517,
 	HNS3_OPC_IGU_EGU_TNL_INT_EN             = 0x1803,
 	HNS3_OPC_IGU_COMMON_INT_EN              = 0x1806,
 	HNS3_OPC_TM_QCN_MEM_INT_CFG             = 0x1A14,
@@ -276,17 +309,30 @@ struct hns3_rx_priv_buff_cmd {
 #define HNS3_FW_VERSION_BYTE0_M		GENMASK(7, 0)
 
 enum HNS3_CAPS_BITS {
-	HNS3_CAPS_UDP_GSO_B,
-	HNS3_CAPS_ATR_B,
-	HNS3_CAPS_FD_QUEUE_REGION_B,
+	/*
+	 * The following capability index definitions must be the same as those
+	 * of the firmware.
+	 */
+	HNS3_CAPS_FD_QUEUE_REGION_B = 2,
 	HNS3_CAPS_PTP_B,
-	HNS3_CAPS_INT_QL_B,
-	HNS3_CAPS_SIMPLE_BD_B,
-	HNS3_CAPS_TX_PUSH_B,
-	HNS3_CAPS_PHY_IMP_B,
+	HNS3_CAPS_TX_PUSH_B = 6,
+	HNS3_CAPS_PHY_IMP_B = 7,
 	HNS3_CAPS_TQP_TXRX_INDEP_B,
 	HNS3_CAPS_HW_PAD_B,
 	HNS3_CAPS_STASH_B,
+	HNS3_CAPS_UDP_TUNNEL_CSUM_B,
+	HNS3_CAPS_RAS_IMP_B,
+	HNS3_CAPS_RXD_ADV_LAYOUT_B = 15,
+	HNS3_CAPS_TM_B = 19,
+};
+
+/* Capabilities of VF dependent on the PF */
+enum HNS3VF_CAPS_BITS {
+	/*
+	 * The following capability index definitions must be the same as those
+	 * in kernel side PF.
+	 */
+	HNS3VF_CAPS_VLAN_FLT_MOD_B = 0,
 };
 
 enum HNS3_API_CAP_BITS {
@@ -633,9 +679,45 @@ enum hns3_promisc_type {
 
 #define HNS3_LINK_EVENT_REPORT_EN_B	0
 #define HNS3_NCSI_ERROR_REPORT_EN_B	1
+#define HNS3_FIRMWARE_PHY_DRIVER_EN_B	2
 struct hns3_firmware_compat_cmd {
 	uint32_t compat;
 	uint8_t rsv[20];
+};
+
+/* Bitmap flags in supported, advertising and lp_advertising */
+#define HNS3_PHY_LINK_SPEED_10M_HD_BIT		BIT(0)
+#define HNS3_PHY_LINK_SPEED_10M_BIT		BIT(1)
+#define HNS3_PHY_LINK_SPEED_100M_HD_BIT		BIT(2)
+#define HNS3_PHY_LINK_SPEED_100M_BIT		BIT(3)
+#define HNS3_PHY_LINK_SPEED_1000M_BIT		BIT(5)
+#define HNS3_PHY_LINK_MODE_AUTONEG_BIT		BIT(6)
+#define HNS3_PHY_LINK_MODE_PAUSE_BIT		BIT(13)
+#define HNS3_PHY_LINK_MODE_ASYM_PAUSE_BIT	BIT(14)
+
+#define HNS3_PHY_PARAM_CFG_BD_NUM	2
+struct hns3_phy_params_bd0_cmd {
+	uint32_t speed;
+#define HNS3_PHY_DUPLEX_CFG_B		0
+	uint8_t duplex;
+#define HNS3_PHY_AUTONEG_CFG_B	0
+	uint8_t autoneg;
+	uint8_t eth_tp_mdix;
+	uint8_t eth_tp_mdix_ctrl;
+	uint8_t port;
+	uint8_t transceiver;
+	uint8_t phy_address;
+	uint8_t rsv;
+	uint32_t supported;
+	uint32_t advertising;
+	uint32_t lp_advertising;
+};
+
+struct hns3_phy_params_bd1_cmd {
+	uint8_t master_slave_cfg;
+	uint8_t master_slave_state;
+	uint8_t rsv1[2];
+	uint32_t rsv2[5];
 };
 
 #define HNS3_MAC_TX_EN_B		6
@@ -696,20 +778,49 @@ struct hns3_config_auto_neg_cmd {
 	uint8_t   rsv[20];
 };
 
+#define HNS3_SFP_INFO_BD0_LEN  20UL
+#define HNS3_SFP_INFO_BDX_LEN  24UL
+
+struct hns3_sfp_info_bd0_cmd {
+	uint16_t offset;
+	uint16_t read_len;
+	uint8_t data[HNS3_SFP_INFO_BD0_LEN];
+};
+
+struct hns3_sfp_type {
+	uint8_t type;
+	uint8_t ext_type;
+};
+
+/* Bitmap flags in supported_speed */
+#define HNS3_FIBER_LINK_SPEED_1G_BIT		BIT(0)
+#define HNS3_FIBER_LINK_SPEED_10G_BIT		BIT(1)
+#define HNS3_FIBER_LINK_SPEED_25G_BIT		BIT(2)
+#define HNS3_FIBER_LINK_SPEED_50G_BIT		BIT(3)
+#define HNS3_FIBER_LINK_SPEED_100G_BIT		BIT(4)
+#define HNS3_FIBER_LINK_SPEED_40G_BIT		BIT(5)
+#define HNS3_FIBER_LINK_SPEED_100M_BIT		BIT(6)
+#define HNS3_FIBER_LINK_SPEED_10M_BIT		BIT(7)
+#define HNS3_FIBER_LINK_SPEED_200G_BIT		BIT(8)
+
+struct hns3_sfp_info_cmd {
+	uint32_t sfp_speed;
+	uint8_t query_type; /* 0: sfp speed, 1: active */
+	uint8_t active_fec; /* current FEC mode */
+	uint8_t autoneg; /* current autoneg state */
+	/* 0: not support autoneg, 1: support autoneg */
+	uint8_t autoneg_ability;
+	uint32_t supported_speed; /* speed supported by current media */
+	uint32_t module_type;
+	uint8_t rsv1[8];
+};
+
 #define HNS3_MAC_CFG_FEC_AUTO_EN_B	0
 #define HNS3_MAC_CFG_FEC_MODE_S		1
 #define HNS3_MAC_CFG_FEC_MODE_M	GENMASK(3, 1)
 #define HNS3_MAC_FEC_OFF		0
 #define HNS3_MAC_FEC_BASER		1
 #define HNS3_MAC_FEC_RS			2
-
-struct hns3_sfp_speed_cmd {
-	uint32_t  sfp_speed;
-	uint8_t   query_type; /* 0: sfp speed, 1: active fec */
-	uint8_t   active_fec; /* current FEC mode */
-	uint16_t  rsv1;
-	uint32_t  rsv2[4];
-};
 
 /* Configure FEC mode, opcode:0x031A */
 struct hns3_config_fec_cmd {
@@ -870,6 +981,50 @@ struct hns3_dev_specs_0_cmd {
 	uint8_t max_non_tso_bd_num;
 	uint8_t rsv1;
 	uint32_t max_tm_rate;
+};
+
+struct hns3_query_rpu_cmd {
+	uint32_t tc_queue_num;
+	uint32_t rsv1[2];
+	uint32_t rpu_rx_pkt_drop_cnt;
+	uint32_t rsv2[2];
+};
+
+#define HNS3_OPC_SSU_DROP_REG_NUM 2
+
+struct hns3_query_ssu_cmd {
+	uint8_t rxtx;
+	uint8_t rsv[3];
+	uint32_t full_drop_cnt;
+	uint32_t part_drop_cnt;
+	uint32_t oq_drop_cnt;
+	uint32_t rev1[2];
+};
+
+#define HNS3_PTP_ENABLE_B               0
+#define HNS3_PTP_TX_ENABLE_B            1
+#define HNS3_PTP_RX_ENABLE_B            2
+
+#define HNS3_PTP_TYPE_S                 0
+#define HNS3_PTP_TYPE_M                (0x3 << HNS3_PTP_TYPE_S)
+
+#define ALL_PTP_V2_TYPE                 0xF
+#define HNS3_PTP_MESSAGE_TYPE_S         0
+#define HNS3_PTP_MESSAGE_TYPE_M        (0xF << HNS3_PTP_MESSAGE_TYPE_S)
+
+#define PTP_TYPE_L2_V2_TYPE             0
+
+struct hns3_ptp_mode_cfg_cmd {
+	uint8_t enable;
+	uint8_t ptp_type;
+	uint8_t v2_message_type_1;
+	uint8_t v2_message_type_0;
+	uint8_t rsv[20];
+};
+
+struct hns3_ptp_int_cmd {
+	uint8_t int_en;
+	uint8_t rsvd[23];
 };
 
 #define HNS3_MAX_TQP_NUM_HIP08_PF	64

@@ -36,11 +36,11 @@ l3fwd_em_handle_ipv4(struct rte_mbuf *m, uint16_t portid,
 	++(ipv4_hdr->hdr_checksum);
 #endif
 	/* dst addr */
-	*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[dst_port];
+	*(uint64_t *)&eth_hdr->dst_addr = dest_eth_addr[dst_port];
 
 	/* src addr */
 	rte_ether_addr_copy(&ports_eth_addr[dst_port],
-			&eth_hdr->s_addr);
+			&eth_hdr->src_addr);
 
 	return dst_port;
 }
@@ -64,11 +64,11 @@ l3fwd_em_handle_ipv6(struct rte_mbuf *m, uint16_t portid,
 		dst_port = portid;
 
 	/* dst addr */
-	*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[dst_port];
+	*(uint64_t *)&eth_hdr->dst_addr = dest_eth_addr[dst_port];
 
 	/* src addr */
 	rte_ether_addr_copy(&ports_eth_addr[dst_port],
-			&eth_hdr->s_addr);
+			&eth_hdr->src_addr);
 
 	return dst_port;
 }
@@ -173,6 +173,43 @@ l3fwd_em_no_opt_process_events(int nb_rx, struct rte_event **events,
 	/* Forward remaining prefetched packets */
 	for (; j < nb_rx; j++)
 		l3fwd_em_simple_process(events[j]->mbuf, qconf);
+}
+
+static inline void
+l3fwd_em_no_opt_process_event_vector(struct rte_event_vector *vec,
+				     struct lcore_conf *qconf)
+{
+	struct rte_mbuf **mbufs = vec->mbufs;
+	int32_t i;
+
+	/* Prefetch first packets */
+	for (i = 0; i < PREFETCH_OFFSET && i < vec->nb_elem; i++)
+		rte_prefetch0(rte_pktmbuf_mtod(mbufs[i], void *));
+
+	/* Process first packet to init vector attributes */
+	l3fwd_em_simple_process(mbufs[0], qconf);
+	if (vec->attr_valid) {
+		if (mbufs[0]->port != BAD_PORT)
+			vec->port = mbufs[0]->port;
+		else
+			vec->attr_valid = 0;
+	}
+
+	/*
+	 * Prefetch and forward already prefetched packets.
+	 */
+	for (i = 1; i < (vec->nb_elem - PREFETCH_OFFSET); i++) {
+		rte_prefetch0(
+			rte_pktmbuf_mtod(mbufs[i + PREFETCH_OFFSET], void *));
+		l3fwd_em_simple_process(mbufs[i], qconf);
+		event_vector_attr_validate(vec, mbufs[i]);
+	}
+
+	/* Forward remaining prefetched packets */
+	for (; i < vec->nb_elem; i++) {
+		l3fwd_em_simple_process(mbufs[i], qconf);
+		event_vector_attr_validate(vec, mbufs[i]);
+	}
 }
 
 #endif /* __L3FWD_EM_H__ */

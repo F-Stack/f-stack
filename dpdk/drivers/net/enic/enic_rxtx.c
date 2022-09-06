@@ -4,7 +4,7 @@
  */
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_net.h>
 #include <rte_prefetch.h>
 
@@ -42,9 +42,9 @@ enic_dummy_recv_pkts(__rte_unused void *rx_queue,
 	return 0;
 }
 
-uint16_t
-enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
-	       uint16_t nb_pkts)
+static inline uint16_t
+enic_recv_pkts_common(void *rx_queue, struct rte_mbuf **rx_pkts,
+		      uint16_t nb_pkts, const bool use_64b_desc)
 {
 	struct vnic_rq *sop_rq = rx_queue;
 	struct vnic_rq *data_rq;
@@ -62,10 +62,15 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint16_t seg_length;
 	struct rte_mbuf *first_seg = sop_rq->pkt_first_seg;
 	struct rte_mbuf *last_seg = sop_rq->pkt_last_seg;
+	const int desc_size = use_64b_desc ?
+		sizeof(struct cq_enet_rq_desc_64) :
+		sizeof(struct cq_enet_rq_desc);
+	RTE_BUILD_BUG_ON(sizeof(struct cq_enet_rq_desc_64) != 64);
 
 	cq = &enic->cq[enic_cq_rq(enic, sop_rq->index)];
 	cq_idx = cq->to_clean;		/* index of cqd, rqd, mbuf_table */
-	cqd_ptr = (struct cq_desc *)(cq->ring.descs) + cq_idx;
+	cqd_ptr = (struct cq_desc *)((uintptr_t)(cq->ring.descs) +
+				     (uintptr_t)cq_idx * desc_size);
 	color = cq->last_color;
 
 	data_rq = &enic->rq[sop_rq->data_queue_idx];
@@ -78,15 +83,26 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		struct cq_desc cqd;
 		uint8_t packet_error;
 		uint16_t ciflags;
+		uint8_t tc;
 
 		max_rx--;
 
+		tc = *(volatile uint8_t *)((uintptr_t)cqd_ptr + desc_size - 1);
 		/* Check for pkts available */
-		if ((cqd_ptr->type_color & CQ_DESC_COLOR_MASK_NOSHIFT) == color)
+		if ((tc & CQ_DESC_COLOR_MASK_NOSHIFT) == color)
 			break;
 
 		/* Get the cq descriptor and extract rq info from it */
 		cqd = *cqd_ptr;
+		/*
+		 * The first 16B of 64B descriptor is identical to the
+		 * 16B descriptor, except type_color. Copy type_color
+		 * from the 64B descriptor into the 16B descriptor's
+		 * field, so the code below can assume the 16B
+		 * descriptor format.
+		 */
+		if (use_64b_desc)
+			cqd.type_color = tc;
 		rq_num = cqd.q_number & CQ_DESC_Q_NUM_MASK;
 		rq_idx = cqd.completed_index & CQ_DESC_COMP_NDX_MASK;
 
@@ -109,7 +125,8 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		cq_idx++;
 
 		/* Prefetch next mbuf & desc while processing current one */
-		cqd_ptr = (struct cq_desc *)(cq->ring.descs) + cq_idx;
+		cqd_ptr = (struct cq_desc *)((uintptr_t)(cq->ring.descs) +
+					     (uintptr_t)cq_idx * desc_size);
 		rte_enic_prefetch(cqd_ptr);
 
 		ciflags = enic_cq_rx_desc_ciflags(
@@ -213,6 +230,18 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 
 	return nb_rx;
+}
+
+uint16_t
+enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
+{
+	return enic_recv_pkts_common(rx_queue, rx_pkts, nb_pkts, false);
+}
+
+uint16_t
+enic_recv_pkts_64(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
+{
+	return enic_recv_pkts_common(rx_queue, rx_pkts, nb_pkts, true);
 }
 
 uint16_t
@@ -395,7 +424,7 @@ uint16_t enic_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	for (i = 0; i != nb_pkts; i++) {
 		m = tx_pkts[i];
 		ol_flags = m->ol_flags;
-		if (!(ol_flags & PKT_TX_TCP_SEG)) {
+		if (!(ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
 			if (unlikely(m->pkt_len > ENIC_TX_MAX_PKT_SIZE)) {
 				rte_errno = EINVAL;
 				return i;
@@ -460,7 +489,7 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	wq_desc_avail = vnic_wq_desc_avail(wq);
 	head_idx = wq->head_idx;
 	desc_count = wq->ring.desc_count;
-	ol_flags_mask = PKT_TX_VLAN | PKT_TX_IP_CKSUM | PKT_TX_L4_MASK;
+	ol_flags_mask = RTE_MBUF_F_TX_VLAN | RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_L4_MASK;
 	tx_oversized = &enic->soft_stats.tx_oversized;
 
 	nb_pkts = RTE_MIN(nb_pkts, ENIC_TX_XMIT_MAX);
@@ -471,7 +500,7 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		data_len = tx_pkt->data_len;
 		ol_flags = tx_pkt->ol_flags;
 		nb_segs = tx_pkt->nb_segs;
-		tso = ol_flags & PKT_TX_TCP_SEG;
+		tso = ol_flags & RTE_MBUF_F_TX_TCP_SEG;
 
 		/* drop packet if it's too big to send */
 		if (unlikely(!tso && pkt_len > ENIC_TX_MAX_PKT_SIZE)) {
@@ -488,7 +517,7 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 		mss = 0;
 		vlan_id = tx_pkt->vlan_tci;
-		vlan_tag_insert = !!(ol_flags & PKT_TX_VLAN);
+		vlan_tag_insert = !!(ol_flags & RTE_MBUF_F_TX_VLAN);
 		bus_addr = (dma_addr_t)
 			   (tx_pkt->buf_iova + tx_pkt->data_off);
 
@@ -514,20 +543,20 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			offload_mode = WQ_ENET_OFFLOAD_MODE_TSO;
 			mss = tx_pkt->tso_segsz;
 			/* For tunnel, need the size of outer+inner headers */
-			if (ol_flags & PKT_TX_TUNNEL_MASK) {
+			if (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 				header_len += tx_pkt->outer_l2_len +
 					tx_pkt->outer_l3_len;
 			}
 		}
 
 		if ((ol_flags & ol_flags_mask) && (header_len == 0)) {
-			if (ol_flags & PKT_TX_IP_CKSUM)
+			if (ol_flags & RTE_MBUF_F_TX_IP_CKSUM)
 				mss |= ENIC_CALC_IP_CKSUM;
 
 			/* Nic uses just 1 bit for UDP and TCP */
-			switch (ol_flags & PKT_TX_L4_MASK) {
-			case PKT_TX_TCP_CKSUM:
-			case PKT_TX_UDP_CKSUM:
+			switch (ol_flags & RTE_MBUF_F_TX_L4_MASK) {
+			case RTE_MBUF_F_TX_TCP_CKSUM:
+			case RTE_MBUF_F_TX_UDP_CKSUM:
 				mss |= ENIC_CALC_TCP_UDP_CKSUM;
 				break;
 			}
@@ -605,7 +634,7 @@ static void enqueue_simple_pkts(struct rte_mbuf **pkts,
 		desc->header_length_flags &=
 			((1 << WQ_ENET_FLAGS_EOP_SHIFT) |
 			 (1 << WQ_ENET_FLAGS_CQ_ENTRY_SHIFT));
-		if (p->ol_flags & PKT_TX_VLAN) {
+		if (p->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			desc->header_length_flags |=
 				1 << WQ_ENET_FLAGS_VLAN_TAG_INSERT_SHIFT;
 		}
@@ -614,9 +643,9 @@ static void enqueue_simple_pkts(struct rte_mbuf **pkts,
 		 * is 0, so no need to set offload_mode.
 		 */
 		mss = 0;
-		if (p->ol_flags & PKT_TX_IP_CKSUM)
+		if (p->ol_flags & RTE_MBUF_F_TX_IP_CKSUM)
 			mss |= ENIC_CALC_IP_CKSUM << WQ_ENET_MSS_SHIFT;
-		if (p->ol_flags & PKT_TX_L4_MASK)
+		if (p->ol_flags & RTE_MBUF_F_TX_L4_MASK)
 			mss |= ENIC_CALC_TCP_UDP_CKSUM << WQ_ENET_MSS_SHIFT;
 		desc->mss_loopback = mss;
 

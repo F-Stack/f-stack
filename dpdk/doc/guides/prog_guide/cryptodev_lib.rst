@@ -338,6 +338,50 @@ start of private data information. The offset is counted from the start of the
 rte_crypto_op including other crypto information such as the IVs (since there can
 be an IV also for authentication).
 
+User callback APIs
+~~~~~~~~~~~~~~~~~~
+The add APIs configures a user callback function to be called for each burst of crypto
+ops received/sent on a given crypto device queue pair. The return value is a pointer
+that can be used later to remove the callback using remove API. Application is expected
+to register a callback function of type ``rte_cryptodev_callback_fn``. Multiple callback
+functions can be added for a given queue pair. API does not restrict on maximum number of
+callbacks.
+
+Callbacks registered by application would not survive ``rte_cryptodev_configure`` as it
+reinitializes the callback list. It is user responsibility to remove all installed
+callbacks before calling ``rte_cryptodev_configure`` to avoid possible memory leakage.
+
+So, the application is expected to add user callback after ``rte_cryptodev_configure``.
+The callbacks can also be added at the runtime. These callbacks get executed when
+``rte_cryptodev_enqueue_burst``/``rte_cryptodev_dequeue_burst`` is called.
+
+.. code-block:: c
+
+	struct rte_cryptodev_cb *
+		rte_cryptodev_add_enq_callback(uint8_t dev_id, uint16_t qp_id,
+					       rte_cryptodev_callback_fn cb_fn,
+					       void *cb_arg);
+
+	struct rte_cryptodev_cb *
+		rte_cryptodev_add_deq_callback(uint8_t dev_id, uint16_t qp_id,
+					       rte_cryptodev_callback_fn cb_fn,
+					       void *cb_arg);
+
+	uint16_t (* rte_cryptodev_callback_fn)(uint16_t dev_id, uint16_t qp_id,
+					       struct rte_crypto_op **ops,
+					       uint16_t nb_ops, void *user_param);
+
+The remove API removes a callback function added by
+``rte_cryptodev_add_enq_callback``/``rte_cryptodev_add_deq_callback``.
+
+.. code-block:: c
+
+	int rte_cryptodev_remove_enq_callback(uint8_t dev_id, uint16_t qp_id,
+					      struct rte_cryptodev_cb *cb);
+
+	int rte_cryptodev_remove_deq_callback(uint8_t dev_id, uint16_t qp_id,
+					      struct rte_cryptodev_cb *cb);
+
 
 Enqueue / Dequeue Burst APIs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1238,3 +1282,37 @@ Asymmetric Crypto Device API
 
 The cryptodev Library API is described in the
 `DPDK API Reference <https://doc.dpdk.org/api/>`_
+
+
+Device Statistics
+-----------------
+
+The Cryptodev library has support for displaying Crypto device information
+through the Telemetry interface. Telemetry commands that can be used
+are shown below.
+
+#. Get the list of available Crypto devices by ID::
+
+     --> /cryptodev/list
+     {"/cryptodev/list": [0, 1, 2, 3]}
+
+#. Get general information from a Crypto device::
+
+     --> /cryptodev/info,0
+     {"/cryptodev/info": {"device_name": "0000:1c:01.0_qat_sym",
+     "max_nb_queue_pairs": 2}}
+
+#. Get the statistics for a particular Crypto device::
+
+     --> /cryptodev/stats,0
+     {"/cryptodev/stats": {"enqueued_count": 0, "dequeued_count": 0,
+     "enqueue_err_count": 0, "dequeue_err_count": 0}}
+
+#. Get the capabilities of a particular Crypto device::
+
+     --> /cryptodev/caps,0
+     {"/cryptodev/caps": {"crypto_caps": [<array of serialized bytes of
+     capabilities>], "crypto_caps_n": <number of capabilities>}}
+
+For more information on how to use the Telemetry interface, see
+the :doc:`../howto/telemetry`.

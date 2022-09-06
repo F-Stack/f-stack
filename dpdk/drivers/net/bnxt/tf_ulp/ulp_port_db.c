@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2020 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -7,7 +7,9 @@
 #include "bnxt.h"
 #include "bnxt_vnic.h"
 #include "bnxt_tf_common.h"
+#include "bnxt_tf_pmd_shim.h"
 #include "ulp_port_db.h"
+#include "tfp.h"
 
 static uint32_t
 ulp_port_db_allocate_ifindex(struct bnxt_ulp_port_db *port_db)
@@ -147,53 +149,59 @@ int32_t	ulp_port_db_dev_port_intf_update(struct bnxt_ulp_context *ulp_ctxt,
 	/* update the interface details */
 	intf = &port_db->ulp_intf_list[ifindex];
 
-	intf->type = bnxt_get_interface_type(port_id);
-	intf->drv_func_id = bnxt_get_fw_func_id(port_id,
+	intf->type = bnxt_pmd_get_interface_type(port_id);
+	intf->drv_func_id = bnxt_pmd_get_fw_func_id(port_id,
 						BNXT_ULP_INTF_TYPE_INVALID);
 
 	func = &port_db->ulp_func_id_tbl[intf->drv_func_id];
 	if (!func->func_valid) {
-		func->func_svif = bnxt_get_svif(port_id, true,
+		func->func_svif = bnxt_pmd_get_svif(port_id, true,
 						BNXT_ULP_INTF_TYPE_INVALID);
-		func->func_spif = bnxt_get_phy_port_id(port_id);
+		func->func_spif = bnxt_pmd_get_phy_port_id(port_id);
 		func->func_parif =
-			bnxt_get_parif(port_id, BNXT_ULP_INTF_TYPE_INVALID);
+			bnxt_pmd_get_parif(port_id, BNXT_ULP_INTF_TYPE_INVALID);
 		func->func_vnic =
-			bnxt_get_vnic_id(port_id, BNXT_ULP_INTF_TYPE_INVALID);
-		func->phy_port_id = bnxt_get_phy_port_id(port_id);
+			bnxt_pmd_get_vnic_id(port_id, BNXT_ULP_INTF_TYPE_INVALID);
+		func->phy_port_id = bnxt_pmd_get_phy_port_id(port_id);
 		func->func_valid = true;
 		func->ifindex = ifindex;
 	}
 
 	if (intf->type == BNXT_ULP_INTF_TYPE_VF_REP) {
 		intf->vf_func_id =
-			bnxt_get_fw_func_id(port_id, BNXT_ULP_INTF_TYPE_VF_REP);
+			bnxt_pmd_get_fw_func_id(port_id, BNXT_ULP_INTF_TYPE_VF_REP);
 
 		func = &port_db->ulp_func_id_tbl[intf->vf_func_id];
 		func->func_svif =
-			bnxt_get_svif(port_id, true, BNXT_ULP_INTF_TYPE_VF_REP);
+			bnxt_pmd_get_svif(port_id, true, BNXT_ULP_INTF_TYPE_VF_REP);
 		func->func_spif =
-			bnxt_get_phy_port_id(port_id);
+			bnxt_pmd_get_phy_port_id(port_id);
 		func->func_parif =
-			bnxt_get_parif(port_id, BNXT_ULP_INTF_TYPE_INVALID);
+			bnxt_pmd_get_parif(port_id, BNXT_ULP_INTF_TYPE_INVALID);
 		func->func_vnic =
-			bnxt_get_vnic_id(port_id, BNXT_ULP_INTF_TYPE_VF_REP);
-		func->phy_port_id = bnxt_get_phy_port_id(port_id);
+			bnxt_pmd_get_vnic_id(port_id, BNXT_ULP_INTF_TYPE_VF_REP);
+		func->phy_port_id = bnxt_pmd_get_phy_port_id(port_id);
 		func->ifindex = ifindex;
 	}
+
+	/* When there is no match, the default action is to send the packet to
+	 * the kernel. And to send it to the kernel, we need the PF's vnic id.
+	 */
+	func->func_parent_vnic = bnxt_pmd_get_parent_vnic_id(port_id, intf->type);
+	func->func_parent_vnic = tfp_cpu_to_be_16(func->func_parent_vnic);
+	bnxt_pmd_get_iface_mac(port_id, intf->type, func->func_mac,
+			   func->func_parent_mac);
 
 	port_data = &port_db->phy_port_list[func->phy_port_id];
 	if (!port_data->port_valid) {
 		port_data->port_svif =
-			bnxt_get_svif(port_id, false,
-				      BNXT_ULP_INTF_TYPE_INVALID);
-		port_data->port_spif = bnxt_get_phy_port_id(port_id);
+			bnxt_pmd_get_svif(port_id, false, BNXT_ULP_INTF_TYPE_INVALID);
+		port_data->port_spif = bnxt_pmd_get_phy_port_id(port_id);
 		port_data->port_parif =
-			bnxt_get_parif(port_id, BNXT_ULP_INTF_TYPE_INVALID);
-		port_data->port_vport = bnxt_get_vport(port_id);
+			bnxt_pmd_get_parif(port_id, BNXT_ULP_INTF_TYPE_INVALID);
+		port_data->port_vport = bnxt_pmd_get_vport(port_id);
 		port_data->port_valid = true;
 	}
-
 	return 0;
 }
 
@@ -580,4 +588,117 @@ ulp_port_db_port_func_id_get(struct bnxt_ulp_context *ulp_ctxt,
 		break;
 	}
 	return 0;
+}
+
+/* internal function to get the */
+static struct ulp_func_if_info*
+ulp_port_db_func_if_info_get(struct bnxt_ulp_context *ulp_ctxt,
+			     uint32_t port_id)
+{
+	struct bnxt_ulp_port_db *port_db;
+	uint16_t func_id;
+
+	port_db = bnxt_ulp_cntxt_ptr2_port_db_get(ulp_ctxt);
+	if (ulp_port_db_port_func_id_get(ulp_ctxt, port_id, &func_id)) {
+		BNXT_TF_DBG(ERR, "Invalid port_id %x\n", port_id);
+		return NULL;
+	}
+
+	if (!port_db->ulp_func_id_tbl[func_id].func_valid) {
+		BNXT_TF_DBG(ERR, "Invalid func_id %x\n", func_id);
+		return NULL;
+	}
+	return &port_db->ulp_func_id_tbl[func_id];
+}
+
+/*
+ * Api to get the parent mac address for a given port id.
+ *
+ * ulp_ctxt [in] Ptr to ulp context
+ * port_id [in] device port id
+ * mac_addr [out] mac address
+ *
+ * Returns 0 on success or negative number on failure.
+ */
+int32_t
+ulp_port_db_parent_mac_addr_get(struct bnxt_ulp_context *ulp_ctxt,
+				uint32_t port_id, uint8_t **mac_addr)
+{
+	struct ulp_func_if_info *info;
+
+	info = ulp_port_db_func_if_info_get(ulp_ctxt, port_id);
+	if (info) {
+		*mac_addr = info->func_parent_mac;
+		return 0;
+	}
+	return -EINVAL;
+}
+
+/*
+ * Api to get the mac address for a given port id.
+ *
+ * ulp_ctxt [in] Ptr to ulp context
+ * port_id [in] device port id
+ * mac_addr [out] mac address
+ *
+ * Returns 0 on success or negative number on failure.
+ */
+int32_t
+ulp_port_db_drv_mac_addr_get(struct bnxt_ulp_context *ulp_ctxt,
+			     uint32_t port_id, uint8_t **mac_addr)
+{
+	struct ulp_func_if_info *info;
+
+	info = ulp_port_db_func_if_info_get(ulp_ctxt, port_id);
+	if (info) {
+		*mac_addr = info->func_mac;
+		return 0;
+	}
+	return -EINVAL;
+}
+
+/*
+ * Api to get the parent vnic for a given port id.
+ *
+ * ulp_ctxt [in] Ptr to ulp context
+ * port_id [in] device port id
+ * vnic [out] parent vnic
+ *
+ * Returns 0 on success or negative number on failure.
+ */
+int32_t
+ulp_port_db_parent_vnic_get(struct bnxt_ulp_context *ulp_ctxt,
+			    uint32_t port_id, uint8_t **vnic)
+{
+	struct ulp_func_if_info *info;
+
+	info = ulp_port_db_func_if_info_get(ulp_ctxt, port_id);
+	if (info) {
+		*vnic = (uint8_t *)&info->func_parent_vnic;
+		return 0;
+	}
+	return -EINVAL;
+}
+
+/*
+ * Api to get the phy port for a given port id.
+ *
+ * ulp_ctxt [in] Ptr to ulp context
+ * port_id [in] device port id
+ * phy_port [out] phy_port of the dpdk port_id
+ *
+ * Returns 0 on success or negative number on failure.
+ */
+int32_t
+ulp_port_db_phy_port_get(struct bnxt_ulp_context *ulp_ctxt,
+			 uint32_t port_id, uint16_t *phy_port)
+{
+	struct ulp_func_if_info *info;
+
+	info = ulp_port_db_func_if_info_get(ulp_ctxt, port_id);
+	if (info) {
+		*phy_port = info->phy_port_id;
+		return 0;
+	}
+	return -EINVAL;
 }

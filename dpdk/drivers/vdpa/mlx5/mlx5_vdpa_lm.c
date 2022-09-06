@@ -42,8 +42,8 @@ mlx5_vdpa_dirty_bitmap_set(struct mlx5_vdpa_priv *priv, uint64_t log_base,
 		.dirty_bitmap_size = log_size,
 	};
 	int i;
-	int ret = mlx5_os_wrapped_mkey_create(priv->ctx, priv->pd,
-					      priv->pdn,
+	int ret = mlx5_os_wrapped_mkey_create(priv->cdev->ctx, priv->cdev->pd,
+					      priv->cdev->pdn,
 					      (void *)(uintptr_t)log_base,
 					      log_size, &priv->lm_mr);
 

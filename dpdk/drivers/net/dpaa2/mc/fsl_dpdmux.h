@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2018-2019 NXP
+ * Copyright 2018-2021 NXP
  *
  */
 #ifndef __FSL_DPDMUX_H
@@ -38,6 +38,12 @@ int dpdmux_close(struct fsl_mc_io *mc_io,
  * Mask support for classification
  */
 #define DPDMUX_OPT_CLS_MASK_SUPPORT		0x0000000000000020ULL
+
+/**
+ * Automatic max frame length - maximum frame length for dpdmux interface will
+ * be changed automatically by connected dpni objects.
+ */
+#define DPDMUX_OPT_AUTO_MAX_FRAME_LEN	0x0000000000000040ULL
 
 #define DPDMUX_IRQ_INDEX_IF	0x0000
 #define DPDMUX_IRQ_INDEX	0x0001
@@ -79,6 +85,8 @@ enum dpdmux_method {
  * @method: Defines the operation method for the DPDMUX address table
  * @manip: Required manipulation operation
  * @num_ifs: Number of interfaces (excluding the uplink interface)
+ * @default_if: Default interface number (different from uplink,
+	maximum value num_ifs)
  * @adv: Advanced parameters; default is all zeros;
  *	use this structure to change default settings
  * @adv.options: DPDMUX options - combination of 'DPDMUX_OPT_<X>' flags.
@@ -89,16 +97,20 @@ enum dpdmux_method {
  * @adv.max_vlan_ids: Maximum vlan ids allowed in the system -
  *	relevant only case of working in mac+vlan method.
  *	0 - indicates default 16 vlan ids.
+ * @adv.mem_size: Size of the memory used for internal buffers expressed as
+ * number of 256byte buffers.
  */
 struct dpdmux_cfg {
 	enum dpdmux_method method;
 	enum dpdmux_manip manip;
 	uint16_t num_ifs;
+	uint16_t default_if;
 	struct {
 		uint64_t options;
 		uint16_t max_dmat_entries;
 		uint16_t max_mc_groups;
 		uint16_t max_vlan_ids;
+		uint16_t mem_size;
 	} adv;
 };
 
@@ -131,6 +143,29 @@ int dpdmux_reset(struct fsl_mc_io *mc_io,
 		 uint16_t token);
 
 /**
+ *Setting 1 DPDMUX_RESET will not reset default interface
+ */
+#define DPDMUX_SKIP_DEFAULT_INTERFACE	0x01
+/**
+ *Setting 1 DPDMUX_RESET will not reset unicast rules
+ */
+#define DPDMUX_SKIP_UNICAST_RULES	0x02
+/**
+ *Setting 1 DPDMUX_RESET will not reset multicast rules
+ */
+#define DPDMUX_SKIP_MULTICAST_RULES	0x04
+
+int dpdmux_set_resetable(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t skip_reset_flags);
+
+int dpdmux_get_resetable(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t *skip_reset_flags);
+
+/**
  * struct dpdmux_attr - Structure representing DPDMUX attributes
  * @id: DPDMUX object ID
  * @options: Configuration options (bitmap)
@@ -138,6 +173,8 @@ int dpdmux_reset(struct fsl_mc_io *mc_io,
  * @manip: DPDMUX manipulation type
  * @num_ifs: Number of interfaces (excluding the uplink interface)
  * @mem_size: DPDMUX frame storage memory size
+ * @default_if: Default interface number (different from uplink,
+	maximum value num_ifs)
  */
 struct dpdmux_attr {
 	int id;
@@ -146,6 +183,7 @@ struct dpdmux_attr {
 	enum dpdmux_manip manip;
 	uint16_t num_ifs;
 	uint16_t mem_size;
+	uint16_t default_if;
 };
 
 int dpdmux_get_attributes(struct fsl_mc_io *mc_io,
@@ -157,6 +195,12 @@ int dpdmux_set_max_frame_length(struct fsl_mc_io *mc_io,
 				uint32_t cmd_flags,
 				uint16_t token,
 				uint16_t max_frame_length);
+
+int dpdmux_get_max_frame_length(struct fsl_mc_io *mc_io,
+				uint32_t cmd_flags,
+				uint16_t token,
+				uint16_t if_id,
+				uint16_t *max_frame_length);
 
 /**
  * enum dpdmux_counter_type - Counter types
@@ -171,6 +215,7 @@ int dpdmux_set_max_frame_length(struct fsl_mc_io *mc_io,
  * @DPDMUX_CNT_EGR_FRAME: Counts egress frames
  * @DPDMUX_CNT_EGR_BYTE: Counts egress bytes
  * @DPDMUX_CNT_EGR_FRAME_DISCARD: Counts discarded egress frames
+ * @DPDMUX_CNT_ING_NO_BUFFER_DISCARD: Counts ingress no buffer discard frames
  */
 enum dpdmux_counter_type {
 	DPDMUX_CNT_ING_FRAME = 0x0,
@@ -183,7 +228,8 @@ enum dpdmux_counter_type {
 	DPDMUX_CNT_ING_BCAST_BYTES = 0x7,
 	DPDMUX_CNT_EGR_FRAME = 0x8,
 	DPDMUX_CNT_EGR_BYTE = 0x9,
-	DPDMUX_CNT_EGR_FRAME_DISCARD = 0xa
+	DPDMUX_CNT_EGR_FRAME_DISCARD = 0xa,
+	DPDMUX_CNT_ING_NO_BUFFER_DISCARD = 0xb,
 };
 
 /**
@@ -367,15 +413,23 @@ int dpdmux_set_custom_key(struct fsl_mc_io *mc_io,
  * struct dpdmux_rule_cfg - Custom classification rule.
  *
  * @key_iova: DMA address of buffer storing the look-up value
- * @mask_iova: DMA address of the mask used for TCAM classification
+ * @mask_iova: DMA address of the mask used for TCAM classification. This
+ *  parameter is used only if dpdmux was created using option
+ *  DPDMUX_OPT_CLS_MASK_SUPPORT.
  * @key_size: size, in bytes, of the look-up value. This must match the size
  *	of the look-up key defined using dpdmux_set_custom_key, otherwise the
  *	entry will never be hit
+ * @entry_index: rule index into the table. This parameter is used only when
+ *  dpdmux object was created using option DPDMUX_OPT_CLS_MASK_SUPPORT. In
+ *  this case the rule is masking and the current frame may be a hit for
+ *  multiple rules. This parameter determines the order in which the rules
+ *  will be checked (smaller entry_index first).
  */
 struct dpdmux_rule_cfg {
 	uint64_t key_iova;
 	uint64_t mask_iova;
 	uint8_t key_size;
+	uint16_t entry_index;
 };
 
 /**
@@ -406,5 +460,108 @@ int dpdmux_get_api_version(struct fsl_mc_io *mc_io,
 			   uint32_t cmd_flags,
 			   uint16_t *major_ver,
 			   uint16_t *minor_ver);
+
+/**
+ * Discard bit. This bit must be used together with other bits in
+ * DPDMUX_ERROR_ACTION_CONTINUE to disable discarding of frames containing
+ * errors
+ */
+#define DPDMUX_ERROR_DISC		0x80000000
+/**
+ * MACSEC is enabled
+ */
+#define DPDMUX_ERROR_MS			0x40000000
+/**
+ * PTP event frame
+ */
+#define DPDMUX_ERROR_PTP			0x08000000
+/**
+ * This is a multicast frame
+ */
+#define DPDMUX_ERROR_MC			0x04000000
+/**
+ * This is a broadcast frame
+ */
+#define DPDMUX_ERROR_BC			0x02000000
+/**
+ * Invalid Key composition or key size error
+ */
+#define DPDMUX_ERROR_KSE			0x00040000
+/**
+ * Extract out of frame header
+ */
+#define DPDMUX_ERROR_EOFHE		0x00020000
+/**
+ * Maximum number of chained lookups is reached
+ */
+#define DPDMUX_ERROR_MNLE			0x00010000
+/**
+ * Invalid table ID
+ */
+#define DPDMUX_ERROR_TIDE			0x00008000
+/**
+ * Policer initialization entry error
+ */
+#define DPDMUX_ERROR_PIEE			0x00004000
+/**
+ * Frame length error
+ */
+#define DPDMUX_ERROR_FLE			0x00002000
+/**
+ * Frame physical error
+ */
+#define DPDMUX_ERROR_FPE			0x00001000
+/**
+ * Cycle limit is exceeded and frame parsing is forced to terminate early
+ */
+#define DPDMUX_ERROR_PTE			0x00000080
+/**
+ * Invalid softparse instruction is encountered
+ */
+#define DPDMUX_ERROR_ISP			0x00000040
+/**
+ * Parsing header error
+ */
+#define DPDMUX_ERROR_PHE			0x00000020
+/*
+ * Block limit is exceeded. Maximum data that can be read and parsed is 256
+ * bytes.
+ * Parser will set this bit if it needs more that this limit to parse.
+ */
+#define DPDMUX_ERROR_BLE			0x00000010
+/**
+ * L3 checksum validation
+ */
+#define DPDMUX__ERROR_L3CV			0x00000008
+/**
+ * L3 checksum error
+ */
+#define DPDMUX__ERROR_L3CE			0x00000004
+/**
+ * L4 checksum validation
+ */
+#define DPDMUX__ERROR_L4CV			0x00000002
+/**
+ * L4 checksum error
+ */
+#define DPDMUX__ERROR_L4CE			0x00000001
+
+enum dpdmux_error_action {
+	DPDMUX_ERROR_ACTION_DISCARD = 0,
+	DPDMUX_ERROR_ACTION_CONTINUE = 1
+};
+
+/**
+ * Configure how dpdmux interface behaves on errors
+ * @errors - or'ed combination of DPDMUX_ERROR_*
+ * @action - set to DPDMUX_ERROR_ACTION_DISCARD or DPDMUX_ERROR_ACTION_CONTINUE
+ */
+struct dpdmux_error_cfg {
+	uint32_t errors;
+	enum dpdmux_error_action error_action;
+};
+
+int dpdmux_if_set_errors_behavior(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, uint16_t if_id, struct dpdmux_error_cfg *cfg);
 
 #endif /* __FSL_DPDMUX_H */

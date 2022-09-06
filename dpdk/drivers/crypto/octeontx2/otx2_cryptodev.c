@@ -6,7 +6,7 @@
 #include <rte_common.h>
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_dev.h>
 #include <rte_errno.h>
 #include <rte_mempool.h>
@@ -36,6 +36,23 @@ static struct rte_pci_id pci_id_cpt_table[] = {
 		.device_id = 0
 	},
 };
+
+uint64_t
+otx2_cpt_default_ff_get(void)
+{
+	return RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
+	       RTE_CRYPTODEV_FF_HW_ACCELERATED |
+	       RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
+	       RTE_CRYPTODEV_FF_IN_PLACE_SGL |
+	       RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
+	       RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
+	       RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT |
+	       RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO |
+	       RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT |
+	       RTE_CRYPTODEV_FF_SYM_SESSIONLESS |
+	       RTE_CRYPTODEV_FF_SECURITY |
+	       RTE_CRYPTODEV_FF_DIGEST_ENCRYPTED;
+}
 
 static int
 otx2_cpt_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
@@ -113,20 +130,12 @@ otx2_cpt_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	if (ret)
 		goto otx2_dev_fini;
 
-	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
-			     RTE_CRYPTODEV_FF_HW_ACCELERATED |
-			     RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
-			     RTE_CRYPTODEV_FF_IN_PLACE_SGL |
-			     RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
-			     RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
-			     RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT |
-			     RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO |
-			     RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT |
-			     RTE_CRYPTODEV_FF_SYM_SESSIONLESS |
-			     RTE_CRYPTODEV_FF_SECURITY;
+	dev->feature_flags = otx2_cpt_default_ff_get();
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
 		otx2_cpt_set_enqdeq_fns(dev);
+
+	rte_cryptodev_pmd_probing_finish(dev);
 
 	return 0;
 
@@ -176,4 +185,4 @@ RTE_PMD_REGISTER_PCI_TABLE(CRYPTODEV_NAME_OCTEONTX2_PMD, pci_id_cpt_table);
 RTE_PMD_REGISTER_KMOD_DEP(CRYPTODEV_NAME_OCTEONTX2_PMD, "vfio-pci");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(otx2_cryptodev_drv, otx2_cryptodev_pmd.driver,
 		otx2_cryptodev_driver_id);
-RTE_LOG_REGISTER(otx2_cpt_logtype, pmd.crypto.octeontx2, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(otx2_cpt_logtype, NOTICE);

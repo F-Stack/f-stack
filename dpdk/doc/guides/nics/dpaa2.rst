@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2016,2020 NXP
+    Copyright 2016,2020-2021 NXP
 
 
 DPAA2 Poll Mode Driver
@@ -406,6 +406,8 @@ Features of the DPAA2 PMD are:
 - Jumbo frames
 - Link flow control
 - Scattered and gather for TX and RX
+- :ref:`Traffic Management API <dptmapi>`
+
 
 Supported DPAA2 SoCs
 --------------------
@@ -418,12 +420,6 @@ Prerequisites
 -------------
 
 See :doc:`../platform/dpaa2` for setup information
-
-Currently supported by DPDK:
-
-- NXP LSDK **19.08+**.
-- MC Firmware version **10.18.0** and higher.
-- Supported architectures:  **arm64 LE**.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
@@ -482,6 +478,16 @@ for details.
   of the packet pull command which is issued  in the previous cycle.
   e.g. ``fslmc:dpni.1,drv_no_prefetch=1``
 
+* Use dev arg option  ``drv_tx_conf=1`` to enable TX confirmation mode.
+  In this mode tx conf queues need to be polled to free the buffers.
+  e.g. ``fslmc:dpni.1,drv_tx_conf=1``
+
+* Use dev arg option  ``drv_error_queue=1`` to enable Packets in Error queue.
+  DPAA2 hardware drops the error packet in hardware. This option enables the
+  hardware to not drop the error packet and let the driver dump the error
+  packets, so that user can check what is wrong with those packets.
+  e.g. ``fslmc:dpni.1,drv_error_queue=1``
+
 Enabling logs
 -------------
 
@@ -539,7 +545,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The DPAA2 SoC family support a maximum of a 10240 jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 10240, frames
 up to 10240 bytes can still reach the host interface.
 
@@ -548,3 +554,119 @@ Other Limitations
 
 - RSS hash key cannot be modified.
 - RSS RETA cannot be configured.
+
+.. _dptmapi:
+
+Traffic Management API
+----------------------
+
+DPAA2 PMD supports generic DPDK Traffic Management API which allows to
+configure the following features:
+
+1. Hierarchical scheduling
+2. Traffic shaping
+
+Internally TM is represented by a hierarchy (tree) of nodes.
+Node which has a parent is called a leaf whereas node without
+parent is called a non-leaf (root).
+
+Nodes hold following types of settings:
+
+- for egress scheduler configuration: weight
+- for egress rate limiter: private shaper
+
+Hierarchy is always constructed from the top, i.e first a root node is added
+then some number of leaf nodes. Number of leaf nodes cannot exceed number
+of configured tx queues.
+
+After hierarchy is complete it can be committed.
+
+For an additional description please refer to DPDK :doc:`Traffic Management API <../prog_guide/traffic_management>`.
+
+Supported Features
+~~~~~~~~~~~~~~~~~~
+
+The following capabilities are supported:
+
+- Level0 (root node) and Level1 are supported.
+- 1 private shaper at root node (port level) is supported.
+- 8 TX queues per port supported (1 channel per port)
+- Both SP and WFQ scheduling mechanisms are supported on all 8 queues.
+- Congestion notification is supported. It means if there is congestion on
+    the network, DPDK driver will not enqueue any packet (no taildrop or WRED)
+
+  User can also check node, level capabilities using testpmd commands.
+
+Usage example
+~~~~~~~~~~~~~
+
+For a detailed usage description please refer to "Traffic Management" section in DPDK :doc:`Testpmd Runtime Functions <../testpmd_app_ug/testpmd_funcs>`.
+
+1. Run testpmd as follows:
+
+   .. code-block:: console
+
+	./dpdk-testpmd  -c 0xf -n 1 -- -i --portmask 0x3 --nb-cores=1 --txq=4 --rxq=4
+
+2. Stop all ports:
+
+   .. code-block:: console
+
+	testpmd> port stop all
+
+3. Add shaper profile:
+
+   One port level shaper and strict priority on all 4 queues of port 0:
+
+   .. code-block:: console
+
+	add port tm node shaper profile 0 1 104857600 64 100 0 0
+	add port tm nonleaf node 0 8 -1 0 1 0 1 1 1 0
+	add port tm leaf node 0 0 8 0 1 1 -1 0 0 0 0
+	add port tm leaf node 0 1 8 1 1 1 -1 0 0 0 0
+	add port tm leaf node 0 2 8 2 1 1 -1 0 0 0 0
+	add port tm leaf node 0 3 8 3 1 1 -1 0 0 0 0
+	port tm hierarchy commit 0 no
+
+	or
+
+   One port level shaper and WFQ on all 4 queues of port 0:
+
+   .. code-block:: console
+
+	add port tm node shaper profile 0 1 104857600 64 100 0 0
+	add port tm nonleaf node 0 8 -1 0 1 0 1 1 1 0
+	add port tm leaf node 0 0 8 0 200 1 -1 0 0 0 0
+	add port tm leaf node 0 1 8 0 300 1 -1 0 0 0 0
+	add port tm leaf node 0 2 8 0 400 1 -1 0 0 0 0
+	add port tm leaf node 0 3 8 0 500 1 -1 0 0 0 0
+	port tm hierarchy commit 0 no
+
+4. Create flows as per the source IP addresses:
+
+   .. code-block:: console
+
+	flow create 1 group 0 priority 1 ingress pattern ipv4 src is \
+	10.10.10.1 / end actions queue index 0 / end
+	flow create 1 group 0 priority 2 ingress pattern ipv4 src is \
+	10.10.10.2 / end actions queue index 1 / end
+	flow create 1 group 0 priority 3 ingress pattern ipv4 src is \
+	10.10.10.3 / end actions queue index 2 / end
+	flow create 1 group 0 priority 4 ingress pattern ipv4 src is \
+	10.10.10.4 / end actions queue index 3 / end
+
+5. Start all ports
+
+   .. code-block:: console
+
+	testpmd> port start all
+
+
+
+6. Enable forwarding
+
+   .. code-block:: console
+
+		testpmd> start
+
+7. Inject the traffic on port1 as per the configured flows, you will see shaped and scheduled forwarded traffic on port0

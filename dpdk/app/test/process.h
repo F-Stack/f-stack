@@ -90,6 +90,11 @@ process_dup(const char *const argv[], int numargs, const char *env_value)
 			}
 
 			while ((dirent = readdir(dir)) != NULL) {
+
+				if (strcmp(dirent->d_name, ".") == 0 ||
+					strcmp(dirent->d_name, "..") == 0)
+					continue;
+
 				errno = 0;
 				fd = strtol(dirent->d_name, &endptr, 10);
 				if (errno != 0 || endptr[0] != '\0') {
@@ -110,6 +115,7 @@ process_dup(const char *const argv[], int numargs, const char *env_value)
 		for (i = 0; i < num; i++)
 			printf("'%s' ", argv_cpy[i]);
 		printf("\n");
+		fflush(stdout);
 
 		/* set the environment variable */
 		if (setenv(RECURSIVE_ENV_VAR, env_value, 1) != 0)

@@ -86,6 +86,15 @@ The application supports two modes of operation: poll mode and event mode.
   threads and supports inline protocol only.** It also provides infrastructure for
   non-internal port however does not define any worker threads.
 
+  Event mode also supports event vectorization. The event devices, ethernet device
+  pairs which support the capability ``RTE_EVENT_ETH_RX_ADAPTER_CAP_EVENT_VECTOR`` can
+  aggregate packets based on flow characteristics and generate a ``rte_event``
+  containing ``rte_event_vector``.
+  The aggregation size and timeout can be given using command line options vector-size
+  (default vector-size is 16) and vector-tmo (default vector-tmo is 102400ns).
+  By default event vectorization is disabled and it can be enabled using event-vector
+  option.
+
 Additionally the event mode introduces two submodes of processing packets:
 
 * Driver submode: This submode has bare minimum changes in the application to support
@@ -107,7 +116,8 @@ Constraints
 *  No IPv6 options headers.
 *  No AH mode.
 *  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, HMAC-SHA1,
-   HMAC-SHA256 and NULL.
+   HMAC-SHA256, AES-GMAC, AES_CTR, AES_XCBC_MAC, AES_CCM, CHACHA20_POLY1305
+   and NULL.
 *  Each SA must be handle by a unique lcore (*1 RX queue per port*).
 
 Compiling the Application
@@ -128,6 +138,7 @@ The application has a number of command line options::
                         -p PORTMASK -P -u PORTMASK -j FRAMESIZE
                         -l -w REPLAY_WINDOW_SIZE -e -a
                         -c SAD_CACHE_SIZE
+                        -t STATISTICS_INTERVAL
                         -s NUMBER_OF_MBUFS_IN_PACKET_POOL
                         -f CONFIG_FILE_PATH
                         --config (port,queue,lcore)[,(port,queue,lcore)]
@@ -177,6 +188,10 @@ Where:
     Zero value disables cache.
     Default value: 128.
 
+*   ``-t``: specifies the statistics screen update interval in seconds. If set
+    to zero or omitted statistics screen is disabled.
+    Default value: 0.
+
 *   ``-s``: sets number of mbufs in packet pool, if not provided number of mbufs
     will be calculated based on number of cores, eth ports and crypto queues.
 
@@ -210,12 +225,12 @@ Where:
     device will ensure the ordering. Ordering will be lost when tried in PARALLEL.
 
 *   ``--rxoffload MASK``: RX HW offload capabilities to enable/use on this port
-    (bitmask of DEV_RX_OFFLOAD_* values). It is an optional parameter and
+    (bitmask of RTE_ETH_RX_OFFLOAD_* values). It is an optional parameter and
     allows user to disable some of the RX HW offload capabilities.
     By default all HW RX offloads are enabled.
 
 *   ``--txoffload MASK``: TX HW offload capabilities to enable/use on this port
-    (bitmask of DEV_TX_OFFLOAD_* values). It is an optional parameter and
+    (bitmask of RTE_ETH_TX_OFFLOAD_* values). It is an optional parameter and
     allows user to disable some of the TX HW offload capabilities.
     By default all HW TX offloads are enabled.
 
@@ -294,7 +309,8 @@ event app mode::
 
     ./<build_dir>/examples/dpdk-ipsec-secgw -c 0x3 -- -P -p 0x3 -u 0x1       \
            -f /path/to/config_file --transfer-mode event \
-           --event-schedule-type parallel                \
+           --event-schedule-type parallel --event-vector --vector-size 32    \
+           --vector-tmo 102400                           \
 
 where each option means:
 
@@ -312,6 +328,12 @@ where each option means:
 *   The ``--transfer-mode`` option selects event mode for processing packets.
 
 *   The ``--event-schedule-type`` option selects parallel ordering of event queues.
+
+*   The ``--event-vector`` option enables event vectorization.
+
+*   The ``--vector-size`` option specifies max vector size.
+
+*   The ``--vector-tmo`` option specifies max timeout in nanoseconds for vectorization.
 
 
 Refer to the *DPDK Getting Started Guide* for general information on running
@@ -501,7 +523,7 @@ The SA rule syntax is shown as follows:
 
     sa <dir> <spi> <cipher_algo> <cipher_key> <auth_algo> <auth_key>
     <mode> <src_ip> <dst_ip> <action_type> <port_id> <fallback>
-    <flow-direction> <port_id> <queue_id>
+    <flow-direction> <port_id> <queue_id> <udp-encap>
 
 where each options means:
 
@@ -710,6 +732,50 @@ where each options means:
 
    * *port_id*: Port ID of the NIC for which the SA is configured.
    * *queue_id*: Queue ID to which traffic should be redirected.
+
+ ``<udp-encap>``
+
+ * Option to enable IPsec UDP encapsulation for NAT Traversal.
+   Only *lookaside-protocol-offload* and *inline-crypto-offload* modes are
+   supported at the moment.
+
+ * Optional: Yes, it is disabled by default
+
+ * Syntax:
+
+   * *udp-encap*
+
+ ``<mss>``
+
+ * Maximum segment size for TSO offload, available for egress SAs only.
+
+ * Optional: Yes, TSO offload not set by default
+
+ * Syntax:
+
+   * *mss N* N is the segment size in bytes
+
+
+``<telemetry>``
+
+ * Option to enable per SA telemetry.
+   Currently only supported with IPsec library path.
+
+ * Optional: Yes, it is disabled by default
+
+ * Syntax:
+
+   * *telemetry*
+
+ ``<esn>``
+
+ * Enable ESN and set the initial ESN value.
+
+ * Optional: Yes, ESN not enabled by default
+
+ * Syntax:
+
+   * *esn N* N is the initial ESN value
 
 Example SA rules:
 

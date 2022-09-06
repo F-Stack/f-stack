@@ -58,12 +58,12 @@ persists over multiple releases.
 
 .. code-block:: none
 
- $ head ./lib/librte_acl/version.map
+ $ head ./lib/acl/version.map
  DPDK_21 {
         global:
  ...
 
- $ head ./lib/librte_eal/version.map
+ $ head ./lib/eal/version.map
  DPDK_21 {
         global:
  ...
@@ -77,7 +77,7 @@ that library.
 
 .. code-block:: none
 
- $ head ./lib/librte_acl/version.map
+ $ head ./lib/acl/version.map
  DPDK_21 {
         global:
  ...
@@ -88,7 +88,7 @@ that library.
  } DPDK_21;
  ...
 
- $ head ./lib/librte_eal/version.map
+ $ head ./lib/eal/version.map
  DPDK_21 {
         global:
  ...
@@ -100,12 +100,12 @@ how this may be done.
 
 .. code-block:: none
 
- $ head ./lib/librte_acl/version.map
+ $ head ./lib/acl/version.map
  DPDK_22 {
         global:
  ...
 
- $ head ./lib/librte_eal/version.map
+ $ head ./lib/eal/version.map
  DPDK_22 {
         global:
  ...
@@ -417,8 +417,7 @@ versioning, in the ``meson.build`` file we add the following
    use_function_versioning = true
 
 at the start of the head of the file. This will indicate to the tool-chain to
-enable the function version macros when building. There is no corresponding
-directive required for the ``make`` build system.
+enable the function version macros when building.
 
 
 .. _aliasing_experimental_symbols:

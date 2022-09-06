@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2020 Mellanox Technologies, Ltd
  */
+
+#include <sys/queue.h>
+
 #include <rte_windows.h>
 #include <rte_errno.h>
 #include <rte_log.h>
@@ -23,6 +26,9 @@ DEFINE_DEVPROPKEY(DEVPKEY_Device_Numa_Node, 0x540b947e, 0x8b40, 0x45bc,
  * This code is used to simulate a PCI probe by parsing information in
  * the registry hive for PCI devices.
  */
+
+/* Class ID consists of hexadecimal digits */
+#define RTE_PCI_DRV_CLASSID_DIGIT "0123456789abcdefABCDEF"
 
 /* Some of the functions below are not implemented on Windows,
  * but need to be defined for compilation purposes
@@ -278,23 +284,41 @@ get_pci_hardware_id(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data,
 
 /*
  * parse the SPDRP_HARDWAREID output and assign to rte_pci_id
+ *
+ * A list of the device identification string formats can be found at:
+ * https://docs.microsoft.com/en-us/windows-hardware/drivers/install/identifiers-for-pci-devices
  */
 static int
 parse_pci_hardware_id(const char *buf, struct rte_pci_id *pci_id)
 {
 	int ids = 0;
 	uint16_t vendor_id, device_id;
-	uint32_t subvendor_id = 0;
+	uint32_t subvendor_id = 0, class_id = 0;
+	const char *cp;
 
 	ids = sscanf_s(buf, "PCI\\VEN_%" PRIx16 "&DEV_%" PRIx16 "&SUBSYS_%"
 		PRIx32, &vendor_id, &device_id, &subvendor_id);
 	if (ids != 3)
 		return -1;
 
+	/* Try and find PCI class ID */
+	for (cp = buf; !(cp[0] == 0 && cp[1] == 0); cp++)
+		if (*cp == '&' && sscanf_s(cp,
+				"&CC_%" PRIx32, &class_id) == 1) {
+			/*
+			 * If the Programming Interface code is not specified,
+			 * assume that it is zero.
+			 */
+			if (strspn(cp + 4, RTE_PCI_DRV_CLASSID_DIGIT) == 4)
+				class_id <<= 8;
+			break;
+		}
+
 	pci_id->vendor_id = vendor_id;
 	pci_id->device_id = device_id;
 	pci_id->subsystem_device_id = subvendor_id >> 16;
 	pci_id->subsystem_vendor_id = subvendor_id & 0xffff;
+	pci_id->class_id = class_id;
 	return 0;
 }
 
@@ -312,17 +336,24 @@ set_kernel_driver_type(PSP_DEVINFO_DATA device_info_data,
 static int
 pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 {
-	struct rte_pci_device *dev;
+	struct rte_pci_device *dev = NULL;
 	int ret = -1;
 	char  pci_device_info[REGSTR_VAL_MAX_HCID_LEN];
 	struct rte_pci_addr addr;
 	struct rte_pci_id pci_id;
 
-	dev = malloc(sizeof(*dev));
-	if (dev == NULL)
+	ret = get_device_pci_address(dev_info, device_info_data, &addr);
+	if (ret != 0)
 		goto end;
 
-	memset(dev, 0, sizeof(*dev));
+	if (rte_pci_ignore_device(&addr)) {
+		/*
+		 * We won't add this device, but we want to continue
+		 * looking for supported devices
+		 */
+		ret = ERROR_CONTINUE;
+		goto end;
+	}
 
 	ret = get_pci_hardware_id(dev_info, device_info_data,
 		pci_device_info, sizeof(pci_device_info));
@@ -339,10 +370,13 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 		goto end;
 	}
 
-	ret = get_device_pci_address(dev_info, device_info_data, &addr);
-	if (ret != 0)
+	dev = malloc(sizeof(*dev));
+	if (dev == NULL)
 		goto end;
 
+	memset(dev, 0, sizeof(*dev));
+
+	dev->device.bus = &rte_pci_bus.bus;
 	dev->addr = addr;
 	dev->id = pci_id;
 	dev->max_vfs = 0; /* TODO: get max_vfs */
@@ -421,7 +455,7 @@ rte_pci_scan(void)
 		device_index++;
 		/* we only want to enumerate net & netuio class devices */
 		if (IsEqualGUID(&(device_info_data.ClassGuid),
-		    &GUID_DEVCLASS_NET) ||
+			    &GUID_DEVCLASS_NET) ||
 			IsEqualGUID(&(device_info_data.ClassGuid),
 			    &GUID_DEVCLASS_NETUIO)) {
 			ret = pci_scan_one(dev_info, &device_info_data);

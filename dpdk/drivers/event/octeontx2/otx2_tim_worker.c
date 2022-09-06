@@ -41,12 +41,12 @@ tim_format_event(const struct rte_event_timer * const tim,
 static inline void
 tim_sync_start_cyc(struct otx2_tim_ring *tim_ring)
 {
-	uint64_t cur_cyc = rte_rdtsc();
+	uint64_t cur_cyc = tim_cntvct();
 	uint32_t real_bkt;
 
 	if (cur_cyc - tim_ring->last_updt_cyc > tim_ring->tot_int) {
 		real_bkt = otx2_read64(tim_ring->base + TIM_LF_RING_REL) >> 44;
-		cur_cyc = rte_rdtsc();
+		cur_cyc = tim_cntvct();
 
 		tim_ring->ring_start_cyc = cur_cyc -
 						(real_bkt * tim_ring->tck_int);
@@ -136,7 +136,7 @@ tim_timer_arm_tmo_brst(const struct rte_event_timer_adapter *adptr,
 	return set_timers;
 }
 
-#define FP(_name, _f4, _f3, _f2, _f1, _flags)				\
+#define FP(_name, _f3, _f2, _f1, _flags)				\
 uint16_t __rte_noinline							  \
 otx2_tim_arm_burst_ ## _name(const struct rte_event_timer_adapter *adptr, \
 			     struct rte_event_timer **tim,		  \
@@ -147,7 +147,7 @@ otx2_tim_arm_burst_ ## _name(const struct rte_event_timer_adapter *adptr, \
 TIM_ARM_FASTPATH_MODES
 #undef FP
 
-#define FP(_name, _f3, _f2, _f1, _flags)				\
+#define FP(_name, _f2, _f1, _flags)				\
 uint16_t __rte_noinline							\
 otx2_tim_arm_tmo_tick_burst_ ## _name(					\
 			const struct rte_event_timer_adapter *adptr,	\
@@ -170,6 +170,7 @@ otx2_tim_timer_cancel_burst(const struct rte_event_timer_adapter *adptr,
 	int ret;
 
 	RTE_SET_USED(adptr);
+	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 	for (index = 0; index < nb_timers; index++) {
 		if (tim[index]->state == RTE_EVENT_TIMER_CANCELED) {
 			rte_errno = EALREADY;

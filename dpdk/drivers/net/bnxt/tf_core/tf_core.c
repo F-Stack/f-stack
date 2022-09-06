@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -18,7 +18,7 @@
 #include "bnxt.h"
 #include "rand.h"
 #include "tf_common.h"
-#include "hwrm_tf.h"
+#include "tf_ext_flow_handle.h"
 
 int
 tf_open_session(struct tf *tfp,
@@ -35,6 +35,7 @@ tf_open_session(struct tf *tfp,
 	 * firmware open session succeeds.
 	 */
 	if (parms->device_type != TF_DEVICE_TYPE_WH &&
+	    parms->device_type != TF_DEVICE_TYPE_THOR &&
 	    parms->device_type != TF_DEVICE_TYPE_SR) {
 		TFP_DRV_LOG(ERR,
 			    "Unsupported device type %d\n",
@@ -250,6 +251,7 @@ int tf_delete_em_entry(struct tf *tfp,
 	struct tf_session      *tfs;
 	struct tf_dev_info     *dev;
 	int rc;
+	unsigned int flag = 0;
 
 	TF_CHECK_PARMS2(tfp, parms);
 
@@ -273,12 +275,11 @@ int tf_delete_em_entry(struct tf *tfp,
 		return rc;
 	}
 
-	if (parms->mem == TF_MEM_EXTERNAL)
-		rc = dev->ops->tf_dev_delete_ext_em_entry(tfp, parms);
-	else if (parms->mem == TF_MEM_INTERNAL)
+	TF_GET_FLAG_FROM_FLOW_HANDLE(parms->flow_handle, flag);
+	if ((flag & TF_FLAGS_FLOW_HANDLE_INTERNAL))
 		rc = dev->ops->tf_dev_delete_int_em_entry(tfp, parms);
 	else
-		return -EINVAL;
+		rc = dev->ops->tf_dev_delete_ext_em_entry(tfp, parms);
 
 	if (rc) {
 		TFP_DRV_LOG(ERR,
@@ -762,7 +763,8 @@ tf_set_tcam_entry(struct tf *tfp,
 		return rc;
 	}
 
-	if (dev->ops->tf_dev_set_tcam == NULL) {
+	if (dev->ops->tf_dev_set_tcam == NULL ||
+	    dev->ops->tf_dev_word_align == NULL) {
 		rc = -EOPNOTSUPP;
 		TFP_DRV_LOG(ERR,
 			    "%s: Operation not supported, rc:%s\n",
@@ -776,7 +778,7 @@ tf_set_tcam_entry(struct tf *tfp,
 	sparms.idx = parms->idx;
 	sparms.key = parms->key;
 	sparms.mask = parms->mask;
-	sparms.key_size = TF_BITS2BYTES_WORD_ALIGN(parms->key_sz_in_bits);
+	sparms.key_size = dev->ops->tf_dev_word_align(parms->key_sz_in_bits);
 	sparms.result = parms->result;
 	sparms.result_size = TF_BITS2BYTES_WORD_ALIGN(parms->result_sz_in_bits);
 
@@ -794,10 +796,68 @@ tf_set_tcam_entry(struct tf *tfp,
 
 int
 tf_get_tcam_entry(struct tf *tfp __rte_unused,
-		  struct tf_get_tcam_entry_parms *parms __rte_unused)
+		  struct tf_get_tcam_entry_parms *parms)
 {
+	int rc;
+	struct tf_session *tfs;
+	struct tf_dev_info *dev;
+	struct tf_tcam_get_parms gparms;
+
 	TF_CHECK_PARMS2(tfp, parms);
-	return -EOPNOTSUPP;
+
+	memset(&gparms, 0, sizeof(struct tf_tcam_get_parms));
+
+
+	/* Retrieve the session information */
+	rc = tf_session_get_session(tfp, &tfs);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup session, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup device, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	if (dev->ops->tf_dev_get_tcam == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	gparms.dir = parms->dir;
+	gparms.type = parms->tcam_tbl_type;
+	gparms.idx = parms->idx;
+	gparms.key = parms->key;
+	gparms.key_size = dev->ops->tf_dev_word_align(parms->key_sz_in_bits);
+	gparms.mask = parms->mask;
+	gparms.result = parms->result;
+	gparms.result_size = TF_BITS2BYTES_WORD_ALIGN(parms->result_sz_in_bits);
+
+	rc = dev->ops->tf_dev_get_tcam(tfp, &gparms);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: TCAM get failed, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+	parms->key_sz_in_bits = gparms.key_size * 8;
+	parms->result_sz_in_bits = gparms.result_size * 8;
+
+	return 0;
 }
 
 int
@@ -857,6 +917,110 @@ tf_free_tcam_entry(struct tf *tfp,
 	return 0;
 }
 
+#ifdef TF_TCAM_SHARED
+int
+tf_move_tcam_shared_entries(struct tf *tfp,
+			    struct tf_move_tcam_shared_entries_parms *parms)
+{
+	int rc;
+	struct tf_session *tfs;
+	struct tf_dev_info *dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* Retrieve the session information */
+	rc = tf_session_get_session(tfp, &tfs);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup session, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup device, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	if (dev->ops->tf_dev_move_tcam == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev->ops->tf_dev_move_tcam(tfp, parms);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: TCAM shared entries move failed, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	return 0;
+}
+
+int
+tf_clear_tcam_shared_entries(struct tf *tfp,
+			     struct tf_clear_tcam_shared_entries_parms *parms)
+{
+	int rc;
+	struct tf_session *tfs;
+	struct tf_dev_info *dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* Retrieve the session information */
+	rc = tf_session_get_session(tfp, &tfs);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup session, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup device, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	if (dev->ops->tf_dev_clear_tcam == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev->ops->tf_dev_clear_tcam(tfp, parms);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: TCAM shared entries clear failed, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	return 0;
+}
+#endif /* TF_TCAM_SHARED */
+
 int
 tf_alloc_tbl_entry(struct tf *tfp,
 		   struct tf_alloc_tbl_entry_parms *parms)
@@ -915,17 +1079,16 @@ tf_alloc_tbl_entry(struct tf *tfp,
 				    strerror(-rc));
 			return rc;
 		}
-
-	} else {
-		if (dev->ops->tf_dev_alloc_tbl == NULL) {
-			rc = -EOPNOTSUPP;
+	} else if (dev->ops->tf_dev_is_sram_managed(tfp, parms->type)) {
+		rc = dev->ops->tf_dev_alloc_sram_tbl(tfp, &aparms);
+		if (rc) {
 			TFP_DRV_LOG(ERR,
-				    "%s: Operation not supported, rc:%s\n",
+				    "%s: SRAM table allocation failed, rc:%s\n",
 				    tf_dir_2_str(parms->dir),
 				    strerror(-rc));
-			return -EOPNOTSUPP;
+			return rc;
 		}
-
+	} else {
 		rc = dev->ops->tf_dev_alloc_tbl(tfp, &aparms);
 		if (rc) {
 			TFP_DRV_LOG(ERR,
@@ -937,71 +1100,6 @@ tf_alloc_tbl_entry(struct tf *tfp,
 	}
 
 	parms->idx = idx;
-
-	return 0;
-}
-
-int
-tf_search_tbl_entry(struct tf *tfp,
-		    struct tf_search_tbl_entry_parms *parms)
-{
-	int rc;
-	struct tf_session *tfs;
-	struct tf_dev_info *dev;
-	struct tf_tbl_alloc_search_parms sparms;
-
-	TF_CHECK_PARMS2(tfp, parms);
-
-	/* Retrieve the session information */
-	rc = tf_session_get_session(tfp, &tfs);
-	if (rc) {
-		TFP_DRV_LOG(ERR,
-			    "%s: Failed to lookup session, rc:%s\n",
-			    tf_dir_2_str(parms->dir),
-			    strerror(-rc));
-		return rc;
-	}
-
-	/* Retrieve the device information */
-	rc = tf_session_get_device(tfs, &dev);
-	if (rc) {
-		TFP_DRV_LOG(ERR,
-			    "%s: Failed to lookup device, rc:%s\n",
-			    tf_dir_2_str(parms->dir),
-			    strerror(-rc));
-		return rc;
-	}
-
-	if (dev->ops->tf_dev_alloc_search_tbl == NULL) {
-		rc = -EOPNOTSUPP;
-		TFP_DRV_LOG(ERR,
-			    "%s: Operation not supported, rc:%s\n",
-			    tf_dir_2_str(parms->dir),
-			    strerror(-rc));
-		return rc;
-	}
-
-	memset(&sparms, 0, sizeof(struct tf_tbl_alloc_search_parms));
-	sparms.dir = parms->dir;
-	sparms.type = parms->type;
-	sparms.result = parms->result;
-	sparms.result_sz_in_bytes = parms->result_sz_in_bytes;
-	sparms.alloc = parms->alloc;
-	sparms.tbl_scope_id = parms->tbl_scope_id;
-	rc = dev->ops->tf_dev_alloc_search_tbl(tfp, &sparms);
-	if (rc) {
-		TFP_DRV_LOG(ERR,
-			    "%s: TBL allocation failed, rc:%s\n",
-			    tf_dir_2_str(parms->dir),
-			    strerror(-rc));
-		return rc;
-	}
-
-	/* Return the outputs from the search */
-	parms->hit = sparms.hit;
-	parms->search_status = sparms.search_status;
-	parms->ref_cnt = sparms.ref_cnt;
-	parms->idx = sparms.idx;
 
 	return 0;
 }
@@ -1063,15 +1161,16 @@ tf_free_tbl_entry(struct tf *tfp,
 				    strerror(-rc));
 			return rc;
 		}
-	} else {
-		if (dev->ops->tf_dev_free_tbl == NULL) {
-			rc = -EOPNOTSUPP;
+	} else if (dev->ops->tf_dev_is_sram_managed(tfp, parms->type)) {
+		rc = dev->ops->tf_dev_free_sram_tbl(tfp, &fparms);
+		if (rc) {
 			TFP_DRV_LOG(ERR,
-				    "%s: Operation not supported, rc:%s\n",
+				    "%s: SRAM table free failed, rc:%s\n",
 				    tf_dir_2_str(parms->dir),
 				    strerror(-rc));
-			return -EOPNOTSUPP;
+			return rc;
 		}
+	} else {
 
 		rc = dev->ops->tf_dev_free_tbl(tfp, &fparms);
 		if (rc) {
@@ -1082,7 +1181,6 @@ tf_free_tbl_entry(struct tf *tfp,
 			return rc;
 		}
 	}
-
 	return 0;
 }
 
@@ -1145,6 +1243,15 @@ tf_set_tbl_entry(struct tf *tfp,
 				    strerror(-rc));
 			return rc;
 		}
+	}  else if (dev->ops->tf_dev_is_sram_managed(tfp, parms->type)) {
+		rc = dev->ops->tf_dev_set_sram_tbl(tfp, &sparms);
+		if (rc) {
+			TFP_DRV_LOG(ERR,
+				    "%s: SRAM table set failed, rc:%s\n",
+				    tf_dir_2_str(parms->dir),
+				    strerror(-rc));
+			return rc;
+		}
 	} else {
 		if (dev->ops->tf_dev_set_tbl == NULL) {
 			rc = -EOPNOTSUPP;
@@ -1201,28 +1308,39 @@ tf_get_tbl_entry(struct tf *tfp,
 			    strerror(-rc));
 		return rc;
 	}
-
-	if (dev->ops->tf_dev_get_tbl == NULL) {
-		rc = -EOPNOTSUPP;
-		TFP_DRV_LOG(ERR,
-			    "%s: Operation not supported, rc:%s\n",
-			    tf_dir_2_str(parms->dir),
-			    strerror(-rc));
-		return -EOPNOTSUPP;
-	}
-
 	gparms.dir = parms->dir;
 	gparms.type = parms->type;
 	gparms.data = parms->data;
 	gparms.data_sz_in_bytes = parms->data_sz_in_bytes;
 	gparms.idx = parms->idx;
-	rc = dev->ops->tf_dev_get_tbl(tfp, &gparms);
-	if (rc) {
-		TFP_DRV_LOG(ERR,
-			    "%s: Table get failed, rc:%s\n",
-			    tf_dir_2_str(parms->dir),
-			    strerror(-rc));
-		return rc;
+
+	if (dev->ops->tf_dev_is_sram_managed(tfp, parms->type)) {
+		rc = dev->ops->tf_dev_get_sram_tbl(tfp, &gparms);
+		if (rc) {
+			TFP_DRV_LOG(ERR,
+				    "%s: SRAM table get failed, rc:%s\n",
+				    tf_dir_2_str(parms->dir),
+				    strerror(-rc));
+			return rc;
+		}
+	} else {
+		if (dev->ops->tf_dev_get_tbl == NULL) {
+			rc = -EOPNOTSUPP;
+			TFP_DRV_LOG(ERR,
+				    "%s: Operation not supported, rc:%s\n",
+				    tf_dir_2_str(parms->dir),
+				    strerror(-rc));
+			return -EOPNOTSUPP;
+		}
+
+		rc = dev->ops->tf_dev_get_tbl(tfp, &gparms);
+		if (rc) {
+			TFP_DRV_LOG(ERR,
+				    "%s: Table get failed, rc:%s\n",
+				    tf_dir_2_str(parms->dir),
+				    strerror(-rc));
+			return rc;
+		}
 	}
 
 	return rc;
@@ -1262,6 +1380,13 @@ tf_bulk_get_tbl_entry(struct tf *tfp,
 		return rc;
 	}
 
+	bparms.dir = parms->dir;
+	bparms.type = parms->type;
+	bparms.starting_idx = parms->starting_idx;
+	bparms.num_entries = parms->num_entries;
+	bparms.entry_sz_in_bytes = parms->entry_sz_in_bytes;
+	bparms.physical_mem_addr = parms->physical_mem_addr;
+
 	if (parms->type == TF_TBL_TYPE_EXT) {
 		/* Not supported, yet */
 		rc = -EOPNOTSUPP;
@@ -1271,9 +1396,16 @@ tf_bulk_get_tbl_entry(struct tf *tfp,
 			    strerror(-rc));
 
 		return rc;
+	} else if (dev->ops->tf_dev_is_sram_managed(tfp, parms->type)) {
+		rc = dev->ops->tf_dev_get_bulk_sram_tbl(tfp, &bparms);
+		if (rc) {
+			TFP_DRV_LOG(ERR,
+				    "%s: SRAM table bulk get failed, rc:%s\n",
+				    tf_dir_2_str(parms->dir),
+				    strerror(-rc));
+		}
+		return rc;
 	}
-
-	/* Internal table type processing */
 
 	if (dev->ops->tf_dev_get_bulk_tbl == NULL) {
 		rc = -EOPNOTSUPP;
@@ -1284,16 +1416,61 @@ tf_bulk_get_tbl_entry(struct tf *tfp,
 		return -EOPNOTSUPP;
 	}
 
-	bparms.dir = parms->dir;
-	bparms.type = parms->type;
-	bparms.starting_idx = parms->starting_idx;
-	bparms.num_entries = parms->num_entries;
-	bparms.entry_sz_in_bytes = parms->entry_sz_in_bytes;
-	bparms.physical_mem_addr = parms->physical_mem_addr;
 	rc = dev->ops->tf_dev_get_bulk_tbl(tfp, &bparms);
 	if (rc) {
 		TFP_DRV_LOG(ERR,
 			    "%s: Table get bulk failed, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+	return rc;
+}
+
+int tf_get_shared_tbl_increment(struct tf *tfp,
+				struct tf_get_shared_tbl_increment_parms *parms)
+{
+	int rc = 0;
+	struct tf_session *tfs;
+	struct tf_dev_info *dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* Retrieve the session information */
+	rc = tf_session_get_session(tfp, &tfs);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup session, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Failed to lookup device, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Internal table type processing */
+
+	if (dev->ops->tf_dev_get_shared_tbl_increment == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return -EOPNOTSUPP;
+	}
+
+	rc = dev->ops->tf_dev_get_shared_tbl_increment(tfp, parms);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: Get table increment not supported, rc:%s\n",
 			    tf_dir_2_str(parms->dir),
 			    strerror(-rc));
 		return rc;
@@ -1532,4 +1709,293 @@ tf_get_if_tbl_entry(struct tf *tfp,
 	}
 
 	return 0;
+}
+
+int tf_get_session_info(struct tf *tfp,
+			struct tf_get_session_info_parms *parms)
+{
+	int rc;
+	struct tf_session      *tfs;
+	struct tf_dev_info     *dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* Retrieve the session information */
+	rc = tf_session_get_session(tfp, &tfs);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Failed to lookup session, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Failed to lookup device, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	if (dev->ops->tf_dev_get_ident_resc_info == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "Operation not supported, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev->ops->tf_dev_get_ident_resc_info(tfp, parms->session_info.ident);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Ident get resc info failed, rc:%s\n",
+			    strerror(-rc));
+	}
+
+	if (dev->ops->tf_dev_get_tbl_resc_info == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "Operation not supported, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev->ops->tf_dev_get_tbl_resc_info(tfp, parms->session_info.tbl);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Tbl get resc info failed, rc:%s\n",
+			    strerror(-rc));
+	}
+
+	if (dev->ops->tf_dev_get_tcam_resc_info == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "Operation not supported, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev->ops->tf_dev_get_tcam_resc_info(tfp, parms->session_info.tcam);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "TCAM get resc info failed, rc:%s\n",
+			    strerror(-rc));
+	}
+
+	if (dev->ops->tf_dev_get_em_resc_info == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "Operation not supported, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev->ops->tf_dev_get_em_resc_info(tfp, parms->session_info.em);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "EM get resc info failed, rc:%s\n",
+			    strerror(-rc));
+	}
+
+	return 0;
+}
+
+int tf_get_version(struct tf *tfp,
+		   struct tf_get_version_parms *parms)
+{
+	int rc;
+	struct tf_dev_info dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* This function can be called before open session, filter
+	 * out any non-supported device types on the Core side.
+	 */
+	if (parms->device_type != TF_DEVICE_TYPE_WH &&
+	    parms->device_type != TF_DEVICE_TYPE_THOR &&
+	    parms->device_type != TF_DEVICE_TYPE_SR) {
+		TFP_DRV_LOG(ERR,
+			    "Unsupported device type %d\n",
+			    parms->device_type);
+		return -ENOTSUP;
+	}
+
+	tf_dev_bind_ops(parms->device_type, &dev);
+
+	rc = tf_msg_get_version(parms->bp, &dev, parms);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
+int tf_query_sram_resources(struct tf *tfp,
+			    struct tf_query_sram_resources_parms *parms)
+{
+	int rc;
+	struct tf_dev_info dev;
+	uint16_t max_types;
+	struct tfp_calloc_parms cparms;
+	struct tf_rm_resc_req_entry *query;
+	enum tf_rm_resc_resv_strategy resv_strategy;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* This function can be called before open session, filter
+	 * out any non-supported device types on the Core side.
+	 */
+	if (parms->device_type != TF_DEVICE_TYPE_THOR) {
+		TFP_DRV_LOG(ERR,
+			    "Unsupported device type %d\n",
+			    parms->device_type);
+		return -ENOTSUP;
+	}
+
+	tf_dev_bind_ops(parms->device_type, &dev);
+
+	if (dev.ops->tf_dev_get_max_types == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return -EOPNOTSUPP;
+	}
+
+	/* Need device max number of elements for the RM QCAPS */
+	rc = dev.ops->tf_dev_get_max_types(tfp, &max_types);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Get SRAM resc info failed, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	/* Allocate memory for RM QCAPS request */
+	cparms.nitems = max_types;
+	cparms.size = sizeof(struct tf_rm_resc_req_entry);
+	cparms.alignment = 0;
+	rc = tfp_calloc(&cparms);
+	if (rc)
+		return rc;
+
+	query = (struct tf_rm_resc_req_entry *)cparms.mem_va;
+	tfp->bp = parms->bp;
+
+	/* Get Firmware Capabilities */
+	rc = tf_msg_session_resc_qcaps(tfp,
+				       &dev,
+				       parms->dir,
+				       max_types,
+				       query,
+				       &resv_strategy,
+				       &parms->sram_profile);
+	if (rc)
+		return rc;
+
+	if (dev.ops->tf_dev_get_sram_resources == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return -EOPNOTSUPP;
+	}
+
+	rc = dev.ops->tf_dev_get_sram_resources((void *)query,
+			parms->bank_resc_count,
+			&parms->dynamic_sram_capable);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Get SRAM resc info failed, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
+	return 0;
+}
+
+int tf_set_sram_policy(struct tf *tfp,
+		       struct tf_set_sram_policy_parms *parms)
+{
+	int rc = 0;
+	struct tf_dev_info dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* This function can be called before open session, filter
+	 * out any non-supported device types on the Core side.
+	 */
+	if (parms->device_type != TF_DEVICE_TYPE_THOR) {
+		TFP_DRV_LOG(ERR,
+			    "Unsupported device type %d\n",
+			    parms->device_type);
+		return -ENOTSUP;
+	}
+
+	tf_dev_bind_ops(parms->device_type, &dev);
+
+	if (dev.ops->tf_dev_set_sram_policy == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev.ops->tf_dev_set_sram_policy(parms->dir, parms->bank_id);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: SRAM policy set failed, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	return rc;
+}
+
+int tf_get_sram_policy(struct tf *tfp,
+		       struct tf_get_sram_policy_parms *parms)
+{
+	int rc = 0;
+	struct tf_dev_info dev;
+
+	TF_CHECK_PARMS2(tfp, parms);
+
+	/* This function can be called before open session, filter
+	 * out any non-supported device types on the Core side.
+	 */
+	if (parms->device_type != TF_DEVICE_TYPE_THOR) {
+		TFP_DRV_LOG(ERR,
+			    "Unsupported device type %d\n",
+			    parms->device_type);
+		return -ENOTSUP;
+	}
+
+	tf_dev_bind_ops(parms->device_type, &dev);
+
+	if (dev.ops->tf_dev_get_sram_policy == NULL) {
+		rc = -EOPNOTSUPP;
+		TFP_DRV_LOG(ERR,
+			    "%s: Operation not supported, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	rc = dev.ops->tf_dev_get_sram_policy(parms->dir, parms->bank_id);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "%s: SRAM policy get failed, rc:%s\n",
+			    tf_dir_2_str(parms->dir),
+			    strerror(-rc));
+		return rc;
+	}
+
+	return rc;
 }

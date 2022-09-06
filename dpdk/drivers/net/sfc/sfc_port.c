@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
  */
+
+#include <rte_bitmap.h>
 
 #include "efx.h"
 
@@ -46,7 +48,7 @@ sfc_port_update_mac_stats(struct sfc_adapter *sa, boolean_t force_upload)
 
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	if (sa->state != SFC_ADAPTER_STARTED)
+	if (sa->state != SFC_ETHDEV_STARTED)
 		return 0;
 
 	/*
@@ -381,14 +383,10 @@ sfc_port_configure(struct sfc_adapter *sa)
 {
 	const struct rte_eth_dev_data *dev_data = sa->eth_dev->data;
 	struct sfc_port *port = &sa->port;
-	const struct rte_eth_rxmode *rxmode = &dev_data->dev_conf.rxmode;
 
 	sfc_log_init(sa, "entry");
 
-	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
-		port->pdu = rxmode->max_rx_pkt_len;
-	else
-		port->pdu = EFX_MAC_PDU(dev_data->mtu);
+	port->pdu = EFX_MAC_PDU(dev_data->mtu);
 
 	return 0;
 }
@@ -442,7 +440,8 @@ sfc_port_attach(struct sfc_adapter *sa)
 
 	mac_nstats = efx_nic_cfg_get(sa->nic)->enc_mac_stats_nstats;
 	mac_stats_size = RTE_ALIGN(mac_nstats * sizeof(uint64_t), EFX_BUF_SIZE);
-	rc = sfc_dma_alloc(sa, "mac_stats", 0, mac_stats_size,
+	rc = sfc_dma_alloc(sa, "mac_stats", 0, EFX_NIC_DMA_ADDR_MAC_STATS_BUF,
+			   mac_stats_size,
 			   sa->socket_id, &port->mac_stats_dma_mem);
 	if (rc != 0)
 		goto fail_mac_stats_dma_alloc;
@@ -575,64 +574,140 @@ sfc_port_link_mode_to_info(efx_link_mode_t link_mode,
 
 	memset(link_info, 0, sizeof(*link_info));
 	if ((link_mode == EFX_LINK_DOWN) || (link_mode == EFX_LINK_UNKNOWN))
-		link_info->link_status = ETH_LINK_DOWN;
+		link_info->link_status = RTE_ETH_LINK_DOWN;
 	else
-		link_info->link_status = ETH_LINK_UP;
+		link_info->link_status = RTE_ETH_LINK_UP;
 
 	switch (link_mode) {
 	case EFX_LINK_10HDX:
-		link_info->link_speed  = ETH_SPEED_NUM_10M;
-		link_info->link_duplex = ETH_LINK_HALF_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_10M;
+		link_info->link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 		break;
 	case EFX_LINK_10FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_10M;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_10M;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_100HDX:
-		link_info->link_speed  = ETH_SPEED_NUM_100M;
-		link_info->link_duplex = ETH_LINK_HALF_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_100M;
+		link_info->link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 		break;
 	case EFX_LINK_100FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_100M;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_100M;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_1000HDX:
-		link_info->link_speed  = ETH_SPEED_NUM_1G;
-		link_info->link_duplex = ETH_LINK_HALF_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_1G;
+		link_info->link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 		break;
 	case EFX_LINK_1000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_1G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_1G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_10000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_10G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_10G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_25000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_25G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_25G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_40000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_40G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_40G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_50000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_50G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_50G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_100000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_100G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_100G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	default:
 		SFC_ASSERT(B_FALSE);
 		/* FALLTHROUGH */
 	case EFX_LINK_UNKNOWN:
 	case EFX_LINK_DOWN:
-		link_info->link_speed  = ETH_SPEED_NUM_NONE;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_NONE;
 		link_info->link_duplex = 0;
 		break;
 	}
 
-	link_info->link_autoneg = ETH_LINK_AUTONEG;
+	link_info->link_autoneg = RTE_ETH_LINK_AUTONEG;
+}
+
+int
+sfc_port_get_mac_stats(struct sfc_adapter *sa, struct rte_eth_xstat *xstats,
+		       unsigned int xstats_count, unsigned int *nb_written)
+{
+	struct sfc_port *port = &sa->port;
+	uint64_t *mac_stats;
+	unsigned int i;
+	int nstats = 0;
+	int ret;
+
+	sfc_adapter_lock(sa);
+
+	ret = sfc_port_update_mac_stats(sa, B_FALSE);
+	if (ret != 0) {
+		SFC_ASSERT(ret > 0);
+		ret = -ret;
+		goto unlock;
+	}
+
+	mac_stats = port->mac_stats_buf;
+
+	for (i = 0; i < EFX_MAC_NSTATS; ++i) {
+		if (EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, i)) {
+			if (nstats < (int)xstats_count) {
+				xstats[nstats].id = nstats;
+				xstats[nstats].value = mac_stats[i];
+				(*nb_written)++;
+			}
+			nstats++;
+		}
+	}
+	ret = nstats;
+
+unlock:
+	sfc_adapter_unlock(sa);
+
+	return ret;
+}
+
+int
+sfc_port_get_mac_stats_by_id(struct sfc_adapter *sa, const uint64_t *ids,
+			     uint64_t *values, unsigned int n)
+{
+	struct sfc_port *port = &sa->port;
+	uint64_t *mac_stats;
+	unsigned int i;
+	int ret;
+	int rc;
+
+	sfc_adapter_lock(sa);
+
+	rc = sfc_port_update_mac_stats(sa, B_FALSE);
+	if (rc != 0) {
+		SFC_ASSERT(rc > 0);
+		ret = -rc;
+		goto unlock;
+	}
+
+	mac_stats = port->mac_stats_buf;
+
+	SFC_ASSERT(port->mac_stats_nb_supported <=
+		   RTE_DIM(port->mac_stats_by_id));
+
+	for (i = 0; i < n; i++) {
+		if (ids[i] < port->mac_stats_nb_supported)
+			values[i] = mac_stats[port->mac_stats_by_id[ids[i]]];
+	}
+
+	ret = 0;
+
+unlock:
+	sfc_adapter_unlock(sa);
+
+	return ret;
 }

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Copyright(c) 2019-2020 Broadcom All rights reserved. */
+/* Copyright(c) 2019-2021 Broadcom All rights reserved. */
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -71,8 +71,7 @@ descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
 	const uint32x4_t flags_type_mask =
 		vdupq_n_u32(RX_PKT_CMPL_FLAGS_ITYPE_MASK);
 	const uint32x4_t flags2_mask1 =
-		vdupq_n_u32(RX_PKT_CMPL_FLAGS2_META_FORMAT_VLAN |
-			    RX_PKT_CMPL_FLAGS2_T_IP_CS_CALC);
+		vdupq_n_u32(CMPL_FLAGS2_VLAN_TUN_MSK);
 	const uint32x4_t flags2_mask2 =
 		vdupq_n_u32(RX_PKT_CMPL_FLAGS2_IP_TYPE);
 	const uint32x4_t rss_mask =
@@ -84,14 +83,18 @@ descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
 	uint64x2_t t0, t1;
 	uint32_t ol_flags;
 
+	/* Validate ptype table indexing at build time. */
+	bnxt_check_ptype_constants();
+
 	/* Compute packet type table indexes for four packets */
 	t0 = vreinterpretq_u64_u32(vzip1q_u32(mm_rxcmp[0], mm_rxcmp[1]));
 	t1 = vreinterpretq_u64_u32(vzip1q_u32(mm_rxcmp[2], mm_rxcmp[3]));
 
 	flags_type = vreinterpretq_u32_u64(vcombine_u64(vget_low_u64(t0),
 							vget_low_u64(t1)));
-	ptype_idx =
-		vshrq_n_u32(vandq_u32(flags_type, flags_type_mask), 9);
+	ptype_idx = vshrq_n_u32(vandq_u32(flags_type, flags_type_mask),
+				RX_PKT_CMPL_FLAGS_ITYPE_SFT -
+				BNXT_PTYPE_TBL_TYPE_SFT);
 
 	t0 = vreinterpretq_u64_u32(vzip1q_u32(mm_rxcmp1[0], mm_rxcmp1[1]));
 	t1 = vreinterpretq_u64_u32(vzip1q_u32(mm_rxcmp1[2], mm_rxcmp1[3]));
@@ -100,9 +103,13 @@ descs_to_mbufs(uint32x4_t mm_rxcmp[4], uint32x4_t mm_rxcmp1[4],
 						    vget_low_u64(t1)));
 
 	ptype_idx = vorrq_u32(ptype_idx,
-			vshrq_n_u32(vandq_u32(flags2, flags2_mask1), 2));
+			vshrq_n_u32(vandq_u32(flags2, flags2_mask1),
+				    RX_PKT_CMPL_FLAGS2_META_FORMAT_SFT -
+				    BNXT_PTYPE_TBL_VLAN_SFT));
 	ptype_idx = vorrq_u32(ptype_idx,
-			vshrq_n_u32(vandq_u32(flags2, flags2_mask2), 7));
+			vshrq_n_u32(vandq_u32(flags2, flags2_mask2),
+				    RX_PKT_CMPL_FLAGS2_IP_TYPE_SFT -
+				    BNXT_PTYPE_TBL_IP_VER_SFT));
 
 	/* Extract RSS valid flags for four packets. */
 	rss_flags = vshrq_n_u32(vandq_u32(flags_type, rss_mask), 9);
@@ -193,17 +200,20 @@ recv_burst_vec_neon(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	 * maximum number of packets to receive to be a multiple of the per-
 	 * loop count.
 	 */
-	if (nb_pkts < RTE_BNXT_DESCS_PER_LOOP)
-		desc_valid_mask >>= 16 * (RTE_BNXT_DESCS_PER_LOOP - nb_pkts);
-	else
-		nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_BNXT_DESCS_PER_LOOP);
+	if (nb_pkts < BNXT_RX_DESCS_PER_LOOP_VEC128) {
+		desc_valid_mask >>=
+			16 * (BNXT_RX_DESCS_PER_LOOP_VEC128 - nb_pkts);
+	} else {
+		nb_pkts =
+			RTE_ALIGN_FLOOR(nb_pkts, BNXT_RX_DESCS_PER_LOOP_VEC128);
+	}
 
 	/* Handle RX burst request */
-	for (i = 0; i < nb_pkts; i += RTE_BNXT_DESCS_PER_LOOP,
-				  cons += RTE_BNXT_DESCS_PER_LOOP * 2,
-				  mbcons += RTE_BNXT_DESCS_PER_LOOP) {
-		uint32x4_t rxcmp1[RTE_BNXT_DESCS_PER_LOOP];
-		uint32x4_t rxcmp[RTE_BNXT_DESCS_PER_LOOP];
+	for (i = 0; i < nb_pkts; i += BNXT_RX_DESCS_PER_LOOP_VEC128,
+				  cons += BNXT_RX_DESCS_PER_LOOP_VEC128 * 2,
+				  mbcons += BNXT_RX_DESCS_PER_LOOP_VEC128) {
+		uint32x4_t rxcmp1[BNXT_RX_DESCS_PER_LOOP_VEC128];
+		uint32x4_t rxcmp[BNXT_RX_DESCS_PER_LOOP_VEC128];
 		uint32x4_t info3_v;
 		uint64x2_t t0, t1;
 		uint32_t num_valid;
@@ -219,7 +229,7 @@ recv_burst_vec_neon(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 #endif
 
 		/* Prefetch four descriptor pairs for next iteration. */
-		if (i + RTE_BNXT_DESCS_PER_LOOP < nb_pkts) {
+		if (i + BNXT_RX_DESCS_PER_LOOP_VEC128 < nb_pkts) {
 			rte_prefetch0(&cp_desc_ring[cons + 8]);
 			rte_prefetch0(&cp_desc_ring[cons + 12]);
 		}
@@ -283,40 +293,22 @@ recv_burst_vec_neon(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		num_valid = (sizeof(uint64_t) / sizeof(uint16_t)) -
 				(__builtin_clzl(valid & desc_valid_mask) / 16);
 
-		switch (num_valid) {
-		case 4:
-			rxr->rx_buf_ring[mbcons + 3] = NULL;
-			/* FALLTHROUGH */
-		case 3:
-			rxr->rx_buf_ring[mbcons + 2] = NULL;
-			/* FALLTHROUGH */
-		case 2:
-			rxr->rx_buf_ring[mbcons + 1] = NULL;
-			/* FALLTHROUGH */
-		case 1:
-			rxr->rx_buf_ring[mbcons + 0] = NULL;
+		if (num_valid == 0)
 			break;
-		case 0:
-			goto out;
-		}
 
 		descs_to_mbufs(rxcmp, rxcmp1, mb_init, &rx_pkts[nb_rx_pkts],
 			       rxr);
 		nb_rx_pkts += num_valid;
 
-		if (num_valid < RTE_BNXT_DESCS_PER_LOOP)
+		if (num_valid < BNXT_RX_DESCS_PER_LOOP_VEC128)
 			break;
 	}
 
-out:
 	if (nb_rx_pkts) {
-		rxr->rx_prod =
-			RING_ADV(rxr->rx_ring_struct, rxr->rx_prod, nb_rx_pkts);
+		rxr->rx_raw_prod = RING_ADV(rxr->rx_raw_prod, nb_rx_pkts);
 
 		rxq->rxrearm_nb += nb_rx_pkts;
 		cpr->cp_raw_cons += 2 * nb_rx_pkts;
-		cpr->valid =
-			!!(cpr->cp_raw_cons & cpr->cp_ring_struct->ring_size);
 		bnxt_db_cq(cpr);
 	}
 
@@ -372,9 +364,8 @@ bnxt_handle_tx_cp_vec(struct bnxt_tx_queue *txq)
 		raw_cons = NEXT_RAW_CMP(raw_cons);
 	} while (nb_tx_pkts < ring_mask);
 
-	cpr->valid = !!(raw_cons & cp_ring_struct->ring_size);
 	if (nb_tx_pkts) {
-		if (txq->offloads & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		if (txq->offloads & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			bnxt_tx_cmp_vec_fast(txq, nb_tx_pkts);
 		else
 			bnxt_tx_cmp_vec(txq, nb_tx_pkts);
@@ -389,10 +380,10 @@ bnxt_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 {
 	struct bnxt_tx_queue *txq = tx_queue;
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
-	uint16_t prod = txr->tx_prod;
+	uint16_t tx_prod, tx_raw_prod = txr->tx_raw_prod;
 	struct rte_mbuf *tx_mbuf;
 	struct tx_bd_long *txbd = NULL;
-	struct bnxt_sw_tx_bd *tx_buf;
+	struct rte_mbuf **tx_buf;
 	uint16_t to_send;
 
 	nb_pkts = RTE_MIN(nb_pkts, bnxt_tx_avail(txq));
@@ -406,16 +397,16 @@ bnxt_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 		tx_mbuf = *tx_pkts++;
 		rte_prefetch0(tx_mbuf);
 
-		tx_buf = &txr->tx_buf_ring[prod];
-		tx_buf->mbuf = tx_mbuf;
-		tx_buf->nr_bds = 1;
+		tx_prod = RING_IDX(txr->tx_ring_struct, tx_raw_prod);
+		tx_buf = &txr->tx_buf_ring[tx_prod];
+		*tx_buf = tx_mbuf;
 
-		txbd = &txr->tx_desc_ring[prod];
+		txbd = &txr->tx_desc_ring[tx_prod];
 		txbd->address = tx_mbuf->buf_iova + tx_mbuf->data_off;
 		txbd->len = tx_mbuf->data_len;
 		txbd->flags_type = bnxt_xmit_flags_len(tx_mbuf->data_len,
 						       TX_BD_FLAGS_NOCMPL);
-		prod = RING_NEXT(txr->tx_ring_struct, prod);
+		tx_raw_prod = RING_NEXT(tx_raw_prod);
 		to_send--;
 	}
 
@@ -426,9 +417,9 @@ bnxt_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 	}
 
 	rte_compiler_barrier();
-	bnxt_db_write(&txr->tx_db, prod);
+	bnxt_db_write(&txr->tx_db, tx_raw_prod);
 
-	txr->tx_prod = prod;
+	txr->tx_raw_prod = tx_raw_prod;
 
 	return nb_pkts;
 }

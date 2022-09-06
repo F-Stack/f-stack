@@ -597,7 +597,7 @@ again:
 		pdata->an_int = 0;
 		axgbe_an73_clear_interrupts(pdata);
 		pdata->eth_dev->data->dev_link.link_status =
-			ETH_LINK_DOWN;
+			RTE_ETH_LINK_DOWN;
 	} else if (pdata->an_state == AXGBE_AN_ERROR) {
 		PMD_DRV_LOG(ERR, "error during auto-negotiation, state=%u\n",
 			    cur_state);
@@ -933,7 +933,7 @@ static int __axgbe_phy_config_aneg(struct axgbe_port *pdata)
 	}
 
 	/* Disable auto-negotiation interrupt */
-	rte_intr_disable(&pdata->pci_dev->intr_handle);
+	rte_intr_disable(pdata->pci_dev->intr_handle);
 
 	/* Start auto-negotiation in a supported mode */
 	if (axgbe_use_mode(pdata, AXGBE_MODE_KR)) {
@@ -951,7 +951,7 @@ static int __axgbe_phy_config_aneg(struct axgbe_port *pdata)
 	} else if (axgbe_use_mode(pdata, AXGBE_MODE_SGMII_100)) {
 		axgbe_set_mode(pdata, AXGBE_MODE_SGMII_100);
 	} else {
-		rte_intr_enable(&pdata->pci_dev->intr_handle);
+		rte_intr_enable(pdata->pci_dev->intr_handle);
 		return -EINVAL;
 	}
 
@@ -964,7 +964,7 @@ static int __axgbe_phy_config_aneg(struct axgbe_port *pdata)
 	pdata->kx_state = AXGBE_RX_BPA;
 
 	/* Re-enable auto-negotiation interrupt */
-	rte_intr_enable(&pdata->pci_dev->intr_handle);
+	rte_intr_enable(pdata->pci_dev->intr_handle);
 	axgbe_an37_enable_interrupts(pdata);
 
 	axgbe_an_init(pdata);

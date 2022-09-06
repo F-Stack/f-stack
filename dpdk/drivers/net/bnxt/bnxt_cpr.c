@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -74,7 +74,7 @@ bnxt_process_default_vnic_change(struct bnxt *bp,
 			BNXT_DEFAULT_VNIC_CHANGE_VF_ID_SFT;
 	PMD_DRV_LOG(INFO, "async event received vf_id 0x%x\n", vf_fid);
 
-	for (vf_id = 0; vf_id < BNXT_MAX_VF_REPS; vf_id++) {
+	for (vf_id = 0; vf_id < BNXT_MAX_VF_REPS(bp); vf_id++) {
 		eth_dev = bp->rep_info[vf_id].vfr_eth_dev;
 		if (!eth_dev)
 			continue;
@@ -89,6 +89,22 @@ bnxt_process_default_vnic_change(struct bnxt *bp,
 		return;
 
 	bnxt_rep_dev_start_op(eth_dev);
+}
+
+static void bnxt_handle_event_error_report(struct bnxt *bp,
+					   uint32_t data1,
+					   uint32_t data2)
+{
+	switch (BNXT_EVENT_ERROR_REPORT_TYPE(data1)) {
+	case HWRM_ASYNC_EVENT_CMPL_ERROR_REPORT_BASE_EVENT_DATA1_ERROR_TYPE_PAUSE_STORM:
+		PMD_DRV_LOG(WARNING, "Port:%d Pause Storm detected!\n",
+			    bp->eth_dev->data->port_id);
+		break;
+	default:
+		PMD_DRV_LOG(INFO, "FW reported unknown error type data1 %d"
+			    " data2: %d\n", data1, data2);
+		break;
+	}
 }
 
 void bnxt_handle_vf_cfg_change(void *arg)
@@ -120,8 +136,14 @@ void bnxt_handle_async_event(struct bnxt *bp,
 	struct hwrm_async_event_cmpl *async_cmp =
 				(struct hwrm_async_event_cmpl *)cmp;
 	uint16_t event_id = rte_le_to_cpu_16(async_cmp->event_id);
+	uint16_t port_id = bp->eth_dev->data->port_id;
 	struct bnxt_error_recovery_info *info;
 	uint32_t event_data;
+	uint32_t data1, data2;
+	uint32_t status;
+
+	data1 = rte_le_to_cpu_32(async_cmp->event_data1);
+	data2 = rte_le_to_cpu_32(async_cmp->event_data2);
 
 	switch (event_id) {
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE:
@@ -136,7 +158,8 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		PMD_DRV_LOG(INFO, "Async event: PF driver unloaded\n");
 		break;
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_VF_CFG_CHANGE:
-		PMD_DRV_LOG(INFO, "Async event: VF config changed\n");
+		PMD_DRV_LOG(INFO, "Port %u: VF config change async event\n", port_id);
+		PMD_DRV_LOG(INFO, "event: data1 %#x data2 %#x\n", data1, data2);
 		bnxt_hwrm_func_qcfg(bp, NULL);
 		if (BNXT_VF(bp))
 			rte_eal_alarm_set(1, bnxt_handle_vf_cfg_change, (void *)bp);
@@ -157,7 +180,8 @@ void bnxt_handle_async_event(struct bnxt *bp,
 			return;
 		}
 
-		event_data = rte_le_to_cpu_32(async_cmp->event_data1);
+		pthread_mutex_lock(&bp->err_recovery_lock);
+		event_data = data1;
 		/* timestamp_lo/hi values are in units of 100ms */
 		bp->fw_reset_max_msecs = async_cmp->timestamp_hi ?
 			rte_le_to_cpu_16(async_cmp->timestamp_hi) * 100 :
@@ -168,14 +192,17 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		if ((event_data & EVENT_DATA1_REASON_CODE_MASK) ==
 		    EVENT_DATA1_REASON_CODE_FW_EXCEPTION_FATAL) {
 			PMD_DRV_LOG(INFO,
-				    "Firmware fatal reset event received\n");
+				    "Port %u: Firmware fatal reset event received\n",
+				    port_id);
 			bp->flags |= BNXT_FLAG_FATAL_ERROR;
 		} else {
 			PMD_DRV_LOG(INFO,
-				    "Firmware non-fatal reset event received\n");
+				    "Port %u: Firmware non-fatal reset event received\n",
+				    port_id);
 		}
 
 		bp->flags |= BNXT_FLAG_FW_RESET;
+		pthread_mutex_unlock(&bp->err_recovery_lock);
 		rte_eal_alarm_set(US_PER_MS, bnxt_dev_reset_and_resume,
 				  (void *)bp);
 		break;
@@ -185,24 +212,26 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		if (!info)
 			return;
 
-		PMD_DRV_LOG(INFO, "Error recovery async event received\n");
+		event_data = data1 & EVENT_DATA1_FLAGS_MASK;
 
-		event_data = rte_le_to_cpu_32(async_cmp->event_data1) &
-				EVENT_DATA1_FLAGS_MASK;
+		if (event_data & EVENT_DATA1_FLAGS_RECOVERY_ENABLED) {
+			info->flags |= BNXT_FLAG_RECOVERY_ENABLED;
+		} else {
+			info->flags &= ~BNXT_FLAG_RECOVERY_ENABLED;
+			PMD_DRV_LOG(INFO, "Driver recovery watchdog is disabled\n");
+			return;
+		}
 
 		if (event_data & EVENT_DATA1_FLAGS_MASTER_FUNC)
-			info->flags |= BNXT_FLAG_MASTER_FUNC;
+			info->flags |= BNXT_FLAG_PRIMARY_FUNC;
 		else
-			info->flags &= ~BNXT_FLAG_MASTER_FUNC;
+			info->flags &= ~BNXT_FLAG_PRIMARY_FUNC;
 
-		if (event_data & EVENT_DATA1_FLAGS_RECOVERY_ENABLED)
-			info->flags |= BNXT_FLAG_RECOVERY_ENABLED;
-		else
-			info->flags &= ~BNXT_FLAG_RECOVERY_ENABLED;
-
-		PMD_DRV_LOG(INFO, "recovery enabled(%d), master function(%d)\n",
-			    bnxt_is_recovery_enabled(bp),
-			    bnxt_is_master_func(bp));
+		status = bnxt_read_fw_status_reg(bp, BNXT_FW_STATUS_REG);
+		PMD_DRV_LOG(INFO,
+			    "Port: %u Driver recovery watchdog, role: %s, FW status: 0x%x (%s)\n",
+			    port_id, bnxt_is_primary_func(bp) ? "primary" : "backup", status,
+			    (status == BNXT_FW_STATUS_HEALTHY) ? "healthy" : "unhealthy");
 
 		if (bp->flags & BNXT_FLAG_FW_HEALTH_CHECK_SCHEDULED)
 			return;
@@ -215,12 +244,21 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		bnxt_schedule_fw_health_check(bp);
 		break;
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_DEBUG_NOTIFICATION:
-		PMD_DRV_LOG(INFO, "DNC event: evt_data1 %#x evt_data2 %#x\n",
-			    rte_le_to_cpu_32(async_cmp->event_data1),
-			    rte_le_to_cpu_32(async_cmp->event_data2));
+		PMD_DRV_LOG(INFO, "Port: %u DNC event: data1 %#x data2 %#x\n",
+			    port_id, data1, data2);
 		break;
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_DEFAULT_VNIC_CHANGE:
 		bnxt_process_default_vnic_change(bp, async_cmp);
+		break;
+	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_ECHO_REQUEST:
+		PMD_DRV_LOG(INFO,
+			    "Port %u: Received fw echo request: data1 %#x data2 %#x\n",
+			    port_id, data1, data2);
+		if (bp->recovery_info)
+			bnxt_hwrm_fw_echo_reply(bp, data1, data2);
+		break;
+	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_ERROR_REPORT:
+		bnxt_handle_event_error_report(bp, data1, data2);
 		break;
 	default:
 		PMD_DRV_LOG(DEBUG, "handle_async_event id = 0x%x\n", event_id);
@@ -349,9 +387,9 @@ int bnxt_event_hwrm_resp_handler(struct bnxt *bp, struct cmpl_base *cmp)
 	return evt;
 }
 
-bool bnxt_is_master_func(struct bnxt *bp)
+bool bnxt_is_primary_func(struct bnxt *bp)
 {
-	if (bp->recovery_info->flags & BNXT_FLAG_MASTER_FUNC)
+	if (bp->recovery_info->flags & BNXT_FLAG_PRIMARY_FUNC)
 		return true;
 
 	return false;
@@ -372,4 +410,13 @@ void bnxt_stop_rxtx(struct bnxt *bp)
 {
 	bp->eth_dev->rx_pkt_burst = &bnxt_dummy_recv_pkts;
 	bp->eth_dev->tx_pkt_burst = &bnxt_dummy_xmit_pkts;
+
+	rte_eth_fp_ops[bp->eth_dev->data->port_id].rx_pkt_burst =
+		bp->eth_dev->rx_pkt_burst;
+	rte_eth_fp_ops[bp->eth_dev->data->port_id].tx_pkt_burst =
+		bp->eth_dev->tx_pkt_burst;
+	rte_mb();
+
+	/* Allow time for threads to exit the real burst functions. */
+	rte_delay_ms(100);
 }

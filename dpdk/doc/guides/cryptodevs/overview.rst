@@ -46,6 +46,12 @@ Supported Feature Flags
    - "Digest encrypted" feature flag means PMD support hash-cipher cases,
      where generated digest is appended to and encrypted with the data.
 
+   - "CIPHER_MULTIPLE_DATA_UNITS" feature flag means PMD support operations
+      on multiple data-units message.
+
+   - "CIPHER_WRAPPED_KEY" feature flag means PMD support wrapped key in cipher
+      xform.
+
 
 Supported Cipher Algorithms
 ---------------------------
@@ -74,3 +80,10 @@ Supported Asymmetric Algorithms
 .. _table_crypto_pmd_asym_algos:
 
 .. include:: overview_asym_table.txt
+
+Supported Operating Systems
+-------------------------------
+
+.. _table_crypto_pmd_os:
+
+.. include:: overview_os_table.txt

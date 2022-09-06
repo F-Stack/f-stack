@@ -11,7 +11,7 @@
 #include <stdarg.h>
 
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_log.h>
 #include <rte_memzone.h>
 #include <rte_malloc.h>
@@ -22,6 +22,7 @@
 #include <rte_sctp.h>
 #include <rte_hash_crc.h>
 #include <rte_bitmap.h>
+#include <rte_os_shim.h>
 
 #include "i40e_logs.h"
 #include "base/i40e_type.h"
@@ -263,10 +264,10 @@ i40e_fdir_setup(struct i40e_pf *pf)
 	return I40E_SUCCESS;
 
 fail_mem:
-	i40e_dev_rx_queue_release(pf->fdir.rxq);
+	i40e_rx_queue_release(pf->fdir.rxq);
 	pf->fdir.rxq = NULL;
 fail_setup_rx:
-	i40e_dev_tx_queue_release(pf->fdir.txq);
+	i40e_tx_queue_release(pf->fdir.txq);
 	pf->fdir.txq = NULL;
 fail_setup_tx:
 	i40e_vsi_release(vsi);
@@ -299,9 +300,9 @@ i40e_fdir_teardown(struct i40e_pf *pf)
 	if (err)
 		PMD_DRV_LOG(DEBUG, "Failed to do FDIR RX switch off");
 
-	i40e_dev_rx_queue_release(pf->fdir.rxq);
+	i40e_rx_queue_release(pf->fdir.rxq);
 	pf->fdir.rxq = NULL;
-	i40e_dev_tx_queue_release(pf->fdir.txq);
+	i40e_tx_queue_release(pf->fdir.txq);
 	pf->fdir.txq = NULL;
 	i40e_vsi_release(vsi);
 	pf->fdir.fdir_vsi = NULL;

@@ -18,118 +18,14 @@
 #include "qat_sym.h"
 #include "qat_asym.h"
 #include "qat_comp.h"
-#include "adf_transport_access_macros.h"
 
 #define QAT_CQ_MAX_DEQ_RETRIES 10
 
 #define ADF_MAX_DESC				4096
 #define ADF_MIN_DESC				128
 
-#define ADF_ARB_REG_SLOT			0x1000
-#define ADF_ARB_RINGSRVARBEN_OFFSET		0x19C
-
-#define WRITE_CSR_ARB_RINGSRVARBEN(csr_addr, index, value) \
-	ADF_CSR_WR(csr_addr, ADF_ARB_RINGSRVARBEN_OFFSET + \
-	(ADF_ARB_REG_SLOT * index), value)
-
-__extension__
-const struct qat_qp_hw_data qat_gen1_qps[QAT_MAX_SERVICES]
-					 [ADF_MAX_QPS_ON_ANY_SERVICE] = {
-	/* queue pairs which provide an asymmetric crypto service */
-	[QAT_SERVICE_ASYMMETRIC] = {
-		{
-			.service_type = QAT_SERVICE_ASYMMETRIC,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 0,
-			.rx_ring_num = 8,
-			.tx_msg_size = 64,
-			.rx_msg_size = 32,
-
-		}, {
-			.service_type = QAT_SERVICE_ASYMMETRIC,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 1,
-			.rx_ring_num = 9,
-			.tx_msg_size = 64,
-			.rx_msg_size = 32,
-		}
-	},
-	/* queue pairs which provide a symmetric crypto service */
-	[QAT_SERVICE_SYMMETRIC] = {
-		{
-			.service_type = QAT_SERVICE_SYMMETRIC,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 2,
-			.rx_ring_num = 10,
-			.tx_msg_size = 128,
-			.rx_msg_size = 32,
-		},
-		{
-			.service_type = QAT_SERVICE_SYMMETRIC,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 3,
-			.rx_ring_num = 11,
-			.tx_msg_size = 128,
-			.rx_msg_size = 32,
-		}
-	},
-	/* queue pairs which provide a compression service */
-	[QAT_SERVICE_COMPRESSION] = {
-		{
-			.service_type = QAT_SERVICE_COMPRESSION,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 6,
-			.rx_ring_num = 14,
-			.tx_msg_size = 128,
-			.rx_msg_size = 32,
-		}, {
-			.service_type = QAT_SERVICE_COMPRESSION,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 7,
-			.rx_ring_num = 15,
-			.tx_msg_size = 128,
-			.rx_msg_size = 32,
-		}
-	}
-};
-
-__extension__
-const struct qat_qp_hw_data qat_gen3_qps[QAT_MAX_SERVICES]
-					 [ADF_MAX_QPS_ON_ANY_SERVICE] = {
-	/* queue pairs which provide an asymmetric crypto service */
-	[QAT_SERVICE_ASYMMETRIC] = {
-		{
-			.service_type = QAT_SERVICE_ASYMMETRIC,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 0,
-			.rx_ring_num = 4,
-			.tx_msg_size = 64,
-			.rx_msg_size = 32,
-		}
-	},
-	/* queue pairs which provide a symmetric crypto service */
-	[QAT_SERVICE_SYMMETRIC] = {
-		{
-			.service_type = QAT_SERVICE_SYMMETRIC,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 1,
-			.rx_ring_num = 5,
-			.tx_msg_size = 128,
-			.rx_msg_size = 32,
-		}
-	},
-	/* queue pairs which provide a compression service */
-	[QAT_SERVICE_COMPRESSION] = {
-		{
-			.service_type = QAT_SERVICE_COMPRESSION,
-			.hw_bundle_num = 0,
-			.tx_ring_num = 3,
-			.rx_ring_num = 7,
-			.tx_msg_size = 128,
-			.rx_msg_size = 32,
-		}
-	}
-};
+struct qat_qp_hw_spec_funcs*
+	qat_qp_hw_spec[QAT_N_GENS];
 
 static int qat_qp_check_queue_alignment(uint64_t phys_addr,
 	uint32_t queue_size_bytes);
@@ -138,64 +34,32 @@ static int qat_queue_create(struct qat_pci_device *qat_dev,
 	struct qat_queue *queue, struct qat_qp_config *, uint8_t dir);
 static int adf_verify_queue_size(uint32_t msg_size, uint32_t msg_num,
 	uint32_t *queue_size_for_csr);
-static void adf_configure_queues(struct qat_qp *queue);
-static void adf_queue_arb_enable(struct qat_queue *txq, void *base_addr,
-	rte_spinlock_t *lock);
-static void adf_queue_arb_disable(struct qat_queue *txq, void *base_addr,
-	rte_spinlock_t *lock);
+static int adf_configure_queues(struct qat_qp *queue,
+	enum qat_device_gen qat_dev_gen);
+static int adf_queue_arb_enable(struct qat_pci_device *qat_dev,
+	struct qat_queue *txq, void *base_addr, rte_spinlock_t *lock);
+static int adf_queue_arb_disable(enum qat_device_gen qat_dev_gen,
+	struct qat_queue *txq, void *base_addr, rte_spinlock_t *lock);
+static int qat_qp_build_ring_base(struct qat_pci_device *qat_dev,
+	void *io_addr, struct qat_queue *queue);
+static const struct rte_memzone *queue_dma_zone_reserve(const char *queue_name,
+	uint32_t queue_size, int socket_id);
+static int qat_qp_csr_setup(struct qat_pci_device *qat_dev, void *io_addr,
+	struct qat_qp *qp);
 
-
-int qat_qps_per_service(const struct qat_qp_hw_data *qp_hw_data,
-		enum qat_service_type service)
-{
-	int i, count;
-
-	for (i = 0, count = 0; i < ADF_MAX_QPS_ON_ANY_SERVICE; i++)
-		if (qp_hw_data[i].service_type == service)
-			count++;
-	return count;
-}
-
-static const struct rte_memzone *
-queue_dma_zone_reserve(const char *queue_name, uint32_t queue_size,
-			int socket_id)
-{
-	const struct rte_memzone *mz;
-
-	mz = rte_memzone_lookup(queue_name);
-	if (mz != 0) {
-		if (((size_t)queue_size <= mz->len) &&
-				((socket_id == SOCKET_ID_ANY) ||
-					(socket_id == mz->socket_id))) {
-			QAT_LOG(DEBUG, "re-use memzone already "
-					"allocated for %s", queue_name);
-			return mz;
-		}
-
-		QAT_LOG(ERR, "Incompatible memzone already "
-				"allocated %s, size %u, socket %d. "
-				"Requested size %u, socket %u",
-				queue_name, (uint32_t)mz->len,
-				mz->socket_id, queue_size, socket_id);
-		return NULL;
-	}
-
-	QAT_LOG(DEBUG, "Allocate memzone for %s, size %u on socket %u",
-					queue_name, queue_size, socket_id);
-	return rte_memzone_reserve_aligned(queue_name, queue_size,
-		socket_id, RTE_MEMZONE_IOVA_CONTIG, queue_size);
-}
-
-int qat_qp_setup(struct qat_pci_device *qat_dev,
+int
+qat_qp_setup(struct qat_pci_device *qat_dev,
 		struct qat_qp **qp_addr,
 		uint16_t queue_pair_id,
 		struct qat_qp_config *qat_qp_conf)
-
 {
-	struct qat_qp *qp;
+	struct qat_qp *qp = NULL;
 	struct rte_pci_device *pci_dev =
 			qat_pci_devs[qat_dev->qat_dev_id].pci_dev;
 	char op_cookie_pool_name[RTE_RING_NAMESIZE];
+	struct qat_dev_hw_spec_funcs *ops_hw =
+		qat_dev_hw_spec[qat_dev->qat_dev_gen];
+	void *io_addr;
 	uint32_t i;
 
 	QAT_LOG(DEBUG, "Setup qp %u on qat pci device %d gen %d",
@@ -208,7 +72,15 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 		return -EINVAL;
 	}
 
-	if (pci_dev->mem_resource[0].addr == NULL) {
+	if (ops_hw->qat_dev_get_transport_bar == NULL)	{
+		QAT_LOG(ERR,
+			"QAT Internal Error: qat_dev_get_transport_bar not set for gen %d",
+			qat_dev->qat_dev_gen);
+		goto create_err;
+	}
+
+	io_addr = ops_hw->qat_dev_get_transport_bar(pci_dev)->addr;
+	if (io_addr == NULL) {
 		QAT_LOG(ERR, "Could not find VF config space "
 				"(UIO driver attached?).");
 		return -EINVAL;
@@ -232,7 +104,7 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 		return -ENOMEM;
 	}
 
-	qp->mmap_bar_addr = pci_dev->mem_resource[0].addr;
+	qp->mmap_bar_addr = io_addr;
 	qp->enqueued = qp->dequeued = 0;
 
 	if (qat_queue_create(qat_dev, &(qp->tx_q), qat_qp_conf,
@@ -259,10 +131,6 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 		goto create_err;
 	}
 
-	adf_configure_queues(qp);
-	adf_queue_arb_enable(&qp->tx_q, qp->mmap_bar_addr,
-					&qat_dev->arb_csr_lock);
-
 	snprintf(op_cookie_pool_name, RTE_RING_NAMESIZE,
 					"%s%d_cookies_%s_qp%hu",
 		pci_dev->driver->driver.name, qat_dev->qat_dev_id,
@@ -280,6 +148,8 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 	if (!qp->op_cookie_pool) {
 		QAT_LOG(ERR, "QAT PMD Cannot create"
 				" op mempool");
+		qat_queue_delete(&(qp->tx_q));
+		qat_queue_delete(&(qp->rx_q));
 		goto create_err;
 	}
 
@@ -298,86 +168,29 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 	QAT_LOG(DEBUG, "QP setup complete: id: %d, cookiepool: %s",
 			queue_pair_id, op_cookie_pool_name);
 
+	qat_qp_csr_setup(qat_dev, io_addr, qp);
+
 	*qp_addr = qp;
 	return 0;
 
 create_err:
-	if (qp->op_cookie_pool)
-		rte_mempool_free(qp->op_cookie_pool);
-	rte_free(qp->op_cookies);
-	rte_free(qp);
+	if (qp) {
+		if (qp->op_cookie_pool)
+			rte_mempool_free(qp->op_cookie_pool);
+
+		if (qp->op_cookies)
+			rte_free(qp->op_cookies);
+
+		rte_free(qp);
+	}
+
 	return -EFAULT;
-}
-
-int qat_qp_release(struct qat_qp **qp_addr)
-{
-	struct qat_qp *qp = *qp_addr;
-	uint32_t i;
-
-	if (qp == NULL) {
-		QAT_LOG(DEBUG, "qp already freed");
-		return 0;
-	}
-
-	QAT_LOG(DEBUG, "Free qp on qat_pci device %d",
-				qp->qat_dev->qat_dev_id);
-
-	/* Don't free memory if there are still responses to be processed */
-	if ((qp->enqueued - qp->dequeued) == 0) {
-		qat_queue_delete(&(qp->tx_q));
-		qat_queue_delete(&(qp->rx_q));
-	} else {
-		return -EAGAIN;
-	}
-
-	adf_queue_arb_disable(&(qp->tx_q), qp->mmap_bar_addr,
-					&qp->qat_dev->arb_csr_lock);
-
-	for (i = 0; i < qp->nb_descriptors; i++)
-		rte_mempool_put(qp->op_cookie_pool, qp->op_cookies[i]);
-
-	if (qp->op_cookie_pool)
-		rte_mempool_free(qp->op_cookie_pool);
-
-	rte_free(qp->op_cookies);
-	rte_free(qp);
-	*qp_addr = NULL;
-	return 0;
-}
-
-
-static void qat_queue_delete(struct qat_queue *queue)
-{
-	const struct rte_memzone *mz;
-	int status = 0;
-
-	if (queue == NULL) {
-		QAT_LOG(DEBUG, "Invalid queue");
-		return;
-	}
-	QAT_LOG(DEBUG, "Free ring %d, memzone: %s",
-			queue->hw_queue_number, queue->memz_name);
-
-	mz = rte_memzone_lookup(queue->memz_name);
-	if (mz != NULL)	{
-		/* Write an unused pattern to the queue memory. */
-		memset(queue->base_addr, 0x7F, queue->queue_size);
-		status = rte_memzone_free(mz);
-		if (status != 0)
-			QAT_LOG(ERR, "Error %d on freeing queue %s",
-					status, queue->memz_name);
-	} else {
-		QAT_LOG(DEBUG, "queue %s doesn't exist",
-				queue->memz_name);
-	}
 }
 
 static int
 qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 		struct qat_qp_config *qp_conf, uint8_t dir)
 {
-	uint64_t queue_base;
-	void *io_addr;
 	const struct rte_memzone *qp_mz;
 	struct rte_pci_device *pci_dev =
 			qat_pci_devs[qat_dev->qat_dev_id].pci_dev;
@@ -441,14 +254,6 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 	 */
 	memset(queue->base_addr, 0x7F, queue_size_bytes);
 
-	queue_base = BUILD_RING_BASE_ADDR(queue->base_phys_addr,
-					queue->queue_size);
-
-	io_addr = pci_dev->mem_resource[0].addr;
-
-	WRITE_CSR_RING_BASE(io_addr, queue->hw_bundle_number,
-			queue->hw_queue_number, queue_base);
-
 	QAT_LOG(DEBUG, "RING: Name:%s, size in CSR: %u, in bytes %u,"
 		" nb msgs %u, msg_size %u, modulo mask %u",
 			queue->memz_name,
@@ -463,93 +268,234 @@ queue_create_err:
 	return ret;
 }
 
-static int qat_qp_check_queue_alignment(uint64_t phys_addr,
-					uint32_t queue_size_bytes)
+static const struct rte_memzone *
+queue_dma_zone_reserve(const char *queue_name, uint32_t queue_size,
+		int socket_id)
 {
-	if (((queue_size_bytes - 1) & phys_addr) != 0)
-		return -EINVAL;
+	const struct rte_memzone *mz;
+
+	mz = rte_memzone_lookup(queue_name);
+	if (mz != 0) {
+		if (((size_t)queue_size <= mz->len) &&
+				((socket_id == SOCKET_ID_ANY) ||
+					(socket_id == mz->socket_id))) {
+			QAT_LOG(DEBUG, "re-use memzone already "
+					"allocated for %s", queue_name);
+			return mz;
+		}
+
+		QAT_LOG(ERR, "Incompatible memzone already "
+				"allocated %s, size %u, socket %d. "
+				"Requested size %u, socket %u",
+				queue_name, (uint32_t)mz->len,
+				mz->socket_id, queue_size, socket_id);
+		return NULL;
+	}
+
+	QAT_LOG(DEBUG, "Allocate memzone for %s, size %u on socket %u",
+					queue_name, queue_size, socket_id);
+	return rte_memzone_reserve_aligned(queue_name, queue_size,
+		socket_id, RTE_MEMZONE_IOVA_CONTIG, queue_size);
+}
+
+int
+qat_qp_release(enum qat_device_gen qat_dev_gen, struct qat_qp **qp_addr)
+{
+	int ret;
+	struct qat_qp *qp = *qp_addr;
+	uint32_t i;
+
+	if (qp == NULL) {
+		QAT_LOG(DEBUG, "qp already freed");
+		return 0;
+	}
+
+	QAT_LOG(DEBUG, "Free qp on qat_pci device %d",
+				qp->qat_dev->qat_dev_id);
+
+	/* Don't free memory if there are still responses to be processed */
+	if ((qp->enqueued - qp->dequeued) == 0) {
+		qat_queue_delete(&(qp->tx_q));
+		qat_queue_delete(&(qp->rx_q));
+	} else {
+		return -EAGAIN;
+	}
+
+	ret = adf_queue_arb_disable(qat_dev_gen, &(qp->tx_q),
+			qp->mmap_bar_addr, &qp->qat_dev->arb_csr_lock);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < qp->nb_descriptors; i++)
+		rte_mempool_put(qp->op_cookie_pool, qp->op_cookies[i]);
+
+	if (qp->op_cookie_pool)
+		rte_mempool_free(qp->op_cookie_pool);
+
+	rte_free(qp->op_cookies);
+	rte_free(qp);
+	*qp_addr = NULL;
 	return 0;
 }
 
-static int adf_verify_queue_size(uint32_t msg_size, uint32_t msg_num,
-	uint32_t *p_queue_size_for_csr)
-{
-	uint8_t i = ADF_MIN_RING_SIZE;
 
-	for (; i <= ADF_MAX_RING_SIZE; i++)
-		if ((msg_size * msg_num) ==
-				(uint32_t)ADF_SIZE_TO_RING_SIZE_IN_BYTES(i)) {
-			*p_queue_size_for_csr = i;
-			return 0;
-		}
-	QAT_LOG(ERR, "Invalid ring size %d", msg_size * msg_num);
-	return -EINVAL;
+static void
+qat_queue_delete(struct qat_queue *queue)
+{
+	const struct rte_memzone *mz;
+	int status = 0;
+
+	if (queue == NULL) {
+		QAT_LOG(DEBUG, "Invalid queue");
+		return;
+	}
+	QAT_LOG(DEBUG, "Free ring %d, memzone: %s",
+			queue->hw_queue_number, queue->memz_name);
+
+	mz = rte_memzone_lookup(queue->memz_name);
+	if (mz != NULL)	{
+		/* Write an unused pattern to the queue memory. */
+		memset(queue->base_addr, 0x7F, queue->queue_size);
+		status = rte_memzone_free(mz);
+		if (status != 0)
+			QAT_LOG(ERR, "Error %d on freeing queue %s",
+					status, queue->memz_name);
+	} else {
+		QAT_LOG(DEBUG, "queue %s doesn't exist",
+				queue->memz_name);
+	}
 }
 
-static void adf_queue_arb_enable(struct qat_queue *txq, void *base_addr,
-					rte_spinlock_t *lock)
+static int __rte_unused
+adf_queue_arb_enable(struct qat_pci_device *qat_dev, struct qat_queue *txq,
+		void *base_addr, rte_spinlock_t *lock)
 {
-	uint32_t arb_csr_offset =  ADF_ARB_RINGSRVARBEN_OFFSET +
-					(ADF_ARB_REG_SLOT *
-							txq->hw_bundle_number);
-	uint32_t value;
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	rte_spinlock_lock(lock);
-	value = ADF_CSR_RD(base_addr, arb_csr_offset);
-	value |= (0x01 << txq->hw_queue_number);
-	ADF_CSR_WR(base_addr, arb_csr_offset, value);
-	rte_spinlock_unlock(lock);
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_arb_enable,
+			-ENOTSUP);
+	ops->qat_qp_adf_arb_enable(txq, base_addr, lock);
+	return 0;
 }
 
-static void adf_queue_arb_disable(struct qat_queue *txq, void *base_addr,
-					rte_spinlock_t *lock)
+static int
+adf_queue_arb_disable(enum qat_device_gen qat_dev_gen, struct qat_queue *txq,
+		void *base_addr, rte_spinlock_t *lock)
 {
-	uint32_t arb_csr_offset =  ADF_ARB_RINGSRVARBEN_OFFSET +
-					(ADF_ARB_REG_SLOT *
-							txq->hw_bundle_number);
-	uint32_t value;
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev_gen];
 
-	rte_spinlock_lock(lock);
-	value = ADF_CSR_RD(base_addr, arb_csr_offset);
-	value &= ~(0x01 << txq->hw_queue_number);
-	ADF_CSR_WR(base_addr, arb_csr_offset, value);
-	rte_spinlock_unlock(lock);
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_arb_disable,
+			-ENOTSUP);
+	ops->qat_qp_adf_arb_disable(txq, base_addr, lock);
+	return 0;
 }
 
-static void adf_configure_queues(struct qat_qp *qp)
+static int __rte_unused
+qat_qp_build_ring_base(struct qat_pci_device *qat_dev, void *io_addr,
+		struct qat_queue *queue)
 {
-	uint32_t queue_config;
-	struct qat_queue *queue = &qp->tx_q;
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	queue_config = BUILD_RING_CONFIG(queue->queue_size);
-
-	WRITE_CSR_RING_CONFIG(qp->mmap_bar_addr, queue->hw_bundle_number,
-			queue->hw_queue_number, queue_config);
-
-	queue = &qp->rx_q;
-	queue_config =
-			BUILD_RESP_RING_CONFIG(queue->queue_size,
-					ADF_RING_NEAR_WATERMARK_512,
-					ADF_RING_NEAR_WATERMARK_0);
-
-	WRITE_CSR_RING_CONFIG(qp->mmap_bar_addr, queue->hw_bundle_number,
-			queue->hw_queue_number, queue_config);
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_build_ring_base,
+			-ENOTSUP);
+	ops->qat_qp_build_ring_base(io_addr, queue);
+	return 0;
 }
 
-static inline uint32_t adf_modulo(uint32_t data, uint32_t modulo_mask)
+int
+qat_qps_per_service(struct qat_pci_device *qat_dev,
+		enum qat_service_type service)
 {
-	return data & modulo_mask;
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev->qat_dev_gen];
+
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_rings_per_service,
+			-ENOTSUP);
+	return ops->qat_qp_rings_per_service(qat_dev, service);
+}
+
+const struct qat_qp_hw_data *
+qat_qp_get_hw_data(struct qat_pci_device *qat_dev,
+		enum qat_service_type service, uint16_t qp_id)
+{
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev->qat_dev_gen];
+
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_get_hw_data, NULL);
+	return ops->qat_qp_get_hw_data(qat_dev, service, qp_id);
+}
+
+int
+qat_read_qp_config(struct qat_pci_device *qat_dev)
+{
+	struct qat_dev_hw_spec_funcs *ops_hw =
+		qat_dev_hw_spec[qat_dev->qat_dev_gen];
+
+	RTE_FUNC_PTR_OR_ERR_RET(ops_hw->qat_dev_read_config,
+			-ENOTSUP);
+	return ops_hw->qat_dev_read_config(qat_dev);
+}
+
+static int __rte_unused
+adf_configure_queues(struct qat_qp *qp, enum qat_device_gen qat_dev_gen)
+{
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev_gen];
+
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_configure_queues,
+			-ENOTSUP);
+	ops->qat_qp_adf_configure_queues(qp);
+	return 0;
 }
 
 static inline void
-txq_write_tail(struct qat_qp *qp, struct qat_queue *q) {
-	WRITE_CSR_RING_TAIL(qp->mmap_bar_addr, q->hw_bundle_number,
-			q->hw_queue_number, q->tail);
-	q->csr_tail = q->tail;
+txq_write_tail(enum qat_device_gen qat_dev_gen,
+		struct qat_qp *qp, struct qat_queue *q)
+{
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev_gen];
+
+	/*
+	 * Pointer check should be done during
+	 * initialization
+	 */
+	ops->qat_qp_csr_write_tail(qp, q);
 }
 
+static inline void
+qat_qp_csr_write_head(enum qat_device_gen qat_dev_gen, struct qat_qp *qp,
+			struct qat_queue *q, uint32_t new_head)
+{
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev_gen];
+
+	/*
+	 * Pointer check should be done during
+	 * initialization
+	 */
+	ops->qat_qp_csr_write_head(qp, q, new_head);
+}
+
+static int
+qat_qp_csr_setup(struct qat_pci_device *qat_dev,
+		void *io_addr, struct qat_qp *qp)
+{
+	struct qat_qp_hw_spec_funcs *ops =
+		qat_qp_hw_spec[qat_dev->qat_dev_gen];
+
+	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_csr_setup,
+			-ENOTSUP);
+	ops->qat_qp_csr_setup(qat_dev, io_addr, qp);
+	return 0;
+}
+
+
 static inline
-void rxq_free_desc(struct qat_qp *qp, struct qat_queue *q)
+void rxq_free_desc(enum qat_device_gen qat_dev_gen, struct qat_qp *qp,
+				struct qat_queue *q)
 {
 	uint32_t old_head, new_head;
 	uint32_t max_head;
@@ -570,9 +516,37 @@ void rxq_free_desc(struct qat_qp *qp, struct qat_queue *q)
 	q->nb_processed_responses = 0;
 	q->csr_head = new_head;
 
-	/* write current head to CSR */
-	WRITE_CSR_RING_HEAD(qp->mmap_bar_addr, q->hw_bundle_number,
-			    q->hw_queue_number, new_head);
+	qat_qp_csr_write_head(qat_dev_gen, qp, q, new_head);
+}
+
+static int
+qat_qp_check_queue_alignment(uint64_t phys_addr, uint32_t queue_size_bytes)
+{
+	if (((queue_size_bytes - 1) & phys_addr) != 0)
+		return -EINVAL;
+	return 0;
+}
+
+static int
+adf_verify_queue_size(uint32_t msg_size, uint32_t msg_num,
+		uint32_t *p_queue_size_for_csr)
+{
+	uint8_t i = ADF_MIN_RING_SIZE;
+
+	for (; i <= ADF_MAX_RING_SIZE; i++)
+		if ((msg_size * msg_num) ==
+				(uint32_t)ADF_SIZE_TO_RING_SIZE_IN_BYTES(i)) {
+			*p_queue_size_for_csr = i;
+			return 0;
+		}
+	QAT_LOG(ERR, "Invalid ring size %d", msg_size * msg_num);
+	return -EINVAL;
+}
+
+static inline uint32_t
+adf_modulo(uint32_t data, uint32_t modulo_mask)
+{
+	return data & modulo_mask;
 }
 
 uint16_t
@@ -665,7 +639,7 @@ kick_tail:
 	queue->tail = tail;
 	tmp_qp->enqueued += nb_ops_sent;
 	tmp_qp->stats.enqueued_count += nb_ops_sent;
-	txq_write_tail(tmp_qp, queue);
+	txq_write_tail(tmp_qp->qat_dev_gen, tmp_qp, queue);
 	return nb_ops_sent;
 }
 
@@ -838,7 +812,7 @@ kick_tail:
 	queue->tail = tail;
 	tmp_qp->enqueued += total_descriptors_built;
 	tmp_qp->stats.enqueued_count += nb_ops_sent;
-	txq_write_tail(tmp_qp, queue);
+	txq_write_tail(tmp_qp->qat_dev_gen, tmp_qp, queue);
 	return nb_ops_sent;
 }
 
@@ -862,7 +836,8 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 		nb_fw_responses = 1;
 
 		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC)
-			qat_sym_process_response(ops, resp_msg);
+			qat_sym_process_response(ops, resp_msg,
+				tmp_qp->op_cookies[head >> rx_queue->trailz]);
 		else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION)
 			nb_fw_responses = qat_comp_process_response(
 				ops, resp_msg,
@@ -903,7 +878,7 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 
 	rx_queue->head = head;
 	if (rx_queue->nb_processed_responses > QAT_CSR_HEAD_WRITE_THRESH)
-		rxq_free_desc(tmp_qp, rx_queue);
+		rxq_free_desc(tmp_qp->qat_dev_gen, tmp_qp, rx_queue);
 
 	QAT_DP_LOG(DEBUG, "Dequeue burst return: %u, QAT responses: %u",
 			op_resp_counter, fw_resp_counter);
@@ -945,7 +920,7 @@ qat_cq_dequeue_response(struct qat_qp *qp, void *out_data)
 
 		queue->head = adf_modulo(queue->head + queue->msg_size,
 				queue->modulo_mask);
-		rxq_free_desc(qp, queue);
+		rxq_free_desc(qp->qat_dev_gen, qp, queue);
 	}
 
 	return result;
@@ -980,7 +955,7 @@ qat_cq_get_fw_version(struct qat_qp *qp)
 	memcpy(base_addr + queue->tail, &null_msg, sizeof(null_msg));
 	queue->tail = adf_modulo(queue->tail + queue->msg_size,
 			queue->modulo_mask);
-	txq_write_tail(qp, queue);
+	txq_write_tail(qp->qat_dev_gen, qp, queue);
 
 	/* receive a response */
 	if (qat_cq_dequeue_response(qp, &response)) {

@@ -8,8 +8,8 @@
 #include <rte_string_fns.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_alarm.h>
 
@@ -19,13 +19,6 @@
 #include "igc_flow.h"
 
 #define IGC_INTEL_VENDOR_ID		0x8086
-
-/*
- * The overhead from MTU to max frame size.
- * Considering VLAN so tag needs to be counted.
- */
-#define IGC_ETH_OVERHEAD		(RTE_ETHER_HDR_LEN + \
-					RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE)
 
 #define IGC_FC_PAUSE_TIME		0x0680
 #define IGC_LINK_UPDATE_CHECK_TIMEOUT	90  /* 9s */
@@ -216,7 +209,7 @@ static int eth_igc_xstats_get_names(struct rte_eth_dev *dev,
 				struct rte_eth_xstat_name *xstats_names,
 				unsigned int size);
 static int eth_igc_xstats_get_names_by_id(struct rte_eth_dev *dev,
-		struct rte_eth_xstat_name *xstats_names, const uint64_t *ids,
+		const uint64_t *ids, struct rte_eth_xstat_name *xstats_names,
 		unsigned int limit);
 static int eth_igc_xstats_reset(struct rte_eth_dev *dev);
 static int
@@ -297,7 +290,7 @@ static const struct eth_dev_ops eth_igc_ops = {
 	.vlan_offload_set	= eth_igc_vlan_offload_set,
 	.vlan_tpid_set		= eth_igc_vlan_tpid_set,
 	.vlan_strip_queue_set	= eth_igc_vlan_strip_queue_set,
-	.filter_ctrl		= eth_igc_filter_ctrl,
+	.flow_ops_get		= eth_igc_flow_ops_get,
 };
 
 /*
@@ -314,8 +307,8 @@ igc_check_mq_mode(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
-	if (rx_mq_mode != ETH_MQ_RX_NONE &&
-		rx_mq_mode != ETH_MQ_RX_RSS) {
+	if (rx_mq_mode != RTE_ETH_MQ_RX_NONE &&
+		rx_mq_mode != RTE_ETH_MQ_RX_RSS) {
 		/* RSS together with VMDq not supported*/
 		PMD_INIT_LOG(ERR, "RX mode %d is not supported.",
 				rx_mq_mode);
@@ -325,7 +318,7 @@ igc_check_mq_mode(struct rte_eth_dev *dev)
 	/* To no break software that set invalid mode, only display
 	 * warning if invalid mode is used.
 	 */
-	if (tx_mq_mode != ETH_MQ_TX_NONE)
+	if (tx_mq_mode != RTE_ETH_MQ_TX_NONE)
 		PMD_INIT_LOG(WARNING,
 			"TX mode %d is not supported. Due to meaningless in this driver, just ignore",
 			tx_mq_mode);
@@ -341,8 +334,8 @@ eth_igc_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
-		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	ret  = igc_check_mq_mode(dev);
 	if (ret != 0)
@@ -384,7 +377,7 @@ igc_intr_other_disable(struct rte_eth_dev *dev)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	if (rte_intr_allow_others(intr_handle) &&
 		dev->data->dev_conf.intr_conf.lsc) {
@@ -404,7 +397,7 @@ igc_intr_other_enable(struct rte_eth_dev *dev)
 	struct igc_interrupt *intr = IGC_DEV_PRIVATE_INTR(dev);
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	if (rte_intr_allow_others(intr_handle) &&
 		dev->data->dev_conf.intr_conf.lsc) {
@@ -480,12 +473,12 @@ eth_igc_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 		uint16_t duplex, speed;
 		hw->mac.ops.get_link_up_info(hw, &speed, &duplex);
 		link.link_duplex = (duplex == FULL_DUPLEX) ?
-				ETH_LINK_FULL_DUPLEX :
-				ETH_LINK_HALF_DUPLEX;
+				RTE_ETH_LINK_FULL_DUPLEX :
+				RTE_ETH_LINK_HALF_DUPLEX;
 		link.link_speed = speed;
-		link.link_status = ETH_LINK_UP;
+		link.link_status = RTE_ETH_LINK_UP;
 		link.link_autoneg = !(dev->data->dev_conf.link_speeds &
-				ETH_LINK_SPEED_FIXED);
+				RTE_ETH_LINK_SPEED_FIXED);
 
 		if (speed == SPEED_2500) {
 			uint32_t tipg = IGC_READ_REG(hw, IGC_TIPG);
@@ -497,9 +490,9 @@ eth_igc_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 		}
 	} else {
 		link.link_speed = 0;
-		link.link_duplex = ETH_LINK_HALF_DUPLEX;
-		link.link_status = ETH_LINK_DOWN;
-		link.link_autoneg = ETH_LINK_FIXED;
+		link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
+		link.link_status = RTE_ETH_LINK_DOWN;
+		link.link_autoneg = RTE_ETH_LINK_FIXED;
 	}
 
 	return rte_eth_linkstatus_set(dev, &link);
@@ -532,7 +525,7 @@ eth_igc_interrupt_action(struct rte_eth_dev *dev)
 				" Port %d: Link Up - speed %u Mbps - %s",
 				dev->data->port_id,
 				(unsigned int)link.link_speed,
-				link.link_duplex == ETH_LINK_FULL_DUPLEX ?
+				link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX ?
 				"full-duplex" : "half-duplex");
 		else
 			PMD_DRV_LOG(INFO, " Port %d: Link Down",
@@ -616,7 +609,7 @@ eth_igc_stop(struct rte_eth_dev *dev)
 	struct igc_adapter *adapter = IGC_DEV_PRIVATE(dev);
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct rte_eth_link link;
 
 	dev->data->dev_started = 0;
@@ -668,10 +661,7 @@ eth_igc_stop(struct rte_eth_dev *dev)
 
 	/* Clean datapath event and queue/vec mapping */
 	rte_intr_efd_disable(intr_handle);
-	if (intr_handle->intr_vec != NULL) {
-		rte_free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
+	rte_intr_vec_list_free(intr_handle);
 
 	return 0;
 }
@@ -731,13 +721,13 @@ igc_configure_msix_intr(struct rte_eth_dev *dev)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	uint32_t intr_mask;
 	uint32_t vec = IGC_MISC_VEC_ID;
 	uint32_t base = IGC_MISC_VEC_ID;
 	uint32_t misc_shift = 0;
-	int i;
+	int i, nb_efd;
 
 	/* won't configure msix register if no mapping is done
 	 * between intr vector and event fd
@@ -755,8 +745,12 @@ igc_configure_msix_intr(struct rte_eth_dev *dev)
 	IGC_WRITE_REG(hw, IGC_GPIE, IGC_GPIE_MSIX_MODE |
 				IGC_GPIE_PBA | IGC_GPIE_EIAME |
 				IGC_GPIE_NSICR);
-	intr_mask = RTE_LEN2MASK(intr_handle->nb_efd, uint32_t) <<
-		misc_shift;
+
+	nb_efd = rte_intr_nb_efd_get(intr_handle);
+	if (nb_efd < 0)
+		return;
+
+	intr_mask = RTE_LEN2MASK(nb_efd, uint32_t) << misc_shift;
 
 	if (dev->data->dev_conf.intr_conf.lsc)
 		intr_mask |= (1u << IGC_MSIX_OTHER_INTR_VEC);
@@ -773,8 +767,8 @@ igc_configure_msix_intr(struct rte_eth_dev *dev)
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		igc_write_ivar(hw, i, 0, vec);
-		intr_handle->intr_vec[i] = vec;
-		if (vec < base + intr_handle->nb_efd - 1)
+		rte_intr_vec_list_index_set(intr_handle, i, vec);
+		if (vec < base + rte_intr_nb_efd_get(intr_handle) - 1)
 			vec++;
 	}
 
@@ -810,8 +804,9 @@ igc_rxq_interrupt_setup(struct rte_eth_dev *dev)
 	uint32_t mask;
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int misc_shift = rte_intr_allow_others(intr_handle) ? 1 : 0;
+	int nb_efd;
 
 	/* won't configure msix register if no mapping is done
 	 * between intr vector and event fd
@@ -819,7 +814,11 @@ igc_rxq_interrupt_setup(struct rte_eth_dev *dev)
 	if (!rte_intr_dp_is_en(intr_handle))
 		return;
 
-	mask = RTE_LEN2MASK(intr_handle->nb_efd, uint32_t) << misc_shift;
+	nb_efd = rte_intr_nb_efd_get(intr_handle);
+	if (nb_efd < 0)
+		return;
+
+	mask = RTE_LEN2MASK(nb_efd, uint32_t) << misc_shift;
 	IGC_WRITE_REG(hw, IGC_EIMS, mask);
 }
 
@@ -913,7 +912,7 @@ eth_igc_start(struct rte_eth_dev *dev)
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct igc_adapter *adapter = IGC_DEV_PRIVATE(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	uint32_t *speeds;
 	int ret;
 
@@ -951,10 +950,9 @@ eth_igc_start(struct rte_eth_dev *dev)
 			return -1;
 	}
 
-	if (rte_intr_dp_is_en(intr_handle) && !intr_handle->intr_vec) {
-		intr_handle->intr_vec = rte_zmalloc("intr_vec",
-			dev->data->nb_rx_queues * sizeof(int), 0);
-		if (intr_handle->intr_vec == NULL) {
+	if (rte_intr_dp_is_en(intr_handle)) {
+		if (rte_intr_vec_list_alloc(intr_handle, "intr_vec",
+						  dev->data->nb_rx_queues)) {
 			PMD_DRV_LOG(ERR,
 				"Failed to allocate %d rx_queues intr_vec",
 				dev->data->nb_rx_queues);
@@ -979,18 +977,18 @@ eth_igc_start(struct rte_eth_dev *dev)
 
 	/* VLAN Offload Settings */
 	eth_igc_vlan_offload_set(dev,
-		ETH_VLAN_STRIP_MASK | ETH_VLAN_FILTER_MASK |
-		ETH_VLAN_EXTEND_MASK);
+		RTE_ETH_VLAN_STRIP_MASK | RTE_ETH_VLAN_FILTER_MASK |
+		RTE_ETH_VLAN_EXTEND_MASK);
 
 	/* Setup link speed and duplex */
 	speeds = &dev->data->dev_conf.link_speeds;
-	if (*speeds == ETH_LINK_SPEED_AUTONEG) {
+	if (*speeds == RTE_ETH_LINK_SPEED_AUTONEG) {
 		hw->phy.autoneg_advertised = IGC_ALL_SPEED_DUPLEX_2500;
 		hw->mac.autoneg = 1;
 	} else {
 		int num_speeds = 0;
 
-		if (*speeds & ETH_LINK_SPEED_FIXED) {
+		if (*speeds & RTE_ETH_LINK_SPEED_FIXED) {
 			PMD_DRV_LOG(ERR,
 				    "Force speed mode currently not supported");
 			igc_dev_clear_queues(dev);
@@ -1000,33 +998,33 @@ eth_igc_start(struct rte_eth_dev *dev)
 		hw->phy.autoneg_advertised = 0;
 		hw->mac.autoneg = 1;
 
-		if (*speeds & ~(ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
-				ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-				ETH_LINK_SPEED_1G | ETH_LINK_SPEED_2_5G)) {
+		if (*speeds & ~(RTE_ETH_LINK_SPEED_10M_HD | RTE_ETH_LINK_SPEED_10M |
+				RTE_ETH_LINK_SPEED_100M_HD | RTE_ETH_LINK_SPEED_100M |
+				RTE_ETH_LINK_SPEED_1G | RTE_ETH_LINK_SPEED_2_5G)) {
 			num_speeds = -1;
 			goto error_invalid_config;
 		}
-		if (*speeds & ETH_LINK_SPEED_10M_HD) {
+		if (*speeds & RTE_ETH_LINK_SPEED_10M_HD) {
 			hw->phy.autoneg_advertised |= ADVERTISE_10_HALF;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_10M) {
+		if (*speeds & RTE_ETH_LINK_SPEED_10M) {
 			hw->phy.autoneg_advertised |= ADVERTISE_10_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_100M_HD) {
+		if (*speeds & RTE_ETH_LINK_SPEED_100M_HD) {
 			hw->phy.autoneg_advertised |= ADVERTISE_100_HALF;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_100M) {
+		if (*speeds & RTE_ETH_LINK_SPEED_100M) {
 			hw->phy.autoneg_advertised |= ADVERTISE_100_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_1G) {
+		if (*speeds & RTE_ETH_LINK_SPEED_1G) {
 			hw->phy.autoneg_advertised |= ADVERTISE_1000_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_2_5G) {
+		if (*speeds & RTE_ETH_LINK_SPEED_2_5G) {
 			hw->phy.autoneg_advertised |= ADVERTISE_2500_FULL;
 			num_speeds++;
 		}
@@ -1153,13 +1151,13 @@ igc_dev_free_queues(struct rte_eth_dev *dev)
 	uint16_t i;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		eth_igc_rx_queue_release(dev->data->rx_queues[i]);
+		eth_igc_rx_queue_release(dev, i);
 		dev->data->rx_queues[i] = NULL;
 	}
 	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		eth_igc_tx_queue_release(dev->data->tx_queues[i]);
+		eth_igc_tx_queue_release(dev, i);
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
@@ -1169,7 +1167,7 @@ static int
 eth_igc_close(struct rte_eth_dev *dev)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct igc_adapter *adapter = IGC_DEV_PRIVATE(dev);
 	int retry = 0;
@@ -1227,7 +1225,6 @@ eth_igc_dev_init(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 	dev->dev_ops = &eth_igc_ops;
-	dev->rx_descriptor_done	= eth_igc_rx_descriptor_done;
 	dev->rx_queue_count = eth_igc_rx_queue_count;
 	dev->rx_descriptor_status = eth_igc_rx_descriptor_status;
 	dev->tx_descriptor_status = eth_igc_tx_descriptor_status;
@@ -1346,11 +1343,11 @@ eth_igc_dev_init(struct rte_eth_dev *dev)
 			dev->data->port_id, pci_dev->id.vendor_id,
 			pci_dev->id.device_id);
 
-	rte_intr_callback_register(&pci_dev->intr_handle,
+	rte_intr_callback_register(pci_dev->intr_handle,
 			eth_igc_interrupt_handler, (void *)dev);
 
 	/* enable uio/vfio intr/eventfd mapping */
-	rte_intr_enable(&pci_dev->intr_handle);
+	rte_intr_enable(pci_dev->intr_handle);
 
 	/* enable support intr */
 	igc_intr_other_enable(dev);
@@ -1495,16 +1492,17 @@ eth_igc_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->min_rx_bufsize = 256; /* See BSIZE field of RCTL register. */
 	dev_info->max_rx_pktlen = MAX_RX_JUMBO_FRAME_SIZE;
 	dev_info->max_mac_addrs = hw->mac.rar_entry_count;
+	dev_info->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 	dev_info->rx_offload_capa = IGC_RX_OFFLOAD_ALL;
 	dev_info->tx_offload_capa = IGC_TX_OFFLOAD_ALL;
-	dev_info->rx_queue_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP;
+	dev_info->rx_queue_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
 
 	dev_info->max_rx_queues = IGC_QUEUE_PAIRS_NUM;
 	dev_info->max_tx_queues = IGC_QUEUE_PAIRS_NUM;
 	dev_info->max_vmdq_pools = 0;
 
 	dev_info->hash_key_size = IGC_HKEY_MAX_INDEX * sizeof(uint32_t);
-	dev_info->reta_size = ETH_RSS_RETA_SIZE_128;
+	dev_info->reta_size = RTE_ETH_RSS_RETA_SIZE_128;
 	dev_info->flow_type_rss_offloads = IGC_RSS_OFFLOAD_ALL;
 
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
@@ -1530,9 +1528,9 @@ eth_igc_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->rx_desc_lim = rx_desc_lim;
 	dev_info->tx_desc_lim = tx_desc_lim;
 
-	dev_info->speed_capa = ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
-			ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-			ETH_LINK_SPEED_1G | ETH_LINK_SPEED_2_5G;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_10M_HD | RTE_ETH_LINK_SPEED_10M |
+			RTE_ETH_LINK_SPEED_100M_HD | RTE_ETH_LINK_SPEED_100M |
+			RTE_ETH_LINK_SPEED_1G | RTE_ETH_LINK_SPEED_2_5G;
 
 	dev_info->max_mtu = dev_info->max_rx_pktlen - IGC_ETH_OVERHEAD;
 	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
@@ -1590,11 +1588,6 @@ eth_igc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (IGC_READ_REG(hw, IGC_CTRL_EXT) & IGC_CTRL_EXT_EXT_VLAN)
 		frame_size += VLAN_TAG_SIZE;
 
-	/* check that mtu is within the allowed range */
-	if (mtu < RTE_ETHER_MIN_MTU ||
-		frame_size > MAX_RX_JUMBO_FRAME_SIZE)
-		return -EINVAL;
-
 	/*
 	 * If device is started, refuse mtu that requires the support of
 	 * scattered packets when this feature has not been enabled before.
@@ -1606,24 +1599,13 @@ eth_igc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	}
 
 	rctl = IGC_READ_REG(hw, IGC_RCTL);
-
-	/* switch to jumbo mode if needed */
-	if (mtu > RTE_ETHER_MTU) {
-		dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_JUMBO_FRAME;
+	if (mtu > RTE_ETHER_MTU)
 		rctl |= IGC_RCTL_LPE;
-	} else {
-		dev->data->dev_conf.rxmode.offloads &=
-			~DEV_RX_OFFLOAD_JUMBO_FRAME;
+	else
 		rctl &= ~IGC_RCTL_LPE;
-	}
 	IGC_WRITE_REG(hw, IGC_RCTL, rctl);
 
-	/* update max frame size */
-	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
-
-	IGC_WRITE_REG(hw, IGC_RLPML,
-			dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	IGC_WRITE_REG(hw, IGC_RLPML, frame_size);
 
 	return 0;
 }
@@ -2020,7 +2002,7 @@ eth_igc_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
 
 static int
 eth_igc_xstats_get_names_by_id(struct rte_eth_dev *dev,
-		struct rte_eth_xstat_name *xstats_names, const uint64_t *ids,
+		const uint64_t *ids, struct rte_eth_xstat_name *xstats_names,
 		unsigned int limit)
 {
 	unsigned int i;
@@ -2107,7 +2089,7 @@ eth_igc_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	uint32_t vec = IGC_MISC_VEC_ID;
 
 	if (rte_intr_allow_others(intr_handle))
@@ -2126,7 +2108,7 @@ eth_igc_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	uint32_t vec = IGC_MISC_VEC_ID;
 
 	if (rte_intr_allow_others(intr_handle))
@@ -2172,13 +2154,13 @@ eth_igc_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		rx_pause = 0;
 
 	if (rx_pause && tx_pause)
-		fc_conf->mode = RTE_FC_FULL;
+		fc_conf->mode = RTE_ETH_FC_FULL;
 	else if (rx_pause)
-		fc_conf->mode = RTE_FC_RX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_RX_PAUSE;
 	else if (tx_pause)
-		fc_conf->mode = RTE_FC_TX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_TX_PAUSE;
 	else
-		fc_conf->mode = RTE_FC_NONE;
+		fc_conf->mode = RTE_ETH_FC_NONE;
 
 	return 0;
 }
@@ -2210,16 +2192,16 @@ eth_igc_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	}
 
 	switch (fc_conf->mode) {
-	case RTE_FC_NONE:
+	case RTE_ETH_FC_NONE:
 		hw->fc.requested_mode = igc_fc_none;
 		break;
-	case RTE_FC_RX_PAUSE:
+	case RTE_ETH_FC_RX_PAUSE:
 		hw->fc.requested_mode = igc_fc_rx_pause;
 		break;
-	case RTE_FC_TX_PAUSE:
+	case RTE_ETH_FC_TX_PAUSE:
 		hw->fc.requested_mode = igc_fc_tx_pause;
 		break;
-	case RTE_FC_FULL:
+	case RTE_ETH_FC_FULL:
 		hw->fc.requested_mode = igc_fc_full;
 		break;
 	default:
@@ -2265,29 +2247,29 @@ eth_igc_rss_reta_update(struct rte_eth_dev *dev,
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	uint16_t i;
 
-	if (reta_size != ETH_RSS_RETA_SIZE_128) {
+	if (reta_size != RTE_ETH_RSS_RETA_SIZE_128) {
 		PMD_DRV_LOG(ERR,
 			"The size of RSS redirection table configured(%d) doesn't match the number hardware can supported(%d)",
-			reta_size, ETH_RSS_RETA_SIZE_128);
+			reta_size, RTE_ETH_RSS_RETA_SIZE_128);
 		return -EINVAL;
 	}
 
-	RTE_BUILD_BUG_ON(ETH_RSS_RETA_SIZE_128 % IGC_RSS_RDT_REG_SIZE);
+	RTE_BUILD_BUG_ON(RTE_ETH_RSS_RETA_SIZE_128 % IGC_RSS_RDT_REG_SIZE);
 
 	/* set redirection table */
-	for (i = 0; i < ETH_RSS_RETA_SIZE_128; i += IGC_RSS_RDT_REG_SIZE) {
+	for (i = 0; i < RTE_ETH_RSS_RETA_SIZE_128; i += IGC_RSS_RDT_REG_SIZE) {
 		union igc_rss_reta_reg reta, reg;
 		uint16_t idx, shift;
 		uint8_t j, mask;
 
-		idx = i / RTE_RETA_GROUP_SIZE;
-		shift = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
 		mask = (uint8_t)((reta_conf[idx].mask >> shift) &
 				IGC_RSS_RDT_REG_SIZE_MASK);
 
 		/* if no need to update the register */
 		if (!mask ||
-		    shift > (RTE_RETA_GROUP_SIZE - IGC_RSS_RDT_REG_SIZE))
+		    shift > (RTE_ETH_RETA_GROUP_SIZE - IGC_RSS_RDT_REG_SIZE))
 			continue;
 
 		/* check mask whether need to read the register value first */
@@ -2321,29 +2303,29 @@ eth_igc_rss_reta_query(struct rte_eth_dev *dev,
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	uint16_t i;
 
-	if (reta_size != ETH_RSS_RETA_SIZE_128) {
+	if (reta_size != RTE_ETH_RSS_RETA_SIZE_128) {
 		PMD_DRV_LOG(ERR,
 			"The size of RSS redirection table configured(%d) doesn't match the number hardware can supported(%d)",
-			reta_size, ETH_RSS_RETA_SIZE_128);
+			reta_size, RTE_ETH_RSS_RETA_SIZE_128);
 		return -EINVAL;
 	}
 
-	RTE_BUILD_BUG_ON(ETH_RSS_RETA_SIZE_128 % IGC_RSS_RDT_REG_SIZE);
+	RTE_BUILD_BUG_ON(RTE_ETH_RSS_RETA_SIZE_128 % IGC_RSS_RDT_REG_SIZE);
 
 	/* read redirection table */
-	for (i = 0; i < ETH_RSS_RETA_SIZE_128; i += IGC_RSS_RDT_REG_SIZE) {
+	for (i = 0; i < RTE_ETH_RSS_RETA_SIZE_128; i += IGC_RSS_RDT_REG_SIZE) {
 		union igc_rss_reta_reg reta;
 		uint16_t idx, shift;
 		uint8_t j, mask;
 
-		idx = i / RTE_RETA_GROUP_SIZE;
-		shift = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
 		mask = (uint8_t)((reta_conf[idx].mask >> shift) &
 				IGC_RSS_RDT_REG_SIZE_MASK);
 
 		/* if no need to read register */
 		if (!mask ||
-		    shift > (RTE_RETA_GROUP_SIZE - IGC_RSS_RDT_REG_SIZE))
+		    shift > (RTE_ETH_RETA_GROUP_SIZE - IGC_RSS_RDT_REG_SIZE))
 			continue;
 
 		/* read register and get the queue index */
@@ -2400,23 +2382,23 @@ eth_igc_rss_hash_conf_get(struct rte_eth_dev *dev,
 
 	rss_hf = 0;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV4)
-		rss_hf |= ETH_RSS_IPV4;
+		rss_hf |= RTE_ETH_RSS_IPV4;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV4_TCP)
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_TCP;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV6)
-		rss_hf |= ETH_RSS_IPV6;
+		rss_hf |= RTE_ETH_RSS_IPV6;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV6_EX)
-		rss_hf |= ETH_RSS_IPV6_EX;
+		rss_hf |= RTE_ETH_RSS_IPV6_EX;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV6_TCP)
-		rss_hf |= ETH_RSS_NONFRAG_IPV6_TCP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV6_TCP;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV6_TCP_EX)
-		rss_hf |= ETH_RSS_IPV6_TCP_EX;
+		rss_hf |= RTE_ETH_RSS_IPV6_TCP_EX;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV4_UDP)
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_UDP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_UDP;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV6_UDP)
-		rss_hf |= ETH_RSS_NONFRAG_IPV6_UDP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV6_UDP;
 	if (mrqc & IGC_MRQC_RSS_FIELD_IPV6_UDP_EX)
-		rss_hf |= ETH_RSS_IPV6_UDP_EX;
+		rss_hf |= RTE_ETH_RSS_IPV6_UDP_EX;
 
 	rss_conf->rss_hf |= rss_hf;
 	return 0;
@@ -2493,6 +2475,7 @@ static int
 igc_vlan_hw_extend_disable(struct rte_eth_dev *dev)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	uint32_t frame_size = dev->data->mtu + IGC_ETH_OVERHEAD;
 	uint32_t ctrl_ext;
 
 	ctrl_ext = IGC_READ_REG(hw, IGC_CTRL_EXT);
@@ -2501,23 +2484,14 @@ igc_vlan_hw_extend_disable(struct rte_eth_dev *dev)
 	if ((ctrl_ext & IGC_CTRL_EXT_EXT_VLAN) == 0)
 		return 0;
 
-	if ((dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_JUMBO_FRAME) == 0)
-		goto write_ext_vlan;
-
 	/* Update maximum packet length */
-	if (dev->data->dev_conf.rxmode.max_rx_pkt_len <
-		RTE_ETHER_MIN_MTU + VLAN_TAG_SIZE) {
+	if (frame_size < RTE_ETHER_MIN_MTU + VLAN_TAG_SIZE) {
 		PMD_DRV_LOG(ERR, "Maximum packet length %u error, min is %u",
-			dev->data->dev_conf.rxmode.max_rx_pkt_len,
-			VLAN_TAG_SIZE + RTE_ETHER_MIN_MTU);
+			frame_size, VLAN_TAG_SIZE + RTE_ETHER_MIN_MTU);
 		return -EINVAL;
 	}
-	dev->data->dev_conf.rxmode.max_rx_pkt_len -= VLAN_TAG_SIZE;
-	IGC_WRITE_REG(hw, IGC_RLPML,
-		dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	IGC_WRITE_REG(hw, IGC_RLPML, frame_size - VLAN_TAG_SIZE);
 
-write_ext_vlan:
 	IGC_WRITE_REG(hw, IGC_CTRL_EXT, ctrl_ext & ~IGC_CTRL_EXT_EXT_VLAN);
 	return 0;
 }
@@ -2526,6 +2500,7 @@ static int
 igc_vlan_hw_extend_enable(struct rte_eth_dev *dev)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	uint32_t frame_size = dev->data->mtu + IGC_ETH_OVERHEAD;
 	uint32_t ctrl_ext;
 
 	ctrl_ext = IGC_READ_REG(hw, IGC_CTRL_EXT);
@@ -2534,23 +2509,14 @@ igc_vlan_hw_extend_enable(struct rte_eth_dev *dev)
 	if (ctrl_ext & IGC_CTRL_EXT_EXT_VLAN)
 		return 0;
 
-	if ((dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_JUMBO_FRAME) == 0)
-		goto write_ext_vlan;
-
 	/* Update maximum packet length */
-	if (dev->data->dev_conf.rxmode.max_rx_pkt_len >
-		MAX_RX_JUMBO_FRAME_SIZE - VLAN_TAG_SIZE) {
+	if (frame_size > MAX_RX_JUMBO_FRAME_SIZE) {
 		PMD_DRV_LOG(ERR, "Maximum packet length %u error, max is %u",
-			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-			VLAN_TAG_SIZE, MAX_RX_JUMBO_FRAME_SIZE);
+			frame_size, MAX_RX_JUMBO_FRAME_SIZE);
 		return -EINVAL;
 	}
-	dev->data->dev_conf.rxmode.max_rx_pkt_len += VLAN_TAG_SIZE;
-	IGC_WRITE_REG(hw, IGC_RLPML,
-		dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	IGC_WRITE_REG(hw, IGC_RLPML, frame_size);
 
-write_ext_vlan:
 	IGC_WRITE_REG(hw, IGC_CTRL_EXT, ctrl_ext | IGC_CTRL_EXT_EXT_VLAN);
 	return 0;
 }
@@ -2561,22 +2527,22 @@ eth_igc_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	struct rte_eth_rxmode *rxmode;
 
 	rxmode = &dev->data->dev_conf.rxmode;
-	if (mask & ETH_VLAN_STRIP_MASK) {
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 			igc_vlan_hw_strip_enable(dev);
 		else
 			igc_vlan_hw_strip_disable(dev);
 	}
 
-	if (mask & ETH_VLAN_FILTER_MASK) {
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 			igc_vlan_hw_filter_enable(dev);
 		else
 			igc_vlan_hw_filter_disable(dev);
 	}
 
-	if (mask & ETH_VLAN_EXTEND_MASK) {
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_EXTEND)
+	if (mask & RTE_ETH_VLAN_EXTEND_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_EXTEND)
 			return igc_vlan_hw_extend_enable(dev);
 		else
 			return igc_vlan_hw_extend_disable(dev);
@@ -2594,7 +2560,7 @@ eth_igc_vlan_tpid_set(struct rte_eth_dev *dev,
 	uint32_t reg_val;
 
 	/* only outer TPID of double VLAN can be configured*/
-	if (vlan_type == ETH_VLAN_TYPE_OUTER) {
+	if (vlan_type == RTE_ETH_VLAN_TYPE_OUTER) {
 		reg_val = IGC_READ_REG(hw, IGC_VET);
 		reg_val = (reg_val & (~IGC_VET_EXT)) |
 			((uint32_t)tpid << IGC_VET_EXT_SHIFT);

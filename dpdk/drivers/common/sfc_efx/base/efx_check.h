@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
@@ -406,5 +406,14 @@
 #  error "MAE requires RIVERHEAD"
 # endif
 #endif /* EFSYS_OPT_MAE */
+
+#if EFSYS_OPT_VIRTIO
+# if !EFSYS_OPT_RIVERHEAD
+#  error "VIRTIO requires RIVERHEAD"
+# endif
+# if !EFSYS_HAS_UINT64
+#  error "VIRTIO requires UINT64"
+# endif
+#endif /* EFSYS_OPT_VIRTIO */
 
 #endif /* _SYS_EFX_CHECK_H */

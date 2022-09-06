@@ -7,7 +7,7 @@
 
 #include <rte_branch_prediction.h>
 #include <rte_common.h>
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_errno.h>
 #include <rte_mempool.h>
 #include <rte_memzone.h>
@@ -409,7 +409,7 @@ otx_cpt_deinit_device(void *dev)
 static int
 otx_cpt_metabuf_mempool_create(const struct rte_cryptodev *dev,
 			       struct cpt_instance *instance, uint8_t qp_id,
-			       int nb_elements)
+			       unsigned int nb_elements)
 {
 	char mempool_name[RTE_MEMPOOL_NAMESIZE];
 	struct cpt_qp_meta_info *meta_info;
@@ -417,6 +417,7 @@ otx_cpt_metabuf_mempool_create(const struct rte_cryptodev *dev,
 	int max_mlen = 0;
 	int sg_mlen = 0;
 	int lb_mlen = 0;
+	int mb_pool_sz;
 	int ret;
 
 	/*
@@ -453,7 +454,9 @@ otx_cpt_metabuf_mempool_create(const struct rte_cryptodev *dev,
 	snprintf(mempool_name, RTE_MEMPOOL_NAMESIZE, "otx_cpt_mb_%u:%u",
 		 dev->data->dev_id, qp_id);
 
-	pool = rte_mempool_create_empty(mempool_name, nb_elements, max_mlen,
+	mb_pool_sz = RTE_MAX(nb_elements, (METABUF_POOL_CACHE_SIZE * rte_lcore_count()));
+
+	pool = rte_mempool_create_empty(mempool_name, mb_pool_sz, max_mlen,
 					METABUF_POOL_CACHE_SIZE, 0,
 					rte_socket_id(), 0);
 
@@ -524,10 +527,10 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	memset(&cptvf->pqueue, 0, sizeof(cptvf->pqueue));
 
 	/* Chunks are of fixed size buffers */
+
+	qlen = DEFAULT_CMD_QLEN;
 	chunks = DEFAULT_CMD_QCHUNKS;
 	chunk_len = DEFAULT_CMD_QCHUNK_SIZE;
-
-	qlen = chunks * chunk_len;
 	/* Chunk size includes 8 bytes of next chunk ptr */
 	chunk_size = chunk_len * CPT_INST_SIZE + CPT_NEXT_CHUNK_PTR_SIZE;
 
@@ -535,7 +538,7 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	len = chunks * RTE_ALIGN(sizeof(struct command_chunk), 8);
 
 	/* For pending queue */
-	len += qlen * sizeof(uintptr_t);
+	len += qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
 
 	/* So that instruction queues start as pg size aligned */
 	len = RTE_ALIGN(len, pg_sz);
@@ -570,14 +573,11 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	}
 
 	/* Pending queue setup */
-	cptvf->pqueue.req_queue = (uintptr_t *)mem;
-	cptvf->pqueue.enq_tail = 0;
-	cptvf->pqueue.deq_head = 0;
-	cptvf->pqueue.pending_count = 0;
+	cptvf->pqueue.rid_queue = (void **)mem;
 
-	mem +=  qlen * sizeof(uintptr_t);
-	len -=  qlen * sizeof(uintptr_t);
-	dma_addr += qlen * sizeof(uintptr_t);
+	mem +=  qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
+	len -=  qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
+	dma_addr += qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
 
 	/* Alignment wastage */
 	used_len = alloc_len - len;

@@ -1,6 +1,8 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2016 Intel Corporation.
 
+.. include:: <isonum.txt>
+
 IXGBE Driver
 ============
 
@@ -22,8 +24,8 @@ The following sections explain RX and TX constraints in the vPMD.
 RX Constraints
 ~~~~~~~~~~~~~~
 
-Prerequisites and Pre-conditions
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Linux Prerequisites and Pre-conditions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The following prerequisites apply:
 
@@ -47,6 +49,24 @@ vPMD for RX would be disabled.
 
 By default, IXGBE_MAX_RING_DESC is set to 4096 and RTE_PMD_IXGBE_RX_MAX_BURST is set to 32.
 
+Windows Prerequisites and Pre-conditions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Follow the :doc:`guide for Windows <../windows_gsg/run_apps>`
+  to setup the basic DPDK environment.
+
+- Identify the Intel\ |reg| Ethernet adapter and get the latest NVM/FW version.
+
+- To access any Intel\ |reg| Ethernet hardware,
+  load the NetUIO driver in place of existing built-in (inbox) driver.
+
+- To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+  <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
+- Loading of private Dynamic Device Personalization (DDP) package
+  is not supported on Windows.
+
+
 Feature not Supported by RX Vector PMD
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -69,13 +89,13 @@ Other features are supported using optional MACRO configuration. They include:
 
 To guarantee the constraint, capabilities in dev_conf.rxmode.offloads will be checked:
 
-*   DEV_RX_OFFLOAD_VLAN_STRIP
+*   RTE_ETH_RX_OFFLOAD_VLAN_STRIP
 
-*   DEV_RX_OFFLOAD_VLAN_EXTEND
+*   RTE_ETH_RX_OFFLOAD_VLAN_EXTEND
 
-*   DEV_RX_OFFLOAD_CHECKSUM
+*   RTE_ETH_RX_OFFLOAD_CHECKSUM
 
-*   DEV_RX_OFFLOAD_HEADER_SPLIT
+*   RTE_ETH_RX_OFFLOAD_HEADER_SPLIT
 
 *   dev_conf
 
@@ -106,7 +126,7 @@ be passed as part of EAL arguments. For example,
 
 .. code-block:: console
 
-   testpmd -a af:10.0,pflink_fullchk=1 -- -i
+   dpdk-testpmd -a af:10.0,pflink_fullchk=1 -- -i
 
 - ``pflink_fullchk`` (default **0**)
 
@@ -160,13 +180,13 @@ l3fwd
 ~~~~~
 
 When running l3fwd with vPMD, there is one thing to note.
-In the configuration, ensure that DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads is NOT set.
+In the configuration, ensure that RTE_ETH_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads is NOT set.
 Otherwise, by default, RX vPMD is disabled.
 
 load_balancer
 ~~~~~~~~~~~~~
 
-As in the case of l3fwd, to enable vPMD, do NOT set DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads.
+As in the case of l3fwd, to enable vPMD, do NOT set RTE_ETH_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads.
 In addition, for improved performance, use -bsz "(32,32),(64,64),(32,32)" in load_balancer to avoid using the default burst size of 144.
 
 
@@ -269,6 +289,11 @@ Before binding ``vfio`` with legacy mode in X550 NICs, use ``modprobe vfio ``
 ``nointxmask=1`` to load ``vfio`` module if the intx is not shared with other
 devices.
 
+RSS isn't supported when QinQ is enabled
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Due to FW limitation, IXGBE doesn't support RSS when QinQ is enabled currently.
+
 UDP with zero checksum is reported as error
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -276,7 +301,7 @@ Intel 82599 10 Gigabit Ethernet Controller Specification Update (Revision 2.87)
 Errata: 44 Integrity Error Reported for IPv4/UDP Packets With Zero Checksum
 
 To support UDP zero checksum, the zero and bad UDP checksum packet is marked as
-PKT_RX_L4_CKSUM_UNKNOWN, so the application needs to recompute the checksum to
+RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN, so the application needs to recompute the checksum to
 validate it.
 
 Inline crypto processing support

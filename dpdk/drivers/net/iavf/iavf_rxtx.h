@@ -23,39 +23,54 @@
 #define IAVF_VPMD_DESCS_PER_LOOP  4
 #define IAVF_VPMD_TX_MAX_FREE_BUF 64
 
-#define IAVF_NO_VECTOR_FLAGS (				 \
-		DEV_TX_OFFLOAD_MULTI_SEGS |		 \
-		DEV_TX_OFFLOAD_VLAN_INSERT |		 \
-		DEV_TX_OFFLOAD_SCTP_CKSUM |		 \
-		DEV_TX_OFFLOAD_UDP_CKSUM |		 \
-		DEV_TX_OFFLOAD_TCP_TSO |		 \
-		DEV_TX_OFFLOAD_TCP_CKSUM)
+#define IAVF_TX_NO_VECTOR_FLAGS (				 \
+		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |		 \
+		RTE_ETH_TX_OFFLOAD_TCP_TSO |		 \
+		RTE_ETH_TX_OFFLOAD_SECURITY)
+
+#define IAVF_TX_VECTOR_OFFLOAD (				 \
+		RTE_ETH_TX_OFFLOAD_VLAN_INSERT |		 \
+		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |		 \
+		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |		 \
+		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |		 \
+		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |		 \
+		RTE_ETH_TX_OFFLOAD_TCP_CKSUM)
+
+#define IAVF_RX_VECTOR_OFFLOAD (				 \
+		RTE_ETH_RX_OFFLOAD_CHECKSUM |		 \
+		RTE_ETH_RX_OFFLOAD_SCTP_CKSUM |		 \
+		RTE_ETH_RX_OFFLOAD_VLAN |		 \
+		RTE_ETH_RX_OFFLOAD_RSS_HASH)
+
+#define IAVF_VECTOR_PATH 0
+#define IAVF_VECTOR_OFFLOAD_PATH 1
 
 #define DEFAULT_TX_RS_THRESH     32
 #define DEFAULT_TX_FREE_THRESH   32
 
-#define IAVF_MIN_TSO_MSS          88
+#define IAVF_MIN_TSO_MSS          256
 #define IAVF_MAX_TSO_MSS          9668
 #define IAVF_TSO_MAX_SEG          UINT8_MAX
 #define IAVF_TX_MAX_MTU_SEG       8
 
 #define IAVF_TX_CKSUM_OFFLOAD_MASK (		 \
-		PKT_TX_IP_CKSUM |		 \
-		PKT_TX_L4_MASK |		 \
-		PKT_TX_TCP_SEG)
+		RTE_MBUF_F_TX_IP_CKSUM |		 \
+		RTE_MBUF_F_TX_L4_MASK |		 \
+		RTE_MBUF_F_TX_TCP_SEG)
 
 #define IAVF_TX_OFFLOAD_MASK (  \
-		PKT_TX_OUTER_IPV6 |		 \
-		PKT_TX_OUTER_IPV4 |		 \
-		PKT_TX_IPV6 |			 \
-		PKT_TX_IPV4 |			 \
-		PKT_TX_VLAN_PKT |		 \
-		PKT_TX_IP_CKSUM |		 \
-		PKT_TX_L4_MASK |		 \
-		PKT_TX_TCP_SEG)
+		RTE_MBUF_F_TX_OUTER_IPV6 |		 \
+		RTE_MBUF_F_TX_OUTER_IPV4 |		 \
+		RTE_MBUF_F_TX_IPV6 |			 \
+		RTE_MBUF_F_TX_IPV4 |			 \
+		RTE_MBUF_F_TX_VLAN |		 \
+		RTE_MBUF_F_TX_IP_CKSUM |		 \
+		RTE_MBUF_F_TX_L4_MASK |		 \
+		RTE_MBUF_F_TX_TCP_SEG |		 \
+		RTE_ETH_TX_OFFLOAD_SECURITY)
 
 #define IAVF_TX_OFFLOAD_NOTSUP_MASK \
-		(PKT_TX_OFFLOAD_MASK ^ IAVF_TX_OFFLOAD_MASK)
+		(RTE_MBUF_F_TX_OFFLOAD_MASK ^ IAVF_TX_OFFLOAD_MASK)
 
 /**
  * Rx Flex Descriptors
@@ -150,6 +165,12 @@ struct iavf_txq_ops {
 	void (*release_mbufs)(struct iavf_tx_queue *txq);
 };
 
+
+struct iavf_rx_queue_stats {
+	uint64_t reserved;
+	struct iavf_ipsec_crypto_stats ipsec_crypto;
+};
+
 /* Structure associated with each Rx queue. */
 struct iavf_rx_queue {
 	struct rte_mempool *mp;       /* mbuf pool to populate Rx ring */
@@ -191,9 +212,14 @@ struct iavf_rx_queue {
 	bool q_set;             /* if rx queue has been configured */
 	bool rx_deferred_start; /* don't start this queue in dev start */
 	const struct iavf_rxq_ops *ops;
+	uint8_t rx_flags;
+#define IAVF_RX_FLAGS_VLAN_TAG_LOC_L2TAG1     BIT(0)
+#define IAVF_RX_FLAGS_VLAN_TAG_LOC_L2TAG2_2   BIT(1)
 	uint8_t proto_xtr; /* protocol extraction type */
 	uint64_t xtr_ol_flag;
 		/* flexible descriptor metadata extraction offload flag */
+	struct iavf_rx_queue_stats stats;
+	uint64_t offloads;
 };
 
 struct iavf_tx_entry {
@@ -228,10 +254,15 @@ struct iavf_tx_queue {
 	uint64_t offloads;
 	uint16_t next_dd;              /* next to set RS, for VPMD */
 	uint16_t next_rs;              /* next to check DD,  for VPMD */
+	uint16_t ipsec_crypto_pkt_md_offset;
 
 	bool q_set;                    /* if rx queue has been configured */
 	bool tx_deferred_start;        /* don't start this queue in dev start */
 	const struct iavf_txq_ops *ops;
+#define IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG1	BIT(0)
+#define IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2	BIT(1)
+	uint8_t vlan_flag;
+	uint8_t tc;
 };
 
 /* Offload features */
@@ -326,6 +357,40 @@ struct iavf_32b_rx_flex_desc_comms_ovs {
 	} flex_ts;
 };
 
+/* Rx Flex Descriptor
+ * RxDID Profile ID 24 Inline IPsec
+ * Flex-field 0: RSS hash lower 16-bits
+ * Flex-field 1: RSS hash upper 16-bits
+ * Flex-field 2: Flow ID lower 16-bits
+ * Flex-field 3: Flow ID upper 16-bits
+ * Flex-field 4: Inline IPsec SAID lower 16-bits
+ * Flex-field 5: Inline IPsec SAID upper 16-bits
+ */
+struct iavf_32b_rx_flex_desc_comms_ipsec {
+	/* Qword 0 */
+	u8 rxdid;
+	u8 mir_id_umb_cast;
+	__le16 ptype_flexi_flags0;
+	__le16 pkt_len;
+	__le16 hdr_len_sph_flex_flags1;
+
+	/* Qword 1 */
+	__le16 status_error0;
+	__le16 l2tag1;
+	__le32 rss_hash;
+
+	/* Qword 2 */
+	__le16 status_error1;
+	u8 flexi_flags2;
+	u8 ts_low;
+	__le16 l2tag2_1st;
+	__le16 l2tag2_2nd;
+
+	/* Qword 3 */
+	__le32 flow_id;
+	__le32 ipsec_said;
+};
+
 enum iavf_rxtx_rel_mbufs_type {
 	IAVF_REL_MBUFS_DEFAULT		= 0,
 	IAVF_REL_MBUFS_SSE_VEC		= 1,
@@ -351,6 +416,7 @@ enum iavf_rxdid {
 	IAVF_RXDID_COMMS_AUX_TCP	= 21,
 	IAVF_RXDID_COMMS_OVS_1		= 22,
 	IAVF_RXDID_COMMS_OVS_2		= 23,
+	IAVF_RXDID_COMMS_IPSEC_CRYPTO	= 24,
 	IAVF_RXDID_COMMS_AUX_IP_OFFSET	= 25,
 	IAVF_RXDID_LAST			= 63,
 };
@@ -378,9 +444,13 @@ enum iavf_rx_flex_desc_status_error_0_bits {
 
 enum iavf_rx_flex_desc_status_error_1_bits {
 	/* Note: These are predefined bit offsets */
-	IAVF_RX_FLEX_DESC_STATUS1_CPM_S = 0, /* 4 bits */
-	IAVF_RX_FLEX_DESC_STATUS1_NAT_S = 4,
-	IAVF_RX_FLEX_DESC_STATUS1_CRYPTO_S = 5,
+	/* Bits 3:0 are reserved for inline ipsec status */
+	IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_0 = 0,
+	IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_1,
+	IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_2,
+	IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_3,
+	IAVF_RX_FLEX_DESC_STATUS1_NAT_S,
+	IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_PROCESSED,
 	/* [10:6] reserved */
 	IAVF_RX_FLEX_DESC_STATUS1_L2TAG2P_S = 11,
 	IAVF_RX_FLEX_DESC_STATUS1_XTRMD2_VALID_S = 12,
@@ -389,6 +459,129 @@ enum iavf_rx_flex_desc_status_error_1_bits {
 	IAVF_RX_FLEX_DESC_STATUS1_XTRMD5_VALID_S = 15,
 	IAVF_RX_FLEX_DESC_STATUS1_LAST /* this entry must be last!!! */
 };
+
+#define IAVF_RX_FLEX_DESC_IPSEC_CRYPTO_STATUS_MASK  (		\
+	BIT(IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_0) |	\
+	BIT(IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_1) |	\
+	BIT(IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_2) |	\
+	BIT(IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_STATUS_3))
+
+enum iavf_rx_flex_desc_ipsec_crypto_status {
+	IAVF_IPSEC_CRYPTO_STATUS_SUCCESS = 0,
+	IAVF_IPSEC_CRYPTO_STATUS_SAD_MISS,
+	IAVF_IPSEC_CRYPTO_STATUS_NOT_PROCESSED,
+	IAVF_IPSEC_CRYPTO_STATUS_ICV_CHECK_FAIL,
+	IAVF_IPSEC_CRYPTO_STATUS_LENGTH_ERR,
+	/* Reserved */
+	IAVF_IPSEC_CRYPTO_STATUS_MISC_ERR = 0xF
+};
+
+
+
+#define IAVF_TXD_DATA_QW1_DTYPE_SHIFT	(0)
+#define IAVF_TXD_DATA_QW1_DTYPE_MASK	(0xFUL << IAVF_TXD_QW1_DTYPE_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_CMD_SHIFT	(4)
+#define IAVF_TXD_DATA_QW1_CMD_MASK	(0x3FFUL << IAVF_TXD_DATA_QW1_CMD_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_OFFSET_SHIFT	(16)
+#define IAVF_TXD_DATA_QW1_OFFSET_MASK	(0x3FFFFULL << \
+					IAVF_TXD_DATA_QW1_OFFSET_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_OFFSET_MACLEN_SHIFT	(IAVF_TXD_DATA_QW1_OFFSET_SHIFT)
+#define IAVF_TXD_DATA_QW1_OFFSET_MACLEN_MASK	\
+	(0x7FUL << IAVF_TXD_DATA_QW1_OFFSET_MACLEN_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_OFFSET_IPLEN_SHIFT	\
+	(IAVF_TXD_DATA_QW1_OFFSET_SHIFT + IAVF_TX_DESC_LENGTH_IPLEN_SHIFT)
+#define IAVF_TXD_DATA_QW1_OFFSET_IPLEN_MASK	\
+	(0x7FUL << IAVF_TXD_DATA_QW1_OFFSET_IPLEN_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_OFFSET_L4LEN_SHIFT	\
+	(IAVF_TXD_DATA_QW1_OFFSET_SHIFT + IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT)
+#define IAVF_TXD_DATA_QW1_OFFSET_L4LEN_MASK	\
+	(0xFUL << IAVF_TXD_DATA_QW1_OFFSET_L4LEN_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_MACLEN_MASK	\
+	(0x7FUL << IAVF_TX_DESC_LENGTH_MACLEN_SHIFT)
+#define IAVF_TXD_DATA_QW1_IPLEN_MASK	\
+	(0x7FUL << IAVF_TX_DESC_LENGTH_IPLEN_SHIFT)
+#define IAVF_TXD_DATA_QW1_L4LEN_MASK	\
+	(0xFUL << IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT)
+#define IAVF_TXD_DATA_QW1_FCLEN_MASK	\
+	(0xFUL << IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_TX_BUF_SZ_SHIFT	(34)
+#define IAVF_TXD_DATA_QW1_TX_BUF_SZ_MASK	\
+	(0x3FFFULL << IAVF_TXD_DATA_QW1_TX_BUF_SZ_SHIFT)
+
+#define IAVF_TXD_DATA_QW1_L2TAG1_SHIFT		(48)
+#define IAVF_TXD_DATA_QW1_L2TAG1_MASK		\
+	(0xFFFFULL << IAVF_TXD_DATA_QW1_L2TAG1_SHIFT)
+
+#define IAVF_TXD_CTX_QW1_IPSEC_PARAMS_CIPHERBLK_SHIFT	(11)
+#define IAVF_TXD_CTX_QW1_IPSEC_PARAMS_CIPHERBLK_MASK	\
+	(0x7UL << IAVF_TXD_CTX_QW1_IPSEC_PARAMS_CIPHERBLK_SHIFT)
+
+#define IAVF_TXD_CTX_QW1_IPSEC_PARAMS_ICVLEN_SHIFT	(14)
+#define IAVF_TXD_CTX_QW1_IPSEC_PARAMS_ICVLEN_MASK	\
+	(0xFUL << IAVF_TXD_CTX_QW1_IPSEC_PARAMS_ICVLEN_SHIFT)
+
+#define IAVF_TXD_CTX_QW1_SEG_PARAMS_TLEN_SHIFT		(30)
+#define IAVF_TXD_CTX_QW1_SEG_PARAMS_TLEN_MASK		\
+	(0x3FFFFUL << IAVF_TXD_CTX_QW1_SEG_PARAMS_TLEN_SHIFT)
+
+#define IAVF_TXD_CTX_QW1_TSYNC_PARAMS_TLEN_SHIFT	(30)
+#define IAVF_TXD_CTX_QW1_TSYNC_PARAMS_TLEN_MASK		\
+	(0x3FUL << IAVF_TXD_CTX_QW1_SEG_PARAMS_TLEN_SHIFT)
+
+#define IAVF_TXD_CTX_QW1_SEG_PARAMS_MSS_SHIFT		(50)
+#define IAVF_TXD_CTX_QW1_SEG_PARAMS_MSS_MASK		\
+	(0x3FFFUL << IAVF_TXD_CTX_QW1_SEG_PARAMS_MSS_SHIFT)
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPT_SHIFT		(0)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPT_MASK		(0x3UL)
+
+enum iavf_tx_ctx_desc_tunnel_external_ip_type {
+	IAVF_TX_CTX_DESC_EIPT_NONE,
+	IAVF_TX_CTX_DESC_EIPT_IPV6,
+	IAVF_TX_CTX_DESC_EIPT_IPV4_NO_CHECKSUM_OFFLOAD,
+	IAVF_TX_CTX_DESC_EIPT_IPV4_CHECKSUM_OFFLOAD
+};
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPLEN_SHIFT	(2)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPLEN_MASK		(0x7FUL)
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_L4TUNT_SHIFT	(9)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_L4TUNT_MASK		(0x3UL)
+
+enum iavf_tx_ctx_desc_tunnel_l4_tunnel_type {
+	IAVF_TX_CTX_DESC_L4_TUN_TYP_NO_UDP_GRE,
+	IAVF_TX_CTX_DESC_L4_TUN_TYP_UDP,
+	IAVF_TX_CTX_DESC_L4_TUN_TYP_GRE
+};
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_EIP_NOINC_SHIFT	(11)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_EIP_NOINC_MASK	(0x1UL)
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_L4TUNLEN_SHIFT	(12)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_L4TUNLEN_MASK	(0x7FUL)
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_DECTTL_SHIFT	(19)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_DECTTL_MASK		(0xFUL)
+
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_L4T_CS_SHIFT	(23)
+#define IAVF_TXD_CTX_QW0_TUN_PARAMS_L4T_CS_MASK		(0x1UL)
+
+#define IAVF_TXD_CTX_QW0_L2TAG2_PARAM			(32)
+#define IAVF_TXD_CTX_QW0_L2TAG2_MASK			(0xFFFFUL)
+
+
+#define IAVF_RX_FLEX_DESC_IPSEC_CRYPTO_SAID_MASK	(0xFFFFF)
+
+/* for iavf_32b_rx_flex_desc.ptype_flex_flags0 member */
+#define IAVF_RX_FLEX_DESC_PTYPE_M	(0x3FF) /* 10-bits */
+
 
 /* for iavf_32b_rx_flex_desc.ptype_flex_flags0 member */
 #define IAVF_RX_FLEX_DESC_PTYPE_M	(0x3FF) /* 10-bits */
@@ -405,7 +598,7 @@ int iavf_dev_rx_queue_setup(struct rte_eth_dev *dev,
 
 int iavf_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int iavf_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id);
-void iavf_dev_rx_queue_release(void *rxq);
+void iavf_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 int iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			   uint16_t queue_idx,
@@ -415,7 +608,7 @@ int iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 int iavf_dev_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 int iavf_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 int iavf_dev_tx_done_cleanup(void *txq, uint32_t free_cnt);
-void iavf_dev_tx_queue_release(void *txq);
+void iavf_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 void iavf_stop_queues(struct rte_eth_dev *dev);
 uint16_t iavf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		       uint16_t nb_pkts);
@@ -438,7 +631,7 @@ void iavf_dev_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 			  struct rte_eth_rxq_info *qinfo);
 void iavf_dev_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 			  struct rte_eth_txq_info *qinfo);
-uint32_t iavf_dev_rxq_count(struct rte_eth_dev *dev, uint16_t queue_id);
+uint32_t iavf_dev_rxq_count(void *rx_queue);
 int iavf_dev_rx_desc_status(void *rx_queue, uint16_t offset);
 int iavf_dev_tx_desc_status(void *tx_queue, uint16_t offset);
 
@@ -469,23 +662,39 @@ uint16_t iavf_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 			    uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 				 uint16_t nb_pkts);
+int iavf_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
 int iavf_rx_vec_dev_check(struct rte_eth_dev *dev);
 int iavf_tx_vec_dev_check(struct rte_eth_dev *dev);
 int iavf_rxq_vec_setup(struct iavf_rx_queue *rxq);
 int iavf_txq_vec_setup(struct iavf_tx_queue *txq);
 uint16_t iavf_recv_pkts_vec_avx512(void *rx_queue, struct rte_mbuf **rx_pkts,
 				   uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_avx512_offload(void *rx_queue,
+					   struct rte_mbuf **rx_pkts,
+					   uint16_t nb_pkts);
 uint16_t iavf_recv_pkts_vec_avx512_flex_rxd(void *rx_queue,
 					    struct rte_mbuf **rx_pkts,
 					    uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_avx512_flex_rxd_offload(void *rx_queue,
+						    struct rte_mbuf **rx_pkts,
+						    uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts_vec_avx512(void *rx_queue,
 					     struct rte_mbuf **rx_pkts,
 					     uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx512_offload(void *rx_queue,
+						     struct rte_mbuf **rx_pkts,
+						     uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts_vec_avx512_flex_rxd(void *rx_queue,
 						      struct rte_mbuf **rx_pkts,
 						      uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx512_flex_rxd_offload(void *rx_queue,
+							      struct rte_mbuf **rx_pkts,
+							      uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec_avx512(void *tx_queue, struct rte_mbuf **tx_pkts,
 				   uint16_t nb_pkts);
+uint16_t iavf_xmit_pkts_vec_avx512_offload(void *tx_queue,
+					   struct rte_mbuf **tx_pkts,
+					   uint16_t nb_pkts);
 int iavf_txq_vec_setup_avx512(struct iavf_tx_queue *txq);
 
 uint8_t iavf_proto_xtr_type_to_rxdid(uint8_t xtr_type);
@@ -527,9 +736,10 @@ void iavf_dump_tx_descriptor(const struct iavf_tx_queue *txq,
 	const volatile struct iavf_tx_desc *tx_desc = desc;
 	enum iavf_tx_desc_dtype_value type;
 
-	type = (enum iavf_tx_desc_dtype_value)rte_le_to_cpu_64(
-		tx_desc->cmd_type_offset_bsz &
-		rte_cpu_to_le_64(IAVF_TXD_QW1_DTYPE_MASK));
+
+	type = (enum iavf_tx_desc_dtype_value)
+		rte_le_to_cpu_64(tx_desc->cmd_type_offset_bsz &
+			rte_cpu_to_le_64(IAVF_TXD_DATA_QW1_DTYPE_MASK));
 	switch (type) {
 	case IAVF_TX_DESC_DTYPE_DATA:
 		name = "Tx_data_desc";
@@ -537,14 +747,17 @@ void iavf_dump_tx_descriptor(const struct iavf_tx_queue *txq,
 	case IAVF_TX_DESC_DTYPE_CONTEXT:
 		name = "Tx_context_desc";
 		break;
+	case IAVF_TX_DESC_DTYPE_IPSEC:
+		name = "Tx_IPsec_desc";
+		break;
 	default:
 		name = "unknown_desc";
 		break;
 	}
 
 	printf("Queue %d %s %d: QW0: 0x%016"PRIx64" QW1: 0x%016"PRIx64"\n",
-	       txq->queue_id, name, tx_id, tx_desc->buffer_addr,
-	       tx_desc->cmd_type_offset_bsz);
+		txq->queue_id, name, tx_id, tx_desc->buffer_addr,
+		tx_desc->cmd_type_offset_bsz);
 }
 
 #define FDIR_PROC_ENABLE_PER_QUEUE(ad, on) do { \

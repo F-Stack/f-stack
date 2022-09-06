@@ -57,11 +57,10 @@ struct flow_conf qos_conf[MAX_DATA_STREAMS];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 	},
 	.txmode = {
-		.mq_mode = ETH_DCB_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -106,9 +105,9 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 			"Error during getting device (port %u) info: %s\n",
 			portid, strerror(-ret));
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	ret = rte_eth_dev_configure(portid, 1, 1, &local_port_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE,
@@ -204,15 +203,9 @@ static struct rte_sched_subport_profile_params
 	},
 };
 
-struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
-	{
-		.n_pipes_per_subport_enabled = 4096,
-		.qsize = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
-		.pipe_profiles = pipe_profiles,
-		.n_pipe_profiles = sizeof(pipe_profiles) /
-			sizeof(struct rte_sched_pipe_params),
-		.n_max_pipe_profiles = MAX_SCHED_PIPE_PROFILES,
-#ifdef RTE_SCHED_RED
+#ifdef RTE_SCHED_CMAN
+struct rte_sched_cman_params cman_params = {
+	.cman_mode = RTE_SCHED_CMAN_RED,
 	.red_params = {
 		/* Traffic Class 0 Colors Green / Yellow / Red */
 		[0][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
@@ -279,7 +272,20 @@ struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
 		[12][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
 		[12][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
 	},
-#endif /* RTE_SCHED_RED */
+};
+#endif /* RTE_SCHED_CMAN */
+
+struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
+	{
+		.n_pipes_per_subport_enabled = 4096,
+		.qsize = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
+		.pipe_profiles = pipe_profiles,
+		.n_pipe_profiles = sizeof(pipe_profiles) /
+			sizeof(struct rte_sched_pipe_params),
+		.n_max_pipe_profiles = MAX_SCHED_PIPE_PROFILES,
+#ifdef RTE_SCHED_CMAN
+		.cman_params = &cman_params,
+#endif /* RTE_SCHED_CMAN */
 	},
 };
 

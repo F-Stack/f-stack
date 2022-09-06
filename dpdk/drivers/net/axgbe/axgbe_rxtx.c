@@ -31,9 +31,9 @@ axgbe_rx_queue_release(struct axgbe_rx_queue *rx_queue)
 	}
 }
 
-void axgbe_dev_rx_queue_release(void *rxq)
+void axgbe_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t queue_idx)
 {
-	axgbe_rx_queue_release(rxq);
+	axgbe_rx_queue_release(dev->data->rx_queues[queue_idx]);
 }
 
 int axgbe_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
@@ -75,7 +75,7 @@ int axgbe_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		(DMA_CH_INC * rxq->queue_id));
 	rxq->dma_tail_reg = (volatile uint32_t *)((uint8_t *)rxq->dma_regs +
 						  DMA_CH_RDTR_LO);
-	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
+	if (dev->data->dev_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC)
 		rxq->crc_len = RTE_ETHER_CRC_LEN;
 	else
 		rxq->crc_len = 0;
@@ -209,9 +209,10 @@ axgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	volatile union axgbe_rx_desc *desc;
 	uint64_t old_dirty = rxq->dirty;
 	struct rte_mbuf *mbuf, *tmbuf;
-	unsigned int err;
+	unsigned int err, etlt;
 	uint32_t error_status;
 	uint16_t idx, pidx, pkt_len;
+	uint64_t offloads;
 
 	idx = AXGBE_GET_DESC_IDX(rxq, rxq->cur);
 	while (nb_rx < nb_pkts) {
@@ -259,27 +260,46 @@ axgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		}
 		if (rxq->pdata->rx_csum_enable) {
 			mbuf->ol_flags = 0;
-			mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
-			mbuf->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+			mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
+			mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			if (unlikely(error_status == AXGBE_L3_CSUM_ERR)) {
-				mbuf->ol_flags &= ~PKT_RX_IP_CKSUM_GOOD;
-				mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
-				mbuf->ol_flags &= ~PKT_RX_L4_CKSUM_GOOD;
-				mbuf->ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
+				mbuf->ol_flags &= ~RTE_MBUF_F_RX_IP_CKSUM_GOOD;
+				mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
+				mbuf->ol_flags &= ~RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+				mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
 			} else if (
 				unlikely(error_status == AXGBE_L4_CSUM_ERR)) {
-				mbuf->ol_flags &= ~PKT_RX_L4_CKSUM_GOOD;
-				mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+				mbuf->ol_flags &= ~RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+				mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			}
 		}
 		rte_prefetch1(rte_pktmbuf_mtod(mbuf, void *));
 		/* Get the RSS hash */
 		if (AXGMAC_GET_BITS_LE(desc->write.desc3, RX_NORMAL_DESC3, RSV))
 			mbuf->hash.rss = rte_le_to_cpu_32(desc->write.desc1);
+		etlt = AXGMAC_GET_BITS_LE(desc->write.desc3,
+				RX_NORMAL_DESC3, ETLT);
+		offloads = rxq->pdata->eth_dev->data->dev_conf.rxmode.offloads;
+		if (!err || !etlt) {
+			if (etlt == RX_CVLAN_TAG_PRESENT) {
+				mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN;
+				mbuf->vlan_tci =
+					AXGMAC_GET_BITS_LE(desc->write.desc0,
+							RX_NORMAL_DESC0, OVT);
+				if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
+					mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED;
+				else
+					mbuf->ol_flags &= ~RTE_MBUF_F_RX_VLAN_STRIPPED;
+			} else {
+				mbuf->ol_flags &=
+					~(RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED);
+				mbuf->vlan_tci = 0;
+			}
+		}
 		/* Indicate if a Context Descriptor is next */
 		if (AXGMAC_GET_BITS_LE(desc->write.desc3, RX_NORMAL_DESC3, CDA))
-			mbuf->ol_flags |= PKT_RX_IEEE1588_PTP
-					| PKT_RX_IEEE1588_TMST;
+			mbuf->ol_flags |= RTE_MBUF_F_RX_IEEE1588_PTP
+					| RTE_MBUF_F_RX_IEEE1588_TMST;
 		pkt_len = AXGMAC_GET_BITS_LE(desc->write.desc3, RX_NORMAL_DESC3,
 					     PL) - rxq->crc_len;
 		/* Mbuf populate */
@@ -324,9 +344,10 @@ uint16_t eth_axgbe_recv_scattered_pkts(void *rx_queue,
 	uint64_t old_dirty = rxq->dirty;
 	struct rte_mbuf *first_seg = NULL;
 	struct rte_mbuf *mbuf, *tmbuf;
-	unsigned int err;
+	unsigned int err, etlt;
 	uint32_t error_status;
 	uint16_t idx, pidx, data_len = 0, pkt_len = 0;
+	uint64_t offloads;
 
 	idx = AXGBE_GET_DESC_IDX(rxq, rxq->cur);
 	while (nb_rx < nb_pkts) {
@@ -399,7 +420,25 @@ next_desc:
 		/* Get the RSS hash */
 		if (AXGMAC_GET_BITS_LE(desc->write.desc3, RX_NORMAL_DESC3, RSV))
 			mbuf->hash.rss = rte_le_to_cpu_32(desc->write.desc1);
-
+		etlt = AXGMAC_GET_BITS_LE(desc->write.desc3,
+				RX_NORMAL_DESC3, ETLT);
+		offloads = rxq->pdata->eth_dev->data->dev_conf.rxmode.offloads;
+		if (!err || !etlt) {
+			if (etlt == RX_CVLAN_TAG_PRESENT) {
+				mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN;
+				mbuf->vlan_tci =
+					AXGMAC_GET_BITS_LE(desc->write.desc0,
+							RX_NORMAL_DESC0, OVT);
+				if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
+					mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED;
+				else
+					mbuf->ol_flags &= ~RTE_MBUF_F_RX_VLAN_STRIPPED;
+			} else {
+				mbuf->ol_flags &=
+					~(RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED);
+				mbuf->vlan_tci = 0;
+			}
+		}
 		/* Mbuf populate */
 		mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 		mbuf->data_len = data_len;
@@ -425,17 +464,17 @@ err_set:
 		first_seg->port = rxq->port_id;
 		if (rxq->pdata->rx_csum_enable) {
 			mbuf->ol_flags = 0;
-			mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
-			mbuf->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+			mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
+			mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			if (unlikely(error_status == AXGBE_L3_CSUM_ERR)) {
-				mbuf->ol_flags &= ~PKT_RX_IP_CKSUM_GOOD;
-				mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
-				mbuf->ol_flags &= ~PKT_RX_L4_CKSUM_GOOD;
-				mbuf->ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
+				mbuf->ol_flags &= ~RTE_MBUF_F_RX_IP_CKSUM_GOOD;
+				mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
+				mbuf->ol_flags &= ~RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+				mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
 			} else if (unlikely(error_status
 						== AXGBE_L4_CSUM_ERR)) {
-				mbuf->ol_flags &= ~PKT_RX_L4_CKSUM_GOOD;
-				mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+				mbuf->ol_flags &= ~RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+				mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			}
 		}
 
@@ -477,9 +516,9 @@ static void axgbe_tx_queue_release(struct axgbe_tx_queue *tx_queue)
 	}
 }
 
-void axgbe_dev_tx_queue_release(void *txq)
+void axgbe_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t queue_idx)
 {
-	axgbe_tx_queue_release(txq);
+	axgbe_tx_queue_release(dev->data->tx_queues[queue_idx]);
 }
 
 int axgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
@@ -492,6 +531,7 @@ int axgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	struct axgbe_tx_queue *txq;
 	unsigned int tsize;
 	const struct rte_memzone *tz;
+	uint64_t offloads;
 
 	tx_desc = nb_desc;
 	pdata = dev->data->dev_private;
@@ -511,7 +551,8 @@ int axgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	if (!txq)
 		return -ENOMEM;
 	txq->pdata = pdata;
-
+	offloads = tx_conf->offloads |
+		txq->pdata->eth_dev->data->dev_conf.txmode.offloads;
 	txq->nb_desc = tx_desc;
 	txq->free_thresh = tx_conf->tx_free_thresh ?
 		tx_conf->tx_free_thresh : AXGBE_TX_FREE_THRESH;
@@ -523,7 +564,7 @@ int axgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	if (txq->nb_desc % txq->free_thresh != 0)
 		txq->vector_disable = 1;
 
-	if (tx_conf->offloads != 0)
+	if (offloads != 0)
 		txq->vector_disable = 1;
 
 	/* Allocate TX ring hardware descriptors */
@@ -569,6 +610,30 @@ int axgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 #endif
 
 	return 0;
+}
+
+int axgbe_dev_fw_version_get(struct rte_eth_dev *eth_dev,
+		char *fw_version, size_t fw_size)
+{
+	struct axgbe_port *pdata;
+	struct axgbe_hw_features *hw_feat;
+	int ret;
+
+	pdata = (struct axgbe_port *)eth_dev->data->dev_private;
+	hw_feat = &pdata->hw_feat;
+
+	ret = snprintf(fw_version, fw_size, "%d.%d.%d",
+			AXGMAC_GET_BITS(hw_feat->version, MAC_VR, USERVER),
+			AXGMAC_GET_BITS(hw_feat->version, MAC_VR, DEVID),
+			AXGMAC_GET_BITS(hw_feat->version, MAC_VR, SNPSVER));
+	if (ret < 0)
+		return -EINVAL;
+
+	ret += 1; /* add the size of '\0' */
+	if (fw_size < (size_t)ret)
+		return ret;
+	else
+		return 0;
 }
 
 static void axgbe_txq_prepare_tx_stop(struct axgbe_port *pdata,
@@ -729,7 +794,7 @@ static int axgbe_xmit_hw(struct axgbe_tx_queue *txq,
 	AXGMAC_SET_BITS_LE(desc->desc3, TX_NORMAL_DESC3, FL,
 			   mbuf->pkt_len);
 	/* Timestamp enablement check */
-	if (mbuf->ol_flags & PKT_TX_IEEE1588_TMST)
+	if (mbuf->ol_flags & RTE_MBUF_F_TX_IEEE1588_TMST)
 		AXGMAC_SET_BITS_LE(desc->desc2, TX_NORMAL_DESC2, TTSE, 1);
 	rte_wmb();
 	/* Mark it as First and Last Descriptor */
@@ -738,16 +803,34 @@ static int axgbe_xmit_hw(struct axgbe_tx_queue *txq,
 	/* Mark it as a NORMAL descriptor */
 	AXGMAC_SET_BITS_LE(desc->desc3, TX_NORMAL_DESC3, CTXT, 0);
 	/* configure h/w Offload */
-	mask = mbuf->ol_flags & PKT_TX_L4_MASK;
-	if ((mask == PKT_TX_TCP_CKSUM) || (mask == PKT_TX_UDP_CKSUM))
+	mask = mbuf->ol_flags & RTE_MBUF_F_TX_L4_MASK;
+	if (mask == RTE_MBUF_F_TX_TCP_CKSUM || mask == RTE_MBUF_F_TX_UDP_CKSUM)
 		AXGMAC_SET_BITS_LE(desc->desc3, TX_NORMAL_DESC3, CIC, 0x3);
-	else if (mbuf->ol_flags & PKT_TX_IP_CKSUM)
+	else if (mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM)
 		AXGMAC_SET_BITS_LE(desc->desc3, TX_NORMAL_DESC3, CIC, 0x1);
+	rte_wmb();
+
+	if (mbuf->ol_flags & (RTE_MBUF_F_TX_VLAN | RTE_MBUF_F_TX_QINQ)) {
+		/* Mark it as a CONTEXT descriptor */
+		AXGMAC_SET_BITS_LE(desc->desc3, TX_CONTEXT_DESC3,
+				  CTXT, 1);
+		/* Set the VLAN tag */
+		AXGMAC_SET_BITS_LE(desc->desc3, TX_CONTEXT_DESC3,
+				  VT, mbuf->vlan_tci);
+		/* Indicate this descriptor contains the VLAN tag */
+		AXGMAC_SET_BITS_LE(desc->desc3, TX_CONTEXT_DESC3,
+					  VLTV, 1);
+		AXGMAC_SET_BITS_LE(desc->desc2, TX_NORMAL_DESC2, VTIR,
+				TX_NORMAL_DESC2_VLAN_INSERT);
+	} else {
+		AXGMAC_SET_BITS_LE(desc->desc2, TX_NORMAL_DESC2, VTIR, 0x0);
+	}
 	rte_wmb();
 
 	/* Set OWN bit */
 	AXGMAC_SET_BITS_LE(desc->desc3, TX_NORMAL_DESC3, OWN, 1);
 	rte_wmb();
+
 
 	/* Save mbuf */
 	txq->sw_ring[idx] = mbuf;

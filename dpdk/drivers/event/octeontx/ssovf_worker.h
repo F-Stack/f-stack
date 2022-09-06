@@ -2,6 +2,11 @@
  * Copyright(c) 2017 Cavium, Inc
  */
 
+#include <arpa/inet.h>
+
+#ifndef _SSOVF_WORKER_H_
+#define _SSOVF_WORKER_H_
+
 #include <rte_common.h>
 #include <rte_branch_prediction.h>
 
@@ -9,6 +14,7 @@
 
 #include "ssovf_evdev.h"
 #include "octeontx_rxtx.h"
+#include "otx_cryptodev_ops.h"
 
 /* Alignment */
 #define OCCTX_ALIGN  128
@@ -77,7 +83,7 @@ ssovf_octeontx_wqe_xtract_mseg(octtx_wqe_t *wqe,
 
 		mbuf->data_off = sizeof(octtx_pki_buflink_t);
 
-		__mempool_check_cookies(mbuf->pool, (void **)&mbuf, 1, 1);
+		RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf, 1, 1);
 		if (nb_segs == 1)
 			mbuf->data_len = bytes_left;
 		else
@@ -120,7 +126,7 @@ ssovf_octeontx_wqe_to_pkt(uint64_t work, uint16_t port_info,
 
 	if (!!(flag & OCCTX_RX_VLAN_FLTR_F)) {
 		if (likely(wqe->s.w2.vv)) {
-			mbuf->ol_flags |= PKT_RX_VLAN;
+			mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN;
 			mbuf->vlan_tci =
 				ntohs(*((uint16_t *)((char *)mbuf->buf_addr +
 					mbuf->data_off + wqe->s.w4.vlptr + 2)));
@@ -172,14 +178,23 @@ ssows_get_work(struct ssows *ws, struct rte_event *ev, const uint16_t flag)
 	sched_type_queue = sched_type_queue << 38;
 	ev->event = sched_type_queue | (get_work0 & 0xffffffff);
 
-	if (get_work1 && ev->event_type == RTE_EVENT_TYPE_ETHDEV) {
-		ev->mbuf = ssovf_octeontx_wqe_to_pkt(get_work1,
-				(ev->event >> 20) & 0x7F, flag, ws->lookup_mem);
-	} else if (unlikely((get_work0 & 0xFFFFFFFF) == 0xFFFFFFFF)) {
-		ssovf_octeontx_wqe_free(get_work1);
-		return 0;
-	} else {
-		ev->u64 = get_work1;
+	if (get_work1) {
+		if (ev->event_type == RTE_EVENT_TYPE_ETHDEV) {
+			uint16_t port = (ev->event >> 20) & 0x7F;
+
+			ev->sub_event_type = 0;
+			ev->mbuf = ssovf_octeontx_wqe_to_pkt(
+				get_work1, port, flag, ws->lookup_mem);
+		} else if (ev->event_type == RTE_EVENT_TYPE_CRYPTODEV) {
+			get_work1 = otx_crypto_adapter_dequeue(get_work1);
+			ev->u64 = get_work1;
+		} else {
+			if (unlikely((get_work0 & 0xFFFFFFFF) == 0xFFFFFFFF)) {
+				ssovf_octeontx_wqe_free(get_work1);
+				return 0;
+			}
+			ev->u64 = get_work1;
+		}
 	}
 
 	return !!get_work1;
@@ -252,3 +267,11 @@ ssows_swtag_wait(struct ssows *ws)
 	while (ssovf_read64(ws->base + SSOW_VHWS_SWTP))
 	;
 }
+
+static __rte_always_inline void
+ssows_head_wait(struct ssows *ws)
+{
+	while (!(ssovf_read64(ws->base + SSOW_VHWS_TAG) & (1ULL << 35)))
+		;
+}
+#endif /* _SSOVF_WORKER_H_ */

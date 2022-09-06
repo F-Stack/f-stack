@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -70,6 +70,14 @@ extern uint32_t sfc_logtype_driver;
 		const struct sfc_adapter *_sa = (sa);			\
 									\
 		SFC_LOG(_sa->priv.shared, RTE_LOG_INFO,			\
+			_sa->priv.logtype_main, __VA_ARGS__);		\
+	} while (0)
+
+#define sfc_dbg(sa, ...) \
+	do {								\
+		const struct sfc_adapter *_sa = (sa);			\
+									\
+		SFC_LOG(_sa->priv.shared, RTE_LOG_DEBUG,		\
 			_sa->priv.logtype_main, __VA_ARGS__);		\
 	} while (0)
 

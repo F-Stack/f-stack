@@ -20,12 +20,14 @@ static uint32_t
 l2fwd_event_device_setup_generic(struct l2fwd_resources *rsrc)
 {
 	struct l2fwd_event_resources *evt_rsrc = rsrc->evt_rsrc;
+	/* Configures event device as per below configuration. 8< */
 	struct rte_event_dev_config event_d_conf = {
 		.nb_events_limit  = 4096,
 		.nb_event_queue_flows = 1024,
 		.nb_event_port_dequeue_depth = 128,
 		.nb_event_port_enqueue_depth = 128
 	};
+	/* >8 End of configuration event device as per below configuration. */
 	struct rte_event_dev_info dev_info;
 	const uint8_t event_d_id = 0; /* Always use first event device only */
 	uint32_t event_queue_cfg = 0;
@@ -97,6 +99,7 @@ l2fwd_event_port_setup_generic(struct l2fwd_resources *rsrc)
 {
 	struct l2fwd_event_resources *evt_rsrc = rsrc->evt_rsrc;
 	uint8_t event_d_id = evt_rsrc->event_d_id;
+	/* Event port initialization. 8< */
 	struct rte_event_port_conf event_p_conf = {
 		.dequeue_depth = 32,
 		.enqueue_depth = 32,
@@ -149,6 +152,7 @@ l2fwd_event_port_setup_generic(struct l2fwd_resources *rsrc)
 			rte_panic("Error in linking event port %d to queues\n",
 				  event_p_id);
 		evt_rsrc->evp.event_p_id[event_p_id] = event_p_id;
+		/* >8 End of event port initialization. */
 	}
 	/* init spinlock */
 	rte_spinlock_init(&evt_rsrc->evp.lock);
@@ -162,6 +166,7 @@ l2fwd_event_queue_setup_generic(struct l2fwd_resources *rsrc,
 {
 	struct l2fwd_event_resources *evt_rsrc = rsrc->evt_rsrc;
 	uint8_t event_d_id = evt_rsrc->event_d_id;
+	/* Event queue initialization. 8< */
 	struct rte_event_queue_conf event_q_conf = {
 		.nb_atomic_flows = 1024,
 		.nb_atomic_order_sequences = 1024,
@@ -181,6 +186,7 @@ l2fwd_event_queue_setup_generic(struct l2fwd_resources *rsrc,
 	ret = rte_event_queue_default_conf_get(event_d_id, 0, &def_q_conf);
 	if (ret < 0)
 		rte_panic("Error to get default config of event queue\n");
+	/* >8 End of event queue initialization. */
 
 	if (def_q_conf.nb_atomic_flows < event_q_conf.nb_atomic_flows)
 		event_q_conf.nb_atomic_flows = def_q_conf.nb_atomic_flows;
@@ -239,6 +245,27 @@ l2fwd_rx_tx_adapter_setup_generic(struct l2fwd_resources *rsrc)
 		if ((rsrc->enabled_port_mask & (1 << port_id)) == 0)
 			continue;
 		eth_q_conf.ev.queue_id = evt_rsrc->evq.event_q_id[i];
+		if (rsrc->evt_vec.enabled) {
+			uint32_t cap;
+
+			if (rte_event_eth_rx_adapter_caps_get(event_d_id,
+							      port_id, &cap))
+				rte_panic(
+					"Failed to get event rx adapter capability");
+
+			if (cap & RTE_EVENT_ETH_RX_ADAPTER_CAP_EVENT_VECTOR) {
+				eth_q_conf.vector_sz = rsrc->evt_vec.size;
+				eth_q_conf.vector_timeout_ns =
+					rsrc->evt_vec.timeout_ns;
+				eth_q_conf.vector_mp = rsrc->evt_vec_pool;
+				eth_q_conf.rx_queue_flags |=
+				RTE_EVENT_ETH_RX_ADAPTER_QUEUE_EVENT_VECTOR;
+			} else {
+				rte_panic(
+					"Rx adapter doesn't support event vector");
+			}
+		}
+
 		ret = rte_event_eth_rx_adapter_queue_add(rx_adptr_id, port_id,
 							 -1, &eth_q_conf);
 		if (ret)
@@ -294,6 +321,7 @@ l2fwd_rx_tx_adapter_setup_generic(struct l2fwd_resources *rsrc)
 	rte_service_set_runstate_mapped_check(service_id, 0);
 	evt_rsrc->tx_adptr.service_id = service_id;
 
+	/* Extra port created. 8< */
 	ret = rte_event_eth_tx_adapter_event_port_get(tx_adptr_id, &tx_port_id);
 	if (ret)
 		rte_panic("Failed to get Tx adapter port id: %d\n", ret);
@@ -305,6 +333,7 @@ l2fwd_rx_tx_adapter_setup_generic(struct l2fwd_resources *rsrc)
 	if (ret != 1)
 		rte_panic("Unable to link Tx adapter port to Tx queue:err=%d\n",
 			 ret);
+	/* >8 End of extra port created. */
 
 	ret = rte_event_eth_tx_adapter_start(tx_adptr_id);
 	if (ret)

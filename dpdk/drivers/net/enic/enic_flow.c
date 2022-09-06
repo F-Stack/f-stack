@@ -5,7 +5,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <rte_log.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_flow_driver.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -656,14 +656,14 @@ enic_copy_item_eth_v2(struct copy_item_args *arg)
 	if (!mask)
 		mask = &rte_flow_item_eth_mask;
 
-	memcpy(enic_spec.d_addr.addr_bytes, spec->dst.addr_bytes,
+	memcpy(enic_spec.dst_addr.addr_bytes, spec->dst.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
-	memcpy(enic_spec.s_addr.addr_bytes, spec->src.addr_bytes,
+	memcpy(enic_spec.src_addr.addr_bytes, spec->src.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
 
-	memcpy(enic_mask.d_addr.addr_bytes, mask->dst.addr_bytes,
+	memcpy(enic_mask.dst_addr.addr_bytes, mask->dst.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
-	memcpy(enic_mask.s_addr.addr_bytes, mask->src.addr_bytes,
+	memcpy(enic_mask.src_addr.addr_bytes, mask->src.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
 	enic_spec.ether_type = spec->type;
 	enic_mask.ether_type = mask->type;
@@ -1208,7 +1208,8 @@ enic_copy_action_v2(struct enic *enic,
 			const struct rte_flow_action_mark *mark =
 				(const struct rte_flow_action_mark *)
 				actions->conf;
-
+			if (enic->use_noscatter_vec_rx_handler)
+				return ENOTSUP;
 			if (overlap & MARK)
 				return ENOTSUP;
 			overlap |= MARK;
@@ -1228,6 +1229,8 @@ enic_copy_action_v2(struct enic *enic,
 			break;
 		}
 		case RTE_FLOW_ACTION_TYPE_FLAG: {
+			if (enic->use_noscatter_vec_rx_handler)
+				return ENOTSUP;
 			if (overlap & MARK)
 				return ENOTSUP;
 			overlap |= MARK;

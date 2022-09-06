@@ -5,7 +5,6 @@
 #include "dlb2_user.h"
 
 #include "dlb2_hw_types.h"
-#include "dlb2_mbox.h"
 #include "dlb2_osdep.h"
 #include "dlb2_osdep_bitmap.h"
 #include "dlb2_osdep_types.h"
@@ -33,6 +32,17 @@
 #define DLB2_FUNC_LIST_FOR_SAFE(head, ptr, ptr_tmp, it, it_tmp) \
 	DLB2_LIST_FOR_EACH_SAFE((head), ptr, ptr_tmp, func_list, it, it_tmp)
 
+/*
+ * The PF driver cannot assume that a register write will affect subsequent HCW
+ * writes. To ensure a write completes, the driver must read back a CSR. This
+ * function only need be called for configuration that can occur after the
+ * domain has started; prior to starting, applications can't send HCWs.
+ */
+static inline void dlb2_flush_csr(struct dlb2_hw *hw)
+{
+	DLB2_CSR_RD(hw, DLB2_SYS_TOTAL_VAS(hw->ver));
+}
+
 static void dlb2_init_domain_rsrc_lists(struct dlb2_hw_domain *domain)
 {
 	int i;
@@ -51,7 +61,6 @@ static void dlb2_init_domain_rsrc_lists(struct dlb2_hw_domain *domain)
 static void dlb2_init_fn_rsrc_lists(struct dlb2_function_resources *rsrc)
 {
 	int i;
-
 	dlb2_list_init_head(&rsrc->avail_domains);
 	dlb2_list_init_head(&rsrc->used_domains);
 	dlb2_list_init_head(&rsrc->avail_ldb_queues);
@@ -61,17 +70,219 @@ static void dlb2_init_fn_rsrc_lists(struct dlb2_function_resources *rsrc)
 		dlb2_list_init_head(&rsrc->avail_ldb_ports[i]);
 }
 
-void dlb2_hw_enable_sparse_dir_cq_mode(struct dlb2_hw *hw)
+/**
+ * dlb2_resource_free() - free device state memory
+ * @hw: dlb2_hw handle for a particular device.
+ *
+ * This function frees software state pointed to by dlb2_hw. This function
+ * should be called when resetting the device or unloading the driver.
+ */
+void dlb2_resource_free(struct dlb2_hw *hw)
 {
-	union dlb2_chp_cfg_chp_csr_ctrl r0;
+	int i;
 
-	r0.val = DLB2_CSR_RD(hw, DLB2_CHP_CFG_CHP_CSR_CTRL);
+	if (hw->pf.avail_hist_list_entries)
+		dlb2_bitmap_free(hw->pf.avail_hist_list_entries);
 
-	r0.field.cfg_64bytes_qe_dir_cq_mode = 1;
-
-	DLB2_CSR_WR(hw, DLB2_CHP_CFG_CHP_CSR_CTRL, r0.val);
+	for (i = 0; i < DLB2_MAX_NUM_VDEVS; i++) {
+		if (hw->vdev[i].avail_hist_list_entries)
+			dlb2_bitmap_free(hw->vdev[i].avail_hist_list_entries);
+	}
 }
 
+/**
+ * dlb2_resource_init() - initialize the device
+ * @hw: pointer to struct dlb2_hw.
+ * @ver: device version.
+ *
+ * This function initializes the device's software state (pointed to by the hw
+ * argument) and programs global scheduling QoS registers. This function should
+ * be called during driver initialization, and the dlb2_hw structure should
+ * be zero-initialized before calling the function.
+ *
+ * The dlb2_hw struct must be unique per DLB 2.0 device and persist until the
+ * device is reset.
+ *
+ * Return:
+ * Returns 0 upon success, <0 otherwise.
+ */
+int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
+{
+	struct dlb2_list_entry *list;
+	unsigned int i;
+	int ret;
+
+	/*
+	 * For optimal load-balancing, ports that map to one or more QIDs in
+	 * common should not be in numerical sequence. The port->QID mapping is
+	 * application dependent, but the driver interleaves port IDs as much
+	 * as possible to reduce the likelihood of sequential ports mapping to
+	 * the same QID(s). This initial allocation of port IDs maximizes the
+	 * average distance between an ID and its immediate neighbors (i.e.
+	 * the distance from 1 to 0 and to 2, the distance from 2 to 1 and to
+	 * 3, etc.).
+	 */
+	const u8 init_ldb_port_allocation[DLB2_MAX_NUM_LDB_PORTS] = {
+		0,  7,  14,  5, 12,  3, 10,  1,  8, 15,  6, 13,  4, 11,  2,  9,
+		16, 23, 30, 21, 28, 19, 26, 17, 24, 31, 22, 29, 20, 27, 18, 25,
+		32, 39, 46, 37, 44, 35, 42, 33, 40, 47, 38, 45, 36, 43, 34, 41,
+		48, 55, 62, 53, 60, 51, 58, 49, 56, 63, 54, 61, 52, 59, 50, 57,
+	};
+
+	hw->ver = ver;
+
+	dlb2_init_fn_rsrc_lists(&hw->pf);
+
+	for (i = 0; i < DLB2_MAX_NUM_VDEVS; i++)
+		dlb2_init_fn_rsrc_lists(&hw->vdev[i]);
+
+	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
+		dlb2_init_domain_rsrc_lists(&hw->domains[i]);
+		hw->domains[i].parent_func = &hw->pf;
+	}
+
+	/* Give all resources to the PF driver */
+	hw->pf.num_avail_domains = DLB2_MAX_NUM_DOMAINS;
+	for (i = 0; i < hw->pf.num_avail_domains; i++) {
+		list = &hw->domains[i].func_list;
+
+		dlb2_list_add(&hw->pf.avail_domains, list);
+	}
+
+	hw->pf.num_avail_ldb_queues = DLB2_MAX_NUM_LDB_QUEUES;
+	for (i = 0; i < hw->pf.num_avail_ldb_queues; i++) {
+		list = &hw->rsrcs.ldb_queues[i].func_list;
+
+		dlb2_list_add(&hw->pf.avail_ldb_queues, list);
+	}
+
+	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
+		hw->pf.num_avail_ldb_ports[i] =
+			DLB2_MAX_NUM_LDB_PORTS / DLB2_NUM_COS_DOMAINS;
+
+	for (i = 0; i < DLB2_MAX_NUM_LDB_PORTS; i++) {
+		int cos_id = i >> DLB2_NUM_COS_DOMAINS;
+		struct dlb2_ldb_port *port;
+
+		port = &hw->rsrcs.ldb_ports[init_ldb_port_allocation[i]];
+
+		dlb2_list_add(&hw->pf.avail_ldb_ports[cos_id],
+			      &port->func_list);
+	}
+
+	hw->pf.num_avail_dir_pq_pairs = DLB2_MAX_NUM_DIR_PORTS(hw->ver);
+	for (i = 0; i < hw->pf.num_avail_dir_pq_pairs; i++) {
+		list = &hw->rsrcs.dir_pq_pairs[i].func_list;
+
+		dlb2_list_add(&hw->pf.avail_dir_pq_pairs, list);
+	}
+
+	if (hw->ver == DLB2_HW_V2) {
+		hw->pf.num_avail_qed_entries = DLB2_MAX_NUM_LDB_CREDITS;
+		hw->pf.num_avail_dqed_entries =
+			DLB2_MAX_NUM_DIR_CREDITS(hw->ver);
+	} else {
+		hw->pf.num_avail_entries = DLB2_MAX_NUM_CREDITS(hw->ver);
+	}
+
+	hw->pf.num_avail_aqed_entries = DLB2_MAX_NUM_AQED_ENTRIES;
+
+	ret = dlb2_bitmap_alloc(&hw->pf.avail_hist_list_entries,
+				DLB2_MAX_NUM_HIST_LIST_ENTRIES);
+	if (ret)
+		goto unwind;
+
+	ret = dlb2_bitmap_fill(hw->pf.avail_hist_list_entries);
+	if (ret)
+		goto unwind;
+
+	for (i = 0; i < DLB2_MAX_NUM_VDEVS; i++) {
+		ret = dlb2_bitmap_alloc(&hw->vdev[i].avail_hist_list_entries,
+					DLB2_MAX_NUM_HIST_LIST_ENTRIES);
+		if (ret)
+			goto unwind;
+
+		ret = dlb2_bitmap_zero(hw->vdev[i].avail_hist_list_entries);
+		if (ret)
+			goto unwind;
+	}
+
+	/* Initialize the hardware resource IDs */
+	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
+		hw->domains[i].id.phys_id = i;
+		hw->domains[i].id.vdev_owned = false;
+	}
+
+	for (i = 0; i < DLB2_MAX_NUM_LDB_QUEUES; i++) {
+		hw->rsrcs.ldb_queues[i].id.phys_id = i;
+		hw->rsrcs.ldb_queues[i].id.vdev_owned = false;
+	}
+
+	for (i = 0; i < DLB2_MAX_NUM_LDB_PORTS; i++) {
+		hw->rsrcs.ldb_ports[i].id.phys_id = i;
+		hw->rsrcs.ldb_ports[i].id.vdev_owned = false;
+	}
+
+	for (i = 0; i < DLB2_MAX_NUM_DIR_PORTS(hw->ver); i++) {
+		hw->rsrcs.dir_pq_pairs[i].id.phys_id = i;
+		hw->rsrcs.dir_pq_pairs[i].id.vdev_owned = false;
+	}
+
+	for (i = 0; i < DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS; i++) {
+		hw->rsrcs.sn_groups[i].id = i;
+		/* Default mode (0) is 64 sequence numbers per queue */
+		hw->rsrcs.sn_groups[i].mode = 0;
+		hw->rsrcs.sn_groups[i].sequence_numbers_per_queue = 64;
+		hw->rsrcs.sn_groups[i].slot_use_bitmap = 0;
+	}
+
+	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
+		hw->cos_reservation[i] = 100 / DLB2_NUM_COS_DOMAINS;
+
+	return 0;
+
+unwind:
+	dlb2_resource_free(hw);
+
+	return ret;
+}
+
+/**
+ * dlb2_clr_pmcsr_disable() - power on bulk of DLB 2.0 logic
+ * @hw: dlb2_hw handle for a particular device.
+ * @ver: device version.
+ *
+ * Clearing the PMCSR must be done at initialization to make the device fully
+ * operational.
+ */
+void dlb2_clr_pmcsr_disable(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
+{
+	u32 pmcsr_dis;
+
+	pmcsr_dis = DLB2_CSR_RD(hw, DLB2_CM_CFG_PM_PMCSR_DISABLE(ver));
+
+	DLB2_BITS_CLR(pmcsr_dis, DLB2_CM_CFG_PM_PMCSR_DISABLE_DISABLE);
+
+	DLB2_CSR_WR(hw, DLB2_CM_CFG_PM_PMCSR_DISABLE(ver), pmcsr_dis);
+}
+
+/**
+ * dlb2_hw_get_num_resources() - query the PCI function's available resources
+ * @hw: dlb2_hw handle for a particular device.
+ * @arg: pointer to resource counts.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
+ *
+ * This function returns the number of available resources for the PF or for a
+ * VF.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, -EINVAL if vdev_req is true and vdev_id is
+ * invalid.
+ */
 int dlb2_hw_get_num_resources(struct dlb2_hw *hw,
 			      struct dlb2_get_num_resources_args *arg,
 			      bool vdev_req,
@@ -113,200 +324,61 @@ int dlb2_hw_get_num_resources(struct dlb2_hw *hw,
 	arg->max_contiguous_hist_list_entries =
 		dlb2_bitmap_longest_set_range(map);
 
-	arg->num_ldb_credits = rsrcs->num_avail_qed_entries;
-
-	arg->num_dir_credits = rsrcs->num_avail_dqed_entries;
-
+	if (hw->ver == DLB2_HW_V2) {
+		arg->num_ldb_credits = rsrcs->num_avail_qed_entries;
+		arg->num_dir_credits = rsrcs->num_avail_dqed_entries;
+	} else {
+		arg->num_credits = rsrcs->num_avail_entries;
+	}
 	return 0;
 }
 
-void dlb2_hw_enable_sparse_ldb_cq_mode(struct dlb2_hw *hw)
+static void dlb2_configure_domain_credits_v2_5(struct dlb2_hw *hw,
+					       struct dlb2_hw_domain *domain)
 {
-	union dlb2_chp_cfg_chp_csr_ctrl r0;
+	u32 reg = 0;
 
-	r0.val = DLB2_CSR_RD(hw, DLB2_CHP_CFG_CHP_CSR_CTRL);
-
-	r0.field.cfg_64bytes_qe_ldb_cq_mode = 1;
-
-	DLB2_CSR_WR(hw, DLB2_CHP_CFG_CHP_CSR_CTRL, r0.val);
+	DLB2_BITS_SET(reg, domain->num_credits, DLB2_CHP_CFG_LDB_VAS_CRD_COUNT);
+	DLB2_CSR_WR(hw, DLB2_CHP_CFG_VAS_CRD(domain->id.phys_id), reg);
 }
 
-void dlb2_resource_free(struct dlb2_hw *hw)
+static void dlb2_configure_domain_credits_v2(struct dlb2_hw *hw,
+					     struct dlb2_hw_domain *domain)
 {
-	int i;
+	u32 reg = 0;
 
-	if (hw->pf.avail_hist_list_entries)
-		dlb2_bitmap_free(hw->pf.avail_hist_list_entries);
+	DLB2_BITS_SET(reg, domain->num_ldb_credits,
+		      DLB2_CHP_CFG_LDB_VAS_CRD_COUNT);
+	DLB2_CSR_WR(hw, DLB2_CHP_CFG_LDB_VAS_CRD(domain->id.phys_id), reg);
 
-	for (i = 0; i < DLB2_MAX_NUM_VDEVS; i++) {
-		if (hw->vdev[i].avail_hist_list_entries)
-			dlb2_bitmap_free(hw->vdev[i].avail_hist_list_entries);
-	}
-}
-
-int dlb2_resource_init(struct dlb2_hw *hw)
-{
-	struct dlb2_list_entry *list;
-	unsigned int i;
-	int ret;
-
-	/*
-	 * For optimal load-balancing, ports that map to one or more QIDs in
-	 * common should not be in numerical sequence. This is application
-	 * dependent, but the driver interleaves port IDs as much as possible
-	 * to reduce the likelihood of this. This initial allocation maximizes
-	 * the average distance between an ID and its immediate neighbors (i.e.
-	 * the distance from 1 to 0 and to 2, the distance from 2 to 1 and to
-	 * 3, etc.).
-	 */
-	u8 init_ldb_port_allocation[DLB2_MAX_NUM_LDB_PORTS] = {
-		0,  7,  14,  5, 12,  3, 10,  1,  8, 15,  6, 13,  4, 11,  2,  9,
-		16, 23, 30, 21, 28, 19, 26, 17, 24, 31, 22, 29, 20, 27, 18, 25,
-		32, 39, 46, 37, 44, 35, 42, 33, 40, 47, 38, 45, 36, 43, 34, 41,
-		48, 55, 62, 53, 60, 51, 58, 49, 56, 63, 54, 61, 52, 59, 50, 57,
-	};
-
-	/* Zero-out resource tracking data structures */
-	memset(&hw->rsrcs, 0, sizeof(hw->rsrcs));
-	memset(&hw->pf, 0, sizeof(hw->pf));
-
-	dlb2_init_fn_rsrc_lists(&hw->pf);
-
-	for (i = 0; i < DLB2_MAX_NUM_VDEVS; i++) {
-		memset(&hw->vdev[i], 0, sizeof(hw->vdev[i]));
-		dlb2_init_fn_rsrc_lists(&hw->vdev[i]);
-	}
-
-	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
-		memset(&hw->domains[i], 0, sizeof(hw->domains[i]));
-		dlb2_init_domain_rsrc_lists(&hw->domains[i]);
-		hw->domains[i].parent_func = &hw->pf;
-	}
-
-	/* Give all resources to the PF driver */
-	hw->pf.num_avail_domains = DLB2_MAX_NUM_DOMAINS;
-	for (i = 0; i < hw->pf.num_avail_domains; i++) {
-		list = &hw->domains[i].func_list;
-
-		dlb2_list_add(&hw->pf.avail_domains, list);
-	}
-
-	hw->pf.num_avail_ldb_queues = DLB2_MAX_NUM_LDB_QUEUES;
-	for (i = 0; i < hw->pf.num_avail_ldb_queues; i++) {
-		list = &hw->rsrcs.ldb_queues[i].func_list;
-
-		dlb2_list_add(&hw->pf.avail_ldb_queues, list);
-	}
-
-	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
-		hw->pf.num_avail_ldb_ports[i] =
-			DLB2_MAX_NUM_LDB_PORTS / DLB2_NUM_COS_DOMAINS;
-
-	for (i = 0; i < DLB2_MAX_NUM_LDB_PORTS; i++) {
-		int cos_id = i >> DLB2_NUM_COS_DOMAINS;
-		struct dlb2_ldb_port *port;
-
-		port = &hw->rsrcs.ldb_ports[init_ldb_port_allocation[i]];
-
-		dlb2_list_add(&hw->pf.avail_ldb_ports[cos_id],
-			      &port->func_list);
-	}
-
-	hw->pf.num_avail_dir_pq_pairs = DLB2_MAX_NUM_DIR_PORTS;
-	for (i = 0; i < hw->pf.num_avail_dir_pq_pairs; i++) {
-		list = &hw->rsrcs.dir_pq_pairs[i].func_list;
-
-		dlb2_list_add(&hw->pf.avail_dir_pq_pairs, list);
-	}
-
-	hw->pf.num_avail_qed_entries = DLB2_MAX_NUM_LDB_CREDITS;
-	hw->pf.num_avail_dqed_entries = DLB2_MAX_NUM_DIR_CREDITS;
-	hw->pf.num_avail_aqed_entries = DLB2_MAX_NUM_AQED_ENTRIES;
-
-	ret = dlb2_bitmap_alloc(&hw->pf.avail_hist_list_entries,
-				DLB2_MAX_NUM_HIST_LIST_ENTRIES);
-	if (ret)
-		goto unwind;
-
-	ret = dlb2_bitmap_fill(hw->pf.avail_hist_list_entries);
-	if (ret)
-		goto unwind;
-
-	for (i = 0; i < DLB2_MAX_NUM_VDEVS; i++) {
-		ret = dlb2_bitmap_alloc(&hw->vdev[i].avail_hist_list_entries,
-					DLB2_MAX_NUM_HIST_LIST_ENTRIES);
-		if (ret)
-			goto unwind;
-
-		ret = dlb2_bitmap_zero(hw->vdev[i].avail_hist_list_entries);
-		if (ret)
-			goto unwind;
-	}
-
-	/* Initialize the hardware resource IDs */
-	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
-		hw->domains[i].id.phys_id = i;
-		hw->domains[i].id.vdev_owned = false;
-	}
-
-	for (i = 0; i < DLB2_MAX_NUM_LDB_QUEUES; i++) {
-		hw->rsrcs.ldb_queues[i].id.phys_id = i;
-		hw->rsrcs.ldb_queues[i].id.vdev_owned = false;
-	}
-
-	for (i = 0; i < DLB2_MAX_NUM_LDB_PORTS; i++) {
-		hw->rsrcs.ldb_ports[i].id.phys_id = i;
-		hw->rsrcs.ldb_ports[i].id.vdev_owned = false;
-	}
-
-	for (i = 0; i < DLB2_MAX_NUM_DIR_PORTS; i++) {
-		hw->rsrcs.dir_pq_pairs[i].id.phys_id = i;
-		hw->rsrcs.dir_pq_pairs[i].id.vdev_owned = false;
-	}
-
-	for (i = 0; i < DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS; i++) {
-		hw->rsrcs.sn_groups[i].id = i;
-		/* Default mode (0) is 64 sequence numbers per queue */
-		hw->rsrcs.sn_groups[i].mode = 0;
-		hw->rsrcs.sn_groups[i].sequence_numbers_per_queue = 64;
-		hw->rsrcs.sn_groups[i].slot_use_bitmap = 0;
-	}
-
-	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
-		hw->cos_reservation[i] = 100 / DLB2_NUM_COS_DOMAINS;
-
-	return 0;
-
-unwind:
-	dlb2_resource_free(hw);
-
-	return ret;
-}
-
-void dlb2_clr_pmcsr_disable(struct dlb2_hw *hw)
-{
-	union dlb2_cfg_mstr_cfg_pm_pmcsr_disable r0;
-
-	r0.val = DLB2_CSR_RD(hw, DLB2_CFG_MSTR_CFG_PM_PMCSR_DISABLE);
-
-	r0.field.disable = 0;
-
-	DLB2_CSR_WR(hw, DLB2_CFG_MSTR_CFG_PM_PMCSR_DISABLE, r0.val);
+	reg = 0;
+	DLB2_BITS_SET(reg, domain->num_dir_credits,
+		      DLB2_CHP_CFG_DIR_VAS_CRD_COUNT);
+	DLB2_CSR_WR(hw, DLB2_CHP_CFG_DIR_VAS_CRD(domain->id.phys_id), reg);
 }
 
 static void dlb2_configure_domain_credits(struct dlb2_hw *hw,
 					  struct dlb2_hw_domain *domain)
 {
-	union dlb2_chp_cfg_ldb_vas_crd r0 = { {0} };
-	union dlb2_chp_cfg_dir_vas_crd r1 = { {0} };
+	if (hw->ver == DLB2_HW_V2)
+		dlb2_configure_domain_credits_v2(hw, domain);
+	else
+		dlb2_configure_domain_credits_v2_5(hw, domain);
+}
 
-	r0.field.count = domain->num_ldb_credits;
+static int dlb2_attach_credits(struct dlb2_function_resources *rsrcs,
+			       struct dlb2_hw_domain *domain,
+			       u32 num_credits,
+			       struct dlb2_cmd_response *resp)
+{
+	if (rsrcs->num_avail_entries < num_credits) {
+		resp->status = DLB2_ST_CREDITS_UNAVAILABLE;
+		return -EINVAL;
+	}
 
-	DLB2_CSR_WR(hw, DLB2_CHP_CFG_LDB_VAS_CRD(domain->id.phys_id), r0.val);
-
-	r1.field.count = domain->num_dir_credits;
-
-	DLB2_CSR_WR(hw, DLB2_CHP_CFG_DIR_VAS_CRD(domain->id.phys_id), r1.val);
+	rsrcs->num_avail_entries -= num_credits;
+	domain->num_credits += num_credits;
+	return 0;
 }
 
 static struct dlb2_ldb_port *
@@ -318,6 +390,7 @@ dlb2_get_next_ldb_port(struct dlb2_hw *hw,
 	struct dlb2_list_entry *iter;
 	struct dlb2_ldb_port *port;
 	RTE_SET_USED(iter);
+
 	/*
 	 * To reduce the odds of consecutive load-balanced ports mapping to the
 	 * same queue(s), the driver attempts to allocate ports whose neighbors
@@ -443,6 +516,7 @@ static int __dlb2_attach_ldb_ports(struct dlb2_hw *hw,
 	return 0;
 }
 
+
 static int dlb2_attach_ldb_ports(struct dlb2_hw *hw,
 				 struct dlb2_function_resources *rsrcs,
 				 struct dlb2_hw_domain *domain,
@@ -489,7 +563,7 @@ static int dlb2_attach_ldb_ports(struct dlb2_hw *hw,
 						break;
 				}
 
-				if (ret < 0)
+				if (ret)
 					return ret;
 			}
 		}
@@ -508,7 +582,7 @@ static int dlb2_attach_ldb_ports(struct dlb2_hw *hw,
 				break;
 		}
 
-		if (ret < 0)
+		if (ret)
 			return ret;
 	}
 
@@ -582,6 +656,7 @@ static int dlb2_attach_dir_credits(struct dlb2_function_resources *rsrcs,
 	domain->num_dir_credits += num_credits;
 	return 0;
 }
+
 
 static int dlb2_attach_atomic_inflights(struct dlb2_function_resources *rsrcs,
 					struct dlb2_hw_domain *domain,
@@ -681,7 +756,7 @@ dlb2_domain_attach_resources(struct dlb2_hw *hw,
 				     domain,
 				     args->num_ldb_queues,
 				     resp);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	ret = dlb2_attach_ldb_ports(hw,
@@ -689,7 +764,7 @@ dlb2_domain_attach_resources(struct dlb2_hw *hw,
 				    domain,
 				    args,
 				    resp);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	ret = dlb2_attach_dir_ports(hw,
@@ -697,35 +772,44 @@ dlb2_domain_attach_resources(struct dlb2_hw *hw,
 				    domain,
 				    args->num_dir_ports,
 				    resp);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
-	ret = dlb2_attach_ldb_credits(rsrcs,
-				      domain,
-				      args->num_ldb_credits,
-				      resp);
-	if (ret < 0)
-		return ret;
+	if (hw->ver == DLB2_HW_V2) {
+		ret = dlb2_attach_ldb_credits(rsrcs,
+					      domain,
+					      args->num_ldb_credits,
+					      resp);
+		if (ret)
+			return ret;
 
-	ret = dlb2_attach_dir_credits(rsrcs,
-				      domain,
-				      args->num_dir_credits,
-				      resp);
-	if (ret < 0)
-		return ret;
+		ret = dlb2_attach_dir_credits(rsrcs,
+					      domain,
+					      args->num_dir_credits,
+					      resp);
+		if (ret)
+			return ret;
+	} else {  /* DLB 2.5 */
+		ret = dlb2_attach_credits(rsrcs,
+					  domain,
+					  args->num_credits,
+					  resp);
+		if (ret)
+			return ret;
+	}
 
 	ret = dlb2_attach_domain_hist_list_entries(rsrcs,
 						   domain,
 						   args->num_hist_list_entries,
 						   resp);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	ret = dlb2_attach_atomic_inflights(rsrcs,
 					   domain,
 					   args->num_atomic_inflights,
 					   resp);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	dlb2_configure_domain_credits(hw, domain);
@@ -742,11 +826,14 @@ dlb2_domain_attach_resources(struct dlb2_hw *hw,
 static int
 dlb2_verify_create_sched_dom_args(struct dlb2_function_resources *rsrcs,
 				  struct dlb2_create_sched_domain_args *args,
-				  struct dlb2_cmd_response *resp)
+				  struct dlb2_cmd_response *resp,
+				  struct dlb2_hw *hw,
+				  struct dlb2_hw_domain **out_domain)
 {
 	u32 num_avail_ldb_ports, req_ldb_ports;
 	struct dlb2_bitmap *avail_hl_entries;
 	unsigned int max_contig_hl_range;
+	struct dlb2_hw_domain *domain;
 	int i;
 
 	avail_hl_entries = rsrcs->avail_hist_list_entries;
@@ -766,6 +853,12 @@ dlb2_verify_create_sched_dom_args(struct dlb2_function_resources *rsrcs,
 	if (rsrcs->num_avail_domains < 1) {
 		resp->status = DLB2_ST_DOMAIN_UNAVAILABLE;
 		return -EINVAL;
+	}
+
+	domain = DLB2_FUNC_LIST_HEAD(rsrcs->avail_domains, typeof(*domain));
+	if (domain == NULL) {
+		resp->status = DLB2_ST_DOMAIN_UNAVAILABLE;
+		return -EFAULT;
 	}
 
 	if (rsrcs->num_avail_ldb_queues < args->num_ldb_queues) {
@@ -795,15 +888,20 @@ dlb2_verify_create_sched_dom_args(struct dlb2_function_resources *rsrcs,
 		resp->status = DLB2_ST_DIR_PORTS_UNAVAILABLE;
 		return -EINVAL;
 	}
-
-	if (rsrcs->num_avail_qed_entries < args->num_ldb_credits) {
-		resp->status = DLB2_ST_LDB_CREDITS_UNAVAILABLE;
-		return -EINVAL;
-	}
-
-	if (rsrcs->num_avail_dqed_entries < args->num_dir_credits) {
-		resp->status = DLB2_ST_DIR_CREDITS_UNAVAILABLE;
-		return -EINVAL;
+	if (hw->ver == DLB2_HW_V2_5) {
+		if (rsrcs->num_avail_entries < args->num_credits) {
+			resp->status = DLB2_ST_CREDITS_UNAVAILABLE;
+			return -EINVAL;
+		}
+	} else {
+		if (rsrcs->num_avail_qed_entries < args->num_ldb_credits) {
+			resp->status = DLB2_ST_LDB_CREDITS_UNAVAILABLE;
+			return -EINVAL;
+		}
+		if (rsrcs->num_avail_dqed_entries < args->num_dir_credits) {
+			resp->status = DLB2_ST_DIR_CREDITS_UNAVAILABLE;
+			return -EINVAL;
+		}
 	}
 
 	if (rsrcs->num_avail_aqed_entries < args->num_atomic_inflights) {
@@ -815,6 +913,8 @@ dlb2_verify_create_sched_dom_args(struct dlb2_function_resources *rsrcs,
 		resp->status = DLB2_ST_HIST_LIST_ENTRIES_UNAVAILABLE;
 		return -EINVAL;
 	}
+
+	*out_domain = domain;
 
 	return 0;
 }
@@ -837,9 +937,9 @@ dlb2_log_create_sched_domain_args(struct dlb2_hw *hw,
 	DLB2_HW_DBG(hw, "\tNumber of LDB ports (CoS 1):   %d\n",
 		    args->num_cos_ldb_ports[1]);
 	DLB2_HW_DBG(hw, "\tNumber of LDB ports (CoS 2):   %d\n",
-		    args->num_cos_ldb_ports[1]);
+		    args->num_cos_ldb_ports[2]);
 	DLB2_HW_DBG(hw, "\tNumber of LDB ports (CoS 3):   %d\n",
-		    args->num_cos_ldb_ports[1]);
+		    args->num_cos_ldb_ports[3]);
 	DLB2_HW_DBG(hw, "\tStrict CoS allocation:         %d\n",
 		    args->cos_strict);
 	DLB2_HW_DBG(hw, "\tNumber of DIR ports:           %d\n",
@@ -848,23 +948,43 @@ dlb2_log_create_sched_domain_args(struct dlb2_hw *hw,
 		    args->num_atomic_inflights);
 	DLB2_HW_DBG(hw, "\tNumber of hist list entries:   %d\n",
 		    args->num_hist_list_entries);
-	DLB2_HW_DBG(hw, "\tNumber of LDB credits:         %d\n",
-		    args->num_ldb_credits);
-	DLB2_HW_DBG(hw, "\tNumber of DIR credits:         %d\n",
-		    args->num_dir_credits);
+	if (hw->ver == DLB2_HW_V2) {
+		DLB2_HW_DBG(hw, "\tNumber of LDB credits:         %d\n",
+			    args->num_ldb_credits);
+		DLB2_HW_DBG(hw, "\tNumber of DIR credits:         %d\n",
+			    args->num_dir_credits);
+	} else {
+		DLB2_HW_DBG(hw, "\tNumber of credits:         %d\n",
+			    args->num_credits);
+	}
 }
 
 /**
- * dlb2_hw_create_sched_domain() - Allocate and initialize a DLB scheduling
- *	domain and its resources.
- * @hw:	Contains the current state of the DLB2 hardware.
- * @args: User-provided arguments.
- * @resp: Response to user.
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_hw_create_sched_domain() - create a scheduling domain
+ * @hw: dlb2_hw handle for a particular device.
+ * @args: scheduling domain creation arguments.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Return: returns < 0 on error, 0 otherwise. If the driver is unable to
- * satisfy a request, resp->status will be set accordingly.
+ * This function creates a scheduling domain containing the resources specified
+ * in args. The individual resources (queues, ports, credits) can be configured
+ * after creating a scheduling domain.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the domain ID.
+ *
+ * resp->id contains a virtual ID if vdev_req is true.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, or the requested domain name
+ *	    is already in use.
+ * EFAULT - Internal error (resp->status not set).
  */
 int dlb2_hw_create_sched_domain(struct dlb2_hw *hw,
 				struct dlb2_create_sched_domain_args *args,
@@ -884,29 +1004,14 @@ int dlb2_hw_create_sched_domain(struct dlb2_hw *hw,
 	 * Verify that hardware resources are available before attempting to
 	 * satisfy the request. This simplifies the error unwinding code.
 	 */
-	ret = dlb2_verify_create_sched_dom_args(rsrcs, args, resp);
+	ret = dlb2_verify_create_sched_dom_args(rsrcs, args, resp, hw, &domain);
 	if (ret)
 		return ret;
-
-	domain = DLB2_FUNC_LIST_HEAD(rsrcs->avail_domains, typeof(*domain));
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: no available domains\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	if (domain->configured) {
-		DLB2_HW_ERR(hw,
-			    "[%s()] Internal error: avail_domains contains configured domains.\n",
-			    __func__);
-		return -EFAULT;
-	}
 
 	dlb2_init_domain_rsrc_lists(domain);
 
 	ret = dlb2_domain_attach_resources(hw, rsrcs, domain, args, resp);
-	if (ret < 0) {
+	if (ret) {
 		DLB2_HW_ERR(hw,
 			    "[%s()] Internal error: failed to verify args.\n",
 			    __func__);
@@ -924,25 +1029,13 @@ int dlb2_hw_create_sched_domain(struct dlb2_hw *hw,
 	return 0;
 }
 
-/*
- * The PF driver cannot assume that a register write will affect subsequent HCW
- * writes. To ensure a write completes, the driver must read back a CSR. This
- * function only need be called for configuration that can occur after the
- * domain has started; prior to starting, applications can't send HCWs.
- */
-static inline void dlb2_flush_csr(struct dlb2_hw *hw)
-{
-	DLB2_CSR_RD(hw, DLB2_SYS_TOTAL_VAS);
-}
-
 static void dlb2_dir_port_cq_disable(struct dlb2_hw *hw,
 				     struct dlb2_dir_pq_pair *port)
 {
-	union dlb2_lsp_cq_dir_dsbl reg;
+	u32 reg = 0;
 
-	reg.field.disabled = 1;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ_DIR_DSBL(port->id.phys_id), reg.val);
+	DLB2_BIT_SET(reg, DLB2_LSP_CQ_DIR_DSBL_DISABLED);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ_DIR_DSBL(hw->ver, port->id.phys_id), reg);
 
 	dlb2_flush_csr(hw);
 }
@@ -950,20 +1043,22 @@ static void dlb2_dir_port_cq_disable(struct dlb2_hw *hw,
 static u32 dlb2_dir_cq_token_count(struct dlb2_hw *hw,
 				   struct dlb2_dir_pq_pair *port)
 {
-	union dlb2_lsp_cq_dir_tkn_cnt r0;
+	u32 cnt;
 
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ_DIR_TKN_CNT(port->id.phys_id));
+	cnt = DLB2_CSR_RD(hw,
+			  DLB2_LSP_CQ_DIR_TKN_CNT(hw->ver, port->id.phys_id));
 
 	/*
 	 * Account for the initial token count, which is used in order to
 	 * provide a CQ with depth less than 8.
 	 */
 
-	return r0.field.count - port->init_tkn_cnt;
+	return DLB2_BITS_GET(cnt, DLB2_LSP_CQ_DIR_TKN_CNT_COUNT) -
+	       port->init_tkn_cnt;
 }
 
 static int dlb2_drain_dir_cq(struct dlb2_hw *hw,
-			     struct dlb2_dir_pq_pair *port)
+			      struct dlb2_dir_pq_pair *port)
 {
 	unsigned int port_id = port->id.phys_id;
 	u32 cnt;
@@ -973,7 +1068,7 @@ static int dlb2_drain_dir_cq(struct dlb2_hw *hw,
 
 	if (cnt != 0) {
 		struct dlb2_hcw hcw_mem[8], *hcw;
-		void  *pp_addr;
+		void __iomem *pp_addr;
 
 		pp_addr = os_map_producer_port(hw, port_id, false);
 
@@ -995,17 +1090,15 @@ static int dlb2_drain_dir_cq(struct dlb2_hw *hw,
 		os_unmap_producer_port(hw, pp_addr);
 	}
 
-	return 0;
+	return cnt;
 }
 
 static void dlb2_dir_port_cq_enable(struct dlb2_hw *hw,
 				    struct dlb2_dir_pq_pair *port)
 {
-	union dlb2_lsp_cq_dir_dsbl reg;
+	u32 reg = 0;
 
-	reg.field.disabled = 0;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ_DIR_DSBL(port->id.phys_id), reg.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ_DIR_DSBL(hw->ver, port->id.phys_id), reg);
 
 	dlb2_flush_csr(hw);
 }
@@ -1016,7 +1109,7 @@ static int dlb2_domain_drain_dir_cqs(struct dlb2_hw *hw,
 {
 	struct dlb2_list_entry *iter;
 	struct dlb2_dir_pq_pair *port;
-	int ret;
+	int drain_cnt = 0;
 	RTE_SET_USED(iter);
 
 	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter) {
@@ -1030,26 +1123,24 @@ static int dlb2_domain_drain_dir_cqs(struct dlb2_hw *hw,
 		if (toggle_port)
 			dlb2_dir_port_cq_disable(hw, port);
 
-		ret = dlb2_drain_dir_cq(hw, port);
-		if (ret < 0)
-			return ret;
+		drain_cnt = dlb2_drain_dir_cq(hw, port);
 
 		if (toggle_port)
 			dlb2_dir_port_cq_enable(hw, port);
 	}
 
-	return 0;
+	return drain_cnt;
 }
 
 static u32 dlb2_dir_queue_depth(struct dlb2_hw *hw,
 				struct dlb2_dir_pq_pair *queue)
 {
-	union dlb2_lsp_qid_dir_enqueue_cnt r0;
+	u32 cnt;
 
-	r0.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_DIR_ENQUEUE_CNT(queue->id.phys_id));
+	cnt = DLB2_CSR_RD(hw, DLB2_LSP_QID_DIR_ENQUEUE_CNT(hw->ver,
+						      queue->id.phys_id));
 
-	return r0.field.count;
+	return DLB2_BITS_GET(cnt, DLB2_LSP_QID_DIR_ENQUEUE_CNT_COUNT);
 }
 
 static bool dlb2_dir_queue_is_empty(struct dlb2_hw *hw,
@@ -1072,23 +1163,30 @@ static bool dlb2_domain_dir_queues_empty(struct dlb2_hw *hw,
 
 	return true;
 }
-
 static int dlb2_domain_drain_dir_queues(struct dlb2_hw *hw,
 					struct dlb2_hw_domain *domain)
 {
-	int i, ret;
+	int i;
 
 	/* If the domain hasn't been started, there's no traffic to drain */
 	if (!domain->started)
 		return 0;
 
 	for (i = 0; i < DLB2_MAX_QID_EMPTY_CHECK_LOOPS; i++) {
-		ret = dlb2_domain_drain_dir_cqs(hw, domain, true);
-		if (ret < 0)
-			return ret;
+		int drain_cnt;
+
+		drain_cnt = dlb2_domain_drain_dir_cqs(hw, domain, false);
 
 		if (dlb2_domain_dir_queues_empty(hw, domain))
 			break;
+
+		/*
+		 * Allow time for DLB to schedule QEs before draining
+		 * the CQs again.
+		 */
+		if (!drain_cnt)
+			rte_delay_us(1);
+
 	}
 
 	if (i == DLB2_MAX_QID_EMPTY_CHECK_LOOPS) {
@@ -1102,9 +1200,7 @@ static int dlb2_domain_drain_dir_queues(struct dlb2_hw *hw,
 	 * Drain the CQs one more time. For the queues to go empty, they would
 	 * have scheduled one or more QEs.
 	 */
-	ret = dlb2_domain_drain_dir_cqs(hw, domain, true);
-	if (ret < 0)
-		return ret;
+	dlb2_domain_drain_dir_cqs(hw, domain, true);
 
 	return 0;
 }
@@ -1112,7 +1208,7 @@ static int dlb2_domain_drain_dir_queues(struct dlb2_hw *hw,
 static void dlb2_ldb_port_cq_enable(struct dlb2_hw *hw,
 				    struct dlb2_ldb_port *port)
 {
-	union dlb2_lsp_cq_ldb_dsbl reg;
+	u32 reg = 0;
 
 	/*
 	 * Don't re-enable the port if a removal is pending. The caller should
@@ -1122,9 +1218,7 @@ static void dlb2_ldb_port_cq_enable(struct dlb2_hw *hw,
 	if (port->num_pending_removals)
 		return;
 
-	reg.field.disabled = 0;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ_LDB_DSBL(port->id.phys_id), reg.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ_LDB_DSBL(hw->ver, port->id.phys_id), reg);
 
 	dlb2_flush_csr(hw);
 }
@@ -1132,11 +1226,10 @@ static void dlb2_ldb_port_cq_enable(struct dlb2_hw *hw,
 static void dlb2_ldb_port_cq_disable(struct dlb2_hw *hw,
 				     struct dlb2_ldb_port *port)
 {
-	union dlb2_lsp_cq_ldb_dsbl reg;
+	u32 reg = 0;
 
-	reg.field.disabled = 1;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ_LDB_DSBL(port->id.phys_id), reg.val);
+	DLB2_BIT_SET(reg, DLB2_LSP_CQ_LDB_DSBL_DISABLED);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ_LDB_DSBL(hw->ver, port->id.phys_id), reg);
 
 	dlb2_flush_csr(hw);
 }
@@ -1144,26 +1237,29 @@ static void dlb2_ldb_port_cq_disable(struct dlb2_hw *hw,
 static u32 dlb2_ldb_cq_inflight_count(struct dlb2_hw *hw,
 				      struct dlb2_ldb_port *port)
 {
-	union dlb2_lsp_cq_ldb_infl_cnt r0;
+	u32 cnt;
 
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ_LDB_INFL_CNT(port->id.phys_id));
+	cnt = DLB2_CSR_RD(hw,
+			  DLB2_LSP_CQ_LDB_INFL_CNT(hw->ver, port->id.phys_id));
 
-	return r0.field.count;
+	return DLB2_BITS_GET(cnt, DLB2_LSP_CQ_LDB_INFL_CNT_COUNT);
 }
 
 static u32 dlb2_ldb_cq_token_count(struct dlb2_hw *hw,
 				   struct dlb2_ldb_port *port)
 {
-	union dlb2_lsp_cq_ldb_tkn_cnt r0;
+	u32 cnt;
 
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ_LDB_TKN_CNT(port->id.phys_id));
+	cnt = DLB2_CSR_RD(hw,
+			  DLB2_LSP_CQ_LDB_TKN_CNT(hw->ver, port->id.phys_id));
 
 	/*
 	 * Account for the initial token count, which is used in order to
 	 * provide a CQ with depth less than 8.
 	 */
 
-	return r0.field.token_count - port->init_tkn_cnt;
+	return DLB2_BITS_GET(cnt, DLB2_LSP_CQ_LDB_TKN_CNT_TOKEN_COUNT) -
+		port->init_tkn_cnt;
 }
 
 static int dlb2_drain_ldb_cq(struct dlb2_hw *hw, struct dlb2_ldb_port *port)
@@ -1176,7 +1272,7 @@ static int dlb2_drain_ldb_cq(struct dlb2_hw *hw, struct dlb2_ldb_port *port)
 
 	if (infl_cnt || tkn_cnt) {
 		struct dlb2_hcw hcw_mem[8], *hcw;
-		void  *pp_addr;
+		void __iomem *pp_addr;
 
 		pp_addr = os_map_producer_port(hw, port->id.phys_id, true);
 
@@ -1207,16 +1303,17 @@ static int dlb2_drain_ldb_cq(struct dlb2_hw *hw, struct dlb2_ldb_port *port)
 		os_unmap_producer_port(hw, pp_addr);
 	}
 
-	return 0;
+	return tkn_cnt;
 }
 
 static int dlb2_domain_drain_ldb_cqs(struct dlb2_hw *hw,
-				     struct dlb2_hw_domain *domain,
-				     bool toggle_port)
+				      struct dlb2_hw_domain *domain,
+				      bool toggle_port)
 {
 	struct dlb2_list_entry *iter;
 	struct dlb2_ldb_port *port;
-	int ret, i;
+	int drain_cnt = 0;
+	int i;
 	RTE_SET_USED(iter);
 
 	/* If the domain hasn't been started, there's no traffic to drain */
@@ -1228,34 +1325,31 @@ static int dlb2_domain_drain_ldb_cqs(struct dlb2_hw *hw,
 			if (toggle_port)
 				dlb2_ldb_port_cq_disable(hw, port);
 
-			ret = dlb2_drain_ldb_cq(hw, port);
-			if (ret < 0)
-				return ret;
+			drain_cnt = dlb2_drain_ldb_cq(hw, port);
 
 			if (toggle_port)
 				dlb2_ldb_port_cq_enable(hw, port);
 		}
 	}
 
-	return 0;
+	return drain_cnt;
 }
 
 static u32 dlb2_ldb_queue_depth(struct dlb2_hw *hw,
 				struct dlb2_ldb_queue *queue)
 {
-	union dlb2_lsp_qid_aqed_active_cnt r0;
-	union dlb2_lsp_qid_atm_active r1;
-	union dlb2_lsp_qid_ldb_enqueue_cnt r2;
+	u32 aqed, ldb, atm;
 
-	r0.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_AQED_ACTIVE_CNT(queue->id.phys_id));
-	r1.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_ATM_ACTIVE(queue->id.phys_id));
+	aqed = DLB2_CSR_RD(hw, DLB2_LSP_QID_AQED_ACTIVE_CNT(hw->ver,
+						       queue->id.phys_id));
+	ldb = DLB2_CSR_RD(hw, DLB2_LSP_QID_LDB_ENQUEUE_CNT(hw->ver,
+						      queue->id.phys_id));
+	atm = DLB2_CSR_RD(hw,
+			  DLB2_LSP_QID_ATM_ACTIVE(hw->ver, queue->id.phys_id));
 
-	r2.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_LDB_ENQUEUE_CNT(queue->id.phys_id));
-
-	return r0.field.count + r1.field.count + r2.field.count;
+	return DLB2_BITS_GET(aqed, DLB2_LSP_QID_AQED_ACTIVE_CNT_COUNT)
+	       + DLB2_BITS_GET(ldb, DLB2_LSP_QID_LDB_ENQUEUE_CNT_COUNT)
+	       + DLB2_BITS_GET(atm, DLB2_LSP_QID_ATM_ACTIVE_COUNT);
 }
 
 static bool dlb2_ldb_queue_is_empty(struct dlb2_hw *hw,
@@ -1285,7 +1379,7 @@ static bool dlb2_domain_mapped_queues_empty(struct dlb2_hw *hw,
 static int dlb2_domain_drain_mapped_queues(struct dlb2_hw *hw,
 					   struct dlb2_hw_domain *domain)
 {
-	int i, ret;
+	int i;
 
 	/* If the domain hasn't been started, there's no traffic to drain */
 	if (!domain->started)
@@ -1299,12 +1393,19 @@ static int dlb2_domain_drain_mapped_queues(struct dlb2_hw *hw,
 	}
 
 	for (i = 0; i < DLB2_MAX_QID_EMPTY_CHECK_LOOPS; i++) {
-		ret = dlb2_domain_drain_ldb_cqs(hw, domain, true);
-		if (ret < 0)
-			return ret;
+		int drain_cnt;
+
+		drain_cnt = dlb2_domain_drain_ldb_cqs(hw, domain, false);
 
 		if (dlb2_domain_mapped_queues_empty(hw, domain))
 			break;
+
+		/*
+		 * Allow time for DLB to schedule QEs before draining
+		 * the CQs again.
+		 */
+		if (!drain_cnt)
+			rte_delay_us(1);
 	}
 
 	if (i == DLB2_MAX_QID_EMPTY_CHECK_LOOPS) {
@@ -1318,9 +1419,7 @@ static int dlb2_domain_drain_mapped_queues(struct dlb2_hw *hw,
 	 * Drain the CQs one more time. For the queues to go empty, they would
 	 * have scheduled one or more QEs.
 	 */
-	ret = dlb2_domain_drain_ldb_cqs(hw, domain, true);
-	if (ret < 0)
-		return ret;
+	dlb2_domain_drain_ldb_cqs(hw, domain, true);
 
 	return 0;
 }
@@ -1365,14 +1464,16 @@ dlb2_get_ldb_queue_from_id(struct dlb2_hw *hw,
 		return &hw->rsrcs.ldb_queues[id];
 
 	DLB2_FUNC_LIST_FOR(rsrcs->used_domains, domain, iter1) {
-		DLB2_DOM_LIST_FOR(domain->used_ldb_queues, queue, iter2)
+		DLB2_DOM_LIST_FOR(domain->used_ldb_queues, queue, iter2) {
 			if (queue->id.virt_id == id)
 				return queue;
+		}
 	}
 
-	DLB2_FUNC_LIST_FOR(rsrcs->avail_ldb_queues, queue, iter1)
+	DLB2_FUNC_LIST_FOR(rsrcs->avail_ldb_queues, queue, iter1) {
 		if (queue->id.virt_id == id)
 			return queue;
+	}
 
 	return NULL;
 }
@@ -1395,9 +1496,10 @@ static struct dlb2_hw_domain *dlb2_get_domain_from_id(struct dlb2_hw *hw,
 
 	rsrcs = &hw->vdev[vdev_id];
 
-	DLB2_FUNC_LIST_FOR(rsrcs->used_domains, domain, iteration)
+	DLB2_FUNC_LIST_FOR(rsrcs->used_domains, domain, iteration) {
 		if (domain->id.virt_id == id)
 			return domain;
+	}
 
 	return NULL;
 }
@@ -1618,14 +1720,13 @@ static void dlb2_ldb_port_clear_queue_if_status(struct dlb2_hw *hw,
 						struct dlb2_ldb_port *port,
 						int slot)
 {
-	union dlb2_lsp_ldb_sched_ctrl r0 = { {0} };
+	u32 ctrl = 0;
 
-	r0.field.cq = port->id.phys_id;
-	r0.field.qidix = slot;
-	r0.field.value = 0;
-	r0.field.inflight_ok_v = 1;
+	DLB2_BITS_SET(ctrl, port->id.phys_id, DLB2_LSP_LDB_SCHED_CTRL_CQ);
+	DLB2_BITS_SET(ctrl, slot, DLB2_LSP_LDB_SCHED_CTRL_QIDIX);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_INFLIGHT_OK_V);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL, r0.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL(hw->ver), ctrl);
 
 	dlb2_flush_csr(hw);
 }
@@ -1634,14 +1735,14 @@ static void dlb2_ldb_port_set_queue_if_status(struct dlb2_hw *hw,
 					      struct dlb2_ldb_port *port,
 					      int slot)
 {
-	union dlb2_lsp_ldb_sched_ctrl r0 = { {0} };
+	u32 ctrl = 0;
 
-	r0.field.cq = port->id.phys_id;
-	r0.field.qidix = slot;
-	r0.field.value = 1;
-	r0.field.inflight_ok_v = 1;
+	DLB2_BITS_SET(ctrl, port->id.phys_id, DLB2_LSP_LDB_SCHED_CTRL_CQ);
+	DLB2_BITS_SET(ctrl, slot, DLB2_LSP_LDB_SCHED_CTRL_QIDIX);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_VALUE);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_INFLIGHT_OK_V);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL, r0.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL(hw->ver), ctrl);
 
 	dlb2_flush_csr(hw);
 }
@@ -1651,12 +1752,12 @@ static int dlb2_ldb_port_map_qid_static(struct dlb2_hw *hw,
 					struct dlb2_ldb_queue *q,
 					u8 priority)
 {
-	union dlb2_lsp_cq2priov r0;
-	union dlb2_lsp_cq2qid0 r1;
-	union dlb2_atm_qid2cqidix_00 r2;
-	union dlb2_lsp_qid2cqidix_00 r3;
-	union dlb2_lsp_qid2cqidix2_00 r4;
 	enum dlb2_qid_map_state state;
+	u32 lsp_qid2cq2;
+	u32 lsp_qid2cq;
+	u32 atm_qid2cq;
+	u32 cq2priov;
+	u32 cq2qid;
 	int i;
 
 	/* Look for a pending or already mapped slot, else an unused slot */
@@ -1669,90 +1770,102 @@ static int dlb2_ldb_port_map_qid_static(struct dlb2_hw *hw,
 		return -EFAULT;
 	}
 
-	if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port slot tracking failed\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
 	/* Read-modify-write the priority and valid bit register */
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ2PRIOV(p->id.phys_id));
+	cq2priov = DLB2_CSR_RD(hw, DLB2_LSP_CQ2PRIOV(hw->ver, p->id.phys_id));
 
-	r0.field.v |= 1 << i;
-	r0.field.prio |= (priority & 0x7) << i * 3;
+	cq2priov |= (1 << (i + DLB2_LSP_CQ2PRIOV_V_LOC)) & DLB2_LSP_CQ2PRIOV_V;
+	cq2priov |= ((priority & 0x7) << (i + DLB2_LSP_CQ2PRIOV_PRIO_LOC) * 3)
+		    & DLB2_LSP_CQ2PRIOV_PRIO;
 
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(p->id.phys_id), r0.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(hw->ver, p->id.phys_id), cq2priov);
 
 	/* Read-modify-write the QID map register */
 	if (i < 4)
-		r1.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ2QID0(p->id.phys_id));
+		cq2qid = DLB2_CSR_RD(hw, DLB2_LSP_CQ2QID0(hw->ver,
+							  p->id.phys_id));
 	else
-		r1.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ2QID1(p->id.phys_id));
+		cq2qid = DLB2_CSR_RD(hw, DLB2_LSP_CQ2QID1(hw->ver,
+							  p->id.phys_id));
 
 	if (i == 0 || i == 4)
-		r1.field.qid_p0 = q->id.phys_id;
+		DLB2_BITS_SET(cq2qid, q->id.phys_id, DLB2_LSP_CQ2QID0_QID_P0);
 	if (i == 1 || i == 5)
-		r1.field.qid_p1 = q->id.phys_id;
+		DLB2_BITS_SET(cq2qid, q->id.phys_id, DLB2_LSP_CQ2QID0_QID_P1);
 	if (i == 2 || i == 6)
-		r1.field.qid_p2 = q->id.phys_id;
+		DLB2_BITS_SET(cq2qid, q->id.phys_id, DLB2_LSP_CQ2QID0_QID_P2);
 	if (i == 3 || i == 7)
-		r1.field.qid_p3 = q->id.phys_id;
+		DLB2_BITS_SET(cq2qid, q->id.phys_id, DLB2_LSP_CQ2QID0_QID_P3);
 
 	if (i < 4)
-		DLB2_CSR_WR(hw, DLB2_LSP_CQ2QID0(p->id.phys_id), r1.val);
+		DLB2_CSR_WR(hw,
+			    DLB2_LSP_CQ2QID0(hw->ver, p->id.phys_id), cq2qid);
 	else
-		DLB2_CSR_WR(hw, DLB2_LSP_CQ2QID1(p->id.phys_id), r1.val);
+		DLB2_CSR_WR(hw,
+			    DLB2_LSP_CQ2QID1(hw->ver, p->id.phys_id), cq2qid);
 
-	r2.val = DLB2_CSR_RD(hw,
-			     DLB2_ATM_QID2CQIDIX(q->id.phys_id,
-						 p->id.phys_id / 4));
+	atm_qid2cq = DLB2_CSR_RD(hw,
+				 DLB2_ATM_QID2CQIDIX(q->id.phys_id,
+						p->id.phys_id / 4));
 
-	r3.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID2CQIDIX(q->id.phys_id,
-						 p->id.phys_id / 4));
+	lsp_qid2cq = DLB2_CSR_RD(hw,
+				 DLB2_LSP_QID2CQIDIX(hw->ver, q->id.phys_id,
+						p->id.phys_id / 4));
 
-	r4.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID2CQIDIX2(q->id.phys_id,
+	lsp_qid2cq2 = DLB2_CSR_RD(hw,
+				  DLB2_LSP_QID2CQIDIX2(hw->ver, q->id.phys_id,
 						  p->id.phys_id / 4));
 
 	switch (p->id.phys_id % 4) {
 	case 0:
-		r2.field.cq_p0 |= 1 << i;
-		r3.field.cq_p0 |= 1 << i;
-		r4.field.cq_p0 |= 1 << i;
+		DLB2_BIT_SET(atm_qid2cq,
+			     1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P0_LOC));
+		DLB2_BIT_SET(lsp_qid2cq,
+			     1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P0_LOC));
+		DLB2_BIT_SET(lsp_qid2cq2,
+			     1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P0_LOC));
 		break;
 
 	case 1:
-		r2.field.cq_p1 |= 1 << i;
-		r3.field.cq_p1 |= 1 << i;
-		r4.field.cq_p1 |= 1 << i;
+		DLB2_BIT_SET(atm_qid2cq,
+			     1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P1_LOC));
+		DLB2_BIT_SET(lsp_qid2cq,
+			     1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P1_LOC));
+		DLB2_BIT_SET(lsp_qid2cq2,
+			     1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P1_LOC));
 		break;
 
 	case 2:
-		r2.field.cq_p2 |= 1 << i;
-		r3.field.cq_p2 |= 1 << i;
-		r4.field.cq_p2 |= 1 << i;
+		DLB2_BIT_SET(atm_qid2cq,
+			     1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P2_LOC));
+		DLB2_BIT_SET(lsp_qid2cq,
+			     1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P2_LOC));
+		DLB2_BIT_SET(lsp_qid2cq2,
+			     1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P2_LOC));
 		break;
 
 	case 3:
-		r2.field.cq_p3 |= 1 << i;
-		r3.field.cq_p3 |= 1 << i;
-		r4.field.cq_p3 |= 1 << i;
+		DLB2_BIT_SET(atm_qid2cq,
+			     1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P3_LOC));
+		DLB2_BIT_SET(lsp_qid2cq,
+			     1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P3_LOC));
+		DLB2_BIT_SET(lsp_qid2cq2,
+			     1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P3_LOC));
 		break;
 	}
 
 	DLB2_CSR_WR(hw,
 		    DLB2_ATM_QID2CQIDIX(q->id.phys_id, p->id.phys_id / 4),
-		    r2.val);
+		    atm_qid2cq);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID2CQIDIX(q->id.phys_id, p->id.phys_id / 4),
-		    r3.val);
+		    DLB2_LSP_QID2CQIDIX(hw->ver,
+					q->id.phys_id, p->id.phys_id / 4),
+		    lsp_qid2cq);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID2CQIDIX2(q->id.phys_id, p->id.phys_id / 4),
-		    r4.val);
+		    DLB2_LSP_QID2CQIDIX2(hw->ver,
+					 q->id.phys_id, p->id.phys_id / 4),
+		    lsp_qid2cq2);
 
 	dlb2_flush_csr(hw);
 
@@ -1769,33 +1882,40 @@ static int dlb2_ldb_port_set_has_work_bits(struct dlb2_hw *hw,
 					   struct dlb2_ldb_queue *queue,
 					   int slot)
 {
-	union dlb2_lsp_qid_aqed_active_cnt r0;
-	union dlb2_lsp_qid_ldb_enqueue_cnt r1;
-	union dlb2_lsp_ldb_sched_ctrl r2 = { {0} };
+	u32 ctrl = 0;
+	u32 active;
+	u32 enq;
 
 	/* Set the atomic scheduling haswork bit */
-	r0.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_AQED_ACTIVE_CNT(queue->id.phys_id));
+	active = DLB2_CSR_RD(hw, DLB2_LSP_QID_AQED_ACTIVE_CNT(hw->ver,
+							 queue->id.phys_id));
 
-	r2.field.cq = port->id.phys_id;
-	r2.field.qidix = slot;
-	r2.field.value = 1;
-	r2.field.rlist_haswork_v = r0.field.count > 0;
+	DLB2_BITS_SET(ctrl, port->id.phys_id, DLB2_LSP_LDB_SCHED_CTRL_CQ);
+	DLB2_BITS_SET(ctrl, slot, DLB2_LSP_LDB_SCHED_CTRL_QIDIX);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_VALUE);
+	DLB2_BITS_SET(ctrl,
+		      DLB2_BITS_GET(active,
+				    DLB2_LSP_QID_AQED_ACTIVE_CNT_COUNT) > 0,
+				    DLB2_LSP_LDB_SCHED_CTRL_RLIST_HASWORK_V);
 
 	/* Set the non-atomic scheduling haswork bit */
-	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL, r2.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL(hw->ver), ctrl);
 
-	r1.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_LDB_ENQUEUE_CNT(queue->id.phys_id));
+	enq = DLB2_CSR_RD(hw,
+			  DLB2_LSP_QID_LDB_ENQUEUE_CNT(hw->ver,
+						       queue->id.phys_id));
 
-	memset(&r2, 0, sizeof(r2));
+	memset(&ctrl, 0, sizeof(ctrl));
 
-	r2.field.cq = port->id.phys_id;
-	r2.field.qidix = slot;
-	r2.field.value = 1;
-	r2.field.nalb_haswork_v = (r1.field.count > 0);
+	DLB2_BITS_SET(ctrl, port->id.phys_id, DLB2_LSP_LDB_SCHED_CTRL_CQ);
+	DLB2_BITS_SET(ctrl, slot, DLB2_LSP_LDB_SCHED_CTRL_QIDIX);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_VALUE);
+	DLB2_BITS_SET(ctrl,
+		      DLB2_BITS_GET(enq,
+				    DLB2_LSP_QID_LDB_ENQUEUE_CNT_COUNT) > 0,
+		      DLB2_LSP_LDB_SCHED_CTRL_NALB_HASWORK_V);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL, r2.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL(hw->ver), ctrl);
 
 	dlb2_flush_csr(hw);
 
@@ -1806,42 +1926,43 @@ static void dlb2_ldb_port_clear_has_work_bits(struct dlb2_hw *hw,
 					      struct dlb2_ldb_port *port,
 					      u8 slot)
 {
-	union dlb2_lsp_ldb_sched_ctrl r2 = { {0} };
+	u32 ctrl = 0;
 
-	r2.field.cq = port->id.phys_id;
-	r2.field.qidix = slot;
-	r2.field.value = 0;
-	r2.field.rlist_haswork_v = 1;
+	DLB2_BITS_SET(ctrl, port->id.phys_id, DLB2_LSP_LDB_SCHED_CTRL_CQ);
+	DLB2_BITS_SET(ctrl, slot, DLB2_LSP_LDB_SCHED_CTRL_QIDIX);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_RLIST_HASWORK_V);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL, r2.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL(hw->ver), ctrl);
 
-	memset(&r2, 0, sizeof(r2));
+	memset(&ctrl, 0, sizeof(ctrl));
 
-	r2.field.cq = port->id.phys_id;
-	r2.field.qidix = slot;
-	r2.field.value = 0;
-	r2.field.nalb_haswork_v = 1;
+	DLB2_BITS_SET(ctrl, port->id.phys_id, DLB2_LSP_LDB_SCHED_CTRL_CQ);
+	DLB2_BITS_SET(ctrl, slot, DLB2_LSP_LDB_SCHED_CTRL_QIDIX);
+	DLB2_BIT_SET(ctrl, DLB2_LSP_LDB_SCHED_CTRL_NALB_HASWORK_V);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL, r2.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_LDB_SCHED_CTRL(hw->ver), ctrl);
 
 	dlb2_flush_csr(hw);
 }
 
+
 static void dlb2_ldb_queue_set_inflight_limit(struct dlb2_hw *hw,
 					      struct dlb2_ldb_queue *queue)
 {
-	union dlb2_lsp_qid_ldb_infl_lim r0 = { {0} };
+	u32 infl_lim = 0;
 
-	r0.field.limit = queue->num_qid_inflights;
+	DLB2_BITS_SET(infl_lim, queue->num_qid_inflights,
+		 DLB2_LSP_QID_LDB_INFL_LIM_LIMIT);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_QID_LDB_INFL_LIM(queue->id.phys_id), r0.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_QID_LDB_INFL_LIM(hw->ver, queue->id.phys_id),
+		    infl_lim);
 }
 
 static void dlb2_ldb_queue_clear_inflight_limit(struct dlb2_hw *hw,
 						struct dlb2_ldb_queue *queue)
 {
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID_LDB_INFL_LIM(queue->id.phys_id),
+		    DLB2_LSP_QID_LDB_INFL_LIM(hw->ver, queue->id.phys_id),
 		    DLB2_LSP_QID_LDB_INFL_LIM_RST);
 }
 
@@ -1851,16 +1972,17 @@ static int dlb2_ldb_port_finish_map_qid_dynamic(struct dlb2_hw *hw,
 						struct dlb2_ldb_queue *queue)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_lsp_qid_ldb_infl_cnt r0;
 	enum dlb2_qid_map_state state;
 	int slot, ret, i;
+	u32 infl_cnt;
 	u8 prio;
 	RTE_SET_USED(iter);
 
-	r0.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_LDB_INFL_CNT(queue->id.phys_id));
+	infl_cnt = DLB2_CSR_RD(hw,
+			       DLB2_LSP_QID_LDB_INFL_CNT(hw->ver,
+						    queue->id.phys_id));
 
-	if (r0.field.count) {
+	if (DLB2_BITS_GET(infl_cnt, DLB2_LSP_QID_LDB_INFL_CNT_COUNT)) {
 		DLB2_HW_ERR(hw,
 			    "[%s()] Internal error: non-zero QID inflight count\n",
 			    __func__);
@@ -1873,13 +1995,6 @@ static int dlb2_ldb_port_finish_map_qid_dynamic(struct dlb2_hw *hw,
 	state = DLB2_QUEUE_MAP_IN_PROG;
 	if (!dlb2_port_find_slot_queue(port, state, queue, &slot))
 		return -EINVAL;
-
-	if (slot >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port slot tracking failed\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
 
 	prio = port->qid_map[slot].priority;
 
@@ -1941,10 +2056,10 @@ static int dlb2_ldb_port_map_qid_dynamic(struct dlb2_hw *hw,
 					 struct dlb2_ldb_queue *queue,
 					 u8 priority)
 {
-	union dlb2_lsp_qid_ldb_infl_cnt r0 = { {0} };
 	enum dlb2_qid_map_state state;
 	struct dlb2_hw_domain *domain;
 	int domain_id, slot, ret;
+	u32 infl_cnt;
 
 	domain_id = port->domain_id.phys_id;
 
@@ -1960,18 +2075,12 @@ static int dlb2_ldb_port_map_qid_dynamic(struct dlb2_hw *hw,
 	 * Set the QID inflight limit to 0 to prevent further scheduling of the
 	 * queue.
 	 */
-	DLB2_CSR_WR(hw, DLB2_LSP_QID_LDB_INFL_LIM(queue->id.phys_id), 0);
+	DLB2_CSR_WR(hw, DLB2_LSP_QID_LDB_INFL_LIM(hw->ver,
+						  queue->id.phys_id), 0);
 
 	if (!dlb2_port_find_slot(port, DLB2_QUEUE_UNMAPPED, &slot)) {
 		DLB2_HW_ERR(hw,
 			    "Internal error: No available unmapped slots\n");
-		return -EFAULT;
-	}
-
-	if (slot >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port slot tracking failed\n",
-			    __func__, __LINE__);
 		return -EFAULT;
 	}
 
@@ -1983,10 +2092,11 @@ static int dlb2_ldb_port_map_qid_dynamic(struct dlb2_hw *hw,
 	if (ret)
 		return ret;
 
-	r0.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_LDB_INFL_CNT(queue->id.phys_id));
+	infl_cnt = DLB2_CSR_RD(hw,
+			       DLB2_LSP_QID_LDB_INFL_CNT(hw->ver,
+						    queue->id.phys_id));
 
-	if (r0.field.count) {
+	if (DLB2_BITS_GET(infl_cnt, DLB2_LSP_QID_LDB_INFL_CNT_COUNT)) {
 		/*
 		 * The queue is owed completions so it's not safe to map it
 		 * yet. Schedule a kernel thread to complete the mapping later,
@@ -2011,10 +2121,11 @@ static int dlb2_ldb_port_map_qid_dynamic(struct dlb2_hw *hw,
 
 	dlb2_ldb_queue_disable_mapped_cqs(hw, domain, queue);
 
-	r0.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID_LDB_INFL_CNT(queue->id.phys_id));
+	infl_cnt = DLB2_CSR_RD(hw,
+			       DLB2_LSP_QID_LDB_INFL_CNT(hw->ver,
+						    queue->id.phys_id));
 
-	if (r0.field.count) {
+	if (DLB2_BITS_GET(infl_cnt, DLB2_LSP_QID_LDB_INFL_CNT_COUNT)) {
 		if (port->enabled)
 			dlb2_ldb_port_cq_enable(hw, port);
 
@@ -2041,7 +2152,7 @@ static void dlb2_domain_finish_map_port(struct dlb2_hw *hw,
 	int i;
 
 	for (i = 0; i < DLB2_MAX_NUM_QIDS_PER_LDB_CQ; i++) {
-		union dlb2_lsp_qid_ldb_infl_cnt r0;
+		u32 infl_cnt;
 		struct dlb2_ldb_queue *queue;
 		int qid;
 
@@ -2059,9 +2170,10 @@ static void dlb2_domain_finish_map_port(struct dlb2_hw *hw,
 			continue;
 		}
 
-		r0.val = DLB2_CSR_RD(hw, DLB2_LSP_QID_LDB_INFL_CNT(qid));
+		infl_cnt = DLB2_CSR_RD(hw,
+				       DLB2_LSP_QID_LDB_INFL_CNT(hw->ver, qid));
 
-		if (r0.field.count)
+		if (DLB2_BITS_GET(infl_cnt, DLB2_LSP_QID_LDB_INFL_CNT_COUNT))
 			continue;
 
 		/*
@@ -2077,9 +2189,10 @@ static void dlb2_domain_finish_map_port(struct dlb2_hw *hw,
 
 		dlb2_ldb_queue_disable_mapped_cqs(hw, domain, queue);
 
-		r0.val = DLB2_CSR_RD(hw, DLB2_LSP_QID_LDB_INFL_CNT(qid));
+		infl_cnt = DLB2_CSR_RD(hw,
+				       DLB2_LSP_QID_LDB_INFL_CNT(hw->ver, qid));
 
-		if (r0.field.count) {
+		if (DLB2_BITS_GET(infl_cnt, DLB2_LSP_QID_LDB_INFL_CNT_COUNT)) {
 			if (port->enabled)
 				dlb2_ldb_port_cq_enable(hw, port);
 
@@ -2117,10 +2230,10 @@ static int dlb2_ldb_port_unmap_qid(struct dlb2_hw *hw,
 				   struct dlb2_ldb_queue *queue)
 {
 	enum dlb2_qid_map_state mapped, in_progress, pending_map, unmapped;
-	union dlb2_lsp_cq2priov r0;
-	union dlb2_atm_qid2cqidix_00 r1;
-	union dlb2_lsp_qid2cqidix_00 r2;
-	union dlb2_lsp_qid2cqidix2_00 r3;
+	u32 lsp_qid2cq2;
+	u32 lsp_qid2cq;
+	u32 atm_qid2cq;
+	u32 cq2priov;
 	u32 queue_id;
 	u32 port_id;
 	int i;
@@ -2139,69 +2252,60 @@ static int dlb2_ldb_port_unmap_qid(struct dlb2_hw *hw,
 		return -EFAULT;
 	}
 
-	if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port slot tracking failed\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
 	port_id = port->id.phys_id;
 	queue_id = queue->id.phys_id;
 
 	/* Read-modify-write the priority and valid bit register */
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ2PRIOV(port_id));
+	cq2priov = DLB2_CSR_RD(hw, DLB2_LSP_CQ2PRIOV(hw->ver, port_id));
 
-	r0.field.v &= ~(1 << i);
+	cq2priov &= ~(1 << (i + DLB2_LSP_CQ2PRIOV_V_LOC));
 
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(port_id), r0.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(hw->ver, port_id), cq2priov);
 
-	r1.val = DLB2_CSR_RD(hw,
-			     DLB2_ATM_QID2CQIDIX(queue_id, port_id / 4));
+	atm_qid2cq = DLB2_CSR_RD(hw, DLB2_ATM_QID2CQIDIX(queue_id,
+							 port_id / 4));
 
-	r2.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID2CQIDIX(queue_id, port_id / 4));
+	lsp_qid2cq = DLB2_CSR_RD(hw,
+				 DLB2_LSP_QID2CQIDIX(hw->ver,
+						queue_id, port_id / 4));
 
-	r3.val = DLB2_CSR_RD(hw,
-			     DLB2_LSP_QID2CQIDIX2(queue_id, port_id / 4));
+	lsp_qid2cq2 = DLB2_CSR_RD(hw,
+				  DLB2_LSP_QID2CQIDIX2(hw->ver,
+						  queue_id, port_id / 4));
 
 	switch (port_id % 4) {
 	case 0:
-		r1.field.cq_p0 &= ~(1 << i);
-		r2.field.cq_p0 &= ~(1 << i);
-		r3.field.cq_p0 &= ~(1 << i);
+		atm_qid2cq &= ~(1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P0_LOC));
+		lsp_qid2cq &= ~(1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P0_LOC));
+		lsp_qid2cq2 &= ~(1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P0_LOC));
 		break;
 
 	case 1:
-		r1.field.cq_p1 &= ~(1 << i);
-		r2.field.cq_p1 &= ~(1 << i);
-		r3.field.cq_p1 &= ~(1 << i);
+		atm_qid2cq &= ~(1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P1_LOC));
+		lsp_qid2cq &= ~(1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P1_LOC));
+		lsp_qid2cq2 &= ~(1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P1_LOC));
 		break;
 
 	case 2:
-		r1.field.cq_p2 &= ~(1 << i);
-		r2.field.cq_p2 &= ~(1 << i);
-		r3.field.cq_p2 &= ~(1 << i);
+		atm_qid2cq &= ~(1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P2_LOC));
+		lsp_qid2cq &= ~(1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P2_LOC));
+		lsp_qid2cq2 &= ~(1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P2_LOC));
 		break;
 
 	case 3:
-		r1.field.cq_p3 &= ~(1 << i);
-		r2.field.cq_p3 &= ~(1 << i);
-		r3.field.cq_p3 &= ~(1 << i);
+		atm_qid2cq &= ~(1 << (i + DLB2_ATM_QID2CQIDIX_00_CQ_P3_LOC));
+		lsp_qid2cq &= ~(1 << (i + DLB2_LSP_QID2CQIDIX_00_CQ_P3_LOC));
+		lsp_qid2cq2 &= ~(1 << (i + DLB2_LSP_QID2CQIDIX2_00_CQ_P3_LOC));
 		break;
 	}
 
-	DLB2_CSR_WR(hw,
-		    DLB2_ATM_QID2CQIDIX(queue_id, port_id / 4),
-		    r1.val);
+	DLB2_CSR_WR(hw, DLB2_ATM_QID2CQIDIX(queue_id, port_id / 4), atm_qid2cq);
 
-	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID2CQIDIX(queue_id, port_id / 4),
-		    r2.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_QID2CQIDIX(hw->ver, queue_id, port_id / 4),
+		    lsp_qid2cq);
 
-	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID2CQIDIX2(queue_id, port_id / 4),
-		    r3.val);
+	DLB2_CSR_WR(hw, DLB2_LSP_QID2CQIDIX2(hw->ver, queue_id, port_id / 4),
+		    lsp_qid2cq2);
 
 	dlb2_flush_csr(hw);
 
@@ -2247,7 +2351,7 @@ dlb2_domain_finish_unmap_port_slot(struct dlb2_hw *hw,
 	/* Reset the {CQ, slot} to its default state */
 	dlb2_ldb_port_set_queue_if_status(hw, port, slot);
 
-	/* Re-enable the CQ if it wasn't manually disabled by the user */
+	/* Re-enable the CQ if it was not manually disabled by the user */
 	if (port->enabled)
 		dlb2_ldb_port_cq_enable(hw, port);
 
@@ -2272,22 +2376,34 @@ dlb2_domain_finish_unmap_port_slot(struct dlb2_hw *hw,
 	}
 }
 
+
 static bool dlb2_domain_finish_unmap_port(struct dlb2_hw *hw,
 					  struct dlb2_hw_domain *domain,
 					  struct dlb2_ldb_port *port)
 {
-	union dlb2_lsp_cq_ldb_infl_cnt r0;
+	u32 infl_cnt;
 	int i;
+	const int max_iters = 1000;
+	const int iter_poll_us = 100;
 
 	if (port->num_pending_removals == 0)
 		return false;
 
 	/*
 	 * The unmap requires all the CQ's outstanding inflights to be
-	 * completed.
+	 * completed. Poll up to 100ms.
 	 */
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ_LDB_INFL_CNT(port->id.phys_id));
-	if (r0.field.count > 0)
+	for (i = 0; i < max_iters; i++) {
+		infl_cnt = DLB2_CSR_RD(hw, DLB2_LSP_CQ_LDB_INFL_CNT(hw->ver,
+						       port->id.phys_id));
+
+		if (DLB2_BITS_GET(infl_cnt,
+				  DLB2_LSP_CQ_LDB_INFL_CNT_COUNT) == 0)
+			break;
+		rte_delay_us_sleep(iter_poll_us);
+	}
+
+	if (DLB2_BITS_GET(infl_cnt, DLB2_LSP_CQ_LDB_INFL_CNT_COUNT) > 0)
 		return false;
 
 	for (i = 0; i < DLB2_MAX_NUM_QIDS_PER_LDB_CQ; i++) {
@@ -2342,6 +2458,7 @@ static void dlb2_domain_disable_ldb_cqs(struct dlb2_hw *hw,
 	}
 }
 
+
 static void dlb2_log_reset_domain(struct dlb2_hw *hw,
 				  u32 domain_id,
 				  bool vdev_req,
@@ -2358,11 +2475,9 @@ static void dlb2_domain_disable_dir_vpps(struct dlb2_hw *hw,
 					 unsigned int vdev_id)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_sys_vf_dir_vpp_v r1;
 	struct dlb2_dir_pq_pair *port;
+	u32 vpp_v = 0;
 	RTE_SET_USED(iter);
-
-	r1.field.vpp_v = 0;
 
 	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter) {
 		unsigned int offs;
@@ -2373,9 +2488,9 @@ static void dlb2_domain_disable_dir_vpps(struct dlb2_hw *hw,
 		else
 			virt_id = port->id.phys_id;
 
-		offs = vdev_id * DLB2_MAX_NUM_DIR_PORTS + virt_id;
+		offs = vdev_id * DLB2_MAX_NUM_DIR_PORTS(hw->ver) + virt_id;
 
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VPP_V(offs), r1.val);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VPP_V(offs), vpp_v);
 	}
 }
 
@@ -2384,12 +2499,10 @@ static void dlb2_domain_disable_ldb_vpps(struct dlb2_hw *hw,
 					 unsigned int vdev_id)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_sys_vf_ldb_vpp_v r1;
 	struct dlb2_ldb_port *port;
+	u32 vpp_v = 0;
 	int i;
 	RTE_SET_USED(iter);
-
-	r1.field.vpp_v = 0;
 
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
 		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter) {
@@ -2403,7 +2516,7 @@ static void dlb2_domain_disable_ldb_vpps(struct dlb2_hw *hw,
 
 			offs = vdev_id * DLB2_MAX_NUM_LDB_PORTS + virt_id;
 
-			DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VPP_V(offs), r1.val);
+			DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VPP_V(offs), vpp_v);
 		}
 	}
 }
@@ -2413,26 +2526,23 @@ dlb2_domain_disable_ldb_port_interrupts(struct dlb2_hw *hw,
 					struct dlb2_hw_domain *domain)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_chp_ldb_cq_int_enb r0 = { {0} };
-	union dlb2_chp_ldb_cq_wd_enb r1 = { {0} };
 	struct dlb2_ldb_port *port;
+	u32 int_en = 0;
+	u32 wd_en = 0;
 	int i;
 	RTE_SET_USED(iter);
-
-	r0.field.en_tim = 0;
-	r0.field.en_depth = 0;
-
-	r1.field.wd_enable = 0;
 
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
 		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter) {
 			DLB2_CSR_WR(hw,
-				    DLB2_CHP_LDB_CQ_INT_ENB(port->id.phys_id),
-				    r0.val);
+				    DLB2_CHP_LDB_CQ_INT_ENB(hw->ver,
+						       port->id.phys_id),
+				    int_en);
 
 			DLB2_CSR_WR(hw,
-				    DLB2_CHP_LDB_CQ_WD_ENB(port->id.phys_id),
-				    r1.val);
+				    DLB2_CHP_LDB_CQ_WD_ENB(hw->ver,
+						      port->id.phys_id),
+				    wd_en);
 		}
 	}
 }
@@ -2442,24 +2552,19 @@ dlb2_domain_disable_dir_port_interrupts(struct dlb2_hw *hw,
 					struct dlb2_hw_domain *domain)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_chp_dir_cq_int_enb r0 = { {0} };
-	union dlb2_chp_dir_cq_wd_enb r1 = { {0} };
 	struct dlb2_dir_pq_pair *port;
+	u32 int_en = 0;
+	u32 wd_en = 0;
 	RTE_SET_USED(iter);
-
-	r0.field.en_tim = 0;
-	r0.field.en_depth = 0;
-
-	r1.field.wd_enable = 0;
 
 	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter) {
 		DLB2_CSR_WR(hw,
-			    DLB2_CHP_DIR_CQ_INT_ENB(port->id.phys_id),
-			    r0.val);
+			    DLB2_CHP_DIR_CQ_INT_ENB(hw->ver, port->id.phys_id),
+			    int_en);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_CHP_DIR_CQ_WD_ENB(port->id.phys_id),
-			    r1.val);
+			    DLB2_CHP_DIR_CQ_WD_ENB(hw->ver, port->id.phys_id),
+			    wd_en);
 	}
 }
 
@@ -2473,31 +2578,21 @@ dlb2_domain_disable_ldb_queue_write_perms(struct dlb2_hw *hw,
 	RTE_SET_USED(iter);
 
 	DLB2_DOM_LIST_FOR(domain->used_ldb_queues, queue, iter) {
-		union dlb2_sys_ldb_vasqid_v r0 = { {0} };
-		union dlb2_sys_ldb_qid2vqid r1 = { {0} };
-		union dlb2_sys_vf_ldb_vqid_v r2 = { {0} };
-		union dlb2_sys_vf_ldb_vqid2qid r3 = { {0} };
-		int idx;
+		int idx = domain_offset + queue->id.phys_id;
 
-		idx = domain_offset + queue->id.phys_id;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_LDB_VASQID_V(idx), r0.val);
+		DLB2_CSR_WR(hw, DLB2_SYS_LDB_VASQID_V(idx), 0);
 
 		if (queue->id.vdev_owned) {
 			DLB2_CSR_WR(hw,
 				    DLB2_SYS_LDB_QID2VQID(queue->id.phys_id),
-				    r1.val);
+				    0);
 
 			idx = queue->id.vdev_id * DLB2_MAX_NUM_LDB_QUEUES +
 				queue->id.virt_id;
 
-			DLB2_CSR_WR(hw,
-				    DLB2_SYS_VF_LDB_VQID_V(idx),
-				    r2.val);
+			DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VQID_V(idx), 0);
 
-			DLB2_CSR_WR(hw,
-				    DLB2_SYS_VF_LDB_VQID2QID(idx),
-				    r3.val);
+			DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VQID2QID(idx), 0);
 		}
 	}
 }
@@ -2506,32 +2601,27 @@ static void
 dlb2_domain_disable_dir_queue_write_perms(struct dlb2_hw *hw,
 					  struct dlb2_hw_domain *domain)
 {
-	int domain_offset = domain->id.phys_id * DLB2_MAX_NUM_DIR_PORTS;
 	struct dlb2_list_entry *iter;
 	struct dlb2_dir_pq_pair *queue;
+	unsigned long max_ports;
+	int domain_offset;
 	RTE_SET_USED(iter);
 
+	max_ports = DLB2_MAX_NUM_DIR_PORTS(hw->ver);
+
+	domain_offset = domain->id.phys_id * max_ports;
+
 	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, queue, iter) {
-		union dlb2_sys_dir_vasqid_v r0 = { {0} };
-		union dlb2_sys_vf_dir_vqid_v r1 = { {0} };
-		union dlb2_sys_vf_dir_vqid2qid r2 = { {0} };
-		int idx;
+		int idx = domain_offset + queue->id.phys_id;
 
-		idx = domain_offset + queue->id.phys_id;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_DIR_VASQID_V(idx), r0.val);
+		DLB2_CSR_WR(hw, DLB2_SYS_DIR_VASQID_V(idx), 0);
 
 		if (queue->id.vdev_owned) {
-			idx = queue->id.vdev_id * DLB2_MAX_NUM_DIR_PORTS +
-				queue->id.virt_id;
+			idx = queue->id.vdev_id * max_ports + queue->id.virt_id;
 
-			DLB2_CSR_WR(hw,
-				    DLB2_SYS_VF_DIR_VQID_V(idx),
-				    r1.val);
+			DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VQID_V(idx), 0);
 
-			DLB2_CSR_WR(hw,
-				    DLB2_SYS_VF_DIR_VQID2QID(idx),
-				    r2.val);
+			DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VQID2QID(idx), 0);
 		}
 	}
 }
@@ -2540,18 +2630,18 @@ static void dlb2_domain_disable_ldb_seq_checks(struct dlb2_hw *hw,
 					       struct dlb2_hw_domain *domain)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_chp_sn_chk_enbl r1;
 	struct dlb2_ldb_port *port;
+	u32 chk_en = 0;
 	int i;
 	RTE_SET_USED(iter);
 
-	r1.field.en = 0;
-
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter)
+		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter) {
 			DLB2_CSR_WR(hw,
-				    DLB2_CHP_SN_CHK_ENBL(port->id.phys_id),
-				    r1.val);
+				    DLB2_CHP_SN_CHK_ENBL(hw->ver,
+							 port->id.phys_id),
+				    chk_en);
+		}
 	}
 }
 
@@ -2565,14 +2655,14 @@ static int dlb2_domain_wait_for_ldb_cqs_to_empty(struct dlb2_hw *hw,
 
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
 		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter) {
-			int i;
+			int j;
 
-			for (i = 0; i < DLB2_MAX_CQ_COMP_CHECK_LOOPS; i++) {
+			for (j = 0; j < DLB2_MAX_CQ_COMP_CHECK_LOOPS; j++) {
 				if (dlb2_ldb_cq_inflight_count(hw, port) == 0)
 					break;
 			}
 
-			if (i == DLB2_MAX_CQ_COMP_CHECK_LOOPS) {
+			if (j == DLB2_MAX_CQ_COMP_CHECK_LOOPS) {
 				DLB2_HW_ERR(hw,
 					    "[%s()] Internal error: failed to flush load-balanced port %d's completions.\n",
 					    __func__, port->id.phys_id);
@@ -2604,15 +2694,14 @@ dlb2_domain_disable_dir_producer_ports(struct dlb2_hw *hw,
 {
 	struct dlb2_list_entry *iter;
 	struct dlb2_dir_pq_pair *port;
-	union dlb2_sys_dir_pp_v r1;
+	u32 pp_v = 0;
 	RTE_SET_USED(iter);
 
-	r1.field.pp_v = 0;
-
-	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter)
+	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter) {
 		DLB2_CSR_WR(hw,
 			    DLB2_SYS_DIR_PP_V(port->id.phys_id),
-			    r1.val);
+			    pp_v);
+	}
 }
 
 static void
@@ -2620,18 +2709,17 @@ dlb2_domain_disable_ldb_producer_ports(struct dlb2_hw *hw,
 				       struct dlb2_hw_domain *domain)
 {
 	struct dlb2_list_entry *iter;
-	union dlb2_sys_ldb_pp_v r1;
 	struct dlb2_ldb_port *port;
+	u32 pp_v = 0;
 	int i;
 	RTE_SET_USED(iter);
 
-	r1.field.pp_v = 0;
-
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter)
+		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter) {
 			DLB2_CSR_WR(hw,
 				    DLB2_SYS_LDB_PP_V(port->id.phys_id),
-				    r1.val);
+				    pp_v);
+		}
 	}
 }
 
@@ -2698,7 +2786,7 @@ static void __dlb2_domain_reset_ldb_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_LDB_PP2VAS_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ2VAS(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ2VAS(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ2VAS_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2737,43 +2825,48 @@ static void __dlb2_domain_reset_ldb_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_LDB_PP_V_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_DSBL(port->id.phys_id),
+		    DLB2_LSP_CQ_LDB_DSBL(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_LDB_DSBL_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_DEPTH(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_DEPTH(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_DEPTH_RST);
 
+	if (hw->ver != DLB2_HW_V2)
+		DLB2_CSR_WR(hw,
+			    DLB2_LSP_CFG_CQ_LDB_WU_LIMIT(port->id.phys_id),
+			    DLB2_LSP_CFG_CQ_LDB_WU_LIMIT_RST);
+
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_INFL_LIM(port->id.phys_id),
+		    DLB2_LSP_CQ_LDB_INFL_LIM(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_LDB_INFL_LIM_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_HIST_LIST_LIM(port->id.phys_id),
+		    DLB2_CHP_HIST_LIST_LIM(hw->ver, port->id.phys_id),
 		    DLB2_CHP_HIST_LIST_LIM_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_HIST_LIST_BASE(port->id.phys_id),
+		    DLB2_CHP_HIST_LIST_BASE(hw->ver, port->id.phys_id),
 		    DLB2_CHP_HIST_LIST_BASE_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_HIST_LIST_POP_PTR(port->id.phys_id),
+		    DLB2_CHP_HIST_LIST_POP_PTR(hw->ver, port->id.phys_id),
 		    DLB2_CHP_HIST_LIST_POP_PTR_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_HIST_LIST_PUSH_PTR(port->id.phys_id),
+		    DLB2_CHP_HIST_LIST_PUSH_PTR(hw->ver, port->id.phys_id),
 		    DLB2_CHP_HIST_LIST_PUSH_PTR_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_INT_DEPTH_THRSH(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_INT_DEPTH_THRSH(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_INT_DEPTH_THRSH_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_TMR_THRSH(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_TMR_THRSH(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_TMR_THRSH_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_INT_ENB(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_INT_ENB(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_INT_ENB_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2781,19 +2874,19 @@ static void __dlb2_domain_reset_ldb_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_LDB_CQ_ISR_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_TKN_DEPTH_SEL(port->id.phys_id),
+		    DLB2_LSP_CQ_LDB_TKN_DEPTH_SEL(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_LDB_TKN_DEPTH_SEL_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_TKN_DEPTH_SEL(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_TKN_DEPTH_SEL(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_TKN_DEPTH_SEL_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_WPTR(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_WPTR(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_WPTR_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_TKN_CNT(port->id.phys_id),
+		    DLB2_LSP_CQ_LDB_TKN_CNT(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_LDB_TKN_CNT_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2804,12 +2897,13 @@ static void __dlb2_domain_reset_ldb_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_LDB_CQ_ADDR_U(port->id.phys_id),
 		    DLB2_SYS_LDB_CQ_ADDR_U_RST);
 
-	DLB2_CSR_WR(hw,
-		    DLB2_SYS_LDB_CQ_AT(port->id.phys_id),
-		    DLB2_SYS_LDB_CQ_AT_RST);
+	if (hw->ver == DLB2_HW_V2)
+		DLB2_CSR_WR(hw,
+			    DLB2_SYS_LDB_CQ_AT(port->id.phys_id),
+			    DLB2_SYS_LDB_CQ_AT_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_SYS_LDB_CQ_PASID(port->id.phys_id),
+		    DLB2_SYS_LDB_CQ_PASID(hw->ver, port->id.phys_id),
 		    DLB2_SYS_LDB_CQ_PASID_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2817,23 +2911,23 @@ static void __dlb2_domain_reset_ldb_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_LDB_CQ2VF_PF_RO_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_TOT_SCH_CNTL(port->id.phys_id),
+		    DLB2_LSP_CQ_LDB_TOT_SCH_CNTL(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_LDB_TOT_SCH_CNTL_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_TOT_SCH_CNTH(port->id.phys_id),
+		    DLB2_LSP_CQ_LDB_TOT_SCH_CNTH(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_LDB_TOT_SCH_CNTH_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ2QID0(port->id.phys_id),
+		    DLB2_LSP_CQ2QID0(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ2QID0_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ2QID1(port->id.phys_id),
+		    DLB2_LSP_CQ2QID1(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ2QID1_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ2PRIOV(port->id.phys_id),
+		    DLB2_LSP_CQ2PRIOV(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ2PRIOV_RST);
 }
 
@@ -2855,30 +2949,38 @@ static void
 __dlb2_domain_reset_dir_port_registers(struct dlb2_hw *hw,
 				       struct dlb2_dir_pq_pair *port)
 {
+	u32 reg = 0;
+
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ2VAS(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ2VAS(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ2VAS_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_DIR_DSBL(port->id.phys_id),
+		    DLB2_LSP_CQ_DIR_DSBL(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_DIR_DSBL_RST);
 
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_OPT_CLR, port->id.phys_id);
+	DLB2_BIT_SET(reg, DLB2_SYS_WB_DIR_CQ_STATE_CQ_OPT_CLR);
+
+	if (hw->ver == DLB2_HW_V2)
+		DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_OPT_CLR, port->id.phys_id);
+	else
+		DLB2_CSR_WR(hw,
+			    DLB2_SYS_WB_DIR_CQ_STATE(port->id.phys_id), reg);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_DEPTH(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_DEPTH(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_DEPTH_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_INT_DEPTH_THRSH(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_INT_DEPTH_THRSH(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_INT_DEPTH_THRSH_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_TMR_THRSH(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_TMR_THRSH(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_TMR_THRSH_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_INT_ENB(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_INT_ENB(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_INT_ENB_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2886,19 +2988,20 @@ __dlb2_domain_reset_dir_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_DIR_CQ_ISR_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_DIR_TKN_DEPTH_SEL_DSI(port->id.phys_id),
+		    DLB2_LSP_CQ_DIR_TKN_DEPTH_SEL_DSI(hw->ver,
+						      port->id.phys_id),
 		    DLB2_LSP_CQ_DIR_TKN_DEPTH_SEL_DSI_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_TKN_DEPTH_SEL(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_TKN_DEPTH_SEL(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_TKN_DEPTH_SEL_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_WPTR(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_WPTR(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_WPTR_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_DIR_TKN_CNT(port->id.phys_id),
+		    DLB2_LSP_CQ_DIR_TKN_CNT(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_DIR_TKN_CNT_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2913,8 +3016,13 @@ __dlb2_domain_reset_dir_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_DIR_CQ_AT(port->id.phys_id),
 		    DLB2_SYS_DIR_CQ_AT_RST);
 
+	if (hw->ver == DLB2_HW_V2)
+		DLB2_CSR_WR(hw,
+			    DLB2_SYS_DIR_CQ_AT(port->id.phys_id),
+			    DLB2_SYS_DIR_CQ_AT_RST);
+
 	DLB2_CSR_WR(hw,
-		    DLB2_SYS_DIR_CQ_PASID(port->id.phys_id),
+		    DLB2_SYS_DIR_CQ_PASID(hw->ver, port->id.phys_id),
 		    DLB2_SYS_DIR_CQ_PASID_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2926,11 +3034,11 @@ __dlb2_domain_reset_dir_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_DIR_CQ2VF_PF_RO_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_DIR_TOT_SCH_CNTL(port->id.phys_id),
+		    DLB2_LSP_CQ_DIR_TOT_SCH_CNTL(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_DIR_TOT_SCH_CNTL_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_DIR_TOT_SCH_CNTH(port->id.phys_id),
+		    DLB2_LSP_CQ_DIR_TOT_SCH_CNTH(hw->ver, port->id.phys_id),
 		    DLB2_LSP_CQ_DIR_TOT_SCH_CNTH_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2938,7 +3046,7 @@ __dlb2_domain_reset_dir_port_registers(struct dlb2_hw *hw,
 		    DLB2_SYS_DIR_PP2VAS_RST);
 
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ2VAS(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ2VAS(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ2VAS_RST);
 
 	DLB2_CSR_WR(hw,
@@ -2961,7 +3069,8 @@ __dlb2_domain_reset_dir_port_registers(struct dlb2_hw *hw,
 		else
 			virt_id = port->id.phys_id;
 
-		offs = port->id.vdev_id * DLB2_MAX_NUM_DIR_PORTS + virt_id;
+		offs = port->id.vdev_id * DLB2_MAX_NUM_DIR_PORTS(hw->ver) +
+			virt_id;
 
 		DLB2_CSR_WR(hw,
 			    DLB2_SYS_VF_DIR_VPP2PP(offs),
@@ -3000,39 +3109,39 @@ static void dlb2_domain_reset_ldb_queue_registers(struct dlb2_hw *hw,
 		int i;
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_NALDB_TOT_ENQ_CNTL(queue_id),
+			    DLB2_LSP_QID_NALDB_TOT_ENQ_CNTL(hw->ver, queue_id),
 			    DLB2_LSP_QID_NALDB_TOT_ENQ_CNTL_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_NALDB_TOT_ENQ_CNTH(queue_id),
+			    DLB2_LSP_QID_NALDB_TOT_ENQ_CNTH(hw->ver, queue_id),
 			    DLB2_LSP_QID_NALDB_TOT_ENQ_CNTH_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_ATM_TOT_ENQ_CNTL(queue_id),
+			    DLB2_LSP_QID_ATM_TOT_ENQ_CNTL(hw->ver, queue_id),
 			    DLB2_LSP_QID_ATM_TOT_ENQ_CNTL_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_ATM_TOT_ENQ_CNTH(queue_id),
+			    DLB2_LSP_QID_ATM_TOT_ENQ_CNTH(hw->ver, queue_id),
 			    DLB2_LSP_QID_ATM_TOT_ENQ_CNTH_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_NALDB_MAX_DEPTH(queue_id),
+			    DLB2_LSP_QID_NALDB_MAX_DEPTH(hw->ver, queue_id),
 			    DLB2_LSP_QID_NALDB_MAX_DEPTH_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_LDB_INFL_LIM(queue_id),
+			    DLB2_LSP_QID_LDB_INFL_LIM(hw->ver, queue_id),
 			    DLB2_LSP_QID_LDB_INFL_LIM_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_AQED_ACTIVE_LIM(queue_id),
+			    DLB2_LSP_QID_AQED_ACTIVE_LIM(hw->ver, queue_id),
 			    DLB2_LSP_QID_AQED_ACTIVE_LIM_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_ATM_DEPTH_THRSH(queue_id),
+			    DLB2_LSP_QID_ATM_DEPTH_THRSH(hw->ver, queue_id),
 			    DLB2_LSP_QID_ATM_DEPTH_THRSH_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_NALDB_DEPTH_THRSH(queue_id),
+			    DLB2_LSP_QID_NALDB_DEPTH_THRSH(hw->ver, queue_id),
 			    DLB2_LSP_QID_NALDB_DEPTH_THRSH_RST);
 
 		DLB2_CSR_WR(hw,
@@ -3040,11 +3149,11 @@ static void dlb2_domain_reset_ldb_queue_registers(struct dlb2_hw *hw,
 			    DLB2_SYS_LDB_QID_ITS_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_CHP_ORD_QID_SN(queue_id),
+			    DLB2_CHP_ORD_QID_SN(hw->ver, queue_id),
 			    DLB2_CHP_ORD_QID_SN_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_CHP_ORD_QID_SN_MAP(queue_id),
+			    DLB2_CHP_ORD_QID_SN_MAP(hw->ver, queue_id),
 			    DLB2_CHP_ORD_QID_SN_MAP_RST);
 
 		DLB2_CSR_WR(hw,
@@ -3058,21 +3167,23 @@ static void dlb2_domain_reset_ldb_queue_registers(struct dlb2_hw *hw,
 		if (queue->sn_cfg_valid) {
 			u32 offs[2];
 
-			offs[0] = DLB2_RO_PIPE_GRP_0_SLT_SHFT(queue->sn_slot);
-			offs[1] = DLB2_RO_PIPE_GRP_1_SLT_SHFT(queue->sn_slot);
+			offs[0] = DLB2_RO_GRP_0_SLT_SHFT(hw->ver,
+							 queue->sn_slot);
+			offs[1] = DLB2_RO_GRP_1_SLT_SHFT(hw->ver,
+							 queue->sn_slot);
 
 			DLB2_CSR_WR(hw,
 				    offs[queue->sn_group],
-				    DLB2_RO_PIPE_GRP_0_SLT_SHFT_RST);
+				    DLB2_RO_GRP_0_SLT_SHFT_RST);
 		}
 
 		for (i = 0; i < DLB2_LSP_QID2CQIDIX_NUM; i++) {
 			DLB2_CSR_WR(hw,
-				    DLB2_LSP_QID2CQIDIX(queue_id, i),
+				    DLB2_LSP_QID2CQIDIX(hw->ver, queue_id, i),
 				    DLB2_LSP_QID2CQIDIX_00_RST);
 
 			DLB2_CSR_WR(hw,
-				    DLB2_LSP_QID2CQIDIX2(queue_id, i),
+				    DLB2_LSP_QID2CQIDIX2(hw->ver, queue_id, i),
 				    DLB2_LSP_QID2CQIDIX2_00_RST);
 
 			DLB2_CSR_WR(hw,
@@ -3091,19 +3202,23 @@ static void dlb2_domain_reset_dir_queue_registers(struct dlb2_hw *hw,
 
 	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, queue, iter) {
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_DIR_MAX_DEPTH(queue->id.phys_id),
+			    DLB2_LSP_QID_DIR_MAX_DEPTH(hw->ver,
+						       queue->id.phys_id),
 			    DLB2_LSP_QID_DIR_MAX_DEPTH_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_DIR_TOT_ENQ_CNTL(queue->id.phys_id),
+			    DLB2_LSP_QID_DIR_TOT_ENQ_CNTL(hw->ver,
+							  queue->id.phys_id),
 			    DLB2_LSP_QID_DIR_TOT_ENQ_CNTL_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_DIR_TOT_ENQ_CNTH(queue->id.phys_id),
+			    DLB2_LSP_QID_DIR_TOT_ENQ_CNTH(hw->ver,
+							  queue->id.phys_id),
 			    DLB2_LSP_QID_DIR_TOT_ENQ_CNTH_RST);
 
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_QID_DIR_DEPTH_THRSH(queue->id.phys_id),
+			    DLB2_LSP_QID_DIR_DEPTH_THRSH(hw->ver,
+							 queue->id.phys_id),
 			    DLB2_LSP_QID_DIR_DEPTH_THRSH_RST);
 
 		DLB2_CSR_WR(hw,
@@ -3116,6 +3231,10 @@ static void dlb2_domain_reset_dir_queue_registers(struct dlb2_hw *hw,
 	}
 }
 
+
+
+
+
 static void dlb2_domain_reset_registers(struct dlb2_hw *hw,
 					struct dlb2_hw_domain *domain)
 {
@@ -3127,13 +3246,18 @@ static void dlb2_domain_reset_registers(struct dlb2_hw *hw,
 
 	dlb2_domain_reset_dir_queue_registers(hw, domain);
 
-	DLB2_CSR_WR(hw,
-		    DLB2_CHP_CFG_LDB_VAS_CRD(domain->id.phys_id),
-		    DLB2_CHP_CFG_LDB_VAS_CRD_RST);
+	if (hw->ver == DLB2_HW_V2) {
+		DLB2_CSR_WR(hw,
+			    DLB2_CHP_CFG_LDB_VAS_CRD(domain->id.phys_id),
+			    DLB2_CHP_CFG_LDB_VAS_CRD_RST);
 
-	DLB2_CSR_WR(hw,
-		    DLB2_CHP_CFG_DIR_VAS_CRD(domain->id.phys_id),
-		    DLB2_CHP_CFG_DIR_VAS_CRD_RST);
+		DLB2_CSR_WR(hw,
+			    DLB2_CHP_CFG_DIR_VAS_CRD(domain->id.phys_id),
+			    DLB2_CHP_CFG_DIR_VAS_CRD_RST);
+	} else
+		DLB2_CSR_WR(hw,
+			    DLB2_CHP_CFG_VAS_CRD(domain->id.phys_id),
+			    DLB2_CHP_CFG_VAS_CRD_RST);
 }
 
 static int dlb2_domain_reset_software_state(struct dlb2_hw *hw,
@@ -3204,6 +3328,7 @@ static int dlb2_domain_reset_software_state(struct dlb2_hw *hw,
 			ldb_port->num_pending_removals = 0;
 			ldb_port->num_mappings = 0;
 			ldb_port->init_tkn_cnt = 0;
+			ldb_port->cq_depth = 0;
 			for (j = 0; j < DLB2_MAX_NUM_QIDS_PER_LDB_CQ; j++)
 				ldb_port->qid_map[j].state =
 					DLB2_QUEUE_UNMAPPED;
@@ -3261,7 +3386,7 @@ static int dlb2_domain_reset_software_state(struct dlb2_hw *hw,
 				    domain->total_hist_list_entries);
 	if (ret) {
 		DLB2_HW_ERR(hw,
-			    "[%s()] Internal error: domain hist list base doesn't match the function's bitmap.\n",
+			    "[%s()] Internal error: domain hist list base does not match the function's bitmap.\n",
 			    __func__);
 		return ret;
 	}
@@ -3271,12 +3396,16 @@ static int dlb2_domain_reset_software_state(struct dlb2_hw *hw,
 	domain->hist_list_entry_base = 0;
 	domain->hist_list_entry_offset = 0;
 
-	rsrcs->num_avail_qed_entries += domain->num_ldb_credits;
-	domain->num_ldb_credits = 0;
+	if (hw->ver == DLB2_HW_V2_5) {
+		rsrcs->num_avail_entries += domain->num_credits;
+		domain->num_credits = 0;
+	} else {
+		rsrcs->num_avail_qed_entries += domain->num_ldb_credits;
+		domain->num_ldb_credits = 0;
 
-	rsrcs->num_avail_dqed_entries += domain->num_dir_credits;
-	domain->num_dir_credits = 0;
-
+		rsrcs->num_avail_dqed_entries += domain->num_dir_credits;
+		domain->num_dir_credits = 0;
+	}
 	rsrcs->num_avail_aqed_entries += domain->num_avail_aqed_entries;
 	rsrcs->num_avail_aqed_entries += domain->num_used_aqed_entries;
 	domain->num_avail_aqed_entries = 0;
@@ -3302,23 +3431,23 @@ static int dlb2_domain_drain_unmapped_queue(struct dlb2_hw *hw,
 					    struct dlb2_hw_domain *domain,
 					    struct dlb2_ldb_queue *queue)
 {
-	struct dlb2_ldb_port *port;
+	struct dlb2_ldb_port *port = NULL;
 	int ret, i;
 
 	/* If a domain has LDB queues, it must have LDB ports */
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-		if (!dlb2_list_empty(&domain->used_ldb_ports[i]))
+		port = DLB2_DOM_LIST_HEAD(domain->used_ldb_ports[i],
+					  typeof(*port));
+		if (port)
 			break;
 	}
 
-	if (i == DLB2_NUM_COS_DOMAINS) {
+	if (port == NULL) {
 		DLB2_HW_ERR(hw,
 			    "[%s()] Internal error: No configured LDB ports\n",
 			    __func__);
 		return -EFAULT;
 	}
-
-	port = DLB2_DOM_LIST_HEAD(domain->used_ldb_ports[i], typeof(*port));
 
 	/* If necessary, free up a QID slot in this CQ */
 	if (port->num_mappings == DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
@@ -3369,17 +3498,29 @@ static int dlb2_domain_drain_unmapped_queues(struct dlb2_hw *hw,
 }
 
 /**
- * dlb2_reset_domain() - Reset a DLB scheduling domain and its associated
- *	hardware resources.
- * @hw:	Contains the current state of the DLB2 hardware.
- * @domain_id: Domain ID
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_reset_domain() - reset a scheduling domain
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Note: User software *must* stop sending to this domain's producer ports
- * before invoking this function, otherwise undefined behavior will result.
+ * This function resets and frees a DLB 2.0 scheduling domain and its associated
+ * resources.
  *
- * Return: returns < 0 on error, 0 otherwise.
+ * Pre-condition: the driver must ensure software has stopped sending QEs
+ * through this domain's producer ports before invoking this function, or
+ * undefined behavior will result.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, -1 otherwise.
+ *
+ * EINVAL - Invalid domain ID, or the domain is not configured.
+ * EFAULT - Internal error. (Possibly caused if software is the pre-condition
+ *	    is not met.)
+ * ETIMEDOUT - Hardware component didn't reset in the expected time.
  */
 int dlb2_reset_domain(struct dlb2_hw *hw,
 		      u32 domain_id,
@@ -3393,7 +3534,7 @@ int dlb2_reset_domain(struct dlb2_hw *hw,
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain  == NULL || !domain->configured)
+	if (domain == NULL || !domain->configured)
 		return -EINVAL;
 
 	/* Disable VPPs */
@@ -3427,31 +3568,29 @@ int dlb2_reset_domain(struct dlb2_hw *hw,
 	 */
 	dlb2_domain_disable_ldb_cqs(hw, domain);
 
-	ret = dlb2_domain_drain_ldb_cqs(hw, domain, false);
-	if (ret < 0)
-		return ret;
+	dlb2_domain_drain_ldb_cqs(hw, domain, false);
 
 	ret = dlb2_domain_wait_for_ldb_cqs_to_empty(hw, domain);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	ret = dlb2_domain_finish_unmap_qid_procedures(hw, domain);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	ret = dlb2_domain_finish_map_qid_procedures(hw, domain);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	/* Re-enable the CQs in order to drain the mapped queues. */
 	dlb2_domain_enable_ldb_cqs(hw, domain);
 
 	ret = dlb2_domain_drain_mapped_queues(hw, domain);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	ret = dlb2_domain_drain_unmapped_queues(hw, domain);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	/* Done draining LDB QEs, so disable the CQs. */
@@ -3475,189 +3614,27 @@ int dlb2_reset_domain(struct dlb2_hw *hw,
 	dlb2_domain_reset_registers(hw, domain);
 
 	/* Hardware reset complete. Reset the domain's software state */
-	ret = dlb2_domain_reset_software_state(hw, domain);
-	if (ret)
-		return ret;
-
-	return 0;
+	return dlb2_domain_reset_software_state(hw, domain);
 }
 
-unsigned int dlb2_finish_unmap_qid_procedures(struct dlb2_hw *hw)
+static void
+dlb2_log_create_ldb_queue_args(struct dlb2_hw *hw,
+			       u32 domain_id,
+			       struct dlb2_create_ldb_queue_args *args,
+			       bool vdev_req,
+			       unsigned int vdev_id)
 {
-	int i, num = 0;
-
-	/* Finish queue unmap jobs for any domain that needs it */
-	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
-		struct dlb2_hw_domain *domain = &hw->domains[i];
-
-		num += dlb2_domain_finish_unmap_qid_procedures(hw, domain);
-	}
-
-	return num;
-}
-
-unsigned int dlb2_finish_map_qid_procedures(struct dlb2_hw *hw)
-{
-	int i, num = 0;
-
-	/* Finish queue map jobs for any domain that needs it */
-	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
-		struct dlb2_hw_domain *domain = &hw->domains[i];
-
-		num += dlb2_domain_finish_map_qid_procedures(hw, domain);
-	}
-
-	return num;
-}
-
-
-static void dlb2_configure_ldb_queue(struct dlb2_hw *hw,
-				     struct dlb2_hw_domain *domain,
-				     struct dlb2_ldb_queue *queue,
-				     struct dlb2_create_ldb_queue_args *args,
-				     bool vdev_req,
-				     unsigned int vdev_id)
-{
-	union dlb2_sys_vf_ldb_vqid_v r0 = { {0} };
-	union dlb2_sys_vf_ldb_vqid2qid r1 = { {0} };
-	union dlb2_sys_ldb_qid2vqid r2 = { {0} };
-	union dlb2_sys_ldb_vasqid_v r3 = { {0} };
-	union dlb2_lsp_qid_ldb_infl_lim r4 = { {0} };
-	union dlb2_lsp_qid_aqed_active_lim r5 = { {0} };
-	union dlb2_aqed_pipe_qid_hid_width r6 = { {0} };
-	union dlb2_sys_ldb_qid_its r7 = { {0} };
-	union dlb2_lsp_qid_atm_depth_thrsh r8 = { {0} };
-	union dlb2_lsp_qid_naldb_depth_thrsh r9 = { {0} };
-	union dlb2_aqed_pipe_qid_fid_lim r10 = { {0} };
-	union dlb2_chp_ord_qid_sn_map r11 = { {0} };
-	union dlb2_sys_ldb_qid_cfg_v r12 = { {0} };
-	union dlb2_sys_ldb_qid_v r13 = { {0} };
-
-	struct dlb2_sn_group *sn_group;
-	unsigned int offs;
-
-	/* QID write permissions are turned on when the domain is started */
-	r3.field.vasqid_v = 0;
-
-	offs = domain->id.phys_id * DLB2_MAX_NUM_LDB_QUEUES +
-		queue->id.phys_id;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_VASQID_V(offs), r3.val);
-
-	/*
-	 * Unordered QIDs get 4K inflights, ordered get as many as the number
-	 * of sequence numbers.
-	 */
-	r4.field.limit = args->num_qid_inflights;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_QID_LDB_INFL_LIM(queue->id.phys_id), r4.val);
-
-	r5.field.limit = queue->aqed_limit;
-
-	if (r5.field.limit > DLB2_MAX_NUM_AQED_ENTRIES)
-		r5.field.limit = DLB2_MAX_NUM_AQED_ENTRIES;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID_AQED_ACTIVE_LIM(queue->id.phys_id),
-		    r5.val);
-
-	switch (args->lock_id_comp_level) {
-	case 64:
-		r6.field.compress_code = 1;
-		break;
-	case 128:
-		r6.field.compress_code = 2;
-		break;
-	case 256:
-		r6.field.compress_code = 3;
-		break;
-	case 512:
-		r6.field.compress_code = 4;
-		break;
-	case 1024:
-		r6.field.compress_code = 5;
-		break;
-	case 2048:
-		r6.field.compress_code = 6;
-		break;
-	case 4096:
-		r6.field.compress_code = 7;
-		break;
-	case 0:
-	case 65536:
-		r6.field.compress_code = 0;
-	}
-
-	DLB2_CSR_WR(hw,
-		    DLB2_AQED_PIPE_QID_HID_WIDTH(queue->id.phys_id),
-		    r6.val);
-
-	/* Don't timestamp QEs that pass through this queue */
-	r7.field.qid_its = 0;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_SYS_LDB_QID_ITS(queue->id.phys_id),
-		    r7.val);
-
-	r8.field.thresh = args->depth_threshold;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID_ATM_DEPTH_THRSH(queue->id.phys_id),
-		    r8.val);
-
-	r9.field.thresh = args->depth_threshold;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID_NALDB_DEPTH_THRSH(queue->id.phys_id),
-		    r9.val);
-
-	/*
-	 * This register limits the number of inflight flows a queue can have
-	 * at one time.  It has an upper bound of 2048, but can be
-	 * over-subscribed. 512 is chosen so that a single queue doesn't use
-	 * the entire atomic storage, but can use a substantial portion if
-	 * needed.
-	 */
-	r10.field.qid_fid_limit = 512;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_AQED_PIPE_QID_FID_LIM(queue->id.phys_id),
-		    r10.val);
-
-	/* Configure SNs */
-	sn_group = &hw->rsrcs.sn_groups[queue->sn_group];
-	r11.field.mode = sn_group->mode;
-	r11.field.slot = queue->sn_slot;
-	r11.field.grp  = sn_group->id;
-
-	DLB2_CSR_WR(hw, DLB2_CHP_ORD_QID_SN_MAP(queue->id.phys_id), r11.val);
-
-	r12.field.sn_cfg_v = (args->num_sequence_numbers != 0);
-	r12.field.fid_cfg_v = (args->num_atomic_inflights != 0);
-
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_QID_CFG_V(queue->id.phys_id), r12.val);
-
-	if (vdev_req) {
-		offs = vdev_id * DLB2_MAX_NUM_LDB_QUEUES + queue->id.virt_id;
-
-		r0.field.vqid_v = 1;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VQID_V(offs), r0.val);
-
-		r1.field.qid = queue->id.phys_id;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VQID2QID(offs), r1.val);
-
-		r2.field.vqid = queue->id.virt_id;
-
-		DLB2_CSR_WR(hw,
-			    DLB2_SYS_LDB_QID2VQID(queue->id.phys_id),
-			    r2.val);
-	}
-
-	r13.field.qid_v = 1;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_QID_V(queue->id.phys_id), r13.val);
+	DLB2_HW_DBG(hw, "DLB2 create load-balanced queue arguments:\n");
+	if (vdev_req)
+		DLB2_HW_DBG(hw, "(Request from vdev %d)\n", vdev_id);
+	DLB2_HW_DBG(hw, "\tDomain ID:                  %d\n",
+		    domain_id);
+	DLB2_HW_DBG(hw, "\tNumber of sequence numbers: %d\n",
+		    args->num_sequence_numbers);
+	DLB2_HW_DBG(hw, "\tNumber of QID inflights:    %d\n",
+		    args->num_qid_inflights);
+	DLB2_HW_DBG(hw, "\tNumber of ATM inflights:    %d\n",
+		    args->num_atomic_inflights);
 }
 
 static int
@@ -3699,43 +3676,22 @@ dlb2_ldb_queue_attach_to_sn_group(struct dlb2_hw *hw,
 }
 
 static int
-dlb2_ldb_queue_attach_resources(struct dlb2_hw *hw,
-				struct dlb2_hw_domain *domain,
-				struct dlb2_ldb_queue *queue,
-				struct dlb2_create_ldb_queue_args *args)
-{
-	int ret;
-
-	ret = dlb2_ldb_queue_attach_to_sn_group(hw, queue, args);
-	if (ret)
-		return ret;
-
-	/* Attach QID inflights */
-	queue->num_qid_inflights = args->num_qid_inflights;
-
-	/* Attach atomic inflights */
-	queue->aqed_limit = args->num_atomic_inflights;
-
-	domain->num_avail_aqed_entries -= args->num_atomic_inflights;
-	domain->num_used_aqed_entries += args->num_atomic_inflights;
-
-	return 0;
-}
-
-static int
 dlb2_verify_create_ldb_queue_args(struct dlb2_hw *hw,
 				  u32 domain_id,
 				  struct dlb2_create_ldb_queue_args *args,
 				  struct dlb2_cmd_response *resp,
 				  bool vdev_req,
-				  unsigned int vdev_id)
+				  unsigned int vdev_id,
+				  struct dlb2_hw_domain **out_domain,
+				  struct dlb2_ldb_queue **out_queue)
 {
 	struct dlb2_hw_domain *domain;
+	struct dlb2_ldb_queue *queue;
 	int i;
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -3750,7 +3706,8 @@ dlb2_verify_create_ldb_queue_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
-	if (dlb2_list_empty(&domain->avail_ldb_queues)) {
+	queue = DLB2_DOM_LIST_HEAD(domain->avail_ldb_queues, typeof(*queue));
+	if (!queue) {
 		resp->status = DLB2_ST_LDB_QUEUES_UNAVAILABLE;
 		return -EINVAL;
 	}
@@ -3771,7 +3728,7 @@ dlb2_verify_create_ldb_queue_args(struct dlb2_hw *hw,
 		}
 	}
 
-	if (args->num_qid_inflights > 4096) {
+	if (args->num_qid_inflights < 1 || args->num_qid_inflights > 2048) {
 		resp->status = DLB2_ST_INVALID_QID_INFLIGHT_ALLOCATION;
 		return -EINVAL;
 	}
@@ -3802,40 +3759,197 @@ dlb2_verify_create_ldb_queue_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
+	*out_domain = domain;
+	*out_queue = queue;
+
 	return 0;
 }
 
-static void
-dlb2_log_create_ldb_queue_args(struct dlb2_hw *hw,
-			       u32 domain_id,
-			       struct dlb2_create_ldb_queue_args *args,
-			       bool vdev_req,
-			       unsigned int vdev_id)
+static int
+dlb2_ldb_queue_attach_resources(struct dlb2_hw *hw,
+				struct dlb2_hw_domain *domain,
+				struct dlb2_ldb_queue *queue,
+				struct dlb2_create_ldb_queue_args *args)
 {
-	DLB2_HW_DBG(hw, "DLB2 create load-balanced queue arguments:\n");
-	if (vdev_req)
-		DLB2_HW_DBG(hw, "(Request from vdev %d)\n", vdev_id);
-	DLB2_HW_DBG(hw, "\tDomain ID:                  %d\n",
-		    domain_id);
-	DLB2_HW_DBG(hw, "\tNumber of sequence numbers: %d\n",
-		    args->num_sequence_numbers);
-	DLB2_HW_DBG(hw, "\tNumber of QID inflights:    %d\n",
-		    args->num_qid_inflights);
-	DLB2_HW_DBG(hw, "\tNumber of ATM inflights:    %d\n",
-		    args->num_atomic_inflights);
+	int ret;
+	ret = dlb2_ldb_queue_attach_to_sn_group(hw, queue, args);
+	if (ret)
+		return ret;
+
+	/* Attach QID inflights */
+	queue->num_qid_inflights = args->num_qid_inflights;
+
+	/* Attach atomic inflights */
+	queue->aqed_limit = args->num_atomic_inflights;
+
+	domain->num_avail_aqed_entries -= args->num_atomic_inflights;
+	domain->num_used_aqed_entries += args->num_atomic_inflights;
+
+	return 0;
+}
+
+static void dlb2_configure_ldb_queue(struct dlb2_hw *hw,
+				     struct dlb2_hw_domain *domain,
+				     struct dlb2_ldb_queue *queue,
+				     struct dlb2_create_ldb_queue_args *args,
+				     bool vdev_req,
+				     unsigned int vdev_id)
+{
+	struct dlb2_sn_group *sn_group;
+	unsigned int offs;
+	u32 reg = 0;
+	u32 alimit;
+
+	/* QID write permissions are turned on when the domain is started */
+	offs = domain->id.phys_id * DLB2_MAX_NUM_LDB_QUEUES + queue->id.phys_id;
+
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_VASQID_V(offs), reg);
+
+	/*
+	 * Unordered QIDs get 4K inflights, ordered get as many as the number
+	 * of sequence numbers.
+	 */
+	DLB2_BITS_SET(reg, args->num_qid_inflights,
+		      DLB2_LSP_QID_LDB_INFL_LIM_LIMIT);
+	DLB2_CSR_WR(hw, DLB2_LSP_QID_LDB_INFL_LIM(hw->ver,
+						  queue->id.phys_id), reg);
+
+	alimit = queue->aqed_limit;
+
+	if (alimit > DLB2_MAX_NUM_AQED_ENTRIES)
+		alimit = DLB2_MAX_NUM_AQED_ENTRIES;
+
+	reg = 0;
+	DLB2_BITS_SET(reg, alimit, DLB2_LSP_QID_AQED_ACTIVE_LIM_LIMIT);
+	DLB2_CSR_WR(hw,
+		    DLB2_LSP_QID_AQED_ACTIVE_LIM(hw->ver,
+						 queue->id.phys_id), reg);
+
+	reg = 0;
+	switch (args->lock_id_comp_level) {
+	case 64:
+		DLB2_BITS_SET(reg, 1, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	case 128:
+		DLB2_BITS_SET(reg, 2, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	case 256:
+		DLB2_BITS_SET(reg, 3, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	case 512:
+		DLB2_BITS_SET(reg, 4, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	case 1024:
+		DLB2_BITS_SET(reg, 5, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	case 2048:
+		DLB2_BITS_SET(reg, 6, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	case 4096:
+		DLB2_BITS_SET(reg, 7, DLB2_AQED_QID_HID_WIDTH_COMPRESS_CODE);
+		break;
+	default:
+		/* No compression by default */
+		break;
+	}
+
+	DLB2_CSR_WR(hw, DLB2_AQED_QID_HID_WIDTH(queue->id.phys_id), reg);
+
+	reg = 0;
+	/* Don't timestamp QEs that pass through this queue */
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_QID_ITS(queue->id.phys_id), reg);
+
+	DLB2_BITS_SET(reg, args->depth_threshold,
+		      DLB2_LSP_QID_ATM_DEPTH_THRSH_THRESH);
+	DLB2_CSR_WR(hw,
+		    DLB2_LSP_QID_ATM_DEPTH_THRSH(hw->ver,
+						 queue->id.phys_id), reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, args->depth_threshold,
+		      DLB2_LSP_QID_NALDB_DEPTH_THRSH_THRESH);
+	DLB2_CSR_WR(hw,
+		    DLB2_LSP_QID_NALDB_DEPTH_THRSH(hw->ver, queue->id.phys_id),
+		    reg);
+
+	/*
+	 * This register limits the number of inflight flows a queue can have
+	 * at one time.  It has an upper bound of 2048, but can be
+	 * over-subscribed. 512 is chosen so that a single queue does not use
+	 * the entire atomic storage, but can use a substantial portion if
+	 * needed.
+	 */
+	reg = 0;
+	DLB2_BITS_SET(reg, 512, DLB2_AQED_QID_FID_LIM_QID_FID_LIMIT);
+	DLB2_CSR_WR(hw, DLB2_AQED_QID_FID_LIM(queue->id.phys_id), reg);
+
+	/* Configure SNs */
+	reg = 0;
+	sn_group = &hw->rsrcs.sn_groups[queue->sn_group];
+	DLB2_BITS_SET(reg, sn_group->mode, DLB2_CHP_ORD_QID_SN_MAP_MODE);
+	DLB2_BITS_SET(reg, queue->sn_slot, DLB2_CHP_ORD_QID_SN_MAP_SLOT);
+	DLB2_BITS_SET(reg, sn_group->id, DLB2_CHP_ORD_QID_SN_MAP_GRP);
+
+	DLB2_CSR_WR(hw,
+		    DLB2_CHP_ORD_QID_SN_MAP(hw->ver, queue->id.phys_id), reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, (args->num_sequence_numbers != 0),
+		 DLB2_SYS_LDB_QID_CFG_V_SN_CFG_V);
+	DLB2_BITS_SET(reg, (args->num_atomic_inflights != 0),
+		 DLB2_SYS_LDB_QID_CFG_V_FID_CFG_V);
+
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_QID_CFG_V(queue->id.phys_id), reg);
+
+	if (vdev_req) {
+		offs = vdev_id * DLB2_MAX_NUM_LDB_QUEUES + queue->id.virt_id;
+
+		reg = 0;
+		DLB2_BIT_SET(reg, DLB2_SYS_VF_LDB_VQID_V_VQID_V);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VQID_V(offs), reg);
+
+		reg = 0;
+		DLB2_BITS_SET(reg, queue->id.phys_id,
+			      DLB2_SYS_VF_LDB_VQID2QID_QID);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VQID2QID(offs), reg);
+
+		reg = 0;
+		DLB2_BITS_SET(reg, queue->id.virt_id,
+			      DLB2_SYS_LDB_QID2VQID_VQID);
+		DLB2_CSR_WR(hw, DLB2_SYS_LDB_QID2VQID(queue->id.phys_id), reg);
+	}
+
+	reg = 0;
+	DLB2_BIT_SET(reg, DLB2_SYS_LDB_QID_V_QID_V);
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_QID_V(queue->id.phys_id), reg);
 }
 
 /**
- * dlb2_hw_create_ldb_queue() - Allocate and initialize a DLB LDB queue.
- * @hw:	Contains the current state of the DLB2 hardware.
- * @domain_id: Domain ID
- * @args: User-provided arguments.
- * @resp: Response to user.
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_hw_create_ldb_queue() - create a load-balanced queue
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: queue creation arguments.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Return: returns < 0 on error, 0 otherwise. If the driver is unable to
- * satisfy a request, resp->status will be set accordingly.
+ * This function creates a load-balanced queue.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the queue ID.
+ *
+ * resp->id contains a virtual ID if vdev_req is true.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, the domain is not configured,
+ *	    the domain has already been started, or the requested queue name is
+ *	    already in use.
+ * EFAULT - Internal error (resp->status not set).
  */
 int dlb2_hw_create_ldb_queue(struct dlb2_hw *hw,
 			     u32 domain_id,
@@ -3859,28 +3973,15 @@ int dlb2_hw_create_ldb_queue(struct dlb2_hw *hw,
 						args,
 						resp,
 						vdev_req,
-						vdev_id);
+						vdev_id,
+						&domain,
+						&queue);
 	if (ret)
 		return ret;
 
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: domain not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	queue = DLB2_DOM_LIST_HEAD(domain->avail_ldb_queues, typeof(*queue));
-	if (queue == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: no available ldb queues\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
 	ret = dlb2_ldb_queue_attach_resources(hw, domain, queue, args);
-	if (ret < 0) {
+
+	if (ret) {
 		DLB2_HW_ERR(hw,
 			    "[%s():%d] Internal error: failed to attach the ldb queue resources\n",
 			    __func__, __LINE__);
@@ -3907,90 +4008,18 @@ int dlb2_hw_create_ldb_queue(struct dlb2_hw *hw,
 	return 0;
 }
 
-int dlb2_get_group_sequence_numbers(struct dlb2_hw *hw, unsigned int group_id)
-{
-	if (group_id >= DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS)
-		return -EINVAL;
-
-	return hw->rsrcs.sn_groups[group_id].sequence_numbers_per_queue;
-}
-
-int dlb2_get_group_sequence_number_occupancy(struct dlb2_hw *hw,
-					     unsigned int group_id)
-{
-	if (group_id >= DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS)
-		return -EINVAL;
-
-	return dlb2_sn_group_used_slots(&hw->rsrcs.sn_groups[group_id]);
-}
-
-static void dlb2_log_set_group_sequence_numbers(struct dlb2_hw *hw,
-						unsigned int group_id,
-						unsigned long val)
-{
-	DLB2_HW_DBG(hw, "DLB2 set group sequence numbers:\n");
-	DLB2_HW_DBG(hw, "\tGroup ID: %u\n", group_id);
-	DLB2_HW_DBG(hw, "\tValue:    %lu\n", val);
-}
-
-int dlb2_set_group_sequence_numbers(struct dlb2_hw *hw,
-				    unsigned int group_id,
-				    unsigned long val)
-{
-	u32 valid_allocations[] = {64, 128, 256, 512, 1024};
-	union dlb2_ro_pipe_grp_sn_mode r0 = { {0} };
-	struct dlb2_sn_group *group;
-	int mode;
-
-	if (group_id >= DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS)
-		return -EINVAL;
-
-	group = &hw->rsrcs.sn_groups[group_id];
-
-	/*
-	 * Once the first load-balanced queue using an SN group is configured,
-	 * the group cannot be changed.
-	 */
-	if (group->slot_use_bitmap != 0)
-		return -EPERM;
-
-	for (mode = 0; mode < DLB2_MAX_NUM_SEQUENCE_NUMBER_MODES; mode++)
-		if (val == valid_allocations[mode])
-			break;
-
-	if (mode == DLB2_MAX_NUM_SEQUENCE_NUMBER_MODES)
-		return -EINVAL;
-
-	group->mode = mode;
-	group->sequence_numbers_per_queue = val;
-
-	r0.field.sn_mode_0 = hw->rsrcs.sn_groups[0].mode;
-	r0.field.sn_mode_1 = hw->rsrcs.sn_groups[1].mode;
-
-	DLB2_CSR_WR(hw, DLB2_RO_PIPE_GRP_SN_MODE, r0.val);
-
-	dlb2_log_set_group_sequence_numbers(hw, group_id, val);
-
-	return 0;
-}
-
 static void dlb2_ldb_port_configure_pp(struct dlb2_hw *hw,
 				       struct dlb2_hw_domain *domain,
 				       struct dlb2_ldb_port *port,
 				       bool vdev_req,
 				       unsigned int vdev_id)
 {
-	union dlb2_sys_ldb_pp2vas r0 = { {0} };
-	union dlb2_sys_ldb_pp_v r4 = { {0} };
+	u32 reg = 0;
 
-	r0.field.vas = domain->id.phys_id;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_PP2VAS(port->id.phys_id), r0.val);
+	DLB2_BITS_SET(reg, domain->id.phys_id, DLB2_SYS_LDB_PP2VAS_VAS);
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_PP2VAS(port->id.phys_id), reg);
 
 	if (vdev_req) {
-		union dlb2_sys_vf_ldb_vpp2pp r1 = { {0} };
-		union dlb2_sys_ldb_pp2vdev r2 = { {0} };
-		union dlb2_sys_vf_ldb_vpp_v r3 = { {0} };
 		unsigned int offs;
 		u32 virt_id;
 
@@ -4006,28 +4035,23 @@ static void dlb2_ldb_port_configure_pp(struct dlb2_hw *hw,
 		else
 			virt_id = port->id.phys_id;
 
-		r1.field.pp = port->id.phys_id;
-
+		reg = 0;
+		DLB2_BITS_SET(reg, port->id.phys_id, DLB2_SYS_VF_LDB_VPP2PP_PP);
 		offs = vdev_id * DLB2_MAX_NUM_LDB_PORTS + virt_id;
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VPP2PP(offs), reg);
 
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VPP2PP(offs), r1.val);
+		reg = 0;
+		DLB2_BITS_SET(reg, vdev_id, DLB2_SYS_LDB_PP2VDEV_VDEV);
+		DLB2_CSR_WR(hw, DLB2_SYS_LDB_PP2VDEV(port->id.phys_id), reg);
 
-		r2.field.vdev = vdev_id;
-
-		DLB2_CSR_WR(hw,
-			    DLB2_SYS_LDB_PP2VDEV(port->id.phys_id),
-			    r2.val);
-
-		r3.field.vpp_v = 1;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VPP_V(offs), r3.val);
+		reg = 0;
+		DLB2_BIT_SET(reg, DLB2_SYS_VF_LDB_VPP_V_VPP_V);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_LDB_VPP_V(offs), reg);
 	}
 
-	r4.field.pp_v = 1;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_SYS_LDB_PP_V(port->id.phys_id),
-		    r4.val);
+	reg = 0;
+	DLB2_BIT_SET(reg, DLB2_SYS_LDB_PP_V_PP_V);
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_PP_V(port->id.phys_id), reg);
 }
 
 static int dlb2_ldb_port_configure_cq(struct dlb2_hw *hw,
@@ -4038,57 +4062,49 @@ static int dlb2_ldb_port_configure_cq(struct dlb2_hw *hw,
 				      bool vdev_req,
 				      unsigned int vdev_id)
 {
-	union dlb2_sys_ldb_cq_addr_l r0 = { {0} };
-	union dlb2_sys_ldb_cq_addr_u r1 = { {0} };
-	union dlb2_sys_ldb_cq2vf_pf_ro r2 = { {0} };
-	union dlb2_chp_ldb_cq_tkn_depth_sel r3 = { {0} };
-	union dlb2_lsp_cq_ldb_tkn_depth_sel r4 = { {0} };
-	union dlb2_chp_hist_list_lim r5 = { {0} };
-	union dlb2_chp_hist_list_base r6 = { {0} };
-	union dlb2_lsp_cq_ldb_infl_lim r7 = { {0} };
-	union dlb2_chp_hist_list_push_ptr r8 = { {0} };
-	union dlb2_chp_hist_list_pop_ptr r9 = { {0} };
-	union dlb2_sys_ldb_cq_at r10 = { {0} };
-	union dlb2_sys_ldb_cq_pasid r11 = { {0} };
-	union dlb2_chp_ldb_cq2vas r12 = { {0} };
-	union dlb2_lsp_cq2priov r13 = { {0} };
+	u32 hl_base = 0;
+	u32 reg = 0;
+	u32 ds = 0;
 
 	/* The CQ address is 64B-aligned, and the DLB only wants bits [63:6] */
-	r0.field.addr_l = cq_dma_base >> 6;
+	DLB2_BITS_SET(reg, cq_dma_base >> 6, DLB2_SYS_LDB_CQ_ADDR_L_ADDR_L);
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_ADDR_L(port->id.phys_id), reg);
 
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_ADDR_L(port->id.phys_id), r0.val);
-
-	r1.field.addr_u = cq_dma_base >> 32;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_ADDR_U(port->id.phys_id), r1.val);
+	reg = cq_dma_base >> 32;
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_ADDR_U(port->id.phys_id), reg);
 
 	/*
 	 * 'ro' == relaxed ordering. This setting allows DLB2 to write
 	 * cache lines out-of-order (but QEs within a cache line are always
 	 * updated in-order).
 	 */
-	r2.field.vf = vdev_id;
-	r2.field.is_pf = !vdev_req && (hw->virt_mode != DLB2_VIRT_SIOV);
-	r2.field.ro = 1;
+	reg = 0;
+	DLB2_BITS_SET(reg, vdev_id, DLB2_SYS_LDB_CQ2VF_PF_RO_VF);
+	DLB2_BITS_SET(reg,
+		 !vdev_req && (hw->virt_mode != DLB2_VIRT_SIOV),
+		 DLB2_SYS_LDB_CQ2VF_PF_RO_IS_PF);
+	DLB2_BIT_SET(reg, DLB2_SYS_LDB_CQ2VF_PF_RO_RO);
 
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ2VF_PF_RO(port->id.phys_id), r2.val);
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ2VF_PF_RO(port->id.phys_id), reg);
+
+	port->cq_depth = args->cq_depth;
 
 	if (args->cq_depth <= 8) {
-		r3.field.token_depth_select = 1;
+		ds = 1;
 	} else if (args->cq_depth == 16) {
-		r3.field.token_depth_select = 2;
+		ds = 2;
 	} else if (args->cq_depth == 32) {
-		r3.field.token_depth_select = 3;
+		ds = 3;
 	} else if (args->cq_depth == 64) {
-		r3.field.token_depth_select = 4;
+		ds = 4;
 	} else if (args->cq_depth == 128) {
-		r3.field.token_depth_select = 5;
+		ds = 5;
 	} else if (args->cq_depth == 256) {
-		r3.field.token_depth_select = 6;
+		ds = 6;
 	} else if (args->cq_depth == 512) {
-		r3.field.token_depth_select = 7;
+		ds = 7;
 	} else if (args->cq_depth == 1024) {
-		r3.field.token_depth_select = 8;
+		ds = 8;
 	} else {
 		DLB2_HW_ERR(hw,
 			    "[%s():%d] Internal error: invalid CQ depth\n",
@@ -4096,9 +4112,12 @@ static int dlb2_ldb_port_configure_cq(struct dlb2_hw *hw,
 		return -EFAULT;
 	}
 
+	reg = 0;
+	DLB2_BITS_SET(reg, ds,
+		      DLB2_CHP_LDB_CQ_TKN_DEPTH_SEL_TOKEN_DEPTH_SELECT);
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_TKN_DEPTH_SEL(port->id.phys_id),
-		    r3.val);
+		    DLB2_CHP_LDB_CQ_TKN_DEPTH_SEL(hw->ver, port->id.phys_id),
+		    reg);
 
 	/*
 	 * To support CQs with depth less than 8, program the token count
@@ -4109,88 +4128,109 @@ static int dlb2_ldb_port_configure_cq(struct dlb2_hw *hw,
 	port->init_tkn_cnt = 0;
 
 	if (args->cq_depth < 8) {
-		union dlb2_lsp_cq_ldb_tkn_cnt r14 = { {0} };
-
+		reg = 0;
 		port->init_tkn_cnt = 8 - args->cq_depth;
 
-		r14.field.token_count = port->init_tkn_cnt;
-
+		DLB2_BITS_SET(reg,
+			      port->init_tkn_cnt,
+			      DLB2_LSP_CQ_LDB_TKN_CNT_TOKEN_COUNT);
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_CQ_LDB_TKN_CNT(port->id.phys_id),
-			    r14.val);
+			    DLB2_LSP_CQ_LDB_TKN_CNT(hw->ver, port->id.phys_id),
+			    reg);
 	} else {
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_CQ_LDB_TKN_CNT(port->id.phys_id),
+			    DLB2_LSP_CQ_LDB_TKN_CNT(hw->ver, port->id.phys_id),
 			    DLB2_LSP_CQ_LDB_TKN_CNT_RST);
 	}
 
-	r4.field.token_depth_select = r3.field.token_depth_select;
-	r4.field.ignore_depth = 0;
-
+	reg = 0;
+	DLB2_BITS_SET(reg, ds,
+		      DLB2_LSP_CQ_LDB_TKN_DEPTH_SEL_TOKEN_DEPTH_SELECT_V2);
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_LDB_TKN_DEPTH_SEL(port->id.phys_id),
-		    r4.val);
+		    DLB2_LSP_CQ_LDB_TKN_DEPTH_SEL(hw->ver, port->id.phys_id),
+		    reg);
 
 	/* Reset the CQ write pointer */
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_LDB_CQ_WPTR(port->id.phys_id),
+		    DLB2_CHP_LDB_CQ_WPTR(hw->ver, port->id.phys_id),
 		    DLB2_CHP_LDB_CQ_WPTR_RST);
 
-	r5.field.limit = port->hist_list_entry_limit - 1;
+	reg = 0;
+	DLB2_BITS_SET(reg,
+		      port->hist_list_entry_limit - 1,
+		      DLB2_CHP_HIST_LIST_LIM_LIMIT);
+	DLB2_CSR_WR(hw, DLB2_CHP_HIST_LIST_LIM(hw->ver, port->id.phys_id), reg);
 
-	DLB2_CSR_WR(hw, DLB2_CHP_HIST_LIST_LIM(port->id.phys_id), r5.val);
-
-	r6.field.base = port->hist_list_entry_base;
-
-	DLB2_CSR_WR(hw, DLB2_CHP_HIST_LIST_BASE(port->id.phys_id), r6.val);
+	DLB2_BITS_SET(hl_base, port->hist_list_entry_base,
+		      DLB2_CHP_HIST_LIST_BASE_BASE);
+	DLB2_CSR_WR(hw,
+		    DLB2_CHP_HIST_LIST_BASE(hw->ver, port->id.phys_id),
+		    hl_base);
 
 	/*
 	 * The inflight limit sets a cap on the number of QEs for which this CQ
 	 * can owe completions at one time.
 	 */
-	r7.field.limit = args->cq_history_list_size;
+	reg = 0;
+	DLB2_BITS_SET(reg, args->cq_history_list_size,
+		      DLB2_LSP_CQ_LDB_INFL_LIM_LIMIT);
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ_LDB_INFL_LIM(hw->ver, port->id.phys_id),
+		    reg);
 
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ_LDB_INFL_LIM(port->id.phys_id), r7.val);
+	reg = 0;
+	DLB2_BITS_SET(reg, DLB2_BITS_GET(hl_base, DLB2_CHP_HIST_LIST_BASE_BASE),
+		      DLB2_CHP_HIST_LIST_PUSH_PTR_PUSH_PTR);
+	DLB2_CSR_WR(hw, DLB2_CHP_HIST_LIST_PUSH_PTR(hw->ver, port->id.phys_id),
+		    reg);
 
-	r8.field.push_ptr = r6.field.base;
-	r8.field.generation = 0;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_CHP_HIST_LIST_PUSH_PTR(port->id.phys_id),
-		    r8.val);
-
-	r9.field.pop_ptr = r6.field.base;
-	r9.field.generation = 0;
-
-	DLB2_CSR_WR(hw, DLB2_CHP_HIST_LIST_POP_PTR(port->id.phys_id), r9.val);
+	reg = 0;
+	DLB2_BITS_SET(reg, DLB2_BITS_GET(hl_base, DLB2_CHP_HIST_LIST_BASE_BASE),
+		      DLB2_CHP_HIST_LIST_POP_PTR_POP_PTR);
+	DLB2_CSR_WR(hw, DLB2_CHP_HIST_LIST_POP_PTR(hw->ver, port->id.phys_id),
+		    reg);
 
 	/*
 	 * Address translation (AT) settings: 0: untranslated, 2: translated
 	 * (see ATS spec regarding Address Type field for more details)
 	 */
-	r10.field.cq_at = 0;
 
-	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_AT(port->id.phys_id), r10.val);
-
-	if (vdev_req && hw->virt_mode == DLB2_VIRT_SIOV) {
-		r11.field.pasid = hw->pasid[vdev_id];
-		r11.field.fmt2 = 1;
+	if (hw->ver == DLB2_HW_V2) {
+		reg = 0;
+		DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_AT(port->id.phys_id), reg);
 	}
 
-	DLB2_CSR_WR(hw,
-		    DLB2_SYS_LDB_CQ_PASID(port->id.phys_id),
-		    r11.val);
+	if (vdev_req && hw->virt_mode == DLB2_VIRT_SIOV) {
+		reg = 0;
+		DLB2_BITS_SET(reg, hw->pasid[vdev_id],
+			      DLB2_SYS_LDB_CQ_PASID_PASID);
+		DLB2_BIT_SET(reg, DLB2_SYS_LDB_CQ_PASID_FMT2);
+	}
 
-	r12.field.cq2vas = domain->id.phys_id;
+	DLB2_CSR_WR(hw, DLB2_SYS_LDB_CQ_PASID(hw->ver, port->id.phys_id), reg);
 
-	DLB2_CSR_WR(hw, DLB2_CHP_LDB_CQ2VAS(port->id.phys_id), r12.val);
+	reg = 0;
+	DLB2_BITS_SET(reg, domain->id.phys_id, DLB2_CHP_LDB_CQ2VAS_CQ2VAS);
+	DLB2_CSR_WR(hw, DLB2_CHP_LDB_CQ2VAS(hw->ver, port->id.phys_id), reg);
 
 	/* Disable the port's QID mappings */
-	r13.field.v = 0;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(port->id.phys_id), r13.val);
+	reg = 0;
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(hw->ver, port->id.phys_id), reg);
 
 	return 0;
+}
+
+static bool
+dlb2_cq_depth_is_valid(u32 depth)
+{
+	if (depth != 1 && depth != 2 &&
+	    depth != 4 && depth != 8 &&
+	    depth != 16 && depth != 32 &&
+	    depth != 64 && depth != 128 &&
+	    depth != 256 && depth != 512 &&
+	    depth != 1024)
+		return false;
+
+	return true;
 }
 
 static int dlb2_configure_ldb_port(struct dlb2_hw *hw,
@@ -4218,7 +4258,7 @@ static int dlb2_configure_ldb_port(struct dlb2_hw *hw,
 					 args,
 					 vdev_req,
 					 vdev_id);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	dlb2_ldb_port_configure_pp(hw,
@@ -4271,14 +4311,18 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 				 struct dlb2_create_ldb_port_args *args,
 				 struct dlb2_cmd_response *resp,
 				 bool vdev_req,
-				 unsigned int vdev_id)
+				 unsigned int vdev_id,
+				 struct dlb2_hw_domain **out_domain,
+				 struct dlb2_ldb_port **out_port,
+				 int *out_cos_id)
 {
 	struct dlb2_hw_domain *domain;
-	int i;
+	struct dlb2_ldb_port *port;
+	int i, id;
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -4299,20 +4343,23 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 	}
 
 	if (args->cos_strict) {
-		if (dlb2_list_empty(&domain->avail_ldb_ports[args->cos_id])) {
-			resp->status = DLB2_ST_LDB_PORTS_UNAVAILABLE;
-			return -EINVAL;
-		}
+		id = args->cos_id;
+		port = DLB2_DOM_LIST_HEAD(domain->avail_ldb_ports[id],
+					  typeof(*port));
 	} else {
 		for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-			if (!dlb2_list_empty(&domain->avail_ldb_ports[i]))
+			id = (args->cos_id + i) % DLB2_NUM_COS_DOMAINS;
+
+			port = DLB2_DOM_LIST_HEAD(domain->avail_ldb_ports[id],
+						  typeof(*port));
+			if (port)
 				break;
 		}
+	}
 
-		if (i == DLB2_NUM_COS_DOMAINS) {
-			resp->status = DLB2_ST_LDB_PORTS_UNAVAILABLE;
-			return -EINVAL;
-		}
+	if (!port) {
+		resp->status = DLB2_ST_LDB_PORTS_UNAVAILABLE;
+		return -EINVAL;
 	}
 
 	/* Check cache-line alignment */
@@ -4321,17 +4368,7 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
-	if (args->cq_depth != 1 &&
-	    args->cq_depth != 2 &&
-	    args->cq_depth != 4 &&
-	    args->cq_depth != 8 &&
-	    args->cq_depth != 16 &&
-	    args->cq_depth != 32 &&
-	    args->cq_depth != 64 &&
-	    args->cq_depth != 128 &&
-	    args->cq_depth != 256 &&
-	    args->cq_depth != 512 &&
-	    args->cq_depth != 1024) {
+	if (!dlb2_cq_depth_is_valid(args->cq_depth)) {
 		resp->status = DLB2_ST_INVALID_CQ_DEPTH;
 		return -EINVAL;
 	}
@@ -4347,23 +4384,40 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
+	*out_domain = domain;
+	*out_port = port;
+	*out_cos_id = id;
+
 	return 0;
 }
 
-
 /**
- * dlb2_hw_create_ldb_port() - Allocate and initialize a load-balanced port and
- *	its resources.
- * @hw:	Contains the current state of the DLB2 hardware.
- * @domain_id: Domain ID
- * @args: User-provided arguments.
- * @cq_dma_base: Base DMA address for consumer queue memory
- * @resp: Response to user.
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_hw_create_ldb_port() - create a load-balanced port
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: port creation arguments.
+ * @cq_dma_base: base address of the CQ memory. This can be a PA or an IOVA.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Return: returns < 0 on error, 0 otherwise. If the driver is unable to
- * satisfy a request, resp->status will be set accordingly.
+ * This function creates a load-balanced port.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the port ID.
+ *
+ * resp->id contains a virtual ID if vdev_req is true.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, a credit setting is invalid, a
+ *	    pointer address is not properly aligned, the domain is not
+ *	    configured, or the domain has already been started.
+ * EFAULT - Internal error (resp->status not set).
  */
 int dlb2_hw_create_ldb_port(struct dlb2_hw *hw,
 			    u32 domain_id,
@@ -4375,7 +4429,7 @@ int dlb2_hw_create_ldb_port(struct dlb2_hw *hw,
 {
 	struct dlb2_hw_domain *domain;
 	struct dlb2_ldb_port *port;
-	int ret, cos_id, i;
+	int ret, cos_id;
 
 	dlb2_log_create_ldb_port_args(hw,
 				      domain_id,
@@ -4394,51 +4448,12 @@ int dlb2_hw_create_ldb_port(struct dlb2_hw *hw,
 					       args,
 					       resp,
 					       vdev_req,
-					       vdev_id);
+					       vdev_id,
+					       &domain,
+					       &port,
+					       &cos_id);
 	if (ret)
 		return ret;
-
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: domain not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	if (args->cos_strict) {
-		cos_id = args->cos_id;
-
-		port = DLB2_DOM_LIST_HEAD(domain->avail_ldb_ports[cos_id],
-					  typeof(*port));
-	} else {
-		int idx;
-
-		for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-			idx = (args->cos_id + i) % DLB2_NUM_COS_DOMAINS;
-
-			port = DLB2_DOM_LIST_HEAD(domain->avail_ldb_ports[idx],
-						  typeof(*port));
-			if (port)
-				break;
-		}
-
-		cos_id = idx;
-	}
-
-	if (port == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: no available ldb ports\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	if (port->configured) {
-		DLB2_HW_ERR(hw,
-			    "[%s()] Internal error: avail_ldb_ports contains configured ports.\n",
-			    __func__);
-		return -EFAULT;
-	}
 
 	ret = dlb2_configure_ldb_port(hw,
 				      domain,
@@ -4447,7 +4462,7 @@ int dlb2_hw_create_ldb_port(struct dlb2_hw *hw,
 				      args,
 				      vdev_req,
 				      vdev_id);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	/*
@@ -4484,7 +4499,8 @@ dlb2_log_create_dir_port_args(struct dlb2_hw *hw,
 }
 
 static struct dlb2_dir_pq_pair *
-dlb2_get_domain_used_dir_pq(u32 id,
+dlb2_get_domain_used_dir_pq(struct dlb2_hw *hw,
+			    u32 id,
 			    bool vdev_req,
 			    struct dlb2_hw_domain *domain)
 {
@@ -4492,13 +4508,14 @@ dlb2_get_domain_used_dir_pq(u32 id,
 	struct dlb2_dir_pq_pair *port;
 	RTE_SET_USED(iter);
 
-	if (id >= DLB2_MAX_NUM_DIR_PORTS)
+	if (id >= DLB2_MAX_NUM_DIR_PORTS(hw->ver))
 		return NULL;
 
-	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter)
+	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, port, iter) {
 		if ((!vdev_req && port->id.phys_id == id) ||
 		    (vdev_req && port->id.virt_id == id))
 			return port;
+	}
 
 	return NULL;
 }
@@ -4510,13 +4527,16 @@ dlb2_verify_create_dir_port_args(struct dlb2_hw *hw,
 				 struct dlb2_create_dir_port_args *args,
 				 struct dlb2_cmd_response *resp,
 				 bool vdev_req,
-				 unsigned int vdev_id)
+				 unsigned int vdev_id,
+				 struct dlb2_hw_domain **out_domain,
+				 struct dlb2_dir_pq_pair **out_port)
 {
 	struct dlb2_hw_domain *domain;
+	struct dlb2_dir_pq_pair *pq;
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -4531,33 +4551,33 @@ dlb2_verify_create_dir_port_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
-	/*
-	 * If the user claims the queue is already configured, validate
-	 * the queue ID, its domain, and whether the queue is configured.
-	 */
 	if (args->queue_id != -1) {
-		struct dlb2_dir_pq_pair *queue;
+		/*
+		 * If the user claims the queue is already configured, validate
+		 * the queue ID, its domain, and whether the queue is
+		 * configured.
+		 */
+		pq = dlb2_get_domain_used_dir_pq(hw,
+						 args->queue_id,
+						 vdev_req,
+						 domain);
 
-		queue = dlb2_get_domain_used_dir_pq(args->queue_id,
-						    vdev_req,
-						    domain);
-
-		if (queue == NULL || queue->domain_id.phys_id !=
-				domain->id.phys_id ||
-				!queue->queue_configured) {
+		if (!pq || pq->domain_id.phys_id != domain->id.phys_id ||
+		    !pq->queue_configured) {
 			resp->status = DLB2_ST_INVALID_DIR_QUEUE_ID;
 			return -EINVAL;
 		}
-	}
-
-	/*
-	 * If the port's queue is not configured, validate that a free
-	 * port-queue pair is available.
-	 */
-	if (args->queue_id == -1 &&
-	    dlb2_list_empty(&domain->avail_dir_pq_pairs)) {
-		resp->status = DLB2_ST_DIR_PORTS_UNAVAILABLE;
-		return -EINVAL;
+	} else {
+		/*
+		 * If the port's queue is not configured, validate that a free
+		 * port-queue pair is available.
+		 */
+		pq = DLB2_DOM_LIST_HEAD(domain->avail_dir_pq_pairs,
+					typeof(*pq));
+		if (!pq) {
+			resp->status = DLB2_ST_DIR_PORTS_UNAVAILABLE;
+			return -EINVAL;
+		}
 	}
 
 	/* Check cache-line alignment */
@@ -4566,20 +4586,13 @@ dlb2_verify_create_dir_port_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
-	if (args->cq_depth != 1 &&
-	    args->cq_depth != 2 &&
-	    args->cq_depth != 4 &&
-	    args->cq_depth != 8 &&
-	    args->cq_depth != 16 &&
-	    args->cq_depth != 32 &&
-	    args->cq_depth != 64 &&
-	    args->cq_depth != 128 &&
-	    args->cq_depth != 256 &&
-	    args->cq_depth != 512 &&
-	    args->cq_depth != 1024) {
+	if (!dlb2_cq_depth_is_valid(args->cq_depth)) {
 		resp->status = DLB2_ST_INVALID_CQ_DEPTH;
 		return -EINVAL;
 	}
+
+	*out_domain = domain;
+	*out_port = pq;
 
 	return 0;
 }
@@ -4590,17 +4603,12 @@ static void dlb2_dir_port_configure_pp(struct dlb2_hw *hw,
 				       bool vdev_req,
 				       unsigned int vdev_id)
 {
-	union dlb2_sys_dir_pp2vas r0 = { {0} };
-	union dlb2_sys_dir_pp_v r4 = { {0} };
+	u32 reg = 0;
 
-	r0.field.vas = domain->id.phys_id;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_PP2VAS(port->id.phys_id), r0.val);
+	DLB2_BITS_SET(reg, domain->id.phys_id, DLB2_SYS_DIR_PP2VAS_VAS);
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_PP2VAS(port->id.phys_id), reg);
 
 	if (vdev_req) {
-		union dlb2_sys_vf_dir_vpp2pp r1 = { {0} };
-		union dlb2_sys_dir_pp2vdev r2 = { {0} };
-		union dlb2_sys_vf_dir_vpp_v r3 = { {0} };
 		unsigned int offs;
 		u32 virt_id;
 
@@ -4616,28 +4624,23 @@ static void dlb2_dir_port_configure_pp(struct dlb2_hw *hw,
 		else
 			virt_id = port->id.phys_id;
 
-		r1.field.pp = port->id.phys_id;
+		reg = 0;
+		DLB2_BITS_SET(reg, port->id.phys_id, DLB2_SYS_VF_DIR_VPP2PP_PP);
+		offs = vdev_id * DLB2_MAX_NUM_DIR_PORTS(hw->ver) + virt_id;
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VPP2PP(offs), reg);
 
-		offs = vdev_id * DLB2_MAX_NUM_DIR_PORTS + virt_id;
+		reg = 0;
+		DLB2_BITS_SET(reg, vdev_id, DLB2_SYS_DIR_PP2VDEV_VDEV);
+		DLB2_CSR_WR(hw, DLB2_SYS_DIR_PP2VDEV(port->id.phys_id), reg);
 
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VPP2PP(offs), r1.val);
-
-		r2.field.vdev = vdev_id;
-
-		DLB2_CSR_WR(hw,
-			    DLB2_SYS_DIR_PP2VDEV(port->id.phys_id),
-			    r2.val);
-
-		r3.field.vpp_v = 1;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VPP_V(offs), r3.val);
+		reg = 0;
+		DLB2_BIT_SET(reg, DLB2_SYS_VF_DIR_VPP_V_VPP_V);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VPP_V(offs), reg);
 	}
 
-	r4.field.pp_v = 1;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_SYS_DIR_PP_V(port->id.phys_id),
-		    r4.val);
+	reg = 0;
+	DLB2_BIT_SET(reg, DLB2_SYS_DIR_PP_V_PP_V);
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_PP_V(port->id.phys_id), reg);
 }
 
 static int dlb2_dir_port_configure_cq(struct dlb2_hw *hw,
@@ -4648,52 +4651,45 @@ static int dlb2_dir_port_configure_cq(struct dlb2_hw *hw,
 				      bool vdev_req,
 				      unsigned int vdev_id)
 {
-	union dlb2_sys_dir_cq_addr_l r0 = { {0} };
-	union dlb2_sys_dir_cq_addr_u r1 = { {0} };
-	union dlb2_sys_dir_cq2vf_pf_ro r2 = { {0} };
-	union dlb2_chp_dir_cq_tkn_depth_sel r3 = { {0} };
-	union dlb2_lsp_cq_dir_tkn_depth_sel_dsi r4 = { {0} };
-	union dlb2_sys_dir_cq_fmt r9 = { {0} };
-	union dlb2_sys_dir_cq_at r10 = { {0} };
-	union dlb2_sys_dir_cq_pasid r11 = { {0} };
-	union dlb2_chp_dir_cq2vas r12 = { {0} };
+	u32 reg = 0;
+	u32 ds = 0;
 
 	/* The CQ address is 64B-aligned, and the DLB only wants bits [63:6] */
-	r0.field.addr_l = cq_dma_base >> 6;
+	DLB2_BITS_SET(reg, cq_dma_base >> 6, DLB2_SYS_DIR_CQ_ADDR_L_ADDR_L);
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_ADDR_L(port->id.phys_id), reg);
 
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_ADDR_L(port->id.phys_id), r0.val);
-
-	r1.field.addr_u = cq_dma_base >> 32;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_ADDR_U(port->id.phys_id), r1.val);
+	reg = cq_dma_base >> 32;
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_ADDR_U(port->id.phys_id), reg);
 
 	/*
 	 * 'ro' == relaxed ordering. This setting allows DLB2 to write
 	 * cache lines out-of-order (but QEs within a cache line are always
 	 * updated in-order).
 	 */
-	r2.field.vf = vdev_id;
-	r2.field.is_pf = !vdev_req && (hw->virt_mode != DLB2_VIRT_SIOV);
-	r2.field.ro = 1;
+	reg = 0;
+	DLB2_BITS_SET(reg, vdev_id, DLB2_SYS_DIR_CQ2VF_PF_RO_VF);
+	DLB2_BITS_SET(reg, !vdev_req && (hw->virt_mode != DLB2_VIRT_SIOV),
+		 DLB2_SYS_DIR_CQ2VF_PF_RO_IS_PF);
+	DLB2_BIT_SET(reg, DLB2_SYS_DIR_CQ2VF_PF_RO_RO);
 
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ2VF_PF_RO(port->id.phys_id), r2.val);
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ2VF_PF_RO(port->id.phys_id), reg);
 
 	if (args->cq_depth <= 8) {
-		r3.field.token_depth_select = 1;
+		ds = 1;
 	} else if (args->cq_depth == 16) {
-		r3.field.token_depth_select = 2;
+		ds = 2;
 	} else if (args->cq_depth == 32) {
-		r3.field.token_depth_select = 3;
+		ds = 3;
 	} else if (args->cq_depth == 64) {
-		r3.field.token_depth_select = 4;
+		ds = 4;
 	} else if (args->cq_depth == 128) {
-		r3.field.token_depth_select = 5;
+		ds = 5;
 	} else if (args->cq_depth == 256) {
-		r3.field.token_depth_select = 6;
+		ds = 6;
 	} else if (args->cq_depth == 512) {
-		r3.field.token_depth_select = 7;
+		ds = 7;
 	} else if (args->cq_depth == 1024) {
-		r3.field.token_depth_select = 8;
+		ds = 8;
 	} else {
 		DLB2_HW_ERR(hw,
 			    "[%s():%d] Internal error: invalid CQ depth\n",
@@ -4701,9 +4697,12 @@ static int dlb2_dir_port_configure_cq(struct dlb2_hw *hw,
 		return -EFAULT;
 	}
 
+	reg = 0;
+	DLB2_BITS_SET(reg, ds,
+		      DLB2_CHP_DIR_CQ_TKN_DEPTH_SEL_TOKEN_DEPTH_SELECT);
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_TKN_DEPTH_SEL(port->id.phys_id),
-		    r3.val);
+		    DLB2_CHP_DIR_CQ_TKN_DEPTH_SEL(hw->ver, port->id.phys_id),
+		    reg);
 
 	/*
 	 * To support CQs with depth less than 8, program the token count
@@ -4714,59 +4713,57 @@ static int dlb2_dir_port_configure_cq(struct dlb2_hw *hw,
 	port->init_tkn_cnt = 0;
 
 	if (args->cq_depth < 8) {
-		union dlb2_lsp_cq_dir_tkn_cnt r13 = { {0} };
-
+		reg = 0;
 		port->init_tkn_cnt = 8 - args->cq_depth;
 
-		r13.field.count = port->init_tkn_cnt;
-
+		DLB2_BITS_SET(reg, port->init_tkn_cnt,
+			      DLB2_LSP_CQ_DIR_TKN_CNT_COUNT);
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_CQ_DIR_TKN_CNT(port->id.phys_id),
-			    r13.val);
+			    DLB2_LSP_CQ_DIR_TKN_CNT(hw->ver, port->id.phys_id),
+			    reg);
 	} else {
 		DLB2_CSR_WR(hw,
-			    DLB2_LSP_CQ_DIR_TKN_CNT(port->id.phys_id),
+			    DLB2_LSP_CQ_DIR_TKN_CNT(hw->ver, port->id.phys_id),
 			    DLB2_LSP_CQ_DIR_TKN_CNT_RST);
 	}
 
-	r4.field.token_depth_select = r3.field.token_depth_select;
-	r4.field.disable_wb_opt = 0;
-	r4.field.ignore_depth = 0;
-
+	reg = 0;
+	DLB2_BITS_SET(reg, ds,
+		      DLB2_LSP_CQ_DIR_TKN_DEPTH_SEL_DSI_TOKEN_DEPTH_SELECT_V2);
 	DLB2_CSR_WR(hw,
-		    DLB2_LSP_CQ_DIR_TKN_DEPTH_SEL_DSI(port->id.phys_id),
-		    r4.val);
+		    DLB2_LSP_CQ_DIR_TKN_DEPTH_SEL_DSI(hw->ver,
+						      port->id.phys_id),
+		    reg);
 
 	/* Reset the CQ write pointer */
 	DLB2_CSR_WR(hw,
-		    DLB2_CHP_DIR_CQ_WPTR(port->id.phys_id),
+		    DLB2_CHP_DIR_CQ_WPTR(hw->ver, port->id.phys_id),
 		    DLB2_CHP_DIR_CQ_WPTR_RST);
 
 	/* Virtualize the PPID */
-	r9.field.keep_pf_ppid = 0;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_FMT(port->id.phys_id), r9.val);
+	reg = 0;
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_FMT(port->id.phys_id), reg);
 
 	/*
 	 * Address translation (AT) settings: 0: untranslated, 2: translated
 	 * (see ATS spec regarding Address Type field for more details)
 	 */
-	r10.field.cq_at = 0;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_AT(port->id.phys_id), r10.val);
-
-	if (vdev_req && hw->virt_mode == DLB2_VIRT_SIOV) {
-		r11.field.pasid = hw->pasid[vdev_id];
-		r11.field.fmt2 = 1;
+	if (hw->ver == DLB2_HW_V2) {
+		reg = 0;
+		DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_AT(port->id.phys_id), reg);
 	}
 
-	DLB2_CSR_WR(hw,
-		    DLB2_SYS_DIR_CQ_PASID(port->id.phys_id),
-		    r11.val);
+	if (vdev_req && hw->virt_mode == DLB2_VIRT_SIOV) {
+		DLB2_BITS_SET(reg, hw->pasid[vdev_id],
+			      DLB2_SYS_DIR_CQ_PASID_PASID);
+		DLB2_BIT_SET(reg, DLB2_SYS_DIR_CQ_PASID_FMT2);
+	}
 
-	r12.field.cq2vas = domain->id.phys_id;
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_CQ_PASID(hw->ver, port->id.phys_id), reg);
 
-	DLB2_CSR_WR(hw, DLB2_CHP_DIR_CQ2VAS(port->id.phys_id), r12.val);
+	reg = 0;
+	DLB2_BITS_SET(reg, domain->id.phys_id, DLB2_CHP_DIR_CQ2VAS_CQ2VAS);
+	DLB2_CSR_WR(hw, DLB2_CHP_DIR_CQ2VAS(hw->ver, port->id.phys_id), reg);
 
 	return 0;
 }
@@ -4789,7 +4786,7 @@ static int dlb2_configure_dir_port(struct dlb2_hw *hw,
 					 vdev_req,
 					 vdev_id);
 
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	dlb2_dir_port_configure_pp(hw,
@@ -4808,18 +4805,32 @@ static int dlb2_configure_dir_port(struct dlb2_hw *hw,
 }
 
 /**
- * dlb2_hw_create_dir_port() - Allocate and initialize a DLB directed port
- *	and queue. The port/queue pair have the same ID and name.
- * @hw:	Contains the current state of the DLB2 hardware.
- * @domain_id: Domain ID
- * @args: User-provided arguments.
- * @cq_dma_base: Base DMA address for consumer queue memory
- * @resp: Response to user.
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_hw_create_dir_port() - create a directed port
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: port creation arguments.
+ * @cq_dma_base: base address of the CQ memory. This can be a PA or an IOVA.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Return: returns < 0 on error, 0 otherwise. If the driver is unable to
- * satisfy a request, resp->status will be set accordingly.
+ * This function creates a directed port.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the port ID.
+ *
+ * resp->id contains a virtual ID if vdev_req is true.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, a credit setting is invalid, a
+ *	    pointer address is not properly aligned, the domain is not
+ *	    configured, or the domain has already been started.
+ * EFAULT - Internal error (resp->status not set).
  */
 int dlb2_hw_create_dir_port(struct dlb2_hw *hw,
 			    u32 domain_id,
@@ -4850,25 +4861,11 @@ int dlb2_hw_create_dir_port(struct dlb2_hw *hw,
 					       args,
 					       resp,
 					       vdev_req,
-					       vdev_id);
+					       vdev_id,
+					       &domain,
+					       &port);
 	if (ret)
 		return ret;
-
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-
-	if (args->queue_id != -1)
-		port = dlb2_get_domain_used_dir_pq(args->queue_id,
-						   vdev_req,
-						   domain);
-	else
-		port = DLB2_DOM_LIST_HEAD(domain->avail_dir_pq_pairs,
-					  typeof(*port));
-	if (port == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: no available dir ports\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
 
 	ret = dlb2_configure_dir_port(hw,
 				      domain,
@@ -4877,7 +4874,7 @@ int dlb2_hw_create_dir_port(struct dlb2_hw *hw,
 				      args,
 				      vdev_req,
 				      vdev_id);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	/*
@@ -4903,52 +4900,42 @@ static void dlb2_configure_dir_queue(struct dlb2_hw *hw,
 				     bool vdev_req,
 				     unsigned int vdev_id)
 {
-	union dlb2_sys_dir_vasqid_v r0 = { {0} };
-	union dlb2_sys_dir_qid_its r1 = { {0} };
-	union dlb2_lsp_qid_dir_depth_thrsh r2 = { {0} };
-	union dlb2_sys_dir_qid_v r5 = { {0} };
-
 	unsigned int offs;
+	u32 reg = 0;
 
 	/* QID write permissions are turned on when the domain is started */
-	r0.field.vasqid_v = 0;
-
-	offs = domain->id.phys_id * DLB2_MAX_NUM_DIR_QUEUES +
+	offs = domain->id.phys_id * DLB2_MAX_NUM_DIR_QUEUES(hw->ver) +
 		queue->id.phys_id;
 
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_VASQID_V(offs), r0.val);
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_VASQID_V(offs), reg);
 
 	/* Don't timestamp QEs that pass through this queue */
-	r1.field.qid_its = 0;
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_QID_ITS(queue->id.phys_id), reg);
 
+	reg = 0;
+	DLB2_BITS_SET(reg, args->depth_threshold,
+		      DLB2_LSP_QID_DIR_DEPTH_THRSH_THRESH);
 	DLB2_CSR_WR(hw,
-		    DLB2_SYS_DIR_QID_ITS(queue->id.phys_id),
-		    r1.val);
-
-	r2.field.thresh = args->depth_threshold;
-
-	DLB2_CSR_WR(hw,
-		    DLB2_LSP_QID_DIR_DEPTH_THRSH(queue->id.phys_id),
-		    r2.val);
+		    DLB2_LSP_QID_DIR_DEPTH_THRSH(hw->ver, queue->id.phys_id),
+		    reg);
 
 	if (vdev_req) {
-		union dlb2_sys_vf_dir_vqid_v r3 = { {0} };
-		union dlb2_sys_vf_dir_vqid2qid r4 = { {0} };
+		offs = vdev_id * DLB2_MAX_NUM_DIR_QUEUES(hw->ver) +
+			queue->id.virt_id;
 
-		offs = vdev_id * DLB2_MAX_NUM_DIR_QUEUES + queue->id.virt_id;
+		reg = 0;
+		DLB2_BIT_SET(reg, DLB2_SYS_VF_DIR_VQID_V_VQID_V);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VQID_V(offs), reg);
 
-		r3.field.vqid_v = 1;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VQID_V(offs), r3.val);
-
-		r4.field.qid = queue->id.phys_id;
-
-		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VQID2QID(offs), r4.val);
+		reg = 0;
+		DLB2_BITS_SET(reg, queue->id.phys_id,
+			      DLB2_SYS_VF_DIR_VQID2QID_QID);
+		DLB2_CSR_WR(hw, DLB2_SYS_VF_DIR_VQID2QID(offs), reg);
 	}
 
-	r5.field.qid_v = 1;
-
-	DLB2_CSR_WR(hw, DLB2_SYS_DIR_QID_V(queue->id.phys_id), r5.val);
+	reg = 0;
+	DLB2_BIT_SET(reg, DLB2_SYS_DIR_QID_V_QID_V);
+	DLB2_CSR_WR(hw, DLB2_SYS_DIR_QID_V(queue->id.phys_id), reg);
 
 	queue->queue_configured = true;
 }
@@ -4973,13 +4960,16 @@ dlb2_verify_create_dir_queue_args(struct dlb2_hw *hw,
 				  struct dlb2_create_dir_queue_args *args,
 				  struct dlb2_cmd_response *resp,
 				  bool vdev_req,
-				  unsigned int vdev_id)
+				  unsigned int vdev_id,
+				  struct dlb2_hw_domain **out_domain,
+				  struct dlb2_dir_pq_pair **out_queue)
 {
 	struct dlb2_hw_domain *domain;
+	struct dlb2_dir_pq_pair *pq;
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -4999,43 +4989,60 @@ dlb2_verify_create_dir_queue_args(struct dlb2_hw *hw,
 	 * ID, its domain, and whether the port is configured.
 	 */
 	if (args->port_id != -1) {
-		struct dlb2_dir_pq_pair *port;
+		pq = dlb2_get_domain_used_dir_pq(hw,
+						 args->port_id,
+						 vdev_req,
+						 domain);
 
-		port = dlb2_get_domain_used_dir_pq(args->port_id,
-						   vdev_req,
-						   domain);
-
-		if (port == NULL || port->domain_id.phys_id !=
-				domain->id.phys_id || !port->port_configured) {
+		if (!pq || pq->domain_id.phys_id != domain->id.phys_id ||
+		    !pq->port_configured) {
 			resp->status = DLB2_ST_INVALID_PORT_ID;
+			return -EINVAL;
+		}
+	} else {
+		/*
+		 * If the queue's port is not configured, validate that a free
+		 * port-queue pair is available.
+		 */
+		pq = DLB2_DOM_LIST_HEAD(domain->avail_dir_pq_pairs,
+					typeof(*pq));
+		if (!pq) {
+			resp->status = DLB2_ST_DIR_QUEUES_UNAVAILABLE;
 			return -EINVAL;
 		}
 	}
 
-	/*
-	 * If the queue's port is not configured, validate that a free
-	 * port-queue pair is available.
-	 */
-	if (args->port_id == -1 &&
-	    dlb2_list_empty(&domain->avail_dir_pq_pairs)) {
-		resp->status = DLB2_ST_DIR_QUEUES_UNAVAILABLE;
-		return -EINVAL;
-	}
+	*out_domain = domain;
+	*out_queue = pq;
 
 	return 0;
 }
 
 /**
- * dlb2_hw_create_dir_queue() - Allocate and initialize a DLB DIR queue.
- * @hw:	Contains the current state of the DLB2 hardware.
- * @domain_id: Domain ID
- * @args: User-provided arguments.
- * @resp: Response to user.
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_hw_create_dir_queue() - create a directed queue
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: queue creation arguments.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Return: returns < 0 on error, 0 otherwise. If the driver is unable to
- * satisfy a request, resp->status will be set accordingly.
+ * This function creates a directed queue.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the queue ID.
+ *
+ * resp->id contains a virtual ID if vdev_req is true.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, the domain is not configured,
+ *	    or the domain has already been started.
+ * EFAULT - Internal error (resp->status not set).
  */
 int dlb2_hw_create_dir_queue(struct dlb2_hw *hw,
 			     u32 domain_id,
@@ -5059,31 +5066,11 @@ int dlb2_hw_create_dir_queue(struct dlb2_hw *hw,
 						args,
 						resp,
 						vdev_req,
-						vdev_id);
+						vdev_id,
+						&domain,
+						&queue);
 	if (ret)
 		return ret;
-
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: domain not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	if (args->port_id != -1)
-		queue = dlb2_get_domain_used_dir_pq(args->port_id,
-						    vdev_req,
-						    domain);
-	else
-		queue = DLB2_DOM_LIST_HEAD(domain->avail_dir_pq_pairs,
-					   typeof(*queue));
-	if (queue == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: no available dir queues\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
 
 	dlb2_configure_dir_queue(hw, domain, queue, args, vdev_req, vdev_id);
 
@@ -5124,26 +5111,6 @@ dlb2_port_find_slot_with_pending_map_queue(struct dlb2_ldb_port *port,
 	*slot = i;
 
 	return (i < DLB2_MAX_NUM_QIDS_PER_LDB_CQ);
-}
-
-static void dlb2_ldb_port_change_qid_priority(struct dlb2_hw *hw,
-					      struct dlb2_ldb_port *port,
-					      int slot,
-					      struct dlb2_map_qid_args *args)
-{
-	union dlb2_lsp_cq2priov r0;
-
-	/* Read-modify-write the priority and valid bit register */
-	r0.val = DLB2_CSR_RD(hw, DLB2_LSP_CQ2PRIOV(port->id.phys_id));
-
-	r0.field.v |= 1 << slot;
-	r0.field.prio |= (args->priority & 0x7) << slot * 3;
-
-	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(port->id.phys_id), r0.val);
-
-	dlb2_flush_csr(hw);
-
-	port->qid_map[slot].priority = args->priority;
 }
 
 static int dlb2_verify_map_qid_slot_available(struct dlb2_ldb_port *port,
@@ -5200,10 +5167,11 @@ dlb2_get_domain_ldb_queue(u32 id,
 	if (id >= DLB2_MAX_NUM_LDB_QUEUES)
 		return NULL;
 
-	DLB2_DOM_LIST_FOR(domain->used_ldb_queues, queue, iter)
+	DLB2_DOM_LIST_FOR(domain->used_ldb_queues, queue, iter) {
 		if ((!vdev_req && queue->id.phys_id == id) ||
 		    (vdev_req && queue->id.virt_id == id))
 			return queue;
+	}
 
 	return NULL;
 }
@@ -5222,18 +5190,43 @@ dlb2_get_domain_used_ldb_port(u32 id,
 		return NULL;
 
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter)
+		DLB2_DOM_LIST_FOR(domain->used_ldb_ports[i], port, iter) {
 			if ((!vdev_req && port->id.phys_id == id) ||
 			    (vdev_req && port->id.virt_id == id))
 				return port;
+		}
 
-		DLB2_DOM_LIST_FOR(domain->avail_ldb_ports[i], port, iter)
+		DLB2_DOM_LIST_FOR(domain->avail_ldb_ports[i], port, iter) {
 			if ((!vdev_req && port->id.phys_id == id) ||
 			    (vdev_req && port->id.virt_id == id))
 				return port;
+		}
 	}
 
 	return NULL;
+}
+
+static void dlb2_ldb_port_change_qid_priority(struct dlb2_hw *hw,
+					      struct dlb2_ldb_port *port,
+					      int slot,
+					      struct dlb2_map_qid_args *args)
+{
+	u32 cq2priov;
+
+	/* Read-modify-write the priority and valid bit register */
+	cq2priov = DLB2_CSR_RD(hw,
+			       DLB2_LSP_CQ2PRIOV(hw->ver, port->id.phys_id));
+
+	cq2priov |= (1 << (slot + DLB2_LSP_CQ2PRIOV_V_LOC)) &
+		    DLB2_LSP_CQ2PRIOV_V;
+	cq2priov |= ((args->priority & 0x7) << slot * 3) &
+		    DLB2_LSP_CQ2PRIOV_PRIO;
+
+	DLB2_CSR_WR(hw, DLB2_LSP_CQ2PRIOV(hw->ver, port->id.phys_id), cq2priov);
+
+	dlb2_flush_csr(hw);
+
+	port->qid_map[slot].priority = args->priority;
 }
 
 static int dlb2_verify_map_qid_args(struct dlb2_hw *hw,
@@ -5241,16 +5234,19 @@ static int dlb2_verify_map_qid_args(struct dlb2_hw *hw,
 				    struct dlb2_map_qid_args *args,
 				    struct dlb2_cmd_response *resp,
 				    bool vdev_req,
-				    unsigned int vdev_id)
+				    unsigned int vdev_id,
+				    struct dlb2_hw_domain **out_domain,
+				    struct dlb2_ldb_port **out_port,
+				    struct dlb2_ldb_queue **out_queue)
 {
 	struct dlb2_hw_domain *domain;
-	struct dlb2_ldb_port *port;
 	struct dlb2_ldb_queue *queue;
+	struct dlb2_ldb_port *port;
 	int id;
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -5264,7 +5260,7 @@ static int dlb2_verify_map_qid_args(struct dlb2_hw *hw,
 
 	port = dlb2_get_domain_used_ldb_port(id, vdev_req, domain);
 
-	if (port == NULL || !port->configured) {
+	if (!port || !port->configured) {
 		resp->status = DLB2_ST_INVALID_PORT_ID;
 		return -EINVAL;
 	}
@@ -5276,7 +5272,7 @@ static int dlb2_verify_map_qid_args(struct dlb2_hw *hw,
 
 	queue = dlb2_get_domain_ldb_queue(args->qid, vdev_req, domain);
 
-	if (queue == NULL || !queue->configured) {
+	if (!queue || !queue->configured) {
 		resp->status = DLB2_ST_INVALID_QID;
 		return -EINVAL;
 	}
@@ -5290,6 +5286,10 @@ static int dlb2_verify_map_qid_args(struct dlb2_hw *hw,
 		resp->status = DLB2_ST_INVALID_PORT_ID;
 		return -EINVAL;
 	}
+
+	*out_domain = domain;
+	*out_queue = queue;
+	*out_port = port;
 
 	return 0;
 }
@@ -5313,6 +5313,48 @@ static void dlb2_log_map_qid(struct dlb2_hw *hw,
 		    args->priority);
 }
 
+/**
+ * dlb2_hw_map_qid() - map a load-balanced queue to a load-balanced port
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: map QID arguments.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
+ *
+ * This function configures the DLB to schedule QEs from the specified queue
+ * to the specified port. Each load-balanced port can be mapped to up to 8
+ * queues; each load-balanced queue can potentially map to all the
+ * load-balanced ports.
+ *
+ * A successful return does not necessarily mean the mapping was configured. If
+ * this function is unable to immediately map the queue to the port, it will
+ * add the requested operation to a per-port list of pending map/unmap
+ * operations, and (if it's not already running) launch a kernel thread that
+ * periodically attempts to process all pending operations. In a sense, this is
+ * an asynchronous function.
+ *
+ * This asynchronicity creates two views of the state of hardware: the actual
+ * hardware state and the requested state (as if every request completed
+ * immediately). If there are any pending map/unmap operations, the requested
+ * state will differ from the actual state. All validation is performed with
+ * respect to the pending state; for instance, if there are 8 pending map
+ * operations for port X, a request for a 9th will fail because a load-balanced
+ * port can only map up to 8 queues.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, invalid port or queue ID, or
+ *	    the domain is not configured.
+ * EFAULT - Internal error (resp->status not set).
+ * EBUSY  - The requested port has outstanding detach operations.
+ */
 int dlb2_hw_map_qid(struct dlb2_hw *hw,
 		    u32 domain_id,
 		    struct dlb2_map_qid_args *args,
@@ -5324,7 +5366,7 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 	struct dlb2_ldb_queue *queue;
 	enum dlb2_qid_map_state st;
 	struct dlb2_ldb_port *port;
-	int ret, i, id;
+	int ret, i;
 	u8 prio;
 
 	dlb2_log_map_qid(hw, domain_id, args, vdev_req, vdev_id);
@@ -5338,45 +5380,26 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 				       args,
 				       resp,
 				       vdev_req,
-				       vdev_id);
+				       vdev_id,
+				       &domain,
+				       &port,
+				       &queue);
 	if (ret)
 		return ret;
 
 	prio = args->priority;
-
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: domain not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	id = args->port_id;
-
-	port = dlb2_get_domain_used_ldb_port(id, vdev_req, domain);
-	if (port == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	queue = dlb2_get_domain_ldb_queue(args->qid, vdev_req, domain);
-	if (queue == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: queue not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
 
 	/*
 	 * If there are any outstanding detach operations for this port,
 	 * attempt to complete them. This may be necessary to free up a QID
 	 * slot for this requested mapping.
 	 */
-	if (port->num_pending_removals)
-		dlb2_domain_finish_unmap_port(hw, domain, port);
+	if (port->num_pending_removals) {
+		bool bool_ret;
+		bool_ret = dlb2_domain_finish_unmap_port(hw, domain, port);
+		if (!bool_ret)
+			return -EBUSY;
+	}
 
 	ret = dlb2_verify_map_qid_slot_available(port, queue, resp);
 	if (ret)
@@ -5392,13 +5415,6 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 	 */
 	st = DLB2_QUEUE_MAPPED;
 	if (dlb2_port_find_slot_queue(port, st, queue, &i)) {
-		if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-			DLB2_HW_ERR(hw,
-				    "[%s():%d] Internal error: port slot tracking failed\n",
-				    __func__, __LINE__);
-			return -EFAULT;
-		}
-
 		if (prio != port->qid_map[i].priority) {
 			dlb2_ldb_port_change_qid_priority(hw, port, i, args);
 			DLB2_HW_DBG(hw, "DLB2 map: priority change\n");
@@ -5414,13 +5430,6 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 
 	st = DLB2_QUEUE_UNMAP_IN_PROG;
 	if (dlb2_port_find_slot_queue(port, st, queue, &i)) {
-		if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-			DLB2_HW_ERR(hw,
-				    "[%s():%d] Internal error: port slot tracking failed\n",
-				    __func__, __LINE__);
-			return -EFAULT;
-		}
-
 		if (prio != port->qid_map[i].priority) {
 			dlb2_ldb_port_change_qid_priority(hw, port, i, args);
 			DLB2_HW_DBG(hw, "DLB2 map: priority change\n");
@@ -5440,13 +5449,6 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 	 */
 	st = DLB2_QUEUE_MAP_IN_PROG;
 	if (dlb2_port_find_slot_queue(port, st, queue, &i)) {
-		if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-			DLB2_HW_ERR(hw,
-				    "[%s():%d] Internal error: port slot tracking failed\n",
-				    __func__, __LINE__);
-			return -EFAULT;
-		}
-
 		port->qid_map[i].priority = prio;
 
 		DLB2_HW_DBG(hw, "DLB2 map: priority change only\n");
@@ -5459,13 +5461,6 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 	 * pending priority
 	 */
 	if (dlb2_port_find_slot_with_pending_map_queue(port, queue, &i)) {
-		if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-			DLB2_HW_ERR(hw,
-				    "[%s():%d] Internal error: port slot tracking failed\n",
-				    __func__, __LINE__);
-			return -EFAULT;
-		}
-
 		port->qid_map[i].pending_priority = prio;
 
 		DLB2_HW_DBG(hw, "DLB2 map: priority change only\n");
@@ -5481,22 +5476,15 @@ int dlb2_hw_map_qid(struct dlb2_hw *hw,
 	 */
 	if (!dlb2_port_find_slot(port, DLB2_QUEUE_UNMAPPED, &i)) {
 		if (dlb2_port_find_slot(port, DLB2_QUEUE_UNMAP_IN_PROG, &i)) {
-			enum dlb2_qid_map_state st;
-
-			if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-				DLB2_HW_ERR(hw,
-					    "[%s():%d] Internal error: port slot tracking failed\n",
-					    __func__, __LINE__);
-				return -EFAULT;
-			}
+			enum dlb2_qid_map_state new_st;
 
 			port->qid_map[i].pending_qid = queue->id.phys_id;
 			port->qid_map[i].pending_priority = prio;
 
-			st = DLB2_QUEUE_UNMAP_IN_PROG_PENDING_MAP;
+			new_st = DLB2_QUEUE_UNMAP_IN_PROG_PENDING_MAP;
 
 			ret = dlb2_port_slot_state_transition(hw, port, queue,
-							      i, st);
+							      i, new_st);
 			if (ret)
 				return ret;
 
@@ -5554,7 +5542,10 @@ static int dlb2_verify_unmap_qid_args(struct dlb2_hw *hw,
 				      struct dlb2_unmap_qid_args *args,
 				      struct dlb2_cmd_response *resp,
 				      bool vdev_req,
-				      unsigned int vdev_id)
+				      unsigned int vdev_id,
+				      struct dlb2_hw_domain **out_domain,
+				      struct dlb2_ldb_port **out_port,
+				      struct dlb2_ldb_queue **out_queue)
 {
 	enum dlb2_qid_map_state state;
 	struct dlb2_hw_domain *domain;
@@ -5565,7 +5556,7 @@ static int dlb2_verify_unmap_qid_args(struct dlb2_hw *hw,
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -5579,7 +5570,7 @@ static int dlb2_verify_unmap_qid_args(struct dlb2_hw *hw,
 
 	port = dlb2_get_domain_used_ldb_port(id, vdev_req, domain);
 
-	if (port == NULL || !port->configured) {
+	if (!port || !port->configured) {
 		resp->status = DLB2_ST_INVALID_PORT_ID;
 		return -EINVAL;
 	}
@@ -5591,7 +5582,7 @@ static int dlb2_verify_unmap_qid_args(struct dlb2_hw *hw,
 
 	queue = dlb2_get_domain_ldb_queue(args->qid, vdev_req, domain);
 
-	if (queue == NULL || !queue->configured) {
+	if (!queue || !queue->configured) {
 		DLB2_HW_ERR(hw, "[%s()] Can't unmap unconfigured queue %d\n",
 			    __func__, args->qid);
 		resp->status = DLB2_ST_INVALID_QID;
@@ -5605,19 +5596,57 @@ static int dlb2_verify_unmap_qid_args(struct dlb2_hw *hw,
 	 */
 	state = DLB2_QUEUE_MAPPED;
 	if (dlb2_port_find_slot_queue(port, state, queue, &slot))
-		return 0;
+		goto done;
 
 	state = DLB2_QUEUE_MAP_IN_PROG;
 	if (dlb2_port_find_slot_queue(port, state, queue, &slot))
-		return 0;
+		goto done;
 
 	if (dlb2_port_find_slot_with_pending_map_queue(port, queue, &slot))
-		return 0;
+		goto done;
 
 	resp->status = DLB2_ST_INVALID_QID;
 	return -EINVAL;
+
+done:
+	*out_domain = domain;
+	*out_port = port;
+	*out_queue = queue;
+
+	return 0;
 }
 
+/**
+ * dlb2_hw_unmap_qid() - Unmap a load-balanced queue from a load-balanced port
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: unmap QID arguments.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
+ *
+ * This function configures the DLB to stop scheduling QEs from the specified
+ * queue to the specified port.
+ *
+ * A successful return does not necessarily mean the mapping was removed. If
+ * this function is unable to immediately unmap the queue from the port, it
+ * will add the requested operation to a per-port list of pending map/unmap
+ * operations, and (if it's not already running) launch a kernel thread that
+ * periodically attempts to process all pending operations. See
+ * dlb2_hw_map_qid() for more details.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error.
+ *
+ * Errors:
+ * EINVAL - A requested resource is unavailable, invalid port or queue ID, or
+ *	    the domain is not configured.
+ * EFAULT - Internal error (resp->status not set).
+ */
 int dlb2_hw_unmap_qid(struct dlb2_hw *hw,
 		      u32 domain_id,
 		      struct dlb2_unmap_qid_args *args,
@@ -5630,7 +5659,7 @@ int dlb2_hw_unmap_qid(struct dlb2_hw *hw,
 	enum dlb2_qid_map_state st;
 	struct dlb2_ldb_port *port;
 	bool unmap_complete;
-	int i, ret, id;
+	int i, ret;
 
 	dlb2_log_unmap_qid(hw, domain_id, args, vdev_req, vdev_id);
 
@@ -5643,35 +5672,12 @@ int dlb2_hw_unmap_qid(struct dlb2_hw *hw,
 					 args,
 					 resp,
 					 vdev_req,
-					 vdev_id);
+					 vdev_id,
+					 &domain,
+					 &port,
+					 &queue);
 	if (ret)
 		return ret;
-
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: domain not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	id = args->port_id;
-
-	port = dlb2_get_domain_used_ldb_port(id, vdev_req, domain);
-	if (port == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
-
-	queue = dlb2_get_domain_ldb_queue(args->qid, vdev_req, domain);
-	if (queue == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: queue not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
 
 	/*
 	 * If the queue hasn't been mapped yet, we need to update the slot's
@@ -5679,13 +5685,6 @@ int dlb2_hw_unmap_qid(struct dlb2_hw *hw,
 	 */
 	st = DLB2_QUEUE_MAP_IN_PROG;
 	if (dlb2_port_find_slot_queue(port, st, queue, &i)) {
-		if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-			DLB2_HW_ERR(hw,
-				    "[%s():%d] Internal error: port slot tracking failed\n",
-				    __func__, __LINE__);
-			return -EFAULT;
-		}
-
 		/*
 		 * Since the in-progress map was aborted, re-enable the QID's
 		 * inflights.
@@ -5706,13 +5705,6 @@ int dlb2_hw_unmap_qid(struct dlb2_hw *hw,
 	 * update the slot's state.
 	 */
 	if (dlb2_port_find_slot_with_pending_map_queue(port, queue, &i)) {
-		if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-			DLB2_HW_ERR(hw,
-				    "[%s():%d] Internal error: port slot tracking failed\n",
-				    __func__, __LINE__);
-			return -EFAULT;
-		}
-
 		st = DLB2_QUEUE_UNMAP_IN_PROG;
 		ret = dlb2_port_slot_state_transition(hw, port, queue, i, st);
 		if (ret)
@@ -5726,13 +5718,6 @@ int dlb2_hw_unmap_qid(struct dlb2_hw *hw,
 		DLB2_HW_ERR(hw,
 			    "[%s()] Internal error: no available CQ slots\n",
 			    __func__);
-		return -EFAULT;
-	}
-
-	if (i >= DLB2_MAX_NUM_QIDS_PER_LDB_CQ) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: port slot tracking failed\n",
-			    __func__, __LINE__);
 		return -EFAULT;
 	}
 
@@ -5782,6 +5767,24 @@ dlb2_log_pending_port_unmaps_args(struct dlb2_hw *hw,
 	DLB2_HW_DBG(hw, "\tPort ID: %d\n", args->port_id);
 }
 
+/**
+ * dlb2_hw_pending_port_unmaps() - returns the number of unmap operations in
+ *	progress.
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: number of unmaps in progress args
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the number of unmaps in progress.
+ *
+ * Errors:
+ * EINVAL - Invalid port ID.
+ */
 int dlb2_hw_pending_port_unmaps(struct dlb2_hw *hw,
 				u32 domain_id,
 				struct dlb2_pending_port_unmaps_args *args,
@@ -5796,13 +5799,13 @@ int dlb2_hw_pending_port_unmaps(struct dlb2_hw *hw,
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
 
 	port = dlb2_get_domain_used_ldb_port(args->port_id, vdev_req, domain);
-	if (port == NULL || !port->configured) {
+	if (!port || !port->configured) {
 		resp->status = DLB2_ST_INVALID_PORT_ID;
 		return -EINVAL;
 	}
@@ -5816,13 +5819,14 @@ static int dlb2_verify_start_domain_args(struct dlb2_hw *hw,
 					 u32 domain_id,
 					 struct dlb2_cmd_response *resp,
 					 bool vdev_req,
-					 unsigned int vdev_id)
+					 unsigned int vdev_id,
+					 struct dlb2_hw_domain **out_domain)
 {
 	struct dlb2_hw_domain *domain;
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
 
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
@@ -5836,6 +5840,8 @@ static int dlb2_verify_start_domain_args(struct dlb2_hw *hw,
 		resp->status = DLB2_ST_DOMAIN_STARTED;
 		return -EINVAL;
 	}
+
+	*out_domain = domain;
 
 	return 0;
 }
@@ -5852,21 +5858,32 @@ static void dlb2_log_start_domain(struct dlb2_hw *hw,
 }
 
 /**
- * dlb2_hw_start_domain() - Lock the domain configuration
- * @hw:	Contains the current state of the DLB2 hardware.
- * @domain_id: Domain ID
- * @arg: User-provided arguments (unused, here for ioctl callback template).
- * @resp: Response to user.
- * @vdev_req: Request came from a virtual device.
- * @vdev_id: If vdev_req is true, this contains the virtual device's ID.
+ * dlb2_hw_start_domain() - start a scheduling domain
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @arg: start domain arguments.
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
  *
- * Return: returns < 0 on error, 0 otherwise. If the driver is unable to
- * satisfy a request, resp->status will be set accordingly.
+ * This function starts a scheduling domain, which allows applications to send
+ * traffic through it. Once a domain is started, its resources can no longer be
+ * configured (besides QID remapping and port enable/disable).
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error.
+ *
+ * Errors:
+ * EINVAL - the domain is not configured, or the domain is already started.
  */
 int
 dlb2_hw_start_domain(struct dlb2_hw *hw,
 		     u32 domain_id,
-		     __attribute((unused)) struct dlb2_start_domain_args *arg,
+		     struct dlb2_start_domain_args *args,
 		     struct dlb2_cmd_response *resp,
 		     bool vdev_req,
 		     unsigned int vdev_id)
@@ -5876,7 +5893,7 @@ dlb2_hw_start_domain(struct dlb2_hw *hw,
 	struct dlb2_ldb_queue *ldb_queue;
 	struct dlb2_hw_domain *domain;
 	int ret;
-	RTE_SET_USED(arg);
+	RTE_SET_USED(args);
 	RTE_SET_USED(iter);
 
 	dlb2_log_start_domain(hw, domain_id, vdev_req, vdev_id);
@@ -5885,17 +5902,10 @@ dlb2_hw_start_domain(struct dlb2_hw *hw,
 					    domain_id,
 					    resp,
 					    vdev_req,
-					    vdev_id);
+					    vdev_id,
+					    &domain);
 	if (ret)
 		return ret;
-
-	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
-		DLB2_HW_ERR(hw,
-			    "[%s():%d] Internal error: domain not found\n",
-			    __func__, __LINE__);
-		return -EFAULT;
-	}
 
 	/*
 	 * Enable load-balanced and directed queue write permissions for the
@@ -5903,27 +5913,27 @@ dlb2_hw_start_domain(struct dlb2_hw *hw,
 	 * incoming traffic to those queues.
 	 */
 	DLB2_DOM_LIST_FOR(domain->used_ldb_queues, ldb_queue, iter) {
-		union dlb2_sys_ldb_vasqid_v r0 = { {0} };
+		u32 vasqid_v = 0;
 		unsigned int offs;
 
-		r0.field.vasqid_v = 1;
+		DLB2_BIT_SET(vasqid_v, DLB2_SYS_LDB_VASQID_V_VASQID_V);
 
 		offs = domain->id.phys_id * DLB2_MAX_NUM_LDB_QUEUES +
 			ldb_queue->id.phys_id;
 
-		DLB2_CSR_WR(hw, DLB2_SYS_LDB_VASQID_V(offs), r0.val);
+		DLB2_CSR_WR(hw, DLB2_SYS_LDB_VASQID_V(offs), vasqid_v);
 	}
 
 	DLB2_DOM_LIST_FOR(domain->used_dir_pq_pairs, dir_queue, iter) {
-		union dlb2_sys_dir_vasqid_v r0 = { {0} };
+		u32 vasqid_v = 0;
 		unsigned int offs;
 
-		r0.field.vasqid_v = 1;
+		DLB2_BIT_SET(vasqid_v, DLB2_SYS_DIR_VASQID_V_VASQID_V);
 
-		offs = domain->id.phys_id * DLB2_MAX_NUM_DIR_PORTS +
+		offs = domain->id.phys_id * DLB2_MAX_NUM_DIR_PORTS(hw->ver) +
 			dir_queue->id.phys_id;
 
-		DLB2_CSR_WR(hw, DLB2_SYS_DIR_VASQID_V(offs), r0.val);
+		DLB2_CSR_WR(hw, DLB2_SYS_DIR_VASQID_V(offs), vasqid_v);
 	}
 
 	dlb2_flush_csr(hw);
@@ -5948,6 +5958,28 @@ static void dlb2_log_get_dir_queue_depth(struct dlb2_hw *hw,
 	DLB2_HW_DBG(hw, "\tQueue ID: %d\n", queue_id);
 }
 
+/**
+ * dlb2_hw_get_dir_queue_depth() - returns the depth of a directed queue
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: queue depth args
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
+ *
+ * This function returns the depth of a directed queue.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the depth.
+ *
+ * Errors:
+ * EINVAL - Invalid domain ID or queue ID.
+ */
 int dlb2_hw_get_dir_queue_depth(struct dlb2_hw *hw,
 				u32 domain_id,
 				struct dlb2_get_dir_queue_depth_args *args,
@@ -5965,15 +5997,15 @@ int dlb2_hw_get_dir_queue_depth(struct dlb2_hw *hw,
 				     vdev_req, vdev_id);
 
 	domain = dlb2_get_domain_from_id(hw, id, vdev_req, vdev_id);
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
 
 	id = args->queue_id;
 
-	queue = dlb2_get_domain_used_dir_pq(id, vdev_req, domain);
-	if (queue == NULL) {
+	queue = dlb2_get_domain_used_dir_pq(hw, id, vdev_req, domain);
+	if (!queue) {
 		resp->status = DLB2_ST_INVALID_QID;
 		return -EINVAL;
 	}
@@ -5996,6 +6028,28 @@ static void dlb2_log_get_ldb_queue_depth(struct dlb2_hw *hw,
 	DLB2_HW_DBG(hw, "\tQueue ID: %d\n", queue_id);
 }
 
+/**
+ * dlb2_hw_get_ldb_queue_depth() - returns the depth of a load-balanced queue
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: queue depth args
+ * @resp: response structure.
+ * @vdev_req: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_req is true, this contains the vdev's ID.
+ *
+ * This function returns the depth of a load-balanced queue.
+ *
+ * A vdev can be either an SR-IOV virtual function or a Scalable IOV virtual
+ * device.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the depth.
+ *
+ * Errors:
+ * EINVAL - Invalid domain ID or queue ID.
+ */
 int dlb2_hw_get_ldb_queue_depth(struct dlb2_hw *hw,
 				u32 domain_id,
 				struct dlb2_get_ldb_queue_depth_args *args,
@@ -6010,13 +6064,13 @@ int dlb2_hw_get_ldb_queue_depth(struct dlb2_hw *hw,
 				     vdev_req, vdev_id);
 
 	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
-	if (domain == NULL) {
+	if (!domain) {
 		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
 		return -EINVAL;
 	}
 
 	queue = dlb2_get_domain_ldb_queue(args->queue_id, vdev_req, domain);
-	if (queue == NULL) {
+	if (!queue) {
 		resp->status = DLB2_ST_INVALID_QID;
 		return -EINVAL;
 	}
@@ -6025,3 +6079,197 @@ int dlb2_hw_get_ldb_queue_depth(struct dlb2_hw *hw,
 
 	return 0;
 }
+
+/**
+ * dlb2_finish_unmap_qid_procedures() - finish any pending unmap procedures
+ * @hw: dlb2_hw handle for a particular device.
+ *
+ * This function attempts to finish any outstanding unmap procedures.
+ * This function should be called by the kernel thread responsible for
+ * finishing map/unmap procedures.
+ *
+ * Return:
+ * Returns the number of procedures that weren't completed.
+ */
+unsigned int dlb2_finish_unmap_qid_procedures(struct dlb2_hw *hw)
+{
+	int i, num = 0;
+
+	/* Finish queue unmap jobs for any domain that needs it */
+	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
+		struct dlb2_hw_domain *domain = &hw->domains[i];
+
+		num += dlb2_domain_finish_unmap_qid_procedures(hw, domain);
+	}
+
+	return num;
+}
+
+/**
+ * dlb2_finish_map_qid_procedures() - finish any pending map procedures
+ * @hw: dlb2_hw handle for a particular device.
+ *
+ * This function attempts to finish any outstanding map procedures.
+ * This function should be called by the kernel thread responsible for
+ * finishing map/unmap procedures.
+ *
+ * Return:
+ * Returns the number of procedures that weren't completed.
+ */
+unsigned int dlb2_finish_map_qid_procedures(struct dlb2_hw *hw)
+{
+	int i, num = 0;
+
+	/* Finish queue map jobs for any domain that needs it */
+	for (i = 0; i < DLB2_MAX_NUM_DOMAINS; i++) {
+		struct dlb2_hw_domain *domain = &hw->domains[i];
+
+		num += dlb2_domain_finish_map_qid_procedures(hw, domain);
+	}
+
+	return num;
+}
+
+/**
+ * dlb2_hw_enable_sparse_dir_cq_mode() - enable sparse mode for directed ports.
+ * @hw: dlb2_hw handle for a particular device.
+ *
+ * This function must be called prior to configuring scheduling domains.
+ */
+
+void dlb2_hw_enable_sparse_dir_cq_mode(struct dlb2_hw *hw)
+{
+	u32 ctrl;
+
+	ctrl = DLB2_CSR_RD(hw, DLB2_CHP_CFG_CHP_CSR_CTRL);
+
+	DLB2_BIT_SET(ctrl,
+		     DLB2_CHP_CFG_CHP_CSR_CTRL_CFG_64BYTES_QE_DIR_CQ_MODE);
+
+	DLB2_CSR_WR(hw, DLB2_CHP_CFG_CHP_CSR_CTRL, ctrl);
+}
+
+/**
+ * dlb2_hw_enable_sparse_ldb_cq_mode() - enable sparse mode for load-balanced
+ *	ports.
+ * @hw: dlb2_hw handle for a particular device.
+ *
+ * This function must be called prior to configuring scheduling domains.
+ */
+void dlb2_hw_enable_sparse_ldb_cq_mode(struct dlb2_hw *hw)
+{
+	u32 ctrl;
+
+	ctrl = DLB2_CSR_RD(hw, DLB2_CHP_CFG_CHP_CSR_CTRL);
+
+	DLB2_BIT_SET(ctrl,
+		     DLB2_CHP_CFG_CHP_CSR_CTRL_CFG_64BYTES_QE_LDB_CQ_MODE);
+
+	DLB2_CSR_WR(hw, DLB2_CHP_CFG_CHP_CSR_CTRL, ctrl);
+}
+
+/**
+ * dlb2_get_group_sequence_numbers() - return a group's number of SNs per queue
+ * @hw: dlb2_hw handle for a particular device.
+ * @group_id: sequence number group ID.
+ *
+ * This function returns the configured number of sequence numbers per queue
+ * for the specified group.
+ *
+ * Return:
+ * Returns -EINVAL if group_id is invalid, else the group's SNs per queue.
+ */
+int dlb2_get_group_sequence_numbers(struct dlb2_hw *hw, u32 group_id)
+{
+	if (group_id >= DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS)
+		return -EINVAL;
+
+	return hw->rsrcs.sn_groups[group_id].sequence_numbers_per_queue;
+}
+
+/**
+ * dlb2_get_group_sequence_number_occupancy() - return a group's in-use slots
+ * @hw: dlb2_hw handle for a particular device.
+ * @group_id: sequence number group ID.
+ *
+ * This function returns the group's number of in-use slots (i.e. load-balanced
+ * queues using the specified group).
+ *
+ * Return:
+ * Returns -EINVAL if group_id is invalid, else the group's SNs per queue.
+ */
+int dlb2_get_group_sequence_number_occupancy(struct dlb2_hw *hw, u32 group_id)
+{
+	if (group_id >= DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS)
+		return -EINVAL;
+
+	return dlb2_sn_group_used_slots(&hw->rsrcs.sn_groups[group_id]);
+}
+
+static void dlb2_log_set_group_sequence_numbers(struct dlb2_hw *hw,
+						u32 group_id,
+						u32 val)
+{
+	DLB2_HW_DBG(hw, "DLB2 set group sequence numbers:\n");
+	DLB2_HW_DBG(hw, "\tGroup ID: %u\n", group_id);
+	DLB2_HW_DBG(hw, "\tValue:    %u\n", val);
+}
+
+/**
+ * dlb2_set_group_sequence_numbers() - assign a group's number of SNs per queue
+ * @hw: dlb2_hw handle for a particular device.
+ * @group_id: sequence number group ID.
+ * @val: requested amount of sequence numbers per queue.
+ *
+ * This function configures the group's number of sequence numbers per queue.
+ * val can be a power-of-two between 32 and 1024, inclusive. This setting can
+ * be configured until the first ordered load-balanced queue is configured, at
+ * which point the configuration is locked.
+ *
+ * Return:
+ * Returns 0 upon success; -EINVAL if group_id or val is invalid, -EPERM if an
+ * ordered queue is configured.
+ */
+int dlb2_set_group_sequence_numbers(struct dlb2_hw *hw,
+				    u32 group_id,
+				    u32 val)
+{
+	const u32 valid_allocations[] = {64, 128, 256, 512, 1024};
+	struct dlb2_sn_group *group;
+	u32 sn_mode = 0;
+	int mode;
+
+	if (group_id >= DLB2_MAX_NUM_SEQUENCE_NUMBER_GROUPS)
+		return -EINVAL;
+
+	group = &hw->rsrcs.sn_groups[group_id];
+
+	/*
+	 * Once the first load-balanced queue using an SN group is configured,
+	 * the group cannot be changed.
+	 */
+	if (group->slot_use_bitmap != 0)
+		return -EPERM;
+
+	for (mode = 0; mode < DLB2_MAX_NUM_SEQUENCE_NUMBER_MODES; mode++)
+		if (val == valid_allocations[mode])
+			break;
+
+	if (mode == DLB2_MAX_NUM_SEQUENCE_NUMBER_MODES)
+		return -EINVAL;
+
+	group->mode = mode;
+	group->sequence_numbers_per_queue = val;
+
+	DLB2_BITS_SET(sn_mode, hw->rsrcs.sn_groups[0].mode,
+		 DLB2_RO_GRP_SN_MODE_SN_MODE_0);
+	DLB2_BITS_SET(sn_mode, hw->rsrcs.sn_groups[1].mode,
+		 DLB2_RO_GRP_SN_MODE_SN_MODE_1);
+
+	DLB2_CSR_WR(hw, DLB2_RO_GRP_SN_MODE(hw->ver), sn_mode);
+
+	dlb2_log_set_group_sequence_numbers(hw, group_id, val);
+
+	return 0;
+}
+

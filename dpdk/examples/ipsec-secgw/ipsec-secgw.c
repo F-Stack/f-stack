@@ -24,7 +24,6 @@
 #include <rte_log.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -48,6 +47,7 @@
 #include <rte_ip.h>
 #include <rte_ip_frag.h>
 #include <rte_alarm.h>
+#include <rte_telemetry.h>
 
 #include "event_helper.h"
 #include "flow.h"
@@ -115,6 +115,9 @@ struct flow_info flow_info_tbl[RTE_MAX_ETHPORTS];
 #define CMD_LINE_OPT_REASSEMBLE		"reassemble"
 #define CMD_LINE_OPT_MTU		"mtu"
 #define CMD_LINE_OPT_FRAG_TTL		"frag-ttl"
+#define CMD_LINE_OPT_EVENT_VECTOR	"event-vector"
+#define CMD_LINE_OPT_VECTOR_SIZE	"vector-size"
+#define CMD_LINE_OPT_VECTOR_TIMEOUT	"vector-tmo"
 
 #define CMD_LINE_ARG_EVENT	"event"
 #define CMD_LINE_ARG_POLL	"poll"
@@ -139,6 +142,9 @@ enum {
 	CMD_LINE_OPT_REASSEMBLE_NUM,
 	CMD_LINE_OPT_MTU_NUM,
 	CMD_LINE_OPT_FRAG_TTL_NUM,
+	CMD_LINE_OPT_EVENT_VECTOR_NUM,
+	CMD_LINE_OPT_VECTOR_SIZE_NUM,
+	CMD_LINE_OPT_VECTOR_TIMEOUT_NUM,
 };
 
 static const struct option lgopts[] = {
@@ -152,6 +158,9 @@ static const struct option lgopts[] = {
 	{CMD_LINE_OPT_REASSEMBLE, 1, 0, CMD_LINE_OPT_REASSEMBLE_NUM},
 	{CMD_LINE_OPT_MTU, 1, 0, CMD_LINE_OPT_MTU_NUM},
 	{CMD_LINE_OPT_FRAG_TTL, 1, 0, CMD_LINE_OPT_FRAG_TTL_NUM},
+	{CMD_LINE_OPT_EVENT_VECTOR, 0, 0, CMD_LINE_OPT_EVENT_VECTOR_NUM},
+	{CMD_LINE_OPT_VECTOR_SIZE, 1, 0, CMD_LINE_OPT_VECTOR_SIZE_NUM},
+	{CMD_LINE_OPT_VECTOR_TIMEOUT, 1, 0, CMD_LINE_OPT_VECTOR_TIMEOUT_NUM},
 	{NULL, 0, 0, 0}
 };
 
@@ -164,7 +173,7 @@ static int32_t promiscuous_on;
 static int32_t numa_on = 1; /**< NUMA is enabled by default. */
 static uint32_t nb_lcores;
 static uint32_t single_sa;
-static uint32_t nb_bufs_in_pool;
+uint32_t nb_bufs_in_pool;
 
 /*
  * RX/TX HW offload capabilities to enable/use on ethernet ports.
@@ -180,11 +189,13 @@ static uint32_t frag_tbl_sz;
 static uint32_t frame_buf_size = RTE_MBUF_DEFAULT_BUF_SIZE;
 static uint32_t mtu_size = RTE_ETHER_MTU;
 static uint64_t frag_ttl_ns = MAX_FRAG_TTL_NS;
+static uint32_t stats_interval;
 
 /* application wide librte_ipsec/SA parameters */
 struct app_sa_prm app_sa_prm = {
 			.enable = 0,
-			.cache_sz = SA_CACHE_SZ
+			.cache_sz = SA_CACHE_SZ,
+			.udp_encap = 0
 		};
 static const char *cfgfile;
 
@@ -233,20 +244,19 @@ static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode	= ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.mq_mode	= RTE_ETH_MQ_RX_RSS,
 		.split_hdr_size = 0,
-		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP | ETH_RSS_UDP |
-				ETH_RSS_TCP | ETH_RSS_SCTP,
+			.rss_hf = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP |
+				RTE_ETH_RSS_TCP | RTE_ETH_RSS_SCTP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -290,7 +300,6 @@ adjust_ipv6_pktlen(struct rte_mbuf *m, const struct rte_ipv6_hdr *iph,
 	}
 }
 
-#if (STATS_INTERVAL > 0)
 
 struct ipsec_core_statistics core_statistics[RTE_MAX_LCORE];
 
@@ -352,9 +361,8 @@ print_stats_cb(__rte_unused void *param)
 		   total_packets_dropped);
 	printf("\n====================================================\n");
 
-	rte_eal_alarm_set(STATS_INTERVAL * US_PER_S, print_stats_cb, NULL);
+	rte_eal_alarm_set(stats_interval * US_PER_S, print_stats_cb, NULL);
 }
-#endif /* STATS_INTERVAL */
 
 static inline void
 prepare_one_packet(struct rte_mbuf *pkt, struct ipsec_traffic *t)
@@ -362,6 +370,9 @@ prepare_one_packet(struct rte_mbuf *pkt, struct ipsec_traffic *t)
 	const struct rte_ether_hdr *eth;
 	const struct rte_ipv4_hdr *iph4;
 	const struct rte_ipv6_hdr *iph6;
+	const struct rte_udp_hdr *udp;
+	uint16_t ip4_hdr_len;
+	uint16_t nat_port;
 
 	eth = rte_pktmbuf_mtod(pkt, const struct rte_ether_hdr *);
 	if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
@@ -370,15 +381,38 @@ prepare_one_packet(struct rte_mbuf *pkt, struct ipsec_traffic *t)
 			RTE_ETHER_HDR_LEN);
 		adjust_ipv4_pktlen(pkt, iph4, 0);
 
-		if (iph4->next_proto_id == IPPROTO_ESP)
+		switch (iph4->next_proto_id) {
+		case IPPROTO_ESP:
 			t->ipsec.pkts[(t->ipsec.num)++] = pkt;
-		else {
+			break;
+		case IPPROTO_UDP:
+			if (app_sa_prm.udp_encap == 1) {
+				ip4_hdr_len = ((iph4->version_ihl &
+					RTE_IPV4_HDR_IHL_MASK) *
+					RTE_IPV4_IHL_MULTIPLIER);
+				udp = rte_pktmbuf_mtod_offset(pkt,
+					struct rte_udp_hdr *, ip4_hdr_len);
+				nat_port = rte_cpu_to_be_16(IPSEC_NAT_T_PORT);
+				if (udp->src_port == nat_port ||
+					udp->dst_port == nat_port){
+					t->ipsec.pkts[(t->ipsec.num)++] = pkt;
+					pkt->packet_type |=
+						MBUF_PTYPE_TUNNEL_ESP_IN_UDP;
+					break;
+				}
+			}
+		/* Fall through */
+		default:
 			t->ip4.data[t->ip4.num] = &iph4->next_proto_id;
 			t->ip4.pkts[(t->ip4.num)++] = pkt;
 		}
 		pkt->l2_len = 0;
 		pkt->l3_len = sizeof(*iph4);
 		pkt->packet_type |= RTE_PTYPE_L3_IPV4;
+		if  (pkt->packet_type & RTE_PTYPE_L4_TCP)
+			pkt->l4_len = sizeof(struct rte_tcp_hdr);
+		else if (pkt->packet_type & RTE_PTYPE_L4_UDP)
+			pkt->l4_len = sizeof(struct rte_udp_hdr);
 	} else if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
 		int next_proto;
 		size_t l3len, ext_len;
@@ -405,9 +439,25 @@ prepare_one_packet(struct rte_mbuf *pkt, struct ipsec_traffic *t)
 			return;
 		}
 
-		if (next_proto == IPPROTO_ESP)
+		switch (next_proto) {
+		case IPPROTO_ESP:
 			t->ipsec.pkts[(t->ipsec.num)++] = pkt;
-		else {
+			break;
+		case IPPROTO_UDP:
+			if (app_sa_prm.udp_encap == 1) {
+				udp = rte_pktmbuf_mtod_offset(pkt,
+					struct rte_udp_hdr *, l3len);
+				nat_port = rte_cpu_to_be_16(IPSEC_NAT_T_PORT);
+				if (udp->src_port == nat_port ||
+					udp->dst_port == nat_port){
+					t->ipsec.pkts[(t->ipsec.num)++] = pkt;
+					pkt->packet_type |=
+						MBUF_PTYPE_TUNNEL_ESP_IN_UDP;
+					break;
+				}
+			}
+		/* Fall through */
+		default:
 			t->ip6.data[t->ip6.num] = &iph6->proto;
 			t->ip6.pkts[(t->ip6.num)++] = pkt;
 		}
@@ -429,7 +479,7 @@ prepare_one_packet(struct rte_mbuf *pkt, struct ipsec_traffic *t)
 	 * with the security session.
 	 */
 
-	if (pkt->ol_flags & PKT_RX_SEC_OFFLOAD &&
+	if (pkt->ol_flags & RTE_MBUF_F_RX_SEC_OFFLOAD &&
 			rte_security_dynfield_is_registered()) {
 		struct ipsec_sa *sa;
 		struct ipsec_mbuf_metadata *priv;
@@ -496,7 +546,7 @@ prepare_tx_pkt(struct rte_mbuf *pkt, uint16_t port,
 		ip->ip_sum = 0;
 
 		/* calculate IPv4 cksum in SW */
-		if ((pkt->ol_flags & PKT_TX_IP_CKSUM) == 0)
+		if ((pkt->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) == 0)
 			ip->ip_sum = rte_ipv4_cksum((struct rte_ipv4_hdr *)ip);
 
 		ethhdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
@@ -508,9 +558,9 @@ prepare_tx_pkt(struct rte_mbuf *pkt, uint16_t port,
 		ethhdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	}
 
-	memcpy(&ethhdr->s_addr, &ethaddr_tbl[port].src,
+	memcpy(&ethhdr->src_addr, &ethaddr_tbl[port].src,
 			sizeof(struct rte_ether_addr));
-	memcpy(&ethhdr->d_addr, &ethaddr_tbl[port].dst,
+	memcpy(&ethhdr->dst_addr, &ethaddr_tbl[port].dst,
 			sizeof(struct rte_ether_addr));
 }
 
@@ -634,7 +684,7 @@ send_single_packet(struct rte_mbuf *m, uint16_t port, uint8_t proto)
 
 static inline void
 inbound_sp_sa(struct sp_ctx *sp, struct sa_ctx *sa, struct traffic_type *ip,
-		uint16_t lim)
+		uint16_t lim, struct ipsec_spd_stats *stats)
 {
 	struct rte_mbuf *m;
 	uint32_t i, j, res, sa_idx;
@@ -651,25 +701,30 @@ inbound_sp_sa(struct sp_ctx *sp, struct sa_ctx *sa, struct traffic_type *ip,
 		res = ip->res[i];
 		if (res == BYPASS) {
 			ip->pkts[j++] = m;
+			stats->bypass++;
 			continue;
 		}
 		if (res == DISCARD) {
 			free_pkts(&m, 1);
+			stats->discard++;
 			continue;
 		}
 
 		/* Only check SPI match for processed IPSec packets */
-		if (i < lim && ((m->ol_flags & PKT_RX_SEC_OFFLOAD) == 0)) {
+		if (i < lim && ((m->ol_flags & RTE_MBUF_F_RX_SEC_OFFLOAD) == 0)) {
+			stats->discard++;
 			free_pkts(&m, 1);
 			continue;
 		}
 
 		sa_idx = res - 1;
 		if (!inbound_sa_check(sa, m, sa_idx)) {
+			stats->discard++;
 			free_pkts(&m, 1);
 			continue;
 		}
 		ip->pkts[j++] = m;
+		stats->protect++;
 	}
 	ip->num = j;
 }
@@ -713,6 +768,7 @@ static inline void
 process_pkts_inbound(struct ipsec_ctx *ipsec_ctx,
 		struct ipsec_traffic *traffic)
 {
+	unsigned int lcoreid = rte_lcore_id();
 	uint16_t nb_pkts_in, n_ip4, n_ip6;
 
 	n_ip4 = traffic->ip4.num;
@@ -728,16 +784,20 @@ process_pkts_inbound(struct ipsec_ctx *ipsec_ctx,
 		ipsec_process(ipsec_ctx, traffic);
 	}
 
-	inbound_sp_sa(ipsec_ctx->sp4_ctx, ipsec_ctx->sa_ctx, &traffic->ip4,
-			n_ip4);
+	inbound_sp_sa(ipsec_ctx->sp4_ctx,
+		ipsec_ctx->sa_ctx, &traffic->ip4, n_ip4,
+		&core_statistics[lcoreid].inbound.spd4);
 
-	inbound_sp_sa(ipsec_ctx->sp6_ctx, ipsec_ctx->sa_ctx, &traffic->ip6,
-			n_ip6);
+	inbound_sp_sa(ipsec_ctx->sp6_ctx,
+		ipsec_ctx->sa_ctx, &traffic->ip6, n_ip6,
+		&core_statistics[lcoreid].inbound.spd6);
 }
 
 static inline void
-outbound_sp(struct sp_ctx *sp, struct traffic_type *ip,
-		struct traffic_type *ipsec)
+outbound_spd_lookup(struct sp_ctx *sp,
+		struct traffic_type *ip,
+		struct traffic_type *ipsec,
+		struct ipsec_spd_stats *stats)
 {
 	struct rte_mbuf *m;
 	uint32_t i, j, sa_idx;
@@ -748,17 +808,23 @@ outbound_sp(struct sp_ctx *sp, struct traffic_type *ip,
 	rte_acl_classify((struct rte_acl_ctx *)sp, ip->data, ip->res,
 			ip->num, DEFAULT_MAX_CATEGORIES);
 
-	j = 0;
-	for (i = 0; i < ip->num; i++) {
+	for (i = 0, j = 0; i < ip->num; i++) {
 		m = ip->pkts[i];
 		sa_idx = ip->res[i] - 1;
-		if (ip->res[i] == DISCARD)
+
+		if (unlikely(ip->res[i] == DISCARD)) {
 			free_pkts(&m, 1);
-		else if (ip->res[i] == BYPASS)
+
+			stats->discard++;
+		} else if (unlikely(ip->res[i] == BYPASS)) {
 			ip->pkts[j++] = m;
-		else {
+
+			stats->bypass++;
+		} else {
 			ipsec->res[ipsec->num] = sa_idx;
 			ipsec->pkts[ipsec->num++] = m;
+
+			stats->protect++;
 		}
 	}
 	ip->num = j;
@@ -770,15 +836,20 @@ process_pkts_outbound(struct ipsec_ctx *ipsec_ctx,
 {
 	struct rte_mbuf *m;
 	uint16_t idx, nb_pkts_out, i;
+	unsigned int lcoreid = rte_lcore_id();
 
 	/* Drop any IPsec traffic from protected ports */
 	free_pkts(traffic->ipsec.pkts, traffic->ipsec.num);
 
 	traffic->ipsec.num = 0;
 
-	outbound_sp(ipsec_ctx->sp4_ctx, &traffic->ip4, &traffic->ipsec);
+	outbound_spd_lookup(ipsec_ctx->sp4_ctx,
+		&traffic->ip4, &traffic->ipsec,
+		&core_statistics[lcoreid].outbound.spd4);
 
-	outbound_sp(ipsec_ctx->sp6_ctx, &traffic->ip6, &traffic->ipsec);
+	outbound_spd_lookup(ipsec_ctx->sp6_ctx,
+		&traffic->ip6, &traffic->ipsec,
+		&core_statistics[lcoreid].outbound.spd6);
 
 	if (app_sa_prm.enable == 0) {
 
@@ -810,16 +881,6 @@ process_pkts_inbound_nosp(struct ipsec_ctx *ipsec_ctx,
 {
 	struct rte_mbuf *m;
 	uint32_t nb_pkts_in, i, idx;
-
-	/* Drop any IPv4 traffic from unprotected ports */
-	free_pkts(traffic->ip4.pkts, traffic->ip4.num);
-
-	traffic->ip4.num = 0;
-
-	/* Drop any IPv6 traffic from unprotected ports */
-	free_pkts(traffic->ip6.pkts, traffic->ip6.num);
-
-	traffic->ip6.num = 0;
 
 	if (app_sa_prm.enable == 0) {
 
@@ -932,6 +993,7 @@ route4_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 	int32_t pkt_hop = 0;
 	uint16_t i, offset;
 	uint16_t lpm_pkts = 0;
+	unsigned int lcoreid = rte_lcore_id();
 
 	if (nb_pkts == 0)
 		return;
@@ -941,7 +1003,7 @@ route4_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 	 */
 
 	for (i = 0; i < nb_pkts; i++) {
-		if (!(pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD)) {
+		if (!(pkts[i]->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)) {
 			/* Security offload not enabled. So an LPM lookup is
 			 * required to get the hop
 			 */
@@ -958,7 +1020,7 @@ route4_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 	lpm_pkts = 0;
 
 	for (i = 0; i < nb_pkts; i++) {
-		if (pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD) {
+		if (pkts[i]->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) {
 			/* Read hop from the SA */
 			pkt_hop = get_hop_for_offload_pkt(pkts[i], 0);
 		} else {
@@ -967,6 +1029,7 @@ route4_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 		}
 
 		if ((pkt_hop & RTE_LPM_LOOKUP_SUCCESS) == 0) {
+			core_statistics[lcoreid].lpm4.miss++;
 			free_pkts(&pkts[i], 1);
 			continue;
 		}
@@ -983,6 +1046,7 @@ route6_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 	int32_t pkt_hop = 0;
 	uint16_t i, offset;
 	uint16_t lpm_pkts = 0;
+	unsigned int lcoreid = rte_lcore_id();
 
 	if (nb_pkts == 0)
 		return;
@@ -992,7 +1056,7 @@ route6_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 	 */
 
 	for (i = 0; i < nb_pkts; i++) {
-		if (!(pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD)) {
+		if (!(pkts[i]->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)) {
 			/* Security offload not enabled. So an LPM lookup is
 			 * required to get the hop
 			 */
@@ -1010,7 +1074,7 @@ route6_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 	lpm_pkts = 0;
 
 	for (i = 0; i < nb_pkts; i++) {
-		if (pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD) {
+		if (pkts[i]->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) {
 			/* Read hop from the SA */
 			pkt_hop = get_hop_for_offload_pkt(pkts[i], 1);
 		} else {
@@ -1019,6 +1083,7 @@ route6_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 		}
 
 		if (pkt_hop == -1) {
+			core_statistics[lcoreid].lpm6.miss++;
 			free_pkts(&pkts[i], 1);
 			continue;
 		}
@@ -1092,6 +1157,7 @@ drain_inbound_crypto_queues(const struct lcore_conf *qconf,
 {
 	uint32_t n;
 	struct ipsec_traffic trf;
+	unsigned int lcoreid = rte_lcore_id();
 
 	if (app_sa_prm.enable == 0) {
 
@@ -1109,13 +1175,15 @@ drain_inbound_crypto_queues(const struct lcore_conf *qconf,
 
 	/* process ipv4 packets */
 	if (trf.ip4.num != 0) {
-		inbound_sp_sa(ctx->sp4_ctx, ctx->sa_ctx, &trf.ip4, 0);
+		inbound_sp_sa(ctx->sp4_ctx, ctx->sa_ctx, &trf.ip4, 0,
+			&core_statistics[lcoreid].inbound.spd4);
 		route4_pkts(qconf->rt4_ctx, trf.ip4.pkts, trf.ip4.num);
 	}
 
 	/* process ipv6 packets */
 	if (trf.ip6.num != 0) {
-		inbound_sp_sa(ctx->sp6_ctx, ctx->sa_ctx, &trf.ip6, 0);
+		inbound_sp_sa(ctx->sp6_ctx, ctx->sa_ctx, &trf.ip6, 0,
+			&core_statistics[lcoreid].inbound.spd6);
 		route6_pkts(qconf->rt6_ctx, trf.ip6.pkts, trf.ip6.num);
 	}
 }
@@ -1369,6 +1437,7 @@ print_usage(const char *prgname)
 		" [-e]"
 		" [-a]"
 		" [-c]"
+		" [-t STATS_INTERVAL]"
 		" [-s NUMBER_OF_MBUFS_IN_PKT_POOL]"
 		" -f CONFIG_FILE"
 		" --config (port,queue,lcore)[,(port,queue,lcore)]"
@@ -1380,6 +1449,9 @@ print_usage(const char *prgname)
 		" [--" CMD_LINE_OPT_TX_OFFLOAD " TX_OFFLOAD_MASK]"
 		" [--" CMD_LINE_OPT_REASSEMBLE " REASSEMBLE_TABLE_SIZE]"
 		" [--" CMD_LINE_OPT_MTU " MTU]"
+		" [--event-vector]"
+		" [--vector-size SIZE]"
+		" [--vector-tmo TIMEOUT in ns]"
 		"\n\n"
 		"  -p PORTMASK: Hexadecimal bitmask of ports to configure\n"
 		"  -P : Enable promiscuous mode\n"
@@ -1393,6 +1465,8 @@ print_usage(const char *prgname)
 		"  -a enables SA SQN atomic behaviour\n"
 		"  -c specifies inbound SAD cache size,\n"
 		"     zero value disables the cache (default value: 128)\n"
+		"  -t specifies statistics screen update interval,\n"
+		"     zero disables statistics screen (default value: 0)\n"
 		"  -s number of mbufs in packet pool, if not specified number\n"
 		"     of mbufs will be calculated based on number of cores,\n"
 		"     ports and crypto queues\n"
@@ -1419,10 +1493,10 @@ print_usage(const char *prgname)
 		"               \"parallel\" : Parallel\n"
 		"  --" CMD_LINE_OPT_RX_OFFLOAD
 		": bitmask of the RX HW offload capabilities to enable/use\n"
-		"                         (DEV_RX_OFFLOAD_*)\n"
+		"                         (RTE_ETH_RX_OFFLOAD_*)\n"
 		"  --" CMD_LINE_OPT_TX_OFFLOAD
 		": bitmask of the TX HW offload capabilities to enable/use\n"
-		"                         (DEV_TX_OFFLOAD_*)\n"
+		"                         (RTE_ETH_TX_OFFLOAD_*)\n"
 		"  --" CMD_LINE_OPT_REASSEMBLE " NUM"
 		": max number of entries in reassemble(fragment) table\n"
 		"    (zero (default value) disables reassembly)\n"
@@ -1433,6 +1507,10 @@ print_usage(const char *prgname)
 		"  --" CMD_LINE_OPT_FRAG_TTL " FRAG_TTL_NS"
 		": fragments lifetime in nanoseconds, default\n"
 		"    and maximum value is 10.000.000.000 ns (10 s)\n"
+		"  --event-vector enables event vectorization\n"
+		"  --vector-size Max vector size (default value: 16)\n"
+		"  --vector-tmo Max vector timeout in nanoseconds"
+		"    (default value: 102400)\n"
 		"\n",
 		prgname);
 }
@@ -1457,6 +1535,8 @@ parse_portmask(const char *portmask)
 {
 	char *end = NULL;
 	unsigned long pm;
+
+	errno = 0;
 
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
@@ -1597,10 +1677,11 @@ parse_args(int32_t argc, char **argv, struct eh_conf *eh_conf)
 	int32_t option_index;
 	char *prgname = argv[0];
 	int32_t f_present = 0;
+	struct eventmode_conf *em_conf = NULL;
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "aelp:Pu:f:j:w:c:s:",
+	while ((opt = getopt_long(argc, argvopt, "aelp:Pu:f:j:w:c:t:s:",
 				lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -1680,6 +1761,15 @@ parse_args(int32_t argc, char **argv, struct eh_conf *eh_conf)
 				return -1;
 			}
 			app_sa_prm.cache_sz = ret;
+			break;
+		case 't':
+			ret = parse_decimal(optarg);
+			if (ret < 0) {
+				printf("Invalid interval value: %s\n", optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			stats_interval = ret;
 			break;
 		case CMD_LINE_OPT_CONFIG_NUM:
 			ret = parse_config(optarg);
@@ -1782,6 +1872,28 @@ parse_args(int32_t argc, char **argv, struct eh_conf *eh_conf)
 			}
 			frag_ttl_ns = ret;
 			break;
+		case CMD_LINE_OPT_EVENT_VECTOR_NUM:
+			em_conf = eh_conf->mode_params;
+			em_conf->ext_params.event_vector = 1;
+			break;
+		case CMD_LINE_OPT_VECTOR_SIZE_NUM:
+			ret = parse_decimal(optarg);
+
+			if (ret > MAX_PKT_BURST) {
+				printf("Invalid argument for \'%s\': %s\n",
+					CMD_LINE_OPT_VECTOR_SIZE, optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			em_conf = eh_conf->mode_params;
+			em_conf->ext_params.vector_size = ret;
+			break;
+		case CMD_LINE_OPT_VECTOR_TIMEOUT_NUM:
+			ret = parse_decimal(optarg);
+
+			em_conf = eh_conf->mode_params;
+			em_conf->vector_tmo_ns = ret;
+			break;
 		default:
 			print_usage(prgname);
 			return -1;
@@ -1871,7 +1983,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -2124,7 +2236,6 @@ cryptodevs_init(uint16_t req_queue_num)
 static void
 port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 {
-	uint32_t frame_size;
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_txconf *txconf;
 	uint16_t nb_tx_queue, nb_rx_queue;
@@ -2172,14 +2283,11 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 	printf("Creating queues: nb_rx_queue=%d nb_tx_queue=%u...\n",
 			nb_rx_queue, nb_tx_queue);
 
-	frame_size = MTU_TO_FRAMELEN(mtu_size);
-	if (frame_size > local_port_conf.rxmode.max_rx_pkt_len)
-		local_port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-	local_port_conf.rxmode.max_rx_pkt_len = frame_size;
+	local_port_conf.rxmode.mtu = mtu_size;
 
 	if (multi_seg_required()) {
-		local_port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
-		local_port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
+		local_port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_SCATTER;
+		local_port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 	}
 
 	local_port_conf.rxmode.offloads |= req_rx_offloads;
@@ -2202,12 +2310,12 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 			portid, local_port_conf.txmode.offloads,
 			dev_info.tx_offload_capa);
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)
-		local_port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+		local_port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
 
 	printf("port %u configuring rx_offloads=0x%" PRIx64
 		", tx_offloads=0x%" PRIx64 "\n",
@@ -2263,10 +2371,10 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 		qconf->tx_queue_id[portid] = tx_queueid;
 
 		/* Pre-populate pkt offloads based on capabilities */
-		qconf->outbound.ipv4_offloads = PKT_TX_IPV4;
-		qconf->outbound.ipv6_offloads = PKT_TX_IPV6;
-		if (local_port_conf.txmode.offloads & DEV_TX_OFFLOAD_IPV4_CKSUM)
-			qconf->outbound.ipv4_offloads |= PKT_TX_IP_CKSUM;
+		qconf->outbound.ipv4_offloads = RTE_MBUF_F_TX_IPV4;
+		qconf->outbound.ipv6_offloads = RTE_MBUF_F_TX_IPV6;
+		if (local_port_conf.txmode.offloads & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+			qconf->outbound.ipv4_offloads |= RTE_MBUF_F_TX_IP_CKSUM;
 
 		tx_queueid++;
 
@@ -2482,6 +2590,17 @@ inline_ipsec_event_callback(uint16_t port_id, enum rte_eth_event_type type,
 	return -1;
 }
 
+static int
+ethdev_reset_event_callback(uint16_t port_id,
+		enum rte_eth_event_type type,
+		 void *param __rte_unused, void *ret_param __rte_unused)
+{
+	printf("Reset Event on port id %d type %d\n", port_id, type);
+	printf("Force quit application");
+	force_quit = true;
+	return 0;
+}
+
 static uint16_t
 rx_callback(__rte_unused uint16_t port, __rte_unused uint16_t queue,
 	struct rte_mbuf *pkt[], uint16_t nb_pkts,
@@ -2528,7 +2647,7 @@ rx_callback(__rte_unused uint16_t port, __rte_unused uint16_t queue,
 				rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
 
 			struct rte_ipv6_hdr *iph;
-			struct ipv6_extension_fragment *fh;
+			struct rte_ipv6_fragment_ext *fh;
 
 			iph = (struct rte_ipv6_hdr *)(eth + 1);
 			fh = rte_ipv6_frag_get_ipv6_fragment_header(iph);
@@ -2626,7 +2745,7 @@ create_default_ipsec_flow(uint16_t port_id, uint64_t rx_offloads)
 	struct rte_flow *flow;
 	int ret;
 
-	if (!(rx_offloads & DEV_RX_OFFLOAD_SECURITY))
+	if (!(rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY))
 		return;
 
 	/* Add the default rte_flow to enable SECURITY for all ESP packets */
@@ -2795,6 +2914,333 @@ calculate_nb_mbufs(uint16_t nb_ports, uint16_t nb_crypto_qp, uint32_t nb_rxq,
 		       8192U);
 }
 
+
+static int
+handle_telemetry_cmd_ipsec_secgw_stats(const char *cmd __rte_unused,
+		const char *params, struct rte_tel_data *data)
+{
+	uint64_t total_pkts_dropped = 0, total_pkts_tx = 0, total_pkts_rx = 0;
+	unsigned int coreid;
+
+	rte_tel_data_start_dict(data);
+
+	if (params) {
+		coreid = (uint32_t)atoi(params);
+		if (rte_lcore_is_enabled(coreid) == 0)
+			return -EINVAL;
+
+		total_pkts_dropped = core_statistics[coreid].dropped;
+		total_pkts_tx = core_statistics[coreid].tx;
+		total_pkts_rx = core_statistics[coreid].rx;
+
+	} else {
+		for (coreid = 0; coreid < RTE_MAX_LCORE; coreid++) {
+
+			/* skip disabled cores */
+			if (rte_lcore_is_enabled(coreid) == 0)
+				continue;
+
+			total_pkts_dropped += core_statistics[coreid].dropped;
+			total_pkts_tx += core_statistics[coreid].tx;
+			total_pkts_rx += core_statistics[coreid].rx;
+		}
+	}
+
+	/* add telemetry key/values pairs */
+	rte_tel_data_add_dict_u64(data, "packets received",
+				total_pkts_rx);
+
+	rte_tel_data_add_dict_u64(data, "packets transmitted",
+				total_pkts_tx);
+
+	rte_tel_data_add_dict_u64(data, "packets dropped",
+				total_pkts_dropped);
+
+
+	return 0;
+}
+
+static void
+update_lcore_statistics(struct ipsec_core_statistics *total, uint32_t coreid)
+{
+	struct ipsec_core_statistics *lcore_stats;
+
+	/* skip disabled cores */
+	if (rte_lcore_is_enabled(coreid) == 0)
+		return;
+
+	lcore_stats = &core_statistics[coreid];
+
+	total->rx = lcore_stats->rx;
+	total->dropped = lcore_stats->dropped;
+	total->tx = lcore_stats->tx;
+
+	/* outbound stats */
+	total->outbound.spd6.protect += lcore_stats->outbound.spd6.protect;
+	total->outbound.spd6.bypass += lcore_stats->outbound.spd6.bypass;
+	total->outbound.spd6.discard += lcore_stats->outbound.spd6.discard;
+
+	total->outbound.spd4.protect += lcore_stats->outbound.spd4.protect;
+	total->outbound.spd4.bypass += lcore_stats->outbound.spd4.bypass;
+	total->outbound.spd4.discard += lcore_stats->outbound.spd4.discard;
+
+	total->outbound.sad.miss += lcore_stats->outbound.sad.miss;
+
+	/* inbound stats */
+	total->inbound.spd6.protect += lcore_stats->inbound.spd6.protect;
+	total->inbound.spd6.bypass += lcore_stats->inbound.spd6.bypass;
+	total->inbound.spd6.discard += lcore_stats->inbound.spd6.discard;
+
+	total->inbound.spd4.protect += lcore_stats->inbound.spd4.protect;
+	total->inbound.spd4.bypass += lcore_stats->inbound.spd4.bypass;
+	total->inbound.spd4.discard += lcore_stats->inbound.spd4.discard;
+
+	total->inbound.sad.miss += lcore_stats->inbound.sad.miss;
+
+
+	/* routing stats */
+	total->lpm4.miss += lcore_stats->lpm4.miss;
+	total->lpm6.miss += lcore_stats->lpm6.miss;
+}
+
+static void
+update_statistics(struct ipsec_core_statistics *total, uint32_t coreid)
+{
+	memset(total, 0, sizeof(*total));
+
+	if (coreid != UINT32_MAX) {
+		update_lcore_statistics(total, coreid);
+	} else {
+		for (coreid = 0; coreid < RTE_MAX_LCORE; coreid++)
+			update_lcore_statistics(total, coreid);
+	}
+}
+
+static int
+handle_telemetry_cmd_ipsec_secgw_stats_outbound(const char *cmd __rte_unused,
+		const char *params, struct rte_tel_data *data)
+{
+	struct ipsec_core_statistics total_stats;
+
+	struct rte_tel_data *spd4_data = rte_tel_data_alloc();
+	struct rte_tel_data *spd6_data = rte_tel_data_alloc();
+	struct rte_tel_data *sad_data = rte_tel_data_alloc();
+	unsigned int coreid = UINT32_MAX;
+	int rc = 0;
+
+	/* verify allocated telemetry data structures */
+	if (!spd4_data || !spd6_data || !sad_data) {
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	/* initialize telemetry data structs as dicts */
+	rte_tel_data_start_dict(data);
+
+	rte_tel_data_start_dict(spd4_data);
+	rte_tel_data_start_dict(spd6_data);
+	rte_tel_data_start_dict(sad_data);
+
+	if (params) {
+		coreid = (uint32_t)atoi(params);
+		if (rte_lcore_is_enabled(coreid) == 0) {
+			rc = -EINVAL;
+			goto exit;
+		}
+	}
+
+	update_statistics(&total_stats, coreid);
+
+	/* add spd 4 telemetry key/values pairs */
+
+	rte_tel_data_add_dict_u64(spd4_data, "protect",
+		total_stats.outbound.spd4.protect);
+	rte_tel_data_add_dict_u64(spd4_data, "bypass",
+		total_stats.outbound.spd4.bypass);
+	rte_tel_data_add_dict_u64(spd4_data, "discard",
+		total_stats.outbound.spd4.discard);
+
+	rte_tel_data_add_dict_container(data, "spd4", spd4_data, 0);
+
+	/* add spd 6 telemetry key/values pairs */
+
+	rte_tel_data_add_dict_u64(spd6_data, "protect",
+		total_stats.outbound.spd6.protect);
+	rte_tel_data_add_dict_u64(spd6_data, "bypass",
+		total_stats.outbound.spd6.bypass);
+	rte_tel_data_add_dict_u64(spd6_data, "discard",
+		total_stats.outbound.spd6.discard);
+
+	rte_tel_data_add_dict_container(data, "spd6", spd6_data, 0);
+
+	/* add sad telemetry key/values pairs */
+
+	rte_tel_data_add_dict_u64(sad_data, "miss",
+		total_stats.outbound.sad.miss);
+
+	rte_tel_data_add_dict_container(data, "sad", sad_data, 0);
+
+exit:
+	if (rc) {
+		rte_tel_data_free(spd4_data);
+		rte_tel_data_free(spd6_data);
+		rte_tel_data_free(sad_data);
+	}
+	return rc;
+}
+
+static int
+handle_telemetry_cmd_ipsec_secgw_stats_inbound(const char *cmd __rte_unused,
+		const char *params, struct rte_tel_data *data)
+{
+	struct ipsec_core_statistics total_stats;
+
+	struct rte_tel_data *spd4_data = rte_tel_data_alloc();
+	struct rte_tel_data *spd6_data = rte_tel_data_alloc();
+	struct rte_tel_data *sad_data = rte_tel_data_alloc();
+	unsigned int coreid = UINT32_MAX;
+	int rc = 0;
+
+	/* verify allocated telemetry data structures */
+	if (!spd4_data || !spd6_data || !sad_data) {
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	/* initialize telemetry data structs as dicts */
+	rte_tel_data_start_dict(data);
+	rte_tel_data_start_dict(spd4_data);
+	rte_tel_data_start_dict(spd6_data);
+	rte_tel_data_start_dict(sad_data);
+
+	/* add children dicts to parent dict */
+
+	if (params) {
+		coreid = (uint32_t)atoi(params);
+		if (rte_lcore_is_enabled(coreid) == 0) {
+			rc = -EINVAL;
+			goto exit;
+		}
+	}
+
+	update_statistics(&total_stats, coreid);
+
+	/* add sad telemetry key/values pairs */
+
+	rte_tel_data_add_dict_u64(sad_data, "miss",
+		total_stats.inbound.sad.miss);
+
+	rte_tel_data_add_dict_container(data, "sad", sad_data, 0);
+
+	/* add spd 4 telemetry key/values pairs */
+
+	rte_tel_data_add_dict_u64(spd4_data, "protect",
+		total_stats.inbound.spd4.protect);
+	rte_tel_data_add_dict_u64(spd4_data, "bypass",
+		total_stats.inbound.spd4.bypass);
+	rte_tel_data_add_dict_u64(spd4_data, "discard",
+		total_stats.inbound.spd4.discard);
+
+	rte_tel_data_add_dict_container(data, "spd4", spd4_data, 0);
+
+	/* add spd 6 telemetry key/values pairs */
+
+	rte_tel_data_add_dict_u64(spd6_data, "protect",
+		total_stats.inbound.spd6.protect);
+	rte_tel_data_add_dict_u64(spd6_data, "bypass",
+		total_stats.inbound.spd6.bypass);
+	rte_tel_data_add_dict_u64(spd6_data, "discard",
+		total_stats.inbound.spd6.discard);
+
+	rte_tel_data_add_dict_container(data, "spd6", spd6_data, 0);
+
+exit:
+	if (rc) {
+		rte_tel_data_free(spd4_data);
+		rte_tel_data_free(spd6_data);
+		rte_tel_data_free(sad_data);
+	}
+	return rc;
+}
+
+static int
+handle_telemetry_cmd_ipsec_secgw_stats_routing(const char *cmd __rte_unused,
+		const char *params, struct rte_tel_data *data)
+{
+	struct ipsec_core_statistics total_stats;
+
+	struct rte_tel_data *lpm4_data = rte_tel_data_alloc();
+	struct rte_tel_data *lpm6_data = rte_tel_data_alloc();
+	unsigned int coreid = UINT32_MAX;
+	int rc = 0;
+
+	/* verify allocated telemetry data structures */
+	if (!lpm4_data || !lpm6_data) {
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	/* initialize telemetry data structs as dicts */
+	rte_tel_data_start_dict(data);
+	rte_tel_data_start_dict(lpm4_data);
+	rte_tel_data_start_dict(lpm6_data);
+
+
+	if (params) {
+		coreid = (uint32_t)atoi(params);
+		if (rte_lcore_is_enabled(coreid) == 0) {
+			rc = -EINVAL;
+			goto exit;
+		}
+	}
+
+	update_statistics(&total_stats, coreid);
+
+	/* add lpm 4 telemetry key/values pairs */
+	rte_tel_data_add_dict_u64(lpm4_data, "miss",
+		total_stats.lpm4.miss);
+
+	rte_tel_data_add_dict_container(data, "IPv4 LPM", lpm4_data, 0);
+
+	/* add lpm 6 telemetry key/values pairs */
+	rte_tel_data_add_dict_u64(lpm6_data, "miss",
+		total_stats.lpm6.miss);
+
+	rte_tel_data_add_dict_container(data, "IPv6 LPM", lpm6_data, 0);
+
+exit:
+	if (rc) {
+		rte_tel_data_free(lpm4_data);
+		rte_tel_data_free(lpm6_data);
+	}
+	return rc;
+}
+
+static void
+ipsec_secgw_telemetry_init(void)
+{
+	rte_telemetry_register_cmd("/examples/ipsec-secgw/stats",
+		handle_telemetry_cmd_ipsec_secgw_stats,
+		"Returns global stats. "
+		"Optional Parameters: int <logical core id>");
+
+	rte_telemetry_register_cmd("/examples/ipsec-secgw/stats/outbound",
+		handle_telemetry_cmd_ipsec_secgw_stats_outbound,
+		"Returns outbound global stats. "
+		"Optional Parameters: int <logical core id>");
+
+	rte_telemetry_register_cmd("/examples/ipsec-secgw/stats/inbound",
+		handle_telemetry_cmd_ipsec_secgw_stats_inbound,
+		"Returns inbound global stats. "
+		"Optional Parameters: int <logical core id>");
+
+	rte_telemetry_register_cmd("/examples/ipsec-secgw/stats/routing",
+		handle_telemetry_cmd_ipsec_secgw_stats_routing,
+		"Returns routing stats. "
+		"Optional Parameters: int <logical core id>");
+}
+
+
 int32_t
 main(int32_t argc, char **argv)
 {
@@ -2831,6 +3277,8 @@ main(int32_t argc, char **argv)
 	ret = parse_args(argc, argv, eh_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid parameters\n");
+
+	ipsec_secgw_telemetry_init();
 
 	/* parse configuration file */
 	if (parse_cfg_file(cfgfile) < 0) {
@@ -2953,6 +3401,9 @@ main(int32_t argc, char **argv)
 					rte_strerror(-ret), portid);
 		}
 
+		rte_eth_dev_callback_register(portid, RTE_ETH_EVENT_INTR_RESET,
+			ethdev_reset_event_callback, NULL);
+
 		rte_eth_dev_callback_register(portid,
 			RTE_ETH_EVENT_IPSEC, inline_ipsec_event_callback, NULL);
 	}
@@ -2981,11 +3432,11 @@ main(int32_t argc, char **argv)
 
 	check_all_ports_link_status(enabled_port_mask);
 
-#if (STATS_INTERVAL > 0)
-	rte_eal_alarm_set(STATS_INTERVAL * US_PER_S, print_stats_cb, NULL);
-#else
-	RTE_LOG(INFO, IPSEC, "Stats display disabled\n");
-#endif /* STATS_INTERVAL */
+	if (stats_interval > 0)
+		rte_eal_alarm_set(stats_interval * US_PER_S,
+				print_stats_cb, NULL);
+	else
+		RTE_LOG(INFO, IPSEC, "Stats display disabled\n");
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(ipsec_launch_one_lcore, eh_conf, CALL_MAIN);

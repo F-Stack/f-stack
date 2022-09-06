@@ -88,7 +88,7 @@ The application has a number of command line options:
 
 .. code-block:: console
 
-    ./<build_dir>/examples/dpdk-l3fwd_power [EAL options] -- -p PORTMASK [-P]  --config(port,queue,lcore)[,(port,queue,lcore)] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
+    ./<build_dir>/examples/dpdk-l3fwd_power [EAL options] -- -p PORTMASK [-P]  --config(port,queue,lcore)[,(port,queue,lcore)] [--max-pkt-len PKTLEN] [--no-numa]
 
 where,
 
@@ -99,8 +99,6 @@ where,
 
 *   --config (port,queue,lcore)[,(port,queue,lcore)]: determines which queues from which ports are mapped to which cores.
 
-*   --enable-jumbo: optional, enables jumbo frames
-
 *   --max-pkt-len: optional, maximum packet length in decimal (64-9600)
 
 *   --no-numa: optional, disables numa awareness
@@ -108,6 +106,8 @@ where,
 *   --empty-poll: Traffic Aware power management. See below for details
 
 *   --telemetry:  Telemetry mode.
+
+*   --pmd-mgmt: PMD power management mode.
 
 See :doc:`l3_forward` for details.
 The L3fwd-power example reuses the L3fwd command line options.
@@ -132,54 +132,10 @@ responsible for checking if it needs to scale down frequency at run time by chec
 
     Only the power management related initialization is shown.
 
-.. code-block:: c
-
-    int main(int argc, char **argv)
-    {
-        struct lcore_conf *qconf;
-        int ret;
-        unsigned nb_ports;
-        uint16_t queueid, portid;
-        unsigned lcore_id;
-        uint64_t hz;
-        uint32_t n_tx_queue, nb_lcores;
-        uint8_t nb_rx_queue, queue, socketid;
-
-        // ...
-
-        /* init RTE timer library to be used to initialize per-core timers */
-
-        rte_timer_subsystem_init();
-
-        // ...
-
-
-        /* per-core initialization */
-
-        for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-            if (rte_lcore_is_enabled(lcore_id) == 0)
-                continue;
-
-            /* init power management library for a specified core */
-
-            ret = rte_power_init(lcore_id);
-            if (ret)
-                rte_exit(EXIT_FAILURE, "Power management library "
-                    "initialization failed on core%d\n", lcore_id);
-
-            /* init timer structures for each enabled lcore */
-
-            rte_timer_init(&power_timers[lcore_id]);
-
-            hz = rte_get_hpet_hz();
-
-            rte_timer_reset(&power_timers[lcore_id], hz/TIMER_NUMBER_PER_SECOND, SINGLE, lcore_id, power_timer_cb, NULL);
-
-            // ...
-        }
-
-        // ...
-    }
+.. literalinclude:: ../../../examples/l3fwd-power/main.c
+    :language: c
+    :start-after: Power library initialized in the main routine. 8<
+    :end-before: >8 End of power library initialization.
 
 Monitoring Loads of Rx Queues
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -203,109 +159,10 @@ to generate hints based on recent network load trends.
 
     Only power control related code is shown.
 
-.. code-block:: c
-
-    static
-    __rte_noreturn int main_loop(__rte_unused void *dummy)
-    {
-        // ...
-
-        while (1) {
-        // ...
-
-        /**
-         * Read packet from RX queues
-         */
-
-        lcore_scaleup_hint = FREQ_CURRENT;
-        lcore_rx_idle_count = 0;
-
-        for (i = 0; i < qconf->n_rx_queue; ++i)
-        {
-            rx_queue = &(qconf->rx_queue_list[i]);
-            rx_queue->idle_hint = 0;
-            portid = rx_queue->port_id;
-            queueid = rx_queue->queue_id;
-
-            nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-            stats[lcore_id].nb_rx_processed += nb_rx;
-
-            if (unlikely(nb_rx == 0)) {
-                /**
-                 * no packet received from rx queue, try to
-                 * sleep for a while forcing CPU enter deeper
-                 * C states.
-                 */
-
-                rx_queue->zero_rx_packet_count++;
-
-                if (rx_queue->zero_rx_packet_count <= MIN_ZERO_POLL_COUNT)
-                    continue;
-
-                rx_queue->idle_hint = power_idle_heuristic(rx_queue->zero_rx_packet_count);
-                lcore_rx_idle_count++;
-            } else {
-                rx_ring_length = rte_eth_rx_queue_count(portid, queueid);
-
-                rx_queue->zero_rx_packet_count = 0;
-
-                /**
-                 * do not scale up frequency immediately as
-                 * user to kernel space communication is costly
-                 * which might impact packet I/O for received
-                 * packets.
-                 */
-
-                rx_queue->freq_up_hint = power_freq_scaleup_heuristic(lcore_id, rx_ring_length);
-            }
-
-            /* Prefetch and forward packets */
-
-            // ...
-        }
-
-        if (likely(lcore_rx_idle_count != qconf->n_rx_queue)) {
-            for (i = 1, lcore_scaleup_hint = qconf->rx_queue_list[0].freq_up_hint; i < qconf->n_rx_queue; ++i) {
-                x_queue = &(qconf->rx_queue_list[i]);
-
-                if (rx_queue->freq_up_hint > lcore_scaleup_hint)
-
-                    lcore_scaleup_hint = rx_queue->freq_up_hint;
-            }
-
-            if (lcore_scaleup_hint == FREQ_HIGHEST)
-
-                rte_power_freq_max(lcore_id);
-
-            else if (lcore_scaleup_hint == FREQ_HIGHER)
-                rte_power_freq_up(lcore_id);
-            } else {
-                /**
-                 *  All Rx queues empty in recent consecutive polls,
-                 *  sleep in a conservative manner, meaning sleep as
-                 * less as possible.
-                 */
-
-                for (i = 1, lcore_idle_hint = qconf->rx_queue_list[0].idle_hint; i < qconf->n_rx_queue; ++i) {
-                    rx_queue = &(qconf->rx_queue_list[i]);
-                    if (rx_queue->idle_hint < lcore_idle_hint)
-                        lcore_idle_hint = rx_queue->idle_hint;
-                }
-
-                if ( lcore_idle_hint < SLEEP_GEAR1_THRESHOLD)
-                    /**
-                     *   execute "pause" instruction to avoid context
-                     *   switch for short sleep.
-                     */
-                    rte_delay_us(lcore_idle_hint);
-                else
-                    /* long sleep force ruining thread to suspend */
-                    usleep(lcore_idle_hint);
-
-               stats[lcore_id].sleep_time += lcore_idle_hint;
-            }
-        }
-    }
+.. literalinclude:: ../../../examples/l3fwd-power/main.c
+    :language: c
+    :start-after: Main processing loop. 8<
+    :end-before: >8 End of main processing loop.
 
 P-State Heuristic Algorithm
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -456,3 +313,46 @@ reference cycles and accordingly busy rate is set  to either 0% or
 
 The new stats ``empty_poll`` , ``full_poll`` and ``busy_percent`` can be viewed by running the script
 ``/usertools/dpdk-telemetry-client.py`` and selecting the menu option ``Send for global Metrics``.
+
+PMD power management Mode
+-------------------------
+
+The PMD power management  mode support for ``l3fwd-power`` is a standalone mode.
+In this mode, ``l3fwd-power`` does simple l3fwding
+along with enabling the power saving scheme on specific port/queue/lcore.
+Main purpose for this mode is to demonstrate
+how to use the PMD power management API.
+
+.. code-block:: console
+
+        ./build/examples/dpdk-l3fwd-power -l 1-3 --  --pmd-mgmt -p 0x0f --config="(0,0,2),(0,1,3)"
+
+PMD Power Management Mode
+-------------------------
+
+There is also a traffic-aware operating mode that,
+instead of using explicit power management,
+will use automatic PMD power management.
+This mode is limited to one queue per core,
+and has three available power management schemes:
+
+``monitor``
+  This will use ``rte_power_monitor()`` function to enter
+  a power-optimized state (subject to platform support).
+
+``pause``
+  This will use ``rte_power_pause()`` or ``rte_pause()``
+  to avoid busy looping when there is no traffic.
+
+``scale``
+  This will use frequency scaling routines
+  available in the ``librte_power`` library.
+  The reaction time of the scale mode is longer
+  than the pause and monitor mode.
+
+See :doc:`Power Management<../prog_guide/power_man>` chapter
+in the DPDK Programmer's Guide for more details on PMD power management.
+
+.. code-block:: console
+
+        ./<build_dir>/examples/dpdk-l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --pmd-mgmt=scale

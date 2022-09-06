@@ -218,26 +218,22 @@ The following is an overview of some key Vhost API functions:
 
   Enable or disable zero copy feature of the vhost crypto backend.
 
-* ``rte_vhost_async_channel_register(vid, queue_id, features, ops)``
+* ``rte_vhost_async_channel_register(vid, queue_id, config, ops)``
 
-  Register a vhost queue with async copy device channel.
-  Following device ``features`` must be specified together with the
-  registration:
+  Register an async copy device channel for a vhost queue after vring
+  is enabled. Following device ``config`` must be specified together
+  with the registration:
 
-  * ``async_inorder``
+  * ``features``
 
-    Async copy device can guarantee the ordering of copy completion
-    sequence. Copies are completed in the same order with that at
-    the submission time.
+    This field is used to specify async copy device features.
 
-    Currently, only ``async_inorder`` capable device is supported by vhost.
+    ``RTE_VHOST_ASYNC_INORDER`` represents the async copy device can
+    guarantee the order of copy completion is the same as the order
+    of copy submission.
 
-  * ``async_threshold``
-
-    The copy length (in bytes) below which CPU copy will be used even if
-    applications call async vhost APIs to enqueue/dequeue data.
-
-    Typical value is 512~1024 depending on the async device capability.
+    Currently, only ``RTE_VHOST_ASYNC_INORDER`` capable device is
+    supported by vhost.
 
   Applications must provide following ``ops`` callbacks for vhost lib to
   work with the async copy devices:
@@ -253,15 +249,41 @@ The following is an overview of some key Vhost API functions:
     vhost invokes this function to get the copy data completed by async
     devices.
 
+* ``rte_vhost_async_channel_register_thread_unsafe(vid, queue_id, config, ops)``
+
+  Register an async copy device channel for a vhost queue without
+  performing any locking.
+
+  This function is only safe to call in vhost callback functions
+  (i.e., struct rte_vhost_device_ops).
+
 * ``rte_vhost_async_channel_unregister(vid, queue_id)``
 
   Unregister the async copy device channel from a vhost queue.
+  Unregistration will fail, if the vhost queue has in-flight
+  packets that are not completed.
 
-* ``rte_vhost_submit_enqueue_burst(vid, queue_id, pkts, count)``
+  Unregister async copy devices in vring_state_changed() may
+  fail, as this API tries to acquire the spinlock of vhost
+  queue. The recommended way is to unregister async copy
+  devices for all vhost queues in destroy_device(), when a
+  virtio device is paused or shut down.
+
+* ``rte_vhost_async_channel_unregister_thread_unsafe(vid, queue_id)``
+
+  Unregister the async copy device channel for a vhost queue without
+  performing any locking.
+
+  This function is only safe to call in vhost callback functions
+  (i.e., struct rte_vhost_device_ops).
+
+* ``rte_vhost_submit_enqueue_burst(vid, queue_id, pkts, count, comp_pkts, comp_count)``
 
   Submit an enqueue request to transmit ``count`` packets from host to guest
-  by async data path. Enqueue is not guaranteed to finish upon the return of
-  this API call.
+  by async data path. Successfully enqueued packets can be transfer completed
+  or being occupied by DMA engines; transfer completed packets are returned in
+  ``comp_pkts``, but others are not guaranteed to finish, when this API
+  call returns.
 
   Applications must not free the packets submitted for enqueue until the
   packets are completed.
@@ -270,6 +292,16 @@ The following is an overview of some key Vhost API functions:
 
   Poll enqueue completion status from async data path. Completed packets
   are returned to applications through ``pkts``.
+
+* ``rte_vhost_async_get_inflight(vid, queue_id)``
+
+  This function returns the amount of in-flight packets for the vhost
+  queue using async acceleration.
+
+* ``rte_vhost_clear_queue_thread_unsafe(vid, queue_id, **pkts, count)``
+
+  Clear inflight packets which are submitted to DMA engine in vhost async data
+  path. Completed packets are returned to applications through ``pkts``.
 
 Vhost-user Implementations
 --------------------------

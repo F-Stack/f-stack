@@ -20,21 +20,17 @@ otx2_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	if (dev->configured && otx2_ethdev_is_ptp_en(dev))
 		frame_size += NIX_TIMESYNC_RX_OFFSET;
 
-	/* Check if MTU is within the allowed range */
-	if (frame_size < NIX_MIN_FRS || frame_size > NIX_MAX_FRS)
-		return -EINVAL;
-
 	buffsz = data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM;
 
 	/* Refuse MTU that requires the support of scattered packets
 	 * when this feature has not been enabled before.
 	 */
 	if (data->dev_started && frame_size > buffsz &&
-	    !(dev->rx_offloads & DEV_RX_OFFLOAD_SCATTER))
+	    !(dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER))
 		return -EINVAL;
 
 	/* Check <seg size> * <max_seg>  >= max_frame */
-	if ((dev->rx_offloads & DEV_RX_OFFLOAD_SCATTER)	&&
+	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)	&&
 	    (frame_size > buffsz * NIX_RX_NB_SEG_MAX))
 		return -EINVAL;
 
@@ -59,14 +55,6 @@ otx2_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	if (rc)
 		return rc;
 
-	if (frame_size > NIX_L2_MAX_LEN)
-		dev->rx_offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		dev->rx_offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
-	/* Update max_rx_pkt_len */
-	data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
-
 	return rc;
 }
 
@@ -75,7 +63,6 @@ otx2_nix_recalc_mtu(struct rte_eth_dev *eth_dev)
 {
 	struct rte_eth_dev_data *data = eth_dev->data;
 	struct otx2_eth_rxq *rxq;
-	uint16_t mtu;
 	int rc;
 
 	rxq = data->rx_queues[0];
@@ -83,10 +70,7 @@ otx2_nix_recalc_mtu(struct rte_eth_dev *eth_dev)
 	/* Setup scatter mode if needed by jumbo */
 	otx2_nix_enable_mseg_on_jumbo(rxq);
 
-	/* Setup MTU based on max_rx_pkt_len */
-	mtu = data->dev_conf.rxmode.max_rx_pkt_len - NIX_L2_OVERHEAD;
-
-	rc = otx2_nix_mtu_set(eth_dev, mtu);
+	rc = otx2_nix_mtu_set(eth_dev, data->mtu);
 	if (rc)
 		otx2_err("Failed to set default MTU size %d", rc);
 
@@ -342,13 +326,13 @@ nix_rx_head_tail_get(struct otx2_eth_dev *dev,
 }
 
 uint32_t
-otx2_nix_rx_queue_count(struct rte_eth_dev *eth_dev, uint16_t queue_idx)
+otx2_nix_rx_queue_count(void *rx_queue)
 {
-	struct otx2_eth_rxq *rxq = eth_dev->data->rx_queues[queue_idx];
-	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
+	struct otx2_eth_rxq *rxq = rx_queue;
+	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(rxq->eth_dev);
 	uint32_t head, tail;
 
-	nix_rx_head_tail_get(dev, &head, &tail, queue_idx);
+	nix_rx_head_tail_get(dev, &head, &tail, rxq->rq);
 	return (tail - head) % rxq->qlen;
 }
 
@@ -363,18 +347,6 @@ nix_offset_has_packet(uint32_t head, uint32_t tail, uint16_t offset)
 		return 1;
 
 	return 0;
-}
-
-int
-otx2_nix_rx_descriptor_done(void *rx_queue, uint16_t offset)
-{
-	struct otx2_eth_rxq *rxq = rx_queue;
-	uint32_t head, tail;
-
-	nix_rx_head_tail_get(otx2_eth_pmd_priv(rxq->eth_dev),
-			     &head, &tail, rxq->rq);
-
-	return nix_offset_has_packet(head, tail, offset);
 }
 
 int
@@ -472,24 +444,11 @@ otx2_nix_pool_ops_supported(struct rte_eth_dev *eth_dev, const char *pool)
 }
 
 int
-otx2_nix_dev_filter_ctrl(struct rte_eth_dev *eth_dev,
-			 enum rte_filter_type filter_type,
-			 enum rte_filter_op filter_op, void *arg)
+otx2_nix_dev_flow_ops_get(struct rte_eth_dev *eth_dev __rte_unused,
+			  const struct rte_flow_ops **ops)
 {
-	RTE_SET_USED(eth_dev);
-
-	if (filter_type != RTE_ETH_FILTER_GENERIC) {
-		otx2_err("Unsupported filter type %d", filter_type);
-		return -ENOTSUP;
-	}
-
-	if (filter_op == RTE_ETH_FILTER_GET) {
-		*(const void **)arg = &otx2_flow_ops;
-		return 0;
-	}
-
-	otx2_err("Invalid filter_op %d", filter_op);
-	return -EINVAL;
+	*ops = &otx2_flow_ops;
+	return 0;
 }
 
 static struct cgx_fw_data *
@@ -609,21 +568,22 @@ otx2_nix_info_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *devinfo)
 	};
 
 	/* Auto negotiation disabled */
-	devinfo->speed_capa = ETH_LINK_SPEED_FIXED;
+	devinfo->speed_capa = RTE_ETH_LINK_SPEED_FIXED;
 	if (!otx2_dev_is_vf_or_sdp(dev) && !otx2_dev_is_lbk(dev)) {
-		devinfo->speed_capa |= ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
-			ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G;
+		devinfo->speed_capa |= RTE_ETH_LINK_SPEED_1G | RTE_ETH_LINK_SPEED_10G |
+			RTE_ETH_LINK_SPEED_25G | RTE_ETH_LINK_SPEED_40G;
 
 		/* 50G and 100G to be supported for board version C0
 		 * and above.
 		 */
 		if (!otx2_dev_is_Ax(dev))
-			devinfo->speed_capa |= ETH_LINK_SPEED_50G |
-					       ETH_LINK_SPEED_100G;
+			devinfo->speed_capa |= RTE_ETH_LINK_SPEED_50G |
+					       RTE_ETH_LINK_SPEED_100G;
 	}
 
 	devinfo->dev_capa = RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 				RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;
+	devinfo->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	return 0;
 }

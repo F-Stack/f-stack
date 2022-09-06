@@ -7,7 +7,7 @@
 #include <stdbool.h>
 
 #include <rte_branch_prediction.h>
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_cycles.h>
 #include <rte_io.h>
 #include <rte_memory.h>
@@ -23,10 +23,16 @@
 #define CPT_INTR_POLL_INTERVAL_MS	(50)
 
 /* Default command queue length */
-#define DEFAULT_CMD_QCHUNKS		2
-#define DEFAULT_CMD_QCHUNK_SIZE		1023
-#define DEFAULT_CMD_QLEN \
-		(DEFAULT_CMD_QCHUNK_SIZE * DEFAULT_CMD_QCHUNKS)
+#define DEFAULT_CMD_QLEN	2048
+#define DEFAULT_CMD_QCHUNKS	2
+
+/* Instruction memory benefits from being 1023, so introduce
+ * reserved entries so we can't overrun the instruction queue
+ */
+#define DEFAULT_CMD_QRSVD_SLOTS DEFAULT_CMD_QCHUNKS
+#define DEFAULT_CMD_QCHUNK_SIZE \
+		((DEFAULT_CMD_QLEN - DEFAULT_CMD_QRSVD_SLOTS) / \
+		DEFAULT_CMD_QCHUNKS)
 
 #define CPT_CSR_REG_BASE(cpt)		((cpt)->reg_base)
 
@@ -45,6 +51,7 @@ struct cpt_instance {
 	struct rte_mempool *sess_mp;
 	struct rte_mempool *sess_mp_priv;
 	struct cpt_qp_meta_info meta_info;
+	uint8_t ca_enabled;
 };
 
 struct command_chunk {

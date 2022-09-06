@@ -105,6 +105,45 @@ struct link *
 link_next(struct obj *obj, struct link *link);
 
 /*
+ * ring
+ */
+struct ring_params {
+	uint32_t size;
+	uint32_t numa_node;
+};
+
+struct ring {
+	TAILQ_ENTRY(ring) node;
+	char name[NAME_SIZE];
+};
+
+struct ring *
+ring_create(struct obj *obj,
+	   const char *name,
+	   struct ring_params *params);
+
+struct ring *
+ring_find(struct obj *obj, const char *name);
+
+/*
+ * tap
+ */
+struct tap {
+	TAILQ_ENTRY(tap) node;
+	char name[NAME_SIZE];
+	int fd;
+};
+
+struct tap *
+tap_find(struct obj *obj, const char *name);
+
+struct tap *
+tap_next(struct obj *obj, struct tap *tap);
+
+struct tap *
+tap_create(struct obj *obj, const char *name);
+
+/*
  * pipeline
  */
 struct pipeline {

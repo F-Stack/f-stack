@@ -4,7 +4,6 @@
 
 #include <unistd.h>
 
-#include "rte_pmd_ark.h"
 #include "ark_ethdev_rx.h"
 #include "ark_global.h"
 #include "ark_logs.h"
@@ -39,6 +38,9 @@ struct ark_rx_queue {
 	struct ark_udm_t *udm;
 	struct ark_mpu_t *mpu;
 
+	rx_user_meta_hook_fn rx_user_meta_hook;
+	void *ext_user_data;
+
 	uint32_t queue_size;
 	uint32_t queue_mask;
 
@@ -53,13 +55,11 @@ struct ark_rx_queue {
 
 	uint32_t unused;
 
-	/* separate cache line */
-	/* second cache line - fields only used in slow path */
+	/* next cache line - fields written by device */
 	RTE_MARKER cacheline1 __rte_cache_min_aligned;
 
 	volatile uint32_t prod_index;	/* step 2 filled by FPGA */
 } __rte_cache_aligned;
-
 
 /* ************************************************************************* */
 static int
@@ -168,6 +168,8 @@ eth_ark_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	queue->queue_index = queue_idx;
 	queue->queue_size = nb_desc;
 	queue->queue_mask = nb_desc - 1;
+	queue->rx_user_meta_hook = ark->user_ext.rx_user_meta_hook;
+	queue->ext_user_data = ark->user_data[dev->data->port_id];
 
 	queue->reserve_q =
 		rte_zmalloc_socket("Ark_rx_queue mbuf",
@@ -244,8 +246,11 @@ eth_ark_recv_pkts(void *rx_queue,
 	struct ark_rx_queue *queue;
 	register uint32_t cons_index, prod_index;
 	uint16_t nb;
+	uint16_t i;
 	struct rte_mbuf *mbuf;
+	struct rte_mbuf **pmbuf;
 	struct ark_rx_meta *meta;
+	rx_user_meta_hook_fn rx_user_meta_hook;
 
 	queue = (struct ark_rx_queue *)rx_queue;
 	if (unlikely(queue == 0))
@@ -254,6 +259,8 @@ eth_ark_recv_pkts(void *rx_queue,
 		return 0;
 	prod_index = queue->prod_index;
 	cons_index = queue->cons_index;
+	if (prod_index == cons_index)
+		return 0;
 	nb = 0;
 
 	while (prod_index != cons_index) {
@@ -265,16 +272,8 @@ eth_ark_recv_pkts(void *rx_queue,
 		/* META DATA embedded in headroom */
 		meta = RTE_PTR_ADD(mbuf->buf_addr, ARK_RX_META_OFFSET);
 
-		mbuf->port = meta->port;
 		mbuf->pkt_len = meta->pkt_len;
 		mbuf->data_len = meta->pkt_len;
-		/* set timestamp if enabled at least on one device */
-		if (ark_timestamp_rx_dynflag > 0) {
-			*RTE_MBUF_DYNFIELD(mbuf, ark_timestamp_dynfield_offset,
-				rte_mbuf_timestamp_t *) = meta->timestamp;
-			mbuf->ol_flags |= ark_timestamp_rx_dynflag;
-		}
-		rte_pmd_ark_mbuf_rx_userdata_set(mbuf, meta->user_data);
 
 		if (ARK_DEBUG_CORE) {	/* debug sanity checks */
 			if ((meta->pkt_len > (1024 * 16)) ||
@@ -317,6 +316,13 @@ eth_ark_recv_pkts(void *rx_queue,
 			break;
 	}
 
+	rx_user_meta_hook = queue->rx_user_meta_hook;
+	for (pmbuf = rx_pkts, i = 0; rx_user_meta_hook && i < nb; i++) {
+		mbuf = *pmbuf++;
+		meta = RTE_PTR_ADD(mbuf->buf_addr, ARK_RX_META_OFFSET);
+		rx_user_meta_hook(mbuf, meta->user_meta, queue->ext_user_data);
+	}
+
 	eth_ark_rx_update_cons_index(queue, cons_index);
 
 	return nb;
@@ -346,8 +352,7 @@ eth_ark_rx_jumbo(struct ark_rx_queue *queue,
 	/* HW guarantees that the data does not exceed prod_index! */
 	while (remaining != 0) {
 		data_len = RTE_MIN(remaining,
-				   RTE_MBUF_DEFAULT_DATAROOM +
-				   RTE_PKTMBUF_HEADROOM);
+				   RTE_MBUF_DEFAULT_DATAROOM);
 
 		remaining -= data_len;
 		segments += 1;
@@ -356,7 +361,6 @@ eth_ark_rx_jumbo(struct ark_rx_queue *queue,
 		mbuf_prev->next = mbuf;
 		mbuf_prev = mbuf;
 		mbuf->data_len = data_len;
-		mbuf->data_off = 0;
 
 		cons_index += 1;
 	}
@@ -384,11 +388,11 @@ eth_ark_rx_queue_drain(struct ark_rx_queue *queue)
 }
 
 uint32_t
-eth_ark_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t queue_id)
+eth_ark_dev_rx_queue_count(void *rx_queue)
 {
 	struct ark_rx_queue *queue;
 
-	queue = dev->data->rx_queues[queue_id];
+	queue = rx_queue;
 	return (queue->prod_index - queue->cons_index);	/* mod arith */
 }
 

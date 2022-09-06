@@ -6,6 +6,9 @@
  * All rights reserved.
  */
 
+#include <rte_eal_paging.h>
+#include <ethdev_driver.h>
+
 /*
  * Tunable ethdev params
  */
@@ -28,13 +31,8 @@
 
 #define HN_RX_EXTMBUF_ENABLE	0
 
-/* Buffers need to be aligned */
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
-
 #ifndef PAGE_MASK
-#define PAGE_MASK (PAGE_SIZE - 1)
+#define PAGE_MASK (rte_mem_page_size() - 1)
 #endif
 
 struct hn_data;
@@ -105,14 +103,44 @@ struct hn_rx_bufinfo {
 
 #define HN_INVALID_PORT	UINT16_MAX
 
+enum vf_device_state {
+	vf_unknown = 0,
+	vf_removed,
+	vf_configured,
+	vf_started,
+	vf_stopped,
+};
+
+struct hn_vf_ctx {
+	uint16_t	vf_port;
+
+	/* We have taken ownership of this VF port from DPDK */
+	bool		vf_attached;
+
+	/* VSC has requested to switch data path to VF */
+	bool		vf_vsc_switched;
+
+	/* VSP has reported the VF is present for this NIC */
+	bool		vf_vsp_reported;
+
+	enum vf_device_state	vf_state;
+};
+
+struct hv_hotadd_context {
+	LIST_ENTRY(hv_hotadd_context) list;
+	struct hn_data *hv;
+	struct rte_devargs da;
+	int eal_hot_plug_retry;
+};
+
 struct hn_data {
 	struct rte_vmbus_device *vmbus;
 	struct hn_rx_queue *primary;
 	rte_rwlock_t    vf_lock;
 	uint16_t	port_id;
-	uint16_t	vf_port;
 
-	uint8_t		vf_present;
+	struct hn_vf_ctx	vf_ctx;
+
 	uint8_t		closed;
 	uint8_t		vlan_strip;
 
@@ -153,6 +181,10 @@ struct hn_data {
 	struct rte_eth_dev_owner owner;
 
 	struct vmbus_channel *channels[HN_MAX_CHANNELS];
+
+	rte_spinlock_t	hotadd_lock;
+	LIST_HEAD(hotadd_list, hv_hotadd_context) hotadd_list;
+	char		*vf_devargs;
 };
 
 static inline struct vmbus_channel *
@@ -175,7 +207,7 @@ int	hn_dev_link_update(struct rte_eth_dev *dev, int wait);
 int	hn_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 			      uint16_t nb_desc, unsigned int socket_id,
 			      const struct rte_eth_txconf *tx_conf);
-void	hn_dev_tx_queue_release(void *arg);
+void	hn_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 void	hn_dev_tx_queue_info(struct rte_eth_dev *dev, uint16_t queue_idx,
 			     struct rte_eth_txq_info *qinfo);
 int	hn_dev_tx_done_cleanup(void *arg, uint32_t free_cnt);
@@ -191,17 +223,10 @@ int	hn_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			      struct rte_mempool *mp);
 void	hn_dev_rx_queue_info(struct rte_eth_dev *dev, uint16_t queue_id,
 			     struct rte_eth_rxq_info *qinfo);
-void	hn_dev_rx_queue_release(void *arg);
-uint32_t hn_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t queue_id);
+void	hn_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+uint32_t hn_dev_rx_queue_count(void *rx_queue);
 int	hn_dev_rx_queue_status(void *rxq, uint16_t offset);
 void	hn_dev_free_queues(struct rte_eth_dev *dev);
-
-/* Check if VF is attached */
-static inline bool
-hn_vf_attached(const struct hn_data *hv)
-{
-	return hv->vf_port != HN_INVALID_PORT;
-}
 
 /*
  * Get VF device for existing netvsc device
@@ -210,19 +235,17 @@ hn_vf_attached(const struct hn_data *hv)
 static inline struct rte_eth_dev *
 hn_get_vf_dev(const struct hn_data *hv)
 {
-	uint16_t vf_port = hv->vf_port;
-
-	if (vf_port == HN_INVALID_PORT)
-		return NULL;
+	if (hv->vf_ctx.vf_attached)
+		return &rte_eth_devices[hv->vf_ctx.vf_port];
 	else
-		return &rte_eth_devices[vf_port];
+		return NULL;
 }
 
 int	hn_vf_info_get(struct hn_data *hv,
 		       struct rte_eth_dev_info *info);
 int	hn_vf_add(struct rte_eth_dev *dev, struct hn_data *hv);
-int	hn_vf_configure(struct rte_eth_dev *dev,
-			const struct rte_eth_conf *dev_conf);
+int	hn_vf_configure_locked(struct rte_eth_dev *dev,
+			       const struct rte_eth_conf *dev_conf);
 const uint32_t *hn_vf_supported_ptypes(struct rte_eth_dev *dev);
 int	hn_vf_start(struct rte_eth_dev *dev);
 void	hn_vf_reset(struct rte_eth_dev *dev);
@@ -265,3 +288,6 @@ int	hn_vf_rss_hash_update(struct rte_eth_dev *dev,
 int	hn_vf_reta_hash_update(struct rte_eth_dev *dev,
 			       struct rte_eth_rss_reta_entry64 *reta_conf,
 			       uint16_t reta_size);
+int	hn_eth_rmv_event_callback(uint16_t port_id,
+				  enum rte_eth_event_type event __rte_unused,
+				  void *cb_arg, void *out __rte_unused);

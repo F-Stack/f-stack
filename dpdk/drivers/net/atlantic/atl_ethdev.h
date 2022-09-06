@@ -11,15 +11,15 @@
 #include "hw_atl/hw_atl_utils.h"
 
 #define ATL_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 #define ATL_DEV_PRIVATE_TO_HW(adapter) \
 	(&((struct atl_adapter *)adapter)->hw)
@@ -54,8 +54,8 @@ struct atl_adapter {
 /*
  * RX/TX function prototypes
  */
-void atl_rx_queue_release(void *rxq);
-void atl_tx_queue_release(void *txq);
+void atl_rx_queue_release(struct rte_eth_dev *dev, uint16_t rx_queue_id);
+void atl_tx_queue_release(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 
 int atl_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -66,7 +66,7 @@ int atl_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 
-uint32_t atl_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id);
+uint32_t atl_rx_queue_count(void *rx_queue);
 
 int atl_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int atl_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);

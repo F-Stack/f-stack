@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -9,13 +9,17 @@
 #include "tf_core.h"
 #include "tf_session.h"
 
-#include "hcapi/hcapi_cfa_defs.h"
+#include "tf_em_common.h"
+
+#include "hcapi_cfa_defs.h"
 
 #define TF_EM_MIN_ENTRIES     (1 << 15) /* 32K */
 #define TF_EM_MAX_ENTRIES     (1 << 27) /* 128M */
 
-#define TF_HW_EM_KEY_MAX_SIZE 52
-#define TF_EM_KEY_RECORD_SIZE 64
+#define TF_P4_HW_EM_KEY_MAX_SIZE 52
+#define TF_P4_EM_KEY_RECORD_SIZE 64
+
+#define TF_P58_HW_EM_KEY_MAX_SIZE 80
 
 #define TF_EM_MAX_MASK 0x7FFF
 #define TF_EM_MAX_ENTRY (128 * 1024 * 1024)
@@ -81,7 +85,7 @@
  *  |   Index      |E |
  *  +--------------+--+
  *
- * E = Entry (bucket inndex)
+ * E = Entry (bucket index)
  */
 #define TF_EM_INTERNAL_INDEX_SHIFT 2
 #define TF_EM_INTERNAL_INDEX_MASK 0xFFFC
@@ -95,7 +99,7 @@ struct tf_em_64b_entry {
 	/** Header is 8 bytes long */
 	struct cfa_p4_eem_entry_hdr hdr;
 	/** Key is 448 bits - 56 bytes */
-	uint8_t key[TF_EM_KEY_RECORD_SIZE - sizeof(struct cfa_p4_eem_entry_hdr)];
+	uint8_t key[TF_P4_EM_KEY_RECORD_SIZE - sizeof(struct cfa_p4_eem_entry_hdr)];
 };
 
 /** EEM Memory Type
@@ -127,6 +131,16 @@ struct tf_em_cfg_parms {
 	 * [in] Memory type.
 	 */
 	enum tf_mem_type mem_type;
+};
+
+/**
+ * EM database
+ *
+ * EM rm database
+ *
+ */
+struct em_rm_db {
+	struct rm_db *em_db[TF_DIR_MAX];
 };
 
 /**
@@ -196,6 +210,54 @@ int tf_em_insert_int_entry(struct tf *tfp,
  */
 int tf_em_delete_int_entry(struct tf *tfp,
 			   struct tf_delete_em_entry_parms *parms);
+
+/**
+ * Insert record in to internal EM table
+ *
+ * [in] tfp
+ *   Pointer to TruFlow handle
+ *
+ * [in] parms
+ *   Pointer to input parameters
+ *
+ * Returns:
+ *   0       - Success
+ *   -EINVAL - Parameter error
+ */
+int tf_em_hash_insert_int_entry(struct tf *tfp,
+				struct tf_insert_em_entry_parms *parms);
+
+/**
+ * Delete record from internal EM table
+ *
+ * [in] tfp
+ *   Pointer to TruFlow handle
+ *
+ * [in] parms
+ *   Pointer to input parameters
+ *
+ * Returns:
+ *   0       - Success
+ *   -EINVAL - Parameter error
+ */
+int tf_em_hash_delete_int_entry(struct tf *tfp,
+				struct tf_delete_em_entry_parms *parms);
+
+/**
+ * Move record from internal EM table
+ *
+ * [in] tfp
+ *   Pointer to TruFlow handle
+ *
+ * [in] parms
+ *   Pointer to input parameters
+ *
+ * Returns:
+ *   0       - Success
+ *   -EINVAL - Parameter error
+ */
+int tf_em_move_int_entry(struct tf *tfp,
+			 struct tf_move_em_entry_parms *parms);
 
 /**
  * Insert record in to external EEM table
@@ -484,4 +546,21 @@ tf_em_ext_system_bind(struct tf *tfp,
 		      struct tf_em_cfg_parms *parms);
 
 int offload_system_mmap(struct tf_tbl_scope_cb *tbl_scope_cb);
+
+/**
+ * Retrieves the allocated resource info
+ *
+ * [in] tfp
+ *   Pointer to TF handle, used for HCAPI communication
+ *
+ * [in] parms
+ *   Pointer to parameters
+ *
+ * Returns
+ *   - (0) if successful.
+ *   - (-EINVAL) on failure.
+ */
+int
+tf_em_get_resc_info(struct tf *tfp,
+		    struct tf_em_resource_info *em);
 #endif /* _TF_EM_H_ */

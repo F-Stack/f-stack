@@ -35,14 +35,24 @@ int
 pci_uio_read_config(const struct rte_intr_handle *intr_handle,
 		    void *buf, size_t len, off_t offset)
 {
-	return pread(intr_handle->uio_cfg_fd, buf, len, offset);
+	int uio_cfg_fd = rte_intr_dev_fd_get(intr_handle);
+
+	if (uio_cfg_fd < 0)
+		return -1;
+
+	return pread(uio_cfg_fd, buf, len, offset);
 }
 
 int
 pci_uio_write_config(const struct rte_intr_handle *intr_handle,
 		     const void *buf, size_t len, off_t offset)
 {
-	return pwrite(intr_handle->uio_cfg_fd, buf, len, offset);
+	int uio_cfg_fd = rte_intr_dev_fd_get(intr_handle);
+
+	if (uio_cfg_fd < 0)
+		return -1;
+
+	return pwrite(uio_cfg_fd, buf, len, offset);
 }
 
 static int
@@ -198,16 +208,19 @@ void
 pci_uio_free_resource(struct rte_pci_device *dev,
 		struct mapped_pci_resource *uio_res)
 {
+	int uio_cfg_fd = rte_intr_dev_fd_get(dev->intr_handle);
+
 	rte_free(uio_res);
 
-	if (dev->intr_handle.uio_cfg_fd >= 0) {
-		close(dev->intr_handle.uio_cfg_fd);
-		dev->intr_handle.uio_cfg_fd = -1;
+	if (uio_cfg_fd >= 0) {
+		close(uio_cfg_fd);
+		rte_intr_dev_fd_set(dev->intr_handle, -1);
 	}
-	if (dev->intr_handle.fd >= 0) {
-		close(dev->intr_handle.fd);
-		dev->intr_handle.fd = -1;
-		dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+
+	if (rte_intr_fd_get(dev->intr_handle) >= 0) {
+		close(rte_intr_fd_get(dev->intr_handle));
+		rte_intr_fd_set(dev->intr_handle, -1);
+		rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UNKNOWN);
 	}
 }
 
@@ -218,7 +231,7 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 	char dirname[PATH_MAX];
 	char cfgname[PATH_MAX];
 	char devname[PATH_MAX]; /* contains the /dev/uioX */
-	int uio_num;
+	int uio_num, fd, uio_cfg_fd;
 	struct rte_pci_addr *loc;
 
 	loc = &dev->addr;
@@ -233,29 +246,38 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 	snprintf(devname, sizeof(devname), "/dev/uio%u", uio_num);
 
 	/* save fd if in primary process */
-	dev->intr_handle.fd = open(devname, O_RDWR);
-	if (dev->intr_handle.fd < 0) {
+	fd = open(devname, O_RDWR);
+	if (fd < 0) {
 		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
 			devname, strerror(errno));
 		goto error;
 	}
 
+	if (rte_intr_fd_set(dev->intr_handle, fd))
+		goto error;
+
 	snprintf(cfgname, sizeof(cfgname),
 			"/sys/class/uio/uio%u/device/config", uio_num);
-	dev->intr_handle.uio_cfg_fd = open(cfgname, O_RDWR);
-	if (dev->intr_handle.uio_cfg_fd < 0) {
+
+	uio_cfg_fd = open(cfgname, O_RDWR);
+	if (uio_cfg_fd < 0) {
 		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
 			cfgname, strerror(errno));
 		goto error;
 	}
 
-	if (dev->kdrv == RTE_PCI_KDRV_IGB_UIO)
-		dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
-	else {
-		dev->intr_handle.type = RTE_INTR_HANDLE_UIO_INTX;
+	if (rte_intr_dev_fd_set(dev->intr_handle, uio_cfg_fd))
+		goto error;
+
+	if (dev->kdrv == RTE_PCI_KDRV_IGB_UIO) {
+		if (rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UIO))
+			goto error;
+	} else {
+		if (rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UIO_INTX))
+			goto error;
 
 		/* set bus master that is not done by uio_pci_generic */
-		if (pci_uio_set_bus_master(dev->intr_handle.uio_cfg_fd)) {
+		if (pci_uio_set_bus_master(uio_cfg_fd)) {
 			RTE_LOG(ERR, EAL, "Cannot set up bus mastering!\n");
 			goto error;
 		}
@@ -368,57 +390,98 @@ error:
 	return -1;
 }
 
+#define PIO_MAX 0x10000
+
 #if defined(RTE_ARCH_X86)
 int
 pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
 		   struct rte_pci_ioport *p)
 {
+	FILE *f = NULL;
 	char dirname[PATH_MAX];
 	char filename[PATH_MAX];
-	int uio_num;
-	unsigned long start;
+	char buf[BUFSIZ];
+	uint64_t phys_addr, end_addr, flags;
+	unsigned long base;
+	int i, fd;
 
-	if (rte_eal_iopl_init() != 0) {
-		RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
-			__func__, dev->name);
+	/* open and read addresses of the corresponding resource in sysfs */
+	snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT "/resource",
+		rte_pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
+		dev->addr.devid, dev->addr.function);
+	f = fopen(filename, "r");
+	if (f == NULL) {
+		RTE_LOG(ERR, EAL, "%s(): Cannot open sysfs resource: %s\n",
+			__func__, strerror(errno));
 		return -1;
 	}
 
-	uio_num = pci_get_uio_dev(dev, dirname, sizeof(dirname), 0);
-	if (uio_num < 0)
-		return -1;
-
-	/* get portio start */
-	snprintf(filename, sizeof(filename),
-		 "%s/portio/port%d/start", dirname, bar);
-	if (eal_parse_sysfs_value(filename, &start) < 0) {
-		RTE_LOG(ERR, EAL, "%s(): cannot parse portio start\n",
-			__func__);
-		return -1;
+	for (i = 0; i < bar + 1; i++) {
+		if (fgets(buf, sizeof(buf), f) == NULL) {
+			RTE_LOG(ERR, EAL, "%s(): Cannot read sysfs resource\n", __func__);
+			goto error;
+		}
 	}
-	/* ensure we don't get anything funny here, read/write will cast to
-	 * uin16_t */
-	if (start > UINT16_MAX)
-		return -1;
+	if (pci_parse_one_sysfs_resource(buf, sizeof(buf), &phys_addr,
+		&end_addr, &flags) < 0)
+		goto error;
+
+	if (flags & IORESOURCE_IO) {
+		if (rte_eal_iopl_init()) {
+			RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
+				__func__, dev->name);
+			goto error;
+		}
+
+		base = (unsigned long)phys_addr;
+		if (base > PIO_MAX) {
+			RTE_LOG(ERR, EAL, "%s(): %08lx too large PIO resource\n", __func__, base);
+			goto error;
+		}
+
+		RTE_LOG(DEBUG, EAL, "%s(): PIO BAR %08lx detected\n", __func__, base);
+	} else if (flags & IORESOURCE_MEM) {
+		base = (unsigned long)dev->mem_resource[bar].addr;
+		RTE_LOG(DEBUG, EAL, "%s(): MMIO BAR %08lx detected\n", __func__, base);
+	} else {
+		RTE_LOG(ERR, EAL, "%s(): unknown BAR type\n", __func__);
+		goto error;
+	}
 
 	/* FIXME only for primary process ? */
-	if (dev->intr_handle.type == RTE_INTR_HANDLE_UNKNOWN) {
+	if (rte_intr_type_get(dev->intr_handle) ==
+					RTE_INTR_HANDLE_UNKNOWN) {
+		int uio_num = pci_get_uio_dev(dev, dirname, sizeof(dirname), 0);
+		if (uio_num < 0) {
+			RTE_LOG(ERR, EAL, "cannot open %s: %s\n",
+				dirname, strerror(errno));
+			goto error;
+		}
 
 		snprintf(filename, sizeof(filename), "/dev/uio%u", uio_num);
-		dev->intr_handle.fd = open(filename, O_RDWR);
-		if (dev->intr_handle.fd < 0) {
+		fd = open(filename, O_RDWR);
+		if (fd < 0) {
 			RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
 				filename, strerror(errno));
-			return -1;
+			goto error;
 		}
-		dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
+		if (rte_intr_fd_set(dev->intr_handle, fd))
+			goto error;
+
+		if (rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UIO))
+			goto error;
 	}
 
-	RTE_LOG(DEBUG, EAL, "PCI Port IO found start=0x%lx\n", start);
+	RTE_LOG(DEBUG, EAL, "PCI Port IO found start=0x%lx\n", base);
 
-	p->base = start;
+	p->base = base;
 	p->len = 0;
+	fclose(f);
 	return 0;
+error:
+	if (f)
+		fclose(f);
+	return -1;
 }
 #else
 int
@@ -489,6 +552,120 @@ error:
 }
 #endif
 
+#if defined(RTE_ARCH_X86)
+
+static inline uint8_t ioread8(void *addr)
+{
+	uint8_t val;
+
+	val = (uint64_t)(uintptr_t)addr >= PIO_MAX ?
+		*(volatile uint8_t *)addr :
+#ifdef __GLIBC__
+		inb_p((unsigned long)addr);
+#else
+		inb((unsigned long)addr);
+#endif
+
+	return val;
+}
+
+static inline uint16_t ioread16(void *addr)
+{
+	uint16_t val;
+
+	val = (uint64_t)(uintptr_t)addr >= PIO_MAX ?
+		*(volatile uint16_t *)addr :
+#ifdef __GLIBC__
+		inw_p((unsigned long)addr);
+#else
+		inw((unsigned long)addr);
+#endif
+
+	return val;
+}
+
+static inline uint32_t ioread32(void *addr)
+{
+	uint32_t val;
+
+	val = (uint64_t)(uintptr_t)addr >= PIO_MAX ?
+		*(volatile uint32_t *)addr :
+#ifdef __GLIBC__
+		inl_p((unsigned long)addr);
+#else
+		inl((unsigned long)addr);
+#endif
+
+	return val;
+}
+
+static inline void iowrite8(uint8_t val, void *addr)
+{
+	(uint64_t)(uintptr_t)addr >= PIO_MAX ?
+		*(volatile uint8_t *)addr = val :
+#ifdef __GLIBC__
+		outb_p(val, (unsigned long)addr);
+#else
+		outb(val, (unsigned long)addr);
+#endif
+}
+
+static inline void iowrite16(uint16_t val, void *addr)
+{
+	(uint64_t)(uintptr_t)addr >= PIO_MAX ?
+		*(volatile uint16_t *)addr = val :
+#ifdef __GLIBC__
+		outw_p(val, (unsigned long)addr);
+#else
+		outw(val, (unsigned long)addr);
+#endif
+}
+
+static inline void iowrite32(uint32_t val, void *addr)
+{
+	(uint64_t)(uintptr_t)addr >= PIO_MAX ?
+		*(volatile uint32_t *)addr = val :
+#ifdef __GLIBC__
+		outl_p(val, (unsigned long)addr);
+#else
+		outl(val, (unsigned long)addr);
+#endif
+}
+
+#else /* !RTE_ARCH_X86 */
+
+static inline uint8_t ioread8(void *addr)
+{
+	return *(volatile uint8_t *)addr;
+}
+
+static inline uint16_t ioread16(void *addr)
+{
+	return *(volatile uint16_t *)addr;
+}
+
+static inline uint32_t ioread32(void *addr)
+{
+	return *(volatile uint32_t *)addr;
+}
+
+static inline void iowrite8(uint8_t val, void *addr)
+{
+	*(volatile uint8_t *)addr = val;
+}
+
+static inline void iowrite16(uint16_t val, void *addr)
+{
+	*(volatile uint16_t *)addr = val;
+}
+
+static inline void iowrite32(uint32_t val, void *addr)
+{
+	*(volatile uint32_t *)addr = val;
+}
+
+#endif /* !RTE_ARCH_X86 */
+
 void
 pci_uio_ioport_read(struct rte_pci_ioport *p,
 		    void *data, size_t len, off_t offset)
@@ -500,25 +677,13 @@ pci_uio_ioport_read(struct rte_pci_ioport *p,
 	for (d = data; len > 0; d += size, reg += size, len -= size) {
 		if (len >= 4) {
 			size = 4;
-#if defined(RTE_ARCH_X86)
-			*(uint32_t *)d = inl(reg);
-#else
-			*(uint32_t *)d = *(volatile uint32_t *)reg;
-#endif
+			*(uint32_t *)d = ioread32((void *)reg);
 		} else if (len >= 2) {
 			size = 2;
-#if defined(RTE_ARCH_X86)
-			*(uint16_t *)d = inw(reg);
-#else
-			*(uint16_t *)d = *(volatile uint16_t *)reg;
-#endif
+			*(uint16_t *)d = ioread16((void *)reg);
 		} else {
 			size = 1;
-#if defined(RTE_ARCH_X86)
-			*d = inb(reg);
-#else
-			*d = *(volatile uint8_t *)reg;
-#endif
+			*d = ioread8((void *)reg);
 		}
 	}
 }
@@ -534,37 +699,13 @@ pci_uio_ioport_write(struct rte_pci_ioport *p,
 	for (s = data; len > 0; s += size, reg += size, len -= size) {
 		if (len >= 4) {
 			size = 4;
-#if defined(RTE_ARCH_X86)
-#ifdef __GLIBC__
-			outl_p(*(const uint32_t *)s, reg);
-#else
-			outl(*(const uint32_t *)s, reg);
-#endif
-#else
-			*(volatile uint32_t *)reg = *(const uint32_t *)s;
-#endif
+			iowrite32(*(const uint32_t *)s, (void *)reg);
 		} else if (len >= 2) {
 			size = 2;
-#if defined(RTE_ARCH_X86)
-#ifdef __GLIBC__
-			outw_p(*(const uint16_t *)s, reg);
-#else
-			outw(*(const uint16_t *)s, reg);
-#endif
-#else
-			*(volatile uint16_t *)reg = *(const uint16_t *)s;
-#endif
+			iowrite16(*(const uint16_t *)s, (void *)reg);
 		} else {
 			size = 1;
-#if defined(RTE_ARCH_X86)
-#ifdef __GLIBC__
-			outb_p(*s, reg);
-#else
-			outb(*s, reg);
-#endif
-#else
-			*(volatile uint8_t *)reg = *s;
-#endif
+			iowrite8(*s, (void *)reg);
 		}
 	}
 }

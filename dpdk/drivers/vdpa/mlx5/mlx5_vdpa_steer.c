@@ -98,7 +98,8 @@ mlx5_vdpa_rqt_prepare(struct mlx5_vdpa_priv *priv)
 	attr->rqt_max_size = rqt_n;
 	attr->rqt_actual_size = rqt_n;
 	if (!priv->steer.rqt) {
-		priv->steer.rqt = mlx5_devx_cmd_create_rqt(priv->ctx, attr);
+		priv->steer.rqt = mlx5_devx_cmd_create_rqt(priv->cdev->ctx,
+							   attr);
 		if (!priv->steer.rqt) {
 			DRV_LOG(ERR, "Failed to create RQT.");
 			ret = -rte_errno;
@@ -140,11 +141,13 @@ mlx5_vdpa_rss_flows_create(struct mlx5_vdpa_priv *priv)
 		/**< Matcher value. This value is used as the mask or a key. */
 	} matcher_mask = {
 				.size = sizeof(matcher_mask.buf) -
-					MLX5_ST_SZ_BYTES(fte_match_set_misc4),
+					MLX5_ST_SZ_BYTES(fte_match_set_misc4) -
+					MLX5_ST_SZ_BYTES(fte_match_set_misc5),
 			},
 	  matcher_value = {
 				.size = sizeof(matcher_value.buf) -
-					MLX5_ST_SZ_BYTES(fte_match_set_misc4),
+					MLX5_ST_SZ_BYTES(fte_match_set_misc4) -
+					MLX5_ST_SZ_BYTES(fte_match_set_misc5),
 			};
 	struct mlx5dv_flow_matcher_attr dv_attr = {
 		.type = IBV_FLOW_ATTR_NORMAL,
@@ -202,13 +205,13 @@ mlx5_vdpa_rss_flows_create(struct mlx5_vdpa_priv *priv)
 		tir_att.rx_hash_field_selector_outer.selected_fields =
 								  vars[i][HASH];
 		priv->steer.rss[i].matcher = mlx5_glue->dv_create_flow_matcher
-					 (priv->ctx, &dv_attr, priv->steer.tbl);
+				   (priv->cdev->ctx, &dv_attr, priv->steer.tbl);
 		if (!priv->steer.rss[i].matcher) {
 			DRV_LOG(ERR, "Failed to create matcher %d.", i);
 			goto error;
 		}
-		priv->steer.rss[i].tir = mlx5_devx_cmd_create_tir(priv->ctx,
-								  &tir_att);
+		priv->steer.rss[i].tir = mlx5_devx_cmd_create_tir
+						    (priv->cdev->ctx, &tir_att);
 		if (!priv->steer.rss[i].tir) {
 			DRV_LOG(ERR, "Failed to create TIR %d.", i);
 			goto error;
@@ -266,7 +269,7 @@ int
 mlx5_vdpa_steer_setup(struct mlx5_vdpa_priv *priv)
 {
 #ifdef HAVE_MLX5DV_DR
-	priv->steer.domain = mlx5_glue->dr_create_domain(priv->ctx,
+	priv->steer.domain = mlx5_glue->dr_create_domain(priv->cdev->ctx,
 						  MLX5DV_DR_DOMAIN_TYPE_NIC_RX);
 	if (!priv->steer.domain) {
 		DRV_LOG(ERR, "Failed to create Rx domain.");

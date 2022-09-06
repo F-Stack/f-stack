@@ -17,10 +17,6 @@
 #include <fsl_bman.h>
 #include <netcfg.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* This sequence number field is used to store event entry index for
  * driver specific usage. For parallel mode queues, invalid
  * index will be set and for atomic mode queues, valid value
@@ -32,15 +28,12 @@ typedef uint32_t dpaa_seqn_t;
 extern int dpaa_seqn_dynfield_offset;
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Read dpaa sequence number from mbuf.
  *
  * @param mbuf Structure to read from.
  * @return pointer to dpaa sequence number.
  */
-__rte_experimental
+__rte_internal
 static inline dpaa_seqn_t *
 dpaa_seqn(struct rte_mbuf *mbuf)
 {
@@ -65,6 +58,9 @@ dpaa_seqn(struct rte_mbuf *mbuf)
 /** Device driver supports link state interrupt */
 #define RTE_DPAA_DRV_INTR_LSC  0x0008
 
+/** Number of supported QDMA devices */
+#define RTE_DPAA_QDMA_DEVICES  1
+
 #define RTE_DEV_TO_DPAA_CONST(ptr) \
 	container_of(ptr, const struct rte_dpaa_device, device)
 
@@ -80,6 +76,7 @@ TAILQ_HEAD(rte_dpaa_driver_list, rte_dpaa_driver);
 enum rte_dpaa_type {
 	FSL_DPAA_ETH = 1,
 	FSL_DPAA_CRYPTO,
+	FSL_DPAA_QDMA
 };
 
 struct rte_dpaa_bus {
@@ -102,10 +99,11 @@ struct rte_dpaa_device {
 	union {
 		struct rte_eth_dev *eth_dev;
 		struct rte_cryptodev *crypto_dev;
+		struct rte_dma_dev *dmadev;
 	};
 	struct rte_dpaa_driver *driver;
 	struct dpaa_device_id id;
-	struct rte_intr_handle intr_handle;
+	struct rte_intr_handle *intr_handle;
 	enum rte_dpaa_type device_type; /**< Ethernet or crypto type device */
 	char name[RTE_ETH_NAME_MAX_LEN];
 };

@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
 #include "tf_common.h"
 #include "tf_util.h"
 #include "tfp.h"
+#include "tf_tcam.h"
 #include "tf_shadow_tcam.h"
 #include "tf_hash.h"
 
@@ -24,7 +25,7 @@
  *   - the result table is stored separately since it only needs to be accessed
  *   when the key matches.
  *   - the result has a back pointer to the hash table via the hb handle.  The
- *   hb handle is a 32 bit represention of the hash with a valid bit, bucket
+ *   hb handle is a 32 bit representation of the hash with a valid bit, bucket
  *   element index, and the hash index.  It is necessary to store the hb handle
  *   with the result since subsequent removes only provide the tcam index.
  *
@@ -634,8 +635,7 @@ tf_shadow_tcam_search(struct tf_shadow_tcam_search_parms *parms)
 			 * requested allocation and return the info
 			 */
 			if (sparms->alloc)
-				ctxt->shadow_ctxt.sh_res_tbl[shtbl_key].refcnt =
-			ctxt->shadow_ctxt.sh_res_tbl[shtbl_key].refcnt + 1;
+				ctxt->shadow_ctxt.sh_res_tbl[shtbl_key].refcnt++;
 
 			sparms->hit = 1;
 			sparms->search_status = HIT;

@@ -19,6 +19,12 @@
 
 /* Parsing tokens. Defined conveniently, so that any correction is easy. */
 #define MRVL_TOK_DEFAULT "default"
+#define MRVL_TOK_DSA_MODE "dsa_mode"
+#define MRVL_TOK_START_HDR "start_hdr"
+#define MRVL_TOK_START_HDR_NONE "none"
+#define MRVL_TOK_START_HDR_DSA "dsa"
+#define MRVL_TOK_START_HDR_CUSTOM "custom"
+#define MRVL_TOK_START_HDR_EXT_DSA "ext_dsa"
 #define MRVL_TOK_DEFAULT_TC "default_tc"
 #define MRVL_TOK_DSCP "dscp"
 #define MRVL_TOK_MAPPING_PRIORITY "mapping_priority"
@@ -31,6 +37,7 @@
 #define MRVL_TOK_TXQ "txq"
 #define MRVL_TOK_VLAN "vlan"
 #define MRVL_TOK_VLAN_IP "vlan/ip"
+#define MRVL_TOK_PARSER_UDF "parser udf"
 
 /* egress specific configuration tokens */
 #define MRVL_TOK_BURST_SIZE "burst_size"
@@ -58,6 +65,23 @@
 #define MRVL_TOK_PLCR_DEFAULT_COLOR_YELLOW "yellow"
 #define MRVL_TOK_PLCR_DEFAULT_COLOR_RED "red"
 
+/* parser udf specific configuration tokens */
+#define MRVL_TOK_PARSER_UDF_PROTO "proto"
+#define MRVL_TOK_PARSER_UDF_FIELD "field"
+#define MRVL_TOK_PARSER_UDF_KEY "key"
+#define MRVL_TOK_PARSER_UDF_MASK "mask"
+#define MRVL_TOK_PARSER_UDF_OFFSET "offset"
+#define MRVL_TOK_PARSER_UDF_PROTO_ETH "eth"
+#define MRVL_TOK_PARSER_UDF_FIELD_ETH_TYPE "type"
+#define MRVL_TOK_PARSER_UDF_PROTO_UDP "udp"
+#define MRVL_TOK_PARSER_UDF_FIELD_UDP_DPORT "dport"
+
+/* parser forward bad frames tokens */
+#define MRVL_TOK_FWD_BAD_FRAMES "forward_bad_frames"
+
+/* parse fill bpool buffers tokens */
+#define MRVL_TOK_FILL_BPOOL_BUFFS "fill_bpool_buffs"
+
 /** Number of tokens in range a-b = 2. */
 #define MAX_RNG_TOKENS 2
 
@@ -67,32 +91,8 @@
 /** Maximum possible value of DSCP. */
 #define MAX_DSCP 63
 
-/** Global QoS configuration. */
-struct mrvl_qos_cfg *mrvl_qos_cfg;
-
-/**
- * Convert string to uint32_t with extra checks for result correctness.
- *
- * @param string String to convert.
- * @param val Conversion result.
- * @returns 0 in case of success, negative value otherwise.
- */
-static int
-get_val_securely(const char *string, uint32_t *val)
-{
-	char *endptr;
-	size_t len = strlen(string);
-
-	if (len == 0)
-		return -1;
-
-	errno = 0;
-	*val = strtoul(string, &endptr, 0);
-	if (errno != 0 || RTE_PTR_DIFF(endptr, string) != len)
-		return -2;
-
-	return 0;
-}
+/** Global configuration. */
+struct mrvl_cfg *mrvl_cfg;
 
 /**
  * Read out-queue configuration from file.
@@ -100,12 +100,12 @@ get_val_securely(const char *string, uint32_t *val)
  * @param file Path to the configuration file.
  * @param port Port number.
  * @param outq Out queue number.
- * @param cfg Pointer to the Marvell QoS configuration structure.
+ * @param cfg Pointer to the Marvell configuration structure.
  * @returns 0 in case of success, negative value otherwise.
  */
 static int
 get_outq_cfg(struct rte_cfgfile *file, int port, int outq,
-		struct mrvl_qos_cfg *cfg)
+		struct mrvl_cfg *cfg)
 {
 	char sec_name[32];
 	const char *entry;
@@ -311,7 +311,7 @@ get_entry_values(const char *entry, uint8_t *tab,
  */
 static int
 parse_tc_cfg(struct rte_cfgfile *file, int port, int tc,
-		struct mrvl_qos_cfg *cfg)
+		struct mrvl_cfg *cfg)
 {
 	char sec_name[32];
 	const char *entry;
@@ -324,7 +324,7 @@ parse_tc_cfg(struct rte_cfgfile *file, int port, int tc,
 	if (rte_cfgfile_num_sections(file, sec_name, strlen(sec_name)) <= 0)
 		return 0;
 
-	cfg->port[port].use_global_defaults = 0;
+	cfg->port[port].use_qos_global_defaults = 0;
 	entry = rte_cfgfile_get_entry(file, sec_name, MRVL_TOK_RXQ);
 	if (entry) {
 		n = get_entry_values(entry,
@@ -405,7 +405,7 @@ parse_tc_cfg(struct rte_cfgfile *file, int port, int tc,
  */
 static int
 parse_policer(struct rte_cfgfile *file, int port, const char *sec_name,
-		struct mrvl_qos_cfg *cfg)
+		struct mrvl_cfg *cfg)
 {
 	const char *entry;
 	uint32_t val;
@@ -474,7 +474,176 @@ parse_policer(struct rte_cfgfile *file, int port, const char *sec_name,
 }
 
 /**
- * Parse QoS configuration - rte_kvargs_process handler.
+ * Parse parser udf.
+ *
+ * @param file Config file handle.
+ * @param sec_name section name
+ * @param udf udf index
+ * @param cfg[out] Parsing results.
+ * @returns 0 in case of success, negative value otherwise.
+ */
+static int
+parse_udf(struct rte_cfgfile *file, const char *sec_name, int udf,
+	  struct mrvl_cfg *cfg)
+{
+	struct pp2_parse_udf_params *udf_params;
+	const char *entry, *entry_field;
+	uint32_t val, i;
+	uint8_t field_size;
+	char malloc_name[32], tmp_arr[3];
+	/* field len in chars equal to '0x' + rest of data */
+#define FIELD_LEN_IN_CHARS(field_size)	(uint32_t)(2 + (field_size) * 2)
+
+	udf_params = &cfg->pp2_cfg.prs_udfs.udfs[udf];
+
+	/* Read 'proto' field */
+	entry = rte_cfgfile_get_entry(file, sec_name,
+				      MRVL_TOK_PARSER_UDF_PROTO);
+	if (!entry) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must be set\n", udf,
+			 MRVL_TOK_PARSER_UDF_PROTO);
+		return -1;
+	}
+
+	/* Read 'field' field */
+	entry_field = rte_cfgfile_get_entry(file, sec_name,
+				       MRVL_TOK_PARSER_UDF_FIELD);
+	if (!entry_field) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must be set\n", udf,
+			 MRVL_TOK_PARSER_UDF_FIELD);
+		return -1;
+	}
+
+	if (!strncmp(entry, MRVL_TOK_PARSER_UDF_PROTO_ETH,
+				sizeof(MRVL_TOK_PARSER_UDF_PROTO_ETH))) {
+		udf_params->match_proto = MV_NET_PROTO_ETH;
+		if (!strncmp(entry_field, MRVL_TOK_PARSER_UDF_FIELD_ETH_TYPE,
+			     sizeof(MRVL_TOK_PARSER_UDF_FIELD_ETH_TYPE))) {
+			udf_params->match_field.eth = MV_NET_ETH_F_TYPE;
+			field_size = 2;
+		} else {
+			MRVL_LOG(ERR, "UDF[%d]: mismatch between '%s' proto "
+				 "and '%s' field\n", udf,
+				 MRVL_TOK_PARSER_UDF_PROTO_ETH,
+				 entry_field);
+			return -1;
+		}
+	} else if (!strncmp(entry, MRVL_TOK_PARSER_UDF_PROTO_UDP,
+				sizeof(MRVL_TOK_PARSER_UDF_PROTO_UDP))) {
+		udf_params->match_proto = MV_NET_PROTO_UDP;
+		if (!strncmp(entry_field, MRVL_TOK_PARSER_UDF_FIELD_UDP_DPORT,
+			     sizeof(MRVL_TOK_PARSER_UDF_FIELD_UDP_DPORT))) {
+			udf_params->match_field.udp = MV_NET_UDP_F_DP;
+			field_size = 2;
+		} else {
+			MRVL_LOG(ERR, "UDF[%d]: mismatch between '%s' proto "
+				 "and '%s' field\n", udf,
+				 MRVL_TOK_PARSER_UDF_PROTO_UDP,
+				 entry_field);
+			return -1;
+		}
+	} else {
+		MRVL_LOG(ERR, "UDF[%d]: Unsupported '%s' proto\n", udf, entry);
+		return -1;
+	}
+
+	snprintf(malloc_name, sizeof(malloc_name), "mrvl_udf_%d_key", udf);
+	udf_params->match_key = rte_zmalloc(malloc_name, field_size, 0);
+	if (udf_params->match_key == NULL) {
+		MRVL_LOG(ERR, "Cannot allocate udf %d key\n", udf);
+		return -1;
+	}
+	snprintf(malloc_name, sizeof(malloc_name), "mrvl_udf_%d_mask", udf);
+	udf_params->match_mask = rte_zmalloc(malloc_name, field_size, 0);
+	if (udf_params->match_mask == NULL) {
+		MRVL_LOG(ERR, "Cannot allocate udf %d mask\n", udf);
+		return -1;
+	}
+
+	/* Read 'key' field */
+	entry = rte_cfgfile_get_entry(file, sec_name, MRVL_TOK_PARSER_UDF_KEY);
+	if (!entry) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must be set\n", udf,
+			 MRVL_TOK_PARSER_UDF_KEY);
+		return -1;
+	}
+
+	if (strncmp(entry, "0x", 2) != 0)  {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must start with '0x'\n",
+			 udf, MRVL_TOK_PARSER_UDF_KEY);
+		return -EINVAL;
+	}
+
+	if (strlen(entry) != FIELD_LEN_IN_CHARS(field_size)) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field's len must be %d\n", udf,
+			 MRVL_TOK_PARSER_UDF_KEY,
+			 FIELD_LEN_IN_CHARS(field_size));
+		return -EINVAL;
+	}
+
+	entry += 2; /* skip the '0x' */
+	for (i = 0; i < field_size; i++) {
+		strncpy(tmp_arr, entry, 2);
+		tmp_arr[2] = '\0';
+		if (get_val_securely8(tmp_arr, 16,
+				      &udf_params->match_key[i]) < 0) {
+			MRVL_LOG(ERR, "UDF[%d]: '%s' field's value is not in "
+				"hex format\n", udf, MRVL_TOK_PARSER_UDF_KEY);
+			return -EINVAL;
+		}
+		entry += 2;
+	}
+
+	/* Read 'mask' field */
+	entry = rte_cfgfile_get_entry(file, sec_name, MRVL_TOK_PARSER_UDF_MASK);
+	if (!entry) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must be set\n", udf,
+			 MRVL_TOK_PARSER_UDF_MASK);
+		return -1;
+	}
+	if (strncmp(entry, "0x", 2) != 0) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must start with '0x'\n",
+			 udf, MRVL_TOK_PARSER_UDF_MASK);
+		return -EINVAL;
+	}
+
+	if (strlen(entry) != FIELD_LEN_IN_CHARS(field_size)) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field's len must be %d\n", udf,
+			 MRVL_TOK_PARSER_UDF_MASK,
+			 FIELD_LEN_IN_CHARS(field_size));
+		return -EINVAL;
+	}
+
+	entry += 2; /* skip the '0x' */
+	for (i = 0; i < field_size; i++) {
+		strncpy(tmp_arr, entry, 2);
+		tmp_arr[2] = '\0';
+		if (get_val_securely8(tmp_arr, 16,
+				      &udf_params->match_mask[i]) < 0) {
+			MRVL_LOG(ERR, "UDF[%d]: '%s' field's value is not in "
+				"hex format\n", udf, MRVL_TOK_PARSER_UDF_MASK);
+			return -EINVAL;
+		}
+		entry += 2;
+	}
+
+	/* Read offset */
+	entry = rte_cfgfile_get_entry(file, sec_name,
+				      MRVL_TOK_PARSER_UDF_OFFSET);
+	if (!entry) {
+		MRVL_LOG(ERR, "UDF[%d]: '%s' field must be set\n", udf,
+			 MRVL_TOK_PARSER_UDF_OFFSET);
+		return -1;
+	}
+	if (get_val_securely(entry, &val) < 0)
+		return -1;
+	udf_params->offset = val;
+
+	return 0;
+}
+
+/**
+ * Parse configuration - rte_kvargs_process handler.
  *
  * Opens configuration file and parses its content.
  *
@@ -484,27 +653,59 @@ parse_policer(struct rte_cfgfile *file, int port, const char *sec_name,
  * @returns 0 in case of success, exits otherwise.
  */
 int
-mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
-		void *extra_args)
+mrvl_get_cfg(const char *key __rte_unused, const char *path, void *extra_args)
 {
-	struct mrvl_qos_cfg **cfg = extra_args;
+	struct mrvl_cfg **cfg = extra_args;
 	struct rte_cfgfile *file = rte_cfgfile_load(path, 0);
 	uint32_t val;
 	int n, i, ret;
 	const char *entry;
 	char sec_name[32];
 
-	if (file == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot load configuration %s\n", path);
+	if (file == NULL) {
+		MRVL_LOG(ERR, "Cannot load configuration %s\n", path);
+		return -1;
+	}
 
 	/* Create configuration. This is never accessed on the fast path,
 	 * so we can ignore socket.
 	 */
-	*cfg = rte_zmalloc("mrvl_qos_cfg", sizeof(struct mrvl_qos_cfg), 0);
-	if (*cfg == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot allocate configuration %s\n",
-			path);
+	*cfg = rte_zmalloc("mrvl_cfg", sizeof(struct mrvl_cfg), 0);
+	if (*cfg == NULL) {
+		MRVL_LOG(ERR, "Cannot allocate configuration %s\n", path);
+		return -1;
+	}
 
+	/* PP2 configuration */
+	n = rte_cfgfile_num_sections(file, MRVL_TOK_PARSER_UDF,
+		sizeof(MRVL_TOK_PARSER_UDF) - 1);
+
+	if (n && n > PP2_MAX_UDFS_SUPPORTED) {
+		MRVL_LOG(ERR, "found %d udf sections, but only %d are supported\n",
+			 n, PP2_MAX_UDFS_SUPPORTED);
+		return -1;
+	}
+	(*cfg)->pp2_cfg.prs_udfs.num_udfs = n;
+	for (i = 0; i < n; i++) {
+		snprintf(sec_name, sizeof(sec_name), "%s %d",
+				MRVL_TOK_PARSER_UDF, i);
+
+		/* udf sections must be sequential. */
+		if (rte_cfgfile_num_sections(file, sec_name,
+				strlen(sec_name)) <= 0) {
+			MRVL_LOG(ERR, "udf sections must be sequential (0 - %d)\n",
+				 PP2_MAX_UDFS_SUPPORTED - 1);
+			return -1;
+		}
+
+		ret = parse_udf(file, sec_name, i, *cfg);
+		if (ret) {
+			MRVL_LOG(ERR, "Error in parsing %s!\n", sec_name);
+			return -1;
+		}
+	}
+
+	/* PP2 Ports configuration */
 	n = rte_cfgfile_num_sections(file, MRVL_TOK_PORT,
 		sizeof(MRVL_TOK_PORT) - 1);
 
@@ -520,12 +721,54 @@ mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
 			MRVL_TOK_PORT, n, MRVL_TOK_DEFAULT);
 
 		/* Use global defaults, unless an override occurs */
-		(*cfg)->port[n].use_global_defaults = 1;
+		(*cfg)->port[n].use_qos_global_defaults = 1;
+
+		/* Set non-zero defaults before the decision to continue to next
+		 * port or to parse the port section in config file
+		 */
+		(*cfg)->port[n].fill_bpool_buffs = MRVL_BURST_SIZE;
 
 		/* Skip ports non-existing in configuration. */
 		if (rte_cfgfile_num_sections(file, sec_name,
 				strlen(sec_name)) <= 0) {
 			continue;
+		}
+
+		/* MRVL_TOK_START_HDR replaces MRVL_TOK_DSA_MODE parameter.
+		 * MRVL_TOK_DSA_MODE will be supported for backward
+		 * compatibility.
+		 */
+		entry = rte_cfgfile_get_entry(file, sec_name,
+				MRVL_TOK_START_HDR);
+		/* if start_hsr is missing, check if dsa_mode exist instead */
+		if (entry == NULL)
+			entry = rte_cfgfile_get_entry(file, sec_name,
+				MRVL_TOK_DSA_MODE);
+		if (entry) {
+			if (!strncmp(entry, MRVL_TOK_START_HDR_NONE,
+				sizeof(MRVL_TOK_START_HDR_NONE)))
+				(*cfg)->port[n].eth_start_hdr =
+				PP2_PPIO_HDR_ETH;
+			else if (!strncmp(entry, MRVL_TOK_START_HDR_DSA,
+				sizeof(MRVL_TOK_START_HDR_DSA)))
+				(*cfg)->port[n].eth_start_hdr =
+				PP2_PPIO_HDR_ETH_DSA;
+			else if (!strncmp(entry, MRVL_TOK_START_HDR_CUSTOM,
+				sizeof(MRVL_TOK_START_HDR_CUSTOM)))
+				(*cfg)->port[n].eth_start_hdr =
+				PP2_PPIO_HDR_ETH_CUSTOM;
+			else if (!strncmp(entry, MRVL_TOK_START_HDR_EXT_DSA,
+				sizeof(MRVL_TOK_START_HDR_EXT_DSA))) {
+				(*cfg)->port[n].eth_start_hdr =
+				PP2_PPIO_HDR_ETH_EXT_DSA;
+			} else {
+				MRVL_LOG(ERR,
+					"Error in parsing %s value (%s)!\n",
+					MRVL_TOK_START_HDR, entry);
+				return -1;
+			}
+		} else {
+			(*cfg)->port[n].eth_start_hdr = PP2_PPIO_HDR_ETH;
 		}
 
 		/*
@@ -561,7 +804,7 @@ mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
 		entry = rte_cfgfile_get_entry(file, sec_name,
 				MRVL_TOK_MAPPING_PRIORITY);
 		if (entry) {
-			(*cfg)->port[n].use_global_defaults = 0;
+			(*cfg)->port[n].use_qos_global_defaults = 0;
 			if (!strncmp(entry, MRVL_TOK_VLAN_IP,
 				sizeof(MRVL_TOK_VLAN_IP)))
 				(*cfg)->port[n].mapping_priority =
@@ -575,23 +818,25 @@ mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
 				(*cfg)->port[n].mapping_priority =
 					PP2_CLS_QOS_TBL_IP_PRI;
 			else if (!strncmp(entry, MRVL_TOK_VLAN,
-				sizeof(MRVL_TOK_VLAN)))
+				sizeof(MRVL_TOK_VLAN))) {
 				(*cfg)->port[n].mapping_priority =
 					PP2_CLS_QOS_TBL_VLAN_PRI;
-			else
-				rte_exit(EXIT_FAILURE,
+			} else {
+				MRVL_LOG(ERR,
 					"Error in parsing %s value (%s)!\n",
 					MRVL_TOK_MAPPING_PRIORITY, entry);
+				return -1;
+			}
 		} else {
 			(*cfg)->port[n].mapping_priority =
-				PP2_CLS_QOS_TBL_VLAN_IP_PRI;
+				PP2_CLS_QOS_TBL_NONE;
 		}
 
 		/* Parse policer configuration (if any) */
 		entry = rte_cfgfile_get_entry(file, sec_name,
 				MRVL_TOK_PLCR_DEFAULT);
 		if (entry) {
-			(*cfg)->port[n].use_global_defaults = 0;
+			(*cfg)->port[n].use_qos_global_defaults = 0;
 			if (get_val_securely(entry, &val) < 0)
 				return -1;
 
@@ -604,18 +849,22 @@ mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
 
 		for (i = 0; i < MRVL_PP2_RXQ_MAX; ++i) {
 			ret = get_outq_cfg(file, n, i, *cfg);
-			if (ret < 0)
-				rte_exit(EXIT_FAILURE,
+			if (ret < 0) {
+				MRVL_LOG(ERR,
 					"Error %d parsing port %d outq %d!\n",
 					ret, n, i);
+				return -1;
+			}
 		}
 
 		for (i = 0; i < MRVL_PP2_TC_MAX; ++i) {
 			ret = parse_tc_cfg(file, n, i, *cfg);
-			if (ret < 0)
-				rte_exit(EXIT_FAILURE,
+			if (ret < 0) {
+				MRVL_LOG(ERR,
 					"Error %d parsing port %d tc %d!\n",
 					ret, n, i);
+				return -1;
+			}
 		}
 
 		entry = rte_cfgfile_get_entry(file, sec_name,
@@ -626,11 +875,40 @@ mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
 				return -1;
 			(*cfg)->port[n].default_tc = (uint8_t)val;
 		} else {
-			if ((*cfg)->port[n].use_global_defaults == 0) {
+			if ((*cfg)->port[n].use_qos_global_defaults == 0) {
 				MRVL_LOG(ERR,
-					 "Default Traffic Class required in custom configuration!");
+					 "Default Traffic Class required in "
+					 "custom configuration!");
 				return -1;
 			}
+		}
+
+		/* Parse forward bad frames option */
+		entry = rte_cfgfile_get_entry(file, sec_name,
+				MRVL_TOK_FWD_BAD_FRAMES);
+		if (entry) {
+			if (get_val_securely(entry, &val) < 0) {
+				MRVL_LOG(ERR,
+					"Error in parsing %s value (%s)!\n",
+					MRVL_TOK_FWD_BAD_FRAMES, entry);
+				return -1;
+			}
+			(*cfg)->port[n].forward_bad_frames = (uint8_t)val;
+		} else {
+			(*cfg)->port[n].forward_bad_frames = 0;
+		}
+
+		/* Parse fill bpool buffs option */
+		entry = rte_cfgfile_get_entry(file, sec_name,
+				MRVL_TOK_FILL_BPOOL_BUFFS);
+		if (entry) {
+			if (get_val_securely(entry, &val) < 0) {
+				MRVL_LOG(ERR,
+					"Error in parsing %s value (%s)!\n",
+					MRVL_TOK_FILL_BPOOL_BUFFS, entry);
+				return -1;
+			}
+			(*cfg)->port[n].fill_bpool_buffs = val;
 		}
 	}
 
@@ -655,6 +933,7 @@ setup_tc(struct pp2_ppio_tc_params *param, uint8_t inqs,
 
 	param->pkt_offset = MRVL_PKT_OFFS;
 	param->pools[0][0] = bpool;
+	param->pools[0][1] = dummy_pool[bpool->pp2_id];
 	param->default_color = color;
 
 	inq_params = rte_zmalloc_socket("inq_params",
@@ -725,8 +1004,8 @@ mrvl_configure_rxqs(struct mrvl_priv *priv, uint16_t portid,
 {
 	size_t i, tc;
 
-	if (mrvl_qos_cfg == NULL ||
-		mrvl_qos_cfg->port[portid].use_global_defaults) {
+	if (mrvl_cfg == NULL ||
+		mrvl_cfg->port[portid].use_qos_global_defaults) {
 		/*
 		 * No port configuration, use default: 1 TC, no QoS,
 		 * TC color set to green.
@@ -744,7 +1023,7 @@ mrvl_configure_rxqs(struct mrvl_priv *priv, uint16_t portid,
 	}
 
 	/* We need only a subset of configuration. */
-	struct port_cfg *port_cfg = &mrvl_qos_cfg->port[portid];
+	struct port_cfg *port_cfg = &mrvl_cfg->port[portid];
 
 	priv->qos_tbl_params.type = port_cfg->mapping_priority;
 
@@ -857,10 +1136,10 @@ mrvl_configure_txqs(struct mrvl_priv *priv, uint16_t portid,
 		uint16_t max_queues)
 {
 	/* We need only a subset of configuration. */
-	struct port_cfg *port_cfg = &mrvl_qos_cfg->port[portid];
+	struct port_cfg *port_cfg = &mrvl_cfg->port[portid];
 	int i;
 
-	if (mrvl_qos_cfg == NULL)
+	if (mrvl_cfg == NULL)
 		return 0;
 
 	priv->ppio_params.rate_limit_enable = port_cfg->rate_limit_enable;
@@ -894,6 +1173,9 @@ int
 mrvl_start_qos_mapping(struct mrvl_priv *priv)
 {
 	size_t i;
+
+	if (priv->qos_tbl_params.type == PP2_CLS_QOS_TBL_NONE)
+		return 0;
 
 	if (priv->ppio == NULL) {
 		MRVL_LOG(ERR, "ppio must not be NULL here!");

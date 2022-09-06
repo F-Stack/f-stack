@@ -163,6 +163,35 @@ af_pf_wait_msg(struct otx2_dev *dev, uint16_t vf, int num_msg)
 		rsp->rc = msg->rc;
 		rsp->pcifunc = msg->pcifunc;
 
+		/* Whenever a PF comes up, AF sends the link status to it but
+		 * when VF comes up no such event is sent to respective VF.
+		 * Using MBOX_MSG_NIX_LF_START_RX response from AF for the
+		 * purpose and send the link status of PF to VF.
+		 */
+		if (msg->id == MBOX_MSG_NIX_LF_START_RX) {
+			/* Send link status to VF */
+			struct cgx_link_user_info linfo;
+			struct mbox_msghdr *vf_msg;
+			size_t sz;
+
+			/* Get the link status */
+			if (dev->ops && dev->ops->link_status_get)
+				dev->ops->link_status_get(dev, &linfo);
+
+			sz = RTE_ALIGN(otx2_mbox_id2size(
+				MBOX_MSG_CGX_LINK_EVENT), MBOX_MSG_ALIGN);
+			/* Prepare the message to be sent */
+			vf_msg = otx2_mbox_alloc_msg(&dev->mbox_vfpf_up, vf,
+						     sz);
+			otx2_mbox_req_init(MBOX_MSG_CGX_LINK_EVENT, vf_msg);
+			memcpy((uint8_t *)vf_msg + sizeof(struct mbox_msghdr),
+			       &linfo, sizeof(struct cgx_link_user_info));
+
+			vf_msg->rc = msg->rc;
+			vf_msg->pcifunc = msg->pcifunc;
+			/* Send to VF */
+			otx2_mbox_msg_send(&dev->mbox_vfpf_up, vf);
+		}
 		offset = mbox->rx_start + msg->next_msgoff;
 	}
 	rte_spinlock_unlock(&mdev->mbox_lock);
@@ -614,7 +643,7 @@ otx2_af_pf_mbox_irq(void *param)
 static int
 mbox_register_pf_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 {
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int i, rc;
 
 	/* HW clear irq */
@@ -664,7 +693,7 @@ mbox_register_pf_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 static int
 mbox_register_vf_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 {
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int rc;
 
 	/* Clear irq */
@@ -697,7 +726,7 @@ mbox_register_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 static void
 mbox_unregister_pf_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 {
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int i;
 
 	/* HW clear irq */
@@ -729,7 +758,7 @@ mbox_unregister_pf_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 static void
 mbox_unregister_vf_irq(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 {
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	/* Clear irq */
 	otx2_write64(~0ull, dev->bar2 + RVU_VF_INT_ENA_W1C);
@@ -812,7 +841,7 @@ otx2_pf_vf_flr_irq(void *param)
 static int
 vf_flr_unregister_irqs(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 {
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int i;
 
 	otx2_base_dbg("Unregister VF FLR interrupts for %s", pci_dev->name);
@@ -833,7 +862,7 @@ vf_flr_unregister_irqs(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 static int
 vf_flr_register_irqs(struct rte_pci_device *pci_dev, struct otx2_dev *dev)
 {
-	struct rte_intr_handle *handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *handle = pci_dev->intr_handle;
 	int i, rc;
 
 	otx2_base_dbg("Register VF FLR interrupts for %s", pci_dev->name);
@@ -1010,7 +1039,7 @@ error:
 void
 otx2_dev_fini(struct rte_pci_device *pci_dev, void *otx2_dev)
 {
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct otx2_dev *dev = otx2_dev;
 	struct otx2_idev_cfg *idev;
 	struct otx2_mbox *mbox;

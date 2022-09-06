@@ -25,7 +25,6 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_malloc.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_ethdev.h>
 #ifdef RTE_NET_I40E
@@ -124,9 +123,7 @@ set_policy_mac(struct rte_power_channel_packet *pkt, int idx, char *mac)
 
 	printf("Received MAC Address: %02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":"
 			"%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 "\n",
-			pfid.addr.addr_bytes[0], pfid.addr.addr_bytes[1],
-			pfid.addr.addr_bytes[2], pfid.addr.addr_bytes[3],
-			pfid.addr.addr_bytes[4], pfid.addr.addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(&pfid.addr));
 
 	pkt->vfid[idx] = pfid.pfid;
 	return 0;
@@ -829,8 +826,9 @@ process_request(struct rte_power_channel_packet *pkt,
 	if (chan_info == NULL)
 		return -1;
 
-	if (rte_atomic32_cmpset(&(chan_info->status), CHANNEL_MGR_CHANNEL_CONNECTED,
-			CHANNEL_MGR_CHANNEL_PROCESSING) == 0)
+	uint32_t channel_connected = CHANNEL_MGR_CHANNEL_CONNECTED;
+	if (__atomic_compare_exchange_n(&(chan_info->status), &channel_connected,
+		CHANNEL_MGR_CHANNEL_PROCESSING, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED) == 0)
 		return -1;
 
 	if (pkt->command == RTE_POWER_CPU_POWER) {
@@ -934,8 +932,9 @@ process_request(struct rte_power_channel_packet *pkt,
 	 * Return is not checked as channel status may have been set to DISABLED
 	 * from management thread
 	 */
-	rte_atomic32_cmpset(&(chan_info->status), CHANNEL_MGR_CHANNEL_PROCESSING,
-			CHANNEL_MGR_CHANNEL_CONNECTED);
+	uint32_t channel_processing = CHANNEL_MGR_CHANNEL_PROCESSING;
+	__atomic_compare_exchange_n(&(chan_info->status), &channel_processing,
+		CHANNEL_MGR_CHANNEL_CONNECTED, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 	return 0;
 
 }

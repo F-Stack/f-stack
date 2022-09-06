@@ -1,226 +1,621 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation.
 # Copyright(c) 2017 Cavium, Inc
+# Copyright(c) 2021 PANTHEON.tech s.r.o.
 
-# for checking defines we need to use the correct compiler flags
-march_opt = '-march=@0@'.format(machine)
+# common flags to all aarch64 builds, with lowest priority
+flags_common = [
+        # Accelerate rte_memcpy. Be sure to run unit test (memcpy_perf_autotest)
+        # to determine the best threshold in code. Refer to notes in source file
+        # (lib/eal/arm/include/rte_memcpy_64.h) for more info.
+        ['RTE_ARCH_ARM64_MEMCPY', false],
+        #    ['RTE_ARM64_MEMCPY_ALIGNED_THRESHOLD', 2048],
+        #    ['RTE_ARM64_MEMCPY_UNALIGNED_THRESHOLD', 512],
+        # Leave below RTE_ARM64_MEMCPY_xxx options commented out,
+        # unless there are strong reasons.
+        #    ['RTE_ARM64_MEMCPY_SKIP_GCC_VER_CHECK', false],
+        #    ['RTE_ARM64_MEMCPY_ALIGN_MASK', 0xF],
+        #    ['RTE_ARM64_MEMCPY_STRICT_ALIGN', false],
 
-arm_force_native_march = false
-arm_force_default_march = (machine == 'default')
-
-flags_common_default = [
-	# Accelarate rte_memcpy. Be sure to run unit test (memcpy_perf_autotest)
-	# to determine the best threshold in code. Refer to notes in source file
-	# (lib/librte_eal/arm/include/rte_memcpy_64.h) for more info.
-	['RTE_ARCH_ARM64_MEMCPY', false],
-	#	['RTE_ARM64_MEMCPY_ALIGNED_THRESHOLD', 2048],
-	#	['RTE_ARM64_MEMCPY_UNALIGNED_THRESHOLD', 512],
-	# Leave below RTE_ARM64_MEMCPY_xxx options commented out, unless there're
-	# strong reasons.
-	#	['RTE_ARM64_MEMCPY_SKIP_GCC_VER_CHECK', false],
-	#	['RTE_ARM64_MEMCPY_ALIGN_MASK', 0xF],
-	#	['RTE_ARM64_MEMCPY_STRICT_ALIGN', false],
-
-	['RTE_NET_FM10K', false],
-	['RTE_NET_AVP', false],
-
-	['RTE_SCHED_VECTOR', false],
-	['RTE_ARM_USE_WFE', false],
+        ['RTE_SCHED_VECTOR', false],
+        ['RTE_ARM_USE_WFE', false],
+        ['RTE_ARCH_ARM64', true],
+        ['RTE_CACHE_LINE_SIZE', 128]
 ]
 
-flags_generic = [
-	['RTE_MACHINE', '"armv8a"'],
-	['RTE_MAX_LCORE', 256],
-	['RTE_USE_C11_MEM_MODEL', true],
-	['RTE_CACHE_LINE_SIZE', 128]]
-flags_arm = [
-	['RTE_MACHINE', '"armv8a"'],
-	['RTE_MAX_LCORE', 16],
-	['RTE_USE_C11_MEM_MODEL', true],
-	['RTE_CACHE_LINE_SIZE', 64]]
-flags_cavium = [
-	['RTE_CACHE_LINE_SIZE', 128],
-	['RTE_MAX_NUMA_NODES', 2],
-	['RTE_MAX_LCORE', 96],
-	['RTE_MAX_VFIO_GROUPS', 128]]
-flags_dpaa = [
-	['RTE_MACHINE', '"dpaa"'],
-	['RTE_USE_C11_MEM_MODEL', true],
-	['RTE_CACHE_LINE_SIZE', 64],
-	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 16],
-	['RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', false]]
-flags_emag = [
-	['RTE_MACHINE', '"emag"'],
-	['RTE_CACHE_LINE_SIZE', 64],
-	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 32]]
-flags_armada = [
-	['RTE_MACHINE', '"armv8a"'],
-	['RTE_CACHE_LINE_SIZE', 64],
-	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 16]]
+## Part numbers are specific to Arm implementers
+# implementer specific armv8 flags have middle priority
+#     (will overwrite common flags)
+# part number specific armv8 flags have higher priority
+#     (will overwrite both common and implementer specific flags)
+implementer_generic = {
+    'description': 'Generic armv8',
+    'flags': [
+        ['RTE_MACHINE', '"armv8a"'],
+        ['RTE_USE_C11_MEM_MODEL', true],
+        ['RTE_MAX_LCORE', 256],
+        ['RTE_MAX_NUMA_NODES', 4]
+    ],
+    'part_number_config': {
+        'generic': {
+            'march': 'armv8-a',
+            'march_features': ['crc'],
+            'compiler_options': ['-moutline-atomics']
+        },
+        'generic_aarch32': {
+            'march': 'armv8-a',
+            'compiler_options': ['-mfpu=neon'],
+            'flags': [
+                ['RTE_ARCH_ARM_NEON_MEMCPY', false],
+                ['RTE_ARCH_STRICT_ALIGN', true],
+                ['RTE_ARCH_ARMv8_AARCH32', true],
+                ['RTE_ARCH', 'armv8_aarch32'],
+                ['RTE_CACHE_LINE_SIZE', 64]
+            ]
+        }
+    }
+}
 
-flags_default_extra = []
-flags_thunderx_extra = [
-	['RTE_MACHINE', '"thunderx"'],
-	['RTE_USE_C11_MEM_MODEL', false]]
-flags_thunderx2_extra = [
-	['RTE_MACHINE', '"thunderx2"'],
-	['RTE_CACHE_LINE_SIZE', 64],
-	['RTE_MAX_NUMA_NODES', 2],
-	['RTE_MAX_LCORE', 256],
-	['RTE_ARM_FEATURE_ATOMICS', true],
-	['RTE_USE_C11_MEM_MODEL', true]]
-flags_octeontx2_extra = [
-	['RTE_MACHINE', '"octeontx2"'],
-	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 36],
-	['RTE_ARM_FEATURE_ATOMICS', true],
-	['RTE_EAL_IGB_UIO', false],
-	['RTE_USE_C11_MEM_MODEL', true]]
-flags_n1generic_extra = [
-	['RTE_MACHINE', '"neoverse-n1"'],
-	['RTE_MAX_LCORE', 64],
-	['RTE_CACHE_LINE_SIZE', 64],
-	['RTE_ARM_FEATURE_ATOMICS', true],
-	['RTE_USE_C11_MEM_MODEL', true],
-	['RTE_MAX_MEM_MB', 1048576],
-	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_EAL_NUMA_AWARE_HUGEPAGES', false],
-	['RTE_LIBRTE_VHOST_NUMA', false]]
+part_number_config_arm = {
+    '0xd03': {'compiler_options':  ['-mcpu=cortex-a53']},
+    '0xd04': {'compiler_options':  ['-mcpu=cortex-a35']},
+    '0xd07': {'compiler_options':  ['-mcpu=cortex-a57']},
+    '0xd08': {'compiler_options':  ['-mcpu=cortex-a72']},
+    '0xd09': {'compiler_options':  ['-mcpu=cortex-a73']},
+    '0xd0a': {'compiler_options':  ['-mcpu=cortex-a75']},
+    '0xd0b': {'compiler_options':  ['-mcpu=cortex-a76']},
+    '0xd0c': {
+        'march': 'armv8.2-a',
+        'march_features': ['crypto'],
+        'compiler_options':  ['-mcpu=neoverse-n1'],
+        'flags': [
+            ['RTE_MACHINE', '"neoverse-n1"'],
+            ['RTE_ARM_FEATURE_ATOMICS', true],
+            ['RTE_MAX_MEM_MB', 1048576],
+            ['RTE_MAX_LCORE', 160],
+            ['RTE_MAX_NUMA_NODES', 2]
+        ]
+    },
+    '0xd49': {
+        'march': 'armv8.5-a',
+        'march_features': ['sve2'],
+        'flags': [
+            ['RTE_MACHINE', '"neoverse-n2"'],
+            ['RTE_ARM_FEATURE_ATOMICS', true],
+            ['RTE_MAX_LCORE', 64],
+            ['RTE_MAX_NUMA_NODES', 1]
+        ]
+    }
+}
+implementer_arm = {
+    'description': 'Arm',
+    'flags': [
+        ['RTE_MACHINE', '"armv8a"'],
+        ['RTE_USE_C11_MEM_MODEL', true],
+        ['RTE_CACHE_LINE_SIZE', 64],
+        ['RTE_MAX_LCORE', 64],
+        ['RTE_MAX_NUMA_NODES', 4]
+    ],
+    'part_number_config': part_number_config_arm
+}
 
-machine_args_generic = [
-	['default', ['-march=armv8-a+crc', '-moutline-atomics']],
-	['native', ['-march=native']],
-	['0xd03', ['-mcpu=cortex-a53']],
-	['0xd04', ['-mcpu=cortex-a35']],
-	['0xd07', ['-mcpu=cortex-a57']],
-	['0xd08', ['-mcpu=cortex-a72']],
-	['0xd09', ['-mcpu=cortex-a73']],
-	['0xd0a', ['-mcpu=cortex-a75']],
-	['0xd0b', ['-mcpu=cortex-a76']],
-	['0xd0c', ['-march=armv8.2-a+crypto', '-mcpu=neoverse-n1'], flags_n1generic_extra]]
+flags_part_number_thunderx = [
+    ['RTE_MACHINE', '"thunderx"'],
+    ['RTE_USE_C11_MEM_MODEL', false]
+]
+implementer_cavium = {
+    'description': 'Cavium',
+    'flags': [
+        ['RTE_MAX_VFIO_GROUPS', 128],
+        ['RTE_MAX_LCORE', 96],
+        ['RTE_MAX_NUMA_NODES', 2]
+    ],
+    'part_number_config': {
+        '0xa1': {
+            'compiler_options': ['-mcpu=thunderxt88'],
+            'flags': flags_part_number_thunderx
+        },
+        '0xa2': {
+            'compiler_options': ['-mcpu=thunderxt81'],
+            'flags': flags_part_number_thunderx
+        },
+        '0xa3': {
+            'compiler_options': ['-mcpu=thunderxt83'],
+            'flags': flags_part_number_thunderx
+        },
+        '0xaf': {
+            'march': 'armv8.1-a',
+            'march_features': ['crc', 'crypto'],
+            'compiler_options': ['-mcpu=thunderx2t99'],
+            'flags': [
+                ['RTE_MACHINE', '"thunderx2"'],
+                ['RTE_ARM_FEATURE_ATOMICS', true],
+                ['RTE_USE_C11_MEM_MODEL', true],
+                ['RTE_CACHE_LINE_SIZE', 64],
+                ['RTE_MAX_LCORE', 256]
+            ]
+        },
+        '0xb2': {
+            'march': 'armv8.2-a',
+            'march_features': ['crc', 'crypto', 'lse'],
+            'compiler_options': ['-mcpu=octeontx2'],
+            'flags': [
+                ['RTE_MACHINE', '"octeontx2"'],
+                ['RTE_ARM_FEATURE_ATOMICS', true],
+                ['RTE_USE_C11_MEM_MODEL', true],
+                ['RTE_MAX_LCORE', 36],
+                ['RTE_MAX_NUMA_NODES', 1]
+            ]
+        }
+    }
+}
 
-machine_args_cavium = [
-	['default', ['-march=armv8-a+crc+crypto','-mcpu=thunderx']],
-	['native', ['-march=native']],
-	['0xa1', ['-mcpu=thunderxt88'], flags_thunderx_extra],
-	['0xa2', ['-mcpu=thunderxt81'], flags_thunderx_extra],
-	['0xa3', ['-mcpu=thunderxt83'], flags_thunderx_extra],
-	['0xaf', ['-march=armv8.1-a+crc+crypto','-mcpu=thunderx2t99'], flags_thunderx2_extra],
-	['0xb2', ['-march=armv8.2-a+crc+crypto+lse','-mcpu=octeontx2'], flags_octeontx2_extra]]
+implementer_ampere = {
+    'description': 'Ampere Computing',
+    'flags': [
+        ['RTE_MACHINE', '"emag"'],
+        ['RTE_CACHE_LINE_SIZE', 64],
+        ['RTE_MAX_LCORE', 32],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'part_number_config': {
+        '0x0': {
+            'march': 'armv8-a',
+            'march_features': ['crc', 'crypto'],
+            'compiler_options':  ['-mtune=emag']
+        }
+    }
+}
 
-machine_args_emag = [
-	['default', ['-march=armv8-a+crc+crypto', '-mtune=emag']],
-	['native', ['-march=native']]]
+implementer_hisilicon = {
+    'description': 'HiSilicon',
+    'flags': [
+        ['RTE_USE_C11_MEM_MODEL', true],
+        ['RTE_CACHE_LINE_SIZE', 128]
+    ],
+    'part_number_config': {
+        '0xd01': {
+            'march': 'armv8.2-a',
+            'march_features': ['crypto'],
+            'compiler_options': ['-mtune=tsv110'],
+            'flags': [
+                ['RTE_MACHINE', '"Kunpeng 920"'],
+                ['RTE_ARM_FEATURE_ATOMICS', true],
+                ['RTE_MAX_LCORE', 256],
+                ['RTE_MAX_NUMA_NODES', 8]
+            ]
+        },
+        '0xd02': {
+            'march': 'armv8.2-a',
+            'march_features': ['crypto', 'sve'],
+            'flags': [
+                ['RTE_MACHINE', '"Kunpeng 930"'],
+                ['RTE_ARM_FEATURE_ATOMICS', true],
+                ['RTE_MAX_LCORE', 1280],
+                ['RTE_MAX_NUMA_NODES', 16]
+            ]
+        }
+    }
+}
 
-## Arm implementer ID (ARM DDI 0487C.a, Section G7.2.106, Page G7-5321)
-impl_generic = ['Generic armv8', flags_generic, machine_args_generic]
-impl_0x41 = ['Arm', flags_arm, machine_args_generic]
-impl_0x42 = ['Broadcom', flags_generic, machine_args_generic]
-impl_0x43 = ['Cavium', flags_cavium, machine_args_cavium]
-impl_0x44 = ['DEC', flags_generic, machine_args_generic]
-impl_0x49 = ['Infineon', flags_generic, machine_args_generic]
-impl_0x4d = ['Motorola', flags_generic, machine_args_generic]
-impl_0x4e = ['NVIDIA', flags_generic, machine_args_generic]
-impl_0x50 = ['Ampere Computing', flags_emag, machine_args_emag]
-impl_0x51 = ['Qualcomm', flags_generic, machine_args_generic]
-impl_0x53 = ['Samsung', flags_generic, machine_args_generic]
-impl_0x56 = ['Marvell ARMADA', flags_armada, machine_args_generic]
-impl_0x69 = ['Intel', flags_generic, machine_args_generic]
-impl_dpaa = ['NXP DPAA', flags_dpaa, machine_args_generic]
+implementer_qualcomm = {
+    'description': 'Qualcomm',
+    'flags': [
+        ['RTE_MACHINE', '"armv8a"'],
+        ['RTE_USE_C11_MEM_MODEL', true],
+        ['RTE_CACHE_LINE_SIZE', 64],
+        ['RTE_MAX_LCORE', 64],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'part_number_config': {
+        '0x800': {
+            'march': 'armv8-a',
+            'march_features': ['crc']
+        },
+        '0xc00': {
+            'march': 'armv8-a',
+            'march_features': ['crc']
+        }
+    }
+}
+
+## Arm implementers (ID from MIDR in Arm Architecture Reference Manual)
+implementers = {
+    'generic': implementer_generic,
+    '0x41': implementer_arm,
+    '0x43': implementer_cavium,
+    '0x48': implementer_hisilicon,
+    '0x50': implementer_ampere,
+    '0x51': implementer_qualcomm
+}
+
+# SoC specific armv8 flags have the highest priority
+#     (will overwrite all other flags)
+soc_generic = {
+    'description': 'Generic un-optimized build for armv8 aarch64 exec mode',
+    'implementer': 'generic',
+    'part_number': 'generic'
+}
+
+soc_generic_aarch32 = {
+    'description': 'Generic un-optimized build for armv8 aarch32 exec mode',
+    'implementer': 'generic',
+    'part_number': 'generic_aarch32'
+}
+
+soc_armada = {
+    'description': 'Marvell ARMADA',
+    'implementer': '0x41',
+    'part_number': '0xd08',
+    'flags': [
+        ['RTE_MAX_LCORE', 16],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'numa': false
+}
+
+soc_bluefield = {
+    'description': 'NVIDIA BlueField',
+    'implementer': '0x41',
+    'part_number': '0xd08',
+    'flags': [
+        ['RTE_MAX_LCORE', 16],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'numa': false
+}
+
+soc_centriq2400 = {
+    'description': 'Qualcomm Centriq 2400',
+    'implementer': '0x51',
+    'part_number': '0xc00',
+    'numa': false
+}
+
+soc_cn10k = {
+    'description' : 'Marvell OCTEON 10',
+    'implementer' : '0x41',
+    'flags': [
+        ['RTE_MAX_LCORE', 24],
+        ['RTE_MAX_NUMA_NODES', 1],
+        ['RTE_MEMPOOL_ALIGN', 128]
+    ],
+    'part_number': '0xd49',
+    'extra_march_features': ['crypto'],
+    'numa': false
+}
+
+soc_dpaa = {
+    'description': 'NXP DPAA',
+    'implementer': '0x41',
+    'part_number': '0xd08',
+    'flags': [
+        ['RTE_MACHINE', '"dpaa"'],
+        ['RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', false],
+        ['RTE_MAX_LCORE', 16],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'numa': false
+}
+
+soc_emag = {
+    'description': 'Ampere eMAG',
+    'implementer': '0x50',
+    'part_number': '0x0'
+}
+
+soc_graviton2 = {
+    'description': 'AWS Graviton2',
+    'implementer': '0x41',
+    'part_number': '0xd0c',
+    'numa': false
+}
+
+soc_kunpeng920 = {
+    'description': 'HiSilicon Kunpeng 920',
+    'implementer': '0x48',
+    'part_number': '0xd01',
+    'numa': true
+}
+
+soc_kunpeng930 = {
+    'description': 'HiSilicon Kunpeng 930',
+    'implementer': '0x48',
+    'part_number': '0xd02',
+    'numa': true
+}
+
+soc_n1sdp = {
+    'description': 'Arm Neoverse N1SDP',
+    'implementer': '0x41',
+    'part_number': '0xd0c',
+    'flags': [
+        ['RTE_MAX_LCORE', 4]
+    ],
+    'numa': false
+}
+
+soc_n2 = {
+    'description': 'Arm Neoverse N2',
+    'implementer': '0x41',
+    'part_number': '0xd49',
+    'numa': false
+}
+
+soc_octeontx2 = {
+    'description': 'Marvell OCTEON TX2',
+    'implementer': '0x43',
+    'part_number': '0xb2',
+    'numa': false
+}
+
+soc_stingray = {
+    'description': 'Broadcom Stingray',
+    'implementer': '0x41',
+    'flags': [
+        ['RTE_MAX_LCORE', 16],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'part_number': '0xd08',
+    'numa': false
+}
+
+soc_thunderx2 = {
+    'description': 'Marvell ThunderX2 T99',
+    'implementer': '0x43',
+    'part_number': '0xaf'
+}
+
+soc_thunderxt88 = {
+    'description': 'Marvell ThunderX T88',
+    'implementer': '0x43',
+    'part_number': '0xa1'
+}
+
+'''
+Start of SoCs list
+generic:         Generic un-optimized build for armv8 aarch64 execution mode.
+generic_aarch32: Generic un-optimized build for armv8 aarch32 execution mode.
+armada:          Marvell ARMADA
+bluefield:       NVIDIA BlueField
+centriq2400:     Qualcomm Centriq 2400
+cn10k:           Marvell OCTEON 10
+dpaa:            NXP DPAA
+emag:            Ampere eMAG
+graviton2:       AWS Graviton2
+kunpeng920:      HiSilicon Kunpeng 920
+kunpeng930:      HiSilicon Kunpeng 930
+n1sdp:           Arm Neoverse N1SDP
+n2:              Arm Neoverse N2
+octeontx2:       Marvell OCTEON TX2
+stingray:        Broadcom Stingray
+thunderx2:       Marvell ThunderX2 T99
+thunderxt88:     Marvell ThunderX T88
+End of SoCs list
+'''
+# The string above is included in the documentation, keep it in sync with the
+# SoCs list below.
+socs = {
+    'generic': soc_generic,
+    'generic_aarch32': soc_generic_aarch32,
+    'armada': soc_armada,
+    'bluefield': soc_bluefield,
+    'centriq2400': soc_centriq2400,
+    'cn10k' : soc_cn10k,
+    'dpaa': soc_dpaa,
+    'emag': soc_emag,
+    'graviton2': soc_graviton2,
+    'kunpeng920': soc_kunpeng920,
+    'kunpeng930': soc_kunpeng930,
+    'n1sdp': soc_n1sdp,
+    'n2': soc_n2,
+    'octeontx2': soc_octeontx2,
+    'stingray': soc_stingray,
+    'thunderx2': soc_thunderx2,
+    'thunderxt88': soc_thunderxt88
+}
 
 dpdk_conf.set('RTE_ARCH_ARM', 1)
 dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
 
+update_flags = false
+soc_flags = []
 if dpdk_conf.get('RTE_ARCH_32')
-	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 64)
-	dpdk_conf.set('RTE_ARCH_ARMv7', 1)
-	dpdk_conf.set('RTE_ARCH', 'armv7')
-	# the minimum architecture supported, armv7-a, needs the following,
-	# mk/machine/armv7a/rte.vars.mk sets it too
-	machine_args += '-mfpu=neon'
+    # 32-bit build
+    dpdk_conf.set('RTE_CACHE_LINE_SIZE', 64)
+    if meson.is_cross_build()
+        update_flags = true
+        soc = meson.get_cross_property('platform', '')
+        if soc == ''
+            error('Arm SoC must be specified in the cross file.')
+        endif
+        soc_config = socs.get(soc, {'not_supported': true})
+        flags_common = []
+    else
+        # armv7 build
+        dpdk_conf.set('RTE_ARCH_ARMv7', true)
+        dpdk_conf.set('RTE_ARCH', 'armv7')
+        dpdk_conf.set('RTE_MAX_LCORE', 128)
+        dpdk_conf.set('RTE_MAX_NUMA_NODES', 1)
+        # the minimum architecture supported, armv7-a, needs the following,
+        machine_args += '-mfpu=neon'
+    endif
 else
-	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 128)
-	dpdk_conf.set('RTE_ARCH_ARM64', 1)
-	dpdk_conf.set('RTE_ARCH', 'armv8')
-
-	machine = []
-	cmd_generic = ['generic', '', '', 'default', '']
-	cmd_output = cmd_generic # Set generic by default
-	machine_args = [] # Clear previous machine args
-	if arm_force_default_march and not meson.is_cross_build()
-		machine = impl_generic
-		impl_pn = 'default'
-	elif not meson.is_cross_build()
-		# The script returns ['Implementer', 'Variant', 'Architecture',
-		# 'Primary Part number', 'Revision']
-		detect_vendor = find_program(join_paths(
-				meson.current_source_dir(), 'armv8_machine.py'))
-		cmd = run_command(detect_vendor.path(), check: false)
-		if cmd.returncode() == 0
-			cmd_output = cmd.stdout().to_lower().strip().split(' ')
-		endif
-		# Set to generic if variable is not found
-		machine = get_variable('impl_' + cmd_output[0], ['generic'])
-		if machine[0] == 'generic'
-			machine = impl_generic
-			cmd_output = cmd_generic
-		endif
-		impl_pn = cmd_output[3]
-		if arm_force_native_march == true
-			impl_pn = 'native'
-		endif
-	else
-		impl_id = meson.get_cross_property('implementor_id', 'generic')
-		impl_pn = meson.get_cross_property('implementor_pn', 'default')
-		machine = get_variable('impl_' + impl_id)
-	endif
-
-	# Apply Common Defaults. These settings may be overwritten by machine
-	# settings later.
-	foreach flag: flags_common_default
-		if flag.length() > 0
-			dpdk_conf.set(flag[0], flag[1])
-		endif
-	endforeach
-
-	message('Implementer : ' + machine[0])
-	foreach flag: machine[1]
-		if flag.length() > 0
-			dpdk_conf.set(flag[0], flag[1])
-		endif
-	endforeach
-
-	foreach marg: machine[2]
-		if marg[0] == impl_pn
-			foreach flag: marg[1]
-				if cc.has_argument(flag)
-					machine_args += flag
-				endif
-			endforeach
-			# Apply any extra machine specific flags.
-			foreach flag: marg.get(2, flags_default_extra)
-				if flag.length() > 0
-					dpdk_conf.set(flag[0], flag[1])
-				endif
-			endforeach
-		endif
-	endforeach
+    # armv8 build
+    dpdk_conf.set('RTE_ARCH', 'armv8')
+    update_flags = true
+    soc_config = {}
+    if not meson.is_cross_build()
+        # for backwards compatibility:
+        #   machine=native is the same behavior as soc=native
+        #   machine=generic/default is the same as soc=generic
+        # cpu_instruction_set holds the proper value - native, generic or cpu
+        # the old behavior only distinguished between generic and native build
+        if machine != 'auto'
+            if cpu_instruction_set == 'generic'
+                soc = 'generic'
+            else
+                soc = 'native'
+            endif
+        else
+            soc = platform
+        endif
+        if soc == 'native'
+            # native build
+            # The script returns ['Implementer', 'Variant', 'Architecture',
+            # 'Primary Part number', 'Revision']
+            detect_vendor = find_program(join_paths(meson.current_source_dir(),
+                                                    'armv8_machine.py'))
+            cmd = run_command(detect_vendor.path(), check: false)
+            if cmd.returncode() == 0
+                cmd_output = cmd.stdout().to_lower().strip().split(' ')
+                implementer_id = cmd_output[0]
+                part_number = cmd_output[3]
+            else
+                error('Error when getting Arm Implementer ID and part number.')
+            endif
+        else
+            # SoC build
+            soc_config = socs.get(soc, {'not_supported': true})
+        endif
+    else
+        # cross build
+        soc = meson.get_cross_property('platform', '')
+        if soc == ''
+            error('Arm SoC must be specified in the cross file.')
+        endif
+        soc_config = socs.get(soc, {'not_supported': true})
+    endif
 endif
-message(machine_args)
+
+if update_flags
+    if soc_config.has_key('not_supported')
+        error('SoC @0@ not supported.'.format(soc))
+    elif soc_config != {}
+        implementer_id = soc_config['implementer']
+        implementer_config = implementers[implementer_id]
+        part_number = soc_config['part_number']
+        soc_flags = soc_config.get('flags', [])
+        if not soc_config.get('numa', true)
+            has_libnuma = 0
+        endif
+
+        disable_drivers += ',' + soc_config.get('disable_drivers', '')
+        enable_drivers += ',' + soc_config.get('enable_drivers', '')
+    endif
+
+    if implementers.has_key(implementer_id)
+        implementer_config = implementers[implementer_id]
+    else
+        error('Unsupported Arm implementer: @0@. '.format(implementer_id) +
+              'Please add support for it or use the generic ' +
+              '(-Dplatform=generic) build.')
+    endif
+
+    message('Arm implementer: ' + implementer_config['description'])
+    message('Arm part number: ' + part_number)
+
+    part_number_config = implementer_config['part_number_config']
+    if part_number_config.has_key(part_number)
+        # use the specified part_number machine args if found
+        part_number_config = part_number_config[part_number]
+    else
+        # unknown part number
+        error('Unsupported part number @0@ of implementer @1@. '
+              .format(part_number, implementer_id) +
+              'Please add support for it or use the generic ' +
+              '(-Dplatform=generic) build.')
+    endif
+
+    # add/overwrite flags in the proper order
+    dpdk_flags = flags_common + implementer_config['flags'] + part_number_config.get('flags', []) + soc_flags
+
+    machine_args = [] # Clear previous machine args
+
+    # probe supported archs and their features
+    candidate_march = ''
+    if part_number_config.has_key('march')
+        supported_marchs = ['armv8.6-a', 'armv8.5-a', 'armv8.4-a', 'armv8.3-a',
+                            'armv8.2-a', 'armv8.1-a', 'armv8-a']
+        check_compiler_support = false
+        foreach supported_march: supported_marchs
+            if supported_march == part_number_config['march']
+                # start checking from this version downwards
+                check_compiler_support = true
+            endif
+            if (check_compiler_support and
+                cc.has_argument('-march=' + supported_march))
+                candidate_march = supported_march
+                # highest supported march version found
+                break
+            endif
+        endforeach
+        if candidate_march == ''
+            error('No suitable armv8 march version found.')
+        endif
+        if candidate_march != part_number_config['march']
+            warning('Configuration march version is ' +
+                    '@0@, but the compiler supports only @1@.'
+                    .format(part_number_config['march'], candidate_march))
+        endif
+        candidate_march = '-march=' + candidate_march
+
+        march_features = []
+        if part_number_config.has_key('march_features')
+            march_features += part_number_config['march_features']
+        endif
+        if soc_config.has_key('extra_march_features')
+            march_features += soc_config['extra_march_features']
+        endif
+        foreach feature: march_features
+            if cc.has_argument('+'.join([candidate_march, feature]))
+                candidate_march = '+'.join([candidate_march, feature])
+            else
+                warning('The compiler does not support feature @0@'
+                    .format(feature))
+            endif
+        endforeach
+        machine_args += candidate_march
+    endif
+
+    # apply supported compiler options
+    if part_number_config.has_key('compiler_options')
+        foreach flag: part_number_config['compiler_options']
+            if cc.has_argument(flag)
+                machine_args += flag
+            else
+                warning('Configuration compiler option ' +
+                        '@0@ isn\'t supported.'.format(flag))
+            endif
+        endforeach
+    endif
+
+    # apply flags
+    foreach flag: dpdk_flags
+        if flag.length() > 0
+            dpdk_conf.set(flag[0], flag[1])
+        endif
+    endforeach
+endif
+message('Using machine args: @0@'.format(machine_args))
 
 if (cc.get_define('__ARM_NEON', args: machine_args) != '' or
     cc.get_define('__aarch64__', args: machine_args) != '')
-	compile_time_cpuflags += ['RTE_CPUFLAG_NEON']
+    compile_time_cpuflags += ['RTE_CPUFLAG_NEON']
+endif
+
+if cc.get_define('__ARM_FEATURE_SVE', args: machine_args) != ''
+    compile_time_cpuflags += ['RTE_CPUFLAG_SVE']
+    if (cc.check_header('arm_sve.h'))
+        dpdk_conf.set('RTE_HAS_SVE_ACLE', 1)
+    endif
 endif
 
 if cc.get_define('__ARM_FEATURE_CRC32', args: machine_args) != ''
-	compile_time_cpuflags += ['RTE_CPUFLAG_CRC32']
+    compile_time_cpuflags += ['RTE_CPUFLAG_CRC32']
 endif
 
 if cc.get_define('__ARM_FEATURE_CRYPTO', args: machine_args) != ''
-	compile_time_cpuflags += ['RTE_CPUFLAG_AES', 'RTE_CPUFLAG_PMULL',
-	'RTE_CPUFLAG_SHA1', 'RTE_CPUFLAG_SHA2']
+    compile_time_cpuflags += ['RTE_CPUFLAG_AES', 'RTE_CPUFLAG_PMULL',
+    'RTE_CPUFLAG_SHA1', 'RTE_CPUFLAG_SHA2']
 endif

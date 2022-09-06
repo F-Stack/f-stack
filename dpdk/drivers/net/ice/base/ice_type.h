@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2020 Intel Corporation
+ * Copyright(c) 2001-2021 Intel Corporation
  */
 
 #ifndef _ICE_TYPE_H_
@@ -44,9 +44,7 @@
 #define ice_struct_size(ptr, field, num) \
 	(sizeof(*(ptr)) + sizeof(*(ptr)->field) * (num))
 
-#ifndef FLEX_ARRAY_SIZE
 #define FLEX_ARRAY_SIZE(_ptr, _mem, cnt) ((cnt) * sizeof(_ptr->_mem[0]))
-#endif /* FLEX_ARRAY_SIZE */
 
 #include "ice_status.h"
 #include "ice_hw_autogen.h"
@@ -57,6 +55,8 @@
 #include "ice_lan_tx_rx.h"
 #include "ice_flex_type.h"
 #include "ice_protocol_type.h"
+#include "ice_sbq_cmd.h"
+#include "ice_vlan_mode.h"
 
 /**
  * ice_is_pow2 - check if integer value is a power of 2
@@ -132,6 +132,7 @@ static inline u32 ice_round_to_num(u32 N, u32 R)
 #define ICE_DBG_PKG		BIT_ULL(16)
 #define ICE_DBG_RES		BIT_ULL(17)
 #define ICE_DBG_ACL		BIT_ULL(18)
+#define ICE_DBG_PTP		BIT_ULL(19)
 #define ICE_DBG_AQ_MSG		BIT_ULL(24)
 #define ICE_DBG_AQ_DESC		BIT_ULL(25)
 #define ICE_DBG_AQ_DESC_BUF	BIT_ULL(26)
@@ -140,6 +141,7 @@ static inline u32 ice_round_to_num(u32 N, u32 R)
 				 ICE_DBG_AQ_DESC	| \
 				 ICE_DBG_AQ_DESC_BUF	| \
 				 ICE_DBG_AQ_CMD)
+#define ICE_DBG_PARSER		BIT_ULL(28)
 
 #define ICE_DBG_USER		BIT_ULL(31)
 #define ICE_DBG_ALL		0xFFFFFFFFFFFFFFFFULL
@@ -247,6 +249,7 @@ struct ice_link_status {
 	u16 max_frame_size;
 	u16 link_speed;
 	u16 req_speeds;
+	u8 link_cfg_err;
 	u8 lse_ena;	/* Link Status Event notification */
 	u8 link_info;
 	u8 an_info;
@@ -303,8 +306,38 @@ enum ice_fltr_ptype {
 	ICE_FLTR_PTYPE_NONF_IPV4_TCP,
 	ICE_FLTR_PTYPE_NONF_IPV4_SCTP,
 	ICE_FLTR_PTYPE_NONF_IPV4_OTHER,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV4,
 	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV4_UDP,
 	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_DW_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_EH_UP_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GTPU,
+	ICE_FLTR_PTYPE_NONF_IPV6_GTPU_EH,
+	ICE_FLTR_PTYPE_NONF_IPV6_GTPU_EH_DW,
+	ICE_FLTR_PTYPE_NONF_IPV6_GTPU_EH_UP,
 	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV4_ICMP,
 	ICE_FLTR_PTYPE_NONF_IPV4_GTPU_IPV4_OTHER,
 	ICE_FLTR_PTYPE_NONF_IPV6_GTPU_IPV6_OTHER,
@@ -323,11 +356,145 @@ enum ice_fltr_ptype {
 	ICE_FLTR_PTYPE_NONF_IPV6_PFCP_NODE,
 	ICE_FLTR_PTYPE_NONF_IPV6_PFCP_SESSION,
 	ICE_FLTR_PTYPE_NON_IP_L2,
+	ICE_FLTR_PTYPE_NONF_ECPRI_TP0,
+	ICE_FLTR_PTYPE_NONF_IPV4_UDP_ECPRI_TP0,
 	ICE_FLTR_PTYPE_FRAG_IPV4,
+	ICE_FLTR_PTYPE_FRAG_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_DW_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_DW_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_DW_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_DW_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV4_GTPU_EH_UP_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_GRE_IPV6_GTPU_EH_UP_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV4_GTPU_EH_UP_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_GRE_IPV6_GTPU_EH_UP_IPV6_TCP,
 	ICE_FLTR_PTYPE_NONF_IPV6_UDP,
 	ICE_FLTR_PTYPE_NONF_IPV6_TCP,
 	ICE_FLTR_PTYPE_NONF_IPV6_SCTP,
 	ICE_FLTR_PTYPE_NONF_IPV6_OTHER,
+	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN,
+	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_SCTP,
+	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_OTHER,
 	ICE_FLTR_PTYPE_MAX,
 };
 
@@ -410,6 +577,7 @@ struct ice_hw_common_caps {
 
 	u8 dcb;
 	u8 iscsi;
+	u8 ieee_1588;
 	u8 mgmt_cem;
 
 	/* WoL and APM support */
@@ -419,8 +587,98 @@ struct ice_hw_common_caps {
 	u8 apm_wol_support;
 	u8 acpi_prog_mthd;
 	u8 proxy_support;
+	bool sec_rev_disabled;
+	bool update_disabled;
 	bool nvm_unified_update;
+#define ICE_NVM_MGMT_SEC_REV_DISABLED		BIT(0)
+#define ICE_NVM_MGMT_UPDATE_DISABLED		BIT(1)
 #define ICE_NVM_MGMT_UNIFIED_UPD_SUPPORT	BIT(3)
+	/* PCIe reset avoidance */
+	bool pcie_reset_avoidance; /* false: not supported, true: supported */
+	/* Post update reset restriction */
+	bool reset_restrict_support; /* false: not supported, true: supported */
+
+	/* External topology device images within the NVM */
+#define ICE_EXT_TOPO_DEV_IMG_COUNT	4
+	u32 ext_topo_dev_img_ver_high[ICE_EXT_TOPO_DEV_IMG_COUNT];
+	u32 ext_topo_dev_img_ver_low[ICE_EXT_TOPO_DEV_IMG_COUNT];
+	u8 ext_topo_dev_img_part_num[ICE_EXT_TOPO_DEV_IMG_COUNT];
+#define ICE_EXT_TOPO_DEV_IMG_PART_NUM_S	8
+#define ICE_EXT_TOPO_DEV_IMG_PART_NUM_M	\
+		MAKEMASK(0xFF, ICE_EXT_TOPO_DEV_IMG_PART_NUM_S)
+	bool ext_topo_dev_img_load_en[ICE_EXT_TOPO_DEV_IMG_COUNT];
+#define ICE_EXT_TOPO_DEV_IMG_LOAD_EN	BIT(0)
+	bool ext_topo_dev_img_prog_en[ICE_EXT_TOPO_DEV_IMG_COUNT];
+#define ICE_EXT_TOPO_DEV_IMG_PROG_EN	BIT(1)
+};
+
+/* IEEE 1588 TIME_SYNC specific info */
+/* Function specific definitions */
+#define ICE_TS_FUNC_ENA_M		BIT(0)
+#define ICE_TS_SRC_TMR_OWND_M		BIT(1)
+#define ICE_TS_TMR_ENA_M		BIT(2)
+#define ICE_TS_TMR_IDX_OWND_S		4
+#define ICE_TS_TMR_IDX_OWND_M		BIT(4)
+#define ICE_TS_CLK_FREQ_S		16
+#define ICE_TS_CLK_FREQ_M		MAKEMASK(0x7, ICE_TS_CLK_FREQ_S)
+#define ICE_TS_CLK_SRC_S		20
+#define ICE_TS_CLK_SRC_M		BIT(20)
+#define ICE_TS_TMR_IDX_ASSOC_S		24
+#define ICE_TS_TMR_IDX_ASSOC_M		BIT(24)
+
+/* TIME_REF clock rate specification */
+enum ice_time_ref_freq {
+	ICE_TIME_REF_FREQ_25_000	= 0,
+	ICE_TIME_REF_FREQ_122_880	= 1,
+	ICE_TIME_REF_FREQ_125_000	= 2,
+	ICE_TIME_REF_FREQ_153_600	= 3,
+	ICE_TIME_REF_FREQ_156_250	= 4,
+	ICE_TIME_REF_FREQ_245_760	= 5,
+
+	NUM_ICE_TIME_REF_FREQ
+};
+
+/* Clock source specification */
+enum ice_clk_src {
+	ICE_CLK_SRC_TCX0	= 0, /* Temperature compensated oscillator  */
+	ICE_CLK_SRC_TIME_REF	= 1, /* Use TIME_REF reference clock */
+
+	NUM_ICE_CLK_SRC
+};
+
+struct ice_ts_func_info {
+	/* Function specific info */
+	enum ice_time_ref_freq time_ref;
+	u8 clk_freq;
+	u8 clk_src;
+	u8 tmr_index_assoc;
+	u8 ena;
+	u8 tmr_index_owned;
+	u8 src_tmr_owned;
+	u8 tmr_ena;
+};
+
+/* Device specific definitions */
+#define ICE_TS_TMR0_OWNR_M		0x7
+#define ICE_TS_TMR0_OWND_M		BIT(3)
+#define ICE_TS_TMR1_OWNR_S		4
+#define ICE_TS_TMR1_OWNR_M		MAKEMASK(0x7, ICE_TS_TMR1_OWNR_S)
+#define ICE_TS_TMR1_OWND_M		BIT(7)
+#define ICE_TS_DEV_ENA_M		BIT(24)
+#define ICE_TS_TMR0_ENA_M		BIT(25)
+#define ICE_TS_TMR1_ENA_M		BIT(26)
+
+struct ice_ts_dev_info {
+	/* Device specific info */
+	u32 ena_ports;
+	u32 tmr_own_map;
+	u32 tmr0_owner;
+	u32 tmr1_owner;
+	u8 tmr0_owned;
+	u8 tmr1_owned;
+	u8 ena;
+	u8 tmr0_ena;
+	u8 tmr1_ena;
 };
 
 /* Function specific capabilities */
@@ -429,6 +687,7 @@ struct ice_hw_func_caps {
 	u32 guar_num_vsi;
 	u32 fd_fltr_guar;		/* Number of filters guaranteed */
 	u32 fd_fltr_best_effort;	/* Number of best effort filters */
+	struct ice_ts_func_info ts_func_info;
 };
 
 /* Device wide capabilities */
@@ -436,6 +695,7 @@ struct ice_hw_dev_caps {
 	struct ice_hw_common_caps common_cap;
 	u32 num_vsi_allocd_to_host;	/* Excluding EMP VSI */
 	u32 num_flow_director_fltr;	/* Number of FD filters available */
+	struct ice_ts_dev_info ts_dev_info;
 	u32 num_funcs;
 };
 
@@ -531,6 +791,15 @@ enum ice_flash_bank {
 	ICE_INVALID_FLASH_BANK,
 	ICE_1ST_FLASH_BANK,
 	ICE_2ND_FLASH_BANK,
+};
+
+/* Enumeration of which flash bank is desired to read from, either the active
+ * bank or the inactive bank. Used to abstract 1st and 2nd bank notion from
+ * code which just wants to read the active or inactive flash bank.
+ */
+enum ice_bank_select {
+	ICE_ACTIVE_FLASH_BANK,
+	ICE_INACTIVE_FLASH_BANK,
 };
 
 /* information for accessing NVM, OROM, and Netlist flash banks */
@@ -760,23 +1029,16 @@ struct ice_dcb_app_priority_table {
 };
 
 #define ICE_MAX_USER_PRIORITY		8
-#define ICE_DCBX_MAX_APPS		32
+#define ICE_DCBX_MAX_APPS		64
+#define ICE_DSCP_NUM_VAL		64
 #define ICE_LLDPDU_SIZE			1500
 #define ICE_TLV_STATUS_OPER		0x1
 #define ICE_TLV_STATUS_SYNC		0x2
 #define ICE_TLV_STATUS_ERR		0x4
-#ifndef ICE_APP_PROT_ID_FCOE
 #define ICE_APP_PROT_ID_FCOE		0x8906
-#endif /* ICE_APP_PROT_ID_FCOE */
-#ifndef ICE_APP_PROT_ID_ISCSI
 #define ICE_APP_PROT_ID_ISCSI		0x0cbc
-#endif /* ICE_APP_PROT_ID_ISCSI */
-#ifndef ICE_APP_PROT_ID_ISCSI_860
 #define ICE_APP_PROT_ID_ISCSI_860	0x035c
-#endif /* ICE_APP_PROT_ID_ISCSI_860 */
-#ifndef ICE_APP_PROT_ID_FIP
 #define ICE_APP_PROT_ID_FIP		0x8914
-#endif /* ICE_APP_PROT_ID_FIP */
 #define ICE_APP_SEL_ETHTYPE		0x1
 #define ICE_APP_SEL_TCPIP		0x2
 #define ICE_CEE_APP_SEL_ETHTYPE		0x0
@@ -788,7 +1050,14 @@ struct ice_dcbx_cfg {
 	struct ice_dcb_ets_cfg etscfg;
 	struct ice_dcb_ets_cfg etsrec;
 	struct ice_dcb_pfc_cfg pfc;
+#define ICE_QOS_MODE_VLAN	0x0
+#define ICE_QOS_MODE_DSCP	0x1
+	u8 pfc_mode;
 	struct ice_dcb_app_priority_table app[ICE_DCBX_MAX_APPS];
+	/* when DSCP mapping defined by user set its bit to 1 */
+	ice_declare_bitmap(dscp_mapped, ICE_DSCP_NUM_VAL);
+	/* array holding DSCP -> UP/TC values for DSCP L3 QoS mode */
+	u8 dscp_map[ICE_DSCP_NUM_VAL];
 	u8 dcbx_mode;
 #define ICE_DCBX_MODE_CEE	0x1
 #define ICE_DCBX_MODE_IEEE	0x2
@@ -890,6 +1159,7 @@ struct ice_hw {
 
 	/* Control Queue info */
 	struct ice_ctl_q_info adminq;
+	struct ice_ctl_q_info sbq;
 	struct ice_ctl_q_info mailboxq;
 	/* Additional function to send AdminQ command */
 	int (*aq_send_cmd_fn)(void *param, struct ice_aq_desc *desc,
@@ -926,7 +1196,8 @@ struct ice_hw {
 	/* INTRL granularity in 1 us */
 	u8 intrl_gran;
 
-	u8 ucast_shared;	/* true if VSIs can share unicast addr */
+	/* true if VSIs can share unicast MAC addr */
+	u8 umac_shared;
 
 #define ICE_PHY_PER_NAC		1
 #define ICE_MAX_QUAD		2
@@ -938,6 +1209,7 @@ struct ice_hw {
 
 	/* Active package version (currently active) */
 	struct ice_pkg_ver active_pkg_ver;
+	u32 pkg_seg_id;
 	u32 active_track_id;
 	u8 active_pkg_name[ICE_PKG_NAME_SIZE];
 	u8 active_pkg_in_nvm;
@@ -962,6 +1234,8 @@ struct ice_hw {
 	/* tunneling info */
 	struct ice_lock tnl_lock;
 	struct ice_tunnel_table tnl;
+	/* dvm boost update information */
+	struct ice_dvm_table dvm_upd;
 
 	struct ice_acl_tbl *acl_tbl;
 	struct ice_fd_hw_prof **acl_prof;
@@ -986,6 +1260,9 @@ struct ice_hw {
 	ice_declare_bitmap(fdir_perfect_fltr, ICE_FLTR_PTYPE_MAX);
 	struct ice_lock rss_locks;	/* protect RSS configuration */
 	struct LIST_HEAD_TYPE rss_list_head;
+	ice_declare_bitmap(hw_ptype, ICE_FLOW_PTYPE_MAX);
+	u8 dvm_ena;
+	__le16 io_expander_handle;
 };
 
 /* Statistics collected by each port, VSI, VEB, and S-channel */
@@ -1145,8 +1422,49 @@ struct ice_aq_get_set_rss_lut_params {
 #define ICE_NVM_CSS_SREV_L			0x14
 #define ICE_NVM_CSS_SREV_H			0x15
 
+/* Length of CSS header section in words */
+#define ICE_CSS_HEADER_LENGTH			330
+
+/* Offset of Shadow RAM copy in the NVM bank area. */
+#define ICE_NVM_SR_COPY_WORD_OFFSET		ROUND_UP(ICE_CSS_HEADER_LENGTH, 32)
+
 /* Size in bytes of Option ROM trailer */
-#define ICE_NVM_OROM_TRAILER_LENGTH		660
+#define ICE_NVM_OROM_TRAILER_LENGTH		(2 * ICE_CSS_HEADER_LENGTH)
+
+/* The Link Topology Netlist section is stored as a series of words. It is
+ * stored in the NVM as a TLV, with the first two words containing the type
+ * and length.
+ */
+#define ICE_NETLIST_LINK_TOPO_MOD_ID		0x011B
+#define ICE_NETLIST_TYPE_OFFSET			0x0000
+#define ICE_NETLIST_LEN_OFFSET			0x0001
+
+/* The Link Topology section follows the TLV header. When reading the netlist
+ * using ice_read_netlist_module, we need to account for the 2-word TLV
+ * header.
+ */
+#define ICE_NETLIST_LINK_TOPO_OFFSET(n)		((n) + 2)
+
+#define ICE_LINK_TOPO_MODULE_LEN		ICE_NETLIST_LINK_TOPO_OFFSET(0x0000)
+#define ICE_LINK_TOPO_NODE_COUNT		ICE_NETLIST_LINK_TOPO_OFFSET(0x0001)
+
+#define ICE_LINK_TOPO_NODE_COUNT_M		MAKEMASK(0x3FF, 0)
+
+/* The Netlist ID Block is located after all of the Link Topology nodes. */
+#define ICE_NETLIST_ID_BLK_SIZE			0x30
+#define ICE_NETLIST_ID_BLK_OFFSET(n)		ICE_NETLIST_LINK_TOPO_OFFSET(0x0004 + 2 * (n))
+
+/* netlist ID block field offsets (word offsets) */
+#define ICE_NETLIST_ID_BLK_MAJOR_VER_LOW	0x02
+#define ICE_NETLIST_ID_BLK_MAJOR_VER_HIGH	0x03
+#define ICE_NETLIST_ID_BLK_MINOR_VER_LOW	0x04
+#define ICE_NETLIST_ID_BLK_MINOR_VER_HIGH	0x05
+#define ICE_NETLIST_ID_BLK_TYPE_LOW		0x06
+#define ICE_NETLIST_ID_BLK_TYPE_HIGH		0x07
+#define ICE_NETLIST_ID_BLK_REV_LOW		0x08
+#define ICE_NETLIST_ID_BLK_REV_HIGH		0x09
+#define ICE_NETLIST_ID_BLK_SHA_HASH_WORD(n)	(0x0A + (n))
+#define ICE_NETLIST_ID_BLK_CUST_VER		0x2F
 
 /* Auxiliary field, mask and shift definition for Shadow RAM and NVM Flash */
 #define ICE_SR_VPD_SIZE_WORDS		512
@@ -1195,4 +1513,9 @@ struct ice_aq_get_set_rss_lut_params {
 #define ICE_FW_API_LLDP_FLTR_MAJ	1
 #define ICE_FW_API_LLDP_FLTR_MIN	7
 #define ICE_FW_API_LLDP_FLTR_PATCH	1
+
+/* AQ API version for report default configuration */
+#define ICE_FW_API_REPORT_DFLT_CFG_MAJ		1
+#define ICE_FW_API_REPORT_DFLT_CFG_MIN		7
+#define ICE_FW_API_REPORT_DFLT_CFG_PATCH	3
 #endif /* _ICE_TYPE_H_ */

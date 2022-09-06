@@ -14,6 +14,7 @@
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_security_driver.h>
+#include <rte_spinlock.h>
 #include <rte_string_fns.h>
 #include <rte_time.h>
 
@@ -116,44 +117,43 @@
 #define CQ_TIMER_THRESH_DEFAULT	0xAULL /* ~1usec i.e (0xA * 100nsec) */
 #define CQ_TIMER_THRESH_MAX     255
 
-#define NIX_RSS_L3_L4_SRC_DST  (ETH_RSS_L3_SRC_ONLY | ETH_RSS_L3_DST_ONLY \
-				| ETH_RSS_L4_SRC_ONLY | ETH_RSS_L4_DST_ONLY)
+#define NIX_RSS_L3_L4_SRC_DST  (RTE_ETH_RSS_L3_SRC_ONLY | RTE_ETH_RSS_L3_DST_ONLY \
+				| RTE_ETH_RSS_L4_SRC_ONLY | RTE_ETH_RSS_L4_DST_ONLY)
 
-#define NIX_RSS_OFFLOAD		(ETH_RSS_PORT | ETH_RSS_IP | ETH_RSS_UDP |\
-				 ETH_RSS_TCP | ETH_RSS_SCTP | \
-				 ETH_RSS_TUNNEL | ETH_RSS_L2_PAYLOAD | \
-				 NIX_RSS_L3_L4_SRC_DST | ETH_RSS_LEVEL_MASK | \
-				 ETH_RSS_C_VLAN)
+#define NIX_RSS_OFFLOAD		(RTE_ETH_RSS_PORT | RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP |\
+				 RTE_ETH_RSS_TCP | RTE_ETH_RSS_SCTP | \
+				 RTE_ETH_RSS_TUNNEL | RTE_ETH_RSS_L2_PAYLOAD | \
+				 NIX_RSS_L3_L4_SRC_DST | RTE_ETH_RSS_LEVEL_MASK | \
+				 RTE_ETH_RSS_C_VLAN)
 
 #define NIX_TX_OFFLOAD_CAPA ( \
-	DEV_TX_OFFLOAD_MBUF_FAST_FREE	| \
-	DEV_TX_OFFLOAD_MT_LOCKFREE	| \
-	DEV_TX_OFFLOAD_VLAN_INSERT	| \
-	DEV_TX_OFFLOAD_QINQ_INSERT	| \
-	DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM	| \
-	DEV_TX_OFFLOAD_OUTER_UDP_CKSUM	| \
-	DEV_TX_OFFLOAD_TCP_CKSUM	| \
-	DEV_TX_OFFLOAD_UDP_CKSUM	| \
-	DEV_TX_OFFLOAD_SCTP_CKSUM	| \
-	DEV_TX_OFFLOAD_TCP_TSO		| \
-	DEV_TX_OFFLOAD_VXLAN_TNL_TSO    | \
-	DEV_TX_OFFLOAD_GENEVE_TNL_TSO   | \
-	DEV_TX_OFFLOAD_GRE_TNL_TSO	| \
-	DEV_TX_OFFLOAD_MULTI_SEGS	| \
-	DEV_TX_OFFLOAD_IPV4_CKSUM)
+	RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE	| \
+	RTE_ETH_TX_OFFLOAD_MT_LOCKFREE	| \
+	RTE_ETH_TX_OFFLOAD_VLAN_INSERT	| \
+	RTE_ETH_TX_OFFLOAD_QINQ_INSERT	| \
+	RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM	| \
+	RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM	| \
+	RTE_ETH_TX_OFFLOAD_TCP_CKSUM	| \
+	RTE_ETH_TX_OFFLOAD_UDP_CKSUM	| \
+	RTE_ETH_TX_OFFLOAD_SCTP_CKSUM	| \
+	RTE_ETH_TX_OFFLOAD_TCP_TSO		| \
+	RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO    | \
+	RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO   | \
+	RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO	| \
+	RTE_ETH_TX_OFFLOAD_MULTI_SEGS	| \
+	RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
 
 #define NIX_RX_OFFLOAD_CAPA ( \
-	DEV_RX_OFFLOAD_CHECKSUM		| \
-	DEV_RX_OFFLOAD_SCTP_CKSUM	| \
-	DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM | \
-	DEV_RX_OFFLOAD_SCATTER		| \
-	DEV_RX_OFFLOAD_JUMBO_FRAME	| \
-	DEV_RX_OFFLOAD_OUTER_UDP_CKSUM	| \
-	DEV_RX_OFFLOAD_VLAN_STRIP	| \
-	DEV_RX_OFFLOAD_VLAN_FILTER	| \
-	DEV_RX_OFFLOAD_QINQ_STRIP	| \
-	DEV_RX_OFFLOAD_TIMESTAMP	| \
-	DEV_RX_OFFLOAD_RSS_HASH)
+	RTE_ETH_RX_OFFLOAD_CHECKSUM		| \
+	RTE_ETH_RX_OFFLOAD_SCTP_CKSUM	| \
+	RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM | \
+	RTE_ETH_RX_OFFLOAD_SCATTER		| \
+	RTE_ETH_RX_OFFLOAD_OUTER_UDP_CKSUM	| \
+	RTE_ETH_RX_OFFLOAD_VLAN_STRIP	| \
+	RTE_ETH_RX_OFFLOAD_VLAN_FILTER	| \
+	RTE_ETH_RX_OFFLOAD_QINQ_STRIP	| \
+	RTE_ETH_RX_OFFLOAD_TIMESTAMP	| \
+	RTE_ETH_RX_OFFLOAD_RSS_HASH)
 
 #define NIX_DEFAULT_RSS_CTX_GROUP  0
 #define NIX_DEFAULT_RSS_MCAM_IDX  -1
@@ -163,6 +163,11 @@
 #define NIX_TIMESYNC_TX_CMD_LEN		8
 /* Additional timesync values. */
 #define OTX2_CYCLECOUNTER_MASK   0xffffffffffffffffULL
+
+#define OCTEONTX2_PMD			net_octeontx2
+
+#define otx2_ethdev_is_same_driver(dev) \
+	(strcmp((dev)->device->driver->name, RTE_STR(OCTEONTX2_PMD)) == 0)
 
 enum nix_q_size_e {
 	nix_q_size_16,	/* 16 entries */
@@ -351,6 +356,7 @@ struct otx2_eth_dev {
 	bool sdp_link; /* SDP flag */
 	/* Inline IPsec params */
 	uint16_t ipsec_in_max_spi;
+	rte_spinlock_t ipsec_tbl_lock;
 	uint8_t duplex;
 	uint32_t speed;
 } __rte_cache_aligned;
@@ -407,9 +413,8 @@ otx2_eth_pmd_priv(struct rte_eth_dev *eth_dev)
 /* Ops */
 int otx2_nix_info_get(struct rte_eth_dev *eth_dev,
 		      struct rte_eth_dev_info *dev_info);
-int otx2_nix_dev_filter_ctrl(struct rte_eth_dev *eth_dev,
-			     enum rte_filter_type filter_type,
-			     enum rte_filter_op filter_op, void *arg);
+int otx2_nix_dev_flow_ops_get(struct rte_eth_dev *eth_dev,
+			      const struct rte_flow_ops **ops);
 int otx2_nix_fw_version_get(struct rte_eth_dev *eth_dev, char *fw_version,
 			    size_t fw_size);
 int otx2_nix_get_module_info(struct rte_eth_dev *eth_dev,
@@ -425,9 +430,8 @@ int otx2_rx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
 			   struct rte_eth_burst_mode *mode);
 int otx2_tx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
 			   struct rte_eth_burst_mode *mode);
-uint32_t otx2_nix_rx_queue_count(struct rte_eth_dev *eth_dev, uint16_t qidx);
+uint32_t otx2_nix_rx_queue_count(void *rx_queue);
 int otx2_nix_tx_done_cleanup(void *txq, uint32_t free_cnt);
-int otx2_nix_rx_descriptor_done(void *rxq, uint16_t offset);
 int otx2_nix_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int otx2_nix_tx_descriptor_status(void *tx_queue, uint16_t offset);
 
@@ -460,6 +464,8 @@ void otx2_nix_toggle_flag_link_cfg(struct otx2_eth_dev *dev, bool set);
 int otx2_nix_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete);
 void otx2_eth_dev_link_status_update(struct otx2_dev *dev,
 				     struct cgx_link_user_info *link);
+void otx2_eth_dev_link_status_get(struct otx2_dev *dev,
+				  struct cgx_link_user_info *link);
 int otx2_nix_dev_set_link_up(struct rte_eth_dev *eth_dev);
 int otx2_nix_dev_set_link_down(struct rte_eth_dev *eth_dev);
 int otx2_apply_link_speed(struct rte_eth_dev *eth_dev);
@@ -506,8 +512,9 @@ int otx2_nix_xstats_get_by_id(struct rte_eth_dev *eth_dev,
 			      const uint64_t *ids,
 			      uint64_t *values, unsigned int n);
 int otx2_nix_xstats_get_names_by_id(struct rte_eth_dev *eth_dev,
+				    const uint64_t *ids,
 				    struct rte_eth_xstat_name *xstats_names,
-				    const uint64_t *ids, unsigned int limit);
+				    unsigned int limit);
 
 /* RSS */
 void otx2_nix_rss_set_key(struct otx2_eth_dev *dev,

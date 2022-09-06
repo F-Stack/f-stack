@@ -26,7 +26,7 @@ Refer to :numref:`figure_single_port_nic`.
 
 Therefore, a NIC is logically distributed among multiple virtual machines (as shown in :numref:`figure_single_port_nic`),
 while still having global data in common to share with the Physical Function and other Virtual Functions.
-The DPDK fm10kvf, i40evf, igbvf or ixgbevf as a Poll Mode Driver (PMD) serves for the Intel® 82576 Gigabit Ethernet Controller,
+The DPDK fm10kvf, iavf, igbvf or ixgbevf as a Poll Mode Driver (PMD) serves for the Intel® 82576 Gigabit Ethernet Controller,
 Intel® Ethernet Controller I350 family, Intel® 82599 10 Gigabit Ethernet Controller NIC,
 Intel® Fortville 10/40 Gigabit Ethernet Controller NIC's virtual PCI function, or PCIe host-interface of the Intel Ethernet Switch
 FM10000 Series.
@@ -216,21 +216,21 @@ For example,
     *   If the max number of VFs (max_vfs) is set in the range of 1 to 32:
 
         If the number of Rx queues is specified as 4 (``--rxq=4`` in testpmd), then there are totally 32
-        pools (ETH_32_POOLS), and each VF could have 4 Rx queues;
+        pools (RTE_ETH_32_POOLS), and each VF could have 4 Rx queues;
 
         If the number of Rx queues is specified as 2 (``--rxq=2`` in testpmd), then there are totally 32
-        pools (ETH_32_POOLS), and each VF could have 2 Rx queues;
+        pools (RTE_ETH_32_POOLS), and each VF could have 2 Rx queues;
 
     *   If the max number of VFs (max_vfs) is in the range of 33 to 64:
 
         If the number of Rx queues in specified as 4 (``--rxq=4`` in testpmd), then error message is expected
         as ``rxq`` is not correct at this case;
 
-        If the number of rxq is 2 (``--rxq=2`` in testpmd), then there is totally 64 pools (ETH_64_POOLS),
+        If the number of rxq is 2 (``--rxq=2`` in testpmd), then there is totally 64 pools (RTE_ETH_64_POOLS),
         and each VF have 2 Rx queues;
 
-    On host, to enable VF RSS functionality, rx mq mode should be set as ETH_MQ_RX_VMDQ_RSS
-    or ETH_MQ_RX_RSS mode, and SRIOV mode should be activated (max_vfs >= 1).
+    On host, to enable VF RSS functionality, rx mq mode should be set as RTE_ETH_MQ_RX_VMDQ_RSS
+    or RTE_ETH_MQ_RX_RSS mode, and SRIOV mode should be activated (max_vfs >= 1).
     It also needs config VF RSS information like hash function, RSS key, RSS key length.
 
 .. note::
@@ -328,6 +328,8 @@ The expected guest operating systems in a virtualized environment are:
 
 For supported kernel versions, refer to the *DPDK Release Notes*.
 
+.. _intel_vf_kvm:
+
 Setting Up a KVM Virtual Machine Monitor
 ----------------------------------------
 
@@ -386,9 +388,8 @@ The setup procedure is as follows:
 #.  Create a Virtual Machine and install Fedora 14 on the Virtual Machine.
     This is referred to as the Guest Operating System (Guest OS).
 
-#.  Download and install the latest ixgbe driver from:
-
-    `http://downloadcenter.intel.com/Detail_Desc.aspx?agr=Y&amp;DwnldID=14687 <http://downloadcenter.intel.com/Detail_Desc.aspx?agr=Y&amp;DwnldID=14687>`_
+#.  Download and install the latest ixgbe driver from
+    `intel.com <https://downloadcenter.intel.com/download/14687>`_.
 
 #.  In the Host OS
 
@@ -610,3 +611,35 @@ which belongs to the destination VF on the VM.
 .. figure:: img/inter_vm_comms.*
 
    Inter-VM Communication
+
+
+Windows Support
+---------------
+
+*   IAVF PMD currently is supported only inside Windows guest created on Linux host.
+
+*   Physical PCI resources are exposed as virtual functions
+    into Windows VM using SR-IOV pass-through feature.
+
+*   Create a Windows guest on Linux host using KVM hypervisor.
+    Refer to the steps mentioned in the above section: :ref:`intel_vf_kvm`.
+
+*   In the Host machine, download and install the kernel Ethernet driver
+    for `i40e <https://downloadcenter.intel.com/download/24411>`_
+    or `ice <https://downloadcenter.intel.com/download/29746>`_.
+
+*   For Windows guest, install NetUIO driver
+    in place of existing built-in (inbox) Virtual Function driver.
+
+*   To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+    <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
+
+Inline IPsec Support
+--------------------
+
+*   IAVF PMD supports inline crypto processing depending on the underlying
+    hardware crypto capabilities. IPsec Security Gateway Sample Application
+    supports inline IPsec processing for IAVF PMD. For more details see the
+    IPsec Security Gateway Sample Application and Security library
+    documentation.

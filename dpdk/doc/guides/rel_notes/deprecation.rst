@@ -11,14 +11,6 @@ here.
 Deprecation Notices
 -------------------
 
-* build: The macros defined to indicate which DPDK libraries and drivers
-  are included in the meson build are changing to a standardized format of
-  ``RTE_LIB_<NAME>`` and ``RTE_<CLASS>_<NAME>``, where ``NAME`` is the
-  upper-case component name, e.g. EAL, ETHDEV, IXGBE, and ``CLASS`` is the
-  upper-case name of the device class to which a driver belongs e.g.
-  ``NET``, ``CRYPTO``, ``VDPA``. The old macros are deprecated and will be
-  removed in a future release.
-
 * kvargs: The function ``rte_kvargs_process`` will get a new parameter
   for returning key match count. It will ease handling of no-match case.
 
@@ -40,8 +32,21 @@ Deprecation Notices
   ``__atomic_thread_fence`` must be used for patches that need to be merged in
   20.08 onwards. This change will not introduce any performance degradation.
 
+* mempool: Helper macro ``MEMPOOL_HEADER_SIZE()`` is deprecated and will
+  be removed in DPDK 22.11. The replacement macro
+  ``RTE_MEMPOOL_HEADER_SIZE()`` is internal only.
+
+* mempool: Macro to register mempool driver ``MEMPOOL_REGISTER_OPS()`` is
+  deprecated and will be removed in DPDK 22.11. Use replacement macro
+  ``RTE_MEMPOOL_REGISTER_OPS()``.
+
 * mempool: The mempool API macros ``MEMPOOL_PG_*`` are deprecated and
   will be removed in DPDK 22.11.
+
+* pci: To reduce unnecessary ABIs exposed by DPDK bus driver, "rte_bus_pci.h"
+  will be made internal in 21.11 and macros/data structures/functions defined
+  in the header will not be considered as ABI anymore. This change is inspired
+  by the RFC https://patchwork.dpdk.org/project/dpdk/list/?series=17176.
 
 * lib: will fix extending some enum/define breaking the ABI. There are multiple
   samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
@@ -52,7 +57,7 @@ Deprecation Notices
   ``RTE_ETH_FLOW_MAX`` is one sample of the mentioned case, adding a new flow
   type will break the ABI because of ``flex_mask[RTE_ETH_FLOW_MAX]`` array
   usage in following public struct hierarchy:
-  ``rte_eth_fdir_flex_conf -> rte_fdir_conf -> rte_eth_conf (in the middle)``.
+  ``rte_eth_fdir_flex_conf -> rte_eth_fdir_conf -> rte_eth_conf (in the middle)``.
   Need to identify this kind of usages and fix in 20.11, otherwise this blocks
   us extending existing enum/define.
   One solution can be using a fixed size array instead of ``.*MAX.*`` value.
@@ -61,53 +66,8 @@ Deprecation Notices
   and the related structures (``rte_fdir_*`` and ``rte_eth_fdir_*``),
   will be removed in DPDK 20.11.
 
-* ethdev: New offload flags ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
-  This will allow application to enable or disable PMDs from updating
-  ``rte_mbuf::hash::fdir``.
-  This scheme will allow PMDs to avoid writes to ``rte_mbuf`` fields on Rx and
-  thereby improve Rx performance if application wishes do so.
-  In 19.11 PMDs will still update the field even when the offload is not
-  enabled.
-
-* ethdev: ``uint32_t max_rx_pkt_len`` field of ``struct rte_eth_rxmode``, will be
-  replaced by a new ``uint32_t mtu`` field of ``struct rte_eth_conf`` in v21.11.
-  The new ``mtu`` field will be used to configure the initial device MTU via
-  ``rte_eth_dev_configure()`` API.
-  Later MTU can be changed by ``rte_eth_dev_set_mtu()`` API as done now.
-  The existing ``(struct rte_eth_dev)->data->mtu`` variable will be used to store
-  the configured ``mtu`` value,
-  and this new ``(struct rte_eth_dev)->data->dev_conf.mtu`` variable will
-  be used to store the user configuration request.
-  Unlike ``max_rx_pkt_len``, which was valid only when ``JUMBO_FRAME`` enabled,
-  ``mtu`` field will be always valid.
-  When ``mtu`` config is not provided by the application, default ``RTE_ETHER_MTU``
-  value will be used.
-  ``(struct rte_eth_dev)->data->mtu`` should be updated after MTU set successfully,
-  either by ``rte_eth_dev_configure()`` or ``rte_eth_dev_set_mtu()``.
-
-  An application may need to configure device for a specific Rx packet size, like for
-  cases ``DEV_RX_OFFLOAD_SCATTER`` is not supported and device received packet size
-  can't be bigger than Rx buffer size.
-  To cover these cases an application needs to know the device packet overhead to be
-  able to calculate the ``mtu`` corresponding to a Rx buffer size, for this
-  ``(struct rte_eth_dev_info).max_rx_pktlen`` will be kept,
-  the device packet overhead can be calculated as:
-  ``(struct rte_eth_dev_info).max_rx_pktlen - (struct rte_eth_dev_info).max_mtu``
-
-* ethdev: ``rx_descriptor_done`` dev_ops and ``rte_eth_rx_descriptor_done``
-  will be removed in 21.11.
-  Existing ``rte_eth_rx_descriptor_status`` and ``rte_eth_tx_descriptor_status``
-  APIs can be used as replacement.
-
-* ethdev: The port mirroring API can be replaced with a more fine grain flow API.
-  The structs ``rte_eth_mirror_conf``, ``rte_eth_vlan_mirror`` and the functions
-  ``rte_eth_mirror_rule_set``, ``rte_eth_mirror_rule_reset`` will be marked
-  as deprecated in DPDK 20.11, along with the associated macros ``ETH_MIRROR_*``.
-  This API will be fully removed in DPDK 21.11.
-
-* ethdev: Attribute ``shared`` of the ``struct rte_flow_action_count``
-  is deprecated and will be removed in DPDK 21.11. Shared counters should
-  be managed using shared actions API (``rte_flow_shared_action_create`` etc).
+* ethdev: Announce moving from dedicated modify function for each field,
+  to using the general ``rte_flow_modify_field`` action.
 
 * ethdev: The flow API matching pattern structures, ``struct rte_flow_item_*``,
   should start with relevant protocol header.
@@ -126,15 +86,59 @@ Deprecation Notices
   will be limited to maximum 256 queues.
   Also compile time flag ``RTE_ETHDEV_QUEUE_STAT_CNTRS`` will be removed.
 
-* Broadcom bnxt PMD: NetXtreme devices belonging to the ``BCM573xx and
-  BCM5740x`` families will no longer be supported as of DPDK 21.02.
-  Specifically the support for the following Broadcom PCI IDs will be removed
-  from the release: ``0x16c8, 0x16c9, 0x16ca, 0x16ce, 0x16cf, 0x16df,``
-  ``0x16d0, 0x16d1, 0x16d2, 0x16d4, 0x16d5, 0x16e7, 0x16e8, 0x16e9``.
+* ethdev: Items and actions ``PF``, ``VF``, ``PHY_PORT``, ``PORT_ID`` are
+  deprecated as hard-to-use / ambiguous and will be removed in DPDK 22.11.
+
+* ethdev: The use of attributes ``ingress`` / ``egress`` in "transfer" flows
+  is deprecated as ambiguous with respect to the embedded switch. The use of
+  these attributes will become invalid starting from DPDK 22.11.
+
+* ethdev: Actions ``OF_SET_MPLS_TTL``, ``OF_DEC_MPLS_TTL``, ``OF_SET_NW_TTL``,
+  ``OF_COPY_TTL_OUT``, ``OF_COPY_TTL_IN`` are deprecated as not supported by
+  any PMD, so they will be removed in DPDK 22.11.
+
+* ethdev: Actions ``OF_DEC_NW_TTL``, ``SET_IPV4_SRC``, ``SET_IPV4_DST``,
+  ``SET_IPV6_SRC``, ``SET_IPV6_DST``, ``SET_TP_SRC``, ``SET_TP_DST``,
+  ``DEC_TTL``, ``SET_TTL``, ``SET_MAC_SRC``, ``SET_MAC_DST``, ``INC_TCP_SEQ``,
+  ``DEC_TCP_SEQ``, ``INC_TCP_ACK``, ``DEC_TCP_ACK``, ``SET_IPV4_DSCP``,
+  ``SET_IPV6_DSCP``, ``SET_TAG``, ``SET_META`` are marked as legacy and
+  superseded by the generic MODIFY_FIELD action.
+  The legacy actions should be deprecated in 22.07, once MODIFY_FIELD
+  alternative is implemented.
+  The legacy actions should be removed in DPDK 22.11.
+
+* cryptodev: Hide structures ``rte_cryptodev_sym_session`` and
+  ``rte_cryptodev_asym_session`` to remove unnecessary indirection between
+  session and the private data of session. An opaque pointer can be exposed
+  directly to application which can be attached to the ``rte_crypto_op``.
+
+* security: Hide structure ``rte_security_session`` and expose an opaque
+  pointer for the private data to the application which can be attached
+  to the packet while enqueuing.
 
 * metrics: The function ``rte_metrics_init`` will have a non-void return
   in order to notify errors instead of calling ``rte_exit``.
 
-* cmdline: ``cmdline`` structure will be made opaque to hide platform-specific
-  content. On Linux and FreeBSD, supported prior to DPDK 20.11,
-  original structure will be kept until DPDK 21.11.
+* raw/ioat: The ``ioat`` rawdev driver has been deprecated, since it's
+  functionality is provided through the new ``dmadev`` infrastructure.
+  To continue to use hardware previously supported by the ``ioat`` rawdev driver,
+  applications should be updated to use the ``dmadev`` library instead,
+  with the underlying HW-functionality being provided by the ``ioat`` or
+  ``idxd`` dma drivers
+
+* drivers/octeontx2: remove octeontx2 drivers
+
+  In the view of enabling unified driver for ``octeontx2(cn9k)``/``octeontx3(cn10k)``,
+  removing ``drivers/octeontx2`` drivers and replace with ``drivers/cnxk/`` which
+  supports both ``octeontx2(cn9k)`` and ``octeontx3(cn10k)`` SoCs.
+  This deprecation notice is to do following actions in DPDK v22.02 version.
+
+  #. Replace ``drivers/common/octeontx2/`` with ``drivers/common/cnxk/``
+  #. Replace ``drivers/mempool/octeontx2/`` with ``drivers/mempool/cnxk/``
+  #. Replace ``drivers/net/octeontx2/`` with ``drivers/net/cnxk/``
+  #. Replace ``drivers/event/octeontx2/`` with ``drivers/event/cnxk/``
+  #. Replace ``drivers/crypto/octeontx2/`` with ``drivers/crypto/cnxk/``
+  #. Rename ``drivers/regex/octeontx2/`` as ``drivers/regex/cn9k/``
+  #. Rename ``config/arm/arm64_octeontx2_linux_gcc`` as ``config/arm/arm64_cn9k_linux_gcc``
+
+  Last two actions are to align naming convention as cnxk scheme.

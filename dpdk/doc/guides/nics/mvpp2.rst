@@ -40,7 +40,7 @@ Features of the MVPP2 PMD are:
 - :ref:`Extended stats <extstats>`
 - RX flow control
 - Scattered TX frames
-- :ref:`QoS <qossupport>`
+- :ref:`QoS <extconf>`
 - :ref:`Flow API <flowapi>`
 - :ref:`Traffic metering and policing <mtrapi>`
 - :ref:`Traffic Management API <tmapi>`
@@ -91,7 +91,7 @@ Prerequisites
 
   .. code-block:: console
 
-     git clone https://github.com/MarvellEmbeddedProcessors/musdk-marvell.git -b musdk-armada-18.09
+     git clone https://github.com/MarvellEmbeddedProcessors/musdk-marvell.git -b musdk-release-SDK-10.3.5.0-PR2
 
   MUSDK is a light-weight library that provides direct access to Marvell's
   PPv2 (Packet Processor v2). Alternatively prebuilt MUSDK library can be
@@ -108,8 +108,8 @@ Prerequisites
   DPDK environment.
 
 
-Building DPDK
--------------
+Building MUSDK
+--------------
 
 Driver needs precompiled MUSDK library during compilation.
 
@@ -123,14 +123,18 @@ Driver needs precompiled MUSDK library during compilation.
 MUSDK will be installed to `usr/local` under current directory.
 For the detailed build instructions please consult ``doc/musdk_get_started.txt``.
 
-The path to the MUSDK installation directory needs to set in meson, shown in the
-command below.
 
-For additional instructions regarding DPDK cross compilation please refer to :doc:`Cross compile DPDK for ARM64 <../linux_gsg/cross_build_dpdk_for_arm64>`.
+Building DPDK
+-------------
+
+Add path to libmusdk.pc in PKG_CONFIG_PATH environment variable.
 
 .. code-block:: console
 
-   meson -Dlib_musdk_dir=/path/to/musdk build ninja -C build
+   export PKG_CONFIG_PATH=$<musdk_install_dir>/lib/pkgconfig/:$PKG_CONFIG_PATH
+
+   meson build --cross-file config/arm/arm64_armada_linux_gcc
+   ninja -C build
 
 
 Usage Example
@@ -184,12 +188,12 @@ MVPP2 PMD supports the following extended statistics:
 	- ``tx_errors``: number of TX MAC errors
 
 
-.. _qossupport:
+.. _extconf:
 
-QoS Configuration
------------------
+External Configuration
+----------------------
 
-QoS configuration is done through external configuration file. Path to the
+Several driver configuration (e.g. QoS) can be done through external configuration file. Path to the
 file must be given as `cfg` in driver's vdev parameter list.
 
 Configuration syntax
@@ -204,7 +208,17 @@ Configuration syntax
    ebs = <ebs>
    cbs = <cbs>
 
+   [parser udf <udf_id>]
+   proto = <proto>
+   field = <field>
+   key = <key>
+   mask = <mask>
+   offset = <offset>
+
    [port <portnum> default]
+   start_hdr = <start_hdr>
+   forward_bad_frames = <forward_bad_frames>
+   fill_bpool_buffs = <fill_bpool_buffs>
    default_tc = <default_tc>
    mapping_priority = <mapping_priority>
 
@@ -235,7 +249,25 @@ Configuration syntax
 
 Where:
 
+- ``<udf_id>``: Logical UDF id.
+
+- ``<proto>``: Indicate the preceding hdr before the UDF header (`eth` or `udp`).
+
+- ``<field>``: Indicate the field of the <proto> hdr (`type` (eth) or `dport` (udp).
+
+- ``<key>``: UDF key in string format starting with '0x'.
+
+- ``<mask>``: UDF mask in string format starting with '0x'.
+
+- ``<offset>``: Starting UDF offset from the <proto> hdr.
+
 - ``<portnum>``: DPDK Port number (0..n).
+
+- ``<start_hdr>``: Indicate what is the start header mode (`none` (eth), `dsa`, `ext_dsa` or `custom`).
+
+- ``<forward_bad_frames>``: Indicate whether to forward or drop l2 bad packets (0 or 1).
+
+- ``<fill_bpool_buffs>``: Control the amount of refill buffers (default is 64).
 
 - ``<default_tc>``: Default traffic class (e.g. 0)
 
@@ -341,6 +373,18 @@ Configuration file example
    rate_limit = 10000
    burst_size = 2000
 
+Configuration file example with UDF
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: console
+
+   [parser udf 0]
+   proto = eth
+   field = type
+   key = 0x8842
+   mask = 0xffff
+   offset = 6
+
 Usage example
 ^^^^^^^^^^^^^
 
@@ -368,6 +412,7 @@ Following flow action items are supported by the driver:
 
 * DROP
 * QUEUE
+* METER
 
 Supported flow items
 ~~~~~~~~~~~~~~~~~~~~
@@ -533,7 +578,7 @@ MVPP2 PMD supports DPDK traffic metering and policing that allows the following:
 
 For an additional description please refer to DPDK :doc:`Traffic Metering and Policing API <../prog_guide/traffic_metering_and_policing>`.
 
-The policer objects defined by this feature can work with the default policer defined via config file as described in :ref:`QoS Support <qossupport>`.
+The policer objects defined by this feature can work with the default policer defined via config file as described in :ref:`QoS Support <extconf>`.
 
 Limitations
 ~~~~~~~~~~~

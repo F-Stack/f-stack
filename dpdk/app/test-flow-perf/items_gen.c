@@ -15,6 +15,7 @@
 /* Storage for additional parameters for items */
 struct additional_para {
 	rte_be32_t src_ip;
+	uint8_t core_idx;
 };
 
 static void
@@ -51,15 +52,16 @@ static void
 add_ipv4(struct rte_flow_item *items,
 	uint8_t items_counter, struct additional_para para)
 {
-	static struct rte_flow_item_ipv4 ipv4_spec;
-	static struct rte_flow_item_ipv4 ipv4_mask;
+	static struct rte_flow_item_ipv4 ipv4_specs[RTE_MAX_LCORE] __rte_cache_aligned;
+	static struct rte_flow_item_ipv4 ipv4_masks[RTE_MAX_LCORE] __rte_cache_aligned;
+	uint8_t ti = para.core_idx;
 
-	ipv4_spec.hdr.src_addr = RTE_BE32(para.src_ip);
-	ipv4_mask.hdr.src_addr = RTE_BE32(0xffffffff);
+	ipv4_specs[ti].hdr.src_addr = RTE_BE32(para.src_ip);
+	ipv4_masks[ti].hdr.src_addr = RTE_BE32(0xffffffff);
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_IPV4;
-	items[items_counter].spec = &ipv4_spec;
-	items[items_counter].mask = &ipv4_mask;
+	items[items_counter].spec = &ipv4_specs[ti];
+	items[items_counter].mask = &ipv4_masks[ti];
 }
 
 
@@ -67,20 +69,22 @@ static void
 add_ipv6(struct rte_flow_item *items,
 	uint8_t items_counter, struct additional_para para)
 {
-	static struct rte_flow_item_ipv6 ipv6_spec;
-	static struct rte_flow_item_ipv6 ipv6_mask;
+	static struct rte_flow_item_ipv6 ipv6_specs[RTE_MAX_LCORE] __rte_cache_aligned;
+	static struct rte_flow_item_ipv6 ipv6_masks[RTE_MAX_LCORE] __rte_cache_aligned;
+	uint8_t ti = para.core_idx;
+	uint8_t i;
 
 	/** Set ipv6 src **/
-	memset(&ipv6_spec.hdr.src_addr, para.src_ip,
-		sizeof(ipv6_spec.hdr.src_addr) / 2);
-
-	/** Full mask **/
-	memset(&ipv6_mask.hdr.src_addr, 0xff,
-		sizeof(ipv6_spec.hdr.src_addr));
+	for (i = 0; i < 16; i++) {
+		/* Currently src_ip is limited to 32 bit */
+		if (i < 4)
+			ipv6_specs[ti].hdr.src_addr[15 - i] = para.src_ip >> (i * 8);
+		ipv6_masks[ti].hdr.src_addr[15 - i] = 0xff;
+	}
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_IPV6;
-	items[items_counter].spec = &ipv6_spec;
-	items[items_counter].mask = &ipv6_mask;
+	items[items_counter].spec = &ipv6_specs[ti];
+	items[items_counter].mask = &ipv6_masks[ti];
 }
 
 static void
@@ -112,11 +116,11 @@ add_udp(struct rte_flow_item *items,
 static void
 add_vxlan(struct rte_flow_item *items,
 	uint8_t items_counter,
-	__rte_unused struct additional_para para)
+	struct additional_para para)
 {
-	static struct rte_flow_item_vxlan vxlan_spec;
-	static struct rte_flow_item_vxlan vxlan_mask;
-
+	static struct rte_flow_item_vxlan vxlan_specs[RTE_MAX_LCORE] __rte_cache_aligned;
+	static struct rte_flow_item_vxlan vxlan_masks[RTE_MAX_LCORE] __rte_cache_aligned;
+	uint8_t ti = para.core_idx;
 	uint32_t vni_value;
 	uint8_t i;
 
@@ -124,16 +128,16 @@ add_vxlan(struct rte_flow_item *items,
 
 	/* Set standard vxlan vni */
 	for (i = 0; i < 3; i++) {
-		vxlan_spec.vni[2 - i] = vni_value >> (i * 8);
-		vxlan_mask.vni[2 - i] = 0xff;
+		vxlan_specs[ti].vni[2 - i] = vni_value >> (i * 8);
+		vxlan_masks[ti].vni[2 - i] = 0xff;
 	}
 
 	/* Standard vxlan flags */
-	vxlan_spec.flags = 0x8;
+	vxlan_specs[ti].flags = 0x8;
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_VXLAN;
-	items[items_counter].spec = &vxlan_spec;
-	items[items_counter].mask = &vxlan_mask;
+	items[items_counter].spec = &vxlan_specs[ti];
+	items[items_counter].mask = &vxlan_masks[ti];
 }
 
 static void
@@ -141,9 +145,9 @@ add_vxlan_gpe(struct rte_flow_item *items,
 	uint8_t items_counter,
 	__rte_unused struct additional_para para)
 {
-	static struct rte_flow_item_vxlan_gpe vxlan_gpe_spec;
-	static struct rte_flow_item_vxlan_gpe vxlan_gpe_mask;
-
+	static struct rte_flow_item_vxlan_gpe vxlan_gpe_specs[RTE_MAX_LCORE] __rte_cache_aligned;
+	static struct rte_flow_item_vxlan_gpe vxlan_gpe_masks[RTE_MAX_LCORE] __rte_cache_aligned;
+	uint8_t ti = para.core_idx;
 	uint32_t vni_value;
 	uint8_t i;
 
@@ -151,16 +155,16 @@ add_vxlan_gpe(struct rte_flow_item *items,
 
 	/* Set vxlan-gpe vni */
 	for (i = 0; i < 3; i++) {
-		vxlan_gpe_spec.vni[2 - i] = vni_value >> (i * 8);
-		vxlan_gpe_mask.vni[2 - i] = 0xff;
+		vxlan_gpe_specs[ti].vni[2 - i] = vni_value >> (i * 8);
+		vxlan_gpe_masks[ti].vni[2 - i] = 0xff;
 	}
 
 	/* vxlan-gpe flags */
-	vxlan_gpe_spec.flags = 0x0c;
+	vxlan_gpe_specs[ti].flags = 0x0c;
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_VXLAN_GPE;
-	items[items_counter].spec = &vxlan_gpe_spec;
-	items[items_counter].mask = &vxlan_gpe_mask;
+	items[items_counter].spec = &vxlan_gpe_specs[ti];
+	items[items_counter].mask = &vxlan_gpe_masks[ti];
 }
 
 static void
@@ -185,22 +189,22 @@ add_geneve(struct rte_flow_item *items,
 	uint8_t items_counter,
 	__rte_unused struct additional_para para)
 {
-	static struct rte_flow_item_geneve geneve_spec;
-	static struct rte_flow_item_geneve geneve_mask;
-
+	static struct rte_flow_item_geneve geneve_specs[RTE_MAX_LCORE] __rte_cache_aligned;
+	static struct rte_flow_item_geneve geneve_masks[RTE_MAX_LCORE] __rte_cache_aligned;
+	uint8_t ti = para.core_idx;
 	uint32_t vni_value;
 	uint8_t i;
 
 	vni_value = VNI_VALUE;
 
 	for (i = 0; i < 3; i++) {
-		geneve_spec.vni[2 - i] = vni_value >> (i * 8);
-		geneve_mask.vni[2 - i] = 0xff;
+		geneve_specs[ti].vni[2 - i] = vni_value >> (i * 8);
+		geneve_masks[ti].vni[2 - i] = 0xff;
 	}
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_GENEVE;
-	items[items_counter].spec = &geneve_spec;
-	items[items_counter].mask = &geneve_mask;
+	items[items_counter].spec = &geneve_specs[ti];
+	items[items_counter].mask = &geneve_masks[ti];
 }
 
 static void
@@ -285,12 +289,14 @@ add_icmpv6(struct rte_flow_item *items,
 
 void
 fill_items(struct rte_flow_item *items,
-	uint64_t *flow_items, uint32_t outer_ip_src)
+	uint64_t *flow_items, uint32_t outer_ip_src,
+	uint8_t core_idx)
 {
 	uint8_t items_counter = 0;
 	uint8_t i, j;
 	struct additional_para additional_para_data = {
 		.src_ip = outer_ip_src,
+		.core_idx = core_idx,
 	};
 
 	/* Support outer items up to tunnel layer only. */

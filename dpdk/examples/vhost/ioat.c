@@ -17,10 +17,10 @@ struct packet_tracker {
 	unsigned short next_read;
 	unsigned short next_write;
 	unsigned short last_remain;
+	unsigned short ioat_space;
 };
 
 struct packet_tracker cb_tracker[MAX_VHOST_DEVICE];
-
 
 int
 open_ioat(const char *value)
@@ -113,7 +113,7 @@ open_ioat(const char *value)
 			goto out;
 		}
 		rte_rawdev_start(dev_id);
-
+		cb_tracker[dev_id].ioat_space = IOAT_RING_SIZE - 1;
 		dma_info->nr++;
 		i++;
 	}
@@ -122,43 +122,36 @@ out:
 	return ret;
 }
 
-uint32_t
+int32_t
 ioat_transfer_data_cb(int vid, uint16_t queue_id,
-		struct rte_vhost_async_desc *descs,
+		struct rte_vhost_iov_iter *iov_iter,
 		struct rte_vhost_async_status *opaque_data, uint16_t count)
 {
-	uint32_t i_desc;
-	int dev_id = dma_bind[vid].dmas[queue_id * 2 + VIRTIO_RXQ].dev_id;
-	struct rte_vhost_iov_iter *src = NULL;
-	struct rte_vhost_iov_iter *dst = NULL;
+	uint32_t i_iter;
+	uint16_t dev_id = dma_bind[vid].dmas[queue_id * 2 + VIRTIO_RXQ].dev_id;
+	struct rte_vhost_iov_iter *iter = NULL;
 	unsigned long i_seg;
 	unsigned short mask = MAX_ENQUEUED_SIZE - 1;
 	unsigned short write = cb_tracker[dev_id].next_write;
 
 	if (!opaque_data) {
-		for (i_desc = 0; i_desc < count; i_desc++) {
-			src = descs[i_desc].src;
-			dst = descs[i_desc].dst;
+		for (i_iter = 0; i_iter < count; i_iter++) {
+			iter = iov_iter + i_iter;
 			i_seg = 0;
-			while (i_seg < src->nr_segs) {
-				/*
-				 * TODO: Assuming that the ring space of the
-				 * IOAT device is large enough, so there is no
-				 * error here, and the actual error handling
-				 * will be added later.
-				 */
+			if (cb_tracker[dev_id].ioat_space < iter->nr_segs)
+				break;
+			while (i_seg < iter->nr_segs) {
 				rte_ioat_enqueue_copy(dev_id,
-					(uintptr_t)(src->iov[i_seg].iov_base)
-						+ src->offset,
-					(uintptr_t)(dst->iov[i_seg].iov_base)
-						+ dst->offset,
-					src->iov[i_seg].iov_len,
+					(uintptr_t)(iter->iov[i_seg].src_addr),
+					(uintptr_t)(iter->iov[i_seg].dst_addr),
+					iter->iov[i_seg].len,
 					0,
 					0);
 				i_seg++;
 			}
 			write &= mask;
-			cb_tracker[dev_id].size_track[write] = i_seg;
+			cb_tracker[dev_id].size_track[write] = iter->nr_segs;
+			cb_tracker[dev_id].ioat_space -= iter->nr_segs;
 			write++;
 		}
 	} else {
@@ -168,27 +161,38 @@ ioat_transfer_data_cb(int vid, uint16_t queue_id,
 	/* ring the doorbell */
 	rte_ioat_perform_ops(dev_id);
 	cb_tracker[dev_id].next_write = write;
-	return i_desc;
+	return i_iter;
 }
 
-uint32_t
+int32_t
 ioat_check_completed_copies_cb(int vid, uint16_t queue_id,
 		struct rte_vhost_async_status *opaque_data,
 		uint16_t max_packets)
 {
 	if (!opaque_data) {
 		uintptr_t dump[255];
-		unsigned short n_seg;
+		int n_seg;
 		unsigned short read, write;
 		unsigned short nb_packet = 0;
 		unsigned short mask = MAX_ENQUEUED_SIZE - 1;
 		unsigned short i;
-		int dev_id = dma_bind[vid].dmas[queue_id * 2
+
+		uint16_t dev_id = dma_bind[vid].dmas[queue_id * 2
 				+ VIRTIO_RXQ].dev_id;
-		n_seg = rte_ioat_completed_ops(dev_id, 255, dump, dump);
-		n_seg += cb_tracker[dev_id].last_remain;
-		if (!n_seg)
+		n_seg = rte_ioat_completed_ops(dev_id, 255, NULL, NULL, dump, dump);
+		if (n_seg < 0) {
+			RTE_LOG(ERR,
+				VHOST_DATA,
+				"fail to poll completed buf on IOAT device %u",
+				dev_id);
 			return 0;
+		}
+		if (n_seg == 0)
+			return 0;
+
+		cb_tracker[dev_id].ioat_space += n_seg;
+		n_seg += cb_tracker[dev_id].last_remain;
+
 		read = cb_tracker[dev_id].next_read;
 		write = cb_tracker[dev_id].next_write;
 		for (i = 0; i < max_packets; i++) {

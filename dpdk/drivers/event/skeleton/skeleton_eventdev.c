@@ -102,7 +102,8 @@ skeleton_eventdev_info_get(struct rte_eventdev *dev,
 	dev_info->event_dev_cap = RTE_EVENT_DEV_CAP_QUEUE_QOS |
 					RTE_EVENT_DEV_CAP_BURST_MODE |
 					RTE_EVENT_DEV_CAP_EVENT_QOS |
-					RTE_EVENT_DEV_CAP_CARRY_FLOW_ID;
+					RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
+					RTE_EVENT_DEV_CAP_MAINTENANCE_FREE;
 }
 
 static int
@@ -320,7 +321,7 @@ skeleton_eventdev_dump(struct rte_eventdev *dev, FILE *f)
 
 
 /* Initialize and register event driver with DPDK Application */
-static struct rte_eventdev_ops skeleton_eventdev_ops = {
+static struct eventdev_ops skeleton_eventdev_ops = {
 	.dev_infos_get    = skeleton_eventdev_info_get,
 	.dev_configure    = skeleton_eventdev_configure,
 	.dev_start        = skeleton_eventdev_start,
@@ -443,6 +444,7 @@ skeleton_eventdev_create(const char *name, int socket_id)
 	eventdev->dequeue       = skeleton_eventdev_dequeue;
 	eventdev->dequeue_burst = skeleton_eventdev_dequeue_burst;
 
+	event_dev_probing_finish(eventdev);
 	return 0;
 fail:
 	return -EFAULT;

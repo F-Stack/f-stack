@@ -25,6 +25,7 @@ poll mode crypto driver support for the following hardware accelerator devices:
 * ``Intel QuickAssist Technology 200xx``
 * ``Intel QuickAssist Technology D15xx``
 * ``Intel QuickAssist Technology C4xxx``
+* ``Intel QuickAssist Technology 4xxx``
 
 
 Features
@@ -94,15 +95,16 @@ All the usual chains are supported and also some mixed chains:
    +==================+===========+=============+==========+==========+
    | NULL CIPHER      | Y         | 2&3         | 2&3      | Y        |
    +------------------+-----------+-------------+----------+----------+
-   | SNOW3G UEA2      | 2&3       | Y           | 2&3      | 2&3      |
+   | SNOW3G UEA2      | 2&3       | 1&2&3       | 2&3      | 2&3      |
    +------------------+-----------+-------------+----------+----------+
    | ZUC EEA3         | 2&3       | 2&3         | 2&3      | 2&3      |
    +------------------+-----------+-------------+----------+----------+
-   | AES CTR          | Y         | 2&3         | 2&3      | Y        |
+   | AES CTR          | 1&2&3     | 2&3         | 2&3      | Y        |
    +------------------+-----------+-------------+----------+----------+
 
 * The combinations marked as "Y" are supported on all QAT hardware versions.
-* The combinations marked as "2&3" are supported on GEN2/GEN3 QAT hardware only.
+* The combinations marked as "2&3" are supported on GEN2 and GEN3 QAT hardware only.
+* The combinations marked as "1&2&3" are supported on GEN1, GEN2 and GEN3 QAT hardware only.
 
 
 Limitations
@@ -372,6 +374,8 @@ to see the full table)
    | Yes | No  | No  | 2   | D15xx    | 01.org/4.2.0+ | qat_d15xx     | d15xx      | 6f54   | 1    | 6f55   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | No  | No  | 3   | C4xxx    | p             | qat_c4xxx     | c4xxx      | 18a0   | 1    | 18a1   | 128    |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | No  | No  | 4   | 4xxx     | N/A           | qat_4xxx      | 4xxx       | 4940   | 4    | 4941   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
 
 * Note: Symmetric mixed crypto algorithms feature on Gen 2 works only with 01.org driver version 4.9.0+
@@ -659,15 +663,15 @@ Debugging
 
 There are 2 sets of trace available via the dynamic logging feature:
 
-* pmd.qat_dp exposes trace on the data-path.
-* pmd.qat_general exposes all other trace.
+* pmd.qat.dp exposes trace on the data-path.
+* pmd.qat.general exposes all other trace.
 
 pmd.qat exposes both sets of traces.
 They can be enabled using the log-level option (where 8=maximum log level) on
 the process cmdline, e.g. using any of the following::
 
-    --log-level="pmd.qat_general,8"
-    --log-level="pmd.qat_dp,8"
+    --log-level="pmd.qat.general,8"
+    --log-level="pmd.qat.dp,8"
     --log-level="pmd.qat,8"
 
 .. Note::
@@ -678,4 +682,4 @@ the process cmdline, e.g. using any of the following::
     Also the dynamic global log level overrides both sets of trace, so e.g. no
     QAT trace would display in this case::
 
-	--log-level="7" --log-level="pmd.qat_general,8"
+	--log-level="7" --log-level="pmd.qat.general,8"

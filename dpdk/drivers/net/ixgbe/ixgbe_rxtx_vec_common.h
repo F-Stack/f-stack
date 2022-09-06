@@ -5,7 +5,7 @@
 #ifndef _IXGBE_RXTX_VEC_COMMON_H_
 #define _IXGBE_RXTX_VEC_COMMON_H_
 #include <stdint.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "ixgbe_ethdev.h"
 #include "ixgbe_rxtx.h"
@@ -277,7 +277,7 @@ static inline int
 ixgbe_rx_vec_dev_conf_condition_check_default(struct rte_eth_dev *dev)
 {
 #ifndef RTE_LIBRTE_IEEE1588
-	struct rte_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
+	struct rte_eth_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
 
 	/* no fdir support */
 	if (fconf->mode != RTE_FDIR_MODE_NONE)

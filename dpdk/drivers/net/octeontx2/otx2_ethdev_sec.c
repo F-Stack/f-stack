@@ -21,6 +21,8 @@
 #include "otx2_sec_idev.h"
 #include "otx2_security.h"
 
+#define ERR_STR_SZ 256
+
 struct eth_sec_tag_const {
 	RTE_STD_C11
 	union {
@@ -162,7 +164,8 @@ lookup_mem_sa_tbl_clear(struct rte_eth_dev *eth_dev)
 }
 
 static int
-lookup_mem_sa_index_update(struct rte_eth_dev *eth_dev, int spi, void *sa)
+lookup_mem_sa_index_update(struct rte_eth_dev *eth_dev, int spi, void *sa,
+			   char *err_str)
 {
 	static const char name[] = OTX2_NIX_FASTPATH_LOOKUP_MEM;
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
@@ -173,7 +176,8 @@ lookup_mem_sa_index_update(struct rte_eth_dev *eth_dev, int spi, void *sa)
 
 	mz = rte_memzone_lookup(name);
 	if (mz == NULL) {
-		otx2_err("Could not find fastpath lookup table");
+		snprintf(err_str, ERR_STR_SZ,
+			 "Could not find fastpath lookup table");
 		return -EINVAL;
 	}
 
@@ -451,6 +455,9 @@ eth_sec_ipsec_out_sess_create(struct rte_eth_dev *eth_dev,
 			goto cpt_put;
 	}
 
+	rte_io_wmb();
+	ctl->valid = 1;
+
 	return 0;
 cpt_put:
 	otx2_sec_idev_tx_cpt_qp_put(sess->qp);
@@ -472,7 +479,10 @@ eth_sec_ipsec_in_sess_create(struct rte_eth_dev *eth_dev,
 	struct otx2_ipsec_fp_sa_ctl *ctl;
 	struct otx2_ipsec_fp_in_sa *sa;
 	struct otx2_sec_session *priv;
+	char err_str[ERR_STR_SZ];
 	struct otx2_cpt_qp *qp;
+
+	memset(err_str, 0, ERR_STR_SZ);
 
 	if (ipsec->spi >= dev->ipsec_in_max_spi) {
 		otx2_err("SPI exceeds max supported");
@@ -480,15 +490,21 @@ eth_sec_ipsec_in_sess_create(struct rte_eth_dev *eth_dev,
 	}
 
 	sa = in_sa_get(port, ipsec->spi);
+	if (sa == NULL)
+		return -ENOMEM;
+
 	ctl = &sa->ctl;
 
 	priv = get_sec_session_private_data(sec_sess);
 	priv->ipsec.dir = RTE_SECURITY_IPSEC_SA_DIR_INGRESS;
 	sess = &priv->ipsec.ip;
 
+	rte_spinlock_lock(&dev->ipsec_tbl_lock);
+
 	if (ctl->valid) {
-		otx2_err("SA already registered");
-		return -EINVAL;
+		snprintf(err_str, ERR_STR_SZ, "SA already registered");
+		ret = -EEXIST;
+		goto tbl_unlock;
 	}
 
 	memset(sa, 0, sizeof(struct otx2_ipsec_fp_in_sa));
@@ -512,10 +528,13 @@ eth_sec_ipsec_in_sess_create(struct rte_eth_dev *eth_dev,
 		auth_key_len = auth_xform->auth.key.length;
 	}
 
-	if (cipher_key_len != 0)
+	if (cipher_key_len != 0) {
 		memcpy(sa->cipher_key, cipher_key, cipher_key_len);
-	else
-		return -EINVAL;
+	} else {
+		snprintf(err_str, ERR_STR_SZ, "Invalid cipher key len");
+		ret = -EINVAL;
+		goto sa_clear;
+	}
 
 	sess->in_sa = sa;
 
@@ -523,33 +542,49 @@ eth_sec_ipsec_in_sess_create(struct rte_eth_dev *eth_dev,
 
 	sa->replay_win_sz = ipsec->replay_win_sz;
 
-	if (lookup_mem_sa_index_update(eth_dev, ipsec->spi, sa))
-		return -EINVAL;
+	if (lookup_mem_sa_index_update(eth_dev, ipsec->spi, sa, err_str)) {
+		ret = -EINVAL;
+		goto sa_clear;
+	}
 
 	ret = ipsec_fp_sa_ctl_set(ipsec, crypto_xform, ctl);
-	if (ret)
-		return ret;
+	if (ret) {
+		snprintf(err_str, ERR_STR_SZ,
+			"Could not set SA CTL word (err: %d)", ret);
+		goto sa_clear;
+	}
 
 	if (auth_key_len && auth_key) {
 		/* Get a queue pair for HMAC init */
 		ret = otx2_sec_idev_tx_cpt_qp_get(port, &qp);
-		if (ret)
-			return ret;
+		if (ret) {
+			snprintf(err_str, ERR_STR_SZ, "Could not get CPT QP");
+			goto sa_clear;
+		}
+
 		ret = hmac_init(ctl, qp, auth_key, auth_key_len, sa->hmac_key);
 		otx2_sec_idev_tx_cpt_qp_put(qp);
-		if (ret)
-			return ret;
+		if (ret) {
+			snprintf(err_str, ERR_STR_SZ, "Could not put CPT QP");
+			goto sa_clear;
+		}
 	}
 
 	if (sa->replay_win_sz) {
 		if (sa->replay_win_sz > OTX2_IPSEC_MAX_REPLAY_WIN_SZ) {
-			otx2_err("Replay window size is not supported");
-			return -ENOTSUP;
+			snprintf(err_str, ERR_STR_SZ,
+				 "Replay window size is not supported");
+			ret = -ENOTSUP;
+			goto sa_clear;
 		}
 		sa->replay = rte_zmalloc(NULL, sizeof(struct otx2_ipsec_replay),
 				0);
-		if (sa->replay == NULL)
-			return -ENOMEM;
+		if (sa->replay == NULL) {
+			snprintf(err_str, ERR_STR_SZ,
+				"Could not allocate memory");
+			ret = -ENOMEM;
+			goto sa_clear;
+		}
 
 		rte_spinlock_init(&sa->replay->lock);
 		/*
@@ -562,6 +597,20 @@ eth_sec_ipsec_in_sess_create(struct rte_eth_dev *eth_dev,
 		sa->esn_low = 0;
 		sa->esn_hi = 0;
 	}
+
+	rte_io_wmb();
+	ctl->valid = 1;
+
+	rte_spinlock_unlock(&dev->ipsec_tbl_lock);
+	return 0;
+
+sa_clear:
+	memset(sa, 0, sizeof(struct otx2_ipsec_fp_in_sa));
+
+tbl_unlock:
+	rte_spinlock_unlock(&dev->ipsec_tbl_lock);
+
+	otx2_err("%s", err_str);
 
 	return ret;
 }
@@ -639,10 +688,12 @@ otx2_eth_sec_free_anti_replay(struct otx2_ipsec_fp_in_sa *sa)
 }
 
 static int
-otx2_eth_sec_session_destroy(void *device __rte_unused,
+otx2_eth_sec_session_destroy(void *device,
 			     struct rte_security_session *sess)
 {
+	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(device);
 	struct otx2_sec_session_ipsec_ip *sess_ip;
+	struct otx2_ipsec_fp_in_sa *sa;
 	struct otx2_sec_session *priv;
 	struct rte_mempool *sess_mp;
 	int ret;
@@ -653,9 +704,21 @@ otx2_eth_sec_session_destroy(void *device __rte_unused,
 
 	sess_ip = &priv->ipsec.ip;
 
-	/* Release the anti replay window */
-	if (priv->ipsec.dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS)
-		otx2_eth_sec_free_anti_replay(sess_ip->in_sa);
+	if (priv->ipsec.dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS) {
+		rte_spinlock_lock(&dev->ipsec_tbl_lock);
+		sa = sess_ip->in_sa;
+
+		/* Release the anti replay window */
+		otx2_eth_sec_free_anti_replay(sa);
+
+		/* Clear SA table entry */
+		if (sa != NULL) {
+			sa->ctl.valid = 0;
+			rte_io_wmb();
+		}
+
+		rte_spinlock_unlock(&dev->ipsec_tbl_lock);
+	}
 
 	/* Release CPT LF used for this session */
 	if (sess_ip->qp != NULL) {
@@ -678,27 +741,6 @@ otx2_eth_sec_session_get_size(void *device __rte_unused)
 	return sizeof(struct otx2_sec_session);
 }
 
-static int
-otx2_eth_sec_set_pkt_mdata(void *device __rte_unused,
-			    struct rte_security_session *session,
-			    struct rte_mbuf *m, void *params __rte_unused)
-{
-	/* Set security session as the pkt metadata */
-	*rte_security_dynfield(m) = (rte_security_dynfield_t)session;
-
-	return 0;
-}
-
-static int
-otx2_eth_sec_get_userdata(void *device __rte_unused, uint64_t md,
-			   void **userdata)
-{
-	/* Retrieve userdata  */
-	*userdata = (void *)md;
-
-	return 0;
-}
-
 static const struct rte_security_capability *
 otx2_eth_sec_capabilities_get(void *device __rte_unused)
 {
@@ -709,8 +751,6 @@ static struct rte_security_ops otx2_eth_sec_ops = {
 	.session_create		= otx2_eth_sec_session_create,
 	.session_destroy	= otx2_eth_sec_session_destroy,
 	.session_get_size	= otx2_eth_sec_session_get_size,
-	.set_pkt_metadata	= otx2_eth_sec_set_pkt_mdata,
-	.get_userdata		= otx2_eth_sec_get_userdata,
 	.capabilities_get	= otx2_eth_sec_capabilities_get
 };
 
@@ -736,6 +776,8 @@ otx2_eth_sec_ctx_create(struct rte_eth_dev *eth_dev)
 	ctx->device = eth_dev;
 	ctx->ops = &otx2_eth_sec_ops;
 	ctx->sess_cnt = 0;
+	ctx->flags =
+		(RTE_SEC_CTX_F_FAST_SET_MDATA | RTE_SEC_CTX_F_FAST_GET_UDATA);
 
 	eth_dev->security_ctx = ctx;
 
@@ -827,8 +869,8 @@ otx2_eth_sec_init(struct rte_eth_dev *eth_dev)
 	RTE_BUILD_BUG_ON(sa_width < 32 || sa_width > 512 ||
 			 !RTE_IS_POWER_OF_2(sa_width));
 
-	if (!(dev->tx_offloads & DEV_TX_OFFLOAD_SECURITY) &&
-	    !(dev->rx_offloads & DEV_RX_OFFLOAD_SECURITY))
+	if (!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_SECURITY) &&
+	    !(dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY))
 		return 0;
 
 	if (rte_security_dynfield_register() < 0)
@@ -853,6 +895,8 @@ otx2_eth_sec_init(struct rte_eth_dev *eth_dev)
 		goto sec_fini;
 	}
 
+	rte_spinlock_init(&dev->ipsec_tbl_lock);
+
 	return 0;
 
 sec_fini:
@@ -868,8 +912,8 @@ otx2_eth_sec_fini(struct rte_eth_dev *eth_dev)
 	uint16_t port = eth_dev->data->port_id;
 	char name[RTE_MEMZONE_NAMESIZE];
 
-	if (!(dev->tx_offloads & DEV_TX_OFFLOAD_SECURITY) &&
-	    !(dev->rx_offloads & DEV_RX_OFFLOAD_SECURITY))
+	if (!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_SECURITY) &&
+	    !(dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY))
 		return;
 
 	lookup_mem_sa_tbl_clear(eth_dev);

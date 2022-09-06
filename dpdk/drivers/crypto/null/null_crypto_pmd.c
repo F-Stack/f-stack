@@ -3,7 +3,7 @@
  */
 
 #include <rte_common.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_bus_vdev.h>
 #include <rte_malloc.h>
 
@@ -184,6 +184,8 @@ cryptodev_null_create(const char *name,
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;
 
+	rte_cryptodev_pmd_probing_finish(dev);
+
 	return 0;
 }
 
@@ -248,4 +250,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_NULL_PMD,
 	"socket_id=<int>");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(null_crypto_drv, cryptodev_null_pmd_drv.driver,
 		cryptodev_driver_id);
-RTE_LOG_REGISTER(null_logtype_driver, pmd.crypto.null, INFO);
+RTE_LOG_REGISTER_DEFAULT(null_logtype_driver, INFO);

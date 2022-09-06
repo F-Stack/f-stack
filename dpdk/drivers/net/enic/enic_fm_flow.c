@@ -5,7 +5,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <rte_log.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_flow_driver.h>
 #include <rte_ether.h>
 #include <rte_hash.h>
@@ -21,9 +21,6 @@
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
 #define IP6_VTC_FLOW 0x60000000
-
-/* Highest Item type supported by Flowman */
-#define FM_MAX_ITEM_TYPE RTE_FLOW_ITEM_TYPE_VXLAN
 
 /* Up to 1024 TCAM entries */
 #define FM_MAX_TCAM_TABLE_SIZE 1024
@@ -235,6 +232,7 @@ static enic_copy_item_fn enic_fm_copy_item_tcp;
 static enic_copy_item_fn enic_fm_copy_item_udp;
 static enic_copy_item_fn enic_fm_copy_item_vlan;
 static enic_copy_item_fn enic_fm_copy_item_vxlan;
+static enic_copy_item_fn enic_fm_copy_item_gtp;
 
 /* Ingress actions */
 static const enum rte_flow_action_type enic_fm_supported_ig_actions[] = {
@@ -340,6 +338,30 @@ static const struct enic_fm_items enic_fm_items[] = {
 	},
 	[RTE_FLOW_ITEM_TYPE_VXLAN] = {
 		.copy_item = enic_fm_copy_item_vxlan,
+		.valid_start_item = 1,
+		.prev_items = (const enum rte_flow_item_type[]) {
+			       RTE_FLOW_ITEM_TYPE_UDP,
+			       RTE_FLOW_ITEM_TYPE_END,
+		},
+	},
+	[RTE_FLOW_ITEM_TYPE_GTP] = {
+		.copy_item = enic_fm_copy_item_gtp,
+		.valid_start_item = 0,
+		.prev_items = (const enum rte_flow_item_type[]) {
+			       RTE_FLOW_ITEM_TYPE_UDP,
+			       RTE_FLOW_ITEM_TYPE_END,
+		},
+	},
+	[RTE_FLOW_ITEM_TYPE_GTPC] = {
+		.copy_item = enic_fm_copy_item_gtp,
+		.valid_start_item = 1,
+		.prev_items = (const enum rte_flow_item_type[]) {
+			       RTE_FLOW_ITEM_TYPE_UDP,
+			       RTE_FLOW_ITEM_TYPE_END,
+		},
+	},
+	[RTE_FLOW_ITEM_TYPE_GTPU] = {
+		.copy_item = enic_fm_copy_item_gtp,
 		.valid_start_item = 1,
 		.prev_items = (const enum rte_flow_item_type[]) {
 			       RTE_FLOW_ITEM_TYPE_UDP,
@@ -629,6 +651,99 @@ enic_fm_copy_item_vxlan(struct copy_item_args *arg)
 	return 0;
 }
 
+static int
+enic_fm_copy_item_gtp(struct copy_item_args *arg)
+{
+	const struct rte_flow_item *item = arg->item;
+	const struct rte_flow_item_gtp *spec = item->spec;
+	const struct rte_flow_item_gtp *mask = item->mask;
+	struct fm_tcam_match_entry *entry = arg->fm_tcam_entry;
+	struct fm_header_set *fm_data, *fm_mask;
+	int off;
+	uint16_t udp_gtp_uc_port_be = 0;
+
+	ENICPMD_FUNC_TRACE();
+	/* Only 2 header levels (outer and inner) allowed */
+	if (arg->header_level > 0)
+		return -EINVAL;
+
+	fm_data = &entry->ftm_data.fk_hdrset[0];
+	fm_mask = &entry->ftm_mask.fk_hdrset[0];
+
+	switch (item->type) {
+	case RTE_FLOW_ITEM_TYPE_GTP:
+	{
+		/* For vanilla GTP, the UDP destination port must be specified
+		 * but value of the port is not enforced here.
+		 */
+		if (!(fm_data->fk_metadata & FKM_UDP) ||
+		    !(fm_data->fk_header_select & FKH_UDP) ||
+		    fm_data->l4.udp.fk_dest == 0)
+			return -EINVAL;
+		if (!(fm_mask->fk_metadata & FKM_UDP) ||
+		    !(fm_mask->fk_header_select & FKH_UDP) ||
+		    fm_mask->l4.udp.fk_dest != 0xFFFF)
+			return -EINVAL;
+		break;
+	}
+	case RTE_FLOW_ITEM_TYPE_GTPC:
+	{
+		udp_gtp_uc_port_be = rte_cpu_to_be_16(RTE_GTPC_UDP_PORT);
+		break;
+	}
+	case RTE_FLOW_ITEM_TYPE_GTPU:
+	{
+		udp_gtp_uc_port_be = rte_cpu_to_be_16(RTE_GTPU_UDP_PORT);
+		break;
+	}
+	default:
+		RTE_ASSERT(0);
+	}
+
+	/* The GTP-C or GTP-U UDP destination port must be matched. */
+	if (udp_gtp_uc_port_be) {
+		if (fm_data->fk_metadata & FKM_UDP &&
+		    fm_data->fk_header_select & FKH_UDP &&
+		    fm_data->l4.udp.fk_dest != udp_gtp_uc_port_be)
+			return -EINVAL;
+		if (fm_mask->fk_metadata & FKM_UDP &&
+		    fm_mask->fk_header_select & FKH_UDP &&
+		    fm_mask->l4.udp.fk_dest != 0xFFFF)
+			return -EINVAL;
+
+		/* In any case, add match for GTP-C GTP-U UDP dst port */
+		fm_data->fk_metadata |= FKM_UDP;
+		fm_data->fk_header_select |= FKH_UDP;
+		fm_data->l4.udp.fk_dest = udp_gtp_uc_port_be;
+		fm_mask->fk_metadata |= FKM_UDP;
+		fm_mask->fk_header_select |= FKH_UDP;
+		fm_mask->l4.udp.fk_dest = 0xFFFF;
+	}
+
+	/* NIC does not support GTP tunnels. No Items are allowed after this.
+	 * This prevents the specification of further items.
+	 */
+	arg->header_level = 0;
+
+	/* Match all if no spec */
+	if (!spec)
+		return 0;
+	if (!mask)
+		mask = &rte_flow_item_gtp_mask;
+
+	/*
+	 * Use the raw L4 buffer to match GTP as fm_header_set does not have
+	 * GTP header. UDP dst port must be specific. Using the raw buffer
+	 * does not affect such UDP item, since we skip UDP in the raw buffer.
+	 */
+	fm_data->fk_header_select |= FKH_L4RAW;
+	fm_mask->fk_header_select |= FKH_L4RAW;
+	off = sizeof(fm_data->l4.udp);
+	memcpy(&fm_data->l4.rawdata[off], spec, sizeof(*spec));
+	memcpy(&fm_mask->l4.rawdata[off], mask, sizeof(*mask));
+	return 0;
+}
+
 /*
  * Currently, raw pattern match is very limited. It is intended for matching
  * UDP tunnel header (e.g. vxlan or geneve).
@@ -863,7 +978,7 @@ enic_fm_copy_entry(struct enic_flowman *fm,
 
 		item_info = &enic_fm_items[item->type];
 
-		if (item->type > FM_MAX_ITEM_TYPE ||
+		if (item->type >= RTE_DIM(enic_fm_items) ||
 		    item_info->copy_item == NULL) {
 			return rte_flow_error_set(error, ENOTSUP,
 				RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1242,6 +1357,35 @@ vf_egress_port_id_action(struct enic_flowman *fm,
 	return 0;
 }
 
+static int
+enic_fm_check_transfer_dst(struct enic *enic, uint16_t dst_port_id,
+			   struct rte_eth_dev **dst_dev,
+			   struct rte_flow_error *error)
+{
+	struct rte_eth_dev *dev;
+
+	ENICPMD_LOG(DEBUG, "port id %u", dst_port_id);
+	if (!rte_eth_dev_is_valid_port(dst_port_id)) {
+		return rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ACTION,
+			NULL, "invalid port_id");
+	}
+	dev = &rte_eth_devices[dst_port_id];
+	if (!dev_is_enic(dev)) {
+		return rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ACTION,
+			NULL, "port_id is not enic");
+	}
+	if (enic->switch_domain_id != pmd_priv(dev)->switch_domain_id) {
+		return rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ACTION,
+			NULL, "destination and source ports are not in the same switch domain");
+	}
+
+	*dst_dev = dev;
+	return 0;
+}
+
 /* Translate flow actions to flowman TCAM entry actions */
 static int
 enic_fm_copy_action(struct enic_flowman *fm,
@@ -1314,6 +1458,8 @@ enic_fm_copy_action(struct enic_flowman *fm,
 			const struct rte_flow_action_mark *mark =
 				actions->conf;
 
+			if (enic->use_noscatter_vec_rx_handler)
+				goto unsupported;
 			if (mark->id >= ENIC_MAGIC_FILTER_ID - 1)
 				return rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ACTION,
@@ -1327,6 +1473,8 @@ enic_fm_copy_action(struct enic_flowman *fm,
 			break;
 		}
 		case RTE_FLOW_ACTION_TYPE_FLAG: {
+			if (enic->use_noscatter_vec_rx_handler)
+				goto unsupported;
 			/* ENIC_MAGIC_FILTER_ID is reserved for flagging */
 			memset(&fm_op, 0, sizeof(fm_op));
 			fm_op.fa_op = FMOP_MARK;
@@ -1431,7 +1579,7 @@ enic_fm_copy_action(struct enic_flowman *fm,
 		}
 		case RTE_FLOW_ACTION_TYPE_PORT_ID: {
 			const struct rte_flow_action_port_id *port;
-			struct rte_eth_dev *dev;
+			struct rte_eth_dev *dev = NULL;
 
 			if (!ingress && (overlap & PORT_ID)) {
 				ENICPMD_LOG(DEBUG, "cannot have multiple egress PORT_ID actions");
@@ -1442,24 +1590,10 @@ enic_fm_copy_action(struct enic_flowman *fm,
 				vnic_h = enic->fm_vnic_handle; /* This port */
 				break;
 			}
-			ENICPMD_LOG(DEBUG, "port id %u", port->id);
-			if (!rte_eth_dev_is_valid_port(port->id)) {
-				return rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_ACTION,
-					NULL, "invalid port_id");
-			}
-			dev = &rte_eth_devices[port->id];
-			if (!dev_is_enic(dev)) {
-				return rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_ACTION,
-					NULL, "port_id is not enic");
-			}
-			if (enic->switch_domain_id !=
-			    pmd_priv(dev)->switch_domain_id) {
-				return rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_ACTION,
-					NULL, "destination and source ports are not in the same switch domain");
-			}
+			ret = enic_fm_check_transfer_dst(enic, port->id, &dev,
+							 error);
+			if (ret)
+				return ret;
 			vnic_h = pmd_priv(dev)->fm_vnic_handle;
 			overlap |= PORT_ID;
 			/*
@@ -1554,6 +1688,48 @@ enic_fm_copy_action(struct enic_flowman *fm,
 			vid = actions->conf;
 			need_ovlan_action = true;
 			ovlan |= rte_be_to_cpu_16(vid->vlan_vid);
+			break;
+		}
+		case RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR: {
+			const struct rte_flow_action_ethdev *ethdev;
+			struct rte_eth_dev *dev = NULL;
+
+			ethdev = actions->conf;
+			ret = enic_fm_check_transfer_dst(enic, ethdev->port_id,
+							 &dev, error);
+			if (ret)
+				return ret;
+			vnic_h = pmd_priv(dev)->fm_vnic_handle;
+			overlap |= PORT_ID;
+			/*
+			 * Action PORT_REPRESENTOR implies ingress destination.
+			 * Noting to do. We add an implicit stree at the
+			 * end if needed.
+			 */
+			ingress = 1;
+			break;
+		}
+		case RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT: {
+			const struct rte_flow_action_ethdev *ethdev;
+			struct rte_eth_dev *dev = NULL;
+
+			if (overlap & PORT_ID) {
+				ENICPMD_LOG(DEBUG, "cannot have multiple egress PORT_ID actions");
+				goto unsupported;
+			}
+			ethdev = actions->conf;
+			ret = enic_fm_check_transfer_dst(enic, ethdev->port_id,
+							 &dev, error);
+			if (ret)
+				return ret;
+			vnic_h = pmd_priv(dev)->fm_vnic_handle;
+			overlap |= PORT_ID;
+			/* Action REPRESENTED_PORT: always egress destination */
+			ingress = 0;
+			ret = vf_egress_port_id_action(fm, dev, vnic_h, &fm_op,
+				error);
+			if (ret)
+				return ret;
 			break;
 		}
 		default:

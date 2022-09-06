@@ -6,6 +6,7 @@
 #define _VMXNET3_ETHDEV_H_
 
 #include <rte_io.h>
+#include <rte_mbuf_dyn.h>
 
 #define VMXNET3_MAX_MAC_ADDRS 1
 
@@ -27,20 +28,22 @@
 
 #define VMXNET3_RSS_MAX_KEY_SIZE        40
 #define VMXNET3_RSS_MAX_IND_TABLE_SIZE  128
+#define VMXNET3_MAX_MSIX_VECT (VMXNET3_MAX_TX_QUEUES + \
+				VMXNET3_MAX_RX_QUEUES + 1)
 
 #define VMXNET3_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP)
 
 #define VMXNET3_V4_RSS_MASK ( \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV6_UDP)
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP)
 
 #define VMXNET3_MANDATORY_V4_RSS ( \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV6_TCP)
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP)
 
 /* RSS configuration structure - shared with device through GPA */
 typedef struct VMXNET3_RSSConf {
@@ -61,6 +64,15 @@ typedef struct vmxnet3_mf_table {
 	uint64_t      mfTablePA;    /* Physical address of the list */
 	uint16_t      num_addrs;    /* number of multicast addrs */
 } vmxnet3_mf_table_t;
+
+struct vmxnet3_intr {
+	enum vmxnet3_intr_mask_mode mask_mode;
+	enum vmxnet3_intr_type      type; /* MSI-X, MSI, or INTx? */
+	uint8_t num_intrs;                /* # of intr vectors */
+	uint8_t event_intr_idx;           /* idx of the intr vector for event */
+	uint8_t mod_levels[VMXNET3_MAX_MSIX_VECT]; /* moderation level */
+	bool lsc_only;                    /* no Rx queue interrupt */
+};
 
 struct vmxnet3_hw {
 	uint8_t *hw_addr0;	/* BAR0: PT-Passthrough Regs    */
@@ -101,6 +113,7 @@ struct vmxnet3_hw {
 	uint64_t              rss_confPA;
 	vmxnet3_mf_table_t    *mf_table;
 	uint32_t              shadow_vfta[VMXNET3_VFT_SIZE];
+	struct vmxnet3_intr   intr;
 	Vmxnet3_MemRegs	      *memRegs;
 	uint64_t	      memRegsPA;
 #define VMXNET3_VFT_TABLE_SIZE     (VMXNET3_VFT_SIZE * sizeof(uint32_t))
@@ -169,8 +182,8 @@ vmxnet3_rx_data_ring(struct vmxnet3_hw *hw, uint32 rqID)
 
 void vmxnet3_dev_clear_queues(struct rte_eth_dev *dev);
 
-void vmxnet3_dev_rx_queue_release(void *rxq);
-void vmxnet3_dev_tx_queue_release(void *txq);
+void vmxnet3_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void vmxnet3_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 int vmxnet3_v4_rss_configure(struct rte_eth_dev *dev);
 

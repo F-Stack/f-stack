@@ -21,9 +21,6 @@ struct ionic_intr {
 	uint32_t rsvd[3];
 };
 
-#define IONIC_INTR_CTRL_REGS_MAX	2048
-#define IONIC_INTR_CTRL_COAL_MAX	0x3F
-
 /** enum ionic_intr_mask_vals - valid values for mask and mask_assert.
  * @IONIC_INTR_MASK_CLEAR:	unmask interrupt.
  * @IONIC_INTR_MASK_SET:	mask interrupt.
@@ -132,11 +129,5 @@ enum ionic_dbell_bits {
 
 	IONIC_DBELL_INDEX_MASK		= 0xffff,
 };
-
-static inline void
-ionic_dbell_ring(u64 __iomem *db_page, int qtype, u64 val)
-{
-	writeq(val, &db_page[qtype]);
-}
 
 #endif /* _IONIC_REGS_H_ */

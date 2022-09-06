@@ -61,10 +61,12 @@ process_outb_sa(struct rte_crypto_op *cop,
 	struct rte_mbuf *m_src = sym_op->m_src;
 	struct cpt_request_info *req = NULL;
 	struct otx2_ipsec_po_out_hdr *hdr;
+	struct otx2_ipsec_po_out_sa *sa;
 	int hdr_len, mdata_len, ret = 0;
 	vq_cmd_word0_t word0;
 	char *mdata, *data;
 
+	sa = &sess->out_sa;
 	hdr_len = sizeof(*hdr);
 
 	dlen = rte_pktmbuf_pkt_len(m_src) + hdr_len;
@@ -110,6 +112,8 @@ process_outb_sa(struct rte_crypto_op *cop,
 	req->ist.ei0 = word0.u64;
 	req->ist.ei1 = rte_pktmbuf_iova(m_src);
 	req->ist.ei2 = req->ist.ei1;
+
+	sa->esn_hi = sess->seq_hi;
 
 	hdr->seq = rte_cpu_to_be_32(sess->seq_lo);
 	hdr->ip_id = rte_cpu_to_be_32(sess->ip_id);

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -100,6 +100,16 @@ struct tf_ident_search_parms {
 };
 
 /**
+ * Identifier database
+ *
+ * Identifier rm database
+ *
+ */
+struct ident_rm_db {
+	struct rm_db *ident_db[TF_DIR_MAX];
+};
+
+/**
  * @page ident Identity Management
  *
  * @ref tf_ident_bind
@@ -190,5 +200,21 @@ int tf_ident_free(struct tf *tfp,
  */
 int tf_ident_search(struct tf *tfp,
 		    struct tf_ident_search_parms *parms);
+
+/**
+ * Retrieves the allocated resource info
+ *
+ * [in] tfp
+ *   Pointer to TF handle, used for HCAPI communication
+ *
+ * [in] parms
+ *   Pointer to parameters
+ *
+ * Returns
+ *   - (0) if successful.
+ *   - (-EINVAL) on failure.
+ */
+int tf_ident_get_resc_info(struct tf *tfp,
+			   struct tf_identifier_resource_info *parms);
 
 #endif /* _TF_IDENTIFIER_H_ */

@@ -49,12 +49,12 @@ parse_reta_size(const char *key, const char *value, void *extra_args)
 
 	val = atoi(value);
 
-	if (val <= ETH_RSS_RETA_SIZE_64)
-		val = ETH_RSS_RETA_SIZE_64;
-	else if (val > ETH_RSS_RETA_SIZE_64 && val <= ETH_RSS_RETA_SIZE_128)
-		val = ETH_RSS_RETA_SIZE_128;
-	else if (val > ETH_RSS_RETA_SIZE_128 && val <= ETH_RSS_RETA_SIZE_256)
-		val = ETH_RSS_RETA_SIZE_256;
+	if (val <= RTE_ETH_RSS_RETA_SIZE_64)
+		val = RTE_ETH_RSS_RETA_SIZE_64;
+	else if (val > RTE_ETH_RSS_RETA_SIZE_64 && val <= RTE_ETH_RSS_RETA_SIZE_128)
+		val = RTE_ETH_RSS_RETA_SIZE_128;
+	else if (val > RTE_ETH_RSS_RETA_SIZE_128 && val <= RTE_ETH_RSS_RETA_SIZE_256)
+		val = RTE_ETH_RSS_RETA_SIZE_256;
 	else
 		val = NIX_RSS_RETA_SIZE;
 
@@ -114,7 +114,17 @@ parse_switch_header_type(const char *key, const char *value, void *extra_args)
 		*(uint16_t *)extra_args = OTX2_PRIV_FLAGS_EDSA;
 
 	if (strcmp(value, "chlen90b") == 0)
-		*(uint16_t *)extra_args = OTX2_PRIV_FLAGS_LEN_90B;
+		*(uint16_t *)extra_args = OTX2_PRIV_FLAGS_CH_LEN_90B;
+
+	if (strcmp(value, "chlen24b") == 0)
+		*(uint16_t *)extra_args = OTX2_PRIV_FLAGS_CH_LEN_24B;
+
+	if (strcmp(value, "exdsa") == 0)
+		*(uint16_t *)extra_args = OTX2_PRIV_FLAGS_EXDSA;
+
+	if (strcmp(value, "vlan_exdsa") == 0)
+		*(uint16_t *)extra_args = OTX2_PRIV_FLAGS_VLAN_EXDSA;
+
 	return 0;
 }
 
@@ -134,7 +144,7 @@ otx2_ethdev_parse_devargs(struct rte_devargs *devargs, struct otx2_eth_dev *dev)
 {
 	uint16_t rss_size = NIX_RSS_RETA_SIZE;
 	uint16_t sqb_count = NIX_MAX_SQB;
-	uint16_t flow_prealloc_size = 1;
+	uint16_t flow_prealloc_size = 8;
 	uint16_t switch_header_type = 0;
 	uint16_t flow_max_priority = 3;
 	uint16_t ipsec_in_max_spi = 1;
@@ -191,14 +201,14 @@ exit:
 	return -EINVAL;
 }
 
-RTE_PMD_REGISTER_PARAM_STRING(net_octeontx2,
+RTE_PMD_REGISTER_PARAM_STRING(OCTEONTX2_PMD,
 			      OTX2_RSS_RETA_SIZE "=<64|128|256>"
 			      OTX2_IPSEC_IN_MAX_SPI "=<1-65535>"
 			      OTX2_SCL_ENABLE "=1"
 			      OTX2_MAX_SQB_COUNT "=<8-512>"
 			      OTX2_FLOW_PREALLOC_SIZE "=<1-32>"
 			      OTX2_FLOW_MAX_PRIORITY "=<1-32>"
-			      OTX2_SWITCH_HEADER_TYPE "=<higig2|dsa|chlen90b>"
+			      OTX2_SWITCH_HEADER_TYPE "=<higig2|dsa|chlen90b|chlen24b>"
 			      OTX2_RSS_TAG_AS_XOR "=1"
 			      OTX2_NPA_LOCK_MASK "=<1-65535>"
 			      OTX2_LOCK_RX_CTX "=1"

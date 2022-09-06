@@ -1,0 +1,605 @@
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(C) 2021 Marvell.
+ */
+
+#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
+#include <rte_event_crypto_adapter.h>
+#include <rte_ip.h>
+#include <rte_vect.h>
+
+#include "cn9k_cryptodev.h"
+#include "cn9k_cryptodev_ops.h"
+#include "cn9k_ipsec.h"
+#include "cn9k_ipsec_la_ops.h"
+#include "cnxk_ae.h"
+#include "cnxk_cryptodev.h"
+#include "cnxk_cryptodev_ops.h"
+#include "cnxk_se.h"
+
+static __rte_always_inline int __rte_hot
+cn9k_cpt_sym_inst_fill(struct cnxk_cpt_qp *qp, struct rte_crypto_op *op,
+		       struct cnxk_se_sess *sess,
+		       struct cpt_inflight_req *infl_req,
+		       struct cpt_inst_s *inst)
+{
+	uint64_t cpt_op;
+	int ret;
+
+	cpt_op = sess->cpt_op;
+
+	if (cpt_op & ROC_SE_OP_CIPHER_MASK)
+		ret = fill_fc_params(op, sess, &qp->meta_info, infl_req, inst);
+	else
+		ret = fill_digest_params(op, sess, &qp->meta_info, infl_req,
+					 inst);
+
+	return ret;
+}
+
+static __rte_always_inline int __rte_hot
+cn9k_cpt_sec_inst_fill(struct rte_crypto_op *op,
+		       struct cpt_inflight_req *infl_req,
+		       struct cpt_inst_s *inst)
+{
+	struct rte_crypto_sym_op *sym_op = op->sym;
+	struct cn9k_sec_session *priv;
+	struct cn9k_ipsec_sa *sa;
+
+	if (unlikely(sym_op->m_dst && sym_op->m_dst != sym_op->m_src)) {
+		plt_dp_err("Out of place is not supported");
+		return -ENOTSUP;
+	}
+
+	if (unlikely(!rte_pktmbuf_is_contiguous(sym_op->m_src))) {
+		plt_dp_err("Scatter Gather mode is not supported");
+		return -ENOTSUP;
+	}
+
+	priv = get_sec_session_private_data(op->sym->sec_session);
+	sa = &priv->sa;
+
+	if (sa->dir == RTE_SECURITY_IPSEC_SA_DIR_EGRESS)
+		return process_outb_sa(op, sa, inst);
+
+	infl_req->op_flags |= CPT_OP_FLAGS_IPSEC_DIR_INBOUND;
+
+	return process_inb_sa(op, sa, inst);
+}
+
+static inline struct cnxk_se_sess *
+cn9k_cpt_sym_temp_sess_create(struct cnxk_cpt_qp *qp, struct rte_crypto_op *op)
+{
+	const int driver_id = cn9k_cryptodev_driver_id;
+	struct rte_crypto_sym_op *sym_op = op->sym;
+	struct rte_cryptodev_sym_session *sess;
+	struct cnxk_se_sess *priv;
+	int ret;
+
+	/* Create temporary session */
+	sess = rte_cryptodev_sym_session_create(qp->sess_mp);
+	if (sess == NULL)
+		return NULL;
+
+	ret = sym_session_configure(qp->lf.roc_cpt, driver_id, sym_op->xform,
+				    sess, qp->sess_mp_priv);
+	if (ret)
+		goto sess_put;
+
+	priv = get_sym_session_private_data(sess, driver_id);
+
+	sym_op->session = sess;
+
+	return priv;
+
+sess_put:
+	rte_mempool_put(qp->sess_mp, sess);
+	return NULL;
+}
+
+static inline int
+cn9k_cpt_inst_prep(struct cnxk_cpt_qp *qp, struct rte_crypto_op *op,
+		   struct cpt_inflight_req *infl_req, struct cpt_inst_s *inst)
+{
+	int ret;
+
+	if (op->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC) {
+		struct rte_crypto_sym_op *sym_op;
+		struct cnxk_se_sess *sess;
+
+		if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			sym_op = op->sym;
+			sess = get_sym_session_private_data(
+				sym_op->session, cn9k_cryptodev_driver_id);
+			ret = cn9k_cpt_sym_inst_fill(qp, op, sess, infl_req,
+						     inst);
+			inst->w7.u64 = sess->cpt_inst_w7;
+		} else if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION)
+			ret = cn9k_cpt_sec_inst_fill(op, infl_req, inst);
+		else {
+			sess = cn9k_cpt_sym_temp_sess_create(qp, op);
+			if (unlikely(sess == NULL)) {
+				plt_dp_err("Could not create temp session");
+				return -1;
+			}
+
+			ret = cn9k_cpt_sym_inst_fill(qp, op, sess, infl_req,
+						     inst);
+			if (unlikely(ret)) {
+				sym_session_clear(cn9k_cryptodev_driver_id,
+						  op->sym->session);
+				rte_mempool_put(qp->sess_mp, op->sym->session);
+			}
+			inst->w7.u64 = sess->cpt_inst_w7;
+		}
+	} else if (op->type == RTE_CRYPTO_OP_TYPE_ASYMMETRIC) {
+		struct rte_crypto_asym_op *asym_op;
+		struct cnxk_ae_sess *sess;
+
+		if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			asym_op = op->asym;
+			sess = get_asym_session_private_data(
+				asym_op->session, cn9k_cryptodev_driver_id);
+			ret = cnxk_ae_enqueue(qp, op, infl_req, inst, sess);
+			inst->w7.u64 = sess->cpt_inst_w7;
+		} else {
+			ret = -EINVAL;
+		}
+	} else {
+		ret = -EINVAL;
+		plt_dp_err("Unsupported op type");
+	}
+
+	return ret;
+}
+
+static inline void
+cn9k_cpt_inst_submit(struct cpt_inst_s *inst, uint64_t lmtline,
+		     uint64_t io_addr)
+{
+	uint64_t lmt_status;
+
+	do {
+		/* Copy CPT command to LMTLINE */
+		roc_lmt_mov((void *)lmtline, inst, 2);
+
+		/*
+		 * Make sure compiler does not reorder memcpy and ldeor.
+		 * LMTST transactions are always flushed from the write
+		 * buffer immediately, a DMB is not required to push out
+		 * LMTSTs.
+		 */
+		rte_io_wmb();
+		lmt_status = roc_lmt_submit_ldeor(io_addr);
+	} while (lmt_status == 0);
+}
+
+static __plt_always_inline void
+cn9k_cpt_inst_submit_dual(struct cpt_inst_s *inst, uint64_t lmtline,
+			  uint64_t io_addr)
+{
+	uint64_t lmt_status;
+
+	do {
+		/* Copy 2 CPT inst_s to LMTLINE */
+#if defined(RTE_ARCH_ARM64)
+		uint64_t *s = (uint64_t *)inst;
+		uint64_t *d = (uint64_t *)lmtline;
+
+		vst1q_u64(&d[0], vld1q_u64(&s[0]));
+		vst1q_u64(&d[2], vld1q_u64(&s[2]));
+		vst1q_u64(&d[4], vld1q_u64(&s[4]));
+		vst1q_u64(&d[6], vld1q_u64(&s[6]));
+		vst1q_u64(&d[8], vld1q_u64(&s[8]));
+		vst1q_u64(&d[10], vld1q_u64(&s[10]));
+		vst1q_u64(&d[12], vld1q_u64(&s[12]));
+		vst1q_u64(&d[14], vld1q_u64(&s[14]));
+#else
+		roc_lmt_mov_seg((void *)lmtline, inst, 8);
+#endif
+
+		/*
+		 * Make sure compiler does not reorder memcpy and ldeor.
+		 * LMTST transactions are always flushed from the write
+		 * buffer immediately, a DMB is not required to push out
+		 * LMTSTs.
+		 */
+		rte_io_wmb();
+		lmt_status = roc_lmt_submit_ldeor(io_addr);
+	} while (lmt_status == 0);
+}
+
+static uint16_t
+cn9k_cpt_enqueue_burst(void *qptr, struct rte_crypto_op **ops, uint16_t nb_ops)
+{
+	struct cpt_inflight_req *infl_req_1, *infl_req_2;
+	struct cpt_inst_s inst[2] __rte_cache_aligned;
+	struct rte_crypto_op *op_1, *op_2;
+	uint16_t nb_allowed, count = 0;
+	struct cnxk_cpt_qp *qp = qptr;
+	struct pending_queue *pend_q;
+	uint64_t head;
+	int ret;
+
+	pend_q = &qp->pend_q;
+
+	const uint64_t lmt_base = qp->lf.lmt_base;
+	const uint64_t io_addr = qp->lf.io_addr;
+	const uint64_t pq_mask = pend_q->pq_mask;
+
+	/* Clear w0, w2, w3 of both inst */
+
+	inst[0].w0.u64 = 0;
+	inst[0].w2.u64 = 0;
+	inst[0].w3.u64 = 0;
+	inst[1].w0.u64 = 0;
+	inst[1].w2.u64 = 0;
+	inst[1].w3.u64 = 0;
+
+	head = pend_q->head;
+	nb_allowed = pending_queue_free_cnt(head, pend_q->tail, pq_mask);
+	nb_ops = RTE_MIN(nb_ops, nb_allowed);
+
+	if (unlikely(nb_ops & 1)) {
+		op_1 = ops[0];
+		infl_req_1 = &pend_q->req_queue[head];
+		infl_req_1->op_flags = 0;
+
+		ret = cn9k_cpt_inst_prep(qp, op_1, infl_req_1, &inst[0]);
+		if (unlikely(ret)) {
+			plt_dp_err("Could not process op: %p", op_1);
+			return 0;
+		}
+
+		infl_req_1->cop = op_1;
+		infl_req_1->res.cn9k.compcode = CPT_COMP_NOT_DONE;
+		inst[0].res_addr = (uint64_t)&infl_req_1->res;
+
+		cn9k_cpt_inst_submit(&inst[0], lmt_base, io_addr);
+		pending_queue_advance(&head, pq_mask);
+		count++;
+	}
+
+	while (count < nb_ops) {
+		op_1 = ops[count];
+		op_2 = ops[count + 1];
+
+		infl_req_1 = &pend_q->req_queue[head];
+		pending_queue_advance(&head, pq_mask);
+		infl_req_2 = &pend_q->req_queue[head];
+		pending_queue_advance(&head, pq_mask);
+
+		infl_req_1->cop = op_1;
+		infl_req_2->cop = op_2;
+		infl_req_1->op_flags = 0;
+		infl_req_2->op_flags = 0;
+
+		infl_req_1->res.cn9k.compcode = CPT_COMP_NOT_DONE;
+		inst[0].res_addr = (uint64_t)&infl_req_1->res;
+
+		infl_req_2->res.cn9k.compcode = CPT_COMP_NOT_DONE;
+		inst[1].res_addr = (uint64_t)&infl_req_2->res;
+
+		ret = cn9k_cpt_inst_prep(qp, op_1, infl_req_1, &inst[0]);
+		if (unlikely(ret)) {
+			plt_dp_err("Could not process op: %p", op_1);
+			pending_queue_retreat(&head, pq_mask, 2);
+			break;
+		}
+
+		ret = cn9k_cpt_inst_prep(qp, op_2, infl_req_2, &inst[1]);
+		if (unlikely(ret)) {
+			plt_dp_err("Could not process op: %p", op_2);
+			pending_queue_retreat(&head, pq_mask, 1);
+			cn9k_cpt_inst_submit(&inst[0], lmt_base, io_addr);
+			count++;
+			break;
+		}
+
+		cn9k_cpt_inst_submit_dual(&inst[0], lmt_base, io_addr);
+
+		count += 2;
+	}
+
+	rte_atomic_thread_fence(__ATOMIC_RELEASE);
+
+	pend_q->head = head;
+	pend_q->time_out = rte_get_timer_cycles() +
+			   DEFAULT_COMMAND_TIMEOUT * rte_get_timer_hz();
+
+	return count;
+}
+
+uint16_t
+cn9k_cpt_crypto_adapter_enqueue(uintptr_t tag_op, struct rte_crypto_op *op)
+{
+	union rte_event_crypto_metadata *ec_mdata;
+	struct cpt_inflight_req *infl_req;
+	struct rte_event *rsp_info;
+	struct cnxk_cpt_qp *qp;
+	struct cpt_inst_s inst;
+	uint8_t cdev_id;
+	uint16_t qp_id;
+	int ret;
+
+	ec_mdata = cnxk_event_crypto_mdata_get(op);
+	if (!ec_mdata) {
+		rte_errno = EINVAL;
+		return 0;
+	}
+
+	cdev_id = ec_mdata->request_info.cdev_id;
+	qp_id = ec_mdata->request_info.queue_pair_id;
+	qp = rte_cryptodevs[cdev_id].data->queue_pairs[qp_id];
+	rsp_info = &ec_mdata->response_info;
+
+	if (unlikely(!qp->ca.enabled)) {
+		rte_errno = EINVAL;
+		return 0;
+	}
+
+	if (unlikely(rte_mempool_get(qp->ca.req_mp, (void **)&infl_req))) {
+		rte_errno = ENOMEM;
+		return 0;
+	}
+	infl_req->op_flags = 0;
+
+	ret = cn9k_cpt_inst_prep(qp, op, infl_req, &inst);
+	if (unlikely(ret)) {
+		plt_dp_err("Could not process op: %p", op);
+		rte_mempool_put(qp->ca.req_mp, infl_req);
+		return 0;
+	}
+
+	infl_req->cop = op;
+	infl_req->res.cn9k.compcode = CPT_COMP_NOT_DONE;
+	infl_req->qp = qp;
+	inst.w0.u64 = 0;
+	inst.res_addr = (uint64_t)&infl_req->res;
+	inst.w2.u64 = CNXK_CPT_INST_W2(
+		(RTE_EVENT_TYPE_CRYPTODEV << 28) | rsp_info->flow_id,
+		rsp_info->sched_type, rsp_info->queue_id, 0);
+	inst.w3.u64 = CNXK_CPT_INST_W3(1, infl_req);
+
+	if (roc_cpt_is_iq_full(&qp->lf)) {
+		rte_mempool_put(qp->ca.req_mp, infl_req);
+		rte_errno = EAGAIN;
+		return 0;
+	}
+
+	if (!rsp_info->sched_type)
+		roc_sso_hws_head_wait(tag_op);
+
+	cn9k_cpt_inst_submit(&inst, qp->lmtline.lmt_base, qp->lmtline.io_addr);
+
+	return 1;
+}
+
+static inline void
+cn9k_cpt_sec_post_process(struct rte_crypto_op *cop,
+			  struct cpt_inflight_req *infl_req)
+{
+	struct rte_crypto_sym_op *sym_op = cop->sym;
+	struct rte_mbuf *m = sym_op->m_src;
+	struct rte_ipv6_hdr *ip6;
+	struct rte_ipv4_hdr *ip;
+	uint16_t m_len = 0;
+	char *data;
+
+	if (infl_req->op_flags & CPT_OP_FLAGS_IPSEC_DIR_INBOUND) {
+		data = rte_pktmbuf_mtod(m, char *);
+
+		ip = (struct rte_ipv4_hdr *)(data + ROC_IE_ON_INB_RPTR_HDR);
+
+		if (((ip->version_ihl & 0xf0) >> RTE_IPV4_IHL_MULTIPLIER) ==
+		    IPVERSION) {
+			m_len = rte_be_to_cpu_16(ip->total_length);
+		} else {
+			PLT_ASSERT(((ip->version_ihl & 0xf0) >>
+				    RTE_IPV4_IHL_MULTIPLIER) == 6);
+			ip6 = (struct rte_ipv6_hdr *)ip;
+			m_len = rte_be_to_cpu_16(ip6->payload_len) +
+				sizeof(struct rte_ipv6_hdr);
+		}
+
+		m->data_len = m_len;
+		m->pkt_len = m_len;
+		m->data_off += ROC_IE_ON_INB_RPTR_HDR;
+	}
+}
+
+static inline void
+cn9k_cpt_dequeue_post_process(struct cnxk_cpt_qp *qp, struct rte_crypto_op *cop,
+			      struct cpt_inflight_req *infl_req)
+{
+	struct cpt_cn9k_res_s *res = (struct cpt_cn9k_res_s *)&infl_req->res;
+	unsigned int sz;
+
+	if (likely(res->compcode == CPT_COMP_GOOD)) {
+		if (unlikely(res->uc_compcode)) {
+			if (res->uc_compcode == ROC_SE_ERR_GC_ICV_MISCOMPARE)
+				cop->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
+			else
+				cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+
+			plt_dp_info("Request failed with microcode error");
+			plt_dp_info("MC completion code 0x%x",
+				    res->uc_compcode);
+			goto temp_sess_free;
+		}
+
+		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+		if (cop->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC) {
+			if (cop->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+				cn9k_cpt_sec_post_process(cop, infl_req);
+				return;
+			}
+
+			/* Verify authentication data if required */
+			if (unlikely(infl_req->op_flags &
+				     CPT_OP_FLAGS_AUTH_VERIFY)) {
+				uintptr_t *rsp = infl_req->mdata;
+				compl_auth_verify(cop, (uint8_t *)rsp[0],
+						  rsp[1]);
+			}
+		} else if (cop->type == RTE_CRYPTO_OP_TYPE_ASYMMETRIC) {
+			struct rte_crypto_asym_op *op = cop->asym;
+			uintptr_t *mdata = infl_req->mdata;
+			struct cnxk_ae_sess *sess;
+
+			sess = get_asym_session_private_data(
+				op->session, cn9k_cryptodev_driver_id);
+
+			cnxk_ae_post_process(cop, sess, (uint8_t *)mdata[0]);
+		}
+	} else {
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+		plt_dp_info("HW completion code 0x%x", res->compcode);
+
+		switch (res->compcode) {
+		case CPT_COMP_INSTERR:
+			plt_dp_err("Request failed with instruction error");
+			break;
+		case CPT_COMP_FAULT:
+			plt_dp_err("Request failed with DMA fault");
+			break;
+		case CPT_COMP_HWERR:
+			plt_dp_err("Request failed with hardware error");
+			break;
+		default:
+			plt_dp_err(
+				"Request failed with unknown completion code");
+		}
+	}
+
+temp_sess_free:
+	if (unlikely(cop->sess_type == RTE_CRYPTO_OP_SESSIONLESS)) {
+		if (cop->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC) {
+			sym_session_clear(cn9k_cryptodev_driver_id,
+					  cop->sym->session);
+			sz = rte_cryptodev_sym_get_existing_header_session_size(
+				cop->sym->session);
+			memset(cop->sym->session, 0, sz);
+			rte_mempool_put(qp->sess_mp, cop->sym->session);
+			cop->sym->session = NULL;
+		}
+	}
+}
+
+uintptr_t
+cn9k_cpt_crypto_adapter_dequeue(uintptr_t get_work1)
+{
+	struct cpt_inflight_req *infl_req;
+	struct rte_crypto_op *cop;
+	struct cnxk_cpt_qp *qp;
+
+	infl_req = (struct cpt_inflight_req *)(get_work1);
+	cop = infl_req->cop;
+	qp = infl_req->qp;
+
+	cn9k_cpt_dequeue_post_process(qp, infl_req->cop, infl_req);
+
+	if (unlikely(infl_req->op_flags & CPT_OP_FLAGS_METABUF))
+		rte_mempool_put(qp->meta_info.pool, infl_req->mdata);
+
+	rte_mempool_put(qp->ca.req_mp, infl_req);
+	return (uintptr_t)cop;
+}
+
+static uint16_t
+cn9k_cpt_dequeue_burst(void *qptr, struct rte_crypto_op **ops, uint16_t nb_ops)
+{
+	struct cpt_inflight_req *infl_req;
+	struct cnxk_cpt_qp *qp = qptr;
+	struct pending_queue *pend_q;
+	struct cpt_cn9k_res_s *res;
+	uint64_t infl_cnt, pq_tail;
+	struct rte_crypto_op *cop;
+	int i;
+
+	pend_q = &qp->pend_q;
+
+	const uint64_t pq_mask = pend_q->pq_mask;
+
+	pq_tail = pend_q->tail;
+	infl_cnt = pending_queue_infl_cnt(pend_q->head, pq_tail, pq_mask);
+	nb_ops = RTE_MIN(nb_ops, infl_cnt);
+
+	/* Ensure infl_cnt isn't read before data lands */
+	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+	for (i = 0; i < nb_ops; i++) {
+		infl_req = &pend_q->req_queue[pq_tail];
+
+		res = (struct cpt_cn9k_res_s *)&infl_req->res;
+
+		if (unlikely(res->compcode == CPT_COMP_NOT_DONE)) {
+			if (unlikely(rte_get_timer_cycles() >
+				     pend_q->time_out)) {
+				plt_err("Request timed out");
+				pend_q->time_out = rte_get_timer_cycles() +
+						   DEFAULT_COMMAND_TIMEOUT *
+							   rte_get_timer_hz();
+			}
+			break;
+		}
+
+		pending_queue_advance(&pq_tail, pq_mask);
+
+		cop = infl_req->cop;
+
+		ops[i] = cop;
+
+		cn9k_cpt_dequeue_post_process(qp, cop, infl_req);
+
+		if (unlikely(infl_req->op_flags & CPT_OP_FLAGS_METABUF))
+			rte_mempool_put(qp->meta_info.pool, infl_req->mdata);
+	}
+
+	pend_q->tail = pq_tail;
+
+	return i;
+}
+void
+cn9k_cpt_set_enqdeq_fns(struct rte_cryptodev *dev)
+{
+	dev->enqueue_burst = cn9k_cpt_enqueue_burst;
+	dev->dequeue_burst = cn9k_cpt_dequeue_burst;
+
+	rte_mb();
+}
+
+static void
+cn9k_cpt_dev_info_get(struct rte_cryptodev *dev,
+		      struct rte_cryptodev_info *info)
+{
+	if (info != NULL) {
+		cnxk_cpt_dev_info_get(dev, info);
+		info->driver_id = cn9k_cryptodev_driver_id;
+	}
+}
+
+struct rte_cryptodev_ops cn9k_cpt_ops = {
+	/* Device control ops */
+	.dev_configure = cnxk_cpt_dev_config,
+	.dev_start = cnxk_cpt_dev_start,
+	.dev_stop = cnxk_cpt_dev_stop,
+	.dev_close = cnxk_cpt_dev_close,
+	.dev_infos_get = cn9k_cpt_dev_info_get,
+
+	.stats_get = NULL,
+	.stats_reset = NULL,
+	.queue_pair_setup = cnxk_cpt_queue_pair_setup,
+	.queue_pair_release = cnxk_cpt_queue_pair_release,
+
+	/* Symmetric crypto ops */
+	.sym_session_get_size = cnxk_cpt_sym_session_get_size,
+	.sym_session_configure = cnxk_cpt_sym_session_configure,
+	.sym_session_clear = cnxk_cpt_sym_session_clear,
+
+	/* Asymmetric crypto ops */
+	.asym_session_get_size = cnxk_ae_session_size_get,
+	.asym_session_configure = cnxk_ae_session_cfg,
+	.asym_session_clear = cnxk_ae_session_clear,
+
+};

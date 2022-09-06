@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
  */
 
 #ifndef _TXGBE_H_
@@ -11,6 +11,7 @@
 #include "txgbe_eeprom.h"
 #include "txgbe_phy.h"
 #include "txgbe_hw.h"
+#include "txgbe_vf.h"
 #include "txgbe_dcb.h"
 
 #endif /* _TXGBE_H_ */

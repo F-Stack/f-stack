@@ -7,8 +7,8 @@
 #include <unistd.h>
 
 #include <rte_string_fns.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_kni.h>
 #include <rte_kvargs.h>
 #include <rte_malloc.h>
@@ -61,14 +61,14 @@ struct pmd_internals {
 };
 
 static const struct rte_eth_link pmd_link = {
-		.link_speed = ETH_SPEED_NUM_10G,
-		.link_duplex = ETH_LINK_FULL_DUPLEX,
-		.link_status = ETH_LINK_DOWN,
-		.link_autoneg = ETH_LINK_FIXED,
+		.link_speed = RTE_ETH_SPEED_NUM_10G,
+		.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
+		.link_status = RTE_ETH_LINK_DOWN,
+		.link_autoneg = RTE_ETH_LINK_FIXED,
 };
 static int is_kni_initialized;
 
-RTE_LOG_REGISTER(eth_kni_logtype, pmd.net.kni, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(eth_kni_logtype, NOTICE);
 
 #define PMD_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, eth_kni_logtype, \
@@ -284,11 +284,6 @@ eth_kni_tx_queue_setup(struct rte_eth_dev *dev,
 	return 0;
 }
 
-static void
-eth_kni_queue_release(void *q __rte_unused)
-{
-}
-
 static int
 eth_kni_link_update(struct rte_eth_dev *dev __rte_unused,
 		int wait_to_complete __rte_unused)
@@ -362,8 +357,6 @@ static const struct eth_dev_ops eth_kni_ops = {
 	.dev_infos_get = eth_kni_dev_info,
 	.rx_queue_setup = eth_kni_rx_queue_setup,
 	.tx_queue_setup = eth_kni_tx_queue_setup,
-	.rx_queue_release = eth_kni_queue_release,
-	.tx_queue_release = eth_kni_queue_release,
 	.link_update = eth_kni_link_update,
 	.stats_get = eth_kni_stats_get,
 	.stats_reset = eth_kni_stats_reset,

@@ -26,8 +26,8 @@
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
 #include <rte_dev.h>
@@ -38,26 +38,23 @@
 #include "vmxnet3_logs.h"
 #include "vmxnet3_ethdev.h"
 
-#define PROCESS_SYS_EVENTS 0
-
 #define	VMXNET3_TX_MAX_SEG	UINT8_MAX
 
 #define VMXNET3_TX_OFFLOAD_CAP		\
-	(DEV_TX_OFFLOAD_VLAN_INSERT |	\
-	 DEV_TX_OFFLOAD_TCP_CKSUM |	\
-	 DEV_TX_OFFLOAD_UDP_CKSUM |	\
-	 DEV_TX_OFFLOAD_TCP_TSO |	\
-	 DEV_TX_OFFLOAD_MULTI_SEGS)
+	(RTE_ETH_TX_OFFLOAD_VLAN_INSERT |	\
+	 RTE_ETH_TX_OFFLOAD_TCP_CKSUM |	\
+	 RTE_ETH_TX_OFFLOAD_UDP_CKSUM |	\
+	 RTE_ETH_TX_OFFLOAD_TCP_TSO |	\
+	 RTE_ETH_TX_OFFLOAD_MULTI_SEGS)
 
 #define VMXNET3_RX_OFFLOAD_CAP		\
-	(DEV_RX_OFFLOAD_VLAN_STRIP |	\
-	 DEV_RX_OFFLOAD_VLAN_FILTER |   \
-	 DEV_RX_OFFLOAD_SCATTER |	\
-	 DEV_RX_OFFLOAD_UDP_CKSUM |	\
-	 DEV_RX_OFFLOAD_TCP_CKSUM |	\
-	 DEV_RX_OFFLOAD_TCP_LRO |	\
-	 DEV_RX_OFFLOAD_JUMBO_FRAME |   \
-	 DEV_RX_OFFLOAD_RSS_HASH)
+	(RTE_ETH_RX_OFFLOAD_VLAN_STRIP |	\
+	 RTE_ETH_RX_OFFLOAD_VLAN_FILTER |   \
+	 RTE_ETH_RX_OFFLOAD_SCATTER |	\
+	 RTE_ETH_RX_OFFLOAD_UDP_CKSUM |	\
+	 RTE_ETH_RX_OFFLOAD_TCP_CKSUM |	\
+	 RTE_ETH_RX_OFFLOAD_TCP_LRO |	\
+	 RTE_ETH_RX_OFFLOAD_RSS_HASH)
 
 int vmxnet3_segs_dynfield_offset = -1;
 
@@ -67,6 +64,7 @@ static int vmxnet3_dev_configure(struct rte_eth_dev *dev);
 static int vmxnet3_dev_start(struct rte_eth_dev *dev);
 static int vmxnet3_dev_stop(struct rte_eth_dev *dev);
 static int vmxnet3_dev_close(struct rte_eth_dev *dev);
+static int vmxnet3_dev_reset(struct rte_eth_dev *dev);
 static void vmxnet3_dev_set_rxmode(struct vmxnet3_hw *hw, uint32_t feature, int set);
 static int vmxnet3_dev_promiscuous_enable(struct rte_eth_dev *dev);
 static int vmxnet3_dev_promiscuous_disable(struct rte_eth_dev *dev);
@@ -95,7 +93,12 @@ static int vmxnet3_dev_vlan_filter_set(struct rte_eth_dev *dev,
 static int vmxnet3_dev_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 static int vmxnet3_mac_addr_set(struct rte_eth_dev *dev,
 				 struct rte_ether_addr *mac_addr);
+static void vmxnet3_process_events(struct rte_eth_dev *dev);
 static void vmxnet3_interrupt_handler(void *param);
+static int vmxnet3_dev_rx_queue_intr_enable(struct rte_eth_dev *dev,
+						uint16_t queue_id);
+static int vmxnet3_dev_rx_queue_intr_disable(struct rte_eth_dev *dev,
+						uint16_t queue_id);
 
 /*
  * The set of PCI devices this driver supports
@@ -112,6 +115,7 @@ static const struct eth_dev_ops vmxnet3_eth_dev_ops = {
 	.dev_start            = vmxnet3_dev_start,
 	.dev_stop             = vmxnet3_dev_stop,
 	.dev_close            = vmxnet3_dev_close,
+	.dev_reset            = vmxnet3_dev_reset,
 	.promiscuous_enable   = vmxnet3_dev_promiscuous_enable,
 	.promiscuous_disable  = vmxnet3_dev_promiscuous_disable,
 	.allmulticast_enable  = vmxnet3_dev_allmulticast_enable,
@@ -131,6 +135,8 @@ static const struct eth_dev_ops vmxnet3_eth_dev_ops = {
 	.rx_queue_release     = vmxnet3_dev_rx_queue_release,
 	.tx_queue_setup       = vmxnet3_dev_tx_queue_setup,
 	.tx_queue_release     = vmxnet3_dev_tx_queue_release,
+	.rx_queue_intr_enable = vmxnet3_dev_rx_queue_intr_enable,
+	.rx_queue_intr_disable = vmxnet3_dev_rx_queue_intr_disable,
 };
 
 struct vmxnet3_xstats_name_off {
@@ -181,30 +187,61 @@ gpa_zone_reserve(struct rte_eth_dev *dev, uint32_t size,
 }
 
 /*
- * This function is based on vmxnet3_disable_intr()
+ * Enable the given interrupt
  */
 static void
-vmxnet3_disable_intr(struct vmxnet3_hw *hw)
+vmxnet3_enable_intr(struct vmxnet3_hw *hw, unsigned int intr_idx)
 {
-	int i;
-
 	PMD_INIT_FUNC_TRACE();
-
-	hw->shared->devRead.intrConf.intrCtrl |= VMXNET3_IC_DISABLE_ALL;
-	for (i = 0; i < hw->num_intrs; i++)
-		VMXNET3_WRITE_BAR0_REG(hw, VMXNET3_REG_IMR + i * 8, 1);
+	VMXNET3_WRITE_BAR0_REG(hw, VMXNET3_REG_IMR + intr_idx * 8, 0);
 }
 
+/*
+ * Disable the given interrupt
+ */
 static void
-vmxnet3_enable_intr(struct vmxnet3_hw *hw)
+vmxnet3_disable_intr(struct vmxnet3_hw *hw, unsigned int intr_idx)
+{
+	PMD_INIT_FUNC_TRACE();
+	VMXNET3_WRITE_BAR0_REG(hw, VMXNET3_REG_IMR + intr_idx * 8, 1);
+}
+
+/*
+ * Enable all intrs used by the device
+ */
+static void
+vmxnet3_enable_all_intrs(struct vmxnet3_hw *hw)
+{
+	Vmxnet3_DSDevRead *devRead = &hw->shared->devRead;
+
+	PMD_INIT_FUNC_TRACE();
+
+	devRead->intrConf.intrCtrl &= rte_cpu_to_le_32(~VMXNET3_IC_DISABLE_ALL);
+
+	if (hw->intr.lsc_only) {
+		vmxnet3_enable_intr(hw, devRead->intrConf.eventIntrIdx);
+	} else {
+		int i;
+
+		for (i = 0; i < hw->intr.num_intrs; i++)
+			vmxnet3_enable_intr(hw, i);
+	}
+}
+
+/*
+ * Disable all intrs used by the device
+ */
+static void
+vmxnet3_disable_all_intrs(struct vmxnet3_hw *hw)
 {
 	int i;
 
 	PMD_INIT_FUNC_TRACE();
 
-	hw->shared->devRead.intrConf.intrCtrl &= ~VMXNET3_IC_DISABLE_ALL;
+	hw->shared->devRead.intrConf.intrCtrl |=
+		rte_cpu_to_le_32(VMXNET3_IC_DISABLE_ALL);
 	for (i = 0; i < hw->num_intrs; i++)
-		VMXNET3_WRITE_BAR0_REG(hw, VMXNET3_REG_IMR + i * 8, 0);
+		vmxnet3_disable_intr(hw, i);
 }
 
 /*
@@ -302,7 +339,7 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 		return -EIO;
 	}
 
-	PMD_INIT_LOG(DEBUG, "Using device version %d\n", hw->version);
+	PMD_INIT_LOG(INFO, "Using device v%d", hw->version);
 
 	/* Check UPT version compatibility with driver. */
 	ver = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_UVRS);
@@ -333,7 +370,7 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	rte_ether_addr_copy((struct rte_ether_addr *)hw->perm_addr,
 			&eth_dev->data->mac_addrs[0]);
 
-	PMD_INIT_LOG(DEBUG, "MAC Address : %02x:%02x:%02x:%02x:%02x:%02x",
+	PMD_INIT_LOG(DEBUG, "MAC Address : " RTE_ETHER_ADDR_PRT_FMT,
 		     hw->perm_addr[0], hw->perm_addr[1], hw->perm_addr[2],
 		     hw->perm_addr[3], hw->perm_addr[4], hw->perm_addr[5]);
 
@@ -361,9 +398,9 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 
 	/* set the initial link status */
 	memset(&link, 0, sizeof(link));
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	link.link_speed = ETH_SPEED_NUM_10G;
-	link.link_autoneg = ETH_LINK_FIXED;
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	link.link_speed = RTE_ETH_SPEED_NUM_10G;
+	link.link_autoneg = RTE_ETH_LINK_FIXED;
 	rte_eth_linkstatus_set(eth_dev, &link);
 
 	return 0;
@@ -406,6 +443,40 @@ static struct rte_pci_driver rte_vmxnet3_pmd = {
 	.remove = eth_vmxnet3_pci_remove,
 };
 
+static void
+vmxnet3_alloc_intr_resources(struct rte_eth_dev *dev)
+{
+	struct vmxnet3_hw *hw = dev->data->dev_private;
+	uint32_t cfg;
+	int nvec = 1; /* for link event */
+
+	/* intr settings */
+	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD,
+			       VMXNET3_CMD_GET_CONF_INTR);
+	cfg = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_CMD);
+	hw->intr.type = cfg & 0x3;
+	hw->intr.mask_mode = (cfg >> 2) & 0x3;
+
+	if (hw->intr.type == VMXNET3_IT_AUTO)
+		hw->intr.type = VMXNET3_IT_MSIX;
+
+	if (hw->intr.type == VMXNET3_IT_MSIX) {
+		/* only support shared tx/rx intr */
+		if (hw->num_tx_queues != hw->num_rx_queues)
+			goto msix_err;
+
+		nvec += hw->num_rx_queues;
+		hw->intr.num_intrs = nvec;
+		return;
+	}
+
+msix_err:
+	/* the tx/rx queue interrupt will be disabled */
+	hw->intr.num_intrs = 2;
+	hw->intr.lsc_only = TRUE;
+	PMD_INIT_LOG(INFO, "Enabled MSI-X with %d vectors", hw->intr.num_intrs);
+}
+
 static int
 vmxnet3_dev_configure(struct rte_eth_dev *dev)
 {
@@ -415,8 +486,8 @@ vmxnet3_dev_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
-		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	if (dev->data->nb_tx_queues > VMXNET3_MAX_TX_QUEUES ||
 	    dev->data->nb_rx_queues > VMXNET3_MAX_RX_QUEUES) {
@@ -476,7 +547,7 @@ vmxnet3_dev_configure(struct rte_eth_dev *dev)
 	hw->queueDescPA = mz->iova;
 	hw->queue_desc_len = (uint16_t)size;
 
-	if (dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_RSS) {
+	if (dev->data->dev_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS) {
 		/* Allocate memory structure for UPT1_RSSConf and configure */
 		mz = gpa_zone_reserve(dev, sizeof(struct VMXNET3_RSSConf),
 				      "rss_conf", rte_socket_id(),
@@ -492,6 +563,8 @@ vmxnet3_dev_configure(struct rte_eth_dev *dev)
 		hw->rss_confPA = mz->iova;
 	}
 
+	vmxnet3_alloc_intr_resources(dev);
+
 	return 0;
 }
 
@@ -501,7 +574,7 @@ vmxnet3_write_mac(struct vmxnet3_hw *hw, const uint8_t *addr)
 	uint32_t val;
 
 	PMD_INIT_LOG(DEBUG,
-		     "Writing MAC Address : %02x:%02x:%02x:%02x:%02x:%02x",
+		     "Writing MAC Address : " RTE_ETHER_ADDR_PRT_FMT,
 		     addr[0], addr[1], addr[2],
 		     addr[3], addr[4], addr[5]);
 
@@ -510,6 +583,84 @@ vmxnet3_write_mac(struct vmxnet3_hw *hw, const uint8_t *addr)
 
 	memcpy(&val, addr + 4, 2);
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_MACH, val);
+}
+
+/*
+ * Configure the hardware to generate MSI-X interrupts.
+ * If setting up MSIx fails, try setting up MSI (only 1 interrupt vector
+ * which will be disabled to allow lsc to work).
+ *
+ * Returns 0 on success and -1 otherwise.
+ */
+static int
+vmxnet3_configure_msix(struct rte_eth_dev *dev)
+{
+	struct vmxnet3_hw *hw = dev->data->dev_private;
+	struct rte_intr_handle *intr_handle = dev->intr_handle;
+	uint16_t intr_vector;
+	int i;
+
+	hw->intr.event_intr_idx = 0;
+
+	/* only vfio-pci driver can support interrupt mode. */
+	if (!rte_intr_cap_multiple(intr_handle) ||
+	    dev->data->dev_conf.intr_conf.rxq == 0)
+		return -1;
+
+	intr_vector = dev->data->nb_rx_queues;
+	if (intr_vector > VMXNET3_MAX_RX_QUEUES) {
+		PMD_INIT_LOG(ERR, "At most %d intr queues supported",
+			     VMXNET3_MAX_RX_QUEUES);
+		return -ENOTSUP;
+	}
+
+	if (rte_intr_efd_enable(intr_handle, intr_vector)) {
+		PMD_INIT_LOG(ERR, "Failed to enable fastpath event fd");
+		return -1;
+	}
+
+	if (rte_intr_dp_is_en(intr_handle)) {
+		if (rte_intr_vec_list_alloc(intr_handle, "intr_vec",
+						   dev->data->nb_rx_queues)) {
+			PMD_INIT_LOG(ERR, "Failed to allocate %d Rx queues intr_vec",
+					dev->data->nb_rx_queues);
+			rte_intr_efd_disable(intr_handle);
+			return -ENOMEM;
+		}
+	}
+
+	if (!rte_intr_allow_others(intr_handle) &&
+	    dev->data->dev_conf.intr_conf.lsc != 0) {
+		PMD_INIT_LOG(ERR, "not enough intr vector to support both Rx interrupt and LSC");
+		rte_intr_vec_list_free(intr_handle);
+		rte_intr_efd_disable(intr_handle);
+		return -1;
+	}
+
+	/* if we cannot allocate one MSI-X vector per queue, don't enable
+	 * interrupt mode.
+	 */
+	if (hw->intr.num_intrs !=
+				(rte_intr_nb_efd_get(intr_handle) + 1)) {
+		PMD_INIT_LOG(ERR, "Device configured with %d Rx intr vectors, expecting %d",
+				hw->intr.num_intrs,
+				rte_intr_nb_efd_get(intr_handle) + 1);
+		rte_intr_vec_list_free(intr_handle);
+		rte_intr_efd_disable(intr_handle);
+		return -1;
+	}
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		if (rte_intr_vec_list_index_set(intr_handle, i, i + 1))
+			return -rte_errno;
+
+	for (i = 0; i < hw->intr.num_intrs; i++)
+		hw->intr.mod_levels[i] = UPT1_IML_ADAPTIVE;
+
+	PMD_INIT_LOG(INFO, "intr type %u, mode %u, %u vectors allocated",
+		    hw->intr.type, hw->intr.mask_mode, hw->intr.num_intrs);
+
+	return 0;
 }
 
 static int
@@ -603,6 +754,7 @@ vmxnet3_setup_driver_shared(struct rte_eth_dev *dev)
 {
 	struct rte_eth_conf port_conf = dev->data->dev_conf;
 	struct vmxnet3_hw *hw = dev->data->dev_private;
+	struct rte_intr_handle *intr_handle = dev->intr_handle;
 	uint32_t mtu = dev->data->mtu;
 	Vmxnet3_DriverShared *shared = hw->shared;
 	Vmxnet3_DSDevRead *devRead = &shared->devRead;
@@ -628,15 +780,6 @@ vmxnet3_setup_driver_shared(struct rte_eth_dev *dev)
 	devRead->misc.numTxQueues  = hw->num_tx_queues;
 	devRead->misc.numRxQueues  = hw->num_rx_queues;
 
-	/*
-	 * Set number of interrupts to 1
-	 * PMD by default disables all the interrupts but this is MUST
-	 * to activate device. It needs at least one interrupt for
-	 * link events to handle
-	 */
-	hw->num_intrs = devRead->intrConf.numIntrs = 1;
-	devRead->intrConf.intrCtrl |= VMXNET3_IC_DISABLE_ALL;
-
 	for (i = 0; i < hw->num_tx_queues; i++) {
 		Vmxnet3_TxQueueDesc *tqd = &hw->tqd_start[i];
 		vmxnet3_tx_queue_t *txq  = dev->data->tx_queues[i];
@@ -653,9 +796,15 @@ vmxnet3_setup_driver_shared(struct rte_eth_dev *dev)
 		tqd->conf.compRingSize = txq->comp_ring.size;
 		tqd->conf.dataRingSize = txq->data_ring.size;
 		tqd->conf.txDataRingDescSize = txq->txdata_desc_size;
-		tqd->conf.intrIdx      = txq->comp_ring.intr_idx;
-		tqd->status.stopped    = TRUE;
-		tqd->status.error      = 0;
+
+		if (hw->intr.lsc_only)
+			tqd->conf.intrIdx = 1;
+		else
+			tqd->conf.intrIdx =
+				rte_intr_vec_list_index_get(intr_handle,
+								   i);
+		tqd->status.stopped = TRUE;
+		tqd->status.error   = 0;
 		memset(&tqd->stats, 0, sizeof(tqd->stats));
 	}
 
@@ -672,29 +821,45 @@ vmxnet3_setup_driver_shared(struct rte_eth_dev *dev)
 		rqd->conf.rxRingSize[0]   = rxq->cmd_ring[0].size;
 		rqd->conf.rxRingSize[1]   = rxq->cmd_ring[1].size;
 		rqd->conf.compRingSize    = rxq->comp_ring.size;
-		rqd->conf.intrIdx         = rxq->comp_ring.intr_idx;
+
 		if (VMXNET3_VERSION_GE_3(hw)) {
 			rqd->conf.rxDataRingBasePA = rxq->data_ring.basePA;
 			rqd->conf.rxDataRingDescSize = rxq->data_desc_size;
 		}
-		rqd->status.stopped       = TRUE;
-		rqd->status.error         = 0;
+
+		if (hw->intr.lsc_only)
+			rqd->conf.intrIdx = 1;
+		else
+			rqd->conf.intrIdx =
+				rte_intr_vec_list_index_get(intr_handle,
+								   i);
+		rqd->status.stopped = TRUE;
+		rqd->status.error   = 0;
 		memset(&rqd->stats, 0, sizeof(rqd->stats));
 	}
+
+	/* intr settings */
+	devRead->intrConf.autoMask = hw->intr.mask_mode == VMXNET3_IMM_AUTO;
+	devRead->intrConf.numIntrs = hw->intr.num_intrs;
+	for (i = 0; i < hw->intr.num_intrs; i++)
+		devRead->intrConf.modLevels[i] = hw->intr.mod_levels[i];
+
+	devRead->intrConf.eventIntrIdx = hw->intr.event_intr_idx;
+	devRead->intrConf.intrCtrl |= rte_cpu_to_le_32(VMXNET3_IC_DISABLE_ALL);
 
 	/* RxMode set to 0 of VMXNET3_RXM_xxx */
 	devRead->rxFilterConf.rxMode = 0;
 
 	/* Setting up feature flags */
-	if (rx_offloads & DEV_RX_OFFLOAD_CHECKSUM)
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_CHECKSUM)
 		devRead->misc.uptFeatures |= VMXNET3_F_RXCSUM;
 
-	if (rx_offloads & DEV_RX_OFFLOAD_TCP_LRO) {
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
 		devRead->misc.uptFeatures |= VMXNET3_F_LRO;
 		devRead->misc.maxNumRxSG = 0;
 	}
 
-	if (port_conf.rxmode.mq_mode == ETH_MQ_RX_RSS) {
+	if (port_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS) {
 		ret = vmxnet3_rss_configure(dev);
 		if (ret != VMXNET3_SUCCESS)
 			return ret;
@@ -706,7 +871,7 @@ vmxnet3_setup_driver_shared(struct rte_eth_dev *dev)
 	}
 
 	ret = vmxnet3_dev_vlan_offload_set(dev,
-			ETH_VLAN_STRIP_MASK | ETH_VLAN_FILTER_MASK);
+			RTE_ETH_VLAN_STRIP_MASK | RTE_ETH_VLAN_FILTER_MASK);
 	if (ret)
 		return ret;
 
@@ -731,23 +896,17 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 	/* Save stats before it is reset by CMD_ACTIVATE */
 	vmxnet3_hw_stats_save(hw);
 
+	/* configure MSI-X */
+	ret = vmxnet3_configure_msix(dev);
+	if (ret < 0) {
+		/* revert to lsc only */
+		hw->intr.num_intrs = 2;
+		hw->intr.lsc_only = TRUE;
+	}
+
 	ret = vmxnet3_setup_driver_shared(dev);
 	if (ret != VMXNET3_SUCCESS)
 		return ret;
-
-	/* check if lsc interrupt feature is enabled */
-	if (dev->data->dev_conf.intr_conf.lsc) {
-		struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(dev->device);
-
-		/* Setup interrupt callback  */
-		rte_intr_callback_register(&pci_dev->intr_handle,
-					   vmxnet3_interrupt_handler, dev);
-
-		if (rte_intr_enable(&pci_dev->intr_handle) < 0) {
-			PMD_INIT_LOG(ERR, "interrupt enable failed");
-			return -EIO;
-		}
-	}
 
 	/* Exchange shared data with device */
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_DSAL,
@@ -779,7 +938,7 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 	}
 
 	if (VMXNET3_VERSION_GE_4(hw) &&
-	    dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_RSS) {
+	    dev->data->dev_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS) {
 		/* Check for additional RSS  */
 		ret = vmxnet3_v4_rss_configure(dev);
 		if (ret != VMXNET3_SUCCESS) {
@@ -787,9 +946,6 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 			return ret;
 		}
 	}
-
-	/* Disable interrupts */
-	vmxnet3_disable_intr(hw);
 
 	/*
 	 * Load RX queues with blank mbufs and update next2fill index for device
@@ -806,18 +962,28 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 	/* Setting proper Rx Mode and issue Rx Mode Update command */
 	vmxnet3_dev_set_rxmode(hw, VMXNET3_RXM_UCAST | VMXNET3_RXM_BCAST, 1);
 
-	if (dev->data->dev_conf.intr_conf.lsc) {
-		vmxnet3_enable_intr(hw);
+	/* Setup interrupt callback  */
+	rte_intr_callback_register(dev->intr_handle,
+				   vmxnet3_interrupt_handler, dev);
 
-		/*
-		 * Update link state from device since this won't be
-		 * done upon starting with lsc in use. This is done
-		 * only after enabling interrupts to avoid any race
-		 * where the link state could change without an
-		 * interrupt being fired.
-		 */
-		__vmxnet3_dev_link_update(dev, 0);
+	if (rte_intr_enable(dev->intr_handle) < 0) {
+		PMD_INIT_LOG(ERR, "interrupt enable failed");
+		return -EIO;
 	}
+
+	/* enable all intrs */
+	vmxnet3_enable_all_intrs(hw);
+
+	vmxnet3_process_events(dev);
+
+	/*
+	 * Update link state from device since this won't be
+	 * done upon starting with lsc in use. This is done
+	 * only after enabling interrupts to avoid any race
+	 * where the link state could change without an
+	 * interrupt being fired.
+	 */
+	__vmxnet3_dev_link_update(dev, 0);
 
 	return VMXNET3_SUCCESS;
 }
@@ -830,6 +996,8 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 {
 	struct rte_eth_link link;
 	struct vmxnet3_hw *hw = dev->data->dev_private;
+	struct rte_intr_handle *intr_handle = dev->intr_handle;
+	int ret;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -838,17 +1006,30 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 		return 0;
 	}
 
+	do {
+		/* Unregister has lock to make sure there is no running cb.
+		 * This has to happen first since vmxnet3_interrupt_handler
+		 * reenables interrupts by calling vmxnet3_enable_intr
+		 */
+		ret = rte_intr_callback_unregister(intr_handle,
+						   vmxnet3_interrupt_handler,
+						   (void *)-1);
+	} while (ret == -EAGAIN);
+
+	if (ret < 0)
+		PMD_DRV_LOG(ERR, "Error attempting to unregister intr cb: %d",
+			    ret);
+
+	PMD_INIT_LOG(DEBUG, "Disabled %d intr callbacks", ret);
+
 	/* disable interrupts */
-	vmxnet3_disable_intr(hw);
+	vmxnet3_disable_all_intrs(hw);
 
-	if (dev->data->dev_conf.intr_conf.lsc) {
-		struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(dev->device);
+	rte_intr_disable(intr_handle);
 
-		rte_intr_disable(&pci_dev->intr_handle);
-
-		rte_intr_callback_unregister(&pci_dev->intr_handle,
-					     vmxnet3_interrupt_handler, dev);
-	}
+	/* Clean datapath event and queue/vector mapping */
+	rte_intr_efd_disable(intr_handle);
+	rte_intr_vec_list_free(intr_handle);
 
 	/* quiesce the device first */
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_QUIESCE_DEV);
@@ -863,9 +1044,9 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 
 	/* Clear recorded link status */
 	memset(&link, 0, sizeof(link));
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	link.link_speed = ETH_SPEED_NUM_10G;
-	link.link_autoneg = ETH_LINK_FIXED;
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	link.link_speed = RTE_ETH_SPEED_NUM_10G;
+	link.link_autoneg = RTE_ETH_LINK_FIXED;
 	rte_eth_linkstatus_set(dev, &link);
 
 	hw->adapter_stopped = 1;
@@ -881,18 +1062,12 @@ vmxnet3_free_queues(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		void *rxq = dev->data->rx_queues[i];
-
-		vmxnet3_dev_rx_queue_release(rxq);
-	}
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		vmxnet3_dev_rx_queue_release(dev, i);
 	dev->data->nb_rx_queues = 0;
 
-	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		void *txq = dev->data->tx_queues[i];
-
-		vmxnet3_dev_tx_queue_release(txq);
-	}
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		vmxnet3_dev_tx_queue_release(dev, i);
 	dev->data->nb_tx_queues = 0;
 }
 
@@ -910,6 +1085,18 @@ vmxnet3_dev_close(struct rte_eth_dev *dev)
 	ret = vmxnet3_dev_stop(dev);
 	vmxnet3_free_queues(dev);
 
+	return ret;
+}
+
+static int
+vmxnet3_dev_reset(struct rte_eth_dev *dev)
+{
+	int ret;
+
+	ret = eth_vmxnet3_dev_uninit(dev);
+	if (ret)
+		return ret;
+	ret = eth_vmxnet3_dev_init(dev);
 	return ret;
 }
 
@@ -1183,7 +1370,7 @@ vmxnet3_dev_info_get(struct rte_eth_dev *dev,
 	dev_info->max_rx_pktlen = 16384; /* includes CRC, cf MAXFRS register */
 	dev_info->min_mtu = VMXNET3_MIN_MTU;
 	dev_info->max_mtu = VMXNET3_MAX_MTU;
-	dev_info->speed_capa = ETH_LINK_SPEED_10G;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_10G;
 	dev_info->max_mac_addrs = VMXNET3_MAX_MAC_ADDRS;
 
 	dev_info->flow_type_rss_offloads = VMXNET3_RSS_OFFLOAD_ALL;
@@ -1265,10 +1452,10 @@ __vmxnet3_dev_link_update(struct rte_eth_dev *dev,
 	ret = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_CMD);
 
 	if (ret & 0x1)
-		link.link_status = ETH_LINK_UP;
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	link.link_speed = ETH_SPEED_NUM_10G;
-	link.link_autoneg = ETH_LINK_FIXED;
+		link.link_status = RTE_ETH_LINK_UP;
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	link.link_speed = RTE_ETH_SPEED_NUM_10G;
+	link.link_autoneg = RTE_ETH_LINK_FIXED;
 
 	return rte_eth_linkstatus_set(dev, &link);
 }
@@ -1321,7 +1508,7 @@ vmxnet3_dev_promiscuous_disable(struct rte_eth_dev *dev)
 	uint32_t *vf_table = hw->shared->devRead.rxFilterConf.vfTable;
 	uint64_t rx_offloads = dev->data->dev_conf.rxmode.offloads;
 
-	if (rx_offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 		memcpy(vf_table, hw->shadow_vfta, VMXNET3_VFT_TABLE_SIZE);
 	else
 		memset(vf_table, 0xff, VMXNET3_VFT_TABLE_SIZE);
@@ -1391,8 +1578,8 @@ vmxnet3_dev_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	uint32_t *vf_table = devRead->rxFilterConf.vfTable;
 	uint64_t rx_offloads = dev->data->dev_conf.rxmode.offloads;
 
-	if (mask & ETH_VLAN_STRIP_MASK) {
-		if (rx_offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
+		if (rx_offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 			devRead->misc.uptFeatures |= UPT1_F_RXVLAN;
 		else
 			devRead->misc.uptFeatures &= ~UPT1_F_RXVLAN;
@@ -1401,8 +1588,8 @@ vmxnet3_dev_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 				       VMXNET3_CMD_UPDATE_FEATURE);
 	}
 
-	if (mask & ETH_VLAN_FILTER_MASK) {
-		if (rx_offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		if (rx_offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 			memcpy(vf_table, hw->shadow_vfta, VMXNET3_VFT_TABLE_SIZE);
 		else
 			memset(vf_table, 0xff, VMXNET3_VFT_TABLE_SIZE);
@@ -1466,16 +1653,48 @@ static void
 vmxnet3_interrupt_handler(void *param)
 {
 	struct rte_eth_dev *dev = param;
-	struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(dev->device);
+	struct vmxnet3_hw *hw = dev->data->dev_private;
+	Vmxnet3_DSDevRead *devRead = &hw->shared->devRead;
+	uint32_t events;
 
+	PMD_INIT_FUNC_TRACE();
+	vmxnet3_disable_intr(hw, devRead->intrConf.eventIntrIdx);
+
+	events = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_ECR);
+	if (events == 0)
+		goto done;
+
+	RTE_LOG(DEBUG, PMD, "Reading events: 0x%X", events);
 	vmxnet3_process_events(dev);
+done:
+	vmxnet3_enable_intr(hw, devRead->intrConf.eventIntrIdx);
+}
 
-	if (rte_intr_ack(&pci_dev->intr_handle) < 0)
-		PMD_DRV_LOG(ERR, "interrupt enable failed");
+static int
+vmxnet3_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct vmxnet3_hw *hw = dev->data->dev_private;
+
+	vmxnet3_enable_intr(hw,
+			    rte_intr_vec_list_index_get(dev->intr_handle,
+							       queue_id));
+
+	return 0;
+}
+
+static int
+vmxnet3_dev_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct vmxnet3_hw *hw = dev->data->dev_private;
+
+	vmxnet3_disable_intr(hw,
+		rte_intr_vec_list_index_get(dev->intr_handle, queue_id));
+
+	return 0;
 }
 
 RTE_PMD_REGISTER_PCI(net_vmxnet3, rte_vmxnet3_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_vmxnet3, pci_id_vmxnet3_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_vmxnet3, "* igb_uio | uio_pci_generic | vfio-pci");
-RTE_LOG_REGISTER(vmxnet3_logtype_init, pmd.net.vmxnet3.init, NOTICE);
-RTE_LOG_REGISTER(vmxnet3_logtype_driver, pmd.net.vmxnet3.driver, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(vmxnet3_logtype_init, init, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(vmxnet3_logtype_driver, driver, NOTICE);

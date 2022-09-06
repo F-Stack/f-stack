@@ -6,14 +6,18 @@
 #define _HNS3_ETHDEV_H_
 
 #include <pthread.h>
-#include <sys/time.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
+#include <rte_byteorder.h>
+#include <rte_io.h>
+#include <rte_spinlock.h>
 
 #include "hns3_cmd.h"
 #include "hns3_mbx.h"
 #include "hns3_rss.h"
 #include "hns3_fdir.h"
 #include "hns3_stats.h"
+#include "hns3_tm.h"
+#include "hns3_flow.h"
 
 /* Vendor ID */
 #define PCI_VENDOR_ID_HUAWEI			0x19e5
@@ -38,6 +42,9 @@
 #define HNS3_PF_FUNC_ID			0
 #define HNS3_1ST_VF_FUNC_ID		1
 
+#define HNS3_DEFAULT_PORT_CONF_BURST_SIZE	32
+#define HNS3_DEFAULT_PORT_CONF_QUEUES_NUM	1
+
 #define HNS3_SW_SHIFT_AND_DISCARD_MODE		0
 #define HNS3_HW_SHIFT_AND_DISCARD_MODE		1
 
@@ -55,7 +62,6 @@
 #define HNS3_MAX_NON_TSO_BD_PER_PKT	8
 #define HNS3_MAX_TSO_BD_PER_PKT		63
 #define HNS3_MAX_FRAME_LEN		9728
-#define HNS3_VLAN_TAG_SIZE		4
 #define HNS3_DEFAULT_RX_BUF_LEN		2048
 #define HNS3_MAX_BD_PAYLEN		(1024 * 1024 - 1)
 #define HNS3_MAX_TSO_HDR_SIZE		512
@@ -63,7 +69,7 @@
 #define HNS3_MAX_LRO_SIZE		64512
 
 #define HNS3_ETH_OVERHEAD \
-	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + HNS3_VLAN_TAG_SIZE * 2)
+	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_VLAN_HLEN * 2)
 #define HNS3_PKTLEN_TO_MTU(pktlen)	((pktlen) - HNS3_ETH_OVERHEAD)
 #define HNS3_MAX_MTU	(HNS3_MAX_FRAME_LEN - HNS3_ETH_OVERHEAD)
 #define HNS3_DEFAULT_MTU		1500UL
@@ -161,6 +167,12 @@ struct hns3_cfg {
 	uint16_t umv_space;
 };
 
+struct hns3_set_link_speed_cfg {
+	uint32_t speed;
+	uint8_t duplex  : 1;
+	uint8_t autoneg : 1;
+};
+
 /* mac media type */
 enum hns3_media_type {
 	HNS3_MEDIA_TYPE_UNKNOWN,
@@ -170,14 +182,41 @@ enum hns3_media_type {
 	HNS3_MEDIA_TYPE_NONE,
 };
 
+#define HNS3_DEFAULT_QUERY		0
+#define HNS3_ACTIVE_QUERY		1
+
 struct hns3_mac {
 	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 	uint8_t media_type;
 	uint8_t phy_addr;
-	uint8_t link_duplex  : 1; /* ETH_LINK_[HALF/FULL]_DUPLEX */
-	uint8_t link_autoneg : 1; /* ETH_LINK_[AUTONEG/FIXED] */
-	uint8_t link_status  : 1; /* ETH_LINK_[DOWN/UP] */
-	uint32_t link_speed;      /* ETH_SPEED_NUM_ */
+	uint8_t link_duplex  : 1; /* RTE_ETH_LINK_[HALF/FULL]_DUPLEX */
+	uint8_t link_autoneg : 1; /* RTE_ETH_LINK_[AUTONEG/FIXED] */
+	uint8_t link_status  : 1; /* RTE_ETH_LINK_[DOWN/UP] */
+	uint32_t link_speed;      /* RTE_ETH_SPEED_NUM_ */
+	/*
+	 * Some firmware versions support only the SFP speed query. In addition
+	 * to the SFP speed query, some firmware supports the query of the speed
+	 * capability, auto-negotiation capability, and FEC mode, which can be
+	 * selected by the 'query_type' filed in the HNS3_OPC_GET_SFP_INFO CMD.
+	 * This field is used to record the SFP information query mode.
+	 * Value range:
+	 *       HNS3_DEFAULT_QUERY/HNS3_ACTIVE_QUERY
+	 *
+	 * - HNS3_DEFAULT_QUERY
+	 * Speed obtained is from SFP. When the queried speed changes, the MAC
+	 * speed needs to be reconfigured.
+	 *
+	 * - HNS3_ACTIVE_QUERY
+	 * Speed obtained is from MAC. At this time, it is unnecessary for
+	 * driver to reconfigured the MAC speed. In addition, more information,
+	 * such as, the speed capability, auto-negotiation capability and FEC
+	 * mode, can be obtained by the HNS3_OPC_GET_SFP_INFO CMD.
+	 */
+	uint8_t query_type;
+	uint32_t supported_speed;  /* supported speed for current media type */
+	uint32_t advertising;     /* advertised capability in the local part */
+	uint32_t lp_advertising; /* advertised capability in the link partner */
+	uint8_t support_autoneg;
 };
 
 struct hns3_fake_queue_data {
@@ -268,8 +307,9 @@ enum hns3_reset_stage {
 };
 
 enum hns3_reset_level {
-	HNS3_NONE_RESET,
+	HNS3_FLR_RESET,     /* A VF perform FLR reset */
 	HNS3_VF_FUNC_RESET, /* A VF function reset */
+
 	/*
 	 * All VFs under a PF perform function reset.
 	 * Kernel PF driver use mailbox to inform DPDK VF to do reset, the value
@@ -277,6 +317,7 @@ enum hns3_reset_level {
 	 * same.
 	 */
 	HNS3_VF_PF_FUNC_RESET = 2,
+
 	/*
 	 * All VFs under a PF perform FLR reset.
 	 * Kernel PF driver use mailbox to inform DPDK VF to do reset, the value
@@ -290,14 +331,23 @@ enum hns3_reset_level {
 	 * In PF FLR, the register state of VF is not reliable, VF's driver
 	 * should not access the registers of the VF device.
 	 */
-	HNS3_VF_FULL_RESET = 3,
-	HNS3_FLR_RESET,     /* A VF perform FLR reset */
+	HNS3_VF_FULL_RESET,
+
 	/* All VFs under the rootport perform a global or IMP reset */
 	HNS3_VF_RESET,
-	HNS3_FUNC_RESET,    /* A PF function reset */
+
+	/*
+	 * The enumeration value of HNS3_FUNC_RESET/HNS3_GLOBAL_RESET/
+	 * HNS3_IMP_RESET/HNS3_NONE_RESET are also used by firmware, and
+	 * can not be changed.
+	 */
+
+	HNS3_FUNC_RESET = 5,    /* A PF function reset */
+
 	/* All PFs under the rootport perform a global reset */
 	HNS3_GLOBAL_RESET,
 	HNS3_IMP_RESET,     /* All PFs under the rootport perform a IMP reset */
+	HNS3_NONE_RESET,
 	HNS3_MAX_RESET
 };
 
@@ -350,11 +400,11 @@ enum hns3_schedule {
 
 struct hns3_reset_data {
 	enum hns3_reset_stage stage;
-	rte_atomic16_t schedule;
+	uint16_t schedule;
 	/* Reset flag, covering the entire reset process */
-	rte_atomic16_t resetting;
+	uint16_t resetting;
 	/* Used to disable sending cmds during reset */
-	rte_atomic16_t disable_cmd;
+	uint16_t disable_cmd;
 	/* The reset level being processed */
 	enum hns3_reset_level level;
 	/* Reset level set, each bit represents a reset level */
@@ -375,6 +425,20 @@ struct hns3_reset_data {
 	struct hns3_reset_stats stats;
 	const struct hns3_reset_ops *ops;
 	struct hns3_wait_data *wait_data;
+};
+
+struct hns3_hw_ops {
+	int (*add_mc_mac_addr)(struct hns3_hw *hw,
+				struct rte_ether_addr *mac_addr);
+	int (*del_mc_mac_addr)(struct hns3_hw *hw,
+				struct rte_ether_addr *mac_addr);
+	int (*add_uc_mac_addr)(struct hns3_hw *hw,
+				struct rte_ether_addr *mac_addr);
+	int (*del_uc_mac_addr)(struct hns3_hw *hw,
+				struct rte_ether_addr *mac_addr);
+	int (*bind_ring_with_vector)(struct hns3_hw *hw, uint16_t vector_id,
+				bool en, enum hns3_ring_type queue_type,
+				uint16_t queue_id);
 };
 
 #define HNS3_INTR_MAPPING_VEC_RSV_ONE		0
@@ -419,20 +483,36 @@ struct hns3_queue_intr {
 #define HNS3_TSO_SW_CAL_PSEUDO_H_CSUM		0
 #define HNS3_TSO_HW_CAL_PSEUDO_H_CSUM		1
 
+#define HNS3_PKTS_DROP_STATS_MODE1		0
+#define HNS3_PKTS_DROP_STATS_MODE2		1
+
 struct hns3_hw {
 	struct rte_eth_dev_data *data;
 	void *io_base;
 	uint8_t revision;           /* PCI revision, low byte of class word */
 	struct hns3_cmq cmq;
 	struct hns3_mbx_resp_status mbx_resp; /* mailbox response */
-	struct hns3_mbx_arq_ring arq;         /* mailbox async rx queue */
 	struct hns3_mac mac;
+	/*
+	 * This flag indicates dev_set_link_down() API is called, and is cleared
+	 * by dev_set_link_up() or dev_start().
+	 */
+	bool set_link_down;
 	unsigned int secondary_cnt; /* Number of secondary processes init'd. */
 	struct hns3_tqp_stats tqp_stats;
 	/* Include Mac stats | Rx stats | Tx stats */
 	struct hns3_mac_stats mac_stats;
 	uint32_t mac_stats_reg_num;
+	struct hns3_rx_missed_stats imissed_stats;
+	uint64_t oerror_stats;
+	/*
+	 * The lock is used to protect statistics update in stats APIs and
+	 * periodic task.
+	 */
+	rte_spinlock_t stats_lock;
+
 	uint32_t fw_version;
+	uint16_t pf_vf_if_version;  /* version of communication interface */
 
 	uint16_t num_msi;
 	uint16_t total_tqps_num;    /* total task queue pairs of this PF */
@@ -534,6 +614,24 @@ struct hns3_hw {
 	 *     port won't be copied to the function which has set promisc mode.
 	 */
 	uint8_t promisc_mode;
+
+	/*
+	 * drop_stats_mode mode.
+	 * value range:
+	 *      HNS3_PKTS_DROP_STATS_MODE1/HNS3_PKTS_DROP_STATS_MODE2
+	 *
+	 *  - HNS3_PKTS_DROP_STATS_MODE1
+	 *     This mode for kunpeng920. In this mode, port level imissed stats
+	 *     is supported. It only includes RPU drop stats.
+	 *
+	 *  - HNS3_PKTS_DROP_STATS_MODE2
+	 *     This mode for kunpeng930. In this mode, imissed stats and oerrors
+	 *     stats is supported. Function level imissed stats is supported. It
+	 *     includes RPU drop stats in VF, and includes both RPU drop stats
+	 *     and SSU drop stats in PF. Oerror stats is also supported in PF.
+	 */
+	uint8_t drop_stats_mode;
+
 	uint8_t max_non_tso_bd_num; /* max BD number of one non-TSO packet */
 	/*
 	 * udp checksum mode.
@@ -543,7 +641,7 @@ struct hns3_hw {
 	 *  - HNS3_SPECIAL_PORT_SW_CKSUM_MODE
 	 *     In this mode, HW can not do checksum for special UDP port like
 	 *     4789, 4790, 6081 for non-tunnel UDP packets and UDP tunnel
-	 *     packets without the PKT_TX_TUNEL_MASK in the mbuf. So, PMD need
+	 *     packets without the RTE_MBUF_F_TX_TUNEL_MASK in the mbuf. So, PMD need
 	 *     do the checksum for these packets to avoid a checksum error.
 	 *
 	 *  - HNS3_SPECIAL_PORT_HW_CKSUM_MODE
@@ -559,6 +657,8 @@ struct hns3_hw {
 	struct hns3_rss_filter_list flow_rss_list; /* flow RSS rule list */
 	struct hns3_flow_mem_list flow_list;
 
+	struct hns3_hw_ops ops;
+
 	/*
 	 * PMD setup and configuration is not thread safe. Since it is not
 	 * performance sensitive, it is better to guarantee thread-safety
@@ -572,38 +672,6 @@ struct hns3_hw {
 
 #define HNS3_FLAG_TC_BASE_SCH_MODE		1
 #define HNS3_FLAG_VNET_BASE_SCH_MODE		2
-
-struct hns3_err_msix_intr_stats {
-	uint64_t mac_afifo_tnl_int_cnt;
-	uint64_t ppu_mpf_abn_int_st2_msix_cnt;
-	uint64_t ssu_port_based_pf_int_cnt;
-	uint64_t ppp_pf_abnormal_int_cnt;
-	uint64_t ppu_pf_abnormal_int_msix_cnt;
-
-	uint64_t imp_tcm_ecc_int_cnt;
-	uint64_t cmdq_mem_ecc_int_cnt;
-	uint64_t imp_rd_poison_int_cnt;
-	uint64_t tqp_int_ecc_int_cnt;
-	uint64_t msix_ecc_int_cnt;
-	uint64_t ssu_ecc_multi_bit_int_0_cnt;
-	uint64_t ssu_ecc_multi_bit_int_1_cnt;
-	uint64_t ssu_common_ecc_int_cnt;
-	uint64_t igu_int_cnt;
-	uint64_t ppp_mpf_abnormal_int_st1_cnt;
-	uint64_t ppp_mpf_abnormal_int_st3_cnt;
-	uint64_t ppu_mpf_abnormal_int_st1_cnt;
-	uint64_t ppu_mpf_abn_int_st2_ras_cnt;
-	uint64_t ppu_mpf_abnormal_int_st3_cnt;
-	uint64_t tm_sch_int_cnt;
-	uint64_t qcn_fifo_int_cnt;
-	uint64_t qcn_ecc_int_cnt;
-	uint64_t ncsi_ecc_int_cnt;
-	uint64_t ssu_port_based_err_int_cnt;
-	uint64_t ssu_fifo_overflow_int_cnt;
-	uint64_t ssu_ets_tcg_int_cnt;
-	uint64_t igu_egu_tnl_int_cnt;
-	uint64_t ppu_pf_abnormal_int_ras_cnt;
-};
 
 /* vlan entry information. */
 struct hns3_user_vlan_table {
@@ -657,6 +725,8 @@ struct hns3_vtag_cfg {
 enum hns3_mp_req_type {
 	HNS3_MP_REQ_START_RXTX = 1,
 	HNS3_MP_REQ_STOP_RXTX,
+	HNS3_MP_REQ_START_TX,
+	HNS3_MP_REQ_STOP_TX,
 	HNS3_MP_REQ_MAX
 };
 
@@ -679,14 +749,26 @@ struct hns3_mp_param {
 #define HNS3_OL2TBL_NUM	4
 #define HNS3_OL3TBL_NUM	16
 #define HNS3_OL4TBL_NUM	16
+#define HNS3_PTYPE_NUM	256
 
 struct hns3_ptype_table {
+	/*
+	 * The next fields used to calc packet-type by the
+	 * L3_ID/L4_ID/OL3_ID/OL4_ID from the Rx descriptor.
+	 */
 	uint32_t l3table[HNS3_L3TBL_NUM];
 	uint32_t l4table[HNS3_L4TBL_NUM];
 	uint32_t inner_l3table[HNS3_L3TBL_NUM];
 	uint32_t inner_l4table[HNS3_L4TBL_NUM];
 	uint32_t ol3table[HNS3_OL3TBL_NUM];
 	uint32_t ol4table[HNS3_OL4TBL_NUM];
+
+	/*
+	 * The next field used to calc packet-type by the PTYPE from the Rx
+	 * descriptor, it functions only when firmware report the capability of
+	 * HNS3_CAPS_RXD_ADV_LAYOUT_B and driver enabled it.
+	 */
+	uint32_t ptype[HNS3_PTYPE_NUM] __rte_cache_aligned;
 };
 
 #define HNS3_FIXED_MAX_TQP_NUM_MODE		0
@@ -731,26 +813,49 @@ struct hns3_pf {
 	uint8_t prio_tc[HNS3_MAX_USER_PRIO]; /* TC indexed by prio */
 	uint16_t pause_time;
 	bool support_fc_autoneg;       /* support FC autonegotiate */
+	bool support_multi_tc_pause;
 
 	uint16_t wanted_umv_size;
 	uint16_t max_umv_size;
 	uint16_t used_umv_size;
 
-	/* Statistics information for abnormal interrupt */
-	struct hns3_err_msix_intr_stats abn_int_stats;
-
 	bool support_sfp_query;
 	uint32_t fec_mode; /* current FEC mode for ethdev */
+
+	bool ptp_enable;
+
+	/* Stores timestamp of last received packet on dev */
+	uint64_t rx_timestamp;
 
 	struct hns3_vtag_cfg vtag_config;
 	LIST_HEAD(vlan_tbl, hns3_user_vlan_table) vlan_list;
 
 	struct hns3_fdir_info fdir; /* flow director info */
 	LIST_HEAD(counters, hns3_flow_counter) flow_counters;
+
+	struct hns3_tm_conf tm_conf;
+};
+
+enum {
+	HNS3_PF_PUSH_LSC_CAP_NOT_SUPPORTED,
+	HNS3_PF_PUSH_LSC_CAP_SUPPORTED,
+	HNS3_PF_PUSH_LSC_CAP_UNKNOWN
 };
 
 struct hns3_vf {
 	struct hns3_adapter *adapter;
+
+	/* Whether PF support push link status change to VF */
+	uint16_t pf_push_lsc_cap;
+
+	/*
+	 * If PF support push link status change, VF still need send request to
+	 * get link status in some cases (such as reset recover stage), so use
+	 * the req_link_info_cnt to control max request count.
+	 */
+	uint16_t req_link_info_cnt;
+
+	uint16_t poll_job_started; /* whether poll job is started */
 };
 
 struct hns3_adapter {
@@ -763,58 +868,60 @@ struct hns3_adapter {
 		struct hns3_vf vf;
 	};
 
-	bool rx_simple_allowed;
-	bool rx_vec_allowed;
-	bool tx_simple_allowed;
-	bool tx_vec_allowed;
+	uint32_t rx_func_hint;
+	uint32_t tx_func_hint;
 
-	struct hns3_ptype_table ptype_tbl __rte_cache_min_aligned;
+	uint64_t dev_caps_mask;
+	uint16_t mbx_time_limit_ms; /* wait time for mbx message */
+
+	struct hns3_ptype_table ptype_tbl __rte_cache_aligned;
 };
 
-#define HNS3_DEV_SUPPORT_DCB_B			0x0
-#define HNS3_DEV_SUPPORT_COPPER_B		0x1
-#define HNS3_DEV_SUPPORT_UDP_GSO_B		0x2
-#define HNS3_DEV_SUPPORT_FD_QUEUE_REGION_B	0x3
-#define HNS3_DEV_SUPPORT_PTP_B			0x4
-#define HNS3_DEV_SUPPORT_TX_PUSH_B		0x5
-#define HNS3_DEV_SUPPORT_INDEP_TXRX_B		0x6
-#define HNS3_DEV_SUPPORT_STASH_B		0x7
+#define HNS3_DEVARG_RX_FUNC_HINT	"rx_func_hint"
+#define HNS3_DEVARG_TX_FUNC_HINT	"tx_func_hint"
 
-#define hns3_dev_dcb_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_DCB_B)
+#define HNS3_DEVARG_DEV_CAPS_MASK	"dev_caps_mask"
 
-/* Support copper media type */
-#define hns3_dev_copper_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_COPPER_B)
+#define HNS3_DEVARG_MBX_TIME_LIMIT_MS	"mbx_time_limit_ms"
 
-/* Support UDP GSO offload */
-#define hns3_dev_udp_gso_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_UDP_GSO_B)
+enum {
+	HNS3_DEV_SUPPORT_DCB_B,
+	HNS3_DEV_SUPPORT_COPPER_B,
+	HNS3_DEV_SUPPORT_FD_QUEUE_REGION_B,
+	HNS3_DEV_SUPPORT_PTP_B,
+	HNS3_DEV_SUPPORT_TX_PUSH_B,
+	HNS3_DEV_SUPPORT_INDEP_TXRX_B,
+	HNS3_DEV_SUPPORT_STASH_B,
+	HNS3_DEV_SUPPORT_RXD_ADV_LAYOUT_B,
+	HNS3_DEV_SUPPORT_OUTER_UDP_CKSUM_B,
+	HNS3_DEV_SUPPORT_RAS_IMP_B,
+	HNS3_DEV_SUPPORT_TM_B,
+	HNS3_DEV_SUPPORT_VF_VLAN_FLT_MOD_B,
+};
 
-/* Support the queue region action rule of flow directory */
-#define hns3_dev_fd_queue_region_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_FD_QUEUE_REGION_B)
-
-/* Support PTP timestamp offload */
-#define hns3_dev_ptp_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_PTP_B)
-
-#define hns3_dev_tx_push_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_TX_PUSH_B)
-
-/* Support to Independently enable/disable/reset Tx or Rx queues */
-#define hns3_dev_indep_txrx_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_INDEP_TXRX_B)
-
-#define hns3_dev_stash_supported(hw) \
-	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_STASH_B)
+#define hns3_dev_get_support(hw, _name) \
+	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_##_name##_B)
 
 #define HNS3_DEV_PRIVATE_TO_HW(adapter) \
 	(&((struct hns3_adapter *)adapter)->hw)
 #define HNS3_DEV_PRIVATE_TO_PF(adapter) \
 	(&((struct hns3_adapter *)adapter)->pf)
+#define HNS3_DEV_PRIVATE_TO_VF(adapter) \
+	(&((struct hns3_adapter *)adapter)->vf)
 #define HNS3_DEV_HW_TO_ADAPTER(hw) \
 	container_of(hw, struct hns3_adapter, hw)
+
+static inline struct hns3_pf *HNS3_DEV_HW_TO_PF(struct hns3_hw *hw)
+{
+	struct hns3_adapter *adapter = HNS3_DEV_HW_TO_ADAPTER(hw);
+	return &adapter->pf;
+}
+
+static inline struct hns3_vf *HNS3_DEV_HW_TO_VF(struct hns3_hw *hw)
+{
+	struct hns3_adapter *adapter = HNS3_DEV_HW_TO_ADAPTER(hw);
+	return &adapter->vf;
+}
 
 #define hns3_set_field(origin, mask, shift, val) \
 	do { \
@@ -874,13 +981,13 @@ static inline void hns3_write_reg(void *base, uint32_t reg, uint32_t value)
 }
 
 /*
- * The optimized function for writing registers used in the '.rx_pkt_burst' and
- * '.tx_pkt_burst' ops implementation function.
+ * The optimized function for writing registers reduces one address addition
+ * calculation, it was used in the '.rx_pkt_burst' and '.tx_pkt_burst' ops
+ * implementation function.
  */
 static inline void hns3_write_reg_opt(volatile void *addr, uint32_t value)
 {
-	rte_io_wmb();
-	rte_write32_relaxed(rte_cpu_to_le_32(value), addr);
+	rte_write32(rte_cpu_to_le_32(value), addr);
 }
 
 static inline uint32_t hns3_read_reg(void *base, uint32_t reg)
@@ -895,8 +1002,6 @@ static inline uint32_t hns3_read_reg(void *base, uint32_t reg)
 #define hns3_read_dev(a, reg) \
 	hns3_read_reg((a)->io_base, (reg))
 
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-
 #define NEXT_ITEM_OF_ACTION(act, actions, index)                        \
 	do {								\
 		act = (actions) + (index);				\
@@ -905,13 +1010,6 @@ static inline uint32_t hns3_read_reg(void *base, uint32_t reg)
 			act = actions + index;				\
 		}							\
 	} while (0)
-
-#define MSEC_PER_SEC              1000L
-#define USEC_PER_MSEC             1000L
-
-void hns3_clock_gettime(struct timeval *tv);
-uint64_t hns3_clock_calctime_ms(struct timeval *tv);
-uint64_t hns3_clock_gettime_ms(void);
 
 static inline uint64_t
 hns3_atomic_test_bit(unsigned int nr, volatile uint64_t *addr)
@@ -942,13 +1040,31 @@ hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 	return __atomic_fetch_and(addr, ~mask, __ATOMIC_RELAXED) & mask;
 }
 
+uint32_t hns3_get_speed_capa(struct hns3_hw *hw);
+
 int hns3_buffer_alloc(struct hns3_hw *hw);
-int hns3_dev_filter_ctrl(struct rte_eth_dev *dev,
-			 enum rte_filter_type filter_type,
-			 enum rte_filter_op filter_op, void *arg);
 bool hns3_is_reset_pending(struct hns3_adapter *hns);
 bool hns3vf_is_reset_pending(struct hns3_adapter *hns);
-void hns3_update_link_status(struct hns3_hw *hw);
+void hns3_update_linkstatus_and_event(struct hns3_hw *hw, bool query);
+void hns3vf_update_link_status(struct hns3_hw *hw, uint8_t link_status,
+			  uint32_t link_speed, uint8_t link_duplex);
+void hns3vf_update_push_lsc_cap(struct hns3_hw *hw, bool supported);
+
+int hns3_restore_ptp(struct hns3_adapter *hns);
+int hns3_mbuf_dyn_rx_timestamp_register(struct rte_eth_dev *dev,
+				    struct rte_eth_conf *conf);
+int hns3_ptp_init(struct hns3_hw *hw);
+int hns3_timesync_enable(struct rte_eth_dev *dev);
+int hns3_timesync_disable(struct rte_eth_dev *dev);
+int hns3_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
+				struct timespec *timestamp,
+				uint32_t flags __rte_unused);
+int hns3_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
+				struct timespec *timestamp);
+int hns3_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts);
+int hns3_timesync_write_time(struct rte_eth_dev *dev,
+			const struct timespec *ts);
+int hns3_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta);
 
 static inline bool
 is_reset_pending(struct hns3_adapter *hns)
@@ -959,15 +1075,6 @@ is_reset_pending(struct hns3_adapter *hns)
 	else
 		ret = hns3_is_reset_pending(hns);
 	return ret;
-}
-
-static inline uint64_t
-hns3_txvlan_cap_get(struct hns3_hw *hw)
-{
-	if (hw->port_base_vlan_cfg.state)
-		return DEV_TX_OFFLOAD_VLAN_INSERT;
-	else
-		return DEV_TX_OFFLOAD_VLAN_INSERT | DEV_TX_OFFLOAD_QINQ_INSERT;
 }
 
 #endif /* _HNS3_ETHDEV_H_ */

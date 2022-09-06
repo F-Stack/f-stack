@@ -900,7 +900,7 @@ int vnic_dev_add_addr(struct vnic_dev *vdev, uint8_t *addr)
 
 	err = vnic_dev_cmd(vdev, CMD_ADDR_ADD, &a0, &a1, wait);
 	if (err)
-		pr_err("Can't add addr [%02x:%02x:%02x:%02x:%02x:%02x], %d\n",
+		pr_err("Can't add addr [" RTE_ETHER_ADDR_PRT_FMT "], %d\n",
 			addr[0], addr[1], addr[2], addr[3], addr[4], addr[5],
 			err);
 
@@ -919,7 +919,7 @@ int vnic_dev_del_addr(struct vnic_dev *vdev, uint8_t *addr)
 
 	err = vnic_dev_cmd(vdev, CMD_ADDR_DEL, &a0, &a1, wait);
 	if (err)
-		pr_err("Can't del addr [%02x:%02x:%02x:%02x:%02x:%02x], %d\n",
+		pr_err("Can't del addr [" RTE_ETHER_ADDR_PRT_FMT "], %d\n",
 			addr[0], addr[1], addr[2], addr[3], addr[4], addr[5],
 			err);
 
@@ -1330,4 +1330,28 @@ int vnic_dev_capable_geneve(struct vnic_dev *vdev)
 
 	ret = vnic_dev_cmd(vdev, CMD_GET_SUPP_FEATURE_VER, &a0, &a1, wait);
 	return ret == 0 && !!(a1 & FEATURE_GENEVE_OPTIONS);
+}
+
+uint64_t vnic_dev_capable_cq_entry_size(struct vnic_dev *vdev)
+{
+	uint64_t a0 = CMD_CQ_ENTRY_SIZE_SET;
+	uint64_t a1 = 0;
+	int wait = 1000;
+	int ret;
+
+	ret = vnic_dev_cmd(vdev, CMD_CAPABILITY, &a0, &a1, wait);
+	/* All models support 16B CQ entry by default */
+	if (!(ret == 0 && a0 == 0))
+		a1 = VNIC_RQ_CQ_ENTRY_SIZE_16_CAPABLE;
+	return a1;
+}
+
+int vnic_dev_set_cq_entry_size(struct vnic_dev *vdev, uint32_t rq_idx,
+			       uint32_t size_flag)
+{
+	uint64_t a0 = rq_idx;
+	uint64_t a1 = size_flag;
+	int wait = 1000;
+
+	return vnic_dev_cmd(vdev, CMD_CQ_ENTRY_SIZE_SET, &a0, &a1, wait);
 }

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -153,7 +153,7 @@ sfc_efx_tso_do(struct sfc_efx_txq *txq, unsigned int idx,
 	 * IPv4 flag. If the packet is still IPv4, HW will simply start from
 	 * zero IPID.
 	 */
-	if (m->ol_flags & PKT_TX_IPV4)
+	if (m->ol_flags & RTE_MBUF_F_TX_IPV4)
 		packet_id = sfc_tso_ip4_get_ipid(tsoh, nh_off);
 
 	/* Handle TCP header */

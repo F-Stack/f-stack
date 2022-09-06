@@ -6,6 +6,7 @@
 #define _I40E_ETHDEV_H_
 
 #include <stdint.h>
+#include <sys/queue.h>
 
 #include <rte_time.h>
 #include <rte_kvargs.h>
@@ -16,6 +17,8 @@
 #include "rte_pmd_i40e.h"
 
 #include "base/i40e_register.h"
+#include "base/i40e_type.h"
+#include "base/virtchnl.h"
 
 /**
  * _i=0...143,
@@ -23,8 +26,6 @@
  * counters 128-143 are for the 16 PFs
  */
 #define I40E_GL_RXERR1_H(_i)	(0x00318004 + ((_i) * 8))
-
-#define I40E_VLAN_TAG_SIZE        4
 
 #define I40E_AQ_LEN               32
 #define I40E_AQ_BUF_SZ            4096
@@ -144,17 +145,17 @@ enum i40e_flxpld_layer_idx {
 		       I40E_FLAG_RSS_AQ_CAPABLE)
 
 #define I40E_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_FRAG_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV4_SCTP | \
-	ETH_RSS_NONFRAG_IPV4_OTHER | \
-	ETH_RSS_FRAG_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_NONFRAG_IPV6_SCTP | \
-	ETH_RSS_NONFRAG_IPV6_OTHER | \
-	ETH_RSS_L2_PAYLOAD)
+	RTE_ETH_RSS_FRAG_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_SCTP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_OTHER | \
+	RTE_ETH_RSS_FRAG_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_SCTP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_OTHER | \
+	RTE_ETH_RSS_L2_PAYLOAD)
 
 /* All bits of RSS hash enable for X722*/
 #define I40E_RSS_HENA_ALL_X722 ( \
@@ -289,7 +290,7 @@ struct rte_flow {
  * Considering QinQ packet, the VLAN tag needs to be counted twice.
  */
 #define I40E_ETH_OVERHEAD \
-	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + I40E_VLAN_TAG_SIZE * 2)
+	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_VLAN_HLEN * 2)
 #define I40E_ETH_MAX_LEN (RTE_ETHER_MTU + I40E_ETH_OVERHEAD)
 
 #define I40E_RXTX_BYTES_H_16_BIT(bytes) ((bytes) & ~I40E_48_BIT_MASK)
@@ -968,27 +969,6 @@ struct i40e_tunnel_filter_conf {
 	uint16_t vf_id;         /**< VF id, available when is_to_vf is 1. */
 };
 
-#define I40E_MIRROR_MAX_ENTRIES_PER_RULE   64
-#define I40E_MAX_MIRROR_RULES           64
-/*
- * Mirror rule structure
- */
-struct i40e_mirror_rule {
-	TAILQ_ENTRY(i40e_mirror_rule) rules;
-	uint8_t rule_type;
-	uint16_t index;          /* the sw index of mirror rule */
-	uint16_t id;             /* the rule id assigned by firmware */
-	uint16_t dst_vsi_seid;   /* destination vsi for this mirror rule. */
-	uint16_t num_entries;
-	/* the info stores depend on the rule type.
-	    If type is I40E_MIRROR_TYPE_VLAN, vlan ids are stored here.
-	    If type is I40E_MIRROR_TYPE_VPORT_*, vsi's seid are stored.
-	 */
-	uint16_t entries[I40E_MIRROR_MAX_ENTRIES_PER_RULE];
-};
-
-TAILQ_HEAD(i40e_mirror_rule_list, i40e_mirror_rule);
-
 TAILQ_HEAD(i40e_flow_list, rte_flow);
 
 /* Struct to store Traffic Manager shaper profile. */
@@ -1076,22 +1056,40 @@ struct i40e_customized_pctype {
 };
 
 struct i40e_rte_flow_rss_conf {
-	struct rte_flow_action_rss conf; /**< RSS parameters. */
-	uint16_t queue_region_conf; /**< Queue region config flag */
+	struct rte_flow_action_rss conf;	/**< RSS parameters. */
+
 	uint8_t key[(I40E_VFQF_HKEY_MAX_INDEX > I40E_PFQF_HKEY_MAX_INDEX ?
 		     I40E_VFQF_HKEY_MAX_INDEX : I40E_PFQF_HKEY_MAX_INDEX + 1) *
-		    sizeof(uint32_t)]; /* Hash key. */
-	uint16_t queue[I40E_MAX_Q_PER_TC]; /**< Queues indices to use. */
-	bool valid; /* Check if it's valid */
-};
+		    sizeof(uint32_t)];		/**< Hash key. */
+	uint16_t queue[RTE_ETH_RSS_RETA_SIZE_512];	/**< Queues indices to use. */
 
-TAILQ_HEAD(i40e_rss_conf_list, i40e_rss_filter);
+	bool symmetric_enable;		/**< true, if enable symmetric */
+	uint64_t config_pctypes;	/**< All PCTYPES with the flow  */
+	uint64_t inset;			/**< input sets */
+
+	uint8_t region_priority;	/**< queue region priority */
+	uint8_t region_queue_num;	/**< region queue number */
+	uint16_t region_queue_start;	/**< region queue start */
+
+	uint32_t misc_reset_flags;
+#define I40E_HASH_FLOW_RESET_FLAG_FUNC		0x01UL
+#define I40E_HASH_FLOW_RESET_FLAG_KEY		0x02UL
+#define I40E_HASH_FLOW_RESET_FLAG_QUEUE		0x04UL
+#define I40E_HASH_FLOW_RESET_FLAG_REGION	0x08UL
+
+	/**< All PCTYPES that reset with the flow  */
+	uint64_t reset_config_pctypes;
+	/**< Symmetric function should reset on PCTYPES */
+	uint64_t reset_symmetric_pctypes;
+};
 
 /* RSS filter list structure */
 struct i40e_rss_filter {
 	TAILQ_ENTRY(i40e_rss_filter) next;
 	struct i40e_rte_flow_rss_conf rss_filter_info;
 };
+
+TAILQ_HEAD(i40e_rss_conf_list, i40e_rss_filter);
 
 struct i40e_vf_msg_cfg {
 	/* maximal VF message during a statistic period */
@@ -1150,6 +1148,8 @@ struct i40e_pf {
 	uint16_t fdir_qp_offset;
 
 	uint16_t hash_lut_size; /* The size of hash lookup table */
+	bool hash_filter_enabled;
+	uint64_t hash_enabled_queues;
 	/* input set bits for each pctype */
 	uint64_t hash_input_set[I40E_FILTER_PCTYPE_MAX];
 	/* store VXLAN UDP ports */
@@ -1164,12 +1164,9 @@ struct i40e_pf {
 	struct i40e_fdir_info fdir; /* flow director info */
 	struct i40e_ethertype_rule ethertype; /* Ethertype filter rule */
 	struct i40e_tunnel_rule tunnel; /* Tunnel filter rule */
-	struct i40e_rte_flow_rss_conf rss_info; /* RSS info */
 	struct i40e_rss_conf_list rss_config_list; /* RSS rule list */
 	struct i40e_queue_regions queue_region; /* queue region info */
 	struct i40e_fc_conf fc_conf; /* Flow control conf */
-	struct i40e_mirror_rule_list mirror_list;
-	uint16_t nb_mirror_rule;   /* The number of mirror rules */
 	bool floating_veb; /* The flag to use the floating VEB */
 	/* The floating enable flag for the specific VF */
 	bool floating_veb_list[I40E_MAX_VF];
@@ -1218,55 +1215,6 @@ struct i40e_vsi_vlan_pvid_info {
 	} config;
 };
 
-struct i40e_vf_rx_queues {
-	uint64_t rx_dma_addr;
-	uint32_t rx_ring_len;
-	uint32_t buff_size;
-};
-
-struct i40e_vf_tx_queues {
-	uint64_t tx_dma_addr;
-	uint32_t tx_ring_len;
-};
-
-/*
- * Structure to store private data specific for VF instance.
- */
-struct i40e_vf {
-	struct i40e_adapter *adapter; /* The adapter this VF associate to */
-	struct rte_eth_dev_data *dev_data; /* Pointer to the device data */
-	uint16_t num_queue_pairs;
-	uint16_t max_pkt_len; /* Maximum packet length */
-	bool promisc_unicast_enabled;
-	bool promisc_multicast_enabled;
-
-	rte_spinlock_t cmd_send_lock;
-	uint32_t version_major; /* Major version number */
-	uint32_t version_minor; /* Minor version number */
-	uint16_t promisc_flags; /* Promiscuous setting */
-	uint32_t vlan[I40E_VFTA_SIZE]; /* VLAN bit map */
-
-	/* Multicast addrs */
-	struct rte_ether_addr mc_addrs[I40E_NUM_MACADDR_MAX];
-	uint16_t mc_addrs_num;   /* Multicast mac addresses number */
-
-	/* Event from pf */
-	bool dev_closed;
-	bool link_up;
-	enum virtchnl_link_speed link_speed;
-	bool vf_reset;
-	volatile uint32_t pend_cmd; /* pending command not finished yet */
-	int32_t cmd_retval; /* return value of the cmd response from PF */
-	u16 pend_msg; /* flags indicates events from pf not handled yet */
-	uint8_t *aq_resp; /* buffer to store the adminq response from PF */
-
-	/* VSI info */
-	struct virtchnl_vf_resource *vf_res; /* All VSIs */
-	struct virtchnl_vsi_resource *vsi_res; /* LAN VSI */
-	struct i40e_vsi vsi;
-	uint64_t flags;
-};
-
 #define I40E_MAX_PKT_TYPE  256
 #define I40E_FLOW_TYPE_MAX 64
 
@@ -1277,11 +1225,8 @@ struct i40e_adapter {
 	/* Common for both PF and VF */
 	struct i40e_hw hw;
 
-	/* Specific for PF or VF */
-	union {
-		struct i40e_pf pf;
-		struct i40e_vf vf;
-	};
+	/* Specific for PF */
+	struct i40e_pf pf;
 
 	/* For vector PMD */
 	bool rx_bulk_alloc_allowed;
@@ -1301,11 +1246,14 @@ struct i40e_adapter {
 	uint64_t flow_types_mask;
 	uint64_t pctypes_mask;
 
-	/* For devargs */
-	uint8_t use_latest_vec;
-
 	/* For RSS reta table update */
 	uint8_t rss_reta_updated;
+#ifdef RTE_ARCH_X86
+	bool rx_use_avx2;
+	bool rx_use_avx512;
+	bool tx_use_avx2;
+	bool tx_use_avx512;
+#endif
 };
 
 /**
@@ -1392,8 +1340,8 @@ int i40e_select_filter_input_set(struct i40e_hw *hw,
 				 struct rte_eth_input_set_conf *conf,
 				 enum rte_filter_type filter);
 void i40e_fdir_filter_restore(struct i40e_pf *pf);
-int i40e_hash_filter_inset_select(struct i40e_hw *hw,
-			     struct rte_eth_input_set_conf *conf);
+int i40e_set_hash_inset(struct i40e_hw *hw, uint64_t input_set,
+			uint32_t pctype, bool add);
 int i40e_pf_host_send_msg_to_vf(struct i40e_pf_vf *vf, uint32_t opcode,
 				uint32_t retval, uint8_t *msg,
 				uint16_t msglen);
@@ -1447,8 +1395,8 @@ int i40e_add_macvlan_filters(struct i40e_vsi *vsi,
 			     int total);
 bool is_device_supported(struct rte_eth_dev *dev, struct rte_pci_driver *drv);
 bool is_i40e_supported(struct rte_eth_dev *dev);
-bool is_i40evf_supported(struct rte_eth_dev *dev);
-
+void i40e_set_symmetric_hash_enable_per_port(struct i40e_hw *hw,
+					     uint8_t enable);
 int i40e_validate_input_set(enum i40e_filter_pctype pctype,
 			    enum rte_filter_type filter, uint64_t inset);
 int i40e_generate_inset_mask_reg(struct i40e_hw *hw, uint64_t inset,
@@ -1471,12 +1419,13 @@ int i40e_flush_queue_region_all_conf(struct rte_eth_dev *dev,
 		struct i40e_hw *hw, struct i40e_pf *pf, uint16_t on);
 void i40e_init_queue_region_conf(struct rte_eth_dev *dev);
 void i40e_flex_payload_reg_set_default(struct i40e_hw *hw);
+void i40e_pf_disable_rss(struct i40e_pf *pf);
+int i40e_pf_calc_configured_queues_num(struct i40e_pf *pf);
+int i40e_pf_reset_rss_reta(struct i40e_pf *pf);
+int i40e_pf_reset_rss_key(struct i40e_pf *pf);
+int i40e_pf_config_rss(struct i40e_pf *pf);
 int i40e_set_rss_key(struct i40e_vsi *vsi, uint8_t *key, uint8_t key_len);
 int i40e_set_rss_lut(struct i40e_vsi *vsi, uint8_t *lut, uint16_t lut_size);
-int i40e_rss_conf_init(struct i40e_rte_flow_rss_conf *out,
-		       const struct rte_flow_action_rss *in);
-int i40e_config_rss_filter(struct i40e_pf *pf,
-		struct i40e_rte_flow_rss_conf *conf, bool add);
 int i40e_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params);
 int i40e_vf_representor_uninit(struct rte_eth_dev *ethdev);
 
@@ -1491,26 +1440,15 @@ int i40e_vf_representor_uninit(struct rte_eth_dev *ethdev);
 #define I40E_DEV_PRIVATE_TO_ADAPTER(adapter) \
 	((struct i40e_adapter *)adapter)
 
-/* I40EVF_DEV_PRIVATE_TO */
-#define I40EVF_DEV_PRIVATE_TO_VF(adapter) \
-	(&((struct i40e_adapter *)adapter)->vf)
-
 static inline struct i40e_vsi *
 i40e_get_vsi_from_adapter(struct i40e_adapter *adapter)
 {
-	struct i40e_hw *hw;
-
         if (!adapter)
                 return NULL;
 
-	hw = I40E_DEV_PRIVATE_TO_HW(adapter);
-	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
-		struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(adapter);
-		return &vf->vsi;
-	} else {
-		struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(adapter);
-		return pf->main_vsi;
-	}
+	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(adapter);
+
+	return pf->main_vsi;
 }
 #define I40E_DEV_PRIVATE_TO_MAIN_VSI(adapter) \
 	i40e_get_vsi_from_adapter((struct i40e_adapter *)adapter)
@@ -1532,10 +1470,6 @@ i40e_get_vsi_from_adapter(struct i40e_adapter *adapter)
 	(&(((struct i40e_pf *)pf)->adapter->hw))
 #define I40E_PF_TO_ADAPTER(pf) \
 	((struct i40e_adapter *)pf->adapter)
-
-/* I40E_VF_TO */
-#define I40E_VF_TO_HW(vf) \
-	(&(((struct i40e_vf *)vf)->adapter->hw))
 
 static inline void
 i40e_init_adminq_parameter(struct i40e_hw *hw)

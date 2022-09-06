@@ -16,11 +16,10 @@
 #define IPSEC_ANTI_REPLAY_FAILED	(-1)
 
 static inline int
-anti_replay_check(uint64_t seq, struct otx2_ipsec_fp_in_sa *sa)
+anti_replay_check(struct otx2_ipsec_replay *replay, uint64_t seq,
+			uint64_t winsz)
 {
-	struct otx2_ipsec_replay *replay = sa->replay;
 	uint64_t *window = &replay->window[0];
-	uint64_t winsz = sa->replay_win_sz;
 	uint64_t ex_winsz = winsz + WORD_SIZE;
 	uint64_t winwords = ex_winsz >> WORD_SHIFT;
 	uint64_t base = replay->base;
@@ -166,9 +165,10 @@ winupdate:
 	return 0;
 }
 
-static int
-cpt_ipsec_antireplay_check(struct otx2_ipsec_fp_in_sa *sa, char *data)
+static inline int
+cpt_ipsec_ip_antireplay_check(struct otx2_ipsec_fp_in_sa *sa, void *l3_ptr)
 {
+	struct otx2_ipsec_fp_res_hdr *hdr = l3_ptr;
 	uint64_t seq_in_sa;
 	uint32_t seqh = 0;
 	uint32_t seql;
@@ -177,14 +177,12 @@ cpt_ipsec_antireplay_check(struct otx2_ipsec_fp_in_sa *sa, char *data)
 	int ret;
 
 	esn = sa->ctl.esn_en;
-	seql = rte_be_to_cpu_32(*((uint32_t *)(data +
-			OTX2_IPSEC_SEQNO_LO_INDEX)));
+	seql = rte_be_to_cpu_32(hdr->seq_no_lo);
 
 	if (!esn)
 		seq = (uint64_t)seql;
 	else {
-		seqh = rte_be_to_cpu_32(*((uint32_t *)(data +
-				OTX2_IPSEC_SEQNO_HI_INDEX)));
+		seqh = rte_be_to_cpu_32(hdr->seq_no_hi);
 		seq = ((uint64_t)seqh << 32) | seql;
 	}
 
@@ -192,7 +190,7 @@ cpt_ipsec_antireplay_check(struct otx2_ipsec_fp_in_sa *sa, char *data)
 		return IPSEC_ANTI_REPLAY_FAILED;
 
 	rte_spinlock_lock(&sa->replay->lock);
-	ret = anti_replay_check(seq, sa);
+	ret = anti_replay_check(sa->replay, seq, sa->replay_win_sz);
 	if (esn && (ret == 0)) {
 		seq_in_sa = ((uint64_t)rte_be_to_cpu_32(sa->esn_hi) << 32) |
 				rte_be_to_cpu_32(sa->esn_low);
@@ -204,5 +202,26 @@ cpt_ipsec_antireplay_check(struct otx2_ipsec_fp_in_sa *sa, char *data)
 	rte_spinlock_unlock(&sa->replay->lock);
 
 	return ret;
+}
+
+static inline uint32_t
+anti_replay_get_seqh(uint32_t winsz, uint32_t seql,
+			uint32_t esn_hi, uint32_t esn_low)
+{
+	uint32_t win_low = esn_low - winsz + 1;
+
+	if (esn_low > winsz - 1) {
+		/* Window is in one sequence number subspace */
+		if (seql > win_low)
+			return esn_hi;
+		else
+			return esn_hi + 1;
+	} else {
+		/* Window is split across two sequence number subspaces */
+		if (seql > win_low)
+			return esn_hi - 1;
+		else
+			return esn_hi;
+	}
 }
 #endif /* __OTX2_IPSEC_ANTI_REPLAY_H__ */

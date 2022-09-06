@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2018-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -10,6 +10,7 @@
 #include <stdbool.h>
 
 #include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 #include <rte_io.h>
 #include <rte_net.h>
 
@@ -23,6 +24,7 @@
 #include "sfc_tweak.h"
 #include "sfc_kvargs.h"
 #include "sfc_ef100.h"
+#include "sfc_nic_dma_dp.h"
 
 
 #define sfc_ef100_tx_err(_txq, ...) \
@@ -62,6 +64,7 @@ struct sfc_ef100_txq {
 #define SFC_EF100_TXQ_STARTED		0x1
 #define SFC_EF100_TXQ_NOT_RUNNING	0x2
 #define SFC_EF100_TXQ_EXCEPTION		0x4
+#define SFC_EF100_TXQ_NIC_DMA_MAP	0x8
 
 	unsigned int			ptr_mask;
 	unsigned int			added;
@@ -86,6 +89,8 @@ struct sfc_ef100_txq {
 
 	/* Datapath transmit queue anchor */
 	struct sfc_dp_txq		dp;
+
+	const struct sfc_nic_dma_info	*nic_dma_info;
 };
 
 static inline struct sfc_ef100_txq *
@@ -98,7 +103,7 @@ static int
 sfc_ef100_tx_prepare_pkt_tso(struct sfc_ef100_txq * const txq,
 			     struct rte_mbuf *m)
 {
-	size_t header_len = ((m->ol_flags & PKT_TX_TUNNEL_MASK) ?
+	size_t header_len = ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
 			     m->outer_l2_len + m->outer_l3_len : 0) +
 			    m->l2_len + m->l3_len + m->l4_len;
 	size_t payload_len = m->pkt_len - header_len;
@@ -106,12 +111,12 @@ sfc_ef100_tx_prepare_pkt_tso(struct sfc_ef100_txq * const txq,
 	unsigned int nb_payload_descs;
 
 #ifdef RTE_LIBRTE_SFC_EFX_DEBUG
-	switch (m->ol_flags & PKT_TX_TUNNEL_MASK) {
+	switch (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 	case 0:
 		/* FALLTHROUGH */
-	case PKT_TX_TUNNEL_VXLAN:
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
 		/* FALLTHROUGH */
-	case PKT_TX_TUNNEL_GENEVE:
+	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
 		break;
 	default:
 		return ENOTSUP;
@@ -164,11 +169,11 @@ sfc_ef100_tx_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		 * pseudo-header checksum which is calculated below,
 		 * but requires contiguous packet headers.
 		 */
-		if ((m->ol_flags & PKT_TX_TUNNEL_MASK) &&
-		    (m->ol_flags & PKT_TX_L4_MASK)) {
+		if ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) &&
+		    (m->ol_flags & RTE_MBUF_F_TX_L4_MASK)) {
 			calc_phdr_cksum = true;
 			max_nb_header_segs = 1;
-		} else if (m->ol_flags & PKT_TX_TCP_SEG) {
+		} else if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			max_nb_header_segs = txq->tso_max_nb_header_descs;
 		}
 
@@ -180,7 +185,7 @@ sfc_ef100_tx_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			break;
 		}
 
-		if (m->ol_flags & PKT_TX_TCP_SEG) {
+		if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			ret = sfc_ef100_tx_prepare_pkt_tso(txq, m);
 			if (unlikely(ret != 0)) {
 				rte_errno = ret;
@@ -197,7 +202,7 @@ sfc_ef100_tx_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * and does not require any assistance.
 			 */
 			ret = rte_net_intel_cksum_flags_prepare(m,
-					m->ol_flags & ~PKT_TX_IP_CKSUM);
+					m->ol_flags & ~RTE_MBUF_F_TX_IP_CKSUM);
 			if (unlikely(ret != 0)) {
 				rte_errno = -ret;
 				break;
@@ -309,16 +314,29 @@ sfc_ef100_tx_reap(struct sfc_ef100_txq *txq)
 	sfc_ef100_tx_reap_num_descs(txq, sfc_ef100_tx_process_events(txq));
 }
 
+static void
+sfc_ef100_tx_qdesc_prefix_create(const struct rte_mbuf *m, efx_oword_t *tx_desc)
+{
+	efx_mport_id_t *mport_id =
+		RTE_MBUF_DYNFIELD(m, sfc_dp_mport_offset, efx_mport_id_t *);
+
+	EFX_POPULATE_OWORD_3(*tx_desc,
+			ESF_GZ_TX_PREFIX_EGRESS_MPORT,
+			mport_id->id,
+			ESF_GZ_TX_PREFIX_EGRESS_MPORT_EN, 1,
+			ESF_GZ_TX_DESC_TYPE, ESE_GZ_TX_DESC_TYPE_PREFIX);
+}
+
 static uint8_t
 sfc_ef100_tx_qdesc_cso_inner_l3(uint64_t tx_tunnel)
 {
 	uint8_t inner_l3;
 
 	switch (tx_tunnel) {
-	case PKT_TX_TUNNEL_VXLAN:
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
 		inner_l3 = ESE_GZ_TX_DESC_CS_INNER_L3_VXLAN;
 		break;
-	case PKT_TX_TUNNEL_GENEVE:
+	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
 		inner_l3 = ESE_GZ_TX_DESC_CS_INNER_L3_GENEVE;
 		break;
 	default:
@@ -328,8 +346,23 @@ sfc_ef100_tx_qdesc_cso_inner_l3(uint64_t tx_tunnel)
 	return inner_l3;
 }
 
-static void
-sfc_ef100_tx_qdesc_send_create(const struct rte_mbuf *m, efx_oword_t *tx_desc)
+static int
+sfc_ef100_tx_map(const struct sfc_ef100_txq *txq, rte_iova_t iova, size_t len,
+		 rte_iova_t *dma_addr)
+{
+	if ((txq->flags & SFC_EF100_TXQ_NIC_DMA_MAP) == 0) {
+		*dma_addr = iova;
+	} else {
+		*dma_addr = sfc_nic_dma_map(txq->nic_dma_info, iova, len);
+		if (unlikely(*dma_addr == RTE_BAD_IOVA))
+			sfc_ef100_tx_err(txq, "failed to map DMA address on Tx");
+	}
+	return 0;
+}
+
+static int
+sfc_ef100_tx_qdesc_send_create(const struct sfc_ef100_txq *txq,
+			       const struct rte_mbuf *m, efx_oword_t *tx_desc)
 {
 	bool outer_l3;
 	bool outer_l4;
@@ -337,26 +370,28 @@ sfc_ef100_tx_qdesc_send_create(const struct rte_mbuf *m, efx_oword_t *tx_desc)
 	uint8_t partial_en;
 	uint16_t part_cksum_w;
 	uint16_t l4_offset_w;
+	rte_iova_t dma_addr;
+	int rc;
 
-	if ((m->ol_flags & PKT_TX_TUNNEL_MASK) == 0) {
-		outer_l3 = (m->ol_flags & PKT_TX_IP_CKSUM);
-		outer_l4 = (m->ol_flags & PKT_TX_L4_MASK);
+	if ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) == 0) {
+		outer_l3 = (m->ol_flags & RTE_MBUF_F_TX_IP_CKSUM);
+		outer_l4 = (m->ol_flags & RTE_MBUF_F_TX_L4_MASK);
 		inner_l3 = ESE_GZ_TX_DESC_CS_INNER_L3_OFF;
 		partial_en = ESE_GZ_TX_DESC_CSO_PARTIAL_EN_OFF;
 		part_cksum_w = 0;
 		l4_offset_w = 0;
 	} else {
-		outer_l3 = (m->ol_flags & PKT_TX_OUTER_IP_CKSUM);
-		outer_l4 = (m->ol_flags & PKT_TX_OUTER_UDP_CKSUM);
+		outer_l3 = (m->ol_flags & RTE_MBUF_F_TX_OUTER_IP_CKSUM);
+		outer_l4 = (m->ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM);
 		inner_l3 = sfc_ef100_tx_qdesc_cso_inner_l3(m->ol_flags &
-							   PKT_TX_TUNNEL_MASK);
+							   RTE_MBUF_F_TX_TUNNEL_MASK);
 
-		switch (m->ol_flags & PKT_TX_L4_MASK) {
-		case PKT_TX_TCP_CKSUM:
+		switch (m->ol_flags & RTE_MBUF_F_TX_L4_MASK) {
+		case RTE_MBUF_F_TX_TCP_CKSUM:
 			partial_en = ESE_GZ_TX_DESC_CSO_PARTIAL_EN_TCP;
 			part_cksum_w = offsetof(struct rte_tcp_hdr, cksum) >> 1;
 			break;
-		case PKT_TX_UDP_CKSUM:
+		case RTE_MBUF_F_TX_UDP_CKSUM:
 			partial_en = ESE_GZ_TX_DESC_CSO_PARTIAL_EN_UDP;
 			part_cksum_w = offsetof(struct rte_udp_hdr,
 						dgram_cksum) >> 1;
@@ -370,8 +405,13 @@ sfc_ef100_tx_qdesc_send_create(const struct rte_mbuf *m, efx_oword_t *tx_desc)
 				m->l2_len + m->l3_len) >> 1;
 	}
 
+	rc = sfc_ef100_tx_map(txq, rte_mbuf_data_iova_default(m),
+			      rte_pktmbuf_data_len(m), &dma_addr);
+	if (unlikely(rc != 0))
+		return rc;
+
 	EFX_POPULATE_OWORD_10(*tx_desc,
-			ESF_GZ_TX_SEND_ADDR, rte_mbuf_data_iova(m),
+			ESF_GZ_TX_SEND_ADDR, dma_addr,
 			ESF_GZ_TX_SEND_LEN, rte_pktmbuf_data_len(m),
 			ESF_GZ_TX_SEND_NUM_SEGS, m->nb_segs,
 			ESF_GZ_TX_SEND_CSO_PARTIAL_START_W, l4_offset_w,
@@ -382,7 +422,7 @@ sfc_ef100_tx_qdesc_send_create(const struct rte_mbuf *m, efx_oword_t *tx_desc)
 			ESF_GZ_TX_SEND_CSO_OUTER_L4, outer_l4,
 			ESF_GZ_TX_DESC_TYPE, ESE_GZ_TX_DESC_TYPE_SEND);
 
-	if (m->ol_flags & PKT_TX_VLAN_PKT) {
+	if (m->ol_flags & RTE_MBUF_F_TX_VLAN) {
 		efx_oword_t tx_desc_extra_fields;
 
 		EFX_POPULATE_OWORD_2(tx_desc_extra_fields,
@@ -391,6 +431,8 @@ sfc_ef100_tx_qdesc_send_create(const struct rte_mbuf *m, efx_oword_t *tx_desc)
 
 		EFX_OR_OWORD(*tx_desc, tx_desc_extra_fields);
 	}
+
+	return 0;
 }
 
 static void
@@ -423,7 +465,7 @@ sfc_ef100_tx_qdesc_tso_create(const struct rte_mbuf *m,
 	 */
 	int ed_inner_ip_id = ESE_GZ_TX_DESC_IP4_ID_INC_MOD16;
 	uint8_t inner_l3 = sfc_ef100_tx_qdesc_cso_inner_l3(
-					m->ol_flags & PKT_TX_TUNNEL_MASK);
+					m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK);
 
 	EFX_POPULATE_OWORD_10(*tx_desc,
 			ESF_GZ_TX_TSO_MSS, m->tso_segsz,
@@ -464,7 +506,7 @@ sfc_ef100_tx_qdesc_tso_create(const struct rte_mbuf *m,
 
 	EFX_OR_OWORD(*tx_desc, tx_desc_extra_fields);
 
-	if (m->ol_flags & PKT_TX_VLAN_PKT) {
+	if (m->ol_flags & RTE_MBUF_F_TX_VLAN) {
 		EFX_POPULATE_OWORD_2(tx_desc_extra_fields,
 				ESF_GZ_TX_TSO_VLAN_INSERT_EN, 1,
 				ESF_GZ_TX_TSO_VLAN_INSERT_TCI, m->vlan_tci);
@@ -489,6 +531,7 @@ sfc_ef100_tx_qpush(struct sfc_ef100_txq *txq, unsigned int added)
 	 * operations that follow it (i.e. doorbell write).
 	 */
 	rte_write32(dword.ed_u32[0], txq->doorbell);
+	txq->dp.dpq.dbells++;
 
 	sfc_ef100_tx_debug(txq, "TxQ pushed doorbell at pidx %u (added=%u)",
 			   EFX_DWORD_FIELD(dword, ERF_GZ_TX_RING_PIDX),
@@ -504,7 +547,7 @@ sfc_ef100_tx_pkt_descs_max(const struct rte_mbuf *m)
 #define SFC_MBUF_SEG_LEN_MAX		UINT16_MAX
 	RTE_BUILD_BUG_ON(sizeof(m->data_len) != 2);
 
-	if (m->ol_flags & PKT_TX_TCP_SEG) {
+	if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 		/* Tx TSO descriptor */
 		extra_descs++;
 		/*
@@ -524,6 +567,11 @@ sfc_ef100_tx_pkt_descs_max(const struct rte_mbuf *m)
 				 SFC_MBUF_SEG_LEN_MAX));
 	}
 
+	if (m->ol_flags & sfc_dp_mport_override) {
+		/* Tx override prefix descriptor will be used */
+		extra_descs++;
+	}
+
 	/*
 	 * Any segment of scattered packet cannot be bigger than maximum
 	 * segment length. Make sure that subsequent segments do not need
@@ -534,11 +582,11 @@ sfc_ef100_tx_pkt_descs_max(const struct rte_mbuf *m)
 	return m->nb_segs + extra_descs;
 }
 
-static struct rte_mbuf *
+static int
 sfc_ef100_xmit_tso_pkt(struct sfc_ef100_txq * const txq,
-		       struct rte_mbuf *m, unsigned int *added)
+		       struct rte_mbuf **m, unsigned int *added)
 {
-	struct rte_mbuf *m_seg = m;
+	struct rte_mbuf *m_seg = *m;
 	unsigned int nb_hdr_descs;
 	unsigned int nb_pld_descs;
 	unsigned int seg_split = 0;
@@ -550,17 +598,19 @@ sfc_ef100_xmit_tso_pkt(struct sfc_ef100_txq * const txq,
 	size_t tcph_off;
 	size_t header_len;
 	size_t remaining_hdr_len;
+	rte_iova_t dma_addr;
+	int rc;
 
-	if (m->ol_flags & PKT_TX_TUNNEL_MASK) {
-		outer_iph_off = m->outer_l2_len;
-		outer_udph_off = outer_iph_off + m->outer_l3_len;
+	if (m_seg->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+		outer_iph_off = m_seg->outer_l2_len;
+		outer_udph_off = outer_iph_off + m_seg->outer_l3_len;
 	} else {
 		outer_iph_off = 0;
 		outer_udph_off = 0;
 	}
-	iph_off = outer_udph_off + m->l2_len;
-	tcph_off = iph_off + m->l3_len;
-	header_len = tcph_off + m->l4_len;
+	iph_off = outer_udph_off + m_seg->l2_len;
+	tcph_off = iph_off + m_seg->l3_len;
+	header_len = tcph_off + m_seg->l4_len;
 
 	/*
 	 * Remember ID of the TX_TSO descriptor to be filled in.
@@ -572,11 +622,15 @@ sfc_ef100_xmit_tso_pkt(struct sfc_ef100_txq * const txq,
 
 	remaining_hdr_len = header_len;
 	do {
+		rc = sfc_ef100_tx_map(txq, rte_mbuf_data_iova(m_seg),
+				      rte_pktmbuf_data_len(m_seg), &dma_addr);
+		if (unlikely(rc != 0))
+			return rc;
+
 		id = (*added)++ & txq->ptr_mask;
 		if (rte_pktmbuf_data_len(m_seg) <= remaining_hdr_len) {
 			/* The segment is fully header segment */
-			sfc_ef100_tx_qdesc_seg_create(
-				rte_mbuf_data_iova(m_seg),
+			sfc_ef100_tx_qdesc_seg_create(dma_addr,
 				rte_pktmbuf_data_len(m_seg),
 				&txq->txq_hw_ring[id]);
 			remaining_hdr_len -= rte_pktmbuf_data_len(m_seg);
@@ -585,15 +639,13 @@ sfc_ef100_xmit_tso_pkt(struct sfc_ef100_txq * const txq,
 			 * The segment must be split into header and
 			 * payload segments
 			 */
-			sfc_ef100_tx_qdesc_seg_create(
-				rte_mbuf_data_iova(m_seg),
-				remaining_hdr_len,
-				&txq->txq_hw_ring[id]);
-			SFC_ASSERT(txq->sw_ring[id].mbuf == NULL);
+			sfc_ef100_tx_qdesc_seg_create(dma_addr,
+				remaining_hdr_len, &txq->txq_hw_ring[id]);
+			txq->sw_ring[id].mbuf = NULL;
 
 			id = (*added)++ & txq->ptr_mask;
 			sfc_ef100_tx_qdesc_seg_create(
-				rte_mbuf_data_iova(m_seg) + remaining_hdr_len,
+				dma_addr + remaining_hdr_len,
 				rte_pktmbuf_data_len(m_seg) - remaining_hdr_len,
 				&txq->txq_hw_ring[id]);
 			remaining_hdr_len = 0;
@@ -608,15 +660,16 @@ sfc_ef100_xmit_tso_pkt(struct sfc_ef100_txq * const txq,
 	 * pointer counts it twice and we should correct it.
 	 */
 	nb_hdr_descs = ((id - tso_desc_id) & txq->ptr_mask) - seg_split;
-	nb_pld_descs = m->nb_segs - nb_hdr_descs + seg_split;
+	nb_pld_descs = (*m)->nb_segs - nb_hdr_descs + seg_split;
 
-	sfc_ef100_tx_qdesc_tso_create(m, nb_hdr_descs, nb_pld_descs, header_len,
-				      rte_pktmbuf_pkt_len(m) - header_len,
+	sfc_ef100_tx_qdesc_tso_create(*m, nb_hdr_descs, nb_pld_descs, header_len,
+				      rte_pktmbuf_pkt_len(*m) - header_len,
 				      outer_iph_off, outer_udph_off,
 				      iph_off, tcph_off,
 				      &txq->txq_hw_ring[tso_desc_id]);
 
-	return m_seg;
+	*m = m_seg;
+	return 0;
 }
 
 static uint16_t
@@ -628,6 +681,8 @@ sfc_ef100_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	bool reap_done;
 	struct rte_mbuf **pktp;
 	struct rte_mbuf **pktp_end;
+	rte_iova_t dma_addr;
+	int rc;
 
 	if (unlikely(txq->flags &
 		     (SFC_EF100_TXQ_NOT_RUNNING | SFC_EF100_TXQ_EXCEPTION)))
@@ -670,12 +725,19 @@ sfc_ef100_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				break;
 		}
 
-		if (m_seg->ol_flags & PKT_TX_TCP_SEG) {
-			m_seg = sfc_ef100_xmit_tso_pkt(txq, m_seg, &added);
+		if (m_seg->ol_flags & sfc_dp_mport_override) {
+			id = added++ & txq->ptr_mask;
+			sfc_ef100_tx_qdesc_prefix_create(m_seg,
+							 &txq->txq_hw_ring[id]);
+			txq->sw_ring[id].mbuf = NULL;
+		}
+
+		if (m_seg->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+			rc = sfc_ef100_xmit_tso_pkt(txq, &m_seg, &added);
 		} else {
 			id = added++ & txq->ptr_mask;
-			sfc_ef100_tx_qdesc_send_create(m_seg,
-						       &txq->txq_hw_ring[id]);
+			rc = sfc_ef100_tx_qdesc_send_create(txq, m_seg,
+							&txq->txq_hw_ring[id]);
 
 			/*
 			 * rte_pktmbuf_free() is commonly used in DPDK for
@@ -696,19 +758,29 @@ sfc_ef100_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			m_seg = m_seg->next;
 		}
 
-		while (m_seg != NULL) {
+		while (likely(rc == 0) && m_seg != NULL) {
 			RTE_BUILD_BUG_ON(SFC_MBUF_SEG_LEN_MAX >
 					 SFC_EF100_TX_SEG_DESC_LEN_MAX);
 
 			id = added++ & txq->ptr_mask;
-			sfc_ef100_tx_qdesc_seg_create(rte_mbuf_data_iova(m_seg),
+			rc = sfc_ef100_tx_map(txq, rte_mbuf_data_iova(m_seg),
+					      rte_pktmbuf_data_len(m_seg),
+					      &dma_addr);
+			sfc_ef100_tx_qdesc_seg_create(dma_addr,
 					rte_pktmbuf_data_len(m_seg),
 					&txq->txq_hw_ring[id]);
 			txq->sw_ring[id].mbuf = m_seg;
 			m_seg = m_seg->next;
 		}
 
-		dma_desc_space -= (added - pkt_start);
+		if (likely(rc == 0)) {
+			dma_desc_space -= (added - pkt_start);
+
+			sfc_pkts_bytes_add(&txq->dp.dpq.stats, 1,
+					   rte_pktmbuf_pkt_len(*pktp));
+		} else {
+			added = pkt_start;
+		}
 	}
 
 	if (likely(added != txq->added)) {
@@ -807,6 +879,10 @@ sfc_ef100_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	txq->tso_max_nb_payload_descs = info->tso_max_nb_payload_descs;
 	txq->tso_max_payload_len = info->tso_max_payload_len;
 	txq->tso_max_nb_outgoing_frames = info->tso_max_nb_outgoing_frames;
+
+	txq->nic_dma_info = info->nic_dma_info;
+	if (txq->nic_dma_info->nb_regions > 0)
+		txq->flags |= SFC_EF100_TXQ_NIC_DMA_MAP;
 
 	sfc_ef100_tx_debug(txq, "TxQ doorbell is %p", txq->doorbell);
 
@@ -939,18 +1015,19 @@ struct sfc_dp_tx sfc_ef100_tx = {
 		.type		= SFC_DP_TX,
 		.hw_fw_caps	= SFC_DP_HW_FW_CAP_EF100,
 	},
-	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS |
+				  SFC_DP_TX_FEAT_STATS,
 	.dev_offload_capa	= 0,
-	.queue_offload_capa	= DEV_TX_OFFLOAD_VLAN_INSERT |
-				  DEV_TX_OFFLOAD_IPV4_CKSUM |
-				  DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-				  DEV_TX_OFFLOAD_OUTER_UDP_CKSUM |
-				  DEV_TX_OFFLOAD_UDP_CKSUM |
-				  DEV_TX_OFFLOAD_TCP_CKSUM |
-				  DEV_TX_OFFLOAD_MULTI_SEGS |
-				  DEV_TX_OFFLOAD_TCP_TSO |
-				  DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-				  DEV_TX_OFFLOAD_GENEVE_TNL_TSO,
+	.queue_offload_capa	= RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
+				  RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
+				  RTE_ETH_TX_OFFLOAD_TCP_TSO |
+				  RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+				  RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO,
 	.get_dev_info		= sfc_ef100_get_dev_info,
 	.qsize_up_rings		= sfc_ef100_tx_qsize_up_rings,
 	.qcreate		= sfc_ef100_tx_qcreate,

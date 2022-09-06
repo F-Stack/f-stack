@@ -20,7 +20,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -60,20 +59,20 @@ static uint16_t ports[RTE_MAX_ETHPORTS];
 static unsigned num_ports;
 
 /* number of pools (if user does not specify any, 32 by default */
-static enum rte_eth_nb_pools num_pools = ETH_32_POOLS;
-static enum rte_eth_nb_tcs   num_tcs   = ETH_4_TCS;
+static enum rte_eth_nb_pools num_pools = RTE_ETH_32_POOLS;
+static enum rte_eth_nb_tcs   num_tcs   = RTE_ETH_4_TCS;
 static uint16_t num_queues, num_vmdq_queues;
 static uint16_t vmdq_pool_base, vmdq_queue_base;
 static uint8_t rss_enable;
 
-/* empty vmdq+dcb configuration structure. Filled in programatically */
+/* Empty vmdq+dcb configuration structure. Filled in programmatically. 8< */
 static const struct rte_eth_conf vmdq_dcb_conf_default = {
 	.rxmode = {
-		.mq_mode        = ETH_MQ_RX_VMDQ_DCB,
+		.mq_mode        = RTE_ETH_MQ_RX_VMDQ_DCB,
 		.split_hdr_size = 0,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_VMDQ_DCB,
+		.mq_mode = RTE_ETH_MQ_TX_VMDQ_DCB,
 	},
 	/*
 	 * should be overridden separately in code with
@@ -81,7 +80,7 @@ static const struct rte_eth_conf vmdq_dcb_conf_default = {
 	 */
 	.rx_adv_conf = {
 		.vmdq_dcb_conf = {
-			.nb_queue_pools = ETH_32_POOLS,
+			.nb_queue_pools = RTE_ETH_32_POOLS,
 			.enable_default_pool = 0,
 			.default_pool = 0,
 			.nb_pool_maps = 0,
@@ -89,12 +88,12 @@ static const struct rte_eth_conf vmdq_dcb_conf_default = {
 			.dcb_tc = {0},
 		},
 		.dcb_rx_conf = {
-				.nb_tcs = ETH_4_TCS,
+				.nb_tcs = RTE_ETH_4_TCS,
 				/** Traffic class each UP mapped to. */
 				.dcb_tc = {0},
 		},
 		.vmdq_rx_conf = {
-			.nb_queue_pools = ETH_32_POOLS,
+			.nb_queue_pools = RTE_ETH_32_POOLS,
 			.enable_default_pool = 0,
 			.default_pool = 0,
 			.nb_pool_maps = 0,
@@ -103,15 +102,17 @@ static const struct rte_eth_conf vmdq_dcb_conf_default = {
 	},
 	.tx_adv_conf = {
 		.vmdq_dcb_tx_conf = {
-			.nb_queue_pools = ETH_32_POOLS,
+			.nb_queue_pools = RTE_ETH_32_POOLS,
 			.dcb_tc = {0},
 		},
 	},
 };
+/* >8 End of empty vmdq+dcb configuration structure. */
 
 /* array used for printing out statistics */
 volatile unsigned long rxPackets[MAX_QUEUES] = {0};
 
+/* Dividing up the possible user priority values. 8< */
 const uint16_t vlan_tags[] = {
 	0,  1,  2,  3,  4,  5,  6,  7,
 	8,  9, 10, 11,	12, 13, 14, 15,
@@ -155,7 +156,7 @@ get_eth_conf(struct rte_eth_conf *eth_conf)
 		conf.pool_map[i].pools = 1UL << i;
 		vmdq_conf.pool_map[i].pools = 1UL << i;
 	}
-	for (i = 0; i < ETH_DCB_NUM_USER_PRIORITIES; i++){
+	for (i = 0; i < RTE_ETH_DCB_NUM_USER_PRIORITIES; i++) {
 		conf.dcb_tc[i] = i % num_tcs;
 		dcb_conf.dcb_tc[i] = i % num_tcs;
 		tx_conf.dcb_tc[i] = i % num_tcs;
@@ -171,14 +172,15 @@ get_eth_conf(struct rte_eth_conf *eth_conf)
 	(void)(rte_memcpy(&eth_conf->tx_adv_conf.vmdq_dcb_tx_conf, &tx_conf,
 			  sizeof(tx_conf)));
 	if (rss_enable) {
-		eth_conf->rxmode.mq_mode = ETH_MQ_RX_VMDQ_DCB_RSS;
-		eth_conf->rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
-							ETH_RSS_UDP |
-							ETH_RSS_TCP |
-							ETH_RSS_SCTP;
+		eth_conf->rxmode.mq_mode = RTE_ETH_MQ_RX_VMDQ_DCB_RSS;
+		eth_conf->rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_IP |
+							RTE_ETH_RSS_UDP |
+							RTE_ETH_RSS_TCP |
+							RTE_ETH_RSS_SCTP;
 	}
 	return 0;
 }
+/* >8 End of dividing up the possible user priority values. */
 
 /*
  * Initialises a given port using global settings and with the rx buffers
@@ -268,9 +270,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	rss_hf_tmp = port_conf.rx_adv_conf.rss_conf.rss_hf;
 	port_conf.rx_adv_conf.rss_conf.rss_hf &=
@@ -342,25 +344,17 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
 			(unsigned)port,
-			vmdq_ports_eth_addr[port].addr_bytes[0],
-			vmdq_ports_eth_addr[port].addr_bytes[1],
-			vmdq_ports_eth_addr[port].addr_bytes[2],
-			vmdq_ports_eth_addr[port].addr_bytes[3],
-			vmdq_ports_eth_addr[port].addr_bytes[4],
-			vmdq_ports_eth_addr[port].addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(&vmdq_ports_eth_addr[port]));
 
-	/* Set mac for each pool.*/
+	/* Set mac for each pool. 8< */
 	for (q = 0; q < num_pools; q++) {
 		struct rte_ether_addr mac;
 
 		mac = pool_addr_template;
 		mac.addr_bytes[4] = port;
 		mac.addr_bytes[5] = q;
-		printf("Port %u vmdq pool %u set mac %02x:%02x:%02x:%02x:%02x:%02x\n",
-			port, q,
-			mac.addr_bytes[0], mac.addr_bytes[1],
-			mac.addr_bytes[2], mac.addr_bytes[3],
-			mac.addr_bytes[4], mac.addr_bytes[5]);
+		printf("Port %u vmdq pool %u set mac " RTE_ETHER_ADDR_PRT_FMT "\n",
+			port, q, RTE_ETHER_ADDR_BYTES(&mac));
 		retval = rte_eth_dev_mac_addr_add(port, &mac,
 				q + vmdq_pool_base);
 		if (retval) {
@@ -368,6 +362,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 		}
 	}
+	/* >8 End of set mac for each pool. */
 
 	return 0;
 }
@@ -386,9 +381,9 @@ vmdq_parse_num_pools(const char *q_arg)
 	if (n != 16 && n != 32)
 		return -1;
 	if (n == 16)
-		num_pools = ETH_16_POOLS;
+		num_pools = RTE_ETH_16_POOLS;
 	else
-		num_pools = ETH_32_POOLS;
+		num_pools = RTE_ETH_32_POOLS;
 
 	return 0;
 }
@@ -408,9 +403,9 @@ vmdq_parse_num_tcs(const char *q_arg)
 	if (n != 4 && n != 8)
 		return -1;
 	if (n == 4)
-		num_tcs = ETH_4_TCS;
+		num_tcs = RTE_ETH_4_TCS;
 	else
-		num_tcs = ETH_8_TCS;
+		num_tcs = RTE_ETH_8_TCS;
 
 	return 0;
 }
@@ -516,11 +511,11 @@ update_mac_address(struct rte_mbuf *m, unsigned dst_port)
 	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
+	tmp = &eth->dst_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	rte_ether_addr_copy(&vmdq_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&vmdq_ports_eth_addr[dst_port], &eth->src_addr);
 }
 
 /* When we receive a HUP signal, print out our stats */

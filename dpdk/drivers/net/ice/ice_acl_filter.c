@@ -11,7 +11,7 @@
 #include <stdarg.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_eth_ctrl.h>
@@ -50,10 +50,10 @@ struct acl_rule {
 
 static struct
 ice_pattern_match_item ice_acl_pattern[] = {
-	{pattern_eth_ipv4,      ICE_ACL_INSET_ETH_IPV4,      ICE_INSET_NONE},
-	{pattern_eth_ipv4_udp,  ICE_ACL_INSET_ETH_IPV4_UDP,  ICE_INSET_NONE},
-	{pattern_eth_ipv4_tcp,  ICE_ACL_INSET_ETH_IPV4_TCP,  ICE_INSET_NONE},
-	{pattern_eth_ipv4_sctp, ICE_ACL_INSET_ETH_IPV4_SCTP, ICE_INSET_NONE},
+	{pattern_eth_ipv4,	ICE_ACL_INSET_ETH_IPV4,		ICE_INSET_NONE,	ICE_INSET_NONE},
+	{pattern_eth_ipv4_udp,	ICE_ACL_INSET_ETH_IPV4_UDP,	ICE_INSET_NONE,	ICE_INSET_NONE},
+	{pattern_eth_ipv4_tcp,	ICE_ACL_INSET_ETH_IPV4_TCP,	ICE_INSET_NONE,	ICE_INSET_NONE},
+	{pattern_eth_ipv4_sctp,	ICE_ACL_INSET_ETH_IPV4_SCTP,	ICE_INSET_NONE,	ICE_INSET_NONE},
 };
 
 static int
@@ -915,6 +915,7 @@ ice_acl_parse(struct ice_adapter *ad,
 	       uint32_t array_len,
 	       const struct rte_flow_item pattern[],
 	       const struct rte_flow_action actions[],
+	       uint32_t priority,
 	       void **meta,
 	       struct rte_flow_error *error)
 {
@@ -924,8 +925,12 @@ ice_acl_parse(struct ice_adapter *ad,
 	uint64_t input_set;
 	int ret;
 
+	if (priority >= 1)
+		return -rte_errno;
+
 	memset(filter, 0, sizeof(*filter));
-	item = ice_search_pattern_match_item(pattern, array, array_len, error);
+	item = ice_search_pattern_match_item(ad, pattern, array, array_len,
+					     error);
 	if (!item)
 		return -rte_errno;
 
@@ -933,7 +938,7 @@ ice_acl_parse(struct ice_adapter *ad,
 	if (ret)
 		goto error;
 	input_set = filter->input_set;
-	if (!input_set || input_set & ~item->input_set_mask) {
+	if (!input_set || input_set & ~item->input_set_mask_o) {
 		rte_flow_error_set(error, EINVAL,
 				   RTE_FLOW_ERROR_TYPE_ITEM_SPEC,
 				   pattern,

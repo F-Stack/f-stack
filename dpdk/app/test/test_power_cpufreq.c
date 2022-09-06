@@ -85,13 +85,11 @@ check_cur_freq(unsigned int lcore_id, uint32_t idx, bool turbo)
 		freq_conv = cur_freq;
 
 		env = rte_power_get_env();
-
-		if (env == PM_ENV_PSTATE_CPUFREQ) {
+		if (env == PM_ENV_CPPC_CPUFREQ || env == PM_ENV_PSTATE_CPUFREQ) {
 			/* convert the frequency to nearest 100000 value
 			 * Ex: if cur_freq=1396789 then freq_conv=1400000
 			 * Ex: if cur_freq=800030 then freq_conv=800000
 			 */
-			unsigned int freq_conv = 0;
 			freq_conv = (cur_freq + TEST_FREQ_ROUNDING_DELTA)
 						/ TEST_ROUND_FREQ_TO_N_100000;
 			freq_conv = freq_conv * TEST_ROUND_FREQ_TO_N_100000;
@@ -503,7 +501,8 @@ test_power_cpufreq(void)
 
 	/* Test environment configuration */
 	env = rte_power_get_env();
-	if ((env != PM_ENV_ACPI_CPUFREQ) && (env != PM_ENV_PSTATE_CPUFREQ)) {
+	if ((env != PM_ENV_ACPI_CPUFREQ) && (env != PM_ENV_PSTATE_CPUFREQ) &&
+			(env != PM_ENV_CPPC_CPUFREQ)) {
 		printf("Unexpectedly got an environment other than ACPI/PSTATE\n");
 		goto fail_all;
 	}

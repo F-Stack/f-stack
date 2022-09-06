@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -10,11 +10,12 @@
 #ifndef _SFC_DP_TX_H
 #define _SFC_DP_TX_H
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "sfc_dp.h"
 #include "sfc_debug.h"
 #include "sfc_tso.h"
+#include "sfc_nic_dma_dp.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,6 +81,9 @@ struct sfc_dp_tx_qcreate_info {
 	uint32_t		tso_max_payload_len;
 	/** Maximum number of frames to be generated per TSOv3 transaction */
 	uint32_t		tso_max_nb_outgoing_frames;
+
+	/** NIC's DMA mapping information */
+	const struct sfc_nic_dma_info	*nic_dma_info;
 };
 
 /**
@@ -168,6 +172,7 @@ struct sfc_dp_tx {
 
 	unsigned int			features;
 #define SFC_DP_TX_FEAT_MULTI_PROCESS	0x1
+#define SFC_DP_TX_FEAT_STATS		0x2
 	/**
 	 * Tx offload capabilities supported by the datapath on device
 	 * level only if HW/FW supports it.
@@ -241,7 +246,7 @@ sfc_dp_tx_prepare_pkt(struct rte_mbuf *m,
 			   unsigned int nb_vlan_descs)
 {
 	unsigned int descs_required = m->nb_segs;
-	unsigned int tcph_off = ((m->ol_flags & PKT_TX_TUNNEL_MASK) ?
+	unsigned int tcph_off = ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
 				 m->outer_l2_len + m->outer_l3_len : 0) +
 				m->l2_len + m->l3_len;
 	unsigned int header_len = tcph_off + m->l4_len;
@@ -279,21 +284,21 @@ sfc_dp_tx_prepare_pkt(struct rte_mbuf *m,
 			 * to proceed with additional checks below.
 			 * Otherwise, throw an error.
 			 */
-			if ((m->ol_flags & PKT_TX_TCP_SEG) == 0 ||
+			if ((m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) == 0 ||
 			    tso_bounce_buffer_len == 0)
 				return EINVAL;
 		}
 	}
 
-	if (m->ol_flags & PKT_TX_TCP_SEG) {
-		switch (m->ol_flags & PKT_TX_TUNNEL_MASK) {
+	if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+		switch (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 		case 0:
 			break;
-		case PKT_TX_TUNNEL_VXLAN:
+		case RTE_MBUF_F_TX_TUNNEL_VXLAN:
 			/* FALLTHROUGH */
-		case PKT_TX_TUNNEL_GENEVE:
+		case RTE_MBUF_F_TX_TUNNEL_GENEVE:
 			if (!(m->ol_flags &
-			      (PKT_TX_OUTER_IPV4 | PKT_TX_OUTER_IPV6)))
+			      (RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IPV6)))
 				return EINVAL;
 		}
 

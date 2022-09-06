@@ -9,7 +9,7 @@
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_eal.h>
 
 #include "virtio_cryptodev.h"
@@ -754,6 +754,8 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 			VIRTIO_CRYPTO_PMD_GUEST_FEATURES) < 0)
 		return -1;
 
+	rte_cryptodev_pmd_probing_finish(cryptodev);
+
 	return 0;
 }
 
@@ -1483,10 +1485,8 @@ RTE_PMD_REGISTER_PCI(CRYPTODEV_NAME_VIRTIO_PMD, rte_virtio_crypto_driver);
 RTE_PMD_REGISTER_CRYPTO_DRIVER(virtio_crypto_drv,
 	rte_virtio_crypto_driver.driver,
 	cryptodev_virtio_driver_id);
-RTE_LOG_REGISTER(virtio_crypto_logtype_init, pmd.crypto.virtio.init, NOTICE);
-RTE_LOG_REGISTER(virtio_crypto_logtype_session, pmd.crypto.virtio.session,
-		 NOTICE);
-RTE_LOG_REGISTER(virtio_crypto_logtype_rx, pmd.crypto.virtio.rx, NOTICE);
-RTE_LOG_REGISTER(virtio_crypto_logtype_tx, pmd.crypto.virtio.tx, NOTICE);
-RTE_LOG_REGISTER(virtio_crypto_logtype_driver, pmd.crypto.virtio.driver,
-		 NOTICE);
+RTE_LOG_REGISTER_SUFFIX(virtio_crypto_logtype_init, init, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(virtio_crypto_logtype_session, session, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(virtio_crypto_logtype_rx, rx, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(virtio_crypto_logtype_tx, tx, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(virtio_crypto_logtype_driver, driver, NOTICE);

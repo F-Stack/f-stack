@@ -6,6 +6,10 @@
 IOAT Rawdev Driver
 ===================
 
+.. warning::
+        As of DPDK 21.11 the rawdev implementation of the IOAT driver has been deprecated.
+        Please use the dmadev library instead.
+
 The ``ioat`` rawdev driver provides a poll-mode driver (PMD) for Intel\ |reg|
 Data Streaming Accelerator `(Intel DSA)
 <https://01.org/blogs/2019/introducing-intel-data-streaming-accelerator>`_ and for Intel\ |reg|
@@ -33,6 +37,14 @@ Compilation
 
 For builds using ``meson`` and ``ninja``, the driver will be built when the target platform is x86-based.
 No additional compilation steps are necessary.
+
+.. note::
+        Since the addition of the dmadev library, the ``ioat`` and ``idxd`` parts of this driver
+        will only be built if their ``dmadev`` counterparts are not built.
+        The following can be used to disable the ``dmadev`` drivers,
+        if the raw drivers are to be used instead::
+
+                $ meson -Ddisable_drivers=dma/* <build_dir>
 
 Device Setup
 -------------
@@ -78,7 +90,7 @@ Example configuration for a work queue::
 
         $ accel-config config-wq dsa0/wq0.0 --group-id=0 \
            --mode=dedicated --priority=10 --wq-size=8 \
-           --type=user --name=app1
+           --type=user --name=dpdk_app1
 
 Once the devices have been configured, they need to be enabled::
 
@@ -106,15 +118,26 @@ For devices bound to a suitable DPDK-supported VFIO/UIO driver, the HW devices w
 be found as part of the device scan done at application initialization time without
 the need to pass parameters to the application.
 
-If the device is bound to the IDXD kernel driver (and previously configured with sysfs),
-then a specific work queue needs to be passed to the application via a vdev parameter.
-This vdev parameter take the driver name and work queue name as parameters.
-For example, to use work queue 0 on Intel\ |reg| DSA instance 0::
+For Intel\ |reg| DSA devices, DPDK will automatically configure the device with the
+maximum number of workqueues available on it, partitioning all resources equally
+among the queues.
+If fewer workqueues are required, then the ``max_queues`` parameter may be passed to
+the device driver on the EAL commandline, via the ``allowlist`` or ``-a`` flag e.g.::
 
-        $ dpdk-test --no-pci --vdev=rawdev_idxd,wq=0.0
+	$ dpdk-test -a <b:d:f>,max_queues=4
 
-Once probed successfully, the device will appear as a ``rawdev``, that is a
-"raw device type" inside DPDK, and can be accessed using APIs from the
+For devices bound to the IDXD kernel driver,
+the DPDK ioat driver will automatically perform a scan for available workqueues to use.
+Any workqueues found listed in ``/dev/dsa`` on the system will be checked in ``/sys``,
+and any which have ``dpdk_`` prefix in their name will be automatically probed by the
+driver to make them available to the application.
+Alternatively, to support use by multiple DPDK processes simultaneously,
+the value used as the DPDK ``--file-prefix`` parameter may be used as a workqueue name prefix,
+instead of ``dpdk_``,
+allowing each DPDK application instance to only use a subset of configured queues.
+
+Once probed successfully, irrespective of kernel driver, the device will appear as a ``rawdev``,
+that is a "raw device type" inside DPDK, and can be accessed using APIs from the
 ``rte_rawdev`` library.
 
 Using IOAT Rawdev Devices

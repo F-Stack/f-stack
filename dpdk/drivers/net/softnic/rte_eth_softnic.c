@@ -6,8 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_bus_vdev.h>
 #include <rte_kvargs.h>
@@ -80,7 +80,7 @@ static const struct softnic_conn_params conn_params_default = {
 	.msg_handle_arg = NULL,
 };
 
-RTE_LOG_REGISTER(pmd_softnic_logtype, pmd.net.softnic, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(pmd_softnic_logtype, NOTICE);
 
 #define PMD_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, pmd_softnic_logtype, \
@@ -93,6 +93,7 @@ pmd_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 	dev_info->max_rx_pktlen = UINT32_MAX;
 	dev_info->max_rx_queues = UINT16_MAX;
 	dev_info->max_tx_queues = UINT16_MAX;
+	dev_info->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	return 0;
 }
@@ -173,7 +174,7 @@ pmd_dev_start(struct rte_eth_dev *dev)
 		return status;
 
 	/* Link UP */
-	dev->data->dev_link.link_status = ETH_LINK_UP;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 
 	return 0;
 }
@@ -184,7 +185,7 @@ pmd_dev_stop(struct rte_eth_dev *dev)
 	struct pmd_internals *p = dev->data->dev_private;
 
 	/* Link DOWN */
-	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 
 	/* Firmware */
 	softnic_pipeline_disable_all(p);
@@ -248,18 +249,11 @@ pmd_link_update(struct rte_eth_dev *dev __rte_unused,
 }
 
 static int
-pmd_filter_ctrl(struct rte_eth_dev *dev __rte_unused,
-		enum rte_filter_type filter_type,
-		enum rte_filter_op filter_op,
-		void *arg)
+pmd_flow_ops_get(struct rte_eth_dev *dev __rte_unused,
+		 const struct rte_flow_ops **ops)
 {
-	if (filter_type == RTE_ETH_FILTER_GENERIC &&
-			filter_op == RTE_ETH_FILTER_GET) {
-		*(const void **)arg = &pmd_flow_ops;
-		return 0;
-	}
-
-	return -ENOTSUP;
+	*ops = &pmd_flow_ops;
+	return 0;
 }
 
 static int
@@ -287,7 +281,7 @@ static const struct eth_dev_ops pmd_ops = {
 	.dev_infos_get = pmd_dev_infos_get,
 	.rx_queue_setup = pmd_rx_queue_setup,
 	.tx_queue_setup = pmd_tx_queue_setup,
-	.filter_ctrl = pmd_filter_ctrl,
+	.flow_ops_get = pmd_flow_ops_get,
 	.tm_ops_get = pmd_tm_ops_get,
 	.mtr_ops_get = pmd_mtr_ops_get,
 };
@@ -393,10 +387,10 @@ pmd_ethdev_register(struct rte_vdev_device *vdev,
 
 	/* dev->data */
 	dev->data->dev_private = dev_private;
-	dev->data->dev_link.link_speed = ETH_SPEED_NUM_100G;
-	dev->data->dev_link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	dev->data->dev_link.link_autoneg = ETH_LINK_FIXED;
-	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	dev->data->dev_link.link_speed = RTE_ETH_SPEED_NUM_100G;
+	dev->data->dev_link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	dev->data->dev_link.link_autoneg = RTE_ETH_LINK_FIXED;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	dev->data->mac_addrs = &eth_addr;
 	dev->data->promiscuous = 1;
 	dev->data->numa_node = params->cpu_id;

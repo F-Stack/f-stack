@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_string_fns.h>
 
 #include "rte_eth_softnic_internals.h"
@@ -82,7 +82,7 @@ softnic_cryptodev_create(struct pmd_internals *p,
 
 		dev_id = (uint32_t)status;
 	} else {
-		if (rte_cryptodev_pmd_is_valid_dev(params->dev_id) == 0)
+		if (rte_cryptodev_is_valid_dev(params->dev_id) == 0)
 			return NULL;
 
 		dev_id = params->dev_id;

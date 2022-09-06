@@ -491,10 +491,10 @@ kni_ioctl_release(struct net *net, uint32_t ioctl_num,
 	return ret;
 }
 
-static long
-kni_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
+static int
+kni_ioctl(struct inode *inode, uint32_t ioctl_num, unsigned long ioctl_param)
 {
-	long ret = -EINVAL;
+	int ret = -EINVAL;
 	struct net *net = current->nsproxy->net_ns;
 
 	pr_debug("IOCTL num=0x%0x param=0x%0lx\n", ioctl_num, ioctl_param);
@@ -520,8 +520,8 @@ kni_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
 	return ret;
 }
 
-static long
-kni_compat_ioctl(struct file *file, unsigned int ioctl_num,
+static int
+kni_compat_ioctl(struct inode *inode, uint32_t ioctl_num,
 		unsigned long ioctl_param)
 {
 	/* 32 bits app on 64 bits OS to be supported later */
@@ -534,8 +534,8 @@ static const struct file_operations kni_fops = {
 	.owner = THIS_MODULE,
 	.open = kni_open,
 	.release = kni_release,
-	.unlocked_ioctl = kni_ioctl,
-	.compat_ioctl = kni_compat_ioctl,
+	.unlocked_ioctl = (void *)kni_ioctl,
+	.compat_ioctl = (void *)kni_compat_ioctl,
 };
 
 static struct miscdevice kni_misc = {

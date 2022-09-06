@@ -1,36 +1,50 @@
 # Please keep these options sorted alphabetically.
 
-option('disable_drivers', type: 'string', value: '',
-	description: 'Comma-separated list of drivers to explicitly disable.')
-option('drivers_install_subdir', type: 'string', value: 'dpdk/pmds-<VERSION>',
-	description: 'Subdirectory of libdir where to install PMDs. Defaults to using a versioned subdirectory.')
-option('enable_docs', type: 'boolean', value: false,
-	description: 'build documentation')
-option('enable_kmods', type: 'boolean', value: false,
-	description: 'build kernel modules')
-option('examples', type: 'string', value: '',
-	description: 'Comma-separated list of examples to build by default')
-option('flexran_sdk', type: 'string', value: '',
-	description: 'Path to FlexRAN SDK optional Libraries for BBDEV device')
-option('ibverbs_link', type: 'combo', choices : ['static', 'shared', 'dlopen'], value: 'shared',
-	description: 'Linkage method (static/shared/dlopen) for Mellanox PMDs with ibverbs dependencies.')
-option('include_subdir_arch', type: 'string', value: '',
-	description: 'subdirectory where to install arch-dependent headers')
-option('kernel_dir', type: 'string', value: '',
-	description: 'Path to the kernel for building kernel modules. Headers must be in $kernel_dir/build. Modules will be installed in $DEST_DIR/$kernel_dir/extra/dpdk.')
-option('lib_musdk_dir', type: 'string', value: '',
-	description: 'path to the MUSDK library installation directory')
-option('machine', type: 'string', value: 'native',
-	description: 'set the target machine type')
-option('max_ethports', type: 'integer', value: 32,
-	description: 'maximum number of Ethernet devices')
-option('max_lcores', type: 'integer', value: 128,
-	description: 'maximum number of cores/threads supported by EAL')
-option('max_numa_nodes', type: 'integer', value: 4,
-	description: 'maximum number of NUMA nodes supported by EAL')
-option('enable_trace_fp', type: 'boolean', value: false,
-	description: 'enable fast path trace points.')
-option('tests', type: 'boolean', value: true,
-	description: 'build unit tests')
-option('use_hpet', type: 'boolean', value: false,
-	description: 'use HPET timer in EAL')
+option('check_includes', type: 'boolean', value: false, description:
+       'build "chkincs" to verify each header file can compile alone')
+option('cpu_instruction_set', type: 'string', value: 'auto',
+	description: 'Set the target machine ISA (instruction set architecture). Will be set according to the platform option by default.')
+option('developer_mode', type: 'feature', description:
+       'turn on additional build checks relevant for DPDK developers')
+option('disable_drivers', type: 'string', value: '', description:
+       'Comma-separated list of drivers to explicitly disable.')
+option('disable_libs', type: 'string', value: '', description:
+       'Comma-separated list of libraries to explicitly disable. [NOTE: not all libs can be disabled]')
+option('drivers_install_subdir', type: 'string', value: 'dpdk/pmds-<VERSION>', description:
+       'Subdirectory of libdir where to install PMDs. Defaults to using a versioned subdirectory.')
+option('enable_docs', type: 'boolean', value: false, description:
+       'build documentation')
+option('enable_drivers', type: 'string', value: '', description:
+       'Comma-separated list of drivers to build. If unspecified, build all drivers.')
+option('enable_driver_sdk', type: 'boolean', value: false, description:
+       'Install headers to build drivers.')
+option('enable_kmods', type: 'boolean', value: false, description:
+       'build kernel modules')
+option('examples', type: 'string', value: '', description:
+       'Comma-separated list of examples to build by default')
+option('flexran_sdk', type: 'string', value: '', description:
+       'Path to FlexRAN SDK optional Libraries for BBDEV device')
+option('ibverbs_link', type: 'combo', choices : ['static', 'shared', 'dlopen'], value: 'shared', description:
+       'Linkage method (static/shared/dlopen) for Mellanox PMDs with ibverbs dependencies.')
+option('include_subdir_arch', type: 'string', value: '', description:
+       'subdirectory where to install arch-dependent headers')
+option('kernel_dir', type: 'string', value: '', description:
+       'Path to the kernel for building kernel modules. Headers must be in $kernel_dir or $kernel_dir/build. Modules will be installed in /lib/modules.')
+option('machine', type: 'string', value: 'auto', description:
+       'Alias of cpu_instruction_set.')
+option('max_ethports', type: 'integer', value: 32, description:
+       'maximum number of Ethernet devices')
+option('max_lcores', type: 'string', value: 'default', description:
+       'Set maximum number of cores/threads supported by EAL; "default" is different per-arch, "detect" detects the number of cores on the build machine.')
+option('max_numa_nodes', type: 'string', value: 'default', description:
+       'Set the highest NUMA node supported by EAL; "default" is different per-arch, "detect" detects the highest NUMA node on the build machine.')
+option('mbuf_refcnt_atomic', type: 'boolean', value: true, description:
+       'Atomically access the mbuf refcnt.')
+option('platform', type: 'string', value: 'native', description:
+       'Platform to build, either "native", "generic" or a SoC. Please refer to the Linux build guide for more information.')
+option('enable_trace_fp', type: 'boolean', value: false, description:
+       'enable fast path trace points.')
+option('tests', type: 'boolean', value: true, description:
+       'build unit tests')
+option('use_hpet', type: 'boolean', value: false, description:
+       'use HPET timer in EAL')

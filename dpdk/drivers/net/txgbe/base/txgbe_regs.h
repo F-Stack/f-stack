@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _TXGBE_REGS_H_
@@ -1699,6 +1700,50 @@ enum txgbe_5tuple_protocol {
 #define TXGBE_REG_RSSTBL   TXGBE_RSSTBL(0)
 #define TXGBE_REG_RSSKEY   TXGBE_RSSKEY(0)
 
+static inline u32
+txgbe_map_reg(struct txgbe_hw *hw, u32 reg)
+{
+	switch (reg) {
+	case TXGBE_REG_RSSTBL:
+		if (hw->mac.type == txgbe_mac_raptor_vf)
+			reg = TXGBE_VFRSSTBL(0);
+		break;
+	case TXGBE_REG_RSSKEY:
+		if (hw->mac.type == txgbe_mac_raptor_vf)
+			reg = TXGBE_VFRSSKEY(0);
+		break;
+	default:
+		/* you should never reach here */
+		reg = TXGBE_REG_DUMMY;
+		break;
+	}
+
+	return reg;
+}
+
+/*
+ * read non-rc counters
+ */
+#define TXGBE_UPDCNT32(reg, last, cur)                           \
+do {                                                             \
+	uint32_t latest = rd32(hw, reg);                         \
+	if (hw->offset_loaded || hw->rx_loaded)			 \
+		last = 0;					 \
+	cur += (latest - last) & UINT_MAX;                       \
+	last = latest;                                           \
+} while (0)
+
+#define TXGBE_UPDCNT36(regl, last, cur)                          \
+do {                                                             \
+	uint64_t new_lsb = rd32(hw, regl);                       \
+	uint64_t new_msb = rd32(hw, regl + 4);                   \
+	uint64_t latest = ((new_msb << 32) | new_lsb);           \
+	if (hw->offset_loaded || hw->rx_loaded)			 \
+		last = 0;					 \
+	cur += (0x1000000000LL + latest - last) & 0xFFFFFFFFFLL; \
+	last = latest;                                           \
+} while (0)
+
 /**
  * register operations
  **/
@@ -1843,6 +1888,11 @@ po32m(struct txgbe_hw *hw, u32 reg, u32 mask, u32 expect, u32 *actual,
 	rd32((hw), (reg) + ((idx) << 2)))
 #define wr32a(hw, reg, idx, val) \
 	wr32((hw), (reg) + ((idx) << 2), (val))
+
+#define rd32at(hw, reg, idx) \
+		rd32a(hw, txgbe_map_reg(hw, reg), idx)
+#define wr32at(hw, reg, idx, val) \
+		wr32a(hw, txgbe_map_reg(hw, reg), idx, val)
 
 #define rd32w(hw, reg, mask, slice) do { \
 	rd32((hw), reg); \

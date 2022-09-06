@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018-2020 NXP
+ * Copyright 2018-2021 NXP
  */
 
 #include <string.h>
@@ -1146,8 +1146,12 @@ dpaa2_qdma_configure(const struct rte_rawdev *rawdev,
 
 	DPAA2_QDMA_FUNC_TRACE();
 
-	if (config_size != sizeof(*qdma_config))
+	if (config_size != sizeof(*qdma_config)) {
+		DPAA2_QDMA_ERR("Config size mismatch. Expected %" PRIu64
+			", Got: %" PRIu64, (uint64_t)(sizeof(*qdma_config)),
+			(uint64_t)config_size);
 		return -EINVAL;
+	}
 
 	/* In case QDMA device is not in stopped state, return -EBUSY */
 	if (qdma_dev->state == 1) {
@@ -1247,8 +1251,12 @@ dpaa2_qdma_queue_setup(struct rte_rawdev *rawdev,
 
 	DPAA2_QDMA_FUNC_TRACE();
 
-	if (conf_size != sizeof(*q_config))
+	if (conf_size != sizeof(*q_config)) {
+		DPAA2_QDMA_ERR("Config size mismatch. Expected %" PRIu64
+			", Got: %" PRIu64, (uint64_t)(sizeof(*q_config)),
+			(uint64_t)conf_size);
 		return -EINVAL;
+	}
 
 	rte_spinlock_lock(&qdma_dev->lock);
 
@@ -1383,13 +1391,6 @@ dpaa2_qdma_enqueue(struct rte_rawdev *rawdev,
 		&dpdmai_dev->qdma_dev->vqs[e_context->vq_id];
 	int ret;
 
-	/* Return error in case of wrong lcore_id */
-	if (rte_lcore_id() != qdma_vq->lcore_id) {
-		DPAA2_QDMA_ERR("QDMA enqueue for vqid %d on wrong core",
-				e_context->vq_id);
-		return -EINVAL;
-	}
-
 	ret = qdma_vq->enqueue_job(qdma_vq, e_context->job, nb_jobs);
 	if (ret < 0) {
 		DPAA2_QDMA_ERR("DPDMAI device enqueue failed: %d", ret);
@@ -1420,13 +1421,6 @@ dpaa2_qdma_dequeue(struct rte_rawdev *rawdev,
 		/** Make sure there are enough space to get jobs.*/
 		if (unlikely(nb_jobs < DPAA2_QDMA_MAX_SG_NB))
 			return -EINVAL;
-	}
-
-	/* Return error in case of wrong lcore_id */
-	if (rte_lcore_id() != (unsigned int)(qdma_vq->lcore_id)) {
-		DPAA2_QDMA_WARN("QDMA dequeue for vqid %d on wrong core",
-				context->vq_id);
-		return -1;
 	}
 
 	/* Only dequeue when there are pending jobs on VQ */
@@ -1606,7 +1600,7 @@ remove_hw_queues_from_list(struct dpaa2_dpdmai_dev *dpdmai_dev)
 
 	DPAA2_QDMA_FUNC_TRACE();
 
-	TAILQ_FOREACH_SAFE(queue, &qdma_queue_list, next, tqueue) {
+	RTE_TAILQ_FOREACH_SAFE(queue, &qdma_queue_list, next, tqueue) {
 		if (queue->dpdmai_dev == dpdmai_dev) {
 			TAILQ_REMOVE(&qdma_queue_list, queue, next);
 			rte_free(queue);

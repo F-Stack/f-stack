@@ -4,7 +4,7 @@
 
 #include <arm_sve.h>
 #include <rte_io.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "hns3_ethdev.h"
 #include "hns3_rxtx.h"
@@ -39,15 +39,14 @@ hns3_desc_parse_field_sve(struct hns3_rx_queue *rxq,
 			  uint32_t   bd_vld_num)
 {
 	uint32_t retcode = 0;
-	uint32_t cksum_err;
 	int ret, i;
 
 	for (i = 0; i < (int)bd_vld_num; i++) {
 		/* init rte_mbuf.rearm_data last 64-bit */
-		rx_pkts[i]->ol_flags = PKT_RX_RSS_HASH;
+		rx_pkts[i]->ol_flags = RTE_MBUF_F_RX_RSS_HASH;
 
 		ret = hns3_handle_bdinfo(rxq, rx_pkts[i], key->bd_base_info[i],
-					 key->l234_info[i], &cksum_err);
+					 key->l234_info[i]);
 		if (unlikely(ret)) {
 			retcode |= 1u << i;
 			continue;
@@ -55,9 +54,9 @@ hns3_desc_parse_field_sve(struct hns3_rx_queue *rxq,
 
 		rx_pkts[i]->packet_type = hns3_rx_calc_ptype(rxq,
 					key->l234_info[i], key->ol_info[i]);
-		if (likely(key->bd_base_info[i] & BIT(HNS3_RXD_L3L4P_B)))
-			hns3_rx_set_cksum_flag(rx_pkts[i],
-					rx_pkts[i]->packet_type, cksum_err);
+
+		/* Increment bytes counter */
+		rxq->basic_stats.bytes += rx_pkts[i]->pkt_len;
 	}
 
 	return retcode;
@@ -118,6 +117,12 @@ hns3_recv_burst_vec_sve(struct hns3_rx_queue *__restrict rxq,
 	svuint16_t xlen_tbl2 = svld1_u16(PG16_256BIT, &xlen_adjust[16]);
 	svuint32_t rss_tbl1 = svld1_u32(PG32_256BIT, rss_adjust);
 	svuint32_t rss_tbl2 = svld1_u32(PG32_256BIT, &rss_adjust[8]);
+
+	/* compile-time verifies the xlen_adjust mask */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_len) !=
+			 offsetof(struct rte_mbuf, pkt_len) + 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, vlan_tci) !=
+			 offsetof(struct rte_mbuf, data_len) + 2);
 
 	for (pos = 0; pos < nb_pkts; pos += HNS3_SVE_DEFAULT_DESCS_PER_LOOP,
 				     rxdp += HNS3_SVE_DEFAULT_DESCS_PER_LOOP) {
@@ -425,8 +430,14 @@ hns3_tx_fill_hw_ring_sve(struct hns3_tx_queue *txq,
 				(uint64_t *)&txdp->tx.outer_vlan_tag,
 				offsets, svdup_n_u64(0));
 		/* save offset 24~31byte of every BD */
-		svst1_scatter_u64offset_u64(pg, (uint64_t *)&txdp->tx.paylen,
-					    offsets, svdup_n_u64(valid_bit));
+		svst1_scatter_u64offset_u64(pg,
+				(uint64_t *)&txdp->tx.paylen_fd_dop_ol4cs,
+				offsets, svdup_n_u64(valid_bit));
+
+		/* Increment bytes counter */
+		uint32_t idx;
+		for (idx = 0; idx < svcntd(); idx++)
+			txq->basic_stats.bytes += pkts[idx]->pkt_len;
 
 		/* update index for next loop */
 		i += svcntd();
@@ -450,7 +461,7 @@ hns3_xmit_fixed_burst_vec_sve(void *__restrict tx_queue,
 
 	nb_pkts = RTE_MIN(txq->tx_bd_ready, nb_pkts);
 	if (unlikely(nb_pkts == 0)) {
-		txq->queue_full_cnt++;
+		txq->dfx_stats.queue_full_cnt++;
 		return 0;
 	}
 
@@ -464,7 +475,7 @@ hns3_xmit_fixed_burst_vec_sve(void *__restrict tx_queue,
 	txq->next_to_use += nb_pkts - nb_tx;
 
 	txq->tx_bd_ready -= nb_pkts;
-	hns3_write_reg_opt(txq->io_tail_reg, nb_pkts);
+	hns3_write_txq_tail_reg(txq, nb_pkts);
 
 	return nb_pkts;
 }

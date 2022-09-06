@@ -180,10 +180,10 @@ mlx5_vdpa_mem_register(struct mlx5_vdpa_priv *priv)
 	struct mlx5_devx_mkey_attr mkey_attr;
 	struct mlx5_vdpa_query_mr *entry = NULL;
 	struct rte_vhost_mem_region *reg = NULL;
-	uint8_t mode;
+	uint8_t mode = 0;
 	uint32_t entries_num = 0;
 	uint32_t i;
-	uint64_t gcd;
+	uint64_t gcd = 0;
 	uint64_t klm_size;
 	uint64_t mem_size;
 	uint64_t k;
@@ -196,7 +196,7 @@ mlx5_vdpa_mem_register(struct mlx5_vdpa_priv *priv)
 	if (!mem)
 		return -rte_errno;
 	priv->vmem = mem;
-	priv->null_mr = mlx5_glue->alloc_null_mr(priv->pd);
+	priv->null_mr = mlx5_glue->alloc_null_mr(priv->cdev->pd);
 	if (!priv->null_mr) {
 		DRV_LOG(ERR, "Failed to allocate null MR.");
 		ret = -errno;
@@ -211,14 +211,11 @@ mlx5_vdpa_mem_register(struct mlx5_vdpa_priv *priv)
 			DRV_LOG(ERR, "Failed to allocate mem entry memory.");
 			goto error;
 		}
-		entry->mr = mlx5_glue->reg_mr_iova(priv->pd,
+		entry->mr = mlx5_glue->reg_mr_iova(priv->cdev->pd,
 				       (void *)(uintptr_t)(reg->host_user_addr),
 				       reg->size, reg->guest_phys_addr,
 				       IBV_ACCESS_LOCAL_WRITE);
 		if (!entry->mr) {
-		mkey_attr.relaxed_ordering_read = 0;
-		mkey_attr.relaxed_ordering_write = 0;
-		entry->mkey = mlx5_devx_cmd_mkey_create(priv->ctx, &mkey_attr);
 			DRV_LOG(ERR, "Failed to create direct Mkey.");
 			ret = -rte_errno;
 			goto error;
@@ -261,7 +258,7 @@ mlx5_vdpa_mem_register(struct mlx5_vdpa_priv *priv)
 	memset(&mkey_attr, 0, sizeof(mkey_attr));
 	mkey_attr.addr = (uintptr_t)(mem->regions[0].guest_phys_addr);
 	mkey_attr.size = mem_size;
-	mkey_attr.pd = priv->pdn;
+	mkey_attr.pd = priv->cdev->pdn;
 	mkey_attr.umem_id = 0;
 	/* Must be zero for KLM mode. */
 	mkey_attr.log_entity_size = mode == MLX5_MKC_ACCESS_MODE_KLM_FBS ?
@@ -275,7 +272,7 @@ mlx5_vdpa_mem_register(struct mlx5_vdpa_priv *priv)
 		ret = -ENOMEM;
 		goto error;
 	}
-	entry->mkey = mlx5_devx_cmd_mkey_create(priv->ctx, &mkey_attr);
+	entry->mkey = mlx5_devx_cmd_mkey_create(priv->cdev->ctx, &mkey_attr);
 	if (!entry->mkey) {
 		DRV_LOG(ERR, "Failed to create indirect Mkey.");
 		ret = -rte_errno;

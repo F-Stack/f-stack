@@ -6,7 +6,7 @@
 #include <rte_pci.h>
 #include <rte_malloc.h>
 
-#include "rte_ethdev_driver.h"
+#include "ethdev_driver.h"
 #include "base/ixgbe_type.h"
 #include "base/ixgbe_vf.h"
 #include "ixgbe_ethdev.h"
@@ -58,20 +58,20 @@ ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 	dev_info->max_mac_addrs = hw->mac.num_rar_entries;
 	/**< Maximum number of MAC addresses. */
 
-	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP |
-		DEV_RX_OFFLOAD_IPV4_CKSUM |	DEV_RX_OFFLOAD_UDP_CKSUM  |
-		DEV_RX_OFFLOAD_TCP_CKSUM;
+	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |	RTE_ETH_RX_OFFLOAD_UDP_CKSUM  |
+		RTE_ETH_RX_OFFLOAD_TCP_CKSUM;
 	/**< Device RX offload capabilities. */
 
-	dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
-		DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_CKSUM | DEV_TX_OFFLOAD_SCTP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_TSO | DEV_TX_OFFLOAD_MULTI_SEGS;
+	dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
+		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_CKSUM | RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_TSO | RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 	/**< Device TX offload capabilities. */
 
 	dev_info->speed_capa =
 		representor->pf_ethdev->data->dev_link.link_speed;
-	/**< Supported speeds bitmap (ETH_LINK_SPEED_). */
+	/**< Supported speeds bitmap (RTE_ETH_LINK_SPEED_). */
 
 	dev_info->switch_info.name =
 		representor->pf_ethdev->device->name;
@@ -197,6 +197,7 @@ ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params)
 
 	ethdev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR;
 	ethdev->data->representor_id = representor->vf_id;
+	ethdev->data->backer_port_id = representor->pf_ethdev->data->port_id;
 
 	/* Set representor device ops */
 	ethdev->dev_ops = &ixgbe_vf_representor_dev_ops;

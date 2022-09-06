@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -11,6 +11,7 @@
 #include "tf_common.h"
 #include "tf_msg.h"
 #include "tfp.h"
+#include "bnxt.h"
 
 struct tf_session_client_create_parms {
 	/**
@@ -56,14 +57,23 @@ tf_session_create(struct tf *tfp,
 	uint8_t fw_session_id;
 	uint8_t fw_session_client_id;
 	union tf_session_id *session_id;
+	struct tf_dev_info dev;
+	bool shared_session_creator;
+	int name_len;
+	char *name;
 
 	TF_CHECK_PARMS2(tfp, parms);
 
+	tf_dev_bind_ops(parms->open_cfg->device_type,
+			&dev);
+
 	/* Open FW session and get a new session_id */
-	rc = tf_msg_session_open(tfp,
+	rc = tf_msg_session_open(parms->open_cfg->bp,
 				 parms->open_cfg->ctrl_chan_name,
 				 &fw_session_id,
-				 &fw_session_client_id);
+				 &fw_session_client_id,
+				 &dev,
+				 &shared_session_creator);
 	if (rc) {
 		/* Log error */
 		if (rc == -EEXIST)
@@ -168,20 +178,58 @@ tf_session_create(struct tf *tfp,
 	ll_insert(&session->client_ll, &client->ll_entry);
 	session->ref_count++;
 
+	/* Init session em_ext_db */
+	session->em_ext_db_handle = NULL;
+
+	/* Populate the request */
+	name_len = strnlen(parms->open_cfg->ctrl_chan_name,
+			   TF_SESSION_NAME_MAX);
+	name = &parms->open_cfg->ctrl_chan_name[name_len - strlen("tf_shared")];
+	if (!strncmp(name, "tf_shared", strlen("tf_shared")))
+		session->shared_session = true;
+
+	name = &parms->open_cfg->ctrl_chan_name[name_len -
+		strlen("tf_shared-wc_tcam")];
+	if (!strncmp(name, "tf_shared-wc_tcam", strlen("tf_shared-wc_tcam")))
+		session->shared_session = true;
+
+	if (session->shared_session && shared_session_creator) {
+		session->shared_session_creator = true;
+		parms->open_cfg->shared_session_creator = true;
+	}
+
 	rc = tf_dev_bind(tfp,
 			 parms->open_cfg->device_type,
 			 session->shadow_copy,
 			 &parms->open_cfg->resources,
+			 parms->open_cfg->wc_num_slices,
 			 &session->dev);
+
 	/* Logging handled by dev_bind */
 	if (rc)
-		return rc;
+		goto cleanup;
+
+	if (session->dev.ops->tf_dev_get_mailbox == NULL) {
+		/* Log error */
+		TFP_DRV_LOG(ERR,
+			    "No tf_dev_get_mailbox() defined for device\n");
+		goto cleanup;
+	}
 
 	session->dev_init = true;
 
 	return 0;
 
  cleanup:
+	rc = tf_msg_session_close(tfp,
+			fw_session_id,
+			dev.ops->tf_dev_get_mailbox());
+	if (rc) {
+		/* Log error */
+		TFP_DRV_LOG(ERR,
+			    "FW Session close failed, rc:%s\n",
+			    strerror(-rc));
+	}
 	if (tfp->session) {
 		tfp_free(tfp->session->core_data);
 		tfp_free(tfp->session);
@@ -237,8 +285,9 @@ tf_session_client_create(struct tf *tfp,
 
 	rc = tf_msg_session_client_register
 		    (tfp,
-		    parms->ctrl_chan_name,
-		    &session_client_id.internal.fw_session_client_id);
+		     session,
+		     parms->ctrl_chan_name,
+		     &session_client_id.internal.fw_session_client_id);
 	if (rc) {
 		TFP_DRV_LOG(ERR,
 			    "Failed to create client on session, rc:%s\n",
@@ -349,6 +398,7 @@ tf_session_client_destroy(struct tf *tfp,
 
 	rc = tf_msg_session_client_unregister
 			(tfp,
+			tfs,
 			parms->session_client_id.internal.fw_session_client_id);
 
 	/* Log error, but continue. If FW fails we do not really have
@@ -378,8 +428,9 @@ tf_session_open_session(struct tf *tfp,
 	int rc;
 	struct tf_session_client_create_parms scparms;
 
-	TF_CHECK_PARMS2(tfp, parms);
+	TF_CHECK_PARMS3(tfp, parms, parms->open_cfg->bp);
 
+	tfp->bp = parms->open_cfg->bp;
 	/* Decide if we're creating a new session or session client */
 	if (tfp->session == NULL) {
 		rc = tf_session_create(tfp, parms);
@@ -392,9 +443,11 @@ tf_session_open_session(struct tf *tfp,
 		}
 
 		TFP_DRV_LOG(INFO,
-		       "Session created, session_client_id:%d, session_id:%d\n",
+		       "Session created, session_client_id:%d,"
+		       "session_id:0x%08x, fw_session_id:%d\n",
 		       parms->open_cfg->session_client_id.id,
-		       parms->open_cfg->session_id.id);
+		       parms->open_cfg->session_id.id,
+		       parms->open_cfg->session_id.internal.fw_session_id);
 	} else {
 		scparms.ctrl_chan_name = parms->open_cfg->ctrl_chan_name;
 		scparms.session_client_id = &parms->open_cfg->session_client_id;
@@ -405,16 +458,16 @@ tf_session_open_session(struct tf *tfp,
 		rc = tf_session_client_create(tfp, &scparms);
 		if (rc) {
 			TFP_DRV_LOG(ERR,
-			      "Failed to create client on session %d, rc:%s\n",
+			      "Failed to create client on session 0x%x, rc:%s\n",
 			      parms->open_cfg->session_id.id,
 			      strerror(-rc));
 			return rc;
 		}
 
 		TFP_DRV_LOG(INFO,
-			    "Session Client:%d created on session:%d\n",
-			    parms->open_cfg->session_client_id.id,
-			    parms->open_cfg->session_id.id);
+			"Session Client:%d registered on session:0x%8x\n",
+			scparms.session_client_id->internal.fw_session_client_id,
+			tfp->session->session_id.id);
 	}
 
 	return 0;
@@ -444,6 +497,8 @@ tf_session_close_session(struct tf *tfp,
 	struct tf_dev_info *tfd = NULL;
 	struct tf_session_client_destroy_parms scdparms;
 	uint16_t fid;
+	uint8_t fw_session_id = 1;
+	int mailbox = 0;
 
 	TF_CHECK_PARMS2(tfp, parms);
 
@@ -508,7 +563,7 @@ tf_session_close_session(struct tf *tfp,
 			    client->session_client_id.id);
 
 		TFP_DRV_LOG(INFO,
-			    "session_id:%d, ref_count:%d\n",
+			    "session_id:0x%08x, ref_count:%d\n",
 			    tfs->session_id.id,
 			    tfs->ref_count);
 
@@ -528,6 +583,16 @@ tf_session_close_session(struct tf *tfp,
 		return rc;
 	}
 
+	mailbox = tfd->ops->tf_dev_get_mailbox();
+
+	rc = tf_session_get_fw_session_id(tfp, &fw_session_id);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Unable to lookup FW id, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+
 	/* Unbind the device */
 	rc = tf_dev_unbind(tfp, tfd);
 	if (rc) {
@@ -537,7 +602,7 @@ tf_session_close_session(struct tf *tfp,
 			    strerror(-rc));
 	}
 
-	rc = tf_msg_session_close(tfp);
+	rc = tf_msg_session_close(tfp, fw_session_id, mailbox);
 	if (rc) {
 		/* Log error */
 		TFP_DRV_LOG(ERR,
@@ -554,7 +619,7 @@ tf_session_close_session(struct tf *tfp,
 	tfs->ref_count--;
 
 	TFP_DRV_LOG(INFO,
-		    "Closed session, session_id:%d, ref_count:%d\n",
+		    "Closed session, session_id:0x%08x, ref_count:%d\n",
 		    tfs->session_id.id,
 		    tfs->ref_count);
 
@@ -639,6 +704,22 @@ tf_session_get_session(struct tf *tfp,
 			strerror(-rc));
 		return -EINVAL;
 	}
+
+	return rc;
+}
+
+int tf_session_get(struct tf *tfp,
+		   struct tf_session **tfs,
+		   struct tf_dev_info **tfd)
+{
+	int rc;
+	rc = tf_session_get_session_internal(tfp, tfs);
+
+	/* Logging done by tf_session_get_session_internal */
+	if (rc)
+		return rc;
+
+	rc = tf_session_get_device(*tfs, tfd);
 
 	return rc;
 }
@@ -784,4 +865,285 @@ tf_session_get_session_id(struct tf *tfp,
 	*session_id = tfs->session_id;
 
 	return 0;
+}
+
+int
+tf_session_get_em_ext_db(struct tf *tfp,
+			 void **em_ext_db_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	*em_ext_db_handle = NULL;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	*em_ext_db_handle = tfs->em_ext_db_handle;
+	return rc;
+}
+
+int
+tf_session_set_em_ext_db(struct tf *tfp,
+			 void *em_ext_db_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	tfs->em_ext_db_handle = em_ext_db_handle;
+	return rc;
+}
+
+int
+tf_session_get_db(struct tf *tfp,
+		  enum tf_module_type type,
+		  void **db_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	*db_handle = NULL;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	switch (type) {
+	case TF_MODULE_TYPE_IDENTIFIER:
+		if (tfs->id_db_handle)
+			*db_handle = tfs->id_db_handle;
+		else
+			rc = -ENOMEM;
+		break;
+	case TF_MODULE_TYPE_TABLE:
+		if (tfs->tbl_db_handle)
+			*db_handle = tfs->tbl_db_handle;
+		else
+			rc = -ENOMEM;
+
+		break;
+	case TF_MODULE_TYPE_TCAM:
+		if (tfs->tcam_db_handle)
+			*db_handle = tfs->tcam_db_handle;
+		else
+			rc = -ENOMEM;
+		break;
+	case TF_MODULE_TYPE_EM:
+		if (tfs->em_db_handle)
+			*db_handle = tfs->em_db_handle;
+		else
+			rc = -ENOMEM;
+		break;
+	default:
+		rc = -EINVAL;
+		break;
+	}
+
+	return rc;
+}
+
+int
+tf_session_set_db(struct tf *tfp,
+		  enum tf_module_type type,
+		  void *db_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	switch (type) {
+	case TF_MODULE_TYPE_IDENTIFIER:
+		tfs->id_db_handle = db_handle;
+		break;
+	case TF_MODULE_TYPE_TABLE:
+		tfs->tbl_db_handle = db_handle;
+		break;
+	case TF_MODULE_TYPE_TCAM:
+		tfs->tcam_db_handle = db_handle;
+		break;
+	case TF_MODULE_TYPE_EM:
+		tfs->em_db_handle = db_handle;
+		break;
+	default:
+		rc = -EINVAL;
+		break;
+	}
+
+	return rc;
+}
+
+#ifdef TF_TCAM_SHARED
+
+int
+tf_session_get_tcam_shared_db(struct tf *tfp,
+			      void **tcam_shared_db_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	*tcam_shared_db_handle = NULL;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	*tcam_shared_db_handle = tfs->tcam_shared_db_handle;
+	return rc;
+}
+
+int
+tf_session_set_tcam_shared_db(struct tf *tfp,
+			 void *tcam_shared_db_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	tfs->tcam_shared_db_handle = tcam_shared_db_handle;
+	return rc;
+}
+
+int
+tf_session_get_sram_db(struct tf *tfp,
+		       void **sram_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	*sram_handle = NULL;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	*sram_handle = tfs->sram_handle;
+	return rc;
+}
+
+int
+tf_session_set_sram_db(struct tf *tfp,
+		       void *sram_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	tfs->sram_handle = sram_handle;
+	return rc;
+}
+
+#endif /* TF_TCAM_SHARED */
+
+int
+tf_session_get_global_db(struct tf *tfp,
+			 void **global_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	*global_handle = NULL;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	*global_handle = tfs->global_db_handle;
+	return rc;
+}
+
+int
+tf_session_set_global_db(struct tf *tfp,
+			 void *global_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	tfs->global_db_handle = global_handle;
+	return rc;
+}
+
+int
+tf_session_get_if_tbl_db(struct tf *tfp,
+			 void **if_tbl_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	*if_tbl_handle = NULL;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	*if_tbl_handle = tfs->if_tbl_db_handle;
+	return rc;
+}
+
+int
+tf_session_set_if_tbl_db(struct tf *tfp,
+			 void *if_tbl_handle)
+{
+	struct tf_session *tfs = NULL;
+	int rc = 0;
+
+	if (tfp == NULL)
+		return (-EINVAL);
+
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	tfs->if_tbl_db_handle = if_tbl_handle;
+	return rc;
 }

@@ -24,7 +24,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -40,8 +39,6 @@
 
 #include "testpmd.h"
 
-/* hardcoded configuration (for now) */
-static unsigned cfg_n_flows	= 1024;
 static uint32_t cfg_ip_src	= RTE_IPV4(10, 254, 0, 0);
 static uint32_t cfg_ip_dst	= RTE_IPV4(10, 253, 0, 0);
 static uint16_t cfg_udp_src	= 1000;
@@ -53,27 +50,7 @@ static struct rte_ether_addr cfg_ether_dst =
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
 
-/* Use this type to inform GCC that ip_sum violates aliasing rules. */
-typedef unaligned_uint16_t alias_int16_t __attribute__((__may_alias__));
-
-static inline uint16_t
-ip_sum(const alias_int16_t *hdr, int hdr_len)
-{
-	uint32_t sum = 0;
-
-	while (hdr_len > 1)
-	{
-		sum += *hdr++;
-		if (sum & 0x80000000)
-			sum = (sum & 0xFFFF) + (sum >> 16);
-		hdr_len -= 2;
-	}
-
-	while (sum >> 16)
-		sum = (sum & 0xFFFF) + (sum >> 16);
-
-	return ~sum;
-}
+RTE_DEFINE_PER_LCORE(int, _next_flow);
 
 /*
  * Multi-flow generation mode.
@@ -88,7 +65,7 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	unsigned pkt_size = tx_pkt_length - 4;	/* Adjust FCS */
 	struct rte_mbuf  *pkts_burst[MAX_PKT_BURST];
 	struct rte_mempool *mbp;
-	struct rte_mbuf  *pkt;
+	struct rte_mbuf  *pkt = NULL;
 	struct rte_ether_hdr *eth_hdr;
 	struct rte_ipv4_hdr *ip_hdr;
 	struct rte_udp_hdr *udp_hdr;
@@ -96,18 +73,21 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	uint64_t ol_flags = 0;
 	uint16_t nb_rx;
 	uint16_t nb_tx;
+	uint16_t nb_dropped;
 	uint16_t nb_pkt;
+	uint16_t nb_clones = nb_pkt_flowgen_clones;
 	uint16_t i;
 	uint32_t retry;
 	uint64_t tx_offloads;
 	uint64_t start_tsc = 0;
-	static int next_flow = 0;
+	int next_flow = RTE_PER_LCORE(_next_flow);
 
 	get_start_cycles(&start_tsc);
 
 	/* Receive a burst of packets and discard them. */
 	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue, pkts_burst,
 				 nb_pkt_per_burst);
+	inc_rx_burst_stats(fs, nb_rx);
 	fs->rx_packets += nb_rx;
 
 	for (i = 0; i < nb_rx; i++)
@@ -118,63 +98,73 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	vlan_tci_outer = ports[fs->tx_port].tx_vlan_id_outer;
 
 	tx_offloads = ports[fs->tx_port].dev_conf.txmode.offloads;
-	if (tx_offloads	& DEV_TX_OFFLOAD_VLAN_INSERT)
-		ol_flags |= PKT_TX_VLAN_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_QINQ_INSERT)
-		ol_flags |= PKT_TX_QINQ_PKT;
-	if (tx_offloads	& DEV_TX_OFFLOAD_MACSEC_INSERT)
-		ol_flags |= PKT_TX_MACSEC;
+	if (tx_offloads	& RTE_ETH_TX_OFFLOAD_VLAN_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_VLAN;
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_QINQ_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_QINQ;
+	if (tx_offloads	& RTE_ETH_TX_OFFLOAD_MACSEC_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_MACSEC;
 
 	for (nb_pkt = 0; nb_pkt < nb_pkt_per_burst; nb_pkt++) {
-		pkt = rte_mbuf_raw_alloc(mbp);
-		if (!pkt)
-			break;
+		if (!nb_pkt || !nb_clones) {
+			nb_clones = nb_pkt_flowgen_clones;
+			/* Logic limitation */
+			if (nb_clones > nb_pkt_per_burst)
+				nb_clones = nb_pkt_per_burst;
 
-		pkt->data_len = pkt_size;
-		pkt->next = NULL;
+			pkt = rte_mbuf_raw_alloc(mbp);
+			if (!pkt)
+				break;
 
-		/* Initialize Ethernet header. */
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
-		rte_ether_addr_copy(&cfg_ether_dst, &eth_hdr->d_addr);
-		rte_ether_addr_copy(&cfg_ether_src, &eth_hdr->s_addr);
-		eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+			pkt->data_len = pkt_size;
+			pkt->next = NULL;
 
-		/* Initialize IP header. */
-		ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
-		memset(ip_hdr, 0, sizeof(*ip_hdr));
-		ip_hdr->version_ihl	= RTE_IPV4_VHL_DEF;
-		ip_hdr->type_of_service	= 0;
-		ip_hdr->fragment_offset	= 0;
-		ip_hdr->time_to_live	= IP_DEFTTL;
-		ip_hdr->next_proto_id	= IPPROTO_UDP;
-		ip_hdr->packet_id	= 0;
-		ip_hdr->src_addr	= rte_cpu_to_be_32(cfg_ip_src);
-		ip_hdr->dst_addr	= rte_cpu_to_be_32(cfg_ip_dst +
-							   next_flow);
-		ip_hdr->total_length	= RTE_CPU_TO_BE_16(pkt_size -
-							   sizeof(*eth_hdr));
-		ip_hdr->hdr_checksum	= ip_sum((const alias_int16_t *)ip_hdr,
-						 sizeof(*ip_hdr));
+			/* Initialize Ethernet header. */
+			eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+			rte_ether_addr_copy(&cfg_ether_dst, &eth_hdr->dst_addr);
+			rte_ether_addr_copy(&cfg_ether_src, &eth_hdr->src_addr);
+			eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
-		/* Initialize UDP header. */
-		udp_hdr = (struct rte_udp_hdr *)(ip_hdr + 1);
-		udp_hdr->src_port	= rte_cpu_to_be_16(cfg_udp_src);
-		udp_hdr->dst_port	= rte_cpu_to_be_16(cfg_udp_dst);
-		udp_hdr->dgram_cksum	= 0; /* No UDP checksum. */
-		udp_hdr->dgram_len	= RTE_CPU_TO_BE_16(pkt_size -
-							   sizeof(*eth_hdr) -
-							   sizeof(*ip_hdr));
-		pkt->nb_segs		= 1;
-		pkt->pkt_len		= pkt_size;
-		pkt->ol_flags		&= EXT_ATTACHED_MBUF;
-		pkt->ol_flags		|= ol_flags;
-		pkt->vlan_tci		= vlan_tci;
-		pkt->vlan_tci_outer	= vlan_tci_outer;
-		pkt->l2_len		= sizeof(struct rte_ether_hdr);
-		pkt->l3_len		= sizeof(struct rte_ipv4_hdr);
-		pkts_burst[nb_pkt]	= pkt;
+			/* Initialize IP header. */
+			ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
+			memset(ip_hdr, 0, sizeof(*ip_hdr));
+			ip_hdr->version_ihl	= RTE_IPV4_VHL_DEF;
+			ip_hdr->type_of_service	= 0;
+			ip_hdr->fragment_offset	= 0;
+			ip_hdr->time_to_live	= IP_DEFTTL;
+			ip_hdr->next_proto_id	= IPPROTO_UDP;
+			ip_hdr->packet_id	= 0;
+			ip_hdr->src_addr	= rte_cpu_to_be_32(cfg_ip_src);
+			ip_hdr->dst_addr	= rte_cpu_to_be_32(cfg_ip_dst +
+								   next_flow);
+			ip_hdr->total_length	= RTE_CPU_TO_BE_16(pkt_size -
+								   sizeof(*eth_hdr));
+			ip_hdr->hdr_checksum	= rte_ipv4_cksum(ip_hdr);
 
-		next_flow = (next_flow + 1) % cfg_n_flows;
+			/* Initialize UDP header. */
+			udp_hdr = (struct rte_udp_hdr *)(ip_hdr + 1);
+			udp_hdr->src_port	= rte_cpu_to_be_16(cfg_udp_src);
+			udp_hdr->dst_port	= rte_cpu_to_be_16(cfg_udp_dst);
+			udp_hdr->dgram_cksum	= 0; /* No UDP checksum. */
+			udp_hdr->dgram_len	= RTE_CPU_TO_BE_16(pkt_size -
+								   sizeof(*eth_hdr) -
+								   sizeof(*ip_hdr));
+			pkt->nb_segs		= 1;
+			pkt->pkt_len		= pkt_size;
+			pkt->ol_flags		&= RTE_MBUF_F_EXTERNAL;
+			pkt->ol_flags		|= ol_flags;
+			pkt->vlan_tci		= vlan_tci;
+			pkt->vlan_tci_outer	= vlan_tci_outer;
+			pkt->l2_len		= sizeof(struct rte_ether_hdr);
+			pkt->l3_len		= sizeof(struct rte_ipv4_hdr);
+		} else {
+			nb_clones--;
+			rte_mbuf_refcnt_update(pkt, 1);
+		}
+		pkts_burst[nb_pkt] = pkt;
+
+		if (++next_flow >= nb_flows_flowgen)
+			next_flow = 0;
 	}
 
 	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, pkts_burst, nb_pkt);
@@ -192,18 +182,29 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	fs->tx_packets += nb_tx;
 
 	inc_tx_burst_stats(fs, nb_tx);
-	if (unlikely(nb_tx < nb_pkt)) {
+	nb_dropped = nb_pkt - nb_tx;
+	if (unlikely(nb_dropped > 0)) {
 		/* Back out the flow counter. */
-		next_flow -= (nb_pkt - nb_tx);
+		next_flow -= nb_dropped;
 		while (next_flow < 0)
-			next_flow += cfg_n_flows;
+			next_flow += nb_flows_flowgen;
 
+		fs->fwd_dropped += nb_dropped;
 		do {
 			rte_pktmbuf_free(pkts_burst[nb_tx]);
 		} while (++nb_tx < nb_pkt);
 	}
 
+	RTE_PER_LCORE(_next_flow) = next_flow;
+
 	get_end_cycles(fs, start_tsc);
+}
+
+static int
+flowgen_begin(portid_t pi)
+{
+	printf("  number of flows for port %u: %d\n", pi, nb_flows_flowgen);
+	return 0;
 }
 
 static void
@@ -220,7 +221,7 @@ flowgen_stream_init(struct fwd_stream *fs)
 
 struct fwd_engine flow_gen_engine = {
 	.fwd_mode_name  = "flowgen",
-	.port_fwd_begin = NULL,
+	.port_fwd_begin = flowgen_begin,
 	.port_fwd_end   = NULL,
 	.stream_init    = flowgen_stream_init,
 	.packet_fwd     = pkt_burst_flow_gen,

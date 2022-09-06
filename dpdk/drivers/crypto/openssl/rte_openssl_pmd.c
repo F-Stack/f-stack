@@ -7,7 +7,7 @@
 #include <rte_common.h>
 #include <rte_hexdump.h>
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_bus_vdev.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
@@ -2215,6 +2215,8 @@ cryptodev_openssl_create(const char *name,
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;
 
+	rte_cryptodev_pmd_probing_finish(dev);
+
 	return 0;
 
 init_error:
@@ -2280,4 +2282,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_OPENSSL_PMD,
 	"socket_id=<int>");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(openssl_crypto_drv,
 		cryptodev_openssl_pmd_drv.driver, cryptodev_driver_id);
-RTE_LOG_REGISTER(openssl_logtype_driver, pmd.crypto.openssl, INFO);
+RTE_LOG_REGISTER_DEFAULT(openssl_logtype_driver, INFO);

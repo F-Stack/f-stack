@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -15,7 +15,6 @@
 		parms.mailbox = mb;				\
 		parms.tf_type = type;				\
 		parms.tf_subtype = subtype;			\
-		parms.tf_resp_code = 0;				\
 		parms.req_size = sizeof(req);			\
 		parms.req_data = (uint32_t *)&(req);		\
 		parms.resp_size = sizeof(resp);			\
@@ -26,7 +25,6 @@
 		parms.mailbox = mb;				\
 		parms.tf_type = type;				\
 		parms.tf_subtype = subtype;			\
-		parms.tf_resp_code = 0;				\
 		parms.req_size  = 0;				\
 		parms.req_data  = NULL;				\
 		parms.resp_size = sizeof(resp);			\
@@ -37,7 +35,6 @@
 		parms.mailbox = mb;				\
 		parms.tf_type = type;				\
 		parms.tf_subtype = subtype;			\
-		parms.tf_resp_code = 0;				\
 		parms.req_size = sizeof(req);			\
 		parms.req_data = (uint32_t *)&(req);		\
 		parms.resp_size = 0;				\

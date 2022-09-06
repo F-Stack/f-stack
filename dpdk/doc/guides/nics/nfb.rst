@@ -11,10 +11,10 @@ FPGA-based programmable NICs. The NFB PMD uses interface provided by the libnfb
 library to communicate with these cards over the nfb layer.
 
 More information about the
-`NFB cards <http://www.netcope.com/en/products/fpga-boards>`_
+`NFB cards <https://www.liberouter.org/technologies/cards/>`_
 and used technology
-(`Netcope Development Kit <http://www.netcope.com/en/products/fpga-development-kit>`_)
-can be found on the `Netcope Technologies website <http://www.netcope.com/>`_.
+(`Network Development Kit <https://www.liberouter.org/ndk/>`_)
+can be found on the `Liberouter website <http://www.liberouter.org/>`_.
 
 .. note::
 
@@ -43,7 +43,7 @@ separately:
    sharing of resources for user space applications.
 
 Dependencies can be found here:
-`Netcope common <https://www.netcope.com/en/company/community-support/dpdk-libsze2#NFB>`_.
+`Netcope common <https://github.com/CESNET/ndk-sw>`_.
 
 Versions of the packages
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -96,11 +96,6 @@ Although each slot may be connected to a different CPU and therefore to a differ
 NUMA node, the card is represented as a single port in DPDK. To work with data
 from the individual queues on the right NUMA node, connection of NUMA nodes on
 first and last queue (each NUMA node has half of the queues) need to be checked.
-
-.. figure:: img/szedata2_nfb200g_architecture.*
-    :align: center
-
-    NFB-200G2QL high-level diagram
 
 Limitations
 -----------

@@ -392,7 +392,7 @@ Set up Virtual Functions on host_server_1
    cat /sys/bus/pci/devices/0000\:02\:00.0/sriov_numvfs
    echo 1 > /sys/bus/pci/devices/0000\:02\:00.0/sriov_numvfs
    cat /sys/bus/pci/devices/0000\:02\:00.0/sriov_numvfs
-   rmmod i40evf
+   rmmod iavf
 
 vm_virtio_vf_one_212_46.sh
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -492,7 +492,7 @@ Set up Virtual Functions on host_server_2
    cat /sys/bus/pci/devices/0000\:03\:00.0/sriov_numvfs
    echo 1 > /sys/bus/pci/devices/0000\:03\:00.0/sriov_numvfs
    cat /sys/bus/pci/devices/0000\:03\:00.0/sriov_numvfs
-   rmmod i40evf
+   rmmod iavf
 
 vm_virtio_one_migrate.sh
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -581,9 +581,9 @@ Set up DPDK in the Virtual Machine
    # virtio port is 03
    # vf port is 04
 
-   cat  /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-   echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-   cat  /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+   /root/dpdk/usertools/dpdk-hugepages.py --show
+   /root/dpdk/usertools/dpdk-hugepages.py --setup 2G
+   /root/dpdk/usertools/dpdk-hugepages.py --show
 
    ifconfig -a
    /root/dpdk/usertools/dpdk-devbind.py --status

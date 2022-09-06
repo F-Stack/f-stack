@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -9,6 +9,9 @@
 #ifndef BIT
 #define BIT(n)	(1UL << (n))
 #endif /* BIT */
+#ifndef BIT_MASK
+#define BIT_MASK(len) (BIT(len) - 1)
+#endif /* BIT_MASK */
 
 #define PCI_SUBSYSTEM_ID_OFFSET	0x2e
 

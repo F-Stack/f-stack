@@ -22,7 +22,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -161,22 +160,22 @@ static struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode        = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = JUMBO_FRAME_MAX_SIZE,
+		.mq_mode        = RTE_ETH_MQ_RX_RSS,
+		.mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN -
+			RTE_ETHER_CRC_LEN,
 		.split_hdr_size = 0,
-		.offloads = (DEV_RX_OFFLOAD_CHECKSUM |
-			     DEV_RX_OFFLOAD_JUMBO_FRAME),
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 			.rss_conf = {
 				.rss_key = NULL,
-				.rss_hf = ETH_RSS_IP,
+				.rss_hf = RTE_ETH_RSS_IP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
-		.offloads = (DEV_TX_OFFLOAD_IPV4_CKSUM |
-			     DEV_TX_OFFLOAD_MULTI_SEGS),
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
+		.offloads = (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+			     RTE_ETH_TX_OFFLOAD_MULTI_SEGS),
 	},
 };
 
@@ -189,6 +188,7 @@ struct l3fwd_ipv4_route {
 	uint8_t  if_out;
 };
 
+/* Default l3fwd_ipv4_route_array table. 8< */
 struct l3fwd_ipv4_route l3fwd_ipv4_route_array[] = {
 		{RTE_IPV4(100,10,0,0), 16, 0},
 		{RTE_IPV4(100,20,0,0), 16, 1},
@@ -199,6 +199,7 @@ struct l3fwd_ipv4_route l3fwd_ipv4_route_array[] = {
 		{RTE_IPV4(100,70,0,0), 16, 6},
 		{RTE_IPV4(100,80,0,0), 16, 7},
 };
+/* >8 End of default l3fwd_ipv4_route_array table. */
 
 /*
  * IPv6 forwarding table
@@ -210,6 +211,7 @@ struct l3fwd_ipv6_route {
 	uint8_t if_out;
 };
 
+/* Default l3fwd_ipv6_route_array table. 8< */
 static struct l3fwd_ipv6_route l3fwd_ipv6_route_array[] = {
 	{{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 0},
 	{{2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 1},
@@ -220,6 +222,7 @@ static struct l3fwd_ipv6_route l3fwd_ipv6_route_array[] = {
 	{{7,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 6},
 	{{8,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 7},
 };
+/* >8 End of default l3fwd_ipv6_route_array table. */
 
 #define LPM_MAX_RULES         1024
 #define LPM6_MAX_RULES         1024
@@ -355,7 +358,7 @@ reassemble(struct rte_mbuf *m, uint16_t portid, uint32_t queue,
 			}
 
 			/* update offloading flags */
-			m->ol_flags |= (PKT_TX_IPV4 | PKT_TX_IP_CKSUM);
+			m->ol_flags |= (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM);
 		}
 		ip_dst = rte_be_to_cpu_32(ip_hdr->dst_addr);
 
@@ -368,7 +371,7 @@ reassemble(struct rte_mbuf *m, uint16_t portid, uint32_t queue,
 		eth_hdr->ether_type = rte_be_to_cpu_16(RTE_ETHER_TYPE_IPV4);
 	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
 		/* if packet is IPv6 */
-		struct ipv6_extension_fragment *frag_hdr;
+		struct rte_ipv6_fragment_ext *frag_hdr;
 		struct rte_ipv6_hdr *ip_hdr;
 
 		ip_hdr = (struct rte_ipv6_hdr *)(eth_hdr + 1);
@@ -409,11 +412,11 @@ reassemble(struct rte_mbuf *m, uint16_t portid, uint32_t queue,
 	/* if packet wasn't IPv4 or IPv6, it's forwarded to the port it came from */
 
 	/* 02:00:00:00:00:xx */
-	d_addr_bytes = &eth_hdr->d_addr.addr_bytes[0];
+	d_addr_bytes = &eth_hdr->dst_addr.addr_bytes[0];
 	*((uint64_t *)d_addr_bytes) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	rte_ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->s_addr);
+	rte_ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->src_addr);
 
 	send_single_packet(m, dst_port);
 }
@@ -512,7 +515,6 @@ static void
 print_usage(const char *prgname)
 {
 	printf("%s [EAL options] -- -p PORTMASK [-q NQ]"
-		"  [--max-pkt-len PKTLEN]"
 		"  [--maxflows=<flows>]  [--flowttl=<ttl>[(s|ms)]]\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
 		"  -q NQ: number of RX queues per lcore\n"
@@ -614,7 +616,6 @@ parse_args(int argc, char **argv)
 	int option_index;
 	char *prgname = argv[0];
 	static struct option lgopts[] = {
-		{"max-pkt-len", 1, 0, 0},
 		{"maxflows", 1, 0, 0},
 		{"flowttl", 1, 0, 0},
 		{NULL, 0, 0, 0}
@@ -736,7 +737,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -856,6 +857,7 @@ setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue)
 	if (socket == SOCKET_ID_ANY)
 		socket = 0;
 
+	/* Each table entry holds information about packet fragmentation. 8< */
 	frag_cycles = (rte_get_tsc_hz() + MS_PER_S - 1) / MS_PER_S *
 		max_flow_ttl;
 
@@ -867,6 +869,7 @@ setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue)
 			max_flow_num, lcore, queue);
 		return -1;
 	}
+	/* >8 End of holding packet fragmentation. */
 
 	/*
 	 * At any given moment up to <max_flow_num * (MAX_FRAG_NUM)>
@@ -874,8 +877,10 @@ setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue)
 	 * Plus, each TX queue can hold up to <max_flow_num> packets.
 	 */
 
+	/* mbufs stored in the fragment table. 8< */
 	nb_mbuf = RTE_MAX(max_flow_num, 2UL * MAX_PKT_BURST) * MAX_FRAG_NUM;
-	nb_mbuf *= (port_conf.rxmode.max_rx_pkt_len + BUF_SIZE - 1) / BUF_SIZE;
+	nb_mbuf *= (port_conf.rxmode.mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN
+			+ BUF_SIZE - 1) / BUF_SIZE;
 	nb_mbuf *= 2; /* ipv4 and ipv6 */
 	nb_mbuf += nb_rxd + nb_txd;
 
@@ -890,6 +895,7 @@ setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue)
 			"rte_pktmbuf_pool_create(%s) failed", buf);
 		return -1;
 	}
+	/* >8 End of mbufs stored in the fragmentation table. */
 
 	return 0;
 }
@@ -1046,9 +1052,9 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
-		    dev_info.max_rx_pktlen,
-		    local_port_conf.rxmode.max_rx_pkt_len);
+		local_port_conf.rxmode.mtu = RTE_MIN(
+		    dev_info.max_mtu,
+		    local_port_conf.rxmode.mtu);
 
 		/* get the lcore_id for this port */
 		while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
@@ -1089,9 +1095,9 @@ main(int argc, char **argv)
 		n_tx_queue = nb_lcores;
 		if (n_tx_queue > MAX_TX_QUEUE_PER_PORT)
 			n_tx_queue = MAX_TX_QUEUE_PER_PORT;
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 			dev_info.flow_type_rss_offloads;

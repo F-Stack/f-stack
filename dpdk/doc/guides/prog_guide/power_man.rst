@@ -192,6 +192,66 @@ User Cases
 ----------
 The mechanism can applied to any device which is based on polling. e.g. NIC, FPGA.
 
+Ethernet PMD Power Management API
+---------------------------------
+
+Abstract
+~~~~~~~~
+
+Existing power management mechanisms require developers to change application
+design or change code to make use of it. The PMD power management API provides a
+convenient alternative by utilizing Ethernet PMD RX callbacks, and triggering
+power saving whenever empty poll count reaches a certain number.
+
+* Monitor
+   This power saving scheme will put the CPU into optimized power state and
+   monitor the Ethernet PMD RX descriptor address, waking the CPU up whenever
+   there's new traffic. Support for this scheme may not be available on all
+   platforms, and further limitations may apply (see below).
+
+* Pause
+   This power saving scheme will avoid busy polling by either entering
+   power-optimized sleep state with ``rte_power_pause()`` function, or, if it's
+   not supported by the underlying platform, use ``rte_pause()``.
+
+* Frequency scaling
+   This power saving scheme will use ``librte_power`` library functionality to
+   scale the core frequency up/down depending on traffic volume.
+   The reaction time of the frequency scaling mode is longer
+   than the pause and monitor mode.
+
+The "monitor" mode is only supported in the following configurations and scenarios:
+
+* On Linux* x86_64, `rte_power_monitor()` requires WAITPKG instruction set being
+  supported by the CPU, while `rte_power_monitor_multi()` requires WAITPKG and
+  RTM instruction sets being supported by the CPU. RTM instruction set may also
+  require booting the Linux with `tsx=on` command line parameter. Please refer
+  to your platform documentation for further information.
+
+* If ``rte_cpu_get_intrinsics_support()`` function indicates that
+  ``rte_power_monitor_multi()`` function is supported by the platform, then
+  monitoring multiple Ethernet Rx queues for traffic will be supported.
+
+* If ``rte_cpu_get_intrinsics_support()`` function indicates that only
+  ``rte_power_monitor()`` is supported by the platform, then monitoring will be
+  limited to a mapping of 1 core 1 queue (thus, each Rx queue will have to be
+  monitored from a different lcore).
+
+* If ``rte_cpu_get_intrinsics_support()`` function indicates that neither of the
+  two monitoring functions are supported, then monitor mode will not be supported.
+
+* Not all Ethernet drivers support monitoring, even if the underlying
+  platform may support the necessary CPU instructions. Please refer to
+  :doc:`../nics/overview` for more information.
+
+
+API Overview for Ethernet PMD Power Management
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **Queue Enable**: Enable specific power scheme for certain queue/port/core.
+
+* **Queue Disable**: Disable power scheme for certain queue/port/core.
+
 References
 ----------
 
@@ -200,3 +260,5 @@ References
 
 *   The :doc:`../sample_app_ug/vm_power_management`
     chapter in the :doc:`../sample_app_ug/index` section.
+
+*   The :doc:`../nics/overview` chapter in the :doc:`../nics/index` section

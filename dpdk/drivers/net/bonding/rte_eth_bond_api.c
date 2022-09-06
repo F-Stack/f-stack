@@ -6,7 +6,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_tcp.h>
 #include <rte_bus_vdev.h>
 #include <rte_kvargs.h>
@@ -204,7 +204,7 @@ slave_vlan_filter_set(uint16_t bonded_port_id, uint16_t slave_port_id)
 
 	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
 	if ((bonded_eth_dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_VLAN_FILTER) == 0)
+			RTE_ETH_RX_OFFLOAD_VLAN_FILTER) == 0)
 		return 0;
 
 	internals = bonded_eth_dev->data->dev_private;
@@ -566,6 +566,12 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 					slave_port_id);
 			return -1;
 		}
+		if (slave_start(bonded_eth_dev, slave_eth_dev) != 0) {
+			internals->slave_count--;
+			RTE_BOND_LOG(ERR, "rte_bond_slaves_start: port=%d",
+					slave_port_id);
+			return -1;
+		}
 	}
 
 	/* Update all slave devices MACs */
@@ -592,7 +598,7 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 			return -1;
 		}
 
-		 if (link_props.link_status == ETH_LINK_UP) {
+		if (link_props.link_status == RTE_ETH_LINK_UP) {
 			if (internals->active_slave_count == 0 &&
 			    !internals->user_defined_primary_port)
 				bond_ethdev_primary_set(internals,
@@ -727,7 +733,7 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 		internals->tx_offload_capa = 0;
 		internals->rx_queue_offload_capa = 0;
 		internals->tx_queue_offload_capa = 0;
-		internals->flow_type_rss_offloads = ETH_RSS_PROTO_MASK;
+		internals->flow_type_rss_offloads = RTE_ETH_RSS_PROTO_MASK;
 		internals->reta_size = 0;
 		internals->candidate_max_rx_pktlen = 0;
 		internals->max_rx_pktlen = 0;

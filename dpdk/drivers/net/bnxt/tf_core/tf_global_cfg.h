@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -93,7 +93,7 @@ struct tf_global_cfg_cfg_parms {
  *
  * Returns
  *   - (0) if successful.
- *   - (-EINVAL) on failure.
+ *   - (-ENOMEM) on failure.
  */
 int
 tf_global_cfg_bind(struct tf *tfp,

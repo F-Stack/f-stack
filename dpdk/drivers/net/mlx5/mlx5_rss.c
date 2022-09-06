@@ -9,13 +9,14 @@
 #include <string.h>
 
 #include <rte_malloc.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include <mlx5_malloc.h>
 
 #include "mlx5_defs.h"
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
+#include "mlx5_rx.h"
 
 /**
  * DPDK callback to update the RSS hash configuration.
@@ -64,10 +65,12 @@ mlx5_rss_hash_update(struct rte_eth_dev *dev,
 	priv->rss_conf.rss_hf = rss_conf->rss_hf;
 	/* Enable the RSS hash in all Rx queues. */
 	for (i = 0, idx = 0; idx != priv->rxqs_n; ++i) {
-		if (!(*priv->rxqs)[i])
+		struct mlx5_rxq_priv *rxq = mlx5_rxq_get(dev, i);
+
+		if (rxq == NULL || rxq->ctrl == NULL)
 			continue;
-		(*priv->rxqs)[i]->rss_hash = !!rss_conf->rss_hf &&
-			!!(dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS);
+		rxq->ctrl->rxq.rss_hash = !!rss_conf->rss_hf &&
+			!!(dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS);
 		++idx;
 	}
 	return 0;
@@ -169,8 +172,8 @@ mlx5_dev_rss_reta_query(struct rte_eth_dev *dev,
 	}
 	/* Fill each entry of the table even if its bit is not set. */
 	for (idx = 0, i = 0; (i != reta_size); ++i) {
-		idx = i / RTE_RETA_GROUP_SIZE;
-		reta_conf[idx].reta[i % RTE_RETA_GROUP_SIZE] =
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		reta_conf[idx].reta[i % RTE_ETH_RETA_GROUP_SIZE] =
 			(*priv->reta_idx)[i];
 	}
 	return 0;
@@ -208,8 +211,8 @@ mlx5_dev_rss_reta_update(struct rte_eth_dev *dev,
 	if (ret)
 		return ret;
 	for (idx = 0, i = 0; (i != reta_size); ++i) {
-		idx = i / RTE_RETA_GROUP_SIZE;
-		pos = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		pos = i % RTE_ETH_RETA_GROUP_SIZE;
 		if (((reta_conf[idx].mask >> pos) & 0x1) == 0)
 			continue;
 		MLX5_ASSERT(reta_conf[idx].reta[pos] < priv->rxqs_n);

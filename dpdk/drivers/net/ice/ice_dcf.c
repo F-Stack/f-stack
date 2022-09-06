@@ -17,8 +17,8 @@
 #include <rte_atomic.h>
 #include <rte_eal.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
 #include <rte_dev.h>
@@ -166,7 +166,7 @@ ice_dcf_handle_virtchnl_msg(struct ice_dcf_hw *hw)
 	info.buf_len = ICE_DCF_AQ_BUF_SZ;
 	info.msg_buf = hw->arq_buf;
 
-	while (pending) {
+	while (pending && !hw->resetting) {
 		ret = iavf_clean_arq_element(&hw->avf, &info, &pending);
 		if (ret != IAVF_SUCCESS)
 			break;
@@ -234,7 +234,9 @@ ice_dcf_get_vf_resource(struct ice_dcf_hw *hw)
 
 	caps = VIRTCHNL_VF_OFFLOAD_WB_ON_ITR | VIRTCHNL_VF_OFFLOAD_RX_POLLING |
 	       VIRTCHNL_VF_CAP_ADV_LINK_SPEED | VIRTCHNL_VF_CAP_DCF |
-	       VF_BASE_MODE_OFFLOADS | VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC;
+	       VIRTCHNL_VF_OFFLOAD_VLAN_V2 |
+	       VF_BASE_MODE_OFFLOADS | VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC |
+	       VIRTCHNL_VF_OFFLOAD_QOS;
 
 	err = ice_dcf_send_cmd_req_no_irq(hw, VIRTCHNL_OP_GET_VF_RESOURCES,
 					  (uint8_t *)&caps, sizeof(caps));
@@ -334,6 +336,9 @@ static int
 ice_dcf_mode_disable(struct ice_dcf_hw *hw)
 {
 	int err;
+
+	if (hw->resetting)
+		return 0;
 
 	err = ice_dcf_send_cmd_req_no_irq(hw, VIRTCHNL_OP_DCF_DISABLE,
 					  NULL, 0);
@@ -534,7 +539,7 @@ ice_dcf_handle_vsi_update_event(struct ice_dcf_hw *hw)
 
 	rte_spinlock_lock(&hw->vc_cmd_send_lock);
 
-	rte_intr_disable(&pci_dev->intr_handle);
+	rte_intr_disable(pci_dev->intr_handle);
 	ice_dcf_disable_irq0(hw);
 
 	for (;;) {
@@ -550,7 +555,7 @@ ice_dcf_handle_vsi_update_event(struct ice_dcf_hw *hw)
 		rte_delay_ms(ICE_DCF_ARQ_CHECK_TIME);
 	}
 
-	rte_intr_enable(&pci_dev->intr_handle);
+	rte_intr_enable(pci_dev->intr_handle);
 	ice_dcf_enable_irq0(hw);
 
 	rte_spinlock_unlock(&hw->vc_cmd_send_lock);
@@ -586,7 +591,9 @@ int
 ice_dcf_init_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
-	int ret;
+	int ret, size;
+
+	hw->resetting = false;
 
 	hw->avf.hw_addr = pci_dev->mem_resource[0].addr;
 	hw->avf.back = hw;
@@ -678,10 +685,20 @@ ice_dcf_init_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 		}
 	}
 
+	if (hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_QOS) {
+		ice_dcf_tm_conf_init(eth_dev);
+		size = sizeof(struct virtchnl_dcf_bw_cfg_list *) * hw->num_vfs;
+		hw->qos_bw_cfg = rte_zmalloc("qos_bw_cfg", size, 0);
+		if (!hw->qos_bw_cfg) {
+			PMD_INIT_LOG(ERR, "no memory for qos_bw_cfg");
+			goto err_rss;
+		}
+	}
+
 	hw->eth_dev = eth_dev;
-	rte_intr_callback_register(&pci_dev->intr_handle,
+	rte_intr_callback_register(pci_dev->intr_handle,
 				   ice_dcf_dev_interrupt_handler, hw);
-	rte_intr_enable(&pci_dev->intr_handle);
+	rte_intr_enable(pci_dev->intr_handle);
 	ice_dcf_enable_irq0(hw);
 
 	return 0;
@@ -703,7 +720,13 @@ void
 ice_dcf_uninit_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
+
+	if (hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_QOS)
+		if (hw->tm_conf.committed) {
+			ice_dcf_clear_bw(hw);
+			ice_dcf_tm_conf_uninit(eth_dev);
+		}
 
 	ice_dcf_disable_irq0(hw);
 	rte_intr_disable(intr_handle);
@@ -714,10 +737,25 @@ ice_dcf_uninit_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 	iavf_shutdown_adminq(&hw->avf);
 
 	rte_free(hw->arq_buf);
+	hw->arq_buf = NULL;
+
 	rte_free(hw->vf_vsi_map);
+	hw->vf_vsi_map = NULL;
+
 	rte_free(hw->vf_res);
+	hw->vf_res = NULL;
+
 	rte_free(hw->rss_lut);
+	hw->rss_lut = NULL;
+
 	rte_free(hw->rss_key);
+	hw->rss_key = NULL;
+
+	rte_free(hw->qos_bw_cfg);
+	hw->qos_bw_cfg = NULL;
+
+	rte_free(hw->ets_config);
+	hw->ets_config = NULL;
 }
 
 static int
@@ -799,7 +837,7 @@ ice_dcf_init_rss(struct ice_dcf_hw *hw)
 		PMD_DRV_LOG(DEBUG, "RSS is not supported");
 		return -ENOTSUP;
 	}
-	if (dev->data->dev_conf.rxmode.mq_mode != ETH_MQ_RX_RSS) {
+	if (dev->data->dev_conf.rxmode.mq_mode != RTE_ETH_MQ_RX_RSS) {
 		PMD_DRV_LOG(WARNING, "RSS is enabled by PF by default");
 		/* set all lut items to default queue */
 		memset(hw->rss_lut, 0, hw->vf_res->rss_lut_size);
@@ -1001,6 +1039,9 @@ ice_dcf_disable_queues(struct ice_dcf_hw *hw)
 	struct dcf_virtchnl_cmd args;
 	int err;
 
+	if (hw->resetting)
+		return 0;
+
 	memset(&queue_select, 0, sizeof(queue_select));
 	queue_select.vsi_id = hw->vsi_res->vsi_id;
 
@@ -1055,6 +1096,14 @@ ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw, bool add)
 	struct dcf_virtchnl_cmd args;
 	int len, err = 0;
 
+	if (hw->resetting) {
+		if (!add)
+			return 0;
+
+		PMD_DRV_LOG(ERR, "fail to add all MACs for VF resetting");
+		return -EIO;
+	}
+
 	len = sizeof(struct virtchnl_ether_addr_list);
 	addr = hw->eth_dev->data->mac_addrs;
 	len += sizeof(struct virtchnl_ether_addr);
@@ -1067,10 +1116,8 @@ ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw, bool add)
 
 	rte_memcpy(list->list[0].addr, addr->addr_bytes,
 			sizeof(addr->addr_bytes));
-	PMD_DRV_LOG(DEBUG, "add/rm mac:%x:%x:%x:%x:%x:%x",
-			    addr->addr_bytes[0], addr->addr_bytes[1],
-			    addr->addr_bytes[2], addr->addr_bytes[3],
-			    addr->addr_bytes[4], addr->addr_bytes[5]);
+	PMD_DRV_LOG(DEBUG, "add/rm mac:" RTE_ETHER_ADDR_PRT_FMT,
+			    RTE_ETHER_ADDR_BYTES(addr));
 
 	list->vsi_id = hw->vsi_res->vsi_id;
 	list->num_elements = 1;

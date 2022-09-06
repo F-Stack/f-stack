@@ -9,10 +9,6 @@ The Telemetry library provides users with the ability to query DPDK for
 telemetry information, currently including information such as ethdev stats,
 ethdev port list, and eal parameters.
 
-.. Note::
-
-   This library is experimental and the output format may change in the future.
-
 
 Telemetry Interface
 -------------------
@@ -91,3 +87,48 @@ and query information using the telemetry client python script.
        --> /help,/ethdev/xstats
        {"/help": {"/ethdev/xstats": "Returns the extended stats for a port.
        Parameters: int port_id"}}
+
+
+Connecting to Different DPDK Processes
+--------------------------------------
+
+When multiple DPDK process instances are running on a system, the user will
+naturally wish to be able to select the instance to which the connection is
+being made. The method to select the instance depends on how the individual
+instances are run:
+
+* For DPDK processes run using a non-default file-prefix,
+  i.e. using the `--file-prefix` EAL option flag,
+  the file-prefix for the process should be passed via the `-f` or `--file-prefix` script flag.
+
+  For example, to connect to testpmd run as::
+
+     $ ./build/app/dpdk-testpmd -l 2,3 --file-prefix="tpmd"
+
+  One would use the telemetry script command::
+
+     $ ./usertools/dpdk-telemetry -f "tpmd"
+
+  To list all running telemetry-enabled file-prefixes, the ``-l`` or ``--list`` flags can be used::
+
+     $ ./usertools/dpdk-telemetry -l
+
+* For the case where multiple processes are run using the `--in-memory` EAL flag,
+  but no `--file-prefix` flag, or the same `--file-prefix` flag,
+  those processes will all share the same runtime directory.
+  In this case,
+  each process after the first will add an increasing count suffix to the telemetry socket name,
+  with each one taking the first available free socket name.
+  This suffix count can be passed to the telemetry script using the `-i` or `--instance` flag.
+
+  For example, if the following two applications are run in separate terminals::
+
+     $ ./build/app/dpdk-testpmd -l 2,3 --in-memory    # will use socket "dpdk_telemetry.v2"
+
+     $ ./build/app/test/dpdk-test -l 4,5 --in-memory  # will use "dpdk_telemetry.v2:1"
+
+  The following telemetry script commands would allow one to connect to each binary::
+
+     $ ./usertools/dpdk-telemetry.py       # will connect to testpmd
+
+     $ ./usertools/dpdk-telemetry.py -i 1  # will connect to test binary

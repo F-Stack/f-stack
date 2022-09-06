@@ -28,8 +28,10 @@
  * The remaining space is defined by each driver as the per-driver
  * configuration space.
  */
-#define VIRTIO_PCI_CONFIG(hw) \
-		(((hw)->use_msix == VIRTIO_MSIX_ENABLED) ? 24 : 20)
+#define VIRTIO_PCI_CONFIG(dev) \
+		(((dev)->msix_status == VIRTIO_MSIX_ENABLED) ? 24 : 20)
+
+struct virtio_pci_internal virtio_pci_internal[RTE_MAX_ETHPORTS];
 
 static inline int
 check_vq_phys_addr_ok(struct virtqueue *vq)
@@ -47,6 +49,56 @@ check_vq_phys_addr_ok(struct virtqueue *vq)
 	return 1;
 }
 
+#define PCI_MSIX_ENABLE 0x8000
+
+static enum virtio_msix_status
+vtpci_msix_detect(struct rte_pci_device *dev)
+{
+	uint8_t pos;
+	int ret;
+
+	ret = rte_pci_read_config(dev, &pos, 1, PCI_CAPABILITY_LIST);
+	if (ret != 1) {
+		PMD_INIT_LOG(DEBUG,
+			     "failed to read pci capability list, ret %d", ret);
+		return VIRTIO_MSIX_NONE;
+	}
+
+	while (pos) {
+		uint8_t cap[2];
+
+		ret = rte_pci_read_config(dev, cap, sizeof(cap), pos);
+		if (ret != sizeof(cap)) {
+			PMD_INIT_LOG(DEBUG,
+				     "failed to read pci cap at pos: %x ret %d",
+				     pos, ret);
+			break;
+		}
+
+		if (cap[0] == PCI_CAP_ID_MSIX) {
+			uint16_t flags;
+
+			ret = rte_pci_read_config(dev, &flags, sizeof(flags),
+					pos + sizeof(cap));
+			if (ret != sizeof(flags)) {
+				PMD_INIT_LOG(DEBUG,
+					     "failed to read pci cap at pos:"
+					     " %x ret %d", pos + 2, ret);
+				break;
+			}
+
+			if (flags & PCI_MSIX_ENABLE)
+				return VIRTIO_MSIX_ENABLED;
+			else
+				return VIRTIO_MSIX_DISABLED;
+		}
+
+		pos = cap[1];
+	}
+
+	return VIRTIO_MSIX_NONE;
+}
+
 /*
  * Since we are in legacy mode:
  * http://ozlabs.org/~rusty/virtio-spec/virtio-0.9.5.pdf
@@ -62,6 +114,7 @@ static void
 legacy_read_dev_config(struct virtio_hw *hw, size_t offset,
 		       void *dst, int length)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 #ifdef RTE_ARCH_PPC_64
 	int size;
 
@@ -69,17 +122,17 @@ legacy_read_dev_config(struct virtio_hw *hw, size_t offset,
 		if (length >= 4) {
 			size = 4;
 			rte_pci_ioport_read(VTPCI_IO(hw), dst, size,
-				VIRTIO_PCI_CONFIG(hw) + offset);
+				VIRTIO_PCI_CONFIG(dev) + offset);
 			*(uint32_t *)dst = rte_be_to_cpu_32(*(uint32_t *)dst);
 		} else if (length >= 2) {
 			size = 2;
 			rte_pci_ioport_read(VTPCI_IO(hw), dst, size,
-				VIRTIO_PCI_CONFIG(hw) + offset);
+				VIRTIO_PCI_CONFIG(dev) + offset);
 			*(uint16_t *)dst = rte_be_to_cpu_16(*(uint16_t *)dst);
 		} else {
 			size = 1;
 			rte_pci_ioport_read(VTPCI_IO(hw), dst, size,
-				VIRTIO_PCI_CONFIG(hw) + offset);
+				VIRTIO_PCI_CONFIG(dev) + offset);
 		}
 
 		dst = (char *)dst + size;
@@ -88,7 +141,7 @@ legacy_read_dev_config(struct virtio_hw *hw, size_t offset,
 	}
 #else
 	rte_pci_ioport_read(VTPCI_IO(hw), dst, length,
-		VIRTIO_PCI_CONFIG(hw) + offset);
+		VIRTIO_PCI_CONFIG(dev) + offset);
 #endif
 }
 
@@ -96,6 +149,7 @@ static void
 legacy_write_dev_config(struct virtio_hw *hw, size_t offset,
 			const void *src, int length)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 #ifdef RTE_ARCH_PPC_64
 	union {
 		uint32_t u32;
@@ -108,16 +162,16 @@ legacy_write_dev_config(struct virtio_hw *hw, size_t offset,
 			size = 4;
 			tmp.u32 = rte_cpu_to_be_32(*(const uint32_t *)src);
 			rte_pci_ioport_write(VTPCI_IO(hw), &tmp.u32, size,
-				VIRTIO_PCI_CONFIG(hw) + offset);
+				VIRTIO_PCI_CONFIG(dev) + offset);
 		} else if (length >= 2) {
 			size = 2;
 			tmp.u16 = rte_cpu_to_be_16(*(const uint16_t *)src);
 			rte_pci_ioport_write(VTPCI_IO(hw), &tmp.u16, size,
-				VIRTIO_PCI_CONFIG(hw) + offset);
+				VIRTIO_PCI_CONFIG(dev) + offset);
 		} else {
 			size = 1;
 			rte_pci_ioport_write(VTPCI_IO(hw), src, size,
-				VIRTIO_PCI_CONFIG(hw) + offset);
+				VIRTIO_PCI_CONFIG(dev) + offset);
 		}
 
 		src = (const char *)src + size;
@@ -126,7 +180,7 @@ legacy_write_dev_config(struct virtio_hw *hw, size_t offset,
 	}
 #else
 	rte_pci_ioport_write(VTPCI_IO(hw), src, length,
-		VIRTIO_PCI_CONFIG(hw) + offset);
+		VIRTIO_PCI_CONFIG(dev) + offset);
 #endif
 }
 
@@ -149,6 +203,12 @@ legacy_set_features(struct virtio_hw *hw, uint64_t features)
 	}
 	rte_pci_ioport_write(VTPCI_IO(hw), &features, 4,
 		VIRTIO_PCI_GUEST_FEATURES);
+}
+
+static int
+legacy_features_ok(struct virtio_hw *hw __rte_unused)
+{
+	return 0;
 }
 
 static uint8_t
@@ -241,13 +301,32 @@ legacy_notify_queue(struct virtio_hw *hw, struct virtqueue *vq)
 		VIRTIO_PCI_QUEUE_NOTIFY);
 }
 
-const struct virtio_pci_ops legacy_ops = {
+static void
+legacy_intr_detect(struct virtio_hw *hw)
+{
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	dev->msix_status = vtpci_msix_detect(VTPCI_DEV(hw));
+	hw->intr_lsc = !!dev->msix_status;
+}
+
+static int
+legacy_dev_close(struct virtio_hw *hw)
+{
+	rte_pci_unmap_device(VTPCI_DEV(hw));
+	rte_pci_ioport_unmap(VTPCI_IO(hw));
+
+	return 0;
+}
+
+const struct virtio_ops legacy_ops = {
 	.read_dev_cfg	= legacy_read_dev_config,
 	.write_dev_cfg	= legacy_write_dev_config,
 	.get_status	= legacy_get_status,
 	.set_status	= legacy_set_status,
 	.get_features	= legacy_get_features,
 	.set_features	= legacy_set_features,
+	.features_ok	= legacy_features_ok,
 	.get_isr	= legacy_get_isr,
 	.set_config_irq	= legacy_set_config_irq,
 	.set_queue_irq  = legacy_set_queue_irq,
@@ -255,6 +334,8 @@ const struct virtio_pci_ops legacy_ops = {
 	.setup_queue	= legacy_setup_queue,
 	.del_queue	= legacy_del_queue,
 	.notify_queue	= legacy_notify_queue,
+	.intr_detect	= legacy_intr_detect,
+	.dev_close	= legacy_dev_close,
 };
 
 static inline void
@@ -268,18 +349,19 @@ static void
 modern_read_dev_config(struct virtio_hw *hw, size_t offset,
 		       void *dst, int length)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 	int i;
 	uint8_t *p;
 	uint8_t old_gen, new_gen;
 
 	do {
-		old_gen = rte_read8(&hw->common_cfg->config_generation);
+		old_gen = rte_read8(&dev->common_cfg->config_generation);
 
 		p = dst;
 		for (i = 0;  i < length; i++)
-			*p++ = rte_read8((uint8_t *)hw->dev_cfg + offset + i);
+			*p++ = rte_read8((uint8_t *)dev->dev_cfg + offset + i);
 
-		new_gen = rte_read8(&hw->common_cfg->config_generation);
+		new_gen = rte_read8(&dev->common_cfg->config_generation);
 	} while (old_gen != new_gen);
 }
 
@@ -287,23 +369,25 @@ static void
 modern_write_dev_config(struct virtio_hw *hw, size_t offset,
 			const void *src, int length)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 	int i;
 	const uint8_t *p = src;
 
 	for (i = 0;  i < length; i++)
-		rte_write8((*p++), (((uint8_t *)hw->dev_cfg) + offset + i));
+		rte_write8((*p++), (((uint8_t *)dev->dev_cfg) + offset + i));
 }
 
 static uint64_t
 modern_get_features(struct virtio_hw *hw)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 	uint32_t features_lo, features_hi;
 
-	rte_write32(0, &hw->common_cfg->device_feature_select);
-	features_lo = rte_read32(&hw->common_cfg->device_feature);
+	rte_write32(0, &dev->common_cfg->device_feature_select);
+	features_lo = rte_read32(&dev->common_cfg->device_feature);
 
-	rte_write32(1, &hw->common_cfg->device_feature_select);
-	features_hi = rte_read32(&hw->common_cfg->device_feature);
+	rte_write32(1, &dev->common_cfg->device_feature_select);
+	features_hi = rte_read32(&dev->common_cfg->device_feature);
 
 	return ((uint64_t)features_hi << 32) | features_lo;
 }
@@ -311,58 +395,84 @@ modern_get_features(struct virtio_hw *hw)
 static void
 modern_set_features(struct virtio_hw *hw, uint64_t features)
 {
-	rte_write32(0, &hw->common_cfg->guest_feature_select);
-	rte_write32(features & ((1ULL << 32) - 1),
-		    &hw->common_cfg->guest_feature);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 
-	rte_write32(1, &hw->common_cfg->guest_feature_select);
+	rte_write32(0, &dev->common_cfg->guest_feature_select);
+	rte_write32(features & ((1ULL << 32) - 1),
+		    &dev->common_cfg->guest_feature);
+
+	rte_write32(1, &dev->common_cfg->guest_feature_select);
 	rte_write32(features >> 32,
-		    &hw->common_cfg->guest_feature);
+		    &dev->common_cfg->guest_feature);
+}
+
+static int
+modern_features_ok(struct virtio_hw *hw)
+{
+	if (!virtio_with_feature(hw, VIRTIO_F_VERSION_1)) {
+		PMD_INIT_LOG(ERR, "Version 1+ required with modern devices");
+		return -1;
+	}
+
+	return 0;
 }
 
 static uint8_t
 modern_get_status(struct virtio_hw *hw)
 {
-	return rte_read8(&hw->common_cfg->device_status);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	return rte_read8(&dev->common_cfg->device_status);
 }
 
 static void
 modern_set_status(struct virtio_hw *hw, uint8_t status)
 {
-	rte_write8(status, &hw->common_cfg->device_status);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	rte_write8(status, &dev->common_cfg->device_status);
 }
 
 static uint8_t
 modern_get_isr(struct virtio_hw *hw)
 {
-	return rte_read8(hw->isr);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	return rte_read8(dev->isr);
 }
 
 static uint16_t
 modern_set_config_irq(struct virtio_hw *hw, uint16_t vec)
 {
-	rte_write16(vec, &hw->common_cfg->msix_config);
-	return rte_read16(&hw->common_cfg->msix_config);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	rte_write16(vec, &dev->common_cfg->msix_config);
+	return rte_read16(&dev->common_cfg->msix_config);
 }
 
 static uint16_t
 modern_set_queue_irq(struct virtio_hw *hw, struct virtqueue *vq, uint16_t vec)
 {
-	rte_write16(vq->vq_queue_index, &hw->common_cfg->queue_select);
-	rte_write16(vec, &hw->common_cfg->queue_msix_vector);
-	return rte_read16(&hw->common_cfg->queue_msix_vector);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	rte_write16(vq->vq_queue_index, &dev->common_cfg->queue_select);
+	rte_write16(vec, &dev->common_cfg->queue_msix_vector);
+	return rte_read16(&dev->common_cfg->queue_msix_vector);
 }
 
 static uint16_t
 modern_get_queue_num(struct virtio_hw *hw, uint16_t queue_id)
 {
-	rte_write16(queue_id, &hw->common_cfg->queue_select);
-	return rte_read16(&hw->common_cfg->queue_size);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	rte_write16(queue_id, &dev->common_cfg->queue_select);
+	return rte_read16(&dev->common_cfg->queue_size);
 }
 
 static int
 modern_setup_queue(struct virtio_hw *hw, struct virtqueue *vq)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 	uint64_t desc_addr, avail_addr, used_addr;
 	uint16_t notify_off;
 
@@ -373,22 +483,22 @@ modern_setup_queue(struct virtio_hw *hw, struct virtqueue *vq)
 	avail_addr = desc_addr + vq->vq_nentries * sizeof(struct vring_desc);
 	used_addr = RTE_ALIGN_CEIL(avail_addr + offsetof(struct vring_avail,
 							 ring[vq->vq_nentries]),
-				   VIRTIO_PCI_VRING_ALIGN);
+				   VIRTIO_VRING_ALIGN);
 
-	rte_write16(vq->vq_queue_index, &hw->common_cfg->queue_select);
+	rte_write16(vq->vq_queue_index, &dev->common_cfg->queue_select);
 
-	io_write64_twopart(desc_addr, &hw->common_cfg->queue_desc_lo,
-				      &hw->common_cfg->queue_desc_hi);
-	io_write64_twopart(avail_addr, &hw->common_cfg->queue_avail_lo,
-				       &hw->common_cfg->queue_avail_hi);
-	io_write64_twopart(used_addr, &hw->common_cfg->queue_used_lo,
-				      &hw->common_cfg->queue_used_hi);
+	io_write64_twopart(desc_addr, &dev->common_cfg->queue_desc_lo,
+				      &dev->common_cfg->queue_desc_hi);
+	io_write64_twopart(avail_addr, &dev->common_cfg->queue_avail_lo,
+				       &dev->common_cfg->queue_avail_hi);
+	io_write64_twopart(used_addr, &dev->common_cfg->queue_used_lo,
+				      &dev->common_cfg->queue_used_hi);
 
-	notify_off = rte_read16(&hw->common_cfg->queue_notify_off);
-	vq->notify_addr = (void *)((uint8_t *)hw->notify_base +
-				notify_off * hw->notify_off_multiplier);
+	notify_off = rte_read16(&dev->common_cfg->queue_notify_off);
+	vq->notify_addr = (void *)((uint8_t *)dev->notify_base +
+				notify_off * dev->notify_off_multiplier);
 
-	rte_write16(1, &hw->common_cfg->queue_enable);
+	rte_write16(1, &dev->common_cfg->queue_enable);
 
 	PMD_INIT_LOG(DEBUG, "queue %u addresses:", vq->vq_queue_index);
 	PMD_INIT_LOG(DEBUG, "\t desc_addr: %" PRIx64, desc_addr);
@@ -403,16 +513,18 @@ modern_setup_queue(struct virtio_hw *hw, struct virtqueue *vq)
 static void
 modern_del_queue(struct virtio_hw *hw, struct virtqueue *vq)
 {
-	rte_write16(vq->vq_queue_index, &hw->common_cfg->queue_select);
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 
-	io_write64_twopart(0, &hw->common_cfg->queue_desc_lo,
-				  &hw->common_cfg->queue_desc_hi);
-	io_write64_twopart(0, &hw->common_cfg->queue_avail_lo,
-				  &hw->common_cfg->queue_avail_hi);
-	io_write64_twopart(0, &hw->common_cfg->queue_used_lo,
-				  &hw->common_cfg->queue_used_hi);
+	rte_write16(vq->vq_queue_index, &dev->common_cfg->queue_select);
 
-	rte_write16(0, &hw->common_cfg->queue_enable);
+	io_write64_twopart(0, &dev->common_cfg->queue_desc_lo,
+				  &dev->common_cfg->queue_desc_hi);
+	io_write64_twopart(0, &dev->common_cfg->queue_avail_lo,
+				  &dev->common_cfg->queue_avail_hi);
+	io_write64_twopart(0, &dev->common_cfg->queue_used_lo,
+				  &dev->common_cfg->queue_used_hi);
+
+	rte_write16(0, &dev->common_cfg->queue_enable);
 }
 
 static void
@@ -420,12 +532,12 @@ modern_notify_queue(struct virtio_hw *hw, struct virtqueue *vq)
 {
 	uint32_t notify_data;
 
-	if (!vtpci_with_feature(hw, VIRTIO_F_NOTIFICATION_DATA)) {
+	if (!virtio_with_feature(hw, VIRTIO_F_NOTIFICATION_DATA)) {
 		rte_write16(vq->vq_queue_index, vq->notify_addr);
 		return;
 	}
 
-	if (vtpci_with_feature(hw, VIRTIO_F_RING_PACKED)) {
+	if (virtio_with_packed_queue(hw)) {
 		/*
 		 * Bit[0:15]: vq queue index
 		 * Bit[16:30]: avail index
@@ -446,13 +558,33 @@ modern_notify_queue(struct virtio_hw *hw, struct virtqueue *vq)
 	rte_write32(notify_data, vq->notify_addr);
 }
 
-const struct virtio_pci_ops modern_ops = {
+
+
+static void
+modern_intr_detect(struct virtio_hw *hw)
+{
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
+
+	dev->msix_status = vtpci_msix_detect(VTPCI_DEV(hw));
+	hw->intr_lsc = !!dev->msix_status;
+}
+
+static int
+modern_dev_close(struct virtio_hw *hw)
+{
+	rte_pci_unmap_device(VTPCI_DEV(hw));
+
+	return 0;
+}
+
+const struct virtio_ops modern_ops = {
 	.read_dev_cfg	= modern_read_dev_config,
 	.write_dev_cfg	= modern_write_dev_config,
 	.get_status	= modern_get_status,
 	.set_status	= modern_set_status,
 	.get_features	= modern_get_features,
 	.set_features	= modern_set_features,
+	.features_ok	= modern_features_ok,
 	.get_isr	= modern_get_isr,
 	.set_config_irq	= modern_set_config_irq,
 	.set_queue_irq  = modern_set_queue_irq,
@@ -460,72 +592,9 @@ const struct virtio_pci_ops modern_ops = {
 	.setup_queue	= modern_setup_queue,
 	.del_queue	= modern_del_queue,
 	.notify_queue	= modern_notify_queue,
+	.intr_detect	= modern_intr_detect,
+	.dev_close	= modern_dev_close,
 };
-
-
-void
-vtpci_read_dev_config(struct virtio_hw *hw, size_t offset,
-		      void *dst, int length)
-{
-	VTPCI_OPS(hw)->read_dev_cfg(hw, offset, dst, length);
-}
-
-void
-vtpci_write_dev_config(struct virtio_hw *hw, size_t offset,
-		       const void *src, int length)
-{
-	VTPCI_OPS(hw)->write_dev_cfg(hw, offset, src, length);
-}
-
-uint64_t
-vtpci_negotiate_features(struct virtio_hw *hw, uint64_t host_features)
-{
-	uint64_t features;
-
-	/*
-	 * Limit negotiated features to what the driver, virtqueue, and
-	 * host all support.
-	 */
-	features = host_features & hw->guest_features;
-	VTPCI_OPS(hw)->set_features(hw, features);
-
-	return features;
-}
-
-void
-vtpci_reset(struct virtio_hw *hw)
-{
-	VTPCI_OPS(hw)->set_status(hw, VIRTIO_CONFIG_STATUS_RESET);
-	/* flush status write */
-	VTPCI_OPS(hw)->get_status(hw);
-}
-
-void
-vtpci_reinit_complete(struct virtio_hw *hw)
-{
-	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_DRIVER_OK);
-}
-
-void
-vtpci_set_status(struct virtio_hw *hw, uint8_t status)
-{
-	if (status != VIRTIO_CONFIG_STATUS_RESET)
-		status |= VTPCI_OPS(hw)->get_status(hw);
-
-	VTPCI_OPS(hw)->set_status(hw, status);
-}
-
-uint8_t
-vtpci_get_status(struct virtio_hw *hw)
-{
-	return VTPCI_OPS(hw)->get_status(hw);
-}
-
-uint8_t
-vtpci_isr(struct virtio_hw *hw)
-{
-	return VTPCI_OPS(hw)->get_isr(hw);
-}
 
 static void *
 get_cfg_addr(struct rte_pci_device *dev, struct virtio_pci_cap *cap)
@@ -562,21 +631,20 @@ get_cfg_addr(struct rte_pci_device *dev, struct virtio_pci_cap *cap)
 	return base + offset;
 }
 
-#define PCI_MSIX_ENABLE 0x8000
-
 static int
-virtio_read_caps(struct rte_pci_device *dev, struct virtio_hw *hw)
+virtio_read_caps(struct rte_pci_device *pci_dev, struct virtio_hw *hw)
 {
+	struct virtio_pci_dev *dev = virtio_pci_get_dev(hw);
 	uint8_t pos;
 	struct virtio_pci_cap cap;
 	int ret;
 
-	if (rte_pci_map_device(dev)) {
+	if (rte_pci_map_device(pci_dev)) {
 		PMD_INIT_LOG(DEBUG, "failed to map pci device!");
 		return -1;
 	}
 
-	ret = rte_pci_read_config(dev, &pos, 1, PCI_CAPABILITY_LIST);
+	ret = rte_pci_read_config(pci_dev, &pos, 1, PCI_CAPABILITY_LIST);
 	if (ret != 1) {
 		PMD_INIT_LOG(DEBUG,
 			     "failed to read pci capability list, ret %d", ret);
@@ -584,7 +652,7 @@ virtio_read_caps(struct rte_pci_device *dev, struct virtio_hw *hw)
 	}
 
 	while (pos) {
-		ret = rte_pci_read_config(dev, &cap, 2, pos);
+		ret = rte_pci_read_config(pci_dev, &cap, 2, pos);
 		if (ret != 2) {
 			PMD_INIT_LOG(DEBUG,
 				     "failed to read pci cap at pos: %x ret %d",
@@ -600,7 +668,7 @@ virtio_read_caps(struct rte_pci_device *dev, struct virtio_hw *hw)
 			 */
 			uint16_t flags;
 
-			ret = rte_pci_read_config(dev, &flags, sizeof(flags),
+			ret = rte_pci_read_config(pci_dev, &flags, sizeof(flags),
 					pos + 2);
 			if (ret != sizeof(flags)) {
 				PMD_INIT_LOG(DEBUG,
@@ -610,9 +678,9 @@ virtio_read_caps(struct rte_pci_device *dev, struct virtio_hw *hw)
 			}
 
 			if (flags & PCI_MSIX_ENABLE)
-				hw->use_msix = VIRTIO_MSIX_ENABLED;
+				dev->msix_status = VIRTIO_MSIX_ENABLED;
 			else
-				hw->use_msix = VIRTIO_MSIX_DISABLED;
+				dev->msix_status = VIRTIO_MSIX_DISABLED;
 		}
 
 		if (cap.cap_vndr != PCI_CAP_ID_VNDR) {
@@ -622,7 +690,7 @@ virtio_read_caps(struct rte_pci_device *dev, struct virtio_hw *hw)
 			goto next;
 		}
 
-		ret = rte_pci_read_config(dev, &cap, sizeof(cap), pos);
+		ret = rte_pci_read_config(pci_dev, &cap, sizeof(cap), pos);
 		if (ret != sizeof(cap)) {
 			PMD_INIT_LOG(DEBUG,
 				     "failed to read pci cap at pos: %x ret %d",
@@ -636,24 +704,24 @@ virtio_read_caps(struct rte_pci_device *dev, struct virtio_hw *hw)
 
 		switch (cap.cfg_type) {
 		case VIRTIO_PCI_CAP_COMMON_CFG:
-			hw->common_cfg = get_cfg_addr(dev, &cap);
+			dev->common_cfg = get_cfg_addr(pci_dev, &cap);
 			break;
 		case VIRTIO_PCI_CAP_NOTIFY_CFG:
-			ret = rte_pci_read_config(dev,
-					&hw->notify_off_multiplier,
+			ret = rte_pci_read_config(pci_dev,
+					&dev->notify_off_multiplier,
 					4, pos + sizeof(cap));
 			if (ret != 4)
 				PMD_INIT_LOG(DEBUG,
 					"failed to read notify_off_multiplier, ret %d",
 					ret);
 			else
-				hw->notify_base = get_cfg_addr(dev, &cap);
+				dev->notify_base = get_cfg_addr(pci_dev, &cap);
 			break;
 		case VIRTIO_PCI_CAP_DEVICE_CFG:
-			hw->dev_cfg = get_cfg_addr(dev, &cap);
+			dev->dev_cfg = get_cfg_addr(pci_dev, &cap);
 			break;
 		case VIRTIO_PCI_CAP_ISR_CFG:
-			hw->isr = get_cfg_addr(dev, &cap);
+			dev->isr = get_cfg_addr(pci_dev, &cap);
 			break;
 		}
 
@@ -661,19 +729,19 @@ next:
 		pos = cap.cap_next;
 	}
 
-	if (hw->common_cfg == NULL || hw->notify_base == NULL ||
-	    hw->dev_cfg == NULL    || hw->isr == NULL) {
+	if (dev->common_cfg == NULL || dev->notify_base == NULL ||
+	    dev->dev_cfg == NULL    || dev->isr == NULL) {
 		PMD_INIT_LOG(INFO, "no modern virtio pci device found.");
 		return -1;
 	}
 
 	PMD_INIT_LOG(INFO, "found modern virtio pci device.");
 
-	PMD_INIT_LOG(DEBUG, "common cfg mapped at: %p", hw->common_cfg);
-	PMD_INIT_LOG(DEBUG, "device cfg mapped at: %p", hw->dev_cfg);
-	PMD_INIT_LOG(DEBUG, "isr cfg mapped at: %p", hw->isr);
+	PMD_INIT_LOG(DEBUG, "common cfg mapped at: %p", dev->common_cfg);
+	PMD_INIT_LOG(DEBUG, "device cfg mapped at: %p", dev->dev_cfg);
+	PMD_INIT_LOG(DEBUG, "isr cfg mapped at: %p", dev->isr);
 	PMD_INIT_LOG(DEBUG, "notify base: %p, notify off multiplier: %u",
-		hw->notify_base, hw->notify_off_multiplier);
+		dev->notify_base, dev->notify_off_multiplier);
 
 	return 0;
 }
@@ -687,26 +755,30 @@ next:
  * Return 0 on success.
  */
 int
-vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw)
+vtpci_init(struct rte_pci_device *pci_dev, struct virtio_pci_dev *dev)
 {
+	struct virtio_hw *hw = &dev->hw;
+
+	RTE_BUILD_BUG_ON(offsetof(struct virtio_pci_dev, hw) != 0);
+
 	/*
 	 * Try if we can succeed reading virtio pci caps, which exists
 	 * only on modern pci device. If failed, we fallback to legacy
 	 * virtio handling.
 	 */
-	if (virtio_read_caps(dev, hw) == 0) {
+	if (virtio_read_caps(pci_dev, hw) == 0) {
 		PMD_INIT_LOG(INFO, "modern virtio pci detected.");
-		virtio_hw_internal[hw->port_id].vtpci_ops = &modern_ops;
-		hw->modern = 1;
-		return 0;
+		VIRTIO_OPS(hw) = &modern_ops;
+		dev->modern = true;
+		goto msix_detect;
 	}
 
 	PMD_INIT_LOG(INFO, "trying with legacy virtio pci.");
-	if (rte_pci_ioport_map(dev, 0, VTPCI_IO(hw)) < 0) {
-		rte_pci_unmap_device(dev);
-		if (dev->kdrv == RTE_PCI_KDRV_UNKNOWN &&
-		    (!dev->device.devargs ||
-		     dev->device.devargs->bus !=
+	if (rte_pci_ioport_map(pci_dev, 0, VTPCI_IO(hw)) < 0) {
+		rte_pci_unmap_device(pci_dev);
+		if (pci_dev->kdrv == RTE_PCI_KDRV_UNKNOWN &&
+		    (!pci_dev->device.devargs ||
+		     pci_dev->device.devargs->bus !=
 		     rte_bus_find_by_name("pci"))) {
 			PMD_INIT_LOG(INFO,
 				"skip kernel managed virtio device.");
@@ -715,56 +787,21 @@ vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw)
 		return -1;
 	}
 
-	virtio_hw_internal[hw->port_id].vtpci_ops = &legacy_ops;
-	hw->modern   = 0;
+	VIRTIO_OPS(hw) = &legacy_ops;
+	dev->modern = false;
+
+msix_detect:
+	VIRTIO_OPS(hw)->intr_detect(hw);
 
 	return 0;
 }
 
-enum virtio_msix_status
-vtpci_msix_detect(struct rte_pci_device *dev)
+void vtpci_legacy_ioport_unmap(struct virtio_hw *hw)
 {
-	uint8_t pos;
-	int ret;
+	rte_pci_ioport_unmap(VTPCI_IO(hw));
+}
 
-	ret = rte_pci_read_config(dev, &pos, 1, PCI_CAPABILITY_LIST);
-	if (ret != 1) {
-		PMD_INIT_LOG(DEBUG,
-			     "failed to read pci capability list, ret %d", ret);
-		return VIRTIO_MSIX_NONE;
-	}
-
-	while (pos) {
-		uint8_t cap[2];
-
-		ret = rte_pci_read_config(dev, cap, sizeof(cap), pos);
-		if (ret != sizeof(cap)) {
-			PMD_INIT_LOG(DEBUG,
-				     "failed to read pci cap at pos: %x ret %d",
-				     pos, ret);
-			break;
-		}
-
-		if (cap[0] == PCI_CAP_ID_MSIX) {
-			uint16_t flags;
-
-			ret = rte_pci_read_config(dev, &flags, sizeof(flags),
-					pos + sizeof(cap));
-			if (ret != sizeof(flags)) {
-				PMD_INIT_LOG(DEBUG,
-					     "failed to read pci cap at pos:"
-					     " %x ret %d", pos + 2, ret);
-				break;
-			}
-
-			if (flags & PCI_MSIX_ENABLE)
-				return VIRTIO_MSIX_ENABLED;
-			else
-				return VIRTIO_MSIX_DISABLED;
-		}
-
-		pos = cap[1];
-	}
-
-	return VIRTIO_MSIX_NONE;
+int vtpci_legacy_ioport_map(struct virtio_hw *hw)
+{
+	return rte_pci_ioport_map(VTPCI_DEV(hw), 0, VTPCI_IO(hw));
 }

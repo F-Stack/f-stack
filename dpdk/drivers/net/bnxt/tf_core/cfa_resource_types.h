@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -57,7 +57,7 @@
 #define CFA_RESOURCE_TYPE_P59_RANGE_PROF         0x15UL
 /* Range */
 #define CFA_RESOURCE_TYPE_P59_RANGE              0x16UL
-/* Link Aggrigation */
+/* Link Aggregation */
 #define CFA_RESOURCE_TYPE_P59_LAG                0x17UL
 /* VEB TCAM */
 #define CFA_RESOURCE_TYPE_P59_VEB_TCAM           0x18UL
@@ -104,8 +104,11 @@
 #define CFA_RESOURCE_TYPE_P58_WC_FKB             0x12UL
 /* VEB TCAM */
 #define CFA_RESOURCE_TYPE_P58_VEB_TCAM           0x13UL
-#define CFA_RESOURCE_TYPE_P58_LAST              CFA_RESOURCE_TYPE_P58_VEB_TCAM
-
+/* Metadata */
+#define CFA_RESOURCE_TYPE_P58_METADATA           0x14UL
+/* Meter drop counter */
+#define CFA_RESOURCE_TYPE_P58_METER_DROP_CNT     0x15UL
+#define CFA_RESOURCE_TYPE_P58_LAST              CFA_RESOURCE_TYPE_P58_METER_DROP_CNT
 
 /* Multicast Group */
 #define CFA_RESOURCE_TYPE_P45_MCG                 0x0UL
@@ -253,6 +256,5 @@
 /* Table Scope */
 #define CFA_RESOURCE_TYPE_P4_TBL_SCOPE           0x22UL
 #define CFA_RESOURCE_TYPE_P4_LAST               CFA_RESOURCE_TYPE_P4_TBL_SCOPE
-
 
 #endif /* _CFA_RESOURCE_TYPES_H_ */

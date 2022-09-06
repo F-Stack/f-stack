@@ -18,6 +18,7 @@
 #include <rte_bitmap.h>
 
 #include <mlx5_common.h>
+#include <mlx5_common_utils.h>
 
 #include "mlx5_defs.h"
 
@@ -29,9 +30,11 @@
 
 extern int mlx5_logtype;
 
+#define MLX5_NET_LOG_PREFIX "mlx5_net"
+
 /* Generic printf()-like logging macro with automatic line feed. */
 #define DRV_LOG(level, ...) \
-	PMD_DRV_LOG_(level, mlx5_logtype, MLX5_DRIVER_NAME, \
+	PMD_DRV_LOG_(level, mlx5_logtype, MLX5_NET_LOG_PREFIX, \
 		__VA_ARGS__ PMD_DRV_LOG_STRIP PMD_DRV_LOG_OPAREN, \
 		PMD_DRV_LOG_CPAREN)
 
@@ -205,6 +208,12 @@ struct mlx5_indexed_pool_config {
 	uint32_t need_lock:1;
 	/* Lock is needed for multiple thread usage. */
 	uint32_t release_mem_en:1; /* Rlease trunk when it is free. */
+	uint32_t max_idx; /* The maximum index can be allocated. */
+	uint32_t per_core_cache;
+	/*
+	 * Cache entry number per core for performance. Should not be
+	 * set with release_mem_en.
+	 */
 	const char *type; /* Memory allocate type name. */
 	void *(*malloc)(uint32_t flags, size_t size, unsigned int align,
 			int socket);
@@ -221,14 +230,43 @@ struct mlx5_indexed_trunk {
 	uint8_t data[] __rte_cache_aligned; /* Entry data start. */
 };
 
+struct mlx5_indexed_cache {
+	struct mlx5_indexed_trunk **trunks;
+	volatile uint32_t n_trunk_valid; /* Trunks allocated. */
+	uint32_t n_trunk; /* Trunk pointer array size. */
+	uint32_t ref_cnt;
+	uint32_t len;
+	uint32_t idx[];
+};
+
+struct mlx5_ipool_per_lcore {
+	struct mlx5_indexed_cache *lc;
+	uint32_t len; /**< Current cache count. */
+	uint32_t idx[]; /**< Cache objects. */
+};
+
 struct mlx5_indexed_pool {
 	struct mlx5_indexed_pool_config cfg; /* Indexed pool configuration. */
-	rte_spinlock_t lock; /* Pool lock for multiple thread usage. */
-	uint32_t n_trunk_valid; /* Trunks allocated. */
-	uint32_t n_trunk; /* Trunk pointer array size. */
+	rte_spinlock_t rsz_lock; /* Pool lock for multiple thread usage. */
+	rte_spinlock_t lcore_lock;
 	/* Dim of trunk pointer array. */
-	struct mlx5_indexed_trunk **trunks;
-	uint32_t free_list; /* Index to first free trunk. */
+	union {
+		struct {
+			uint32_t n_trunk_valid; /* Trunks allocated. */
+			uint32_t n_trunk; /* Trunk pointer array size. */
+			struct mlx5_indexed_trunk **trunks;
+			uint32_t free_list; /* Index to first free trunk. */
+		};
+		struct {
+			struct mlx5_indexed_cache *gc;
+			/* Global cache. */
+			struct mlx5_ipool_per_lcore *cache[RTE_MAX_LCORE + 1];
+			/* Local cache. */
+			struct rte_bitmap *ibmp;
+			void *bmp_mem;
+			/* Allocate objects bitmap. Use during flush. */
+		};
+	};
 #ifdef POOL_DEBUG
 	uint32_t n_entry;
 	uint32_t trunk_new;
@@ -258,374 +296,6 @@ log2above(unsigned int v)
 		r |= (v & 1);
 	return l + r;
 }
-
-#define MLX5_HLIST_DIRECT_KEY 0x0001 /* Use the key directly as hash index. */
-#define MLX5_HLIST_WRITE_MOST 0x0002 /* List mostly used for append new. */
-
-/** Maximum size of string for naming the hlist table. */
-#define MLX5_HLIST_NAMESIZE			32
-
-struct mlx5_hlist;
-
-/**
- * Structure of the entry in the hash list, user should define its own struct
- * that contains this in order to store the data. The 'key' is 64-bits right
- * now and its user's responsibility to guarantee there is no collision.
- */
-struct mlx5_hlist_entry {
-	LIST_ENTRY(mlx5_hlist_entry) next; /* entry pointers in the list. */
-	uint64_t key; /* user defined 'key', could be the hash signature. */
-	uint32_t ref_cnt; /* Reference count. */
-};
-
-/** Structure for hash head. */
-LIST_HEAD(mlx5_hlist_head, mlx5_hlist_entry);
-
-/**
- * Type of callback function for entry removal.
- *
- * @param list
- *   The hash list.
- * @param entry
- *   The entry in the list.
- */
-typedef void (*mlx5_hlist_remove_cb)(struct mlx5_hlist *list,
-				     struct mlx5_hlist_entry *entry);
-
-/**
- * Type of function for user defined matching.
- *
- * @param list
- *   The hash list.
- * @param entry
- *   The entry in the list.
- * @param key
- *   The new entry key.
- * @param ctx
- *   The pointer to new entry context.
- *
- * @return
- *   0 if matching, non-zero number otherwise.
- */
-typedef int (*mlx5_hlist_match_cb)(struct mlx5_hlist *list,
-				   struct mlx5_hlist_entry *entry,
-				   uint64_t key, void *ctx);
-
-/**
- * Type of function for user defined hash list entry creation.
- *
- * @param list
- *   The hash list.
- * @param key
- *   The key of the new entry.
- * @param ctx
- *   The pointer to new entry context.
- *
- * @return
- *   Pointer to allocated entry on success, NULL otherwise.
- */
-typedef struct mlx5_hlist_entry *(*mlx5_hlist_create_cb)
-				  (struct mlx5_hlist *list,
-				   uint64_t key, void *ctx);
-
-/**
- * Hash list table structure
- *
- * Entry in hash list could be reused if entry already exists, reference
- * count will increase and the existing entry returns.
- *
- * When destroy an entry from list, decrease reference count and only
- * destroy when no further reference.
- */
-struct mlx5_hlist {
-	char name[MLX5_HLIST_NAMESIZE]; /**< Name of the hash list. */
-	/**< number of heads, need to be power of 2. */
-	uint32_t table_sz;
-	uint32_t entry_sz; /**< Size of entry, used to allocate entry. */
-	/**< mask to get the index of the list heads. */
-	uint32_t mask;
-	rte_rwlock_t lock;
-	uint32_t gen_cnt; /* List modification will update generation count. */
-	bool direct_key; /* Use the new entry key directly as hash index. */
-	bool write_most; /* List mostly used for append new or destroy. */
-	void *ctx;
-	mlx5_hlist_create_cb cb_create; /**< entry create callback. */
-	mlx5_hlist_match_cb cb_match; /**< entry match callback. */
-	mlx5_hlist_remove_cb cb_remove; /**< entry remove callback. */
-	struct mlx5_hlist_head heads[];	/**< list head arrays. */
-};
-
-/**
- * Create a hash list table, the user can specify the list heads array size
- * of the table, now the size should be a power of 2 in order to get better
- * distribution for the entries. Each entry is a part of the whole data element
- * and the caller should be responsible for the data element's allocation and
- * cleanup / free. Key of each entry will be calculated with CRC in order to
- * generate a little fairer distribution.
- *
- * @param name
- *   Name of the hash list(optional).
- * @param size
- *   Heads array size of the hash list.
- * @param entry_size
- *   Entry size to allocate if cb_create not specified.
- * @param flags
- *   The hash list attribute flags.
- * @param cb_create
- *   Callback function for entry create.
- * @param cb_match
- *   Callback function for entry match.
- * @param cb_destroy
- *   Callback function for entry destroy.
- * @return
- *   Pointer of the hash list table created, NULL on failure.
- */
-struct mlx5_hlist *mlx5_hlist_create(const char *name, uint32_t size,
-				     uint32_t entry_size, uint32_t flags,
-				     mlx5_hlist_create_cb cb_create,
-				     mlx5_hlist_match_cb cb_match,
-				     mlx5_hlist_remove_cb cb_destroy);
-
-/**
- * Search an entry matching the key.
- *
- * Result returned might be destroyed by other thread, must use
- * this function only in main thread.
- *
- * @param h
- *   Pointer to the hast list table.
- * @param key
- *   Key for the searching entry.
- * @param ctx
- *   Common context parameter used by entry callback function.
- *
- * @return
- *   Pointer of the hlist entry if found, NULL otherwise.
- */
-struct mlx5_hlist_entry *mlx5_hlist_lookup(struct mlx5_hlist *h, uint64_t key,
-					   void *ctx);
-
-/**
- * Insert an entry to the hash list table, the entry is only part of whole data
- * element and a 64B key is used for matching. User should construct the key or
- * give a calculated hash signature and guarantee there is no collision.
- *
- * @param h
- *   Pointer to the hast list table.
- * @param entry
- *   Entry to be inserted into the hash list table.
- * @param ctx
- *   Common context parameter used by callback function.
- *
- * @return
- *   registered entry on success, NULL otherwise
- */
-struct mlx5_hlist_entry *mlx5_hlist_register(struct mlx5_hlist *h, uint64_t key,
-					     void *ctx);
-
-/**
- * Remove an entry from the hash list table. User should guarantee the validity
- * of the entry.
- *
- * @param h
- *   Pointer to the hast list table. (not used)
- * @param entry
- *   Entry to be removed from the hash list table.
- * @return
- *   0 on entry removed, 1 on entry still referenced.
- */
-int mlx5_hlist_unregister(struct mlx5_hlist *h, struct mlx5_hlist_entry *entry);
-
-/**
- * Destroy the hash list table, all the entries already inserted into the lists
- * will be handled by the callback function provided by the user (including
- * free if needed) before the table is freed.
- *
- * @param h
- *   Pointer to the hast list table.
- */
-void mlx5_hlist_destroy(struct mlx5_hlist *h);
-
-/************************ cache list *****************************/
-
-/** Maximum size of string for naming. */
-#define MLX5_NAME_SIZE			32
-
-struct mlx5_cache_list;
-
-/**
- * Structure of the entry in the cache list, user should define its own struct
- * that contains this in order to store the data.
- */
-struct mlx5_cache_entry {
-	LIST_ENTRY(mlx5_cache_entry) next; /* Entry pointers in the list. */
-	uint32_t ref_cnt; /* Reference count. */
-};
-
-/**
- * Type of callback function for entry removal.
- *
- * @param list
- *   The cache list.
- * @param entry
- *   The entry in the list.
- */
-typedef void (*mlx5_cache_remove_cb)(struct mlx5_cache_list *list,
-				     struct mlx5_cache_entry *entry);
-
-/**
- * Type of function for user defined matching.
- *
- * @param list
- *   The cache list.
- * @param entry
- *   The entry in the list.
- * @param ctx
- *   The pointer to new entry context.
- *
- * @return
- *   0 if matching, non-zero number otherwise.
- */
-typedef int (*mlx5_cache_match_cb)(struct mlx5_cache_list *list,
-				   struct mlx5_cache_entry *entry, void *ctx);
-
-/**
- * Type of function for user defined cache list entry creation.
- *
- * @param list
- *   The cache list.
- * @param entry
- *   The new allocated entry, NULL if list entry size unspecified,
- *   New entry has to be allocated in callback and return.
- * @param ctx
- *   The pointer to new entry context.
- *
- * @return
- *   Pointer of entry on success, NULL otherwise.
- */
-typedef struct mlx5_cache_entry *(*mlx5_cache_create_cb)
-				 (struct mlx5_cache_list *list,
-				  struct mlx5_cache_entry *entry,
-				  void *ctx);
-
-/**
- * Linked cache list structure.
- *
- * Entry in cache list could be reused if entry already exists,
- * reference count will increase and the existing entry returns.
- *
- * When destroy an entry from list, decrease reference count and only
- * destroy when no further reference.
- *
- * Linked list cache is designed for limited number of entries cache,
- * read mostly, less modification.
- *
- * For huge amount of entries cache, please consider hash list cache.
- *
- */
-struct mlx5_cache_list {
-	char name[MLX5_NAME_SIZE]; /**< Name of the cache list. */
-	uint32_t entry_sz; /**< Entry size, 0: use create callback. */
-	rte_rwlock_t lock; /* read/write lock. */
-	uint32_t gen_cnt; /* List modification will update generation count. */
-	uint32_t count; /* number of entries in list. */
-	void *ctx; /* user objects target to callback. */
-	mlx5_cache_create_cb cb_create; /**< entry create callback. */
-	mlx5_cache_match_cb cb_match; /**< entry match callback. */
-	mlx5_cache_remove_cb cb_remove; /**< entry remove callback. */
-	LIST_HEAD(mlx5_cache_head, mlx5_cache_entry) head;
-};
-
-/**
- * Initialize a cache list.
- *
- * @param list
- *   Pointer to the hast list table.
- * @param name
- *   Name of the cache list.
- * @param entry_size
- *   Entry size to allocate, 0 to allocate by creation callback.
- * @param ctx
- *   Pointer to the list context data.
- * @param cb_create
- *   Callback function for entry create.
- * @param cb_match
- *   Callback function for entry match.
- * @param cb_remove
- *   Callback function for entry remove.
- * @return
- *   0 on success, otherwise failure.
- */
-int mlx5_cache_list_init(struct mlx5_cache_list *list,
-			 const char *name, uint32_t entry_size, void *ctx,
-			 mlx5_cache_create_cb cb_create,
-			 mlx5_cache_match_cb cb_match,
-			 mlx5_cache_remove_cb cb_remove);
-
-/**
- * Search an entry matching the key.
- *
- * Result returned might be destroyed by other thread, must use
- * this function only in main thread.
- *
- * @param list
- *   Pointer to the cache list.
- * @param ctx
- *   Common context parameter used by entry callback function.
- *
- * @return
- *   Pointer of the cache entry if found, NULL otherwise.
- */
-struct mlx5_cache_entry *mlx5_cache_lookup(struct mlx5_cache_list *list,
-					   void *ctx);
-
-/**
- * Reuse or create an entry to the cache list.
- *
- * @param list
- *   Pointer to the hast list table.
- * @param ctx
- *   Common context parameter used by callback function.
- *
- * @return
- *   registered entry on success, NULL otherwise
- */
-struct mlx5_cache_entry *mlx5_cache_register(struct mlx5_cache_list *list,
-					     void *ctx);
-
-/**
- * Remove an entry from the cache list.
- *
- * User should guarantee the validity of the entry.
- *
- * @param list
- *   Pointer to the hast list.
- * @param entry
- *   Entry to be removed from the cache list table.
- * @return
- *   0 on entry removed, 1 on entry still referenced.
- */
-int mlx5_cache_unregister(struct mlx5_cache_list *list,
-			  struct mlx5_cache_entry *entry);
-
-/**
- * Destroy the cache list.
- *
- * @param list
- *   Pointer to the cache list.
- */
-void mlx5_cache_list_destroy(struct mlx5_cache_list *list);
-
-/**
- * Get entry number from the cache list.
- *
- * @param list
- *   Pointer to the hast list.
- * @return
- *   Cache list entry number.
- */
-uint32_t
-mlx5_cache_list_get_entry_num(struct mlx5_cache_list *list);
 
 /********************************* indexed pool *************************/
 
@@ -726,6 +396,30 @@ int mlx5_ipool_destroy(struct mlx5_indexed_pool *pool);
 void mlx5_ipool_dump(struct mlx5_indexed_pool *pool);
 
 /**
+ * This function flushes all the cache index back to pool trunk.
+ *
+ * @param pool
+ *   Pointer to the index memory pool handler.
+ *
+ */
+
+void mlx5_ipool_flush_cache(struct mlx5_indexed_pool *pool);
+
+/**
+ * This function gets the available entry from pos.
+ *
+ * @param pool
+ *   Pointer to the index memory pool handler.
+ * @param pos
+ *   Pointer to the index position start from.
+ *
+ * @return
+ *  - Pointer to the next available entry.
+ *
+ */
+void *mlx5_ipool_get_next(struct mlx5_indexed_pool *pool, uint32_t *pos);
+
+/**
  * This function allocates new empty Three-level table.
  *
  * @param type
@@ -766,34 +460,6 @@ int32_t mlx5_l3t_get_entry(struct mlx5_l3t_tbl *tbl, uint32_t idx,
 			    union mlx5_l3t_data *data);
 
 /**
- * This function gets the index entry from Three-level table.
- *
- * If the index entry is not available, allocate new one by callback
- * function and fill in the entry.
- *
- * @param tbl
- *   Pointer to the l3t.
- * @param idx
- *   Index to the entry.
- * @param data
- *   Pointer to the memory which saves the entry data.
- *   When function call returns 0, data contains the entry data get from
- *   l3t.
- *   When function call returns -1, data is not modified.
- * @param cb
- *   Callback function to allocate new data.
- * @param ctx
- *   Context for callback function.
- *
- * @return
- *   0 if success, -1 on error.
- */
-
-int32_t mlx5_l3t_prepare_entry(struct mlx5_l3t_tbl *tbl, uint32_t idx,
-			       union mlx5_l3t_data *data,
-			       mlx5_l3t_alloc_callback_fn cb, void *ctx);
-
-/**
  * This function decreases and clear index entry if reference
  * counter is 0 from Three-level table.
  *
@@ -825,6 +491,91 @@ int32_t mlx5_l3t_clear_entry(struct mlx5_l3t_tbl *tbl, uint32_t idx);
  */
 int32_t mlx5_l3t_set_entry(struct mlx5_l3t_tbl *tbl, uint32_t idx,
 			    union mlx5_l3t_data *data);
+
+static inline void *
+mlx5_l3t_get_next(struct mlx5_l3t_tbl *tbl, uint32_t *pos)
+{
+	struct mlx5_l3t_level_tbl *g_tbl, *m_tbl;
+	uint32_t i, j, k, g_start, m_start, e_start;
+	uint32_t idx = *pos;
+	void *e_tbl;
+	struct mlx5_l3t_entry_word *w_e_tbl;
+	struct mlx5_l3t_entry_dword *dw_e_tbl;
+	struct mlx5_l3t_entry_qword *qw_e_tbl;
+	struct mlx5_l3t_entry_ptr *ptr_e_tbl;
+
+	if (!tbl)
+		return NULL;
+	g_tbl = tbl->tbl;
+	if (!g_tbl)
+		return NULL;
+	g_start = (idx >> MLX5_L3T_GT_OFFSET) & MLX5_L3T_GT_MASK;
+	m_start = (idx >> MLX5_L3T_MT_OFFSET) & MLX5_L3T_MT_MASK;
+	e_start = idx & MLX5_L3T_ET_MASK;
+	for (i = g_start; i < MLX5_L3T_GT_SIZE; i++) {
+		m_tbl = g_tbl->tbl[i];
+		if (!m_tbl) {
+			/* Jump to new table, reset the sub table start. */
+			m_start = 0;
+			e_start = 0;
+			continue;
+		}
+		for (j = m_start; j < MLX5_L3T_MT_SIZE; j++) {
+			if (!m_tbl->tbl[j]) {
+				/*
+				 * Jump to new table, reset the sub table
+				 * start.
+				 */
+				e_start = 0;
+				continue;
+			}
+			e_tbl = m_tbl->tbl[j];
+			switch (tbl->type) {
+			case MLX5_L3T_TYPE_WORD:
+				w_e_tbl = (struct mlx5_l3t_entry_word *)e_tbl;
+				for (k = e_start; k < MLX5_L3T_ET_SIZE; k++) {
+					if (!w_e_tbl->entry[k].data)
+						continue;
+					*pos = (i << MLX5_L3T_GT_OFFSET) |
+					       (j << MLX5_L3T_MT_OFFSET) | k;
+					return (void *)&w_e_tbl->entry[k].data;
+				}
+				break;
+			case MLX5_L3T_TYPE_DWORD:
+				dw_e_tbl = (struct mlx5_l3t_entry_dword *)e_tbl;
+				for (k = e_start; k < MLX5_L3T_ET_SIZE; k++) {
+					if (!dw_e_tbl->entry[k].data)
+						continue;
+					*pos = (i << MLX5_L3T_GT_OFFSET) |
+					       (j << MLX5_L3T_MT_OFFSET) | k;
+					return (void *)&dw_e_tbl->entry[k].data;
+				}
+				break;
+			case MLX5_L3T_TYPE_QWORD:
+				qw_e_tbl = (struct mlx5_l3t_entry_qword *)e_tbl;
+				for (k = e_start; k < MLX5_L3T_ET_SIZE; k++) {
+					if (!qw_e_tbl->entry[k].data)
+						continue;
+					*pos = (i << MLX5_L3T_GT_OFFSET) |
+					       (j << MLX5_L3T_MT_OFFSET) | k;
+					return (void *)&qw_e_tbl->entry[k].data;
+				}
+				break;
+			default:
+				ptr_e_tbl = (struct mlx5_l3t_entry_ptr *)e_tbl;
+				for (k = e_start; k < MLX5_L3T_ET_SIZE; k++) {
+					if (!ptr_e_tbl->entry[k].data)
+						continue;
+					*pos = (i << MLX5_L3T_GT_OFFSET) |
+					       (j << MLX5_L3T_MT_OFFSET) | k;
+					return ptr_e_tbl->entry[k].data;
+				}
+				break;
+			}
+		}
+	}
+	return NULL;
+}
 
 /*
  * Macros for linked list based on indexed memory.
@@ -900,5 +651,15 @@ struct {								\
 	     (idx) ? mlx5_ipool_get(pool, (idx)) : NULL; (elem);	\
 	     idx = (elem)->field.next, (elem) =				\
 	     (idx) ? mlx5_ipool_get(pool, idx) : NULL)
+
+#define MLX5_L3T_FOREACH(tbl, idx, entry)				\
+	for (idx = 0, (entry) = mlx5_l3t_get_next((tbl), &idx);		\
+	     (entry);							\
+	     idx++, (entry) = mlx5_l3t_get_next((tbl), &idx))
+
+#define MLX5_IPOOL_FOREACH(ipool, idx, entry)				\
+	for ((idx) = 0, mlx5_ipool_flush_cache((ipool)),		\
+	    (entry) = mlx5_ipool_get_next((ipool), &idx);		\
+	    (entry); idx++, (entry) = mlx5_ipool_get_next((ipool), &idx))
 
 #endif /* RTE_PMD_MLX5_UTILS_H_ */

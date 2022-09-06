@@ -17,8 +17,8 @@
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_malloc.h>
@@ -96,7 +96,7 @@ static int eth_igb_xstats_get_names(struct rte_eth_dev *dev,
 				    struct rte_eth_xstat_name *xstats_names,
 				    unsigned int size);
 static int eth_igb_xstats_get_names_by_id(struct rte_eth_dev *dev,
-		struct rte_eth_xstat_name *xstats_names, const uint64_t *ids,
+		const uint64_t *ids, struct rte_eth_xstat_name *xstats_names,
 		unsigned int limit);
 static int eth_igb_stats_reset(struct rte_eth_dev *dev);
 static int eth_igb_xstats_reset(struct rte_eth_dev *dev);
@@ -194,10 +194,8 @@ static int igb_add_5tuple_filter_82576(struct rte_eth_dev *dev,
 			struct rte_eth_ntuple_filter *ntuple_filter);
 static int igb_remove_5tuple_filter_82576(struct rte_eth_dev *dev,
 			struct rte_eth_ntuple_filter *ntuple_filter);
-static int eth_igb_filter_ctrl(struct rte_eth_dev *dev,
-		     enum rte_filter_type filter_type,
-		     enum rte_filter_op filter_op,
-		     void *arg);
+static int eth_igb_flow_ops_get(struct rte_eth_dev *dev,
+				const struct rte_flow_ops **ops);
 static int eth_igb_get_reg_length(struct rte_eth_dev *dev);
 static int eth_igb_get_regs(struct rte_eth_dev *dev,
 		struct rte_dev_reg_info *regs);
@@ -374,7 +372,7 @@ static const struct eth_dev_ops eth_igb_ops = {
 	.reta_query           = eth_igb_rss_reta_query,
 	.rss_hash_update      = eth_igb_rss_hash_update,
 	.rss_hash_conf_get    = eth_igb_rss_hash_conf_get,
-	.filter_ctrl          = eth_igb_filter_ctrl,
+	.flow_ops_get         = eth_igb_flow_ops_get,
 	.set_mc_addr_list     = eth_igb_set_mc_addr_list,
 	.rxq_info_get         = igb_rxq_info_get,
 	.txq_info_get         = igb_txq_info_get,
@@ -517,7 +515,7 @@ igb_intr_enable(struct rte_eth_dev *dev)
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	if (rte_intr_allow_others(intr_handle) &&
 		dev->data->dev_conf.intr_conf.lsc != 0) {
@@ -534,7 +532,7 @@ igb_intr_disable(struct rte_eth_dev *dev)
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	if (rte_intr_allow_others(intr_handle) &&
 		dev->data->dev_conf.intr_conf.lsc != 0) {
@@ -728,7 +726,6 @@ eth_igb_dev_init(struct rte_eth_dev *eth_dev)
 
 	eth_dev->dev_ops = &eth_igb_ops;
 	eth_dev->rx_queue_count = eth_igb_rx_queue_count;
-	eth_dev->rx_descriptor_done   = eth_igb_rx_descriptor_done;
 	eth_dev->rx_descriptor_status = eth_igb_rx_descriptor_status;
 	eth_dev->tx_descriptor_status = eth_igb_tx_descriptor_status;
 	eth_dev->rx_pkt_burst = &eth_igb_recv_pkts;
@@ -854,12 +851,12 @@ eth_igb_dev_init(struct rte_eth_dev *eth_dev)
 		     eth_dev->data->port_id, pci_dev->id.vendor_id,
 		     pci_dev->id.device_id);
 
-	rte_intr_callback_register(&pci_dev->intr_handle,
+	rte_intr_callback_register(pci_dev->intr_handle,
 				   eth_igb_interrupt_handler,
 				   (void *)eth_dev);
 
 	/* enable uio/vfio intr/eventfd mapping */
-	rte_intr_enable(&pci_dev->intr_handle);
+	rte_intr_enable(pci_dev->intr_handle);
 
 	/* enable support intr */
 	igb_intr_enable(eth_dev);
@@ -921,7 +918,6 @@ eth_igbvf_dev_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	eth_dev->dev_ops = &igbvf_eth_dev_ops;
-	eth_dev->rx_descriptor_done   = eth_igb_rx_descriptor_done;
 	eth_dev->rx_descriptor_status = eth_igb_rx_descriptor_status;
 	eth_dev->tx_descriptor_status = eth_igb_tx_descriptor_status;
 	eth_dev->rx_pkt_burst = &eth_igb_recv_pkts;
@@ -977,13 +973,8 @@ eth_igbvf_dev_init(struct rte_eth_dev *eth_dev)
 		rte_eth_random_addr(perm_addr->addr_bytes);
 		PMD_INIT_LOG(INFO, "\tVF MAC address not assigned by Host PF");
 		PMD_INIT_LOG(INFO, "\tAssign randomly generated MAC address "
-			     "%02x:%02x:%02x:%02x:%02x:%02x",
-			     perm_addr->addr_bytes[0],
-			     perm_addr->addr_bytes[1],
-			     perm_addr->addr_bytes[2],
-			     perm_addr->addr_bytes[3],
-			     perm_addr->addr_bytes[4],
-			     perm_addr->addr_bytes[5]);
+			     RTE_ETHER_ADDR_PRT_FMT,
+			     RTE_ETHER_ADDR_BYTES(perm_addr));
 	}
 
 	diag = e1000_rar_set(hw, perm_addr->addr_bytes, 0);
@@ -1001,7 +992,7 @@ eth_igbvf_dev_init(struct rte_eth_dev *eth_dev)
 		     eth_dev->data->port_id, pci_dev->id.vendor_id,
 		     pci_dev->id.device_id, "igb_mac_82576_vf");
 
-	intr_handle = &pci_dev->intr_handle;
+	intr_handle = pci_dev->intr_handle;
 	rte_intr_callback_register(intr_handle,
 				   eth_igbvf_interrupt_handler, eth_dev);
 
@@ -1082,21 +1073,21 @@ igb_check_mq_mode(struct rte_eth_dev *dev)
 	uint16_t nb_rx_q = dev->data->nb_rx_queues;
 	uint16_t nb_tx_q = dev->data->nb_tx_queues;
 
-	if ((rx_mq_mode & ETH_MQ_RX_DCB_FLAG) ||
-	    tx_mq_mode == ETH_MQ_TX_DCB ||
-	    tx_mq_mode == ETH_MQ_TX_VMDQ_DCB) {
+	if ((rx_mq_mode & RTE_ETH_MQ_RX_DCB_FLAG) ||
+	    tx_mq_mode == RTE_ETH_MQ_TX_DCB ||
+	    tx_mq_mode == RTE_ETH_MQ_TX_VMDQ_DCB) {
 		PMD_INIT_LOG(ERR, "DCB mode is not supported.");
 		return -EINVAL;
 	}
 	if (RTE_ETH_DEV_SRIOV(dev).active != 0) {
 		/* Check multi-queue mode.
-		 * To no break software we accept ETH_MQ_RX_NONE as this might
+		 * To no break software we accept RTE_ETH_MQ_RX_NONE as this might
 		 * be used to turn off VLAN filter.
 		 */
 
-		if (rx_mq_mode == ETH_MQ_RX_NONE ||
-		    rx_mq_mode == ETH_MQ_RX_VMDQ_ONLY) {
-			dev->data->dev_conf.rxmode.mq_mode = ETH_MQ_RX_VMDQ_ONLY;
+		if (rx_mq_mode == RTE_ETH_MQ_RX_NONE ||
+		    rx_mq_mode == RTE_ETH_MQ_RX_VMDQ_ONLY) {
+			dev->data->dev_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_VMDQ_ONLY;
 			RTE_ETH_DEV_SRIOV(dev).nb_q_per_pool = 1;
 		} else {
 			/* Only support one queue on VFs.
@@ -1108,12 +1099,12 @@ igb_check_mq_mode(struct rte_eth_dev *dev)
 			return -EINVAL;
 		}
 		/* TX mode is not used here, so mode might be ignored.*/
-		if (tx_mq_mode != ETH_MQ_TX_VMDQ_ONLY) {
+		if (tx_mq_mode != RTE_ETH_MQ_TX_VMDQ_ONLY) {
 			/* SRIOV only works in VMDq enable mode */
 			PMD_INIT_LOG(WARNING, "SRIOV is active,"
 					" TX mode %d is not supported. "
 					" Driver will behave as %d mode.",
-					tx_mq_mode, ETH_MQ_TX_VMDQ_ONLY);
+					tx_mq_mode, RTE_ETH_MQ_TX_VMDQ_ONLY);
 		}
 
 		/* check valid queue number */
@@ -1126,17 +1117,17 @@ igb_check_mq_mode(struct rte_eth_dev *dev)
 		/* To no break software that set invalid mode, only display
 		 * warning if invalid mode is used.
 		 */
-		if (rx_mq_mode != ETH_MQ_RX_NONE &&
-		    rx_mq_mode != ETH_MQ_RX_VMDQ_ONLY &&
-		    rx_mq_mode != ETH_MQ_RX_RSS) {
+		if (rx_mq_mode != RTE_ETH_MQ_RX_NONE &&
+		    rx_mq_mode != RTE_ETH_MQ_RX_VMDQ_ONLY &&
+		    rx_mq_mode != RTE_ETH_MQ_RX_RSS) {
 			/* RSS together with VMDq not supported*/
 			PMD_INIT_LOG(ERR, "RX mode %d is not supported.",
 				     rx_mq_mode);
 			return -EINVAL;
 		}
 
-		if (tx_mq_mode != ETH_MQ_TX_NONE &&
-		    tx_mq_mode != ETH_MQ_TX_VMDQ_ONLY) {
+		if (tx_mq_mode != RTE_ETH_MQ_TX_NONE &&
+		    tx_mq_mode != RTE_ETH_MQ_TX_VMDQ_ONLY) {
 			PMD_INIT_LOG(WARNING, "TX mode %d is not supported."
 					" Due to txmode is meaningless in this"
 					" driver, just ignore.",
@@ -1155,8 +1146,8 @@ eth_igb_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
-		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	/* multiple queue mode checking */
 	ret  = igb_check_mq_mode(dev);
@@ -1205,7 +1196,7 @@ eth_igb_start(struct rte_eth_dev *dev)
 	struct e1000_adapter *adapter =
 		E1000_DEV_PRIVATE(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int ret, mask;
 	uint32_t intr_vector = 0;
 	uint32_t ctrl_ext;
@@ -1264,11 +1255,10 @@ eth_igb_start(struct rte_eth_dev *dev)
 			return -1;
 	}
 
-	if (rte_intr_dp_is_en(intr_handle) && !intr_handle->intr_vec) {
-		intr_handle->intr_vec =
-			rte_zmalloc("intr_vec",
-				    dev->data->nb_rx_queues * sizeof(int), 0);
-		if (intr_handle->intr_vec == NULL) {
+	/* Allocate the vector list */
+	if (rte_intr_dp_is_en(intr_handle)) {
+		if (rte_intr_vec_list_alloc(intr_handle, "intr_vec",
+						   dev->data->nb_rx_queues)) {
 			PMD_INIT_LOG(ERR, "Failed to allocate %d rx_queues"
 				     " intr_vec", dev->data->nb_rx_queues);
 			return -ENOMEM;
@@ -1296,8 +1286,8 @@ eth_igb_start(struct rte_eth_dev *dev)
 	/*
 	 * VLAN Offload Settings
 	 */
-	mask = ETH_VLAN_STRIP_MASK | ETH_VLAN_FILTER_MASK | \
-			ETH_VLAN_EXTEND_MASK;
+	mask = RTE_ETH_VLAN_STRIP_MASK | RTE_ETH_VLAN_FILTER_MASK |
+			RTE_ETH_VLAN_EXTEND_MASK;
 	ret = eth_igb_vlan_offload_set(dev, mask);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Unable to set vlan offload");
@@ -1305,7 +1295,7 @@ eth_igb_start(struct rte_eth_dev *dev)
 		return ret;
 	}
 
-	if (dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_VMDQ_ONLY) {
+	if (dev->data->dev_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_VMDQ_ONLY) {
 		/* Enable VLAN filter since VMDq always use VLAN filter */
 		igb_vmdq_vlan_hw_filter_enable(dev);
 	}
@@ -1319,39 +1309,39 @@ eth_igb_start(struct rte_eth_dev *dev)
 
 	/* Setup link speed and duplex */
 	speeds = &dev->data->dev_conf.link_speeds;
-	if (*speeds == ETH_LINK_SPEED_AUTONEG) {
+	if (*speeds == RTE_ETH_LINK_SPEED_AUTONEG) {
 		hw->phy.autoneg_advertised = E1000_ALL_SPEED_DUPLEX;
 		hw->mac.autoneg = 1;
 	} else {
 		num_speeds = 0;
-		autoneg = (*speeds & ETH_LINK_SPEED_FIXED) == 0;
+		autoneg = (*speeds & RTE_ETH_LINK_SPEED_FIXED) == 0;
 
 		/* Reset */
 		hw->phy.autoneg_advertised = 0;
 
-		if (*speeds & ~(ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
-				ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-				ETH_LINK_SPEED_1G | ETH_LINK_SPEED_FIXED)) {
+		if (*speeds & ~(RTE_ETH_LINK_SPEED_10M_HD | RTE_ETH_LINK_SPEED_10M |
+				RTE_ETH_LINK_SPEED_100M_HD | RTE_ETH_LINK_SPEED_100M |
+				RTE_ETH_LINK_SPEED_1G | RTE_ETH_LINK_SPEED_FIXED)) {
 			num_speeds = -1;
 			goto error_invalid_config;
 		}
-		if (*speeds & ETH_LINK_SPEED_10M_HD) {
+		if (*speeds & RTE_ETH_LINK_SPEED_10M_HD) {
 			hw->phy.autoneg_advertised |= ADVERTISE_10_HALF;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_10M) {
+		if (*speeds & RTE_ETH_LINK_SPEED_10M) {
 			hw->phy.autoneg_advertised |= ADVERTISE_10_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_100M_HD) {
+		if (*speeds & RTE_ETH_LINK_SPEED_100M_HD) {
 			hw->phy.autoneg_advertised |= ADVERTISE_100_HALF;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_100M) {
+		if (*speeds & RTE_ETH_LINK_SPEED_100M) {
 			hw->phy.autoneg_advertised |= ADVERTISE_100_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_1G) {
+		if (*speeds & RTE_ETH_LINK_SPEED_1G) {
 			hw->phy.autoneg_advertised |= ADVERTISE_1000_FULL;
 			num_speeds++;
 		}
@@ -1427,7 +1417,7 @@ eth_igb_stop(struct rte_eth_dev *dev)
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_eth_link link;
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct e1000_adapter *adapter =
 		E1000_DEV_PRIVATE(dev->data->dev_private);
 
@@ -1471,10 +1461,7 @@ eth_igb_stop(struct rte_eth_dev *dev)
 
 	/* Clean datapath event and queue/vec mapping */
 	rte_intr_efd_disable(intr_handle);
-	if (intr_handle->intr_vec != NULL) {
-		rte_free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
+	rte_intr_vec_list_free(intr_handle);
 
 	adapter->stopped = true;
 	dev->data->dev_started = 0;
@@ -1514,7 +1501,7 @@ eth_igb_close(struct rte_eth_dev *dev)
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_eth_link link;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct e1000_filter_info *filter_info =
 		E1000_DEV_PRIVATE_TO_FILTER_INFO(dev->data->dev_private);
 	int ret;
@@ -1540,10 +1527,8 @@ eth_igb_close(struct rte_eth_dev *dev)
 
 	igb_dev_free_queues(dev);
 
-	if (intr_handle->intr_vec) {
-		rte_free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
+	/* Cleanup vector list */
+	rte_intr_vec_list_free(intr_handle);
 
 	memset(&link, 0, sizeof(link));
 	rte_eth_linkstatus_set(dev, &link);
@@ -1888,7 +1873,7 @@ static int eth_igb_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
 }
 
 static int eth_igb_xstats_get_names_by_id(struct rte_eth_dev *dev,
-		struct rte_eth_xstat_name *xstats_names, const uint64_t *ids,
+		const uint64_t *ids, struct rte_eth_xstat_name *xstats_names,
 		unsigned int limit)
 {
 	unsigned int i;
@@ -1907,7 +1892,7 @@ static int eth_igb_xstats_get_names_by_id(struct rte_eth_dev *dev,
 	} else {
 		struct rte_eth_xstat_name xstats_names_copy[IGB_NB_XSTATS];
 
-		eth_igb_xstats_get_names_by_id(dev, xstats_names_copy, NULL,
+		eth_igb_xstats_get_names_by_id(dev, NULL, xstats_names_copy,
 				IGB_NB_XSTATS);
 
 		for (i = 0; i < limit; i++) {
@@ -2183,6 +2168,7 @@ eth_igb_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->tx_queue_offload_capa = igb_get_tx_queue_offloads_capa(dev);
 	dev_info->tx_offload_capa = igb_get_tx_port_offloads_capa(dev) |
 				    dev_info->tx_queue_offload_capa;
+	dev_info->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	switch (hw->mac.type) {
 	case e1000_82575:
@@ -2194,21 +2180,21 @@ eth_igb_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	case e1000_82576:
 		dev_info->max_rx_queues = 16;
 		dev_info->max_tx_queues = 16;
-		dev_info->max_vmdq_pools = ETH_8_POOLS;
+		dev_info->max_vmdq_pools = RTE_ETH_8_POOLS;
 		dev_info->vmdq_queue_num = 16;
 		break;
 
 	case e1000_82580:
 		dev_info->max_rx_queues = 8;
 		dev_info->max_tx_queues = 8;
-		dev_info->max_vmdq_pools = ETH_8_POOLS;
+		dev_info->max_vmdq_pools = RTE_ETH_8_POOLS;
 		dev_info->vmdq_queue_num = 8;
 		break;
 
 	case e1000_i350:
 		dev_info->max_rx_queues = 8;
 		dev_info->max_tx_queues = 8;
-		dev_info->max_vmdq_pools = ETH_8_POOLS;
+		dev_info->max_vmdq_pools = RTE_ETH_8_POOLS;
 		dev_info->vmdq_queue_num = 8;
 		break;
 
@@ -2234,7 +2220,7 @@ eth_igb_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		return -EINVAL;
 	}
 	dev_info->hash_key_size = IGB_HKEY_MAX_INDEX * sizeof(uint32_t);
-	dev_info->reta_size = ETH_RSS_RETA_SIZE_128;
+	dev_info->reta_size = RTE_ETH_RSS_RETA_SIZE_128;
 	dev_info->flow_type_rss_offloads = IGB_RSS_OFFLOAD_ALL;
 
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
@@ -2260,9 +2246,9 @@ eth_igb_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->rx_desc_lim = rx_desc_lim;
 	dev_info->tx_desc_lim = tx_desc_lim;
 
-	dev_info->speed_capa = ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
-			ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-			ETH_LINK_SPEED_1G;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_10M_HD | RTE_ETH_LINK_SPEED_10M |
+			RTE_ETH_LINK_SPEED_100M_HD | RTE_ETH_LINK_SPEED_100M |
+			RTE_ETH_LINK_SPEED_1G;
 
 	dev_info->max_mtu = dev_info->max_rx_pktlen - E1000_ETH_OVERHEAD;
 	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
@@ -2305,12 +2291,12 @@ eth_igbvf_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->min_rx_bufsize = 256; /* See BSIZE field of RCTL register. */
 	dev_info->max_rx_pktlen  = 0x3FFF; /* See RLPML register. */
 	dev_info->max_mac_addrs = hw->mac.rar_entry_count;
-	dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
-				DEV_TX_OFFLOAD_IPV4_CKSUM  |
-				DEV_TX_OFFLOAD_UDP_CKSUM   |
-				DEV_TX_OFFLOAD_TCP_CKSUM   |
-				DEV_TX_OFFLOAD_SCTP_CKSUM  |
-				DEV_TX_OFFLOAD_TCP_TSO;
+	dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
+				RTE_ETH_TX_OFFLOAD_IPV4_CKSUM  |
+				RTE_ETH_TX_OFFLOAD_UDP_CKSUM   |
+				RTE_ETH_TX_OFFLOAD_TCP_CKSUM   |
+				RTE_ETH_TX_OFFLOAD_SCTP_CKSUM  |
+				RTE_ETH_TX_OFFLOAD_TCP_TSO;
 	switch (hw->mac.type) {
 	case e1000_vfadapt:
 		dev_info->max_rx_queues = 2;
@@ -2411,17 +2397,17 @@ eth_igb_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 		uint16_t duplex, speed;
 		hw->mac.ops.get_link_up_info(hw, &speed, &duplex);
 		link.link_duplex = (duplex == FULL_DUPLEX) ?
-				ETH_LINK_FULL_DUPLEX :
-				ETH_LINK_HALF_DUPLEX;
+				RTE_ETH_LINK_FULL_DUPLEX :
+				RTE_ETH_LINK_HALF_DUPLEX;
 		link.link_speed = speed;
-		link.link_status = ETH_LINK_UP;
+		link.link_status = RTE_ETH_LINK_UP;
 		link.link_autoneg = !(dev->data->dev_conf.link_speeds &
-				ETH_LINK_SPEED_FIXED);
+				RTE_ETH_LINK_SPEED_FIXED);
 	} else if (!link_check) {
 		link.link_speed = 0;
-		link.link_duplex = ETH_LINK_HALF_DUPLEX;
-		link.link_status = ETH_LINK_DOWN;
-		link.link_autoneg = ETH_LINK_FIXED;
+		link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
+		link.link_status = RTE_ETH_LINK_DOWN;
+		link.link_autoneg = RTE_ETH_LINK_FIXED;
 	}
 
 	return rte_eth_linkstatus_set(dev, &link);
@@ -2597,7 +2583,7 @@ eth_igb_vlan_tpid_set(struct rte_eth_dev *dev,
 	qinq &= E1000_CTRL_EXT_EXT_VLAN;
 
 	/* only outer TPID of double VLAN can be configured*/
-	if (qinq && vlan_type == ETH_VLAN_TYPE_OUTER) {
+	if (qinq && vlan_type == RTE_ETH_VLAN_TYPE_OUTER) {
 		reg = E1000_READ_REG(hw, E1000_VET);
 		reg = (reg & (~E1000_VET_VET_EXT)) |
 			((uint32_t)tpid << E1000_VET_VET_EXT_SHIFT);
@@ -2686,9 +2672,7 @@ igb_vlan_hw_extend_disable(struct rte_eth_dev *dev)
 	E1000_WRITE_REG(hw, E1000_CTRL_EXT, reg);
 
 	/* Update maximum packet length */
-	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
-		E1000_WRITE_REG(hw, E1000_RLPML,
-				dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	E1000_WRITE_REG(hw, E1000_RLPML, dev->data->mtu + E1000_ETH_OVERHEAD);
 }
 
 static void
@@ -2704,10 +2688,8 @@ igb_vlan_hw_extend_enable(struct rte_eth_dev *dev)
 	E1000_WRITE_REG(hw, E1000_CTRL_EXT, reg);
 
 	/* Update maximum packet length */
-	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
-		E1000_WRITE_REG(hw, E1000_RLPML,
-			dev->data->dev_conf.rxmode.max_rx_pkt_len +
-						VLAN_TAG_SIZE);
+	E1000_WRITE_REG(hw, E1000_RLPML,
+		dev->data->mtu + E1000_ETH_OVERHEAD + VLAN_TAG_SIZE);
 }
 
 static int
@@ -2716,22 +2698,22 @@ eth_igb_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	struct rte_eth_rxmode *rxmode;
 
 	rxmode = &dev->data->dev_conf.rxmode;
-	if(mask & ETH_VLAN_STRIP_MASK){
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 			igb_vlan_hw_strip_enable(dev);
 		else
 			igb_vlan_hw_strip_disable(dev);
 	}
 
-	if(mask & ETH_VLAN_FILTER_MASK){
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 			igb_vlan_hw_filter_enable(dev);
 		else
 			igb_vlan_hw_filter_disable(dev);
 	}
 
-	if(mask & ETH_VLAN_EXTEND_MASK){
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_EXTEND)
+	if (mask & RTE_ETH_VLAN_EXTEND_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_EXTEND)
 			igb_vlan_hw_extend_enable(dev);
 		else
 			igb_vlan_hw_extend_disable(dev);
@@ -2784,7 +2766,7 @@ static int eth_igb_rxq_interrupt_setup(struct rte_eth_dev *dev)
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int misc_shift = rte_intr_allow_others(intr_handle) ? 1 : 0;
 	struct rte_eth_dev_info dev_info;
 
@@ -2883,7 +2865,7 @@ eth_igb_interrupt_action(struct rte_eth_dev *dev,
 				     " Port %d: Link Up - speed %u Mbps - %s",
 				     dev->data->port_id,
 				     (unsigned)link.link_speed,
-				     link.link_duplex == ETH_LINK_FULL_DUPLEX ?
+				     link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX ?
 				     "full-duplex" : "half-duplex");
 		} else {
 			PMD_INIT_LOG(INFO, " Port %d: Link Down",
@@ -3037,13 +3019,13 @@ eth_igb_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		rx_pause = 0;
 
 	if (rx_pause && tx_pause)
-		fc_conf->mode = RTE_FC_FULL;
+		fc_conf->mode = RTE_ETH_FC_FULL;
 	else if (rx_pause)
-		fc_conf->mode = RTE_FC_RX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_RX_PAUSE;
 	else if (tx_pause)
-		fc_conf->mode = RTE_FC_TX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_TX_PAUSE;
 	else
-		fc_conf->mode = RTE_FC_NONE;
+		fc_conf->mode = RTE_ETH_FC_NONE;
 
 	return 0;
 }
@@ -3112,18 +3094,18 @@ eth_igb_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		 * on configuration
 		 */
 		switch (fc_conf->mode) {
-		case RTE_FC_NONE:
+		case RTE_ETH_FC_NONE:
 			ctrl &= ~E1000_CTRL_RFCE & ~E1000_CTRL_TFCE;
 			break;
-		case RTE_FC_RX_PAUSE:
+		case RTE_ETH_FC_RX_PAUSE:
 			ctrl |= E1000_CTRL_RFCE;
 			ctrl &= ~E1000_CTRL_TFCE;
 			break;
-		case RTE_FC_TX_PAUSE:
+		case RTE_ETH_FC_TX_PAUSE:
 			ctrl |= E1000_CTRL_TFCE;
 			ctrl &= ~E1000_CTRL_RFCE;
 			break;
-		case RTE_FC_FULL:
+		case RTE_ETH_FC_FULL:
 			ctrl |= E1000_CTRL_RFCE | E1000_CTRL_TFCE;
 			break;
 		default:
@@ -3271,22 +3253,22 @@ igbvf_dev_configure(struct rte_eth_dev *dev)
 	PMD_INIT_LOG(DEBUG, "Configured Virtual Function port id: %d",
 		     dev->data->port_id);
 
-	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
-		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	/*
 	 * VF has no ability to enable/disable HW CRC
 	 * Keep the persistent behavior the same as Host PF
 	 */
 #ifndef RTE_LIBRTE_E1000_PF_DISABLE_STRIP_CRC
-	if (conf->rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
+	if (conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC) {
 		PMD_INIT_LOG(NOTICE, "VF can't disable HW CRC Strip");
-		conf->rxmode.offloads &= ~DEV_RX_OFFLOAD_KEEP_CRC;
+		conf->rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 	}
 #else
-	if (!(conf->rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)) {
+	if (!(conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC)) {
 		PMD_INIT_LOG(NOTICE, "VF can't enable HW CRC Strip");
-		conf->rxmode.offloads |= DEV_RX_OFFLOAD_KEEP_CRC;
+		conf->rxmode.offloads |= RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 	}
 #endif
 
@@ -3301,7 +3283,7 @@ igbvf_dev_start(struct rte_eth_dev *dev)
 	struct e1000_adapter *adapter =
 		E1000_DEV_PRIVATE(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int ret;
 	uint32_t intr_vector = 0;
 
@@ -3332,11 +3314,10 @@ igbvf_dev_start(struct rte_eth_dev *dev)
 			return ret;
 	}
 
-	if (rte_intr_dp_is_en(intr_handle) && !intr_handle->intr_vec) {
-		intr_handle->intr_vec =
-			rte_zmalloc("intr_vec",
-				    dev->data->nb_rx_queues * sizeof(int), 0);
-		if (!intr_handle->intr_vec) {
+	/* Allocate the vector list */
+	if (rte_intr_dp_is_en(intr_handle)) {
+		if (rte_intr_vec_list_alloc(intr_handle, "intr_vec",
+						   dev->data->nb_rx_queues)) {
 			PMD_INIT_LOG(ERR, "Failed to allocate %d rx_queues"
 				     " intr_vec", dev->data->nb_rx_queues);
 			return -ENOMEM;
@@ -3358,7 +3339,7 @@ static int
 igbvf_dev_stop(struct rte_eth_dev *dev)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct e1000_adapter *adapter =
 		E1000_DEV_PRIVATE(dev->data->dev_private);
 
@@ -3382,10 +3363,9 @@ igbvf_dev_stop(struct rte_eth_dev *dev)
 
 	/* Clean datapath event and queue/vec mapping */
 	rte_intr_efd_disable(intr_handle);
-	if (intr_handle->intr_vec) {
-		rte_free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
+
+	/* Clean vector list */
+	rte_intr_vec_list_free(intr_handle);
 
 	adapter->stopped = true;
 	dev->data->dev_started = 0;
@@ -3423,7 +3403,7 @@ igbvf_dev_close(struct rte_eth_dev *dev)
 	memset(&addr, 0, sizeof(addr));
 	igbvf_default_mac_addr_set(dev, &addr);
 
-	rte_intr_callback_unregister(&pci_dev->intr_handle,
+	rte_intr_callback_unregister(pci_dev->intr_handle,
 				     eth_igbvf_interrupt_handler,
 				     (void *)dev);
 
@@ -3584,16 +3564,16 @@ eth_igb_rss_reta_update(struct rte_eth_dev *dev,
 	uint16_t idx, shift;
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
-	if (reta_size != ETH_RSS_RETA_SIZE_128) {
+	if (reta_size != RTE_ETH_RSS_RETA_SIZE_128) {
 		PMD_DRV_LOG(ERR, "The size of hash lookup table configured "
 			"(%d) doesn't match the number hardware can supported "
-			"(%d)", reta_size, ETH_RSS_RETA_SIZE_128);
+			"(%d)", reta_size, RTE_ETH_RSS_RETA_SIZE_128);
 		return -EINVAL;
 	}
 
 	for (i = 0; i < reta_size; i += IGB_4_BIT_WIDTH) {
-		idx = i / RTE_RETA_GROUP_SIZE;
-		shift = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
 		mask = (uint8_t)((reta_conf[idx].mask >> shift) &
 						IGB_4_BIT_MASK);
 		if (!mask)
@@ -3625,16 +3605,16 @@ eth_igb_rss_reta_query(struct rte_eth_dev *dev,
 	uint16_t idx, shift;
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
-	if (reta_size != ETH_RSS_RETA_SIZE_128) {
+	if (reta_size != RTE_ETH_RSS_RETA_SIZE_128) {
 		PMD_DRV_LOG(ERR, "The size of hash lookup table configured "
 			"(%d) doesn't match the number hardware can supported "
-			"(%d)", reta_size, ETH_RSS_RETA_SIZE_128);
+			"(%d)", reta_size, RTE_ETH_RSS_RETA_SIZE_128);
 		return -EINVAL;
 	}
 
 	for (i = 0; i < reta_size; i += IGB_4_BIT_WIDTH) {
-		idx = i / RTE_RETA_GROUP_SIZE;
-		shift = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
 		mask = (uint8_t)((reta_conf[idx].mask >> shift) &
 						IGB_4_BIT_MASK);
 		if (!mask)
@@ -4372,9 +4352,7 @@ eth_igb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 {
 	uint32_t rctl;
 	struct e1000_hw *hw;
-	struct rte_eth_dev_info dev_info;
 	uint32_t frame_size = mtu + E1000_ETH_OVERHEAD;
-	int ret;
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
@@ -4383,15 +4361,6 @@ eth_igb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (hw->mac.type == e1000_82571)
 		return -ENOTSUP;
 #endif
-	ret = eth_igb_infos_get(dev, &dev_info);
-	if (ret != 0)
-		return ret;
-
-	/* check that mtu is within the allowed range */
-	if (mtu < RTE_ETHER_MIN_MTU ||
-			frame_size > dev_info.max_rx_pktlen)
-		return -EINVAL;
-
 	/*
 	 * If device is started, refuse mtu that requires the support of
 	 * scattered packets when this feature has not been enabled before.
@@ -4405,22 +4374,13 @@ eth_igb_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > E1000_ETH_MAX_LEN) {
-		dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_JUMBO_FRAME;
+	if (mtu > RTE_ETHER_MTU)
 		rctl |= E1000_RCTL_LPE;
-	} else {
-		dev->data->dev_conf.rxmode.offloads &=
-			~DEV_RX_OFFLOAD_JUMBO_FRAME;
+	else
 		rctl &= ~E1000_RCTL_LPE;
-	}
 	E1000_WRITE_REG(hw, E1000_RCTL, rctl);
 
-	/* update max frame size */
-	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
-
-	E1000_WRITE_REG(hw, E1000_RLPML,
-			dev->data->dev_conf.rxmode.max_rx_pkt_len);
+	E1000_WRITE_REG(hw, E1000_RLPML, frame_size);
 
 	return 0;
 }
@@ -4581,26 +4541,11 @@ igb_add_del_ethertype_filter(struct rte_eth_dev *dev,
 }
 
 static int
-eth_igb_filter_ctrl(struct rte_eth_dev *dev __rte_unused,
-		     enum rte_filter_type filter_type,
-		     enum rte_filter_op filter_op,
-		     void *arg)
+eth_igb_flow_ops_get(struct rte_eth_dev *dev __rte_unused,
+		     const struct rte_flow_ops **ops)
 {
-	int ret = 0;
-
-	switch (filter_type) {
-	case RTE_ETH_FILTER_GENERIC:
-		if (filter_op != RTE_ETH_FILTER_GET)
-			return -EINVAL;
-		*(const void **)arg = &igb_flow_ops;
-		break;
-	default:
-		PMD_DRV_LOG(WARNING, "Filter type (%d) not supported",
-							filter_type);
-		break;
-	}
-
-	return ret;
+	*ops = &igb_flow_ops;
+	return 0;
 }
 
 static int
@@ -5160,7 +5105,7 @@ eth_igb_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id)
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	uint32_t vec = E1000_MISC_VEC_ID;
 
 	if (rte_intr_allow_others(intr_handle))
@@ -5180,7 +5125,7 @@ eth_igb_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	uint32_t vec = E1000_MISC_VEC_ID;
 
 	if (rte_intr_allow_others(intr_handle))
@@ -5250,7 +5195,7 @@ eth_igb_assign_msix_vector(struct e1000_hw *hw, int8_t direction,
 static void
 eth_igb_configure_msix_intr(struct rte_eth_dev *dev)
 {
-	int queue_id;
+	int queue_id, nb_efd;
 	uint32_t tmpval, regval, intr_mask;
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -5258,7 +5203,7 @@ eth_igb_configure_msix_intr(struct rte_eth_dev *dev)
 	uint32_t base = E1000_MISC_VEC_ID;
 	uint32_t misc_shift = 0;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	/* won't configure msix register if no mapping is done
 	 * between intr vector and event fd
@@ -5299,8 +5244,11 @@ eth_igb_configure_msix_intr(struct rte_eth_dev *dev)
 		E1000_WRITE_REG(hw, E1000_GPIE, E1000_GPIE_MSIX_MODE |
 					E1000_GPIE_PBA | E1000_GPIE_EIAME |
 					E1000_GPIE_NSICR);
-		intr_mask = RTE_LEN2MASK(intr_handle->nb_efd, uint32_t) <<
-			misc_shift;
+		nb_efd = rte_intr_nb_efd_get(intr_handle);
+		if (nb_efd < 0)
+			return;
+
+		intr_mask = RTE_LEN2MASK(nb_efd, uint32_t) << misc_shift;
 
 		if (dev->data->dev_conf.intr_conf.lsc != 0)
 			intr_mask |= (1 << IGB_MSIX_OTHER_INTR_VEC);
@@ -5318,8 +5266,11 @@ eth_igb_configure_msix_intr(struct rte_eth_dev *dev)
 	/* use EIAM to auto-mask when MSI-X interrupt
 	 * is asserted, this saves a register write for every interrupt
 	 */
-	intr_mask = RTE_LEN2MASK(intr_handle->nb_efd, uint32_t) <<
-		misc_shift;
+	nb_efd = rte_intr_nb_efd_get(intr_handle);
+	if (nb_efd < 0)
+		return;
+
+	intr_mask = RTE_LEN2MASK(nb_efd, uint32_t) << misc_shift;
 
 	if (dev->data->dev_conf.intr_conf.lsc != 0)
 		intr_mask |= (1 << IGB_MSIX_OTHER_INTR_VEC);
@@ -5329,8 +5280,8 @@ eth_igb_configure_msix_intr(struct rte_eth_dev *dev)
 
 	for (queue_id = 0; queue_id < dev->data->nb_rx_queues; queue_id++) {
 		eth_igb_assign_msix_vector(hw, 0, queue_id, vec);
-		intr_handle->intr_vec[queue_id] = vec;
-		if (vec < base + intr_handle->nb_efd - 1)
+		rte_intr_vec_list_index_set(intr_handle, queue_id, vec);
+		if (vec < base + rte_intr_nb_efd_get(intr_handle) - 1)
 			vec++;
 	}
 

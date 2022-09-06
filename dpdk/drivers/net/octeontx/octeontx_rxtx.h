@@ -5,7 +5,7 @@
 #ifndef	__OCTEONTX_RXTX_H__
 #define	__OCTEONTX_RXTX_H__
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #define OFFLOAD_FLAGS					\
 	uint16_t rx_offload_flags;			\
@@ -242,20 +242,20 @@ octeontx_tx_checksum_offload(uint64_t *cmd_buf, const uint16_t flags,
 	 * 0x2 - TCP L4 checksum
 	 * 0x3 - SCTP L4 checksum
 	 */
-	const uint8_t csum = (!(((ol_flags ^ PKT_TX_UDP_CKSUM) >> 52) & 0x3) +
-		      (!(((ol_flags ^ PKT_TX_TCP_CKSUM) >> 52) & 0x3) * 2) +
-		      (!(((ol_flags ^ PKT_TX_SCTP_CKSUM) >> 52) & 0x3) * 3));
+	const uint8_t csum = (!(((ol_flags ^ RTE_MBUF_F_TX_UDP_CKSUM) >> 52) & 0x3) +
+		      (!(((ol_flags ^ RTE_MBUF_F_TX_TCP_CKSUM) >> 52) & 0x3) * 2) +
+		      (!(((ol_flags ^ RTE_MBUF_F_TX_SCTP_CKSUM) >> 52) & 0x3) * 3));
 
-	const uint8_t is_tunnel_parsed = (!!(ol_flags & PKT_TX_TUNNEL_GTP) ||
-				      !!(ol_flags & PKT_TX_TUNNEL_VXLAN_GPE) ||
-				      !!(ol_flags & PKT_TX_TUNNEL_VXLAN) ||
-				      !!(ol_flags & PKT_TX_TUNNEL_GRE) ||
-				      !!(ol_flags & PKT_TX_TUNNEL_GENEVE) ||
-				      !!(ol_flags & PKT_TX_TUNNEL_IP) ||
-				      !!(ol_flags & PKT_TX_TUNNEL_IPIP));
+	const uint8_t is_tunnel_parsed = (!!(ol_flags & RTE_MBUF_F_TX_TUNNEL_GTP) ||
+				      !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE) ||
+				      !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_VXLAN) ||
+				      !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_GRE) ||
+				      !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_GENEVE) ||
+				      !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_IP) ||
+				      !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_IPIP));
 
-	const uint8_t csum_outer = (!!(ol_flags & PKT_TX_OUTER_UDP_CKSUM) ||
-				    !!(ol_flags & PKT_TX_TUNNEL_UDP));
+	const uint8_t csum_outer = (!!(ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM) ||
+				    !!(ol_flags & RTE_MBUF_F_TX_TUNNEL_UDP));
 	const uint8_t outer_l2_len = m->outer_l2_len;
 	const uint8_t l2_len = m->l2_len;
 
@@ -266,7 +266,7 @@ octeontx_tx_checksum_offload(uint64_t *cmd_buf, const uint16_t flags,
 			send_hdr->w0.l3ptr = outer_l2_len;
 			send_hdr->w0.l4ptr = outer_l2_len + m->outer_l3_len;
 			/* Set clk3 for PKO to calculate IPV4 header checksum */
-			send_hdr->w0.ckl3 = !!(ol_flags & PKT_TX_OUTER_IPV4);
+			send_hdr->w0.ckl3 = !!(ol_flags & RTE_MBUF_F_TX_OUTER_IPV4);
 
 			/* Outer L4 */
 			send_hdr->w0.ckl4 = csum_outer;
@@ -277,7 +277,7 @@ octeontx_tx_checksum_offload(uint64_t *cmd_buf, const uint16_t flags,
 			/* Set clke for PKO to calculate inner IPV4 header
 			 * checksum.
 			 */
-			send_hdr->w0.ckle = !!(ol_flags & PKT_TX_IPV4);
+			send_hdr->w0.ckle = !!(ol_flags & RTE_MBUF_F_TX_IPV4);
 
 			/* Inner L4 */
 			send_hdr->w0.cklf = csum;
@@ -286,7 +286,7 @@ octeontx_tx_checksum_offload(uint64_t *cmd_buf, const uint16_t flags,
 			send_hdr->w0.l3ptr = l2_len;
 			send_hdr->w0.l4ptr = l2_len + m->l3_len;
 			/* Set clk3 for PKO to calculate IPV4 header checksum */
-			send_hdr->w0.ckl3 = !!(ol_flags & PKT_TX_IPV4);
+			send_hdr->w0.ckl3 = !!(ol_flags & RTE_MBUF_F_TX_IPV4);
 
 			/* Inner L4 */
 			send_hdr->w0.ckl4 = csum;
@@ -296,7 +296,7 @@ octeontx_tx_checksum_offload(uint64_t *cmd_buf, const uint16_t flags,
 		send_hdr->w0.l3ptr = outer_l2_len;
 		send_hdr->w0.l4ptr = outer_l2_len + m->outer_l3_len;
 		/* Set clk3 for PKO to calculate IPV4 header checksum */
-		send_hdr->w0.ckl3 = !!(ol_flags & PKT_TX_OUTER_IPV4);
+		send_hdr->w0.ckl3 = !!(ol_flags & RTE_MBUF_F_TX_OUTER_IPV4);
 
 		/* Outer L4 */
 		send_hdr->w0.ckl4 = csum_outer;
@@ -305,7 +305,7 @@ octeontx_tx_checksum_offload(uint64_t *cmd_buf, const uint16_t flags,
 		send_hdr->w0.l3ptr = l2_len;
 		send_hdr->w0.l4ptr = l2_len + m->l3_len;
 		/* Set clk3 for PKO to calculate IPV4 header checksum */
-		send_hdr->w0.ckl3 = !!(ol_flags & PKT_TX_IPV4);
+		send_hdr->w0.ckl3 = !!(ol_flags & RTE_MBUF_F_TX_IPV4);
 
 		/* Inner L4 */
 		send_hdr->w0.ckl4 = csum;
@@ -344,7 +344,7 @@ __octeontx_xmit_prepare(struct rte_mbuf *tx_pkt, uint64_t *cmd_buf,
 
 	/* Mark mempool object as "put" since it is freed by PKO */
 	if (!(cmd_buf[0] & (1ULL << 58)))
-		__mempool_check_cookies(m_tofree->pool, (void **)&m_tofree,
+		RTE_MEMPOOL_CHECK_COOKIES(m_tofree->pool, (void **)&m_tofree,
 					1, 0);
 	/* Get the gaura Id */
 	gaura_id =
@@ -417,7 +417,7 @@ __octeontx_xmit_mseg_prepare(struct rte_mbuf *tx_pkt, uint64_t *cmd_buf,
 		 */
 		if (!(cmd_buf[nb_desc] & (1ULL << 57))) {
 			tx_pkt->next = NULL;
-			__mempool_check_cookies(m_tofree->pool,
+			RTE_MEMPOOL_CHECK_COOKIES(m_tofree->pool,
 						(void **)&m_tofree, 1, 0);
 		}
 		nb_desc++;

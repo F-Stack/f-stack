@@ -21,7 +21,6 @@
 #include <rte_memory.h>
 #include <rte_mempool.h>
 #include <rte_log.h>
-#include <rte_atomic.h>
 #include <rte_spinlock.h>
 
 #include <libvirt/libvirt.h>
@@ -511,7 +510,6 @@ add_channels(const char *vm_name, unsigned *channel_list,
 	}
 
 	for (i = 0; i < len_channel_list; i++) {
-
 		if (channel_list[i] >= RTE_MAX_LCORE) {
 			RTE_LOG(INFO, CHANNEL_MANAGER, "Channel(%u) is out of range "
 							"0...%d\n", channel_list[i],
@@ -573,6 +571,9 @@ add_host_channels(void)
 	}
 
 	for (i = 0; i < ci->core_count; i++) {
+		if (rte_lcore_index(i) == -1)
+			continue;
+
 		if (ci->cd[i].global_enabled_cpus == 0)
 			continue;
 

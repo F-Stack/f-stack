@@ -15,8 +15,8 @@
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_malloc.h>
@@ -237,7 +237,7 @@ static int
 eth_em_dev_init(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct e1000_adapter *adapter =
 		E1000_DEV_PRIVATE(eth_dev->data->dev_private);
 	struct e1000_hw *hw =
@@ -247,7 +247,6 @@ eth_em_dev_init(struct rte_eth_dev *eth_dev)
 
 	eth_dev->dev_ops = &eth_em_ops;
 	eth_dev->rx_queue_count = eth_em_rx_queue_count;
-	eth_dev->rx_descriptor_done   = eth_em_rx_descriptor_done;
 	eth_dev->rx_descriptor_status = eth_em_rx_descriptor_status;
 	eth_dev->tx_descriptor_status = eth_em_tx_descriptor_status;
 	eth_dev->rx_pkt_burst = (eth_rx_burst_t)&eth_em_recv_pkts;
@@ -524,7 +523,7 @@ eth_em_start(struct rte_eth_dev *dev)
 	struct e1000_hw *hw =
 		E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int ret, mask;
 	uint32_t intr_vector = 0;
 	uint32_t *speeds;
@@ -574,12 +573,10 @@ eth_em_start(struct rte_eth_dev *dev)
 	}
 
 	if (rte_intr_dp_is_en(intr_handle)) {
-		intr_handle->intr_vec =
-			rte_zmalloc("intr_vec",
-					dev->data->nb_rx_queues * sizeof(int), 0);
-		if (intr_handle->intr_vec == NULL) {
+		if (rte_intr_vec_list_alloc(intr_handle, "intr_vec",
+						   dev->data->nb_rx_queues)) {
 			PMD_INIT_LOG(ERR, "Failed to allocate %d rx_queues"
-						" intr_vec", dev->data->nb_rx_queues);
+				     " intr_vec", dev->data->nb_rx_queues);
 			return -ENOMEM;
 		}
 
@@ -598,8 +595,8 @@ eth_em_start(struct rte_eth_dev *dev)
 
 	e1000_clear_hw_cntrs_base_generic(hw);
 
-	mask = ETH_VLAN_STRIP_MASK | ETH_VLAN_FILTER_MASK | \
-			ETH_VLAN_EXTEND_MASK;
+	mask = RTE_ETH_VLAN_STRIP_MASK | RTE_ETH_VLAN_FILTER_MASK |
+			RTE_ETH_VLAN_EXTEND_MASK;
 	ret = eth_em_vlan_offload_set(dev, mask);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Unable to update vlan offload");
@@ -612,39 +609,39 @@ eth_em_start(struct rte_eth_dev *dev)
 
 	/* Setup link speed and duplex */
 	speeds = &dev->data->dev_conf.link_speeds;
-	if (*speeds == ETH_LINK_SPEED_AUTONEG) {
+	if (*speeds == RTE_ETH_LINK_SPEED_AUTONEG) {
 		hw->phy.autoneg_advertised = E1000_ALL_SPEED_DUPLEX;
 		hw->mac.autoneg = 1;
 	} else {
 		num_speeds = 0;
-		autoneg = (*speeds & ETH_LINK_SPEED_FIXED) == 0;
+		autoneg = (*speeds & RTE_ETH_LINK_SPEED_FIXED) == 0;
 
 		/* Reset */
 		hw->phy.autoneg_advertised = 0;
 
-		if (*speeds & ~(ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
-				ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-				ETH_LINK_SPEED_1G | ETH_LINK_SPEED_FIXED)) {
+		if (*speeds & ~(RTE_ETH_LINK_SPEED_10M_HD | RTE_ETH_LINK_SPEED_10M |
+				RTE_ETH_LINK_SPEED_100M_HD | RTE_ETH_LINK_SPEED_100M |
+				RTE_ETH_LINK_SPEED_1G | RTE_ETH_LINK_SPEED_FIXED)) {
 			num_speeds = -1;
 			goto error_invalid_config;
 		}
-		if (*speeds & ETH_LINK_SPEED_10M_HD) {
+		if (*speeds & RTE_ETH_LINK_SPEED_10M_HD) {
 			hw->phy.autoneg_advertised |= ADVERTISE_10_HALF;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_10M) {
+		if (*speeds & RTE_ETH_LINK_SPEED_10M) {
 			hw->phy.autoneg_advertised |= ADVERTISE_10_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_100M_HD) {
+		if (*speeds & RTE_ETH_LINK_SPEED_100M_HD) {
 			hw->phy.autoneg_advertised |= ADVERTISE_100_HALF;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_100M) {
+		if (*speeds & RTE_ETH_LINK_SPEED_100M) {
 			hw->phy.autoneg_advertised |= ADVERTISE_100_FULL;
 			num_speeds++;
 		}
-		if (*speeds & ETH_LINK_SPEED_1G) {
+		if (*speeds & RTE_ETH_LINK_SPEED_1G) {
 			hw->phy.autoneg_advertised |= ADVERTISE_1000_FULL;
 			num_speeds++;
 		}
@@ -717,7 +714,7 @@ eth_em_stop(struct rte_eth_dev *dev)
 	struct rte_eth_link link;
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	dev->data->dev_started = 0;
 
@@ -751,10 +748,7 @@ eth_em_stop(struct rte_eth_dev *dev)
 
 	/* Clean datapath event and queue/vec mapping */
 	rte_intr_efd_disable(intr_handle);
-	if (intr_handle->intr_vec != NULL) {
-		rte_free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
+	rte_intr_vec_list_free(intr_handle);
 
 	return 0;
 }
@@ -766,7 +760,7 @@ eth_em_close(struct rte_eth_dev *dev)
 	struct e1000_adapter *adapter =
 		E1000_DEV_PRIVATE(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	int ret;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
@@ -1007,7 +1001,7 @@ eth_em_rx_queue_intr_enable(struct rte_eth_dev *dev, __rte_unused uint16_t queue
 {
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
-	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 
 	em_rxq_intr_enable(hw);
 	rte_intr_ack(intr_handle);
@@ -1082,8 +1076,8 @@ eth_em_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_rx_queues = 1;
 	dev_info->max_tx_queues = 1;
 
-	dev_info->rx_queue_offload_capa = em_get_rx_queue_offloads_capa(dev);
-	dev_info->rx_offload_capa = em_get_rx_port_offloads_capa(dev) |
+	dev_info->rx_queue_offload_capa = em_get_rx_queue_offloads_capa();
+	dev_info->rx_offload_capa = em_get_rx_port_offloads_capa() |
 				    dev_info->rx_queue_offload_capa;
 	dev_info->tx_queue_offload_capa = em_get_tx_queue_offloads_capa(dev);
 	dev_info->tx_offload_capa = em_get_tx_port_offloads_capa(dev) |
@@ -1103,9 +1097,11 @@ eth_em_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_mtu_seg_max = EM_TX_MAX_MTU_SEG,
 	};
 
-	dev_info->speed_capa = ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
-			ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
-			ETH_LINK_SPEED_1G;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_10M_HD | RTE_ETH_LINK_SPEED_10M |
+			RTE_ETH_LINK_SPEED_100M_HD | RTE_ETH_LINK_SPEED_100M |
+			RTE_ETH_LINK_SPEED_1G;
+
+	dev_info->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	/* Preferred queue parameters */
 	dev_info->default_rxportconf.nb_queues = 1;
@@ -1163,17 +1159,17 @@ eth_em_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 		uint16_t duplex, speed;
 		hw->mac.ops.get_link_up_info(hw, &speed, &duplex);
 		link.link_duplex = (duplex == FULL_DUPLEX) ?
-				ETH_LINK_FULL_DUPLEX :
-				ETH_LINK_HALF_DUPLEX;
+				RTE_ETH_LINK_FULL_DUPLEX :
+				RTE_ETH_LINK_HALF_DUPLEX;
 		link.link_speed = speed;
-		link.link_status = ETH_LINK_UP;
+		link.link_status = RTE_ETH_LINK_UP;
 		link.link_autoneg = !(dev->data->dev_conf.link_speeds &
-				ETH_LINK_SPEED_FIXED);
+				RTE_ETH_LINK_SPEED_FIXED);
 	} else {
-		link.link_speed = ETH_SPEED_NUM_NONE;
-		link.link_duplex = ETH_LINK_HALF_DUPLEX;
-		link.link_status = ETH_LINK_DOWN;
-		link.link_autoneg = ETH_LINK_FIXED;
+		link.link_speed = RTE_ETH_SPEED_NUM_NONE;
+		link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
+		link.link_status = RTE_ETH_LINK_DOWN;
+		link.link_autoneg = RTE_ETH_LINK_FIXED;
 	}
 
 	return rte_eth_linkstatus_set(dev, &link);
@@ -1425,15 +1421,15 @@ eth_em_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	struct rte_eth_rxmode *rxmode;
 
 	rxmode = &dev->data->dev_conf.rxmode;
-	if(mask & ETH_VLAN_STRIP_MASK){
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 			em_vlan_hw_strip_enable(dev);
 		else
 			em_vlan_hw_strip_disable(dev);
 	}
 
-	if(mask & ETH_VLAN_FILTER_MASK){
-		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 			em_vlan_hw_filter_enable(dev);
 		else
 			em_vlan_hw_filter_disable(dev);
@@ -1602,7 +1598,7 @@ eth_em_interrupt_action(struct rte_eth_dev *dev,
 	if (link.link_status) {
 		PMD_INIT_LOG(INFO, " Port %d: Link Up - speed %u Mbps - %s",
 			     dev->data->port_id, link.link_speed,
-			     link.link_duplex == ETH_LINK_FULL_DUPLEX ?
+			     link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX ?
 			     "full-duplex" : "half-duplex");
 	} else {
 		PMD_INIT_LOG(INFO, " Port %d: Link Down", dev->data->port_id);
@@ -1684,13 +1680,13 @@ eth_em_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		rx_pause = 0;
 
 	if (rx_pause && tx_pause)
-		fc_conf->mode = RTE_FC_FULL;
+		fc_conf->mode = RTE_ETH_FC_FULL;
 	else if (rx_pause)
-		fc_conf->mode = RTE_FC_RX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_RX_PAUSE;
 	else if (tx_pause)
-		fc_conf->mode = RTE_FC_TX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_TX_PAUSE;
 	else
-		fc_conf->mode = RTE_FC_NONE;
+		fc_conf->mode = RTE_ETH_FC_NONE;
 
 	return 0;
 }
@@ -1787,21 +1783,11 @@ eth_em_default_mac_addr_set(struct rte_eth_dev *dev,
 static int
 eth_em_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 {
-	struct rte_eth_dev_info dev_info;
 	struct e1000_hw *hw;
 	uint32_t frame_size;
 	uint32_t rctl;
-	int ret;
-
-	ret = eth_em_infos_get(dev, &dev_info);
-	if (ret != 0)
-		return ret;
 
 	frame_size = mtu + E1000_ETH_OVERHEAD;
-
-	/* check that mtu is within the allowed range */
-	if (mtu < RTE_ETHER_MIN_MTU || frame_size > dev_info.max_rx_pktlen)
-		return -EINVAL;
 
 	/*
 	 * If device is started, refuse mtu that requires the support of
@@ -1817,19 +1803,12 @@ eth_em_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 
 	/* switch to jumbo mode if needed */
-	if (frame_size > E1000_ETH_MAX_LEN) {
-		dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_JUMBO_FRAME;
+	if (mtu > RTE_ETHER_MTU)
 		rctl |= E1000_RCTL_LPE;
-	} else {
-		dev->data->dev_conf.rxmode.offloads &=
-			~DEV_RX_OFFLOAD_JUMBO_FRAME;
+	else
 		rctl &= ~E1000_RCTL_LPE;
-	}
 	E1000_WRITE_REG(hw, E1000_RCTL, rctl);
 
-	/* update max frame size */
-	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
 	return 0;
 }
 

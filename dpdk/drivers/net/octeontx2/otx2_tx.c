@@ -202,7 +202,7 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			if (otx2_nix_prefree_seg(mbuf))
 				vsetq_lane_u64(0x80000, xmask01, 0);
 			else
-				__mempool_check_cookies(mbuf->pool,
+				RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool,
 							(void **)&mbuf,
 							1, 0);
 
@@ -211,7 +211,7 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			if (otx2_nix_prefree_seg(mbuf))
 				vsetq_lane_u64(0x80000, xmask01, 1);
 			else
-				__mempool_check_cookies(mbuf->pool,
+				RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool,
 							(void **)&mbuf,
 							1, 0);
 
@@ -220,7 +220,7 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			if (otx2_nix_prefree_seg(mbuf))
 				vsetq_lane_u64(0x80000, xmask23, 0);
 			else
-				__mempool_check_cookies(mbuf->pool,
+				RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool,
 							(void **)&mbuf,
 							1, 0);
 
@@ -229,7 +229,7 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			if (otx2_nix_prefree_seg(mbuf))
 				vsetq_lane_u64(0x80000, xmask23, 1);
 			else
-				__mempool_check_cookies(mbuf->pool,
+				RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool,
 							(void **)&mbuf,
 							1, 0);
 			senddesc01_w0 = vorrq_u64(senddesc01_w0, xmask01);
@@ -245,22 +245,22 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 */
 			mbuf = (struct rte_mbuf *)((uintptr_t)mbuf0 -
 				offsetof(struct rte_mbuf, buf_iova));
-			__mempool_check_cookies(mbuf->pool, (void **)&mbuf,
+			RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf,
 						1, 0);
 
 			mbuf = (struct rte_mbuf *)((uintptr_t)mbuf1 -
 				offsetof(struct rte_mbuf, buf_iova));
-			__mempool_check_cookies(mbuf->pool, (void **)&mbuf,
+			RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf,
 						1, 0);
 
 			mbuf = (struct rte_mbuf *)((uintptr_t)mbuf2 -
 				offsetof(struct rte_mbuf, buf_iova));
-			__mempool_check_cookies(mbuf->pool, (void **)&mbuf,
+			RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf,
 						1, 0);
 
 			mbuf = (struct rte_mbuf *)((uintptr_t)mbuf3 -
 				offsetof(struct rte_mbuf, buf_iova));
-			__mempool_check_cookies(mbuf->pool, (void **)&mbuf,
+			RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf,
 						1, 0);
 			RTE_SET_USED(mbuf);
 		}
@@ -364,26 +364,26 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			const uint8x16_t tbl = {
 				/* [0-15] = il4type:il3type */
 				0x04, /* none (IPv6 assumed) */
-				0x14, /* PKT_TX_TCP_CKSUM (IPv6 assumed) */
-				0x24, /* PKT_TX_SCTP_CKSUM (IPv6 assumed) */
-				0x34, /* PKT_TX_UDP_CKSUM (IPv6 assumed) */
-				0x03, /* PKT_TX_IP_CKSUM */
-				0x13, /* PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM */
-				0x23, /* PKT_TX_IP_CKSUM | PKT_TX_SCTP_CKSUM */
-				0x33, /* PKT_TX_IP_CKSUM | PKT_TX_UDP_CKSUM */
-				0x02, /* PKT_TX_IPV4  */
-				0x12, /* PKT_TX_IPV4 | PKT_TX_TCP_CKSUM */
-				0x22, /* PKT_TX_IPV4 | PKT_TX_SCTP_CKSUM */
-				0x32, /* PKT_TX_IPV4 | PKT_TX_UDP_CKSUM */
-				0x03, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM */
-				0x13, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
-				       * PKT_TX_TCP_CKSUM
+				0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6 assumed) */
+				0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6 assumed) */
+				0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6 assumed) */
+				0x03, /* RTE_MBUF_F_TX_IP_CKSUM */
+				0x13, /* RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM */
+				0x23, /* RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_SCTP_CKSUM */
+				0x33, /* RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_UDP_CKSUM */
+				0x02, /* RTE_MBUF_F_TX_IPV4  */
+				0x12, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_TCP_CKSUM */
+				0x22, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_SCTP_CKSUM */
+				0x32, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_UDP_CKSUM */
+				0x03, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM */
+				0x13, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+				       * RTE_MBUF_F_TX_TCP_CKSUM
 				       */
-				0x23, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
-				       * PKT_TX_SCTP_CKSUM
+				0x23, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+				       * RTE_MBUF_F_TX_SCTP_CKSUM
 				       */
-				0x33, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
-				       * PKT_TX_UDP_CKSUM
+				0x33, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+				       * RTE_MBUF_F_TX_UDP_CKSUM
 				       */
 			};
 
@@ -655,40 +655,40 @@ nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 				{
 					/* [0-15] = il4type:il3type */
 					0x04, /* none (IPv6) */
-					0x14, /* PKT_TX_TCP_CKSUM (IPv6) */
-					0x24, /* PKT_TX_SCTP_CKSUM (IPv6) */
-					0x34, /* PKT_TX_UDP_CKSUM (IPv6) */
-					0x03, /* PKT_TX_IP_CKSUM */
-					0x13, /* PKT_TX_IP_CKSUM |
-					       * PKT_TX_TCP_CKSUM
+					0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6) */
+					0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6) */
+					0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6) */
+					0x03, /* RTE_MBUF_F_TX_IP_CKSUM */
+					0x13, /* RTE_MBUF_F_TX_IP_CKSUM |
+					       * RTE_MBUF_F_TX_TCP_CKSUM
 					       */
-					0x23, /* PKT_TX_IP_CKSUM |
-					       * PKT_TX_SCTP_CKSUM
+					0x23, /* RTE_MBUF_F_TX_IP_CKSUM |
+					       * RTE_MBUF_F_TX_SCTP_CKSUM
 					       */
-					0x33, /* PKT_TX_IP_CKSUM |
-					       * PKT_TX_UDP_CKSUM
+					0x33, /* RTE_MBUF_F_TX_IP_CKSUM |
+					       * RTE_MBUF_F_TX_UDP_CKSUM
 					       */
-					0x02, /* PKT_TX_IPV4 */
-					0x12, /* PKT_TX_IPV4 |
-					       * PKT_TX_TCP_CKSUM
+					0x02, /* RTE_MBUF_F_TX_IPV4 */
+					0x12, /* RTE_MBUF_F_TX_IPV4 |
+					       * RTE_MBUF_F_TX_TCP_CKSUM
 					       */
-					0x22, /* PKT_TX_IPV4 |
-					       * PKT_TX_SCTP_CKSUM
+					0x22, /* RTE_MBUF_F_TX_IPV4 |
+					       * RTE_MBUF_F_TX_SCTP_CKSUM
 					       */
-					0x32, /* PKT_TX_IPV4 |
-					       * PKT_TX_UDP_CKSUM
+					0x32, /* RTE_MBUF_F_TX_IPV4 |
+					       * RTE_MBUF_F_TX_UDP_CKSUM
 					       */
-					0x03, /* PKT_TX_IPV4 |
-					       * PKT_TX_IP_CKSUM
+					0x03, /* RTE_MBUF_F_TX_IPV4 |
+					       * RTE_MBUF_F_TX_IP_CKSUM
 					       */
-					0x13, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
-					       * PKT_TX_TCP_CKSUM
+					0x13, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+					       * RTE_MBUF_F_TX_TCP_CKSUM
 					       */
-					0x23, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
-					       * PKT_TX_SCTP_CKSUM
+					0x23, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+					       * RTE_MBUF_F_TX_SCTP_CKSUM
 					       */
-					0x33, /* PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
-					       * PKT_TX_UDP_CKSUM
+					0x33, /* RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+					       * RTE_MBUF_F_TX_UDP_CKSUM
 					       */
 				},
 
@@ -1070,7 +1070,7 @@ NIX_TX_FASTPATH_MODES
 	else
 		pick_tx_func(eth_dev, nix_eth_tx_vec_burst);
 
-	if (dev->tx_offloads & DEV_TX_OFFLOAD_MULTI_SEGS)
+	if (dev->tx_offloads & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)
 		pick_tx_func(eth_dev, nix_eth_tx_burst_mseg);
 
 	rte_mb();

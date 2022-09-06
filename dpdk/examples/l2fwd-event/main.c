@@ -25,6 +25,9 @@ l2fwd_event_usage(const char *prgname)
 	       "  --eventq-sched: Event queue schedule type, ordered, atomic or parallel.\n"
 	       "                  Default: atomic\n"
 	       "                  Valid only if --mode=eventdev\n"
+	       "  --event-vector:  Enable event vectorization.\n"
+	       "  --event-vector-size: Max vector size if event vectorization is enabled.\n"
+	       "  --event-vector-tmo: Max timeout to form vector in nanoseconds if event vectorization is enabled\n"
 	       "  --config: Configure forwarding port pair mapping\n"
 	       "	    Default: alternate port pairs\n\n",
 	       prgname);
@@ -175,6 +178,9 @@ static const char short_options[] =
 #define CMD_LINE_OPT_MODE "mode"
 #define CMD_LINE_OPT_EVENTQ_SCHED "eventq-sched"
 #define CMD_LINE_OPT_PORT_PAIR_CONF "config"
+#define CMD_LINE_OPT_ENABLE_VECTOR "event-vector"
+#define CMD_LINE_OPT_VECTOR_SIZE "event-vector-size"
+#define CMD_LINE_OPT_VECTOR_TMO_NS "event-vector-tmo"
 
 enum {
 	/* long options mapped to a short option */
@@ -186,6 +192,9 @@ enum {
 	CMD_LINE_OPT_MODE_NUM,
 	CMD_LINE_OPT_EVENTQ_SCHED_NUM,
 	CMD_LINE_OPT_PORT_PAIR_CONF_NUM,
+	CMD_LINE_OPT_ENABLE_VECTOR_NUM,
+	CMD_LINE_OPT_VECTOR_SIZE_NUM,
+	CMD_LINE_OPT_VECTOR_TMO_NS_NUM
 };
 
 /* Parse the argument given in the command line of the application */
@@ -202,6 +211,12 @@ l2fwd_event_parse_args(int argc, char **argv, struct l2fwd_resources *rsrc)
 						CMD_LINE_OPT_EVENTQ_SCHED_NUM},
 		{ CMD_LINE_OPT_PORT_PAIR_CONF, required_argument, NULL,
 					CMD_LINE_OPT_PORT_PAIR_CONF_NUM},
+		{CMD_LINE_OPT_ENABLE_VECTOR, no_argument, NULL,
+					CMD_LINE_OPT_ENABLE_VECTOR_NUM},
+		{CMD_LINE_OPT_VECTOR_SIZE, required_argument, NULL,
+					CMD_LINE_OPT_VECTOR_SIZE_NUM},
+		{CMD_LINE_OPT_VECTOR_TMO_NS, required_argument, NULL,
+					CMD_LINE_OPT_VECTOR_TMO_NS_NUM},
 		{NULL, 0, 0, 0}
 	};
 	int opt, ret, timer_secs;
@@ -210,7 +225,7 @@ l2fwd_event_parse_args(int argc, char **argv, struct l2fwd_resources *rsrc)
 	int option_index;
 	char **argvopt;
 
-	/* reset l2fwd_dst_ports */
+	/* Reset l2fwd_dst_ports. 8< */
 	for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++)
 		rsrc->dst_ports[port_id] = UINT32_MAX;
 
@@ -270,6 +285,16 @@ l2fwd_event_parse_args(int argc, char **argv, struct l2fwd_resources *rsrc)
 				return -1;
 			}
 			break;
+		case CMD_LINE_OPT_ENABLE_VECTOR_NUM:
+			printf("event vectorization is enabled\n");
+			rsrc->evt_vec.enabled = 1;
+			break;
+		case CMD_LINE_OPT_VECTOR_SIZE_NUM:
+			rsrc->evt_vec.size = strtol(optarg, NULL, 10);
+			break;
+		case CMD_LINE_OPT_VECTOR_TMO_NS_NUM:
+			rsrc->evt_vec.timeout_ns = strtoull(optarg, NULL, 10);
+			break;
 
 		/* long options */
 		case 0:
@@ -283,12 +308,25 @@ l2fwd_event_parse_args(int argc, char **argv, struct l2fwd_resources *rsrc)
 
 	rsrc->mac_updating = mac_updating;
 
+	if (rsrc->evt_vec.enabled && !rsrc->evt_vec.size) {
+		rsrc->evt_vec.size = VECTOR_SIZE_DEFAULT;
+		printf("vector size set to default (%" PRIu16 ")\n",
+		       rsrc->evt_vec.size);
+	}
+
+	if (rsrc->evt_vec.enabled && !rsrc->evt_vec.timeout_ns) {
+		rsrc->evt_vec.timeout_ns = VECTOR_TMO_NS_DEFAULT;
+		printf("vector timeout set to default (%" PRIu64 " ns)\n",
+		       rsrc->evt_vec.timeout_ns);
+	}
+
 	if (optind >= 0)
 		argv[optind-1] = prgname;
 
 	ret = optind-1;
 	optind = 1; /* reset getopt lib */
 	return ret;
+	/* >8 End of reset l2fwd_dst_ports. */
 }
 
 /*
@@ -394,7 +432,7 @@ check_all_ports_link_status(struct l2fwd_resources *rsrc,
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -563,7 +601,7 @@ main(int argc, char **argv)
 	uint16_t nb_ports;
 	int i, ret;
 
-	/* init EAL */
+	/* Init EAL. 8< */
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_panic("Invalid EAL arguments\n");
@@ -579,6 +617,7 @@ main(int argc, char **argv)
 	ret = l2fwd_event_parse_args(argc, argv, rsrc);
 	if (ret < 0)
 		rte_panic("Invalid L2FWD arguments\n");
+	/* >8 End of init EAL. */
 
 	printf("MAC updating %s\n", rsrc->mac_updating ? "enabled" :
 			"disabled");
@@ -626,12 +665,24 @@ main(int argc, char **argv)
 				       MAX_PKT_BURST + rte_lcore_count() *
 				       MEMPOOL_CACHE_SIZE), 8192U);
 
-	/* create the mbuf pool */
+	/* Create the mbuf pool. 8< */
 	rsrc->pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool",
 			nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
 			RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 	if (rsrc->pktmbuf_pool == NULL)
 		rte_panic("Cannot init mbuf pool\n");
+	/* >8 End of creation of mbuf pool. */
+
+	if (rsrc->evt_vec.enabled) {
+		unsigned int nb_vec, vec_size;
+
+		vec_size = rsrc->evt_vec.size;
+		nb_vec = (nb_mbufs + vec_size - 1) / vec_size;
+		rsrc->evt_vec_pool = rte_event_vector_pool_create(
+			"vector_pool", nb_vec, 0, vec_size, rte_socket_id());
+		if (rsrc->evt_vec_pool == NULL)
+			rte_panic("Cannot init event vector pool\n");
+	}
 
 	nb_ports_available = l2fwd_event_init_ports(rsrc);
 	if (!nb_ports_available)

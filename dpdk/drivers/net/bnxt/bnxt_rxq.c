@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -24,26 +24,37 @@ uint64_t bnxt_get_rx_port_offloads(struct bnxt *bp)
 {
 	uint64_t rx_offload_capa;
 
-	rx_offload_capa = DEV_RX_OFFLOAD_IPV4_CKSUM  |
-			  DEV_RX_OFFLOAD_UDP_CKSUM   |
-			  DEV_RX_OFFLOAD_TCP_CKSUM   |
-			  DEV_RX_OFFLOAD_KEEP_CRC    |
-			  DEV_RX_OFFLOAD_VLAN_FILTER |
-			  DEV_RX_OFFLOAD_VLAN_EXTEND |
-			  DEV_RX_OFFLOAD_TCP_LRO |
-			  DEV_RX_OFFLOAD_SCATTER |
-			  DEV_RX_OFFLOAD_RSS_HASH;
+	rx_offload_capa = RTE_ETH_RX_OFFLOAD_IPV4_CKSUM  |
+			  RTE_ETH_RX_OFFLOAD_UDP_CKSUM   |
+			  RTE_ETH_RX_OFFLOAD_TCP_CKSUM   |
+			  RTE_ETH_RX_OFFLOAD_KEEP_CRC    |
+			  RTE_ETH_RX_OFFLOAD_VLAN_FILTER |
+			  RTE_ETH_RX_OFFLOAD_VLAN_EXTEND |
+			  RTE_ETH_RX_OFFLOAD_TCP_LRO |
+			  RTE_ETH_RX_OFFLOAD_SCATTER |
+			  RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	if (bp->flags & BNXT_FLAG_PTP_SUPPORTED)
-		rx_offload_capa |= DEV_RX_OFFLOAD_TIMESTAMP;
+		rx_offload_capa |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
 	if (bp->vnic_cap_flags & BNXT_VNIC_CAP_VLAN_RX_STRIP)
-		rx_offload_capa |= DEV_RX_OFFLOAD_VLAN_STRIP;
+		rx_offload_capa |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
 
 	if (BNXT_TUNNELED_OFFLOADS_CAP_ALL_EN(bp))
-		rx_offload_capa |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-				   DEV_RX_OFFLOAD_OUTER_UDP_CKSUM;
+		rx_offload_capa |= RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+					RTE_ETH_RX_OFFLOAD_OUTER_UDP_CKSUM;
 
 	return rx_offload_capa;
+}
+
+/* Determine whether the current configuration needs aggregation ring in HW. */
+int bnxt_need_agg_ring(struct rte_eth_dev *eth_dev)
+{
+	/* scattered_rx will be true if OFFLOAD_SCATTER is enabled,
+	 * if LRO is enabled, or if the max packet len is greater than the
+	 * mbuf data size. So AGG ring will be needed whenever scattered_rx
+	 * is set.
+	 */
+	return eth_dev->data->scattered_rx ? 1 : 0;
 }
 
 void bnxt_free_rxq_stats(struct bnxt_rx_queue *rxq)
@@ -68,13 +79,13 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 	bp->nr_vnics = 0;
 
 	/* Multi-queue mode */
-	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_VMDQ_DCB_RSS) {
+	if (dev_conf->rxmode.mq_mode & RTE_ETH_MQ_RX_VMDQ_DCB_RSS) {
 		/* VMDq ONLY, VMDq+RSS, VMDq+DCB, VMDq+DCB+RSS */
 
 		switch (dev_conf->rxmode.mq_mode) {
-		case ETH_MQ_RX_VMDQ_RSS:
-		case ETH_MQ_RX_VMDQ_ONLY:
-		case ETH_MQ_RX_VMDQ_DCB_RSS:
+		case RTE_ETH_MQ_RX_VMDQ_RSS:
+		case RTE_ETH_MQ_RX_VMDQ_ONLY:
+		case RTE_ETH_MQ_RX_VMDQ_DCB_RSS:
 			/* FALLTHROUGH */
 			/* ETH_8/64_POOLs */
 			pools = conf->nb_queue_pools;
@@ -82,14 +93,14 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 			max_pools = RTE_MIN(bp->max_vnics,
 					    RTE_MIN(bp->max_l2_ctx,
 					    RTE_MIN(bp->max_rsscos_ctx,
-						    ETH_64_POOLS)));
+						    RTE_ETH_64_POOLS)));
 			PMD_DRV_LOG(DEBUG,
 				    "pools = %u max_pools = %u\n",
 				    pools, max_pools);
 			if (pools > max_pools)
 				pools = max_pools;
 			break;
-		case ETH_MQ_RX_RSS:
+		case RTE_ETH_MQ_RX_RSS:
 			pools = bp->rx_cosq_cnt ? bp->rx_cosq_cnt : 1;
 			break;
 		default:
@@ -127,7 +138,7 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 				    ring_idx, rxq, i, vnic);
 		}
 		if (i == 0) {
-			if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_VMDQ_DCB) {
+			if (dev_conf->rxmode.mq_mode & RTE_ETH_MQ_RX_VMDQ_DCB) {
 				bp->eth_dev->data->promiscuous = 1;
 				vnic->flags |= BNXT_VNIC_INFO_PROMISC;
 			}
@@ -137,8 +148,8 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 		vnic->end_grp_id = end_grp_id;
 
 		if (i) {
-			if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_VMDQ_DCB ||
-			    !(dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS))
+			if (dev_conf->rxmode.mq_mode & RTE_ETH_MQ_RX_VMDQ_DCB ||
+			    !(dev_conf->rxmode.mq_mode & RTE_ETH_MQ_RX_RSS))
 				vnic->rss_dflt_cr = true;
 			goto skip_filter_allocation;
 		}
@@ -164,7 +175,7 @@ skip_filter_allocation:
 	bp->rx_num_qs_per_vnic = nb_q_per_grp;
 
 	for (i = 0; i < bp->nr_vnics; i++) {
-		uint32_t lvl = ETH_RSS_LEVEL(rss->rss_hf);
+		uint32_t lvl = RTE_ETH_RSS_LEVEL(rss->rss_hf);
 
 		vnic = &bp->vnic_info[i];
 		vnic->hash_type = bnxt_rte_to_hwrm_hash_types(rss->rss_hf);
@@ -197,6 +208,16 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 
 	sw_ring = rxq->rx_ring->rx_buf_ring;
 	if (sw_ring) {
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM64)
+		/*
+		 * The vector receive burst function does not set used
+		 * mbuf pointers to NULL, do that here to simplify
+		 * cleanup logic.
+		 */
+		for (i = 0; i < rxq->rxrearm_nb; i++)
+			sw_ring[rxq->rxrearm_start + i] = NULL;
+		rxq->rxrearm_nb = 0;
+#endif
 		for (i = 0;
 		     i < rxq->rx_ring->rx_ring_struct->ring_size; i++) {
 			if (sw_ring[i]) {
@@ -207,6 +228,11 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 		}
 	}
 	/* Free up mbufs in Agg ring */
+	if (rxq->bp == NULL ||
+	    rxq->bp->eth_dev == NULL ||
+	    !bnxt_need_agg_ring(rxq->bp->eth_dev))
+		return;
+
 	sw_ring = rxq->rx_ring->ag_buf_ring;
 	if (sw_ring) {
 		for (i = 0;
@@ -244,37 +270,47 @@ void bnxt_free_rx_mbufs(struct bnxt *bp)
 	}
 }
 
-void bnxt_rx_queue_release_op(void *rx_queue)
+void bnxt_free_rxq_mem(struct bnxt_rx_queue *rxq)
 {
-	struct bnxt_rx_queue *rxq = (struct bnxt_rx_queue *)rx_queue;
+	bnxt_rx_queue_release_mbufs(rxq);
 
-	if (rxq) {
+	/* Free RX, AGG ring hardware descriptors */
+	if (rxq->rx_ring) {
+		bnxt_free_ring(rxq->rx_ring->rx_ring_struct);
+		rte_free(rxq->rx_ring->rx_ring_struct);
+		rxq->rx_ring->rx_ring_struct = NULL;
+		/* Free RX Agg ring hardware descriptors */
+		bnxt_free_ring(rxq->rx_ring->ag_ring_struct);
+		rte_free(rxq->rx_ring->ag_ring_struct);
+		rxq->rx_ring->ag_ring_struct = NULL;
+
+		rte_free(rxq->rx_ring);
+		rxq->rx_ring = NULL;
+	}
+	/* Free RX completion ring hardware descriptors */
+	if (rxq->cp_ring) {
+		bnxt_free_ring(rxq->cp_ring->cp_ring_struct);
+		rte_free(rxq->cp_ring->cp_ring_struct);
+		rxq->cp_ring->cp_ring_struct = NULL;
+		rte_free(rxq->cp_ring);
+		rxq->cp_ring = NULL;
+	}
+
+	bnxt_free_rxq_stats(rxq);
+	rte_memzone_free(rxq->mz);
+	rxq->mz = NULL;
+}
+
+void bnxt_rx_queue_release_op(struct rte_eth_dev *dev, uint16_t queue_idx)
+{
+	struct bnxt_rx_queue *rxq = dev->data->rx_queues[queue_idx];
+
+	if (rxq != NULL) {
 		if (is_bnxt_in_error(rxq->bp))
 			return;
 
-		bnxt_rx_queue_release_mbufs(rxq);
-
-		/* Free RX ring hardware descriptors */
-		if (rxq->rx_ring) {
-			bnxt_free_ring(rxq->rx_ring->rx_ring_struct);
-			rte_free(rxq->rx_ring->rx_ring_struct);
-			/* Free RX Agg ring hardware descriptors */
-			bnxt_free_ring(rxq->rx_ring->ag_ring_struct);
-			rte_free(rxq->rx_ring->ag_ring_struct);
-
-			rte_free(rxq->rx_ring);
-		}
-		/* Free RX completion ring hardware descriptors */
-		if (rxq->cp_ring) {
-			bnxt_free_ring(rxq->cp_ring->cp_ring_struct);
-			rte_free(rxq->cp_ring->cp_ring_struct);
-			rte_free(rxq->cp_ring);
-		}
-
-		bnxt_free_rxq_stats(rxq);
-		rte_memzone_free(rxq->mz);
-		rxq->mz = NULL;
-
+		bnxt_free_hwrm_rx_ring(rxq->bp, rxq->queue_id);
+		bnxt_free_rxq_mem(rxq);
 		rte_free(rxq);
 	}
 }
@@ -290,7 +326,6 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	uint64_t rx_offloads = eth_dev->data->dev_conf.rxmode.offloads;
 	struct bnxt_rx_queue *rxq;
 	int rc = 0;
-	uint8_t queue_state;
 
 	rc = is_bnxt_in_error(bp);
 	if (rc)
@@ -311,7 +346,7 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	if (eth_dev->data->rx_queues) {
 		rxq = eth_dev->data->rx_queues[queue_idx];
 		if (rxq)
-			bnxt_rx_queue_release_op(rxq);
+			bnxt_rx_queue_release_op(eth_dev, queue_idx);
 	}
 	rxq = rte_zmalloc_socket("bnxt_rx_queue", sizeof(struct bnxt_rx_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
@@ -332,6 +367,8 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 
 	PMD_DRV_LOG(DEBUG, "RX Buf MTU %d\n", eth_dev->data->mtu);
 
+	eth_dev->data->rx_queues[queue_idx] = rxq;
+
 	rc = bnxt_init_rx_ring_struct(rxq, socket_id);
 	if (rc) {
 		PMD_DRV_LOG(ERR,
@@ -342,12 +379,11 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	PMD_DRV_LOG(DEBUG, "RX Buf size is %d\n", rxq->rx_buf_size);
 	rxq->queue_id = queue_idx;
 	rxq->port_id = eth_dev->data->port_id;
-	if (rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC)
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC)
 		rxq->crc_len = RTE_ETHER_CRC_LEN;
 	else
 		rxq->crc_len = 0;
 
-	eth_dev->data->rx_queues[queue_idx] = rxq;
 	/* Allocate RX ring hardware descriptors */
 	rc = bnxt_alloc_rings(bp, socket_id, queue_idx, NULL, rxq, rxq->cp_ring,
 			      NULL, "rxr");
@@ -364,22 +400,12 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	else
 		rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 
-	if (rxq->rx_deferred_start) {
-		queue_state = RTE_ETH_QUEUE_STATE_STOPPED;
-		rxq->rx_started = false;
-	} else {
-		queue_state = RTE_ETH_QUEUE_STATE_STARTED;
-		rxq->rx_started = true;
-	}
-	eth_dev->data->rx_queue_state[queue_idx] = queue_state;
-
-	/* Configure mtu if it is different from what was configured before */
-	if (!queue_idx)
-		bnxt_mtu_set_op(eth_dev, eth_dev->data->mtu);
+	rxq->rx_started = rxq->rx_deferred_start ? false : true;
+	rxq->vnic = BNXT_GET_DEFAULT_VNIC(bp);
 
 	return 0;
 err:
-	bnxt_rx_queue_release_op(rxq);
+	bnxt_rx_queue_release_op(eth_dev, queue_idx);
 	return rc;
 }
 
@@ -465,7 +491,7 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 
 	PMD_DRV_LOG(INFO, "Rx queue started %d\n", rx_queue_id);
 
-	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {
+	if (dev_conf->rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG) {
 		vnic = rxq->vnic;
 
 		if (BNXT_HAS_RING_GRPS(bp)) {
@@ -536,7 +562,7 @@ int bnxt_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	rxq->rx_started = false;
 	PMD_DRV_LOG(DEBUG, "Rx queue stopped\n");
 
-	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {
+	if (dev_conf->rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG) {
 		if (BNXT_HAS_RING_GRPS(bp))
 			vnic->fw_grp_ids[rx_queue_id] = INVALID_HW_RING_ID;
 
@@ -549,7 +575,7 @@ int bnxt_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		if (bp->rx_queues[i]->rx_started)
 			active_queue_cnt++;
 
-	if (BNXT_CHIP_THOR(bp)) {
+	if (BNXT_CHIP_P5(bp)) {
 		/*
 		 * For Thor, we need to ensure that the VNIC default receive
 		 * ring corresponds to an active receive queue. When no queue

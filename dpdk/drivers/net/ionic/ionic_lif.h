@@ -34,7 +34,6 @@ struct ionic_tx_stats {
 	uint64_t stop;
 	uint64_t no_csum;
 	uint64_t tso;
-	uint64_t frags;
 };
 
 struct ionic_rx_stats {
@@ -44,39 +43,79 @@ struct ionic_rx_stats {
 	uint64_t bad_cq_status;
 	uint64_t no_room;
 	uint64_t bad_len;
+	uint64_t mtods;
 };
 
 #define IONIC_QCQ_F_INITED	BIT(0)
 #define IONIC_QCQ_F_SG		BIT(1)
-#define IONIC_QCQ_F_INTR	BIT(2)
-#define IONIC_QCQ_F_NOTIFYQ	BIT(3)
+#define IONIC_QCQ_F_DEFERRED	BIT(4)
+#define IONIC_QCQ_F_CSUM_L3	BIT(7)
+#define IONIC_QCQ_F_CSUM_UDP	BIT(8)
+#define IONIC_QCQ_F_CSUM_TCP	BIT(9)
 
 /* Queue / Completion Queue */
 struct ionic_qcq {
-	uint64_t offloads;
 	struct ionic_queue q;        /**< Queue */
 	struct ionic_cq cq;          /**< Completion Queue */
 	struct ionic_lif *lif;       /**< LIF */
-	struct rte_mempool *mb_pool; /**< mbuf pool to populate the RX ring */
-	union {
-		struct ionic_tx_stats tx;
-		struct ionic_rx_stats rx;
-	} stats;
 	const struct rte_memzone *base_z;
 	void *base;
 	rte_iova_t base_pa;
-	uint32_t total_size;
-	uint32_t flags;
-	struct ionic_intr_info intr;
-	bool deferred_start;
 };
 
-#define IONIC_Q_TO_QCQ(q)	container_of(q, struct ionic_qcq, q)
-#define IONIC_Q_TO_TX_STATS(q)	(&IONIC_Q_TO_QCQ(q)->stats.tx)
-#define IONIC_Q_TO_RX_STATS(q)	(&IONIC_Q_TO_QCQ(q)->stats.rx)
+struct ionic_admin_qcq {
+	struct ionic_qcq qcq;
+	uint16_t flags;
+};
+
+struct ionic_notify_qcq {
+	struct ionic_qcq qcq;
+	uint16_t flags;
+
+	struct ionic_intr_info intr;
+};
+
+struct ionic_rx_qcq {
+	/* cacheline0, cacheline1 */
+	struct ionic_qcq qcq;
+
+	/* cacheline2 */
+	struct rte_mempool *mb_pool;
+	uint16_t flags;
+
+	/* cacheline3 (inside stats) */
+	struct ionic_rx_stats stats;
+};
+
+struct ionic_tx_qcq {
+	/* cacheline0, cacheline1 */
+	struct ionic_qcq qcq;
+
+	/* cacheline2 */
+	uint16_t num_segs_fw;	/* # segs supported by current FW */
+	uint16_t flags;
+
+	struct ionic_tx_stats stats;
+};
+
+#define IONIC_Q_TO_QCQ(_q)	container_of(_q, struct ionic_qcq, q)
+#define IONIC_CQ_TO_QCQ(_cq)	container_of(_cq, struct ionic_qcq, cq)
+
+struct ionic_qtype_info {
+	uint8_t  version;
+	uint8_t  supported;
+	uint64_t features;
+	uint16_t desc_sz;
+	uint16_t comp_sz;
+	uint16_t sg_desc_sz;
+	uint16_t max_sg_elems;
+	uint16_t sg_desc_stride;
+};
 
 #define IONIC_LIF_F_INITED		BIT(0)
 #define IONIC_LIF_F_LINK_CHECK_NEEDED	BIT(1)
+#define IONIC_LIF_F_UP			BIT(2)
+#define IONIC_LIF_F_FW_RESET		BIT(3)
 
 #define IONIC_LIF_NAME_MAX_SZ		(32)
 
@@ -84,19 +123,16 @@ struct ionic_lif {
 	struct ionic_adapter *adapter;
 	struct rte_eth_dev *eth_dev;
 	uint16_t port_id;  /**< Device port identifier */
-	uint16_t mtu;
-	uint32_t index;
 	uint32_t hw_index;
 	uint32_t state;
 	uint32_t ntxqcqs;
 	uint32_t nrxqcqs;
-	uint32_t kern_pid;
 	rte_spinlock_t adminq_lock;
 	rte_spinlock_t adminq_service_lock;
-	struct ionic_qcq *adminqcq;
-	struct ionic_qcq *notifyqcq;
-	struct ionic_qcq **txqcqs;
-	struct ionic_qcq **rxqcqs;
+	struct ionic_admin_qcq *adminqcq;
+	struct ionic_notify_qcq *notifyqcq;
+	struct ionic_tx_qcq **txqcqs;
+	struct ionic_rx_qcq **rxqcqs;
 	struct ionic_rx_filters rx_filters;
 	struct ionic_doorbell __iomem *kern_dbpage;
 	uint64_t last_eid;
@@ -110,10 +146,15 @@ struct ionic_lif {
 	uint8_t *rss_ind_tbl;
 	rte_iova_t rss_ind_tbl_pa;
 	const struct rte_memzone *rss_ind_tbl_z;
+	uint32_t rss_ind_tbl_nrxqcqs;
 	uint32_t info_sz;
 	struct ionic_lif_info *info;
 	rte_iova_t info_pa;
 	const struct rte_memzone *info_z;
+
+	struct ionic_qtype_info qtype_info[IONIC_QTYPE_MAX];
+	uint8_t qtype_ver[IONIC_QTYPE_MAX];
+
 	struct rte_eth_stats stats_base;
 	struct ionic_lif_stats lif_stats_base;
 };
@@ -123,21 +164,20 @@ int ionic_lifs_size(struct ionic_adapter *ionic);
 
 int ionic_lif_alloc(struct ionic_lif *lif);
 void ionic_lif_free(struct ionic_lif *lif);
+void ionic_lif_free_queues(struct ionic_lif *lif);
 
 int ionic_lif_init(struct ionic_lif *lif);
 void ionic_lif_deinit(struct ionic_lif *lif);
 
 int ionic_lif_start(struct ionic_lif *lif);
-int ionic_lif_stop(struct ionic_lif *lif);
+void ionic_lif_stop(struct ionic_lif *lif);
 
-int ionic_lif_configure(struct ionic_lif *lif);
+void ionic_lif_configure(struct ionic_lif *lif);
+void ionic_lif_configure_vlan_offload(struct ionic_lif *lif, int mask);
 void ionic_lif_reset(struct ionic_lif *lif);
 
 int ionic_intr_alloc(struct ionic_lif *lif, struct ionic_intr_info *intr);
-void ionic_intr_free(struct ionic_lif *lif, struct ionic_intr_info *intr);
 
-bool ionic_adminq_service(struct ionic_cq *cq, uint32_t cq_desc_index,
-	void *cb_arg);
 int ionic_qcq_service(struct ionic_qcq *qcq, int budget, ionic_cq_cb cb,
 	void *cb_arg);
 
@@ -157,20 +197,22 @@ int ionic_dev_promiscuous_disable(struct rte_eth_dev *dev);
 int ionic_dev_allmulticast_enable(struct rte_eth_dev *dev);
 int ionic_dev_allmulticast_disable(struct rte_eth_dev *dev);
 
-int ionic_rx_qcq_alloc(struct ionic_lif *lif, uint32_t index,
-	uint16_t nrxq_descs, struct ionic_qcq **qcq);
-int ionic_tx_qcq_alloc(struct ionic_lif *lif, uint32_t index,
-	uint16_t ntxq_descs, struct ionic_qcq **qcq);
+int ionic_rx_qcq_alloc(struct ionic_lif *lif, uint32_t socket_id,
+	uint32_t index, uint16_t nrxq_descs,
+	struct ionic_rx_qcq **qcq_out);
+int ionic_tx_qcq_alloc(struct ionic_lif *lif, uint32_t socket_id,
+	uint32_t index, uint16_t ntxq_descs,
+	struct ionic_tx_qcq **qcq_out);
 void ionic_qcq_free(struct ionic_qcq *qcq);
 
 int ionic_qcq_enable(struct ionic_qcq *qcq);
 int ionic_qcq_disable(struct ionic_qcq *qcq);
 
-int ionic_lif_rxq_init(struct ionic_qcq *qcq);
-void ionic_lif_rxq_deinit(struct ionic_qcq *qcq);
+int ionic_lif_rxq_init(struct ionic_rx_qcq *rxq);
+void ionic_lif_rxq_deinit(struct ionic_rx_qcq *rxq);
 
-int ionic_lif_txq_init(struct ionic_qcq *qcq);
-void ionic_lif_txq_deinit(struct ionic_qcq *qcq);
+int ionic_lif_txq_init(struct ionic_tx_qcq *txq);
+void ionic_lif_txq_deinit(struct ionic_tx_qcq *txq);
 
 int ionic_lif_rss_config(struct ionic_lif *lif, const uint16_t types,
 	const uint8_t *key, const uint32_t *indir);

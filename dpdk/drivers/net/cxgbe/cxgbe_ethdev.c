@@ -21,15 +21,14 @@
 #include <rte_debug.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_tailq.h>
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_dev.h>
@@ -132,6 +131,8 @@ int cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
 	device_info->max_vfs = adapter->params.arch.vfcount;
 	device_info->max_vmdq_pools = 0; /* XXX: For now no support for VMDQ */
 
+	device_info->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
+
 	device_info->rx_queue_offload_capa = 0UL;
 	device_info->rx_offload_capa = CXGBE_RX_OFFLOADS;
 
@@ -153,6 +154,13 @@ int cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adapter = pi->adapter;
+	int ret;
+
+	if (adapter->params.rawf_size != 0) {
+		ret = cxgbe_mpstcam_rawf_enable(pi);
+		if (ret < 0)
+			return ret;
+	}
 
 	return t4_set_rxmode(adapter, adapter->mbox, pi->viid, -1,
 			     1, -1, 1, -1, false);
@@ -162,6 +170,13 @@ int cxgbe_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adapter = pi->adapter;
+	int ret;
+
+	if (adapter->params.rawf_size != 0) {
+		ret = cxgbe_mpstcam_rawf_disable(pi);
+		if (ret < 0)
+			return ret;
+	}
 
 	return t4_set_rxmode(adapter, adapter->mbox, pi->viid, -1,
 			     0, -1, 1, -1, false);
@@ -193,11 +208,12 @@ int cxgbe_dev_link_update(struct rte_eth_dev *eth_dev,
 			  int wait_to_complete)
 {
 	struct port_info *pi = eth_dev->data->dev_private;
-	struct adapter *adapter = pi->adapter;
-	struct sge *s = &adapter->sge;
-	struct rte_eth_link new_link = { 0 };
 	unsigned int i, work_done, budget = 32;
+	struct link_config *lc = &pi->link_cfg;
+	struct adapter *adapter = pi->adapter;
+	struct rte_eth_link new_link = { 0 };
 	u8 old_link = pi->link_cfg.link_ok;
+	struct sge *s = &adapter->sge;
 
 	for (i = 0; i < CXGBE_LINK_STATUS_POLL_CNT; i++) {
 		if (!s->fw_evtq.desc)
@@ -217,10 +233,10 @@ int cxgbe_dev_link_update(struct rte_eth_dev *eth_dev,
 	}
 
 	new_link.link_status = cxgbe_force_linkup(adapter) ?
-			       ETH_LINK_UP : pi->link_cfg.link_ok;
-	new_link.link_autoneg = pi->link_cfg.autoneg;
-	new_link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	new_link.link_speed = pi->link_cfg.speed;
+			       RTE_ETH_LINK_UP : pi->link_cfg.link_ok;
+	new_link.link_autoneg = (lc->link_caps & FW_PORT_CAP32_ANEG) ? 1 : 0;
+	new_link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	new_link.link_speed = t4_fwcap_to_speed(lc->link_caps);
 
 	return rte_eth_linkstatus_set(eth_dev, &new_link);
 }
@@ -287,32 +303,10 @@ int cxgbe_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 {
 	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adapter = pi->adapter;
-	struct rte_eth_dev_info dev_info;
-	int err;
 	uint16_t new_mtu = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
-	err = cxgbe_dev_info_get(eth_dev, &dev_info);
-	if (err != 0)
-		return err;
-
-	/* Must accommodate at least RTE_ETHER_MIN_MTU */
-	if (new_mtu < RTE_ETHER_MIN_MTU || new_mtu > dev_info.max_rx_pktlen)
-		return -EINVAL;
-
-	/* set to jumbo mode if needed */
-	if (new_mtu > CXGBE_ETH_MAX_LEN)
-		eth_dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		eth_dev->data->dev_conf.rxmode.offloads &=
-			~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
-	err = t4_set_rxmode(adapter, adapter->mbox, pi->viid, new_mtu, -1, -1,
+	return t4_set_rxmode(adapter, adapter->mbox, pi->viid, new_mtu, -1, -1,
 			    -1, -1, true);
-	if (!err)
-		eth_dev->data->dev_conf.rxmode.max_rx_pkt_len = new_mtu;
-
-	return err;
 }
 
 /*
@@ -382,7 +376,7 @@ int cxgbe_dev_start(struct rte_eth_dev *eth_dev)
 			goto out;
 	}
 
-	if (rx_conf->offloads & DEV_RX_OFFLOAD_SCATTER)
+	if (rx_conf->offloads & RTE_ETH_RX_OFFLOAD_SCATTER)
 		eth_dev->data->scattered_rx = 1;
 	else
 		eth_dev->data->scattered_rx = 0;
@@ -446,9 +440,9 @@ int cxgbe_dev_configure(struct rte_eth_dev *eth_dev)
 
 	CXGBE_FUNC_TRACE();
 
-	if (eth_dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+	if (eth_dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
 		eth_dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_RSS_HASH;
+			RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	if (!(adapter->flags & FW_QUEUE_BOUND)) {
 		err = cxgbe_setup_sge_fwevtq(adapter);
@@ -518,7 +512,7 @@ int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 
 	/*  Free up the existing queue  */
 	if (eth_dev->data->tx_queues[queue_idx]) {
-		cxgbe_dev_tx_queue_release(eth_dev->data->tx_queues[queue_idx]);
+		cxgbe_dev_tx_queue_release(eth_dev, queue_idx);
 		eth_dev->data->tx_queues[queue_idx] = NULL;
 	}
 
@@ -551,9 +545,9 @@ int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 	return err;
 }
 
-void cxgbe_dev_tx_queue_release(void *q)
+void cxgbe_dev_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t qid)
 {
-	struct sge_eth_txq *txq = (struct sge_eth_txq *)q;
+	struct sge_eth_txq *txq = eth_dev->data->tx_queues[qid];
 
 	if (txq) {
 		struct port_info *pi = (struct port_info *)
@@ -609,7 +603,8 @@ int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 			     const struct rte_eth_rxconf *rx_conf __rte_unused,
 			     struct rte_mempool *mp)
 {
-	unsigned int pkt_len = eth_dev->data->dev_conf.rxmode.max_rx_pkt_len;
+	unsigned int pkt_len = eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
+		RTE_ETHER_CRC_LEN;
 	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adapter = pi->adapter;
 	struct rte_eth_dev_info dev_info;
@@ -641,7 +636,7 @@ int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 
 	/*  Free up the existing queue  */
 	if (eth_dev->data->rx_queues[queue_idx]) {
-		cxgbe_dev_rx_queue_release(eth_dev->data->rx_queues[queue_idx]);
+		cxgbe_dev_rx_queue_release(eth_dev, queue_idx);
 		eth_dev->data->rx_queues[queue_idx] = NULL;
 	}
 
@@ -667,14 +662,6 @@ int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	rxq->rspq.size = temp_nb_desc;
 	rxq->fl.size = temp_nb_desc;
 
-	/* Set to jumbo mode if necessary */
-	if (pkt_len > CXGBE_ETH_MAX_LEN)
-		eth_dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		eth_dev->data->dev_conf.rxmode.offloads &=
-			~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
 	err = t4_sge_alloc_rxq(adapter, &rxq->rspq, false, eth_dev, msi_idx,
 			       &rxq->fl, NULL,
 			       is_pf4(adapter) ?
@@ -687,9 +674,9 @@ int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	return err;
 }
 
-void cxgbe_dev_rx_queue_release(void *q)
+void cxgbe_dev_rx_queue_release(struct rte_eth_dev *eth_dev, uint16_t qid)
 {
-	struct sge_eth_rxq *rxq = (struct sge_eth_rxq *)q;
+	struct sge_eth_rxq *rxq = eth_dev->data->rx_queues[qid];
 
 	if (rxq) {
 		struct port_info *pi = (struct port_info *)
@@ -732,22 +719,12 @@ static int cxgbe_dev_stats_get(struct rte_eth_dev *eth_dev,
 	eth_stats->oerrors  = ps.tx_error_frames;
 
 	for (i = 0; i < pi->n_rx_qsets; i++) {
-		struct sge_eth_rxq *rxq =
-			&s->ethrxq[pi->first_rxqset + i];
+		struct sge_eth_rxq *rxq = &s->ethrxq[pi->first_rxqset + i];
 
-		eth_stats->q_ipackets[i] = rxq->stats.pkts;
-		eth_stats->q_ibytes[i] = rxq->stats.rx_bytes;
-		eth_stats->ipackets += eth_stats->q_ipackets[i];
-		eth_stats->ibytes += eth_stats->q_ibytes[i];
+		eth_stats->ipackets += rxq->stats.pkts;
+		eth_stats->ibytes += rxq->stats.rx_bytes;
 	}
 
-	for (i = 0; i < pi->n_tx_qsets; i++) {
-		struct sge_eth_txq *txq =
-			&s->ethtxq[pi->first_txqset + i];
-
-		eth_stats->q_opackets[i] = txq->stats.pkts;
-		eth_stats->q_obytes[i] = txq->stats.tx_bytes;
-	}
 	return 0;
 }
 
@@ -763,22 +740,328 @@ static int cxgbe_dev_stats_reset(struct rte_eth_dev *eth_dev)
 
 	cxgbe_stats_reset(pi);
 	for (i = 0; i < pi->n_rx_qsets; i++) {
-		struct sge_eth_rxq *rxq =
-			&s->ethrxq[pi->first_rxqset + i];
+		struct sge_eth_rxq *rxq = &s->ethrxq[pi->first_rxqset + i];
 
-		rxq->stats.pkts = 0;
-		rxq->stats.rx_bytes = 0;
+		memset(&rxq->stats, 0, sizeof(rxq->stats));
 	}
 	for (i = 0; i < pi->n_tx_qsets; i++) {
-		struct sge_eth_txq *txq =
-			&s->ethtxq[pi->first_txqset + i];
+		struct sge_eth_txq *txq = &s->ethtxq[pi->first_txqset + i];
 
-		txq->stats.pkts = 0;
-		txq->stats.tx_bytes = 0;
-		txq->stats.mapping_err = 0;
+		memset(&txq->stats, 0, sizeof(txq->stats));
 	}
 
 	return 0;
+}
+
+/* Store extended statistics names and its offset in stats structure  */
+struct cxgbe_dev_xstats_name_off {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+	unsigned int offset;
+};
+
+static const struct cxgbe_dev_xstats_name_off cxgbe_dev_rxq_stats_strings[] = {
+	{"packets", offsetof(struct sge_eth_rx_stats, pkts)},
+	{"bytes", offsetof(struct sge_eth_rx_stats, rx_bytes)},
+	{"checksum_offloads", offsetof(struct sge_eth_rx_stats, rx_cso)},
+	{"vlan_extractions", offsetof(struct sge_eth_rx_stats, vlan_ex)},
+	{"dropped_packets", offsetof(struct sge_eth_rx_stats, rx_drops)},
+};
+
+static const struct cxgbe_dev_xstats_name_off cxgbe_dev_txq_stats_strings[] = {
+	{"packets", offsetof(struct sge_eth_tx_stats, pkts)},
+	{"bytes", offsetof(struct sge_eth_tx_stats, tx_bytes)},
+	{"tso_requests", offsetof(struct sge_eth_tx_stats, tso)},
+	{"checksum_offloads", offsetof(struct sge_eth_tx_stats, tx_cso)},
+	{"vlan_insertions", offsetof(struct sge_eth_tx_stats, vlan_ins)},
+	{"packet_mapping_errors",
+	 offsetof(struct sge_eth_tx_stats, mapping_err)},
+	{"coalesced_wrs", offsetof(struct sge_eth_tx_stats, coal_wr)},
+	{"coalesced_packets", offsetof(struct sge_eth_tx_stats, coal_pkts)},
+};
+
+static const struct cxgbe_dev_xstats_name_off cxgbe_dev_port_stats_strings[] = {
+	{"tx_bytes", offsetof(struct port_stats, tx_octets)},
+	{"tx_packets", offsetof(struct port_stats, tx_frames)},
+	{"tx_broadcast_packets", offsetof(struct port_stats, tx_bcast_frames)},
+	{"tx_multicast_packets", offsetof(struct port_stats, tx_mcast_frames)},
+	{"tx_unicast_packets", offsetof(struct port_stats, tx_ucast_frames)},
+	{"tx_error_packets", offsetof(struct port_stats, tx_error_frames)},
+	{"tx_size_64_packets", offsetof(struct port_stats, tx_frames_64)},
+	{"tx_size_65_to_127_packets",
+	 offsetof(struct port_stats, tx_frames_65_127)},
+	{"tx_size_128_to_255_packets",
+	 offsetof(struct port_stats, tx_frames_128_255)},
+	{"tx_size_256_to_511_packets",
+	 offsetof(struct port_stats, tx_frames_256_511)},
+	{"tx_size_512_to_1023_packets",
+	 offsetof(struct port_stats, tx_frames_512_1023)},
+	{"tx_size_1024_to_1518_packets",
+	 offsetof(struct port_stats, tx_frames_1024_1518)},
+	{"tx_size_1519_to_max_packets",
+	 offsetof(struct port_stats, tx_frames_1519_max)},
+	{"tx_drop_packets", offsetof(struct port_stats, tx_drop)},
+	{"tx_pause_frames", offsetof(struct port_stats, tx_pause)},
+	{"tx_ppp_pri0_packets", offsetof(struct port_stats, tx_ppp0)},
+	{"tx_ppp_pri1_packets", offsetof(struct port_stats, tx_ppp1)},
+	{"tx_ppp_pri2_packets", offsetof(struct port_stats, tx_ppp2)},
+	{"tx_ppp_pri3_packets", offsetof(struct port_stats, tx_ppp3)},
+	{"tx_ppp_pri4_packets", offsetof(struct port_stats, tx_ppp4)},
+	{"tx_ppp_pri5_packets", offsetof(struct port_stats, tx_ppp5)},
+	{"tx_ppp_pri6_packets", offsetof(struct port_stats, tx_ppp6)},
+	{"tx_ppp_pri7_packets", offsetof(struct port_stats, tx_ppp7)},
+	{"rx_bytes", offsetof(struct port_stats, rx_octets)},
+	{"rx_packets", offsetof(struct port_stats, rx_frames)},
+	{"rx_broadcast_packets", offsetof(struct port_stats, rx_bcast_frames)},
+	{"rx_multicast_packets", offsetof(struct port_stats, rx_mcast_frames)},
+	{"rx_unicast_packets", offsetof(struct port_stats, rx_ucast_frames)},
+	{"rx_too_long_packets", offsetof(struct port_stats, rx_too_long)},
+	{"rx_jabber_packets", offsetof(struct port_stats, rx_jabber)},
+	{"rx_fcs_error_packets", offsetof(struct port_stats, rx_fcs_err)},
+	{"rx_length_error_packets", offsetof(struct port_stats, rx_len_err)},
+	{"rx_symbol_error_packets",
+	 offsetof(struct port_stats, rx_symbol_err)},
+	{"rx_short_packets", offsetof(struct port_stats, rx_runt)},
+	{"rx_size_64_packets", offsetof(struct port_stats, rx_frames_64)},
+	{"rx_size_65_to_127_packets",
+	 offsetof(struct port_stats, rx_frames_65_127)},
+	{"rx_size_128_to_255_packets",
+	 offsetof(struct port_stats, rx_frames_128_255)},
+	{"rx_size_256_to_511_packets",
+	 offsetof(struct port_stats, rx_frames_256_511)},
+	{"rx_size_512_to_1023_packets",
+	 offsetof(struct port_stats, rx_frames_512_1023)},
+	{"rx_size_1024_to_1518_packets",
+	 offsetof(struct port_stats, rx_frames_1024_1518)},
+	{"rx_size_1519_to_max_packets",
+	 offsetof(struct port_stats, rx_frames_1519_max)},
+	{"rx_pause_packets", offsetof(struct port_stats, rx_pause)},
+	{"rx_ppp_pri0_packets", offsetof(struct port_stats, rx_ppp0)},
+	{"rx_ppp_pri1_packets", offsetof(struct port_stats, rx_ppp1)},
+	{"rx_ppp_pri2_packets", offsetof(struct port_stats, rx_ppp2)},
+	{"rx_ppp_pri3_packets", offsetof(struct port_stats, rx_ppp3)},
+	{"rx_ppp_pri4_packets", offsetof(struct port_stats, rx_ppp4)},
+	{"rx_ppp_pri5_packets", offsetof(struct port_stats, rx_ppp5)},
+	{"rx_ppp_pri6_packets", offsetof(struct port_stats, rx_ppp6)},
+	{"rx_ppp_pri7_packets", offsetof(struct port_stats, rx_ppp7)},
+	{"rx_bg0_dropped_packets", offsetof(struct port_stats, rx_ovflow0)},
+	{"rx_bg1_dropped_packets", offsetof(struct port_stats, rx_ovflow1)},
+	{"rx_bg2_dropped_packets", offsetof(struct port_stats, rx_ovflow2)},
+	{"rx_bg3_dropped_packets", offsetof(struct port_stats, rx_ovflow3)},
+	{"rx_bg0_truncated_packets", offsetof(struct port_stats, rx_trunc0)},
+	{"rx_bg1_truncated_packets", offsetof(struct port_stats, rx_trunc1)},
+	{"rx_bg2_truncated_packets", offsetof(struct port_stats, rx_trunc2)},
+	{"rx_bg3_truncated_packets", offsetof(struct port_stats, rx_trunc3)},
+};
+
+static const struct cxgbe_dev_xstats_name_off
+cxgbevf_dev_port_stats_strings[] = {
+	{"tx_bytes", offsetof(struct port_stats, tx_octets)},
+	{"tx_broadcast_packets", offsetof(struct port_stats, tx_bcast_frames)},
+	{"tx_multicast_packets", offsetof(struct port_stats, tx_mcast_frames)},
+	{"tx_unicast_packets", offsetof(struct port_stats, tx_ucast_frames)},
+	{"tx_drop_packets", offsetof(struct port_stats, tx_drop)},
+	{"rx_broadcast_packets", offsetof(struct port_stats, rx_bcast_frames)},
+	{"rx_multicast_packets", offsetof(struct port_stats, rx_mcast_frames)},
+	{"rx_unicast_packets", offsetof(struct port_stats, rx_ucast_frames)},
+	{"rx_length_error_packets", offsetof(struct port_stats, rx_len_err)},
+};
+
+#define CXGBE_NB_RXQ_STATS RTE_DIM(cxgbe_dev_rxq_stats_strings)
+#define CXGBE_NB_TXQ_STATS RTE_DIM(cxgbe_dev_txq_stats_strings)
+#define CXGBE_NB_PORT_STATS RTE_DIM(cxgbe_dev_port_stats_strings)
+#define CXGBEVF_NB_PORT_STATS RTE_DIM(cxgbevf_dev_port_stats_strings)
+
+static u16 cxgbe_dev_xstats_count(struct port_info *pi)
+{
+	u16 count;
+
+	count = (pi->n_tx_qsets * CXGBE_NB_TXQ_STATS) +
+		(pi->n_rx_qsets * CXGBE_NB_RXQ_STATS);
+
+	if (is_pf4(pi->adapter) != 0)
+		count += CXGBE_NB_PORT_STATS;
+	else
+		count += CXGBEVF_NB_PORT_STATS;
+
+	return count;
+}
+
+static int cxgbe_dev_xstats(struct rte_eth_dev *dev,
+			    struct rte_eth_xstat_name *xstats_names,
+			    struct rte_eth_xstat *xstats, unsigned int size)
+{
+	const struct cxgbe_dev_xstats_name_off *xstats_str;
+	struct port_info *pi = dev->data->dev_private;
+	struct adapter *adap = pi->adapter;
+	struct sge *s = &adap->sge;
+	u16 count, i, qid, nstats;
+	struct port_stats ps;
+	u64 *stats_ptr;
+
+	count = cxgbe_dev_xstats_count(pi);
+	if (size < count)
+		return count;
+
+	if (is_pf4(adap) != 0) {
+		/* port stats for PF*/
+		cxgbe_stats_get(pi, &ps);
+		xstats_str = cxgbe_dev_port_stats_strings;
+		nstats = CXGBE_NB_PORT_STATS;
+	} else {
+		/* port stats for VF*/
+		cxgbevf_stats_get(pi, &ps);
+		xstats_str = cxgbevf_dev_port_stats_strings;
+		nstats = CXGBEVF_NB_PORT_STATS;
+	}
+
+	count = 0;
+	for (i = 0; i < nstats; i++, count++) {
+		if (xstats_names != NULL)
+			snprintf(xstats_names[count].name,
+				 sizeof(xstats_names[count].name),
+				 "%s", xstats_str[i].name);
+		if (xstats != NULL) {
+			stats_ptr = RTE_PTR_ADD(&ps,
+						xstats_str[i].offset);
+			xstats[count].value = *stats_ptr;
+			xstats[count].id = count;
+		}
+	}
+
+	/* per-txq stats */
+	xstats_str = cxgbe_dev_txq_stats_strings;
+	for (qid = 0; qid < pi->n_tx_qsets; qid++) {
+		struct sge_eth_txq *txq = &s->ethtxq[pi->first_txqset + qid];
+
+		for (i = 0; i < CXGBE_NB_TXQ_STATS; i++, count++) {
+			if (xstats_names != NULL)
+				snprintf(xstats_names[count].name,
+					 sizeof(xstats_names[count].name),
+					 "tx_q%u_%s",
+					 qid, xstats_str[i].name);
+			if (xstats != NULL) {
+				stats_ptr = RTE_PTR_ADD(&txq->stats,
+							xstats_str[i].offset);
+				xstats[count].value = *stats_ptr;
+				xstats[count].id = count;
+			}
+		}
+	}
+
+	/* per-rxq stats */
+	xstats_str = cxgbe_dev_rxq_stats_strings;
+	for (qid = 0; qid < pi->n_rx_qsets; qid++) {
+		struct sge_eth_rxq *rxq = &s->ethrxq[pi->first_rxqset + qid];
+
+		for (i = 0; i < CXGBE_NB_RXQ_STATS; i++, count++) {
+			if (xstats_names != NULL)
+				snprintf(xstats_names[count].name,
+					 sizeof(xstats_names[count].name),
+					 "rx_q%u_%s",
+					 qid, xstats_str[i].name);
+			if (xstats != NULL) {
+				stats_ptr = RTE_PTR_ADD(&rxq->stats,
+							xstats_str[i].offset);
+				xstats[count].value = *stats_ptr;
+				xstats[count].id = count;
+			}
+		}
+	}
+
+	return count;
+}
+
+/* Get port extended statistics by ID. */
+int cxgbe_dev_xstats_get_by_id(struct rte_eth_dev *dev,
+			       const uint64_t *ids, uint64_t *values,
+			       unsigned int n)
+{
+	struct port_info *pi = dev->data->dev_private;
+	struct rte_eth_xstat *xstats_copy;
+	u16 count, i;
+	int ret = 0;
+
+	count = cxgbe_dev_xstats_count(pi);
+	if (ids == NULL || values == NULL)
+		return count;
+
+	xstats_copy = rte_calloc(NULL, count, sizeof(*xstats_copy), 0);
+	if (xstats_copy == NULL)
+		return -ENOMEM;
+
+	cxgbe_dev_xstats(dev, NULL, xstats_copy, count);
+
+	for (i = 0; i < n; i++) {
+		if (ids[i] >= count) {
+			ret = -EINVAL;
+			goto out_err;
+		}
+		values[i] = xstats_copy[ids[i]].value;
+	}
+
+	ret = n;
+
+out_err:
+	rte_free(xstats_copy);
+	return ret;
+}
+
+/* Get names of port extended statistics by ID. */
+int cxgbe_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
+					    const uint64_t *ids,
+					    struct rte_eth_xstat_name *xnames,
+					    unsigned int n)
+{
+	struct port_info *pi = dev->data->dev_private;
+	struct rte_eth_xstat_name *xnames_copy;
+	u16 count, i;
+	int ret = 0;
+
+	count = cxgbe_dev_xstats_count(pi);
+	if (ids == NULL || xnames == NULL)
+		return count;
+
+	xnames_copy = rte_calloc(NULL, count, sizeof(*xnames_copy), 0);
+	if (xnames_copy == NULL)
+		return -ENOMEM;
+
+	cxgbe_dev_xstats(dev, xnames_copy, NULL, count);
+
+	for (i = 0; i < n; i++) {
+		if (ids[i] >= count) {
+			ret = -EINVAL;
+			goto out_err;
+		}
+		rte_strlcpy(xnames[i].name, xnames_copy[ids[i]].name,
+			    sizeof(xnames[i].name));
+	}
+
+	ret = n;
+
+out_err:
+	rte_free(xnames_copy);
+	return ret;
+}
+
+/* Get port extended statistics. */
+int cxgbe_dev_xstats_get(struct rte_eth_dev *dev,
+			 struct rte_eth_xstat *xstats, unsigned int n)
+{
+	return cxgbe_dev_xstats(dev, NULL, xstats, n);
+}
+
+/* Get names of port extended statistics. */
+int cxgbe_dev_xstats_get_names(struct rte_eth_dev *dev,
+			       struct rte_eth_xstat_name *xstats_names,
+			       unsigned int n)
+{
+	return cxgbe_dev_xstats(dev, xstats_names, NULL, n);
+}
+
+/* Reset port extended statistics. */
+static int cxgbe_dev_xstats_reset(struct rte_eth_dev *dev)
+{
+	return cxgbe_dev_stats_reset(dev);
 }
 
 static int cxgbe_flow_ctrl_get(struct rte_eth_dev *eth_dev,
@@ -786,20 +1069,26 @@ static int cxgbe_flow_ctrl_get(struct rte_eth_dev *eth_dev,
 {
 	struct port_info *pi = eth_dev->data->dev_private;
 	struct link_config *lc = &pi->link_cfg;
-	int rx_pause, tx_pause;
+	u8 rx_pause = 0, tx_pause = 0;
+	u32 caps = lc->link_caps;
 
-	fc_conf->autoneg = lc->fc & PAUSE_AUTONEG;
-	rx_pause = lc->fc & PAUSE_RX;
-	tx_pause = lc->fc & PAUSE_TX;
+	if (caps & FW_PORT_CAP32_ANEG)
+		fc_conf->autoneg = 1;
+
+	if (caps & FW_PORT_CAP32_FC_TX)
+		tx_pause = 1;
+
+	if (caps & FW_PORT_CAP32_FC_RX)
+		rx_pause = 1;
 
 	if (rx_pause && tx_pause)
-		fc_conf->mode = RTE_FC_FULL;
+		fc_conf->mode = RTE_ETH_FC_FULL;
 	else if (rx_pause)
-		fc_conf->mode = RTE_FC_RX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_RX_PAUSE;
 	else if (tx_pause)
-		fc_conf->mode = RTE_FC_TX_PAUSE;
+		fc_conf->mode = RTE_ETH_FC_TX_PAUSE;
 	else
-		fc_conf->mode = RTE_FC_NONE;
+		fc_conf->mode = RTE_ETH_FC_NONE;
 	return 0;
 }
 
@@ -807,30 +1096,39 @@ static int cxgbe_flow_ctrl_set(struct rte_eth_dev *eth_dev,
 			       struct rte_eth_fc_conf *fc_conf)
 {
 	struct port_info *pi = eth_dev->data->dev_private;
-	struct adapter *adapter = pi->adapter;
 	struct link_config *lc = &pi->link_cfg;
+	u32 new_caps = lc->admin_caps;
+	u8 tx_pause = 0, rx_pause = 0;
+	int ret;
 
-	if (lc->pcaps & FW_PORT_CAP32_ANEG) {
-		if (fc_conf->autoneg)
-			lc->requested_fc |= PAUSE_AUTONEG;
-		else
-			lc->requested_fc &= ~PAUSE_AUTONEG;
+	if (fc_conf->mode == RTE_ETH_FC_FULL) {
+		tx_pause = 1;
+		rx_pause = 1;
+	} else if (fc_conf->mode == RTE_ETH_FC_TX_PAUSE) {
+		tx_pause = 1;
+	} else if (fc_conf->mode == RTE_ETH_FC_RX_PAUSE) {
+		rx_pause = 1;
 	}
 
-	if (((fc_conf->mode & RTE_FC_FULL) == RTE_FC_FULL) ||
-	    (fc_conf->mode & RTE_FC_RX_PAUSE))
-		lc->requested_fc |= PAUSE_RX;
-	else
-		lc->requested_fc &= ~PAUSE_RX;
+	ret = t4_set_link_pause(pi, fc_conf->autoneg, tx_pause,
+				rx_pause, &new_caps);
+	if (ret != 0)
+		return ret;
 
-	if (((fc_conf->mode & RTE_FC_FULL) == RTE_FC_FULL) ||
-	    (fc_conf->mode & RTE_FC_TX_PAUSE))
-		lc->requested_fc |= PAUSE_TX;
-	else
-		lc->requested_fc &= ~PAUSE_TX;
+	if (!fc_conf->autoneg) {
+		if (lc->pcaps & FW_PORT_CAP32_FORCE_PAUSE)
+			new_caps |= FW_PORT_CAP32_FORCE_PAUSE;
+	} else {
+		new_caps &= ~FW_PORT_CAP32_FORCE_PAUSE;
+	}
 
-	return t4_link_l1cfg(adapter, adapter->mbox, pi->tx_chan,
-			     &pi->link_cfg);
+	if (new_caps != lc->admin_caps) {
+		ret = t4_link_l1cfg(pi, new_caps);
+		if (ret == 0)
+			lc->admin_caps = new_caps;
+	}
+
+	return ret;
 }
 
 const uint32_t *
@@ -904,9 +1202,9 @@ static int cxgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 		rss_hf |= CXGBE_RSS_HF_IPV6_MASK;
 
 	if (flags & F_FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN) {
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_TCP;
 		if (flags & F_FW_RSS_VI_CONFIG_CMD_UDPEN)
-			rss_hf |= ETH_RSS_NONFRAG_IPV4_UDP;
+			rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_UDP;
 	}
 
 	if (flags & F_FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN)
@@ -950,8 +1248,8 @@ static int cxgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
 
 	rte_memcpy(rss, pi->rss, pi->rss_size * sizeof(u16));
 	for (i = 0; i < reta_size; i++) {
-		idx = i / RTE_RETA_GROUP_SIZE;
-		shift = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
 		if (!(reta_conf[idx].mask & (1ULL << shift)))
 			continue;
 
@@ -981,8 +1279,8 @@ static int cxgbe_dev_rss_reta_query(struct rte_eth_dev *dev,
 		return -EINVAL;
 
 	for (i = 0; i < reta_size; i++) {
-		idx = i / RTE_RETA_GROUP_SIZE;
-		shift = i % RTE_RETA_GROUP_SIZE;
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
 		if (!(reta_conf[idx].mask & (1ULL << shift)))
 			continue;
 
@@ -1176,6 +1474,150 @@ int cxgbe_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *addr)
 	return 0;
 }
 
+static int cxgbe_fec_get_capa_speed_to_fec(struct link_config *lc,
+					   struct rte_eth_fec_capa *capa_arr)
+{
+	int num = 0;
+
+	if (lc->pcaps & FW_PORT_CAP32_SPEED_100G) {
+		if (capa_arr) {
+			capa_arr[num].speed = RTE_ETH_SPEED_NUM_100G;
+			capa_arr[num].capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+		num++;
+	}
+
+	if (lc->pcaps & FW_PORT_CAP32_SPEED_50G) {
+		if (capa_arr) {
+			capa_arr[num].speed = RTE_ETH_SPEED_NUM_50G;
+			capa_arr[num].capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+		}
+		num++;
+	}
+
+	if (lc->pcaps & FW_PORT_CAP32_SPEED_25G) {
+		if (capa_arr) {
+			capa_arr[num].speed = RTE_ETH_SPEED_NUM_25G;
+			capa_arr[num].capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(BASER) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+		num++;
+	}
+
+	return num;
+}
+
+static int cxgbe_fec_get_capability(struct rte_eth_dev *dev,
+				    struct rte_eth_fec_capa *speed_fec_capa,
+				    unsigned int num)
+{
+	struct port_info *pi = dev->data->dev_private;
+	struct link_config *lc = &pi->link_cfg;
+	u8 num_entries;
+
+	if (!(lc->pcaps & V_FW_PORT_CAP32_FEC(M_FW_PORT_CAP32_FEC)))
+		return -EOPNOTSUPP;
+
+	num_entries = cxgbe_fec_get_capa_speed_to_fec(lc, NULL);
+	if (!speed_fec_capa || num < num_entries)
+		return num_entries;
+
+	return cxgbe_fec_get_capa_speed_to_fec(lc, speed_fec_capa);
+}
+
+static int cxgbe_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
+{
+	struct port_info *pi = dev->data->dev_private;
+	struct link_config *lc = &pi->link_cfg;
+	u32 fec_caps = 0, caps = lc->link_caps;
+
+	if (!(lc->pcaps & V_FW_PORT_CAP32_FEC(M_FW_PORT_CAP32_FEC)))
+		return -EOPNOTSUPP;
+
+	if (caps & FW_PORT_CAP32_FEC_RS)
+		fec_caps = RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+	else if (caps & FW_PORT_CAP32_FEC_BASER_RS)
+		fec_caps = RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+	else
+		fec_caps = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
+
+	*fec_capa = fec_caps;
+	return 0;
+}
+
+static int cxgbe_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
+{
+	struct port_info *pi = dev->data->dev_private;
+	u8 fec_rs = 0, fec_baser = 0, fec_none = 0;
+	struct link_config *lc = &pi->link_cfg;
+	u32 new_caps = lc->admin_caps;
+	int ret;
+
+	if (!(lc->pcaps & V_FW_PORT_CAP32_FEC(M_FW_PORT_CAP32_FEC)))
+		return -EOPNOTSUPP;
+
+	if (!fec_capa)
+		return -EINVAL;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(AUTO))
+		goto set_fec;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC))
+		fec_none = 1;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(BASER))
+		fec_baser = 1;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(RS))
+		fec_rs = 1;
+
+set_fec:
+	ret = t4_set_link_fec(pi, fec_rs, fec_baser, fec_none, &new_caps);
+	if (ret != 0)
+		return ret;
+
+	if (lc->pcaps & FW_PORT_CAP32_FORCE_FEC)
+		new_caps |= FW_PORT_CAP32_FORCE_FEC;
+	else
+		new_caps &= ~FW_PORT_CAP32_FORCE_FEC;
+
+	if (new_caps != lc->admin_caps) {
+		ret = t4_link_l1cfg(pi, new_caps);
+		if (ret == 0)
+			lc->admin_caps = new_caps;
+	}
+
+	return ret;
+}
+
+int cxgbe_fw_version_get(struct rte_eth_dev *dev, char *fw_version,
+			 size_t fw_size)
+{
+	struct port_info *pi = dev->data->dev_private;
+	struct adapter *adapter = pi->adapter;
+	int ret;
+
+	if (adapter->params.fw_vers == 0)
+		return -EIO;
+
+	ret = snprintf(fw_version, fw_size, "%u.%u.%u.%u",
+		       G_FW_HDR_FW_VER_MAJOR(adapter->params.fw_vers),
+		       G_FW_HDR_FW_VER_MINOR(adapter->params.fw_vers),
+		       G_FW_HDR_FW_VER_MICRO(adapter->params.fw_vers),
+		       G_FW_HDR_FW_VER_BUILD(adapter->params.fw_vers));
+	if (ret < 0)
+		return -EINVAL;
+
+	ret += 1;
+	if (fw_size < (size_t)ret)
+		return ret;
+
+	return 0;
+}
+
 static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.dev_start		= cxgbe_dev_start,
 	.dev_stop		= cxgbe_dev_stop,
@@ -1199,9 +1641,14 @@ static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.rx_queue_start		= cxgbe_dev_rx_queue_start,
 	.rx_queue_stop		= cxgbe_dev_rx_queue_stop,
 	.rx_queue_release	= cxgbe_dev_rx_queue_release,
-	.filter_ctrl            = cxgbe_dev_filter_ctrl,
+	.flow_ops_get           = cxgbe_dev_flow_ops_get,
 	.stats_get		= cxgbe_dev_stats_get,
 	.stats_reset		= cxgbe_dev_stats_reset,
+	.xstats_get             = cxgbe_dev_xstats_get,
+	.xstats_get_by_id       = cxgbe_dev_xstats_get_by_id,
+	.xstats_get_names       = cxgbe_dev_xstats_get_names,
+	.xstats_get_names_by_id = cxgbe_dev_xstats_get_names_by_id,
+	.xstats_reset           = cxgbe_dev_xstats_reset,
 	.flow_ctrl_get		= cxgbe_flow_ctrl_get,
 	.flow_ctrl_set		= cxgbe_flow_ctrl_set,
 	.get_eeprom_length	= cxgbe_get_eeprom_length,
@@ -1213,6 +1660,10 @@ static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.mac_addr_set		= cxgbe_mac_addr_set,
 	.reta_update            = cxgbe_dev_rss_reta_update,
 	.reta_query             = cxgbe_dev_rss_reta_query,
+	.fec_get_capability     = cxgbe_fec_get_capability,
+	.fec_get                = cxgbe_fec_get,
+	.fec_set                = cxgbe_fec_set,
+	.fw_version_get         = cxgbe_fw_version_get,
 };
 
 /*
@@ -1260,8 +1711,6 @@ static int eth_cxgbe_dev_init(struct rte_eth_dev *eth_dev)
 		}
 		return 0;
 	}
-
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	snprintf(name, sizeof(name), "cxgbeadapter%d", eth_dev->data->port_id);
 	adapter = rte_zmalloc(name, sizeof(*adapter), 0);
@@ -1335,5 +1784,5 @@ RTE_PMD_REGISTER_PARAM_STRING(net_cxgbe,
 			      CXGBE_DEVARG_CMN_TX_MODE_LATENCY "=<0|1> "
 			      CXGBE_DEVARG_PF_FILTER_MODE "=<uint32> "
 			      CXGBE_DEVARG_PF_FILTER_MASK "=<uint32> ");
-RTE_LOG_REGISTER(cxgbe_logtype, pmd.net.cxgbe, NOTICE);
-RTE_LOG_REGISTER(cxgbe_mbox_logtype, pmd.net.cxgbe.mbox, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(cxgbe_logtype, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cxgbe_mbox_logtype, mbox, NOTICE);

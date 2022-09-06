@@ -9,7 +9,7 @@
 
 #include <rte_debug.h>
 #include <rte_atomic.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_flow.h>
 #include <rte_cycles.h>
@@ -358,26 +358,21 @@ fs_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 }
 
 static void
-fs_rx_queue_release(void *queue)
+fs_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct rte_eth_dev *dev;
 	struct sub_device *sdev;
 	uint8_t i;
-	struct rxq *rxq;
+	struct rxq *rxq = dev->data->rx_queues[qid];
 
-	if (queue == NULL)
+	if (rxq == NULL)
 		return;
-	rxq = queue;
-	dev = &rte_eth_devices[rxq->priv->data->port_id];
 	fs_lock(dev, 0);
 	if (rxq->event_fd >= 0)
 		close(rxq->event_fd);
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
 		if (ETH(sdev)->data->rx_queues != NULL &&
-		    ETH(sdev)->data->rx_queues[rxq->qid] != NULL) {
-			SUBOPS(sdev, rx_queue_release)
-				(ETH(sdev)->data->rx_queues[rxq->qid]);
-		}
+		    ETH(sdev)->data->rx_queues[rxq->qid] != NULL)
+			SUBOPS(sdev, rx_queue_release)(ETH(sdev), rxq->qid);
 	}
 	dev->data->rx_queues[rxq->qid] = NULL;
 	rte_free(rxq);
@@ -398,14 +393,21 @@ fs_rx_queue_setup(struct rte_eth_dev *dev,
 	 * For the time being, fake as if we are using MSIX interrupts,
 	 * this will cause rte_intr_efd_enable to allocate an eventfd for us.
 	 */
-	struct rte_intr_handle intr_handle = {
-		.type = RTE_INTR_HANDLE_VFIO_MSIX,
-		.efds = { -1, },
-	};
+	struct rte_intr_handle *intr_handle;
 	struct sub_device *sdev;
 	struct rxq *rxq;
 	uint8_t i;
 	int ret;
+
+	intr_handle = rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_PRIVATE);
+	if (intr_handle == NULL)
+		return -ENOMEM;
+
+	if (rte_intr_type_set(intr_handle, RTE_INTR_HANDLE_VFIO_MSIX))
+		return -rte_errno;
+
+	if (rte_intr_efds_index_set(intr_handle, 0, -1))
+		return -rte_errno;
 
 	fs_lock(dev, 0);
 	if (rx_conf->rx_deferred_start) {
@@ -420,7 +422,7 @@ fs_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 	rxq = dev->data->rx_queues[rx_queue_id];
 	if (rxq != NULL) {
-		fs_rx_queue_release(rxq);
+		fs_rx_queue_release(dev, rx_queue_id);
 		dev->data->rx_queues[rx_queue_id] = NULL;
 	}
 	rxq = rte_zmalloc(NULL,
@@ -440,12 +442,12 @@ fs_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->info.nb_desc = nb_rx_desc;
 	rxq->priv = PRIV(dev);
 	rxq->sdev = PRIV(dev)->subs;
-	ret = rte_intr_efd_enable(&intr_handle, 1);
+	ret = rte_intr_efd_enable(intr_handle, 1);
 	if (ret < 0) {
 		fs_unlock(dev, 0);
 		return ret;
 	}
-	rxq->event_fd = intr_handle.efds[0];
+	rxq->event_fd = rte_intr_efds_index_get(intr_handle, 0);
 	dev->data->rx_queues[rx_queue_id] = rxq;
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
 		ret = rte_eth_rx_queue_setup(PORT_ID(sdev),
@@ -460,7 +462,7 @@ fs_rx_queue_setup(struct rte_eth_dev *dev,
 	fs_unlock(dev, 0);
 	return 0;
 free_rxq:
-	fs_rx_queue_release(rxq);
+	fs_rx_queue_release(dev, rx_queue_id);
 	fs_unlock(dev, 0);
 	return ret;
 }
@@ -542,24 +544,19 @@ unlock:
 }
 
 static void
-fs_tx_queue_release(void *queue)
+fs_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct rte_eth_dev *dev;
 	struct sub_device *sdev;
 	uint8_t i;
-	struct txq *txq;
+	struct txq *txq = dev->data->tx_queues[qid];
 
-	if (queue == NULL)
+	if (txq == NULL)
 		return;
-	txq = queue;
-	dev = &rte_eth_devices[txq->priv->data->port_id];
 	fs_lock(dev, 0);
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
 		if (ETH(sdev)->data->tx_queues != NULL &&
-		    ETH(sdev)->data->tx_queues[txq->qid] != NULL) {
-			SUBOPS(sdev, tx_queue_release)
-				(ETH(sdev)->data->tx_queues[txq->qid]);
-		}
+		    ETH(sdev)->data->tx_queues[txq->qid] != NULL)
+			SUBOPS(sdev, tx_queue_release)(ETH(sdev), txq->qid);
 	}
 	dev->data->tx_queues[txq->qid] = NULL;
 	rte_free(txq);
@@ -591,7 +588,7 @@ fs_tx_queue_setup(struct rte_eth_dev *dev,
 	}
 	txq = dev->data->tx_queues[tx_queue_id];
 	if (txq != NULL) {
-		fs_tx_queue_release(txq);
+		fs_tx_queue_release(dev, tx_queue_id);
 		dev->data->tx_queues[tx_queue_id] = NULL;
 	}
 	txq = rte_zmalloc("ethdev TX queue",
@@ -623,7 +620,7 @@ fs_tx_queue_setup(struct rte_eth_dev *dev,
 	fs_unlock(dev, 0);
 	return 0;
 free_txq:
-	fs_tx_queue_release(txq);
+	fs_tx_queue_release(dev, tx_queue_id);
 	fs_unlock(dev, 0);
 	return ret;
 }
@@ -634,12 +631,12 @@ fs_dev_free_queues(struct rte_eth_dev *dev)
 	uint16_t i;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		fs_rx_queue_release(dev->data->rx_queues[i]);
+		fs_rx_queue_release(dev, i);
 		dev->data->rx_queues[i] = NULL;
 	}
 	dev->data->nb_rx_queues = 0;
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		fs_tx_queue_release(dev->data->tx_queues[i]);
+		fs_tx_queue_release(dev, i);
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
@@ -1182,56 +1179,55 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 	 * configuring a sub-device.
 	 */
 	infos->rx_offload_capa =
-		DEV_RX_OFFLOAD_VLAN_STRIP |
-		DEV_RX_OFFLOAD_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_UDP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_LRO |
-		DEV_RX_OFFLOAD_QINQ_STRIP |
-		DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_MACSEC_STRIP |
-		DEV_RX_OFFLOAD_HEADER_SPLIT |
-		DEV_RX_OFFLOAD_VLAN_FILTER |
-		DEV_RX_OFFLOAD_VLAN_EXTEND |
-		DEV_RX_OFFLOAD_JUMBO_FRAME |
-		DEV_RX_OFFLOAD_SCATTER |
-		DEV_RX_OFFLOAD_TIMESTAMP |
-		DEV_RX_OFFLOAD_SECURITY |
-		DEV_RX_OFFLOAD_RSS_HASH;
+		RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_TCP_LRO |
+		RTE_ETH_RX_OFFLOAD_QINQ_STRIP |
+		RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_MACSEC_STRIP |
+		RTE_ETH_RX_OFFLOAD_HEADER_SPLIT |
+		RTE_ETH_RX_OFFLOAD_VLAN_FILTER |
+		RTE_ETH_RX_OFFLOAD_VLAN_EXTEND |
+		RTE_ETH_RX_OFFLOAD_SCATTER |
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP |
+		RTE_ETH_RX_OFFLOAD_SECURITY |
+		RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	infos->rx_queue_offload_capa =
-		DEV_RX_OFFLOAD_VLAN_STRIP |
-		DEV_RX_OFFLOAD_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_UDP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_LRO |
-		DEV_RX_OFFLOAD_QINQ_STRIP |
-		DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_MACSEC_STRIP |
-		DEV_RX_OFFLOAD_HEADER_SPLIT |
-		DEV_RX_OFFLOAD_VLAN_FILTER |
-		DEV_RX_OFFLOAD_VLAN_EXTEND |
-		DEV_RX_OFFLOAD_JUMBO_FRAME |
-		DEV_RX_OFFLOAD_SCATTER |
-		DEV_RX_OFFLOAD_TIMESTAMP |
-		DEV_RX_OFFLOAD_SECURITY |
-		DEV_RX_OFFLOAD_RSS_HASH;
+		RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_TCP_LRO |
+		RTE_ETH_RX_OFFLOAD_QINQ_STRIP |
+		RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_MACSEC_STRIP |
+		RTE_ETH_RX_OFFLOAD_HEADER_SPLIT |
+		RTE_ETH_RX_OFFLOAD_VLAN_FILTER |
+		RTE_ETH_RX_OFFLOAD_VLAN_EXTEND |
+		RTE_ETH_RX_OFFLOAD_SCATTER |
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP |
+		RTE_ETH_RX_OFFLOAD_SECURITY |
+		RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	infos->tx_offload_capa =
-		DEV_TX_OFFLOAD_MULTI_SEGS |
-		DEV_TX_OFFLOAD_MBUF_FAST_FREE |
-		DEV_TX_OFFLOAD_IPV4_CKSUM |
-		DEV_TX_OFFLOAD_UDP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_TSO;
+		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
+		RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE |
+		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_TSO;
 
 	infos->flow_type_rss_offloads =
-		ETH_RSS_IP |
-		ETH_RSS_UDP |
-		ETH_RSS_TCP;
+		RTE_ETH_RSS_IP |
+		RTE_ETH_RSS_UDP |
+		RTE_ETH_RSS_TCP;
 	infos->dev_capa =
 		RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 		RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;
+	infos->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_PROBED) {
 		struct rte_eth_dev_info sub_info;
@@ -1514,17 +1510,11 @@ fs_rss_hash_update(struct rte_eth_dev *dev,
 }
 
 static int
-fs_filter_ctrl(struct rte_eth_dev *dev __rte_unused,
-		enum rte_filter_type type,
-		enum rte_filter_op op,
-		void *arg)
+fs_flow_ops_get(struct rte_eth_dev *dev __rte_unused,
+		const struct rte_flow_ops **ops)
 {
-	if (type == RTE_ETH_FILTER_GENERIC &&
-	    op == RTE_ETH_FILTER_GET) {
-		*(const void **)arg = &fs_flow_ops;
-		return 0;
-	}
-	return -ENOTSUP;
+	*ops = &fs_flow_ops;
+	return 0;
 }
 
 const struct eth_dev_ops failsafe_ops = {
@@ -1565,5 +1555,5 @@ const struct eth_dev_ops failsafe_ops = {
 	.mac_addr_set = fs_mac_addr_set,
 	.set_mc_addr_list = fs_set_mc_addr_list,
 	.rss_hash_update = fs_rss_hash_update,
-	.filter_ctrl = fs_filter_ctrl,
+	.flow_ops_get = fs_flow_ops_get,
 };

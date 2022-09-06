@@ -3,7 +3,7 @@
  */
 
 #include <rte_eal.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_string_fns.h>
 #include <rte_io.h>
 
@@ -13,7 +13,7 @@
 #include "hns3_mp.h"
 
 /* local data for primary or secondary process. */
-struct hns3_process_local_data process_data;
+static struct hns3_process_local_data process_data;
 
 /*
  * Initialize IPC message.
@@ -88,19 +88,21 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 		PMD_INIT_LOG(INFO, "port %u starting datapath",
 			     dev->data->port_id);
 		hns3_set_rxtx_function(dev);
-		rte_mb();
-		mp_init_msg(dev, &mp_res, param->type);
-		res->result = 0;
-		ret = rte_mp_reply(&mp_res, peer);
 		break;
 	case HNS3_MP_REQ_STOP_RXTX:
 		PMD_INIT_LOG(INFO, "port %u stopping datapath",
 			     dev->data->port_id);
 		hns3_set_rxtx_function(dev);
-		rte_mb();
-		mp_init_msg(dev, &mp_res, param->type);
-		res->result = 0;
-		ret = rte_mp_reply(&mp_res, peer);
+		break;
+	case HNS3_MP_REQ_START_TX:
+		PMD_INIT_LOG(INFO, "port %u starting Tx datapath",
+			     dev->data->port_id);
+		hns3_start_tx_datapath(dev);
+		break;
+	case HNS3_MP_REQ_STOP_TX:
+		PMD_INIT_LOG(INFO, "port %u stopping Tx datapath",
+			     dev->data->port_id);
+		hns3_stop_tx_datapath(dev);
 		break;
 	default:
 		rte_errno = EINVAL;
@@ -108,7 +110,22 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 			     dev->data->port_id);
 		return -rte_errno;
 	}
+
+	rte_mb();
+	mp_init_msg(dev, &mp_res, param->type);
+	res->result = 0;
+	ret = rte_mp_reply(&mp_res, peer);
+
 	return ret;
+}
+
+static bool
+mp_req_type_is_valid(enum hns3_mp_req_type type)
+{
+	return type == HNS3_MP_REQ_START_RXTX ||
+		type == HNS3_MP_REQ_STOP_RXTX ||
+		type == HNS3_MP_REQ_START_TX ||
+		type == HNS3_MP_REQ_STOP_TX;
 }
 
 /*
@@ -134,8 +151,8 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum hns3_mp_req_type type)
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY ||
 		__atomic_load_n(&hw->secondary_cnt, __ATOMIC_RELAXED) == 0)
 		return;
-	if (type != HNS3_MP_REQ_START_RXTX && type != HNS3_MP_REQ_STOP_RXTX) {
 
+	if (!mp_req_type_is_valid(type)) {
 		hns3_err(hw, "port %u unknown request (req_type %d)",
 			 dev->data->port_id, type);
 		return;
@@ -192,10 +209,23 @@ void hns3_mp_req_stop_rxtx(struct rte_eth_dev *dev)
 	mp_req_on_rxtx(dev, HNS3_MP_REQ_STOP_RXTX);
 }
 
+void
+hns3_mp_req_stop_tx(struct rte_eth_dev *dev)
+{
+	mp_req_on_rxtx(dev, HNS3_MP_REQ_STOP_TX);
+}
+
+void
+hns3_mp_req_start_tx(struct rte_eth_dev *dev)
+{
+	mp_req_on_rxtx(dev, HNS3_MP_REQ_START_TX);
+}
+
 /*
  * Initialize by primary process.
  */
-int hns3_mp_init_primary(void)
+static int
+hns3_mp_init_primary(void)
 {
 	int ret;
 
@@ -212,20 +242,11 @@ int hns3_mp_init_primary(void)
 	return 0;
 }
 
-void hns3_mp_uninit(void)
-{
-	process_data.eth_dev_cnt--;
-
-	if (process_data.eth_dev_cnt == 0) {
-		rte_mp_action_unregister(HNS3_MP_NAME);
-		process_data.init_done = false;
-	}
-}
-
 /*
  * Initialize by secondary process.
  */
-int hns3_mp_init_secondary(void)
+static int
+hns3_mp_init_secondary(void)
 {
 	int ret;
 
@@ -233,10 +254,52 @@ int hns3_mp_init_secondary(void)
 		return 0;
 
 	ret = rte_mp_action_register(HNS3_MP_NAME, mp_secondary_handle);
-	if (ret)
+	if (ret && rte_errno != ENOTSUP)
 		return ret;
 
 	process_data.init_done = true;
 
 	return 0;
+}
+
+int
+hns3_mp_init(struct rte_eth_dev *dev)
+{
+	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int ret;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		ret = hns3_mp_init_secondary();
+		if (ret) {
+			PMD_INIT_LOG(ERR, "Failed to init for secondary process, ret = %d",
+				     ret);
+			return ret;
+		}
+		__atomic_fetch_add(&hw->secondary_cnt, 1, __ATOMIC_RELAXED);
+	} else {
+		ret = hns3_mp_init_primary();
+		if (ret) {
+			PMD_INIT_LOG(ERR, "Failed to init for primary process, ret = %d",
+				     ret);
+			return ret;
+		}
+	}
+
+	process_data.eth_dev_cnt++;
+
+	return 0;
+}
+
+void hns3_mp_uninit(struct rte_eth_dev *dev)
+{
+	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		__atomic_fetch_sub(&hw->secondary_cnt, 1, __ATOMIC_RELAXED);
+
+	process_data.eth_dev_cnt--;
+	if (process_data.eth_dev_cnt == 0) {
+		rte_mp_action_unregister(HNS3_MP_NAME);
+		process_data.init_done = false;
+	}
 }

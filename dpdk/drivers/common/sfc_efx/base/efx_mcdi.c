@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2008-2019 Solarflare Communications Inc.
  */
 
@@ -645,6 +645,86 @@ efx_mcdi_request_abort(
 	EFSYS_UNLOCK(enp->en_eslp, state);
 
 	return (aborted);
+}
+
+	__checkReturn	efx_rc_t
+efx_mcdi_get_client_handle(
+	__in		efx_nic_t *enp,
+	__in		efx_pcie_interface_t intf,
+	__in		uint16_t pf,
+	__in		uint16_t vf,
+	__out		uint32_t *handle)
+{
+	efx_mcdi_req_t req;
+	EFX_MCDI_DECLARE_BUF(payload,
+	    MC_CMD_GET_CLIENT_HANDLE_IN_LEN,
+	    MC_CMD_GET_CLIENT_HANDLE_OUT_LEN);
+	uint32_t pcie_intf;
+	efx_rc_t rc;
+
+	if (handle == NULL) {
+		rc = EINVAL;
+		goto fail1;
+	}
+
+	rc = efx_mcdi_intf_to_pcie(intf, &pcie_intf);
+	if (rc != 0)
+		goto fail2;
+
+	req.emr_cmd = MC_CMD_GET_CLIENT_HANDLE;
+	req.emr_in_buf = payload;
+	req.emr_in_length = MC_CMD_GET_CLIENT_HANDLE_IN_LEN;
+	req.emr_out_buf = payload;
+	req.emr_out_length = MC_CMD_GET_CLIENT_HANDLE_OUT_LEN;
+
+	MCDI_IN_SET_DWORD(req, GET_CLIENT_HANDLE_IN_TYPE,
+	    MC_CMD_GET_CLIENT_HANDLE_IN_TYPE_FUNC);
+	MCDI_IN_SET_WORD(req, GET_CLIENT_HANDLE_IN_FUNC_PF, pf);
+	MCDI_IN_SET_WORD(req, GET_CLIENT_HANDLE_IN_FUNC_VF, vf);
+	MCDI_IN_SET_DWORD(req, GET_CLIENT_HANDLE_IN_FUNC_INTF, pcie_intf);
+
+	efx_mcdi_execute(enp, &req);
+
+	if (req.emr_rc != 0) {
+		rc = req.emr_rc;
+		goto fail3;
+	}
+
+	if (req.emr_out_length_used < MC_CMD_GET_CLIENT_HANDLE_OUT_LEN) {
+		rc = EMSGSIZE;
+		goto fail4;
+	}
+
+	*handle = MCDI_OUT_DWORD(req, GET_CLIENT_HANDLE_OUT_HANDLE);
+
+	return 0;
+fail4:
+	EFSYS_PROBE(fail4);
+fail3:
+	EFSYS_PROBE(fail3);
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+	return (rc);
+}
+
+	__checkReturn	efx_rc_t
+efx_mcdi_get_own_client_handle(
+	__in		efx_nic_t *enp,
+	__out		uint32_t *handle)
+{
+	efx_rc_t rc;
+
+	rc = efx_mcdi_get_client_handle(enp, EFX_PCIE_INTERFACE_CALLER,
+	    PCIE_FUNCTION_PF_NULL, PCIE_FUNCTION_VF_NULL, handle);
+	if (rc != 0)
+		goto fail1;
+
+	return (0);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+	return (rc);
 }
 
 			void
@@ -2130,6 +2210,65 @@ fail1:
 
 #if EFSYS_OPT_RIVERHEAD || EFX_OPTS_EF10()
 
+	__checkReturn		efx_rc_t
+efx_mcdi_intf_from_pcie(
+	__in			uint32_t pcie_intf,
+	__out			efx_pcie_interface_t *efx_intf)
+{
+	efx_rc_t rc;
+
+	switch (pcie_intf) {
+	case PCIE_INTERFACE_CALLER:
+		*efx_intf = EFX_PCIE_INTERFACE_CALLER;
+		break;
+	case PCIE_INTERFACE_HOST_PRIMARY:
+		*efx_intf = EFX_PCIE_INTERFACE_HOST_PRIMARY;
+		break;
+	case PCIE_INTERFACE_NIC_EMBEDDED:
+		*efx_intf = EFX_PCIE_INTERFACE_NIC_EMBEDDED;
+		break;
+	default:
+		rc = EINVAL;
+		goto fail1;
+	}
+
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn		efx_rc_t
+efx_mcdi_intf_to_pcie(
+	__in			efx_pcie_interface_t efx_intf,
+	__out			uint32_t *pcie_intf)
+{
+	efx_rc_t rc;
+
+	switch (efx_intf) {
+	case EFX_PCIE_INTERFACE_CALLER:
+		*pcie_intf = PCIE_INTERFACE_CALLER;
+		break;
+	case EFX_PCIE_INTERFACE_HOST_PRIMARY:
+		*pcie_intf = PCIE_INTERFACE_HOST_PRIMARY;
+		break;
+	case EFX_PCIE_INTERFACE_NIC_EMBEDDED:
+		*pcie_intf = PCIE_INTERFACE_NIC_EMBEDDED;
+		break;
+	default:
+		rc = EINVAL;
+		goto fail1;
+	}
+
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+	return (rc);
+}
+
 /*
  * This function returns the pf and vf number of a function.  If it is a pf the
  * vf number is 0xffff.  The vf number is the index of the vf on that
@@ -2140,18 +2279,21 @@ fail1:
 efx_mcdi_get_function_info(
 	__in			efx_nic_t *enp,
 	__out			uint32_t *pfp,
-	__out_opt		uint32_t *vfp)
+	__out_opt		uint32_t *vfp,
+	__out_opt		efx_pcie_interface_t *intfp)
 {
+	efx_pcie_interface_t intf;
 	efx_mcdi_req_t req;
 	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_FUNCTION_INFO_IN_LEN,
-		MC_CMD_GET_FUNCTION_INFO_OUT_LEN);
+		MC_CMD_GET_FUNCTION_INFO_OUT_V2_LEN);
+	uint32_t pcie_intf;
 	efx_rc_t rc;
 
 	req.emr_cmd = MC_CMD_GET_FUNCTION_INFO;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_FUNCTION_INFO_IN_LEN;
 	req.emr_out_buf = payload;
-	req.emr_out_length = MC_CMD_GET_FUNCTION_INFO_OUT_LEN;
+	req.emr_out_length = MC_CMD_GET_FUNCTION_INFO_OUT_V2_LEN;
 
 	efx_mcdi_execute(enp, &req);
 
@@ -2169,8 +2311,24 @@ efx_mcdi_get_function_info(
 	if (vfp != NULL)
 		*vfp = MCDI_OUT_DWORD(req, GET_FUNCTION_INFO_OUT_VF);
 
+	if (req.emr_out_length < MC_CMD_GET_FUNCTION_INFO_OUT_V2_LEN) {
+		intf = EFX_PCIE_INTERFACE_HOST_PRIMARY;
+	} else {
+		pcie_intf = MCDI_OUT_DWORD(req,
+		    GET_FUNCTION_INFO_OUT_V2_INTF);
+
+		rc = efx_mcdi_intf_from_pcie(pcie_intf, &intf);
+		if (rc != 0)
+			goto fail3;
+	}
+
+	if (intfp != NULL)
+		*intfp = intf;
+
 	return (0);
 
+fail3:
+	EFSYS_PROBE(fail3);
 fail2:
 	EFSYS_PROBE(fail2);
 fail1:
@@ -2568,6 +2726,7 @@ efx_mcdi_init_evq(
 	__in		efsys_mem_t *esmp,
 	__in		size_t nevs,
 	__in		uint32_t irq,
+	__in		uint32_t target_evq,
 	__in		uint32_t us,
 	__in		uint32_t flags,
 	__in		boolean_t low_latency)
@@ -2602,10 +2761,14 @@ efx_mcdi_init_evq(
 
 	MCDI_IN_SET_DWORD(req, INIT_EVQ_V2_IN_SIZE, nevs);
 	MCDI_IN_SET_DWORD(req, INIT_EVQ_V2_IN_INSTANCE, instance);
-	MCDI_IN_SET_DWORD(req, INIT_EVQ_V2_IN_IRQ_NUM, irq);
 
 	interrupting = ((flags & EFX_EVQ_FLAGS_NOTIFY_MASK) ==
 	    EFX_EVQ_FLAGS_NOTIFY_INTERRUPT);
+
+	if (interrupting)
+		MCDI_IN_SET_DWORD(req, INIT_EVQ_V2_IN_IRQ_NUM, irq);
+	else
+		MCDI_IN_SET_DWORD(req, INIT_EVQ_V2_IN_TARGET_EVQ, target_evq);
 
 	if (encp->enc_init_evq_v2_supported) {
 		/*
@@ -3108,5 +3271,209 @@ fail1:
 }
 
 #endif	/* EFSYS_OPT_RIVERHEAD || EFX_OPTS_EF10() */
+
+	__checkReturn	efx_rc_t
+efx_mcdi_get_nic_addr_info(
+	__in		efx_nic_t *enp,
+	__out		uint32_t *mapping_typep)
+{
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_DESC_ADDR_INFO_IN_LEN,
+		MC_CMD_GET_DESC_ADDR_INFO_OUT_LEN);
+	efx_mcdi_req_t req;
+	efx_rc_t rc;
+
+	req.emr_cmd = MC_CMD_GET_DESC_ADDR_INFO;
+	req.emr_in_buf = payload;
+	req.emr_in_length = MC_CMD_GET_DESC_ADDR_INFO_IN_LEN;
+	req.emr_out_buf = payload;
+	req.emr_out_length = MC_CMD_GET_DESC_ADDR_INFO_OUT_LEN;
+
+	efx_mcdi_execute_quiet(enp, &req);
+
+	if (req.emr_rc != 0) {
+		rc = req.emr_rc;
+		goto fail1;
+	}
+
+	if (req.emr_out_length_used < MC_CMD_GET_DESC_ADDR_INFO_OUT_LEN) {
+		rc = EMSGSIZE;
+		goto fail2;
+	}
+
+	*mapping_typep =
+	    MCDI_OUT_DWORD(req, GET_DESC_ADDR_INFO_OUT_MAPPING_TYPE);
+
+	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn	efx_rc_t
+efx_mcdi_get_nic_addr_regions(
+	__in		efx_nic_t *enp,
+	__out		efx_nic_dma_region_info_t *endrip)
+{
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_DESC_ADDR_REGIONS_IN_LEN,
+		MC_CMD_GET_DESC_ADDR_REGIONS_OUT_LENMAX_MCDI2);
+	efx_xword_t *regions;
+	efx_mcdi_req_t req;
+	efx_rc_t rc;
+	size_t alloc_size;
+	unsigned int nregions;
+	unsigned int i;
+
+	req.emr_cmd = MC_CMD_GET_DESC_ADDR_REGIONS;
+	req.emr_in_buf = payload;
+	req.emr_in_length = MC_CMD_GET_DESC_ADDR_REGIONS_IN_LEN;
+	req.emr_out_buf = payload;
+	req.emr_out_length = MC_CMD_GET_DESC_ADDR_REGIONS_OUT_LENMAX_MCDI2;
+
+	efx_mcdi_execute_quiet(enp, &req);
+
+	if (req.emr_rc != 0) {
+		rc = req.emr_rc;
+		goto fail1;
+	}
+
+	if (req.emr_out_length_used <
+	    MC_CMD_GET_DESC_ADDR_REGIONS_OUT_LENMIN) {
+		rc = EMSGSIZE;
+		goto fail2;
+	}
+
+	nregions = MC_CMD_GET_DESC_ADDR_REGIONS_OUT_REGIONS_NUM(
+	    req.emr_out_length_used);
+
+	EFX_STATIC_ASSERT(sizeof (*regions) == DESC_ADDR_REGION_LEN);
+	regions = MCDI_OUT2(req, efx_xword_t,
+	    GET_DESC_ADDR_REGIONS_OUT_REGIONS);
+
+	alloc_size = nregions * sizeof(endrip->endri_regions[0]);
+	if (alloc_size / sizeof (endrip->endri_regions[0]) != nregions) {
+		rc = ENOMEM;
+		goto fail3;
+	}
+
+	EFSYS_KMEM_ALLOC(enp->en_esip,
+	    alloc_size,
+	    endrip->endri_regions);
+	if (endrip->endri_regions == NULL) {
+		rc = ENOMEM;
+		goto fail4;
+	}
+
+	endrip->endri_count = nregions;
+	for (i = 0; i < nregions; ++i) {
+		efx_nic_dma_region_t *region_info;
+
+		region_info = &endrip->endri_regions[i];
+
+		region_info->endr_inuse = B_FALSE;
+
+		region_info->endr_nic_base =
+		    MCDI_OUT_INDEXED_MEMBER_QWORD(req,
+		        GET_DESC_ADDR_REGIONS_OUT_REGIONS, i,
+		        DESC_ADDR_REGION_DESC_ADDR_BASE);
+
+		region_info->endr_trgt_base =
+		    MCDI_OUT_INDEXED_MEMBER_QWORD(req,
+		        GET_DESC_ADDR_REGIONS_OUT_REGIONS, i,
+		        DESC_ADDR_REGION_TRGT_ADDR_BASE);
+
+		region_info->endr_window_log2 =
+		    MCDI_OUT_INDEXED_MEMBER_DWORD(req,
+		        GET_DESC_ADDR_REGIONS_OUT_REGIONS, i,
+		        DESC_ADDR_REGION_WINDOW_SIZE_LOG2);
+
+		region_info->endr_align_log2 =
+		    MCDI_OUT_INDEXED_MEMBER_DWORD(req,
+		        GET_DESC_ADDR_REGIONS_OUT_REGIONS, i,
+		        DESC_ADDR_REGION_TRGT_ADDR_ALIGN_LOG2);
+	}
+
+	return (0);
+
+fail4:
+	EFSYS_PROBE(fail4);
+fail3:
+	EFSYS_PROBE(fail3);
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn	efx_rc_t
+efx_mcdi_set_nic_addr_regions(
+	__in		efx_nic_t *enp,
+	__in		const efx_nic_dma_region_info_t *endrip)
+{
+	EFX_MCDI_DECLARE_BUF(payload,
+		MC_CMD_SET_DESC_ADDR_REGIONS_IN_LENMAX_MCDI2,
+		MC_CMD_SET_DESC_ADDR_REGIONS_OUT_LEN);
+	efx_qword_t *trgt_addr_base;
+	efx_mcdi_req_t req;
+	unsigned int i;
+	efx_rc_t rc;
+
+	if (endrip->endri_count >
+	    MC_CMD_SET_DESC_ADDR_REGIONS_IN_TRGT_ADDR_BASE_MAXNUM) {
+		rc = EINVAL;
+		goto fail1;
+	}
+
+	req.emr_cmd = MC_CMD_SET_DESC_ADDR_REGIONS;
+	req.emr_in_buf = payload;
+	req.emr_in_length =
+	    MC_CMD_SET_DESC_ADDR_REGIONS_IN_LEN(endrip->endri_count);
+	req.emr_out_buf = payload;
+	req.emr_out_length = MC_CMD_SET_DESC_ADDR_REGIONS_OUT_LEN;
+
+	EFX_STATIC_ASSERT(sizeof (*trgt_addr_base) ==
+	    MC_CMD_SET_DESC_ADDR_REGIONS_IN_TRGT_ADDR_BASE_LEN);
+	trgt_addr_base = MCDI_OUT2(req, efx_qword_t,
+	    SET_DESC_ADDR_REGIONS_IN_TRGT_ADDR_BASE);
+
+	for (i = 0; i < endrip->endri_count; ++i) {
+		const efx_nic_dma_region_t *region_info;
+
+		region_info = &endrip->endri_regions[i];
+
+		if (region_info->endr_inuse != B_TRUE)
+			continue;
+
+		EFX_STATIC_ASSERT(sizeof (1U) * 8 >=
+		    MC_CMD_SET_DESC_ADDR_REGIONS_IN_TRGT_ADDR_BASE_MAXNUM);
+		MCDI_IN_SET_DWORD(req,
+		    SET_DESC_ADDR_REGIONS_IN_SET_REGION_MASK, 1U << i);
+
+		MCDI_IN_SET_INDEXED_QWORD(req,
+		    SET_DESC_ADDR_REGIONS_IN_TRGT_ADDR_BASE, i,
+		    region_info->endr_trgt_base);
+	}
+
+	efx_mcdi_execute_quiet(enp, &req);
+
+	if (req.emr_rc != 0) {
+		rc = req.emr_rc;
+		goto fail2;
+	}
+
+	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
 
 #endif	/* EFSYS_OPT_MCDI */

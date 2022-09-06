@@ -1,0 +1,183 @@
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(C) 2021 Marvell.
+ */
+
+#ifndef _CNXK_CRYPTODEV_OPS_H_
+#define _CNXK_CRYPTODEV_OPS_H_
+
+#include <rte_cryptodev.h>
+#include <rte_event_crypto_adapter.h>
+
+#include "roc_api.h"
+
+#define CNXK_CPT_MIN_HEADROOM_REQ 24
+#define CNXK_CPT_MIN_TAILROOM_REQ 102
+
+/* Default command timeout in seconds */
+#define DEFAULT_COMMAND_TIMEOUT 4
+
+#define MOD_INC(i, l) ((i) == (l - 1) ? (i) = 0 : (i)++)
+
+/* Macros to form words in CPT instruction */
+#define CNXK_CPT_INST_W2(tag, tt, grp, rvu_pf_func)                            \
+	((tag) | ((uint64_t)(tt) << 32) | ((uint64_t)(grp) << 34) |            \
+	 ((uint64_t)(rvu_pf_func) << 48))
+#define CNXK_CPT_INST_W3(qord, wqe_ptr)                                        \
+	(qord | ((uintptr_t)(wqe_ptr) >> 3) << 3)
+
+struct cpt_qp_meta_info {
+	struct rte_mempool *pool;
+	int mlen;
+};
+
+enum sym_xform_type {
+	CNXK_CPT_CIPHER = 1,
+	CNXK_CPT_AUTH,
+	CNXK_CPT_AEAD,
+	CNXK_CPT_CIPHER_ENC_AUTH_GEN,
+	CNXK_CPT_AUTH_VRFY_CIPHER_DEC,
+	CNXK_CPT_AUTH_GEN_CIPHER_ENC,
+	CNXK_CPT_CIPHER_DEC_AUTH_VRFY
+};
+
+#define CPT_OP_FLAGS_METABUF	       (1 << 1)
+#define CPT_OP_FLAGS_AUTH_VERIFY       (1 << 0)
+#define CPT_OP_FLAGS_IPSEC_DIR_INBOUND (1 << 2)
+
+struct cpt_inflight_req {
+	union cpt_res_s res;
+	struct rte_crypto_op *cop;
+	void *mdata;
+	uint8_t op_flags;
+	void *qp;
+} __rte_aligned(16);
+
+struct pending_queue {
+	/** Array of pending requests */
+	struct cpt_inflight_req *req_queue;
+	/** Head of the queue to be used for enqueue */
+	uint64_t head;
+	/** Tail of the queue to be used for dequeue */
+	uint64_t tail;
+	/** Pending queue mask */
+	uint64_t pq_mask;
+	/** Timeout to track h/w being unresponsive */
+	uint64_t time_out;
+};
+
+struct crypto_adpter_info {
+	bool enabled;
+	/**< Set if queue pair is added to crypto adapter */
+	struct rte_mempool *req_mp;
+	/**< CPT inflight request mempool */
+};
+
+struct cnxk_cpt_qp {
+	struct roc_cpt_lf lf;
+	/**< Crypto LF */
+	struct pending_queue pend_q;
+	/**< Pending queue */
+	struct rte_mempool *sess_mp;
+	/**< Session mempool */
+	struct rte_mempool *sess_mp_priv;
+	/**< Session private data mempool */
+	struct cpt_qp_meta_info meta_info;
+	/**< Metabuf info required to support operations on the queue pair */
+	struct roc_cpt_lmtline lmtline;
+	/**< Lmtline information */
+	struct crypto_adpter_info ca;
+	/**< Crypto adapter related info */
+};
+
+int cnxk_cpt_dev_config(struct rte_cryptodev *dev,
+			struct rte_cryptodev_config *conf);
+
+int cnxk_cpt_dev_start(struct rte_cryptodev *dev);
+
+void cnxk_cpt_dev_stop(struct rte_cryptodev *dev);
+
+int cnxk_cpt_dev_close(struct rte_cryptodev *dev);
+
+void cnxk_cpt_dev_info_get(struct rte_cryptodev *dev,
+			   struct rte_cryptodev_info *info);
+
+int cnxk_cpt_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
+			      const struct rte_cryptodev_qp_conf *conf,
+			      int socket_id __rte_unused);
+
+int cnxk_cpt_queue_pair_release(struct rte_cryptodev *dev, uint16_t qp_id);
+
+unsigned int cnxk_cpt_sym_session_get_size(struct rte_cryptodev *dev);
+
+int cnxk_cpt_sym_session_configure(struct rte_cryptodev *dev,
+				   struct rte_crypto_sym_xform *xform,
+				   struct rte_cryptodev_sym_session *sess,
+				   struct rte_mempool *pool);
+
+int sym_session_configure(struct roc_cpt *roc_cpt, int driver_id,
+			  struct rte_crypto_sym_xform *xform,
+			  struct rte_cryptodev_sym_session *sess,
+			  struct rte_mempool *pool);
+
+void cnxk_cpt_sym_session_clear(struct rte_cryptodev *dev,
+				struct rte_cryptodev_sym_session *sess);
+
+void sym_session_clear(int driver_id, struct rte_cryptodev_sym_session *sess);
+
+unsigned int cnxk_ae_session_size_get(struct rte_cryptodev *dev __rte_unused);
+
+void cnxk_ae_session_clear(struct rte_cryptodev *dev,
+			   struct rte_cryptodev_asym_session *sess);
+int cnxk_ae_session_cfg(struct rte_cryptodev *dev,
+			struct rte_crypto_asym_xform *xform,
+			struct rte_cryptodev_asym_session *sess,
+			struct rte_mempool *pool);
+
+static inline union rte_event_crypto_metadata *
+cnxk_event_crypto_mdata_get(struct rte_crypto_op *op)
+{
+	union rte_event_crypto_metadata *ec_mdata;
+
+	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+		ec_mdata = rte_cryptodev_sym_session_get_user_data(
+			op->sym->session);
+	else if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS &&
+		 op->private_data_offset)
+		ec_mdata = (union rte_event_crypto_metadata
+				    *)((uint8_t *)op + op->private_data_offset);
+	else
+		return NULL;
+
+	return ec_mdata;
+}
+
+static __rte_always_inline void
+pending_queue_advance(uint64_t *index, const uint64_t mask)
+{
+	*index = (*index + 1) & mask;
+}
+
+static __rte_always_inline void
+pending_queue_retreat(uint64_t *index, const uint64_t mask, uint64_t nb_entry)
+{
+	*index = (*index - nb_entry) & mask;
+}
+
+static __rte_always_inline uint64_t
+pending_queue_infl_cnt(uint64_t head, uint64_t tail, const uint64_t mask)
+{
+	/*
+	 * Mask is nb_desc - 1. Add nb_desc to head and mask to account for
+	 * cases when tail > head, which happens during wrap around.
+	 */
+	return ((head + mask + 1) - tail) & mask;
+}
+
+static __rte_always_inline uint64_t
+pending_queue_free_cnt(uint64_t head, uint64_t tail, const uint64_t mask)
+{
+	/* mask is nb_desc - 1 */
+	return mask - pending_queue_infl_cnt(head, tail, mask);
+}
+
+#endif /* _CNXK_CRYPTODEV_OPS_H_ */

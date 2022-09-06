@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _TXGBE_ETHDEV_H_
@@ -9,7 +10,18 @@
 
 #include "base/txgbe.h"
 #include "txgbe_ptypes.h"
+#ifdef RTE_LIB_SECURITY
+#include "txgbe_ipsec.h"
+#endif
+#include <rte_flow.h>
+#include <rte_flow_driver.h>
 #include <rte_time.h>
+#include <rte_ethdev.h>
+#include <rte_ethdev_core.h>
+#include <rte_hash.h>
+#include <rte_hash_crc.h>
+#include <rte_bus_pci.h>
+#include <rte_tm_driver.h>
 
 /* need update link, bit flag */
 #define TXGBE_FLAG_NEED_LINK_UPDATE (uint32_t)(1 << 0)
@@ -17,13 +29,13 @@
 #define TXGBE_FLAG_PHY_INTERRUPT    (uint32_t)(1 << 2)
 #define TXGBE_FLAG_MACSEC           (uint32_t)(1 << 3)
 #define TXGBE_FLAG_NEED_LINK_CONFIG (uint32_t)(1 << 4)
+#define TXGBE_FLAG_NEED_AN_CONFIG   (uint32_t)(1 << 5)
 
 /*
  * Defines that were not part of txgbe_type.h as they are not used by the
  * FreeBSD driver.
  */
 #define TXGBE_VFTA_SIZE 128
-#define TXGBE_VLAN_TAG_SIZE 4
 #define TXGBE_HKEY_MAX_INDEX 10
 /*Default value of Max Rx Queue*/
 #define TXGBE_MAX_RX_QUEUE_NUM	128
@@ -39,27 +51,101 @@
 
 #define TXGBE_MAX_QUEUE_NUM_PER_VF  8
 
+#define TXGBE_5TUPLE_MAX_PRI            7
+#define TXGBE_5TUPLE_MIN_PRI            1
+
+
+/* The overhead from MTU to max frame size. */
+#define TXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
+
 #define TXGBE_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 #define TXGBE_MISC_VEC_ID               RTE_INTR_VEC_ZERO_OFFSET
 #define TXGBE_RX_VEC_START              RTE_INTR_VEC_RXTX_OFFSET
+
+#define TXGBE_MAX_FDIR_FILTER_NUM       (1024 * 32)
+#define TXGBE_MAX_L2_TN_FILTER_NUM      128
+
+/*
+ * Information about the fdir mode.
+ */
+struct txgbe_hw_fdir_mask {
+	uint16_t vlan_tci_mask;
+	uint32_t src_ipv4_mask;
+	uint32_t dst_ipv4_mask;
+	uint16_t src_ipv6_mask;
+	uint16_t dst_ipv6_mask;
+	uint16_t src_port_mask;
+	uint16_t dst_port_mask;
+	uint16_t flex_bytes_mask;
+	uint8_t  mac_addr_byte_mask;
+	uint32_t tunnel_id_mask;
+	uint8_t  tunnel_type_mask;
+};
+
+struct txgbe_fdir_filter {
+	TAILQ_ENTRY(txgbe_fdir_filter) entries;
+	struct txgbe_atr_input input; /* key of fdir filter*/
+	uint32_t fdirflags; /* drop or forward */
+	uint32_t fdirhash; /* hash value for fdir */
+	uint8_t queue; /* assigned rx queue */
+};
+
+/* list of fdir filters */
+TAILQ_HEAD(txgbe_fdir_filter_list, txgbe_fdir_filter);
+
+struct txgbe_fdir_rule {
+	struct txgbe_hw_fdir_mask mask;
+	struct txgbe_atr_input input; /* key of fdir filter */
+	bool b_spec; /* If TRUE, input, fdirflags, queue have meaning. */
+	bool b_mask; /* If TRUE, mask has meaning. */
+	enum rte_fdir_mode mode; /* IP, MAC VLAN, Tunnel */
+	uint32_t fdirflags; /* drop or forward */
+	uint32_t soft_id; /* an unique value for this rule */
+	uint8_t queue; /* assigned rx queue */
+	uint8_t flex_bytes_offset;
+};
+
+struct txgbe_hw_fdir_info {
+	struct txgbe_hw_fdir_mask mask;
+	uint8_t     flex_bytes_offset;
+	uint16_t    collision;
+	uint16_t    free;
+	uint16_t    maxhash;
+	uint8_t     maxlen;
+	uint64_t    add;
+	uint64_t    remove;
+	uint64_t    f_add;
+	uint64_t    f_remove;
+	struct txgbe_fdir_filter_list fdir_list; /* filter list*/
+	/* store the pointers of the filters, index is the hash value. */
+	struct txgbe_fdir_filter **hash_map;
+	struct rte_hash *hash_handle; /* cuckoo hash handler */
+	bool mask_added; /* If already got mask from consistent filter */
+};
+
+struct txgbe_rte_flow_rss_conf {
+	struct rte_flow_action_rss conf; /**< RSS parameters. */
+	uint8_t key[TXGBE_HKEY_MAX_INDEX * sizeof(uint32_t)]; /* Hash key. */
+	uint16_t queue[TXGBE_MAX_RX_QUEUE_NUM]; /**< Queues indices to use. */
+};
 
 /* structure for interrupt relative data */
 struct txgbe_interrupt {
 	uint32_t flags;
 	uint32_t mask_misc;
-	/* to save original mask during delayed handler */
-	uint32_t mask_misc_orig;
-	uint32_t mask[2];
+	uint32_t mask_misc_orig; /* save mask during delayed handler */
+	uint64_t mask;
+	uint64_t mask_orig; /* save mask during delayed handler */
 };
 
 #define TXGBE_NB_STAT_MAPPING  32
@@ -90,13 +176,6 @@ struct txgbe_uta_info {
 	uint32_t uta_shadow[TXGBE_MAX_UTA];
 };
 
-#define TXGBE_MAX_MIRROR_RULES 4  /* Maximum nb. of mirror rules. */
-
-struct txgbe_mirror_info {
-	struct rte_eth_mirror_conf mr_conf[TXGBE_MAX_MIRROR_RULES];
-	/* store PF mirror rules configuration */
-};
-
 struct txgbe_vf_info {
 	uint8_t vf_mac_addresses[RTE_ETHER_ADDR_LEN];
 	uint16_t vf_mc_hashes[TXGBE_MAX_VF_MC_ENTRIES];
@@ -109,6 +188,36 @@ struct txgbe_vf_info {
 	uint16_t xcast_mode;
 	uint16_t mac_count;
 };
+
+TAILQ_HEAD(txgbe_5tuple_filter_list, txgbe_5tuple_filter);
+
+struct txgbe_5tuple_filter_info {
+	uint32_t dst_ip;
+	uint32_t src_ip;
+	uint16_t dst_port;
+	uint16_t src_port;
+	enum txgbe_5tuple_protocol proto;        /* l4 protocol. */
+	uint8_t priority;        /* seven levels (001b-111b), 111b is highest,
+				  * used when more than one filter matches.
+				  */
+	uint8_t dst_ip_mask:1,   /* if mask is 1b, do not compare dst ip. */
+		src_ip_mask:1,   /* if mask is 1b, do not compare src ip. */
+		dst_port_mask:1, /* if mask is 1b, do not compare dst port. */
+		src_port_mask:1, /* if mask is 1b, do not compare src port. */
+		proto_mask:1;    /* if mask is 1b, do not compare protocol. */
+};
+
+/* 5tuple filter structure */
+struct txgbe_5tuple_filter {
+	TAILQ_ENTRY(txgbe_5tuple_filter) entries;
+	uint16_t index;       /* the index of 5tuple filter */
+	struct txgbe_5tuple_filter_info filter_info;
+	uint16_t queue;       /* rx queue assigned to */
+};
+
+#define TXGBE_5TUPLE_ARRAY_SIZE \
+	(RTE_ALIGN(TXGBE_MAX_FTQF_FILTERS, (sizeof(uint32_t) * NBBY)) / \
+	 (sizeof(uint32_t) * NBBY))
 
 struct txgbe_ethertype_filter {
 	uint16_t ethertype;
@@ -128,11 +237,107 @@ struct txgbe_filter_info {
 	uint8_t ethertype_mask;  /* Bit mask for every used ethertype filter */
 	/* store used ethertype filters*/
 	struct txgbe_ethertype_filter ethertype_filters[TXGBE_ETF_ID_MAX];
+	/* Bit mask for every used 5tuple filter */
+	uint32_t fivetuple_mask[TXGBE_5TUPLE_ARRAY_SIZE];
+	struct txgbe_5tuple_filter_list fivetuple_list;
+	/* store the SYN filter info */
+	uint32_t syn_info;
+	/* store the rss filter info */
+	struct txgbe_rte_flow_rss_conf rss_info;
+};
+
+struct txgbe_l2_tn_key {
+	enum rte_eth_tunnel_type          l2_tn_type;
+	uint32_t                          tn_id;
+};
+
+struct txgbe_l2_tn_filter {
+	TAILQ_ENTRY(txgbe_l2_tn_filter)    entries;
+	struct txgbe_l2_tn_key             key;
+	uint32_t                           pool;
+};
+
+TAILQ_HEAD(txgbe_l2_tn_filter_list, txgbe_l2_tn_filter);
+
+struct txgbe_l2_tn_info {
+	struct txgbe_l2_tn_filter_list      l2_tn_list;
+	struct txgbe_l2_tn_filter         **hash_map;
+	struct rte_hash                    *hash_handle;
+	bool e_tag_en; /* e-tag enabled */
+	bool e_tag_fwd_en; /* e-tag based forwarding enabled */
+	uint16_t e_tag_ether_type; /* ether type for e-tag */
+};
+
+struct rte_flow {
+	enum rte_filter_type filter_type;
+	void *rule;
 };
 
 /* The configuration of bandwidth */
 struct txgbe_bw_conf {
 	uint8_t tc_num; /* Number of TCs. */
+};
+
+/* Struct to store Traffic Manager shaper profile. */
+struct txgbe_tm_shaper_profile {
+	TAILQ_ENTRY(txgbe_tm_shaper_profile) node;
+	uint32_t shaper_profile_id;
+	uint32_t reference_count;
+	struct rte_tm_shaper_params profile;
+};
+
+TAILQ_HEAD(txgbe_shaper_profile_list, txgbe_tm_shaper_profile);
+
+/* node type of Traffic Manager */
+enum txgbe_tm_node_type {
+	TXGBE_TM_NODE_TYPE_PORT,
+	TXGBE_TM_NODE_TYPE_TC,
+	TXGBE_TM_NODE_TYPE_QUEUE,
+	TXGBE_TM_NODE_TYPE_MAX,
+};
+
+/* Struct to store Traffic Manager node configuration. */
+struct txgbe_tm_node {
+	TAILQ_ENTRY(txgbe_tm_node) node;
+	uint32_t id;
+	uint32_t priority;
+	uint32_t weight;
+	uint32_t reference_count;
+	uint16_t no;
+	struct txgbe_tm_node *parent;
+	struct txgbe_tm_shaper_profile *shaper_profile;
+	struct rte_tm_node_params params;
+};
+
+TAILQ_HEAD(txgbe_tm_node_list, txgbe_tm_node);
+
+/* The configuration of Traffic Manager */
+struct txgbe_tm_conf {
+	struct txgbe_shaper_profile_list shaper_profile_list;
+	struct txgbe_tm_node *root; /* root node - port */
+	struct txgbe_tm_node_list tc_list; /* node list for all the TCs */
+	struct txgbe_tm_node_list queue_list; /* node list for all the queues */
+	/**
+	 * The number of added TC nodes.
+	 * It should be no more than the TC number of this port.
+	 */
+	uint32_t nb_tc_node;
+	/**
+	 * The number of added queue nodes.
+	 * It should be no more than the queue number of this port.
+	 */
+	uint32_t nb_queue_node;
+	/**
+	 * This flag is used to check if APP can change the TM node
+	 * configuration.
+	 * When it's true, means the configuration is applied to HW,
+	 * APP should not change the configuration.
+	 * As we don't support on-the-fly configuration, when starting
+	 * the port, APP should call the hierarchy_commit API to set this
+	 * flag to true. When stopping the port, this flag should be set
+	 * to false.
+	 */
+	bool committed;
 };
 
 /*
@@ -141,20 +346,25 @@ struct txgbe_bw_conf {
 struct txgbe_adapter {
 	struct txgbe_hw             hw;
 	struct txgbe_hw_stats       stats;
+	struct txgbe_hw_fdir_info   fdir;
 	struct txgbe_interrupt      intr;
 	struct txgbe_stat_mappings  stat_mappings;
 	struct txgbe_vfta           shadow_vfta;
 	struct txgbe_hwstrip        hwstrip;
 	struct txgbe_dcb_config     dcb_config;
-	struct txgbe_mirror_info    mr_data;
 	struct txgbe_vf_info        *vfdata;
 	struct txgbe_uta_info       uta_info;
 	struct txgbe_filter_info    filter;
+	struct txgbe_l2_tn_info     l2_tn;
 	struct txgbe_bw_conf        bw_conf;
+#ifdef RTE_LIB_SECURITY
+	struct txgbe_ipsec          ipsec;
+#endif
 	bool rx_bulk_alloc_allowed;
 	struct rte_timecounter      systime_tc;
 	struct rte_timecounter      rx_tstamp_tc;
 	struct rte_timecounter      tx_tstamp_tc;
+	struct txgbe_tm_conf        tm_conf;
 
 	/* For RSS reta table update */
 	uint8_t rss_reta_updated;
@@ -171,6 +381,9 @@ struct txgbe_adapter {
 
 #define TXGBE_DEV_INTR(dev) \
 	(&((struct txgbe_adapter *)(dev)->data->dev_private)->intr)
+
+#define TXGBE_DEV_FDIR(dev) \
+	(&((struct txgbe_adapter *)(dev)->data->dev_private)->fdir)
 
 #define TXGBE_DEV_STAT_MAPPINGS(dev) \
 	(&((struct txgbe_adapter *)(dev)->data->dev_private)->stat_mappings)
@@ -195,9 +408,18 @@ struct txgbe_adapter {
 
 #define TXGBE_DEV_FILTER(dev) \
 	(&((struct txgbe_adapter *)(dev)->data->dev_private)->filter)
+
+#define TXGBE_DEV_L2_TN(dev) \
+	(&((struct txgbe_adapter *)(dev)->data->dev_private)->l2_tn)
+
 #define TXGBE_DEV_BW_CONF(dev) \
 	(&((struct txgbe_adapter *)(dev)->data->dev_private)->bw_conf)
 
+#define TXGBE_DEV_TM_CONF(dev) \
+	(&((struct txgbe_adapter *)(dev)->data->dev_private)->tm_conf)
+
+#define TXGBE_DEV_IPSEC(dev) \
+	(&((struct txgbe_adapter *)(dev)->data->dev_private)->ipsec)
 
 /*
  * RX/TX function prototypes
@@ -206,9 +428,9 @@ void txgbe_dev_clear_queues(struct rte_eth_dev *dev);
 
 void txgbe_dev_free_queues(struct rte_eth_dev *dev);
 
-void txgbe_dev_rx_queue_release(void *rxq);
+void txgbe_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
-void txgbe_dev_tx_queue_release(void *txq);
+void txgbe_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 int  txgbe_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -219,8 +441,7 @@ int  txgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 
-uint32_t txgbe_dev_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
+uint32_t txgbe_dev_rx_queue_count(void *rx_queue);
 
 int txgbe_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int txgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -250,6 +471,12 @@ void txgbe_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 void txgbe_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
 
+int txgbevf_dev_rx_init(struct rte_eth_dev *dev);
+
+void txgbevf_dev_tx_init(struct rte_eth_dev *dev);
+
+void txgbevf_dev_rxtx_start(struct rte_eth_dev *dev);
+
 uint16_t txgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
 
@@ -278,8 +505,50 @@ int txgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 
 bool txgbe_rss_update_sp(enum txgbe_mac_type mac_type);
 
+int txgbe_add_del_ntuple_filter(struct rte_eth_dev *dev,
+			struct rte_eth_ntuple_filter *filter,
+			bool add);
+int txgbe_add_del_ethertype_filter(struct rte_eth_dev *dev,
+			struct rte_eth_ethertype_filter *filter,
+			bool add);
+int txgbe_syn_filter_set(struct rte_eth_dev *dev,
+			struct rte_eth_syn_filter *filter,
+			bool add);
+
+/**
+ * l2 tunnel configuration.
+ */
+struct txgbe_l2_tunnel_conf {
+	enum rte_eth_tunnel_type l2_tunnel_type;
+	uint16_t ether_type; /* ether type in l2 header */
+	uint32_t tunnel_id; /* port tag id for e-tag */
+	uint16_t vf_id; /* VF id for tag insertion */
+	uint32_t pool; /* destination pool for tag based forwarding */
+};
+
+int
+txgbe_dev_l2_tunnel_filter_add(struct rte_eth_dev *dev,
+			       struct txgbe_l2_tunnel_conf *l2_tunnel,
+			       bool restore);
+int
+txgbe_dev_l2_tunnel_filter_del(struct rte_eth_dev *dev,
+			       struct txgbe_l2_tunnel_conf *l2_tunnel);
+void txgbe_filterlist_init(void);
+void txgbe_filterlist_flush(void);
+
 void txgbe_set_ivar_map(struct txgbe_hw *hw, int8_t direction,
 			       uint8_t queue, uint8_t msix_vector);
+
+/*
+ * Flow director function prototypes
+ */
+int txgbe_fdir_configure(struct rte_eth_dev *dev);
+int txgbe_fdir_set_input_mask(struct rte_eth_dev *dev);
+int txgbe_fdir_set_flexbytes_offset(struct rte_eth_dev *dev,
+				    uint16_t offset);
+int txgbe_fdir_filter_program(struct rte_eth_dev *dev,
+			      struct txgbe_fdir_rule *rule,
+			      bool del, bool update);
 
 void txgbe_configure_pb(struct rte_eth_dev *dev);
 void txgbe_configure_port(struct rte_eth_dev *dev);
@@ -298,10 +567,30 @@ int txgbe_pf_host_configure(struct rte_eth_dev *eth_dev);
 
 uint32_t txgbe_convert_vm_rx_mask_to_val(uint16_t rx_mask, uint32_t orig_val);
 
+void txgbe_fdir_filter_restore(struct rte_eth_dev *dev);
+int txgbe_clear_all_fdir_filter(struct rte_eth_dev *dev);
+
+extern const struct rte_flow_ops txgbe_flow_ops;
+
+void txgbe_clear_all_ethertype_filter(struct rte_eth_dev *dev);
+void txgbe_clear_all_ntuple_filter(struct rte_eth_dev *dev);
+void txgbe_clear_syn_filter(struct rte_eth_dev *dev);
+int txgbe_clear_all_l2_tn_filter(struct rte_eth_dev *dev);
+
 int txgbe_set_vf_rate_limit(struct rte_eth_dev *dev, uint16_t vf,
 			    uint16_t tx_rate, uint64_t q_msk);
+int txgbe_tm_ops_get(struct rte_eth_dev *dev, void *ops);
+void txgbe_tm_conf_init(struct rte_eth_dev *dev);
+void txgbe_tm_conf_uninit(struct rte_eth_dev *dev);
 int txgbe_set_queue_rate_limit(struct rte_eth_dev *dev, uint16_t queue_idx,
 			       uint16_t tx_rate);
+int txgbe_rss_conf_init(struct txgbe_rte_flow_rss_conf *out,
+			const struct rte_flow_action_rss *in);
+int txgbe_action_rss_same(const struct rte_flow_action_rss *comp,
+			  const struct rte_flow_action_rss *with);
+int txgbe_config_rss_filter(struct rte_eth_dev *dev,
+		struct txgbe_rte_flow_rss_conf *conf, bool add);
+
 static inline int
 txgbe_ethertype_filter_lookup(struct txgbe_filter_info *filter_info,
 			      uint16_t ethertype)
@@ -339,6 +628,24 @@ txgbe_ethertype_filter_insert(struct txgbe_filter_info *filter_info,
 	}
 	return (i < TXGBE_ETF_ID_MAX ? i : -1);
 }
+
+static inline int
+txgbe_ethertype_filter_remove(struct txgbe_filter_info *filter_info,
+			      uint8_t idx)
+{
+	if (idx >= TXGBE_ETF_ID_MAX)
+		return -1;
+	filter_info->ethertype_mask &= ~(1 << idx);
+	filter_info->ethertype_filters[idx].ethertype = 0;
+	filter_info->ethertype_filters[idx].etqf = 0;
+	filter_info->ethertype_filters[idx].etqs = 0;
+	filter_info->ethertype_filters[idx].etqs = FALSE;
+	return idx;
+}
+
+#ifdef RTE_LIB_SECURITY
+int txgbe_ipsec_ctx_create(struct rte_eth_dev *dev);
+#endif
 
 /* High threshold controlling when to start sending XOFF frames. */
 #define TXGBE_FC_XOFF_HITH              128 /*KB*/

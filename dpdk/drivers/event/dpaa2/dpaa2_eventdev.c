@@ -24,8 +24,8 @@
 #include <rte_memory.h>
 #include <rte_pci.h>
 #include <rte_bus_vdev.h>
-#include <rte_ethdev_driver.h>
-#include <rte_cryptodev.h>
+#include <ethdev_driver.h>
+#include <cryptodev_pmd.h>
 #include <rte_event_eth_rx_adapter.h>
 #include <rte_event_eth_tx_adapter.h>
 
@@ -408,7 +408,8 @@ dpaa2_eventdev_info_get(struct rte_eventdev *dev,
 		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
 		RTE_EVENT_DEV_CAP_NONSEQ_MODE |
 		RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES |
-		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID;
+		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
+		RTE_EVENT_DEV_CAP_MAINTENANCE_FREE;
 
 }
 
@@ -1015,7 +1016,7 @@ dpaa2_eventdev_txa_enqueue(void *port,
 	return nb_events;
 }
 
-static struct rte_eventdev_ops dpaa2_eventdev_ops = {
+static struct eventdev_ops dpaa2_eventdev_ops = {
 	.dev_infos_get    = dpaa2_eventdev_info_get,
 	.dev_configure    = dpaa2_eventdev_configure,
 	.dev_start        = dpaa2_eventdev_start,
@@ -1110,7 +1111,7 @@ dpaa2_eventdev_create(const char *name)
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
+		goto done;
 
 	priv = eventdev->data->dev_private;
 	priv->max_event_queues = 0;
@@ -1139,6 +1140,8 @@ dpaa2_eventdev_create(const char *name)
 
 	RTE_LOG(INFO, PMD, "%s eventdev created\n", name);
 
+done:
+	event_dev_probing_finish(eventdev);
 	return 0;
 fail:
 	return -EFAULT;
@@ -1206,4 +1209,4 @@ static struct rte_vdev_driver vdev_eventdev_dpaa2_pmd = {
 };
 
 RTE_PMD_REGISTER_VDEV(EVENTDEV_NAME_DPAA2_PMD, vdev_eventdev_dpaa2_pmd);
-RTE_LOG_REGISTER(dpaa2_logtype_event, pmd.event.dpaa2, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa2_logtype_event, NOTICE);

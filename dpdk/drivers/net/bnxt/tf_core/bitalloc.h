@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -7,6 +7,7 @@
 #define _BITALLOC_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Bitalloc works on uint32_t as its word size */
 typedef uint32_t bitalloc_word_t;
@@ -59,12 +60,12 @@ struct bitalloc {
 #define BA_NO_ENTRY_FOUND   -1
 
 /**
- * Initializates the bitallocator
+ * Initializes the bitallocator
  *
  * Returns 0 on success, -1 on failure.  Size is arbitrary up to
  * BITALLOC_MAX_SIZE
  */
-int ba_init(struct bitalloc *pool, int size);
+int ba_init(struct bitalloc *pool, int size, bool free);
 
 /**
  * Returns -1 on failure, or index of allocated entry

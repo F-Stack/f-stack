@@ -12,7 +12,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_sched.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_spinlock.h>
 
 #include <rte_io.h>
@@ -50,11 +50,11 @@ ipn3ke_rpst_dev_infos_get(struct rte_eth_dev *ethdev,
 	dev_info->speed_capa =
 		(hw->retimer.mac_type ==
 			IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) ?
-		ETH_LINK_SPEED_10G :
+		RTE_ETH_LINK_SPEED_10G :
 		((hw->retimer.mac_type ==
 			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) ?
-		ETH_LINK_SPEED_25G :
-		ETH_LINK_SPEED_AUTONEG);
+		RTE_ETH_LINK_SPEED_25G :
+		RTE_ETH_LINK_SPEED_AUTONEG);
 
 	dev_info->max_rx_queues  = 1;
 	dev_info->max_tx_queues  = 1;
@@ -67,36 +67,36 @@ ipn3ke_rpst_dev_infos_get(struct rte_eth_dev *ethdev,
 	};
 	dev_info->rx_queue_offload_capa = 0;
 	dev_info->rx_offload_capa =
-		DEV_RX_OFFLOAD_VLAN_STRIP |
-		DEV_RX_OFFLOAD_QINQ_STRIP |
-		DEV_RX_OFFLOAD_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_UDP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_CKSUM |
-		DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-		DEV_RX_OFFLOAD_VLAN_EXTEND |
-		DEV_RX_OFFLOAD_VLAN_FILTER |
-		DEV_RX_OFFLOAD_JUMBO_FRAME;
+		RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_QINQ_STRIP |
+		RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+		RTE_ETH_RX_OFFLOAD_VLAN_EXTEND |
+		RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
 
-	dev_info->tx_queue_offload_capa = DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+	dev_info->tx_queue_offload_capa = RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	dev_info->tx_offload_capa =
-		DEV_TX_OFFLOAD_VLAN_INSERT |
-		DEV_TX_OFFLOAD_QINQ_INSERT |
-		DEV_TX_OFFLOAD_IPV4_CKSUM |
-		DEV_TX_OFFLOAD_UDP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_CKSUM |
-		DEV_TX_OFFLOAD_SCTP_CKSUM |
-		DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-		DEV_TX_OFFLOAD_TCP_TSO |
-		DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-		DEV_TX_OFFLOAD_GRE_TNL_TSO |
-		DEV_TX_OFFLOAD_IPIP_TNL_TSO |
-		DEV_TX_OFFLOAD_GENEVE_TNL_TSO |
-		DEV_TX_OFFLOAD_MULTI_SEGS |
+		RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
+		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |
+		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_TSO |
+		RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+		RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |
+		RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
+		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
+		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
 		dev_info->tx_queue_offload_capa;
 
 	dev_info->dev_capa =
 		RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 		RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;
+	dev_info->dev_capa &= ~RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	dev_info->switch_info.name = ethdev->device->name;
 	dev_info->switch_info.domain_id = rpst->switch_domain_id;
@@ -288,11 +288,6 @@ ipn3ke_rpst_rx_queue_setup(__rte_unused struct rte_eth_dev *dev,
 	return 0;
 }
 
-static void
-ipn3ke_rpst_rx_queue_release(__rte_unused void *rxq)
-{
-}
-
 static int
 ipn3ke_rpst_tx_queue_setup(__rte_unused struct rte_eth_dev *dev,
 	__rte_unused uint16_t queue_idx, __rte_unused uint16_t nb_desc,
@@ -300,11 +295,6 @@ ipn3ke_rpst_tx_queue_setup(__rte_unused struct rte_eth_dev *dev,
 	__rte_unused const struct rte_eth_txconf *tx_conf)
 {
 	return 0;
-}
-
-static void
-ipn3ke_rpst_tx_queue_release(__rte_unused void *txq)
-{
 }
 
 /* Statistics collected by each port, VSI, VEB, and S-channel */
@@ -2407,10 +2397,10 @@ ipn3ke_update_link(struct rte_rawdev *rawdev,
 				(uint64_t *)&link_speed);
 	switch (link_speed) {
 	case IFPGA_RAWDEV_LINK_SPEED_10GB:
-		link->link_speed = ETH_SPEED_NUM_10G;
+		link->link_speed = RTE_ETH_SPEED_NUM_10G;
 		break;
 	case IFPGA_RAWDEV_LINK_SPEED_25GB:
-		link->link_speed = ETH_SPEED_NUM_25G;
+		link->link_speed = RTE_ETH_SPEED_NUM_25G;
 		break;
 	default:
 		IPN3KE_AFU_PMD_ERR("Unknown link speed info %u", link_speed);
@@ -2468,9 +2458,9 @@ ipn3ke_rpst_link_update(struct rte_eth_dev *ethdev,
 
 	memset(&link, 0, sizeof(link));
 
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 	link.link_autoneg = !(ethdev->data->dev_conf.link_speeds &
-				ETH_LINK_SPEED_FIXED);
+				RTE_ETH_LINK_SPEED_FIXED);
 
 	rawdev = hw->rawdev;
 	ipn3ke_update_link(rawdev, rpst->port_id, &link);
@@ -2526,9 +2516,9 @@ ipn3ke_rpst_link_check(struct ipn3ke_rpst *rpst)
 
 	memset(&link, 0, sizeof(link));
 
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 	link.link_autoneg = !(rpst->ethdev->data->dev_conf.link_speeds &
-				ETH_LINK_SPEED_FIXED);
+				RTE_ETH_LINK_SPEED_FIXED);
 
 	rawdev = hw->rawdev;
 	ipn3ke_update_link(rawdev, rpst->port_id, &link);
@@ -2775,12 +2765,6 @@ ipn3ke_rpst_mtu_set(struct rte_eth_dev *ethdev, uint16_t mtu)
 	int ret = 0;
 	struct ipn3ke_rpst *rpst = IPN3KE_DEV_PRIVATE_TO_RPST(ethdev);
 	struct rte_eth_dev_data *dev_data = ethdev->data;
-	uint32_t frame_size = mtu  + IPN3KE_ETH_OVERHEAD;
-
-	/* check if mtu is within the allowed range */
-	if (mtu < RTE_ETHER_MIN_MTU ||
-		frame_size > IPN3KE_MAC_FRAME_SIZE_MAX)
-		return -EINVAL;
 
 	/* mtu setting is forbidden if port is start */
 	/* make sure NIC port is stopped */
@@ -2798,15 +2782,6 @@ ipn3ke_rpst_mtu_set(struct rte_eth_dev *ethdev, uint16_t mtu)
 		return -EBUSY;
 	}
 
-	if (frame_size > IPN3KE_ETH_MAX_LEN)
-		dev_data->dev_conf.rxmode.offloads |=
-			(uint64_t)(DEV_RX_OFFLOAD_JUMBO_FRAME);
-	else
-		dev_data->dev_conf.rxmode.offloads &=
-			(uint64_t)(~DEV_RX_OFFLOAD_JUMBO_FRAME);
-
-	dev_data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
-
 	if (rpst->i40e_pf_eth) {
 		ret = rpst->i40e_pf_eth->dev_ops->mtu_set(rpst->i40e_pf_eth,
 							mtu);
@@ -2818,11 +2793,9 @@ ipn3ke_rpst_mtu_set(struct rte_eth_dev *ethdev, uint16_t mtu)
 }
 
 static int
-ipn3ke_afu_filter_ctrl(struct rte_eth_dev *ethdev,
-	enum rte_filter_type filter_type, enum rte_filter_op filter_op,
-	void *arg)
+ipn3ke_afu_flow_ops_get(struct rte_eth_dev *ethdev,
+			const struct rte_flow_ops **ops)
 {
-	int ret = 0;
 	struct ipn3ke_hw *hw;
 	struct ipn3ke_rpst *rpst;
 
@@ -2833,27 +2806,13 @@ ipn3ke_afu_filter_ctrl(struct rte_eth_dev *ethdev,
 	rpst = IPN3KE_DEV_PRIVATE_TO_RPST(ethdev);
 
 	if (hw->acc_flow)
-		switch (filter_type) {
-		case RTE_ETH_FILTER_GENERIC:
-			if (filter_op != RTE_ETH_FILTER_GET)
-				return -EINVAL;
-			*(const void **)arg = &ipn3ke_flow_ops;
-			break;
-		default:
-			IPN3KE_AFU_PMD_WARN("Filter type (%d) not supported",
-					filter_type);
-			ret = -EINVAL;
-			break;
-		}
+		*ops = &ipn3ke_flow_ops;
 	else if (rpst->i40e_pf_eth)
-		(*rpst->i40e_pf_eth->dev_ops->filter_ctrl)(ethdev,
-							filter_type,
-							filter_op,
-							arg);
+		(*rpst->i40e_pf_eth->dev_ops->flow_ops_get)(ethdev, ops);
 	else
 		return -EINVAL;
 
-	return ret;
+	return 0;
 }
 
 static const struct eth_dev_ops ipn3ke_rpst_dev_ops = {
@@ -2871,16 +2830,14 @@ static const struct eth_dev_ops ipn3ke_rpst_dev_ops = {
 	.stats_reset          = ipn3ke_rpst_stats_reset,
 	.xstats_reset         = ipn3ke_rpst_stats_reset,
 
-	.filter_ctrl          = ipn3ke_afu_filter_ctrl,
+	.flow_ops_get         = ipn3ke_afu_flow_ops_get,
 
 	.rx_queue_start       = ipn3ke_rpst_rx_queue_start,
 	.rx_queue_stop        = ipn3ke_rpst_rx_queue_stop,
 	.tx_queue_start       = ipn3ke_rpst_tx_queue_start,
 	.tx_queue_stop        = ipn3ke_rpst_tx_queue_stop,
 	.rx_queue_setup       = ipn3ke_rpst_rx_queue_setup,
-	.rx_queue_release     = ipn3ke_rpst_rx_queue_release,
 	.tx_queue_setup       = ipn3ke_rpst_tx_queue_setup,
-	.tx_queue_release     = ipn3ke_rpst_tx_queue_release,
 
 	.dev_set_link_up      = ipn3ke_rpst_dev_set_link_up,
 	.dev_set_link_down    = ipn3ke_rpst_dev_set_link_down,

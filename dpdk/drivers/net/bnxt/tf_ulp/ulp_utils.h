@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2019 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -9,10 +9,12 @@
 #include "bnxt.h"
 #include "ulp_template_db_enum.h"
 
+#define ULP_BUFFER_ALIGN_8_BITS		8
 #define ULP_BUFFER_ALIGN_8_BYTE		8
 #define ULP_BUFFER_ALIGN_16_BYTE	16
 #define ULP_BUFFER_ALIGN_64_BYTE	64
 #define ULP_64B_IN_BYTES		8
+
 /*
  * Macros for bitmap sets and gets
  * These macros can be used if the val are power of 2.
@@ -62,10 +64,10 @@
 
 /* Macros to read the computed fields */
 #define ULP_COMP_FLD_IDX_RD(params, idx) \
-	rte_be_to_cpu_32((params)->comp_fld[(idx)])
+	rte_be_to_cpu_64((params)->comp_fld[(idx)])
 
 #define ULP_COMP_FLD_IDX_WR(params, idx, val)	\
-	((params)->comp_fld[(idx)] = rte_cpu_to_be_32((val)))
+	((params)->comp_fld[(idx)] = rte_cpu_to_be_64((uint64_t)(val)))
 /*
  * Making the blob statically sized to 128 bytes for now.
  * The blob must be initialized with ulp_blob_init prior to using.
@@ -91,7 +93,7 @@ struct ulp_regfile_entry {
 };
 
 struct ulp_regfile {
-	struct ulp_regfile_entry entry[BNXT_ULP_REGFILE_INDEX_LAST];
+	struct ulp_regfile_entry entry[BNXT_ULP_RF_IDX_LAST];
 };
 
 /*
@@ -115,7 +117,7 @@ ulp_regfile_init(struct ulp_regfile *regfile);
  */
 uint32_t
 ulp_regfile_read(struct ulp_regfile *regfile,
-		 enum bnxt_ulp_regfile_index field,
+		 enum bnxt_ulp_rf_idx field,
 		 uint64_t *data);
 
 /*
@@ -128,12 +130,44 @@ ulp_regfile_read(struct ulp_regfile *regfile,
  * data [in] The value is written into this variable.  It is going to be in the
  * same byte order as it was written.
  *
- * returns zero on error
+ * returns zero on success
+ */
+int32_t
+ulp_regfile_write(struct ulp_regfile *regfile,
+		  enum bnxt_ulp_rf_idx field,
+		  uint64_t data);
+
+/*
+ * Add data to the byte array in Little endian format.
+ *
+ * bs [in] The byte array where data is pushed
+ *
+ * pos [in] The offset where data is pushed
+ *
+ * len [in] The number of bits to be added to the data array.
+ *
+ * val [in] The data to be added to the data array.
+ *
+ * returns the number of bits pushed.
  */
 uint32_t
-ulp_regfile_write(struct ulp_regfile *regfile,
-		  enum bnxt_ulp_regfile_index field,
-		  uint64_t data);
+ulp_bs_push_lsb(uint8_t *bs, uint16_t pos, uint8_t len, uint8_t *val);
+
+/*
+ * Add data to the byte array in Big endian format.
+ *
+ * bs [in] The byte array where data is pushed
+ *
+ * pos [in] The offset where data is pushed
+ *
+ * len [in] The number of bits to be added to the data array.
+ *
+ * val [in] The data to be added to the data array.
+ *
+ * returns the number of bits pushed.
+ */
+uint32_t
+ulp_bs_push_msb(uint8_t *bs, uint16_t pos, uint8_t len, uint8_t *val);
 
 /*
  * Initializes the blob structure for creating binary blob
@@ -238,7 +272,7 @@ ulp_blob_push_32(struct ulp_blob *blob,
  * The offset of the data is updated after each push of data.
  * NULL returned on error, pointer pushed value otherwise.
  */
-uint32_t
+int32_t
 ulp_blob_push_encap(struct ulp_blob *blob,
 		    uint8_t *data,
 		    uint32_t datalen);
@@ -256,6 +290,52 @@ ulp_blob_push_encap(struct ulp_blob *blob,
 uint8_t *
 ulp_blob_data_get(struct ulp_blob *blob,
 		  uint16_t *datalen);
+
+/*
+ * Get the data length of the binary blob.
+ *
+ * blob [in] The blob's data len to be retrieved.
+ *
+ * returns length of the binary blob
+ */
+uint16_t
+ulp_blob_data_len_get(struct ulp_blob *blob);
+
+/*
+ * Get data from the byte array in Little endian format.
+ *
+ * src [in] The byte array where data is extracted from
+ *
+ * dst [out] The byte array where data is pulled into
+ *
+ * size [in] The size of dst array in bytes
+ *
+ * offset [in] The offset where data is pulled
+ *
+ * len [in] The number of bits to be extracted from the data array
+ *
+ * returns None.
+ */
+void
+ulp_bs_pull_lsb(uint8_t *src, uint8_t *dst, uint32_t size,
+		uint32_t offset, uint32_t len);
+
+/*
+ * Get data from the byte array in Big endian format.
+ *
+ * src [in] The byte array where data is extracted from
+ *
+ * dst [out] The byte array where data is pulled into
+ *
+ * offset [in] The offset where data is pulled
+ *
+ * len [in] The number of bits to be extracted from the data array
+ *
+ * returns None.
+ */
+void
+ulp_bs_pull_msb(uint8_t *src, uint8_t *dst,
+		uint32_t offset, uint32_t len);
 
 /*
  * Extract data from the binary blob using given offset.
@@ -289,6 +369,20 @@ ulp_blob_pad_push(struct ulp_blob *blob,
 		  uint32_t datalen);
 
 /*
+ * Adds pad to an initialized blob at the current offset based on
+ * the alignment.
+ *
+ * blob [in] The blob that needs to be aligned
+ *
+ * align [in] Alignment in bits.
+ *
+ * returns the number of pad bits added, -1 on failure
+ */
+int32_t
+ulp_blob_pad_align(struct ulp_blob *blob,
+		   uint32_t align);
+
+/*
  * Set the 64 bit swap start index of the binary blob.
  *
  * blob [in] The blob's data to be retrieved. The blob must be
@@ -315,11 +409,13 @@ ulp_blob_perform_encap_swap(struct ulp_blob *blob);
  * vice-versa.
  *
  * blob [in] The blob's data to be used for swap.
+ * chunk_size[in] the swap is done within the chunk in bytes
  *
  * returns void.
  */
 void
-ulp_blob_perform_byte_reverse(struct ulp_blob *blob);
+ulp_blob_perform_byte_reverse(struct ulp_blob *blob,
+			      uint32_t chunk_size);
 
 /*
  * Perform the blob buffer 64 bit word swap.
@@ -346,6 +442,52 @@ void
 ulp_blob_perform_64B_byte_swap(struct ulp_blob *blob);
 
 /*
+ * Perform the blob buffer merge.
+ * This api makes the src blob merged to the dst blob.
+ * The block size and pad size help in padding the dst blob
+ *
+ * dst [in] The destination blob, the blob to be merged.
+ * src [in] The src blob.
+ * block_size [in] The size of the block after which padding gets applied.
+ * pad [in] The size of the pad to be applied.
+ *
+ * returns 0 on success.
+ */
+int32_t
+ulp_blob_block_merge(struct ulp_blob *dst, struct ulp_blob *src,
+		     uint32_t block_size, uint32_t pad);
+
+/*
+ * Append bits from src blob to dst blob.
+ * Only works on BE blobs
+ *
+ * dst [in/out] The destination blob to append to
+ *
+ * src [in] The src blob to append from
+ *
+ * src_offset [in] The bit offset from src to start at
+ *
+ * src_len [in] The number of bits to append to dst
+ *
+ * returns 0 on success, non-zero on error
+ */
+int32_t
+ulp_blob_append(struct ulp_blob *dst, struct ulp_blob *src,
+		uint16_t src_offset, uint16_t src_len);
+
+/*
+ * Perform the blob buffer copy.
+ * This api makes the src blob merged to the dst blob.
+ *
+ * dst [in] The destination blob, the blob to be merged.
+ * src [in] The src blob.
+ *
+ * returns 0 on success.
+ */
+int32_t
+ulp_blob_buffer_copy(struct ulp_blob *dst, struct ulp_blob *src);
+
+/*
  * Read data from the operand
  *
  * operand [in] A pointer to a 16 Byte operand
@@ -362,21 +504,6 @@ ulp_operand_read(uint8_t *operand,
 		 uint16_t bitlen);
 
 /*
- * copy the buffer in the encap format which is 2 bytes.
- * The MSB of the src is placed at the LSB of dst.
- *
- * dst [out] The destination buffer
- * src [in] The source buffer dst
- * size[in] size of the buffer.
- * align[in] The alignment is either 8 or 16.
- */
-void
-ulp_encap_buffer_copy(uint8_t *dst,
-		      const uint8_t *src,
-		      uint16_t size,
-		      uint16_t align);
-
-/*
  * Check the buffer is empty
  *
  * buf [in] The buffer
@@ -391,6 +518,9 @@ uint32_t ulp_bitmap_is_zero(uint8_t *bitmap, int32_t size);
 uint32_t ulp_bitmap_is_ones(uint8_t *bitmap, int32_t size);
 
 /* Function to check if bitmap is not zero. Return 1 on success */
-uint32_t ulp_bitmap_notzero(uint8_t *bitmap, int32_t size);
+uint32_t ulp_bitmap_notzero(const uint8_t *bitmap, int32_t size);
+
+/* returns 0 if input is power of 2 */
+int32_t ulp_util_is_power_of_2(uint64_t x);
 
 #endif /* _ULP_UTILS_H_ */

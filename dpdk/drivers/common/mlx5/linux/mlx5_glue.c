@@ -1155,6 +1155,18 @@ mlx5_glue_devx_port_query(struct ibv_context *ctx,
 }
 
 static int
+mlx5_glue_dr_dump_single_rule(FILE *file, void *rule)
+{
+#ifdef HAVE_MLX5_DR_FLOW_DUMP_RULE
+	return mlx5dv_dump_dr_rule(file, rule);
+#else
+	RTE_SET_USED(file);
+	RTE_SET_USED(rule);
+	return -ENOTSUP;
+#endif
+}
+
+static int
 mlx5_glue_dr_dump_domain(FILE *file, void *domain)
 {
 #ifdef HAVE_MLX5_DR_FLOW_DUMP
@@ -1364,6 +1376,17 @@ mlx5_glue_dv_alloc_pp(struct ibv_context *context,
 }
 
 static void
+mlx5_glue_dr_allow_duplicate_rules(void *domain, uint32_t allow)
+{
+#ifdef HAVE_MLX5_DR_ALLOW_DUPLICATE
+	mlx5dv_dr_domain_allow_duplicate_rules(domain, allow);
+#else
+	(void)(allow);
+	(void)(domain);
+#endif
+}
+
+static void
 mlx5_glue_dv_free_pp(struct mlx5dv_pp *pp)
 {
 #ifdef HAVE_MLX5DV_PP_ALLOC
@@ -1478,11 +1501,13 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue) {
 	.devx_wq_query = mlx5_glue_devx_wq_query,
 	.devx_port_query = mlx5_glue_devx_port_query,
 	.dr_dump_domain = mlx5_glue_dr_dump_domain,
+	.dr_dump_rule = mlx5_glue_dr_dump_single_rule,
 	.dr_reclaim_domain_memory = mlx5_glue_dr_reclaim_domain_memory,
 	.dr_create_flow_action_sampler =
 		mlx5_glue_dr_create_flow_action_sampler,
 	.dr_create_flow_action_dest_array =
 		mlx5_glue_dr_action_create_dest_array,
+	.dr_allow_duplicate_rules = mlx5_glue_dr_allow_duplicate_rules,
 	.devx_query_eqn = mlx5_glue_devx_query_eqn,
 	.devx_create_event_channel = mlx5_glue_devx_create_event_channel,
 	.devx_destroy_event_channel = mlx5_glue_devx_destroy_event_channel,

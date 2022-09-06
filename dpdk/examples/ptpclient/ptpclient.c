@@ -47,12 +47,6 @@ uint32_t ptp_enabled_port_mask;
 uint8_t ptp_enabled_port_nb;
 static uint8_t ptp_enabled_ports[RTE_MAX_ETHPORTS];
 
-static const struct rte_eth_conf port_conf_default = {
-	.rxmode = {
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-	},
-};
-
 static const struct rte_ether_addr ether_multicast = {
 	.addr_bytes = {0x01, 0x1b, 0x19, 0x0, 0x0, 0x0}
 };
@@ -178,7 +172,7 @@ static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_dev_info dev_info;
-	struct rte_eth_conf port_conf = port_conf_default;
+	struct rte_eth_conf port_conf;
 	const uint16_t rx_rings = 1;
 	const uint16_t tx_rings = 1;
 	int retval;
@@ -189,6 +183,8 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
+	memset(&port_conf, 0, sizeof(struct rte_eth_conf));
+
 	retval = rte_eth_dev_info_get(port, &dev_info);
 	if (retval != 0) {
 		printf("Error during getting device (port %u) info: %s\n",
@@ -197,11 +193,14 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	/* Force full Tx path in the driver, required for IEEE1588 */
-	port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
+	port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 
 	/* Configure the Ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -214,8 +213,13 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	/* Allocate and set up 1 RX queue per Ethernet port. */
 	for (q = 0; q < rx_rings; q++) {
+		struct rte_eth_rxconf *rxconf;
+
+		rxconf = &dev_info.default_rxconf;
+		rxconf->offloads = port_conf.rxmode.offloads;
+
 		retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
-				rte_eth_dev_socket_id(port), NULL, mbuf_pool);
+				rte_eth_dev_socket_id(port), rxconf, mbuf_pool);
 
 		if (retval < 0)
 			return retval;
@@ -429,10 +433,10 @@ parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
 		created_pkt->data_len = pkt_size;
 		created_pkt->pkt_len = pkt_size;
 		eth_hdr = rte_pktmbuf_mtod(created_pkt, struct rte_ether_hdr *);
-		rte_ether_addr_copy(&eth_addr, &eth_hdr->s_addr);
+		rte_ether_addr_copy(&eth_addr, &eth_hdr->src_addr);
 
 		/* Set multicast address 01-1B-19-00-00-00. */
-		rte_ether_addr_copy(&eth_multicast, &eth_hdr->d_addr);
+		rte_ether_addr_copy(&eth_multicast, &eth_hdr->dst_addr);
 
 		eth_hdr->ether_type = htons(PTP_PROTOCOL);
 		req_msg = rte_pktmbuf_mtod_offset(created_pkt,
@@ -452,21 +456,21 @@ parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
 		client_clkid =
 			&req_msg->hdr.source_port_id.clock_id;
 
-		client_clkid->id[0] = eth_hdr->s_addr.addr_bytes[0];
-		client_clkid->id[1] = eth_hdr->s_addr.addr_bytes[1];
-		client_clkid->id[2] = eth_hdr->s_addr.addr_bytes[2];
+		client_clkid->id[0] = eth_hdr->src_addr.addr_bytes[0];
+		client_clkid->id[1] = eth_hdr->src_addr.addr_bytes[1];
+		client_clkid->id[2] = eth_hdr->src_addr.addr_bytes[2];
 		client_clkid->id[3] = 0xFF;
 		client_clkid->id[4] = 0xFE;
-		client_clkid->id[5] = eth_hdr->s_addr.addr_bytes[3];
-		client_clkid->id[6] = eth_hdr->s_addr.addr_bytes[4];
-		client_clkid->id[7] = eth_hdr->s_addr.addr_bytes[5];
+		client_clkid->id[5] = eth_hdr->src_addr.addr_bytes[3];
+		client_clkid->id[6] = eth_hdr->src_addr.addr_bytes[4];
+		client_clkid->id[7] = eth_hdr->src_addr.addr_bytes[5];
 
 		rte_memcpy(&ptp_data->client_clock_id,
 			   client_clkid,
 			   sizeof(struct clock_id));
 
 		/* Enable flag for hardware timestamping. */
-		created_pkt->ol_flags |= PKT_TX_IEEE1588_TMST;
+		created_pkt->ol_flags |= RTE_MBUF_F_TX_IEEE1588_TMST;
 
 		/*Read value from NIC to prevent latching with old value. */
 		rte_eth_timesync_read_tx_timestamp(ptp_data->portid,
@@ -566,6 +570,8 @@ parse_drsp(struct ptpv2_data_slave_ordinary *ptp_data)
 /* This function processes PTP packets, implementing slave PTP IEEE1588 L2
  * functionality.
  */
+
+/* Parse ptp frames. 8< */
 static void
 parse_ptp_frames(uint16_t portid, struct rte_mbuf *m) {
 	struct ptp_header *ptp_hdr;
@@ -597,6 +603,7 @@ parse_ptp_frames(uint16_t portid, struct rte_mbuf *m) {
 		}
 	}
 }
+/* >8 End of function processes PTP packets. */
 
 /*
  * The lcore main. This is the main thread that does the work, reading from an
@@ -615,7 +622,7 @@ lcore_main(void)
 	/* Run until the application is quit or killed. */
 
 	while (1) {
-		/* Read packet from RX queues. */
+		/* Read packet from RX queues. 8< */
 		for (portid = 0; portid < ptp_enabled_port_nb; portid++) {
 
 			portid = ptp_enabled_ports[portid];
@@ -624,11 +631,14 @@ lcore_main(void)
 			if (likely(nb_rx == 0))
 				continue;
 
-			if (m->ol_flags & PKT_RX_IEEE1588_PTP)
+			/* Packet is parsed to determine which type. 8< */
+			if (m->ol_flags & RTE_MBUF_F_RX_IEEE1588_PTP)
 				parse_ptp_frames(portid, m);
+			/* >8 End of packet is parsed to determine which type. */
 
 			rte_pktmbuf_free(m);
 		}
+		/* >8 End of read packets from RX queues. */
 	}
 }
 
@@ -735,32 +745,36 @@ main(int argc, char *argv[])
 
 	uint16_t portid;
 
-	/* Initialize the Environment Abstraction Layer (EAL). */
+	/* Initialize the Environment Abstraction Layer (EAL). 8< */
 	int ret = rte_eal_init(argc, argv);
 
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+	/* >8 End of initialization of EAL. */
 
 	memset(&ptp_data, '\0', sizeof(struct ptpv2_data_slave_ordinary));
 
+	/* Parse specific arguments. 8< */
 	argc -= ret;
 	argv += ret;
 
 	ret = ptp_parse_args(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Error with PTP initialization\n");
+	/* >8 End of parsing specific arguments. */
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
 
-	/* Creates a new mempool in memory to hold the mbufs. */
+	/* Creates a new mempool in memory to hold the mbufs. 8< */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
 		MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	/* >8 End of a new mempool in memory to hold the mbufs. */
 
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
-	/* Initialize all ports. */
+	/* Initialize all ports. 8< */
 	RTE_ETH_FOREACH_DEV(portid) {
 		if ((ptp_enabled_port_mask & (1 << portid)) != 0) {
 			if (port_init(portid, mbuf_pool) == 0) {
@@ -774,6 +788,7 @@ main(int argc, char *argv[])
 		} else
 			printf("Skipping disabled port %u\n", portid);
 	}
+	/* >8 End of initialization of all ports. */
 
 	if (ptp_enabled_port_nb == 0) {
 		rte_exit(EXIT_FAILURE,

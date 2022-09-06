@@ -24,7 +24,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -83,7 +82,7 @@ static struct rte_eth_conf port_conf = {
 		.split_hdr_size = 0,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -177,11 +176,11 @@ l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
+	tmp = &eth->dst_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	rte_ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->src_addr);
 
 	buffer = tx_buffer[dst_port];
 	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
@@ -227,7 +226,7 @@ l2fwd_main_loop(void)
 	uint64_t tsc_lifetime = (rand()&0x07) * rte_get_tsc_hz();
 
 	while (!terminate_signal_received) {
-		/* Keepalive heartbeat */
+		/* Keepalive heartbeat. 8< */
 		rte_keepalive_mark_alive(rte_global_keepalive_info);
 
 		cur_tsc = rte_rdtsc();
@@ -238,6 +237,7 @@ l2fwd_main_loop(void)
 		 */
 		if (check_period > 0 && cur_tsc - tsc_initial > tsc_lifetime)
 			break;
+		/* >8 End of keepalive heartbeat. */
 
 		/*
 		 * TX burst queue drain
@@ -477,7 +477,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -506,8 +506,7 @@ dead_core(__rte_unused void *ptr_data, const int id_core)
 	if (terminate_signal_received)
 		return;
 	printf("Dead core %i - restarting..\n", id_core);
-	if (rte_eal_get_lcore_state(id_core) == FINISHED) {
-		rte_eal_wait_lcore(id_core);
+	if (rte_eal_get_lcore_state(id_core) == WAIT) {
 		rte_eal_remote_launch(l2fwd_launch_one_lcore, NULL, id_core);
 	} else {
 		printf("..false positive!\n");
@@ -649,9 +648,9 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 		ret = rte_eth_dev_configure(portid, 1, 1, &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
@@ -729,14 +728,9 @@ main(int argc, char **argv)
 				 rte_strerror(-ret), portid);
 
 		printf("Port %u, MAC address: "
-			"%02X:%02X:%02X:%02X:%02X:%02X\n\n",
+			RTE_ETHER_ADDR_PRT_FMT "\n\n",
 			portid,
-			l2fwd_ports_eth_addr[portid].addr_bytes[0],
-			l2fwd_ports_eth_addr[portid].addr_bytes[1],
-			l2fwd_ports_eth_addr[portid].addr_bytes[2],
-			l2fwd_ports_eth_addr[portid].addr_bytes[3],
-			l2fwd_ports_eth_addr[portid].addr_bytes[4],
-			l2fwd_ports_eth_addr[portid].addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(&l2fwd_ports_eth_addr[portid]));
 
 		/* initialize port stats */
 		memset(&port_statistics, 0, sizeof(port_statistics));
@@ -760,10 +754,12 @@ main(int argc, char **argv)
 		if (ka_shm == NULL)
 			rte_exit(EXIT_FAILURE,
 				"rte_keepalive_shm_create() failed");
+		/* Initialize keepalive functionality. 8< */
 		rte_global_keepalive_info =
 			rte_keepalive_create(&dead_core, ka_shm);
 		if (rte_global_keepalive_info == NULL)
 			rte_exit(EXIT_FAILURE, "init_keep_alive() failed");
+		/* >8 End of initializing keepalive functionality. */
 		rte_keepalive_register_relay_callback(rte_global_keepalive_info,
 			relay_core_state, ka_shm);
 		rte_timer_init(&hb_timer);
@@ -778,6 +774,7 @@ main(int argc, char **argv)
 			rte_exit(EXIT_FAILURE, "Keepalive setup failure.\n");
 	}
 	if (timer_period > 0) {
+		/* Issues the pings keepalive_dispatch_pings(). 8< */
 		if (rte_timer_reset(&stats_timer,
 				(timer_period * rte_get_timer_hz()) / 1000,
 				PERIODICAL,
@@ -785,6 +782,7 @@ main(int argc, char **argv)
 				&print_stats, NULL
 				) != 0 )
 			rte_exit(EXIT_FAILURE, "Stats setup failure.\n");
+		/* >8 End of issuing the pings keepalive_dispatch_pings(). */
 	}
 	/* launch per-lcore init on every worker lcore */
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {

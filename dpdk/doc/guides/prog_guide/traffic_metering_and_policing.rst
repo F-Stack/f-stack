@@ -20,6 +20,7 @@ The main features are:
   and RFC 4115 Two Rate Three Color Marker (trTCM)
 * Policer actions (per meter output color): recolor, drop
 * Statistics (per policer output color)
+* Chaining multiple meter objects
 
 Configuration steps
 -------------------
@@ -56,19 +57,51 @@ The processing done for each input packet hitting an MTR object is:
   color blind mode, which is equivalent to considering all input packets
   initially colored as green.
 
-* Policing: There is a separate policer action configured for each meter
-  output color, which can:
-
-  * Drop the packet.
-
-  * Keep the same packet color: the policer output color matches the meter
-    output color (essentially a no-op action).
-
-  * Recolor the packet: the policer output color is set to a different color
-    than the meter output color. The policer output color is the output color
-    of the packet, which is set in the packet meta-data (i.e. struct
-    ``rte_mbuf::sched::color``).
+* There is a meter policy API to manage pre-defined policies for meter.
+  Any rte_flow action list can be configured per color for each policy.
+  A meter object configured with a policy executes the actions per packet
+  according to the packet color.
 
 * Statistics: The set of counters maintained for each MTR object is
   configurable and subject to the implementation support. This set includes
   the number of packets and bytes dropped or passed for each output color.
+
+API walk-through
+----------------
+
+.. _figure_rte_mtr_chaining:
+
+.. figure:: img/rte_mtr_meter_chaining.*
+
+   Meter components
+
+This section will introduce the reader to the critical APIs to use
+the traffic meter and policing library.
+
+In general, the application performs the following steps to configure the
+traffic meter and policing library.
+
+#. Application gets the meter driver capabilities using ``rte_mtr_capabilities_get()``.
+#. The application creates the required meter profiles by using the
+   ``rte_mtr_meter_profile_add()`` API function.
+#. The application creates the required meter policies by using the
+   ``rte_mtr_meter_policy_add()`` API function.
+#. The application creates a meter object using the ``rte_mtr_create()`` API
+   function. One of the previously created meter profile
+   (``struct rte_mtr_params::meter_profile_id``) and meter policy
+   (``struct rte_mtr_params::meter_policy_id``) are provided as arguments
+   at this step.
+#. The application enables the meter object execution as part of the flow action
+   processing by calling the ``rte_flow_create()`` API function with one of the
+   flow action set to ``RTE_FLOW_ACTION_TYPE_METER`` and the associated
+   meter object ID set to this meter object.
+#. The API allows chaining the meter objects to create complex metering topology
+   by the following methods.
+
+   * Adding multiple flow actions of the type ``RTE_FLOW_ACTION_TYPE_METER`` to
+     the same flow.
+     Each of the meter action typically refers to a different meter object.
+
+   * Adding one (or multiple) actions of the type ``RTE_FLOW_ACTION_TYPE_METER``
+     to the list of meter actions (``struct rte_mtr_meter_policy_params::actions``)
+     specified per color as show in :numref:`figure_rte_mtr_chaining`.

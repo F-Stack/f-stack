@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2020 NXP
+ *   Copyright 2016-2021 NXP
  *
  */
 
@@ -9,11 +9,12 @@
 #include <net/if.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
 #include <rte_dev.h>
+#include <rte_hexdump.h>
 
 #include <rte_fslmc.h>
 #include <fslmc_vfio.h>
@@ -113,7 +114,7 @@ dpaa2_dev_rx_parse_new(struct rte_mbuf *m, const struct qbman_fd *fd,
 		m->packet_type = dpaa2_dev_rx_parse_slow(m, annotation);
 	}
 	m->hash.rss = fd->simple.flc_hi;
-	m->ol_flags |= PKT_RX_RSS_HASH;
+	m->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 
 	if (dpaa2_enable_ts[m->port]) {
 		*dpaa2_timestamp_dynfield(m) = annotation->word2;
@@ -140,8 +141,8 @@ dpaa2_dev_rx_parse_slow(struct rte_mbuf *mbuf,
 
 #if defined(RTE_LIBRTE_IEEE1588)
 	if (BIT_ISSET_AT_POS(annotation->word1, DPAA2_ETH_FAS_PTP)) {
-		mbuf->ol_flags |= PKT_RX_IEEE1588_PTP;
-		mbuf->ol_flags |= PKT_RX_IEEE1588_TMST;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_IEEE1588_PTP;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_IEEE1588_TMST;
 	}
 #endif
 
@@ -149,13 +150,13 @@ dpaa2_dev_rx_parse_slow(struct rte_mbuf *mbuf,
 		vlan_tci = rte_pktmbuf_mtod_offset(mbuf, uint16_t *,
 			(VLAN_TCI_OFFSET_1(annotation->word5) >> 16));
 		mbuf->vlan_tci = rte_be_to_cpu_16(*vlan_tci);
-		mbuf->ol_flags |= PKT_RX_VLAN;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN;
 		pkt_type |= RTE_PTYPE_L2_ETHER_VLAN;
 	} else if (BIT_ISSET_AT_POS(annotation->word3, L2_VLAN_N_PRESENT)) {
 		vlan_tci = rte_pktmbuf_mtod_offset(mbuf, uint16_t *,
 			(VLAN_TCI_OFFSET_1(annotation->word5) >> 16));
 		mbuf->vlan_tci = rte_be_to_cpu_16(*vlan_tci);
-		mbuf->ol_flags |= PKT_RX_VLAN | PKT_RX_QINQ;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_QINQ;
 		pkt_type |= RTE_PTYPE_L2_ETHER_QINQ;
 	}
 
@@ -167,6 +168,10 @@ dpaa2_dev_rx_parse_slow(struct rte_mbuf *mbuf,
 	} else {
 		goto parse_done;
 	}
+
+	if (BIT_ISSET_AT_POS(annotation->word3, L2_MPLS_1_PRESENT |
+				L2_MPLS_N_PRESENT))
+		pkt_type |= RTE_PTYPE_L2_ETHER_MPLS;
 
 	if (BIT_ISSET_AT_POS(annotation->word4, L3_IPV4_1_PRESENT |
 			     L3_IPV4_N_PRESENT)) {
@@ -186,9 +191,9 @@ dpaa2_dev_rx_parse_slow(struct rte_mbuf *mbuf,
 	}
 
 	if (BIT_ISSET_AT_POS(annotation->word8, DPAA2_ETH_FAS_L3CE))
-		mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else if (BIT_ISSET_AT_POS(annotation->word8, DPAA2_ETH_FAS_L4CE))
-		mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 
 	if (BIT_ISSET_AT_POS(annotation->word4, L3_IP_1_FIRST_FRAGMENT |
 	    L3_IP_1_MORE_FRAGMENT |
@@ -229,9 +234,9 @@ dpaa2_dev_rx_parse(struct rte_mbuf *mbuf, void *hw_annot_addr)
 			   annotation->word4);
 
 	if (BIT_ISSET_AT_POS(annotation->word8, DPAA2_ETH_FAS_L3CE))
-		mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else if (BIT_ISSET_AT_POS(annotation->word8, DPAA2_ETH_FAS_L4CE))
-		mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 
 	if (dpaa2_enable_ts[mbuf->port]) {
 		*dpaa2_timestamp_dynfield(mbuf) = annotation->word2;
@@ -375,25 +380,47 @@ eth_fd_to_mbuf(const struct qbman_fd *fd,
 
 static int __rte_noinline __rte_hot
 eth_mbuf_to_sg_fd(struct rte_mbuf *mbuf,
-		  struct qbman_fd *fd, uint16_t bpid)
+		  struct qbman_fd *fd,
+		  struct rte_mempool *mp, uint16_t bpid)
 {
 	struct rte_mbuf *cur_seg = mbuf, *prev_seg, *mi, *temp;
 	struct qbman_sge *sgt, *sge = NULL;
-	int i;
+	int i, offset = 0;
 
-	temp = rte_pktmbuf_alloc(mbuf->pool);
-	if (temp == NULL) {
-		DPAA2_PMD_DP_DEBUG("No memory to allocate S/G table\n");
-		return -ENOMEM;
+#ifdef RTE_LIBRTE_IEEE1588
+	/* annotation area for timestamp in first buffer */
+	offset = 0x64;
+#endif
+	if (RTE_MBUF_DIRECT(mbuf) &&
+		(mbuf->data_off > (mbuf->nb_segs * sizeof(struct qbman_sge)
+		+ offset))) {
+		temp = mbuf;
+		if (rte_mbuf_refcnt_read(temp) > 1) {
+			/* If refcnt > 1, invalid bpid is set to ensure
+			 * buffer is not freed by HW
+			 */
+			fd->simple.bpid_offset = 0;
+			DPAA2_SET_FD_IVP(fd);
+			rte_mbuf_refcnt_update(temp, -1);
+		} else {
+			DPAA2_SET_ONLY_FD_BPID(fd, bpid);
+		}
+		DPAA2_SET_FD_OFFSET(fd, offset);
+	} else {
+		temp = rte_pktmbuf_alloc(mp);
+		if (temp == NULL) {
+			DPAA2_PMD_DP_DEBUG("No memory to allocate S/G table\n");
+			return -ENOMEM;
+		}
+		DPAA2_SET_ONLY_FD_BPID(fd, bpid);
+		DPAA2_SET_FD_OFFSET(fd, temp->data_off);
 	}
-
 	DPAA2_SET_FD_ADDR(fd, DPAA2_MBUF_VADDR_TO_IOVA(temp));
 	DPAA2_SET_FD_LEN(fd, mbuf->pkt_len);
-	DPAA2_SET_ONLY_FD_BPID(fd, bpid);
-	DPAA2_SET_FD_OFFSET(fd, temp->data_off);
 	DPAA2_FD_SET_FORMAT(fd, qbman_fd_sg);
 	DPAA2_RESET_FD_FRC(fd);
 	DPAA2_RESET_FD_CTRL(fd);
+	DPAA2_RESET_FD_FLC(fd);
 	/*Set Scatter gather table and Scatter gather entries*/
 	sgt = (struct qbman_sge *)(
 			(size_t)DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd))
@@ -407,15 +434,27 @@ eth_mbuf_to_sg_fd(struct rte_mbuf *mbuf,
 		DPAA2_SET_FLE_OFFSET(sge, cur_seg->data_off);
 		sge->length = cur_seg->data_len;
 		if (RTE_MBUF_DIRECT(cur_seg)) {
-			if (rte_mbuf_refcnt_read(cur_seg) > 1) {
+			/* if we are using inline SGT in same buffers
+			 * set the FLE FMT as Frame Data Section
+			 */
+			if (temp == cur_seg) {
+				DPAA2_SG_SET_FORMAT(sge, qbman_fd_list);
+				DPAA2_SET_FLE_IVP(sge);
+			} else {
+				if (rte_mbuf_refcnt_read(cur_seg) > 1) {
 				/* If refcnt > 1, invalid bpid is set to ensure
 				 * buffer is not freed by HW
 				 */
-				DPAA2_SET_FLE_IVP(sge);
-				rte_mbuf_refcnt_update(cur_seg, -1);
-			} else
-				DPAA2_SET_FLE_BPID(sge,
+					DPAA2_SET_FLE_IVP(sge);
+					rte_mbuf_refcnt_update(cur_seg, -1);
+				} else {
+					DPAA2_SET_FLE_BPID(sge,
 						mempool_to_bpid(cur_seg->pool));
+				}
+			}
+			cur_seg = cur_seg->next;
+		} else if (RTE_MBUF_HAS_EXTBUF(cur_seg)) {
+			DPAA2_SET_FLE_IVP(sge);
 			cur_seg = cur_seg->next;
 		} else {
 			/* Get owner MBUF from indirect buffer */
@@ -461,6 +500,8 @@ eth_mbuf_to_fd(struct rte_mbuf *mbuf,
 			DPAA2_SET_FD_IVP(fd);
 			rte_mbuf_refcnt_update(mbuf, -1);
 		}
+	} else if (RTE_MBUF_HAS_EXTBUF(mbuf)) {
+		DPAA2_SET_FD_IVP(fd);
 	} else {
 		struct rte_mbuf *mi;
 
@@ -512,6 +553,93 @@ eth_copy_mbuf_to_fd(struct rte_mbuf *mbuf,
 return 0;
 }
 
+static void
+dump_err_pkts(struct dpaa2_queue *dpaa2_q)
+{
+	/* Function receive frames for a given device and VQ */
+	struct qbman_result *dq_storage;
+	uint32_t fqid = dpaa2_q->fqid;
+	int ret, num_rx = 0, num_pulled;
+	uint8_t pending, status;
+	struct qbman_swp *swp;
+	const struct qbman_fd *fd;
+	struct qbman_pull_desc pulldesc;
+	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
+	uint32_t lcore_id = rte_lcore_id();
+	void *v_addr, *hw_annot_addr;
+	struct dpaa2_fas *fas;
+
+	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
+		ret = dpaa2_affine_qbman_swp();
+		if (ret) {
+			DPAA2_PMD_ERR("Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
+			return;
+		}
+	}
+	swp = DPAA2_PER_LCORE_PORTAL;
+
+	dq_storage = dpaa2_q->q_storage[lcore_id].dq_storage[0];
+	qbman_pull_desc_clear(&pulldesc);
+	qbman_pull_desc_set_fq(&pulldesc, fqid);
+	qbman_pull_desc_set_storage(&pulldesc, dq_storage,
+			(size_t)(DPAA2_VADDR_TO_IOVA(dq_storage)), 1);
+	qbman_pull_desc_set_numframes(&pulldesc, dpaa2_dqrr_size);
+
+	while (1) {
+		if (qbman_swp_pull(swp, &pulldesc)) {
+			DPAA2_PMD_DP_DEBUG("VDQ command is not issued.QBMAN is busy\n");
+			/* Portal was busy, try again */
+			continue;
+		}
+		break;
+	}
+
+	/* Check if the previous issued command is completed. */
+	while (!qbman_check_command_complete(dq_storage))
+		;
+
+	num_pulled = 0;
+	pending = 1;
+	do {
+		/* Loop until the dq_storage is updated with
+		 * new token by QBMAN
+		 */
+		while (!qbman_check_new_result(dq_storage))
+			;
+
+		/* Check whether Last Pull command is Expired and
+		 * setting Condition for Loop termination
+		 */
+		if (qbman_result_DQ_is_pull_complete(dq_storage)) {
+			pending = 0;
+			/* Check for valid frame. */
+			status = qbman_result_DQ_flags(dq_storage);
+			if (unlikely((status &
+				QBMAN_DQ_STAT_VALIDFRAME) == 0))
+				continue;
+		}
+		fd = qbman_result_DQ_fd(dq_storage);
+		v_addr = DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd));
+		hw_annot_addr = (void *)((size_t)v_addr + DPAA2_FD_PTA_SIZE);
+		fas = hw_annot_addr;
+
+		DPAA2_PMD_ERR("\n\n[%d] error packet on port[%d]:"
+			" fd_off: %d, fd_err: %x, fas_status: %x",
+			rte_lcore_id(), eth_data->port_id,
+			DPAA2_GET_FD_OFFSET(fd), DPAA2_GET_FD_ERR(fd),
+			fas->status);
+		rte_hexdump(stderr, "Error packet", v_addr,
+			DPAA2_GET_FD_OFFSET(fd) + DPAA2_GET_FD_LEN(fd));
+
+		dq_storage++;
+		num_rx++;
+		num_pulled++;
+	} while (pending);
+
+	dpaa2_q->err_pkts += num_rx;
+}
+
 /* This function assumes that caller will be keep the same value for nb_pkts
  * across calls per queue, if that is not the case, better use non-prefetch
  * version of rx call.
@@ -532,9 +660,10 @@ dpaa2_dev_prefetch_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	struct qbman_pull_desc pulldesc;
 	struct queue_storage_info_t *q_storage = dpaa2_q->q_storage;
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
-#if defined(RTE_LIBRTE_IEEE1588)
 	struct dpaa2_dev_priv *priv = eth_data->dev_private;
-#endif
+
+	if (unlikely(dpaa2_enable_err_queue))
+		dump_err_pkts(priv->rx_err_vq);
 
 	if (unlikely(!DPAA2_PER_LCORE_ETHRX_DPIO)) {
 		ret = dpaa2_affine_qbman_ethrx_swp();
@@ -649,7 +778,7 @@ dpaa2_dev_prefetch_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 #endif
 
 		if (eth_data->dev_conf.rxmode.offloads &
-				DEV_RX_OFFLOAD_VLAN_STRIP)
+				RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 			rte_vlan_strip(bufs[num_rx]);
 
 		dq_storage++;
@@ -772,9 +901,10 @@ dpaa2_dev_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	const struct qbman_fd *fd;
 	struct qbman_pull_desc pulldesc;
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
-#if defined(RTE_LIBRTE_IEEE1588)
 	struct dpaa2_dev_priv *priv = eth_data->dev_private;
-#endif
+
+	if (unlikely(dpaa2_enable_err_queue))
+		dump_err_pkts(priv->rx_err_vq);
 
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
@@ -869,7 +999,7 @@ dpaa2_dev_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 #endif
 
 		if (eth_data->dev_conf.rxmode.offloads &
-				DEV_RX_OFFLOAD_VLAN_STRIP) {
+				RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
 			rte_vlan_strip(bufs[num_rx]);
 		}
 
@@ -1053,6 +1183,7 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
 	struct dpaa2_dev_priv *priv = eth_data->dev_private;
 	uint32_t flags[MAX_TX_RING_SLOTS] = {0};
+	struct rte_mbuf **orig_bufs = bufs;
 
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
@@ -1120,9 +1251,9 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				    (*bufs)->nb_segs == 1 &&
 				    rte_mbuf_refcnt_read((*bufs)) == 1)) {
 					if (unlikely(((*bufs)->ol_flags
-						& PKT_TX_VLAN_PKT) ||
+						& RTE_MBUF_F_TX_VLAN) ||
 						(eth_data->dev_conf.txmode.offloads
-						& DEV_TX_OFFLOAD_VLAN_INSERT))) {
+						& RTE_ETH_TX_OFFLOAD_VLAN_INSERT))) {
 						ret = rte_vlan_insert(bufs);
 						if (ret)
 							goto send_n_return;
@@ -1139,15 +1270,33 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				mi = rte_mbuf_from_indirect(*bufs);
 				mp = mi->pool;
 			}
+
+			if (unlikely(RTE_MBUF_HAS_EXTBUF(*bufs))) {
+				if (unlikely((*bufs)->nb_segs > 1)) {
+					if (eth_mbuf_to_sg_fd(*bufs,
+							      &fd_arr[loop],
+							      mp, 0))
+						goto send_n_return;
+				} else {
+					eth_mbuf_to_fd(*bufs,
+						       &fd_arr[loop], 0);
+				}
+				bufs++;
+#ifdef RTE_LIBRTE_IEEE1588
+				enable_tx_tstamp(&fd_arr[loop]);
+#endif
+				continue;
+			}
+
 			/* Not a hw_pkt pool allocated frame */
 			if (unlikely(!mp || !priv->bp_list)) {
 				DPAA2_PMD_ERR("Err: No buffer pool attached");
 				goto send_n_return;
 			}
 
-			if (unlikely(((*bufs)->ol_flags & PKT_TX_VLAN_PKT) ||
+			if (unlikely(((*bufs)->ol_flags & RTE_MBUF_F_TX_VLAN) ||
 				(eth_data->dev_conf.txmode.offloads
-				& DEV_TX_OFFLOAD_VLAN_INSERT))) {
+				& RTE_ETH_TX_OFFLOAD_VLAN_INSERT))) {
 				int ret = rte_vlan_insert(bufs);
 				if (ret)
 					goto send_n_return;
@@ -1174,7 +1323,8 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				bpid = mempool_to_bpid(mp);
 				if (unlikely((*bufs)->nb_segs > 1)) {
 					if (eth_mbuf_to_sg_fd(*bufs,
-							&fd_arr[loop], bpid))
+							&fd_arr[loop],
+							mp, bpid))
 						goto send_n_return;
 				} else {
 					eth_mbuf_to_fd(*bufs,
@@ -1210,6 +1360,15 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		nb_pkts -= loop;
 	}
 	dpaa2_q->tx_pkts += num_tx;
+
+	loop = 0;
+	while (loop < num_tx) {
+		if (unlikely(RTE_MBUF_HAS_EXTBUF(*orig_bufs)))
+			rte_pktmbuf_free(*orig_bufs);
+		orig_bufs++;
+		loop++;
+	}
+
 	return num_tx;
 
 send_n_return:
@@ -1236,6 +1395,15 @@ send_n_return:
 	}
 skip_tx:
 	dpaa2_q->tx_pkts += num_tx;
+
+	loop = 0;
+	while (loop < num_tx) {
+		if (unlikely(RTE_MBUF_HAS_EXTBUF(*orig_bufs)))
+			rte_pktmbuf_free(*orig_bufs);
+		orig_bufs++;
+		loop++;
+	}
+
 	return num_tx;
 }
 
@@ -1387,7 +1555,7 @@ dpaa2_dev_tx_ordered(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				    (*bufs)->nb_segs == 1 &&
 				    rte_mbuf_refcnt_read((*bufs)) == 1)) {
 					if (unlikely((*bufs)->ol_flags
-						& PKT_TX_VLAN_PKT)) {
+						& RTE_MBUF_F_TX_VLAN)) {
 					  ret = rte_vlan_insert(bufs);
 					  if (ret)
 						goto send_n_return;
@@ -1431,6 +1599,7 @@ dpaa2_dev_tx_ordered(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				if (unlikely((*bufs)->nb_segs > 1)) {
 					if (eth_mbuf_to_sg_fd(*bufs,
 							      &fd_arr[loop],
+							      mp,
 							      bpid))
 						goto send_n_return;
 				} else {

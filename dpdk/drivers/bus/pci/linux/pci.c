@@ -21,11 +21,7 @@
 
 /**
  * @file
- * PCI probing under linux
- *
- * This code is used to simulate a PCI probe by parsing information in sysfs.
- * When a registered device matches a driver, it is then initialized with
- * IGB_UIO driver (or doesn't initialize, if the device wasn't bound to it).
+ * PCI probing using Linux sysfs.
  */
 
 extern struct rte_pci_bus rte_pci_bus;
@@ -549,16 +545,22 @@ bool
 pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 {
 	/*
-	 * IOMMU is always present on a PowerNV host (IOMMUv2).
-	 * IOMMU is also present in a KVM/QEMU VM (IOMMUv1) but is not
-	 * currently supported by DPDK. Test for our current environment
-	 * and report VA support as appropriate.
+	 * All POWER systems support an IOMMU, but only IOMMUv2 supports
+	 * IOVA = VA in DPDK. Check contents of /proc/cpuinfo to find the
+	 * system.
+	 *
+	 * Platform | Model |  IOMMU  | VA? |             Comment
+	 * ---------+-------+---------+-----+---------------------------------
+	 *  PowerNV |  N/A  | IOMMUv2 | Yes | OpenPOWER (Bare Metal)
+	 *  pSeries | ~qemu | IOMMUv2 | Yes | PowerVM Logical Partition (LPAR)
+	 *  pSeries |  qemu | IOMMUv1 |  No | QEMU Virtual Machine
 	 */
 
 	char *line = NULL;
 	size_t len = 0;
 	char filename[PATH_MAX] = "/proc/cpuinfo";
 	FILE *fp = fopen(filename, "r");
+	bool pseries = false, powernv = false, qemu = false;
 	bool ret = false;
 
 	if (fp == NULL) {
@@ -567,20 +569,29 @@ pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 		return ret;
 	}
 
-	/* Check for a PowerNV platform */
+	/* Check the "platform" and "model" fields */
 	while (getline(&line, &len, fp) != -1) {
-		if (strstr(line, "platform") == NULL)
-			continue;
-
-		if (strstr(line, "PowerNV") != NULL) {
-			RTE_LOG(DEBUG, EAL, "Running on a PowerNV system\n");
-			ret = true;
-			break;
+		if (strstr(line, "platform") != NULL) {
+			if (strstr(line, "PowerNV") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Running on a PowerNV platform\n");
+				powernv = true;
+			} else if (strstr(line, "pSeries") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Running on a pSeries platform\n");
+				pseries = true;
+			}
+		} else if (strstr(line, "model") != NULL) {
+			if (strstr(line, "qemu") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Found qemu emulation\n");
+				qemu = true;
+			}
 		}
 	}
 
 	free(line);
 	fclose(fp);
+
+	if (powernv || (pseries && !qemu))
+		ret = true;
 	return ret;
 }
 #else
@@ -634,7 +645,7 @@ int rte_pci_read_config(const struct rte_pci_device *device,
 		void *buf, size_t len, off_t offset)
 {
 	char devname[RTE_DEV_NAME_MAX_LEN] = "";
-	const struct rte_intr_handle *intr_handle = &device->intr_handle;
+	const struct rte_intr_handle *intr_handle = device->intr_handle;
 
 	switch (device->kdrv) {
 	case RTE_PCI_KDRV_IGB_UIO:
@@ -658,7 +669,7 @@ int rte_pci_write_config(const struct rte_pci_device *device,
 		const void *buf, size_t len, off_t offset)
 {
 	char devname[RTE_DEV_NAME_MAX_LEN] = "";
-	const struct rte_intr_handle *intr_handle = &device->intr_handle;
+	const struct rte_intr_handle *intr_handle = device->intr_handle;
 
 	switch (device->kdrv) {
 	case RTE_PCI_KDRV_IGB_UIO:
@@ -677,71 +688,6 @@ int rte_pci_write_config(const struct rte_pci_device *device,
 	}
 }
 
-#if defined(RTE_ARCH_X86)
-static int
-pci_ioport_map(struct rte_pci_device *dev, int bar __rte_unused,
-		struct rte_pci_ioport *p)
-{
-	uint16_t start, end;
-	FILE *fp;
-	char *line = NULL;
-	char pci_id[16];
-	int found = 0;
-	size_t linesz;
-
-	if (rte_eal_iopl_init() != 0) {
-		RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
-			__func__, dev->name);
-		return -1;
-	}
-
-	snprintf(pci_id, sizeof(pci_id), PCI_PRI_FMT,
-		 dev->addr.domain, dev->addr.bus,
-		 dev->addr.devid, dev->addr.function);
-
-	fp = fopen("/proc/ioports", "r");
-	if (fp == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): can't open ioports\n", __func__);
-		return -1;
-	}
-
-	while (getdelim(&line, &linesz, '\n', fp) > 0) {
-		char *ptr = line;
-		char *left;
-		int n;
-
-		n = strcspn(ptr, ":");
-		ptr[n] = 0;
-		left = &ptr[n + 1];
-
-		while (*left && isspace(*left))
-			left++;
-
-		if (!strncmp(left, pci_id, strlen(pci_id))) {
-			found = 1;
-
-			while (*ptr && isspace(*ptr))
-				ptr++;
-
-			sscanf(ptr, "%04hx-%04hx", &start, &end);
-
-			break;
-		}
-	}
-
-	free(line);
-	fclose(fp);
-
-	if (!found)
-		return -1;
-
-	p->base = start;
-	RTE_LOG(DEBUG, EAL, "PCI Port IO found start=0x%x\n", start);
-
-	return 0;
-}
-#endif
-
 int
 rte_pci_ioport_map(struct rte_pci_device *dev, int bar,
 		struct rte_pci_ioport *p)
@@ -756,14 +702,8 @@ rte_pci_ioport_map(struct rte_pci_device *dev, int bar,
 		break;
 #endif
 	case RTE_PCI_KDRV_IGB_UIO:
-		ret = pci_uio_ioport_map(dev, bar, p);
-		break;
 	case RTE_PCI_KDRV_UIO_GENERIC:
-#if defined(RTE_ARCH_X86)
-		ret = pci_ioport_map(dev, bar, p);
-#else
 		ret = pci_uio_ioport_map(dev, bar, p);
-#endif
 		break;
 	default:
 		break;
@@ -786,8 +726,6 @@ rte_pci_ioport_read(struct rte_pci_ioport *p,
 		break;
 #endif
 	case RTE_PCI_KDRV_IGB_UIO:
-		pci_uio_ioport_read(p, data, len, offset);
-		break;
 	case RTE_PCI_KDRV_UIO_GENERIC:
 		pci_uio_ioport_read(p, data, len, offset);
 		break;
@@ -807,8 +745,6 @@ rte_pci_ioport_write(struct rte_pci_ioport *p,
 		break;
 #endif
 	case RTE_PCI_KDRV_IGB_UIO:
-		pci_uio_ioport_write(p, data, len, offset);
-		break;
 	case RTE_PCI_KDRV_UIO_GENERIC:
 		pci_uio_ioport_write(p, data, len, offset);
 		break;
@@ -830,14 +766,8 @@ rte_pci_ioport_unmap(struct rte_pci_ioport *p)
 		break;
 #endif
 	case RTE_PCI_KDRV_IGB_UIO:
-		ret = pci_uio_ioport_unmap(p);
-		break;
 	case RTE_PCI_KDRV_UIO_GENERIC:
-#if defined(RTE_ARCH_X86)
-		ret = 0;
-#else
 		ret = pci_uio_ioport_unmap(p);
-#endif
 		break;
 	default:
 		break;

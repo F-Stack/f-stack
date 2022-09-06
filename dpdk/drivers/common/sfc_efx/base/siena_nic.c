@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
@@ -197,6 +197,9 @@ siena_board_cfg(
 	encp->enc_filter_action_mark_max = 0;
 
 	encp->enc_mae_supported = B_FALSE;
+	encp->enc_mae_admin = B_FALSE;
+
+	encp->enc_dma_mapping = EFX_NIC_DMA_MAPPING_FLAT;
 
 	return (0);
 

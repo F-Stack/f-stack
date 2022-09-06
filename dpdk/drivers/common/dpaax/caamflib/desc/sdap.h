@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2020 NXP
+ * Copyright 2020-2021 NXP
  */
 
 #ifndef __DESC_SDAP_H__
@@ -19,6 +19,63 @@
 #define SDAP_BYTE_SIZE 1
 #define SDAP_BITS_SIZE (SDAP_BYTE_SIZE * 8)
 #endif
+
+/**
+ * rta_inline_pdcp_query() - Provide indications if a key can be passed as
+ *                           immediate data or shall be referenced in a
+ *                           shared descriptor.
+ * Return: 0 if data can be inlined or 1 if referenced.
+ */
+static inline int
+rta_inline_pdcp_sdap_query(enum auth_type_pdcp auth_alg,
+		      enum cipher_type_pdcp cipher_alg,
+		      enum pdcp_sn_size sn_size,
+		      int8_t hfn_ovd)
+{
+	int nb_key_to_inline = 0;
+
+	if ((cipher_alg != PDCP_CIPHER_TYPE_NULL) &&
+			(auth_alg != PDCP_AUTH_TYPE_NULL))
+		return 2;
+	else
+		return 0;
+
+	/**
+	 * Shared Descriptors for some of the cases does not fit in the
+	 * MAX_DESC_SIZE of the descriptor
+	 * The cases which exceed are for RTA_SEC_ERA=8 and HFN override
+	 * enabled and 12/18 bit uplane and either of following Algo combo.
+	 * - AES-SNOW
+	 * - AES-ZUC
+	 * - SNOW-SNOW
+	 * - SNOW-ZUC
+	 * - ZUC-SNOW
+	 * - ZUC-SNOW
+	 *
+	 * We cannot make inline for all cases, as this will impact performance
+	 * due to extra memory accesses for the keys.
+	 */
+
+	/* Inline only the cipher key */
+	if ((rta_sec_era == RTA_SEC_ERA_8) && hfn_ovd &&
+		((sn_size == PDCP_SN_SIZE_12) ||
+		 (sn_size == PDCP_SN_SIZE_18)) &&
+		(cipher_alg != PDCP_CIPHER_TYPE_NULL) &&
+		((auth_alg == PDCP_AUTH_TYPE_SNOW) ||
+		 (auth_alg == PDCP_AUTH_TYPE_ZUC))) {
+
+		nb_key_to_inline++;
+
+		/* Sub case where inlining another key is required */
+		if ((cipher_alg == PDCP_CIPHER_TYPE_AES) &&
+			(auth_alg == PDCP_AUTH_TYPE_SNOW))
+			nb_key_to_inline++;
+	}
+
+	/* Inline both keys */
+
+	return nb_key_to_inline;
+}
 
 static inline void key_loading_opti(struct program *p,
 				    struct alginfo *cipherdata,
@@ -109,12 +166,17 @@ static inline int pdcp_sdap_insert_no_int_op(struct program *p,
 					     bool swap __maybe_unused,
 					     struct alginfo *cipherdata,
 					     unsigned int dir,
-					     enum pdcp_sn_size sn_size)
+					     enum pdcp_sn_size sn_size,
+					     enum pdb_type_e pdb_type)
 {
 	int op;
 	uint32_t sn_mask = 0;
 	uint32_t length = 0;
 	uint32_t offset = 0;
+	int hfn_bearer_dir_offset_in_descbuf =
+		(pdb_type == PDCP_PDB_TYPE_FULL_PDB) ?
+			FULL_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET :
+			REDUCED_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET;
 
 	if (pdcp_sdap_get_sn_parameters(sn_size, swap, &offset, &length,
 					&sn_mask))
@@ -137,7 +199,8 @@ static inline int pdcp_sdap_insert_no_int_op(struct program *p,
 	SEQSTORE(p, MATH0, offset, length, 0);
 
 	MATHB(p, MATH1, SHLD, MATH1, MATH1, 8, 0);
-	MOVEB(p, DESCBUF, 8, MATH2, 0, 8, WAITCOMP | IMMED);
+	MOVEB(p, DESCBUF, hfn_bearer_dir_offset_in_descbuf,
+			MATH2, 0, 8, WAITCOMP | IMMED);
 	MATHB(p, MATH1, OR, MATH2, MATH2, 8, 0);
 
 	MATHB(p, SEQINSZ, SUB, MATH3, VSEQINSZ, 4, 0);
@@ -190,9 +253,14 @@ pdcp_sdap_insert_enc_only_op(struct program *p, bool swap __maybe_unused,
 			     struct alginfo *cipherdata,
 			     struct alginfo *authdata __maybe_unused,
 			     unsigned int dir, enum pdcp_sn_size sn_size,
-			     unsigned char era_2_sw_hfn_ovrd __maybe_unused)
+			     unsigned char era_2_sw_hfn_ovrd __maybe_unused,
+			     enum pdb_type_e pdb_type)
 {
 	uint32_t offset = 0, length = 0, sn_mask = 0;
+	int hfn_bearer_dir_offset_in_descbuf =
+		(pdb_type == PDCP_PDB_TYPE_FULL_PDB) ?
+			FULL_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET :
+			REDUCED_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET;
 
 	if (pdcp_sdap_get_sn_parameters(sn_size, swap, &offset, &length,
 					&sn_mask))
@@ -217,7 +285,8 @@ pdcp_sdap_insert_enc_only_op(struct program *p, bool swap __maybe_unused,
 	/* Word (32 bit) swap */
 	MATHB(p, MATH1, SHLD, MATH1, MATH1, 8, 0);
 	/* Load words from PDB: word 02 (HFN) + word 03 (bearer_dir)*/
-	MOVEB(p, DESCBUF, 8, MATH2, 0, 8, WAITCOMP | IMMED);
+	MOVEB(p, DESCBUF, hfn_bearer_dir_offset_in_descbuf,
+			MATH2, 0, 8, WAITCOMP | IMMED);
 	/* Create basic IV */
 	MATHB(p, MATH1, OR, MATH2, MATH2, 8, 0);
 
@@ -309,13 +378,18 @@ static inline int
 pdcp_sdap_insert_snoop_op(struct program *p, bool swap __maybe_unused,
 			  struct alginfo *cipherdata, struct alginfo *authdata,
 			  unsigned int dir, enum pdcp_sn_size sn_size,
-			  unsigned char era_2_sw_hfn_ovrd __maybe_unused)
+			  unsigned char era_2_sw_hfn_ovrd __maybe_unused,
+			  enum pdb_type_e pdb_type)
 {
 	uint32_t offset = 0, length = 0, sn_mask = 0;
 	uint32_t int_op_alg = 0;
 	uint32_t int_op_aai = 0;
 	uint32_t cipher_op_alg = 0;
 	uint32_t cipher_op_aai = 0;
+	int hfn_bearer_dir_offset_in_descbuf =
+		(pdb_type == PDCP_PDB_TYPE_FULL_PDB) ?
+			FULL_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET :
+			REDUCED_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET;
 
 	if (authdata->algtype == PDCP_CIPHER_TYPE_ZUC) {
 		if (rta_sec_era < RTA_SEC_ERA_5) {
@@ -362,11 +436,13 @@ pdcp_sdap_insert_snoop_op(struct program *p, bool swap __maybe_unused,
 
 	/* Load the HFN / Beare / Dir from the PDB
 	 * CAAM word are 32bit hence loading 8 byte loads 2 words:
-	 *  - The HFN at offset 8
-	 *  - The Bearer / Dir at offset 12
+	 *  - The HFN at offset hfn_bearer_dir_offset_in_descbuf
+	 *  - The Bearer / Dir at next word
 	 */
-	MOVEB(p, DESCBUF, 8, MATH2, 0, 8, WAITCOMP | IMMED);
-	/* Create the 4 first byte of the ICV by oring the math registers */
+	MOVEB(p, DESCBUF, hfn_bearer_dir_offset_in_descbuf,
+			MATH2, 0, 8, WAITCOMP | IMMED);
+
+	/* Create the 4 first byte of the ICV by or-ing the math registers */
 	MATHB(p, MATH1, OR, MATH2, MATH1, 8, 0);
 
 	/* Set the IV of class 1 CHA */
@@ -562,11 +638,16 @@ pdcp_sdap_insert_snoop_op(struct program *p, bool swap __maybe_unused,
 static inline int pdcp_sdap_insert_no_snoop_op(
 	struct program *p, bool swap __maybe_unused, struct alginfo *cipherdata,
 	struct alginfo *authdata, unsigned int dir, enum pdcp_sn_size sn_size,
-	unsigned char era_2_sw_hfn_ovrd __maybe_unused)
+	unsigned char era_2_sw_hfn_ovrd __maybe_unused,
+	enum pdb_type_e pdb_type)
 {
 	uint32_t offset = 0, length = 0, sn_mask = 0;
 	uint32_t cipher_alg_op = 0;
 	uint32_t cipher_alg_aai = 0;
+	int hfn_bearer_dir_offset_in_descbuf =
+		(pdb_type == PDCP_PDB_TYPE_FULL_PDB) ?
+			FULL_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET :
+			REDUCED_PDB_DESCBUF_HFN_BEARER_DIR_OFFSET;
 
 	if (authdata->algtype == PDCP_CIPHER_TYPE_ZUC) {
 		if (rta_sec_era < RTA_SEC_ERA_5) {
@@ -592,7 +673,8 @@ static inline int pdcp_sdap_insert_no_snoop_op(
 #endif
 
 	MATHB(p, MATH1, SHLD, MATH1, MATH1, 8, 0);
-	MOVEB(p, DESCBUF, 8, MATH2, 0, 0x08, WAITCOMP | IMMED);
+	MOVEB(p, DESCBUF, hfn_bearer_dir_offset_in_descbuf,
+			MATH2, 0, 0x08, WAITCOMP | IMMED);
 	MATHB(p, MATH1, OR, MATH2, MATH2, 8, 0);
 
 	SEQSTORE(p, MATH0, offset, length, 0);
@@ -753,22 +835,51 @@ static inline int pdcp_sdap_insert_no_snoop_op(
 	return 0;
 }
 
+static inline int
+pdcp_sdap_insert_cplane_null_op(struct program *p,
+			   bool swap __maybe_unused,
+			   struct alginfo *cipherdata,
+			   struct alginfo *authdata,
+			   unsigned int dir,
+			   enum pdcp_sn_size sn_size,
+			   unsigned char era_2_sw_hfn_ovrd,
+			   enum pdb_type_e pdb_type __maybe_unused)
+{
+	return pdcp_insert_cplane_null_op(p, swap, cipherdata, authdata, dir,
+					  sn_size, era_2_sw_hfn_ovrd);
+}
+
+static inline int
+pdcp_sdap_insert_cplane_int_only_op(struct program *p,
+			   bool swap __maybe_unused,
+			   struct alginfo *cipherdata,
+			   struct alginfo *authdata,
+			   unsigned int dir,
+			   enum pdcp_sn_size sn_size,
+			   unsigned char era_2_sw_hfn_ovrd,
+			   enum pdb_type_e pdb_type __maybe_unused)
+{
+	return pdcp_insert_cplane_int_only_op(p, swap, cipherdata, authdata,
+				dir, sn_size, era_2_sw_hfn_ovrd);
+}
+
 static int pdcp_sdap_insert_with_int_op(
 	struct program *p, bool swap __maybe_unused, struct alginfo *cipherdata,
 	struct alginfo *authdata, enum pdcp_sn_size sn_size,
-	unsigned char era_2_sw_hfn_ovrd, unsigned int dir)
+	unsigned char era_2_sw_hfn_ovrd, unsigned int dir,
+	enum pdb_type_e pdb_type)
 {
 	static int (
 		*pdcp_cp_fp[PDCP_CIPHER_TYPE_INVALID][PDCP_AUTH_TYPE_INVALID])(
 		struct program *, bool swap, struct alginfo *, struct alginfo *,
 		unsigned int, enum pdcp_sn_size,
-		unsigned char __maybe_unused) = {
+		unsigned char __maybe_unused, enum pdb_type_e pdb_type) = {
 		{
 			/* NULL */
-			pdcp_insert_cplane_null_op,     /* NULL */
-			pdcp_insert_cplane_int_only_op, /* SNOW f9 */
-			pdcp_insert_cplane_int_only_op, /* AES CMAC */
-			pdcp_insert_cplane_int_only_op  /* ZUC-I */
+			pdcp_sdap_insert_cplane_null_op,     /* NULL */
+			pdcp_sdap_insert_cplane_int_only_op, /* SNOW f9 */
+			pdcp_sdap_insert_cplane_int_only_op, /* AES CMAC */
+			pdcp_sdap_insert_cplane_int_only_op  /* ZUC-I */
 		},
 		{
 			/* SNOW f8 */
@@ -796,7 +907,7 @@ static int pdcp_sdap_insert_with_int_op(
 
 	err = pdcp_cp_fp[cipherdata->algtype]
 			[authdata->algtype](p, swap, cipherdata, authdata, dir,
-					    sn_size, era_2_sw_hfn_ovrd);
+					sn_size, era_2_sw_hfn_ovrd, pdb_type);
 	if (err)
 		return err;
 
@@ -936,7 +1047,7 @@ cnstr_shdsc_pdcp_sdap_u_plane(uint32_t *descbuf,
 	SET_LABEL(p, pdb_end);
 
 	/* Inser the HFN override operation */
-	err = insert_hfn_ov_op(p, sn_size, pdb_type, era_2_sw_hfn_ovrd);
+	err = insert_hfn_ov_op(p, sn_size, pdb_type, era_2_sw_hfn_ovrd, false);
 	if (err)
 		return err;
 
@@ -948,7 +1059,7 @@ cnstr_shdsc_pdcp_sdap_u_plane(uint32_t *descbuf,
 		} else {
 			err = pdcp_sdap_insert_no_int_op(p, swap, cipherdata,
 							 caps_mode,
-							 sn_size);
+							 sn_size, pdb_type);
 			if (err) {
 				pr_err("Fail pdcp_sdap_insert_no_int_op\n");
 				return err;
@@ -958,7 +1069,7 @@ cnstr_shdsc_pdcp_sdap_u_plane(uint32_t *descbuf,
 		err = pdcp_sdap_insert_with_int_op(p, swap, cipherdata,
 						   authdata, sn_size,
 						   era_2_sw_hfn_ovrd,
-						   caps_mode);
+						   caps_mode, pdb_type);
 		if (err) {
 			pr_err("Fail pdcp_sdap_insert_with_int_op\n");
 			return err;

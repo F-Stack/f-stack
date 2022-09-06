@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2020 Intel Corporation
+ * Copyright(c) 2001-2021 Intel Corporation
  */
 
 #include "ice_sched.h"
@@ -965,6 +965,50 @@ ice_sched_add_elems(struct ice_port_info *pi, struct ice_sched_node *tc_node,
 }
 
 /**
+ * ice_sched_add_nodes_to_hw_layer - Add nodes to hw layer
+ * @pi: port information structure
+ * @tc_node: pointer to TC node
+ * @parent: pointer to parent node
+ * @layer: layer number to add nodes
+ * @num_nodes: number of nodes to be added
+ * @first_node_teid: pointer to the first node TEID
+ * @num_nodes_added: pointer to number of nodes added
+ *
+ * Add nodes into specific hw layer.
+ */
+static enum ice_status
+ice_sched_add_nodes_to_hw_layer(struct ice_port_info *pi,
+				struct ice_sched_node *tc_node,
+				struct ice_sched_node *parent, u8 layer,
+				u16 num_nodes, u32 *first_node_teid,
+				u16 *num_nodes_added)
+{
+	u16 max_child_nodes;
+
+	*num_nodes_added = 0;
+
+	if (!num_nodes)
+		return ICE_SUCCESS;
+
+	if (!parent || layer < pi->hw->sw_entry_point_layer)
+		return ICE_ERR_PARAM;
+
+	/* max children per node per layer */
+	max_child_nodes = pi->hw->max_children[parent->tx_sched_layer];
+
+	/* current number of children + required nodes exceed max children */
+	if ((parent->num_children + num_nodes) > max_child_nodes) {
+		/* Fail if the parent is a TC node */
+		if (parent == tc_node)
+			return ICE_ERR_CFG;
+		return ICE_ERR_MAX_LIMIT;
+	}
+
+	return ice_sched_add_elems(pi, tc_node, parent, layer, num_nodes,
+				   num_nodes_added, first_node_teid);
+}
+
+/**
  * ice_sched_add_nodes_to_layer - Add nodes to a given layer
  * @pi: port information structure
  * @tc_node: pointer to TC node
@@ -984,72 +1028,52 @@ ice_sched_add_nodes_to_layer(struct ice_port_info *pi,
 			     u16 *num_nodes_added)
 {
 	u32 *first_teid_ptr = first_node_teid;
-	u16 new_num_nodes, max_child_nodes;
+	u16 new_num_nodes = num_nodes;
 	enum ice_status status = ICE_SUCCESS;
-	struct ice_hw *hw = pi->hw;
-	u16 num_added = 0;
-	u32 temp;
 
 	*num_nodes_added = 0;
+	while (*num_nodes_added < num_nodes) {
+		u16 max_child_nodes, num_added = 0;
+		u32 temp;
 
-	if (!num_nodes)
-		return status;
-
-	if (!parent || layer < hw->sw_entry_point_layer)
-		return ICE_ERR_PARAM;
-
-	/* max children per node per layer */
-	max_child_nodes = hw->max_children[parent->tx_sched_layer];
-
-	/* current number of children + required nodes exceed max children ? */
-	if ((parent->num_children + num_nodes) > max_child_nodes) {
-		/* Fail if the parent is a TC node */
-		if (parent == tc_node)
-			return ICE_ERR_CFG;
-
+		status = ice_sched_add_nodes_to_hw_layer(pi, tc_node, parent,
+							 layer,	new_num_nodes,
+							 first_teid_ptr,
+							 &num_added);
+		if (status == ICE_SUCCESS)
+			*num_nodes_added += num_added;
+		/* added more nodes than requested ? */
+		if (*num_nodes_added > num_nodes) {
+			ice_debug(pi->hw, ICE_DBG_SCHED, "added extra nodes %d %d\n", num_nodes,
+				  *num_nodes_added);
+			status = ICE_ERR_CFG;
+			break;
+		}
+		/* break if all the nodes are added successfully */
+		if (status == ICE_SUCCESS && (*num_nodes_added == num_nodes))
+			break;
+		/* break if the error is not max limit */
+		if (status != ICE_SUCCESS && status != ICE_ERR_MAX_LIMIT)
+			break;
+		/* Exceeded the max children */
+		max_child_nodes = pi->hw->max_children[parent->tx_sched_layer];
 		/* utilize all the spaces if the parent is not full */
 		if (parent->num_children < max_child_nodes) {
 			new_num_nodes = max_child_nodes - parent->num_children;
-			/* this recursion is intentional, and wouldn't
-			 * go more than 2 calls
+		} else {
+			/* This parent is full, try the next sibling */
+			parent = parent->sibling;
+			/* Don't modify the first node TEID memory if the
+			 * first node was added already in the above call.
+			 * Instead send some temp memory for all other
+			 * recursive calls.
 			 */
-			status = ice_sched_add_nodes_to_layer(pi, tc_node,
-							      parent, layer,
-							      new_num_nodes,
-							      first_node_teid,
-							      &num_added);
-			if (status != ICE_SUCCESS)
-				return status;
+			if (num_added)
+				first_teid_ptr = &temp;
 
-			*num_nodes_added += num_added;
+			new_num_nodes = num_nodes - *num_nodes_added;
 		}
-		/* Don't modify the first node TEID memory if the first node was
-		 * added already in the above call. Instead send some temp
-		 * memory for all other recursive calls.
-		 */
-		if (num_added)
-			first_teid_ptr = &temp;
-
-		new_num_nodes = num_nodes - num_added;
-
-		/* This parent is full, try the next sibling */
-		parent = parent->sibling;
-
-		/* this recursion is intentional, for 1024 queues
-		 * per VSI, it goes max of 16 iterations.
-		 * 1024 / 8 = 128 layer 8 nodes
-		 * 128 /8 = 16 (add 8 nodes per iteration)
-		 */
-		status = ice_sched_add_nodes_to_layer(pi, tc_node, parent,
-						      layer, new_num_nodes,
-						      first_teid_ptr,
-						      &num_added);
-		*num_nodes_added += num_added;
-		return status;
 	}
-
-	status = ice_sched_add_elems(pi, tc_node, parent, layer, num_nodes,
-				     num_nodes_added, first_node_teid);
 	return status;
 }
 
@@ -1960,7 +1984,7 @@ ice_sched_cfg_vsi(struct ice_port_info *pi, u16 vsi_handle, u8 tc, u16 maxqs,
 }
 
 /**
- * ice_sched_rm_agg_vsi_entry - remove aggregator related VSI info entry
+ * ice_sched_rm_agg_vsi_info - remove aggregator related VSI info entry
  * @pi: port information structure
  * @vsi_handle: software VSI handle
  *
@@ -2817,8 +2841,8 @@ static enum ice_status
 ice_sched_assoc_vsi_to_agg(struct ice_port_info *pi, u32 agg_id,
 			   u16 vsi_handle, ice_bitmap_t *tc_bitmap)
 {
-	struct ice_sched_agg_vsi_info *agg_vsi_info;
-	struct ice_sched_agg_info *agg_info;
+	struct ice_sched_agg_vsi_info *agg_vsi_info, *old_agg_vsi_info = NULL;
+	struct ice_sched_agg_info *agg_info, *old_agg_info;
 	enum ice_status status = ICE_SUCCESS;
 	struct ice_hw *hw = pi->hw;
 	u8 tc;
@@ -2828,6 +2852,20 @@ ice_sched_assoc_vsi_to_agg(struct ice_port_info *pi, u32 agg_id,
 	agg_info = ice_get_agg_info(hw, agg_id);
 	if (!agg_info)
 		return ICE_ERR_PARAM;
+	/* If the vsi is already part of another aggregator then update
+	 * its vsi info list
+	 */
+	old_agg_info = ice_get_vsi_agg_info(hw, vsi_handle);
+	if (old_agg_info && old_agg_info != agg_info) {
+		struct ice_sched_agg_vsi_info *vtmp;
+
+		LIST_FOR_EACH_ENTRY_SAFE(old_agg_vsi_info, vtmp,
+					 &old_agg_info->agg_vsi_list,
+					 ice_sched_agg_vsi_info, list_entry)
+			if (old_agg_vsi_info->vsi_handle == vsi_handle)
+				break;
+	}
+
 	/* check if entry already exist */
 	agg_vsi_info = ice_get_agg_vsi_info(agg_info, vsi_handle);
 	if (!agg_vsi_info) {
@@ -2852,6 +2890,12 @@ ice_sched_assoc_vsi_to_agg(struct ice_port_info *pi, u32 agg_id,
 			break;
 
 		ice_set_bit(tc, agg_vsi_info->tc_bitmap);
+		if (old_agg_vsi_info)
+			ice_clear_bit(tc, old_agg_vsi_info->tc_bitmap);
+	}
+	if (old_agg_vsi_info && !old_agg_vsi_info->tc_bitmap[0]) {
+		LIST_DEL(&old_agg_vsi_info->list_entry);
+		ice_free(pi->hw, old_agg_vsi_info);
 	}
 	return status;
 }
@@ -2901,6 +2945,9 @@ ice_sched_update_elem(struct ice_hw *hw, struct ice_sched_node *node,
 	u16 num_elems = 1;
 
 	buf = *info;
+	/* For TC nodes, CIR config is not supported */
+	if (node->info.data.elem_type == ICE_AQC_ELEM_TYPE_TC)
+		buf.data.valid_sections &= ~ICE_AQC_ELEM_VALID_CIR;
 	/* Parent TEID is reserved field in this aq call */
 	buf.parent_teid = 0;
 	/* Element type is reserved field in this aq call */
@@ -3336,7 +3383,7 @@ ice_cfg_vsi_bw_lmt_per_tc(struct ice_port_info *pi, u16 vsi_handle, u8 tc,
 }
 
 /**
- * ice_cfg_dflt_vsi_bw_lmt_per_tc - configure default VSI BW limit per TC
+ * ice_cfg_vsi_bw_dflt_lmt_per_tc - configure default VSI BW limit per TC
  * @pi: port information structure
  * @vsi_handle: software VSI handle
  * @tc: traffic class
@@ -3491,7 +3538,7 @@ ice_cfg_agg_bw_no_shared_lmt(struct ice_port_info *pi, u32 agg_id)
 }
 
 /**
- * ice_cfg_agg_bw_shared_lmt_per_tc - configure aggregator BW shared limit per tc
+ * ice_cfg_agg_bw_shared_lmt_per_tc - config aggregator BW shared limit per tc
  * @pi: port information structure
  * @agg_id: aggregator ID
  * @tc: traffic class
@@ -3511,7 +3558,7 @@ ice_cfg_agg_bw_shared_lmt_per_tc(struct ice_port_info *pi, u32 agg_id, u8 tc,
 }
 
 /**
- * ice_cfg_agg_bw_shared_lmt_per_tc - configure aggregator BW shared limit per tc
+ * ice_cfg_agg_bw_no_shared_lmt_per_tc - cfg aggregator BW shared limit per tc
  * @pi: port information structure
  * @agg_id: aggregator ID
  * @tc: traffic class
@@ -3529,7 +3576,7 @@ ice_cfg_agg_bw_no_shared_lmt_per_tc(struct ice_port_info *pi, u32 agg_id, u8 tc)
 }
 
 /**
- * ice_config_vsi_queue_priority - config VSI queue priority of node
+ * ice_cfg_vsi_q_priority - config VSI queue priority of node
  * @pi: port information structure
  * @num_qs: number of VSI queues
  * @q_ids: queue IDs array
@@ -3625,7 +3672,6 @@ ice_cfg_agg_vsi_priority_per_tc(struct ice_port_info *pi, u32 agg_id,
 		LIST_FOR_EACH_ENTRY(agg_vsi_info, &agg_info->agg_vsi_list,
 				    ice_sched_agg_vsi_info, list_entry)
 			if (agg_vsi_info->vsi_handle == vsi_handle) {
-				/* cppcheck-suppress unreadVariable */
 				vsi_handle_valid = true;
 				break;
 			}
@@ -4273,7 +4319,7 @@ ice_sched_set_node_bw_lmt(struct ice_port_info *pi, struct ice_sched_node *node,
 	ice_sched_rm_unused_rl_prof(hw);
 
 	layer_num = ice_sched_get_rl_prof_layer(pi, rl_type,
-		node->tx_sched_layer);
+						node->tx_sched_layer);
 	if (layer_num >= hw->num_tx_sched_layers)
 		return ICE_ERR_PARAM;
 

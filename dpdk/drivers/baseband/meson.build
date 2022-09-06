@@ -2,9 +2,16 @@
 # Copyright(c) 2018 Luca Boccassi <bluca@debian.org>
 
 if is_windows
-	subdir_done()
+    subdir_done()
 endif
 
-drivers = ['null', 'turbo_sw', 'fpga_lte_fec', 'fpga_5gnr_fec', 'acc100']
+drivers = [
+        'acc100',
+        'fpga_5gnr_fec',
+        'fpga_lte_fec',
+        'la12xx',
+        'null',
+        'turbo_sw',
+]
 
-config_flag_fmt = 'RTE_LIBRTE_PMD_BBDEV_@0@'
+log_prefix = 'pmd.bb'

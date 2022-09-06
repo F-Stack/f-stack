@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -46,7 +46,7 @@ struct bnxt_rx_queue {
 
 void bnxt_free_rxq_stats(struct bnxt_rx_queue *rxq);
 int bnxt_mq_rx_configure(struct bnxt *bp);
-void bnxt_rx_queue_release_op(void *rx_queue);
+void bnxt_rx_queue_release_op(struct rte_eth_dev *dev, uint16_t queue_idx);
 int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 			       uint16_t queue_idx,
 			       uint16_t nb_desc,
@@ -63,5 +63,7 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev,
 int bnxt_rx_queue_stop(struct rte_eth_dev *dev,
 		       uint16_t rx_queue_id);
 void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq);
+int bnxt_need_agg_ring(struct rte_eth_dev *eth_dev);
+void bnxt_free_rxq_mem(struct bnxt_rx_queue *rxq);
 uint64_t bnxt_get_rx_port_offloads(struct bnxt *bp);
 #endif

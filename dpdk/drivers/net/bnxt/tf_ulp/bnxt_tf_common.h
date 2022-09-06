@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2019 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -13,6 +13,8 @@
 
 #define BNXT_TF_DBG(lvl, fmt, args...)	PMD_DRV_LOG(lvl, fmt, ## args)
 
+#define BNXT_TF_INF(fmt, args...)
+
 #define BNXT_ULP_EM_FLOWS			8192
 #define BNXT_ULP_1M_FLOWS			1000000
 #define BNXT_EEM_RX_GLOBAL_ID_MASK		(BNXT_ULP_1M_FLOWS - 1)
@@ -23,19 +25,15 @@
 #define	BNXT_ULP_DFLT_RX_MAX_ACTN_ENTRY		256
 #define	BNXT_ULP_DFLT_RX_MEM			0
 #define	BNXT_ULP_RX_NUM_FLOWS			32
-#define	BNXT_ULP_RX_TBL_IF_ID			0
 #define	BNXT_ULP_DFLT_TX_MAX_KEY		512
 #define	BNXT_ULP_DFLT_TX_MAX_ACTN_ENTRY		256
 #define	BNXT_ULP_DFLT_TX_MEM			0
 #define	BNXT_ULP_TX_NUM_FLOWS			32
-#define	BNXT_ULP_TX_TBL_IF_ID			0
 
 enum bnxt_tf_rc {
 	BNXT_TF_RC_PARSE_ERR	= -2,
 	BNXT_TF_RC_ERROR	= -1,
-	BNXT_TF_RC_SUCCESS	= 0,
-	BNXT_TF_RC_NORMAL	= 1,
-	BNXT_TF_RC_FID		= 2,
+	BNXT_TF_RC_SUCCESS	= 0
 };
 
 /* eth IPv4 Type */

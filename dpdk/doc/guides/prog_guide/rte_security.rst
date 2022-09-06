@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2017,2020 NXP
+    Copyright 2017,2020-2021 NXP
 
 
 
@@ -408,6 +408,15 @@ PMD which supports the IPsec and PDCP protocol.
                 },
                 .crypto_capabilities = pmd_capabilities
         },
+	{ /* PDCP Lookaside Protocol offload short MAC-I */
+                .action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+                .protocol = RTE_SECURITY_PROTOCOL_PDCP,
+                .pdcp = {
+                        .domain = RTE_SECURITY_PDCP_MODE_SHORT_MAC,
+                        .capa_flags = 0
+                },
+                .crypto_capabilities = pmd_capabilities
+        },
         {
                 .action = RTE_SECURITY_ACTION_TYPE_NONE
         }
@@ -560,7 +569,7 @@ created by the application is attached to the security session by the API
 
 For Inline Crypto and Inline protocol offload, device specific defined metadata is
 updated in the mbuf using ``rte_security_set_pkt_metadata()`` if
-``DEV_TX_OFFLOAD_SEC_NEED_MDATA`` is set.
+``RTE_ETH_TX_OFFLOAD_SEC_NEED_MDATA`` is set.
 
 For inline protocol offloaded ingress traffic, the application can register a
 pointer, ``userdata`` , in the security session. When the packet is received,
@@ -719,3 +728,31 @@ it is only valid to have a single flow to map to that security session.
         +-------+            +--------+    +-----+
         |  Eth  | ->  ... -> |   ESP  | -> | END |
         +-------+            +--------+    +-----+
+
+
+Telemetry support
+-----------------
+
+The Security library has support for displaying Crypto device information
+with respect to its Security capabilities. Telemetry commands that can be used
+are shown below.
+
+#. Get the list of available Crypto devices by ID, that supports Security features::
+
+     --> /security/cryptodev/list
+     {"/security/cryptodev/list": [0, 1, 2, 3]}
+
+#. Get the security capabilities of a Crypto device::
+
+     --> /security/cryptodev/sec_caps,0
+	 {"/security/cryptodev/sec_caps": {"sec_caps": [<array of serialized bytes of
+	 capabilities>], "sec_caps_n": <number of capabilities>}}
+
+ #. Get the security crypto capabilities of a Crypto device::
+
+     --> /security/cryptodev/crypto_caps,0,0
+	 {"/security/cryptodev/crypto_caps": {"crypto_caps": [<array of serialized bytes of
+	 capabilities>], "crypto_caps_n": <number of capabilities>}}
+
+For more information on how to use the Telemetry interface, see
+the :doc:`../howto/telemetry`.

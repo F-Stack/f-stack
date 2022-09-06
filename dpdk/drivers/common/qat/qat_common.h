@@ -13,22 +13,33 @@
 #define QAT_64_BTYE_ALIGN_MASK (~0x3f)
 
 /* Intel(R) QuickAssist Technology device generation is enumerated
- * from one according to the generation of the device
+ * from one according to the generation of the device.
+ * QAT_GEN* is used as the index to find all devices
  */
 enum qat_device_gen {
-	QAT_GEN1 = 1,
+	QAT_GEN1,
 	QAT_GEN2,
-	QAT_GEN3
+	QAT_GEN3,
+	QAT_GEN4,
+	QAT_N_GENS
 };
 
 enum qat_service_type {
-	QAT_SERVICE_ASYMMETRIC = 0,
+	QAT_SERVICE_ASYMMETRIC,
 	QAT_SERVICE_SYMMETRIC,
 	QAT_SERVICE_COMPRESSION,
-	QAT_SERVICE_INVALID
+	QAT_MAX_SERVICES
 };
 
-#define QAT_MAX_SERVICES		(QAT_SERVICE_INVALID)
+#define QAT_SERVICE_INVALID	(QAT_MAX_SERVICES)
+
+enum qat_svc_list {
+	QAT_SVC_UNUSED = 0,
+	QAT_SVC_CRYPTO = 1,
+	QAT_SVC_COMPRESSION = 2,
+	QAT_SVC_SYM = 3,
+	QAT_SVC_ASYM = 4,
+};
 
 /**< Common struct for scatter-gather list operations */
 struct qat_flat_buf {
@@ -79,5 +90,8 @@ qat_stats_get(struct qat_pci_device *dev,
 void
 qat_stats_reset(struct qat_pci_device *dev,
 		enum qat_service_type service);
+
+const char *
+qat_service_get_str(enum qat_service_type type);
 
 #endif /* _QAT_COMMON_H_ */

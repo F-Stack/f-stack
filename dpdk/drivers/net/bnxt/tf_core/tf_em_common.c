@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -19,58 +19,23 @@
 #include "tfp.h"
 #include "tf_device.h"
 #include "tf_ext_flow_handle.h"
-#include "cfa_resource_types.h"
+#include "hcapi_cfa.h"
 
 #include "bnxt.h"
 
+
+/** Invalid table scope id */
+#define TF_TBL_SCOPE_INVALID 0xffffffff
+
 /* Number of pointers per page_size */
 #define MAX_PAGE_PTRS(page_size)  ((page_size) / sizeof(void *))
-
-/**
- * EM DBs.
- */
-void *eem_db[TF_DIR_MAX];
-
-/**
- * Init flag, set on bind and cleared on unbind
- */
-static uint8_t init;
 
 /**
  * Host or system
  */
 static enum tf_mem_type mem_type;
 
-/** Table scope array */
-struct tf_tbl_scope_cb tbl_scopes[TF_NUM_TBL_SCOPE];
-
 /* API defined in tf_em.h */
-struct tf_tbl_scope_cb *
-tbl_scope_cb_find(uint32_t tbl_scope_id)
-{
-	int i;
-	struct tf_rm_is_allocated_parms parms = { 0 };
-	int allocated;
-
-	/* Check that id is valid */
-	parms.rm_db = eem_db[TF_DIR_RX];
-	parms.db_index = TF_EM_TBL_TYPE_TBL_SCOPE;
-	parms.index = tbl_scope_id;
-	parms.allocated = &allocated;
-
-	i = tf_rm_is_allocated(&parms);
-
-	if (i < 0 || allocated != TF_RM_ALLOCATED_ENTRY_IN_USE)
-		return NULL;
-
-	for (i = 0; i < TF_NUM_TBL_SCOPE; i++) {
-		if (tbl_scopes[i].tbl_scope_id == tbl_scope_id)
-			return &tbl_scopes[i];
-	}
-
-	return NULL;
-}
-
 int
 tf_create_tbl_pool_external(enum tf_dir dir,
 			    struct tf_tbl_scope_cb *tbl_scope_cb,
@@ -159,6 +124,44 @@ tf_destroy_tbl_pool_external(enum tf_dir dir,
 }
 
 /**
+ * Looks up table scope control block using tbl_scope_id from tf_session.
+ *
+ * [in] tfp
+ *   Pointer to Truflow Handle
+ * [in] tbl_scope_id
+ *   table scope id
+ *
+ * Return:
+ *  - Pointer to the tf_tbl_scope_cb, if found.
+ *  - (NULL) on failure, not found.
+ */
+struct tf_tbl_scope_cb *
+tf_em_ext_common_tbl_scope_find(struct tf *tfp,
+			uint32_t tbl_scope_id)
+{
+	int rc;
+	struct em_ext_db *ext_db;
+	void *ext_ptr = NULL;
+	struct tf_tbl_scope_cb *tbl_scope_cb = NULL;
+	struct ll_entry *entry;
+
+	rc = tf_session_get_em_ext_db(tfp, &ext_ptr);
+	if (rc)
+		return NULL;
+
+	ext_db = (struct em_ext_db *)ext_ptr;
+
+	for (entry = ext_db->tbl_scope_ll.head; entry != NULL;
+			entry = entry->next) {
+		tbl_scope_cb = (struct tf_tbl_scope_cb *)entry;
+		if (tbl_scope_cb->tbl_scope_id == tbl_scope_id)
+			return tbl_scope_cb;
+	}
+
+	return NULL;
+}
+
+/**
  * Allocate External Tbl entry from the scope pool.
  *
  * [in] tfp
@@ -182,16 +185,14 @@ tf_tbl_ext_alloc(struct tf *tfp,
 
 	TF_CHECK_PARMS2(tfp, parms);
 
-	/* Get the pool info from the table scope
-	 */
-	tbl_scope_cb = tbl_scope_cb_find(parms->tbl_scope_id);
-
+	tbl_scope_cb = tf_em_ext_common_tbl_scope_find(tfp, parms->tbl_scope_id);
 	if (tbl_scope_cb == NULL) {
 		TFP_DRV_LOG(ERR,
 			    "%s, table scope not allocated\n",
 			    tf_dir_2_str(parms->dir));
 		return -EINVAL;
 	}
+
 	pool = &tbl_scope_cb->ext_act_pool[parms->dir];
 
 	/* Allocate an element
@@ -237,10 +238,7 @@ tf_tbl_ext_free(struct tf *tfp,
 
 	TF_CHECK_PARMS2(tfp, parms);
 
-	/* Get the pool info from the table scope
-	 */
-	tbl_scope_cb = tbl_scope_cb_find(parms->tbl_scope_id);
-
+	tbl_scope_cb = tf_em_ext_common_tbl_scope_find(tfp, parms->tbl_scope_id);
 	if (tbl_scope_cb == NULL) {
 		TFP_DRV_LOG(ERR,
 			    "%s, table scope error\n",
@@ -284,7 +282,7 @@ tf_em_create_key_entry(struct cfa_p4_eem_entry_hdr *result,
 {
 	key_entry->hdr.word1 = result->word1;
 	key_entry->hdr.pointer = result->pointer;
-	memcpy(key_entry->key, in_key, TF_HW_EM_KEY_MAX_SIZE + 4);
+	memcpy(key_entry->key, in_key, TF_P4_HW_EM_KEY_MAX_SIZE + 4);
 }
 
 
@@ -307,6 +305,7 @@ tf_em_page_tbl_pgcnt(uint32_t num_pages,
 {
 	return roundup(num_pages, MAX_PAGE_PTRS(page_size)) /
 		       MAX_PAGE_PTRS(page_size);
+	return 0;
 }
 
 /**
@@ -646,7 +645,18 @@ tf_em_validate_num_entries(struct tf_tbl_scope_cb *tbl_scope_cb,
 	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_RECORD_TABLE].entry_size =
 		parms->rx_max_action_entry_sz_in_bits / 8;
 
-	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_EFC_TABLE].num_entries = 0;
+	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_EFC_TABLE].num_entries =
+		0;
+
+	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_ACTION_TABLE].num_entries =
+		parms->rx_num_flows_in_k * TF_KILOBYTE;
+	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_ACTION_TABLE].entry_size =
+		parms->rx_max_action_entry_sz_in_bits / 8;
+
+	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_EM_LKUP_TABLE].num_entries =
+		parms->rx_num_flows_in_k * TF_KILOBYTE;
+	tbl_scope_cb->em_ctx_info[TF_DIR_RX].em_tables[TF_EM_LKUP_TABLE].entry_size =
+		parms->rx_max_key_sz_in_bits / 8;
 
 	/* Tx */
 	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_KEY0_TABLE].num_entries =
@@ -664,7 +674,18 @@ tf_em_validate_num_entries(struct tf_tbl_scope_cb *tbl_scope_cb,
 	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_RECORD_TABLE].entry_size =
 		parms->tx_max_action_entry_sz_in_bits / 8;
 
-	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_EFC_TABLE].num_entries = 0;
+	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_EFC_TABLE].num_entries =
+		0;
+
+	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_ACTION_TABLE].num_entries =
+		parms->rx_num_flows_in_k * TF_KILOBYTE;
+	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_ACTION_TABLE].entry_size =
+		parms->tx_max_action_entry_sz_in_bits / 8;
+
+	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_EM_LKUP_TABLE].num_entries =
+		parms->rx_num_flows_in_k * TF_KILOBYTE;
+	tbl_scope_cb->em_ctx_info[TF_DIR_TX].em_tables[TF_EM_LKUP_TABLE].entry_size =
+		parms->tx_max_key_sz_in_bits / 8;
 
 	return 0;
 }
@@ -680,7 +701,8 @@ tf_em_validate_num_entries(struct tf_tbl_scope_cb *tbl_scope_cb,
  *   TF_ERR_EM_DUP  - key is already in table
  */
 static int
-tf_insert_eem_entry(struct tf_tbl_scope_cb *tbl_scope_cb,
+tf_insert_eem_entry(struct tf_dev_info *dev,
+		    struct tf_tbl_scope_cb *tbl_scope_cb,
 		    struct tf_insert_em_entry_parms *parms)
 {
 	uint32_t mask;
@@ -705,22 +727,17 @@ tf_insert_eem_entry(struct tf_tbl_scope_cb *tbl_scope_cb,
 	if (!mask)
 		return -EINVAL;
 
-#ifdef TF_EEM_DEBUG
-	dump_raw((uint8_t *)parms->key, TF_HW_EM_KEY_MAX_SIZE + 4, "In Key");
-#endif
+	if (dev->ops->tf_dev_cfa_key_hash == NULL)
+		return -EINVAL;
 
-	big_hash = hcapi_cfa_key_hash((uint64_t *)parms->key,
-				      (TF_HW_EM_KEY_MAX_SIZE + 4) * 8);
+	big_hash = dev->ops->tf_dev_cfa_key_hash((uint64_t *)parms->key,
+					 (TF_P4_HW_EM_KEY_MAX_SIZE + 4) * 8);
 	key0_hash = (uint32_t)(big_hash >> 32);
 	key1_hash = (uint32_t)(big_hash & 0xFFFFFFFF);
 
 	key0_index = key0_hash & mask;
 	key1_index = key1_hash & mask;
 
-#ifdef TF_EEM_DEBUG
-	TFP_DRV_LOG(DEBUG, "Key0 hash:0x%08x\n", key0_hash);
-	TFP_DRV_LOG(DEBUG, "Key1 hash:0x%08x\n", key1_hash);
-#endif
 	/*
 	 * Use the "result" arg to populate all of the key entry then
 	 * store the byte swapped "raw" entry in a local copy ready
@@ -739,14 +756,14 @@ tf_insert_eem_entry(struct tf_tbl_scope_cb *tbl_scope_cb,
 	key_tbl.base0 =
 		(uint8_t *)&tbl_scope_cb->em_ctx_info[parms->dir].em_tables[TF_KEY0_TABLE];
 	key_tbl.page_size = TF_EM_PAGE_SIZE;
-	key_obj.offset = index * TF_EM_KEY_RECORD_SIZE;
+	key_obj.offset = index * TF_P4_EM_KEY_RECORD_SIZE;
 	key_obj.data = (uint8_t *)&key_entry;
-	key_obj.size = TF_EM_KEY_RECORD_SIZE;
+	key_obj.size = TF_P4_EM_KEY_RECORD_SIZE;
 
-	rc = hcapi_cfa_key_hw_op(&op,
-				 &key_tbl,
-				 &key_obj,
-				 &key_loc);
+	rc = cfa_p4_devops.hcapi_cfa_key_hw_op(&op,
+					       &key_tbl,
+					       &key_obj,
+					       &key_loc);
 
 	if (rc == 0) {
 		table_type = TF_KEY0_TABLE;
@@ -755,12 +772,12 @@ tf_insert_eem_entry(struct tf_tbl_scope_cb *tbl_scope_cb,
 
 		key_tbl.base0 =
 			(uint8_t *)&tbl_scope_cb->em_ctx_info[parms->dir].em_tables[TF_KEY1_TABLE];
-		key_obj.offset = index * TF_EM_KEY_RECORD_SIZE;
+		key_obj.offset = index * TF_P4_EM_KEY_RECORD_SIZE;
 
-		rc = hcapi_cfa_key_hw_op(&op,
-					 &key_tbl,
-					 &key_obj,
-					 &key_loc);
+		rc = cfa_p4_devops.hcapi_cfa_key_hw_op(&op,
+						       &key_tbl,
+						       &key_obj,
+						       &key_loc);
 		if (rc != 0)
 			return rc;
 
@@ -818,14 +835,14 @@ tf_delete_eem_entry(struct tf_tbl_scope_cb *tbl_scope_cb,
 		(uint8_t *)&tbl_scope_cb->em_ctx_info[parms->dir].em_tables
 			[(hash_type == 0 ? TF_KEY0_TABLE : TF_KEY1_TABLE)];
 	key_tbl.page_size = TF_EM_PAGE_SIZE;
-	key_obj.offset = index * TF_EM_KEY_RECORD_SIZE;
+	key_obj.offset = index * TF_P4_EM_KEY_RECORD_SIZE;
 	key_obj.data = NULL;
-	key_obj.size = TF_EM_KEY_RECORD_SIZE;
+	key_obj.size = TF_P4_EM_KEY_RECORD_SIZE;
 
-	rc = hcapi_cfa_key_hw_op(&op,
-				 &key_tbl,
-				 &key_obj,
-				 &key_loc);
+	rc = cfa_p4_devops.hcapi_cfa_key_hw_op(&op,
+					       &key_tbl,
+					       &key_obj,
+					       &key_loc);
 
 	if (!rc)
 		return rc;
@@ -840,20 +857,34 @@ tf_delete_eem_entry(struct tf_tbl_scope_cb *tbl_scope_cb,
  *    -EINVAL - Error
  */
 int
-tf_em_insert_ext_entry(struct tf *tfp __rte_unused,
+tf_em_insert_ext_entry(struct tf *tfp,
 		       struct tf_insert_em_entry_parms *parms)
 {
+	int rc;
 	struct tf_tbl_scope_cb *tbl_scope_cb;
+	struct tf_session *tfs;
+	struct tf_dev_info *dev;
 
-	tbl_scope_cb = tbl_scope_cb_find(parms->tbl_scope_id);
+	tbl_scope_cb = tf_em_ext_common_tbl_scope_find(tfp, parms->tbl_scope_id);
 	if (tbl_scope_cb == NULL) {
 		TFP_DRV_LOG(ERR, "Invalid tbl_scope_cb\n");
 		return -EINVAL;
 	}
 
+	/* Retrieve the session information */
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc)
+		return rc;
+
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc)
+		return rc;
+
 	return tf_insert_eem_entry
-		(tbl_scope_cb,
-		parms);
+		(dev,
+		 tbl_scope_cb,
+		 parms);
 }
 
 /** Delete EM hash entry API
@@ -863,12 +894,12 @@ tf_em_insert_ext_entry(struct tf *tfp __rte_unused,
  *    -EINVAL - Error
  */
 int
-tf_em_delete_ext_entry(struct tf *tfp __rte_unused,
+tf_em_delete_ext_entry(struct tf *tfp,
 		       struct tf_delete_em_entry_parms *parms)
 {
 	struct tf_tbl_scope_cb *tbl_scope_cb;
 
-	tbl_scope_cb = tbl_scope_cb_find(parms->tbl_scope_id);
+	tbl_scope_cb = tf_em_ext_common_tbl_scope_find(tfp, parms->tbl_scope_id);
 	if (tbl_scope_cb == NULL) {
 		TFP_DRV_LOG(ERR, "Invalid tbl_scope_cb\n");
 		return -EINVAL;
@@ -885,17 +916,27 @@ tf_em_ext_common_bind(struct tf *tfp,
 	int rc;
 	int i;
 	struct tf_rm_create_db_parms db_cfg = { 0 };
-	uint8_t db_exists = 0;
+	struct em_ext_db *ext_db;
+	struct tfp_calloc_parms cparms;
 
 	TF_CHECK_PARMS2(tfp, parms);
 
-	if (init) {
-		TFP_DRV_LOG(ERR,
-			    "EM Ext DB already initialized\n");
-		return -EINVAL;
+	cparms.nitems = 1;
+	cparms.size = sizeof(struct em_ext_db);
+	cparms.alignment = 0;
+	if (tfp_calloc(&cparms) != 0) {
+		TFP_DRV_LOG(ERR, "em_ext_db alloc error %s\n",
+			    strerror(ENOMEM));
+		return -ENOMEM;
 	}
 
-	db_cfg.type = TF_DEVICE_MODULE_TYPE_EM;
+	ext_db = cparms.mem_va;
+	ll_init(&ext_db->tbl_scope_ll);
+	for (i = 0; i < TF_DIR_MAX; i++)
+		ext_db->eem_db[i] = NULL;
+	tf_session_set_em_ext_db(tfp, ext_db);
+
+	db_cfg.module = TF_MODULE_TYPE_EM;
 	db_cfg.num_elements = parms->num_elements;
 	db_cfg.cfg = parms->cfg;
 
@@ -909,7 +950,7 @@ tf_em_ext_common_bind(struct tf *tfp,
 		if (db_cfg.alloc_cnt[TF_EM_TBL_TYPE_TBL_SCOPE] == 0)
 			continue;
 
-		db_cfg.rm_db = &eem_db[i];
+		db_cfg.rm_db = (void *)&ext_db->eem_db[i];
 		rc = tf_rm_create_db(tfp, &db_cfg);
 		if (rc) {
 			TFP_DRV_LOG(ERR,
@@ -918,11 +959,7 @@ tf_em_ext_common_bind(struct tf *tfp,
 
 			return rc;
 		}
-		db_exists = 1;
 	}
-
-	if (db_exists)
-		init = 1;
 
 	mem_type = parms->mem_type;
 
@@ -935,27 +972,77 @@ tf_em_ext_common_unbind(struct tf *tfp)
 	int rc;
 	int i;
 	struct tf_rm_free_db_parms fparms = { 0 };
+	struct em_ext_db *ext_db = NULL;
+	struct tf_session *tfs = NULL;
+	struct tf_dev_info *dev;
+	struct ll_entry *entry;
+	struct tf_tbl_scope_cb *tbl_scope_cb = NULL;
+	void *ext_ptr = NULL;
+	struct tf_free_tbl_scope_parms tparms = { 0 };
 
 	TF_CHECK_PARMS1(tfp);
 
-	/* Bail if nothing has been initialized */
-	if (!init) {
-		TFP_DRV_LOG(INFO,
-			    "No EM Ext DBs created\n");
-		return 0;
+	rc = tf_session_get_session_internal(tfp, &tfs);
+	if (rc) {
+		TFP_DRV_LOG(ERR, "Failed to get tf_session, rc:%s\n",
+		strerror(-rc));
+		return rc;
 	}
 
-	for (i = 0; i < TF_DIR_MAX; i++) {
-		fparms.dir = i;
-		fparms.rm_db = eem_db[i];
-		rc = tf_rm_free_db(tfp, &fparms);
-		if (rc)
-			return rc;
-
-		eem_db[i] = NULL;
+	/* Retrieve the device information */
+	rc = tf_session_get_device(tfs, &dev);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Failed to lookup device, rc:%s\n",
+			    strerror(-rc));
+		return rc;
 	}
 
-	init = 0;
+	rc = tf_session_get_em_ext_db(tfp, &ext_ptr);
+	if (rc) {
+		TFP_DRV_LOG(ERR,
+			    "Failed to get em_ext_db from session, rc:%s\n",
+			    strerror(-rc));
+		return rc;
+	}
+	ext_db = (struct em_ext_db *)ext_ptr;
+
+	if (ext_db != NULL) {
+		entry = ext_db->tbl_scope_ll.head;
+		while (entry != NULL) {
+			tbl_scope_cb = (struct tf_tbl_scope_cb *)entry;
+			entry = entry->next;
+			tparms.tbl_scope_id =
+				tbl_scope_cb->tbl_scope_id;
+
+			if (dev->ops->tf_dev_free_tbl_scope) {
+				dev->ops->tf_dev_free_tbl_scope(tfp,
+								&tparms);
+			} else {
+				/* should not reach here */
+				ll_delete(&ext_db->tbl_scope_ll,
+					  &tbl_scope_cb->ll_entry);
+				tfp_free(tbl_scope_cb);
+			}
+		}
+
+		for (i = 0; i < TF_DIR_MAX; i++) {
+			if (ext_db->eem_db[i] == NULL)
+				continue;
+
+			fparms.dir = i;
+			fparms.rm_db = ext_db->eem_db[i];
+			rc = tf_rm_free_db(tfp, &fparms);
+			if (rc)
+				return rc;
+
+			ext_db->eem_db[i] = NULL;
+		}
+
+		tfp_free(ext_db);
+	}
+
+	tf_session_set_em_ext_db(tfp, NULL);
 
 	return 0;
 }
@@ -1004,11 +1091,7 @@ int tf_tbl_ext_common_set(struct tf *tfp,
 		return -EINVAL;
 	}
 
-	/* Get the table scope control block associated with the
-	 * external pool
-	 */
-	tbl_scope_cb = tbl_scope_cb_find(tbl_scope_id);
-
+	tbl_scope_cb = tf_em_ext_common_tbl_scope_find(tfp, tbl_scope_id);
 	if (tbl_scope_cb == NULL) {
 		TFP_DRV_LOG(ERR,
 			    "%s, table scope error\n",
@@ -1024,10 +1107,10 @@ int tf_tbl_ext_common_set(struct tf *tfp,
 	key_obj.data = parms->data;
 	key_obj.size = parms->data_sz_in_bytes;
 
-	rc = hcapi_cfa_key_hw_op(&op,
-				 &key_tbl,
-				 &key_obj,
-				 &key_loc);
+	rc = cfa_p4_devops.hcapi_cfa_key_hw_op(&op,
+					       &key_tbl,
+					       &key_obj,
+					       &key_loc);
 
 	return rc;
 }
@@ -1058,14 +1141,6 @@ int tf_em_ext_map_tbl_scope(struct tf *tfp,
 	uint32_t sz_in_bytes = 8;
 	struct tf_dev_info *dev;
 
-	tbl_scope_cb = tbl_scope_cb_find(parms->tbl_scope_id);
-
-	if (tbl_scope_cb == NULL) {
-		TFP_DRV_LOG(ERR, "Invalid tbl_scope_cb tbl_scope_id(%d)\n",
-			    parms->tbl_scope_id);
-		return -EINVAL;
-	}
-
 	/* Retrieve the session information */
 	rc = tf_session_get_session_internal(tfp, &tfs);
 	if (rc)
@@ -1075,6 +1150,13 @@ int tf_em_ext_map_tbl_scope(struct tf *tfp,
 	rc = tf_session_get_device(tfs, &dev);
 	if (rc)
 		return rc;
+
+	tbl_scope_cb = tf_em_ext_common_tbl_scope_find(tfp, parms->tbl_scope_id);
+	if (tbl_scope_cb == NULL) {
+		TFP_DRV_LOG(ERR, "Invalid tbl_scope_cb tbl_scope_id(%d)\n",
+			    parms->tbl_scope_id);
+		return -EINVAL;
+	}
 
 	if (dev->ops->tf_dev_map_tbl_scope == NULL) {
 		rc = -EOPNOTSUPP;
@@ -1115,8 +1197,8 @@ int tf_em_ext_map_tbl_scope(struct tf *tfp,
 		goto cleaner;
 	}
 
-	gcfg_parms.type =
-		(enum tf_global_config_type)TF_GLOBAL_CFG_INTERNAL_PARIF_2_PF;
+	/* Note that TF_GLOBAL_CFG_INTERNAL_PARIF_2_PF is same as below enum */
+	gcfg_parms.type = TF_GLOBAL_CFG_TYPE_MAX;
 	gcfg_parms.offset = 0;
 	gcfg_parms.config = (uint8_t *)data;
 	gcfg_parms.config_mask = (uint8_t *)mask;

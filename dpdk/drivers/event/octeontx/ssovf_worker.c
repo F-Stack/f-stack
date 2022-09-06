@@ -322,6 +322,15 @@ sso_event_tx_adapter_enqueue_ ## name(void *port, struct rte_event ev[],     \
 SSO_TX_ADPTR_ENQ_FASTPATH_FUNC
 #undef T
 
+static uint16_t __rte_hot
+ssow_crypto_adapter_enqueue(void *port, struct rte_event ev[],
+			    uint16_t nb_events)
+{
+	RTE_SET_USED(nb_events);
+
+	return otx_crypto_adapter_enqueue(port, ev->event_ptr);
+}
+
 void
 ssovf_fastpath_fns_set(struct rte_eventdev *dev)
 {
@@ -332,11 +341,13 @@ ssovf_fastpath_fns_set(struct rte_eventdev *dev)
 	dev->enqueue_new_burst = ssows_enq_new_burst;
 	dev->enqueue_forward_burst = ssows_enq_fwd_burst;
 
-	const event_tx_adapter_enqueue ssow_txa_enqueue[2][2][2][2] = {
+	dev->ca_enqueue = ssow_crypto_adapter_enqueue;
+
+	const event_tx_adapter_enqueue_t ssow_txa_enqueue[2][2][2][2] = {
 #define T(name, f3, f2, f1, f0, sz, flags)				\
 	[f3][f2][f1][f0] =  sso_event_tx_adapter_enqueue_ ##name,
 
-SSO_TX_ADPTR_ENQ_FASTPATH_FUNC
+		SSO_TX_ADPTR_ENQ_FASTPATH_FUNC
 #undef T
 	};
 
@@ -417,53 +428,53 @@ octeontx_create_rx_ol_flags_array(void *mem)
 		errcode = idx & 0xff;
 		errlev = (idx & 0x700) >> 8;
 
-		val = PKT_RX_IP_CKSUM_UNKNOWN;
-		val |= PKT_RX_L4_CKSUM_UNKNOWN;
-		val |= PKT_RX_OUTER_L4_CKSUM_UNKNOWN;
+		val = RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN;
+		val |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+		val |= RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN;
 
 		switch (errlev) {
 		case OCCTX_ERRLEV_RE:
 			if (errcode) {
-				val |= PKT_RX_IP_CKSUM_BAD;
-				val |= PKT_RX_L4_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			} else {
-				val |= PKT_RX_IP_CKSUM_GOOD;
-				val |= PKT_RX_L4_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			}
 			break;
 		case OCCTX_ERRLEV_LC:
 			if (errcode == OCCTX_EC_IP4_CSUM) {
-				val |= PKT_RX_IP_CKSUM_BAD;
-				val |= PKT_RX_EIP_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD;
 			} else {
-				val |= PKT_RX_IP_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			}
 			break;
 		case OCCTX_ERRLEV_LD:
 			/* Check if parsed packet is neither IPv4 or IPV6 */
 			if (errcode == OCCTX_EC_IP4_NOT)
 				break;
-			val |= PKT_RX_IP_CKSUM_GOOD;
+			val |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			if (errcode == OCCTX_EC_L4_CSUM)
-				val |= PKT_RX_OUTER_L4_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_OUTER_L4_CKSUM_BAD;
 			else
-				val |= PKT_RX_L4_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			break;
 		case OCCTX_ERRLEV_LE:
 			if (errcode == OCCTX_EC_IP4_CSUM)
-				val |= PKT_RX_IP_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 			else
-				val |= PKT_RX_IP_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			break;
 		case OCCTX_ERRLEV_LF:
 			/* Check if parsed packet is neither IPv4 or IPV6 */
 			if (errcode == OCCTX_EC_IP4_NOT)
 				break;
-			val |= PKT_RX_IP_CKSUM_GOOD;
+			val |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			if (errcode == OCCTX_EC_L4_CSUM)
-				val |= PKT_RX_L4_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			else
-				val |= PKT_RX_L4_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			break;
 		}
 

@@ -7,7 +7,7 @@
 
 #include "virtqueue.h"
 #include "virtio_logs.h"
-#include "virtio_pci.h"
+#include "virtio.h"
 #include "virtio_rxtx_simple.h"
 
 /*
@@ -32,7 +32,7 @@ virtqueue_detach_unused(struct virtqueue *vq)
 	end = (vq->vq_avail_idx + vq->vq_free_cnt) & (vq->vq_nentries - 1);
 
 	for (idx = 0; idx < vq->vq_nentries; idx++) {
-		if (hw->use_vec_rx && !vtpci_packed_queue(hw) &&
+		if (hw->use_vec_rx && !virtio_with_packed_queue(hw) &&
 		    type == VTNET_RQ) {
 			if (start <= end && idx >= start && idx < end)
 				continue;
@@ -137,7 +137,7 @@ virtqueue_rxvq_flush(struct virtqueue *vq)
 {
 	struct virtio_hw *hw = vq->hw;
 
-	if (vtpci_packed_queue(hw))
+	if (virtio_with_packed_queue(hw))
 		virtqueue_rxvq_flush_packed(vq);
 	else
 		virtqueue_rxvq_flush_split(vq);
@@ -212,7 +212,7 @@ virtqueue_txvq_reset_packed(struct virtqueue *vq)
 			dxp->cookie = NULL;
 		}
 
-		if (vtpci_with_feature(vq->hw, VIRTIO_RING_F_INDIRECT_DESC)) {
+		if (virtio_with_feature(vq->hw, VIRTIO_RING_F_INDIRECT_DESC)) {
 			/* first indirect descriptor is always the tx header */
 			start_dp = txr[desc_idx].tx_packed_indir;
 			vring_desc_init_indirect_packed(start_dp,

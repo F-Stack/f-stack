@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_interrupts.h>
 #include <rte_alarm.h>
 #include <rte_malloc.h>
@@ -13,10 +13,15 @@
 #include <rte_eal_paging.h>
 
 #include <mlx5_malloc.h>
+#include <mlx5_common_devx.h>
 
 #include "mlx5.h"
-#include "mlx5_rxtx.h"
+#include "mlx5_rx.h"
+#include "mlx5_tx.h"
 #include "mlx5_common_os.h"
+
+static_assert(sizeof(struct mlx5_cqe_ts) == sizeof(rte_int128_t),
+		"Wrong timestamp CQE part size");
 
 static const char * const mlx5_txpp_stat_names[] = {
 	"tx_pp_missed_interrupt_errors", /* Missed service interrupt. */
@@ -34,7 +39,7 @@ static void
 mlx5_txpp_destroy_event_channel(struct mlx5_dev_ctx_shared *sh)
 {
 	if (sh->txpp.echan) {
-		mlx5_glue->devx_destroy_event_channel(sh->txpp.echan);
+		mlx5_os_devx_destroy_event_channel(sh->txpp.echan);
 		sh->txpp.echan = NULL;
 	}
 }
@@ -44,7 +49,7 @@ static int
 mlx5_txpp_create_event_channel(struct mlx5_dev_ctx_shared *sh)
 {
 	MLX5_ASSERT(!sh->txpp.echan);
-	sh->txpp.echan = mlx5_glue->devx_create_event_channel(sh->ctx,
+	sh->txpp.echan = mlx5_os_devx_create_event_channel(sh->cdev->ctx,
 			MLX5DV_DEVX_CREATE_EVENT_CHANNEL_FLAGS_OMIT_EV_DATA);
 	if (!sh->txpp.echan) {
 		rte_errno = errno;
@@ -99,7 +104,7 @@ mlx5_txpp_alloc_pp_index(struct mlx5_dev_ctx_shared *sh)
 	MLX5_SET(set_pp_rate_limit_context, &pp, rate_mode,
 		 sh->txpp.test ? MLX5_DATA_RATE : MLX5_WQE_RATE);
 	sh->txpp.pp = mlx5_glue->dv_alloc_pp
-				(sh->ctx, sizeof(pp), &pp,
+				(sh->cdev->ctx, sizeof(pp), &pp,
 				 MLX5DV_PP_ALLOC_FLAGS_DEDICATED_INDEX);
 	if (sh->txpp.pp == NULL) {
 		DRV_LOG(ERR, "Failed to allocate packet pacing index.");
@@ -125,18 +130,8 @@ mlx5_txpp_alloc_pp_index(struct mlx5_dev_ctx_shared *sh)
 static void
 mlx5_txpp_destroy_send_queue(struct mlx5_txpp_wq *wq)
 {
-	if (wq->sq)
-		claim_zero(mlx5_devx_cmd_destroy(wq->sq));
-	if (wq->sq_umem)
-		claim_zero(mlx5_glue->devx_umem_dereg(wq->sq_umem));
-	if (wq->sq_buf)
-		mlx5_free((void *)(uintptr_t)wq->sq_buf);
-	if (wq->cq)
-		claim_zero(mlx5_devx_cmd_destroy(wq->cq));
-	if (wq->cq_umem)
-		claim_zero(mlx5_glue->devx_umem_dereg(wq->cq_umem));
-	if (wq->cq_buf)
-		mlx5_free((void *)(uintptr_t)wq->cq_buf);
+	mlx5_devx_sq_destroy(&wq->sq_obj);
+	mlx5_devx_cq_destroy(&wq->cq_obj);
 	memset(wq, 0, sizeof(*wq));
 }
 
@@ -164,45 +159,26 @@ static void
 mlx5_txpp_doorbell_rearm_queue(struct mlx5_dev_ctx_shared *sh, uint16_t ci)
 {
 	struct mlx5_txpp_wq *wq = &sh->txpp.rearm_queue;
+	struct mlx5_wqe *wqe = (struct mlx5_wqe *)(uintptr_t)wq->sq_obj.wqes;
 	union {
 		uint32_t w32[2];
 		uint64_t w64;
 	} cs;
-	void *reg_addr;
 
 	wq->sq_ci = ci + 1;
 	cs.w32[0] = rte_cpu_to_be_32(rte_be_to_cpu_32
-		   (wq->wqes[ci & (wq->sq_size - 1)].ctrl[0]) | (ci - 1) << 8);
-	cs.w32[1] = wq->wqes[ci & (wq->sq_size - 1)].ctrl[1];
+			(wqe[ci & (wq->sq_size - 1)].ctrl[0]) | (ci - 1) << 8);
+	cs.w32[1] = wqe[ci & (wq->sq_size - 1)].ctrl[1];
 	/* Update SQ doorbell record with new SQ ci. */
-	rte_compiler_barrier();
-	*wq->sq_dbrec = rte_cpu_to_be_32(wq->sq_ci);
-	/* Make sure the doorbell record is updated. */
-	rte_wmb();
-	/* Write to doorbel register to start processing. */
-	reg_addr = mlx5_os_get_devx_uar_reg_addr(sh->tx_uar);
-	__mlx5_uar_write64_relaxed(cs.w64, reg_addr, NULL);
-	rte_wmb();
-}
-
-static void
-mlx5_txpp_fill_cqe_rearm_queue(struct mlx5_dev_ctx_shared *sh)
-{
-	struct mlx5_txpp_wq *wq = &sh->txpp.rearm_queue;
-	struct mlx5_cqe *cqe = (struct mlx5_cqe *)(uintptr_t)wq->cqes;
-	uint32_t i;
-
-	for (i = 0; i < MLX5_TXPP_REARM_CQ_SIZE; i++) {
-		cqe->op_own = (MLX5_CQE_INVALID << 4) | MLX5_CQE_OWNER_MASK;
-		++cqe;
-	}
+	mlx5_doorbell_ring(&sh->tx_uar.bf_db, cs.w64, wq->sq_ci,
+			   wq->sq_obj.db_rec, !sh->tx_uar.dbnc);
 }
 
 static void
 mlx5_txpp_fill_wqe_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 {
 	struct mlx5_txpp_wq *wq = &sh->txpp.rearm_queue;
-	struct mlx5_wqe *wqe = (struct mlx5_wqe *)(uintptr_t)wq->wqes;
+	struct mlx5_wqe *wqe = (struct mlx5_wqe *)(uintptr_t)wq->sq_obj.wqes;
 	uint32_t i;
 
 	for (i = 0; i < wq->sq_size; i += 2) {
@@ -213,7 +189,7 @@ mlx5_txpp_fill_wqe_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 		/* Build SEND_EN request with slave WQE index. */
 		cs = &wqe[i + 0].cseg;
 		cs->opcode = RTE_BE32(MLX5_OPCODE_SEND_EN | 0);
-		cs->sq_ds = rte_cpu_to_be_32((wq->sq->id << 8) | 2);
+		cs->sq_ds = rte_cpu_to_be_32((wq->sq_obj.sq->id << 8) | 2);
 		cs->flags = RTE_BE32(MLX5_COMP_ALWAYS <<
 				     MLX5_COMP_MODE_OFFSET);
 		cs->misc = RTE_BE32(0);
@@ -221,11 +197,12 @@ mlx5_txpp_fill_wqe_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 		index = (i * MLX5_TXPP_REARM / 2 + MLX5_TXPP_REARM) &
 			((1 << MLX5_WQ_INDEX_WIDTH) - 1);
 		qs->max_index = rte_cpu_to_be_32(index);
-		qs->qpn_cqn = rte_cpu_to_be_32(sh->txpp.clock_queue.sq->id);
+		qs->qpn_cqn =
+			   rte_cpu_to_be_32(sh->txpp.clock_queue.sq_obj.sq->id);
 		/* Build WAIT request with slave CQE index. */
 		cs = &wqe[i + 1].cseg;
 		cs->opcode = RTE_BE32(MLX5_OPCODE_WAIT | 0);
-		cs->sq_ds = rte_cpu_to_be_32((wq->sq->id << 8) | 2);
+		cs->sq_ds = rte_cpu_to_be_32((wq->sq_obj.sq->id << 8) | 2);
 		cs->flags = RTE_BE32(MLX5_COMP_ONLY_ERR <<
 				     MLX5_COMP_MODE_OFFSET);
 		cs->misc = RTE_BE32(0);
@@ -233,7 +210,8 @@ mlx5_txpp_fill_wqe_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 		index = (i * MLX5_TXPP_REARM / 2 + MLX5_TXPP_REARM / 2) &
 			((1 << MLX5_CQ_INDEX_WIDTH) - 1);
 		qs->max_index = rte_cpu_to_be_32(index);
-		qs->qpn_cqn = rte_cpu_to_be_32(sh->txpp.clock_queue.cq->id);
+		qs->qpn_cqn =
+			   rte_cpu_to_be_32(sh->txpp.clock_queue.cq_obj.cq->id);
 	}
 }
 
@@ -241,119 +219,55 @@ mlx5_txpp_fill_wqe_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 static int
 mlx5_txpp_create_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 {
-	struct mlx5_devx_create_sq_attr sq_attr = { 0 };
+	struct mlx5_devx_create_sq_attr sq_attr = {
+		.cd_master = 1,
+		.state = MLX5_SQC_STATE_RST,
+		.tis_lst_sz = 1,
+		.tis_num = sh->tis[0]->id,
+		.wq_attr = (struct mlx5_devx_wq_attr){
+			.pd = sh->cdev->pdn,
+			.uar_page =
+				mlx5_os_get_devx_uar_page_id(sh->tx_uar.obj),
+		},
+		.ts_format = mlx5_ts_format_conv
+				       (sh->cdev->config.hca_attr.sq_ts_format),
+	};
 	struct mlx5_devx_modify_sq_attr msq_attr = { 0 };
-	struct mlx5_devx_cq_attr cq_attr = { 0 };
+	struct mlx5_devx_cq_attr cq_attr = {
+		.uar_page_id = mlx5_os_get_devx_uar_page_id(sh->tx_uar.obj),
+	};
 	struct mlx5_txpp_wq *wq = &sh->txpp.rearm_queue;
-	size_t page_size;
-	uint32_t umem_size, umem_dbrec;
 	int ret;
 
-	page_size = rte_mem_page_size();
-	if (page_size == (size_t)-1) {
-		DRV_LOG(ERR, "Failed to get mem page size");
-		return -ENOMEM;
-	}
-	/* Allocate memory buffer for CQEs and doorbell record. */
-	umem_size = sizeof(struct mlx5_cqe) * MLX5_TXPP_REARM_CQ_SIZE;
-	umem_dbrec = RTE_ALIGN(umem_size, MLX5_DBR_SIZE);
-	umem_size += MLX5_DBR_SIZE;
-	wq->cq_buf = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, umem_size,
-				 page_size, sh->numa_node);
-	if (!wq->cq_buf) {
-		DRV_LOG(ERR, "Failed to allocate memory for Rearm Queue.");
-		return -ENOMEM;
-	}
-	/* Register allocated buffer in user space with DevX. */
-	wq->cq_umem = mlx5_glue->devx_umem_reg(sh->ctx,
-					       (void *)(uintptr_t)wq->cq_buf,
-					       umem_size,
-					       IBV_ACCESS_LOCAL_WRITE);
-	if (!wq->cq_umem) {
-		rte_errno = errno;
-		DRV_LOG(ERR, "Failed to register umem for Rearm Queue.");
-		goto error;
-	}
 	/* Create completion queue object for Rearm Queue. */
-	cq_attr.uar_page_id = mlx5_os_get_devx_uar_page_id(sh->tx_uar);
-	cq_attr.eqn = sh->eqn;
-	cq_attr.q_umem_valid = 1;
-	cq_attr.q_umem_offset = 0;
-	cq_attr.q_umem_id = mlx5_os_get_umem_id(wq->cq_umem);
-	cq_attr.db_umem_valid = 1;
-	cq_attr.db_umem_offset = umem_dbrec;
-	cq_attr.db_umem_id = mlx5_os_get_umem_id(wq->cq_umem);
-	cq_attr.log_cq_size = rte_log2_u32(MLX5_TXPP_REARM_CQ_SIZE);
-	cq_attr.log_page_size = rte_log2_u32(page_size);
-	wq->cq = mlx5_devx_cmd_create_cq(sh->ctx, &cq_attr);
-	if (!wq->cq) {
-		rte_errno = errno;
+	ret = mlx5_devx_cq_create(sh->cdev->ctx, &wq->cq_obj,
+				  log2above(MLX5_TXPP_REARM_CQ_SIZE), &cq_attr,
+				  sh->numa_node);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create CQ for Rearm Queue.");
-		goto error;
+		return ret;
 	}
-	wq->cq_dbrec = RTE_PTR_ADD(wq->cq_buf, umem_dbrec);
 	wq->cq_ci = 0;
 	wq->arm_sn = 0;
-	/* Mark all CQEs initially as invalid. */
-	mlx5_txpp_fill_cqe_rearm_queue(sh);
-	/*
-	 * Allocate memory buffer for Send Queue WQEs.
-	 * There should be no WQE leftovers in the cyclic queue.
-	 */
 	wq->sq_size = MLX5_TXPP_REARM_SQ_SIZE;
 	MLX5_ASSERT(wq->sq_size == (1 << log2above(wq->sq_size)));
-	umem_size =  MLX5_WQE_SIZE * wq->sq_size;
-	umem_dbrec = RTE_ALIGN(umem_size, MLX5_DBR_SIZE);
-	umem_size += MLX5_DBR_SIZE;
-	wq->sq_buf = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, umem_size,
-				 page_size, sh->numa_node);
-	if (!wq->sq_buf) {
-		DRV_LOG(ERR, "Failed to allocate memory for Rearm Queue.");
-		rte_errno = ENOMEM;
-		goto error;
-	}
-	/* Register allocated buffer in user space with DevX. */
-	wq->sq_umem = mlx5_glue->devx_umem_reg(sh->ctx,
-					       (void *)(uintptr_t)wq->sq_buf,
-					       umem_size,
-					       IBV_ACCESS_LOCAL_WRITE);
-	if (!wq->sq_umem) {
-		rte_errno = errno;
-		DRV_LOG(ERR, "Failed to register umem for Rearm Queue.");
-		goto error;
-	}
 	/* Create send queue object for Rearm Queue. */
-	sq_attr.state = MLX5_SQC_STATE_RST;
-	sq_attr.tis_lst_sz = 1;
-	sq_attr.tis_num = sh->tis->id;
-	sq_attr.cqn = wq->cq->id;
-	sq_attr.cd_master = 1;
-	sq_attr.ts_format = mlx5_ts_format_conv(sh->sq_ts_format);
-	sq_attr.wq_attr.uar_page = mlx5_os_get_devx_uar_page_id(sh->tx_uar);
-	sq_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC;
-	sq_attr.wq_attr.pd = sh->pdn;
-	sq_attr.wq_attr.log_wq_stride = rte_log2_u32(MLX5_WQE_SIZE);
-	sq_attr.wq_attr.log_wq_sz = rte_log2_u32(wq->sq_size);
-	sq_attr.wq_attr.dbr_umem_valid = 1;
-	sq_attr.wq_attr.dbr_addr = umem_dbrec;
-	sq_attr.wq_attr.dbr_umem_id = mlx5_os_get_umem_id(wq->sq_umem);
-	sq_attr.wq_attr.wq_umem_valid = 1;
-	sq_attr.wq_attr.wq_umem_id = mlx5_os_get_umem_id(wq->sq_umem);
-	sq_attr.wq_attr.wq_umem_offset = 0;
-	wq->sq = mlx5_devx_cmd_create_sq(sh->ctx, &sq_attr);
-	if (!wq->sq) {
+	sq_attr.cqn = wq->cq_obj.cq->id;
+	/* There should be no WQE leftovers in the cyclic queue. */
+	ret = mlx5_devx_sq_create(sh->cdev->ctx, &wq->sq_obj,
+				  log2above(MLX5_TXPP_REARM_SQ_SIZE), &sq_attr,
+				  sh->numa_node);
+	if (ret) {
 		rte_errno = errno;
 		DRV_LOG(ERR, "Failed to create SQ for Rearm Queue.");
 		goto error;
 	}
-	wq->sq_dbrec = RTE_PTR_ADD(wq->sq_buf, umem_dbrec +
-				   MLX5_SND_DBR * sizeof(uint32_t));
 	/* Build the WQEs in the Send Queue before goto Ready state. */
 	mlx5_txpp_fill_wqe_rearm_queue(sh);
 	/* Change queue state to ready. */
 	msq_attr.sq_state = MLX5_SQC_STATE_RST;
 	msq_attr.state = MLX5_SQC_STATE_RDY;
-	ret = mlx5_devx_cmd_modify_sq(wq->sq, &msq_attr);
+	ret = mlx5_devx_cmd_modify_sq(wq->sq_obj.sq, &msq_attr);
 	if (ret) {
 		DRV_LOG(ERR, "Failed to set SQ ready state Rearm Queue.");
 		goto error;
@@ -370,7 +284,7 @@ static void
 mlx5_txpp_fill_wqe_clock_queue(struct mlx5_dev_ctx_shared *sh)
 {
 	struct mlx5_txpp_wq *wq = &sh->txpp.clock_queue;
-	struct mlx5_wqe *wqe = (struct mlx5_wqe *)(uintptr_t)wq->wqes;
+	struct mlx5_wqe *wqe = (struct mlx5_wqe *)(uintptr_t)wq->sq_obj.wqes;
 	struct mlx5_wqe_cseg *cs = &wqe->cseg;
 	uint32_t wqe_size, opcode, i;
 	uint8_t *dst;
@@ -388,7 +302,7 @@ mlx5_txpp_fill_wqe_clock_queue(struct mlx5_dev_ctx_shared *sh)
 		opcode = MLX5_OPCODE_NOP;
 	}
 	cs->opcode = rte_cpu_to_be_32(opcode | 0); /* Index is ignored. */
-	cs->sq_ds = rte_cpu_to_be_32((wq->sq->id << 8) |
+	cs->sq_ds = rte_cpu_to_be_32((wq->sq_obj.sq->id << 8) |
 				     (wqe_size / MLX5_WSEG_SIZE));
 	cs->flags = RTE_BE32(MLX5_COMP_ALWAYS << MLX5_COMP_MODE_OFFSET);
 	cs->misc = RTE_BE32(0);
@@ -414,8 +328,8 @@ mlx5_txpp_fill_wqe_clock_queue(struct mlx5_dev_ctx_shared *sh)
 		/* Build test packet L2 header (Ethernet). */
 		dst = (uint8_t *)&es->inline_data;
 		eth_hdr = (struct rte_ether_hdr *)dst;
-		rte_eth_random_addr(&eth_hdr->d_addr.addr_bytes[0]);
-		rte_eth_random_addr(&eth_hdr->s_addr.addr_bytes[0]);
+		rte_eth_random_addr(&eth_hdr->dst_addr.addr_bytes[0]);
+		rte_eth_random_addr(&eth_hdr->src_addr.addr_bytes[0]);
 		eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		/* Build test packet L3 header (IP v4). */
 		dst += sizeof(struct rte_ether_hdr);
@@ -457,10 +371,11 @@ mlx5_txpp_fill_wqe_clock_queue(struct mlx5_dev_ctx_shared *sh)
 	}
 wcopy:
 	/* Duplicate the pattern to the next WQEs. */
-	dst = (uint8_t *)(uintptr_t)wq->sq_buf;
+	dst = (uint8_t *)(uintptr_t)wq->sq_obj.umem_buf;
 	for (i = 1; i < MLX5_TXPP_CLKQ_SIZE; i++) {
 		dst += wqe_size;
-		rte_memcpy(dst, (void *)(uintptr_t)wq->sq_buf, wqe_size);
+		rte_memcpy(dst, (void *)(uintptr_t)wq->sq_obj.umem_buf,
+			   wqe_size);
 	}
 }
 
@@ -470,17 +385,14 @@ mlx5_txpp_create_clock_queue(struct mlx5_dev_ctx_shared *sh)
 {
 	struct mlx5_devx_create_sq_attr sq_attr = { 0 };
 	struct mlx5_devx_modify_sq_attr msq_attr = { 0 };
-	struct mlx5_devx_cq_attr cq_attr = { 0 };
+	struct mlx5_devx_cq_attr cq_attr = {
+		.use_first_only = 1,
+		.overrun_ignore = 1,
+		.uar_page_id = mlx5_os_get_devx_uar_page_id(sh->tx_uar.obj),
+	};
 	struct mlx5_txpp_wq *wq = &sh->txpp.clock_queue;
-	size_t page_size;
-	uint32_t umem_size, umem_dbrec;
 	int ret;
 
-	page_size = rte_mem_page_size();
-	if (page_size == (size_t)-1) {
-		DRV_LOG(ERR, "Failed to get mem page size");
-		return -ENOMEM;
-	}
 	sh->txpp.tsa = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO,
 				   MLX5_TXPP_REARM_SQ_SIZE *
 				   sizeof(struct mlx5_txpp_ts),
@@ -491,46 +403,14 @@ mlx5_txpp_create_clock_queue(struct mlx5_dev_ctx_shared *sh)
 	}
 	sh->txpp.ts_p = 0;
 	sh->txpp.ts_n = 0;
-	/* Allocate memory buffer for CQEs and doorbell record. */
-	umem_size = sizeof(struct mlx5_cqe) * MLX5_TXPP_CLKQ_SIZE;
-	umem_dbrec = RTE_ALIGN(umem_size, MLX5_DBR_SIZE);
-	umem_size += MLX5_DBR_SIZE;
-	wq->cq_buf = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, umem_size,
-					page_size, sh->numa_node);
-	if (!wq->cq_buf) {
-		DRV_LOG(ERR, "Failed to allocate memory for Clock Queue.");
-		return -ENOMEM;
-	}
-	/* Register allocated buffer in user space with DevX. */
-	wq->cq_umem = mlx5_glue->devx_umem_reg(sh->ctx,
-					       (void *)(uintptr_t)wq->cq_buf,
-					       umem_size,
-					       IBV_ACCESS_LOCAL_WRITE);
-	if (!wq->cq_umem) {
-		rte_errno = errno;
-		DRV_LOG(ERR, "Failed to register umem for Clock Queue.");
-		goto error;
-	}
 	/* Create completion queue object for Clock Queue. */
-	cq_attr.use_first_only = 1;
-	cq_attr.overrun_ignore = 1;
-	cq_attr.uar_page_id = mlx5_os_get_devx_uar_page_id(sh->tx_uar);
-	cq_attr.eqn = sh->eqn;
-	cq_attr.q_umem_valid = 1;
-	cq_attr.q_umem_offset = 0;
-	cq_attr.q_umem_id = mlx5_os_get_umem_id(wq->cq_umem);
-	cq_attr.db_umem_valid = 1;
-	cq_attr.db_umem_offset = umem_dbrec;
-	cq_attr.db_umem_id = mlx5_os_get_umem_id(wq->cq_umem);
-	cq_attr.log_cq_size = rte_log2_u32(MLX5_TXPP_CLKQ_SIZE);
-	cq_attr.log_page_size = rte_log2_u32(page_size);
-	wq->cq = mlx5_devx_cmd_create_cq(sh->ctx, &cq_attr);
-	if (!wq->cq) {
-		rte_errno = errno;
+	ret = mlx5_devx_cq_create(sh->cdev->ctx, &wq->cq_obj,
+				  log2above(MLX5_TXPP_CLKQ_SIZE), &cq_attr,
+				  sh->numa_node);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create CQ for Clock Queue.");
 		goto error;
 	}
-	wq->cq_dbrec = RTE_PTR_ADD(wq->cq_buf, umem_dbrec);
 	wq->cq_ci = 0;
 	/* Allocate memory buffer for Send Queue WQEs. */
 	if (sh->txpp.test) {
@@ -545,68 +425,38 @@ mlx5_txpp_create_clock_queue(struct mlx5_dev_ctx_shared *sh)
 	}
 	/* There should not be WQE leftovers in the cyclic queue. */
 	MLX5_ASSERT(wq->sq_size == (1 << log2above(wq->sq_size)));
-	umem_size =  MLX5_WQE_SIZE * wq->sq_size;
-	umem_dbrec = RTE_ALIGN(umem_size, MLX5_DBR_SIZE);
-	umem_size += MLX5_DBR_SIZE;
-	wq->sq_buf = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, umem_size,
-				 page_size, sh->numa_node);
-	if (!wq->sq_buf) {
-		DRV_LOG(ERR, "Failed to allocate memory for Clock Queue.");
-		rte_errno = ENOMEM;
-		goto error;
-	}
-	/* Register allocated buffer in user space with DevX. */
-	wq->sq_umem = mlx5_glue->devx_umem_reg(sh->ctx,
-					       (void *)(uintptr_t)wq->sq_buf,
-					       umem_size,
-					       IBV_ACCESS_LOCAL_WRITE);
-	if (!wq->sq_umem) {
-		rte_errno = errno;
-		DRV_LOG(ERR, "Failed to register umem for Clock Queue.");
-		goto error;
-	}
 	/* Create send queue object for Clock Queue. */
 	if (sh->txpp.test) {
 		sq_attr.tis_lst_sz = 1;
-		sq_attr.tis_num = sh->tis->id;
+		sq_attr.tis_num = sh->tis[0]->id;
 		sq_attr.non_wire = 0;
 		sq_attr.static_sq_wq = 1;
 	} else {
 		sq_attr.non_wire = 1;
 		sq_attr.static_sq_wq = 1;
 	}
-	sq_attr.state = MLX5_SQC_STATE_RST;
-	sq_attr.cqn = wq->cq->id;
+	sq_attr.cqn = wq->cq_obj.cq->id;
 	sq_attr.packet_pacing_rate_limit_index = sh->txpp.pp_id;
-	sq_attr.ts_format = mlx5_ts_format_conv(sh->sq_ts_format);
 	sq_attr.wq_attr.cd_slave = 1;
-	sq_attr.wq_attr.uar_page = mlx5_os_get_devx_uar_page_id(sh->tx_uar);
-	sq_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC;
-	sq_attr.wq_attr.pd = sh->pdn;
-	sq_attr.wq_attr.log_wq_stride = rte_log2_u32(MLX5_WQE_SIZE);
-	sq_attr.wq_attr.log_wq_sz = rte_log2_u32(wq->sq_size);
-	sq_attr.wq_attr.dbr_umem_valid = 1;
-	sq_attr.wq_attr.dbr_addr = umem_dbrec;
-	sq_attr.wq_attr.dbr_umem_id = mlx5_os_get_umem_id(wq->sq_umem);
-	sq_attr.wq_attr.wq_umem_valid = 1;
-	sq_attr.wq_attr.wq_umem_id = mlx5_os_get_umem_id(wq->sq_umem);
-	/* umem_offset must be zero for static_sq_wq queue. */
-	sq_attr.wq_attr.wq_umem_offset = 0;
-	wq->sq = mlx5_devx_cmd_create_sq(sh->ctx, &sq_attr);
-	if (!wq->sq) {
+	sq_attr.wq_attr.uar_page = mlx5_os_get_devx_uar_page_id(sh->tx_uar.obj);
+	sq_attr.wq_attr.pd = sh->cdev->pdn;
+	sq_attr.ts_format =
+		mlx5_ts_format_conv(sh->cdev->config.hca_attr.sq_ts_format);
+	ret = mlx5_devx_sq_create(sh->cdev->ctx, &wq->sq_obj,
+				  log2above(wq->sq_size),
+				  &sq_attr, sh->numa_node);
+	if (ret) {
 		rte_errno = errno;
 		DRV_LOG(ERR, "Failed to create SQ for Clock Queue.");
 		goto error;
 	}
-	wq->sq_dbrec = RTE_PTR_ADD(wq->sq_buf, umem_dbrec +
-				   MLX5_SND_DBR * sizeof(uint32_t));
 	/* Build the WQEs in the Send Queue before goto Ready state. */
 	mlx5_txpp_fill_wqe_clock_queue(sh);
 	/* Change queue state to ready. */
 	msq_attr.sq_state = MLX5_SQC_STATE_RST;
 	msq_attr.state = MLX5_SQC_STATE_RDY;
 	wq->sq_ci = 0;
-	ret = mlx5_devx_cmd_modify_sq(wq->sq, &msq_attr);
+	ret = mlx5_devx_cmd_modify_sq(wq->sq_obj.sq, &msq_attr);
 	if (ret) {
 		DRV_LOG(ERR, "Failed to set SQ ready state Clock Queue.");
 		goto error;
@@ -623,25 +473,14 @@ error:
 static inline void
 mlx5_txpp_cq_arm(struct mlx5_dev_ctx_shared *sh)
 {
-	void *base_addr;
-
 	struct mlx5_txpp_wq *aq = &sh->txpp.rearm_queue;
 	uint32_t arm_sn = aq->arm_sn << MLX5_CQ_SQN_OFFSET;
 	uint32_t db_hi = arm_sn | MLX5_CQ_DBR_CMD_ALL | aq->cq_ci;
-	uint64_t db_be = rte_cpu_to_be_64(((uint64_t)db_hi << 32) | aq->cq->id);
-	base_addr = mlx5_os_get_devx_uar_base_addr(sh->tx_uar);
-	uint32_t *addr = RTE_PTR_ADD(base_addr, MLX5_CQ_DOORBELL);
+	uint64_t db_be =
+		rte_cpu_to_be_64(((uint64_t)db_hi << 32) | aq->cq_obj.cq->id);
 
-	rte_compiler_barrier();
-	aq->cq_dbrec[MLX5_CQ_ARM_DB] = rte_cpu_to_be_32(db_hi);
-	rte_wmb();
-#ifdef RTE_ARCH_64
-	*(uint64_t *)addr = db_be;
-#else
-	*(uint32_t *)addr = db_be;
-	rte_io_wmb();
-	*((uint32_t *)addr + 1) = db_be >> 32;
-#endif
+	mlx5_doorbell_ring(&sh->tx_uar.cq_db, db_be, db_hi,
+			   &aq->cq_obj.db_rec[MLX5_CQ_ARM_DB], 0);
 	aq->arm_sn++;
 }
 
@@ -731,7 +570,7 @@ static inline void
 mlx5_txpp_update_timestamp(struct mlx5_dev_ctx_shared *sh)
 {
 	struct mlx5_txpp_wq *wq = &sh->txpp.clock_queue;
-	struct mlx5_cqe *cqe = (struct mlx5_cqe *)(uintptr_t)wq->cqes;
+	struct mlx5_cqe *cqe = (struct mlx5_cqe *)(uintptr_t)wq->cq_obj.cqes;
 	union {
 		rte_int128_t u128;
 		struct mlx5_cqe_ts cts;
@@ -740,8 +579,6 @@ mlx5_txpp_update_timestamp(struct mlx5_dev_ctx_shared *sh)
 	uint16_t ci;
 	uint8_t opcode;
 
-	static_assert(sizeof(struct mlx5_cqe_ts) == sizeof(rte_int128_t),
-		      "Wrong timestamp CQE part size");
 	mlx5_atomic_read_cqe((rte_int128_t *)&cqe->timestamp, &to.u128);
 	opcode = MLX5_CQE_OPCODE(to.cts.op_own);
 	if (opcode) {
@@ -776,15 +613,11 @@ mlx5_txpp_init_timestamp(struct mlx5_dev_ctx_shared *sh)
 	sh->txpp.ts_p = 0;
 	sh->txpp.ts_n = 0;
 	for (wait = 0; wait < MLX5_TXPP_WAIT_INIT_TS; wait++) {
-		struct timespec onems;
-
 		mlx5_txpp_update_timestamp(sh);
 		if (wq->sq_ci)
 			return;
 		/* Wait one millisecond and try again. */
-		onems.tv_sec = 0;
-		onems.tv_nsec = NS_PER_S / MS_PER_S;
-		nanosleep(&onems, 0);
+		rte_delay_us_sleep(US_PER_S / MS_PER_S);
 	}
 	DRV_LOG(ERR, "Unable to initialize timestamp.");
 	sh->txpp.sync_lost = 1;
@@ -821,7 +654,7 @@ mlx5_txpp_handle_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 	do {
 		volatile struct mlx5_cqe *cqe;
 
-		cqe = &wq->cqes[cq_ci & (MLX5_TXPP_REARM_CQ_SIZE - 1)];
+		cqe = &wq->cq_obj.cqes[cq_ci & (MLX5_TXPP_REARM_CQ_SIZE - 1)];
 		ret = check_cqe(cqe, MLX5_TXPP_REARM_CQ_SIZE, cq_ci);
 		switch (ret) {
 		case MLX5_CQE_STATUS_ERR:
@@ -853,7 +686,7 @@ mlx5_txpp_handle_rearm_queue(struct mlx5_dev_ctx_shared *sh)
 		}
 		/* Update doorbell record to notify hardware. */
 		rte_compiler_barrier();
-		*wq->cq_dbrec = rte_cpu_to_be_32(cq_ci);
+		*wq->cq_obj.db_rec = rte_cpu_to_be_32(cq_ci);
 		rte_wmb();
 		wq->cq_ci = cq_ci;
 		/* Fire new requests to Rearm Queue. */
@@ -908,11 +741,11 @@ mlx5_txpp_interrupt_handler(void *cb_arg)
 static void
 mlx5_txpp_stop_service(struct mlx5_dev_ctx_shared *sh)
 {
-	if (!sh->txpp.intr_handle.fd)
+	if (!rte_intr_fd_get(sh->txpp.intr_handle))
 		return;
-	mlx5_intr_callback_unregister(&sh->txpp.intr_handle,
+	mlx5_intr_callback_unregister(sh->txpp.intr_handle,
 				      mlx5_txpp_interrupt_handler, sh);
-	sh->txpp.intr_handle.fd = 0;
+	rte_intr_instance_free(sh->txpp.intr_handle);
 }
 
 /* Attach interrupt handler and fires first request to Rearm Queue. */
@@ -936,21 +769,29 @@ mlx5_txpp_start_service(struct mlx5_dev_ctx_shared *sh)
 		rte_errno = errno;
 		return -rte_errno;
 	}
-	memset(&sh->txpp.intr_handle, 0, sizeof(sh->txpp.intr_handle));
+	sh->txpp.intr_handle =
+			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+	if (sh->txpp.intr_handle == NULL) {
+		DRV_LOG(ERR, "Fail to allocate intr_handle");
+		return -ENOMEM;
+	}
 	fd = mlx5_os_get_devx_channel_fd(sh->txpp.echan);
-	sh->txpp.intr_handle.fd = fd;
-	sh->txpp.intr_handle.type = RTE_INTR_HANDLE_EXT;
-	if (rte_intr_callback_register(&sh->txpp.intr_handle,
+	if (rte_intr_fd_set(sh->txpp.intr_handle, fd))
+		return -rte_errno;
+
+	if (rte_intr_type_set(sh->txpp.intr_handle, RTE_INTR_HANDLE_EXT))
+		return -rte_errno;
+
+	if (rte_intr_callback_register(sh->txpp.intr_handle,
 				       mlx5_txpp_interrupt_handler, sh)) {
-		sh->txpp.intr_handle.fd = 0;
+		rte_intr_fd_set(sh->txpp.intr_handle, 0);
 		DRV_LOG(ERR, "Failed to register CQE interrupt %d.", rte_errno);
 		return -rte_errno;
 	}
 	/* Subscribe CQ event to the event channel controlled by the driver. */
-	ret = mlx5_glue->devx_subscribe_devx_event(sh->txpp.echan,
-						   sh->txpp.rearm_queue.cq->obj,
-						   sizeof(event_nums),
-						   event_nums, 0);
+	ret = mlx5_os_devx_subscribe_devx_event(sh->txpp.echan,
+					    sh->txpp.rearm_queue.cq_obj.cq->obj,
+					     sizeof(event_nums), event_nums, 0);
 	if (ret) {
 		DRV_LOG(ERR, "Failed to subscribe CQE event.");
 		rte_errno = errno;
@@ -1146,7 +987,8 @@ mlx5_txpp_read_clock(struct rte_eth_dev *dev, uint64_t *timestamp)
 
 	if (sh->txpp.refcnt) {
 		struct mlx5_txpp_wq *wq = &sh->txpp.clock_queue;
-		struct mlx5_cqe *cqe = (struct mlx5_cqe *)(uintptr_t)wq->cqes;
+		struct mlx5_cqe *cqe =
+				(struct mlx5_cqe *)(uintptr_t)wq->cq_obj.cqes;
 		union {
 			rte_int128_t u128;
 			struct mlx5_cqe_ts cts;

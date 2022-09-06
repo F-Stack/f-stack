@@ -20,7 +20,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -124,22 +123,23 @@ static uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode	= ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.mq_mode	= RTE_ETH_MQ_RX_RSS,
 		.split_hdr_size = 0,
-		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP | ETH_RSS_UDP |
-				ETH_RSS_TCP | ETH_RSS_SCTP,
+			.rss_hf = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP |
+				RTE_ETH_RSS_TCP | RTE_ETH_RSS_SCTP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
+
+static uint32_t max_pkt_len;
 
 static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
@@ -195,13 +195,24 @@ send_single_packet(struct rte_mbuf *m, uint16_t port);
 #define ACL_LEAD_CHAR		('@')
 #define ROUTE_LEAD_CHAR		('R')
 #define COMMENT_LEAD_CHAR	('#')
-#define OPTION_CONFIG		"config"
-#define OPTION_NONUMA		"no-numa"
-#define OPTION_ENBJMO		"enable-jumbo"
-#define OPTION_RULE_IPV4	"rule_ipv4"
-#define OPTION_RULE_IPV6	"rule_ipv6"
-#define OPTION_ALG		"alg"
-#define OPTION_ETH_DEST		"eth-dest"
+
+enum {
+#define OPT_CONFIG      "config"
+	OPT_CONFIG_NUM = 256,
+#define OPT_NONUMA      "no-numa"
+	OPT_NONUMA_NUM,
+#define OPT_MAX_PKT_LEN "max-pkt-len"
+	OPT_MAX_PKT_LEN_NUM,
+#define OPT_RULE_IPV4   "rule_ipv4"
+	OPT_RULE_IPV4_NUM,
+#define OPT_RULE_IPV6	"rule_ipv6"
+	OPT_RULE_IPV6_NUM,
+#define OPT_ALG         "alg"
+	OPT_ALG_NUM,
+#define OPT_ETH_DEST    "eth-dest"
+	OPT_ETH_DEST_NUM,
+};
+
 #define ACL_DENY_SIGNATURE	0xf0000000
 #define RTE_LOGTYPE_L3FWDACL	RTE_LOGTYPE_USER3
 #define acl_log(format, ...)	RTE_LOG(ERR, L3FWDACL, format, ##__VA_ARGS__)
@@ -1177,9 +1188,9 @@ static void
 dump_acl_config(void)
 {
 	printf("ACL option are:\n");
-	printf(OPTION_RULE_IPV4": %s\n", parm_config.rule_ipv4_name);
-	printf(OPTION_RULE_IPV6": %s\n", parm_config.rule_ipv6_name);
-	printf(OPTION_ALG": %s\n", str_acl_alg(parm_config.alg));
+	printf(OPT_RULE_IPV4": %s\n", parm_config.rule_ipv4_name);
+	printf(OPT_RULE_IPV6": %s\n", parm_config.rule_ipv6_name);
+	printf(OPT_ALG": %s\n", str_acl_alg(parm_config.alg));
 }
 
 static int
@@ -1364,7 +1375,8 @@ send_single_packet(struct rte_mbuf *m, uint16_t port)
 
 	/* update src and dst mac*/
 	eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-	memcpy(eh, &port_l2hdr[port], sizeof(eh->d_addr) + sizeof(eh->s_addr));
+	memcpy(eh, &port_l2hdr[port],
+			sizeof(eh->dst_addr) + sizeof(eh->src_addr));
 
 	qconf = &lcore_conf[lcore_id];
 	rte_eth_tx_buffer(port, qconf->tx_queue_id[port],
@@ -1608,27 +1620,22 @@ print_usage(const char *prgname)
 
 	usage_acl_alg(alg, sizeof(alg));
 	printf("%s [EAL options] -- -p PORTMASK -P"
-		"--"OPTION_RULE_IPV4"=FILE"
-		"--"OPTION_RULE_IPV6"=FILE"
-		"  [--"OPTION_CONFIG" (port,queue,lcore)[,(port,queue,lcore]]"
-		"  [--"OPTION_ENBJMO" [--max-pkt-len PKTLEN]]\n"
+		"  --"OPT_RULE_IPV4"=FILE"
+		"  --"OPT_RULE_IPV6"=FILE"
+		"  [--"OPT_CONFIG" (port,queue,lcore)[,(port,queue,lcore]]"
+		"  [--"OPT_MAX_PKT_LEN" PKTLEN]\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
-		"  -P : enable promiscuous mode\n"
-		"  --"OPTION_CONFIG": (port,queue,lcore): "
-		"rx queues configuration\n"
-		"  --"OPTION_NONUMA": optional, disable numa awareness\n"
-		"  --"OPTION_ENBJMO": enable jumbo frame"
-		" which max packet len is PKTLEN in decimal (64-9600)\n"
-		"  --"OPTION_RULE_IPV4"=FILE: specify the ipv4 rules entries "
-		"file. "
+		"  -P: enable promiscuous mode\n"
+		"  --"OPT_CONFIG" (port,queue,lcore): rx queues configuration\n"
+		"  --"OPT_NONUMA": optional, disable numa awareness\n"
+		"  --"OPT_MAX_PKT_LEN" PKTLEN: maximum packet length in decimal (64-9600)\n"
+		"  --"OPT_RULE_IPV4"=FILE: specify the ipv4 rules entries file. "
 		"Each rule occupy one line. "
 		"2 kinds of rules are supported. "
 		"One is ACL entry at while line leads with character '%c', "
-		"another is route entry at while line leads with "
-		"character '%c'.\n"
-		"  --"OPTION_RULE_IPV6"=FILE: specify the ipv6 rules "
-		"entries file.\n"
-		"  --"OPTION_ALG": ACL classify method to use, one of: %s\n",
+		"another is route entry at while line leads with character '%c'.\n"
+		"  --"OPT_RULE_IPV6"=FILE: specify the ipv6 rules entries file.\n"
+		"  --"OPT_ALG": ACL classify method to use, one of: %s\n",
 		prgname, ACL_LEAD_CHAR, ROUTE_LEAD_CHAR, alg);
 }
 
@@ -1732,8 +1739,9 @@ parse_eth_dest(const char *optarg)
 		return "port value exceeds RTE_MAX_ETHPORTS("
 			RTE_STR(RTE_MAX_ETHPORTS) ")";
 
-	if (cmdline_parse_etheraddr(NULL, port_end, &port_l2hdr[portid].d_addr,
-			sizeof(port_l2hdr[portid].d_addr)) < 0)
+	if (cmdline_parse_etheraddr(NULL, port_end,
+			&port_l2hdr[portid].dst_addr,
+			sizeof(port_l2hdr[portid].dst_addr)) < 0)
 		return "Invalid ethernet address";
 	return NULL;
 }
@@ -1747,14 +1755,14 @@ parse_args(int argc, char **argv)
 	int option_index;
 	char *prgname = argv[0];
 	static struct option lgopts[] = {
-		{OPTION_CONFIG, 1, 0, 0},
-		{OPTION_NONUMA, 0, 0, 0},
-		{OPTION_ENBJMO, 0, 0, 0},
-		{OPTION_RULE_IPV4, 1, 0, 0},
-		{OPTION_RULE_IPV6, 1, 0, 0},
-		{OPTION_ALG, 1, 0, 0},
-		{OPTION_ETH_DEST, 1, 0, 0},
-		{NULL, 0, 0, 0}
+		{OPT_CONFIG,      1, NULL, OPT_CONFIG_NUM      },
+		{OPT_NONUMA,      0, NULL, OPT_NONUMA_NUM      },
+		{OPT_MAX_PKT_LEN, 1, NULL, OPT_MAX_PKT_LEN_NUM },
+		{OPT_RULE_IPV4,   1, NULL, OPT_RULE_IPV4_NUM   },
+		{OPT_RULE_IPV6,   1, NULL, OPT_RULE_IPV6_NUM   },
+		{OPT_ALG,         1, NULL, OPT_ALG_NUM         },
+		{OPT_ETH_DEST,    1, NULL, OPT_ETH_DEST_NUM    },
+		{NULL,            0, 0,    0                   }
 	};
 
 	argvopt = argv;
@@ -1772,104 +1780,62 @@ parse_args(int argc, char **argv)
 				return -1;
 			}
 			break;
+
 		case 'P':
 			printf("Promiscuous mode selected\n");
 			promiscuous_on = 1;
 			break;
 
 		/* long options */
-		case 0:
-			if (!strncmp(lgopts[option_index].name,
-					OPTION_CONFIG,
-					sizeof(OPTION_CONFIG))) {
-				ret = parse_config(optarg);
-				if (ret) {
-					printf("invalid config\n");
-					print_usage(prgname);
-					return -1;
-				}
+		case OPT_CONFIG_NUM:
+			ret = parse_config(optarg);
+			if (ret) {
+				printf("invalid config\n");
+				print_usage(prgname);
+				return -1;
 			}
-
-			if (!strncmp(lgopts[option_index].name,
-					OPTION_NONUMA,
-					sizeof(OPTION_NONUMA))) {
-				printf("numa is disabled\n");
-				numa_on = 0;
-			}
-
-			if (!strncmp(lgopts[option_index].name,
-					OPTION_ENBJMO, sizeof(OPTION_ENBJMO))) {
-				struct option lenopts = {
-					"max-pkt-len",
-					required_argument,
-					0,
-					0
-				};
-
-				printf("jumbo frame is enabled\n");
-				port_conf.rxmode.offloads |=
-						DEV_RX_OFFLOAD_JUMBO_FRAME;
-				port_conf.txmode.offloads |=
-						DEV_TX_OFFLOAD_MULTI_SEGS;
-
-				/*
-				 * if no max-pkt-len set, then use the
-				 * default value RTE_ETHER_MAX_LEN
-				 */
-				if (0 == getopt_long(argc, argvopt, "",
-						&lenopts, &option_index)) {
-					ret = parse_max_pkt_len(optarg);
-					if ((ret < 64) ||
-						(ret > MAX_JUMBO_PKT_LEN)) {
-						printf("invalid packet "
-							"length\n");
-						print_usage(prgname);
-						return -1;
-					}
-					port_conf.rxmode.max_rx_pkt_len = ret;
-				}
-				printf("set jumbo frame max packet length "
-					"to %u\n",
-					(unsigned int)
-					port_conf.rxmode.max_rx_pkt_len);
-			}
-
-			if (!strncmp(lgopts[option_index].name,
-					OPTION_RULE_IPV4,
-					sizeof(OPTION_RULE_IPV4)))
-				parm_config.rule_ipv4_name = optarg;
-
-			if (!strncmp(lgopts[option_index].name,
-					OPTION_RULE_IPV6,
-					sizeof(OPTION_RULE_IPV6))) {
-				parm_config.rule_ipv6_name = optarg;
-			}
-
-			if (!strncmp(lgopts[option_index].name,
-					OPTION_ALG, sizeof(OPTION_ALG))) {
-				parm_config.alg = parse_acl_alg(optarg);
-				if (parm_config.alg ==
-						RTE_ACL_CLASSIFY_DEFAULT) {
-					printf("unknown %s value:\"%s\"\n",
-						OPTION_ALG, optarg);
-					print_usage(prgname);
-					return -1;
-				}
-			}
-
-			if (!strncmp(lgopts[option_index].name, OPTION_ETH_DEST,
-					sizeof(OPTION_ETH_DEST))) {
-				const char *serr = parse_eth_dest(optarg);
-				if (serr != NULL) {
-					printf("invalid %s value:\"%s\": %s\n",
-						OPTION_ETH_DEST, optarg, serr);
-					print_usage(prgname);
-					return -1;
-				}
-			}
-
 			break;
 
+		case OPT_NONUMA_NUM:
+			printf("numa is disabled\n");
+			numa_on = 0;
+			break;
+
+		case OPT_MAX_PKT_LEN_NUM:
+			printf("Custom frame size is configured\n");
+			max_pkt_len = parse_max_pkt_len(optarg);
+			break;
+
+		case OPT_RULE_IPV4_NUM:
+			parm_config.rule_ipv4_name = optarg;
+			break;
+
+		case OPT_RULE_IPV6_NUM:
+			parm_config.rule_ipv6_name = optarg;
+			break;
+
+		case OPT_ALG_NUM:
+			parm_config.alg = parse_acl_alg(optarg);
+			if (parm_config.alg ==
+					RTE_ACL_CLASSIFY_DEFAULT) {
+				printf("unknown %s value:\"%s\"\n",
+					OPT_ALG, optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+
+		case OPT_ETH_DEST_NUM:
+		{
+			const char *serr = parse_eth_dest(optarg);
+			if (serr != NULL) {
+				printf("invalid %s value:\"%s\": %s\n",
+					OPT_ETH_DEST, optarg, serr);
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+		}
 		default:
 			print_usage(prgname);
 			return -1;
@@ -1969,7 +1935,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -2001,9 +1967,45 @@ set_default_dest_mac(void)
 	uint32_t i;
 
 	for (i = 0; i != RTE_DIM(port_l2hdr); i++) {
-		port_l2hdr[i].d_addr.addr_bytes[0] = RTE_ETHER_LOCAL_ADMIN_ADDR;
-		port_l2hdr[i].d_addr.addr_bytes[5] = i;
+		port_l2hdr[i].dst_addr.addr_bytes[0] =
+				RTE_ETHER_LOCAL_ADMIN_ADDR;
+		port_l2hdr[i].dst_addr.addr_bytes[5] = i;
 	}
+}
+
+static uint32_t
+eth_dev_get_overhead_len(uint32_t max_rx_pktlen, uint16_t max_mtu)
+{
+	uint32_t overhead_len;
+
+	if (max_mtu != UINT16_MAX && max_rx_pktlen > max_mtu)
+		overhead_len = max_rx_pktlen - max_mtu;
+	else
+		overhead_len = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+
+	return overhead_len;
+}
+
+static int
+config_port_max_pkt_len(struct rte_eth_conf *conf,
+		struct rte_eth_dev_info *dev_info)
+{
+	uint32_t overhead_len;
+
+	if (max_pkt_len == 0)
+		return 0;
+
+	if (max_pkt_len < RTE_ETHER_MIN_LEN || max_pkt_len > MAX_JUMBO_PKT_LEN)
+		return -1;
+
+	overhead_len = eth_dev_get_overhead_len(dev_info->max_rx_pktlen,
+			dev_info->max_mtu);
+	conf->rxmode.mtu = max_pkt_len - overhead_len;
+
+	if (conf->rxmode.mtu > RTE_ETHER_MTU)
+		conf->txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+
+	return 0;
 }
 
 int
@@ -2079,9 +2081,15 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		ret = config_port_max_pkt_len(&local_port_conf, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Invalid max packet length: %u (port %u)\n",
+				max_pkt_len, portid);
+
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 			dev_info.flow_type_rss_offloads;
@@ -2108,14 +2116,14 @@ main(int argc, char **argv)
 				"rte_eth_dev_adjust_nb_rx_tx_desc: err=%d, port=%d\n",
 				ret, portid);
 
-		ret = rte_eth_macaddr_get(portid, &port_l2hdr[portid].s_addr);
+		ret = rte_eth_macaddr_get(portid, &port_l2hdr[portid].src_addr);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
 				"rte_eth_macaddr_get: err=%d, port=%d\n",
 				ret, portid);
 
-		print_ethaddr("Dst MAC:", &port_l2hdr[portid].d_addr);
-		print_ethaddr(", Src MAC:", &port_l2hdr[portid].s_addr);
+		print_ethaddr("Dst MAC:", &port_l2hdr[portid].dst_addr);
+		print_ethaddr(", Src MAC:", &port_l2hdr[portid].src_addr);
 		printf(", ");
 
 		/* init memory */

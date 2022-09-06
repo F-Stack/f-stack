@@ -9,7 +9,7 @@
 
 /* System headers */
 #include <stdbool.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_event_eth_rx_adapter.h>
 
 #include <fsl_usd.h>
@@ -74,16 +74,15 @@
 #define DPAA_DEBUG_FQ_TX_ERROR   1
 
 #define DPAA_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_L2_PAYLOAD | \
-	ETH_RSS_IP | \
-	ETH_RSS_UDP | \
-	ETH_RSS_TCP | \
-	ETH_RSS_SCTP)
+	RTE_ETH_RSS_L2_PAYLOAD | \
+	RTE_ETH_RSS_IP | \
+	RTE_ETH_RSS_UDP | \
+	RTE_ETH_RSS_TCP | \
+	RTE_ETH_RSS_SCTP)
 
-#define DPAA_TX_CKSUM_OFFLOAD_MASK (             \
-		PKT_TX_IP_CKSUM |                \
-		PKT_TX_TCP_CKSUM |               \
-		PKT_TX_UDP_CKSUM)
+#define DPAA_TX_CKSUM_OFFLOAD_MASK (RTE_MBUF_F_TX_IP_CKSUM |                \
+		RTE_MBUF_F_TX_TCP_CKSUM |               \
+		RTE_MBUF_F_TX_UDP_CKSUM)
 
 /* DPAA Frame descriptor macros */
 

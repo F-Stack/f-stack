@@ -20,6 +20,9 @@
 #define CPT_MAJOR_OP_ZUC_SNOW3G	0x37
 #define CPT_MAJOR_OP_KASUMI	0x38
 #define CPT_MAJOR_OP_MISC	0x01
+#define CPT_HMAC_FIRST_BIT_POS	0x4
+#define CPT_FC_MINOR_OP_ENCRYPT	0x0
+#define CPT_FC_MINOR_OP_DECRYPT	0x1
 
 /* AE opcodes */
 #define CPT_MAJOR_OP_MODEX	0x03
@@ -217,7 +220,10 @@ typedef enum {
 	CPT_EC_ID_P256 = 2,
 	CPT_EC_ID_P384 = 3,
 	CPT_EC_ID_P521 = 4,
-	CPT_EC_ID_PMAX = 5
+	CPT_EC_ID_P160 = 5,
+	CPT_EC_ID_P320 = 6,
+	CPT_EC_ID_P512 = 7,
+	CPT_EC_ID_PMAX = 8
 } cpt_ec_id_t;
 
 typedef struct sglist_comp {
@@ -314,15 +320,18 @@ struct cpt_ctx {
 	uint64_t hmac		:1;
 	uint64_t zsk_flags	:3;
 	uint64_t k_ecb		:1;
+	uint64_t auth_enc	:1;
+	uint64_t dec_auth	:1;
 	uint64_t snow3g		:2;
-	uint64_t rsvd		:21;
+	uint64_t rsvd		:19;
 	/* Below fields are accessed by hardware */
 	union {
 		mc_fc_context_t fctx;
 		mc_zuc_snow3g_ctx_t zs_ctx;
 		mc_kasumi_ctx_t k_ctx;
 	} mc_ctx;
-	uint8_t  auth_key[1024];
+	uint8_t *auth_key;
+	uint64_t auth_key_iova;
 };
 
 /* Prime and order fields of built-in elliptic curves */
@@ -338,6 +347,18 @@ struct cpt_ec_group {
 		uint8_t data[66];
 		unsigned int length;
 	} order;
+
+	struct {
+		/* P521 maximum length */
+		uint8_t data[66];
+		unsigned int length;
+	} consta;
+
+	struct {
+		/* P521 maximum length */
+		uint8_t data[66];
+		unsigned int length;
+	} constb;
 };
 
 struct cpt_asym_ec_ctx {

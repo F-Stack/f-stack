@@ -6,13 +6,12 @@
 #define __DLB2_RESOURCE_H
 
 #include "dlb2_user.h"
-
-#include "dlb2_hw_types.h"
 #include "dlb2_osdep_types.h"
 
 /**
  * dlb2_resource_init() - initialize the device
  * @hw: pointer to struct dlb2_hw.
+ * @ver: device version.
  *
  * This function initializes the device's software state (pointed to by the hw
  * argument) and programs global scheduling QoS registers. This function should
@@ -24,7 +23,17 @@
  * Return:
  * Returns 0 upon success, <0 otherwise.
  */
-int dlb2_resource_init(struct dlb2_hw *hw);
+int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver);
+
+/**
+ * dlb2_clr_pmcsr_disable() - power on bulk of DLB 2.0 logic
+ * @hw: dlb2_hw handle for a particular device.
+ * @ver: device version.
+ *
+ * Clearing the PMCSR must be done at initialization to make the device fully
+ * operational.
+ */
+void dlb2_clr_pmcsr_disable(struct dlb2_hw *hw, enum dlb2_hw_ver ver);
 
 /**
  * dlb2_resource_free() - free device state memory
@@ -819,8 +828,8 @@ int dlb2_get_group_sequence_number_occupancy(struct dlb2_hw *hw,
  * ordered queue is configured.
  */
 int dlb2_set_group_sequence_numbers(struct dlb2_hw *hw,
-				    unsigned int group_id,
-				    unsigned long val);
+				    u32 group_id,
+				    u32 val);
 
 /**
  * dlb2_reset_domain() - reset a scheduling domain
@@ -1484,15 +1493,6 @@ int dlb2_notify_vf(struct dlb2_hw *hw,
  * an internal error occurs.
  */
 int dlb2_vdev_in_use(struct dlb2_hw *hw, unsigned int id);
-
-/**
- * dlb2_clr_pmcsr_disable() - power on bulk of DLB 2.0 logic
- * @hw: dlb2_hw handle for a particular device.
- *
- * Clearing the PMCSR must be done at initialization to make the device fully
- * operational.
- */
-void dlb2_clr_pmcsr_disable(struct dlb2_hw *hw);
 
 /**
  * dlb2_hw_get_ldb_queue_depth() - returns the depth of a load-balanced queue

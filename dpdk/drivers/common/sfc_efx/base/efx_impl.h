@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2007-2019 Solarflare Communications Inc.
  */
 
@@ -65,6 +65,7 @@ extern "C" {
 #define	EFX_MOD_TUNNEL		0x00004000
 #define	EFX_MOD_EVB		0x00008000
 #define	EFX_MOD_PROXY		0x00010000
+#define	EFX_MOD_VIRTIO		0x00020000
 
 #define	EFX_RESET_PHY		0x00000001
 #define	EFX_RESET_RXQ_ERR	0x00000002
@@ -86,7 +87,8 @@ typedef struct efx_ev_ops_s {
 	void		(*eevo_fini)(efx_nic_t *);
 	efx_rc_t	(*eevo_qcreate)(efx_nic_t *, unsigned int,
 					  efsys_mem_t *, size_t, uint32_t,
-					  uint32_t, uint32_t, efx_evq_t *);
+					  uint32_t, uint32_t, uint32_t,
+					  efx_evq_t *);
 	void		(*eevo_qdestroy)(efx_evq_t *);
 	efx_rc_t	(*eevo_qprime)(efx_evq_t *, unsigned int);
 	void		(*eevo_qpost)(efx_evq_t *, uint16_t);
@@ -308,6 +310,22 @@ typedef struct efx_tunnel_ops_s {
 } efx_tunnel_ops_t;
 #endif /* EFSYS_OPT_TUNNEL */
 
+#if EFSYS_OPT_VIRTIO
+typedef struct efx_virtio_ops_s {
+	efx_rc_t	(*evo_virtio_qstart)(efx_virtio_vq_t *,
+				efx_virtio_vq_cfg_t *,
+				efx_virtio_vq_dyncfg_t *);
+	efx_rc_t	(*evo_virtio_qstop)(efx_virtio_vq_t *,
+				efx_virtio_vq_dyncfg_t *);
+	efx_rc_t	(*evo_get_doorbell_offset)(efx_virtio_vq_t *,
+				uint32_t *);
+	efx_rc_t	(*evo_get_features)(efx_nic_t *,
+				efx_virtio_device_type_t, uint64_t *);
+	efx_rc_t	(*evo_verify_features)(efx_nic_t *,
+				efx_virtio_device_type_t, uint64_t);
+} efx_virtio_ops_t;
+#endif /* EFSYS_OPT_VIRTIO */
+
 typedef struct efx_port_s {
 	efx_mac_type_t		ep_mac_type;
 	uint32_t		ep_phy_type;
@@ -410,6 +428,25 @@ typedef struct efx_nic_ops_s {
 #define	EFX_RXQ_LIMIT_TARGET 512
 #endif
 
+typedef struct efx_nic_dma_region_s {
+	efsys_dma_addr_t	endr_nic_base;
+	efsys_dma_addr_t	endr_trgt_base;
+	unsigned int		endr_window_log2;
+	unsigned int		endr_align_log2;
+	boolean_t		endr_inuse;
+} efx_nic_dma_region_t;
+
+typedef struct efx_nic_dma_region_info_s {
+	unsigned int		endri_count;
+	efx_nic_dma_region_t	*endri_regions;
+} efx_nic_dma_region_info_t;
+
+typedef struct efx_nic_dma_s {
+	union {
+		/* No configuration in the case flat mapping type */
+		efx_nic_dma_region_info_t	endu_region_info;
+	} end_u;
+} efx_nic_dma_t;
 
 #if EFSYS_OPT_FILTER
 
@@ -803,6 +840,7 @@ typedef struct efx_mae_s {
 	/** Outer rule match field capabilities. */
 	efx_mae_field_cap_t		*em_outer_rule_field_caps;
 	size_t				em_outer_rule_field_caps_size;
+	uint32_t			em_max_ncounters;
 } efx_mae_t;
 
 #endif /* EFSYS_OPT_MAE */
@@ -840,6 +878,7 @@ struct efx_nic_s {
 	const efx_rx_ops_t	*en_erxop;
 	efx_fw_variant_t	efv;
 	char			en_drv_version[EFX_DRV_VER_MAX];
+	efx_nic_dma_t		en_dma;
 #if EFSYS_OPT_FILTER
 	efx_filter_t		en_filter;
 	const efx_filter_ops_t	*en_efop;
@@ -857,6 +896,9 @@ struct efx_nic_s {
 #endif	/* EFSYS_OPT_NVRAM */
 #if EFSYS_OPT_VPD
 	const efx_vpd_ops_t	*en_evpdop;
+#endif	/* EFSYS_OPT_VPD */
+#if EFSYS_OPT_VIRTIO
+	const efx_virtio_ops_t	*en_evop;
 #endif	/* EFSYS_OPT_VPD */
 #if EFSYS_OPT_RX_SCALE
 	efx_rx_hash_support_t		en_hash_support;
@@ -1508,6 +1550,18 @@ efx_mcdi_get_workarounds(
 #if EFSYS_OPT_RIVERHEAD || EFX_OPTS_EF10()
 
 LIBEFX_INTERNAL
+extern	__checkReturn		efx_rc_t
+efx_mcdi_intf_from_pcie(
+	__in			uint32_t pcie_intf,
+	__out			efx_pcie_interface_t *efx_intf);
+
+LIBEFX_INTERNAL
+extern	__checkReturn		efx_rc_t
+efx_mcdi_intf_to_pcie(
+	__in			efx_pcie_interface_t efx_intf,
+	__out			uint32_t *pcie_intf);
+
+LIBEFX_INTERNAL
 extern	__checkReturn	efx_rc_t
 efx_mcdi_init_evq(
 	__in		efx_nic_t *enp,
@@ -1515,6 +1569,7 @@ efx_mcdi_init_evq(
 	__in		efsys_mem_t *esmp,
 	__in		size_t nevs,
 	__in		uint32_t irq,
+	__in		uint32_t target_evq,
 	__in		uint32_t us,
 	__in		uint32_t flags,
 	__in		boolean_t low_latency);
@@ -1700,15 +1755,23 @@ struct efx_mae_match_spec_s {
 	efx_mae_rule_type_t		emms_type;
 	uint32_t			emms_prio;
 	union emms_mask_value_pairs {
-		uint8_t			action[MAE_FIELD_MASK_VALUE_PAIRS_LEN];
+		uint8_t			action[
+					    MAE_FIELD_MASK_VALUE_PAIRS_V2_LEN];
 		uint8_t			outer[MAE_ENC_FIELD_PAIRS_LEN];
 	} emms_mask_value_pairs;
+	uint8_t				emms_outer_rule_recirc_id;
 };
 
 typedef enum efx_mae_action_e {
 	/* These actions are strictly ordered. */
+	EFX_MAE_ACTION_DECAP,
 	EFX_MAE_ACTION_VLAN_POP,
+	EFX_MAE_ACTION_SET_DST_MAC,
+	EFX_MAE_ACTION_SET_SRC_MAC,
+	EFX_MAE_ACTION_DECR_IP_TTL,
 	EFX_MAE_ACTION_VLAN_PUSH,
+	EFX_MAE_ACTION_COUNT,
+	EFX_MAE_ACTION_ENCAP,
 
 	/*
 	 * These actions are not strictly ordered and can
@@ -1736,6 +1799,13 @@ typedef struct efx_mae_action_vlan_push_s {
 	uint16_t			emavp_tci_be;
 } efx_mae_action_vlan_push_t;
 
+typedef struct efx_mae_actions_rsrc_s {
+	efx_mae_mac_id_t		emar_dst_mac_id;
+	efx_mae_mac_id_t		emar_src_mac_id;
+	efx_mae_eh_id_t			emar_eh_id;
+	efx_counter_t			emar_counter_id;
+} efx_mae_actions_rsrc_t;
+
 struct efx_mae_actions_s {
 	/* Bitmap of actions in spec, indexed by action type */
 	uint32_t			ema_actions;
@@ -1744,11 +1814,48 @@ struct efx_mae_actions_s {
 	unsigned int			ema_n_vlan_tags_to_push;
 	efx_mae_action_vlan_push_t	ema_vlan_push_descs[
 	    EFX_MAE_VLAN_PUSH_MAX_NTAGS];
+	unsigned int			ema_n_count_actions;
 	uint32_t			ema_mark_value;
 	efx_mport_sel_t			ema_deliver_mport;
+
+	/*
+	 * Always keep this at the end of the struct since
+	 * efx_mae_action_set_specs_equal() relies on that
+	 * to make sure that resource IDs are not compared.
+	 */
+	efx_mae_actions_rsrc_t		ema_rsrc;
+
+	/*
+	 * A copy of encp->enc_mae_aset_v2_supported.
+	 * It is set by efx_mae_action_set_spec_init().
+	 * This value is ignored on spec comparisons.
+	 */
+	boolean_t			ema_v2_is_supported;
 };
 
 #endif /* EFSYS_OPT_MAE */
+
+#if EFSYS_OPT_VIRTIO
+
+#define	EFX_VQ_MAGIC	0x026011950
+
+typedef enum efx_virtio_vq_state_e {
+	EFX_VIRTIO_VQ_STATE_UNKNOWN = 0,
+	EFX_VIRTIO_VQ_STATE_INITIALIZED,
+	EFX_VIRTIO_VQ_STATE_STARTED,
+	EFX_VIRTIO_VQ_NSTATES
+} efx_virtio_vq_state_t;
+
+struct efx_virtio_vq_s {
+	uint32_t		evv_magic;
+	efx_nic_t		*evv_enp;
+	efx_virtio_vq_state_t	evv_state;
+	uint32_t		evv_vi_index;
+	efx_virtio_vq_type_t	evv_type;
+	uint16_t		evv_target_vf;
+};
+
+#endif /* EFSYS_OPT_VIRTIO */
 
 #ifdef	__cplusplus
 }

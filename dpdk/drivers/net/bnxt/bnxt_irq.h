@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -8,7 +8,7 @@
 
 struct bnxt_irq {
 	rte_intr_callback_fn	handler;
-	unsigned int		vector;
+	unsigned int		vector_idx;
 	uint8_t			requested;
 	char			name[RTE_ETH_NAME_MAX_LEN + 2];
 };

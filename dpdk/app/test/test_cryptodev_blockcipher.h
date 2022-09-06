@@ -13,11 +13,13 @@
 #define BLOCKCIPHER_TEST_OP_DECRYPT		0x02
 #define BLOCKCIPHER_TEST_OP_AUTH_GEN	0x04
 #define BLOCKCIPHER_TEST_OP_AUTH_VERIFY	0x08
+#define BLOCKCIPHER_TEST_OP_DIGEST_ENCRYPTED	0x10
 
 #define BLOCKCIPHER_TEST_FEATURE_OOP			0x01
 #define BLOCKCIPHER_TEST_FEATURE_SESSIONLESS	0x02
 #define BLOCKCIPHER_TEST_FEATURE_STOPPER	0x04 /* stop upon failing */
 #define BLOCKCIPHER_TEST_FEATURE_SG		0x08 /* Scatter Gather */
+#define BLOCKCIPHER_TEST_FEATURE_DIGEST_ENCRYPTED	0x10
 
 #define BLOCKCIPHER_TEST_OP_CIPHER	(BLOCKCIPHER_TEST_OP_ENCRYPT | \
 					BLOCKCIPHER_TEST_OP_DECRYPT)
@@ -30,6 +32,14 @@
 
 #define BLOCKCIPHER_TEST_OP_AUTH_VERIFY_DEC	(BLOCKCIPHER_TEST_OP_DECRYPT | \
 					BLOCKCIPHER_TEST_OP_AUTH_VERIFY)
+
+#define BLOCKCIPHER_TEST_OP_AUTH_GEN_ENC	(BLOCKCIPHER_TEST_OP_ENCRYPT | \
+					BLOCKCIPHER_TEST_OP_AUTH_GEN | \
+					BLOCKCIPHER_TEST_OP_DIGEST_ENCRYPTED)
+
+#define BLOCKCIPHER_TEST_OP_DEC_AUTH_VERIFY	(BLOCKCIPHER_TEST_OP_DECRYPT | \
+					BLOCKCIPHER_TEST_OP_AUTH_VERIFY | \
+					BLOCKCIPHER_TEST_OP_DIGEST_ENCRYPTED)
 
 enum blockcipher_test_type {
 	BLKCIPHER_AES_CHAIN_TYPE,	/* use aes_chain_test_cases[] */
@@ -87,14 +97,14 @@ struct blockcipher_test_data {
 
 	unsigned int cipher_offset;
 	unsigned int auth_offset;
+	uint32_t xts_dataunit_len;
+	bool wrapped_key;
 };
 
-int
-test_blockcipher_all_tests(struct rte_mempool *mbuf_pool,
-	struct rte_mempool *op_mpool,
-	struct rte_mempool *sess_mpool,
-	struct rte_mempool *sess_priv_mpool,
-	uint8_t dev_id,
-	enum blockcipher_test_type test_type);
+struct unit_test_suite *
+build_blockcipher_test_suite(enum blockcipher_test_type test_type);
+
+void
+free_blockcipher_test_suite(struct unit_test_suite *ts);
 
 #endif /* TEST_CRYPTODEV_BLOCKCIPHER_H_ */

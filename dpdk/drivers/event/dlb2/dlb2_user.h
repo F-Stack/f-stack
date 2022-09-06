@@ -18,6 +18,7 @@ enum dlb2_error {
 	DLB2_ST_LDB_QUEUES_UNAVAILABLE,
 	DLB2_ST_LDB_CREDITS_UNAVAILABLE,
 	DLB2_ST_DIR_CREDITS_UNAVAILABLE,
+	DLB2_ST_CREDITS_UNAVAILABLE,
 	DLB2_ST_SEQUENCE_NUMBERS_UNAVAILABLE,
 	DLB2_ST_INVALID_DOMAIN_ID,
 	DLB2_ST_INVALID_QID_INFLIGHT_ALLOCATION,
@@ -57,6 +58,7 @@ static const char dlb2_error_strings[][128] = {
 	"DLB2_ST_LDB_QUEUES_UNAVAILABLE",
 	"DLB2_ST_LDB_CREDITS_UNAVAILABLE",
 	"DLB2_ST_DIR_CREDITS_UNAVAILABLE",
+	"DLB2_ST_CREDITS_UNAVAILABLE",
 	"DLB2_ST_SEQUENCE_NUMBERS_UNAVAILABLE",
 	"DLB2_ST_INVALID_DOMAIN_ID",
 	"DLB2_ST_INVALID_QID_INFLIGHT_ALLOCATION",
@@ -170,8 +172,15 @@ struct dlb2_create_sched_domain_args {
 	__u32 num_dir_ports;
 	__u32 num_atomic_inflights;
 	__u32 num_hist_list_entries;
-	__u32 num_ldb_credits;
-	__u32 num_dir_credits;
+	union {
+		struct {
+			__u32 num_ldb_credits;
+			__u32 num_dir_credits;
+		};
+		struct {
+			__u32 num_credits;
+		};
+	};
 	__u8 cos_strict;
 	__u8 padding1[3];
 };
@@ -195,9 +204,12 @@ struct dlb2_create_sched_domain_args {
  *	contiguous range of history list entries.
  * - num_ldb_credits: Amount of available load-balanced QE storage.
  * - num_dir_credits: Amount of available directed QE storage.
+ * - response.status: Detailed error code. In certain cases, such as if the
+ *	ioctl request arg is invalid, the driver won't set status.
  */
 struct dlb2_get_num_resources_args {
 	/* Output parameters */
+	struct dlb2_cmd_response response;
 	__u32 num_sched_domains;
 	__u32 num_ldb_queues;
 	__u32 num_ldb_ports;
@@ -206,8 +218,15 @@ struct dlb2_get_num_resources_args {
 	__u32 num_atomic_inflights;
 	__u32 num_hist_list_entries;
 	__u32 max_contiguous_hist_list_entries;
-	__u32 num_ldb_credits;
-	__u32 num_dir_credits;
+	union {
+		struct {
+			__u32 num_ldb_credits;
+			__u32 num_dir_credits;
+		};
+		struct {
+			__u32 num_credits;
+		};
+	};
 };
 
 /*

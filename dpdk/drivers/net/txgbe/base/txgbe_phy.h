@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _TXGBE_PHY_H_
@@ -18,11 +19,27 @@
 #define   SR_PCS_CTRL2_TYPE_SEL_R       LS16(0, 0, 0x3)
 #define   SR_PCS_CTRL2_TYPE_SEL_X       LS16(1, 0, 0x3)
 #define   SR_PCS_CTRL2_TYPE_SEL_W       LS16(2, 0, 0x3)
+#define SR_XS_PCS_KR_STS1		0x030020
+#define   SR_XS_PCS_KR_STS1_PLU		MS16(12, 0x1)
 #define SR_PMA_CTRL1                    0x010000
 #define   SR_PMA_CTRL1_SS13             MS16(13, 0x1)
 #define   SR_PMA_CTRL1_SS13_KX          LS16(0, 13, 0x1)
 #define   SR_PMA_CTRL1_SS13_KX4         LS16(1, 13, 0x1)
 #define   SR_PMA_CTRL1_LB               MS16(0, 0x1)
+#define SR_PMA_KR_PMD_CTRL		0x010096
+#define   SR_PMA_KR_PMD_CTRL_EN_TR	MS16(1, 0x1)
+#define   SR_PMA_KR_PMD_CTRL_RS_TR	MS16(0, 0x1)
+#define SR_PMA_KR_PMD_STS		0x010097
+#define   SR_PMA_KR_PMD_STS_TR_FAIL	MS16(3, 0x1)
+#define   SR_PMA_KR_PMD_STS_RCV		MS16(0, 0x1)
+#define SR_PMA_KR_LP_CEU		0x010098
+#define SR_PMA_KR_LP_CESTS		0x010099
+#define   SR_PMA_KR_LP_CESTS_RR		MS16(15, 0x1)
+#define SR_PMA_KR_LD_CEU		0x01009A
+#define SR_PMA_KR_LD_CESTS		0x01009B
+#define   SR_PMA_KR_LD_CESTS_RR		MS16(15, 0x1)
+#define SR_PMA_KR_FEC_CTRL              0x0100AB
+#define   SR_PMA_KR_FEC_CTRL_EN		MS16(0, 0x1)
 #define SR_MII_MMD_CTL                  0x1F0000
 #define   SR_MII_MMD_CTL_AN_EN              0x1000
 #define   SR_MII_MMD_CTL_RESTART_AN         0x0200
@@ -33,26 +50,80 @@
 #define   SR_MII_MMD_AN_ADV_PAUSE_ASM   0x80
 #define   SR_MII_MMD_AN_ADV_PAUSE_SYM   0x100
 #define SR_MII_MMD_LP_BABL              0x1F0005
+
+#define BP_TYPE_KX		0x20
+#define BP_TYPE_KX4		0x40
+#define BP_TYPE_KX4_KX		0x60
+#define BP_TYPE_KR		0x80
+#define BP_TYPE_KR_KX		0xA0
+#define BP_TYPE_KR_KX4		0xC0
+#define BP_TYPE_KR_KX4_KX	0xE0
+
 #define SR_AN_CTRL                      0x070000
 #define   SR_AN_CTRL_RSTRT_AN           MS16(9, 0x1)
 #define   SR_AN_CTRL_AN_EN              MS16(12, 0x1)
+#define   SR_AN_CTRL_EXT_NP             MS16(13, 0x1)
 #define SR_AN_MMD_ADV_REG1                0x070010
 #define   SR_AN_MMD_ADV_REG1_PAUSE(v)      ((0x3 & (v)) << 10)
 #define   SR_AN_MMD_ADV_REG1_PAUSE_SYM      0x400
 #define   SR_AN_MMD_ADV_REG1_PAUSE_ASM      0x800
-#define SR_AN_MMD_ADV_REG2                0x070011
-#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KX4    0x40
-#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KX     0x20
-#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KR     0x80
-#define   SR_AN_MMD_ADV_REG2_BP_TYPE_MASK   0xFFFF
+#define   SR_AN_MMD_ADV_REG1_NP(v)	  RS16(v, 15, 0x1)
+#define SR_AN_MMD_ADV_REG2		  0x070011
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KX4	BP_TYPE_KX4
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KX		BP_TYPE_KX
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KR		BP_TYPE_KR
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KX4_KX	BP_TYPE_KX4_KX
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KR_KX	BP_TYPE_KR_KX
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KR_KX4	BP_TYPE_KR_KX4
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_KR_KX4_KX	BP_TYPE_KR_KX4_KX
+#define   SR_AN_MMD_ADV_REG2_BP_TYPE_MASK	0xFFFF
+#define SR_AN_MMD_ADV_REG3                0x070012
+#define   SR_AN_MMD_ADV_REG3_FCE(v)	  RS16(v, 14, 0x3)
 #define SR_AN_MMD_LP_ABL1                 0x070013
+#define   SR_MMD_LP_ABL1_ADV_NP(v)	  RS16(v, 15, 0x1)
+#define SR_AN_MMD_LP_ABL2		  0x070014
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KX4		BP_TYPE_KX4
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KX		BP_TYPE_KX
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KR		BP_TYPE_KR
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KX4_KX	BP_TYPE_KX4_KX
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KR_KX	BP_TYPE_KR_KX
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KR_KX4	BP_TYPE_KR_KX4
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_KR_KX4_KX	BP_TYPE_KR_KX4_KX
+#define   SR_AN_MMD_LP_ABL2_BP_TYPE_MASK	0xFFFF
+#define SR_AN_MMD_LP_ABL3		  0x070015
+#define   SR_AN_MMD_LP_ABL3_FCE(v)	  RS16(v, 14, 0x3)
+#define SR_AN_XNP_TX1			  0x070016
+#define   SR_AN_XNP_TX1_NP		  MS16(15, 0x1)
+#define SR_AN_LP_XNP_ABL1		  0x070019
+#define   SR_AN_LP_XNP_ABL1_NP(v)	  RS16(v, 15, 0x1)
+
+#define VR_AN_INTR_MSK			  0x078001
+#define   VR_AN_INTR_CMPLT_IE		  MS16(0, 0x1)
+#define   VR_AN_INTR_LINK_IE		  MS16(1, 0x1)
+#define   VR_AN_INTR_PG_RCV_IE		  MS16(2, 0x1)
+#define VR_AN_INTR			  0x078002
+#define   VR_AN_INTR_CMPLT		  MS16(0, 0x1)
+#define   VR_AN_INTR_LINK		  MS16(1, 0x1)
+#define   VR_AN_INTR_PG_RCV		  MS16(2, 0x1)
 #define VR_AN_KR_MODE_CL                  0x078003
+#define   VR_AN_KR_MODE_CL_PDET		  MS16(0, 0x1)
 #define VR_XS_OR_PCS_MMD_DIGI_CTL1        0x038000
 #define   VR_XS_OR_PCS_MMD_DIGI_CTL1_ENABLE 0x1000
 #define   VR_XS_OR_PCS_MMD_DIGI_CTL1_VR_RST 0x8000
+#define VR_XS_OR_PCS_MMD_DIGI_CTL2        0x038001
 #define VR_XS_OR_PCS_MMD_DIGI_STATUS      0x038010
 #define   VR_XS_OR_PCS_MMD_DIGI_STATUS_PSEQ_MASK            0x1C
 #define   VR_XS_OR_PCS_MMD_DIGI_STATUS_PSEQ_POWER_GOOD      0x10
+#define VR_PMA_KRTR_PRBS_CTRL0		  0x018003
+#define   VR_PMA_KRTR_PRBS31_EN		  MS16(1, 0x1)
+#define   VR_PMA_KRTR_PRBS_MODE_EN	  MS16(0, 0x1)
+#define VR_PMA_KRTR_PRBS_CTRL1		  0x018004
+#define   VR_PMA_KRTR_PRBS_TIME_LMT	  MS16(0, 0xFFFF)
+#define VR_PMA_KRTR_PRBS_CTRL2		  0x018005
+#define   VR_PMA_KRTR_PRBS_ERR_LIM	  MS16(0, 0x2FFF)
+#define VR_PMA_KRTR_TIMER_CTRL0		  0x018006
+#define   VR_PMA_KRTR_TIMER_MAX_WAIT	  MS16(0, 0xFFFF)
+#define VR_PMA_KRTR_TIMER_CTRL2		  0x018008
 
 #define TXGBE_PHY_MPLLA_CTL0                    0x018071
 #define TXGBE_PHY_MPLLA_CTL3                    0x018077
@@ -71,6 +142,7 @@
 #define TXGBE_PHY_RX_EQ_CTL                     0x01805C
 #define TXGBE_PHY_TX_EQ_CTL0                    0x018036
 #define TXGBE_PHY_TX_EQ_CTL1                    0x018037
+#define   TXGBE_PHY_TX_EQ_CTL1_DEF		MS16(7, 0x1)
 #define TXGBE_PHY_TX_RATE_CTL                   0x018034
 #define TXGBE_PHY_RX_RATE_CTL                   0x018054
 #define TXGBE_PHY_TX_GEN_CTL2                   0x018032
@@ -80,12 +152,14 @@
 #define TXGBE_PHY_RX_POWER_ST_CTL               0x018055
 #define TXGBE_PHY_TX_POWER_ST_CTL               0x018035
 #define TXGBE_PHY_TX_GENCTRL1                   0x018031
+#define TXGBE_PHY_EQ_INIT_CTL0			0x01803A
+#define TXGBE_PHY_EQ_INIT_CTL1			0x01803B
 
 #define TXGBE_PHY_MPLLA_CTL0_MULTIPLIER_1GBASEX_KX              32
 #define TXGBE_PHY_MPLLA_CTL0_MULTIPLIER_10GBASER_KR             33
 #define TXGBE_PHY_MPLLA_CTL0_MULTIPLIER_OTHER                   40
 #define TXGBE_PHY_MPLLA_CTL0_MULTIPLIER_MASK                    0xFF
-#define TXGBE_PHY_MPLLA_CTL3_MULTIPLIER_BW_1GBASEX_KX           0x46
+#define TXGBE_PHY_MPLLA_CTL3_MULTIPLIER_BW_1GBASEX_KX           0x56
 #define TXGBE_PHY_MPLLA_CTL3_MULTIPLIER_BW_10GBASER_KR          0x7B
 #define TXGBE_PHY_MPLLA_CTL3_MULTIPLIER_BW_OTHER                0x56
 #define TXGBE_PHY_MPLLA_CTL3_MULTIPLIER_BW_MASK                 0x7FF
@@ -151,6 +225,11 @@
 #define TXGBE_PHY_MPLLA_CTL2_DIV_CLK_EN_10                      0x200
 #define TXGBE_PHY_MPLLA_CTL2_DIV_CLK_EN_16P5                    0x400
 #define TXGBE_PHY_MPLLA_CTL2_DIV_CLK_EN_MASK                    0x700
+#define TXGBE_PHY_LANE0_TX_EQ_CTL1				0x100E
+#define   TXGBE_PHY_LANE0_TX_EQ_CTL1_MAIN(v)			RS16(v, 6, 0x3F)
+#define TXGBE_PHY_LANE0_TX_EQ_CTL2				0x100F
+#define   TXGBE_PHY_LANE0_TX_EQ_CTL2_PRE			MS16(0, 0x3F)
+#define   TXGBE_PHY_LANE0_TX_EQ_CTL2_POST(v)			RS16(v, 6, 0x3F)
 
 /******************************************************************************
  * SFP I2C Registers:
@@ -318,6 +397,18 @@
 #define TXGBE_MD_PORT_CTRL            0xF001
 #define   TXGBE_MD_PORT_CTRL_RESET    MS16(14, 0x1)
 
+#define TXGBE_BP_M_NULL                      0
+#define TXGBE_BP_M_SFI                       1
+#define TXGBE_BP_M_KR                        2
+#define TXGBE_BP_M_KX4                       3
+#define TXGBE_BP_M_KX                        4
+#define TXGBE_BP_M_NAUTO                     0
+#define TXGBE_BP_M_AUTO                      1
+
+#ifndef CL72_KRTR_PRBS_MODE_EN
+#define CL72_KRTR_PRBS_MODE_EN	0xFFFF	/* open kr prbs check */
+#endif
+
 /******************************************************************************
  * SFP I2C Registers:
  ******************************************************************************/
@@ -340,6 +431,7 @@ s32 txgbe_setup_phy_link(struct txgbe_hw *hw);
 s32 txgbe_setup_phy_link_speed(struct txgbe_hw *hw,
 				       u32 speed,
 				       bool autoneg_wait_to_complete);
+s32 txgbe_get_phy_fw_version(struct txgbe_hw *hw, u32 *fw_version);
 s32 txgbe_get_copper_link_capabilities(struct txgbe_hw *hw,
 					       u32 *speed,
 					       bool *autoneg);
@@ -371,5 +463,9 @@ s32 txgbe_write_i2c_eeprom(struct txgbe_hw *hw, u8 byte_offset,
 				   u8 eeprom_data);
 u64 txgbe_autoc_read(struct txgbe_hw *hw);
 void txgbe_autoc_write(struct txgbe_hw *hw, u64 value);
+void txgbe_bp_mode_set(struct txgbe_hw *hw);
+void txgbe_set_phy_temp(struct txgbe_hw *hw);
+void txgbe_bp_down_event(struct txgbe_hw *hw);
+s32 txgbe_kr_handle(struct txgbe_hw *hw);
 
 #endif /* _TXGBE_PHY_H_ */

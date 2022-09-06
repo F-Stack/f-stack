@@ -62,6 +62,15 @@ service function and needs to create an event port for it. The callback is
 expected to fill the ``struct rte_event_eth_rx_adapter_conf structure``
 passed to it.
 
+If the application desires to control the event buffer size at adapter level,
+it can use the ``rte_event_eth_rx_adapter_create_with_params()`` api. The event
+buffer size is specified using ``struct rte_event_eth_rx_adapter_params::
+event_buf_size``. To configure the event buffer size at queue level, the boolean
+flag ``struct rte_event_eth_rx_adapter_params::use_queue_event_buf`` need to be
+set to true. The function is passed the event device to be associated with
+the adapter and port configuration for the adapter to setup an event port
+if the adapter needs to use a service function.
+
 Adding Rx Queues to the Adapter Instance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -72,7 +81,9 @@ parameter. Event information for packets from this Rx queue is encoded in the
 ``ev`` field of ``struct rte_event_eth_rx_adapter_queue_conf``. The
 servicing_weight member of the struct  rte_event_eth_rx_adapter_queue_conf
 is the relative polling frequency of the Rx queue and is applicable when the
-adapter uses a service core function.
+adapter uses a service core function. The applications can configure queue
+event buffer size in ``struct rte_event_eth_rx_adapter_queue_conf::event_buf_size``
+parameter.
 
 .. code-block:: c
 
@@ -83,6 +94,7 @@ adapter uses a service core function.
         queue_config.rx_queue_flags = 0;
         queue_config.ev = ev;
         queue_config.servicing_weight = 1;
+        queue_config.event_buf_size = 1024;
 
         err = rte_event_eth_rx_adapter_queue_add(id,
                                                 eth_dev_id,
@@ -146,6 +158,25 @@ if the callback is supported, and the counts maintained by the service function,
 if one exists. The service function also maintains a count of cycles for which
 it was not able to enqueue to the event device.
 
+Getting Adapter queue config
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The  ``rte_event_eth_rx_adapter_queue_conf_get()`` function reports
+flags for handling received packets, event queue identifier, scheduler type,
+event priority, polling frequency of the receive queue and flow identifier
+in struct ``rte_event_eth_rx_adapter_queue_conf``.
+
+Getting and resetting Adapter queue stats
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``rte_event_eth_rx_adapter_queue_stats_get()`` function reports
+adapter queue counters defined in struct ``rte_event_eth_rx_adapter_queue_stats``.
+This function reports queue level stats only when queue level event buffer is
+used otherwise it returns -EINVAL.
+
+The ``rte_event_eth_rx_adapter_queue_stats_reset`` function can be used to
+reset queue level stats when queue level event buffer is in use.
+
 Interrupt Based Rx Queues
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -186,3 +217,65 @@ the event buffer fill level is low. The
 ``rte_event_eth_rx_adapter_cb_register()`` function allow the application
 to register a callback that selects which packets to enqueue to the event
 device.
+
+Rx event vectorization
+~~~~~~~~~~~~~~~~~~~~~~
+
+The event devices, ethernet device pairs which support the capability
+``RTE_EVENT_ETH_RX_ADAPTER_CAP_EVENT_VECTOR`` can aggregate packets based on
+flow characteristics and generate a ``rte_event`` containing ``rte_event_vector``
+whose event type is either ``RTE_EVENT_TYPE_ETHDEV_VECTOR`` or
+``RTE_EVENT_TYPE_ETH_RX_ADAPTER_VECTOR``.
+The maximum, minimum vector sizes and timeouts vary based on the device
+capability and can be queried using
+``rte_event_eth_rx_adapter_vector_limits_get``.
+The Rx adapter additionally might include useful data such as ethernet device
+port and queue identifier in the ``rte_event_vector::port`` and
+``rte_event_vector::queue`` and mark ``rte_event_vector::attr_valid`` as true.
+The aggregation size and timeout are configurable at a queue level by setting
+``rte_event_eth_rx_adapter_queue_conf::vector_sz``,
+``rte_event_eth_rx_adapter_queue_conf::vector_timeout_ns`` and
+``rte_event_eth_rx_adapter_queue_conf::vector_mp`` when adding queues using
+``rte_event_eth_rx_adapter_queue_add``.
+
+A loop processing ``rte_event_vector`` containing mbufs is shown below.
+
+.. code-block:: c
+
+        event = rte_event_dequeue_burst(event_dev, event_port, &event,
+                                        1, 0);
+        if (!event)
+                continue;
+
+        switch (ev.event_type) {
+        case RTE_EVENT_TYPE_ETH_RX_ADAPTER_VECTOR:
+        case RTE_EVENT_TYPE_ETHDEV_VECTOR:
+                struct rte_mbufs **mbufs;
+
+                mbufs = (struct rte_mbufs **)ev[i].vec->mbufs;
+                for (i = 0; i < ev.vec->nb_elem; i++) {
+                        /* Process each mbuf. */
+                }
+        break;
+        case default:
+                /* Handle other event_types. */
+        }
+
+Rx event vectorization for SW Rx adapter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For SW based event vectorization, i.e., when the
+``RTE_EVENT_ETH_RX_ADAPTER_CAP_INTERNAL_PORT`` is not set in the adapter's
+capabilities flags for a particular ethernet device, the service function
+creates a single event vector flow for all the mbufs arriving on the given
+Rx queue.
+The 20-bit event flow identifier is set to 12-bits of Rx queue identifier
+and 8-bits of ethernet device identifier.
+Flow identifier is formatted as follows:
+
+.. code-block:: console
+
+    19      12,11            0
+    +---------+--------------+
+    | port_id |   queue_id   |
+    +---------+--------------+

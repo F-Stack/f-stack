@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -11,6 +11,9 @@
 /**
  * The TCAM module provides processing of Internal TCAM types.
  */
+
+/* Number of slices per row for WC TCAM */
+extern uint16_t g_wc_num_slices_per_row;
 
 /**
  * TCAM configuration parameters
@@ -36,6 +39,10 @@ struct tf_tcam_cfg_parms {
 	 * Session resource allocations
 	 */
 	struct tf_session_resources *resources;
+	/**
+	 * WC number of slices per row.
+	 */
+	enum tf_wc_num_slice wc_num_slices;
 };
 
 /**
@@ -208,6 +215,10 @@ struct tf_tcam_get_parms {
 	 */
 	enum tf_tcam_tbl_type type;
 	/**
+	 * [in] Type of HCAPI
+	 */
+	uint16_t hcapi_type;
+	/**
 	 * [in] Entry index to read
 	 */
 	uint32_t idx;
@@ -231,6 +242,16 @@ struct tf_tcam_get_parms {
 	 * [out] result size
 	 */
 	uint16_t result_size;
+};
+
+/**
+ * TCAM database
+ *
+ * Tcam rm database
+ *
+ */
+struct tcam_rm_db {
+	struct rm_db *tcam_db[TF_DIR_MAX];
 };
 
 /**
@@ -371,5 +392,21 @@ int tf_tcam_set(struct tf *tfp,
  */
 int tf_tcam_get(struct tf *tfp,
 		struct tf_tcam_get_parms *parms);
+
+/**
+ * Retrieves the allocated resource info
+ *
+ * [in] tfp
+ *   Pointer to TF handle, used for HCAPI communication
+ *
+ * [in] parms
+ *   Pointer to parameters
+ *
+ * Returns
+ *   - (0) if successful.
+ *   - (-EINVAL) on failure.
+ */
+int tf_tcam_get_resc_info(struct tf *tfp,
+			  struct tf_tcam_resource_info *parms);
 
 #endif /* _TF_TCAM_H */

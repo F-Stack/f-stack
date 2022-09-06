@@ -5,6 +5,7 @@
 #ifndef RTE_PMD_MLX5_REGEX_RXP_H_
 #define RTE_PMD_MLX5_REGEX_RXP_H_
 
+#define MLX5_RXP_BF2_IDENTIFIER 0x0
 #define MLX5_RXP_MAX_JOB_LENGTH	16384
 #define MLX5_RXP_MAX_SUBSETS 4095
 #define MLX5_RXP_CSR_NUM_ENTRIES 31
@@ -129,9 +130,9 @@ enum mlx5_rxp_program_mode {
 #define MLX5_RXP_EM_COUNT 1u /* Extra External Memories to use. */
 #define MLX5_RXP_DB_NOT_ASSIGNED 0xFF
 
-struct mlx5_regex_umem {
+struct mlx5_regex_mkey {
 	struct mlx5dv_devx_umem *umem;
-	uint32_t id;
+	struct mlx5_devx_obj *mkey;
 	uint64_t offset;
 };
 

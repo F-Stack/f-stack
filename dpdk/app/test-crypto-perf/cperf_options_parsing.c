@@ -457,6 +457,14 @@ parse_op_type(struct cperf_options *opts, const char *arg)
 		{
 			cperf_op_type_strs[CPERF_DOCSIS],
 			CPERF_DOCSIS
+		},
+		{
+			cperf_op_type_strs[CPERF_IPSEC],
+			CPERF_IPSEC
+		},
+		{
+			cperf_op_type_strs[CPERF_ASYM_MODEX],
+			CPERF_ASYM_MODEX
 		}
 	};
 
@@ -662,7 +670,8 @@ parse_pdcp_sn_sz(struct cperf_options *opts, const char *arg)
 
 const char *cperf_pdcp_domain_strs[] = {
 	[RTE_SECURITY_PDCP_MODE_CONTROL] = "control",
-	[RTE_SECURITY_PDCP_MODE_DATA] = "data"
+	[RTE_SECURITY_PDCP_MODE_DATA] = "data",
+	[RTE_SECURITY_PDCP_MODE_SHORT_MAC] = "short_mac"
 };
 
 static int
@@ -677,6 +686,11 @@ parse_pdcp_domain(struct cperf_options *opts, const char *arg)
 			cperf_pdcp_domain_strs
 			[RTE_SECURITY_PDCP_MODE_DATA],
 			RTE_SECURITY_PDCP_MODE_DATA
+		},
+		{
+			cperf_pdcp_domain_strs
+			[RTE_SECURITY_PDCP_MODE_SHORT_MAC],
+			RTE_SECURITY_PDCP_MODE_SHORT_MAC
 		}
 	};
 
@@ -1118,9 +1132,17 @@ cperf_options_check(struct cperf_options *options)
 	 * If segment size is not set, assume only one segment,
 	 * big enough to contain the largest buffer and the digest
 	 */
-	if (options->segment_sz == 0)
+	if (options->segment_sz == 0) {
 		options->segment_sz = options->max_buffer_size +
 				options->digest_sz;
+		/* In IPsec operation, packet length will be increased
+		 * by some bytes depend upon the algorithm, so increasing
+		 * the segment size by headroom to cover most of
+		 * the scenarios.
+		 */
+		if (options->op_type == CPERF_IPSEC)
+			options->segment_sz += RTE_PKTMBUF_HEADROOM;
+	}
 
 	if (options->segment_sz < options->digest_sz) {
 		RTE_LOG(ERR, USER1,

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
@@ -926,6 +926,14 @@ ef10_rx_qcreate(
 			goto fail1;
 		}
 		erp->er_buf_size = type_data->ertd_default.ed_buf_size;
+		if (flags & EFX_RXQ_FLAG_USER_MARK) {
+			rc = ENOTSUP;
+			goto fail2;
+		}
+		if (flags & EFX_RXQ_FLAG_USER_FLAG) {
+			rc = ENOTSUP;
+			goto fail3;
+		}
 		/*
 		 * Ignore EFX_RXQ_FLAG_RSS_HASH since if RSS hash is calculated
 		 * it is always delivered from HW in the pseudo-header.
@@ -936,7 +944,7 @@ ef10_rx_qcreate(
 		erpl = &ef10_packed_stream_rx_prefix_layout;
 		if (type_data == NULL) {
 			rc = EINVAL;
-			goto fail2;
+			goto fail4;
 		}
 		switch (type_data->ertd_packed_stream.eps_buf_size) {
 		case EFX_RXQ_PACKED_STREAM_BUF_SIZE_1M:
@@ -956,13 +964,21 @@ ef10_rx_qcreate(
 			break;
 		default:
 			rc = ENOTSUP;
-			goto fail3;
+			goto fail5;
 		}
 		erp->er_buf_size = type_data->ertd_packed_stream.eps_buf_size;
 		/* Packed stream pseudo header does not have RSS hash value */
 		if (flags & EFX_RXQ_FLAG_RSS_HASH) {
 			rc = ENOTSUP;
-			goto fail4;
+			goto fail6;
+		}
+		if (flags & EFX_RXQ_FLAG_USER_MARK) {
+			rc = ENOTSUP;
+			goto fail7;
+		}
+		if (flags & EFX_RXQ_FLAG_USER_FLAG) {
+			rc = ENOTSUP;
+			goto fail8;
 		}
 		break;
 #endif /* EFSYS_OPT_RX_PACKED_STREAM */
@@ -971,7 +987,7 @@ ef10_rx_qcreate(
 		erpl = &ef10_essb_rx_prefix_layout;
 		if (type_data == NULL) {
 			rc = EINVAL;
-			goto fail5;
+			goto fail9;
 		}
 		params.es_bufs_per_desc =
 		    type_data->ertd_es_super_buffer.eessb_bufs_per_desc;
@@ -989,7 +1005,7 @@ ef10_rx_qcreate(
 #endif /* EFSYS_OPT_RX_ES_SUPER_BUFFER */
 	default:
 		rc = ENOTSUP;
-		goto fail6;
+		goto fail10;
 	}
 
 #if EFSYS_OPT_RX_PACKED_STREAM
@@ -997,13 +1013,13 @@ ef10_rx_qcreate(
 		/* Check if datapath firmware supports packed stream mode */
 		if (encp->enc_rx_packed_stream_supported == B_FALSE) {
 			rc = ENOTSUP;
-			goto fail7;
+			goto fail11;
 		}
 		/* Check if packed stream allows configurable buffer sizes */
 		if ((params.ps_buf_size != MC_CMD_INIT_RXQ_EXT_IN_PS_BUFF_1M) &&
 		    (encp->enc_rx_var_packed_stream_supported == B_FALSE)) {
 			rc = ENOTSUP;
-			goto fail8;
+			goto fail12;
 		}
 	}
 #else /* EFSYS_OPT_RX_PACKED_STREAM */
@@ -1014,22 +1030,27 @@ ef10_rx_qcreate(
 	if (params.es_bufs_per_desc > 0) {
 		if (encp->enc_rx_es_super_buffer_supported == B_FALSE) {
 			rc = ENOTSUP;
-			goto fail9;
+			goto fail13;
 		}
 		if (!EFX_IS_P2ALIGNED(uint32_t, params.es_max_dma_len,
 			    EFX_RX_ES_SUPER_BUFFER_BUF_ALIGNMENT)) {
 			rc = EINVAL;
-			goto fail10;
+			goto fail14;
 		}
 		if (!EFX_IS_P2ALIGNED(uint32_t, params.es_buf_stride,
 			    EFX_RX_ES_SUPER_BUFFER_BUF_ALIGNMENT)) {
 			rc = EINVAL;
-			goto fail11;
+			goto fail15;
 		}
 	}
 #else /* EFSYS_OPT_RX_ES_SUPER_BUFFER */
 	EFSYS_ASSERT(params.es_bufs_per_desc == 0);
 #endif /* EFSYS_OPT_RX_ES_SUPER_BUFFER */
+
+	if (flags & EFX_RXQ_FLAG_INGRESS_MPORT) {
+		rc = ENOTSUP;
+		goto fail16;
+	}
 
 	/* Scatter can only be disabled if the firmware supports doing so */
 	if (flags & EFX_RXQ_FLAG_SCATTER)
@@ -1044,7 +1065,7 @@ ef10_rx_qcreate(
 
 	if ((rc = efx_mcdi_init_rxq(enp, ndescs, eep, label, index,
 		    esmp, &params)) != 0)
-		goto fail12;
+		goto fail17;
 
 	erp->er_eep = eep;
 	erp->er_label = label;
@@ -1057,13 +1078,27 @@ ef10_rx_qcreate(
 
 	return (0);
 
+fail17:
+	EFSYS_PROBE(fail15);
+fail16:
+	EFSYS_PROBE(fail14);
+#if EFSYS_OPT_RX_ES_SUPER_BUFFER
+fail15:
+	EFSYS_PROBE(fail15);
+fail14:
+	EFSYS_PROBE(fail14);
+fail13:
+	EFSYS_PROBE(fail13);
+#endif /* EFSYS_OPT_RX_ES_SUPER_BUFFER */
+#if EFSYS_OPT_RX_PACKED_STREAM
 fail12:
 	EFSYS_PROBE(fail12);
-#if EFSYS_OPT_RX_ES_SUPER_BUFFER
 fail11:
 	EFSYS_PROBE(fail11);
+#endif /* EFSYS_OPT_RX_PACKED_STREAM */
 fail10:
 	EFSYS_PROBE(fail10);
+#if EFSYS_OPT_RX_ES_SUPER_BUFFER
 fail9:
 	EFSYS_PROBE(fail9);
 #endif /* EFSYS_OPT_RX_ES_SUPER_BUFFER */
@@ -1072,21 +1107,17 @@ fail8:
 	EFSYS_PROBE(fail8);
 fail7:
 	EFSYS_PROBE(fail7);
-#endif /* EFSYS_OPT_RX_PACKED_STREAM */
 fail6:
 	EFSYS_PROBE(fail6);
-#if EFSYS_OPT_RX_ES_SUPER_BUFFER
 fail5:
 	EFSYS_PROBE(fail5);
-#endif /* EFSYS_OPT_RX_ES_SUPER_BUFFER */
-#if EFSYS_OPT_RX_PACKED_STREAM
 fail4:
 	EFSYS_PROBE(fail4);
+#endif /* EFSYS_OPT_RX_PACKED_STREAM */
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:
 	EFSYS_PROBE(fail2);
-#endif /* EFSYS_OPT_RX_PACKED_STREAM */
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 

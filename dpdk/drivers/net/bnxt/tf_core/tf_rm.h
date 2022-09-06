@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -35,24 +35,14 @@ struct tf;
  * The RM DB will work on its initial allocated sizes so the
  * capability of dynamically growing a particular resource is not
  * possible. If this capability later becomes a requirement then the
- * MAX pool size of the Chip œneeds to be added to the tf_rm_elem_info
+ * MAX pool size of the chip needs to be added to the tf_rm_elem_info
  * structure and several new APIs would need to be added to allow for
  * growth of a single TF resource type.
  *
- * The access functions does not check for NULL pointers as it's a
+ * The access functions do not check for NULL pointers as they are a
  * support module, not called directly.
  */
 
-/**
- * Resource reservation single entry result. Used when accessing HCAPI
- * RM on the firmware.
- */
-struct tf_rm_new_entry {
-	/** Starting index of the allocated resource */
-	uint16_t start;
-	/** Number of allocated elements */
-	uint16_t stride;
-};
 
 /**
  * RM Element configuration enumeration. Used by the Device to
@@ -65,19 +55,28 @@ enum tf_rm_elem_cfg_type {
 	 * No configuration
 	 */
 	TF_RM_ELEM_CFG_NULL,
-	/** HCAPI 'controlled', no RM storage thus the Device Module
+	/** HCAPI 'controlled', no RM storage so the module
 	 *  using the RM can chose to handle storage locally.
 	 */
 	TF_RM_ELEM_CFG_HCAPI,
-	/** HCAPI 'controlled', uses a Bit Allocator Pool for internal
+	/** HCAPI 'controlled', uses a bit allocator pool for internal
 	 *  storage in the RM.
 	 */
 	TF_RM_ELEM_CFG_HCAPI_BA,
 	/**
-	 * Shared element thus it belongs to a shared FW Session and
-	 * is not controlled by the Host.
+	 * HCAPI 'controlled', uses a bit allocator pool for internal
+	 * storage in the RM but multiple TF types map to a single
+	 * HCAPI type.  Parent manages the table.
 	 */
-	TF_RM_ELEM_CFG_SHARED,
+	TF_RM_ELEM_CFG_HCAPI_BA_PARENT,
+	/**
+	 * HCAPI 'controlled', uses a bit allocator pool for internal
+	 * storage in the RM but multiple TF types map to a single
+	 * HCAPI type.  Child accesses the parent db.
+	 */
+	TF_RM_ELEM_CFG_HCAPI_BA_CHILD,
+
+
 	TF_RM_TYPE_MAX
 };
 
@@ -105,15 +104,26 @@ struct tf_rm_element_cfg {
 	 */
 	enum tf_rm_elem_cfg_type cfg_type;
 
-	/* If a HCAPI to TF type conversion is required then TF type
-	 * can be added here.
-	 */
-
 	/**
 	 * HCAPI RM Type for the element. Used for TF to HCAPI type
 	 * conversion.
 	 */
 	uint16_t hcapi_type;
+
+	/**
+	 * if cfg_type == TF_RM_ELEM_CFG_HCAPI_BA_CHILD/PARENT
+	 *
+	 * Parent Truflow module subtype associated with this resource type.
+	 */
+	uint16_t parent_subtype;
+
+	/**
+	 * if cfg_type == TF_RM_ELEM_CFG_HCAPI_BA_CHILD/PARENT
+	 *
+	 * Resource slices.  How many slices will fit in the
+	 * resource pool chunk size.
+	 */
+	uint8_t slices;
 };
 
 /**
@@ -127,7 +137,7 @@ struct tf_rm_alloc_info {
 	 * In case of dynamic allocation support this would have
 	 * to be changed to linked list of tf_rm_entry instead.
 	 */
-	struct tf_rm_new_entry entry;
+	struct tf_resource_info entry;
 };
 
 /**
@@ -135,9 +145,9 @@ struct tf_rm_alloc_info {
  */
 struct tf_rm_create_db_parms {
 	/**
-	 * [in] Device module type. Used for logging purposes.
+	 * [in] Module type. Used for logging purposes.
 	 */
-	enum tf_device_module_type type;
+	enum tf_module_type module;
 	/**
 	 * [in] Receive or transmit direction.
 	 */
@@ -153,8 +163,7 @@ struct tf_rm_create_db_parms {
 	/**
 	 * Resource allocation count array. This array content
 	 * originates from the tf_session_resources that is passed in
-	 * on session open.
-	 * Array size is num_elements.
+	 * on session open. Array size is num_elements.
 	 */
 	uint16_t *alloc_cnt;
 	/**
@@ -186,10 +195,11 @@ struct tf_rm_allocate_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] Module subtype indicates which DB entry to perform the
+	 * action on.  (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
 	 * [in] Pointer to the allocated index in normalized
 	 * form. Normalized means the index has been adjusted,
@@ -219,10 +229,11 @@ struct tf_rm_free_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
 	 * [in] Index to free
 	 */
@@ -238,10 +249,11 @@ struct tf_rm_is_allocated_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
 	 * [in] Index to free
 	 */
@@ -265,13 +277,14 @@ struct tf_rm_get_alloc_info_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
 	 * [out] Pointer to the requested allocation information for
-	 * the specified db_index
+	 * the specified subtype
 	 */
 	struct tf_rm_alloc_info *info;
 };
@@ -285,14 +298,34 @@ struct tf_rm_get_hcapi_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
-	 * [out] Pointer to the hcapi type for the specified db_index
+	 * [out] Pointer to the hcapi type for the specified subtype
 	 */
 	uint16_t *hcapi_type;
+};
+/**
+ * Get Slices parameters for a single element
+ */
+struct tf_rm_get_slices_parms {
+	/**
+	 * [in] RM DB Handle
+	 */
+	void *rm_db;
+	/**
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TBL_TYPE_FULL_ACTION subtype of module
+	 * TF_MODULE_TYPE_TABLE)
+	 */
+	uint16_t subtype;
+	/**
+	 * [in/out] Pointer to number of slices for the given type
+	 */
+	uint16_t *slices;
 };
 
 /**
@@ -304,12 +337,13 @@ struct tf_rm_get_inuse_count_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
-	 * [out] Pointer to the inuse count for the specified db_index
+	 * [out] Pointer to the inuse count for the specified subtype
 	 */
 	uint16_t *count;
 };
@@ -323,10 +357,11 @@ struct tf_rm_check_indexes_in_range_parms {
 	 */
 	void *rm_db;
 	/**
-	 * [in] DB Index, indicates which DB entry to perform the
-	 * action on.
+	 * [in] TF subtype indicates which DB entry to perform the
+	 * action on. (e.g. TF_TCAM_TBL_TYPE_L2_CTXT subtype of module
+	 * TF_MODULE_TYPE_TCAM)
 	 */
-	uint16_t db_index;
+	uint16_t subtype;
 	/**
 	 * [in] Starting index
 	 */
@@ -355,6 +390,8 @@ struct tf_rm_check_indexes_in_range_parms {
  * @ref tf_rm_get_hcapi_type
  *
  * @ref tf_rm_get_inuse_count
+ *
+ * @ref tf_rm_get_slice_size
  */
 
 /**
@@ -384,6 +421,24 @@ struct tf_rm_check_indexes_in_range_parms {
  * - Returns handle to the created DB
  */
 int tf_rm_create_db(struct tf *tfp,
+		    struct tf_rm_create_db_parms *parms);
+
+/**
+ * Creates and fills a Resource Manager (RM) DB with requested
+ * elements. The DB is indexed per the parms structure. It only retrieve
+ * allocated resource information for a exist session.
+ *
+ * [in] tfp
+ *   Pointer to TF handle, used for HCAPI communication
+ *
+ * [in] parms
+ *   Pointer to create parameters
+ *
+ * Returns
+ *   - (0) if successful.
+ *   - (-EINVAL) on failure.
+ */
+int tf_rm_create_db_no_reservation(struct tf *tfp,
 		    struct tf_rm_create_db_parms *parms);
 
 /**
@@ -460,6 +515,22 @@ int tf_rm_is_allocated(struct tf_rm_is_allocated_parms *parms);
 int tf_rm_get_info(struct tf_rm_get_alloc_info_parms *parms);
 
 /**
+ * Retrieves all elements allocation information from the Resource
+ * Manager (RM) DB.
+ *
+ * [in] parms
+ *   Pointer to get info parameters
+ *
+ * [in] size
+ *   number of the elements for the specific module
+ *
+ * Returns
+ *   - (0) if successful.
+ *   - (-EINVAL) on failure.
+ */
+int tf_rm_get_all_info(struct tf_rm_get_alloc_info_parms *parms, int size);
+
+/**
  * Performs a lookup in the Resource Manager DB and retrieves the
  * requested HCAPI RM type.
  *
@@ -498,5 +569,17 @@ int tf_rm_get_inuse_count(struct tf_rm_get_inuse_count_parms *parms);
 int
 tf_rm_check_indexes_in_range(struct tf_rm_check_indexes_in_range_parms *parms);
 
+/**
+ * Get the number of slices per resource bit allocator for the resource type
+ *
+ * [in] parms
+ *   Pointer to get inuse parameters
+ *
+ * Returns
+ *   - (0) if successful.
+ *   - (-EINVAL) on failure.
+ */
+int
+tf_rm_get_slices(struct tf_rm_get_slices_parms *parms);
 
 #endif /* TF_RM_NEW_H_ */

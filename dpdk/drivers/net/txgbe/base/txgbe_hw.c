@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include "txgbe_type.h"
 #include "txgbe_mbx.h"
 #include "txgbe_phy.h"
 #include "txgbe_dcb.h"
+#include "txgbe_vf.h"
 #include "txgbe_eeprom.h"
 #include "txgbe_mng.h"
 #include "txgbe_hw.h"
@@ -57,9 +59,9 @@ bool txgbe_device_supports_autoneg_fc(struct txgbe_hw *hw)
 		break;
 	case txgbe_media_type_copper:
 		/* only some copper devices support flow control autoneg */
-		switch (hw->device_id) {
-		case TXGBE_DEV_ID_RAPTOR_XAUI:
-		case TXGBE_DEV_ID_RAPTOR_SGMII:
+		switch (hw->subsystem_device_id & 0xFF) {
+		case TXGBE_DEV_ID_XAUI:
+		case TXGBE_DEV_ID_SGMII:
 			supported = true;
 			break;
 		default:
@@ -88,7 +90,6 @@ s32 txgbe_setup_fc(struct txgbe_hw *hw)
 	u16 reg_cu = 0;
 	u32 value = 0;
 	u64 reg_bp = 0;
-	bool locked = false;
 
 	/* Validate the requested mode */
 	if (hw->fc.strict_ieee && hw->fc.requested_mode == txgbe_fc_rx_pause) {
@@ -105,29 +106,6 @@ s32 txgbe_setup_fc(struct txgbe_hw *hw)
 		hw->fc.requested_mode = txgbe_fc_full;
 
 	/*
-	 * Set up the 1G and 10G flow control advertisement registers so the
-	 * HW will be able to do fc autoneg once the cable is plugged in.  If
-	 * we link at 10G, the 1G advertisement is harmless and vice versa.
-	 */
-	switch (hw->phy.media_type) {
-	case txgbe_media_type_backplane:
-		/* some MAC's need RMW protection on AUTOC */
-		err = hw->mac.prot_autoc_read(hw, &locked, &reg_bp);
-		if (err != 0)
-			goto out;
-
-		/* fall through - only backplane uses autoc */
-	case txgbe_media_type_fiber_qsfp:
-	case txgbe_media_type_fiber:
-	case txgbe_media_type_copper:
-		hw->phy.read_reg(hw, TXGBE_MD_AUTO_NEG_ADVT,
-				     TXGBE_MD_DEV_AUTO_NEG, &reg_cu);
-		break;
-	default:
-		break;
-	}
-
-	/*
 	 * The possible values of fc.requested_mode are:
 	 * 0: Flow control is completely disabled
 	 * 1: Rx flow control is enabled (we can receive pause frames,
@@ -140,28 +118,12 @@ s32 txgbe_setup_fc(struct txgbe_hw *hw)
 	switch (hw->fc.requested_mode) {
 	case txgbe_fc_none:
 		/* Flow control completely disabled by software override. */
-		reg &= ~(SR_MII_MMD_AN_ADV_PAUSE_SYM |
-			SR_MII_MMD_AN_ADV_PAUSE_ASM);
-		if (hw->phy.media_type == txgbe_media_type_backplane)
-			reg_bp &= ~(TXGBE_AUTOC_SYM_PAUSE |
-				    TXGBE_AUTOC_ASM_PAUSE);
-		else if (hw->phy.media_type == txgbe_media_type_copper)
-			reg_cu &= ~(TXGBE_TAF_SYM_PAUSE | TXGBE_TAF_ASM_PAUSE);
 		break;
 	case txgbe_fc_tx_pause:
 		/*
 		 * Tx Flow control is enabled, and Rx Flow control is
 		 * disabled by software override.
 		 */
-		reg |= SR_MII_MMD_AN_ADV_PAUSE_ASM;
-		reg &= ~SR_MII_MMD_AN_ADV_PAUSE_SYM;
-		if (hw->phy.media_type == txgbe_media_type_backplane) {
-			reg_bp |= TXGBE_AUTOC_ASM_PAUSE;
-			reg_bp &= ~TXGBE_AUTOC_SYM_PAUSE;
-		} else if (hw->phy.media_type == txgbe_media_type_copper) {
-			reg_cu |= TXGBE_TAF_ASM_PAUSE;
-			reg_cu &= ~TXGBE_TAF_SYM_PAUSE;
-		}
 		reg |= SR_MII_MMD_AN_ADV_PAUSE_ASM;
 		reg_bp |= SR_AN_MMD_ADV_REG1_PAUSE_ASM;
 		break;
@@ -177,13 +139,6 @@ s32 txgbe_setup_fc(struct txgbe_hw *hw)
 		 */
 	case txgbe_fc_full:
 		/* Flow control (both Rx and Tx) is enabled by SW override. */
-		reg |= SR_MII_MMD_AN_ADV_PAUSE_SYM |
-			SR_MII_MMD_AN_ADV_PAUSE_ASM;
-		if (hw->phy.media_type == txgbe_media_type_backplane)
-			reg_bp |= TXGBE_AUTOC_SYM_PAUSE |
-				  TXGBE_AUTOC_ASM_PAUSE;
-		else if (hw->phy.media_type == txgbe_media_type_copper)
-			reg_cu |= TXGBE_TAF_SYM_PAUSE | TXGBE_TAF_ASM_PAUSE;
 		reg |= SR_MII_MMD_AN_ADV_PAUSE_SYM |
 			SR_MII_MMD_AN_ADV_PAUSE_ASM;
 		reg_bp |= SR_AN_MMD_ADV_REG1_PAUSE_SYM |
@@ -313,6 +268,9 @@ s32 txgbe_start_hw_gen2(struct txgbe_hw *hw)
 s32 txgbe_init_hw(struct txgbe_hw *hw)
 {
 	s32 status;
+
+	/* Get firmware version */
+	hw->phy.get_fw_version(hw, &hw->fw_version);
 
 	/* Reset the hardware */
 	status = hw->mac.reset_hw(hw);
@@ -724,18 +682,18 @@ s32 txgbe_init_rx_addrs(struct txgbe_hw *hw)
 		/* Get the MAC address from the RAR0 for later reference */
 		hw->mac.get_mac_addr(hw, hw->mac.addr);
 
-		DEBUGOUT(" Keeping Current RAR0 Addr =%.2X %.2X %.2X ",
+		DEBUGOUT(" Keeping Current RAR0 Addr = "
+			  RTE_ETHER_ADDR_PRT_FMT,
 			  hw->mac.addr[0], hw->mac.addr[1],
-			  hw->mac.addr[2]);
-		DEBUGOUT("%.2X %.2X %.2X\n", hw->mac.addr[3],
+			  hw->mac.addr[2], hw->mac.addr[3],
 			  hw->mac.addr[4], hw->mac.addr[5]);
 	} else {
 		/* Setup the receive address. */
 		DEBUGOUT("Overriding MAC Address in RAR[0]");
-		DEBUGOUT(" New MAC Addr =%.2X %.2X %.2X ",
+		DEBUGOUT(" New MAC Addr = "
+			  RTE_ETHER_ADDR_PRT_FMT,
 			  hw->mac.addr[0], hw->mac.addr[1],
-			  hw->mac.addr[2]);
-		DEBUGOUT("%.2X %.2X %.2X\n", hw->mac.addr[3],
+			  hw->mac.addr[2], hw->mac.addr[3],
 			  hw->mac.addr[4], hw->mac.addr[5]);
 
 		hw->mac.set_rar(hw, 0, hw->mac.addr, 0, true);
@@ -2411,6 +2369,9 @@ s32 txgbe_init_shared_code(struct txgbe_hw *hw)
 	case txgbe_mac_raptor:
 		status = txgbe_init_ops_pf(hw);
 		break;
+	case txgbe_mac_raptor_vf:
+		status = txgbe_init_ops_vf(hw);
+		break;
 	default:
 		status = TXGBE_ERR_DEVICE_NOT_SUPPORTED;
 		break;
@@ -2439,26 +2400,12 @@ s32 txgbe_set_mac_type(struct txgbe_hw *hw)
 	}
 
 	switch (hw->device_id) {
-	case TXGBE_DEV_ID_RAPTOR_KR_KX_KX4:
-		hw->phy.media_type = txgbe_media_type_backplane;
+	case TXGBE_DEV_ID_SP1000:
+	case TXGBE_DEV_ID_WX1820:
 		hw->mac.type = txgbe_mac_raptor;
 		break;
-	case TXGBE_DEV_ID_RAPTOR_XAUI:
-	case TXGBE_DEV_ID_RAPTOR_SGMII:
-		hw->phy.media_type = txgbe_media_type_copper;
-		hw->mac.type = txgbe_mac_raptor;
-		break;
-	case TXGBE_DEV_ID_RAPTOR_SFP:
-	case TXGBE_DEV_ID_WX1820_SFP:
-		hw->phy.media_type = txgbe_media_type_fiber;
-		hw->mac.type = txgbe_mac_raptor;
-		break;
-	case TXGBE_DEV_ID_RAPTOR_QSFP:
-		hw->phy.media_type = txgbe_media_type_fiber_qsfp;
-		hw->mac.type = txgbe_mac_raptor;
-		break;
-	case TXGBE_DEV_ID_RAPTOR_VF:
-	case TXGBE_DEV_ID_RAPTOR_VF_HV:
+	case TXGBE_DEV_ID_SP1000_VF:
+	case TXGBE_DEV_ID_WX1820_VF:
 		hw->phy.media_type = txgbe_media_type_virtual;
 		hw->mac.type = txgbe_mac_raptor_vf;
 		break;
@@ -2468,8 +2415,8 @@ s32 txgbe_set_mac_type(struct txgbe_hw *hw)
 		break;
 	}
 
-	DEBUGOUT("found mac: %d media: %d, returns: %d",
-		  hw->mac.type, hw->phy.media_type, err);
+	DEBUGOUT("found mac: %d, returns: %d",
+		  hw->mac.type, err);
 	return err;
 }
 
@@ -2498,13 +2445,9 @@ void txgbe_init_mac_link_ops(struct txgbe_hw *hw)
 		mac->setup_link = txgbe_setup_mac_link_multispeed_fiber;
 		mac->setup_mac_link = txgbe_setup_mac_link;
 		mac->set_rate_select_speed = txgbe_set_hard_rate_select_speed;
-	} else if ((hw->phy.media_type == txgbe_media_type_backplane) &&
-		    (hw->phy.smart_speed == txgbe_smart_speed_auto ||
-		     hw->phy.smart_speed == txgbe_smart_speed_on) &&
-		     !txgbe_verify_lesm_fw_enabled_raptor(hw)) {
-		mac->setup_link = txgbe_setup_mac_link_smartspeed;
 	} else {
 		mac->setup_link = txgbe_setup_mac_link;
+		mac->set_rate_select_speed = txgbe_set_hard_rate_select_speed;
 	}
 }
 
@@ -2523,7 +2466,7 @@ s32 txgbe_init_phy_raptor(struct txgbe_hw *hw)
 	struct txgbe_phy_info *phy = &hw->phy;
 	s32 err = 0;
 
-	if (hw->device_id == TXGBE_DEV_ID_RAPTOR_QSFP) {
+	if ((hw->device_id & 0xFF) == TXGBE_DEV_ID_QSFP) {
 		/* Store flag indicating I2C bus access control unit. */
 		hw->phy.qsfp_shared_i2c_bus = TRUE;
 
@@ -2544,6 +2487,11 @@ s32 txgbe_init_phy_raptor(struct txgbe_hw *hw)
 		mac->setup_link = txgbe_setup_copper_link_raptor;
 		mac->get_link_capabilities =
 				  txgbe_get_copper_link_capabilities;
+	}
+
+	if (phy->media_type == txgbe_media_type_backplane) {
+		mac->kr_handle = txgbe_kr_handle;
+		mac->bp_down_event = txgbe_bp_down_event;
 	}
 
 	/* Set necessary function pointers based on PHY type */
@@ -2694,6 +2642,7 @@ s32 txgbe_init_ops_pf(struct txgbe_hw *hw)
 	phy->write_reg_mdi = txgbe_write_phy_reg_mdi;
 	phy->setup_link = txgbe_setup_phy_link;
 	phy->setup_link_speed = txgbe_setup_phy_link_speed;
+	phy->get_fw_version = txgbe_get_phy_fw_version;
 	phy->read_i2c_byte = txgbe_read_i2c_byte;
 	phy->write_i2c_byte = txgbe_write_i2c_byte;
 	phy->read_i2c_sff8472 = txgbe_read_i2c_sff8472;
@@ -2714,6 +2663,7 @@ s32 txgbe_init_ops_pf(struct txgbe_hw *hw)
 	mac->acquire_swfw_sync = txgbe_acquire_swfw_sync;
 	mac->release_swfw_sync = txgbe_release_swfw_sync;
 	mac->reset_hw = txgbe_reset_hw;
+	mac->update_mc_addr_list = txgbe_update_mc_addr_list;
 
 	mac->disable_sec_rx_path = txgbe_disable_sec_rx_path;
 	mac->enable_sec_rx_path = txgbe_enable_sec_rx_path;
@@ -2908,6 +2858,9 @@ u32 txgbe_get_media_type_raptor(struct txgbe_hw *hw)
 {
 	u32 media_type;
 
+	if (hw->phy.ffe_set)
+		txgbe_bp_mode_set(hw);
+
 	/* Detect if there is a copper PHY attached. */
 	switch (hw->phy.type) {
 	case txgbe_phy_cu_unknown:
@@ -2918,21 +2871,28 @@ u32 txgbe_get_media_type_raptor(struct txgbe_hw *hw)
 		break;
 	}
 
-	switch (hw->device_id) {
-	case TXGBE_DEV_ID_RAPTOR_KR_KX_KX4:
+	switch (hw->subsystem_device_id & 0xFF) {
+	case TXGBE_DEV_ID_KR_KX_KX4:
+	case TXGBE_DEV_ID_MAC_SGMII:
+	case TXGBE_DEV_ID_MAC_XAUI:
 		/* Default device ID is mezzanine card KX/KX4 */
 		media_type = txgbe_media_type_backplane;
 		break;
-	case TXGBE_DEV_ID_RAPTOR_SFP:
-	case TXGBE_DEV_ID_WX1820_SFP:
+	case TXGBE_DEV_ID_SFP:
 		media_type = txgbe_media_type_fiber;
 		break;
-	case TXGBE_DEV_ID_RAPTOR_QSFP:
+	case TXGBE_DEV_ID_QSFP:
 		media_type = txgbe_media_type_fiber_qsfp;
 		break;
-	case TXGBE_DEV_ID_RAPTOR_XAUI:
-	case TXGBE_DEV_ID_RAPTOR_SGMII:
+	case TXGBE_DEV_ID_XAUI:
+	case TXGBE_DEV_ID_SGMII:
 		media_type = txgbe_media_type_copper;
+		break;
+	case TXGBE_DEV_ID_SFI_XAUI:
+		if (hw->bus.lan_id == 0)
+			media_type = txgbe_media_type_fiber;
+		else
+			media_type = txgbe_media_type_copper;
 		break;
 	default:
 		media_type = txgbe_media_type_unknown;
@@ -3206,11 +3166,10 @@ s32 txgbe_setup_mac_link(struct txgbe_hw *hw,
 	u64 pma_pmd_10gs = autoc & TXGBE_AUTOC_10GS_PMA_PMD_MASK;
 	u64 pma_pmd_1g = autoc & TXGBE_AUTOC_1G_PMA_PMD_MASK;
 	u64 link_mode = autoc & TXGBE_AUTOC_LMS_MASK;
-	u64 current_autoc = autoc;
 	u64 orig_autoc = 0;
-	u32 links_reg;
-	u32 i;
 	u32 link_capabilities = TXGBE_LINK_SPEED_UNKNOWN;
+
+	UNREFERENCED_PARAMETER(autoneg_wait_to_complete);
 
 	/* Check to see if speed passed in is supported. */
 	status = hw->mac.get_link_capabilities(hw,
@@ -3241,8 +3200,7 @@ s32 txgbe_setup_mac_link(struct txgbe_hw *hw,
 		if (speed & TXGBE_LINK_SPEED_10GB_FULL) {
 			if (orig_autoc & TXGBE_AUTOC_KX4_SUPP)
 				autoc |= TXGBE_AUTOC_KX4_SUPP;
-			if ((orig_autoc & TXGBE_AUTOC_KR_SUPP) &&
-			    !hw->phy.smart_speed_active)
+			if (orig_autoc & TXGBE_AUTOC_KR_SUPP)
 				autoc |= TXGBE_AUTOC_KR_SUPP;
 		}
 		if (speed & TXGBE_LINK_SPEED_1GB_FULL)
@@ -3269,34 +3227,13 @@ s32 txgbe_setup_mac_link(struct txgbe_hw *hw,
 		}
 	}
 
-	if (autoc == current_autoc)
-		return status;
-
 	autoc &= ~TXGBE_AUTOC_SPEED_MASK;
 	autoc |= TXGBE_AUTOC_SPEED(speed);
+	autoc &= ~TXGBE_AUTOC_AUTONEG;
 	autoc |= (autoneg ? TXGBE_AUTOC_AUTONEG : 0);
 
 	/* Restart link */
 	hw->mac.autoc_write(hw, autoc);
-
-	/* Only poll for autoneg to complete if specified to do so */
-	if (autoneg_wait_to_complete) {
-		if (link_mode == TXGBE_AUTOC_LMS_KX4_KX_KR ||
-		    link_mode == TXGBE_AUTOC_LMS_KX4_KX_KR_1G_AN ||
-		    link_mode == TXGBE_AUTOC_LMS_KX4_KX_KR_SGMII) {
-			links_reg = 0; /*Just in case Autoneg time=0*/
-			for (i = 0; i < TXGBE_AUTO_NEG_TIME; i++) {
-				links_reg = rd32(hw, TXGBE_PORTSTAT);
-				if (links_reg & TXGBE_PORTSTAT_UP)
-					break;
-				msec_delay(100);
-			}
-			if (!(links_reg & TXGBE_PORTSTAT_UP)) {
-				status = TXGBE_ERR_AUTONEG_NOT_COMPLETE;
-				DEBUGOUT("Autoneg did not complete.\n");
-			}
-		}
-	}
 
 	/* Add delay to filter out noises during initial link setup */
 	msec_delay(50);
@@ -3408,6 +3345,7 @@ txgbe_reset_misc(struct txgbe_hw *hw)
 	/* enable mac transmitter */
 	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE, TXGBE_MACTXCFG_TXE);
 
+	hw->mac.autoc = hw->mac.orig_autoc;
 	for (i = 0; i < 4; i++)
 		wr32m(hw, TXGBE_IVAR(i), 0x80808080, 0);
 }
@@ -3499,10 +3437,17 @@ mac_reset_top:
 	 */
 	if (!hw->mac.orig_link_settings_stored) {
 		hw->mac.orig_autoc = hw->mac.autoc_read(hw);
-		hw->mac.autoc_write(hw, hw->mac.orig_autoc);
 		hw->mac.orig_link_settings_stored = true;
 	} else {
 		hw->mac.orig_autoc = autoc;
+	}
+
+	if (hw->phy.ffe_set) {
+		/* Make sure phy power is up */
+		msec_delay(50);
+
+		/* A temporary solution to set phy */
+		txgbe_set_phy_temp(hw);
 	}
 
 	/* Store the permanent mac address */
@@ -3540,6 +3485,91 @@ mac_reset_top:
 				   &hw->mac.wwpn_prefix);
 
 	return status;
+}
+
+/**
+ * txgbe_fdir_check_cmd_complete - poll to check whether FDIRPICMD is complete
+ * @hw: pointer to hardware structure
+ * @fdircmd: current value of FDIRCMD register
+ */
+static s32 txgbe_fdir_check_cmd_complete(struct txgbe_hw *hw, u32 *fdircmd)
+{
+	int i;
+
+	for (i = 0; i < TXGBE_FDIRCMD_CMD_POLL; i++) {
+		*fdircmd = rd32(hw, TXGBE_FDIRPICMD);
+		if (!(*fdircmd & TXGBE_FDIRPICMD_OP_MASK))
+			return 0;
+		usec_delay(10);
+	}
+
+	return TXGBE_ERR_FDIR_CMD_INCOMPLETE;
+}
+
+/**
+ *  txgbe_reinit_fdir_tables - Reinitialize Flow Director tables.
+ *  @hw: pointer to hardware structure
+ **/
+s32 txgbe_reinit_fdir_tables(struct txgbe_hw *hw)
+{
+	s32 err;
+	int i;
+	u32 fdirctrl = rd32(hw, TXGBE_FDIRCTL);
+	u32 fdircmd;
+	fdirctrl &= ~TXGBE_FDIRCTL_INITDONE;
+
+	/*
+	 * Before starting reinitialization process,
+	 * FDIRPICMD.OP must be zero.
+	 */
+	err = txgbe_fdir_check_cmd_complete(hw, &fdircmd);
+	if (err) {
+		DEBUGOUT("Flow Director previous command did not complete, aborting table re-initialization.");
+		return err;
+	}
+
+	wr32(hw, TXGBE_FDIRFREE, 0);
+	txgbe_flush(hw);
+	/*
+	 * adapters flow director init flow cannot be restarted,
+	 * Workaround silicon errata by performing the following steps
+	 * before re-writing the FDIRCTL control register with the same value.
+	 * - write 1 to bit 8 of FDIRPICMD register &
+	 * - write 0 to bit 8 of FDIRPICMD register
+	 */
+	wr32m(hw, TXGBE_FDIRPICMD, TXGBE_FDIRPICMD_CLR, TXGBE_FDIRPICMD_CLR);
+	txgbe_flush(hw);
+	wr32m(hw, TXGBE_FDIRPICMD, TXGBE_FDIRPICMD_CLR, 0);
+	txgbe_flush(hw);
+	/*
+	 * Clear FDIR Hash register to clear any leftover hashes
+	 * waiting to be programmed.
+	 */
+	wr32(hw, TXGBE_FDIRPIHASH, 0x00);
+	txgbe_flush(hw);
+
+	wr32(hw, TXGBE_FDIRCTL, fdirctrl);
+	txgbe_flush(hw);
+
+	/* Poll init-done after we write FDIRCTL register */
+	for (i = 0; i < TXGBE_FDIR_INIT_DONE_POLL; i++) {
+		if (rd32m(hw, TXGBE_FDIRCTL, TXGBE_FDIRCTL_INITDONE))
+			break;
+		msec_delay(1);
+	}
+	if (i >= TXGBE_FDIR_INIT_DONE_POLL) {
+		DEBUGOUT("Flow Director Signature poll time exceeded!");
+		return TXGBE_ERR_FDIR_REINIT_FAILED;
+	}
+
+	/* Clear FDIR statistics registers (read to clear) */
+	rd32(hw, TXGBE_FDIRUSED);
+	rd32(hw, TXGBE_FDIRFAIL);
+	rd32(hw, TXGBE_FDIRMATCH);
+	rd32(hw, TXGBE_FDIRMISS);
+	rd32(hw, TXGBE_FDIRLEN);
+
+	return 0;
 }
 
 /**

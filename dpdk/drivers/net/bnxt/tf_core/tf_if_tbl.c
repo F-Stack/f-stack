@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -15,24 +15,17 @@
 struct tf;
 
 /**
- * IF Table DBs.
+ * IF Table database
  */
-static void *if_tbl_db[TF_DIR_MAX];
-
-/**
- * IF Table Shadow DBs
- */
-/* static void *shadow_if_tbl_db[TF_DIR_MAX]; */
+struct tf_if_tbl_db {
+	struct tf_if_tbl_cfg *if_tbl_cfg_db[TF_DIR_MAX];
+};
 
 /**
  * Init flag, set on bind and cleared on unbind
+ * TODO: Store this data in session db
  */
 static uint8_t init;
-
-/**
- * Shadow init flag, set on bind and cleared on unbind
- */
-/* static uint8_t shadow_init; */
 
 /**
  * Convert if_tbl_type to hwrm type.
@@ -65,19 +58,27 @@ tf_if_tbl_get_hcapi_type(struct tf_if_tbl_get_hcapi_parms *parms)
 }
 
 int
-tf_if_tbl_bind(struct tf *tfp __rte_unused,
+tf_if_tbl_bind(struct tf *tfp,
 	       struct tf_if_tbl_cfg_parms *parms)
 {
+	struct tfp_calloc_parms cparms;
+	struct tf_if_tbl_db *if_tbl_db;
+
 	TF_CHECK_PARMS2(tfp, parms);
 
-	if (init) {
-		TFP_DRV_LOG(ERR,
-			    "IF TBL DB already initialized\n");
-		return -EINVAL;
+	cparms.nitems = 1;
+	cparms.size = sizeof(struct tf_if_tbl_db);
+	cparms.alignment = 0;
+	if (tfp_calloc(&cparms) != 0) {
+		TFP_DRV_LOG(ERR, "if_tbl_rm_db alloc error %s\n",
+			    strerror(ENOMEM));
+		return -ENOMEM;
 	}
 
-	if_tbl_db[TF_DIR_RX] = parms->cfg;
-	if_tbl_db[TF_DIR_TX] = parms->cfg;
+	if_tbl_db = cparms.mem_va;
+	if_tbl_db->if_tbl_cfg_db[TF_DIR_RX] = parms->cfg;
+	if_tbl_db->if_tbl_cfg_db[TF_DIR_TX] = parms->cfg;
+	tf_session_set_if_tbl_db(tfp, (void *)if_tbl_db);
 
 	init = 1;
 
@@ -88,8 +89,11 @@ tf_if_tbl_bind(struct tf *tfp __rte_unused,
 }
 
 int
-tf_if_tbl_unbind(struct tf *tfp __rte_unused)
+tf_if_tbl_unbind(struct tf *tfp)
 {
+	int rc;
+	struct tf_if_tbl_db *if_tbl_db_ptr;
+
 	/* Bail if nothing has been initialized */
 	if (!init) {
 		TFP_DRV_LOG(INFO,
@@ -97,8 +101,15 @@ tf_if_tbl_unbind(struct tf *tfp __rte_unused)
 		return 0;
 	}
 
-	if_tbl_db[TF_DIR_RX] = NULL;
-	if_tbl_db[TF_DIR_TX] = NULL;
+	TF_CHECK_PARMS1(tfp);
+
+	rc = tf_session_get_if_tbl_db(tfp, (void **)&if_tbl_db_ptr);
+	if (rc) {
+		TFP_DRV_LOG(INFO, "No IF Table DBs initialized\n");
+		return 0;
+	}
+
+	tfp_free((void *)if_tbl_db_ptr);
 	init = 0;
 
 	return 0;
@@ -109,6 +120,7 @@ tf_if_tbl_set(struct tf *tfp,
 	      struct tf_if_tbl_set_parms *parms)
 {
 	int rc;
+	struct tf_if_tbl_db *if_tbl_db_ptr;
 	struct tf_if_tbl_get_hcapi_parms hparms;
 
 	TF_CHECK_PARMS3(tfp, parms, parms->data);
@@ -120,8 +132,14 @@ tf_if_tbl_set(struct tf *tfp,
 		return -EINVAL;
 	}
 
+	rc = tf_session_get_if_tbl_db(tfp, (void **)&if_tbl_db_ptr);
+	if (rc) {
+		TFP_DRV_LOG(INFO, "No IF Table DBs initialized\n");
+		return 0;
+	}
+
 	/* Convert TF type to HCAPI type */
-	hparms.tbl_db = if_tbl_db[parms->dir];
+	hparms.tbl_db = if_tbl_db_ptr->if_tbl_cfg_db[parms->dir];
 	hparms.db_index = parms->type;
 	hparms.hcapi_type = &parms->hcapi_type;
 	rc = tf_if_tbl_get_hcapi_type(&hparms);
@@ -144,7 +162,8 @@ int
 tf_if_tbl_get(struct tf *tfp,
 	      struct tf_if_tbl_get_parms *parms)
 {
-	int rc;
+	int rc = 0;
+	struct tf_if_tbl_db *if_tbl_db_ptr;
 	struct tf_if_tbl_get_hcapi_parms hparms;
 
 	TF_CHECK_PARMS3(tfp, parms, parms->data);
@@ -156,8 +175,14 @@ tf_if_tbl_get(struct tf *tfp,
 		return -EINVAL;
 	}
 
+	rc = tf_session_get_if_tbl_db(tfp, (void **)&if_tbl_db_ptr);
+	if (rc) {
+		TFP_DRV_LOG(INFO, "No IF Table DBs initialized\n");
+		return 0;
+	}
+
 	/* Convert TF type to HCAPI type */
-	hparms.tbl_db = if_tbl_db[parms->dir];
+	hparms.tbl_db = if_tbl_db_ptr->if_tbl_cfg_db[parms->dir];
 	hparms.db_index = parms->type;
 	hparms.hcapi_type = &parms->hcapi_type;
 	rc = tf_if_tbl_get_hcapi_type(&hparms);

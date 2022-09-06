@@ -116,7 +116,7 @@ Driver options
   - 2, Completion queue scheduling will be managed by interrupts. Each CQ burst
     arms the CQ in order to get an interrupt event in the next traffic burst.
 
-  - Default mode is 0.
+  - Default mode is 1.
 
 - ``event_us`` parameter [int]
 
@@ -125,15 +125,55 @@ Driver options
   - 0, A nonzero value to set timer step in micro-seconds. The timer thread
     dynamic delay change steps according to this value. Default value is 1us.
 
-  - 1, A nonzero value to set fixed timer delay in micro-seconds. Default value
-    is 100us.
+  - 1, A value to set fixed timer delay in micro-seconds. Default value is 0us.
 
 - ``no_traffic_time`` parameter [int]
 
-  A nonzero value defines the traffic off time, in seconds, that moves the
-  driver to no-traffic mode. In this mode the timer events are stopped and
-  interrupts are configured to the device in order to notify traffic for the
-  driver. Default value is 2s.
+  A nonzero value defines the traffic off time, in polling cycle time units,
+  that moves the driver to no-traffic mode. In this mode the polling is stopped
+  and interrupts are configured to the device in order to notify traffic for the
+  driver. Default value is 16.
+
+- ``event_core`` parameter [int]
+
+  CPU core number to set polling thread affinity to, default to control plane
+  cpu.
+
+- ``hw_latency_mode`` parameter [int]
+
+  The completion queue moderation mode:
+
+  - 0, HW default.
+
+  - 1, Latency is counted from the first packet completion report.
+
+  - 2, Latency is counted from the last packet completion.
+
+- ``hw_max_latency_us`` parameter [int]
+
+  - 1 - 4095, The maximum time in microseconds that packet completion report
+    can be delayed.
+
+  - 0, HW default.
+
+- ``hw_max_pending_comp`` parameter [int]
+
+  - 1 - 65535, The maximum number of pending packets completions in an HW queue.
+
+  - 0, HW default.
+
+
+Devargs example
+^^^^^^^^^^^^^^^
+
+- PCI devargs::
+
+  -a 0000:03:00.2,class=vdpa
+
+- Auxiliary devargs::
+
+  -a auxiliary:mlx5_core.sf.2,class=vdpa
+
 
 Error handling
 ^^^^^^^^^^^^^^

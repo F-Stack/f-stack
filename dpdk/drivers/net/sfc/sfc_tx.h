@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -11,7 +11,7 @@
 #define _SFC_TX_H
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "efx.h"
 
@@ -58,7 +58,8 @@ struct sfc_txq {
 };
 
 struct sfc_txq *sfc_txq_by_dp_txq(const struct sfc_dp_txq *dp_txq);
-
+struct sfc_txq_info *sfc_txq_info_by_ethdev_qid(struct sfc_adapter_shared *sas,
+						sfc_ethdev_qid_t ethdev_qid);
 /**
  * Transmit queue information used on libefx-based data path.
  * Allocated on the socket specified on the queue setup.
@@ -107,14 +108,15 @@ struct sfc_txq_info *sfc_txq_info_by_dp_txq(const struct sfc_dp_txq *dp_txq);
 int sfc_tx_configure(struct sfc_adapter *sa);
 void sfc_tx_close(struct sfc_adapter *sa);
 
-int sfc_tx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
+int sfc_tx_qinit_info(struct sfc_adapter *sa, sfc_sw_index_t sw_index);
+int sfc_tx_qinit(struct sfc_adapter *sa, sfc_sw_index_t sw_index,
 		 uint16_t nb_tx_desc, unsigned int socket_id,
 		 const struct rte_eth_txconf *tx_conf);
-void sfc_tx_qfini(struct sfc_adapter *sa, unsigned int sw_index);
+void sfc_tx_qfini(struct sfc_adapter *sa, sfc_sw_index_t sw_index);
 
 void sfc_tx_qflush_done(struct sfc_txq_info *txq_info);
-int sfc_tx_qstart(struct sfc_adapter *sa, unsigned int sw_index);
-void sfc_tx_qstop(struct sfc_adapter *sa, unsigned int sw_index);
+int sfc_tx_qstart(struct sfc_adapter *sa, sfc_sw_index_t sw_index);
+void sfc_tx_qstop(struct sfc_adapter *sa, sfc_sw_index_t sw_index);
 int sfc_tx_start(struct sfc_adapter *sa);
 void sfc_tx_stop(struct sfc_adapter *sa);
 

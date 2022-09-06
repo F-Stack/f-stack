@@ -15,7 +15,7 @@
 
 #define DRIVER_NAME baseband_null
 
-RTE_LOG_REGISTER(bbdev_null_logtype, pmd.bb.null, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(bbdev_null_logtype, NOTICE);
 
 /* Helper macro for logging */
 #define rte_bbdev_log(level, fmt, ...) \
@@ -76,6 +76,12 @@ info_get(struct rte_bbdev *dev, struct rte_bbdev_driver_info *dev_info)
 	dev_info->capabilities = bbdev_capabilities;
 	dev_info->cpu_flag_reqs = NULL;
 	dev_info->min_alignment = 0;
+
+	/* BBDEV null device does not process the data, so
+	 * endianness setting is not relevant, but setting it
+	 * here for code completeness.
+	 */
+	dev_info->data_endianness = RTE_LITTLE_ENDIAN;
 
 	rte_bbdev_log_debug("got device info from %u", dev->data->dev_id);
 }

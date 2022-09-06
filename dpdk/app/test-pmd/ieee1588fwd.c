@@ -60,8 +60,8 @@ port_ieee1588_rx_timestamp_check(portid_t pi, uint32_t index)
 		printf("Port %u RX timestamp registers not valid\n", pi);
 		return;
 	}
-	printf("Port %u RX timestamp value %lu s %lu ns\n",
-		pi, timestamp.tv_sec, timestamp.tv_nsec);
+	printf("Port %u RX timestamp value %ju s %lu ns\n",
+		pi, (uintmax_t)timestamp.tv_sec, timestamp.tv_nsec);
 }
 
 #define MAX_TX_TMST_WAIT_MICROSECS 1000 /**< 1 milli-second */
@@ -83,9 +83,9 @@ port_ieee1588_tx_timestamp_check(portid_t pi)
 		       pi, MAX_TX_TMST_WAIT_MICROSECS);
 		return;
 	}
-	printf("Port %u TX timestamp value %lu s %lu ns validated after "
+	printf("Port %u TX timestamp value %ju s %lu ns validated after "
 	       "%u micro-second%s\n",
-	       pi, timestamp.tv_sec, timestamp.tv_nsec, wait_us,
+	       pi, (uintmax_t)timestamp.tv_sec, timestamp.tv_nsec, wait_us,
 	       (wait_us == 1) ? "" : "s");
 }
 
@@ -114,7 +114,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	eth_hdr = rte_pktmbuf_mtod(mb, struct rte_ether_hdr *);
 	eth_type = rte_be_to_cpu_16(eth_hdr->ether_type);
 
-	if (! (mb->ol_flags & PKT_RX_IEEE1588_PTP)) {
+	if (!(mb->ol_flags & RTE_MBUF_F_RX_IEEE1588_PTP)) {
 		if (eth_type == RTE_ETHER_TYPE_1588) {
 			printf("Port %u Received PTP packet not filtered"
 			       " by hardware\n",
@@ -163,7 +163,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	 * Check that the received PTP packet has been timestamped by the
 	 * hardware.
 	 */
-	if (! (mb->ol_flags & PKT_RX_IEEE1588_TMST)) {
+	if (!(mb->ol_flags & RTE_MBUF_F_RX_IEEE1588_TMST)) {
 		printf("Port %u Received PTP packet not timestamped"
 		       " by hardware\n",
 		       fs->rx_port);
@@ -178,12 +178,12 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	port_ieee1588_rx_timestamp_check(fs->rx_port, timesync_index);
 
 	/* Swap dest and src mac addresses. */
-	rte_ether_addr_copy(&eth_hdr->d_addr, &addr);
-	rte_ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
-	rte_ether_addr_copy(&addr, &eth_hdr->s_addr);
+	rte_ether_addr_copy(&eth_hdr->dst_addr, &addr);
+	rte_ether_addr_copy(&eth_hdr->src_addr, &eth_hdr->dst_addr);
+	rte_ether_addr_copy(&addr, &eth_hdr->src_addr);
 
 	/* Forward PTP packet with hardware TX timestamp */
-	mb->ol_flags |= PKT_TX_IEEE1588_TMST;
+	mb->ol_flags |= RTE_MBUF_F_TX_IEEE1588_TMST;
 	fs->tx_packets += 1;
 	if (rte_eth_tx_burst(fs->rx_port, fs->tx_queue, &mb, 1) == 0) {
 		printf("Port %u sent PTP packet dropped\n", fs->rx_port);

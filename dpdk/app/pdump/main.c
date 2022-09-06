@@ -477,10 +477,10 @@ pdump_rxtx(struct rte_ring *ring, uint16_t vdev_id, struct pdump_stats *stats)
 		stats->tx_pkts += nb_in_txd;
 
 		if (unlikely(nb_in_txd < nb_in_deq)) {
-			do {
-				rte_pktmbuf_free(rxtx_bufs[nb_in_txd]);
-				stats->freed_pkts++;
-			} while (++nb_in_txd < nb_in_deq);
+			unsigned int drops = nb_in_deq - nb_in_txd;
+
+			rte_pktmbuf_free_bulk(&rxtx_bufs[nb_in_txd], drops);
+			stats->freed_pkts += drops;
 		}
 	}
 }
@@ -612,10 +612,7 @@ configure_vdev(uint16_t port_id)
 
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			port_id,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
 	ret = rte_eth_promiscuous_enable(port_id);
 	if (ret != 0) {

@@ -37,7 +37,7 @@ struct dpaa_memseg_list rte_dpaa_memsegs
 
 struct dpaa_bp_info *rte_dpaa_bpid_info;
 
-RTE_LOG_REGISTER(dpaa_logtype_mempool, mempool.dpaa, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa_logtype_mempool, NOTICE);
 
 static int
 dpaa_mbuf_create_pool(struct rte_mempool *mp)
@@ -134,6 +134,7 @@ dpaa_mbuf_free_pool(struct rte_mempool *mp)
 		DPAA_MEMPOOL_INFO("BMAN pool freed for bpid =%d",
 				  bp_info->bpid);
 		rte_free(mp->pool_data);
+		bp_info->bp = NULL;
 		mp->pool_data = NULL;
 	}
 }
@@ -357,4 +358,4 @@ static const struct rte_mempool_ops dpaa_mpool_ops = {
 	.populate = dpaa_populate,
 };
 
-MEMPOOL_REGISTER_OPS(dpaa_mpool_ops);
+RTE_MEMPOOL_REGISTER_OPS(dpaa_mpool_ops);

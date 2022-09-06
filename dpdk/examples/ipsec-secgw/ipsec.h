@@ -23,8 +23,6 @@
 
 #define MAX_DIGEST_SIZE 32 /* Bytes -- 256 bits */
 
-#define IPSEC_OFFLOAD_ESN_SOFTLIMIT 0xffffff00
-
 #define IV_OFFSET		(sizeof(struct rte_crypto_op) + \
 				sizeof(struct rte_crypto_sym_op))
 
@@ -65,8 +63,7 @@ struct ip_addr {
 	} ip;
 };
 
-#define MAX_KEY_SIZE		36
-
+#define MAX_KEY_SIZE		64
 /*
  * application wide SA parameters
  */
@@ -75,6 +72,7 @@ struct app_sa_prm {
 	uint32_t window_size; /* replay window size */
 	uint32_t enable_esn;  /* enable/disable ESN support */
 	uint32_t cache_sz;	/* per lcore SA cache size */
+	uint32_t udp_encap;   /* enable/disable UDP Encapsulation */
 	uint64_t flags;       /* rte_ipsec_sa_prm.flags */
 };
 
@@ -124,8 +122,14 @@ struct ipsec_sa {
 #define TRANSPORT  (1 << 2)
 #define IP4_TRANSPORT (1 << 3)
 #define IP6_TRANSPORT (1 << 4)
+#define SA_TELEMETRY_ENABLE (1 << 5)
+
 	struct ip_addr src;
 	struct ip_addr dst;
+	struct {
+		uint16_t sport;
+		uint16_t dport;
+	} udp;
 	uint8_t cipher_key[MAX_KEY_SIZE];
 	uint16_t cipher_key_len;
 	uint8_t auth_key[MAX_KEY_SIZE];
@@ -136,11 +140,14 @@ struct ipsec_sa {
 		struct rte_security_ipsec_xform *sec_xform;
 	};
 	enum rte_security_ipsec_sa_direction direction;
+	uint8_t udp_encap;
 	uint16_t portid;
+	uint64_t esn;
+	uint16_t mss;
 	uint8_t fdir_qid;
 	uint8_t fdir_flag;
 
-#define MAX_RTE_FLOW_PATTERN (4)
+#define MAX_RTE_FLOW_PATTERN (5)
 #define MAX_RTE_FLOW_ACTIONS (3)
 	struct rte_flow_item pattern[MAX_RTE_FLOW_PATTERN];
 	struct rte_flow_action action[MAX_RTE_FLOW_ACTIONS];
@@ -149,6 +156,7 @@ struct ipsec_sa {
 		struct rte_flow_item_ipv4 ipv4_spec;
 		struct rte_flow_item_ipv6 ipv6_spec;
 	};
+	struct rte_flow_item_udp udp_spec;
 	struct rte_flow_item_esp esp_spec;
 	struct rte_flow *flow;
 	struct rte_security_session_conf sess_conf;

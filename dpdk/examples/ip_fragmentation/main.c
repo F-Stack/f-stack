@@ -21,7 +21,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -146,16 +145,16 @@ struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.max_rx_pkt_len = JUMBO_FRAME_MAX_SIZE,
+		.mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN -
+			RTE_ETHER_CRC_LEN,
 		.split_hdr_size = 0,
-		.offloads = (DEV_RX_OFFLOAD_CHECKSUM |
-			     DEV_RX_OFFLOAD_SCATTER |
-			     DEV_RX_OFFLOAD_JUMBO_FRAME),
+		.offloads = (RTE_ETH_RX_OFFLOAD_CHECKSUM |
+			     RTE_ETH_RX_OFFLOAD_SCATTER),
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
-		.offloads = (DEV_TX_OFFLOAD_IPV4_CKSUM |
-			     DEV_TX_OFFLOAD_MULTI_SEGS),
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
+		.offloads = (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+			     RTE_ETH_TX_OFFLOAD_MULTI_SEGS),
 	},
 };
 
@@ -168,6 +167,7 @@ struct l3fwd_ipv4_route {
 	uint8_t  if_out;
 };
 
+/* Default l3fwd_ipv4_route_array table. 8< */
 struct l3fwd_ipv4_route l3fwd_ipv4_route_array[] = {
 		{RTE_IPV4(100,10,0,0), 16, 0},
 		{RTE_IPV4(100,20,0,0), 16, 1},
@@ -178,6 +178,7 @@ struct l3fwd_ipv4_route l3fwd_ipv4_route_array[] = {
 		{RTE_IPV4(100,70,0,0), 16, 6},
 		{RTE_IPV4(100,80,0,0), 16, 7},
 };
+/* >8 End of default l3fwd_ipv4_route_array table */
 
 /*
  * IPv6 forwarding table
@@ -189,6 +190,7 @@ struct l3fwd_ipv6_route {
 	uint8_t if_out;
 };
 
+/* Default l3fwd_ipv6_route_array table. 8< */
 static struct l3fwd_ipv6_route l3fwd_ipv6_route_array[] = {
 	{{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 0},
 	{{2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 1},
@@ -199,6 +201,7 @@ static struct l3fwd_ipv6_route l3fwd_ipv6_route_array[] = {
 	{{7,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 6},
 	{{8,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}, 48, 7},
 };
+/* >8 End of default l3fwd_ipv6_route_array table. */
 
 #define LPM_MAX_RULES         1024
 #define LPM6_MAX_RULES         1024
@@ -295,7 +298,7 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 			rte_pktmbuf_free(m);
 
 			/* request HW to regenerate IPv4 cksum */
-			ol_flags |= (PKT_TX_IPV4 | PKT_TX_IP_CKSUM);
+			ol_flags |= (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM);
 
 			/* If we fail to fragment the packet */
 			if (unlikely (len2 < 0))
@@ -358,13 +361,13 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 		m->l2_len = sizeof(struct rte_ether_hdr);
 
 		/* 02:00:00:00:00:xx */
-		d_addr_bytes = &eth_hdr->d_addr.addr_bytes[0];
+		d_addr_bytes = &eth_hdr->dst_addr.addr_bytes[0];
 		*((uint64_t *)d_addr_bytes) = 0x000000000002 +
 			((uint64_t)port_out << 40);
 
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[port_out],
-				&eth_hdr->s_addr);
+				&eth_hdr->src_addr);
 		eth_hdr->ether_type = ether_type;
 	}
 
@@ -620,7 +623,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -914,9 +917,9 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
-		    dev_info.max_rx_pktlen,
-		    local_port_conf.rxmode.max_rx_pkt_len);
+		local_port_conf.rxmode.mtu = RTE_MIN(
+		    dev_info.max_mtu,
+		    local_port_conf.rxmode.mtu);
 
 		/* get the lcore_id for this port */
 		while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
@@ -959,8 +962,7 @@ main(int argc, char **argv)
 		}
 
 		/* set the mtu to the maximum received packet size */
-		ret = rte_eth_dev_set_mtu(portid,
-			local_port_conf.rxmode.max_rx_pkt_len - MTU_OVERHEAD);
+		ret = rte_eth_dev_set_mtu(portid, local_port_conf.rxmode.mtu);
 		if (ret < 0) {
 			printf("\n");
 			rte_exit(EXIT_FAILURE, "Set MTU failed: "

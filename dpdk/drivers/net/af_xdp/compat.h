@@ -2,11 +2,17 @@
  * Copyright(c) 2020 Intel Corporation.
  */
 
+#ifdef RTE_NET_AF_XDP_LIBXDP
+#include <xdp/xsk.h>
+#else
 #include <bpf/xsk.h>
+#endif
+#include <bpf/bpf.h>
 #include <linux/version.h>
+#include <poll.h>
 
 #if KERNEL_VERSION(5, 10, 0) <= LINUX_VERSION_CODE && \
-	defined(RTE_LIBRTE_AF_XDP_PMD_SHARED_UMEM)
+	defined(RTE_NET_AF_XDP_SHARED_UMEM)
 #define ETH_AF_XDP_SHARED_UMEM 1
 #endif
 
@@ -37,5 +43,57 @@ create_shared_socket(struct xsk_socket **xsk_ptr __rte_unused,
 			  const struct xsk_socket_config *config __rte_unused)
 {
 	return -1;
+}
+#endif
+
+#ifdef XDP_USE_NEED_WAKEUP
+static int
+tx_syscall_needed(struct xsk_ring_prod *q)
+{
+	return xsk_ring_prod__needs_wakeup(q);
+}
+#else
+static int
+tx_syscall_needed(struct xsk_ring_prod *q __rte_unused)
+{
+	return 1;
+}
+#endif
+
+#ifdef RTE_NET_AF_XDP_LIBBPF_OBJ_OPEN
+static int load_program(const char *prog_path, struct bpf_object **obj)
+{
+	struct bpf_program *prog;
+	int err;
+
+	*obj = bpf_object__open_file(prog_path, NULL);
+	err = libbpf_get_error(*obj);
+	if (err)
+		return -1;
+
+	err = bpf_object__load(*obj);
+	if (err)
+		goto out;
+
+	prog = bpf_object__next_program(*obj, NULL);
+	if (!prog)
+		goto out;
+
+	return bpf_program__fd(prog);
+
+out:
+	bpf_object__close(*obj);
+	return -1;
+}
+#else
+static int load_program(const char *prog_path, struct bpf_object **obj)
+{
+	int ret, prog_fd;
+
+	ret = bpf_prog_load(prog_path, BPF_PROG_TYPE_XDP, obj, &prog_fd);
+	if (ret)
+		return -1;
+
+	return prog_fd;
 }
 #endif

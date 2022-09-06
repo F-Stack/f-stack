@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _TXGBE_RXTX_H_
@@ -293,6 +294,10 @@ struct txgbe_rx_queue {
 	uint16_t rx_nb_avail; /**< nr of staged pkts ready to ret to app */
 	uint16_t rx_next_avail; /**< idx of next staged pkt to ret to app */
 	uint16_t rx_free_trigger; /**< triggers rx buffer allocation */
+#ifdef RTE_LIB_SECURITY
+	uint8_t            using_ipsec;
+	/**< indicates that IPsec RX feature is in use */
+#endif
 	uint16_t            rx_free_thresh; /**< max free RX desc to hold. */
 	uint16_t            queue_id; /**< RX queue index. */
 	uint16_t            reg_idx;  /**< RX queue register index. */
@@ -304,7 +309,7 @@ struct txgbe_rx_queue {
 	uint8_t             rx_deferred_start; /**< not in global dev start. */
 	/** flags to set in mbuf when a vlan is detected. */
 	uint64_t            vlan_flags;
-	uint64_t	    offloads; /**< Rx offloads with DEV_RX_OFFLOAD_* */
+	uint64_t	    offloads; /**< Rx offloads with RTE_ETH_RX_OFFLOAD_* */
 	/** need to alloc dummy mbuf, for wraparound when scanning hw ring */
 	struct rte_mbuf fake_mbuf;
 	/** hold packets to return to application */
@@ -336,6 +341,11 @@ union txgbe_tx_offload {
 		uint64_t outer_tun_len:8; /**< Outer TUN (Tunnel) Hdr Length. */
 		uint64_t outer_l2_len:8; /**< Outer L2 (MAC) Hdr Length. */
 		uint64_t outer_l3_len:16; /**< Outer L3 (IP) Hdr Length. */
+#ifdef RTE_LIB_SECURITY
+		/* inline ipsec related*/
+		uint64_t sa_idx:8;	/**< TX SA database entry index */
+		uint64_t sec_pad_len:4;	/**< padding length */
+#endif
 	};
 };
 
@@ -382,12 +392,16 @@ struct txgbe_tx_queue {
 	uint8_t             pthresh;       /**< Prefetch threshold register. */
 	uint8_t             hthresh;       /**< Host threshold register. */
 	uint8_t             wthresh;       /**< Write-back threshold reg. */
-	uint64_t            offloads; /* Tx offload flags of DEV_TX_OFFLOAD_* */
+	uint64_t            offloads; /* Tx offload flags of RTE_ETH_TX_OFFLOAD_* */
 	uint32_t            ctx_curr;      /**< Hardware context states. */
 	/** Hardware context0 history. */
 	struct txgbe_ctx_info ctx_cache[TXGBE_CTX_NUM];
 	const struct txgbe_txq_ops *ops;       /**< txq ops */
 	uint8_t             tx_deferred_start; /**< not in global dev start. */
+#ifdef RTE_LIB_SECURITY
+	uint8_t		    using_ipsec;
+	/**< indicates that IPsec TX feature is in use */
+#endif
 };
 
 struct txgbe_txq_ops {

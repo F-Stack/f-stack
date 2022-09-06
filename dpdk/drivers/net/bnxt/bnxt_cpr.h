@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -11,14 +11,6 @@
 #include "hsi_struct_def_dpdk.h"
 
 struct bnxt_db_info;
-
-#define CMPL_VALID(cmp, v)						\
-	(!!(rte_le_to_cpu_32(((struct cmpl_base *)(cmp))->info3_v) &	\
-	    CMPL_BASE_V) == !(v))
-
-#define NQ_CMP_VALID(nqcmp, raw_cons, ring)		\
-	(!!((nqcmp)->v & rte_cpu_to_le_32(NQ_CN_V)) ==	\
-	 !((raw_cons) & ((ring)->ring_size)))
 
 #define CMP_TYPE(cmp)						\
 	(((struct cmpl_base *)cmp)->type & CMPL_BASE_TYPE_MASK)
@@ -32,21 +24,13 @@ struct bnxt_db_info;
 #define RING_CMP(ring, idx)	((idx) & (ring)->ring_mask)
 #define RING_CMPL(ring_mask, idx)	((idx) & (ring_mask))
 #define NEXT_CMP(idx)		RING_CMP(ADV_RAW_CMP(idx, 1))
-#define FLIP_VALID(cons, mask, val)	((cons) >= (mask) ? !(val) : (val))
 
 #define DB_CP_REARM_FLAGS	(DB_KEY_CP | DB_IDX_VALID)
 #define DB_CP_FLAGS		(DB_KEY_CP | DB_IDX_VALID | DB_IRQ_DIS)
 
-#define NEXT_CMPL(cpr, idx, v, inc)	do { \
-	(idx) += (inc); \
-	if (unlikely((idx) >= (cpr)->cp_ring_struct->ring_size)) { \
-		(v) = !(v); \
-		(idx) = 0; \
-	} \
-} while (0)
 #define B_CP_DB_REARM(cpr, raw_cons)					\
 	rte_write32((DB_CP_REARM_FLAGS |				\
-		    RING_CMP(((cpr)->cp_ring_struct), raw_cons)),	\
+		    DB_RING_IDX(&((cpr)->cp_db), raw_cons)),		\
 		    ((cpr)->cp_db.doorbell))
 
 #define B_CP_DB_ARM(cpr)	rte_write32((DB_KEY_CP),		\
@@ -66,8 +50,8 @@ struct bnxt_db_info;
 } while (0)
 #define B_CP_DIS_DB(cpr, raw_cons)					\
 	rte_write32_relaxed((DB_CP_FLAGS |				\
-			    RING_CMP(((cpr)->cp_ring_struct), raw_cons)), \
-			    ((cpr)->cp_db.doorbell))
+		    DB_RING_IDX(&((cpr)->cp_db), raw_cons)),		\
+		    ((cpr)->cp_db.doorbell))
 
 #define B_CP_DB(cpr, raw_cons, ring_mask)				\
 	rte_write32((DB_CP_FLAGS |					\
@@ -81,7 +65,15 @@ struct bnxt_db_info {
 		uint32_t        db_key32;
 	};
 	bool                    db_64;
+	uint32_t		db_ring_mask;
+	uint32_t		db_epoch_mask;
+	uint32_t		db_epoch_shift;
 };
+
+#define DB_EPOCH(db, idx)	(((idx) & (db)->db_epoch_mask) <<	\
+				 ((db)->db_epoch_shift))
+#define DB_RING_IDX(db, idx)	(((idx) & (db)->db_ring_mask) |		\
+				 DB_EPOCH(db, idx))
 
 struct bnxt_ring;
 struct bnxt_cp_ring_info {
@@ -96,8 +88,6 @@ struct bnxt_cp_ring_info {
 	uint32_t		hw_stats_ctx_id;
 
 	struct bnxt_ring	*cp_ring_struct;
-	uint16_t		cp_cons;
-	bool			valid;
 };
 
 #define RX_CMP_L2_ERRORS						\
@@ -125,7 +115,7 @@ void bnxt_wait_for_device_shutdown(struct bnxt *bp);
 	HWRM_ASYNC_EVENT_CMPL_ERROR_RECOVERY_EVENT_DATA1_FLAGS_RECOVERY_ENABLED
 
 bool bnxt_is_recovery_enabled(struct bnxt *bp);
-bool bnxt_is_master_func(struct bnxt *bp);
+bool bnxt_is_primary_func(struct bnxt *bp);
 
 void bnxt_stop_rxtx(struct bnxt *bp);
 

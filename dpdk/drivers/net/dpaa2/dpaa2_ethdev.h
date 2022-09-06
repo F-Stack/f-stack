@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2015-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2020 NXP
+ *   Copyright 2016-2021 NXP
  *
  */
 
@@ -12,12 +12,14 @@
 #include <rte_pmd_dpaa2.h>
 
 #include <dpaa2_hw_pvt.h>
+#include "dpaa2_tm.h"
 
 #include <mc/fsl_dpni.h>
 #include <mc/fsl_mc_sys.h>
 
 #define DPAA2_MIN_RX_BUF_SIZE 512
 #define DPAA2_MAX_RX_PKT_LEN  10240 /*WRIOP support*/
+#define NET_DPAA2_PMD_DRIVER_NAME net_dpaa2
 
 #define MAX_TCS			DPNI_MAX_TC
 #define MAX_RX_QUEUES		128
@@ -63,11 +65,17 @@
 #define DPAA2_TX_CONF_ENABLE	0x06
 
 #define DPAA2_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_L2_PAYLOAD | \
-	ETH_RSS_IP | \
-	ETH_RSS_UDP | \
-	ETH_RSS_TCP | \
-	ETH_RSS_SCTP)
+	RTE_ETH_RSS_L2_PAYLOAD | \
+	RTE_ETH_RSS_IP | \
+	RTE_ETH_RSS_UDP | \
+	RTE_ETH_RSS_TCP | \
+	RTE_ETH_RSS_SCTP | \
+	RTE_ETH_RSS_MPLS | \
+	RTE_ETH_RSS_C_VLAN | \
+	RTE_ETH_RSS_S_VLAN | \
+	RTE_ETH_RSS_ESP | \
+	RTE_ETH_RSS_AH | \
+	RTE_ETH_RSS_PPPOE)
 
 /* LX2 FRC Parsed values (Little Endian) */
 #define DPAA2_PKT_TYPE_ETHER		0x0060
@@ -111,7 +119,10 @@ extern int dpaa2_timestamp_dynfield_offset;
 
 /* Externally defined */
 extern const struct rte_flow_ops dpaa2_flow_ops;
-extern enum rte_filter_type dpaa2_filter_type;
+
+extern const struct rte_tm_ops dpaa2_tm_ops;
+
+extern bool dpaa2_enable_err_queue;
 
 #define IP_ADDRESS_OFFSET_INVALID (-1)
 
@@ -150,14 +161,14 @@ struct dpaa2_dev_priv {
 	void *tx_vq[MAX_TX_QUEUES];
 	struct dpaa2_bp_list *bp_list; /**<Attached buffer pool list */
 	void *tx_conf_vq[MAX_TX_QUEUES];
-	uint8_t tx_conf_en;
+	void *rx_err_vq;
+	uint8_t flags; /*dpaa2 config flags */
 	uint8_t max_mac_filters;
 	uint8_t max_vlan_filters;
 	uint8_t num_rx_tc;
 	uint16_t qos_entries;
 	uint16_t fs_entries;
 	uint8_t dist_queues;
-	uint8_t flags; /*dpaa2 config flags */
 	uint8_t en_ordered;
 	uint8_t en_loose_ordered;
 	uint8_t max_cgs;
@@ -180,6 +191,8 @@ struct dpaa2_dev_priv {
 	struct rte_eth_dev *eth_dev; /**< Pointer back to holding ethdev */
 
 	LIST_HEAD(, rte_flow) flows; /**< Configured flow rule handles. */
+	LIST_HEAD(nodes, dpaa2_tm_node) nodes;
+	LIST_HEAD(shaper_profiles, dpaa2_tm_shaper_profile) shaper_profiles;
 };
 
 int dpaa2_distset_to_dpkg_profile_cfg(uint64_t req_dist_set,
@@ -232,6 +245,7 @@ uint16_t dummy_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts);
 void dpaa2_dev_free_eqresp_buf(uint16_t eqresp_ci);
 void dpaa2_flow_clean(struct rte_eth_dev *dev);
 uint16_t dpaa2_dev_tx_conf(void *queue)  __rte_unused;
+int dpaa2_dev_is_dpaa2(struct rte_eth_dev *dev);
 
 int dpaa2_timesync_enable(struct rte_eth_dev *dev);
 int dpaa2_timesync_disable(struct rte_eth_dev *dev);

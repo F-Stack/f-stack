@@ -11,7 +11,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_sched.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include <rte_io.h>
 #include <rte_rawdev.h>
@@ -583,4 +583,4 @@ static struct rte_afu_driver afu_ipn3ke_driver = {
 };
 
 RTE_PMD_REGISTER_AFU(net_ipn3ke_afu, afu_ipn3ke_driver);
-RTE_LOG_REGISTER(ipn3ke_afu_logtype, pmd.afu.ipn3ke, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(ipn3ke_afu_logtype, NOTICE);

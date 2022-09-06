@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2018-2019 Solarflare Communications Inc.
  */
 
@@ -131,6 +131,7 @@ rhead_ev_qcreate(
 	__in		uint32_t id,
 	__in		uint32_t us,
 	__in		uint32_t flags,
+	__in		uint32_t irq,
 	__in		efx_evq_t *eep);
 
 LIBEFX_INTERNAL
@@ -476,6 +477,43 @@ rhead_nic_xilinx_cap_tbl_read_ef100_locator(
 	__in				efsys_bar_t *esbp,
 	__in				efsys_dma_addr_t offset,
 	__out				efx_bar_region_t *ebrp);
+
+#if EFSYS_OPT_VIRTIO
+
+LIBEFX_INTERNAL
+extern	__checkReturn			efx_rc_t
+rhead_virtio_qstart(
+	__in				efx_virtio_vq_t *evvp,
+	__in				efx_virtio_vq_cfg_t *evvcp,
+	__in_opt			efx_virtio_vq_dyncfg_t *evvdp);
+
+LIBEFX_INTERNAL
+extern	__checkReturn			efx_rc_t
+rhead_virtio_qstop(
+	__in				efx_virtio_vq_t *evvp,
+	__out_opt			efx_virtio_vq_dyncfg_t *evvdp);
+
+LIBEFX_INTERNAL
+extern	__checkReturn			efx_rc_t
+rhead_virtio_get_doorbell_offset(
+	__in				efx_virtio_vq_t *evvp,
+	__out				uint32_t *offsetp);
+
+LIBEFX_INTERNAL
+extern	__checkReturn			efx_rc_t
+rhead_virtio_get_features(
+	__in				efx_nic_t *enp,
+	__in				efx_virtio_device_type_t type,
+	__out				uint64_t *featuresp);
+
+LIBEFX_INTERNAL
+extern	__checkReturn			efx_rc_t
+rhead_virtio_verify_features(
+	__in				efx_nic_t *enp,
+	__in				efx_virtio_device_type_t type,
+	__in				uint64_t features);
+
+#endif /* EFSYS_OPT_VIRTIO */
 
 #ifdef	__cplusplus
 }

@@ -24,9 +24,9 @@
 #include "rte_pmd_fpga_5gnr_fec.h"
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
-RTE_LOG_REGISTER(fpga_5gnr_fec_logtype, pmd.bb.fpga_5gnr_fec, DEBUG);
+RTE_LOG_REGISTER_DEFAULT(fpga_5gnr_fec_logtype, DEBUG);
 #else
-RTE_LOG_REGISTER(fpga_5gnr_fec_logtype, pmd.bb.fpga_5gnr_fec, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(fpga_5gnr_fec_logtype, NOTICE);
 #endif
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
@@ -372,6 +372,7 @@ fpga_dev_info_get(struct rte_bbdev *dev,
 	dev_info->default_queue_conf = default_queue_conf;
 	dev_info->capabilities = bbdev_capabilities;
 	dev_info->cpu_flag_reqs = NULL;
+	dev_info->data_endianness = RTE_LITTLE_ENDIAN;
 
 	/* Calculates number of queues assigned to device */
 	dev_info->max_num_queues = 0;
@@ -742,17 +743,17 @@ fpga_intr_enable(struct rte_bbdev *dev)
 	 * It ensures that callback function assigned to that descriptor will
 	 * invoked when any FPGA queue issues interrupt.
 	 */
-	for (i = 0; i < FPGA_NUM_INTR_VEC; ++i)
-		dev->intr_handle->efds[i] = dev->intr_handle->fd;
+	for (i = 0; i < FPGA_NUM_INTR_VEC; ++i) {
+		if (rte_intr_efds_index_set(dev->intr_handle, i,
+				rte_intr_fd_get(dev->intr_handle)))
+			return -rte_errno;
+	}
 
-	if (!dev->intr_handle->intr_vec) {
-		dev->intr_handle->intr_vec = rte_zmalloc("intr_vec",
-				dev->data->num_queues * sizeof(int), 0);
-		if (!dev->intr_handle->intr_vec) {
-			rte_bbdev_log(ERR, "Failed to allocate %u vectors",
-					dev->data->num_queues);
-			return -ENOMEM;
-		}
+	if (rte_intr_vec_list_alloc(dev->intr_handle, "intr_vec",
+			dev->data->num_queues)) {
+		rte_bbdev_log(ERR, "Failed to allocate %u vectors",
+				dev->data->num_queues);
+		return -ENOMEM;
 	}
 
 	ret = rte_intr_enable(dev->intr_handle);
@@ -1068,14 +1069,14 @@ validate_enc_op(struct rte_bbdev_enc_op *op __rte_unused)
 				ldpc_enc->basegraph);
 		return -1;
 	}
-	if (ldpc_enc->code_block_mode > 1) {
+	if (ldpc_enc->code_block_mode > RTE_BBDEV_CODE_BLOCK) {
 		rte_bbdev_log(ERR,
 				"code_block_mode (%u) is out of range 0:Tb 1:CB",
 				ldpc_enc->code_block_mode);
 		return -1;
 	}
 
-	if (ldpc_enc->code_block_mode == 0) {
+	if (ldpc_enc->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		tb = &ldpc_enc->tb_params;
 		if (tb->c == 0) {
 			rte_bbdev_log(ERR,
@@ -1161,14 +1162,14 @@ validate_dec_op(struct rte_bbdev_dec_op *op __rte_unused)
 		return -1;
 	}
 
-	if (ldpc_dec->code_block_mode > 1) {
+	if (ldpc_dec->code_block_mode > RTE_BBDEV_CODE_BLOCK) {
 		rte_bbdev_log(ERR,
 				"code_block_mode (%u) is out of range 0 <= value <= 1",
 				ldpc_dec->code_block_mode);
 		return -1;
 	}
 
-	if (ldpc_dec->code_block_mode == 0) {
+	if (ldpc_dec->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		tb = &ldpc_dec->tb_params;
 		if (tb->c < 1) {
 			rte_bbdev_log(ERR,
@@ -1370,7 +1371,7 @@ enqueue_ldpc_enc_one_op_cb(struct fpga_queue *q, struct rte_bbdev_enc_op *op,
 	if (enc->op_flags & RTE_BBDEV_LDPC_CRC_24B_ATTACH)
 		crc24_bits = 24;
 
-	if (enc->code_block_mode == 0) {
+	if (enc->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		/* For Transport Block mode */
 		/* FIXME */
 		c = enc->tb_params.c;
@@ -1879,7 +1880,7 @@ fpga_5gnr_fec_probe(struct rte_pci_driver *pci_drv,
 
 	/* Fill HW specific part of device structure */
 	bbdev->device = &pci_dev->device;
-	bbdev->intr_handle = &pci_dev->intr_handle;
+	bbdev->intr_handle = pci_dev->intr_handle;
 	bbdev->data->socket_id = pci_dev->device.numa_node;
 
 	/* Invoke FEC FPGA device initialization function */

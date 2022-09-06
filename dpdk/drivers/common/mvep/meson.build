@@ -3,18 +3,20 @@
 # Copyright(c) 2018 Semihalf.
 # All rights reserved.
 #
-path = get_option('lib_musdk_dir')
-lib_dir = path + '/lib'
-inc_dir = path + '/include'
 
-lib = cc.find_library('libmusdk', dirs: [lib_dir], required: false)
-if not lib.found()
-	build = false
-	reason = 'missing dependency, "libmusdk"'
-else
-	ext_deps += lib
-	includes += include_directories(inc_dir)
-	cflags += ['-DMVCONF_TYPES_PUBLIC', '-DMVCONF_DMA_PHYS_ADDR_T_PUBLIC']
+if is_windows
+    build = false
+    reason = 'not supported on Windows'
+    subdir_done()
 endif
+
+dep = dependency('libmusdk', required: false, method: 'pkg-config')
+if not dep.found()
+    build = false
+    reason = 'missing dependency, "libmusdk"'
+    subdir_done()
+endif
+
+ext_deps += dep
 
 sources = files('mvep_common.c')

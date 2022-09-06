@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -12,15 +12,13 @@
 #include "tfp.h"
 
 struct tf;
-/**
- * Global Cfg DBs.
- */
-static void *global_cfg_db[TF_DIR_MAX];
 
 /**
- * Init flag, set on bind and cleared on unbind
+ * Global cfg database
  */
-static uint8_t init;
+struct tf_global_cfg_db {
+	struct tf_global_cfg_cfg *global_cfg_db[TF_DIR_MAX];
+};
 
 /**
  * Get HCAPI type parameters for a single element
@@ -72,42 +70,47 @@ tf_global_cfg_get_hcapi_type(struct tf_global_cfg_get_hcapi_parms *parms)
 }
 
 int
-tf_global_cfg_bind(struct tf *tfp __rte_unused,
+tf_global_cfg_bind(struct tf *tfp,
 		   struct tf_global_cfg_cfg_parms *parms)
 {
+	struct tfp_calloc_parms cparms;
+	struct tf_global_cfg_db *global_cfg_db;
+
 	TF_CHECK_PARMS2(tfp, parms);
 
-	if (init) {
-		TFP_DRV_LOG(ERR,
-			    "Global Cfg DB already initialized\n");
-		return -EINVAL;
+	cparms.nitems = 1;
+	cparms.size = sizeof(struct tf_global_cfg_db);
+	cparms.alignment = 0;
+	if (tfp_calloc(&cparms) != 0) {
+		TFP_DRV_LOG(ERR, "global_rm_db alloc error %s\n",
+			    strerror(ENOMEM));
+		return -ENOMEM;
 	}
 
-	global_cfg_db[TF_DIR_RX] = parms->cfg;
-	global_cfg_db[TF_DIR_TX] = parms->cfg;
+	global_cfg_db = cparms.mem_va;
+	global_cfg_db->global_cfg_db[TF_DIR_RX] = parms->cfg;
+	global_cfg_db->global_cfg_db[TF_DIR_TX] = parms->cfg;
+	tf_session_set_global_db(tfp, (void *)global_cfg_db);
 
-	init = 1;
-
-	TFP_DRV_LOG(INFO,
-		    "Global Cfg - initialized\n");
-
+	TFP_DRV_LOG(INFO, "Global Cfg - initialized\n");
 	return 0;
 }
 
 int
-tf_global_cfg_unbind(struct tf *tfp __rte_unused)
+tf_global_cfg_unbind(struct tf *tfp)
 {
-	/* Bail if nothing has been initialized */
-	if (!init) {
-		TFP_DRV_LOG(INFO,
-			    "No Global Cfg DBs created\n");
+	int rc;
+	struct tf_global_cfg_db *global_cfg_db_ptr;
+
+	TF_CHECK_PARMS1(tfp);
+
+	rc = tf_session_get_global_db(tfp, (void **)&global_cfg_db_ptr);
+	if (rc) {
+		TFP_DRV_LOG(INFO, "global_cfg_db is not initialized\n");
 		return 0;
 	}
 
-	global_cfg_db[TF_DIR_RX] = NULL;
-	global_cfg_db[TF_DIR_TX] = NULL;
-	init = 0;
-
+	tfp_free((void *)global_cfg_db_ptr);
 	return 0;
 }
 
@@ -117,19 +120,19 @@ tf_global_cfg_set(struct tf *tfp,
 {
 	int rc;
 	struct tf_global_cfg_get_hcapi_parms hparms;
+	struct tf_global_cfg_db *global_cfg_db_ptr;
 	uint16_t hcapi_type;
 
 	TF_CHECK_PARMS3(tfp, parms, parms->config);
 
-	if (!init) {
-		TFP_DRV_LOG(ERR,
-			    "%s: No Global Cfg DBs created\n",
-			    tf_dir_2_str(parms->dir));
-		return -EINVAL;
+	rc = tf_session_get_global_db(tfp, (void **)&global_cfg_db_ptr);
+	if (rc) {
+		TFP_DRV_LOG(INFO, "No global cfg DBs initialized\n");
+		return 0;
 	}
 
 	/* Convert TF type to HCAPI type */
-	hparms.global_cfg_db = global_cfg_db[parms->dir];
+	hparms.global_cfg_db = global_cfg_db_ptr->global_cfg_db[parms->dir];
 	hparms.db_index = parms->type;
 	hparms.hcapi_type = &hcapi_type;
 	rc = tf_global_cfg_get_hcapi_type(&hparms);
@@ -161,18 +164,19 @@ tf_global_cfg_get(struct tf *tfp,
 {
 	int rc;
 	struct tf_global_cfg_get_hcapi_parms hparms;
+	struct tf_global_cfg_db *global_cfg_db_ptr;
 	uint16_t hcapi_type;
 
 	TF_CHECK_PARMS3(tfp, parms, parms->config);
 
-	if (!init) {
-		TFP_DRV_LOG(ERR,
-			    "%s: No Global Cfg DBs created\n",
-			    tf_dir_2_str(parms->dir));
-		return -EINVAL;
+	rc = tf_session_get_global_db(tfp, (void **)&global_cfg_db_ptr);
+	if (rc) {
+		TFP_DRV_LOG(INFO, "No Global cfg DBs initialized\n");
+		return 0;
 	}
 
-	hparms.global_cfg_db = global_cfg_db[parms->dir];
+	/* Convert TF type to HCAPI type */
+	hparms.global_cfg_db = global_cfg_db_ptr->global_cfg_db[parms->dir];
 	hparms.db_index = parms->type;
 	hparms.hcapi_type = &hcapi_type;
 	rc = tf_global_cfg_get_hcapi_type(&hparms);

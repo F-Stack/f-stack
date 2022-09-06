@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include "txgbe_hw.h"
@@ -9,6 +10,18 @@
 
 static void txgbe_i2c_start(struct txgbe_hw *hw, u8 dev_addr);
 static void txgbe_i2c_stop(struct txgbe_hw *hw);
+static s32 txgbe_handle_bp_flow(u32 link_mode, struct txgbe_hw *hw);
+static void txgbe_get_bp_ability(struct txgbe_backplane_ability *ability,
+	u32 link_partner, struct txgbe_hw *hw);
+static s32 txgbe_check_bp_ability(struct txgbe_backplane_ability *local_ability,
+	struct txgbe_backplane_ability *lp_ability, struct txgbe_hw *hw);
+static void txgbe_clear_bp_intr(u32 bit, u32 bit_high, struct txgbe_hw *hw);
+static s32 txgbe_enable_kr_training(struct txgbe_hw *hw);
+static s32 txgbe_disable_kr_training(struct txgbe_hw *hw, s32 post, s32 mode);
+static s32 txgbe_check_kr_training(struct txgbe_hw *hw);
+static void txgbe_read_phy_lane_tx_eq(u16 lane, struct txgbe_hw *hw,
+				s32 post, s32 mode);
+static s32 txgbe_set_link_to_sfi(struct txgbe_hw *hw, u32 speed);
 
 /**
  * txgbe_identify_extphy - Identify a single address for a PHY
@@ -534,6 +547,18 @@ s32 txgbe_setup_phy_link_speed(struct txgbe_hw *hw,
 
 	/* Setup link based on the new speed settings */
 	hw->phy.setup_link(hw);
+
+	return 0;
+}
+
+s32 txgbe_get_phy_fw_version(struct txgbe_hw *hw, u32 *fw_version)
+{
+	u16 eeprom_verh, eeprom_verl;
+
+	hw->rom.readw_sw(hw, TXGBE_EEPROM_VERSION_H, &eeprom_verh);
+	hw->rom.readw_sw(hw, TXGBE_EEPROM_VERSION_L, &eeprom_verl);
+
+	*fw_version = (eeprom_verh << 16) | eeprom_verl;
 
 	return 0;
 }
@@ -1338,24 +1363,32 @@ static void txgbe_i2c_stop(struct txgbe_hw *hw)
 	wr32(hw, TXGBE_I2CENA, 0);
 }
 
-static s32
+static void
 txgbe_set_sgmii_an37_ability(struct txgbe_hw *hw)
 {
 	u32 value;
+	u8 device_type = hw->subsystem_device_id & 0xF0;
 
 	wr32_epcs(hw, VR_XS_OR_PCS_MMD_DIGI_CTL1, 0x3002);
-	wr32_epcs(hw, SR_MII_MMD_AN_CTL, 0x0105);
+	/* for sgmii + external phy, set to 0x0105 (phy sgmii mode) */
+	/* for sgmii direct link, set to 0x010c (mac sgmii mode) */
+	if (device_type == TXGBE_DEV_ID_MAC_SGMII ||
+			hw->phy.media_type == txgbe_media_type_fiber)
+		wr32_epcs(hw, SR_MII_MMD_AN_CTL, 0x010C);
+	else if (device_type == TXGBE_DEV_ID_SGMII ||
+			device_type == TXGBE_DEV_ID_XAUI)
+		wr32_epcs(hw, SR_MII_MMD_AN_CTL, 0x0105);
 	wr32_epcs(hw, SR_MII_MMD_DIGI_CTL, 0x0200);
 	value = rd32_epcs(hw, SR_MII_MMD_CTL);
 	value = (value & ~0x1200) | (0x1 << 12) | (0x1 << 9);
 	wr32_epcs(hw, SR_MII_MMD_CTL, value);
-	return 0;
 }
 
 static s32
 txgbe_set_link_to_kr(struct txgbe_hw *hw, bool autoneg)
 {
 	u32 i;
+	u16 value;
 	s32 err = 0;
 
 	/* 1. Wait xpcs power-up good */
@@ -1370,18 +1403,37 @@ txgbe_set_link_to_kr(struct txgbe_hw *hw, bool autoneg)
 		err = TXGBE_ERR_XPCS_POWER_UP_FAILED;
 		goto out;
 	}
+	BP_LOG("It is set to kr.\n");
+
+	wr32_epcs(hw, VR_AN_INTR_MSK, 0x7);
+	wr32_epcs(hw, TXGBE_PHY_TX_POWER_ST_CTL, 0x00FC);
+	wr32_epcs(hw, TXGBE_PHY_RX_POWER_ST_CTL, 0x00FC);
 
 	if (!autoneg) {
 		/* 2. Disable xpcs AN-73 */
-		wr32_epcs(hw, SR_AN_CTRL, 0x0);
-		/* Disable PHY MPLLA for eth mode change(after ECO) */
-		wr32_ephy(hw, 0x4, 0x243A);
-		txgbe_flush(hw);
-		msec_delay(1);
-		/* Set the eth change_mode bit first in mis_rst register
-		 * for corresponding LAN port
-		 */
-		wr32(hw, TXGBE_RST, TXGBE_RST_ETH(hw->bus.lan_id));
+		wr32_epcs(hw, SR_AN_CTRL,
+			SR_AN_CTRL_AN_EN | SR_AN_CTRL_EXT_NP);
+
+		wr32_epcs(hw, VR_AN_KR_MODE_CL, VR_AN_KR_MODE_CL_PDET);
+
+		if (!(hw->devarg.auto_neg == 1)) {
+			wr32_epcs(hw, SR_AN_CTRL, 0);
+			wr32_epcs(hw, VR_AN_KR_MODE_CL, 0);
+		} else {
+			value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
+			value &= ~(1 << 6);
+			wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+		}
+		if (hw->devarg.present == 1) {
+			value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
+			value |= TXGBE_PHY_TX_EQ_CTL1_DEF;
+			wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+		}
+		if (hw->devarg.poll == 1) {
+			wr32_epcs(hw, VR_PMA_KRTR_TIMER_CTRL0,
+				VR_PMA_KRTR_TIMER_MAX_WAIT);
+			wr32_epcs(hw, VR_PMA_KRTR_TIMER_CTRL2, 0xA697);
+		}
 
 		/* 3. Set VR_XS_PMA_Gen5_12G_MPLLA_CTRL3 Register
 		 * Bit[10:0](MPLLA_BANDWIDTH) = 11'd123 (default: 11'd16)
@@ -1426,6 +1478,15 @@ txgbe_set_link_to_kr(struct txgbe_hw *hw, bool autoneg)
 	} else {
 		wr32_epcs(hw, VR_AN_KR_MODE_CL, 0x1);
 	}
+
+	if (hw->phy.ffe_set == TXGBE_BP_M_KR) {
+		value = (0x1804 & ~0x3F3F);
+		value |= hw->phy.ffe_main << 8 | hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = (0x50 & ~0x7F) | (1 << 6) | hw->phy.ffe_post;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	}
 out:
 	return err;
 }
@@ -1440,6 +1501,10 @@ txgbe_set_link_to_kx4(struct txgbe_hw *hw, bool autoneg)
 	/* Check link status, if already set, skip setting it again */
 	if (hw->link_status == TXGBE_LINK_STATUS_KX4)
 		goto out;
+
+	BP_LOG("It is set to kx4.\n");
+	wr32_epcs(hw, TXGBE_PHY_TX_POWER_ST_CTL, 0);
+	wr32_epcs(hw, TXGBE_PHY_RX_POWER_ST_CTL, 0);
 
 	/* 1. Wait xpcs power-up good */
 	for (i = 0; i < 100; i++) {
@@ -1485,16 +1550,13 @@ txgbe_set_link_to_kx4(struct txgbe_hw *hw, bool autoneg)
 	wr32_epcs(hw, SR_PMA_CTRL1,
 			SR_PMA_CTRL1_SS13_KX4);
 
-	value = (0xf5f0 & ~0x7F0) |  (0x5 << 8) | (0x7 << 5) | 0x10;
+	value = (0xf5f0 & ~0x7F0) |  (0x5 << 8) | (0x7 << 5) | 0xF0;
 	wr32_epcs(hw, TXGBE_PHY_TX_GENCTRL1, value);
 
-	wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0x4F00);
-
-	value = (0x1804 & ~0x3F3F);
-	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
-
-	value = (0x50 & ~0x7F) | 40 | (1 << 6);
-	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	if ((hw->subsystem_device_id & 0xFF) == TXGBE_DEV_ID_MAC_XAUI)
+		wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0xCF00);
+	else
+		wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0x4F00);
 
 	for (i = 0; i < 4; i++) {
 		if (i == 0)
@@ -1622,6 +1684,20 @@ txgbe_set_link_to_kx4(struct txgbe_hw *hw, bool autoneg)
 		goto out;
 	}
 
+	if (hw->phy.ffe_set == TXGBE_BP_M_KX4) {
+		value = (0x1804 & ~0x3F3F);
+		value |= hw->phy.ffe_main << 8 | hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = (0x50 & ~0x7F) | (1 << 6) | hw->phy.ffe_post;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	} else if (hw->fw_version <= TXGBE_FW_N_TXEQ) {
+		value = (0x1804 & ~0x3F3F);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = (0x50 & ~0x7F) | 40 | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	}
 out:
 	return err;
 }
@@ -1639,6 +1715,10 @@ txgbe_set_link_to_kx(struct txgbe_hw *hw,
 	/* Check link status, if already set, skip setting it again */
 	if (hw->link_status == TXGBE_LINK_STATUS_KX)
 		goto out;
+
+	BP_LOG("It is set to kx. speed =0x%x\n", speed);
+	wr32_epcs(hw, TXGBE_PHY_TX_POWER_ST_CTL, 0x00FC);
+	wr32_epcs(hw, TXGBE_PHY_RX_POWER_ST_CTL, 0x00FC);
 
 	/* 1. Wait xpcs power-up good */
 	for (i = 0; i < 100; i++) {
@@ -1696,16 +1776,13 @@ txgbe_set_link_to_kx(struct txgbe_hw *hw,
 	wr32_epcs(hw, SR_MII_MMD_CTL,
 			wdata);
 
-	value = (0xf5f0 & ~0x710) |  (0x5 << 8);
+	value = (0xf5f0 & ~0x710) | (0x5 << 8) | 0x10;
 	wr32_epcs(hw, TXGBE_PHY_TX_GENCTRL1, value);
 
-	wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0x4F00);
-
-	value = (0x1804 & ~0x3F3F) | (24 << 8) | 4;
-	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
-
-	value = (0x50 & ~0x7F) | 16 | (1 << 6);
-	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	if (hw->devarg.sgmii == 1)
+		wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0x4F00);
+	else
+		wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0xCF00);
 
 	for (i = 0; i < 4; i++) {
 		if (i) {
@@ -1821,6 +1898,21 @@ txgbe_set_link_to_kx(struct txgbe_hw *hw,
 		goto out;
 	}
 
+	if (hw->phy.ffe_set == TXGBE_BP_M_KX) {
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0) & ~0x3F3F;
+		value |= hw->phy.ffe_main << 8 | hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0) & ~0x7F;
+		value |= hw->phy.ffe_post | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	} else if (hw->fw_version <= TXGBE_FW_N_TXEQ) {
+		value = (0x1804 & ~0x3F3F) | (24 << 8) | 4;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = (0x50 & ~0x7F) | 16 | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	}
 out:
 	return err;
 }
@@ -1917,18 +2009,7 @@ txgbe_set_link_to_sfi(struct txgbe_hw *hw,
 		 * MPLLA_DIV8_CLK_EN=0
 		 */
 		wr32_epcs(hw, TXGBE_PHY_MPLLA_CTL2, 0x0600);
-		/* 5. Set VR_XS_PMA_Gen5_12G_TX_EQ_CTRL0 Register
-		 * Bit[13:8](TX_EQ_MAIN) = 6'd30, Bit[5:0](TX_EQ_PRE) = 6'd4
-		 */
-		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0);
-		value = (value & ~0x3F3F) | (24 << 8) | 4;
-		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
-		/* 6. Set VR_XS_PMA_Gen5_12G_TX_EQ_CTRL1 Register
-		 * Bit[6](TX_EQ_OVR_RIDE) = 1'b1, Bit[5:0](TX_EQ_POST) = 6'd36
-		 */
-		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
-		value = (value & ~0x7F) | 16 | (1 << 6);
-		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+
 		if (hw->phy.sfp_type == txgbe_sfp_type_da_cu_core0 ||
 			hw->phy.sfp_type == txgbe_sfp_type_da_cu_core1) {
 			/* 7. Set VR_XS_PMA_Gen5_12G_RX_EQ_CTRL0 Register
@@ -1995,18 +2076,7 @@ txgbe_set_link_to_sfi(struct txgbe_hw *hw,
 		 * Bit[12:8](RX_VREF_CTRL) = 5'hF
 		 */
 		wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0xCF00);
-		/* 5. Set VR_XS_PMA_Gen5_12G_TX_EQ_CTRL0 Register
-		 * Bit[13:8](TX_EQ_MAIN) = 6'd30, Bit[5:0](TX_EQ_PRE) = 6'd4
-		 */
-		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0);
-		value = (value & ~0x3F3F) | (24 << 8) | 4;
-		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
-		/* 6. Set VR_XS_PMA_Gen5_12G_TX_EQ_CTRL1 Register Bit[6]
-		 * (TX_EQ_OVR_RIDE) = 1'b1, Bit[5:0](TX_EQ_POST) = 6'd36
-		 */
-		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
-		value = (value & ~0x7F) | 16 | (1 << 6);
-		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+
 		if (hw->phy.sfp_type == txgbe_sfp_type_da_cu_core0 ||
 			hw->phy.sfp_type == txgbe_sfp_type_da_cu_core1) {
 			wr32_epcs(hw, TXGBE_PHY_RX_EQ_CTL0, 0x774F);
@@ -2063,6 +2133,23 @@ txgbe_set_link_to_sfi(struct txgbe_hw *hw,
 		goto out;
 	}
 
+	if (hw->phy.ffe_set == TXGBE_BP_M_SFI) {
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0) & ~0x3F3F;
+		value |= hw->phy.ffe_main << 8 | hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0) & ~0x7F;
+		value |= hw->phy.ffe_post | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	} else if (hw->fw_version <= TXGBE_FW_N_TXEQ) {
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0);
+		value = (value & ~0x3F3F) | (24 << 8) | 4;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
+		value = (value & ~0x7F) | 16 | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	}
 out:
 	return err;
 }
@@ -2073,31 +2160,39 @@ out:
  */
 u64 txgbe_autoc_read(struct txgbe_hw *hw)
 {
-	u64 autoc = 0;
+	u64 autoc;
 	u32 sr_pcs_ctl;
 	u32 sr_pma_ctl1;
 	u32 sr_an_ctl;
 	u32 sr_an_adv_reg2;
+	u8 type = hw->subsystem_device_id & 0xFF;
+
+	autoc = hw->mac.autoc;
 
 	if (hw->phy.multispeed_fiber) {
 		autoc |= TXGBE_AUTOC_LMS_10G;
-	} else if (hw->device_id == TXGBE_DEV_ID_RAPTOR_SFP ||
-		   hw->device_id == TXGBE_DEV_ID_WX1820_SFP) {
-		autoc |= TXGBE_AUTOC_LMS_10G |
-			 TXGBE_AUTOC_10GS_SFI;
-	} else if (hw->device_id == TXGBE_DEV_ID_RAPTOR_QSFP) {
+	} else if (type == TXGBE_DEV_ID_SFP) {
+		autoc |= TXGBE_AUTOC_LMS_10G;
+		autoc |= TXGBE_AUTOC_10GS_SFI;
+	} else if (type == TXGBE_DEV_ID_QSFP) {
 		autoc = 0; /*TBD*/
-	} else if (hw->device_id == TXGBE_DEV_ID_RAPTOR_XAUI) {
-		autoc |= TXGBE_AUTOC_LMS_10G_LINK_NO_AN |
-			 TXGBE_AUTOC_10G_XAUI;
+	} else if (type == TXGBE_DEV_ID_XAUI || type == TXGBE_DEV_ID_SFI_XAUI) {
+		autoc |= TXGBE_AUTOC_LMS_10G_LINK_NO_AN;
+		autoc |= TXGBE_AUTOC_10G_XAUI;
 		hw->phy.link_mode = TXGBE_PHYSICAL_LAYER_10GBASE_T;
-	} else if (hw->device_id == TXGBE_DEV_ID_RAPTOR_SGMII) {
+	} else if (type == TXGBE_DEV_ID_SGMII) {
 		autoc |= TXGBE_AUTOC_LMS_SGMII_1G_100M;
 		hw->phy.link_mode = TXGBE_PHYSICAL_LAYER_1000BASE_T |
 				TXGBE_PHYSICAL_LAYER_100BASE_TX;
+	} else if (type == TXGBE_DEV_ID_MAC_XAUI) {
+		autoc |= TXGBE_AUTOC_LMS_10G_LINK_NO_AN;
+		hw->phy.link_mode = TXGBE_PHYSICAL_LAYER_10GBASE_KX4;
+	} else if (type == TXGBE_DEV_ID_MAC_SGMII) {
+		autoc |= TXGBE_AUTOC_LMS_1G_LINK_NO_AN;
+		hw->phy.link_mode = TXGBE_PHYSICAL_LAYER_1000BASE_KX;
 	}
 
-	if (hw->device_id != TXGBE_DEV_ID_RAPTOR_SGMII)
+	if (type != TXGBE_DEV_ID_KR_KX_KX4)
 		return autoc;
 
 	sr_pcs_ctl = rd32_epcs(hw, SR_XS_PCS_CTRL2);
@@ -2129,11 +2224,11 @@ u64 txgbe_autoc_read(struct txgbe_hw *hw)
 	} else if ((sr_an_ctl & SR_AN_CTRL_AN_EN)) {
 		/* KX/KX4/KR backplane auto-negotiation enable */
 		if (sr_an_adv_reg2 & SR_AN_MMD_ADV_REG2_BP_TYPE_KR)
-			autoc |= TXGBE_AUTOC_10G_KR;
+			autoc |= TXGBE_AUTOC_KR_SUPP;
 		if (sr_an_adv_reg2 & SR_AN_MMD_ADV_REG2_BP_TYPE_KX4)
-			autoc |= TXGBE_AUTOC_10G_KX4;
+			autoc |= TXGBE_AUTOC_KX4_SUPP;
 		if (sr_an_adv_reg2 & SR_AN_MMD_ADV_REG2_BP_TYPE_KX)
-			autoc |= TXGBE_AUTOC_1G_KX;
+			autoc |= TXGBE_AUTOC_KX_SUPP;
 		autoc |= TXGBE_AUTOC_LMS_KX4_KX_KR;
 		hw->phy.link_mode = TXGBE_PHYSICAL_LAYER_10GBASE_KR |
 				TXGBE_PHYSICAL_LAYER_10GBASE_KX4 |
@@ -2153,13 +2248,14 @@ void txgbe_autoc_write(struct txgbe_hw *hw, u64 autoc)
 	bool autoneg;
 	u32 speed;
 	u32 mactxcfg = 0;
+	u8 device_type = hw->subsystem_device_id & 0xFF;
 
-	speed = TXGBE_AUTOC_SPEED(autoc);
+	speed = TXGBD_AUTOC_SPEED(autoc);
 	autoc &= ~TXGBE_AUTOC_SPEED_MASK;
 	autoneg = (autoc & TXGBE_AUTOC_AUTONEG ? true : false);
 	autoc &= ~TXGBE_AUTOC_AUTONEG;
 
-	if (hw->device_id == TXGBE_DEV_ID_RAPTOR_KR_KX_KX4) {
+	if (device_type == TXGBE_DEV_ID_KR_KX_KX4) {
 		if (!autoneg) {
 			switch (hw->phy.link_mode) {
 			case TXGBE_PHYSICAL_LAYER_10GBASE_KR:
@@ -2174,18 +2270,26 @@ void txgbe_autoc_write(struct txgbe_hw *hw, u64 autoc)
 			default:
 				return;
 			}
+		} else {
+			txgbe_set_link_to_kr(hw, !autoneg);
 		}
-	} else if (hw->device_id == TXGBE_DEV_ID_RAPTOR_XAUI ||
-		   hw->device_id == TXGBE_DEV_ID_RAPTOR_SGMII) {
+	} else if (device_type == TXGBE_DEV_ID_XAUI ||
+		   device_type == TXGBE_DEV_ID_SGMII ||
+		   device_type == TXGBE_DEV_ID_MAC_XAUI ||
+		   device_type == TXGBE_DEV_ID_MAC_SGMII ||
+		   (device_type == TXGBE_DEV_ID_SFI_XAUI &&
+		   hw->phy.media_type == txgbe_media_type_copper)) {
 		if (speed == TXGBE_LINK_SPEED_10GB_FULL) {
-			txgbe_set_link_to_kx4(hw, autoneg);
+			txgbe_set_link_to_kx4(hw, 0);
 		} else {
 			txgbe_set_link_to_kx(hw, speed, 0);
-			txgbe_set_sgmii_an37_ability(hw);
+			if (hw->devarg.auto_neg == 1)
+				txgbe_set_sgmii_an37_ability(hw);
 		}
-	} else if (hw->device_id == TXGBE_DEV_ID_RAPTOR_SFP ||
-		   hw->device_id == TXGBE_DEV_ID_WX1820_SFP) {
+	} else if (hw->phy.media_type == txgbe_media_type_fiber) {
 		txgbe_set_link_to_sfi(hw, speed);
+		if (speed == TXGBE_LINK_SPEED_1GB_FULL)
+			txgbe_set_sgmii_an37_ability(hw);
 	}
 
 	if (speed == TXGBE_LINK_SPEED_10GB_FULL)
@@ -2194,6 +2298,511 @@ void txgbe_autoc_write(struct txgbe_hw *hw, u64 autoc)
 		mactxcfg = TXGBE_MACTXCFG_SPEED_1G;
 
 	/* enable mac transmitter */
-	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_SPEED_MASK, mactxcfg);
+	wr32m(hw, TXGBE_MACTXCFG,
+		TXGBE_MACTXCFG_SPEED_MASK | TXGBE_MACTXCFG_TXE,
+		mactxcfg | TXGBE_MACTXCFG_TXE);
 }
 
+void txgbe_bp_down_event(struct txgbe_hw *hw)
+{
+	if (!(hw->devarg.auto_neg == 1))
+		return;
+
+	BP_LOG("restart phy power.\n");
+	wr32_epcs(hw, VR_AN_KR_MODE_CL, 0);
+	wr32_epcs(hw, SR_AN_CTRL, 0);
+	wr32_epcs(hw, VR_AN_INTR_MSK, 0);
+
+	msleep(1050);
+	txgbe_set_link_to_kr(hw, 0);
+}
+
+void txgbe_bp_mode_set(struct txgbe_hw *hw)
+{
+	if (hw->phy.ffe_set == TXGBE_BP_M_SFI)
+		hw->subsystem_device_id = TXGBE_DEV_ID_WX1820_SFP;
+	else if (hw->phy.ffe_set == TXGBE_BP_M_KR)
+		hw->subsystem_device_id = TXGBE_DEV_ID_WX1820_KR_KX_KX4;
+	else if (hw->phy.ffe_set == TXGBE_BP_M_KX4)
+		hw->subsystem_device_id = TXGBE_DEV_ID_WX1820_MAC_XAUI;
+	else if (hw->phy.ffe_set == TXGBE_BP_M_KX)
+		hw->subsystem_device_id = TXGBE_DEV_ID_WX1820_MAC_SGMII;
+}
+
+void txgbe_set_phy_temp(struct txgbe_hw *hw)
+{
+	u32 value;
+
+	if (hw->phy.ffe_set == TXGBE_BP_M_SFI) {
+		BP_LOG("Set SFI TX_EQ MAIN:%d PRE:%d POST:%d\n",
+			hw->phy.ffe_main, hw->phy.ffe_pre, hw->phy.ffe_post);
+
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0);
+		value = (value & ~0x3F3F) | (hw->phy.ffe_main << 8) |
+			hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
+		value = (value & ~0x7F) | hw->phy.ffe_post | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	}
+
+	if (hw->phy.ffe_set == TXGBE_BP_M_KR) {
+		BP_LOG("Set KR TX_EQ MAIN:%d PRE:%d POST:%d\n",
+			hw->phy.ffe_main, hw->phy.ffe_pre, hw->phy.ffe_post);
+		value = (0x1804 & ~0x3F3F);
+		value |= hw->phy.ffe_main << 8 | hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = (0x50 & ~0x7F) | (1 << 6) | hw->phy.ffe_post;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+		wr32_epcs(hw, 0x18035, 0x00FF);
+		wr32_epcs(hw, 0x18055, 0x00FF);
+	}
+
+	if (hw->phy.ffe_set == TXGBE_BP_M_KX) {
+		BP_LOG("Set KX TX_EQ MAIN:%d PRE:%d POST:%d\n",
+			hw->phy.ffe_main, hw->phy.ffe_pre, hw->phy.ffe_post);
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0);
+		value = (value & ~0x3F3F) | (hw->phy.ffe_main << 8) |
+			hw->phy.ffe_pre;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
+
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
+		value = (value & ~0x7F) | hw->phy.ffe_post | (1 << 6);
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+
+		wr32_epcs(hw, 0x18035, 0x00FF);
+		wr32_epcs(hw, 0x18055, 0x00FF);
+	}
+}
+
+/**
+ * txgbe_kr_handle - Handle the interrupt of auto-negotiation
+ * @hw: pointer to hardware structure
+ */
+s32 txgbe_kr_handle(struct txgbe_hw *hw)
+{
+	u32 value;
+	s32 status = 0;
+
+	value = rd32_epcs(hw, VR_AN_INTR);
+	BP_LOG("AN INTERRUPT!! value: 0x%x\n", value);
+	if (!(value & VR_AN_INTR_PG_RCV)) {
+		wr32_epcs(hw, VR_AN_INTR, 0);
+		return status;
+	}
+
+	status = txgbe_handle_bp_flow(0, hw);
+
+	return status;
+}
+
+/**
+ * txgbe_handle_bp_flow - Handle backplane AN73 flow
+ * @hw: pointer to hardware structure
+ * @link_mode: local AN73 link mode
+ */
+static s32 txgbe_handle_bp_flow(u32 link_mode, struct txgbe_hw *hw)
+{
+	u32 value, i, lp_reg, ld_reg;
+	s32 status = 0;
+	struct txgbe_backplane_ability local_ability, lp_ability;
+
+	local_ability.current_link_mode = link_mode;
+
+	/* 1. Get the local AN73 Base Page Ability */
+	BP_LOG("<1>. Get the local AN73 Base Page Ability ...\n");
+	txgbe_get_bp_ability(&local_ability, 0, hw);
+
+	/* 2. Check and clear the AN73 Interrupt Status */
+	BP_LOG("<2>. Check the AN73 Interrupt Status ...\n");
+	txgbe_clear_bp_intr(2, 0, hw);
+
+	/* 3.1. Get the link partner AN73 Base Page Ability */
+	BP_LOG("<3.1>. Get the link partner AN73 Base Page Ability ...\n");
+	txgbe_get_bp_ability(&lp_ability, 1, hw);
+
+	/* 3.2. Check the AN73 Link Ability with Link Partner */
+	BP_LOG("<3.2>. Check the AN73 Link Ability with Link Partner ...\n");
+	BP_LOG("       Local Link Ability: 0x%x\n", local_ability.link_ability);
+	BP_LOG("   Link Partner Link Ability: 0x%x\n", lp_ability.link_ability);
+
+	status = txgbe_check_bp_ability(&local_ability, &lp_ability, hw);
+
+	wr32_epcs(hw, SR_AN_CTRL, 0);
+	wr32_epcs(hw, VR_AN_KR_MODE_CL, 0);
+
+	/* 3.3. Check the FEC and KR Training for KR mode */
+	BP_LOG("<3.3>. Check the FEC for KR mode ...\n");
+	if ((local_ability.fec_ability & lp_ability.fec_ability) == 0x03) {
+		BP_LOG("Enable the Backplane KR FEC ...\n");
+		wr32_epcs(hw, SR_PMA_KR_FEC_CTRL, SR_PMA_KR_FEC_CTRL_EN);
+	} else {
+		BP_LOG("Backplane KR FEC is disabled.\n");
+	}
+
+	printf("Enter training.\n");
+	/* CL72 KR training on */
+	for (i = 0; i < 2; i++) {
+		/* 3.4. Check the CL72 KR Training for KR mode */
+		BP_LOG("<3.4>. Check the CL72 KR Training for KR mode ...\n");
+		BP_LOG("==================%d==================\n", i);
+		status = txgbe_enable_kr_training(hw);
+		BP_LOG("Check the Clause 72 KR Training status ...\n");
+		status |= txgbe_check_kr_training(hw);
+
+		lp_reg = rd32_epcs(hw, SR_PMA_KR_LP_CESTS);
+		lp_reg &= SR_PMA_KR_LP_CESTS_RR;
+		BP_LOG("SR PMA MMD 10GBASE-KR LP Coefficient Status Register: 0x%x\n",
+			lp_reg);
+		ld_reg = rd32_epcs(hw, SR_PMA_KR_LD_CESTS);
+		ld_reg &= SR_PMA_KR_LD_CESTS_RR;
+		BP_LOG("SR PMA MMD 10GBASE-KR LD Coefficient Status Register: 0x%x\n",
+			ld_reg);
+		if (hw->devarg.poll == 0 && status != 0)
+			lp_reg = SR_PMA_KR_LP_CESTS_RR;
+
+		if (lp_reg & ld_reg) {
+			BP_LOG("==================out==================\n");
+			status = txgbe_disable_kr_training(hw, 0, 0);
+			wr32_epcs(hw, SR_AN_CTRL, 0);
+			txgbe_clear_bp_intr(2, 0, hw);
+			txgbe_clear_bp_intr(1, 0, hw);
+			txgbe_clear_bp_intr(0, 0, hw);
+			for (i = 0; i < 10; i++) {
+				value = rd32_epcs(hw, SR_XS_PCS_KR_STS1);
+				if (value & SR_XS_PCS_KR_STS1_PLU) {
+					BP_LOG("\nINT_AN_INT_CMPLT =1, AN73 Done Success.\n");
+					wr32_epcs(hw, SR_AN_CTRL, 0);
+					return 0;
+				}
+				msec_delay(10);
+			}
+			msec_delay(1000);
+			txgbe_set_link_to_kr(hw, 0);
+
+			return 0;
+		}
+
+		status |= txgbe_disable_kr_training(hw, 0, 0);
+	}
+
+	txgbe_clear_bp_intr(2, 0, hw);
+	txgbe_clear_bp_intr(1, 0, hw);
+	txgbe_clear_bp_intr(0, 0, hw);
+
+	return status;
+}
+
+/**
+ * txgbe_get_bp_ability
+ * @hw: pointer to hardware structure
+ * @ability: pointer to blackplane ability structure
+ * @link_partner:
+ *	1: Get Link Partner Base Page
+ *	2: Get Link Partner Next Page
+ *		(only get NXP Ability Register 1 at the moment)
+ *	0: Get Local Device Base Page
+ */
+static void txgbe_get_bp_ability(struct txgbe_backplane_ability *ability,
+		u32 link_partner, struct txgbe_hw *hw)
+{
+	u32 value = 0;
+
+	/* Link Partner Base Page */
+	if (link_partner == 1) {
+		/* Read the link partner AN73 Base Page Ability Registers */
+		BP_LOG("Read the link partner AN73 Base Page Ability Registers...\n");
+		value = rd32_epcs(hw, SR_AN_MMD_LP_ABL1);
+		BP_LOG("SR AN MMD LP Base Page Ability Register 1: 0x%x\n",
+			value);
+		ability->next_page = SR_MMD_LP_ABL1_ADV_NP(value);
+		BP_LOG("  Next Page (bit15): %d\n", ability->next_page);
+
+		value = rd32_epcs(hw, SR_AN_MMD_LP_ABL2);
+		BP_LOG("SR AN MMD LP Base Page Ability Register 2: 0x%x\n",
+			value);
+		ability->link_ability =
+			value & SR_AN_MMD_LP_ABL2_BP_TYPE_KR_KX4_KX;
+		BP_LOG("  Link Ability (bit[15:0]): 0x%x\n",
+			ability->link_ability);
+		BP_LOG("  (0x20- KX_ONLY, 0x40- KX4_ONLY, 0x60- KX4_KX\n");
+		BP_LOG("   0x80- KR_ONLY, 0xA0- KR_KX, 0xC0- KR_KX4, 0xE0- KR_KX4_KX)\n");
+
+		value = rd32_epcs(hw, SR_AN_MMD_LP_ABL3);
+		BP_LOG("SR AN MMD LP Base Page Ability Register 3: 0x%x\n",
+			value);
+		BP_LOG("  FEC Request (bit15): %d\n", ((value >> 15) & 0x01));
+		BP_LOG("  FEC Enable  (bit14): %d\n", ((value >> 14) & 0x01));
+		ability->fec_ability = SR_AN_MMD_LP_ABL3_FCE(value);
+	} else if (link_partner == 2) {
+		/* Read the link partner AN73 Next Page Ability Registers */
+		BP_LOG("\nRead the link partner AN73 Next Page Ability Registers...\n");
+		value = rd32_epcs(hw, SR_AN_LP_XNP_ABL1);
+		BP_LOG(" SR AN MMD LP XNP Ability Register 1: 0x%x\n", value);
+		ability->next_page = SR_AN_LP_XNP_ABL1_NP(value);
+		BP_LOG("  Next Page (bit15): %d\n", ability->next_page);
+	} else {
+		/* Read the local AN73 Base Page Ability Registers */
+		BP_LOG("Read the local AN73 Base Page Ability Registers...\n");
+		value = rd32_epcs(hw, SR_AN_MMD_ADV_REG1);
+		BP_LOG("SR AN MMD Advertisement Register 1: 0x%x\n", value);
+		ability->next_page = SR_AN_MMD_ADV_REG1_NP(value);
+		BP_LOG("  Next Page (bit15): %d\n", ability->next_page);
+
+		value = rd32_epcs(hw, SR_AN_MMD_ADV_REG2);
+		BP_LOG("SR AN MMD Advertisement Register 2: 0x%x\n", value);
+		ability->link_ability =
+			value & SR_AN_MMD_ADV_REG2_BP_TYPE_KR_KX4_KX;
+		BP_LOG("  Link Ability (bit[15:0]): 0x%x\n",
+			ability->link_ability);
+		BP_LOG("  (0x20- KX_ONLY, 0x40- KX4_ONLY, 0x60- KX4_KX\n");
+		BP_LOG("   0x80- KR_ONLY, 0xA0- KR_KX, 0xC0- KR_KX4, 0xE0- KR_KX4_KX)\n");
+
+		value = rd32_epcs(hw, SR_AN_MMD_ADV_REG3);
+		BP_LOG("SR AN MMD Advertisement Register 3: 0x%x\n", value);
+		BP_LOG("  FEC Request (bit15): %d\n", ((value >> 15) & 0x01));
+		BP_LOG("  FEC Enable  (bit14): %d\n", ((value >> 14) & 0x01));
+		ability->fec_ability = SR_AN_MMD_ADV_REG3_FCE(value);
+	}
+
+	BP_LOG("done.\n");
+}
+
+/**
+ * txgbe_check_bp_ability
+ * @hw: pointer to hardware structure
+ * @ability: pointer to blackplane ability structure
+ */
+static s32 txgbe_check_bp_ability(struct txgbe_backplane_ability *local_ability,
+	struct txgbe_backplane_ability *lp_ability, struct txgbe_hw *hw)
+{
+	u32 com_link_abi;
+	s32 ret = 0;
+
+	com_link_abi = local_ability->link_ability & lp_ability->link_ability;
+	BP_LOG("com_link_abi = 0x%x, local_ability = 0x%x, lp_ability = 0x%x\n",
+		com_link_abi, local_ability->link_ability,
+		lp_ability->link_ability);
+
+	if (!com_link_abi) {
+		BP_LOG("The Link Partner does not support any compatible speed mode.\n");
+		ret = -1;
+	} else if (com_link_abi & BP_TYPE_KR) {
+		if (local_ability->current_link_mode) {
+			BP_LOG("Link mode is not matched with Link Partner: [LINK_KR].\n");
+			BP_LOG("Set the local link mode to [LINK_KR] ...\n");
+			txgbe_set_link_to_kr(hw, 0);
+			ret = 1;
+		} else {
+			BP_LOG("Link mode is matched with Link Partner: [LINK_KR].\n");
+			ret = 0;
+		}
+	} else if (com_link_abi & BP_TYPE_KX4) {
+		if (local_ability->current_link_mode == 0x10) {
+			BP_LOG("Link mode is matched with Link Partner: [LINK_KX4].\n");
+			ret = 0;
+		} else {
+			BP_LOG("Link mode is not matched with Link Partner: [LINK_KX4].\n");
+			BP_LOG("Set the local link mode to [LINK_KX4] ...\n");
+			txgbe_set_link_to_kx4(hw, 1);
+			ret = 1;
+		}
+	} else if (com_link_abi & BP_TYPE_KX) {
+		if (local_ability->current_link_mode == 0x1) {
+			BP_LOG("Link mode is matched with Link Partner: [LINK_KX].\n");
+			ret = 0;
+		} else {
+			BP_LOG("Link mode is not matched with Link Partner: [LINK_KX].\n");
+			BP_LOG("Set the local link mode to [LINK_KX] ...\n");
+			txgbe_set_link_to_kx(hw, 1, 1);
+			ret = 1;
+		}
+	}
+
+	return ret;
+}
+
+/**
+ * txgbe_clear_bp_intr
+ * @hw: pointer to hardware structure
+ * @index: the bit will be cleared
+ * @index_high:
+ *	index_high = 0: Only the index bit will be cleared
+ *	index_high != 0: the [index_high, index] range will be cleared
+ */
+static void txgbe_clear_bp_intr(u32 bit, u32 bit_high, struct txgbe_hw *hw)
+{
+	u32 rdata = 0, wdata, i;
+
+	rdata = rd32_epcs(hw, VR_AN_INTR);
+	BP_LOG("[Before clear]Read VR AN MMD Interrupt Register: 0x%x\n",
+			rdata);
+	BP_LOG("Interrupt: 0- AN_INT_CMPLT, 1-  AN_INC_LINK, 2- AN_PG_RCV\n\n");
+
+	wdata = rdata;
+	if (bit_high) {
+		for (i = bit; i <= bit_high; i++)
+			wdata &= ~(1 << i);
+	} else {
+		wdata &= ~(1 << bit);
+	}
+
+	wr32_epcs(hw, VR_AN_INTR, wdata);
+
+	rdata = rd32_epcs(hw, VR_AN_INTR);
+	BP_LOG("[After clear]Read VR AN MMD Interrupt Register: 0x%x\n", rdata);
+}
+
+static s32 txgbe_enable_kr_training(struct txgbe_hw *hw)
+{
+	s32 status = 0;
+	u32 value = 0;
+
+	BP_LOG("Enable Clause 72 KR Training ...\n");
+
+	if (CL72_KRTR_PRBS_MODE_EN != 0xFFFF) {
+		/* Set PRBS Timer Duration Control to maximum 6.7ms in
+		 * VR_PMA_KRTR_PRBS_CTRL2 Register
+		 */
+		value = CL72_KRTR_PRBS_MODE_EN;
+		wr32_epcs(hw, VR_PMA_KRTR_PRBS_CTRL2, value);
+		/* Set PRBS Timer Duration Control to maximum 6.7ms in
+		 * VR_PMA_KRTR_PRBS_CTRL1 Register
+		 */
+		wr32_epcs(hw, VR_PMA_KRTR_PRBS_CTRL1,
+			VR_PMA_KRTR_PRBS_TIME_LMT);
+		/* Enable PRBS Mode to determine KR Training Status by setting
+		 * Bit 0 of VR_PMA_KRTR_PRBS_CTRL0 Register
+		 */
+		value = VR_PMA_KRTR_PRBS_MODE_EN;
+	}
+#ifdef CL72_KRTR_PRBS31_EN
+	/* Enable PRBS Mode to determine KR Training Status by setting
+	 * Bit 1 of VR_PMA_KRTR_PRBS_CTRL0 Register
+	 */
+	value = VR_PMA_KRTR_PRBS31_EN;
+#endif
+	wr32_epcs(hw, VR_PMA_KRTR_PRBS_CTRL0, value);
+	/* Read PHY Lane0 TX EQ before Clause 72 KR Training. */
+	txgbe_read_phy_lane_tx_eq(0, hw, 0, 0);
+
+	/* Enable the Clause 72 start-up protocol
+	 *   by setting Bit 1 of SR_PMA_KR_PMD_CTRL Register.
+	 * Restart the Clause 72 start-up protocol
+	 *   by setting Bit 0 of SR_PMA_KR_PMD_CTRL Register.
+	 */
+	wr32_epcs(hw, SR_PMA_KR_PMD_CTRL,
+		SR_PMA_KR_PMD_CTRL_EN_TR | SR_PMA_KR_PMD_CTRL_RS_TR);
+
+	return status;
+}
+
+static s32 txgbe_disable_kr_training(struct txgbe_hw *hw, s32 post, s32 mode)
+{
+	s32 status = 0;
+
+	BP_LOG("Disable Clause 72 KR Training ...\n");
+	/* Read PHY Lane0 TX EQ before Clause 72 KR Training. */
+	txgbe_read_phy_lane_tx_eq(0, hw, post, mode);
+
+	wr32_epcs(hw, SR_PMA_KR_PMD_CTRL, SR_PMA_KR_PMD_CTRL_RS_TR);
+
+	return status;
+}
+
+static s32 txgbe_check_kr_training(struct txgbe_hw *hw)
+{
+	s32 status = 0;
+	u32 value, test;
+	int i;
+	int times = hw->devarg.poll ? 35 : 20;
+
+	for (i = 0; i < times; i++) {
+		value = rd32_epcs(hw, SR_PMA_KR_LP_CEU);
+		BP_LOG("SR PMA MMD 10GBASE-KR LP Coefficient Update Register: 0x%x\n",
+			value);
+		value = rd32_epcs(hw, SR_PMA_KR_LP_CESTS);
+		BP_LOG("SR PMA MMD 10GBASE-KR LP Coefficient Status Register: 0x%x\n",
+			value);
+		value = rd32_epcs(hw, SR_PMA_KR_LD_CEU);
+		BP_LOG("SR PMA MMD 10GBASE-KR LD Coefficient Update: 0x%x\n",
+			value);
+		value = rd32_epcs(hw, SR_PMA_KR_LD_CESTS);
+		BP_LOG("SR PMA MMD 10GBASE-KR LD Coefficient Status: 0x%x\n",
+			value);
+		value = rd32_epcs(hw, SR_PMA_KR_PMD_STS);
+		BP_LOG("SR PMA MMD 10GBASE-KR Status Register: 0x%x\n", value);
+		BP_LOG("  Training Failure         (bit3): %d\n",
+			((value >> 3) & 0x01));
+		BP_LOG("  Start-Up Protocol Status (bit2): %d\n",
+			((value >> 2) & 0x01));
+		BP_LOG("  Frame Lock               (bit1): %d\n",
+			((value >> 1) & 0x01));
+		BP_LOG("  Receiver Status          (bit0): %d\n",
+			((value >> 0) & 0x01));
+
+		test = rd32_epcs(hw, SR_PMA_KR_LP_CESTS);
+		if (test & SR_PMA_KR_LP_CESTS_RR) {
+			BP_LOG("TEST Coefficient Status Register: 0x%x\n",
+				test);
+			status = 1;
+		}
+
+		if (value & SR_PMA_KR_PMD_STS_TR_FAIL) {
+			BP_LOG("Training is completed with failure.\n");
+			txgbe_read_phy_lane_tx_eq(0, hw, 0, 0);
+			return 0;
+		}
+
+		if (value & SR_PMA_KR_PMD_STS_RCV) {
+			BP_LOG("Receiver trained and ready to receive data.\n");
+			txgbe_read_phy_lane_tx_eq(0, hw, 0, 0);
+			return 0;
+		}
+
+		msec_delay(20);
+	}
+
+	BP_LOG("ERROR: Check Clause 72 KR Training Complete Timeout.\n");
+	return status;
+}
+
+static void txgbe_read_phy_lane_tx_eq(u16 lane, struct txgbe_hw *hw,
+				s32 post, s32 mode)
+{
+	u32 value = 0;
+	u32 addr;
+	u32 tx_main_cursor, tx_pre_cursor, tx_post_cursor, lmain;
+
+	addr = TXGBE_PHY_LANE0_TX_EQ_CTL1 | (lane << 8);
+	value = rd32_ephy(hw, addr);
+	BP_LOG("PHY LANE TX EQ Read Value: %x\n", lane);
+	tx_main_cursor = TXGBE_PHY_LANE0_TX_EQ_CTL1_MAIN(value);
+	BP_LOG("TX_MAIN_CURSOR: %x\n", tx_main_cursor);
+	UNREFERENCED_PARAMETER(tx_main_cursor);
+
+	addr = TXGBE_PHY_LANE0_TX_EQ_CTL2 | (lane << 8);
+	value = rd32_ephy(hw, addr);
+	tx_pre_cursor = value & TXGBE_PHY_LANE0_TX_EQ_CTL2_PRE;
+	tx_post_cursor = TXGBE_PHY_LANE0_TX_EQ_CTL2_POST(value);
+	BP_LOG("TX_PRE_CURSOR: %x\n", tx_pre_cursor);
+	BP_LOG("TX_POST_CURSOR: %x\n", tx_post_cursor);
+
+	if (mode == 1) {
+		lmain = 160 - tx_pre_cursor - tx_post_cursor;
+		if (lmain < 88)
+			lmain = 88;
+
+		if (post)
+			tx_post_cursor = post;
+
+		wr32_epcs(hw, TXGBE_PHY_EQ_INIT_CTL1, tx_post_cursor);
+		wr32_epcs(hw, TXGBE_PHY_EQ_INIT_CTL0,
+				tx_pre_cursor | (lmain << 8));
+		value = rd32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1);
+		value &= ~TXGBE_PHY_TX_EQ_CTL1_DEF;
+		wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
+	}
+}

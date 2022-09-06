@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2018-2019 NXP
+ * Copyright 2018-2021 NXP
  *
  */
 #include <fsl_mc_sys.h>
@@ -123,10 +123,12 @@ int dpdmux_create(struct fsl_mc_io *mc_io,
 	cmd_params->method = cfg->method;
 	cmd_params->manip = cfg->manip;
 	cmd_params->num_ifs = cpu_to_le16(cfg->num_ifs);
+	cmd_params->default_if = cpu_to_le16(cfg->default_if);
 	cmd_params->adv_max_dmat_entries =
 			cpu_to_le16(cfg->adv.max_dmat_entries);
 	cmd_params->adv_max_mc_groups = cpu_to_le16(cfg->adv.max_mc_groups);
 	cmd_params->adv_max_vlan_ids = cpu_to_le16(cfg->adv.max_vlan_ids);
+	cmd_params->mem_size = cpu_to_le16(cfg->adv.mem_size);
 	cmd_params->options = cpu_to_le64(cfg->adv.options);
 
 	/* send command to mc*/
@@ -279,6 +281,87 @@ int dpdmux_reset(struct fsl_mc_io *mc_io,
 }
 
 /**
+ * dpdmux_set_resetable() - Set overall resetable DPDMUX parameters.
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPDMUX object
+ * @skip_reset_flags:	By default all are 0.
+ *			By setting 1 will deactivate the reset.
+ *	The flags are:
+ *			DPDMUX_SKIP_DEFAULT_INTERFACE  0x01
+ *			DPDMUX_SKIP_UNICAST_RULES      0x02
+ *			DPDMUX_SKIP_MULTICAST_RULES    0x04
+ *
+ * For example, by default, through DPDMUX_RESET the default
+ * interface will be restored with the one from create.
+ * By setting DPDMUX_SKIP_DEFAULT_INTERFACE flag,
+ * through DPDMUX_RESET the default interface will not be modified.
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpdmux_set_resetable(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t skip_reset_flags)
+{
+	struct mc_command cmd = { 0 };
+	struct dpdmux_cmd_set_skip_reset_flags *cmd_params;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPDMUX_CMDID_SET_RESETABLE,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpdmux_cmd_set_skip_reset_flags *)cmd.params;
+	dpdmux_set_field(cmd_params->skip_reset_flags,
+			SKIP_RESET_FLAGS,
+			skip_reset_flags);
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpdmux_get_resetable() - Get overall resetable parameters.
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPDMUX object
+ * @skip_reset_flags:	Get the reset flags.
+ *
+ *	The flags are:
+ *			DPDMUX_SKIP_DEFAULT_INTERFACE  0x01
+ *			DPDMUX_SKIP_UNICAST_RULES      0x02
+ *			DPDMUX_SKIP_MULTICAST_RULES    0x04
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpdmux_get_resetable(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t *skip_reset_flags)
+{
+	struct mc_command cmd = { 0 };
+	struct dpdmux_rsp_get_skip_reset_flags *rsp_params;
+	int err;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPDMUX_CMDID_GET_RESETABLE,
+					  cmd_flags,
+					  token);
+
+	/* send command to mc*/
+	err = mc_send_command(mc_io, &cmd);
+	if (err)
+		return err;
+
+	/* retrieve response parameters */
+	rsp_params = (struct dpdmux_rsp_get_skip_reset_flags *)cmd.params;
+	*skip_reset_flags = dpdmux_get_field(rsp_params->skip_reset_flags,
+			SKIP_RESET_FLAGS);
+
+	return 0;
+}
+
+/**
  * dpdmux_get_attributes() - Retrieve DPDMUX attributes
  * @mc_io:	Pointer to MC portal's I/O object
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
@@ -314,6 +397,7 @@ int dpdmux_get_attributes(struct fsl_mc_io *mc_io,
 	attr->manip = rsp_params->manip;
 	attr->num_ifs = le16_to_cpu(rsp_params->num_ifs);
 	attr->mem_size = le16_to_cpu(rsp_params->mem_size);
+	attr->default_if = le16_to_cpu(rsp_params->default_if);
 
 	return 0;
 }
@@ -405,6 +489,49 @@ int dpdmux_set_max_frame_length(struct fsl_mc_io *mc_io,
 
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpdmux_get_max_frame_length() - Return the maximum frame length for DPDMUX
+ * interface
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:		Token of DPDMUX object
+ * @if_id:		Interface id
+ * @max_frame_length:	maximum frame length
+ *
+ * When dpdmux object is in VEPA mode this function will ignore if_id parameter
+ * and will return maximum frame length for uplink interface (if_id==0).
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpdmux_get_max_frame_length(struct fsl_mc_io *mc_io,
+				uint32_t cmd_flags,
+				uint16_t token,
+				uint16_t if_id,
+				uint16_t *max_frame_length)
+{
+	struct mc_command cmd = { 0 };
+	struct dpdmux_cmd_get_max_frame_len *cmd_params;
+	struct dpdmux_rsp_get_max_frame_len *rsp_params;
+	int err = 0;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPDMUX_CMDID_GET_MAX_FRAME_LENGTH,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpdmux_cmd_get_max_frame_len *)cmd.params;
+	cmd_params->if_id = cpu_to_le16(if_id);
+
+	err = mc_send_command(mc_io, &cmd);
+	if (err)
+		return err;
+
+	rsp_params = (struct dpdmux_rsp_get_max_frame_len *)cmd.params;
+	*max_frame_length = le16_to_cpu(rsp_params->max_len);
+
+	/* send command to mc*/
+	return err;
 }
 
 /**
@@ -852,6 +979,7 @@ int dpdmux_add_custom_cls_entry(struct fsl_mc_io *mc_io,
 
 	cmd_params = (struct dpdmux_cmd_add_custom_cls_entry *)cmd.params;
 	cmd_params->key_size = rule->key_size;
+	cmd_params->entry_index = rule->entry_index;
 	cmd_params->dest_if = cpu_to_le16(action->dest_if);
 	cmd_params->key_iova = cpu_to_le64(rule->key_iova);
 	cmd_params->mask_iova = cpu_to_le64(rule->mask_iova);
@@ -926,4 +1054,41 @@ int dpdmux_get_api_version(struct fsl_mc_io *mc_io,
 	*minor_ver = le16_to_cpu(rsp_params->minor);
 
 	return 0;
+}
+
+/**
+ * dpdmux_if_set_errors_behavior() - Set errors behavior
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPSW object
+ * @if_id:  Interface Identifier
+ * @cfg:	Errors configuration
+ *
+ * Provides a set of frame errors that will be rejected or accepted by the
+ * dpdmux interface. The frame with this errors will no longer be dropped by
+ * the dpdmux interface. When frame has parsing error the distribution to
+ * expected interface may fail. If the frame must be distributed using the
+ * information from a header that was not parsed due errors the frame may
+ * be discarded or end up on a default interface because needed data was not
+ * parsed properly.
+ * This function may be called numerous times with different error masks
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpdmux_if_set_errors_behavior(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, uint16_t if_id, struct dpdmux_error_cfg *cfg)
+{
+	struct mc_command cmd = { 0 };
+	struct dpdmux_cmd_set_errors_behavior *cmd_params;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPDMUX_CMDID_SET_ERRORS_BEHAVIOR,
+					cmd_flags,
+					token);
+	cmd_params = (struct dpdmux_cmd_set_errors_behavior *)cmd.params;
+	cmd_params->errors = cpu_to_le32(cfg->errors);
+	dpdmux_set_field(cmd_params->flags, ERROR_ACTION, cfg->error_action);
+	cmd_params->if_id = cpu_to_le16(if_id);
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
 }

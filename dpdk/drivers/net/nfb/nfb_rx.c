@@ -42,7 +42,7 @@ nfb_check_timestamp(struct rte_devargs *devargs)
 	}
 	/* Timestamps are enabled when there is
 	 * key-value pair: enable_timestamp=1
-	 * TODO: timestamp should be enabled with DEV_RX_OFFLOAD_TIMESTAMP
+	 * TODO: timestamp should be enabled with RTE_ETH_RX_OFFLOAD_TIMESTAMP
 	 */
 	if (rte_kvargs_process(kvlist, TIMESTAMP_ARG,
 		timestamp_check_handler, NULL) < 0) {
@@ -176,9 +176,10 @@ nfb_eth_rx_queue_init(struct nfb_device *nfb,
 }
 
 void
-nfb_eth_rx_queue_release(void *q)
+nfb_eth_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct ndp_rx_queue *rxq = (struct ndp_rx_queue *)q;
+	struct ndp_rx_queue *rxq = dev->data->rx_queues[qid];
+
 	if (rxq->queue != NULL) {
 		ndp_close_rx_queue(rxq->queue);
 		rte_free(rxq);

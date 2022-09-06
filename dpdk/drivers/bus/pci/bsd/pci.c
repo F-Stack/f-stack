@@ -45,14 +45,7 @@
 
 /**
  * @file
- * PCI probing under BSD
- *
- * This code is used to simulate a PCI probe by parsing information in
- * sysfs. Moreover, when a registered driver matches a device, the
- * kernel driver currently using it is unloaded and replaced by
- * nic_uio module, which is a very minimal userland driver for Intel
- * network card, only providing access to PCI BAR to applications, and
- * enabling bus master.
+ * PCI probing under BSD.
  */
 
 extern struct rte_pci_bus rte_pci_bus;
@@ -102,10 +95,10 @@ pci_uio_free_resource(struct rte_pci_device *dev,
 {
 	rte_free(uio_res);
 
-	if (dev->intr_handle.fd) {
-		close(dev->intr_handle.fd);
-		dev->intr_handle.fd = -1;
-		dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	if (rte_intr_fd_get(dev->intr_handle)) {
+		close(rte_intr_fd_get(dev->intr_handle));
+		rte_intr_fd_set(dev->intr_handle, -1);
+		rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UNKNOWN);
 	}
 }
 
@@ -128,13 +121,19 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 	}
 
 	/* save fd if in primary process */
-	dev->intr_handle.fd = open(devname, O_RDWR);
-	if (dev->intr_handle.fd < 0) {
+	if (rte_intr_fd_set(dev->intr_handle, open(devname, O_RDWR))) {
+		RTE_LOG(WARNING, EAL, "Failed to save fd");
+		goto error;
+	}
+
+	if (rte_intr_fd_get(dev->intr_handle) < 0) {
 		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
 			devname, strerror(errno));
 		goto error;
 	}
-	dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
+
+	if (rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UIO))
+		goto error;
 
 	/* allocate the mapping details for secondary processes*/
 	*uio_res = rte_zmalloc("UIO_RES", sizeof(**uio_res), 0);

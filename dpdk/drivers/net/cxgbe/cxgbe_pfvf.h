@@ -16,8 +16,8 @@
 	 V_FW_PARAMS_PARAM_Y(0) | \
 	 V_FW_PARAMS_PARAM_Z(0))
 
-void cxgbe_dev_rx_queue_release(void *q);
-void cxgbe_dev_tx_queue_release(void *q);
+void cxgbe_dev_rx_queue_release(struct rte_eth_dev *eth_dev, uint16_t qid);
+void cxgbe_dev_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t qid);
 int cxgbe_dev_stop(struct rte_eth_dev *eth_dev);
 int cxgbe_dev_close(struct rte_eth_dev *eth_dev);
 int cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
@@ -52,4 +52,18 @@ uint16_t cxgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 uint16_t cxgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			 uint16_t nb_pkts);
 const uint32_t *cxgbe_dev_supported_ptypes_get(struct rte_eth_dev *eth_dev);
+int cxgbe_dev_xstats_get_by_id(struct rte_eth_dev *dev,
+			       const uint64_t *ids, uint64_t *values,
+			       unsigned int n);
+int cxgbe_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
+				     const uint64_t *ids,
+				     struct rte_eth_xstat_name *xnames,
+				     unsigned int n);
+int cxgbe_dev_xstats_get_names(struct rte_eth_dev *dev,
+			       struct rte_eth_xstat_name *xstats_names,
+			       unsigned int n);
+int cxgbe_dev_xstats_get(struct rte_eth_dev *dev,
+			 struct rte_eth_xstat *xstats, unsigned int n);
+int cxgbe_fw_version_get(struct rte_eth_dev *dev, char *fw_version,
+			 size_t fw_size);
 #endif /* _CXGBE_PFVF_H_ */

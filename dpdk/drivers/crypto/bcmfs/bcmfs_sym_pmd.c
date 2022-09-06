@@ -7,7 +7,7 @@
 #include <rte_dev.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 
 #include "bcmfs_device.h"
 #include "bcmfs_logs.h"
@@ -393,6 +393,8 @@ bcmfs_sym_dev_create(struct bcmfs_device *fsdev)
 
 	internals->sym_dev_id = cryptodev->data->dev_id;
 	internals->fsdev_capabilities = bcmfs_sym_get_capabilities();
+
+	rte_cryptodev_pmd_probing_finish(cryptodev);
 
 	BCMFS_LOG(DEBUG, "Created bcmfs-sym device %s as cryptodev instance %d",
 		  cryptodev->data->name, internals->sym_dev_id);

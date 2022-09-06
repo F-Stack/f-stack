@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018-2020 NXP
+ * Copyright 2018-2021 NXP
  */
 
 #include <sys/queue.h>
@@ -66,6 +66,10 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 	void *key_iova, *mask_iova, *key_cfg_iova = NULL;
 	uint8_t key_size = 0;
 	int ret;
+	static int i;
+
+	if (!pattern || !actions || !pattern[0] || !actions[0])
+		return NULL;
 
 	/* Find the DPDMUX from dpdmux_id in our list */
 	dpdmux_dev = get_dpdmux_from_id(dpdmux_id);
@@ -154,6 +158,23 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 	}
 	break;
 
+	case RTE_FLOW_ITEM_TYPE_RAW:
+	{
+		const struct rte_flow_item_raw *spec;
+
+		spec = (const struct rte_flow_item_raw *)pattern[0]->spec;
+		kg_cfg.extracts[0].extract.from_data.offset = spec->offset;
+		kg_cfg.extracts[0].extract.from_data.size = spec->length;
+		kg_cfg.extracts[0].type = DPKG_EXTRACT_FROM_DATA;
+		kg_cfg.num_extracts = 1;
+		memcpy((void *)key_iova, (const void *)spec->pattern,
+							spec->length);
+		memcpy(mask_iova, pattern[0]->mask, spec->length);
+
+		key_size = spec->length;
+	}
+	break;
+
 	default:
 		DPAA2_PMD_ERR("Not supported pattern type: %d",
 				pattern[0]->type);
@@ -166,20 +187,27 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 		goto creation_error;
 	}
 
-	ret = dpdmux_set_custom_key(&dpdmux_dev->dpdmux, CMD_PRI_LOW,
-				    dpdmux_dev->token,
-			(uint64_t)(DPAA2_VADDR_TO_IOVA(key_cfg_iova)));
-	if (ret) {
-		DPAA2_PMD_ERR("dpdmux_set_custom_key failed: err(%d)", ret);
-		goto creation_error;
+	/* Multiple rules with same DPKG extracts (kg_cfg.extracts) like same
+	 * offset and length values in raw is supported right now. Different
+	 * values of kg_cfg may not work.
+	 */
+	if (i == 0) {
+		ret = dpdmux_set_custom_key(&dpdmux_dev->dpdmux, CMD_PRI_LOW,
+					    dpdmux_dev->token,
+				(uint64_t)(DPAA2_VADDR_TO_IOVA(key_cfg_iova)));
+		if (ret) {
+			DPAA2_PMD_ERR("dpdmux_set_custom_key failed: err(%d)",
+					ret);
+			goto creation_error;
+		}
 	}
-
 	/* As now our key extract parameters are set, let us configure
 	 * the rule.
 	 */
 	flow->rule.key_iova = (uint64_t)(DPAA2_VADDR_TO_IOVA(key_iova));
 	flow->rule.mask_iova = (uint64_t)(DPAA2_VADDR_TO_IOVA(mask_iova));
 	flow->rule.key_size = key_size;
+	flow->rule.entry_index = i++;
 
 	vf_conf = (const struct rte_flow_action_vf *)(actions[0]->conf);
 	if (vf_conf->id == 0 || vf_conf->id > dpdmux_dev->num_ifs) {
@@ -205,6 +233,32 @@ creation_error:
 	return NULL;
 }
 
+int
+rte_pmd_dpaa2_mux_rx_frame_len(uint32_t dpdmux_id, uint16_t max_rx_frame_len)
+{
+	struct dpaa2_dpdmux_dev *dpdmux_dev;
+	int ret;
+
+	/* Find the DPDMUX from dpdmux_id in our list */
+	dpdmux_dev = get_dpdmux_from_id(dpdmux_id);
+	if (!dpdmux_dev) {
+		DPAA2_PMD_ERR("Invalid dpdmux_id: %d", dpdmux_id);
+		return -1;
+	}
+
+	ret = dpdmux_set_max_frame_length(&dpdmux_dev->dpdmux,
+			CMD_PRI_LOW, dpdmux_dev->token, max_rx_frame_len);
+	if (ret) {
+		DPAA2_PMD_ERR("DPDMUX:Unable to set mtu. check config %d", ret);
+		return ret;
+	}
+
+	DPAA2_PMD_INFO("dpdmux mtu set as %u",
+			DPAA2_MAX_RX_PKT_LEN - RTE_ETHER_CRC_LEN);
+
+	return ret;
+}
+
 static int
 dpaa2_create_dpdmux_device(int vdev_fd __rte_unused,
 			   struct vfio_device_info *obj_info __rte_unused,
@@ -213,6 +267,8 @@ dpaa2_create_dpdmux_device(int vdev_fd __rte_unused,
 	struct dpaa2_dpdmux_dev *dpdmux_dev;
 	struct dpdmux_attr attr;
 	int ret;
+	uint16_t maj_ver;
+	uint16_t min_ver;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -240,11 +296,53 @@ dpaa2_create_dpdmux_device(int vdev_fd __rte_unused,
 	}
 
 	ret = dpdmux_if_set_default(&dpdmux_dev->dpdmux, CMD_PRI_LOW,
-				    dpdmux_dev->token, 1);
+				    dpdmux_dev->token, attr.default_if);
 	if (ret) {
 		DPAA2_PMD_ERR("setting default interface failed in %s",
 			      __func__);
 		goto init_err;
+	}
+
+	ret = dpdmux_get_api_version(&dpdmux_dev->dpdmux, CMD_PRI_LOW,
+					&maj_ver, &min_ver);
+	if (ret) {
+		DPAA2_PMD_ERR("setting version failed in %s",
+				__func__);
+		goto init_err;
+	}
+
+	/* The new dpdmux_set/get_resetable() API are available starting with
+	 * DPDMUX_VER_MAJOR==6 and DPDMUX_VER_MINOR==6
+	 */
+	if (maj_ver >= 6 && min_ver >= 6) {
+		ret = dpdmux_set_resetable(&dpdmux_dev->dpdmux, CMD_PRI_LOW,
+				dpdmux_dev->token,
+				DPDMUX_SKIP_DEFAULT_INTERFACE |
+				DPDMUX_SKIP_UNICAST_RULES |
+				DPDMUX_SKIP_MULTICAST_RULES);
+		if (ret) {
+			DPAA2_PMD_ERR("setting default interface failed in %s",
+				      __func__);
+			goto init_err;
+		}
+	}
+
+	if (maj_ver >= 6 && min_ver >= 9) {
+		struct dpdmux_error_cfg mux_err_cfg;
+
+		memset(&mux_err_cfg, 0, sizeof(mux_err_cfg));
+		mux_err_cfg.error_action = DPDMUX_ERROR_ACTION_CONTINUE;
+		mux_err_cfg.errors = DPDMUX_ERROR_DISC;
+
+		ret = dpdmux_if_set_errors_behavior(&dpdmux_dev->dpdmux,
+				CMD_PRI_LOW,
+				dpdmux_dev->token, dpdmux_id,
+				&mux_err_cfg);
+		if (ret) {
+			DPAA2_PMD_ERR("dpdmux_if_set_errors_behavior %s err %d",
+				      __func__, ret);
+			goto init_err;
+		}
 	}
 
 	dpdmux_dev->dpdmux_id = dpdmux_id;

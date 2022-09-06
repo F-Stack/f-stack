@@ -4,8 +4,8 @@
  */
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_bus_vdev.h>
@@ -61,19 +61,19 @@ struct pmd_internals {
 	rte_spinlock_t rss_lock;
 
 	uint16_t reta_size;
-	struct rte_eth_rss_reta_entry64 reta_conf[ETH_RSS_RETA_SIZE_128 /
-			RTE_RETA_GROUP_SIZE];
+	struct rte_eth_rss_reta_entry64 reta_conf[RTE_ETH_RSS_RETA_SIZE_128 /
+			RTE_ETH_RETA_GROUP_SIZE];
 
 	uint8_t rss_key[40];                /**< 40-byte hash key. */
 };
 static struct rte_eth_link pmd_link = {
-	.link_speed = ETH_SPEED_NUM_10G,
-	.link_duplex = ETH_LINK_FULL_DUPLEX,
-	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_FIXED,
+	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
+	.link_status = RTE_ETH_LINK_DOWN,
+	.link_autoneg = RTE_ETH_LINK_FIXED,
 };
 
-RTE_LOG_REGISTER(eth_null_logtype, pmd.net.null, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(eth_null_logtype, NOTICE);
 
 #define PMD_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, eth_null_logtype, \
@@ -189,7 +189,7 @@ eth_dev_start(struct rte_eth_dev *dev)
 	if (dev == NULL)
 		return -EINVAL;
 
-	dev->data->dev_link.link_status = ETH_LINK_UP;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 	return 0;
 }
 
@@ -199,7 +199,7 @@ eth_dev_stop(struct rte_eth_dev *dev)
 	if (dev == NULL)
 		return 0;
 
-	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 
 	return 0;
 }
@@ -353,14 +353,24 @@ eth_stats_reset(struct rte_eth_dev *dev)
 }
 
 static void
-eth_queue_release(void *q)
+eth_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct null_queue *nq;
+	struct null_queue *nq = dev->data->rx_queues[qid];
 
-	if (q == NULL)
+	if (nq == NULL)
 		return;
 
-	nq = q;
+	rte_free(nq->dummy_packet);
+}
+
+static void
+eth_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
+{
+	struct null_queue *nq = dev->data->tx_queues[qid];
+
+	if (nq == NULL)
+		return;
+
 	rte_free(nq->dummy_packet);
 }
 
@@ -381,9 +391,9 @@ eth_rss_reta_update(struct rte_eth_dev *dev,
 	rte_spinlock_lock(&internal->rss_lock);
 
 	/* Copy RETA table */
-	for (i = 0; i < (internal->reta_size / RTE_RETA_GROUP_SIZE); i++) {
+	for (i = 0; i < (internal->reta_size / RTE_ETH_RETA_GROUP_SIZE); i++) {
 		internal->reta_conf[i].mask = reta_conf[i].mask;
-		for (j = 0; j < RTE_RETA_GROUP_SIZE; j++)
+		for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++)
 			if ((reta_conf[i].mask >> j) & 0x01)
 				internal->reta_conf[i].reta[j] = reta_conf[i].reta[j];
 	}
@@ -406,8 +416,8 @@ eth_rss_reta_query(struct rte_eth_dev *dev,
 	rte_spinlock_lock(&internal->rss_lock);
 
 	/* Copy RETA table */
-	for (i = 0; i < (internal->reta_size / RTE_RETA_GROUP_SIZE); i++) {
-		for (j = 0; j < RTE_RETA_GROUP_SIZE; j++)
+	for (i = 0; i < (internal->reta_size / RTE_ETH_RETA_GROUP_SIZE); i++) {
+		for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++)
 			if ((reta_conf[i].mask >> j) & 0x01)
 				reta_conf[i].reta[j] = internal->reta_conf[i].reta[j];
 	}
@@ -483,8 +493,8 @@ static const struct eth_dev_ops ops = {
 	.dev_infos_get = eth_dev_info,
 	.rx_queue_setup = eth_rx_queue_setup,
 	.tx_queue_setup = eth_tx_queue_setup,
-	.rx_queue_release = eth_queue_release,
-	.tx_queue_release = eth_queue_release,
+	.rx_queue_release = eth_rx_queue_release,
+	.tx_queue_release = eth_tx_queue_release,
 	.mtu_set = eth_mtu_set,
 	.link_update = eth_link_update,
 	.mac_addr_set = eth_mac_address_set,
@@ -538,8 +548,8 @@ eth_dev_null_create(struct rte_vdev_device *dev, struct pmd_options *args)
 	internals->port_id = eth_dev->data->port_id;
 	rte_eth_random_addr(internals->eth_addr.addr_bytes);
 
-	internals->flow_type_rss_offloads =  ETH_RSS_PROTO_MASK;
-	internals->reta_size = RTE_DIM(internals->reta_conf) * RTE_RETA_GROUP_SIZE;
+	internals->flow_type_rss_offloads =  RTE_ETH_RSS_PROTO_MASK;
+	internals->reta_size = RTE_DIM(internals->reta_conf) * RTE_ETH_RETA_GROUP_SIZE;
 
 	rte_memcpy(internals->rss_key, default_rss_key, 40);
 

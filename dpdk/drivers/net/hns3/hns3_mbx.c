@@ -2,10 +2,10 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_io.h>
 
-#include "hns3_ethdev.h"
+#include "hns3_common.h"
 #include "hns3_regs.h"
 #include "hns3_logs.h"
 #include "hns3_intr.h"
@@ -61,8 +61,9 @@ static int
 hns3_get_mbx_resp(struct hns3_hw *hw, uint16_t code, uint16_t subcode,
 		  uint8_t *resp_data, uint16_t resp_len)
 {
-#define HNS3_MAX_RETRY_US	500000
 #define HNS3_WAIT_RESP_US	100
+#define US_PER_MS		1000
+	uint32_t mbx_time_limit;
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	struct hns3_mbx_resp_status *mbx_resp;
 	uint32_t wait_time = 0;
@@ -74,8 +75,9 @@ hns3_get_mbx_resp(struct hns3_hw *hw, uint16_t code, uint16_t subcode,
 		return -EINVAL;
 	}
 
-	while (wait_time < HNS3_MAX_RETRY_US) {
-		if (rte_atomic16_read(&hw->reset.disable_cmd)) {
+	mbx_time_limit = (uint32_t)hns->mbx_time_limit_ms * US_PER_MS;
+	while (wait_time < mbx_time_limit) {
+		if (__atomic_load_n(&hw->reset.disable_cmd, __ATOMIC_RELAXED)) {
 			hns3_err(hw, "Don't wait for mbx response because of "
 				 "disable_cmd");
 			return -EBUSY;
@@ -103,7 +105,7 @@ hns3_get_mbx_resp(struct hns3_hw *hw, uint16_t code, uint16_t subcode,
 		wait_time += HNS3_WAIT_RESP_US;
 	}
 	hw->mbx_resp.req_msg_data = 0;
-	if (wait_time >= HNS3_MAX_RETRY_US) {
+	if (wait_time >= mbx_time_limit) {
 		hns3_mbx_proc_timeout(hw, code, subcode);
 		return -ETIME;
 	}
@@ -214,50 +216,42 @@ hns3_cmd_crq_empty(struct hns3_hw *hw)
 }
 
 static void
-hns3_mbx_handler(struct hns3_hw *hw)
+hns3vf_handle_link_change_event(struct hns3_hw *hw,
+				struct hns3_mbx_pf_to_vf_cmd *req)
 {
-	struct hns3_mac *mac = &hw->mac;
+	uint8_t link_status, link_duplex;
+	uint16_t *msg_q = req->msg;
+	uint8_t support_push_lsc;
+	uint32_t link_speed;
+
+	memcpy(&link_speed, &msg_q[2], sizeof(link_speed));
+	link_status = rte_le_to_cpu_16(msg_q[1]);
+	link_duplex = (uint8_t)rte_le_to_cpu_16(msg_q[4]);
+	hns3vf_update_link_status(hw, link_status, link_speed,
+				  link_duplex);
+	support_push_lsc = (*(uint8_t *)&msg_q[5]) & 1u;
+	hns3vf_update_push_lsc_cap(hw, support_push_lsc);
+}
+
+static void
+hns3_handle_asserting_reset(struct hns3_hw *hw,
+			    struct hns3_mbx_pf_to_vf_cmd *req)
+{
 	enum hns3_reset_level reset_level;
-	uint16_t *msg_q;
-	uint8_t opcode;
-	uint32_t tail;
+	uint16_t *msg_q = req->msg;
 
-	tail = hw->arq.tail;
+	/*
+	 * PF has asserted reset hence VF should go in pending
+	 * state and poll for the hardware reset status till it
+	 * has been completely reset. After this stack should
+	 * eventually be re-initialized.
+	 */
+	reset_level = rte_le_to_cpu_16(msg_q[1]);
+	hns3_atomic_set_bit(reset_level, &hw->reset.pending);
 
-	/* process all the async queue messages */
-	while (tail != hw->arq.head) {
-		msg_q = hw->arq.msg_q[hw->arq.head];
-
-		opcode = msg_q[0] & 0xff;
-		switch (opcode) {
-		case HNS3_MBX_LINK_STAT_CHANGE:
-			memcpy(&mac->link_speed, &msg_q[2],
-				   sizeof(mac->link_speed));
-			mac->link_status = rte_le_to_cpu_16(msg_q[1]);
-			mac->link_duplex = (uint8_t)rte_le_to_cpu_16(msg_q[4]);
-			break;
-		case HNS3_MBX_ASSERTING_RESET:
-			/* PF has asserted reset hence VF should go in pending
-			 * state and poll for the hardware reset status till it
-			 * has been completely reset. After this stack should
-			 * eventually be re-initialized.
-			 */
-			reset_level = rte_le_to_cpu_16(msg_q[1]);
-			hns3_atomic_set_bit(reset_level, &hw->reset.pending);
-
-			hns3_warn(hw, "PF inform reset level %d", reset_level);
-			hw->reset.stats.request_cnt++;
-			hns3_schedule_reset(HNS3_DEV_HW_TO_ADAPTER(hw));
-			break;
-		default:
-			hns3_err(hw, "Fetched unsupported(%u) message from arq",
-				 opcode);
-			break;
-		}
-
-		hns3_mbx_head_ptr_move_arq(hw->arq);
-		msg_q = hw->arq.msg_q[hw->arq.head];
-	}
+	hns3_warn(hw, "PF inform reset level %d", reset_level);
+	hw->reset.stats.request_cnt++;
+	hns3_schedule_reset(HNS3_DEV_HW_TO_ADAPTER(hw));
 }
 
 /*
@@ -354,7 +348,7 @@ hns3_link_fail_parse(struct hns3_hw *hw, uint8_t link_fail_code)
 }
 
 static void
-hns3_handle_link_change_event(struct hns3_hw *hw,
+hns3pf_handle_link_change_event(struct hns3_hw *hw,
 				struct hns3_mbx_vf_to_pf_cmd *req)
 {
 #define LINK_STATUS_OFFSET     1
@@ -363,7 +357,7 @@ hns3_handle_link_change_event(struct hns3_hw *hw,
 	if (!req->msg[LINK_STATUS_OFFSET])
 		hns3_link_fail_parse(hw, req->msg[LINK_FAIL_CODE_OFFSET]);
 
-	hns3_update_link_status(hw);
+	hns3_update_linkstatus_and_event(hw, true);
 }
 
 static void
@@ -453,10 +447,10 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 	struct hns3_cmq_ring *crq = &hw->cmq.crq;
 	struct hns3_mbx_pf_to_vf_cmd *req;
 	struct hns3_cmd_desc *desc;
-	uint16_t *msg_q;
 	bool handle_out;
 	uint8_t opcode;
 	uint16_t flag;
+
 	rte_spinlock_lock(&hw->cmq.crq.lock);
 
 	handle_out = (rte_eal_process_type() != RTE_PROC_PRIMARY ||
@@ -484,7 +478,7 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 	}
 
 	while (!hns3_cmd_crq_empty(hw)) {
-		if (rte_atomic16_read(&hw->reset.disable_cmd)) {
+		if (__atomic_load_n(&hw->reset.disable_cmd, __ATOMIC_RELAXED)) {
 			rte_spinlock_unlock(&hw->cmq.crq.lock);
 			return;
 		}
@@ -518,13 +512,10 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 			hns3_handle_mbx_response(hw, req);
 			break;
 		case HNS3_MBX_LINK_STAT_CHANGE:
+			hns3vf_handle_link_change_event(hw, req);
+			break;
 		case HNS3_MBX_ASSERTING_RESET:
-			msg_q = hw->arq.msg_q[hw->arq.tail];
-			memcpy(&msg_q[0], req->msg,
-			       HNS3_MBX_MAX_ARQ_MSG_SIZE * sizeof(uint16_t));
-			hns3_mbx_tail_ptr_move_arq(hw->arq);
-
-			hns3_mbx_handler(hw);
+			hns3_handle_asserting_reset(hw, req);
 			break;
 		case HNS3_MBX_PUSH_LINK_STATUS:
 			/*
@@ -533,7 +524,7 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 			 * Therefore, we should cast the req variable to
 			 * 'struct hns3_mbx_vf_to_pf_cmd' and then process it.
 			 */
-			hns3_handle_link_change_event(hw,
+			hns3pf_handle_link_change_event(hw,
 				(struct hns3_mbx_vf_to_pf_cmd *)req);
 			break;
 		case HNS3_MBX_PUSH_VLAN_INFO:

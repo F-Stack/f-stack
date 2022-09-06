@@ -15,12 +15,11 @@
 extern "C" {
 #endif
 
-#include <sys/queue.h>
 #include <rte_dev.h>
 #include <rte_devargs.h>
 
 struct rte_vdev_device {
-	TAILQ_ENTRY(rte_vdev_device) next;      /**< Next attached vdev */
+	RTE_TAILQ_ENTRY(rte_vdev_device) next;      /**< Next attached vdev */
 	struct rte_device device;               /**< Inherit core device */
 };
 
@@ -33,6 +32,8 @@ struct rte_vdev_device {
 
 #define RTE_DEV_TO_VDEV_CONST(ptr) \
 	container_of(ptr, const struct rte_vdev_device, device)
+
+#define RTE_ETH_DEV_TO_VDEV(eth_dev)	RTE_DEV_TO_VDEV((eth_dev)->device)
 
 static inline const char *
 rte_vdev_device_name(const struct rte_vdev_device *dev)
@@ -51,7 +52,7 @@ rte_vdev_device_args(const struct rte_vdev_device *dev)
 }
 
 /** Double linked list of virtual device drivers. */
-TAILQ_HEAD(vdev_driver_list, rte_vdev_driver);
+RTE_TAILQ_HEAD(vdev_driver_list, rte_vdev_driver);
 
 /**
  * Probe function called for each virtual device driver once.
@@ -105,13 +106,17 @@ typedef int (rte_vdev_dma_unmap_t)(struct rte_vdev_device *dev, void *addr,
  * A virtual device driver abstraction.
  */
 struct rte_vdev_driver {
-	TAILQ_ENTRY(rte_vdev_driver) next; /**< Next in list. */
+	RTE_TAILQ_ENTRY(rte_vdev_driver) next; /**< Next in list. */
 	struct rte_driver driver;        /**< Inherited general driver. */
 	rte_vdev_probe_t *probe;         /**< Virtual device probe function. */
 	rte_vdev_remove_t *remove;       /**< Virtual device remove function. */
 	rte_vdev_dma_map_t *dma_map;     /**< Virtual device DMA map function. */
 	rte_vdev_dma_unmap_t *dma_unmap; /**< Virtual device DMA unmap function. */
+	uint32_t drv_flags;              /**< Flags RTE_VDEV_DRV_*. */
 };
+
+/** Device driver needs IOVA as VA and cannot work with IOVA as PA */
+#define RTE_VDEV_DRV_NEED_IOVA_AS_VA 0x0001
 
 /**
  * Register a virtual device driver.

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -139,7 +139,7 @@ ulp_set_vlan_in_act_prop(uint16_t port_id,
 	struct ulp_rte_act_prop *act_prop = mapper_params->act_prop;
 
 	if (ULP_BITMAP_ISSET(mapper_params->act->bits,
-			     BNXT_ULP_ACTION_BIT_SET_VLAN_VID)) {
+			     BNXT_ULP_ACT_BIT_SET_VLAN_VID)) {
 		BNXT_TF_DBG(ERR,
 			    "VLAN already set, multiple VLANs unsupported\n");
 		return BNXT_TF_RC_ERROR;
@@ -148,7 +148,7 @@ ulp_set_vlan_in_act_prop(uint16_t port_id,
 	port_id = rte_cpu_to_be_16(port_id);
 
 	ULP_BITMAP_SET(mapper_params->act->bits,
-		       BNXT_ULP_ACTION_BIT_SET_VLAN_VID);
+		       BNXT_ULP_ACT_BIT_SET_VLAN_VID);
 
 	memcpy(&act_prop->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_VTAG],
 	       &port_id, sizeof(port_id));
@@ -161,7 +161,7 @@ ulp_set_mark_in_act_prop(uint16_t port_id,
 			 struct bnxt_ulp_mapper_create_parms *mapper_params)
 {
 	if (ULP_BITMAP_ISSET(mapper_params->act->bits,
-			     BNXT_ULP_ACTION_BIT_MARK)) {
+			     BNXT_ULP_ACT_BIT_MARK)) {
 		BNXT_TF_DBG(ERR,
 			    "MARK already set, multiple MARKs unsupported\n");
 		return BNXT_TF_RC_ERROR;
@@ -299,7 +299,7 @@ ulp_default_flow_create(struct rte_eth_dev *eth_dev,
 			uint32_t *flow_id)
 {
 	struct ulp_rte_hdr_field	hdr_field[BNXT_ULP_PROTO_HDR_MAX];
-	uint32_t			comp_fld[BNXT_ULP_CF_IDX_LAST];
+	uint64_t			comp_fld[BNXT_ULP_CF_IDX_LAST];
 	struct bnxt_ulp_mapper_create_parms mapper_params = { 0 };
 	struct ulp_rte_act_prop		act_prop;
 	struct ulp_rte_act_bitmap	act = { 0 };
@@ -318,11 +318,12 @@ ulp_default_flow_create(struct rte_eth_dev *eth_dev,
 	mapper_params.comp_fld = comp_fld;
 	mapper_params.class_tid = ulp_class_tid;
 	mapper_params.flow_type = BNXT_ULP_FDB_TYPE_DEFAULT;
+	mapper_params.port_id = eth_dev->data->port_id;
 
 	ulp_ctx = bnxt_ulp_eth_dev_ptr2_cntxt_get(eth_dev);
 	if (!ulp_ctx) {
-		BNXT_TF_DBG(ERR, "ULP context is not initialized. "
-				 "Failed to create default flow.\n");
+		BNXT_TF_DBG(ERR,
+			    "ULP is not init'ed. Fail to create dflt flow.\n");
 		return -EINVAL;
 	}
 
@@ -360,13 +361,16 @@ ulp_default_flow_create(struct rte_eth_dev *eth_dev,
 		goto err1;
 	}
 
+	BNXT_TF_DBG(DEBUG, "Creating default flow with template id: %u\n",
+		    ulp_class_tid);
+
 	/* Protect flow creation */
 	if (bnxt_ulp_cntxt_acquire_fdb_lock(ulp_ctx)) {
 		BNXT_TF_DBG(ERR, "Flow db lock acquire failed\n");
 		goto err1;
 	}
 
-	rc = ulp_flow_db_fid_alloc(ulp_ctx, BNXT_ULP_FDB_TYPE_DEFAULT,
+	rc = ulp_flow_db_fid_alloc(ulp_ctx, mapper_params.flow_type,
 				   mapper_params.func_id, &fid);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Unable to allocate flow table entry\n");
@@ -383,7 +387,7 @@ ulp_default_flow_create(struct rte_eth_dev *eth_dev,
 	return 0;
 
 err3:
-	ulp_flow_db_fid_free(ulp_ctx, BNXT_ULP_FDB_TYPE_DEFAULT, fid);
+	ulp_flow_db_fid_free(ulp_ctx, mapper_params.flow_type, fid);
 err2:
 	bnxt_ulp_cntxt_release_fdb_lock(ulp_ctx);
 err1:
@@ -454,9 +458,7 @@ bnxt_ulp_destroy_df_rules(struct bnxt *bp, bool global)
 			return;
 
 		ulp_default_flow_destroy(bp->eth_dev,
-					 info->port_to_app_flow_id);
-		ulp_default_flow_destroy(bp->eth_dev,
-					 info->app_to_port_flow_id);
+					 info->def_port_flow_id);
 		memset(info, 0, sizeof(struct bnxt_ulp_df_rule_info));
 		return;
 	}
@@ -468,9 +470,7 @@ bnxt_ulp_destroy_df_rules(struct bnxt *bp, bool global)
 			continue;
 
 		ulp_default_flow_destroy(bp->eth_dev,
-					 info->port_to_app_flow_id);
-		ulp_default_flow_destroy(bp->eth_dev,
-					 info->app_to_port_flow_id);
+					 info->def_port_flow_id);
 		memset(info, 0, sizeof(struct bnxt_ulp_df_rule_info));
 	}
 }
@@ -493,6 +493,10 @@ bnxt_create_port_app_df_rule(struct bnxt *bp, uint8_t flow_type,
 		}
 	};
 
+	if (!flow_type) {
+		*flow_id = 0;
+		return 0;
+	}
 	return ulp_default_flow_create(bp->eth_dev, param_list, flow_type,
 				       flow_id);
 }
@@ -502,7 +506,7 @@ bnxt_ulp_create_df_rules(struct bnxt *bp)
 {
 	struct bnxt_ulp_df_rule_info *info;
 	uint16_t port_id;
-	int rc;
+	int rc = 0;
 
 	if (!BNXT_TRUFLOW_EN(bp) ||
 	    BNXT_ETH_DEV_IS_REPRESENTOR(bp->eth_dev) || !bp->ulp_ctx)
@@ -510,39 +514,22 @@ bnxt_ulp_create_df_rules(struct bnxt *bp)
 
 	port_id = bp->eth_dev->data->port_id;
 	info = &bp->ulp_ctx->cfg_data->df_rule_info[port_id];
-	rc = bnxt_create_port_app_df_rule(bp, BNXT_ULP_DF_TPL_PORT_TO_VS,
-					  &info->port_to_app_flow_id);
+	rc = bnxt_create_port_app_df_rule(bp,
+					  BNXT_ULP_DF_TPL_DEFAULT_UPLINK_PORT,
+					  &info->def_port_flow_id);
 	if (rc) {
 		BNXT_TF_DBG(ERR,
 			    "Failed to create port to app default rule\n");
 		return rc;
 	}
 
-	bp->tx_cfa_action = 0;
-	rc = bnxt_create_port_app_df_rule(bp, BNXT_ULP_DF_TPL_VS_TO_PORT,
-					  &info->app_to_port_flow_id);
-	if (rc) {
-		BNXT_TF_DBG(ERR,
-			    "Failed to create app to port default rule\n");
-		goto port_to_app_free;
-	}
-
 	rc = ulp_default_flow_db_cfa_action_get(bp->ulp_ctx,
-						info->app_to_port_flow_id,
+						info->def_port_flow_id,
 						&bp->tx_cfa_action);
 	if (rc)
-		goto app_to_port_free;
-
+		bp->tx_cfa_action = 0;
 	info->valid = true;
 	return 0;
-
-app_to_port_free:
-	ulp_default_flow_destroy(bp->eth_dev, info->app_to_port_flow_id);
-port_to_app_free:
-	ulp_default_flow_destroy(bp->eth_dev, info->port_to_app_flow_id);
-	info->valid = false;
-
-	return rc;
 }
 
 static int32_t
@@ -595,22 +582,15 @@ bnxt_ulp_create_vfr_default_rules(struct rte_eth_dev *vfr_ethdev)
 	}
 
 	memset(info, 0, sizeof(struct bnxt_ulp_vfr_rule_info));
-	rc = bnxt_create_port_vfr_default_rule(bp, BNXT_ULP_DF_TPL_VFREP_TO_VF,
+	rc = bnxt_create_port_vfr_default_rule(bp, BNXT_ULP_DF_TPL_DEFAULT_VFR,
 					       vfr_port_id,
-					       &info->rep2vf_flow_id);
+					       &info->vfr_flow_id);
 	if (rc) {
-		BNXT_TF_DBG(ERR, "Failed to create VFREP to VF default rule\n");
-		goto error;
-	}
-	rc = bnxt_create_port_vfr_default_rule(bp, BNXT_ULP_DF_TPL_VF_TO_VFREP,
-					       vfr_port_id,
-					       &info->vf2rep_flow_id);
-	if (rc) {
-		BNXT_TF_DBG(ERR, "Failed to create VF to VFREP default rule\n");
+		BNXT_TF_DBG(ERR, "Failed to create VFR default rule\n");
 		goto error;
 	}
 	rc = ulp_default_flow_db_cfa_action_get(bp->ulp_ctx,
-						info->rep2vf_flow_id,
+						info->vfr_flow_id,
 						&vfr->vfr_tx_cfa_action);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Failed to get the tx cfa action\n");
@@ -623,10 +603,8 @@ bnxt_ulp_create_vfr_default_rules(struct rte_eth_dev *vfr_ethdev)
 	return 0;
 
 error:
-	if (info->rep2vf_flow_id)
-		ulp_default_flow_destroy(bp->eth_dev, info->rep2vf_flow_id);
-	if (info->vf2rep_flow_id)
-		ulp_default_flow_destroy(bp->eth_dev, info->vf2rep_flow_id);
+	if (info->vfr_flow_id)
+		ulp_default_flow_destroy(bp->eth_dev, info->vfr_flow_id);
 	return rc;
 }
 
@@ -650,8 +628,7 @@ bnxt_ulp_delete_vfr_default_rules(struct bnxt_representor *vfr)
 		BNXT_TF_DBG(ERR, "VFR already freed\n");
 		return -EINVAL;
 	}
-	ulp_default_flow_destroy(bp->eth_dev, info->rep2vf_flow_id);
-	ulp_default_flow_destroy(bp->eth_dev, info->vf2rep_flow_id);
+	ulp_default_flow_destroy(bp->eth_dev, info->vfr_flow_id);
 	vfr->vfr_tx_cfa_action = 0;
 	memset(info, 0, sizeof(struct bnxt_ulp_vfr_rule_info));
 	return 0;

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2020 Intel Corporation
+ * Copyright(c) 2001-2021 Intel Corporation
  */
 
 #ifndef _ICE_FDIR_H_
@@ -13,6 +13,19 @@
 #define ICE_IP_PROTO_SCTP		132
 #define ICE_IP_PROTO_IP			0
 #define ICE_IP_PROTO_ESP		50
+
+#define ICE_FDIR_GTPU_IP_INNER_PKT_OFF 50
+#define ICE_FDIR_GTPU_EH_INNER_PKT_OFF 58
+#define ICE_FDIR_IPV4_GRE_INNER_PKT_OFF 38
+#define ICE_FDIR_IPV6_GRE_INNER_PKT_OFF 58
+#define ICE_FDIR_V4_V4_GTPOGRE_PKT_OFF	74
+#define ICE_FDIR_V4_V6_GTPOGRE_PKT_OFF	94
+#define ICE_FDIR_V6_V4_GTPOGRE_PKT_OFF	94
+#define ICE_FDIR_V6_V6_GTPOGRE_PKT_OFF	114
+#define ICE_FDIR_V4_V4_GTPOGRE_EH_PKT_OFF	82
+#define ICE_FDIR_V4_V6_GTPOGRE_EH_PKT_OFF	102
+#define ICE_FDIR_V6_V4_GTPOGRE_EH_PKT_OFF	102
+#define ICE_FDIR_V6_V6_GTPOGRE_EH_PKT_OFF	122
 
 #define ICE_FDIR_TUN_PKT_OFF		50
 #define ICE_FDIR_MAX_RAW_PKT_SIZE	(512 + ICE_FDIR_TUN_PKT_OFF)
@@ -39,14 +52,39 @@
 
 #define ICE_MAC_ETHTYPE_OFFSET		12
 #define ICE_IPV4_TOS_OFFSET		15
+#define ICE_IPV4_ID_OFFSET		18
 #define ICE_IPV4_TTL_OFFSET		22
 #define ICE_IPV6_TC_OFFSET		14
 #define ICE_IPV6_HLIM_OFFSET		21
 #define ICE_IPV6_PROTO_OFFSET		20
+#define ICE_IPV6_ID_OFFSET		58
+/* For TUN inner (without inner MAC) */
+#define ICE_IPV4_NO_MAC_TOS_OFFSET	1
+#define ICE_IPV4_NO_MAC_TTL_OFFSET	8
+#define ICE_IPV4_NO_MAC_PROTO_OFFSET	9
+#define ICE_IPV4_NO_MAC_SRC_ADDR_OFFSET	12
+#define ICE_IPV4_NO_MAC_DST_ADDR_OFFSET	16
+#define ICE_TCP4_NO_MAC_SRC_PORT_OFFSET	20
+#define ICE_TCP4_NO_MAC_DST_PORT_OFFSET	22
+#define ICE_UDP4_NO_MAC_SRC_PORT_OFFSET	20
+#define ICE_UDP4_NO_MAC_DST_PORT_OFFSET	22
+#define ICE_IPV6_NO_MAC_TC_OFFSET	0
+#define ICE_IPV6_NO_MAC_HLIM_OFFSET	7
+#define ICE_IPV6_NO_MAC_PROTO_OFFSET	6
+#define ICE_IPV6_NO_MAC_SRC_ADDR_OFFSET	8
+#define ICE_IPV6_NO_MAC_DST_ADDR_OFFSET	24
+#define ICE_TCP6_NO_MAC_SRC_PORT_OFFSET	40
+#define ICE_TCP6_NO_MAC_DST_PORT_OFFSET	42
+#define ICE_UDP6_NO_MAC_SRC_PORT_OFFSET	40
+#define ICE_UDP6_NO_MAC_DST_PORT_OFFSET	42
 #define ICE_IPV4_GTPU_TEID_OFFSET	46
 #define ICE_IPV4_GTPU_QFI_OFFSET	56
 #define ICE_IPV6_GTPU_TEID_OFFSET	66
 #define ICE_IPV6_GTPU_QFI_OFFSET	76
+#define ICE_IPV4_GTPOGRE_TEID_OFFSET	70
+#define ICE_IPV4_GTPOGRE_QFI_OFFSET	80
+#define ICE_IPV6_GTPOGRE_TEID_OFFSET	90
+#define ICE_IPV6_GTPOGRE_QFI_OFFSET	100
 #define ICE_IPV4_L2TPV3_SESS_ID_OFFSET	34
 #define ICE_IPV6_L2TPV3_SESS_ID_OFFSET	54
 #define ICE_IPV4_ESP_SPI_OFFSET		34
@@ -55,15 +93,26 @@
 #define ICE_IPV6_AH_SPI_OFFSET		58
 #define ICE_IPV4_NAT_T_ESP_SPI_OFFSET	42
 #define ICE_IPV6_NAT_T_ESP_SPI_OFFSET	62
+#define ICE_IPV4_VXLAN_VNI_OFFSET	46
+#define ICE_ECPRI_TP0_PC_ID_OFFSET	18
+#define ICE_IPV4_UDP_ECPRI_TP0_PC_ID_OFFSET			46
 
 #define ICE_FDIR_MAX_FLTRS		16384
 
-/* IP v4 has 2 flag bits that enable fragment processing: DF and MF. DF
+/* IPv4 has 2 flag bits that enable fragment processing: DF and MF. DF
  * requests that the packet not be fragmented. MF indicates that a packet has
- * been fragmented.
+ * been fragmented, except that for the last fragment has a non-zero
+ * Fragment Offset field with zero MF.
  */
-#define ICE_FDIR_IPV4_PKT_FLAG_DF		0x20
-#define ICE_FDIR_IPV4_PKT_FLAG_MF		0x40
+#define ICE_FDIR_IPV4_PKT_FLAG_MF		0x20
+#define ICE_FDIR_IPV4_PKT_FLAG_MF_SHIFT	8
+#define ICE_FDIR_IPV4_PKT_FLAG_DF		0x40
+
+/* For IPv6 fragmented packets, all fragments except the last have
+ * the MF flag set.
+ */
+#define ICE_FDIR_IPV6_PKT_FLAG_MF		0x100
+#define ICE_FDIR_IPV6_PKT_FLAG_MF_SHIFT	8
 
 enum ice_fltr_prgm_desc_dest {
 	ICE_FLTR_PRGM_DESC_DEST_DROP_PKT,
@@ -125,6 +174,7 @@ struct ice_fdir_v4 {
 	u8 ip_ver;
 	u8 proto;
 	u8 ttl;
+	__be16 packet_id;
 };
 
 #define ICE_IPV6_ADDR_LEN_AS_U32		4
@@ -139,6 +189,7 @@ struct ice_fdir_v6 {
 	u8 tc;
 	u8 proto;
 	u8 hlim;
+	__be32 packet_id;
 };
 
 struct ice_fdir_udp_gtp {
@@ -161,6 +212,14 @@ struct ice_fdir_udp_gtp {
 
 struct ice_fdir_l2tpv3 {
 	__be32 session_id;
+};
+
+struct ice_fdir_udp_vxlan {
+	__be32 vni; /* 8 bits reserved, always be zero */
+};
+
+struct ice_fdir_ecpri {
+	__be16 pc_id;
 };
 
 struct ice_fdir_extra {
@@ -190,11 +249,17 @@ struct ice_fdir_fltr {
 	struct ice_fdir_extra ext_data_outer;
 	struct ice_fdir_extra ext_mask_outer;
 
+	struct ice_fdir_udp_vxlan vxlan_data;
+	struct ice_fdir_udp_vxlan vxlan_mask;
+
 	struct ice_fdir_udp_gtp gtpu_data;
 	struct ice_fdir_udp_gtp gtpu_mask;
 
 	struct ice_fdir_l2tpv3 l2tpv3_data;
 	struct ice_fdir_l2tpv3 l2tpv3_mask;
+
+	struct ice_fdir_ecpri ecpri_data;
+	struct ice_fdir_ecpri ecpri_mask;
 
 	struct ice_fdir_extra ext_data;
 	struct ice_fdir_extra ext_mask;

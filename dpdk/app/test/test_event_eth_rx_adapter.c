@@ -88,10 +88,7 @@ port_init_common(uint16_t port, const struct rte_eth_conf *port_conf,
 		return retval;
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			(unsigned int)port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			(unsigned int)port, RTE_ETHER_ADDR_BYTES(&addr));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	retval = rte_eth_promiscuous_enable(port);
@@ -106,7 +103,7 @@ port_init_rx_intr(uint16_t port, struct rte_mempool *mp)
 {
 	static const struct rte_eth_conf port_conf_default = {
 		.rxmode = {
-			.mq_mode = ETH_MQ_RX_NONE,
+			.mq_mode = RTE_ETH_MQ_RX_NONE,
 		},
 		.intr_conf = {
 			.rxq = 1,
@@ -121,7 +118,7 @@ port_init(uint16_t port, struct rte_mempool *mp)
 {
 	static const struct rte_eth_conf port_conf_default = {
 		.rxmode = {
-			.mq_mode = ETH_MQ_RX_NONE,
+			.mq_mode = RTE_ETH_MQ_RX_NONE,
 		},
 	};
 
@@ -390,6 +387,148 @@ adapter_create(void)
 	return err;
 }
 
+static int
+adapter_create_with_params(void)
+{
+	int err;
+	struct rte_event_dev_info dev_info;
+	struct rte_event_port_conf rx_p_conf;
+	struct rte_event_eth_rx_adapter_params rxa_params;
+
+	memset(&rx_p_conf, 0, sizeof(rx_p_conf));
+
+	err = rte_event_dev_info_get(TEST_DEV_ID, &dev_info);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	rx_p_conf.new_event_threshold = dev_info.max_num_events;
+	rx_p_conf.dequeue_depth = dev_info.max_event_port_dequeue_depth;
+	rx_p_conf.enqueue_depth = dev_info.max_event_port_enqueue_depth;
+
+	rxa_params.use_queue_event_buf = false;
+	rxa_params.event_buf_size = 0;
+
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, &rx_p_conf, &rxa_params);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	rxa_params.use_queue_event_buf = true;
+
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, &rx_p_conf, &rxa_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, &rx_p_conf, &rxa_params);
+	TEST_ASSERT(err == -EEXIST, "Expected -EEXIST got %d", err);
+
+	return TEST_SUCCESS;
+}
+
+static int
+adapter_queue_event_buf_test(void)
+{
+	int err;
+	struct rte_event ev;
+	uint32_t cap;
+
+	struct rte_event_eth_rx_adapter_queue_conf queue_config = {0};
+
+	err = rte_event_eth_rx_adapter_caps_get(TEST_DEV_ID, TEST_ETHDEV_ID,
+					 &cap);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	ev.queue_id = 0;
+	ev.sched_type = RTE_SCHED_TYPE_ATOMIC;
+	ev.priority = 0;
+
+	queue_config.rx_queue_flags = 0;
+	if (cap & RTE_EVENT_ETH_RX_ADAPTER_CAP_OVERRIDE_FLOW_ID) {
+		ev.flow_id = 1;
+		queue_config.rx_queue_flags =
+			RTE_EVENT_ETH_RX_ADAPTER_QUEUE_FLOW_ID_VALID;
+	}
+	queue_config.ev = ev;
+	queue_config.servicing_weight = 1;
+	queue_config.event_buf_size = 0;
+
+	err = rte_event_eth_rx_adapter_queue_add(TEST_INST_ID,
+					TEST_ETHDEV_ID, 0,
+					&queue_config);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	queue_config.event_buf_size = 1024;
+
+	err = rte_event_eth_rx_adapter_queue_add(TEST_INST_ID,
+					TEST_ETHDEV_ID, 0,
+					&queue_config);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_queue_del(TEST_INST_ID,
+						TEST_ETHDEV_ID,
+						0);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	return TEST_SUCCESS;
+}
+
+static int
+adapter_queue_stats_test(void)
+{
+	int err;
+	struct rte_event ev;
+	uint32_t cap;
+	struct rte_event_eth_rx_adapter_queue_conf queue_config = {0};
+	struct rte_event_eth_rx_adapter_queue_stats q_stats;
+
+	err = rte_event_eth_rx_adapter_queue_stats_get(TEST_INST_ID,
+						TEST_ETHDEV_ID, 0,
+						&q_stats);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_rx_adapter_queue_stats_reset(TEST_INST_ID,
+						TEST_ETHDEV_ID, 0);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_rx_adapter_caps_get(TEST_DEV_ID, TEST_ETHDEV_ID,
+					 &cap);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	ev.queue_id = 0;
+	ev.sched_type = RTE_SCHED_TYPE_ATOMIC;
+	ev.priority = 0;
+
+	queue_config.rx_queue_flags = 0;
+	if (cap & RTE_EVENT_ETH_RX_ADAPTER_CAP_OVERRIDE_FLOW_ID) {
+		ev.flow_id = 1;
+		queue_config.rx_queue_flags =
+			RTE_EVENT_ETH_RX_ADAPTER_QUEUE_FLOW_ID_VALID;
+	}
+	queue_config.ev = ev;
+	queue_config.servicing_weight = 1;
+	queue_config.event_buf_size = 1024;
+
+	err = rte_event_eth_rx_adapter_queue_add(TEST_INST_ID,
+					TEST_ETHDEV_ID, 0,
+					&queue_config);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_queue_stats_get(TEST_INST_ID,
+						TEST_ETHDEV_ID, 0,
+						&q_stats);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_queue_stats_reset(TEST_INST_ID,
+						TEST_ETHDEV_ID, 0);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_queue_del(TEST_INST_ID,
+						TEST_ETHDEV_ID,
+						0);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	return TEST_SUCCESS;
+}
+
 static void
 adapter_free(void)
 {
@@ -432,13 +571,57 @@ adapter_create_free(void)
 }
 
 static int
+adapter_create_free_with_params(void)
+{
+	int err;
+
+	struct rte_event_port_conf rx_p_conf = {
+			.dequeue_depth = 8,
+			.enqueue_depth = 8,
+			.new_event_threshold = 1200,
+	};
+
+	struct rte_event_eth_rx_adapter_params rxa_params = {
+			.event_buf_size = 1024
+	};
+
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, NULL, NULL);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, &rx_p_conf, &rxa_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, &rx_p_conf, &rxa_params);
+	TEST_ASSERT(err == -EEXIST, "Expected -EEXIST %d got %d", -EEXIST, err);
+
+	rxa_params.event_buf_size = 0;
+	err = rte_event_eth_rx_adapter_create_with_params(TEST_INST_ID,
+				TEST_DEV_ID, &rx_p_conf, &rxa_params);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_rx_adapter_free(TEST_INST_ID);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_rx_adapter_free(TEST_INST_ID);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL %d got %d", -EINVAL, err);
+
+	err = rte_event_eth_rx_adapter_free(1);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL %d got %d", -EINVAL, err);
+
+	return TEST_SUCCESS;
+}
+
+static int
 adapter_queue_add_del(void)
 {
 	int err;
 	struct rte_event ev;
 	uint32_t cap;
 
-	struct rte_event_eth_rx_adapter_queue_conf queue_config;
+	struct rte_event_eth_rx_adapter_queue_conf queue_config = {0};
 
 	err = rte_event_eth_rx_adapter_caps_get(TEST_DEV_ID, TEST_ETHDEV_ID,
 					 &cap);
@@ -526,7 +709,7 @@ adapter_multi_eth_add_del(void)
 	uint16_t port_index, port_index_base, drv_id = 0;
 	char driver_name[50];
 
-	struct rte_event_eth_rx_adapter_queue_conf queue_config;
+	struct rte_event_eth_rx_adapter_queue_conf queue_config = {0};
 
 	ev.queue_id = 0;
 	ev.sched_type = RTE_SCHED_TYPE_ATOMIC;
@@ -597,7 +780,7 @@ adapter_intr_queue_add_del(void)
 	struct rte_event ev;
 	uint32_t cap;
 	uint16_t eth_port;
-	struct rte_event_eth_rx_adapter_queue_conf queue_config;
+	struct rte_event_eth_rx_adapter_queue_conf queue_config = {0};
 
 	if (!default_params.rx_intr_port_inited)
 		return 0;
@@ -690,7 +873,7 @@ adapter_start_stop(void)
 	ev.sched_type = RTE_SCHED_TYPE_ATOMIC;
 	ev.priority = 0;
 
-	struct rte_event_eth_rx_adapter_queue_conf queue_config;
+	struct rte_event_eth_rx_adapter_queue_conf queue_config = {0};
 
 	queue_config.rx_queue_flags = 0;
 	if (default_params.caps &
@@ -750,18 +933,73 @@ adapter_stats(void)
 	return TEST_SUCCESS;
 }
 
+static int
+adapter_queue_conf(void)
+{
+	int err;
+	struct rte_event_eth_rx_adapter_queue_conf queue_conf = {0};
+
+	/* Case 1: queue conf get without any queues in Rx adapter */
+	err = rte_event_eth_rx_adapter_queue_conf_get(TEST_INST_ID,
+						      TEST_ETHDEV_ID,
+						      0, &queue_conf);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Add queue to Rx adapter */
+	queue_conf.ev.queue_id = 0;
+	queue_conf.ev.sched_type = RTE_SCHED_TYPE_ATOMIC;
+	queue_conf.ev.priority = RTE_EVENT_DEV_PRIORITY_NORMAL;
+
+	err = rte_event_eth_rx_adapter_queue_add(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 0, &queue_conf);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Case 2: queue conf get with queue added to Rx adapter */
+	err = rte_event_eth_rx_adapter_queue_conf_get(TEST_INST_ID,
+						      TEST_ETHDEV_ID,
+						      0, &queue_conf);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Case 3: queue conf get with invalid rx queue id */
+	err = rte_event_eth_rx_adapter_queue_conf_get(TEST_INST_ID,
+						      TEST_ETHDEV_ID,
+						      -1, &queue_conf);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 4: queue conf get with NULL queue conf struct */
+	err = rte_event_eth_rx_adapter_queue_conf_get(TEST_INST_ID,
+						      TEST_ETHDEV_ID,
+						      0, NULL);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Delete queue from the Rx adapter */
+	err = rte_event_eth_rx_adapter_queue_del(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 0);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	return TEST_SUCCESS;
+}
+
 static struct unit_test_suite event_eth_rx_tests = {
 	.suite_name = "rx event eth adapter test suite",
 	.setup = testsuite_setup,
 	.teardown = testsuite_teardown,
 	.unit_test_cases = {
 		TEST_CASE_ST(NULL, NULL, adapter_create_free),
+		TEST_CASE_ST(NULL, NULL, adapter_create_free_with_params),
 		TEST_CASE_ST(adapter_create, adapter_free,
 					adapter_queue_add_del),
 		TEST_CASE_ST(adapter_create, adapter_free,
 					adapter_multi_eth_add_del),
 		TEST_CASE_ST(adapter_create, adapter_free, adapter_start_stop),
 		TEST_CASE_ST(adapter_create, adapter_free, adapter_stats),
+		TEST_CASE_ST(adapter_create, adapter_free, adapter_queue_conf),
+		TEST_CASE_ST(adapter_create_with_params, adapter_free,
+			     adapter_queue_event_buf_test),
+		TEST_CASE_ST(adapter_create_with_params, adapter_free,
+			     adapter_queue_stats_test),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };

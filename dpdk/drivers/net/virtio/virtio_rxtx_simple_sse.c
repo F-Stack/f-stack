@@ -14,7 +14,7 @@
 #include <rte_branch_prediction.h>
 #include <rte_cycles.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_errno.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
@@ -41,7 +41,7 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint16_t nb_pkts)
 {
 	struct virtnet_rx *rxvq = rx_queue;
-	struct virtqueue *vq = rxvq->vq;
+	struct virtqueue *vq = virtnet_rxq_to_vq(rxvq);
 	struct virtio_hw *hw = vq->hw;
 	uint16_t nb_used, nb_total;
 	uint16_t desc_idx;

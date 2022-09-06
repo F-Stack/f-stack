@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Intel Corporation
+ * Copyright(c) 2019-2021 Intel Corporation
  */
 
 #include <stdio.h>
@@ -86,4 +86,4 @@ iavf_free_virt_mem_d(__rte_unused struct iavf_hw *hw,
 	return IAVF_SUCCESS;
 }
 
-RTE_LOG_REGISTER(iavf_common_logger, pmd.common.iavf, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(iavf_common_logger, NOTICE);

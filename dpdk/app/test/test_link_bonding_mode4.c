@@ -107,12 +107,11 @@ static struct link_bonding_unittest_params test_params  = {
 
 static struct rte_eth_conf default_pmd_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
 		.split_hdr_size = 0,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.lpbk_mode = 0,
 };
@@ -502,8 +501,8 @@ make_lacp_reply(struct slave_conf *slave, struct rte_mbuf *pkt)
 	slow_hdr = rte_pktmbuf_mtod(pkt, struct slow_protocol_frame *);
 
 	/* Change source address to partner address */
-	rte_ether_addr_copy(&parnter_mac_default, &slow_hdr->eth_hdr.s_addr);
-	slow_hdr->eth_hdr.s_addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
+	rte_ether_addr_copy(&parnter_mac_default, &slow_hdr->eth_hdr.src_addr);
+	slow_hdr->eth_hdr.src_addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
 		slave->port_id;
 
 	lacp = (struct lacpdu *) &slow_hdr->slow_protocol;
@@ -870,7 +869,7 @@ test_mode4_rx(void)
 
 		for (i = 0; i < expected_pkts_cnt; i++) {
 			hdr = rte_pktmbuf_mtod(pkts[i], struct rte_ether_hdr *);
-			cnt[rte_is_same_ether_addr(&hdr->d_addr,
+			cnt[rte_is_same_ether_addr(&hdr->dst_addr,
 							&bonded_mac)]++;
 		}
 
@@ -918,7 +917,7 @@ test_mode4_rx(void)
 
 		for (i = 0; i < expected_pkts_cnt; i++) {
 			hdr = rte_pktmbuf_mtod(pkts[i], struct rte_ether_hdr *);
-			eq_cnt += rte_is_same_ether_addr(&hdr->d_addr,
+			eq_cnt += rte_is_same_ether_addr(&hdr->dst_addr,
 							&bonded_mac);
 		}
 
@@ -1163,11 +1162,12 @@ init_marker(struct rte_mbuf *pkt, struct slave_conf *slave)
 
 	/* Copy multicast destination address */
 	rte_ether_addr_copy(&slow_protocol_mac_addr,
-			&marker_hdr->eth_hdr.d_addr);
+			&marker_hdr->eth_hdr.dst_addr);
 
 	/* Init source address */
-	rte_ether_addr_copy(&parnter_mac_default, &marker_hdr->eth_hdr.s_addr);
-	marker_hdr->eth_hdr.s_addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
+	rte_ether_addr_copy(&parnter_mac_default,
+			&marker_hdr->eth_hdr.src_addr);
+	marker_hdr->eth_hdr.src_addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
 		slave->port_id;
 
 	marker_hdr->eth_hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_SLOW);

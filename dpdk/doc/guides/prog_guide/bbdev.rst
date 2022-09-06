@@ -891,6 +891,9 @@ given below.
 |RTE_BBDEV_LDPC_CRC_TYPE_24B_DROP                                    |
 | Set to drop the last CRC bits decoding output                      |
 +--------------------------------------------------------------------+
+|RTE_BBDEV_LDPC_CRC_TYPE_16_CHECK                                    |
+| Set for code block CRC-16 checking                                 |
++--------------------------------------------------------------------+
 |RTE_BBDEV_LDPC_DEINTERLEAVER_BYPASS                                 |
 | Set for bit-level de-interleaver bypass on input stream            |
 +--------------------------------------------------------------------+
@@ -1050,6 +1053,37 @@ the output of the HARQ combination function of the device. If the
 capability RTE_BBDEV_LDPC_INTERNAL_HARQ_MEMORY_OUT_ENABLE is set
 then the HARQ is stored in memory internal to the device and not visible
 to BBDEV.
+
+.. note::
+
+    More explicitly for a typical usage of HARQ retransmission
+    in a VRAN application using a HW PMD, there will be 2 cases.
+
+    For 1st transmission, only the HARQ output is enabled:
+
+    - the harq_combined_output.offset is provided to a given address.
+      ie. typically an integer index * 32K,
+      where the index is tracked by the application based on code block index
+      for a given UE and HARQ process.
+
+    - the related operation flag would notably include
+      RTE_BBDEV_LDPC_HQ_COMBINE_OUT_ENABLE and RTE_BBDEV_LDPC_HARQ_6BIT_COMPRESSION.
+
+    - note that no explicit flush or reset of the memory is required.
+
+    For 2nd transmission, an input is also required to benefit from HARQ combination gain:
+
+    - the changes mentioned above are the same (note that rvIndex may be adjusted).
+
+    - the operation flag would additionally include the LDPC_HQ_COMBINE_IN_ENABLE flag.
+
+    - the harq_combined_input.offset must be set to the address of the related code block
+      (ie. same as the harq_combine_output index above for the same code block, HARQ process, UE).
+
+    - the harq_combined_input.length must be set to the length
+      which was provided back in the related harq_combined_output.length
+      when it has processed and dequeued (previous HARQ iteration).
+
 
 The output mbuf data structures are expected to be allocated by the
 application with enough room for the output data.

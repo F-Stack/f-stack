@@ -22,7 +22,6 @@
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_branch_prediction.h>
-#include <rte_atomic.h>
 #include <rte_ring.h>
 #include <rte_log.h>
 #include <rte_debug.h>
@@ -84,10 +83,8 @@ get_printable_mac_addr(uint16_t port)
 		}
 
 		snprintf(addresses[port], sizeof(addresses[port]),
-				"%02x:%02x:%02x:%02x:%02x:%02x\n",
-				mac.addr_bytes[0], mac.addr_bytes[1],
-				mac.addr_bytes[2], mac.addr_bytes[3],
-				mac.addr_bytes[4], mac.addr_bytes[5]);
+				RTE_ETHER_ADDR_PRT_FMT "\n",
+				RTE_ETHER_ADDR_BYTES(&mac));
 	}
 	return addresses[port];
 }
@@ -99,6 +96,8 @@ get_printable_mac_addr(uint16_t port)
  * thread in the server process, when the process is run with more
  * than one lcore enabled.
  */
+
+/* Display recorded statistics. 8< */
 static void
 do_stats_display(void)
 {
@@ -166,6 +165,7 @@ do_stats_display(void)
 
 	printf("\n");
 }
+/* >8 End of displaying the recorded statistics. */
 
 /*
  * The function called from each non-main lcore used by the process.
@@ -177,10 +177,12 @@ static int
 sleep_lcore(__rte_unused void *dummy)
 {
 	/* Used to pick a display thread - static, so zero-initialised */
-	static rte_atomic32_t display_stats;
+	static uint32_t display_stats;
 
 	/* Only one core should display stats */
-	if (rte_atomic32_test_and_set(&display_stats)) {
+	uint32_t display_init = 0;
+	if (__atomic_compare_exchange_n(&display_stats, &display_init, 1, 0,
+			__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
 		const unsigned int sleeptime = 1;
 
 		printf("Core %u displaying statistics\n", rte_lcore_id());
@@ -212,6 +214,8 @@ clear_stats(void)
  * send a burst of traffic to a node, assuming there are packets
  * available to be sent to this node
  */
+
+/* Flush rx queue. 8< */
 static void
 flush_rx_queue(uint16_t node)
 {
@@ -232,6 +236,7 @@ flush_rx_queue(uint16_t node)
 
 	cl_rx_buf[node].count = 0;
 }
+/* >8 End of sending a burst of traffic to a node. */
 
 /*
  * marks a packet down to be sent to a particular node process
@@ -245,8 +250,10 @@ enqueue_rx_packet(uint8_t node, struct rte_mbuf *buf)
 /*
  * This function takes a group of packets and routes them
  * individually to the node process. Very simply round-robins the packets
- * without checking any of the packet contents.
+ * without checking any of the packet contents. 8<
  */
+
+/* Processing packets. 8< */
 static void
 process_packets(uint32_t port_num __rte_unused, struct rte_mbuf *pkts[],
 		uint16_t rx_count, unsigned int socket_id)
@@ -288,6 +295,7 @@ process_packets(uint32_t port_num __rte_unused, struct rte_mbuf *pkts[],
 	for (i = 0; i < num_nodes; i++)
 		flush_rx_queue(i);
 }
+/* >8 End of process_packets. */
 
 /*
  * Function called by the main lcore of the DPDK process.

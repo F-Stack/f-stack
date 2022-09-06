@@ -8,20 +8,20 @@
 #include <rte_flow.h>
 
 #define HNS3_ETH_RSS_SUPPORT ( \
-	ETH_RSS_FRAG_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV4_SCTP | \
-	ETH_RSS_NONFRAG_IPV4_OTHER | \
-	ETH_RSS_FRAG_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_NONFRAG_IPV6_SCTP | \
-	ETH_RSS_NONFRAG_IPV6_OTHER | \
-	ETH_RSS_L3_SRC_ONLY | \
-	ETH_RSS_L3_DST_ONLY | \
-	ETH_RSS_L4_SRC_ONLY | \
-	ETH_RSS_L4_DST_ONLY)
+	RTE_ETH_RSS_FRAG_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_SCTP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_OTHER | \
+	RTE_ETH_RSS_FRAG_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_SCTP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_OTHER | \
+	RTE_ETH_RSS_L3_SRC_ONLY | \
+	RTE_ETH_RSS_L3_DST_ONLY | \
+	RTE_ETH_RSS_L4_SRC_ONLY | \
+	RTE_ETH_RSS_L4_DST_ONLY)
 
 #define HNS3_RSS_IND_TBL_SIZE	512 /* The size of hash lookup table */
 #define HNS3_RSS_IND_TBL_SIZE_MAX 2048
@@ -102,14 +102,14 @@ int hns3_dev_rss_reta_update(struct rte_eth_dev *dev,
 int hns3_dev_rss_reta_query(struct rte_eth_dev *dev,
 			    struct rte_eth_rss_reta_entry64 *reta_conf,
 			    uint16_t reta_size);
-void hns3_set_default_rss_args(struct hns3_hw *hw);
+void hns3_rss_set_default_args(struct hns3_hw *hw);
 int hns3_set_rss_indir_table(struct hns3_hw *hw, uint16_t *indir,
 			     uint16_t size);
 int hns3_rss_reset_indir_table(struct hns3_hw *hw);
 int hns3_config_rss(struct hns3_adapter *hns);
 void hns3_rss_uninit(struct hns3_adapter *hns);
 int hns3_set_rss_tuple_by_rss_hf(struct hns3_hw *hw, uint64_t rss_hf);
-int hns3_set_rss_algo_key(struct hns3_hw *hw, const uint8_t *key);
+int hns3_rss_set_algo_key(struct hns3_hw *hw, const uint8_t *key);
 int hns3_restore_rss_filter(struct rte_eth_dev *dev);
 
 #endif /* _HNS3_RSS_H_ */

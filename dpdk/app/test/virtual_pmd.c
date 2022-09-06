@@ -4,7 +4,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_malloc.h>
@@ -53,7 +53,7 @@ static int  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
 	void *pkt = NULL;
 	struct virtual_ethdev_private *prv = eth_dev->data->dev_private;
 
-	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	eth_dev->data->dev_started = 0;
 	while (rte_ring_dequeue(prv->rx_queue, &pkt) != -ENOENT)
 		rte_pktmbuf_free(pkt);
@@ -163,22 +163,12 @@ virtual_ethdev_tx_queue_setup_fail(struct rte_eth_dev *dev __rte_unused,
 	return -1;
 }
 
-static void
-virtual_ethdev_rx_queue_release(void *q __rte_unused)
-{
-}
-
-static void
-virtual_ethdev_tx_queue_release(void *q __rte_unused)
-{
-}
-
 static int
 virtual_ethdev_link_update_success(struct rte_eth_dev *bonded_eth_dev,
 		int wait_to_complete __rte_unused)
 {
 	if (!bonded_eth_dev->data->dev_started)
-		bonded_eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
+		bonded_eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 
 	return 0;
 }
@@ -243,8 +233,6 @@ static const struct eth_dev_ops virtual_ethdev_default_dev_ops = {
 	.dev_infos_get = virtual_ethdev_info_get,
 	.rx_queue_setup = virtual_ethdev_rx_queue_setup_success,
 	.tx_queue_setup = virtual_ethdev_tx_queue_setup_success,
-	.rx_queue_release = virtual_ethdev_rx_queue_release,
-	.tx_queue_release = virtual_ethdev_tx_queue_release,
 	.link_update = virtual_ethdev_link_update_success,
 	.mac_addr_set = virtual_ethdev_mac_address_set,
 	.stats_get = virtual_ethdev_stats_get,
@@ -427,10 +415,14 @@ virtual_ethdev_rx_burst_fn_set_success(uint16_t port_id, uint8_t success)
 {
 	struct rte_eth_dev *vrtl_eth_dev = &rte_eth_devices[port_id];
 
+	rte_eth_dev_stop(port_id);
+
 	if (success)
 		vrtl_eth_dev->rx_pkt_burst = virtual_ethdev_rx_burst_success;
 	else
 		vrtl_eth_dev->rx_pkt_burst = virtual_ethdev_rx_burst_fail;
+
+	rte_eth_dev_start(port_id);
 }
 
 
@@ -440,6 +432,7 @@ virtual_ethdev_tx_burst_fn_set_success(uint16_t port_id, uint8_t success)
 	struct virtual_ethdev_private *dev_private = NULL;
 	struct rte_eth_dev *vrtl_eth_dev = &rte_eth_devices[port_id];
 
+	rte_eth_dev_stop(port_id);
 	dev_private = vrtl_eth_dev->data->dev_private;
 
 	if (success)
@@ -448,6 +441,7 @@ virtual_ethdev_tx_burst_fn_set_success(uint16_t port_id, uint8_t success)
 		vrtl_eth_dev->tx_pkt_burst = virtual_ethdev_tx_burst_fail;
 
 	dev_private->tx_burst_fail_count = 0;
+	rte_eth_dev_start(port_id);
 }
 
 void
@@ -456,7 +450,6 @@ virtual_ethdev_tx_burst_fn_set_tx_pkt_fail_count(uint16_t port_id,
 {
 	struct virtual_ethdev_private *dev_private = NULL;
 	struct rte_eth_dev *vrtl_eth_dev = &rte_eth_devices[port_id];
-
 
 	dev_private = vrtl_eth_dev->data->dev_private;
 	dev_private->tx_burst_fail_count = packet_fail_count;
@@ -574,9 +567,9 @@ virtual_ethdev_create(const char *name, struct rte_ether_addr *mac_addr,
 	eth_dev->data->nb_rx_queues = (uint16_t)1;
 	eth_dev->data->nb_tx_queues = (uint16_t)1;
 
-	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
-	eth_dev->data->dev_link.link_speed = ETH_SPEED_NUM_10G;
-	eth_dev->data->dev_link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
+	eth_dev->data->dev_link.link_speed = RTE_ETH_SPEED_NUM_10G;
+	eth_dev->data->dev_link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 
 	eth_dev->data->mac_addrs = rte_zmalloc(name, RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL)

@@ -5,6 +5,8 @@
 #ifndef _DSW_EVDEV_H_
 #define _DSW_EVDEV_H_
 
+#include <eventdev_pmd.h>
+
 #include <rte_event_ring.h>
 #include <rte_eventdev.h>
 
@@ -219,9 +221,9 @@ struct dsw_port {
 	struct rte_ring *ctl_in_ring __rte_cache_aligned;
 
 	/* Estimate of current port load. */
-	rte_atomic16_t load __rte_cache_aligned;
+	int16_t load __rte_cache_aligned;
 	/* Estimate of flows currently migrating to this port. */
-	rte_atomic32_t immigration_load __rte_cache_aligned;
+	int32_t immigration_load __rte_cache_aligned;
 } __rte_cache_aligned;
 
 struct dsw_queue {
@@ -241,7 +243,7 @@ struct dsw_evdev {
 	uint8_t num_queues;
 	int32_t max_inflight;
 
-	rte_atomic32_t credits_on_loan __rte_cache_aligned;
+	int32_t credits_on_loan __rte_cache_aligned;
 };
 
 #define DSW_CTL_PAUS_REQ (0)
@@ -269,6 +271,7 @@ uint16_t dsw_event_enqueue_forward_burst(void *port,
 uint16_t dsw_event_dequeue(void *port, struct rte_event *ev, uint64_t wait);
 uint16_t dsw_event_dequeue_burst(void *port, struct rte_event *events,
 				 uint16_t num, uint64_t wait);
+void dsw_event_maintain(void *port, int op);
 
 int dsw_xstats_get_names(const struct rte_eventdev *dev,
 			 enum rte_event_dev_xstats_mode mode,

@@ -7,7 +7,7 @@
 #include <rte_common.h>
 #include <rte_hexdump.h>
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_bus_vdev.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
@@ -802,6 +802,8 @@ cryptodev_armv8_crypto_create(const char *name,
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;
 
+	rte_cryptodev_pmd_probing_finish(dev);
+
 	return 0;
 
 init_error:
@@ -864,7 +866,7 @@ static struct rte_vdev_driver armv8_crypto_pmd_drv = {
 
 static struct cryptodev_driver armv8_crypto_drv;
 
-RTE_LOG_REGISTER(crypto_armv8_log_type, pmd.crypto.armv8, ERR);
+RTE_LOG_REGISTER_DEFAULT(crypto_armv8_log_type, ERR);
 
 RTE_PMD_REGISTER_VDEV(CRYPTODEV_NAME_ARMV8_PMD, armv8_crypto_pmd_drv);
 RTE_PMD_REGISTER_ALIAS(CRYPTODEV_NAME_ARMV8_PMD, cryptodev_armv8_pmd);

@@ -3,7 +3,7 @@
  */
 
 #include <rte_io.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "hns3_ethdev.h"
 #include "hns3_rxtx.h"
@@ -17,9 +17,15 @@ int
 hns3_tx_check_vec_support(struct rte_eth_dev *dev)
 {
 	struct rte_eth_txmode *txmode = &dev->data->dev_conf.txmode;
+	struct hns3_adapter *hns = dev->data->dev_private;
+	struct hns3_pf *pf = &hns->pf;
 
-	/* Only support DEV_TX_OFFLOAD_MBUF_FAST_FREE */
-	if (txmode->offloads != DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	/* Only support RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE */
+	if (txmode->offloads != RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
+		return -ENOTSUP;
+
+	/* Vec is not supported when PTP enabled */
+	if (pf->ptp_enable)
 		return -ENOTSUP;
 
 	return 0;
@@ -163,6 +169,24 @@ hns3_rxq_vec_setup_rearm_data(struct hns3_rx_queue *rxq)
 	mb_def.port = rxq->port_id;
 	rte_mbuf_refcnt_set(&mb_def, 1);
 
+	/* compile-time verifies the rearm_data first 8bytes */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_off) <
+			 offsetof(struct rte_mbuf, rearm_data));
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, refcnt) <
+			 offsetof(struct rte_mbuf, rearm_data));
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, nb_segs) <
+			 offsetof(struct rte_mbuf, rearm_data));
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, port) <
+			 offsetof(struct rte_mbuf, rearm_data));
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_off) -
+			 offsetof(struct rte_mbuf, rearm_data) > 6);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, refcnt) -
+			 offsetof(struct rte_mbuf, rearm_data) > 6);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, nb_segs) -
+			 offsetof(struct rte_mbuf, rearm_data) > 6);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, port) -
+			 offsetof(struct rte_mbuf, rearm_data) > 6);
+
 	/* prevent compiler reordering: rearm_data covers previous fields */
 	rte_compiler_barrier();
 	p = (uintptr_t)&mb_def.rearm_data;
@@ -187,7 +211,6 @@ hns3_rxq_vec_setup(struct hns3_rx_queue *rxq)
 	memset(rxq->offset_table, 0, sizeof(rxq->offset_table));
 }
 
-#ifndef RTE_LIBRTE_IEEE1588
 static int
 hns3_rxq_vec_check(struct hns3_rx_queue *rxq, void *arg)
 {
@@ -203,16 +226,16 @@ hns3_rxq_vec_check(struct hns3_rx_queue *rxq, void *arg)
 	RTE_SET_USED(arg);
 	return 0;
 }
-#endif
 
 int
 hns3_rx_check_vec_support(struct rte_eth_dev *dev)
 {
-#ifndef RTE_LIBRTE_IEEE1588
-	struct rte_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
+	struct rte_eth_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
-	uint64_t offloads_mask = DEV_RX_OFFLOAD_TCP_LRO |
-				 DEV_RX_OFFLOAD_VLAN;
+	uint64_t offloads_mask = RTE_ETH_RX_OFFLOAD_TCP_LRO |
+				 RTE_ETH_RX_OFFLOAD_VLAN;
+	struct hns3_adapter *hns = dev->data->dev_private;
+	struct hns3_pf *pf = &hns->pf;
 
 	if (dev->data->scattered_rx)
 		return -ENOTSUP;
@@ -226,9 +249,9 @@ hns3_rx_check_vec_support(struct rte_eth_dev *dev)
 	if (hns3_rxq_iterate(dev, hns3_rxq_vec_check, NULL) != 0)
 		return -ENOTSUP;
 
+	/* Vec is not supported when PTP enabled */
+	if (pf->ptp_enable)
+		return -ENOTSUP;
+
 	return 0;
-#else
-	RTE_SET_USED(dev);
-	return -ENOTSUP;
-#endif
 }

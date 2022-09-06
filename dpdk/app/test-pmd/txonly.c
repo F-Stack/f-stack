@@ -24,7 +24,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -210,7 +209,7 @@ pkt_burst_prepare(struct rte_mbuf *pkt, struct rte_mempool *mbp,
 
 	rte_pktmbuf_reset_headroom(pkt);
 	pkt->data_len = tx_pkt_seg_lengths[0];
-	pkt->ol_flags &= EXT_ATTACHED_MBUF;
+	pkt->ol_flags &= RTE_MBUF_F_EXTERNAL;
 	pkt->ol_flags |= ol_flags;
 	pkt->vlan_tci = vlan_tci;
 	pkt->vlan_tci_outer = vlan_tci_outer;
@@ -262,10 +261,22 @@ pkt_burst_prepare(struct rte_mbuf *pkt, struct rte_mempool *mbp,
 		uint64_t skew = fs->ts_skew;
 		struct tx_timestamp timestamp_mark;
 
-		if (!skew) {
-			struct rte_eth_dev *dev = &rte_eth_devices[fs->tx_port];
-			unsigned int txqs_n = dev->data->nb_tx_queues;
-			uint64_t phase = tx_pkt_times_inter * fs->tx_queue /
+		if (unlikely(!skew)) {
+			struct rte_eth_dev_info dev_info;
+			unsigned int txqs_n;
+			uint64_t phase;
+			int ret;
+
+			ret = eth_dev_info_get_print_err(fs->tx_port, &dev_info);
+			if (ret != 0) {
+				TESTPMD_LOG(ERR,
+					"Failed to get device info for port %d,"
+					"could not finish timestamp init",
+					fs->tx_port);
+				return false;
+			}
+			txqs_n = dev_info.nb_tx_queues;
+			phase = tx_pkt_times_inter * fs->tx_queue /
 					 (txqs_n ? txqs_n : 1);
 			/*
 			 * Initialize the scheduling time phase shift
@@ -336,18 +347,18 @@ pkt_burst_transmit(struct fwd_stream *fs)
 	tx_offloads = txp->dev_conf.txmode.offloads;
 	vlan_tci = txp->tx_vlan_id;
 	vlan_tci_outer = txp->tx_vlan_id_outer;
-	if (tx_offloads	& DEV_TX_OFFLOAD_VLAN_INSERT)
-		ol_flags = PKT_TX_VLAN_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_QINQ_INSERT)
-		ol_flags |= PKT_TX_QINQ_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_MACSEC_INSERT)
-		ol_flags |= PKT_TX_MACSEC;
+	if (tx_offloads	& RTE_ETH_TX_OFFLOAD_VLAN_INSERT)
+		ol_flags = RTE_MBUF_F_TX_VLAN;
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_QINQ_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_QINQ;
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_MACSEC_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_MACSEC;
 
 	/*
 	 * Initialize Ethernet header.
 	 */
-	rte_ether_addr_copy(&peer_eth_addrs[fs->peer_addr], &eth_hdr.d_addr);
-	rte_ether_addr_copy(&ports[fs->tx_port].eth_addr, &eth_hdr.s_addr);
+	rte_ether_addr_copy(&peer_eth_addrs[fs->peer_addr], &eth_hdr.dst_addr);
+	rte_ether_addr_copy(&ports[fs->tx_port].eth_addr, &eth_hdr.src_addr);
 	eth_hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
 	if (rte_mempool_get_bulk(mbp, (void **)pkts_burst,

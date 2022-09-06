@@ -3,8 +3,8 @@
  */
 
 #include <rte_string_fns.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_cycles.h>
 #include <rte_malloc.h>
 #include <rte_alarm.h>
@@ -384,15 +384,15 @@ lio_dev_info_get(struct rte_eth_dev *eth_dev,
 	case PCI_SUBSYS_DEV_ID_CN2360_210SVPN3:
 	case PCI_SUBSYS_DEV_ID_CN2350_210SVPT:
 	case PCI_SUBSYS_DEV_ID_CN2360_210SVPT:
-		devinfo->speed_capa = ETH_LINK_SPEED_10G;
+		devinfo->speed_capa = RTE_ETH_LINK_SPEED_10G;
 		break;
 	/* CN23xx 25G cards */
 	case PCI_SUBSYS_DEV_ID_CN2350_225:
 	case PCI_SUBSYS_DEV_ID_CN2360_225:
-		devinfo->speed_capa = ETH_LINK_SPEED_25G;
+		devinfo->speed_capa = RTE_ETH_LINK_SPEED_25G;
 		break;
 	default:
-		devinfo->speed_capa = ETH_LINK_SPEED_10G;
+		devinfo->speed_capa = RTE_ETH_LINK_SPEED_10G;
 		lio_dev_err(lio_dev,
 			    "Unknown CN23XX subsystem device id. Setting 10G as default link speed.\n");
 		return -EINVAL;
@@ -406,27 +406,27 @@ lio_dev_info_get(struct rte_eth_dev *eth_dev,
 
 	devinfo->max_mac_addrs = 1;
 
-	devinfo->rx_offload_capa = (DEV_RX_OFFLOAD_IPV4_CKSUM		|
-				    DEV_RX_OFFLOAD_UDP_CKSUM		|
-				    DEV_RX_OFFLOAD_TCP_CKSUM		|
-				    DEV_RX_OFFLOAD_VLAN_STRIP		|
-				    DEV_RX_OFFLOAD_RSS_HASH);
-	devinfo->tx_offload_capa = (DEV_TX_OFFLOAD_IPV4_CKSUM		|
-				    DEV_TX_OFFLOAD_UDP_CKSUM		|
-				    DEV_TX_OFFLOAD_TCP_CKSUM		|
-				    DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM);
+	devinfo->rx_offload_capa = (RTE_ETH_RX_OFFLOAD_IPV4_CKSUM		|
+				    RTE_ETH_RX_OFFLOAD_UDP_CKSUM		|
+				    RTE_ETH_RX_OFFLOAD_TCP_CKSUM		|
+				    RTE_ETH_RX_OFFLOAD_VLAN_STRIP		|
+				    RTE_ETH_RX_OFFLOAD_RSS_HASH);
+	devinfo->tx_offload_capa = (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM		|
+				    RTE_ETH_TX_OFFLOAD_UDP_CKSUM		|
+				    RTE_ETH_TX_OFFLOAD_TCP_CKSUM		|
+				    RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM);
 
 	devinfo->rx_desc_lim = lio_rx_desc_lim;
 	devinfo->tx_desc_lim = lio_tx_desc_lim;
 
 	devinfo->reta_size = LIO_RSS_MAX_TABLE_SZ;
 	devinfo->hash_key_size = LIO_RSS_MAX_KEY_SZ;
-	devinfo->flow_type_rss_offloads = (ETH_RSS_IPV4			|
-					   ETH_RSS_NONFRAG_IPV4_TCP	|
-					   ETH_RSS_IPV6			|
-					   ETH_RSS_NONFRAG_IPV6_TCP	|
-					   ETH_RSS_IPV6_EX		|
-					   ETH_RSS_IPV6_TCP_EX);
+	devinfo->flow_type_rss_offloads = (RTE_ETH_RSS_IPV4			|
+					   RTE_ETH_RSS_NONFRAG_IPV4_TCP	|
+					   RTE_ETH_RSS_IPV6			|
+					   RTE_ETH_RSS_NONFRAG_IPV6_TCP	|
+					   RTE_ETH_RSS_IPV6_EX		|
+					   RTE_ETH_RSS_IPV6_TCP_EX);
 	return 0;
 }
 
@@ -434,8 +434,6 @@ static int
 lio_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 {
 	struct lio_device *lio_dev = LIO_DEV(eth_dev);
-	uint16_t pf_mtu = lio_dev->linfo.link.s.mtu;
-	uint32_t frame_len = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 	struct lio_dev_ctrl_cmd ctrl_cmd;
 	struct lio_ctrl_pkt ctrl_pkt;
 
@@ -444,15 +442,6 @@ lio_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	if (!lio_dev->intf_open) {
 		lio_dev_err(lio_dev, "Port %d down, can't set MTU\n",
 			    lio_dev->port_id);
-		return -EINVAL;
-	}
-
-	/* check if VF MTU is within allowed range.
-	 * New value should not exceed PF MTU.
-	 */
-	if (mtu < RTE_ETHER_MIN_MTU || mtu > pf_mtu) {
-		lio_dev_err(lio_dev, "VF MTU should be >= %d and <= %d\n",
-			    RTE_ETHER_MIN_MTU, pf_mtu);
 		return -EINVAL;
 	}
 
@@ -480,16 +469,6 @@ lio_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 		lio_dev_err(lio_dev, "Command to change MTU timed out\n");
 		return -1;
 	}
-
-	if (frame_len > LIO_ETH_MAX_LEN)
-		eth_dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		eth_dev->data->dev_conf.rxmode.offloads &=
-			~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
-	eth_dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_len;
-	eth_dev->data->mtu = mtu;
 
 	return 0;
 }
@@ -540,10 +519,10 @@ lio_dev_rss_reta_update(struct rte_eth_dev *eth_dev,
 	rss_param->param.flags &= ~LIO_RSS_PARAM_ITABLE_UNCHANGED;
 	rss_param->param.itablesize = LIO_RSS_MAX_TABLE_SZ;
 
-	for (i = 0; i < (reta_size / RTE_RETA_GROUP_SIZE); i++) {
-		for (j = 0; j < RTE_RETA_GROUP_SIZE; j++) {
+	for (i = 0; i < (reta_size / RTE_ETH_RETA_GROUP_SIZE); i++) {
+		for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++) {
 			if ((reta_conf[i].mask) & ((uint64_t)1 << j)) {
-				index = (i * RTE_RETA_GROUP_SIZE) + j;
+				index = (i * RTE_ETH_RETA_GROUP_SIZE) + j;
 				rss_state->itable[index] = reta_conf[i].reta[j];
 			}
 		}
@@ -583,12 +562,12 @@ lio_dev_rss_reta_query(struct rte_eth_dev *eth_dev,
 		return -EINVAL;
 	}
 
-	num = reta_size / RTE_RETA_GROUP_SIZE;
+	num = reta_size / RTE_ETH_RETA_GROUP_SIZE;
 
 	for (i = 0; i < num; i++) {
 		memcpy(reta_conf->reta,
-		       &rss_state->itable[i * RTE_RETA_GROUP_SIZE],
-		       RTE_RETA_GROUP_SIZE);
+		       &rss_state->itable[i * RTE_ETH_RETA_GROUP_SIZE],
+		       RTE_ETH_RETA_GROUP_SIZE);
 		reta_conf++;
 	}
 
@@ -616,17 +595,17 @@ lio_dev_rss_hash_conf_get(struct rte_eth_dev *eth_dev,
 		memcpy(hash_key, rss_state->hash_key, rss_state->hash_key_size);
 
 	if (rss_state->ip)
-		rss_hf |= ETH_RSS_IPV4;
+		rss_hf |= RTE_ETH_RSS_IPV4;
 	if (rss_state->tcp_hash)
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_TCP;
 	if (rss_state->ipv6)
-		rss_hf |= ETH_RSS_IPV6;
+		rss_hf |= RTE_ETH_RSS_IPV6;
 	if (rss_state->ipv6_tcp_hash)
-		rss_hf |= ETH_RSS_NONFRAG_IPV6_TCP;
+		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV6_TCP;
 	if (rss_state->ipv6_ex)
-		rss_hf |= ETH_RSS_IPV6_EX;
+		rss_hf |= RTE_ETH_RSS_IPV6_EX;
 	if (rss_state->ipv6_tcp_ex_hash)
-		rss_hf |= ETH_RSS_IPV6_TCP_EX;
+		rss_hf |= RTE_ETH_RSS_IPV6_TCP_EX;
 
 	rss_conf->rss_hf = rss_hf;
 
@@ -694,42 +673,42 @@ lio_dev_rss_hash_update(struct rte_eth_dev *eth_dev,
 		if (rss_state->hash_disable)
 			return -EINVAL;
 
-		if (rss_conf->rss_hf & ETH_RSS_IPV4) {
+		if (rss_conf->rss_hf & RTE_ETH_RSS_IPV4) {
 			hashinfo |= LIO_RSS_HASH_IPV4;
 			rss_state->ip = 1;
 		} else {
 			rss_state->ip = 0;
 		}
 
-		if (rss_conf->rss_hf & ETH_RSS_NONFRAG_IPV4_TCP) {
+		if (rss_conf->rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_TCP) {
 			hashinfo |= LIO_RSS_HASH_TCP_IPV4;
 			rss_state->tcp_hash = 1;
 		} else {
 			rss_state->tcp_hash = 0;
 		}
 
-		if (rss_conf->rss_hf & ETH_RSS_IPV6) {
+		if (rss_conf->rss_hf & RTE_ETH_RSS_IPV6) {
 			hashinfo |= LIO_RSS_HASH_IPV6;
 			rss_state->ipv6 = 1;
 		} else {
 			rss_state->ipv6 = 0;
 		}
 
-		if (rss_conf->rss_hf & ETH_RSS_NONFRAG_IPV6_TCP) {
+		if (rss_conf->rss_hf & RTE_ETH_RSS_NONFRAG_IPV6_TCP) {
 			hashinfo |= LIO_RSS_HASH_TCP_IPV6;
 			rss_state->ipv6_tcp_hash = 1;
 		} else {
 			rss_state->ipv6_tcp_hash = 0;
 		}
 
-		if (rss_conf->rss_hf & ETH_RSS_IPV6_EX) {
+		if (rss_conf->rss_hf & RTE_ETH_RSS_IPV6_EX) {
 			hashinfo |= LIO_RSS_HASH_IPV6_EX;
 			rss_state->ipv6_ex = 1;
 		} else {
 			rss_state->ipv6_ex = 0;
 		}
 
-		if (rss_conf->rss_hf & ETH_RSS_IPV6_TCP_EX) {
+		if (rss_conf->rss_hf & RTE_ETH_RSS_IPV6_TCP_EX) {
 			hashinfo |= LIO_RSS_HASH_TCP_IPV6_EX;
 			rss_state->ipv6_tcp_ex_hash = 1;
 		} else {
@@ -778,7 +757,7 @@ lio_dev_udp_tunnel_add(struct rte_eth_dev *eth_dev,
 	if (udp_tnl == NULL)
 		return -EINVAL;
 
-	if (udp_tnl->prot_type != RTE_TUNNEL_TYPE_VXLAN) {
+	if (udp_tnl->prot_type != RTE_ETH_TUNNEL_TYPE_VXLAN) {
 		lio_dev_err(lio_dev, "Unsupported tunnel type\n");
 		return -1;
 	}
@@ -835,7 +814,7 @@ lio_dev_udp_tunnel_del(struct rte_eth_dev *eth_dev,
 	if (udp_tnl == NULL)
 		return -EINVAL;
 
-	if (udp_tnl->prot_type != RTE_TUNNEL_TYPE_VXLAN) {
+	if (udp_tnl->prot_type != RTE_ETH_TUNNEL_TYPE_VXLAN) {
 		lio_dev_err(lio_dev, "Unsupported tunnel type\n");
 		return -1;
 	}
@@ -933,10 +912,10 @@ lio_dev_link_update(struct rte_eth_dev *eth_dev,
 
 	/* Initialize */
 	memset(&link, 0, sizeof(link));
-	link.link_status = ETH_LINK_DOWN;
-	link.link_speed = ETH_SPEED_NUM_NONE;
-	link.link_duplex = ETH_LINK_HALF_DUPLEX;
-	link.link_autoneg = ETH_LINK_AUTONEG;
+	link.link_status = RTE_ETH_LINK_DOWN;
+	link.link_speed = RTE_ETH_SPEED_NUM_NONE;
+	link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
+	link.link_autoneg = RTE_ETH_LINK_AUTONEG;
 
 	/* Return what we found */
 	if (lio_dev->linfo.link.s.link_up == 0) {
@@ -944,18 +923,18 @@ lio_dev_link_update(struct rte_eth_dev *eth_dev,
 		return rte_eth_linkstatus_set(eth_dev, &link);
 	}
 
-	link.link_status = ETH_LINK_UP; /* Interface is up */
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	link.link_status = RTE_ETH_LINK_UP; /* Interface is up */
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 	switch (lio_dev->linfo.link.s.speed) {
 	case LIO_LINK_SPEED_10000:
-		link.link_speed = ETH_SPEED_NUM_10G;
+		link.link_speed = RTE_ETH_SPEED_NUM_10G;
 		break;
 	case LIO_LINK_SPEED_25000:
-		link.link_speed = ETH_SPEED_NUM_25G;
+		link.link_speed = RTE_ETH_SPEED_NUM_25G;
 		break;
 	default:
-		link.link_speed = ETH_SPEED_NUM_NONE;
-		link.link_duplex = ETH_LINK_HALF_DUPLEX;
+		link.link_speed = RTE_ETH_SPEED_NUM_NONE;
+		link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 	}
 
 	return rte_eth_linkstatus_set(eth_dev, &link);
@@ -1107,8 +1086,8 @@ lio_dev_rss_configure(struct rte_eth_dev *eth_dev)
 
 		q_idx = (uint8_t)((eth_dev->data->nb_rx_queues > 1) ?
 				  i % eth_dev->data->nb_rx_queues : 0);
-		conf_idx = i / RTE_RETA_GROUP_SIZE;
-		reta_idx = i % RTE_RETA_GROUP_SIZE;
+		conf_idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		reta_idx = i % RTE_ETH_RETA_GROUP_SIZE;
 		reta_conf[conf_idx].reta[reta_idx] = q_idx;
 		reta_conf[conf_idx].mask |= ((uint64_t)1 << reta_idx);
 	}
@@ -1124,10 +1103,10 @@ lio_dev_mq_rx_configure(struct rte_eth_dev *eth_dev)
 	struct rte_eth_rss_conf rss_conf;
 
 	switch (eth_dev->data->dev_conf.rxmode.mq_mode) {
-	case ETH_MQ_RX_RSS:
+	case RTE_ETH_MQ_RX_RSS:
 		lio_dev_rss_configure(eth_dev);
 		break;
-	case ETH_MQ_RX_NONE:
+	case RTE_ETH_MQ_RX_NONE:
 	/* if mq_mode is none, disable rss mode. */
 	default:
 		memset(&rss_conf, 0, sizeof(rss_conf));
@@ -1182,7 +1161,7 @@ lio_dev_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t q_no,
 
 	/* Free previous allocation if any */
 	if (eth_dev->data->rx_queues[q_no] != NULL) {
-		lio_dev_rx_queue_release(eth_dev->data->rx_queues[q_no]);
+		lio_dev_rx_queue_release(eth_dev, q_no);
 		eth_dev->data->rx_queues[q_no] = NULL;
 	}
 
@@ -1204,16 +1183,18 @@ lio_dev_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t q_no,
  * Release the receive queue/ringbuffer. Called by
  * the upper layers.
  *
- * @param rxq
- *    Opaque pointer to the receive queue to release
+ * @param eth_dev
+ *    Pointer to Ethernet device structure.
+ * @param q_no
+ *    Receive queue index.
  *
  * @return
  *    - nothing
  */
 void
-lio_dev_rx_queue_release(void *rxq)
+lio_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t q_no)
 {
-	struct lio_droq *droq = rxq;
+	struct lio_droq *droq = dev->data->rx_queues[q_no];
 	int oq_no;
 
 	if (droq) {
@@ -1262,7 +1243,7 @@ lio_dev_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t q_no,
 
 	/* Free previous allocation if any */
 	if (eth_dev->data->tx_queues[q_no] != NULL) {
-		lio_dev_tx_queue_release(eth_dev->data->tx_queues[q_no]);
+		lio_dev_tx_queue_release(eth_dev, q_no);
 		eth_dev->data->tx_queues[q_no] = NULL;
 	}
 
@@ -1292,16 +1273,18 @@ lio_dev_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t q_no,
  * Release the transmit queue/ringbuffer. Called by
  * the upper layers.
  *
- * @param txq
- *    Opaque pointer to the transmit queue to release
+ * @param eth_dev
+ *    Pointer to Ethernet device structure.
+ * @param q_no
+ *   Transmit queue index.
  *
  * @return
  *    - nothing
  */
 void
-lio_dev_tx_queue_release(void *txq)
+lio_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t q_no)
 {
-	struct lio_instr_queue *tq = txq;
+	struct lio_instr_queue *tq = dev->data->tx_queues[q_no];
 	uint32_t fw_mapped_iq_no;
 
 
@@ -1398,8 +1381,6 @@ lio_sync_link_state_check(void *eth_dev)
 static int
 lio_dev_start(struct rte_eth_dev *eth_dev)
 {
-	uint16_t mtu;
-	uint32_t frame_len = eth_dev->data->dev_conf.rxmode.max_rx_pkt_len;
 	struct lio_device *lio_dev = LIO_DEV(eth_dev);
 	uint16_t timeout = LIO_MAX_CMD_TIMEOUT;
 	int ret = 0;
@@ -1442,15 +1423,9 @@ lio_dev_start(struct rte_eth_dev *eth_dev)
 		goto dev_mtu_set_error;
 	}
 
-	mtu = (uint16_t)(frame_len - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN);
-	if (mtu < RTE_ETHER_MIN_MTU)
-		mtu = RTE_ETHER_MIN_MTU;
-
-	if (eth_dev->data->mtu != mtu) {
-		ret = lio_dev_mtu_set(eth_dev, mtu);
-		if (ret)
-			goto dev_mtu_set_error;
-	}
+	ret = lio_dev_mtu_set(eth_dev, eth_dev->data->mtu);
+	if (ret != 0)
+		goto dev_mtu_set_error;
 
 	return 0;
 
@@ -1509,7 +1484,7 @@ lio_dev_set_link_up(struct rte_eth_dev *eth_dev)
 	}
 
 	lio_dev->linfo.link.s.link_up = 1;
-	eth_dev->data->dev_link.link_status = ETH_LINK_UP;
+	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 
 	return 0;
 }
@@ -1530,11 +1505,11 @@ lio_dev_set_link_down(struct rte_eth_dev *eth_dev)
 	}
 
 	lio_dev->linfo.link.s.link_up = 0;
-	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 
 	if (lio_send_rx_ctrl_cmd(eth_dev, 0)) {
 		lio_dev->linfo.link.s.link_up = 1;
-		eth_dev->data->dev_link.link_status = ETH_LINK_UP;
+		eth_dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 		lio_dev_err(lio_dev, "Unable to set Link Down\n");
 		return -1;
 	}
@@ -1746,9 +1721,9 @@ lio_dev_configure(struct rte_eth_dev *eth_dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (eth_dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+	if (eth_dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
 		eth_dev->data->dev_conf.rxmode.offloads |=
-			DEV_RX_OFFLOAD_RSS_HASH;
+			RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	/* Inform firmware about change in number of queues to use.
 	 * Disable IO queues and reset registers for re-configuration.
@@ -2167,5 +2142,5 @@ static struct rte_pci_driver rte_liovf_pmd = {
 RTE_PMD_REGISTER_PCI(net_liovf, rte_liovf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_liovf, pci_id_liovf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_liovf, "* igb_uio | vfio-pci");
-RTE_LOG_REGISTER(lio_logtype_init, pmd.net.liquidio.init, NOTICE);
-RTE_LOG_REGISTER(lio_logtype_driver, pmd.net.liquidio.driver, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(lio_logtype_init, init, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(lio_logtype_driver, driver, NOTICE);

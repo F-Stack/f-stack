@@ -279,9 +279,9 @@ inner and outer packets can be IPv4 or IPv6.
 - Rx checksum offloads.
 
   The NIC validates IPv4/UDP/TCP checksums of both inner and outer packets.
-  Good checksum flags (e.g. ``PKT_RX_L4_CKSUM_GOOD``) indicate that the inner
+  Good checksum flags (e.g. ``RTE_MBUF_F_RX_L4_CKSUM_GOOD``) indicate that the inner
   packet has the correct checksum, and if applicable, the outer packet also
-  has the correct checksum. Bad checksum flags (e.g. ``PKT_RX_L4_CKSUM_BAD``)
+  has the correct checksum. Bad checksum flags (e.g. ``RTE_MBUF_F_RX_L4_CKSUM_BAD``)
   indicate that the inner and/or outer packets have invalid checksum values.
 
 - Inner Rx packet type classification
@@ -384,6 +384,31 @@ vectorized handler is selected, enable debug logging
 
     enic_use_vector_rx_handler use the non-scatter avx2 Rx handler
 
+64B Completion Queue Entry
+--------------------------
+
+Recent VIC adapters support 64B completion queue entries, as well as
+16B entries that are available on all adapter models. ENIC PMD enables
+and uses 64B entries by default, if available. 64B entries generally
+lower CPU cycles per Rx packet, as they avoid partial DMA writes and
+reduce cache contention between DMA and polling CPU. The effect is
+most pronounced when multiple Rx queues are used on Intel platforms
+with Data Direct I/O Technology (DDIO).
+
+If 64B entries are not available, PMD uses 16B entries. The user may
+explicitly disable 64B entries and use 16B entries by setting
+``devarg`` parameter ``cq64=0``. For example::
+
+    -a 12:00.0,cq64=0
+
+To verify the selected entry size, enable debug logging
+(``--log-level=enic,debug``) and check the following messages.
+
+.. code-block:: console
+
+    PMD: rte_enic_pmd: Supported CQ entry sizes: 16 32
+    PMD: rte_enic_pmd: Using 16B CQ entry size
+
 .. _enic_limitations:
 
 Limitations
@@ -407,13 +432,13 @@ Limitations
 .. code-block:: console
 
      vlan_offload = rte_eth_dev_get_vlan_offload(port);
-     vlan_offload |= ETH_VLAN_STRIP_OFFLOAD;
+     vlan_offload |= RTE_ETH_VLAN_STRIP_OFFLOAD;
      rte_eth_dev_set_vlan_offload(port, vlan_offload);
 
 Another alternative is modify the adapter's ingress VLAN rewrite mode so that
 packets with the default VLAN tag are stripped by the adapter and presented to
-DPDK as untagged packets. In this case mbuf->vlan_tci and the PKT_RX_VLAN and
-PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
+DPDK as untagged packets. In this case mbuf->vlan_tci and the RTE_MBUF_F_RX_VLAN and
+RTE_MBUF_F_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
 ``devargs`` parameter ``ig-vlan-rewrite=untag``. For example::
 
     -a 12:00.0,ig-vlan-rewrite=untag
@@ -448,6 +473,8 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
     packets and then receive them normally. These require 1400 series VIC adapters
     and latest firmware.
   - RAW items are limited to matching UDP tunnel headers like VXLAN.
+  - GTP, GTP-C and GTP-U header matching is enabled, however matching items within
+    the tunnel is not supported.
   - For 1400 VICs, all flows using the RSS action on a port use same hash
     configuration. The RETA is ignored. The queues used in the RSS group must be
     sequential. There is a performance hit if the number of queues is not a power of 2.

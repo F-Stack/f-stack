@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2016 Intel Corporation
+ * Copyright(c) 2010-2021 Intel Corporation
  */
 
 #include <stdio.h>
@@ -24,7 +24,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -47,6 +46,7 @@
 
 #include "l3fwd.h"
 #include "l3fwd_event.h"
+#include "l3fwd_route.h"
 
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_LCORE
 #define MAX_RX_QUEUE_PER_PORT 128
@@ -59,9 +59,14 @@ uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 /**< Ports set in promiscuous mode off by default. */
 static int promiscuous_on;
 
-/* Select Longest-Prefix or Exact match. */
-static int l3fwd_lpm_on;
-static int l3fwd_em_on;
+/* Select Longest-Prefix, Exact match or Forwarding Information Base. */
+enum L3FWD_LOOKUP_MODE {
+	L3FWD_LOOKUP_DEFAULT,
+	L3FWD_LOOKUP_LPM,
+	L3FWD_LOOKUP_EM,
+	L3FWD_LOOKUP_FIB
+};
+static enum L3FWD_LOOKUP_MODE lookup_mode;
 
 /* Global variables. */
 
@@ -113,23 +118,25 @@ static uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.mq_mode = RTE_ETH_MQ_RX_RSS,
 		.split_hdr_size = 0,
-		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP,
+			.rss_hf = RTE_ETH_RSS_IP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
+static uint32_t max_pkt_len;
+
 static struct rte_mempool *pktmbuf_pool[RTE_MAX_ETHPORTS][NB_SOCKETS];
+static struct rte_mempool *vector_pool[RTE_MAX_ETHPORTS];
 static uint8_t lkp_per_socket[NB_SOCKETS];
 
 struct l3fwd_lkp_mode {
@@ -161,17 +168,75 @@ static struct l3fwd_lkp_mode l3fwd_lpm_lkp = {
 	.get_ipv6_lookup_struct = lpm_get_ipv6_l3fwd_lookup_struct,
 };
 
+static struct l3fwd_lkp_mode l3fwd_fib_lkp = {
+	.setup                  = setup_fib,
+	.check_ptype            = lpm_check_ptype,
+	.cb_parse_ptype         = lpm_cb_parse_ptype,
+	.main_loop              = fib_main_loop,
+	.get_ipv4_lookup_struct = fib_get_ipv4_l3fwd_lookup_struct,
+	.get_ipv6_lookup_struct = fib_get_ipv6_l3fwd_lookup_struct,
+};
+
+/*
+ * 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735).
+ * 198.18.{0-15}.0/24 = Port {0-15}
+ */
+const struct ipv4_l3fwd_route ipv4_l3fwd_route_array[] = {
+	{RTE_IPV4(198, 18, 0, 0), 24, 0},
+	{RTE_IPV4(198, 18, 1, 0), 24, 1},
+	{RTE_IPV4(198, 18, 2, 0), 24, 2},
+	{RTE_IPV4(198, 18, 3, 0), 24, 3},
+	{RTE_IPV4(198, 18, 4, 0), 24, 4},
+	{RTE_IPV4(198, 18, 5, 0), 24, 5},
+	{RTE_IPV4(198, 18, 6, 0), 24, 6},
+	{RTE_IPV4(198, 18, 7, 0), 24, 7},
+	{RTE_IPV4(198, 18, 8, 0), 24, 8},
+	{RTE_IPV4(198, 18, 9, 0), 24, 9},
+	{RTE_IPV4(198, 18, 10, 0), 24, 10},
+	{RTE_IPV4(198, 18, 11, 0), 24, 11},
+	{RTE_IPV4(198, 18, 12, 0), 24, 12},
+	{RTE_IPV4(198, 18, 13, 0), 24, 13},
+	{RTE_IPV4(198, 18, 14, 0), 24, 14},
+	{RTE_IPV4(198, 18, 15, 0), 24, 15},
+};
+
+/*
+ * 2001:200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180).
+ * 2001:200:0:{0-f}::/64 = Port {0-15}
+ */
+const struct ipv6_l3fwd_route ipv6_l3fwd_route_array[] = {
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 0},
+	{{32, 1, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 1},
+	{{32, 1, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 2},
+	{{32, 1, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 3},
+	{{32, 1, 2, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 4},
+	{{32, 1, 2, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 5},
+	{{32, 1, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 6},
+	{{32, 1, 2, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 7},
+	{{32, 1, 2, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 8},
+	{{32, 1, 2, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 9},
+	{{32, 1, 2, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 10},
+	{{32, 1, 2, 0, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 11},
+	{{32, 1, 2, 0, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 12},
+	{{32, 1, 2, 0, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 13},
+	{{32, 1, 2, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 14},
+	{{32, 1, 2, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0}, 64, 15},
+};
+
 /*
  * Setup lookup methods for forwarding.
- * Currently exact-match and longest-prefix-match
- * are supported ones.
+ * Currently exact-match, longest-prefix-match and forwarding information
+ * base are the supported ones.
  */
 static void
 setup_l3fwd_lookup_tables(void)
 {
 	/* Setup HASH lookup functions. */
-	if (l3fwd_em_on)
+	if (lookup_mode == L3FWD_LOOKUP_EM)
 		l3fwd_lkp = l3fwd_em_lkp;
+	/* Setup FIB lookup functions. */
+	else if (lookup_mode == L3FWD_LOOKUP_FIB)
+		l3fwd_lkp = l3fwd_fib_lkp;
 	/* Setup LPM lookup functions. */
 	else
 		l3fwd_lkp = l3fwd_lpm_lkp;
@@ -274,34 +339,35 @@ print_usage(const char *prgname)
 	fprintf(stderr, "%s [EAL options] --"
 		" -p PORTMASK"
 		" [-P]"
-		" [-E]"
-		" [-L]"
+		" [--lookup]"
 		" --config (port,queue,lcore)[,(port,queue,lcore)]"
 		" [--rx-queue-size NPKTS]"
 		" [--tx-queue-size NPKTS]"
 		" [--eth-dest=X,MM:MM:MM:MM:MM:MM]"
-		" [--enable-jumbo [--max-pkt-len PKTLEN]]"
+		" [--max-pkt-len PKTLEN]"
 		" [--no-numa]"
 		" [--hash-entry-num]"
 		" [--ipv6]"
 		" [--parse-ptype]"
 		" [--per-port-pool]"
 		" [--mode]"
-		" [--eventq-sched]\n\n"
+		" [--eventq-sched]"
+		" [--event-vector [--event-vector-size SIZE] [--event-vector-tmo NS]]"
+		" [-E]"
+		" [-L]\n\n"
 
 		"  -p PORTMASK: Hexadecimal bitmask of ports to configure\n"
 		"  -P : Enable promiscuous mode\n"
-		"  -E : Enable exact match\n"
-		"  -L : Enable longest prefix match (default)\n"
+		"  --lookup: Select the lookup method\n"
+		"            Default: lpm\n"
+		"            Accepted: em (Exact Match), lpm (Longest Prefix Match), fib (Forwarding Information Base)\n"
 		"  --config (port,queue,lcore): Rx queue configuration\n"
 		"  --rx-queue-size NPKTS: Rx queue size in decimal\n"
 		"            Default: %d\n"
 		"  --tx-queue-size NPKTS: Tx queue size in decimal\n"
 		"            Default: %d\n"
 		"  --eth-dest=X,MM:MM:MM:MM:MM:MM: Ethernet destination for port X\n"
-		"  --enable-jumbo: Enable jumbo frames\n"
-		"  --max-pkt-len: Under the premise of enabling jumbo,\n"
-		"                 maximum packet length in decimal (64-9600)\n"
+		"  --max-pkt-len PKTLEN: maximum packet length in decimal (64-9600)\n"
 		"  --no-numa: Disable numa awareness\n"
 		"  --hash-entry-num: Specify the hash entry number in hexadecimal to be setup\n"
 		"  --ipv6: Set if running ipv6 packets\n"
@@ -315,7 +381,12 @@ print_usage(const char *prgname)
 		"                  Valid only if --mode=eventdev\n"
 		"  --event-eth-rxqs: Number of ethernet RX queues per device.\n"
 		"                    Default: 1\n"
-		"                    Valid only if --mode=eventdev\n\n",
+		"                    Valid only if --mode=eventdev\n"
+		"  --event-vector:  Enable event vectorization.\n"
+		"  --event-vector-size: Max vector size if event vectorization is enabled.\n"
+		"  --event-vector-tmo: Max timeout to form vector in nanoseconds if event vectorization is enabled\n"
+		"  -E : Enable exact match, legacy flag please use --lookup=em instead\n"
+		"  -L : Enable longest prefix match, legacy flag please use --lookup=lpm instead\n\n",
 		prgname, RTE_TEST_RX_DESC_DEFAULT, RTE_TEST_TX_DESC_DEFAULT);
 }
 
@@ -522,13 +593,29 @@ parse_event_eth_rx_queues(const char *eth_rx_queues)
 	evt_rsrc->eth_rx_queues = num_eth_rx_queues;
 }
 
+static int
+parse_lookup(const char *optarg)
+{
+	if (!strcmp(optarg, "em"))
+		lookup_mode = L3FWD_LOOKUP_EM;
+	else if (!strcmp(optarg, "lpm"))
+		lookup_mode = L3FWD_LOOKUP_LPM;
+	else if (!strcmp(optarg, "fib"))
+		lookup_mode = L3FWD_LOOKUP_FIB;
+	else {
+		fprintf(stderr, "Invalid lookup option! Accepted options: em, lpm, fib\n");
+		return -1;
+	}
+	return 0;
+}
+
 #define MAX_JUMBO_PKT_LEN  9600
 
 static const char short_options[] =
 	"p:"  /* portmask */
 	"P"   /* promiscuous */
-	"L"   /* enable long prefix match */
-	"E"   /* enable exact match */
+	"L"   /* legacy enable long prefix match */
+	"E"   /* legacy enable exact match */
 	;
 
 #define CMD_LINE_OPT_CONFIG "config"
@@ -537,13 +624,18 @@ static const char short_options[] =
 #define CMD_LINE_OPT_ETH_DEST "eth-dest"
 #define CMD_LINE_OPT_NO_NUMA "no-numa"
 #define CMD_LINE_OPT_IPV6 "ipv6"
-#define CMD_LINE_OPT_ENABLE_JUMBO "enable-jumbo"
+#define CMD_LINE_OPT_MAX_PKT_LEN "max-pkt-len"
 #define CMD_LINE_OPT_HASH_ENTRY_NUM "hash-entry-num"
 #define CMD_LINE_OPT_PARSE_PTYPE "parse-ptype"
 #define CMD_LINE_OPT_PER_PORT_POOL "per-port-pool"
 #define CMD_LINE_OPT_MODE "mode"
 #define CMD_LINE_OPT_EVENTQ_SYNC "eventq-sched"
 #define CMD_LINE_OPT_EVENT_ETH_RX_QUEUES "event-eth-rxqs"
+#define CMD_LINE_OPT_LOOKUP "lookup"
+#define CMD_LINE_OPT_ENABLE_VECTOR "event-vector"
+#define CMD_LINE_OPT_VECTOR_SIZE "event-vector-size"
+#define CMD_LINE_OPT_VECTOR_TMO_NS "event-vector-tmo"
+
 enum {
 	/* long options mapped to a short option */
 
@@ -556,13 +648,17 @@ enum {
 	CMD_LINE_OPT_ETH_DEST_NUM,
 	CMD_LINE_OPT_NO_NUMA_NUM,
 	CMD_LINE_OPT_IPV6_NUM,
-	CMD_LINE_OPT_ENABLE_JUMBO_NUM,
+	CMD_LINE_OPT_MAX_PKT_LEN_NUM,
 	CMD_LINE_OPT_HASH_ENTRY_NUM_NUM,
 	CMD_LINE_OPT_PARSE_PTYPE_NUM,
 	CMD_LINE_OPT_PARSE_PER_PORT_POOL,
 	CMD_LINE_OPT_MODE_NUM,
 	CMD_LINE_OPT_EVENTQ_SYNC_NUM,
 	CMD_LINE_OPT_EVENT_ETH_RX_QUEUES_NUM,
+	CMD_LINE_OPT_LOOKUP_NUM,
+	CMD_LINE_OPT_ENABLE_VECTOR_NUM,
+	CMD_LINE_OPT_VECTOR_SIZE_NUM,
+	CMD_LINE_OPT_VECTOR_TMO_NS_NUM
 };
 
 static const struct option lgopts[] = {
@@ -572,7 +668,7 @@ static const struct option lgopts[] = {
 	{CMD_LINE_OPT_ETH_DEST, 1, 0, CMD_LINE_OPT_ETH_DEST_NUM},
 	{CMD_LINE_OPT_NO_NUMA, 0, 0, CMD_LINE_OPT_NO_NUMA_NUM},
 	{CMD_LINE_OPT_IPV6, 0, 0, CMD_LINE_OPT_IPV6_NUM},
-	{CMD_LINE_OPT_ENABLE_JUMBO, 0, 0, CMD_LINE_OPT_ENABLE_JUMBO_NUM},
+	{CMD_LINE_OPT_MAX_PKT_LEN, 1, 0, CMD_LINE_OPT_MAX_PKT_LEN_NUM},
 	{CMD_LINE_OPT_HASH_ENTRY_NUM, 1, 0, CMD_LINE_OPT_HASH_ENTRY_NUM_NUM},
 	{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, CMD_LINE_OPT_PARSE_PTYPE_NUM},
 	{CMD_LINE_OPT_PER_PORT_POOL, 0, 0, CMD_LINE_OPT_PARSE_PER_PORT_POOL},
@@ -580,6 +676,10 @@ static const struct option lgopts[] = {
 	{CMD_LINE_OPT_EVENTQ_SYNC, 1, 0, CMD_LINE_OPT_EVENTQ_SYNC_NUM},
 	{CMD_LINE_OPT_EVENT_ETH_RX_QUEUES, 1, 0,
 					CMD_LINE_OPT_EVENT_ETH_RX_QUEUES_NUM},
+	{CMD_LINE_OPT_LOOKUP, 1, 0, CMD_LINE_OPT_LOOKUP_NUM},
+	{CMD_LINE_OPT_ENABLE_VECTOR, 0, 0, CMD_LINE_OPT_ENABLE_VECTOR_NUM},
+	{CMD_LINE_OPT_VECTOR_SIZE, 1, 0, CMD_LINE_OPT_VECTOR_SIZE_NUM},
+	{CMD_LINE_OPT_VECTOR_TMO_NS, 1, 0, CMD_LINE_OPT_VECTOR_TMO_NS_NUM},
 	{NULL, 0, 0, 0}
 };
 
@@ -632,11 +732,19 @@ parse_args(int argc, char **argv)
 			break;
 
 		case 'E':
-			l3fwd_em_on = 1;
+			if (lookup_mode != L3FWD_LOOKUP_DEFAULT) {
+				fprintf(stderr, "Only one lookup mode is allowed at a time!\n");
+				return -1;
+			}
+			lookup_mode = L3FWD_LOOKUP_EM;
 			break;
 
 		case 'L':
-			l3fwd_lpm_on = 1;
+			if (lookup_mode != L3FWD_LOOKUP_DEFAULT) {
+				fprintf(stderr, "Only one lookup mode is allowed at a time!\n");
+				return -1;
+			}
+			lookup_mode = L3FWD_LOOKUP_LPM;
 			break;
 
 		/* long options */
@@ -670,31 +778,9 @@ parse_args(int argc, char **argv)
 			ipv6 = 1;
 			break;
 
-		case CMD_LINE_OPT_ENABLE_JUMBO_NUM: {
-			const struct option lenopts = {
-				"max-pkt-len", required_argument, 0, 0
-			};
-
-			port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-			port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
-
-			/*
-			 * if no max-pkt-len set, use the default
-			 * value RTE_ETHER_MAX_LEN.
-			 */
-			if (getopt_long(argc, argvopt, "",
-					&lenopts, &option_index) == 0) {
-				ret = parse_max_pkt_len(optarg);
-				if (ret < 64 || ret > MAX_JUMBO_PKT_LEN) {
-					fprintf(stderr,
-						"invalid maximum packet length\n");
-					print_usage(prgname);
-					return -1;
-				}
-				port_conf.rxmode.max_rx_pkt_len = ret;
-			}
+		case CMD_LINE_OPT_MAX_PKT_LEN_NUM:
+			max_pkt_len = parse_max_pkt_len(optarg);
 			break;
-		}
 
 		case CMD_LINE_OPT_HASH_ENTRY_NUM_NUM:
 			ret = parse_hash_entry_number(optarg);
@@ -731,16 +817,35 @@ parse_args(int argc, char **argv)
 			eth_rx_q = 1;
 			break;
 
+		case CMD_LINE_OPT_LOOKUP_NUM:
+			if (lookup_mode != L3FWD_LOOKUP_DEFAULT) {
+				fprintf(stderr, "Only one lookup mode is allowed at a time!\n");
+				return -1;
+			}
+			ret = parse_lookup(optarg);
+			/*
+			 * If parse_lookup was passed an invalid lookup type
+			 * then return -1. Error log included within
+			 * parse_lookup for simplicity.
+			 */
+			if (ret)
+				return -1;
+			break;
+
+		case CMD_LINE_OPT_ENABLE_VECTOR_NUM:
+			printf("event vectorization is enabled\n");
+			evt_rsrc->vector_enabled = 1;
+			break;
+		case CMD_LINE_OPT_VECTOR_SIZE_NUM:
+			evt_rsrc->vector_size = strtol(optarg, NULL, 10);
+			break;
+		case CMD_LINE_OPT_VECTOR_TMO_NS_NUM:
+			evt_rsrc->vector_tmo_ns = strtoull(optarg, NULL, 10);
+			break;
 		default:
 			print_usage(prgname);
 			return -1;
 		}
-	}
-
-	/* If both LPM and EM are selected, return error. */
-	if (l3fwd_lpm_on && l3fwd_em_on) {
-		fprintf(stderr, "LPM and EM are mutually exclusive, select only one\n");
-		return -1;
 	}
 
 	if (evt_rsrc->enabled && lcore_params) {
@@ -758,21 +863,34 @@ parse_args(int argc, char **argv)
 		return -1;
 	}
 
+	if (evt_rsrc->vector_enabled && !evt_rsrc->vector_size) {
+		evt_rsrc->vector_size = VECTOR_SIZE_DEFAULT;
+		fprintf(stderr, "vector size set to default (%" PRIu16 ")\n",
+			evt_rsrc->vector_size);
+	}
+
+	if (evt_rsrc->vector_enabled && !evt_rsrc->vector_tmo_ns) {
+		evt_rsrc->vector_tmo_ns = VECTOR_TMO_NS_DEFAULT;
+		fprintf(stderr,
+			"vector timeout set to default (%" PRIu64 " ns)\n",
+			evt_rsrc->vector_tmo_ns);
+	}
+
 	/*
 	 * Nothing is selected, pick longest-prefix match
 	 * as default match.
 	 */
-	if (!l3fwd_lpm_on && !l3fwd_em_on) {
-		fprintf(stderr, "LPM or EM none selected, default LPM on\n");
-		l3fwd_lpm_on = 1;
+	if (lookup_mode == L3FWD_LOOKUP_DEFAULT) {
+		fprintf(stderr, "Neither LPM, EM, or FIB selected, defaulting to LPM\n");
+		lookup_mode = L3FWD_LOOKUP_LPM;
 	}
 
 	/*
 	 * ipv6 and hash flags are valid only for
-	 * exact macth, reset them to default for
+	 * exact match, reset them to default for
 	 * longest-prefix match.
 	 */
-	if (l3fwd_lpm_on) {
+	if (lookup_mode == L3FWD_LOOKUP_LPM) {
 		ipv6 = 0;
 		hash_entry_number = HASH_ENTRY_NUMBER_DEFAULT;
 	}
@@ -796,6 +914,7 @@ print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
 int
 init_mem(uint16_t portid, unsigned int nb_mbuf)
 {
+	struct l3fwd_event_resources *evt_rsrc = l3fwd_get_eventdev_rsrc();
 	struct lcore_conf *qconf;
 	int socketid;
 	unsigned lcore_id;
@@ -831,7 +950,7 @@ init_mem(uint16_t portid, unsigned int nb_mbuf)
 				printf("Allocated mbuf pool on socket %d\n",
 					socketid);
 
-			/* Setup either LPM or EM(f.e Hash). But, only once per
+			/* Setup LPM, EM(f.e Hash) or FIB. But, only once per
 			 * available socket.
 			 */
 			if (!lkp_per_socket[socketid]) {
@@ -839,6 +958,24 @@ init_mem(uint16_t portid, unsigned int nb_mbuf)
 				lkp_per_socket[socketid] = 1;
 			}
 		}
+
+		if (evt_rsrc->vector_enabled && vector_pool[portid] == NULL) {
+			unsigned int nb_vec;
+
+			nb_vec = (nb_mbuf + evt_rsrc->vector_size - 1) /
+				 evt_rsrc->vector_size;
+			snprintf(s, sizeof(s), "vector_pool_%d", portid);
+			vector_pool[portid] = rte_event_vector_pool_create(
+				s, nb_vec, 0, evt_rsrc->vector_size, socketid);
+			if (vector_pool[portid] == NULL)
+				rte_exit(EXIT_FAILURE,
+					 "Failed to create vector pool for port %d\n",
+					 portid);
+			else
+				printf("Allocated vector pool for port %d\n",
+				       portid);
+		}
+
 		qconf = &lcore_conf[lcore_id];
 		qconf->ipv4_lookup_struct =
 			l3fwd_lkp.get_ipv4_lookup_struct(socketid);
@@ -889,7 +1026,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -941,6 +1078,41 @@ prepare_ptype_parser(uint16_t portid, uint16_t queueid)
 
 	printf("port %d cannot parse packet type, please add --%s\n",
 	       portid, CMD_LINE_OPT_PARSE_PTYPE);
+	return 0;
+}
+
+static uint32_t
+eth_dev_get_overhead_len(uint32_t max_rx_pktlen, uint16_t max_mtu)
+{
+	uint32_t overhead_len;
+
+	if (max_mtu != UINT16_MAX && max_rx_pktlen > max_mtu)
+		overhead_len = max_rx_pktlen - max_mtu;
+	else
+		overhead_len = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+
+	return overhead_len;
+}
+
+static int
+config_port_max_pkt_len(struct rte_eth_conf *conf,
+		struct rte_eth_dev_info *dev_info)
+{
+	uint32_t overhead_len;
+
+	if (max_pkt_len == 0)
+		return 0;
+
+	if (max_pkt_len < RTE_ETHER_MIN_LEN || max_pkt_len > MAX_JUMBO_PKT_LEN)
+		return -1;
+
+	overhead_len = eth_dev_get_overhead_len(dev_info->max_rx_pktlen,
+			dev_info->max_mtu);
+	conf->rxmode.mtu = max_pkt_len - overhead_len;
+
+	if (conf->rxmode.mtu > RTE_ETHER_MTU)
+		conf->txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+
 	return 0;
 }
 
@@ -998,12 +1170,22 @@ l3fwd_poll_resource_setup(void)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		ret = config_port_max_pkt_len(&local_port_conf, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Invalid max packet length: %u (port %u)\n",
+				max_pkt_len, portid);
+
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 			dev_info.flow_type_rss_offloads;
+
+		if (dev_info.max_rx_queues == 1)
+			local_port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+
 		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf !=
 				port_conf.rx_adv_conf.rss_conf.rss_hf) {
 			printf("Port %u modified RSS hash function based on hardware support,"
@@ -1266,12 +1448,15 @@ main(int argc, char **argv)
 
 	evt_rsrc->per_port_pool = per_port_pool;
 	evt_rsrc->pkt_pool = pktmbuf_pool;
+	evt_rsrc->vec_pool = vector_pool;
 	evt_rsrc->port_mask = enabled_port_mask;
 	/* Configure eventdev parameters if user has requested */
 	if (evt_rsrc->enabled) {
 		l3fwd_event_resource_setup(&port_conf);
-		if (l3fwd_em_on)
+		if (lookup_mode == L3FWD_LOOKUP_EM)
 			l3fwd_lkp.main_loop = evt_rsrc->ops.em_event_loop;
+		else if (lookup_mode == L3FWD_LOOKUP_FIB)
+			l3fwd_lkp.main_loop = evt_rsrc->ops.fib_event_loop;
 		else
 			l3fwd_lkp.main_loop = evt_rsrc->ops.lpm_event_loop;
 		l3fwd_event_service_setup();

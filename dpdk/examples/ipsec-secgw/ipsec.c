@@ -49,9 +49,9 @@ set_ipsec_conf(struct ipsec_sa *sa, struct rte_security_ipsec_xform *ipsec)
 		}
 		/* TODO support for Transport */
 	}
-	ipsec->esn_soft_limit = IPSEC_OFFLOAD_ESN_SOFTLIMIT;
 	ipsec->replay_win_sz = app_sa_prm.window_size;
 	ipsec->options.esn = app_sa_prm.enable_esn;
+	ipsec->options.udp_encap = sa->udp_encap;
 }
 
 int
@@ -171,15 +171,67 @@ create_inline_session(struct socket_ctx *skt_ctx, struct ipsec_sa *sa,
 			.options = { 0 },
 			.replay_win_sz = 0,
 			.direction = sa->direction,
-			.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
-			.mode = (sa->flags == IP4_TUNNEL ||
-					sa->flags == IP6_TUNNEL) ?
-					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL :
-					RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT,
+			.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP
 		} },
 		.crypto_xform = sa->xforms,
 		.userdata = NULL,
 	};
+
+	if (IS_TRANSPORT(sa->flags)) {
+		sess_conf.ipsec.mode = RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT;
+		if (IS_IP4(sa->flags)) {
+			sess_conf.ipsec.tunnel.type =
+				RTE_SECURITY_IPSEC_TUNNEL_IPV4;
+
+			sess_conf.ipsec.tunnel.ipv4.src_ip.s_addr =
+				sa->src.ip.ip4;
+			sess_conf.ipsec.tunnel.ipv4.dst_ip.s_addr =
+				sa->dst.ip.ip4;
+		} else if (IS_IP6(sa->flags)) {
+			sess_conf.ipsec.tunnel.type =
+				RTE_SECURITY_IPSEC_TUNNEL_IPV6;
+
+			memcpy(sess_conf.ipsec.tunnel.ipv6.src_addr.s6_addr,
+				sa->src.ip.ip6.ip6_b, 16);
+			memcpy(sess_conf.ipsec.tunnel.ipv6.dst_addr.s6_addr,
+				sa->dst.ip.ip6.ip6_b, 16);
+		}
+	} else if (IS_TUNNEL(sa->flags)) {
+		sess_conf.ipsec.mode = RTE_SECURITY_IPSEC_SA_MODE_TUNNEL;
+
+		if (IS_IP4(sa->flags)) {
+			sess_conf.ipsec.tunnel.type =
+				RTE_SECURITY_IPSEC_TUNNEL_IPV4;
+
+			sess_conf.ipsec.tunnel.ipv4.src_ip.s_addr =
+				sa->src.ip.ip4;
+			sess_conf.ipsec.tunnel.ipv4.dst_ip.s_addr =
+				sa->dst.ip.ip4;
+		} else if (IS_IP6(sa->flags)) {
+			sess_conf.ipsec.tunnel.type =
+				RTE_SECURITY_IPSEC_TUNNEL_IPV6;
+
+			memcpy(sess_conf.ipsec.tunnel.ipv6.src_addr.s6_addr,
+				sa->src.ip.ip6.ip6_b, 16);
+			memcpy(sess_conf.ipsec.tunnel.ipv6.dst_addr.s6_addr,
+				sa->dst.ip.ip6.ip6_b, 16);
+		} else {
+			RTE_LOG(ERR, IPSEC, "invalid tunnel type\n");
+			return -1;
+		}
+	}
+
+	if (sa->udp_encap) {
+		sess_conf.ipsec.options.udp_encap = 1;
+		sess_conf.ipsec.udp.sport = htons(sa->udp.sport);
+		sess_conf.ipsec.udp.dport = htons(sa->udp.dport);
+	}
+
+	if (sa->esn > 0) {
+		sess_conf.ipsec.options.esn = 1;
+		sess_conf.ipsec.esn.value = sa->esn;
+	}
+
 
 	RTE_LOG_DP(DEBUG, IPSEC, "Create session for SA spi %u on port %u\n",
 		sa->spi, sa->portid);
@@ -249,12 +301,31 @@ create_inline_session(struct socket_ctx *skt_ctx, struct ipsec_sa *sa,
 			sa->ipv4_spec.hdr.src_addr = sa->src.ip.ip4;
 		}
 
-		sa->pattern[2].type = RTE_FLOW_ITEM_TYPE_ESP;
-		sa->pattern[2].spec = &sa->esp_spec;
-		sa->pattern[2].mask = &rte_flow_item_esp_mask;
 		sa->esp_spec.hdr.spi = rte_cpu_to_be_32(sa->spi);
 
-		sa->pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+		if (sa->udp_encap) {
+
+			sa->udp_spec.hdr.dst_port =
+					rte_cpu_to_be_16(sa->udp.dport);
+			sa->udp_spec.hdr.src_port =
+					rte_cpu_to_be_16(sa->udp.sport);
+
+			sa->pattern[2].mask = &rte_flow_item_udp_mask;
+			sa->pattern[2].type = RTE_FLOW_ITEM_TYPE_UDP;
+			sa->pattern[2].spec = &sa->udp_spec;
+
+			sa->pattern[3].type = RTE_FLOW_ITEM_TYPE_ESP;
+			sa->pattern[3].spec = &sa->esp_spec;
+			sa->pattern[3].mask = &rte_flow_item_esp_mask;
+
+			sa->pattern[4].type = RTE_FLOW_ITEM_TYPE_END;
+		} else {
+			sa->pattern[2].type = RTE_FLOW_ITEM_TYPE_ESP;
+			sa->pattern[2].spec = &sa->esp_spec;
+			sa->pattern[2].mask = &rte_flow_item_esp_mask;
+
+			sa->pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+		}
 
 		sa->action[0].type = RTE_FLOW_ACTION_TYPE_SECURITY;
 		sa->action[0].conf = ips->security.ses;
@@ -266,10 +337,10 @@ create_inline_session(struct socket_ctx *skt_ctx, struct ipsec_sa *sa,
 		sa->attr.ingress = (sa->direction ==
 				RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
 		if (sa->attr.ingress) {
-			uint8_t rss_key[40];
+			uint8_t rss_key[64];
 			struct rte_eth_rss_conf rss_conf = {
 				.rss_key = rss_key,
-				.rss_key_len = 40,
+				.rss_key_len = sizeof(rss_key),
 			};
 			struct rte_eth_dev_info dev_info;
 			uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
@@ -552,6 +623,15 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 			if ((unlikely(ips->security.ses == NULL)) &&
 				create_lookaside_session(ipsec_ctx, sa, ips)) {
+				free_pkts(&pkts[i], 1);
+				continue;
+			}
+
+			if (unlikely((pkts[i]->packet_type &
+					(RTE_PTYPE_TUNNEL_MASK |
+					RTE_PTYPE_L4_MASK)) ==
+					MBUF_PTYPE_TUNNEL_ESP_IN_UDP &&
+					sa->udp_encap != 1)) {
 				free_pkts(&pkts[i], 1);
 				continue;
 			}

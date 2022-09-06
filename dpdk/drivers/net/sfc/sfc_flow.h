@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2017-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -63,8 +63,22 @@ struct sfc_flow_spec_filter {
 	struct sfc_flow_rss rss_conf;
 };
 
+/* Indicates the role of a given flow in tunnel offload */
+enum sfc_flow_tunnel_rule_type {
+	/* The flow has nothing to do with tunnel offload */
+	SFC_FT_RULE_NONE = 0,
+	/* The flow represents a JUMP rule */
+	SFC_FT_RULE_JUMP,
+	/* The flow represents a GROUP rule */
+	SFC_FT_RULE_GROUP,
+};
+
 /* MAE-specific flow specification */
 struct sfc_flow_spec_mae {
+	/* FLow Tunnel (FT) rule type (or NONE) */
+	enum sfc_flow_tunnel_rule_type	ft_rule_type;
+	/* Flow Tunnel (FT) context (or NULL) */
+	struct sfc_flow_tunnel		*ft;
 	/* Desired priority level */
 	unsigned int			priority;
 	/* Outer rule registry entry */
@@ -136,13 +150,17 @@ typedef int (sfc_flow_item_parse)(const struct rte_flow_item *item,
 
 struct sfc_flow_item {
 	enum rte_flow_item_type type;		/* Type of item */
+	const char *name;			/* Item name */
 	enum sfc_flow_item_layers layer;	/* Layer of item */
 	enum sfc_flow_item_layers prev_layer;	/* Previous layer of item */
 	enum sfc_flow_parse_ctx_type ctx_type;	/* Parse context type */
 	sfc_flow_item_parse *parse;		/* Parsing function */
 };
 
-int sfc_flow_parse_pattern(const struct sfc_flow_item *flow_items,
+struct sfc_adapter;
+
+int sfc_flow_parse_pattern(struct sfc_adapter *sa,
+			   const struct sfc_flow_item *flow_items,
 			   unsigned int nb_flow_items,
 			   const struct rte_flow_item pattern[],
 			   struct sfc_flow_parse_ctx *parse_ctx,
@@ -155,8 +173,6 @@ int sfc_flow_parse_init(const struct rte_flow_item *item,
 			const void *def_mask,
 			unsigned int size,
 			struct rte_flow_error *error);
-
-struct sfc_adapter;
 
 void sfc_flow_init(struct sfc_adapter *sa);
 void sfc_flow_fini(struct sfc_adapter *sa);
@@ -180,6 +196,12 @@ typedef int (sfc_flow_insert_cb_t)(struct sfc_adapter *sa,
 
 typedef int (sfc_flow_remove_cb_t)(struct sfc_adapter *sa,
 				   struct rte_flow *flow);
+
+typedef int (sfc_flow_query_cb_t)(struct rte_eth_dev *dev,
+				  struct rte_flow *flow,
+				  const struct rte_flow_action *action,
+				  void *data,
+				  struct rte_flow_error *error);
 
 #ifdef __cplusplus
 }

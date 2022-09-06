@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -17,6 +17,16 @@ extern "C" {
 #endif
 
 #define SFC_KVARG_VALUES_BOOL		"[1|y|yes|on|0|n|no|off]"
+
+#define SFC_KVARG_SWITCH_MODE_LEGACY	"legacy"
+#define SFC_KVARG_SWITCH_MODE_SWITCHDEV	"switchdev"
+
+#define SFC_KVARG_SWITCH_MODE		"switch_mode"
+#define SFC_KVARG_VALUES_SWITCH_MODE \
+	"[" SFC_KVARG_SWITCH_MODE_LEGACY "|" \
+	    SFC_KVARG_SWITCH_MODE_SWITCHDEV "]"
+
+#define SFC_KVARG_REPRESENTOR		"representor"
 
 #define SFC_KVARG_PERF_PROFILE		"perf_profile"
 

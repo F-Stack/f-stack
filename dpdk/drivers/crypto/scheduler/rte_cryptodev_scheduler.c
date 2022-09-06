@@ -4,7 +4,7 @@
 #include <rte_string_fns.h>
 #include <rte_reorder.h>
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_malloc.h>
 
 #include "rte_cryptodev_scheduler.h"
@@ -577,4 +577,4 @@ rte_cryptodev_scheduler_option_get(uint8_t scheduler_id,
 }
 
 
-RTE_LOG_REGISTER(scheduler_logtype_driver, pmd.crypto.scheduler, INFO);
+RTE_LOG_REGISTER_DEFAULT(scheduler_logtype_driver, INFO);

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2018-2019 Solarflare Communications Inc.
  */
 
@@ -102,11 +102,12 @@ rhead_ev_qcreate(
 	__in		uint32_t id,
 	__in		uint32_t us,
 	__in		uint32_t flags,
+	__in		uint32_t irq,
 	__in		efx_evq_t *eep)
 {
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
 	size_t desc_size;
-	uint32_t irq;
+	uint32_t target_evq = 0;
 	efx_rc_t rc;
 
 	_NOTE(ARGUNUSED(id))	/* buftbl id managed by MC */
@@ -140,21 +141,22 @@ rhead_ev_qcreate(
 	/* INIT_EVQ expects function-relative vector number */
 	if ((flags & EFX_EVQ_FLAGS_NOTIFY_MASK) ==
 	    EFX_EVQ_FLAGS_NOTIFY_INTERRUPT) {
-		irq = index;
+		/* IRQ number is specified by caller */
 	} else if (index == EFX_RHEAD_ALWAYS_INTERRUPTING_EVQ_INDEX) {
-		irq = index;
+		/* Use the first interrupt for always interrupting EvQ */
+		irq = 0;
 		flags = (flags & ~EFX_EVQ_FLAGS_NOTIFY_MASK) |
 		    EFX_EVQ_FLAGS_NOTIFY_INTERRUPT;
 	} else {
-		irq = EFX_RHEAD_ALWAYS_INTERRUPTING_EVQ_INDEX;
+		target_evq = EFX_RHEAD_ALWAYS_INTERRUPTING_EVQ_INDEX;
 	}
 
 	/*
 	 * Interrupts may be raised for events immediately after the queue is
 	 * created. See bug58606.
 	 */
-	rc = efx_mcdi_init_evq(enp, index, esmp, ndescs, irq, us, flags,
-	    B_FALSE);
+	rc = efx_mcdi_init_evq(enp, index, esmp, ndescs, irq, target_evq, us,
+	    flags, B_FALSE);
 	if (rc != 0)
 		goto fail2;
 

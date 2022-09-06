@@ -17,7 +17,7 @@
 #include <rte_pci.h>
 #include <rte_spinlock.h>
 #include <rte_crypto_sym.h>
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 
 /**< CCP specific */
 #define MAX_HW_QUEUES                   5
@@ -473,7 +473,8 @@ int ccp_dev_start(struct rte_cryptodev *dev);
  * @param ccp_id rte_pci_id list for supported CCP devices
  * @return no. of successfully initialized CCP devices
  */
-int ccp_probe_devices(const struct rte_pci_id *ccp_id);
+int ccp_probe_devices(struct rte_pci_device *pci_dev,
+		const struct rte_pci_id *ccp_id);
 
 /**
  * allocate a ccp command queue

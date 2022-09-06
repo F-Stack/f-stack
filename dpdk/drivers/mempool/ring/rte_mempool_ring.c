@@ -110,9 +110,9 @@ common_ring_alloc(struct rte_mempool *mp)
 {
 	uint32_t rg_flags = 0;
 
-	if (mp->flags & MEMPOOL_F_SP_PUT)
+	if (mp->flags & RTE_MEMPOOL_F_SP_PUT)
 		rg_flags |= RING_F_SP_ENQ;
-	if (mp->flags & MEMPOOL_F_SC_GET)
+	if (mp->flags & RTE_MEMPOOL_F_SC_GET)
 		rg_flags |= RING_F_SC_DEQ;
 
 	return ring_alloc(mp, rg_flags);
@@ -198,9 +198,9 @@ static const struct rte_mempool_ops ops_mt_hts = {
 	.get_count = common_ring_get_count,
 };
 
-MEMPOOL_REGISTER_OPS(ops_mp_mc);
-MEMPOOL_REGISTER_OPS(ops_sp_sc);
-MEMPOOL_REGISTER_OPS(ops_mp_sc);
-MEMPOOL_REGISTER_OPS(ops_sp_mc);
-MEMPOOL_REGISTER_OPS(ops_mt_rts);
-MEMPOOL_REGISTER_OPS(ops_mt_hts);
+RTE_MEMPOOL_REGISTER_OPS(ops_mp_mc);
+RTE_MEMPOOL_REGISTER_OPS(ops_sp_sc);
+RTE_MEMPOOL_REGISTER_OPS(ops_mp_sc);
+RTE_MEMPOOL_REGISTER_OPS(ops_sp_mc);
+RTE_MEMPOOL_REGISTER_OPS(ops_mt_rts);
+RTE_MEMPOOL_REGISTER_OPS(ops_mt_hts);

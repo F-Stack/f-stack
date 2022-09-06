@@ -17,7 +17,7 @@
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_ethdev.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -134,12 +134,11 @@ static uint16_t vlan_id = 0x100;
 
 static struct rte_eth_conf default_pmd_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
 		.split_hdr_size = 0,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.lpbk_mode = 0,
 };
@@ -181,6 +180,10 @@ configure_ethdev(uint16_t port_id, uint8_t start, uint8_t en_isr)
 	TEST_ASSERT_SUCCESS(rte_eth_dev_configure(port_id, test_params->nb_rx_q,
 			test_params->nb_tx_q, &default_pmd_conf),
 			"rte_eth_dev_configure for port %d failed", port_id);
+
+	int ret = rte_eth_dev_set_mtu(port_id, 1550);
+	RTE_TEST_ASSERT(ret == 0 || ret == -ENOTSUP,
+			"rte_eth_dev_set_mtu for port %d failed", port_id);
 
 	for (q_id = 0; q_id < test_params->nb_rx_q; q_id++)
 		TEST_ASSERT_SUCCESS(rte_eth_rx_queue_setup(port_id, q_id, RX_RING_SIZE,

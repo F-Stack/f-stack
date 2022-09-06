@@ -47,7 +47,7 @@ struct test_pipeline {
 	enum evt_test_result result;
 	uint32_t nb_flows;
 	uint64_t outstand_pkts;
-	struct rte_mempool *pool;
+	struct rte_mempool *pool[RTE_MAX_ETHPORTS];
 	struct worker_data worker[EVT_MAX_PORTS];
 	struct evt_options *opt;
 	uint8_t sched_type_list[EVT_MAX_STAGES] __rte_cache_aligned;
@@ -102,10 +102,28 @@ pipeline_fwd_event(struct rte_event *ev, uint8_t sched)
 }
 
 static __rte_always_inline void
+pipeline_fwd_event_vector(struct rte_event *ev, uint8_t sched)
+{
+	ev->event_type = RTE_EVENT_TYPE_CPU_VECTOR;
+	ev->op = RTE_EVENT_OP_FORWARD;
+	ev->sched_type = sched;
+}
+
+static __rte_always_inline void
 pipeline_event_tx(const uint8_t dev, const uint8_t port,
 		struct rte_event * const ev)
 {
 	rte_event_eth_tx_adapter_txq_set(ev->mbuf, 0);
+	while (!rte_event_eth_tx_adapter_enqueue(dev, port, ev, 1, 0))
+		rte_pause();
+}
+
+static __rte_always_inline void
+pipeline_event_tx_vector(const uint8_t dev, const uint8_t port,
+			 struct rte_event *const ev)
+{
+	ev->vec->queue = 0;
+
 	while (!rte_event_eth_tx_adapter_enqueue(dev, port, ev, 1, 0))
 		rte_pause();
 }

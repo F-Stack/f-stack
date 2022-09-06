@@ -27,21 +27,27 @@ Programmer's Guide
     cryptodev_lib
     compressdev
     regexdev
+    dmadev
+    gpudev
     rte_security
     rawdev
     link_bonding_poll_mode_drv_lib
     timer_lib
     hash_lib
+    toeplitz_hash_lib
     efd_lib
     member_lib
     lpm_lib
     lpm6_lib
+    fib_lib
+    rib_lib
     flow_classify_lib
     packet_distrib_lib
     reorder_lib
     ip_fragment_reassembly_lib
     generic_receive_offload_lib
     generic_segmentation_offload_lib
+    pcapng_lib
     pdump_lib
     multi_proc_support
     kernel_nic_interface
@@ -69,4 +75,5 @@ Programmer's Guide
     writing_efficient_code
     lto
     profile_app
+    asan
     glossary

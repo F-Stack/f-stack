@@ -7,7 +7,7 @@
 
 #include <sys/queue.h>
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_interrupts.h>
 
@@ -68,7 +68,7 @@ struct memif_queue {
 	uint64_t n_pkts;			/**< number of rx/tx packets */
 	uint64_t n_bytes;			/**< number of rx/tx bytes */
 
-	struct rte_intr_handle intr_handle;	/**< interrupt handle */
+	struct rte_intr_handle *intr_handle;	/**< interrupt handle */
 
 	memif_log2_ring_size_t log2_ring_size;	/**< log2 of ring size */
 };

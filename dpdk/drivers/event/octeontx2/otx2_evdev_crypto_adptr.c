@@ -2,7 +2,7 @@
  * Copyright (C) 2020-2021 Marvell.
  */
 
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_eventdev.h>
 
 #include "otx2_cryptodev.h"
@@ -19,7 +19,8 @@ otx2_ca_caps_get(const struct rte_eventdev *dev,
 	RTE_SET_USED(cdev);
 
 	*caps = RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND |
-		RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW;
+		RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW |
+		RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD;
 
 	return 0;
 }
@@ -32,13 +33,13 @@ otx2_ca_qp_sso_link(const struct rte_cryptodev *cdev, struct otx2_cpt_qp *qp,
 	int ret;
 
 	ret = otx2_cpt_af_reg_read(cdev, OTX2_CPT_AF_LF_CTL2(qp->id),
-				   &af_lf_ctl2.u);
+				   qp->blkaddr, &af_lf_ctl2.u);
 	if (ret)
 		return ret;
 
 	af_lf_ctl2.s.sso_pf_func = sso_pf_func;
 	ret = otx2_cpt_af_reg_write(cdev, OTX2_CPT_AF_LF_CTL2(qp->id),
-				    af_lf_ctl2.u);
+				    qp->blkaddr, af_lf_ctl2.u);
 	return ret;
 }
 

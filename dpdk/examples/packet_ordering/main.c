@@ -29,6 +29,13 @@
 /* Macros for printing using RTE_LOG */
 #define RTE_LOGTYPE_REORDERAPP          RTE_LOGTYPE_USER1
 
+enum {
+#define OPT_DISABLE_REORDER "disable-reorder"
+	OPT_DISABLE_REORDER_NUM = 256,
+#define OPT_INSIGHT_WORKER  "insight-worker"
+	OPT_INSIGHT_WORKER_NUM,
+};
+
 unsigned int portmask;
 unsigned int disable_reorder;
 unsigned int insight_worker;
@@ -157,9 +164,9 @@ parse_args(int argc, char **argv)
 	char **argvopt;
 	char *prgname = argv[0];
 	static struct option lgopts[] = {
-		{"disable-reorder", 0, 0, 0},
-		{"insight-worker", 0, 0, 0},
-		{NULL, 0, 0, 0}
+		{OPT_DISABLE_REORDER, 0, NULL, OPT_DISABLE_REORDER_NUM},
+		{OPT_INSIGHT_WORKER,  0, NULL, OPT_INSIGHT_WORKER_NUM },
+		{NULL,                0, 0,    0                      }
 	};
 
 	argvopt = argv;
@@ -176,18 +183,18 @@ parse_args(int argc, char **argv)
 				return -1;
 			}
 			break;
+
 		/* long options */
-		case 0:
-			if (!strcmp(lgopts[option_index].name, "disable-reorder")) {
-				printf("reorder disabled\n");
-				disable_reorder = 1;
-			}
-			if (!strcmp(lgopts[option_index].name,
-						"insight-worker")) {
-				printf("print all worker statistics\n");
-				insight_worker = 1;
-			}
+		case OPT_DISABLE_REORDER_NUM:
+			printf("reorder disabled\n");
+			disable_reorder = 1;
 			break;
+
+		case OPT_INSIGHT_WORKER_NUM:
+			printf("print all worker statistics\n");
+			insight_worker = 1;
+			break;
+
 		default:
 			print_usage(prgname);
 			return -1;
@@ -287,9 +294,9 @@ configure_eth_port(uint16_t port_id)
 		return ret;
 	}
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	ret = rte_eth_dev_configure(port_id, rxRings, txRings, &port_conf);
 	if (ret != 0)
 		return ret;
@@ -328,10 +335,7 @@ configure_eth_port(uint16_t port_id)
 
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			port_id,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
 	ret = rte_eth_promiscuous_enable(port_id);
 	if (ret != 0)

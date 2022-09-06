@@ -24,7 +24,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -72,12 +71,12 @@ pkt_burst_mac_forward(struct fwd_stream *fs)
 	fs->rx_packets += nb_rx;
 	txp = &ports[fs->tx_port];
 	tx_offloads = txp->dev_conf.txmode.offloads;
-	if (tx_offloads	& DEV_TX_OFFLOAD_VLAN_INSERT)
-		ol_flags = PKT_TX_VLAN_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_QINQ_INSERT)
-		ol_flags |= PKT_TX_QINQ_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_MACSEC_INSERT)
-		ol_flags |= PKT_TX_MACSEC;
+	if (tx_offloads	& RTE_ETH_TX_OFFLOAD_VLAN_INSERT)
+		ol_flags = RTE_MBUF_F_TX_VLAN;
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_QINQ_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_QINQ;
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_MACSEC_INSERT)
+		ol_flags |= RTE_MBUF_F_TX_MACSEC;
 	for (i = 0; i < nb_rx; i++) {
 		if (likely(i < nb_rx - 1))
 			rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[i + 1],
@@ -85,10 +84,10 @@ pkt_burst_mac_forward(struct fwd_stream *fs)
 		mb = pkts_burst[i];
 		eth_hdr = rte_pktmbuf_mtod(mb, struct rte_ether_hdr *);
 		rte_ether_addr_copy(&peer_eth_addrs[fs->peer_addr],
-				&eth_hdr->d_addr);
+				&eth_hdr->dst_addr);
 		rte_ether_addr_copy(&ports[fs->tx_port].eth_addr,
-				&eth_hdr->s_addr);
-		mb->ol_flags &= IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF;
+				&eth_hdr->src_addr);
+		mb->ol_flags &= RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL;
 		mb->ol_flags |= ol_flags;
 		mb->l2_len = sizeof(struct rte_ether_hdr);
 		mb->l3_len = sizeof(struct rte_ipv4_hdr);

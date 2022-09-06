@@ -1044,13 +1044,10 @@ ntb_dev_close(struct rte_rawdev *dev)
 		ntb_queue_release(dev, i);
 	hw->queue_pairs = 0;
 
-	intr_handle = &hw->pci_dev->intr_handle;
+	intr_handle = hw->pci_dev->intr_handle;
 	/* Clean datapath event and vec mapping */
 	rte_intr_efd_disable(intr_handle);
-	if (intr_handle->intr_vec) {
-		rte_free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
+	rte_intr_vec_list_free(intr_handle);
 	/* Disable uio intr before callback unregister */
 	rte_intr_disable(intr_handle);
 
@@ -1406,7 +1403,7 @@ ntb_init_hw(struct rte_rawdev *dev, struct rte_pci_device *pci_dev)
 		return -ENOTSUP;
 	(*hw->ntb_ops->db_clear)(dev, hw->db_valid_mask);
 
-	intr_handle = &pci_dev->intr_handle;
+	intr_handle = pci_dev->intr_handle;
 	/* Register callback func to eal lib */
 	rte_intr_callback_register(intr_handle,
 				   ntb_dev_intr_handler, dev);
@@ -1551,4 +1548,4 @@ static struct rte_pci_driver rte_ntb_pmd = {
 RTE_PMD_REGISTER_PCI(raw_ntb, rte_ntb_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(raw_ntb, pci_id_ntb_map);
 RTE_PMD_REGISTER_KMOD_DEP(raw_ntb, "* igb_uio | uio_pci_generic | vfio-pci");
-RTE_LOG_REGISTER(ntb_logtype, pmd.raw.ntb, INFO);
+RTE_LOG_REGISTER_DEFAULT(ntb_logtype, INFO);

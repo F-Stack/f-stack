@@ -181,7 +181,7 @@ pmd_cyclecount_bench_ops(struct pmd_cyclecount_state *state, uint32_t cur_op,
 				burst_size,
 				state->ctx->sess, state->opts,
 				state->ctx->test_vector, iv_offset,
-				&imix_idx);
+				&imix_idx, NULL);
 
 #ifdef CPERF_LINEARIZATION_ENABLE
 		/* Check if source mbufs require coalescing */
@@ -232,7 +232,7 @@ pmd_cyclecount_build_ops(struct pmd_cyclecount_state *state,
 				burst_size,
 				state->ctx->sess, state->opts,
 				state->ctx->test_vector, iv_offset,
-				&imix_idx);
+				&imix_idx, NULL);
 	}
 	return 0;
 }
@@ -404,7 +404,7 @@ cperf_pmd_cyclecount_test_runner(void *test_ctx)
 	state.lcore = rte_lcore_id();
 	state.linearize = 0;
 
-	static rte_atomic16_t display_once = RTE_ATOMIC16_INIT(0);
+	static uint16_t display_once;
 	static bool warmup = true;
 
 	/*
@@ -449,8 +449,10 @@ cperf_pmd_cyclecount_test_runner(void *test_ctx)
 			continue;
 		}
 
+		uint16_t exp = 0;
 		if (!opts->csv) {
-			if (rte_atomic16_test_and_set(&display_once))
+			if (__atomic_compare_exchange_n(&display_once, &exp, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED))
 				printf(PRETTY_HDR_FMT, "lcore id", "Buf Size",
 						"Burst Size", "Enqueued",
 						"Dequeued", "Enq Retries",
@@ -466,7 +468,8 @@ cperf_pmd_cyclecount_test_runner(void *test_ctx)
 					state.cycles_per_enq,
 					state.cycles_per_deq);
 		} else {
-			if (rte_atomic16_test_and_set(&display_once))
+			if (__atomic_compare_exchange_n(&display_once, &exp, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED))
 				printf(CSV_HDR_FMT, "# lcore id", "Buf Size",
 						"Burst Size", "Enqueued",
 						"Dequeued", "Enq Retries",

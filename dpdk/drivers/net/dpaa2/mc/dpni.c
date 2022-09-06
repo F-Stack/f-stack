@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2016-2019 NXP
+ * Copyright 2016-2021 NXP
  *
  */
 #include <fsl_mc_sys.h>
@@ -126,6 +126,8 @@ int dpni_create(struct fsl_mc_io *mc_io,
 	cmd_params->qos_entries = cfg->qos_entries;
 	cmd_params->fs_entries = cpu_to_le16(cfg->fs_entries);
 	cmd_params->num_cgs = cfg->num_cgs;
+	cmd_params->num_opr = cfg->num_opr;
+	cmd_params->dist_key_size = cfg->dist_key_size;
 
 	/* send command to mc*/
 	err = mc_send_command(mc_io, &cmd);
@@ -950,6 +952,46 @@ int dpni_get_link_state(struct fsl_mc_io *mc_io,
 }
 
 /**
+ * dpni_set_tx_shaping() - Set the transmit shaping
+ * @mc_io:		Pointer to MC portal's I/O object
+ * @cmd_flags:		Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:		Token of DPNI object
+ * @tx_cr_shaper:	TX committed rate shaping configuration
+ * @tx_er_shaper:	TX excess rate shaping configuration
+ * @coupled:		Committed and excess rate shapers are coupled
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpni_set_tx_shaping(struct fsl_mc_io *mc_io,
+			uint32_t cmd_flags,
+			uint16_t token,
+			const struct dpni_tx_shaping_cfg *tx_cr_shaper,
+			const struct dpni_tx_shaping_cfg *tx_er_shaper,
+			int coupled)
+{
+	struct dpni_cmd_set_tx_shaping *cmd_params;
+	struct mc_command cmd = { 0 };
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_SET_TX_SHAPING,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_set_tx_shaping *)cmd.params;
+	cmd_params->tx_cr_max_burst_size =
+		cpu_to_le16(tx_cr_shaper->max_burst_size);
+	cmd_params->tx_er_max_burst_size =
+		cpu_to_le16(tx_er_shaper->max_burst_size);
+	cmd_params->tx_cr_rate_limit =
+		cpu_to_le32(tx_cr_shaper->rate_limit);
+	cmd_params->tx_er_rate_limit =
+		cpu_to_le32(tx_er_shaper->rate_limit);
+	dpni_set_field(cmd_params->coupled, COUPLED, coupled);
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
  * dpni_set_max_frame_length() - Set the maximum received frame length.
  * @mc_io:		Pointer to MC portal's I/O object
  * @cmd_flags:		Command flags; one or more of 'MC_CMD_FLAG_'
@@ -1477,6 +1519,55 @@ int dpni_clear_vlan_filters(struct fsl_mc_io *mc_io,
 }
 
 /**
+ * dpni_set_tx_priorities() - Set transmission TC priority configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @cfg:	Transmission selection configuration
+ *
+ * warning:	Allowed only when DPNI is disabled
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpni_set_tx_priorities(struct fsl_mc_io *mc_io,
+			   uint32_t cmd_flags,
+			   uint16_t token,
+			   const struct dpni_tx_priorities_cfg *cfg)
+{
+	struct dpni_cmd_set_tx_priorities *cmd_params;
+	struct mc_command cmd = { 0 };
+	int i;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_SET_TX_PRIORITIES,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_set_tx_priorities *)cmd.params;
+	dpni_set_field(cmd_params->flags,
+				SEPARATE_GRP,
+				cfg->separate_groups);
+	cmd_params->prio_group_A = cfg->prio_group_A;
+	cmd_params->prio_group_B = cfg->prio_group_B;
+
+	for (i = 0; i + 1 < DPNI_MAX_TC; i = i + 2) {
+		dpni_set_field(cmd_params->modes[i / 2],
+			       MODE_1,
+			       cfg->tc_sched[i].mode);
+		dpni_set_field(cmd_params->modes[i / 2],
+				   MODE_2,
+				   cfg->tc_sched[i + 1].mode);
+	}
+
+	for (i = 0; i < DPNI_MAX_TC; i++) {
+		cmd_params->delta_bandwidth[i] =
+				cpu_to_le16(cfg->tc_sched[i].delta_bandwidth);
+	}
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
  * dpni_set_rx_tc_dist() - Set Rx traffic class distribution configuration
  * @mc_io:	Pointer to MC portal's I/O object
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
@@ -1740,6 +1831,7 @@ int dpni_add_fs_entry(struct fsl_mc_io *mc_io,
 	cmd_params->options = cpu_to_le16(action->options);
 	cmd_params->flow_id = cpu_to_le16(action->flow_id);
 	cmd_params->flc = cpu_to_le64(action->flc);
+	cmd_params->redir_token = cpu_to_le16(action->redirect_obj_token);
 
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
@@ -1803,6 +1895,228 @@ int dpni_clear_fs_entries(struct fsl_mc_io *mc_io,
 					  token);
 	cmd_params = (struct dpni_cmd_clear_fs_entries *)cmd.params;
 	cmd_params->tc_id = tc_id;
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpni_set_rx_tc_policing() - Set Rx traffic class policing configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @tc_id:	Traffic class selection (0-7)
+ * @cfg:	Traffic class policing configuration
+ *
+ * Return:	'0' on Success; error code otherwise.
+ */
+int dpni_set_rx_tc_policing(struct fsl_mc_io *mc_io,
+			    uint32_t cmd_flags,
+			    uint16_t token,
+			    uint8_t tc_id,
+			    const struct dpni_rx_tc_policing_cfg *cfg)
+{
+	struct dpni_cmd_set_rx_tc_policing *cmd_params;
+	struct mc_command cmd = { 0 };
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_SET_RX_TC_POLICING,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_set_rx_tc_policing *)cmd.params;
+	dpni_set_field(cmd_params->mode_color, COLOR, cfg->default_color);
+	dpni_set_field(cmd_params->mode_color, MODE, cfg->mode);
+	dpni_set_field(cmd_params->units, UNITS, cfg->units);
+	cmd_params->options = cpu_to_le32(cfg->options);
+	cmd_params->cir = cpu_to_le32(cfg->cir);
+	cmd_params->cbs = cpu_to_le32(cfg->cbs);
+	cmd_params->eir = cpu_to_le32(cfg->eir);
+	cmd_params->ebs = cpu_to_le32(cfg->ebs);
+	cmd_params->tc_id = tc_id;
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpni_get_rx_tc_policing() - Get Rx traffic class policing configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @tc_id:	Traffic class selection (0-7)
+ * @cfg:	Traffic class policing configuration
+ *
+ * Return:	'0' on Success; error code otherwise.
+ */
+int dpni_get_rx_tc_policing(struct fsl_mc_io *mc_io,
+			    uint32_t cmd_flags,
+			    uint16_t token,
+			    uint8_t tc_id,
+			    struct dpni_rx_tc_policing_cfg *cfg)
+{
+	struct dpni_rsp_get_rx_tc_policing *rsp_params;
+	struct dpni_cmd_get_rx_tc_policing *cmd_params;
+	struct mc_command cmd = { 0 };
+	int err;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_GET_RX_TC_POLICING,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_get_rx_tc_policing *)cmd.params;
+	cmd_params->tc_id = tc_id;
+
+
+	/* send command to mc*/
+	err =  mc_send_command(mc_io, &cmd);
+	if (err)
+		return err;
+
+	rsp_params =  (struct dpni_rsp_get_rx_tc_policing *)cmd.params;
+	cfg->options = le32_to_cpu(rsp_params->options);
+	cfg->cir = le32_to_cpu(rsp_params->cir);
+	cfg->cbs = le32_to_cpu(rsp_params->cbs);
+	cfg->eir = le32_to_cpu(rsp_params->eir);
+	cfg->ebs = le32_to_cpu(rsp_params->ebs);
+	cfg->units = dpni_get_field(rsp_params->units, UNITS);
+	cfg->mode = dpni_get_field(rsp_params->mode_color, MODE);
+	cfg->default_color = dpni_get_field(rsp_params->mode_color, COLOR);
+
+	return 0;
+}
+
+/**
+ * dpni_prepare_early_drop() - prepare an early drop.
+ * @cfg:		Early-drop configuration
+ * @early_drop_buf:	Zeroed 256 bytes of memory before mapping it to DMA
+ *
+ * This function has to be called before dpni_set_rx_tc_early_drop or
+ * dpni_set_tx_tc_early_drop
+ *
+ */
+void dpni_prepare_early_drop(const struct dpni_early_drop_cfg *cfg,
+			     uint8_t *early_drop_buf)
+{
+	struct dpni_early_drop *ext_params;
+
+	ext_params = (struct dpni_early_drop *)early_drop_buf;
+
+	dpni_set_field(ext_params->flags, DROP_ENABLE, cfg->enable);
+	dpni_set_field(ext_params->flags, DROP_UNITS, cfg->units);
+	ext_params->green_drop_probability = cfg->green.drop_probability;
+	ext_params->green_max_threshold = cpu_to_le64(cfg->green.max_threshold);
+	ext_params->green_min_threshold = cpu_to_le64(cfg->green.min_threshold);
+	ext_params->yellow_drop_probability = cfg->yellow.drop_probability;
+	ext_params->yellow_max_threshold =
+		cpu_to_le64(cfg->yellow.max_threshold);
+	ext_params->yellow_min_threshold =
+		cpu_to_le64(cfg->yellow.min_threshold);
+	ext_params->red_drop_probability = cfg->red.drop_probability;
+	ext_params->red_max_threshold = cpu_to_le64(cfg->red.max_threshold);
+	ext_params->red_min_threshold = cpu_to_le64(cfg->red.min_threshold);
+}
+
+/**
+ * dpni_extract_early_drop() - extract the early drop configuration.
+ * @cfg:		Early-drop configuration
+ * @early_drop_buf:	Zeroed 256 bytes of memory before mapping it to DMA
+ *
+ * This function has to be called after dpni_get_rx_tc_early_drop or
+ * dpni_get_tx_tc_early_drop
+ *
+ */
+void dpni_extract_early_drop(struct dpni_early_drop_cfg *cfg,
+			     const uint8_t *early_drop_buf)
+{
+	const struct dpni_early_drop *ext_params;
+
+	ext_params = (const struct dpni_early_drop *)early_drop_buf;
+
+	cfg->enable = dpni_get_field(ext_params->flags, DROP_ENABLE);
+	cfg->units = dpni_get_field(ext_params->flags, DROP_UNITS);
+	cfg->green.drop_probability = ext_params->green_drop_probability;
+	cfg->green.max_threshold = le64_to_cpu(ext_params->green_max_threshold);
+	cfg->green.min_threshold = le64_to_cpu(ext_params->green_min_threshold);
+	cfg->yellow.drop_probability = ext_params->yellow_drop_probability;
+	cfg->yellow.max_threshold =
+		le64_to_cpu(ext_params->yellow_max_threshold);
+	cfg->yellow.min_threshold =
+		le64_to_cpu(ext_params->yellow_min_threshold);
+	cfg->red.drop_probability = ext_params->red_drop_probability;
+	cfg->red.max_threshold = le64_to_cpu(ext_params->red_max_threshold);
+	cfg->red.min_threshold = le64_to_cpu(ext_params->red_min_threshold);
+}
+
+/**
+ * dpni_set_early_drop() - Set traffic class early-drop configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @qtype:	Type of queue - only Rx and Tx types are supported
+ * @tc_id:	Traffic class selection (0-7)
+ * @early_drop_iova:  I/O virtual address of 256 bytes DMA-able memory filled
+ *	with the early-drop configuration by calling dpni_prepare_early_drop()
+ *
+ * warning: Before calling this function, call dpni_prepare_early_drop() to
+ *			prepare the early_drop_iova parameter
+ *
+ * Return:	'0' on Success; error code otherwise.
+ */
+int dpni_set_early_drop(struct fsl_mc_io *mc_io,
+			uint32_t cmd_flags,
+			uint16_t token,
+			enum dpni_queue_type qtype,
+			uint8_t tc_id,
+			uint64_t early_drop_iova)
+{
+	struct dpni_cmd_early_drop *cmd_params;
+	struct mc_command cmd = { 0 };
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_SET_EARLY_DROP,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_early_drop *)cmd.params;
+	cmd_params->qtype = qtype;
+	cmd_params->tc = tc_id;
+	cmd_params->early_drop_iova = cpu_to_le64(early_drop_iova);
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpni_get_early_drop() - Get Rx traffic class early-drop configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @qtype:	Type of queue - only Rx and Tx types are supported
+ * @tc_id:	Traffic class selection (0-7)
+ * @early_drop_iova:  I/O virtual address of 256 bytes DMA-able memory
+ *
+ * warning: After calling this function, call dpni_extract_early_drop() to
+ *	get the early drop configuration
+ *
+ * Return:	'0' on Success; error code otherwise.
+ */
+int dpni_get_early_drop(struct fsl_mc_io *mc_io,
+			uint32_t cmd_flags,
+			uint16_t token,
+			enum dpni_queue_type qtype,
+			uint8_t tc_id,
+			uint64_t early_drop_iova)
+{
+	struct dpni_cmd_early_drop *cmd_params;
+	struct mc_command cmd = { 0 };
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_GET_EARLY_DROP,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_early_drop *)cmd.params;
+	cmd_params->qtype = qtype;
+	cmd_params->tc = tc_id;
+	cmd_params->early_drop_iova = cpu_to_le64(early_drop_iova);
 
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
@@ -2131,7 +2445,7 @@ int dpni_reset_statistics(struct fsl_mc_io *mc_io,
 }
 
 /**
- * dpni_set_taildrop() - Set taildrop per queue or TC
+ * dpni_set_taildrop() - Set taildrop per congestion group
  *
  * Setting a per-TC taildrop (cg_point = DPNI_CP_GROUP) will reset any current
  * congestion notification or early drop (WRED) configuration previously applied
@@ -2140,13 +2454,14 @@ int dpni_reset_statistics(struct fsl_mc_io *mc_io,
  * @mc_io:	Pointer to MC portal's I/O object
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
  * @token:	Token of DPNI object
- * @cg_point:	Congestion point, DPNI_CP_QUEUE is only supported in
+ * @cg_point:	Congestion group identifier DPNI_CP_QUEUE is only supported in
  *		combination with DPNI_QUEUE_RX.
  * @q_type:	Queue type, can be DPNI_QUEUE_RX or DPNI_QUEUE_TX.
  * @tc:		Traffic class to apply this taildrop to
- * @q_index:	Index of the queue if the DPNI supports multiple queues for
+ * @index/cgid:	Index of the queue if the DPNI supports multiple queues for
  *		traffic distribution.
- *		Ignored if CONGESTION_POINT is not DPNI_CP_QUEUE.
+ *		If CONGESTION_POINT is DPNI_CP_CONGESTION_GROUP then it
+ *		represent the cgid of the congestion point
  * @taildrop:	Taildrop structure
  *
  * Return:	'0' on Success; Error code otherwise.
@@ -2266,7 +2581,8 @@ int dpni_set_opr(struct fsl_mc_io *mc_io,
 		 uint8_t tc,
 		 uint8_t index,
 		 uint8_t options,
-		 struct opr_cfg *cfg)
+		 struct opr_cfg *cfg,
+		 uint8_t opr_id)
 {
 	struct dpni_cmd_set_opr *cmd_params;
 	struct mc_command cmd = { 0 };
@@ -2280,6 +2596,7 @@ int dpni_set_opr(struct fsl_mc_io *mc_io,
 	cmd_params->tc_id = tc;
 	cmd_params->index = index;
 	cmd_params->options = options;
+	cmd_params->opr_id = opr_id;
 	cmd_params->oloe = cfg->oloe;
 	cmd_params->oeane = cfg->oeane;
 	cmd_params->olws = cfg->olws;
@@ -2310,7 +2627,9 @@ int dpni_get_opr(struct fsl_mc_io *mc_io,
 		 uint8_t tc,
 		 uint8_t index,
 		 struct opr_cfg *cfg,
-		 struct opr_qry *qry)
+		 struct opr_qry *qry,
+		 uint8_t flags,
+		 uint8_t opr_id)
 {
 	struct dpni_rsp_get_opr *rsp_params;
 	struct dpni_cmd_get_opr *cmd_params;
@@ -2324,6 +2643,8 @@ int dpni_get_opr(struct fsl_mc_io *mc_io,
 	cmd_params = (struct dpni_cmd_get_opr *)cmd.params;
 	cmd_params->index = index;
 	cmd_params->tc_id = tc;
+	cmd_params->flags = flags;
+	cmd_params->opr_id = opr_id;
 
 	/* send command to mc*/
 	err = mc_send_command(mc_io, &cmd);
@@ -2362,7 +2683,7 @@ int dpni_get_opr(struct fsl_mc_io *mc_io,
  * If the FS is already enabled with a previous call the classification
  *		key will be changed but all the table rules are kept. If the
  *		existing rules do not match the key the results will not be
- *		predictable. It is the user responsibility to keep key integrity
+ *		predictable. It is the user responsibility to keep keyintegrity.
  * If cfg.enable is set to 1 the command will create a flow steering table
  *		and will classify packets according to this table. The packets
  *		that miss all the table rules will be classified according to
@@ -2384,7 +2705,7 @@ int dpni_set_rx_fs_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
 	cmd_params = (struct dpni_cmd_set_rx_fs_dist *)cmd.params;
 	cmd_params->dist_size	= cpu_to_le16(cfg->dist_size);
 	dpni_set_field(cmd_params->enable, RX_FS_DIST_ENABLE, cfg->enable);
-	cmd_params->tc = cfg->tc;
+	cmd_params->tc			= cfg->tc;
 	cmd_params->miss_flow_id = cpu_to_le16(cfg->fs_miss_flow_id);
 	cmd_params->key_cfg_iova = cpu_to_le64(cfg->key_cfg_iova);
 
@@ -2399,9 +2720,9 @@ int dpni_set_rx_fs_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
  * @token:	Token of DPNI object
  * @cfg: Distribution configuration
  * If cfg.enable is set to 1 the packets will be classified using a hash
- *		function based on the key received in cfg.key_cfg_iova parameter
+ *	function based on the key received in cfg.key_cfg_iova parameter.
  * If cfg.enable is set to 0 the packets will be sent to the queue configured in
- *		dpni_set_rx_dist_default_queue() call
+ *	dpni_set_rx_dist_default_queue() call
  */
 int dpni_set_rx_hash_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
 		uint16_t token, const struct dpni_rx_dist_cfg *cfg)
@@ -2424,9 +2745,9 @@ int dpni_set_rx_hash_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
 }
 
 /**
- * dpni_add_custom_tpid() - Configures a distinct Ethertype value
- *		(or TPID value) to indicate VLAN tag in addition to the common
- *		TPID values 0x8100 and 0x88A8
+ * dpni_add_custom_tpid() - Configures a distinct Ethertype value (or TPID
+ *		value) to indicate VLAN tag in adition to the common TPID values
+ *		0x81000 and 0x88A8
  * @mc_io:	Pointer to MC portal's I/O object
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
  * @token:	Token of DPNI object
@@ -2434,8 +2755,8 @@ int dpni_set_rx_hash_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
  *
  * Only two custom values are accepted. If the function is called for the third
  * time it will return error.
- * To replace an existing value use dpni_remove_custom_tpid() to remove
- * a previous TPID and after that use again the function.
+ * To replace an existing value use dpni_remove_custom_tpid() to remove a
+ * previous TPID and after that use again the function.
  *
  * Return:	'0' on Success; Error code otherwise.
  */
@@ -2458,7 +2779,7 @@ int dpni_add_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
 
 /**
  * dpni_remove_custom_tpid() - Removes a distinct Ethertype value added
- *		previously with dpni_add_custom_tpid()
+ * previously with dpni_add_custom_tpid()
  * @mc_io:	Pointer to MC portal's I/O object
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
  * @token:	Token of DPNI object
@@ -2487,8 +2808,8 @@ int dpni_remove_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
 }
 
 /**
- * dpni_get_custom_tpid() - Returns custom TPID (vlan tags) values configured
- *				to detect 802.1q frames
+ * dpni_get_custom_tpid() - Returns custom TPID (vlan tags) values configured to
+ * detect 802.1q frames
  * @mc_io:	Pointer to MC portal's I/O object
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
  * @token:	Token of DPNI object

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -9,10 +9,12 @@
 #include <rte_common.h>
 #include <hsi_struct_def_dpdk.h>
 
+#include "tf_em_common.h"
 #include "tf_tbl.h"
 #include "tf_rm.h"
 #include "tf_tcam.h"
 #include "tf_global_cfg.h"
+#include "bnxt.h"
 
 struct tf;
 
@@ -21,8 +23,8 @@ struct tf;
 /**
  * Sends session open request to Firmware
  *
- * [in] session
- *   Pointer to session handle
+ * [in] bp
+ *   Pointer to bnxt handle
  *
  * [in] ctrl_chan_name
  *   PCI name of the control channel
@@ -30,13 +32,24 @@ struct tf;
  * [in/out] fw_session_id
  *   Pointer to the fw_session_id that is allocated on firmware side
  *
+ * [in/out] fw_session_client_id
+ *   Pointer to the fw_session_client_id that is allocated on firmware side
+ *
+ * [in/out] dev
+ *   Pointer to the associated device
+ *
+ * [out] shared_session_creator
+ *   Pointer to the shared_session_creator
+ *
  * Returns:
  *   0 on Success else internal Truflow error
  */
-int tf_msg_session_open(struct tf *tfp,
+int tf_msg_session_open(struct bnxt *bp,
 			char *ctrl_chan_name,
 			uint8_t *fw_session_id,
-			uint8_t *fw_session_client_id);
+			uint8_t *fw_session_client_id,
+			struct tf_dev_info *dev,
+			bool *shared_session_creator);
 
 /**
  * Sends session close request to Firmware
@@ -75,6 +88,7 @@ int tf_msg_session_attach(struct tf *tfp,
  *   0 on Success else internal Truflow error
  */
 int tf_msg_session_client_register(struct tf *tfp,
+				   struct tf_session *tfs,
 				   char *ctrl_channel_name,
 				   uint8_t *fw_session_client_id);
 
@@ -92,6 +106,7 @@ int tf_msg_session_client_register(struct tf *tfp,
  *   0 on Success else internal Truflow error
  */
 int tf_msg_session_client_unregister(struct tf *tfp,
+				     struct tf_session *tfs,
 				     uint8_t fw_session_client_id);
 
 /**
@@ -100,10 +115,18 @@ int tf_msg_session_client_unregister(struct tf *tfp,
  * [in] session
  *   Pointer to session handle
  *
+ * [in] fw_session_id
+ *   fw session id
+ *
+ * [in] mailbox
+ *   mailbox
+ *
  * Returns:
  *   0 on Success else internal Truflow error
  */
-int tf_msg_session_close(struct tf *tfp);
+int tf_msg_session_close(struct tf *tfp,
+			 uint8_t fw_session_id,
+			 int mailbox);
 
 /**
  * Sends session query config request to TF Firmware
@@ -135,14 +158,19 @@ int tf_msg_session_qcfg(struct tf *tfp);
  * [out] resv_strategy
  *   Pointer to the reservation strategy
  *
+ * [out] sram_profile
+ *   Pointer to the sram profile
+ *
  * Returns:
  *   0 on Success else internal Truflow error
  */
 int tf_msg_session_resc_qcaps(struct tf *tfp,
+			      struct tf_dev_info *dev,
 			      enum tf_dir dir,
 			      uint16_t size,
 			      struct tf_rm_resc_req_entry *query,
-			      enum tf_rm_resc_resv_strategy *resv_strategy);
+			      enum tf_rm_resc_resv_strategy *resv_strategy,
+			      uint8_t *sram_profile);
 
 /**
  * Sends session HW resource allocation request to TF Firmware
@@ -166,6 +194,35 @@ int tf_msg_session_resc_qcaps(struct tf *tfp,
  *   0 on Success else internal Truflow error
  */
 int tf_msg_session_resc_alloc(struct tf *tfp,
+			      struct tf_dev_info *dev,
+			      enum tf_dir dir,
+			      uint16_t size,
+			      struct tf_rm_resc_req_entry *request,
+			      struct tf_rm_resc_entry *resv);
+
+/**
+ * Sends session HW resource allocation request to TF Firmware
+ *
+ * [in] tfp
+ *   Pointer to TF handle
+ *
+ * [in] dir
+ *   Receive or Transmit direction
+ *
+ * [in] size
+ *   Number of elements in the req and resv arrays
+ *
+ * [in] req
+ *   Pointer to an array of request elements
+ *
+ * [in] resv
+ *   Pointer to an array of reserved elements
+ *
+ * Returns:
+ *   0 on Success else internal Truflow error
+ */
+int tf_msg_session_resc_info(struct tf *tfp,
+			      struct tf_dev_info *dev,
 			      enum tf_dir dir,
 			      uint16_t size,
 			      struct tf_rm_resc_req_entry *request,
@@ -220,6 +277,41 @@ int tf_msg_insert_em_internal_entry(struct tf *tfp,
 				    uint8_t *rptr_entry,
 				    uint8_t *num_of_entries);
 /**
+ * Sends EM hash internal insert request to Firmware
+ *
+ * [in] tfp
+ *   Pointer to TF handle
+ *
+ * [in] params
+ *   Pointer to em insert parameter list
+ *
+ * [in] key0_hash
+ *      CRC32 hash of key
+ *
+ * [in] key1_hash
+ *      Lookup3 hash of key
+ *
+ * [in] rptr_index
+ *   Record ptr index
+ *
+ * [in] rptr_entry
+ *   Record ptr entry
+ *
+ * [in] num_of_entries
+ *   Number of entries to insert
+ *
+ * Returns:
+ *   0 on Success else internal Truflow error
+ */
+int
+tf_msg_hash_insert_em_internal_entry(struct tf *tfp,
+				struct tf_insert_em_entry_parms *em_parms,
+				uint32_t key0_hash,
+				uint32_t key1_hash,
+				uint16_t *rptr_index,
+				uint8_t *rptr_entry,
+				uint8_t *num_of_entries);
+/**
  * Sends EM internal delete request to Firmware
  *
  * [in] tfp
@@ -233,6 +325,75 @@ int tf_msg_insert_em_internal_entry(struct tf *tfp,
  */
 int tf_msg_delete_em_entry(struct tf *tfp,
 			   struct tf_delete_em_entry_parms *em_parms);
+
+/**
+ * Sends EM internal move request to Firmware
+ *
+ * [in] tfp
+ *   Pointer to TF handle
+ *
+ * [in] em_parms
+ *   Pointer to em move parameters
+ *
+ * Returns:
+ *   0 on Success else internal Truflow error
+ */
+int tf_msg_move_em_entry(struct tf *tfp,
+			 struct tf_move_em_entry_parms *em_parms);
+
+/**
+ * Sends Ext EM mem allocation request to Firmware
+ *
+ * [in] tfp
+ *   Pointer to TF handle
+ *
+ * [in] tbl
+ *   memory allocation details
+ *
+ * [out] dma_addr
+ *   memory address
+ *
+ * [out] page_lvl
+ *   page level
+ *
+ * [out] page_size
+ *   page size
+ *
+ * Returns:
+ *   0 on Success else internal Truflow error
+ */
+int tf_msg_ext_em_ctxt_mem_alloc(struct tf *tfp,
+			struct hcapi_cfa_em_table *tbl,
+			uint64_t *dma_addr,
+			uint32_t *page_lvl,
+			uint32_t *page_size);
+
+/**
+ * Sends Ext EM mem allocation request to Firmware
+ *
+ * [in] tfp
+ *   Pointer to TF handle
+ *
+ * [in] mem_size_k
+ *   memory size in KB
+ *
+ * [in] page_dir
+ *   Pointer to the PBL or PDL depending on number of levels
+ *
+ * [in] page_level
+ *   PBL indirect levels
+ *
+ * [in] page_size
+ *   page size
+ *
+ * Returns:
+ *   0 on Success else internal Truflow error
+ */
+int tf_msg_ext_em_ctxt_mem_free(struct tf *tfp,
+				uint32_t mem_size_k,
+				uint64_t dma_addr,
+				uint8_t page_level,
+				uint8_t page_size);
 
 /**
  * Sends EM mem register request to Firmware
@@ -337,6 +498,38 @@ int tf_msg_em_cfg(struct tf *tfp,
 		  int dir);
 
 /**
+ * Sends Ext EM config request to Firmware
+ *
+ * [in] tfp
+ *   Pointer to TF handle
+ *
+ * [in] fw_se_id
+ *   FW session id
+ *
+ * [in] tbl_scope_cb
+ *   Table scope parameters
+ *
+ * [in] st_buckets
+ *   static bucket size
+ *
+ * [in] flush_interval
+ *   Flush pending HW cached flows every 1/10th of value set in
+ *   seconds, both idle and active flows are flushed from the HW
+ *   cache. If set to 0, this feature will be disabled.
+ *
+ * [in] dir
+ *   Receive or Transmit direction
+ *
+ * Returns:
+ *   0 on Success else internal Truflow error
+ */
+int tf_msg_ext_em_cfg(struct tf *tfp,
+		      struct tf_tbl_scope_cb *tbl_scope_cb,
+		      uint32_t st_buckets,
+		      uint8_t flush_interval,
+		      enum tf_dir dir);
+
+/**
  * Sends EM operation request to Firmware
  *
  * [in] tfp
@@ -368,7 +561,24 @@ int tf_msg_em_op(struct tf *tfp,
  *  0 on Success else internal Truflow error
  */
 int tf_msg_tcam_entry_set(struct tf *tfp,
+			  struct tf_dev_info *dev,
 			  struct tf_tcam_set_parms *parms);
+
+/**
+ * Sends tcam entry 'get' to the Firmware.
+ *
+ * [in] tfp
+ *   Pointer to session handle
+ *
+ * [in] parms
+ *   Pointer to get parameters
+ *
+ * Returns:
+ *  0 on Success else internal Truflow error
+ */
+int tf_msg_tcam_entry_get(struct tf *tfp,
+			  struct tf_dev_info *dev,
+			  struct tf_tcam_get_parms *parms);
 
 /**
  * Sends tcam entry 'free' to the Firmware.
@@ -383,6 +593,7 @@ int tf_msg_tcam_entry_set(struct tf *tfp,
  *  0 on Success else internal Truflow error
  */
 int tf_msg_tcam_entry_free(struct tf *tfp,
+			   struct tf_dev_info *dev,
 			   struct tf_tcam_free_parms *parms);
 
 /**
@@ -445,7 +656,8 @@ int tf_msg_get_tbl_entry(struct tf *tfp,
 			 uint16_t hcapi_type,
 			 uint16_t size,
 			 uint8_t *data,
-			 uint32_t index);
+			 uint32_t index,
+			 bool clear_on_read);
 
 /* HWRM Tunneled messages */
 
@@ -497,7 +709,8 @@ int tf_msg_bulk_get_tbl_entry(struct tf *tfp,
 			      uint32_t starting_idx,
 			      uint16_t num_entries,
 			      uint16_t entry_sz_in_bytes,
-			      uint64_t physical_mem_addr);
+			      uint64_t physical_mem_addr,
+			      bool clear_on_read);
 
 /**
  * Sends Set message of a IF Table Type element to the firmware.
@@ -529,4 +742,23 @@ int tf_msg_set_if_tbl_entry(struct tf *tfp,
 int tf_msg_get_if_tbl_entry(struct tf *tfp,
 			    struct tf_if_tbl_get_parms *params);
 
+/**
+ * Send get version request to the firmware.
+ *
+ * [in] bp
+ *   Pointer to bnxt handle
+ *
+ * [in] dev
+ *   Pointer to the associated device
+ *
+ * [in/out] parms
+ *   Pointer to the version info parameter
+ *
+ * Returns:
+ *  0 on Success else internal Truflow error
+ */
+int
+tf_msg_get_version(struct bnxt *bp,
+		   struct tf_dev_info *dev,
+		   struct tf_get_version_parms *parms);
 #endif  /* _TF_MSG_H_ */

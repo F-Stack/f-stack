@@ -139,6 +139,7 @@ setup_eventdev_generic(struct worker_data *worker_data)
 			.dequeue_depth = cdata.worker_cq_depth,
 			.enqueue_depth = 64,
 			.new_event_threshold = 4096,
+			.event_port_cfg = RTE_EVENT_PORT_CFG_HINT_WORKER,
 	};
 	struct rte_event_queue_conf wkr_q_conf = {
 			.schedule_type = cdata.queue_type,
@@ -283,14 +284,13 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	struct rte_eth_rxconf rx_conf;
 	static const struct rte_eth_conf port_conf_default = {
 		.rxmode = {
-			.mq_mode = ETH_MQ_RX_RSS,
-			.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+			.mq_mode = RTE_ETH_MQ_RX_RSS,
 		},
 		.rx_adv_conf = {
 			.rss_conf = {
-				.rss_hf = ETH_RSS_IP |
-					  ETH_RSS_TCP |
-					  ETH_RSS_UDP,
+				.rss_hf = RTE_ETH_RSS_IP |
+					  RTE_ETH_RSS_TCP |
+					  RTE_ETH_RSS_UDP,
 			}
 		}
 	};
@@ -312,12 +312,12 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
-	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_RSS_HASH)
-		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+	if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_RSS_HASH)
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	rx_conf = dev_info.default_rxconf;
 	rx_conf.offloads = port_conf.rxmode.offloads;
@@ -368,10 +368,7 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			" %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			(unsigned int)port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			(unsigned int)port, RTE_ETHER_ADDR_BYTES(&addr));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	retval = rte_eth_promiscuous_enable(port);
@@ -419,6 +416,7 @@ init_adapters(uint16_t nb_ports)
 		.dequeue_depth = cdata.worker_cq_depth,
 		.enqueue_depth = 64,
 		.new_event_threshold = 4096,
+		.event_port_cfg = RTE_EVENT_PORT_CFG_HINT_PRODUCER,
 	};
 
 	if (adptr_p_conf.new_event_threshold > dev_info.max_num_events)

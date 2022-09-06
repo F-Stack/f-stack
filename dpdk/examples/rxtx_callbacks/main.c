@@ -40,12 +40,6 @@ tsc_field(struct rte_mbuf *mbuf)
 static const char usage[] =
 	"%s EAL_ARGS -- [-t]\n";
 
-static const struct rte_eth_conf port_conf_default = {
-	.rxmode = {
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-	},
-};
-
 static struct {
 	uint64_t total_cycles;
 	uint64_t total_queue_cycles;
@@ -57,6 +51,7 @@ int hw_timestamping;
 #define TICKS_PER_CYCLE_SHIFT 16
 static uint64_t ticks_per_cycle_mult;
 
+/* Callback added to the RX port and applied to packets. 8< */
 static uint16_t
 add_timestamps(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
 		struct rte_mbuf **pkts, uint16_t nb_pkts,
@@ -69,7 +64,9 @@ add_timestamps(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
 		*tsc_field(pkts[i]) = now;
 	return nb_pkts;
 }
+/* >8 End of callback addition and application. */
 
+/* Callback is added to the TX port. 8< */
 static uint16_t
 calc_latency(uint16_t port, uint16_t qidx __rte_unused,
 		struct rte_mbuf **pkts, uint16_t nb_pkts, void *_ __rte_unused)
@@ -110,15 +107,18 @@ calc_latency(uint16_t port, uint16_t qidx __rte_unused,
 	}
 	return nb_pkts;
 }
+/* >8 End of callback addition. */
 
 /*
  * Initialises a given port using global settings and with the rx buffers
  * coming from the mbuf_pool passed as parameter
  */
+
+ /* Port initialization. 8< */
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
-	struct rte_eth_conf port_conf = port_conf_default;
+	struct rte_eth_conf port_conf;
 	const uint16_t rx_rings = 1, tx_rings = 1;
 	uint16_t nb_rxd = RX_RING_SIZE;
 	uint16_t nb_txd = TX_RING_SIZE;
@@ -131,6 +131,8 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
+	memset(&port_conf, 0, sizeof(struct rte_eth_conf));
+
 	retval = rte_eth_dev_info_get(port, &dev_info);
 	if (retval != 0) {
 		printf("Error during getting device (port %u) info: %s\n",
@@ -139,17 +141,17 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	if (hw_timestamping) {
-		if (!(dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TIMESTAMP)) {
+		if (!(dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 			printf("\nERROR: Port %u does not support hardware timestamping\n"
 					, port);
 			return -1;
 		}
-		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TIMESTAMP;
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
 		rte_mbuf_dyn_rx_timestamp_register(&hwts_dynfield_offset, NULL);
 		if (hwts_dynfield_offset < 0) {
 			printf("ERROR: Failed to register timestamp field\n");
@@ -221,19 +223,20 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
 			(unsigned)port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(&addr));
 
 	retval = rte_eth_promiscuous_enable(port);
 	if (retval != 0)
 		return retval;
 
+	/* RX and TX callbacks are added to the ports. 8< */
 	rte_eth_add_rx_callback(port, 0, add_timestamps, NULL);
 	rte_eth_add_tx_callback(port, 0, calc_latency, NULL);
+	/* >8 End of RX and TX callbacks. */
 
 	return 0;
 }
+/* >8 End of port initialization. */
 
 /*
  * Main thread that does the work, reading from INPUT_PORT

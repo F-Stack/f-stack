@@ -26,8 +26,11 @@ mlx5_vdpa_virtq_kick_handler(void *cb_arg)
 	int nbytes;
 	int retry;
 
+	if (rte_intr_fd_get(virtq->intr_handle) < 0)
+		return;
 	for (retry = 0; retry < 3; ++retry) {
-		nbytes = read(virtq->intr_handle.fd, &buf, 8);
+		nbytes = read(rte_intr_fd_get(virtq->intr_handle), &buf,
+			      8);
 		if (nbytes < 0) {
 			if (errno == EINTR ||
 			    errno == EWOULDBLOCK ||
@@ -61,19 +64,20 @@ mlx5_vdpa_virtq_unset(struct mlx5_vdpa_virtq *virtq)
 	unsigned int i;
 	int ret = -EAGAIN;
 
-	if (virtq->intr_handle.fd >= 0) {
+	if (rte_intr_fd_get(virtq->intr_handle) >= 0) {
 		while (ret == -EAGAIN) {
-			ret = rte_intr_callback_unregister(&virtq->intr_handle,
+			ret = rte_intr_callback_unregister(virtq->intr_handle,
 					mlx5_vdpa_virtq_kick_handler, virtq);
 			if (ret == -EAGAIN) {
 				DRV_LOG(DEBUG, "Try again to unregister fd %d of virtq %hu interrupt",
-					virtq->intr_handle.fd,
+					rte_intr_fd_get(virtq->intr_handle),
 					virtq->index);
 				usleep(MLX5_VDPA_INTR_RETRIES_USEC);
 			}
 		}
-		virtq->intr_handle.fd = -1;
+		rte_intr_fd_set(virtq->intr_handle, -1);
 	}
+	rte_intr_instance_free(virtq->intr_handle);
 	if (virtq->virtq) {
 		ret = mlx5_vdpa_virtq_stop(virtq->priv, virtq->index);
 		if (ret)
@@ -254,7 +258,7 @@ mlx5_vdpa_virtq_setup(struct mlx5_vdpa_priv *priv, int index)
 	if (priv->caps.queue_counters_valid) {
 		if (!virtq->counters)
 			virtq->counters = mlx5_devx_cmd_create_virtio_q_counters
-								(priv->ctx);
+							      (priv->cdev->ctx);
 		if (!virtq->counters) {
 			DRV_LOG(ERR, "Failed to create virtq couners for virtq"
 				" %d.", index);
@@ -273,7 +277,7 @@ mlx5_vdpa_virtq_setup(struct mlx5_vdpa_priv *priv, int index)
 				" %u.", i, index);
 			goto error;
 		}
-		virtq->umems[i].obj = mlx5_glue->devx_umem_reg(priv->ctx,
+		virtq->umems[i].obj = mlx5_glue->devx_umem_reg(priv->cdev->ctx,
 							virtq->umems[i].buf,
 							virtq->umems[i].size,
 							IBV_ACCESS_LOCAL_WRITE);
@@ -326,8 +330,11 @@ mlx5_vdpa_virtq_setup(struct mlx5_vdpa_priv *priv, int index)
 	attr.mkey = priv->gpa_mkey_index;
 	attr.tis_id = priv->tiss[(index / 2) % priv->num_lag_ports]->id;
 	attr.queue_index = index;
-	attr.pd = priv->pdn;
-	virtq->virtq = mlx5_devx_cmd_create_virtq(priv->ctx, &attr);
+	attr.pd = priv->cdev->pdn;
+	attr.hw_latency_mode = priv->hw_latency_mode;
+	attr.hw_max_latency_us = priv->hw_max_latency_us;
+	attr.hw_max_pending_comp = priv->hw_max_pending_comp;
+	virtq->virtq = mlx5_devx_cmd_create_virtq(priv->cdev->ctx, &attr);
 	virtq->priv = priv;
 	if (!virtq->virtq)
 		goto error;
@@ -337,21 +344,33 @@ mlx5_vdpa_virtq_setup(struct mlx5_vdpa_priv *priv, int index)
 	virtq->priv = priv;
 	rte_write32(virtq->index, priv->virtq_db_addr);
 	/* Setup doorbell mapping. */
-	virtq->intr_handle.fd = vq.kickfd;
-	if (virtq->intr_handle.fd == -1) {
+	virtq->intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+	if (virtq->intr_handle == NULL) {
+		DRV_LOG(ERR, "Fail to allocate intr_handle");
+		goto error;
+	}
+
+	if (rte_intr_fd_set(virtq->intr_handle, vq.kickfd))
+		goto error;
+
+	if (rte_intr_fd_get(virtq->intr_handle) == -1) {
 		DRV_LOG(WARNING, "Virtq %d kickfd is invalid.", index);
 	} else {
-		virtq->intr_handle.type = RTE_INTR_HANDLE_EXT;
-		if (rte_intr_callback_register(&virtq->intr_handle,
+		if (rte_intr_type_set(virtq->intr_handle, RTE_INTR_HANDLE_EXT))
+			goto error;
+
+		if (rte_intr_callback_register(virtq->intr_handle,
 					       mlx5_vdpa_virtq_kick_handler,
 					       virtq)) {
-			virtq->intr_handle.fd = -1;
+			rte_intr_fd_set(virtq->intr_handle, -1);
 			DRV_LOG(ERR, "Failed to register virtq %d interrupt.",
 				index);
 			goto error;
 		} else {
 			DRV_LOG(DEBUG, "Register fd %d interrupt for virtq %d.",
-				virtq->intr_handle.fd, index);
+				rte_intr_fd_get(virtq->intr_handle),
+				index);
 		}
 	}
 	/* Subscribe virtq error event. */
@@ -438,6 +457,7 @@ int
 mlx5_vdpa_virtqs_prepare(struct mlx5_vdpa_priv *priv)
 {
 	struct mlx5_devx_tis_attr tis_attr = {0};
+	struct ibv_context *ctx = priv->cdev->ctx;
 	uint32_t i;
 	uint16_t nr_vring = rte_vhost_get_vring_num(priv->vid);
 	int ret = rte_vhost_get_negotiated_features(priv->vid, &priv->features);
@@ -461,7 +481,7 @@ mlx5_vdpa_virtqs_prepare(struct mlx5_vdpa_priv *priv)
 	}
 	/* Always map the entire page. */
 	priv->virtq_db_addr = mmap(NULL, priv->var->length, PROT_READ |
-				   PROT_WRITE, MAP_SHARED, priv->ctx->cmd_fd,
+				   PROT_WRITE, MAP_SHARED, ctx->cmd_fd,
 				   priv->var->mmap_off);
 	if (priv->virtq_db_addr == MAP_FAILED) {
 		DRV_LOG(ERR, "Failed to map doorbell page %u.", errno);
@@ -475,7 +495,7 @@ mlx5_vdpa_virtqs_prepare(struct mlx5_vdpa_priv *priv)
 		DRV_LOG(DEBUG, "VAR address of doorbell mapping is %p.",
 			priv->virtq_db_addr);
 	}
-	priv->td = mlx5_devx_cmd_create_td(priv->ctx);
+	priv->td = mlx5_devx_cmd_create_td(ctx);
 	if (!priv->td) {
 		DRV_LOG(ERR, "Failed to create transport domain.");
 		return -rte_errno;
@@ -484,7 +504,7 @@ mlx5_vdpa_virtqs_prepare(struct mlx5_vdpa_priv *priv)
 	for (i = 0; i < priv->num_lag_ports; i++) {
 		/* 0 is auto affinity, non-zero value to propose port. */
 		tis_attr.lag_tx_port_affinity = i + 1;
-		priv->tiss[i] = mlx5_devx_cmd_create_tis(priv->ctx, &tis_attr);
+		priv->tiss[i] = mlx5_devx_cmd_create_tis(ctx, &tis_attr);
 		if (!priv->tiss[i]) {
 			DRV_LOG(ERR, "Failed to create TIS %u.", i);
 			goto error;
@@ -509,9 +529,10 @@ mlx5_vdpa_virtq_is_modified(struct mlx5_vdpa_priv *priv,
 
 	if (ret)
 		return -1;
-	if (vq.size != virtq->vq_size || vq.kickfd != virtq->intr_handle.fd)
+	if (vq.size != virtq->vq_size || vq.kickfd !=
+	    rte_intr_fd_get(virtq->intr_handle))
 		return 1;
-	if (virtq->eqp.cq.cq) {
+	if (virtq->eqp.cq.cq_obj.cq) {
 		if (vq.callfd != virtq->eqp.cq.callfd)
 			return 1;
 	} else if (vq.callfd != -1) {

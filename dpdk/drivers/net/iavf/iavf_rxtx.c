@@ -17,7 +17,7 @@
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_tcp.h>
 #include <rte_sctp.h>
 #include <rte_udp.h>
@@ -27,6 +27,7 @@
 
 #include "iavf.h"
 #include "iavf_rxtx.h"
+#include "iavf_ipsec_crypto.h"
 #include "rte_pmd_iavf.h"
 
 /* Offset of mbuf dynamic field for protocol extraction's metadata */
@@ -39,6 +40,7 @@ uint64_t rte_pmd_ifd_dynflag_proto_xtr_ipv6_mask;
 uint64_t rte_pmd_ifd_dynflag_proto_xtr_ipv6_flow_mask;
 uint64_t rte_pmd_ifd_dynflag_proto_xtr_tcp_mask;
 uint64_t rte_pmd_ifd_dynflag_proto_xtr_ip_offset_mask;
+uint64_t rte_pmd_ifd_dynflag_proto_xtr_ipsec_crypto_said_mask;
 
 uint8_t
 iavf_proto_xtr_type_to_rxdid(uint8_t flex_type)
@@ -51,10 +53,45 @@ iavf_proto_xtr_type_to_rxdid(uint8_t flex_type)
 		[IAVF_PROTO_XTR_IPV6_FLOW] = IAVF_RXDID_COMMS_AUX_IPV6_FLOW,
 		[IAVF_PROTO_XTR_TCP]       = IAVF_RXDID_COMMS_AUX_TCP,
 		[IAVF_PROTO_XTR_IP_OFFSET] = IAVF_RXDID_COMMS_AUX_IP_OFFSET,
+		[IAVF_PROTO_XTR_IPSEC_CRYPTO_SAID] =
+				IAVF_RXDID_COMMS_IPSEC_CRYPTO,
 	};
 
 	return flex_type < RTE_DIM(rxdid_map) ?
 				rxdid_map[flex_type] : IAVF_RXDID_COMMS_OVS_1;
+}
+
+static int
+iavf_monitor_callback(const uint64_t value,
+		const uint64_t arg[RTE_POWER_MONITOR_OPAQUE_SZ] __rte_unused)
+{
+	const uint64_t m = rte_cpu_to_le_64(1 << IAVF_RX_DESC_STATUS_DD_SHIFT);
+	/*
+	 * we expect the DD bit to be set to 1 if this descriptor was already
+	 * written to.
+	 */
+	return (value & m) == m ? -1 : 0;
+}
+
+int
+iavf_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc)
+{
+	struct iavf_rx_queue *rxq = rx_queue;
+	volatile union iavf_rx_desc *rxdp;
+	uint16_t desc;
+
+	desc = rxq->rx_tail;
+	rxdp = &rxq->rx_ring[desc];
+	/* watch for changes in status bit */
+	pmc->addr = &rxdp->wb.qword1.status_error_len;
+
+	/* comparison callback */
+	pmc->fn = iavf_monitor_callback;
+
+	/* registers are 64-bit */
+	pmc->size = sizeof(uint64_t);
+
+	return 0;
 }
 
 static inline int
@@ -135,7 +172,7 @@ check_rx_vec_allow(struct iavf_rx_queue *rxq)
 static inline bool
 check_tx_vec_allow(struct iavf_tx_queue *txq)
 {
-	if (!(txq->offloads & IAVF_NO_VECTOR_FLAGS) &&
+	if (!(txq->offloads & IAVF_TX_NO_VECTOR_FLAGS) &&
 	    txq->rs_thresh >= IAVF_VPMD_TX_MAX_BURST &&
 	    txq->rs_thresh <= IAVF_VPMD_TX_MAX_FREE_BUF) {
 		PMD_INIT_LOG(DEBUG, "Vector tx can be enabled on this txq.");
@@ -358,14 +395,14 @@ iavf_rxd_to_pkt_fields_by_comms_ovs(__rte_unused struct iavf_rx_queue *rxq,
 #endif
 
 	if (desc->flow_id != 0xFFFFFFFF) {
-		mb->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
+		mb->ol_flags |= RTE_MBUF_F_RX_FDIR | RTE_MBUF_F_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
 	}
 
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 	stat_err = rte_le_to_cpu_16(desc->status_error0);
 	if (likely(stat_err & (1 << IAVF_RX_FLEX_DESC_STATUS0_RSS_VALID_S))) {
-		mb->ol_flags |= PKT_RX_RSS_HASH;
+		mb->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 		mb->hash.rss = rte_le_to_cpu_32(desc->rss_hash);
 	}
 #endif
@@ -382,13 +419,13 @@ iavf_rxd_to_pkt_fields_by_comms_aux_v1(struct iavf_rx_queue *rxq,
 
 	stat_err = rte_le_to_cpu_16(desc->status_error0);
 	if (likely(stat_err & (1 << IAVF_RX_FLEX_DESC_STATUS0_RSS_VALID_S))) {
-		mb->ol_flags |= PKT_RX_RSS_HASH;
+		mb->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 		mb->hash.rss = rte_le_to_cpu_32(desc->rss_hash);
 	}
 
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 	if (desc->flow_id != 0xFFFFFFFF) {
-		mb->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
+		mb->ol_flags |= RTE_MBUF_F_RX_FDIR | RTE_MBUF_F_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
 	}
 
@@ -424,13 +461,13 @@ iavf_rxd_to_pkt_fields_by_comms_aux_v2(struct iavf_rx_queue *rxq,
 
 	stat_err = rte_le_to_cpu_16(desc->status_error0);
 	if (likely(stat_err & (1 << IAVF_RX_FLEX_DESC_STATUS0_RSS_VALID_S))) {
-		mb->ol_flags |= PKT_RX_RSS_HASH;
+		mb->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 		mb->hash.rss = rte_le_to_cpu_32(desc->rss_hash);
 	}
 
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 	if (desc->flow_id != 0xFFFFFFFF) {
-		mb->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
+		mb->ol_flags |= RTE_MBUF_F_RX_FDIR | RTE_MBUF_F_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
 	}
 
@@ -453,8 +490,6 @@ iavf_rxd_to_pkt_fields_by_comms_aux_v2(struct iavf_rx_queue *rxq,
 
 static const
 iavf_rxd_to_pkt_fields_t rxd_to_pkt_fields_ops[IAVF_RXDID_LAST + 1] = {
-	[IAVF_RXDID_LEGACY_0] = iavf_rxd_to_pkt_fields_by_comms_ovs,
-	[IAVF_RXDID_LEGACY_1] = iavf_rxd_to_pkt_fields_by_comms_ovs,
 	[IAVF_RXDID_COMMS_AUX_VLAN] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
 	[IAVF_RXDID_COMMS_AUX_IPV4] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
 	[IAVF_RXDID_COMMS_AUX_IPV6] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
@@ -462,6 +497,8 @@ iavf_rxd_to_pkt_fields_t rxd_to_pkt_fields_ops[IAVF_RXDID_LAST + 1] = {
 		iavf_rxd_to_pkt_fields_by_comms_aux_v1,
 	[IAVF_RXDID_COMMS_AUX_TCP] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
 	[IAVF_RXDID_COMMS_AUX_IP_OFFSET] =
+		iavf_rxd_to_pkt_fields_by_comms_aux_v2,
+	[IAVF_RXDID_COMMS_IPSEC_CRYPTO] =
 		iavf_rxd_to_pkt_fields_by_comms_aux_v2,
 	[IAVF_RXDID_COMMS_OVS_1] = iavf_rxd_to_pkt_fields_by_comms_ovs,
 };
@@ -492,9 +529,11 @@ iavf_select_rxd_to_pkt_fields_handler(struct iavf_rx_queue *rxq, uint32_t rxdid)
 		rxq->xtr_ol_flag =
 			rte_pmd_ifd_dynflag_proto_xtr_ip_offset_mask;
 		break;
+	case IAVF_RXDID_COMMS_IPSEC_CRYPTO:
+		rxq->xtr_ol_flag =
+			rte_pmd_ifd_dynflag_proto_xtr_ipsec_crypto_said_mask;
+		break;
 	case IAVF_RXDID_COMMS_OVS_1:
-	case IAVF_RXDID_LEGACY_0:
-	case IAVF_RXDID_LEGACY_1:
 		break;
 	default:
 		/* update this according to the RXDID for FLEX_DESC_NONE */
@@ -524,8 +563,14 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	uint8_t proto_xtr;
 	uint16_t len;
 	uint16_t rx_free_thresh;
+	uint64_t offloads;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (ad->closed)
+		return -EIO;
+
+	offloads = rx_conf->offloads | dev->data->dev_conf.rxmode.offloads;
 
 	if (nb_desc % IAVF_ALIGN_RING_DESC != 0 ||
 	    nb_desc > IAVF_MAX_RING_DESC ||
@@ -544,7 +589,7 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 
 	/* Free memory if needed */
 	if (dev->data->rx_queues[queue_idx]) {
-		iavf_dev_rx_queue_release(dev->data->rx_queues[queue_idx]);
+		iavf_dev_rx_queue_release(dev, queue_idx);
 		dev->data->rx_queues[queue_idx] = NULL;
 	}
 
@@ -569,6 +614,24 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		rxq->proto_xtr = IAVF_PROTO_XTR_NONE;
 	}
 
+	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2) {
+		struct virtchnl_vlan_supported_caps *stripping_support =
+				&vf->vlan_v2_caps.offloads.stripping_support;
+		uint32_t stripping_cap;
+
+		if (stripping_support->outer)
+			stripping_cap = stripping_support->outer;
+		else
+			stripping_cap = stripping_support->inner;
+
+		if (stripping_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG1)
+			rxq->rx_flags = IAVF_RX_FLAGS_VLAN_TAG_LOC_L2TAG1;
+		else if (stripping_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG2_2)
+			rxq->rx_flags = IAVF_RX_FLAGS_VLAN_TAG_LOC_L2TAG2_2;
+	} else {
+		rxq->rx_flags = IAVF_RX_FLAGS_VLAN_TAG_LOC_L2TAG1;
+	}
+
 	iavf_select_rxd_to_pkt_fields_handler(rxq, rxq->rxdid);
 
 	rxq->mp = mp;
@@ -576,10 +639,15 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	rxq->rx_free_thresh = rx_free_thresh;
 	rxq->queue_id = queue_idx;
 	rxq->port_id = dev->data->port_id;
-	rxq->crc_len = 0; /* crc stripping by default */
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 	rxq->rx_hdr_len = 0;
 	rxq->vsi = vsi;
+	rxq->offloads = offloads;
+
+	if (dev->data->dev_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC)
+		rxq->crc_len = RTE_ETHER_CRC_LEN;
+	else
+		rxq->crc_len = 0;
 
 	len = rte_pktmbuf_data_room_size(rxq->mp) - RTE_PKTMBUF_HEADROOM;
 	rxq->rx_buf_len = RTE_ALIGN_FLOOR(len, (1 << IAVF_RXQ_CTX_DBUFF_SHIFT));
@@ -651,6 +719,10 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		       const struct rte_eth_txconf *tx_conf)
 {
 	struct iavf_hw *hw = IAVF_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct iavf_adapter *adapter =
+		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct iavf_info *vf =
+		IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct iavf_tx_queue *txq;
 	const struct rte_memzone *mz;
 	uint32_t ring_size;
@@ -658,6 +730,9 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	uint64_t offloads;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (adapter->closed)
+		return -EIO;
 
 	offloads = tx_conf->offloads | dev->data->dev_conf.txmode.offloads;
 
@@ -678,7 +753,7 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 
 	/* Free memory if needed. */
 	if (dev->data->tx_queues[queue_idx]) {
-		iavf_dev_tx_queue_release(dev->data->tx_queues[queue_idx]);
+		iavf_dev_tx_queue_release(dev, queue_idx);
 		dev->data->tx_queues[queue_idx] = NULL;
 	}
 
@@ -693,6 +768,24 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	if (adapter->vf.vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2) {
+		struct virtchnl_vlan_supported_caps *insertion_support =
+			&adapter->vf.vlan_v2_caps.offloads.insertion_support;
+		uint32_t insertion_cap;
+
+		if (insertion_support->outer)
+			insertion_cap = insertion_support->outer;
+		else
+			insertion_cap = insertion_support->inner;
+
+		if (insertion_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG1)
+			txq->vlan_flag = IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG1;
+		else if (insertion_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG2)
+			txq->vlan_flag = IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2;
+	} else {
+		txq->vlan_flag = IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG1;
+	}
+
 	txq->nb_tx_desc = nb_desc;
 	txq->rs_thresh = tx_rs_thresh;
 	txq->free_thresh = tx_free_thresh;
@@ -700,6 +793,10 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->port_id = dev->data->port_id;
 	txq->offloads = offloads;
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
+
+	if (iavf_ipsec_crypto_supported(adapter))
+		txq->ipsec_crypto_pkt_md_offset =
+			iavf_security_get_pkt_md_offset(adapter);
 
 	/* Allocate software ring */
 	txq->sw_ring =
@@ -739,6 +836,22 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		struct iavf_adapter *ad =
 			IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 		ad->tx_vec_allowed = false;
+	}
+
+	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_QOS &&
+	    vf->tm_conf.committed) {
+		int tc;
+		for (tc = 0; tc < vf->qos_cap->num_elem; tc++) {
+			if (txq->queue_id >= vf->qtc_map[tc].start_queue_id &&
+			    txq->queue_id < (vf->qtc_map[tc].start_queue_id +
+			    vf->qtc_map[tc].queue_count))
+				break;
+		}
+		if (tc >= vf->qos_cap->num_elem) {
+			PMD_INIT_LOG(ERR, "Queue TC mapping is not correct");
+			return -EINVAL;
+		}
+		txq->tc = tc;
 	}
 
 	return 0;
@@ -885,9 +998,9 @@ iavf_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 }
 
 void
-iavf_dev_rx_queue_release(void *rxq)
+iavf_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct iavf_rx_queue *q = (struct iavf_rx_queue *)rxq;
+	struct iavf_rx_queue *q = dev->data->rx_queues[qid];
 
 	if (!q)
 		return;
@@ -899,9 +1012,9 @@ iavf_dev_rx_queue_release(void *rxq)
 }
 
 void
-iavf_dev_tx_queue_release(void *txq)
+iavf_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct iavf_tx_queue *q = (struct iavf_tx_queue *)txq;
+	struct iavf_tx_queue *q = dev->data->tx_queues[qid];
 
 	if (!q)
 		return;
@@ -967,7 +1080,7 @@ iavf_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union iavf_rx_desc *rxdp)
 {
 	if (rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len) &
 		(1 << IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT)) {
-		mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
+		mb->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
 		mb->vlan_tci =
 			rte_le_to_cpu_16(rxdp->wb.qword0.lo_dword.l2tag1);
 	} else {
@@ -981,7 +1094,8 @@ iavf_flex_rxd_to_vlan_tci(struct rte_mbuf *mb,
 {
 	if (rte_le_to_cpu_64(rxdp->wb.status_error0) &
 		(1 << IAVF_RX_FLEX_DESC_STATUS0_L2TAG1P_S)) {
-		mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
+		mb->ol_flags |= RTE_MBUF_F_RX_VLAN |
+				RTE_MBUF_F_RX_VLAN_STRIPPED;
 		mb->vlan_tci =
 			rte_le_to_cpu_16(rxdp->wb.l2tag1);
 	} else {
@@ -991,8 +1105,10 @@ iavf_flex_rxd_to_vlan_tci(struct rte_mbuf *mb,
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 	if (rte_le_to_cpu_16(rxdp->wb.status_error1) &
 	    (1 << IAVF_RX_FLEX_DESC_STATUS1_L2TAG2P_S)) {
-		mb->ol_flags |= PKT_RX_QINQ_STRIPPED | PKT_RX_QINQ |
-				PKT_RX_VLAN_STRIPPED | PKT_RX_VLAN;
+		mb->ol_flags |= RTE_MBUF_F_RX_QINQ_STRIPPED |
+				RTE_MBUF_F_RX_QINQ |
+				RTE_MBUF_F_RX_VLAN_STRIPPED |
+				RTE_MBUF_F_RX_VLAN;
 		mb->vlan_tci_outer = mb->vlan_tci;
 		mb->vlan_tci = rte_le_to_cpu_16(rxdp->wb.l2tag2_2nd);
 		PMD_RX_LOG(DEBUG, "Descriptor l2tag2_1: %u, l2tag2_2: %u",
@@ -1003,6 +1119,70 @@ iavf_flex_rxd_to_vlan_tci(struct rte_mbuf *mb,
 	}
 #endif
 }
+
+static inline void
+iavf_flex_rxd_to_ipsec_crypto_said_get(struct rte_mbuf *mb,
+			  volatile union iavf_rx_flex_desc *rxdp)
+{
+	volatile struct iavf_32b_rx_flex_desc_comms_ipsec *desc =
+		(volatile struct iavf_32b_rx_flex_desc_comms_ipsec *)rxdp;
+
+	mb->dynfield1[0] = desc->ipsec_said &
+			 IAVF_RX_FLEX_DESC_IPSEC_CRYPTO_SAID_MASK;
+	}
+
+static inline void
+iavf_flex_rxd_to_ipsec_crypto_status(struct rte_mbuf *mb,
+			  volatile union iavf_rx_flex_desc *rxdp,
+			  struct iavf_ipsec_crypto_stats *stats)
+{
+	uint16_t status1 = rte_le_to_cpu_64(rxdp->wb.status_error1);
+
+	if (status1 & BIT(IAVF_RX_FLEX_DESC_STATUS1_IPSEC_CRYPTO_PROCESSED)) {
+		uint16_t ipsec_status;
+
+		mb->ol_flags |= RTE_MBUF_F_RX_SEC_OFFLOAD;
+
+		ipsec_status = status1 &
+			IAVF_RX_FLEX_DESC_IPSEC_CRYPTO_STATUS_MASK;
+
+
+		if (unlikely(ipsec_status !=
+			IAVF_IPSEC_CRYPTO_STATUS_SUCCESS)) {
+			mb->ol_flags |= RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED;
+
+			switch (ipsec_status) {
+			case IAVF_IPSEC_CRYPTO_STATUS_SAD_MISS:
+				stats->ierrors.sad_miss++;
+				break;
+			case IAVF_IPSEC_CRYPTO_STATUS_NOT_PROCESSED:
+				stats->ierrors.not_processed++;
+				break;
+			case IAVF_IPSEC_CRYPTO_STATUS_ICV_CHECK_FAIL:
+				stats->ierrors.icv_check++;
+				break;
+			case IAVF_IPSEC_CRYPTO_STATUS_LENGTH_ERR:
+				stats->ierrors.ipsec_length++;
+				break;
+			case IAVF_IPSEC_CRYPTO_STATUS_MISC_ERR:
+				stats->ierrors.misc++;
+				break;
+}
+
+			stats->ierrors.count++;
+			return;
+		}
+
+		stats->icount++;
+		stats->ibytes += rxdp->wb.pkt_len & 0x3FFF;
+
+		if (rxdp->wb.rxdid == IAVF_RXDID_COMMS_IPSEC_CRYPTO &&
+			ipsec_status !=
+				IAVF_IPSEC_CRYPTO_STATUS_SAD_MISS)
+			iavf_flex_rxd_to_ipsec_crypto_said_get(mb, rxdp);
+	}
+}
+
 
 /* Translate the rx descriptor status and error fields to pkt flags */
 static inline uint64_t
@@ -1016,26 +1196,26 @@ iavf_rxd_to_pkt_flags(uint64_t qword)
 	/* Check if RSS_HASH */
 	flags = (((qword >> IAVF_RX_DESC_STATUS_FLTSTAT_SHIFT) &
 					IAVF_RX_DESC_FLTSTAT_RSS_HASH) ==
-			IAVF_RX_DESC_FLTSTAT_RSS_HASH) ? PKT_RX_RSS_HASH : 0;
+			IAVF_RX_DESC_FLTSTAT_RSS_HASH) ? RTE_MBUF_F_RX_RSS_HASH : 0;
 
 	/* Check if FDIR Match */
 	flags |= (qword & (1 << IAVF_RX_DESC_STATUS_FLM_SHIFT) ?
-				PKT_RX_FDIR : 0);
+				RTE_MBUF_F_RX_FDIR : 0);
 
 	if (likely((error_bits & IAVF_RX_ERR_BITS) == 0)) {
-		flags |= (PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD);
+		flags |= (RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD);
 		return flags;
 	}
 
 	if (unlikely(error_bits & (1 << IAVF_RX_DESC_ERROR_IPE_SHIFT)))
-		flags |= PKT_RX_IP_CKSUM_BAD;
+		flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else
-		flags |= PKT_RX_IP_CKSUM_GOOD;
+		flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 
 	if (unlikely(error_bits & (1 << IAVF_RX_DESC_ERROR_L4E_SHIFT)))
-		flags |= PKT_RX_L4_CKSUM_BAD;
+		flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 	else
-		flags |= PKT_RX_L4_CKSUM_GOOD;
+		flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 
 	/* TODO: Oversize error bit is not processed here */
 
@@ -1056,12 +1236,12 @@ iavf_rxd_build_fdir(volatile union iavf_rx_desc *rxdp, struct rte_mbuf *mb)
 	if (flexbh == IAVF_RX_DESC_EXT_STATUS_FLEXBH_FD_ID) {
 		mb->hash.fdir.hi =
 			rte_le_to_cpu_32(rxdp->wb.qword3.hi_dword.fd_id);
-		flags |= PKT_RX_FDIR_ID;
+		flags |= RTE_MBUF_F_RX_FDIR_ID;
 	}
 #else
 	mb->hash.fdir.hi =
 		rte_le_to_cpu_32(rxdp->wb.qword0.hi_dword.fd_id);
-	flags |= PKT_RX_FDIR_ID;
+	flags |= RTE_MBUF_F_RX_FDIR_ID;
 #endif
 	return flags;
 }
@@ -1085,22 +1265,22 @@ iavf_flex_rxd_error_to_pkt_flags(uint16_t stat_err0)
 		return 0;
 
 	if (likely(!(stat_err0 & IAVF_RX_FLEX_ERR0_BITS))) {
-		flags |= (PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD);
+		flags |= (RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD);
 		return flags;
 	}
 
 	if (unlikely(stat_err0 & (1 << IAVF_RX_FLEX_DESC_STATUS0_XSUM_IPE_S)))
-		flags |= PKT_RX_IP_CKSUM_BAD;
+		flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else
-		flags |= PKT_RX_IP_CKSUM_GOOD;
+		flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 
 	if (unlikely(stat_err0 & (1 << IAVF_RX_FLEX_DESC_STATUS0_XSUM_L4E_S)))
-		flags |= PKT_RX_L4_CKSUM_BAD;
+		flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 	else
-		flags |= PKT_RX_L4_CKSUM_GOOD;
+		flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 
 	if (unlikely(stat_err0 & (1 << IAVF_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S)))
-		flags |= PKT_RX_EIP_CKSUM_BAD;
+		flags |= RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD;
 
 	return flags;
 }
@@ -1123,7 +1303,7 @@ iavf_update_rx_tail(struct iavf_rx_queue *rxq, uint16_t nb_hold, uint16_t rx_id)
 			   rxq->port_id, rxq->queue_id, rx_id, nb_hold);
 		rx_id = (uint16_t)((rx_id == 0) ?
 			(rxq->nb_rx_desc - 1) : (rx_id - 1));
-		IAVF_PCI_REG_WRITE(rxq->qrx_tail, rx_id);
+		IAVF_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
 		nb_hold = 0;
 	}
 	rxq->nb_rx_hold = nb_hold;
@@ -1219,11 +1399,11 @@ iavf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			ptype_tbl[(uint8_t)((qword1 &
 			IAVF_RXD_QW1_PTYPE_MASK) >> IAVF_RXD_QW1_PTYPE_SHIFT)];
 
-		if (pkt_flags & PKT_RX_RSS_HASH)
+		if (pkt_flags & RTE_MBUF_F_RX_RSS_HASH)
 			rxm->hash.rss =
 				rte_le_to_cpu_32(rxd.wb.qword0.hi_dword.rss);
 
-		if (pkt_flags & PKT_RX_FDIR)
+		if (pkt_flags & RTE_MBUF_F_RX_FDIR)
 			pkt_flags |= iavf_rxd_build_fdir(&rxd, rxm);
 
 		rxm->ol_flags |= pkt_flags;
@@ -1322,6 +1502,8 @@ iavf_recv_pkts_flex_rxd(void *rx_queue,
 		rxm->packet_type = ptype_tbl[IAVF_RX_FLEX_DESC_PTYPE_M &
 			rte_le_to_cpu_16(rxd.wb.ptype_flex_flags0)];
 		iavf_flex_rxd_to_vlan_tci(rxm, &rxd);
+		iavf_flex_rxd_to_ipsec_crypto_status(rxm, &rxd,
+				&rxq->stats.ipsec_crypto);
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, rxm, &rxd);
 		pkt_flags = iavf_flex_rxd_error_to_pkt_flags(rx_stat_err0);
 		rxm->ol_flags |= pkt_flags;
@@ -1464,6 +1646,8 @@ iavf_recv_scattered_pkts_flex_rxd(void *rx_queue, struct rte_mbuf **rx_pkts,
 		first_seg->packet_type = ptype_tbl[IAVF_RX_FLEX_DESC_PTYPE_M &
 			rte_le_to_cpu_16(rxd.wb.ptype_flex_flags0)];
 		iavf_flex_rxd_to_vlan_tci(first_seg, &rxd);
+		iavf_flex_rxd_to_ipsec_crypto_status(first_seg, &rxd,
+				&rxq->stats.ipsec_crypto);
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, first_seg, &rxd);
 		pkt_flags = iavf_flex_rxd_error_to_pkt_flags(rx_stat_err0);
 
@@ -1620,11 +1804,11 @@ iavf_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			ptype_tbl[(uint8_t)((qword1 &
 			IAVF_RXD_QW1_PTYPE_MASK) >> IAVF_RXD_QW1_PTYPE_SHIFT)];
 
-		if (pkt_flags & PKT_RX_RSS_HASH)
+		if (pkt_flags & RTE_MBUF_F_RX_RSS_HASH)
 			first_seg->hash.rss =
 				rte_le_to_cpu_32(rxd.wb.qword0.hi_dword.rss);
 
-		if (pkt_flags & PKT_RX_FDIR)
+		if (pkt_flags & RTE_MBUF_F_RX_FDIR)
 			pkt_flags |= iavf_rxd_build_fdir(&rxd, first_seg);
 
 		first_seg->ol_flags |= pkt_flags;
@@ -1720,6 +1904,8 @@ iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
 			mb->packet_type = ptype_tbl[IAVF_RX_FLEX_DESC_PTYPE_M &
 				rte_le_to_cpu_16(rxdp[j].wb.ptype_flex_flags0)];
 			iavf_flex_rxd_to_vlan_tci(mb, &rxdp[j]);
+			iavf_flex_rxd_to_ipsec_crypto_status(mb, &rxdp[j],
+				&rxq->stats.ipsec_crypto);
 			rxd_to_pkt_fields_ops[rxq->rxdid](rxq, mb, &rxdp[j]);
 			stat_err0 = rte_le_to_cpu_16(rxdp[j].wb.status_error0);
 			pkt_flags = iavf_flex_rxd_error_to_pkt_flags(stat_err0);
@@ -1825,11 +2011,11 @@ iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq)
 				IAVF_RXD_QW1_PTYPE_MASK) >>
 				IAVF_RXD_QW1_PTYPE_SHIFT)];
 
-			if (pkt_flags & PKT_RX_RSS_HASH)
+			if (pkt_flags & RTE_MBUF_F_RX_RSS_HASH)
 				mb->hash.rss = rte_le_to_cpu_32(
 					rxdp[j].wb.qword0.hi_dword.rss);
 
-			if (pkt_flags & PKT_RX_FDIR)
+			if (pkt_flags & RTE_MBUF_F_RX_FDIR)
 				pkt_flags |= iavf_rxd_build_fdir(&rxdp[j], mb);
 
 			mb->ol_flags |= pkt_flags;
@@ -1908,7 +2094,7 @@ iavf_rx_alloc_bufs(struct iavf_rx_queue *rxq)
 
 	/* Update rx tail register */
 	rte_wmb();
-	IAVF_PCI_REG_WRITE_RELAXED(rxq->qrx_tail, rxq->rx_free_trigger);
+	IAVF_PCI_REG_WC_WRITE_RELAXED(rxq->qrx_tail, rxq->rx_free_trigger);
 
 	rxq->rx_free_trigger =
 		(uint16_t)(rxq->rx_free_trigger + rxq->rx_free_thresh);
@@ -2010,9 +2196,9 @@ iavf_xmit_cleanup(struct iavf_tx_queue *txq)
 	if ((txd[desc_to_clean_to].cmd_type_offset_bsz &
 			rte_cpu_to_le_64(IAVF_TXD_QW1_DTYPE_MASK)) !=
 			rte_cpu_to_le_64(IAVF_TX_DESC_DTYPE_DESC_DONE)) {
-		PMD_TX_FREE_LOG(DEBUG, "TX descriptor %4u is not done "
-				"(port=%d queue=%d)", desc_to_clean_to,
-				txq->port_id, txq->queue_id);
+		PMD_TX_LOG(DEBUG, "TX descriptor %4u is not done "
+			   "(port=%d queue=%d)", desc_to_clean_to,
+			   txq->port_id, txq->queue_id);
 		return -1;
 	}
 
@@ -2033,184 +2219,388 @@ iavf_xmit_cleanup(struct iavf_tx_queue *txq)
 
 /* Check if the context descriptor is needed for TX offloading */
 static inline uint16_t
-iavf_calc_context_desc(uint64_t flags)
+iavf_calc_context_desc(uint64_t flags, uint8_t vlan_flag)
 {
-	static uint64_t mask = PKT_TX_TCP_SEG;
-
-	return (flags & mask) ? 1 : 0;
+	if (flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG |
+			RTE_MBUF_F_TX_TUNNEL_MASK))
+		return 1;
+	if (flags & RTE_MBUF_F_TX_VLAN &&
+	    vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2)
+		return 1;
+	return 0;
 }
 
 static inline void
-iavf_txd_enable_checksum(uint64_t ol_flags,
-			uint32_t *td_cmd,
-			uint32_t *td_offset,
-			union iavf_tx_offload tx_offload)
+iavf_fill_ctx_desc_cmd_field(volatile uint64_t *field, struct rte_mbuf *m,
+		uint8_t vlan_flag)
 {
-	/* Set MACLEN */
-	*td_offset |= (tx_offload.l2_len >> 1) <<
-		      IAVF_TX_DESC_LENGTH_MACLEN_SHIFT;
+	uint64_t cmd = 0;
 
-	/* Enable L3 checksum offloads */
-	if (ol_flags & PKT_TX_IP_CKSUM) {
-		*td_cmd |= IAVF_TX_DESC_CMD_IIPT_IPV4_CSUM;
-		*td_offset |= (tx_offload.l3_len >> 2) <<
-			      IAVF_TX_DESC_LENGTH_IPLEN_SHIFT;
-	} else if (ol_flags & PKT_TX_IPV4) {
-		*td_cmd |= IAVF_TX_DESC_CMD_IIPT_IPV4;
-		*td_offset |= (tx_offload.l3_len >> 2) <<
-			      IAVF_TX_DESC_LENGTH_IPLEN_SHIFT;
-	} else if (ol_flags & PKT_TX_IPV6) {
-		*td_cmd |= IAVF_TX_DESC_CMD_IIPT_IPV6;
-		*td_offset |= (tx_offload.l3_len >> 2) <<
-			      IAVF_TX_DESC_LENGTH_IPLEN_SHIFT;
+	/* TSO enabled */
+	if (m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG))
+		cmd = IAVF_TX_CTX_DESC_TSO << IAVF_TXD_CTX_QW1_CMD_SHIFT;
+
+	if (m->ol_flags & RTE_MBUF_F_TX_VLAN &&
+			vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2) {
+		cmd |= IAVF_TX_CTX_DESC_IL2TAG2
+			<< IAVF_TXD_CTX_QW1_CMD_SHIFT;
 	}
 
-	if (ol_flags & PKT_TX_TCP_SEG) {
-		*td_cmd |= IAVF_TX_DESC_CMD_L4T_EOFT_TCP;
-		*td_offset |= (tx_offload.l4_len >> 2) <<
+	*field |= cmd;
+}
+
+static inline void
+iavf_fill_ctx_desc_ipsec_field(volatile uint64_t *field,
+	struct iavf_ipsec_crypto_pkt_metadata *ipsec_md)
+{
+	uint64_t ipsec_field =
+		(uint64_t)ipsec_md->ctx_desc_ipsec_params <<
+			IAVF_TXD_CTX_QW1_IPSEC_PARAMS_CIPHERBLK_SHIFT;
+
+	*field |= ipsec_field;
+}
+
+
+static inline void
+iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
+		const struct rte_mbuf *m)
+{
+	uint64_t eip_typ = IAVF_TX_CTX_DESC_EIPT_NONE;
+	uint64_t eip_len = 0;
+	uint64_t eip_noinc = 0;
+	/* Default - IP_ID is increment in each segment of LSO */
+
+	switch (m->ol_flags & (RTE_MBUF_F_TX_OUTER_IPV4 |
+			RTE_MBUF_F_TX_OUTER_IPV6 |
+			RTE_MBUF_F_TX_OUTER_IP_CKSUM)) {
+	case RTE_MBUF_F_TX_OUTER_IPV4:
+		eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV4_NO_CHECKSUM_OFFLOAD;
+		eip_len = m->outer_l3_len >> 2;
+	break;
+	case RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IP_CKSUM:
+		eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV4_CHECKSUM_OFFLOAD;
+		eip_len = m->outer_l3_len >> 2;
+	break;
+	case RTE_MBUF_F_TX_OUTER_IPV6:
+		eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV6;
+		eip_len = m->outer_l3_len >> 2;
+	break;
+	}
+
+	*qw0 = eip_typ << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPT_SHIFT |
+		eip_len << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPLEN_SHIFT |
+		eip_noinc << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIP_NOINC_SHIFT;
+}
+
+static inline uint16_t
+iavf_fill_ctx_desc_segmentation_field(volatile uint64_t *field,
+	struct rte_mbuf *m, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md)
+{
+	uint64_t segmentation_field = 0;
+	uint64_t total_length = 0;
+
+	if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) {
+		total_length = ipsec_md->l4_payload_len;
+	} else {
+		total_length = m->pkt_len - (m->l2_len + m->l3_len + m->l4_len);
+
+		if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
+			total_length -= m->outer_l3_len;
+	}
+
+#ifdef RTE_LIBRTE_IAVF_DEBUG_TX
+	if (!m->l4_len || !m->tso_segsz)
+		PMD_TX_LOG(DEBUG, "L4 length %d, LSO Segment size %d",
+			 m->l4_len, m->tso_segsz);
+	if (m->tso_segsz < 88)
+		PMD_TX_LOG(DEBUG, "LSO Segment size %d is less than minimum %d",
+			m->tso_segsz, 88);
+#endif
+	segmentation_field =
+		(((uint64_t)total_length << IAVF_TXD_CTX_QW1_TSO_LEN_SHIFT) &
+				IAVF_TXD_CTX_QW1_TSO_LEN_MASK) |
+		(((uint64_t)m->tso_segsz << IAVF_TXD_CTX_QW1_MSS_SHIFT) &
+				IAVF_TXD_CTX_QW1_MSS_MASK);
+
+	*field |= segmentation_field;
+
+	return total_length;
+}
+
+
+struct iavf_tx_context_desc_qws {
+	__le64 qw0;
+	__le64 qw1;
+};
+
+static inline void
+iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
+	struct rte_mbuf *m, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md,
+	uint16_t *tlen, uint8_t vlan_flag)
+{
+	volatile struct iavf_tx_context_desc_qws *desc_qws =
+			(volatile struct iavf_tx_context_desc_qws *)desc;
+	/* fill descriptor type field */
+	desc_qws->qw1 = IAVF_TX_DESC_DTYPE_CONTEXT;
+
+	/* fill command field */
+	iavf_fill_ctx_desc_cmd_field(&desc_qws->qw1, m, vlan_flag);
+
+	/* fill segmentation field */
+	if (m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG)) {
+		/* fill IPsec field */
+		if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)
+			iavf_fill_ctx_desc_ipsec_field(&desc_qws->qw1,
+				ipsec_md);
+
+		*tlen = iavf_fill_ctx_desc_segmentation_field(&desc_qws->qw1,
+				m, ipsec_md);
+	}
+
+	/* fill tunnelling field */
+	if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
+		iavf_fill_ctx_desc_tunnelling_field(&desc_qws->qw0, m);
+	else
+		desc_qws->qw0 = 0;
+
+	desc_qws->qw0 = rte_cpu_to_le_64(desc_qws->qw0);
+	desc_qws->qw1 = rte_cpu_to_le_64(desc_qws->qw1);
+
+	if (vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2)
+		desc->l2tag2 = m->vlan_tci;
+}
+
+
+static inline void
+iavf_fill_ipsec_desc(volatile struct iavf_tx_ipsec_desc *desc,
+	const struct iavf_ipsec_crypto_pkt_metadata *md, uint16_t *ipsec_len)
+{
+	desc->qw0 = rte_cpu_to_le_64(((uint64_t)md->l4_payload_len <<
+		IAVF_IPSEC_TX_DESC_QW0_L4PAYLEN_SHIFT) |
+		((uint64_t)md->esn << IAVF_IPSEC_TX_DESC_QW0_IPSECESN_SHIFT) |
+		((uint64_t)md->esp_trailer_len <<
+				IAVF_IPSEC_TX_DESC_QW0_TRAILERLEN_SHIFT));
+
+	desc->qw1 = rte_cpu_to_le_64(((uint64_t)md->sa_idx <<
+		IAVF_IPSEC_TX_DESC_QW1_IPSECSA_SHIFT) |
+		((uint64_t)md->next_proto <<
+				IAVF_IPSEC_TX_DESC_QW1_IPSECNH_SHIFT) |
+		((uint64_t)(md->len_iv & 0x3) <<
+				IAVF_IPSEC_TX_DESC_QW1_IVLEN_SHIFT) |
+		((uint64_t)(md->ol_flags & IAVF_IPSEC_CRYPTO_OL_FLAGS_NATT ?
+				1ULL : 0ULL) <<
+				IAVF_IPSEC_TX_DESC_QW1_UDP_SHIFT) |
+		(uint64_t)IAVF_TX_DESC_DTYPE_IPSEC);
+
+	/**
+	 * TODO: Pre-calculate this in the Session initialization
+	 *
+	 * Calculate IPsec length required in data descriptor func when TSO
+	 * offload is enabled
+	 */
+	*ipsec_len = sizeof(struct rte_esp_hdr) + (md->len_iv >> 2) +
+			(md->ol_flags & IAVF_IPSEC_CRYPTO_OL_FLAGS_NATT ?
+			sizeof(struct rte_udp_hdr) : 0);
+}
+
+static inline void
+iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
+		struct rte_mbuf *m, uint8_t vlan_flag)
+{
+	uint64_t command = 0;
+	uint64_t offset = 0;
+	uint64_t l2tag1 = 0;
+
+	*qw1 = IAVF_TX_DESC_DTYPE_DATA;
+
+	command = (uint64_t)IAVF_TX_DESC_CMD_ICRC;
+
+	/* Descriptor based VLAN insertion */
+	if ((vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG1) &&
+			m->ol_flags & RTE_MBUF_F_TX_VLAN) {
+		command |= (uint64_t)IAVF_TX_DESC_CMD_IL2TAG1;
+		l2tag1 |= m->vlan_tci;
+	}
+
+	/* Set MACLEN */
+	offset |= (m->l2_len >> 1) << IAVF_TX_DESC_LENGTH_MACLEN_SHIFT;
+
+	/* Enable L3 checksum offloading inner */
+	if (m->ol_flags & (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4)) {
+		command |= IAVF_TX_DESC_CMD_IIPT_IPV4_CSUM;
+		offset |= (m->l3_len >> 2) << IAVF_TX_DESC_LENGTH_IPLEN_SHIFT;
+	} else if (m->ol_flags & RTE_MBUF_F_TX_IPV4) {
+		command |= IAVF_TX_DESC_CMD_IIPT_IPV4;
+		offset |= (m->l3_len >> 2) << IAVF_TX_DESC_LENGTH_IPLEN_SHIFT;
+	} else if (m->ol_flags & RTE_MBUF_F_TX_IPV6) {
+		command |= IAVF_TX_DESC_CMD_IIPT_IPV6;
+		offset |= (m->l3_len >> 2) << IAVF_TX_DESC_LENGTH_IPLEN_SHIFT;
+	}
+
+	if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+		command |= IAVF_TX_DESC_CMD_L4T_EOFT_TCP;
+		offset |= (m->l4_len >> 2) <<
 			      IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
-		return;
 	}
 
 	/* Enable L4 checksum offloads */
-	switch (ol_flags & PKT_TX_L4_MASK) {
-	case PKT_TX_TCP_CKSUM:
-		*td_cmd |= IAVF_TX_DESC_CMD_L4T_EOFT_TCP;
-		*td_offset |= (sizeof(struct rte_tcp_hdr) >> 2) <<
-			      IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
+	switch (m->ol_flags & RTE_MBUF_F_TX_L4_MASK) {
+	case RTE_MBUF_F_TX_TCP_CKSUM:
+		command |= IAVF_TX_DESC_CMD_L4T_EOFT_TCP;
+		offset |= (sizeof(struct rte_tcp_hdr) >> 2) <<
+				IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
 		break;
-	case PKT_TX_SCTP_CKSUM:
-		*td_cmd |= IAVF_TX_DESC_CMD_L4T_EOFT_SCTP;
-		*td_offset |= (sizeof(struct rte_sctp_hdr) >> 2) <<
-			      IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
+	case RTE_MBUF_F_TX_SCTP_CKSUM:
+		command |= IAVF_TX_DESC_CMD_L4T_EOFT_SCTP;
+		offset |= (sizeof(struct rte_sctp_hdr) >> 2) <<
+				IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
 		break;
-	case PKT_TX_UDP_CKSUM:
-		*td_cmd |= IAVF_TX_DESC_CMD_L4T_EOFT_UDP;
-		*td_offset |= (sizeof(struct rte_udp_hdr) >> 2) <<
-			      IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
-		break;
-	default:
+	case RTE_MBUF_F_TX_UDP_CKSUM:
+		command |= IAVF_TX_DESC_CMD_L4T_EOFT_UDP;
+		offset |= (sizeof(struct rte_udp_hdr) >> 2) <<
+				IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
 		break;
 	}
+
+	*qw1 = rte_cpu_to_le_64((((uint64_t)command <<
+		IAVF_TXD_DATA_QW1_CMD_SHIFT) & IAVF_TXD_DATA_QW1_CMD_MASK) |
+		(((uint64_t)offset << IAVF_TXD_DATA_QW1_OFFSET_SHIFT) &
+		IAVF_TXD_DATA_QW1_OFFSET_MASK) |
+		((uint64_t)l2tag1 << IAVF_TXD_DATA_QW1_L2TAG1_SHIFT));
 }
 
-/* set TSO context descriptor
- * support IP -> L4 and IP -> IP -> L4
- */
-static inline uint64_t
-iavf_set_tso_ctx(struct rte_mbuf *mbuf, union iavf_tx_offload tx_offload)
+static inline void
+iavf_fill_data_desc(volatile struct iavf_tx_desc *desc,
+	struct rte_mbuf *m, uint64_t desc_template,
+	uint16_t tlen, uint16_t ipseclen)
 {
-	uint64_t ctx_desc = 0;
-	uint32_t cd_cmd, hdr_len, cd_tso_len;
+	uint32_t hdrlen = m->l2_len;
+	uint32_t bufsz = 0;
 
-	if (!tx_offload.l4_len) {
-		PMD_TX_LOG(DEBUG, "L4 length set to 0");
-		return ctx_desc;
+	/* fill data descriptor qw1 from template */
+	desc->cmd_type_offset_bsz = desc_template;
+
+	/* set data buffer address */
+	desc->buffer_addr = rte_mbuf_data_iova(m);
+
+	/* calculate data buffer size less set header lengths */
+	if ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) &&
+			(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
+					RTE_MBUF_F_TX_UDP_SEG))) {
+		hdrlen += m->outer_l3_len;
+		if (m->ol_flags & RTE_MBUF_F_TX_L4_MASK)
+			hdrlen += m->l3_len + m->l4_len;
+		else
+			hdrlen += m->l3_len;
+		if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)
+			hdrlen += ipseclen;
+		bufsz = hdrlen + tlen;
+	} else if ((m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) &&
+			(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
+					RTE_MBUF_F_TX_UDP_SEG))) {
+		hdrlen += m->outer_l3_len + m->l3_len + ipseclen;
+		if (m->ol_flags & RTE_MBUF_F_TX_L4_MASK)
+			hdrlen += m->l4_len;
+		bufsz = hdrlen + tlen;
+
+	} else {
+		bufsz = m->data_len;
 	}
 
-	hdr_len = tx_offload.l2_len +
-		  tx_offload.l3_len +
-		  tx_offload.l4_len;
+	/* set data buffer size */
+	desc->cmd_type_offset_bsz |=
+		(((uint64_t)bufsz << IAVF_TXD_DATA_QW1_TX_BUF_SZ_SHIFT) &
+		IAVF_TXD_DATA_QW1_TX_BUF_SZ_MASK);
 
-	cd_cmd = IAVF_TX_CTX_DESC_TSO;
-	cd_tso_len = mbuf->pkt_len - hdr_len;
-	ctx_desc |= ((uint64_t)cd_cmd << IAVF_TXD_CTX_QW1_CMD_SHIFT) |
-		     ((uint64_t)cd_tso_len << IAVF_TXD_CTX_QW1_TSO_LEN_SHIFT) |
-		     ((uint64_t)mbuf->tso_segsz << IAVF_TXD_CTX_QW1_MSS_SHIFT);
-
-	return ctx_desc;
+	desc->buffer_addr = rte_cpu_to_le_64(desc->buffer_addr);
+	desc->cmd_type_offset_bsz = rte_cpu_to_le_64(desc->cmd_type_offset_bsz);
 }
 
-/* Construct the tx flags */
-static inline uint64_t
-iavf_build_ctob(uint32_t td_cmd, uint32_t td_offset, unsigned int size,
-	       uint32_t td_tag)
+
+static struct iavf_ipsec_crypto_pkt_metadata *
+iavf_ipsec_crypto_get_pkt_metadata(const struct iavf_tx_queue *txq,
+		struct rte_mbuf *m)
 {
-	return rte_cpu_to_le_64(IAVF_TX_DESC_DTYPE_DATA |
-				((uint64_t)td_cmd  << IAVF_TXD_QW1_CMD_SHIFT) |
-				((uint64_t)td_offset <<
-				 IAVF_TXD_QW1_OFFSET_SHIFT) |
-				((uint64_t)size  <<
-				 IAVF_TXD_QW1_TX_BUF_SZ_SHIFT) |
-				((uint64_t)td_tag  <<
-				 IAVF_TXD_QW1_L2TAG1_SHIFT));
+	if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)
+		return RTE_MBUF_DYNFIELD(m, txq->ipsec_crypto_pkt_md_offset,
+				struct iavf_ipsec_crypto_pkt_metadata *);
+
+	return NULL;
 }
 
 /* TX function */
 uint16_t
 iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
-	volatile struct iavf_tx_desc *txd;
-	volatile struct iavf_tx_desc *txr;
-	struct iavf_tx_queue *txq;
-	struct iavf_tx_entry *sw_ring;
+	struct iavf_tx_queue *txq = tx_queue;
+	volatile struct iavf_tx_desc *txr = txq->tx_ring;
+	struct iavf_tx_entry *txe_ring = txq->sw_ring;
 	struct iavf_tx_entry *txe, *txn;
-	struct rte_mbuf *tx_pkt;
-	struct rte_mbuf *m_seg;
-	uint16_t tx_id;
-	uint16_t nb_tx;
-	uint32_t td_cmd;
-	uint32_t td_offset;
-	uint32_t td_tag;
-	uint64_t ol_flags;
-	uint16_t nb_used;
-	uint16_t nb_ctx;
-	uint16_t tx_last;
-	uint16_t slen;
-	uint64_t buf_dma_addr;
-	union iavf_tx_offload tx_offload = {0};
+	struct rte_mbuf *mb, *mb_seg;
+	uint16_t desc_idx, desc_idx_last;
+	uint16_t idx;
 
-	txq = tx_queue;
-	sw_ring = txq->sw_ring;
-	txr = txq->tx_ring;
-	tx_id = txq->tx_tail;
-	txe = &sw_ring[tx_id];
 
 	/* Check if the descriptor ring needs to be cleaned. */
 	if (txq->nb_free < txq->free_thresh)
-		(void)iavf_xmit_cleanup(txq);
+		iavf_xmit_cleanup(txq);
 
-	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
-		td_cmd = 0;
-		td_tag = 0;
-		td_offset = 0;
+	desc_idx = txq->tx_tail;
+	txe = &txe_ring[desc_idx];
 
-		tx_pkt = *tx_pkts++;
+	for (idx = 0; idx < nb_pkts; idx++) {
+		volatile struct iavf_tx_desc *ddesc;
+		struct iavf_ipsec_crypto_pkt_metadata *ipsec_md;
+
+		uint16_t nb_desc_ctx, nb_desc_ipsec;
+		uint16_t nb_desc_data, nb_desc_required;
+		uint16_t tlen = 0, ipseclen = 0;
+		uint64_t ddesc_template = 0;
+		uint64_t ddesc_cmd = 0;
+
+		mb = tx_pkts[idx];
+
 		RTE_MBUF_PREFETCH_TO_FREE(txe->mbuf);
 
-		ol_flags = tx_pkt->ol_flags;
-		tx_offload.l2_len = tx_pkt->l2_len;
-		tx_offload.l3_len = tx_pkt->l3_len;
-		tx_offload.l4_len = tx_pkt->l4_len;
-		tx_offload.tso_segsz = tx_pkt->tso_segsz;
-		/* Calculate the number of context descriptors needed. */
-		nb_ctx = iavf_calc_context_desc(ol_flags);
-
-		/* The number of descriptors that must be allocated for
-		 * a packet equals to the number of the segments of that
-		 * packet plus 1 context descriptor if needed.
+		/**
+		 * Get metadata for ipsec crypto from mbuf dynamic fields if
+		 * security offload is specified.
 		 */
-		nb_used = (uint16_t)(tx_pkt->nb_segs + nb_ctx);
-		tx_last = (uint16_t)(tx_id + nb_used - 1);
+		ipsec_md = iavf_ipsec_crypto_get_pkt_metadata(txq, mb);
 
-		/* Circular ring */
-		if (tx_last >= txq->nb_tx_desc)
-			tx_last = (uint16_t)(tx_last - txq->nb_tx_desc);
+		nb_desc_data = mb->nb_segs;
+		nb_desc_ctx =
+			iavf_calc_context_desc(mb->ol_flags, txq->vlan_flag);
+		nb_desc_ipsec = !!(mb->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD);
 
-		PMD_TX_LOG(DEBUG, "port_id=%u queue_id=%u"
-			   " tx_first=%u tx_last=%u",
-			   txq->port_id, txq->queue_id, tx_id, tx_last);
+		/**
+		 * The number of descriptors that must be allocated for
+		 * a packet equals to the number of the segments of that
+		 * packet plus the context and ipsec descriptors if needed.
+		 */
+		nb_desc_required = nb_desc_data + nb_desc_ctx + nb_desc_ipsec;
 
-		if (nb_used > txq->nb_free) {
+		desc_idx_last = (uint16_t)(desc_idx + nb_desc_required - 1);
+
+		/* wrap descriptor ring */
+		if (desc_idx_last >= txq->nb_tx_desc)
+			desc_idx_last =
+				(uint16_t)(desc_idx_last - txq->nb_tx_desc);
+
+		PMD_TX_LOG(DEBUG,
+			"port_id=%u queue_id=%u tx_first=%u tx_last=%u",
+			txq->port_id, txq->queue_id, desc_idx, desc_idx_last);
+
+		if (nb_desc_required > txq->nb_free) {
 			if (iavf_xmit_cleanup(txq)) {
-				if (nb_tx == 0)
+				if (idx == 0)
 					return 0;
 				goto end_of_tx;
 			}
-			if (unlikely(nb_used > txq->rs_thresh)) {
-				while (nb_used > txq->nb_free) {
+			if (unlikely(nb_desc_required > txq->rs_thresh)) {
+				while (nb_desc_required > txq->nb_free) {
 					if (iavf_xmit_cleanup(txq)) {
-						if (nb_tx == 0)
+						if (idx == 0)
 							return 0;
 						goto end_of_tx;
 					}
@@ -2218,113 +2608,137 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			}
 		}
 
-		/* Descriptor based VLAN insertion */
-		if (ol_flags & PKT_TX_VLAN_PKT) {
-			td_cmd |= IAVF_TX_DESC_CMD_IL2TAG1;
-			td_tag = tx_pkt->vlan_tci;
-		}
+		iavf_build_data_desc_cmd_offset_fields(&ddesc_template, mb,
+			txq->vlan_flag);
 
-		/* According to datasheet, the bit2 is reserved and must be
-		 * set to 1.
-		 */
-		td_cmd |= 0x04;
-
-		/* Enable checksum offloading */
-		if (ol_flags & IAVF_TX_CKSUM_OFFLOAD_MASK)
-			iavf_txd_enable_checksum(ol_flags, &td_cmd,
-						&td_offset, tx_offload);
-
-		if (nb_ctx) {
 			/* Setup TX context descriptor if required */
-			uint64_t cd_type_cmd_tso_mss =
-				IAVF_TX_DESC_DTYPE_CONTEXT;
-			volatile struct iavf_tx_context_desc *ctx_txd =
+		if (nb_desc_ctx) {
+			volatile struct iavf_tx_context_desc *ctx_desc =
 				(volatile struct iavf_tx_context_desc *)
-							&txr[tx_id];
+					&txr[desc_idx];
 
 			/* clear QW0 or the previous writeback value
 			 * may impact next write
 			 */
-			*(volatile uint64_t *)ctx_txd = 0;
+			*(volatile uint64_t *)ctx_desc = 0;
 
-			txn = &sw_ring[txe->next_id];
+			txn = &txe_ring[txe->next_id];
 			RTE_MBUF_PREFETCH_TO_FREE(txn->mbuf);
+
 			if (txe->mbuf) {
 				rte_pktmbuf_free_seg(txe->mbuf);
 				txe->mbuf = NULL;
 			}
 
-			/* TSO enabled */
-			if (ol_flags & PKT_TX_TCP_SEG)
-				cd_type_cmd_tso_mss |=
-					iavf_set_tso_ctx(tx_pkt, tx_offload);
+			iavf_fill_context_desc(ctx_desc, mb, ipsec_md, &tlen,
+				txq->vlan_flag);
+			IAVF_DUMP_TX_DESC(txq, ctx_desc, desc_idx);
 
-			ctx_txd->type_cmd_tso_mss =
-				rte_cpu_to_le_64(cd_type_cmd_tso_mss);
+			txe->last_id = desc_idx_last;
+			desc_idx = txe->next_id;
+			txe = txn;
+			}
 
-			IAVF_DUMP_TX_DESC(txq, &txr[tx_id], tx_id);
-			txe->last_id = tx_last;
-			tx_id = txe->next_id;
+		if (nb_desc_ipsec) {
+			volatile struct iavf_tx_ipsec_desc *ipsec_desc =
+				(volatile struct iavf_tx_ipsec_desc *)
+					&txr[desc_idx];
+
+			txn = &txe_ring[txe->next_id];
+			RTE_MBUF_PREFETCH_TO_FREE(txn->mbuf);
+
+			if (txe->mbuf) {
+				rte_pktmbuf_free_seg(txe->mbuf);
+				txe->mbuf = NULL;
+		}
+
+			iavf_fill_ipsec_desc(ipsec_desc, ipsec_md, &ipseclen);
+
+			IAVF_DUMP_TX_DESC(txq, ipsec_desc, desc_idx);
+
+			txe->last_id = desc_idx_last;
+			desc_idx = txe->next_id;
 			txe = txn;
 		}
 
-		m_seg = tx_pkt;
+		mb_seg = mb;
+
 		do {
-			txd = &txr[tx_id];
-			txn = &sw_ring[txe->next_id];
+			ddesc = (volatile struct iavf_tx_desc *)
+					&txr[desc_idx];
+
+			txn = &txe_ring[txe->next_id];
+			RTE_MBUF_PREFETCH_TO_FREE(txn->mbuf);
 
 			if (txe->mbuf)
 				rte_pktmbuf_free_seg(txe->mbuf);
-			txe->mbuf = m_seg;
 
-			/* Setup TX Descriptor */
-			slen = m_seg->data_len;
-			buf_dma_addr = rte_mbuf_data_iova(m_seg);
-			txd->buffer_addr = rte_cpu_to_le_64(buf_dma_addr);
-			txd->cmd_type_offset_bsz = iavf_build_ctob(td_cmd,
-								  td_offset,
-								  slen,
-								  td_tag);
+			txe->mbuf = mb_seg;
+			iavf_fill_data_desc(ddesc, mb_seg,
+					ddesc_template, tlen, ipseclen);
 
-			IAVF_DUMP_TX_DESC(txq, txd, tx_id);
-			txe->last_id = tx_last;
-			tx_id = txe->next_id;
+			IAVF_DUMP_TX_DESC(txq, ddesc, desc_idx);
+
+			txe->last_id = desc_idx_last;
+			desc_idx = txe->next_id;
 			txe = txn;
-			m_seg = m_seg->next;
-		} while (m_seg);
+			mb_seg = mb_seg->next;
+		} while (mb_seg);
 
 		/* The last packet data descriptor needs End Of Packet (EOP) */
-		td_cmd |= IAVF_TX_DESC_CMD_EOP;
-		txq->nb_used = (uint16_t)(txq->nb_used + nb_used);
-		txq->nb_free = (uint16_t)(txq->nb_free - nb_used);
+		ddesc_cmd = IAVF_TX_DESC_CMD_EOP;
+
+		txq->nb_used = (uint16_t)(txq->nb_used + nb_desc_required);
+		txq->nb_free = (uint16_t)(txq->nb_free - nb_desc_required);
 
 		if (txq->nb_used >= txq->rs_thresh) {
 			PMD_TX_LOG(DEBUG, "Setting RS bit on TXD id="
 				   "%4u (port=%d queue=%d)",
-				   tx_last, txq->port_id, txq->queue_id);
+				   desc_idx_last, txq->port_id, txq->queue_id);
 
-			td_cmd |= IAVF_TX_DESC_CMD_RS;
+			ddesc_cmd |= IAVF_TX_DESC_CMD_RS;
 
 			/* Update txq RS bit counters */
 			txq->nb_used = 0;
 		}
 
-		txd->cmd_type_offset_bsz |=
-			rte_cpu_to_le_64(((uint64_t)td_cmd) <<
-					 IAVF_TXD_QW1_CMD_SHIFT);
-		IAVF_DUMP_TX_DESC(txq, txd, tx_id);
+		ddesc->cmd_type_offset_bsz |= rte_cpu_to_le_64(ddesc_cmd <<
+				IAVF_TXD_DATA_QW1_CMD_SHIFT);
+
+		IAVF_DUMP_TX_DESC(txq, ddesc, desc_idx - 1);
 	}
 
 end_of_tx:
 	rte_wmb();
 
 	PMD_TX_LOG(DEBUG, "port_id=%u queue_id=%u tx_tail=%u nb_tx=%u",
-		   txq->port_id, txq->queue_id, tx_id, nb_tx);
+		   txq->port_id, txq->queue_id, desc_idx, idx);
 
-	IAVF_PCI_REG_WRITE_RELAXED(txq->qtx_tail, tx_id);
-	txq->tx_tail = tx_id;
+	IAVF_PCI_REG_WRITE_RELAXED(txq->qtx_tail, desc_idx);
+	txq->tx_tail = desc_idx;
 
-	return nb_tx;
+	return idx;
+}
+
+/* Check if the packet with vlan user priority is transmitted in the
+ * correct queue.
+ */
+static int
+iavf_check_vlan_up2tc(struct iavf_tx_queue *txq, struct rte_mbuf *m)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	uint16_t up;
+
+	up = m->vlan_tci >> IAVF_VLAN_TAG_PCP_OFFSET;
+
+	if (!(vf->qos_cap->cap[txq->tc].tc_prio & BIT(up))) {
+		PMD_TX_LOG(ERR, "packet with vlan pcp %u cannot transmit in queue %u\n",
+			up, txq->queue_id);
+		return -1;
+	} else {
+		return 0;
+	}
 }
 
 /* TX prep functions */
@@ -2335,13 +2749,20 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	int i, ret;
 	uint64_t ol_flags;
 	struct rte_mbuf *m;
+	struct iavf_tx_queue *txq = tx_queue;
+	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	struct iavf_adapter *adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+
+	if (adapter->closed)
+		return 0;
 
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
 		ol_flags = m->ol_flags;
 
 		/* Check condition for nb_segs > IAVF_TX_MAX_MTU_SEG. */
-		if (!(ol_flags & PKT_TX_TCP_SEG)) {
+		if (!(ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
 			if (m->nb_segs > IAVF_TX_MAX_MTU_SEG) {
 				rte_errno = EINVAL;
 				return i;
@@ -2358,7 +2779,7 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
-#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+#ifdef RTE_ETHDEV_DEBUG_TX
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
 			rte_errno = -ret;
@@ -2369,6 +2790,15 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		if (ret != 0) {
 			rte_errno = -ret;
 			return i;
+		}
+
+		if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_QOS &&
+		    ol_flags & (RTE_MBUF_F_RX_VLAN_STRIPPED | RTE_MBUF_F_RX_VLAN)) {
+			ret = iavf_check_vlan_up2tc(txq, m);
+			if (ret != 0) {
+				rte_errno = -ret;
+				return i;
+			}
 		}
 	}
 
@@ -2400,22 +2830,18 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 	}
 
 #ifdef RTE_ARCH_X86
+	int check_ret;
 	bool use_avx2 = false;
-#ifdef CC_AVX512_SUPPORT
 	bool use_avx512 = false;
-#endif
 
-	if (!iavf_rx_vec_dev_check(dev) &&
-			rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
-		for (i = 0; i < dev->data->nb_rx_queues; i++) {
-			rxq = dev->data->rx_queues[i];
-			(void)iavf_rxq_vec_setup(rxq);
-		}
-
+	check_ret = iavf_rx_vec_dev_check(dev);
+	if (check_ret >= 0 &&
+	    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
 		if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
 		     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
-				rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
+		    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
 			use_avx2 = true;
+
 #ifdef CC_AVX512_SUPPORT
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1 &&
 		    rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512BW) == 1 &&
@@ -2423,61 +2849,106 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			use_avx512 = true;
 #endif
 
+		for (i = 0; i < dev->data->nb_rx_queues; i++) {
+			rxq = dev->data->rx_queues[i];
+			(void)iavf_rxq_vec_setup(rxq);
+		}
+
 		if (dev->data->scattered_rx) {
-			PMD_DRV_LOG(DEBUG,
-				    "Using %sVector Scattered Rx (port %d).",
-				    use_avx2 ? "avx2 " : "",
-				    dev->data->port_id);
-			if (vf->vf_res->vf_cap_flags &
-				VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC) {
+			if (!use_avx512) {
+				PMD_DRV_LOG(DEBUG,
+					    "Using %sVector Scattered Rx (port %d).",
+					    use_avx2 ? "avx2 " : "",
+					    dev->data->port_id);
+			} else {
+				if (check_ret == IAVF_VECTOR_PATH)
+					PMD_DRV_LOG(DEBUG,
+						    "Using AVX512 Vector Scattered Rx (port %d).",
+						    dev->data->port_id);
+				else
+					PMD_DRV_LOG(DEBUG,
+						    "Using AVX512 OFFLOAD Vector Scattered Rx (port %d).",
+						    dev->data->port_id);
+			}
+			if (use_flex) {
 				dev->rx_pkt_burst = use_avx2 ?
 					iavf_recv_scattered_pkts_vec_avx2_flex_rxd :
 					iavf_recv_scattered_pkts_vec_flex_rxd;
 #ifdef CC_AVX512_SUPPORT
-				if (use_avx512)
-					dev->rx_pkt_burst =
-						iavf_recv_scattered_pkts_vec_avx512_flex_rxd;
+				if (use_avx512) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx512_flex_rxd;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx512_flex_rxd_offload;
+				}
 #endif
 			} else {
 				dev->rx_pkt_burst = use_avx2 ?
 					iavf_recv_scattered_pkts_vec_avx2 :
 					iavf_recv_scattered_pkts_vec;
 #ifdef CC_AVX512_SUPPORT
-				if (use_avx512)
-					dev->rx_pkt_burst =
-						iavf_recv_scattered_pkts_vec_avx512;
+				if (use_avx512) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx512;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx512_offload;
+				}
 #endif
 			}
 		} else {
-			PMD_DRV_LOG(DEBUG, "Using %sVector Rx (port %d).",
-				    use_avx2 ? "avx2 " : "",
-				    dev->data->port_id);
-			if (vf->vf_res->vf_cap_flags &
-				VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC) {
+			if (!use_avx512) {
+				PMD_DRV_LOG(DEBUG, "Using %sVector Rx (port %d).",
+					    use_avx2 ? "avx2 " : "",
+					    dev->data->port_id);
+			} else {
+				if (check_ret == IAVF_VECTOR_PATH)
+					PMD_DRV_LOG(DEBUG,
+						    "Using AVX512 Vector Rx (port %d).",
+						    dev->data->port_id);
+				else
+					PMD_DRV_LOG(DEBUG,
+						    "Using AVX512 OFFLOAD Vector Rx (port %d).",
+						    dev->data->port_id);
+			}
+			if (use_flex) {
 				dev->rx_pkt_burst = use_avx2 ?
 					iavf_recv_pkts_vec_avx2_flex_rxd :
 					iavf_recv_pkts_vec_flex_rxd;
 #ifdef CC_AVX512_SUPPORT
-				if (use_avx512)
-					dev->rx_pkt_burst =
-						iavf_recv_pkts_vec_avx512_flex_rxd;
+				if (use_avx512) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx512_flex_rxd;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx512_flex_rxd_offload;
+				}
 #endif
 			} else {
 				dev->rx_pkt_burst = use_avx2 ?
 					iavf_recv_pkts_vec_avx2 :
 					iavf_recv_pkts_vec;
 #ifdef CC_AVX512_SUPPORT
-				if (use_avx512)
-					dev->rx_pkt_burst =
-						iavf_recv_pkts_vec_avx512;
+				if (use_avx512) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx512;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx512_offload;
+				}
 #endif
 			}
 		}
 
 		return;
 	}
-#endif
 
+#endif
 	if (dev->data->scattered_rx) {
 		PMD_DRV_LOG(DEBUG, "Using a Scattered Rx callback (port=%d).",
 			    dev->data->port_id);
@@ -2506,17 +2977,23 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 #ifdef RTE_ARCH_X86
 	struct iavf_tx_queue *txq;
 	int i;
+	int check_ret;
+	bool use_sse = false;
 	bool use_avx2 = false;
-#ifdef CC_AVX512_SUPPORT
 	bool use_avx512 = false;
-#endif
 
-	if (!iavf_tx_vec_dev_check(dev) &&
-			rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
-		if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
-		     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
-				rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
-			use_avx2 = true;
+	check_ret = iavf_tx_vec_dev_check(dev);
+
+	if (check_ret >= 0 &&
+	    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
+		/* SSE and AVX2 not support offload path yet. */
+		if (check_ret == IAVF_VECTOR_PATH) {
+			use_sse = true;
+			if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
+			     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
+			    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
+				use_avx2 = true;
+		}
 #ifdef CC_AVX512_SUPPORT
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1 &&
 		    rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512BW) == 1 &&
@@ -2524,17 +3001,32 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 			use_avx512 = true;
 #endif
 
-		PMD_DRV_LOG(DEBUG, "Using %sVector Tx (port %d).",
-			    use_avx2 ? "avx2 " : "",
-			    dev->data->port_id);
-		dev->tx_pkt_burst = use_avx2 ?
-				    iavf_xmit_pkts_vec_avx2 :
-				    iavf_xmit_pkts_vec;
-#ifdef CC_AVX512_SUPPORT
-		if (use_avx512)
-			dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx512;
-#endif
+		if (!use_sse && !use_avx2 && !use_avx512)
+			goto normal;
+
+		if (!use_avx512) {
+			PMD_DRV_LOG(DEBUG, "Using %sVector Tx (port %d).",
+				    use_avx2 ? "avx2 " : "",
+				    dev->data->port_id);
+			dev->tx_pkt_burst = use_avx2 ?
+					    iavf_xmit_pkts_vec_avx2 :
+					    iavf_xmit_pkts_vec;
+		}
 		dev->tx_pkt_prepare = NULL;
+#ifdef CC_AVX512_SUPPORT
+		if (use_avx512) {
+			if (check_ret == IAVF_VECTOR_PATH) {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx512;
+				PMD_DRV_LOG(DEBUG, "Using AVX512 Vector Tx (port %d).",
+					    dev->data->port_id);
+			} else {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx512_offload;
+				dev->tx_pkt_prepare = iavf_prep_pkts;
+				PMD_DRV_LOG(DEBUG, "Using AVX512 OFFLOAD Vector Tx (port %d).",
+					    dev->data->port_id);
+			}
+		}
+#endif
 
 		for (i = 0; i < dev->data->nb_tx_queues; i++) {
 			txq = dev->data->tx_queues[i];
@@ -2552,8 +3044,9 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 
 		return;
 	}
-#endif
 
+normal:
+#endif
 	PMD_DRV_LOG(DEBUG, "Using Basic Tx callback (port=%d).",
 		    dev->data->port_id);
 	dev->tx_pkt_burst = iavf_xmit_pkts;
@@ -2662,14 +3155,14 @@ iavf_dev_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 
 /* Get the number of used descriptors of a rx queue */
 uint32_t
-iavf_dev_rxq_count(struct rte_eth_dev *dev, uint16_t queue_id)
+iavf_dev_rxq_count(void *rx_queue)
 {
 #define IAVF_RXQ_SCAN_INTERVAL 4
 	volatile union iavf_rx_desc *rxdp;
 	struct iavf_rx_queue *rxq;
 	uint16_t desc = 0;
 
-	rxq = dev->data->rx_queues[queue_id];
+	rxq = rx_queue;
 	rxdp = &rxq->rx_ring[rxq->rx_tail];
 
 	while ((desc < rxq->nb_rx_desc) &&
@@ -3281,6 +3774,50 @@ iavf_get_default_ptype(uint16_t ptype)
 			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_ICMP,
+
+		/* IPv4 --> UDP ECPRI */
+		[372] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[373] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[374] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[375] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[376] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[377] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[378] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[379] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[380] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[381] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+
+		/* IPV6 --> UDP ECPRI */
+		[382] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[383] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[384] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[385] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[386] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[387] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[388] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[389] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[390] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[391] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
 		/* All others reserved */
 	};
 

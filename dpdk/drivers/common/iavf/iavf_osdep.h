@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2017-2020 Intel Corporation
+ * Copyright(c) 2017-2021 Intel Corporation
  */
 
 #ifndef _IAVF_OSDEP_H_
@@ -55,6 +55,15 @@ typedef uint64_t        s64;
 #define __be64          uint64_t
 #endif
 
+/* Avoid macro redefinition warning on Windows */
+#ifdef RTE_EXEC_ENV_WINDOWS
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+#endif
 #define min(a, b) RTE_MIN(a, b)
 #define max(a, b) RTE_MAX(a, b)
 
@@ -122,6 +131,11 @@ writeq(uint64_t value, volatile void *addr)
 
 #define IAVF_PCI_REG_WRITE(reg, value)         writel(value, reg)
 #define IAVF_PCI_REG_WRITE_RELAXED(reg, value) writel_relaxed(value, reg)
+
+#define IAVF_PCI_REG_WC_WRITE(reg, value) \
+	rte_write32_wc((rte_cpu_to_le_32(value)), reg)
+#define IAVF_PCI_REG_WC_WRITE_RELAXED(reg, value) \
+	rte_write32_wc_relaxed((rte_cpu_to_le_32(value)), reg)
 
 #define IAVF_READ_REG(hw, reg)                 rd32(hw, reg)
 #define IAVF_WRITE_REG(hw, reg, value)         wr32(hw, reg, value)

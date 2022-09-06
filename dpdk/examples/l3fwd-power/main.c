@@ -24,7 +24,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -47,6 +46,7 @@
 #include <rte_power_empty_poll.h>
 #include <rte_metrics.h>
 #include <rte_telemetry.h>
+#include <rte_power_pmd_mgmt.h>
 
 #include "perf_core.h"
 #include "main.h"
@@ -199,10 +199,14 @@ enum appmode {
 	APP_MODE_LEGACY,
 	APP_MODE_EMPTY_POLL,
 	APP_MODE_TELEMETRY,
-	APP_MODE_INTERRUPT
+	APP_MODE_INTERRUPT,
+	APP_MODE_PMD_MGMT
 };
 
 enum appmode app_mode;
+
+static enum rte_power_pmd_mgmt_type pmgmt_type;
+bool baseline_enabled;
 
 enum freq_scale_hint_t
 {
@@ -245,21 +249,22 @@ uint16_t nb_lcore_params = RTE_DIM(lcore_params_array_default);
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode        = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.mq_mode        = RTE_ETH_MQ_RX_RSS,
 		.split_hdr_size = 0,
-		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_UDP,
+			.rss_hf = RTE_ETH_RSS_UDP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	}
 };
+
+static uint32_t max_pkt_len;
 
 static struct rte_mempool * pktmbuf_pool[NB_SOCKETS];
 
@@ -500,7 +505,15 @@ is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len)
 		return -1;
 
 	/* 2. The IP checksum must be correct. */
-	/* this is checked in H/W */
+	/* if this is not checked in H/W, check it. */
+	if ((port_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) == 0) {
+		uint16_t actual_cksum, expected_cksum;
+		actual_cksum = pkt->hdr_checksum;
+		pkt->hdr_checksum = 0;
+		expected_cksum = rte_ipv4_cksum(pkt);
+		if (actual_cksum != expected_cksum)
+			return -2;
+	}
 
 	/*
 	 * 3. The IP version number must be 4. If the version number is not 4
@@ -712,7 +725,7 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 			dst_port = portid;
 
 		/* 02:00:00:00:00:xx */
-		d_addr_bytes = &eth_hdr->d_addr.addr_bytes[0];
+		d_addr_bytes = &eth_hdr->dst_addr.addr_bytes[0];
 		*((uint64_t *)d_addr_bytes) =
 			0x000000000002 + ((uint64_t)dst_port << 40);
 
@@ -724,7 +737,7 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
-				&eth_hdr->s_addr);
+				&eth_hdr->src_addr);
 
 		send_single_packet(m, dst_port);
 	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
@@ -744,13 +757,13 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 			dst_port = portid;
 
 		/* 02:00:00:00:00:xx */
-		d_addr_bytes = &eth_hdr->d_addr.addr_bytes[0];
+		d_addr_bytes = &eth_hdr->dst_addr.addr_bytes[0];
 		*((uint64_t *)d_addr_bytes) =
 			0x000000000002 + ((uint64_t)dst_port << 40);
 
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
-				&eth_hdr->s_addr);
+				&eth_hdr->src_addr);
 
 		send_single_packet(m, dst_port);
 #else
@@ -906,7 +919,7 @@ static int event_register(struct lcore_conf *qconf)
 	return 0;
 }
 
-/* main processing loop */
+/* Main processing loop. 8< */
 static int main_intr_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
@@ -1069,6 +1082,7 @@ start_rx:
 
 	return 0;
 }
+/* >8 End of main processing loop. */
 
 /* main processing loop */
 static int
@@ -1595,23 +1609,24 @@ print_usage(const char *prgname)
 		"  [--config (port,queue,lcore)[,(port,queue,lcore]]"
 		"  [--high-perf-cores CORELIST"
 		"  [--perf-config (port,queue,hi_perf,lcore_index)[,(port,queue,hi_perf,lcore_index]]"
-		"  [--enable-jumbo [--max-pkt-len PKTLEN]]\n"
+		"  [--max-pkt-len PKTLEN]\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
-		"  -P : enable promiscuous mode\n"
+		"  -P: enable promiscuous mode\n"
 		"  --config (port,queue,lcore): rx queues configuration\n"
 		"  --high-perf-cores CORELIST: list of high performance cores\n"
 		"  --perf-config: similar as config, cores specified as indices"
 		" for bins containing high or regular performance cores\n"
 		"  --no-numa: optional, disable numa awareness\n"
-		"  --enable-jumbo: enable jumbo frame"
-		" which max packet len is PKTLEN in decimal (64-9600)\n"
+		"  --max-pkt-len PKTLEN: maximum packet length in decimal (64-9600)\n"
 		"  --parse-ptype: parse packet type by software\n"
 		"  --legacy: use legacy interrupt-based scaling\n"
 		"  --empty-poll: enable empty poll detection"
 		" follow (training_flag, high_threshold, med_threshold)\n"
 		" --telemetry: enable telemetry mode, to update"
 		" empty polls, full polls, and core busyness to telemetry\n"
-		" --interrupt-only: enable interrupt-only mode\n",
+		" --interrupt-only: enable interrupt-only mode\n"
+		" --pmd-mgmt MODE: enable PMD power management mode. "
+		"Currently supported modes: baseline, monitor, pause, scale\n",
 		prgname);
 }
 
@@ -1701,6 +1716,37 @@ parse_config(const char *q_arg)
 
 	return 0;
 }
+
+static int
+parse_pmd_mgmt_config(const char *name)
+{
+#define PMD_MGMT_MONITOR "monitor"
+#define PMD_MGMT_PAUSE   "pause"
+#define PMD_MGMT_SCALE   "scale"
+#define PMD_MGMT_BASELINE  "baseline"
+
+	if (strncmp(PMD_MGMT_MONITOR, name, sizeof(PMD_MGMT_MONITOR)) == 0) {
+		pmgmt_type = RTE_POWER_MGMT_TYPE_MONITOR;
+		return 0;
+	}
+
+	if (strncmp(PMD_MGMT_PAUSE, name, sizeof(PMD_MGMT_PAUSE)) == 0) {
+		pmgmt_type = RTE_POWER_MGMT_TYPE_PAUSE;
+		return 0;
+	}
+
+	if (strncmp(PMD_MGMT_SCALE, name, sizeof(PMD_MGMT_SCALE)) == 0) {
+		pmgmt_type = RTE_POWER_MGMT_TYPE_SCALE;
+		return 0;
+	}
+	if (strncmp(PMD_MGMT_BASELINE, name, sizeof(PMD_MGMT_BASELINE)) == 0) {
+		baseline_enabled = true;
+		return 0;
+	}
+	/* unknown PMD power management mode */
+	return -1;
+}
+
 static int
 parse_ep_config(const char *q_arg)
 {
@@ -1755,6 +1801,8 @@ parse_ep_config(const char *q_arg)
 #define CMD_LINE_OPT_EMPTY_POLL "empty-poll"
 #define CMD_LINE_OPT_INTERRUPT_ONLY "interrupt-only"
 #define CMD_LINE_OPT_TELEMETRY "telemetry"
+#define CMD_LINE_OPT_PMD_MGMT "pmd-mgmt"
+#define CMD_LINE_OPT_MAX_PKT_LEN "max-pkt-len"
 
 /* Parse the argument given in the command line of the application */
 static int
@@ -1770,12 +1818,13 @@ parse_args(int argc, char **argv)
 		{"perf-config", 1, 0, 0},
 		{"high-perf-cores", 1, 0, 0},
 		{"no-numa", 0, 0, 0},
-		{"enable-jumbo", 0, 0, 0},
+		{CMD_LINE_OPT_MAX_PKT_LEN, 1, 0, 0},
 		{CMD_LINE_OPT_EMPTY_POLL, 1, 0, 0},
 		{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, 0},
 		{CMD_LINE_OPT_LEGACY, 0, 0, 0},
 		{CMD_LINE_OPT_TELEMETRY, 0, 0, 0},
 		{CMD_LINE_OPT_INTERRUPT_ONLY, 0, 0, 0},
+		{CMD_LINE_OPT_PMD_MGMT, 1, 0, 0},
 		{NULL, 0, 0, 0}
 	};
 
@@ -1887,6 +1936,21 @@ parse_args(int argc, char **argv)
 			}
 
 			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_PMD_MGMT,
+					sizeof(CMD_LINE_OPT_PMD_MGMT))) {
+				if (app_mode != APP_MODE_DEFAULT) {
+					printf(" power mgmt mode is mutually exclusive with other modes\n");
+					return -1;
+				}
+				if (parse_pmd_mgmt_config(optarg) < 0) {
+					printf(" Invalid PMD power management mode: %s\n",
+							optarg);
+					return -1;
+				}
+				app_mode = APP_MODE_PMD_MGMT;
+				printf("PMD power mgmt mode is enabled\n");
+			}
+			if (!strncmp(lgopts[option_index].name,
 					CMD_LINE_OPT_INTERRUPT_ONLY,
 					sizeof(CMD_LINE_OPT_INTERRUPT_ONLY))) {
 				if (app_mode != APP_MODE_DEFAULT) {
@@ -1898,36 +1962,10 @@ parse_args(int argc, char **argv)
 			}
 
 			if (!strncmp(lgopts[option_index].name,
-					"enable-jumbo", 12)) {
-				struct option lenopts =
-					{"max-pkt-len", required_argument, \
-									0, 0};
-
-				printf("jumbo frame is enabled \n");
-				port_conf.rxmode.offloads |=
-						DEV_RX_OFFLOAD_JUMBO_FRAME;
-				port_conf.txmode.offloads |=
-						DEV_TX_OFFLOAD_MULTI_SEGS;
-
-				/**
-				 * if no max-pkt-len set, use the default value
-				 * RTE_ETHER_MAX_LEN
-				 */
-				if (0 == getopt_long(argc, argvopt, "",
-						&lenopts, &option_index)) {
-					ret = parse_max_pkt_len(optarg);
-					if ((ret < 64) ||
-						(ret > MAX_JUMBO_PKT_LEN)){
-						printf("invalid packet "
-								"length\n");
-						print_usage(prgname);
-						return -1;
-					}
-					port_conf.rxmode.max_rx_pkt_len = ret;
-				}
-				printf("set jumbo frame "
-					"max packet length to %u\n",
-				(unsigned int)port_conf.rxmode.max_rx_pkt_len);
+					CMD_LINE_OPT_MAX_PKT_LEN,
+					sizeof(CMD_LINE_OPT_MAX_PKT_LEN))) {
+				printf("Custom frame size is configured\n");
+				max_pkt_len = parse_max_pkt_len(optarg);
 			}
 
 			if (!strncmp(lgopts[option_index].name,
@@ -2166,7 +2204,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -2442,11 +2480,49 @@ mode_to_str(enum appmode mode)
 		return "telemetry";
 	case APP_MODE_INTERRUPT:
 		return "interrupt-only";
+	case APP_MODE_PMD_MGMT:
+		return "pmd mgmt";
 	default:
 		return "invalid";
 	}
 }
 
+static uint32_t
+eth_dev_get_overhead_len(uint32_t max_rx_pktlen, uint16_t max_mtu)
+{
+	uint32_t overhead_len;
+
+	if (max_mtu != UINT16_MAX && max_rx_pktlen > max_mtu)
+		overhead_len = max_rx_pktlen - max_mtu;
+	else
+		overhead_len = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+
+	return overhead_len;
+}
+
+static int
+config_port_max_pkt_len(struct rte_eth_conf *conf,
+		struct rte_eth_dev_info *dev_info)
+{
+	uint32_t overhead_len;
+
+	if (max_pkt_len == 0)
+		return 0;
+
+	if (max_pkt_len < RTE_ETHER_MIN_LEN || max_pkt_len > MAX_JUMBO_PKT_LEN)
+		return -1;
+
+	overhead_len = eth_dev_get_overhead_len(dev_info->max_rx_pktlen,
+			dev_info->max_mtu);
+	conf->rxmode.mtu = max_pkt_len - overhead_len;
+
+	if (conf->rxmode.mtu > RTE_ETHER_MTU)
+		conf->txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+
+	return 0;
+}
+
+/* Power library initialized in the main routine. 8< */
 int
 main(int argc, char **argv)
 {
@@ -2476,6 +2552,9 @@ main(int argc, char **argv)
 
 	/* init RTE timer library to be used late */
 	rte_timer_subsystem_init();
+
+	/* if we're running pmd-mgmt mode, don't default to baseline mode */
+	baseline_enabled = false;
 
 	/* parse application arguments (after the EAL ones) */
 	ret = parse_args(argc, argv);
@@ -2560,9 +2639,15 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		ret = config_port_max_pkt_len(&local_port_conf, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Invalid max packet length: %u (port %u)\n",
+				max_pkt_len, portid);
+
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 			dev_info.flow_type_rss_offloads;
@@ -2574,6 +2659,11 @@ main(int argc, char **argv)
 				port_conf.rx_adv_conf.rss_conf.rss_hf,
 				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
 		}
+
+		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf == 0)
+			local_port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+		local_port_conf.rxmode.offloads &= dev_info.rx_offload_capa;
+		port_conf.rxmode.offloads = local_port_conf.rxmode.offloads;
 
 		ret = rte_eth_dev_configure(portid, nb_rx_queue,
 					(uint16_t)n_tx_queue, &local_port_conf);
@@ -2671,6 +2761,7 @@ main(int argc, char **argv)
 		qconf = &lcore_conf[lcore_id];
 		printf("\nInitializing rx queues on lcore %u ... ", lcore_id );
 		fflush(stdout);
+
 		/* init RX queues */
 		for(queue = 0; queue < qconf->n_rx_queue; ++queue) {
 			struct rte_eth_rxconf rxq_conf;
@@ -2708,8 +2799,19 @@ main(int argc, char **argv)
 					rte_exit(EXIT_FAILURE,
 						 "Fail to add ptype cb\n");
 			}
+
+			if (app_mode == APP_MODE_PMD_MGMT && !baseline_enabled) {
+				ret = rte_power_ethdev_pmgmt_queue_enable(
+						lcore_id, portid, queueid,
+						pmgmt_type);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"rte_power_ethdev_pmgmt_queue_enable: err=%d, port=%d\n",
+							ret, portid);
+			}
 		}
 	}
+	/* >8 End of power library initialization. */
 
 	printf("\n");
 
@@ -2798,6 +2900,9 @@ main(int argc, char **argv)
 						SKIP_MAIN);
 	} else if (app_mode == APP_MODE_INTERRUPT) {
 		rte_eal_mp_remote_launch(main_intr_loop, NULL, CALL_MAIN);
+	} else if (app_mode == APP_MODE_PMD_MGMT) {
+		/* reuse telemetry loop for PMD power management mode */
+		rte_eal_mp_remote_launch(main_telemetry_loop, NULL, CALL_MAIN);
 	}
 
 	if (app_mode == APP_MODE_EMPTY_POLL || app_mode == APP_MODE_TELEMETRY)
@@ -2806,6 +2911,21 @@ main(int argc, char **argv)
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
+	}
+
+	if (app_mode == APP_MODE_PMD_MGMT) {
+		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+			if (rte_lcore_is_enabled(lcore_id) == 0)
+				continue;
+			qconf = &lcore_conf[lcore_id];
+			for (queue = 0; queue < qconf->n_rx_queue; ++queue) {
+				portid = qconf->rx_queue_list[queue].port_id;
+				queueid = qconf->rx_queue_list[queue].queue_id;
+
+				rte_power_ethdev_pmgmt_queue_disable(lcore_id,
+						portid, queueid);
+			}
+		}
 	}
 
 	RTE_ETH_FOREACH_DEV(portid)

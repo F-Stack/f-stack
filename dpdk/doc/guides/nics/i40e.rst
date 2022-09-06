@@ -46,8 +46,8 @@ Features of the i40e PMD are:
 - Malicious Device Drive event catch and notify
 - Generic flow API
 
-Prerequisites
--------------
+Linux Prerequisites
+-------------------
 
 - Identifying your adapter using `Intel Support
   <http://www.intel.com/support>`_ and get the latest NVM/FW images.
@@ -75,6 +75,19 @@ Prerequisites
       * In all cases Intel recommends using Intel Ethernet Optics; other modules
         may function but are not validated by Intel. Contact Intel for supported media types.
 
+Windows Prerequisites
+---------------------
+
+- Follow the :doc:`guide for Windows <../windows_gsg/run_apps>`
+  to setup the basic DPDK environment.
+
+- Identify the Intel® Ethernet adapter and get the latest NVM/FW version.
+
+- To access any Intel® Ethernet hardware, load the NetUIO driver in place of existing built-in (inbox) driver.
+
+- To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+  <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
 Recommended Matching List
 -------------------------
 
@@ -95,6 +108,8 @@ For X710/XL710/XXV710,
    |    21.08     |         2.15.9        |       8.30       |
    +--------------+-----------------------+------------------+
    |    21.05     |         2.15.9        |       8.30       |
+   +--------------+-----------------------+------------------+
+   |    21.02     |         2.14.13       |       8.00       |
    +--------------+-----------------------+------------------+
    |    20.11     |         2.14.13       |       8.00       |
    +--------------+-----------------------+------------------+
@@ -148,6 +163,8 @@ For X722,
    |    21.08     |         2.15.9        |       5.30       |
    +--------------+-----------------------+------------------+
    |    21.05     |         2.15.9        |       5.30       |
+   +--------------+-----------------------+------------------+
+   |    21.02     |         2.14.13       |       5.00       |
    +--------------+-----------------------+------------------+
    |    20.11     |         2.13.10       |       5.00       |
    +--------------+-----------------------+------------------+
@@ -224,15 +241,6 @@ Runtime Config Options
 
   Currently hot-plugging of representor ports is not supported so all required
   representors must be specified on the creation of the PF.
-
-- ``Use latest supported vector`` (default ``disable``)
-
-  Latest supported vector path may not always get the best perf so vector path was
-  recommended to use only on later platform. But users may want the latest vector path
-  since it can get better perf in some real work loading cases. So ``devargs`` param
-  ``use-latest-supported-vec`` is introduced, for example::
-
-  -a 84:00.0,use-latest-supported-vec=1
 
 - ``Enable validation for VF message`` (default ``not enabled``)
 
@@ -747,6 +755,11 @@ Cloud Filter
 When programming cloud filters for IPv4/6_UDP/TCP/SCTP with SRC port only or DST port only,
 it will make any cloud filter using inner_vlan or tunnel key invalid. Default configuration will be
 recovered only by NIC core reset.
+
+Mirror rule limitation for X722
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Due to firmware restriction of X722, the same VSI cannot have more than one mirror rule.
 
 High Performance of Small Packets on 40GbE NIC
 ----------------------------------------------

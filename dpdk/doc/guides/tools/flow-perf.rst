@@ -25,15 +25,8 @@ computes an average time across all windows.
 The application also provides the ability to measure rte flow deletion rate,
 in addition to memory consumption before and after the flow rules' creation.
 
-The app supports single and multi core performance measurements.
-
-
-Known Limitations
------------------
-
-The current version has limitations which can be removed in future:
-
-* Single core insertion only.
+The app supports single and multiple core performance measurements, and
+support multiple cores insertion/deletion as well.
 
 
 Compiling the Application
@@ -103,6 +96,49 @@ The command line options are:
 *	``--portmask=N``
 	hexadecimal bitmask of ports to be used.
 
+*	``--cores=N``
+	Set the number of needed cores to insert/delete rte_flow rules.
+	Default cores count is 1.
+
+*       ``--random-priority=N,S``
+        Create flows with the priority attribute set randomly between 0 to N - 1
+        and use S as seed for the pseudo-random number generator.
+
+*	``--meter-profile-alg``
+	Set the traffic metering algorithm.
+	Example: meter-profile-alg=srtcmp, default algorithm is srtcm_rfc2697
+
+*	``--unique-data``
+	Flag to set using unique data for all actions that support data,
+	Such as header modify and encap actions. Default is using fixed
+	data for any action that support data for all flows.
+
+*	``--rxq=N``
+	Set the count of receive queues, default is 1.
+
+*	``--txq=N``
+	Set the count of send queues, default is 1.
+
+*	``--rxd=N``
+	Set the count of rxd, default is 256.
+
+*	``--txd=N``
+	Set the count of txd, default is 256.
+
+*	``--mbuf-size=N``
+	Set the size of mbuf, default size is 2048.
+
+*	``--mbuf-cache-size=N``
+	Set the size of mbuf cache, default size is 512.
+
+*	``--total-mbuf-count=N``
+	Set the count of total mbuf number, default count is 32000.
+
+*	``--meter-profile=N1,N2,N3``
+	Set the CIR, CBS and EBS parameters, default values are 1250000, 156250 and 0.
+
+*	``--packet-mode``
+	Enable packet mode for meter profile.
 
 Attributes:
 
@@ -204,6 +240,10 @@ Actions:
 	Add port redirection action to all flows actions.
 	Port redirection destination is defined in user_parameters.h
 	under PORT_ID_DST, default value = 1.
+
+       It can also has optional parameter like --port-id=N[,M] to
+       specify the destination port, the number of values should be
+       the same with number of set bits in portmask.
 
 *	``--rss``
 	Add RSS action to all flows actions,
@@ -349,3 +389,11 @@ Actions:
 
 *	``--vxlan-decap``
 	Add vxlan decap action to all flows actions.
+
+*	``--policy-mtr=<str>``
+	Add policy-mtr to create meter with policy and specify policy actions.
+	Example: policy-mtr=rss,mark::drop
+
+*	``--meter``
+	Add meter action to all flows actions.
+	Currently, 1 meter profile -> N meter rules -> N rte flows.

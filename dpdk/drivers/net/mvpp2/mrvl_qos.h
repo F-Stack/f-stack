@@ -17,9 +17,13 @@
 /** Value used as "unknown". */
 #define MRVL_UNKNOWN_TC (0xFF)
 
-/* QoS config. */
-struct mrvl_qos_cfg {
+/* config. */
+struct mrvl_cfg {
+	struct  {
+		struct pp2_parse_udfs	prs_udfs;
+	} pp2_cfg;
 	struct port_cfg {
+		enum pp2_ppio_eth_start_hdr eth_start_hdr;
 		int rate_limit_enable;
 		struct pp2_ppio_rate_limit_params rate_limit_params;
 		struct {
@@ -41,17 +45,19 @@ struct mrvl_qos_cfg {
 		uint16_t inqs;
 		uint16_t outqs;
 		uint8_t default_tc;
-		uint8_t use_global_defaults;
+		uint8_t use_qos_global_defaults;
 		struct pp2_cls_plcr_params policer_params;
 		uint8_t setup_policer;
+		uint8_t forward_bad_frames;
+		uint32_t fill_bpool_buffs;
 	} port[RTE_MAX_ETHPORTS];
 };
 
-/** Global QoS configuration. */
-extern struct mrvl_qos_cfg *mrvl_qos_cfg;
+/** Global configuration. */
+extern struct mrvl_cfg *mrvl_cfg;
 
 /**
- * Parse QoS configuration - rte_kvargs_process handler.
+ * Parse configuration - rte_kvargs_process handler.
  *
  * Opens configuration file and parses its content.
  *
@@ -61,8 +67,7 @@ extern struct mrvl_qos_cfg *mrvl_qos_cfg;
  * @returns 0 in case of success, exits otherwise.
  */
 int
-mrvl_get_qoscfg(const char *key __rte_unused, const char *path,
-		void *extra_args);
+mrvl_get_cfg(const char *key __rte_unused, const char *path, void *extra_args);
 
 /**
  * Configure RX Queues in a given port.

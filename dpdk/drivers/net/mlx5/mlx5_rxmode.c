@@ -7,11 +7,10 @@
 #include <errno.h>
 #include <string.h>
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include <mlx5_glue.h>
 #include "mlx5.h"
-#include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
 
 /**
@@ -37,7 +36,7 @@ mlx5_promiscuous_enable(struct rte_eth_dev *dev)
 			dev->data->port_id);
 		return 0;
 	}
-	if (priv->config.vf) {
+	if (priv->config.vf || priv->config.sf) {
 		ret = mlx5_os_set_promisc(dev, 1);
 		if (ret)
 			return ret;
@@ -70,7 +69,7 @@ mlx5_promiscuous_disable(struct rte_eth_dev *dev)
 	int ret;
 
 	dev->data->promiscuous = 0;
-	if (priv->config.vf) {
+	if (priv->config.vf || priv->config.sf) {
 		ret = mlx5_os_set_promisc(dev, 0);
 		if (ret)
 			return ret;
@@ -110,7 +109,7 @@ mlx5_allmulticast_enable(struct rte_eth_dev *dev)
 			dev->data->port_id);
 		return 0;
 	}
-	if (priv->config.vf) {
+	if (priv->config.vf || priv->config.sf) {
 		ret = mlx5_os_set_allmulti(dev, 1);
 		if (ret)
 			goto error;
@@ -143,7 +142,7 @@ mlx5_allmulticast_disable(struct rte_eth_dev *dev)
 	int ret;
 
 	dev->data->all_multicast = 0;
-	if (priv->config.vf) {
+	if (priv->config.vf || priv->config.sf) {
 		ret = mlx5_os_set_allmulti(dev, 0);
 		if (ret)
 			goto error;

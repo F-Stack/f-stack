@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
@@ -171,7 +171,7 @@ sfc_ef10_rx_qrefill(struct sfc_ef10_rxq *rxq)
 
 	SFC_ASSERT(rxq->added != added);
 	rxq->added = added;
-	sfc_ef10_rx_qpush(rxq->doorbell, added, ptr_mask);
+	sfc_ef10_rx_qpush(rxq->doorbell, added, ptr_mask, &rxq->dp.dpq.dbells);
 }
 
 static void
@@ -329,7 +329,7 @@ sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
 	/* Mask RSS hash offload flag if RSS is not enabled */
 	sfc_ef10_rx_ev_to_offloads(rx_ev, m,
 				   (rxq->flags & SFC_EF10_RXQ_RSS_HASH) ?
-				   ~0ull : ~PKT_RX_RSS_HASH);
+				   ~0ull : ~RTE_MBUF_F_RX_RSS_HASH);
 
 	/* data_off already moved past pseudo header */
 	pseudo_hdr = (uint8_t *)m->buf_addr + RTE_PKTMBUF_HEADROOM;
@@ -337,7 +337,7 @@ sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
 	/*
 	 * Always get RSS hash from pseudo header to avoid
 	 * condition/branching. If it is valid or not depends on
-	 * PKT_RX_RSS_HASH in m->ol_flags.
+	 * RTE_MBUF_F_RX_RSS_HASH in m->ol_flags.
 	 */
 	m->hash.rss = sfc_ef10_rx_pseudo_hdr_get_hash(pseudo_hdr);
 
@@ -391,7 +391,7 @@ sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
 		/*
 		 * Always get RSS hash from pseudo header to avoid
 		 * condition/branching. If it is valid or not depends on
-		 * PKT_RX_RSS_HASH in m->ol_flags.
+		 * RTE_MBUF_F_RX_RSS_HASH in m->ol_flags.
 		 */
 		m->hash.rss = sfc_ef10_rx_pseudo_hdr_get_hash(pseudo_hdr);
 
@@ -651,6 +651,10 @@ sfc_ef10_rx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (info->rxq_entries != info->evq_entries)
 		goto fail_rxq_args;
 
+	rc = ENOTSUP;
+	if (info->nic_dma_info->nb_regions > 0)
+		goto fail_nic_dma;
+
 	rc = ENOMEM;
 	rxq = rte_zmalloc_socket("sfc-ef10-rxq", sizeof(*rxq),
 				 RTE_CACHE_LINE_SIZE, socket_id);
@@ -696,6 +700,7 @@ fail_desc_alloc:
 	rte_free(rxq);
 
 fail_rxq_alloc:
+fail_nic_dma:
 fail_rxq_args:
 	return rc;
 }
@@ -818,10 +823,10 @@ struct sfc_dp_rx sfc_ef10_rx = {
 	},
 	.features		= SFC_DP_RX_FEAT_MULTI_PROCESS |
 				  SFC_DP_RX_FEAT_INTR,
-	.dev_offload_capa	= DEV_RX_OFFLOAD_CHECKSUM |
-				  DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-				  DEV_RX_OFFLOAD_RSS_HASH,
-	.queue_offload_capa	= DEV_RX_OFFLOAD_SCATTER,
+	.dev_offload_capa	= RTE_ETH_RX_OFFLOAD_CHECKSUM |
+				  RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+				  RTE_ETH_RX_OFFLOAD_RSS_HASH,
+	.queue_offload_capa	= RTE_ETH_RX_OFFLOAD_SCATTER,
 	.get_dev_info		= sfc_ef10_rx_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_rx_qsize_up_rings,
 	.qcreate		= sfc_ef10_rx_qcreate,

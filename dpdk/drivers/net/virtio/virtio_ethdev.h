@@ -7,11 +7,9 @@
 
 #include <stdint.h>
 
-#include "virtio_pci.h"
+#include <ethdev_driver.h>
 
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
+#include "virtio.h"
 
 #define VIRTIO_MAX_RX_QUEUES 128U
 #define VIRTIO_MAX_TX_QUEUES 128U
@@ -47,7 +45,8 @@
 	 1u << VIRTIO_NET_F_GUEST_TSO6     |	\
 	 1u << VIRTIO_NET_F_CSUM           |	\
 	 1u << VIRTIO_NET_F_HOST_TSO4      |	\
-	 1u << VIRTIO_NET_F_HOST_TSO6)
+	 1u << VIRTIO_NET_F_HOST_TSO6      |	\
+	 1ULL << VIRTIO_NET_F_RSS)
 
 extern const struct eth_dev_ops virtio_user_secondary_eth_dev_ops;
 
@@ -59,8 +58,6 @@ void virtio_dev_cq_start(struct rte_eth_dev *dev);
 /*
  * RX/TX function prototypes
  */
-
-int virtio_dev_rx_queue_done(void *rxq, uint16_t offset);
 
 int  virtio_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -117,6 +114,8 @@ void virtio_interrupt_handler(void *param);
 
 int virtio_dev_pause(struct rte_eth_dev *dev);
 void virtio_dev_resume(struct rte_eth_dev *dev);
+int virtio_dev_stop(struct rte_eth_dev *dev);
+int virtio_dev_close(struct rte_eth_dev *dev);
 int virtio_inject_pkts(struct rte_eth_dev *dev, struct rte_mbuf **tx_pkts,
 		int nb_pkts);
 

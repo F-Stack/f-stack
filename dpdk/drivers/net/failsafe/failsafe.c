@@ -7,8 +7,8 @@
 
 #include <rte_alarm.h>
 #include <rte_malloc.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_devargs.h>
 #include <rte_kvargs.h>
 #include <rte_bus_vdev.h>
@@ -17,10 +17,10 @@
 
 const char pmd_failsafe_driver_name[] = FAILSAFE_DRIVER_NAME;
 static const struct rte_eth_link eth_link = {
-	.link_speed = ETH_SPEED_NUM_10G,
-	.link_duplex = ETH_LINK_FULL_DUPLEX,
-	.link_status = ETH_LINK_UP,
-	.link_autoneg = ETH_LINK_AUTONEG,
+	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
+	.link_status = RTE_ETH_LINK_UP,
+	.link_autoneg = RTE_ETH_LINK_AUTONEG,
 };
 
 static int
@@ -260,17 +260,27 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		if (i == priv->subs_tail)
 			rte_eth_random_addr(&mac->addr_bytes[0]);
 	}
-	INFO("MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
-		mac->addr_bytes[0], mac->addr_bytes[1],
-		mac->addr_bytes[2], mac->addr_bytes[3],
-		mac->addr_bytes[4], mac->addr_bytes[5]);
+	INFO("MAC address is " RTE_ETHER_ADDR_PRT_FMT,
+		RTE_ETHER_ADDR_BYTES(mac));
 	dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC |
 				RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
-	PRIV(dev)->intr_handle = (struct rte_intr_handle){
-		.fd = -1,
-		.type = RTE_INTR_HANDLE_EXT,
-	};
+
+	/* Allocate interrupt instance */
+	PRIV(dev)->intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+	if (PRIV(dev)->intr_handle == NULL) {
+		ERROR("Failed to allocate intr handle");
+		goto cancel_alarm;
+	}
+
+	if (rte_intr_fd_set(PRIV(dev)->intr_handle, -1))
+		goto cancel_alarm;
+
+	if (rte_intr_type_set(PRIV(dev)->intr_handle, RTE_INTR_HANDLE_EXT))
+		goto cancel_alarm;
+
 	rte_eth_dev_probing_finish(dev);
+
 	return 0;
 cancel_alarm:
 	failsafe_hotplug_alarm_cancel(dev);
@@ -298,6 +308,7 @@ fs_rte_eth_free(const char *name)
 	if (dev == NULL)
 		return 0; /* port already released */
 	ret = failsafe_eth_dev_close(dev);
+	rte_intr_instance_free(PRIV(dev)->intr_handle);
 	rte_eth_dev_release_port(dev);
 	return ret;
 }
@@ -390,4 +401,4 @@ static struct rte_vdev_driver failsafe_drv = {
 
 RTE_PMD_REGISTER_VDEV(net_failsafe, failsafe_drv);
 RTE_PMD_REGISTER_PARAM_STRING(net_failsafe, PMD_FAILSAFE_PARAM_STRING);
-RTE_LOG_REGISTER(failsafe_logtype, pmd.net.failsafe, NOTICE)
+RTE_LOG_REGISTER_DEFAULT(failsafe_logtype, NOTICE)

@@ -216,7 +216,7 @@ i40e_vsi_rm_mac_filter(struct i40e_vsi *vsi)
 	void *temp;
 
 	/* remove all the MACs */
-	TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
+	RTE_TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
 		vlan_num = vsi->vlan_num;
 		filter_type = f->mac_info.filter_type;
 		if (filter_type == I40E_MACVLAN_PERFECT_MATCH ||
@@ -274,7 +274,7 @@ i40e_vsi_restore_mac_filter(struct i40e_vsi *vsi)
 	void *temp;
 
 	/* restore all the MACs */
-	TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
+	RTE_TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
 		if (f->mac_info.filter_type == I40E_MACVLAN_PERFECT_MATCH ||
 		    f->mac_info.filter_type == I40E_MACVLAN_HASH_MATCH) {
 			/**
@@ -563,7 +563,7 @@ rte_pmd_i40e_set_vf_mac_addr(uint16_t port, uint16_t vf_id,
 	rte_ether_addr_copy(mac_addr, &vf->mac_addr);
 
 	/* Remove all existing mac */
-	TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp)
+	RTE_TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp)
 		if (i40e_vsi_delete_mac(vsi, &f->mac_info.mac_addr)
 				!= I40E_SUCCESS)
 			PMD_DRV_LOG(WARNING, "Delete MAC failed");
@@ -2410,8 +2410,7 @@ int rte_pmd_i40e_flow_type_mapping_reset(uint16_t port)
 
 	dev = &rte_eth_devices[port];
 
-	if (!is_i40e_supported(dev) &&
-	    !is_i40evf_supported(dev))
+	if (!is_i40e_supported(dev))
 		return -ENOTSUP;
 
 	i40e_set_default_pctype_table(dev);
@@ -2431,8 +2430,7 @@ int rte_pmd_i40e_flow_type_mapping_get(
 
 	dev = &rte_eth_devices[port];
 
-	if (!is_i40e_supported(dev) &&
-	    !is_i40evf_supported(dev))
+	if (!is_i40e_supported(dev))
 		return -ENOTSUP;
 
 	ad = I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
@@ -2460,8 +2458,7 @@ rte_pmd_i40e_flow_type_mapping_update(
 
 	dev = &rte_eth_devices[port];
 
-	if (!is_i40e_supported(dev) &&
-	    !is_i40evf_supported(dev))
+	if (!is_i40e_supported(dev))
 		return -ENOTSUP;
 
 	if (count > I40E_FLOW_TYPE_MAX)

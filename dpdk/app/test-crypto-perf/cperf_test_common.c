@@ -83,6 +83,20 @@ fill_multi_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 }
 
 static void
+mempool_asym_obj_init(struct rte_mempool *mp, __rte_unused void *opaque_arg,
+		      void *obj, __rte_unused unsigned int i)
+{
+	struct rte_crypto_op *op = obj;
+
+	/* Set crypto operation */
+	op->type = RTE_CRYPTO_OP_TYPE_ASYMMETRIC;
+	op->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+	op->sess_type = RTE_CRYPTO_OP_WITH_SESSION;
+	op->phys_addr = rte_mem_virt2iova(obj);
+	op->mempool = mp;
+}
+
+static void
 mempool_obj_init(struct rte_mempool *mp,
 		 void *opaque_arg,
 		 void *obj,
@@ -140,6 +154,24 @@ cperf_alloc_common_memory(const struct cperf_options *options,
 	uint16_t crypto_op_size = sizeof(struct rte_crypto_op) +
 		sizeof(struct rte_crypto_sym_op);
 	uint16_t crypto_op_private_size;
+
+	if (options->op_type == CPERF_ASYM_MODEX) {
+		snprintf(pool_name, RTE_MEMPOOL_NAMESIZE, "perf_asym_op_pool%u",
+			 rte_socket_id());
+		*pool = rte_crypto_op_pool_create(
+			pool_name, RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+			options->pool_sz, RTE_MEMPOOL_CACHE_MAX_SIZE, 0,
+			rte_socket_id());
+		if (*pool == NULL) {
+			RTE_LOG(ERR, USER1,
+				"Cannot allocate mempool for device %u\n",
+				dev_id);
+			return -1;
+		}
+		rte_mempool_obj_iter(*pool, mempool_asym_obj_init, NULL);
+		return 0;
+	}
+
 	/*
 	 * If doing AES-CCM, IV field needs to be 16 bytes long,
 	 * and AAD field needs to be long enough to have 18 bytes,

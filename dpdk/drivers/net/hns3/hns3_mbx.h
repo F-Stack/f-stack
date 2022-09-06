@@ -18,7 +18,7 @@ enum HNS3_MBX_OPCODE {
 	HNS3_MBX_API_NEGOTIATE,         /* (VF -> PF) negotiate API version */
 	HNS3_MBX_GET_QINFO,             /* (VF -> PF) get queue config */
 	HNS3_MBX_GET_QDEPTH,            /* (VF -> PF) get queue depth */
-	HNS3_MBX_GET_TCINFO,            /* (VF -> PF) get TC config */
+	HNS3_MBX_GET_BASIC_INFO,        /* (VF -> PF) get basic info */
 	HNS3_MBX_GET_RETA,              /* (VF -> PF) get RETA */
 	HNS3_MBX_GET_RSS_KEY,           /* (VF -> PF) get RSS key */
 	HNS3_MBX_GET_MAC_ADDR,          /* (VF -> PF) get MAC addr */
@@ -47,6 +47,14 @@ enum HNS3_MBX_OPCODE {
 	HNS3_MBX_PUSH_LINK_STATUS = 201, /* (IMP -> PF) get port link status */
 };
 
+struct hns3_basic_info {
+	uint8_t hw_tc_map;
+	uint8_t rsv;
+	uint16_t pf_vf_if_version;
+	/* capabilities of VF dependent on PF */
+	uint32_t caps;
+};
+
 /* below are per-VF mac-vlan subcodes */
 enum hns3_mbx_mac_vlan_subcode {
 	HNS3_MBX_MAC_VLAN_UC_MODIFY = 0,        /* modify UC mac addr */
@@ -63,6 +71,7 @@ enum hns3_mbx_vlan_cfg_subcode {
 	HNS3_MBX_VLAN_TX_OFF_CFG,               /* set tx side vlan offload */
 	HNS3_MBX_VLAN_RX_OFF_CFG,               /* set rx side vlan offload */
 	HNS3_MBX_GET_PORT_BASE_VLAN_STATE = 4,  /* get port based vlan state */
+	HNS3_MBX_ENABLE_VLAN_FILTER,            /* set vlan filter state */
 };
 
 enum hns3_mbx_tbl_cfg_subcode {
@@ -78,6 +87,7 @@ enum hns3_mbx_link_fail_subcode {
 
 #define HNS3_MBX_MAX_MSG_SIZE	16
 #define HNS3_MBX_MAX_RESP_DATA_SIZE	8
+#define HNS3_MBX_DEF_TIME_LIMIT_MS	500
 
 enum {
 	HNS3_MBX_RESP_MATCHING_SCHEME_OF_ORIGINAL = 0,
@@ -150,22 +160,8 @@ struct hns3_pf_rst_done_cmd {
 
 #define HNS3_PF_RESET_DONE_BIT		BIT(0)
 
-/* used by VF to store the received Async responses from PF */
-struct hns3_mbx_arq_ring {
-#define HNS3_MBX_MAX_ARQ_MSG_SIZE	8
-#define HNS3_MBX_MAX_ARQ_MSG_NUM	1024
-	uint32_t head;
-	uint32_t tail;
-	uint32_t count;
-	uint16_t msg_q[HNS3_MBX_MAX_ARQ_MSG_NUM][HNS3_MBX_MAX_ARQ_MSG_SIZE];
-};
-
 #define hns3_mbx_ring_ptr_move_crq(crq) \
 	((crq)->next_to_use = ((crq)->next_to_use + 1) % (crq)->desc_num)
-#define hns3_mbx_tail_ptr_move_arq(arq) \
-	((arq).tail = ((arq).tail + 1) % HNS3_MBX_MAX_ARQ_MSG_SIZE)
-#define hns3_mbx_head_ptr_move_arq(arq) \
-		((arq).head = ((arq).head + 1) % HNS3_MBX_MAX_ARQ_MSG_SIZE)
 
 struct hns3_hw;
 void hns3_dev_handle_mbx_msg(struct hns3_hw *hw);

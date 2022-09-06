@@ -14,6 +14,13 @@
 #define ICE_DCF_VSI_UPDATE_SERVICE_INTERVAL	100000 /* us */
 static rte_spinlock_t vsi_update_lock = RTE_SPINLOCK_INITIALIZER;
 
+struct ice_dcf_reset_event_param {
+	struct ice_dcf_hw *dcf_hw;
+
+	bool vfr; /* VF reset event */
+	uint16_t vf_id; /* The reset VF ID */
+};
+
 static __rte_always_inline void
 ice_dcf_update_vsi_ctx(struct ice_hw *hw, uint16_t vsi_handle,
 		       uint16_t vsi_map)
@@ -110,30 +117,109 @@ ice_dcf_update_pf_vsi_map(struct ice_hw *hw, uint16_t pf_vsi_idx,
 static void*
 ice_dcf_vsi_update_service_handler(void *param)
 {
-	struct ice_dcf_hw *hw = param;
+	struct ice_dcf_reset_event_param *reset_param = param;
+	struct ice_dcf_hw *hw = reset_param->dcf_hw;
 	struct ice_dcf_adapter *adapter =
 		container_of(hw, struct ice_dcf_adapter, real_hw);
 	struct ice_adapter *parent_adapter = &adapter->parent;
 
 	pthread_detach(pthread_self());
-	usleep(ICE_DCF_VSI_UPDATE_SERVICE_INTERVAL);
 
+	rte_delay_us(ICE_DCF_VSI_UPDATE_SERVICE_INTERVAL);
 
 	rte_spinlock_lock(&vsi_update_lock);
 
 	if (!ice_dcf_handle_vsi_update_event(hw)) {
-		struct ice_dcf_adapter *dcf_ad =
-			container_of(hw, struct ice_dcf_adapter, real_hw);
-
 		__atomic_store_n(&parent_adapter->dcf_state_on, true,
 				 __ATOMIC_RELAXED);
-		ice_dcf_update_vf_vsi_map(&dcf_ad->parent.hw,
+		ice_dcf_update_vf_vsi_map(&adapter->parent.hw,
 					  hw->num_vfs, hw->vf_vsi_map);
 	}
 
+	if (reset_param->vfr && adapter->repr_infos) {
+		struct rte_eth_dev *vf_rep_eth_dev =
+			adapter->repr_infos[reset_param->vf_id].vf_rep_eth_dev;
+		if (vf_rep_eth_dev && vf_rep_eth_dev->data->dev_started) {
+			PMD_DRV_LOG(DEBUG, "VF%u representor is resetting",
+				    reset_param->vf_id);
+			ice_dcf_vf_repr_init_vlan(vf_rep_eth_dev);
+		}
+	}
+
+	if (hw->tm_conf.committed)
+		ice_dcf_replay_vf_bw(hw, reset_param->vf_id);
+
 	rte_spinlock_unlock(&vsi_update_lock);
 
+	free(param);
+
 	return NULL;
+}
+
+static void
+start_vsi_reset_thread(struct ice_dcf_hw *dcf_hw, bool vfr, uint16_t vf_id)
+{
+#define THREAD_NAME_LEN	16
+	struct ice_dcf_reset_event_param *param;
+	char name[THREAD_NAME_LEN];
+	pthread_t thread;
+	int ret;
+
+	param = malloc(sizeof(*param));
+	if (!param) {
+		PMD_DRV_LOG(ERR, "Failed to allocate the memory for reset handling");
+		return;
+	}
+
+	param->dcf_hw = dcf_hw;
+	param->vfr = vfr;
+	param->vf_id = vf_id;
+
+	snprintf(name, sizeof(name), "ice-reset-%u", vf_id);
+	ret = rte_ctrl_thread_create(&thread, name, NULL,
+				     ice_dcf_vsi_update_service_handler, param);
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "Failed to start the thread for reset handling");
+		free(param);
+	}
+}
+
+static uint32_t
+ice_dcf_convert_link_speed(enum virtchnl_link_speed virt_link_speed)
+{
+	uint32_t speed;
+
+	switch (virt_link_speed) {
+	case VIRTCHNL_LINK_SPEED_100MB:
+		speed = 100;
+		break;
+	case VIRTCHNL_LINK_SPEED_1GB:
+		speed = 1000;
+		break;
+	case VIRTCHNL_LINK_SPEED_10GB:
+		speed = 10000;
+		break;
+	case VIRTCHNL_LINK_SPEED_40GB:
+		speed = 40000;
+		break;
+	case VIRTCHNL_LINK_SPEED_20GB:
+		speed = 20000;
+		break;
+	case VIRTCHNL_LINK_SPEED_25GB:
+		speed = 25000;
+		break;
+	case VIRTCHNL_LINK_SPEED_2_5GB:
+		speed = 2500;
+		break;
+	case VIRTCHNL_LINK_SPEED_5GB:
+		speed = 5000;
+		break;
+	default:
+		speed = 0;
+		break;
+	}
+
+	return speed;
 }
 
 void
@@ -141,7 +227,6 @@ ice_dcf_handle_pf_event_msg(struct ice_dcf_hw *dcf_hw,
 			    uint8_t *msg, uint16_t msglen)
 {
 	struct virtchnl_pf_event *pf_msg = (struct virtchnl_pf_event *)msg;
-	pthread_t thread;
 	struct ice_dcf_adapter *adapter =
 		container_of(dcf_hw, struct ice_dcf_adapter, real_hw);
 	struct ice_adapter *parent_adapter = &adapter->parent;
@@ -154,11 +239,23 @@ ice_dcf_handle_pf_event_msg(struct ice_dcf_hw *dcf_hw,
 	switch (pf_msg->event) {
 	case VIRTCHNL_EVENT_RESET_IMPENDING:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_RESET_IMPENDING event");
-		pthread_create(&thread, NULL,
-			       ice_dcf_vsi_update_service_handler, dcf_hw);
+		dcf_hw->resetting = true;
 		break;
 	case VIRTCHNL_EVENT_LINK_CHANGE:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_LINK_CHANGE event");
+		dcf_hw->link_up = pf_msg->event_data.link_event.link_status;
+		if (dcf_hw->vf_res->vf_cap_flags &
+			VIRTCHNL_VF_CAP_ADV_LINK_SPEED) {
+			dcf_hw->link_speed =
+				pf_msg->event_data.link_event_adv.link_speed;
+		} else {
+			enum virtchnl_link_speed speed;
+			speed = pf_msg->event_data.link_event.link_speed;
+			dcf_hw->link_speed = ice_dcf_convert_link_speed(speed);
+		}
+		ice_dcf_link_update(dcf_hw->eth_dev, 0);
+		rte_eth_dev_callback_process(dcf_hw->eth_dev,
+			RTE_ETH_EVENT_INTR_LSC, NULL);
 		break;
 	case VIRTCHNL_EVENT_PF_DRIVER_CLOSE:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_PF_DRIVER_CLOSE event");
@@ -167,15 +264,38 @@ ice_dcf_handle_pf_event_msg(struct ice_dcf_hw *dcf_hw,
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_DCF_VSI_MAP_UPDATE event : VF%u with VSI num %u",
 			    pf_msg->event_data.vf_vsi_map.vf_id,
 			    pf_msg->event_data.vf_vsi_map.vsi_id);
-		pthread_create(&thread, NULL,
-			       ice_dcf_vsi_update_service_handler, dcf_hw);
 		__atomic_store_n(&parent_adapter->dcf_state_on, false,
 				 __ATOMIC_RELAXED);
+		start_vsi_reset_thread(dcf_hw, true,
+				       pf_msg->event_data.vf_vsi_map.vf_id);
 		break;
 	default:
 		PMD_DRV_LOG(ERR, "Unknown event received %u", pf_msg->event);
 		break;
 	}
+}
+
+static int
+ice_dcf_query_port_ets(struct ice_hw *parent_hw, struct ice_dcf_hw *real_hw)
+{
+	int ret;
+
+	real_hw->ets_config = (struct ice_aqc_port_ets_elem *)
+			ice_malloc(real_hw, sizeof(*real_hw->ets_config));
+	if (!real_hw->ets_config)
+		return ICE_ERR_NO_MEMORY;
+
+	ret = ice_aq_query_port_ets(parent_hw->port_info,
+			real_hw->ets_config, sizeof(*real_hw->ets_config),
+			NULL);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "DCF Query Port ETS failed");
+		rte_free(real_hw->ets_config);
+		real_hw->ets_config = NULL;
+		return ret;
+	}
+
+	return ICE_SUCCESS;
 }
 
 static int
@@ -214,7 +334,7 @@ ice_dcf_init_parent_hw(struct ice_hw *hw)
 
 	/* Initialize port_info struct with PHY capabilities */
 	status = ice_aq_get_phy_caps(hw->port_info, false,
-				     ICE_AQC_REPORT_TOPO_CAP, pcaps, NULL);
+				     ICE_AQC_REPORT_TOPO_CAP_MEDIA, pcaps, NULL);
 	ice_free(hw, pcaps);
 	if (status)
 		goto err_unroll_alloc;
@@ -245,6 +365,7 @@ err_unroll_fltr_mgmt_struct:
 err_unroll_alloc:
 	ice_free(hw, hw->port_info);
 	hw->port_info = NULL;
+	hw->switch_info = NULL;
 
 	return status;
 }
@@ -258,18 +379,20 @@ static void ice_dcf_uninit_parent_hw(struct ice_hw *hw)
 
 	ice_free(hw, hw->port_info);
 	hw->port_info = NULL;
+	hw->switch_info = NULL;
 
 	ice_clear_all_vsi_ctx(hw);
 }
 
 static int
-ice_dcf_request_pkg_name(struct ice_hw *hw, char *pkg_name)
+ice_dcf_load_pkg(struct ice_adapter *adapter)
 {
 	struct ice_dcf_adapter *dcf_adapter =
-			container_of(hw, struct ice_dcf_adapter, parent.hw);
+			container_of(&adapter->hw, struct ice_dcf_adapter, parent.hw);
 	struct virtchnl_pkg_info pkg_info;
 	struct dcf_virtchnl_cmd vc_cmd;
-	uint64_t dsn;
+	bool use_dsn;
+	uint64_t dsn = 0;
 
 	vc_cmd.v_op = VIRTCHNL_OP_DCF_GET_PKG_INFO;
 	vc_cmd.req_msglen = 0;
@@ -277,90 +400,11 @@ ice_dcf_request_pkg_name(struct ice_hw *hw, char *pkg_name)
 	vc_cmd.rsp_buflen = sizeof(pkg_info);
 	vc_cmd.rsp_msgbuf = (uint8_t *)&pkg_info;
 
-	if (ice_dcf_execute_virtchnl_cmd(&dcf_adapter->real_hw, &vc_cmd))
-		goto pkg_file_direct;
+	use_dsn = ice_dcf_execute_virtchnl_cmd(&dcf_adapter->real_hw, &vc_cmd) == 0;
+	if (use_dsn)
+		rte_memcpy(&dsn, pkg_info.dsn, sizeof(dsn));
 
-	rte_memcpy(&dsn, pkg_info.dsn, sizeof(dsn));
-
-	snprintf(pkg_name, ICE_MAX_PKG_FILENAME_SIZE,
-		 ICE_PKG_FILE_SEARCH_PATH_UPDATES "ice-%016llx.pkg",
-		 (unsigned long long)dsn);
-	if (!access(pkg_name, 0))
-		return 0;
-
-	snprintf(pkg_name, ICE_MAX_PKG_FILENAME_SIZE,
-		 ICE_PKG_FILE_SEARCH_PATH_DEFAULT "ice-%016llx.pkg",
-		 (unsigned long long)dsn);
-	if (!access(pkg_name, 0))
-		return 0;
-
-pkg_file_direct:
-	snprintf(pkg_name,
-		 ICE_MAX_PKG_FILENAME_SIZE, "%s", ICE_PKG_FILE_UPDATES);
-	if (!access(pkg_name, 0))
-		return 0;
-
-	snprintf(pkg_name,
-		 ICE_MAX_PKG_FILENAME_SIZE, "%s", ICE_PKG_FILE_DEFAULT);
-	if (!access(pkg_name, 0))
-		return 0;
-
-	return -1;
-}
-
-static int
-ice_dcf_load_pkg(struct ice_hw *hw)
-{
-	char pkg_name[ICE_MAX_PKG_FILENAME_SIZE];
-	uint8_t *pkg_buf;
-	uint32_t buf_len;
-	struct stat st;
-	FILE *fp;
-	int err;
-
-	if (ice_dcf_request_pkg_name(hw, pkg_name)) {
-		PMD_INIT_LOG(ERR, "Failed to locate the package file");
-		return -ENOENT;
-	}
-
-	PMD_INIT_LOG(DEBUG, "DDP package name: %s", pkg_name);
-
-	err = stat(pkg_name, &st);
-	if (err) {
-		PMD_INIT_LOG(ERR, "Failed to get file status");
-		return err;
-	}
-
-	buf_len = st.st_size;
-	pkg_buf = rte_malloc(NULL, buf_len, 0);
-	if (!pkg_buf) {
-		PMD_INIT_LOG(ERR, "failed to allocate buffer of size %u for package",
-			     buf_len);
-		return -1;
-	}
-
-	fp = fopen(pkg_name, "rb");
-	if (!fp)  {
-		PMD_INIT_LOG(ERR, "failed to open file: %s", pkg_name);
-		err = -1;
-		goto ret;
-	}
-
-	err = fread(pkg_buf, buf_len, 1, fp);
-	fclose(fp);
-	if (err != 1) {
-		PMD_INIT_LOG(ERR, "failed to read package data");
-		err = -1;
-		goto ret;
-	}
-
-	err = ice_copy_and_init_pkg(hw, pkg_buf, buf_len);
-	if (err)
-		PMD_INIT_LOG(ERR, "ice_copy_and_init_hw failed: %d", err);
-
-ret:
-	rte_free(pkg_buf);
-	return err;
+	return ice_load_pkg(adapter, use_dsn, dsn);
 }
 
 int
@@ -400,13 +444,21 @@ ice_dcf_init_parent_adapter(struct rte_eth_dev *eth_dev)
 		return err;
 	}
 
-	err = ice_dcf_load_pkg(parent_hw);
+	if (hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_QOS) {
+		err = ice_dcf_query_port_ets(parent_hw, hw);
+		if (err) {
+			PMD_INIT_LOG(ERR, "failed to query port ets with error %d",
+				     err);
+			goto uninit_hw;
+		}
+	}
+
+	err = ice_dcf_load_pkg(parent_adapter);
 	if (err) {
 		PMD_INIT_LOG(ERR, "failed to load package with error %d",
 			     err);
 		goto uninit_hw;
 	}
-	parent_adapter->active_pkg_type = ice_load_pkg_type(parent_hw);
 
 	parent_adapter->pf.main_vsi->idx = hw->num_vfs;
 	ice_dcf_update_pf_vsi_map(parent_hw,
@@ -443,6 +495,8 @@ ice_dcf_uninit_parent_adapter(struct rte_eth_dev *eth_dev)
 	struct ice_hw *parent_hw = &parent_adapter->hw;
 
 	eth_dev->data->mac_addrs = NULL;
+	rte_free(parent_adapter->pf.main_vsi);
+	parent_adapter->pf.main_vsi = NULL;
 
 	ice_flow_uninit(parent_adapter);
 	ice_dcf_uninit_parent_hw(parent_hw);

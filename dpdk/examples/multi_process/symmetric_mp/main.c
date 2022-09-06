@@ -31,7 +31,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_debug.h>
 #include <rte_interrupts.h>
@@ -176,18 +175,18 @@ smp_port_init(uint16_t port, struct rte_mempool *mbuf_pool,
 {
 	struct rte_eth_conf port_conf = {
 			.rxmode = {
-				.mq_mode	= ETH_MQ_RX_RSS,
+				.mq_mode	= RTE_ETH_MQ_RX_RSS,
 				.split_hdr_size = 0,
-				.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+				.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 			},
 			.rx_adv_conf = {
 				.rss_conf = {
 					.rss_key = NULL,
-					.rss_hf = ETH_RSS_IP,
+					.rss_hf = RTE_ETH_RSS_IP,
 				},
 			},
 			.txmode = {
-				.mq_mode = ETH_MQ_TX_NONE,
+				.mq_mode = RTE_ETH_MQ_TX_NONE,
 			}
 	};
 	const uint16_t rx_rings = num_queues, tx_rings = num_queues;
@@ -218,9 +217,9 @@ smp_port_init(uint16_t port, struct rte_mempool *mbuf_pool,
 
 	info.default_rxconf.rx_drop_en = 1;
 
-	if (info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	rss_hf_tmp = port_conf.rx_adv_conf.rss_conf.rss_hf;
 	port_conf.rx_adv_conf.rss_conf.rss_hf &= info.flow_type_rss_offloads;
@@ -392,7 +391,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -455,6 +454,7 @@ main(int argc, char **argv)
 	if (mp == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot get memory pool for buffers\n");
 
+	/* Primary instance initialized. 8< */
 	if (num_ports & 1)
 		rte_exit(EXIT_FAILURE, "Application must use an even number of ports\n");
 	for(i = 0; i < num_ports; i++){
@@ -462,6 +462,7 @@ main(int argc, char **argv)
 			if (smp_port_init(ports[i], mp, (uint16_t)num_procs) < 0)
 				rte_exit(EXIT_FAILURE, "Error initialising ports\n");
 	}
+	/* >8 End of primary instance initialization. */
 
 	if (proc_type == RTE_PROC_PRIMARY)
 		check_all_ports_link_status((uint8_t)num_ports, (~0x0));

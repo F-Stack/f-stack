@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ *   Copyright 2016-2021 NXP
  *
  */
 
@@ -9,7 +9,7 @@
 #include <net/if.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
@@ -40,6 +40,17 @@ rte_pmd_dpaa2_set_custom_hash(uint16_t port_id,
 	struct dpkg_profile_cfg kg_cfg;
 	void *p_params;
 	int ret, tc_index = 0;
+
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		DPAA2_PMD_WARN("Invalid port id %u", port_id);
+		return -EINVAL;
+	}
+
+	if (strcmp(eth_dev->device->driver->name,
+			RTE_STR(NET_DPAA2_PMD_DRIVER_NAME))) {
+		DPAA2_PMD_WARN("Not a valid dpaa2 port");
+		return -EINVAL;
+	}
 
 	p_params = rte_zmalloc(
 		NULL, DIST_PARAM_IOVA_SIZE, RTE_CACHE_LINE_SIZE);
@@ -194,17 +205,23 @@ dpaa2_distset_to_dpkg_profile_cfg(
 		uint64_t req_dist_set,
 		struct dpkg_profile_cfg *kg_cfg)
 {
-	uint32_t loop = 0, i = 0, dist_field = 0;
+	uint32_t loop = 0, i = 0;
+	uint64_t dist_field = 0;
 	int l2_configured = 0, l3_configured = 0;
 	int l4_configured = 0, sctp_configured = 0;
+	int mpls_configured = 0;
+	int vlan_configured = 0;
+	int esp_configured = 0;
+	int ah_configured = 0;
+	int pppoe_configured = 0;
 
 	memset(kg_cfg, 0, sizeof(struct dpkg_profile_cfg));
 	while (req_dist_set) {
 		if (req_dist_set % 2 != 0) {
-			dist_field = 1U << loop;
+			dist_field = 1ULL << loop;
 			switch (dist_field) {
-			case ETH_RSS_L2_PAYLOAD:
-
+			case RTE_ETH_RSS_L2_PAYLOAD:
+			case RTE_ETH_RSS_ETH:
 				if (l2_configured)
 					break;
 				l2_configured = 1;
@@ -218,15 +235,115 @@ dpaa2_distset_to_dpkg_profile_cfg(
 				kg_cfg->extracts[i].extract.from_hdr.type =
 					DPKG_FULL_FIELD;
 				i++;
-			break;
+				break;
 
-			case ETH_RSS_IPV4:
-			case ETH_RSS_FRAG_IPV4:
-			case ETH_RSS_NONFRAG_IPV4_OTHER:
-			case ETH_RSS_IPV6:
-			case ETH_RSS_FRAG_IPV6:
-			case ETH_RSS_NONFRAG_IPV6_OTHER:
-			case ETH_RSS_IPV6_EX:
+			case RTE_ETH_RSS_PPPOE:
+				if (pppoe_configured)
+					break;
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_PPPOE;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_PPPOE_SID;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+				break;
+
+			case RTE_ETH_RSS_ESP:
+				if (esp_configured)
+					break;
+				esp_configured = 1;
+
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_IPSEC_ESP;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_IPSEC_ESP_SPI;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+				break;
+
+			case RTE_ETH_RSS_AH:
+				if (ah_configured)
+					break;
+				ah_configured = 1;
+
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_IPSEC_AH;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_IPSEC_AH_SPI;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+				break;
+
+			case RTE_ETH_RSS_C_VLAN:
+			case RTE_ETH_RSS_S_VLAN:
+				if (vlan_configured)
+					break;
+				vlan_configured = 1;
+
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_VLAN;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_VLAN_TCI;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+				break;
+
+			case RTE_ETH_RSS_MPLS:
+
+				if (mpls_configured)
+					break;
+				mpls_configured = 1;
+
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_MPLS;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_MPLS_MPLSL_1;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_MPLS;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_MPLS_MPLSL_2;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+
+				kg_cfg->extracts[i].extract.from_hdr.prot =
+					NET_PROT_MPLS;
+				kg_cfg->extracts[i].extract.from_hdr.field =
+					NH_FLD_MPLS_MPLSL_N;
+				kg_cfg->extracts[i].type =
+					DPKG_EXTRACT_FROM_HDR;
+				kg_cfg->extracts[i].extract.from_hdr.type =
+					DPKG_FULL_FIELD;
+				i++;
+				break;
+
+			case RTE_ETH_RSS_IPV4:
+			case RTE_ETH_RSS_FRAG_IPV4:
+			case RTE_ETH_RSS_NONFRAG_IPV4_OTHER:
+			case RTE_ETH_RSS_IPV6:
+			case RTE_ETH_RSS_FRAG_IPV6:
+			case RTE_ETH_RSS_NONFRAG_IPV6_OTHER:
+			case RTE_ETH_RSS_IPV6_EX:
 
 				if (l3_configured)
 					break;
@@ -264,12 +381,12 @@ dpaa2_distset_to_dpkg_profile_cfg(
 				i++;
 			break;
 
-			case ETH_RSS_NONFRAG_IPV4_TCP:
-			case ETH_RSS_NONFRAG_IPV6_TCP:
-			case ETH_RSS_NONFRAG_IPV4_UDP:
-			case ETH_RSS_NONFRAG_IPV6_UDP:
-			case ETH_RSS_IPV6_TCP_EX:
-			case ETH_RSS_IPV6_UDP_EX:
+			case RTE_ETH_RSS_NONFRAG_IPV4_TCP:
+			case RTE_ETH_RSS_NONFRAG_IPV6_TCP:
+			case RTE_ETH_RSS_NONFRAG_IPV4_UDP:
+			case RTE_ETH_RSS_NONFRAG_IPV6_UDP:
+			case RTE_ETH_RSS_IPV6_TCP_EX:
+			case RTE_ETH_RSS_IPV6_UDP_EX:
 
 				if (l4_configured)
 					break;
@@ -296,8 +413,8 @@ dpaa2_distset_to_dpkg_profile_cfg(
 				i++;
 				break;
 
-			case ETH_RSS_NONFRAG_IPV4_SCTP:
-			case ETH_RSS_NONFRAG_IPV6_SCTP:
+			case RTE_ETH_RSS_NONFRAG_IPV4_SCTP:
+			case RTE_ETH_RSS_NONFRAG_IPV6_SCTP:
 
 				if (sctp_configured)
 					break;
@@ -326,7 +443,7 @@ dpaa2_distset_to_dpkg_profile_cfg(
 
 			default:
 				DPAA2_PMD_WARN(
-					     "Unsupported flow dist option %x",
+				      "unsupported flow dist option 0x%" PRIx64,
 					     dist_field);
 				return -EINVAL;
 			}

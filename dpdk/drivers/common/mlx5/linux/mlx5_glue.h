@@ -78,6 +78,7 @@ struct mlx5dv_devx_async_cmd_hdr;
 enum  mlx5dv_dr_domain_type { unused, };
 struct mlx5dv_dr_domain;
 struct mlx5dv_dr_action;
+#define MLX5DV_DR_ACTION_FLAGS_ROOT_LEVEL 1
 #endif
 
 #ifndef HAVE_MLX5DV_DR_DEVX_PORT
@@ -330,6 +331,7 @@ struct mlx5_glue {
 			       uint32_t port_num,
 			       struct mlx5_port_info *info);
 	int (*dr_dump_domain)(FILE *file, void *domain);
+	int (*dr_dump_rule)(FILE *file, void *rule);
 	int (*devx_query_eqn)(struct ibv_context *context, uint32_t cpus,
 			      uint32_t *eqn);
 	struct mlx5dv_devx_event_channel *(*devx_create_event_channel)
@@ -352,6 +354,7 @@ struct mlx5_glue {
 			 struct mlx5dv_devx_async_event_hdr *event_data,
 			 size_t event_resp_len);
 	void (*dr_reclaim_domain_memory)(void *domain, uint32_t enable);
+	void (*dr_allow_duplicate_rules)(void *domain, uint32_t allow);
 	struct mlx5dv_pp *(*dv_alloc_pp)(struct ibv_context *context,
 					 size_t pp_context_sz,
 					 const void *pp_context,

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2020 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -73,6 +73,12 @@ ulp_mark_db_init(struct bnxt_ulp_context *ctxt)
 		return -EINVAL;
 	}
 
+	if (!dparms->mark_db_lfid_entries || !dparms->mark_db_gfid_entries) {
+		BNXT_TF_DBG(DEBUG, "mark Table is not allocated\n");
+		bnxt_ulp_cntxt_ptr2_mark_db_set(ctxt, NULL);
+		return 0;
+	}
+
 	mark_tbl = rte_zmalloc("ulp_rx_mark_tbl_ptr",
 			       sizeof(struct bnxt_ulp_mark_tbl), 0);
 	if (!mark_tbl)
@@ -110,7 +116,7 @@ ulp_mark_db_init(struct bnxt_ulp_context *ctxt)
 	mark_tbl->gfid_mask	= (mark_tbl->gfid_num_entries / 2) - 1;
 	mark_tbl->gfid_type_bit = (mark_tbl->gfid_num_entries / 2);
 
-	BNXT_TF_DBG(DEBUG, "GFID Max = 0x%08x\nGFID MASK = 0x%08x\n",
+	BNXT_TF_DBG(DEBUG, "GFID Max = 0x%08x GFID MASK = 0x%08x\n",
 		    mark_tbl->gfid_num_entries - 1,
 		    mark_tbl->gfid_mask);
 
@@ -182,10 +188,8 @@ ulp_mark_db_mark_get(struct bnxt_ulp_context *ctxt,
 		return -EINVAL;
 
 	mtbl = bnxt_ulp_cntxt_ptr2_mark_db_get(ctxt);
-	if (!mtbl) {
-		BNXT_TF_DBG(ERR, "Unable to get Mark Table\n");
+	if (!mtbl)
 		return -EINVAL;
-	}
 
 	idx = ulp_mark_db_idx_get(is_gfid, fid, mtbl);
 

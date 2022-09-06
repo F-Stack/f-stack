@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -67,7 +67,7 @@ void bnxt_int_handler(void *param)
 
 int bnxt_free_int(struct bnxt *bp)
 {
-	struct rte_intr_handle *intr_handle = &bp->pdev->intr_handle;
+	struct rte_intr_handle *intr_handle = bp->pdev->intr_handle;
 	struct bnxt_irq *irq = bp->irq_tbl;
 	int rc = 0;
 
@@ -155,7 +155,7 @@ int bnxt_setup_int(struct bnxt *bp)
 				 sizeof(struct bnxt_irq), 0);
 	if (bp->irq_tbl) {
 		for (i = 0; i < total_vecs; i++) {
-			bp->irq_tbl[i].vector = i;
+			bp->irq_tbl[i].vector_idx = i;
 			snprintf(bp->irq_tbl[i].name, len,
 				 "%s-%d", bp->eth_dev->device->name, i);
 			bp->irq_tbl[i].handler = bnxt_int_handler;
@@ -170,7 +170,7 @@ int bnxt_setup_int(struct bnxt *bp)
 
 int bnxt_request_int(struct bnxt *bp)
 {
-	struct rte_intr_handle *intr_handle = &bp->pdev->intr_handle;
+	struct rte_intr_handle *intr_handle = bp->pdev->intr_handle;
 	struct bnxt_irq *irq = bp->irq_tbl;
 	int rc = 0;
 

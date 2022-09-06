@@ -86,9 +86,9 @@ enqueue_task(struct vhost_blk_task *task)
 	 */
 	used->ring[used->idx & (vq->vring.size - 1)].id = task->req_idx;
 	used->ring[used->idx & (vq->vring.size - 1)].len = task->data_len;
-	rte_smp_mb();
+	rte_atomic_thread_fence(__ATOMIC_SEQ_CST);
 	used->idx++;
-	rte_smp_mb();
+	rte_atomic_thread_fence(__ATOMIC_SEQ_CST);
 
 	rte_vhost_clr_inflight_desc_split(task->ctrlr->vid,
 		vq->id, used->idx, task->req_idx);
@@ -112,12 +112,12 @@ enqueue_task_packed(struct vhost_blk_task *task)
 	desc->id = task->buffer_id;
 	desc->addr = 0;
 
-	rte_smp_mb();
+	rte_atomic_thread_fence(__ATOMIC_SEQ_CST);
 	if (vq->used_wrap_counter)
 		desc->flags |= VIRTQ_DESC_F_AVAIL | VIRTQ_DESC_F_USED;
 	else
 		desc->flags &= ~(VIRTQ_DESC_F_AVAIL | VIRTQ_DESC_F_USED);
-	rte_smp_mb();
+	rte_atomic_thread_fence(__ATOMIC_SEQ_CST);
 
 	rte_vhost_clr_inflight_desc_packed(task->ctrlr->vid, vq->id,
 					   task->inflight_idx);
@@ -603,10 +603,10 @@ new_device(int vid)
 	struct vhost_blk_ctrlr *ctrlr;
 	struct vhost_blk_queue *vq;
 	char path[PATH_MAX];
-	uint64_t features;
+	uint64_t features, protocol_features;
 	pthread_t tid;
 	int i, ret;
-	bool packed_ring;
+	bool packed_ring, inflight_shmfd;
 
 	ret = rte_vhost_get_ifname(vid, path, PATH_MAX);
 	if (ret) {
@@ -631,6 +631,16 @@ new_device(int vid)
 	}
 	packed_ring = !!(features & (1ULL << VIRTIO_F_RING_PACKED));
 
+	ret = rte_vhost_get_negotiated_protocol_features(
+		vid, &protocol_features);
+	if (ret) {
+		fprintf(stderr,
+			"Failed to get the negotiated protocol features\n");
+		return -1;
+	}
+	inflight_shmfd = !!(features &
+			    (1ULL << VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD));
+
 	/* Disable Notifications and init last idx */
 	for (i = 0; i < NUM_OF_BLK_QUEUES; i++) {
 		vq = &ctrlr->queues[i];
@@ -641,10 +651,13 @@ new_device(int vid)
 		assert(rte_vhost_get_vring_base(ctrlr->vid, i,
 					       &vq->last_avail_idx,
 					       &vq->last_used_idx) == 0);
-		assert(rte_vhost_get_vhost_ring_inflight(ctrlr->vid, i,
-						&vq->inflight_ring) == 0);
 
-		if (packed_ring) {
+		if (inflight_shmfd)
+			assert(rte_vhost_get_vhost_ring_inflight(
+				       ctrlr->vid, i,
+				       &vq->inflight_ring) == 0);
+
+		if (packed_ring && inflight_shmfd) {
 			/* for the reconnection */
 			assert(rte_vhost_get_vring_base_from_inflight(
 				ctrlr->vid, i,
@@ -672,7 +685,8 @@ new_device(int vid)
 	/* start polling vring */
 	worker_thread_status = WORKER_STATE_START;
 	fprintf(stdout, "New Device %s, Device ID %d\n", path, vid);
-	if (pthread_create(&tid, NULL, &ctrlr_worker, ctrlr) < 0) {
+	if (rte_ctrl_thread_create(&tid, "vhostblk-ctrlr", NULL,
+				   &ctrlr_worker, ctrlr) != 0) {
 		fprintf(stderr, "Worker Thread Started Failed\n");
 		return -1;
 	}
@@ -739,7 +753,7 @@ new_connection(int vid)
 	return 0;
 }
 
-struct vhost_device_ops vhost_blk_device_ops = {
+struct rte_vhost_device_ops vhost_blk_device_ops = {
 	.new_device =  new_device,
 	.destroy_device = destroy_device,
 	.new_connection = new_connection,

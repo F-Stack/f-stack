@@ -10,7 +10,7 @@
 
 #include <rte_string_fns.h>
 #include <rte_dev.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_pci.h>
 #include <rte_alarm.h>
 
 /*
@@ -94,14 +94,14 @@ bnx2x_link_update(struct rte_eth_dev *dev)
 	link.link_speed = sc->link_vars.line_speed;
 	switch (sc->link_vars.duplex) {
 		case DUPLEX_FULL:
-			link.link_duplex = ETH_LINK_FULL_DUPLEX;
+			link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 			break;
 		case DUPLEX_HALF:
-			link.link_duplex = ETH_LINK_HALF_DUPLEX;
+			link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 			break;
 	}
 	link.link_autoneg = !(dev->data->dev_conf.link_speeds &
-			ETH_LINK_SPEED_FIXED);
+		 RTE_ETH_LINK_SPEED_FIXED);
 	link.link_status = sc->link_vars.link_up;
 
 	return rte_eth_linkstatus_set(dev, &link);
@@ -134,7 +134,7 @@ bnx2x_interrupt_handler(void *param)
 	PMD_DEBUG_PERIODIC_LOG(INFO, sc, "Interrupt handled");
 
 	bnx2x_interrupt_action(dev, 1);
-	rte_intr_ack(&sc->pci_dev->intr_handle);
+	rte_intr_ack(sc->pci_dev->intr_handle);
 }
 
 static void bnx2x_periodic_start(void *param)
@@ -175,16 +175,12 @@ static int
 bnx2x_dev_configure(struct rte_eth_dev *dev)
 {
 	struct bnx2x_softc *sc = dev->data->dev_private;
-	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 
 	int mp_ncpus = sysconf(_SC_NPROCESSORS_CONF);
 
 	PMD_INIT_FUNC_TRACE(sc);
 
-	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
-		sc->mtu = dev->data->dev_conf.rxmode.max_rx_pkt_len;
-		dev->data->mtu = sc->mtu;
-	}
+	sc->mtu = dev->data->dev_conf.rxmode.mtu;
 
 	if (dev->data->nb_tx_queues > dev->data->nb_rx_queues) {
 		PMD_DRV_LOG(ERR, sc, "The number of TX queues is greater than number of RX queues");
@@ -234,10 +230,10 @@ bnx2x_dev_start(struct rte_eth_dev *dev)
 	}
 
 	if (IS_PF(sc)) {
-		rte_intr_callback_register(&sc->pci_dev->intr_handle,
+		rte_intr_callback_register(sc->pci_dev->intr_handle,
 				bnx2x_interrupt_handler, (void *)dev);
 
-		if (rte_intr_enable(&sc->pci_dev->intr_handle))
+		if (rte_intr_enable(sc->pci_dev->intr_handle))
 			PMD_DRV_LOG(ERR, sc, "rte_intr_enable failed");
 	}
 
@@ -262,8 +258,8 @@ bnx2x_dev_stop(struct rte_eth_dev *dev)
 	bnx2x_dev_rxtx_init_dummy(dev);
 
 	if (IS_PF(sc)) {
-		rte_intr_disable(&sc->pci_dev->intr_handle);
-		rte_intr_callback_unregister(&sc->pci_dev->intr_handle,
+		rte_intr_disable(sc->pci_dev->intr_handle);
+		rte_intr_callback_unregister(sc->pci_dev->intr_handle,
 				bnx2x_interrupt_handler, (void *)dev);
 
 		/* stop the periodic callout */
@@ -412,7 +408,7 @@ bnx2xvf_dev_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_comple
 	if (sc->old_bulletin.valid_bitmap & (1 << CHANNEL_DOWN)) {
 		PMD_DRV_LOG(ERR, sc, "PF indicated channel is down."
 				"VF device is no longer operational");
-		dev->data->dev_link.link_status = ETH_LINK_DOWN;
+		dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	}
 
 	return ret;
@@ -538,8 +534,7 @@ bnx2x_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->min_rx_bufsize = BNX2X_MIN_RX_BUF_SIZE;
 	dev_info->max_rx_pktlen  = BNX2X_MAX_RX_PKT_LEN;
 	dev_info->max_mac_addrs  = BNX2X_MAX_MAC_ADDRS;
-	dev_info->speed_capa = ETH_LINK_SPEED_10G | ETH_LINK_SPEED_20G;
-	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_JUMBO_FRAME;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_10G | RTE_ETH_LINK_SPEED_20G;
 
 	dev_info->rx_desc_lim.nb_max = MAX_RX_AVAIL;
 	dev_info->rx_desc_lim.nb_min = MIN_RX_SIZE_NONTPA;
@@ -674,7 +669,7 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 	bnx2x_load_firmware(sc);
 	assert(sc->firmware);
 
-	if (eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf & ETH_RSS_NONFRAG_IPV4_UDP)
+	if (eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_UDP)
 		sc->udp_rss = 1;
 
 	sc->rx_budget = BNX2X_RX_BUDGET;
@@ -816,5 +811,5 @@ RTE_PMD_REGISTER_KMOD_DEP(net_bnx2x, "* igb_uio | uio_pci_generic | vfio-pci");
 RTE_PMD_REGISTER_PCI(net_bnx2xvf, rte_bnx2xvf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_bnx2xvf, pci_id_bnx2xvf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_bnx2xvf, "* igb_uio | vfio-pci");
-RTE_LOG_REGISTER(bnx2x_logtype_init, pmd.net.bnx2x.init, NOTICE);
-RTE_LOG_REGISTER(bnx2x_logtype_driver, pmd.net.bnx2x.driver, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(bnx2x_logtype_init, init, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(bnx2x_logtype_driver, driver, NOTICE);

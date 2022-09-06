@@ -8,12 +8,12 @@
 
 allow_experimental_apis = true
 if not is_linux
-	build = false
-	subdir_done()
+    build = false
+    subdir_done()
 endif
 
 deps += ['rawdev', 'raw_ntb']
 cflags += ['-D_FILE_OFFSET_BITS=64']
 sources = files(
-	'ntb_fwd.c'
+        'ntb_fwd.c',
 )

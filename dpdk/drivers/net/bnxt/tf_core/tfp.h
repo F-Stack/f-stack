@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -15,6 +15,7 @@
 #include <rte_spinlock.h>
 #include <rte_log.h>
 #include <rte_byteorder.h>
+#include <bnxt.h>
 
 /**
  * DPDK/Driver specific log level for the BNXT Eth driver.
@@ -37,7 +38,7 @@ struct tfp_spinlock_parms {
 /**
  * @file
  *
- * TrueFlow Portability API Header File
+ * TruFlow Portability API Header File
  */
 
 /**
@@ -56,11 +57,6 @@ struct tfp_send_msg_parms {
 	 * [in] tlv_subtype, specifies the tlv_subtype.
 	 */
 	uint16_t  tf_subtype;
-	/**
-	 * [out] tf_resp_code, response code from the internal tlv
-	 *       message. Only supported on tunneled messages.
-	 */
-	uint32_t tf_resp_code;
 	/**
 	 * [out] size, number specifying the request size of the data in bytes
 	 */
@@ -111,7 +107,6 @@ struct tfp_calloc_parms {
  * @page Portability
  *
  * @ref tfp_send_direct
- * @ref tfp_send_msg_tunneled
  *
  * @ref tfp_calloc
  * @ref tfp_memcpy
@@ -124,8 +119,8 @@ struct tfp_calloc_parms {
  */
 
 /**
- * Provides communication capability from the TrueFlow API layer to
- * the TrueFlow firmware. The portability layer internally provides
+ * Provides communication capability from the TruFlow API layer to
+ * the TruFlow firmware. The portability layer internally provides
  * the transport to the firmware.
  *
  * [in] session, pointer to session handle
@@ -136,39 +131,8 @@ struct tfp_calloc_parms {
  *   -1             - Global error like not supported
  *   -EINVAL        - Parameter Error
  */
-int tfp_send_msg_direct(struct tf *tfp,
+int tfp_send_msg_direct(struct bnxt *bp,
 			struct tfp_send_msg_parms *parms);
-
-/**
- * Provides communication capability from the TrueFlow API layer to
- * the TrueFlow firmware. The portability layer internally provides
- * the transport to the firmware.
- *
- * [in] session, pointer to session handle
- * [in] parms, parameter structure
- *
- * Returns:
- *   0              - Success
- *   -1             - Global error like not supported
- *   -EINVAL        - Parameter Error
- */
-int tfp_send_msg_tunneled(struct tf *tfp,
-			  struct tfp_send_msg_parms *parms);
-
-/**
- * Sends OEM command message to Chimp
- *
- * [in] session, pointer to session handle
- * [in] max_flows, max number of flows requested
- *
- * Returns:
- *   0              - Success
- *   -1             - Global error like not supported
- *   -EINVAL        - Parameter Error
- */
-int
-tfp_msg_hwrm_oem_cmd(struct tf *tfp,
-		     uint32_t max_flows);
 
 /**
  * Sends OEM command message to Chimp
@@ -252,21 +216,6 @@ int tfp_get_fid(struct tf *tfp, uint16_t *fw_fid);
 #define tfp_bswap_16(val) rte_bswap16(val)
 #define tfp_bswap_32(val) rte_bswap32(val)
 #define tfp_bswap_64(val) rte_bswap64(val)
-
-/**
- * Lookup of the FID in the platform specific structure.
- *
- * [in] session
- *   Pointer to session handle
- *
- * [out] fw_fid
- *   Pointer to the fw_fid
- *
- * Returns:
- *   0       - Success
- *   -EINVAL - Parameter error
- */
-int tfp_get_fid(struct tf *tfp, uint16_t *fw_fid);
 
 /**
  * Get the PF associated with the fw communications channel.

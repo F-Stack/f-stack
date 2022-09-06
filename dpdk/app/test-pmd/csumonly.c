@@ -24,7 +24,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -41,8 +40,12 @@
 #include <rte_prefetch.h>
 #include <rte_string_fns.h>
 #include <rte_flow.h>
+#ifdef RTE_LIB_GRO
 #include <rte_gro.h>
+#endif
+#ifdef RTE_LIB_GSO
 #include <rte_gso.h>
+#endif
 #include <rte_geneve.h>
 
 #include "testpmd.h"
@@ -69,7 +72,9 @@ uint16_t geneve_udp_port = RTE_GENEVE_DEFAULT_PORT;
 /* structure that caches offload info for the current packet */
 struct testpmd_offload_info {
 	uint16_t ethertype;
+#ifdef RTE_LIB_GSO
 	uint8_t gso_enable;
+#endif
 	uint16_t l2_len;
 	uint16_t l3_len;
 	uint16_t l4_len;
@@ -217,15 +222,14 @@ parse_gtp(struct rte_udp_hdr *udp_hdr,
 
 	gtp_hdr = (struct rte_gtp_hdr *)((char *)udp_hdr +
 		  sizeof(struct rte_udp_hdr));
-
+	if (gtp_hdr->e || gtp_hdr->s || gtp_hdr->pn)
+		gtp_len += sizeof(struct rte_gtp_hdr_ext_word);
 	/*
 	 * Check message type. If message type is 0xff, it is
 	 * a GTP data packet. If not, it is a GTP control packet
 	 */
 	if (gtp_hdr->msg_type == 0xff) {
-		ip_ver = *(uint8_t *)((char *)udp_hdr +
-			 sizeof(struct rte_udp_hdr) +
-			 sizeof(struct rte_gtp_hdr));
+		ip_ver = *(uint8_t *)((char *)gtp_hdr + gtp_len);
 		ip_ver = (ip_ver) & 0xf0;
 
 		if (ip_ver == RTE_GTP_TYPE_IPV4) {
@@ -479,12 +483,12 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 	if (info->ethertype == _htons(RTE_ETHER_TYPE_IPV4)) {
 		ipv4_hdr = l3_hdr;
 
-		ol_flags |= PKT_TX_IPV4;
+		ol_flags |= RTE_MBUF_F_TX_IPV4;
 		if (info->l4_proto == IPPROTO_TCP && tso_segsz) {
-			ol_flags |= PKT_TX_IP_CKSUM;
+			ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
 		} else {
-			if (tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM) {
-				ol_flags |= PKT_TX_IP_CKSUM;
+			if (tx_offloads & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+				ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
 			} else {
 				ipv4_hdr->hdr_checksum = 0;
 				ipv4_hdr->hdr_checksum =
@@ -492,7 +496,7 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 			}
 		}
 	} else if (info->ethertype == _htons(RTE_ETHER_TYPE_IPV6))
-		ol_flags |= PKT_TX_IPV6;
+		ol_flags |= RTE_MBUF_F_TX_IPV6;
 	else
 		return 0; /* packet type not supported, nothing to do */
 
@@ -500,8 +504,8 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 		udp_hdr = (struct rte_udp_hdr *)((char *)l3_hdr + info->l3_len);
 		/* do not recalculate udp cksum if it was 0 */
 		if (udp_hdr->dgram_cksum != 0) {
-			if (tx_offloads & DEV_TX_OFFLOAD_UDP_CKSUM) {
-				ol_flags |= PKT_TX_UDP_CKSUM;
+			if (tx_offloads & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) {
+				ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
 			} else {
 				udp_hdr->dgram_cksum = 0;
 				udp_hdr->dgram_cksum =
@@ -509,30 +513,34 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 						info->ethertype);
 			}
 		}
+#ifdef RTE_LIB_GSO
 		if (info->gso_enable)
-			ol_flags |= PKT_TX_UDP_SEG;
+			ol_flags |= RTE_MBUF_F_TX_UDP_SEG;
+#endif
 	} else if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct rte_tcp_hdr *)((char *)l3_hdr + info->l3_len);
 		if (tso_segsz)
-			ol_flags |= PKT_TX_TCP_SEG;
-		else if (tx_offloads & DEV_TX_OFFLOAD_TCP_CKSUM) {
-			ol_flags |= PKT_TX_TCP_CKSUM;
+			ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
+		else if (tx_offloads & RTE_ETH_TX_OFFLOAD_TCP_CKSUM) {
+			ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
 		} else {
 			tcp_hdr->cksum = 0;
 			tcp_hdr->cksum =
 				get_udptcp_checksum(l3_hdr, tcp_hdr,
 					info->ethertype);
 		}
+#ifdef RTE_LIB_GSO
 		if (info->gso_enable)
-			ol_flags |= PKT_TX_TCP_SEG;
+			ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
+#endif
 	} else if (info->l4_proto == IPPROTO_SCTP) {
 		sctp_hdr = (struct rte_sctp_hdr *)
 			((char *)l3_hdr + info->l3_len);
 		/* sctp payload must be a multiple of 4 to be
 		 * offloaded */
-		if ((tx_offloads & DEV_TX_OFFLOAD_SCTP_CKSUM) &&
+		if ((tx_offloads & RTE_ETH_TX_OFFLOAD_SCTP_CKSUM) &&
 			((ipv4_hdr->total_length & 0x3) == 0)) {
-			ol_flags |= PKT_TX_SCTP_CKSUM;
+			ol_flags |= RTE_MBUF_F_TX_SCTP_CKSUM;
 		} else {
 			sctp_hdr->cksum = 0;
 			/* XXX implement CRC32c, example available in
@@ -555,14 +563,14 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 
 	if (info->outer_ethertype == _htons(RTE_ETHER_TYPE_IPV4)) {
 		ipv4_hdr->hdr_checksum = 0;
-		ol_flags |= PKT_TX_OUTER_IPV4;
+		ol_flags |= RTE_MBUF_F_TX_OUTER_IPV4;
 
-		if (tx_offloads	& DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM)
-			ol_flags |= PKT_TX_OUTER_IP_CKSUM;
+		if (tx_offloads	& RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM)
+			ol_flags |= RTE_MBUF_F_TX_OUTER_IP_CKSUM;
 		else
 			ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);
 	} else
-		ol_flags |= PKT_TX_OUTER_IPV6;
+		ol_flags |= RTE_MBUF_F_TX_OUTER_IPV6;
 
 	if (info->outer_l4_proto != IPPROTO_UDP)
 		return ol_flags;
@@ -571,10 +579,10 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 		((char *)outer_l3_hdr + info->outer_l3_len);
 
 	if (tso_enabled)
-		ol_flags |= PKT_TX_TCP_SEG;
+		ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
 
 	/* Skip SW outer UDP checksum generation if HW supports it */
-	if (tx_offloads & DEV_TX_OFFLOAD_OUTER_UDP_CKSUM) {
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM) {
 		if (info->outer_ethertype == _htons(RTE_ETHER_TYPE_IPV4))
 			udp_hdr->dgram_cksum
 				= rte_ipv4_phdr_cksum(ipv4_hdr, ol_flags);
@@ -582,7 +590,7 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 			udp_hdr->dgram_cksum
 				= rte_ipv6_phdr_cksum(ipv6_hdr, ol_flags);
 
-		ol_flags |= PKT_TX_OUTER_UDP_CKSUM;
+		ol_flags |= RTE_MBUF_F_TX_OUTER_UDP_CKSUM;
 		return ol_flags;
 	}
 
@@ -695,7 +703,7 @@ pkt_copy_split(const struct rte_mbuf *pkt)
 	mp = current_fwd_lcore()->mbp;
 
 	if (tx_pkt_split == TX_PKT_SPLIT_RND)
-		nb_seg = random() % tx_pkt_nb_segs + 1;
+		nb_seg = rte_rand() % tx_pkt_nb_segs + 1;
 	else
 		nb_seg = tx_pkt_nb_segs;
 
@@ -770,8 +778,8 @@ pkts_ip_csum_recalc(struct rte_mbuf **pkts_burst, const uint16_t nb_pkts, uint64
 	int i;
 	struct rte_ipv4_hdr *ipv4_hdr;
 	for (i = 0; i < nb_pkts; i++) {
-		if ((pkts_burst[i]->ol_flags & PKT_TX_IPV4) &&
-			(tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM) == 0) {
+		if ((pkts_burst[i]->ol_flags & RTE_MBUF_F_TX_IPV4) &&
+			(tx_offloads & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) == 0) {
 			ipv4_hdr = rte_pktmbuf_mtod_offset(pkts_burst[i],
 						struct rte_ipv4_hdr *,
 						pkts_burst[i]->l2_len);
@@ -815,16 +823,20 @@ static void
 pkt_burst_checksum_forward(struct fwd_stream *fs)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+#ifdef RTE_LIB_GSO
 	struct rte_mbuf *gso_segments[GSO_MAX_PKT_BURST];
 	struct rte_gso_ctx *gso_ctx;
+#endif
 	struct rte_mbuf **tx_pkts_burst;
 	struct rte_port *txp;
 	struct rte_mbuf *m, *p;
 	struct rte_ether_hdr *eth_hdr;
 	void *l3_hdr = NULL, *outer_l3_hdr = NULL; /* can be IPv4 or IPv6 */
+#ifdef RTE_LIB_GRO
 	void **gro_ctx;
 	uint16_t gro_pkts_num;
 	uint8_t gro_enable;
+#endif
 	uint16_t nb_rx;
 	uint16_t nb_tx;
 	uint16_t nb_prep;
@@ -835,9 +847,8 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 	uint32_t rx_bad_ip_csum;
 	uint32_t rx_bad_l4_csum;
 	uint32_t rx_bad_outer_l4_csum;
+	uint32_t rx_bad_outer_ip_csum;
 	struct testpmd_offload_info info;
-	uint16_t nb_segments = 0;
-	int ret;
 
 	uint64_t start_tsc = 0;
 
@@ -854,15 +865,20 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 	rx_bad_ip_csum = 0;
 	rx_bad_l4_csum = 0;
 	rx_bad_outer_l4_csum = 0;
+	rx_bad_outer_ip_csum = 0;
+#ifdef RTE_LIB_GRO
 	gro_enable = gro_ports[fs->rx_port].enable;
+#endif
 
 	txp = &ports[fs->tx_port];
 	tx_offloads = txp->dev_conf.txmode.offloads;
 	memset(&info, 0, sizeof(info));
 	info.tso_segsz = txp->tso_segsz;
 	info.tunnel_tso_segsz = txp->tunnel_tso_segsz;
+#ifdef RTE_LIB_GSO
 	if (gso_ports[fs->tx_port].enable)
 		info.gso_enable = 1;
+#endif
 
 	for (i = 0; i < nb_rx; i++) {
 		if (likely(i < nb_rx - 1))
@@ -873,16 +889,18 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		info.is_tunnel = 0;
 		info.pkt_len = rte_pktmbuf_pkt_len(m);
 		tx_ol_flags = m->ol_flags &
-			      (IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF);
+			      (RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL);
 		rx_ol_flags = m->ol_flags;
 
 		/* Update the L3/L4 checksum error packet statistics */
-		if ((rx_ol_flags & PKT_RX_IP_CKSUM_MASK) == PKT_RX_IP_CKSUM_BAD)
+		if ((rx_ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK) == RTE_MBUF_F_RX_IP_CKSUM_BAD)
 			rx_bad_ip_csum += 1;
-		if ((rx_ol_flags & PKT_RX_L4_CKSUM_MASK) == PKT_RX_L4_CKSUM_BAD)
+		if ((rx_ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) == RTE_MBUF_F_RX_L4_CKSUM_BAD)
 			rx_bad_l4_csum += 1;
-		if (rx_ol_flags & PKT_RX_OUTER_L4_CKSUM_BAD)
+		if (rx_ol_flags & RTE_MBUF_F_RX_OUTER_L4_CKSUM_BAD)
 			rx_bad_outer_l4_csum += 1;
+		if (rx_ol_flags & RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD)
+			rx_bad_outer_ip_csum += 1;
 
 		/* step 1: dissect packet, parsing optional vlan, ip4/ip6, vxlan
 		 * and inner headers */
@@ -900,25 +918,25 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 					((char *)l3_hdr + info.l3_len);
 				parse_gtp(udp_hdr, &info);
 				if (info.is_tunnel) {
-					tx_ol_flags |= PKT_TX_TUNNEL_GTP;
+					tx_ol_flags |= RTE_MBUF_F_TX_TUNNEL_GTP;
 					goto tunnel_update;
 				}
 				parse_vxlan_gpe(udp_hdr, &info);
 				if (info.is_tunnel) {
 					tx_ol_flags |=
-						PKT_TX_TUNNEL_VXLAN_GPE;
+						RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE;
 					goto tunnel_update;
 				}
 				parse_vxlan(udp_hdr, &info);
 				if (info.is_tunnel) {
 					tx_ol_flags |=
-						PKT_TX_TUNNEL_VXLAN;
+						RTE_MBUF_F_TX_TUNNEL_VXLAN;
 					goto tunnel_update;
 				}
 				parse_geneve(udp_hdr, &info);
 				if (info.is_tunnel) {
 					tx_ol_flags |=
-						PKT_TX_TUNNEL_GENEVE;
+						RTE_MBUF_F_TX_TUNNEL_GENEVE;
 					goto tunnel_update;
 				}
 				/* Always keep last. */
@@ -934,14 +952,14 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 					((char *)l3_hdr + info.l3_len);
 				parse_gre(gre_hdr, &info);
 				if (info.is_tunnel)
-					tx_ol_flags |= PKT_TX_TUNNEL_GRE;
+					tx_ol_flags |= RTE_MBUF_F_TX_TUNNEL_GRE;
 			} else if (info.l4_proto == IPPROTO_IPIP) {
 				void *encap_ip_hdr;
 
 				encap_ip_hdr = (char *)l3_hdr + info.l3_len;
 				parse_encap_ip(encap_ip_hdr, &info);
 				if (info.is_tunnel)
-					tx_ol_flags |= PKT_TX_TUNNEL_IPIP;
+					tx_ol_flags |= RTE_MBUF_F_TX_TUNNEL_IPIP;
 			}
 		}
 
@@ -967,7 +985,7 @@ tunnel_update:
 		if (info.is_tunnel == 1) {
 			tx_ol_flags |= process_outer_cksums(outer_l3_hdr, &info,
 					tx_offloads,
-					!!(tx_ol_flags & PKT_TX_TCP_SEG));
+					!!(tx_ol_flags & RTE_MBUF_F_TX_TCP_SEG));
 		}
 
 		/* step 3: fill the mbuf meta data (flags and header lengths) */
@@ -976,9 +994,9 @@ tunnel_update:
 		if (info.is_tunnel == 1) {
 			if (info.tunnel_tso_segsz ||
 			    (tx_offloads &
-			     DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
+			     RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
 			    (tx_offloads &
-			     DEV_TX_OFFLOAD_OUTER_UDP_CKSUM)) {
+			     RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM)) {
 				m->outer_l2_len = info.outer_l2_len;
 				m->outer_l3_len = info.outer_l3_len;
 				m->l2_len = info.l2_len;
@@ -1031,7 +1049,7 @@ tunnel_update:
 				"l4_proto=%d l4_len=%d flags=%s\n",
 				info.l2_len, rte_be_to_cpu_16(info.ethertype),
 				info.l3_len, info.l4_proto, info.l4_len, buf);
-			if (rx_ol_flags & PKT_RX_LRO)
+			if (rx_ol_flags & RTE_MBUF_F_RX_LRO)
 				printf("rx: m->lro_segsz=%u\n", m->tso_segsz);
 			if (info.is_tunnel == 1)
 				printf("rx: outer_l2_len=%d outer_ethertype=%x "
@@ -1039,30 +1057,30 @@ tunnel_update:
 					rte_be_to_cpu_16(info.outer_ethertype),
 					info.outer_l3_len);
 			/* dump tx packet info */
-			if ((tx_offloads & (DEV_TX_OFFLOAD_IPV4_CKSUM |
-					    DEV_TX_OFFLOAD_UDP_CKSUM |
-					    DEV_TX_OFFLOAD_TCP_CKSUM |
-					    DEV_TX_OFFLOAD_SCTP_CKSUM)) ||
+			if ((tx_offloads & (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+					    RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+					    RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+					    RTE_ETH_TX_OFFLOAD_SCTP_CKSUM)) ||
 				info.tso_segsz != 0)
 				printf("tx: m->l2_len=%d m->l3_len=%d "
 					"m->l4_len=%d\n",
 					m->l2_len, m->l3_len, m->l4_len);
 			if (info.is_tunnel == 1) {
 				if ((tx_offloads &
-				    DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
+				    RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
 				    (tx_offloads &
-				    DEV_TX_OFFLOAD_OUTER_UDP_CKSUM) ||
-				    (tx_ol_flags & PKT_TX_OUTER_IPV6))
+				    RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM) ||
+				    (tx_ol_flags & RTE_MBUF_F_TX_OUTER_IPV6))
 					printf("tx: m->outer_l2_len=%d "
 						"m->outer_l3_len=%d\n",
 						m->outer_l2_len,
 						m->outer_l3_len);
 				if (info.tunnel_tso_segsz != 0 &&
-						(m->ol_flags & PKT_TX_TCP_SEG))
+						(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG))
 					printf("tx: m->tso_segsz=%d\n",
 						m->tso_segsz);
 			} else if (info.tso_segsz != 0 &&
-					(m->ol_flags & PKT_TX_TCP_SEG))
+					(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG))
 				printf("tx: m->tso_segsz=%d\n", m->tso_segsz);
 			rte_get_tx_ol_flag_list(m->ol_flags, buf, sizeof(buf));
 			printf("tx: flags=%s", buf);
@@ -1070,6 +1088,7 @@ tunnel_update:
 		}
 	}
 
+#ifdef RTE_LIB_GRO
 	if (unlikely(gro_enable)) {
 		if (gro_flush_cycles == GRO_DEFAULT_FLUSH_CYCLES) {
 			nb_rx = rte_gro_reassemble_burst(pkts_burst, nb_rx,
@@ -1093,13 +1112,17 @@ tunnel_update:
 
 		pkts_ip_csum_recalc(pkts_burst, nb_rx, tx_offloads);
 	}
+#endif
 
-	if (gso_ports[fs->tx_port].enable == 0)
-		tx_pkts_burst = pkts_burst;
-	else {
+#ifdef RTE_LIB_GSO
+	if (gso_ports[fs->tx_port].enable != 0) {
+		uint16_t nb_segments = 0;
+
 		gso_ctx = &(current_fwd_lcore()->gso_ctx);
 		gso_ctx->gso_size = gso_max_segment_size;
 		for (i = 0; i < nb_rx; i++) {
+			int ret;
+
 			ret = rte_gso_segment(pkts_burst[i], gso_ctx,
 					&gso_segments[nb_segments],
 					GSO_MAX_PKT_BURST - nb_segments);
@@ -1123,13 +1146,16 @@ tunnel_update:
 		nb_rx = nb_segments;
 
 		pkts_ip_csum_recalc(tx_pkts_burst, nb_rx, tx_offloads);
-	}
+	} else
+#endif
+		tx_pkts_burst = pkts_burst;
 
 	nb_prep = rte_eth_tx_prepare(fs->tx_port, fs->tx_queue,
 			tx_pkts_burst, nb_rx);
 	if (nb_prep != nb_rx)
-		printf("Preparing packet burst to transmit failed: %s\n",
-				rte_strerror(rte_errno));
+		fprintf(stderr,
+			"Preparing packet burst to transmit failed: %s\n",
+			rte_strerror(rte_errno));
 
 	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, tx_pkts_burst,
 			nb_prep);
@@ -1149,6 +1175,7 @@ tunnel_update:
 	fs->rx_bad_ip_csum += rx_bad_ip_csum;
 	fs->rx_bad_l4_csum += rx_bad_l4_csum;
 	fs->rx_bad_outer_l4_csum += rx_bad_outer_l4_csum;
+	fs->rx_bad_outer_ip_csum += rx_bad_outer_ip_csum;
 
 	inc_tx_burst_stats(fs, nb_tx);
 	if (unlikely(nb_tx < nb_rx)) {

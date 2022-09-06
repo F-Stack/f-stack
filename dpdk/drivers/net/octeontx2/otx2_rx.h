@@ -41,7 +41,6 @@
 
 /* Inline IPsec offsets */
 
-#define INLINE_INB_RPTR_HDR		16
 /* nix_cqe_hdr_s + nix_rx_parse_s + nix_rx_sg_s + nix_iova_s */
 #define INLINE_CPT_RESULT_OFFSET	80
 
@@ -89,15 +88,15 @@ otx2_nix_mbuf_to_tstamp(struct rte_mbuf *mbuf,
 		 */
 		*otx2_timestamp_dynfield(mbuf, tstamp) =
 				rte_be_to_cpu_64(*tstamp_ptr);
-		/* PKT_RX_IEEE1588_TMST flag needs to be set only in case
+		/* RTE_MBUF_F_RX_IEEE1588_TMST flag needs to be set only in case
 		 * PTP packets are received.
 		 */
 		if (mbuf->packet_type == RTE_PTYPE_L2_ETHER_TIMESYNC) {
 			tstamp->rx_tstamp =
 					*otx2_timestamp_dynfield(mbuf, tstamp);
 			tstamp->rx_ready = 1;
-			mbuf->ol_flags |= PKT_RX_IEEE1588_PTP |
-				PKT_RX_IEEE1588_TMST |
+			mbuf->ol_flags |= RTE_MBUF_F_RX_IEEE1588_PTP |
+				RTE_MBUF_F_RX_IEEE1588_TMST |
 				tstamp->rx_tstamp_dynflag;
 		}
 	}
@@ -162,9 +161,9 @@ nix_update_match_id(const uint16_t match_id, uint64_t ol_flags,
 	 * 0 to OTX2_FLOW_ACTION_FLAG_DEFAULT - 2
 	 */
 	if (likely(match_id)) {
-		ol_flags |= PKT_RX_FDIR;
+		ol_flags |= RTE_MBUF_F_RX_FDIR;
 		if (match_id != OTX2_FLOW_ACTION_FLAG_DEFAULT) {
-			ol_flags |= PKT_RX_FDIR_ID;
+			ol_flags |= RTE_MBUF_F_RX_FDIR_ID;
 			mbuf->hash.fdir.hi = match_id - 1;
 		}
 	}
@@ -200,7 +199,7 @@ nix_cqe_xtract_mseg(const struct nix_rx_parse_s *rx,
 		mbuf->next = ((struct rte_mbuf *)*iova_list) - 1;
 		mbuf = mbuf->next;
 
-		__mempool_check_cookies(mbuf->pool, (void **)&mbuf, 1, 1);
+		RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf, 1, 1);
 
 		mbuf->data_len = sg & 0xFFFF;
 		sg = sg >> 16;
@@ -239,17 +238,21 @@ nix_rx_sec_sa_get(const void * const lookup_mem, int spi, uint16_t port)
 }
 
 static __rte_always_inline uint64_t
-nix_rx_sec_mbuf_update(const struct nix_cqe_hdr_s *cq, struct rte_mbuf *m,
+nix_rx_sec_mbuf_update(const struct nix_rx_parse_s *rx,
+		       const struct nix_cqe_hdr_s *cq, struct rte_mbuf *m,
 		       const void * const lookup_mem)
 {
+	uint8_t *l2_ptr, *l3_ptr, *l2_ptr_actual, *l3_ptr_actual;
 	struct otx2_ipsec_fp_in_sa *sa;
-	struct rte_ipv4_hdr *ipv4;
-	uint16_t m_len;
+	uint16_t m_len, l2_len, ip_len;
+	struct rte_ipv6_hdr *ip6h;
+	struct rte_ipv4_hdr *iph;
+	uint16_t *ether_type;
 	uint32_t spi;
-	char *data;
+	int i;
 
 	if (unlikely(nix_rx_sec_cptres_get(cq) != OTX2_SEC_COMP_GOOD))
-		return PKT_RX_SEC_OFFLOAD | PKT_RX_SEC_OFFLOAD_FAILED;
+		return RTE_MBUF_F_RX_SEC_OFFLOAD | RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED;
 
 	/* 20 bits of tag would have the SPI */
 	spi = cq->tag & 0xFFFFF;
@@ -257,25 +260,41 @@ nix_rx_sec_mbuf_update(const struct nix_cqe_hdr_s *cq, struct rte_mbuf *m,
 	sa = nix_rx_sec_sa_get(lookup_mem, spi, m->port);
 	*rte_security_dynfield(m) = sa->udata64;
 
-	data = rte_pktmbuf_mtod(m, char *);
+	l2_ptr = rte_pktmbuf_mtod(m, uint8_t *);
+	l2_len = rx->lcptr - rx->laptr;
+	l3_ptr = RTE_PTR_ADD(l2_ptr, l2_len);
 
 	if (sa->replay_win_sz) {
-		if (cpt_ipsec_antireplay_check(sa, data) < 0)
-			return PKT_RX_SEC_OFFLOAD | PKT_RX_SEC_OFFLOAD_FAILED;
+		if (cpt_ipsec_ip_antireplay_check(sa, l3_ptr) < 0)
+			return RTE_MBUF_F_RX_SEC_OFFLOAD | RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED;
 	}
 
-	memcpy(data + INLINE_INB_RPTR_HDR, data, RTE_ETHER_HDR_LEN);
+	l2_ptr_actual = RTE_PTR_ADD(l2_ptr,
+				    sizeof(struct otx2_ipsec_fp_res_hdr));
+	l3_ptr_actual = RTE_PTR_ADD(l3_ptr,
+				    sizeof(struct otx2_ipsec_fp_res_hdr));
 
-	m->data_off += INLINE_INB_RPTR_HDR;
+	for (i = l2_len - RTE_ETHER_TYPE_LEN - 1; i >= 0; i--)
+		l2_ptr_actual[i] = l2_ptr[i];
 
-	ipv4 = (struct rte_ipv4_hdr *)(data + INLINE_INB_RPTR_HDR +
-				       RTE_ETHER_HDR_LEN);
+	m->data_off += sizeof(struct otx2_ipsec_fp_res_hdr);
 
-	m_len = rte_be_to_cpu_16(ipv4->total_length) + RTE_ETHER_HDR_LEN;
+	ether_type = RTE_PTR_SUB(l3_ptr_actual, RTE_ETHER_TYPE_LEN);
 
+	iph = (struct rte_ipv4_hdr *)l3_ptr_actual;
+	if ((iph->version_ihl >> 4) == 4) {
+		ip_len = rte_be_to_cpu_16(iph->total_length);
+		*ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+	} else {
+		ip6h = (struct rte_ipv6_hdr *)iph;
+		ip_len = rte_be_to_cpu_16(ip6h->payload_len);
+		*ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+	}
+
+	m_len = ip_len + l2_len;
 	m->data_len = m_len;
 	m->pkt_len = m_len;
-	return PKT_RX_SEC_OFFLOAD;
+	return RTE_MBUF_F_RX_SEC_OFFLOAD;
 }
 
 static __rte_always_inline void
@@ -290,7 +309,7 @@ otx2_nix_cqe_to_mbuf(const struct nix_cqe_hdr_s *cq, const uint32_t tag,
 	uint64_t ol_flags = 0;
 
 	/* Mark mempool obj as "get" as it is alloc'ed by NIX */
-	__mempool_check_cookies(mbuf->pool, (void **)&mbuf, 1, 1);
+	RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf, 1, 1);
 
 	if (flag & NIX_RX_OFFLOAD_PTYPE_F)
 		mbuf->packet_type = nix_ptype_get(lookup_mem, w1);
@@ -299,7 +318,7 @@ otx2_nix_cqe_to_mbuf(const struct nix_cqe_hdr_s *cq, const uint32_t tag,
 
 	if (flag & NIX_RX_OFFLOAD_RSS_F) {
 		mbuf->hash.rss = tag;
-		ol_flags |= PKT_RX_RSS_HASH;
+		ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 	}
 
 	if (flag & NIX_RX_OFFLOAD_CHECKSUM_F)
@@ -307,11 +326,11 @@ otx2_nix_cqe_to_mbuf(const struct nix_cqe_hdr_s *cq, const uint32_t tag,
 
 	if (flag & NIX_RX_OFFLOAD_VLAN_STRIP_F) {
 		if (rx->vtag0_gone) {
-			ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
+			ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
 			mbuf->vlan_tci = rx->vtag0_tci;
 		}
 		if (rx->vtag1_gone) {
-			ol_flags |= PKT_RX_QINQ | PKT_RX_QINQ_STRIPPED;
+			ol_flags |= RTE_MBUF_F_RX_QINQ | RTE_MBUF_F_RX_QINQ_STRIPPED;
 			mbuf->vlan_tci_outer = rx->vtag1_tci;
 		}
 	}
@@ -322,7 +341,7 @@ otx2_nix_cqe_to_mbuf(const struct nix_cqe_hdr_s *cq, const uint32_t tag,
 	if ((flag & NIX_RX_OFFLOAD_SECURITY_F) &&
 	    cq->cqe_type == NIX_XQE_TYPE_RX_IPSECH) {
 		*(uint64_t *)(&mbuf->rearm_data) = val;
-		ol_flags |= nix_rx_sec_mbuf_update(cq, mbuf, lookup_mem);
+		ol_flags |= nix_rx_sec_mbuf_update(rx, cq, mbuf, lookup_mem);
 		mbuf->ol_flags = ol_flags;
 		return;
 	}

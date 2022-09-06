@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
 #ifndef _BNXT_STATS_H_
 #define _BNXT_STATS_H_
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 void bnxt_free_stats(struct bnxt *bp);
 int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,

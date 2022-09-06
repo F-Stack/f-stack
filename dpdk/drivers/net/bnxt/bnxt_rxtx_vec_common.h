@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2020 Broadcom
+ * Copyright(c) 2020-2021 Broadcom
  * All rights reserved.
  */
 
@@ -96,61 +96,82 @@ bnxt_rxq_rearm(struct bnxt_rx_queue *rxq, struct bnxt_rx_ring_info *rxr)
 }
 
 /*
- * Transmit completion function for use when DEV_TX_OFFLOAD_MBUF_FAST_FREE
+ * Transmit completion function for use when RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE
  * is enabled.
  */
 static inline void
-bnxt_tx_cmp_vec_fast(struct bnxt_tx_queue *txq, int nr_pkts)
+bnxt_tx_cmp_vec_fast(struct bnxt_tx_queue *txq, uint32_t nr_pkts)
 {
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
-	uint32_t ring_mask = txr->tx_ring_struct->ring_mask;
-	struct rte_mbuf **free = txq->free;
-	uint16_t cons = txr->tx_cons;
-	unsigned int blk = 0;
+	uint16_t cons, raw_cons = txr->tx_raw_cons;
+	uint32_t ring_mask, ring_size, num;
+	struct rte_mempool *pool;
 
-	while (nr_pkts--) {
-		struct bnxt_sw_tx_bd *tx_buf;
+	ring_mask = txr->tx_ring_struct->ring_mask;
+	ring_size = txr->tx_ring_struct->ring_size;
 
-		tx_buf = &txr->tx_buf_ring[cons];
-		cons = (cons + 1) & ring_mask;
-		free[blk++] = tx_buf->mbuf;
-		tx_buf->mbuf = NULL;
+	cons = raw_cons & ring_mask;
+	num = RTE_MIN(nr_pkts, ring_size - cons);
+	pool = txr->tx_buf_ring[cons]->pool;
+
+	rte_mempool_put_bulk(pool, (void **)&txr->tx_buf_ring[cons], num);
+	memset(&txr->tx_buf_ring[cons], 0, num * sizeof(struct rte_mbuf *));
+	raw_cons += num;
+	num = nr_pkts - num;
+	if (num) {
+		cons = raw_cons & ring_mask;
+		rte_mempool_put_bulk(pool, (void **)&txr->tx_buf_ring[cons],
+				     num);
+		memset(&txr->tx_buf_ring[cons], 0,
+		       num * sizeof(struct rte_mbuf *));
+		raw_cons += num;
 	}
-	if (blk)
-		rte_mempool_put_bulk(free[0]->pool, (void **)free, blk);
 
-	txr->tx_cons = cons;
+	txr->tx_raw_cons = raw_cons;
 }
 
 static inline void
-bnxt_tx_cmp_vec(struct bnxt_tx_queue *txq, int nr_pkts)
+bnxt_tx_cmp_vec(struct bnxt_tx_queue *txq, uint32_t nr_pkts)
 {
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
-	struct rte_mbuf **free = txq->free;
-	uint16_t cons = txr->tx_cons;
-	unsigned int blk = 0;
-	uint32_t ring_mask = txr->tx_ring_struct->ring_mask;
+	uint16_t cons, raw_cons = txr->tx_raw_cons;
+	uint32_t ring_mask, ring_size, num, blk;
+	struct rte_mempool *pool;
 
-	while (nr_pkts--) {
-		struct bnxt_sw_tx_bd *tx_buf;
+	ring_mask = txr->tx_ring_struct->ring_mask;
+	ring_size = txr->tx_ring_struct->ring_size;
+
+	while (nr_pkts) {
 		struct rte_mbuf *mbuf;
 
-		tx_buf = &txr->tx_buf_ring[cons];
-		cons = (cons + 1) & ring_mask;
-		mbuf = rte_pktmbuf_prefree_seg(tx_buf->mbuf);
-		if (unlikely(mbuf == NULL))
-			continue;
-		tx_buf->mbuf = NULL;
+		cons = raw_cons & ring_mask;
+		num = RTE_MIN(nr_pkts, ring_size - cons);
+		pool = txr->tx_buf_ring[cons]->pool;
 
-		if (blk && mbuf->pool != free[0]->pool) {
-			rte_mempool_put_bulk(free[0]->pool, (void **)free, blk);
-			blk = 0;
+		blk = 0;
+		do {
+			mbuf = txr->tx_buf_ring[cons + blk];
+			mbuf = rte_pktmbuf_prefree_seg(mbuf);
+			if (!mbuf || mbuf->pool != pool)
+				break;
+			blk++;
+		} while (blk < num);
+
+		if (blk) {
+			rte_mempool_put_bulk(pool,
+					     (void **)&txr->tx_buf_ring[cons],
+					     blk);
+			memset(&txr->tx_buf_ring[cons], 0,
+			       blk * sizeof(struct rte_mbuf *));
+			raw_cons += blk;
+			nr_pkts -= blk;
 		}
-		free[blk++] = mbuf;
+		if (!mbuf) {
+			/* Skip freeing mbufs with non-zero reference count. */
+			raw_cons++;
+			nr_pkts--;
+		}
 	}
-	if (blk)
-		rte_mempool_put_bulk(free[0]->pool, (void **)free, blk);
-
-	txr->tx_cons = cons;
+	txr->tx_raw_cons = raw_cons;
 }
 #endif /* _BNXT_RXTX_VEC_COMMON_H_ */

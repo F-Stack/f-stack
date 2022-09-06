@@ -14,6 +14,8 @@
 enum mlx5_mp_req_type {
 	MLX5_MP_REQ_VERBS_CMD_FD = 1,
 	MLX5_MP_REQ_CREATE_MR,
+	MLX5_MP_REQ_MEMPOOL_REGISTER,
+	MLX5_MP_REQ_MEMPOOL_UNREGISTER,
 	MLX5_MP_REQ_START_RXTX,
 	MLX5_MP_REQ_STOP_RXTX,
 	MLX5_MP_REQ_QUEUE_STATE_MODIFY,
@@ -33,14 +35,27 @@ struct mlx5_mp_arg_queue_id {
 	uint16_t queue_id; /* DPDK queue ID. */
 };
 
-/* Pameters for IPC. */
+struct mlx5_mp_arg_mr_manage {
+	struct mlx5_common_device *cdev;
+	RTE_STD_C11
+	union {
+		struct {
+			struct rte_mempool *mempool;
+			bool is_extmem;
+		}; /* MLX5_MP_REQ_MEMPOOL_(UN)REGISTER */
+		uintptr_t addr; /* MLX5_MP_REQ_CREATE_MR */
+	};
+};
+
+/* Parameters for IPC. */
 struct mlx5_mp_param {
 	enum mlx5_mp_req_type type;
 	int port_id;
 	int result;
 	RTE_STD_C11
 	union {
-		uintptr_t addr; /* MLX5_MP_REQ_CREATE_MR */
+		struct mlx5_mp_arg_mr_manage mr_manage;
+		/* MLX5_MP_REQ_MEMPOOL_(UN)REGISTER, MLX5_MP_REQ_CREATE_MR */
 		struct mlx5_mp_arg_queue_state_modify state_modify;
 		/* MLX5_MP_REQ_QUEUE_STATE_MODIFY */
 		struct mlx5_mp_arg_queue_id queue_id;
@@ -53,6 +68,17 @@ struct mlx5_mp_id {
 	char name[RTE_MP_MAX_NAME_LEN];
 	uint16_t port_id;
 };
+
+/** Key string for IPC. */
+#define MLX5_MP_NAME "common_mlx5_mp"
+
+/** Initialize a multi-process ID. */
+static inline void
+mlx5_mp_id_init(struct mlx5_mp_id *mp_id, uint16_t port_id)
+{
+	mp_id->port_id = port_id;
+	strlcpy(mp_id->name, MLX5_MP_NAME, RTE_MP_MAX_NAME_LEN);
+}
 
 /** Request timeout for IPC. */
 #define MLX5_MP_REQ_TIMEOUT_SEC 5
@@ -80,6 +106,25 @@ mp_init_msg(struct mlx5_mp_id *mp_id, struct rte_mp_msg *msg,
 	param->port_id = mp_id->port_id;
 }
 
+/**
+ * Initialize IPC port-agnostic message.
+ *
+ * @param[out] msg
+ *   Pointer to message to fill in.
+ * @param[in] type
+ *   Message type.
+ */
+static inline void
+mp_init_port_agnostic_msg(struct rte_mp_msg *msg, enum mlx5_mp_req_type type)
+{
+	struct mlx5_mp_param *param = (struct mlx5_mp_param *)msg->param;
+
+	memset(msg, 0, sizeof(*msg));
+	strlcpy(msg->name, MLX5_MP_NAME, sizeof(msg->name));
+	msg->len_param = sizeof(*param);
+	param->type = type;
+}
+
 __rte_internal
 int mlx5_mp_init_primary(const char *name, const rte_mp_t primary_action);
 __rte_internal
@@ -89,7 +134,11 @@ int mlx5_mp_init_secondary(const char *name, const rte_mp_t secondary_action);
 __rte_internal
 void mlx5_mp_uninit_secondary(const char *name);
 __rte_internal
-int mlx5_mp_req_mr_create(struct mlx5_mp_id *mp_id, uintptr_t addr);
+int mlx5_mp_req_mr_create(struct mlx5_common_device *cdev, uintptr_t addr);
+__rte_internal
+int mlx5_mp_req_mempool_reg(struct mlx5_common_device *cdev,
+			    struct rte_mempool *mempool, bool reg,
+			    bool is_extmem);
 __rte_internal
 int mlx5_mp_req_queue_state_modify(struct mlx5_mp_id *mp_id,
 				   struct mlx5_mp_arg_queue_state_modify *sm);

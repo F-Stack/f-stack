@@ -10,14 +10,13 @@
 
 /* Macros for anti replay and ESN */
 #define OTX2_IPSEC_MAX_REPLAY_WIN_SZ	1024
-#define OTX2_IPSEC_SAINDEX_SZ		4
-#define OTX2_IPSEC_SEQNO_LO		4
 
-#define OTX2_IPSEC_SEQNO_LO_INDEX	(RTE_ETHER_HDR_LEN + \
-					 OTX2_IPSEC_SAINDEX_SZ)
-
-#define OTX2_IPSEC_SEQNO_HI_INDEX	(OTX2_IPSEC_SEQNO_LO_INDEX + \
-					 OTX2_IPSEC_SEQNO_LO)
+struct otx2_ipsec_fp_res_hdr {
+	uint32_t spi;
+	uint32_t seq_no_lo;
+	uint32_t seq_no_hi;
+	uint32_t rsvd;
+};
 
 enum {
 	OTX2_IPSEC_FP_SA_DIRECTION_INBOUND = 0,
@@ -365,7 +364,6 @@ ipsec_fp_sa_ctl_set(struct rte_security_ipsec_xform *ipsec,
 		ctl->esn_en = 1;
 
 	ctl->spi = rte_cpu_to_be_32(ipsec->spi);
-	ctl->valid = 1;
 
 	return 0;
 }

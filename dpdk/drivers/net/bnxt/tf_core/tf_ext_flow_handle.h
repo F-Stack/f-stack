@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2019-2020 Broadcom
+ * Copyright(c) 2019-2021 Broadcom
  * All rights reserved.
  */
 
@@ -18,6 +18,9 @@
 #define TF_ENTRY_NUM_FLOW_HANDLE_SFT		33
 #define TF_HASH_TYPE_FLOW_HANDLE_MASK		0x0000000100000000ULL
 #define TF_HASH_TYPE_FLOW_HANDLE_SFT		32
+
+#define TF_FLAGS_FLOW_HANDLE_INTERNAL		0x2
+#define TF_FLAGS_FLOW_HANDLE_EXTERNAL		0x0
 
 #define TF_FLOW_HANDLE_MASK (TF_NUM_KEY_ENTRIES_FLOW_HANDLE_MASK |	\
 				TF_FLOW_TYPE_FLOW_HANDLE_MASK |		\
@@ -92,15 +95,23 @@ do {									\
 
 #define TF_GET_NUM_KEY_ENTRIES_FROM_FLOW_HANDLE(flow_handle,		\
 					  num_key_entries)		\
+do {									\
 	(num_key_entries =						\
 		(((flow_handle) & TF_NUM_KEY_ENTRIES_FLOW_HANDLE_MASK) >> \
-		     TF_NUM_KEY_ENTRIES_FLOW_HANDLE_SFT))		\
+		     TF_NUM_KEY_ENTRIES_FLOW_HANDLE_SFT));		\
+} while (0)
 
 #define TF_GET_ENTRY_NUM_FROM_FLOW_HANDLE(flow_handle,		\
 					  entry_num)		\
+do {									\
 	(entry_num =						\
 		(((flow_handle) & TF_ENTRY_NUM_FLOW_HANDLE_MASK) >> \
-		     TF_ENTRY_NUM_FLOW_HANDLE_SFT))		\
+		     TF_ENTRY_NUM_FLOW_HANDLE_SFT));		\
+} while (0)
+
+#define TF_GET_FLAG_FROM_FLOW_HANDLE(flow_handle, flag)		\
+	(flag =	(((flow_handle) & TF_FLAGS_FLOW_HANDLE_MASK) >>\
+		     TF_FLAGS_FLOW_HANDLE_SFT))
 
 /*
  * 32 bit Flow ID handlers

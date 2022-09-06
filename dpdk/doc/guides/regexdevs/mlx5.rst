@@ -35,6 +35,11 @@ be specified as device parameter. The RegEx device can be probed and used with
 other Mellanox devices, by adding more options in the class.
 For example: ``class=net:regex`` will probe both the net PMD and the RegEx PMD.
 
+Features
+--------
+
+- Multi segments mbuf support.
+
 Supported NICs
 --------------
 
@@ -46,6 +51,11 @@ Prerequisites
 - BlueField-2 running Mellanox supported kernel.
 - Enable the RegEx capabilities using system call from the BlueField-2.
 - Official support is not yet released.
+
+Limitations
+-----------
+
+- The firmware version must be greater than XX.31.0364
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~

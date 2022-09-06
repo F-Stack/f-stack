@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
  * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
@@ -1442,13 +1442,28 @@ ef10_get_datapath_caps(
 	 * MAE support requires the privilege is granted initially,
 	 * and ignore later dynamic changes.
 	 */
-	if (CAP_FLAGS3(req, MAE_SUPPORTED) &&
-	    EFX_MCDI_HAVE_PRIVILEGE(encp->enc_privilege_mask, MAE))
+	if (CAP_FLAGS3(req, MAE_SUPPORTED)) {
 		encp->enc_mae_supported = B_TRUE;
-	else
+		if (EFX_MCDI_HAVE_PRIVILEGE(encp->enc_privilege_mask, MAE))
+			encp->enc_mae_admin = B_TRUE;
+		else
+			encp->enc_mae_admin = B_FALSE;
+	} else {
 		encp->enc_mae_supported = B_FALSE;
+		encp->enc_mae_admin = B_FALSE;
+	}
+
+	/*
+	 * Check support for MAE action set v2 features.
+	 * These provide support for packet edits.
+	 */
+	if (CAP_FLAGS3(req, MAE_ACTION_SET_ALLOC_V2_SUPPORTED))
+		encp->enc_mae_aset_v2_supported = B_TRUE;
+	else
+		encp->enc_mae_aset_v2_supported = B_FALSE;
 #else
 	encp->enc_mae_supported = B_FALSE;
+	encp->enc_mae_admin = B_FALSE;
 #endif /* EFSYS_OPT_MAE */
 
 #undef CAP_FLAGS1
@@ -1839,6 +1854,51 @@ fail1:
 	return (rc);
 }
 
+static __checkReturn	efx_rc_t
+efx_mcdi_get_nic_addr_caps(
+	__in		efx_nic_t *enp)
+{
+	efx_nic_cfg_t *encp = &(enp->en_nic_cfg);
+	uint32_t mapping_type;
+	efx_rc_t rc;
+
+	rc = efx_mcdi_get_nic_addr_info(enp, &mapping_type);
+	if (rc != 0) {
+		if (rc == ENOTSUP) {
+			encp->enc_dma_mapping = EFX_NIC_DMA_MAPPING_FLAT;
+			goto out;
+		}
+		goto fail1;
+	}
+
+	switch (mapping_type) {
+	case MC_CMD_GET_DESC_ADDR_INFO_OUT_MAPPING_FLAT:
+		encp->enc_dma_mapping = EFX_NIC_DMA_MAPPING_FLAT;
+		break;
+	case MC_CMD_GET_DESC_ADDR_INFO_OUT_MAPPING_REGIONED:
+		encp->enc_dma_mapping = EFX_NIC_DMA_MAPPING_REGIONED;
+		rc = efx_mcdi_get_nic_addr_regions(enp,
+		    &enp->en_dma.end_u.endu_region_info);
+		if (rc != 0)
+			goto fail2;
+		break;
+	default:
+		goto fail3;
+	}
+
+out:
+	return (0);
+
+fail3:
+	EFSYS_PROBE(fail3);
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
 	__checkReturn	efx_rc_t
 efx_mcdi_nic_board_cfg(
 	__in		efx_nic_t *enp)
@@ -1847,6 +1907,7 @@ efx_mcdi_nic_board_cfg(
 	efx_nic_cfg_t *encp = &(enp->en_nic_cfg);
 	ef10_link_state_t els;
 	efx_port_t *epp = &(enp->en_port);
+	efx_pcie_interface_t intf;
 	uint32_t board_type = 0;
 	uint32_t base, nvec;
 	uint32_t port;
@@ -1875,11 +1936,12 @@ efx_mcdi_nic_board_cfg(
 	 *  - PCIe PF: pf = PF number, vf = 0xffff.
 	 *  - PCIe VF: pf = parent PF, vf = VF number.
 	 */
-	if ((rc = efx_mcdi_get_function_info(enp, &pf, &vf)) != 0)
+	if ((rc = efx_mcdi_get_function_info(enp, &pf, &vf, &intf)) != 0)
 		goto fail3;
 
 	encp->enc_pf = pf;
 	encp->enc_vf = vf;
+	encp->enc_intf = intf;
 
 	if ((rc = ef10_mcdi_get_pf_count(enp, &encp->enc_hw_pf_count)) != 0)
 		goto fail4;
@@ -1977,8 +2039,14 @@ efx_mcdi_nic_board_cfg(
 	encp->enc_intr_vec_base = base;
 	encp->enc_intr_limit = nvec;
 
+	rc = efx_mcdi_get_nic_addr_caps(enp);
+	if (rc != 0)
+		goto fail12;
+
 	return (0);
 
+fail12:
+	EFSYS_PROBE(fail12);
 fail11:
 	EFSYS_PROBE(fail11);
 fail10:

@@ -78,11 +78,11 @@ To enable via ``RX_OLFLAGS`` use ``RTE_LIBRTE_FM10K_RX_OLFLAGS_ENABLE=y``.
 To guarantee the constraint, the following capabilities in ``dev_conf.rxmode.offloads``
 will be checked:
 
-*   ``DEV_RX_OFFLOAD_VLAN_EXTEND``
+*   ``RTE_ETH_RX_OFFLOAD_VLAN_EXTEND``
 
-*   ``DEV_RX_OFFLOAD_CHECKSUM``
+*   ``RTE_ETH_RX_OFFLOAD_CHECKSUM``
 
-*   ``DEV_RX_OFFLOAD_HEADER_SPLIT``
+*   ``RTE_ETH_RX_OFFLOAD_HEADER_SPLIT``
 
 *   ``fdir_conf->mode``
 
@@ -141,7 +141,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The FM10000 family of NICS support a maximum of a 15K jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 15364, frames
 up to 15364 bytes can still reach the host interface.
 

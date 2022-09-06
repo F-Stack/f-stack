@@ -32,9 +32,12 @@ The mailing list for DPDK development is `dev@dpdk.org <https://mails.dpdk.org/a
 Contributors will need to `register for the mailing list <https://mails.dpdk.org/listinfo/dev>`_ in order to submit patches.
 It is also worth registering for the DPDK `Patchwork <https://patches.dpdk.org/project/dpdk/list/>`_
 
-If you are using the GitHub service, you can link your repository to
-the ``travis-ci.org`` build service.  When you push patches to your GitHub
-repository, the travis service will automatically build your changes.
+If you are using the GitHub service, pushing to a branch will trigger GitHub
+Actions to automatically build your changes and run unit tests and ABI checks.
+
+Additionally, a Travis configuration is available in DPDK but Travis free usage
+is limited to a few builds.
+You can link your repository to the ``travis-ci.com`` build service.
 
 The development process requires some familiarity with the ``git`` version control system.
 Refer to the `Pro Git Book <http://www.git-scm.com/book/>`_ for further information.
@@ -161,6 +164,10 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
   the :doc:`ABI policy <abi_policy>` and :ref:`ABI versioning <abi_versioning>`
   guides. New external functions should also be added in alphabetical order.
 
+* Any new API function should be used in ``/app`` test directory.
+
+* When introducing a new device API, at least one driver should implement it.
+
 * Important changes will require an addition to the release notes in ``doc/guides/rel_notes/``.
   See the :ref:`Release Notes section of the Documentation Guidelines <doc_guidelines>` for details.
 
@@ -174,6 +181,8 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
 * Add documentation, if relevant, in the form of Doxygen comments or a User Guide in RST format.
   See the :ref:`Documentation Guidelines <doc_guidelines>`.
 
+* Code and related documentation must be updated atomically in the same patch.
+
 Once the changes have been made you should commit them to your local repo.
 
 For small changes, that do not require specific explanations, it is better to keep things together in the
@@ -181,11 +190,6 @@ same patch.
 Larger changes that require different explanations should be separated into logical patches in a patchset.
 A good way of thinking about whether a patch should be split is to consider whether the change could be
 applied without dependencies as a backport.
-
-It is better to keep the related documentation changes in the same patch
-file as the code, rather than one big documentation patch at the end of a
-patchset. This makes it easier for future maintenance and development of the
-code.
 
 As a guide to how patches should be structured run ``git log`` on similar files.
 
@@ -427,13 +431,16 @@ updating the Linux kernel sources.
 
 The path to the original Linux script must be set in the environment variable ``DPDK_CHECKPATCH_PATH``.
 
-Spell checking of commonly misspelled words
-can be enabled by downloading the codespell dictionary::
-
-   https://raw.githubusercontent.com/codespell-project/codespell/master/codespell_lib/data/dictionary.txt
-
-The path to the downloaded ``dictionary.txt`` must be set
+Spell checking of commonly misspelled words is enabled
+by default if installed in ``/usr/share/codespell/dictionary.txt``.
+A different dictionary path can be specified
 in the environment variable ``DPDK_CHECKPATCH_CODESPELL``.
+
+There is a DPDK script to build an adjusted dictionary
+from the multiple codespell dictionaries::
+
+   git clone https://github.com/codespell-project/codespell.git
+   devtools/build-dict.sh codespell/ > codespell-dpdk.txt
 
 Environment variables required by the development tools,
 are loaded from the following files, in order of preference::
@@ -657,3 +664,78 @@ patch accepted. The general cycle for patch review and acceptance is:
      than rework of the original.
    * Trivial patches may be merged sooner than described above at the tree committer's
      discretion.
+
+
+Milestones definition
+---------------------
+
+Each DPDK release has milestones that help everyone to converge to the release date.
+The following is a list of these milestones together with
+concrete definitions and expectations for a typical release cycle.
+An average cycle lasts 3 months and have 4 release candidates in the last month.
+Test reports are expected to be received after each release candidate.
+The number and expectations of release candidates might vary slightly.
+The schedule is updated in the `roadmap <https://core.dpdk.org/roadmap/#dates>`_.
+
+.. note::
+   Sooner is always better. Deadlines are not ideal dates.
+
+   Integration is never guaranteed but everyone can help.
+
+Roadmap
+~~~~~~~
+
+* Announce new features in libraries, drivers, applications, and examples.
+* To be published before the previous release.
+
+Proposal Deadline
+~~~~~~~~~~~~~~~~~
+
+* Must send an RFC (Request For Comments) or a complete patch of new features.
+* Early RFC gives time for design review before complete implementation.
+* Should include at least the API changes in libraries and applications.
+* Library code should be quite complete at the deadline.
+* Nice to have: driver implementation, example code, and documentation.
+
+rc1
+~~~
+
+* Priority: libraries. No library feature should be accepted after -rc1.
+* API changes or additions must be implemented in libraries.
+* The API must include Doxygen documentation
+  and be part of the relevant .rst files (library-specific and release notes).
+* API should be used in a test application (``/app``).
+* At least one PMD should implement the API.
+  It may be a draft sent in a separate series.
+* The above should be sent to the mailing list at least 2 weeks before -rc1
+  to give time for review and maintainers approval.
+* If no review after 10 days, a reminder should be sent.
+* Nice to have: example code (``/examples``)
+
+rc2
+~~~
+
+* Priority: drivers. No driver feature should be accepted after -rc2.
+* A driver change must include documentation
+  in the relevant .rst files (driver-specific and release notes).
+* Driver changes should be sent to the mailing list before -rc1 is released.
+
+rc3
+~~~
+
+* Priority: applications. No application feature should be accepted after -rc3.
+* New functionality that does not depend on libraries update
+  can be integrated as part of -rc3.
+* The application change must include documentation in the relevant .rst files
+  (application-specific and release notes if significant).
+* Libraries and drivers cleanup are allowed.
+* Small driver reworks.
+
+rc4
+~~~
+
+* Documentation updates.
+* Critical bug fixes only.
+
+.. note::
+   Bug fixes are integrated as early as possible at any stage.

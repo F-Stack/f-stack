@@ -27,7 +27,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
@@ -95,7 +94,7 @@ static struct kni_port_params *kni_port_params_array[RTE_MAX_ETHPORTS];
 /* Options for configuring ethernet port */
 static struct rte_eth_conf port_conf = {
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -131,8 +130,8 @@ static int kni_change_mtu(uint16_t port_id, unsigned int new_mtu);
 static int kni_config_network_interface(uint16_t port_id, uint8_t if_up);
 static int kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[]);
 
-static rte_atomic32_t kni_stop = RTE_ATOMIC32_INIT(0);
-static rte_atomic32_t kni_pause = RTE_ATOMIC32_INIT(0);
+static uint32_t kni_stop;
+static uint32_t kni_pause;
 
 /* Print out statistics on packets handled */
 static void
@@ -185,7 +184,7 @@ signal_handler(int signum)
 	if (signum == SIGRTMIN || signum == SIGINT || signum == SIGTERM) {
 		printf("\nSIGRTMIN/SIGINT/SIGTERM received. "
 			"KNI processing stopping.\n");
-		rte_atomic32_inc(&kni_stop);
+		__atomic_fetch_add(&kni_stop, 1, __ATOMIC_RELAXED);
 		return;
         }
 }
@@ -311,8 +310,8 @@ main_loop(__rte_unused void *arg)
 					kni_port_params_array[i]->lcore_rx,
 					kni_port_params_array[i]->port_id);
 		while (1) {
-			f_stop = rte_atomic32_read(&kni_stop);
-			f_pause = rte_atomic32_read(&kni_pause);
+			f_stop = __atomic_load_n(&kni_stop, __ATOMIC_RELAXED);
+			f_pause = __atomic_load_n(&kni_pause, __ATOMIC_RELAXED);
 			if (f_stop)
 				break;
 			if (f_pause)
@@ -324,8 +323,8 @@ main_loop(__rte_unused void *arg)
 					kni_port_params_array[i]->lcore_tx,
 					kni_port_params_array[i]->port_id);
 		while (1) {
-			f_stop = rte_atomic32_read(&kni_stop);
-			f_pause = rte_atomic32_read(&kni_pause);
+			f_stop = __atomic_load_n(&kni_stop, __ATOMIC_RELAXED);
+			f_pause = __atomic_load_n(&kni_pause, __ATOMIC_RELAXED);
 			if (f_stop)
 				break;
 			if (f_pause)
@@ -608,9 +607,9 @@ init_port(uint16_t port)
 			"Error during getting device (port %u) info: %s\n",
 			port, strerror(-ret));
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	ret = rte_eth_dev_configure(port, 1, 1, &local_port_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not configure port%u (%d)\n",
@@ -688,7 +687,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -790,15 +789,8 @@ kni_change_mtu_(uint16_t port_id, unsigned int new_mtu)
 	}
 
 	memcpy(&conf, &port_conf, sizeof(conf));
-	/* Set new MTU */
-	if (new_mtu > RTE_ETHER_MAX_LEN)
-		conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
 
-	/* mtu + length of header + length of FCS = max pkt length */
-	conf.rxmode.max_rx_pkt_len = new_mtu + KNI_ENET_HEADER_SIZE +
-							KNI_ENET_FCS_SIZE;
+	conf.rxmode.mtu = new_mtu;
 	ret = rte_eth_dev_configure(port_id, 1, 1, &conf);
 	if (ret < 0) {
 		RTE_LOG(ERR, APP, "Fail to reconfigure port %d\n", port_id);
@@ -856,9 +848,9 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 {
 	int ret;
 
-	rte_atomic32_inc(&kni_pause);
+	__atomic_fetch_add(&kni_pause, 1, __ATOMIC_RELAXED);
 	ret =  kni_change_mtu_(port_id, new_mtu);
-	rte_atomic32_dec(&kni_pause);
+	__atomic_fetch_sub(&kni_pause, 1, __ATOMIC_RELAXED);
 
 	return ret;
 }
@@ -877,14 +869,14 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 	RTE_LOG(INFO, APP, "Configure network interface of %d %s\n",
 					port_id, if_up ? "up" : "down");
 
-	rte_atomic32_inc(&kni_pause);
+	__atomic_fetch_add(&kni_pause, 1, __ATOMIC_RELAXED);
 
 	if (if_up != 0) { /* Configure network interface up */
 		ret = rte_eth_dev_stop(port_id);
 		if (ret != 0) {
 			RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
 				port_id, rte_strerror(-ret));
-			rte_atomic32_dec(&kni_pause);
+			__atomic_fetch_sub(&kni_pause, 1, __ATOMIC_RELAXED);
 			return ret;
 		}
 		ret = rte_eth_dev_start(port_id);
@@ -893,12 +885,12 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 		if (ret != 0) {
 			RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
 				port_id, rte_strerror(-ret));
-			rte_atomic32_dec(&kni_pause);
+			__atomic_fetch_sub(&kni_pause, 1, __ATOMIC_RELAXED);
 			return ret;
 		}
 	}
 
-	rte_atomic32_dec(&kni_pause);
+	__atomic_fetch_sub(&kni_pause, 1, __ATOMIC_RELAXED);
 
 	if (ret < 0)
 		RTE_LOG(ERR, APP, "Failed to start port %d\n", port_id);
@@ -1031,6 +1023,7 @@ kni_free_kni(uint16_t port_id)
 	if (ret != 0)
 		RTE_LOG(ERR, APP, "Failed to stop port %d: %s\n",
 			port_id, rte_strerror(-ret));
+	rte_eth_dev_close(port_id);
 
 	return 0;
 }

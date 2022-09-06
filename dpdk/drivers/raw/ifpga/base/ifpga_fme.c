@@ -7,6 +7,7 @@
 #include "opae_intel_max10.h"
 #include "opae_i2c.h"
 #include "opae_at24_eeprom.h"
+#include "ifpga_sec_mgr.h"
 
 #define PWR_THRESHOLD_MAX       0x7F
 
@@ -100,6 +101,24 @@ static int fme_hdr_get_ports_num(struct ifpga_fme_hw *fme, u64 *ports_num)
 	return 0;
 }
 
+static int fme_hdr_get_port_type(struct ifpga_fme_hw *fme, u64 *port_type)
+{
+	struct feature_fme_header *fme_hdr
+		= get_fme_feature_ioaddr_by_index(fme, FME_FEATURE_ID_HEADER);
+	struct feature_fme_port pt;
+	u32 port = (u32)((*port_type >> 32) & 0xffffffff);
+
+	pt.csr = readq(&fme_hdr->port[port]);
+	if (!pt.port_implemented)
+		return -ENODEV;
+	if (pt.afu_access_control)
+		*port_type |= 0x1;
+	else
+		*port_type &= ~0x1;
+
+	return 0;
+}
+
 static int fme_hdr_get_cache_size(struct ifpga_fme_hw *fme, u64 *cache_size)
 {
 	struct feature_fme_header *fme_hdr
@@ -178,6 +197,8 @@ fme_hdr_get_prop(struct ifpga_feature *feature, struct feature_prop *prop)
 		return fme_hdr_get_bitstream_id(fme, &prop->data);
 	case FME_HDR_PROP_BITSTREAM_METADATA:
 		return fme_hdr_get_bitstream_metadata(fme, &prop->data);
+	case FME_HDR_PROP_PORT_TYPE:
+		return fme_hdr_get_port_type(fme, &prop->data);
 	}
 
 	return -ENOENT;
@@ -890,13 +911,17 @@ static int fme_get_board_interface(struct ifpga_fme_hw *fme)
 			fme->board_info.nums_of_fvl,
 			fme->board_info.ports_per_fvl);
 
+	if (max10_sys_read(fme->max10_dev, FPGA_PAGE_INFO, &val))
+		return -EINVAL;
+	fme->board_info.boot_page = val & 0x7;
+
 	if (max10_sys_read(fme->max10_dev, MAX10_BUILD_VER, &val))
 		return -EINVAL;
-	fme->board_info.max10_version = val & 0xffffff;
+	fme->board_info.max10_version = val;
 
 	if (max10_sys_read(fme->max10_dev, NIOS2_FW_VERSION, &val))
 		return -EINVAL;
-	fme->board_info.nios_fw_version = val & 0xffffff;
+	fme->board_info.nios_fw_version = val;
 
 	dev_info(fme, "max10 version 0x%x, nios fw version 0x%x\n",
 		fme->board_info.max10_version,
@@ -1152,6 +1177,12 @@ static int fme_nios_spi_init(struct ifpga_feature *feature)
 	if (spi_self_checking(max10))
 		goto spi_fail;
 
+	ret = init_sec_mgr(fme);
+	if (ret) {
+		dev_err(fme, "security manager init fail\n");
+		goto spi_fail;
+	}
+
 	return ret;
 
 spi_fail:
@@ -1165,6 +1196,7 @@ static void fme_nios_spi_uinit(struct ifpga_feature *feature)
 {
 	struct ifpga_fme_hw *fme = (struct ifpga_fme_hw *)feature->parent;
 
+	release_sec_mgr(fme);
 	if (fme->max10_dev)
 		intel_max10_device_remove(fme->max10_dev);
 }

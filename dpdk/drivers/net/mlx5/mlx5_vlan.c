@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <unistd.h>
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_hypervisor.h>
@@ -16,6 +16,7 @@
 #include "mlx5.h"
 #include "mlx5_autoconf.h"
 #include "mlx5_rxtx.h"
+#include "mlx5_rx.h"
 #include "mlx5_utils.h"
 #include "mlx5_devx.h"
 
@@ -90,11 +91,11 @@ void
 mlx5_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue, int on)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_rxq_data *rxq = (*priv->rxqs)[queue];
-	struct mlx5_rxq_ctrl *rxq_ctrl =
-		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
+	struct mlx5_rxq_priv *rxq = mlx5_rxq_get(dev, queue);
+	struct mlx5_rxq_data *rxq_data = &rxq->ctrl->rxq;
 	int ret = 0;
 
+	MLX5_ASSERT(rxq != NULL && rxq->ctrl != NULL);
 	/* Validate hw support */
 	if (!priv->config.hw_vlan_strip) {
 		DRV_LOG(ERR, "port %u VLAN stripping is not supported",
@@ -108,20 +109,20 @@ mlx5_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue, int on)
 		return;
 	}
 	DRV_LOG(DEBUG, "port %u set VLAN stripping offloads %d for port %uqueue %d",
-		dev->data->port_id, on, rxq->port_id, queue);
-	if (!rxq_ctrl->obj) {
+		dev->data->port_id, on, rxq_data->port_id, queue);
+	if (rxq->ctrl->obj == NULL) {
 		/* Update related bits in RX queue. */
-		rxq->vlan_strip = !!on;
+		rxq_data->vlan_strip = !!on;
 		return;
 	}
-	ret = priv->obj_ops.rxq_obj_modify_vlan_strip(rxq_ctrl->obj, on);
+	ret = priv->obj_ops.rxq_obj_modify_vlan_strip(rxq, on);
 	if (ret) {
 		DRV_LOG(ERR, "Port %u failed to modify object stripping mode:"
 			" %s", dev->data->port_id, strerror(rte_errno));
 		return;
 	}
 	/* Update related bits in RX queue. */
-	rxq->vlan_strip = !!on;
+	rxq_data->vlan_strip = !!on;
 }
 
 /**
@@ -141,9 +142,9 @@ mlx5_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int i;
 
-	if (mask & ETH_VLAN_STRIP_MASK) {
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
 		int hw_vlan_strip = !!(dev->data->dev_conf.rxmode.offloads &
-				       DEV_RX_OFFLOAD_VLAN_STRIP);
+				       RTE_ETH_RX_OFFLOAD_VLAN_STRIP);
 
 		if (!priv->config.hw_vlan_strip) {
 			DRV_LOG(ERR, "port %u VLAN stripping is not supported",

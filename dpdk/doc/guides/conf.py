@@ -152,6 +152,9 @@ def generate_overview_table(output_filename, table_id, section, table_name, titl
         name = ini_filename[:-4]
         name = name.replace('_vf', 'vf')
         pmd_names.append(name)
+    if not pmd_names:
+        # Add an empty column if table is empty (required by RST syntax)
+        pmd_names.append(' ')
 
     # Pad the table header names.
     max_header_len = len(max(pmd_names, key=len))
@@ -176,14 +179,8 @@ def generate_overview_table(output_filename, table_id, section, table_name, titl
         # Initialize the dict with the default.ini value.
         ini_data[ini_filename] = valid_features.copy()
 
-        # Check for a valid ini section.
+        # Check for a section.
         if not config.has_section(section):
-            print("{}: File '{}' has no [{}] secton".format(warning,
-                                                            ini_filename,
-                                                            section),
-                                                            file=stderr)
-            if stop_on_error:
-                raise Exception('Warning is treated as a failure')
             continue
 
         # Check for valid features names.
@@ -339,6 +336,16 @@ def setup(app):
                             'Features',
                             'Features availability in networking drivers',
                             'Feature')
+    table_file = dirname(__file__) + '/nics/rte_flow_items_table.txt'
+    generate_overview_table(table_file, 2,
+                            'rte_flow items',
+                            'rte_flow items availability in networking drivers',
+                            'Item')
+    table_file = dirname(__file__) + '/nics/rte_flow_actions_table.txt'
+    generate_overview_table(table_file, 3,
+                            'rte_flow actions',
+                            'rte_flow actions availability in networking drivers',
+                            'Action')
     table_file = dirname(__file__) + '/cryptodevs/overview_feature_table.txt'
     generate_overview_table(table_file, 1,
                             'Features',
@@ -364,6 +371,11 @@ def setup(app):
                             'Asymmetric',
                             'Asymmetric algorithms in crypto drivers',
                             'Asymmetric algorithm')
+    table_file = dirname(__file__) + '/cryptodevs/overview_os_table.txt'
+    generate_overview_table(table_file, 6,
+                            'OS',
+                            'Operating systems support for crypto drivers',
+                            'Operating system')
     table_file = dirname(__file__) + '/compressdevs/overview_feature_table.txt'
     generate_overview_table(table_file, 1,
                             'Features',
@@ -383,6 +395,36 @@ def setup(app):
     generate_overview_table(table_file, 1,
                             'Features',
                             'Features availability in bbdev drivers',
+                            'Feature')
+    table_file = dirname(__file__) + '/gpus/overview_feature_table.txt'
+    generate_overview_table(table_file, 1,
+                            'Features',
+                            'Features availability in GPU drivers',
+                            'Feature')
+    table_file = dirname(__file__) + '/eventdevs/overview_feature_table.txt'
+    generate_overview_table(table_file, 1,
+                            'Scheduling Features',
+                            'Features availability in eventdev drivers',
+                            'Feature')
+    table_file = dirname(__file__) + '/eventdevs/overview_rx_adptr_feature_table.txt'
+    generate_overview_table(table_file, 2,
+                            'Eth Rx adapter Features',
+                            'Features availability for Ethdev Rx adapters',
+                            'Feature')
+    table_file = dirname(__file__) + '/eventdevs/overview_tx_adptr_feature_table.txt'
+    generate_overview_table(table_file, 3,
+                            'Eth Tx adapter Features',
+                            'Features availability for Ethdev Tx adapters',
+                            'Feature')
+    table_file = dirname(__file__) + '/eventdevs/overview_crypto_adptr_feature_table.txt'
+    generate_overview_table(table_file, 4,
+                            'Crypto adapter Features',
+                            'Features availability for Crypto adapters',
+                            'Feature')
+    table_file = dirname(__file__) + '/eventdevs/overview_timer_adptr_feature_table.txt'
+    generate_overview_table(table_file, 5,
+                            'Timer adapter Features',
+                            'Features availability for Timer adapters',
                             'Feature')
 
     if Version(sphinx_version) < Version('1.3.1'):

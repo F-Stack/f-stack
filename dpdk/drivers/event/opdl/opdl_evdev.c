@@ -375,7 +375,8 @@ opdl_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 		.max_event_port_enqueue_depth = MAX_OPDL_CONS_Q_DEPTH,
 		.max_num_events = OPDL_INFLIGHT_EVENTS_TOTAL,
 		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE |
-				 RTE_EVENT_DEV_CAP_CARRY_FLOW_ID,
+				 RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
+				 RTE_EVENT_DEV_CAP_MAINTENANCE_FREE,
 	};
 
 	*info = evdev_opdl_info;
@@ -609,7 +610,7 @@ set_do_test(const char *key __rte_unused, const char *value, void *opaque)
 static int
 opdl_probe(struct rte_vdev_device *vdev)
 {
-	static struct rte_eventdev_ops evdev_opdl_ops = {
+	static struct eventdev_ops evdev_opdl_ops = {
 		.dev_configure = opdl_dev_configure,
 		.dev_infos_get = opdl_info_get,
 		.dev_close = opdl_close,
@@ -720,7 +721,7 @@ opdl_probe(struct rte_vdev_device *vdev)
 	dev->dequeue_burst = opdl_event_dequeue_burst;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
+		goto done;
 
 	opdl = dev->data->dev_private;
 	opdl->data = dev->data;
@@ -733,6 +734,8 @@ opdl_probe(struct rte_vdev_device *vdev)
 	if (do_test == 1)
 		test_result =  opdl_selftest();
 
+done:
+	event_dev_probing_finish(dev);
 	return test_result;
 }
 
@@ -755,7 +758,7 @@ static struct rte_vdev_driver evdev_opdl_pmd_drv = {
 	.remove = opdl_remove
 };
 
-RTE_LOG_REGISTER(opdl_logtype_driver, pmd.event.opdl.driver, INFO);
+RTE_LOG_REGISTER_SUFFIX(opdl_logtype_driver, driver, INFO);
 
 RTE_PMD_REGISTER_VDEV(EVENTDEV_NAME_OPDL_PMD, evdev_opdl_pmd_drv);
 RTE_PMD_REGISTER_PARAM_STRING(event_opdl, NUMA_NODE_ARG "=<int>"

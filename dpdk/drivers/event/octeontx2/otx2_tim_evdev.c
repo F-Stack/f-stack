@@ -9,7 +9,7 @@
 #include "otx2_evdev.h"
 #include "otx2_tim_evdev.h"
 
-static struct rte_event_timer_adapter_ops otx2_tim_ops;
+static struct event_timer_adapter_ops otx2_tim_ops;
 
 static inline int
 tim_get_msix_offsets(void)
@@ -34,27 +34,25 @@ tim_set_fp_ops(struct otx2_tim_ring *tim_ring)
 {
 	uint8_t prod_flag = !tim_ring->prod_type_sp;
 
-	/* [MOD/AND] [DFB/FB] [SP][MP]*/
-	const rte_event_timer_arm_burst_t arm_burst[2][2][2][2] = {
-#define FP(_name, _f4, _f3, _f2, _f1, flags) \
-		[_f4][_f3][_f2][_f1] = otx2_tim_arm_burst_ ## _name,
-TIM_ARM_FASTPATH_MODES
+	/* [DFB/FB] [SP][MP]*/
+	const rte_event_timer_arm_burst_t arm_burst[2][2][2] = {
+#define FP(_name, _f3, _f2, _f1, flags)                                        \
+	[_f3][_f2][_f1] = otx2_tim_arm_burst_##_name,
+		TIM_ARM_FASTPATH_MODES
 #undef FP
 	};
 
-	const rte_event_timer_arm_tmo_tick_burst_t arm_tmo_burst[2][2][2] = {
-#define FP(_name, _f3, _f2, _f1, flags) \
-		[_f3][_f2][_f1] = otx2_tim_arm_tmo_tick_burst_ ## _name,
-TIM_ARM_TMO_FASTPATH_MODES
+	const rte_event_timer_arm_tmo_tick_burst_t arm_tmo_burst[2][2] = {
+#define FP(_name, _f2, _f1, flags)                                             \
+	[_f2][_f1] = otx2_tim_arm_tmo_tick_burst_##_name,
+		TIM_ARM_TMO_FASTPATH_MODES
 #undef FP
 	};
 
 	otx2_tim_ops.arm_burst =
-		arm_burst[tim_ring->enable_stats][tim_ring->optimized]
-			[tim_ring->ena_dfb][prod_flag];
+		arm_burst[tim_ring->enable_stats][tim_ring->ena_dfb][prod_flag];
 	otx2_tim_ops.arm_tmo_tick_burst =
-		arm_tmo_burst[tim_ring->enable_stats][tim_ring->optimized]
-			[tim_ring->ena_dfb];
+		arm_tmo_burst[tim_ring->enable_stats][tim_ring->ena_dfb];
 	otx2_tim_ops.cancel_burst = otx2_tim_timer_cancel_burst;
 }
 
@@ -65,54 +63,10 @@ otx2_tim_ring_info_get(const struct rte_event_timer_adapter *adptr,
 	struct otx2_tim_ring *tim_ring = adptr->data->adapter_priv;
 
 	adptr_info->max_tmo_ns = tim_ring->max_tout;
-	adptr_info->min_resolution_ns = tim_ring->tck_nsec;
+	adptr_info->min_resolution_ns = tim_ring->ena_periodic ?
+		tim_ring->max_tout : tim_ring->tck_nsec;
 	rte_memcpy(&adptr_info->conf, &adptr->data->conf,
 		   sizeof(struct rte_event_timer_adapter_conf));
-}
-
-static void
-tim_optimze_bkt_param(struct otx2_tim_ring *tim_ring)
-{
-	uint64_t tck_nsec;
-	uint32_t hbkts;
-	uint32_t lbkts;
-
-	hbkts = rte_align32pow2(tim_ring->nb_bkts);
-	tck_nsec = RTE_ALIGN_MUL_CEIL(tim_ring->max_tout / (hbkts - 1), 10);
-
-	if ((tck_nsec < TICK2NSEC(OTX2_TIM_MIN_TMO_TKS,
-				  tim_ring->tenns_clk_freq) ||
-	    hbkts > OTX2_TIM_MAX_BUCKETS))
-		hbkts = 0;
-
-	lbkts = rte_align32prevpow2(tim_ring->nb_bkts);
-	tck_nsec = RTE_ALIGN_MUL_CEIL((tim_ring->max_tout / (lbkts - 1)), 10);
-
-	if ((tck_nsec < TICK2NSEC(OTX2_TIM_MIN_TMO_TKS,
-				  tim_ring->tenns_clk_freq) ||
-	    lbkts > OTX2_TIM_MAX_BUCKETS))
-		lbkts = 0;
-
-	if (!hbkts && !lbkts)
-		return;
-
-	if (!hbkts) {
-		tim_ring->nb_bkts = lbkts;
-		goto end;
-	} else if (!lbkts) {
-		tim_ring->nb_bkts = hbkts;
-		goto end;
-	}
-
-	tim_ring->nb_bkts = (hbkts - tim_ring->nb_bkts) <
-		(tim_ring->nb_bkts - lbkts) ? hbkts : lbkts;
-end:
-	tim_ring->optimized = true;
-	tim_ring->tck_nsec = RTE_ALIGN_MUL_CEIL((tim_ring->max_tout /
-						(tim_ring->nb_bkts - 1)), 10);
-	otx2_tim_dbg("Optimized configured values");
-	otx2_tim_dbg("Nb_bkts  : %" PRIu32 "", tim_ring->nb_bkts);
-	otx2_tim_dbg("Tck_nsec : %" PRIu64 "", tim_ring->tck_nsec);
 }
 
 static int
@@ -127,7 +81,7 @@ tim_chnk_pool_create(struct otx2_tim_ring *tim_ring,
 	cache_sz /= rte_lcore_count();
 	/* Create chunk pool. */
 	if (rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_SP_PUT) {
-		mp_flags = MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET;
+		mp_flags = RTE_MEMPOOL_F_SP_PUT | RTE_MEMPOOL_F_SC_GET;
 		otx2_tim_dbg("Using single producer mode");
 		tim_ring->prod_type_sp = true;
 	}
@@ -138,6 +92,8 @@ tim_chnk_pool_create(struct otx2_tim_ring *tim_ring,
 	if (cache_sz > RTE_MEMPOOL_CACHE_MAX_SIZE)
 		cache_sz = RTE_MEMPOOL_CACHE_MAX_SIZE;
 
+	cache_sz = cache_sz != 0 ? cache_sz : 2;
+	tim_ring->nb_chunks += (cache_sz * rte_lcore_count());
 	if (!tim_ring->disable_npa) {
 		tim_ring->chunk_pool = rte_mempool_create_empty(pool_name,
 				tim_ring->nb_chunks, tim_ring->chunk_sz,
@@ -163,7 +119,7 @@ tim_chnk_pool_create(struct otx2_tim_ring *tim_ring,
 		}
 		tim_ring->aura = npa_lf_aura_handle_to_aura(
 				tim_ring->chunk_pool->pool_id);
-		tim_ring->ena_dfb = 0;
+		tim_ring->ena_dfb = tim_ring->ena_periodic ? 1 : 0;
 	} else {
 		tim_ring->chunk_pool = rte_mempool_create(pool_name,
 				tim_ring->nb_chunks, tim_ring->chunk_sz,
@@ -254,6 +210,7 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 	struct tim_ring_req *free_req;
 	struct tim_lf_alloc_req *req;
 	struct tim_lf_alloc_rsp *rsp;
+	uint8_t is_periodic;
 	int i, rc;
 
 	if (dev == NULL)
@@ -284,6 +241,20 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 		}
 	}
 
+	is_periodic = 0;
+	if (rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_PERIODIC) {
+		if (rcfg->max_tmo_ns &&
+		    rcfg->max_tmo_ns != rcfg->timer_tick_ns) {
+			rc = -ERANGE;
+			goto rng_mem_err;
+		}
+
+		/* Use 2 buckets to avoid contention */
+		rcfg->max_tmo_ns = rcfg->timer_tick_ns;
+		rcfg->timer_tick_ns /= 2;
+		is_periodic = 1;
+	}
+
 	tim_ring = rte_zmalloc("otx2_tim_prv", sizeof(struct otx2_tim_ring), 0);
 	if (tim_ring == NULL) {
 		rc =  -ENOMEM;
@@ -296,11 +267,13 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 	tim_ring->clk_src = (int)rcfg->clk_src;
 	tim_ring->ring_id = adptr->data->id;
 	tim_ring->tck_nsec = RTE_ALIGN_MUL_CEIL(rcfg->timer_tick_ns, 10);
-	tim_ring->max_tout = rcfg->max_tmo_ns;
+	tim_ring->max_tout = is_periodic ?
+		rcfg->timer_tick_ns * 2 : rcfg->max_tmo_ns;
 	tim_ring->nb_bkts = (tim_ring->max_tout / tim_ring->tck_nsec);
 	tim_ring->chunk_sz = dev->chunk_sz;
 	tim_ring->nb_timers = rcfg->nb_timers;
 	tim_ring->disable_npa = dev->disable_npa;
+	tim_ring->ena_periodic = is_periodic;
 	tim_ring->enable_stats = dev->enable_stats;
 
 	for (i = 0; i < dev->ring_ctl_cnt ; i++) {
@@ -315,24 +288,15 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 		}
 	}
 
-	tim_ring->nb_chunks = tim_ring->nb_timers / OTX2_TIM_NB_CHUNK_SLOTS(
-							tim_ring->chunk_sz);
-	tim_ring->nb_chunk_slots = OTX2_TIM_NB_CHUNK_SLOTS(tim_ring->chunk_sz);
-
-	/* Try to optimize the bucket parameters. */
-	if ((rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_ADJUST_RES)) {
-		if (rte_is_power_of_2(tim_ring->nb_bkts))
-			tim_ring->optimized = true;
-		else
-			tim_optimze_bkt_param(tim_ring);
-	}
-
-	if (tim_ring->disable_npa)
+	if (tim_ring->disable_npa) {
+		tim_ring->nb_chunks =
+			tim_ring->nb_timers /
+			OTX2_TIM_NB_CHUNK_SLOTS(tim_ring->chunk_sz);
 		tim_ring->nb_chunks = tim_ring->nb_chunks * tim_ring->nb_bkts;
-	else
-		tim_ring->nb_chunks = tim_ring->nb_chunks + tim_ring->nb_bkts;
-
-	/* Create buckets. */
+	} else {
+		tim_ring->nb_chunks = tim_ring->nb_timers;
+	}
+	tim_ring->nb_chunk_slots = OTX2_TIM_NB_CHUNK_SLOTS(tim_ring->chunk_sz);
 	tim_ring->bkt = rte_zmalloc("otx2_tim_bucket", (tim_ring->nb_bkts) *
 				    sizeof(struct otx2_tim_bkt),
 				    RTE_CACHE_LINE_SIZE);
@@ -348,7 +312,7 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 	cfg_req->ring = tim_ring->ring_id;
 	cfg_req->bigendian = false;
 	cfg_req->clocksource = tim_ring->clk_src;
-	cfg_req->enableperiodic = false;
+	cfg_req->enableperiodic = tim_ring->ena_periodic;
 	cfg_req->enabledontfreebuffer = tim_ring->ena_dfb;
 	cfg_req->bucketsize = tim_ring->nb_bkts;
 	cfg_req->chunksize = tim_ring->chunk_sz;
@@ -408,7 +372,7 @@ otx2_tim_calibrate_start_tsc(struct otx2_tim_ring *tim_ring)
 
 	for (icount = 0; icount < OTX2_TIM_CALIB_ITER; icount++) {
 		real_bkt = otx2_read64(tim_ring->base + TIM_LF_RING_REL) >> 44;
-		bkt_cyc = rte_rdtsc();
+		bkt_cyc = tim_cntvct();
 		bucket = (bkt_cyc - tim_ring->ring_start_cyc) /
 							tim_ring->tck_int;
 		bucket = bucket % (tim_ring->nb_bkts);
@@ -443,22 +407,11 @@ otx2_tim_ring_start(const struct rte_event_timer_adapter *adptr)
 		tim_err_desc(rc);
 		goto fail;
 	}
-#ifdef RTE_ARM_EAL_RDTSC_USE_PMU
-	uint64_t tenns_stmp, tenns_diff;
-	uint64_t pmu_stmp;
-
-	pmu_stmp = rte_rdtsc();
-	asm volatile("mrs %0, cntvct_el0" : "=r" (tenns_stmp));
-
-	tenns_diff = tenns_stmp - rsp->timestarted;
-	pmu_stmp = pmu_stmp - (NSEC2TICK(tenns_diff  * 10, rte_get_timer_hz()));
-	tim_ring->ring_start_cyc = pmu_stmp;
-#else
 	tim_ring->ring_start_cyc = rsp->timestarted;
-#endif
-	tim_ring->tck_int = NSEC2TICK(tim_ring->tck_nsec, rte_get_timer_hz());
+	tim_ring->tck_int = NSEC2TICK(tim_ring->tck_nsec, tim_cntfrq());
 	tim_ring->tot_int = tim_ring->tck_int * tim_ring->nb_bkts;
 	tim_ring->fast_div = rte_reciprocal_value_u64(tim_ring->tck_int);
+	tim_ring->fast_bkt = rte_reciprocal_value_u64(tim_ring->nb_bkts);
 
 	otx2_tim_calibrate_start_tsc(tim_ring);
 
@@ -523,8 +476,7 @@ otx2_tim_stats_get(const struct rte_event_timer_adapter *adapter,
 		   struct rte_event_timer_adapter_stats *stats)
 {
 	struct otx2_tim_ring *tim_ring = adapter->data->adapter_priv;
-	uint64_t bkt_cyc = rte_rdtsc() - tim_ring->ring_start_cyc;
-
+	uint64_t bkt_cyc = tim_cntvct() - tim_ring->ring_start_cyc;
 
 	stats->evtim_exp_count = __atomic_load_n(&tim_ring->arm_cnt,
 						 __ATOMIC_RELAXED);
@@ -545,8 +497,7 @@ otx2_tim_stats_reset(const struct rte_event_timer_adapter *adapter)
 
 int
 otx2_tim_caps_get(const struct rte_eventdev *evdev, uint64_t flags,
-		  uint32_t *caps,
-		  const struct rte_event_timer_adapter_ops **ops)
+		  uint32_t *caps, const struct event_timer_adapter_ops **ops)
 {
 	struct otx2_tim_evdev *dev = tim_priv_get();
 
@@ -568,7 +519,8 @@ otx2_tim_caps_get(const struct rte_eventdev *evdev, uint64_t flags,
 
 	/* Store evdev pointer for later use. */
 	dev->event_dev = (struct rte_eventdev *)(uintptr_t)evdev;
-	*caps = RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT;
+	*caps = RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT |
+		RTE_EVENT_TIMER_ADAPTER_CAP_PERIODIC;
 	*ops = &otx2_tim_ops;
 
 	return 0;
