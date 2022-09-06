@@ -38,6 +38,12 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     yum install numactl-devel          # on Centos
     #sudo apt-get install libnuma-dev  # on Ubuntu
 
+    pip3 install pyelftools --upgrade
+    # Install python and modules for running DPDK python scripts
+    pip3 install pyelftools --upgrade # RedHat/Centos
+    sudo apt install python # On ubuntu
+    #sudo pkg install python # On FreeBSD
+
     # Install dependencies (FreeBSD only)
     #pkg install meson pkgconf py38-pyelftools
 
@@ -62,10 +68,6 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
     # Close ASLR; it is necessary in multiple process (Linux only)
     echo 0 > /proc/sys/kernel/randomize_va_space
-
-    # Install python for running DPDK python scripts
-    sudo apt install python # On ubuntu
-    #sudo pkg install python # On FreeBSD
 
     # Offload NIC
     # For Linux:

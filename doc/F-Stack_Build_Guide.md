@@ -6,6 +6,8 @@ The procedures to compile f-stack in different linux releases is almost the same
 $ sudo -i
 # in centos and redhat
 $ yum install -y git gcc openssl-devel kernel-devel-$(uname -r) bc numactl-devel python
+$ pip3 install pyelftools --upgrade
+
 # in ubuntu
 $ apt-get install git gcc openssl libssl-dev linux-headers-$(uname -r) bc libnuma1 libnuma-dev libpcre3 libpcre3-dev zlib1g-dev python
 

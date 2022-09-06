@@ -1122,7 +1122,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 {
     uint8_t rx_csum = ctx->hw_features.rx_csum;
     if (rx_csum) {
-        if (pkt->ol_flags & (PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD)) {
+        if (pkt->ol_flags & (RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD)) {
             rte_pktmbuf_free(pkt);
             return;
         }
@@ -1137,7 +1137,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         return;
     }
 
-    if (pkt->ol_flags & PKT_RX_VLAN_STRIPPED) {
+    if (pkt->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) {
         ff_mbuf_set_vlan_info(hdr, pkt->vlan_tci);
     }
 
@@ -1765,7 +1765,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         iph = (struct rte_ipv4_hdr *)(data + RTE_ETHER_HDR_LEN);
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
-        head->ol_flags |= PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+        head->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
         head->l2_len = RTE_ETHER_HDR_LEN;
         head->l3_len = iph_len;
     }
@@ -1777,7 +1777,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
         if (offload.tcp_csum) {
-            head->ol_flags |= PKT_TX_TCP_CKSUM;
+            head->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
             head->l2_len = RTE_ETHER_HDR_LEN;
             head->l3_len = iph_len;
         }
@@ -1802,15 +1802,15 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
             int tcph_len;
             tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
             tcph_len = (tcph->data_off & 0xf0) >> 2;
-            tcph->cksum = rte_ipv4_phdr_cksum(iph, PKT_TX_TCP_SEG);
+            tcph->cksum = rte_ipv4_phdr_cksum(iph, RTE_MBUF_F_TX_TCP_SEG);
 
-            head->ol_flags |= PKT_TX_TCP_SEG;
+            head->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
             head->l4_len = tcph_len;
             head->tso_segsz = offload.tso_seg_size;
         }
 
         if (offload.udp_csum) {
-            head->ol_flags |= PKT_TX_UDP_CKSUM;
+            head->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
             head->l2_len = RTE_ETHER_HDR_LEN;
             head->l3_len = iph_len;
         }

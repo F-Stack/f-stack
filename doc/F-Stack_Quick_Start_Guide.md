@@ -12,6 +12,11 @@ See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 	mkdir /data/f-stack
 	git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
+## Install python and modules for running DPDK python scripts
+    pip3 install pyelftools --upgrade # RedHat/Centos
+    sudo apt install python # On ubuntu
+    #sudo pkg install python # On FreeBSD
+
 ## Compile DPDK
 
 Read DPDK Quick Started Guide or run the command below

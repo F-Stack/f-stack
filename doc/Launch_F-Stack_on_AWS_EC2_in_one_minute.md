@@ -8,6 +8,8 @@
     mkdir /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
+    pip3 install pyelftools --upgrade
+
     # Compile DPDK
     cd /data/f-stack/dpdk
     meson -Denable_kmods=true build
