@@ -839,7 +839,7 @@ init_clock(void)
     return 0;
 }
 
-#ifdef FF_FLOW_ISOLATE
+#if defined(FF_FLOW_ISOLATE) || defined(FF_FDIR)
 /** Print a message out of a flow error. */
 static int
 port_flow_complain(struct rte_flow_error *error)
@@ -880,7 +880,10 @@ port_flow_complain(struct rte_flow_error *error)
            rte_strerror(err));
     return -err;
 }
+#endif
 
+
+#ifdef FF_FLOW_ISOLATE
 static int
 port_flow_isolate(uint16_t port_id, int set)
 {
@@ -1046,6 +1049,110 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
 
 #endif
 
+#ifdef FF_FDIR
+/*
+ * Flow director allows the traffic to specific port to be processed on the
+ * specific queue. Unlike FF_FLOW_ISOLATE, the FF_FDIR implementation uses
+ * general flow rule so that most FDIR supported NIC will support. The best
+ * using case of FDIR is (but not limited to), using multiple processes to
+ * listen on different ports.
+ *
+ * This function can be called either in FSTACK or in end-application. 
+ *
+ * Example:
+ *  Given 2 fstack instances A and B. Instance A listens on port 80, and
+ *  instance B listens on port 81. We want to process the traffic to port 80
+ *  on rx queue 0, and the traffic to port 81 on rx queue 1. 
+ *  // port 80 rx queue 0
+ *  ret = fdir_add_tcp_flow(port_id, 0, FF_FLOW_INGRESS, 0, 80);
+ *  // port 81 rx queue 1
+ *  ret = fdir_add_tcp_flow(port_id, 1, FF_FLOW_INGRESS, 0, 81);
+ */
+#define FF_FLOW_EGRESS		1
+#define FF_FLOW_INGRESS		2
+/**
+ * Create a flow rule that moves packets with matching src and dest tcp port 
+ * to the target queue. 
+ * 
+ * This function uses general flow rules and doesn't rely on the flow_isolation
+ * that not all the FDIR capable NIC support.
+ *
+ * @param port_id
+ *   The selected port.
+ * @param queue 
+ *   The target queue.
+ * @param dir 
+ *   The direction of the traffic. 
+ *   1 for egress, 2 for ingress and sum(1+2) for both. 
+ * @param tcp_sport 
+ *   The src tcp port to match.
+ * @param tcp_dport
+ *   The dest tcp port to match.
+ *
+ */
+static int
+fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir, 
+		uint16_t tcp_sport, uint16_t tcp_dport)
+{
+    struct rte_flow_attr attr;
+    struct rte_flow_item flow_pattern[4];
+    struct rte_flow_action flow_action[2];
+    struct rte_flow *flow = NULL;
+    struct rte_flow_action_queue flow_action_queue = { .index = queue };
+    struct rte_flow_item_tcp tcp_spec;
+    struct rte_flow_item_tcp tcp_mask;
+    struct rte_flow_error rfe;
+    int res;
+
+    memset(flow_pattern, 0, sizeof(flow_pattern));
+    memset(flow_action, 0, sizeof(flow_action));
+
+    /*
+     * set the rule attribute.
+     */
+    memset(&attr, 0, sizeof(struct rte_flow_attr));
+    attr.ingress = ((dir & FF_FLOW_INGRESS) > 0);
+    attr.egress = ((dir & FF_FLOW_EGRESS) > 0); 
+
+    /*
+     * create the action sequence.
+     * one action only, move packet to queue
+     */
+    flow_action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    flow_action[0].conf = &flow_action_queue;
+    flow_action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+    flow_pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    flow_pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+
+    /*
+     * set the third level of the pattern (TCP).
+     */
+    memset(&tcp_spec, 0, sizeof(struct rte_flow_item_tcp));
+    memset(&tcp_mask, 0, sizeof(struct rte_flow_item_tcp));
+    tcp_spec.hdr.src_port = htons(tcp_sport);
+    tcp_mask.hdr.src_port = (tcp_sport == 0 ? 0: 0xffff); 
+    tcp_spec.hdr.dst_port = htons(tcp_dport);
+    tcp_mask.hdr.dst_port = (tcp_dport == 0 ? 0: 0xffff);
+    flow_pattern[2].type = RTE_FLOW_ITEM_TYPE_TCP;
+    flow_pattern[2].spec = &tcp_spec;
+    flow_pattern[2].mask = &tcp_mask;
+
+    flow_pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+
+    res = rte_flow_validate(port_id, &attr, flow_pattern, flow_action, &rfe);
+    if (res)
+	return (1);
+
+    flow = rte_flow_create(port_id, &attr, flow_pattern, flow_action, &rfe);
+    if (!flow) 
+	return port_flow_complain(&rfe);
+
+    return (0);
+}
+
+#endif
+
 int
 ff_dpdk_init(int argc, char **argv)
 {
@@ -1114,6 +1221,16 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
     }
 #endif
+
+#ifdef FF_FDIR
+    /*
+     * Refer function header section for usage.
+     */
+    ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
+    if (ret)
+	rte_exit(EXIT_FAILURE, "fdir_add_tcp_flow failed\n");
+#endif
+
     return 0;
 }
 
