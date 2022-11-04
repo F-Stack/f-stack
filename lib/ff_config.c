@@ -1045,7 +1045,16 @@ ff_load_config(int argc, char *const argv[])
     ret = ini_parse(ff_global_cfg.filename, ini_parse_handler,
         &ff_global_cfg);
     if (ret != 0) {
-        printf("parse %s failed on line %d\n", ff_global_cfg.filename, ret);
+        switch(ret) {
+            case -1:
+                printf("failed to open file %s\n", ff_global_cfg.filename);
+                break;
+            case -2:
+                printf("failed to allocate memory for config parsing\n");
+                break;
+            default:
+                printf("parse %s failed on line %d\n", ff_global_cfg.filename, ret);
+        }
         return -1;
     }
 
