@@ -888,7 +888,7 @@ static int
 port_flow_isolate(uint16_t port_id, int set)
 {
     struct rte_flow_error error;
-
+    printf("-------- Isolating -------------\n");
     /* Poisoning to make sure PMDs update it in case of error. */
     memset(&error, 0x66, sizeof(error));
     if (rte_flow_isolate(port_id, set, &error))
@@ -931,12 +931,20 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
           },
   };
   struct rte_flow_error error;
+  struct rte_flow_item_ipv4 ipv4_spec = {
+       .hdr = { .dst_addr = RTE_BE32(0x0AFA8815) } // 10.250.136.21
+  };
+  struct rte_flow_item_ipv4 ipv4_mask = {
+       .hdr = { .dst_addr = 0xFFFFFFFF }
+  };
 
   memset(pattern, 0, sizeof(pattern));
   memset(action, 0, sizeof(action));
 
   /* set the dst ipv4 packet to the required value */
   pattern[0].type = RTE_FLOW_ITEM_TYPE_IPV4;
+  pattern[0].spec = &ipv4_spec;
+  pattern[0].mask = &ipv4_mask;
 
   memset(&tcp_spec, 0, sizeof(struct rte_flow_item_tcp));
   tcp_spec.hdr.dst_port = rte_cpu_to_be_16(tcp_port);
@@ -964,7 +972,15 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
   memset(pattern, 0, sizeof(pattern));
 
   /* set the dst ipv4 packet to the required value */
+  struct rte_flow_item_ipv4 ipv4_spec2 = {
+       .hdr = { .src_addr = RTE_BE32(0x0AFA8815) } // 10.250.136.21
+  };
+  struct rte_flow_item_ipv4 ipv4_mask2 = {
+       .hdr = { .src_addr = 0xFFFFFFFF }
+  };
   pattern[0].type = RTE_FLOW_ITEM_TYPE_IPV4;
+  pattern[0].spec = &ipv4_spec2;
+  pattern[0].mask = &ipv4_mask2;
 
   struct rte_flow_item_tcp tcp_src_mask = {
           .hdr = {
@@ -1013,19 +1029,33 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
   struct rte_flow_attr attr = {.ingress = 1};
   struct rte_flow_action_queue queue = {.index = 0};
 
-  struct rte_flow_item pattern_[2];
+  struct rte_flow_item pattern_[3];
   struct rte_flow_action action[2];
-  struct rte_flow_item_eth eth_type = {.type = RTE_BE16(0x0806)};
-  struct rte_flow_item_eth eth_mask = {
-          .type = RTE_BE16(0xffff)
-  };
 
   memset(pattern_, 0, sizeof(pattern_));
   memset(action, 0, sizeof(action));
+  
+  const uint8_t ip[] = { 0x0A, 0xFA, 0x88, 0x15 };  // 10.250.136.21
+  struct rte_flow_item_eth  item_eth_mask = {};
+    struct rte_flow_item_eth  item_eth_spec = {};
+    struct rte_flow_item_raw  raw_spec = {
+        .relative = 0,
+        .search = 0,
+        .offset = 38,
+        .limit = 0,
+        .length = 4,
+        .pattern = ip 
+    };
 
-  pattern_[0].type = RTE_FLOW_ITEM_TYPE_ETH;
-  pattern_[0].spec = &eth_type;
-  pattern_[0].mask = &eth_mask;
+    item_eth_spec.hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
+    item_eth_mask.hdr.ether_type = rte_cpu_to_be_16(0xFFFF);
+
+    pattern_[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern_[0].mask = &item_eth_mask;
+    pattern_[0].spec = &item_eth_spec;
+
+    pattern_[1].type = RTE_FLOW_ITEM_TYPE_RAW;
+    pattern_[1].spec = &raw_spec;
 
   pattern_[1].type = RTE_FLOW_ITEM_TYPE_END;
 
@@ -1037,11 +1067,16 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
   struct rte_flow *flow;
   struct rte_flow_error error;
   /* validate and create the flow rule */
+  printf("--- Creating ARP rule ----\n");
   if (!rte_flow_validate(port_id, &attr, pattern_, action, &error)) {
+      printf("--- ARP rule valid ----\n");
       flow = rte_flow_create(port_id, &attr, pattern_, action, &error);
+      printf("--- ARP rule created, %p ----\n", flow);
       if (!flow) {
           return port_flow_complain(&error);
       }
+  } else {
+    return port_flow_complain(&error);
   }
 
   return 1;

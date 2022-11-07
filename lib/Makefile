@@ -35,7 +35,7 @@ ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
 endif
 
-#FF_FLOW_ISOLATE=1
+FF_FLOW_ISOLATE=1
 #FF_FDIR=1
 
 # NETGRAPH drivers ipfw
