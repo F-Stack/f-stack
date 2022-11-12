@@ -1388,7 +1388,7 @@ ff_add_vlan_tag(struct rte_mbuf * rtem)
 {
     void *data = NULL;
 
-    if (rtem->ol_flags & PKT_RX_VLAN_STRIPPED) {
+    if (rtem->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) {
         data = rte_pktmbuf_prepend(rtem, sizeof(struct rte_vlan_hdr));
         if (data != NULL) {
             memmove(data, data + sizeof(struct rte_vlan_hdr), RTE_ETHER_HDR_LEN);
