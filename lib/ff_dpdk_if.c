@@ -1275,6 +1275,24 @@ pktmbuf_deep_clone(const struct rte_mbuf *md,
 }
 
 static inline void
+ff_add_vlan_tag(struct rte_mbuf * rtem)
+{
+    void *data = NULL;
+
+    if (rtem->ol_flags & PKT_RX_VLAN_STRIPPED) {
+        data = rte_pktmbuf_prepend(rtem, sizeof(struct rte_vlan_hdr));
+        if (data != NULL) {
+            memmove(data, data + sizeof(struct rte_vlan_hdr), RTE_ETHER_HDR_LEN);
+            struct rte_ether_hdr *etherhdr = (struct rte_ether_hdr *)data;
+            struct rte_vlan_hdr *vlanhdr = (struct rte_vlan_hdr *)(data + RTE_ETHER_HDR_LEN);
+            vlanhdr->vlan_tci = rte_cpu_to_be_16(rtem->vlan_tci);
+            vlanhdr->eth_proto = etherhdr->ether_type;
+            etherhdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
+        }
+    }
+}
+
+static inline void
 process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, const struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
@@ -1303,21 +1321,10 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
             if (ret == FF_DISPATCH_RESPONSE) {
                 rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
-
                 /*
                  * We have not support vlan out strip
                  */
-                if (rtem->vlan_tci) {
-                    data = rte_pktmbuf_prepend(rtem, sizeof(struct rte_vlan_hdr));
-                    if (data != NULL) {
-                        memmove(data, data + sizeof(struct rte_vlan_hdr), RTE_ETHER_HDR_LEN);
-                        struct rte_ether_hdr *etherhdr = (struct rte_ether_hdr *)data;
-                        struct rte_vlan_hdr *vlanhdr = (struct rte_vlan_hdr *)(data + RTE_ETHER_HDR_LEN);
-                        vlanhdr->vlan_tci = rte_cpu_to_be_16(rtem->vlan_tci);
-                        vlanhdr->eth_proto = etherhdr->ether_type;
-                        etherhdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
-                    }
-                }
+                ff_add_vlan_tag(rtem);
                 send_single_packet(rtem, port_id);
                 continue;
             }
@@ -1371,6 +1378,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
+                    ff_add_vlan_tag(mbuf_clone);
                     ff_kni_enqueue(port_id, mbuf_clone);
                 }
             }
@@ -1379,6 +1387,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 #ifdef FF_KNI
         } else if (enable_kni) {
             if (knictl_action == FF_KNICTL_ACTION_ALL_TO_KNI){
+                ff_add_vlan_tag(rtem);
                 ff_kni_enqueue(port_id, rtem);
             } else if (knictl_action == FF_KNICTL_ACTION_ALL_TO_FF){
                 ff_veth_input(ctx, rtem);
@@ -1386,7 +1395,8 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 if (enable_kni &&
                         ((filter == FILTER_KNI && kni_accept) ||
                         (filter == FILTER_UNKNOWN && !kni_accept)) ) {
-                        ff_kni_enqueue(port_id, rtem);
+                    ff_add_vlan_tag(rtem);
+                    ff_kni_enqueue(port_id, rtem);
                 } else {
                     ff_veth_input(ctx, rtem);
                 }
