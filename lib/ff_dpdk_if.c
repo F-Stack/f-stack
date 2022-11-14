@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <arpa/inet.h>
 
 #include <rte_common.h>
 #include <rte_byteorder.h>
@@ -888,7 +889,6 @@ static int
 port_flow_isolate(uint16_t port_id, int set)
 {
     struct rte_flow_error error;
-    printf("-------- Isolating -------------\n");
     /* Poisoning to make sure PMDs update it in case of error. */
     memset(&error, 0x66, sizeof(error));
     if (rte_flow_isolate(port_id, set, &error))
@@ -900,7 +900,7 @@ port_flow_isolate(uint16_t port_id, int set)
 }
 
 static int
-create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
+create_tcp_flow(uint16_t port_id, uint16_t tcp_port, uint32_t ip) {
   struct rte_flow_attr attr = {.ingress = 1};
   struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
   int nb_queues = pconf->nb_lcores;
@@ -932,7 +932,7 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
   };
   struct rte_flow_error error;
   struct rte_flow_item_ipv4 ipv4_spec = {
-       .hdr = { .dst_addr = RTE_BE32(0x0AFA8815) } // 10.250.136.21
+       .hdr = { .dst_addr = rte_cpu_to_le_32(ip) }
   };
   struct rte_flow_item_ipv4 ipv4_mask = {
        .hdr = { .dst_addr = 0xFFFFFFFF }
@@ -973,7 +973,7 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
 
   /* set the dst ipv4 packet to the required value */
   struct rte_flow_item_ipv4 ipv4_spec2 = {
-       .hdr = { .src_addr = RTE_BE32(0x0AFA8815) } // 10.250.136.21
+       .hdr = { .src_addr = rte_cpu_to_le_32(ip) }
   };
   struct rte_flow_item_ipv4 ipv4_mask2 = {
        .hdr = { .src_addr = 0xFFFFFFFF }
@@ -1010,17 +1010,9 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
 }
 
 static int
-init_flow(uint16_t port_id, uint16_t tcp_port) {
-  // struct ff_flow_cfg fcfg = ff_global_cfg.dpdk.flow_cfgs[0];
+init_flow(uint16_t port_id, uint16_t tcp_port, uint32_t ip) {
 
-  // int i;
-  // for (i = 0; i < fcfg.nb_port; i++) {
-  //     if(!create_tcp_flow(fcfg.port_id, fcfg.tcp_ports[i])) {
-  //         return 0;
-  //     }
-  // }
-
-  if(!create_tcp_flow(port_id, tcp_port)) {
+  if(!create_tcp_flow(port_id, tcp_port, ip)) {
       rte_exit(EXIT_FAILURE, "create tcp flow failed\n");
       return -1;
   }
@@ -1035,7 +1027,7 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
   memset(pattern_, 0, sizeof(pattern_));
   memset(action, 0, sizeof(action));
   
-  const uint8_t ip[] = { 0x0A, 0xFA, 0x88, 0x15 };  // 10.250.136.21
+  uint32_t ip_addr = rte_cpu_to_le_32(ip);
   struct rte_flow_item_eth  item_eth_mask = {};
     struct rte_flow_item_eth  item_eth_spec = {};
     struct rte_flow_item_raw  raw_spec = {
@@ -1044,7 +1036,7 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
         .offset = 38,
         .limit = 0,
         .length = 4,
-        .pattern = ip 
+        .pattern = (uint8_t*)&ip_addr
     };
 
     item_eth_spec.hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
@@ -1067,11 +1059,8 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
   struct rte_flow *flow;
   struct rte_flow_error error;
   /* validate and create the flow rule */
-  printf("--- Creating ARP rule ----\n");
   if (!rte_flow_validate(port_id, &attr, pattern_, action, &error)) {
-      printf("--- ARP rule valid ----\n");
       flow = rte_flow_create(port_id, &attr, pattern_, action, &error);
-      printf("--- ARP rule created, %p ----\n", flow);
       if (!flow) {
           return port_flow_complain(&error);
       }
@@ -1247,11 +1236,18 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    //Only give a example usage: port_id=0, tcp_port= 80.
-    //Recommend:
-    //1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
-    //2. using config options `tcp_port` replace magic number of 80
-    ret = init_flow(0, 80);
+    uint16_t port_id = 0;
+    uint16_t network_port = 80;
+    char* ip_addr = ff_global_cfg.dpdk.port_cfgs[0].addr;
+    uint32_t ip = 0;
+    ret = inet_pton(AF_INET, ip_addr, &ip);
+    if (ret != 1) {
+        rte_exit(EXIT_FAILURE, "Error converting IP address %s\n", ip_addr);
+    } else {
+        printf("Creating flow for %s (%x) on port %d\n", ip_addr, ip, network_port);
+    }
+
+    ret = init_flow(port_id, network_port, ip);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
     }
