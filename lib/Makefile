@@ -28,7 +28,7 @@ endif
 
 HOST_OS:=$(shell uname -s)
 
-DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation -fPIC
 
 # No DPDK KNI support on FreeBSD
 ifneq ($(TGT_OS),FreeBSD)
@@ -665,6 +665,7 @@ libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} $
 	objcopy --globalize-symbols=ff_api.symlist $*.ro
 	rm -f $@
 	ar -cqs $@ $*.ro ${HOST_OBJS}
+	${CC} -shared -o libfstack.so $*.ro -fPIC ${HOST_OBJS}
 	rm -f $*.ro
 
 ${HOST_OBJS}: %.o: %.c
