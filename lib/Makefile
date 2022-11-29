@@ -127,6 +127,11 @@ ifdef FF_TCPHPTS
 CFLAGS+= -DTCPHPTS -DRATELIMIT
 endif
 
+ifdef FF_IPSEC
+HOST_CFLAGS+= -DIPSEC
+CFLAGS+= -DIPSEC
+endif
+
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
 
 
@@ -270,12 +275,8 @@ FF_HOST_SRCS+=              \
 endif
 
 ifdef FF_IPSEC
-CRYPTO_ASM_SRCS+=                       \
-	aesencdec_${MACHINE_CPUARCH}.S  \
-	aeskeys_${MACHINE_CPUARCH}.S
-
 CRYPTO_SRCS+=               \
-	aesni.c	            \
+	#aesni.c	            \
 	aesni_wrap.c        \
 	bf_ecb.c            \
 	bf_enc.c            \
@@ -577,16 +578,6 @@ NETIPFW_SRCS+=             \
 endif
 
 ifdef FF_IPSEC
-NETINET_SRCS+=		\
-	ip_ipsec.c
-ifdef FF_INET6
-NETINET6_SRCS+=		\
-	ip6_ipsec.c
-endif
-endif
-
-
-ifdef FF_IPSEC
 NETIPSEC_SRCS+=		\
 	ipsec.c		\
 	ipsec_input.c	\
@@ -605,13 +596,11 @@ endif
 
 ifdef FF_IPSEC
 OPENCRYPTO_SRCS+=	\
-	cast.c		\
 	criov.c		\
 	crypto.c	\
 	cryptosoft.c	\
-	deflate.c	\
+	cryptodeflate.c	\
 	rmd160.c	\
-	skipjack.c	\
 	xform.c
 endif
 
