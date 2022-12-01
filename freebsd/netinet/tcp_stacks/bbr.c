@@ -11395,7 +11395,7 @@ bbr_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
     int32_t nxt_pkt, struct timeval *tv)
 {
 	int32_t thflags, retval;
-	uint32_t cts, lcts;
+	uint32_t cts, lcts = 0;
 	uint32_t tiwin;
 	struct tcpopt to;
 	struct tcp_bbr *bbr;
@@ -11957,7 +11957,7 @@ bbr_output_wtime(struct tcpcb *tp, const struct timeval *tv)
 	struct socket *so;
 	int32_t len;
 	uint32_t cts;
-	uint32_t recwin, sendwin;
+	uint32_t recwin = 0, sendwin;
 	int32_t sb_offset;
 	int32_t flags, abandon, error = 0;
 	struct tcp_log_buffer *lgb = NULL;

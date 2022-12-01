@@ -11878,13 +11878,13 @@ static int
 rack_output(struct tcpcb *tp)
 {
 	struct socket *so;
-	uint32_t recwin;
+	uint32_t recwin = 0;
 	uint32_t sb_offset;
 	int32_t len, flags, error = 0;
 	struct mbuf *m;
 	struct mbuf *mb;
 	uint32_t if_hw_tsomaxsegcount = 0;
-	uint32_t if_hw_tsomaxsegsize;
+	uint32_t if_hw_tsomaxsegsize = 0;
 	int32_t segsiz, minseg;
 	long tot_len_this_send = 0;
 	struct ip *ip = NULL;

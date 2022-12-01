@@ -248,7 +248,7 @@ ctf_process_inbound_raw(struct tcpcb *tp, struct socket *so, struct mbuf *m, int
 	 */
 	struct mbuf *m_save;
 	struct ether_header *eh;
-	struct tcphdr *th;
+	struct tcphdr *th = NULL;
 #ifdef INET6
 	struct ip6_hdr *ip6 = NULL;	/* Keep compiler happy. */
 #endif
@@ -257,10 +257,10 @@ ctf_process_inbound_raw(struct tcpcb *tp, struct socket *so, struct mbuf *m, int
 #endif
 	struct ifnet *ifp;
 	struct timeval tv;
-	int32_t retval, nxt_pkt, tlen, off;
+	int32_t retval, nxt_pkt, tlen = 0, off;
 	uint16_t etype;
-	uint16_t drop_hdrlen;
-	uint8_t iptos, no_vn=0, bpf_req=0;
+	uint16_t drop_hdrlen = 0;
+	uint8_t iptos = 0, no_vn=0, bpf_req=0;
 
 	NET_EPOCH_ASSERT();
 
