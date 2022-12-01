@@ -163,7 +163,6 @@ kern_uuidgen(struct uuid *store, size_t count)
 		uuid.time.x.mid = (uint16_t)(time >> 32);
 		uuid.time.x.hi = ((uint16_t)(time >> 48) & 0xfff) | (1 << 12);
 		memcpy(store + n, &uuid, sizeof(struct uuid));
-		// store[n] = *(struct uuid *)&uuid;
 		time++;
 	}
 

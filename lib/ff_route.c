@@ -876,7 +876,6 @@ rt_getmetrics(const struct rtentry *rt, const struct nhop_object *nh,
 }
 
 static void
-// init_sockaddrs_family(int family, struct sockaddr *dst, struct sockaddr *mask)
 init_sockaddrs_family(int family, union sockaddr_union *dst, union sockaddr_union *mask)
 {
     if (family == AF_INET) {
