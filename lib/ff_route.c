@@ -876,11 +876,11 @@ rt_getmetrics(const struct rtentry *rt, const struct nhop_object *nh,
 }
 
 static void
-init_sockaddrs_family(int family, struct sockaddr *dst, struct sockaddr *mask)
+init_sockaddrs_family(int family, union sockaddr_union *dst, union sockaddr_union *mask)
 {
     if (family == AF_INET) {
-        struct sockaddr_in *dst4 = (struct sockaddr_in *)dst;
-        struct sockaddr_in *mask4 = (struct sockaddr_in *)mask;
+        struct sockaddr_in *dst4 = &(dst->sin);
+        struct sockaddr_in *mask4 = &(mask->sin);
 
         bzero(dst4, sizeof(struct sockaddr_in));
         bzero(mask4, sizeof(struct sockaddr_in));
@@ -892,8 +892,8 @@ init_sockaddrs_family(int family, struct sockaddr *dst, struct sockaddr *mask)
     }
 #ifdef INET6
     if (family == AF_INET6) {
-        struct sockaddr_in6 *dst6 = (struct sockaddr_in6 *)dst;
-        struct sockaddr_in6 *mask6 = (struct sockaddr_in6 *)mask;
+        struct sockaddr_in6 *dst6 = &(dst->sin6);
+        struct sockaddr_in6 *mask6 = &(mask->sin6);
 
         bzero(dst6, sizeof(struct sockaddr_in6));
         bzero(mask6, sizeof(struct sockaddr_in6));
@@ -944,7 +944,7 @@ update_rtm_from_rc(struct rt_addrinfo *info, struct rt_msghdr **prtm,
     rtm = *prtm;
     union sockaddr_union sa_dst, sa_mask;
     int family = info->rti_info[RTAX_DST]->sa_family;
-    init_sockaddrs_family(family, &sa_dst.sa, &sa_mask.sa);
+    init_sockaddrs_family(family, &sa_dst, &sa_mask);
     export_rtaddrs(rc->rc_rt, &sa_dst.sa, &sa_mask.sa);
 
     info->rti_info[RTAX_DST] = &sa_dst.sa;

@@ -1242,7 +1242,7 @@ nd6_is_new_addr_neighbor(const struct sockaddr_in6 *addr, struct ifnet *ifp)
 	struct sockaddr_in6 rt_key;
 	const struct sockaddr *dst6;
 	uint64_t genid;
-	int error, fibnum;
+	int error = 0, fibnum;
 
 	/*
 	 * A link-local address is always a neighbor.

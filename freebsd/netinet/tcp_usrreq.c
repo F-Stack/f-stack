@@ -1006,16 +1006,16 @@ tcp_usr_send(struct socket *so, int flags, struct mbuf *m,
 {
 	struct epoch_tracker et;
 	int error = 0;
-	struct inpcb *inp;
+	struct inpcb *inp = NULL;
 	struct tcpcb *tp = NULL;
 #ifdef INET
 #ifdef INET6
 	struct sockaddr_in sin;
 #endif
-	struct sockaddr_in *sinp;
+	struct sockaddr_in *sinp = NULL;
 #endif
 #ifdef INET6
-	int isipv6;
+	int isipv6 = 0;
 #endif
 	u_int8_t incflagsav;
 	u_char vflagsav;

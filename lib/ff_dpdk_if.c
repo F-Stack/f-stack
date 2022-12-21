@@ -705,6 +705,9 @@ init_port_start(void)
                     port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
                     pconf->hw_features.tx_tso = 1;
                 }
+                else {
+                    printf("TSO is not supported\n");
+                }
             } else {
                 printf("TSO is disabled\n");
             }

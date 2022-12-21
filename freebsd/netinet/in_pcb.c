@@ -692,7 +692,7 @@ in_pcb_lport_dest(struct inpcb *inp, struct sockaddr *lsa, u_short *lportp,
 	struct in_addr laddr, faddr;
 #endif
 #ifdef INET6
-	struct in6_addr *laddr6, *faddr6;
+	struct in6_addr *laddr6 = NULL, *faddr6 = NULL;
 #endif
 
 	pcbinfo = inp->inp_pcbinfo;
