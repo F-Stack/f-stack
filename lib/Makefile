@@ -28,7 +28,7 @@ endif
 
 HOST_OS:=$(shell uname -s)
 
-DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+#DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 # No DPDK KNI support on FreeBSD
 ifneq ($(TGT_OS),FreeBSD)
