@@ -210,7 +210,11 @@ static void tcp_hpts_thread(void *ctx);
 static void tcp_init_hptsi(void *st);
 
 int32_t tcp_min_hptsi_time = DEFAULT_MIN_SLEEP;
+#ifndef FSTACK
 static int32_t tcp_hpts_callout_skip_swi = 0;
+#else
+static int32_t tcp_hpts_callout_skip_swi = 1;
+#endif
 
 SYSCTL_NODE(_net_inet_tcp, OID_AUTO, hpts, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TCP Hpts controls");
