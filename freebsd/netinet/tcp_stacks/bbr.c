@@ -13489,15 +13489,6 @@ send:
 				th->th_seq = htonl(tp->snd_max);
 				bbr_seq = tp->snd_max;
 			}
-		} else if (flags & TH_RST) {
-			/*
-			 * For a Reset send the last cum ack in sequence
-			 * (this like any other choice may still generate a
-			 * challenge ack, if a ack-update packet is in
-			 * flight).
-			 */
-			th->th_seq = htonl(tp->snd_una);
-			bbr_seq = tp->snd_una;
 		} else {
 			/*
 			 * len == 0 and not persist we use snd_max, sending
