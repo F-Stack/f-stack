@@ -160,7 +160,7 @@ socket(int domain, int type, int protocol)
         return real_socket(domain, type, protocol);
     }
 
-    if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
+    if ((AF_INET != domain && AF_INET6 != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
         rc = real_socket(domain, type, protocol);
         return rc;
     }
