@@ -20,7 +20,7 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.22
+F-STACK_VERSION=1.23
 TGT_OS=$(shell uname)
 ifeq ($(TGT_OS),FreeBSD)
 CC=gcc
