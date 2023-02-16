@@ -25,7 +25,7 @@ int sockfd;
 int sockfd6;
 #endif
 
-char html[] = 
+char html[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
@@ -60,8 +60,14 @@ char html[] =
 int loop(void *arg)
 {
     /* Wait for events to happen */
-    unsigned nevents = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
-    unsigned i;
+    int nevents = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
+    int i;
+
+    if (nevents < 0) {
+        printf("ff_kevent failed:%d, %s\n", errno,
+                        strerror(errno));
+        return -1;
+    }
 
     for (i = 0; i < nevents; ++i) {
         struct kevent event = events[i];
@@ -111,7 +117,11 @@ int main(int argc, char * argv[])
 {
     ff_init(argc, argv);
 
-    assert((kq = ff_kqueue()) > 0);
+    kq = ff_kqueue();
+    if (kq < 0) {
+        printf("ff_kqueue failed, errno:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
 
     sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -167,7 +177,11 @@ int main(int argc, char * argv[])
     }
 
     EV_SET(&kevSet, sockfd6, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
-    ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
+    ret = ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
+    if (ret < 0) {
+        printf("ff_kevent failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
 #endif
 
     ff_run(loop, NULL);
