@@ -641,7 +641,12 @@ im6f_get_source(struct in6_mfilter *imf, const struct sockaddr_in6 *psin,
 	if (lims == NULL) {
 		if (imf->im6f_nsrc == in6_mcast_maxsocksrc)
 			return (ENOSPC);
+
+#ifdef FSTACK
+		nims = malloc(sizeof(struct ip6_msource), M_IN6MFILTER,
+#else
 		nims = malloc(sizeof(struct in6_msource), M_IN6MFILTER,
+#endif
 		    M_NOWAIT | M_ZERO);
 		if (nims == NULL)
 			return (ENOMEM);
@@ -672,7 +677,11 @@ im6f_graft(struct in6_mfilter *imf, const uint8_t st1,
 	struct ip6_msource	*nims;
 	struct in6_msource	*lims;
 
+#ifdef FSTACK
+	nims = malloc(sizeof(struct ip6_msource), M_IN6MFILTER,
+#else
 	nims = malloc(sizeof(struct in6_msource), M_IN6MFILTER,
+#endif
 	    M_NOWAIT | M_ZERO);
 	if (nims == NULL)
 		return (NULL);
@@ -999,9 +1008,10 @@ in6m_merge(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
 	/* Decrement ASM listener count on transition out of ASM mode. */
 	if (imf->im6f_st[0] == MCAST_EXCLUDE && nsrc0 == 0) {
 		if ((imf->im6f_st[1] != MCAST_EXCLUDE) ||
-		    (imf->im6f_st[1] == MCAST_EXCLUDE && nsrc1 > 0))
+		    (imf->im6f_st[1] == MCAST_EXCLUDE && nsrc1 > 0)) {
 			CTR1(KTR_MLD, "%s: --asm on inm at t1", __func__);
 			--inm->in6m_st[1].iss_asm;
+		}
 	}
 
 	/* Increment ASM listener count on transition to ASM mode. */
@@ -2440,7 +2450,7 @@ in6p_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 		int			 i;
 
 		INP_WUNLOCK(inp);
- 
+
 		CTR2(KTR_MLD, "%s: loading %lu source list entries",
 		    __func__, (unsigned long)msfr.msfr_nsrcs);
 		kss = malloc(sizeof(struct sockaddr_storage) * msfr.msfr_nsrcs,

@@ -687,7 +687,11 @@ imf_get_source(struct in_mfilter *imf, const struct sockaddr_in *psin,
 	if (lims == NULL) {
 		if (imf->imf_nsrc == in_mcast_maxsocksrc)
 			return (ENOSPC);
+#ifdef FSTACK
+		nims = malloc(sizeof(struct ip_msource), M_INMFILTER,
+#else
 		nims = malloc(sizeof(struct in_msource), M_INMFILTER,
+#endif
 		    M_NOWAIT | M_ZERO);
 		if (nims == NULL)
 			return (ENOMEM);
@@ -718,7 +722,11 @@ imf_graft(struct in_mfilter *imf, const uint8_t st1,
 	struct ip_msource	*nims;
 	struct in_msource	*lims;
 
+#ifdef FSTACK
+	nims = malloc(sizeof(struct ip_msource), M_INMFILTER,
+#else
 	nims = malloc(sizeof(struct in_msource), M_INMFILTER,
+#endif
 	    M_NOWAIT | M_ZERO);
 	if (nims == NULL)
 		return (NULL);
@@ -1053,9 +1061,10 @@ inm_merge(struct in_multi *inm, /*const*/ struct in_mfilter *imf)
 	/* Decrement ASM listener count on transition out of ASM mode. */
 	if (imf->imf_st[0] == MCAST_EXCLUDE && nsrc0 == 0) {
 		if ((imf->imf_st[1] != MCAST_EXCLUDE) ||
-		    (imf->imf_st[1] == MCAST_EXCLUDE && nsrc1 > 0))
+		    (imf->imf_st[1] == MCAST_EXCLUDE && nsrc1 > 0)) {
 			CTR1(KTR_IGMPV3, "%s: --asm on inm at t1", __func__);
 			--inm->inm_st[1].iss_asm;
+		}
 	}
 
 	/* Increment ASM listener count on transition to ASM mode. */
@@ -2168,7 +2177,7 @@ inp_join_group(struct inpcb *inp, struct sockopt *sopt)
 		error = in_joingroup_locked(ifp, &gsa->sin.sin_addr, imf,
 		    &inm);
 		if (error) {
-                        CTR1(KTR_IGMPV3, "%s: in_joingroup_locked failed", 
+                        CTR1(KTR_IGMPV3, "%s: in_joingroup_locked failed",
                             __func__);
                         IN_MULTI_UNLOCK();
 			goto out_imo_free;
@@ -2582,7 +2591,7 @@ inp_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 		int			 i;
 
 		INP_WUNLOCK(inp);
- 
+
 		CTR2(KTR_IGMPV3, "%s: loading %lu source list entries",
 		    __func__, (unsigned long)msfr.msfr_nsrcs);
 		kss = malloc(sizeof(struct sockaddr_storage) * msfr.msfr_nsrcs,

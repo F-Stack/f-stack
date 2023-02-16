@@ -741,7 +741,7 @@ linker_file_add_dependency(linker_file_t file, linker_file_t dep)
 	file->deps[file->ndeps] = dep;
 	file->ndeps++;
 	KLD_DPF(FILE, ("linker_file_add_dependency:"
-	    " adding %s as dependency for %s\n", 
+	    " adding %s as dependency for %s\n",
 	    dep->filename, file->filename));
 	return (0);
 }
@@ -1711,6 +1711,9 @@ linker_lookup_file(const char *path, int pathlen, const char *name,
 	reclen = pathlen + strlen(sep) + namelen + extlen + 1;
 	result = malloc(reclen, M_LINKER, M_WAITOK);
 	for (cpp = linker_ext_list; *cpp; cpp++) {
+#ifdef FSTACK
+		if (path != NULL && name != NULL)
+#endif
 		snprintf(result, reclen, "%.*s%s%.*s%s", pathlen, path, sep,
 		    namelen, name, *cpp);
 		/*
@@ -1776,7 +1779,11 @@ linker_hints_lookup(const char *path, int pathlen, const char *modname,
 		goto bad;
 	best = cp = NULL;
 	error = VOP_GETATTR(nd.ni_vp, &vattr, cred);
+#ifdef FSTACK
+	if (error || vattr.va_size == 0)
+#else
 	if (error)
+#endif
 		goto bad;
 	/*
 	 * XXX: we need to limit this number to some reasonable value
