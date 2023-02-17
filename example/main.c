@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <assert.h>
+#include <sys/ioctl.h>
 
 #include "ff_config.h"
 #include "ff_api.h"
