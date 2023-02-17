@@ -104,13 +104,19 @@ int loop(void *arg)
             } while (available);
         } else if (event.filter == EVFILT_READ) {
             char buf[256];
-            size_t readlen = ff_read(clientfd, buf, sizeof(buf));
-
-            ff_write(clientfd, html, sizeof(html) - 1);
+            ssize_t readlen = ff_read(clientfd, buf, sizeof(buf));
+            ssize_t writelen = ff_write(clientfd, html, sizeof(html) - 1);
+            if (writelen < 0){
+                printf("ff_write failed:%d, %s\n", errno,
+                    strerror(errno));
+                ff_close(clientfd);
+            }
         } else {
             printf("unknown event: %8.8X\n", event.flags);
         }
     }
+
+    return 0;
 }
 
 int main(int argc, char * argv[])
@@ -128,6 +134,10 @@ int main(int argc, char * argv[])
         printf("ff_socket failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
+
+    /* Set non blocking */
+    int on = 1;
+    ff_ioctl(sockfd, FIONBIO, &on);
 
     struct sockaddr_in my_addr;
     bzero(&my_addr, sizeof(my_addr));
