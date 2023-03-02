@@ -783,7 +783,7 @@ dpdk_args_setup(struct ff_config *cfg)
         char* rest = cfg->dpdk.pci_whitelist;
 
         while ((token = strtok_r(rest, ",", &rest))){
-            sprintf(temp, "--pci-whitelist=%s", token);
+            sprintf(temp, "--allow=%s", token);
             dpdk_argv[n++] = strdup(temp);
         }
 
