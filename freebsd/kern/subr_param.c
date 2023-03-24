@@ -185,8 +185,9 @@ init_param1(void)
 	 * Arrange for ticks to wrap 10 minutes after boot to help catch
 	 * sign problems sooner.
 	 */
+#ifndef FSTACK
 	ticks = INT_MAX - (hz * 10 * 60);
-
+#endif
 	vn_lock_pair_pause_max = hz / 100;
 	if (vn_lock_pair_pause_max == 0)
 		vn_lock_pair_pause_max = 1;
