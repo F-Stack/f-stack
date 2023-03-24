@@ -76,7 +76,7 @@ vtoslab(vm_offset_t va)
 
     hash_list = &uma_page_slab_hash[UMA_PAGE_HASH(va)];
     LIST_FOREACH(up, hash_list, list_entry)
-        if (up->up_va == va)
+        if (up->up_va == (va & (~(PAGE_SIZE - 1))))
             return (up->up_slab);
     return (NULL);
 }
@@ -89,7 +89,7 @@ vtozoneslab(vm_offset_t va, uma_zone_t *zone, uma_slab_t *slab)
 
     hash_list = &uma_page_slab_hash[UMA_PAGE_HASH(va)];
     LIST_FOREACH(up, hash_list, list_entry)
-        if (up->up_va == va)
+        if (up->up_va == (va & (~(PAGE_SIZE - 1))))
             break;
 
     *slab = up->up_slab;

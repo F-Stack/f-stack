@@ -545,6 +545,11 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     return ff_kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
 }
 
+/*
+ * It is need to modify the definition, such as Ubuntu 22.04 or later.
+ *
+ * int(struct timeval * restrict,  void * restrict)
+ */
 int
 gettimeofday(struct timeval *tv, struct timezone *tz)
 {

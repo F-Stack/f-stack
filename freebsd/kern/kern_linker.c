@@ -771,7 +771,7 @@ linker_file_add_dependency(linker_file_t file, linker_file_t dep)
 	file->deps[file->ndeps] = dep;
 	file->ndeps++;
 	KLD_DPF(FILE, ("linker_file_add_dependency:"
-	    " adding %s as dependency for %s\n", 
+	    " adding %s as dependency for %s\n",
 	    dep->filename, file->filename));
 	return (0);
 }
@@ -1862,7 +1862,11 @@ linker_hints_lookup(const char *path, int pathlen, const char *modname,
 		goto bad;
 	best = cp = NULL;
 	error = VOP_GETATTR(nd.ni_vp, &vattr, cred);
+#ifdef FSTACK
+	if (error || vattr.va_size == 0)
+#else
 	if (error)
+#endif
 		goto bad;
 	/*
 	 * XXX: we need to limit this number to some reasonable value

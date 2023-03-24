@@ -88,7 +88,7 @@ The mount point can be made permanent across reboots, by adding the following li
 
 	cd app/redis-6.2.6/deps/jemalloc
 	./autogen.sh
-	cd app/redis-6.2.6/
+	cd ../..
 	make
 	# run with start.sh
 	./start.sh -b ./redis-server -o /path/to/redis.conf

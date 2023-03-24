@@ -729,7 +729,11 @@ im6f_get_source(struct in6_mfilter *imf, const struct sockaddr_in6 *psin,
 	if (lims == NULL) {
 		if (imf->im6f_nsrc == in6_mcast_maxsocksrc)
 			return (ENOSPC);
+#ifdef FSTACK
+		nims = malloc(sizeof(struct ip6_msource), M_IN6MFILTER,
+#else
 		nims = malloc(sizeof(struct in6_msource), M_IN6MFILTER,
+#endif
 		    M_NOWAIT | M_ZERO);
 		if (nims == NULL)
 			return (ENOMEM);
@@ -760,7 +764,11 @@ im6f_graft(struct in6_mfilter *imf, const uint8_t st1,
 	struct ip6_msource	*nims;
 	struct in6_msource	*lims;
 
+#ifdef FSTACK
+	nims = malloc(sizeof(struct ip6_msource), M_IN6MFILTER,
+#else
 	nims = malloc(sizeof(struct in6_msource), M_IN6MFILTER,
+#endif
 	    M_NOWAIT | M_ZERO);
 	if (nims == NULL)
 		return (NULL);

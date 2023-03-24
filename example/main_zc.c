@@ -25,7 +25,7 @@ int sockfd;
 int sockfd6;
 #endif
 
-char html[] = 
+char html[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
@@ -58,7 +58,7 @@ char html[] =
 "</html>";
 
 
-char html1[] = 
+char html1[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
@@ -94,7 +94,7 @@ char html1[] =
 "</body>\r\n"
 "</html>";
 
-char html2[] = 
+char html2[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
@@ -195,7 +195,7 @@ int loop(void *arg)
                      printf("ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", to_write_len, errno, strerror(errno));
                      exit(1);
                  }
-             off += to_write_len;
+                off += to_write_len;
             }
 
             /* Or call ff_zc_mbuf_write one time */
