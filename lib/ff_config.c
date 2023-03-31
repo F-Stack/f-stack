@@ -882,6 +882,7 @@ dpdk_args_setup(struct ff_config *cfg)
 
     for (i=0; i<n; i++)
         printf("%s ", dpdk_argv[i]);
+    printf("\n");
 
     return n;
 }
