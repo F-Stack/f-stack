@@ -8,15 +8,27 @@ ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
 	$(error "No installation of DPDK found, maybe you should export environment variable `PKG_CONFIG_PATH`")
 endif
 
-DEBUG=-O0 -gdwarf-2 -g3 -DDEBUG
+DEBUG=-O0 -gdwarf-2 -g3
+
+# Per thread separate initialization dpdk lib and attach sc when needed,
+# such as listen same port in different threads, and socket can use in own thread.
+# Default enable.
+#
+# If disable it, one socket can use in all threads.
+FF_THREAD_SOCKET=1
 
 PKGCONF ?= pkg-config
 
 ifndef DEBUG
-	CFLAGS+= -g -O2
+	CFLAGS+= -g -O2 -DNDEBUG
 else
 	CFLAGS+= ${DEBUG}
 endif
+
+ifdef FF_THREAD_SOCKET
+	CFLAGS+= -DFF_THREAD_SOCKET
+endif
+
 CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 INCLUDES= -I. -I${FF_PATH}/lib

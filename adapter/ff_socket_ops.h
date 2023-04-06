@@ -10,10 +10,10 @@
         printf("file:%s, line:%u, fun:%s, "fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     } while (0)
 
-#ifdef DEBUG
-#define DEBUG_LOG ERR_LOG
-#else
+#ifdef NDEBUG
 #define DEBUG_LOG(...)
+#else
+#define DEBUG_LOG ERR_LOG
 #endif
 
 enum FF_SOCKET_OPS {

@@ -95,9 +95,19 @@
     return ret;                                                   \
 } while (0)
 
-/* per thread separate initialization dpdk lib and attach sc */
-static __thread int inited = 0;
-static __thread struct ff_so_context *sc;
+/*
+ * Per thread separate initialization dpdk lib and attach sc when needed,
+ * such as listen same port in different threads, and socket can use in own thread.
+ *
+ * Otherwise, one socket can use in all threads.
+ */
+#ifdef FF_THREAD_SOCKET
+#define __FF_THREAD __thread
+#else
+#define __FF_THREAD
+#endif
+static __FF_THREAD int inited = 0;
+static __FF_THREAD struct ff_so_context *sc;
 
 /* process-level initialization flag */
 static int proc_inited = 0;
