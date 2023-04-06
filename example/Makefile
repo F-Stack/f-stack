@@ -10,7 +10,7 @@ endif
 
 PKGCONF ?= pkg-config
 
-CFLAGS += -O -gdwarf-2 $(shell $(PKGCONF) --cflags libdpdk)
+CFLAGS += -O0 -g -gdwarf-2 $(shell $(PKGCONF) --cflags libdpdk)
 
 LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
 LIBS+= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
@@ -20,6 +20,7 @@ TARGET="helloworld"
 all:
 	cc ${CFLAGS} -DINET6 -o ${TARGET} main.c ${LIBS}
 	cc ${CFLAGS} -o ${TARGET}_epoll main_epoll.c ${LIBS}
+	cc ${CFLAGS} -I ../adapter -o ${TARGET}_stack_epoll main_stack_epoll.c ${LIBS}
 
 .PHONY: clean
 clean:
