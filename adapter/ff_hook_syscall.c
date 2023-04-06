@@ -98,6 +98,14 @@
 static __FF_THREAD int inited = 0;
 static __FF_THREAD struct ff_so_context *sc;
 
+/*
+ * Use pthread_key_create/pthread_setspecific/pthread_key_delete in FF_THREAD_SOCKET mode,
+ * because ff_so_zone is thread level.
+ */
+#ifdef FF_THREAD_SOCKET
+static pthread_key_t key;
+#endif
+
 /* process-level initialization flag */
 static int proc_inited = 0;
 
@@ -1405,6 +1413,15 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     RETURN();
 }
 
+#ifdef FF_THREAD_SOCKET
+static void
+thread_destructor(void *sc)
+{
+    DEBUG_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
+    ff_detach_so_context(sc);
+}
+#endif
+
 int
 ff_adapter_init()
 //int __attribute__((constructor))
@@ -1420,6 +1437,11 @@ ff_adapter_init()
         /* May conflict */
         rte_spinlock_init(&worker_id_lock);
         rte_spinlock_lock(&worker_id_lock);
+
+#ifdef FF_THREAD_SOCKET
+        pthread_key_create(&key, thread_destructor);
+        DEBUG_LOG("pthread key:%d\n", key);
+#endif
 
         /*
          * get ulimit -n to distinguish fd between kernel and F-Stack
@@ -1514,6 +1536,10 @@ ff_adapter_init()
         return -1;
     }
 
+#ifdef FF_THREAD_SOCKET
+    pthread_setspecific(key, sc);
+#endif
+
     worker_id++;
     inited = 1;
 
@@ -1527,6 +1553,10 @@ ff_adapter_init()
 void __attribute__((destructor))
 ff_adapter_exit()
 {
+#ifdef FF_THREAD_SOCKET
+    pthread_key_delete(key);
+#else
+    DEBUG_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
     ff_detach_so_context(sc);
-    ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
+#endif
 }

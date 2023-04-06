@@ -88,6 +88,7 @@ ff_create_so_memzone()
                 struct ff_so_context *sc = &so_zone_tmp->sc[i];
                 rte_spinlock_init(&sc->lock);
                 sc->status = FF_SC_IDLE;
+                sc->idx = i;
                 sc->inuse = 0;
 
                 if (sem_init(&sc->wait_sem, 1, 0) == -1) {
@@ -182,16 +183,26 @@ ff_attach_so_context(int proc_id)
 void
 ff_detach_so_context(struct ff_so_context *sc)
 {
+    DEBUG_LOG("ff_so_zone:%p, sc:%p\n", ff_so_zone, sc);
+
     if (ff_so_zone == NULL || sc == NULL) {
         return;
     }
 
+    DEBUG_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, inuse:%d, so free:%u, idx:%u\n",
+        sc, sc->ops, sc->status, sc->idx, sc->inuse, ff_so_zone->free, ff_so_zone->idx);
+
     rte_spinlock_lock(&ff_so_zone->lock);
 
-    sc->inuse = 0;
+    if (sc->inuse == 1) {
+        sc->inuse = 0;
 
-    ff_so_zone->free++;
-    DEBUG_LOG("detach sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
+        ff_so_zone->free++;
+        ff_so_zone->idx = sc->idx;
+    }
+
+    DEBUG_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, inuse:%d, so free:%u, idx:%u\n",
+        sc, sc->ops, sc->status, sc->idx, sc->inuse, ff_so_zone->free, ff_so_zone->idx);
 
     rte_spinlock_unlock(&ff_so_zone->lock);
 }

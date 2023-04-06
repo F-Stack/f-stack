@@ -84,14 +84,12 @@ struct ff_socket_ops_zone {
 
 struct ff_so_context {
     rte_spinlock_t lock;
-
-    int status;
-
     sem_t wait_sem;
+    void *args;
 
     enum FF_SOCKET_OPS ops;
-
-    void *args;
+    int status;
+    int idx;
 
     /* result of ops processing */
     ssize_t result;
