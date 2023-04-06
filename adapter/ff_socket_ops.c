@@ -410,10 +410,6 @@ ff_handle_kevent(struct ff_so_context *sc)
 static inline void
 ff_handle_socket_ops(struct ff_so_context *sc)
 {
-    if (sc->inuse == 0) {
-        return;
-    }
-
     if (!rte_spinlock_trylock(&sc->lock)) {
         return;
     }
@@ -446,14 +442,27 @@ ff_handle_socket_ops(struct ff_so_context *sc)
 void
 ff_handle_each_context()
 {
-    uint16_t i;
+    uint16_t i, nb_handled;
 
     rte_spinlock_lock(&ff_so_zone->lock);
 
-    for (i = 0; i < ff_so_zone->count; i++) {
-        struct ff_so_context *sc = &ff_so_zone->sc[i];
+    assert(ff_so_zone->count >= ff_so_zone->free);
+    nb_handled = ff_so_zone->count - ff_so_zone->free;
+    if (nb_handled) {
+        for (i = 0; i < ff_so_zone->count; i++) {
+            struct ff_so_context *sc = &ff_so_zone->sc[i];
 
-        ff_handle_socket_ops(sc);
+            if (sc->inuse == 0) {
+                continue;
+            }
+
+            ff_handle_socket_ops(sc);
+
+            nb_handled--;
+            if (!nb_handled) {
+                break;
+            }
+        }
     }
 
     rte_spinlock_unlock(&ff_so_zone->lock);

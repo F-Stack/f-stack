@@ -58,11 +58,14 @@ enum FF_SO_CONTEXT_STATUS {
 struct ff_socket_ops_zone {
     rte_spinlock_t lock;
 
-    /* total number of so_contex */
+    /* total number of so_contex, must be power of 2 */
     uint16_t count;
+    uint16_t mask;
 
     /* free number of so_context */
     uint16_t free;
+
+    uint16_t idx;
 
     struct ff_so_context *sc;
 } __attribute__((packed));

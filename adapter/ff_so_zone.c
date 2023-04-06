@@ -9,13 +9,20 @@
 
 #define SOCKET_OPS_ZONE_NAME "ff_socket_ops_zone_%d"
 
-#define SOCKET_OPS_CONTEXT_MAX_NUM 32
+/* Must be power of 2 */
+#define SOCKET_OPS_CONTEXT_MAX_NUM (2 << 5)
 
 #define SOCKET_OPS_CONTEXT_NAME_SIZE 32
 #define SOCKET_OPS_CONTEXT_NAME "ff_so_context_"
 
 static uint16_t ff_max_so_context = SOCKET_OPS_CONTEXT_MAX_NUM;
 struct ff_socket_ops_zone *ff_so_zone;
+
+static inline int
+is_power_of_2(uint64_t n)
+{
+    return (n != 0 && ((n & (n - 1)) == 0));
+}
 
 int
 ff_set_max_so_context(uint16_t count)
@@ -29,6 +36,12 @@ ff_set_max_so_context(uint16_t count)
         ERR_LOG("Can not set: process is not primary\n");
         return 1;
     }*/
+
+    if (!is_power_of_2(count)) {
+        ERR_LOG("Can not set: count:%d is not power of 2, use default:%d\n",
+            count, ff_max_so_context);
+        return -1;
+    }
 
     ff_max_so_context = count;
 
@@ -66,7 +79,9 @@ ff_create_so_memzone()
 
             rte_spinlock_init(&so_zone_tmp->lock);
             so_zone_tmp->count = ff_max_so_context;
+            so_zone_tmp->mask = so_zone_tmp->count - 1;
             so_zone_tmp->free = so_zone_tmp->count;
+            so_zone_tmp->idx = 0;
             so_zone_tmp->sc = (struct ff_so_context *)(so_zone_tmp + 1);
 
             for (i = 0; i < ff_max_so_context; i++) {
@@ -134,18 +149,28 @@ ff_attach_so_context(int proc_id)
         return NULL;
     }
 
-    /* i从count-free开始尝试，直到一轮结束 */
     for (i = 0; i < ff_so_zone->count; i++) {
-        sc = &ff_so_zone->sc[i];
+        uint16_t idx = (ff_so_zone->idx + i) & ff_so_zone->mask;
+        sc = &ff_so_zone->sc[idx];
         if (sc->inuse == 0) {
             sc->inuse = 1;
             rte_spinlock_init(&sc->lock);
             sc->status = FF_SC_IDLE;
             ff_so_zone->free--;
+            ff_so_zone->idx = idx;
             break;
         }
     }
-    DEBUG_LOG("attach sc:%p, i:%d\n", sc, i);
+
+    if (unlikely(i == ff_so_zone->count)) {
+        ERR_LOG("Attach memzone failed: instance %d no free context,"
+            " fetel error of so status, all sc inuse, count:%d, free:%d\n",
+            proc_id, ff_so_zone->count, ff_so_zone->free);
+        sc = NULL;
+    }
+
+    DEBUG_LOG("attach sc:%p, so count:%d, free:%d, idx:%d, i:%d\n",
+        sc, ff_so_zone->count, ff_so_zone->free, ff_so_zone->idx, i);
 
     rte_spinlock_unlock(&ff_so_zone->lock);
 
