@@ -6,6 +6,18 @@
 #include <rte_atomic.h>
 #include <rte_spinlock.h>
 
+/*
+ * Per thread separate initialization dpdk lib and attach sc when needed,
+ * such as listen same port in different threads, and socket can use in own thread.
+ *
+ * Otherwise, one socket can use in all threads.
+ */
+#ifdef FF_THREAD_SOCKET
+#define __FF_THREAD __thread
+#else
+#define __FF_THREAD
+#endif
+
 #define ERR_LOG(fmt, ...)  do { \
         printf("file:%s, line:%u, fun:%s, "fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     } while (0)
@@ -92,7 +104,7 @@ struct ff_so_context {
     // listen fd, refcount..
 } __attribute__((packed));
 
-extern struct ff_socket_ops_zone *ff_so_zone;
+extern __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
 
 /* For primary process */
 int ff_set_max_so_context(uint16_t count);

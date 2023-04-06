@@ -95,17 +95,6 @@
     return ret;                                                   \
 } while (0)
 
-/*
- * Per thread separate initialization dpdk lib and attach sc when needed,
- * such as listen same port in different threads, and socket can use in own thread.
- *
- * Otherwise, one socket can use in all threads.
- */
-#ifdef FF_THREAD_SOCKET
-#define __FF_THREAD __thread
-#else
-#define __FF_THREAD
-#endif
 static __FF_THREAD int inited = 0;
 static __FF_THREAD struct ff_so_context *sc;
 
@@ -1428,6 +1417,7 @@ ff_adapter_init()
     }
 
     if (proc_inited == 0) {
+        /* May conflict */
         rte_spinlock_init(&worker_id_lock);
         rte_spinlock_lock(&worker_id_lock);
 
@@ -1453,14 +1443,11 @@ ff_adapter_init()
          */
         char *ff_init_lcore_id = getenv(FF_INITIAL_LCORE_ID_STR);
         if (ff_init_lcore_id != NULL) {
-            char *pos = strchr(ff_init_lcore_id, '=');
-            if (pos != NULL) {
-                initial_lcore_id = (uint64_t)strtoull(pos, NULL, 16);
-                if (initial_lcore_id > ((uint64_t)INITIAL_LCORE_ID_MAX) /*== UINT64_MAX*/) {
-                    initial_lcore_id = INITIAL_LCORE_ID_DEFAULT;
-                    ERR_LOG("get invalid FF_INITIAL_LCORE_ID=%s, to use default value 0x%0lx\n",
-                        ff_init_lcore_id, initial_lcore_id);
-                }
+            initial_lcore_id = (uint64_t)strtoull(ff_init_lcore_id, NULL, 16);
+            if (initial_lcore_id > ((uint64_t)INITIAL_LCORE_ID_MAX) /*== UINT64_MAX*/) {
+                initial_lcore_id = INITIAL_LCORE_ID_DEFAULT;
+                ERR_LOG("get invalid FF_INITIAL_LCORE_ID=%s, to use default value 0x%0lx\n",
+                    ff_init_lcore_id, initial_lcore_id);
             }
             ERR_LOG("get FF_INITIAL_LCORE_ID=%s, use 0x%0lx\n",
                 ff_init_lcore_id, initial_lcore_id);
@@ -1470,20 +1457,16 @@ ff_adapter_init()
                 initial_lcore_id);
         }
 
-
         /*
          * Get environment variable FF_NB_FSTACK_INSTANCE to set nb_procs.
          */
         char *ff_nb_procs = getenv(FF_NB_FSTACK_INSTANCE_STR);
         if (ff_nb_procs != NULL) {
-            char *pos = strchr(ff_nb_procs, '=');
-            if (pos != NULL) {
-                nb_procs = (uint32_t)strtoul(pos, NULL, 10);
-                if (nb_procs == -1 /*UINT32_MAX*/) {
-                    nb_procs = NB_FSTACK_INSTANCE_DEFAULT;
-                    ERR_LOG("get invalid FF_NB_FSTACK_INSTANCE=%s, to use default value %d\n",
-                        ff_nb_procs, nb_procs);
-                }
+            nb_procs = (uint32_t)strtoul(ff_nb_procs, NULL, 10);
+            if (nb_procs == -1 /*UINT32_MAX*/) {
+                nb_procs = NB_FSTACK_INSTANCE_DEFAULT;
+                ERR_LOG("get invalid FF_NB_FSTACK_INSTANCE=%s, to use default value %d\n",
+                    ff_nb_procs, nb_procs);
             }
             ERR_LOG("get FF_NB_FSTACK_INSTANCE=%s, use %d\n",
                 ff_nb_procs, nb_procs);
@@ -1493,6 +1476,30 @@ ff_adapter_init()
                 nb_procs);
         }
 
+        char buf[RTE_MAX_LCORE] = {0};
+        sprintf(buf, "-c%lx", initial_lcore_id/* << worker_id*/);
+
+        char *dpdk_argv[] = {
+            "ff-adapter", buf, "-n4",
+            "--proc-type=secondary",
+            /* RTE_LOG_WARNING */
+            "--log-level=5",
+        };
+
+        printf("\n");
+        DEBUG_LOG("rte_eal_init, argc:%ld/%ld=%ld\n", sizeof(dpdk_argv), sizeof(dpdk_argv[0]), sizeof(dpdk_argv)/sizeof(dpdk_argv[0]));
+        for (int i=0; i < sizeof(dpdk_argv)/sizeof(dpdk_argv[0]); i++) {
+            printf("%s ", dpdk_argv[i]);
+        }
+        printf("\n");
+        ret = rte_eal_init(sizeof(dpdk_argv)/sizeof(dpdk_argv[0]),
+            dpdk_argv);
+        DEBUG_LOG("rte_eal_init ret:%d\n", ret);
+        if (ret < 0) {
+            ERR_LOG("ff_adapter_init failed with EAL initialization\n");
+            return ret;
+        }
+
         if (proc_inited == 0) {
             proc_inited = 1;
         }
@@ -1500,30 +1507,7 @@ ff_adapter_init()
         rte_spinlock_lock(&worker_id_lock);
     }
 
-    char buf[RTE_MAX_LCORE] = {0};
-    sprintf(buf, "-c%lx", initial_lcore_id << worker_id);
-
-    char *dpdk_argv[] = {
-        "ff-adapter", buf, "-n4",
-        "--proc-type=secondary",
-        /* RTE_LOG_WARNING */
-        "--log-level=5",
-    };
-
-    printf("\n");
-    DEBUG_LOG("rte_eal_init, argc:%ld/%ld=%ld\n", sizeof(dpdk_argv), sizeof(dpdk_argv[0]), sizeof(dpdk_argv)/sizeof(dpdk_argv[0]));
-    for (int i=0; i < sizeof(dpdk_argv)/sizeof(dpdk_argv[0]); i++) {
-        printf("%s ", dpdk_argv[i]);
-    }
-    printf("\n");
-    ret = rte_eal_init(sizeof(dpdk_argv)/sizeof(dpdk_argv[0]),
-        dpdk_argv);
-    DEBUG_LOG("rte_eal_init ret:%d\n", ret);
-    if (ret < 0) {
-        ERR_LOG("ff_adapter_init failed with EAL initialization\n");
-        return ret;
-    }
-
+    DEBUG_LOG("worker_id:%d, nb_procs:%d\n", worker_id, nb_procs);
     sc = ff_attach_so_context(worker_id % nb_procs);
     if (sc == NULL) {
         ERR_LOG("ff_attach_so_context failed\n");

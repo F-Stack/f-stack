@@ -16,7 +16,7 @@
 #define SOCKET_OPS_CONTEXT_NAME "ff_so_context_"
 
 static uint16_t ff_max_so_context = SOCKET_OPS_CONTEXT_MAX_NUM;
-struct ff_socket_ops_zone *ff_so_zone;
+__FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
 
 static inline int
 is_power_of_2(uint64_t n)
@@ -125,6 +125,8 @@ ff_attach_so_context(int proc_id)
     struct ff_so_context *sc = NULL;
     uint16_t i;
 
+    DEBUG_LOG("proc_id:%d, ff_so_zone:%p\n", proc_id, ff_so_zone);
+
     if (ff_so_zone == NULL) {
         const struct rte_memzone *mz;
         char zn[64];
@@ -157,7 +159,7 @@ ff_attach_so_context(int proc_id)
             rte_spinlock_init(&sc->lock);
             sc->status = FF_SC_IDLE;
             ff_so_zone->free--;
-            ff_so_zone->idx = idx;
+            ff_so_zone->idx = idx + 1;
             break;
         }
     }

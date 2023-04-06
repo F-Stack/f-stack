@@ -13,8 +13,6 @@
 static int ff_sys_kqueue(struct ff_kqueue_args *args);
 static int ff_sys_kevent(struct ff_kevent_args *args);
 
-extern struct ff_socket_ops_zone *ff_so_zone;
-
 #define FF_MAX_BOUND_NUM 8
 
 
