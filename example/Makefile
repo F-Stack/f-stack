@@ -20,8 +20,10 @@ TARGET="helloworld"
 all:
 	cc ${CFLAGS} -DINET6 -o ${TARGET} main.c ${LIBS}
 	cc ${CFLAGS} -o ${TARGET}_epoll main_epoll.c ${LIBS}
-	cc ${CFLAGS} -I ../adapter -o ${TARGET}_stack_epoll main_stack_epoll.c ${LIBS}
-	cc ${CFLAGS} -I ../adapter -o ${TARGET}_stack_epoll_thread_socket main_stack_epoll_thread_socket.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter -L ${FF_PATH}/adapter -lff_syscall -o ${TARGET}_stack main_stack.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter -L ${FF_PATH}/adapter -lff_syscall -o ${TARGET}_stack_thread_socket main_stack_thread_socket.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter -o ${TARGET}_stack_epoll main_stack_epoll.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter -o ${TARGET}_stack_epoll_thread_socket main_stack_epoll_thread_socket.c ${LIBS}
 
 .PHONY: clean
 clean:

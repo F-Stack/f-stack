@@ -846,6 +846,8 @@ ff_hook_recvmsg(int fd, struct msghdr *msg, int flags)
 ssize_t
 ff_hook_read(int fd, void *buf, size_t len)
 {
+    DEBUG_LOG("ff_hook_read, fd:%d, len:%lu\n", fd, len);
+
     if (buf == NULL || len == 0) {
         errno = EINVAL;
         return -1;
@@ -1000,6 +1002,8 @@ ff_hook_send(int fd, const void *buf, size_t len, int flags)
 ssize_t
 ff_hook_write(int fd, const void *buf, size_t len)
 {
+    DEBUG_LOG("ff_hook_write, fd:%d, len:%lu\n", fd, len);
+
     if (buf == NULL || len == 0) {
         errno = EINVAL;
         return -1;
@@ -1062,6 +1066,8 @@ ff_hook_writev(int fd, const struct iovec *iov, int iovcnt)
 int
 ff_hook_close(int fd)
 {
+    DEBUG_LOG("ff_hook_close, fd:%d\n", fd);
+
     CHECK_FD_OWNERSHIP(close, (fd));
 
     DEFINE_REQ_ARGS(close);
@@ -1288,6 +1294,8 @@ kqueue()
 {
     int ret = -1;
 
+    DEBUG_LOG("run kqueue\n");
+
     if (unlikely(inited == 0)) {
         errno = ENOSYS;
         return -1;
@@ -1299,6 +1307,8 @@ kqueue()
         ret = convert_fstack_fd(ret);
     }
 
+    DEBUG_LOG("get fd:%d\n", ret);
+
     return ret;
 }
 
@@ -1307,6 +1317,11 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents,
     const struct timespec *timeout)
 {
+    int i;
+    struct kevent *kev;
+
+    DEBUG_LOG("kq:%d, nchanges:%d, nevents:%d\n", kq, nchanges, nevents);
+
     if (unlikely(inited == 0 && ff_adapter_init() < 0)) {
         errno = ENOSYS;
         return -1;
@@ -1326,8 +1341,6 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
 
         rte_memcpy(sh_changelist, changelist, sizeof(struct kevent) * nchanges);
 
-        struct kevent *kev;
-        int i = 0;
         for(i = 0; i < nchanges; i++) {
             kev = (struct kevent *)&sh_changelist[i];
             switch (kev->filter) {
@@ -1402,6 +1415,11 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
         if (eventlist && nevents) {
             rte_memcpy(eventlist, sh_eventlist,
                 sizeof(struct kevent) * ret);
+
+            for (i = 0; i < nevents; i++) {
+                kev = &eventlist[i];
+                kev->ident = convert_fstack_fd(kev->ident);
+            }
         }
     }
 

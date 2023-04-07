@@ -207,6 +207,7 @@ ff_sys_recvmsg(struct ff_recvmsg_args *args)
 static ssize_t
 ff_sys_read(struct ff_read_args *args)
 {
+    DEBUG_LOG("ff_sys_read, fd:%d, len:%lu\n", args->fd, args->len);
     return ff_read(args->fd, args->buf, args->len);
 }
 
@@ -238,6 +239,7 @@ ff_sys_sendmsg(struct ff_sendmsg_args *args)
 static ssize_t
 ff_sys_write(struct ff_write_args *args)
 {
+    DEBUG_LOG("ff_sys_write, fd:%d, len:%lu\n", args->fd, args->len);
     return ff_write(args->fd, args->buf, args->len);
 }
 
@@ -250,6 +252,7 @@ ff_sys_writev(struct ff_writev_args *args)
 static int
 ff_sys_close(struct ff_close_args *args)
 {
+    DEBUG_LOG("ff_sys_close, fd:%d\n", args->fd);
     sockaddr_unbind(args->fd);
     return ff_close(args->fd);
 }
@@ -389,6 +392,9 @@ ff_handle_kevent(struct ff_so_context *sc)
 {
     struct ff_kevent_args *ka = sc->args;
 
+    DEBUG_LOG("ff_handle_kevent sc:%p, status:%d, ops:%d, kq:%d, nchanges:%d, nevents:%d\n",
+        sc, sc->status, sc->ops, ka->kq, ka->nchanges, ka->nevents);
+
     errno = 0;
     sc->result = ff_sys_kevent(ka);
     sc->error = errno;
@@ -397,9 +403,9 @@ ff_handle_kevent(struct ff_so_context *sc)
         ka->nchanges = 0;
     }
 
-    if (sc->result == 0 && ka->nevents != 0) {
+    /*if (sc->result == 0 && ka->nevents != 0) {
         return;
-    }
+    }*/
 
     sc->status = FF_SC_REP;
     sem_post(&sc->wait_sem);

@@ -69,16 +69,18 @@ void *loop(void *arg)
     /* Wait for events to happen */
     while (!exit_flag) {
         int nevents = epoll_wait(epfd, events, MAX_EVENTS, 100);
+        int i;
+
         if (nevents <= 0) {
             if (nevents) {
                 printf("hello world epoll wait ret %d, errno:%d, %s\n",
                     nevents, errno, strerror(errno));
+                break;
             }
             //usleep(100);
             sleep(1);
         }
         printf("get nevents:%d\n", nevents);
-        int i;
 
         for (i = 0; i < nevents; ++i) {
             /* Handle new connect */
@@ -95,6 +97,7 @@ void *loop(void *arg)
                     if (epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
                         printf("ff_epoll_ctl failed:%d, %s\n",
                             errno, strerror(errno));
+                        close(nclientfd);
                         break;
                     }
                 }
@@ -118,6 +121,8 @@ void *loop(void *arg)
             }
         }
     }
+
+    return NULL;
 }
 
 int main(int argc, char * argv[])
@@ -131,7 +136,7 @@ int main(int argc, char * argv[])
     printf("sockfd:%d\n", sockfd);
     if (sockfd < 0) {
         printf("ff_socket failed\n");
-        exit(1);
+        return -1;
     }
 
     int on = 1;
@@ -146,29 +151,41 @@ int main(int argc, char * argv[])
     int ret = bind(sockfd, (const struct sockaddr *)&my_addr, sizeof(my_addr));
     if (ret < 0) {
         printf("ff_bind failed\n");
-        exit(1);
+        close(sockfd);
+        return -1;
     }
 
     ret = listen(sockfd, MAX_EVENTS);
     if (ret < 0) {
         printf("ff_listen failed\n");
-        exit(1);
+        close(sockfd);
+        return -1;
     }
 
     epfd = epoll_create(0);
     if (epfd <= 0) {
         printf("ff_epoll_create failed, errno:%d, %s\n",
             errno, strerror(errno));
-        exit(1);
+        close(sockfd);
+        return -1;
     }
+
     ev.data.fd = sockfd;
     ev.events = EPOLLIN;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+    ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+    if (ret < 0) {
+        printf("ff_listen failed\n");
+        close(epfd);
+        close(sockfd);
+        return -1;
+    }
 
     for (i = 0; i < worker_num; i++) {
         if(pthread_create(&hworker[i], NULL, loop, (void *)&i) < 0) {
             printf("create loop thread failed., errno:%d/%s\n",
                 errno, strerror(errno));
+            close(epfd);
+            close(sockfd);
             return -1;
         }
     }
@@ -176,6 +193,9 @@ int main(int argc, char * argv[])
     for (i = 0; i < worker_num; i++) {
         pthread_join(hworker[i], NULL);
     }
+
+    close(epfd);
+    close(sockfd);
 
     return 0;
 }

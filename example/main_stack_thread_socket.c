@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <sys/ioctl.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -10,9 +9,16 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <assert.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
+
+//#include "ff_config.h"
+//#include "ff_api.h"
+#include "ff_event.h"
+#include "ff_adapter.h"
+#include "ff_hook_syscall.h"
 
 #define MAX_WORKERS 128
 pthread_t hworker[MAX_WORKERS];
@@ -62,10 +68,14 @@ void sig_term(int sig)
 
 void *loop(void *arg)
 {
-    struct epoll_event ev;
-    struct epoll_event events[MAX_EVENTS];
-    int epfd;
+    /* kevent set */
+    struct kevent kevSet;
+    /* events */
+    struct kevent events[MAX_EVENTS];
+    /* kq */
+    int kq;
     int sockfd;
+
     int thread_id;
 
     thread_id = *(int *)arg;
@@ -105,33 +115,35 @@ void *loop(void *arg)
         return NULL;
     }
 
-    epfd = epoll_create(0);
-    if (epfd <= 0) {
-        printf("thread %d, ff_epoll_create failed, errno:%d, %s\n",
-            thread_id, errno, strerror(errno));
-        close(sockfd);
-        return NULL;
+
+    kq = kqueue();
+    printf("thread %d, kq:%d\n", thread_id, kq);
+    if (kq < 0) {
+       printf("thread %d, ff_kqueue failed, errno:%d, %s\n", thread_id, errno, strerror(errno));
+       close(sockfd);
+       return NULL;
     }
-    ev.data.fd = sockfd;
-    ev.events = EPOLLIN;
-    ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+
+    EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
+    /* Update kqueue */
+    ret = kevent(kq, &kevSet, 1, NULL, 0, NULL);
     if (ret < 0) {
-        printf("ff_listen failed\n");
-        close(epfd);
+        printf("thread %d, kevent failed\n", thread_id);
+        close(kq);
         close(sockfd);
         return NULL;
     }
 
     /* Wait for events to happen */
     while (!exit_flag) {
-        int nevents = epoll_wait(epfd, events, MAX_EVENTS, 100);
+        int nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
         int i;
 
         if (nevents <= 0) {
             if (nevents) {
-                printf("thread %d, hello world epoll wait ret %d, errno:%d, %s\n",
-                    thread_id, nevents, errno, strerror(errno));
-                break;
+                    printf("thread %d, ff_kevent failed:%d, %s\n", thread_id, errno,
+                                    strerror(errno));
+                    return NULL;
             }
             //usleep(100);
             sleep(1);
@@ -139,46 +151,51 @@ void *loop(void *arg)
         printf("thread %d, get nevents:%d\n", thread_id, nevents);
 
         for (i = 0; i < nevents; ++i) {
-            /* Handle new connect */
-            if (events[i].data.fd == sockfd) {
-                while (1) {
-                    int nclientfd = accept(sockfd, NULL, NULL);
+            struct kevent event = events[i];
+            int clientfd = (int)event.ident;
+
+            /* Handle disconnect */
+            if (event.flags & EV_EOF) {
+                /* Simply close socket */
+                close(clientfd);
+            } else if (clientfd == sockfd) {
+                int available = (int)event.data;
+                do {
+                    int nclientfd = accept(clientfd, NULL, NULL);
                     if (nclientfd < 0) {
+                        printf("thread %d, ff_accept failed:%d, %s\n", thread_id, errno,
+                            strerror(errno));
                         break;
                     }
 
                     /* Add to event list */
-                    ev.data.fd = nclientfd;
-                    ev.events  = EPOLLIN;
-                    if (epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
-                        printf("thread %d, ff_epoll_ctl failed:%d, %s\n",
-                            thread_id, errno, strerror(errno));
+                    EV_SET(&kevSet, nclientfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+
+                    if(kevent(kq, &kevSet, 1, NULL, 0, NULL) < 0) {
+                        printf("thread %d, ff_kevent error:%d, %s\n", thread_id, errno,
+                            strerror(errno));
                         close(nclientfd);
                         break;
                     }
+
+                    available--;
+                } while (available);
+            } else if (event.filter == EVFILT_READ) {
+                char buf[256];
+                ssize_t readlen = read(clientfd, buf, sizeof(buf));
+                ssize_t writelen = write(clientfd, html, sizeof(html) - 1);
+                if (writelen < 0){
+                    printf("thread %d, ff_write failed:%d, %s\n", thread_id, errno,
+                        strerror(errno));
+                    close(clientfd);
                 }
             } else {
-                if (events[i].events & EPOLLERR ) {
-                    /* Simply close socket */
-                    epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-                    close(events[i].data.fd);
-                } else if (events[i].events & EPOLLIN) {
-                    char buf[256];
-                    size_t readlen = read( events[i].data.fd, buf, sizeof(buf));
-                    if(readlen > 0) {
-                        write( events[i].data.fd, html, sizeof(html) - 1);
-                    } else {
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
-                        close(events[i].data.fd);
-                    }
-                } else {
-                    printf("thread %d, unknown event: %8.8X\n", thread_id, events[i].events);
-                }
+                printf("thread %d, unknown event: %8.8X\n", thread_id, event.flags);
             }
         }
     }
 
-    close(epfd);
+    close(kq);
     close(sockfd);
 
     return NULL;
@@ -210,7 +227,6 @@ int main(int argc, char * argv[])
             return -1;
         }
         pthread_spin_lock(&worker_lock);
-        //sleep(1);
     }
 
     for (i = 0; i < worker_num; i++) {
