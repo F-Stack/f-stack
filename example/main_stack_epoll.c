@@ -69,16 +69,18 @@ void *loop(void *arg)
     int thread_id;
 
     thread_id = *(int *)arg;
-    pthread_spin_unlock(&worker_lock);
-
     printf("start thread %d\n", thread_id);
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     printf("thread %d, sockfd:%d\n", thread_id, sockfd);
     if (sockfd < 0) {
         printf("thread %d, ff_socket failed\n", thread_id);
+        pthread_spin_unlock(&worker_lock);
         exit(1);
     }
+
+    /* socket will init adapter,so unlock after socket */
+    pthread_spin_unlock(&worker_lock);
 
     int on = 1;
     ioctl(sockfd, FIONBIO, &on);
@@ -158,7 +160,7 @@ void *loop(void *arg)
                         close(events[i].data.fd);
                     }
                 } else {
-                    printf("thread %d, unknown event: %8.8X\n", events[i].events);
+                    printf("thread %d, unknown event: %8.8X\n", thread_id, events[i].events);
                 }
             }
         }
@@ -190,7 +192,7 @@ int main(int argc, char * argv[])
             pthread_spin_destroy(&worker_lock);
             return -1;
         }
-        sleep(5);
+        //sleep(1);
     }
 
     for (i = 0; i < worker_num; i++) {
