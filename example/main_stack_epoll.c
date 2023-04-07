@@ -181,10 +181,10 @@ int main(int argc, char * argv[])
     }
     printf("to init %d workers.\n", worker_num);
 
-    pthread_spin_init(&worker_lock, PTHREAD_PROCESS_SHARED);
+    pthread_spin_init(&worker_lock, PTHREAD_PROCESS_PRIVATE);
+    pthread_spin_lock(&worker_lock);
 
     for (i = 0; i < worker_num; i++) {
-        pthread_spin_lock(&worker_lock);
         if(pthread_create(&hworker[i], NULL, loop, (void *)&i) < 0) {
             printf("create loop thread failed., errno:%d/%s\n",
                 errno, strerror(errno));
@@ -192,6 +192,7 @@ int main(int argc, char * argv[])
             pthread_spin_destroy(&worker_lock);
             return -1;
         }
+        pthread_spin_lock(&worker_lock);
         //sleep(1);
     }
 
