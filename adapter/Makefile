@@ -12,10 +12,10 @@ DEBUG=-O0 -gdwarf-2 -g3
 
 # Per thread separate initialization dpdk lib and attach sc when needed,
 # such as listen same port in different threads, and socket can use in own thread.
-# Default enable.
+# Default disable.
 #
 # If disable it, one socket can use in all threads.
-FF_THREAD_SOCKET=1
+#FF_THREAD_SOCKET=1
 
 PKGCONF ?= pkg-config
 
