@@ -114,7 +114,10 @@ static int proc_inited = 0;
 #define INITIAL_LCORE_ID_MAX 0x4000000000000     /* lcore 50 */
 #define FF_INITIAL_LCORE_ID_STR "FF_INITIAL_LCORE_ID"
 static uint64_t initial_lcore_id = INITIAL_LCORE_ID_DEFAULT;
-static int worker_id = 0;
+
+#define WORKER_ID_DEFAULT 0
+#define FF_PROC_ID_STR "FF_PROC_ID"
+static int worker_id = WORKER_ID_DEFAULT;
 rte_spinlock_t worker_id_lock;
 
 /* The num of F-Stack process instance, default 1 */
@@ -1199,7 +1202,7 @@ int
 ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     int maxevents, int timeout)
 {
-    //DEBUG_LOG("ff_hook_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n", epfd, maxevents, timeout);
+    DEBUG_LOG("ff_hook_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n", epfd, maxevents, timeout);
     int fd = epfd;
     CHECK_FD_OWNERSHIP(epoll_wait, (epfd, events, maxevents, timeout));
 
@@ -1496,6 +1499,25 @@ ff_adapter_init()
         else {
             ERR_LOG("environment variable FF_NB_FSTACK_INSTANCE not found, to use default value %d\n",
                 nb_procs);
+        }
+
+        /*
+         * Get environment variable FF_PROC_ID to set nb_procs.
+         */
+        char *ff_worker_id = getenv(FF_PROC_ID_STR);
+        if (ff_worker_id != NULL) {
+            worker_id = (uint32_t)strtoul(ff_worker_id, NULL, 10);
+            if (worker_id == -1 /*UINT32_MAX*/) {
+                worker_id = WORKER_ID_DEFAULT;
+                ERR_LOG("get invalid FF_PROC_ID=%s, to use default value %d\n",
+                    ff_worker_id, worker_id);
+            }
+            ERR_LOG("get FF_PROC_ID=%s, use %d\n",
+                ff_worker_id, worker_id);
+        }
+        else {
+            ERR_LOG("environment variable FF_PROC_ID not found, to use default value %d\n",
+                worker_id);
         }
 
         char buf[RTE_MAX_LCORE] = {0};

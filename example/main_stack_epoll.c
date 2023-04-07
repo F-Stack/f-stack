@@ -169,6 +169,7 @@ int main(int argc, char * argv[])
 {
     int i, worker_num;
 
+    signal(SIGINT, sig_term);
     signal(SIGTERM, sig_term);
 
     if (argc == 1) {
