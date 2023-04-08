@@ -32,6 +32,8 @@ struct kevent events[MAX_EVENTS];
 int kq;
 int sockfd;
 
+struct timespec timeout = {0, 100000};
+
 static int exit_flag = 0;
 
 char html[] =
@@ -77,7 +79,7 @@ void *loop(void *arg)
 {
     /* Wait for events to happen */
     while (!exit_flag) {
-        int nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
+        int nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, &timeout);
         int i;
 
         if (nevents <= 0) {
@@ -185,7 +187,7 @@ int main(int argc, char * argv[])
 
     EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
     /* Update kqueue */
-    ret = kevent(kq, &kevSet, 1, NULL, 0, NULL);
+    ret = kevent(kq, &kevSet, 1, NULL, 0, &timeout);
     if (ret < 0) {
         printf("kevent failed\n");
         close(kq);

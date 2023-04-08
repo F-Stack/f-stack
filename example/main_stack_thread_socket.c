@@ -25,6 +25,8 @@ pthread_t hworker[MAX_WORKERS];
 pthread_spinlock_t worker_lock;
 #define MAX_EVENTS 512
 
+struct timespec timeout = {0, 100000};
+
 static int exit_flag = 0;
 
 char html[] =
@@ -126,7 +128,7 @@ void *loop(void *arg)
 
     EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
     /* Update kqueue */
-    ret = kevent(kq, &kevSet, 1, NULL, 0, NULL);
+    ret = kevent(kq, &kevSet, 1, NULL, 0, &timeout);
     if (ret < 0) {
         printf("thread %d, kevent failed\n", thread_id);
         close(kq);
@@ -136,7 +138,7 @@ void *loop(void *arg)
 
     /* Wait for events to happen */
     while (!exit_flag) {
-        int nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
+        int nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, &timeout);
         int i;
 
         if (nevents <= 0) {

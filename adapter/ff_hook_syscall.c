@@ -71,6 +71,7 @@
     rte_spinlock_unlock(&sc->lock);                               \
 } while (0)
 
+/* NOTE: deadlock prone while fstack adapter run error */
 #define SYSCALL(op, arg) do {                                     \
     ACQUIRE_ZONE_LOCK(FF_SC_IDLE);                                \
     sc->ops = (op);                                               \
