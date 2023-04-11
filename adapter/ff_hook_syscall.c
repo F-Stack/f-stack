@@ -1233,6 +1233,7 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     sc->args = args;
     RELEASE_ZONE_LOCK(FF_SC_REQ);
 
+    errno = 0;
     if (timeout > 0) {
         struct timespec abs_timeout;
 
@@ -1256,11 +1257,16 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 
     rte_spinlock_lock(&sc->lock);
 
-    if (ret == -1 && sc->status == FF_SC_REQ) {
-        if (errno == ETIMEDOUT) {
-            ret = 0;
-        }
-    } else {
+    /*
+     * After sem_timedwait, and before lock sc, sc->status may be modify from FF_SC_REQ to FF_SC_RSP,
+     * so it can't use to check.
+     *
+     * And only ret == 0, means sem_timedwait return normal,
+     * can set ret = sc->result, otherwise may use last sc->result.
+     */
+    if (ret == -1 && errno == ETIMEDOUT /* sc->status == FF_SC_REQ */) {
+        ret = 0;
+    } else if (ret == 0) {
         ret = sc->result;
         if (ret < 0) {
             errno = sc->error;
@@ -1272,6 +1278,11 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 
     if (ret > 0) {
         int i;
+        if (unlikely(ret > maxevents)) {
+            ERR_LOG("return events:%d, maxevents:%d, set return events to maxevents, may be some error occur\n",
+                ret, maxevents);
+            ret = maxevents;
+        }
         for (i = 0; i < ret; i++) {
             rte_memcpy(&events[i], &sh_events[i], sizeof(struct epoll_event));
         }
@@ -1319,6 +1330,7 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     const struct timespec *timeout)
 {
     int i;
+    int maxevents = nevents;
     struct kevent *kev;
 
     DEBUG_LOG("kq:%d, nchanges:%d, nevents:%d\n", kq, nchanges, nevents);
@@ -1397,11 +1409,16 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
 
     rte_spinlock_lock(&sc->lock);
 
-    if (ret == -1 && sc->status == FF_SC_REQ) {
-        if (errno == ETIMEDOUT) {
-            ret = 0;
-        }
-    } else {
+    /*
+     * After sem_timedwait, and before lock sc, sc->status may be modify from FF_SC_REQ to FF_SC_RSP,
+     * so it can't use to check.
+     *
+     * And only ret == 0, means sem_timedwait return normal,
+     * can set ret = sc->result, otherwise may use last sc->result.
+     */
+    if (ret == -1 && errno == ETIMEDOUT /* sc->status == FF_SC_REQ */) {
+        ret = 0;
+    } else if (ret == 0) {
         ret = sc->result;
         if (ret < 0) {
             errno = sc->error;
@@ -1414,6 +1431,11 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
 
     if (ret > 0) {
         if (eventlist && nevents) {
+            if (unlikely(nevents > maxevents)) {
+                ERR_LOG("return events:%d, maxevents:%d, set return events to maxevents, may be some error occur\n",
+                    nevents, maxevents);
+                nevents = maxevents;
+            }
             rte_memcpy(eventlist, sh_eventlist,
                 sizeof(struct kevent) * ret);
 
