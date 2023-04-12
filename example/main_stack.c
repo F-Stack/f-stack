@@ -93,7 +93,7 @@ void *loop(void *arg)
                     return NULL;
             }
             //usleep(100);
-            sleep(1);
+            //sleep(1);
         }
         //printf("get nevents:%d\n", nevents);
 
