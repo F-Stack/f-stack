@@ -107,6 +107,7 @@ void *loop(void *arg)
     }
 
     epfd = epoll_create(0);
+    printf("thread %d, epfd:%d\n", thread_id, epfd);
     if (epfd <= 0) {
         printf("thread %d, ff_epoll_create failed, errno:%d, %s\n",
             thread_id, errno, strerror(errno));

@@ -168,6 +168,7 @@ int main(int argc, char * argv[])
     }
 
     epfd = epoll_create(0);
+    printf("epfd:%d\n", epfd);
     if (epfd <= 0) {
         printf("ff_epoll_create failed, errno:%d, %s\n",
             errno, strerror(errno));
