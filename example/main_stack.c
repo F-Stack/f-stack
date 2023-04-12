@@ -72,6 +72,7 @@ void sig_term(int sig)
 {
     printf("we caught signal %d, to exit helloworld\n", sig);
     exit_flag = 1;
+    alarm_event_sem();
     return;
 }
 
@@ -79,6 +80,9 @@ void *loop(void *arg)
 {
     /* Wait for events to happen */
     while (!exit_flag) {
+        /*
+         * If timeout is NULL, must call alarm_event_sem();
+         */
         int nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, &timeout);
         int i;
 
@@ -91,7 +95,7 @@ void *loop(void *arg)
             //usleep(100);
             sleep(1);
         }
-        printf("get nevents:%d\n", nevents);
+        //printf("get nevents:%d\n", nevents);
 
         for (i = 0; i < nevents; ++i) {
             struct kevent event = events[i];

@@ -15,6 +15,8 @@ static int ff_sys_kevent(struct ff_kevent_args *args);
 
 #define FF_MAX_BOUND_NUM 8
 
+/* Where to call sem_post in kevent or epoll_wait */
+static int sem_flag = 0;
 
 struct ff_bound_info {
     int fd;
@@ -288,10 +290,25 @@ ff_sys_epoll_ctl(struct ff_epoll_ctl_args *args)
 static int
 ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
 {
+    int ret;
+
     DEBUG_LOG("to run ff_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n",
         args->epfd, args->maxevents, args->timeout);
-    return ff_epoll_wait(args->epfd, args->events,
+    ret = ff_epoll_wait(args->epfd, args->events,
         args->maxevents, args->timeout);
+
+    /*
+     * If timeout is 0, and no event triggered,
+     * no post sem, and next loop will continue to call ff_sys_epoll_wait,
+     * until some event triggered
+     */
+    if (args->timeout == 0 && ret == 0 && args->maxevents != 0) {
+        sem_flag = 0;
+    } else {
+        sem_flag = 1;
+    }
+
+    return ret;
 }
 
 static int
@@ -303,8 +320,27 @@ ff_sys_kqueue(struct ff_kqueue_args *args)
 static int
 ff_sys_kevent(struct ff_kevent_args *args)
 {
-    return ff_kevent(args->kq, args->changelist, args->nchanges,
+    int ret;
+
+    ret = ff_kevent(args->kq, args->changelist, args->nchanges,
         args->eventlist, args->nevents, args->timeout);
+
+    if (args->nchanges) {
+        args->nchanges = 0;
+    }
+
+    /*
+     * If timeout is NULL, and no event triggered,
+     * no post sem, and next loop will continue to call ff_sys_kevent,
+     * until some event triggered
+     */
+    if (args->timeout == NULL && ret == 0 && args->nevents != 0) {
+        sem_flag = 0;
+    } else {
+        sem_flag = 1;
+    }
+
+    return ret;
 }
 
 static pid_t
@@ -387,30 +423,6 @@ ff_so_handler(int ops, void *args)
     return (-1);
 }
 
-static void
-ff_handle_kevent(struct ff_so_context *sc)
-{
-    struct ff_kevent_args *ka = sc->args;
-
-    DEBUG_LOG("ff_handle_kevent sc:%p, status:%d, ops:%d, kq:%d, nchanges:%d, nevents:%d\n",
-        sc, sc->status, sc->ops, ka->kq, ka->nchanges, ka->nevents);
-
-    errno = 0;
-    sc->result = ff_sys_kevent(ka);
-    sc->error = errno;
-
-    if (ka->nchanges) {
-        ka->nchanges = 0;
-    }
-
-    /*if (sc->result == 0 && ka->nevents != 0) {
-        return;
-    }*/
-
-    sc->status = FF_SC_REP;
-    sem_post(&sc->wait_sem);
-}
-
 static inline void
 ff_handle_socket_ops(struct ff_so_context *sc)
 {
@@ -425,19 +437,19 @@ ff_handle_socket_ops(struct ff_so_context *sc)
 
     DEBUG_LOG("ff_handle_socket_ops sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
 
-    if (sc->ops == FF_SO_KEVENT) {
-        ff_handle_kevent(sc);
-        rte_spinlock_unlock(&sc->lock);
-        return;
-    }
-
     errno = 0;
     sc->result = ff_so_handler(sc->ops, sc->args);
     sc->error = errno;
-    sc->status = FF_SC_REP;
 
-    if (sc->ops == FF_SO_EPOLL_WAIT) {
-        sem_post(&sc->wait_sem);
+    if (sc->ops == FF_SO_EPOLL_WAIT || sc->ops == FF_SO_KEVENT) {
+        if (sem_flag == 1) {
+            sc->status = FF_SC_REP;
+            sem_post(&sc->wait_sem);
+        } else {
+            // do nothing with this sc
+        }
+    } else {
+        sc->status = FF_SC_REP;
     }
 
     rte_spinlock_unlock(&sc->lock);

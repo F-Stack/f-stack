@@ -10,6 +10,8 @@
 int ff_adapter_init();
 //int __attribute__((constructor)) ff_adapter_init(int argc, char * const argv[]);
 
+void alarm_event_sem();
+
 /*-
  * Verify whether the socket is supported by fstack or not.
  */

@@ -57,6 +57,7 @@ void sig_term(int sig)
 {
     printf("we caught signal %d, to exit helloworld\n", sig);
     exit_flag = 1;
+    //alarm_event_sem();
     return;
 }
 
@@ -124,6 +125,10 @@ void *loop(void *arg)
 
     /* Wait for events to happen */
     while (!exit_flag) {
+        /*
+         * If not call alarm_event_sem, and epoll_wait timeout is 0,
+         * it can't exit normal, so timeout can't set to 0.
+         */
         int nevents = epoll_wait(epfd, events, MAX_EVENTS, 100);
         int i;
 
@@ -136,7 +141,7 @@ void *loop(void *arg)
             //usleep(100);
             sleep(1);
         }
-        printf("thread %d, get nevents:%d\n", thread_id, nevents);
+        //printf("thread %d, get nevents:%d\n", thread_id, nevents);
 
         for (i = 0; i < nevents; ++i) {
             /* Handle new connect */

@@ -129,6 +129,8 @@ static int nb_procs = NB_FSTACK_INSTANCE_DEFAULT;
 #define FF_KERNEL_MAX_FD_DEFAULT    1024
 static int ff_kernel_max_fd = FF_KERNEL_MAX_FD_DEFAULT;
 
+static int need_alarm_sem = 0;
+
 static inline int convert_fstack_fd(int sockfd) {
     return sockfd + ff_kernel_max_fd;
 }
@@ -1231,6 +1233,11 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
     sc->ops = FF_SO_EPOLL_WAIT;
     sc->args = args;
+
+    if (timeout == 0) {
+        need_alarm_sem = 1;
+    }
+
     RELEASE_ZONE_LOCK(FF_SC_REQ);
 
     errno = 0;
@@ -1256,6 +1263,10 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     }
 
     rte_spinlock_lock(&sc->lock);
+
+    if (timeout == 0) {
+        need_alarm_sem = 1;
+    }
 
     /*
      * After sem_timedwait, and before lock sc, sc->status may be modify from FF_SC_REQ to FF_SC_RSP,
@@ -1380,6 +1391,10 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     args->nevents = nevents;
     args->timeout = NULL;
 
+    if (timeout == NULL) {
+        need_alarm_sem = 1;
+    }
+
     rte_spinlock_lock(&sc->lock);
 
     sc->ops = FF_SO_KEVENT;
@@ -1405,6 +1420,10 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     }
 
     rte_spinlock_lock(&sc->lock);
+
+    if (timeout == NULL) {
+        need_alarm_sem = 0;
+    }
 
     /*
      * After sem_timedwait, and before lock sc, sc->status may be modify from FF_SC_REQ to FF_SC_RSP,
@@ -1616,7 +1635,27 @@ ff_adapter_exit()
 #ifdef FF_THREAD_SOCKET
     pthread_key_delete(key);
 #else
-    DEBUG_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
+    ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
     ff_detach_so_context(sc);
 #endif
 }
+
+void
+alarm_event_sem()
+{
+#ifndef FF_THREAD_SOCKET
+    DEBUG_LOG("check whether need to alarm sem sc:%p, status:%d, ops:%d\n",
+        sc, sc->status, sc->ops, need_alarm_sem);
+    rte_spinlock_lock(&sc->lock);
+    if (need_alarm_sem == 1) {
+        ERR_LOG("alarm sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
+        sem_post(&sc->wait_sem);
+        need_alarm_sem = 0;
+    }
+    rte_spinlock_unlock(&sc->lock);
+
+    DEBUG_LOG("finish alarm sem sc:%p, status:%d, ops:%d\n",
+        sc, sc->status, sc->ops, need_alarm_sem);
+#endif
+}
+
