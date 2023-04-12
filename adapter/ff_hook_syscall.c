@@ -1277,15 +1277,12 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     rte_spinlock_unlock(&sc->lock);
 
     if (ret > 0) {
-        int i;
         if (unlikely(ret > maxevents)) {
             ERR_LOG("return events:%d, maxevents:%d, set return events to maxevents, may be some error occur\n",
                 ret, maxevents);
             ret = maxevents;
         }
-        for (i = 0; i < ret; i++) {
-            rte_memcpy(&events[i], &sh_events[i], sizeof(struct epoll_event));
-        }
+        rte_memcpy(events, sh_events, sizeof(struct epoll_event) * ret);
     }
 
     if (sh_events) {
