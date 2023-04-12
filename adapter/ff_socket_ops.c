@@ -18,6 +18,14 @@ static int ff_sys_kevent(struct ff_kevent_args *args);
 /* Where to call sem_post in kevent or epoll_wait */
 static int sem_flag = 0;
 
+/*
+ * The event num kevent or epoll_wait returned.
+ * Use for burst process event in one F-Stack loop to improve performance.
+ */
+#define EVENT_LOOP_TIMES    32
+static int ff_event_loop_nb = 0;
+static int ff_next_event_flag = 0;
+
 struct ff_bound_info {
     int fd;
     struct sockaddr addr;
@@ -442,6 +450,18 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     sc->error = errno;
 
     if (sc->ops == FF_SO_EPOLL_WAIT || sc->ops == FF_SO_KEVENT) {
+        if (ff_event_loop_nb > 0) {
+            ff_next_event_flag = 1;
+        } else {
+            ff_next_event_flag = 0;
+        }
+
+        if (sc->result > 0) {
+            ff_event_loop_nb = (sc->result * EVENT_LOOP_TIMES);
+        } else {
+            ff_event_loop_nb = 0;
+        }
+
         if (sem_flag == 1) {
             sc->status = FF_SC_REP;
             sem_post(&sc->wait_sem);
@@ -460,27 +480,35 @@ ff_handle_each_context()
 {
     uint16_t i, nb_handled;
 
-    rte_spinlock_lock(&ff_so_zone->lock);
+    while(1) {
+        rte_spinlock_lock(&ff_so_zone->lock);
 
-    assert(ff_so_zone->count >= ff_so_zone->free);
-    nb_handled = ff_so_zone->count - ff_so_zone->free;
-    if (nb_handled) {
-        for (i = 0; i < ff_so_zone->count; i++) {
-            struct ff_so_context *sc = &ff_so_zone->sc[i];
+        assert(ff_so_zone->count >= ff_so_zone->free);
+        nb_handled = ff_so_zone->count - ff_so_zone->free;
+        if (nb_handled) {
+            for (i = 0; i < ff_so_zone->count; i++) {
+                struct ff_so_context *sc = &ff_so_zone->sc[i];
 
-            if (sc->inuse == 0) {
-                continue;
-            }
+                if (sc->inuse == 0) {
+                    continue;
+                }
 
-            ff_handle_socket_ops(sc);
+                ff_handle_socket_ops(sc);
 
-            nb_handled--;
-            if (!nb_handled) {
-                break;
+                nb_handled--;
+                if (!nb_handled) {
+                    break;
+                }
             }
         }
-    }
 
-    rte_spinlock_unlock(&ff_so_zone->lock);
+        rte_spinlock_unlock(&ff_so_zone->lock);
+
+        if (--ff_event_loop_nb <= 0 || ff_next_event_flag == 1) {
+            break;
+        }
+
+        rte_pause();
+    }
 }
 
