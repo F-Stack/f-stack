@@ -137,7 +137,7 @@ void *loop(void *arg)
                     close(clientfd);
                 }
             } else {
-                printf("unknown event: %8.8X\n", event.flags);
+                printf("unknown event: %d:%8.8X\n", i, event.flags);
             }
         }
     }

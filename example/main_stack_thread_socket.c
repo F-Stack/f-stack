@@ -197,7 +197,7 @@ void *loop(void *arg)
                     close(clientfd);
                 }
             } else {
-                printf("thread %d, unknown event: %8.8X\n", thread_id, event.flags);
+                printf("thread %d, unknown event: %d:%8.8X\n", thread_id, i, event.flags);
             }
         }
     }

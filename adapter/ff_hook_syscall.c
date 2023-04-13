@@ -148,6 +148,7 @@ static uint64_t initial_lcore_id = INITIAL_LCORE_ID_DEFAULT;
 #define WORKER_ID_DEFAULT 0
 #define FF_PROC_ID_STR "FF_PROC_ID"
 static int worker_id = WORKER_ID_DEFAULT;
+static __thread int thread_id = 0;
 rte_spinlock_t worker_id_lock;
 
 /* The num of F-Stack process instance, default 1 */
@@ -158,6 +159,7 @@ static int nb_procs = NB_FSTACK_INSTANCE_DEFAULT;
 #define FF_KERNEL_MAX_FD_DEFAULT    1024
 static int ff_kernel_max_fd = FF_KERNEL_MAX_FD_DEFAULT;
 
+/* not support thread socket now */
 static int need_alarm_sem = 0;
 
 static inline int convert_fstack_fd(int sockfd) {
@@ -1798,6 +1800,7 @@ ff_adapter_init()
 
     pthread_setspecific(key, sc);
 
+    thread_id = worker_id;
     worker_id++;
     inited = 1;
 

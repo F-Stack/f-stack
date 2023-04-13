@@ -121,7 +121,7 @@ void *loop(void *arg)
                         close(events[i].data.fd);
                     }
                 } else {
-                    printf("unknown event: %8.8X\n", events[i].events);
+                    printf("unknown event: %d:%8.8X\n", i, events[i].events);
                 }
             }
         }
