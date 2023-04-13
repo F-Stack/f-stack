@@ -1351,20 +1351,30 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     sc->ops = FF_SO_EPOLL_WAIT;
     sc->args = args;
 
+    /*
+     * sc->result, sc->error must reset in epoll_wait and kevent.
+     * Otherwise can access last sc call's result.
+     *
+     * Because if sem_timedwait timeouted, but fstack instance still
+     * call sem_post later, and next or next's next sem_timedwait will
+     * return 0 directly, then get invalid result and error.
+     */
+    sc->result = 0;
+    sc->error = 0;
+    errno = 0;
     if (timeout == 0) {
         need_alarm_sem = 1;
     }
 
     RELEASE_ZONE_LOCK(FF_SC_REQ);
 
-    errno = 0;
     if (timeout > 0) {
         struct timespec abs_timeout;
 
         clock_gettime(CLOCK_REALTIME, &abs_timeout);
         DEBUG_LOG("before wait, sec:%ld, nsec:%ld\n", abs_timeout.tv_sec, abs_timeout.tv_nsec);
         abs_timeout.tv_sec += timeout / 1000;
-        abs_timeout.tv_nsec += timeout * 1000;
+        abs_timeout.tv_nsec += timeout * 1000 * 1000;
         if (abs_timeout.tv_nsec > NS_PER_SECOND) {
             abs_timeout.tv_nsec -= NS_PER_SECOND;
             abs_timeout.tv_sec += 1;
@@ -1535,15 +1545,26 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     args->kq = kq;
     args->timeout = (struct timespec *)timeout;
 
-    if (timeout == NULL) {
-        need_alarm_sem = 1;
-    }
-
     rte_spinlock_lock(&sc->lock);
 
     sc->ops = FF_SO_KEVENT;
     sc->args = args;
     sc->status = FF_SC_REQ;
+
+    /*
+     * sc->result, sc->error must reset in epoll_wait and kevent.
+     * Otherwise can access last sc call's result.
+     *
+     * Because if sem_timedwait timeouted, but fstack instance still
+     * call sem_post later, and next or next's next sem_timedwait will
+     * return 0 directly, then get invalid result and error.
+     */
+    sc->result = 0;
+    sc->error = 0;
+    errno = 0;
+    if (timeout == NULL) {
+        need_alarm_sem = 1;
+    }
 
     rte_spinlock_unlock(&sc->lock);
 

@@ -32,7 +32,8 @@ struct kevent events[MAX_EVENTS];
 int kq;
 int sockfd;
 
-struct timespec timeout = {0, 100000};
+/* 100 ms */
+struct timespec timeout = {0, 100000000};
 
 static int exit_flag = 0;
 

@@ -25,7 +25,8 @@ pthread_t hworker[MAX_WORKERS];
 pthread_spinlock_t worker_lock;
 #define MAX_EVENTS 512
 
-struct timespec timeout = {0, 100000};
+/* 100 ms */
+struct timespec timeout = {0, 100000000};
 
 static int exit_flag = 0;
 
