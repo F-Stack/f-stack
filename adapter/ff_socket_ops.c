@@ -450,6 +450,8 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     sc->error = errno;
 
     if (sc->ops == FF_SO_EPOLL_WAIT || sc->ops == FF_SO_KEVENT) {
+        DEBUG_LOG("ff_event_loop_nb:%d/%d, ff_next_event_flag:%d\n",
+                   ff_event_loop_nb, ff_next_event_flag);
         if (ff_event_loop_nb > 0) {
             ff_next_event_flag = 1;
         } else {
@@ -478,22 +480,33 @@ ff_handle_socket_ops(struct ff_so_context *sc)
 void
 ff_handle_each_context()
 {
-    uint16_t i, nb_handled;
+    uint16_t i, nb_handled, tmp;
+
+    ff_event_loop_nb = 0;
+
+    rte_spinlock_lock(&ff_so_zone->lock);
+
+    assert(ff_so_zone->count >= ff_so_zone->free);
+    tmp = nb_handled = ff_so_zone->count - ff_so_zone->free;
 
     while(1) {
-        rte_spinlock_lock(&ff_so_zone->lock);
-
-        assert(ff_so_zone->count >= ff_so_zone->free);
-        nb_handled = ff_so_zone->count - ff_so_zone->free;
+        nb_handled = tmp;
         if (nb_handled) {
             for (i = 0; i < ff_so_zone->count; i++) {
                 struct ff_so_context *sc = &ff_so_zone->sc[i];
 
-                if (sc->inuse == 0) {
+                DEBUG_LOG("so:%p, so->count:%d,%p, sc:%p, sc->inuse:%d,%p, i:%d, nb:%d, all_nb:%d\n",
+                    ff_so_zone, ff_so_zone->count, &ff_so_zone->count,
+                    sc, ff_so_zone->inuse[i], &ff_so_zone->inuse[i], i, nb_handled, tmp);
+
+                if (ff_so_zone->inuse[i] == 0) {
                     continue;
                 }
 
-                ff_handle_socket_ops(sc);
+                /* Dirty read first, and then try to lock sc and real read. */
+                if (sc->status == FF_SC_REQ) {
+                    ff_handle_socket_ops(sc);
+                }
 
                 nb_handled--;
                 if (!nb_handled) {
@@ -502,13 +515,13 @@ ff_handle_each_context()
             }
         }
 
-        rte_spinlock_unlock(&ff_so_zone->lock);
-
         if (--ff_event_loop_nb <= 0 || ff_next_event_flag == 1) {
             break;
         }
 
         rte_pause();
     }
+
+    rte_spinlock_unlock(&ff_so_zone->lock);
 }
 

@@ -9,9 +9,6 @@
 
 #define SOCKET_OPS_ZONE_NAME "ff_socket_ops_zone_%d"
 
-/* Must be power of 2 */
-#define SOCKET_OPS_CONTEXT_MAX_NUM (2 << 5)
-
 #define SOCKET_OPS_CONTEXT_NAME_SIZE 32
 #define SOCKET_OPS_CONTEXT_NAME "ff_so_context_"
 
@@ -41,6 +38,10 @@ ff_set_max_so_context(uint16_t count)
         ERR_LOG("Can not set: count:%d is not power of 2, use default:%d\n",
             count, ff_max_so_context);
         return -1;
+    }
+
+    if (count > SOCKET_OPS_CONTEXT_MAX_NUM) {
+        count = SOCKET_OPS_CONTEXT_MAX_NUM;
     }
 
     ff_max_so_context = count;
@@ -82,6 +83,7 @@ ff_create_so_memzone()
             so_zone_tmp->mask = so_zone_tmp->count - 1;
             so_zone_tmp->free = so_zone_tmp->count;
             so_zone_tmp->idx = 0;
+            memset(so_zone_tmp->inuse, 0, SOCKET_OPS_CONTEXT_MAX_NUM);
             so_zone_tmp->sc = (struct ff_so_context *)(so_zone_tmp + 1);
 
             for (i = 0; i < ff_max_so_context; i++) {
@@ -89,7 +91,7 @@ ff_create_so_memzone()
                 rte_spinlock_init(&sc->lock);
                 sc->status = FF_SC_IDLE;
                 sc->idx = i;
-                sc->inuse = 0;
+                //so_zone_tmp->inuse[i] = 0;
 
                 if (sem_init(&sc->wait_sem, 1, 0) == -1) {
                     ERR_LOG("Initialize semaphore failed:%d\n", errno);
@@ -155,8 +157,8 @@ ff_attach_so_context(int proc_id)
     for (i = 0; i < ff_so_zone->count; i++) {
         uint16_t idx = (ff_so_zone->idx + i) & ff_so_zone->mask;
         sc = &ff_so_zone->sc[idx];
-        if (sc->inuse == 0) {
-            sc->inuse = 1;
+        if (ff_so_zone->inuse[idx] == 0) {
+            ff_so_zone->inuse[idx] = 1;
             rte_spinlock_init(&sc->lock);
             sc->status = FF_SC_IDLE;
             ff_so_zone->free--;
@@ -190,19 +192,19 @@ ff_detach_so_context(struct ff_so_context *sc)
     }
 
     ERR_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, inuse:%d, so free:%u, idx:%u\n",
-        sc, sc->ops, sc->status, sc->idx, sc->inuse, ff_so_zone->free, ff_so_zone->idx);
+        sc, sc->ops, sc->status, sc->idx, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
 
     rte_spinlock_lock(&ff_so_zone->lock);
 
-    if (sc->inuse == 1) {
-        sc->inuse = 0;
+    if (ff_so_zone->inuse[sc->idx] == 1) {
+        ff_so_zone->inuse[sc->idx] = 0;
 
         ff_so_zone->free++;
         ff_so_zone->idx = sc->idx;
     }
 
     ERR_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, inuse:%d, so free:%u, idx:%u\n",
-        sc, sc->ops, sc->status, sc->idx, sc->inuse, ff_so_zone->free, ff_so_zone->idx);
+        sc, sc->ops, sc->status, sc->idx, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
 
     rte_spinlock_unlock(&ff_so_zone->lock);
 }

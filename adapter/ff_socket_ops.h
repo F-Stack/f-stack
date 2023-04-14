@@ -28,6 +28,9 @@
 #define DEBUG_LOG ERR_LOG
 #endif
 
+/* Must be power of 2 */
+#define SOCKET_OPS_CONTEXT_MAX_NUM (1 << 5)
+
 enum FF_SOCKET_OPS {
     FF_SO_SOCKET,
     FF_SO_LISTEN,
@@ -71,36 +74,38 @@ struct ff_socket_ops_zone {
     rte_spinlock_t lock;
 
     /* total number of so_contex, must be power of 2 */
-    uint16_t count;
-    uint16_t mask;
+    uint8_t count;
+    uint8_t mask;
 
     /* free number of so_context */
-    uint16_t free;
+    uint8_t free;
 
-    uint16_t idx;
+    uint8_t idx;
 
+    /* 1 if used, else 0, most access */
+    uint8_t inuse[SOCKET_OPS_CONTEXT_MAX_NUM];
     struct ff_so_context *sc;
-} __attribute__((packed));
+
+    uint8_t padding[16];
+} __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 struct ff_so_context {
-    rte_spinlock_t lock;
-    sem_t wait_sem;
+    enum FF_SOCKET_OPS ops;
+    enum FF_SO_CONTEXT_STATUS status;
     void *args;
 
-    enum FF_SOCKET_OPS ops;
-    int status;
-    int idx;
+    rte_spinlock_t lock;
 
-    /* result of ops processing */
-    ssize_t result;
     /* errno if failed */
     int error;
+    /* result of ops processing */
+    int result;
+    int idx;
 
-    /* 1 if used, else 0 */
-    int inuse;
+    sem_t wait_sem; /* 32 bytes */
 
     // listen fd, refcount..
-} __attribute__((packed));
+} __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 extern __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
 

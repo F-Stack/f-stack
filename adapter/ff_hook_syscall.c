@@ -81,14 +81,17 @@ static __thread struct ff_kevent_args *kevent_args = NULL;
     }                                                             \
     args = name##_args;
 
+/* Dirty read first, and then try to lock sc and real read. */
 #define ACQUIRE_ZONE_LOCK(exp) do {                               \
     while (1) {                                                   \
+        while (sc->status != exp) {                               \
+            rte_pause();                                          \
+        }                                                         \
         rte_spinlock_lock(&sc->lock);                             \
         if (sc->status == exp) {                                  \
             break;                                                \
         }                                                         \
         rte_spinlock_unlock(&sc->lock);                           \
-        rte_pause();                                              \
     }                                                             \
 } while (0)
 
@@ -1545,7 +1548,8 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     args->kq = kq;
     args->timeout = (struct timespec *)timeout;
 
-    rte_spinlock_lock(&sc->lock);
+    ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
+    //rte_spinlock_lock(&sc->lock);
 
     sc->ops = FF_SO_KEVENT;
     sc->args = args;
