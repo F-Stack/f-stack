@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -233,6 +235,19 @@ int main(int argc, char * argv[])
             pthread_spin_unlock(&worker_lock);
             pthread_spin_destroy(&worker_lock);
             return -1;
+        }
+        if (i > 0) {
+            cpu_set_t cpuinfo;
+            int lcore_id = 2 + i;
+
+            CPU_ZERO(&cpuinfo);
+            CPU_SET_S(lcore_id, sizeof(cpuinfo), &cpuinfo);
+            if(0 != pthread_setaffinity_np(hworker[i], sizeof(cpu_set_t), &cpuinfo))
+            {
+                 printf("set affinity recver faild\n");
+                 exit(0);
+            }
+            printf("set affinity recver sucssed, thread:%d, lcore_id:%d\n", i, lcore_id);
         }
         pthread_spin_lock(&worker_lock);
     }
