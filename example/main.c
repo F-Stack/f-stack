@@ -162,6 +162,23 @@ int main(int argc, char * argv[])
     /* Update kqueue */
     ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
 
+    int conn_fd = ff_accept(sockfd, NULL, NULL);
+    printf("ff_accept return: %d, errno: %s\n", conn_fd, strerror(errno));
+    // Will print 'ff_accept return: -1, errno: Resource temporarily unavailable'
+    // EAGAIN errno
+
+    while (1) {
+        unsigned nevents = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
+        if (nevents == 0)
+            continue;
+        else
+            printf("nevents %u\n", nevents);    // curl http://server:80 from client. Won't see this print. Why?
+        assert(sockfd == (int) events[0].ident);
+        conn_fd = ff_accept(sockfd, NULL, NULL);
+        printf("ff_accept got conn_fd %d\n", conn_fd);
+    }
+
+
 #ifdef INET6
     sockfd6 = ff_socket(AF_INET6, SOCK_STREAM, 0);
     if (sockfd6 < 0) {
@@ -195,6 +212,6 @@ int main(int argc, char * argv[])
     }
 #endif
 
-    ff_run(loop, NULL);
+    // ff_run(loop, NULL);
     return 0;
 }
