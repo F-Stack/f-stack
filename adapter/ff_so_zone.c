@@ -91,6 +91,7 @@ ff_create_so_memzone()
                 rte_spinlock_init(&sc->lock);
                 sc->status = FF_SC_IDLE;
                 sc->idx = i;
+                sc->refcount = 0;
                 //so_zone_tmp->inuse[i] = 0;
 
                 if (sem_init(&sc->wait_sem, 1, 0) == -1) {
@@ -161,6 +162,7 @@ ff_attach_so_context(int proc_id)
             ff_so_zone->inuse[idx] = 1;
             rte_spinlock_init(&sc->lock);
             sc->status = FF_SC_IDLE;
+            sc->refcount = 1;
             ff_so_zone->free--;
             ff_so_zone->idx = idx + 1;
             break;
@@ -191,20 +193,30 @@ ff_detach_so_context(struct ff_so_context *sc)
         return;
     }
 
-    ERR_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, inuse:%d, so free:%u, idx:%u\n",
-        sc, sc->ops, sc->status, sc->idx, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
+    ERR_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, sc->refcount:%d, inuse:%d, so free:%u, idx:%u\n",
+        sc, sc->ops, sc->status, sc->idx, sc->refcount, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
 
     rte_spinlock_lock(&ff_so_zone->lock);
+    rte_spinlock_lock(&sc->lock);
 
-    if (ff_so_zone->inuse[sc->idx] == 1) {
-        ff_so_zone->inuse[sc->idx] = 0;
+    if (sc->refcount > 1) {
+        ERR_LOG("sc refcount > 1, to sub it, sc:%p, ops:%d, status:%d, idx:%d, sc->refcount:%d, inuse:%d, so free:%u, idx:%u\n",
+                sc, sc->ops, sc->status, sc->idx, sc->refcount, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
+        sc->refcount--;
+    } else {
+        ERR_LOG("sc refcount is 1, to detach it, sc:%p, ops:%d, status:%d, idx:%d, sc->refcount:%d, inuse:%d, so free:%u, idx:%u\n",
+                sc, sc->ops, sc->status, sc->idx, sc->refcount, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
+        if (ff_so_zone->inuse[sc->idx] == 1) {
+            ff_so_zone->inuse[sc->idx] = 0;
 
-        ff_so_zone->free++;
-        ff_so_zone->idx = sc->idx;
+            ff_so_zone->free++;
+            ff_so_zone->idx = sc->idx;
+        }
     }
 
-    ERR_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, inuse:%d, so free:%u, idx:%u\n",
-        sc, sc->ops, sc->status, sc->idx, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
+    ERR_LOG("detach sc:%p, ops:%d, status:%d, idx:%d, sc->refcount:%d, inuse:%d, so free:%u, idx:%u\n",
+        sc, sc->ops, sc->status, sc->idx, sc->refcount, ff_so_zone->inuse[sc->idx], ff_so_zone->free, ff_so_zone->idx);
 
+    rte_spinlock_unlock(&sc->lock);
     rte_spinlock_unlock(&ff_so_zone->lock);
 }

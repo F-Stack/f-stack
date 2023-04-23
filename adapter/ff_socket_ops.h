@@ -91,6 +91,7 @@ struct ff_socket_ops_zone {
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 struct ff_so_context {
+    /* CACHE LINE 0 */
     enum FF_SOCKET_OPS ops;
     enum FF_SO_CONTEXT_STATUS status;
     void *args;
@@ -105,7 +106,9 @@ struct ff_so_context {
 
     sem_t wait_sem; /* 32 bytes */
 
-    // listen fd, refcount..
+    /* CACHE LINE 1 */
+    /* listen fd, refcount.. */
+    int refcount;
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 extern __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;

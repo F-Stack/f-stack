@@ -1452,8 +1452,28 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 pid_t
 ff_hook_fork(void)
 {
+    pid_t pid;
+
     DEBUG_LOG("ff_hook_fork\n");
-    return ff_linux_fork();
+    if (sc) {
+        rte_spinlock_lock(&sc->lock);
+    }
+
+    pid = ff_linux_fork();
+
+    if (sc) {
+        /* Parent process set refcount. */
+        if (pid > 0) {
+            sc->refcount++;
+        }
+
+        /* Parent process unlock sc, fork success of failed. */
+        if (pid != 0) {
+            rte_spinlock_unlock(&sc->lock);
+        }
+    }
+
+    return pid;
 }
 
 int
