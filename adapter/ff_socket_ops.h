@@ -19,7 +19,8 @@
 #endif
 
 #define ERR_LOG(fmt, ...)  do { \
-        printf("file:%s, line:%u, fun:%s, "fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+        printf("file:%s, line:%u, fun:%s, thread self tid:%ld, "fmt, \
+            __FILE__, __LINE__, __func__, pthread_self(), ##__VA_ARGS__); \
     } while (0)
 
 #ifdef NDEBUG

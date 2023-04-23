@@ -74,7 +74,7 @@ fstack: ${FSTACK_OBJS}
 #libff_syscall.a: ${FF_SYSCALL_OBJS}
 libff_syscall.so: ${FF_SYSCALL_OBJS}
 	#ar -rcs $@ $^ ${FF_SYSCALL_LIBS}
-	${CC} -fPIC -shared -o $@ $^ ${FF_SYSCALL_LIBS}
+	${CC} -fPIC -shared -o $@ $^ ${FF_SYSCALL_LIBS} ${DPDK_LIBS}
 
 ${FSTACK_OBJS}: %.o: %.c
 	${CC} -c $(CFLAGS) ${PROF} $<

@@ -450,7 +450,7 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     sc->error = errno;
 
     if (sc->ops == FF_SO_EPOLL_WAIT || sc->ops == FF_SO_KEVENT) {
-        DEBUG_LOG("ff_event_loop_nb:%d/%d, ff_next_event_flag:%d\n",
+        DEBUG_LOG("ff_event_loop_nb:%d, ff_next_event_flag:%d\n",
                    ff_event_loop_nb, ff_next_event_flag);
         if (ff_event_loop_nb > 0) {
             ff_next_event_flag = 1;
@@ -481,6 +481,7 @@ void
 ff_handle_each_context()
 {
     uint16_t i, nb_handled, tmp;
+    static uint64_t loop_count = 0;
 
     ff_event_loop_nb = 0;
 
@@ -495,9 +496,11 @@ ff_handle_each_context()
             for (i = 0; i < ff_so_zone->count; i++) {
                 struct ff_so_context *sc = &ff_so_zone->sc[i];
 
-                DEBUG_LOG("so:%p, so->count:%d,%p, sc:%p, sc->inuse:%d,%p, i:%d, nb:%d, all_nb:%d\n",
-                    ff_so_zone, ff_so_zone->count, &ff_so_zone->count,
-                    sc, ff_so_zone->inuse[i], &ff_so_zone->inuse[i], i, nb_handled, tmp);
+                if ((loop_count & 1048575) == 0) {
+                    DEBUG_LOG("so:%p, so->count:%d,%p, sc:%p, sc->inuse:%d,%p, i:%d, nb:%d, all_nb:%d\n",
+                        ff_so_zone, ff_so_zone->count, &ff_so_zone->count,
+                        sc, ff_so_zone->inuse[i], &ff_so_zone->inuse[i], i, nb_handled, tmp);
+                }
 
                 if (ff_so_zone->inuse[i] == 0) {
                     continue;
@@ -523,5 +526,7 @@ ff_handle_each_context()
     }
 
     rte_spinlock_unlock(&ff_so_zone->lock);
+
+    loop_count++;
 }
 

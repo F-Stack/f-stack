@@ -124,6 +124,7 @@ int ff_linux_setsockopt(int s, int level, int optname,
 
 int ff_linux_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 {
+    DEBUG_LOG("ff_linux_accept, fd:%d, addr:%p, len:%p\n", s, addr, addrlen);
     SYSCALL(accept, (s, addr, addrlen));
 }
 
@@ -151,11 +152,13 @@ ssize_t ff_linux_send(int s, const void *buf, size_t len, int flags)
 
 ssize_t ff_linux_read(int s, void *buf, size_t len)
 {
+    DEBUG_LOG("ff_linux_read, fd:%d, buf:%p, len:%lu\n", s, buf, len);
     SYSCALL(read, (s, buf, len));
 }
 
 ssize_t ff_linux_write(int s, const void *buf, size_t len)
 {
+    DEBUG_LOG("ff_linux_write, fd:%d, buf:%p, len:%lu\n", s, buf, len);
     SYSCALL(write, (s, buf, len));
 }
 
@@ -194,6 +197,7 @@ ssize_t ff_linux_recvmsg(int s, struct msghdr *msg, int flags)
 
 int ff_linux_close(int s)
 {
+    DEBUG_LOG("ff_linux_close, fd:%d\n", s);
     SYSCALL(close, (s));
 }
 
@@ -231,6 +235,7 @@ ff_linux_epoll_wait(int epfd, struct epoll_event *events,
 pid_t
 ff_linux_fork(void)
 {
+    DEBUG_LOG("ff_linux_fork\n");
     SYSCALL(fork, ());
 }
 

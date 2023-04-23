@@ -7,6 +7,6 @@
 
 extern int kqueue(void);
 extern int kevent(int kq, const struct kevent *changelist, int nchanges,
-    struct kevent *eventlist, int nevents, const struct timespec *timeout);
+		    struct kevent *eventlist, int nevents, const struct timespec *timeout);
 
 #endif

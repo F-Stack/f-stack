@@ -5,6 +5,7 @@
 #include <sys/resource.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
@@ -16,6 +17,9 @@
 #include "ff_hook_syscall.h"
 #include "ff_linux_syscall.h"
 #include "ff_adapter.h"
+
+/* Just for so, no used */
+struct ff_config ff_global_cfg;
 
 #define NS_PER_SECOND  1000000000
 
@@ -237,6 +241,8 @@ ff_hook_socket(int domain, int type, int protocol)
     if (ret >= 0) {
         ret = convert_fstack_fd(ret);
     }
+
+    DEBUG_LOG("ff_hook_socket return fd:%d\n", ret);
 
     RETURN();
 }
@@ -484,6 +490,8 @@ ff_hook_setsockopt(int fd, int level, int optname,
 int
 ff_hook_accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
 {
+    DEBUG_LOG("ff_hook_accept, fd:%d, addr:%p, len:%p\n", fd, addr, addrlen);
+
     if ((addr == NULL && addrlen != NULL) ||
         (addr != NULL && addrlen == NULL)) {
         errno = EINVAL;
@@ -1263,7 +1271,7 @@ int
 ff_hook_epoll_create(int fdsize)
 {
     DEBUG_LOG("ff_hook_epoll_create, fdsize:%d\n", fdsize);
-    if (inited == 0 || ((fdsize & SOCK_KERNEL) && !(fdsize & SOCK_FSTACK)) || (fdsize >= 1 && fdsize <= 16)) {
+    if (inited == 0 || ((fdsize & SOCK_KERNEL) && !(fdsize & SOCK_FSTACK))/* || (fdsize >= 1 && fdsize <= 16)*/) {
         fdsize &= ~SOCK_KERNEL;
         return ff_linux_epoll_create(fdsize);
     }
@@ -1277,6 +1285,8 @@ ff_hook_epoll_create(int fdsize)
     if (ret >= 0) {
         ret = convert_fstack_fd(ret);
     }
+
+    DEBUG_LOG("ff_hook_epoll_create return fd:%d\n", ret);
 
     RETURN();
 }
@@ -1442,6 +1452,7 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 pid_t
 ff_hook_fork(void)
 {
+    DEBUG_LOG("ff_hook_fork\n");
     return ff_linux_fork();
 }
 
@@ -1655,6 +1666,7 @@ thread_destructor(void *sc)
 #ifdef FF_THREAD_SOCKET
     DEBUG_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
     ff_detach_so_context(sc);
+    sc = NULL;
 #endif
 
     if (shutdown_args) {
@@ -1692,6 +1704,18 @@ thread_destructor(void *sc)
     }
 }
 
+void __attribute__((destructor))
+ff_adapter_exit()
+{
+    pthread_key_delete(key);
+
+#ifndef FF_THREAD_SOCKET
+    ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
+    ff_detach_so_context(sc);
+    sc = NULL;
+#endif
+}
+
 int
 ff_adapter_init()
 //int __attribute__((constructor))
@@ -1710,6 +1734,9 @@ ff_adapter_init()
 
         pthread_key_create(&key, thread_destructor);
         DEBUG_LOG("pthread key:%d\n", key);
+
+        //atexit(ff_adapter_exit);
+        //on_exit(ff_adapter_exit, NULL);
 
         /*
          * get ulimit -n to distinguish fd between kernel and F-Stack
@@ -1836,22 +1863,11 @@ ff_adapter_init()
     return 0;
 }
 
-void __attribute__((destructor))
-ff_adapter_exit()
-{
-    pthread_key_delete(key);
-
-#ifndef FF_THREAD_SOCKET
-    ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
-    ff_detach_so_context(sc);
-#endif
-}
-
 void
 alarm_event_sem()
 {
 #ifndef FF_THREAD_SOCKET
-    DEBUG_LOG("check whether need to alarm sem sc:%p, status:%d, ops:%d\n",
+    DEBUG_LOG("check whether need to alarm sem sc:%p, status:%d, ops:%d, need_alarm_sem:%d\n",
         sc, sc->status, sc->ops, need_alarm_sem);
     rte_spinlock_lock(&sc->lock);
     if (need_alarm_sem == 1) {
@@ -1861,7 +1877,7 @@ alarm_event_sem()
     }
     rte_spinlock_unlock(&sc->lock);
 
-    DEBUG_LOG("finish alarm sem sc:%p, status:%d, ops:%d\n",
+    DEBUG_LOG("finish alarm sem sc:%p, status:%d, ops:%d, need_alarm_sem:%d\n",
         sc, sc->status, sc->ops, need_alarm_sem);
 #endif
 }
