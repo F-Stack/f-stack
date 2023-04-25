@@ -17,6 +17,10 @@ DEBUG=-O0 -gdwarf-2 -g3
 # If disable it, one socket can use in all threads.
 #FF_THREAD_SOCKET=1
 
+# If enable FF_KERNEL_EVENT, epoll_create/epoll_clt/epoll_wait always call f-stack and system API at the same time.
+# Use for some scenarios similar to Nginx.
+#FF_KERNEL_EVENT=1
+
 PKGCONF ?= pkg-config
 
 ifndef DEBUG
@@ -27,6 +31,10 @@ endif
 
 ifdef FF_THREAD_SOCKET
 	CFLAGS+= -DFF_THREAD_SOCKET
+endif
+
+ifdef FF_KERNEL_EVENT
+	CFLAGS+= -DFF_KERNEL_EVENT
 endif
 
 CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)

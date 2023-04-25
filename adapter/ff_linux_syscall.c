@@ -142,11 +142,13 @@ int ff_linux_connect(int s, const struct sockaddr *addr,
 
 ssize_t ff_linux_recv(int s, void *buf, size_t len, int flags)
 {
+    DEBUG_LOG("ff_linux_recv, fd:%d, buf:%p, len:%lu, flags:%d\n", s, buf, len, flags);
     SYSCALL(recv, (s, buf, len, flags));
 }
 
 ssize_t ff_linux_send(int s, const void *buf, size_t len, int flags)
 {
+    DEBUG_LOG("ff_linux_send, fd:%d, buf:%p, len:%lu, flags:%d\n", s, buf, len, flags);
     SYSCALL(send, (s, buf, len, flags));
 }
 
@@ -164,17 +166,21 @@ ssize_t ff_linux_write(int s, const void *buf, size_t len)
 
 ssize_t ff_linux_writev(int s, const struct iovec *iov, int iovcnt)
 {
+    DEBUG_LOG("ff_linux_writev, fd:%d, iov:%p, iovcnt:%d\n", s, iov, iovcnt);
     SYSCALL(writev, (s, iov, iovcnt));
 }
 
 ssize_t ff_linux_readv(int s, const struct iovec *iov, int iovcnt)
 {
+    DEBUG_LOG("ff_linux_readv, fd:%d, iov:%p, iovcnt:%d\n", s, iov, iovcnt);
     SYSCALL(readv, (s, iov, iovcnt));
 }
 
 ssize_t ff_linux_sendto(int s, const void *buf, size_t len, int flags,
     const struct sockaddr *to, socklen_t tolen)
 {
+    DEBUG_LOG("ff_linux_sendto, fd:%d, buf:%p, len:%lu, flags:%d, to:%p, tolen:%d\n",
+        s, buf, len, flags, to, tolen);
     SYSCALL(sendto, (s, buf, len, flags, to, tolen));
 }
 
@@ -182,16 +188,21 @@ ssize_t ff_linux_recvfrom(int s, void *buf, size_t len, int flags,
     struct sockaddr *from, socklen_t *fromlen)
 
 {
+    DEBUG_LOG("ff_linux_recvfrom, fd:%d, buf:%p, len:%lu, flags:%d, from:%p, fromlen:%p\n",
+        s, buf, len, flags, from, fromlen);
     SYSCALL(recvfrom, (s, buf, len, flags, from, fromlen));
 }
 
 ssize_t ff_linux_sendmsg(int s, const struct msghdr *msg, int flags)
 {
+    DEBUG_LOG("ff_linux_sendmsg, fd:%d, msg:%p, flags:%d\n",
+        s, msg, flags);
     SYSCALL(sendmsg, (s, msg, flags));
 }
 
 ssize_t ff_linux_recvmsg(int s, struct msghdr *msg, int flags)
 {
+    DEBUG_LOG("ff_linux_recvmsg, fd:%d, msg:%p, flags:%d\n", s, msg, flags);
     SYSCALL(recvmsg, (s, msg, flags))
 }
 

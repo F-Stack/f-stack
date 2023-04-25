@@ -428,6 +428,7 @@ ff_so_handler(int ops, void *args)
     }
 
     errno = EINVAL;
+    DEBUG_LOG("ff_so_handler error:%d, ops:%d\n", errno, ops);
     return (-1);
 }
 
@@ -448,6 +449,7 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     errno = 0;
     sc->result = ff_so_handler(sc->ops, sc->args);
     sc->error = errno;
+    DEBUG_LOG("ff_handle_socket_ops error:%d, ops:%d, result:%d\n", errno, sc->ops, sc->result);
 
     if (sc->ops == FF_SO_EPOLL_WAIT || sc->ops == FF_SO_KEVENT) {
         DEBUG_LOG("ff_event_loop_nb:%d, ff_next_event_flag:%d\n",

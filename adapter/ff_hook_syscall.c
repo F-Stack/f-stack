@@ -119,11 +119,13 @@ static __thread struct ff_kevent_args *kevent_args = NULL;
 } while (0)
 
 #define RETURN_NOFREE() do {                                      \
+    DEBUG_LOG("RETURN_NOFREE ret:%d, errno:%d\n", ret, errno);    \
     return ret;                                                   \
 } while (0)
 
 #define RETURN_ERROR_NOFREE(err) do {                             \
     errno = err;                                                  \
+    DEBUG_LOG("RETURN_ERROR_NOFREE ret:%d, errno:%d\n", ret, errno); \
     return ret;                                                   \
 } while (0)
 
@@ -142,6 +144,12 @@ static __FF_THREAD int inited = 0;
 static __FF_THREAD struct ff_so_context *sc;
 
 static pthread_key_t key;
+
+#ifdef FF_KERNEL_EVENT
+/* kern.maxfiles: 33554432 */
+#define FF_MAX_FREEBSD_FILES 65536
+int fstack_kernel_fd_map[FF_MAX_FREEBSD_FILES];
+#endif
 
 /* process-level initialization flag */
 static int proc_inited = 0;
@@ -607,6 +615,8 @@ ff_hook_connect(int fd, const struct sockaddr *addr,
 ssize_t
 ff_hook_recv(int fd, void *buf, size_t len, int flags)
 {
+    DEBUG_LOG("ff_hook_recv, fd:%d, buf:%p, len:%lu, flags:%d\n",
+        fd, buf, len, flags);
     return ff_hook_recvfrom(fd, buf, len, flags, NULL, NULL);
 }
 
@@ -614,6 +624,9 @@ ssize_t
 ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
     struct sockaddr *from, socklen_t *fromlen)
 {
+    DEBUG_LOG("ff_hook_recvfrom, fd:%d, buf:%p, len:%lu, flags:%d, from:%p, fromlen:%p\n",
+        fd, buf, len, flags, from, fromlen);
+
     if (buf == NULL || len == 0) {
         errno = EINVAL;
         return -1;
@@ -892,6 +905,8 @@ msghdr_share_memcpy(const struct msghdr *dst, const struct msghdr *src)
 ssize_t
 ff_hook_recvmsg(int fd, struct msghdr *msg, int flags)
 {
+    DEBUG_LOG("ff_hook_recvmsg, fd:%d, msg:%p, flags:%d\n", fd, msg, flags);
+
     if (msg == NULL || msg->msg_iov == NULL ||
         msg->msg_iovlen == 0) {
         errno = EINVAL;
@@ -930,7 +945,7 @@ ff_hook_recvmsg(int fd, struct msghdr *msg, int flags)
 ssize_t
 ff_hook_read(int fd, void *buf, size_t len)
 {
-    DEBUG_LOG("ff_hook_read, fd:%d, len:%lu\n", fd, len);
+    DEBUG_LOG("ff_hook_read, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
 
     if (buf == NULL || len == 0) {
         errno = EINVAL;
@@ -975,6 +990,8 @@ ff_hook_read(int fd, void *buf, size_t len)
 ssize_t
 ff_hook_readv(int fd, const struct iovec *iov, int iovcnt)
 {
+    DEBUG_LOG("ff_hook_readv, fd:%d, iov:%p, iovcnt:%d\n", fd, iov, iovcnt);
+
     if (iov == NULL || iovcnt == 0) {
         errno = EINVAL;
         return -1;
@@ -1008,6 +1025,9 @@ ssize_t
 ff_hook_sendto(int fd, const void *buf, size_t len, int flags,
     const struct sockaddr *to, socklen_t tolen)
 {
+    DEBUG_LOG("ff_hook_sendto, fd:%d, buf:%p, len:%lu, flags:%d, to:%p, tolen:%d\n",
+        fd, buf, len, flags, to, tolen);
+
     if (buf == NULL || len == 0) {
         errno = EINVAL;
         return -1;
@@ -1074,6 +1094,9 @@ ff_hook_sendto(int fd, const void *buf, size_t len, int flags,
 ssize_t
 ff_hook_sendmsg(int fd, const struct msghdr *msg, int flags)
 {
+    DEBUG_LOG("ff_hook_sendmsg, fd:%d, msg:%p, flags:%d\n",
+        fd, msg, flags);
+
     if (msg == NULL || msg->msg_iov == NULL ||
         msg->msg_iovlen == 0) {
         errno = EINVAL;
@@ -1112,6 +1135,7 @@ ff_hook_sendmsg(int fd, const struct msghdr *msg, int flags)
 ssize_t
 ff_hook_send(int fd, const void *buf, size_t len, int flags)
 {
+    DEBUG_LOG("ff_hook_send, fd:%d, buf:%p, len:%lu, flags:%d\n", fd, buf, len, flags);
     return ff_hook_sendto(fd, buf, len, flags, NULL, 0);
 }
 
@@ -1158,6 +1182,8 @@ ff_hook_write(int fd, const void *buf, size_t len)
 ssize_t
 ff_hook_writev(int fd, const struct iovec *iov, int iovcnt)
 {
+    DEBUG_LOG("ff_hook_writev, fd:%d, iov:%p, iovcnt:%d\n", fd, iov, iovcnt);
+
     if (iov == NULL || iovcnt == 0) {
         errno = EINVAL;
         return -1;
@@ -1270,6 +1296,7 @@ ff_hook_fcntl(int fd, int cmd, unsigned long data)
 int
 ff_hook_epoll_create(int fdsize)
 {
+
     DEBUG_LOG("ff_hook_epoll_create, fdsize:%d\n", fdsize);
     if (inited == 0 || ((fdsize & SOCK_KERNEL) && !(fdsize & SOCK_FSTACK))/* || (fdsize >= 1 && fdsize <= 16)*/) {
         fdsize &= ~SOCK_KERNEL;
@@ -1283,6 +1310,13 @@ ff_hook_epoll_create(int fdsize)
     SYSCALL(FF_SO_EPOLL_CREATE, args);
 
     if (ret >= 0) {
+#ifdef FF_KERNEL_EVENT
+        int kernel_fd;
+
+        kernel_fd = ff_linux_epoll_create(fdsize);
+        fstack_kernel_fd_map[ret] = kernel_fd;
+        ERR_LOG("ff_hook_epoll_create fstack fd:%d, FF_KERNEL_EVENT kernel_fd:%d:\n", ret, kernel_fd);
+#endif
         ret = convert_fstack_fd(ret);
     }
 
@@ -1295,8 +1329,30 @@ int
 ff_hook_epoll_ctl(int epfd, int op, int fd,
     struct epoll_event *event)
 {
+    int ff_epfd;
+
     DEBUG_LOG("ff_hook_epoll_ctl, epfd:%d, op:%d, fd:%d\n", epfd, op, fd);
+
+#ifdef FF_KERNEL_EVENT
+    if (unlikely(!is_fstack_fd(fd))) {
+        if (is_fstack_fd(epfd)) {
+            ff_epfd = restore_fstack_fd(epfd);
+            if (likely(fstack_kernel_fd_map[ff_epfd] > 0)) {
+                epfd = fstack_kernel_fd_map[ff_epfd];
+                DEBUG_LOG("ff_epfd:%d, kernel epfd:%d\n", ff_epfd, epfd);
+            } else {
+                ERR_LOG("invalid fd and ff_epfd:%d, epfd:%d, op:%d, fd:%d\n", ff_epfd, epfd, op, fd);
+                errno = EBADF;
+                return -1;
+            }
+        }
+        return ff_linux_epoll_ctl(epfd, op, fd, event);
+    }
+    fd = restore_fstack_fd(fd);
+#else
     CHECK_FD_OWNERSHIP(epoll_ctl, (epfd, op, fd, event));
+#endif
+    ff_epfd = restore_fstack_fd(epfd);
 
     DEFINE_REQ_ARGS_STATIC(epoll_ctl);
     static __thread struct epoll_event *sh_event = NULL;
@@ -1322,7 +1378,7 @@ ff_hook_epoll_ctl(int epfd, int op, int fd,
         args->event = NULL;
     }
 
-    args->epfd = restore_fstack_fd(epfd);
+    args->epfd = ff_epfd;
     args->op = op;
     args->fd = fd;
 
@@ -1341,15 +1397,58 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 {
     DEBUG_LOG("ff_hook_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n", epfd, maxevents, timeout);
     int fd = epfd;
+    struct timespec abs_timeout;
+
     CHECK_FD_OWNERSHIP(epoll_wait, (epfd, events, maxevents, timeout));
 
     DEFINE_REQ_ARGS_STATIC(epoll_wait);
     static __thread struct epoll_event *sh_events = NULL;
+    static __thread int sh_events_len = 0;
 
-    if (sh_events == NULL) {
-        sh_events = share_mem_alloc(sizeof(struct epoll_event) * maxevents);
+#ifdef FF_KERNEL_EVENT
+    /* maxevents must >= 2, if use FF_KERNEL_EVENT */
+    if (unlikely(maxevents < 2)) {
+        ERR_LOG("maxevents must >= 2, if use FF_KERNEL_EVENT, now is %d\n", maxevents);
+        RETURN_ERROR_NOFREE(EINVAL);
+    }
+
+    int kernel_ret = 0;
+    int kernel_maxevents = kernel_maxevents = maxevents / 16;
+
+    if (kernel_maxevents > SOCKET_OPS_CONTEXT_MAX_NUM) {
+        kernel_maxevents = SOCKET_OPS_CONTEXT_MAX_NUM;
+    } else if (kernel_maxevents <= 0) {
+        kernel_maxevents = 1;
+    }
+    maxevents -= kernel_maxevents;
+#endif
+
+    if (sh_events == NULL || sh_events_len < maxevents) {
+        if (sh_events) {
+            share_mem_free(sh_events);
+        }
+
+        sh_events_len = maxevents;
+        sh_events = share_mem_alloc(sizeof(struct epoll_event) * sh_events_len);
         if (sh_events == NULL) {
             RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    if (timeout > 0) {
+        clock_gettime(CLOCK_REALTIME, &abs_timeout);
+        DEBUG_LOG("before wait, sec:%ld, nsec:%ld\n", abs_timeout.tv_sec, abs_timeout.tv_nsec);
+        abs_timeout.tv_sec += timeout / 1000;
+        /* must % 1000 first, otherwise type(int) maybe overflow, and sem_timedwait failed */
+        abs_timeout.tv_nsec += (timeout % 1000) * 1000 * 1000;
+        if (abs_timeout.tv_nsec > NS_PER_SECOND) {
+            abs_timeout.tv_nsec -= NS_PER_SECOND;
+            abs_timeout.tv_sec += 1;
+        }
+        if (unlikely(abs_timeout.tv_sec < 0 || abs_timeout.tv_nsec < 0)) {
+            ERR_LOG("invalid timeout argument, the sec:%ld, nsec:%ld\n",
+                abs_timeout.tv_sec, abs_timeout.tv_nsec);
+            RETURN_ERROR_NOFREE(EINVAL);
         }
     }
 
@@ -1358,6 +1457,7 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     args->maxevents = maxevents;
     args->timeout = timeout;
 
+RETRY:
     /* for timeout, Although not really effective in FreeBSD stack */
     //SYSCALL(FF_SO_EPOLL_WAIT, args);
     ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
@@ -1375,24 +1475,33 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     sc->result = 0;
     sc->error = 0;
     errno = 0;
-    if (timeout == 0) {
+    if (timeout <= 0) {
         need_alarm_sem = 1;
     }
 
     RELEASE_ZONE_LOCK(FF_SC_REQ);
 
-    if (timeout > 0) {
-        struct timespec abs_timeout;
-
-        clock_gettime(CLOCK_REALTIME, &abs_timeout);
-        DEBUG_LOG("before wait, sec:%ld, nsec:%ld\n", abs_timeout.tv_sec, abs_timeout.tv_nsec);
-        abs_timeout.tv_sec += timeout / 1000;
-        abs_timeout.tv_nsec += timeout * 1000 * 1000;
-        if (abs_timeout.tv_nsec > NS_PER_SECOND) {
-            abs_timeout.tv_nsec -= NS_PER_SECOND;
-            abs_timeout.tv_sec += 1;
+#ifdef FF_KERNEL_EVENT
+    /*
+     * Call ff_linux_epoll_wait before sem_timedwait/sem_wait.
+     * And set timeout is 0.
+     *
+     * If there are events return, and move event offset to unused event for copy F-Stack events.
+     */
+    DEBUG_LOG("call ff_linux_epoll_wait at the same time, epfd:%d, fstack_kernel_fd_map[epfd]:%d, kernel_maxevents:%d\n",
+        fd, fstack_kernel_fd_map[fd], kernel_maxevents);
+    if (likely(fstack_kernel_fd_map[fd] > 0)) {
+        kernel_ret = ff_linux_epoll_wait(fstack_kernel_fd_map[fd], events, kernel_maxevents, 0);
+        DEBUG_LOG("ff_linux_epoll_wait kernel_ret:%d, errno:%d\n", ret, errno);
+        if (kernel_ret < 0) {
+            kernel_ret = 0;
+        } else if (kernel_ret > 0) {
+            events += kernel_ret;
         }
+    }
+#endif
 
+    if (timeout > 0) {
         DEBUG_LOG("ready to wait, sec:%ld, nsec:%ld\n", abs_timeout.tv_sec, abs_timeout.tv_nsec);
         ret = sem_timedwait(&sc->wait_sem, &abs_timeout);
 
@@ -1404,8 +1513,8 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 
     rte_spinlock_lock(&sc->lock);
 
-    if (timeout == 0) {
-        need_alarm_sem = 1;
+    if (timeout <= 0) {
+        need_alarm_sem = 0;
     }
 
     /*
@@ -1415,9 +1524,11 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
      * And only ret == 0, means sem_timedwait return normal,
      * can set ret = sc->result, otherwise may use last sc->result.
      */
-    if (ret == -1 && errno == ETIMEDOUT /* sc->status == FF_SC_REQ */) {
+    DEBUG_LOG("sem wait, ret:%d, sc->result:%d, sc->errno:%d\n",
+        ret, sc->result, sc->error);
+    if (unlikely(ret == -1 && errno == ETIMEDOUT /* sc->status == FF_SC_REQ */)) {
         ret = 0;
-    } else if (ret == 0) {
+    } else if (likely(ret == 0)) {
         ret = sc->result;
         if (ret < 0) {
             errno = sc->error;
@@ -1427,13 +1538,30 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     sc->status = FF_SC_IDLE;
     rte_spinlock_unlock(&sc->lock);
 
-    if (ret > 0) {
+    if (likely(ret > 0)) {
         if (unlikely(ret > maxevents)) {
             ERR_LOG("return events:%d, maxevents:%d, set return events to maxevents, may be some error occur\n",
                 ret, maxevents);
             ret = maxevents;
         }
         rte_memcpy(events, sh_events, sizeof(struct epoll_event) * ret);
+    }
+
+#ifdef FF_KERNEL_EVENT
+    if (unlikely(kernel_ret > 0)) {
+        if (likely(ret > 0)) {
+            ret += kernel_ret;
+        } else {
+            ret = kernel_ret;
+        }
+    }
+#endif
+
+    /* If timeout is -1, always retry epoll_wait until ret not 0 */
+    if (timeout <= 0 && ret == 0) {
+        //usleep(100);
+        rte_pause();
+        goto RETRY;
     }
 
     /*
@@ -1613,8 +1741,14 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
             abs_timeout.tv_nsec -= NS_PER_SECOND;
             abs_timeout.tv_sec += 1;
         }
-
-        ret = sem_timedwait(&sc->wait_sem, &abs_timeout);
+        if (unlikely(abs_timeout.tv_sec < 0 || abs_timeout.tv_nsec < 0)) {
+            ERR_LOG("invalid timeout argument, the sec:%ld, nsec:%ld\n",
+                abs_timeout.tv_sec, abs_timeout.tv_nsec);
+            errno = EINVAL;
+            ret = -1;
+        } else {
+            ret = sem_timedwait(&sc->wait_sem, &abs_timeout);
+        }
     } else {
         ret = sem_wait(&sc->wait_sem);
     }
