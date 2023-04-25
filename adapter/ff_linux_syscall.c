@@ -131,12 +131,14 @@ int ff_linux_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 int ff_linux_accept4(int s, struct sockaddr *addr,
     socklen_t *addrlen, int flags)
 {
+    DEBUG_LOG("ff_linux_accept4, fd:%d, addr:%p, addrlen:%p, flags:%d\n", s, addr, addrlen, flags);
     SYSCALL(accept4, (s, addr, addrlen, flags));
 }
 
 int ff_linux_connect(int s, const struct sockaddr *addr,
     socklen_t addrlen)
 {
+    DEBUG_LOG("ff_linux_connect, fd:%d, addr:%p, addrlen:%u\n", s, addr, addrlen);
     SYSCALL(connect, (s, addr, addrlen));
 }
 

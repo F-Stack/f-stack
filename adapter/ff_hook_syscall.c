@@ -131,12 +131,14 @@ static __thread struct ff_kevent_args *kevent_args = NULL;
 
 #define RETURN() do {                                             \
     share_mem_free(args);                                         \
+    DEBUG_LOG("RETURN ret:%d, errno:%d\n", ret, errno);           \
     return ret;                                                   \
 } while (0)
 
 #define RETURN_ERROR(err) do {                                    \
     errno = err;                                                  \
     share_mem_free(args);                                         \
+    DEBUG_LOG("RETURN_ERROR ret:%d, errno:%d\n", ret, errno);     \
     return ret;                                                   \
 } while (0)
 
@@ -267,7 +269,7 @@ ff_hook_bind(int fd, const struct sockaddr *addr,
     CHECK_FD_OWNERSHIP(bind, (fd, addr, addrlen));
 
     DEFINE_REQ_ARGS(bind);
-    struct sockaddr *sh_addr;
+    struct sockaddr *sh_addr = NULL;
 
     sh_addr = share_mem_alloc(addrlen);
     if (sh_addr == NULL) {
@@ -327,8 +329,8 @@ ff_hook_getsockname(int fd, struct sockaddr *name,
     CHECK_FD_OWNERSHIP(getsockname, (fd, name, namelen));
 
     DEFINE_REQ_ARGS(getsockname);
-    struct sockaddr *sh_name;
-    socklen_t *sh_namelen;
+    struct sockaddr *sh_name = NULL;
+    socklen_t *sh_namelen = NULL;
 
     sh_name = share_mem_alloc(*namelen);
     if (sh_name == NULL) {
@@ -372,8 +374,8 @@ ff_hook_getpeername(int fd, struct sockaddr *name,
     CHECK_FD_OWNERSHIP(getpeername, (fd, name, namelen));
 
     DEFINE_REQ_ARGS(getpeername);
-    struct sockaddr *sh_name;
-    socklen_t *sh_namelen;
+    struct sockaddr *sh_name = NULL;
+    socklen_t *sh_namelen = NULL;
 
     sh_name = share_mem_alloc(*namelen);
     if (sh_name == NULL) {
@@ -419,7 +421,7 @@ ff_hook_getsockopt(int fd, int level, int optname,
 
     DEFINE_REQ_ARGS(getsockopt);
     void *sh_optval = NULL;
-    socklen_t *sh_optlen;
+    socklen_t *sh_optlen = NULL;
 
     if (optval != NULL) {
         sh_optval = share_mem_alloc(*optlen);
@@ -449,11 +451,13 @@ ff_hook_getsockopt(int fd, int level, int optname,
     if (ret == 0) {
         if (optval) {
             rte_memcpy(optval, sh_optval, *sh_optlen);
-            share_mem_free(sh_optval);
         }
         *optlen = *sh_optlen;
     }
 
+    if (sh_optval) {
+        share_mem_free(sh_optval);
+    }
     share_mem_free(sh_optlen);
     RETURN();
 }
@@ -568,6 +572,8 @@ int
 ff_hook_accept4(int fd, struct sockaddr *addr,
     socklen_t *addrlen, int flags)
 {
+    DEBUG_LOG("ff_hook_accept4, fd:%d, addr:%p, addrlen:%p, flags:%d\n", fd, addr, addrlen, flags);
+
     CHECK_FD_OWNERSHIP(accept4, (fd, addr, addrlen, flags));
 
     errno = ENOSYS;
@@ -578,6 +584,8 @@ int
 ff_hook_connect(int fd, const struct sockaddr *addr,
     socklen_t addrlen)
 {
+    DEBUG_LOG("ff_hook_connect, fd:%d, addr:%p, addrlen:%u\n", fd, addr, addrlen);
+
     if (addr == NULL) {
         errno = EINVAL;
         return -1;
@@ -641,7 +649,7 @@ ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
     CHECK_FD_OWNERSHIP(recvfrom, (fd, buf, len, flags, from, fromlen));
 
     DEFINE_REQ_ARGS_STATIC(recvfrom);
-    static __thread void *sh_buf;
+    static __thread void *sh_buf = NULL;
     static __thread size_t sh_buf_len = 0;
     static __thread struct sockaddr *sh_from = NULL;
     static __thread socklen_t sh_from_len = 0;
@@ -916,7 +924,7 @@ ff_hook_recvmsg(int fd, struct msghdr *msg, int flags)
     CHECK_FD_OWNERSHIP(recvmsg, (fd, msg, flags));
 
     DEFINE_REQ_ARGS(recvmsg);
-    struct msghdr *sh_msg;
+    struct msghdr *sh_msg = NULL;
 
     sh_msg = msghdr_share_alloc(msg);
     if (sh_msg == NULL) {
@@ -1000,7 +1008,7 @@ ff_hook_readv(int fd, const struct iovec *iov, int iovcnt)
     CHECK_FD_OWNERSHIP(readv, (fd, iov, iovcnt));
 
     DEFINE_REQ_ARGS(readv);
-    struct iovec *sh_iov;
+    struct iovec *sh_iov = NULL;
 
     sh_iov = iovec_share_alloc(iov, iovcnt);
     if (sh_iov == NULL) {
@@ -1106,7 +1114,7 @@ ff_hook_sendmsg(int fd, const struct msghdr *msg, int flags)
     CHECK_FD_OWNERSHIP(sendmsg, (fd, msg, flags));
 
     DEFINE_REQ_ARGS(sendmsg);
-    struct msghdr *sh_msg;
+    struct msghdr *sh_msg = NULL;
 
     sh_msg = msghdr_share_alloc(msg);
     if (sh_msg == NULL) {
@@ -1192,7 +1200,7 @@ ff_hook_writev(int fd, const struct iovec *iov, int iovcnt)
     CHECK_FD_OWNERSHIP(writev, (fd, iov, iovcnt));
 
     DEFINE_REQ_ARGS(writev);
-    struct iovec *sh_iov;
+    struct iovec *sh_iov = NULL;
 
     sh_iov = iovec_share_alloc(iov, iovcnt);
     if (sh_iov == NULL) {
@@ -1248,7 +1256,7 @@ ff_hook_ioctl(int fd, unsigned long req, unsigned long data)
     CHECK_FD_OWNERSHIP(ioctl, (fd, req, data));
 
     DEFINE_REQ_ARGS(ioctl);
-    unsigned long *sh_data;
+    unsigned long *sh_data = NULL;
 
     sh_data = share_mem_alloc(sizeof(int));
     if (sh_data == NULL) {
@@ -1265,6 +1273,8 @@ ff_hook_ioctl(int fd, unsigned long req, unsigned long data)
     if (ret == 0) {
         *((int *)data) = *sh_data;
     }
+
+    share_mem_free(sh_data);
 
     RETURN();
 }
