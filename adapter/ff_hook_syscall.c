@@ -61,16 +61,33 @@ struct ff_config ff_global_cfg;
 
 /* Always use __thread, but no __FF_THREAD */
 static __thread struct ff_shutdown_args *shutdown_args = NULL;
+static __thread struct ff_getsockname_args *getsockname_args = NULL;
+static __thread struct ff_getpeername_args *getpeername_args = NULL;
+static __thread struct ff_setsockopt_args *setsockopt_args = NULL;
 static __thread struct ff_accept_args *accept_args = NULL;
 static __thread struct ff_connect_args *connect_args = NULL;
 static __thread struct ff_recvfrom_args *recvfrom_args = NULL;
+static __thread struct ff_recvmsg_args *recvmsg_args = NULL;
 static __thread struct ff_read_args *read_args = NULL;
+static __thread struct ff_readv_args *readv_args = NULL;
 static __thread struct ff_sendto_args *sendto_args = NULL;
+static __thread struct ff_sendmsg_args *sendmsg_args = NULL;
 static __thread struct ff_write_args *write_args = NULL;
+static __thread struct ff_writev_args *writev_args = NULL;
 static __thread struct ff_close_args *close_args = NULL;
+static __thread struct ff_ioctl_args *ioctl_args = NULL;
+static __thread struct ff_fcntl_args *fcntl_args = NULL;
 static __thread struct ff_epoll_ctl_args *epoll_ctl_args = NULL;
 static __thread struct ff_epoll_wait_args *epoll_wait_args = NULL;
 static __thread struct ff_kevent_args *kevent_args = NULL;
+
+#define IOV_MAX   64
+#define IOV_LEN_MAX     2048
+
+static __thread struct iovec *sh_iov_static = NULL;
+static __thread void *sh_iov_static_base[IOV_MAX];
+static __thread int sh_iov_static_fill_idx_local = 0;
+static __thread int sh_iov_static_fill_idx_share = 0;
 
 #define DEFINE_REQ_ARGS_STATIC(name)                              \
     int ret = -1;                                                 \
@@ -328,19 +345,29 @@ ff_hook_getsockname(int fd, struct sockaddr *name,
 
     CHECK_FD_OWNERSHIP(getsockname, (fd, name, namelen));
 
-    DEFINE_REQ_ARGS(getsockname);
-    struct sockaddr *sh_name = NULL;
-    socklen_t *sh_namelen = NULL;
+    DEFINE_REQ_ARGS_STATIC(getsockname);
+    static __thread struct sockaddr *sh_name = NULL;
+    static __thread socklen_t sh_name_len = 0;
+    static __thread socklen_t *sh_namelen = NULL;
 
-    sh_name = share_mem_alloc(*namelen);
-    if (sh_name == NULL) {
-        RETURN_ERROR(ENOMEM);
+    if (sh_name == NULL || sh_name_len < *namelen) {
+        if (sh_name) {
+            share_mem_free(sh_name);
+        }
+
+        sh_name_len = *namelen;
+        sh_name = share_mem_alloc(sh_name_len);
+        if (sh_name == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
     }
 
-    sh_namelen = share_mem_alloc(sizeof(socklen_t));
     if (sh_namelen == NULL) {
-        share_mem_free(sh_name);
-        RETURN_ERROR(ENOMEM);
+        sh_namelen = share_mem_alloc(sizeof(socklen_t));
+        if (sh_namelen == NULL) {
+            //share_mem_free(sh_name);
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
     }
     *sh_namelen = *namelen;
 
@@ -357,9 +384,10 @@ ff_hook_getsockname(int fd, struct sockaddr *name,
         *namelen = *sh_namelen;
     }
 
-    share_mem_free(sh_name);
-    share_mem_free(sh_namelen);
-    RETURN();
+    //share_mem_free(sh_name);
+    //share_mem_free(sh_namelen);
+
+    RETURN_NOFREE();
 }
 
 int
@@ -373,19 +401,29 @@ ff_hook_getpeername(int fd, struct sockaddr *name,
 
     CHECK_FD_OWNERSHIP(getpeername, (fd, name, namelen));
 
-    DEFINE_REQ_ARGS(getpeername);
-    struct sockaddr *sh_name = NULL;
-    socklen_t *sh_namelen = NULL;
+    DEFINE_REQ_ARGS_STATIC(getpeername);
+    static __thread struct sockaddr *sh_name = NULL;
+    static __thread socklen_t sh_name_len = 0;
+    static __thread socklen_t *sh_namelen = NULL;
 
-    sh_name = share_mem_alloc(*namelen);
-    if (sh_name == NULL) {
-        RETURN_ERROR(ENOMEM);
+    if (sh_name == NULL || sh_name_len < *namelen) {
+        if (sh_name) {
+            share_mem_free(sh_name);
+        }
+
+        sh_name_len = *namelen;
+        sh_name = share_mem_alloc(sh_name_len);
+        if (sh_name == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
     }
 
-    sh_namelen = share_mem_alloc(sizeof(socklen_t));
     if (sh_namelen == NULL) {
-        share_mem_free(sh_name);
-        RETURN_ERROR(ENOMEM);
+        sh_namelen = share_mem_alloc(sizeof(socklen_t));
+        if (sh_namelen == NULL) {
+            //share_mem_free(sh_name);
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
     }
     *sh_namelen = *namelen;
 
@@ -402,9 +440,10 @@ ff_hook_getpeername(int fd, struct sockaddr *name,
         *namelen = *sh_namelen;
     }
 
-    share_mem_free(sh_name);
-    share_mem_free(sh_namelen);
-    RETURN();
+    //share_mem_free(sh_name);
+    //share_mem_free(sh_namelen);
+
+    RETURN_NOFREE();
 }
 
 int
@@ -474,13 +513,21 @@ ff_hook_setsockopt(int fd, int level, int optname,
     CHECK_FD_OWNERSHIP(setsockopt, (fd, level, optname,
         optval, optlen));
 
-    DEFINE_REQ_ARGS(setsockopt);
-    void *sh_optval = NULL;
+    DEFINE_REQ_ARGS_STATIC(setsockopt);
+    static __thread void *sh_optval = NULL;
+    static __thread socklen_t sh_optval_len = 0;
 
     if (optval != NULL) {
-        sh_optval = share_mem_alloc(optlen);
-        if (sh_optval == NULL) {
-            RETURN_ERROR(ENOMEM);
+        if (sh_optval == NULL || sh_optval_len < optlen) {
+            if (sh_optval) {
+                share_mem_free(sh_optval);
+            }
+
+            sh_optval_len = optlen;
+            sh_optval = share_mem_alloc(sh_optval_len);
+            if (sh_optval == NULL) {
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
         }
     }
 
@@ -492,11 +539,11 @@ ff_hook_setsockopt(int fd, int level, int optname,
 
     SYSCALL(FF_SO_SETSOCKOPT, args);
 
-    if (sh_optval) {
+    /*if (sh_optval) {
         share_mem_free(sh_optval);
-    }
+    }*/
 
-    RETURN();
+    RETURN_NOFREE();
 }
 
 int
@@ -617,6 +664,7 @@ ff_hook_connect(int fd, const struct sockaddr *addr,
     SYSCALL(FF_SO_CONNECT, args);
 
     //share_mem_free(sh_addr);
+
     RETURN_NOFREE();
 }
 
@@ -815,6 +863,145 @@ iovec_share2local(struct iovec *share,
     }
 }
 
+static struct iovec *
+iovec_share_alloc_s()
+{
+    int i, iovcnt = IOV_MAX;
+
+    sh_iov_static = share_mem_alloc(sizeof(struct iovec) * iovcnt);
+    if (sh_iov_static == NULL) {
+        ERR_LOG("share_mem_alloc shiov failed, oom\n");
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    for (i = 0; i < iovcnt; i++) {
+        sh_iov_static[i].iov_len = IOV_LEN_MAX;
+        void *iov_base = share_mem_alloc(sh_iov_static[i].iov_len);
+        sh_iov_static[i].iov_base = iov_base;
+        sh_iov_static_base[i] = iov_base;
+
+        if (iov_base == NULL) {
+            ERR_LOG("share_mem_alloc iov_base:%d failed, oom\n", i);
+            errno = ENOMEM;
+            goto ERROR;
+        }
+    }
+
+    ERR_LOG("iovec_share_alloc_s alloc sh_iov_static:%p success, iovcnt:%d, per iov_len:%d\n",
+            sh_iov_static, IOV_MAX, IOV_LEN_MAX);
+
+    return sh_iov_static;
+
+ERROR:
+    iovec_share_free(sh_iov_static, i);
+    return NULL;
+}
+
+static int
+_iovec_local2share_s(const struct iovec *local, int iovcnt, size_t skip)
+{
+    int i, j;
+    size_t len, total = 0;
+
+    DEBUG_LOG("_iovec_local2share_s local iov:%p, iovcnt:%d, skip:%lu, sh_iov_static:%p, "
+        "first iov_base:%p, iov_len:%lu\n",
+        local, iovcnt, skip, sh_iov_static,
+        sh_iov_static[0].iov_base, sh_iov_static[0].iov_len);
+
+    if (local == NULL || iovcnt == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (i = sh_iov_static_fill_idx_local, j = 0; i < iovcnt && j < IOV_MAX; i++, j++) {
+        DEBUG_LOG("local[%d].iov_len:%lu, skip:%lu, total:%lu\n",
+            i, local[i].iov_len, skip, total);
+
+        if (local[i].iov_len <= skip) {
+            skip -= local[i].iov_len;
+            continue;
+        }
+
+        if ((local[i].iov_len - skip) <= IOV_LEN_MAX) {
+            sh_iov_static[j].iov_len = local[i].iov_len - skip;
+            rte_memcpy(sh_iov_static[j].iov_base, local[i].iov_base,
+                sh_iov_static[j].iov_len);
+            total += sh_iov_static[j].iov_len;
+            DEBUG_LOG("sh_iov_static[%d].iov_base:%p, len:%lu, skip:%lu, total:%lu\n",
+                j, sh_iov_static[j].iov_base, sh_iov_static[j].iov_len, skip, total);
+        } else {
+            len = local[i].iov_len - skip;
+            DEBUG_LOG("local[%d].iov_len:%lu, skip:%lu, total:%lu, len(iov_len - skip):%lu\n",
+                        i, local[i].iov_len, skip, total, len);
+            for (; j < IOV_MAX ; j++) {
+                sh_iov_static[j].iov_len = RTE_MIN(IOV_LEN_MAX, len);
+                rte_memcpy(sh_iov_static[j].iov_base, local[i].iov_base + (local[i].iov_len - len),
+                    sh_iov_static[j].iov_len);
+
+                len -= sh_iov_static[j].iov_len;
+                total += sh_iov_static[j].iov_len;
+
+                DEBUG_LOG("sh_iov_static[%d].iov_base:%p, len:%lu, skip:%lu, total:%lu, len:%lu\n",
+                        j, sh_iov_static[j].iov_base, sh_iov_static[j].iov_len, skip, total, len);
+
+                if (len == 0) {
+                    break;
+                }
+            }
+
+            if (j == IOV_MAX) {
+                ERR_LOG("Too large buf to send/write, you best to reduce it.\n");
+                break;
+            }
+        }
+    }
+
+    sh_iov_static_fill_idx_local = i;
+    sh_iov_static_fill_idx_share = j;
+
+    DEBUG_LOG("sh_iov_static_fill_idx_local(i):%d, sh_iov_static_fill_idx_share(j):%d, skip:%lu, total:%lu\n",
+                sh_iov_static_fill_idx_local, sh_iov_static_fill_idx_share, skip, total);
+
+    return total;
+}
+
+static int
+iovec_local2share_s(const struct iovec *iov, int iovcnt, size_t skip)
+{
+    int sent = 0;
+
+    DEBUG_LOG("iovec_local2share_s iov:%p, iovcnt:%d, skip:%lu, sh_iov_static:%p\n",
+        iov, iovcnt, skip, sh_iov_static);
+
+    if (sh_iov_static == NULL) {
+        sh_iov_static = iovec_share_alloc_s();
+        if (sh_iov_static == NULL) {
+            ERR_LOG("iovec_share_alloc_s failed, oom\n");
+            errno = ENOMEM;
+            return -1;
+        }
+    }
+
+    sent = _iovec_local2share_s(iov, iovcnt, skip);
+
+    return sent;
+}
+
+static void
+iovec_share2local_s()
+{
+    int i;
+
+    DEBUG_LOG("iovec_share2local_s sh_iov_static:%p, sh_iov_static_fill_idx_share:%d\n",
+        sh_iov_static, sh_iov_static_fill_idx_share);
+
+    for (i = 0; i < sh_iov_static_fill_idx_share; i++) {
+        sh_iov_static[i].iov_base = sh_iov_static_base[i];
+        sh_iov_static[i].iov_len = IOV_LEN_MAX;
+    }
+}
+
 static void
 msghdr_share_free(struct msghdr *msg)
 {
@@ -923,12 +1110,21 @@ ff_hook_recvmsg(int fd, struct msghdr *msg, int flags)
 
     CHECK_FD_OWNERSHIP(recvmsg, (fd, msg, flags));
 
-    DEFINE_REQ_ARGS(recvmsg);
+    DEFINE_REQ_ARGS_STATIC(recvmsg);
+
+    /*
+     * If calling very frequently,
+     * may need to not free the memory malloc with rte_malloc,
+     * to improve proformance.
+     *
+     * Because this API support it relatively troublesome,
+     * so no support right now.
+     */
     struct msghdr *sh_msg = NULL;
 
     sh_msg = msghdr_share_alloc(msg);
     if (sh_msg == NULL) {
-        RETURN_ERROR(ENOMEM);
+        RETURN_ERROR_NOFREE(ENOMEM);
     }
 
     args->fd = fd;
@@ -947,7 +1143,8 @@ ff_hook_recvmsg(int fd, struct msghdr *msg, int flags)
     }
 
     msghdr_share_free(sh_msg);
-    RETURN();
+
+    RETURN_NOFREE();
 }
 
 ssize_t
@@ -1007,12 +1204,18 @@ ff_hook_readv(int fd, const struct iovec *iov, int iovcnt)
 
     CHECK_FD_OWNERSHIP(readv, (fd, iov, iovcnt));
 
-    DEFINE_REQ_ARGS(readv);
+    DEFINE_REQ_ARGS_STATIC(readv);
+
+    /*
+     * If calling very frequently,
+     * may need to not free the memory malloc with rte_malloc,
+     * to improve proformance, see ff_hook_writev().
+     */
     struct iovec *sh_iov = NULL;
 
     sh_iov = iovec_share_alloc(iov, iovcnt);
     if (sh_iov == NULL) {
-        RETURN_ERROR(ENOMEM);
+        RETURN_ERROR_NOFREE(ENOMEM);
     }
 
     args->fd = fd;
@@ -1026,7 +1229,8 @@ ff_hook_readv(int fd, const struct iovec *iov, int iovcnt)
     }
 
     iovec_share_free(sh_iov, iovcnt);
-    RETURN();
+
+    RETURN_NOFREE();
 }
 
 ssize_t
@@ -1113,12 +1317,21 @@ ff_hook_sendmsg(int fd, const struct msghdr *msg, int flags)
 
     CHECK_FD_OWNERSHIP(sendmsg, (fd, msg, flags));
 
-    DEFINE_REQ_ARGS(sendmsg);
+    DEFINE_REQ_ARGS_STATIC(sendmsg);
+
+    /*
+     * If calling very frequently,
+     * may need to not free the memory malloc with rte_malloc,
+     * to improve proformance.
+     *
+     * Because this API support it relatively troublesome,
+     * so no support right now.
+     */
     struct msghdr *sh_msg = NULL;
 
     sh_msg = msghdr_share_alloc(msg);
     if (sh_msg == NULL) {
-        RETURN_ERROR(ENOMEM);
+        RETURN_ERROR_NOFREE(ENOMEM);
     }
     msghdr_share_memcpy(sh_msg, msg);
     iovec_local2share(sh_msg->msg_iov,
@@ -1137,7 +1350,8 @@ ff_hook_sendmsg(int fd, const struct msghdr *msg, int flags)
     }
 
     msghdr_share_free(sh_msg);
-    RETURN();
+
+    RETURN_NOFREE();
 }
 
 ssize_t
@@ -1190,6 +1404,9 @@ ff_hook_write(int fd, const void *buf, size_t len)
 ssize_t
 ff_hook_writev(int fd, const struct iovec *iov, int iovcnt)
 {
+    size_t sent = 0;
+    int ret_s = -1;
+
     DEBUG_LOG("ff_hook_writev, fd:%d, iov:%p, iovcnt:%d\n", fd, iov, iovcnt);
 
     if (iov == NULL || iovcnt == 0) {
@@ -1199,27 +1416,57 @@ ff_hook_writev(int fd, const struct iovec *iov, int iovcnt)
 
     CHECK_FD_OWNERSHIP(writev, (fd, iov, iovcnt));
 
-    DEFINE_REQ_ARGS(writev);
-    struct iovec *sh_iov = NULL;
+    DEFINE_REQ_ARGS_STATIC(writev);
 
-    sh_iov = iovec_share_alloc(iov, iovcnt);
-    if (sh_iov == NULL) {
-        RETURN_ERROR(ENOMEM);
-    }
-    iovec_local2share(sh_iov, iov, iovcnt);
-
+    errno = 0;
     args->fd = fd;
-    args->iov = sh_iov;
-    args->iovcnt = iovcnt;
 
-    SYSCALL(FF_SO_WRITEV, args);
+    do {
+        sh_iov_static_fill_idx_local = 0;
+        sh_iov_static_fill_idx_share = 0;
+        ret_s = iovec_local2share_s(iov, iovcnt, sent);
+        DEBUG_LOG("iovec_local2share_s ret_s:%d, iov:%p, ipvcnt:%d, send:%lu, "
+            "sh_iov_static:%p, sh_iov_static_fill_idx_local:%d, sh_iov_static_fill_idx_share:%d\n",
+            ret_s, iov, iovcnt, sent,
+            sh_iov_static, sh_iov_static_fill_idx_local, sh_iov_static_fill_idx_share);
+        if (ret_s < 0) {
+            ERR_LOG("get_iovec_share failed, iov:%p, iovcnt:%d, sh_iov_static_fill_idx_local:%d,"
+                " sh_iov_static_fill_idx_share:%d",
+                iov, iovcnt, sh_iov_static_fill_idx_local,
+                sh_iov_static_fill_idx_share);
+            return -1;
+        }
 
-    if (ret > 0) {
-        iovec_share2local(sh_iov, iov, iovcnt, ret, 0);
+        args->iov = sh_iov_static;
+        args->iovcnt = sh_iov_static_fill_idx_share;
+
+        SYSCALL(FF_SO_WRITEV, args);
+
+        /*
+         * This API can be igroned while use sh_iov_static_base[i] directly
+         * in _iovec_local2share_s. But don't do like that now
+         */
+        iovec_share2local_s();
+
+        if (ret > 0) {
+            sent += ret;
+        }
+
+        /*
+         * Don't try to send again in this case.
+         */
+        DEBUG_LOG("iovec_local2share_s ret_s:%d, f-stack writev ret:%d, total sent:%lu\n", ret_s, ret, sent);
+        if (ret != ret_s) {
+            break;
+        }
+    } while (sh_iov_static_fill_idx_local < iovcnt);
+    sh_iov_static_fill_idx_share = 0;
+
+    if (sent > 0) {
+        ret = sent;
     }
 
-    iovec_share_free(sh_iov, iovcnt);
-    RETURN();
+    RETURN_NOFREE();
 }
 
 int
@@ -1255,14 +1502,17 @@ ff_hook_ioctl(int fd, unsigned long req, unsigned long data)
 
     CHECK_FD_OWNERSHIP(ioctl, (fd, req, data));
 
-    DEFINE_REQ_ARGS(ioctl);
-    unsigned long *sh_data = NULL;
+    DEFINE_REQ_ARGS_STATIC(ioctl);
 
-    sh_data = share_mem_alloc(sizeof(int));
+    static __thread unsigned long *sh_data = NULL;
+
     if (sh_data == NULL) {
-        RETURN_ERROR(ENOMEM);
+        sh_data = share_mem_alloc(sizeof(int));
+        if (sh_data == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
     }
-    *sh_data = *((int *)data);
+    *((int *)sh_data) = *((int *)data);
 
     args->fd = fd;
     args->com = req;
@@ -1271,12 +1521,12 @@ ff_hook_ioctl(int fd, unsigned long req, unsigned long data)
     SYSCALL(FF_SO_IOCTL, args);
 
     if (ret == 0) {
-        *((int *)data) = *sh_data;
+        *((int *)data) = *((int *)sh_data);
     }
 
-    share_mem_free(sh_data);
+    //share_mem_free(sh_data);
 
-    RETURN();
+    RETURN_NOFREE();
 }
 
 int
@@ -1284,7 +1534,7 @@ ff_hook_fcntl(int fd, int cmd, unsigned long data)
 {
     CHECK_FD_OWNERSHIP(fcntl, (fd, cmd, data));
 
-    DEFINE_REQ_ARGS(fcntl);
+    DEFINE_REQ_ARGS_STATIC(fcntl);
 
     args->fd = fd;
     args->cmd = cmd;
@@ -1292,7 +1542,7 @@ ff_hook_fcntl(int fd, int cmd, unsigned long data)
 
     SYSCALL(FF_SO_FCNTL, args);
 
-    RETURN();
+    RETURN_NOFREE();
 }
 
 /*
@@ -1836,6 +2086,15 @@ thread_destructor(void *sc)
     if (shutdown_args) {
         share_mem_free(shutdown_args);
     }
+    if (getsockname_args) {
+        share_mem_free(getsockname_args);
+    }
+    if (getpeername_args) {
+        share_mem_free(getpeername_args);
+    }
+    if (setsockopt_args) {
+        share_mem_free(setsockopt_args);
+    }
     if (accept_args) {
         share_mem_free(accept_args);
     }
@@ -1845,17 +2104,35 @@ thread_destructor(void *sc)
     if (recvfrom_args) {
         share_mem_free(recvfrom_args);
     }
+    if (recvmsg_args) {
+        share_mem_free(recvmsg_args);
+    }
     if (read_args) {
         share_mem_free(read_args);
+    }
+    if (readv_args) {
+        share_mem_free(readv_args);
     }
     if (sendto_args) {
         share_mem_free(sendto_args);
     }
+    if (sendmsg_args) {
+        share_mem_free(sendmsg_args);
+    }
     if (write_args) {
         share_mem_free(write_args);
     }
+    if (writev_args) {
+        share_mem_free(writev_args);
+    }
     if (close_args) {
         share_mem_free(close_args);
+    }
+    if (ioctl_args) {
+        share_mem_free(ioctl_args);
+    }
+    if (fcntl_args) {
+        share_mem_free(fcntl_args);
     }
     if (epoll_ctl_args) {
         share_mem_free(epoll_ctl_args);
@@ -1865,6 +2142,11 @@ thread_destructor(void *sc)
     }
     if (kevent_args) {
         share_mem_free(kevent_args);
+    }
+
+    if (sh_iov_static) {
+        iovec_share2local_s();
+        iovec_share_free(sh_iov_static, IOV_MAX);
     }
 }
 
