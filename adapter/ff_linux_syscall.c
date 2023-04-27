@@ -76,7 +76,7 @@ linux_syscall_init()
 int
 ff_linux_socket(int domain, int type, int protocol)
 {
-    DEBUG_LOG("ff_linux_socket, domain:%d, type:%d, protocol:%d\n", domain, type, protocol);
+    ERR_LOG("ff_linux_socket, domain:%d, type:%d, protocol:%d\n", domain, type, protocol);
     SYSCALL(socket, (domain, type, protocol));
 }
 
@@ -226,14 +226,14 @@ int ff_linux_fcntl(int s, int cmd, unsigned long data)
 
 int ff_linux_epoll_create(int size)
 {
-    DEBUG_LOG("ff_linux_epoll_create, fdsize:%d\n", size);
+    ERR_LOG("ff_linux_epoll_create, fdsize:%d\n", size);
     SYSCALL(epoll_create, (size));
 }
 
 int ff_linux_epoll_ctl(int epfd, int op, int fd,
     struct epoll_event *event)
 {
-    DEBUG_LOG("ff_linux_epoll_ctl, epfd:%d, op:%d, fd:%d\n", epfd, op, fd);
+    ERR_LOG("ff_linux_epoll_ctl, epfd:%d, op:%d, fd:%d\n", epfd, op, fd);
     SYSCALL(epoll_ctl, (epfd, op, fd, event));
 }
 
