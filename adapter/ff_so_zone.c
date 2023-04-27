@@ -14,6 +14,9 @@
 
 static uint16_t ff_max_so_context = SOCKET_OPS_CONTEXT_MAX_NUM;
 __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
+#ifdef FF_MULTI_SC
+struct ff_socket_ops_zone *ff_so_zones[SOCKET_OPS_CONTEXT_MAX_NUM] = {NULL};
+#endif
 
 static inline int
 is_power_of_2(uint64_t n)
@@ -124,18 +127,22 @@ ff_create_so_memzone()
 }
 
 struct ff_so_context *
-ff_attach_so_context(int proc_id)
+ff_attach_so_context(int idx)
 {
     struct ff_so_context *sc = NULL;
     uint16_t i;
 
-    DEBUG_LOG("proc_id:%d, ff_so_zone:%p\n", proc_id, ff_so_zone);
+#ifdef FF_MULTI_SC
+    ff_so_zone = ff_so_zones[idx];
+#endif
+
+    DEBUG_LOG("proc_id:%d, ff_so_zone:%p\n", idx, ff_so_zone);
 
     if (ff_so_zone == NULL) {
         const struct rte_memzone *mz;
         char zn[64];
 
-        snprintf(zn, sizeof(zn), SOCKET_OPS_ZONE_NAME, proc_id);
+        snprintf(zn, sizeof(zn), SOCKET_OPS_ZONE_NAME, idx);
         ERR_LOG("To lookup memzone:%s\n", zn);
 
         mz = rte_memzone_lookup(zn);
@@ -145,6 +152,11 @@ ff_attach_so_context(int proc_id)
         }
 
         ff_so_zone = mz->addr;
+
+#ifdef FF_MULTI_SC
+        ff_so_zones[idx] = ff_so_zone;
+        ERR_LOG("FF_MULTI_SC f_so_zones[%d]:%p\n", idx, ff_so_zones[idx]);
+#endif
     }
 
     rte_spinlock_lock(&ff_so_zone->lock);
@@ -172,7 +184,7 @@ ff_attach_so_context(int proc_id)
     if (unlikely(i == ff_so_zone->count)) {
         ERR_LOG("Attach memzone failed: instance %d no free context,"
             " fetel error of so status, all sc inuse, count:%d, free:%d\n",
-            proc_id, ff_so_zone->count, ff_so_zone->free);
+            idx, ff_so_zone->count, ff_so_zone->free);
         sc = NULL;
     }
 

@@ -113,6 +113,9 @@ struct ff_so_context {
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 extern __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
+#ifdef FF_MULTI_SC
+extern struct ff_socket_ops_zone *ff_so_zones[SOCKET_OPS_CONTEXT_MAX_NUM];
+#endif
 
 /* For primary process */
 int ff_set_max_so_context(uint16_t count);

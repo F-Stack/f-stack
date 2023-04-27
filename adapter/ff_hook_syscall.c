@@ -1881,8 +1881,9 @@ ff_hook_fork(void)
 
     ERR_LOG("ff_hook_fork\n");
 #ifdef FF_MULTI_SC
-    /* Let the child process inherit the specified sc */
+    /* Let the child process inherit the specified sc and ff_so_zone*/
     sc = scs[current_worker_id].sc;
+    ff_so_zone = ff_so_zones[current_worker_id];
 #endif
 
     if (sc) {
@@ -1895,16 +1896,16 @@ ff_hook_fork(void)
         /* Parent process set refcount. */
         if (pid > 0) {
             sc->refcount++;
-            ERR_LOG("parent process, chilid pid:%d, sc:%p, sc->refcount:%d\n",
-                pid, sc, sc->refcount);
+            ERR_LOG("parent process, chilid pid:%d, sc:%p, sc->refcount:%d, ff_so_zone:%p\n",
+                pid, sc, sc->refcount, ff_so_zone);
 #ifdef FF_MULTI_SC
             current_worker_id++;
             ERR_LOG("parent process, current_worker_id++:%d\n", current_worker_id);
 #endif
         }
         else if (pid == 0) {
-            ERR_LOG("chilid process, sc:%p, sc->refcount:%d\n",
-                sc, sc->refcount);
+            ERR_LOG("chilid process, sc:%p, sc->refcount:%d, ff_so_zone:%p\n",
+                sc, sc->refcount, ff_so_zone);
 #ifdef FF_MULTI_SC
             ERR_LOG("chilid process, current_worker_id:%d\n", current_worker_id);
 #endif
@@ -2217,6 +2218,7 @@ ff_adapter_exit()
         int i;
         for (i = 0; i < worker_id; i ++) {
             ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), scs[i].sc);
+            ff_so_zone = ff_so_zones[i];
             ff_detach_so_context(scs[i].sc);
         }
     } else
