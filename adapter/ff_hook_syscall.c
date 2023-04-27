@@ -1789,7 +1789,7 @@ RETRY:
         fd, fstack_kernel_fd_map[fd], kernel_maxevents);
     if (likely(fstack_kernel_fd_map[fd] > 0)) {
         static uint64_t count = 0;
-        if (unlikely(count & 0xff == 0)) {
+        if (unlikely((count & 0xff) == 0)) {
             kernel_ret = ff_linux_epoll_wait(fstack_kernel_fd_map[fd], events, kernel_maxevents, 0);
             DEBUG_LOG("ff_linux_epoll_wait kernel_ret:%d, errno:%d\n", ret, errno);
             if (kernel_ret < 0) {
