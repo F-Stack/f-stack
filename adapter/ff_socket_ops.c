@@ -5,6 +5,7 @@
 #include "ff_sysproto.h"
 #include "ff_api.h"
 #include "ff_epoll.h"
+#include "ff_config.h"
 
 #undef FF_SYSCALL_DECL
 #define FF_SYSCALL_DECL(ret, fn, none) \
@@ -24,7 +25,7 @@ static int sem_flag = 0;
  */
 #define EVENT_LOOP_TIMES    32
 static int ff_event_loop_nb = 0;
-static int ff_next_event_flag = 0;
+//static int ff_next_event_flag = 0;
 
 struct ff_bound_info {
     int fd;
@@ -452,7 +453,7 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     DEBUG_LOG("ff_handle_socket_ops error:%d, ops:%d, result:%d\n", errno, sc->ops, sc->result);
 
     if (sc->ops == FF_SO_EPOLL_WAIT || sc->ops == FF_SO_KEVENT) {
-        DEBUG_LOG("ff_event_loop_nb:%d, ff_next_event_flag:%d\n",
+        /*DEBUG_LOG("ff_event_loop_nb:%d, ff_next_event_flag:%d\n",
                    ff_event_loop_nb, ff_next_event_flag);
         if (ff_event_loop_nb > 0) {
             ff_next_event_flag = 1;
@@ -464,7 +465,7 @@ ff_handle_socket_ops(struct ff_so_context *sc)
             ff_event_loop_nb = (sc->result * EVENT_LOOP_TIMES);
         } else {
             ff_event_loop_nb = 0;
-        }
+        }*/
 
         if (sem_flag == 1) {
             sc->status = FF_SC_REP;
@@ -484,8 +485,17 @@ ff_handle_each_context()
 {
     uint16_t i, nb_handled, tmp;
     static uint64_t loop_count = 0;
+    static uint64_t cur_tsc, diff_tsc, drain_tsc = 0;
+
+    if (unlikely(drain_tsc == 0 && ff_global_cfg.dpdk.pkt_tx_delay)) {
+        drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * ff_global_cfg.dpdk.pkt_tx_delay;
+        ERR_LOG("ff_global_cfg.dpdk.handle_sc_delay%d, drain_tsc:%lu\n",
+                        ff_global_cfg.dpdk.pkt_tx_delay, drain_tsc);
+    }
 
     ff_event_loop_nb = 0;
+
+    cur_tsc = rte_rdtsc();
 
     rte_spinlock_lock(&ff_so_zone->lock);
 
@@ -520,7 +530,12 @@ ff_handle_each_context()
             }
         }
 
-        if (--ff_event_loop_nb <= 0 || ff_next_event_flag == 1) {
+        /*if (--ff_event_loop_nb <= 0 || ff_next_event_flag == 1) {
+            break;
+        }*/
+        diff_tsc = rte_rdtsc() - cur_tsc;
+        DEBUG_LOG("cur_tsc:%lu, diff_tsc:%lu, drain_tsc:%lu\n", cur_tsc, diff_tsc, drain_tsc);
+        if (diff_tsc >= drain_tsc) {
             break;
         }
 
@@ -530,5 +545,9 @@ ff_handle_each_context()
     rte_spinlock_unlock(&ff_so_zone->lock);
 
     loop_count++;
+
+    DEBUG_LOG("loop_count:%lu, nb:%d, all_nb:%d\n",
+        loop_count, nb_handled, tmp/*, ff_event_loop_nb, ff_next_event_flag*/);
+    //, ff_event_loop_nb:%d, ff_next_event_flag:%d
 }
 
