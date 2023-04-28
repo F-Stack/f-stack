@@ -170,7 +170,7 @@ static __FF_THREAD struct ff_so_context *sc;
 #ifdef FF_MULTI_SC
 typedef struct ff_multi_sc {
     int worker_id;
-    //int fd;
+    int fd;
     struct ff_so_context *sc;
 } ff_multi_sc_type;
 
@@ -297,6 +297,10 @@ ff_hook_socket(int domain, int type, int protocol)
     args->protocol = protocol;
 
     SYSCALL(FF_SO_SOCKET, args);
+
+#ifdef FF_MULTI_SC
+    scs[worker_id - 1].fd = ret;
+#endif
 
     if (ret >= 0) {
         ret = convert_fstack_fd(ret);
@@ -1515,6 +1519,25 @@ ff_hook_close(int fd)
 
     DEFINE_REQ_ARGS_STATIC(close);
 
+#ifdef FF_MULTI_SC
+    /*
+     * Hear don't care if the fd belong to this worker sc,
+     * just scs[i].fd == fd, to close it
+     * until the loop close all fd.
+     */
+    if (unlikely(current_worker_id == worker_id)) {
+        int i;
+        for (i = 0; i < worker_id; i++) {
+            if (scs[i].fd == fd) {
+                ERR_LOG("worker_id:%d, fd:%d, sc:%p, sc->fd:%d, sc->worker_id:%d\n",
+                    i, fd, scs[i].sc, scs[i].fd, scs[i].worker_id);
+                sc = scs[i].sc;
+                scs[i].fd = -1;
+                break;
+            }
+        }
+    }
+#endif
     args->fd = fd;
 
     SYSCALL(FF_SO_CLOSE, args);
@@ -2220,7 +2243,7 @@ ff_adapter_exit()
 #ifdef FF_MULTI_SC
     if (current_worker_id == worker_id) {
         int i;
-        for (i = 0; i < worker_id; i ++) {
+        for (i = 0; i < worker_id; i++) {
             ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), scs[i].sc);
             ff_so_zone = ff_so_zones[i];
             ff_detach_so_context(scs[i].sc);
@@ -2377,6 +2400,7 @@ ff_adapter_init()
 
 #ifdef FF_MULTI_SC
     scs[worker_id].worker_id = worker_id;
+    scs[worker_id].fd = -1;
     scs[worker_id].sc = sc;
 #endif
     worker_id++;
