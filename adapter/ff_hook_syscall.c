@@ -81,7 +81,7 @@ static __thread struct ff_epoll_ctl_args *epoll_ctl_args = NULL;
 static __thread struct ff_epoll_wait_args *epoll_wait_args = NULL;
 static __thread struct ff_kevent_args *kevent_args = NULL;
 
-#define IOV_MAX   64
+#define IOV_MAX   16
 #define IOV_LEN_MAX     2048
 
 static __thread struct iovec *sh_iov_static = NULL;
