@@ -1,4 +1,4 @@
 # F-Stack LD_PRELOAD Beta Introduction
 
-[To be translated](https://mp.weixin.qq.com/s?__biz=MzI5ODY3Nzc5OA==&tempkey=MTIxNl9Kd0pabEJ4em95c3J6OFJJdUYzZ2F2aGthLURKQmplYnJIVmE0cTFsSzNqdkhFM3JjV1F1SjlrMWFxeVo0Nks0b0lwOG5UbEZueVRTb0RFcnQ5LW42UE1aNVFUYW9mMHVaRjFiWXBKcG9VY0FYTTJIdUgxcU5UdTltb0hId0EtODBHR3lZM1FuX1FxdHNMQkJsWExTb3IyQ0MycDkxWXlBTllNOVlBfn4%3D&chksm=eca3623edbd4eb28e8d7dc68001f46381d39f4ffca91037a4ad8f8ed5b59bad2354ca273601b&token=39899456&lang=zh_CN#rd).
+[To be translated](https://mp.weixin.qq.com/s/hmxCEu0kOzp5X5TEB7r3OQ).
 
