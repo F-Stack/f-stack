@@ -32,8 +32,7 @@ struct kevent events[MAX_EVENTS];
 int kq;
 int sockfd;
 
-/* 100 ms */
-struct timespec timeout = {0, 100000000};
+struct timespec timeout = {0, 100000};
 
 static int exit_flag = 0;
 
@@ -133,12 +132,12 @@ void *loop(void *arg)
                 ssize_t readlen = read(clientfd, buf, sizeof(buf));
                 ssize_t writelen = write(clientfd, html, sizeof(html) - 1);
                 if (writelen < 0){
-                    printf("ff_write failed:%d, %s\n", errno,
-                        strerror(errno));
+                    printf("ff_write failed, readlen:%lu, writelen:%lu, :%d, %s\n",
+                        readlen, writelen, errno, strerror(errno));
                     close(clientfd);
                 }
             } else {
-                printf("unknown event: %d:%8.8X\n", i, event.flags);
+                printf("unknown event: %8.8X\n", event.flags);
             }
         }
     }

@@ -84,12 +84,14 @@ int
 ff_linux_bind(int s, const struct sockaddr *addr,
     socklen_t addrlen)
 {
+    ERR_LOG("ff_linux_bind, fd:%d, addr:%p, addrlen:%u\n", s, addr, addrlen);
     SYSCALL(bind, (s, addr, addrlen));
 }
 
 int
 ff_linux_listen(int s, int backlog)
 {
+    ERR_LOG("ff_linux_listen, fd:%d, backlog:%d\n", s, backlog);
     SYSCALL(listen, (s, backlog));
 }
 

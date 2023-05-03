@@ -195,8 +195,8 @@ void *loop(void *arg)
                 ssize_t readlen = read(clientfd, buf, sizeof(buf));
                 ssize_t writelen = write(clientfd, html, sizeof(html) - 1);
                 if (writelen < 0){
-                    printf("thread %d, ff_write failed:%d, %s\n", thread_id, errno,
-                        strerror(errno));
+                    printf("thread %d, ff_write failed, readlen:%lu, writelen:%lu, :%d, %s\n",
+                        thread_id, readlen, writelen, errno, strerror(errno));
                     close(clientfd);
                 }
             } else {

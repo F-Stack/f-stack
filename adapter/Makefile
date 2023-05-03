@@ -45,10 +45,11 @@ CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 INCLUDES= -I. -I${FF_PATH}/lib
 
+LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread -lnuma
 FF_LIBS= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
 
 DPDK_LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
-DPDK_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread -lnuma
+DPDK_LIBS+= ${LIBS}
 
 #DPDK_CFLAGS= -Wall -Werror -include ${FF_DPDK}/include/rte_config.h
 #DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3
@@ -76,7 +77,7 @@ FSTACK_OBJS= $(patsubst %.c,%.o,${FSTACK_SRCS})
 FF_SYSCALL_OBJS= $(patsubst %.c,%.o,${FF_SYSCALL_SRCS})
 
 #TARGET= fstack libff_syscall.a
-TARGET= fstack libff_syscall.so
+TARGET= fstack libff_syscall.so example
 
 all: ${TARGET}
 
@@ -87,6 +88,13 @@ fstack: ${FSTACK_OBJS}
 libff_syscall.so: ${FF_SYSCALL_OBJS}
 	#ar -rcs $@ $^ ${FF_SYSCALL_LIBS}
 	${CC} -fPIC -shared -o $@ $^ ${FF_SYSCALL_LIBS} ${DPDK_LIBS}
+
+example:
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -L ${FF_PATH}/adapter/syscall -lff_syscall -o helloworld_stack main_stack.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -L ${FF_PATH}/adapter/syscall -lff_syscall -o helloworld_stack_thread_socket main_stack_thread_socket.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll main_stack_epoll.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll_thread_socket main_stack_epoll_thread_socket.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll_kernel main_stack_epoll_kernel.c ${LIBS}
 
 ${FSTACK_OBJS}: %.o: %.c
 	${CC} -c $(CFLAGS) ${PROF} $<

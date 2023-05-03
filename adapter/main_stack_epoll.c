@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-#include <sched.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <stdlib.h>
@@ -18,8 +16,12 @@
 
 #define MAX_WORKERS 128
 pthread_t hworker[MAX_WORKERS];
-pthread_spinlock_t worker_lock;
+
 #define MAX_EVENTS 512
+struct epoll_event ev;
+struct epoll_event events[MAX_EVENTS];
+int epfd;
+int sockfd;
 
 static int exit_flag = 0;
 
@@ -65,67 +67,6 @@ void sig_term(int sig)
 
 void *loop(void *arg)
 {
-    struct epoll_event ev;
-    struct epoll_event events[MAX_EVENTS];
-    int epfd;
-    int sockfd;
-    int thread_id;
-
-    thread_id = *(int *)arg;
-    printf("start thread %d\n", thread_id);
-
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    printf("thread %d, sockfd:%d\n", thread_id, sockfd);
-    if (sockfd < 0) {
-        printf("thread %d, ff_socket failed\n", thread_id);
-        pthread_spin_unlock(&worker_lock);
-        return NULL;
-    }
-
-    /* socket will init adapter,so unlock after socket */
-    pthread_spin_unlock(&worker_lock);
-
-    int on = 1;
-    ioctl(sockfd, FIONBIO, &on);
-
-    struct sockaddr_in my_addr;
-    bzero(&my_addr, sizeof(my_addr));
-    my_addr.sin_family = AF_INET;
-    my_addr.sin_port = htons(80);
-    my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    int ret = bind(sockfd, (const struct sockaddr *)&my_addr, sizeof(my_addr));
-    if (ret < 0) {
-        printf("thread %d, ff_bind failed\n", thread_id);
-        close(sockfd);
-        return NULL;
-    }
-
-    ret = listen(sockfd, MAX_EVENTS);
-    if (ret < 0) {
-        printf("thread %d, ff_listen failed\n", thread_id);
-        close(sockfd);
-        return NULL;
-    }
-
-    epfd = epoll_create(0);
-    printf("thread %d, epfd:%d\n", thread_id, epfd);
-    if (epfd <= 0) {
-        printf("thread %d, ff_epoll_create failed, errno:%d, %s\n",
-            thread_id, errno, strerror(errno));
-        close(sockfd);
-        return NULL;
-    }
-    ev.data.fd = sockfd;
-    ev.events = EPOLLIN;
-    ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
-    if (ret < 0) {
-        printf("ff_listen failed\n");
-        close(epfd);
-        close(sockfd);
-        return NULL;
-    }
-
     /* Wait for events to happen */
     while (!exit_flag) {
         /*
@@ -137,20 +78,21 @@ void *loop(void *arg)
 
         if (nevents <= 0) {
             if (nevents) {
-                printf("thread %d, hello world epoll wait ret %d, errno:%d, %s\n",
-                    thread_id, nevents, errno, strerror(errno));
+                printf("hello world epoll wait ret %d, errno:%d, %s\n",
+                    nevents, errno, strerror(errno));
                 break;
             }
             //usleep(100);
-            //sleep(1);
+            sleep(1);
         }
-        //printf("thread %d, get nevents:%d\n", thread_id, nevents);
+        //printf("get nevents:%d\n", nevents);
 
         for (i = 0; i < nevents; ++i) {
             /* Handle new connect */
             if (events[i].data.fd == sockfd) {
                 while (1) {
                     int nclientfd = accept(sockfd, NULL, NULL);
+			    printf("accept sockfd:%d, nclientfd:%d, errono:%d/%s\n", sockfd, nclientfd, errno, strerror(errno));
                     if (nclientfd < 0) {
                         break;
                     }
@@ -159,8 +101,8 @@ void *loop(void *arg)
                     ev.data.fd = nclientfd;
                     ev.events  = EPOLLIN;
                     if (epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
-                        printf("thread %d, ff_epoll_ctl failed:%d, %s\n",
-                            thread_id, errno, strerror(errno));
+                        printf("ff_epoll_ctl failed:%d, %s\n",
+                            errno, strerror(errno));
                         close(nclientfd);
                         break;
                     }
@@ -180,65 +122,87 @@ void *loop(void *arg)
                         close(events[i].data.fd);
                     }
                 } else {
-                    printf("thread %d, unknown event: %d:%8.8X\n", thread_id, i, events[i].events);
+                    printf("unknown event: %d:%8.8X\n", i, events[i].events);
                 }
             }
         }
     }
-
-    close(epfd);
-    close(sockfd);
 
     return NULL;
 }
 
 int main(int argc, char * argv[])
 {
-    int i, worker_num;
+    int i, worker_num = 1;
 
     signal(SIGINT, sig_term);
     signal(SIGTERM, sig_term);
 
-    if (argc == 1) {
-        worker_num = 1;
-    } else {
-        worker_num = atoi(argv[1]);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    printf("sockfd:%d\n", sockfd);
+    if (sockfd < 0) {
+        printf("ff_socket failed\n");
+        return -1;
     }
-    printf("to init %d workers.\n", worker_num);
 
-    pthread_spin_init(&worker_lock, PTHREAD_PROCESS_PRIVATE);
-    pthread_spin_lock(&worker_lock);
+    int on = 1;
+    ioctl(sockfd, FIONBIO, &on);
+
+    struct sockaddr_in my_addr;
+    bzero(&my_addr, sizeof(my_addr));
+    my_addr.sin_family = AF_INET;
+    my_addr.sin_port = htons(80);
+    my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    int ret = bind(sockfd, (const struct sockaddr *)&my_addr, sizeof(my_addr));
+    if (ret < 0) {
+        printf("ff_bind failed\n");
+        close(sockfd);
+        return -1;
+    }
+
+    ret = listen(sockfd, MAX_EVENTS);
+    if (ret < 0) {
+        printf("ff_listen failed\n");
+        close(sockfd);
+        return -1;
+    }
+
+    epfd = epoll_create(512);
+    printf("epfd:%d\n", epfd);
+    if (epfd <= 0) {
+        printf("ff_epoll_create failed, errno:%d, %s\n",
+            errno, strerror(errno));
+        close(sockfd);
+        return -1;
+    }
+
+    ev.data.fd = sockfd;
+    ev.events = EPOLLIN;
+    ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+    if (ret < 0) {
+        printf("ff_listen failed\n");
+        close(epfd);
+        close(sockfd);
+        return -1;
+    }
 
     for (i = 0; i < worker_num; i++) {
         if(pthread_create(&hworker[i], NULL, loop, (void *)&i) < 0) {
             printf("create loop thread failed., errno:%d/%s\n",
                 errno, strerror(errno));
-            pthread_spin_unlock(&worker_lock);
-            pthread_spin_destroy(&worker_lock);
+            close(epfd);
+            close(sockfd);
             return -1;
         }
-        if (i > 0) {
-            cpu_set_t cpuinfo;
-            int lcore_id = 2 + i;
-
-            CPU_ZERO(&cpuinfo);
-            CPU_SET_S(lcore_id, sizeof(cpuinfo), &cpuinfo);
-            if(0 != pthread_setaffinity_np(hworker[i], sizeof(cpu_set_t), &cpuinfo))
-            {
-                 printf("set affinity recver faild\n");
-                 exit(0);
-            }
-            printf("set affinity recver sucssed, thread:%d, lcore_id:%d\n", i, lcore_id);
-        }
-        pthread_spin_lock(&worker_lock);
-        //sleep(1);
     }
 
     for (i = 0; i < worker_num; i++) {
         pthread_join(hworker[i], NULL);
     }
 
-    pthread_spin_destroy(&worker_lock);
+    close(epfd);
+    close(sockfd);
 
     return 0;
 }

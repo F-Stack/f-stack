@@ -14,6 +14,9 @@
 #include <pthread.h>
 #include <signal.h>
 
+#define SOCK_FSTACK 0x01000000
+#define SOCK_KERNEL 0x02000000
+
 #define MAX_WORKERS 128
 pthread_t hworker[MAX_WORKERS];
 
@@ -21,7 +24,7 @@ pthread_t hworker[MAX_WORKERS];
 struct epoll_event ev;
 struct epoll_event events[MAX_EVENTS];
 int epfd;
-int sockfd;
+int sockfd, sockfd_kernel;
 
 static int exit_flag = 0;
 
@@ -73,7 +76,7 @@ void *loop(void *arg)
          * If not call alarm_event_sem, and epoll_wait timeout is 0,
          * it can't exit normal, so timeout can't set to 0.
          */
-        int nevents = epoll_wait(epfd, events, MAX_EVENTS, 100);
+        int nevents = epoll_wait(epfd, events, MAX_EVENTS, -1);
         int i;
 
         if (nevents <= 0) {
@@ -82,16 +85,17 @@ void *loop(void *arg)
                     nevents, errno, strerror(errno));
                 break;
             }
-            //usleep(100);
+            usleep(100);
             //sleep(1);
         }
         //printf("get nevents:%d\n", nevents);
 
         for (i = 0; i < nevents; ++i) {
             /* Handle new connect */
-            if (events[i].data.fd == sockfd) {
+            if (events[i].data.fd == sockfd || events[i].data.fd == sockfd_kernel) {
                 while (1) {
-                    int nclientfd = accept(sockfd, NULL, NULL);
+                    int nclientfd = accept(events[i].data.fd, NULL, NULL);
+			    printf("accept sockfd(_kernel):%d, nclientfd:%d, errono:%d/%s\n", events[i].data.fd, nclientfd, errno, strerror(errno));
                     if (nclientfd < 0) {
                         break;
                     }
@@ -105,6 +109,9 @@ void *loop(void *arg)
                         close(nclientfd);
                         break;
                     }
+		    if (events[i].data.fd == sockfd_kernel) {
+		    	break;
+		    }
                 }
             } else {
                 if (events[i].events & EPOLLERR ) {
@@ -167,7 +174,35 @@ int main(int argc, char * argv[])
         return -1;
     }
 
-    epfd = epoll_create(0);
+    sockfd_kernel = socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0);
+    printf("sockfd_kernel:%d\n", sockfd_kernel);
+    if (sockfd_kernel < 0) {
+        printf("ff_socket failed\n");
+        return -1;
+    }
+
+    bzero(&my_addr, sizeof(my_addr));
+    my_addr.sin_family = AF_INET;
+    my_addr.sin_port = htons(80);
+    my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    ret = bind(sockfd_kernel, (const struct sockaddr *)&my_addr, sizeof(my_addr));
+    if (ret < 0) {
+        printf("ff_bind failed\n");
+        close(sockfd);
+        close(sockfd_kernel);
+        return -1;
+    }
+
+    ret = listen(sockfd_kernel, MAX_EVENTS);
+    if (ret < 0) {
+        printf("ff_listen failed\n");
+        close(sockfd);
+        close(sockfd_kernel);
+        return -1;
+    }
+
+    epfd = epoll_create(512);
     printf("epfd:%d\n", epfd);
     if (epfd <= 0) {
         printf("ff_epoll_create failed, errno:%d, %s\n",
@@ -183,6 +218,17 @@ int main(int argc, char * argv[])
         printf("ff_listen failed\n");
         close(epfd);
         close(sockfd);
+        close(sockfd_kernel);
+        return -1;
+    }
+    ev.data.fd = sockfd_kernel;
+    ev.events = EPOLLIN;
+    ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd_kernel, &ev);
+    if (ret < 0) {
+        printf("ff_listen failed\n");
+        close(epfd);
+        close(sockfd);
+        close(sockfd_kernel);
         return -1;
     }
 
@@ -192,6 +238,7 @@ int main(int argc, char * argv[])
                 errno, strerror(errno));
             close(epfd);
             close(sockfd);
+            close(sockfd_kernel);
             return -1;
         }
     }
@@ -202,6 +249,7 @@ int main(int argc, char * argv[])
 
     close(epfd);
     close(sockfd);
+    close(sockfd_kernel);
 
     return 0;
 }
