@@ -20,11 +20,6 @@ Overall conclusion:
 - There are still memory leaks and easy deadlocks when the process ends.
 - Some interfaces (such as `sendmsg`, `readv`, `readmsg`, etc.) have not been optimized and tested because they have not been used yet, and further performance optimization and testing are needed.
 - Lack of longer running verification, there may be some unknown hidden problems that have not been discovered yet.
-- When multiple F-Stack instances are running, it cannot be used as a client temporarily, such as Nginx's proxy. The reference modification plan is as follows:
-  - @铁皮大爷: I have implemented a similar logic before, but I added RSS in the hook. Delay the socket establishment (only after determining the target and source, then select which F-Stack as the worker process. It is required to set RSS symmetric hash when receiving on the network card to ensure that the output and input can be in the same F-Stack worker).
-    - app -> `socket`: hold a socket operation, create fd (fd1), and return it to the user. 
-    - app -> `bind`: hold a bind operation, bind the bind parameters to fd1, and return it to the user.
-    -  app -> `connect`: add a connect parameter to bind on fd1, calculate according to RSS symmetric hash, select an F-Stack process (worker), and hand over the held `socket`, `bind`, and `connect` to the F-Stack process, and wait for synchronous return results.
 
 ## Compilation of `libff_syscall.so`
 
