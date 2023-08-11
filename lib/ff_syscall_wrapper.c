@@ -383,8 +383,6 @@ ip_opt_convert(int optname)
 {
     switch(optname) {
         case LINUX_IP_TOS:
-            *(char*)modoptval = *(int *)optval;
-            *modoptlen = CMSG_LEN(sizeof(char));
             return IP_TOS;
         case LINUX_IP_TTL:
             return IP_TTL;
@@ -527,37 +525,6 @@ freebsd2linux_sockaddr(struct linux_sockaddr *linux,
 
     bcopy(freebsd->sa_data, linux->sa_data, freebsd->sa_len - sizeof(linux->sa_family));
 }
-
-static int 
-linux2freebsd_cmsg(const struct msghdr *msg, struct cmsghdr **cmsg)
-{
-    struct cmsghdr *cmsg_bsd = NULL;
-    cmsg_bsd = malloc(msg->msg_controllen,NULL,0);
-    *cmsg = cmsg_bsd;
-
-    struct linux_cmsghdr *linux_cmsg = (struct linux_cmsghdr *) msg->msg_control;
-    
-        
-    while (linux_cmsg != NULL) {
-        cmsg_bsd->cmsg_len = CMSG_LEN(linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
-        cmsg_bsd->cmsg_level = linux_cmsg->cmsg_level;
-        cmsg_bsd->cmsg_type = linux_cmsg->cmsg_type;
-        void *modoptval = CMSG_DATA(cmsg_bsd);
-        socklen_t modoptlen = cmsg_bsd->cmsg_len;
-        memcpy(((char *)cmsg_bsd)+sizeof(struct cmsghdr), ((char *)linux_cmsg)+sizeof(struct linux_cmsghdr), linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
-        cmsg_bsd->cmsg_type = linux2freebsd_opt(cmsg_bsd->cmsg_level, cmsg_bsd->cmsg_type, CMSG_DATA(cmsg_bsd), cmsg_bsd->cmsg_len - CMSG_ALIGN(sizeof(struct cmsghdr)), &modoptval, &modoptlen);
-        if (cmsg_bsd->cmsg_type < 0) {
-            free(cmsg,NULL);
-            return -1;        
-        }
-        cmsg_bsd->cmsg_len = modoptlen;
-        linux_cmsg = (struct linux_cmsghdr*) CMSG_NXTHDR(msg, linux_cmsg);
-        cmsg_bsd = CMSG_NXTHDR(msg, cmsg_bsd);
-    }
-
-    return 0;
-}
-
 
 int
 ff_socket(int domain, int type, int protocol)
@@ -873,28 +840,15 @@ ff_sendmsg(int s, const struct msghdr *msg, int flags)
     int rc;
     struct sockaddr_storage freebsd_sa;
     void *linux_sa = msg->msg_name;
-    struct cmsghdr *cmsg = NULL;
 
     if (linux_sa != NULL) {
         linux2freebsd_sockaddr(linux_sa,
             sizeof(struct linux_sockaddr), (struct sockaddr *)&freebsd_sa);
         __DECONST(struct msghdr *, msg)->msg_name = &freebsd_sa;
     }
-    if (msg && msg->msg_control)
-    {
-        if(linux2freebsd_cmsg(msg, &cmsg) < 0)
-        {
-            rc = EINVAL;
-            goto kern_fail;
-        }
-        __DECONST(struct msghdr *, msg)->msg_control = cmsg;
 
-    }
     rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags);
-    
-    if (cmsg)
-        free(cmsg,NULL);
-    
+
     __DECONST(struct msghdr *, msg)->msg_name = linux_sa;
 
     if (rc)
