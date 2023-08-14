@@ -122,7 +122,12 @@ void *loop(void *arg)
                     char buf[256];
                     size_t readlen = read( events[i].data.fd, buf, sizeof(buf));
                     if(readlen > 0) {
-                        write( events[i].data.fd, html, sizeof(html) - 1);
+                        size_t writelen = write( events[i].data.fd, html, sizeof(html) - 1);
+                        if (writelen < 0){
+                            printf("write failed, readlen:%lu, writelen:%lu, :%d, %s\n",
+                                readlen, writelen, errno, strerror(errno));
+                            close(events[i].data.fd);
+                        }
                     } else {
                         epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
                         close(events[i].data.fd);

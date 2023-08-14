@@ -90,8 +90,8 @@ libff_syscall.so: ${FF_SYSCALL_OBJS}
 	${CC} -fPIC -shared -o $@ $^ ${FF_SYSCALL_LIBS} ${DPDK_LIBS}
 
 example:
-	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -L ${FF_PATH}/adapter/syscall -lff_syscall -o helloworld_stack main_stack.c ${LIBS}
-	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -L ${FF_PATH}/adapter/syscall -lff_syscall -o helloworld_stack_thread_socket main_stack_thread_socket.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack main_stack.c -L ${FF_PATH}/adapter/syscall -lff_syscall ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_thread_socket main_stack_thread_socket.c -L ${FF_PATH}/adapter/syscall -lff_syscall ${LIBS}
 	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll main_stack_epoll.c ${LIBS}
 	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll_thread_socket main_stack_epoll_thread_socket.c ${LIBS}
 	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll_kernel main_stack_epoll_kernel.c ${LIBS}
