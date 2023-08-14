@@ -2370,7 +2370,8 @@ ff_adapter_init()
 
         printf("\n");
         DEBUG_LOG("rte_eal_init, argc:%ld/%ld=%ld\n", sizeof(dpdk_argv), sizeof(dpdk_argv[0]), sizeof(dpdk_argv)/sizeof(dpdk_argv[0]));
-        for (int i=0; i < sizeof(dpdk_argv)/sizeof(dpdk_argv[0]); i++) {
+        int i;
+        for (i = 0; i < sizeof(dpdk_argv)/sizeof(dpdk_argv[0]); i++) {
             printf("%s ", dpdk_argv[i]);
         }
         printf("\n");
