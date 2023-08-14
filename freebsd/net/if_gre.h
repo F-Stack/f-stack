@@ -52,13 +52,13 @@ struct grehdr {
 struct greip {
 	struct ip	gi_ip;
 	struct grehdr	gi_gre;
-} __packed;
+} __packed __aligned(2);
 
 struct greudp {
 	struct ip	gi_ip;
 	struct udphdr	gi_udp;
 	struct grehdr	gi_gre;
-} __packed;
+} __packed __aligned(2);
 #endif /* INET */
 
 #ifdef INET6
