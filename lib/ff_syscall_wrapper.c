@@ -205,14 +205,37 @@ struct linux_msghdr {
 
 struct linux_cmsghdr
 {
-    size_t cmsg_len;		/* Length of data in cmsg_data plus length
+    size_t cmsg_len;        /* Length of data in cmsg_data plus length
                     of cmsghdr structure.
                     !! The type should be socklen_t but the
                     definition of the kernel is incompatible
                     with this.  */
-    int cmsg_level;		/* Originating protocol.  */
-    int cmsg_type;		/* Protocol specific type.  */
+    int cmsg_level;        /* Originating protocol.  */
+    int cmsg_type;        /* Protocol specific type.  */
 };
+
+/*
+ * LINUX_CMSG_XXXX has the same effect as FreeBSD's CMSG_XXXX,
+ * because aligned to 8 bytes, but still redefine them.
+ */
+#define LINUX_CMSG_DATA(cmsg) ((unsigned char *)(cmsg) + \
+                         _ALIGN(sizeof(struct linux_cmsghdr)))
+#define LINUX_CMSG_SPACE(l)   (_ALIGN(sizeof(struct linux_cmsghdr)) + _ALIGN(l))
+#define LINUX_CMSG_LEN(l)     (_ALIGN(sizeof(struct linux_cmsghdr)) + (l))
+
+#define LINUX_CMSG_FIRSTHDR(mhdr) \
+        ((mhdr)->msg_controllen >= sizeof(struct linux_cmsghdr) ? \
+         (struct linux_cmsghdr *)(mhdr)->msg_control : \
+         (struct linux_cmsghdr *)0)
+
+#define LINUX_CMSG_NXTHDR(mhdr, cmsg)    \
+    ((char *)(cmsg) == (char *)0 ? LINUX_CMSG_FIRSTHDR(mhdr) : \
+        ((char *)(cmsg) + _ALIGN(((struct linux_cmsghdr *)(cmsg))->cmsg_len) + \
+      _ALIGN(sizeof(struct linux_cmsghdr)) > \
+        (char *)(mhdr)->msg_control + (mhdr)->msg_controllen) ? \
+        (struct linux_cmsghdr *)0 : \
+        (struct linux_cmsghdr *)(void *)((char *)(cmsg) + \
+        _ALIGN(((struct linux_cmsghdr *)(cmsg))->cmsg_len)))
 
 /* cmsghdr define end */
 
@@ -448,40 +471,6 @@ tcp_opt_convert(int optname)
 }
 
 static int
-ip_opt_convert2linux(int optname)
-{
-    switch(optname) {
-        case IP_RECVTTL:
-            return LINUX_IP_TTL; // in linux kernel return IP_TTL not IP_RECVTTL
-        case IP_RECVTOS:
-            return LINUX_IP_TOS; // in linux kernel return IP_TOS not IP_RECVTOS
-        default:
-            return optname;
-    }
-}
-
-static void
-freebsd2linux_cmsghdr(struct linux_msghdr *linux_msg)
-{
-    struct cmsghdr *cmsg;
-    cmsg = CMSG_FIRSTHDR(linux_msg);
-    struct linux_cmsghdr *linux_cmsg = (struct linux_cmsghdr*)cmsg;
-
-    switch (cmsg->cmsg_level) {
-        case IPPROTO_IP:
-            linux_cmsg->cmsg_type = ip_opt_convert2linux(cmsg->cmsg_type);
-            break;
-        default:
-            linux_cmsg->cmsg_type = cmsg->cmsg_type;
-            break;
-    }
-
-    linux_cmsg->cmsg_level = cmsg->cmsg_level;
-    linux_cmsg->cmsg_len = cmsg->cmsg_len + sizeof(struct linux_cmsghdr) - sizeof(struct cmsghdr);
-
-}
-
-static int
 linux2freebsd_opt(int level, int optname)
 {
     switch(level) {
@@ -502,7 +491,7 @@ static void
 linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
     socklen_t addrlen, struct sockaddr *freebsd)
 {
-    if (linux == NULL) {
+    if (linux == NULL || freebsd == NULL) {
         return;
     }
 
@@ -517,13 +506,186 @@ static void
 freebsd2linux_sockaddr(struct linux_sockaddr *linux,
     struct sockaddr *freebsd)
 {
-    if (linux == NULL) {
+    if (linux == NULL || freebsd == NULL) {
         return;
     }
 
-    linux->sa_family = freebsd->sa_family == AF_INET6 ? LINUX_AF_INET6 : freebsd->sa_family;
-
+    /* #linux and #freebsd may point to the same address */
     bcopy(freebsd->sa_data, linux->sa_data, freebsd->sa_len - sizeof(linux->sa_family));
+    linux->sa_family = freebsd->sa_family == AF_INET6 ? LINUX_AF_INET6 : freebsd->sa_family;
+}
+
+static inline int
+freebsd2linux_cmsghdr(struct linux_msghdr *linux_msg, const struct msghdr *freebsd_msg)
+{
+    struct cmsghdr *freebsd_cmsg = CMSG_FIRSTHDR(freebsd_msg);
+    struct linux_cmsghdr *linux_cmsg = LINUX_CMSG_FIRSTHDR(linux_msg);
+
+    while (freebsd_cmsg && linux_cmsg) {
+        unsigned char *freebsd_optval = CMSG_DATA(freebsd_cmsg);
+        unsigned char *linux_optval = LINUX_CMSG_DATA(linux_cmsg);
+
+        /*
+         * The address of linux_cmsg and freebsd_cmsg coincides while recvmsg,
+         * but the position of the variable pointer is different,
+         * and the assignment must be reversed.
+         *
+         * Although sizeof(struct linux_msghdr) and sizeof(struct msghdr) have different lengths,
+         * but cmsg_data both skip the same 16 bytes，both aligned to 8 bytes.
+         */
+        linux_cmsg->cmsg_type = freebsd_cmsg->cmsg_type;
+        linux_cmsg->cmsg_level = freebsd_cmsg->cmsg_level;
+        linux_cmsg->cmsg_len = LINUX_CMSG_LEN(freebsd_cmsg->cmsg_len - CMSG_ALIGN(sizeof(struct cmsghdr)));
+
+        /*
+         * The freebsd_msg's cmsg_level and cmsg_type has been moddied while recvmsg,
+         * must use linux_cmsg to judge and calculate data length.
+         * And don't copy other the bytes that used aligned.
+         */
+        switch (linux_cmsg->cmsg_level) {
+            case IPPROTO_IP:
+                switch (linux_cmsg->cmsg_type) {
+                    case IP_RECVTOS:
+                        linux_cmsg->cmsg_type = LINUX_IP_TOS;
+                        *linux_optval = *freebsd_optval;
+                        break;
+                    case IP_RECVTTL:
+                        linux_cmsg->cmsg_type = LINUX_IP_TTL;
+                        *linux_optval = *freebsd_optval;
+                        break;
+                    /*case XXXX:
+                        break;*/
+                    default:
+                        memcpy(linux_optval, freebsd_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
+                        break;
+                }
+
+                break;
+            default:
+                memcpy(linux_optval, freebsd_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
+                break;
+        }
+
+        linux_cmsg = LINUX_CMSG_NXTHDR(linux_msg, linux_cmsg);
+        freebsd_cmsg = CMSG_NXTHDR(freebsd_msg, freebsd_cmsg);
+    }
+
+    return 0;
+}
+
+static inline int
+linux2freebsd_cmsg(const struct linux_msghdr *linux_msg, struct msghdr *freebsd_msg)
+{
+    struct cmsghdr *cmsg_bsd = malloc(linux_msg->msg_controllen, NULL, 0);
+    struct linux_cmsghdr *linux_cmsg = LINUX_CMSG_FIRSTHDR(linux_msg);
+
+    if (cmsg_bsd == NULL) {
+        return -1;
+    }
+    freebsd_msg->msg_control = cmsg_bsd;
+
+    while (cmsg_bsd && linux_cmsg) {
+        unsigned char *freebsd_optval = CMSG_DATA(cmsg_bsd);
+        unsigned char *linux_optval = LINUX_CMSG_DATA(linux_cmsg);
+
+        cmsg_bsd->cmsg_type = linux_cmsg->cmsg_type;
+        cmsg_bsd->cmsg_level = linux_cmsg->cmsg_level;
+        cmsg_bsd->cmsg_len = CMSG_LEN(linux_cmsg->cmsg_len - CMSG_ALIGN(sizeof(struct linux_cmsghdr)));
+
+        switch (linux_cmsg->cmsg_level) {
+            case IPPROTO_IP:
+                switch (linux_cmsg->cmsg_type) {
+                    case LINUX_IP_TOS:
+                        cmsg_bsd->cmsg_type = IP_TOS;
+                        cmsg_bsd->cmsg_len = CMSG_LEN(sizeof(char));
+
+                        if (linux_cmsg->cmsg_len == LINUX_CMSG_LEN(sizeof(int))) {
+                            *freebsd_optval = *(int *)linux_optval;
+                        } else if (linux_cmsg->cmsg_len == LINUX_CMSG_LEN(sizeof(char))) {
+                            *freebsd_optval = *linux_optval;
+                        }
+
+                        break;
+                    case LINUX_IP_TTL:
+                        cmsg_bsd->cmsg_type = IP_TTL;
+                        cmsg_bsd->cmsg_len = CMSG_LEN(sizeof(char));
+
+                        *freebsd_optval = *(int *)linux_optval;
+
+                        break;
+                    /*case XXXX:
+                        break;*/
+                    default:
+                        memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
+                        break;
+                }
+
+                break;
+            default:
+                memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
+                break;
+        }
+
+        linux_cmsg = LINUX_CMSG_NXTHDR(linux_msg, linux_cmsg);
+        cmsg_bsd = CMSG_NXTHDR(freebsd_msg, cmsg_bsd);
+    }
+
+    return 0;
+}
+
+static int
+freebsd2linux_msghdr(struct linux_msghdr *linux_msg, struct msghdr *freebsd_msg)
+{
+    if (linux_msg == NULL || freebsd_msg == NULL) {
+        return -1;
+    }
+
+    linux_msg->msg_name = freebsd_msg->msg_name;
+    freebsd2linux_sockaddr(linux_msg->msg_name, freebsd_msg->msg_name);
+    linux_msg->msg_namelen = freebsd_msg->msg_namelen;
+
+    linux_msg->msg_iov = freebsd_msg->msg_iov;
+    linux_msg->msg_iovlen = freebsd_msg->msg_iovlen;
+
+    if(freebsd_msg->msg_control && linux_msg->msg_control) {
+        freebsd2linux_cmsghdr(linux_msg, freebsd_msg);
+    }
+    linux_msg->msg_controllen = freebsd_msg->msg_controllen;
+
+    linux_msg->msg_flags = freebsd_msg->msg_flags;
+
+    return 0;
+}
+
+static int
+linux2freebsd_msghdr(const struct linux_msghdr *linux_msg, struct msghdr *freebsd_msg, int send_flag)
+{
+    int ret = 0;
+
+    if (linux_msg == NULL || freebsd_msg == NULL) {
+        return -1;;
+    }
+
+    freebsd_msg->msg_name = linux_msg->msg_name;
+    if (linux_msg->msg_name && send_flag) {
+        linux2freebsd_sockaddr(linux_msg->msg_name, linux_msg->msg_namelen, freebsd_msg->msg_name);
+    }
+    freebsd_msg->msg_namelen = linux_msg->msg_namelen;
+
+    freebsd_msg->msg_iov = linux_msg->msg_iov;
+    freebsd_msg->msg_iovlen = linux_msg->msg_iovlen;
+
+    if (linux_msg->msg_control && send_flag) {
+        ret = linux2freebsd_cmsg(linux_msg, freebsd_msg);
+        if(ret < 0) {
+            return ret;
+        }
+    } else {
+        freebsd_msg->msg_control = linux_msg->msg_control;
+    }
+    freebsd_msg->msg_controllen = linux_msg->msg_controllen;
+
+    return 0;
 }
 
 int
@@ -837,24 +999,26 @@ kern_fail:
 ssize_t
 ff_sendmsg(int s, const struct msghdr *msg, int flags)
 {
-    int rc;
-    struct sockaddr_storage freebsd_sa;
-    void *linux_sa = msg->msg_name;
+    int rc, ret;
+    struct msghdr freebsd_msg;
 
-    if (linux_sa != NULL) {
-        linux2freebsd_sockaddr(linux_sa,
-            sizeof(struct linux_sockaddr), (struct sockaddr *)&freebsd_sa);
-        __DECONST(struct msghdr *, msg)->msg_name = &freebsd_sa;
+    ret = linux2freebsd_msghdr((const struct linux_msghdr *)msg, &freebsd_msg, 1);
+    if (ret < 0) {
+        rc = EINVAL;
+        goto kern_fail;
     }
 
-    rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags);
-
-    __DECONST(struct msghdr *, msg)->msg_name = linux_sa;
-
+    rc = sendit(curthread, s, &freebsd_msg, flags);
     if (rc)
         goto kern_fail;
 
     rc = curthread->td_retval[0];
+
+    freebsd2linux_msghdr(__DECONST(struct linux_msghdr *, msg), &freebsd_msg);
+
+    if (freebsd_msg.msg_control) {
+        free(freebsd_msg.msg_control, NULL);
+    }
 
     return (rc);
 kern_fail:
@@ -912,24 +1076,22 @@ kern_fail:
 ssize_t
 ff_recvmsg(int s, struct msghdr *msg, int flags)
 {
-    int rc;
-    struct linux_msghdr *linux_msg = (struct linux_msghdr *)msg;
+    int rc, ret;
+    struct msghdr freebsd_msg;
 
-    msg->msg_flags = flags;
+    ret = linux2freebsd_msghdr((struct linux_msghdr *)msg, &freebsd_msg, 0);
+    if (ret < 0) {
+        rc = EINVAL;
+        goto kern_fail;
+    }
+    freebsd_msg.msg_flags = flags;
 
-    if ((rc = kern_recvit(curthread, s, msg, UIO_SYSSPACE, NULL))) {
-        msg->msg_flags = 0;
+    if ((rc = kern_recvit(curthread, s, &freebsd_msg, UIO_SYSSPACE, NULL))) {
         goto kern_fail;
     }
     rc = curthread->td_retval[0];
 
-    freebsd2linux_sockaddr(linux_msg->msg_name, msg->msg_name);
-    linux_msg->msg_flags = msg->msg_flags;
-    msg->msg_flags = 0;
-
-    if(msg->msg_control) {
-        freebsd2linux_cmsghdr(linux_msg);
-    }
+    freebsd2linux_msghdr((struct linux_msghdr *)msg, &freebsd_msg);
 
     return (rc);
 kern_fail:
