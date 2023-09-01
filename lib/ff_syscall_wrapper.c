@@ -90,6 +90,7 @@
 #define LINUX_IP_OPTIONS    4
 #define LINUX_IP_RECVTTL    12
 #define LINUX_IP_RECVTOS    13
+#define LINUX_IP_TRANSPARENT    19
 #define LINUX_IP_MINTTL     21
 
 #define LINUX_IP_MULTICAST_IF       32
@@ -100,6 +101,7 @@
 
 #define LINUX_IPV6_V6ONLY           26
 #define LINUX_IPV6_RECVPKTINFO      49
+#define LINUX_IPV6_TRANSPARENT      75
 
 #define LINUX_TCP_NODELAY     1
 #define LINUX_TCP_MAXSEG      2
@@ -427,6 +429,8 @@ ip_opt_convert(int optname)
             return IP_RECVTTL;
         case LINUX_IP_RECVTOS:
             return IP_RECVTOS;
+        case LINUX_IP_TRANSPARENT:
+            return IP_BINDANY;
         case LINUX_IP_MINTTL:
             return IP_MINTTL;
         default:
@@ -442,6 +446,8 @@ ip6_opt_convert(int optname)
             return IPV6_V6ONLY;
         case LINUX_IPV6_RECVPKTINFO:
             return IPV6_RECVPKTINFO;
+        case LINUX_IPV6_TRANSPARENT:
+            return IPV6_BINDANY;
         default:
             return optname;
     }
