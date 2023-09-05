@@ -427,7 +427,11 @@ ngx_quic_send_segments(ngx_connection_t *c, u_char *buf, size_t len,
     *valp = segment;
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
+#if (NGX_HAVE_FSTACK)
+    if ((!c->listening->belong_to_host) && c->listening && c->listening->wildcard && c->local_sockaddr) {
+#else
     if (c->listening && c->listening->wildcard && c->local_sockaddr) {
+#endif
         cmsg = CMSG_NXTHDR(&msg, cmsg);
         clen += ngx_set_srcaddr_cmsg(cmsg, c->local_sockaddr);
     }
@@ -691,7 +695,11 @@ ngx_quic_send(ngx_connection_t *c, u_char *buf, size_t len,
     msg.msg_namelen = socklen;
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
+#if (NGX_HAVE_FSTACK)
+    if ((!c->listening->belong_to_host) && c->listening && c->listening->wildcard && c->local_sockaddr) {
+#else
     if (c->listening && c->listening->wildcard && c->local_sockaddr) {
+#endif
 
         msg.msg_control = msg_control;
         msg.msg_controllen = sizeof(msg_control);

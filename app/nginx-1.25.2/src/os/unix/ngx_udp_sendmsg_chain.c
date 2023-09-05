@@ -396,6 +396,12 @@ ngx_sendmsg(ngx_connection_t *c, struct msghdr *msg, int flags)
 #if (NGX_DEBUG)
     size_t      size;
     ngx_uint_t  i;
+
+#if (NGX_HAVE_FSTACK)
+    for (i = 0, size = 0; i < (size_t) msg->msg_iovlen; i++) {
+        size += msg->msg_iov[i].iov_len;
+    }
+#endif
 #endif
 
 eintr:
@@ -424,9 +430,11 @@ eintr:
     }
 
 #if (NGX_DEBUG)
+#if (!NGX_HAVE_FSTACK)
     for (i = 0, size = 0; i < (size_t) msg->msg_iovlen; i++) {
         size += msg->msg_iov[i].iov_len;
     }
+#endif
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
                    "sendmsg: %z of %uz", n, size);
