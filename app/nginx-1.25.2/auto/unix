@@ -501,6 +501,7 @@ ngx_feature_libs=
 ngx_feature_test="setsockopt(0, IPPROTO_IP, IPV6_DONTFRAG, NULL, 0)"
 #. auto/feature
 have=NGX_HAVE_IPV6_DONTFRAG . auto/have
+have=IPV6_DONTFRAG value=62 . auto/define
 
 
 ngx_feature="TCP_DEFER_ACCEPT"
