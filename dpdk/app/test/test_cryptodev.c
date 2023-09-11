@@ -3121,6 +3121,16 @@ create_wireless_algo_auth_cipher_operation(
 			remaining_off -= rte_pktmbuf_data_len(sgl_buf);
 			sgl_buf = sgl_buf->next;
 		}
+
+		/* The last segment should be large enough to hold full digest */
+		if (sgl_buf->data_len < auth_tag_len) {
+			rte_pktmbuf_free(sgl_buf->next);
+			sgl_buf->next = NULL;
+			TEST_ASSERT_NOT_NULL(rte_pktmbuf_append(sgl_buf,
+					auth_tag_len - sgl_buf->data_len),
+					"No room to append auth tag");
+		}
+
 		sym_op->auth.digest.data = rte_pktmbuf_mtod_offset(sgl_buf,
 				uint8_t *, remaining_off);
 		sym_op->auth.digest.phys_addr = rte_pktmbuf_iova_offset(sgl_buf,
@@ -6223,8 +6233,10 @@ test_snow3g_decryption_with_digest_test_case_1(void)
 	 */
 	snow3g_hash_test_vector_setup(&snow3g_test_case_7, &snow3g_hash_data);
 
-	return test_snow3g_decryption(&snow3g_test_case_7) &
-			test_snow3g_authentication_verify(&snow3g_hash_data);
+	if (test_snow3g_decryption(&snow3g_test_case_7))
+		return TEST_FAILED;
+
+	return test_snow3g_authentication_verify(&snow3g_hash_data);
 }
 
 static int
@@ -7708,7 +7720,7 @@ create_aead_operation(enum rte_crypto_aead_operation op,
 				rte_pktmbuf_iova(ut_params->ibuf);
 		/* Copy AAD 18 bytes after the AAD pointer, according to the API */
 		memcpy(sym_op->aead.aad.data + 18, tdata->aad.data, tdata->aad.len);
-		debug_hexdump(stdout, "aad:", sym_op->aead.aad.data,
+		debug_hexdump(stdout, "aad:", sym_op->aead.aad.data + 18,
 			tdata->aad.len);
 
 		/* Append IV at the end of the crypto operation*/
@@ -7717,7 +7729,7 @@ create_aead_operation(enum rte_crypto_aead_operation op,
 
 		/* Copy IV 1 byte after the IV pointer, according to the API */
 		rte_memcpy(iv_ptr + 1, tdata->iv.data, tdata->iv.len);
-		debug_hexdump(stdout, "iv:", iv_ptr,
+		debug_hexdump(stdout, "iv:", iv_ptr + 1,
 			tdata->iv.len);
 	} else {
 		aad_pad_len = RTE_ALIGN_CEIL(tdata->aad.len, 16);

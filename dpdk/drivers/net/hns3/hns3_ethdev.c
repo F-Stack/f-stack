@@ -1680,7 +1680,7 @@ err_pause_addr_cfg:
 		rte_ether_format_addr(mac_str, RTE_ETHER_ADDR_FMT_SIZE,
 				      mac_addr);
 		hns3_warn(hw,
-			  "Failed to roll back to del setted mac addr(%s): %d",
+			  "Failed to roll back to del set mac addr(%s): %d",
 			  mac_str, ret_val);
 	}
 
@@ -4999,7 +4999,15 @@ hns3_is_reset_pending(struct hns3_adapter *hns)
 	struct hns3_hw *hw = &hns->hw;
 	enum hns3_reset_level reset;
 
-	hns3_check_event_cause(hns, NULL);
+	/*
+	 * Check the registers to confirm whether there is reset pending.
+	 * Note: This check may lead to schedule reset task, but only primary
+	 *       process can process the reset event. Therefore, limit the
+	 *       checking under only primary process.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		hns3_check_event_cause(hns, NULL);
+
 	reset = hns3_get_reset_level(hns, &hw->reset.pending);
 	if (hw->reset.level != HNS3_NONE_RESET && hw->reset.level < reset) {
 		hns3_warn(hw, "High level reset %d is pending", reset);

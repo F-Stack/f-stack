@@ -1481,6 +1481,7 @@ xstats_id_reset_tests(struct test *t)
 			goto fail;
 		}
 		ev.queue_id = t->qid[i];
+		ev.flow_id = 0;
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = arp;
 		arp->seqn = i;
@@ -1633,8 +1634,8 @@ xstats_id_reset_tests(struct test *t)
 		}
 		if (val != port_expected[i]) {
 			printf("%d: %s value incorrect, expected %"PRIu64
-				" got %d\n", __LINE__, port_names[i],
-				port_expected[i], id);
+				" got %"PRIu64"\n", __LINE__, port_names[i],
+				port_expected[i], val);
 			failed = 1;
 		}
 		/* reset to zero */

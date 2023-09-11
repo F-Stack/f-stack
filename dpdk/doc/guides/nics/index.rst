@@ -26,6 +26,7 @@ Network Interface Controller Drivers
     ena
     enetc
     enic
+    fail_safe
     fm10k
     hinic
     hns3
@@ -33,9 +34,9 @@ Network Interface Controller Drivers
     ice
     ifc
     igb
+    intel_vf
     ipn3ke
     ixgbe
-    intel_vf
     kni
     liquidio
     memif
@@ -48,6 +49,7 @@ Network Interface Controller Drivers
     nfp
     octeontx
     octeontx2
+    pcap_ring
     pfe
     qede
     sfc_efx
@@ -56,8 +58,6 @@ Network Interface Controller Drivers
     tap
     thunderx
     vdev_netvsc
-    virtio
     vhost
+    virtio
     vmxnet3
-    pcap_ring
-    fail_safe

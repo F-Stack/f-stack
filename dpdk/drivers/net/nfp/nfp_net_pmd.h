@@ -102,6 +102,9 @@ struct nfp_net_adapter;
 #define NFD_CFG_MINOR_VERSION(x)    (((x) & 0xff) << 0)
 #define NFD_CFG_MINOR_VERSION_of(x) (((x) >> 0) & 0xff)
 
+/* Maximum supported NFP frame size (MTU + layer 2 headers) */
+#define NFP_FRAME_SIZE_MAX	10048
+
 #include <linux/types.h>
 #include <rte_io.h>
 

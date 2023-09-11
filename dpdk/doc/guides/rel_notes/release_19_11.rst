@@ -4819,3 +4819,209 @@ We are happy to state that - again - more of them got fixed in 19.11.12.
    * https://bugs.dpdk.org/show_bug.cgi?id=991
    * https://bugs.dpdk.org/show_bug.cgi?id=1063
    * https://bugs.dpdk.org/show_bug.cgi?id=1064
+
+19.11.14 Release Notes
+----------------------
+
+
+19.11.14 Fixes
+~~~~~~~~~~~~~~
+
+* app/testpmd: fix build with clang 15
+* app/testpmd: make quit flag volatile
+* app/testpmd: restore ixgbe bypass commands
+* bus/dpaa: fix build with clang 15
+* common/iavf: avoid copy in async mode
+* common/sfc_efx/base: fix maximum Tx data count
+* crypto/qat: fix build with GCC 12
+* doc: add LRO size limitation in mlx5 guide
+* doc: fix net drivers ordering
+* doc: fix typo depreciated instead of deprecated
+* drivers: fix typos found by Lintian
+* eal: fix data race in multi-process support
+* eal: fix doxygen comments for UUID
+* eal: fix side effect in some pointer arithmetic macros
+* eventdev/eth_tx: add spinlock for adapter start/stop
+* eventdev/eth_tx: fix adapter stop
+* eventdev/eth_tx: fix queue delete
+* eventdev: fix name of Rx conf type in documentation
+* event/sw: fix device name in dump
+* event/sw: fix flow ID init in self test
+* event/sw: fix log in self test
+* examples/fips_validation: fix typo in error log
+* examples/l2fwd-crypto: fix typo in error message
+* examples/vm_power_manager: use safe list iterator
+* gro: fix chain index for more than 2 packets
+* (HEAD -> 19.11, github-cpaelzer-stable/19.11) net/mlx5: cleanup Netlink interrupt handler
+* ipsec: fix build with GCC 12
+* license: fix paths
+* malloc: fix storage size for some allocations
+* net: accept unaligned data in checksum routines
+* net/atlantic: fix build with clang 15
+* net/bonding: fix array overflow in Rx burst
+* net/bonding: fix descriptor limit reporting
+* net/bonding: fix double slave link status query
+* net/bonding: fix dropping valid MAC packets
+* net/bonding: fix flow flush order on close
+* net/bonding: fix mbuf fast free handling
+* net/bonding: fix Tx hash for TCP
+* net/bonding: set initial value of descriptor count alignment
+* net/hns3: fix crash when secondary process access FW
+* net/i40e: fix VF representor release
+* net/ice/base: fix array overflow in add switch recipe
+* net/ice/base: fix duplicate flow rules
+* net/ice/base: fix media type of PHY 10G SFI C2C
+* net/ice: check illegal packet sizes
+* net/ice: fix scalar Rx path segment
+* net/ice: fix scalar Tx path segment
+* net/ixgbe: fix broadcast Rx on VF after promisc removal
+* net/ixgbe: fix unexpected VLAN Rx in promisc mode on VF
+* net/ixgbevf: fix promiscuous and allmulti
+* net/memif: fix crash with different number of Rx/Tx queues
+* net/mlx4: fix Verbs FD leak in secondary process
+* net/mlx5: fix hairpin split with set VLAN VID action
+* net/mlx5: fix invalid memory access in port closing
+* net/mlx5: fix meter profile delete after disable
+* net/mlx5: fix port event cleaning order
+* net/mlx5: fix Verbs FD leak in secondary process
+* net/mvneta: fix build with GCC 12
+* net/nfp: fix internal buffer size and MTU check
+* net/nfp: improve HW info header log readability
+* net/qede/base: fix 32-bit build with GCC 12
+* net/tap: fix overflow of network interface index
+* net/virtio: fix crash when configured twice
+* pdump: do not allow enable/disable in primary process
+* power: fix some doxygen comments
+* service: fix build with clang 15
+* service: fix early move to inactive status
+* (tag: v19.11.14-post-22.11-rc4) doc: fix maximum packet size of virtio driver
+* (tag: v19.11.14-pre-22.11-rc4) net/nfp: fix memory leak in Rx
+* (tag: v19.11.14-rc1, origin-stable/19.11) version: 19.11.14-rc1
+* (tag: v19.11.14-up-to-22.11-pre-rc3) eventdev/crypto: fix multi-process
+* (tag: v19.11.14-up-to-22.11-rc2) crypto/qat: fix null hash algorithm digest size
+* (tag: v19.11.14-up-to-22.11-rc3) ring: remove leftover comment about watermark
+* test/crypto: fix bitwise operator in a SNOW3G case
+* test/crypto: fix debug messages
+* test/crypto: fix PDCP vectors
+* test/crypto: fix wireless auth digest segment
+* test/efd: fix build with clang 15
+* test/event: fix build with clang 15
+* test/hash: remove dead code in extendable bucket test
+* test/ipsec: fix build with GCC 12
+* test/ipsec: skip if no compatible device
+* test/member: fix build with clang 15
+* timer: fix stopping all timers
+* vhost: fix virtqueue use after free on NUMA reallocation
+
+19.11.14 Validation
+~~~~~~~~~~~~~~~~~~~
+
+* [Intel(R) Testing](https://mails.dpdk.org/archives/dev/2022-December/257208.html)
+
+   * Basic Intel NIC (ixgbe, i40e) testing
+
+      * Build: cover the build test combination with latest GCC/Clang version and the popular OS revision such as Ubuntu20.04&22.04, Fedora36, RHEL8.4, etc.
+      * PF&VF(i40e, ixgbe): test scenarios including RTE_FLOW/TSO/Jumboframe/checksum offload/VLAN/VXLAN, etc.
+      * PF/VF(ice): test scenarios including Switch features/Package Management/Flow Director/Advanced Tx, etc.
+      * Intel NIC single core/NIC performance: test scenarios including PF/VF single core performance test etc.
+
+   * Basic Cryptodev and Virtio testing
+
+      * Virtio: both function and performance test are covered. Such as PVP/Virtio_loopback/virtio-user loopback/virtio-net VM2VM perf testing, etc.
+      * Function test: test scenarios including Cryptodev API testing/CompressDev ISA-L/QAT/ZLIB PMD Testing/ etc.
+      * Performance test: test scenarios including Thoughput Performance /Cryptodev Latency, etc.
+
+* [Canonical(R) Testing](https://mails.dpdk.org/archives/dev/2022-December/257596.html)
+
+   * Build tests of DPDK & OVS 2.13.8 on Ubuntu 20.04 (meson based)
+   * Functional and performance tests based on OVS-DPDK on x86_64
+   * Autopkgtests for DPDK and OpenvSwitch
+
+* [Red Hat(R) Testing](https://mails.dpdk.org/archives/dev/2022-December/257432.html)
+
+   * Platform
+
+      * RHEL 8
+      * Kernel 4.18
+      * Qemu 6.2
+      * X540-AT2 NIC(ixgbe, 10G)
+      * Tested on 19.11.14-RC1
+
+   * Tests
+
+      * Guest with device assignment(PF) throughput testing(1G hugepage size): PASS
+      * Guest with device assignment(PF) throughput testing(2M hugepage size) : PASS
+      * Guest with device assignment(VF) throughput testing: PASS
+      * PVP (host dpdk testpmd as vswitch) 1Q: throughput testing: PASS
+      * PVP vhost-user 2Q throughput testing: PASS
+      * PVP vhost-user 1Q - cross numa node throughput testing: PASS
+      * Guest with vhost-user 2 queues throughput testing: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: qemu reconnect: PASS
+      * vhost-user reconnect with dpdk-client, qemu-server: ovs reconnect: PASS
+      * PVP 1Q live migration testing: PASS
+      * PVP 1Q cross numa node live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 1Q live migration testing (2M): PASS
+      * Guest with ovs+dpdk+vhost-user 2Q live migration testing: PASS
+      * Guest with ovs+dpdk+vhost-user 4Q live migration testing: PASS
+      * Host PF + DPDK testing: PASS
+      * Host VF + DPDK testing: PASS
+
+* [Nvidia(R) Testing](https://mails.dpdk.org/archives/dev/2022-December/257473.html)
+
+   * functional tests on Mellanox hardware
+
+      * NIC: ConnectX-4 Lx / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.8-1.0.1.1 / Firmware: 14.32.1010
+      * NIC: ConnectX-5 / OS: Ubuntu 20.04 LTS / Driver: MLNX_OFED_LINUX-5.8-1.0.1.1 / Firmware: 16.35.1012
+
+   * Functionality:
+
+      * Send and receive multiple types of traffic.
+      * testpmd xstats counter test.
+      * testpmd timestamp test.
+      * Changing/checking link status through testpmd.
+      * RTE flow tests: Items: eth / vlan / ipv4 / ipv6 / tcp / udp / icmp / gre / nvgre / vxlan ip in ip / mplsoudp / mplsogre
+      * Actions: drop / queue / rss / mark / flag / jump / count / raw_encap / raw_decap / vxlan_encap / vxlan_decap / NAT / dec_ttl
+      * Some RSS tests.
+      * VLAN filtering, stripping and insertion tests.
+      * Checksum and TSO tests.
+      * ptype tests.
+      * link_status_interrupt example application tests.
+      * l3fwd-power example application tests.
+      * Multi-process example applications tests.
+
+   * Compilation tests with multiple configurations in the following OS/driver combinations are also passing:
+
+      * Ubuntu 22.04.1 with MLNX_OFED_LINUX-5.8-1.1.2.1.
+      * Ubuntu 20.04.5 with MLNX_OFED_LINUX-5.8-1.1.2.1.
+      * Ubuntu 20.04.5 with rdma-core master (76cfaa1).
+      * Ubuntu 20.04.5 with rdma-core v28.0.
+      * Ubuntu 18.04.6 with rdma-core v17.1.
+      * Ubuntu 18.04.6 with rdma-core master (76cfaa1) (i386).
+      * Ubuntu 16.04.7 with rdma-core v22.7.
+      * CentOS 7 7.9.2009 with rdma-core master (76cfaa1).
+      * CentOS 7 7.9.2009 with MLNX_OFED_LINUX-5.8-1.0.1.1.
+      * CentOS 8 8.4.2105 with rdma-core master (76cfaa1).
+      * OpenSUSE Leap 15.4 with rdma-core v38.1.
+
+19.11.14 Known Issues
+~~~~~~~~~~~~~~~~~~~~~
+
+A few issues are still present, but none of them is an in-place regression.
+So far these are mostly issues with newer compilers, toolchains and kernels
+that happen to be incompatible with the older 19.11.x codebase.
+
+* Identified up to 19.11.13-rc1, but fixed in this release:
+
+  * [net/mlx5: cleanup Netlink interrupt handler](https://inbox.dpdk.org/stable/DM4PR12MB516765207EE7A8999B284B5EDA1A9@DM4PR12MB5167.namprd12.prod.outlook.com/)
+
+* Remaining known build issues in 19.11.14
+
+  * [Meson based build issue with ICC-19.1.1 - cast discards qualifiers from target type](https://bugs.dpdk.org/show_bug.cgi?id=747)
+  * [net/quede build fail with clang 13 - unused-but-set-variable](https://bugs.dpdk.org/show_bug.cgi?id=912)
+  * [net/ena build failure with gcc 12](https://bugs.dpdk.org/show_bug.cgi?id=991)
+  * [librte_eal build error with gcc 12](https://bugs.dpdk.org/show_bug.cgi?id=985)
+  * [net/qede build failure with make and clang 13](https://bugs.dpdk.org/show_bug.cgi?id=912)
+  * [app/test-pmd/config meson build failed with Clang15.0.4](https://bugs.dpdk.org/show_bug.cgi?id=1140)
+  * [kernel/linux/kni make build failed with gcc7.5.0 and clang11.0.1](https://bugs.dpdk.org/show_bug.cgi?id=1141)
+  * [kernel/linux/igb_uio make build failed with gcc12](https://bugs.dpdk.org/show_bug.cgi?id=1142)

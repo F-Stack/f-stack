@@ -579,6 +579,11 @@ mlx5_dev_shared_handler_uninstall(struct mlx5_ibv_shared *sh)
 	if (sh->intr_handle.fd >= 0)
 		mlx5_intr_callback_unregister(&sh->intr_handle,
 					      mlx5_dev_interrupt_handler, sh);
+	if (sh->intr_handle_nl.fd >= 0) {
+		mlx5_intr_callback_unregister(&sh->intr_handle_nl,
+					      mlx5_dev_interrupt_handler_nl, sh);
+		close(sh->intr_handle_nl.fd);
+	}
 #ifdef HAVE_IBV_DEVX_ASYNC
 	if (sh->intr_handle_devx.fd >= 0)
 		rte_intr_callback_unregister(&sh->intr_handle_devx,
@@ -1405,6 +1410,12 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		close(priv->nl_socket_rdma);
 	if (priv->vmwa_context)
 		mlx5_vlan_vmwa_exit(priv->vmwa_context);
+	priv->sh->port[priv->ibv_port - 1].nl_ih_port_id = RTE_MAX_ETHPORTS;
+	/*
+	 * The interrupt handler port id must be reset before priv is reset
+	 * since 'mlx5_dev_interrupt_nl_cb' uses priv.
+	 */
+	rte_io_wmb();
 	/*
 	 * Free the shared context in last turn, because the cleanup
 	 * routines above may use some shared fields, like
@@ -2291,6 +2302,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	}
 	DRV_LOG(DEBUG, "naming Ethernet device \"%s\"", name);
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		int fd;
+
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (eth_dev == NULL) {
 			DRV_LOG(ERR, "can not attach rte ethdev");
@@ -2303,11 +2316,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		if (err)
 			return NULL;
 		/* Receive command fd from primary process */
-		err = mlx5_mp_req_verbs_cmd_fd(eth_dev);
-		if (err < 0)
+		fd = mlx5_mp_req_verbs_cmd_fd(eth_dev);
+		if (fd < 0)
 			goto err_secondary;
 		/* Remap UAR for Tx queues. */
-		err = mlx5_tx_uar_init_secondary(eth_dev, err);
+		err = mlx5_tx_uar_init_secondary(eth_dev, fd);
+		close(fd);
 		if (err)
 			goto err_secondary;
 		/*
@@ -2883,6 +2897,9 @@ err_secondary:
 	return eth_dev;
 error:
 	if (priv) {
+		priv->sh->port[priv->ibv_port - 1].nl_ih_port_id =
+							       RTE_MAX_ETHPORTS;
+		rte_io_wmb();
 		if (priv->mreg_cp_tbl)
 			mlx5_hlist_destroy(priv->mreg_cp_tbl, NULL, NULL);
 		if (priv->sh)

@@ -935,7 +935,7 @@ mlx5_flow_meter_profile_update(struct rte_eth_dev *dev,
 	fm->profile = fmp;
 	/* Update meter params in HW (if not disabled). */
 	if (fm->active_state == MLX5_FLOW_METER_DISABLE)
-		return 0;
+		goto dec_ref_cnt;
 	ret = mlx5_flow_meter_action_modify(priv, fm, &fm->profile->srtcm_prm,
 					      modify_bits, fm->active_state);
 	if (ret) {
@@ -945,6 +945,7 @@ mlx5_flow_meter_profile_update(struct rte_eth_dev *dev,
 					  NULL, "Failed to update meter"
 					  " parmeters in hardware.");
 	}
+dec_ref_cnt:
 	old_fmp->ref_cnt--;
 	fmp->ref_cnt++;
 	return 0;

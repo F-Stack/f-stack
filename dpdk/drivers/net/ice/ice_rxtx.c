@@ -1726,6 +1726,10 @@ ice_recv_scattered_pkts(void *rx_queue,
 			} else
 				rxm->data_len = (uint16_t)(rx_packet_len -
 							   RTE_ETHER_CRC_LEN);
+		} else if (rx_packet_len == 0) {
+			rte_pktmbuf_free_seg(rxm);
+			first_seg->nb_segs--;
+			last_seg->next = NULL;
 		}
 
 		first_seg->port = rxq->port_id;
@@ -2948,6 +2952,22 @@ ice_set_tx_function_flag(struct rte_eth_dev *dev, struct ice_tx_queue *txq)
 #define ICE_MIN_TSO_MSS            64
 #define ICE_MAX_TSO_MSS            9728
 #define ICE_MAX_TSO_FRAME_SIZE     262144
+
+/*Check for empty mbuf*/
+static inline uint16_t
+ice_check_empty_mbuf(struct rte_mbuf *tx_pkt)
+{
+	struct rte_mbuf *txd = tx_pkt;
+
+	while (txd != NULL) {
+		if (txd->data_len == 0)
+			return -1;
+		txd = txd->next;
+	}
+
+	return 0;
+}
+
 uint16_t
 ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	      uint16_t nb_pkts)
@@ -2955,6 +2975,9 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	int i, ret;
 	uint64_t ol_flags;
 	struct rte_mbuf *m;
+	struct ice_tx_queue *txq = tx_queue;
+	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
+	uint16_t max_frame_size = dev->data->mtu + ICE_ETH_OVERHEAD;
 
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
@@ -2971,6 +2994,14 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
+		/* check the data_len in mbuf */
+		if (m->data_len < ICE_TX_MIN_PKT_LEN ||
+			m->data_len > max_frame_size) {
+			rte_errno = EINVAL;
+			PMD_DRV_LOG(ERR, "INVALID mbuf: bad data_len=[%hu]", m->data_len);
+			return i;
+		}
+
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
@@ -2981,6 +3012,12 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
 			rte_errno = -ret;
+			return i;
+		}
+
+		if (ice_check_empty_mbuf(m) != 0) {
+			rte_errno = EINVAL;
+			PMD_DRV_LOG(ERR, "INVALID mbuf:	last mbuf data_len=[0]");
 			return i;
 		}
 	}

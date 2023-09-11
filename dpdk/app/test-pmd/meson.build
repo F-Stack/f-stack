@@ -47,6 +47,7 @@ if dpdk_conf.has('RTE_LIBRTE_I40E_PMD')
 	deps += 'pmd_i40e'
 endif
 if dpdk_conf.has('RTE_LIBRTE_IXGBE_PMD')
+	cflags += ['-DRTE_LIBRTE_IXGBE_BYPASS']
 	deps += 'pmd_ixgbe'
 endif
 if dpdk_conf.has('RTE_LIBRTE_SOFTNIC_PMD')

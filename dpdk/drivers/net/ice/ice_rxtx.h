@@ -38,6 +38,8 @@
 
 #define ICE_FDIR_PKT_LEN	512
 
+#define ICE_TX_MIN_PKT_LEN 17
+
 typedef void (*ice_rx_release_mbufs_t)(struct ice_rx_queue *rxq);
 typedef void (*ice_tx_release_mbufs_t)(struct ice_tx_queue *txq);
 
