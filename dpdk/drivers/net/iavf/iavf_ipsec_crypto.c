@@ -708,19 +708,11 @@ iavf_ipsec_crypto_action_valid(struct rte_eth_dev *ethdev,
 	if (unlikely(sess == NULL || sess->adapter != adapter))
 		return false;
 
-	/* SPI value must be non-zero */
-	if (spi == 0)
+	/* SPI value must be non-zero and must match flow SPI*/
+	if (spi == 0 || (htonl(sess->sa.spi) != spi))
 		return false;
-	/* Session SPI must patch flow SPI*/
-	else if (sess->sa.spi == spi) {
-		return true;
-		/**
-		 * TODO: We should add a way of tracking valid hw SA indices to
-		 * make validation less brittle
-		 */
-	}
 
-		return true;
+	return true;
 }
 
 /**
@@ -893,11 +885,12 @@ iavf_ipsec_crypto_session_update(void *device,
 		 * iavf_security_session for outbound SA for use
 		 * in *iavf_ipsec_crypto_pkt_metadata_set* function.
 		 */
+		iavf_sess->esn.hi = conf->ipsec.esn.hi;
+		iavf_sess->esn.low = conf->ipsec.esn.low;
 		if (iavf_sess->direction == RTE_SECURITY_IPSEC_SA_DIR_INGRESS)
 			rc = iavf_ipsec_crypto_sa_update_esn(adapter,
 					iavf_sess);
-		else
-			iavf_sess->esn.hi = conf->ipsec.esn.hi;
+
 	}
 
 	return rc;
@@ -1862,6 +1855,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 		struct rte_flow_error *error)
 {
 	struct iavf_ipsec_flow_item *ipsec_flow = meta;
+	int flow_id = -1;
 	if (!ipsec_flow) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -1870,8 +1864,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 	}
 
 	if (ipsec_flow->is_ipv4) {
-		ipsec_flow->id =
-			iavf_ipsec_crypto_inbound_security_policy_add(ad,
+		flow_id = iavf_ipsec_crypto_inbound_security_policy_add(ad,
 			ipsec_flow->spi,
 			1,
 			ipsec_flow->ipv4_hdr.dst_addr,
@@ -1880,8 +1873,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 			ipsec_flow->is_udp,
 			ipsec_flow->udp_hdr.dst_port);
 	} else {
-		ipsec_flow->id =
-			iavf_ipsec_crypto_inbound_security_policy_add(ad,
+		flow_id = iavf_ipsec_crypto_inbound_security_policy_add(ad,
 			ipsec_flow->spi,
 			0,
 			0,
@@ -1891,13 +1883,14 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 			ipsec_flow->udp_hdr.dst_port);
 	}
 
-	if (ipsec_flow->id < 1) {
+	if (flow_id < 1) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 				"Failed to add SA.");
 		return -rte_errno;
 	}
 
+	ipsec_flow->id = flow_id;
 	flow->rule = ipsec_flow;
 
 	return 0;

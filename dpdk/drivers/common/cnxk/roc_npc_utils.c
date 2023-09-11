@@ -88,7 +88,7 @@ npc_get_hw_supp_mask(struct npc_parse_state *pst,
 	}
 }
 
-static inline int
+inline int
 npc_mask_is_supported(const char *mask, const char *hw_mask, int len)
 {
 	/*
@@ -638,7 +638,7 @@ retry:
 	npc_find_mcam_ref_entry(flow, npc, &prio, &ref_entry, dir);
 	rc = npc_allocate_mcam_entry(mbox, prio, rsp_local, ref_entry);
 	if (rc && !retry_done) {
-		plt_info(
+		plt_npc_dbg(
 			"npc: Failed to allocate lower priority entry. Retrying for higher priority");
 
 		dir = NPC_MCAM_HIGHER_PRIO;

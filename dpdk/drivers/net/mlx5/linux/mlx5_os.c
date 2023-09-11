@@ -722,10 +722,10 @@ mlx5_flow_drop_action_config(struct rte_eth_dev *dev __rte_unused)
 	 */
 	if (!priv->sh->drop_action_check_flag) {
 		if (!mlx5_flow_discover_dr_action_support(dev))
-			priv->sh->dr_drop_action_en = 1;
+			priv->sh->dr_root_drop_action_en = 1;
 		priv->sh->drop_action_check_flag = 1;
 	}
-	if (priv->sh->dr_drop_action_en)
+	if (priv->sh->dr_root_drop_action_en)
 		priv->root_drop_action = priv->sh->dr_drop_action;
 	else
 		priv->root_drop_action = priv->drop_queue.hrxq->action;
@@ -933,6 +933,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	DRV_LOG(DEBUG, "naming Ethernet device \"%s\"", name);
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
 		struct mlx5_mp_id mp_id;
+		int fd;
 
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (eth_dev == NULL) {
@@ -949,11 +950,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 			return NULL;
 		mlx5_mp_id_init(&mp_id, eth_dev->data->port_id);
 		/* Receive command fd from primary process */
-		err = mlx5_mp_req_verbs_cmd_fd(&mp_id);
-		if (err < 0)
+		fd = mlx5_mp_req_verbs_cmd_fd(&mp_id);
+		if (fd < 0)
 			goto err_secondary;
 		/* Remap UAR for Tx queues. */
-		err = mlx5_tx_uar_init_secondary(eth_dev, err);
+		err = mlx5_tx_uar_init_secondary(eth_dev, fd);
+		close(fd);
 		if (err)
 			goto err_secondary;
 		/*
@@ -1800,6 +1802,9 @@ err_secondary:
 	return eth_dev;
 error:
 	if (priv) {
+		priv->sh->port[priv->dev_port - 1].nl_ih_port_id =
+							       RTE_MAX_ETHPORTS;
+		rte_io_wmb();
 		if (priv->mreg_cp_tbl)
 			mlx5_hlist_destroy(priv->mreg_cp_tbl);
 		if (priv->sh)
@@ -2572,7 +2577,7 @@ mlx5_os_parse_eth_devargs(struct rte_device *dev,
 			dev->devargs->cls_str);
 		return -rte_errno;
 	}
-	if (eth_da->type == RTE_ETH_REPRESENTOR_NONE) {
+	if (eth_da->type == RTE_ETH_REPRESENTOR_NONE && dev->devargs->args) {
 		/* Parse legacy device argument */
 		ret = rte_eth_devargs_parse(dev->devargs->args, eth_da);
 		if (ret) {

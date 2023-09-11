@@ -528,12 +528,12 @@ mlx5_rx_queue_stop(struct rte_eth_dev *dev, uint16_t idx)
 	 * synchronized, that might be broken on RQ restart
 	 * and cause Rx malfunction, so queue stopping is
 	 * not supported if vectorized Rx burst is engaged.
-	 * The routine pointer depends on the process
-	 * type, should perform check there.
+	 * The routine pointer depends on the process type,
+	 * should perform check there. MPRQ is not supported as well.
 	 */
-	if (pkt_burst == mlx5_rx_burst_vec) {
-		DRV_LOG(ERR, "Rx queue stop is not supported "
-			"for vectorized Rx");
+	if (pkt_burst != mlx5_rx_burst) {
+		DRV_LOG(ERR, "Rx queue stop is only supported "
+			"for non-vectorized single-packet Rx");
 		rte_errno = EINVAL;
 		return -EINVAL;
 	}
@@ -899,16 +899,20 @@ mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		/* Try to reuse shared RXQ. */
 		rxq_ctrl = mlx5_shared_rxq_get(dev, conf->share_group,
 					       conf->share_qid);
+		res = mlx5_rx_queue_pre_setup(dev, idx, &desc, &rxq_ctrl);
+		if (res)
+			return res;
 		if (rxq_ctrl != NULL &&
 		    !mlx5_shared_rxq_match(rxq_ctrl, dev, idx, desc, socket,
 					   conf, mp)) {
 			rte_errno = EINVAL;
 			return -rte_errno;
 		}
+	} else {
+		res = mlx5_rx_queue_pre_setup(dev, idx, &desc, &rxq_ctrl);
+		if (res)
+			return res;
 	}
-	res = mlx5_rx_queue_pre_setup(dev, idx, &desc, &rxq_ctrl);
-	if (res)
-		return res;
 	/* Allocate RXQ. */
 	rxq = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, sizeof(*rxq), 0,
 			  SOCKET_ID_ANY);
@@ -1530,8 +1534,6 @@ mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint16_t idx,
 	    MLX5_MAX_TCP_HDR_OFFSET)
 		max_lro_size -= MLX5_MAX_TCP_HDR_OFFSET;
 	max_lro_size = RTE_MIN(max_lro_size, MLX5_MAX_LRO_SIZE);
-	MLX5_ASSERT(max_lro_size >= MLX5_LRO_SEG_CHUNK_SIZE);
-	max_lro_size /= MLX5_LRO_SEG_CHUNK_SIZE;
 	if (priv->max_lro_msg_size)
 		priv->max_lro_msg_size =
 			RTE_MIN((uint32_t)priv->max_lro_msg_size, max_lro_size);
@@ -1539,8 +1541,7 @@ mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint16_t idx,
 		priv->max_lro_msg_size = max_lro_size;
 	DRV_LOG(DEBUG,
 		"port %u Rx Queue %u max LRO message size adjusted to %u bytes",
-		dev->data->port_id, idx,
-		priv->max_lro_msg_size * MLX5_LRO_SEG_CHUNK_SIZE);
+		dev->data->port_id, idx, priv->max_lro_msg_size);
 }
 
 /**

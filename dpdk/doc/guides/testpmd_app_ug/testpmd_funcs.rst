@@ -1767,7 +1767,7 @@ Enable or disable a per port Rx offloading on all Rx queues of a port::
 * ``offloading``: can be any of these offloading capability:
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
-                  header_split, vlan_filter, vlan_extend, jumbo_frame,
+                  header_split, vlan_filter, vlan_extend,
                   scatter, timestamp, security, keep_crc, rss_hash
 
 This command should be run when the port is stopped, or else it will fail.
@@ -1782,7 +1782,7 @@ Enable or disable a per queue Rx offloading only on a specific Rx queue::
 * ``offloading``: can be any of these offloading capability:
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
-                  header_split, vlan_filter, vlan_extend, jumbo_frame,
+                  header_split, vlan_filter, vlan_extend,
                   scatter, timestamp, security, keep_crc
 
 This command should be run when the port is stopped, or else it will fail.
@@ -4342,7 +4342,7 @@ Disabling isolated mode::
  testpmd>
 
 Dumping HW internal information
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``flow dump`` dumps the hardware's internal representation information of
 all flows. It is bound to ``rte_flow_dev_dump()``::
@@ -4358,10 +4358,10 @@ Otherwise, it will complain error occurred::
    Caught error type [...] ([...]): [...]
 
 Listing and destroying aged flow rules
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``flow aged`` simply lists aged flow rules be get from api ``rte_flow_get_aged_flows``,
-and ``destroy`` parameter can be used to destroy those flow rules in PMD.
+and ``destroy`` parameter can be used to destroy those flow rules in PMD::
 
    flow aged {port_id} [destroy]
 
@@ -4396,7 +4396,7 @@ will be ID 3, ID 1, ID 0::
    1       0       0       i--
    0       0       0       i--
 
-If attach ``destroy`` parameter, the command will destroy all the list aged flow rules.
+If attach ``destroy`` parameter, the command will destroy all the list aged flow rules::
 
    testpmd> flow aged 0 destroy
    Port 0 total aged flows: 4

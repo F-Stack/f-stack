@@ -64,6 +64,9 @@
 /* Tx confirmation enabled */
 #define DPAA2_TX_CONF_ENABLE	0x06
 
+/* DPDMUX index for DPMAC */
+#define DPAA2_DPDMUX_DPMAC_IDX 0
+
 #define DPAA2_RSS_OFFLOAD_ALL ( \
 	RTE_ETH_RSS_L2_PAYLOAD | \
 	RTE_ETH_RSS_IP | \
@@ -103,6 +106,24 @@
 			(0x0003 | DPAA2_PKT_TYPE_IPV6_EXT)
 #define DPAA2_PKT_TYPE_VLAN_1		0x0160
 #define DPAA2_PKT_TYPE_VLAN_2		0x0260
+
+/* Global pool used by driver for SG list TX */
+extern struct rte_mempool *dpaa2_tx_sg_pool;
+/* Maximum SG segments */
+#define DPAA2_MAX_SGS 128
+/* SG pool size */
+#define DPAA2_POOL_SIZE 2048
+/* SG pool cache size */
+#define DPAA2_POOL_CACHE_SIZE 256
+/* structure to free external and indirect
+ * buffers.
+ */
+struct sw_buf_free {
+	/* To which packet this segment belongs */
+	uint16_t pkt_id;
+	/* The actual segment */
+	struct rte_mbuf *seg;
+};
 
 /* enable timestamp in mbuf*/
 extern bool dpaa2_enable_ts[];

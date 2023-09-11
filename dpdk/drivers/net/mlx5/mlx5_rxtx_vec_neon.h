@@ -524,7 +524,7 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 {
 	const uint16_t q_n = 1 << rxq->cqe_n;
 	const uint16_t q_mask = q_n - 1;
-	unsigned int pos;
+	unsigned int pos, adj;
 	uint64_t n = 0;
 	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
 	uint16_t nocmp_n = 0;
@@ -616,7 +616,7 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 	     pos += MLX5_VPMD_DESCS_PER_LOOP) {
 		uint16x4_t op_own;
 		uint16x4_t opcode, owner_mask, invalid_mask;
-		uint16x4_t comp_mask;
+		uint16x4_t comp_mask, mini_mask;
 		uint16x4_t mask;
 		uint16x4_t byte_cnt;
 		uint32x4_t ptype_info, flow_tag;
@@ -647,6 +647,14 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		c0 = vld1q_u64((uint64_t *)(p0 + 48));
 		/* Synchronize for loading the rest of blocks. */
 		rte_io_rmb();
+		/* B.0 (CQE 3) reload lower half of the block. */
+		c3 = vld1q_lane_u64((uint64_t *)(p3 + 48), c3, 0);
+		/* B.0 (CQE 2) reload lower half of the block. */
+		c2 = vld1q_lane_u64((uint64_t *)(p2 + 48), c2, 0);
+		/* B.0 (CQE 1) reload lower half of the block. */
+		c1 = vld1q_lane_u64((uint64_t *)(p1 + 48), c1, 0);
+		/* B.0 (CQE 0) reload lower half of the block. */
+		c0 = vld1q_lane_u64((uint64_t *)(p0 + 48), c0, 0);
 		/* Prefetch next 4 CQEs. */
 		if (pkts_n - pos >= 2 * MLX5_VPMD_DESCS_PER_LOOP) {
 			unsigned int next = pos + MLX5_VPMD_DESCS_PER_LOOP;
@@ -780,8 +788,12 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 				   -1UL >> (n * sizeof(uint16_t) * 8) : 0);
 		invalid_mask = vorr_u16(invalid_mask, mask);
 		/* D.3 check error in opcode. */
+		adj = (comp_idx != MLX5_VPMD_DESCS_PER_LOOP && comp_idx == n);
+		mask = vcreate_u16(adj ?
+			   -1UL >> ((n + 1) * sizeof(uint16_t) * 8) : -1UL);
+		mini_mask = vand_u16(invalid_mask, mask);
 		opcode = vceq_u16(resp_err_check, opcode);
-		opcode = vbic_u16(opcode, invalid_mask);
+		opcode = vbic_u16(opcode, mini_mask);
 		/* D.4 mark if any error is set */
 		*err |= vget_lane_u64(vreinterpret_u64_u16(opcode), 0);
 		/* C.4 fill in mbuf - rearm_data and packet_type. */

@@ -423,11 +423,12 @@ acc100_check_ir(struct acc100_device *acc100_dev)
 	while (ring_data->valid) {
 		if ((ring_data->int_nb < ACC100_PF_INT_DMA_DL_DESC_IRQ) || (
 				ring_data->int_nb >
-				ACC100_PF_INT_DMA_DL5G_DESC_IRQ))
+				ACC100_PF_INT_DMA_DL5G_DESC_IRQ)) {
 			rte_bbdev_log(WARNING, "InfoRing: ITR:%d Info:0x%x",
 				ring_data->int_nb, ring_data->detailed_info);
-		/* Initialize Info Ring entry and move forward */
-		ring_data->val = 0;
+			/* Initialize Info Ring entry and move forward */
+			ring_data->val = 0;
+		}
 		info_ring_head++;
 		ring_data = acc100_dev->info_ring +
 				(info_ring_head & ACC100_INFO_RING_MASK);
@@ -660,7 +661,8 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 	acc100_reg_write(d, reg_addr->ring_size, value);
 
 	/* Configure tail pointer for use when SDONE enabled */
-	d->tail_ptrs = rte_zmalloc_socket(
+	if (d->tail_ptrs == NULL)
+		d->tail_ptrs = rte_zmalloc_socket(
 			dev->device->driver->name,
 			ACC100_NUM_QGRPS * ACC100_NUM_AQS * sizeof(uint32_t),
 			RTE_CACHE_LINE_SIZE, socket_id);
@@ -668,8 +670,8 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 		rte_bbdev_log(ERR, "Failed to allocate tail ptr for %s:%u",
 				dev->device->driver->name,
 				dev->data->dev_id);
-		rte_free(d->sw_rings);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_sw_rings;
 	}
 	d->tail_ptr_iova = rte_malloc_virt2iova(d->tail_ptrs);
 
@@ -692,15 +694,16 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 		/* Continue */
 	}
 
-	d->harq_layout = rte_zmalloc_socket("HARQ Layout",
+	if (d->harq_layout == NULL)
+		d->harq_layout = rte_zmalloc_socket("HARQ Layout",
 			ACC100_HARQ_LAYOUT * sizeof(*d->harq_layout),
 			RTE_CACHE_LINE_SIZE, dev->data->socket_id);
 	if (d->harq_layout == NULL) {
 		rte_bbdev_log(ERR, "Failed to allocate harq_layout for %s:%u",
 				dev->device->driver->name,
 				dev->data->dev_id);
-		rte_free(d->sw_rings);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_tail_ptrs;
 	}
 
 	/* Mark as configured properly */
@@ -711,6 +714,15 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 			PRIx64, dev->data->name, d->sw_rings, d->sw_rings_iova);
 
 	return 0;
+
+free_tail_ptrs:
+	rte_free(d->tail_ptrs);
+	d->tail_ptrs = NULL;
+free_sw_rings:
+	rte_free(d->sw_rings_base);
+	d->sw_rings = NULL;
+
+	return ret;
 }
 
 static int
@@ -767,7 +779,11 @@ acc100_dev_close(struct rte_bbdev *dev)
 		rte_free(d->tail_ptrs);
 		rte_free(d->info_ring);
 		rte_free(d->sw_rings_base);
+		rte_free(d->harq_layout);
 		d->sw_rings_base = NULL;
+		d->tail_ptrs = NULL;
+		d->info_ring = NULL;
+		d->harq_layout = NULL;
 	}
 	/* Ensure all in flight HW transactions are completed */
 	usleep(ACC100_LONG_WAIT);
@@ -824,16 +840,16 @@ acc100_queue_setup(struct rte_bbdev *dev, uint16_t queue_id,
 	struct acc100_queue *q;
 	int16_t q_idx;
 
+	if (d == NULL) {
+		rte_bbdev_log(ERR, "Undefined device");
+		return -ENODEV;
+	}
 	/* Allocate the queue data structure. */
 	q = rte_zmalloc_socket(dev->device->driver->name, sizeof(*q),
 			RTE_CACHE_LINE_SIZE, conf->socket);
 	if (q == NULL) {
 		rte_bbdev_log(ERR, "Failed to allocate queue memory");
 		return -ENOMEM;
-	}
-	if (d == NULL) {
-		rte_bbdev_log(ERR, "Undefined device");
-		return -ENODEV;
 	}
 
 	q->d = d;
@@ -1082,7 +1098,7 @@ acc100_dev_info_get(struct rte_bbdev *dev,
 			d->acc100_conf.q_ul_4g.num_qgroups - 1;
 	dev_info->default_queue_conf = default_queue_conf;
 	dev_info->cpu_flag_reqs = NULL;
-	dev_info->min_alignment = 64;
+	dev_info->min_alignment = 1;
 	dev_info->capabilities = bbdev_capabilities;
 #ifdef ACC100_EXT_MEM
 	dev_info->harq_buffer_size = d->ddr_size;
@@ -1290,13 +1306,14 @@ acc100_fcw_td_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_td *fcw)
 
 /* Fill in a frame control word for LDPC decoding. */
 static inline void
-acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
+acc100_fcw_ld_fill(struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 		union acc100_harq_layout_data *harq_layout)
 {
 	uint16_t harq_out_length, harq_in_length, ncb_p, k0_p, parity_offset;
 	uint16_t harq_index;
 	uint32_t l;
 	bool harq_prun = false;
+	uint32_t max_hc_in;
 
 	fcw->qm = op->ldpc_dec.q_m;
 	fcw->nfiller = op->ldpc_dec.n_filler;
@@ -1312,6 +1329,14 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 				op->ldpc_dec.tb_params.cab) ?
 						op->ldpc_dec.tb_params.ea :
 						op->ldpc_dec.tb_params.eb;
+
+	if (unlikely(check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE) &&
+			(op->ldpc_dec.harq_combined_input.length == 0))) {
+		rte_bbdev_log(WARNING, "Null HARQ input size provided");
+		/* Disable HARQ input in that case to carry forward. */
+		op->ldpc_dec.op_flags ^= RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE;
+	}
 
 	fcw->hcin_en = check_bit(op->ldpc_dec.op_flags,
 			RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE);
@@ -1346,13 +1371,21 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 		harq_in_length = op->ldpc_dec.harq_combined_input.length;
 		if (fcw->hcin_decomp_mode > 0)
 			harq_in_length = harq_in_length * 8 / 6;
-		harq_in_length = RTE_ALIGN(harq_in_length, 64);
-		if ((harq_layout[harq_index].offset > 0) & harq_prun) {
+		harq_in_length = RTE_MIN(harq_in_length, op->ldpc_dec.n_cb
+				- op->ldpc_dec.n_filler);
+
+		/* Alignment on next 64B - Already enforced from HC output */
+		harq_in_length = RTE_ALIGN_FLOOR(harq_in_length, ACC100_HARQ_ALIGN_64B);
+
+		/* Stronger alignment requirement when in decompression mode */
+		if (fcw->hcin_decomp_mode > 0)
+			harq_in_length = RTE_ALIGN_FLOOR(harq_in_length, ACC100_HARQ_ALIGN_COMP);
+
+		if ((harq_layout[harq_index].offset > 0) && harq_prun) {
 			rte_bbdev_log_debug("HARQ IN offset unexpected for now\n");
 			fcw->hcin_size0 = harq_layout[harq_index].size0;
 			fcw->hcin_offset = harq_layout[harq_index].offset;
-			fcw->hcin_size1 = harq_in_length -
-					harq_layout[harq_index].offset;
+			fcw->hcin_size1 = harq_in_length - harq_layout[harq_index].offset;
 		} else {
 			fcw->hcin_size0 = harq_in_length;
 			fcw->hcin_offset = 0;
@@ -1362,6 +1395,21 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 		fcw->hcin_size0 = 0;
 		fcw->hcin_offset = 0;
 		fcw->hcin_size1 = 0;
+	}
+
+	/* Enforce additional check on FCW validity */
+	max_hc_in = RTE_ALIGN_CEIL(fcw->ncb - fcw->nfiller, ACC100_HARQ_ALIGN_64B);
+	if ((fcw->hcin_size0 > max_hc_in) ||
+			(fcw->hcin_size1 + fcw->hcin_offset > max_hc_in) ||
+			((fcw->hcin_size0 > fcw->hcin_offset) &&
+			(fcw->hcin_size1 != 0))) {
+		rte_bbdev_log(ERR, " Invalid FCW : HCIn %d %d %d, Ncb %d F %d",
+				fcw->hcin_size0, fcw->hcin_size1,
+				fcw->hcin_offset,
+				fcw->ncb, fcw->nfiller);
+		/* Disable HARQ input in that case to carry forward */
+		op->ldpc_dec.op_flags ^= RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE;
+		fcw->hcin_en = 0;
 	}
 
 	fcw->itmax = op->ldpc_dec.iter_max;
@@ -1388,15 +1436,27 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 	if (fcw->hcout_en > 0) {
 		parity_offset = (op->ldpc_dec.basegraph == 1 ? 20 : 8)
 			* op->ldpc_dec.z_c - op->ldpc_dec.n_filler;
-		k0_p = (fcw->k0 > parity_offset) ?
-				fcw->k0 - op->ldpc_dec.n_filler : fcw->k0;
+		k0_p = (fcw->k0 > parity_offset) ? fcw->k0 - op->ldpc_dec.n_filler : fcw->k0;
 		ncb_p = fcw->ncb - op->ldpc_dec.n_filler;
-		l = k0_p + fcw->rm_e;
+		l = RTE_MIN(k0_p + fcw->rm_e, INT16_MAX);
 		harq_out_length = (uint16_t) fcw->hcin_size0;
-		harq_out_length = RTE_MIN(RTE_MAX(harq_out_length, l), ncb_p);
-		harq_out_length = (harq_out_length + 0x3F) & 0xFFC0;
-		if ((k0_p > fcw->hcin_size0 + ACC100_HARQ_OFFSET_THRESHOLD) &&
-				harq_prun) {
+		harq_out_length = RTE_MAX(harq_out_length, l);
+
+		/* Stronger alignment when in compression mode */
+		if (fcw->hcout_comp_mode > 0)
+			harq_out_length = RTE_ALIGN_CEIL(harq_out_length, ACC100_HARQ_ALIGN_COMP);
+
+		/* Cannot exceed the pruned Ncb circular buffer */
+		harq_out_length = RTE_MIN(harq_out_length, ncb_p);
+
+		/* Alignment on next 64B */
+		harq_out_length = RTE_ALIGN_CEIL(harq_out_length, ACC100_HARQ_ALIGN_64B);
+
+		/* Stronger alignment when in compression mode enforced again */
+		if (fcw->hcout_comp_mode > 0)
+			harq_out_length = RTE_ALIGN_FLOOR(harq_out_length, ACC100_HARQ_ALIGN_COMP);
+
+		if ((k0_p > fcw->hcin_size0 + ACC100_HARQ_OFFSET_THRESHOLD) && harq_prun) {
 			fcw->hcout_size0 = (uint16_t) fcw->hcin_size0;
 			fcw->hcout_offset = k0_p & 0xFFC0;
 			fcw->hcout_size1 = harq_out_length - fcw->hcout_offset;
@@ -1405,6 +1465,14 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 			fcw->hcout_size1 = 0;
 			fcw->hcout_offset = 0;
 		}
+
+		if (fcw->hcout_size0 == 0) {
+			rte_bbdev_log(ERR, " Invalid FCW : HCout %d",
+				fcw->hcout_size0);
+			op->ldpc_dec.op_flags ^= RTE_BBDEV_LDPC_HQ_COMBINE_OUT_ENABLE;
+			fcw->hcout_en = 0;
+		}
+
 		harq_layout[harq_index].offset = fcw->hcout_offset;
 		harq_layout[harq_index].size0 = fcw->hcout_size0;
 	} else {
@@ -1434,6 +1502,8 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
  *   Store information about device capabilities
  * @param next_triplet
  *   Index for ACC100 DMA Descriptor triplet
+ * @param scattergather
+ *   Flag to support scatter-gather for the mbuf
  *
  * @return
  *   Returns index of next triplet on success, other value if lengths of
@@ -1443,12 +1513,16 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 static inline int
 acc100_dma_fill_blk_type_in(struct acc100_dma_req_desc *desc,
 		struct rte_mbuf **input, uint32_t *offset, uint32_t cb_len,
-		uint32_t *seg_total_left, int next_triplet)
+		uint32_t *seg_total_left, int next_triplet,
+		bool scattergather)
 {
 	uint32_t part_len;
 	struct rte_mbuf *m = *input;
 
-	part_len = (*seg_total_left < cb_len) ? *seg_total_left : cb_len;
+	if (scattergather)
+		part_len = (*seg_total_left < cb_len) ? *seg_total_left : cb_len;
+	else
+		part_len = cb_len;
 	cb_len -= part_len;
 	*seg_total_left -= part_len;
 
@@ -1584,7 +1658,9 @@ acc100_dma_desc_te_fill(struct rte_bbdev_enc_op *op,
 	}
 
 	next_triplet = acc100_dma_fill_blk_type_in(desc, input, in_offset,
-			length, seg_total_left, next_triplet);
+			length, seg_total_left, next_triplet,
+			check_bit(op->turbo_enc.op_flags,
+			RTE_BBDEV_TURBO_ENC_SCATTER_GATHER));
 	if (unlikely(next_triplet < 0)) {
 		rte_bbdev_log(ERR,
 				"Mismatch between data to process and mbuf data length in bbdev_op: %p",
@@ -1620,6 +1696,19 @@ acc100_dma_desc_te_fill(struct rte_bbdev_enc_op *op,
 	return 0;
 }
 
+/* May need to pad LDPC Encoder input to avoid small beat for ACC100. */
+static inline uint16_t
+pad_le_in(uint16_t blen)
+{
+	uint16_t last_beat;
+
+	last_beat = blen % 64;
+	if ((last_beat > 0) && (last_beat <= 8))
+		blen += 8;
+
+	return blen;
+}
+
 static inline int
 acc100_dma_desc_le_fill(struct rte_bbdev_enc_op *op,
 		struct acc100_dma_req_desc *desc, struct rte_mbuf **input,
@@ -1635,8 +1724,7 @@ acc100_dma_desc_le_fill(struct rte_bbdev_enc_op *op,
 
 	K = (enc->basegraph == 1 ? 22 : 10) * enc->z_c;
 	in_length_in_bits = K - enc->n_filler;
-	if ((enc->op_flags & RTE_BBDEV_LDPC_CRC_24A_ATTACH) ||
-			(enc->op_flags & RTE_BBDEV_LDPC_CRC_24B_ATTACH))
+	if (enc->op_flags & RTE_BBDEV_LDPC_CRC_24B_ATTACH)
 		in_length_in_bits -= 24;
 	in_length_in_bytes = in_length_in_bits >> 3;
 
@@ -1649,8 +1737,7 @@ acc100_dma_desc_le_fill(struct rte_bbdev_enc_op *op,
 	}
 
 	next_triplet = acc100_dma_fill_blk_type_in(desc, input, in_offset,
-			in_length_in_bytes,
-			seg_total_left, next_triplet);
+			pad_le_in(in_length_in_bytes), seg_total_left, next_triplet, false);
 	if (unlikely(next_triplet < 0)) {
 		rte_bbdev_log(ERR,
 				"Mismatch between data to process and mbuf data length in bbdev_op: %p",
@@ -1738,7 +1825,9 @@ acc100_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 	}
 
 	next_triplet = acc100_dma_fill_blk_type_in(desc, input, in_offset, kw,
-			seg_total_left, next_triplet);
+			seg_total_left, next_triplet,
+			check_bit(op->turbo_dec.op_flags,
+			RTE_BBDEV_TURBO_DEC_SCATTER_GATHER));
 	if (unlikely(next_triplet < 0)) {
 		rte_bbdev_log(ERR,
 				"Mismatch between data to process and mbuf data length in bbdev_op: %p",
@@ -1840,7 +1929,9 @@ acc100_dma_desc_ld_fill(struct rte_bbdev_dec_op *op,
 
 	next_triplet = acc100_dma_fill_blk_type_in(desc, input,
 			in_offset, input_length,
-			seg_total_left, next_triplet);
+			seg_total_left, next_triplet,
+			check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_DEC_SCATTER_GATHER));
 
 	if (unlikely(next_triplet < 0)) {
 		rte_bbdev_log(ERR,
@@ -1983,6 +2074,7 @@ acc100_dma_enqueue(struct acc100_queue *q, uint16_t n,
 		struct rte_bbdev_stats *queue_stats)
 {
 	union acc100_enqueue_reg_fmt enq_req;
+	union acc100_dma_desc *desc;
 #ifdef RTE_BBDEV_OFFLOAD_COST
 	uint64_t start_time = 0;
 	queue_stats->acc_offload_cycles = 0;
@@ -1990,13 +2082,17 @@ acc100_dma_enqueue(struct acc100_queue *q, uint16_t n,
 	RTE_SET_USED(queue_stats);
 #endif
 
+	/* Set Sdone and IRQ enable bit on last descriptor. */
+	desc = q->ring_addr + ((q->sw_ring_head + n - 1) & q->sw_ring_wrap_mask);
+	desc->req.sdone_enable = 1;
+	desc->req.irq_enable = q->irq_enable;
+
 	enq_req.val = 0;
 	/* Setting offset, 100b for 256 DMA Desc */
 	enq_req.addr_offset = ACC100_DESC_OFFSET;
 
 	/* Split ops into batches */
 	do {
-		union acc100_dma_desc *desc;
 		uint16_t enq_batch_size;
 		uint64_t offset;
 		rte_iova_t req_elem_addr;
@@ -2086,6 +2182,11 @@ validate_enc_op(struct rte_bbdev_enc_op *op)
 		return -1;
 	}
 
+	if (unlikely(turbo_enc->input.length == 0)) {
+		rte_bbdev_log(ERR, "input length null");
+		return -1;
+	}
+
 	if (turbo_enc->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		tb = &turbo_enc->tb_params;
 		if ((tb->k_neg < RTE_BBDEV_TURBO_MIN_CB_SIZE
@@ -2105,11 +2206,12 @@ validate_enc_op(struct rte_bbdev_enc_op *op)
 					RTE_BBDEV_TURBO_MAX_CB_SIZE);
 			return -1;
 		}
-		if (tb->c_neg > (RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1))
+		if (unlikely(tb->c_neg > 0)) {
 			rte_bbdev_log(ERR,
-					"c_neg (%u) is out of range 0 <= value <= %u",
-					tb->c_neg,
-					RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1);
+					"c_neg (%u) expected to be null",
+					tb->c_neg);
+			return -1;
+		}
 		if (tb->c < 1 || tb->c > RTE_BBDEV_TURBO_MAX_CODE_BLOCKS) {
 			rte_bbdev_log(ERR,
 					"c (%u) is out of range 1 <= value <= %u",
@@ -2369,7 +2471,7 @@ enqueue_ldpc_enc_n_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op **ops,
 	acc100_header_init(&desc->req);
 	desc->req.numCBs = num;
 
-	in_length_in_bytes = ops[0]->ldpc_enc.input.data->data_len;
+	in_length_in_bytes = pad_le_in(ops[0]->ldpc_enc.input.data->data_len);
 	out_length = (enc->cb_params.e + 7) >> 3;
 	desc->req.m2dlen = 1 + num;
 	desc->req.d2mlen = num;
@@ -2496,6 +2598,10 @@ enqueue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 	r = op->turbo_enc.tb_params.r;
 
 	while (mbuf_total_left > 0 && r < c) {
+		if (unlikely(input == NULL)) {
+			rte_bbdev_log(ERR, "Not enough input segment");
+			return -EINVAL;
+		}
 		seg_total_left = rte_pktmbuf_data_len(input) - in_offset;
 		/* Set up DMA descriptor */
 		desc = q->ring_addr + ((q->sw_ring_head + total_enqueued_cbs)
@@ -2538,7 +2644,6 @@ enqueue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 
 	/* Set SDone on last CB descriptor for TB mode. */
 	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
 
 	return current_enqueued_cbs;
 }
@@ -2601,6 +2706,11 @@ validate_dec_op(struct rte_bbdev_dec_op *op)
 		return -1;
 	}
 
+	if (unlikely(turbo_dec->input.length == 0)) {
+		rte_bbdev_log(ERR, "input length null");
+		return -1;
+	}
+
 	if (turbo_dec->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		tb = &turbo_dec->tb_params;
 		if ((tb->k_neg < RTE_BBDEV_TURBO_MIN_CB_SIZE
@@ -2621,11 +2731,13 @@ validate_dec_op(struct rte_bbdev_dec_op *op)
 					RTE_BBDEV_TURBO_MAX_CB_SIZE);
 			return -1;
 		}
-		if (tb->c_neg > (RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1))
+		if (unlikely(tb->c_neg > (RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1))) {
 			rte_bbdev_log(ERR,
 					"c_neg (%u) is out of range 0 <= value <= %u",
 					tb->c_neg,
 					RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1);
+					return -1;
+		}
 		if (tb->c < 1 || tb->c > RTE_BBDEV_TURBO_MAX_CODE_BLOCKS) {
 			rte_bbdev_log(ERR,
 					"c (%u) is out of range 1 <= value <= %u",
@@ -2968,10 +3080,9 @@ enqueue_ldpc_dec_one_op_cb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 		fcw = &desc->req.fcw_ld;
 		acc100_fcw_ld_fill(op, fcw, harq_layout);
 
-		/* Special handling when overusing mbuf */
-		if (fcw->rm_e < ACC100_MAX_E_MBUF)
-			seg_total_left = rte_pktmbuf_data_len(input)
-					- in_offset;
+		/* Special handling when using mbuf or not */
+		if (check_bit(op->ldpc_dec.op_flags, RTE_BBDEV_LDPC_DEC_SCATTER_GATHER))
+			seg_total_left = rte_pktmbuf_data_len(input) - in_offset;
 		else
 			seg_total_left = fcw->rm_e;
 
@@ -3046,7 +3157,10 @@ enqueue_ldpc_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 
 	while (mbuf_total_left > 0 && r < c) {
 
-		seg_total_left = rte_pktmbuf_data_len(input) - in_offset;
+		if (check_bit(op->ldpc_dec.op_flags, RTE_BBDEV_LDPC_DEC_SCATTER_GATHER))
+			seg_total_left = rte_pktmbuf_data_len(input) - in_offset;
+		else
+			seg_total_left = op->ldpc_dec.input.length;
 
 		/* Set up DMA descriptor */
 		desc = q->ring_addr + ((q->sw_ring_head + total_enqueued_cbs)
@@ -3073,7 +3187,9 @@ enqueue_ldpc_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 		rte_memdump(stderr, "Req Desc.", desc, sizeof(*desc));
 #endif
 
-		if (seg_total_left == 0) {
+		if (check_bit(op->ldpc_dec.op_flags,
+				RTE_BBDEV_LDPC_DEC_SCATTER_GATHER)
+				&& (seg_total_left == 0)) {
 			/* Go to the next mbuf */
 			input = input->next;
 			in_offset = 0;
@@ -3091,7 +3207,6 @@ enqueue_ldpc_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 #endif
 	/* Set SDone on last CB descriptor for TB mode */
 	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
 
 	return current_enqueued_cbs;
 }
@@ -3193,7 +3308,6 @@ enqueue_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 #endif
 	/* Set SDone on last CB descriptor for TB mode */
 	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
 
 	return current_enqueued_cbs;
 }
@@ -3274,15 +3388,28 @@ get_num_cbs_in_tb_ldpc_dec(struct rte_bbdev_op_ldpc_dec *ldpc_dec)
 	return cbs_in_tb;
 }
 
+/* Number of available descriptor in ring to enqueue */
+static inline uint32_t
+acc100_ring_avail_enq(struct acc100_queue *q)
+{
+	return (q->sw_ring_depth - 1 + q->sw_ring_tail - q->sw_ring_head) & q->sw_ring_wrap_mask;
+}
+
+/* Number of available descriptor in ring to dequeue */
+static inline uint32_t
+acc100_ring_avail_deq(struct acc100_queue *q)
+{
+	return (q->sw_ring_depth + q->sw_ring_head - q->sw_ring_tail) & q->sw_ring_wrap_mask;
+}
+
 /* Enqueue encode operations for ACC100 device in CB mode. */
 static uint16_t
 acc100_enqueue_enc_cb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_enc_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i;
-	union acc100_dma_desc *desc;
 	int ret;
 
 	for (i = 0; i < num; ++i) {
@@ -3298,12 +3425,6 @@ acc100_enqueue_enc_cb(struct rte_bbdev_queue_data *q_data,
 
 	if (unlikely(i == 0))
 		return 0; /* Nothing to enqueue */
-
-	/* Set SDone in last CB in enqueued ops for CB mode*/
-	desc = q->ring_addr + ((q->sw_ring_head + i - 1)
-			& q->sw_ring_wrap_mask);
-	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
 
 	acc100_dma_enqueue(q, i, &q_data->queue_stats);
 
@@ -3336,9 +3457,8 @@ acc100_enqueue_ldpc_enc_cb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_enc_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i = 0;
-	union acc100_dma_desc *desc;
 	int ret, desc_idx = 0;
 	int16_t enq, left = num;
 
@@ -3366,12 +3486,6 @@ acc100_enqueue_ldpc_enc_cb(struct rte_bbdev_queue_data *q_data,
 	if (unlikely(i == 0))
 		return 0; /* Nothing to enqueue */
 
-	/* Set SDone in last CB in enqueued ops for CB mode*/
-	desc = q->ring_addr + ((q->sw_ring_head + desc_idx - 1)
-			& q->sw_ring_wrap_mask);
-	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
-
 	acc100_dma_enqueue(q, desc_idx, &q_data->queue_stats);
 
 	/* Update stats */
@@ -3387,7 +3501,7 @@ acc100_enqueue_enc_tb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_enc_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i, enqueued_cbs = 0;
 	uint8_t cbs_in_tb;
 	int ret;
@@ -3416,12 +3530,27 @@ acc100_enqueue_enc_tb(struct rte_bbdev_queue_data *q_data,
 	return i;
 }
 
+/* Check room in AQ for the enqueues batches into Qmgr */
+static inline int32_t
+acc100_aq_avail(struct rte_bbdev_queue_data *q_data, uint16_t num_ops)
+{
+	struct acc100_queue *q = q_data->queue_private;
+	int32_t aq_avail = q->aq_depth -
+			((q->aq_enqueued - q->aq_dequeued +
+			ACC100_MAX_QUEUE_DEPTH) % ACC100_MAX_QUEUE_DEPTH)
+			- (num_ops >> 7);
+
+	return aq_avail;
+}
+
 /* Enqueue encode operations for ACC100 device. */
 static uint16_t
 acc100_enqueue_enc(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_enc_op **ops, uint16_t num)
 {
-	if (unlikely(num == 0))
+	int32_t aq_avail = acc100_aq_avail(q_data, num);
+
+	if (unlikely((aq_avail <= 0) || (num == 0)))
 		return 0;
 	if (ops[0]->turbo_enc.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_enc_tb(q_data, ops, num);
@@ -3434,7 +3563,9 @@ static uint16_t
 acc100_enqueue_ldpc_enc(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_enc_op **ops, uint16_t num)
 {
-	if (unlikely(num == 0))
+	int32_t aq_avail = acc100_aq_avail(q_data, num);
+
+	if (unlikely((aq_avail <= 0) || (num == 0)))
 		return 0;
 	if (ops[0]->ldpc_enc.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_enc_tb(q_data, ops, num);
@@ -3449,9 +3580,8 @@ acc100_enqueue_dec_cb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_dec_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i;
-	union acc100_dma_desc *desc;
 	int ret;
 
 	for (i = 0; i < num; ++i) {
@@ -3467,12 +3597,6 @@ acc100_enqueue_dec_cb(struct rte_bbdev_queue_data *q_data,
 
 	if (unlikely(i == 0))
 		return 0; /* Nothing to enqueue */
-
-	/* Set SDone in last CB in enqueued ops for CB mode*/
-	desc = q->ring_addr + ((q->sw_ring_head + i - 1)
-			& q->sw_ring_wrap_mask);
-	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
 
 	acc100_dma_enqueue(q, i, &q_data->queue_stats);
 
@@ -3502,7 +3626,7 @@ acc100_enqueue_ldpc_dec_tb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_dec_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i, enqueued_cbs = 0;
 	uint8_t cbs_in_tb;
 	int ret;
@@ -3520,6 +3644,8 @@ acc100_enqueue_ldpc_dec_tb(struct rte_bbdev_queue_data *q_data,
 			break;
 		enqueued_cbs += ret;
 	}
+	if (unlikely(enqueued_cbs == 0))
+		return 0; /* Nothing to enqueue */
 
 	acc100_dma_enqueue(q, enqueued_cbs, &q_data->queue_stats);
 
@@ -3535,9 +3661,8 @@ acc100_enqueue_ldpc_dec_cb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_dec_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i;
-	union acc100_dma_desc *desc;
 	int ret;
 	bool same_op = false;
 	for (i = 0; i < num; ++i) {
@@ -3563,13 +3688,6 @@ acc100_enqueue_ldpc_dec_cb(struct rte_bbdev_queue_data *q_data,
 	if (unlikely(i == 0))
 		return 0; /* Nothing to enqueue */
 
-	/* Set SDone in last CB in enqueued ops for CB mode*/
-	desc = q->ring_addr + ((q->sw_ring_head + i - 1)
-			& q->sw_ring_wrap_mask);
-
-	desc->req.sdone_enable = 1;
-	desc->req.irq_enable = q->irq_enable;
-
 	acc100_dma_enqueue(q, i, &q_data->queue_stats);
 
 	/* Update stats */
@@ -3585,7 +3703,7 @@ acc100_enqueue_dec_tb(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_dec_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	int32_t avail = q->sw_ring_depth + q->sw_ring_tail - q->sw_ring_head;
+	int32_t avail = acc100_ring_avail_enq(q);
 	uint16_t i, enqueued_cbs = 0;
 	uint8_t cbs_in_tb;
 	int ret;
@@ -3617,7 +3735,9 @@ static uint16_t
 acc100_enqueue_dec(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_dec_op **ops, uint16_t num)
 {
-	if (unlikely(num == 0))
+	int32_t aq_avail = acc100_aq_avail(q_data, num);
+
+	if (unlikely((aq_avail <= 0) || (num == 0)))
 		return 0;
 	if (ops[0]->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_dec_tb(q_data, ops, num);
@@ -3630,11 +3750,9 @@ static uint16_t
 acc100_enqueue_ldpc_dec(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_dec_op **ops, uint16_t num)
 {
-	struct acc100_queue *q = q_data->queue_private;
-	int32_t aq_avail = q->aq_depth +
-			(q->aq_dequeued - q->aq_enqueued) / 128;
+	int32_t aq_avail = acc100_aq_avail(q_data, num);
 
-	if (unlikely((aq_avail == 0) || (num == 0)))
+	if (unlikely((aq_avail <= 0) || (num == 0)))
 		return 0;
 
 	if (ops[0]->ldpc_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
@@ -3672,8 +3790,6 @@ dequeue_enc_one_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op **ref_op,
 	/* Clearing status, it will be set based on response */
 	op->status = 0;
 
-	op->status |= ((rsp.input_err)
-			? (1 << RTE_BBDEV_DATA_ERROR) : 0);
 	op->status |= ((rsp.dma_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 	op->status |= ((rsp.fcw_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 
@@ -3744,8 +3860,6 @@ dequeue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op **ref_op,
 		rte_bbdev_log_debug("Resp. desc %p: %x", desc,
 				rsp.val);
 
-		op->status |= ((rsp.input_err)
-				? (1 << RTE_BBDEV_DATA_ERROR) : 0);
 		op->status |= ((rsp.dma_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 		op->status |= ((rsp.fcw_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 
@@ -3925,16 +4039,19 @@ dequeue_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op **ref_op,
 		rte_bbdev_log_debug("Resp. desc %p: %x", desc,
 				rsp.val);
 
-		op->status |= ((rsp.input_err)
-				? (1 << RTE_BBDEV_DATA_ERROR) : 0);
+		op->status |= ((rsp.input_err) ? (1 << RTE_BBDEV_DATA_ERROR) : 0);
 		op->status |= ((rsp.dma_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 		op->status |= ((rsp.fcw_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 
 		/* CRC invalid if error exists */
 		if (!op->status)
 			op->status |= rsp.crc_status << RTE_BBDEV_CRC_ERROR;
-		op->turbo_dec.iter_count = RTE_MAX((uint8_t) rsp.iter_cnt,
-				op->turbo_dec.iter_count);
+		if (q->op_type == RTE_BBDEV_OP_LDPC_DEC)
+			op->ldpc_dec.iter_count = RTE_MAX((uint8_t) rsp.iter_cnt,
+					op->ldpc_dec.iter_count);
+		else
+			op->turbo_dec.iter_count = RTE_MAX((uint8_t) rsp.iter_cnt,
+					op->turbo_dec.iter_count);
 
 		/* Check if this is the last desc in batch (Atomic Queue) */
 		if (desc->req.last_desc_in_batch) {
@@ -3960,7 +4077,7 @@ acc100_dequeue_enc(struct rte_bbdev_queue_data *q_data,
 {
 	struct acc100_queue *q = q_data->queue_private;
 	uint16_t dequeue_num;
-	uint32_t avail = q->sw_ring_head - q->sw_ring_tail;
+	uint32_t avail = acc100_ring_avail_deq(q);
 	uint32_t aq_dequeued = 0;
 	uint16_t i, dequeued_cbs = 0;
 	struct rte_bbdev_enc_op *op;
@@ -4005,7 +4122,7 @@ acc100_dequeue_ldpc_enc(struct rte_bbdev_queue_data *q_data,
 		struct rte_bbdev_enc_op **ops, uint16_t num)
 {
 	struct acc100_queue *q = q_data->queue_private;
-	uint32_t avail = q->sw_ring_head - q->sw_ring_tail;
+	uint32_t avail = acc100_ring_avail_deq(q);
 	uint32_t aq_dequeued = 0;
 	uint16_t dequeue_num, i, dequeued_cbs = 0, dequeued_descs = 0;
 	int ret;
@@ -4045,7 +4162,7 @@ acc100_dequeue_dec(struct rte_bbdev_queue_data *q_data,
 {
 	struct acc100_queue *q = q_data->queue_private;
 	uint16_t dequeue_num;
-	uint32_t avail = q->sw_ring_head - q->sw_ring_tail;
+	uint32_t avail = acc100_ring_avail_deq(q);
 	uint32_t aq_dequeued = 0;
 	uint16_t i;
 	uint16_t dequeued_cbs = 0;
@@ -4062,6 +4179,8 @@ acc100_dequeue_dec(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
+		if (unlikely(op == NULL))
+			break;
 		if (op->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 			ret = dequeue_dec_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);
@@ -4090,7 +4209,7 @@ acc100_dequeue_ldpc_dec(struct rte_bbdev_queue_data *q_data,
 {
 	struct acc100_queue *q = q_data->queue_private;
 	uint16_t dequeue_num;
-	uint32_t avail = q->sw_ring_head - q->sw_ring_tail;
+	uint32_t avail = acc100_ring_avail_deq(q);
 	uint32_t aq_dequeued = 0;
 	uint16_t i;
 	uint16_t dequeued_cbs = 0;
@@ -4107,6 +4226,8 @@ acc100_dequeue_ldpc_dec(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
+		if (unlikely(op == NULL))
+			break;
 		if (op->ldpc_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 			ret = dequeue_dec_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);

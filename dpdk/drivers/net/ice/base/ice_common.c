@@ -475,7 +475,6 @@ static enum ice_media_type ice_get_media_type(struct ice_port_info *pi)
 		case ICE_PHY_TYPE_LOW_1000BASE_LX:
 		case ICE_PHY_TYPE_LOW_10GBASE_SR:
 		case ICE_PHY_TYPE_LOW_10GBASE_LR:
-		case ICE_PHY_TYPE_LOW_10G_SFI_C2C:
 		case ICE_PHY_TYPE_LOW_25GBASE_SR:
 		case ICE_PHY_TYPE_LOW_25GBASE_LR:
 		case ICE_PHY_TYPE_LOW_40GBASE_SR4:
@@ -532,6 +531,7 @@ static enum ice_media_type ice_get_media_type(struct ice_port_info *pi)
 		case ICE_PHY_TYPE_LOW_2500BASE_X:
 		case ICE_PHY_TYPE_LOW_5GBASE_KR:
 		case ICE_PHY_TYPE_LOW_10GBASE_KR_CR1:
+		case ICE_PHY_TYPE_LOW_10G_SFI_C2C:
 		case ICE_PHY_TYPE_LOW_25GBASE_KR:
 		case ICE_PHY_TYPE_LOW_25GBASE_KR1:
 		case ICE_PHY_TYPE_LOW_25GBASE_KR_S:
@@ -3022,12 +3022,10 @@ ice_aq_set_port_params(struct ice_port_info *pi, u16 bad_frame_vsi,
 bool ice_is_100m_speed_supported(struct ice_hw *hw)
 {
 	switch (hw->device_id) {
-	case ICE_DEV_ID_E822C_10G_BASE_T:
 	case ICE_DEV_ID_E822C_SGMII:
-	case ICE_DEV_ID_E822L_10G_BASE_T:
 	case ICE_DEV_ID_E822L_SGMII:
-	case ICE_DEV_ID_E823L_10G_BASE_T:
 	case ICE_DEV_ID_E823L_1GBE:
+	case ICE_DEV_ID_E823C_SGMII:
 		return true;
 	default:
 		return false;
@@ -3934,7 +3932,7 @@ ice_aq_read_topo_dev_nvm(struct ice_hw *hw,
 
 	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_read_topo_dev_nvm);
 
-	desc.datalen = data_size;
+	desc.datalen = CPU_TO_LE16(data_size);
 	ice_memcpy(&cmd->topo_params, topo_params, sizeof(*topo_params),
 		   ICE_NONDMA_TO_NONDMA);
 	cmd->start_address = CPU_TO_LE32(start_address);
@@ -5588,7 +5586,7 @@ ice_aq_set_gpio(struct ice_hw *hw, u16 gpio_ctrl_handle, u8 pin_idx, bool value,
 
 	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_set_gpio);
 	cmd = &desc.params.read_write_gpio;
-	cmd->gpio_ctrl_handle = gpio_ctrl_handle;
+	cmd->gpio_ctrl_handle = CPU_TO_LE16(gpio_ctrl_handle);
 	cmd->gpio_num = pin_idx;
 	cmd->gpio_val = value ? 1 : 0;
 
@@ -5616,7 +5614,7 @@ ice_aq_get_gpio(struct ice_hw *hw, u16 gpio_ctrl_handle, u8 pin_idx,
 
 	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_get_gpio);
 	cmd = &desc.params.read_write_gpio;
-	cmd->gpio_ctrl_handle = gpio_ctrl_handle;
+	cmd->gpio_ctrl_handle = CPU_TO_LE16(gpio_ctrl_handle);
 	cmd->gpio_num = pin_idx;
 
 	status = ice_aq_send_cmd(hw, &desc, NULL, 0, cd);

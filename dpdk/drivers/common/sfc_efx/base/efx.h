@@ -4535,6 +4535,24 @@ efx_mae_action_set_populate_mark(
 	__in				efx_mae_actions_t *spec,
 	__in				uint32_t mark_value);
 
+/*
+ * Whilst efx_mae_action_set_populate_mark() can be used to request setting
+ * a user mark in matching packets and demands that the request come before
+ * setting the final destination (deliver action), this API can be invoked
+ * after deliver action has been added in order to request mark reset if
+ * the user's own mark request has not been added as a result of parsing.
+ *
+ * It is useful when the driver chains an outer rule (OR) with an action
+ * rule (AR) by virtue of a recirculation ID. The OR may set mark from
+ * this ID to help the driver identify packets that hit the OR and do
+ * not hit the AR. But, for packets that do hit the AR, the driver
+ * wants to reset the mark value to avoid confusing recipients.
+ */
+LIBEFX_API
+extern					void
+efx_mae_action_set_populate_mark_reset(
+	__in				efx_mae_actions_t *spec);
+
 LIBEFX_API
 extern	__checkReturn			efx_rc_t
 efx_mae_action_set_populate_deliver(
@@ -4682,6 +4700,20 @@ extern	__checkReturn			efx_rc_t
 efx_mae_action_set_fill_in_counter_id(
 	__in				efx_mae_actions_t *spec,
 	__in				const efx_counter_t *counter_idp);
+
+/*
+ * Clears dangling FW object IDs (counter ID, for instance) in
+ * the action set specification. Useful for adapter restarts,
+ * when all MAE objects need to be reallocated by the driver.
+ *
+ * This method only clears the IDs in the specification.
+ * The driver is still responsible for keeping the IDs
+ * separately and freeing them when stopping the port.
+ */
+LIBEFX_API
+extern					void
+efx_mae_action_set_clear_fw_rsrc_ids(
+	__in				efx_mae_actions_t *spec);
 
 /* Action set ID */
 typedef struct efx_mae_aset_id_s {

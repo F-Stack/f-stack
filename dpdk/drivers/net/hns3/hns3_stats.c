@@ -317,7 +317,7 @@ hns3_update_mac_stats(struct hns3_hw *hw)
 	uint32_t stats_iterms;
 	uint64_t *desc_data;
 	uint32_t desc_num;
-	uint16_t i;
+	uint32_t i;
 	int ret;
 
 	/* The first desc has a 64-bit header, so need to consider it. */
@@ -404,15 +404,6 @@ hns3_query_mac_stats_reg_num(struct hns3_hw *hw)
 		hns3_warn(hw, "MAC stats reg number from firmware is greater than stats iterms in driver.");
 
 	return 0;
-}
-
-static int
-hns3_query_update_mac_stats(struct rte_eth_dev *dev)
-{
-	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
-
-	return hns3_update_mac_stats(hw);
 }
 
 static int
@@ -763,14 +754,13 @@ out:
 }
 
 static int
-hns3_mac_stats_reset(__rte_unused struct rte_eth_dev *dev)
+hns3_mac_stats_reset(struct hns3_hw *hw)
 {
-	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
 	struct hns3_mac_stats *mac_stats = &hw->mac_stats;
 	int ret;
 
-	ret = hns3_query_update_mac_stats(dev);
+	/* Clear hardware MAC statistics by reading it. */
+	ret = hns3_update_mac_stats(hw);
 	if (ret) {
 		hns3_err(hw, "Clear Mac stats fail : %d", ret);
 		return ret;
@@ -1063,8 +1053,7 @@ hns3_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	hns3_tqp_basic_stats_get(dev, xstats, &count);
 
 	if (!hns->is_vf) {
-		/* Update Mac stats */
-		ret = hns3_query_update_mac_stats(dev);
+		ret = hns3_update_mac_stats(hw);
 		if (ret < 0) {
 			hns3_err(hw, "Update Mac stats fail : %d", ret);
 			rte_spinlock_unlock(&hw->stats_lock);
@@ -1482,8 +1471,7 @@ hns3_dev_xstats_reset(struct rte_eth_dev *dev)
 	if (hns->is_vf)
 		goto out;
 
-	/* HW registers are cleared on read */
-	ret = hns3_mac_stats_reset(dev);
+	ret = hns3_mac_stats_reset(hw);
 
 out:
 	rte_spinlock_unlock(&hw->stats_lock);
@@ -1540,6 +1528,7 @@ hns3_tqp_stats_clear(struct hns3_hw *hw)
 int
 hns3_stats_init(struct hns3_hw *hw)
 {
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	int ret;
 
 	rte_spinlock_init(&hw->stats_lock);
@@ -1549,6 +1538,9 @@ hns3_stats_init(struct hns3_hw *hw)
 		hns3_err(hw, "clear imissed stats failed, ret = %d", ret);
 		return ret;
 	}
+
+	if (!hns->is_vf)
+		hns3_mac_stats_reset(hw);
 
 	return hns3_tqp_stats_init(hw);
 }

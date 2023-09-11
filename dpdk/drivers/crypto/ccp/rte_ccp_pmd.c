@@ -22,7 +22,6 @@
 static unsigned int ccp_pmd_init_done;
 uint8_t ccp_cryptodev_driver_id;
 uint8_t cryptodev_cnt;
-extern void *sha_ctx;
 
 struct ccp_pmd_init_params {
 	struct rte_cryptodev_pmd_init_params def_p;
@@ -213,7 +212,6 @@ cryptodev_ccp_remove(struct rte_pci_device *pci_dev)
 		return -ENODEV;
 
 	ccp_pmd_init_done = 0;
-	rte_free(sha_ctx);
 
 	RTE_LOG(INFO, PMD, "Closing ccp device %s on numa socket %u\n",
 			name, rte_socket_id());
@@ -250,7 +248,7 @@ cryptodev_ccp_create(const char *name,
 		goto init_error;
 	}
 
-	printf("CCP : Crypto device count = %d\n", cryptodev_cnt);
+	CCP_LOG_DBG("CCP : Crypto device count = %d\n", cryptodev_cnt);
 	dev->device = &pci_dev->device;
 	dev->device->driver = &pci_drv->driver;
 	dev->driver_id = ccp_cryptodev_driver_id;
@@ -300,7 +298,6 @@ cryptodev_ccp_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		.auth_opt = CCP_PMD_AUTH_OPT_CCP,
 	};
 
-	sha_ctx = (void *)rte_malloc(NULL, SHA512_DIGEST_SIZE, 64);
 	if (ccp_pmd_init_done) {
 		RTE_LOG(INFO, PMD, "CCP PMD already initialized\n");
 		return -EFAULT;

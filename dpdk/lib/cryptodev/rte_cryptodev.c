@@ -1215,13 +1215,13 @@ rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
 	}
 
 	if (!qp_conf) {
-		CDEV_LOG_ERR("qp_conf cannot be NULL\n");
+		CDEV_LOG_ERR("qp_conf cannot be NULL");
 		return -EINVAL;
 	}
 
 	if ((qp_conf->mp_session && !qp_conf->mp_session_private) ||
 			(!qp_conf->mp_session && qp_conf->mp_session_private)) {
-		CDEV_LOG_ERR("Invalid mempools\n");
+		CDEV_LOG_ERR("Invalid mempools");
 		return -EINVAL;
 	}
 
@@ -1234,7 +1234,7 @@ rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
 		pool_priv = rte_mempool_get_priv(qp_conf->mp_session);
 		if (!pool_priv || qp_conf->mp_session->private_data_size <
 				sizeof(*pool_priv)) {
-			CDEV_LOG_ERR("Invalid mempool\n");
+			CDEV_LOG_ERR("Invalid mempool");
 			return -EINVAL;
 		}
 
@@ -1245,7 +1245,7 @@ rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
 			obj_size) || (s.nb_drivers <= dev->driver_id) ||
 			rte_cryptodev_sym_get_private_session_size(dev_id) >
 				obj_priv_size) {
-			CDEV_LOG_ERR("Invalid mempool\n");
+			CDEV_LOG_ERR("Invalid mempool");
 			return -EINVAL;
 		}
 	}
@@ -1803,7 +1803,7 @@ rte_cryptodev_sym_session_pool_create(const char *name, uint32_t nb_elts,
 
 	obj_sz = rte_cryptodev_sym_get_header_session_size() + user_data_size;
 	if (obj_sz > elt_size)
-		CDEV_LOG_INFO("elt_size %u is expanded to %u\n", elt_size,
+		CDEV_LOG_INFO("elt_size %u is expanded to %u", elt_size,
 				obj_sz);
 	else
 		obj_sz = elt_size;
@@ -1813,14 +1813,14 @@ rte_cryptodev_sym_session_pool_create(const char *name, uint32_t nb_elts,
 			NULL, NULL, NULL, NULL,
 			socket_id, 0);
 	if (mp == NULL) {
-		CDEV_LOG_ERR("%s(name=%s) failed, rte_errno=%d\n",
+		CDEV_LOG_ERR("%s(name=%s) failed, rte_errno=%d",
 			__func__, name, rte_errno);
 		return NULL;
 	}
 
 	pool_priv = rte_mempool_get_priv(mp);
 	if (!pool_priv) {
-		CDEV_LOG_ERR("%s(name=%s) failed to get private data\n",
+		CDEV_LOG_ERR("%s(name=%s) failed to get private data",
 			__func__, name);
 		rte_mempool_free(mp);
 		return NULL;
@@ -1868,7 +1868,7 @@ rte_cryptodev_sym_session_create(struct rte_mempool *mp)
 	struct rte_cryptodev_sym_session_pool_private_data *pool_priv;
 
 	if (!rte_cryptodev_sym_is_valid_session_pool(mp)) {
-		CDEV_LOG_ERR("Invalid mempool\n");
+		CDEV_LOG_ERR("Invalid mempool");
 		return NULL;
 	}
 
@@ -1902,7 +1902,7 @@ rte_cryptodev_asym_session_create(struct rte_mempool *mp)
 			rte_cryptodev_asym_get_header_session_size();
 
 	if (!mp) {
-		CDEV_LOG_ERR("invalid mempool\n");
+		CDEV_LOG_ERR("invalid mempool");
 		return NULL;
 	}
 
@@ -2286,7 +2286,7 @@ rte_crypto_op_pool_create(const char *name, enum rte_crypto_op_type type,
 		elt_size += RTE_MAX(sizeof(struct rte_crypto_sym_op),
 		                    sizeof(struct rte_crypto_asym_op));
 	} else {
-		CDEV_LOG_ERR("Invalid op_type\n");
+		CDEV_LOG_ERR("Invalid op_type");
 		return NULL;
 	}
 
@@ -2472,7 +2472,7 @@ cryptodev_handle_dev_info(const char *cmd __rte_unused,
 	rte_tel_data_start_dict(d);
 	rte_tel_data_add_dict_string(d, "device_name",
 		cryptodev_info.device->name);
-	rte_tel_data_add_dict_int(d, "max_nb_queue_pairs",
+	rte_tel_data_add_dict_u64(d, "max_nb_queue_pairs",
 		cryptodev_info.max_nb_queue_pairs);
 
 	return 0;

@@ -148,14 +148,15 @@ Attribute: Group
 Flow rules can be grouped by assigning them a common group number. Groups
 allow a logical hierarchy of flow rule groups (tables) to be defined. These
 groups can be supported virtually in the PMD or in the physical device.
-Group 0 is the default group and this is the only group which flows are
-guarantee to matched against, all subsequent groups can only be reached by
-way of the JUMP action from a matched flow rule.
+Group 0 is the default group and is the only group that
+flows are guaranteed to be matched against.
+All subsequent groups can only be reached by using a JUMP action
+from a matched flow rule.
 
 Although optional, applications are encouraged to group similar rules as
 much as possible to fully take advantage of hardware capabilities
 (e.g. optimized matching) and work around limitations (e.g. a single pattern
-type possibly allowed in a given group), while being aware that the groups
+type possibly allowed in a given group), while being aware that the groups'
 hierarchies must be programmed explicitly.
 
 Note that support for more than a single group is not guaranteed.
@@ -170,7 +171,7 @@ Priority levels are arbitrary and up to the application, they do
 not need to be contiguous nor start from 0, however the maximum number
 varies between devices and may be affected by existing flow rules.
 
-A flow which matches multiple rules in the same group will always matched by
+A flow which matches multiple rules in the same group will always be matched by
 the rule with the highest priority in that group.
 
 If a packet is matched by several rules of a given group for a given
@@ -1610,22 +1611,15 @@ rte_flow_flex_item_create() routine.
   value and mask.
 
 Item: ``L2TPV2``
-^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
 
 Matches a L2TPv2 header.
 
-- ``flags_version``: flags(12b), version(4b).
-- ``length``: total length of the message.
-- ``tunnel_id``: identifier for the control connection.
-- ``session_id``: identifier for a session within a tunnel.
-- ``ns``: sequence number for this date or control message.
-- ``nr``: sequence number expected in the next control message to be received.
-- ``offset_size``: offset of payload data.
-- ``offset_padding``: offset padding, variable length.
+- ``hdr``:  header definition (``rte_l2tpv2.h``).
 - Default ``mask`` matches flags_version only.
 
 Item: ``PPP``
-^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^
 
 Matches a PPP header.
 
@@ -1838,12 +1832,12 @@ flow group/tables on the device, this action redirects the matched flow to
 the specified group on that device.
 
 If a matched flow is redirected to a table which doesn't contain a matching
-rule for that flow then the behavior is undefined and the resulting behavior
-is up to the specific device. Best practice when using groups would be define
+rule for that flow, then the behavior is undefined and the resulting behavior
+is up to the specific device. Best practice when using groups would be to define
 a default flow rule for each group which a defines the default actions in that
 group so a consistent behavior is defined.
 
-Defining an action for matched flow in a group to jump to a group which is
+Defining an action for a matched flow in a group to jump to a group which is
 higher in the group hierarchy may not be supported by physical devices,
 depending on how groups are mapped to the physical devices. In the
 definitions of jump actions, applications should be aware that it may be
@@ -2015,8 +2009,8 @@ Also, regarding packet encapsulation ``level``:
   level.
 
 - ``2`` and subsequent values request RSS to be performed on the specified
-   inner packet encapsulation level, from outermost to innermost (lower to
-   higher values).
+  inner packet encapsulation level, from outermost to innermost (lower to
+  higher values).
 
 Values other than ``0`` are not necessarily supported.
 
@@ -3073,20 +3067,23 @@ The immediate value ``RTE_FLOW_FIELD_VALUE`` (or a pointer to it
 ``RTE_FLOW_FIELD_START`` is used to point to the beginning of a packet.
 See ``enum rte_flow_field_id`` for the list of supported fields.
 
-``op`` selects the operation to perform on a destination field.
+``op`` selects the operation to perform on a destination field:
+
 - ``set`` copies the data from ``src`` field to ``dst`` field.
 - ``add`` adds together ``dst`` and ``src`` and stores the result into ``dst``.
-- ``sub`` subtracts ``src`` from ``dst`` and stores the result into ``dst``
+- ``sub`` subtracts ``src`` from ``dst`` and stores the result into ``dst``.
 
 ``width`` defines a number of bits to use from ``src`` field.
 
 ``level`` is used to access any packet field on any encapsulation level
-as well as any tag element in the tag array.
-- ``0`` means the default behaviour. Depending on the packet type, it can
-mean outermost, innermost or anything in between.
+as well as any tag element in the tag array:
+
+- ``0`` means the default behaviour. Depending on the packet type,
+  it can mean outermost, innermost or anything in between.
 - ``1`` requests access to the outermost packet encapsulation level.
 - ``2`` and subsequent values requests access to the specified packet
-encapsulation level, from outermost to innermost (lower to higher values).
+  encapsulation level, from outermost to innermost (lower to higher values).
+
 For the tag array (in case of multiple tags are supported and present)
 ``level`` translates directly into the array index.
 

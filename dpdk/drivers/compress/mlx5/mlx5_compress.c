@@ -96,9 +96,7 @@ static const struct rte_compressdev_capabilities mlx5_caps[] = {
 				      RTE_COMP_FF_HUFFMAN_DYNAMIC,
 		.window_size = {.min = 10, .max = 15, .increment = 1},
 	},
-	{
-		.algo = RTE_COMP_ALGO_LIST_END,
-	}
+	RTE_COMP_END_OF_CAPABILITIES_LIST()
 };
 
 static void
@@ -246,8 +244,8 @@ mlx5_compress_qp_setup(struct rte_compressdev *dev, uint16_t qp_id,
 		mlx5_ts_format_conv(priv->cdev->config.hca_attr.qp_ts_format);
 	qp_attr.num_of_receive_wqes = 0;
 	qp_attr.num_of_send_wqbbs = RTE_BIT32(log_ops_n);
-	qp_attr.mmo = priv->mmo_decomp_qp && priv->mmo_comp_qp
-			&& priv->mmo_dma_qp;
+	qp_attr.mmo = priv->mmo_decomp_qp || priv->mmo_comp_qp ||
+		      priv->mmo_dma_qp;
 	ret = mlx5_devx_qp_create(priv->cdev->ctx, &qp->qp,
 					qp_attr.num_of_send_wqbbs *
 					MLX5_WQE_SIZE, &qp_attr, socket_id);
@@ -316,7 +314,7 @@ mlx5_compress_xform_create(struct rte_compressdev *dev,
 			DRV_LOG(ERR, "Not enough capabilities to support decompress operation, maybe old FW/OFED version?");
 			return -ENOTSUP;
 		}
-		if (xform->compress.hash_algo != RTE_COMP_HASH_ALGO_NONE) {
+		if (xform->decompress.hash_algo != RTE_COMP_HASH_ALGO_NONE) {
 			DRV_LOG(ERR, "SHA is not supported.");
 			return -ENOTSUP;
 		}
@@ -636,7 +634,7 @@ mlx5_compress_dequeue_burst(void *queue_pair, struct rte_comp_op **ops,
 				break;
 			case RTE_COMP_CHECKSUM_ADLER32:
 				op->output_chksum = (uint64_t)rte_be_to_cpu_32
-					    (opaq[idx].adler32) << 32;
+						    (opaq[idx].adler32);
 				break;
 			case RTE_COMP_CHECKSUM_CRC32_ADLER32:
 				op->output_chksum = (uint64_t)rte_be_to_cpu_32

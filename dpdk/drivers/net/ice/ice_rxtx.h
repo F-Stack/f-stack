@@ -40,8 +40,13 @@
 
 #define ICE_RXDID_COMMS_OVS	22
 
+#define ICE_TX_MIN_PKT_LEN 17
+
 extern uint64_t ice_timestamp_dynflag;
 extern int ice_timestamp_dynfield_offset;
+
+/* Max data buffer size must be 16K - 128 bytes */
+#define ICE_RX_MAX_DATA_BUF_SIZE	(16 * 1024 - 128)
 
 typedef void (*ice_rx_release_mbufs_t)(struct ice_rx_queue *rxq);
 typedef void (*ice_tx_release_mbufs_t)(struct ice_tx_queue *txq);
@@ -98,6 +103,7 @@ struct ice_rx_queue {
 	uint32_t hw_time_high; /* high 32 bits of timestamp */
 	uint32_t hw_time_low; /* low 32 bits of timestamp */
 	uint64_t hw_time_update; /* SW time of HW record updating */
+	bool ts_enable; /* if rxq timestamp is enabled */
 };
 
 struct ice_tx_entry {

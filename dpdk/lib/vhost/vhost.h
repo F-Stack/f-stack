@@ -686,7 +686,10 @@ hva_to_gpa(struct virtio_net *dev, uint64_t vva, uint64_t len)
 static __rte_always_inline struct virtio_net *
 get_device(int vid)
 {
-	struct virtio_net *dev = vhost_devices[vid];
+	struct virtio_net *dev = NULL;
+
+	if (likely(vid >= 0 && vid < MAX_VHOST_DEVICE))
+		dev = vhost_devices[vid];
 
 	if (unlikely(!dev)) {
 		VHOST_LOG_CONFIG(ERR,
@@ -783,9 +786,9 @@ vhost_vring_call_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 			vhost_used_event(vq),
 			old, new);
 
-		if ((vhost_need_event(vhost_used_event(vq), new, old) &&
-					(vq->callfd >= 0)) ||
-				unlikely(!signalled_used_valid)) {
+		if ((vhost_need_event(vhost_used_event(vq), new, old) ||
+					unlikely(!signalled_used_valid)) &&
+				vq->callfd >= 0) {
 			eventfd_write(vq->callfd, (eventfd_t) 1);
 			if (dev->notify_ops->guest_notified)
 				dev->notify_ops->guest_notified(dev->vid);
@@ -848,7 +851,7 @@ vhost_vring_call_packed(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	if (vhost_need_event(off, new, old))
 		kick = true;
 kick:
-	if (kick) {
+	if (kick && vq->callfd >= 0) {
 		eventfd_write(vq->callfd, (eventfd_t)1);
 		if (dev->notify_ops->guest_notified)
 			dev->notify_ops->guest_notified(dev->vid);

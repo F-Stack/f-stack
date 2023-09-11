@@ -504,6 +504,7 @@ parse_test_file(struct cperf_options *opts,
 	if (access(opts->test_file, F_OK) != -1)
 		return 0;
 	RTE_LOG(ERR, USER1, "Test vector file doesn't exist\n");
+	free(opts->test_file);
 
 	return -1;
 }
@@ -1247,6 +1248,21 @@ cperf_options_check(struct cperf_options *options)
 	if (options->op_type == CPERF_DOCSIS) {
 		if (check_docsis_buffer_length(options) < 0)
 			return -EINVAL;
+	}
+
+	if (options->op_type == CPERF_IPSEC) {
+		if (options->aead_algo) {
+			if (options->aead_op == RTE_CRYPTO_AEAD_OP_ENCRYPT)
+				options->is_outbound = 1;
+			else
+				options->is_outbound = 0;
+		} else {
+			if (options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT &&
+			    options->auth_op == RTE_CRYPTO_AUTH_OP_GENERATE)
+				options->is_outbound = 1;
+			else
+				options->is_outbound = 0;
+		}
 	}
 #endif
 

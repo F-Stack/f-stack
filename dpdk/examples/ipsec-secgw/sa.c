@@ -1223,6 +1223,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 	struct ipsec_sa *sa;
 	uint32_t i, idx;
 	uint16_t iv_length, aad_length;
+	uint16_t auth_iv_length = 0;
 	int inline_status;
 	int32_t rc;
 	struct rte_ipsec_session *ips;
@@ -1315,7 +1316,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 
 			/* AES_GMAC uses salt like AEAD algorithms */
 			if (sa->auth_algo == RTE_CRYPTO_AUTH_AES_GMAC)
-				iv_length = 12;
+				auth_iv_length = 12;
 
 			if (inbound) {
 				sa_ctx->xf[idx].b.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
@@ -1339,7 +1340,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				sa_ctx->xf[idx].a.auth.op =
 					RTE_CRYPTO_AUTH_OP_VERIFY;
 				sa_ctx->xf[idx].a.auth.iv.offset = IV_OFFSET;
-				sa_ctx->xf[idx].a.auth.iv.length = iv_length;
+				sa_ctx->xf[idx].a.auth.iv.length = auth_iv_length;
 
 			} else { /* outbound */
 				sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
@@ -1363,7 +1364,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				sa_ctx->xf[idx].b.auth.op =
 					RTE_CRYPTO_AUTH_OP_GENERATE;
 				sa_ctx->xf[idx].b.auth.iv.offset = IV_OFFSET;
-				sa_ctx->xf[idx].b.auth.iv.length = iv_length;
+				sa_ctx->xf[idx].b.auth.iv.length = auth_iv_length;
 
 			}
 
@@ -1773,9 +1774,17 @@ sa_check_offloads(uint16_t port_id, uint64_t *rx_offloads,
 	struct ipsec_sa *rule;
 	uint32_t idx_sa;
 	enum rte_security_session_action_type rule_type;
+	struct rte_eth_dev_info dev_info;
+	int ret;
 
 	*rx_offloads = 0;
 	*tx_offloads = 0;
+
+	ret = rte_eth_dev_info_get(port_id, &dev_info);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"Error during getting device (port %u) info: %s\n",
+			port_id, strerror(-ret));
 
 	/* Check for inbound rules that use offloads and use this port */
 	for (idx_sa = 0; idx_sa < nb_sa_in; idx_sa++) {
@@ -1792,13 +1801,43 @@ sa_check_offloads(uint16_t port_id, uint64_t *rx_offloads,
 	for (idx_sa = 0; idx_sa < nb_sa_out; idx_sa++) {
 		rule = &sa_out[idx_sa];
 		rule_type = ipsec_get_action_type(rule);
-		if ((rule_type == RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO ||
-				rule_type ==
-				RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL)
-				&& rule->portid == port_id) {
-			*tx_offloads |= RTE_ETH_TX_OFFLOAD_SECURITY;
-			if (rule->mss)
-				*tx_offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
+		if (rule->portid == port_id) {
+			switch (rule_type) {
+			case RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL:
+				/* Checksum offload is not needed for inline
+				 * protocol as all processing for Outbound IPSec
+				 * packets will be implicitly taken care and for
+				 * non-IPSec packets, there is no need of
+				 * IPv4 Checksum offload.
+				 */
+				*tx_offloads |= RTE_ETH_TX_OFFLOAD_SECURITY;
+				if (rule->mss)
+					*tx_offloads |= (RTE_ETH_TX_OFFLOAD_TCP_TSO |
+							 RTE_ETH_TX_OFFLOAD_IPV4_CKSUM);
+				break;
+			case RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO:
+				*tx_offloads |= RTE_ETH_TX_OFFLOAD_SECURITY;
+				if (rule->mss)
+					*tx_offloads |=
+						RTE_ETH_TX_OFFLOAD_TCP_TSO;
+				if (dev_info.tx_offload_capa &
+						RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+					*tx_offloads |=
+						RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+				break;
+			default:
+				/* Enable IPv4 checksum offload even if
+				 * one of lookaside SA's are present.
+				 */
+				if (dev_info.tx_offload_capa &
+				    RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+					*tx_offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+				break;
+			}
+		} else {
+			if (dev_info.tx_offload_capa &
+			    RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+				*tx_offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
 		}
 	}
 	return 0;

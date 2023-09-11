@@ -224,34 +224,34 @@ enum mlx5_feature_name {
 	(MLX5_FLOW_LAYER_OUTER_L4 | MLX5_FLOW_LAYER_INNER_L4)
 
 /* Actions */
-#define MLX5_FLOW_ACTION_DROP (1u << 0)
-#define MLX5_FLOW_ACTION_QUEUE (1u << 1)
-#define MLX5_FLOW_ACTION_RSS (1u << 2)
-#define MLX5_FLOW_ACTION_FLAG (1u << 3)
-#define MLX5_FLOW_ACTION_MARK (1u << 4)
-#define MLX5_FLOW_ACTION_COUNT (1u << 5)
-#define MLX5_FLOW_ACTION_PORT_ID (1u << 6)
-#define MLX5_FLOW_ACTION_OF_POP_VLAN (1u << 7)
-#define MLX5_FLOW_ACTION_OF_PUSH_VLAN (1u << 8)
-#define MLX5_FLOW_ACTION_OF_SET_VLAN_VID (1u << 9)
-#define MLX5_FLOW_ACTION_OF_SET_VLAN_PCP (1u << 10)
-#define MLX5_FLOW_ACTION_SET_IPV4_SRC (1u << 11)
-#define MLX5_FLOW_ACTION_SET_IPV4_DST (1u << 12)
-#define MLX5_FLOW_ACTION_SET_IPV6_SRC (1u << 13)
-#define MLX5_FLOW_ACTION_SET_IPV6_DST (1u << 14)
-#define MLX5_FLOW_ACTION_SET_TP_SRC (1u << 15)
-#define MLX5_FLOW_ACTION_SET_TP_DST (1u << 16)
-#define MLX5_FLOW_ACTION_JUMP (1u << 17)
-#define MLX5_FLOW_ACTION_SET_TTL (1u << 18)
-#define MLX5_FLOW_ACTION_DEC_TTL (1u << 19)
-#define MLX5_FLOW_ACTION_SET_MAC_SRC (1u << 20)
-#define MLX5_FLOW_ACTION_SET_MAC_DST (1u << 21)
-#define MLX5_FLOW_ACTION_ENCAP (1u << 22)
-#define MLX5_FLOW_ACTION_DECAP (1u << 23)
-#define MLX5_FLOW_ACTION_INC_TCP_SEQ (1u << 24)
-#define MLX5_FLOW_ACTION_DEC_TCP_SEQ (1u << 25)
-#define MLX5_FLOW_ACTION_INC_TCP_ACK (1u << 26)
-#define MLX5_FLOW_ACTION_DEC_TCP_ACK (1u << 27)
+#define MLX5_FLOW_ACTION_DROP (1ull << 0)
+#define MLX5_FLOW_ACTION_QUEUE (1ull << 1)
+#define MLX5_FLOW_ACTION_RSS (1ull << 2)
+#define MLX5_FLOW_ACTION_FLAG (1ull << 3)
+#define MLX5_FLOW_ACTION_MARK (1ull << 4)
+#define MLX5_FLOW_ACTION_COUNT (1ull << 5)
+#define MLX5_FLOW_ACTION_PORT_ID (1ull << 6)
+#define MLX5_FLOW_ACTION_OF_POP_VLAN (1ull << 7)
+#define MLX5_FLOW_ACTION_OF_PUSH_VLAN (1ull << 8)
+#define MLX5_FLOW_ACTION_OF_SET_VLAN_VID (1ull << 9)
+#define MLX5_FLOW_ACTION_OF_SET_VLAN_PCP (1ull << 10)
+#define MLX5_FLOW_ACTION_SET_IPV4_SRC (1ull << 11)
+#define MLX5_FLOW_ACTION_SET_IPV4_DST (1ull << 12)
+#define MLX5_FLOW_ACTION_SET_IPV6_SRC (1ull << 13)
+#define MLX5_FLOW_ACTION_SET_IPV6_DST (1ull << 14)
+#define MLX5_FLOW_ACTION_SET_TP_SRC (1ull << 15)
+#define MLX5_FLOW_ACTION_SET_TP_DST (1ull << 16)
+#define MLX5_FLOW_ACTION_JUMP (1ull << 17)
+#define MLX5_FLOW_ACTION_SET_TTL (1ull << 18)
+#define MLX5_FLOW_ACTION_DEC_TTL (1ull << 19)
+#define MLX5_FLOW_ACTION_SET_MAC_SRC (1ull << 20)
+#define MLX5_FLOW_ACTION_SET_MAC_DST (1ull << 21)
+#define MLX5_FLOW_ACTION_ENCAP (1ull << 22)
+#define MLX5_FLOW_ACTION_DECAP (1ull << 23)
+#define MLX5_FLOW_ACTION_INC_TCP_SEQ (1ull << 24)
+#define MLX5_FLOW_ACTION_DEC_TCP_SEQ (1ull << 25)
+#define MLX5_FLOW_ACTION_INC_TCP_ACK (1ull << 26)
+#define MLX5_FLOW_ACTION_DEC_TCP_ACK (1ull << 27)
 #define MLX5_FLOW_ACTION_SET_TAG (1ull << 28)
 #define MLX5_FLOW_ACTION_MARK_EXT (1ull << 29)
 #define MLX5_FLOW_ACTION_SET_META (1ull << 30)
@@ -266,6 +266,9 @@ enum mlx5_feature_name {
 #define MLX5_FLOW_ACTION_MODIFY_FIELD (1ull << 39)
 #define MLX5_FLOW_ACTION_METER_WITH_TERMINATED_POLICY (1ull << 40)
 #define MLX5_FLOW_ACTION_CT (1ull << 41)
+
+#define MLX5_FLOW_DROP_INCLUSIVE_ACTIONS \
+	(MLX5_FLOW_ACTION_COUNT | MLX5_FLOW_ACTION_SAMPLE | MLX5_FLOW_ACTION_AGE)
 
 #define MLX5_FLOW_FATE_ACTIONS \
 	(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_ACTION_QUEUE | \
@@ -1095,10 +1098,10 @@ struct mlx5_flow_workspace {
 	/* If creating another flow in same thread, push new as stack. */
 	struct mlx5_flow_workspace *prev;
 	struct mlx5_flow_workspace *next;
+	struct mlx5_flow_workspace *gc;
 	uint32_t inuse; /* can't create new flow with current. */
 	struct mlx5_flow flows[MLX5_NUM_MAX_DEV_FLOWS];
 	struct mlx5_flow_rss_desc rss_desc;
-	uint32_t rssq_num; /* Allocated queue num in rss_desc. */
 	uint32_t flow_idx; /* Intermediate device flow index. */
 	struct mlx5_flow_meter_info *fm; /* Pointer to the meter in flow. */
 	struct mlx5_flow_meter_policy *policy;
@@ -1108,6 +1111,7 @@ struct mlx5_flow_workspace {
 	uint32_t skip_matcher_reg:1;
 	/* Indicates if need to skip matcher register in translate. */
 	uint32_t mark:1; /* Indicates if flow contains mark action. */
+	uint32_t vport_meta_tag; /* Used for vport index match. */
 };
 
 struct mlx5_flow_split_info {
@@ -1297,8 +1301,11 @@ struct mlx5_flow_driver_ops {
 };
 
 /* mlx5_flow.c */
-
+struct mlx5_flow_workspace *mlx5_flow_push_thread_workspace(void);
+void mlx5_flow_pop_thread_workspace(void);
 struct mlx5_flow_workspace *mlx5_flow_get_thread_workspace(void);
+void mlx5_flow_workspace_gc_release(void);
+
 __extension__
 struct flow_grp_info {
 	uint64_t external:1;
@@ -1464,6 +1471,25 @@ mlx5_translate_tunnel_etypes(uint64_t pattern_flags)
 	return 0;
 }
 
+/**
+ * Indicates whether flow source vport is representor port.
+ *
+ * @param[in] priv
+ *   Pointer to device private context structure.
+ * @param[in] act_priv
+ *   Pointer to actual device private context structure if have.
+ *
+ * @return
+ *   True when the flow source vport is representor port, false otherwise.
+ */
+static inline bool
+flow_source_vport_representor(struct mlx5_priv *priv, struct mlx5_priv *act_priv)
+{
+	MLX5_ASSERT(priv);
+	return (!act_priv ? (priv->representor_id != UINT16_MAX) :
+		 (act_priv->representor_id != UINT16_MAX));
+}
+
 int mlx5_flow_group_to_table(struct rte_eth_dev *dev,
 			     const struct mlx5_flow_tunnel *tunnel,
 			     uint32_t group, uint32_t *table,
@@ -1493,7 +1519,8 @@ int mlx5_validate_action_rss(struct rte_eth_dev *dev,
 int mlx5_flow_validate_action_count(struct rte_eth_dev *dev,
 				    const struct rte_flow_attr *attr,
 				    struct rte_flow_error *error);
-int mlx5_flow_validate_action_drop(uint64_t action_flags,
+int mlx5_flow_validate_action_drop(struct rte_eth_dev *dev,
+				   bool is_root,
 				   const struct rte_flow_attr *attr,
 				   struct rte_flow_error *error);
 int mlx5_flow_validate_action_flag(uint64_t action_flags,

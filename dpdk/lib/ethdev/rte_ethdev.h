@@ -4034,10 +4034,7 @@ int rte_eth_fec_get_capability(uint16_t port_id,
  * @param port_id
  *   The port identifier of the Ethernet device.
  * @param fec_capa
- *   A bitmask of enabled FEC modes. If AUTO bit is set, other
- *   bits specify FEC modes which may be negotiated. If AUTO
- *   bit is clear, specify FEC modes to be used (only one valid
- *   mode per speed may be set).
+ *   A bitmask with the current FEC mode.
  * @return
  *   - (0) if successful.
  *   - (-ENOTSUP) if underlying hardware OR driver doesn't support.
@@ -4057,10 +4054,13 @@ int rte_eth_fec_get(uint16_t port_id, uint32_t *fec_capa);
  * @param port_id
  *   The port identifier of the Ethernet device.
  * @param fec_capa
- *   A bitmask of allowed FEC modes. If AUTO bit is set, other
- *   bits specify FEC modes which may be negotiated. If AUTO
- *   bit is clear, specify FEC modes to be used (only one valid
- *   mode per speed may be set).
+ *   A bitmask of allowed FEC modes.
+ *   If only the AUTO bit is set, the decision on which FEC
+ *   mode to use will be made by HW/FW or driver.
+ *   If the AUTO bit is set with some FEC modes, only specified
+ *   FEC modes can be set.
+ *   If AUTO bit is clear, specify FEC mode to be used
+ *   (only one valid mode per speed may be set).
  * @return
  *   - (0) if successful.
  *   - (-EINVAL) if the FEC mode is not valid.
@@ -4163,6 +4163,9 @@ int rte_eth_dev_mac_addr_remove(uint16_t port_id,
 
 /**
  * Set the default MAC address.
+ * It replaces the address at index 0 of the MAC address list.
+ * If the address was already in the MAC address list,
+ * please remove it first.
  *
  * @param port_id
  *   The port identifier of the Ethernet device.
@@ -4173,6 +4176,7 @@ int rte_eth_dev_mac_addr_remove(uint16_t port_id,
  *   - (-ENOTSUP) if hardware doesn't support.
  *   - (-ENODEV) if *port* invalid.
  *   - (-EINVAL) if MAC address is invalid.
+ *   - (-EEXIST) if MAC address was already in the address list.
  */
 int rte_eth_dev_default_mac_addr_set(uint16_t port_id,
 		struct rte_ether_addr *mac_addr);

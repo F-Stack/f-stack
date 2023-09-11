@@ -10,6 +10,12 @@
 #ifndef _RTE_RING_ELEM_PVT_H_
 #define _RTE_RING_ELEM_PVT_H_
 
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 120000)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#pragma GCC diagnostic ignored "-Wstringop-overread"
+#endif
+
 static __rte_always_inline void
 __rte_ring_enqueue_elems_32(struct rte_ring *r, const uint32_t size,
 		uint32_t idx, const void *obj_table, uint32_t n)
@@ -188,12 +194,12 @@ __rte_ring_dequeue_elems_32(struct rte_ring *r, const uint32_t size,
 }
 
 static __rte_always_inline void
-__rte_ring_dequeue_elems_64(struct rte_ring *r, uint32_t prod_head,
+__rte_ring_dequeue_elems_64(struct rte_ring *r, uint32_t cons_head,
 		void *obj_table, uint32_t n)
 {
 	unsigned int i;
 	const uint32_t size = r->size;
-	uint32_t idx = prod_head & r->mask;
+	uint32_t idx = cons_head & r->mask;
 	uint64_t *ring = (uint64_t *)&r[1];
 	unaligned_uint64_t *obj = (unaligned_uint64_t *)obj_table;
 	if (likely(idx + n < size)) {
@@ -221,12 +227,12 @@ __rte_ring_dequeue_elems_64(struct rte_ring *r, uint32_t prod_head,
 }
 
 static __rte_always_inline void
-__rte_ring_dequeue_elems_128(struct rte_ring *r, uint32_t prod_head,
+__rte_ring_dequeue_elems_128(struct rte_ring *r, uint32_t cons_head,
 		void *obj_table, uint32_t n)
 {
 	unsigned int i;
 	const uint32_t size = r->size;
-	uint32_t idx = prod_head & r->mask;
+	uint32_t idx = cons_head & r->mask;
 	rte_int128_t *ring = (rte_int128_t *)&r[1];
 	rte_int128_t *obj = (rte_int128_t *)obj_table;
 	if (likely(idx + n < size)) {
@@ -381,5 +387,9 @@ end:
 		*available = entries - n;
 	return n;
 }
+
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 120000)
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* _RTE_RING_ELEM_PVT_H_ */

@@ -132,6 +132,13 @@ nfp_net_start(struct rte_eth_dev *dev)
 		update = NFP_NET_CFG_UPDATE_MSIX;
 	}
 
+	/* Checking MTU set */
+	if (dev->data->mtu > hw->flbufsz) {
+		PMD_INIT_LOG(ERR, "MTU (%u) can't be larger than the current NFP_FRAME_SIZE (%u)",
+				dev->data->mtu, hw->flbufsz);
+		return -ERANGE;
+	}
+
 	rte_intr_enable(intr_handle);
 
 	new_ctrl = nfp_check_offloads(dev);
@@ -502,7 +509,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
 	hw->mtu = RTE_ETHER_MTU;
-	hw->flbufsz = RTE_ETHER_MTU;
+	hw->flbufsz = DEFAULT_FLBUF_SIZE;
 
 	/* VLAN insertion is incompatible with LSOv2 */
 	if (hw->cap & NFP_NET_CFG_CTRL_LSO2)
@@ -630,7 +637,7 @@ nfp_fw_upload(struct rte_pci_device *dev, struct nfp_nsp *nsp, char *card)
 		goto load_fw;
 	/* Then try the PCI name */
 	snprintf(fw_name, sizeof(fw_name), "%s/pci-%s.nffw", DEFAULT_FW_PATH,
-			dev->device.name);
+			dev->name);
 
 	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
 	if (rte_firmware_read(fw_name, &fw_buf, &fsize) == 0)
@@ -665,7 +672,9 @@ nfp_fw_setup(struct rte_pci_device *dev, struct nfp_cpp *cpp,
 	char card_desc[100];
 	int err = 0;
 
-	nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "assembly.partno");
+	nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "nffw.partno");
+	if (nfp_fw_model == NULL)
+		nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "assembly.partno");
 
 	if (nfp_fw_model) {
 		PMD_DRV_LOG(INFO, "firmware model found: %s", nfp_fw_model);
@@ -791,6 +800,7 @@ static int nfp_pf_init(struct rte_pci_device *pci_dev)
 {
 	struct nfp_pf_dev *pf_dev = NULL;
 	struct nfp_cpp *cpp;
+	uint32_t cpp_id;
 	struct nfp_hwinfo *hwinfo;
 	struct nfp_rtsym_table *sym_tbl;
 	struct nfp_eth_table *nfp_eth_table = NULL;
@@ -895,7 +905,8 @@ static int nfp_pf_init(struct rte_pci_device *pci_dev)
 	PMD_INIT_LOG(DEBUG, "ctrl bar: %p", pf_dev->ctrl_bar);
 
 	/* configure access to tx/rx vNIC BARs */
-	pf_dev->hw_queues = nfp_cpp_map_area(pf_dev->cpp, 0, 0,
+	cpp_id = NFP_CPP_ISLAND_ID(0, NFP_CPP_ACTION_RW, 0, 0);
+	pf_dev->hw_queues = nfp_cpp_map_area(pf_dev->cpp, cpp_id,
 					      NFP_PCIE_QUEUE(0),
 					      NFP_QCP_QUEUE_AREA_SZ,
 					      &pf_dev->hwqueues_area);

@@ -1180,6 +1180,8 @@ sfc_mae_action_set_disable(struct sfc_adapter *sa,
 	}
 
 	if (fw_rsrc->refcnt == 1) {
+		efx_mae_action_set_clear_fw_rsrc_ids(action_set->spec);
+
 		rc = efx_mae_action_set_free(sa->nic, &fw_rsrc->aset_id);
 		if (rc == 0) {
 			sfc_dbg(sa, "disabled action_set=%p with AS_ID=0x%08x",
@@ -4131,12 +4133,10 @@ sfc_mae_rule_parse_actions(struct sfc_adapter *sa,
 		break;
 	case SFC_FT_RULE_GROUP:
 		/*
-		 * Packets that go to the rule's AR have FT mark set (from the
-		 * JUMP rule OR's RECIRC_ID). Remove this mark in matching
-		 * packets. The user may have provided their own action
-		 * MARK above, so don't check the return value here.
+		 * Packets that go to the rule's AR have FT mark set (from
+		 * the JUMP rule OR's RECIRC_ID). Reset the mark to zero.
 		 */
-		(void)efx_mae_action_set_populate_mark(ctx.spec, 0);
+		efx_mae_action_set_populate_mark_reset(ctx.spec);
 
 		ctx.ft_group_hit_counter = &spec_mae->ft->group_hit_counter;
 		break;
@@ -4144,8 +4144,25 @@ sfc_mae_rule_parse_actions(struct sfc_adapter *sa,
 		SFC_ASSERT(B_FALSE);
 	}
 
+	/*
+	 * A DPDK flow entry must specify a fate action, which the parser
+	 * converts into a DELIVER action in a libefx action set. An
+	 * attempt to replace the action in the action set should
+	 * fail. If it succeeds then report an error, as the
+	 * parsed flow entry did not contain a fate action.
+	 */
+	rc = efx_mae_action_set_populate_drop(ctx.spec);
+	if (rc == 0) {
+		rc = rte_flow_error_set(error, EINVAL,
+					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
+					"no fate action found");
+		goto fail_check_fate_action;
+	}
+
 	spec_mae->action_set = sfc_mae_action_set_attach(sa, &ctx);
 	if (spec_mae->action_set != NULL) {
+		sfc_mae_mac_addr_del(sa, ctx.src_mac);
+		sfc_mae_mac_addr_del(sa, ctx.dst_mac);
 		sfc_mae_encap_header_del(sa, ctx.encap_header);
 		efx_mae_action_set_spec_fini(sa->nic, ctx.spec);
 		return 0;
@@ -4158,6 +4175,7 @@ sfc_mae_rule_parse_actions(struct sfc_adapter *sa,
 	return 0;
 
 fail_action_set_add:
+fail_check_fate_action:
 fail_workaround_jump_delivery:
 fail_nb_count:
 	sfc_mae_encap_header_del(sa, ctx.encap_header);

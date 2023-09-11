@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
-project('DPDK', 'C',
+project('DPDK', 'c',
         # Get version number from file.
         # Fallback to "more" for Windows compatibility.
         version: run_command(find_program('cat', 'more'),
@@ -16,7 +16,7 @@ developer_mode = false
 if get_option('developer_mode').auto()
     if meson.version().version_compare('>=0.53') # fs module available
         fs = import('fs')
-        developer_mode = fs.is_dir('.git')
+        developer_mode = fs.exists('.git')
     endif
 else
     developer_mode = get_option('developer_mode').enabled()

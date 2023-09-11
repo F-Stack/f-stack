@@ -177,9 +177,9 @@ nfp_net_configure(struct rte_eth_dev *dev)
 	}
 
 	/* Checking MTU set */
-	if (rxmode->mtu > hw->flbufsz) {
-		PMD_INIT_LOG(INFO, "MTU (%u) larger then current mbufsize (%u) not supported",
-				    rxmode->mtu, hw->flbufsz);
+	if (rxmode->mtu > NFP_FRAME_SIZE_MAX) {
+		PMD_INIT_LOG(ERR, "MTU (%u) larger than NFP_FRAME_SIZE_MAX (%u) not supported",
+				    rxmode->mtu, NFP_FRAME_SIZE_MAX);
 		return -ERANGE;
 	}
 
@@ -969,9 +969,9 @@ nfp_net_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EBUSY;
 	}
 
-	/* MTU larger then current mbufsize not supported */
+	/* MTU larger than current mbufsize not supported */
 	if (mtu > hw->flbufsz) {
-		PMD_DRV_LOG(ERR, "MTU (%u) larger then current mbufsize (%u) not supported",
+		PMD_DRV_LOG(ERR, "MTU (%u) larger than current mbufsize (%u) not supported",
 			    mtu, hw->flbufsz);
 		return -ERANGE;
 	}
@@ -1248,7 +1248,7 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 	cfg_rss_ctrl = nn_cfg_readl(hw, NFP_NET_CFG_RSS_CTRL);
 
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV4)
-		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV4_UDP;
+		rss_hf |= RTE_ETH_RSS_IPV4;
 
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV4_TCP)
 		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_TCP;
@@ -1263,7 +1263,7 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV6_UDP;
 
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV6)
-		rss_hf |= RTE_ETH_RSS_NONFRAG_IPV4_UDP | RTE_ETH_RSS_NONFRAG_IPV6_UDP;
+		rss_hf |= RTE_ETH_RSS_IPV6;
 
 	/* Propagate current RSS hash functions to caller */
 	rss_conf->rss_hf = rss_hf;

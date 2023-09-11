@@ -599,7 +599,7 @@ fill_vec_buf_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
  */
 static inline int
 reserve_avail_buf_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
-				uint32_t size, struct buf_vector *buf_vec,
+				uint64_t size, struct buf_vector *buf_vec,
 				uint16_t *num_buffers, uint16_t avail_head,
 				uint16_t *nr_vec)
 {
@@ -1069,7 +1069,7 @@ vhost_enqueue_single_packed(struct virtio_net *dev,
 	uint16_t buf_id = 0;
 	uint32_t len = 0;
 	uint16_t desc_count;
-	uint32_t size = pkt->pkt_len + sizeof(struct virtio_net_hdr_mrg_rxbuf);
+	uint64_t size = pkt->pkt_len + sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	uint16_t num_buffers = 0;
 	uint32_t buffer_len[vq->size];
 	uint16_t buffer_buf_id[vq->size];
@@ -1137,7 +1137,7 @@ virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
 	for (pkt_idx = 0; pkt_idx < count; pkt_idx++) {
-		uint32_t pkt_len = pkts[pkt_idx]->pkt_len + dev->vhost_hlen;
+		uint64_t pkt_len = pkts[pkt_idx]->pkt_len + dev->vhost_hlen;
 		uint16_t nr_vec = 0;
 
 		if (unlikely(reserve_avail_buf_split(dev, vq,
@@ -1244,6 +1244,12 @@ virtio_dev_rx_batch_packed_copy(struct virtio_net *dev,
 					(uintptr_t)desc_addrs[i];
 		lens[i] = pkts[i]->pkt_len +
 			sizeof(struct virtio_net_hdr_mrg_rxbuf);
+	}
+
+	if (rxvq_is_mergeable(dev)) {
+		vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
+			ASSIGN_UNLESS_EQUAL(hdrs[i]->num_buffers, 1);
+		}
 	}
 
 	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
@@ -1485,7 +1491,7 @@ virtio_dev_rx_async_submit_split(struct virtio_net *dev,
 	async_iter_reset(async);
 
 	for (pkt_idx = 0; pkt_idx < count; pkt_idx++) {
-		uint32_t pkt_len = pkts[pkt_idx]->pkt_len + dev->vhost_hlen;
+		uint64_t pkt_len = pkts[pkt_idx]->pkt_len + dev->vhost_hlen;
 		uint16_t nr_vec = 0;
 
 		if (unlikely(reserve_avail_buf_split(dev, vq, pkt_len, buf_vec,
@@ -1575,7 +1581,7 @@ vhost_enqueue_async_packed(struct virtio_net *dev,
 	uint16_t buf_id = 0;
 	uint32_t len = 0;
 	uint16_t desc_count = 0;
-	uint32_t size = pkt->pkt_len + sizeof(struct virtio_net_hdr_mrg_rxbuf);
+	uint64_t size = pkt->pkt_len + sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	uint32_t buffer_len[vq->size];
 	uint16_t buffer_buf_id[vq->size];
 	uint16_t buffer_desc_count[vq->size];
@@ -1672,7 +1678,6 @@ virtio_dev_rx_async_submit_packed(struct virtio_net *dev,
 	struct rte_mbuf **pkts, uint32_t count)
 {
 	uint32_t pkt_idx = 0;
-	uint32_t remained = count;
 	int32_t n_xfer;
 	uint16_t num_buffers;
 	uint16_t num_descs;
@@ -1698,7 +1703,6 @@ virtio_dev_rx_async_submit_packed(struct virtio_net *dev,
 		pkts_info[slot_idx].mbuf = pkts[pkt_idx];
 
 		pkt_idx++;
-		remained--;
 		vq_inc_last_avail_packed(vq, num_descs);
 	} while (pkt_idx < count);
 

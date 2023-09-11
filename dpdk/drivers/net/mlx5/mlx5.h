@@ -323,9 +323,10 @@ struct mlx5_lb_ctx {
 	uint16_t refcnt; /* Reference count for representors. */
 };
 
+#define MLX5_COUNTER_POOLS_MAX_NUM (1 << 15)
 #define MLX5_COUNTERS_PER_POOL 512
 #define MLX5_MAX_PENDING_QUERIES 4
-#define MLX5_CNT_CONTAINER_RESIZE 64
+#define MLX5_CNT_MR_ALLOC_BULK 64
 #define MLX5_CNT_SHARED_OFFSET 0x80000000
 #define IS_BATCH_CNT(cnt) (((cnt) & (MLX5_CNT_SHARED_OFFSET - 1)) >= \
 			   MLX5_CNT_BATCH_OFFSET)
@@ -481,7 +482,6 @@ TAILQ_HEAD(mlx5_counter_pools, mlx5_flow_counter_pool);
 /* Counter global management structure. */
 struct mlx5_flow_counter_mng {
 	volatile uint16_t n_valid; /* Number of valid pools. */
-	uint16_t n; /* Number of pools. */
 	uint16_t last_pool_idx; /* Last used pool index */
 	int min_id; /* The minimum counter ID in the pools. */
 	int max_id; /* The maximum counter ID in the pools. */
@@ -550,6 +550,7 @@ struct mlx5_aso_age_action {
 };
 
 #define MLX5_ASO_AGE_ACTIONS_PER_POOL 512
+#define MLX5_ASO_AGE_CONTAINER_RESIZE 64
 
 struct mlx5_aso_age_pool {
 	struct mlx5_devx_obj *flow_hit_aso_obj;
@@ -1158,7 +1159,7 @@ struct mlx5_dev_ctx_shared {
 	uint32_t tunnel_header_0_1:1; /* tunnel_header_0_1 is supported. */
 	uint32_t misc5_cap:1; /* misc5 matcher parameter is supported. */
 	uint32_t reclaim_mode:1; /* Reclaim memory. */
-	uint32_t dr_drop_action_en:1; /* Use DR drop action. */
+	uint32_t dr_root_drop_action_en:1; /* DR drop action is usable on root tables. */
 	uint32_t drop_action_check_flag:1; /* Check Flag for drop action. */
 	uint32_t flow_priority_check_flag:1; /* Check Flag for flow priority. */
 	uint32_t metadata_regc_check_flag:1; /* Check Flag for metadata REGC. */
@@ -1416,6 +1417,7 @@ struct mlx5_priv {
 	unsigned int mtr_en:1; /* Whether support meter. */
 	unsigned int mtr_reg_share:1; /* Whether support meter REG_C share. */
 	unsigned int lb_used:1; /* Loopback queue is referred to. */
+	unsigned int rmv_notified:1; /* Notified about removal event */
 	uint32_t mark_enabled:1; /* If mark action is enabled on rxqs. */
 	uint16_t domain_id; /* Switch domain identifier. */
 	uint16_t vport_id; /* Associated VF vport index (if any). */
@@ -1452,7 +1454,7 @@ struct mlx5_priv {
 	uint32_t refcnt; /**< Reference counter. */
 	/**< Verbs modify header action object. */
 	uint8_t ft_type; /**< Flow table type, Rx or Tx. */
-	uint8_t max_lro_msg_size;
+	uint32_t max_lro_msg_size;
 	uint32_t link_speed_capa; /* Link speed capabilities. */
 	struct mlx5_xstats_ctrl xstats_ctrl; /* Extended stats control. */
 	struct mlx5_stats_ctrl stats_ctrl; /* Stats control. */

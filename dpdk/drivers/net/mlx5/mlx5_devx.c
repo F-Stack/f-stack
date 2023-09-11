@@ -771,7 +771,8 @@ mlx5_devx_tir_attr_set(struct rte_eth_dev *dev, const uint8_t *rss_key,
 	if (lro) {
 		MLX5_ASSERT(priv->config.lro.supported);
 		tir_attr->lro_timeout_period_usecs = priv->config.lro.timeout;
-		tir_attr->lro_max_msg_sz = priv->max_lro_msg_size;
+		tir_attr->lro_max_msg_sz =
+			priv->max_lro_msg_size / MLX5_LRO_SEG_CHUNK_SIZE;
 		tir_attr->lro_enable_mask =
 				MLX5_TIRC_LRO_ENABLE_MASK_IPV4_LRO |
 				MLX5_TIRC_LRO_ENABLE_MASK_IPV6_LRO;
@@ -1017,6 +1018,10 @@ mlx5_devx_drop_action_destroy(struct rte_eth_dev *dev)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq *hrxq = priv->drop_queue.hrxq;
 
+#if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
+	if (hrxq->action != NULL)
+		mlx5_flow_os_destroy_flow_action(hrxq->action);
+#endif
 	if (hrxq->tir != NULL)
 		mlx5_devx_tir_destroy(hrxq);
 	if (hrxq->ind_table->ind_table != NULL)

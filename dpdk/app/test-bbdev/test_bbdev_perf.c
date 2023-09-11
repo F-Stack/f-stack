@@ -70,13 +70,12 @@
 
 #define SYNC_WAIT 0
 #define SYNC_START 1
-#define INVALID_OPAQUE -1
 
 #define INVALID_QUEUE_ID -1
 /* Increment for next code block in external HARQ memory */
 #define HARQ_INCR 32768
 /* Headroom for filler LLRs insertion in HARQ buffer */
-#define FILLER_HEADROOM 1024
+#define FILLER_HEADROOM 2048
 /* Constants from K0 computation from 3GPP 38.212 Table 5.4.2.1-2 */
 #define N_ZC_1 66 /* N = 66 Zc for BG 1 */
 #define N_ZC_2 50 /* N = 50 Zc for BG 2 */
@@ -87,6 +86,7 @@
 #define K0_3_1 56 /* K0 fraction numerator for rv 3 and BG 1 */
 #define K0_3_2 43 /* K0 fraction numerator for rv 3 and BG 2 */
 
+#define HARQ_MEM_TOLERANCE 256
 static struct test_bbdev_vector test_vector;
 
 /* Switch between PMD and Interrupt for throughput TC */
@@ -1822,10 +1822,9 @@ check_enc_status_and_ordering(struct rte_bbdev_enc_op *op,
 			"op_status (%d) != expected_status (%d)",
 			op->status, expected_status);
 
-	if (op->opaque_data != (void *)(uintptr_t)INVALID_OPAQUE)
-		TEST_ASSERT((void *)(uintptr_t)order_idx == op->opaque_data,
-				"Ordering error, expected %p, got %p",
-				(void *)(uintptr_t)order_idx, op->opaque_data);
+	TEST_ASSERT((void *)(uintptr_t)order_idx == op->opaque_data,
+			"Ordering error, expected %p, got %p",
+			(void *)(uintptr_t)order_idx, op->opaque_data);
 
 	return TEST_SUCCESS;
 }
@@ -1947,12 +1946,16 @@ validate_op_harq_chain(struct rte_bbdev_op_data *op,
 		uint16_t data_len = rte_pktmbuf_data_len(m) - offset;
 		total_data_size += orig_op->segments[i].length;
 
-		TEST_ASSERT(orig_op->segments[i].length <
-				(uint32_t)(data_len + 64),
+		TEST_ASSERT(orig_op->segments[i].length < (uint32_t)(data_len + HARQ_MEM_TOLERANCE),
 				"Length of segment differ in original (%u) and filled (%u) op",
 				orig_op->segments[i].length, data_len);
 		harq_orig = (int8_t *) orig_op->segments[i].addr;
 		harq_out = rte_pktmbuf_mtod_offset(m, int8_t *, offset);
+
+		/* Cannot compare HARQ output data for such cases */
+		if ((ldpc_llr_decimals > 1) && ((ops_ld->op_flags & RTE_BBDEV_LDPC_LLR_COMPRESSION)
+				|| (ops_ld->op_flags & RTE_BBDEV_LDPC_HARQ_6BIT_COMPRESSION)))
+			break;
 
 		if (!(ldpc_cap_flags &
 				RTE_BBDEV_LDPC_INTERNAL_HARQ_MEMORY_FILLERS
@@ -1968,9 +1971,9 @@ validate_op_harq_chain(struct rte_bbdev_op_data *op,
 					ops_ld->n_filler;
 			if (data_len > deRmOutSize)
 				data_len = deRmOutSize;
-			if (data_len > orig_op->segments[i].length)
-				data_len = orig_op->segments[i].length;
 		}
+		if (data_len > orig_op->segments[i].length)
+			data_len = orig_op->segments[i].length;
 		/*
 		 * HARQ output can have minor differences
 		 * due to integer representation and related scaling
@@ -2029,7 +2032,7 @@ validate_op_harq_chain(struct rte_bbdev_op_data *op,
 
 	/* Validate total mbuf pkt length */
 	uint32_t pkt_len = rte_pktmbuf_pkt_len(op->data) - op->offset;
-	TEST_ASSERT(total_data_size < pkt_len + 64,
+	TEST_ASSERT(total_data_size < pkt_len + HARQ_MEM_TOLERANCE,
 			"Length of data differ in original (%u) and filled (%u) op",
 			total_data_size, pkt_len);
 
@@ -4724,7 +4727,7 @@ offload_cost_test(struct active_device *ad,
 	printf("Set RTE_BBDEV_OFFLOAD_COST to 'y' to turn the test on.\n");
 	return TEST_SKIPPED;
 #else
-	int iter;
+	int iter, ret;
 	uint16_t burst_sz = op_params->burst_sz;
 	const uint16_t num_to_process = op_params->num_to_process;
 	const enum rte_bbdev_op_type op_type = test_vector.op_type;
@@ -4815,7 +4818,10 @@ offload_cost_test(struct active_device *ad,
 			rte_get_tsc_hz());
 
 	struct rte_bbdev_stats stats = {0};
-	get_bbdev_queue_stats(ad->dev_id, queue_id, &stats);
+	ret = get_bbdev_queue_stats(ad->dev_id, queue_id, &stats);
+	TEST_ASSERT_SUCCESS(ret,
+			"Failed to get stats for queue (%u) of device (%u)",
+			queue_id, ad->dev_id);
 	if (op_type != RTE_BBDEV_OP_LDPC_DEC) {
 		TEST_ASSERT_SUCCESS(stats.enqueued_count != num_to_process,
 				"Mismatch in enqueue count %10"PRIu64" %d",

@@ -23,7 +23,6 @@
 #include "ccp_pci.h"
 #include "ccp_pmd_private.h"
 
-int iommu_mode;
 struct ccp_list ccp_list = TAILQ_HEAD_INITIALIZER(ccp_list);
 static int ccp_dev_id;
 
@@ -362,7 +361,7 @@ ccp_find_lsb_regions(struct ccp_queue *cmd_q, uint64_t status)
 		if (ccp_get_bit(&cmd_q->lsbmask, j))
 			weight++;
 
-	printf("Queue %d can access %d LSB regions  of mask  %lu\n",
+	CCP_LOG_DBG("Queue %d can access %d LSB regions  of mask  %lu\n",
 	       (int)cmd_q->id, weight, cmd_q->lsbmask);
 
 	return weight ? 0 : -EINVAL;
@@ -652,8 +651,7 @@ is_ccp_device(const char *dirname,
 static int
 ccp_probe_device(int ccp_type, struct rte_pci_device *pci_dev)
 {
-	struct ccp_device *ccp_dev = NULL;
-	int uio_fd = -1;
+	struct ccp_device *ccp_dev;
 
 	ccp_dev = rte_zmalloc("ccp_device", sizeof(*ccp_dev),
 			      RTE_CACHE_LINE_SIZE);
@@ -671,8 +669,6 @@ ccp_probe_device(int ccp_type, struct rte_pci_device *pci_dev)
 	return 0;
 fail:
 	CCP_LOG_ERR("CCP Device probe failed");
-	if (uio_fd >= 0)
-		close(uio_fd);
 	if (ccp_dev)
 		rte_free(ccp_dev);
 	return -1;
@@ -687,16 +683,10 @@ ccp_probe_devices(struct rte_pci_device *pci_dev,
 	struct dirent *d;
 	DIR *dir;
 	int ret = 0;
-	int module_idx = 0;
 	uint16_t domain;
 	uint8_t bus, devid, function;
 	char dirname[PATH_MAX];
 
-	module_idx = ccp_check_pci_uio_module();
-	if (module_idx < 0)
-		return -1;
-
-	iommu_mode = module_idx;
 	TAILQ_INIT(&ccp_list);
 	dir = opendir(SYSFS_PCI_DEVICES);
 	if (dir == NULL)
@@ -710,7 +700,7 @@ ccp_probe_devices(struct rte_pci_device *pci_dev,
 		snprintf(dirname, sizeof(dirname), "%s/%s",
 			     SYSFS_PCI_DEVICES, d->d_name);
 		if (is_ccp_device(dirname, ccp_id, &ccp_type)) {
-			printf("CCP : Detected CCP device with ID = 0x%x\n",
+			CCP_LOG_DBG("CCP : Detected CCP device with ID = 0x%x\n",
 			       ccp_id[ccp_type].device_id);
 			ret = ccp_probe_device(ccp_type, pci_dev);
 			if (ret == 0)

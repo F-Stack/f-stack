@@ -1061,12 +1061,6 @@ rte_eal_init(int argc, char **argv)
 		}
 	}
 
-	/* register multi-process action callbacks for hotplug */
-	if (eal_mp_dev_hotplug_init() < 0) {
-		rte_eal_init_alert("failed to register mp callback for hotplug");
-		return -1;
-	}
-
 	if (rte_bus_scan()) {
 		rte_eal_init_alert("Cannot scan the buses for devices");
 		rte_errno = ENODEV;
@@ -1202,6 +1196,12 @@ rte_eal_init(int argc, char **argv)
 	if (rte_eal_malloc_heap_init() < 0) {
 		rte_eal_init_alert("Cannot init malloc heap");
 		rte_errno = ENODEV;
+		return -1;
+	}
+
+	/* register multi-process action callbacks for hotplug after memory init */
+	if (eal_mp_dev_hotplug_init() < 0) {
+		rte_eal_init_alert("failed to register mp callback for hotplug");
 		return -1;
 	}
 
@@ -1354,6 +1354,16 @@ mark_freeable(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
 int
 rte_eal_cleanup(void)
 {
+	static uint32_t run_once;
+	uint32_t has_run = 0;
+
+	if (!__atomic_compare_exchange_n(&run_once, &has_run, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+		RTE_LOG(WARNING, EAL, "Already called cleanup\n");
+		rte_errno = EALREADY;
+		return -1;
+	}
+
 	/* if we're in a primary process, we need to mark hugepages as freeable
 	 * so that finalization can release them back to the system.
 	 */
@@ -1370,9 +1380,9 @@ rte_eal_cleanup(void)
 	rte_mp_channel_cleanup();
 	rte_trace_save();
 	eal_trace_fini();
+	rte_eal_alarm_cleanup();
 	/* after this point, any DPDK pointers will become dangling */
 	rte_eal_memory_detach();
-	rte_eal_alarm_cleanup();
 	eal_cleanup_config(internal_conf);
 	return 0;
 }

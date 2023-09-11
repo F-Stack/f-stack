@@ -214,6 +214,9 @@ struct rte_sched_subport {
 	uint32_t qsize_add[RTE_SCHED_QUEUES_PER_PIPE];
 	uint32_t qsize_sum;
 
+	/* TC oversubscription activation */
+	int tc_ov_enabled;
+
 	struct rte_sched_pipe *pipe;
 	struct rte_sched_queue *queue;
 	struct rte_sched_queue_extra *queue_extra;
@@ -1242,8 +1245,6 @@ rte_sched_subport_config(struct rte_sched_port *port,
 		}
 
 		n_subports++;
-
-		subport_profile_id = 0;
 
 		/* Port */
 		port->subports[subport_id] = s;

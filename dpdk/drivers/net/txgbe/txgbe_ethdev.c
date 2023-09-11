@@ -179,12 +179,16 @@ static const struct rte_txgbe_xstats_name_off rte_txgbe_stats_strings[] = {
 	HW_XSTAT(tx_total_packets),
 	HW_XSTAT(rx_total_missed_packets),
 	HW_XSTAT(rx_broadcast_packets),
+	HW_XSTAT(tx_broadcast_packets),
 	HW_XSTAT(rx_multicast_packets),
+	HW_XSTAT(tx_multicast_packets),
 	HW_XSTAT(rx_management_packets),
 	HW_XSTAT(tx_management_packets),
 	HW_XSTAT(rx_management_dropped),
+	HW_XSTAT(rx_dma_drop),
 
 	/* Basic Error */
+	HW_XSTAT(rx_rdb_drop),
 	HW_XSTAT(rx_crc_errors),
 	HW_XSTAT(rx_illegal_byte_errors),
 	HW_XSTAT(rx_error_bytes),
@@ -192,7 +196,7 @@ static const struct rte_txgbe_xstats_name_off rte_txgbe_stats_strings[] = {
 	HW_XSTAT(rx_length_errors),
 	HW_XSTAT(rx_undersize_errors),
 	HW_XSTAT(rx_fragment_errors),
-	HW_XSTAT(rx_oversize_errors),
+	HW_XSTAT(rx_oversize_cnt),
 	HW_XSTAT(rx_jabber_errors),
 	HW_XSTAT(rx_l3_l4_xsum_error),
 	HW_XSTAT(mac_local_errors),
@@ -1774,6 +1778,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 		speed = (TXGBE_LINK_SPEED_100M_FULL |
 			 TXGBE_LINK_SPEED_1GB_FULL |
 			 TXGBE_LINK_SPEED_10GB_FULL);
+		hw->autoneg = true;
 	} else {
 		if (*link_speeds & RTE_ETH_LINK_SPEED_10G)
 			speed |= TXGBE_LINK_SPEED_10GB_FULL;
@@ -1785,6 +1790,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 			speed |= TXGBE_LINK_SPEED_1GB_FULL;
 		if (*link_speeds & RTE_ETH_LINK_SPEED_100M)
 			speed |= TXGBE_LINK_SPEED_100M_FULL;
+		hw->autoneg = false;
 	}
 
 	err = hw->mac.setup_link(hw, speed, link_up);
@@ -2007,8 +2013,9 @@ txgbe_dev_close(struct rte_eth_dev *dev)
 		rte_delay_ms(100);
 	} while (retries++ < (10 + TXGBE_LINK_UP_TIME));
 
-	/* cancel the delay handler before remove dev */
+	/* cancel all alarm handler before remove dev */
 	rte_eal_alarm_cancel(txgbe_dev_interrupt_delayed_handler, dev);
+	rte_eal_alarm_cancel(txgbe_dev_setup_link_alarm_handler, dev);
 
 	/* uninitialize PF if max_vfs not zero */
 	txgbe_pf_host_uninit(dev);
@@ -2147,7 +2154,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 	hw_stats->rx_bytes += rd64(hw, TXGBE_DMARXOCTL);
 	hw_stats->tx_bytes += rd64(hw, TXGBE_DMATXOCTL);
 	hw_stats->rx_dma_drop += rd32(hw, TXGBE_DMARXDROP);
-	hw_stats->rx_drop_packets += rd32(hw, TXGBE_PBRXDROP);
+	hw_stats->rx_rdb_drop += rd32(hw, TXGBE_PBRXDROP);
 
 	/* MAC Stats */
 	hw_stats->rx_crc_errors += rd64(hw, TXGBE_MACRXERRCRCL);
@@ -2179,7 +2186,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 			rd64(hw, TXGBE_MACTX1024TOMAXL);
 
 	hw_stats->rx_undersize_errors += rd64(hw, TXGBE_MACRXERRLENL);
-	hw_stats->rx_oversize_errors += rd32(hw, TXGBE_MACRXOVERSIZE);
+	hw_stats->rx_oversize_cnt += rd32(hw, TXGBE_MACRXOVERSIZE);
 	hw_stats->rx_jabber_errors += rd32(hw, TXGBE_MACRXJABBER);
 
 	/* MNG Stats */
@@ -2301,8 +2308,7 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			  hw_stats->rx_mac_short_packet_dropped +
 			  hw_stats->rx_length_errors +
 			  hw_stats->rx_undersize_errors +
-			  hw_stats->rx_oversize_errors +
-			  hw_stats->rx_drop_packets +
+			  hw_stats->rx_rdb_drop +
 			  hw_stats->rx_illegal_byte_errors +
 			  hw_stats->rx_error_bytes +
 			  hw_stats->rx_fragment_errors +
@@ -2938,9 +2944,6 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 		rte_intr_type_get(intr_handle) != RTE_INTR_HANDLE_VFIO_MSIX)
 		wr32(hw, TXGBE_PX_INTA, 1);
 
-	/* clear all cause mask */
-	txgbe_disable_intr(hw);
-
 	/* read-on-clear nic registers here */
 	eicr = ((u32 *)hw->isb_mem)[TXGBE_ISB_MISC];
 	PMD_DRV_LOG(DEBUG, "eicr %x", eicr);
@@ -2962,6 +2965,8 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 
 	if (eicr & TXGBE_ICRMISC_GPIO)
 		intr->flags |= TXGBE_FLAG_PHY_INTERRUPT;
+
+	((u32 *)hw->isb_mem)[TXGBE_ISB_MISC] = 0;
 
 	return 0;
 }
@@ -3132,7 +3137,8 @@ txgbe_dev_interrupt_delayed_handler(void *param)
 	}
 
 	/* restore original mask */
-	intr->mask_misc |= TXGBE_ICRMISC_LSC;
+	if (dev->data->dev_conf.intr_conf.lsc == 1)
+		intr->mask_misc |= TXGBE_ICRMISC_LSC;
 
 	intr->mask = intr->mask_orig;
 	intr->mask_orig = 0;

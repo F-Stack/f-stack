@@ -2316,6 +2316,9 @@ ice_dev_init(struct rte_eth_dev *dev)
 
 	pf->supported_rxdid = ice_get_supported_rxdid(hw);
 
+	/* reset all stats of the device, including pf and main vsi */
+	ice_stats_reset(dev);
+
 	return 0;
 
 err_flow_init:
@@ -2456,11 +2459,16 @@ ice_dev_close(struct rte_eth_dev *dev)
 		return 0;
 
 	/* Since stop will make link down, then the link event will be
-	 * triggered, disable the irq firstly to avoid the port_infoe etc
-	 * resources deallocation causing the interrupt service thread
-	 * crash.
+	 * triggered, disable the irq firstly.
 	 */
 	ice_pf_disable_irq0(hw);
+
+	/* Unregister callback func from eal lib, use sync version to
+	 * make sure all active interrupt callbacks is done, then it's
+	 * safe to free all resources.
+	 */
+	rte_intr_callback_unregister_sync(intr_handle,
+					  ice_interrupt_handler, dev);
 
 	ret = ice_dev_stop(dev);
 
@@ -2492,10 +2500,6 @@ ice_dev_close(struct rte_eth_dev *dev)
 
 	/* disable uio intr before callback unregister */
 	rte_intr_disable(intr_handle);
-
-	/* unregister callback func from eal lib */
-	rte_intr_callback_unregister(intr_handle,
-				     ice_interrupt_handler, dev);
 
 	return ret;
 }
@@ -3195,7 +3199,8 @@ static int ice_init_rss(struct ice_pf *pf)
 
 	rss_conf = &dev_data->dev_conf.rx_adv_conf.rss_conf;
 	nb_q = dev_data->nb_rx_queues;
-	vsi->rss_key_size = ICE_AQC_GET_SET_RSS_KEY_DATA_RSS_KEY_SIZE;
+	vsi->rss_key_size = ICE_AQC_GET_SET_RSS_KEY_DATA_RSS_KEY_SIZE +
+			    ICE_AQC_GET_SET_RSS_KEY_DATA_HASH_KEY_SIZE;
 	vsi->rss_lut_size = pf->hash_lut_size;
 
 	if (nb_q == 0) {
@@ -3236,7 +3241,10 @@ static int ice_init_rss(struct ice_pf *pf)
 				   vsi->rss_key_size));
 
 	rte_memcpy(key.standard_rss_key, vsi->rss_key,
-		RTE_MIN(sizeof(key.standard_rss_key), vsi->rss_key_size));
+		ICE_AQC_GET_SET_RSS_KEY_DATA_RSS_KEY_SIZE);
+	rte_memcpy(key.extended_hash_key,
+		&vsi->rss_key[ICE_AQC_GET_SET_RSS_KEY_DATA_RSS_KEY_SIZE],
+		ICE_AQC_GET_SET_RSS_KEY_DATA_HASH_KEY_SIZE);
 	ret = ice_aq_set_rss_key(hw, vsi->idx, &key);
 	if (ret)
 		goto out;
@@ -3553,6 +3561,16 @@ ice_dev_start(struct rte_eth_dev *dev)
 		ret = ice_tx_queue_start(dev, nb_txq);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "fail to start Tx queue %u", nb_txq);
+			goto tx_err;
+		}
+	}
+
+	if (dev->data->dev_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		/* Register mbuf field and flag for Rx timestamp */
+		ret = rte_mbuf_dyn_rx_timestamp_register(&ice_timestamp_dynfield_offset,
+							 &ice_timestamp_dynflag);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "Cannot register mbuf field/flag for timestamp");
 			goto tx_err;
 		}
 	}
@@ -4623,10 +4641,8 @@ ice_rss_hash_update(struct rte_eth_dev *dev,
 	if (status)
 		return status;
 
-	if (rss_conf->rss_hf == 0) {
+	if (rss_conf->rss_hf == 0)
 		pf->rss_hf = 0;
-		return 0;
-	}
 
 	/* RSS hash configuration */
 	ice_rss_hash_set(pf, rss_conf->rss_hf);
