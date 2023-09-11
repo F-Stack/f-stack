@@ -162,7 +162,7 @@ static inline bool igbuio_kernel_is_locked_down(void)
 #if __has_attribute(__fallthrough__)
 #define fallthrough	__attribute__((__fallthrough__))
 #else
-#define fallthrough	do {} while (0)
+#define fallthrough	do {} while (0)  /* fallthrough */
 #endif
 
 #endif

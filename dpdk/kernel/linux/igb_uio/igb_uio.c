@@ -15,7 +15,21 @@
 #include <linux/version.h>
 #include <linux/slab.h>
 
-#include <rte_pci_dev_features.h>
+/**
+ * These enum and macro definitions are copied from the
+ * file rte_pci_dev_features.h
+ */
+enum rte_intr_mode {
+	RTE_INTR_MODE_NONE = 0,
+	RTE_INTR_MODE_LEGACY,
+	RTE_INTR_MODE_MSI,
+	RTE_INTR_MODE_MSIX
+};
+#define RTE_INTR_MODE_NONE_NAME "none"
+#define RTE_INTR_MODE_LEGACY_NAME "legacy"
+#define RTE_INTR_MODE_MSI_NAME "msi"
+#define RTE_INTR_MODE_MSIX_NAME "msix"
+
 
 #include "compat.h"
 
@@ -498,15 +512,9 @@ igbuio_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		goto fail_release_iomem;
 
 	/* set 64-bit DMA mask */
-	err = pci_set_dma_mask(dev,  DMA_BIT_MASK(64));
+	err = dma_set_mask_and_coherent(&dev->dev,  DMA_BIT_MASK(64));
 	if (err != 0) {
 		dev_err(&dev->dev, "Cannot set DMA mask\n");
-		goto fail_release_iomem;
-	}
-
-	err = pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(64));
-	if (err != 0) {
-		dev_err(&dev->dev, "Cannot set consistent DMA mask\n");
 		goto fail_release_iomem;
 	}
 
