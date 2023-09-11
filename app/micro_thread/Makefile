@@ -37,7 +37,7 @@ FF_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma
 
 # Comment the following line if you are not using the gnu c compiler
 #C_ARGS = -Wall -g -fPIC -D_DEBUG
-C_ARGS = -Wall -g -fPIC -O0 -DMT_REAL_TIME 
+C_ARGS = -Wall -g -fPIC -O0 -DMT_REAL_TIME -Wno-register
 #.SUFFIXES: .o .cpp
 
 ifeq ($(ARCH),32)
