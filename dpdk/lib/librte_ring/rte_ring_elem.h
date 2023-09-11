@@ -95,7 +95,6 @@ ssize_t rte_ring_get_memsize_elem(unsigned int esize, unsigned int count);
  *   On success, the pointer to the new allocated ring. NULL on error with
  *    rte_errno set appropriately. Possible errno values include:
  *    - E_RTE_NO_CONFIG - function could not get pointer to rte_config structure
- *    - E_RTE_SECONDARY - function was called from a secondary process instance
  *    - EINVAL - esize is not a multiple of 4 or count provided is not a
  *		 power of 2.
  *    - ENOSPC - the maximum number of memzones has already been allocated
@@ -104,6 +103,12 @@ ssize_t rte_ring_get_memsize_elem(unsigned int esize, unsigned int count);
  */
 struct rte_ring *rte_ring_create_elem(const char *name, unsigned int esize,
 			unsigned int count, int socket_id, unsigned int flags);
+
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 120000)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#pragma GCC diagnostic ignored "-Wstringop-overread"
+#endif
 
 static __rte_always_inline void
 __rte_ring_enqueue_elems_32(struct rte_ring *r, const uint32_t size,
@@ -1076,6 +1081,10 @@ rte_ring_dequeue_burst_elem(struct rte_ring *r, void *obj_table,
 		*available = 0;
 	return 0;
 }
+
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 120000)
+#pragma GCC diagnostic pop
+#endif
 
 #ifdef ALLOW_EXPERIMENTAL_API
 #include <rte_ring_peek.h>

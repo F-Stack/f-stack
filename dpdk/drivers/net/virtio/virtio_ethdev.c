@@ -1695,15 +1695,17 @@ static int
 virtio_configure_intr(struct rte_eth_dev *dev)
 {
 	struct virtio_hw *hw = dev->data->dev_private;
+	int ret;
 
 	if (!rte_intr_cap_multiple(dev->intr_handle)) {
 		PMD_INIT_LOG(ERR, "Multiple intr vector not supported");
 		return -ENOTSUP;
 	}
 
-	if (rte_intr_efd_enable(dev->intr_handle, dev->data->nb_rx_queues)) {
+	ret = rte_intr_efd_enable(dev->intr_handle, dev->data->nb_rx_queues);
+	if (ret < 0) {
 		PMD_INIT_LOG(ERR, "Fail to create eventfd");
-		return -1;
+		return ret;
 	}
 
 	if (!dev->intr_handle->intr_vec) {
@@ -1735,12 +1737,13 @@ virtio_configure_intr(struct rte_eth_dev *dev)
 	 */
 	if (virtio_intr_enable(dev) < 0) {
 		PMD_DRV_LOG(ERR, "interrupt enable failed");
-		return -1;
+		return -EINVAL;
 	}
 
-	if (virtio_queues_bind_intr(dev) < 0) {
+	ret = virtio_queues_bind_intr(dev);
+	if (ret < 0) {
 		PMD_INIT_LOG(ERR, "Failed to bind queue/interrupt");
-		return -1;
+		return ret;
 	}
 
 	return 0;
@@ -1796,7 +1799,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	/* Tell the host we've known how to drive the device. */
 	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_DRIVER);
 	if (virtio_negotiate_features(hw, req_features) < 0)
-		return -1;
+		return -EINVAL;
 
 	hw->weak_barriers = !vtpci_with_feature(hw, VIRTIO_F_ORDER_PLATFORM);
 
@@ -1881,7 +1884,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 			if (config->mtu < RTE_ETHER_MIN_MTU) {
 				PMD_INIT_LOG(ERR, "invalid max MTU value (%u)",
 						config->mtu);
-				return -1;
+				return -EINVAL;
 			}
 
 			hw->max_mtu = config->mtu;
@@ -1913,10 +1916,11 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 		return ret;
 
 	if (eth_dev->data->dev_conf.intr_conf.rxq) {
-		if (virtio_configure_intr(eth_dev) < 0) {
+		ret = virtio_configure_intr(eth_dev);
+		if (ret < 0) {
 			PMD_INIT_LOG(ERR, "failed to configure interrupt");
 			virtio_free_queues(hw);
-			return -1;
+			return ret;
 		}
 	}
 
@@ -2097,6 +2101,9 @@ eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 static int vdpa_check_handler(__rte_unused const char *key,
 		const char *value, void *ret_val)
 {
+	if (value == NULL || ret_val == NULL)
+		return -EINVAL;
+
 	if (strcmp(value, "1") == 0)
 		*(int *)ret_val = 1;
 	else
@@ -2134,6 +2141,9 @@ virtio_dev_speed_capa_get(uint32_t speed)
 static int vectorized_check_handler(__rte_unused const char *key,
 		const char *value, void *ret_val)
 {
+	if (value == NULL || ret_val == NULL)
+		return -EINVAL;
+
 	if (strcmp(value, "1") == 0)
 		*(int *)ret_val = 1;
 	else
@@ -2352,6 +2362,13 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 	/* if request features changed, reinit the device */
 	if (req_features != hw->req_guest_features) {
 		ret = virtio_init_device(dev, req_features);
+		if (ret < 0)
+			return ret;
+	}
+
+	/* if queues are not allocated, reinit the device */
+	if (hw->vqs == NULL) {
+		ret = virtio_init_device(dev, hw->req_guest_features);
 		if (ret < 0)
 			return ret;
 	}

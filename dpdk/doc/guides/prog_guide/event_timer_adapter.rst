@@ -35,7 +35,7 @@ device upon timer expiration.
 
 The Event Timer Adapter API represents each event timer with a generic struct,
 which contains an event and user metadata.  The ``rte_event_timer`` struct is
-defined in ``lib/librte_event/librte_event_timer_adapter.h``.
+defined in ``rte_event_timer_adapter.h``.
 
 .. _timer_expiry_event:
 
@@ -107,18 +107,19 @@ to ``rte_event_timer_adapter_create()``.
 
 .. code-block:: c
 
-	#define NSECPERSEC 1E9 // No of ns in 1 sec
+	#define NSECPERSEC 1E9
 	const struct rte_event_timer_adapter_conf adapter_config = {
                 .event_dev_id = event_dev_id,
                 .timer_adapter_id = 0,
+		.socket_id = rte_socket_id(),
                 .clk_src = RTE_EVENT_TIMER_ADAPTER_CPU_CLK,
-                .timer_tick_ns = NSECPERSEC / 10, // 100 milliseconds
-                .max_tmo_nsec = 180 * NSECPERSEC // 2 minutes
+                .timer_tick_ns = NSECPERSEC / 10,
+                .max_tmo_ns = 180 * NSECPERSEC,
                 .nb_timers = 40000,
-                .timer_adapter_flags = 0,
+                .flags = 0,
 	};
 
-	struct rte_event_timer_adapter *adapter = NULL;
+	struct rte_event_timer_adapter *adapter;
 	adapter = rte_event_timer_adapter_create(&adapter_config);
 
 	if (adapter == NULL) { ... };
@@ -216,9 +217,7 @@ Note that it is necessary to initialize the event timer state to
 RTE_EVENT_TIMER_NOT_ARMED.  Also note that we have saved a pointer to the
 ``conn`` object in the timer's event payload. This will allow us to locate
 the connection object again once we dequeue the timer expiry event from the
-event device later.  As a convenience, the application may specify no value for
-ev.event_ptr, and the adapter will by default set it to point at the event
-timer itself.
+event device later.
 
 Now we can arm the event timer with ``rte_event_timer_arm_burst()``:
 

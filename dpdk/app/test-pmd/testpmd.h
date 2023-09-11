@@ -25,6 +25,7 @@
 #define RTE_PORT_HANDLING       (uint16_t)3
 
 extern uint8_t cl_quit;
+extern volatile uint8_t f_quit;
 
 /*
  * It is used to allocate the memory for hash key.
@@ -237,7 +238,8 @@ struct rte_port {
 	struct rte_ether_addr   *mc_addr_pool; /**< pool of multicast addrs */
 	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
 	uint8_t                 slave_flag : 1, /**< bonding slave port */
-				bond_flag : 1; /**< port is bond device */
+				bond_flag : 1, /**< port is bond device */
+				fwd_mac_swap : 1; /**< swap packet MAC before forward */
 	struct port_flow        *flow_list; /**< Associated flows. */
 	struct port_shared_action *actions_list;
 	/**< Associated shared actions. */

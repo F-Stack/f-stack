@@ -199,7 +199,7 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 	struct rte_tcp_hdr *tcp_hdr;
 	uint32_t sent_seq;
 	int32_t tcp_dl;
-	uint16_t ip_id, hdr_len, frag_off;
+	uint16_t ip_id, hdr_len, frag_off, ip_tlen;
 	uint8_t is_atomic;
 
 	struct tcp4_flow_key key;
@@ -226,6 +226,12 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 	 */
 	if (tcp_hdr->tcp_flags != RTE_TCP_ACK_FLAG)
 		return -1;
+
+	/* trim the tail padding bytes */
+	ip_tlen = rte_be_to_cpu_16(ipv4_hdr->total_length);
+	if (pkt->pkt_len > (uint32_t)(ip_tlen + pkt->l2_len))
+		rte_pktmbuf_trim(pkt, pkt->pkt_len - ip_tlen - pkt->l2_len);
+
 	/*
 	 * Don't process the packet whose payload length is less than or
 	 * equal to 0.
@@ -306,7 +312,7 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 			 * length is greater than the max value. Store
 			 * the packet into the flow.
 			 */
-			if (insert_new_item(tbl, pkt, start_time, prev_idx,
+			if (insert_new_item(tbl, pkt, start_time, cur_idx,
 						sent_seq, ip_id, is_atomic) ==
 					INVALID_ARRAY_INDEX)
 				return -1;

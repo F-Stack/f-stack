@@ -397,7 +397,6 @@ static int i40e_set_default_mac_addr(struct rte_eth_dev *dev,
 				      struct rte_ether_addr *mac_addr);
 
 static int i40e_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
-static void i40e_set_mac_max_frame(struct rte_eth_dev *dev, uint16_t size);
 
 static int i40e_ethertype_filter_convert(
 	const struct rte_eth_ethertype_filter *input,
@@ -1779,6 +1778,11 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	/* initialize mirror rule list */
 	TAILQ_INIT(&pf->mirror_list);
 
+	/* Set the max frame size to 0x2600 by default,
+	 * in case other drivers changed the default value.
+	 */
+	i40e_aq_set_mac_config(hw, I40E_FRAME_SIZE_MAX, TRUE, false, 0, NULL);
+
 	/* initialize RSS rule list */
 	TAILQ_INIT(&pf->rss_config_list);
 
@@ -2430,7 +2434,6 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	uint32_t intr_vector = 0;
 	struct i40e_vsi *vsi;
 	uint16_t nb_rxq, nb_txq;
-	uint16_t max_frame_size;
 
 	hw->adapter_stopped = 0;
 
@@ -2517,10 +2520,21 @@ i40e_dev_start(struct rte_eth_dev *dev)
 		}
 	}
 
+	/* Disable mac loopback mode */
+	if (dev->data->dev_conf.lpbk_mode == I40E_AQ_LB_MODE_NONE) {
+		ret = i40e_aq_set_lb_modes(hw, I40E_AQ_LB_MODE_NONE, NULL);
+		if (ret != I40E_SUCCESS) {
+			PMD_DRV_LOG(ERR, "fail to set loopback link");
+			goto tx_err;
+		}
+	}
+
 	/* Enable mac loopback mode */
-	if (dev->data->dev_conf.lpbk_mode == I40E_AQ_LB_MODE_NONE ||
-	    dev->data->dev_conf.lpbk_mode == I40E_AQ_LB_PHY_LOCAL) {
-		ret = i40e_aq_set_lb_modes(hw, dev->data->dev_conf.lpbk_mode, NULL);
+	if (dev->data->dev_conf.lpbk_mode == I40E_AQ_LB_MODE_EN) {
+		if (hw->mac.type == I40E_MAC_X722)
+			ret = i40e_aq_set_lb_modes(hw, I40E_AQ_LB_MAC_LOCAL_X722, NULL);
+		else
+			ret = i40e_aq_set_lb_modes(hw, I40E_AQ_LB_MAC, NULL);
 		if (ret != I40E_SUCCESS) {
 			PMD_DRV_LOG(ERR, "fail to set loopback link");
 			goto tx_err;
@@ -2571,9 +2585,6 @@ i40e_dev_start(struct rte_eth_dev *dev)
 		PMD_DRV_LOG(WARNING,
 			    "please call hierarchy_commit() "
 			    "before starting the port");
-
-	max_frame_size = dev->data->mtu + I40E_ETH_OVERHEAD;
-	i40e_set_mac_max_frame(dev, max_frame_size);
 
 	return I40E_SUCCESS;
 
@@ -2942,9 +2953,6 @@ i40e_dev_set_link_down(struct rte_eth_dev *dev)
 	return i40e_phy_conf_link(hw, abilities, speed, false);
 }
 
-#define CHECK_INTERVAL             100  /* 100ms */
-#define MAX_REPEAT_TIME            10  /* 1s (10 * 100ms) in total */
-
 static __rte_always_inline void
 update_link_reg(struct i40e_hw *hw, struct rte_eth_link *link)
 {
@@ -3012,6 +3020,8 @@ static __rte_always_inline void
 update_link_aq(struct i40e_hw *hw, struct rte_eth_link *link,
 	bool enable_lse, int wait_to_complete)
 {
+#define CHECK_INTERVAL             100  /* 100ms */
+#define MAX_REPEAT_TIME            10  /* 1s (10 * 100ms) in total */
 	uint32_t rep_cnt = MAX_REPEAT_TIME;
 	struct i40e_link_status link_status;
 	int status;
@@ -6814,7 +6824,6 @@ i40e_dev_handle_aq_msg(struct rte_eth_dev *dev)
 			if (!ret)
 				rte_eth_dev_callback_process(dev,
 					RTE_ETH_EVENT_INTR_LSC, NULL);
-
 			break;
 		default:
 			PMD_DRV_LOG(DEBUG, "Request %u is not supported yet",
@@ -13130,35 +13139,6 @@ i40e_config_rss_filter(struct i40e_pf *pf,
 	}
 
 	return 0;
-}
-
-static void
-i40e_set_mac_max_frame(struct rte_eth_dev *dev, uint16_t size)
-{
-	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	uint32_t rep_cnt = MAX_REPEAT_TIME;
-	struct rte_eth_link link;
-	enum i40e_status_code status;
-	bool can_be_set = true;
-
-	/* I40E_MEDIA_TYPE_BASET link up can be ignored */
-	if (hw->phy.media_type != I40E_MEDIA_TYPE_BASET) {
-		do {
-			update_link_reg(hw, &link);
-			if (link.link_status)
-				break;
-			rte_delay_ms(CHECK_INTERVAL);
-		} while (--rep_cnt);
-		can_be_set = !!link.link_status;
-	}
-
-	if (can_be_set) {
-		status = i40e_aq_set_mac_config(hw, size, TRUE, 0, false, NULL);
-		if (status != I40E_SUCCESS)
-			PMD_DRV_LOG(ERR, "Failed to set max frame size at port level");
-	} else {
-		PMD_DRV_LOG(ERR, "Set max frame size at port level not applicable on link down");
-	}
 }
 
 RTE_LOG_REGISTER(i40e_logtype_init, pmd.net.i40e.init, NOTICE);

@@ -579,12 +579,12 @@ mlx5_rx_queue_stop(struct rte_eth_dev *dev, uint16_t idx)
 	 * synchronized, that might be broken on RQ restart
 	 * and cause Rx malfunction, so queue stopping is
 	 * not supported if vectorized Rx burst is engaged.
-	 * The routine pointer depends on the process
-	 * type, should perform check there.
+	 * The routine pointer depends on the process type,
+	 * should perform check there. MPRQ is not supported as well.
 	 */
-	if (pkt_burst == mlx5_rx_burst_vec) {
-		DRV_LOG(ERR, "Rx queue stop is not supported "
-			"for vectorized Rx");
+	if (pkt_burst != mlx5_rx_burst) {
+		DRV_LOG(ERR, "Rx queue stop is only supported "
+			"for non-vectorized single-packet Rx");
 		rte_errno = EINVAL;
 		return -EINVAL;
 	}
@@ -1378,8 +1378,6 @@ mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint16_t idx,
 	    MLX5_MAX_TCP_HDR_OFFSET)
 		max_lro_size -= MLX5_MAX_TCP_HDR_OFFSET;
 	max_lro_size = RTE_MIN(max_lro_size, MLX5_MAX_LRO_SIZE);
-	MLX5_ASSERT(max_lro_size >= MLX5_LRO_SEG_CHUNK_SIZE);
-	max_lro_size /= MLX5_LRO_SEG_CHUNK_SIZE;
 	if (priv->max_lro_msg_size)
 		priv->max_lro_msg_size =
 			RTE_MIN((uint32_t)priv->max_lro_msg_size, max_lro_size);
@@ -1387,8 +1385,7 @@ mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint16_t idx,
 		priv->max_lro_msg_size = max_lro_size;
 	DRV_LOG(DEBUG,
 		"port %u Rx Queue %u max LRO message size adjusted to %u bytes",
-		dev->data->port_id, idx,
-		priv->max_lro_msg_size * MLX5_LRO_SEG_CHUNK_SIZE);
+		dev->data->port_id, idx, priv->max_lro_msg_size);
 }
 
 /**
@@ -1449,23 +1446,38 @@ mlx5_mprq_prepare(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	} else {
 		*actual_log_stride_num = config->mprq.log_stride_num;
 	}
-	if (config->mprq.log_stride_size) {
-		/* Checks if chosen size of stride is in supported range. */
-		if (config->mprq.log_stride_size > log_max_stride_size ||
-		    config->mprq.log_stride_size < log_min_stride_size) {
-			*actual_log_stride_size = log_def_stride_size;
-			DRV_LOG(WARNING,
-				"Port %u Rx queue %u size of a stride for Multi-Packet RQ is out of range, setting default value (%u)",
-				dev->data->port_id, idx,
-				RTE_BIT32(log_def_stride_size));
-		} else {
-			*actual_log_stride_size = config->mprq.log_stride_size;
-		}
+	/* Checks if chosen size of stride is in supported range. */
+	if (config->mprq.log_stride_size > log_max_stride_size ||
+	    config->mprq.log_stride_size < log_min_stride_size) {
+		*actual_log_stride_size = log_def_stride_size;
+		DRV_LOG(WARNING,
+			"Port %u Rx queue %u size of a stride for Multi-Packet RQ is out of range, setting default value (%u)",
+			dev->data->port_id, idx,
+			RTE_BIT32(log_def_stride_size));
 	} else {
-		if (min_mbuf_size <= RTE_BIT32(log_max_stride_size))
+		*actual_log_stride_size = config->mprq.log_stride_size;
+	}
+	/* Make the stride fit the mbuf size by default. */
+	if (*actual_log_stride_size == MLX5_MPRQ_DEFAULT_LOG_STRIDE_SIZE) {
+		if (min_mbuf_size <= RTE_BIT32(log_max_stride_size)) {
+			DRV_LOG(WARNING,
+				"Port %u Rx queue %u size of a stride for Multi-Packet RQ is adjusted to match the mbuf size (%u)",
+				dev->data->port_id, idx, min_mbuf_size);
 			*actual_log_stride_size = log2above(min_mbuf_size);
-		else
+		} else {
 			goto unsupport;
+		}
+	}
+	/* Make sure the stride size is greater than the headroom. */
+	if (RTE_BIT32(*actual_log_stride_size) < RTE_PKTMBUF_HEADROOM) {
+		if (RTE_BIT32(log_max_stride_size) > RTE_PKTMBUF_HEADROOM) {
+			DRV_LOG(WARNING,
+				"Port %u Rx queue %u size of a stride for Multi-Packet RQ is adjusted to accommodate the headroom (%u)",
+				dev->data->port_id, idx, RTE_PKTMBUF_HEADROOM);
+			*actual_log_stride_size = log2above(RTE_PKTMBUF_HEADROOM);
+		} else {
+			goto unsupport;
+		}
 	}
 	log_stride_wqe_size = *actual_log_stride_num + *actual_log_stride_size;
 	/* Check if WQE buffer size is supported by hardware. */

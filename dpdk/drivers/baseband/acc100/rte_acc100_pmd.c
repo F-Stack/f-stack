@@ -423,11 +423,12 @@ acc100_check_ir(struct acc100_device *acc100_dev)
 	while (ring_data->valid) {
 		if ((ring_data->int_nb < ACC100_PF_INT_DMA_DL_DESC_IRQ) || (
 				ring_data->int_nb >
-				ACC100_PF_INT_DMA_DL5G_DESC_IRQ))
+				ACC100_PF_INT_DMA_DL5G_DESC_IRQ)) {
 			rte_bbdev_log(WARNING, "InfoRing: ITR:%d Info:0x%x",
 				ring_data->int_nb, ring_data->detailed_info);
-		/* Initialize Info Ring entry and move forward */
-		ring_data->val = 0;
+			/* Initialize Info Ring entry and move forward */
+			ring_data->val = 0;
+		}
 		info_ring_head++;
 		ring_data = acc100_dev->info_ring +
 				(info_ring_head & ACC100_INFO_RING_MASK);
@@ -569,9 +570,9 @@ allocate_info_ring(struct rte_bbdev *dev)
 		reg_addr = &vf_reg_addr;
 	/* Allocate InfoRing */
 	d->info_ring = rte_zmalloc_socket("Info Ring",
-			ACC100_INFO_RING_NUM_ENTRIES *
-			sizeof(*d->info_ring), RTE_CACHE_LINE_SIZE,
-			dev->data->socket_id);
+		ACC100_INFO_RING_NUM_ENTRIES *
+		sizeof(*d->info_ring), RTE_CACHE_LINE_SIZE,
+		dev->data->socket_id);
 	if (d->info_ring == NULL) {
 		rte_bbdev_log(ERR,
 				"Failed to allocate Info Ring for %s:%u",
@@ -660,7 +661,8 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 	acc100_reg_write(d, reg_addr->ring_size, value);
 
 	/* Configure tail pointer for use when SDONE enabled */
-	d->tail_ptrs = rte_zmalloc_socket(
+	if (d->tail_ptrs == NULL)
+		d->tail_ptrs = rte_zmalloc_socket(
 			dev->device->driver->name,
 			ACC100_NUM_QGRPS * ACC100_NUM_AQS * sizeof(uint32_t),
 			RTE_CACHE_LINE_SIZE, socket_id);
@@ -668,8 +670,8 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 		rte_bbdev_log(ERR, "Failed to allocate tail ptr for %s:%u",
 				dev->device->driver->name,
 				dev->data->dev_id);
-		rte_free(d->sw_rings);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_sw_rings;
 	}
 	d->tail_ptr_iova = rte_malloc_virt2iova(d->tail_ptrs);
 
@@ -692,15 +694,16 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 		/* Continue */
 	}
 
-	d->harq_layout = rte_zmalloc_socket("HARQ Layout",
+	if (d->harq_layout == NULL)
+		d->harq_layout = rte_zmalloc_socket("HARQ Layout",
 			ACC100_HARQ_LAYOUT * sizeof(*d->harq_layout),
 			RTE_CACHE_LINE_SIZE, dev->data->socket_id);
 	if (d->harq_layout == NULL) {
 		rte_bbdev_log(ERR, "Failed to allocate harq_layout for %s:%u",
 				dev->device->driver->name,
 				dev->data->dev_id);
-		rte_free(d->sw_rings);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_tail_ptrs;
 	}
 
 	/* Mark as configured properly */
@@ -709,8 +712,16 @@ acc100_setup_queues(struct rte_bbdev *dev, uint16_t num_queues, int socket_id)
 	rte_bbdev_log_debug(
 			"ACC100 (%s) configured  sw_rings = %p, sw_rings_iova = %#"
 			PRIx64, dev->data->name, d->sw_rings, d->sw_rings_iova);
-
 	return 0;
+
+free_tail_ptrs:
+	rte_free(d->tail_ptrs);
+	d->tail_ptrs = NULL;
+free_sw_rings:
+	rte_free(d->sw_rings_base);
+	d->sw_rings = NULL;
+
+	return ret;
 }
 
 static int
@@ -767,7 +778,11 @@ acc100_dev_close(struct rte_bbdev *dev)
 		rte_free(d->tail_ptrs);
 		rte_free(d->info_ring);
 		rte_free(d->sw_rings_base);
+		rte_free(d->harq_layout);
 		d->sw_rings_base = NULL;
+		d->tail_ptrs = NULL;
+		d->info_ring = NULL;
+		d->harq_layout = NULL;
 	}
 	/* Ensure all in flight HW transactions are completed */
 	usleep(ACC100_LONG_WAIT);
@@ -824,16 +839,16 @@ acc100_queue_setup(struct rte_bbdev *dev, uint16_t queue_id,
 	struct acc100_queue *q;
 	int16_t q_idx;
 
+	if (d == NULL) {
+		rte_bbdev_log(ERR, "Undefined device");
+		return -ENODEV;
+	}
 	/* Allocate the queue data structure. */
 	q = rte_zmalloc_socket(dev->device->driver->name, sizeof(*q),
 			RTE_CACHE_LINE_SIZE, conf->socket);
 	if (q == NULL) {
 		rte_bbdev_log(ERR, "Failed to allocate queue memory");
 		return -ENOMEM;
-	}
-	if (d == NULL) {
-		rte_bbdev_log(ERR, "Undefined device");
-		return -ENODEV;
 	}
 
 	q->d = d;
@@ -1081,7 +1096,7 @@ acc100_dev_info_get(struct rte_bbdev *dev,
 			d->acc100_conf.q_ul_4g.num_qgroups - 1;
 	dev_info->default_queue_conf = default_queue_conf;
 	dev_info->cpu_flag_reqs = NULL;
-	dev_info->min_alignment = 64;
+	dev_info->min_alignment = 1;
 	dev_info->capabilities = bbdev_capabilities;
 #ifdef ACC100_EXT_MEM
 	dev_info->harq_buffer_size = d->ddr_size;
@@ -1618,12 +1633,25 @@ acc100_dma_desc_te_fill(struct rte_bbdev_enc_op *op,
 	return 0;
 }
 
+/* May need to pad LDPC Encoder input to avoid small beat for ACC100. */
+static inline uint16_t
+pad_le_in(uint16_t blen, struct acc100_queue *q __rte_unused)
+{
+	uint16_t last_beat;
+
+	last_beat = blen % 64;
+	if ((last_beat > 0) && (last_beat <= 8))
+		blen += 8;
+
+	return blen;
+}
+
 static inline int
 acc100_dma_desc_le_fill(struct rte_bbdev_enc_op *op,
 		struct acc100_dma_req_desc *desc, struct rte_mbuf **input,
 		struct rte_mbuf *output, uint32_t *in_offset,
 		uint32_t *out_offset, uint32_t *out_length,
-		uint32_t *mbuf_total_left, uint32_t *seg_total_left)
+		uint32_t *mbuf_total_left, uint32_t *seg_total_left, struct acc100_queue *q)
 {
 	int next_triplet = 1; /* FCW already done */
 	uint16_t K, in_length_in_bits, in_length_in_bytes;
@@ -1633,8 +1661,7 @@ acc100_dma_desc_le_fill(struct rte_bbdev_enc_op *op,
 
 	K = (enc->basegraph == 1 ? 22 : 10) * enc->z_c;
 	in_length_in_bits = K - enc->n_filler;
-	if ((enc->op_flags & RTE_BBDEV_LDPC_CRC_24A_ATTACH) ||
-			(enc->op_flags & RTE_BBDEV_LDPC_CRC_24B_ATTACH))
+	if (enc->op_flags & RTE_BBDEV_LDPC_CRC_24B_ATTACH)
 		in_length_in_bits -= 24;
 	in_length_in_bytes = in_length_in_bits >> 3;
 
@@ -1647,8 +1674,7 @@ acc100_dma_desc_le_fill(struct rte_bbdev_enc_op *op,
 	}
 
 	next_triplet = acc100_dma_fill_blk_type_in(desc, input, in_offset,
-			in_length_in_bytes,
-			seg_total_left, next_triplet);
+			pad_le_in(in_length_in_bytes, q), seg_total_left, next_triplet);
 	if (unlikely(next_triplet < 0)) {
 		rte_bbdev_log(ERR,
 				"Mismatch between data to process and mbuf data length in bbdev_op: %p",
@@ -2080,6 +2106,11 @@ validate_enc_op(struct rte_bbdev_enc_op *op)
 		return -1;
 	}
 
+	if (unlikely(turbo_enc->input.length == 0)) {
+		rte_bbdev_log(ERR, "input length null");
+		return -1;
+	}
+
 	if (turbo_enc->code_block_mode == 0) {
 		tb = &turbo_enc->tb_params;
 		if ((tb->k_neg < RTE_BBDEV_TURBO_MIN_CB_SIZE
@@ -2099,11 +2130,12 @@ validate_enc_op(struct rte_bbdev_enc_op *op)
 					RTE_BBDEV_TURBO_MAX_CB_SIZE);
 			return -1;
 		}
-		if (tb->c_neg > (RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1))
+		if (unlikely(tb->c_neg > 0)) {
 			rte_bbdev_log(ERR,
-					"c_neg (%u) is out of range 0 <= value <= %u",
-					tb->c_neg,
-					RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1);
+					"c_neg (%u) expected to be null",
+					tb->c_neg);
+			return -1;
+		}
 		if (tb->c < 1 || tb->c > RTE_BBDEV_TURBO_MAX_CODE_BLOCKS) {
 			rte_bbdev_log(ERR,
 					"c (%u) is out of range 1 <= value <= %u",
@@ -2363,7 +2395,7 @@ enqueue_ldpc_enc_n_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op **ops,
 	acc100_header_init(&desc->req);
 	desc->req.numCBs = num;
 
-	in_length_in_bytes = ops[0]->ldpc_enc.input.data->data_len;
+	in_length_in_bytes = pad_le_in(ops[0]->ldpc_enc.input.data->data_len, q);
 	out_length = (enc->cb_params.e + 7) >> 3;
 	desc->req.m2dlen = 1 + num;
 	desc->req.d2mlen = num;
@@ -2432,7 +2464,7 @@ enqueue_ldpc_enc_one_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 
 	ret = acc100_dma_desc_le_fill(op, &desc->req, &input, output,
 			&in_offset, &out_offset, &out_length, &mbuf_total_left,
-			&seg_total_left);
+			&seg_total_left, q);
 
 	if (unlikely(ret < 0))
 		return ret;
@@ -2490,6 +2522,10 @@ enqueue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 	r = op->turbo_enc.tb_params.r;
 
 	while (mbuf_total_left > 0 && r < c) {
+		if (unlikely(input == NULL)) {
+			rte_bbdev_log(ERR, "Not enough input segment");
+			return -EINVAL;
+		}
 		seg_total_left = rte_pktmbuf_data_len(input) - in_offset;
 		/* Set up DMA descriptor */
 		desc = q->ring_addr + ((q->sw_ring_head + total_enqueued_cbs)
@@ -2595,6 +2631,11 @@ validate_dec_op(struct rte_bbdev_dec_op *op)
 		return -1;
 	}
 
+	if (unlikely(turbo_dec->input.length == 0)) {
+		rte_bbdev_log(ERR, "input length null");
+		return -1;
+	}
+
 	if (turbo_dec->code_block_mode == 0) {
 		tb = &turbo_dec->tb_params;
 		if ((tb->k_neg < RTE_BBDEV_TURBO_MIN_CB_SIZE
@@ -2615,11 +2656,13 @@ validate_dec_op(struct rte_bbdev_dec_op *op)
 					RTE_BBDEV_TURBO_MAX_CB_SIZE);
 			return -1;
 		}
-		if (tb->c_neg > (RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1))
+		if (unlikely(tb->c_neg > (RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1))) {
 			rte_bbdev_log(ERR,
 					"c_neg (%u) is out of range 0 <= value <= %u",
 					tb->c_neg,
 					RTE_BBDEV_TURBO_MAX_CODE_BLOCKS - 1);
+					return -1;
+		}
 		if (tb->c < 1 || tb->c > RTE_BBDEV_TURBO_MAX_CODE_BLOCKS) {
 			rte_bbdev_log(ERR,
 					"c (%u) is out of range 1 <= value <= %u",
@@ -3514,6 +3557,8 @@ acc100_enqueue_ldpc_dec_tb(struct rte_bbdev_queue_data *q_data,
 			break;
 		enqueued_cbs += ret;
 	}
+	if (unlikely(enqueued_cbs == 0))
+		return 0; /* Nothing to enqueue */
 
 	acc100_dma_enqueue(q, enqueued_cbs, &q_data->queue_stats);
 
@@ -3666,8 +3711,6 @@ dequeue_enc_one_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op **ref_op,
 	/* Clearing status, it will be set based on response */
 	op->status = 0;
 
-	op->status |= ((rsp.input_err)
-			? (1 << RTE_BBDEV_DATA_ERROR) : 0);
 	op->status |= ((rsp.dma_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 	op->status |= ((rsp.fcw_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 
@@ -3738,8 +3781,6 @@ dequeue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op **ref_op,
 		rte_bbdev_log_debug("Resp. desc %p: %x", desc,
 				rsp.val);
 
-		op->status |= ((rsp.input_err)
-				? (1 << RTE_BBDEV_DATA_ERROR) : 0);
 		op->status |= ((rsp.dma_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 		op->status |= ((rsp.fcw_err) ? (1 << RTE_BBDEV_DRV_ERROR) : 0);
 
@@ -3927,8 +3968,12 @@ dequeue_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op **ref_op,
 		/* CRC invalid if error exists */
 		if (!op->status)
 			op->status |= rsp.crc_status << RTE_BBDEV_CRC_ERROR;
-		op->turbo_dec.iter_count = RTE_MAX((uint8_t) rsp.iter_cnt,
-				op->turbo_dec.iter_count);
+		if (q->op_type == RTE_BBDEV_OP_LDPC_DEC)
+			op->ldpc_dec.iter_count = RTE_MAX((uint8_t) rsp.iter_cnt,
+					op->ldpc_dec.iter_count);
+		else
+			op->turbo_dec.iter_count = RTE_MAX((uint8_t) rsp.iter_cnt,
+					op->turbo_dec.iter_count);
 
 		/* Check if this is the last desc in batch (Atomic Queue) */
 		if (desc->req.last_desc_in_batch) {
@@ -4056,6 +4101,8 @@ acc100_dequeue_dec(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
+		if (unlikely(op == NULL))
+			break;
 		if (op->turbo_dec.code_block_mode == 0)
 			ret = dequeue_dec_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);
@@ -4101,6 +4148,8 @@ acc100_dequeue_ldpc_dec(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
+		if (unlikely(op == NULL))
+			break;
 		if (op->ldpc_dec.code_block_mode == 0)
 			ret = dequeue_dec_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);

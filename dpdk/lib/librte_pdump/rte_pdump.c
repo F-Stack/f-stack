@@ -91,7 +91,7 @@ pdump_copy(struct rte_mbuf **pkts, uint16_t nb_pkts, void *user_params)
 			dup_bufs[d_pkts++] = p;
 	}
 
-	ring_enq = rte_ring_enqueue_burst(ring, (void *)dup_bufs, d_pkts, NULL);
+	ring_enq = rte_ring_enqueue_burst(ring, (void *)&dup_bufs[0], d_pkts, NULL);
 	if (unlikely(ring_enq < d_pkts)) {
 		PDUMP_LOG(DEBUG,
 			"only %d of packets enqueued to ring\n", ring_enq);
@@ -441,6 +441,12 @@ pdump_prepare_client_request(char *device, uint16_t queue,
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct pdump_request *req = (struct pdump_request *)mp_req.param;
 	struct pdump_response *resp;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		PDUMP_LOG(ERR,
+				"pdump enable/disable not allowed in primary process\n");
+		return -EINVAL;
+	}
 
 	req->ver = 1;
 	req->flags = flags;

@@ -56,9 +56,16 @@ struct rte_service_spec_impl {
 	 * on currently.
 	 */
 	uint32_t num_mapped_cores;
-	uint64_t calls;
-	uint64_t cycles_spent;
+
+	/* 32-bit builds won't naturally align a uint64_t, so force alignment,
+	 * allowing regular reads to be atomic.
+	 */
+	uint64_t calls __rte_aligned(8);
+	uint64_t cycles_spent __rte_aligned(8);
 } __rte_cache_aligned;
+
+/* Mask used to ensure uint64_t 8 byte vars are naturally aligned. */
+#define RTE_SERVICE_STAT_ALIGN_MASK (8 - 1)
 
 /* the internal values of a service core */
 struct core_state {
@@ -103,14 +110,12 @@ rte_service_init(void)
 	}
 
 	int i;
-	int count = 0;
 	struct rte_config *cfg = rte_eal_get_configuration();
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		if (lcore_config[i].core_role == ROLE_SERVICE) {
 			if ((unsigned int)i == cfg->main_lcore)
 				continue;
 			rte_service_lcore_add(i);
-			count++;
 		}
 	}
 
@@ -365,13 +370,29 @@ service_runner_do_callback(struct rte_service_spec_impl *s,
 {
 	void *userdata = s->spec.callback_userdata;
 
+	/* Ensure the atomically stored variables are naturally aligned,
+	 * as required for regular loads to be atomic.
+	 */
+	RTE_BUILD_BUG_ON((offsetof(struct rte_service_spec_impl, calls)
+		& RTE_SERVICE_STAT_ALIGN_MASK) != 0);
+	RTE_BUILD_BUG_ON((offsetof(struct rte_service_spec_impl, cycles_spent)
+		& RTE_SERVICE_STAT_ALIGN_MASK) != 0);
+
 	if (service_stats_enabled(s)) {
 		uint64_t start = rte_rdtsc();
 		s->spec.callback(userdata);
 		uint64_t end = rte_rdtsc();
-		s->cycles_spent += end - start;
+		uint64_t cycles = end - start;
 		cs->calls_per_service[service_idx]++;
-		s->calls++;
+		if (service_mt_safe(s)) {
+			__atomic_fetch_add(&s->cycles_spent, cycles, __ATOMIC_RELAXED);
+			__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
+		} else {
+			uint64_t cycles_new = s->cycles_spent + cycles;
+			uint64_t calls_new = s->calls++;
+			__atomic_store_n(&s->cycles_spent, cycles_new, __ATOMIC_RELAXED);
+			__atomic_store_n(&s->calls, calls_new, __ATOMIC_RELAXED);
+		}
 	} else
 		s->spec.callback(userdata);
 }
@@ -477,6 +498,12 @@ service_runner_func(void *arg)
 
 		cs->loops++;
 	}
+
+	/* Switch off this core for all services, to ensure that future
+	 * calls to may_be_active() know this core is switched off.
+	 */
+	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++)
+		cs->service_active_on_lcore[i] = 0;
 
 	/* Use SEQ CST memory ordering to avoid any re-ordering around
 	 * this store, ensuring that once this store is visible, the service
@@ -773,11 +800,6 @@ rte_service_lcore_stop(uint32_t lcore)
 		int32_t only_core = (1 ==
 			__atomic_load_n(&rte_services[i].num_mapped_cores,
 				__ATOMIC_RELAXED));
-
-		/* Switch off this core for all services, to ensure that future
-		 * calls to may_be_active() know this core is switched off.
-		 */
-		cs->service_active_on_lcore[i] = 0;
 
 		/* if the core is mapped, and the service is running, and this
 		 * is the only core that is mapped, the service would cease to

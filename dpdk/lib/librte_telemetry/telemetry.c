@@ -181,9 +181,14 @@ output_json(const char *cmd, const struct rte_tel_data *d, int s)
 				MAX_CMD_LEN, cmd ? cmd : "none");
 		break;
 	case RTE_TEL_STRING:
-		used = snprintf(out_buf, sizeof(out_buf), "{\"%.*s\":\"%.*s\"}",
-				MAX_CMD_LEN, cmd,
-				RTE_TEL_MAX_SINGLE_STRING_LEN, d->data.str);
+		prefix_used = snprintf(out_buf, sizeof(out_buf), "{\"%.*s\":",
+				MAX_CMD_LEN, cmd);
+		cb_data_buf = &out_buf[prefix_used];
+		buf_len = sizeof(out_buf) - prefix_used - 1; /* space for '}' */
+
+		used = rte_tel_json_str(cb_data_buf, buf_len, 0, d->data.str);
+		used += prefix_used;
+		used += strlcat(out_buf + used, "}", sizeof(out_buf) - used);
 		break;
 	case RTE_TEL_DICT:
 		prefix_used = snprintf(out_buf, sizeof(out_buf), "{\"%.*s\":",
@@ -212,7 +217,11 @@ output_json(const char *cmd, const struct rte_tel_data *d, int s)
 				break;
 			case RTE_TEL_CONTAINER:
 			{
-				char temp[buf_len];
+				char *temp = malloc(buf_len);
+				if (temp == NULL)
+					break;
+				*temp = '\0';  /* ensure valid string */
+
 				const struct container *cont =
 						&v->value.container;
 				if (container_to_json(cont->data,
@@ -223,6 +232,7 @@ output_json(const char *cmd, const struct rte_tel_data *d, int s)
 							v->name, temp);
 				if (!cont->keep)
 					rte_tel_data_free(cont->data);
+				free(temp);
 			}
 			}
 		}
@@ -254,7 +264,11 @@ output_json(const char *cmd, const struct rte_tel_data *d, int s)
 						buf_len, used,
 						d->data.array[i].u64val);
 			else if (d->type == RTE_TEL_ARRAY_CONTAINER) {
-				char temp[buf_len];
+				char *temp = malloc(buf_len);
+				if (temp == NULL)
+					break;
+				*temp = '\0';  /* ensure valid string */
+
 				const struct container *rec_data =
 						&d->data.array[i].container;
 				if (container_to_json(rec_data->data,
@@ -264,6 +278,7 @@ output_json(const char *cmd, const struct rte_tel_data *d, int s)
 							buf_len, used, temp);
 				if (!rec_data->keep)
 					rte_tel_data_free(rec_data->data);
+				free(temp);
 			}
 		used += prefix_used;
 		used += strlcat(out_buf + used, "}", sizeof(out_buf) - used);
@@ -276,7 +291,7 @@ output_json(const char *cmd, const struct rte_tel_data *d, int s)
 static void
 perform_command(telemetry_cb fn, const char *cmd, const char *param, int s)
 {
-	struct rte_tel_data data;
+	struct rte_tel_data data = {0};
 
 	int ret = fn(cmd, param, &data);
 	if (ret < 0) {

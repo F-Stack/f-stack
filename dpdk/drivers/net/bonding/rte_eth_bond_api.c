@@ -541,6 +541,11 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 			return ret;
 	}
 
+	/* Bond mode Broadcast & 8023AD don't support MBUF_FAST_FREE offload. */
+	if (internals->mode == BONDING_MODE_8023AD ||
+	    internals->mode == BONDING_MODE_BROADCAST)
+		internals->tx_offload_capa &= ~DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
 	bonded_eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf &=
 			internals->flow_type_rss_offloads;
 
@@ -696,6 +701,16 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 					 &flow_error);
 			flow->flows[slave_idx] = NULL;
 		}
+	}
+
+	/* Remove the dedicated queues flow */
+	if (internals->mode == BONDING_MODE_8023AD &&
+		internals->mode4.dedicated_queues.enabled == 1 &&
+		internals->mode4.dedicated_queues.flow[slave_port_id] != NULL) {
+		rte_flow_destroy(slave_port_id,
+				internals->mode4.dedicated_queues.flow[slave_port_id],
+				&flow_error);
+		internals->mode4.dedicated_queues.flow[slave_port_id] = NULL;
 	}
 
 	slave_eth_dev = &rte_eth_devices[slave_port_id];

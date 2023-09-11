@@ -2217,7 +2217,7 @@ mlx5_flow_validate_item_ipv4(const struct rte_flow_item *item,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "IPv4 cannot follow L2/VLAN layer "
 					  "which ether type is not IPv4");
-	if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+	if (item_flags & MLX5_FLOW_LAYER_IPIP) {
 		if (mask && spec)
 			next_proto = mask->hdr.next_proto_id &
 				     spec->hdr.next_proto_id;
@@ -2325,7 +2325,7 @@ mlx5_flow_validate_item_ipv6(const struct rte_flow_item *item,
 					  "which ether type is not IPv6");
 	if (mask && mask->hdr.proto == UINT8_MAX && spec)
 		next_proto = spec->hdr.proto;
-	if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+	if (item_flags & MLX5_FLOW_LAYER_IPIP) {
 		if (next_proto == IPPROTO_IPIP || next_proto == IPPROTO_IPV6)
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ITEM,
@@ -3729,6 +3729,7 @@ flow_check_hairpin_split(struct rte_eth_dev *dev,
 	int queue_action = 0;
 	int action_n = 0;
 	int split = 0;
+	int push_vlan = 0;
 	const struct rte_flow_action_queue *queue;
 	const struct rte_flow_action_rss *rss;
 	const struct rte_flow_action_raw_encap *raw_encap;
@@ -3737,6 +3738,8 @@ flow_check_hairpin_split(struct rte_eth_dev *dev,
 	if (!attr->ingress)
 		return 0;
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+		if (actions->type == RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN)
+			push_vlan = 1;
 		switch (actions->type) {
 		case RTE_FLOW_ACTION_TYPE_QUEUE:
 			queue = actions->conf;
@@ -3761,9 +3764,13 @@ flow_check_hairpin_split(struct rte_eth_dev *dev,
 		case RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP:
 		case RTE_FLOW_ACTION_TYPE_NVGRE_ENCAP:
 		case RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN:
-		case RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID:
 		case RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP:
 			split++;
+			action_n++;
+			break;
+		case RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID:
+			if (push_vlan)
+				split++;
 			action_n++;
 			break;
 		case RTE_FLOW_ACTION_TYPE_RAW_ENCAP:
@@ -4177,18 +4184,31 @@ flow_hairpin_split(struct rte_eth_dev *dev,
 	struct mlx5_rte_flow_item_tag *tag_item;
 	struct rte_flow_item *item;
 	char *addr;
+	int push_vlan = 0;
 	int encap = 0;
 
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+		if (actions->type == RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN)
+			push_vlan = 1;
 		switch (actions->type) {
 		case RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP:
 		case RTE_FLOW_ACTION_TYPE_NVGRE_ENCAP:
 		case RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN:
-		case RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID:
 		case RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP:
 			rte_memcpy(actions_tx, actions,
 			       sizeof(struct rte_flow_action));
 			actions_tx++;
+			break;
+		case RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID:
+			if (push_vlan) {
+				rte_memcpy(actions_tx, actions,
+					   sizeof(struct rte_flow_action));
+				actions_tx++;
+			} else {
+				rte_memcpy(actions_rx, actions,
+					   sizeof(struct rte_flow_action));
+				actions_rx++;
+			}
 			break;
 		case RTE_FLOW_ACTION_TYPE_COUNT:
 			if (encap) {
@@ -4801,13 +4821,14 @@ flow_sample_split_prep(struct rte_eth_dev *dev,
 	if (!fdb_tx) {
 		/* Prepare the prefix tag action. */
 		set_tag = (void *)(actions_pre + actions_n + 1);
-		ret = mlx5_flow_get_reg_id(dev, MLX5_SAMPLE_ID, 0, error);
 		/* Trust VF/SF on CX5 not supported meter so that the reserved
 		 * metadata regC is REG_NON, back to use application tag
 		 * index 0.
 		 */
-		if (unlikely(ret == REG_NON))
+		if (unlikely(priv->mtr_color_reg == REG_NON))
 			ret = mlx5_flow_get_reg_id(dev, MLX5_APP_TAG, 0, error);
+		else
+			ret = mlx5_flow_get_reg_id(dev, MLX5_SAMPLE_ID, 0, error);
 		if (ret < 0)
 			return ret;
 		set_tag->id = ret;
@@ -5478,7 +5499,7 @@ flow_list_create(struct rte_eth_dev *dev, uint32_t *list,
 	int shared_actions_n = MLX5_MAX_SHARED_ACTIONS;
 	union {
 		struct mlx5_flow_expand_rss buf;
-		uint8_t buffer[4096];
+		uint8_t buffer[8192];
 	} expand_buffer;
 	union {
 		struct rte_flow_action actions[MLX5_MAX_SPLIT_ACTIONS];
@@ -5691,8 +5712,8 @@ error:
 	rte_errno = ret; /* Restore rte_errno. */
 	ret = rte_errno;
 	rte_errno = ret;
-	mlx5_flow_pop_thread_workspace();
 error_before_hairpin_split:
+	mlx5_flow_pop_thread_workspace();
 	rte_free(translated_actions);
 	return 0;
 }
@@ -6647,7 +6668,7 @@ mlx5_flow_create_counter_stat_mem_mng(struct mlx5_dev_ctx_shared *sh)
 {
 	struct mlx5_counter_stats_mem_mng *mem_mng;
 	volatile struct flow_counter_stats *raw_data;
-	int raws_n = MLX5_CNT_CONTAINER_RESIZE + MLX5_MAX_PENDING_QUERIES;
+	int raws_n = MLX5_CNT_MR_ALLOC_BULK + MLX5_MAX_PENDING_QUERIES;
 	int size = (sizeof(struct flow_counter_stats) *
 			MLX5_COUNTERS_PER_POOL +
 			sizeof(struct mlx5_counter_stats_raw)) * raws_n +
@@ -6685,7 +6706,7 @@ mlx5_flow_create_counter_stat_mem_mng(struct mlx5_dev_ctx_shared *sh)
 	}
 	for (i = 0; i < MLX5_MAX_PENDING_QUERIES; ++i)
 		LIST_INSERT_HEAD(&sh->cmng.free_stat_raws,
-				 mem_mng->raws + MLX5_CNT_CONTAINER_RESIZE + i,
+				 mem_mng->raws + MLX5_CNT_MR_ALLOC_BULK + i,
 				 next);
 	LIST_INSERT_HEAD(&sh->cmng.mem_mngs, mem_mng, next);
 	sh->cmng.mem_mng = mem_mng;
@@ -6709,14 +6730,13 @@ mlx5_flow_set_counter_stat_mem(struct mlx5_dev_ctx_shared *sh,
 {
 	struct mlx5_flow_counter_mng *cmng = &sh->cmng;
 	/* Resize statistic memory once used out. */
-	if (!(pool->index % MLX5_CNT_CONTAINER_RESIZE) &&
+	if (!(pool->index % MLX5_CNT_MR_ALLOC_BULK) &&
 	    mlx5_flow_create_counter_stat_mem_mng(sh)) {
 		DRV_LOG(ERR, "Cannot resize counter stat mem.");
 		return -1;
 	}
 	rte_spinlock_lock(&pool->sl);
-	pool->raw = cmng->mem_mng->raws + pool->index %
-		    MLX5_CNT_CONTAINER_RESIZE;
+	pool->raw = cmng->mem_mng->raws + pool->index % MLX5_CNT_MR_ALLOC_BULK;
 	rte_spinlock_unlock(&pool->sl);
 	pool->raw_hw = NULL;
 	return 0;
@@ -6758,13 +6778,13 @@ void
 mlx5_flow_query_alarm(void *arg)
 {
 	struct mlx5_dev_ctx_shared *sh = arg;
-	int ret;
-	uint16_t pool_index = sh->cmng.pool_index;
 	struct mlx5_flow_counter_mng *cmng = &sh->cmng;
+	uint16_t pool_index = cmng->pool_index;
 	struct mlx5_flow_counter_pool *pool;
 	uint16_t n_valid;
+	int ret;
 
-	if (sh->cmng.pending_queries >= MLX5_MAX_PENDING_QUERIES)
+	if (cmng->pending_queries >= MLX5_MAX_PENDING_QUERIES)
 		goto set_alarm;
 	rte_spinlock_lock(&cmng->pool_update_sl);
 	pool = cmng->pools[pool_index];
@@ -6776,8 +6796,7 @@ mlx5_flow_query_alarm(void *arg)
 	if (pool->raw_hw)
 		/* There is a pool query in progress. */
 		goto set_alarm;
-	pool->raw_hw =
-		LIST_FIRST(&sh->cmng.free_stat_raws);
+	pool->raw_hw = LIST_FIRST(&cmng->free_stat_raws);
 	if (!pool->raw_hw)
 		/* No free counter statistics raw memory. */
 		goto set_alarm;
@@ -6803,12 +6822,12 @@ mlx5_flow_query_alarm(void *arg)
 		goto set_alarm;
 	}
 	LIST_REMOVE(pool->raw_hw, next);
-	sh->cmng.pending_queries++;
+	cmng->pending_queries++;
 	pool_index++;
 	if (pool_index >= n_valid)
 		pool_index = 0;
 set_alarm:
-	sh->cmng.pool_index = pool_index;
+	cmng->pool_index = pool_index;
 	mlx5_set_query_alarm(sh);
 }
 
@@ -7899,7 +7918,7 @@ mlx5_flow_tunnel_validate(struct rte_eth_dev *dev,
 	if (!is_tunnel_offload_active(dev))
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, NULL,
-					  "tunnel offload was not activated");
+					  "tunnel offload was not activated, consider setting dv_xmeta_en=3");
 	if (!tunnel)
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, NULL,

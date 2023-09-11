@@ -1409,6 +1409,10 @@ static int qat_sym_do_precomputes(enum icp_qat_hw_auth_algo hash_alg,
 		QAT_LOG(ERR, "invalid keylen %u", auth_keylen);
 		return -EFAULT;
 	}
+
+	RTE_VERIFY(auth_keylen <= sizeof(ipad));
+	RTE_VERIFY(auth_keylen <= sizeof(opad));
+
 	rte_memcpy(ipad, auth_key, auth_keylen);
 	rte_memcpy(opad, auth_key, auth_keylen);
 
@@ -1568,9 +1572,10 @@ int qat_sym_session_aead_create_cd_cipher(struct qat_sym_session *cdesc,
 		key_convert = ICP_QAT_HW_CIPHER_NO_CONVERT;
 	} else if (cdesc->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2
 		|| cdesc->qat_cipher_alg ==
-			ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3)
+			ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3) {
 		key_convert = ICP_QAT_HW_CIPHER_KEY_CONVERT;
-	else if (cdesc->qat_dir == ICP_QAT_HW_CIPHER_ENCRYPT)
+		cdesc->qat_dir = ICP_QAT_HW_CIPHER_ENCRYPT;
+	} else if (cdesc->qat_dir == ICP_QAT_HW_CIPHER_ENCRYPT)
 		key_convert = ICP_QAT_HW_CIPHER_NO_CONVERT;
 	else
 		key_convert = ICP_QAT_HW_CIPHER_KEY_CONVERT;
@@ -1736,7 +1741,12 @@ int qat_sym_session_aead_create_cd_auth(struct qat_sym_session *cdesc,
 	hash_offset = cdesc->cd_cur_ptr-((uint8_t *)&cdesc->cd);
 	hash = (struct icp_qat_hw_auth_setup *)cdesc->cd_cur_ptr;
 	hash->auth_config.reserved = 0;
-	hash->auth_config.config =
+	if (cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL)
+		hash->auth_config.config =
+			ICP_QAT_HW_AUTH_CONFIG_BUILD(cdesc->auth_mode,
+				cdesc->qat_hash_alg, 4);
+	else
+		hash->auth_config.config =
 			ICP_QAT_HW_AUTH_CONFIG_BUILD(cdesc->auth_mode,
 				cdesc->qat_hash_alg, digestsize);
 
@@ -2000,10 +2010,16 @@ int qat_sym_session_aead_create_cd_auth(struct qat_sym_session *cdesc,
 	/* Auth CD config setup */
 	hash_cd_ctrl->hash_cfg_offset = hash_offset >> 3;
 	hash_cd_ctrl->hash_flags = ICP_QAT_FW_AUTH_HDR_FLAG_NO_NESTED;
-	hash_cd_ctrl->inner_res_sz = digestsize;
-	hash_cd_ctrl->final_sz = digestsize;
 	hash_cd_ctrl->inner_state1_sz = state1_size;
-	auth_param->auth_res_sz = digestsize;
+	if (cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL) {
+		hash_cd_ctrl->inner_res_sz = 4;
+		hash_cd_ctrl->final_sz = 4;
+		auth_param->auth_res_sz = 4;
+	} else {
+		hash_cd_ctrl->inner_res_sz = digestsize;
+		hash_cd_ctrl->final_sz = digestsize;
+		auth_param->auth_res_sz = digestsize;
+	}
 
 	hash_cd_ctrl->inner_state2_sz  = state2_size;
 	hash_cd_ctrl->inner_state2_offset = hash_cd_ctrl->hash_cfg_offset +

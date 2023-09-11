@@ -10,6 +10,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -216,7 +217,7 @@ uint16_t stats_period; /**< Period to show statistics (disabled by default) */
  * In container, it cannot terminate the process which running with 'stats-period'
  * option. Set flag to exit stats period loop after received SIGINT/SIGTERM.
  */
-uint8_t f_quit;
+volatile uint8_t f_quit;
 uint8_t cl_quit; /* Quit testpmd from cmdline. */
 
 /*
@@ -1845,6 +1846,8 @@ fwd_stats_display(void)
 			fwd_cycles += fs->core_cycles;
 	}
 	for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++) {
+		uint64_t tx_dropped = 0;
+
 		pt_id = fwd_ports_ids[i];
 		port = &ports[pt_id];
 
@@ -1866,8 +1869,9 @@ fwd_stats_display(void)
 		total_recv += stats.ipackets;
 		total_xmit += stats.opackets;
 		total_rx_dropped += stats.imissed;
-		total_tx_dropped += ports_stats[pt_id].tx_dropped;
-		total_tx_dropped += stats.oerrors;
+		tx_dropped += ports_stats[pt_id].tx_dropped;
+		tx_dropped += stats.oerrors;
+		total_tx_dropped += tx_dropped;
 		total_rx_nombuf  += stats.rx_nombuf;
 
 		printf("\n  %s Forward statistics for port %-2d %s\n",
@@ -1891,8 +1895,8 @@ fwd_stats_display(void)
 
 		printf("  TX-packets: %-14"PRIu64" TX-dropped: %-14"PRIu64
 		       "TX-total: %-"PRIu64"\n",
-		       stats.opackets, ports_stats[pt_id].tx_dropped,
-		       stats.opackets + ports_stats[pt_id].tx_dropped);
+		       stats.opackets, tx_dropped,
+		       stats.opackets + tx_dropped);
 
 		if (record_burst_stats) {
 			if (ports_stats[pt_id].rx_stream)
@@ -3813,19 +3817,14 @@ init_port(void)
 				"rte_zmalloc(%d struct rte_port) failed\n",
 				RTE_MAX_ETHPORTS);
 	}
-	for (i = 0; i < RTE_MAX_ETHPORTS; i++)
+	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
+		ports[i].fwd_mac_swap = 1;
 		LIST_INIT(&ports[i].flow_tunnel_list);
+	}
 	/* Initialize ports NUMA structures */
 	memset(port_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
 	memset(rxring_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
 	memset(txring_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
-}
-
-static void
-force_quit(void)
-{
-	pmd_test_exit();
-	prompt_exit();
 }
 
 static void
@@ -3846,26 +3845,10 @@ print_stats(void)
 }
 
 static void
-signal_handler(int signum)
+signal_handler(int signum __rte_unused)
 {
-	if (signum == SIGINT || signum == SIGTERM) {
-		printf("\nSignal %d received, preparing to exit...\n",
-				signum);
-#ifdef RTE_LIB_PDUMP
-		/* uninitialize packet capture framework */
-		rte_pdump_uninit();
-#endif
-#ifdef RTE_LIB_LATENCYSTATS
-		if (latencystats_enabled != 0)
-			rte_latencystats_uninit();
-#endif
-		force_quit();
-		/* Set flag to indicate the force termination. */
-		f_quit = 1;
-		/* exit with the expected status */
-		signal(signum, SIG_DFL);
-		kill(getpid(), signum);
-	}
+	f_quit = 1;
+	prompt_exit();
 }
 
 int
@@ -3876,8 +3859,18 @@ main(int argc, char** argv)
 	uint16_t count;
 	int ret;
 
+#ifdef RTE_EXEC_ENV_WINDOWS
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
+#else
+	/* Want read() not to be restarted on signal */
+	struct sigaction action = {
+		.sa_handler = signal_handler,
+	};
+
+	sigaction(SIGINT, &action, NULL);
+	sigaction(SIGTERM, &action, NULL);
+#endif
 
 	testpmd_logtype = rte_log_register("testpmd");
 	if (testpmd_logtype < 0)
@@ -3892,6 +3885,9 @@ main(int argc, char** argv)
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
 		rte_exit(EXIT_FAILURE,
 			 "Secondary process type not supported.\n");
+
+	/* allocate port structures, and init them */
+	init_port();
 
 	ret = register_eth_event_callback();
 	if (ret != 0)
@@ -3910,9 +3906,6 @@ main(int argc, char** argv)
 	nb_ports = (portid_t) count;
 	if (nb_ports == 0)
 		TESTPMD_LOG(WARNING, "No probed ethernet devices\n");
-
-	/* allocate port structures, and init them */
-	init_port();
 
 	set_def_fwd_config();
 	if (nb_lcores == 0)
@@ -3988,8 +3981,13 @@ main(int argc, char** argv)
 		}
 	}
 
-	if (!no_device_start && start_port(RTE_PORT_ALL) != 0)
-		rte_exit(EXIT_FAILURE, "Start ports failed\n");
+	if (!no_device_start && start_port(RTE_PORT_ALL) != 0) {
+		if (!interactive) {
+			rte_eal_cleanup();
+			rte_exit(EXIT_FAILURE, "Start ports failed\n");
+		}
+		fprintf(stderr, "Start ports failed\n");
+	}
 
 	/* set all ports to promiscuous mode by default */
 	RTE_ETH_FOREACH_DEV(port_id) {
@@ -4034,15 +4032,9 @@ main(int argc, char** argv)
 			start_packet_forwarding(0);
 		}
 		prompt();
-		pmd_test_exit();
 	} else
 #endif
 	{
-		char c;
-		int rc;
-
-		f_quit = 0;
-
 		printf("No commandline core given, start packet forwarding\n");
 		start_packet_forwarding(tx_first);
 		if (stats_period != 0) {
@@ -4065,14 +4057,40 @@ main(int argc, char** argv)
 				prev_time = cur_time;
 				sleep(1);
 			}
-		}
+		} else {
+			char c;
+			fd_set fds;
 
-		printf("Press enter to exit\n");
-		rc = read(0, &c, 1);
-		pmd_test_exit();
-		if (rc < 0)
-			return 1;
+			printf("Press enter to exit\n");
+
+			FD_ZERO(&fds);
+			FD_SET(0, &fds);
+
+			/* wait for signal or enter */
+			ret = select(1, &fds, NULL, NULL, NULL);
+			if (ret < 0 && errno != EINTR)
+				rte_exit(EXIT_FAILURE,
+					 "Select failed: %s\n",
+					 strerror(errno));
+
+			/* if got enter then consume it */
+			if (ret == 1 && read(0, &c, 1) < 0)
+				rte_exit(EXIT_FAILURE,
+					 "Read failed: %s\n",
+					 strerror(errno));
+		}
 	}
+
+	pmd_test_exit();
+
+#ifdef RTE_LIB_PDUMP
+	/* uninitialize packet capture framework */
+	rte_pdump_uninit();
+#endif
+#ifdef RTE_LIB_LATENCYSTATS
+	if (latencystats_enabled != 0)
+		rte_latencystats_uninit();
+#endif
 
 	ret = rte_eal_cleanup();
 	if (ret != 0)

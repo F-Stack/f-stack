@@ -16,6 +16,9 @@
 /* used for Rx Bulk Allocate */
 #define IAVF_RX_MAX_BURST         32
 
+/* Max data buffer size must be 16K - 128 bytes */
+#define IAVF_RX_MAX_DATA_BUF_SIZE (16 * 1024 - 128)
+
 /* used for Vector PMD */
 #define IAVF_VPMD_RX_MAX_BURST    32
 #define IAVF_VPMD_TX_MAX_BURST    32
@@ -38,6 +41,8 @@
 #define IAVF_MAX_TSO_MSS          9668
 #define IAVF_TSO_MAX_SEG          UINT8_MAX
 #define IAVF_TX_MAX_MTU_SEG       8
+
+#define IAVF_TX_MIN_PKT_LEN 17
 
 #define IAVF_TX_CKSUM_OFFLOAD_MASK (		 \
 		PKT_TX_IP_CKSUM |		 \

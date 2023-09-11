@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
-project('DPDK', 'C',
+project('DPDK', 'c',
 	# Get version number from file.
 	# Fallback to "more" for Windows compatibility.
 	version: run_command(find_program('cat', 'more'),
-		files('VERSION'), check: true).stdout().strip(),
+		files('VERSION')).stdout().strip(),
 	license: 'BSD',
 	default_options: [
 		'buildtype=release',

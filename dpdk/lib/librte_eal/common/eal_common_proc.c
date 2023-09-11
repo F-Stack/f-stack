@@ -262,7 +262,7 @@ rte_mp_action_unregister(const char *name)
 }
 
 static int
-read_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
+read_msg(int fd, struct mp_msg_internal *m, struct sockaddr_un *s)
 {
 	int msglen;
 	struct iovec iov;
@@ -283,7 +283,7 @@ read_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
 	msgh.msg_controllen = sizeof(control);
 
 retry:
-	msglen = recvmsg(mp_fd, &msgh, 0);
+	msglen = recvmsg(fd, &msgh, 0);
 
 	/* zero length message means socket was closed */
 	if (msglen == 0)
@@ -324,6 +324,15 @@ retry:
 }
 
 static void
+cleanup_msg_fds(const struct rte_mp_msg *msg)
+{
+	int i;
+
+	for (i = 0; i < msg->num_fds; i++)
+		close(msg->fds[i]);
+}
+
+static void
 process_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
 {
 	struct pending_request *pending_req;
@@ -351,8 +360,10 @@ process_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
 			else if (pending_req->type == REQUEST_TYPE_ASYNC)
 				req = async_reply_handle_thread_unsafe(
 						pending_req);
-		} else
+		} else {
 			RTE_LOG(ERR, EAL, "Drop mp reply: %s\n", msg->name);
+			cleanup_msg_fds(msg);
+		}
 		pthread_mutex_unlock(&pending_requests.lock);
 
 		if (req != NULL)
@@ -382,6 +393,7 @@ process_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
 			RTE_LOG(ERR, EAL, "Cannot find action: %s\n",
 				msg->name);
 		}
+		cleanup_msg_fds(msg);
 	} else if (action(msg, s->sun_path) < 0) {
 		RTE_LOG(ERR, EAL, "Fail to handle message: %s\n", msg->name);
 	}
@@ -392,11 +404,12 @@ mp_handle(void *arg __rte_unused)
 {
 	struct mp_msg_internal msg;
 	struct sockaddr_un sa;
+	int fd;
 
-	while (mp_fd >= 0) {
+	while ((fd = __atomic_load_n(&mp_fd, __ATOMIC_RELAXED)) >= 0) {
 		int ret;
 
-		ret = read_msg(&msg, &sa);
+		ret = read_msg(fd, &msg, &sa);
 		if (ret <= 0)
 			break;
 
@@ -640,9 +653,8 @@ rte_mp_channel_init(void)
 			NULL, mp_handle, NULL) < 0) {
 		RTE_LOG(ERR, EAL, "failed to create mp thread: %s\n",
 			strerror(errno));
-		close(mp_fd);
 		close(dir_fd);
-		mp_fd = -1;
+		close(__atomic_exchange_n(&mp_fd, -1, __ATOMIC_RELAXED));
 		return -1;
 	}
 
@@ -658,11 +670,10 @@ rte_mp_channel_cleanup(void)
 {
 	int fd;
 
-	if (mp_fd < 0)
+	fd = __atomic_exchange_n(&mp_fd, -1, __ATOMIC_RELAXED);
+	if (fd < 0)
 		return;
 
-	fd = mp_fd;
-	mp_fd = -1;
 	pthread_cancel(mp_handle_tid);
 	pthread_join(mp_handle_tid, NULL);
 	close_socket_fd(fd);

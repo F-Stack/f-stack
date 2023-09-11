@@ -338,7 +338,7 @@ hns3_update_mac_stats(struct hns3_hw *hw)
 	uint32_t stats_iterms;
 	uint64_t *desc_data;
 	uint32_t desc_num;
-	uint16_t i;
+	uint32_t i;
 	int ret;
 
 	/* The first desc has a 64-bit header, so need to consider it. */
@@ -425,15 +425,6 @@ hns3_query_mac_stats_reg_num(struct hns3_hw *hw)
 		hns3_warn(hw, "MAC stats reg number from firmware is greater than stats iterms in driver.");
 
 	return 0;
-}
-
-static int
-hns3_query_update_mac_stats(struct rte_eth_dev *dev)
-{
-	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
-
-	return hns3_update_mac_stats(hw);
 }
 
 /* Get tqp stats from register */
@@ -602,14 +593,13 @@ hns3_stats_reset(struct rte_eth_dev *eth_dev)
 }
 
 static int
-hns3_mac_stats_reset(__rte_unused struct rte_eth_dev *dev)
+hns3_mac_stats_reset(struct hns3_hw *hw)
 {
-	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
 	struct hns3_mac_stats *mac_stats = &hw->mac_stats;
 	int ret;
 
-	ret = hns3_query_update_mac_stats(dev);
+	/* Clear hardware MAC statistics by reading it. */
+	ret = hns3_update_mac_stats(hw);
 	if (ret) {
 		hns3_err(hw, "Clear Mac stats fail : %d", ret);
 		return ret;
@@ -727,8 +717,7 @@ hns3_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	count = 0;
 
 	if (!hns->is_vf) {
-		/* Update Mac stats */
-		ret = hns3_query_update_mac_stats(dev);
+		ret = hns3_update_mac_stats(hw);
 		if (ret < 0) {
 			hns3_err(hw, "Update Mac stats fail : %d", ret);
 			return ret;
@@ -1095,8 +1084,7 @@ hns3_dev_xstats_reset(struct rte_eth_dev *dev)
 	if (hns->is_vf)
 		return 0;
 
-	/* HW registers are cleared on read */
-	ret = hns3_mac_stats_reset(dev);
+	ret = hns3_mac_stats_reset(&hns->hw);
 	if (ret)
 		return ret;
 
@@ -1106,7 +1094,7 @@ hns3_dev_xstats_reset(struct rte_eth_dev *dev)
 	return 0;
 }
 
-int
+static int
 hns3_tqp_stats_init(struct hns3_hw *hw)
 {
 	struct hns3_tqp_stats *tqp_stats = &hw->tqp_stats;
@@ -1130,7 +1118,7 @@ hns3_tqp_stats_init(struct hns3_hw *hw)
 	return 0;
 }
 
-void
+static void
 hns3_tqp_stats_uninit(struct hns3_hw *hw)
 {
 	struct hns3_tqp_stats *tqp_stats = &hw->tqp_stats;
@@ -1150,4 +1138,21 @@ hns3_tqp_stats_clear(struct hns3_hw *hw)
 	stats->rcb_tx_ring_pktnum_rcd = 0;
 	memset(stats->rcb_rx_ring_pktnum, 0, sizeof(uint64_t) * hw->tqps_num);
 	memset(stats->rcb_tx_ring_pktnum, 0, sizeof(uint64_t) * hw->tqps_num);
+}
+
+int
+hns3_stats_init(struct hns3_hw *hw)
+{
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+
+	if (!hns->is_vf)
+		hns3_mac_stats_reset(hw);
+
+	return hns3_tqp_stats_init(hw);
+}
+
+void
+hns3_stats_uninit(struct hns3_hw *hw)
+{
+	hns3_tqp_stats_uninit(hw);
 }

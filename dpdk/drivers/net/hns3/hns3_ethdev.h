@@ -69,7 +69,6 @@
 #define HNS3_DEFAULT_MTU		1500UL
 #define HNS3_DEFAULT_FRAME_LEN		(HNS3_DEFAULT_MTU + HNS3_ETH_OVERHEAD)
 #define HNS3_HIP08_MIN_TX_PKT_LEN	33
-#define HNS3_HIP09_MIN_TX_PKT_LEN	9
 
 #define HNS3_BITS_PER_BYTE	8
 
@@ -474,7 +473,7 @@ struct hns3_hw {
 	 * The minimum length of the packet supported by hardware in the Tx
 	 * direction.
 	 */
-	uint32_t min_tx_pkt_len;
+	uint8_t min_tx_pkt_len;
 
 	struct hns3_queue_intr intr;
 	/*
@@ -810,9 +809,9 @@ struct hns3_adapter {
 	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_STASH_B)
 
 #define HNS3_DEV_PRIVATE_TO_HW(adapter) \
-	(&((struct hns3_adapter *)adapter)->hw)
+	(&((struct hns3_adapter *)(adapter))->hw)
 #define HNS3_DEV_PRIVATE_TO_PF(adapter) \
-	(&((struct hns3_adapter *)adapter)->pf)
+	(&((struct hns3_adapter *)(adapter))->pf)
 #define HNS3_DEV_HW_TO_ADAPTER(hw) \
 	container_of(hw, struct hns3_adapter, hw)
 
@@ -897,15 +896,6 @@ static inline uint32_t hns3_read_reg(void *base, uint32_t reg)
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
-#define NEXT_ITEM_OF_ACTION(act, actions, index)                        \
-	do {								\
-		act = (actions) + (index);				\
-		while (act->type == RTE_FLOW_ACTION_TYPE_VOID) {	\
-			(index)++;					\
-			act = actions + index;				\
-		}							\
-	} while (0)
-
 #define MSEC_PER_SEC              1000L
 #define USEC_PER_MSEC             1000L
 
@@ -934,7 +924,7 @@ hns3_atomic_clear_bit(unsigned int nr, volatile uint64_t *addr)
 	__atomic_fetch_and(addr, ~(1UL << nr), __ATOMIC_RELAXED);
 }
 
-static inline int64_t
+static inline uint64_t
 hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 {
 	uint64_t mask = (1UL << nr);

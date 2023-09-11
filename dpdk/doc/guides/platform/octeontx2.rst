@@ -249,7 +249,7 @@ context or stats using debugfs.
 
 Enable ``debugfs`` by:
 
-1. Compile kernel with debugfs enabled, i.e ``CONFIG_DEBUGFS=y``.
+1. Compile kernel with debugfs enabled, i.e ``CONFIG_DEBUG_FS=y``.
 2. Boot OCTEON TX2 with debugfs supported kernel.
 3. Verify ``debugfs`` mounted by default "mount | grep -i debugfs" or mount it manually by using.
 
@@ -505,7 +505,7 @@ Native Compilation
 
 .. code-block:: console
 
-        meson build
+        meson setup build
         ninja -C build
 
 Cross Compilation
@@ -515,7 +515,7 @@ Refer to :doc:`../linux_gsg/cross_build_dpdk_for_arm64` for generic arm64 detail
 
 .. code-block:: console
 
-        meson build --cross-file config/arm/arm64_octeontx2_linux_gcc
+        meson setup build --cross-file config/arm/arm64_octeontx2_linux_gcc
         ninja -C build
 
 .. note::

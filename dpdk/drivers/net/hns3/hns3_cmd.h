@@ -7,6 +7,9 @@
 
 #include <stdint.h>
 
+#include <rte_byteorder.h>
+#include <rte_spinlock.h>
+
 #define HNS3_CMDQ_TX_TIMEOUT		30000
 #define HNS3_CMDQ_CLEAR_WAIT_TIME	200
 #define HNS3_CMDQ_RX_INVLD_B		0
@@ -576,6 +579,7 @@ struct hns3_rss_input_tuple_cmd {
 #define HNS3_RSS_CFG_TBL_SIZE_H		4
 #define HNS3_RSS_CFG_TBL_BW_H		2
 #define HNS3_RSS_CFG_TBL_BW_L		8
+#define HNS3_RSS_CFG_TBL_BW_H_M		0x3
 
 /* Configure the indirection table, opcode:0x0D07 */
 struct hns3_rss_indirection_table_cmd {
@@ -870,6 +874,12 @@ struct hns3_dev_specs_0_cmd {
 	uint8_t max_non_tso_bd_num;
 	uint8_t rsv1;
 	uint32_t max_tm_rate;
+};
+
+struct hns3_dev_specs_1_cmd {
+	uint8_t rsv0[12];
+	uint8_t min_tx_pkt_len;
+	uint8_t rsv1[11];
 };
 
 #define HNS3_MAX_TQP_NUM_HIP08_PF	64

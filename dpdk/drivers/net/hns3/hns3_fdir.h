@@ -5,6 +5,8 @@
 #ifndef _HNS3_FDIR_H_
 #define _HNS3_FDIR_H_
 
+#include <stdint.h>
+
 #include <rte_flow.h>
 
 struct hns3_fd_key_cfg {
@@ -173,10 +175,18 @@ struct hns3_fdir_rule_ele {
 	struct hns3_fdir_rule fdir_conf;
 };
 
+struct hns3_flow_rss_conf {
+	struct rte_flow_action_rss conf;
+	uint8_t key[HNS3_RSS_KEY_SIZE_MAX];  /* Hash key */
+	uint16_t queue[HNS3_RSS_QUEUES_BUFFER_NUM]; /* Queues indices to use */
+	uint64_t pattern_type;
+	uint64_t hw_pctypes; /* packet types in driver */
+};
+
 /* rss filter list structure */
 struct hns3_rss_conf_ele {
 	TAILQ_ENTRY(hns3_rss_conf_ele) entries;
-	struct hns3_rss_conf filter_info;
+	struct hns3_flow_rss_conf filter_info;
 };
 
 /* hns3_flow memory list structure */
@@ -205,6 +215,7 @@ struct rte_flow {
 	uint32_t counter_id;
 };
 struct hns3_adapter;
+struct hns3_hw;
 
 int hns3_init_fd_config(struct hns3_adapter *hns);
 int hns3_fdir_filter_init(struct hns3_adapter *hns);

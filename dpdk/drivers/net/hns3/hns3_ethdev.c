@@ -8,13 +8,13 @@
 #include <rte_io.h>
 #include <rte_pci.h>
 
-#include "hns3_ethdev.h"
 #include "hns3_logs.h"
 #include "hns3_rxtx.h"
 #include "hns3_intr.h"
 #include "hns3_regs.h"
 #include "hns3_dcb.h"
 #include "hns3_mp.h"
+#include "hns3_ethdev.h"
 
 #define HNS3_DEFAULT_PORT_CONF_BURST_SIZE	32
 #define HNS3_DEFAULT_PORT_CONF_QUEUES_NUM	1
@@ -44,6 +44,7 @@
 #define HNS3_VECTOR0_IMP_CMDQ_ERR_B	4U
 #define HNS3_VECTOR0_IMP_RD_POISON_B	5U
 #define HNS3_VECTOR0_ALL_MSIX_ERR_B	6U
+#define HNS3_VECTOR0_TRIGGER_IMP_RESET_B	7U
 
 #define HNS3_RESET_WAIT_MS	100
 #define HNS3_RESET_WAIT_CNT	200
@@ -83,8 +84,7 @@ static const struct rte_eth_fec_capa speed_fec_capa_tbl[] = {
 			      RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
 			      RTE_ETH_FEC_MODE_CAPA_MASK(RS) },
 
-	{ ETH_SPEED_NUM_200G, RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) |
-			      RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
+	{ ETH_SPEED_NUM_200G, RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
 			      RTE_ETH_FEC_MODE_CAPA_MASK(RS) }
 };
 
@@ -227,6 +227,19 @@ hns3_clear_all_event_cause(struct hns3_hw *hw)
 }
 
 static void
+hns3_delay_before_clear_event_cause(struct hns3_hw *hw, uint32_t event_type, uint32_t regclr)
+{
+#define IMPRESET_WAIT_MS_TIME	5
+
+	if (event_type == HNS3_VECTOR0_EVENT_RST &&
+	    regclr & BIT(HNS3_VECTOR0_IMPRESET_INT_B) &&
+	    hw->revision >= PCI_REVISION_ID_HIP09_A) {
+		rte_delay_ms(IMPRESET_WAIT_MS_TIME);
+		hns3_dbg(hw, "wait firmware watchdog initialization completed.");
+	}
+}
+
+static void
 hns3_interrupt_handler(void *param)
 {
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
@@ -239,6 +252,7 @@ hns3_interrupt_handler(void *param)
 	hns3_pf_disable_irq0(hw);
 
 	event_cause = hns3_check_event_cause(hns, &clearval);
+	hns3_delay_before_clear_event_cause(hw, event_cause, clearval);
 	hns3_clear_event_cause(hw, event_cause, clearval);
 	/* vector 0 interrupt is shared with reset and mailbox source events. */
 	if (event_cause == HNS3_VECTOR0_EVENT_ERR) {
@@ -1711,7 +1725,7 @@ err_pause_addr_cfg:
 		rte_ether_format_addr(mac_str, RTE_ETHER_ADDR_FMT_SIZE,
 				      mac_addr);
 		hns3_warn(hw,
-			  "Failed to roll back to del setted mac addr(%s): %d",
+			  "Failed to roll back to del set mac addr(%s): %d",
 			  mac_str, ret_val);
 	}
 
@@ -2606,7 +2620,7 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 	};
 
 	info->reta_size = hw->rss_ind_tbl_size;
-	info->hash_key_size = HNS3_RSS_KEY_SIZE;
+	info->hash_key_size = hw->rss_key_size;
 	info->flow_type_rss_offloads = HNS3_ETH_RSS_SUPPORT;
 
 	info->default_rxportconf.burst_size = HNS3_DEFAULT_PORT_CONF_BURST_SIZE;
@@ -2701,6 +2715,7 @@ hns3_dev_link_update(struct rte_eth_dev *eth_dev,
 	struct rte_eth_link new_link;
 	int ret;
 
+	memset(&new_link, 0, sizeof(new_link));
 	/* When port is stopped, report link down. */
 	if (eth_dev->data->dev_started == 0) {
 		new_link.link_autoneg = mac->link_autoneg;
@@ -2716,7 +2731,6 @@ hns3_dev_link_update(struct rte_eth_dev *eth_dev,
 		hns3_err(hw, "failed to get port link info, ret = %d.", ret);
 	}
 
-	memset(&new_link, 0, sizeof(new_link));
 	hns3_setup_linkstatus(eth_dev, &new_link);
 
 out:
@@ -3022,14 +3036,17 @@ static void
 hns3_parse_dev_specifications(struct hns3_hw *hw, struct hns3_cmd_desc *desc)
 {
 	struct hns3_dev_specs_0_cmd *req0;
+	struct hns3_dev_specs_1_cmd *req1;
 
 	req0 = (struct hns3_dev_specs_0_cmd *)desc[0].data;
+	req1 = (struct hns3_dev_specs_1_cmd *)desc[1].data;
 
 	hw->max_non_tso_bd_num = req0->max_non_tso_bd_num;
 	hw->rss_ind_tbl_size = rte_le_to_cpu_16(req0->rss_ind_tbl_size);
 	hw->rss_key_size = rte_le_to_cpu_16(req0->rss_key_size);
 	hw->max_tm_rate = rte_le_to_cpu_32(req0->max_tm_rate);
 	hw->intr.int_ql_max = rte_le_to_cpu_16(req0->intr_ql_max);
+	hw->min_tx_pkt_len = req1->min_tx_pkt_len;
 }
 
 static int
@@ -3037,11 +3054,20 @@ hns3_check_dev_specifications(struct hns3_hw *hw)
 {
 	if (hw->rss_ind_tbl_size == 0 ||
 	    hw->rss_ind_tbl_size > HNS3_RSS_IND_TBL_SIZE_MAX) {
-		hns3_err(hw, "the size of hash lookup table configured (%u)"
-			      " exceeds the maximum(%u)", hw->rss_ind_tbl_size,
-			      HNS3_RSS_IND_TBL_SIZE_MAX);
+		hns3_err(hw, "the indirection table size obtained (%u) is invalid, and should not be zero or exceed the maximum(%u)",
+			 hw->rss_ind_tbl_size, HNS3_RSS_IND_TBL_SIZE_MAX);
 		return -EINVAL;
 	}
+
+	if (hw->rss_key_size == 0 || hw->rss_key_size > HNS3_RSS_KEY_SIZE_MAX) {
+		 hns3_err(hw, "the RSS key size obtained (%u) is invalid, and should not be zero or exceed the maximum(%u)",
+			   hw->rss_key_size, HNS3_RSS_KEY_SIZE_MAX);
+		 return -EINVAL;
+	}
+
+	if (hw->rss_key_size > HNS3_RSS_KEY_SIZE)
+		 hns3_warn(hw, "the RSS key size obtained (%u) is greater than the default key size (%u)",
+			    hw->rss_key_size, HNS3_RSS_KEY_SIZE);
 
 	return 0;
 }
@@ -3129,7 +3155,6 @@ hns3_get_capability(struct hns3_hw *hw)
 	hw->intr.gl_unit = HNS3_INTR_COALESCE_GL_UINT_1US;
 	hw->tso_mode = HNS3_TSO_HW_CAL_PSEUDO_H_CSUM;
 	hw->vlan_mode = HNS3_HW_SHIFT_AND_DISCARD_MODE;
-	hw->min_tx_pkt_len = HNS3_HIP09_MIN_TX_PKT_LEN;
 	pf->tqp_config_mode = HNS3_FLEX_MAX_TQP_NUM_MODE;
 	hw->rss_info.ipv6_sctp_offload_supported = true;
 	hw->udp_cksum_mode = HNS3_SPECIAL_PORT_HW_CKSUM_MODE;
@@ -3173,6 +3198,7 @@ hns3_get_board_configuration(struct hns3_hw *hw)
 	struct hns3_cfg cfg;
 	int ret;
 
+	memset(&cfg, 0, sizeof(cfg));
 	ret = hns3_get_board_cfg(hw, &cfg);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "get board config failed %d", ret);
@@ -4063,7 +4089,7 @@ hns3_get_mac_ethertype_cmd_status(uint16_t cmdq_resp, uint8_t resp_code)
 
 	if (cmdq_resp) {
 		PMD_INIT_LOG(ERR,
-			     "cmdq execute failed for get_mac_ethertype_cmd_status, status=%u.\n",
+			     "cmdq execute failed for get_mac_ethertype_cmd_status, status=%u.",
 			     cmdq_resp);
 		return -EIO;
 	}
@@ -4807,7 +4833,7 @@ hns3_init_pf(struct rte_eth_dev *eth_dev)
 		goto err_get_config;
 	}
 
-	ret = hns3_tqp_stats_init(hw);
+	ret = hns3_stats_init(hw);
 	if (ret)
 		goto err_get_config;
 
@@ -4841,7 +4867,7 @@ err_fdir:
 	(void)hns3_firmware_compat_config(hw, false);
 	hns3_uninit_umv_space(hw);
 err_init_hw:
-	hns3_tqp_stats_uninit(hw);
+	hns3_stats_uninit(hw);
 err_get_config:
 	hns3_pf_disable_irq0(hw);
 	rte_intr_disable(&pci_dev->intr_handle);
@@ -4875,7 +4901,7 @@ hns3_uninit_pf(struct rte_eth_dev *eth_dev)
 	hns3_fdir_filter_uninit(hns);
 	(void)hns3_firmware_compat_config(hw, false);
 	hns3_uninit_umv_space(hw);
-	hns3_tqp_stats_uninit(hw);
+	hns3_stats_uninit(hw);
 	hns3_pf_disable_irq0(hw);
 	rte_intr_disable(&pci_dev->intr_handle);
 	hns3_intr_unregister(&pci_dev->intr_handle, hns3_interrupt_handler,
@@ -4910,7 +4936,7 @@ hns3_do_start(struct hns3_adapter *hns, bool reset_queue)
 		PMD_INIT_LOG(ERR, "failed to enable MAC, ret = %d", ret);
 		goto err_config_mac_mode;
 	}
-	return 0;
+	return hns3_restore_filter(hns);
 
 err_config_mac_mode:
 	hns3_dev_release_mbufs(hns);
@@ -5018,12 +5044,6 @@ hns3_restore_rx_interrupt(struct hns3_hw *hw)
 	return 0;
 }
 
-static void
-hns3_restore_filter(struct rte_eth_dev *dev)
-{
-	hns3_restore_rss_filter(dev);
-}
-
 static int
 hns3_dev_start(struct rte_eth_dev *dev)
 {
@@ -5071,11 +5091,8 @@ hns3_dev_start(struct rte_eth_dev *dev)
 	rte_spinlock_unlock(&hw->lock);
 
 	hns3_rx_scattered_calc(dev);
-	hns3_set_rxtx_function(dev);
-	hns3_mp_req_start_rxtx(dev);
+	hns3_start_rxtx_datapath(dev);
 	rte_eal_alarm_set(HNS3_SERVICE_INTERVAL, hns3_service_handler, dev);
-
-	hns3_restore_filter(dev);
 
 	/* Enable interrupt of all rx queues before enabling queues */
 	hns3_dev_all_rx_queue_intr_enable(hw, true);
@@ -5180,12 +5197,7 @@ hns3_dev_stop(struct rte_eth_dev *dev)
 	dev->data->dev_started = 0;
 
 	hw->adapter_state = HNS3_NIC_STOPPING;
-	hns3_set_rxtx_function(dev);
-	rte_wmb();
-	/* Disable datapath on secondary process. */
-	hns3_mp_req_stop_rxtx(dev);
-	/* Prevent crashes when queues are still in use. */
-	rte_delay_ms(hw->cfg_max_queues);
+	hns3_stop_rxtx_datapath(dev);
 
 	rte_spinlock_lock(&hw->lock);
 	if (rte_atomic16_read(&hw->reset.resetting) == 0) {
@@ -5458,7 +5470,15 @@ hns3_is_reset_pending(struct hns3_adapter *hns)
 	struct hns3_hw *hw = &hns->hw;
 	enum hns3_reset_level reset;
 
-	hns3_check_event_cause(hns, NULL);
+	/*
+	 * Check the registers to confirm whether there is reset pending.
+	 * Note: This check may lead to schedule reset task, but only primary
+	 *       process can process the reset event. Therefore, limit the
+	 *       checking under only primary process.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		hns3_check_event_cause(hns, NULL);
+
 	reset = hns3_get_reset_level(hns, &hw->reset.pending);
 	if (hw->reset.level != HNS3_NONE_RESET && hw->reset.level < reset) {
 		hns3_warn(hw, "High level reset %d is pending", reset);
@@ -5513,17 +5533,6 @@ hns3_func_reset_cmd(struct hns3_hw *hw, int func_id)
 	return hns3_cmd_send(hw, &desc, 1);
 }
 
-static int
-hns3_imp_reset_cmd(struct hns3_hw *hw)
-{
-	struct hns3_cmd_desc desc;
-
-	hns3_cmd_setup_basic_desc(&desc, 0xFFFE, false);
-	desc.data[0] = 0xeedd;
-
-	return hns3_cmd_send(hw, &desc, 1);
-}
-
 static void
 hns3_msix_process(struct hns3_adapter *hns, enum hns3_reset_level reset_level)
 {
@@ -5541,7 +5550,9 @@ hns3_msix_process(struct hns3_adapter *hns, enum hns3_reset_level reset_level)
 
 	switch (reset_level) {
 	case HNS3_IMP_RESET:
-		hns3_imp_reset_cmd(hw);
+		val = hns3_read_dev(hw, HNS3_VECTOR0_OTER_EN_REG);
+		hns3_set_bit(val, HNS3_VECTOR0_TRIGGER_IMP_RESET_B, 1);
+		hns3_write_dev(hw, HNS3_VECTOR0_OTER_EN_REG, val);
 		hns3_warn(hw, "IMP Reset requested time=%ld.%.6ld",
 			  tv.tv_sec, tv.tv_usec);
 		break;
@@ -5667,11 +5678,7 @@ hns3_stop_service(struct hns3_adapter *hns)
 		rte_eal_alarm_cancel(hns3_service_handler, eth_dev);
 	hw->mac.link_status = ETH_LINK_DOWN;
 
-	hns3_set_rxtx_function(eth_dev);
-	rte_wmb();
-	/* Disable datapath on secondary process. */
-	hns3_mp_req_stop_rxtx(eth_dev);
-	rte_delay_ms(hw->cfg_max_queues);
+	hns3_stop_rxtx_datapath(eth_dev);
 
 	rte_spinlock_lock(&hw->lock);
 	if (hns->hw.adapter_state == HNS3_NIC_STARTED ||
@@ -5704,8 +5711,7 @@ hns3_start_service(struct hns3_adapter *hns)
 	    hw->reset.level == HNS3_GLOBAL_RESET)
 		hns3_set_rst_done(hw);
 	eth_dev = &rte_eth_devices[hw->data->port_id];
-	hns3_set_rxtx_function(eth_dev);
-	hns3_mp_req_start_rxtx(eth_dev);
+	hns3_start_rxtx_datapath(eth_dev);
 	if (hw->adapter_state == HNS3_NIC_STARTED) {
 		hns3_service_handler(eth_dev);
 
@@ -5749,10 +5755,6 @@ hns3_restore_conf(struct hns3_adapter *hns)
 		goto err_promisc;
 
 	ret = hns3_restore_vlan_conf(hns);
-	if (ret)
-		goto err_promisc;
-
-	ret = hns3_restore_all_fdir_filter(hns);
 	if (ret)
 		goto err_promisc;
 
@@ -6085,52 +6087,49 @@ get_current_speed_fec_cap(struct hns3_hw *hw, struct rte_eth_fec_capa *fec_capa)
 	return cur_capa;
 }
 
-static bool
-is_fec_mode_one_bit_set(uint32_t mode)
-{
-	int cnt = 0;
-	uint8_t i;
-
-	for (i = 0; i < sizeof(mode); i++)
-		if (mode >> i & 0x1)
-			cnt++;
-
-	return cnt == 1 ? true : false;
-}
-
 static int
-hns3_fec_set(struct rte_eth_dev *dev, uint32_t mode)
+hns3_fec_mode_valid(struct rte_eth_dev *dev, uint32_t mode)
 {
 #define FEC_CAPA_NUM 2
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(hns);
-	struct hns3_pf *pf = &hns->pf;
-
 	struct rte_eth_fec_capa fec_capa[FEC_CAPA_NUM];
-	uint32_t cur_capa;
 	uint32_t num = FEC_CAPA_NUM;
+	uint32_t cur_capa;
 	int ret;
+
+	if (__builtin_popcount(mode) != 1) {
+		hns3_err(hw, "FEC mode(0x%x) should be only one bit set", mode);
+		return -EINVAL;
+	}
 
 	ret = hns3_fec_get_capability(dev, fec_capa, num);
 	if (ret < 0)
 		return ret;
-
-	/* HNS3 PMD only support one bit set mode, e.g. 0x1, 0x4 */
-	if (!is_fec_mode_one_bit_set(mode)) {
-		hns3_err(hw, "FEC mode(0x%x) not supported in HNS3 PMD, "
-			     "FEC mode should be only one bit set", mode);
-		return -EINVAL;
-	}
-
 	/*
 	 * Check whether the configured mode is within the FEC capability.
 	 * If not, the configured mode will not be supported.
 	 */
 	cur_capa = get_current_speed_fec_cap(hw, fec_capa);
-	if (!(cur_capa & mode)) {
-		hns3_err(hw, "unsupported FEC mode = 0x%x", mode);
+	if ((cur_capa & mode) == 0) {
+		hns3_err(hw, "unsupported FEC mode(0x%x)", mode);
 		return -EINVAL;
 	}
+
+	return 0;
+}
+
+static int
+hns3_fec_set(struct rte_eth_dev *dev, uint32_t mode)
+{
+	struct hns3_adapter *hns = dev->data->dev_private;
+	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(hns);
+	struct hns3_pf *pf = &hns->pf;
+	int ret;
+
+	ret = hns3_fec_mode_valid(dev, mode);
+	if (ret != 0)
+		return ret;
 
 	rte_spinlock_lock(&hw->lock);
 	ret = hns3_set_fec_hw(hw, mode);

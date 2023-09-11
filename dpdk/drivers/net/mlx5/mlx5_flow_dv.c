@@ -104,6 +104,7 @@ flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr,
 		  struct mlx5_flow *dev_flow, bool tunnel_decap)
 {
 	uint64_t layers = dev_flow->handle->layers;
+	bool tunnel_match = false;
 
 	/*
 	 * If layers is already initialized, it means this dev_flow is the
@@ -112,6 +113,13 @@ flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr,
 	 * have the user defined items as the flow is split.
 	 */
 	if (layers) {
+		if (tunnel_decap) {
+			/*
+			 * If decap action before modify, it means the driver
+			 * should take the inner as outer for the modify actions.
+			 */
+			layers = ((layers >> 6) & MLX5_FLOW_LAYER_OUTER);
+		}
 		if (layers & MLX5_FLOW_LAYER_OUTER_L3_IPV4)
 			attr->ipv4 = 1;
 		else if (layers & MLX5_FLOW_LAYER_OUTER_L3_IPV6)
@@ -133,8 +141,10 @@ flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr,
 		case RTE_FLOW_ITEM_TYPE_GENEVE:
 		case RTE_FLOW_ITEM_TYPE_MPLS:
 		case RTE_FLOW_ITEM_TYPE_GTP:
-			if (tunnel_decap)
+			if (tunnel_decap) {
 				attr->attr = 0;
+				tunnel_match = true;
+			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
 			if (!attr->ipv6)
@@ -148,7 +158,8 @@ flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr,
 				    ((const struct rte_flow_item_ipv4 *)
 				      (item->mask))->hdr.next_proto_id;
 			if ((next_protocol == IPPROTO_IPIP ||
-			    next_protocol == IPPROTO_IPV6) && tunnel_decap)
+			    next_protocol == IPPROTO_IPV6) && tunnel_decap &&
+			    !tunnel_match)
 				attr->attr = 0;
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV6:
@@ -163,7 +174,8 @@ flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr,
 				    ((const struct rte_flow_item_ipv6 *)
 				      (item->mask))->hdr.proto;
 			if ((next_protocol == IPPROTO_IPIP ||
-			    next_protocol == IPPROTO_IPV6) && tunnel_decap)
+			    next_protocol == IPPROTO_IPV6) && tunnel_decap &&
+			    !tunnel_match)
 				attr->attr = 0;
 			break;
 		case RTE_FLOW_ITEM_TYPE_UDP:
@@ -1487,6 +1499,8 @@ flow_dv_validate_item_meta(struct rte_eth_dev *dev __rte_unused,
  *   Pointer to the rte_eth_dev structure.
  * @param[in] item
  *   Item specification.
+ * @param[in] tag_bitmap
+ *   Tag index bitmap.
  * @param[in] attr
  *   Attributes of flow that includes this item.
  * @param[out] error
@@ -1498,6 +1512,7 @@ flow_dv_validate_item_meta(struct rte_eth_dev *dev __rte_unused,
 static int
 flow_dv_validate_item_tag(struct rte_eth_dev *dev,
 			  const struct rte_flow_item *item,
+			  uint32_t *tag_bitmap,
 			  const struct rte_flow_attr *attr __rte_unused,
 			  struct rte_flow_error *error)
 {
@@ -1541,6 +1556,12 @@ flow_dv_validate_item_tag(struct rte_eth_dev *dev,
 	if (ret < 0)
 		return ret;
 	MLX5_ASSERT(ret != REG_NON);
+	if (*tag_bitmap & (1 << ret))
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM_SPEC,
+					  item->spec,
+					  "Duplicated tag index");
+	*tag_bitmap |= 1 << ret;
 	return 0;
 }
 
@@ -4638,7 +4659,7 @@ flow_dv_counter_get_by_idx(struct rte_eth_dev *dev,
 
 	/* Decrease to original index and clear shared bit. */
 	idx = (idx - 1) & (MLX5_CNT_SHARED_OFFSET - 1);
-	MLX5_ASSERT(idx / MLX5_COUNTERS_PER_POOL < cmng->n);
+	MLX5_ASSERT(idx / MLX5_COUNTERS_PER_POOL < MLX5_COUNTER_POOLS_MAX_NUM);
 	pool = cmng->pools[idx / MLX5_COUNTERS_PER_POOL];
 	MLX5_ASSERT(pool);
 	if (ppool)
@@ -4715,39 +4736,6 @@ out:
 }
 
 /**
- * Resize a counter container.
- *
- * @param[in] dev
- *   Pointer to the Ethernet device structure.
- *
- * @return
- *   0 on success, otherwise negative errno value and rte_errno is set.
- */
-static int
-flow_dv_container_resize(struct rte_eth_dev *dev)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_flow_counter_mng *cmng = &priv->sh->cmng;
-	void *old_pools = cmng->pools;
-	uint32_t resize = cmng->n + MLX5_CNT_CONTAINER_RESIZE;
-	uint32_t mem_size = sizeof(struct mlx5_flow_counter_pool *) * resize;
-	void *pools = mlx5_malloc(MLX5_MEM_ZERO, mem_size, 0, SOCKET_ID_ANY);
-
-	if (!pools) {
-		rte_errno = ENOMEM;
-		return -ENOMEM;
-	}
-	if (old_pools)
-		memcpy(pools, old_pools, cmng->n *
-				       sizeof(struct mlx5_flow_counter_pool *));
-	cmng->n = resize;
-	cmng->pools = pools;
-	if (old_pools)
-		mlx5_free(old_pools);
-	return 0;
-}
-
-/**
  * Query a devx flow counter.
  *
  * @param[in] dev
@@ -4798,8 +4786,6 @@ _flow_dv_query_count(struct rte_eth_dev *dev, uint32_t counter, uint64_t *pkts,
  *   The devX counter handle.
  * @param[in] age
  *   Whether the pool is for counter that was allocated for aging.
- * @param[in/out] cont_cur
- *   Pointer to the container pointer, it will be update in pool resize.
  *
  * @return
  *   The pool container pointer on success, NULL otherwise and rte_errno is set.
@@ -4811,9 +4797,14 @@ flow_dv_pool_create(struct rte_eth_dev *dev, struct mlx5_devx_obj *dcs,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_counter_pool *pool;
 	struct mlx5_flow_counter_mng *cmng = &priv->sh->cmng;
-	bool fallback = priv->sh->cmng.counter_fallback;
+	bool fallback = cmng->counter_fallback;
 	uint32_t size = sizeof(*pool);
 
+	if (cmng->n_valid == MLX5_COUNTER_POOLS_MAX_NUM) {
+		DRV_LOG(ERR, "All counter is in used, try again later.");
+		rte_errno = EAGAIN;
+		return NULL;
+	}
 	size += MLX5_COUNTERS_PER_POOL * MLX5_CNT_SIZE;
 	size += (!age ? 0 : MLX5_COUNTERS_PER_POOL * MLX5_AGE_SIZE);
 	pool = mlx5_malloc(MLX5_MEM_ZERO, size, 0, SOCKET_ID_ANY);
@@ -4832,11 +4823,6 @@ flow_dv_pool_create(struct rte_eth_dev *dev, struct mlx5_devx_obj *dcs,
 	pool->time_of_last_age_check = MLX5_CURR_TIME_SEC;
 	rte_spinlock_lock(&cmng->pool_update_sl);
 	pool->index = cmng->n_valid;
-	if (pool->index == cmng->n && flow_dv_container_resize(dev)) {
-		mlx5_free(pool);
-		rte_spinlock_unlock(&cmng->pool_update_sl);
-		return NULL;
-	}
 	cmng->pools[pool->index] = pool;
 	cmng->n_valid++;
 	if (unlikely(fallback)) {
@@ -5336,7 +5322,8 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		.std_tbl_fix = true,
 	};
 	const struct rte_eth_hairpin_conf *conf;
-	uint32_t tag_id = 0;
+	uint32_t tag_id = 0, tag_bitmap = 0;
+	const struct mlx5_rte_flow_item_tag *mlx5_tag;
 
 	if (items == NULL)
 		return -1;
@@ -5607,7 +5594,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 			last_item = MLX5_FLOW_LAYER_ICMP6;
 			break;
 		case RTE_FLOW_ITEM_TYPE_TAG:
-			ret = flow_dv_validate_item_tag(dev, items,
+			ret = flow_dv_validate_item_tag(dev, items, &tag_bitmap,
 							attr, error);
 			if (ret < 0)
 				return ret;
@@ -5617,6 +5604,13 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 			last_item = MLX5_FLOW_ITEM_TX_QUEUE;
 			break;
 		case MLX5_RTE_FLOW_ITEM_TYPE_TAG:
+			mlx5_tag = (const struct mlx5_rte_flow_item_tag *)items->spec;
+			if (tag_bitmap & (1 << mlx5_tag->id))
+				return rte_flow_error_set(error, EINVAL,
+							  RTE_FLOW_ERROR_TYPE_ITEM_SPEC,
+							  items->spec,
+							  "Duplicated tag index");
+			tag_bitmap |= 1 << mlx5_tag->id;
 			break;
 		case RTE_FLOW_ITEM_TYPE_GTP:
 			ret = flow_dv_validate_item_gtp(dev, items, item_flags,
@@ -6178,18 +6172,18 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	/*
 	 * Validate the drop action mutual exclusion with other actions.
 	 * Drop action is mutually-exclusive with any other action, except for
-	 * Count action.
+	 * Count/Sample/Age actions.
 	 * Drop action compatibility with tunnel offload was already validated.
 	 */
 	if (action_flags & (MLX5_FLOW_ACTION_TUNNEL_MATCH |
 			    MLX5_FLOW_ACTION_TUNNEL_MATCH));
 	else if ((action_flags & MLX5_FLOW_ACTION_DROP) &&
-	    (action_flags & ~(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_ACTION_COUNT)))
+	    (action_flags & ~(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_DROP_INCLUSIVE_ACTIONS)))
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ACTION, NULL,
 					  "Drop action is mutually-exclusive "
 					  "with any other action, except for "
-					  "Count action");
+					  "Count/Sample/Age action");
 	/* Eswitch has few restrictions on using items and actions */
 	if (attr->transfer) {
 		if (!mlx5_flow_ext_mreg_supported(dev) &&
@@ -9521,7 +9515,7 @@ flow_dv_aso_age_release(struct rte_eth_dev *dev, uint32_t age_idx)
 }
 
 /**
- * Resize the ASO age pools array by MLX5_CNT_CONTAINER_RESIZE pools.
+ * Resize the ASO age pools array by MLX5_ASO_AGE_CONTAINER_RESIZE pools.
  *
  * @param[in] dev
  *   Pointer to the Ethernet device structure.
@@ -9535,7 +9529,7 @@ flow_dv_aso_age_pools_resize(struct rte_eth_dev *dev)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_aso_age_mng *mng = priv->sh->aso_age_mng;
 	void *old_pools = mng->pools;
-	uint32_t resize = mng->n + MLX5_CNT_CONTAINER_RESIZE;
+	uint32_t resize = mng->n + MLX5_ASO_AGE_CONTAINER_RESIZE;
 	uint32_t mem_size = sizeof(struct mlx5_aso_age_pool *) * resize;
 	void *pools = mlx5_malloc(MLX5_MEM_ZERO, mem_size, 0, SOCKET_ID_ANY);
 

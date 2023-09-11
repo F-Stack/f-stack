@@ -82,7 +82,7 @@ bond_ethdev_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 					 bufs + num_rx_total, nb_pkts);
 		num_rx_total += num_rx_slave;
 		nb_pkts -= num_rx_slave;
-		if (++active_slave == slave_count)
+		if (++active_slave >= slave_count)
 			active_slave = 0;
 	}
 
@@ -198,7 +198,7 @@ bond_ethdev_8023ad_flow_verify(struct rte_eth_dev *bond_dev,
 	if (slave_info.max_rx_queues < bond_dev->data->nb_rx_queues ||
 			slave_info.max_tx_queues < bond_dev->data->nb_tx_queues) {
 		RTE_BOND_LOG(ERR,
-			"%s: Slave %d capabilities doesn't allow to allocate additional queues",
+			"%s: Slave %d capabilities doesn't allow allocating additional queues",
 			__func__, slave_port);
 		return -1;
 	}
@@ -271,6 +271,24 @@ bond_ethdev_8023ad_flow_set(struct rte_eth_dev *bond_dev, uint16_t slave_port) {
 	return 0;
 }
 
+static bool
+is_bond_mac_addr(const struct rte_ether_addr *ea,
+		 const struct rte_ether_addr *mac_addrs, uint32_t max_mac_addrs)
+{
+	uint32_t i;
+
+	for (i = 0; i < max_mac_addrs; i++) {
+		/* skip zero address */
+		if (rte_is_zero_ether_addr(&mac_addrs[i]))
+			continue;
+
+		if (rte_is_same_ether_addr(ea, &mac_addrs[i]))
+			return true;
+	}
+
+	return false;
+}
+
 static inline uint16_t
 rx_burst_8023ad(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts,
 		bool dedicated_rxq)
@@ -331,8 +349,9 @@ rx_burst_8023ad(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts,
 			/* Remove packet from array if:
 			 * - it is slow packet but no dedicated rxq is present,
 			 * - slave is not in collecting state,
-			 * - bonding interface is not in promiscuous mode:
-			 *   - packet is unicast and address does not match,
+			 * - bonding interface is not in promiscuous mode and
+			 *   packet address isn't in mac_addrs array:
+			 *   - packet is unicast,
 			 *   - packet is multicast and bonding interface
 			 *     is not in allmulti,
 			 */
@@ -342,12 +361,10 @@ rx_burst_8023ad(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts,
 						 bufs[j])) ||
 				!collecting ||
 				(!promisc &&
-				 ((rte_is_unicast_ether_addr(&hdr->d_addr) &&
-				   !rte_is_same_ether_addr(bond_mac,
-						       &hdr->d_addr)) ||
-				  (!allmulti &&
-				   rte_is_multicast_ether_addr(&hdr->d_addr)))))) {
-
+				 !is_bond_mac_addr(&hdr->d_addr, bond_mac,
+						   BOND_MAX_MAC_ADDRS) &&
+				 (rte_is_unicast_ether_addr(&hdr->d_addr) ||
+				  !allmulti)))) {
 				if (hdr->ether_type == ether_type_slow_be) {
 					bond_mode_8023ad_handle_slow_pkt(
 					    internals, slaves[idx], bufs[j]);
@@ -772,7 +789,7 @@ burst_xmit_l34_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
 						((char *)ipv4_hdr +
 							ip_hdr_offset);
 					if ((size_t)tcp_hdr + sizeof(*tcp_hdr)
-							< pkt_end)
+							<= pkt_end)
 						l4hash = HASH_L4_PORTS(tcp_hdr);
 				} else if (ipv4_hdr->next_proto_id ==
 								IPPROTO_UDP) {
@@ -1723,20 +1740,11 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 				bonded_eth_dev->data->dev_conf.rxmode.mq_mode;
 	}
 
-	slave_eth_dev->data->dev_conf.txmode.offloads |=
-		bonded_eth_dev->data->dev_conf.txmode.offloads;
+	slave_eth_dev->data->dev_conf.txmode.offloads =
+			bonded_eth_dev->data->dev_conf.txmode.offloads;
 
-	slave_eth_dev->data->dev_conf.txmode.offloads &=
-		(bonded_eth_dev->data->dev_conf.txmode.offloads |
-		~internals->tx_offload_capa);
-
-	slave_eth_dev->data->dev_conf.rxmode.offloads |=
-		bonded_eth_dev->data->dev_conf.rxmode.offloads;
-
-	slave_eth_dev->data->dev_conf.rxmode.offloads &=
-		(bonded_eth_dev->data->dev_conf.rxmode.offloads |
-		~internals->rx_offload_capa);
-
+	slave_eth_dev->data->dev_conf.rxmode.offloads =
+			bonded_eth_dev->data->dev_conf.rxmode.offloads;
 
 	nb_rx_queues = bonded_eth_dev->data->nb_rx_queues;
 	nb_tx_queues = bonded_eth_dev->data->nb_tx_queues;
@@ -1817,15 +1825,6 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 			rte_flow_destroy(slave_eth_dev->data->port_id,
 					internals->mode4.dedicated_queues.flow[slave_eth_dev->data->port_id],
 					&flow_error);
-
-		errval = bond_ethdev_8023ad_flow_set(bonded_eth_dev,
-				slave_eth_dev->data->port_id);
-		if (errval != 0) {
-			RTE_BOND_LOG(ERR,
-				"bond_ethdev_8023ad_flow_set: port=%d, err (%d)",
-				slave_eth_dev->data->port_id, errval);
-			return errval;
-		}
 	}
 
 	/* Start device */
@@ -1834,6 +1833,18 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 		RTE_BOND_LOG(ERR, "rte_eth_dev_start: port=%u, err (%d)",
 				slave_eth_dev->data->port_id, errval);
 		return -1;
+	}
+
+	if (internals->mode == BONDING_MODE_8023AD &&
+			internals->mode4.dedicated_queues.enabled == 1) {
+		errval = bond_ethdev_8023ad_flow_set(bonded_eth_dev,
+				slave_eth_dev->data->port_id);
+		if (errval != 0) {
+			RTE_BOND_LOG(ERR,
+				"bond_ethdev_8023ad_flow_set: port=%d, err (%d)",
+				slave_eth_dev->data->port_id, errval);
+			return errval;
+		}
 	}
 
 	/* If RSS is enabled for bonding, synchronize RETA */
@@ -2137,6 +2148,10 @@ bond_ethdev_close(struct rte_eth_dev *dev)
 		return 0;
 
 	RTE_BOND_LOG(INFO, "Closing bonded device %s", dev->device->name);
+
+	/* Flush flows in all back-end devices before removing them */
+	bond_flow_ops.flush(dev, &ferror);
+
 	while (internals->slave_count != skipped) {
 		uint16_t port_id = internals->slaves[skipped].port_id;
 
@@ -2154,7 +2169,6 @@ bond_ethdev_close(struct rte_eth_dev *dev)
 			skipped++;
 		}
 	}
-	bond_flow_ops.flush(dev, &ferror);
 	bond_ethdev_free_queues(dev);
 	rte_bitmap_reset(internals->vlan_filter_bmp);
 	rte_bitmap_free(internals->vlan_filter_bmp);
@@ -2183,8 +2197,6 @@ bond_ethdev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	uint16_t max_nb_rx_queues = UINT16_MAX;
 	uint16_t max_nb_tx_queues = UINT16_MAX;
-	uint16_t max_rx_desc_lim = UINT16_MAX;
-	uint16_t max_tx_desc_lim = UINT16_MAX;
 
 	dev_info->max_mac_addrs = BOND_MAX_MAC_ADDRS;
 
@@ -2218,12 +2230,6 @@ bond_ethdev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 			if (slave_info.max_tx_queues < max_nb_tx_queues)
 				max_nb_tx_queues = slave_info.max_tx_queues;
-
-			if (slave_info.rx_desc_lim.nb_max < max_rx_desc_lim)
-				max_rx_desc_lim = slave_info.rx_desc_lim.nb_max;
-
-			if (slave_info.tx_desc_lim.nb_max < max_tx_desc_lim)
-				max_tx_desc_lim = slave_info.tx_desc_lim.nb_max;
 		}
 	}
 
@@ -2235,8 +2241,10 @@ bond_ethdev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	memcpy(&dev_info->default_txconf, &internals->default_txconf,
 	       sizeof(dev_info->default_txconf));
 
-	dev_info->rx_desc_lim.nb_max = max_rx_desc_lim;
-	dev_info->tx_desc_lim.nb_max = max_tx_desc_lim;
+	memcpy(&dev_info->rx_desc_lim, &internals->rx_desc_lim,
+	       sizeof(dev_info->rx_desc_lim));
+	memcpy(&dev_info->tx_desc_lim, &internals->tx_desc_lim,
+	       sizeof(dev_info->tx_desc_lim));
 
 	/**
 	 * If dedicated hw queues enabled for link bonding device in LACP mode
@@ -2397,9 +2405,6 @@ bond_ethdev_slave_link_status_change_monitor(void *cb_arg)
 			 * event callback */
 			if (slave_ethdev->data->dev_link.link_status !=
 					internals->slaves[i].last_link_status) {
-				internals->slaves[i].last_link_status =
-						slave_ethdev->data->dev_link.link_status;
-
 				bond_ethdev_lsc_event_callback(internals->slaves[i].port_id,
 						RTE_ETH_EVENT_INTR_LSC,
 						&bonded_ethdev->data->port_id,
@@ -2898,7 +2903,7 @@ bond_ethdev_lsc_event_callback(uint16_t port_id, enum rte_eth_event_type type,
 
 	uint8_t lsc_flag = 0;
 	int valid_slave = 0;
-	uint16_t active_pos;
+	uint16_t active_pos, slave_idx;
 	uint16_t i;
 
 	if (type != RTE_ETH_EVENT_INTR_LSC || param == NULL)
@@ -2919,6 +2924,7 @@ bond_ethdev_lsc_event_callback(uint16_t port_id, enum rte_eth_event_type type,
 	for (i = 0; i < internals->slave_count; i++) {
 		if (internals->slaves[i].port_id == port_id) {
 			valid_slave = 1;
+			slave_idx = i;
 			break;
 		}
 	}
@@ -3007,6 +3013,7 @@ link_update:
 	 * slaves
 	 */
 	bond_ethdev_link_update(bonded_eth_dev, 0);
+	internals->slaves[slave_idx].last_link_status = link.link_status;
 
 	if (lsc_flag) {
 		/* Cancel any possible outstanding interrupts if delays are enabled */
@@ -3299,7 +3306,7 @@ static int
 bond_alloc(struct rte_vdev_device *dev, uint8_t mode)
 {
 	const char *name = rte_vdev_device_name(dev);
-	uint8_t socket_id = dev->device.numa_node;
+	int socket_id = dev->device.numa_node;
 	struct bond_dev_private *internals = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
 	uint32_t vlan_filter_bmp_size;
@@ -3369,6 +3376,15 @@ bond_alloc(struct rte_vdev_device *dev, uint8_t mode)
 
 	memset(&internals->rx_desc_lim, 0, sizeof(internals->rx_desc_lim));
 	memset(&internals->tx_desc_lim, 0, sizeof(internals->tx_desc_lim));
+
+	/*
+	 * Do not restrict descriptor counts until
+	 * the first back-end device gets attached.
+	 */
+	internals->rx_desc_lim.nb_max = UINT16_MAX;
+	internals->tx_desc_lim.nb_max = UINT16_MAX;
+	internals->rx_desc_lim.nb_align = 1;
+	internals->tx_desc_lim.nb_align = 1;
 
 	memset(internals->active_slaves, 0, sizeof(internals->active_slaves));
 	memset(internals->slaves, 0, sizeof(internals->slaves));
@@ -3490,7 +3506,7 @@ bond_probe(struct rte_vdev_device *dev)
 	port_id = bond_alloc(dev, bonding_mode);
 	if (port_id < 0) {
 		RTE_BOND_LOG(ERR, "Failed to create socket %s in mode %u on "
-				"socket %u.",	name, bonding_mode, socket_id);
+				"socket %d.",	name, bonding_mode, socket_id);
 		goto parse_error;
 	}
 	internals = rte_eth_devices[port_id].data->dev_private;
@@ -3515,7 +3531,7 @@ bond_probe(struct rte_vdev_device *dev)
 
 	rte_eth_dev_probing_finish(&rte_eth_devices[port_id]);
 	RTE_BOND_LOG(INFO, "Create bonded device %s on port %d in mode %u on "
-			"socket %u.",	name, port_id, bonding_mode, socket_id);
+			"socket %d.",	name, port_id, bonding_mode, socket_id);
 	return 0;
 
 parse_error:
@@ -3569,7 +3585,6 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 	const char *name = dev->device->name;
 	struct bond_dev_private *internals = dev->data->dev_private;
 	struct rte_kvargs *kvlist = internals->kvlist;
-	uint64_t offloads;
 	int arg_count;
 	uint16_t port_id = dev - rte_eth_devices;
 	uint8_t agg_mode;
@@ -3628,16 +3643,6 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 						(i * RTE_RETA_GROUP_SIZE + j) %
 						dev->data->nb_rx_queues;
 		}
-	}
-
-	offloads = dev->data->dev_conf.txmode.offloads;
-	if ((offloads & DEV_TX_OFFLOAD_MBUF_FAST_FREE) &&
-			(internals->mode == BONDING_MODE_8023AD ||
-			internals->mode == BONDING_MODE_BROADCAST)) {
-		RTE_BOND_LOG(WARNING,
-			"bond mode broadcast & 8023AD don't support MBUF_FAST_FREE offload, force disable it.");
-		offloads &= ~DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-		dev->data->dev_conf.txmode.offloads = offloads;
 	}
 
 	/* set the max_rx_pktlen */

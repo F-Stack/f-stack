@@ -95,6 +95,8 @@ static int nfp_net_rss_hash_write(struct rte_eth_dev *dev,
 static int nfp_set_mac_addr(struct rte_eth_dev *dev,
 			     struct rte_ether_addr *mac_addr);
 
+#define DEFAULT_FLBUF_SIZE        9216
+
 /* The offset of the queue controller queues in the PCIe Target */
 #define NFP_PCIE_QUEUE(_q) (0x80000 + (NFP_QCP_QUEUE_ADDR_SZ * ((_q) & 0xff)))
 
@@ -2041,8 +2043,9 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf *new_mb;
 	uint16_t nb_hold;
 	uint64_t dma_addr;
-	int avail;
+	uint16_t avail;
 
+	avail = 0;
 	rxq = rx_queue;
 	if (unlikely(rxq == NULL)) {
 		/*
@@ -2050,11 +2053,10 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 * enabled. But the queue needs to be configured
 		 */
 		RTE_LOG_DP(ERR, PMD, "RX Bad queue\n");
-		return -EINVAL;
+		return avail;
 	}
 
 	hw = rxq->hw;
-	avail = 0;
 	nb_hold = 0;
 
 	while (avail < nb_pkts) {
@@ -2087,8 +2089,6 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			break;
 		}
 
-		nb_hold++;
-
 		/*
 		 * Grab the mbuf and refill the descriptor with the
 		 * previously allocated mbuf
@@ -2120,7 +2120,8 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 				hw->rx_offset,
 				rxq->mbuf_size - hw->rx_offset,
 				mb->data_len);
-			return -EINVAL;
+			rte_pktmbuf_free(mb);
+			break;
 		}
 
 		/* Filling the received mbuf with packet info */
@@ -2158,6 +2159,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxds->fld.dd = 0;
 		rxds->fld.dma_addr_hi = (dma_addr >> 32) & 0xff;
 		rxds->fld.dma_addr_lo = dma_addr & 0xffffffff;
+		nb_hold++;
 
 		rxq->rd_p++;
 		if (unlikely(rxq->rd_p == rxq->rx_count)) /* wrapping?*/
@@ -2236,10 +2238,14 @@ nfp_net_tx_free_bufs(struct nfp_net_txq *txq)
 static inline
 uint32_t nfp_free_tx_desc(struct nfp_net_txq *txq)
 {
+	uint32_t free_desc;
+
 	if (txq->wr_p >= txq->rd_p)
-		return txq->tx_count - (txq->wr_p - txq->rd_p) - 8;
+		free_desc = txq->tx_count - (txq->wr_p - txq->rd_p);
 	else
-		return txq->rd_p - txq->wr_p - 8;
+		free_desc = txq->rd_p - txq->wr_p;
+
+	return (free_desc > 8) ? (free_desc - 8) : 0;
 }
 
 /*
@@ -2652,7 +2658,7 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 	cfg_rss_ctrl = nn_cfg_readl(hw, NFP_NET_CFG_RSS_CTRL);
 
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV4)
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP;
+		rss_hf |= ETH_RSS_IPV4;
 
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV4_TCP)
 		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
@@ -2667,7 +2673,7 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 		rss_hf |= ETH_RSS_NONFRAG_IPV6_UDP;
 
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV6)
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_NONFRAG_IPV6_UDP;
+		rss_hf |= ETH_RSS_IPV6;
 
 	/* Propagate current RSS hash functions to caller */
 	rss_conf->rss_hf = rss_hf;
@@ -2795,6 +2801,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 
 	uint64_t tx_bar_off = 0, rx_bar_off = 0;
 	uint32_t start_q;
+	uint32_t cpp_id;
 	int stride = 4;
 	int port = 0;
 	int err;
@@ -2906,7 +2913,8 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 
 	if (hw->is_pf && port == 0) {
 		/* configure access to tx/rx vNIC BARs */
-		hwport0->hw_queues = nfp_cpp_map_area(hw->cpp, 0, 0,
+		cpp_id = NFP_CPP_ISLAND_ID(0, NFP_CPP_ACTION_RW, 0, 0);
+		hwport0->hw_queues = nfp_cpp_map_area(hw->cpp, cpp_id,
 						      NFP_PCIE_QUEUE(0),
 						      NFP_QCP_QUEUE_AREA_SZ,
 						      &hw->hwqueues_area);
@@ -2942,6 +2950,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
 	hw->mtu = RTE_ETHER_MTU;
+	hw->flbufsz = DEFAULT_FLBUF_SIZE;
 
 	/* VLAN insertion is incompatible with LSOv2 */
 	if (hw->cap & NFP_NET_CFG_CTRL_LSO2)
@@ -3538,7 +3547,7 @@ nfp_fw_upload(struct rte_pci_device *dev, struct nfp_nsp *nsp, char *card)
 
 	/* Then try the PCI name */
 	snprintf(fw_name, sizeof(fw_name), "%s/pci-%s.nffw", DEFAULT_FW_PATH,
-			dev->device.name);
+			dev->name);
 
 	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
 	fw_f = open(fw_name, O_RDONLY);

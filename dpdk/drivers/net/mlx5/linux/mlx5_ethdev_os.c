@@ -23,7 +23,6 @@
 #include <stdalign.h>
 #include <sys/un.h>
 #include <time.h>
-#include <dlfcn.h>
 
 #include <rte_ethdev_driver.h>
 #include <rte_bus_pci.h>
@@ -716,6 +715,7 @@ mlx5_dev_interrupt_device_fatal(struct mlx5_dev_ctx_shared *sh)
 
 	for (i = 0; i < sh->max_port; ++i) {
 		struct rte_eth_dev *dev;
+		struct mlx5_priv *priv;
 
 		if (sh->port[i].ih_port_id >= RTE_MAX_ETHPORTS) {
 			/*
@@ -726,9 +726,14 @@ mlx5_dev_interrupt_device_fatal(struct mlx5_dev_ctx_shared *sh)
 		}
 		dev = &rte_eth_devices[sh->port[i].ih_port_id];
 		MLX5_ASSERT(dev);
-		if (dev->data->dev_conf.intr_conf.rmv)
+		priv = dev->data->dev_private;
+		MLX5_ASSERT(priv);
+		if (!priv->rmv_notified && dev->data->dev_conf.intr_conf.rmv) {
+			/* Notify driver about removal only once. */
+			priv->rmv_notified = 1;
 			rte_eth_dev_callback_process
 				(dev, RTE_ETH_EVENT_INTR_RMV, NULL);
+		}
 	}
 }
 
@@ -801,21 +806,29 @@ mlx5_dev_interrupt_handler(void *cb_arg)
 		struct rte_eth_dev *dev;
 		uint32_t tmp;
 
-		if (mlx5_glue->get_async_event(sh->ctx, &event))
+		if (mlx5_glue->get_async_event(sh->ctx, &event)) {
+			if (errno == EIO) {
+				DRV_LOG(DEBUG,
+					"IBV async event queue closed on: %s",
+					sh->ibdev_name);
+				mlx5_dev_interrupt_device_fatal(sh);
+			}
 			break;
-		/* Retrieve and check IB port index. */
-		tmp = (uint32_t)event.element.port_num;
-		if (!tmp && event.event_type == IBV_EVENT_DEVICE_FATAL) {
+		}
+		if (event.event_type == IBV_EVENT_DEVICE_FATAL) {
 			/*
-			 * The DEVICE_FATAL event is called once for
-			 * entire device without port specifying.
-			 * We should notify all existing ports.
+			 * The DEVICE_FATAL event can be called by kernel
+			 * twice - from mlx5 and uverbs layers, and port
+			 * index is not applicable. We should notify all
+			 * existing ports.
 			 */
-			mlx5_glue->ack_async_event(&event);
 			mlx5_dev_interrupt_device_fatal(sh);
+			mlx5_glue->ack_async_event(&event);
 			continue;
 		}
-		MLX5_ASSERT(tmp && (tmp <= sh->max_port));
+		/* Retrieve and check IB port index. */
+		tmp = (uint32_t)event.element.port_num;
+		MLX5_ASSERT(tmp <= sh->max_port);
 		if (!tmp) {
 			/* Unsupported device level event. */
 			mlx5_glue->ack_async_event(&event);
@@ -1071,12 +1084,12 @@ mlx5_sysfs_check_switch_info(bool device_dir,
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int (*real_if_indextoname)(unsigned int, char *);
 int
 mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 {
 	char ifname[IF_NAMESIZE];
-	char port_name[IF_NAMESIZE];
+	char *port_name = NULL;
+	size_t port_name_size = 0;
 	FILE *file;
 	struct mlx5_switch_info data = {
 		.master = 0,
@@ -1089,17 +1102,9 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	bool port_switch_id_set = false;
 	bool device_dir = false;
 	char c;
+	ssize_t line_size;
 
-	// for ff tools
-	if (!real_if_indextoname) {
-		real_if_indextoname = dlsym(RTLD_NEXT, "if_indextoname");
-		if (!real_if_indextoname) {
-			rte_errno = errno;
-			return -rte_errno;
-		}
-	}
-
-	if (!real_if_indextoname(ifindex, ifname)) {
+	if (!if_indextoname(ifindex, ifname)) {
 		rte_errno = errno;
 		return -rte_errno;
 	}
@@ -1113,8 +1118,21 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 
 	file = fopen(phys_port_name, "rb");
 	if (file != NULL) {
-		if (fgets(port_name, IF_NAMESIZE, file) != NULL)
+		char *tail_nl;
+
+		line_size = getline(&port_name, &port_name_size, file);
+		if (line_size < 0) {
+			fclose(file);
+			rte_errno = errno;
+			return -rte_errno;
+		} else if (line_size > 0) {
+			/* Remove tailing newline character. */
+			tail_nl = strchr(port_name, '\n');
+			if (tail_nl)
+				*tail_nl = '\0';
 			mlx5_translate_port_name(port_name, &data);
+		}
+		free(port_name);
 		fclose(file);
 	}
 	file = fopen(phys_switch_id, "rb");

@@ -37,7 +37,7 @@ foreach libname:libnames
 endforeach
 if static_ibverbs or dlopen_ibverbs
 	# Build without adding shared libs to Requires.private
-	ibv_cflags = run_command(pkgconf, '--cflags', 'libibverbs', check: true).stdout()
+	ibv_cflags = run_command(pkgconf, '--cflags', 'libibverbs').stdout()
 	ext_deps += declare_dependency(compile_args: ibv_cflags.split())
 endif
 if static_ibverbs
@@ -190,6 +190,8 @@ has_sym_args = [
         'mlx5dv_dr_action_create_aso' ],
         [ 'HAVE_MLX5_IBV_REG_MR_IOVA', 'infiniband/verbs.h',
             'ibv_reg_mr_iova' ],
+        [ 'HAVE_IBV_FORK_UNNEEDED', 'infiniband/verbs.h',
+            'ibv_is_fork_initialized'],
 ]
 config = configuration_data()
 foreach arg:has_sym_args

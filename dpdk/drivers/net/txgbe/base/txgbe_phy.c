@@ -1347,7 +1347,9 @@ txgbe_set_sgmii_an37_ability(struct txgbe_hw *hw)
 	wr32_epcs(hw, SR_MII_MMD_AN_CTL, 0x0105);
 	wr32_epcs(hw, SR_MII_MMD_DIGI_CTL, 0x0200);
 	value = rd32_epcs(hw, SR_MII_MMD_CTL);
-	value = (value & ~0x1200) | (0x1 << 12) | (0x1 << 9);
+	value = (value & ~0x1200) | (0x1 << 9);
+	if (hw->autoneg)
+		value |= SR_MII_MMD_CTL_AN_EN;
 	wr32_epcs(hw, SR_MII_MMD_CTL, value);
 	return 0;
 }
@@ -1454,8 +1456,9 @@ txgbe_set_link_to_kx4(struct txgbe_hw *hw, bool autoneg)
 		goto out;
 	}
 
-	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE,
-			~TXGBE_MACTXCFG_TXE);
+	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE, ~TXGBE_MACTXCFG_TXE);
+	wr32m(hw, TXGBE_MACRXCFG, TXGBE_MACRXCFG_ENA, ~TXGBE_MACRXCFG_ENA);
+	hw->mac.disable_sec_tx_path(hw);
 
 	/* 2. Disable xpcs AN-73 */
 	if (!autoneg)
@@ -1491,9 +1494,10 @@ txgbe_set_link_to_kx4(struct txgbe_hw *hw, bool autoneg)
 	wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0x4F00);
 
 	value = (0x1804 & ~0x3F3F);
+	value |= 40 << 8;
 	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
 
-	value = (0x50 & ~0x7F) | 40 | (1 << 6);
+	value = (0x50 & ~0x7F) | (1 << 6);
 	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
 
 	for (i = 0; i < 4; i++) {
@@ -1653,8 +1657,9 @@ txgbe_set_link_to_kx(struct txgbe_hw *hw,
 		goto out;
 	}
 
-	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE,
-				~TXGBE_MACTXCFG_TXE);
+	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE, ~TXGBE_MACTXCFG_TXE);
+	wr32m(hw, TXGBE_MACRXCFG, TXGBE_MACRXCFG_ENA, ~TXGBE_MACRXCFG_ENA);
+	hw->mac.disable_sec_tx_path(hw);
 
 	/* 2. Disable xpcs AN-73 */
 	if (!autoneg)
@@ -1701,10 +1706,10 @@ txgbe_set_link_to_kx(struct txgbe_hw *hw,
 
 	wr32_epcs(hw, TXGBE_PHY_MISC_CTL0, 0x4F00);
 
-	value = (0x1804 & ~0x3F3F) | (24 << 8) | 4;
+	value = (0x1804 & ~0x3F3F) | (24 << 8);
 	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL0, value);
 
-	value = (0x50 & ~0x7F) | 16 | (1 << 6);
+	value = (0x50 & ~0x7F) | (1 << 6);
 	wr32_epcs(hw, TXGBE_PHY_TX_EQ_CTL1, value);
 
 	for (i = 0; i < 4; i++) {
@@ -1848,8 +1853,9 @@ txgbe_set_link_to_sfi(struct txgbe_hw *hw,
 		goto out;
 	}
 
-	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE,
-			~TXGBE_MACTXCFG_TXE);
+	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_TXE, ~TXGBE_MACTXCFG_TXE);
+	wr32m(hw, TXGBE_MACRXCFG, TXGBE_MACRXCFG_ENA, ~TXGBE_MACRXCFG_ENA);
+	hw->mac.disable_sec_tx_path(hw);
 
 	/* 2. Disable xpcs AN-73 */
 	wr32_epcs(hw, SR_AN_CTRL, 0x0);
@@ -2188,6 +2194,8 @@ void txgbe_autoc_write(struct txgbe_hw *hw, u64 autoc)
 		txgbe_set_link_to_sfi(hw, speed);
 	}
 
+	hw->mac.enable_sec_tx_path(hw);
+
 	if (speed == TXGBE_LINK_SPEED_10GB_FULL)
 		mactxcfg = TXGBE_MACTXCFG_SPEED_10G;
 	else if (speed == TXGBE_LINK_SPEED_1GB_FULL)
@@ -2195,5 +2203,6 @@ void txgbe_autoc_write(struct txgbe_hw *hw, u64 autoc)
 
 	/* enable mac transmitter */
 	wr32m(hw, TXGBE_MACTXCFG, TXGBE_MACTXCFG_SPEED_MASK, mactxcfg);
+	wr32m(hw, TXGBE_MACRXCFG, TXGBE_MACRXCFG_ENA, TXGBE_MACRXCFG_ENA);
 }
 

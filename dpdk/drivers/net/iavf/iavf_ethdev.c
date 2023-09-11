@@ -750,10 +750,11 @@ iavf_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (adapter->stopped == 1)
+	if (vf->vf_reset)
 		return 0;
 
-	iavf_stop_queues(dev);
+	if (adapter->stopped == 1)
+		return 0;
 
 	/* Disable the interrupt for Rx */
 	rte_intr_efd_disable(intr_handle);
@@ -769,6 +770,8 @@ iavf_dev_stop(struct rte_eth_dev *dev)
 	/* remove all multicast addresses */
 	iavf_add_del_mc_addr_list(adapter, vf->mc_addrs, vf->mc_addrs_num,
 				  false);
+
+	iavf_stop_queues(dev);
 
 	adapter->stopped = 1;
 	dev->data->dev_started = 0;
@@ -2008,6 +2011,9 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 	adapter->dev_data = eth_dev->data;
 	adapter->stopped = 1;
 
+	if (iavf_dev_event_handler_init())
+		return 0;
+
 	if (iavf_init_vf(eth_dev) != 0) {
 		PMD_INIT_LOG(ERR, "Init vf failed");
 		return -1;
@@ -2033,6 +2039,7 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 		rte_eth_random_addr(hw->mac.addr);
 	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.addr,
 			&eth_dev->data->mac_addrs[0]);
+
 
 	/* register callback func to eal lib */
 	rte_intr_callback_register(&pci_dev->intr_handle,
@@ -2069,6 +2076,18 @@ iavf_dev_close(struct rte_eth_dev *dev)
 		return 0;
 
 	ret = iavf_dev_stop(dev);
+
+	/*
+	 * Release redundant queue resource when close the dev
+	 * so that other vfs can re-use the queues.
+	 */
+	if (vf->lv_enabled) {
+		ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
+		if (ret)
+			PMD_DRV_LOG(ERR, "Reset the num of queues failed");
+
+		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
+	}
 
 	iavf_flow_flush(dev, NULL);
 	iavf_flow_uninit(adapter);
@@ -2120,6 +2139,8 @@ iavf_dev_uninit(struct rte_eth_dev *dev)
 		return -EPERM;
 
 	iavf_dev_close(dev);
+
+	iavf_dev_event_handler_fini();
 
 	return 0;
 }

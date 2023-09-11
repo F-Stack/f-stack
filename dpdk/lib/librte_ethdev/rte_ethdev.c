@@ -4032,6 +4032,12 @@ rte_eth_fec_set(uint16_t port_id, uint32_t fec_capa)
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	dev = &rte_eth_devices[port_id];
+
+	if (fec_capa == 0) {
+		RTE_ETHDEV_LOG(ERR, "At least one FEC mode should be specified\n");
+		return -EINVAL;
+	}
+
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->fec_set, -ENOTSUP);
 	return eth_err(port_id, (*dev->dev_ops->fec_set)(dev, fec_capa));
 }
@@ -4150,6 +4156,7 @@ int
 rte_eth_dev_default_mac_addr_set(uint16_t port_id, struct rte_ether_addr *addr)
 {
 	struct rte_eth_dev *dev;
+	int index;
 	int ret;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
@@ -4159,6 +4166,15 @@ rte_eth_dev_default_mac_addr_set(uint16_t port_id, struct rte_ether_addr *addr)
 
 	dev = &rte_eth_devices[port_id];
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->mac_addr_set, -ENOTSUP);
+
+	/* Keep address unique in dev->data->mac_addrs[]. */
+	index = eth_dev_get_mac_addr_index(port_id, addr);
+	if (index > 0) {
+		RTE_ETHDEV_LOG(ERR,
+			"New default address for port %u was already in the address list. Please remove it first.\n",
+			port_id);
+		return -EEXIST;
+	}
 
 	ret = (*dev->dev_ops->mac_addr_set)(dev, addr);
 	if (ret < 0)

@@ -23,7 +23,7 @@ is_ms_linker = is_windows and (cc.get_id() == 'clang')
 pver = meson.project_version().split('.')
 major_version = '@0@.@1@'.format(pver.get(0), pver.get(1))
 abi_version = run_command(find_program('cat', 'more'),
-	abi_version_file, check: true).stdout().strip()
+	abi_version_file).stdout().strip()
 
 # Libraries have the abi_version as the filename extension
 # and have the soname be all but the final part of the abi_version.
@@ -107,7 +107,7 @@ endif
 
 toolchain = cc.get_id()
 dpdk_conf.set_quoted('RTE_TOOLCHAIN', toolchain)
-dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
+dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper().underscorify(), 1)
 
 dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
 dpdk_conf.set('RTE_ARCH_32', cc.sizeof('void *') == 4)
@@ -152,7 +152,7 @@ if numa_dep.found() and cc.has_header('numaif.h')
 endif
 
 has_libfdt = 0
-fdt_dep = cc.find_library('libfdt', required: false)
+fdt_dep = cc.find_library('fdt', required: false)
 if fdt_dep.found() and cc.has_header('fdt.h')
 	dpdk_conf.set10('RTE_HAS_LIBFDT', true)
 	has_libfdt = 1
@@ -160,7 +160,7 @@ if fdt_dep.found() and cc.has_header('fdt.h')
 	dpdk_extra_ldflags += '-lfdt'
 endif
 
-libexecinfo = cc.find_library('libexecinfo', required: false)
+libexecinfo = cc.find_library('execinfo', required: false)
 if libexecinfo.found() and cc.has_header('execinfo.h')
 	add_project_link_arguments('-lexecinfo', language: 'c')
 	dpdk_extra_ldflags += '-lexecinfo'

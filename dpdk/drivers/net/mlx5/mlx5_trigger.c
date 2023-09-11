@@ -871,11 +871,11 @@ mlx5_hairpin_unbind_single_port(struct rte_eth_dev *dev, uint16_t rx_port)
 		}
 		/* Indeed, only the first used queue needs to be checked. */
 		if (txq_ctrl->hairpin_conf.manual_bind == 0) {
+			mlx5_txq_release(dev, i);
 			if (cur_port != rx_port) {
 				rte_errno = EINVAL;
 				DRV_LOG(ERR, "port %u and port %u are in"
 					" auto-bind mode", cur_port, rx_port);
-				mlx5_txq_release(dev, i);
 				return -rte_errno;
 			} else {
 				return 0;
@@ -1070,6 +1070,22 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 	else
 		rte_net_mlx5_dynf_inline_mask = 0;
 	if (dev->data->nb_rx_queues > 0) {
+		uint32_t max_lro_msg_size = priv->max_lro_msg_size;
+
+		if (max_lro_msg_size < MLX5_LRO_SEG_CHUNK_SIZE) {
+			uint32_t i;
+			struct mlx5_rxq_ctrl *rxq_ctrl;
+
+			for (i = 0; i != priv->rxqs_n; ++i) {
+				rxq_ctrl = mlx5_rxq_get(dev, i);
+				if (rxq_ctrl && rxq_ctrl->rxq.lro) {
+					DRV_LOG(ERR, "port %u invalid max LRO size",
+						dev->data->port_id);
+					rte_errno = EINVAL;
+					return -rte_errno;
+				}
+			}
+		}
 		ret = mlx5_dev_configure_rss_reta(dev);
 		if (ret) {
 			DRV_LOG(ERR, "port %u reta config failed: %s",
