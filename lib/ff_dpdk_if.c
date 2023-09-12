@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -78,6 +78,7 @@ static int numa_on;
 
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
+static uint64_t usr_cb_tsc;
 
 static struct rte_timer freebsd_clock;
 
@@ -357,7 +358,7 @@ init_mem_pool(void)
         } else {
             printf("create mbuf pool on socket %d\n", socketid);
         }
-        
+
 #ifdef FF_USE_PAGE_ARRAY
         nb_mbuf = RTE_ALIGN_CEIL (
             nb_ports*nb_lcores*MAX_PKT_BURST    +
@@ -704,6 +705,9 @@ init_port_start(void)
                     port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
                     pconf->hw_features.tx_tso = 1;
                 }
+                else {
+                    printf("TSO is not supported\n");
+                }
             } else {
                 printf("TSO is disabled\n");
             }
@@ -736,7 +740,7 @@ init_port_start(void)
             uint16_t q;
             for (q = 0; q < nb_queues; q++) {
                 if (numa_on) {
-                    uint16_t lcore_id = lcore_conf.port_cfgs[port_id].lcore_list[q];
+                    uint16_t lcore_id = lcore_conf.port_cfgs[u_port_id].lcore_list[q];
                     socketid = rte_lcore_to_socket_id(lcore_id);
                 }
                 mbuf_pool = pktmbuf_pool[socketid];
@@ -792,8 +796,8 @@ init_port_start(void)
             if (ret < 0) {
                 return ret;
             }
-    //RSS reta update will failed when enable flow isolate
-    #ifndef FF_FLOW_ISOLATE
+//RSS reta update will failed when enable flow isolate
+#ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
                 /* set HW rss hash function to Toeplitz. */
                 if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
@@ -810,7 +814,7 @@ init_port_start(void)
 
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
-    #endif
+#endif
 
             /* Enable RX in promiscuous mode for the Ethernet device. */
             if (ff_global_cfg.dpdk.promiscuous) {
@@ -848,7 +852,7 @@ init_clock(void)
     return 0;
 }
 
-#ifdef FF_FLOW_ISOLATE
+#if defined(FF_FLOW_ISOLATE) || defined(FF_FDIR)
 /** Print a message out of a flow error. */
 static int
 port_flow_complain(struct rte_flow_error *error)
@@ -875,7 +879,7 @@ port_flow_complain(struct rte_flow_error *error)
     const char *errstr;
     char buf[32];
     int err = rte_errno;
-    
+
     if ((unsigned int)error->type >= RTE_DIM(errstrlist) ||
         !errstrlist[error->type])
         errstr = "unknown type";
@@ -889,12 +893,15 @@ port_flow_complain(struct rte_flow_error *error)
            rte_strerror(err));
     return -err;
 }
+#endif
 
+
+#ifdef FF_FLOW_ISOLATE
 static int
 port_flow_isolate(uint16_t port_id, int set)
 {
     struct rte_flow_error error;
-    
+
     /* Poisoning to make sure PMDs update it in case of error. */
     memset(&error, 0x66, sizeof(error));
     if (rte_flow_isolate(port_id, set, &error))
@@ -1055,6 +1062,110 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
 
 #endif
 
+#ifdef FF_FDIR
+/*
+ * Flow director allows the traffic to specific port to be processed on the
+ * specific queue. Unlike FF_FLOW_ISOLATE, the FF_FDIR implementation uses
+ * general flow rule so that most FDIR supported NIC will support. The best
+ * using case of FDIR is (but not limited to), using multiple processes to
+ * listen on different ports.
+ *
+ * This function can be called either in FSTACK or in end-application.
+ *
+ * Example:
+ *  Given 2 fstack instances A and B. Instance A listens on port 80, and
+ *  instance B listens on port 81. We want to process the traffic to port 80
+ *  on rx queue 0, and the traffic to port 81 on rx queue 1.
+ *  // port 80 rx queue 0
+ *  ret = fdir_add_tcp_flow(port_id, 0, FF_FLOW_INGRESS, 0, 80);
+ *  // port 81 rx queue 1
+ *  ret = fdir_add_tcp_flow(port_id, 1, FF_FLOW_INGRESS, 0, 81);
+ */
+#define FF_FLOW_EGRESS		1
+#define FF_FLOW_INGRESS		2
+/**
+ * Create a flow rule that moves packets with matching src and dest tcp port
+ * to the target queue.
+ *
+ * This function uses general flow rules and doesn't rely on the flow_isolation
+ * that not all the FDIR capable NIC support.
+ *
+ * @param port_id
+ *   The selected port.
+ * @param queue
+ *   The target queue.
+ * @param dir
+ *   The direction of the traffic.
+ *   1 for egress, 2 for ingress and sum(1+2) for both.
+ * @param tcp_sport
+ *   The src tcp port to match.
+ * @param tcp_dport
+ *   The dest tcp port to match.
+ *
+ */
+static int
+fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir,
+        uint16_t tcp_sport, uint16_t tcp_dport)
+{
+    struct rte_flow_attr attr;
+    struct rte_flow_item flow_pattern[4];
+    struct rte_flow_action flow_action[2];
+    struct rte_flow *flow = NULL;
+    struct rte_flow_action_queue flow_action_queue = { .index = queue };
+    struct rte_flow_item_tcp tcp_spec;
+    struct rte_flow_item_tcp tcp_mask;
+    struct rte_flow_error rfe;
+    int res;
+
+    memset(flow_pattern, 0, sizeof(flow_pattern));
+    memset(flow_action, 0, sizeof(flow_action));
+
+    /*
+     * set the rule attribute.
+     */
+    memset(&attr, 0, sizeof(struct rte_flow_attr));
+    attr.ingress = ((dir & FF_FLOW_INGRESS) > 0);
+    attr.egress = ((dir & FF_FLOW_EGRESS) > 0);
+
+    /*
+     * create the action sequence.
+     * one action only, move packet to queue
+     */
+    flow_action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    flow_action[0].conf = &flow_action_queue;
+    flow_action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+    flow_pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    flow_pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+
+    /*
+     * set the third level of the pattern (TCP).
+     */
+    memset(&tcp_spec, 0, sizeof(struct rte_flow_item_tcp));
+    memset(&tcp_mask, 0, sizeof(struct rte_flow_item_tcp));
+    tcp_spec.hdr.src_port = htons(tcp_sport);
+    tcp_mask.hdr.src_port = (tcp_sport == 0 ? 0: 0xffff);
+    tcp_spec.hdr.dst_port = htons(tcp_dport);
+    tcp_mask.hdr.dst_port = (tcp_dport == 0 ? 0: 0xffff);
+    flow_pattern[2].type = RTE_FLOW_ITEM_TYPE_TCP;
+    flow_pattern[2].spec = &tcp_spec;
+    flow_pattern[2].mask = &tcp_mask;
+
+    flow_pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+
+    res = rte_flow_validate(port_id, &attr, flow_pattern, flow_action, &rfe);
+    if (res)
+        return (1);
+
+    flow = rte_flow_create(port_id, &attr, flow_pattern, flow_action, &rfe);
+    if (!flow)
+        return port_flow_complain(&rfe);
+
+    return (0);
+}
+
+#endif
+
 int
 ff_dpdk_init(int argc, char **argv)
 {
@@ -1097,8 +1208,8 @@ ff_dpdk_init(int argc, char **argv)
 #ifdef FF_USE_PAGE_ARRAY
     ff_mmap_init();
 #endif
-    
-#ifdef FF_FLOW_ISOLATE 
+
+#ifdef FF_FLOW_ISOLATE
     // run once in primary process
     if (0 == lcore_conf.tx_queue_id[0]){
         ret = port_flow_isolate(0, 1);
@@ -1106,7 +1217,7 @@ ff_dpdk_init(int argc, char **argv)
             rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
     }
 #endif
-    
+
     ret = init_port_start();
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_start failed\n");
@@ -1114,8 +1225,8 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    //Only give a example usage: port_id=0, tcp_port= 80. 
-    //Recommend: 
+    //Only give a example usage: port_id=0, tcp_port= 80.
+    //Recommend:
     //1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
     //2. using config options `tcp_port` replace magic number of 80
     ret = init_flow(0, 80);
@@ -1123,6 +1234,16 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
     }
 #endif
+
+#ifdef FF_FDIR
+    /*
+     * Refer function header section for usage.
+     */
+    ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
+    if (ret)
+    rte_exit(EXIT_FAILURE, "fdir_add_tcp_flow failed\n");
+#endif
+
     return 0;
 }
 
@@ -1192,7 +1313,8 @@ protocol_filter(const void *data, uint16_t len)
     if(ether_type == RTE_ETHER_TYPE_ARP)
         return FILTER_ARP;
 
-#ifdef INET6
+#if (!defined(__FreeBSD__) && defined(INET6) ) || \
+        ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
     if (ether_type == RTE_ETHER_TYPE_IPV6) {
         return ff_kni_proto_filter(data,
             len, ether_type);
@@ -1313,12 +1435,14 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
         if (!pkts_from_ring) {
-            ff_traffic.rx_packets++;
-            ff_traffic.rx_bytes += len;
+            ff_traffic.rx_packets += rtem->nb_segs;
+            ff_traffic.rx_bytes += rte_pktmbuf_pkt_len(rtem);
         }
 
         if (!pkts_from_ring && packet_dispatcher) {
+            uint64_t cur_tsc = rte_rdtsc();
             int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
+            usr_cb_tsc += rte_rdtsc() - cur_tsc;
             if (ret == FF_DISPATCH_RESPONSE) {
                 rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
                 /*
@@ -1423,7 +1547,7 @@ process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
         process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
     }
 
-    return 0;
+    return nb_rb;
 }
 
 static inline void
@@ -1521,7 +1645,7 @@ handle_ipfw_msg(struct ff_msg *msg)
         case FF_IPFW_SET:
             ret = ff_setsockopt_freebsd(fd, msg->ipfw.level,
                 msg->ipfw.optname, msg->ipfw.optval,
-                *(msg->ipfw.optlen)); 
+                *(msg->ipfw.optlen));
             break;
         default:
             ret = -1;
@@ -1660,11 +1784,11 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     if (unlikely(ff_global_cfg.pcap.enable)) {
         uint16_t i;
         for (i = 0; i < n; i++) {
-            ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i], 
+            ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i],
                ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len);
         }
     }
-    
+
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
     ff_traffic.tx_packets += ret;
     uint16_t i;
@@ -1674,7 +1798,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
         if (qconf->tx_mbufs[port].bsd_m_table[i])
             ff_enq_tx_bsdmbuf(port, qconf->tx_mbufs[port].bsd_m_table[i], m_table[i]->nb_segs);
 #endif
-    }    
+    }
     if (unlikely(ret < n)) {
         do {
             rte_pktmbuf_free(m_table[ret]);
@@ -1716,7 +1840,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 #ifdef FF_USE_PAGE_ARRAY
     struct lcore_conf *qconf = &lcore_conf;
     int    len = 0;
-    
+
     len = ff_if_send_onepkt(ctx, m,total);
     if (unlikely(len == MAX_PKT_BURST)) {
         send_burst(qconf, MAX_PKT_BURST, ctx->port_id);
@@ -1868,6 +1992,7 @@ main_loop(void *arg)
         idle = 1;
         sys_tsc = 0;
         usr_tsc = 0;
+        usr_cb_tsc = 0;
 
         /*
          * TX burst queue drain
@@ -1904,7 +2029,7 @@ main_loop(void *arg)
             }
 #endif
 
-            process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
+            idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
@@ -1949,12 +2074,13 @@ main_loop(void *arg)
             end_tsc = idle_sleep_tsc;
         }
 
+        usr_tsc = usr_cb_tsc;
         if (usch_tsc == cur_tsc) {
-            usr_tsc = idle_sleep_tsc - div_tsc;
+            usr_tsc += idle_sleep_tsc - div_tsc;
         }
 
         if (!idle) {
-            sys_tsc = div_tsc - cur_tsc;
+            sys_tsc = div_tsc - cur_tsc - usr_cb_tsc;
             ff_top_status.sys_tsc += sys_tsc;
         }
 

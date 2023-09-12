@@ -1,6 +1,6 @@
-# 
+#
 # Copyright (c) 2013 Patrick Kelsey. All rights reserved.
-# Copyright (C) 2017 THL A29 Limited, a Tencent company.
+# Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
 # All rights reserved.
 #
 # Derived in part from libuinet's Makefile.
@@ -20,19 +20,31 @@ PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
 F-STACK_VERSION=1.21
+TGT_OS=$(shell uname)
+ifeq ($(TGT_OS),FreeBSD)
+CC=gcc
+endif
 
 HOST_OS:=$(shell uname -s)
 
 #DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
+# No DPDK KNI support on FreeBSD
+ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
+endif
+
 #FF_FLOW_ISOLATE=1
+#FF_FDIR=1
+
+# NETGRAPH drivers ipfw
 #FF_NETGRAPH=1
 #FF_IPFW=1
+
 #FF_USE_PAGE_ARRAY=1
 #FF_ZC_SEND=1
 FF_INET6=1
-
+#FF_IPSEC=1
 
 include ${TOPDIR}/mk/kern.pre.mk
 
@@ -45,7 +57,7 @@ endif
 endif
 
 ifdef RTE_SDK
-ifeq (${MACHINE_CPUARCH},aarch64) 
+ifeq (${MACHINE_CPUARCH},aarch64)
     FF_DPDK=${RTE_SDK}/build
 else
     FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
@@ -65,10 +77,15 @@ INCLUDES+= -I./opt
 
 # Include search path for files that only include host OS headers
 HOST_INCLUDES= -I.
+# Use libepoll shim on FreeBSD
+ifeq ($(TGT_OS),FreeBSD)
+HOST_INCLUDES+= -I/usr/local/include/libepoll-shim
+endif
+
 ifndef DEBUG
 HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb -Wno-format-truncation
 else
-HOST_CFLAGS = ${DEBUG} 
+HOST_CFLAGS = ${DEBUG}
 endif
 
 ifdef FF_KNI
@@ -77,6 +94,10 @@ endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}
 HOST_CFLAGS+= ${CONF_CFLAGS}
+
+ifdef FF_FDIR
+HOST_CFLAGS+= -DFF_FDIR
+endif
 
 ifdef FF_FLOW_ISOLATE
 HOST_CFLAGS+= -DFF_FLOW_ISOLATE
@@ -94,9 +115,27 @@ ifdef FF_USE_PAGE_ARRAY
 HOST_CFLAGS+= -DFF_USE_PAGE_ARRAY
 endif
 
+HOST_CFLAGS+= -DINET
+CFLAGS+= -DINET
+
 ifdef FF_INET6
 HOST_CFLAGS+= -DINET6
 CFLAGS+= -DINET6
+endif
+
+ifdef FF_IPSEC
+HOST_CFLAGS+= -DIPSEC
+CFLAGS+= -DIPSEC
+endif
+
+GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
+ifeq "$(GCCVERGE10)" "1"
+    CFLAGS+= -Wno-error=stringop-overflow
+endif
+
+GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
+ifeq "$(GCCVERGE11)" "1"
+    CFLAGS+= -Wno-error=stringop-overread
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -223,7 +262,7 @@ FF_HOST_SRCS+=              \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
-	ff_init.c	
+	ff_init.c
 
 ifdef FF_KNI
 FF_HOST_SRCS+=              \
@@ -331,7 +370,7 @@ LIBKERN_SRCS+=		 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
 	strnlen.c        \
-	zlib.c		 
+	zlib.c
 endif
 
 
@@ -495,11 +534,15 @@ NETINET6_SRCS+=		\
 	#ip6_ipsec.c
 	#sctp6_usrreq.c
 	#in6_rss.c
+
+ifneq ($(TGT_OS),FreeBSD)
 ifndef FF_KNI
 FF_HOST_SRCS+=         \
         ff_dpdk_kni.c
-endif
-endif
+endif		#FF_KNI
+endif		#FreeBSD OS Check
+
+endif		#INET6
 
 ifdef FF_IPFW
 NETIPFW_SRCS+=             \
@@ -600,7 +643,7 @@ all: libfstack.a
 libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} ${ASM_OBJS} ${OBJS}
 	${LD} -d -r -o $*.ro ${ASM_OBJS} ${OBJS}
 	nm $*.ro  | grep -v ' U ' | cut -d ' ' -f 3 > $*_localize_list.tmp
-	objcopy --localize-symbols=$*_localize_list.tmp $*.ro 
+	objcopy --localize-symbols=$*_localize_list.tmp $*.ro
 	rm $*_localize_list.tmp
 	objcopy --globalize-symbols=ff_api.symlist $*.ro
 	rm -f $@
