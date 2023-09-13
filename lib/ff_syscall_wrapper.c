@@ -559,8 +559,9 @@ freebsd2linux_cmsghdr(struct linux_msghdr *linux_msg, const struct msghdr *freeb
                         *linux_optval = *freebsd_optval;
                         break;
                     case IP_RECVTTL:
+                        linux_cmsg->cmsg_len = LINUX_CMSG_LEN(int);
                         linux_cmsg->cmsg_type = LINUX_IP_TTL;
-                        *linux_optval = *freebsd_optval;
+                        *(int *)linux_optval = *freebsd_optval;
                         break;
                     /*case XXXX:
                         break;*/
