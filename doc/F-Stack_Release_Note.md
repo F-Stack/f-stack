@@ -2,6 +2,20 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2023.09 F-Stack v1.22.1
+
+  1. F-Stack lib:
+
+  - Fix #702 F-stack rack and BBR both causes PCB memory leak.
+  - While use bbr, the hz should be set to 1000000, match the bintime and timer of F-Stack. Ref #701 #702
+  - Modify pci_whitelist to allow that from DPDK 20.11. Close #745.
+
+  2. DPDK:
+
+  - Upgrade to DPDK-20.11.9(LTS).
+
+
+
 2022.09 F-Stack v1.22
 
   1. Freebsd
