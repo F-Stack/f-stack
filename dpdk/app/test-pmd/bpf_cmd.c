@@ -2,7 +2,9 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
+#include <ctype.h>
 #include <stdio.h>
+
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_flow.h>
@@ -117,20 +119,20 @@ static void cmd_operate_bpf_ld_parsed(void *parsed_result,
 		fprintf(stderr, "invalid value: %s\n", res->dir);
 }
 
-cmdline_parse_token_string_t cmd_load_bpf_start =
+static cmdline_parse_token_string_t cmd_load_bpf_start =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_ld_result,
 			bpf, "bpf-load");
-cmdline_parse_token_string_t cmd_load_bpf_dir =
+static cmdline_parse_token_string_t cmd_load_bpf_dir =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_ld_result,
 			dir, "rx#tx");
-cmdline_parse_token_num_t cmd_load_bpf_port =
+static cmdline_parse_token_num_t cmd_load_bpf_port =
 	TOKEN_NUM_INITIALIZER(struct cmd_bpf_ld_result, port, RTE_UINT8);
-cmdline_parse_token_num_t cmd_load_bpf_queue =
+static cmdline_parse_token_num_t cmd_load_bpf_queue =
 	TOKEN_NUM_INITIALIZER(struct cmd_bpf_ld_result, queue, RTE_UINT16);
-cmdline_parse_token_string_t cmd_load_bpf_flags =
+static cmdline_parse_token_string_t cmd_load_bpf_flags =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_ld_result,
 			flags, NULL);
-cmdline_parse_token_string_t cmd_load_bpf_prm =
+static cmdline_parse_token_string_t cmd_load_bpf_prm =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_ld_result,
 			prm, NULL);
 
@@ -173,15 +175,15 @@ static void cmd_operate_bpf_unld_parsed(void *parsed_result,
 		fprintf(stderr, "invalid value: %s\n", res->dir);
 }
 
-cmdline_parse_token_string_t cmd_unload_bpf_start =
+static cmdline_parse_token_string_t cmd_unload_bpf_start =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_unld_result,
 			bpf, "bpf-unload");
-cmdline_parse_token_string_t cmd_unload_bpf_dir =
+static cmdline_parse_token_string_t cmd_unload_bpf_dir =
 	TOKEN_STRING_INITIALIZER(struct cmd_bpf_unld_result,
 			dir, "rx#tx");
-cmdline_parse_token_num_t cmd_unload_bpf_port =
+static cmdline_parse_token_num_t cmd_unload_bpf_port =
 	TOKEN_NUM_INITIALIZER(struct cmd_bpf_unld_result, port, RTE_UINT8);
-cmdline_parse_token_num_t cmd_unload_bpf_queue =
+static cmdline_parse_token_num_t cmd_unload_bpf_queue =
 	TOKEN_NUM_INITIALIZER(struct cmd_bpf_unld_result, queue, RTE_UINT16);
 
 cmdline_parse_inst_t cmd_operate_bpf_unld_parse = {

@@ -13,15 +13,22 @@
 static int ifpga_acc_get_uuid(struct opae_accelerator *acc,
 			      struct uuid *uuid)
 {
-	struct opae_bridge *br = acc->br;
-	struct ifpga_port_hw *port;
+	struct ifpga_afu_info *afu_info = acc->data;
+	struct opae_reg_region *region;
+	u64 val = 0;
 
-	if (!br || !br->data)
-		return -EINVAL;
+	if (!afu_info)
+		return -ENODEV;
 
-	port = br->data;
+	region = &afu_info->region[0];
+	if (uuid) {
+		val = readq(region->addr + sizeof(struct feature_header));
+		opae_memcpy(uuid->b, &val, sizeof(u64));
+		val = readq(region->addr + sizeof(struct feature_header) + 8);
+		opae_memcpy(uuid->b + 8, &val, sizeof(u64));
+	}
 
-	return fpga_get_afu_uuid(port, uuid);
+	return 0;
 }
 
 static int ifpga_acc_set_irq(struct opae_accelerator *acc,
@@ -31,6 +38,9 @@ static int ifpga_acc_set_irq(struct opae_accelerator *acc,
 	struct opae_bridge *br = acc->br;
 	struct ifpga_port_hw *port;
 	struct fpga_uafu_irq_set irq_set;
+
+	if (!afu_info)
+		return -ENODEV;
 
 	if (!br || !br->data)
 		return -EINVAL;
@@ -68,7 +78,7 @@ static int ifpga_acc_get_region_info(struct opae_accelerator *acc,
 	struct ifpga_afu_info *afu_info = acc->data;
 
 	if (!afu_info)
-		return -EINVAL;
+		return -ENODEV;
 
 	if (info->index >= afu_info->num_regions)
 		return -EINVAL;
@@ -89,7 +99,7 @@ static int ifpga_acc_read(struct opae_accelerator *acc, unsigned int region_idx,
 	struct opae_reg_region *region;
 
 	if (!afu_info)
-		return -EINVAL;
+		return -ENODEV;
 
 	if (offset + byte <= offset)
 		return -EINVAL;
@@ -129,7 +139,7 @@ static int ifpga_acc_write(struct opae_accelerator *acc,
 	struct opae_reg_region *region;
 
 	if (!afu_info)
-		return -EINVAL;
+		return -ENODEV;
 
 	if (offset + byte <= offset)
 		return -EINVAL;
@@ -258,6 +268,14 @@ static int ifpga_mgr_reload(struct opae_manager *mgr, int type, int page)
 	return fpga_reload(fme, type, page);
 }
 
+static int ifpga_mgr_read_flash(struct opae_manager *mgr, u32 address,
+		u32 size, void *buf)
+{
+	struct ifpga_fme_hw *fme = mgr->data;
+
+	return fme_mgr_read_flash(fme, address, size, buf);
+}
+
 struct opae_manager_ops ifpga_mgr_ops = {
 	.flash = ifpga_mgr_flash,
 	.get_eth_group_region_info = ifpga_mgr_get_eth_group_region_info,
@@ -267,6 +285,7 @@ struct opae_manager_ops ifpga_mgr_ops = {
 	.update_flash = ifpga_mgr_update_flash,
 	.stop_flash_update = ifpga_mgr_stop_flash_update,
 	.reload = ifpga_mgr_reload,
+	.read_flash = ifpga_mgr_read_flash
 };
 
 static int ifpga_mgr_read_mac_rom(struct opae_manager *mgr, int offset,

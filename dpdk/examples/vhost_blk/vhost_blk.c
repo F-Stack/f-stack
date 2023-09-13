@@ -9,6 +9,7 @@
 #include <sched.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <signal.h>
@@ -849,8 +850,7 @@ static void
 vhost_blk_ctrlr_destroy(struct vhost_blk_ctrlr *ctrlr)
 {
 	if (ctrlr->bdev != NULL) {
-		if (ctrlr->bdev->data != NULL)
-			rte_free(ctrlr->bdev->data);
+		rte_free(ctrlr->bdev->data);
 
 		rte_free(ctrlr->bdev);
 	}

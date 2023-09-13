@@ -25,21 +25,30 @@ sfc_vdpa_dma_alloc(struct sfc_vdpa_adapter *sva, const char *name,
 {
 	uint64_t mcdi_iova;
 	size_t mcdi_buff_size;
+	char mz_name[RTE_MEMZONE_NAMESIZE];
 	const struct rte_memzone *mz = NULL;
 	int numa_node = sva->pdev->device.numa_node;
 	int ret;
 
 	mcdi_buff_size = RTE_ALIGN_CEIL(len, PAGE_SIZE);
+	ret = snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "%s_%s",
+		       sva->pdev->name, name);
+	if (ret < 0 || ret >= RTE_MEMZONE_NAMESIZE) {
+		sfc_vdpa_err(sva, "%s_%s too long to fit in mz_name",
+			     sva->pdev->name, name);
+		return -EINVAL;
+	}
 
-	sfc_vdpa_log_init(sva, "name=%s, len=%zu", name, len);
+	sfc_vdpa_log_init(sva, "name=%s, len=%zu", mz_name, len);
 
-	mz = rte_memzone_reserve_aligned(name, mcdi_buff_size,
+	mz = rte_memzone_reserve_aligned(mz_name, mcdi_buff_size,
 					 numa_node,
 					 RTE_MEMZONE_IOVA_CONTIG,
 					 PAGE_SIZE);
 	if (mz == NULL) {
 		sfc_vdpa_err(sva, "cannot reserve memory for %s: len=%#x: %s",
-			     name, (unsigned int)len, rte_strerror(rte_errno));
+			     mz_name, (unsigned int)len,
+			     rte_strerror(rte_errno));
 		return -ENOMEM;
 	}
 
@@ -277,6 +286,8 @@ sfc_vdpa_estimate_resource_limits(struct sfc_vdpa_adapter *sva)
 	SFC_VDPA_ASSERT(max_queue_cnt > 0);
 
 	sva->max_queue_count = max_queue_cnt;
+	sfc_vdpa_log_init(sva, "NIC init done with %u pair(s) of queues",
+			  max_queue_cnt);
 
 	return 0;
 

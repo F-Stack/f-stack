@@ -3,6 +3,7 @@
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <signal.h>
@@ -90,7 +91,6 @@ static uint16_t pkt_burst = NTB_DFLT_PKT_BURST;
 static struct rte_eth_conf eth_port_conf = {
 	.rxmode = {
 		.mq_mode = RTE_ETH_MQ_RX_RSS,
-		.split_hdr_size = 0,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {

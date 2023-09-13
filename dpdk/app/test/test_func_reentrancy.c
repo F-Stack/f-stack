@@ -89,15 +89,13 @@ ring_clean(unsigned int lcore_id)
 	int i;
 
 	rp = rte_ring_lookup("fr_test_once");
-	if (rp != NULL)
-		rte_ring_free(rp);
+	rte_ring_free(rp);
 
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(ring_name, sizeof(ring_name),
 				"fr_test_%d_%d", lcore_id, i);
 		rp = rte_ring_lookup(ring_name);
-		if (rp != NULL)
-			rte_ring_free(rp);
+		rte_ring_free(rp);
 	}
 }
 
@@ -152,15 +150,13 @@ mempool_clean(unsigned int lcore_id)
 	int i;
 
 	mp = rte_mempool_lookup("fr_test_once");
-	if (mp != NULL)
-		rte_mempool_free(mp);
+	rte_mempool_free(mp);
 
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(mempool_name, sizeof(mempool_name), "fr_test_%d_%d",
 			 lcore_id, i);
 		mp = rte_mempool_lookup(mempool_name);
-		if (mp != NULL)
-			rte_mempool_free(mp);
+		rte_mempool_free(mp);
 	}
 }
 
@@ -215,8 +211,7 @@ hash_clean(unsigned lcore_id)
 	int i;
 
 	handle = rte_hash_find_existing("fr_test_once");
-	if (handle != NULL)
-		rte_hash_free(handle);
+	rte_hash_free(handle);
 
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(hash_name, sizeof(hash_name), "fr_test_%d_%d",  lcore_id, i);
@@ -283,8 +278,7 @@ fbk_clean(unsigned lcore_id)
 	int i;
 
 	handle = rte_fbk_hash_find_existing("fr_test_once");
-	if (handle != NULL)
-		rte_fbk_hash_free(handle);
+	rte_fbk_hash_free(handle);
 
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(fbk_name, sizeof(fbk_name), "fr_test_%d_%d",  lcore_id, i);
@@ -353,8 +347,7 @@ lpm_clean(unsigned int lcore_id)
 	int i;
 
 	lpm = rte_lpm_find_existing("fr_test_once");
-	if (lpm != NULL)
-		rte_lpm_free(lpm);
+	rte_lpm_free(lpm);
 
 	for (i = 0; i < MAX_LPM_ITER_TIMES; i++) {
 		snprintf(lpm_name, sizeof(lpm_name), "fr_test_%d_%d",  lcore_id, i);
@@ -488,6 +481,9 @@ test_func_reentrancy(void)
 {
 	uint32_t case_id;
 	struct test_case *pt_case = NULL;
+
+	if (RTE_EXEC_ENV_IS_WINDOWS)
+		return TEST_SKIPPED;
 
 	if (rte_lcore_count() < 2) {
 		printf("Not enough cores for func_reentrancy_autotest, expecting at least 2\n");

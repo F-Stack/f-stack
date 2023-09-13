@@ -29,18 +29,23 @@ headers += files(
         'rte_lcore.h',
         'rte_log.h',
         'rte_malloc.h',
+        'rte_mcslock.h',
         'rte_memory.h',
         'rte_memzone.h',
         'rte_pci_dev_feature_defs.h',
         'rte_pci_dev_features.h',
         'rte_per_lcore.h',
+        'rte_pflock.h',
         'rte_random.h',
         'rte_reciprocal.h',
+        'rte_seqcount.h',
+        'rte_seqlock.h',
         'rte_service.h',
         'rte_service_component.h',
         'rte_string_fns.h',
         'rte_tailq.h',
         'rte_thread.h',
+        'rte_ticketlock.h',
         'rte_time.h',
         'rte_trace.h',
         'rte_trace_point.h',
@@ -50,6 +55,11 @@ headers += files(
         'rte_vfio.h',
 )
 
+driver_sdk_headers = files(
+        'bus_driver.h',
+        'dev_driver.h',
+)
+
 # special case install the generic headers, since they go in a subdir
 generic_headers = files(
         'generic/rte_atomic.h',
@@ -57,15 +67,12 @@ generic_headers = files(
         'generic/rte_cpuflags.h',
         'generic/rte_cycles.h',
         'generic/rte_io.h',
-        'generic/rte_mcslock.h',
         'generic/rte_memcpy.h',
         'generic/rte_pause.h',
-        'generic/rte_pflock.h',
         'generic/rte_power_intrinsics.h',
         'generic/rte_prefetch.h',
         'generic/rte_rwlock.h',
         'generic/rte_spinlock.h',
-        'generic/rte_ticketlock.h',
         'generic/rte_vect.h',
 )
 install_headers(generic_headers, subdir: 'generic')

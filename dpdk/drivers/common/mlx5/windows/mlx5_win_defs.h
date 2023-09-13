@@ -7,10 +7,6 @@
 
 #include <rte_bitops.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 enum {
 	MLX5_CQE_OWNER_MASK	= 1,
 	MLX5_CQE_REQ		= 0,

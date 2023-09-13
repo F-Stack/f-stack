@@ -8,10 +8,14 @@
 /* CN9K IPsec LA */
 
 /* CN9K IPsec LA opcodes */
-#define ROC_IE_ON_MAJOR_OP_WRITE_IPSEC_OUTBOUND	  0x20
-#define ROC_IE_ON_MAJOR_OP_WRITE_IPSEC_INBOUND	  0x21
 #define ROC_IE_ON_MAJOR_OP_PROCESS_OUTBOUND_IPSEC 0x23
 #define ROC_IE_ON_MAJOR_OP_PROCESS_INBOUND_IPSEC  0x24
+
+#define ROC_IE_ON_INB_MAX_CTX_LEN	       34UL
+#define ROC_IE_ON_INB_IKEV2_SINGLE_SA_SUPPORT  (1 << 12)
+#define ROC_IE_ON_OUTB_MAX_CTX_LEN	       31UL
+#define ROC_IE_ON_OUTB_IKEV2_SINGLE_SA_SUPPORT (1 << 9)
+#define ROC_IE_ON_OUTB_PER_PKT_IV	       (1 << 11)
 
 /* Ucode completion codes */
 enum roc_ie_on_ucc_ipsec {
@@ -21,8 +25,10 @@ enum roc_ie_on_ucc_ipsec {
 };
 
 /* Helper macros */
-#define ROC_IE_ON_PER_PKT_IV   BIT(11)
-#define ROC_IE_ON_INB_RPTR_HDR 0x8
+#define ROC_IE_ON_INB_RPTR_HDR 16
+#define ROC_IE_ON_MAX_IV_LEN   16
+#define ROC_IE_ON_PER_PKT_IV   BIT(43)
+#define ROC_IE_ON_INPLACE_BIT  BIT(6)
 
 enum {
 	ROC_IE_ON_SA_ENC_NULL = 0,
@@ -56,10 +62,24 @@ enum {
 	ROC_IE_ON_SA_ENCAP_UDP = 1,
 };
 
+enum {
+	ROC_IE_ON_IV_SRC_HW_GEN_DEFAULT = 0,
+	ROC_IE_ON_IV_SRC_FROM_DPTR = 1,
+};
+
 struct roc_ie_on_outb_hdr {
 	uint32_t ip_id;
 	uint32_t seq;
+	uint32_t esn;
+	uint32_t df_tos;
 	uint8_t iv[16];
+};
+
+struct roc_ie_on_inb_hdr {
+	uint32_t sa_index;
+	uint32_t seql;
+	uint32_t seqh;
+	uint32_t pad;
 };
 
 union roc_ie_on_bit_perfect_iv {
@@ -102,6 +122,35 @@ struct roc_ie_on_ip_template {
 	};
 };
 
+union roc_on_ipsec_outb_param1 {
+	uint16_t u16;
+	struct {
+		uint16_t l2hdr_len : 4;
+		uint16_t rsvd_4_6 : 3;
+		uint16_t gre_select : 1;
+		uint16_t dsiv : 1;
+		uint16_t ikev2 : 1;
+		uint16_t min_frag_size : 1;
+		uint16_t per_pkt_iv : 1;
+		uint16_t tfc_pad_enable : 1;
+		uint16_t tfc_dummy_pkt : 1;
+		uint16_t rfc_or_override_mode : 1;
+		uint16_t custom_hdr_or_p99 : 1;
+	} s;
+};
+
+union roc_on_ipsec_inb_param2 {
+	uint16_t u16;
+	struct {
+		uint16_t rsvd_0_10 : 11;
+		uint16_t gre_select : 1;
+		uint16_t ikev2 : 1;
+		uint16_t udp_cksum : 1;
+		uint16_t ctx_addr_sel : 1;
+		uint16_t custom_hdr_or_p99 : 1;
+	} s;
+};
+
 struct roc_ie_on_sa_ctl {
 	uint64_t spi : 32;
 	uint64_t exp_proto_inter_frag : 8;
@@ -134,8 +183,13 @@ struct roc_ie_on_common_sa {
 	union roc_ie_on_bit_perfect_iv iv;
 
 	/* w7 */
-	uint32_t esn_hi;
-	uint32_t esn_low;
+	union {
+		uint64_t u64;
+		struct {
+			uint32_t th;
+			uint32_t tl;
+		};
+	} seq_t;
 };
 
 struct roc_ie_on_outb_sa {
@@ -152,6 +206,11 @@ struct roc_ie_on_outb_sa {
 			uint8_t unused[24];
 			struct roc_ie_on_ip_template template;
 		} sha1;
+		struct {
+			uint8_t key[16];
+			uint8_t unused[32];
+			struct roc_ie_on_ip_template template;
+		} aes_xcbc;
 		struct {
 			uint8_t hmac_key[64];
 			uint8_t hmac_iv[64];
@@ -174,6 +233,11 @@ struct roc_ie_on_inb_sa {
 			struct roc_ie_on_traffic_selector selector;
 		} sha1_or_gcm;
 		struct {
+			uint8_t key[16];
+			uint8_t unused[32];
+			struct roc_ie_on_traffic_selector selector;
+		} aes_xcbc;
+		struct {
 			uint8_t hmac_key[64];
 			uint8_t hmac_iv[64];
 			struct roc_ie_on_traffic_selector selector;
@@ -188,7 +252,21 @@ struct roc_ie_on_inb_sa {
 #define ROC_IE_ONF_MAJOR_OP_PROCESS_INBOUND_IPSEC  0x26UL
 
 /* Ucode completion codes */
-#define ROC_IE_ONF_UCC_SUCCESS 0
+#define ROC_IE_ON_UCC_SUCCESS		  0
+#define ROC_IE_ON_UCC_ENC_TYPE_ERR	  0xB1
+#define ROC_IE_ON_UCC_IP_VER_ERR	  0xB2
+#define ROC_IE_ON_UCC_PROTO_ERR		  0xB3
+#define ROC_IE_ON_UCC_CTX_INVALID	  0xB4
+#define ROC_IE_ON_UCC_CTX_DIR_MISMATCH	  0xB5
+#define ROC_IE_ON_UCC_IP_PAYLOAD_TYPE_ERR 0xB6
+#define ROC_IE_ON_UCC_CTX_FLAG_MISMATCH	  0xB7
+#define ROC_IE_ON_UCC_SPI_MISMATCH	  0xBE
+#define ROC_IE_ON_UCC_IP_CHKSUM_ERR	  0xBF
+#define ROC_IE_ON_UCC_AUTH_ERR		  0xC3
+#define ROC_IE_ON_UCC_PADDING_INVALID	  0xC4
+#define ROC_IE_ON_UCC_SA_MISMATCH	  0xCC
+#define ROC_IE_ON_UCC_L2_HDR_INFO_ERR	  0xCF
+#define ROC_IE_ON_UCC_L2_HDR_LEN_ERR	  0xE0
 
 struct roc_ie_onf_sa_ctl {
 	uint32_t spi;

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_LAN_TX_RX_H_
@@ -544,7 +544,7 @@ struct ice_32b_rx_flex_desc_nic_raw_csum {
 	__le32 rss_hash;
 
 	/* Qword 2 */
-	__le16 status_error1; /* bit 6 Raw CSUM present */
+	__le16 status_error1; /* bit 11 Raw CSUM present */
 	u8 flexi_flags2;
 	u8 ts_low;
 	__le16 l2tag2_1st;

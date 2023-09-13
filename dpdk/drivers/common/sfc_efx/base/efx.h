@@ -311,6 +311,8 @@ efx_nic_check_pcie_link_speed(
 	__in		uint32_t pcie_link_gen,
 	__out		efx_pcie_link_performance_t *resultp);
 
+#define	EFX_MAC_ADDR_LEN 6
+
 #if EFSYS_OPT_MCDI
 
 #if EFSYS_OPT_RIVERHEAD || EFX_OPTS_EF10()
@@ -405,6 +407,20 @@ extern	__checkReturn	efx_rc_t
 efx_mcdi_get_own_client_handle(
 	__in		efx_nic_t *enp,
 	__out		uint32_t *handle);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mcdi_client_mac_addr_get(
+	__in		efx_nic_t *enp,
+	__in		uint32_t client_handle,
+	__out		uint8_t addr_bytes[EFX_MAC_ADDR_LEN]);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mcdi_client_mac_addr_set(
+	__in		efx_nic_t *enp,
+	__in		uint32_t client_handle,
+	__in		const uint8_t addr_bytes[EFX_MAC_ADDR_LEN]);
 
 LIBEFX_API
 extern			void
@@ -616,11 +632,10 @@ typedef enum efx_link_mode_e {
 	EFX_LINK_NMODES
 } efx_link_mode_t;
 
-#define	EFX_MAC_ADDR_LEN 6
-
 #define	EFX_VNI_OR_VSID_LEN 3
 
-#define	EFX_MAC_ADDR_IS_MULTICAST(_address) (((uint8_t *)_address)[0] & 0x01)
+#define	EFX_MAC_ADDR_IS_MULTICAST(_address)	\
+	(((const uint8_t *)_address)[0] & 0x01)
 
 #define	EFX_MAC_MULTICAST_LIST_MAX	256
 
@@ -1495,6 +1510,22 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_rx_buf_align_start;
 	uint32_t		enc_rx_buf_align_end;
 #if EFSYS_OPT_RX_SCALE
+	/*
+	 * The limit on how many queues an RSS context in the even spread
+	 * mode can span. When this mode is not supported, the value is 0.
+	 */
+	uint32_t		enc_rx_scale_even_spread_max_nqueues;
+	/*
+	 * The limit on how many queues an RSS indirection table can address.
+	 *
+	 * Indirection table entries are offsets relative to a base queue ID.
+	 * This means that the maximum offset has to be less than this value.
+	 */
+	uint32_t		enc_rx_scale_indirection_max_nqueues;
+	/* Minimum number of entries an RSS indirection table can contain. */
+	uint32_t		enc_rx_scale_tbl_min_nentries;
+	/* Maximum number of entries an RSS indirection table can contain. */
+	uint32_t		enc_rx_scale_tbl_max_nentries;
 	uint32_t		enc_rx_scale_max_exclusive_contexts;
 	/*
 	 * Mask of supported hash algorithms.
@@ -1507,6 +1538,11 @@ typedef struct efx_nic_cfg_s {
 	 */
 	boolean_t		enc_rx_scale_l4_hash_supported;
 	boolean_t		enc_rx_scale_additional_modes_supported;
+	/*
+	 * Indicates whether the user can decide how many entries to
+	 * have in the indirection table of an exclusive RSS context.
+	 */
+	boolean_t		enc_rx_scale_tbl_entry_count_is_selectable;
 #endif /* EFSYS_OPT_RX_SCALE */
 #if EFSYS_OPT_LOOPBACK
 	efx_qword_t		enc_loopback_types[EFX_LINK_NMODES];
@@ -1551,6 +1587,7 @@ typedef struct efx_nic_cfg_s {
 	/* Number of rx descriptors the hardware requires for a push. */
 	uint32_t		enc_rx_push_align;
 	/* Maximum amount of data in DMA descriptor */
+	uint32_t		enc_rx_dma_desc_size_max;
 	uint32_t		enc_tx_dma_desc_size_max;
 	/*
 	 * Boundary which DMA descriptor data must not cross or 0 if no
@@ -2768,7 +2805,8 @@ typedef enum efx_rx_hash_support_e {
 typedef enum efx_rx_scale_context_type_e {
 	EFX_RX_SCALE_UNAVAILABLE = 0,	/* No RX scale context */
 	EFX_RX_SCALE_EXCLUSIVE,		/* Writable key/indirection table */
-	EFX_RX_SCALE_SHARED		/* Read-only key/indirection table */
+	EFX_RX_SCALE_SHARED,		/* Read-only key/indirection table */
+	EFX_RX_SCALE_EVEN_SPREAD,	/* No indirection table, writable key */
 } efx_rx_scale_context_type_t;
 
 /*
@@ -2882,6 +2920,15 @@ efx_rx_scale_context_alloc(
 
 LIBEFX_API
 extern	__checkReturn	efx_rc_t
+efx_rx_scale_context_alloc_v2(
+	__in		efx_nic_t *enp,
+	__in		efx_rx_scale_context_type_t type,
+	__in		uint32_t num_queues,
+	__in		uint32_t table_nentries,
+	__out		uint32_t *rss_contextp);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
 efx_rx_scale_context_free(
 	__in		efx_nic_t *enp,
 	__in		uint32_t rss_context);
@@ -2896,12 +2943,12 @@ efx_rx_scale_mode_set(
 	__in	boolean_t insert);
 
 LIBEFX_API
-extern	__checkReturn	efx_rc_t
+extern	__checkReturn		efx_rc_t
 efx_rx_scale_tbl_set(
-	__in		efx_nic_t *enp,
-	__in		uint32_t rss_context,
-	__in_ecount(n)	unsigned int *table,
-	__in		size_t n);
+	__in			efx_nic_t *enp,
+	__in			uint32_t rss_context,
+	__in_ecount(nentries)	unsigned int *table,
+	__in			size_t nentries);
 
 LIBEFX_API
 extern	__checkReturn	efx_rc_t
@@ -4872,17 +4919,17 @@ typedef enum efx_virtio_vq_type_e {
 
 typedef struct efx_virtio_vq_dyncfg_s {
 	/*
-	 * If queue is being created to be migrated then this
-	 * should be the FINAL_PIDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
+	 * If queue is being created to be migrated then this should be
+	 * the FINAL_AVAIL_IDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
 	 * of the queue being migrated from. Otherwise, it should be zero.
 	 */
-	uint32_t		evvd_vq_pidx;
+	uint32_t		evvd_vq_avail_idx;
 	/*
-	 * If this queue is being created to be migrated then this
-	 * should be the FINAL_CIDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
+	 * If queue is being created to be migrated then this should be
+	 * the FINAL_USED_IDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
 	 * of the queue being migrated from. Otherwise, it should be zero.
 	 */
-	uint32_t		evvd_vq_cidx;
+	uint32_t		evvd_vq_used_idx;
 } efx_virtio_vq_dyncfg_t;
 
 /*

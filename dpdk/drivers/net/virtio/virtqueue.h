@@ -309,7 +309,7 @@ struct virtqueue {
 
 	uint16_t  *notify_addr;
 	struct rte_mbuf **sw_ring;  /**< RX software ring. */
-	struct vq_desc_extra vq_descx[0];
+	struct vq_desc_extra vq_descx[];
 };
 
 /* If multiqueue is provided by host, then we support it. */
@@ -474,10 +474,6 @@ virtqueue_enable_intr(struct virtqueue *vq)
 		virtqueue_enable_intr_split(vq);
 }
 
-/**
- *  Dump virtqueue internal structures, for debug purpose only.
- */
-void virtqueue_dump(struct virtqueue *vq);
 /**
  *  Get all mbufs to be freed.
  */

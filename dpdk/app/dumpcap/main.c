@@ -61,8 +61,13 @@ static char *output_name;
 static const char *filter_str;
 static unsigned int ring_size = 2048;
 static const char *capture_comment;
+static const char *file_prefix;
 static uint32_t snaplen = RTE_MBUF_DEFAULT_BUF_SIZE;
 static bool dump_bpf;
+static bool show_interfaces;
+static bool select_interfaces;
+const char *interface_arg;
+
 static struct {
 	uint64_t  duration;	/* nanoseconds */
 	unsigned long packets;  /* number of packets in file */
@@ -122,6 +127,7 @@ static void usage(void)
 	       "                           add a capture comment to the output file\n"
 	       "\n"
 	       "Miscellaneous:\n"
+	       "  --file-prefix=<prefix>   prefix to use for multi-process\n"
 	       "  -q                       don't report packet capture counts\n"
 	       "  -v, --version            print version information and exit\n"
 	       "  -h, --help               display this help and exit\n"
@@ -241,7 +247,7 @@ static void select_interface(const char *arg)
 {
 	uint16_t port;
 
-	if (strcmp(arg, "*"))
+	if (strcmp(arg, "*") == 0)
 		select_all_interfaces();
 	else if (rte_eth_dev_get_port_by_name(arg, &port) == 0)
 		add_interface(port, arg);
@@ -257,7 +263,7 @@ static void select_interface(const char *arg)
 }
 
 /* Display list of possible interfaces that can be used. */
-static void show_interfaces(void)
+static void dump_interfaces(void)
 {
 	char name[RTE_ETH_NAME_MAX_LEN];
 	uint16_t p;
@@ -267,6 +273,8 @@ static void show_interfaces(void)
 			continue;
 		printf("%u. %s\n", p, name);
 	}
+
+	exit(0);
 }
 
 static void compile_filter(void)
@@ -311,6 +319,7 @@ static void parse_opts(int argc, char **argv)
 	static const struct option long_options[] = {
 		{ "autostop",        required_argument, NULL, 'a' },
 		{ "capture-comment", required_argument, NULL, 0 },
+		{ "file-prefix",     required_argument, NULL, 0 },
 		{ "help",            no_argument,       NULL, 'h' },
 		{ "interface",       required_argument, NULL, 'i' },
 		{ "list-interfaces", no_argument,       NULL, 'D' },
@@ -331,11 +340,13 @@ static void parse_opts(int argc, char **argv)
 
 		switch (c) {
 		case 0:
-			switch (option_index) {
-			case 0:
+			if (!strcmp(long_options[option_index].name,
+				    "capture-comment")) {
 				capture_comment = optarg;
-				break;
-			default:
+			} else if (!strcmp(long_options[option_index].name,
+					   "file-prefix")) {
+				file_prefix = optarg;
+			} else {
 				usage();
 				exit(1);
 			}
@@ -354,8 +365,8 @@ static void parse_opts(int argc, char **argv)
 			dump_bpf = true;
 			break;
 		case 'D':
-			show_interfaces();
-			exit(0);
+			show_interfaces = true;
+			break;
 		case 'f':
 			filter_str = optarg;
 			break;
@@ -367,7 +378,8 @@ static void parse_opts(int argc, char **argv)
 			usage();
 			exit(0);
 		case 'i':
-			select_interface(optarg);
+			select_interfaces = true;
+			interface_arg = optarg;
 			break;
 		case 'n':
 			use_pcapng = true;
@@ -513,11 +525,13 @@ static void dpdk_init(void)
 	static const char * const args[] = {
 		"dumpcap", "--proc-type", "secondary",
 		"--log-level", "notice"
-
 	};
-	const int eal_argc = RTE_DIM(args);
+	int eal_argc = RTE_DIM(args);
 	char **eal_argv;
 	unsigned int i;
+
+	if (file_prefix != NULL)
+		eal_argc += 2;
 
 	/* DPDK API requires mutable versions of command line arguments. */
 	eal_argv = calloc(eal_argc + 1, sizeof(char *));
@@ -528,11 +542,13 @@ static void dpdk_init(void)
 	for (i = 1; i < RTE_DIM(args); i++)
 		eal_argv[i] = strdup(args[i]);
 
+	if (file_prefix != NULL) {
+		eal_argv[i++] = strdup("--file-prefix");
+		eal_argv[i++] = strdup(file_prefix);
+	}
+
 	if (rte_eal_init(eal_argc, eal_argv) < 0)
 		rte_exit(EXIT_FAILURE, "EAL init failed: is primary process running?\n");
-
-	if (rte_eth_dev_count_avail() == 0)
-		rte_exit(EXIT_FAILURE, "No Ethernet ports found\n");
 }
 
 /* Create packet ring shared between callbacks and process */
@@ -793,8 +809,17 @@ int main(int argc, char **argv)
 	else
 		progname = p + 1;
 
-	dpdk_init();
 	parse_opts(argc, argv);
+	dpdk_init();
+
+	if (show_interfaces)
+		dump_interfaces();
+
+	if (rte_eth_dev_count_avail() == 0)
+		rte_exit(EXIT_FAILURE, "No Ethernet ports found\n");
+
+	if (select_interfaces)
+		select_interface(interface_arg);
 
 	if (filter_str)
 		compile_filter();

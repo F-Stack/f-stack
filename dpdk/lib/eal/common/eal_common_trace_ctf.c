@@ -3,6 +3,7 @@
  */
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include <rte_byteorder.h>
@@ -52,8 +53,7 @@ meta_copy(char **meta, int *offset, char *str, int rc)
 	return rc;
 
 free_str:
-	if (str)
-		free(str);
+	free(str);
 	return -ENOMEM;
 }
 
@@ -291,8 +291,7 @@ trace_metadata_create(void)
 	return 0;
 
 fail:
-	if (meta)
-		free(meta);
+	free(meta);
 	return -EBADF;
 }
 

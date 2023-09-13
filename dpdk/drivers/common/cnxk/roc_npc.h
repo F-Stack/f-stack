@@ -15,6 +15,7 @@ enum roc_npc_item_type {
 	ROC_NPC_ITEM_TYPE_E_TAG,
 	ROC_NPC_ITEM_TYPE_IPV4,
 	ROC_NPC_ITEM_TYPE_IPV6,
+	ROC_NPC_ITEM_TYPE_IPV6_FRAG_EXT,
 	ROC_NPC_ITEM_TYPE_ARP_ETH_IPV4,
 	ROC_NPC_ITEM_TYPE_MPLS,
 	ROC_NPC_ITEM_TYPE_ICMP,
@@ -37,6 +38,7 @@ enum roc_npc_item_type {
 	ROC_NPC_ITEM_TYPE_L3_CUSTOM,
 	ROC_NPC_ITEM_TYPE_QINQ,
 	ROC_NPC_ITEM_TYPE_RAW,
+	ROC_NPC_ITEM_TYPE_MARK,
 	ROC_NPC_ITEM_TYPE_END,
 };
 
@@ -58,6 +60,41 @@ struct roc_npc_flow_item_raw {
 	const uint8_t *pattern; /**< Byte string to look for. */
 };
 
+struct roc_ether_addr {
+	uint8_t addr_bytes[PLT_ETHER_ADDR_LEN]; /**< Addr bytes in tx order */
+} __plt_aligned(2);
+
+struct roc_ether_hdr {
+	struct roc_ether_addr d_addr; /**< Destination address. */
+	PLT_STD_C11
+	union {
+		struct roc_ether_addr s_addr; /**< Source address. */
+		struct {
+			struct roc_ether_addr S_addr;
+		} S_un; /**< Do not use directly; use s_addr instead.*/
+	};
+	uint16_t ether_type; /**< Frame type. */
+} __plt_aligned(2);
+
+PLT_STD_C11
+struct roc_npc_flow_item_eth {
+	union {
+		struct {
+			/*
+			 * These fields are retained
+			 * for compatibility.
+			 * Please switch to the new header field below.
+			 */
+			struct roc_ether_addr dst; /**< Destination MAC. */
+			struct roc_ether_addr src; /**< Source MAC. */
+			uint16_t type;		   /**< EtherType or TPID. */
+		};
+		struct roc_ether_hdr hdr;
+	};
+	uint32_t has_vlan : 1; /**< Packet header contains at least one VLAN. */
+	uint32_t reserved : 31; /**< Reserved, must be zero. */
+};
+
 struct roc_vlan_hdr {
 	uint16_t vlan_tci; /**< Priority (3) + CFI (1) + Identifier Code (12) */
 	uint16_t eth_proto; /**< Ethernet type of encapsulated frame. */
@@ -75,6 +112,50 @@ struct roc_npc_flow_item_vlan {
 	uint32_t has_more_vlan : 1;
 	/**< Packet header contains at least one more VLAN, after this VLAN. */
 	uint32_t reserved : 31; /**< Reserved, must be zero. */
+};
+
+struct roc_ipv6_hdr {
+	uint32_t vtc_flow;    /**< IP version, traffic class & flow label. */
+	uint16_t payload_len; /**< IP payload size, including ext. headers */
+	uint8_t proto;	      /**< Protocol, next header. */
+	uint8_t hop_limits;   /**< Hop limits. */
+	uint8_t src_addr[16]; /**< IP address of source host. */
+	uint8_t dst_addr[16]; /**< IP address of destination host(s). */
+} __plt_packed;
+
+struct roc_ipv6_fragment_ext {
+	uint8_t next_header; /**< Next header type */
+	uint8_t reserved;    /**< Reserved */
+	uint16_t frag_data;  /**< All fragmentation data */
+	uint32_t id;	     /**< Packet ID */
+} __plt_packed;
+
+struct roc_flow_item_ipv6_ext {
+	uint8_t next_hdr; /**< Next header. */
+};
+
+struct roc_npc_flow_item_ipv6 {
+	struct roc_ipv6_hdr hdr; /**< IPv6 header definition. */
+	uint32_t has_hop_ext : 1;
+	/**< Header contains Hop-by-Hop Options extension header. */
+	uint32_t has_route_ext : 1;
+	/**< Header contains Routing extension header. */
+	uint32_t has_frag_ext : 1;
+	/**< Header contains Fragment extension header. */
+	uint32_t has_auth_ext : 1;
+	/**< Header contains Authentication extension header. */
+	uint32_t has_esp_ext : 1;
+	/**< Header contains Encapsulation Security Payload extension header. */
+	uint32_t has_dest_ext : 1;
+	/**< Header contains Destination Options extension header. */
+	uint32_t has_mobil_ext : 1;
+	/**< Header contains Mobility extension header. */
+	uint32_t has_hip_ext : 1;
+	/**< Header contains Host Identity Protocol extension header. */
+	uint32_t has_shim6_ext : 1;
+	/**< Header contains Shim6 Protocol extension header. */
+	uint32_t reserved : 23;
+	/**< Reserved for future extension headers, must be zero. */
 };
 
 #define ROC_NPC_MAX_ACTION_COUNT 19
@@ -116,7 +197,7 @@ struct roc_npc_action_vf {
 };
 
 struct roc_npc_action_port_id {
-	uint32_t original : 1;	/**< Use original DPDK port ID if possible. */
+	uint32_t original : 1;	/**< Use original port ID if possible. */
 	uint32_t reserved : 31; /**< Reserved, must be zero. */
 	uint32_t id;		/**< port ID. */
 };
@@ -141,6 +222,25 @@ struct roc_npc_action_meter {
 	uint32_t mtr_id; /**< Meter id to be applied. > */
 };
 
+enum roc_npc_sec_action_alg {
+	ROC_NPC_SEC_ACTION_ALG0,
+	ROC_NPC_SEC_ACTION_ALG1,
+	ROC_NPC_SEC_ACTION_ALG2,
+	ROC_NPC_SEC_ACTION_ALG3,
+};
+
+struct roc_npc_sec_action {
+	/* Used as lookup result for ALG3 */
+	uint32_t sa_index;
+	/* When true XOR initial SA_INDEX with SA_HI/SA_LO to get SA_MCAM */
+	bool sa_xor;
+	uint16_t sa_hi, sa_lo;
+	/* Determines alg to be applied post SA_MCAM computation with/without
+	 * XOR
+	 */
+	enum roc_npc_sec_action_alg alg;
+};
+
 struct roc_npc_attr {
 	uint32_t priority;	/**< Rule priority level within group. */
 	uint32_t ingress : 1;	/**< Rule applies to ingress traffic. */
@@ -157,6 +257,7 @@ struct roc_npc_flow {
 	uint8_t nix_intf;
 	uint8_t enable;
 	uint32_t mcam_id;
+	uint8_t use_ctr;
 	int32_t ctr_id;
 	uint32_t priority;
 	uint32_t mtr_id;
@@ -186,7 +287,7 @@ enum roc_npc_rss_hash_function {
 struct roc_npc_action_rss {
 	enum roc_npc_rss_hash_function func;
 	uint32_t level;
-	uint64_t types;	       /**< Specific RSS hash types (see RTE_ETH_RSS_*). */
+	uint64_t types;	       /**< Specific RSS hash types (see ETH_RSS_*). */
 	uint32_t key_len;      /**< Hash key length in bytes. */
 	uint32_t queue_num;    /**< Number of entries in @p queue. */
 	const uint8_t *key;    /**< Hash key. */
@@ -206,6 +307,14 @@ enum flow_vtag_cfg_dir { VTAG_TX, VTAG_RX };
 struct roc_npc {
 	struct roc_nix *roc_nix;
 	uint8_t switch_header_type;
+	uint8_t pre_l2_size_offset;	 /**< Offset with in header that holds
+					   * size of custom header
+					   */
+	uint8_t pre_l2_size_offset_mask; /**< Offset mask with in header
+					   * that holds size of custom header
+					   */
+	uint8_t pre_l2_size_shift_dir;	 /**< Shift direction to calculate size
+					   */
 	uint16_t flow_prealloc_size;
 	uint16_t flow_max_priority;
 	uint16_t channel;
@@ -214,6 +323,9 @@ struct roc_npc {
 	uint64_t rx_parse_nibble;
 	/* Parsed RSS Flowkey cfg for current flow being created */
 	uint32_t flowkey_cfg_state;
+	bool is_sdp_mask_set;
+	uint16_t sdp_channel;
+	uint16_t sdp_channel_mask;
 
 #define ROC_NPC_MEM_SZ (5 * 1024)
 	uint8_t reserved[ROC_NPC_MEM_SZ];
@@ -229,7 +341,11 @@ roc_npc_flow_create(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 		    const struct roc_npc_action actions[], int *errcode);
 int __roc_api roc_npc_flow_destroy(struct roc_npc *roc_npc,
 				   struct roc_npc_flow *flow);
+int __roc_api roc_npc_mcam_free(struct roc_npc *roc_npc,
+				struct roc_npc_flow *mcam);
 int __roc_api roc_npc_mcam_free_entry(struct roc_npc *roc_npc, uint32_t entry);
+int __roc_api roc_npc_mcam_enable_all_entries(struct roc_npc *roc_npc,
+					      bool enable);
 int __roc_api roc_npc_mcam_alloc_entry(struct roc_npc *roc_npc,
 				       struct roc_npc_flow *mcam,
 				       struct roc_npc_flow *ref_mcam, int prio,
@@ -258,9 +374,6 @@ int __roc_api roc_npc_mcam_free_all_resources(struct roc_npc *roc_npc);
 void __roc_api roc_npc_flow_dump(FILE *file, struct roc_npc *roc_npc);
 void __roc_api roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc,
 				      struct roc_npc_flow *mcam);
-int __roc_api roc_npc_mark_actions_get(struct roc_npc *roc_npc);
-int __roc_api roc_npc_mark_actions_sub_return(struct roc_npc *roc_npc,
-					      uint32_t count);
 int __roc_api roc_npc_vtag_actions_get(struct roc_npc *roc_npc);
 int __roc_api roc_npc_vtag_actions_sub_return(struct roc_npc *roc_npc,
 					      uint32_t count);
@@ -268,4 +381,8 @@ int __roc_api roc_npc_mcam_merge_base_steering_rule(struct roc_npc *roc_npc,
 						    struct roc_npc_flow *flow);
 int __roc_api roc_npc_validate_portid_action(struct roc_npc *roc_npc_src,
 					     struct roc_npc *roc_npc_dst);
+int __roc_api roc_npc_mcam_init(struct roc_npc *roc_npc,
+				struct roc_npc_flow *flow, int mcam_id);
+int __roc_api roc_npc_mcam_move(struct roc_npc *roc_npc, uint16_t old_ent,
+				uint16_t new_ent);
 #endif /* _ROC_NPC_H_ */

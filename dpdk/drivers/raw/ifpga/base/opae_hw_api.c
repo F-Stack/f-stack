@@ -177,7 +177,7 @@ int opae_acc_get_region_info(struct opae_accelerator *acc,
 int opae_acc_set_irq(struct opae_accelerator *acc,
 		     u32 start, u32 count, s32 evtfds[])
 {
-	if (!acc || !acc->data)
+	if (!acc)
 		return -EINVAL;
 
 	if (start + count <= start)
@@ -831,6 +831,35 @@ int opae_manager_get_retimer_status(struct opae_manager *mgr,
 }
 
 /**
+ * opae_manager_get_sensor_list - get sensor name list
+ * @mgr: opae_manager of sensors
+ * @buf: buffer to accommodate name list separated by semicolon
+ * @size: size of buffer
+ *
+ * Return: the pointer of the opae_sensor_info
+ */
+int
+opae_mgr_get_sensor_list(struct opae_manager *mgr, char *buf, size_t size)
+{
+	struct opae_sensor_info *sensor;
+	uint32_t offset = 0;
+
+	opae_mgr_for_each_sensor(mgr, sensor) {
+		if (sensor->name) {
+			if (buf && (offset < size))
+				snprintf(buf + offset, size - offset, "%s;",
+					sensor->name);
+			offset += strlen(sensor->name) + 1;
+		}
+	}
+
+	if (buf && (offset > 0) && (offset <= size))
+		buf[offset-1] = 0;
+
+	return offset;
+}
+
+/**
  * opae_manager_get_sensor_by_id - get sensor device
  * @id: the id of the sensor
  *
@@ -1038,6 +1067,26 @@ int opae_mgr_reload(struct opae_manager *mgr, int type, int page)
 
 	if (mgr->ops && mgr->ops->reload)
 		return mgr->ops->reload(mgr, type, page);
+
+	return -ENOENT;
+}
+/**
+ * opae_mgr_read_flash -  read flash content
+ * @mgr: targeted manager
+ * @address: the start address of flash
+ * @size: the size of flash
+ * @buf: the read buffer
+ *
+ * Return: 0 on success, otherwise error code.
+ */
+int opae_mgr_read_flash(struct opae_manager *mgr, u32 address,
+		u32 size, void *buf)
+{
+	if (!mgr)
+		return -EINVAL;
+
+	if (mgr->ops && mgr->ops->read_flash)
+		return mgr->ops->read_flash(mgr, address, size, buf);
 
 	return -ENOENT;
 }

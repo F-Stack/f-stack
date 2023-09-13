@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2014 Intel Corporation.
  * Copyright(c) 2016 6WIND S.A.
+ * Copyright(c) 2022 SmartShare Systems
  */
 
 #include <stdbool.h>
@@ -8,7 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include <stdarg.h>
 #include <unistd.h>
 #include <inttypes.h>
 #include <errno.h>
@@ -20,16 +20,10 @@
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_malloc.h>
-#include <rte_atomic.h>
-#include <rte_launch.h>
 #include <rte_eal.h>
 #include <rte_eal_memconfig.h>
-#include <rte_per_lcore.h>
-#include <rte_lcore.h>
-#include <rte_branch_prediction.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
-#include <rte_spinlock.h>
 #include <rte_tailq.h>
 #include <rte_eal_paging.h>
 #include <rte_telemetry.h>
@@ -752,6 +746,11 @@ rte_mempool_free(struct rte_mempool *mp)
 static void
 mempool_cache_init(struct rte_mempool_cache *cache, uint32_t size)
 {
+	/* Check that cache have enough space for flush threshold */
+	RTE_BUILD_BUG_ON(CALC_CACHE_FLUSHTHRESH(RTE_MEMPOOL_CACHE_MAX_SIZE) >
+			 RTE_SIZEOF_FIELD(struct rte_mempool_cache, objs) /
+			 RTE_SIZEOF_FIELD(struct rte_mempool_cache, objs[0]));
+
 	cache->size = size;
 	cache->flushthresh = CALC_CACHE_FLUSHTHRESH(size);
 	cache->len = 0;
@@ -820,7 +819,7 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 			  RTE_CACHE_LINE_MASK) != 0);
 	RTE_BUILD_BUG_ON((sizeof(struct rte_mempool_cache) &
 			  RTE_CACHE_LINE_MASK) != 0);
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
 	RTE_BUILD_BUG_ON((sizeof(struct rte_mempool_debug_stats) &
 			  RTE_CACHE_LINE_MASK) != 0);
 	RTE_BUILD_BUG_ON((offsetof(struct rte_mempool, stats) &
@@ -1223,7 +1222,7 @@ rte_mempool_audit(struct rte_mempool *mp)
 void
 rte_mempool_dump(FILE *f, struct rte_mempool *mp)
 {
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
 	struct rte_mempool_info info;
 	struct rte_mempool_debug_stats sum;
 	unsigned lcore_id;
@@ -1271,10 +1270,10 @@ rte_mempool_dump(FILE *f, struct rte_mempool *mp)
 	fprintf(f, "  common_pool_count=%u\n", common_count);
 
 	/* sum and dump statistics */
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
 	rte_mempool_ops_get_info(mp, &info);
 	memset(&sum, 0, sizeof(sum));
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE + 1; lcore_id++) {
 		sum.put_bulk += mp->stats[lcore_id].put_bulk;
 		sum.put_objs += mp->stats[lcore_id].put_objs;
 		sum.put_common_pool_bulk += mp->stats[lcore_id].put_common_pool_bulk;
@@ -1287,6 +1286,15 @@ rte_mempool_dump(FILE *f, struct rte_mempool *mp)
 		sum.get_fail_objs += mp->stats[lcore_id].get_fail_objs;
 		sum.get_success_blks += mp->stats[lcore_id].get_success_blks;
 		sum.get_fail_blks += mp->stats[lcore_id].get_fail_blks;
+	}
+	if (mp->cache_size != 0) {
+		/* Add the statistics stored in the mempool caches. */
+		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+			sum.put_bulk += mp->local_cache[lcore_id].stats.put_bulk;
+			sum.put_objs += mp->local_cache[lcore_id].stats.put_objs;
+			sum.get_success_bulk += mp->local_cache[lcore_id].stats.get_success_bulk;
+			sum.get_success_objs += mp->local_cache[lcore_id].stats.get_success_objs;
+		}
 	}
 	fprintf(f, "  stats:\n");
 	fprintf(f, "    put_bulk=%"PRIu64"\n", sum.put_bulk);

@@ -79,8 +79,9 @@ Runtime Config Options
 
 - ``CN10K Getwork mode``
 
-  CN10K supports multiple getwork prefetch modes, by default the prefetch
-  mode is set to none.
+  CN10K supports three getwork prefetch modes no prefetch[0], prefetch
+  immediately[1] and delayed prefetch on forward progress event[2].
+  The default getwork mode is 2.
 
   For example::
 
@@ -95,12 +96,11 @@ Runtime Config Options
   We can control the QoS of SSO GGRP by modifying the above mentioned
   thresholds. GGRPs that have higher importance can be assigned higher
   thresholds than the rest. The dictionary format is as follows
-  [Qx-XAQ-TAQ-IAQ][Qz-XAQ-TAQ-IAQ] expressed in percentages, 0 represents
-  default.
+  [Qx-TAQ-IAQ][Qz-TAQ-IAQ] expressed in percentages, 0 represents default.
 
   For example::
 
-    -a 0002:0e:00.0,qos=[1-50-50-50]
+    -a 0002:0e:00.0,qos=[1-50-50]
 
 - ``Force Rx Back pressure``
 
@@ -163,6 +163,24 @@ Runtime Config Options
   For Example::
 
     -a 0002:0e:00.0,tim_ring_ctl=[2-1023-1-0]
+
+- ``TIM external clock frequency``
+
+  The ``tim_eclk_freq`` devagrs can be used to pass external clock frequencies
+  when external clock source is selected.
+
+  External clock frequencies are mapped as follows::
+
+    RTE_EVENT_TIMER_ADAPTER_EXT_CLK0 = TIM_CLK_SRC_10NS,
+    RTE_EVENT_TIMER_ADAPTER_EXT_CLK1 = TIM_CLK_SRC_GPIO,
+    RTE_EVENT_TIMER_ADAPTER_EXT_CLK2 = TIM_CLK_SRC_PTP,
+    RTE_EVENT_TIMER_ADAPTER_EXT_CLK3 = TIM_CLK_SRC_SYNCE
+
+  The order of frequencies supplied to device args should be GPIO-PTP-SYNCE.
+
+  For Example::
+
+    -a 0002:0e:00.0,tim_eclk_freq=122880000-1000000000-0
 
 Debugging Options
 -----------------

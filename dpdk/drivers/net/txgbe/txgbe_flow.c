@@ -4,7 +4,7 @@
  */
 
 #include <sys/queue.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_malloc.h>
 #include <rte_flow.h>
 #include <rte_flow_driver.h>
@@ -2456,7 +2456,7 @@ txgbe_parse_fdir_filter(struct rte_eth_dev *dev,
 {
 	int ret;
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
-	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+	struct rte_eth_fdir_conf *fdir_conf = TXGBE_DEV_FDIR_CONF(dev);
 
 	ret = txgbe_parse_fdir_filter_normal(dev, attr, pattern,
 					actions, rule, error);
@@ -2475,9 +2475,16 @@ step_next:
 		(rule->input.src_port != 0 || rule->input.dst_port != 0))
 		return -ENOTSUP;
 
-	if (fdir_mode == RTE_FDIR_MODE_NONE ||
-	    fdir_mode != rule->mode)
+	if (fdir_conf->mode == RTE_FDIR_MODE_NONE) {
+		fdir_conf->mode = rule->mode;
+		ret = txgbe_fdir_configure(dev);
+		if (ret) {
+			fdir_conf->mode = RTE_FDIR_MODE_NONE;
+			return ret;
+		}
+	} else if (fdir_conf->mode != rule->mode) {
 		return -ENOTSUP;
+	}
 
 	if (rule->queue >= dev->data->nb_rx_queues)
 		return -ENOTSUP;
@@ -3169,4 +3176,3 @@ const struct rte_flow_ops txgbe_flow_ops = {
 	.destroy = txgbe_flow_destroy,
 	.flush = txgbe_flow_flush,
 };
-

@@ -3,12 +3,20 @@
 
 .. include:: <isonum.txt>
 
-MLX5 vDPA driver
-================
+NVIDIA MLX5 vDPA Driver
+=======================
 
-The MLX5 vDPA (vhost data path acceleration) driver library
-(**librte_vdpa_mlx5**) provides support for **Mellanox ConnectX-6**,
-**Mellanox ConnectX-6 Dx** and **Mellanox BlueField** families of
+.. note::
+
+   NVIDIA acquired Mellanox Technologies in 2020.
+   The DPDK documentation and code might still include instances
+   of or references to Mellanox trademarks (like BlueField and ConnectX)
+   that are now NVIDIA trademarks.
+
+The mlx5 vDPA (vhost data path acceleration) driver library
+(**librte_vdpa_mlx5**) provides support for **NVIDIA ConnectX-6**,
+**NVIDIA ConnectX-6 Dx**, **NVIDIA ConnectX-6 Lx**, **NVIDIA ConnectX7**,
+**NVIDIA BlueField** and **NVIDIA BlueField-2** families of
 10/25/40/50/100/200 Gb/s adapters as well as their virtual functions (VF) in
 SR-IOV context.
 
@@ -17,93 +25,35 @@ SR-IOV context.
    This driver is enabled automatically when using "meson" build system which
    will detect dependencies.
 
-
-Design
-------
-
-For security reasons and robustness, this driver only deals with virtual
-memory addresses. The way resources allocations are handled by the kernel,
-combined with hardware specifications that allow to handle virtual memory
-addresses directly, ensure that DPDK applications cannot access random
-physical memory (or memory that does not belong to the current process).
-
-The PMD can use libibverbs and libmlx5 to access the device firmware
-or directly the hardware components.
-There are different levels of objects and bypassing abilities
-to get the best performances:
-
-- Verbs is a complete high-level generic API
-- Direct Verbs is a device-specific API
-- DevX allows to access firmware objects
-- Direct Rules manages flow steering at low-level hardware layer
-
-Enabling librte_vdpa_mlx5 causes DPDK applications to be linked against
-libibverbs.
-
-A Mellanox mlx5 PCI device can be probed by either net/mlx5 driver or vdpa/mlx5
-driver but not in parallel. Hence, the user should decide the driver by the
-``class`` parameter in the device argument list.
-By default, the mlx5 device will be probed by the net/mlx5 driver.
+See :doc:`../../platform/mlx5` guide for design details,
+and which PMDs can be combined with vDPA PMD.
 
 Supported NICs
 --------------
 
-* Mellanox\ |reg| ConnectX\ |reg|-6 200G MCX654106A-HCAT (2x200G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 Dx EN 25G MCX621102AN-ADAT (2x25G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 Dx EN 100G MCX623106AN-CDAT (2x100G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 Dx EN 200G MCX623105AN-VDAT (1x200G)
-* Mellanox\ |reg| BlueField SmartNIC 25G MBF1M332A-ASCAT (2x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 200G MCX654106A-HCAT (2x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 25G MCX621102AN-ADAT (2x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 100G MCX623106AN-CDAT (2x100G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 200G MCX623105AN-VDAT (1x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Lx EN 25G MCX631102AN-ADAT (2x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-7 200G CX713106AE-HEA_QP1_Ax (2x200G)
+* NVIDIA\ |reg| BlueField SmartNIC 25G MBF1M332A-ASCAT (2x25G)
+* NVIDIA\ |reg| BlueField |reg|-2 SmartNIC MT41686 - MBF2H332A-AEEOT_A1 (2x25G)
 
 Prerequisites
 -------------
 
-- Mellanox OFED version: **5.0**
-  see :doc:`../../nics/mlx5` guide for more Mellanox OFED details.
-
-Compilation option
-~~~~~~~~~~~~~~~~~~
-
-The meson option ``ibverbs_link`` is **shared** by default,
-but can be configured to have the following values:
-
-- ``dlopen``
-
-  Build PMD with additional code to make it loadable without hard
-  dependencies on **libibverbs** nor **libmlx5**, which may not be installed
-  on the target system.
-
-  In this mode, their presence is still required for it to run properly,
-  however their absence won't prevent a DPDK application from starting (with
-  DPDK shared build disabled) and they won't show up as missing with ``ldd(1)``.
-
-  It works by moving these dependencies to a purpose-built rdma-core "glue"
-  plug-in which must be installed in a directory whose name is based
-  on ``RTE_EAL_PMD_PATH`` suffixed with ``-glue``.
-
-  This option has no performance impact.
-
-- ``static``
-
-  Embed static flavor of the dependencies **libibverbs** and **libmlx5**
-  in the PMD shared library or the executable static binary.
-
-.. note::
-
-   Default armv8a configuration of meson build sets ``RTE_CACHE_LINE_SIZE``
-   to 128 then brings performance degradation.
+- NVIDIA MLNX_OFED version: **5.0**
+  See :ref:`mlx5 common prerequisites <mlx5_linux_prerequisites>` for more details.
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~
 
-- **ethtool** operations on related kernel interfaces also affect the PMD.
-
 Driver options
 ^^^^^^^^^^^^^^
 
-- ``class`` parameter [string]
-
-  Select the class of the driver that should probe the device.
-  `vdpa` for the mlx5 vDPA driver.
+Please refer to :ref:`mlx5 common options <mlx5_common_driver_options>`
+for an additional list of options shared with other mlx5 drivers.
 
 - ``event_mode`` parameter [int]
 
@@ -136,8 +86,25 @@ Driver options
 
 - ``event_core`` parameter [int]
 
-  CPU core number to set polling thread affinity to, default to control plane
-  cpu.
+  The CPU core number of the timer thread, default: EAL main lcore.
+
+.. note::
+
+   This core can be shared among different mlx5 vDPA devices as `event_core`
+   but using it also for other tasks may affect the performance and the latency
+   of the mlx5 vDPA devices.
+
+- ``max_conf_threads`` parameter [int]
+
+  Allow the driver to use internal threads to obtain fast configuration.
+  All the threads will be open on the same core of the event completion queue scheduling thread.
+
+  - 0, default, don't use internal threads for configuration.
+
+  - 1 - 256, number of internal threads in addition to the caller thread (8 is suggested).
+    This value, if not 0, should be the same for all the devices;
+    the first probing will take it with the ``event_core``
+    for all the multi-thread configurations in the driver.
 
 - ``hw_latency_mode`` parameter [int]
 
@@ -162,18 +129,20 @@ Driver options
 
   - 0, HW default.
 
+- ``queue_size`` parameter [int]
 
-Devargs example
-^^^^^^^^^^^^^^^
+  - 1 - 1024, Virtio queue depth for pre-creating queue resource to speed up
+    first time queue creation. Set it together with ``queues`` parameter.
 
-- PCI devargs::
+  - 0, default value, no pre-create virtq resource.
 
-  -a 0000:03:00.2,class=vdpa
+- ``queues`` parameter [int]
 
-- Auxiliary devargs::
+  - 1 - 128, Maximum number of virtio queue pair (including 1 Rx queue and 1 Tx queue)
+    for pre-creating queue resource to speed up first time queue creation.
+    Set it together with ``queue_size`` parameter.
 
-  -a auxiliary:mlx5_core.sf.2,class=vdpa
-
+  - 0, default value, no pre-create virtq resource.
 
 Error handling
 ^^^^^^^^^^^^^^
@@ -182,3 +151,9 @@ Upon potential hardware errors, mlx5 PMD try to recover, give up if failed 3
 times in 3 seconds, virtq will be put in disable state. User should check log
 to get error information, or query vdpa statistics counter to know error type
 and count report.
+
+Statistics
+^^^^^^^^^^
+
+The device statistics counter persists in reconfiguration until the device gets
+removed. User can reset counters by calling function rte_vdpa_reset_stats().

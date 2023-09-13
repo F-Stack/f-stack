@@ -18,13 +18,19 @@
 #include <rte_kvargs.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include <iavf_devids.h>
 
 #include "ice_generic_flow.h"
 #include "ice_dcf_ethdev.h"
 #include "ice_rxtx.h"
+
+#define DCF_NUM_MACADDR_MAX      64
+
+static int dcf_add_del_mc_addr_list(struct ice_dcf_hw *hw,
+						struct rte_ether_addr *mc_addrs,
+						uint32_t mc_addrs_num, bool add);
 
 static int
 ice_dcf_dev_udp_tunnel_port_add(struct rte_eth_dev *dev,
@@ -38,6 +44,50 @@ ice_dcf_dev_init(struct rte_eth_dev *eth_dev);
 
 static int
 ice_dcf_dev_uninit(struct rte_eth_dev *eth_dev);
+
+static int
+ice_dcf_cap_check_handler(__rte_unused const char *key,
+			  const char *value, __rte_unused void *opaque);
+
+static int
+ice_dcf_engine_disabled_handler(__rte_unused const char *key,
+			  const char *value, __rte_unused void *opaque);
+
+struct ice_devarg {
+	enum ice_dcf_devrarg type;
+	const char *key;
+	int (*handler)(__rte_unused const char *key,
+			  const char *value, __rte_unused void *opaque);
+};
+
+static const struct ice_devarg ice_devargs_table[] = {
+	{ICE_DCF_DEVARG_CAP, "cap", ice_dcf_cap_check_handler},
+	{ICE_DCF_DEVARG_ACL, "acl", ice_dcf_engine_disabled_handler},
+};
+
+struct rte_ice_dcf_xstats_name_off {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+	unsigned int offset;
+};
+
+static const struct rte_ice_dcf_xstats_name_off rte_ice_dcf_stats_strings[] = {
+	{"rx_bytes", offsetof(struct ice_dcf_eth_stats, rx_bytes)},
+	{"rx_unicast_packets", offsetof(struct ice_dcf_eth_stats, rx_unicast)},
+	{"rx_multicast_packets", offsetof(struct ice_dcf_eth_stats, rx_multicast)},
+	{"rx_broadcast_packets", offsetof(struct ice_dcf_eth_stats, rx_broadcast)},
+	{"rx_dropped_packets", offsetof(struct ice_dcf_eth_stats, rx_discards)},
+	{"rx_unknown_protocol_packets", offsetof(struct ice_dcf_eth_stats,
+		rx_unknown_protocol)},
+	{"tx_bytes", offsetof(struct ice_dcf_eth_stats, tx_bytes)},
+	{"tx_unicast_packets", offsetof(struct ice_dcf_eth_stats, tx_unicast)},
+	{"tx_multicast_packets", offsetof(struct ice_dcf_eth_stats, tx_multicast)},
+	{"tx_broadcast_packets", offsetof(struct ice_dcf_eth_stats, tx_broadcast)},
+	{"tx_dropped_packets", offsetof(struct ice_dcf_eth_stats, tx_discards)},
+	{"tx_error_packets", offsetof(struct ice_dcf_eth_stats, tx_errors)},
+};
+
+#define ICE_DCF_NB_XSTATS (sizeof(rte_ice_dcf_stats_strings) / \
+		sizeof(rte_ice_dcf_stats_strings[0]))
 
 static uint16_t
 ice_dcf_recv_pkts(__rte_unused void *rx_queue,
@@ -562,11 +612,21 @@ ice_dcf_dev_start(struct rte_eth_dev *dev)
 		return ret;
 	}
 
-	ret = ice_dcf_add_del_all_mac_addr(hw, true);
+	ret = ice_dcf_add_del_all_mac_addr(hw, hw->eth_dev->data->mac_addrs,
+					   true, VIRTCHNL_ETHER_ADDR_PRIMARY);
 	if (ret) {
 		PMD_DRV_LOG(ERR, "Failed to add mac addr");
 		return ret;
 	}
+
+	if (dcf_ad->mc_addrs_num) {
+		/* flush previous addresses */
+		ret = dcf_add_del_mc_addr_list(hw, dcf_ad->mc_addrs,
+						dcf_ad->mc_addrs_num, true);
+		if (ret)
+			return ret;
+	}
+
 
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 
@@ -626,7 +686,16 @@ ice_dcf_dev_stop(struct rte_eth_dev *dev)
 	rte_intr_efd_disable(intr_handle);
 	rte_intr_vec_list_free(intr_handle);
 
-	ice_dcf_add_del_all_mac_addr(&dcf_ad->real_hw, false);
+	ice_dcf_add_del_all_mac_addr(&dcf_ad->real_hw,
+				     dcf_ad->real_hw.eth_dev->data->mac_addrs,
+				     false, VIRTCHNL_ETHER_ADDR_PRIMARY);
+
+	if (dcf_ad->mc_addrs_num)
+		/* flush previous addresses */
+		(void)dcf_add_del_mc_addr_list(&dcf_ad->real_hw,
+										dcf_ad->mc_addrs,
+							dcf_ad->mc_addrs_num, false);
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	ad->pf.adapter_stopped = 1;
 	hw->tm_conf.committed = false;
@@ -656,7 +725,7 @@ ice_dcf_dev_info_get(struct rte_eth_dev *dev,
 	struct ice_dcf_adapter *adapter = dev->data->dev_private;
 	struct ice_dcf_hw *hw = &adapter->real_hw;
 
-	dev_info->max_mac_addrs = 1;
+	dev_info->max_mac_addrs = DCF_NUM_MACADDR_MAX;
 	dev_info->max_rx_queues = hw->vsi_res->num_queue_pairs;
 	dev_info->max_tx_queues = hw->vsi_res->num_queue_pairs;
 	dev_info->min_rx_bufsize = ICE_BUF_SIZE_MIN;
@@ -730,26 +799,513 @@ ice_dcf_dev_info_get(struct rte_eth_dev *dev,
 }
 
 static int
+dcf_config_promisc(struct ice_dcf_adapter *adapter,
+		   bool enable_unicast,
+		   bool enable_multicast)
+{
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	struct virtchnl_promisc_info promisc;
+	struct dcf_virtchnl_cmd args;
+	int err;
+
+	promisc.flags = 0;
+	promisc.vsi_id = hw->vsi_res->vsi_id;
+
+	if (enable_unicast)
+		promisc.flags |= FLAG_VF_UNICAST_PROMISC;
+
+	if (enable_multicast)
+		promisc.flags |= FLAG_VF_MULTICAST_PROMISC;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = VIRTCHNL_OP_CONFIG_PROMISCUOUS_MODE;
+	args.req_msg = (uint8_t *)&promisc;
+	args.req_msglen = sizeof(promisc);
+
+	err = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (err) {
+		PMD_DRV_LOG(ERR,
+			    "fail to execute command VIRTCHNL_OP_CONFIG_PROMISCUOUS_MODE");
+		return err;
+	}
+
+	adapter->promisc_unicast_enabled = enable_unicast;
+	adapter->promisc_multicast_enabled = enable_multicast;
+	return 0;
+}
+
+static int
 ice_dcf_dev_promiscuous_enable(__rte_unused struct rte_eth_dev *dev)
 {
-	return 0;
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+
+	if (adapter->promisc_unicast_enabled) {
+		PMD_DRV_LOG(INFO, "promiscuous has been enabled");
+		return 0;
+	}
+
+	return dcf_config_promisc(adapter, true,
+				  adapter->promisc_multicast_enabled);
 }
 
 static int
 ice_dcf_dev_promiscuous_disable(__rte_unused struct rte_eth_dev *dev)
 {
-	return 0;
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+
+	if (!adapter->promisc_unicast_enabled) {
+		PMD_DRV_LOG(INFO, "promiscuous has been disabled");
+		return 0;
+	}
+
+	return dcf_config_promisc(adapter, false,
+				  adapter->promisc_multicast_enabled);
 }
 
 static int
 ice_dcf_dev_allmulticast_enable(__rte_unused struct rte_eth_dev *dev)
 {
-	return 0;
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+
+	if (adapter->promisc_multicast_enabled) {
+		PMD_DRV_LOG(INFO, "allmulticast has been enabled");
+		return 0;
+	}
+
+	return dcf_config_promisc(adapter, adapter->promisc_unicast_enabled,
+				  true);
 }
 
 static int
 ice_dcf_dev_allmulticast_disable(__rte_unused struct rte_eth_dev *dev)
 {
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+
+	if (!adapter->promisc_multicast_enabled) {
+		PMD_DRV_LOG(INFO, "allmulticast has been disabled");
+		return 0;
+	}
+
+	return dcf_config_promisc(adapter, adapter->promisc_unicast_enabled,
+				  false);
+}
+
+static int
+dcf_dev_add_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *addr,
+		     __rte_unused uint32_t index,
+		     __rte_unused uint32_t pool)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	int err;
+
+	if (rte_is_zero_ether_addr(addr)) {
+		PMD_DRV_LOG(ERR, "Invalid Ethernet Address");
+		return -EINVAL;
+	}
+
+	err = ice_dcf_add_del_all_mac_addr(&adapter->real_hw, addr, true,
+					   VIRTCHNL_ETHER_ADDR_EXTRA);
+	if (err) {
+		PMD_DRV_LOG(ERR, "fail to add MAC address");
+		return err;
+	}
+
+	return 0;
+}
+
+static void
+dcf_dev_del_mac_addr(struct rte_eth_dev *dev, uint32_t index)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct rte_ether_addr *addr = &dev->data->mac_addrs[index];
+	int err;
+
+	err = ice_dcf_add_del_all_mac_addr(&adapter->real_hw, addr, false,
+					   VIRTCHNL_ETHER_ADDR_EXTRA);
+	if (err)
+		PMD_DRV_LOG(ERR, "fail to remove MAC address");
+}
+
+static int
+dcf_add_del_mc_addr_list(struct ice_dcf_hw *hw,
+			 struct rte_ether_addr *mc_addrs,
+			 uint32_t mc_addrs_num, bool add)
+{
+	struct virtchnl_ether_addr_list *list;
+	struct dcf_virtchnl_cmd args;
+	uint32_t i;
+	int len, err = 0;
+
+	len = sizeof(struct virtchnl_ether_addr_list);
+	len += sizeof(struct virtchnl_ether_addr) * mc_addrs_num;
+
+	list = rte_zmalloc(NULL, len, 0);
+	if (!list) {
+		PMD_DRV_LOG(ERR, "fail to allocate memory");
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < mc_addrs_num; i++) {
+		memcpy(list->list[i].addr, mc_addrs[i].addr_bytes,
+		       sizeof(list->list[i].addr));
+		list->list[i].type = VIRTCHNL_ETHER_ADDR_EXTRA;
+	}
+
+	list->vsi_id = hw->vsi_res->vsi_id;
+	list->num_elements = mc_addrs_num;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = add ? VIRTCHNL_OP_ADD_ETH_ADDR :
+			VIRTCHNL_OP_DEL_ETH_ADDR;
+	args.req_msg = (uint8_t *)list;
+	args.req_msglen  = len;
+	err = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (err)
+		PMD_DRV_LOG(ERR, "fail to execute command %s",
+			    add ? "OP_ADD_ETHER_ADDRESS" :
+			    "OP_DEL_ETHER_ADDRESS");
+	rte_free(list);
+	return err;
+}
+
+static int
+dcf_set_mc_addr_list(struct rte_eth_dev *dev,
+		     struct rte_ether_addr *mc_addrs,
+		     uint32_t mc_addrs_num)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	uint32_t i;
+	int ret;
+
+
+	if (mc_addrs_num > DCF_NUM_MACADDR_MAX) {
+		PMD_DRV_LOG(ERR,
+			    "can't add more than a limited number (%u) of addresses.",
+			    (uint32_t)DCF_NUM_MACADDR_MAX);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < mc_addrs_num; i++) {
+		if (!rte_is_multicast_ether_addr(&mc_addrs[i])) {
+			const uint8_t *mac = mc_addrs[i].addr_bytes;
+
+			PMD_DRV_LOG(ERR,
+				    "Invalid mac: %02x:%02x:%02x:%02x:%02x:%02x",
+				    mac[0], mac[1], mac[2], mac[3], mac[4],
+				    mac[5]);
+			return -EINVAL;
+		}
+	}
+
+	if (adapter->mc_addrs_num) {
+		/* flush previous addresses */
+		ret = dcf_add_del_mc_addr_list(hw, adapter->mc_addrs,
+							adapter->mc_addrs_num, false);
+		if (ret)
+			return ret;
+	}
+	if (!mc_addrs_num) {
+		adapter->mc_addrs_num = 0;
+		return 0;
+	}
+
+    /* add new ones */
+	ret = dcf_add_del_mc_addr_list(hw, mc_addrs, mc_addrs_num, true);
+	if (ret) {
+		/* if adding mac address list fails, should add the
+		 * previous addresses back.
+		 */
+		if (adapter->mc_addrs_num)
+			(void)dcf_add_del_mc_addr_list(hw, adapter->mc_addrs,
+						       adapter->mc_addrs_num,
+						       true);
+		return ret;
+	}
+	adapter->mc_addrs_num = mc_addrs_num;
+	memcpy(adapter->mc_addrs,
+		    mc_addrs, mc_addrs_num * sizeof(*mc_addrs));
+
+	return 0;
+}
+
+static int
+dcf_dev_set_default_mac_addr(struct rte_eth_dev *dev,
+			     struct rte_ether_addr *mac_addr)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	struct rte_ether_addr *old_addr;
+	int ret;
+
+	old_addr = hw->eth_dev->data->mac_addrs;
+	if (rte_is_same_ether_addr(old_addr, mac_addr))
+		return 0;
+
+	ret = ice_dcf_add_del_all_mac_addr(&adapter->real_hw, old_addr, false,
+					   VIRTCHNL_ETHER_ADDR_PRIMARY);
+	if (ret)
+		PMD_DRV_LOG(ERR, "Fail to delete old MAC:"
+			    " %02X:%02X:%02X:%02X:%02X:%02X",
+			    old_addr->addr_bytes[0],
+			    old_addr->addr_bytes[1],
+			    old_addr->addr_bytes[2],
+			    old_addr->addr_bytes[3],
+			    old_addr->addr_bytes[4],
+			    old_addr->addr_bytes[5]);
+
+	ret = ice_dcf_add_del_all_mac_addr(&adapter->real_hw, mac_addr, true,
+					   VIRTCHNL_ETHER_ADDR_PRIMARY);
+	if (ret)
+		PMD_DRV_LOG(ERR, "Fail to add new MAC:"
+			    " %02X:%02X:%02X:%02X:%02X:%02X",
+			    mac_addr->addr_bytes[0],
+			    mac_addr->addr_bytes[1],
+			    mac_addr->addr_bytes[2],
+			    mac_addr->addr_bytes[3],
+			    mac_addr->addr_bytes[4],
+			    mac_addr->addr_bytes[5]);
+
+	if (ret)
+		return -EIO;
+
+	rte_ether_addr_copy(mac_addr, hw->eth_dev->data->mac_addrs);
+	return 0;
+}
+
+static int
+dcf_add_del_vlan_v2(struct ice_dcf_hw *hw, uint16_t vlanid, bool add)
+{
+	struct virtchnl_vlan_supported_caps *supported_caps =
+			&hw->vlan_v2_caps.filtering.filtering_support;
+	struct virtchnl_vlan *vlan_setting;
+	struct virtchnl_vlan_filter_list_v2 vlan_filter;
+	struct dcf_virtchnl_cmd args;
+	uint32_t filtering_caps;
+	int err;
+
+	if (supported_caps->outer) {
+		filtering_caps = supported_caps->outer;
+		vlan_setting = &vlan_filter.filters[0].outer;
+	} else {
+		filtering_caps = supported_caps->inner;
+		vlan_setting = &vlan_filter.filters[0].inner;
+	}
+
+	if (!(filtering_caps & VIRTCHNL_VLAN_ETHERTYPE_8100))
+		return -ENOTSUP;
+
+	memset(&vlan_filter, 0, sizeof(vlan_filter));
+	vlan_filter.vport_id = hw->vsi_res->vsi_id;
+	vlan_filter.num_elements = 1;
+	vlan_setting->tpid = RTE_ETHER_TYPE_VLAN;
+	vlan_setting->tci = vlanid;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = add ? VIRTCHNL_OP_ADD_VLAN_V2 : VIRTCHNL_OP_DEL_VLAN_V2;
+	args.req_msg = (uint8_t *)&vlan_filter;
+	args.req_msglen = sizeof(vlan_filter);
+	err = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (err)
+		PMD_DRV_LOG(ERR, "fail to execute command %s",
+			    add ? "OP_ADD_VLAN_V2" :  "OP_DEL_VLAN_V2");
+
+	return err;
+}
+
+static int
+dcf_add_del_vlan(struct ice_dcf_hw *hw, uint16_t vlanid, bool add)
+{
+	struct virtchnl_vlan_filter_list *vlan_list;
+	uint8_t cmd_buffer[sizeof(struct virtchnl_vlan_filter_list) +
+							sizeof(uint16_t)];
+	struct dcf_virtchnl_cmd args;
+	int err;
+
+	vlan_list = (struct virtchnl_vlan_filter_list *)cmd_buffer;
+	vlan_list->vsi_id = hw->vsi_res->vsi_id;
+	vlan_list->num_elements = 1;
+	vlan_list->vlan_id[0] = vlanid;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = add ? VIRTCHNL_OP_ADD_VLAN : VIRTCHNL_OP_DEL_VLAN;
+	args.req_msg = cmd_buffer;
+	args.req_msglen = sizeof(cmd_buffer);
+	err = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (err)
+		PMD_DRV_LOG(ERR, "fail to execute command %s",
+			    add ? "OP_ADD_VLAN" :  "OP_DEL_VLAN");
+
+	return err;
+}
+
+static int
+dcf_dev_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	int err;
+
+	if (hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2) {
+		err = dcf_add_del_vlan_v2(hw, vlan_id, on);
+		if (err)
+			return -EIO;
+		return 0;
+	}
+
+	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN))
+		return -ENOTSUP;
+
+	err = dcf_add_del_vlan(hw, vlan_id, on);
+	if (err)
+		return -EIO;
+	return 0;
+}
+
+static void
+dcf_iterate_vlan_filters_v2(struct rte_eth_dev *dev, bool enable)
+{
+	struct rte_vlan_filter_conf *vfc = &dev->data->vlan_filter_conf;
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	uint32_t i, j;
+	uint64_t ids;
+
+	for (i = 0; i < RTE_DIM(vfc->ids); i++) {
+		if (vfc->ids[i] == 0)
+			continue;
+
+		ids = vfc->ids[i];
+		for (j = 0; ids != 0 && j < 64; j++, ids >>= 1) {
+			if (ids & 1)
+				dcf_add_del_vlan_v2(hw, 64 * i + j, enable);
+		}
+	}
+}
+
+static int
+dcf_config_vlan_strip_v2(struct ice_dcf_hw *hw, bool enable)
+{
+	struct virtchnl_vlan_supported_caps *stripping_caps =
+			&hw->vlan_v2_caps.offloads.stripping_support;
+	struct virtchnl_vlan_setting vlan_strip;
+	struct dcf_virtchnl_cmd args;
+	uint32_t *ethertype;
+	int ret;
+
+	if ((stripping_caps->outer & VIRTCHNL_VLAN_ETHERTYPE_8100) &&
+	    (stripping_caps->outer & VIRTCHNL_VLAN_TOGGLE))
+		ethertype = &vlan_strip.outer_ethertype_setting;
+	else if ((stripping_caps->inner & VIRTCHNL_VLAN_ETHERTYPE_8100) &&
+		 (stripping_caps->inner & VIRTCHNL_VLAN_TOGGLE))
+		ethertype = &vlan_strip.inner_ethertype_setting;
+	else
+		return -ENOTSUP;
+
+	memset(&vlan_strip, 0, sizeof(vlan_strip));
+	vlan_strip.vport_id = hw->vsi_res->vsi_id;
+	*ethertype = VIRTCHNL_VLAN_ETHERTYPE_8100;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = enable ? VIRTCHNL_OP_ENABLE_VLAN_STRIPPING_V2 :
+			    VIRTCHNL_OP_DISABLE_VLAN_STRIPPING_V2;
+	args.req_msg = (uint8_t *)&vlan_strip;
+	args.req_msglen = sizeof(vlan_strip);
+	ret = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (ret)
+		PMD_DRV_LOG(ERR, "fail to execute command %s",
+			    enable ? "VIRTCHNL_OP_ENABLE_VLAN_STRIPPING_V2" :
+				     "VIRTCHNL_OP_DISABLE_VLAN_STRIPPING_V2");
+
+	return ret;
+}
+
+static int
+dcf_dev_vlan_offload_set_v2(struct rte_eth_dev *dev, int mask)
+{
+	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	bool enable;
+	int err;
+
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		enable = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER);
+
+		dcf_iterate_vlan_filters_v2(dev, enable);
+	}
+
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
+		enable = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP);
+
+		err = dcf_config_vlan_strip_v2(hw, enable);
+		/* If not support, the stripping is already disabled by PF */
+		if (err == -ENOTSUP && !enable)
+			err = 0;
+		if (err)
+			return -EIO;
+	}
+
+	return 0;
+}
+
+static int
+dcf_enable_vlan_strip(struct ice_dcf_hw *hw)
+{
+	struct dcf_virtchnl_cmd args;
+	int ret;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = VIRTCHNL_OP_ENABLE_VLAN_STRIPPING;
+	ret = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (ret)
+		PMD_DRV_LOG(ERR,
+			    "Failed to execute command of OP_ENABLE_VLAN_STRIPPING");
+
+	return ret;
+}
+
+static int
+dcf_disable_vlan_strip(struct ice_dcf_hw *hw)
+{
+	struct dcf_virtchnl_cmd args;
+	int ret;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = VIRTCHNL_OP_DISABLE_VLAN_STRIPPING;
+	ret = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (ret)
+		PMD_DRV_LOG(ERR,
+			    "Failed to execute command of OP_DISABLE_VLAN_STRIPPING");
+
+	return ret;
+}
+
+static int
+dcf_dev_vlan_offload_set(struct rte_eth_dev *dev, int mask)
+{
+	struct rte_eth_conf *dev_conf = &dev->data->dev_conf;
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	int err;
+
+	if (hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2)
+		return dcf_dev_vlan_offload_set_v2(dev, mask);
+
+	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN))
+		return -ENOTSUP;
+
+	/* Vlan stripping setting */
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
+		/* Enable or disable VLAN stripping */
+		if (dev_conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
+			err = dcf_enable_vlan_strip(hw);
+		else
+			err = dcf_disable_vlan_strip(hw);
+
+		if (err)
+			return -EIO;
+	}
 	return 0;
 }
 
@@ -761,6 +1317,130 @@ ice_dcf_dev_flow_ops_get(struct rte_eth_dev *dev,
 		return -EINVAL;
 
 	*ops = &ice_flow_ops;
+	return 0;
+}
+
+static int
+ice_dcf_dev_rss_reta_update(struct rte_eth_dev *dev,
+			struct rte_eth_rss_reta_entry64 *reta_conf,
+			uint16_t reta_size)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	uint8_t *lut;
+	uint16_t i, idx, shift;
+	int ret;
+
+	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
+		return -ENOTSUP;
+
+	if (reta_size != hw->vf_res->rss_lut_size) {
+		PMD_DRV_LOG(ERR, "The size of hash lookup table configured "
+			"(%d) doesn't match the number of hardware can "
+			"support (%d)", reta_size, hw->vf_res->rss_lut_size);
+		return -EINVAL;
+	}
+
+	lut = rte_zmalloc("rss_lut", reta_size, 0);
+	if (!lut) {
+		PMD_DRV_LOG(ERR, "No memory can be allocated");
+		return -ENOMEM;
+	}
+	/* store the old lut table temporarily */
+	rte_memcpy(lut, hw->rss_lut, reta_size);
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
+		if (reta_conf[idx].mask & (1ULL << shift))
+			lut[i] = reta_conf[idx].reta[shift];
+	}
+
+	rte_memcpy(hw->rss_lut, lut, reta_size);
+	/* send virtchnnl ops to configure rss*/
+	ret = ice_dcf_configure_rss_lut(hw);
+	if (ret) /* revert back */
+		rte_memcpy(hw->rss_lut, lut, reta_size);
+	rte_free(lut);
+
+	return ret;
+}
+
+static int
+ice_dcf_dev_rss_reta_query(struct rte_eth_dev *dev,
+		       struct rte_eth_rss_reta_entry64 *reta_conf,
+		       uint16_t reta_size)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	uint16_t i, idx, shift;
+
+	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
+		return -ENOTSUP;
+
+	if (reta_size != hw->vf_res->rss_lut_size) {
+		PMD_DRV_LOG(ERR, "The size of hash lookup table configured "
+			"(%d) doesn't match the number of hardware can "
+			"support (%d)", reta_size, hw->vf_res->rss_lut_size);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
+		if (reta_conf[idx].mask & (1ULL << shift))
+			reta_conf[idx].reta[shift] = hw->rss_lut[i];
+	}
+
+	return 0;
+}
+
+static int
+ice_dcf_dev_rss_hash_update(struct rte_eth_dev *dev,
+			struct rte_eth_rss_conf *rss_conf)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+
+	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
+		return -ENOTSUP;
+
+	/* HENA setting, it is enabled by default, no change */
+	if (!rss_conf->rss_key || rss_conf->rss_key_len == 0) {
+		PMD_DRV_LOG(DEBUG, "No key to be configured");
+		return 0;
+	} else if (rss_conf->rss_key_len != hw->vf_res->rss_key_size) {
+		PMD_DRV_LOG(ERR, "The size of hash key configured "
+			"(%d) doesn't match the size of hardware can "
+			"support (%d)", rss_conf->rss_key_len,
+			hw->vf_res->rss_key_size);
+		return -EINVAL;
+	}
+
+	rte_memcpy(hw->rss_key, rss_conf->rss_key, rss_conf->rss_key_len);
+
+	return ice_dcf_configure_rss_key(hw);
+}
+
+static int
+ice_dcf_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
+			  struct rte_eth_rss_conf *rss_conf)
+{
+	struct ice_dcf_adapter *adapter = dev->data->dev_private;
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+
+	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
+		return -ENOTSUP;
+
+	/* Just set it to default value now. */
+	rss_conf->rss_hf = ICE_RSS_OFFLOAD_ALL;
+
+	if (!rss_conf->rss_key)
+		return 0;
+
+	rss_conf->rss_key_len = hw->vf_res->rss_key_size;
+	rte_memcpy(rss_conf->rss_key, hw->rss_key, rss_conf->rss_key_len);
+
 	return 0;
 }
 
@@ -862,6 +1542,54 @@ ice_dcf_stats_reset(struct rte_eth_dev *dev)
 	return 0;
 }
 
+static int ice_dcf_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
+				      struct rte_eth_xstat_name *xstats_names,
+				      __rte_unused unsigned int limit)
+{
+	unsigned int i;
+
+	if (xstats_names != NULL)
+		for (i = 0; i < ICE_DCF_NB_XSTATS; i++) {
+			snprintf(xstats_names[i].name,
+				sizeof(xstats_names[i].name),
+				"%s", rte_ice_dcf_stats_strings[i].name);
+		}
+	return ICE_DCF_NB_XSTATS;
+}
+
+static int ice_dcf_xstats_get(struct rte_eth_dev *dev,
+				 struct rte_eth_xstat *xstats, unsigned int n)
+{
+	int ret;
+	unsigned int i;
+	struct ice_dcf_adapter *adapter =
+		ICE_DCF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct ice_dcf_hw *hw = &adapter->real_hw;
+	struct virtchnl_eth_stats *postats = &hw->eth_stats_offset;
+	struct virtchnl_eth_stats pnstats;
+
+	if (n < ICE_DCF_NB_XSTATS)
+		return ICE_DCF_NB_XSTATS;
+
+	ret = ice_dcf_query_stats(hw, &pnstats);
+	if (ret != 0)
+		return 0;
+
+	if (!xstats)
+		return 0;
+
+	ice_dcf_update_stats(postats, &pnstats);
+
+	/* loop over xstats array and values from pstats */
+	for (i = 0; i < ICE_DCF_NB_XSTATS; i++) {
+		xstats[i].id = i;
+		xstats[i].value = *(uint64_t *)(((char *)&pnstats) +
+			rte_ice_dcf_stats_strings[i].offset);
+	}
+
+	return ICE_DCF_NB_XSTATS;
+}
+
 static void
 ice_dcf_free_repr_info(struct ice_dcf_adapter *dcf_adapter)
 {
@@ -958,6 +1686,19 @@ ice_dcf_link_update(struct rte_eth_dev *dev,
 				RTE_ETH_LINK_SPEED_FIXED);
 
 	return rte_eth_linkstatus_set(dev, &new_link);
+}
+
+static int
+ice_dcf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu __rte_unused)
+{
+	/* mtu setting is forbidden if port is start */
+	if (dev->data->dev_started != 0) {
+		PMD_DRV_LOG(ERR, "port %d must be stopped before configuration",
+			    dev->data->port_id);
+		return -EBUSY;
+	}
+
+	return 0;
 }
 
 bool
@@ -1084,32 +1825,68 @@ ice_dcf_dev_reset(struct rte_eth_dev *dev)
 	return ret;
 }
 
+static const uint32_t *
+ice_dcf_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
+{
+	static const uint32_t ptypes[] = {
+		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_L4_FRAG,
+		RTE_PTYPE_L4_ICMP,
+		RTE_PTYPE_L4_NONFRAG,
+		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_UNKNOWN
+	};
+	return ptypes;
+}
+
 static const struct eth_dev_ops ice_dcf_eth_dev_ops = {
-	.dev_start               = ice_dcf_dev_start,
-	.dev_stop                = ice_dcf_dev_stop,
-	.dev_close               = ice_dcf_dev_close,
-	.dev_reset               = ice_dcf_dev_reset,
-	.dev_configure           = ice_dcf_dev_configure,
-	.dev_infos_get           = ice_dcf_dev_info_get,
-	.rx_queue_setup          = ice_rx_queue_setup,
-	.tx_queue_setup          = ice_tx_queue_setup,
-	.rx_queue_release        = ice_dev_rx_queue_release,
-	.tx_queue_release        = ice_dev_tx_queue_release,
-	.rx_queue_start          = ice_dcf_rx_queue_start,
-	.tx_queue_start          = ice_dcf_tx_queue_start,
-	.rx_queue_stop           = ice_dcf_rx_queue_stop,
-	.tx_queue_stop           = ice_dcf_tx_queue_stop,
-	.link_update             = ice_dcf_link_update,
-	.stats_get               = ice_dcf_stats_get,
-	.stats_reset             = ice_dcf_stats_reset,
-	.promiscuous_enable      = ice_dcf_dev_promiscuous_enable,
-	.promiscuous_disable     = ice_dcf_dev_promiscuous_disable,
-	.allmulticast_enable     = ice_dcf_dev_allmulticast_enable,
-	.allmulticast_disable    = ice_dcf_dev_allmulticast_disable,
-	.flow_ops_get            = ice_dcf_dev_flow_ops_get,
-	.udp_tunnel_port_add	 = ice_dcf_dev_udp_tunnel_port_add,
-	.udp_tunnel_port_del	 = ice_dcf_dev_udp_tunnel_port_del,
-	.tm_ops_get              = ice_dcf_tm_ops_get,
+	.dev_start                = ice_dcf_dev_start,
+	.dev_stop                 = ice_dcf_dev_stop,
+	.dev_close                = ice_dcf_dev_close,
+	.dev_reset                = ice_dcf_dev_reset,
+	.dev_configure            = ice_dcf_dev_configure,
+	.dev_infos_get            = ice_dcf_dev_info_get,
+	.dev_supported_ptypes_get = ice_dcf_dev_supported_ptypes_get,
+	.rx_queue_setup           = ice_rx_queue_setup,
+	.tx_queue_setup           = ice_tx_queue_setup,
+	.rx_queue_release         = ice_dev_rx_queue_release,
+	.tx_queue_release         = ice_dev_tx_queue_release,
+	.rx_queue_start           = ice_dcf_rx_queue_start,
+	.tx_queue_start           = ice_dcf_tx_queue_start,
+	.rx_queue_stop            = ice_dcf_rx_queue_stop,
+	.tx_queue_stop            = ice_dcf_tx_queue_stop,
+	.rxq_info_get             = ice_rxq_info_get,
+	.txq_info_get             = ice_txq_info_get,
+	.get_monitor_addr         = ice_get_monitor_addr,
+	.link_update              = ice_dcf_link_update,
+	.stats_get                = ice_dcf_stats_get,
+	.stats_reset              = ice_dcf_stats_reset,
+	.xstats_get               = ice_dcf_xstats_get,
+	.xstats_get_names         = ice_dcf_xstats_get_names,
+	.xstats_reset             = ice_dcf_stats_reset,
+	.promiscuous_enable       = ice_dcf_dev_promiscuous_enable,
+	.promiscuous_disable      = ice_dcf_dev_promiscuous_disable,
+	.allmulticast_enable      = ice_dcf_dev_allmulticast_enable,
+	.allmulticast_disable     = ice_dcf_dev_allmulticast_disable,
+	.mac_addr_add             = dcf_dev_add_mac_addr,
+	.mac_addr_remove          = dcf_dev_del_mac_addr,
+	.set_mc_addr_list         = dcf_set_mc_addr_list,
+	.mac_addr_set             = dcf_dev_set_default_mac_addr,
+	.vlan_filter_set          = dcf_dev_vlan_filter_set,
+	.vlan_offload_set         = dcf_dev_vlan_offload_set,
+	.flow_ops_get             = ice_dcf_dev_flow_ops_get,
+	.udp_tunnel_port_add	  = ice_dcf_dev_udp_tunnel_port_add,
+	.udp_tunnel_port_del	  = ice_dcf_dev_udp_tunnel_port_del,
+	.tm_ops_get               = ice_dcf_tm_ops_get,
+	.reta_update              = ice_dcf_dev_rss_reta_update,
+	.reta_query               = ice_dcf_dev_rss_reta_query,
+	.rss_hash_update          = ice_dcf_dev_rss_hash_update,
+	.rss_hash_conf_get        = ice_dcf_dev_rss_hash_conf_get,
+	.tx_done_cleanup          = ice_tx_done_cleanup,
+	.mtu_set                  = ice_dcf_dev_mtu_set,
 };
 
 static int
@@ -1141,6 +1918,7 @@ ice_dcf_dev_init(struct rte_eth_dev *eth_dev)
 		return -1;
 	}
 
+	dcf_config_promisc(adapter, false, false);
 	return 0;
 }
 
@@ -1148,6 +1926,16 @@ static int
 ice_dcf_dev_uninit(struct rte_eth_dev *eth_dev)
 {
 	ice_dcf_dev_close(eth_dev);
+
+	return 0;
+}
+
+static int
+ice_dcf_engine_disabled_handler(__rte_unused const char *key,
+			  const char *value, __rte_unused void *opaque)
+{
+	if (strcmp(value, "off"))
+		return -1;
 
 	return 0;
 }
@@ -1162,11 +1950,11 @@ ice_dcf_cap_check_handler(__rte_unused const char *key,
 	return 0;
 }
 
-static int
-ice_dcf_cap_selected(struct rte_devargs *devargs)
+int
+ice_devargs_check(struct rte_devargs *devargs, enum ice_dcf_devrarg devarg_type)
 {
 	struct rte_kvargs *kvlist;
-	const char *key = "cap";
+	unsigned int i = 0;
 	int ret = 0;
 
 	if (devargs == NULL)
@@ -1176,16 +1964,18 @@ ice_dcf_cap_selected(struct rte_devargs *devargs)
 	if (kvlist == NULL)
 		return 0;
 
-	if (!rte_kvargs_count(kvlist, key))
-		goto exit;
+	for (i = 0; i < ARRAY_SIZE(ice_devargs_table); i++)	{
+		if (devarg_type == ice_devargs_table[i].type) {
+			if (!rte_kvargs_count(kvlist, ice_devargs_table[i].key))
+				goto exit;
 
-	/* dcf capability selected when there's a key-value pair: cap=dcf */
-	if (rte_kvargs_process(kvlist, key,
-			       ice_dcf_cap_check_handler, NULL) < 0)
-		goto exit;
-
-	ret = 1;
-
+			if (rte_kvargs_process(kvlist, ice_devargs_table[i].key,
+					ice_devargs_table[i].handler, NULL) < 0)
+				goto exit;
+			ret = 1;
+			break;
+		}
+	}
 exit:
 	rte_kvargs_free(kvlist);
 	return ret;
@@ -1203,7 +1993,7 @@ eth_ice_dcf_pci_probe(__rte_unused struct rte_pci_driver *pci_drv,
 	uint16_t dcf_vsi_id;
 	int i, ret;
 
-	if (!ice_dcf_cap_selected(pci_dev->device.devargs))
+	if (!ice_devargs_check(pci_dev->device.devargs, ICE_DCF_DEVARG_CAP))
 		return 1;
 
 	ret = rte_eth_devargs_parse(pci_dev->device.devargs->args, &eth_da);

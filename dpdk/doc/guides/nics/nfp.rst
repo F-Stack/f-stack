@@ -12,7 +12,8 @@ up to 400-Gb/s.
 
 This document explains how to use DPDK with the Netronome Poll Mode
 Driver (PMD) supporting Netronome's Network Flow Processor 6xxx
-(NFP-6xxx) and Netronome's Flow Processor 4xxx (NFP-4xxx).
+(NFP-6xxx), Netronome's Network Flow Processor 4xxx (NFP-4xxx) and
+Netronome's Network Flow Processor 38xx (NFP-38xx).
 
 NFP is a SRIOV capable device and the PMD supports the physical
 function (PF) and the virtual functions (VFs).
@@ -99,9 +100,10 @@ more than one SmartNIC, same type of SmartNIC or different ones, and to upload a
 different firmware to each SmartNIC.
 
    .. Note::
-      Currently the NFP PMD supports using the PF with Agilio Basic Firmware. See
-      https://help.netronome.com/support/solutions for more information on the
-      various firmwares supported by the Netronome Agilio CX smartNIC.
+      Currently the NFP PMD supports using the PF with Agilio Firmware with NFD3
+      and Agilio Firmware with NFDk. See https://help.netronome.com/support/solutions
+      for more information on the various firmwares supported by the Netronome
+      Agilio CX smartNIC.
 
 PF multiport support
 --------------------
@@ -179,3 +181,35 @@ System configuration
    -k option shows the device driver, if any, that devices are bound to.
    Depending on the modules loaded at this point the new PCI devices may be
    bound to nfp_netvf driver.
+
+
+Flow offload
+------------
+
+Use the flower firmware application, some type of Netronome's SmartNICs can
+offload the flow into cards.
+
+The flower firmware application requires the PMD running two services:
+
+	* PF vNIC service: handling the feedback traffic.
+	* ctrl vNIC service: communicate between PMD and firmware through
+	  control message.
+
+To achieve the offload of flow, the representor ports are exposed to OVS.
+The flower firmware application support representor port for VF and physical
+port. There will always exist a representor port for each physical port,
+and the number of the representor port for VF is specified by the user through
+parameter.
+
+In the Rx direction, the flower firmware application will prepend the input
+port information into metadata for each packet which can't offloaded. The PF
+vNIC service will keep polling packets from the firmware, and multiplex them
+to the corresponding representor port.
+
+In the Tx direction, the representor port will prepend the output port
+information into metadata for each packet, and then send it to firmware through
+PF vNIC.
+
+The ctrl vNIC service handling various control message, like the creation and
+configuration of representor port, the pattern and action of flow rules, the
+statistics of flow rules, and so on.

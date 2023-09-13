@@ -2,10 +2,13 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_CMD_H_
-#define _HNS3_CMD_H_
+#ifndef HNS3_CMD_H
+#define HNS3_CMD_H
 
 #include <stdint.h>
+
+#include <rte_byteorder.h>
+#include <rte_spinlock.h>
 
 #define HNS3_CMDQ_TX_TIMEOUT		30000
 #define HNS3_CMDQ_CLEAR_WAIT_TIME	200
@@ -785,12 +788,6 @@ struct hns3_sfp_type {
 #define HNS3_FIBER_LINK_SPEED_10M_BIT		BIT(7)
 #define HNS3_FIBER_LINK_SPEED_200G_BIT		BIT(8)
 
-#define HNS3_FIBER_FEC_AUTO_BIT		BIT(0)
-#define HNS3_FIBER_FEC_BASER_BIT	BIT(1)
-#define HNS3_FIBER_FEC_RS_BIT		BIT(2)
-#define HNS3_FIBER_FEC_LLRS_BIT		BIT(3)
-#define HNS3_FIBER_FEC_NOFEC_BIT	BIT(4)
-
 struct hns3_sfp_info_cmd {
 	uint32_t sfp_speed;
 	uint8_t query_type; /* 0: sfp speed, 1: active */
@@ -800,8 +797,7 @@ struct hns3_sfp_info_cmd {
 	uint8_t autoneg_ability;
 	uint32_t supported_speed; /* speed supported by current media */
 	uint32_t module_type;
-	uint8_t fec_ability; /* supported fec modes, see HNS3_FIBER_FEC_XXX_BIT */
-	uint8_t rsv1[7];
+	uint8_t rsv1[8];
 };
 
 #define HNS3_MAC_CFG_FEC_AUTO_EN_B	0
@@ -1049,4 +1045,4 @@ int hns3_cmd_init(struct hns3_hw *hw);
 void hns3_cmd_destroy_queue(struct hns3_hw *hw);
 void hns3_cmd_uninit(struct hns3_hw *hw);
 
-#endif /* _HNS3_CMD_H_ */
+#endif /* HNS3_CMD_H */

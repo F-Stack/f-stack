@@ -9,6 +9,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -90,7 +91,7 @@ struct sync_msg {
 struct follow_up_msg {
 	struct ptp_header   hdr;
 	struct tstamp       precise_origin_tstamp;
-	uint8_t             suffix[0];
+	uint8_t             suffix[];
 } __rte_packed;
 
 struct delay_req_msg {
@@ -102,7 +103,7 @@ struct delay_resp_msg {
 	struct ptp_header    hdr;
 	struct tstamp        rx_tstamp;
 	struct port_id       req_port_id;
-	uint8_t              suffix[0];
+	uint8_t              suffix[];
 } __rte_packed;
 
 struct ptp_message {

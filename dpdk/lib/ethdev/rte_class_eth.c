@@ -2,16 +2,15 @@
  * Copyright(c) 2018 Gaëtan Rivet
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <rte_class.h>
-#include <rte_compat.h>
 #include <rte_errno.h>
 #include <rte_kvargs.h>
 #include <rte_log.h>
 
 #include "rte_ethdev.h"
-#include "rte_ethdev_core.h"
 #include "ethdev_driver.h"
 #include "ethdev_private.h"
 

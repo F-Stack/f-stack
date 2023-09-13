@@ -6,9 +6,9 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_geneve.h>
@@ -538,7 +538,7 @@ static const uint32_t *enicpmd_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_UNKNOWN
 	};
 
-	if (dev->rx_pkt_burst != enic_dummy_recv_pkts &&
+	if (dev->rx_pkt_burst != rte_eth_pkt_burst_dummy &&
 	    dev->rx_pkt_burst != NULL) {
 		struct enic *enic = pmd_priv(dev);
 		if (enic->overlay_offload)

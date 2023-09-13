@@ -120,6 +120,10 @@ The following are the application command-line options:
 
        Use burst mode event timer adapter as producer.
 
+* ``--prod_type_cryptodev``
+
+        Use crypto device as producer.
+
 * ``--timer_tick_nsec``
 
        Used to dictate number of nano seconds between bucket traversal of the
@@ -147,6 +151,16 @@ The following are the application command-line options:
        Global dequeue timeout for all the event ports if the provided dequeue
        timeout is out of the supported range of event device it will be
        adjusted to the highest/lowest supported dequeue timeout supported.
+
+* ``--crypto_adptr_mode``
+
+        Set crypto adapter mode. Use 0 for OP_NEW (default) and 1 for
+        OP_FORWARD mode.
+
+* ``--crypto_op_type``
+
+        Set crypto operation type. Use 0 for symmetric crypto ops (default)
+        and 1 for asymmetric crypto ops.
 
 * ``--mbuf_sz``
 
@@ -186,9 +200,20 @@ The following are the application command-line options:
 
 * ``--per_port_pool``
 
-        Configure unique mempool per ethernet device, the size of each pool
-        is equal to `pool_sz`.
-        Only applicable for pipeline_atq` and `pipeline_queue` tests.
+       Configure unique mempool per ethernet device, the size of each pool
+       is equal to `pool_sz`.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--tx_first``
+
+       Transmit given number of packets across all the ethernet device that
+       are enabled in the test.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--tx_pkt_sz``
+
+       Packet size to use for `--tx_first`.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
 
 
 Eventdev Tests
@@ -420,6 +445,7 @@ Supported application command line options are following::
         --prod_type_ethdev
         --prod_type_timerdev_burst
         --prod_type_timerdev
+        --prod_type_cryptodev
         --prod_enq_burst_sz
         --timer_tick_nsec
         --max_tmo_nsec
@@ -427,6 +453,7 @@ Supported application command line options are following::
         --nb_timers
         --nb_timer_adptrs
         --deq_tmo_nsec
+        --crypto_adptr_mode
 
 Example
 ^^^^^^^
@@ -529,12 +556,14 @@ Supported application command line options are following::
         --prod_type_ethdev
         --prod_type_timerdev_burst
         --prod_type_timerdev
+        --prod_type_cryptodev
         --timer_tick_nsec
         --max_tmo_nsec
         --expiry_nsec
         --nb_timers
         --nb_timer_adptrs
         --deq_tmo_nsec
+        --crypto_adptr_mode
 
 Example
 ^^^^^^^
@@ -654,6 +683,8 @@ Supported application command line options are following::
         --vector_size
         --vector_tmo_ns
         --per_port_pool
+        --tx_first
+        --tx_pkt_sz
 
 
 .. Note::
@@ -758,6 +789,8 @@ Supported application command line options are following::
         --vector_size
         --vector_tmo_ns
         --per_port_pool
+        --tx_first
+        --tx_pkt_sz
 
 
 .. Note::

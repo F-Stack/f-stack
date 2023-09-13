@@ -9,18 +9,21 @@
 #include <cnxk_security_ar.h>
 
 struct cn9k_eth_txq {
-	uint64_t cmd[8];
+	uint64_t send_hdr_w0;
 	int64_t fc_cache_pkts;
 	uint64_t *fc_mem;
 	void *lmt_addr;
 	rte_iova_t io_addr;
 	uint64_t lso_tun_fmt;
+	uint64_t ts_mem;
 	uint16_t sqes_per_sqb_log2;
 	int16_t nb_sqb_bufs_adj;
 	rte_iova_t cpt_io_addr;
 	uint64_t sa_base;
 	uint64_t *cpt_fc;
 	uint16_t cpt_desc;
+	uint64_t mark_flag : 8;
+	uint64_t mark_fmt : 48;
 } __plt_cache_aligned;
 
 struct cn9k_eth_rxq {
@@ -76,6 +79,9 @@ struct cn9k_outb_priv_data {
 
 	/* Back pointer to eth sec session */
 	struct cnxk_eth_sec_sess *eth_sec;
+
+	/* IV in DBG mode */
+	uint8_t iv_dbg[ROC_IE_ON_MAX_IV_LEN];
 };
 
 struct cn9k_sec_sess_priv {

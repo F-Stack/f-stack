@@ -347,7 +347,9 @@ __rte_crypto_op_get_priv_data(struct rte_crypto_op *op, uint32_t size)
  * If operation has been allocate from a rte_mempool, then the operation will
  * be returned to the mempool.
  *
- * @param	op	symmetric crypto operation
+ * @param op
+ *   Pointer to symmetric crypto operation allocated with rte_crypto_op_alloc()
+ *   If op is NULL, no operation is performed.
  */
 static inline void
 rte_crypto_op_free(struct rte_crypto_op *op)
@@ -428,8 +430,7 @@ rte_crypto_op_sym_xforms_alloc(struct rte_crypto_op *op, uint8_t nb_xforms)
  * @param	sess	cryptodev session
  */
 static inline int
-rte_crypto_op_attach_sym_session(struct rte_crypto_op *op,
-		struct rte_cryptodev_sym_session *sess)
+rte_crypto_op_attach_sym_session(struct rte_crypto_op *op, void *sess)
 {
 	if (unlikely(op->type != RTE_CRYPTO_OP_TYPE_SYMMETRIC))
 		return -1;

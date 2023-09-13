@@ -101,6 +101,10 @@ For X710/XL710/XXV710,
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    22.11     |         2.20.12       |       9.01       |
+   +--------------+-----------------------+------------------+
+   |    22.07     |         2.19.3        |       8.70       |
+   +--------------+-----------------------+------------------+
    |    22.03     |         2.17.15       |       8.30       |
    +--------------+-----------------------+------------------+
    |    21.11     |         2.17.4        |       8.30       |
@@ -156,6 +160,10 @@ For X722,
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    22.11     |         2.20.12       |       6.00       |
+   +--------------+-----------------------+------------------+
+   |    22.07     |         2.19.3        |       5.60       |
+   +--------------+-----------------------+------------------+
    |    22.03     |         2.17.15       |       5.50       |
    +--------------+-----------------------+------------------+
    |    21.11     |         2.17.4        |       5.30       |
@@ -568,8 +576,7 @@ of the region index, queue number, queue start index, user priority, traffic
 classes and so on. Depending on commands from the command line, it will call
 i40e private APIs and start the process of setting or flushing the queue
 region configuration. As this feature is specific for i40e only private
-APIs are used. These new ``test_pmd`` commands are as shown below. For
-details please refer to :doc:`../testpmd_app_ug/index`.
+APIs are used.
 
 .. code-block:: console
 
@@ -639,24 +646,6 @@ used to classify MPLS packet by using a command in testpmd like:
    testpmd> flow create 0 ingress pattern eth type is 0x8847 / end \
             actions queue index <M> / end
 
-16 Byte RX Descriptor setting on DPDK VF
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Currently the VF's RX descriptor mode is decided by PF. There's no PF-VF
-interface for VF to request the RX descriptor mode, also no interface to notify
-VF its own RX descriptor mode.
-For all available versions of the i40e driver, these drivers don't support 16
-byte RX descriptor. If the Linux i40e kernel driver is used as host driver,
-while DPDK i40e PMD is used as the VF driver, DPDK cannot choose 16 byte receive
-descriptor. The reason is that the RX descriptor is already set to 32 byte by
-the i40e kernel driver.
-In the future, if the Linux i40e driver supports 16 byte RX descriptor, user
-should make sure the DPDK VF uses the same RX descriptor mode, 16 byte or 32
-byte, as the PF driver.
-
-The same rule for DPDK PF + DPDK VF. The PF and VF should use the same RX
-descriptor mode. Or the VF RX will not work.
-
 Receive packets with Ethertype 0x88A8
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -700,38 +689,6 @@ effect.
 It's suggested to set the strict priority mode for a TC that is latency
 sensitive but no consuming much bandwidth.
 
-VF performance is impacted by PCI extended tag setting
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-To reach maximum NIC performance in the VF the PCI extended tag must be
-enabled. The DPDK i40e PF driver will set this feature during initialization,
-but the kernel PF driver does not. So when running traffic on a VF which is
-managed by the kernel PF driver, a significant NIC performance downgrade has
-been observed (for 64 byte packets, there is about 25% line-rate downgrade for
-a 25GbE device and about 35% for a 40GbE device).
-
-For kernel version >= 4.11, the kernel's PCI driver will enable the extended
-tag if it detects that the device supports it. So by default, this is not an
-issue. For kernels <= 4.11 or when the PCI extended tag is disabled it can be
-enabled using the steps below.
-
-#. Get the current value of the PCI configure register::
-
-      setpci -s <XX:XX.X> a8.w
-
-#. Set bit 8::
-
-      value = value | 0x100
-
-#. Set the PCI configure register with new value::
-
-      setpci -s <XX:XX.X> a8.w=<value>
-
-Vlan strip of VF
-~~~~~~~~~~~~~~~~
-
-The VF vlan strip function is only supported in the i40e kernel driver >= 2.1.26.
-
 DCB function
 ~~~~~~~~~~~~
 
@@ -761,6 +718,189 @@ Mirror rule limitation for X722
 
 Due to firmware restriction of X722, the same VSI cannot have more than one mirror rule.
 
+.. _net_i40e_testpmd_commands:
+
+Testpmd driver specific commands
+--------------------------------
+
+Some i40e driver specific features are integrated in testpmd.
+
+RSS queue region
+~~~~~~~~~~~~~~~~
+
+Set RSS queue region span on a port::
+
+   testpmd> set port (port_id) queue-region region_id (value) \
+		queue_start_index (value) queue_num (value)
+
+Set flowtype mapping on a RSS queue region on a port::
+
+   testpmd> set port (port_id) queue-region region_id (value) flowtype (value)
+
+where:
+
+* For the flowtype(pctype) of packet,the specific index for each type has
+  been defined in file i40e_type.h as enum i40e_filter_pctype.
+
+Set user priority mapping on a RSS queue region on a port::
+
+   testpmd> set port (port_id) queue-region UP (value) region_id (value)
+
+Flush all queue region related configuration on a port::
+
+   testpmd> set port (port_id) queue-region flush (on|off)
+
+where:
+
+* ``on``: is just an enable function which server for other configuration,
+  it is for all configuration about queue region from up layer,
+  at first will only keep in DPDK software stored in driver,
+  only after "flush on", it commit all configuration to HW.
+
+* ``"off``: is just clean all configuration about queue region just now,
+  and restore all to DPDK i40e driver default config when start up.
+
+Show all queue region related configuration info on a port::
+
+   testpmd> show port (port_id) queue-region
+
+.. note::
+
+  Queue region only support on PF by now, so these command is
+  only for configuration of queue region on PF port.
+
+set promisc (for VF)
+~~~~~~~~~~~~~~~~~~~~
+
+Set the unicast promiscuous mode for a VF from PF.
+It's supported by Intel i40e NICs now.
+In promiscuous mode packets are not dropped if they aren't for the specified MAC address::
+
+   testpmd> set vf promisc (port_id) (vf_id) (on|off)
+
+set allmulticast (for VF)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set the multicast promiscuous mode for a VF from PF.
+It's supported by Intel i40e NICs now.
+In promiscuous mode packets are not dropped if they aren't for the specified MAC address::
+
+   testpmd> set vf allmulti (port_id) (vf_id) (on|off)
+
+set broadcast mode (for VF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set broadcast mode for a VF from the PF::
+
+   testpmd> set vf broadcast (port_id) (vf_id) (on|off)
+
+vlan set tag (for VF)
+~~~~~~~~~~~~~~~~~~~~~
+
+Set VLAN tag for a VF from the PF::
+
+   testpmd> set vf vlan tag (port_id) (vf_id) (on|off)
+
+set tx max bandwidth (for VF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set TX max absolute bandwidth (Mbps) for a VF from PF::
+
+   testpmd> set vf tx max-bandwidth (port_id) (vf_id) (max_bandwidth)
+
+set tc tx min bandwidth (for VF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set all TCs' TX min relative bandwidth (%) for a VF from PF::
+
+   testpmd> set vf tc tx min-bandwidth (port_id) (vf_id) (bw1, bw2, ...)
+
+set tc tx max bandwidth (for VF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set a TC's TX max absolute bandwidth (Mbps) for a VF from PF::
+
+   testpmd> set vf tc tx max-bandwidth (port_id) (vf_id) (tc_no) (max_bandwidth)
+
+set tc strict link priority mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set some TCs' strict link priority mode on a physical port::
+
+   testpmd> set tx strict-link-priority (port_id) (tc_bitmap)
+
+ddp add
+~~~~~~~
+
+Load a dynamic device personalization (DDP) profile and store backup profile::
+
+   testpmd> ddp add (port_id) (profile_path[,backup_profile_path])
+
+ddp del
+~~~~~~~
+
+Delete a dynamic device personalization profile and restore backup profile::
+
+   testpmd> ddp del (port_id) (backup_profile_path)
+
+ddp get list
+~~~~~~~~~~~~
+
+Get loaded dynamic device personalization (DDP) package info list::
+
+   testpmd> ddp get list (port_id)
+
+ddp get info
+~~~~~~~~~~~~
+
+Display information about dynamic device personalization (DDP) profile::
+
+   testpmd> ddp get info (profile_path)
+
+ptype mapping
+~~~~~~~~~~~~~
+
+List all items from the ptype mapping table::
+
+   testpmd> ptype mapping get (port_id) (valid_only)
+
+Where:
+
+* ``valid_only``: A flag indicates if only list valid items(=1) or all items(=0).
+
+Replace a specific or a group of software defined ptype with a new one::
+
+   testpmd> ptype mapping replace  (port_id) (target) (mask) (pkt_type)
+
+where:
+
+* ``target``: A specific software ptype or a mask to represent a group of software ptypes.
+
+* ``mask``: A flag indicate if "target" is a specific software ptype(=0) or a ptype mask(=1).
+
+* ``pkt_type``: The new software ptype to replace the old ones.
+
+Update hardware defined ptype to software defined packet type mapping table::
+
+   testpmd> ptype mapping update (port_id) (hw_ptype) (sw_ptype)
+
+where:
+
+* ``hw_ptype``: hardware ptype as the index of the ptype mapping table.
+
+* ``sw_ptype``: software ptype as the value of the ptype mapping table.
+
+Reset ptype mapping table::
+
+   testpmd> ptype mapping reset (port_id)
+
+show port pctype mapping
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+List all items from the pctype mapping table::
+
+   testpmd> show port (port_id) pctype mapping
+
 High Performance of Small Packets on 40GbE NIC
 ----------------------------------------------
 
@@ -787,12 +927,15 @@ it will fail and return the info "Conflict with the first rule's input set",
 which means the current rule's input set conflicts with the first rule's.
 Remove the first rule if want to change the input set of the PCTYPE.
 
-PF reset fail after QinQ set with FW >= 8.4
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Vlan related Features miss when FW >= 8.4
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If upgrade FW to version 8.4 and higher, after set MAC VLAN filter and configure outer VLAN on PF, kill
-DPDK process will cause the card crash.
+If FW version >= 8.4, there'll be some Vlan related issues:
 
+#. TCI input set for QinQ  is invalid.
+#. Fail to configure TPID for QinQ.
+#. Need to enable QinQ before enabling Vlan filter.
+#. Fail to strip outer Vlan.
 
 Example of getting best performance with l3fwd example
 ------------------------------------------------------

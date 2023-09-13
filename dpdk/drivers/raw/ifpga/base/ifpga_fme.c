@@ -790,19 +790,32 @@ struct ifpga_feature_ops fme_emif_ops = {
 	.uinit = fme_emif_uinit,
 };
 
-static const char *board_type_to_string(u32 type)
+static const char *board_type_to_string(u32 board, u32 type)
 {
-	switch (type) {
-	case VC_8_10G:
-		return "VC_8x10G";
-	case VC_4_25G:
-		return "VC_4x25G";
-	case VC_2_1_25:
-		return "VC_2x1x25G";
-	case VC_4_25G_2_25G:
-		return "VC_4x25G+2x25G";
-	case VC_2_2_25G:
-		return "VC_2x2x25G";
+	if (board == VISTA_CREEK) {
+		switch (type) {
+		case VC_8_10G:
+			return "8x10G";
+		case VC_4_25G:
+			return "4x25G";
+		case VC_2_1_25:
+			return "2x1x25G";
+		case VC_4_25G_2_25G:
+			return "4x25G+2x25G";
+		case VC_2_2_25G:
+			return "2x2x25G";
+		break;
+		}
+	} else {
+		switch (type) {
+		case FIMA_10G_ADP:
+			return "2x4x10G";
+		case FIMA_25G_ADP:
+			return "2x2x25G";
+		case FIMA_100G_ADP:
+			return "2x100G";
+		break;
+		}
 	}
 
 	return "unknown";
@@ -817,6 +830,12 @@ static const char *board_major_to_string(u32 major)
 		return "RUSH_CREEK";
 	case DARBY_CREEK:
 		return "DARBY_CREEK";
+	case LIGHTNING_CREEK:
+		return "LIGHTNING_CREEK";
+	case ARROW_CREEK:
+		return "ARROW_CREEK";
+	default:
+		break;
 	}
 
 	return "unknown";
@@ -859,35 +878,56 @@ static int board_type_to_info(u32 type,
 
 static int fme_get_board_interface(struct ifpga_fme_hw *fme)
 {
-	struct fme_bitstream_id id;
+	struct feature_fme_bitstream_id id;
 	struct ifpga_hw *hw;
 	u32 val;
+	const char *type = NULL;
+	int ret;
 
 	hw = fme->parent;
 	if (!hw)
 		return -ENODEV;
 
-	if (fme_hdr_get_bitstream_id(fme, &id.id))
+	if (fme_hdr_get_bitstream_id(fme, &id.csr))
 		return -EINVAL;
 
-	fme->board_info.major = id.major;
-	fme->board_info.minor = id.minor;
-	fme->board_info.type = id.interface;
-	fme->board_info.fvl_bypass = id.fvl_bypass;
-	fme->board_info.mac_lightweight = id.mac_lightweight;
-	fme->board_info.lightweight = id.lightweiht;
-	fme->board_info.disaggregate = id.disagregate;
-	fme->board_info.seu = id.seu;
-	fme->board_info.ptp = id.ptp;
+	if (id.v1.major == ARROW_CREEK) {
+		fme->board_info.major = id.v2.bs_vermajor;
+		fme->board_info.minor = id.v2.bs_verminor;
+		fme->board_info.n6000_fim_type = id.v2.fim_type;
+		fme->board_info.n6000_hssi_id = id.v2.hssi_id;
+		type = board_type_to_string(fme->board_info.major,
+				fme->board_info.n6000_fim_type);
+	} else {
+		fme->board_info.major = id.v1.major;
+		fme->board_info.minor = id.v1.minor;
+		fme->board_info.type = id.v1.interface;
+		fme->board_info.fvl_bypass = id.v1.fvl_bypass;
+		fme->board_info.mac_lightweight = id.v1.mac_lightweight;
+		fme->board_info.lightweight = id.v1.lightweiht;
+		fme->board_info.disaggregate = id.v1.disagregate;
+		fme->board_info.seu = id.v1.seu;
+		fme->board_info.ptp = id.v1.ptp;
+		type = board_type_to_string(fme->board_info.major,
+				fme->board_info.type);
+	}
 
 	dev_info(fme, "found: PCI dev: %02x:%02x:%x board: %s type: %s\n",
 			hw->pci_data->bus,
 			hw->pci_data->devid,
 			hw->pci_data->function,
 			board_major_to_string(fme->board_info.major),
-			board_type_to_string(fme->board_info.type));
+			type);
 
-	dev_info(fme, "support feature:\n"
+	ret = max10_get_fpga_load_info(fme->max10_dev, &val);
+	if (ret)
+		return ret;
+	fme->board_info.boot_page = val;
+
+	if (fme->board_info.major == VISTA_CREEK) {
+		dev_info(dev, "FPGA loaded from %s Image\n",
+			val ? "User" : "Factory");
+		dev_info(fme, "support feature:\n"
 			"fvl_bypass:%s\n"
 			"mac_lightweight:%s\n"
 			"lightweight:%s\n"
@@ -901,26 +941,29 @@ static int fme_get_board_interface(struct ifpga_fme_hw *fme)
 			check_support(fme->board_info.seu),
 			check_support(fme->board_info.ptp));
 
+		if (board_type_to_info(fme->board_info.type, &fme->board_info))
+			return -EINVAL;
 
-	if (board_type_to_info(fme->board_info.type, &fme->board_info))
-		return -EINVAL;
-
-	dev_info(fme, "get board info: nums_retimers %d ports_per_retimer %d nums_fvl %d ports_per_fvl %d\n",
+		dev_info(fme, "get board info: nums_retimers %d "
+			"ports_per_retimer %d nums_fvl %d "
+			"ports_per_fvl %d\n",
 			fme->board_info.nums_of_retimer,
 			fme->board_info.ports_per_retimer,
 			fme->board_info.nums_of_fvl,
 			fme->board_info.ports_per_fvl);
+	} else {
+		dev_info(dev, "FPGA loaded from %s Image\n",
+			val ? (val == 1 ? "User1" : "User2") : "Factory");
+	}
 
-	if (max10_sys_read(fme->max10_dev, FPGA_PAGE_INFO, &val))
-		return -EINVAL;
-	fme->board_info.boot_page = val & 0x7;
-
-	if (max10_sys_read(fme->max10_dev, MAX10_BUILD_VER, &val))
-		return -EINVAL;
+	ret = max10_get_bmc_version(fme->max10_dev, &val);
+	if (ret)
+		return ret;
 	fme->board_info.max10_version = val;
 
-	if (max10_sys_read(fme->max10_dev, NIOS2_FW_VERSION, &val))
-		return -EINVAL;
+	ret = max10_get_bmcfw_version(fme->max10_dev, &val);
+	if (ret)
+		return ret;
 	fme->board_info.nios_fw_version = val;
 
 	dev_info(fme, "max10 version 0x%x, nios fw version 0x%x\n",
@@ -983,11 +1026,25 @@ static int fme_spi_init(struct ifpga_feature *feature)
 
 	altera_spi_init(spi_master);
 
-	max10 = intel_max10_device_probe(spi_master, 0);
-	if (!max10) {
+	max10 = opae_zmalloc(sizeof(*max10));
+	if (!max10)
+		goto release_dev;
+
+	max10->spi_master = spi_master;
+	max10->type = M10_N3000;
+
+	max10->spi_tran_dev = spi_transaction_init(spi_master, 0);
+	if (!max10->spi_tran_dev) {
+		dev_err(fme, "%s spi tran init fail\n", __func__);
+		goto free_max10;
+	}
+
+	/* init the max10 device */
+	ret = intel_max10_device_init(max10);
+	if (ret) {
 		ret = -ENODEV;
 		dev_err(fme, "max10 init fail\n");
-		goto spi_fail;
+		goto release_spi_tran_dev;
 	}
 
 	fme->max10_dev = max10;
@@ -1002,17 +1059,24 @@ static int fme_spi_init(struct ifpga_feature *feature)
 
 max10_fail:
 	intel_max10_device_remove(fme->max10_dev);
-spi_fail:
+release_spi_tran_dev:
+	if (max10->spi_tran_dev)
+		spi_transaction_remove(max10->spi_tran_dev);
+free_max10:
+	opae_free(max10);
+release_dev:
 	altera_spi_release(spi_master);
-	return ret;
+	return -ENODEV;
 }
 
 static void fme_spi_uinit(struct ifpga_feature *feature)
 {
 	struct ifpga_fme_hw *fme = (struct ifpga_fme_hw *)feature->parent;
 
-	if (fme->max10_dev)
+	if (fme->max10_dev) {
 		intel_max10_device_remove(fme->max10_dev);
+		opae_free(fme->max10_dev);
+	}
 }
 
 struct ifpga_feature_ops fme_spi_master_ops = {
@@ -1157,20 +1221,30 @@ static int fme_nios_spi_init(struct ifpga_feature *feature)
 	/* 3. init the spi master*/
 	altera_spi_init(spi_master);
 
+	max10 = opae_zmalloc(sizeof(*max10));
+	if (!max10)
+		goto release_dev;
+
+	max10->spi_master = spi_master;
+	max10->type = M10_N3000;
+
+	max10->spi_tran_dev = spi_transaction_init(spi_master, 0);
+	if (!max10->spi_tran_dev) {
+		dev_err(fme, "%s spi tran init fail\n", __func__);
+		goto free_max10;
+	}
+
 	/* init the max10 device */
-	max10 = intel_max10_device_probe(spi_master, 0);
-	if (!max10) {
+	ret = intel_max10_device_init(max10);
+	if (ret) {
 		ret = -ENODEV;
 		dev_err(fme, "max10 init fail\n");
-		goto release_dev;
+		goto release_spi_tran_dev;
 	}
 
 	fme->max10_dev = max10;
-
 	max10->bus = hw->pci_data->bus;
-
 	fme_get_board_interface(fme);
-
 	mgr->sensor_list = &max10->opae_sensor_list;
 
 	/* SPI self test */
@@ -1187,6 +1261,11 @@ static int fme_nios_spi_init(struct ifpga_feature *feature)
 
 spi_fail:
 	intel_max10_device_remove(fme->max10_dev);
+release_spi_tran_dev:
+	if (max10->spi_tran_dev)
+		spi_transaction_remove(max10->spi_tran_dev);
+free_max10:
+	opae_free(max10);
 release_dev:
 	altera_spi_release(spi_master);
 	return -ENODEV;
@@ -1197,8 +1276,10 @@ static void fme_nios_spi_uinit(struct ifpga_feature *feature)
 	struct ifpga_fme_hw *fme = (struct ifpga_fme_hw *)feature->parent;
 
 	release_sec_mgr(fme);
-	if (fme->max10_dev)
+	if (fme->max10_dev) {
 		intel_max10_device_remove(fme->max10_dev);
+		opae_free(fme->max10_dev);
+	}
 }
 
 struct ifpga_feature_ops fme_nios_spi_master_ops = {
@@ -1230,7 +1311,7 @@ static int i2c_mac_rom_test(struct altera_i2c_dev *dev)
 	}
 
 	if (memcmp(buf, read_buf, strlen(string))) {
-		dev_err(NULL, "%s test fail!\n", __func__);
+		dev_info(NULL, "%s test fail!\n", __func__);
 		return -EFAULT;
 	}
 
@@ -1498,4 +1579,90 @@ int fme_mgr_get_sensor_value(struct ifpga_fme_hw *fme,
 	*value *= sensor->multiplier;
 
 	return 0;
+}
+
+static int fme_pmci_init(struct ifpga_feature *feature)
+{
+	struct ifpga_fme_hw *fme = (struct ifpga_fme_hw *)feature->parent;
+	struct intel_max10_device *max10;
+	struct ifpga_hw *hw;
+	struct opae_manager *mgr;
+	opae_share_data *sd = NULL;
+	int ret = 0;
+
+	hw = fme->parent;
+	if (!hw || !hw->adapter)
+		return -ENODEV;
+
+	mgr = hw->adapter->mgr;
+	if (!mgr)
+		return -ENODEV;
+
+	dev_info(fme, "FME PMCI Init.\n");
+	dev_debug(fme, "FME PMCI base addr %p.\n",
+			feature->addr);
+
+	max10 = opae_zmalloc(sizeof(*max10));
+	if (!max10)
+		return -ENOMEM;
+
+	max10->type = M10_N6000;
+	max10->mmio = feature->addr;
+	if (hw->adapter->shm.ptr) {
+		sd = (opae_share_data *)hw->adapter->shm.ptr;
+		max10->bmc_ops.mutex = &sd->spi_mutex;
+	} else {
+		max10->bmc_ops.mutex = NULL;
+	}
+
+	/* init the max10 device */
+	ret = intel_max10_device_init(max10);
+	if (ret) {
+		dev_err(fme, "max10 init fail\n");
+		goto free_max10;
+	}
+
+	fme->max10_dev = max10;
+	max10->bus = hw->pci_data->bus;
+	fme_get_board_interface(fme);
+	mgr->sensor_list = &max10->opae_sensor_list;
+
+	ret = init_sec_mgr(fme);
+	if (ret) {
+		dev_err(fme, "security manager init fail\n");
+		goto release_max10;
+	}
+
+	return ret;
+
+release_max10:
+	intel_max10_device_remove(max10);
+free_max10:
+	opae_free(max10);
+
+	return ret;
+}
+
+static void fme_pmci_uinit(struct ifpga_feature *feature)
+{
+	struct ifpga_fme_hw *fme = (struct ifpga_fme_hw *)feature->parent;
+
+	release_sec_mgr(fme);
+	if (fme->max10_dev) {
+		intel_max10_device_remove(fme->max10_dev);
+		opae_free(fme->max10_dev);
+	}
+}
+
+struct ifpga_feature_ops fme_pmci_ops = {
+	.init = fme_pmci_init,
+	.uinit = fme_pmci_uinit,
+};
+
+int fme_mgr_read_flash(struct ifpga_fme_hw *fme, u32 address,
+		u32 size, void *buf)
+{
+	struct intel_max10_device *max10 = fme->max10_dev;
+
+	return opae_read_flash(max10, address, size, buf);
 }

@@ -6,7 +6,7 @@
 #include <rte_ethdev.h>
 #include <ethdev_driver.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_memory.h>
@@ -397,8 +397,7 @@ virtual_ethdev_tx_burst_fail(void *queue, struct rte_mbuf **bufs,
 		/* free packets in burst */
 		for (i = 0; i < successfully_txd; i++) {
 			/* free packets in burst */
-			if (bufs[i] != NULL)
-				rte_pktmbuf_free(bufs[i]);
+			rte_pktmbuf_free(bufs[i]);
 
 			bufs[i] = NULL;
 		}

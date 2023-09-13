@@ -2,8 +2,8 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_ETHDEV_H_
-#define _HNS3_ETHDEV_H_
+#ifndef HNS3_ETHDEV_H
+#define HNS3_ETHDEV_H
 
 #include <pthread.h>
 #include <ethdev_driver.h>
@@ -154,8 +154,6 @@ struct hns3_tc_queue_info {
 
 struct hns3_cfg {
 	uint8_t tc_num;
-	uint16_t tqp_desc_num;
-	uint16_t rx_buf_len;
 	uint16_t rss_size_max;
 	uint8_t phy_addr;
 	uint8_t media_type;
@@ -216,8 +214,6 @@ struct hns3_mac {
 	uint32_t advertising;     /* advertised capability in the local part */
 	uint32_t lp_advertising; /* advertised capability in the link partner */
 	uint8_t support_autoneg;
-	/* current supported fec modes. see HNS3_FIBER_FEC_XXX_BIT */
-	uint32_t fec_capa;
 };
 
 struct hns3_fake_queue_data {
@@ -521,8 +517,6 @@ struct hns3_hw {
 	uint16_t intr_tqps_num;     /* num queue pairs mapping interrupt */
 	uint16_t rss_size_max;      /* HW defined max RSS task queue */
 	uint16_t rx_buf_len;        /* hold min hardware rx buf len */
-	uint16_t num_tx_desc;       /* desc num of per tx queue */
-	uint16_t num_rx_desc;       /* desc num of per rx queue */
 	uint32_t mng_entry_num;     /* number of manager table entry */
 	uint32_t mac_entry_num;     /* number of mac-vlan table entry */
 
@@ -811,7 +805,6 @@ struct hns3_pf {
 	uint8_t tc_max; /* max number of tc driver supported */
 	uint8_t local_max_tc; /* max number of local tc */
 	uint8_t pfc_max;
-	uint8_t prio_tc[HNS3_MAX_USER_PRIO]; /* TC indexed by prio */
 	uint16_t pause_time;
 	bool support_fc_autoneg;       /* support FC autonegotiate */
 	bool support_multi_tc_pause;
@@ -878,7 +871,7 @@ struct hns3_adapter {
 	struct hns3_ptype_table ptype_tbl __rte_cache_aligned;
 };
 
-enum {
+enum hns3_dev_cap {
 	HNS3_DEV_SUPPORT_DCB_B,
 	HNS3_DEV_SUPPORT_COPPER_B,
 	HNS3_DEV_SUPPORT_FD_QUEUE_REGION_B,
@@ -897,11 +890,11 @@ enum {
 	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_##_name##_B)
 
 #define HNS3_DEV_PRIVATE_TO_HW(adapter) \
-	(&((struct hns3_adapter *)adapter)->hw)
+	(&((struct hns3_adapter *)(adapter))->hw)
 #define HNS3_DEV_PRIVATE_TO_PF(adapter) \
-	(&((struct hns3_adapter *)adapter)->pf)
+	(&((struct hns3_adapter *)(adapter))->pf)
 #define HNS3_DEV_PRIVATE_TO_VF(adapter) \
-	(&((struct hns3_adapter *)adapter)->vf)
+	(&((struct hns3_adapter *)(adapter))->vf)
 #define HNS3_DEV_HW_TO_ADAPTER(hw) \
 	container_of(hw, struct hns3_adapter, hw)
 
@@ -1017,7 +1010,7 @@ hns3_atomic_clear_bit(unsigned int nr, volatile uint64_t *addr)
 	__atomic_fetch_and(addr, ~(1UL << nr), __ATOMIC_RELAXED);
 }
 
-static inline int64_t
+static inline uint64_t
 hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 {
 	uint64_t mask = (1UL << nr);
@@ -1025,6 +1018,8 @@ hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 	return __atomic_fetch_and(addr, ~mask, __ATOMIC_RELAXED) & mask;
 }
 
+int
+hns3_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf);
 uint32_t hns3_get_speed_capa(struct hns3_hw *hw);
 
 int hns3_buffer_alloc(struct hns3_hw *hw);
@@ -1034,6 +1029,7 @@ void hns3_update_linkstatus_and_event(struct hns3_hw *hw, bool query);
 void hns3vf_update_link_status(struct hns3_hw *hw, uint8_t link_status,
 			  uint32_t link_speed, uint8_t link_duplex);
 void hns3vf_update_push_lsc_cap(struct hns3_hw *hw, bool supported);
+
 
 static inline bool
 is_reset_pending(struct hns3_adapter *hns)
@@ -1046,4 +1042,4 @@ is_reset_pending(struct hns3_adapter *hns)
 	return ret;
 }
 
-#endif /* _HNS3_ETHDEV_H_ */
+#endif /* HNS3_ETHDEV_H */

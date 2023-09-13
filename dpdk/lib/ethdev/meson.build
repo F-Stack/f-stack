@@ -2,17 +2,25 @@
 # Copyright(c) 2017 Intel Corporation
 
 sources = files(
+        'ethdev_driver.c',
         'ethdev_private.c',
         'ethdev_profile.c',
         'ethdev_trace_points.c',
         'rte_class_eth.c',
         'rte_ethdev.c',
+        'rte_ethdev_cman.c',
         'rte_flow.c',
         'rte_mtr.c',
         'rte_tm.c',
+        'sff_telemetry.c',
+        'sff_common.c',
+        'sff_8079.c',
+        'sff_8472.c',
+        'sff_8636.c',
 )
 
 headers = files(
+        'rte_cman.h',
         'rte_ethdev.h',
         'rte_ethdev_trace.h',
         'rte_ethdev_trace_fp.h',

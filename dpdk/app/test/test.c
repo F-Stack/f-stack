@@ -8,7 +8,6 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <termios.h>
 #include <ctype.h>
 #include <sys/queue.h>
 
@@ -63,7 +62,9 @@ do_recursive_call(void)
 		const char *env_var;
 		int (*action_fn)(void);
 	} actions[] =  {
+#ifndef RTE_EXEC_ENV_WINDOWS
 			{ "run_secondary_instances", test_mp_secondary },
+#endif
 #ifdef RTE_LIB_PDUMP
 #ifdef RTE_NET_RING
 			{ "run_pdump_server_tests", test_pdump },
@@ -82,7 +83,9 @@ do_recursive_call(void)
 			{ "test_file_prefix", no_action },
 			{ "test_no_huge_flag", no_action },
 #ifdef RTE_LIB_TIMER
+#ifndef RTE_EXEC_ENV_WINDOWS
 			{ "timer_secondary_spawn_wait", test_timer_secondary },
+#endif
 #endif
 	};
 
@@ -183,22 +186,10 @@ main(int argc, char **argv)
 #ifdef RTE_LIB_CMDLINE
 	char *dpdk_test = getenv("DPDK_TEST");
 
-	if (dpdk_test && strlen(dpdk_test) == 0)
-		dpdk_test = NULL;
-
-	if (dpdk_test && !command_valid(dpdk_test)) {
-		RTE_LOG(WARNING, APP, "Invalid DPDK_TEST value '%s'\n", dpdk_test);
-		dpdk_test = NULL;
-	}
-
-	if (dpdk_test)
+	if (dpdk_test && strlen(dpdk_test) > 0)
 		tests[test_count++] = dpdk_test;
-	for (i = 1; i < argc; i++) {
-		if (!command_valid(argv[i]))
-			RTE_LOG(WARNING, APP, "Invalid test requested: '%s'\n", argv[i]);
-		else
-			tests[test_count++] = argv[i];
-	}
+	for (i = 1; i < argc; i++)
+		tests[test_count++] = argv[i];
 
 	if (test_count > 0) {
 		char buf[1024];
@@ -211,9 +202,11 @@ main(int argc, char **argv)
 
 		for (i = 0; i < test_count; i++) {
 			snprintf(buf, sizeof(buf), "%s\n", tests[i]);
-			if (cmdline_in(cl, buf, strlen(buf)) < 0) {
+			if (cmdline_parse_check(cl, buf) < 0) {
+				printf("Error: invalid test command: '%s'\n", tests[i]);
+				ret = -1;
+			} else if (cmdline_in(cl, buf, strlen(buf)) < 0) {
 				printf("error on cmdline input\n");
-
 				ret = -1;
 			} else
 				ret = last_test_result;
@@ -358,6 +351,8 @@ unit_test_suite_runner(struct unit_test_suite *suite)
 				suite->failed++;
 		} else if (test_success == -ENOTSUP) {
 			suite->unsupported++;
+		} else if (test_success == TEST_SKIPPED) {
+			suite->skipped++;
 		} else {
 			suite->failed++;
 		}

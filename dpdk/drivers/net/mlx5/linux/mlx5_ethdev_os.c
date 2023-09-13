@@ -23,12 +23,12 @@
 #include <stdalign.h>
 #include <sys/un.h>
 #include <time.h>
-#include <dlfcn.h>
 
 #include <ethdev_driver.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_mbuf.h>
 #include <rte_common.h>
+#include <rte_eal_paging.h>
 #include <rte_interrupts.h>
 #include <rte_malloc.h>
 #include <rte_string_fns.h>
@@ -896,77 +896,6 @@ mlx5_dev_interrupt_handler(void *cb_arg)
 	}
 }
 
-/*
- * Unregister callback handler safely. The handler may be active
- * while we are trying to unregister it, in this case code -EAGAIN
- * is returned by rte_intr_callback_unregister(). This routine checks
- * the return code and tries to unregister handler again.
- *
- * @param handle
- *   interrupt handle
- * @param cb_fn
- *   pointer to callback routine
- * @cb_arg
- *   opaque callback parameter
- */
-void
-mlx5_intr_callback_unregister(const struct rte_intr_handle *handle,
-			      rte_intr_callback_fn cb_fn, void *cb_arg)
-{
-	/*
-	 * Try to reduce timeout management overhead by not calling
-	 * the timer related routines on the first iteration. If the
-	 * unregistering succeeds on first call there will be no
-	 * timer calls at all.
-	 */
-	uint64_t twait = 0;
-	uint64_t start = 0;
-
-	do {
-		int ret;
-
-		ret = rte_intr_callback_unregister(handle, cb_fn, cb_arg);
-		if (ret >= 0)
-			return;
-		if (ret != -EAGAIN) {
-			DRV_LOG(INFO, "failed to unregister interrupt"
-				      " handler (error: %d)", ret);
-			MLX5_ASSERT(false);
-			return;
-		}
-		if (twait) {
-			struct timespec onems;
-
-			/* Wait one millisecond and try again. */
-			onems.tv_sec = 0;
-			onems.tv_nsec = NS_PER_S / MS_PER_S;
-			nanosleep(&onems, 0);
-			/* Check whether one second elapsed. */
-			if ((rte_get_timer_cycles() - start) <= twait)
-				continue;
-		} else {
-			/*
-			 * We get the amount of timer ticks for one second.
-			 * If this amount elapsed it means we spent one
-			 * second in waiting. This branch is executed once
-			 * on first iteration.
-			 */
-			twait = rte_get_timer_hz();
-			MLX5_ASSERT(twait);
-		}
-		/*
-		 * Timeout elapsed, show message (once a second) and retry.
-		 * We have no other acceptable option here, if we ignore
-		 * the unregistering return code the handler will not
-		 * be unregistered, fd will be closed and we may get the
-		 * crush. Hanging and messaging in the loop seems not to be
-		 * the worst choice.
-		 */
-		DRV_LOG(INFO, "Retrying to unregister interrupt handler");
-		start = rte_get_timer_cycles();
-	} while (true);
-}
-
 /**
  * Handle DEVX interrupts from the NIC.
  * This function is probably called from the DPDK host thread.
@@ -1116,7 +1045,6 @@ mlx5_sysfs_check_switch_info(bool device_dir,
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int (*real_if_indextoname)(unsigned int, char *);
 int
 mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 {
@@ -1137,16 +1065,7 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	char c;
 	ssize_t line_size;
 
-	// for ff tools
-	if (!real_if_indextoname) {
-		real_if_indextoname = dlsym(RTLD_NEXT, "if_indextoname");
-		if (!real_if_indextoname) {
-			rte_errno = errno;
-			return -rte_errno;
-		}
-	}
-
-	if (!real_if_indextoname(ifindex, ifname)) {
+	if (!if_indextoname(ifindex, ifname)) {
 		rte_errno = errno;
 		return -rte_errno;
 	}
@@ -1566,6 +1485,70 @@ static const struct mlx5_counter_ctrl mlx5_counters_init[] = {
 		.ctr_name = "rx_discards_phy",
 	},
 	{
+		.dpdk_name = "rx_prio0_buf_discard_packets",
+		.ctr_name = "rx_prio0_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio1_buf_discard_packets",
+		.ctr_name = "rx_prio1_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio2_buf_discard_packets",
+		.ctr_name = "rx_prio2_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio3_buf_discard_packets",
+		.ctr_name = "rx_prio3_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio4_buf_discard_packets",
+		.ctr_name = "rx_prio4_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio5_buf_discard_packets",
+		.ctr_name = "rx_prio5_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio6_buf_discard_packets",
+		.ctr_name = "rx_prio6_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio7_buf_discard_packets",
+		.ctr_name = "rx_prio7_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio0_cong_discard_packets",
+		.ctr_name = "rx_prio0_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio1_cong_discard_packets",
+		.ctr_name = "rx_prio1_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio2_cong_discard_packets",
+		.ctr_name = "rx_prio2_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio3_cong_discard_packets",
+		.ctr_name = "rx_prio3_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio4_cong_discard_packets",
+		.ctr_name = "rx_prio4_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio5_cong_discard_packets",
+		.ctr_name = "rx_prio5_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio6_cong_discard_packets",
+		.ctr_name = "rx_prio6_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio7_cong_discard_packets",
+		.ctr_name = "rx_prio7_cong_discard",
+	},
+	{
 		.dpdk_name = "tx_phy_bytes",
 		.ctr_name = "tx_bytes_phy",
 	},
@@ -1664,6 +1647,7 @@ mlx5_os_stats_init(struct rte_eth_dev *dev)
 		}
 	}
 	/* Add dev counters. */
+	MLX5_ASSERT(xstats_ctrl->mlx5_stats_n <= MLX5_MAX_XSTATS);
 	for (i = 0; i != xstats_n; ++i) {
 		if (mlx5_counters_init[i].dev) {
 			unsigned int idx = xstats_ctrl->mlx5_stats_n++;
@@ -1672,7 +1656,6 @@ mlx5_os_stats_init(struct rte_eth_dev *dev)
 			xstats_ctrl->hw_stats[idx] = 0;
 		}
 	}
-	MLX5_ASSERT(xstats_ctrl->mlx5_stats_n <= MLX5_MAX_XSTATS);
 	xstats_ctrl->stats_n = dev_stats_n;
 	/* Copy to base at first time. */
 	ret = mlx5_os_read_dev_counters(dev, xstats_ctrl->base);
@@ -1823,3 +1806,70 @@ exit:
 	mlx5_free(sset_info);
 	return ret;
 }
+
+/**
+ * Unmaps HCA PCI BAR from the current process address space.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ */
+void mlx5_txpp_unmap_hca_bar(struct rte_eth_dev *dev)
+{
+	struct mlx5_proc_priv *ppriv = dev->process_private;
+
+	if (ppriv && ppriv->hca_bar) {
+		rte_mem_unmap(ppriv->hca_bar, MLX5_ST_SZ_BYTES(initial_seg));
+		ppriv->hca_bar = NULL;
+	}
+}
+
+/**
+ * Maps HCA PCI BAR to the current process address space.
+ * Stores pointer in the process private structure allowing
+ * to read internal and real time counter directly from the HW.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success and not NULL pointer to mapped area in process structure.
+ *   negative otherwise and NULL pointer
+ */
+int mlx5_txpp_map_hca_bar(struct rte_eth_dev *dev)
+{
+	struct mlx5_proc_priv *ppriv = dev->process_private;
+	char pci_addr[PCI_PRI_STR_SIZE] = { 0 };
+	void *base, *expected = NULL;
+	int fd, ret;
+
+	if (!ppriv) {
+		rte_errno = ENOMEM;
+		return -rte_errno;
+	}
+	if (ppriv->hca_bar)
+		return 0;
+	ret = mlx5_dev_to_pci_str(dev->device, pci_addr, sizeof(pci_addr));
+	if (ret < 0)
+		return -rte_errno;
+	/* Open PCI device resource 0 - HCA initialize segment */
+	MKSTR(name, "/sys/bus/pci/devices/%s/resource0", pci_addr);
+	fd = open(name, O_RDWR | O_SYNC);
+	if (fd == -1) {
+		rte_errno = ENOTSUP;
+		return -ENOTSUP;
+	}
+	base = rte_mem_map(NULL, MLX5_ST_SZ_BYTES(initial_seg),
+			   RTE_PROT_READ, RTE_MAP_SHARED, fd, 0);
+	close(fd);
+	if (!base) {
+		rte_errno = ENOTSUP;
+		return -ENOTSUP;
+	}
+	/* Check there is no concurrent mapping in other thread. */
+	if (!__atomic_compare_exchange_n(&ppriv->hca_bar, &expected,
+					 base, false,
+					 __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+		rte_mem_unmap(base, MLX5_ST_SZ_BYTES(initial_seg));
+	return 0;
+}
+

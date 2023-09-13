@@ -43,8 +43,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
 
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_ETHPORTS
 #define MAX_RX_QUEUE_PER_PORT 128
@@ -56,8 +56,8 @@
 #define NB_SOCKETS 8
 
 /* Static global variables used within this file. */
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+static uint16_t nb_rxd = RX_DESC_DEFAULT;
+static uint16_t nb_txd = TX_DESC_DEFAULT;
 
 /**< Ports set in promiscuous mode off by default. */
 static int promiscuous_on;
@@ -112,7 +112,6 @@ static uint16_t nb_lcore_params = RTE_DIM(lcore_params_array_default);
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode = RTE_ETH_MQ_RX_RSS,
-		.split_hdr_size = 0,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {

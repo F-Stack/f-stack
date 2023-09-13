@@ -26,8 +26,7 @@ fill_single_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 	/* start of buffer is after mbuf structure and priv data */
 	m->priv_size = 0;
 	m->buf_addr = (char *)m + mbuf_hdr_size;
-	m->buf_iova = rte_mempool_virt2iova(obj) +
-		mbuf_offset + mbuf_hdr_size;
+	rte_mbuf_iova_set(m, rte_mempool_virt2iova(obj) + mbuf_offset + mbuf_hdr_size);
 	m->buf_len = segment_sz;
 	m->data_len = data_len;
 	m->pkt_len = data_len;
@@ -58,7 +57,7 @@ fill_multi_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 		/* start of buffer is after mbuf structure and priv data */
 		m->priv_size = 0;
 		m->buf_addr = (char *)m + mbuf_hdr_size;
-		m->buf_iova = next_seg_phys_addr;
+		rte_mbuf_iova_set(m, next_seg_phys_addr);
 		next_seg_phys_addr += mbuf_hdr_size + segment_sz;
 		m->buf_len = segment_sz;
 		m->data_len = data_len;
@@ -263,4 +262,40 @@ cperf_alloc_common_memory(const struct cperf_options *options,
 	rte_mempool_obj_iter(*pool, mempool_obj_init, (void *)&params);
 
 	return 0;
+}
+
+void
+cperf_mbuf_set(struct rte_mbuf *mbuf,
+		const struct cperf_options *options,
+		const struct cperf_test_vector *test_vector)
+{
+	uint32_t segment_sz = options->segment_sz;
+	uint8_t *mbuf_data;
+	uint8_t *test_data;
+	uint32_t remaining_bytes = options->max_buffer_size;
+
+	if (options->op_type == CPERF_AEAD) {
+		test_data = (options->aead_op == RTE_CRYPTO_AEAD_OP_ENCRYPT) ?
+					test_vector->plaintext.data :
+					test_vector->ciphertext.data;
+	} else {
+		test_data =
+			(options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) ?
+				test_vector->plaintext.data :
+				test_vector->ciphertext.data;
+	}
+
+	while (remaining_bytes) {
+		mbuf_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
+
+		if (remaining_bytes <= segment_sz) {
+			memcpy(mbuf_data, test_data, remaining_bytes);
+			return;
+		}
+
+		memcpy(mbuf_data, test_data, segment_sz);
+		remaining_bytes -= segment_sz;
+		test_data += segment_sz;
+		mbuf = mbuf->next;
+	}
 }

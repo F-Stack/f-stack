@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <sys/queue.h>
 
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
 
@@ -151,6 +151,13 @@ int rte_eal_tailqs_init(void);
  *  0 on success, negative on error
  */
 int rte_eal_intr_init(void);
+
+/**
+ * Close the default log stream
+ *
+ * This function is private to EAL.
+ */
+void rte_eal_log_cleanup(void);
 
 /**
  * Init alarm mechanism. This is to allow a callback be called after
@@ -435,6 +442,16 @@ int rte_eal_memory_detach(void);
 struct rte_bus *rte_bus_find_by_device_name(const char *str);
 
 /**
+ * For each device on the buses, call the driver-specific function for
+ * device cleanup.
+ *
+ * @return
+ * 0 for successful cleanup
+ * !0 otherwise
+ */
+int eal_bus_cleanup(void);
+
+/**
  * Create the unix channel for primary/secondary communication.
  *
  * @return
@@ -681,13 +698,11 @@ eal_mem_set_dump(void *virt, size_t size, bool dump);
  *
  * @param run_dir
  *   The new runtime directory path of DPDK
- * @param size
- *   The size of the new runtime directory path in bytes.
  * @return
  *   0 on success, (-1) on failure.
  */
 int
-eal_set_runtime_dir(char *run_dir, size_t size);
+eal_set_runtime_dir(const char *run_dir);
 
 /**
  * Get the internal configuration structure.

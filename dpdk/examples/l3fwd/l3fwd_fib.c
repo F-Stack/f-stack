@@ -18,6 +18,8 @@
 #include "l3fwd_neon.h"
 #elif defined RTE_ARCH_PPC_64
 #include "l3fwd_altivec.h"
+#else
+#include "l3fwd_common.h"
 #endif
 #include "l3fwd_event.h"
 #include "l3fwd_route.h"
@@ -75,27 +77,37 @@ fib_parse_packet(struct rte_mbuf *mbuf,
  */
 #if !defined FIB_SEND_MULTI
 static inline void
+process_packet(struct rte_mbuf *pkt, uint16_t *hop)
+{
+	struct rte_ether_hdr *eth_hdr;
+
+	/* Run rfc1812 if packet is ipv4 and checks enabled. */
+#if defined DO_RFC_1812_CHECKS
+	rfc1812_process(
+		(struct rte_ipv4_hdr *)(rte_pktmbuf_mtod(
+						pkt, struct rte_ether_hdr *) +
+					1),
+		hop, pkt->packet_type);
+#endif
+
+	/* Set MAC addresses. */
+	eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+	*(uint64_t *)&eth_hdr->dst_addr = dest_eth_addr[*hop];
+	rte_ether_addr_copy(&ports_eth_addr[*hop], &eth_hdr->src_addr);
+}
+
+static inline void
 fib_send_single(int nb_tx, struct lcore_conf *qconf,
 		struct rte_mbuf **pkts_burst, uint16_t hops[nb_tx])
 {
 	int32_t j;
-	struct rte_ether_hdr *eth_hdr;
 
 	for (j = 0; j < nb_tx; j++) {
-		/* Run rfc1812 if packet is ipv4 and checks enabled. */
-#if defined DO_RFC_1812_CHECKS
-		rfc1812_process((struct rte_ipv4_hdr *)(rte_pktmbuf_mtod(
-				pkts_burst[j], struct rte_ether_hdr *) + 1),
-				&hops[j], pkts_burst[j]->packet_type);
-#endif
-
-		/* Set MAC addresses. */
-		eth_hdr = rte_pktmbuf_mtod(pkts_burst[j],
-				struct rte_ether_hdr *);
-		*(uint64_t *)&eth_hdr->dst_addr = dest_eth_addr[hops[j]];
-		rte_ether_addr_copy(&ports_eth_addr[hops[j]],
-				&eth_hdr->src_addr);
-
+		process_packet(pkts_burst[j], &hops[j]);
+		if (hops[j] == BAD_PORT) {
+			rte_pktmbuf_free(pkts_burst[j]);
+			continue;
+		}
 		/* Send single packet. */
 		send_single_packet(qconf, pkts_burst[j], hops[j]);
 	}
@@ -252,14 +264,14 @@ fib_event_loop(struct l3fwd_event_resources *evt_rsrc,
 	const uint8_t event_d_id = evt_rsrc->event_d_id;
 	const uint16_t deq_len = evt_rsrc->deq_depth;
 	struct rte_event events[MAX_PKT_BURST];
+	int i, nb_enq = 0, nb_deq = 0;
 	struct lcore_conf *lconf;
 	unsigned int lcore_id;
-	int nb_enq, nb_deq, i;
 
 	uint32_t ipv4_arr[MAX_PKT_BURST];
 	uint8_t ipv6_arr[MAX_PKT_BURST][RTE_FIB6_IPV6_ADDR_SIZE];
 	uint64_t hopsv4[MAX_PKT_BURST], hopsv6[MAX_PKT_BURST];
-	uint16_t nh;
+	uint16_t nh, hops[MAX_PKT_BURST];
 	uint8_t type_arr[MAX_PKT_BURST];
 	uint32_t ipv4_cnt, ipv6_cnt;
 	uint32_t ipv4_arr_assem, ipv6_arr_assem;
@@ -347,8 +359,14 @@ fib_event_loop(struct l3fwd_event_resources *evt_rsrc,
 				nh = (uint16_t)hopsv4[ipv4_arr_assem++];
 			else
 				nh = (uint16_t)hopsv6[ipv6_arr_assem++];
-			if (nh != FIB_DEFAULT_HOP)
-				events[i].mbuf->port = nh;
+
+			hops[i] = nh != FIB_DEFAULT_HOP ?
+				  nh :
+				  events[i].mbuf->port;
+			process_packet(events[i].mbuf, &hops[i]);
+			events[i].mbuf->port = hops[i] != BAD_PORT ?
+						       hops[i] :
+						       events[i].mbuf->port;
 		}
 
 		if (flags & L3FWD_EVENT_TX_ENQ) {
@@ -370,6 +388,9 @@ fib_event_loop(struct l3fwd_event_resources *evt_rsrc,
 						nb_deq - nb_enq, 0);
 		}
 	}
+
+	l3fwd_event_worker_cleanup(event_d_id, event_p_id, events, nb_enq,
+				   nb_deq, 0);
 }
 
 int __rte_noinline
@@ -413,14 +434,12 @@ fib_event_main_loop_tx_q_burst(__rte_unused void *dummy)
 }
 
 static __rte_always_inline void
-fib_process_event_vector(struct rte_event_vector *vec)
+fib_process_event_vector(struct rte_event_vector *vec, uint8_t *type_arr,
+			 uint8_t **ipv6_arr, uint64_t *hopsv4, uint64_t *hopsv6,
+			 uint32_t *ipv4_arr, uint16_t *hops)
 {
-	uint8_t ipv6_arr[MAX_PKT_BURST][RTE_FIB6_IPV6_ADDR_SIZE];
-	uint64_t hopsv4[MAX_PKT_BURST], hopsv6[MAX_PKT_BURST];
 	uint32_t ipv4_arr_assem, ipv6_arr_assem;
 	struct rte_mbuf **mbufs = vec->mbufs;
-	uint32_t ipv4_arr[MAX_PKT_BURST];
-	uint8_t type_arr[MAX_PKT_BURST];
 	uint32_t ipv4_cnt, ipv6_cnt;
 	struct lcore_conf *lconf;
 	uint16_t nh;
@@ -458,16 +477,10 @@ fib_process_event_vector(struct rte_event_vector *vec)
 
 	/* Lookup IPv6 hops if IPv6 packets are present. */
 	if (ipv6_cnt > 0)
-		rte_fib6_lookup_bulk(lconf->ipv6_lookup_struct, ipv6_arr,
-				     hopsv6, ipv6_cnt);
-
-	if (vec->attr_valid) {
-		nh = type_arr[0] ? (uint16_t)hopsv4[0] : (uint16_t)hopsv6[0];
-		if (nh != FIB_DEFAULT_HOP)
-			vec->port = nh;
-		else
-			vec->attr_valid = 0;
-	}
+		rte_fib6_lookup_bulk(
+			lconf->ipv6_lookup_struct,
+			(uint8_t(*)[RTE_FIB6_IPV6_ADDR_SIZE])ipv6_arr, hopsv6,
+			ipv6_cnt);
 
 	/* Assign ports looked up in fib depending on IPv4 or IPv6 */
 	for (i = 0; i < vec->nb_elem; i++) {
@@ -476,9 +489,26 @@ fib_process_event_vector(struct rte_event_vector *vec)
 		else
 			nh = (uint16_t)hopsv6[ipv6_arr_assem++];
 		if (nh != FIB_DEFAULT_HOP)
-			mbufs[i]->port = nh;
-		event_vector_attr_validate(vec, mbufs[i]);
+			hops[i] = nh;
+		else
+			hops[i] = vec->attr_valid ? vec->port :
+						    vec->mbufs[i]->port;
 	}
+
+#if defined FIB_SEND_MULTI
+	uint16_t k;
+	k = RTE_ALIGN_FLOOR(vec->nb_elem, FWDSTEP);
+
+	for (i = 0; i != k; i += FWDSTEP)
+		processx4_step3(&vec->mbufs[i], &hops[i]);
+	for (; i < vec->nb_elem; i++)
+		process_packet(vec->mbufs[i], &hops[i]);
+#else
+	for (i = 0; i < vec->nb_elem; i++)
+		process_packet(vec->mbufs[i], &hops[i]);
+#endif
+
+	process_event_vector(vec, hops);
 }
 
 static __rte_always_inline void
@@ -491,10 +521,37 @@ fib_event_loop_vector(struct l3fwd_event_resources *evt_rsrc,
 	const uint8_t event_d_id = evt_rsrc->event_d_id;
 	const uint16_t deq_len = evt_rsrc->deq_depth;
 	struct rte_event events[MAX_PKT_BURST];
-	int nb_enq, nb_deq, i;
+	uint8_t *type_arr, **ipv6_arr, *ptr;
+	int nb_enq = 0, nb_deq = 0, i;
+	uint64_t *hopsv4, *hopsv6;
+	uint32_t *ipv4_arr;
+	uint16_t *hops;
+	uintptr_t mem;
 
-	if (event_p_id < 0)
+	mem = (uintptr_t)rte_zmalloc(
+		"vector_fib",
+		(sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint64_t) +
+		 sizeof(uint64_t) + sizeof(uint16_t) + sizeof(uint8_t *) +
+		 (sizeof(uint8_t) * RTE_FIB6_IPV6_ADDR_SIZE)) *
+			evt_rsrc->vector_size,
+		RTE_CACHE_LINE_SIZE);
+	if (mem == 0)
 		return;
+	ipv4_arr = (uint32_t *)mem;
+	type_arr = (uint8_t *)&ipv4_arr[evt_rsrc->vector_size];
+	hopsv4 = (uint64_t *)&type_arr[evt_rsrc->vector_size];
+	hopsv6 = (uint64_t *)&hopsv4[evt_rsrc->vector_size];
+	hops = (uint16_t *)&hopsv6[evt_rsrc->vector_size];
+	ipv6_arr = (uint8_t **)&hops[evt_rsrc->vector_size];
+
+	ptr = (uint8_t *)&ipv6_arr[evt_rsrc->vector_size];
+	for (i = 0; i < evt_rsrc->vector_size; i++)
+		ipv6_arr[i] = &ptr[RTE_FIB6_IPV6_ADDR_SIZE + i];
+
+	if (event_p_id < 0) {
+		rte_free((void *)mem);
+		return;
+	}
 
 	RTE_LOG(INFO, L3FWD, "entering %s on lcore %u\n", __func__,
 		rte_lcore_id());
@@ -514,10 +571,9 @@ fib_event_loop_vector(struct l3fwd_event_resources *evt_rsrc,
 				events[i].op = RTE_EVENT_OP_FORWARD;
 			}
 
-			fib_process_event_vector(events[i].vec);
-
-			if (flags & L3FWD_EVENT_TX_DIRECT)
-				event_vector_txq_set(events[i].vec, 0);
+			fib_process_event_vector(events[i].vec, type_arr,
+						 ipv6_arr, hopsv4, hopsv6,
+						 ipv4_arr, hops);
 		}
 
 		if (flags & L3FWD_EVENT_TX_ENQ) {
@@ -538,6 +594,10 @@ fib_event_loop_vector(struct l3fwd_event_resources *evt_rsrc,
 					nb_deq - nb_enq, 0);
 		}
 	}
+
+	l3fwd_event_worker_cleanup(event_d_id, event_p_id, events, nb_enq,
+				   nb_deq, 1);
+	rte_free((void *)mem);
 }
 
 int __rte_noinline
@@ -583,7 +643,7 @@ setup_fib(const int socketid)
 	struct rte_eth_dev_info dev_info;
 	struct rte_fib6_conf config;
 	struct rte_fib_conf config_ipv4;
-	unsigned int i;
+	int i;
 	int ret;
 	char s[64];
 	char abuf[INET6_ADDRSTRLEN];
@@ -603,38 +663,40 @@ setup_fib(const int socketid)
 			"Unable to create the l3fwd FIB table on socket %d\n",
 			socketid);
 
+
 	/* Populate the fib ipv4 table. */
-	for (i = 0; i < RTE_DIM(ipv4_l3fwd_route_array); i++) {
+	for (i = 0; i < route_num_v4; i++) {
 		struct in_addr in;
 
 		/* Skip unused ports. */
-		if ((1 << ipv4_l3fwd_route_array[i].if_out &
+		if ((1 << route_base_v4[i].if_out &
 				enabled_port_mask) == 0)
 			continue;
 
-		rte_eth_dev_info_get(ipv4_l3fwd_route_array[i].if_out,
+		rte_eth_dev_info_get(route_base_v4[i].if_out,
 				     &dev_info);
 		ret = rte_fib_add(ipv4_l3fwd_fib_lookup_struct[socketid],
-			ipv4_l3fwd_route_array[i].ip,
-			ipv4_l3fwd_route_array[i].depth,
-			ipv4_l3fwd_route_array[i].if_out);
+			route_base_v4[i].ip,
+			route_base_v4[i].depth,
+			route_base_v4[i].if_out);
 
 		if (ret < 0) {
+			free(route_base_v4);
 			rte_exit(EXIT_FAILURE,
 					"Unable to add entry %u to the l3fwd FIB table on socket %d\n",
 					i, socketid);
 		}
 
-		in.s_addr = htonl(ipv4_l3fwd_route_array[i].ip);
+		in.s_addr = htonl(route_base_v4[i].ip);
 		if (inet_ntop(AF_INET, &in, abuf, sizeof(abuf)) != NULL) {
 			printf("FIB: Adding route %s / %d (%d) [%s]\n", abuf,
-			       ipv4_l3fwd_route_array[i].depth,
-			       ipv4_l3fwd_route_array[i].if_out,
-			       dev_info.device->name);
+			       route_base_v4[i].depth,
+			       route_base_v4[i].if_out,
+			       rte_dev_name(dev_info.device));
 		} else {
 			printf("FIB: IPv4 route added to port %d [%s]\n",
-			       ipv4_l3fwd_route_array[i].if_out,
-			       dev_info.device->name);
+			       route_base_v4[i].if_out,
+			       rte_dev_name(dev_info.device));
 		}
 	}
 	/* >8 End of setup fib. */
@@ -650,42 +712,46 @@ setup_fib(const int socketid)
 	config.trie.num_tbl8 = (1 << 15);
 	ipv6_l3fwd_fib_lookup_struct[socketid] = rte_fib6_create(s, socketid,
 			&config);
-	if (ipv6_l3fwd_fib_lookup_struct[socketid] == NULL)
+	if (ipv6_l3fwd_fib_lookup_struct[socketid] == NULL) {
+		free(route_base_v4);
 		rte_exit(EXIT_FAILURE,
 				"Unable to create the l3fwd FIB table on socket %d\n",
 				socketid);
+	}
 
 	/* Populate the fib IPv6 table. */
-	for (i = 0; i < RTE_DIM(ipv6_l3fwd_route_array); i++) {
+	for (i = 0; i < route_num_v6; i++) {
 
 		/* Skip unused ports. */
-		if ((1 << ipv6_l3fwd_route_array[i].if_out &
+		if ((1 << route_base_v6[i].if_out &
 				enabled_port_mask) == 0)
 			continue;
 
-		rte_eth_dev_info_get(ipv6_l3fwd_route_array[i].if_out,
+		rte_eth_dev_info_get(route_base_v6[i].if_out,
 				     &dev_info);
 		ret = rte_fib6_add(ipv6_l3fwd_fib_lookup_struct[socketid],
-			ipv6_l3fwd_route_array[i].ip,
-			ipv6_l3fwd_route_array[i].depth,
-			ipv6_l3fwd_route_array[i].if_out);
+			route_base_v6[i].ip_8,
+			route_base_v6[i].depth,
+			route_base_v6[i].if_out);
 
 		if (ret < 0) {
+			free(route_base_v4);
+			free(route_base_v6);
 			rte_exit(EXIT_FAILURE,
 					"Unable to add entry %u to the l3fwd FIB table on socket %d\n",
 					i, socketid);
 		}
 
-		if (inet_ntop(AF_INET6, ipv6_l3fwd_route_array[i].ip,
+		if (inet_ntop(AF_INET6, route_base_v6[i].ip_8,
 				abuf, sizeof(abuf)) != NULL) {
 			printf("FIB: Adding route %s / %d (%d) [%s]\n", abuf,
-			       ipv6_l3fwd_route_array[i].depth,
-			       ipv6_l3fwd_route_array[i].if_out,
-			       dev_info.device->name);
+			       route_base_v6[i].depth,
+			       route_base_v6[i].if_out,
+			       rte_dev_name(dev_info.device));
 		} else {
 			printf("FIB: IPv6 route added to port %d [%s]\n",
-			       ipv6_l3fwd_route_array[i].if_out,
-			       dev_info.device->name);
+			       route_base_v6[i].if_out,
+			       rte_dev_name(dev_info.device));
 		}
 	}
 }

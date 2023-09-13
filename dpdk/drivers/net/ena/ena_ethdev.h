@@ -12,9 +12,9 @@
 #include <ethdev_pci.h>
 #include <rte_cycles.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_timer.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_net.h>
 
 #include "ena_com.h"
@@ -29,6 +29,9 @@
 #define ENA_RX_BUF_MIN_SIZE	1400
 #define ENA_DEFAULT_RING_SIZE	1024
 
+#define ENA_RX_RSS_TABLE_LOG_SIZE	7
+#define ENA_RX_RSS_TABLE_SIZE		(1 << ENA_RX_RSS_TABLE_LOG_SIZE)
+
 #define ENA_MIN_MTU		128
 
 #define ENA_MMIO_DISABLE_REG_READ	BIT(0)
@@ -37,6 +40,7 @@
 #define ENA_DEVICE_KALIVE_TIMEOUT (ENA_WD_TIMEOUT_SEC * rte_get_timer_hz())
 
 #define ENA_TX_TIMEOUT			(5 * rte_get_timer_hz())
+#define ENA_MAX_TX_TIMEOUT_SECONDS	60
 #define ENA_MONITORED_TX_QUEUES		3
 #define ENA_DEFAULT_MISSING_COMP	256U
 
@@ -103,8 +107,6 @@ struct ena_stats_tx {
 	u64 cnt;
 	u64 bytes;
 	u64 prepare_ctx_err;
-	u64 linearize;
-	u64 linearize_failed;
 	u64 tx_poll;
 	u64 doorbells;
 	u64 bad_req_id;
@@ -116,7 +118,9 @@ struct ena_stats_rx {
 	u64 cnt;
 	u64 bytes;
 	u64 refill_partial;
-	u64 bad_csum;
+	u64 l3_csum_bad;
+	u64 l4_csum_bad;
+	u64 l4_csum_good;
 	u64 mbuf_alloc_fail;
 	u64 bad_desc_num;
 	u64 bad_req_id;
@@ -290,19 +294,29 @@ struct ena_adapter {
 
 	struct ena_stats_dev dev_stats;
 	struct ena_stats_eni eni_stats;
+	struct ena_admin_basic_stats basic_stats;
+
+	u32 indirect_table[ENA_RX_RSS_TABLE_SIZE];
+
+	uint32_t all_aenq_groups;
+	uint32_t active_aenq_groups;
 
 	bool trigger_reset;
 
-	bool wd_state;
-
+	bool enable_llq;
 	bool use_large_llq_hdr;
 
 	uint32_t last_tx_comp_qid;
 	uint64_t missing_tx_completion_to;
 	uint64_t missing_tx_completion_budget;
 	uint64_t tx_cleanup_stall_delay;
+
+	uint64_t memzone_cnt;
 };
 
+int ena_mp_indirect_table_set(struct ena_adapter *adapter);
+int ena_mp_indirect_table_get(struct ena_adapter *adapter,
+			      uint32_t *indirect_table);
 int ena_rss_reta_update(struct rte_eth_dev *dev,
 			struct rte_eth_rss_reta_entry64 *reta_conf,
 			uint16_t reta_size);

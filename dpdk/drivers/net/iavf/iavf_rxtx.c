@@ -230,8 +230,7 @@ reset_rx_queue(struct iavf_rx_queue *rxq)
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
 
-	if (rxq->pkt_first_seg != NULL)
-		rte_pktmbuf_free(rxq->pkt_first_seg);
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -490,6 +489,8 @@ iavf_rxd_to_pkt_fields_by_comms_aux_v2(struct iavf_rx_queue *rxq,
 
 static const
 iavf_rxd_to_pkt_fields_t rxd_to_pkt_fields_ops[IAVF_RXDID_LAST + 1] = {
+	[IAVF_RXDID_LEGACY_0] = iavf_rxd_to_pkt_fields_by_comms_ovs,
+	[IAVF_RXDID_LEGACY_1] = iavf_rxd_to_pkt_fields_by_comms_ovs,
 	[IAVF_RXDID_COMMS_AUX_VLAN] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
 	[IAVF_RXDID_COMMS_AUX_IPV4] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
 	[IAVF_RXDID_COMMS_AUX_IPV6] = iavf_rxd_to_pkt_fields_by_comms_aux_v1,
@@ -534,6 +535,8 @@ iavf_select_rxd_to_pkt_fields_handler(struct iavf_rx_queue *rxq, uint32_t rxdid)
 			rte_pmd_ifd_dynflag_proto_xtr_ipsec_crypto_said_mask;
 		break;
 	case IAVF_RXDID_COMMS_OVS_1:
+	case IAVF_RXDID_LEGACY_0:
+	case IAVF_RXDID_LEGACY_1:
 		break;
 	default:
 		/* update this according to the RXDID for FLEX_DESC_NONE */
@@ -900,6 +903,15 @@ iavf_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	} else {
 		dev->data->rx_queue_state[rx_queue_id] =
 			RTE_ETH_QUEUE_STATE_STARTED;
+	}
+
+	if (dev->data->dev_conf.rxmode.offloads &
+	    RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		if (iavf_get_phc_time(rxq)) {
+			PMD_DRV_LOG(ERR, "get physical time failed");
+			return err;
+		}
+		rxq->hw_time_update = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
 	}
 
 	return err;
@@ -1455,6 +1467,7 @@ iavf_recv_pkts_flex_rxd(void *rx_queue,
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
 	const uint32_t *ptype_tbl;
+	uint64_t ts_ns;
 
 	nb_rx = 0;
 	nb_hold = 0;
@@ -1462,6 +1475,16 @@ iavf_recv_pkts_flex_rxd(void *rx_queue,
 	rx_id = rxq->rx_tail;
 	rx_ring = rxq->rx_ring;
 	ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+
+		if (sw_cur_time - rxq->hw_time_update > 4) {
+			if (iavf_get_phc_time(rxq))
+				PMD_DRV_LOG(ERR, "get physical time failed");
+			rxq->hw_time_update = sw_cur_time;
+		}
+	}
 
 	while (nb_rx < nb_pkts) {
 		rxdp = (volatile union iavf_rx_flex_desc *)&rx_ring[rx_id];
@@ -1524,6 +1547,20 @@ iavf_recv_pkts_flex_rxd(void *rx_queue,
 				&rxq->stats.ipsec_crypto);
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, rxm, &rxd);
 		pkt_flags = iavf_flex_rxd_error_to_pkt_flags(rx_stat_err0);
+
+		if (iavf_timestamp_dynflag > 0) {
+			ts_ns = iavf_tstamp_convert_32b_64b(rxq->phc_time,
+				rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high));
+
+			rxq->phc_time = ts_ns;
+			rxq->hw_time_update = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+
+			*RTE_MBUF_DYNFIELD(rxm,
+				iavf_timestamp_dynfield_offset,
+				rte_mbuf_timestamp_t *) = ts_ns;
+			rxm->ol_flags |= iavf_timestamp_dynflag;
+		}
+
 		rxm->ol_flags |= pkt_flags;
 
 		rx_pkts[nb_rx++] = rxm;
@@ -1552,10 +1589,21 @@ iavf_recv_scattered_pkts_flex_rxd(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint16_t rx_stat_err0;
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
+	uint64_t ts_ns;
 
 	volatile union iavf_rx_desc *rx_ring = rxq->rx_ring;
 	volatile union iavf_rx_flex_desc *rxdp;
 	const uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+
+		if (sw_cur_time - rxq->hw_time_update > 4) {
+			if (iavf_get_phc_time(rxq))
+				PMD_DRV_LOG(ERR, "get physical time failed");
+			rxq->hw_time_update = sw_cur_time;
+		}
+	}
 
 	while (nb_rx < nb_pkts) {
 		rxdp = (volatile union iavf_rx_flex_desc *)&rx_ring[rx_id];
@@ -1668,6 +1716,19 @@ iavf_recv_scattered_pkts_flex_rxd(void *rx_queue, struct rte_mbuf **rx_pkts,
 				&rxq->stats.ipsec_crypto);
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, first_seg, &rxd);
 		pkt_flags = iavf_flex_rxd_error_to_pkt_flags(rx_stat_err0);
+
+		if (iavf_timestamp_dynflag > 0) {
+			ts_ns = iavf_tstamp_convert_32b_64b(rxq->phc_time,
+				rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high));
+
+			rxq->phc_time = ts_ns;
+			rxq->hw_time_update = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+
+			*RTE_MBUF_DYNFIELD(first_seg,
+				iavf_timestamp_dynfield_offset,
+				rte_mbuf_timestamp_t *) = ts_ns;
+			first_seg->ol_flags |= iavf_timestamp_dynflag;
+		}
 
 		first_seg->ol_flags |= pkt_flags;
 
@@ -1850,7 +1911,9 @@ iavf_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 #define IAVF_LOOK_AHEAD 8
 static inline int
-iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
+iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq,
+			    struct rte_mbuf **rx_pkts,
+			    uint16_t nb_pkts)
 {
 	volatile union iavf_rx_flex_desc *rxdp;
 	struct rte_mbuf **rxep;
@@ -1859,8 +1922,10 @@ iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
 	uint16_t pkt_len;
 	int32_t s[IAVF_LOOK_AHEAD], var, nb_dd;
 	int32_t i, j, nb_rx = 0;
+	int32_t nb_staged = 0;
 	uint64_t pkt_flags;
 	const uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+	uint64_t ts_ns;
 
 	rxdp = (volatile union iavf_rx_flex_desc *)&rxq->rx_ring[rxq->rx_tail];
 	rxep = &rxq->sw_ring[rxq->rx_tail];
@@ -1871,6 +1936,16 @@ iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
 	if (!(stat_err0 & (1 << IAVF_RX_FLEX_DESC_STATUS0_DD_S)))
 		return 0;
 
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+
+		if (sw_cur_time - rxq->hw_time_update > 4) {
+			if (iavf_get_phc_time(rxq))
+				PMD_DRV_LOG(ERR, "get physical time failed");
+			rxq->hw_time_update = sw_cur_time;
+		}
+	}
+
 	/* Scan LOOK_AHEAD descriptors at a time to determine which
 	 * descriptors reference packets that are ready to be received.
 	 */
@@ -1880,7 +1955,8 @@ iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
 		for (j = IAVF_LOOK_AHEAD - 1; j >= 0; j--)
 			s[j] = rte_le_to_cpu_16(rxdp[j].wb.status_error0);
 
-		rte_smp_rmb();
+		/* This barrier is to order loads of different words in the descriptor */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		/* Compute how many contiguous DD bits were set */
 		for (j = 0, nb_dd = 0; j < IAVF_LOOK_AHEAD; j++) {
@@ -1904,8 +1980,6 @@ iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
 #endif
 		}
 
-		nb_rx += nb_dd;
-
 		/* Translate descriptor info to mbuf parameters */
 		for (j = 0; j < nb_dd; j++) {
 			IAVF_DUMP_RX_DESC(rxq, &rxdp[j],
@@ -1928,25 +2002,49 @@ iavf_rx_scan_hw_ring_flex_rxd(struct iavf_rx_queue *rxq)
 			stat_err0 = rte_le_to_cpu_16(rxdp[j].wb.status_error0);
 			pkt_flags = iavf_flex_rxd_error_to_pkt_flags(stat_err0);
 
-			mb->ol_flags |= pkt_flags;
-		}
+			if (iavf_timestamp_dynflag > 0) {
+				ts_ns = iavf_tstamp_convert_32b_64b(rxq->phc_time,
+					rte_le_to_cpu_32(rxdp[j].wb.flex_ts.ts_high));
 
-		for (j = 0; j < IAVF_LOOK_AHEAD; j++)
-			rxq->rx_stage[i + j] = rxep[j];
+				rxq->phc_time = ts_ns;
+				rxq->hw_time_update = rte_get_timer_cycles() /
+					(rte_get_timer_hz() / 1000);
+
+				*RTE_MBUF_DYNFIELD(mb,
+					iavf_timestamp_dynfield_offset,
+					rte_mbuf_timestamp_t *) = ts_ns;
+				mb->ol_flags |= iavf_timestamp_dynflag;
+			}
+
+			mb->ol_flags |= pkt_flags;
+
+			/* Put up to nb_pkts directly into buffers */
+			if ((i + j) < nb_pkts) {
+				rx_pkts[i + j] = rxep[j];
+				nb_rx++;
+			} else {
+				/* Stage excess pkts received */
+				rxq->rx_stage[nb_staged] = rxep[j];
+				nb_staged++;
+			}
+		}
 
 		if (nb_dd != IAVF_LOOK_AHEAD)
 			break;
 	}
 
+	/* Update rxq->rx_nb_avail to reflect number of staged pkts */
+	rxq->rx_nb_avail = nb_staged;
+
 	/* Clear software ring entries */
-	for (i = 0; i < nb_rx; i++)
+	for (i = 0; i < (nb_rx + nb_staged); i++)
 		rxq->sw_ring[rxq->rx_tail + i] = NULL;
 
 	return nb_rx;
 }
 
 static inline int
-iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq)
+iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
 	volatile union iavf_rx_desc *rxdp;
 	struct rte_mbuf **rxep;
@@ -1956,6 +2054,7 @@ iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq)
 	uint32_t rx_status;
 	int32_t s[IAVF_LOOK_AHEAD], var, nb_dd;
 	int32_t i, j, nb_rx = 0;
+	int32_t nb_staged = 0;
 	uint64_t pkt_flags;
 	const uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
 
@@ -1983,7 +2082,8 @@ iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq)
 			       IAVF_RXD_QW1_STATUS_SHIFT;
 		}
 
-		rte_smp_rmb();
+		/* This barrier is to order loads of different words in the descriptor */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		/* Compute how many contiguous DD bits were set */
 		for (j = 0, nb_dd = 0; j < IAVF_LOOK_AHEAD; j++) {
@@ -2006,8 +2106,6 @@ iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq)
 			nb_dd += var;
 #endif
 		}
-
-		nb_rx += nb_dd;
 
 		/* Translate descriptor info to mbuf parameters */
 		for (j = 0; j < nb_dd; j++) {
@@ -2037,17 +2135,26 @@ iavf_rx_scan_hw_ring(struct iavf_rx_queue *rxq)
 				pkt_flags |= iavf_rxd_build_fdir(&rxdp[j], mb);
 
 			mb->ol_flags |= pkt_flags;
-		}
 
-		for (j = 0; j < IAVF_LOOK_AHEAD; j++)
-			rxq->rx_stage[i + j] = rxep[j];
+			/* Put up to nb_pkts directly into buffers */
+			if ((i + j) < nb_pkts) {
+				rx_pkts[i + j] = rxep[j];
+				nb_rx++;
+			} else { /* Stage excess pkts received */
+				rxq->rx_stage[nb_staged] = rxep[j];
+				nb_staged++;
+			}
+		}
 
 		if (nb_dd != IAVF_LOOK_AHEAD)
 			break;
 	}
 
+	/* Update rxq->rx_nb_avail to reflect number of staged pkts */
+	rxq->rx_nb_avail = nb_staged;
+
 	/* Clear software ring entries */
-	for (i = 0; i < nb_rx; i++)
+	for (i = 0; i < (nb_rx + nb_staged); i++)
 		rxq->sw_ring[rxq->rx_tail + i] = NULL;
 
 	return nb_rx;
@@ -2135,23 +2242,31 @@ rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		return iavf_rx_fill_from_stage(rxq, rx_pkts, nb_pkts);
 
 	if (rxq->rxdid >= IAVF_RXDID_FLEX_NIC && rxq->rxdid <= IAVF_RXDID_LAST)
-		nb_rx = (uint16_t)iavf_rx_scan_hw_ring_flex_rxd(rxq);
+		nb_rx = (uint16_t)iavf_rx_scan_hw_ring_flex_rxd(rxq, rx_pkts, nb_pkts);
 	else
-		nb_rx = (uint16_t)iavf_rx_scan_hw_ring(rxq);
+		nb_rx = (uint16_t)iavf_rx_scan_hw_ring(rxq, rx_pkts, nb_pkts);
+
 	rxq->rx_next_avail = 0;
-	rxq->rx_nb_avail = nb_rx;
-	rxq->rx_tail = (uint16_t)(rxq->rx_tail + nb_rx);
+	rxq->rx_tail = (uint16_t)(rxq->rx_tail + nb_rx + rxq->rx_nb_avail);
 
 	if (rxq->rx_tail > rxq->rx_free_trigger) {
 		if (iavf_rx_alloc_bufs(rxq) != 0) {
-			uint16_t i, j;
+			uint16_t i, j, nb_staged;
 
 			/* TODO: count rx_mbuf_alloc_failed here */
 
+			nb_staged = rxq->rx_nb_avail;
 			rxq->rx_nb_avail = 0;
-			rxq->rx_tail = (uint16_t)(rxq->rx_tail - nb_rx);
-			for (i = 0, j = rxq->rx_tail; i < nb_rx; i++, j++)
+
+			rxq->rx_tail = (uint16_t)(rxq->rx_tail - (nb_rx + nb_staged));
+			for (i = 0, j = rxq->rx_tail; i < nb_rx; i++, j++) {
+				rxq->sw_ring[j] = rx_pkts[i];
+				rx_pkts[i] = NULL;
+			}
+			for (i = 0, j = rxq->rx_tail + nb_rx; i < nb_staged; i++, j++) {
 				rxq->sw_ring[j] = rxq->rx_stage[i];
+				rx_pkts[i] = NULL;
+			}
 
 			return 0;
 		}
@@ -2164,10 +2279,7 @@ rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		   rxq->port_id, rxq->queue_id,
 		   rxq->rx_tail, nb_rx);
 
-	if (rxq->rx_nb_avail)
-		return iavf_rx_fill_from_stage(rxq, rx_pkts, nb_pkts);
-
-	return 0;
+	return nb_rx;
 }
 
 static uint16_t
@@ -2240,7 +2352,8 @@ static inline uint16_t
 iavf_calc_context_desc(uint64_t flags, uint8_t vlan_flag)
 {
 	if (flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG |
-			RTE_MBUF_F_TX_TUNNEL_MASK))
+	    RTE_MBUF_F_TX_TUNNEL_MASK | RTE_MBUF_F_TX_OUTER_IP_CKSUM |
+	    RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
 		return 1;
 	if (flags & RTE_MBUF_F_TX_VLAN &&
 	    vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2)
@@ -2305,6 +2418,50 @@ iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
 	break;
 	}
 
+	if (!(m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)) {
+		/* L4TUNT: L4 Tunneling Type */
+		switch (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+		case RTE_MBUF_F_TX_TUNNEL_IPIP:
+			/* for non UDP / GRE tunneling, set to 00b */
+			break;
+		case RTE_MBUF_F_TX_TUNNEL_VXLAN:
+		case RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE:
+		case RTE_MBUF_F_TX_TUNNEL_GTP:
+		case RTE_MBUF_F_TX_TUNNEL_GENEVE:
+			eip_typ |= IAVF_TXD_CTX_UDP_TUNNELING;
+			break;
+		case RTE_MBUF_F_TX_TUNNEL_GRE:
+			eip_typ |= IAVF_TXD_CTX_GRE_TUNNELING;
+			break;
+		default:
+			PMD_TX_LOG(ERR, "Tunnel type not supported");
+			return;
+		}
+
+		/* L4TUNLEN: L4 Tunneling Length, in Words
+		 *
+		 * We depend on app to set rte_mbuf.l2_len correctly.
+		 * For IP in GRE it should be set to the length of the GRE
+		 * header;
+		 * For MAC in GRE or MAC in UDP it should be set to the length
+		 * of the GRE or UDP headers plus the inner MAC up to including
+		 * its last Ethertype.
+		 * If MPLS labels exists, it should include them as well.
+		 */
+		eip_typ |= (m->l2_len >> 1) << IAVF_TXD_CTX_QW0_NATLEN_SHIFT;
+
+		/**
+		 * Calculate the tunneling UDP checksum.
+		 * Shall be set only if L4TUNT = 01b and EIPT is not zero
+		 */
+		if ((eip_typ & (IAVF_TX_CTX_EXT_IP_IPV6 |
+					IAVF_TX_CTX_EXT_IP_IPV4 |
+					IAVF_TX_CTX_EXT_IP_IPV4_NO_CSUM)) &&
+				(eip_typ & IAVF_TXD_CTX_UDP_TUNNELING) &&
+				(m->ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
+			eip_typ |= IAVF_TXD_CTX_QW0_L4T_CS_MASK;
+	}
+
 	*qw0 = eip_typ << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPT_SHIFT |
 		eip_len << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPLEN_SHIFT |
 		eip_noinc << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIP_NOINC_SHIFT;
@@ -2323,7 +2480,7 @@ iavf_fill_ctx_desc_segmentation_field(volatile uint64_t *field,
 		total_length = m->pkt_len - (m->l2_len + m->l3_len + m->l4_len);
 
 		if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
-			total_length -= m->outer_l3_len;
+			total_length -= m->outer_l3_len + m->outer_l2_len;
 	}
 
 #ifdef RTE_LIBRTE_IAVF_DEBUG_TX
@@ -2441,7 +2598,13 @@ iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
 	}
 
 	/* Set MACLEN */
-	offset |= (m->l2_len >> 1) << IAVF_TX_DESC_LENGTH_MACLEN_SHIFT;
+	if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK &&
+			!(m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD))
+		offset |= (m->outer_l2_len >> 1)
+			<< IAVF_TX_DESC_LENGTH_MACLEN_SHIFT;
+	else
+		offset |= (m->l2_len >> 1)
+			<< IAVF_TX_DESC_LENGTH_MACLEN_SHIFT;
 
 	/* Enable L3 checksum offloading inner */
 	if (m->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
@@ -2500,50 +2663,36 @@ iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
 		((uint64_t)l2tag1 << IAVF_TXD_DATA_QW1_L2TAG1_SHIFT));
 }
 
+/* Calculate the number of TX descriptors needed for each pkt */
+static inline uint16_t
+iavf_calc_pkt_desc(struct rte_mbuf *tx_pkt)
+{
+	struct rte_mbuf *txd = tx_pkt;
+	uint16_t count = 0;
+
+	while (txd != NULL) {
+		count += (txd->data_len + IAVF_MAX_DATA_PER_TXD - 1) /
+			IAVF_MAX_DATA_PER_TXD;
+		txd = txd->next;
+	}
+
+	return count;
+}
+
 static inline void
 iavf_fill_data_desc(volatile struct iavf_tx_desc *desc,
-	struct rte_mbuf *m, uint64_t desc_template,
-	uint16_t tlen, uint16_t ipseclen)
+	uint64_t desc_template,	uint16_t buffsz,
+	uint64_t buffer_addr)
 {
-	uint32_t hdrlen = m->l2_len;
-	uint32_t bufsz = 0;
-
 	/* fill data descriptor qw1 from template */
 	desc->cmd_type_offset_bsz = desc_template;
 
-	/* set data buffer address */
-	desc->buffer_addr = rte_mbuf_data_iova(m);
-
-	/* calculate data buffer size less set header lengths */
-	if ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) &&
-			(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
-					RTE_MBUF_F_TX_UDP_SEG))) {
-		hdrlen += m->outer_l3_len;
-		if (m->ol_flags & RTE_MBUF_F_TX_L4_MASK)
-			hdrlen += m->l3_len + m->l4_len;
-		else
-			hdrlen += m->l3_len;
-		if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)
-			hdrlen += ipseclen;
-		bufsz = hdrlen + tlen;
-	} else if ((m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) &&
-			(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
-					RTE_MBUF_F_TX_UDP_SEG))) {
-		hdrlen += m->outer_l3_len + m->l3_len + ipseclen;
-		if (m->ol_flags & RTE_MBUF_F_TX_L4_MASK)
-			hdrlen += m->l4_len;
-		bufsz = hdrlen + tlen;
-
-	} else {
-		bufsz = m->data_len;
-	}
-
 	/* set data buffer size */
 	desc->cmd_type_offset_bsz |=
-		(((uint64_t)bufsz << IAVF_TXD_DATA_QW1_TX_BUF_SZ_SHIFT) &
+		(((uint64_t)buffsz << IAVF_TXD_DATA_QW1_TX_BUF_SZ_SHIFT) &
 		IAVF_TXD_DATA_QW1_TX_BUF_SZ_MASK);
 
-	desc->buffer_addr = rte_cpu_to_le_64(desc->buffer_addr);
+	desc->buffer_addr = rte_cpu_to_le_64(buffer_addr);
 	desc->cmd_type_offset_bsz = rte_cpu_to_le_64(desc->cmd_type_offset_bsz);
 }
 
@@ -2568,8 +2717,10 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct iavf_tx_entry *txe_ring = txq->sw_ring;
 	struct iavf_tx_entry *txe, *txn;
 	struct rte_mbuf *mb, *mb_seg;
+	uint64_t buf_dma_addr;
 	uint16_t desc_idx, desc_idx_last;
 	uint16_t idx;
+	uint16_t slen;
 
 
 	/* Check if the descriptor ring needs to be cleaned. */
@@ -2608,8 +2759,14 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 * The number of descriptors that must be allocated for
 		 * a packet equals to the number of the segments of that
 		 * packet plus the context and ipsec descriptors if needed.
+		 * Recalculate the needed tx descs when TSO enabled in case
+		 * the mbuf data size exceeds max data size that hw allows
+		 * per tx desc.
 		 */
-		nb_desc_required = nb_desc_data + nb_desc_ctx + nb_desc_ipsec;
+		if (mb->ol_flags & RTE_MBUF_F_TX_TCP_SEG)
+			nb_desc_required = iavf_calc_pkt_desc(mb) + nb_desc_ctx + nb_desc_ipsec;
+		else
+			nb_desc_required = nb_desc_data + nb_desc_ctx + nb_desc_ipsec;
 
 		desc_idx_last = (uint16_t)(desc_idx + nb_desc_required - 1);
 
@@ -2705,8 +2862,40 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				rte_pktmbuf_free_seg(txe->mbuf);
 
 			txe->mbuf = mb_seg;
-			iavf_fill_data_desc(ddesc, mb_seg,
-					ddesc_template, tlen, ipseclen);
+
+			if ((mb_seg->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) &&
+					(mb_seg->ol_flags &
+						(RTE_MBUF_F_TX_TCP_SEG |
+						RTE_MBUF_F_TX_UDP_SEG))) {
+				slen = tlen + mb_seg->l2_len + mb_seg->l3_len +
+						mb_seg->outer_l3_len + ipseclen;
+				if (mb_seg->ol_flags & RTE_MBUF_F_TX_L4_MASK)
+					slen += mb_seg->l4_len;
+			} else {
+				slen = mb_seg->data_len;
+			}
+
+			buf_dma_addr = rte_mbuf_data_iova(mb_seg);
+			while ((mb_seg->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
+					RTE_MBUF_F_TX_UDP_SEG)) &&
+					unlikely(slen > IAVF_MAX_DATA_PER_TXD)) {
+				iavf_fill_data_desc(ddesc, ddesc_template,
+					IAVF_MAX_DATA_PER_TXD, buf_dma_addr);
+
+				IAVF_DUMP_TX_DESC(txq, ddesc, desc_idx);
+
+				buf_dma_addr += IAVF_MAX_DATA_PER_TXD;
+				slen -= IAVF_MAX_DATA_PER_TXD;
+
+				txe->last_id = desc_idx_last;
+				desc_idx = txe->next_id;
+				txe = txn;
+				ddesc = &txr[desc_idx];
+				txn = &txe_ring[txe->next_id];
+			}
+
+			iavf_fill_data_desc(ddesc, ddesc_template,
+					slen, buf_dma_addr);
 
 			IAVF_DUMP_TX_DESC(txq, ddesc, desc_idx);
 
@@ -2987,7 +3176,21 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 
 		return;
 	}
+#elif defined RTE_ARCH_ARM
+	int check_ret;
 
+	check_ret = iavf_rx_vec_dev_check(dev);
+	if (check_ret >= 0 &&
+	    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
+		PMD_DRV_LOG(DEBUG, "Using a Vector Rx callback (port=%d).",
+			    dev->data->port_id);
+		for (i = 0; i < dev->data->nb_rx_queues; i++) {
+			rxq = dev->data->rx_queues[i];
+			(void)iavf_rxq_vec_setup(rxq);
+		}
+		dev->rx_pkt_burst = iavf_recv_pkts_vec;
+		return;
+	}
 #endif
 	if (dev->data->scattered_rx) {
 		PMD_DRV_LOG(DEBUG, "Using a Scattered Rx callback (port=%d).",

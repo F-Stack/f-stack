@@ -14,5 +14,5 @@ The following are platform specific guides and setup information.
     cnxk
     dpaa
     dpaa2
+    mlx5
     octeontx
-    octeontx2

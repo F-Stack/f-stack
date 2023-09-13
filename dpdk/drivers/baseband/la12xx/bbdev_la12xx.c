@@ -2,6 +2,7 @@
  * Copyright 2020-2021 NXP
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -10,7 +11,7 @@
 #include <dirent.h>
 
 #include <rte_common.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_kvargs.h>
@@ -100,7 +101,15 @@ la12xx_info_get(struct rte_bbdev *dev __rte_unused,
 	dev_info->capabilities = bbdev_capabilities;
 	dev_info->cpu_flag_reqs = NULL;
 	dev_info->min_alignment = 64;
+	dev_info->device_status = RTE_BBDEV_DEV_NOT_SUPPORTED;
 
+	dev_info->num_queues[RTE_BBDEV_OP_NONE] = 0;
+	dev_info->num_queues[RTE_BBDEV_OP_TURBO_DEC] = 0;
+	dev_info->num_queues[RTE_BBDEV_OP_TURBO_ENC] = 0;
+	dev_info->num_queues[RTE_BBDEV_OP_LDPC_DEC] = LA12XX_MAX_QUEUES / 2;
+	dev_info->num_queues[RTE_BBDEV_OP_LDPC_ENC] = LA12XX_MAX_QUEUES / 2;
+	dev_info->queue_priority[RTE_BBDEV_OP_LDPC_DEC] = 1;
+	dev_info->queue_priority[RTE_BBDEV_OP_LDPC_ENC] = 1;
 	rte_bbdev_log_debug("got device info from %u", dev->data->dev_id);
 }
 
@@ -975,8 +984,7 @@ parse_bbdev_la12xx_params(struct bbdev_la12xx_params *params,
 	}
 
 exit:
-	if (kvlist)
-		rte_kvargs_free(kvlist);
+	rte_kvargs_free(kvlist);
 	return ret;
 }
 

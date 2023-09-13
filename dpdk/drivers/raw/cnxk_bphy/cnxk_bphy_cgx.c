@@ -3,7 +3,7 @@
  */
 #include <string.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_rawdev.h>
 #include <rte_rawdev_pmd.h>
 
@@ -56,10 +56,16 @@ cnxk_bphy_cgx_process_buf(struct cnxk_bphy_cgx *cgx, unsigned int queue,
 			  struct rte_rawdev_buf *buf)
 {
 	struct cnxk_bphy_cgx_queue *qp = &cgx->queues[queue];
+	struct cnxk_bphy_cgx_msg_cpri_mode_change *cpri_mode;
 	struct cnxk_bphy_cgx_msg_set_link_state *link_state;
+	struct cnxk_bphy_cgx_msg_cpri_mode_tx_ctrl *tx_ctrl;
+	struct cnxk_bphy_cgx_msg_cpri_mode_misc *mode_misc;
 	struct cnxk_bphy_cgx_msg *msg = buf->buf_addr;
 	struct cnxk_bphy_cgx_msg_link_mode *link_mode;
 	struct cnxk_bphy_cgx_msg_link_info *link_info;
+	struct roc_bphy_cgx_cpri_mode_change rcpri_mode;
+	struct roc_bphy_cgx_cpri_mode_misc rmode_misc;
+	struct roc_bphy_cgx_cpri_mode_tx_ctrl rtx_ctrl;
 	struct roc_bphy_cgx_link_info rlink_info;
 	struct roc_bphy_cgx_link_mode rlink_mode;
 	enum roc_bphy_cgx_eth_link_fec *fec;
@@ -106,10 +112,24 @@ cnxk_bphy_cgx_process_buf(struct cnxk_bphy_cgx *cgx, unsigned int queue,
 		memset(&rlink_mode, 0, sizeof(rlink_mode));
 		rlink_mode.full_duplex = link_mode->full_duplex;
 		rlink_mode.an = link_mode->autoneg;
+		rlink_mode.use_portm_idx = link_mode->use_portm_idx;
+		rlink_mode.portm_idx = link_mode->portm_idx;
+		rlink_mode.mode_group_idx =
+			(enum roc_bphy_cgx_mode_group)link_mode->mode_group_idx;
 		rlink_mode.speed =
 			(enum roc_bphy_cgx_eth_link_speed)link_mode->speed;
-		rlink_mode.mode =
-			(enum roc_bphy_cgx_eth_link_mode)link_mode->mode;
+		switch (link_mode->mode_group_idx) {
+		case CNXK_BPHY_CGX_MODE_GROUP_ETH:
+			rlink_mode.mode =
+				(enum roc_bphy_cgx_eth_link_mode)
+				link_mode->mode;
+			break;
+		case CNXK_BPHY_CGX_MODE_GROUP_CPRI:
+			rlink_mode.mode_cpri =
+				(enum roc_bphy_cgx_eth_mode_cpri)
+				link_mode->mode_cpri;
+			break;
+		}
 		ret = roc_bphy_cgx_set_link_mode(cgx->rcgx, lmac, &rlink_mode);
 		break;
 	case CNXK_BPHY_CGX_MSG_TYPE_SET_LINK_STATE:
@@ -134,6 +154,34 @@ cnxk_bphy_cgx_process_buf(struct cnxk_bphy_cgx *cgx, unsigned int queue,
 	case CNXK_BPHY_CGX_MSG_TYPE_SET_FEC:
 		fec = msg->data;
 		ret = roc_bphy_cgx_fec_set(cgx->rcgx, lmac, *fec);
+		break;
+	case CNXK_BPHY_CGX_MSG_TYPE_CPRI_MODE_CHANGE:
+		cpri_mode = msg->data;
+		memset(&rcpri_mode, 0, sizeof(rcpri_mode));
+		rcpri_mode.gserc_idx = cpri_mode->gserc_idx;
+		rcpri_mode.lane_idx = cpri_mode->lane_idx;
+		rcpri_mode.rate = cpri_mode->rate;
+		rcpri_mode.disable_leq = cpri_mode->disable_leq;
+		rcpri_mode.disable_dfe = cpri_mode->disable_dfe;
+		ret = roc_bphy_cgx_cpri_mode_change(cgx->rcgx, lmac,
+						    &rcpri_mode);
+		break;
+	case CNXK_BPHY_CGX_MSG_TYPE_CPRI_TX_CONTROL:
+		tx_ctrl = msg->data;
+		memset(&rtx_ctrl, 0, sizeof(rtx_ctrl));
+		rtx_ctrl.gserc_idx = tx_ctrl->gserc_idx;
+		rtx_ctrl.lane_idx = tx_ctrl->lane_idx;
+		rtx_ctrl.enable = tx_ctrl->enable;
+		ret = roc_bphy_cgx_cpri_mode_tx_control(cgx->rcgx, lmac,
+							&rtx_ctrl);
+		break;
+	case CNXK_BPHY_CGX_MSG_TYPE_CPRI_MODE_MISC:
+		mode_misc = msg->data;
+		memset(&rmode_misc, 0, sizeof(rmode_misc));
+		rmode_misc.gserc_idx = mode_misc->gserc_idx;
+		rmode_misc.lane_idx = mode_misc->lane_idx;
+		rmode_misc.flags = mode_misc->flags;
+		ret = roc_bphy_cgx_cpri_mode_misc(cgx->rcgx, lmac, &rmode_misc);
 		break;
 	default:
 		return -EINVAL;
@@ -233,8 +281,7 @@ cnxk_bphy_cgx_fini_queues(struct cnxk_bphy_cgx *cgx)
 	unsigned int i;
 
 	for (i = 0; i < cgx->num_queues; i++) {
-		if (cgx->queues[i].rsp)
-			rte_free(cgx->queues[i].rsp);
+		rte_free(cgx->queues[i].rsp);
 	}
 
 	cgx->num_queues = 0;

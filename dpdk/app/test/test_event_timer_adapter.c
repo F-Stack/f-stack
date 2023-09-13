@@ -3,6 +3,8 @@
  * Copyright(c) 2017-2018 Intel Corporation.
  */
 
+#include "test.h"
+
 #include <math.h>
 
 #include <rte_common.h>
@@ -10,6 +12,17 @@
 #include <rte_debug.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_event_timer_adapter_func(void)
+{
+	printf("event_timer_adapter not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_eventdev.h>
 #include <rte_event_timer_adapter.h>
 #include <rte_mempool.h>
@@ -20,8 +33,6 @@
 #include <rte_bus_vdev.h>
 #include <rte_service.h>
 #include <stdbool.h>
-
-#include "test.h"
 
 /* 4K timers corresponds to sw evdev max inflight events */
 #define MAX_TIMERS  (4 * 1024)
@@ -376,11 +387,22 @@ timdev_setup_msec(void)
 static int
 timdev_setup_msec_periodic(void)
 {
+	uint32_t caps = 0;
+	uint64_t max_tmo_ns;
+
 	uint64_t flags = RTE_EVENT_TIMER_ADAPTER_F_ADJUST_RES |
 			 RTE_EVENT_TIMER_ADAPTER_F_PERIODIC;
 
+	TEST_ASSERT_SUCCESS(rte_event_timer_adapter_caps_get(evdev, &caps),
+				"failed to get adapter capabilities");
+
+	if (caps & RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT)
+		max_tmo_ns = 0;
+	else
+		max_tmo_ns = 180 * NSECPERSEC;
+
 	/* Periodic mode with 100 ms resolution */
-	return _timdev_setup(0, NSECPERSEC / 10, flags);
+	return _timdev_setup(max_tmo_ns, NSECPERSEC / 10, flags);
 }
 
 static int
@@ -399,7 +421,7 @@ timdev_setup_sec_periodic(void)
 			 RTE_EVENT_TIMER_ADAPTER_F_PERIODIC;
 
 	/* Periodic mode with 1 sec resolution */
-	return _timdev_setup(0, NSECPERSEC, flags);
+	return _timdev_setup(180 * NSECPERSEC, NSECPERSEC, flags);
 }
 
 static int
@@ -573,12 +595,23 @@ test_timer_arm(void)
 static inline int
 test_timer_arm_periodic(void)
 {
+	uint32_t caps = 0;
+	uint32_t timeout_count = 0;
+
 	TEST_ASSERT_SUCCESS(_arm_timers(1, MAX_TIMERS),
 			    "Failed to arm timers");
 	/* With a resolution of 100ms and wait time of 1sec,
 	 * there will be 10 * MAX_TIMERS periodic timer triggers.
 	 */
-	TEST_ASSERT_SUCCESS(_wait_timer_triggers(1, 10 * MAX_TIMERS, 0),
+	TEST_ASSERT_SUCCESS(rte_event_timer_adapter_caps_get(evdev, &caps),
+				"failed to get adapter capabilities");
+
+	if (caps & RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT)
+		timeout_count = 10;
+	else
+		timeout_count = 9;
+
+	TEST_ASSERT_SUCCESS(_wait_timer_triggers(1, timeout_count * MAX_TIMERS, 0),
 			    "Timer triggered count doesn't match arm count");
 	return TEST_SUCCESS;
 }
@@ -661,12 +694,23 @@ test_timer_arm_burst(void)
 static inline int
 test_timer_arm_burst_periodic(void)
 {
+	uint32_t caps = 0;
+	uint32_t timeout_count = 0;
+
 	TEST_ASSERT_SUCCESS(_arm_timers_burst(1, MAX_TIMERS),
 			    "Failed to arm timers");
 	/* With a resolution of 100ms and wait time of 1sec,
 	 * there will be 10 * MAX_TIMERS periodic timer triggers.
 	 */
-	TEST_ASSERT_SUCCESS(_wait_timer_triggers(1, 10 * MAX_TIMERS, 0),
+	TEST_ASSERT_SUCCESS(rte_event_timer_adapter_caps_get(evdev, &caps),
+				"failed to get adapter capabilities");
+
+	if (caps & RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT)
+		timeout_count = 10;
+	else
+		timeout_count = 9;
+
+	TEST_ASSERT_SUCCESS(_wait_timer_triggers(1, timeout_count * MAX_TIMERS, 0),
 			    "Timer triggered count doesn't match arm count");
 
 	return TEST_SUCCESS;
@@ -1916,5 +1960,7 @@ test_event_timer_adapter_func(void)
 {
 	return unit_test_suite_runner(&event_timer_adptr_functional_testsuite);
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(event_timer_adapter_test, test_event_timer_adapter_func);

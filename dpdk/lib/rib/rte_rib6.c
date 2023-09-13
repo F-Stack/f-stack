@@ -6,12 +6,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <rte_eal.h>
 #include <rte_eal_memconfig.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
 #include <rte_mempool.h>
-#include <rte_rwlock.h>
 #include <rte_string_fns.h>
 #include <rte_tailq.h>
 
@@ -36,7 +34,7 @@ struct rte_rib6_node {
 	uint8_t			ip[RTE_RIB6_IPV6_ADDR_SIZE];
 	uint8_t			depth;
 	uint8_t			flag;
-	__extension__ uint64_t		ext[0];
+	__extension__ uint64_t ext[];
 };
 
 struct rte_rib6 {
@@ -49,13 +47,13 @@ struct rte_rib6 {
 };
 
 static inline bool
-is_valid_node(struct rte_rib6_node *node)
+is_valid_node(const struct rte_rib6_node *node)
 {
 	return (node->flag & RTE_RIB_VALID_NODE) == RTE_RIB_VALID_NODE;
 }
 
 static inline bool
-is_right_node(struct rte_rib6_node *node)
+is_right_node(const struct rte_rib6_node *node)
 {
 	return node->parent->right == node;
 }
@@ -173,7 +171,7 @@ rte_rib6_lookup_exact(struct rte_rib6 *rib,
 	uint8_t tmp_ip[RTE_RIB6_IPV6_ADDR_SIZE];
 	int i;
 
-	if ((rib == NULL) || (ip == NULL) || (depth > RIB6_MAXDEPTH)) {
+	if (unlikely(rib == NULL || ip == NULL || depth > RIB6_MAXDEPTH)) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -212,7 +210,7 @@ rte_rib6_get_nxt(struct rte_rib6 *rib,
 	uint8_t tmp_ip[RTE_RIB6_IPV6_ADDR_SIZE];
 	int i;
 
-	if ((rib == NULL) || (ip == NULL) || (depth > RIB6_MAXDEPTH)) {
+	if (unlikely(rib == NULL || ip == NULL || depth > RIB6_MAXDEPTH)) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -295,8 +293,7 @@ rte_rib6_insert(struct rte_rib6 *rib,
 	int i, d;
 	uint8_t common_depth, ip_xor;
 
-	if (unlikely((rib == NULL) || (ip == NULL) ||
-			(depth > RIB6_MAXDEPTH))) {
+	if (unlikely((rib == NULL || ip == NULL || depth > RIB6_MAXDEPTH))) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -415,7 +412,7 @@ int
 rte_rib6_get_ip(const struct rte_rib6_node *node,
 		uint8_t ip[RTE_RIB6_IPV6_ADDR_SIZE])
 {
-	if ((node == NULL) || (ip == NULL)) {
+	if (unlikely(node == NULL || ip == NULL)) {
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -426,7 +423,7 @@ rte_rib6_get_ip(const struct rte_rib6_node *node,
 int
 rte_rib6_get_depth(const struct rte_rib6_node *node, uint8_t *depth)
 {
-	if ((node == NULL) || (depth == NULL)) {
+	if (unlikely(node == NULL || depth == NULL)) {
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -443,7 +440,7 @@ rte_rib6_get_ext(struct rte_rib6_node *node)
 int
 rte_rib6_get_nh(const struct rte_rib6_node *node, uint64_t *nh)
 {
-	if ((node == NULL) || (nh == NULL)) {
+	if (unlikely(node == NULL || nh == NULL)) {
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -454,7 +451,7 @@ rte_rib6_get_nh(const struct rte_rib6_node *node, uint64_t *nh)
 int
 rte_rib6_set_nh(struct rte_rib6_node *node, uint64_t nh)
 {
-	if (node == NULL) {
+	if (unlikely(node == NULL)) {
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -473,7 +470,7 @@ rte_rib6_create(const char *name, int socket_id,
 	struct rte_mempool *node_pool;
 
 	/* Check user arguments. */
-	if (name == NULL || conf == NULL || conf->max_nodes <= 0) {
+	if (unlikely(name == NULL || conf == NULL || conf->max_nodes <= 0)) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -508,7 +505,7 @@ rte_rib6_create(const char *name, int socket_id,
 
 	/* allocate tailq entry */
 	te = rte_zmalloc("RIB6_TAILQ_ENTRY", sizeof(*te), 0);
-	if (te == NULL) {
+	if (unlikely(te == NULL)) {
 		RTE_LOG(ERR, LPM,
 			"Can not allocate tailq entry for RIB6 %s\n", name);
 		rte_errno = ENOMEM;
@@ -518,7 +515,7 @@ rte_rib6_create(const char *name, int socket_id,
 	/* Allocate memory to store the RIB6 data structures. */
 	rib = rte_zmalloc_socket(mem_name,
 		sizeof(struct rte_rib6), RTE_CACHE_LINE_SIZE, socket_id);
-	if (rib == NULL) {
+	if (unlikely(rib == NULL)) {
 		RTE_LOG(ERR, LPM, "RIB6 %s memory allocation failed\n", name);
 		rte_errno = ENOMEM;
 		goto free_te;

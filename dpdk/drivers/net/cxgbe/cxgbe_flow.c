@@ -209,31 +209,6 @@ ch_rte_parsetype_eth(const void *dmask, const struct rte_flow_item *item,
 }
 
 static int
-ch_rte_parsetype_port(const void *dmask, const struct rte_flow_item *item,
-		      struct ch_filter_specification *fs,
-		      struct rte_flow_error *e)
-{
-	const struct rte_flow_item_phy_port *val = item->spec;
-	const struct rte_flow_item_phy_port *umask = item->mask;
-	const struct rte_flow_item_phy_port *mask;
-
-	mask = umask ? umask : (const struct rte_flow_item_phy_port *)dmask;
-
-	if (!val)
-		return 0; /* Wildcard, match all physical ports */
-
-	if (val->index > 0x7)
-		return rte_flow_error_set(e, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
-					  item,
-					  "port index up to 0x7 is supported");
-
-	if (val->index || (umask && umask->index))
-		CXGBE_FILL_FS(val->index, mask->index, iport);
-
-	return 0;
-}
-
-static int
 ch_rte_parsetype_vlan(const void *dmask, const struct rte_flow_item *item,
 		      struct ch_filter_specification *fs,
 		      struct rte_flow_error *e)
@@ -284,51 +259,6 @@ ch_rte_parsetype_vlan(const void *dmask, const struct rte_flow_item *item,
 	if (spec && (spec->inner_type || (umask && umask->inner_type)))
 		CXGBE_FILL_FS(be16_to_cpu(spec->inner_type),
 			      be16_to_cpu(mask->inner_type), ethtype);
-
-	return 0;
-}
-
-static int
-ch_rte_parsetype_pf(const void *dmask __rte_unused,
-		    const struct rte_flow_item *item __rte_unused,
-		    struct ch_filter_specification *fs,
-		    struct rte_flow_error *e __rte_unused)
-{
-	struct rte_flow *flow = (struct rte_flow *)fs->private;
-	struct rte_eth_dev *dev = flow->dev;
-	struct adapter *adap = ethdev2adap(dev);
-
-	CXGBE_FILL_FS(1, 1, pfvf_vld);
-
-	CXGBE_FILL_FS(adap->pf, 0x7, pf);
-	return 0;
-}
-
-static int
-ch_rte_parsetype_vf(const void *dmask, const struct rte_flow_item *item,
-		    struct ch_filter_specification *fs,
-		    struct rte_flow_error *e)
-{
-	const struct rte_flow_item_vf *umask = item->mask;
-	const struct rte_flow_item_vf *val = item->spec;
-	const struct rte_flow_item_vf *mask;
-
-	/* If user has not given any mask, then use chelsio supported mask. */
-	mask = umask ? umask : (const struct rte_flow_item_vf *)dmask;
-
-	CXGBE_FILL_FS(1, 1, pfvf_vld);
-
-	if (!val)
-		return 0; /* Wildcard, match all Vf */
-
-	if (val->id > UCHAR_MAX)
-		return rte_flow_error_set(e, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM,
-					  item,
-					  "VF ID > MAX(255)");
-
-	if (val->id || (umask && umask->id))
-		CXGBE_FILL_FS(val->id, mask->id, vf);
 
 	return 0;
 }
@@ -668,7 +598,6 @@ ch_rte_parse_atype_switch(const struct rte_flow_action *a,
 	const struct rte_flow_action_set_ipv4 *ipv4;
 	const struct rte_flow_action_set_ipv6 *ipv6;
 	const struct rte_flow_action_set_tp *tp_port;
-	const struct rte_flow_action_phy_port *port;
 	const struct rte_flow_action_set_mac *mac;
 	int item_index;
 	u16 tmp_vlan;
@@ -714,10 +643,6 @@ ch_rte_parse_atype_switch(const struct rte_flow_action *a,
 		break;
 	case RTE_FLOW_ACTION_TYPE_OF_POP_VLAN:
 		fs->newvlan = VLAN_REMOVE;
-		break;
-	case RTE_FLOW_ACTION_TYPE_PHY_PORT:
-		port = (const struct rte_flow_action_phy_port *)a->conf;
-		fs->eport = port->index;
 		break;
 	case RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC:
 		item_index = cxgbe_get_flow_item_index(items,
@@ -906,7 +831,6 @@ cxgbe_rtef_parse_actions(struct rte_flow *flow,
 			goto action_switch;
 		case RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN:
 		case RTE_FLOW_ACTION_TYPE_OF_POP_VLAN:
-		case RTE_FLOW_ACTION_TYPE_PHY_PORT:
 		case RTE_FLOW_ACTION_TYPE_MAC_SWAP:
 		case RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC:
 		case RTE_FLOW_ACTION_TYPE_SET_IPV4_DST:
@@ -971,13 +895,6 @@ static struct chrte_fparse parseitem[] = {
 		}
 	},
 
-	[RTE_FLOW_ITEM_TYPE_PHY_PORT] = {
-		.fptr = ch_rte_parsetype_port,
-		.dmask = &(const struct rte_flow_item_phy_port){
-			.index = 0x7,
-		}
-	},
-
 	[RTE_FLOW_ITEM_TYPE_VLAN] = {
 		.fptr = ch_rte_parsetype_vlan,
 		.dmask = &(const struct rte_flow_item_vlan){
@@ -1020,18 +937,6 @@ static struct chrte_fparse parseitem[] = {
 	[RTE_FLOW_ITEM_TYPE_TCP] = {
 		.fptr  = ch_rte_parsetype_tcp,
 		.dmask = &rte_flow_item_tcp_mask,
-	},
-
-	[RTE_FLOW_ITEM_TYPE_PF] = {
-		.fptr = ch_rte_parsetype_pf,
-		.dmask = NULL,
-	},
-
-	[RTE_FLOW_ITEM_TYPE_VF] = {
-		.fptr = ch_rte_parsetype_vf,
-		.dmask = &(const struct rte_flow_item_vf){
-			.id = 0xffffffff,
-		}
 	},
 };
 

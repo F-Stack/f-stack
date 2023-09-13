@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #include <rte_memory.h>
 
@@ -22,7 +23,7 @@ struct vhost_kernel_data {
 struct vhost_memory_kernel {
 	uint32_t nregions;
 	uint32_t padding;
-	struct vhost_memory_region regions[0];
+	struct vhost_memory_region regions[];
 };
 
 /* vhost kernel ioctls */
@@ -383,6 +384,7 @@ vhost_kernel_setup(struct virtio_user_dev *dev)
 	struct vhost_kernel_data *data;
 	unsigned int tap_features;
 	unsigned int tap_flags;
+	unsigned int r_flags;
 	const char *ifname;
 	uint32_t q, i;
 	int vhostfd;
@@ -394,6 +396,10 @@ vhost_kernel_setup(struct virtio_user_dev *dev)
 		PMD_INIT_LOG(ERR, "TAP does not support IFF_VNET_HDR");
 		return -1;
 	}
+	r_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+
+	if (tap_features & IFF_NAPI)
+		r_flags |= IFF_NAPI;
 
 	data = malloc(sizeof(*data));
 	if (!data) {
@@ -429,7 +435,7 @@ vhost_kernel_setup(struct virtio_user_dev *dev)
 	}
 
 	ifname = dev->ifname != NULL ? dev->ifname : "tap%d";
-	data->tapfds[0] = tap_open(ifname, (tap_features & IFF_MULTI_QUEUE) != 0);
+	data->tapfds[0] = tap_open(ifname, r_flags, (tap_features & IFF_MULTI_QUEUE) != 0);
 	if (data->tapfds[0] < 0)
 		goto err_tapfds;
 	if (dev->ifname == NULL && tap_get_name(data->tapfds[0], &dev->ifname) < 0) {
@@ -446,7 +452,7 @@ vhost_kernel_setup(struct virtio_user_dev *dev)
 	}
 
 	for (i = 1; i < dev->max_queue_pairs; i++) {
-		data->tapfds[i] = tap_open(dev->ifname, true);
+		data->tapfds[i] = tap_open(dev->ifname, r_flags, true);
 		if (data->tapfds[i] < 0)
 			goto err_tapfds;
 	}

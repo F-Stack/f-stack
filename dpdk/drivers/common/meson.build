@@ -6,7 +6,7 @@ drivers = [
         'cpt',
         'dpaax',
         'iavf',
+        'idpf',
         'mvep',
         'octeontx',
-        'octeontx2',
 ]

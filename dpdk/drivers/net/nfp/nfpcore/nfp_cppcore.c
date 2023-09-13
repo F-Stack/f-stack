@@ -19,6 +19,7 @@
 #include "nfp6000/nfp6000.h"
 #include "nfp6000/nfp_xpb.h"
 #include "nfp_nffw.h"
+#include "../nfp_logs.h"
 
 #define NFP_PL_DEVICE_ID                        0x00000004
 #define NFP_PL_DEVICE_ID_MASK                   0xff
@@ -616,6 +617,7 @@ nfp_cpp_alloc(struct rte_pci_device *dev, int driver_lock_needed)
 
 	err = nfp_cpp_set_mu_locality_lsb(cpp);
 	if (err < 0) {
+		PMD_DRV_LOG(ERR, "Can't calculate MU locality bit offset");
 		free(cpp);
 		return NULL;
 	}
@@ -859,7 +861,7 @@ __nfp_cpp_model_autodetect(struct nfp_cpp *cpp, uint32_t *model)
  * Map an area of IOMEM access.  To undo the effect of this function call
  * @nfp_cpp_area_release_free(*area).
  *
- * Return: Pointer to memory mapped area or ERR_PTR
+ * Return: Pointer to memory mapped area or NULL
  */
 uint8_t *
 nfp_cpp_map_area(struct nfp_cpp *cpp, uint32_t cpp_id, uint64_t addr,
@@ -868,7 +870,7 @@ nfp_cpp_map_area(struct nfp_cpp *cpp, uint32_t cpp_id, uint64_t addr,
 	uint8_t *res;
 
 	*area = nfp_cpp_area_alloc_acquire(cpp, cpp_id, addr, size);
-	if (*area == NULL)
+	if (!*area)
 		goto err_eio;
 
 	res = nfp_cpp_area_iomem(*area);

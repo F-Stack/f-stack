@@ -21,7 +21,7 @@
 #include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_string_fns.h>
 #include <rte_errno.h>
 #include <rte_memory.h>
@@ -55,7 +55,7 @@ static const char * const valid_arguments[] = {
 };
 
 static const struct rte_eth_link pmd_link = {
-	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_speed = RTE_ETH_SPEED_NUM_100G,
 	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
 	.link_status = RTE_ETH_LINK_DOWN,
 	.link_autoneg = RTE_ETH_LINK_AUTONEG
@@ -88,17 +88,14 @@ memif_mp_send_region(const struct rte_mp_msg *msg, const void *peer)
 	const struct mp_region_msg *msg_param = (const struct mp_region_msg *)msg->param;
 	struct rte_mp_msg reply;
 	struct mp_region_msg *reply_param = (struct mp_region_msg *)reply.param;
-	uint16_t port_id;
-	int ret;
 
 	/* Get requested port */
-	ret = rte_eth_dev_get_port_by_name(msg_param->port_name, &port_id);
-	if (ret) {
+	dev = rte_eth_dev_get_by_name(msg_param->port_name);
+	if (!dev) {
 		MIF_LOG(ERR, "Failed to get port id for %s",
 			msg_param->port_name);
 		return -1;
 	}
-	dev = &rte_eth_devices[port_id];
 	proc_private = dev->process_private;
 
 	memset(&reply, 0, sizeof(reply));
@@ -1712,8 +1709,7 @@ memif_check_socket_filename(const char *filename)
 		ret = -EINVAL;
 	}
 
-	if (dir != NULL)
-		rte_free(dir);
+	rte_free(dir);
 
 	return ret;
 }
@@ -1884,8 +1880,7 @@ rte_pmd_memif_probe(struct rte_vdev_device *vdev)
 			   log2_ring_size, pkt_buffer_size, secret, ether_addr);
 
 exit:
-	if (kvlist != NULL)
-		rte_kvargs_free(kvlist);
+	rte_kvargs_free(kvlist);
 	return ret;
 }
 

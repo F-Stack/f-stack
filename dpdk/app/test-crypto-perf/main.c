@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <rte_malloc.h>
@@ -23,7 +24,6 @@
 
 static struct {
 	struct rte_mempool *sess_mp;
-	struct rte_mempool *priv_mp;
 } session_pool_socket[RTE_MAX_NUMA_NODES];
 
 const char *cperf_test_type_strs[] = {
@@ -69,39 +69,16 @@ const struct cperf_test cperf_testmap[] = {
 };
 
 static int
-create_asym_op_pool_socket(uint8_t dev_id, int32_t socket_id,
-			   uint32_t nb_sessions)
+create_asym_op_pool_socket(int32_t socket_id, uint32_t nb_sessions)
 {
 	char mp_name[RTE_MEMPOOL_NAMESIZE];
 	struct rte_mempool *mpool = NULL;
-	unsigned int session_size =
-		RTE_MAX(rte_cryptodev_asym_get_private_session_size(dev_id),
-			rte_cryptodev_asym_get_header_session_size());
-
-	if (session_pool_socket[socket_id].priv_mp == NULL) {
-		snprintf(mp_name, RTE_MEMPOOL_NAMESIZE, "perf_asym_priv_pool%u",
-			 socket_id);
-
-		mpool = rte_mempool_create(mp_name, nb_sessions, session_size,
-					   0, 0, NULL, NULL, NULL, NULL,
-					   socket_id, 0);
-		if (mpool == NULL) {
-			printf("Cannot create pool \"%s\" on socket %d\n",
-			       mp_name, socket_id);
-			return -ENOMEM;
-		}
-		printf("Allocated pool \"%s\" on socket %d\n", mp_name,
-		       socket_id);
-		session_pool_socket[socket_id].priv_mp = mpool;
-	}
 
 	if (session_pool_socket[socket_id].sess_mp == NULL) {
-
 		snprintf(mp_name, RTE_MEMPOOL_NAMESIZE, "perf_asym_sess_pool%u",
 			 socket_id);
-		mpool = rte_mempool_create(mp_name, nb_sessions,
-					   session_size, 0, 0, NULL, NULL, NULL,
-					   NULL, socket_id, 0);
+		mpool = rte_cryptodev_asym_session_pool_create(mp_name,
+				nb_sessions, 0, 0, socket_id);
 		if (mpool == NULL) {
 			printf("Cannot create pool \"%s\" on socket %d\n",
 			       mp_name, socket_id);
@@ -119,35 +96,14 @@ fill_session_pool_socket(int32_t socket_id, uint32_t session_priv_size,
 	char mp_name[RTE_MEMPOOL_NAMESIZE];
 	struct rte_mempool *sess_mp;
 
-	if (session_pool_socket[socket_id].priv_mp == NULL) {
-		snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
-			"priv_sess_mp_%u", socket_id);
-
-		sess_mp = rte_mempool_create(mp_name,
-					nb_sessions,
-					session_priv_size,
-					0, 0, NULL, NULL, NULL,
-					NULL, socket_id,
-					0);
-
-		if (sess_mp == NULL) {
-			printf("Cannot create pool \"%s\" on socket %d\n",
-				mp_name, socket_id);
-			return -ENOMEM;
-		}
-
-		printf("Allocated pool \"%s\" on socket %d\n",
-			mp_name, socket_id);
-		session_pool_socket[socket_id].priv_mp = sess_mp;
-	}
-
 	if (session_pool_socket[socket_id].sess_mp == NULL) {
 
 		snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
 			"sess_mp_%u", socket_id);
 
 		sess_mp = rte_cryptodev_sym_session_pool_create(mp_name,
-					nb_sessions, 0, 0, 0, socket_id);
+					nb_sessions, session_priv_size, 0, 0,
+					socket_id);
 
 		if (sess_mp == NULL) {
 			printf("Cannot create pool \"%s\" on socket %d\n",
@@ -306,19 +262,15 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs)
 		opts->segment_sz += (opts->headroom_sz + opts->tailroom_sz);
 
 		uint32_t dev_max_nb_sess = cdev_info.sym.max_nb_sessions;
-		/*
-		 * Two sessions objects are required for each session
-		 * (one for the header, one for the private data)
-		 */
 		if (!strcmp((const char *)opts->device_type,
 					"crypto_scheduler")) {
 #ifdef RTE_CRYPTO_SCHEDULER
-			uint32_t nb_slaves =
+			uint32_t nb_workers =
 				rte_cryptodev_scheduler_workers_get(cdev_id,
 								NULL);
-
-			sessions_needed = enabled_cdev_count *
-				opts->nb_qps * nb_slaves;
+			/* scheduler session header per lcore + 1 session per worker qp */
+			sessions_needed = nb_lcores + enabled_cdev_count *
+				opts->nb_qps * nb_workers;
 #endif
 		} else
 			sessions_needed = enabled_cdev_count * opts->nb_qps;
@@ -335,7 +287,7 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs)
 		}
 
 		if (opts->op_type == CPERF_ASYM_MODEX)
-			ret = create_asym_op_pool_socket(cdev_id, socket_id,
+			ret = create_asym_op_pool_socket(socket_id,
 							 sessions_needed);
 		else
 			ret = fill_session_pool_socket(socket_id, max_sess_size,
@@ -344,12 +296,9 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs)
 			return ret;
 
 		qp_conf.mp_session = session_pool_socket[socket_id].sess_mp;
-		qp_conf.mp_session_private =
-				session_pool_socket[socket_id].priv_mp;
 
 		if (opts->op_type == CPERF_ASYM_MODEX) {
 			qp_conf.mp_session = NULL;
-			qp_conf.mp_session_private = NULL;
 		}
 
 		ret = rte_cryptodev_configure(cdev_id, &conf);
@@ -404,7 +353,7 @@ cperf_verify_devices_capabilities(struct cperf_options *opts,
 				return -1;
 
 			ret = rte_cryptodev_asym_xform_capability_check_modlen(
-				asym_capability, sizeof(perf_mod_p));
+				asym_capability, opts->modex_data->modulus.len);
 			if (ret != 0)
 				return ret;
 
@@ -708,7 +657,6 @@ main(int argc, char **argv)
 
 		ctx[i] = cperf_testmap[opts.test].constructor(
 				session_pool_socket[socket_id].sess_mp,
-				session_pool_socket[socket_id].priv_mp,
 				cdev_id, qp_id,
 				&opts, t_vec, &op_fns);
 		if (ctx[i] == NULL) {

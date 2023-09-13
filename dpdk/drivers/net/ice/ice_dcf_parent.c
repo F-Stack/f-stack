@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2020 Intel Corporation
  */
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <pthread.h>
@@ -471,6 +472,9 @@ ice_dcf_init_parent_adapter(struct rte_eth_dev *eth_dev)
 			parent_adapter->pf.main_vsi->idx, hw->pf_vsi_id);
 
 	ice_dcf_update_vf_vsi_map(parent_hw, hw->num_vfs, hw->vf_vsi_map);
+
+	if (ice_devargs_check(eth_dev->device->devargs, ICE_DCF_DEVARG_ACL))
+		parent_adapter->disabled_engine_mask |= BIT(ICE_FLOW_ENGINE_ACL);
 
 	err = ice_flow_init(parent_adapter);
 	if (err) {

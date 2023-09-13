@@ -53,6 +53,7 @@ s32 ngbe_init_hw(struct ngbe_hw *hw)
 {
 	s32 status;
 
+	ngbe_read_efuse(hw);
 	ngbe_save_eeprom_version(hw);
 
 	/* Reset the hardware */
@@ -120,8 +121,7 @@ ngbe_reset_misc_em(struct ngbe_hw *hw)
 
 	wr32m(hw, NGBE_GPIE, NGBE_GPIE_MSIX, NGBE_GPIE_MSIX);
 
-	if ((hw->sub_system_id & NGBE_OEM_MASK) == NGBE_LY_M88E1512_SFP ||
-		(hw->sub_system_id & NGBE_OEM_MASK) == NGBE_LY_YT8521S_SFP) {
+	if (hw->gpio_ctl) {
 		/* gpio0 is used to power on/off control*/
 		wr32(hw, NGBE_GPIODIR, NGBE_GPIODIR_DDR(1));
 		wr32(hw, NGBE_GPIODATA, NGBE_GPIOBIT_0);
@@ -1117,6 +1117,7 @@ out:
 s32 ngbe_acquire_swfw_sync(struct ngbe_hw *hw, u32 mask)
 {
 	u32 mngsem = 0;
+	u32 fwsm = 0;
 	u32 swmask = NGBE_MNGSEM_SW(mask);
 	u32 fwmask = NGBE_MNGSEM_FW(mask);
 	u32 timeout = 200;
@@ -1143,9 +1144,9 @@ s32 ngbe_acquire_swfw_sync(struct ngbe_hw *hw, u32 mask)
 		}
 	}
 
-	/* If time expired clear the bits holding the lock and retry */
-	if (mngsem & (fwmask | swmask))
-		ngbe_release_swfw_sync(hw, mngsem & (fwmask | swmask));
+	fwsm = rd32(hw, NGBE_MNGFWSYNC);
+	DEBUGOUT("SWFW semaphore not granted: MNG_SWFW_SYNC = 0x%x, MNG_FW_SM = 0x%x",
+			mngsem, fwsm);
 
 	msec_delay(5);
 	return NGBE_ERR_SWFW_SYNC;
@@ -1540,11 +1541,15 @@ s32 ngbe_clear_vfta(struct ngbe_hw *hw)
 s32 ngbe_check_mac_link_em(struct ngbe_hw *hw, u32 *speed,
 			bool *link_up, bool link_up_wait_to_complete)
 {
-	u32 i, reg;
+	u32 i;
 	s32 status = 0;
 
-	reg = rd32(hw, NGBE_GPIOINTSTAT);
-	wr32(hw, NGBE_GPIOEOI, reg);
+	if (hw->lsc) {
+		u32 reg;
+
+		reg = rd32(hw, NGBE_GPIOINTSTAT);
+		wr32(hw, NGBE_GPIOEOI, reg);
+	}
 
 	if (link_up_wait_to_complete) {
 		for (i = 0; i < hw->mac.max_link_up_time; i++) {
@@ -1565,18 +1570,20 @@ s32 ngbe_get_link_capabilities_em(struct ngbe_hw *hw,
 				      bool *autoneg)
 {
 	s32 status = 0;
-
+	u16 value = 0;
 
 	hw->mac.autoneg = *autoneg;
 
-	switch (hw->sub_device_id) {
-	case NGBE_SUB_DEV_ID_EM_RTL_SGMII:
+	if (hw->phy.type == ngbe_phy_rtl) {
 		*speed = NGBE_LINK_SPEED_1GB_FULL |
 			NGBE_LINK_SPEED_100M_FULL |
 			NGBE_LINK_SPEED_10M_FULL;
-		break;
-	default:
-		break;
+	}
+
+	if (hw->phy.type == ngbe_phy_yt8521s_sfi) {
+		ngbe_read_phy_reg_ext_yt(hw, YT_CHIP, 0, &value);
+		if ((value & YT_CHIP_MODE_MASK) == YT_CHIP_MODE_SEL(1))
+			*speed = NGBE_LINK_SPEED_1GB_FULL;
 	}
 
 	return status;
@@ -1754,11 +1761,23 @@ s32 ngbe_set_mac_type(struct ngbe_hw *hw)
 	case NGBE_SUB_DEV_ID_EM_MVL_RGMII:
 		hw->phy.media_type = ngbe_media_type_copper;
 		hw->mac.type = ngbe_mac_em;
+		hw->mac.link_type = ngbe_link_copper;
+		break;
+	case NGBE_SUB_DEV_ID_EM_RTL_YT8521S_SFP:
+		hw->phy.media_type = ngbe_media_type_copper;
+		hw->mac.type = ngbe_mac_em;
+		hw->mac.link_type = ngbe_link_fiber;
 		break;
 	case NGBE_SUB_DEV_ID_EM_MVL_SFP:
 	case NGBE_SUB_DEV_ID_EM_YT8521S_SFP:
 		hw->phy.media_type = ngbe_media_type_fiber;
 		hw->mac.type = ngbe_mac_em;
+		hw->mac.link_type = ngbe_link_fiber;
+		break;
+	case NGBE_SUB_DEV_ID_EM_MVL_MIX:
+		hw->phy.media_type = ngbe_media_type_unknown;
+		hw->mac.type = ngbe_mac_em;
+		hw->mac.link_type = ngbe_link_type_unknown;
 		break;
 	case NGBE_SUB_DEV_ID_EM_VF:
 		hw->phy.media_type = ngbe_media_type_virtual;
@@ -1804,10 +1823,63 @@ s32 ngbe_enable_rx_dma(struct ngbe_hw *hw, u32 regval)
 	return 0;
 }
 
+/* cmd_addr is used for some special command:
+ * 1. to be sector address, when implemented erase sector command
+ * 2. to be flash address when implemented read, write flash address
+ *
+ * Return 0 on success, return 1 on failure.
+ */
+u32 ngbe_fmgr_cmd_op(struct ngbe_hw *hw, u32 cmd, u32 cmd_addr)
+{
+	u32 cmd_val, i;
+
+	cmd_val = NGBE_SPICMD_CMD(cmd) | NGBE_SPICMD_CLK(3) | cmd_addr;
+	wr32(hw, NGBE_SPICMD, cmd_val);
+
+	for (i = 0; i < NGBE_SPI_TIMEOUT; i++) {
+		if (rd32(hw, NGBE_SPISTAT) & NGBE_SPISTAT_OPDONE)
+			break;
+
+		usec_delay(10);
+	}
+	if (i == NGBE_SPI_TIMEOUT)
+		return 1;
+
+	return 0;
+}
+
+u32 ngbe_flash_read_dword(struct ngbe_hw *hw, u32 addr)
+{
+	u32 status;
+
+	status = ngbe_fmgr_cmd_op(hw, 1, addr);
+	if (status == 0x1) {
+		DEBUGOUT("Read flash timeout.");
+		return status;
+	}
+
+	return rd32(hw, NGBE_SPIDAT);
+}
+
+void ngbe_read_efuse(struct ngbe_hw *hw)
+{
+	u32 efuse[2];
+	u8 lan_id = hw->bus.lan_id;
+
+	efuse[0] = ngbe_flash_read_dword(hw, 0xfe010 + lan_id * 8);
+	efuse[1] = ngbe_flash_read_dword(hw, 0xfe010 + lan_id * 8 + 4);
+
+	DEBUGOUT("port %d efuse[0] = %08x, efuse[1] = %08x\n",
+		lan_id, efuse[0], efuse[1]);
+
+	hw->gphy_efuse[0] = efuse[0];
+	hw->gphy_efuse[1] = efuse[1];
+}
+
 void ngbe_map_device_id(struct ngbe_hw *hw)
 {
 	u16 oem = hw->sub_system_id & NGBE_OEM_MASK;
-	u16 internal = hw->sub_system_id & NGBE_INTERNAL_MASK;
+
 	hw->is_pf = true;
 
 	/* move subsystem_device_id to device_id */
@@ -1841,20 +1913,31 @@ void ngbe_map_device_id(struct ngbe_hw *hw)
 	case NGBE_DEV_ID_EM_WX1860A1:
 	case NGBE_DEV_ID_EM_WX1860A1L:
 		hw->device_id = NGBE_DEV_ID_EM;
-		if (oem == NGBE_LY_M88E1512_SFP ||
-				internal == NGBE_INTERNAL_SFP)
+		if (oem == NGBE_M88E1512_SFP || oem == NGBE_LY_M88E1512_SFP)
 			hw->sub_device_id = NGBE_SUB_DEV_ID_EM_MVL_SFP;
-		else if (hw->sub_system_id == NGBE_SUB_DEV_ID_EM_M88E1512_RJ45)
+		else if (oem == NGBE_M88E1512_RJ45 ||
+			(hw->sub_system_id == NGBE_SUB_DEV_ID_EM_M88E1512_RJ45))
 			hw->sub_device_id = NGBE_SUB_DEV_ID_EM_MVL_RGMII;
+		else if (oem == NGBE_M88E1512_MIX)
+			hw->sub_device_id = NGBE_SUB_DEV_ID_EM_MVL_MIX;
 		else if (oem == NGBE_YT8521S_SFP ||
-				oem == NGBE_LY_YT8521S_SFP)
+			 oem == NGBE_YT8521S_SFP_GPIO ||
+			 oem == NGBE_LY_YT8521S_SFP)
 			hw->sub_device_id = NGBE_SUB_DEV_ID_EM_YT8521S_SFP;
+		else if (oem == NGBE_INTERNAL_YT8521S_SFP ||
+			 oem == NGBE_INTERNAL_YT8521S_SFP_GPIO)
+			hw->sub_device_id = NGBE_SUB_DEV_ID_EM_RTL_YT8521S_SFP;
 		else
 			hw->sub_device_id = NGBE_SUB_DEV_ID_EM_RTL_SGMII;
 		break;
 	default:
 		break;
 	}
+
+	if (oem == NGBE_LY_M88E1512_SFP || oem == NGBE_YT8521S_SFP_GPIO ||
+			oem == NGBE_INTERNAL_YT8521S_SFP_GPIO ||
+			oem == NGBE_LY_YT8521S_SFP)
+		hw->gpio_ctl = true;
 }
 
 /**
@@ -1882,6 +1965,7 @@ s32 ngbe_init_ops_pf(struct ngbe_hw *hw)
 	phy->read_reg_unlocked = ngbe_read_phy_reg_mdi;
 	phy->write_reg_unlocked = ngbe_write_phy_reg_mdi;
 	phy->reset_hw = ngbe_reset_phy;
+	phy->led_oem_chk = ngbe_phy_led_oem_chk;
 
 	/* MAC */
 	mac->init_hw = ngbe_init_hw;

@@ -2978,8 +2978,7 @@ ixgbe_reset_rx_queue(struct ixgbe_adapter *adapter, struct ixgbe_rx_queue *rxq)
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
 
-	if (rxq->pkt_first_seg != NULL)
-		rte_pktmbuf_free(rxq->pkt_first_seg);
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -5959,8 +5958,11 @@ ixgbe_config_rss_filter(struct rte_eth_dev *dev,
 	return 0;
 }
 
-/* Stubs needed for linkage when RTE_ARCH_PPC_64 is set */
-#if defined(RTE_ARCH_PPC_64)
+/* Stubs needed for linkage when RTE_ARCH_PPC_64, RTE_ARCH_RISCV or
+ * RTE_ARCH_LOONGARCH is set.
+ */
+#if defined(RTE_ARCH_PPC_64) || defined(RTE_ARCH_RISCV) || \
+	defined(RTE_ARCH_LOONGARCH)
 int
 ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev __rte_unused *dev)
 {

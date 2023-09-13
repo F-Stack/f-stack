@@ -68,13 +68,13 @@
 #define CRYPTODEV_NAME_CCP_PMD		crypto_ccp
 #define CRYPTODEV_NAME_VIRTIO_PMD	crypto_virtio
 #define CRYPTODEV_NAME_OCTEONTX_SYM_PMD	crypto_octeontx
-#define CRYPTODEV_NAME_OCTEONTX2_PMD	crypto_octeontx2
 #define CRYPTODEV_NAME_CAAM_JR_PMD	crypto_caam_jr
 #define CRYPTODEV_NAME_NITROX_PMD	crypto_nitrox_sym
 #define CRYPTODEV_NAME_BCMFS_PMD	crypto_bcmfs
 #define CRYPTODEV_NAME_CN9K_PMD		crypto_cn9k
 #define CRYPTODEV_NAME_CN10K_PMD	crypto_cn10k
 #define CRYPTODEV_NAME_MLX5_PMD		crypto_mlx5
+#define CRYPTODEV_NAME_UADK_PMD		crypto_uadk
 
 
 enum cryptodev_api_test_type {
@@ -231,8 +231,7 @@ create_segmented_mbuf(struct rte_mempool *mbuf_pool, int pkt_len,
 	return mbuf;
 
 fail:
-	if (mbuf)
-		rte_pktmbuf_free(mbuf);
+	rte_pktmbuf_free(mbuf);
 	return NULL;
 }
 

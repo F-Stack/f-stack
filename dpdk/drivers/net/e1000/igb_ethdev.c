@@ -15,14 +15,14 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_malloc.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include "e1000_logs.h"
 #include "base/e1000_api.h"
@@ -2340,6 +2340,8 @@ eth_igbvf_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	dev_info->rx_desc_lim = rx_desc_lim;
 	dev_info->tx_desc_lim = tx_desc_lim;
+
+	dev_info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PASSIVE;
 
 	return 0;
 }

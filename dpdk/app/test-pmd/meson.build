@@ -32,7 +32,7 @@ if dpdk_conf.has('RTE_HAS_JANSSON')
     ext_deps += jansson_dep
 endif
 
-deps += ['ethdev', 'cmdline', 'bus_pci']
+deps += ['ethdev', 'cmdline']
 if dpdk_conf.has('RTE_CRYPTO_SCHEDULER')
     deps += 'crypto_scheduler'
 endif
@@ -58,9 +58,6 @@ endif
 if dpdk_conf.has('RTE_LIB_PDUMP')
     deps += 'pdump'
 endif
-if dpdk_conf.has('RTE_NET_BOND')
-    deps += 'net_bond'
-endif
 if dpdk_conf.has('RTE_NET_BNXT')
     deps += 'net_bnxt'
 endif
@@ -68,9 +65,13 @@ if dpdk_conf.has('RTE_NET_I40E')
     deps += 'net_i40e'
 endif
 if dpdk_conf.has('RTE_NET_IXGBE')
-    cflags += ['-DRTE_LIBRTE_IXGBE_BYPASS']
     deps += 'net_ixgbe'
 endif
 if dpdk_conf.has('RTE_NET_DPAA')
     deps += ['bus_dpaa', 'mempool_dpaa', 'net_dpaa']
 endif
+
+# Driver-specific commands are located in driver directories.
+includes = include_directories('.')
+sources += testpmd_drivers_sources
+deps += testpmd_drivers_deps

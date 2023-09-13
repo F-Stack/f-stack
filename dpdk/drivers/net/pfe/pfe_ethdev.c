@@ -6,7 +6,7 @@
 #include <sys/epoll.h>
 #include <rte_kvargs.h>
 #include <ethdev_vdev.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_ether.h>
 #include <dpaa_of.h>
 
@@ -235,22 +235,6 @@ pfe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	return nb_pkts;
 }
 
-static uint16_t
-pfe_dummy_xmit_pkts(__rte_unused void *tx_queue,
-		__rte_unused struct rte_mbuf **tx_pkts,
-		__rte_unused uint16_t nb_pkts)
-{
-	return 0;
-}
-
-static uint16_t
-pfe_dummy_recv_pkts(__rte_unused void *rxq,
-		__rte_unused struct rte_mbuf **rx_pkts,
-		__rte_unused uint16_t nb_pkts)
-{
-	return 0;
-}
-
 static int
 pfe_eth_open(struct rte_eth_dev *dev)
 {
@@ -383,8 +367,8 @@ pfe_eth_stop(struct rte_eth_dev *dev/*, int wake*/)
 	gemac_disable(priv->EMAC_baseaddr);
 	gpi_disable(priv->GPI_baseaddr);
 
-	dev->rx_pkt_burst = &pfe_dummy_recv_pkts;
-	dev->tx_pkt_burst = &pfe_dummy_xmit_pkts;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 
 	return 0;
 }
@@ -587,8 +571,7 @@ pfe_eth_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 		ret = ioctl(priv->link_fd, ioctl_cmd, &lstatus);
 		if (ret != 0) {
 			PFE_PMD_ERR("Unable to fetch link status (ioctl)\n");
-			/* use dummy link value */
-			link.link_status = 1;
+			return -1;
 		}
 		PFE_PMD_DEBUG("Fetched link state (%d) for dev %d.\n",
 			      lstatus, priv->id);

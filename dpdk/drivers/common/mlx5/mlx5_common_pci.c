@@ -9,7 +9,8 @@
 #include <rte_errno.h>
 #include <rte_class.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
 
 #include "mlx5_common_log.h"
 #include "mlx5_common_private.h"
@@ -97,8 +98,7 @@ pci_ids_table_update(const struct rte_pci_id *driver_id_table)
 	updated_table[i].vendor_id = 0;
 	mlx5_common_pci_driver.id_table = updated_table;
 	mlx5_pci_id_table = updated_table;
-	if (old_table)
-		free(old_table);
+	free(old_table);
 	return 0;
 }
 
@@ -106,6 +106,24 @@ bool
 mlx5_dev_is_pci(const struct rte_device *dev)
 {
 	return strcmp(dev->bus->name, "pci") == 0;
+}
+
+bool
+mlx5_dev_is_vf_pci(const struct rte_pci_device *pci_dev)
+{
+	switch (pci_dev->id.device_id) {
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX4VF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX4LXVF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX5VF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX5EXVF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX5BFVF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX6VF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTXVF:
+		return true;
+	default:
+		break;
+	}
+	return false;
 }
 
 bool

@@ -19,7 +19,7 @@
 #include <rte_debug.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_ether.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
@@ -37,10 +37,12 @@
 #include "nfpcore/nfp_rtsym.h"
 #include "nfpcore/nfp_nsp.h"
 
+#include "flower/nfp_flower_representor.h"
+
 #include "nfp_common.h"
+#include "nfp_ctrl.h"
 #include "nfp_rxtx.h"
 #include "nfp_logs.h"
-#include "nfp_ctrl.h"
 #include "nfp_cpp_bridge.h"
 
 #include <sys/types.h>
@@ -171,7 +173,7 @@ nfp_net_configure(struct rte_eth_dev *dev)
 
 	/* Checking RX mode */
 	if (rxmode->mq_mode & RTE_ETH_MQ_RX_RSS &&
-	    !(hw->cap & NFP_NET_CFG_CTRL_RSS)) {
+	    !(hw->cap & NFP_NET_CFG_CTRL_RSS_ANY)) {
 		PMD_INIT_LOG(INFO, "RSS not supported");
 		return -EINVAL;
 	}
@@ -274,7 +276,7 @@ nfp_net_write_mac(struct nfp_net_hw *hw, uint8_t *mac)
 }
 
 int
-nfp_set_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
+nfp_net_set_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 {
 	struct nfp_net_hw *hw;
 	uint32_t update, ctrl;
@@ -412,10 +414,16 @@ nfp_net_promisc_enable(struct rte_eth_dev *dev)
 	uint32_t new_ctrl, update = 0;
 	struct nfp_net_hw *hw;
 	int ret;
+	struct nfp_flower_representor *repr;
 
 	PMD_DRV_LOG(DEBUG, "Promiscuous mode enable");
 
-	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	if ((dev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR) != 0) {
+		repr = dev->data->dev_private;
+		hw = repr->app_fw_flower->pf_hw;
+	} else {
+		hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	}
 
 	if (!(hw->cap & NFP_NET_CFG_CTRL_PROMISC)) {
 		PMD_INIT_LOG(INFO, "Promiscuous mode not supported");
@@ -769,7 +777,7 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_mtu_seg_max = NFP_TX_MAX_MTU_SEG,
 	};
 
-	if (hw->cap & NFP_NET_CFG_CTRL_RSS) {
+	if (hw->cap & NFP_NET_CFG_CTRL_RSS_ANY) {
 		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 		dev_info->flow_type_rss_offloads = RTE_ETH_RSS_IPV4 |
@@ -1080,7 +1088,7 @@ nfp_net_reta_update(struct rte_eth_dev *dev,
 	uint32_t update;
 	int ret;
 
-	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS))
+	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS_ANY))
 		return -EINVAL;
 
 	ret = nfp_net_rss_reta_write(dev, reta_conf, reta_size);
@@ -1108,7 +1116,7 @@ nfp_net_reta_query(struct rte_eth_dev *dev,
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
-	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS))
+	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS_ANY))
 		return -EINVAL;
 
 	if (reta_size != NFP_NET_CFG_RSS_ITBL_SZ) {
@@ -1206,7 +1214,7 @@ nfp_net_rss_hash_update(struct rte_eth_dev *dev,
 	rss_hf = rss_conf->rss_hf;
 
 	/* Checking if RSS is enabled */
-	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS)) {
+	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS_ANY)) {
 		if (rss_hf != 0) { /* Enable RSS? */
 			PMD_DRV_LOG(ERR, "RSS unsupported");
 			return -EINVAL;
@@ -1241,7 +1249,7 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
-	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS))
+	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS_ANY))
 		return -EINVAL;
 
 	rss_hf = rss_conf->rss_hf;
@@ -1320,8 +1328,109 @@ nfp_net_rss_config_default(struct rte_eth_dev *dev)
 	return ret;
 }
 
+void
+nfp_net_stop_rx_queue(struct rte_eth_dev *dev)
+{
+	uint16_t i;
+	struct nfp_net_rxq *this_rx_q;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		this_rx_q = (struct nfp_net_rxq *)dev->data->rx_queues[i];
+		nfp_net_reset_rx_queue(this_rx_q);
+	}
+}
+
+void
+nfp_net_close_rx_queue(struct rte_eth_dev *dev)
+{
+	uint16_t i;
+	struct nfp_net_rxq *this_rx_q;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		this_rx_q = (struct nfp_net_rxq *)dev->data->rx_queues[i];
+		nfp_net_reset_rx_queue(this_rx_q);
+		nfp_net_rx_queue_release(dev, i);
+	}
+}
+
+void
+nfp_net_stop_tx_queue(struct rte_eth_dev *dev)
+{
+	uint16_t i;
+	struct nfp_net_txq *this_tx_q;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		this_tx_q = (struct nfp_net_txq *)dev->data->tx_queues[i];
+		nfp_net_reset_tx_queue(this_tx_q);
+	}
+}
+
+void
+nfp_net_close_tx_queue(struct rte_eth_dev *dev)
+{
+	uint16_t i;
+	struct nfp_net_txq *this_tx_q;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		this_tx_q = (struct nfp_net_txq *)dev->data->tx_queues[i];
+		nfp_net_reset_tx_queue(this_tx_q);
+		nfp_net_tx_queue_release(dev, i);
+	}
+}
+
+int
+nfp_net_set_vxlan_port(struct nfp_net_hw *hw,
+		size_t idx,
+		uint16_t port)
+{
+	int ret;
+	uint32_t i;
+
+	if (idx >= NFP_NET_N_VXLAN_PORTS) {
+		PMD_DRV_LOG(ERR, "The idx value is out of range.");
+		return -ERANGE;
+	}
+
+	hw->vxlan_ports[idx] = port;
+
+	for (i = 0; i < NFP_NET_N_VXLAN_PORTS; i += 2) {
+		nn_cfg_writel(hw, NFP_NET_CFG_VXLAN_PORT + i * sizeof(port),
+			(hw->vxlan_ports[i + 1] << 16) | hw->vxlan_ports[i]);
+	}
+
+	rte_spinlock_lock(&hw->reconfig_lock);
+
+	nn_cfg_writel(hw, NFP_NET_CFG_UPDATE, NFP_NET_CFG_UPDATE_VXLAN);
+	rte_wmb();
+
+	ret = __nfp_net_reconfig(hw, NFP_NET_CFG_UPDATE_VXLAN);
+
+	rte_spinlock_unlock(&hw->reconfig_lock);
+
+	return ret;
+}
+
 RTE_LOG_REGISTER_SUFFIX(nfp_logtype_init, init, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(nfp_logtype_driver, driver, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(nfp_logtype_cpp, cpp, NOTICE);
+/*
+ * The firmware with NFD3 can not handle DMA address requiring more
+ * than 40 bits
+ */
+int
+nfp_net_check_dma_mask(struct nfp_net_hw *hw, char *name)
+{
+	if (NFD_CFG_CLASS_VER_of(hw->ver) == NFP_NET_CFG_VERSION_DP_NFD3 &&
+			rte_mem_check_dma_mask(40) != 0) {
+		PMD_DRV_LOG(ERR,
+			"The device %s can't be used: restricted dma mask to 40 bits!",
+			name);
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
 /*
  * Local variables:
  * c-file-style: "Linux"

@@ -2,6 +2,10 @@
  * Copyright(C) 2021 Marvell.
  */
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "roc_api.h"
 #include "roc_priv.h"
 
@@ -16,6 +20,7 @@ struct roc_model *roc_model;
 #define PART_106xx  0xB9
 #define PART_105xx  0xBA
 #define PART_105xxN 0xBC
+#define PART_103xx  0xBD
 #define PART_98xx   0xB1
 #define PART_96xx   0xB2
 #define PART_95xx   0xB3
@@ -36,6 +41,16 @@ struct roc_model *roc_model;
 #define MODEL_MINOR_SHIFT 0
 #define MODEL_MINOR_MASK  ((1 << MODEL_MINOR_BITS) - 1)
 
+#define MODEL_CN10K_PART_SHIFT	8
+#define MODEL_CN10K_PASS_BITS	4
+#define MODEL_CN10K_PASS_MASK	((1 << MODEL_CN10K_PASS_BITS) - 1)
+#define MODEL_CN10K_MAJOR_BITS	2
+#define MODEL_CN10K_MAJOR_SHIFT 2
+#define MODEL_CN10K_MAJOR_MASK	((1 << MODEL_CN10K_MAJOR_BITS) - 1)
+#define MODEL_CN10K_MINOR_BITS	2
+#define MODEL_CN10K_MINOR_SHIFT 0
+#define MODEL_CN10K_MINOR_MASK	((1 << MODEL_CN10K_MINOR_BITS) - 1)
+
 static const struct model_db {
 	uint32_t impl;
 	uint32_t part;
@@ -45,9 +60,12 @@ static const struct model_db {
 	char name[ROC_MODEL_STR_LEN_MAX];
 } model_db[] = {
 	{VENDOR_ARM, PART_106xx, 0, 0, ROC_MODEL_CN106xx_A0, "cn10ka_a0"},
+	{VENDOR_ARM, PART_106xx, 0, 1, ROC_MODEL_CN106xx_A1, "cn10ka_a1"},
 	{VENDOR_ARM, PART_105xx, 0, 0, ROC_MODEL_CNF105xx_A0, "cnf10ka_a0"},
+	{VENDOR_ARM, PART_103xx, 0, 0, ROC_MODEL_CN103xx_A0, "cn10kb_a0"},
 	{VENDOR_ARM, PART_105xxN, 0, 0, ROC_MODEL_CNF105xxN_A0, "cnf10kb_a0"},
 	{VENDOR_CAVIUM, PART_98xx, 0, 0, ROC_MODEL_CN98xx_A0, "cn98xx_a0"},
+	{VENDOR_CAVIUM, PART_98xx, 0, 1, ROC_MODEL_CN98xx_A1, "cn98xx_a1"},
 	{VENDOR_CAVIUM, PART_96xx, 0, 0, ROC_MODEL_CN96xx_A0, "cn96xx_a0"},
 	{VENDOR_CAVIUM, PART_96xx, 0, 1, ROC_MODEL_CN96xx_B0, "cn96xx_b0"},
 	{VENDOR_CAVIUM, PART_96xx, 2, 0, ROC_MODEL_CN96xx_C0, "cn96xx_c0"},
@@ -56,57 +74,106 @@ static const struct model_db {
 	{VENDOR_CAVIUM, PART_95xx, 1, 0, ROC_MODEL_CNF95xx_B0, "cnf95xx_b0"},
 	{VENDOR_CAVIUM, PART_95xxN, 0, 0, ROC_MODEL_CNF95xxN_A0, "cnf95xxn_a0"},
 	{VENDOR_CAVIUM, PART_95xxN, 0, 1, ROC_MODEL_CNF95xxN_A0, "cnf95xxn_a1"},
+	{VENDOR_CAVIUM, PART_95xxN, 1, 0, ROC_MODEL_CNF95xxN_B0, "cnf95xxn_b0"},
 	{VENDOR_CAVIUM, PART_95O, 0, 0, ROC_MODEL_CNF95xxO_A0, "cnf95O_a0"},
 	{VENDOR_CAVIUM, PART_95xxMM, 0, 0, ROC_MODEL_CNF95xxMM_A0,
 	 "cnf95xxmm_a0"}};
 
-static uint32_t
-cn10k_part_get(void)
+/* Detect if RVU device */
+static bool
+is_rvu_device(unsigned long val)
 {
-	uint32_t soc = 0x0;
-	char buf[BUFSIZ];
-	char *ptr;
-	FILE *fd;
+	return (val == PCI_DEVID_CNXK_RVU_PF || val == PCI_DEVID_CNXK_RVU_VF ||
+		val == PCI_DEVID_CNXK_RVU_AF ||
+		val == PCI_DEVID_CNXK_RVU_AF_VF ||
+		val == PCI_DEVID_CNXK_RVU_NPA_PF ||
+		val == PCI_DEVID_CNXK_RVU_NPA_VF ||
+		val == PCI_DEVID_CNXK_RVU_SSO_TIM_PF ||
+		val == PCI_DEVID_CNXK_RVU_SSO_TIM_VF ||
+		val == PCI_DEVID_CN10K_RVU_CPT_PF ||
+		val == PCI_DEVID_CN10K_RVU_CPT_VF);
+}
 
-	/* Read the CPU compatible variant */
-	fd = fopen("/proc/device-tree/compatible", "r");
-	if (!fd) {
-		plt_err("Failed to open /proc/device-tree/compatible");
-		goto err;
+static int
+rvu_device_lookup(const char *dirname, uint32_t *part, uint32_t *pass)
+{
+	char filename[PATH_MAX];
+	unsigned long val;
+
+	/* Check if vendor id is cavium */
+	snprintf(filename, sizeof(filename), "%s/vendor", dirname);
+	if (plt_sysfs_value_parse(filename, &val) < 0)
+		goto error;
+
+	if (val != PCI_VENDOR_ID_CAVIUM)
+		goto error;
+
+	/* Get device id  */
+	snprintf(filename, sizeof(filename), "%s/device", dirname);
+	if (plt_sysfs_value_parse(filename, &val) < 0)
+		goto error;
+
+	/* Check if device ID belongs to any RVU device */
+	if (!is_rvu_device(val))
+		goto error;
+
+	/* Get subsystem_device id */
+	snprintf(filename, sizeof(filename), "%s/subsystem_device", dirname);
+	if (plt_sysfs_value_parse(filename, &val) < 0)
+		goto error;
+
+	*part = val >> MODEL_CN10K_PART_SHIFT;
+
+	/* Get revision for pass value*/
+	snprintf(filename, sizeof(filename), "%s/revision", dirname);
+	if (plt_sysfs_value_parse(filename, &val) < 0)
+		goto error;
+
+	*pass = val & MODEL_CN10K_PASS_MASK;
+
+	return 0;
+error:
+	return -EINVAL;
+}
+
+/* Scans through all PCI devices, detects RVU device and returns
+ * subsystem_device
+ */
+static int
+cn10k_part_pass_get(uint32_t *part, uint32_t *pass)
+{
+#define SYSFS_PCI_DEVICES "/sys/bus/pci/devices"
+	char dirname[PATH_MAX];
+	struct dirent *e;
+	DIR *dir;
+
+	dir = opendir(SYSFS_PCI_DEVICES);
+	if (dir == NULL) {
+		plt_err("%s(): opendir failed: %s\n", __func__,
+			strerror(errno));
+		return -errno;
 	}
 
-	if (fgets(buf, sizeof(buf), fd) == NULL) {
-		plt_err("Failed to read from /proc/device-tree/compatible");
-		goto fclose;
-	}
-	ptr = strchr(buf, ',');
-	if (!ptr) {
-		plt_err("Malformed 'CPU compatible': <%s>", buf);
-		goto fclose;
-	}
-	ptr++;
-	if (strcmp("cn10ka", ptr) == 0) {
-		soc = PART_106xx;
-	} else if (strcmp("cnf10ka", ptr) == 0) {
-		soc = PART_105xx;
-	} else if (strcmp("cnf10kb", ptr) == 0) {
-		soc = PART_105xxN;
-	} else {
-		plt_err("Unidentified 'CPU compatible': <%s>", ptr);
-		goto fclose;
+	while ((e = readdir(dir)) != NULL) {
+		if (e->d_name[0] == '.')
+			continue;
+
+		snprintf(dirname, sizeof(dirname), "%s/%s", SYSFS_PCI_DEVICES,
+			 e->d_name);
+
+		/* Lookup for rvu device and get part pass information */
+		if (!rvu_device_lookup(dirname, part, pass))
+			break;
 	}
 
-fclose:
-	fclose(fd);
-
-err:
-	return soc;
+	closedir(dir);
+	return 0;
 }
 
 static bool
 populate_model(struct roc_model *model, uint32_t midr)
 {
-	uint32_t impl, major, part, minor;
+	uint32_t impl, major, part, minor, pass;
 	bool found = false;
 	size_t i;
 
@@ -116,8 +183,19 @@ populate_model(struct roc_model *model, uint32_t midr)
 	minor = (midr >> MODEL_MINOR_SHIFT) & MODEL_MINOR_MASK;
 
 	/* Update part number for cn10k from device-tree */
-	if (part == SOC_PART_CN10K)
-		part = cn10k_part_get();
+	if (part == SOC_PART_CN10K) {
+		if (cn10k_part_pass_get(&part, &pass))
+			goto not_found;
+		/*
+		 * Pass value format:
+		 * Bits 0..1: minor pass
+		 * Bits 3..2: major pass
+		 */
+		minor = (pass >> MODEL_CN10K_MINOR_SHIFT) &
+			MODEL_CN10K_MINOR_MASK;
+		major = (pass >> MODEL_CN10K_MAJOR_SHIFT) &
+			MODEL_CN10K_MAJOR_MASK;
+	}
 
 	for (i = 0; i < PLT_DIM(model_db); i++)
 		if (model_db[i].impl == impl && model_db[i].part == part &&
@@ -128,11 +206,12 @@ populate_model(struct roc_model *model, uint32_t midr)
 			found = true;
 			break;
 		}
-
+not_found:
 	if (!found) {
 		model->flag = 0;
 		strncpy(model->name, "unknown", ROC_MODEL_STR_LEN_MAX - 1);
-		plt_err("Invalid RoC model (impl=0x%x, part=0x%x)", impl, part);
+		plt_err("Invalid RoC model (impl=0x%x, part=0x%x, major=0x%x, minor=0x%x)",
+			impl, part, major, minor);
 	}
 
 	return found;
@@ -204,6 +283,12 @@ of_env_get(struct roc_model *model)
 	const char *const path = "/proc/device-tree/soc@0/runplatform";
 	uint64_t flag;
 	FILE *fp;
+
+	if (access(path, F_OK) != 0) {
+		strncpy(model->env, "HW_PLATFORM", ROC_MODEL_STR_LEN_MAX - 1);
+		model->flag |= ROC_ENV_HW;
+		return;
+	}
 
 	fp = fopen(path, "r");
 	if (!fp) {

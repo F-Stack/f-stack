@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2017-2018 Intel Corporation
+# Copyright(c) 2017-2022 Intel Corporation
 
 if is_windows
     build = false
@@ -35,6 +35,25 @@ if qat_crypto and not libcrypto.found()
             'missing dependency, libcrypto')
 endif
 
+IMB_required_ver = '1.2.0'
+IMB_header = '#include<intel-ipsec-mb.h>'
+if arch_subdir == 'arm'
+    IMB_header = '#include<ipsec-mb.h>'
+endif
+libipsecmb = cc.find_library('IPSec_MB', required: false)
+libcrypto_3 = dependency('libcrypto', required: false,
+    method: 'pkg-config', version : '>=3.0.0')
+if libipsecmb.found() and libcrypto_3.found()
+    # version comes with quotes, so we split based on " and take the middle
+    imb_ver = cc.get_define('IMB_VERSION_STR',
+        prefix : IMB_header).split('"')[1]
+
+    if (imb_ver.version_compare('>=' + IMB_required_ver))
+        ext_deps += libipsecmb
+        dpdk_conf.set('RTE_QAT_LIBIPSECMB', true)
+    endif
+endif
+
 deps += ['bus_pci', 'cryptodev', 'net', 'compressdev']
 sources += files(
         'qat_common.c',
@@ -65,8 +84,8 @@ if qat_compress
 endif
 
 if qat_crypto
-    foreach f: ['qat_sym_pmd.c', 'qat_sym.c', 'qat_sym_session.c',
-            'qat_sym_hw_dp.c', 'qat_asym_pmd.c', 'qat_asym.c', 'qat_crypto.c',
+    foreach f: ['qat_sym.c', 'qat_sym_session.c',
+            'qat_asym.c', 'qat_crypto.c',
             'dev/qat_sym_pmd_gen1.c',
             'dev/qat_asym_pmd_gen1.c',
             'dev/qat_crypto_pmd_gen2.c',

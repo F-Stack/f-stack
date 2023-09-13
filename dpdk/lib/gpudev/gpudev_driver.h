@@ -14,9 +14,14 @@
 #include <stdint.h>
 #include <sys/queue.h>
 
-#include <rte_dev.h>
+#include <dev_driver.h>
 
+#include <rte_compat.h>
 #include "rte_gpudev.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Flags indicate current state of device. */
 enum rte_gpu_state {
@@ -27,10 +32,12 @@ enum rte_gpu_state {
 struct rte_gpu;
 typedef int (rte_gpu_close_t)(struct rte_gpu *dev);
 typedef int (rte_gpu_info_get_t)(struct rte_gpu *dev, struct rte_gpu_info *info);
-typedef int (rte_gpu_mem_alloc_t)(struct rte_gpu *dev, size_t size, void **ptr);
+typedef int (rte_gpu_mem_alloc_t)(struct rte_gpu *dev, size_t size, unsigned int align, void **ptr);
 typedef int (rte_gpu_mem_free_t)(struct rte_gpu *dev, void *ptr);
 typedef int (rte_gpu_mem_register_t)(struct rte_gpu *dev, size_t size, void *ptr);
 typedef int (rte_gpu_mem_unregister_t)(struct rte_gpu *dev, void *ptr);
+typedef int (rte_gpu_mem_cpu_map_t)(struct rte_gpu *dev, size_t size, void *ptr_in, void **ptr_out);
+typedef int (rte_gpu_mem_cpu_unmap_t)(struct rte_gpu *dev, void *ptr);
 typedef int (rte_gpu_wmb_t)(struct rte_gpu *dev);
 
 struct rte_gpu_ops {
@@ -46,6 +53,10 @@ struct rte_gpu_ops {
 	rte_gpu_mem_register_t *mem_register;
 	/* Unregister CPU memory from device. */
 	rte_gpu_mem_unregister_t *mem_unregister;
+	/* Map GPU memory for CPU visibility. */
+	rte_gpu_mem_cpu_map_t *mem_cpu_map;
+	/* Unmap GPU memory for CPU visibility. */
+	rte_gpu_mem_cpu_unmap_t *mem_cpu_unmap;
 	/* Enforce GPU write memory barrier. */
 	rte_gpu_wmb_t *wmb;
 };
@@ -98,5 +109,9 @@ int rte_gpu_release(struct rte_gpu *dev);
 /* Call registered callbacks. No multi-process event. */
 __rte_internal
 void rte_gpu_notify(struct rte_gpu *dev, enum rte_gpu_event);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* RTE_GPUDEV_DRIVER_H */

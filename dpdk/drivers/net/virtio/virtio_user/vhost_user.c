@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/un.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
@@ -78,7 +79,6 @@ enum vhost_user_request {
 	VHOST_USER_SET_VRING_ENABLE = 18,
 	VHOST_USER_SET_STATUS = 39,
 	VHOST_USER_GET_STATUS = 40,
-	VHOST_USER_MAX
 };
 
 struct vhost_user_msg {
@@ -97,7 +97,6 @@ struct vhost_user_msg {
 		struct vhost_vring_addr addr;
 		struct vhost_memory memory;
 	} payload;
-	int fds[VHOST_MEMORY_MAX_NREGIONS];
 } __rte_packed;
 
 #define VHOST_USER_HDR_SIZE offsetof(struct vhost_user_msg, payload.u64)

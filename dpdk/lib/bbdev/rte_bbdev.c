@@ -6,19 +6,15 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_errno.h>
 #include <rte_log.h>
-#include <rte_debug.h>
 #include <rte_eal.h>
 #include <rte_malloc.h>
 #include <rte_mempool.h>
 #include <rte_memzone.h>
 #include <rte_lcore.h>
-#include <rte_dev.h>
 #include <rte_spinlock.h>
-#include <rte_tailq.h>
 #include <rte_interrupts.h>
 
 #include "rte_bbdev_op.h"
@@ -27,6 +23,8 @@
 
 #define DEV_NAME "BBDEV"
 
+/* Number of supported operation types in *rte_bbdev_op_type*. */
+#define BBDEV_OP_TYPE_COUNT 6
 
 /* BBDev library logging ID */
 RTE_LOG_REGISTER_DEFAULT(bbdev_logtype, NOTICE);
@@ -723,6 +721,8 @@ get_stats_from_queues(struct rte_bbdev *dev, struct rte_bbdev_stats *stats)
 		stats->dequeued_count += q_stats->dequeued_count;
 		stats->enqueue_err_count += q_stats->enqueue_err_count;
 		stats->dequeue_err_count += q_stats->dequeue_err_count;
+		stats->enqueue_warn_count += q_stats->enqueue_warn_count;
+		stats->dequeue_warn_count += q_stats->dequeue_warn_count;
 	}
 	rte_bbdev_log_debug("Got stats on %u", dev->data->dev_id);
 }
@@ -854,6 +854,9 @@ get_bbdev_op_size(enum rte_bbdev_op_type type)
 	case RTE_BBDEV_OP_LDPC_ENC:
 		result = sizeof(struct rte_bbdev_enc_op);
 		break;
+	case RTE_BBDEV_OP_FFT:
+		result = sizeof(struct rte_bbdev_fft_op);
+		break;
 	default:
 		break;
 	}
@@ -877,6 +880,10 @@ bbdev_op_init(struct rte_mempool *mempool, void *arg, void *element,
 		struct rte_bbdev_enc_op *op = element;
 		memset(op, 0, mempool->elt_size);
 		op->mempool = mempool;
+	} else if (type == RTE_BBDEV_OP_FFT) {
+		struct rte_bbdev_fft_op *op = element;
+		memset(op, 0, mempool->elt_size);
+		op->mempool = mempool;
 	}
 }
 
@@ -894,10 +901,10 @@ rte_bbdev_op_pool_create(const char *name, enum rte_bbdev_op_type type,
 		return NULL;
 	}
 
-	if (type >= RTE_BBDEV_OP_TYPE_COUNT) {
+	if (type >= BBDEV_OP_TYPE_COUNT) {
 		rte_bbdev_log(ERR,
 				"Invalid op type (%u), should be less than %u",
-				type, RTE_BBDEV_OP_TYPE_COUNT);
+				type, BBDEV_OP_TYPE_COUNT);
 		return NULL;
 	}
 
@@ -1127,11 +1134,53 @@ rte_bbdev_op_type_str(enum rte_bbdev_op_type op_type)
 		"RTE_BBDEV_OP_TURBO_ENC",
 		"RTE_BBDEV_OP_LDPC_DEC",
 		"RTE_BBDEV_OP_LDPC_ENC",
+		"RTE_BBDEV_OP_FFT",
 	};
 
-	if (op_type < RTE_BBDEV_OP_TYPE_COUNT)
+	if (op_type < BBDEV_OP_TYPE_COUNT)
 		return op_types[op_type];
 
 	rte_bbdev_log(ERR, "Invalid operation type");
+	return NULL;
+}
+
+const char *
+rte_bbdev_device_status_str(enum rte_bbdev_device_status status)
+{
+	static const char * const dev_sta_string[] = {
+		"RTE_BBDEV_DEV_NOSTATUS",
+		"RTE_BBDEV_DEV_NOT_SUPPORTED",
+		"RTE_BBDEV_DEV_RESET",
+		"RTE_BBDEV_DEV_CONFIGURED",
+		"RTE_BBDEV_DEV_ACTIVE",
+		"RTE_BBDEV_DEV_FATAL_ERR",
+		"RTE_BBDEV_DEV_RESTART_REQ",
+		"RTE_BBDEV_DEV_RECONFIG_REQ",
+		"RTE_BBDEV_DEV_CORRECT_ERR",
+	};
+
+	/* Cast from enum required for clang. */
+	if ((uint8_t)status < sizeof(dev_sta_string) / sizeof(char *))
+		return dev_sta_string[status];
+
+	rte_bbdev_log(ERR, "Invalid device status");
+	return NULL;
+}
+
+const char *
+rte_bbdev_enqueue_status_str(enum rte_bbdev_enqueue_status status)
+{
+	static const char * const enq_sta_string[] = {
+		"RTE_BBDEV_ENQ_STATUS_NONE",
+		"RTE_BBDEV_ENQ_STATUS_QUEUE_FULL",
+		"RTE_BBDEV_ENQ_STATUS_RING_FULL",
+		"RTE_BBDEV_ENQ_STATUS_INVALID_OP",
+	};
+
+	/* Cast from enum required for clang. */
+	if ((uint8_t)status < sizeof(enq_sta_string) / sizeof(char *))
+		return enq_sta_string[status];
+
+	rte_bbdev_log(ERR, "Invalid enqueue status");
 	return NULL;
 }

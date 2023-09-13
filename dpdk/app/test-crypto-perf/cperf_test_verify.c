@@ -2,6 +2,8 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <rte_malloc.h>
 #include <rte_cycles.h>
 #include <rte_crypto.h>
@@ -18,7 +20,7 @@ struct cperf_verify_ctx {
 
 	struct rte_mempool *pool;
 
-	struct rte_cryptodev_sym_session *sess;
+	void *sess;
 
 	cperf_populate_ops_t populate_ops;
 
@@ -36,22 +38,31 @@ struct cperf_op_result {
 static void
 cperf_verify_test_free(struct cperf_verify_ctx *ctx)
 {
-	if (ctx) {
-		if (ctx->sess) {
-			rte_cryptodev_sym_session_clear(ctx->dev_id, ctx->sess);
-			rte_cryptodev_sym_session_free(ctx->sess);
+	if (ctx == NULL)
+		return;
+
+	if (ctx->sess != NULL) {
+		if (ctx->options->op_type == CPERF_ASYM_MODEX)
+			rte_cryptodev_asym_session_free(ctx->dev_id, ctx->sess);
+#ifdef RTE_LIB_SECURITY
+		else if (ctx->options->op_type == CPERF_PDCP ||
+			 ctx->options->op_type == CPERF_DOCSIS ||
+			 ctx->options->op_type == CPERF_IPSEC) {
+			struct rte_security_ctx *sec_ctx =
+				rte_cryptodev_get_sec_ctx(ctx->dev_id);
+			rte_security_session_destroy(sec_ctx, ctx->sess);
 		}
-
-		if (ctx->pool)
-			rte_mempool_free(ctx->pool);
-
-		rte_free(ctx);
+#endif
+		else
+			rte_cryptodev_sym_session_free(ctx->dev_id, ctx->sess);
 	}
+
+	rte_mempool_free(ctx->pool);
+	rte_free(ctx);
 }
 
 void *
 cperf_verify_test_constructor(struct rte_mempool *sess_mp,
-		struct rte_mempool *sess_priv_mp,
 		uint8_t dev_id, uint16_t qp_id,
 		const struct cperf_options *options,
 		const struct cperf_test_vector *test_vector,
@@ -74,7 +85,7 @@ cperf_verify_test_constructor(struct rte_mempool *sess_mp,
 	uint16_t iv_offset = sizeof(struct rte_crypto_op) +
 		sizeof(struct rte_crypto_sym_op);
 
-	ctx->sess = op_fns->sess_create(sess_mp, sess_priv_mp, dev_id, options,
+	ctx->sess = op_fns->sess_create(sess_mp, dev_id, options,
 			test_vector, iv_offset);
 	if (ctx->sess == NULL)
 		goto err;
@@ -194,42 +205,6 @@ cperf_verify_op(struct rte_crypto_op *op,
 out:
 	rte_free(data);
 	return !!res;
-}
-
-static void
-cperf_mbuf_set(struct rte_mbuf *mbuf,
-		const struct cperf_options *options,
-		const struct cperf_test_vector *test_vector)
-{
-	uint32_t segment_sz = options->segment_sz;
-	uint8_t *mbuf_data;
-	uint8_t *test_data;
-	uint32_t remaining_bytes = options->max_buffer_size;
-
-	if (options->op_type == CPERF_AEAD) {
-		test_data = (options->aead_op == RTE_CRYPTO_AEAD_OP_ENCRYPT) ?
-					test_vector->plaintext.data :
-					test_vector->ciphertext.data;
-	} else {
-		test_data =
-			(options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) ?
-				test_vector->plaintext.data :
-				test_vector->ciphertext.data;
-	}
-
-	while (remaining_bytes) {
-		mbuf_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
-
-		if (remaining_bytes <= segment_sz) {
-			memcpy(mbuf_data, test_data, remaining_bytes);
-			return;
-		}
-
-		memcpy(mbuf_data, test_data, segment_sz);
-		remaining_bytes -= segment_sz;
-		test_data += segment_sz;
-		mbuf = mbuf->next;
-	}
 }
 
 int

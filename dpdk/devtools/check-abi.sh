@@ -37,13 +37,6 @@ fi
 error=
 for dump in $(find $refdir -name "*.dump"); do
 	name=$(basename $dump)
-	# skip glue drivers, example librte_pmd_mlx5_glue.dump
-	# We can't rely on a suppression rule for now:
-	# https://sourceware.org/bugzilla/show_bug.cgi?id=25480
-	if grep -qE "\<soname='[^']*_glue\.so\.[^']*'" $dump; then
-		echo "Skipped glue library $name."
-		continue
-	fi
 	dump2=$(find $newdir -name $name)
 	if [ -z "$dump2" ] || [ ! -e "$dump2" ]; then
 		echo "Error: cannot find $name in $newdir" >&2

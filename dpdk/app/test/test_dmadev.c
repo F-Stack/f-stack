@@ -110,8 +110,8 @@ do_multi_copies(int16_t dev_id, uint16_t vchan,
 		for (j = 0; j < COPY_LEN/sizeof(uint64_t); j++)
 			src_data[j] = rte_rand();
 
-		if (rte_dma_copy(dev_id, vchan, srcs[i]->buf_iova + srcs[i]->data_off,
-				dsts[i]->buf_iova + dsts[i]->data_off, COPY_LEN, 0) != id_count++)
+		if (rte_dma_copy(dev_id, vchan, rte_mbuf_data_iova(srcs[i]),
+				 rte_mbuf_data_iova(dsts[i]), COPY_LEN, 0) != id_count++)
 			ERR_RETURN("Error with rte_dma_copy for buffer %u\n", i);
 	}
 	rte_dma_submit(dev_id, vchan);
@@ -177,6 +177,7 @@ do_multi_copies(int16_t dev_id, uint16_t vchan,
 static int
 test_enqueue_copies(int16_t dev_id, uint16_t vchan)
 {
+	enum rte_dma_status_code status;
 	unsigned int i;
 	uint16_t id;
 
@@ -208,11 +209,28 @@ test_enqueue_copies(int16_t dev_id, uint16_t vchan)
 						dst_data[i], src_data[i]);
 
 		/* now check completion works */
+		id = ~id;
 		if (rte_dma_completed(dev_id, vchan, 1, &id, NULL) != 1)
 			ERR_RETURN("Error with rte_dma_completed\n");
 
 		if (id != id_count)
 			ERR_RETURN("Error:incorrect job id received, %u [expected %u]\n",
+					id, id_count);
+
+		/* check for completed and id when no job done */
+		id = ~id;
+		if (rte_dma_completed(dev_id, vchan, 1, &id, NULL) != 0)
+			ERR_RETURN("Error with rte_dma_completed when no job done\n");
+		if (id != id_count)
+			ERR_RETURN("Error:incorrect job id received when no job done, %u [expected %u]\n",
+					id, id_count);
+
+		/* check for completed_status and id when no job done */
+		id = ~id;
+		if (rte_dma_completed_status(dev_id, vchan, 1, &id, &status) != 0)
+			ERR_RETURN("Error with rte_dma_completed_status when no job done\n");
+		if (id != id_count)
+			ERR_RETURN("Error:incorrect job id received when no job done, %u [expected %u]\n",
 					id, id_count);
 
 		rte_pktmbuf_free(src);
@@ -299,9 +317,8 @@ test_failure_in_full_burst(int16_t dev_id, uint16_t vchan, bool fence,
 	rte_dma_stats_get(dev_id, vchan, &baseline); /* get a baseline set of stats */
 	for (i = 0; i < COMP_BURST_SZ; i++) {
 		int id = rte_dma_copy(dev_id, vchan,
-				(i == fail_idx ? 0 : (srcs[i]->buf_iova + srcs[i]->data_off)),
-				dsts[i]->buf_iova + dsts[i]->data_off,
-				COPY_LEN, OPT_FENCE(i));
+				      (i == fail_idx ? 0 : rte_mbuf_data_iova(srcs[i])),
+				      rte_mbuf_data_iova(dsts[i]), COPY_LEN, OPT_FENCE(i));
 		if (id < 0)
 			ERR_RETURN("Error with rte_dma_copy for buffer %u\n", i);
 		if (i == fail_idx)
@@ -389,9 +406,8 @@ test_individual_status_query_with_failure(int16_t dev_id, uint16_t vchan, bool f
 
 	for (j = 0; j < COMP_BURST_SZ; j++) {
 		int id = rte_dma_copy(dev_id, vchan,
-				(j == fail_idx ? 0 : (srcs[j]->buf_iova + srcs[j]->data_off)),
-				dsts[j]->buf_iova + dsts[j]->data_off,
-				COPY_LEN, OPT_FENCE(j));
+				      (j == fail_idx ? 0 : rte_mbuf_data_iova(srcs[j])),
+				      rte_mbuf_data_iova(dsts[j]), COPY_LEN, OPT_FENCE(j));
 		if (id < 0)
 			ERR_RETURN("Error with rte_dma_copy for buffer %u\n", j);
 		if (j == fail_idx)
@@ -452,9 +468,8 @@ test_single_item_status_query_with_failure(int16_t dev_id, uint16_t vchan,
 
 	for (j = 0; j < COMP_BURST_SZ; j++) {
 		int id = rte_dma_copy(dev_id, vchan,
-				(j == fail_idx ? 0 : (srcs[j]->buf_iova + srcs[j]->data_off)),
-				dsts[j]->buf_iova + dsts[j]->data_off,
-				COPY_LEN, 0);
+				      (j == fail_idx ? 0 : rte_mbuf_data_iova(srcs[j])),
+				      rte_mbuf_data_iova(dsts[j]), COPY_LEN, 0);
 		if (id < 0)
 			ERR_RETURN("Error with rte_dma_copy for buffer %u\n", j);
 		if (j == fail_idx)
@@ -511,15 +526,14 @@ test_multi_failure(int16_t dev_id, uint16_t vchan, struct rte_mbuf **srcs, struc
 
 	/* enqueue and gather completions in one go */
 	for (j = 0; j < COMP_BURST_SZ; j++) {
-		uintptr_t src = srcs[j]->buf_iova + srcs[j]->data_off;
+		uintptr_t src = rte_mbuf_data_iova(srcs[j]);
 		/* set up for failure if the current index is anywhere is the fails array */
 		for (i = 0; i < num_fail; i++)
 			if (j == fail[i])
 				src = 0;
 
-		int id = rte_dma_copy(dev_id, vchan,
-				src, dsts[j]->buf_iova + dsts[j]->data_off,
-				COPY_LEN, 0);
+		int id = rte_dma_copy(dev_id, vchan, src, rte_mbuf_data_iova(dsts[j]),
+				      COPY_LEN, 0);
 		if (id < 0)
 			ERR_RETURN("Error with rte_dma_copy for buffer %u\n", j);
 	}
@@ -547,15 +561,14 @@ test_multi_failure(int16_t dev_id, uint16_t vchan, struct rte_mbuf **srcs, struc
 
 	/* enqueue and gather completions in bursts, but getting errors one at a time */
 	for (j = 0; j < COMP_BURST_SZ; j++) {
-		uintptr_t src = srcs[j]->buf_iova + srcs[j]->data_off;
+		uintptr_t src = rte_mbuf_data_iova(srcs[j]);
 		/* set up for failure if the current index is anywhere is the fails array */
 		for (i = 0; i < num_fail; i++)
 			if (j == fail[i])
 				src = 0;
 
-		int id = rte_dma_copy(dev_id, vchan,
-				src, dsts[j]->buf_iova + dsts[j]->data_off,
-				COPY_LEN, 0);
+		int id = rte_dma_copy(dev_id, vchan, src, rte_mbuf_data_iova(dsts[j]),
+				      COPY_LEN, 0);
 		if (id < 0)
 			ERR_RETURN("Error with rte_dma_copy for buffer %u\n", j);
 	}
@@ -686,10 +699,11 @@ test_burst_capacity(int16_t dev_id, uint16_t vchan)
 	/* to test capacity, we enqueue elements and check capacity is reduced
 	 * by one each time - rebaselining the expected value after each burst
 	 * as the capacity is only for a burst. We enqueue multiple bursts to
-	 * fill up half the ring, before emptying it again. We do this twice to
-	 * ensure that we get to test scenarios where we get ring wrap-around
+	 * fill up half the ring, before emptying it again. We do this multiple
+	 * times to ensure that we get to test scenarios where we get ring
+	 * wrap-around and wrap-around of the ids returned (at UINT16_MAX).
 	 */
-	for (iter = 0; iter < 2; iter++) {
+	for (iter = 0; iter < 2 * (((int)UINT16_MAX + 1) / ring_space); iter++) {
 		for (i = 0; i < (ring_space / (2 * CAP_TEST_BURST_SIZE)) + 1; i++) {
 			cap = rte_dma_burst_capacity(dev_id, vchan);
 

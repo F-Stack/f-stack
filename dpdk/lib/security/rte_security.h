@@ -23,10 +23,7 @@ extern "C" {
 #include <rte_common.h>
 #include <rte_crypto.h>
 #include <rte_ip.h>
-#include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
-#include <rte_memory.h>
-#include <rte_mempool.h>
 
 /** IPSec protocol mode */
 enum rte_security_ipsec_sa_mode {
@@ -76,17 +73,18 @@ struct rte_security_ctx {
 	/**< Pointer to security ops for the device */
 	uint16_t sess_cnt;
 	/**< Number of sessions attached to this context */
+	uint16_t macsec_sc_cnt;
+	/**< Number of MACsec SC attached to this context */
+	uint16_t macsec_sa_cnt;
+	/**< Number of MACsec SA attached to this context */
 	uint32_t flags;
 	/**< Flags for security context */
 };
 
 #define RTE_SEC_CTX_F_FAST_SET_MDATA 0x00000001
-/**< Driver uses fast metadata update without using driver specific callback */
-
-#define RTE_SEC_CTX_F_FAST_GET_UDATA 0x00000002
-/**< Driver provides udata using fast method without using driver specific
- * callback. For fast mdata and udata, mbuf dynamic field would be registered
- * by driver via rte_security_dynfield_register().
+/**< Driver uses fast metadata update without using driver specific callback.
+ * For fast mdata, mbuf dynamic field would be registered by driver
+ * via rte_security_dynfield_register().
  */
 
 /**
@@ -264,6 +262,19 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t l4_csum_enable : 1;
 
+	/** Enable IP reassembly on inline inbound packets.
+	 *
+	 * * 1: Enable driver to try reassembly of encrypted IP packets for
+	 *      this SA, if supported by the driver. This feature will work
+	 *      only if user has successfully set IP reassembly config params
+	 *      using rte_eth_ip_reassembly_conf_set() for the inline Ethernet
+	 *      device. PMD need to register mbuf dynamic fields using
+	 *      rte_eth_ip_reassembly_dynfield_register() and security session
+	 *      creation would fail if dynfield is not registered successfully.
+	 * * 0: Disable IP reassembly of packets (default).
+	 */
+	uint32_t ip_reassembly_en : 1;
+
 	/** Reserved bit fields for future extension
 	 *
 	 * User should ensure reserved_opts is cleared as it may change in
@@ -271,7 +282,7 @@ struct rte_security_ipsec_sa_options {
 	 *
 	 * Note: Reduce number of bits in reserved_opts for every new option.
 	 */
-	uint32_t reserved_opts : 18;
+	uint32_t reserved_opts : 17;
 };
 
 /** IPSec security association direction */
@@ -345,11 +356,165 @@ struct rte_security_ipsec_xform {
 };
 
 /**
+ * MACSec packet flow direction
+ */
+enum rte_security_macsec_direction {
+	/** Generate SecTag and encrypt/authenticate */
+	RTE_SECURITY_MACSEC_DIR_TX,
+	/** Remove SecTag and decrypt/verify */
+	RTE_SECURITY_MACSEC_DIR_RX,
+};
+
+/** Maximum number of association numbers for a secure channel. */
+#define RTE_SECURITY_MACSEC_NUM_AN	4
+/** Salt length for MACsec SA. */
+#define RTE_SECURITY_MACSEC_SALT_LEN	12
+
+/**
+ * MACsec secure association (SA) configuration structure.
+ */
+struct rte_security_macsec_sa {
+	/** Direction of SA */
+	enum rte_security_macsec_direction dir;
+	/** MACsec SA key for AES-GCM 128/256 */
+	struct {
+		const uint8_t *data;	/**< pointer to key data */
+		uint16_t length;	/**< key length in bytes */
+	} key;
+	/** 96-bit value distributed by key agreement protocol */
+	uint8_t salt[RTE_SECURITY_MACSEC_SALT_LEN];
+	/** Association number to be used */
+	uint8_t an : 2;
+	/** Short Secure Channel Identifier, to be used for XPN cases */
+	uint32_t ssci;
+	/** Extended packet number */
+	uint32_t xpn;
+	/** Packet number expected/ to be used for next packet of this SA */
+	uint32_t next_pn;
+};
+
+/**
+ * MACsec Secure Channel configuration parameters.
+ */
+struct rte_security_macsec_sc {
+	/** Direction of SC */
+	enum rte_security_macsec_direction dir;
+	union {
+		struct {
+			/** SAs for each association number */
+			uint16_t sa_id[RTE_SECURITY_MACSEC_NUM_AN];
+			/** flag to denote which all SAs are in use for each association number */
+			uint8_t sa_in_use[RTE_SECURITY_MACSEC_NUM_AN];
+			/** Channel is active */
+			uint8_t active : 1;
+			/** Reserved bitfields for future */
+			uint8_t reserved : 7;
+		} sc_rx;
+		struct {
+			uint16_t sa_id; /**< SA ID to be used for encryption */
+			uint16_t sa_id_rekey; /**< Rekeying SA ID to be used for encryption */
+			uint64_t sci; /**< SCI value to be used if send_sci is set */
+			uint8_t active : 1; /**< Channel is active */
+			uint8_t re_key_en : 1; /**< Enable Rekeying */
+			/** Reserved bitfields for future */
+			uint8_t reserved : 6;
+		} sc_tx;
+	};
+};
+
+/**
+ * MACsec Supported Algorithm list as per IEEE Std 802.1AE.
+ */
+enum rte_security_macsec_alg {
+	RTE_SECURITY_MACSEC_ALG_GCM_128, /**< AES-GCM 128 bit block cipher */
+	RTE_SECURITY_MACSEC_ALG_GCM_256, /**< AES-GCM 256 bit block cipher */
+	RTE_SECURITY_MACSEC_ALG_GCM_XPN_128, /**< AES-GCM 128 bit block cipher with unique SSCI */
+	RTE_SECURITY_MACSEC_ALG_GCM_XPN_256, /**< AES-GCM 256 bit block cipher with unique SSCI */
+};
+
+/** Disable Validation of MACsec frame. */
+#define RTE_SECURITY_MACSEC_VALIDATE_DISABLE	0
+/** Validate MACsec frame but do not discard invalid frame. */
+#define RTE_SECURITY_MACSEC_VALIDATE_NO_DISCARD	1
+/** Validate MACsec frame and discart invalid frame. */
+#define RTE_SECURITY_MACSEC_VALIDATE_STRICT	2
+/** Do not perform any MACsec operation. */
+#define RTE_SECURITY_MACSEC_VALIDATE_NO_OP	3
+
+/**
  * MACsec security session configuration
  */
 struct rte_security_macsec_xform {
-	/** To be Filled */
-	int dummy;
+	/** Direction of flow/secure channel */
+	enum rte_security_macsec_direction dir;
+	/** MACsec algorithm to be used */
+	enum rte_security_macsec_alg alg;
+	/** Cipher offset from start of Ethernet header */
+	uint8_t cipher_off;
+	/**
+	 * SCI to be used for RX flow identification or
+	 * to set SCI in packet for TX when send_sci is set
+	 */
+	uint64_t sci;
+	/** Receive/transmit secure channel ID created by *rte_security_macsec_sc_create* */
+	uint16_t sc_id;
+	union {
+		struct {
+			/** MTU for transmit frame (valid for inline processing) */
+			uint16_t mtu;
+			/**
+			 * Offset to insert sectag from start of ethernet header or
+			 * from a matching VLAN tag
+			 */
+			uint8_t sectag_off;
+			/** Enable MACsec protection of frames */
+			uint16_t protect_frames : 1;
+			/**
+			 * Sectag insertion mode
+			 * If 1, Sectag is inserted at fixed sectag_off set above.
+			 * If 0, Sectag is inserted at relative sectag_off from a matching
+			 * VLAN tag set.
+			 */
+			uint16_t sectag_insert_mode : 1;
+			/** ICV includes source and destination MAC addresses */
+			uint16_t icv_include_da_sa : 1;
+			/** Control port is enabled */
+			uint16_t ctrl_port_enable : 1;
+			/** Version of MACsec header. Should be 0 */
+			uint16_t sectag_version : 1;
+			/** Enable end station. SCI is not valid */
+			uint16_t end_station : 1;
+			/** Send SCI along with sectag */
+			uint16_t send_sci : 1;
+			/** enable secure channel support EPON - single copy broadcast */
+			uint16_t scb : 1;
+			/**
+			 * Enable packet encryption and set RTE_MACSEC_TCI_C and
+			 * RTE_MACSEC_TCI_E in sectag
+			 */
+			uint16_t encrypt : 1;
+			/** Reserved bitfields for future */
+			uint16_t reserved : 7;
+		} tx_secy;
+		struct {
+			/** Replay Window size to be supported */
+			uint32_t replay_win_sz;
+			/** Set bits as per RTE_SECURITY_MACSEC_VALIDATE_* */
+			uint16_t validate_frames : 2;
+			/** ICV includes source and destination MAC addresses */
+			uint16_t icv_include_da_sa : 1;
+			/** Control port is enabled */
+			uint16_t ctrl_port_enable : 1;
+			/** Do not strip SecTAG after processing */
+			uint16_t preserve_sectag : 1;
+			/** Do not strip ICV from the packet after processing */
+			uint16_t preserve_icv : 1;
+			/** Enable anti-replay protection */
+			uint16_t replay_protect : 1;
+			/** Reserved bitfields for future */
+			uint16_t reserved : 9;
+		} rx_secy;
+	};
 };
 
 /**
@@ -503,16 +668,9 @@ struct rte_security_session_conf {
 	};
 	/**< Configuration parameters for security session */
 	struct rte_crypto_sym_xform *crypto_xform;
-	/**< Security Session Crypto Transformations */
+	/**< Security Session Crypto Transformations. NULL in case of MACsec. */
 	void *userdata;
 	/**< Application specific userdata to be saved with session */
-};
-
-struct rte_security_session {
-	void *sess_private_data;
-	/**< Private session material */
-	uint64_t opaque_data;
-	/**< Opaque user defined data */
 };
 
 /**
@@ -521,16 +679,14 @@ struct rte_security_session {
  * @param   instance	security instance
  * @param   conf	session configuration parameters
  * @param   mp		mempool to allocate session objects from
- * @param   priv_mp	mempool to allocate session private data objects from
  * @return
  *  - On success, pointer to session
  *  - On failure, NULL
  */
-struct rte_security_session *
+void *
 rte_security_session_create(struct rte_security_ctx *instance,
 			    struct rte_security_session_conf *conf,
-			    struct rte_mempool *mp,
-			    struct rte_mempool *priv_mp);
+			    struct rte_mempool *mp);
 
 /**
  * Update security session as specified by the session configuration
@@ -545,7 +701,7 @@ rte_security_session_create(struct rte_security_ctx *instance,
 __rte_experimental
 int
 rte_security_session_update(struct rte_security_ctx *instance,
-			    struct rte_security_session *sess,
+			    void *sess,
 			    struct rte_security_session_conf *conf);
 
 /**
@@ -575,8 +731,81 @@ rte_security_session_get_size(struct rte_security_ctx *instance);
  *  - other negative values in case of freeing private data errors.
  */
 int
-rte_security_session_destroy(struct rte_security_ctx *instance,
-			     struct rte_security_session *sess);
+rte_security_session_destroy(struct rte_security_ctx *instance, void *sess);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Create MACsec security channel (SC).
+ *
+ * @param   instance	security instance
+ * @param   conf	MACsec SC configuration params
+ * @return
+ *  - secure channel ID if successful.
+ *  - -EINVAL if configuration params are invalid of instance is NULL.
+ *  - -ENOTSUP if device does not support MACsec.
+ *  - -ENOMEM if PMD is not capable to create more SC.
+ *  - other negative value for other errors.
+ */
+__rte_experimental
+int
+rte_security_macsec_sc_create(struct rte_security_ctx *instance,
+			      struct rte_security_macsec_sc *conf);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Destroy MACsec security channel (SC).
+ *
+ * @param   instance	security instance
+ * @param   sc_id	SC ID to be destroyed
+ * @return
+ *  - 0 if successful.
+ *  - -EINVAL if sc_id is invalid or instance is NULL.
+ *  - -EBUSY if sc is being used by some session.
+ */
+__rte_experimental
+int
+rte_security_macsec_sc_destroy(struct rte_security_ctx *instance, uint16_t sc_id);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Create MACsec security association (SA).
+ *
+ * @param   instance	security instance
+ * @param   conf	MACsec SA configuration params
+ * @return
+ *  - positive SA ID if successful.
+ *  - -EINVAL if configuration params are invalid of instance is NULL.
+ *  - -ENOTSUP if device does not support MACsec.
+ *  - -ENOMEM if PMD is not capable to create more SAs.
+ *  - other negative value for other errors.
+ */
+__rte_experimental
+int
+rte_security_macsec_sa_create(struct rte_security_ctx *instance,
+			      struct rte_security_macsec_sa *conf);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Destroy MACsec security association (SA).
+ *
+ * @param   instance	security instance
+ * @param   sa_id	SA ID to be destroyed
+ * @return
+ *  - 0 if successful.
+ *  - -EINVAL if sa_id is invalid or instance is NULL.
+ *  - -EBUSY if sa is being used by some session.
+ */
+__rte_experimental
+int
+rte_security_macsec_sa_destroy(struct rte_security_ctx *instance, uint16_t sa_id);
 
 /** Device-specific metadata field type */
 typedef uint64_t rte_security_dynfield_t;
@@ -619,10 +848,52 @@ static inline bool rte_security_dynfield_is_registered(void)
 	return rte_security_dynfield_offset >= 0;
 }
 
+#define RTE_SECURITY_SESS_OPAQUE_DATA_OFF	0
+#define RTE_SECURITY_SESS_FAST_MDATA_OFF	1
+/**
+ * Get opaque data from session handle
+ */
+static inline uint64_t
+rte_security_session_opaque_data_get(void *sess)
+{
+	return *((uint64_t *)sess + RTE_SECURITY_SESS_OPAQUE_DATA_OFF);
+}
+
+/**
+ * Set opaque data in session handle
+ */
+static inline void
+rte_security_session_opaque_data_set(void *sess, uint64_t opaque)
+{
+	uint64_t *data;
+	data = (((uint64_t *)sess) + RTE_SECURITY_SESS_OPAQUE_DATA_OFF);
+	*data = opaque;
+}
+
+/**
+ * Get fast mdata from session handle
+ */
+static inline uint64_t
+rte_security_session_fast_mdata_get(void *sess)
+{
+	return *((uint64_t *)sess + RTE_SECURITY_SESS_FAST_MDATA_OFF);
+}
+
+/**
+ * Set fast mdata in session handle
+ */
+static inline void
+rte_security_session_fast_mdata_set(void *sess, uint64_t fdata)
+{
+	uint64_t *data;
+	data = (((uint64_t *)sess) + RTE_SECURITY_SESS_FAST_MDATA_OFF);
+	*data = fdata;
+}
+
 /** Function to call PMD specific function pointer set_pkt_metadata() */
 __rte_experimental
 extern int __rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
-					   struct rte_security_session *sess,
+					   void *sess,
 					   struct rte_mbuf *m, void *params);
 
 /**
@@ -640,52 +911,18 @@ extern int __rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
  */
 static inline int
 rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
-			      struct rte_security_session *sess,
+			      void *sess,
 			      struct rte_mbuf *mb, void *params)
 {
 	/* Fast Path */
 	if (instance->flags & RTE_SEC_CTX_F_FAST_SET_MDATA) {
-		*rte_security_dynfield(mb) =
-			(rte_security_dynfield_t)(sess->sess_private_data);
+		*rte_security_dynfield(mb) = (rte_security_dynfield_t)
+			rte_security_session_fast_mdata_get(sess);
 		return 0;
 	}
 
 	/* Jump to PMD specific function pointer */
 	return __rte_security_set_pkt_metadata(instance, sess, mb, params);
-}
-
-/** Function to call PMD specific function pointer get_userdata() */
-__rte_experimental
-extern void *__rte_security_get_userdata(struct rte_security_ctx *instance,
-					 uint64_t md);
-
-/**
- * Get userdata associated with the security session. Device specific metadata
- * provided would be used to uniquely identify the security session being
- * referred to. This userdata would be registered while creating the session,
- * and application can use this to identify the SA etc.
- *
- * Device specific metadata would be set in mbuf for inline processed inbound
- * packets. In addition, the same metadata would be set for IPsec events
- * reported by rte_eth_event framework.
- *
- * @param   instance	security instance
- * @param   md		device-specific metadata
- *
- * @return
- *  - On success, userdata
- *  - On failure, NULL
- */
-__rte_experimental
-static inline void *
-rte_security_get_userdata(struct rte_security_ctx *instance, uint64_t md)
-{
-	/* Fast Path */
-	if (instance->flags & RTE_SEC_CTX_F_FAST_GET_UDATA)
-		return (void *)(uintptr_t)md;
-
-	/* Jump to PMD specific function pointer */
-	return __rte_security_get_userdata(instance, md);
 }
 
 /**
@@ -695,25 +932,11 @@ rte_security_get_userdata(struct rte_security_ctx *instance, uint64_t md)
  * @param	sess	security session
  */
 static inline int
-__rte_security_attach_session(struct rte_crypto_sym_op *sym_op,
-			      struct rte_security_session *sess)
+__rte_security_attach_session(struct rte_crypto_sym_op *sym_op, void *sess)
 {
-	sym_op->sec_session = sess;
+	sym_op->session = sess;
 
 	return 0;
-}
-
-static inline void *
-get_sec_session_private_data(const struct rte_security_session *sess)
-{
-	return sess->sess_private_data;
-}
-
-static inline void
-set_sec_session_private_data(struct rte_security_session *sess,
-			     void *private_data)
-{
-	sess->sess_private_data = private_data;
 }
 
 /**
@@ -727,7 +950,7 @@ set_sec_session_private_data(struct rte_security_session *sess,
  */
 static inline int
 rte_security_attach_session(struct rte_crypto_op *op,
-			    struct rte_security_session *sess)
+			    void *sess)
 {
 	if (unlikely(op->type != RTE_CRYPTO_OP_TYPE_SYMMETRIC))
 		return -EINVAL;
@@ -737,8 +960,62 @@ rte_security_attach_session(struct rte_crypto_op *op,
 	return __rte_security_attach_session(op->sym, sess);
 }
 
-struct rte_security_macsec_stats {
-	uint64_t reserved;
+struct rte_security_macsec_secy_stats {
+	uint64_t ctl_pkt_bcast_cnt;
+	uint64_t ctl_pkt_mcast_cnt;
+	uint64_t ctl_pkt_ucast_cnt;
+	uint64_t ctl_octet_cnt;
+	uint64_t unctl_pkt_bcast_cnt;
+	uint64_t unctl_pkt_mcast_cnt;
+	uint64_t unctl_pkt_ucast_cnt;
+	uint64_t unctl_octet_cnt;
+	/* Valid only for Rx */
+	uint64_t octet_decrypted_cnt;
+	uint64_t octet_validated_cnt;
+	uint64_t pkt_port_disabled_cnt;
+	uint64_t pkt_badtag_cnt;
+	uint64_t pkt_nosa_cnt;
+	uint64_t pkt_nosaerror_cnt;
+	uint64_t pkt_tagged_ctl_cnt;
+	uint64_t pkt_untaged_cnt;
+	uint64_t pkt_ctl_cnt;
+	uint64_t pkt_notag_cnt;
+	/* Valid only for Tx */
+	uint64_t octet_encrypted_cnt;
+	uint64_t octet_protected_cnt;
+	uint64_t pkt_noactivesa_cnt;
+	uint64_t pkt_toolong_cnt;
+	uint64_t pkt_untagged_cnt;
+};
+
+struct rte_security_macsec_sc_stats {
+	/* Rx */
+	uint64_t hit_cnt;
+	uint64_t pkt_invalid_cnt;
+	uint64_t pkt_late_cnt;
+	uint64_t pkt_notvalid_cnt;
+	uint64_t pkt_unchecked_cnt;
+	uint64_t pkt_delay_cnt;
+	uint64_t pkt_ok_cnt;
+	uint64_t octet_decrypt_cnt;
+	uint64_t octet_validate_cnt;
+	/* Tx */
+	uint64_t pkt_encrypt_cnt;
+	uint64_t pkt_protected_cnt;
+	uint64_t octet_encrypt_cnt;
+	uint64_t octet_protected_cnt;
+};
+
+struct rte_security_macsec_sa_stats {
+	/* Rx */
+	uint64_t pkt_invalid_cnt;
+	uint64_t pkt_nosaerror_cnt;
+	uint64_t pkt_notvalid_cnt;
+	uint64_t pkt_ok_cnt;
+	uint64_t pkt_nosa_cnt;
+	/* Tx */
+	uint64_t pkt_encrypt_cnt;
+	uint64_t pkt_protected_cnt;
 };
 
 struct rte_security_ipsec_stats {
@@ -766,7 +1043,7 @@ struct rte_security_stats {
 
 	RTE_STD_C11
 	union {
-		struct rte_security_macsec_stats macsec;
+		struct rte_security_macsec_secy_stats macsec;
 		struct rte_security_ipsec_stats ipsec;
 		struct rte_security_pdcp_stats pdcp;
 		struct rte_security_docsis_stats docsis;
@@ -789,8 +1066,46 @@ struct rte_security_stats {
 __rte_experimental
 int
 rte_security_session_stats_get(struct rte_security_ctx *instance,
-			       struct rte_security_session *sess,
+			       void *sess,
 			       struct rte_security_stats *stats);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Get MACsec SA statistics.
+ *
+ * @param	instance	security instance
+ * @param	sa_id		SA ID for which stats are needed
+ * @param	stats		statistics
+ * @return
+ *  - On success, return 0.
+ *  - On failure, a negative value.
+ */
+__rte_experimental
+int
+rte_security_macsec_sa_stats_get(struct rte_security_ctx *instance,
+				 uint16_t sa_id,
+				 struct rte_security_macsec_sa_stats *stats);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Get MACsec SC statistics.
+ *
+ * @param	instance	security instance
+ * @param	sc_id		SC ID for which stats are needed
+ * @param	stats		SC statistics
+ * @return
+ *  - On success, return 0.
+ *  - On failure, a negative value.
+ */
+__rte_experimental
+int
+rte_security_macsec_sc_stats_get(struct rte_security_ctx *instance,
+				 uint16_t sc_id,
+				 struct rte_security_macsec_sc_stats *stats);
 
 /**
  * Security capability definition
@@ -818,8 +1133,38 @@ struct rte_security_capability {
 		} ipsec;
 		/**< IPsec capability */
 		struct {
-			/* To be Filled */
-			int dummy;
+			/** MTU supported for inline TX */
+			uint16_t mtu;
+			/** MACsec algorithm to be used */
+			enum rte_security_macsec_alg alg;
+			/** Maximum number of secure channels supported */
+			uint16_t max_nb_sc;
+			/** Maximum number of SAs supported */
+			uint16_t max_nb_sa;
+			/** Maximum number of SAs supported */
+			uint16_t max_nb_sess;
+			/** MACsec anti replay window size */
+			uint32_t replay_win_sz;
+			/** Support Sectag insertion at relative offset */
+			uint16_t relative_sectag_insert : 1;
+			/** Support Sectag insertion at fixed offset */
+			uint16_t fixed_sectag_insert : 1;
+			/** ICV includes source and destination MAC addresses */
+			uint16_t icv_include_da_sa : 1;
+			/** Control port traffic is supported */
+			uint16_t ctrl_port_enable : 1;
+			/** Do not strip SecTAG after processing */
+			uint16_t preserve_sectag : 1;
+			/** Do not strip ICV from the packet after processing */
+			uint16_t preserve_icv : 1;
+			/** Support frame validation as per RTE_SECURITY_MACSEC_VALIDATE_* */
+			uint16_t validate_frames : 1;
+			/** support re-keying on SA expiry */
+			uint16_t re_key : 1;
+			/** support anti replay */
+			uint16_t anti_replay : 1;
+			/** Reserved bitfields for future capabilities */
+			uint16_t reserved : 7;
 		} macsec;
 		/**< MACsec capability */
 		struct {

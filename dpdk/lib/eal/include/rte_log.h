@@ -24,7 +24,6 @@ extern "C" {
 
 #include <rte_common.h>
 #include <rte_config.h>
-#include <rte_compat.h>
 
 /* SDK log type */
 #define RTE_LOGTYPE_EAL        0 /**< Log related to eal. */
@@ -136,7 +135,6 @@ int rte_log_get_level(uint32_t logtype);
  * @return
  * Returns 'true' if log can be printed and 'false' if it can't.
  */
-__rte_experimental
 bool rte_log_can_log(uint32_t logtype, uint32_t loglevel);
 
 /**
@@ -236,9 +234,6 @@ int rte_log_register(const char *name);
 int rte_log_register_type_and_pick_level(const char *name, uint32_t level_def);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Dump name of each logtype, one per line.
  *
  * @param out
@@ -246,7 +241,6 @@ int rte_log_register_type_and_pick_level(const char *name, uint32_t level_def);
  * @param prefix
  *   String preceding each logtype in the output.
  */
-__rte_experimental
 void rte_log_list_types(FILE *out, const char *prefix);
 
 /**
@@ -378,9 +372,6 @@ RTE_INIT(__##type)							    \
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Register a dynamic log type in constructor context with its name and level.
  *
  * It is a wrapper macro for declaring the logtype, register the log and
@@ -397,9 +388,6 @@ RTE_INIT(__##type)							    \
 	RTE_LOG_REGISTER_IMPL(type, RTE_STR(name), level)
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * This is an equivalent to RTE_LOG_REGISTER, but relying on the build system
  * to select the right format for the logtype.
  */
@@ -407,9 +395,6 @@ RTE_INIT(__##type)							    \
 	RTE_LOG_REGISTER_IMPL(type, RTE_STR(RTE_LOG_DEFAULT_LOGTYPE), level)
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * This is an equivalent to RTE_LOG_REGISTER, but relying on the build system
  * to select the right prefix for the logtype.
  */

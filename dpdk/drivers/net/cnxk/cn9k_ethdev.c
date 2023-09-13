@@ -2,7 +2,7 @@
  * Copyright(C) 2021 Marvell.
  */
 #include "cn9k_ethdev.h"
-#include "cn9k_rte_flow.h"
+#include "cn9k_flow.h"
 #include "cn9k_rx.h"
 #include "cn9k_tx.h"
 
@@ -39,6 +39,9 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
 		flags |= NIX_RX_OFFLOAD_SECURITY_F;
 
+	if (dev->rx_mark_update)
+		flags |= NIX_RX_OFFLOAD_MARK_UPDATE_F;
+
 	return flags;
 }
 
@@ -64,9 +67,9 @@ nix_tx_offload_flags(struct rte_eth_dev *eth_dev)
 	RTE_BUILD_BUG_ON(RTE_MBUF_OUTL2_LEN_BITS != 7);
 	RTE_BUILD_BUG_ON(RTE_MBUF_OUTL3_LEN_BITS != 9);
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_off) !=
-			 offsetof(struct rte_mbuf, buf_iova) + 8);
+			 offsetof(struct rte_mbuf, buf_addr) + 16);
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, ol_flags) !=
-			 offsetof(struct rte_mbuf, buf_iova) + 16);
+			 offsetof(struct rte_mbuf, buf_addr) + 24);
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pkt_len) !=
 			 offsetof(struct rte_mbuf, ol_flags) + 12);
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, tx_offload) !=
@@ -107,6 +110,9 @@ nix_tx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->tx_offloads & RTE_ETH_TX_OFFLOAD_SECURITY)
 		flags |= NIX_TX_OFFLOAD_SECURITY_F;
 
+	if (dev->tx_mark)
+		flags |= NIX_TX_OFFLOAD_VLAN_QINQ_F;
+
 	return flags;
 }
 
@@ -131,51 +137,31 @@ static void
 nix_form_default_desc(struct cnxk_eth_dev *dev, struct cn9k_eth_txq *txq,
 		      uint16_t qid)
 {
-	struct nix_send_ext_s *send_hdr_ext;
-	struct nix_send_hdr_s *send_hdr;
-	struct nix_send_mem_s *send_mem;
-	union nix_send_sg_s *sg;
+	union nix_send_hdr_w0_u send_hdr_w0;
 
 	/* Initialize the fields based on basic single segment packet */
-	memset(&txq->cmd, 0, sizeof(txq->cmd));
-
+	send_hdr_w0.u = 0;
 	if (dev->tx_offload_flags & NIX_TX_NEED_EXT_HDR) {
-		send_hdr = (struct nix_send_hdr_s *)&txq->cmd[0];
 		/* 2(HDR) + 2(EXT_HDR) + 1(SG) + 1(IOVA) = 6/2 - 1 = 2 */
-		send_hdr->w0.sizem1 = 2;
-
-		send_hdr_ext = (struct nix_send_ext_s *)&txq->cmd[2];
-		send_hdr_ext->w0.subdc = NIX_SUBDC_EXT;
+		send_hdr_w0.sizem1 = 2;
 		if (dev->tx_offload_flags & NIX_TX_OFFLOAD_TSTAMP_F) {
 			/* Default: one seg packet would have:
 			 * 2(HDR) + 2(EXT) + 1(SG) + 1(IOVA) + 2(MEM)
 			 * => 8/2 - 1 = 3
 			 */
-			send_hdr->w0.sizem1 = 3;
-			send_hdr_ext->w0.tstmp = 1;
+			send_hdr_w0.sizem1 = 3;
 
 			/* To calculate the offset for send_mem,
 			 * send_hdr->w0.sizem1 * 2
 			 */
-			send_mem = (struct nix_send_mem_s *)
-				(txq->cmd + (send_hdr->w0.sizem1 << 1));
-			send_mem->w0.cn9k.subdc = NIX_SUBDC_MEM;
-			send_mem->w0.cn9k.alg = NIX_SENDMEMALG_SETTSTMP;
-			send_mem->addr = dev->tstamp.tx_tstamp_iova;
+			txq->ts_mem = dev->tstamp.tx_tstamp_iova;
 		}
-		sg = (union nix_send_sg_s *)&txq->cmd[4];
 	} else {
-		send_hdr = (struct nix_send_hdr_s *)&txq->cmd[0];
 		/* 2(HDR) + 1(SG) + 1(IOVA) = 4/2 - 1 = 1 */
-		send_hdr->w0.sizem1 = 1;
-		sg = (union nix_send_sg_s *)&txq->cmd[2];
+		send_hdr_w0.sizem1 = 1;
 	}
-
-	send_hdr->w0.sq = qid;
-	sg->subdc = NIX_SUBDC_SG;
-	sg->segs = 1;
-	sg->ld_type = NIX_SENDLDTYPE_LDD;
-
+	send_hdr_w0.sq = qid;
+	txq->send_hdr_w0 = send_hdr_w0.u;
 	rte_wmb();
 }
 
@@ -185,6 +171,7 @@ cn9k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 			const struct rte_eth_txconf *tx_conf)
 {
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	uint64_t mark_fmt, mark_flag;
 	struct roc_cpt_lf *inl_lf;
 	struct cn9k_eth_txq *txq;
 	struct roc_nix_sq *sq;
@@ -221,6 +208,10 @@ cn9k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 		PLT_STATIC_ASSERT(BIT_ULL(16) == ROC_NIX_INL_SA_BASE_ALIGN);
 	}
 
+	mark_fmt = roc_nix_tm_mark_format_get(&dev->nix, &mark_flag);
+	txq->mark_flag = mark_flag & CNXK_TM_MARK_MASK;
+	txq->mark_fmt = mark_fmt & CNXK_TX_MARK_FMT_MASK;
+
 	nix_form_default_desc(dev, txq, qid);
 	txq->lso_tun_fmt = dev->lso_tun_fmt;
 	return 0;
@@ -249,6 +240,17 @@ cn9k_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 				     sizeof(struct cn9k_eth_rxq), rx_conf, mp);
 	if (rc)
 		return rc;
+
+	/* Do initial mtu setup for RQ0 before device start */
+	if (!qid) {
+		rc = nix_recalc_mtu(eth_dev);
+		if (rc)
+			return rc;
+
+		/* Update offload flags */
+		dev->rx_offload_flags = nix_rx_offload_flags(eth_dev);
+		dev->tx_offload_flags = nix_tx_offload_flags(eth_dev);
+	}
 
 	rq = &dev->rqs[qid];
 	cq = &dev->cqs[qid];
@@ -467,6 +469,158 @@ cn9k_nix_dev_start(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
+static int
+cn9k_nix_timesync_read_tx_timestamp(struct rte_eth_dev *eth_dev,
+				    struct timespec *timestamp)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct cnxk_timesync_info *tstamp = &dev->tstamp;
+	uint64_t ns;
+
+	if (*tstamp->tx_tstamp == 0)
+		return -EINVAL;
+
+	ns = rte_timecounter_update(&dev->tx_tstamp_tc, *tstamp->tx_tstamp);
+	*timestamp = rte_ns_to_timespec(ns);
+	*tstamp->tx_tstamp = 0;
+	rte_wmb();
+
+	return 0;
+}
+
+static int
+cn9k_nix_rx_metadata_negotiate(struct rte_eth_dev *eth_dev, uint64_t *features)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+
+	*features &=
+		(RTE_ETH_RX_METADATA_USER_FLAG | RTE_ETH_RX_METADATA_USER_MARK);
+
+	if (*features) {
+		dev->rx_offload_flags |= NIX_RX_OFFLOAD_MARK_UPDATE_F;
+		dev->rx_mark_update = true;
+	} else {
+		dev->rx_offload_flags &= ~NIX_RX_OFFLOAD_MARK_UPDATE_F;
+		dev->rx_mark_update = false;
+	}
+
+	cn9k_eth_set_rx_function(eth_dev);
+
+	return 0;
+}
+
+static int
+cn9k_nix_tm_mark_vlan_dei(struct rte_eth_dev *eth_dev, int mark_green,
+			  int mark_yellow, int mark_red,
+			  struct rte_tm_error *error)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *roc_nix = &dev->nix;
+	uint64_t mark_fmt, mark_flag;
+	int rc, i;
+
+	rc = cnxk_nix_tm_mark_vlan_dei(eth_dev, mark_green, mark_yellow,
+				       mark_red, error);
+
+	if (rc)
+		goto exit;
+
+	mark_fmt = roc_nix_tm_mark_format_get(roc_nix, &mark_flag);
+	if (mark_flag) {
+		dev->tx_offload_flags |= NIX_TX_OFFLOAD_VLAN_QINQ_F;
+		dev->tx_mark = true;
+	} else {
+		dev->tx_mark = false;
+		if (!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_VLAN_INSERT ||
+		      dev->tx_offloads & RTE_ETH_TX_OFFLOAD_QINQ_INSERT))
+			dev->tx_offload_flags &= ~NIX_TX_OFFLOAD_VLAN_QINQ_F;
+	}
+
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+		struct cn9k_eth_txq *txq = eth_dev->data->tx_queues[i];
+
+		txq->mark_flag = mark_flag & CNXK_TM_MARK_MASK;
+		txq->mark_fmt = mark_fmt & CNXK_TX_MARK_FMT_MASK;
+	}
+	cn9k_eth_set_tx_function(eth_dev);
+exit:
+	return rc;
+}
+
+static int
+cn9k_nix_tm_mark_ip_ecn(struct rte_eth_dev *eth_dev, int mark_green,
+			int mark_yellow, int mark_red,
+			struct rte_tm_error *error)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *roc_nix = &dev->nix;
+	uint64_t mark_fmt, mark_flag;
+	int rc, i;
+
+	rc = cnxk_nix_tm_mark_ip_ecn(eth_dev, mark_green, mark_yellow, mark_red,
+				     error);
+	if (rc)
+		goto exit;
+
+	mark_fmt = roc_nix_tm_mark_format_get(roc_nix, &mark_flag);
+	if (mark_flag) {
+		dev->tx_offload_flags |= NIX_TX_OFFLOAD_VLAN_QINQ_F;
+		dev->tx_mark = true;
+	} else {
+		dev->tx_mark = false;
+		if (!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_VLAN_INSERT ||
+		      dev->tx_offloads & RTE_ETH_TX_OFFLOAD_QINQ_INSERT))
+			dev->tx_offload_flags &= ~NIX_TX_OFFLOAD_VLAN_QINQ_F;
+	}
+
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+		struct cn9k_eth_txq *txq = eth_dev->data->tx_queues[i];
+
+		txq->mark_flag = mark_flag & CNXK_TM_MARK_MASK;
+		txq->mark_fmt = mark_fmt & CNXK_TX_MARK_FMT_MASK;
+	}
+	cn9k_eth_set_tx_function(eth_dev);
+exit:
+	return rc;
+}
+
+static int
+cn9k_nix_tm_mark_ip_dscp(struct rte_eth_dev *eth_dev, int mark_green,
+			 int mark_yellow, int mark_red,
+			 struct rte_tm_error *error)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *roc_nix = &dev->nix;
+	uint64_t mark_fmt, mark_flag;
+	int rc, i;
+
+	rc = cnxk_nix_tm_mark_ip_dscp(eth_dev, mark_green, mark_yellow,
+				      mark_red, error);
+	if (rc)
+		goto exit;
+
+	mark_fmt = roc_nix_tm_mark_format_get(roc_nix, &mark_flag);
+	if (mark_flag) {
+		dev->tx_offload_flags |= NIX_TX_OFFLOAD_VLAN_QINQ_F;
+		dev->tx_mark = true;
+	} else {
+		dev->tx_mark = false;
+		if (!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_VLAN_INSERT ||
+		      dev->tx_offloads & RTE_ETH_TX_OFFLOAD_QINQ_INSERT))
+			dev->tx_offload_flags &= ~NIX_TX_OFFLOAD_VLAN_QINQ_F;
+	}
+
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+		struct cn9k_eth_txq *txq = eth_dev->data->tx_queues[i];
+
+		txq->mark_flag = mark_flag & CNXK_TM_MARK_MASK;
+		txq->mark_fmt = mark_fmt & CNXK_TX_MARK_FMT_MASK;
+	}
+	cn9k_eth_set_tx_function(eth_dev);
+exit:
+	return rc;
+}
+
 /* Update platform specific eth dev ops */
 static void
 nix_eth_dev_ops_override(void)
@@ -487,6 +641,25 @@ nix_eth_dev_ops_override(void)
 	cnxk_eth_dev_ops.timesync_enable = cn9k_nix_timesync_enable;
 	cnxk_eth_dev_ops.timesync_disable = cn9k_nix_timesync_disable;
 	cnxk_eth_dev_ops.mtr_ops_get = NULL;
+	cnxk_eth_dev_ops.rx_metadata_negotiate = cn9k_nix_rx_metadata_negotiate;
+	cnxk_eth_dev_ops.timesync_read_tx_timestamp =
+		cn9k_nix_timesync_read_tx_timestamp;
+}
+
+/* Update platform specific eth dev ops */
+static void
+nix_tm_ops_override(void)
+{
+	static int init_once;
+
+	if (init_once)
+		return;
+	init_once = 1;
+
+	/* Update platform specific ops */
+	cnxk_tm_ops.mark_vlan_dei = cn9k_nix_tm_mark_vlan_dei;
+	cnxk_tm_ops.mark_ip_ecn = cn9k_nix_tm_mark_ip_ecn;
+	cnxk_tm_ops.mark_ip_dscp = cn9k_nix_tm_mark_ip_dscp;
 }
 
 static void
@@ -516,11 +689,6 @@ cn9k_nix_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	struct cnxk_eth_dev *dev;
 	int rc;
 
-	if (RTE_CACHE_LINE_SIZE != 128) {
-		plt_err("Driver not compiled for CN9K");
-		return -EFAULT;
-	}
-
 	rc = roc_plt_init();
 	if (rc) {
 		plt_err("Failed to initialize platform model, rc=%d", rc);
@@ -528,6 +696,7 @@ cn9k_nix_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	}
 
 	nix_eth_dev_ops_override();
+	nix_tm_ops_override();
 	npc_flow_ops_override();
 
 	cn9k_eth_sec_ops_override();
@@ -539,8 +708,12 @@ cn9k_nix_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 
 	/* Find eth dev allocated */
 	eth_dev = rte_eth_dev_allocated(pci_dev->device.name);
-	if (!eth_dev)
+	if (!eth_dev) {
+		/* Ignore if ethdev is in mid of detach state in secondary */
+		if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+			return 0;
 		return -ENOENT;
+	}
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
 		/* Setup callbacks for secondary process */
@@ -568,17 +741,48 @@ cn9k_nix_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	}
 
 	dev->hwcap = 0;
+	dev->inb.no_inl_dev = 1;
 
 	/* Register up msg callbacks for PTP information */
 	roc_nix_ptp_info_cb_register(&dev->nix, cn9k_nix_ptp_info_update_cb);
 
 	/* Update HW erratas */
-	if (roc_model_is_cn96_a0() || roc_model_is_cn95_a0())
+	if (roc_errata_nix_has_cq_min_size_4k())
 		dev->cq_min_4k = 1;
+
+	if (dev->nix.custom_sa_action) {
+		dev->nix.custom_sa_action = 0;
+		plt_info("WARNING: Custom SA action is enabled. It's not supported"
+			 " on cn9k device. Disabling it");
+	}
 	return 0;
 }
 
 static const struct rte_pci_id cn9k_pci_nix_map[] = {
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KA, PCI_DEVID_CNXK_RVU_PF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KB, PCI_DEVID_CNXK_RVU_PF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KC, PCI_DEVID_CNXK_RVU_PF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KD, PCI_DEVID_CNXK_RVU_PF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KE, PCI_DEVID_CNXK_RVU_PF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF9KA, PCI_DEVID_CNXK_RVU_PF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KA, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KB, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KC, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KD, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KE, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF9KA, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KA, PCI_DEVID_CNXK_RVU_AF_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KB, PCI_DEVID_CNXK_RVU_AF_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KC, PCI_DEVID_CNXK_RVU_AF_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KD, PCI_DEVID_CNXK_RVU_AF_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KE, PCI_DEVID_CNXK_RVU_AF_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF9KA, PCI_DEVID_CNXK_RVU_AF_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KA, PCI_DEVID_CNXK_RVU_SDP_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KB, PCI_DEVID_CNXK_RVU_SDP_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KC, PCI_DEVID_CNXK_RVU_SDP_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KD, PCI_DEVID_CNXK_RVU_SDP_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN9KE, PCI_DEVID_CNXK_RVU_SDP_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF9KA, PCI_DEVID_CNXK_RVU_SDP_VF),
 	{
 		.vendor_id = 0,
 	},

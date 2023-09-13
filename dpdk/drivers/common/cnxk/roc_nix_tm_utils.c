@@ -125,9 +125,72 @@ nix_tm_node_search(struct nix *nix, uint32_t node_id, enum roc_nix_tm_tree tree)
 	return NULL;
 }
 
-uint64_t
-nix_tm_shaper_rate_conv(uint64_t value, uint64_t *exponent_p,
-			uint64_t *mantissa_p, uint64_t *div_exp_p)
+static uint64_t
+nix_tm_shaper_rate_conv_floor(uint64_t value, uint64_t *exponent_p,
+			      uint64_t *mantissa_p, uint64_t *div_exp_p)
+{
+	uint64_t div_exp, exponent, mantissa;
+
+	/* Boundary checks */
+	if (value < NIX_TM_MIN_SHAPER_RATE || value > NIX_TM_MAX_SHAPER_RATE)
+		return 0;
+
+	if (value <= NIX_TM_SHAPER_RATE(0, 0, 0)) {
+		/* Calculate rate div_exp and mantissa using
+		 * the following formula:
+		 *
+		 * value = (2E6 * (256 + mantissa)
+		 *              / ((1 << div_exp) * 256))
+		 */
+		div_exp = 0;
+		exponent = 0;
+		mantissa = NIX_TM_MAX_RATE_MANTISSA;
+
+		while (value <= (NIX_TM_SHAPER_RATE_CONST / (1 << div_exp)))
+			div_exp += 1;
+
+		while (value <= ((NIX_TM_SHAPER_RATE_CONST * (256 + mantissa)) /
+				 ((1 << div_exp) * 256)))
+			mantissa -= 1;
+	} else {
+		/* Calculate rate exponent and mantissa using
+		 * the following formula:
+		 *
+		 * value = (2E6 * ((256 + mantissa) << exponent)) / 256
+		 *
+		 */
+		div_exp = 0;
+		exponent = NIX_TM_MAX_RATE_EXPONENT;
+		mantissa = NIX_TM_MAX_RATE_MANTISSA;
+
+		while (value <= (NIX_TM_SHAPER_RATE_CONST * (1 << exponent)))
+			exponent -= 1;
+
+		while (value <= ((NIX_TM_SHAPER_RATE_CONST *
+				  ((256 + mantissa) << exponent)) /
+				 256))
+			mantissa -= 1;
+	}
+
+	if (div_exp > NIX_TM_MAX_RATE_DIV_EXP ||
+	    exponent > NIX_TM_MAX_RATE_EXPONENT ||
+	    mantissa > NIX_TM_MAX_RATE_MANTISSA)
+		return 0;
+
+	if (div_exp_p)
+		*div_exp_p = div_exp;
+	if (exponent_p)
+		*exponent_p = exponent;
+	if (mantissa_p)
+		*mantissa_p = mantissa;
+
+	/* Calculate real rate value */
+	return NIX_TM_SHAPER_RATE(exponent, mantissa, div_exp);
+}
+
+static uint64_t
+nix_tm_shaper_rate_conv_exact(uint64_t value, uint64_t *exponent_p,
+			      uint64_t *mantissa_p, uint64_t *div_exp_p)
 {
 	uint64_t div_exp, exponent, mantissa;
 
@@ -188,6 +251,23 @@ nix_tm_shaper_rate_conv(uint64_t value, uint64_t *exponent_p,
 	return NIX_TM_SHAPER_RATE(exponent, mantissa, div_exp);
 }
 
+/* With zero accuracy we will tune parameters as defined by HW,
+ * non zero accuracy will keep the parameters close to lower values
+ * and make sure long-term shaper rate will not exceed the requested rate.
+ */
+uint64_t
+nix_tm_shaper_rate_conv(uint64_t value, uint64_t *exponent_p,
+			uint64_t *mantissa_p, uint64_t *div_exp_p,
+			int8_t accuracy)
+{
+	if (!accuracy)
+		return nix_tm_shaper_rate_conv_exact(value, exponent_p,
+						     mantissa_p, div_exp_p);
+
+	return nix_tm_shaper_rate_conv_floor(value, exponent_p, mantissa_p,
+					     div_exp_p);
+}
+
 uint64_t
 nix_tm_shaper_burst_conv(uint64_t value, uint64_t *exponent_p,
 			 uint64_t *mantissa_p)
@@ -245,13 +325,13 @@ nix_tm_shaper_conf_get(struct nix_tm_shaper_profile *profile,
 	if (profile->commit.rate)
 		cir->rate = nix_tm_shaper_rate_conv(
 			profile->commit.rate, &cir->exponent, &cir->mantissa,
-			&cir->div_exp);
+			&cir->div_exp, profile->accuracy);
 
 	/* Calculate PIR exponent and mantissa */
 	if (profile->peak.rate)
 		pir->rate = nix_tm_shaper_rate_conv(
 			profile->peak.rate, &pir->exponent, &pir->mantissa,
-			&pir->div_exp);
+			&pir->div_exp, profile->accuracy);
 
 	/* Calculate CIR burst exponent and mantissa */
 	if (profile->commit.size)
@@ -398,7 +478,7 @@ nix_tm_child_res_valid(struct nix_tm_node_list *list,
 }
 
 uint8_t
-nix_tm_tl1_default_prep(uint32_t schq, volatile uint64_t *reg,
+nix_tm_tl1_default_prep(struct nix *nix, uint32_t schq, volatile uint64_t *reg,
 			volatile uint64_t *regval)
 {
 	uint8_t k = 0;
@@ -416,7 +496,7 @@ nix_tm_tl1_default_prep(uint32_t schq, volatile uint64_t *reg,
 	k++;
 
 	reg[k] = NIX_AF_TL1X_TOPOLOGY(schq);
-	regval[k] = (NIX_TM_TL1_DFLT_RR_PRIO << 1);
+	regval[k] = (nix->tm_aggr_lvl_rr_prio << 1);
 	k++;
 
 	reg[k] = NIX_AF_TL1X_CIR(schq);
@@ -460,7 +540,7 @@ nix_tm_topology_reg_prep(struct nix *nix, struct nix_tm_node *node,
 	 * Static Priority is disabled
 	 */
 	if (hw_lvl == NIX_TXSCH_LVL_TL1 && nix->tm_flags & NIX_TM_TL1_NO_SP) {
-		rr_prio = NIX_TM_TL1_DFLT_RR_PRIO;
+		rr_prio = nix->tm_aggr_lvl_rr_prio;
 		child = 0;
 	}
 
@@ -564,9 +644,25 @@ nix_tm_topology_reg_prep(struct nix *nix, struct nix_tm_node *node,
 	return k;
 }
 
+static inline int
+nix_tm_default_rr_weight(struct nix *nix)
+{
+	struct roc_nix *roc_nix = nix_priv_to_roc_nix(nix);
+	uint32_t max_pktlen = roc_nix_max_pkt_len(roc_nix);
+	uint32_t weight;
+
+	/* Reduce TX VTAG Insertions */
+	max_pktlen -= 8;
+	weight = max_pktlen / roc_nix->dwrr_mtu;
+	if (max_pktlen % roc_nix->dwrr_mtu)
+		weight += 1;
+
+	return weight;
+}
+
 uint8_t
-nix_tm_sched_reg_prep(struct nix *nix, struct nix_tm_node *node,
-		      volatile uint64_t *reg, volatile uint64_t *regval)
+nix_tm_sched_reg_prep(struct nix *nix, struct nix_tm_node *node, volatile uint64_t *reg,
+		      volatile uint64_t *regval)
 {
 	uint64_t strict_prio = node->priority;
 	uint32_t hw_lvl = node->hw_lvl;
@@ -574,20 +670,26 @@ nix_tm_sched_reg_prep(struct nix *nix, struct nix_tm_node *node,
 	uint64_t rr_quantum;
 	uint8_t k = 0;
 
-	/* For CN9K, weight needs to be converted to quantum */
-	rr_quantum = nix_tm_weight_to_rr_quantum(node->weight);
+	/* If minimum weight not provided, then by default RR_QUANTUM
+	 * should be in sync with kernel, i.e., single MTU value
+	 */
+	if (!node->weight)
+		rr_quantum = nix_tm_default_rr_weight(nix);
+	else
+		/* For CN9K, weight needs to be converted to quantum */
+		rr_quantum = nix_tm_weight_to_rr_quantum(node->weight);
 
 	/* For children to root, strict prio is default if either
 	 * device root is TL2 or TL1 Static Priority is disabled.
 	 */
 	if (hw_lvl == NIX_TXSCH_LVL_TL2 &&
 	    (!nix_tm_have_tl1_access(nix) || nix->tm_flags & NIX_TM_TL1_NO_SP))
-		strict_prio = NIX_TM_TL1_DFLT_RR_PRIO;
+		strict_prio = nix->tm_aggr_lvl_rr_prio;
 
 	plt_tm_dbg("Schedule config node %s(%u) lvl %u id %u, "
 		   "prio 0x%" PRIx64 ", rr_quantum/rr_wt 0x%" PRIx64 " (%p)",
-		   nix_tm_hwlvl2str(node->hw_lvl), schq, node->lvl, node->id,
-		   strict_prio, rr_quantum, node);
+		   nix_tm_hwlvl2str(node->hw_lvl), schq, node->lvl, node->id, strict_prio,
+		   rr_quantum, node);
 
 	switch (hw_lvl) {
 	case NIX_TXSCH_LVL_SMQ:
@@ -1156,11 +1258,14 @@ roc_nix_tm_shaper_default_red_algo(struct roc_nix_tm_node *node,
 	struct nix_tm_shaper_profile *profile;
 	struct nix_tm_shaper_data cir, pir;
 
+	if (!roc_prof)
+		return;
+
 	profile = (struct nix_tm_shaper_profile *)roc_prof->reserved;
-	tm_node->red_algo = NIX_REDALG_STD;
+	tm_node->red_algo = roc_prof->red_algo;
 
 	/* C0 doesn't support STALL when both PIR & CIR are enabled */
-	if (profile && roc_model_is_cn96_cx()) {
+	if (roc_model_is_cn96_cx()) {
 		nix_tm_shaper_conf_get(profile, &cir, &pir);
 
 		if (pir.rate && cir.rate)

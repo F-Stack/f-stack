@@ -33,7 +33,7 @@
 #include <rte_malloc.h>
 #include <rte_ring.h>
 
-#include <rte_dpaa_bus.h>
+#include <bus_dpaa_driver.h>
 #include <rte_dpaa_logs.h>
 #include <dpaa_mempool.h>
 
@@ -197,6 +197,7 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	struct rte_eth_conf *eth_conf = &dev->data->dev_conf;
 	uint64_t rx_offloads = eth_conf->rxmode.offloads;
 	uint64_t tx_offloads = eth_conf->txmode.offloads;
+	struct dpaa_if *dpaa_intf = dev->data->dev_private;
 	struct rte_device *rdev = dev->device;
 	struct rte_eth_link *link = &dev->data->dev_link;
 	struct rte_dpaa_device *dpaa_dev;
@@ -205,13 +206,23 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle;
 	uint32_t max_rx_pktlen;
 	int speed, duplex;
-	int ret;
+	int ret, rx_status;
 
 	PMD_INIT_FUNC_TRACE();
 
 	dpaa_dev = container_of(rdev, struct rte_dpaa_device, device);
 	intr_handle = dpaa_dev->intr_handle;
 	__fif = container_of(fif, struct __fman_if, __if);
+
+	/* Check if interface is enabled in case of shared MAC */
+	if (fif->is_shared_mac) {
+		rx_status = fman_if_get_rx_status(fif);
+		if (!rx_status) {
+			DPAA_PMD_ERR("%s Interface not enabled in kernel!",
+				     dpaa_intf->name);
+			return -EHOSTDOWN;
+		}
+	}
 
 	/* Rx offloads which are enabled by default */
 	if (dev_rx_offloads_nodis & ~rx_offloads) {
@@ -351,7 +362,8 @@ dpaa_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_L4_FRAG,
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_UDP,
-		RTE_PTYPE_L4_SCTP
+		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_TUNNEL_ESP
 	};
 
 	PMD_INIT_FUNC_TRACE();
@@ -465,8 +477,7 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 	}
 
 	/* release configuration memory */
-	if (dpaa_intf->fc_conf)
-		rte_free(dpaa_intf->fc_conf);
+	rte_free(dpaa_intf->fc_conf);
 
 	/* Release RX congestion Groups */
 	if (dpaa_intf->cgr_rx) {
@@ -1487,7 +1498,7 @@ static int dpaa_dev_queue_intr_disable(struct rte_eth_dev *dev,
 
 	temp1 = read(rxq->q_fd, &temp, sizeof(temp));
 	if (temp1 != sizeof(temp))
-		DPAA_PMD_ERR("irq read error");
+		DPAA_PMD_DEBUG("read did not return anything");
 
 	qman_fq_portal_thread_irq(rxq->qp);
 
@@ -1739,6 +1750,10 @@ static int dpaa_tx_queue_init(struct qman_fq *fq,
 	/* no tx-confirmation */
 	opts.fqd.context_a.hi = 0x80000000 | fman_dealloc_bufs_mask_hi;
 	opts.fqd.context_a.lo = 0 | fman_dealloc_bufs_mask_lo;
+	if (fman_ip_rev >= FMAN_V3) {
+		/* Set B0V bit in contextA to set ASPID to 0 */
+		opts.fqd.context_a.hi |= 0x04000000;
+	}
 	DPAA_PMD_DEBUG("init tx fq %p, fqid 0x%x", fq, fq->fqid);
 
 	if (cgr_tx) {

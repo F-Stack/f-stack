@@ -2,8 +2,11 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_REGS_H_
-#define _HNS3_REGS_H_
+#ifndef HNS3_REGS_H
+#define HNS3_REGS_H
+
+#include <ethdev_driver.h>
+#include <rte_dev_info.h>
 
 /* bar registers for cmdq */
 #define HNS3_CMDQ_TX_ADDR_L_REG		0x27000
@@ -127,4 +130,4 @@
 #define HNS3_RL_USEC_TO_REG(rl_usec)		((rl_usec) >> 2)
 
 int hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs);
-#endif /* _HNS3_REGS_H_ */
+#endif /* HNS3_REGS_H */

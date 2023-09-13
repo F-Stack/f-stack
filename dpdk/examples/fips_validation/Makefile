@@ -15,6 +15,8 @@ SRCS-y += fips_validation_ccm.c
 SRCS-y += fips_validation_sha.c
 SRCS-y += fips_dev_self_test.c
 SRCS-y += fips_validation_xts.c
+SRCS-y += fips_validation_rsa.c
+SRCS-y += fips_validation_ecdsa.c
 SRCS-y += main.c
 
 PKGCONF ?= pkg-config
@@ -35,6 +37,12 @@ PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
+
+JANSSON := $(shell $(PKGCONF) --exists jansson; echo $$?)
+ifeq ($(JANSSON), 0)
+LDFLAGS += $(shell $(PKGCONF) --libs jansson)
+CFLAGS += -DUSE_JANSSON
+endif
 
 ifeq ($(MAKECMDGOALS),static)
 # check for broken pkg-config

@@ -9,7 +9,7 @@
 #include <rte_string_fns.h>
 #include <rte_mempool.h>
 #include <rte_errno.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include "rte_mempool_trace.h"
 
@@ -154,7 +154,8 @@ rte_mempool_ops_get_info(const struct rte_mempool *mp,
 
 	ops = rte_mempool_get_ops(mp->ops_index);
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->get_info, -ENOTSUP);
+	if (ops->get_info == NULL)
+		return -ENOTSUP;
 	return ops->get_info(mp, info);
 }
 

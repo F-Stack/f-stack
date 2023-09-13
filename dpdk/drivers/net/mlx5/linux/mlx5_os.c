@@ -19,8 +19,9 @@
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
-#include <rte_bus_auxiliary.h>
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
+#include <bus_auxiliary_driver.h>
 #include <rte_common.h>
 #include <rte_kvargs.h>
 #include <rte_rwlock.h>
@@ -131,74 +132,248 @@ mlx5_os_set_nonblock_channel_fd(int fd)
  * with out parameter of type 'struct ibv_device_attr_ex *'. Then fill in mlx5
  * device attributes from the glue out parameter.
  *
- * @param cdev
- *   Pointer to mlx5 device.
- *
- * @param device_attr
- *   Pointer to mlx5 device attributes.
+ * @param sh
+ *   Pointer to shared device context.
  *
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-mlx5_os_get_dev_attr(struct mlx5_common_device *cdev,
-		     struct mlx5_dev_attr *device_attr)
+mlx5_os_capabilities_prepare(struct mlx5_dev_ctx_shared *sh)
 {
 	int err;
-	struct ibv_context *ctx = cdev->ctx;
-	struct ibv_device_attr_ex attr_ex;
-
-	memset(device_attr, 0, sizeof(*device_attr));
-	err = mlx5_glue->query_device_ex(ctx, NULL, &attr_ex);
-	if (err) {
-		rte_errno = errno;
-		return -rte_errno;
-	}
-	device_attr->device_cap_flags_ex = attr_ex.device_cap_flags_ex;
-	device_attr->max_qp_wr = attr_ex.orig_attr.max_qp_wr;
-	device_attr->max_sge = attr_ex.orig_attr.max_sge;
-	device_attr->max_cq = attr_ex.orig_attr.max_cq;
-	device_attr->max_cqe = attr_ex.orig_attr.max_cqe;
-	device_attr->max_mr = attr_ex.orig_attr.max_mr;
-	device_attr->max_pd = attr_ex.orig_attr.max_pd;
-	device_attr->max_qp = attr_ex.orig_attr.max_qp;
-	device_attr->max_srq = attr_ex.orig_attr.max_srq;
-	device_attr->max_srq_wr = attr_ex.orig_attr.max_srq_wr;
-	device_attr->raw_packet_caps = attr_ex.raw_packet_caps;
-	device_attr->max_rwq_indirection_table_size =
-		attr_ex.rss_caps.max_rwq_indirection_table_size;
-	device_attr->max_tso = attr_ex.tso_caps.max_tso;
-	device_attr->tso_supported_qpts = attr_ex.tso_caps.supported_qpts;
-
+	struct mlx5_common_device *cdev = sh->cdev;
+	struct mlx5_hca_attr *hca_attr = &cdev->config.hca_attr;
+	struct ibv_device_attr_ex attr_ex = { .comp_mask = 0 };
 	struct mlx5dv_context dv_attr = { .comp_mask = 0 };
-	err = mlx5_glue->dv_query_device(ctx, &dv_attr);
+
+	err = mlx5_glue->query_device_ex(cdev->ctx, NULL, &attr_ex);
 	if (err) {
 		rte_errno = errno;
 		return -rte_errno;
 	}
-
-	device_attr->flags = dv_attr.flags;
-	device_attr->comp_mask = dv_attr.comp_mask;
 #ifdef HAVE_IBV_MLX5_MOD_SWP
-	device_attr->sw_parsing_offloads =
-		dv_attr.sw_parsing_caps.sw_parsing_offloads;
+	dv_attr.comp_mask |= MLX5DV_CONTEXT_MASK_SWP;
 #endif
-	device_attr->min_single_stride_log_num_of_bytes =
-		dv_attr.striding_rq_caps.min_single_stride_log_num_of_bytes;
-	device_attr->max_single_stride_log_num_of_bytes =
-		dv_attr.striding_rq_caps.max_single_stride_log_num_of_bytes;
-	device_attr->min_single_wqe_log_num_of_strides =
-		dv_attr.striding_rq_caps.min_single_wqe_log_num_of_strides;
-	device_attr->max_single_wqe_log_num_of_strides =
-		dv_attr.striding_rq_caps.max_single_wqe_log_num_of_strides;
-	device_attr->stride_supported_qpts =
-		dv_attr.striding_rq_caps.supported_qpts;
 #ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
-	device_attr->tunnel_offloads_caps = dv_attr.tunnel_offloads_caps;
+	dv_attr.comp_mask |= MLX5DV_CONTEXT_MASK_TUNNEL_OFFLOADS;
 #endif
-	strlcpy(device_attr->fw_ver, attr_ex.orig_attr.fw_ver,
-		sizeof(device_attr->fw_ver));
+#ifdef HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT
+	dv_attr.comp_mask |= MLX5DV_CONTEXT_MASK_STRIDING_RQ;
+#endif
+	err = mlx5_glue->dv_query_device(cdev->ctx, &dv_attr);
+	if (err) {
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	memset(&sh->dev_cap, 0, sizeof(struct mlx5_dev_cap));
+	if (mlx5_dev_is_pci(cdev->dev))
+		sh->dev_cap.vf = mlx5_dev_is_vf_pci(RTE_DEV_TO_PCI(cdev->dev));
+	else
+		sh->dev_cap.sf = 1;
+	sh->dev_cap.max_qp_wr = attr_ex.orig_attr.max_qp_wr;
+	sh->dev_cap.max_sge = attr_ex.orig_attr.max_sge;
+	sh->dev_cap.max_cq = attr_ex.orig_attr.max_cq;
+	sh->dev_cap.max_qp = attr_ex.orig_attr.max_qp;
+#ifdef HAVE_MLX5DV_DR_ACTION_DEST_DEVX_TIR
+	sh->dev_cap.dest_tir = 1;
+#endif
+#if defined(HAVE_IBV_FLOW_DV_SUPPORT) && defined(HAVE_MLX5DV_DR)
+	DRV_LOG(DEBUG, "DV flow is supported.");
+	sh->dev_cap.dv_flow_en = 1;
+#endif
+#ifdef HAVE_MLX5DV_DR_ESWITCH
+	if (hca_attr->eswitch_manager && sh->dev_cap.dv_flow_en && sh->esw_mode)
+		sh->dev_cap.dv_esw_en = 1;
+#endif
+	/*
+	 * Multi-packet send is supported by ConnectX-4 Lx PF as well
+	 * as all ConnectX-5 devices.
+	 */
+	if (dv_attr.flags & MLX5DV_CONTEXT_FLAGS_MPW_ALLOWED) {
+		if (dv_attr.flags & MLX5DV_CONTEXT_FLAGS_ENHANCED_MPW) {
+			DRV_LOG(DEBUG, "Enhanced MPW is supported.");
+			sh->dev_cap.mps = MLX5_MPW_ENHANCED;
+		} else {
+			DRV_LOG(DEBUG, "MPW is supported.");
+			sh->dev_cap.mps = MLX5_MPW;
+		}
+	} else {
+		DRV_LOG(DEBUG, "MPW isn't supported.");
+		sh->dev_cap.mps = MLX5_MPW_DISABLED;
+	}
+#if (RTE_CACHE_LINE_SIZE == 128)
+	if (dv_attr.flags & MLX5DV_CONTEXT_FLAGS_CQE_128B_COMP)
+		sh->dev_cap.cqe_comp = 1;
+	DRV_LOG(DEBUG, "Rx CQE 128B compression is %ssupported.",
+		sh->dev_cap.cqe_comp ? "" : "not ");
+#else
+	sh->dev_cap.cqe_comp = 1;
+#endif
+#ifdef HAVE_IBV_DEVICE_MPLS_SUPPORT
+	sh->dev_cap.mpls_en =
+		((dv_attr.tunnel_offloads_caps &
+		  MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_CW_MPLS_OVER_GRE) &&
+		 (dv_attr.tunnel_offloads_caps &
+		  MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_CW_MPLS_OVER_UDP));
+	DRV_LOG(DEBUG, "MPLS over GRE/UDP tunnel offloading is %ssupported.",
+		sh->dev_cap.mpls_en ? "" : "not ");
+#else
+	DRV_LOG(WARNING,
+		"MPLS over GRE/UDP tunnel offloading disabled due to old OFED/rdma-core version or firmware configuration");
+#endif
+#if defined(HAVE_IBV_WQ_FLAG_RX_END_PADDING)
+	sh->dev_cap.hw_padding = !!attr_ex.rx_pad_end_addr_align;
+#elif defined(HAVE_IBV_WQ_FLAGS_PCI_WRITE_END_PADDING)
+	sh->dev_cap.hw_padding = !!(attr_ex.device_cap_flags_ex &
+				    IBV_DEVICE_PCI_WRITE_END_PADDING);
+#endif
+	sh->dev_cap.hw_csum =
+		!!(attr_ex.device_cap_flags_ex & IBV_DEVICE_RAW_IP_CSUM);
+	DRV_LOG(DEBUG, "Checksum offloading is %ssupported.",
+		sh->dev_cap.hw_csum ? "" : "not ");
+	sh->dev_cap.hw_vlan_strip = !!(attr_ex.raw_packet_caps &
+				       IBV_RAW_PACKET_CAP_CVLAN_STRIPPING);
+	DRV_LOG(DEBUG, "VLAN stripping is %ssupported.",
+		(sh->dev_cap.hw_vlan_strip ? "" : "not "));
+	sh->dev_cap.hw_fcs_strip = !!(attr_ex.raw_packet_caps &
+				      IBV_RAW_PACKET_CAP_SCATTER_FCS);
+#if !defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42) && \
+	!defined(HAVE_IBV_DEVICE_COUNTERS_SET_V45)
+	DRV_LOG(DEBUG, "Counters are not supported.");
+#endif
+	/*
+	 * DPDK doesn't support larger/variable indirection tables.
+	 * Once DPDK supports it, take max size from device attr.
+	 */
+	sh->dev_cap.ind_table_max_size =
+			RTE_MIN(attr_ex.rss_caps.max_rwq_indirection_table_size,
+				(unsigned int)RTE_ETH_RSS_RETA_SIZE_512);
+	DRV_LOG(DEBUG, "Maximum Rx indirection table size is %u",
+		sh->dev_cap.ind_table_max_size);
+	sh->dev_cap.tso = (attr_ex.tso_caps.max_tso > 0 &&
+			   (attr_ex.tso_caps.supported_qpts &
+			    (1 << IBV_QPT_RAW_PACKET)));
+	if (sh->dev_cap.tso)
+		sh->dev_cap.tso_max_payload_sz = attr_ex.tso_caps.max_tso;
+	strlcpy(sh->dev_cap.fw_ver, attr_ex.orig_attr.fw_ver,
+		sizeof(sh->dev_cap.fw_ver));
+#ifdef HAVE_IBV_MLX5_MOD_SWP
+	if (dv_attr.comp_mask & MLX5DV_CONTEXT_MASK_SWP)
+		sh->dev_cap.swp = dv_attr.sw_parsing_caps.sw_parsing_offloads &
+				  (MLX5_SW_PARSING_CAP |
+				   MLX5_SW_PARSING_CSUM_CAP |
+				   MLX5_SW_PARSING_TSO_CAP);
+	DRV_LOG(DEBUG, "SWP support: %u", sh->dev_cap.swp);
+#endif
+#ifdef HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT
+	if (dv_attr.comp_mask & MLX5DV_CONTEXT_MASK_STRIDING_RQ) {
+		struct mlx5dv_striding_rq_caps *strd_rq_caps =
+				&dv_attr.striding_rq_caps;
 
+		sh->dev_cap.mprq.enabled = 1;
+		sh->dev_cap.mprq.log_min_stride_size =
+			strd_rq_caps->min_single_stride_log_num_of_bytes;
+		sh->dev_cap.mprq.log_max_stride_size =
+			strd_rq_caps->max_single_stride_log_num_of_bytes;
+		sh->dev_cap.mprq.log_min_stride_num =
+			strd_rq_caps->min_single_wqe_log_num_of_strides;
+		sh->dev_cap.mprq.log_max_stride_num =
+			strd_rq_caps->max_single_wqe_log_num_of_strides;
+		sh->dev_cap.mprq.log_min_stride_wqe_size =
+					cdev->config.devx ?
+					hca_attr->log_min_stride_wqe_sz :
+					MLX5_MPRQ_LOG_MIN_STRIDE_WQE_SIZE;
+		DRV_LOG(DEBUG, "\tmin_single_stride_log_num_of_bytes: %u",
+			sh->dev_cap.mprq.log_min_stride_size);
+		DRV_LOG(DEBUG, "\tmax_single_stride_log_num_of_bytes: %u",
+			sh->dev_cap.mprq.log_max_stride_size);
+		DRV_LOG(DEBUG, "\tmin_single_wqe_log_num_of_strides: %u",
+			sh->dev_cap.mprq.log_min_stride_num);
+		DRV_LOG(DEBUG, "\tmax_single_wqe_log_num_of_strides: %u",
+			sh->dev_cap.mprq.log_max_stride_num);
+		DRV_LOG(DEBUG, "\tmin_stride_wqe_log_size: %u",
+			sh->dev_cap.mprq.log_min_stride_wqe_size);
+		DRV_LOG(DEBUG, "\tsupported_qpts: %d",
+			strd_rq_caps->supported_qpts);
+		DRV_LOG(DEBUG, "Device supports Multi-Packet RQ.");
+	}
+#endif
+#ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
+	if (dv_attr.comp_mask & MLX5DV_CONTEXT_MASK_TUNNEL_OFFLOADS) {
+		sh->dev_cap.tunnel_en = dv_attr.tunnel_offloads_caps &
+					(MLX5_TUNNELED_OFFLOADS_VXLAN_CAP |
+					 MLX5_TUNNELED_OFFLOADS_GRE_CAP |
+					 MLX5_TUNNELED_OFFLOADS_GENEVE_CAP);
+	}
+	if (sh->dev_cap.tunnel_en) {
+		DRV_LOG(DEBUG, "Tunnel offloading is supported for %s%s%s",
+			sh->dev_cap.tunnel_en &
+			MLX5_TUNNELED_OFFLOADS_VXLAN_CAP ? "[VXLAN]" : "",
+			sh->dev_cap.tunnel_en &
+			MLX5_TUNNELED_OFFLOADS_GRE_CAP ? "[GRE]" : "",
+			sh->dev_cap.tunnel_en &
+			MLX5_TUNNELED_OFFLOADS_GENEVE_CAP ? "[GENEVE]" : "");
+	} else {
+		DRV_LOG(DEBUG, "Tunnel offloading is not supported.");
+	}
+#else
+	DRV_LOG(WARNING,
+		"Tunnel offloading disabled due to old OFED/rdma-core version");
+#endif
+	if (!sh->cdev->config.devx)
+		return 0;
+	/* Check capabilities for Packet Pacing. */
+	DRV_LOG(DEBUG, "Timestamp counter frequency %u kHz.",
+		hca_attr->dev_freq_khz);
+	DRV_LOG(DEBUG, "Packet pacing is %ssupported.",
+		hca_attr->qos.packet_pacing ? "" : "not ");
+	DRV_LOG(DEBUG, "Cross channel ops are %ssupported.",
+		hca_attr->cross_channel ? "" : "not ");
+	DRV_LOG(DEBUG, "WQE index ignore is %ssupported.",
+		hca_attr->wqe_index_ignore ? "" : "not ");
+	DRV_LOG(DEBUG, "Non-wire SQ feature is %ssupported.",
+		hca_attr->non_wire_sq ? "" : "not ");
+	DRV_LOG(DEBUG, "Static WQE SQ feature is %ssupported (%d)",
+		hca_attr->log_max_static_sq_wq ? "" : "not ",
+		hca_attr->log_max_static_sq_wq);
+	DRV_LOG(DEBUG, "WQE rate PP mode is %ssupported.",
+		hca_attr->qos.wqe_rate_pp ? "" : "not ");
+	sh->dev_cap.txpp_en = hca_attr->qos.packet_pacing;
+	if (!hca_attr->cross_channel) {
+		DRV_LOG(DEBUG,
+			"Cross channel operations are required for packet pacing.");
+		sh->dev_cap.txpp_en = 0;
+	}
+	if (!hca_attr->wqe_index_ignore) {
+		DRV_LOG(DEBUG,
+			"WQE index ignore feature is required for packet pacing.");
+		sh->dev_cap.txpp_en = 0;
+	}
+	if (!hca_attr->non_wire_sq) {
+		DRV_LOG(DEBUG,
+			"Non-wire SQ feature is required for packet pacing.");
+		sh->dev_cap.txpp_en = 0;
+	}
+	if (!hca_attr->log_max_static_sq_wq) {
+		DRV_LOG(DEBUG,
+			"Static WQE SQ feature is required for packet pacing.");
+		sh->dev_cap.txpp_en = 0;
+	}
+	if (!hca_attr->qos.wqe_rate_pp) {
+		DRV_LOG(DEBUG,
+			"WQE rate mode is required for packet pacing.");
+		sh->dev_cap.txpp_en = 0;
+	}
+#ifndef HAVE_MLX5DV_DEVX_UAR_OFFSET
+	DRV_LOG(DEBUG,
+		"DevX does not provide UAR offset, can't create queues for packet pacing.");
+	sh->dev_cap.txpp_en = 0;
+#endif
+	sh->dev_cap.scatter_fcs_w_decap_disable =
+					hca_attr->scatter_fcs_w_decap_disable;
+	sh->dev_cap.rq_delay_drop_en = hca_attr->rq_delay_drop;
+	mlx5_rt_timestamp_config(sh, hca_attr);
 	return 0;
 }
 
@@ -252,7 +427,7 @@ __mlx5_discovery_misc5_cap(struct mlx5_priv *priv)
 	dv_attr.priority = 3;
 #ifdef HAVE_MLX5DV_DR_ESWITCH
 	void *misc2_m;
-	if (priv->config.dv_esw_en) {
+	if (priv->sh->config.dv_esw_en) {
 		/* FDB enabled reg_c_0 */
 		dv_attr.match_criteria_enable |=
 				(1 << MLX5_MATCH_CRITERIA_ENABLE_MISC2_BIT);
@@ -299,6 +474,8 @@ mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 	err = mlx5_alloc_table_hash_list(priv);
 	if (err)
 		goto error;
+	if (priv->sh->config.dv_flow_en == 2)
+		return 0;
 	/* The resources below are only valid with DV support. */
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 	/* Init port id action list. */
@@ -373,7 +550,7 @@ mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 	}
 	sh->tx_domain = domain;
 #ifdef HAVE_MLX5DV_DR_ESWITCH
-	if (priv->config.dv_esw_en) {
+	if (sh->config.dv_esw_en) {
 		domain = mlx5_glue->dr_create_domain(sh->cdev->ctx,
 						     MLX5DV_DR_DOMAIN_TYPE_FDB);
 		if (!domain) {
@@ -395,20 +572,20 @@ mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 		goto error;
 	}
 #endif
-	if (!sh->tunnel_hub && priv->config.dv_miss_info)
+	if (!sh->tunnel_hub && sh->config.dv_miss_info)
 		err = mlx5_alloc_tunnel_hub(sh);
 	if (err) {
 		DRV_LOG(ERR, "mlx5_alloc_tunnel_hub failed err=%d", err);
 		goto error;
 	}
-	if (priv->config.reclaim_mode == MLX5_RCM_AGGR) {
+	if (sh->config.reclaim_mode == MLX5_RCM_AGGR) {
 		mlx5_glue->dr_reclaim_domain_memory(sh->rx_domain, 1);
 		mlx5_glue->dr_reclaim_domain_memory(sh->tx_domain, 1);
 		if (sh->fdb_domain)
 			mlx5_glue->dr_reclaim_domain_memory(sh->fdb_domain, 1);
 	}
 	sh->pop_vlan_action = mlx5_glue->dr_create_flow_action_pop_vlan();
-	if (!priv->config.allow_duplicate_pattern) {
+	if (!sh->config.allow_duplicate_pattern) {
 #ifndef HAVE_MLX5_DR_ALLOW_DUPLICATE
 		DRV_LOG(WARNING, "Disallow duplicate pattern is not supported - maybe old rdma-core version?");
 #endif
@@ -522,6 +699,19 @@ mlx5_os_free_shared_dr(struct mlx5_priv *priv)
 	if (sh->pop_vlan_action) {
 		mlx5_glue->destroy_flow_action(sh->pop_vlan_action);
 		sh->pop_vlan_action = NULL;
+	}
+	if (sh->send_to_kernel_action.action) {
+		void *action = sh->send_to_kernel_action.action;
+
+		mlx5_glue->destroy_flow_action(action);
+		sh->send_to_kernel_action.action = NULL;
+	}
+	if (sh->send_to_kernel_action.tbl) {
+		struct mlx5_flow_tbl_resource *tbl =
+				sh->send_to_kernel_action.tbl;
+
+		flow_dv_tbl_resource_release(sh, tbl);
+		sh->send_to_kernel_action.tbl = NULL;
 	}
 #endif /* HAVE_MLX5DV_DR */
 	if (sh->default_miss_action)
@@ -663,45 +853,6 @@ out:
 }
 
 /**
- * DV flow counter mode detect and config.
- *
- * @param dev
- *   Pointer to rte_eth_dev structure.
- *
- */
-static void
-mlx5_flow_counter_mode_config(struct rte_eth_dev *dev __rte_unused)
-{
-#ifdef HAVE_IBV_FLOW_DV_SUPPORT
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_dev_ctx_shared *sh = priv->sh;
-	bool fallback;
-
-#ifndef HAVE_IBV_DEVX_ASYNC
-	fallback = true;
-#else
-	fallback = false;
-	if (!sh->devx || !priv->config.dv_flow_en ||
-	    !priv->config.hca_attr.flow_counters_dump ||
-	    !(priv->config.hca_attr.flow_counter_bulk_alloc_bitmap & 0x4) ||
-	    (mlx5_flow_dv_discover_counter_offset_support(dev) == -ENOTSUP))
-		fallback = true;
-#endif
-	if (fallback)
-		DRV_LOG(INFO, "Use fall-back DV counter management. Flow "
-			"counter dump:%d, bulk_alloc_bitmap:0x%hhx.",
-			priv->config.hca_attr.flow_counters_dump,
-			priv->config.hca_attr.flow_counter_bulk_alloc_bitmap);
-	/* Initialize fallback mode only on the port initializes sh. */
-	if (sh->refcnt == 1)
-		sh->cmng.counter_fallback = fallback;
-	else if (fallback != sh->cmng.counter_fallback)
-		DRV_LOG(WARNING, "Port %d in sh has different fallback mode "
-			"with others:%d.", PORT_ID(priv), fallback);
-#endif
-}
-
-/**
  * DR flow drop action support detect.
  *
  * @param dev
@@ -714,7 +865,7 @@ mlx5_flow_drop_action_config(struct rte_eth_dev *dev __rte_unused)
 #ifdef HAVE_MLX5DV_DR
 	struct mlx5_priv *priv = dev->data->dev_private;
 
-	if (!priv->config.dv_flow_en || !priv->sh->dr_drop_action)
+	if (!priv->sh->config.dv_flow_en || !priv->sh->dr_drop_action)
 		return;
 	/**
 	 * DR supports drop action placeholder when it is supported;
@@ -855,10 +1006,10 @@ mlx5_representor_match(struct mlx5_dev_spawn_data *spawn,
  *   Backing DPDK device.
  * @param spawn
  *   Verbs device parameters (name, port, switch_info) to spawn.
- * @param config
- *   Device configuration parameters.
  * @param eth_da
  *   Device arguments.
+ * @param mkvlist
+ *   Pointer to mlx5 kvargs control, can be NULL if there is no devargs.
  *
  * @return
  *   A valid Ethernet device object on success, NULL otherwise and rte_errno
@@ -870,27 +1021,21 @@ mlx5_representor_match(struct mlx5_dev_spawn_data *spawn,
 static struct rte_eth_dev *
 mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	       struct mlx5_dev_spawn_data *spawn,
-	       struct mlx5_dev_config *config,
-	       struct rte_eth_devargs *eth_da)
+	       struct rte_eth_devargs *eth_da,
+	       struct mlx5_kvargs_ctrl *mkvlist)
 {
 	const struct mlx5_switch_info *switch_info = &spawn->info;
 	struct mlx5_dev_ctx_shared *sh = NULL;
 	struct ibv_port_attr port_attr = { .state = IBV_PORT_NOP };
-	struct mlx5dv_context dv_attr = { .comp_mask = 0 };
 	struct rte_eth_dev *eth_dev = NULL;
 	struct mlx5_priv *priv = NULL;
 	int err = 0;
-	unsigned int hw_padding = 0;
-	unsigned int mps;
-	unsigned int mpls_en = 0;
-	unsigned int swp = 0;
-	unsigned int mprq = 0;
 	struct rte_ether_addr mac;
 	char name[RTE_ETH_NAME_MAX_LEN];
 	int own_domain_id = 0;
 	uint16_t port_id;
 	struct mlx5_port_info vport_info = { .query_flags = 0 };
-	int nl_rdma = -1;
+	int nl_rdma;
 	int i;
 
 	/* Determine if this port representor is supposed to be spawned. */
@@ -927,6 +1072,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		DRV_LOG(WARNING, "device name overflow %s", name);
 	/* check if the device is already spawned */
 	if (rte_eth_dev_get_port_by_name(name, &port_id) == 0) {
+		/*
+		 * When device is already spawned, its devargs should be set
+		 * as used. otherwise, mlx5_kvargs_validate() will fail.
+		 */
+		if (mkvlist)
+			mlx5_port_args_set_used(name, port_id, mkvlist);
 		rte_errno = EEXIST;
 		return NULL;
 	}
@@ -970,124 +1121,9 @@ err_secondary:
 		mlx5_dev_close(eth_dev);
 		return NULL;
 	}
-	/*
-	 * Some parameters ("tx_db_nc" in particularly) are needed in
-	 * advance to create dv/verbs device context. We proceed the
-	 * devargs here to get ones, and later proceed devargs again
-	 * to override some hardware settings.
-	 */
-	err = mlx5_args(config, dpdk_dev->devargs);
-	if (err) {
-		err = rte_errno;
-		DRV_LOG(ERR, "failed to process device arguments: %s",
-			strerror(rte_errno));
-		goto error;
-	}
-	sh = mlx5_alloc_shared_dev_ctx(spawn, config);
+	sh = mlx5_alloc_shared_dev_ctx(spawn, mkvlist);
 	if (!sh)
 		return NULL;
-#ifdef HAVE_MLX5DV_DR_ACTION_DEST_DEVX_TIR
-	config->dest_tir = 1;
-#endif
-#ifdef HAVE_IBV_MLX5_MOD_SWP
-	dv_attr.comp_mask |= MLX5DV_CONTEXT_MASK_SWP;
-#endif
-	/*
-	 * Multi-packet send is supported by ConnectX-4 Lx PF as well
-	 * as all ConnectX-5 devices.
-	 */
-#ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
-	dv_attr.comp_mask |= MLX5DV_CONTEXT_MASK_TUNNEL_OFFLOADS;
-#endif
-#ifdef HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT
-	dv_attr.comp_mask |= MLX5DV_CONTEXT_MASK_STRIDING_RQ;
-#endif
-	mlx5_glue->dv_query_device(sh->cdev->ctx, &dv_attr);
-	if (dv_attr.flags & MLX5DV_CONTEXT_FLAGS_MPW_ALLOWED) {
-		if (dv_attr.flags & MLX5DV_CONTEXT_FLAGS_ENHANCED_MPW) {
-			DRV_LOG(DEBUG, "enhanced MPW is supported");
-			mps = MLX5_MPW_ENHANCED;
-		} else {
-			DRV_LOG(DEBUG, "MPW is supported");
-			mps = MLX5_MPW;
-		}
-	} else {
-		DRV_LOG(DEBUG, "MPW isn't supported");
-		mps = MLX5_MPW_DISABLED;
-	}
-#ifdef HAVE_IBV_MLX5_MOD_SWP
-	if (dv_attr.comp_mask & MLX5DV_CONTEXT_MASK_SWP)
-		swp = dv_attr.sw_parsing_caps.sw_parsing_offloads;
-	DRV_LOG(DEBUG, "SWP support: %u", swp);
-#endif
-	config->swp = swp & (MLX5_SW_PARSING_CAP | MLX5_SW_PARSING_CSUM_CAP |
-		MLX5_SW_PARSING_TSO_CAP);
-#ifdef HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT
-	if (dv_attr.comp_mask & MLX5DV_CONTEXT_MASK_STRIDING_RQ) {
-		struct mlx5dv_striding_rq_caps mprq_caps =
-			dv_attr.striding_rq_caps;
-
-		DRV_LOG(DEBUG, "\tmin_single_stride_log_num_of_bytes: %d",
-			mprq_caps.min_single_stride_log_num_of_bytes);
-		DRV_LOG(DEBUG, "\tmax_single_stride_log_num_of_bytes: %d",
-			mprq_caps.max_single_stride_log_num_of_bytes);
-		DRV_LOG(DEBUG, "\tmin_single_wqe_log_num_of_strides: %d",
-			mprq_caps.min_single_wqe_log_num_of_strides);
-		DRV_LOG(DEBUG, "\tmax_single_wqe_log_num_of_strides: %d",
-			mprq_caps.max_single_wqe_log_num_of_strides);
-		DRV_LOG(DEBUG, "\tsupported_qpts: %d",
-			mprq_caps.supported_qpts);
-		DRV_LOG(DEBUG, "\tmin_stride_wqe_log_size: %d",
-			config->mprq.log_min_stride_wqe_size);
-		DRV_LOG(DEBUG, "device supports Multi-Packet RQ");
-		mprq = 1;
-		config->mprq.log_min_stride_size =
-			mprq_caps.min_single_stride_log_num_of_bytes;
-		config->mprq.log_max_stride_size =
-			mprq_caps.max_single_stride_log_num_of_bytes;
-		config->mprq.log_min_stride_num =
-			mprq_caps.min_single_wqe_log_num_of_strides;
-		config->mprq.log_max_stride_num =
-			mprq_caps.max_single_wqe_log_num_of_strides;
-	}
-#endif
-	/* Rx CQE compression is enabled by default. */
-	config->cqe_comp = 1;
-#ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
-	if (dv_attr.comp_mask & MLX5DV_CONTEXT_MASK_TUNNEL_OFFLOADS) {
-		config->tunnel_en = dv_attr.tunnel_offloads_caps &
-			     (MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_VXLAN |
-			      MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GRE |
-			      MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GENEVE);
-	}
-	if (config->tunnel_en) {
-		DRV_LOG(DEBUG, "tunnel offloading is supported for %s%s%s",
-		config->tunnel_en &
-		MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_VXLAN ? "[VXLAN]" : "",
-		config->tunnel_en &
-		MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GRE ? "[GRE]" : "",
-		config->tunnel_en &
-		MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GENEVE ? "[GENEVE]" : ""
-		);
-	} else {
-		DRV_LOG(DEBUG, "tunnel offloading is not supported");
-	}
-#else
-	DRV_LOG(WARNING,
-		"tunnel offloading disabled due to old OFED/rdma-core version");
-#endif
-#ifdef HAVE_IBV_DEVICE_MPLS_SUPPORT
-	mpls_en = ((dv_attr.tunnel_offloads_caps &
-		    MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_CW_MPLS_OVER_GRE) &&
-		   (dv_attr.tunnel_offloads_caps &
-		    MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_CW_MPLS_OVER_UDP));
-	DRV_LOG(DEBUG, "MPLS over GRE/UDP tunnel offloading is %ssupported",
-		mpls_en ? "" : "not ");
-#else
-	DRV_LOG(WARNING, "MPLS over GRE/UDP tunnel offloading disabled due to"
-		" old OFED/rdma-core version or firmware configuration");
-#endif
-	config->mpls_en = mpls_en;
 	nl_rdma = mlx5_nl_init(NETLINK_RDMA, 0);
 	/* Check port status. */
 	if (spawn->phys_port <= UINT8_MAX) {
@@ -1129,6 +1165,22 @@ err_secondary:
 		err = ENOMEM;
 		goto error;
 	}
+	/*
+	 * When user configures remote PD and CTX and device creates RxQ by
+	 * DevX, external RxQ is both supported and requested.
+	 */
+	if (mlx5_imported_pd_and_ctx(sh->cdev) && mlx5_devx_obj_ops_en(sh)) {
+		priv->ext_rxqs = mlx5_malloc(MLX5_MEM_ZERO | MLX5_MEM_RTE,
+					     sizeof(struct mlx5_external_rxq) *
+					     MLX5_MAX_EXT_RX_QUEUES, 0,
+					     SOCKET_ID_ANY);
+		if (priv->ext_rxqs == NULL) {
+			DRV_LOG(ERR, "Fail to allocate external RxQ array.");
+			err = ENOMEM;
+			goto error;
+		}
+		DRV_LOG(DEBUG, "External RxQ is supported.");
+	}
 	priv->sh = sh;
 	priv->dev_port = spawn->phys_port;
 	priv->pci_dev = spawn->pci_dev;
@@ -1155,7 +1207,7 @@ err_secondary:
 	 * register to match on vport index. The engaged part of metadata
 	 * register is defined by mask.
 	 */
-	if (switch_info->representor || switch_info->master) {
+	if (sh->esw_mode) {
 		err = mlx5_glue->devx_port_query(sh->cdev->ctx,
 						 spawn->phys_port,
 						 &vport_info);
@@ -1186,8 +1238,7 @@ err_secondary:
 	}
 	if (vport_info.query_flags & MLX5_PORT_QUERY_VPORT) {
 		priv->vport_id = vport_info.vport_id;
-	} else if (spawn->pf_bond >= 0 &&
-		   (switch_info->representor || switch_info->master)) {
+	} else if (spawn->pf_bond >= 0 && sh->esw_mode) {
 		DRV_LOG(ERR,
 			"Cannot deduce vport index for port %d on bonding device %s",
 			spawn->phys_port, spawn->phys_dev_name);
@@ -1241,122 +1292,16 @@ err_secondary:
 		DRV_LOG(DEBUG, "dev_port-%u new domain_id=%u\n",
 			priv->dev_port, priv->domain_id);
 	}
-	/* Override some values set by hardware configuration. */
-	mlx5_args(config, dpdk_dev->devargs);
-	/* Update final values for devargs before check sibling config. */
-	if (config->dv_miss_info) {
-		if (switch_info->master || switch_info->representor)
-			config->dv_xmeta_en = MLX5_XMETA_MODE_META16;
-	}
-#if !defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_MLX5DV_DR)
-	if (config->dv_flow_en) {
-		DRV_LOG(WARNING, "DV flow is not supported.");
-		config->dv_flow_en = 0;
-	}
-#endif
-#ifdef HAVE_MLX5DV_DR_ESWITCH
-	if (!(sh->cdev->config.hca_attr.eswitch_manager && config->dv_flow_en &&
-	      (switch_info->representor || switch_info->master)))
-		config->dv_esw_en = 0;
-#else
-	config->dv_esw_en = 0;
-#endif
-	if (!priv->config.dv_esw_en &&
-	    priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY) {
-		DRV_LOG(WARNING,
-			"Metadata mode %u is not supported (no E-Switch).",
-			priv->config.dv_xmeta_en);
-		priv->config.dv_xmeta_en = MLX5_XMETA_MODE_LEGACY;
-	}
-	/* Check sibling device configurations. */
-	err = mlx5_dev_check_sibling_config(priv, config, dpdk_dev);
-	if (err)
-		goto error;
-	config->hw_csum = !!(sh->device_attr.device_cap_flags_ex &
-			    IBV_DEVICE_RAW_IP_CSUM);
-	DRV_LOG(DEBUG, "checksum offloading is %ssupported",
-		(config->hw_csum ? "" : "not "));
-#if !defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42) && \
-	!defined(HAVE_IBV_DEVICE_COUNTERS_SET_V45)
-	DRV_LOG(DEBUG, "counters are not supported");
-#endif
-	config->ind_table_max_size =
-		sh->device_attr.max_rwq_indirection_table_size;
-	/*
-	 * Remove this check once DPDK supports larger/variable
-	 * indirection tables.
-	 */
-	if (config->ind_table_max_size > (unsigned int)RTE_ETH_RSS_RETA_SIZE_512)
-		config->ind_table_max_size = RTE_ETH_RSS_RETA_SIZE_512;
-	DRV_LOG(DEBUG, "maximum Rx indirection table size is %u",
-		config->ind_table_max_size);
-	config->hw_vlan_strip = !!(sh->device_attr.raw_packet_caps &
-				  IBV_RAW_PACKET_CAP_CVLAN_STRIPPING);
-	DRV_LOG(DEBUG, "VLAN stripping is %ssupported",
-		(config->hw_vlan_strip ? "" : "not "));
-	config->hw_fcs_strip = !!(sh->device_attr.raw_packet_caps &
-				 IBV_RAW_PACKET_CAP_SCATTER_FCS);
-#if defined(HAVE_IBV_WQ_FLAG_RX_END_PADDING)
-	hw_padding = !!sh->device_attr.rx_pad_end_addr_align;
-#elif defined(HAVE_IBV_WQ_FLAGS_PCI_WRITE_END_PADDING)
-	hw_padding = !!(sh->device_attr.device_cap_flags_ex &
-			IBV_DEVICE_PCI_WRITE_END_PADDING);
-#endif
-	if (config->hw_padding && !hw_padding) {
-		DRV_LOG(DEBUG, "Rx end alignment padding isn't supported");
-		config->hw_padding = 0;
-	} else if (config->hw_padding) {
-		DRV_LOG(DEBUG, "Rx end alignment padding is enabled");
-	}
-	config->tso = (sh->device_attr.max_tso > 0 &&
-		      (sh->device_attr.tso_supported_qpts &
-		       (1 << IBV_QPT_RAW_PACKET)));
-	if (config->tso)
-		config->tso_max_payload_sz = sh->device_attr.max_tso;
-	/*
-	 * MPW is disabled by default, while the Enhanced MPW is enabled
-	 * by default.
-	 */
-	if (config->mps == MLX5_ARG_UNSET)
-		config->mps = (mps == MLX5_MPW_ENHANCED) ? MLX5_MPW_ENHANCED :
-							  MLX5_MPW_DISABLED;
-	else
-		config->mps = config->mps ? mps : MLX5_MPW_DISABLED;
-	DRV_LOG(INFO, "%sMPS is %s",
-		config->mps == MLX5_MPW_ENHANCED ? "enhanced " :
-		config->mps == MLX5_MPW ? "legacy " : "",
-		config->mps != MLX5_MPW_DISABLED ? "enabled" : "disabled");
-	if (sh->devx) {
-		config->hca_attr = sh->cdev->config.hca_attr;
-		sh->steering_format_version =
-			config->hca_attr.steering_format_version;
-		/* Check for LRO support. */
-		if (config->dest_tir && config->hca_attr.lro_cap &&
-		    config->dv_flow_en) {
-			/* TBD check tunnel lro caps. */
-			config->lro.supported = config->hca_attr.lro_cap;
-			DRV_LOG(DEBUG, "Device supports LRO");
-			/*
-			 * If LRO timeout is not configured by application,
-			 * use the minimal supported value.
-			 */
-			if (!config->lro.timeout)
-				config->lro.timeout =
-				config->hca_attr.lro_timer_supported_periods[0];
-			DRV_LOG(DEBUG, "LRO session timeout set to %d usec",
-				config->lro.timeout);
-			DRV_LOG(DEBUG, "LRO minimal size of TCP segment "
-				"required for coalescing is %d bytes",
-				config->hca_attr.lro_min_mss_size);
-		}
+	if (sh->cdev->config.devx) {
+		struct mlx5_hca_attr *hca_attr = &sh->cdev->config.hca_attr;
+
+		sh->steering_format_version = hca_attr->steering_format_version;
 #if defined(HAVE_MLX5DV_DR) && \
 	(defined(HAVE_MLX5_DR_CREATE_ACTION_FLOW_METER) || \
 	 defined(HAVE_MLX5_DR_CREATE_ACTION_ASO))
-		if (config->hca_attr.qos.sup &&
-		    config->hca_attr.qos.flow_meter_old &&
-		    config->dv_flow_en) {
-			uint8_t reg_c_mask =
-				config->hca_attr.qos.flow_meter_reg_c_ids;
+		if (hca_attr->qos.sup && hca_attr->qos.flow_meter_old &&
+		    sh->config.dv_flow_en) {
+			uint8_t reg_c_mask = hca_attr->qos.flow_meter_reg_c_ids;
 			/*
 			 * Meter needs two REG_C's for color match and pre-sfx
 			 * flow match. Here get the REG_C for color match.
@@ -1380,20 +1325,18 @@ err_secondary:
 					priv->mtr_color_reg = ffs(reg_c_mask)
 							      - 1 + REG_C_0;
 				priv->mtr_en = 1;
-				priv->mtr_reg_share =
-				      config->hca_attr.qos.flow_meter;
+				priv->mtr_reg_share = hca_attr->qos.flow_meter;
 				DRV_LOG(DEBUG, "The REG_C meter uses is %d",
 					priv->mtr_color_reg);
 			}
 		}
-		if (config->hca_attr.qos.sup &&
-			config->hca_attr.qos.flow_meter_aso_sup) {
+		if (hca_attr->qos.sup && hca_attr->qos.flow_meter_aso_sup) {
 			uint32_t log_obj_size =
 				rte_log2_u32(MLX5_ASO_MTRS_PER_POOL >> 1);
 			if (log_obj_size >=
-			config->hca_attr.qos.log_meter_aso_granularity &&
-			log_obj_size <=
-			config->hca_attr.qos.log_meter_aso_max_alloc)
+			    hca_attr->qos.log_meter_aso_granularity &&
+			    log_obj_size <=
+			    hca_attr->qos.log_meter_aso_max_alloc)
 				sh->meter_aso_en = 1;
 		}
 		if (priv->mtr_en) {
@@ -1403,12 +1346,13 @@ err_secondary:
 				goto error;
 			}
 		}
-		if (config->hca_attr.flow.tunnel_header_0_1)
+		if (hca_attr->flow.tunnel_header_0_1)
 			sh->tunnel_header_0_1 = 1;
+		if (hca_attr->flow.tunnel_header_2_3)
+			sh->tunnel_header_2_3 = 1;
 #endif
 #ifdef HAVE_MLX5_DR_CREATE_ACTION_ASO
-		if (config->hca_attr.flow_hit_aso &&
-		    priv->mtr_color_reg == REG_C_3) {
+		if (hca_attr->flow_hit_aso && priv->mtr_color_reg == REG_C_3) {
 			sh->flow_hit_aso_en = 1;
 			err = mlx5_flow_aso_age_mng_init(sh);
 			if (err) {
@@ -1418,10 +1362,11 @@ err_secondary:
 			DRV_LOG(DEBUG, "Flow Hit ASO is supported.");
 		}
 #endif /* HAVE_MLX5_DR_CREATE_ACTION_ASO */
-#if defined(HAVE_MLX5_DR_CREATE_ACTION_ASO) && \
-	defined(HAVE_MLX5_DR_ACTION_ASO_CT)
-		if (config->hca_attr.ct_offload &&
-		    priv->mtr_color_reg == REG_C_3) {
+#if defined (HAVE_MLX5_DR_CREATE_ACTION_ASO) && \
+    defined (HAVE_MLX5_DR_ACTION_ASO_CT)
+		/* HWS create CT ASO SQ based on HWS configure queue number. */
+		if (sh->config.dv_flow_en != 2 &&
+		    hca_attr->ct_offload && priv->mtr_color_reg == REG_C_3) {
 			err = mlx5_flow_aso_ct_mng_init(sh);
 			if (err) {
 				err = -err;
@@ -1432,13 +1377,13 @@ err_secondary:
 		}
 #endif /* HAVE_MLX5_DR_CREATE_ACTION_ASO && HAVE_MLX5_DR_ACTION_ASO_CT */
 #if defined(HAVE_MLX5DV_DR) && defined(HAVE_MLX5_DR_CREATE_ACTION_FLOW_SAMPLE)
-		if (config->hca_attr.log_max_ft_sampler_num > 0  &&
-		    config->dv_flow_en) {
+		if (hca_attr->log_max_ft_sampler_num > 0  &&
+		    sh->config.dv_flow_en) {
 			priv->sampler_en = 1;
 			DRV_LOG(DEBUG, "Sampler enabled!");
 		} else {
 			priv->sampler_en = 0;
-			if (!config->hca_attr.log_max_ft_sampler_num)
+			if (!hca_attr->log_max_ft_sampler_num)
 				DRV_LOG(WARNING,
 					"No available register for sampler.");
 			else
@@ -1446,134 +1391,14 @@ err_secondary:
 		}
 #endif
 	}
-	if (config->cqe_comp && RTE_CACHE_LINE_SIZE == 128 &&
-	    !(dv_attr.flags & MLX5DV_CONTEXT_FLAGS_CQE_128B_COMP)) {
-		DRV_LOG(WARNING, "Rx CQE 128B compression is not supported");
-		config->cqe_comp = 0;
-	}
-	if (config->cqe_comp_fmt == MLX5_CQE_RESP_FORMAT_FTAG_STRIDX &&
-	    (!sh->devx || !config->hca_attr.mini_cqe_resp_flow_tag)) {
-		DRV_LOG(WARNING, "Flow Tag CQE compression"
-				 " format isn't supported.");
-		config->cqe_comp = 0;
-	}
-	if (config->cqe_comp_fmt == MLX5_CQE_RESP_FORMAT_L34H_STRIDX &&
-	    (!sh->devx || !config->hca_attr.mini_cqe_resp_l3_l4_tag)) {
-		DRV_LOG(WARNING, "L3/L4 Header CQE compression"
-				 " format isn't supported.");
-		config->cqe_comp = 0;
-	}
-	DRV_LOG(DEBUG, "Rx CQE compression is %ssupported",
-			config->cqe_comp ? "" : "not ");
-	if (config->tx_pp) {
-		DRV_LOG(DEBUG, "Timestamp counter frequency %u kHz",
-			config->hca_attr.dev_freq_khz);
-		DRV_LOG(DEBUG, "Packet pacing is %ssupported",
-			config->hca_attr.qos.packet_pacing ? "" : "not ");
-		DRV_LOG(DEBUG, "Cross channel ops are %ssupported",
-			config->hca_attr.cross_channel ? "" : "not ");
-		DRV_LOG(DEBUG, "WQE index ignore is %ssupported",
-			config->hca_attr.wqe_index_ignore ? "" : "not ");
-		DRV_LOG(DEBUG, "Non-wire SQ feature is %ssupported",
-			config->hca_attr.non_wire_sq ? "" : "not ");
-		DRV_LOG(DEBUG, "Static WQE SQ feature is %ssupported (%d)",
-			config->hca_attr.log_max_static_sq_wq ? "" : "not ",
-			config->hca_attr.log_max_static_sq_wq);
-		DRV_LOG(DEBUG, "WQE rate PP mode is %ssupported",
-			config->hca_attr.qos.wqe_rate_pp ? "" : "not ");
-		if (!sh->devx) {
-			DRV_LOG(ERR, "DevX is required for packet pacing");
-			err = ENODEV;
-			goto error;
-		}
-		if (!config->hca_attr.qos.packet_pacing) {
-			DRV_LOG(ERR, "Packet pacing is not supported");
-			err = ENODEV;
-			goto error;
-		}
-		if (!config->hca_attr.cross_channel) {
-			DRV_LOG(ERR, "Cross channel operations are"
-				     " required for packet pacing");
-			err = ENODEV;
-			goto error;
-		}
-		if (!config->hca_attr.wqe_index_ignore) {
-			DRV_LOG(ERR, "WQE index ignore feature is"
-				     " required for packet pacing");
-			err = ENODEV;
-			goto error;
-		}
-		if (!config->hca_attr.non_wire_sq) {
-			DRV_LOG(ERR, "Non-wire SQ feature is"
-				     " required for packet pacing");
-			err = ENODEV;
-			goto error;
-		}
-		if (!config->hca_attr.log_max_static_sq_wq) {
-			DRV_LOG(ERR, "Static WQE SQ feature is"
-				     " required for packet pacing");
-			err = ENODEV;
-			goto error;
-		}
-		if (!config->hca_attr.qos.wqe_rate_pp) {
-			DRV_LOG(ERR, "WQE rate mode is required"
-				     " for packet pacing");
-			err = ENODEV;
-			goto error;
-		}
-#ifndef HAVE_MLX5DV_DEVX_UAR_OFFSET
-		DRV_LOG(ERR, "DevX does not provide UAR offset,"
-			     " can't create queues for packet pacing");
-		err = ENODEV;
+	/* Process parameters and store port configuration on priv structure. */
+	err = mlx5_port_args_config(priv, mkvlist, &priv->config);
+	if (err) {
+		err = rte_errno;
+		DRV_LOG(ERR, "Failed to process port configure: %s",
+			strerror(rte_errno));
 		goto error;
-#endif
 	}
-	if (config->std_delay_drop || config->hp_delay_drop) {
-		if (!config->hca_attr.rq_delay_drop) {
-			config->std_delay_drop = 0;
-			config->hp_delay_drop = 0;
-			DRV_LOG(WARNING,
-				"dev_port-%u: Rxq delay drop is not supported",
-				priv->dev_port);
-		}
-	}
-	if (sh->devx) {
-		uint32_t reg[MLX5_ST_SZ_DW(register_mtutc)];
-
-		err = config->hca_attr.access_register_user ?
-			mlx5_devx_cmd_register_read
-				(sh->cdev->ctx, MLX5_REGISTER_ID_MTUTC, 0,
-				reg, MLX5_ST_SZ_DW(register_mtutc)) : ENOTSUP;
-		if (!err) {
-			uint32_t ts_mode;
-
-			/* MTUTC register is read successfully. */
-			ts_mode = MLX5_GET(register_mtutc, reg,
-					   time_stamp_mode);
-			if (ts_mode == MLX5_MTUTC_TIMESTAMP_MODE_REAL_TIME)
-				config->rt_timestamp = 1;
-		} else {
-			/* Kernel does not support register reading. */
-			if (config->hca_attr.dev_freq_khz ==
-						 (NS_PER_S / MS_PER_S))
-				config->rt_timestamp = 1;
-		}
-	}
-	/*
-	 * If HW has bug working with tunnel packet decapsulation and
-	 * scatter FCS, and decapsulation is needed, clear the hw_fcs_strip
-	 * bit. Then RTE_ETH_RX_OFFLOAD_KEEP_CRC bit will not be set anymore.
-	 */
-	if (config->hca_attr.scatter_fcs_w_decap_disable && config->decap_en)
-		config->hw_fcs_strip = 0;
-	DRV_LOG(DEBUG, "FCS stripping configuration is %ssupported",
-		(config->hw_fcs_strip ? "" : "not "));
-	if (config->mprq.enabled && !mprq) {
-		DRV_LOG(WARNING, "Multi-Packet RQ isn't supported");
-		config->mprq.enabled = 0;
-	}
-	if (config->max_dump_files_num == 0)
-		config->max_dump_files_num = 128;
 	eth_dev = rte_eth_dev_allocate(name);
 	if (eth_dev == NULL) {
 		DRV_LOG(ERR, "can not allocate rte ethdev");
@@ -1645,15 +1470,15 @@ err_secondary:
 	DRV_LOG(DEBUG, "port %u MTU is %u", eth_dev->data->port_id,
 		priv->mtu);
 	/* Initialize burst functions to prevent crashes before link-up. */
-	eth_dev->rx_pkt_burst = removed_rx_burst;
-	eth_dev->tx_pkt_burst = removed_tx_burst;
+	eth_dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	eth_dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 	eth_dev->dev_ops = &mlx5_dev_ops;
 	eth_dev->rx_descriptor_status = mlx5_rx_descriptor_status;
 	eth_dev->tx_descriptor_status = mlx5_tx_descriptor_status;
 	eth_dev->rx_queue_count = mlx5_rx_queue_count;
 	/* Register MAC address. */
 	claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
-	if (config->vf && config->vf_nl_en)
+	if (sh->dev_cap.vf && sh->config.vf_nl_en)
 		mlx5_nl_mac_addr_sync(priv->nl_socket_route,
 				      mlx5_ifindex(eth_dev),
 				      eth_dev->data->mac_addrs,
@@ -1673,13 +1498,9 @@ err_secondary:
 	priv->sh->port[priv->dev_port - 1].nl_ih_port_id =
 							eth_dev->data->port_id;
 	mlx5_set_link_up(eth_dev);
-	/* Detect minimal data bytes to inline. */
-	mlx5_set_min_inline(spawn, config);
-	/* Store device configuration on private structure. */
-	priv->config = *config;
 	for (i = 0; i < MLX5_FLOW_TYPE_MAXI; i++) {
-		icfg[i].release_mem_en = !!config->reclaim_mode;
-		if (config->reclaim_mode)
+		icfg[i].release_mem_en = !!sh->config.reclaim_mode;
+		if (sh->config.reclaim_mode)
 			icfg[i].per_core_cache = 0;
 		priv->flows[i] = mlx5_ipool_create(&icfg[i]);
 		if (!priv->flows[i])
@@ -1687,14 +1508,14 @@ err_secondary:
 	}
 	/* Create context for virtual machine VLAN workaround. */
 	priv->vmwa_context = mlx5_vlan_vmwa_init(eth_dev, spawn->ifindex);
-	if (config->dv_flow_en) {
+	if (sh->config.dv_flow_en) {
 		err = mlx5_alloc_shared_dr(priv);
 		if (err)
 			goto error;
 		if (mlx5_flex_item_port_init(eth_dev) < 0)
 			goto error;
 	}
-	if (sh->devx && config->dv_flow_en && config->dest_tir) {
+	if (mlx5_devx_obj_ops_en(sh)) {
 		priv->obj_ops = devx_obj_ops;
 		mlx5_queue_counter_id_prepare(eth_dev);
 		priv->obj_ops.lb_dummy_queue_create =
@@ -1709,7 +1530,7 @@ err_secondary:
 	} else {
 		priv->obj_ops = ibv_obj_ops;
 	}
-	if (config->tx_pp &&
+	if (sh->config.tx_pp &&
 	    priv->obj_ops.txq_obj_new != mlx5_txq_devx_obj_new) {
 		/*
 		 * HAVE_MLX5DV_DEVX_UAR_OFFSET is required to support
@@ -1726,7 +1547,94 @@ err_secondary:
 	priv->drop_queue.hrxq = mlx5_drop_action_create(eth_dev);
 	if (!priv->drop_queue.hrxq)
 		goto error;
-	/* Port representor shares the same max priority with pf port. */
+	priv->hrxqs = mlx5_list_create("hrxq", eth_dev, true,
+				       mlx5_hrxq_create_cb,
+				       mlx5_hrxq_match_cb,
+				       mlx5_hrxq_remove_cb,
+				       mlx5_hrxq_clone_cb,
+				       mlx5_hrxq_clone_free_cb);
+	if (!priv->hrxqs)
+		goto error;
+	mlx5_set_metadata_mask(eth_dev);
+	if (sh->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
+	    !priv->sh->dv_regc0_mask) {
+		DRV_LOG(ERR, "metadata mode %u is not supported "
+			     "(no metadata reg_c[0] is available)",
+			     sh->config.dv_xmeta_en);
+			err = ENOTSUP;
+			goto error;
+	}
+	rte_rwlock_init(&priv->ind_tbls_lock);
+	if (priv->sh->config.dv_flow_en == 2) {
+#ifdef HAVE_MLX5_HWS_SUPPORT
+		if (priv->sh->config.dv_esw_en) {
+			uint32_t usable_bits;
+			uint32_t required_bits;
+
+			if (priv->sh->dv_regc0_mask == UINT32_MAX) {
+				DRV_LOG(ERR, "E-Switch port metadata is required when using HWS "
+					     "but it is disabled (configure it through devlink)");
+				err = ENOTSUP;
+				goto error;
+			}
+			if (priv->sh->dv_regc0_mask == 0) {
+				DRV_LOG(ERR, "E-Switch with HWS is not supported "
+					     "(no available bits in reg_c[0])");
+				err = ENOTSUP;
+				goto error;
+			}
+			usable_bits = __builtin_popcount(priv->sh->dv_regc0_mask);
+			required_bits = __builtin_popcount(priv->vport_meta_mask);
+			if (usable_bits < required_bits) {
+				DRV_LOG(ERR, "Not enough bits available in reg_c[0] to provide "
+					     "representor matching.");
+				err = ENOTSUP;
+				goto error;
+			}
+		}
+		if (priv->vport_meta_mask)
+			flow_hw_set_port_info(eth_dev);
+		if (priv->sh->config.dv_esw_en &&
+		    priv->sh->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
+		    priv->sh->config.dv_xmeta_en != MLX5_XMETA_MODE_META32_HWS) {
+			DRV_LOG(ERR,
+				"metadata mode %u is not supported in HWS eswitch mode",
+				priv->sh->config.dv_xmeta_en);
+				err = ENOTSUP;
+				goto error;
+		}
+		/* Only HWS requires this information. */
+		flow_hw_init_tags_set(eth_dev);
+		flow_hw_init_flow_metadata_config(eth_dev);
+		if (priv->sh->config.dv_esw_en &&
+		    flow_hw_create_vport_action(eth_dev)) {
+			DRV_LOG(ERR, "port %u failed to create vport action",
+				eth_dev->data->port_id);
+			err = EINVAL;
+			goto error;
+		}
+		/*
+		 * If representor matching is disabled, PMD cannot create default flow rules
+		 * to receive traffic for all ports, since implicit source port match is not added.
+		 * Isolated mode is forced.
+		 */
+		if (priv->sh->config.dv_esw_en && !priv->sh->config.repr_matching) {
+			err = mlx5_flow_isolate(eth_dev, 1, NULL);
+			if (err < 0) {
+				err = -err;
+				goto error;
+			}
+			DRV_LOG(WARNING, "port %u ingress traffic is restricted to defined "
+					 "flow rules (isolated mode) since representor "
+					 "matching is disabled",
+				eth_dev->data->port_id);
+		}
+		return eth_dev;
+#else
+		DRV_LOG(ERR, "DV support is missing for HWS.");
+		goto error;
+#endif
+	}
 	if (!priv->sh->flow_priority_check_flag) {
 		/* Supported Verbs flow priority number detection. */
 		err = mlx5_flow_discover_priorities(eth_dev);
@@ -1739,24 +1647,6 @@ err_secondary:
 		err = -err;
 		goto error;
 	}
-	mlx5_set_metadata_mask(eth_dev);
-	if (priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
-	    !priv->sh->dv_regc0_mask) {
-		DRV_LOG(ERR, "metadata mode %u is not supported "
-			     "(no metadata reg_c[0] is available)",
-			     priv->config.dv_xmeta_en);
-			err = ENOTSUP;
-			goto error;
-	}
-	priv->hrxqs = mlx5_list_create("hrxq", eth_dev, true,
-				       mlx5_hrxq_create_cb,
-				       mlx5_hrxq_match_cb,
-				       mlx5_hrxq_remove_cb,
-				       mlx5_hrxq_clone_cb,
-				       mlx5_hrxq_clone_free_cb);
-	if (!priv->hrxqs)
-		goto error;
-	rte_rwlock_init(&priv->ind_tbls_lock);
 	/* Query availability of metadata reg_c's. */
 	if (!priv->sh->metadata_regc_check_flag) {
 		err = mlx5_flow_discover_mreg_c(eth_dev);
@@ -1769,16 +1659,16 @@ err_secondary:
 		DRV_LOG(DEBUG,
 			"port %u extensive metadata register is not supported",
 			eth_dev->data->port_id);
-		if (priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY) {
+		if (sh->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY) {
 			DRV_LOG(ERR, "metadata mode %u is not supported "
 				     "(no metadata registers available)",
-				     priv->config.dv_xmeta_en);
+				     sh->config.dv_xmeta_en);
 			err = ENOTSUP;
 			goto error;
 		}
 	}
-	if (priv->config.dv_flow_en &&
-	    priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
+	if (sh->config.dv_flow_en &&
+	    sh->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
 	    mlx5_flow_ext_mreg_supported(eth_dev) &&
 	    priv->sh->dv_regc0_mask) {
 		priv->mreg_cp_tbl = mlx5_hlist_create(MLX5_FLOW_MREG_HNAME,
@@ -1797,7 +1687,7 @@ err_secondary:
 	rte_spinlock_init(&priv->shared_act_sl);
 	mlx5_flow_counter_mode_config(eth_dev);
 	mlx5_flow_drop_action_config(eth_dev);
-	if (priv->config.dv_flow_en)
+	if (sh->config.dv_flow_en)
 		eth_dev->data->dev_flags |= RTE_ETH_DEV_FLOW_OPS_THREAD_SAFE;
 	return eth_dev;
 error:
@@ -1805,6 +1695,13 @@ error:
 		priv->sh->port[priv->dev_port - 1].nl_ih_port_id =
 							       RTE_MAX_ETHPORTS;
 		rte_io_wmb();
+#ifdef HAVE_MLX5_HWS_SUPPORT
+		if (eth_dev &&
+		    priv->sh &&
+		    priv->sh->config.dv_flow_en == 2 &&
+		    priv->sh->config.dv_esw_en)
+			flow_hw_destroy_vport_action(eth_dev);
+#endif
 		if (priv->mreg_cp_tbl)
 			mlx5_hlist_destroy(priv->mreg_cp_tbl);
 		if (priv->sh)
@@ -1823,6 +1720,7 @@ error:
 			mlx5_list_destroy(priv->hrxqs);
 		if (eth_dev && priv->flex_item_map)
 			mlx5_flex_item_port_cleanup(eth_dev);
+		mlx5_free(priv->ext_rxqs);
 		mlx5_free(priv);
 		if (eth_dev != NULL)
 			eth_dev->data->dev_private = NULL;
@@ -2047,33 +1945,6 @@ mlx5_device_bond_pci_match(const char *ibdev_name,
 	return pf;
 }
 
-static void
-mlx5_os_config_default(struct mlx5_dev_config *config,
-		       struct mlx5_common_dev_config *cconf)
-{
-	memset(config, 0, sizeof(*config));
-	config->mps = MLX5_ARG_UNSET;
-	config->rx_vec_en = 1;
-	config->txq_inline_max = MLX5_ARG_UNSET;
-	config->txq_inline_min = MLX5_ARG_UNSET;
-	config->txq_inline_mpw = MLX5_ARG_UNSET;
-	config->txqs_inline = MLX5_ARG_UNSET;
-	config->vf_nl_en = 1;
-	config->mprq.max_memcpy_len = MLX5_MPRQ_MEMCPY_DEFAULT_LEN;
-	config->mprq.min_rxqs_num = MLX5_MPRQ_MIN_RXQS;
-	config->mprq.log_min_stride_wqe_size = cconf->devx ?
-					cconf->hca_attr.log_min_stride_wqe_sz :
-					MLX5_MPRQ_LOG_MIN_STRIDE_WQE_SIZE;
-	config->mprq.log_stride_num = MLX5_MPRQ_DEFAULT_LOG_STRIDE_NUM;
-	config->dv_esw_en = 1;
-	config->dv_flow_en = 1;
-	config->decap_en = 1;
-	config->log_hp_size = MLX5_ARG_UNSET;
-	config->allow_duplicate_pattern = 1;
-	config->std_delay_drop = 0;
-	config->hp_delay_drop = 0;
-}
-
 /**
  * Register a PCI device within bonding.
  *
@@ -2086,6 +1957,8 @@ mlx5_os_config_default(struct mlx5_dev_config *config,
  *   Requested ethdev device argument.
  * @param[in] owner_id
  *   Requested owner PF port ID within bonding device, default to 0.
+ * @param[in, out] mkvlist
+ *   Pointer to mlx5 kvargs control, can be NULL if there is no devargs.
  *
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
@@ -2093,7 +1966,7 @@ mlx5_os_config_default(struct mlx5_dev_config *config,
 static int
 mlx5_os_pci_probe_pf(struct mlx5_common_device *cdev,
 		     struct rte_eth_devargs *req_eth_da,
-		     uint16_t owner_id)
+		     uint16_t owner_id, struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct ibv_device **ibv_list;
 	/*
@@ -2122,8 +1995,6 @@ mlx5_os_pci_probe_pf(struct mlx5_common_device *cdev,
 	int bd = -1;
 	struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(cdev->dev);
 	struct mlx5_dev_spawn_data *list = NULL;
-	struct mlx5_dev_config dev_config;
-	unsigned int dev_config_vf;
 	struct rte_eth_devargs eth_da = *req_eth_da;
 	struct rte_pci_addr owner_pci = pci_dev->addr; /* Owner PF. */
 	struct mlx5_bond_info bond_info;
@@ -2444,21 +2315,6 @@ mlx5_os_pci_probe_pf(struct mlx5_common_device *cdev,
 	 * (i.e. master first, then representors from lowest to highest ID).
 	 */
 	qsort(list, ns, sizeof(*list), mlx5_dev_spawn_data_cmp);
-	/* Device specific configuration. */
-	switch (pci_dev->id.device_id) {
-	case PCI_DEVICE_ID_MELLANOX_CONNECTX4VF:
-	case PCI_DEVICE_ID_MELLANOX_CONNECTX4LXVF:
-	case PCI_DEVICE_ID_MELLANOX_CONNECTX5VF:
-	case PCI_DEVICE_ID_MELLANOX_CONNECTX5EXVF:
-	case PCI_DEVICE_ID_MELLANOX_CONNECTX5BFVF:
-	case PCI_DEVICE_ID_MELLANOX_CONNECTX6VF:
-	case PCI_DEVICE_ID_MELLANOX_CONNECTXVF:
-		dev_config_vf = 1;
-		break;
-	default:
-		dev_config_vf = 0;
-		break;
-	}
 	if (eth_da.type != RTE_ETH_REPRESENTOR_NONE) {
 		/* Set devargs default values. */
 		if (eth_da.nb_mh_controllers == 0) {
@@ -2480,11 +2336,8 @@ mlx5_os_pci_probe_pf(struct mlx5_common_device *cdev,
 	for (i = 0; i != ns; ++i) {
 		uint32_t restore;
 
-		/* Default configuration. */
-		mlx5_os_config_default(&dev_config, &cdev->config);
-		dev_config.vf = dev_config_vf;
-		list[i].eth_dev = mlx5_dev_spawn(cdev->dev, &list[i],
-						 &dev_config, &eth_da);
+		list[i].eth_dev = mlx5_dev_spawn(cdev->dev, &list[i], &eth_da,
+						 mkvlist);
 		if (!list[i].eth_dev) {
 			if (rte_errno != EBUSY && rte_errno != EEXIST)
 				break;
@@ -2596,12 +2449,15 @@ mlx5_os_parse_eth_devargs(struct rte_device *dev,
  *
  * @param[in] cdev
  *   Pointer to common mlx5 device structure.
+ * @param[in, out] mkvlist
+ *   Pointer to mlx5 kvargs control, can be NULL if there is no devargs.
  *
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx5_os_pci_probe(struct mlx5_common_device *cdev)
+mlx5_os_pci_probe(struct mlx5_common_device *cdev,
+		  struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(cdev->dev);
 	struct rte_eth_devargs eth_da = { .nb_ports = 0 };
@@ -2616,7 +2472,7 @@ mlx5_os_pci_probe(struct mlx5_common_device *cdev)
 		/* Iterate all port if devargs pf is range: "pf[0-1]vf[...]". */
 		for (p = 0; p < eth_da.nb_ports; p++) {
 			ret = mlx5_os_pci_probe_pf(cdev, &eth_da,
-						   eth_da.ports[p]);
+						   eth_da.ports[p], mkvlist);
 			if (ret) {
 				DRV_LOG(INFO, "Probe of PCI device " PCI_PRI_FMT " "
 					"aborted due to proding failure of PF %u",
@@ -2629,17 +2485,17 @@ mlx5_os_pci_probe(struct mlx5_common_device *cdev)
 			}
 		}
 	} else {
-		ret = mlx5_os_pci_probe_pf(cdev, &eth_da, 0);
+		ret = mlx5_os_pci_probe_pf(cdev, &eth_da, 0, mkvlist);
 	}
 	return ret;
 }
 
 /* Probe a single SF device on auxiliary bus, no representor support. */
 static int
-mlx5_os_auxiliary_probe(struct mlx5_common_device *cdev)
+mlx5_os_auxiliary_probe(struct mlx5_common_device *cdev,
+			struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct rte_eth_devargs eth_da = { .nb_ports = 0 };
-	struct mlx5_dev_config config;
 	struct mlx5_dev_spawn_data spawn = { .pf_bond = -1 };
 	struct rte_device *dev = cdev->dev;
 	struct rte_auxiliary_device *adev = RTE_DEV_TO_AUXILIARY(dev);
@@ -2650,9 +2506,6 @@ mlx5_os_auxiliary_probe(struct mlx5_common_device *cdev)
 	ret = mlx5_os_parse_eth_devargs(dev, &eth_da);
 	if (ret != 0)
 		return ret;
-	/* Set default config data. */
-	mlx5_os_config_default(&config, &cdev->config);
-	config.sf = 1;
 	/* Init spawn data. */
 	spawn.max_port = 1;
 	spawn.phys_port = 1;
@@ -2665,7 +2518,7 @@ mlx5_os_auxiliary_probe(struct mlx5_common_device *cdev)
 	spawn.ifindex = ret;
 	spawn.cdev = cdev;
 	/* Spawn device. */
-	eth_dev = mlx5_dev_spawn(dev, &spawn, &config, &eth_da);
+	eth_dev = mlx5_dev_spawn(dev, &spawn, &eth_da, mkvlist);
 	if (eth_dev == NULL)
 		return -rte_errno;
 	/* Post create. */
@@ -2686,12 +2539,15 @@ mlx5_os_auxiliary_probe(struct mlx5_common_device *cdev)
  *
  * @param[in] cdev
  *   Pointer to the common mlx5 device.
+ * @param[in, out] mkvlist
+ *   Pointer to mlx5 kvargs control, can be NULL if there is no devargs.
  *
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-mlx5_os_net_probe(struct mlx5_common_device *cdev)
+mlx5_os_net_probe(struct mlx5_common_device *cdev,
+		  struct mlx5_kvargs_ctrl *mkvlist)
 {
 	int ret;
 
@@ -2703,10 +2559,16 @@ mlx5_os_net_probe(struct mlx5_common_device *cdev)
 			strerror(rte_errno));
 		return -rte_errno;
 	}
+	ret = mlx5_probe_again_args_validate(cdev, mkvlist);
+	if (ret) {
+		DRV_LOG(ERR, "Probe again parameters are not compatible : %s",
+			strerror(rte_errno));
+		return -rte_errno;
+	}
 	if (mlx5_dev_is_pci(cdev->dev))
-		return mlx5_os_pci_probe(cdev);
+		return mlx5_os_pci_probe(cdev, mkvlist);
 	else
-		return mlx5_os_auxiliary_probe(cdev);
+		return mlx5_os_auxiliary_probe(cdev, mkvlist);
 }
 
 /**
@@ -2716,40 +2578,6 @@ void
 mlx5_os_net_cleanup(void)
 {
 	mlx5_pmd_socket_uninit();
-}
-
-static int
-mlx5_os_dev_shared_handler_install_lsc(struct mlx5_dev_ctx_shared *sh)
-{
-	int nlsk_fd, flags, ret;
-
-	nlsk_fd = mlx5_nl_init(NETLINK_ROUTE, RTMGRP_LINK);
-	if (nlsk_fd < 0) {
-		DRV_LOG(ERR, "Failed to create a socket for Netlink events: %s",
-			rte_strerror(rte_errno));
-		return -1;
-	}
-	flags = fcntl(nlsk_fd, F_GETFL);
-	ret = fcntl(nlsk_fd, F_SETFL, flags | O_NONBLOCK);
-	if (ret != 0) {
-		DRV_LOG(ERR, "Failed to make Netlink event socket non-blocking: %s",
-			strerror(errno));
-		rte_errno = errno;
-		goto error;
-	}
-	rte_intr_type_set(sh->intr_handle_nl, RTE_INTR_HANDLE_EXT);
-	rte_intr_fd_set(sh->intr_handle_nl, nlsk_fd);
-	if (rte_intr_callback_register(sh->intr_handle_nl,
-				       mlx5_dev_interrupt_handler_nl,
-				       sh) != 0) {
-		DRV_LOG(ERR, "Failed to register Netlink events interrupt");
-		rte_intr_fd_set(sh->intr_handle_nl, -1);
-		goto error;
-	}
-	return 0;
-error:
-	close(nlsk_fd);
-	return -1;
 }
 
 /**
@@ -2763,75 +2591,46 @@ error:
 void
 mlx5_os_dev_shared_handler_install(struct mlx5_dev_ctx_shared *sh)
 {
-	int ret;
-	int flags;
 	struct ibv_context *ctx = sh->cdev->ctx;
+	int nlsk_fd;
 
-	sh->intr_handle = rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
-	if (sh->intr_handle == NULL) {
-		DRV_LOG(ERR, "Fail to allocate intr_handle");
-		rte_errno = ENOMEM;
+	sh->intr_handle = mlx5_os_interrupt_handler_create
+		(RTE_INTR_INSTANCE_F_SHARED, true,
+		 ctx->async_fd, mlx5_dev_interrupt_handler, sh);
+	if (!sh->intr_handle) {
+		DRV_LOG(ERR, "Failed to allocate intr_handle.");
 		return;
 	}
-	rte_intr_fd_set(sh->intr_handle, -1);
-
-	flags = fcntl(ctx->async_fd, F_GETFL);
-	ret = fcntl(ctx->async_fd, F_SETFL, flags | O_NONBLOCK);
-	if (ret) {
-		DRV_LOG(INFO, "failed to change file descriptor async event"
-			" queue");
-	} else {
-		rte_intr_fd_set(sh->intr_handle, ctx->async_fd);
-		rte_intr_type_set(sh->intr_handle, RTE_INTR_HANDLE_EXT);
-		if (rte_intr_callback_register(sh->intr_handle,
-					mlx5_dev_interrupt_handler, sh)) {
-			DRV_LOG(INFO, "Fail to install the shared interrupt.");
-			rte_intr_fd_set(sh->intr_handle, -1);
-		}
+	nlsk_fd = mlx5_nl_init(NETLINK_ROUTE, RTMGRP_LINK);
+	if (nlsk_fd < 0) {
+		DRV_LOG(ERR, "Failed to create a socket for Netlink events: %s",
+			rte_strerror(rte_errno));
+		return;
 	}
-	sh->intr_handle_nl = rte_intr_instance_alloc
-						(RTE_INTR_INSTANCE_F_SHARED);
+	sh->intr_handle_nl = mlx5_os_interrupt_handler_create
+		(RTE_INTR_INSTANCE_F_SHARED, true,
+		 nlsk_fd, mlx5_dev_interrupt_handler_nl, sh);
 	if (sh->intr_handle_nl == NULL) {
 		DRV_LOG(ERR, "Fail to allocate intr_handle");
-		rte_errno = ENOMEM;
 		return;
 	}
-	rte_intr_fd_set(sh->intr_handle_nl, -1);
-	if (mlx5_os_dev_shared_handler_install_lsc(sh) < 0) {
-		DRV_LOG(INFO, "Fail to install the shared Netlink event handler.");
-		rte_intr_fd_set(sh->intr_handle_nl, -1);
-	}
-	if (sh->devx) {
+	if (sh->cdev->config.devx) {
 #ifdef HAVE_IBV_DEVX_ASYNC
-		sh->intr_handle_devx =
-			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
-		if (!sh->intr_handle_devx) {
-			DRV_LOG(ERR, "Fail to allocate intr_handle");
-			rte_errno = ENOMEM;
-			return;
-		}
-		rte_intr_fd_set(sh->intr_handle_devx, -1);
+		struct mlx5dv_devx_cmd_comp *devx_comp;
+
 		sh->devx_comp = (void *)mlx5_glue->devx_create_cmd_comp(ctx);
-		struct mlx5dv_devx_cmd_comp *devx_comp = sh->devx_comp;
+		devx_comp = sh->devx_comp;
 		if (!devx_comp) {
 			DRV_LOG(INFO, "failed to allocate devx_comp.");
 			return;
 		}
-		flags = fcntl(devx_comp->fd, F_GETFL);
-		ret = fcntl(devx_comp->fd, F_SETFL, flags | O_NONBLOCK);
-		if (ret) {
-			DRV_LOG(INFO, "failed to change file descriptor"
-				" devx comp");
+		sh->intr_handle_devx = mlx5_os_interrupt_handler_create
+			(RTE_INTR_INSTANCE_F_SHARED, true,
+			 devx_comp->fd,
+			 mlx5_dev_interrupt_handler_devx, sh);
+		if (!sh->intr_handle_devx) {
+			DRV_LOG(ERR, "Failed to allocate intr_handle.");
 			return;
-		}
-		rte_intr_fd_set(sh->intr_handle_devx, devx_comp->fd);
-		rte_intr_type_set(sh->intr_handle_devx,
-					 RTE_INTR_HANDLE_EXT);
-		if (rte_intr_callback_register(sh->intr_handle_devx,
-					mlx5_dev_interrupt_handler_devx, sh)) {
-			DRV_LOG(INFO, "Fail to install the devx shared"
-				" interrupt.");
-			rte_intr_fd_set(sh->intr_handle_devx, -1);
 		}
 #endif /* HAVE_IBV_DEVX_ASYNC */
 	}
@@ -2848,24 +2647,13 @@ mlx5_os_dev_shared_handler_install(struct mlx5_dev_ctx_shared *sh)
 void
 mlx5_os_dev_shared_handler_uninstall(struct mlx5_dev_ctx_shared *sh)
 {
-	int nlsk_fd;
-
-	if (rte_intr_fd_get(sh->intr_handle) >= 0)
-		mlx5_intr_callback_unregister(sh->intr_handle,
-					      mlx5_dev_interrupt_handler, sh);
-	rte_intr_instance_free(sh->intr_handle);
-	nlsk_fd = rte_intr_fd_get(sh->intr_handle_nl);
-	if (nlsk_fd >= 0) {
-		mlx5_intr_callback_unregister
-			(sh->intr_handle_nl, mlx5_dev_interrupt_handler_nl, sh);
-		close(nlsk_fd);
-	}
-	rte_intr_instance_free(sh->intr_handle_nl);
+	mlx5_os_interrupt_handler_destroy(sh->intr_handle,
+					  mlx5_dev_interrupt_handler, sh);
+	mlx5_os_interrupt_handler_destroy(sh->intr_handle_nl,
+					  mlx5_dev_interrupt_handler_nl, sh);
 #ifdef HAVE_IBV_DEVX_ASYNC
-	if (rte_intr_fd_get(sh->intr_handle_devx) >= 0)
-		rte_intr_callback_unregister(sh->intr_handle_devx,
-				  mlx5_dev_interrupt_handler_devx, sh);
-	rte_intr_instance_free(sh->intr_handle_devx);
+	mlx5_os_interrupt_handler_destroy(sh->intr_handle_devx,
+					  mlx5_dev_interrupt_handler_devx, sh);
 	if (sh->devx_comp)
 		mlx5_glue->devx_destroy_cmd_comp(sh->devx_comp);
 #endif
@@ -2938,7 +2726,7 @@ void
 mlx5_os_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	const int vf = priv->config.vf;
+	const int vf = priv->sh->dev_cap.vf;
 
 	if (vf)
 		mlx5_nl_mac_addr_remove(priv->nl_socket_route,
@@ -2964,7 +2752,7 @@ mlx5_os_mac_addr_add(struct rte_eth_dev *dev, struct rte_ether_addr *mac,
 		     uint32_t index)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	const int vf = priv->config.vf;
+	const int vf = priv->sh->dev_cap.vf;
 	int ret = 0;
 
 	if (vf)

@@ -178,6 +178,7 @@ extern struct ifpga_feature_ops fme_spi_master_ops;
 extern struct ifpga_feature_ops fme_i2c_master_ops;
 extern struct ifpga_feature_ops fme_eth_group_ops;
 extern struct ifpga_feature_ops fme_nios_spi_master_ops;
+extern struct ifpga_feature_ops fme_pmci_ops;
 
 int port_get_prop(struct ifpga_port_hw *port, struct feature_prop *prop);
 int port_set_prop(struct ifpga_port_hw *port, struct feature_prop *prop);
@@ -222,4 +223,6 @@ int fme_mgr_get_retimer_status(struct ifpga_fme_hw *fme,
 int fme_mgr_get_sensor_value(struct ifpga_fme_hw *fme,
 		struct opae_sensor_info *sensor,
 		unsigned int *value);
+int fme_mgr_read_flash(struct ifpga_fme_hw *fme, u32 address,
+		u32 size, void *buf);
 #endif /* _IFPGA_FEATURE_DEV_H_ */

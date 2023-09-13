@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <rte_common.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
 #include <rte_cryptodev.h>
 #include <cryptodev_pmd.h>
@@ -25,12 +25,28 @@
 #define CRYPTO_ADAPTER_MEM_NAME_LEN 32
 #define CRYPTO_ADAPTER_MAX_EV_ENQ_RETRIES 100
 
+#define CRYPTO_ADAPTER_OPS_BUFFER_SZ (BATCH_SIZE + BATCH_SIZE)
+#define CRYPTO_ADAPTER_BUFFER_SZ 1024
+
 /* Flush an instance's enqueue buffers every CRYPTO_ENQ_FLUSH_THRESHOLD
  * iterations of eca_crypto_adapter_enq_run()
  */
 #define CRYPTO_ENQ_FLUSH_THRESHOLD 1024
 
 #define ECA_ADAPTER_ARRAY "crypto_adapter_array"
+
+struct crypto_ops_circular_buffer {
+	/* index of head element in circular buffer */
+	uint16_t head;
+	/* index of tail element in circular buffer */
+	uint16_t tail;
+	/* number of elements in buffer */
+	uint16_t count;
+	/* size of circular buffer */
+	uint16_t size;
+	/* Pointer to hold rte_crypto_ops for batching */
+	struct rte_crypto_op **op_buffer;
+} __rte_cache_aligned;
 
 struct event_crypto_adapter {
 	/* Event device identifier */
@@ -39,6 +55,10 @@ struct event_crypto_adapter {
 	uint8_t event_port_id;
 	/* Store event device's implicit release capability */
 	uint8_t implicit_release_disabled;
+	/* Flag to indicate backpressure at cryptodev
+	 * Stop further dequeuing events from eventdev
+	 */
+	bool stop_enq_to_cryptodev;
 	/* Max crypto ops processed in any service function invocation */
 	uint32_t max_nb;
 	/* Lock to serialize config updates with service function */
@@ -49,6 +69,8 @@ struct event_crypto_adapter {
 	struct crypto_device_info *cdevs;
 	/* Loop counter to flush crypto ops */
 	uint16_t transmit_loop_count;
+	/* Circular buffer for batching crypto ops to eventdev */
+	struct crypto_ops_circular_buffer ebuf;
 	/* Per instance stats structure */
 	struct rte_event_crypto_adapter_stats crypto_stats;
 	/* Configuration callback for rte_service configuration */
@@ -95,10 +117,8 @@ struct crypto_device_info {
 struct crypto_queue_pair_info {
 	/* Set to indicate queue pair is enabled */
 	bool qp_enabled;
-	/* Pointer to hold rte_crypto_ops for batching */
-	struct rte_crypto_op **op_buffer;
-	/* No of crypto ops accumulated */
-	uint8_t len;
+	/* Circular buffer for batching crypto ops to cdev */
+	struct crypto_ops_circular_buffer cbuf;
 } __rte_cache_aligned;
 
 static struct event_crypto_adapter **event_crypto_adapter;
@@ -157,6 +177,84 @@ eca_memzone_lookup(void)
 	}
 
 	return 0;
+}
+
+static inline bool
+eca_circular_buffer_batch_ready(struct crypto_ops_circular_buffer *bufp)
+{
+	return bufp->count >= BATCH_SIZE;
+}
+
+static inline bool
+eca_circular_buffer_space_for_batch(struct crypto_ops_circular_buffer *bufp)
+{
+	return (bufp->size - bufp->count) >= BATCH_SIZE;
+}
+
+static inline void
+eca_circular_buffer_free(struct crypto_ops_circular_buffer *bufp)
+{
+	rte_free(bufp->op_buffer);
+}
+
+static inline int
+eca_circular_buffer_init(const char *name,
+			 struct crypto_ops_circular_buffer *bufp,
+			 uint16_t sz)
+{
+	bufp->op_buffer = rte_zmalloc(name,
+				      sizeof(struct rte_crypto_op *) * sz,
+				      0);
+	if (bufp->op_buffer == NULL)
+		return -ENOMEM;
+
+	bufp->size = sz;
+	return 0;
+}
+
+static inline int
+eca_circular_buffer_add(struct crypto_ops_circular_buffer *bufp,
+			struct rte_crypto_op *op)
+{
+	uint16_t *tailp = &bufp->tail;
+
+	bufp->op_buffer[*tailp] = op;
+	/* circular buffer, go round */
+	*tailp = (*tailp + 1) % bufp->size;
+	bufp->count++;
+
+	return 0;
+}
+
+static inline int
+eca_circular_buffer_flush_to_cdev(struct crypto_ops_circular_buffer *bufp,
+				  uint8_t cdev_id, uint16_t qp_id,
+				  uint16_t *nb_ops_flushed)
+{
+	uint16_t n = 0;
+	uint16_t *headp = &bufp->head;
+	uint16_t *tailp = &bufp->tail;
+	struct rte_crypto_op **ops = bufp->op_buffer;
+
+	if (*tailp > *headp)
+		n = *tailp - *headp;
+	else if (*tailp < *headp)
+		n = bufp->size - *headp;
+	else {
+		*nb_ops_flushed = 0;
+		return 0;  /* buffer empty */
+	}
+
+	*nb_ops_flushed = rte_cryptodev_enqueue_burst(cdev_id, qp_id,
+						      &ops[*headp], n);
+	bufp->count -= *nb_ops_flushed;
+	if (!bufp->count) {
+		*headp = 0;
+		*tailp = 0;
+	} else
+		*headp = (*headp + *nb_ops_flushed) % bufp->size;
+
+	return *nb_ops_flushed == n ? 0 : -1;
 }
 
 static inline struct event_crypto_adapter *
@@ -255,10 +353,19 @@ rte_event_crypto_adapter_create_ext(uint8_t id, uint8_t dev_id,
 		return -ENOMEM;
 	}
 
+	if (eca_circular_buffer_init("eca_edev_circular_buffer",
+				     &adapter->ebuf,
+				     CRYPTO_ADAPTER_BUFFER_SZ)) {
+		RTE_EDEV_LOG_ERR("Failed to get memory for eventdev buffer");
+		rte_free(adapter);
+		return -ENOMEM;
+	}
+
 	ret = rte_event_dev_info_get(dev_id, &dev_info);
 	if (ret < 0) {
 		RTE_EDEV_LOG_ERR("Failed to get info for eventdev %d: %s!",
 				 dev_id, dev_info.driver_name);
+		eca_circular_buffer_free(&adapter->ebuf);
 		rte_free(adapter);
 		return ret;
 	}
@@ -277,6 +384,7 @@ rte_event_crypto_adapter_create_ext(uint8_t id, uint8_t dev_id,
 					socket_id);
 	if (adapter->cdevs == NULL) {
 		RTE_EDEV_LOG_ERR("Failed to get mem for crypto devices\n");
+		eca_circular_buffer_free(&adapter->ebuf);
 		rte_free(adapter);
 		return -ENOMEM;
 	}
@@ -355,10 +463,10 @@ eca_enq_to_cryptodev(struct event_crypto_adapter *adapter, struct rte_event *ev,
 	struct crypto_queue_pair_info *qp_info = NULL;
 	struct rte_crypto_op *crypto_op;
 	unsigned int i, n;
-	uint16_t qp_id, len, ret;
+	uint16_t qp_id, nb_enqueued = 0;
 	uint8_t cdev_id;
+	int ret;
 
-	len = 0;
 	ret = 0;
 	n = 0;
 	stats->event_deq_count += cnt;
@@ -367,120 +475,99 @@ eca_enq_to_cryptodev(struct event_crypto_adapter *adapter, struct rte_event *ev,
 		crypto_op = ev[i].event_ptr;
 		if (crypto_op == NULL)
 			continue;
-		if (crypto_op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
-			m_data = rte_cryptodev_sym_session_get_user_data(
-					crypto_op->sym->session);
-			if (m_data == NULL) {
-				rte_pktmbuf_free(crypto_op->sym->m_src);
-				rte_crypto_op_free(crypto_op);
-				continue;
-			}
-
-			cdev_id = m_data->request_info.cdev_id;
-			qp_id = m_data->request_info.queue_pair_id;
-			qp_info = &adapter->cdevs[cdev_id].qpairs[qp_id];
-			if (!qp_info->qp_enabled) {
-				rte_pktmbuf_free(crypto_op->sym->m_src);
-				rte_crypto_op_free(crypto_op);
-				continue;
-			}
-			len = qp_info->len;
-			qp_info->op_buffer[len] = crypto_op;
-			len++;
-		} else if (crypto_op->sess_type == RTE_CRYPTO_OP_SESSIONLESS &&
-				crypto_op->private_data_offset) {
-			m_data = (union rte_event_crypto_metadata *)
-				 ((uint8_t *)crypto_op +
-					crypto_op->private_data_offset);
-			cdev_id = m_data->request_info.cdev_id;
-			qp_id = m_data->request_info.queue_pair_id;
-			qp_info = &adapter->cdevs[cdev_id].qpairs[qp_id];
-			if (!qp_info->qp_enabled) {
-				rte_pktmbuf_free(crypto_op->sym->m_src);
-				rte_crypto_op_free(crypto_op);
-				continue;
-			}
-			len = qp_info->len;
-			qp_info->op_buffer[len] = crypto_op;
-			len++;
-		} else {
+		m_data = rte_cryptodev_session_event_mdata_get(crypto_op);
+		if (m_data == NULL) {
 			rte_pktmbuf_free(crypto_op->sym->m_src);
 			rte_crypto_op_free(crypto_op);
 			continue;
 		}
 
-		if (len == BATCH_SIZE) {
-			struct rte_crypto_op **op_buffer = qp_info->op_buffer;
-			ret = rte_cryptodev_enqueue_burst(cdev_id,
-							  qp_id,
-							  op_buffer,
-							  BATCH_SIZE);
-
-			stats->crypto_enq_count += ret;
-
-			while (ret < len) {
-				struct rte_crypto_op *op;
-				op = op_buffer[ret++];
-				stats->crypto_enq_fail++;
-				rte_pktmbuf_free(op->sym->m_src);
-				rte_crypto_op_free(op);
-			}
-
-			len = 0;
+		cdev_id = m_data->request_info.cdev_id;
+		qp_id = m_data->request_info.queue_pair_id;
+		qp_info = &adapter->cdevs[cdev_id].qpairs[qp_id];
+		if (!qp_info->qp_enabled) {
+			rte_pktmbuf_free(crypto_op->sym->m_src);
+			rte_crypto_op_free(crypto_op);
+			continue;
 		}
+		eca_circular_buffer_add(&qp_info->cbuf, crypto_op);
 
-		if (qp_info)
-			qp_info->len = len;
-		n += ret;
+		if (eca_circular_buffer_batch_ready(&qp_info->cbuf)) {
+			ret = eca_circular_buffer_flush_to_cdev(&qp_info->cbuf,
+								cdev_id,
+								qp_id,
+								&nb_enqueued);
+			stats->crypto_enq_count += nb_enqueued;
+			n += nb_enqueued;
+
+			/**
+			 * If some crypto ops failed to flush to cdev and
+			 * space for another batch is not available, stop
+			 * dequeue from eventdev momentarily
+			 */
+			if (unlikely(ret < 0 &&
+				!eca_circular_buffer_space_for_batch(
+							&qp_info->cbuf)))
+				adapter->stop_enq_to_cryptodev = true;
+		}
 	}
 
 	return n;
 }
 
 static unsigned int
+eca_crypto_cdev_flush(struct event_crypto_adapter *adapter,
+		      uint8_t cdev_id, uint16_t *nb_ops_flushed)
+{
+	struct crypto_device_info *curr_dev;
+	struct crypto_queue_pair_info *curr_queue;
+	struct rte_cryptodev *dev;
+	uint16_t nb = 0, nb_enqueued = 0;
+	uint16_t qp;
+
+	curr_dev = &adapter->cdevs[cdev_id];
+	dev = rte_cryptodev_pmd_get_dev(cdev_id);
+
+	for (qp = 0; qp < dev->data->nb_queue_pairs; qp++) {
+
+		curr_queue = &curr_dev->qpairs[qp];
+		if (unlikely(curr_queue == NULL || !curr_queue->qp_enabled))
+			continue;
+
+		eca_circular_buffer_flush_to_cdev(&curr_queue->cbuf,
+						  cdev_id,
+						  qp,
+						  &nb_enqueued);
+		*nb_ops_flushed += curr_queue->cbuf.count;
+		nb += nb_enqueued;
+	}
+
+	return nb;
+}
+
+static unsigned int
 eca_crypto_enq_flush(struct event_crypto_adapter *adapter)
 {
 	struct rte_event_crypto_adapter_stats *stats = &adapter->crypto_stats;
-	struct crypto_device_info *curr_dev;
-	struct crypto_queue_pair_info *curr_queue;
-	struct rte_crypto_op **op_buffer;
-	struct rte_cryptodev *dev;
 	uint8_t cdev_id;
-	uint16_t qp;
-	uint16_t ret;
+	uint16_t nb_enqueued = 0;
+	uint16_t nb_ops_flushed = 0;
 	uint16_t num_cdev = rte_cryptodev_count();
 
-	ret = 0;
-	for (cdev_id = 0; cdev_id < num_cdev; cdev_id++) {
-		curr_dev = &adapter->cdevs[cdev_id];
-		dev = curr_dev->dev;
-		if (dev == NULL)
-			continue;
-		for (qp = 0; qp < dev->data->nb_queue_pairs; qp++) {
+	for (cdev_id = 0; cdev_id < num_cdev; cdev_id++)
+		nb_enqueued += eca_crypto_cdev_flush(adapter,
+						    cdev_id,
+						    &nb_ops_flushed);
+	/**
+	 * Enable dequeue from eventdev if all ops from circular
+	 * buffer flushed to cdev
+	 */
+	if (!nb_ops_flushed)
+		adapter->stop_enq_to_cryptodev = false;
 
-			curr_queue = &curr_dev->qpairs[qp];
-			if (!curr_queue->qp_enabled)
-				continue;
+	stats->crypto_enq_count += nb_enqueued;
 
-			op_buffer = curr_queue->op_buffer;
-			ret = rte_cryptodev_enqueue_burst(cdev_id,
-							  qp,
-							  op_buffer,
-							  curr_queue->len);
-			stats->crypto_enq_count += ret;
-
-			while (ret < curr_queue->len) {
-				struct rte_crypto_op *op;
-				op = op_buffer[ret++];
-				stats->crypto_enq_fail++;
-				rte_pktmbuf_free(op->sym->m_src);
-				rte_crypto_op_free(op);
-			}
-			curr_queue->len = 0;
-		}
-	}
-
-	return ret;
+	return nb_enqueued;
 }
 
 static int
@@ -499,6 +586,14 @@ eca_crypto_adapter_enq_run(struct event_crypto_adapter *adapter,
 		return 0;
 
 	for (nb_enq = 0; nb_enq < max_enq; nb_enq += n) {
+
+		if (unlikely(adapter->stop_enq_to_cryptodev)) {
+			nb_enqueued += eca_crypto_enq_flush(adapter);
+
+			if (unlikely(adapter->stop_enq_to_cryptodev))
+				break;
+		}
+
 		stats->event_poll_count++;
 		n = rte_event_dequeue_burst(event_dev_id,
 					    event_port_id, ev, BATCH_SIZE, 0);
@@ -517,9 +612,9 @@ eca_crypto_adapter_enq_run(struct event_crypto_adapter *adapter,
 	return nb_enqueued;
 }
 
-static inline void
+static inline uint16_t
 eca_ops_enqueue_burst(struct event_crypto_adapter *adapter,
-		      struct rte_crypto_op **ops, uint16_t num)
+		  struct rte_crypto_op **ops, uint16_t num)
 {
 	struct rte_event_crypto_adapter_stats *stats = &adapter->crypto_stats;
 	union rte_event_crypto_metadata *m_data = NULL;
@@ -536,16 +631,8 @@ eca_ops_enqueue_burst(struct event_crypto_adapter *adapter,
 	num = RTE_MIN(num, BATCH_SIZE);
 	for (i = 0; i < num; i++) {
 		struct rte_event *ev = &events[nb_ev++];
-		if (ops[i]->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
-			m_data = rte_cryptodev_sym_session_get_user_data(
-					ops[i]->sym->session);
-		} else if (ops[i]->sess_type == RTE_CRYPTO_OP_SESSIONLESS &&
-				ops[i]->private_data_offset) {
-			m_data = (union rte_event_crypto_metadata *)
-				 ((uint8_t *)ops[i] +
-				  ops[i]->private_data_offset);
-		}
 
+		m_data = rte_cryptodev_session_event_mdata_get(ops[i]);
 		if (unlikely(m_data == NULL)) {
 			rte_pktmbuf_free(ops[i]->sym->m_src);
 			rte_crypto_op_free(ops[i]);
@@ -566,21 +653,56 @@ eca_ops_enqueue_burst(struct event_crypto_adapter *adapter,
 						  event_port_id,
 						  &events[nb_enqueued],
 						  nb_ev - nb_enqueued);
+
 	} while (retry++ < CRYPTO_ADAPTER_MAX_EV_ENQ_RETRIES &&
 		 nb_enqueued < nb_ev);
-
-	/* Free mbufs and rte_crypto_ops for failed events */
-	for (i = nb_enqueued; i < nb_ev; i++) {
-		struct rte_crypto_op *op = events[i].event_ptr;
-		rte_pktmbuf_free(op->sym->m_src);
-		rte_crypto_op_free(op);
-	}
 
 	stats->event_enq_fail_count += nb_ev - nb_enqueued;
 	stats->event_enq_count += nb_enqueued;
 	stats->event_enq_retry_count += retry - 1;
+
+	return nb_enqueued;
 }
 
+static int
+eca_circular_buffer_flush_to_evdev(struct event_crypto_adapter *adapter,
+				   struct crypto_ops_circular_buffer *bufp)
+{
+	uint16_t n = 0, nb_ops_flushed;
+	uint16_t *headp = &bufp->head;
+	uint16_t *tailp = &bufp->tail;
+	struct rte_crypto_op **ops = bufp->op_buffer;
+
+	if (*tailp > *headp)
+		n = *tailp - *headp;
+	else if (*tailp < *headp)
+		n = bufp->size - *headp;
+	else
+		return 0;  /* buffer empty */
+
+	nb_ops_flushed =  eca_ops_enqueue_burst(adapter, &ops[*headp], n);
+	bufp->count -= nb_ops_flushed;
+	if (!bufp->count) {
+		*headp = 0;
+		*tailp = 0;
+		return 0;  /* buffer empty */
+	}
+
+	*headp = (*headp + nb_ops_flushed) % bufp->size;
+	return 1;
+}
+
+
+static void
+eca_ops_buffer_flush(struct event_crypto_adapter *adapter)
+{
+	if (likely(adapter->ebuf.count == 0))
+		return;
+
+	while (eca_circular_buffer_flush_to_evdev(adapter,
+						  &adapter->ebuf))
+		;
+}
 static inline unsigned int
 eca_crypto_adapter_deq_run(struct event_crypto_adapter *adapter,
 			   unsigned int max_deq)
@@ -589,7 +711,7 @@ eca_crypto_adapter_deq_run(struct event_crypto_adapter *adapter,
 	struct crypto_device_info *curr_dev;
 	struct crypto_queue_pair_info *curr_queue;
 	struct rte_crypto_op *ops[BATCH_SIZE];
-	uint16_t n, nb_deq;
+	uint16_t n, nb_deq, nb_enqueued, i;
 	struct rte_cryptodev *dev;
 	uint8_t cdev_id;
 	uint16_t qp, dev_qps;
@@ -597,16 +719,20 @@ eca_crypto_adapter_deq_run(struct event_crypto_adapter *adapter,
 	uint16_t num_cdev = rte_cryptodev_count();
 
 	nb_deq = 0;
+	eca_ops_buffer_flush(adapter);
+
 	do {
-		uint16_t queues = 0;
 		done = true;
 
 		for (cdev_id = adapter->next_cdev_id;
 			cdev_id < num_cdev; cdev_id++) {
+			uint16_t queues = 0;
+
 			curr_dev = &adapter->cdevs[cdev_id];
 			dev = curr_dev->dev;
-			if (dev == NULL)
+			if (unlikely(dev == NULL))
 				continue;
+
 			dev_qps = dev->data->nb_queue_pairs;
 
 			for (qp = curr_dev->next_queue_pair_id;
@@ -614,7 +740,8 @@ eca_crypto_adapter_deq_run(struct event_crypto_adapter *adapter,
 				queues++) {
 
 				curr_queue = &curr_dev->qpairs[qp];
-				if (!curr_queue->qp_enabled)
+				if (unlikely(curr_queue == NULL ||
+				    !curr_queue->qp_enabled))
 					continue;
 
 				n = rte_cryptodev_dequeue_burst(cdev_id, qp,
@@ -623,11 +750,27 @@ eca_crypto_adapter_deq_run(struct event_crypto_adapter *adapter,
 					continue;
 
 				done = false;
+				nb_enqueued = 0;
+
 				stats->crypto_deq_count += n;
-				eca_ops_enqueue_burst(adapter, ops, n);
+
+				if (unlikely(!adapter->ebuf.count))
+					nb_enqueued = eca_ops_enqueue_burst(
+							adapter, ops, n);
+
+				if (likely(nb_enqueued == n))
+					goto check;
+
+				/* Failed to enqueue events case */
+				for (i = nb_enqueued; i < n; i++)
+					eca_circular_buffer_add(
+						&adapter->ebuf,
+						ops[i]);
+
+check:
 				nb_deq += n;
 
-				if (nb_deq > max_deq) {
+				if (nb_deq >= max_deq) {
 					if ((qp + 1) == dev_qps) {
 						adapter->next_cdev_id =
 							(cdev_id + 1)
@@ -640,11 +783,12 @@ eca_crypto_adapter_deq_run(struct event_crypto_adapter *adapter,
 				}
 			}
 		}
+		adapter->next_cdev_id = 0;
 	} while (done == false);
 	return nb_deq;
 }
 
-static void
+static int
 eca_crypto_adapter_run(struct event_crypto_adapter *adapter,
 		       unsigned int max_ops)
 {
@@ -664,22 +808,26 @@ eca_crypto_adapter_run(struct event_crypto_adapter *adapter,
 
 	}
 
-	if (ops_left == max_ops)
+	if (ops_left == max_ops) {
 		rte_event_maintain(adapter->eventdev_id,
 				   adapter->event_port_id, 0);
+		return -EAGAIN;
+	} else
+		return 0;
 }
 
 static int
 eca_service_func(void *args)
 {
 	struct event_crypto_adapter *adapter = args;
+	int ret;
 
 	if (rte_spinlock_trylock(&adapter->lock) == 0)
 		return 0;
-	eca_crypto_adapter_run(adapter, adapter->max_nb);
+	ret = eca_crypto_adapter_run(adapter, adapter->max_nb);
 	rte_spinlock_unlock(&adapter->lock);
 
-	return 0;
+	return ret;
 }
 
 static int
@@ -769,11 +917,12 @@ eca_add_queue_pair(struct event_crypto_adapter *adapter, uint8_t cdev_id,
 			return -ENOMEM;
 
 		qpairs = dev_info->qpairs;
-		qpairs->op_buffer = rte_zmalloc_socket(adapter->mem_name,
-					BATCH_SIZE *
-					sizeof(struct rte_crypto_op *),
-					0, adapter->socket_id);
-		if (!qpairs->op_buffer) {
+
+		if (eca_circular_buffer_init("eca_cdev_circular_buffer",
+					     &qpairs->cbuf,
+					     CRYPTO_ADAPTER_OPS_BUFFER_SZ)) {
+			RTE_EDEV_LOG_ERR("Failed to get memory for cryptodev "
+					 "buffer");
 			rte_free(qpairs);
 			return -ENOMEM;
 		}
@@ -793,11 +942,12 @@ int
 rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 			uint8_t cdev_id,
 			int32_t queue_pair_id,
-			const struct rte_event *event)
+			const struct rte_event_crypto_adapter_queue_conf *conf)
 {
+	struct rte_event_crypto_adapter_vector_limits limits;
 	struct event_crypto_adapter *adapter;
-	struct rte_eventdev *dev;
 	struct crypto_device_info *dev_info;
+	struct rte_eventdev *dev;
 	uint32_t cap;
 	int ret;
 
@@ -822,11 +972,49 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 		return ret;
 	}
 
-	if ((cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) &&
-	    (event == NULL)) {
-		RTE_EDEV_LOG_ERR("Conf value can not be NULL for dev_id=%u",
-				  cdev_id);
-		return -EINVAL;
+	if (conf == NULL) {
+		if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) {
+			RTE_EDEV_LOG_ERR("Conf value can not be NULL for dev_id=%u",
+					 cdev_id);
+			return -EINVAL;
+		}
+	} else {
+		if (conf->flags & RTE_EVENT_CRYPTO_ADAPTER_EVENT_VECTOR) {
+			if ((cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_EVENT_VECTOR) == 0) {
+				RTE_EDEV_LOG_ERR("Event vectorization is not supported,"
+						 "dev %" PRIu8 " cdev %" PRIu8, id,
+						 cdev_id);
+				return -ENOTSUP;
+			}
+
+			ret = rte_event_crypto_adapter_vector_limits_get(
+				adapter->eventdev_id, cdev_id, &limits);
+			if (ret < 0) {
+				RTE_EDEV_LOG_ERR("Failed to get event device vector "
+						 "limits, dev %" PRIu8 " cdev %" PRIu8,
+						 id, cdev_id);
+				return -EINVAL;
+			}
+
+			if (conf->vector_sz < limits.min_sz ||
+			    conf->vector_sz > limits.max_sz ||
+			    conf->vector_timeout_ns < limits.min_timeout_ns ||
+			    conf->vector_timeout_ns > limits.max_timeout_ns ||
+			    conf->vector_mp == NULL) {
+				RTE_EDEV_LOG_ERR("Invalid event vector configuration,"
+						" dev %" PRIu8 " cdev %" PRIu8,
+						id, cdev_id);
+				return -EINVAL;
+			}
+
+			if (conf->vector_mp->elt_size < (sizeof(struct rte_event_vector) +
+			    (sizeof(uintptr_t) * conf->vector_sz))) {
+				RTE_EDEV_LOG_ERR("Invalid event vector configuration,"
+						" dev %" PRIu8 " cdev %" PRIu8,
+						id, cdev_id);
+				return -EINVAL;
+			}
+		}
 	}
 
 	dev_info = &adapter->cdevs[cdev_id];
@@ -846,9 +1034,8 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 	     adapter->mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW) ||
 	    (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW &&
 	     adapter->mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW)) {
-		RTE_FUNC_PTR_OR_ERR_RET(
-			*dev->dev_ops->crypto_adapter_queue_pair_add,
-			-ENOTSUP);
+		if (*dev->dev_ops->crypto_adapter_queue_pair_add == NULL)
+			return -ENOTSUP;
 		if (dev_info->qpairs == NULL) {
 			dev_info->qpairs =
 			    rte_zmalloc_socket(adapter->mem_name,
@@ -862,7 +1049,7 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 		ret = (*dev->dev_ops->crypto_adapter_queue_pair_add)(dev,
 				dev_info->dev,
 				queue_pair_id,
-				event);
+				conf);
 		if (ret)
 			return ret;
 
@@ -902,8 +1089,8 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 		rte_service_component_runstate_set(adapter->service_id, 1);
 	}
 
-	rte_eventdev_trace_crypto_adapter_queue_pair_add(id, cdev_id, event,
-		queue_pair_id);
+	rte_eventdev_trace_crypto_adapter_queue_pair_add(id, cdev_id,
+		queue_pair_id, conf);
 	return 0;
 }
 
@@ -948,9 +1135,8 @@ rte_event_crypto_adapter_queue_pair_del(uint8_t id, uint8_t cdev_id,
 	if ((cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) ||
 	    (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW &&
 	     adapter->mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW)) {
-		RTE_FUNC_PTR_OR_ERR_RET(
-			*dev->dev_ops->crypto_adapter_queue_pair_del,
-			-ENOTSUP);
+		if (*dev->dev_ops->crypto_adapter_queue_pair_del == NULL)
+			return -ENOTSUP;
 		ret = (*dev->dev_ops->crypto_adapter_queue_pair_del)(dev,
 						dev_info->dev,
 						queue_pair_id);
@@ -1167,4 +1353,49 @@ rte_event_crypto_adapter_event_port_get(uint8_t id, uint8_t *event_port_id)
 	*event_port_id = adapter->event_port_id;
 
 	return 0;
+}
+
+int
+rte_event_crypto_adapter_vector_limits_get(
+	uint8_t dev_id, uint16_t cdev_id,
+	struct rte_event_crypto_adapter_vector_limits *limits)
+{
+	struct rte_cryptodev *cdev;
+	struct rte_eventdev *dev;
+	uint32_t cap;
+	int ret;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+
+	if (!rte_cryptodev_is_valid_dev(cdev_id)) {
+		RTE_EDEV_LOG_ERR("Invalid dev_id=%" PRIu8, cdev_id);
+		return -EINVAL;
+	}
+
+	if (limits == NULL) {
+		RTE_EDEV_LOG_ERR("Invalid limits storage provided");
+		return -EINVAL;
+	}
+
+	dev = &rte_eventdevs[dev_id];
+	cdev = rte_cryptodev_pmd_get_dev(cdev_id);
+
+	ret = rte_event_crypto_adapter_caps_get(dev_id, cdev_id, &cap);
+	if (ret) {
+		RTE_EDEV_LOG_ERR("Failed to get adapter caps edev %" PRIu8
+				 "cdev %" PRIu16, dev_id, cdev_id);
+		return ret;
+	}
+
+	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_EVENT_VECTOR)) {
+		RTE_EDEV_LOG_ERR("Event vectorization is not supported,"
+				 "dev %" PRIu8 " cdev %" PRIu8, dev_id, cdev_id);
+		return -ENOTSUP;
+	}
+
+	if ((*dev->dev_ops->crypto_adapter_vector_limits_get) == NULL)
+		return -ENOTSUP;
+
+	return dev->dev_ops->crypto_adapter_vector_limits_get(
+		dev, cdev, limits);
 }

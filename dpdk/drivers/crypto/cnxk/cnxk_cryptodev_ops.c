@@ -10,12 +10,13 @@
 
 #include "cnxk_ae.h"
 #include "cnxk_cryptodev.h"
-#include "cnxk_cryptodev_ops.h"
 #include "cnxk_cryptodev_capabilities.h"
+#include "cnxk_cryptodev_ops.h"
 #include "cnxk_se.h"
 
-#define CNXK_CPT_MAX_ASYM_OP_NUM_PARAMS 5
-#define CNXK_CPT_MAX_ASYM_OP_MOD_LEN	1024
+#define CNXK_CPT_MAX_ASYM_OP_NUM_PARAMS	 5
+#define CNXK_CPT_MAX_ASYM_OP_MOD_LEN	 1024
+#define CNXK_CPT_META_BUF_MAX_CACHE_SIZE 128
 
 static int
 cnxk_cpt_get_mlen(void)
@@ -26,11 +27,13 @@ cnxk_cpt_get_mlen(void)
 	len = 2 * sizeof(uint64_t);
 	len += ROC_SE_MAX_MAC_LEN * sizeof(uint8_t);
 
+	/* For PDCP_CHAIN passthrough alignment */
+	len += 8;
 	len += ROC_SE_OFF_CTRL_LEN + ROC_CPT_AES_CBC_IV_LEN;
-	len += RTE_ALIGN_CEIL((ROC_SE_SG_LIST_HDR_SIZE +
-			       (RTE_ALIGN_CEIL(ROC_SE_MAX_SG_IN_OUT_CNT, 4) >>
-				2) * ROC_SE_SG_ENTRY_SIZE),
-			      8);
+	len += RTE_ALIGN_CEIL(
+		(ROC_SE_SG_LIST_HDR_SIZE +
+		 (RTE_ALIGN_CEIL(ROC_SE_MAX_SG_IN_OUT_CNT, 4) >> 2) * ROC_SE_SG_ENTRY_SIZE),
+		8);
 
 	return len;
 }
@@ -200,7 +203,7 @@ cnxk_cpt_metabuf_mempool_create(const struct rte_cryptodev *dev,
 	}
 
 	mb_pool_sz = nb_elements;
-	cache_sz = RTE_MIN(RTE_MEMPOOL_CACHE_MAX_SIZE, nb_elements / 1.5);
+	cache_sz = RTE_MIN(CNXK_CPT_META_BUF_MAX_CACHE_SIZE, nb_elements / 1.5);
 
 	/* For poll mode, core that enqueues and core that dequeues can be
 	 * different. For event mode, all cores are allowed to use same crypto
@@ -405,7 +408,6 @@ cnxk_cpt_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	}
 
 	qp->sess_mp = conf->mp_session;
-	qp->sess_mp_priv = conf->mp_session_private;
 	dev->data->queue_pairs[qp_id] = qp;
 
 	return 0;
@@ -421,85 +423,183 @@ cnxk_cpt_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 	return sizeof(struct cnxk_se_sess);
 }
 
-static int
-sym_xform_verify(struct rte_crypto_sym_xform *xform)
+static bool
+is_valid_pdcp_cipher_alg(struct rte_crypto_sym_xform *c_xfrm,
+			 struct cnxk_se_sess *sess)
 {
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->auth.algo == RTE_CRYPTO_AUTH_NULL &&
-	    xform->auth.op == RTE_CRYPTO_AUTH_OP_VERIFY)
-		return -ENOTSUP;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER && xform->next == NULL)
-		return CNXK_CPT_CIPHER;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH && xform->next == NULL)
-		return CNXK_CPT_AUTH;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AEAD && xform->next == NULL)
-		return CNXK_CPT_AEAD;
-
-	if (xform->next == NULL)
-		return -EIO;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-	    xform->cipher.algo == RTE_CRYPTO_CIPHER_3DES_CBC &&
-	    xform->next->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->next->auth.algo == RTE_CRYPTO_AUTH_SHA1)
-		return -ENOTSUP;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->auth.algo == RTE_CRYPTO_AUTH_SHA1 &&
-	    xform->next->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-	    xform->next->cipher.algo == RTE_CRYPTO_CIPHER_3DES_CBC)
-		return -ENOTSUP;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-	    xform->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT &&
-	    xform->next->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->next->auth.op == RTE_CRYPTO_AUTH_OP_GENERATE)
-		return CNXK_CPT_CIPHER_ENC_AUTH_GEN;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->auth.op == RTE_CRYPTO_AUTH_OP_VERIFY &&
-	    xform->next->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-	    xform->next->cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT)
-		return CNXK_CPT_AUTH_VRFY_CIPHER_DEC;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->auth.op == RTE_CRYPTO_AUTH_OP_GENERATE &&
-	    xform->next->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-	    xform->next->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
-		switch (xform->auth.algo) {
-		case RTE_CRYPTO_AUTH_SHA1_HMAC:
-			switch (xform->next->cipher.algo) {
-			case RTE_CRYPTO_CIPHER_AES_CBC:
-				return CNXK_CPT_AUTH_GEN_CIPHER_ENC;
-			default:
-				return -ENOTSUP;
-			}
-		default:
-			return -ENOTSUP;
-		}
+	switch (c_xfrm->cipher.algo) {
+	case RTE_CRYPTO_CIPHER_SNOW3G_UEA2:
+	case RTE_CRYPTO_CIPHER_ZUC_EEA3:
+		break;
+	case RTE_CRYPTO_CIPHER_AES_CTR:
+		sess->aes_ctr_eea2 = 1;
+		break;
+	default:
+		return false;
 	}
 
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-	    xform->cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT &&
-	    xform->next->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-	    xform->next->auth.op == RTE_CRYPTO_AUTH_OP_VERIFY) {
-		switch (xform->cipher.algo) {
-		case RTE_CRYPTO_CIPHER_AES_CBC:
-			switch (xform->next->auth.algo) {
+	return true;
+}
+
+static int
+cnxk_sess_fill(struct roc_cpt *roc_cpt, struct rte_crypto_sym_xform *xform,
+	       struct cnxk_se_sess *sess)
+{
+	struct rte_crypto_sym_xform *aead_xfrm = NULL;
+	struct rte_crypto_sym_xform *c_xfrm = NULL;
+	struct rte_crypto_sym_xform *a_xfrm = NULL;
+	bool pdcp_chain_supported = false;
+	bool ciph_then_auth = false;
+
+	if (roc_cpt->hw_caps[CPT_ENG_TYPE_SE].pdcp_chain)
+		pdcp_chain_supported = true;
+
+	if (xform == NULL)
+		return -EINVAL;
+
+	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER) {
+		c_xfrm = xform;
+		a_xfrm = xform->next;
+		ciph_then_auth = true;
+	} else if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH) {
+		c_xfrm = xform->next;
+		a_xfrm = xform;
+		ciph_then_auth = false;
+	} else {
+		aead_xfrm = xform;
+	}
+
+	if (c_xfrm != NULL && c_xfrm->type != RTE_CRYPTO_SYM_XFORM_CIPHER) {
+		plt_dp_err("Invalid type in cipher xform");
+		return -EINVAL;
+	}
+
+	if (a_xfrm != NULL && a_xfrm->type != RTE_CRYPTO_SYM_XFORM_AUTH) {
+		plt_dp_err("Invalid type in auth xform");
+		return -EINVAL;
+	}
+
+	if (aead_xfrm != NULL && aead_xfrm->type != RTE_CRYPTO_SYM_XFORM_AEAD) {
+		plt_dp_err("Invalid type in AEAD xform");
+		return -EINVAL;
+	}
+
+	if ((c_xfrm == NULL || c_xfrm->cipher.algo == RTE_CRYPTO_CIPHER_NULL) &&
+	    a_xfrm != NULL && a_xfrm->auth.algo == RTE_CRYPTO_AUTH_NULL &&
+	    a_xfrm->auth.op == RTE_CRYPTO_AUTH_OP_VERIFY) {
+		plt_dp_err("Null cipher + null auth verify is not supported");
+		return -ENOTSUP;
+	}
+
+	/* Cipher only */
+	if (c_xfrm != NULL &&
+	    (a_xfrm == NULL || a_xfrm->auth.algo == RTE_CRYPTO_AUTH_NULL)) {
+		if (fill_sess_cipher(c_xfrm, sess))
+			return -ENOTSUP;
+		else
+			return 0;
+	}
+
+	/* Auth only */
+	if (a_xfrm != NULL &&
+	    (c_xfrm == NULL || c_xfrm->cipher.algo == RTE_CRYPTO_CIPHER_NULL)) {
+		if (fill_sess_auth(a_xfrm, sess))
+			return -ENOTSUP;
+		else
+			return 0;
+	}
+
+	/* AEAD */
+	if (aead_xfrm != NULL) {
+		if (fill_sess_aead(aead_xfrm, sess))
+			return -ENOTSUP;
+		else
+			return 0;
+	}
+
+	/* Chained ops */
+	if (c_xfrm == NULL || a_xfrm == NULL) {
+		plt_dp_err("Invalid xforms");
+		return -EINVAL;
+	}
+
+	if (c_xfrm->cipher.algo == RTE_CRYPTO_CIPHER_3DES_CBC &&
+	    a_xfrm->auth.algo == RTE_CRYPTO_AUTH_SHA1) {
+		plt_dp_err("3DES-CBC + SHA1 is not supported");
+		return -ENOTSUP;
+	}
+
+	/* Cipher then auth */
+	if (ciph_then_auth) {
+		if (c_xfrm->cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT) {
+			if (a_xfrm->auth.op != RTE_CRYPTO_AUTH_OP_VERIFY)
+				return -EINVAL;
+			sess->auth_first = 1;
+			switch (a_xfrm->auth.algo) {
 			case RTE_CRYPTO_AUTH_SHA1_HMAC:
-				return CNXK_CPT_CIPHER_DEC_AUTH_VRFY;
+				switch (c_xfrm->cipher.algo) {
+				case RTE_CRYPTO_CIPHER_AES_CBC:
+					break;
+				default:
+					return -ENOTSUP;
+				}
+				break;
+			case RTE_CRYPTO_AUTH_SNOW3G_UIA2:
+			case RTE_CRYPTO_AUTH_ZUC_EIA3:
+			case RTE_CRYPTO_AUTH_AES_CMAC:
+				if (!pdcp_chain_supported ||
+				    !is_valid_pdcp_cipher_alg(c_xfrm, sess))
+					return -ENOTSUP;
+				break;
 			default:
 				return -ENOTSUP;
 			}
+		}
+		sess->roc_se_ctx.ciph_then_auth = 1;
+		sess->chained_op = 1;
+		if (fill_sess_cipher(c_xfrm, sess))
+			return -ENOTSUP;
+		if (fill_sess_auth(a_xfrm, sess))
+			return -ENOTSUP;
+		else
+			return 0;
+	}
+
+	/* else */
+
+	if (c_xfrm->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
+		if (a_xfrm->auth.op != RTE_CRYPTO_AUTH_OP_GENERATE)
+			return -EINVAL;
+		sess->auth_first = 1;
+		switch (a_xfrm->auth.algo) {
+		case RTE_CRYPTO_AUTH_SHA1_HMAC:
+			switch (c_xfrm->cipher.algo) {
+			case RTE_CRYPTO_CIPHER_AES_CBC:
+				break;
+			default:
+				return -ENOTSUP;
+			}
+			break;
+		case RTE_CRYPTO_AUTH_SNOW3G_UIA2:
+		case RTE_CRYPTO_AUTH_ZUC_EIA3:
+		case RTE_CRYPTO_AUTH_AES_CMAC:
+			if (!pdcp_chain_supported ||
+			    !is_valid_pdcp_cipher_alg(c_xfrm, sess))
+				return -ENOTSUP;
+			break;
 		default:
 			return -ENOTSUP;
 		}
 	}
 
-	return -ENOTSUP;
+	sess->roc_se_ctx.auth_then_ciph = 1;
+	sess->chained_op = 1;
+	if (fill_sess_auth(a_xfrm, sess))
+		return -ENOTSUP;
+	if (fill_sess_cipher(c_xfrm, sess))
+		return -ENOTSUP;
+	else
+		return 0;
 }
 
 static uint64_t
@@ -510,7 +610,7 @@ cnxk_cpt_inst_w7_get(struct cnxk_se_sess *sess, struct roc_cpt *roc_cpt)
 	inst_w7.s.cptr = (uint64_t)&sess->roc_se_ctx.se_ctx;
 
 	/* Set the engine group */
-	if (sess->zsk_flag || sess->chacha_poly)
+	if (sess->zsk_flag || sess->aes_ctr_eea2)
 		inst_w7.s.egrp = roc_cpt->eng_grp[CPT_ENG_TYPE_SE];
 	else
 		inst_w7.s.egrp = roc_cpt->eng_grp[CPT_ENG_TYPE_IE];
@@ -519,61 +619,46 @@ cnxk_cpt_inst_w7_get(struct cnxk_se_sess *sess, struct roc_cpt *roc_cpt)
 }
 
 int
-sym_session_configure(struct roc_cpt *roc_cpt, int driver_id,
+sym_session_configure(struct roc_cpt *roc_cpt,
 		      struct rte_crypto_sym_xform *xform,
-		      struct rte_cryptodev_sym_session *sess,
-		      struct rte_mempool *pool)
+		      struct rte_cryptodev_sym_session *sess)
 {
-	struct cnxk_se_sess *sess_priv;
-	void *priv;
+	enum cpt_dp_thread_type thr_type;
+	struct cnxk_se_sess *sess_priv = CRYPTODEV_GET_SYM_SESS_PRIV(sess);
 	int ret;
 
-	ret = sym_xform_verify(xform);
-	if (unlikely(ret < 0))
-		return ret;
-
-	if (unlikely(rte_mempool_get(pool, &priv))) {
-		plt_dp_err("Could not allocate session private data");
-		return -ENOMEM;
-	}
-
-	memset(priv, 0, sizeof(struct cnxk_se_sess));
-
-	sess_priv = priv;
-
-	switch (ret) {
-	case CNXK_CPT_CIPHER:
-		ret = fill_sess_cipher(xform, sess_priv);
-		break;
-	case CNXK_CPT_AUTH:
-		if (xform->auth.algo == RTE_CRYPTO_AUTH_AES_GMAC)
-			ret = fill_sess_gmac(xform, sess_priv);
-		else
-			ret = fill_sess_auth(xform, sess_priv);
-		break;
-	case CNXK_CPT_AEAD:
-		ret = fill_sess_aead(xform, sess_priv);
-		break;
-	case CNXK_CPT_CIPHER_ENC_AUTH_GEN:
-	case CNXK_CPT_CIPHER_DEC_AUTH_VRFY:
-		ret = fill_sess_cipher(xform, sess_priv);
-		if (ret < 0)
-			break;
-		ret = fill_sess_auth(xform->next, sess_priv);
-		break;
-	case CNXK_CPT_AUTH_VRFY_CIPHER_DEC:
-	case CNXK_CPT_AUTH_GEN_CIPHER_ENC:
-		ret = fill_sess_auth(xform, sess_priv);
-		if (ret < 0)
-			break;
-		ret = fill_sess_cipher(xform->next, sess_priv);
-		break;
-	default:
-		ret = -1;
-	}
-
+	memset(sess_priv, 0, sizeof(struct cnxk_se_sess));
+	ret = cnxk_sess_fill(roc_cpt, xform, sess_priv);
 	if (ret)
 		goto priv_put;
+
+	if (sess_priv->cpt_op & ROC_SE_OP_CIPHER_MASK) {
+		switch (sess_priv->roc_se_ctx.fc_type) {
+		case ROC_SE_FC_GEN:
+			if (sess_priv->aes_gcm || sess_priv->chacha_poly)
+				thr_type = CPT_DP_THREAD_TYPE_FC_AEAD;
+			else
+				thr_type = CPT_DP_THREAD_TYPE_FC_CHAIN;
+			break;
+		case ROC_SE_PDCP:
+			thr_type = CPT_DP_THREAD_TYPE_PDCP;
+			break;
+		case ROC_SE_KASUMI:
+			thr_type = CPT_DP_THREAD_TYPE_KASUMI;
+			break;
+		case ROC_SE_PDCP_CHAIN:
+			thr_type = CPT_DP_THREAD_TYPE_PDCP_CHAIN;
+			break;
+		default:
+			plt_err("Invalid op type");
+			ret = -ENOTSUP;
+			goto priv_put;
+		}
+	} else {
+		thr_type = CPT_DP_THREAD_AUTH_ONLY;
+	}
+
+	sess_priv->dp_thr_type = thr_type;
 
 	if ((sess_priv->roc_se_ctx.fc_type == ROC_SE_HASH_HMAC) &&
 	    cpt_mac_len_verify(&xform->auth)) {
@@ -588,61 +673,39 @@ sym_session_configure(struct roc_cpt *roc_cpt, int driver_id,
 	}
 
 	sess_priv->cpt_inst_w7 = cnxk_cpt_inst_w7_get(sess_priv, roc_cpt);
-
-	set_sym_session_private_data(sess, driver_id, sess_priv);
-
 	return 0;
 
 priv_put:
-	rte_mempool_put(pool, priv);
-
-	return -ENOTSUP;
+	return ret;
 }
 
 int
 cnxk_cpt_sym_session_configure(struct rte_cryptodev *dev,
 			       struct rte_crypto_sym_xform *xform,
-			       struct rte_cryptodev_sym_session *sess,
-			       struct rte_mempool *pool)
+			       struct rte_cryptodev_sym_session *sess)
 {
 	struct cnxk_cpt_vf *vf = dev->data->dev_private;
 	struct roc_cpt *roc_cpt = &vf->cpt;
-	uint8_t driver_id;
 
-	driver_id = dev->driver_id;
-
-	return sym_session_configure(roc_cpt, driver_id, xform, sess, pool);
+	return sym_session_configure(roc_cpt, xform, sess);
 }
 
 void
-sym_session_clear(int driver_id, struct rte_cryptodev_sym_session *sess)
+sym_session_clear(struct rte_cryptodev_sym_session *sess)
 {
-	void *priv = get_sym_session_private_data(sess, driver_id);
-	struct cnxk_se_sess *sess_priv;
-	struct rte_mempool *pool;
-
-	if (priv == NULL)
-		return;
-
-	sess_priv = priv;
+	struct cnxk_se_sess *sess_priv = CRYPTODEV_GET_SYM_SESS_PRIV(sess);
 
 	if (sess_priv->roc_se_ctx.auth_key != NULL)
 		plt_free(sess_priv->roc_se_ctx.auth_key);
 
-	memset(priv, 0, cnxk_cpt_sym_session_get_size(NULL));
-
-	pool = rte_mempool_from_obj(priv);
-
-	set_sym_session_private_data(sess, driver_id, NULL);
-
-	rte_mempool_put(pool, priv);
+	memset(sess_priv, 0, cnxk_cpt_sym_session_get_size(NULL));
 }
 
 void
-cnxk_cpt_sym_session_clear(struct rte_cryptodev *dev,
+cnxk_cpt_sym_session_clear(struct rte_cryptodev *dev __rte_unused,
 			   struct rte_cryptodev_sym_session *sess)
 {
-	return sym_session_clear(dev->driver_id, sess);
+	return sym_session_clear(sess);
 }
 
 unsigned int
@@ -655,10 +718,9 @@ void
 cnxk_ae_session_clear(struct rte_cryptodev *dev,
 		      struct rte_cryptodev_asym_session *sess)
 {
-	struct rte_mempool *sess_mp;
 	struct cnxk_ae_sess *priv;
 
-	priv = get_asym_session_private_data(sess, dev->driver_id);
+	priv = (struct cnxk_ae_sess *) sess->sess_private_data;
 	if (priv == NULL)
 		return;
 
@@ -667,40 +729,72 @@ cnxk_ae_session_clear(struct rte_cryptodev *dev,
 
 	/* Reset and free object back to pool */
 	memset(priv, 0, cnxk_ae_session_size_get(dev));
-	sess_mp = rte_mempool_from_obj(priv);
-	set_asym_session_private_data(sess, dev->driver_id, NULL);
-	rte_mempool_put(sess_mp, priv);
 }
 
 int
 cnxk_ae_session_cfg(struct rte_cryptodev *dev,
 		    struct rte_crypto_asym_xform *xform,
-		    struct rte_cryptodev_asym_session *sess,
-		    struct rte_mempool *pool)
+		    struct rte_cryptodev_asym_session *sess)
 {
+	struct cnxk_ae_sess *priv =
+			(struct cnxk_ae_sess *) sess->sess_private_data;
 	struct cnxk_cpt_vf *vf = dev->data->dev_private;
 	struct roc_cpt *roc_cpt = &vf->cpt;
-	struct cnxk_ae_sess *priv;
 	union cpt_inst_w7 w7;
 	int ret;
 
-	if (rte_mempool_get(pool, (void **)&priv))
-		return -ENOMEM;
-
-	memset(priv, 0, sizeof(struct cnxk_ae_sess));
-
 	ret = cnxk_ae_fill_session_parameters(priv, xform);
-	if (ret) {
-		rte_mempool_put(pool, priv);
+	if (ret)
 		return ret;
-	}
 
 	w7.u64 = 0;
 	w7.s.egrp = roc_cpt->eng_grp[CPT_ENG_TYPE_AE];
 	priv->cpt_inst_w7 = w7.u64;
 	priv->cnxk_fpm_iova = vf->cnxk_fpm_iova;
 	priv->ec_grp = vf->ec_grp;
-	set_asym_session_private_data(sess, dev->driver_id, priv);
 
 	return 0;
+}
+
+void
+cnxk_cpt_dump_on_err(struct cnxk_cpt_qp *qp)
+{
+	struct pending_queue *pend_q = &qp->pend_q;
+	uint64_t inflight, enq_ptr, deq_ptr, insts;
+	union cpt_lf_q_inst_ptr inst_ptr;
+	union cpt_lf_inprog lf_inprog;
+
+	plt_print("Lcore ID: %d, LF/QP ID: %d", rte_lcore_id(), qp->lf.lf_id);
+	plt_print("");
+	plt_print("S/w pending queue:");
+	plt_print("\tHead: %"PRIu64"", pend_q->head);
+	plt_print("\tTail: %"PRIu64"", pend_q->tail);
+	plt_print("\tMask: 0x%"PRIx64"", pend_q->pq_mask);
+	plt_print("\tInflight count: %"PRIu64"",
+		  pending_queue_infl_cnt(pend_q->head, pend_q->tail,
+					 pend_q->pq_mask));
+
+	plt_print("");
+	plt_print("H/w pending queue:");
+
+	lf_inprog.u = plt_read64(qp->lf.rbase + CPT_LF_INPROG);
+	inflight = lf_inprog.s.inflight;
+	plt_print("\tInflight in engines: %"PRIu64"", inflight);
+
+	inst_ptr.u = plt_read64(qp->lf.rbase + CPT_LF_Q_INST_PTR);
+
+	enq_ptr = inst_ptr.s.nq_ptr;
+	deq_ptr = inst_ptr.s.dq_ptr;
+
+	if (enq_ptr >= deq_ptr)
+		insts = enq_ptr - deq_ptr;
+	else
+		insts = (enq_ptr + pend_q->pq_mask + 1 + 320 + 40) - deq_ptr;
+
+	plt_print("\tNQ ptr: 0x%"PRIx64"", enq_ptr);
+	plt_print("\tDQ ptr: 0x%"PRIx64"", deq_ptr);
+	plt_print("Insts waiting in CPT: %"PRIu64"", insts);
+
+	plt_print("");
+	roc_cpt_afs_print(qp->lf.roc_cpt);
 }

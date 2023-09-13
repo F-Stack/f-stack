@@ -7,12 +7,12 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
-#include <rte_bus.h>
+#include <bus_driver.h>
 #include <rte_class.h>
-#include <rte_compat.h>
 #include <rte_dev.h>
 #include <rte_devargs.h>
 #include <rte_errno.h>
@@ -161,8 +161,7 @@ rte_devargs_layers_parse(struct rte_devargs *devargs,
 
 get_out:
 	for (i = 0; i < RTE_DIM(layers); i++) {
-		if (layers[i].kvlist)
-			rte_kvargs_free(layers[i].kvlist);
+		rte_kvargs_free(layers[i].kvlist);
 	}
 	if (ret != 0) {
 		if (allocated_data) {
@@ -286,8 +285,7 @@ rte_devargs_reset(struct rte_devargs *da)
 {
 	if (da == NULL)
 		return;
-	if (da->data)
-		free(da->data);
+	free(da->data);
 	da->data = NULL;
 }
 

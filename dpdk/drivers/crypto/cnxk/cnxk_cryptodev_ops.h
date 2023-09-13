@@ -5,13 +5,13 @@
 #ifndef _CNXK_CRYPTODEV_OPS_H_
 #define _CNXK_CRYPTODEV_OPS_H_
 
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_event_crypto_adapter.h>
 
 #include "roc_api.h"
 
-#define CNXK_CPT_MIN_HEADROOM_REQ 24
-#define CNXK_CPT_MIN_TAILROOM_REQ 102
+#define CNXK_CPT_MIN_HEADROOM_REQ	 32
+#define CNXK_CPT_MIN_TAILROOM_REQ	 102
 
 /* Default command timeout in seconds */
 #define DEFAULT_COMMAND_TIMEOUT 4
@@ -30,27 +30,23 @@ struct cpt_qp_meta_info {
 	int mlen;
 };
 
-enum sym_xform_type {
-	CNXK_CPT_CIPHER = 1,
-	CNXK_CPT_AUTH,
-	CNXK_CPT_AEAD,
-	CNXK_CPT_CIPHER_ENC_AUTH_GEN,
-	CNXK_CPT_AUTH_VRFY_CIPHER_DEC,
-	CNXK_CPT_AUTH_GEN_CIPHER_ENC,
-	CNXK_CPT_CIPHER_DEC_AUTH_VRFY
-};
-
 #define CPT_OP_FLAGS_METABUF	       (1 << 1)
 #define CPT_OP_FLAGS_AUTH_VERIFY       (1 << 0)
 #define CPT_OP_FLAGS_IPSEC_DIR_INBOUND (1 << 2)
+#define CPT_OP_FLAGS_IPSEC_INB_REPLAY  (1 << 3)
 
 struct cpt_inflight_req {
 	union cpt_res_s res;
-	struct rte_crypto_op *cop;
+	union {
+		struct rte_crypto_op *cop;
+		struct rte_event_vector *vec;
+	};
 	void *mdata;
 	uint8_t op_flags;
 	void *qp;
-} __rte_aligned(16);
+} __rte_aligned(ROC_ALIGN);
+
+PLT_STATIC_ASSERT(sizeof(struct cpt_inflight_req) == ROC_CACHE_LINE_SZ);
 
 struct pending_queue {
 	/** Array of pending requests */
@@ -70,6 +66,10 @@ struct crypto_adpter_info {
 	/**< Set if queue pair is added to crypto adapter */
 	struct rte_mempool *req_mp;
 	/**< CPT inflight request mempool */
+	uint16_t vector_sz;
+	/** Maximum number of cops to combine into single vector */
+	struct rte_mempool *vector_mp;
+	/** Pool for allocating rte_event_vector */
 };
 
 struct cnxk_cpt_qp {
@@ -77,16 +77,14 @@ struct cnxk_cpt_qp {
 	/**< Crypto LF */
 	struct pending_queue pend_q;
 	/**< Pending queue */
-	struct rte_mempool *sess_mp;
-	/**< Session mempool */
-	struct rte_mempool *sess_mp_priv;
-	/**< Session private data mempool */
-	struct cpt_qp_meta_info meta_info;
-	/**< Metabuf info required to support operations on the queue pair */
 	struct roc_cpt_lmtline lmtline;
 	/**< Lmtline information */
+	struct cpt_qp_meta_info meta_info;
+	/**< Metabuf info required to support operations on the queue pair */
 	struct crypto_adpter_info ca;
 	/**< Crypto adapter related info */
+	struct rte_mempool *sess_mp;
+	/**< Session mempool */
 };
 
 int cnxk_cpt_dev_config(struct rte_cryptodev *dev,
@@ -111,18 +109,16 @@ unsigned int cnxk_cpt_sym_session_get_size(struct rte_cryptodev *dev);
 
 int cnxk_cpt_sym_session_configure(struct rte_cryptodev *dev,
 				   struct rte_crypto_sym_xform *xform,
-				   struct rte_cryptodev_sym_session *sess,
-				   struct rte_mempool *pool);
+				   struct rte_cryptodev_sym_session *sess);
 
-int sym_session_configure(struct roc_cpt *roc_cpt, int driver_id,
+int sym_session_configure(struct roc_cpt *roc_cpt,
 			  struct rte_crypto_sym_xform *xform,
-			  struct rte_cryptodev_sym_session *sess,
-			  struct rte_mempool *pool);
+			  struct rte_cryptodev_sym_session *sess);
 
 void cnxk_cpt_sym_session_clear(struct rte_cryptodev *dev,
-				struct rte_cryptodev_sym_session *sess);
+		struct rte_cryptodev_sym_session *sess);
 
-void sym_session_clear(int driver_id, struct rte_cryptodev_sym_session *sess);
+void sym_session_clear(struct rte_cryptodev_sym_session *sess);
 
 unsigned int cnxk_ae_session_size_get(struct rte_cryptodev *dev __rte_unused);
 
@@ -130,26 +126,8 @@ void cnxk_ae_session_clear(struct rte_cryptodev *dev,
 			   struct rte_cryptodev_asym_session *sess);
 int cnxk_ae_session_cfg(struct rte_cryptodev *dev,
 			struct rte_crypto_asym_xform *xform,
-			struct rte_cryptodev_asym_session *sess,
-			struct rte_mempool *pool);
-
-static inline union rte_event_crypto_metadata *
-cnxk_event_crypto_mdata_get(struct rte_crypto_op *op)
-{
-	union rte_event_crypto_metadata *ec_mdata;
-
-	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
-		ec_mdata = rte_cryptodev_sym_session_get_user_data(
-			op->sym->session);
-	else if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS &&
-		 op->private_data_offset)
-		ec_mdata = (union rte_event_crypto_metadata
-				    *)((uint8_t *)op + op->private_data_offset);
-	else
-		return NULL;
-
-	return ec_mdata;
-}
+			struct rte_cryptodev_asym_session *sess);
+void cnxk_cpt_dump_on_err(struct cnxk_cpt_qp *qp);
 
 static __rte_always_inline void
 pending_queue_advance(uint64_t *index, const uint64_t mask)

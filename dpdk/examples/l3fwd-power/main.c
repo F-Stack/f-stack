@@ -47,6 +47,7 @@
 #include <rte_metrics.h>
 #include <rte_telemetry.h>
 #include <rte_power_pmd_mgmt.h>
+#include <rte_power_intel_uncore.h>
 
 #include "perf_core.h"
 #include "main.h"
@@ -121,8 +122,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
 
 /*
  * These two thresholds were decided on by running the training algorithm on
@@ -134,8 +135,8 @@
 
 #define NUM_TELSTATS RTE_DIM(telstats_strings)
 
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+static uint16_t nb_rxd = RX_DESC_DEFAULT;
+static uint16_t nb_txd = TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
 static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
@@ -161,6 +162,9 @@ static struct rte_timer telemetry_timer;
 /* stats index returned by metrics lib */
 int telstats_index;
 
+/* flag to check if uncore option enabled */
+int enabled_uncore = -1;
+
 struct telstats_name {
 	char name[RTE_ETH_XSTATS_NAME_SIZE];
 };
@@ -177,6 +181,12 @@ enum busy_rate {
 	ZERO = 0,
 	PARTIAL = 50,
 	FULL = 100
+};
+
+enum uncore_choice {
+	UNCORE_MIN = 0,
+	UNCORE_MAX = 1,
+	UNCORE_IDX = 2
 };
 
 /* reference poll count to measure core busyness */
@@ -250,7 +260,6 @@ uint16_t nb_lcore_params = RTE_DIM(lcore_params_array_default);
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode        = RTE_ETH_MQ_RX_RSS,
-		.split_hdr_size = 0,
 		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
@@ -265,6 +274,10 @@ static struct rte_eth_conf port_conf = {
 };
 
 static uint32_t max_pkt_len;
+static uint32_t max_empty_polls = 512;
+static uint32_t pause_duration = 1;
+static uint32_t scale_freq_min;
+static uint32_t scale_freq_max;
 
 static struct rte_mempool * pktmbuf_pool[NB_SOCKETS];
 
@@ -1612,6 +1625,9 @@ print_usage(const char *prgname)
 		"  [--max-pkt-len PKTLEN]\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
 		"  -P: enable promiscuous mode\n"
+		"  -u: set min/max frequency for uncore to minimum value\n"
+		"  -U: set min/max frequency for uncore to maximum value\n"
+		"  -i (frequency index): set min/max frequency for uncore to specified frequency index\n"
 		"  --config (port,queue,lcore): rx queues configuration\n"
 		"  --high-perf-cores CORELIST: list of high performance cores\n"
 		"  --perf-config: similar as config, cores specified as indices"
@@ -1626,8 +1642,30 @@ print_usage(const char *prgname)
 		" empty polls, full polls, and core busyness to telemetry\n"
 		" --interrupt-only: enable interrupt-only mode\n"
 		" --pmd-mgmt MODE: enable PMD power management mode. "
-		"Currently supported modes: baseline, monitor, pause, scale\n",
+		"Currently supported modes: baseline, monitor, pause, scale\n"
+		"  --max-empty-polls MAX_EMPTY_POLLS: number of empty polls to"
+		" wait before entering sleep state\n"
+		"  --pause-duration DURATION: set the duration, in microseconds,"
+		" of the pause callback\n"
+		"  --scale-freq-min FREQ_MIN: set minimum frequency for scaling mode for"
+		" all application lcores (FREQ_MIN must be in kHz, in increments of 100MHz)\n"
+		"  --scale-freq-max FREQ_MAX: set maximum frequency for scaling mode for"
+		" all application lcores (FREQ_MAX must be in kHz, in increments of 100MHz)\n",
 		prgname);
+}
+
+static int
+parse_int(const char *opt)
+{
+	char *end = NULL;
+	unsigned long val;
+
+	/* parse integer string */
+	val = strtoul(opt, &end, 10);
+	if ((opt[0] == '\0') || (end == NULL) || (*end != '\0'))
+		return -1;
+
+	return val;
 }
 
 static int parse_max_pkt_len(const char *pktlen)
@@ -1644,6 +1682,74 @@ static int parse_max_pkt_len(const char *pktlen)
 		return -1;
 
 	return len;
+}
+
+static int
+parse_uncore_options(enum uncore_choice choice, const char *argument)
+{
+	unsigned int die, pkg, max_pkg, max_die;
+	int ret = 0;
+	max_pkg = rte_power_uncore_get_num_pkgs();
+	if (max_pkg == 0)
+		return -1;
+
+	for (pkg = 0; pkg < max_pkg; pkg++) {
+		max_die = rte_power_uncore_get_num_dies(pkg);
+		if (max_die == 0)
+			return -1;
+		for (die = 0; die < max_die; die++) {
+			ret = rte_power_uncore_init(pkg, die);
+			if (ret == -1) {
+				RTE_LOG(INFO, L3FWD_POWER, "Unable to initialize uncore for pkg %02u die %02u\n"
+				, pkg, die);
+				return ret;
+			}
+			if (choice == UNCORE_MIN) {
+				ret = rte_power_uncore_freq_min(pkg, die);
+				if (ret == -1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Unable to set the uncore min/max to minimum uncore frequency value for pkg %02u die %02u\n"
+					, pkg, die);
+					return ret;
+				}
+			} else if (choice == UNCORE_MAX) {
+				ret = rte_power_uncore_freq_max(pkg, die);
+				if (ret == -1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Unable to set uncore min/max to maximum uncore frequency value for pkg %02u die %02u\n"
+					, pkg, die);
+					return ret;
+				}
+			} else if (choice == UNCORE_IDX) {
+				char *ptr = NULL;
+				int frequency_index = strtol(argument, &ptr, 10);
+				if (argument == ptr) {
+					RTE_LOG(INFO, L3FWD_POWER, "Index given is not a valid number.");
+					return -1;
+				}
+				int freq_array_len = rte_power_uncore_get_num_freqs(pkg, die);
+				if (frequency_index > freq_array_len - 1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Frequency index given out of range, please choose a value from 0 to %d.\n",
+					freq_array_len);
+					return -1;
+				}
+				ret = rte_power_set_uncore_freq(pkg, die, frequency_index);
+				if (ret == -1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Unable to set min/max uncore index value for pkg %02u die %02u\n",
+					pkg, die);
+					return ret;
+				}
+			} else {
+				RTE_LOG(INFO, L3FWD_POWER, "Uncore choice provided invalid\n");
+				return -1;
+			}
+		}
+	}
+
+	RTE_LOG(INFO, L3FWD_POWER, "Successfully set max/min/index uncore frequency.\n");
+	return ret;
 }
 
 static int
@@ -1803,6 +1909,10 @@ parse_ep_config(const char *q_arg)
 #define CMD_LINE_OPT_TELEMETRY "telemetry"
 #define CMD_LINE_OPT_PMD_MGMT "pmd-mgmt"
 #define CMD_LINE_OPT_MAX_PKT_LEN "max-pkt-len"
+#define CMD_LINE_OPT_MAX_EMPTY_POLLS "max-empty-polls"
+#define CMD_LINE_OPT_PAUSE_DURATION "pause-duration"
+#define CMD_LINE_OPT_SCALE_FREQ_MIN "scale-freq-min"
+#define CMD_LINE_OPT_SCALE_FREQ_MAX "scale-freq-max"
 
 /* Parse the argument given in the command line of the application */
 static int
@@ -1825,12 +1935,16 @@ parse_args(int argc, char **argv)
 		{CMD_LINE_OPT_TELEMETRY, 0, 0, 0},
 		{CMD_LINE_OPT_INTERRUPT_ONLY, 0, 0, 0},
 		{CMD_LINE_OPT_PMD_MGMT, 1, 0, 0},
+		{CMD_LINE_OPT_MAX_EMPTY_POLLS, 1, 0, 0},
+		{CMD_LINE_OPT_PAUSE_DURATION, 1, 0, 0},
+		{CMD_LINE_OPT_SCALE_FREQ_MIN, 1, 0, 0},
+		{CMD_LINE_OPT_SCALE_FREQ_MAX, 1, 0, 0},
 		{NULL, 0, 0, 0}
 	};
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "p:l:m:h:P",
+	while ((opt = getopt_long(argc, argvopt, "p:l:m:h:PuUi:",
 				lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -1858,6 +1972,27 @@ parse_args(int argc, char **argv)
 		case 'h':
 			limit = parse_max_pkt_len(optarg);
 			freq_tlb[HGH] = limit;
+			break;
+		case 'u':
+			enabled_uncore = parse_uncore_options(UNCORE_MIN, NULL);
+			if (enabled_uncore < 0) {
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+		case 'U':
+			enabled_uncore = parse_uncore_options(UNCORE_MAX, NULL);
+			if (enabled_uncore < 0) {
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+		case 'i':
+			enabled_uncore = parse_uncore_options(UNCORE_IDX, optarg);
+			if (enabled_uncore < 0) {
+				print_usage(prgname);
+				return -1;
+			}
 			break;
 		/* long options */
 		case 0:
@@ -1973,6 +2108,34 @@ parse_args(int argc, char **argv)
 				     sizeof(CMD_LINE_OPT_PARSE_PTYPE))) {
 				printf("soft parse-ptype is enabled\n");
 				parse_ptype = 1;
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_MAX_EMPTY_POLLS,
+					sizeof(CMD_LINE_OPT_MAX_EMPTY_POLLS))) {
+				printf("Maximum empty polls configured\n");
+				max_empty_polls = parse_int(optarg);
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_PAUSE_DURATION,
+					sizeof(CMD_LINE_OPT_PAUSE_DURATION))) {
+				printf("Pause duration configured\n");
+				pause_duration = parse_int(optarg);
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_SCALE_FREQ_MIN,
+					sizeof(CMD_LINE_OPT_SCALE_FREQ_MIN))) {
+				printf("Scaling frequency minimum configured\n");
+				scale_freq_min = parse_int(optarg);
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_SCALE_FREQ_MAX,
+					sizeof(CMD_LINE_OPT_SCALE_FREQ_MAX))) {
+				printf("Scaling frequency maximum configured\n");
+				scale_freq_max = parse_int(optarg);
 			}
 
 			break;
@@ -2302,7 +2465,7 @@ init_power_library(void)
 static int
 deinit_power_library(void)
 {
-	unsigned int lcore_id;
+	unsigned int lcore_id, max_pkg, max_die, die, pkg;
 	int ret = 0;
 
 	RTE_LCORE_FOREACH(lcore_id) {
@@ -2313,6 +2476,26 @@ deinit_power_library(void)
 				"Library deinitialization failed on core %u\n",
 				lcore_id);
 			return ret;
+		}
+	}
+
+	/* if uncore option was set */
+	if (enabled_uncore == 0) {
+		max_pkg = rte_power_uncore_get_num_pkgs();
+		if (max_pkg == 0)
+			return -1;
+		for (pkg = 0; pkg < max_pkg; pkg++) {
+			max_die = rte_power_uncore_get_num_dies(pkg);
+			if (max_die == 0)
+				return -1;
+			for (die = 0; die < max_die; die++) {
+				ret = rte_power_uncore_exit(pkg, die);
+				if (ret < 0) {
+					RTE_LOG(ERR, L3FWD_POWER, "Failed to exit uncore deinit successfully for pkg %02u die %02u\n"
+						, pkg, die);
+					return -1;
+				}
+			}
 		}
 	}
 	return ret;
@@ -2801,6 +2984,28 @@ main(int argc, char **argv)
 			}
 
 			if (app_mode == APP_MODE_PMD_MGMT && !baseline_enabled) {
+				/* Set power_pmd_mgmt configs passed by user */
+				rte_power_pmd_mgmt_set_emptypoll_max(max_empty_polls);
+				ret = rte_power_pmd_mgmt_set_pause_duration(pause_duration);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"Error setting pause_duration: err=%d, lcore=%d\n",
+							ret, lcore_id);
+
+				ret = rte_power_pmd_mgmt_set_scaling_freq_min(lcore_id,
+						scale_freq_min);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"Error setting scaling freq min: err=%d, lcore=%d\n",
+							ret, lcore_id);
+
+				ret = rte_power_pmd_mgmt_set_scaling_freq_max(lcore_id,
+						scale_freq_max);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"Error setting scaling freq max: err=%d, lcore %d\n",
+							ret, lcore_id);
+
 				ret = rte_power_ethdev_pmgmt_queue_enable(
 						lcore_id, portid, queueid,
 						pmgmt_type);

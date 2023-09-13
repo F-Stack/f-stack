@@ -18,6 +18,18 @@ sources = files(
         'fips_validation_ccm.c',
         'fips_validation_sha.c',
         'fips_validation_xts.c',
+        'fips_validation_rsa.c',
+        'fips_validation_ecdsa.c',
         'fips_dev_self_test.c',
         'main.c',
 )
+
+if dpdk_conf.has('RTE_HAS_JANSSON')
+    ext_deps += jansson_dep
+    cflags += '-DUSE_JANSSON'
+endif
+
+if dpdk_conf.has('RTE_HAS_OPENSSL')
+    ext_deps += openssl_dep
+    cflags += '-DUSE_OPENSSL'
+endif

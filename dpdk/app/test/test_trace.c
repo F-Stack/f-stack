@@ -11,6 +11,17 @@
 
 int app_dpdk_test_tp_count;
 
+#ifdef RTE_EXEC_ENV_WINDOWS
+
+static int
+test_trace(void)
+{
+	printf("trace not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 static int32_t
 test_trace_point_globbing(void)
 {
@@ -225,5 +236,7 @@ test_trace(void)
 {
 	return unit_test_suite_runner(&trace_tests);
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(trace_autotest, test_trace);

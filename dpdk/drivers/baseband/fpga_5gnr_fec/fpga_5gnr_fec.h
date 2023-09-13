@@ -36,7 +36,6 @@
 #define FPGA_RING_DESC_LEN_UNIT_BYTES (32)
 /* Maximum size of queue */
 #define FPGA_RING_MAX_SIZE (1024)
-#define FPGA_FLR_TIMEOUT_UNIT (16.384)
 
 #define FPGA_NUM_UL_QUEUES (32)
 #define FPGA_NUM_DL_QUEUES (32)
@@ -70,7 +69,6 @@ enum {
 	FPGA_5GNR_FEC_QUEUE_PF_VF_MAP_DONE = 0x00000008, /* len: 1B */
 	FPGA_5GNR_FEC_LOAD_BALANCE_FACTOR = 0x0000000a, /* len: 2B */
 	FPGA_5GNR_FEC_RING_DESC_LEN = 0x0000000c, /* len: 2B */
-	FPGA_5GNR_FEC_FLR_TIME_OUT = 0x0000000e, /* len: 2B */
 	FPGA_5GNR_FEC_VFQ_FLUSH_STATUS_LW = 0x00000018, /* len: 4B */
 	FPGA_5GNR_FEC_VFQ_FLUSH_STATUS_HI = 0x0000001c, /* len: 4B */
 	FPGA_5GNR_FEC_QUEUE_MAP = 0x00000040, /* len: 256B */
@@ -84,7 +82,9 @@ enum {
 	FPGA_5GNR_FEC_DDR4_RD_DATA_REGS = 0x00000A30, /* len: 8B */
 	FPGA_5GNR_FEC_DDR4_ADDR_RDY_REGS = 0x00000A38, /* len: 1B */
 	FPGA_5GNR_FEC_HARQ_BUF_SIZE_RDY_REGS = 0x00000A40, /* len: 1B */
-	FPGA_5GNR_FEC_HARQ_BUF_SIZE_REGS = 0x00000A48  /* len: 4B */
+	FPGA_5GNR_FEC_HARQ_BUF_SIZE_REGS = 0x00000A48, /* len: 4B */
+	FPGA_5GNR_FEC_MUTEX = 0x00000A60, /* len: 4B */
+	FPGA_5GNR_FEC_MUTEX_RESET = 0x00000A68  /* len: 4B */
 };
 
 /* FPGA 5GNR FEC Ring Control Registers */
@@ -107,6 +107,7 @@ enum {
 	DESC_ERR_DESC_READ_FAIL = 0x8,
 	DESC_ERR_DESC_READ_TIMEOUT = 0x9,
 	DESC_ERR_DESC_READ_TLP_POISONED = 0xA,
+	DESC_ERR_HARQ_INPUT_LEN = 0xB,
 	DESC_ERR_CB_READ_FAIL = 0xC,
 	DESC_ERR_CB_READ_TIMEOUT = 0xD,
 	DESC_ERR_CB_READ_TLP_POISONED = 0xE,
@@ -266,6 +267,8 @@ struct __rte_cache_aligned fpga_queue {
 	uint32_t sw_ring_wrap_mask;
 	uint32_t irq_enable;  /* Enable ops dequeue interrupts if set to 1 */
 	uint8_t q_idx;  /* Queue index */
+	/** uuid used for MUTEX acquision for DDR */
+	uint16_t ddr_mutex_uuid;
 	struct fpga_5gnr_fec_device *d;
 	/* MMIO register of shadow_tail used to enqueue descriptors */
 	void *shadow_tail_addr;

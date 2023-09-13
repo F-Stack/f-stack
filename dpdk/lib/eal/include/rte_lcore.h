@@ -11,6 +11,9 @@
  * API for lcore and socket manipulation
  *
  */
+#include <stdio.h>
+
+#include <rte_compat.h>
 #include <rte_config.h>
 #include <rte_per_lcore.h>
 #include <rte_eal.h>
@@ -160,9 +163,6 @@ unsigned int
 rte_lcore_to_socket_id(unsigned int lcore_id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Return the id of the lcore on a socket starting from zero.
  *
  * @param lcore_id
@@ -170,25 +170,19 @@ rte_lcore_to_socket_id(unsigned int lcore_id);
  * @return
  *   The relative index, or -1 if not enabled.
  */
-__rte_experimental
-int
-rte_lcore_to_cpu_id(int lcore_id);
+int rte_lcore_to_cpu_id(int lcore_id);
 
 #ifdef RTE_HAS_CPUSET
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Return the cpuset for a given lcore.
+ *
  * @param lcore_id
  *   the targeted lcore, which MUST be between 0 and RTE_MAX_LCORE-1.
  * @return
  *   The cpuset of that lcore
  */
-__rte_experimental
-rte_cpuset_t
-rte_lcore_cpuset(unsigned int lcore_id);
+rte_cpuset_t rte_lcore_cpuset(unsigned int lcore_id);
 
 #endif /* RTE_HAS_CPUSET */
 

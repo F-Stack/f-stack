@@ -15,7 +15,7 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_version.h>
 
 #include "ark_pktdir.h"
@@ -107,11 +107,13 @@ struct ark_adapter {
 
 	/* Pointers to packet generator and checker */
 	int start_pg;
+	uint16_t pg_running;
 	ark_pkt_gen_t pg;
 	ark_pkt_chkr_t pc;
 	ark_pkt_dir_t pd;
 
 	int num_ports;
+	bool isvf;
 
 	/* Packet generator/checker args */
 	char pkt_gen_args[ARK_MAX_ARG_LEN];

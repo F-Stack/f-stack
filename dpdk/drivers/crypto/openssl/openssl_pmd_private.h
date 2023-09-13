@@ -6,11 +6,16 @@
 #define _OPENSSL_PMD_PRIVATE_H_
 
 #include <openssl/evp.h>
+#include <openssl/cmac.h>
 #include <openssl/hmac.h>
 #include <openssl/des.h>
 #include <openssl/rsa.h>
 #include <openssl/dh.h>
 #include <openssl/dsa.h>
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+#include <openssl/provider.h>
+#include <openssl/core_names.h>
+#endif
 
 #define CRYPTODEV_NAME_OPENSSL_PMD	crypto_openssl
 /**< Open SSL Crypto PMD device name */
@@ -46,6 +51,7 @@ enum openssl_cipher_mode {
 enum openssl_auth_mode {
 	OPENSSL_AUTH_AS_AUTH,
 	OPENSSL_AUTH_AS_HMAC,
+	OPENSSL_AUTH_AS_CMAC,
 };
 
 /** private data structure for each OPENSSL crypto device */
@@ -64,8 +70,6 @@ struct openssl_qp {
 	/**< Ring for placing process packets */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
-	struct rte_mempool *sess_mp_priv;
-	/**< Session Private Data Mempool */
 	struct rte_cryptodev_stats stats;
 	/**< Queue pair statistics */
 	uint8_t temp_digest[DIGEST_LENGTH_MAX];
@@ -134,9 +138,25 @@ struct openssl_session {
 				/**< pointer to EVP key */
 				const EVP_MD *evp_algo;
 				/**< pointer to EVP algorithm function */
+# if OPENSSL_VERSION_NUMBER >= 0x30000000L
+				EVP_MAC_CTX * ctx;
+# else
 				HMAC_CTX *ctx;
+# endif
 				/**< pointer to EVP context structure */
 			} hmac;
+
+			struct {
+# if OPENSSL_VERSION_NUMBER >= 0x30000000L
+				EVP_MAC_CTX * ctx;
+				/**< pointer to EVP context structure */
+# else
+				const EVP_CIPHER * evp_algo;
+				/**< pointer to EVP algorithm function */
+				CMAC_CTX *ctx;
+				/**< pointer to EVP context structure */
+# endif
+			} cmac;
 		};
 
 		uint16_t aad_length;
@@ -153,6 +173,9 @@ struct openssl_asym_session {
 	union {
 		struct rsa {
 			RSA *rsa;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+			EVP_PKEY_CTX * ctx;
+#endif
 		} r;
 		struct exp {
 			BIGNUM *exp;
@@ -166,9 +189,16 @@ struct openssl_asym_session {
 		struct dh {
 			DH *dh_key;
 			uint32_t key_op;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+			OSSL_PARAM_BLD * param_bld;
+			OSSL_PARAM_BLD *param_bld_peer;
+#endif
 		} dh;
 		struct {
 			DSA *dsa;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+			OSSL_PARAM_BLD * param_bld;
+#endif
 		} s;
 	} u;
 } __rte_cache_aligned;

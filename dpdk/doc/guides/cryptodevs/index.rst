@@ -22,7 +22,6 @@ Crypto Device Drivers
     dpaa_sec
     kasumi
     octeontx
-    octeontx2
     openssl
     mlx5
     mvsam
@@ -31,5 +30,6 @@ Crypto Device Drivers
     scheduler
     snow3g
     qat
+    uadk
     virtio
     zuc

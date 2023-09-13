@@ -49,8 +49,8 @@
 #define CRC_24B_LEN 3
 
 /* Configurable number of RX/TX ring descriptors */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RX_DESC_DEFAULT 128
+#define TX_DESC_DEFAULT 512
 
 #define BBDEV_ASSERT(a) do { \
 	if (!(a)) { \
@@ -71,7 +71,6 @@ mbuf_input(struct rte_mbuf *mbuf)
 static const struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode = RTE_ETH_MQ_RX_NONE,
-		.split_hdr_size = 0,
 	},
 	.txmode = {
 		.mq_mode = RTE_ETH_MQ_TX_NONE,
@@ -467,7 +466,7 @@ initialize_ports(struct app_config_params *app_params,
 	/* initialize RX queues for encoder */
 	for (q = 0; q < app_params->num_enc_cores; q++) {
 		ret = rte_eth_rx_queue_setup(port_id, q,
-			RTE_TEST_RX_DESC_DEFAULT,
+			RX_DESC_DEFAULT,
 			rte_eth_dev_socket_id(port_id),
 			NULL, ethdev_mbuf_mempool);
 		if (ret < 0) {
@@ -479,7 +478,7 @@ initialize_ports(struct app_config_params *app_params,
 	/* initialize TX queues for decoder */
 	for (q = 0; q < app_params->num_dec_cores; q++) {
 		ret = rte_eth_tx_queue_setup(port_id, q,
-			RTE_TEST_TX_DESC_DEFAULT,
+			TX_DESC_DEFAULT,
 			rte_eth_dev_socket_id(port_id), NULL);
 		if (ret < 0) {
 			printf("rte_eth_tx_queue_setup: err=%d, queue=%u\n",
@@ -1041,7 +1040,7 @@ main(int argc, char **argv)
 	void *sigret;
 	struct app_config_params app_params = def_app_config;
 	struct rte_mempool *ethdev_mbuf_mempool, *bbdev_mbuf_mempool;
-	struct rte_mempool *bbdev_op_pools[RTE_BBDEV_OP_TYPE_COUNT];
+	struct rte_mempool *bbdev_op_pools[RTE_BBDEV_OP_TYPE_SIZE_MAX];
 	struct lcore_conf lcore_conf[RTE_MAX_LCORE] = { {0} };
 	struct lcore_statistics lcore_stats[RTE_MAX_LCORE] = { {0} };
 	struct stats_lcore_params stats_lcore;

@@ -13,7 +13,6 @@
  */
 
 #include <stdint.h>
-#include <rte_compat.h>
 #include <rte_debug.h>
 #include <rte_atomic.h>
 
@@ -165,9 +164,7 @@ void rte_delay_us_block(unsigned int us);
  * @param us
  *   Number of microseconds to wait.
  */
-__rte_experimental
-void
-rte_delay_us_sleep(unsigned int us);
+void rte_delay_us_sleep(unsigned int us);
 
 /**
  * Replace rte_delay_us with user defined function.

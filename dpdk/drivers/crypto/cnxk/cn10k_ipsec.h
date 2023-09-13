@@ -6,10 +6,13 @@
 #define __CN10K_IPSEC_H__
 
 #include <rte_security.h>
+#include <rte_security_driver.h>
+
+#include "roc_api.h"
 
 #include "cnxk_ipsec.h"
 
-#define CN10K_IPSEC_SA_CTX_HDR_SIZE 1
+typedef void *CN10K_SA_CONTEXT_MARKER[0];
 
 struct cn10k_ipsec_sa {
 	union {
@@ -18,17 +21,27 @@ struct cn10k_ipsec_sa {
 		/** Outbound SA */
 		struct roc_ot_ipsec_outb_sa out_sa;
 	};
+} __rte_aligned(ROC_ALIGN);
+
+struct cn10k_sec_session {
+	struct rte_security_session rte_sess;
+
+	/** PMD private space */
+
 	/** Pre-populated CPT inst words */
 	struct cnxk_cpt_inst_tmpl inst;
 	uint16_t max_extended_len;
 	uint16_t iv_offset;
 	uint8_t iv_length;
-	bool ip_csum_enable;
-};
+	bool is_outbound;
+	/** Queue pair */
+	struct cnxk_cpt_qp *qp;
 
-struct cn10k_sec_session {
+	/**
+	 * End of SW mutable area
+	 */
 	struct cn10k_ipsec_sa sa;
-} __rte_cache_aligned;
+} __rte_aligned(ROC_ALIGN);
 
 void cn10k_sec_ops_override(void);
 

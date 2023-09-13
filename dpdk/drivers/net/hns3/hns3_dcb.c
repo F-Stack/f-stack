@@ -621,7 +621,7 @@ hns3_set_rss_size(struct hns3_hw *hw, uint16_t nb_rx_q)
 	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
 	uint16_t rx_qnum_per_tc;
 	uint16_t used_rx_queues;
-	int i;
+	uint16_t i;
 
 	rx_qnum_per_tc = nb_rx_q / hw->num_tc;
 	if (rx_qnum_per_tc > hw->rss_size_max) {
@@ -743,19 +743,9 @@ static int
 hns3_dcb_update_tc_queue_mapping(struct hns3_hw *hw, uint16_t nb_rx_q,
 				 uint16_t nb_tx_q)
 {
-	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
-	struct hns3_pf *pf = &hns->pf;
-	int ret;
-
 	hw->num_tc = hw->dcb_info.num_tc;
-	ret = hns3_queue_to_tc_mapping(hw, nb_rx_q, nb_tx_q);
-	if (ret)
-		return ret;
 
-	if (!hns->is_vf)
-		memcpy(pf->prio_tc, hw->dcb_info.prio_tc, HNS3_MAX_USER_PRIO);
-
-	return 0;
+	return hns3_queue_to_tc_mapping(hw, nb_rx_q, nb_tx_q);
 }
 
 int
@@ -879,9 +869,8 @@ hns3_dcb_pri_tc_base_dwrr_cfg(struct hns3_hw *hw)
 
 		ret = hns3_dcb_pri_weight_cfg(hw, i, dwrr);
 		if (ret) {
-			hns3_err(hw,
-			       "fail to send priority weight cmd: %d, ret = %d",
-			       i, ret);
+			hns3_err(hw, "fail to send priority weight cmd: %d, ret = %d",
+				 i, ret);
 			return ret;
 		}
 

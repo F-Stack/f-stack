@@ -964,4 +964,3 @@ clean_arq_element_err:
 
 	return ret_code;
 }
-

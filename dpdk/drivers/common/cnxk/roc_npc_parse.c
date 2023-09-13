@@ -22,6 +22,95 @@ npc_parse_meta_items(struct npc_parse_state *pst)
 }
 
 int
+npc_parse_mark_item(struct npc_parse_state *pst)
+{
+	if (pst->pattern->type == ROC_NPC_ITEM_TYPE_MARK) {
+		if (pst->flow->nix_intf != NIX_INTF_RX)
+			return -EINVAL;
+
+		pst->is_second_pass_rule = true;
+		pst->pattern++;
+	}
+
+	return 0;
+}
+
+static int
+npc_flow_raw_item_prepare(const struct roc_npc_flow_item_raw *raw_spec,
+			  const struct roc_npc_flow_item_raw *raw_mask,
+			  struct npc_parse_item_info *info, uint8_t *spec_buf,
+			  uint8_t *mask_buf)
+{
+
+	memset(spec_buf, 0, NPC_MAX_RAW_ITEM_LEN);
+	memset(mask_buf, 0, NPC_MAX_RAW_ITEM_LEN);
+
+	memcpy(spec_buf + raw_spec->offset, raw_spec->pattern,
+	       raw_spec->length);
+
+	if (raw_mask && raw_mask->pattern) {
+		memcpy(mask_buf + raw_spec->offset, raw_mask->pattern,
+		       raw_spec->length);
+	} else {
+		memset(mask_buf + raw_spec->offset, 0xFF, raw_spec->length);
+	}
+
+	info->len = NPC_MAX_RAW_ITEM_LEN;
+	info->spec = spec_buf;
+	info->mask = mask_buf;
+	return 0;
+}
+
+int
+npc_parse_pre_l2(struct npc_parse_state *pst)
+{
+	uint8_t raw_spec_buf[NPC_MAX_RAW_ITEM_LEN] = {0};
+	uint8_t raw_mask_buf[NPC_MAX_RAW_ITEM_LEN] = {0};
+	uint8_t hw_mask[NPC_MAX_EXTRACT_HW_LEN] = {0};
+	const struct roc_npc_flow_item_raw *raw_spec;
+	struct npc_parse_item_info info;
+	int lid, lt, len;
+	int rc;
+
+	if (pst->npc->switch_header_type != ROC_PRIV_FLAGS_PRE_L2)
+		return 0;
+
+	/* Identify the pattern type into lid, lt */
+	if (pst->pattern->type != ROC_NPC_ITEM_TYPE_RAW)
+		return 0;
+
+	lid = NPC_LID_LA;
+	lt = NPC_LT_LA_CUSTOM_PRE_L2_ETHER;
+	info.hw_hdr_len = 0;
+
+	raw_spec = pst->pattern->spec;
+	len = raw_spec->length + raw_spec->offset;
+	if (len > NPC_MAX_RAW_ITEM_LEN)
+		return -EINVAL;
+
+	if (raw_spec->relative == 0 || raw_spec->search || raw_spec->limit ||
+	    raw_spec->offset < 0)
+		return -EINVAL;
+
+	npc_flow_raw_item_prepare(
+		(const struct roc_npc_flow_item_raw *)pst->pattern->spec,
+		(const struct roc_npc_flow_item_raw *)pst->pattern->mask, &info,
+		raw_spec_buf, raw_mask_buf);
+
+	info.def_mask = NULL;
+	info.hw_mask = &hw_mask;
+	npc_get_hw_supp_mask(pst, &info, lid, lt);
+
+	/* Basic validation of item parameters */
+	rc = npc_parse_item_basic(pst->pattern, &info);
+	if (rc)
+		return rc;
+
+	/* Update pst if not validate only? clash check? */
+	return npc_update_parse_state(pst, &info, lid, lt, 0);
+}
+
+int
 npc_parse_cpt_hdr(struct npc_parse_state *pst)
 {
 	uint8_t hw_mask[NPC_MAX_EXTRACT_HW_LEN];
@@ -95,6 +184,7 @@ npc_parse_higig2_hdr(struct npc_parse_state *pst)
 int
 npc_parse_la(struct npc_parse_state *pst)
 {
+	const struct roc_npc_flow_item_eth *eth_item;
 	uint8_t hw_mask[NPC_MAX_EXTRACT_HW_LEN];
 	struct npc_parse_item_info info;
 	int lid, lt;
@@ -103,6 +193,9 @@ npc_parse_la(struct npc_parse_state *pst)
 	/* Identify the pattern type into lid, lt */
 	if (pst->pattern->type != ROC_NPC_ITEM_TYPE_ETH)
 		return 0;
+
+	pst->has_eth_type = true;
+	eth_item = pst->pattern->spec;
 
 	lid = NPC_LID_LA;
 	lt = NPC_LT_LA_ETHER;
@@ -125,7 +218,7 @@ npc_parse_la(struct npc_parse_state *pst)
 	/* Prepare for parsing the item */
 	info.def_mask = NULL;
 	info.hw_mask = &hw_mask;
-	info.len = pst->pattern->size;
+	info.len = sizeof(eth_item->hdr);
 	npc_get_hw_supp_mask(pst, &info, lid, lt);
 	info.spec = NULL;
 	info.mask = NULL;
@@ -135,35 +228,12 @@ npc_parse_la(struct npc_parse_state *pst)
 	if (rc)
 		return rc;
 
-	/* Update pst if not validate only? clash check? */
-	return npc_update_parse_state(pst, &info, lid, lt, 0);
-}
+	rc = npc_update_parse_state(pst, &info, lid, lt, 0);
+	if (rc)
+		return rc;
 
-static int
-npc_flow_raw_item_prepare(const struct roc_npc_flow_item_raw *raw_spec,
-			  const struct roc_npc_flow_item_raw *raw_mask,
-			  struct npc_parse_item_info *info, uint8_t *spec_buf,
-			  uint8_t *mask_buf)
-{
-	uint32_t custom_hdr_size = 0;
-
-	memset(spec_buf, 0, NPC_MAX_RAW_ITEM_LEN);
-	memset(mask_buf, 0, NPC_MAX_RAW_ITEM_LEN);
-	custom_hdr_size = raw_spec->offset + raw_spec->length;
-
-	memcpy(spec_buf + raw_spec->offset, raw_spec->pattern,
-	       raw_spec->length);
-
-	if (raw_mask->pattern) {
-		memcpy(mask_buf + raw_spec->offset, raw_mask->pattern,
-		       raw_spec->length);
-	} else {
-		memset(mask_buf + raw_spec->offset, 0xFF, raw_spec->length);
-	}
-
-	info->len = custom_hdr_size;
-	info->spec = spec_buf;
-	info->mask = mask_buf;
+	if (eth_item && eth_item->has_vlan)
+		pst->set_vlan_ltype_mask = true;
 
 	return 0;
 }
@@ -400,7 +470,7 @@ npc_parse_lb(struct npc_parse_state *pst)
 		info.len = pattern->size;
 	} else if (pst->pattern->type == ROC_NPC_ITEM_TYPE_QINQ) {
 		info.hw_mask = NULL;
-		info.len = pst->pattern->size;
+		info.len = pattern->size;
 		lt = NPC_LT_LB_STAG_QINQ;
 		lflags = NPC_F_STAG_CTAG;
 	} else if (pst->pattern->type == ROC_NPC_ITEM_TYPE_RAW) {
@@ -542,6 +612,174 @@ npc_check_lc_ip_tunnel(struct npc_parse_state *pst)
 		pst->tunnel = 1;
 }
 
+static int
+npc_handle_ipv6ext_attr(const struct roc_npc_flow_item_ipv6 *ipv6_spec,
+			struct npc_parse_state *pst, uint8_t *flags)
+{
+	int flags_count = 0;
+
+	if (ipv6_spec->has_hop_ext) {
+		*flags = NPC_F_LC_L_EXT_HOP;
+		flags_count++;
+	}
+	if (ipv6_spec->has_route_ext) {
+		*flags = NPC_F_LC_L_EXT_ROUT;
+		flags_count++;
+	}
+	if (ipv6_spec->has_frag_ext) {
+		*flags = NPC_F_LC_U_IP6_FRAG;
+		flags_count++;
+	}
+	if (ipv6_spec->has_dest_ext) {
+		*flags = NPC_F_LC_L_EXT_DEST;
+		flags_count++;
+	}
+	if (ipv6_spec->has_mobil_ext) {
+		*flags = NPC_F_LC_L_EXT_MOBILITY;
+		flags_count++;
+	}
+	if (ipv6_spec->has_hip_ext) {
+		*flags = NPC_F_LC_L_EXT_HOSTID;
+		flags_count++;
+	}
+	if (ipv6_spec->has_shim6_ext) {
+		*flags = NPC_F_LC_L_EXT_SHIM6;
+		flags_count++;
+	}
+	if (ipv6_spec->has_auth_ext) {
+		pst->lt[NPC_LID_LD] = NPC_LT_LD_AH;
+		flags_count++;
+	}
+	if (ipv6_spec->has_esp_ext) {
+		pst->lt[NPC_LID_LE] = NPC_LT_LE_ESP;
+		flags_count++;
+	}
+
+	if (flags_count > 1)
+		return -EINVAL;
+
+	if (flags_count)
+		pst->set_ipv6ext_ltype_mask = true;
+
+	return 0;
+}
+
+static int
+npc_process_ipv6_item(struct npc_parse_state *pst)
+{
+	uint8_t ipv6_hdr_mask[sizeof(struct roc_ipv6_hdr) + sizeof(struct roc_ipv6_fragment_ext)];
+	uint8_t ipv6_hdr_buf[sizeof(struct roc_ipv6_hdr) + sizeof(struct roc_ipv6_fragment_ext)];
+	const struct roc_npc_flow_item_ipv6 *ipv6_spec, *ipv6_mask;
+	const struct roc_npc_item_info *pattern = pst->pattern;
+	int offset = 0, rc = 0, lid, item_count = 0;
+	struct npc_parse_item_info parse_info;
+	char hw_mask[NPC_MAX_EXTRACT_HW_LEN];
+	uint8_t flags = 0, ltype;
+
+	memset(ipv6_hdr_buf, 0, sizeof(ipv6_hdr_buf));
+	memset(ipv6_hdr_mask, 0, sizeof(ipv6_hdr_mask));
+
+	ipv6_spec = pst->pattern->spec;
+	ipv6_mask = pst->pattern->mask;
+
+	parse_info.def_mask = NULL;
+	parse_info.spec = ipv6_hdr_buf;
+	parse_info.mask = ipv6_hdr_mask;
+	parse_info.def_mask = NULL;
+	parse_info.hw_hdr_len = 0;
+	parse_info.len = sizeof(ipv6_spec->hdr);
+
+	pst->set_ipv6ext_ltype_mask = true;
+
+	lid = NPC_LID_LC;
+	ltype = NPC_LT_LC_IP6;
+
+	if (pattern->type == ROC_NPC_ITEM_TYPE_IPV6) {
+		item_count++;
+		if (ipv6_spec) {
+			memcpy(ipv6_hdr_buf, &ipv6_spec->hdr, sizeof(struct roc_ipv6_hdr));
+			rc = npc_handle_ipv6ext_attr(ipv6_spec, pst, &flags);
+			if (rc)
+				return rc;
+		}
+		if (ipv6_mask)
+			memcpy(ipv6_hdr_mask, &ipv6_mask->hdr, sizeof(struct roc_ipv6_hdr));
+	}
+
+	offset = sizeof(struct roc_ipv6_hdr);
+
+	while (pattern->type != ROC_NPC_ITEM_TYPE_END) {
+		/* Don't support ranges */
+		if (pattern->last != NULL)
+			return NPC_ERR_INVALID_RANGE;
+
+		/* If spec is NULL, both mask and last must be NULL, this
+		 * makes it to match ANY value (eq to mask = 0).
+		 * Setting either mask or last without spec is
+		 * an error
+		 */
+		if (pattern->spec == NULL) {
+			if (pattern->last != NULL && pattern->mask != NULL)
+				return NPC_ERR_INVALID_SPEC;
+		}
+		/* Either one ROC_NPC_ITEM_TYPE_IPV6_EXT or
+		 * one ROC_NPC_ITEM_TYPE_IPV6_FRAG_EXT is supported
+		 * following an ROC_NPC_ITEM_TYPE_IPV6 item.
+		 */
+		if (pattern->type == ROC_NPC_ITEM_TYPE_IPV6_EXT) {
+			item_count++;
+			ltype = NPC_LT_LC_IP6_EXT;
+			parse_info.len =
+				sizeof(struct roc_ipv6_hdr) + sizeof(struct roc_flow_item_ipv6_ext);
+			if (pattern->spec)
+				memcpy(ipv6_hdr_buf + offset, pattern->spec,
+				       sizeof(struct roc_flow_item_ipv6_ext));
+			if (pattern->mask)
+				memcpy(ipv6_hdr_mask + offset, pattern->mask,
+				       sizeof(struct roc_flow_item_ipv6_ext));
+			break;
+		} else if (pattern->type == ROC_NPC_ITEM_TYPE_IPV6_FRAG_EXT) {
+			item_count++;
+			ltype = NPC_LT_LC_IP6_EXT;
+			flags = NPC_F_LC_U_IP6_FRAG;
+			parse_info.len =
+				sizeof(struct roc_ipv6_hdr) + sizeof(struct roc_ipv6_fragment_ext);
+			if (pattern->spec)
+				memcpy(ipv6_hdr_buf + offset, pattern->spec,
+				       sizeof(struct roc_ipv6_fragment_ext));
+			if (pattern->mask)
+				memcpy(ipv6_hdr_mask + offset, pattern->mask,
+				       sizeof(struct roc_ipv6_fragment_ext));
+
+			break;
+		}
+
+		pattern++;
+		pattern = npc_parse_skip_void_and_any_items(pattern);
+	}
+
+	memset(hw_mask, 0, sizeof(hw_mask));
+
+	parse_info.hw_mask = &hw_mask;
+	npc_get_hw_supp_mask(pst, &parse_info, lid, ltype);
+
+	rc = npc_mask_is_supported(parse_info.mask, parse_info.hw_mask, parse_info.len);
+	if (!rc)
+		return NPC_ERR_INVALID_MASK;
+
+	rc = npc_update_parse_state(pst, &parse_info, lid, ltype, flags);
+	if (rc)
+		return rc;
+
+	/* npc_update_parse_state() increments pattern once.
+	 * Check if additional increment is required.
+	 */
+	if (item_count == 2)
+		pst->pattern++;
+
+	return 0;
+}
+
 int
 npc_parse_lc(struct npc_parse_state *pst)
 {
@@ -550,8 +788,8 @@ npc_parse_lc(struct npc_parse_state *pst)
 	uint8_t raw_mask_buf[NPC_MAX_RAW_ITEM_LEN];
 	uint8_t hw_mask[NPC_MAX_EXTRACT_HW_LEN];
 	struct npc_parse_item_info info;
-	int lid, lt, len = 0;
-	int rc;
+	int rc, lid, lt, len = 0;
+	uint8_t flags = 0;
 
 	if (pst->pattern->type == ROC_NPC_ITEM_TYPE_MPLS)
 		return npc_parse_mpls(pst, NPC_LID_LC);
@@ -569,19 +807,12 @@ npc_parse_lc(struct npc_parse_state *pst)
 		info.len = pst->pattern->size;
 		break;
 	case ROC_NPC_ITEM_TYPE_IPV6:
-		lid = NPC_LID_LC;
-		lt = NPC_LT_LC_IP6;
-		info.len = pst->pattern->size;
-		break;
+	case ROC_NPC_ITEM_TYPE_IPV6_EXT:
+	case ROC_NPC_ITEM_TYPE_IPV6_FRAG_EXT:
+		return npc_process_ipv6_item(pst);
 	case ROC_NPC_ITEM_TYPE_ARP_ETH_IPV4:
 		lt = NPC_LT_LC_ARP;
 		info.len = pst->pattern->size;
-		break;
-	case ROC_NPC_ITEM_TYPE_IPV6_EXT:
-		lid = NPC_LID_LC;
-		lt = NPC_LT_LC_IP6_EXT;
-		info.len = pst->pattern->size;
-		info.hw_hdr_len = 40;
 		break;
 	case ROC_NPC_ITEM_TYPE_L3_CUSTOM:
 		lt = NPC_LT_LC_CUSTOM0;
@@ -621,7 +852,7 @@ npc_parse_lc(struct npc_parse_state *pst)
 	if (rc != 0)
 		return rc;
 
-	return npc_update_parse_state(pst, &info, lid, lt, 0);
+	return npc_update_parse_state(pst, &info, lid, lt, flags);
 }
 
 int

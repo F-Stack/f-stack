@@ -17,7 +17,6 @@ flags_common = [
         #    ['RTE_ARM64_MEMCPY_ALIGN_MASK', 0xF],
         #    ['RTE_ARM64_MEMCPY_STRICT_ALIGN', false],
 
-        ['RTE_SCHED_VECTOR', false],
         ['RTE_ARM_USE_WFE', false],
         ['RTE_ARCH_ARM64', true],
         ['RTE_CACHE_LINE_SIZE', 128]
@@ -76,6 +75,16 @@ part_number_config_arm = {
             ['RTE_MAX_NUMA_NODES', 2]
         ]
     },
+    '0xd40': {
+        'march': 'armv8.4-a',
+        'march_features': ['sve'],
+        'compiler_options':  ['-mcpu=neoverse-v1'],
+        'flags': [
+            ['RTE_MACHINE', '"neoverse-v1"'],
+            ['RTE_ARM_FEATURE_ATOMICS', true],
+            ['RTE_MAX_NUMA_NODES', 1]
+        ]
+    },
     '0xd49': {
         'march': 'armv8.5-a',
         'march_features': ['sve2'],
@@ -120,7 +129,7 @@ implementer_cavium = {
             'flags': flags_part_number_thunderx
         },
         '0xa3': {
-            'compiler_options': ['-mcpu=thunderxt83'],
+            'compiler_options': ['-march=armv8-a+crc', '-mcpu=thunderxt83'],
             'flags': flags_part_number_thunderx
         },
         '0xaf': {
@@ -140,7 +149,7 @@ implementer_cavium = {
             'march_features': ['crc', 'crypto', 'lse'],
             'compiler_options': ['-mcpu=octeontx2'],
             'flags': [
-                ['RTE_MACHINE', '"octeontx2"'],
+                ['RTE_MACHINE', '"cn9k"'],
                 ['RTE_ARM_FEATURE_ATOMICS', true],
                 ['RTE_USE_C11_MEM_MODEL', true],
                 ['RTE_MAX_LCORE', 36],
@@ -198,6 +207,33 @@ implementer_hisilicon = {
     }
 }
 
+implementer_phytium = {
+    'description': 'Phytium',
+    'flags': [
+        ['RTE_MACHINE', '"armv8a"'],
+        ['RTE_USE_C11_MEM_MODEL', true],
+        ['RTE_CACHE_LINE_SIZE', 64],
+    ],
+    'part_number_config': {
+        '0x662': {
+            'march': 'armv8-a',
+            'march_features': ['crc'],
+            'flags': [
+                ['RTE_MAX_LCORE', 64],
+                ['RTE_MAX_NUMA_NODES', 8]
+             ]
+        },
+       '0x663': {
+            'march': 'armv8-a',
+            'march_features': ['crc'],
+            'flags': [
+                ['RTE_MAX_LCORE', 256],
+                ['RTE_MAX_NUMA_NODES', 32]
+            ]
+        }
+    }
+}
+
 implementer_qualcomm = {
     'description': 'Qualcomm',
     'flags': [
@@ -226,7 +262,8 @@ implementers = {
     '0x43': implementer_cavium,
     '0x48': implementer_hisilicon,
     '0x50': implementer_ampere,
-    '0x51': implementer_qualcomm
+    '0x51': implementer_qualcomm,
+    '0x70': implementer_phytium,
 }
 
 # SoC specific armv8 flags have the highest priority
@@ -278,11 +315,13 @@ soc_cn10k = {
     'flags': [
         ['RTE_MAX_LCORE', 24],
         ['RTE_MAX_NUMA_NODES', 1],
-        ['RTE_MEMPOOL_ALIGN', 128]
+        ['RTE_MEMPOOL_ALIGN', 128],
+        ['RTE_IOVA_AS_PA', 0]
     ],
     'part_number': '0xd49',
     'extra_march_features': ['crypto'],
-    'numa': false
+    'numa': false,
+    'sve_acle': false
 }
 
 soc_dpaa = {
@@ -304,10 +343,32 @@ soc_emag = {
     'part_number': '0x0'
 }
 
+soc_ft2000plus = {
+    'description': 'Phytium FT-2000+',
+    'implementer': '0x70',
+    'part_number': '0x662',
+    'numa': true
+}
+
+soc_tys2500 = {
+    'description': 'Phytium TengYun S2500',
+    'implementer': '0x70',
+    'part_number': '0x663',
+    'numa': true
+}
+
 soc_graviton2 = {
     'description': 'AWS Graviton2',
     'implementer': '0x41',
     'part_number': '0xd0c',
+    'numa': false
+}
+
+soc_graviton3 = {
+    'description': 'AWS Graviton3',
+    'implementer': '0x41',
+    'part_number': '0xd40',
+    'extra_march_features': ['crypto'],
     'numa': false
 }
 
@@ -342,11 +403,14 @@ soc_n2 = {
     'numa': false
 }
 
-soc_octeontx2 = {
-    'description': 'Marvell OCTEON TX2',
+soc_cn9k = {
+    'description': 'Marvell OCTEON 9',
     'implementer': '0x43',
     'part_number': '0xb2',
-    'numa': false
+    'numa': false,
+    'flags': [
+        ['RTE_IOVA_AS_PA', 0]
+    ]
 }
 
 soc_stingray = {
@@ -372,6 +436,12 @@ soc_thunderxt88 = {
     'part_number': '0xa1'
 }
 
+soc_thunderxt83 = {
+    'description': 'Marvell ThunderX T83',
+    'implementer': '0x43',
+    'part_number': '0xa3'
+}
+
 '''
 Start of SoCs list
 generic:         Generic un-optimized build for armv8 aarch64 execution mode.
@@ -379,18 +449,22 @@ generic_aarch32: Generic un-optimized build for armv8 aarch32 execution mode.
 armada:          Marvell ARMADA
 bluefield:       NVIDIA BlueField
 centriq2400:     Qualcomm Centriq 2400
+cn9k:            Marvell OCTEON 9
 cn10k:           Marvell OCTEON 10
 dpaa:            NXP DPAA
 emag:            Ampere eMAG
+ft2000plus:      Phytium FT-2000+
+tys2500:         Phytium TengYun S2500
 graviton2:       AWS Graviton2
+graviton3:       AWS Graviton3
 kunpeng920:      HiSilicon Kunpeng 920
 kunpeng930:      HiSilicon Kunpeng 930
 n1sdp:           Arm Neoverse N1SDP
 n2:              Arm Neoverse N2
-octeontx2:       Marvell OCTEON TX2
 stingray:        Broadcom Stingray
 thunderx2:       Marvell ThunderX2 T99
 thunderxt88:     Marvell ThunderX T88
+thunderxt83:     Marvell ThunderX T83
 End of SoCs list
 '''
 # The string above is included in the documentation, keep it in sync with the
@@ -401,18 +475,22 @@ socs = {
     'armada': soc_armada,
     'bluefield': soc_bluefield,
     'centriq2400': soc_centriq2400,
+    'cn9k': soc_cn9k,
     'cn10k' : soc_cn10k,
     'dpaa': soc_dpaa,
     'emag': soc_emag,
+    'ft2000plus': soc_ft2000plus,
+    'tys2500': soc_tys2500,
     'graviton2': soc_graviton2,
+    'graviton3': soc_graviton3,
     'kunpeng920': soc_kunpeng920,
     'kunpeng930': soc_kunpeng930,
     'n1sdp': soc_n1sdp,
     'n2': soc_n2,
-    'octeontx2': soc_octeontx2,
     'stingray': soc_stingray,
     'thunderx2': soc_thunderx2,
-    'thunderxt88': soc_thunderxt88
+    'thunderxt88': soc_thunderxt88,
+    'thunderxt83': soc_thunderxt83,
 }
 
 dpdk_conf.set('RTE_ARCH_ARM', 1)
@@ -606,7 +684,7 @@ endif
 
 if cc.get_define('__ARM_FEATURE_SVE', args: machine_args) != ''
     compile_time_cpuflags += ['RTE_CPUFLAG_SVE']
-    if (cc.check_header('arm_sve.h'))
+    if (cc.check_header('arm_sve.h') and soc_config.get('sve_acle', true))
         dpdk_conf.set('RTE_HAS_SVE_ACLE', 1)
     endif
 endif

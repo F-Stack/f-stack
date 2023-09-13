@@ -3,7 +3,7 @@
  */
 
 #include <rte_alarm.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_cryptodev.h>
 #include <cryptodev_pmd.h>
 #include <rte_eventdev.h>
@@ -171,7 +171,6 @@ otx_cpt_que_pair_setup(struct rte_cryptodev *dev,
 
 	instance->queue_id = que_pair_id;
 	instance->sess_mp = qp_conf->mp_session;
-	instance->sess_mp_priv = qp_conf->mp_session_private;
 	dev->data->queue_pairs[que_pair_id] = instance;
 
 	return 0;
@@ -243,24 +242,18 @@ sym_xform_verify(struct rte_crypto_sym_xform *xform)
 }
 
 static int
-sym_session_configure(int driver_id, struct rte_crypto_sym_xform *xform,
-		      struct rte_cryptodev_sym_session *sess,
-		      struct rte_mempool *pool)
+sym_session_configure(struct rte_crypto_sym_xform *xform,
+		      struct rte_cryptodev_sym_session *sess)
 {
 	struct rte_crypto_sym_xform *temp_xform = xform;
 	struct cpt_sess_misc *misc;
 	vq_cmd_word3_t vq_cmd_w3;
-	void *priv;
+	void *priv = CRYPTODEV_GET_SYM_SESS_PRIV(sess);
 	int ret;
 
 	ret = sym_xform_verify(xform);
 	if (unlikely(ret))
 		return ret;
-
-	if (unlikely(rte_mempool_get(pool, &priv))) {
-		CPT_LOG_ERR("Could not allocate session private data");
-		return -ENOMEM;
-	}
 
 	memset(priv, 0, sizeof(struct cpt_sess_misc) +
 			offsetof(struct cpt_ctx, mc_ctx));
@@ -301,9 +294,7 @@ sym_session_configure(int driver_id, struct rte_crypto_sym_xform *xform,
 		goto priv_put;
 	}
 
-	set_sym_session_private_data(sess, driver_id, priv);
-
-	misc->ctx_dma_addr = rte_mempool_virt2iova(misc) +
+	misc->ctx_dma_addr = CRYPTODEV_GET_SYM_SESS_PRIV_IOVA(sess) +
 			     sizeof(struct cpt_sess_misc);
 
 	vq_cmd_w3.u64 = 0;
@@ -316,17 +307,14 @@ sym_session_configure(int driver_id, struct rte_crypto_sym_xform *xform,
 	return 0;
 
 priv_put:
-	if (priv)
-		rte_mempool_put(pool, priv);
 	return -ENOTSUP;
 }
 
 static void
-sym_session_clear(int driver_id, struct rte_cryptodev_sym_session *sess)
+sym_session_clear(struct rte_cryptodev_sym_session *sess)
 {
-	void *priv = get_sym_session_private_data(sess, driver_id);
+	void *priv = CRYPTODEV_GET_SYM_SESS_PRIV(sess);
 	struct cpt_sess_misc *misc;
-	struct rte_mempool *pool;
 	struct cpt_ctx *ctx;
 
 	if (priv == NULL)
@@ -335,37 +323,27 @@ sym_session_clear(int driver_id, struct rte_cryptodev_sym_session *sess)
 	misc = priv;
 	ctx = SESS_PRIV(misc);
 
-	if (ctx->auth_key != NULL)
-		rte_free(ctx->auth_key);
-
-	memset(priv, 0, cpt_get_session_size());
-
-	pool = rte_mempool_from_obj(priv);
-
-	set_sym_session_private_data(sess, driver_id, NULL);
-
-	rte_mempool_put(pool, priv);
+	rte_free(ctx->auth_key);
 }
 
 static int
-otx_cpt_session_cfg(struct rte_cryptodev *dev,
+otx_cpt_session_cfg(struct rte_cryptodev *dev __rte_unused,
 		    struct rte_crypto_sym_xform *xform,
-		    struct rte_cryptodev_sym_session *sess,
-		    struct rte_mempool *pool)
+		    struct rte_cryptodev_sym_session *sess)
 {
 	CPT_PMD_INIT_FUNC_TRACE();
 
-	return sym_session_configure(dev->driver_id, xform, sess, pool);
+	return sym_session_configure(xform, sess);
 }
 
 
 static void
-otx_cpt_session_clear(struct rte_cryptodev *dev,
+otx_cpt_session_clear(struct rte_cryptodev *dev __rte_unused,
 		  struct rte_cryptodev_sym_session *sess)
 {
 	CPT_PMD_INIT_FUNC_TRACE();
 
-	return sym_session_clear(dev->driver_id, sess);
+	return sym_session_clear(sess);
 }
 
 static unsigned int
@@ -375,35 +353,24 @@ otx_cpt_asym_session_size_get(struct rte_cryptodev *dev __rte_unused)
 }
 
 static int
-otx_cpt_asym_session_cfg(struct rte_cryptodev *dev,
+otx_cpt_asym_session_cfg(struct rte_cryptodev *dev __rte_unused,
 			 struct rte_crypto_asym_xform *xform __rte_unused,
-			 struct rte_cryptodev_asym_session *sess,
-			 struct rte_mempool *pool)
+			 struct rte_cryptodev_asym_session *sess)
 {
-	struct cpt_asym_sess_misc *priv;
+	struct cpt_asym_sess_misc *priv = (struct cpt_asym_sess_misc *)
+			sess->sess_private_data;
 	int ret;
 
 	CPT_PMD_INIT_FUNC_TRACE();
 
-	if (rte_mempool_get(pool, (void **)&priv)) {
-		CPT_LOG_ERR("Could not allocate session private data");
-		return -ENOMEM;
-	}
-
-	memset(priv, 0, sizeof(struct cpt_asym_sess_misc));
-
 	ret = cpt_fill_asym_session_parameters(priv, xform);
 	if (ret) {
 		CPT_LOG_ERR("Could not configure session parameters");
-
-		/* Return session to mempool */
-		rte_mempool_put(pool, priv);
 		return ret;
 	}
 
 	priv->cpt_inst_w7 = 0;
 
-	set_asym_session_private_data(sess, dev->driver_id, priv);
 	return 0;
 }
 
@@ -412,11 +379,10 @@ otx_cpt_asym_session_clear(struct rte_cryptodev *dev,
 			   struct rte_cryptodev_asym_session *sess)
 {
 	struct cpt_asym_sess_misc *priv;
-	struct rte_mempool *sess_mp;
 
 	CPT_PMD_INIT_FUNC_TRACE();
 
-	priv = get_asym_session_private_data(sess, dev->driver_id);
+	priv = (struct cpt_asym_sess_misc *) sess->sess_private_data;
 
 	if (priv == NULL)
 		return;
@@ -424,9 +390,6 @@ otx_cpt_asym_session_clear(struct rte_cryptodev *dev,
 	/* Free resources allocated during session configure */
 	cpt_free_asym_session_parameters(priv);
 	memset(priv, 0, otx_cpt_asym_session_size_get(dev));
-	sess_mp = rte_mempool_from_obj(priv);
-	set_asym_session_private_data(sess, dev->driver_id, NULL);
-	rte_mempool_put(sess_mp, priv);
 }
 
 static __rte_always_inline void * __rte_hot
@@ -471,8 +434,8 @@ otx_cpt_enq_single_asym(struct cpt_instance *instance,
 		return NULL;
 	}
 
-	sess = get_asym_session_private_data(asym_op->session,
-					     otx_cryptodev_driver_id);
+	sess = (struct cpt_asym_sess_misc *)
+			asym_op->session->sess_private_data;
 
 	/* Store phys_addr of the mdata to meta_buf */
 	params.meta_buf = rte_mempool_virt2iova(mdata);
@@ -544,10 +507,7 @@ otx_cpt_enq_single_sym(struct cpt_instance *instance,
 	void *req;
 	uint64_t cpt_op;
 
-	sess = (struct cpt_sess_misc *)
-			get_sym_session_private_data(sym_op->session,
-						     otx_cryptodev_driver_id);
-
+	sess = CRYPTODEV_GET_SYM_SESS_PRIV(sym_op->session);
 	cpt_op = sess->cpt_op;
 
 	if (likely(cpt_op & CPT_OP_CIPHER_MASK))
@@ -576,21 +536,18 @@ static __rte_always_inline void * __rte_hot
 otx_cpt_enq_single_sym_sessless(struct cpt_instance *instance,
 				struct rte_crypto_op *op)
 {
-	const int driver_id = otx_cryptodev_driver_id;
 	struct rte_crypto_sym_op *sym_op = op->sym;
 	struct rte_cryptodev_sym_session *sess;
 	void *req;
 	int ret;
 
 	/* Create temporary session */
-	sess = rte_cryptodev_sym_session_create(instance->sess_mp);
-	if (sess == NULL) {
+	if (rte_mempool_get(instance->sess_mp, (void **)&sess) < 0) {
 		rte_errno = ENOMEM;
 		return NULL;
 	}
 
-	ret = sym_session_configure(driver_id, sym_op->xform, sess,
-				    instance->sess_mp_priv);
+	ret = sym_session_configure(sym_op->xform, sess);
 	if (ret)
 		goto sess_put;
 
@@ -599,12 +556,10 @@ otx_cpt_enq_single_sym_sessless(struct cpt_instance *instance,
 	/* Enqueue op with the tmp session set */
 	req = otx_cpt_enq_single_sym(instance, op);
 	if (unlikely(req == NULL))
-		goto priv_put;
+		goto sess_put;
 
 	return req;
 
-priv_put:
-	sym_session_clear(driver_id, sess);
 sess_put:
 	rte_mempool_put(instance->sess_mp, sess);
 	return NULL;
@@ -691,6 +646,7 @@ submit_request_to_sso(struct ssows *ws, uintptr_t req,
 	uint64_t add_work;
 
 	add_work = rsp_info->flow_id | (RTE_EVENT_TYPE_CRYPTODEV << 28) |
+		   (rsp_info->sub_event_type << 20) |
 		   ((uint64_t)(rsp_info->sched_type) << 32);
 
 	if (!rsp_info->sched_type)
@@ -698,24 +654,6 @@ submit_request_to_sso(struct ssows *ws, uintptr_t req,
 
 	rte_atomic_thread_fence(__ATOMIC_RELEASE);
 	ssovf_store_pair(add_work, req, ws->grps[rsp_info->queue_id]);
-}
-
-static inline union rte_event_crypto_metadata *
-get_event_crypto_mdata(struct rte_crypto_op *op)
-{
-	union rte_event_crypto_metadata *ec_mdata;
-
-	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
-		ec_mdata = rte_cryptodev_sym_session_get_user_data(
-							   op->sym->session);
-	else if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS &&
-		 op->private_data_offset)
-		ec_mdata = (union rte_event_crypto_metadata *)
-			((uint8_t *)op + op->private_data_offset);
-	else
-		return NULL;
-
-	return ec_mdata;
 }
 
 uint16_t __rte_hot
@@ -728,7 +666,7 @@ otx_crypto_adapter_enqueue(void *port, struct rte_crypto_op *op)
 	uint8_t op_type, cdev_id;
 	uint16_t qp_id;
 
-	ec_mdata = get_event_crypto_mdata(op);
+	ec_mdata = rte_cryptodev_session_event_mdata_get(op);
 	if (unlikely(ec_mdata == NULL)) {
 		rte_errno = EINVAL;
 		return 0;
@@ -770,7 +708,7 @@ otx_cpt_asym_rsa_op(struct rte_crypto_op *cop, struct cpt_request_info *req,
 		memcpy(rsa->cipher.data, req->rptr, rsa->cipher.length);
 		break;
 	case RTE_CRYPTO_ASYM_OP_DECRYPT:
-		if (rsa->pad == RTE_CRYPTO_RSA_PADDING_NONE)
+		if (rsa->padding.type == RTE_CRYPTO_RSA_PADDING_NONE)
 			rsa->message.length = rsa_ctx->n.length;
 		else {
 			/* Get length of decrypted output */
@@ -787,7 +725,7 @@ otx_cpt_asym_rsa_op(struct rte_crypto_op *cop, struct cpt_request_info *req,
 		memcpy(rsa->sign.data, req->rptr, rsa->sign.length);
 		break;
 	case RTE_CRYPTO_ASYM_OP_VERIFY:
-		if (rsa->pad == RTE_CRYPTO_RSA_PADDING_NONE)
+		if (rsa->padding.type == RTE_CRYPTO_RSA_PADDING_NONE)
 			rsa->sign.length = rsa_ctx->n.length;
 		else {
 			/* Get length of decrypted output */
@@ -852,8 +790,7 @@ otx_cpt_asym_post_process(struct rte_crypto_op *cop,
 	struct rte_crypto_asym_op *op = cop->asym;
 	struct cpt_asym_sess_misc *sess;
 
-	sess = get_asym_session_private_data(op->session,
-					     otx_cryptodev_driver_id);
+	sess = (struct cpt_asym_sess_misc *) op->session->sess_private_data;
 
 	switch (sess->xfrm_type) {
 	case RTE_CRYPTO_ASYM_XFORM_RSA:
@@ -907,13 +844,9 @@ static inline void
 free_sym_session_data(const struct cpt_instance *instance,
 		      struct rte_crypto_op *cop)
 {
-	void *sess_private_data_t = get_sym_session_private_data(
-		cop->sym->session, otx_cryptodev_driver_id);
+	void *sess_private_data_t = CRYPTODEV_GET_SYM_SESS_PRIV(cop->sym->session);
+
 	memset(sess_private_data_t, 0, cpt_get_session_size());
-	memset(cop->sym->session, 0,
-	       rte_cryptodev_sym_get_existing_header_session_size(
-		       cop->sym->session));
-	rte_mempool_put(instance->sess_mp_priv, sess_private_data_t);
 	rte_mempool_put(instance->sess_mp, cop->sym->session);
 	cop->sym->session = NULL;
 }

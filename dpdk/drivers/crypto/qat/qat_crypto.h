@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2021 Intel Corporation
+ * Copyright(c) 2022 Intel Corporation
  */
 
  #ifndef _QAT_CRYPTO_H_
@@ -12,7 +12,10 @@
 extern uint8_t qat_sym_driver_id;
 extern uint8_t qat_asym_driver_id;
 
-/** helper macro to set cryptodev capability range **/
+/**
+ * helper macro to set cryptodev capability range
+ * <n: name> <l: min > <r: max> <i: increment> <v: value>
+ **/
 #define CAP_RNG(n, l, r, i) .n = {.min = l, .max = r, .increment = i}
 
 #define CAP_RNG_ZERO(n) .n = {.min = 0, .max = 0, .increment = 0}
@@ -41,21 +44,30 @@ struct qat_capabilities_info {
 	uint64_t size;
 };
 
-typedef struct qat_capabilities_info (*get_capabilities_info_t)
-			(struct qat_pci_device *qat_dev);
+typedef int (*get_capabilities_info_t)(struct qat_cryptodev_private *internals,
+			const char *capa_memz_name, uint16_t slice_map);
 
 typedef uint64_t (*get_feature_flags_t)(struct qat_pci_device *qat_dev);
 
 typedef void * (*create_security_ctx_t)(void *cryptodev);
 
+typedef int (*set_session_t)(void *cryptodev, void *session);
+
+typedef int (*set_raw_dp_ctx_t)(void *raw_dp_ctx, void *ctx);
+
 struct qat_crypto_gen_dev_ops {
 	get_feature_flags_t get_feature_flags;
 	get_capabilities_info_t get_capabilities;
 	struct rte_cryptodev_ops *cryptodev_ops;
+	set_session_t set_session;
+	set_raw_dp_ctx_t set_raw_dp_ctx;
 #ifdef RTE_LIB_SECURITY
 	create_security_ctx_t create_security_ctx;
 #endif
 };
+
+extern struct qat_crypto_gen_dev_ops qat_sym_gen_dev_ops[];
+extern struct qat_crypto_gen_dev_ops qat_asym_gen_dev_ops[];
 
 int
 qat_cryptodev_config(struct rte_cryptodev *dev,

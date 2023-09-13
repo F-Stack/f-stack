@@ -7,12 +7,9 @@
 int
 l2fwd_event_init_ports(struct l2fwd_resources *rsrc)
 {
-	uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-	uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+	uint16_t nb_rxd = RX_DESC_DEFAULT;
+	uint16_t nb_txd = TX_DESC_DEFAULT;
 	struct rte_eth_conf port_conf = {
-		.rxmode = {
-			.split_hdr_size = 0,
-		},
 		.txmode = {
 			.mq_mode = RTE_ETH_MQ_TX_NONE,
 		},
@@ -113,4 +110,52 @@ l2fwd_event_init_ports(struct l2fwd_resources *rsrc)
 	}
 
 	return nb_ports_available;
+}
+
+static void
+l2fwd_event_vector_array_free(struct rte_event events[], uint16_t num)
+{
+	uint16_t i;
+
+	for (i = 0; i < num; i++) {
+		rte_pktmbuf_free_bulk(
+			&events[i].vec->mbufs[events[i].vec->elem_offset],
+			events[i].vec->nb_elem);
+		rte_mempool_put(rte_mempool_from_obj(events[i].vec),
+				events[i].vec);
+	}
+}
+
+static void
+l2fwd_event_port_flush(uint8_t event_d_id __rte_unused, struct rte_event ev,
+		       void *args __rte_unused)
+{
+	if (ev.event_type & RTE_EVENT_TYPE_VECTOR)
+		l2fwd_event_vector_array_free(&ev, 1);
+	else
+		rte_pktmbuf_free(ev.mbuf);
+}
+
+void
+l2fwd_event_worker_cleanup(uint8_t event_d_id, uint8_t port_id,
+			   struct rte_event events[], uint16_t nb_enq,
+			   uint16_t nb_deq, uint8_t is_vector)
+{
+	int i;
+
+	if (nb_deq) {
+		if (is_vector)
+			l2fwd_event_vector_array_free(events + nb_enq,
+						      nb_deq - nb_enq);
+		else
+			for (i = nb_enq; i < nb_deq; i++)
+				rte_pktmbuf_free(events[i].mbuf);
+
+		for (i = 0; i < nb_deq; i++)
+			events[i].op = RTE_EVENT_OP_RELEASE;
+		rte_event_enqueue_burst(event_d_id, port_id, events, nb_deq);
+	}
+
+	rte_event_port_quiesce(event_d_id, port_id, l2fwd_event_port_flush,
+			       NULL);
 }

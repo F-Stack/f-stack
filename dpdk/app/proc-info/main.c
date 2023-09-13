@@ -39,42 +39,48 @@
 #include <rte_cryptodev.h>
 #include <rte_tm.h>
 #include <rte_hexdump.h>
+#include <rte_version.h>
 
 /* Maximum long option length for option parsing. */
 #define MAX_LONG_OPT_SZ 64
 #define MAX_STRING_LEN 256
 
+#define ETHDEV_FWVERS_LEN 32
+#define RTE_RETA_CONF_GROUP_NUM 32
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+#define EEPROM_DUMP_CHUNKSIZE 1024
+
 #define STATS_BDR_FMT "========================================"
 #define STATS_BDR_STR(w, s) printf("%.*s%s%.*s\n", w, \
 	STATS_BDR_FMT, s, w, STATS_BDR_FMT)
 
-/**< mask of enabled ports */
+/* mask of enabled ports */
 static unsigned long enabled_port_mask;
-/**< Enable stats. */
+/* Enable stats. */
 static uint32_t enable_stats;
-/**< Enable xstats. */
+/* Enable xstats. */
 static uint32_t enable_xstats;
-/**< Enable collectd format*/
+/* Enable collectd format */
 static uint32_t enable_collectd_format;
-/**< FD to send collectd format messages to STDOUT*/
+/* FD to send collectd format messages to STDOUT */
 static int stdout_fd;
-/**< Host id process is running on */
+/* Host id process is running on */
 static char host_id[MAX_LONG_OPT_SZ];
 #ifdef RTE_LIB_METRICS
-/**< Enable metrics. */
+/* Enable metrics. */
 static uint32_t enable_metrics;
 #endif
-/**< Enable stats reset. */
+/* Enable stats reset. */
 static uint32_t reset_stats;
-/**< Enable xstats reset. */
+/* Enable xstats reset. */
 static uint32_t reset_xstats;
-/**< Enable memory info. */
+/* Enable memory info. */
 static uint32_t mem_info;
-/**< Enable displaying xstat name. */
+/* Enable displaying xstat name. */
 static uint32_t enable_xstats_name;
 static char *xstats_name;
 
-/**< Enable xstats by ids. */
+/* Enable xstats by ids. */
 #define MAX_NB_XSTATS_IDS 1024
 static uint32_t nb_xstats_ids;
 static uint64_t xstats_ids[MAX_NB_XSTATS_IDS];
@@ -82,26 +88,51 @@ static uint64_t xstats_ids[MAX_NB_XSTATS_IDS];
 /* show border */
 static char bdr_str[MAX_STRING_LEN];
 
-/**< Enable show port. */
+/* Enable show port. */
 static uint32_t enable_shw_port;
-/**< Enable show tm. */
+/* Enable show port private info. */
+static uint32_t enable_shw_port_priv;
+/* Enable show tm. */
 static uint32_t enable_shw_tm;
-/**< Enable show crypto. */
+/* Enable show crypto. */
 static uint32_t enable_shw_crypto;
-/**< Enable show ring. */
+/* Enable show ring. */
 static uint32_t enable_shw_ring;
 static char *ring_name;
-/**< Enable show mempool. */
+/* Enable show mempool. */
 static uint32_t enable_shw_mempool;
 static char *mempool_name;
-/**< Enable iter mempool. */
+/* Enable iter mempool. */
 static uint32_t enable_iter_mempool;
 static char *mempool_iter_name;
-/**< Enable dump regs. */
+/* Enable dump regs. */
 static uint32_t enable_dump_regs;
 static char *dump_regs_file_prefix;
+/* Enable show DPDK version. */
+static uint32_t enable_shw_version;
+/* Enable show ethdev firmware version. */
+static uint32_t enable_shw_fw_version;
+/* Enable show RSS reta. */
+static uint32_t enable_shw_rss_reta;
+/* Enable show module eeprom information. */
+static uint32_t enable_shw_module_eeprom;
 
-/**< display usage */
+/* Enable dump Rx/Tx descriptor. */
+static uint32_t enable_shw_rx_desc_dump;
+static uint32_t enable_shw_tx_desc_dump;
+
+#define DESC_PARAM_NUM 3
+
+struct desc_param {
+	uint16_t queue_id; /* A queue identifier on this port. */
+	uint16_t offset;   /* The offset of the descriptor starting from tail. */
+	uint16_t num;      /* The number of the descriptors to dump. */
+};
+
+static struct desc_param rx_desc_param;
+static struct desc_param tx_desc_param;
+
+/* display usage */
 static void
 proc_info_usage(const char *prgname)
 {
@@ -123,10 +154,23 @@ proc_info_usage(const char *prgname)
 		"  --collectd-format: to print statistics to STDOUT in expected by collectd format\n"
 		"  --host-id STRING: host id used to identify the system process is running on\n"
 		"  --show-port: to display ports information\n"
+		"  --show-port-private: to display ports private information\n"
 		"  --show-tm: to display traffic manager information for ports\n"
 		"  --show-crypto: to display crypto information\n"
 		"  --show-ring[=name]: to display ring information\n"
 		"  --show-mempool[=name]: to display mempool information\n"
+		"  --version: to display DPDK version\n"
+		"  --firmware-version: to display ethdev firmware version\n"
+		"  --show-rss-reta: to display ports redirection table\n"
+		"  --show-module-eeprom: to display ports module eeprom information\n"
+		"  --show-rx-descriptor queue_id:offset:num to display ports Rx descriptor information. "
+			"queue_id: A Rx queue identifier on this port. "
+			"offset: The offset of the descriptor starting from tail. "
+			"num: The number of the descriptors to dump.\n"
+		"  --show-tx-descriptor queue_id:offset:num to display ports Tx descriptor information. "
+			"queue_id: A Tx queue identifier on this port. "
+			"offset: The offset of the descriptor starting from tail. "
+			"num: The number of the descriptors to dump.\n"
 		"  --iter-mempool=name: iterate mempool elements to display content\n"
 		"  --dump-regs=file-prefix: dump registers to file with the file-prefix\n",
 		prgname);
@@ -177,6 +221,19 @@ parse_xstats_ids(char *list, uint64_t *ids, int limit) {
 	}
 
 	return length;
+}
+
+static int
+parse_descriptor_param(char *list, struct desc_param *desc)
+{
+	int ret;
+
+	ret = sscanf(list, "%hu:%hu:%hu", &desc->queue_id, &desc->offset,
+		     &desc->num);
+	if (ret != DESC_PARAM_NUM)
+		return -EINVAL;
+
+	return 0;
 }
 
 static int
@@ -232,12 +289,19 @@ proc_info_parse_args(int argc, char **argv)
 		{"xstats-ids", 1, NULL, 1},
 		{"host-id", 0, NULL, 0},
 		{"show-port", 0, NULL, 0},
+		{"show-port-private", 0, NULL, 0},
 		{"show-tm", 0, NULL, 0},
 		{"show-crypto", 0, NULL, 0},
 		{"show-ring", optional_argument, NULL, 0},
 		{"show-mempool", optional_argument, NULL, 0},
 		{"iter-mempool", required_argument, NULL, 0},
 		{"dump-regs", required_argument, NULL, 0},
+		{"version", 0, NULL, 0},
+		{"firmware-version", 0, NULL, 0},
+		{"show-rss-reta", 0, NULL, 0},
+		{"show-module-eeprom", 0, NULL, 0},
+		{"show-rx-descriptor", required_argument, NULL, 1},
+		{"show-tx-descriptor", required_argument, NULL, 1},
 		{NULL, 0, 0, 0}
 	};
 
@@ -285,6 +349,9 @@ proc_info_parse_args(int argc, char **argv)
 					"show-port", MAX_LONG_OPT_SZ))
 				enable_shw_port = 1;
 			else if (!strncmp(long_option[option_index].name,
+					"show-port-private", MAX_LONG_OPT_SZ))
+				enable_shw_port_priv = 1;
+			else if (!strncmp(long_option[option_index].name,
 					"show-tm", MAX_LONG_OPT_SZ))
 				enable_shw_tm = 1;
 			else if (!strncmp(long_option[option_index].name,
@@ -306,7 +373,18 @@ proc_info_parse_args(int argc, char **argv)
 					"dump-regs", MAX_LONG_OPT_SZ)) {
 				enable_dump_regs = 1;
 				dump_regs_file_prefix = optarg;
-			}
+			} else if (!strncmp(long_option[option_index].name,
+					"version", MAX_LONG_OPT_SZ))
+				enable_shw_version = 1;
+			else if (!strncmp(long_option[option_index].name,
+					"firmware-version", MAX_LONG_OPT_SZ))
+				enable_shw_fw_version = 1;
+			else if (!strncmp(long_option[option_index].name,
+					"show-rss-reta", MAX_LONG_OPT_SZ))
+				enable_shw_rss_reta = 1;
+			else if (!strncmp(long_option[option_index].name,
+					"show-module-eeprom", MAX_LONG_OPT_SZ))
+				enable_shw_module_eeprom = 1;
 			break;
 		case 1:
 			/* Print xstat single value given by name*/
@@ -327,6 +405,26 @@ proc_info_parse_args(int argc, char **argv)
 					return -1;
 				}
 				nb_xstats_ids = ret;
+			} else if (!strncmp(long_option[option_index].name,
+				"show-rx-descriptor", MAX_LONG_OPT_SZ)) {
+				int ret = parse_descriptor_param(optarg,
+							&rx_desc_param);
+				if (ret < 0) {
+					fprintf(stderr, "Error parsing Rx descriptor param: %s\n",
+						strerror(-ret));
+					return -1;
+				}
+				enable_shw_rx_desc_dump = 1;
+			} else if (!strncmp(long_option[option_index].name,
+				"show-tx-descriptor", MAX_LONG_OPT_SZ)) {
+				int ret = parse_descriptor_param(optarg,
+							&tx_desc_param);
+				if (ret < 0) {
+					fprintf(stderr, "Error parsing Tx descriptor param: %s\n",
+						strerror(-ret));
+					return -1;
+				}
+				enable_shw_tx_desc_dump = 1;
 			}
 			break;
 		default:
@@ -748,7 +846,7 @@ show_port(void)
 		}
 
 		printf("\t  -- driver %s device %s socket %d\n",
-		       dev_info.driver_name, dev_info.device->name,
+		       dev_info.driver_name, rte_dev_name(dev_info.device),
 		       rte_eth_dev_socket_id(i));
 
 		ret = rte_eth_dev_owner_get(i, &owner);
@@ -805,6 +903,7 @@ show_port(void)
 
 		for (j = 0; j < dev_info.nb_rx_queues; j++) {
 			struct rte_eth_rxq_info queue_info;
+			struct rte_eth_burst_mode mode;
 			int count;
 
 			ret = rte_eth_rx_queue_info_get(i, j, &queue_info);
@@ -840,11 +939,18 @@ show_port(void)
 			if (queue_info.conf.offloads != 0)
 				show_offloads(queue_info.conf.offloads, rte_eth_dev_rx_offload_name);
 
+			if (rte_eth_rx_burst_mode_get(i, j, &mode) == 0)
+				printf(" burst mode : %s%s",
+				       mode.info,
+				       mode.flags & RTE_ETH_BURST_FLAG_PER_QUEUE ?
+						" (per queue)" : "");
+
 			printf("\n");
 		}
 
 		for (j = 0; j < dev_info.nb_tx_queues; j++) {
 			struct rte_eth_txq_info queue_info;
+			struct rte_eth_burst_mode mode;
 
 			ret = rte_eth_tx_queue_info_get(i, j, &queue_info);
 			if (ret != 0)
@@ -865,6 +971,13 @@ show_port(void)
 
 			if (queue_info.conf.offloads != 0)
 				show_offloads(queue_info.conf.offloads, rte_eth_dev_tx_offload_name);
+
+			if (rte_eth_tx_burst_mode_get(i, j, &mode) == 0)
+				printf(" burst mode : %s%s",
+				       mode.info,
+				       mode.flags & RTE_ETH_BURST_FLAG_PER_QUEUE ?
+						" (per queue)" : "");
+
 			printf("\n");
 		}
 
@@ -884,6 +997,25 @@ show_port(void)
 #ifdef RTE_LIB_SECURITY
 		show_security_context(i, true);
 #endif
+	}
+}
+
+static void
+show_port_private_info(void)
+{
+	int i;
+
+	snprintf(bdr_str, MAX_STRING_LEN, " Dump - Ports private information");
+	STATS_BDR_STR(10, bdr_str);
+
+	RTE_ETH_FOREACH_DEV(i) {
+		/* Skip if port is not in mask */
+		if ((enabled_port_mask & (1ul << i)) == 0)
+			continue;
+
+		snprintf(bdr_str, MAX_STRING_LEN, " Port %u ", i);
+		STATS_BDR_STR(5, bdr_str);
+		rte_eth_dev_priv_dump(i, stdout);
 	}
 }
 
@@ -1228,7 +1360,7 @@ show_crypto(void)
 		       rte_cryptodev_name_get(i),
 		       dev_info.driver_name,
 		       dev_info.driver_id,
-		       dev_info.device->numa_node,
+		       rte_dev_numa_node(dev_info.device),
 		       rte_cryptodev_queue_pair_count(i));
 
 		display_crypto_feature_info(dev_info.feature_flags);
@@ -1440,7 +1572,7 @@ dump_regs(char *file_prefix)
 			else
 				printf("Device (%s) regs dumped successfully, "
 					"driver:%s version:0X%08X\n",
-					dev_info.device->name,
+					rte_dev_name(dev_info.device),
 					dev_info.driver_name, reg_info.version);
 
 			fclose(fp_regs);
@@ -1448,6 +1580,168 @@ dump_regs(char *file_prefix)
 
 		free(buf_data);
 	}
+}
+
+static void
+show_version(void)
+{
+	snprintf(bdr_str, MAX_STRING_LEN, " show - DPDK version ");
+	STATS_BDR_STR(10, bdr_str);
+	printf("DPDK version: %s\n", rte_version());
+}
+
+static void
+show_firmware_version(void)
+{
+	char fw_version[ETHDEV_FWVERS_LEN];
+	uint16_t i;
+
+	snprintf(bdr_str, MAX_STRING_LEN, " show - firmware version ");
+	STATS_BDR_STR(10, bdr_str);
+
+	RTE_ETH_FOREACH_DEV(i) {
+		/* Skip if port is not in mask */
+		if ((enabled_port_mask & (1ul << i)) == 0)
+			continue;
+
+		if (rte_eth_dev_fw_version_get(i, fw_version,
+					       ETHDEV_FWVERS_LEN) == 0)
+			printf("Ethdev port %u firmware version: %s\n", i,
+				fw_version);
+		else
+			printf("Ethdev port %u firmware version: %s\n", i,
+				"not available");
+	}
+}
+
+static void
+show_port_rss_reta_info(void)
+{
+	struct rte_eth_rss_reta_entry64 reta_conf[RTE_RETA_CONF_GROUP_NUM + 1];
+	struct rte_eth_dev_info dev_info;
+	uint16_t i, idx, shift;
+	uint16_t num;
+	uint16_t id;
+	int ret;
+
+	RTE_ETH_FOREACH_DEV(id) {
+		/* Skip if port is not in mask */
+		if ((enabled_port_mask & (1ul << id)) == 0)
+			continue;
+
+		snprintf(bdr_str, MAX_STRING_LEN, " Port %u ", id);
+		STATS_BDR_STR(5, bdr_str);
+
+		ret = rte_eth_dev_info_get(id, &dev_info);
+		if (ret != 0) {
+			fprintf(stderr, "Error getting device info: %s\n",
+				strerror(-ret));
+			return;
+		}
+
+		num = DIV_ROUND_UP(dev_info.reta_size, RTE_ETH_RETA_GROUP_SIZE);
+		memset(reta_conf, 0, sizeof(reta_conf));
+		for (i = 0; i < num; i++)
+			reta_conf[i].mask = ~0ULL;
+
+		ret = rte_eth_dev_rss_reta_query(id, reta_conf, dev_info.reta_size);
+		if (ret != 0) {
+			fprintf(stderr, "Error getting RSS RETA info: %s\n",
+				strerror(-ret));
+			return;
+		}
+
+		for (i = 0; i < dev_info.reta_size; i++) {
+			idx = i / RTE_ETH_RETA_GROUP_SIZE;
+			shift = i % RTE_ETH_RETA_GROUP_SIZE;
+			printf("RSS RETA configuration: hash index=%u, queue=%u\n",
+				i, reta_conf[idx].reta[shift]);
+		}
+	}
+}
+
+static void
+show_module_eeprom_info(void)
+{
+	unsigned char bytes_eeprom[EEPROM_DUMP_CHUNKSIZE];
+	struct rte_eth_dev_module_info module_info;
+	struct rte_dev_eeprom_info eeprom_info;
+	uint16_t i;
+	int ret;
+
+	RTE_ETH_FOREACH_DEV(i) {
+		/* Skip if port is not in mask */
+		if ((enabled_port_mask & (1ul << i)) == 0)
+			continue;
+
+		snprintf(bdr_str, MAX_STRING_LEN, " Port %u ", i);
+		STATS_BDR_STR(5, bdr_str);
+
+		ret = rte_eth_dev_get_module_info(i, &module_info);
+		if (ret != 0) {
+			fprintf(stderr, "Module EEPROM information read error: %s\n",
+				strerror(-ret));
+			return;
+		}
+
+		eeprom_info.offset = 0;
+		eeprom_info.length = module_info.eeprom_len;
+		eeprom_info.data = bytes_eeprom;
+
+		ret = rte_eth_dev_get_module_eeprom(i, &eeprom_info);
+		if (ret != 0) {
+			fprintf(stderr, "Module EEPROM read error: %s\n",
+				strerror(-ret));
+			return;
+		}
+
+		rte_hexdump(stdout, "hexdump", eeprom_info.data,
+			    eeprom_info.length);
+		printf("Finish -- Port: %u MODULE EEPROM length: %d bytes\n",
+		       i, eeprom_info.length);
+	}
+}
+
+static void
+nic_rx_descriptor_display(uint16_t port_id, struct desc_param *desc)
+{
+	uint16_t queue_id = desc->queue_id;
+	uint16_t offset = desc->offset;
+	uint16_t num = desc->num;
+	int ret;
+
+	snprintf(bdr_str, MAX_STRING_LEN, " show - Rx descriptor ");
+	STATS_BDR_STR(10, bdr_str);
+
+	printf("Dump ethdev Rx descriptor for port %u, queue %u, offset %u, num %u\n",
+		port_id, queue_id, offset, num);
+
+	ret = rte_eth_rx_descriptor_dump(port_id, queue_id, offset, num,
+					 stdout);
+	if (ret < 0)
+		fprintf(stderr, "Error dumping ethdev Rx descriptor: %s\n",
+			strerror(-ret));
+}
+
+static void
+nic_tx_descriptor_display(uint16_t port_id, struct desc_param *desc)
+{
+	uint16_t queue_id = desc->queue_id;
+	uint16_t offset = desc->offset;
+	uint16_t num = desc->num;
+	int ret;
+
+	snprintf(bdr_str, MAX_STRING_LEN, " show - Tx descriptor ");
+	STATS_BDR_STR(10, bdr_str);
+
+	printf("Dump ethdev Tx descriptor for port %u, queue %u, offset %u, num %u\n",
+		port_id, queue_id, offset, num);
+
+	ret = rte_eth_tx_descriptor_dump(port_id, queue_id, offset, num,
+					 stdout);
+	if (ret < 0)
+		fprintf(stderr, "Error dumping ethdev Tx descriptor: %s\n",
+			strerror(-ret));
 }
 
 int
@@ -1538,6 +1832,10 @@ main(int argc, char **argv)
 			metrics_display(i);
 #endif
 
+		if (enable_shw_rx_desc_dump)
+			nic_rx_descriptor_display(i, &rx_desc_param);
+		if (enable_shw_tx_desc_dump)
+			nic_tx_descriptor_display(i, &tx_desc_param);
 	}
 
 #ifdef RTE_LIB_METRICS
@@ -1549,6 +1847,8 @@ main(int argc, char **argv)
 	/* show information for PMD */
 	if (enable_shw_port)
 		show_port();
+	if (enable_shw_port_priv)
+		show_port_private_info();
 	if (enable_shw_tm)
 		show_tm();
 	if (enable_shw_crypto)
@@ -1561,6 +1861,14 @@ main(int argc, char **argv)
 		iter_mempool(mempool_iter_name);
 	if (enable_dump_regs)
 		dump_regs(dump_regs_file_prefix);
+	if (enable_shw_version)
+		show_version();
+	if (enable_shw_fw_version)
+		show_firmware_version();
+	if (enable_shw_rss_reta)
+		show_port_rss_reta_info();
+	if (enable_shw_module_eeprom)
+		show_module_eeprom_info();
 
 	RTE_ETH_FOREACH_DEV(i)
 		rte_eth_dev_close(i);

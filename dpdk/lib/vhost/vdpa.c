@@ -8,9 +8,9 @@
  * Device specific vhost lib
  */
 
-#include <stdbool.h>
 #include <sys/queue.h>
 
+#include <dev_driver.h>
 #include <rte_class.h>
 #include <rte_malloc.h>
 #include <rte_spinlock.h>
@@ -73,6 +73,7 @@ rte_vdpa_register_device(struct rte_device *rte_dev,
 		struct rte_vdpa_dev_ops *ops)
 {
 	struct rte_vdpa_device *dev;
+	int ret = 0;
 
 	if (ops == NULL)
 		return NULL;
@@ -82,8 +83,8 @@ rte_vdpa_register_device(struct rte_device *rte_dev,
 			!ops->get_protocol_features || !ops->dev_conf ||
 			!ops->dev_close || !ops->set_vring_state ||
 			!ops->set_features) {
-		VHOST_LOG_CONFIG(ERR,
-				"Some mandatory vDPA ops aren't implemented\n");
+		VHOST_LOG_CONFIG(rte_dev->name, ERR,
+			"Some mandatory vDPA ops aren't implemented\n");
 		return NULL;
 	}
 
@@ -101,6 +102,20 @@ rte_vdpa_register_device(struct rte_device *rte_dev,
 
 	dev->device = rte_dev;
 	dev->ops = ops;
+
+	if (ops->get_dev_type) {
+		ret = ops->get_dev_type(dev, &dev->type);
+		if (ret) {
+			VHOST_LOG_CONFIG(rte_dev->name, ERR,
+					 "Failed to get vdpa dev type.\n");
+			ret = -1;
+			goto out_unlock;
+		}
+	} else {
+		/** by default, we assume vdpa device is a net device */
+		dev->type = RTE_VHOST_VDPA_DEVICE_TYPE_NET;
+	}
+
 	TAILQ_INSERT_TAIL(&vdpa_device_list, dev, next);
 out_unlock:
 	rte_spinlock_unlock(&vdpa_device_list_lock);
@@ -267,7 +282,8 @@ rte_vdpa_get_stats_names(struct rte_vdpa_device *dev,
 	if (!dev)
 		return -EINVAL;
 
-	RTE_FUNC_PTR_OR_ERR_RET(dev->ops->get_stats_names, -ENOTSUP);
+	if (dev->ops->get_stats_names == NULL)
+		return -ENOTSUP;
 
 	return dev->ops->get_stats_names(dev, stats_names, size);
 }
@@ -279,7 +295,8 @@ rte_vdpa_get_stats(struct rte_vdpa_device *dev, uint16_t qid,
 	if (!dev || !stats || !n)
 		return -EINVAL;
 
-	RTE_FUNC_PTR_OR_ERR_RET(dev->ops->get_stats, -ENOTSUP);
+	if (dev->ops->get_stats == NULL)
+		return -ENOTSUP;
 
 	return dev->ops->get_stats(dev, qid, stats, n);
 }
@@ -290,7 +307,8 @@ rte_vdpa_reset_stats(struct rte_vdpa_device *dev, uint16_t qid)
 	if (!dev)
 		return -EINVAL;
 
-	RTE_FUNC_PTR_OR_ERR_RET(dev->ops->reset_stats, -ENOTSUP);
+	if (dev->ops->reset_stats == NULL)
+		return -ENOTSUP;
 
 	return dev->ops->reset_stats(dev, qid);
 }

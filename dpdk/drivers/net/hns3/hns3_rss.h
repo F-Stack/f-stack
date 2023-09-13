@@ -2,8 +2,9 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_RSS_H_
-#define _HNS3_RSS_H_
+#ifndef HNS3_RSS_H
+#define HNS3_RSS_H
+
 #include <rte_ethdev.h>
 #include <rte_flow.h>
 
@@ -167,6 +168,7 @@ static inline uint32_t roundup_pow_of_two(uint32_t x)
 extern const uint8_t hns3_hash_key[HNS3_RSS_KEY_SIZE];
 
 struct hns3_adapter;
+struct hns3_hw;
 
 int hns3_dev_rss_hash_update(struct rte_eth_dev *dev,
 			     struct rte_eth_rss_conf *rss_conf);
@@ -196,4 +198,4 @@ uint64_t hns3_rss_calc_tuple_filed(uint64_t rss_hf);
 int hns3_update_rss_algo_key(struct hns3_hw *hw, uint8_t hash_algo,
 			     uint8_t *key, uint8_t key_len);
 
-#endif /* _HNS3_RSS_H_ */
+#endif /* HNS3_RSS_H */

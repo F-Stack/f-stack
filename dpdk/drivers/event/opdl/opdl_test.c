@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/queue.h>
@@ -19,7 +20,7 @@
 #include <rte_ethdev.h>
 #include <rte_cycles.h>
 #include <rte_eventdev.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_pause.h>
 
 #include "opdl_evdev.h"
@@ -470,7 +471,7 @@ atomic_basic(struct test *t)
 	return 0;
 }
 static __rte_always_inline int
-check_qid_stats(uint32_t id[], int index)
+check_qid_stats(uint64_t id[], int index)
 {
 
 	if (index == 0) {
@@ -508,7 +509,7 @@ check_statistics(void)
 				0);
 		if (num_stats > 0) {
 
-			uint32_t id[num_stats];
+			uint64_t id[num_stats];
 			struct rte_event_dev_xstats_name names[num_stats];
 			uint64_t values[num_stats];
 

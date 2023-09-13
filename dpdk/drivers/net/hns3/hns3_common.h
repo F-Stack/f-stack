@@ -2,8 +2,8 @@
  * Copyright(C) 2021 HiSilicon Limited
  */
 
-#ifndef _HNS3_COMMON_H_
-#define _HNS3_COMMON_H_
+#ifndef HNS3_COMMON_H
+#define HNS3_COMMON_H
 
 #include <sys/time.h>
 
@@ -52,12 +52,14 @@ int hns3_set_mc_mac_addr_list(struct rte_eth_dev *dev,
 			      uint32_t nb_mc_addr);
 void hns3_ether_format_addr(char *buf, uint16_t size,
 			    const struct rte_ether_addr *ether_addr);
+int hns3_init_mac_addrs(struct rte_eth_dev *dev);
 
 int hns3_init_ring_with_vector(struct hns3_hw *hw);
 int hns3_map_rx_interrupt(struct rte_eth_dev *dev);
 void hns3_unmap_rx_interrupt(struct rte_eth_dev *dev);
 int hns3_restore_rx_interrupt(struct hns3_hw *hw);
 
+int hns3_get_pci_revision_id(struct hns3_hw *hw, uint8_t *revision_id);
 void hns3_set_default_dev_specifications(struct hns3_hw *hw);
 int hns3_query_dev_specifications(struct hns3_hw *hw);
 

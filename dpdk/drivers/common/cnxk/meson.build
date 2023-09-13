@@ -12,6 +12,7 @@ config_flag_fmt = 'RTE_LIBRTE_@0@_COMMON'
 deps = ['eal', 'pci', 'bus_pci', 'mbuf', 'security']
 sources = files(
         'roc_ae.c',
+        'roc_aes.c',
         'roc_ae_fpm_tables.c',
         'roc_bphy.c',
         'roc_bphy_cgx.c',
@@ -23,6 +24,7 @@ sources = files(
         'roc_hash.c',
         'roc_idev.c',
         'roc_irq.c',
+        'roc_ie_ot.c',
         'roc_mbox.c',
         'roc_model.c',
         'roc_nix.c',
@@ -42,12 +44,14 @@ sources = files(
         'roc_nix_rss.c',
         'roc_nix_stats.c',
         'roc_nix_tm.c',
+        'roc_nix_tm_mark.c',
         'roc_nix_tm_ops.c',
         'roc_nix_tm_utils.c',
         'roc_nix_vlan.c',
         'roc_npa.c',
         'roc_npa_debug.c',
         'roc_npa_irq.c',
+        'roc_npa_type.c',
         'roc_npc.c',
         'roc_npc_mcam.c',
         'roc_npc_mcam_dump.c',
@@ -61,6 +65,7 @@ sources = files(
         'roc_tim.c',
         'roc_tim_irq.c',
         'roc_utils.c',
+        'roc_ree.c',
 )
 
 # Security common code
@@ -77,6 +82,9 @@ includes += include_directories('../../../lib/meter')
 # Telemetry common code
 sources += files('cnxk_telemetry_bphy.c',
                  'cnxk_telemetry_npa.c',
-                 'cnxk_telemetry_nix.c')
+                 'cnxk_telemetry_nix.c',
+                 'cnxk_telemetry_sso.c',
+)
 
 deps += ['bus_pci', 'net', 'telemetry']
+pmd_supports_disable_iova_as_pa = true

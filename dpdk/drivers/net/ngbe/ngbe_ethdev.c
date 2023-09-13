@@ -325,6 +325,7 @@ eth_ngbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	const struct rte_memzone *mz;
 	uint32_t ctrl_ext;
+	u32 led_conf = 0;
 	int err, ret;
 
 	PMD_INIT_FUNC_TRACE();
@@ -365,13 +366,26 @@ eth_ngbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
+	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
+
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->back = pci_dev;
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
-	hw->sub_system_id = pci_dev->id.subsystem_device_id;
+	if (pci_dev->id.subsystem_vendor_id == PCI_VENDOR_ID_WANGXUN) {
+		hw->sub_system_id = pci_dev->id.subsystem_device_id;
+	} else {
+		u32 ssid;
+
+		ssid = ngbe_flash_read_dword(hw, 0xFFFDC);
+		if (ssid == 0x1) {
+			PMD_INIT_LOG(ERR,
+				"Read of internal subsystem device id failed\n");
+			return -ENODEV;
+		}
+		hw->sub_system_id = (u16)ssid >> 8 | (u16)ssid << 8;
+	}
 	ngbe_map_device_id(hw);
-	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 
 	/* Reserve memory for interrupt status block */
 	mz = rte_eth_dma_zone_reserve(eth_dev, "ngbe_driver", -1,
@@ -412,6 +426,12 @@ eth_ngbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		PMD_INIT_LOG(ERR, "The EEPROM checksum is not valid: %d", err);
 		return -EIO;
 	}
+
+	err = hw->phy.led_oem_chk(hw, &led_conf);
+	if (err == 0)
+		hw->led_conf = led_conf;
+	else
+		hw->led_conf = 0xFFFF;
 
 	err = hw->mac.init_hw(hw);
 	if (err != 0) {
@@ -954,9 +974,6 @@ ngbe_dev_start(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	/* Stop the link setup handler before resetting the HW. */
-	rte_eal_alarm_cancel(ngbe_dev_setup_link_alarm_handler, dev);
-
 	/* disable uio/vfio intr/eventfd mapping */
 	rte_intr_disable(intr_handle);
 
@@ -1032,6 +1049,8 @@ ngbe_dev_start(struct rte_eth_dev *dev)
 	if (hw->is_pf && dev->data->dev_conf.lpbk_mode)
 		goto skip_link_setup;
 
+	hw->lsc = dev->data->dev_conf.intr_conf.lsc;
+
 	err = hw->mac.check_link(hw, &speed, &link_up, 0);
 	if (err != 0)
 		goto error;
@@ -1070,7 +1089,11 @@ ngbe_dev_start(struct rte_eth_dev *dev)
 			speed |= NGBE_LINK_SPEED_10M_FULL;
 	}
 
-	hw->phy.init_hw(hw);
+	err = hw->phy.init_hw(hw);
+	if (err != 0) {
+		PMD_INIT_LOG(ERR, "PHY init failed");
+		goto error;
+	}
 	err = hw->mac.setup_link(hw, speed, link_up);
 	if (err != 0)
 		goto error;
@@ -1105,8 +1128,7 @@ skip_link_setup:
 	/* resume enabled intr since HW reset */
 	ngbe_enable_intr(dev);
 
-	if ((hw->sub_system_id & NGBE_OEM_MASK) == NGBE_LY_M88E1512_SFP ||
-		(hw->sub_system_id & NGBE_OEM_MASK) == NGBE_LY_YT8521S_SFP) {
+	if (hw->gpio_ctl) {
 		/* gpio0 is used to power on/off control*/
 		wr32(hw, NGBE_GPIODATA, 0);
 	}
@@ -1147,10 +1169,7 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	rte_eal_alarm_cancel(ngbe_dev_setup_link_alarm_handler, dev);
-
-	if ((hw->sub_system_id & NGBE_OEM_MASK) == NGBE_LY_M88E1512_SFP ||
-		(hw->sub_system_id & NGBE_OEM_MASK) == NGBE_LY_YT8521S_SFP) {
+	if (hw->gpio_ctl) {
 		/* gpio0 is used to power on/off control*/
 		wr32(hw, NGBE_GPIODATA, NGBE_GPIOBIT_0);
 	}
@@ -1167,6 +1186,8 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 	for (vf = 0; vfinfo != NULL && vf < pci_dev->max_vfs; vf++)
 		vfinfo[vf].clear_to_send = false;
+
+	hw->phy.set_phy_power(hw, false);
 
 	ngbe_dev_clear_queues(dev);
 
@@ -1193,6 +1214,32 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 	hw->adapter_stopped = true;
 	dev->data->dev_started = 0;
+
+	return 0;
+}
+
+/*
+ * Set device link up: power on.
+ */
+static int
+ngbe_dev_set_link_up(struct rte_eth_dev *dev)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+
+	hw->phy.set_phy_power(hw, true);
+
+	return 0;
+}
+
+/*
+ * Set device link down: power off.
+ */
+static int
+ngbe_dev_set_link_down(struct rte_eth_dev *dev)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+
+	hw->phy.set_phy_power(hw, false);
 
 	return 0;
 }
@@ -1821,24 +1868,6 @@ ngbe_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	return NULL;
 }
 
-void
-ngbe_dev_setup_link_alarm_handler(void *param)
-{
-	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
-	struct ngbe_hw *hw = ngbe_dev_hw(dev);
-	struct ngbe_interrupt *intr = ngbe_dev_intr(dev);
-	u32 speed;
-	bool autoneg = false;
-
-	speed = hw->phy.autoneg_advertised;
-	if (!speed)
-		hw->mac.get_link_capabilities(hw, &speed, &autoneg);
-
-	hw->mac.setup_link(hw, speed, true);
-
-	intr->flags &= ~NGBE_FLAG_NEED_LINK_CONFIG;
-}
-
 /* return 0 means link status changed, -1 means not changed */
 int
 ngbe_dev_link_update_share(struct rte_eth_dev *dev,
@@ -1848,7 +1877,6 @@ ngbe_dev_link_update_share(struct rte_eth_dev *dev,
 	struct rte_eth_link link;
 	u32 link_speed = NGBE_LINK_SPEED_UNKNOWN;
 	u32 lan_speed = 0;
-	struct ngbe_interrupt *intr = ngbe_dev_intr(dev);
 	bool link_up;
 	int err;
 	int wait = 1;
@@ -1862,9 +1890,6 @@ ngbe_dev_link_update_share(struct rte_eth_dev *dev,
 
 	hw->mac.get_link_status = true;
 
-	if (intr->flags & NGBE_FLAG_NEED_LINK_CONFIG)
-		return rte_eth_linkstatus_set(dev, &link);
-
 	/* check if it needs to wait to complete, if lsc interrupt is enabled */
 	if (wait_to_complete == 0 || dev->data->dev_conf.intr_conf.lsc != 0)
 		wait = 0;
@@ -1876,18 +1901,9 @@ ngbe_dev_link_update_share(struct rte_eth_dev *dev,
 		return rte_eth_linkstatus_set(dev, &link);
 	}
 
-	if (!link_up) {
-		if (hw->phy.media_type == ngbe_media_type_fiber &&
-			hw->phy.type != ngbe_phy_mvl_sfi) {
-			intr->flags |= NGBE_FLAG_NEED_LINK_CONFIG;
-			rte_eal_alarm_set(10,
-				ngbe_dev_setup_link_alarm_handler, dev);
-		}
-
+	if (!link_up)
 		return rte_eth_linkstatus_set(dev, &link);
-	}
 
-	intr->flags &= ~NGBE_FLAG_NEED_LINK_CONFIG;
 	link.link_status = RTE_ETH_LINK_UP;
 	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 
@@ -3016,6 +3032,8 @@ static const struct eth_dev_ops ngbe_eth_dev_ops = {
 	.dev_infos_get              = ngbe_dev_info_get,
 	.dev_start                  = ngbe_dev_start,
 	.dev_stop                   = ngbe_dev_stop,
+	.dev_set_link_up            = ngbe_dev_set_link_up,
+	.dev_set_link_down          = ngbe_dev_set_link_down,
 	.dev_close                  = ngbe_dev_close,
 	.dev_reset                  = ngbe_dev_reset,
 	.promiscuous_enable         = ngbe_dev_promiscuous_enable,

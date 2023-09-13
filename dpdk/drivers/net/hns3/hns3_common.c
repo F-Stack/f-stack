@@ -3,15 +3,15 @@
  */
 
 #include <rte_kvargs.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <ethdev_pci.h>
 #include <rte_pci.h>
 
-#include "hns3_common.h"
 #include "hns3_logs.h"
 #include "hns3_regs.h"
 #include "hns3_rxtx.h"
 #include "hns3_dcb.h"
+#include "hns3_common.h"
 
 int
 hns3_fw_version_get(struct rte_eth_dev *eth_dev, char *fw_version,
@@ -150,6 +150,8 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 	} else {
 		info->max_mac_addrs = HNS3_VF_UC_MACADDR_NUM;
 	}
+
+	info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PROACTIVE;
 
 	return 0;
 }
@@ -486,7 +488,7 @@ hns3_configure_all_mac_addr(struct hns3_adapter *hns, bool del)
 	struct rte_ether_addr *addr;
 	uint16_t mac_addrs_capa;
 	int ret = 0;
-	int i;
+	uint16_t i;
 
 	mac_addrs_capa =
 		hns->is_vf ? HNS3_VF_UC_MACADDR_NUM : HNS3_UC_MACADDR_NUM;
@@ -504,7 +506,7 @@ hns3_configure_all_mac_addr(struct hns3_adapter *hns, bool del)
 		if (ret) {
 			hns3_ether_format_addr(mac_str, RTE_ETHER_ADDR_FMT_SIZE,
 					       addr);
-			hns3_err(hw, "failed to %s mac addr(%s) index:%d ret = %d.",
+			hns3_err(hw, "failed to %s mac addr(%s) index:%u ret = %d.",
 				 del ? "remove" : "restore", mac_str, i, ret);
 		}
 	}
@@ -599,11 +601,65 @@ hns3_remove_mac_addr(struct rte_eth_dev *dev, uint32_t idx)
 }
 
 int
+hns3_init_mac_addrs(struct rte_eth_dev *dev)
+{
+	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+	const char *memory_name = hns->is_vf ? "hns3vf-mac" : "hns3-mac";
+	uint16_t mac_addrs_capa = hns->is_vf ? HNS3_VF_UC_MACADDR_NUM :
+						HNS3_UC_MACADDR_NUM;
+	char mac_str[RTE_ETHER_ADDR_FMT_SIZE];
+	struct rte_ether_addr *eth_addr;
+
+	/* Allocate memory for storing MAC addresses */
+	dev->data->mac_addrs = rte_zmalloc(memory_name,
+				sizeof(struct rte_ether_addr) * mac_addrs_capa,
+				0);
+	if (dev->data->mac_addrs == NULL) {
+		hns3_err(hw, "failed to allocate %zx bytes needed to store MAC addresses",
+			 sizeof(struct rte_ether_addr) * mac_addrs_capa);
+		return -ENOMEM;
+	}
+
+	eth_addr = (struct rte_ether_addr *)hw->mac.mac_addr;
+	if (!hns->is_vf) {
+		if (!rte_is_valid_assigned_ether_addr(eth_addr)) {
+			rte_eth_random_addr(hw->mac.mac_addr);
+			hns3_ether_format_addr(mac_str, RTE_ETHER_ADDR_FMT_SIZE,
+				(struct rte_ether_addr *)hw->mac.mac_addr);
+			hns3_warn(hw, "default mac_addr from firmware is an invalid "
+				  "unicast address, using random MAC address %s",
+				  mac_str);
+		}
+	} else {
+		/*
+		 * The hns3 PF ethdev driver in kernel support setting VF MAC
+		 * address on the host by "ip link set ..." command. To avoid
+		 * some incorrect scenes, for example, hns3 VF PMD driver fails
+		 * to receive and send packets after user configure the MAC
+		 * address by using the "ip link set ..." command, hns3 VF PMD
+		 * driver keep the same MAC address strategy as the hns3 kernel
+		 * ethdev driver in the initialization. If user configure a MAC
+		 * address by the ip command for VF device, then hns3 VF PMD
+		 * driver will start with it, otherwise start with a random MAC
+		 * address in the initialization.
+		 */
+		if (rte_is_zero_ether_addr(eth_addr))
+			rte_eth_random_addr(hw->mac.mac_addr);
+	}
+
+	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.mac_addr,
+			    &dev->data->mac_addrs[0]);
+
+	return 0;
+}
+
+int
 hns3_init_ring_with_vector(struct hns3_hw *hw)
 {
 	uint16_t vec;
+	uint16_t i;
 	int ret;
-	int i;
 
 	/*
 	 * In hns3 network engine, vector 0 is always the misc interrupt of this
@@ -637,16 +693,16 @@ hns3_init_ring_with_vector(struct hns3_hw *hw)
 		ret = hw->ops.bind_ring_with_vector(hw, vec, false,
 						    HNS3_RING_TYPE_TX, i);
 		if (ret) {
-			PMD_INIT_LOG(ERR, "fail to unbind TX ring(%d) with "
-					  "vector: %u, ret=%d", i, vec, ret);
+			PMD_INIT_LOG(ERR, "fail to unbind TX ring(%u) with vector: %u, ret=%d",
+				     i, vec, ret);
 			return ret;
 		}
 
 		ret = hw->ops.bind_ring_with_vector(hw, vec, false,
 						    HNS3_RING_TYPE_RX, i);
 		if (ret) {
-			PMD_INIT_LOG(ERR, "fail to unbind RX ring(%d) with "
-					  "vector: %u, ret=%d", i, vec, ret);
+			PMD_INIT_LOG(ERR, "fail to unbind RX ring(%d) with vector: %u, ret=%d",
+				     i, vec, ret);
 			return ret;
 		}
 	}
@@ -775,6 +831,28 @@ hns3_restore_rx_interrupt(struct hns3_hw *hw)
 				return ret;
 		}
 	}
+
+	return 0;
+}
+
+int
+hns3_get_pci_revision_id(struct hns3_hw *hw, uint8_t *revision_id)
+{
+	struct rte_pci_device *pci_dev;
+	struct rte_eth_dev *eth_dev;
+	uint8_t revision;
+	int ret;
+
+	eth_dev = &rte_eth_devices[hw->data->port_id];
+	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+	ret = rte_pci_read_config(pci_dev, &revision, HNS3_PCI_REVISION_ID_LEN,
+				  HNS3_PCI_REVISION_ID);
+	if (ret != HNS3_PCI_REVISION_ID_LEN) {
+		hns3_err(hw, "failed to read pci revision id, ret = %d", ret);
+		return -EIO;
+	}
+
+	*revision_id = revision;
 
 	return 0;
 }

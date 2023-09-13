@@ -5,6 +5,7 @@
 #include <rte_string_fns.h>
 #include <ethdev_pci.h>
 
+#include <ctype.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -20,7 +21,6 @@
 #include "base/ice_common.h"
 #include "base/ice_ptp_hw.h"
 
-#include "rte_pmd_ice.h"
 #include "ice_ethdev.h"
 #include "ice_rxtx.h"
 #include "ice_generic_flow.h"
@@ -29,6 +29,8 @@
 #define ICE_SAFE_MODE_SUPPORT_ARG "safe-mode-support"
 #define ICE_PIPELINE_MODE_SUPPORT_ARG  "pipeline-mode-support"
 #define ICE_PROTO_XTR_ARG         "proto_xtr"
+#define ICE_FIELD_OFFS_ARG		  "field_offs"
+#define ICE_FIELD_NAME_ARG		  "field_name"
 #define ICE_HW_DEBUG_MASK_ARG     "hw_debug_mask"
 #define ICE_ONE_PPS_OUT_ARG       "pps_out"
 #define ICE_RX_LOW_LATENCY_ARG    "rx_low_latency"
@@ -42,6 +44,8 @@ static const char * const ice_valid_args[] = {
 	ICE_SAFE_MODE_SUPPORT_ARG,
 	ICE_PIPELINE_MODE_SUPPORT_ARG,
 	ICE_PROTO_XTR_ARG,
+	ICE_FIELD_OFFS_ARG,
+	ICE_FIELD_NAME_ARG,
 	ICE_HW_DEBUG_MASK_ARG,
 	ICE_ONE_PPS_OUT_ARG,
 	ICE_RX_LOW_LATENCY_ARG,
@@ -50,16 +54,8 @@ static const char * const ice_valid_args[] = {
 
 #define PPS_OUT_DELAY_NS  1
 
-static const struct rte_mbuf_dynfield ice_proto_xtr_metadata_param = {
-	.name = "intel_pmd_dynfield_proto_xtr_metadata",
-	.size = sizeof(uint32_t),
-	.align = __alignof__(uint32_t),
-	.flags = 0,
-};
-
 struct proto_xtr_ol_flag {
 	const struct rte_mbuf_dynflag param;
-	uint64_t *ol_flag;
 	bool required;
 };
 
@@ -67,23 +63,17 @@ static bool ice_proto_xtr_hw_support[PROTO_XTR_MAX];
 
 static struct proto_xtr_ol_flag ice_proto_xtr_ol_flag_params[] = {
 	[PROTO_XTR_VLAN] = {
-		.param = { .name = "intel_pmd_dynflag_proto_xtr_vlan" },
-		.ol_flag = &rte_net_ice_dynflag_proto_xtr_vlan_mask },
+		.param = { .name = "intel_pmd_dynflag_proto_xtr_vlan" }},
 	[PROTO_XTR_IPV4] = {
-		.param = { .name = "intel_pmd_dynflag_proto_xtr_ipv4" },
-		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ipv4_mask },
+		.param = { .name = "intel_pmd_dynflag_proto_xtr_ipv4" }},
 	[PROTO_XTR_IPV6] = {
-		.param = { .name = "intel_pmd_dynflag_proto_xtr_ipv6" },
-		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ipv6_mask },
+		.param = { .name = "intel_pmd_dynflag_proto_xtr_ipv6" }},
 	[PROTO_XTR_IPV6_FLOW] = {
-		.param = { .name = "intel_pmd_dynflag_proto_xtr_ipv6_flow" },
-		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ipv6_flow_mask },
+		.param = { .name = "intel_pmd_dynflag_proto_xtr_ipv6_flow" }},
 	[PROTO_XTR_TCP] = {
-		.param = { .name = "intel_pmd_dynflag_proto_xtr_tcp" },
-		.ol_flag = &rte_net_ice_dynflag_proto_xtr_tcp_mask },
+		.param = { .name = "intel_pmd_dynflag_proto_xtr_tcp" }},
 	[PROTO_XTR_IP_OFFSET] = {
-		.param = { .name = "intel_pmd_dynflag_proto_xtr_ip_offset" },
-		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ip_offset_mask },
+		.param = { .name = "intel_pmd_dynflag_proto_xtr_ip_offset" }}
 };
 
 #define ICE_OS_DEFAULT_PKG_NAME		"ICE OS Default Package"
@@ -101,6 +91,8 @@ static int ice_link_update(struct rte_eth_dev *dev,
 			   int wait_to_complete);
 static int ice_dev_set_link_up(struct rte_eth_dev *dev);
 static int ice_dev_set_link_down(struct rte_eth_dev *dev);
+static int ice_dev_led_on(struct rte_eth_dev *dev);
+static int ice_dev_led_off(struct rte_eth_dev *dev);
 
 static int ice_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 static int ice_vlan_offload_set(struct rte_eth_dev *dev, int mask);
@@ -139,6 +131,10 @@ static int ice_vlan_pvid_set(struct rte_eth_dev *dev,
 static int ice_get_eeprom_length(struct rte_eth_dev *dev);
 static int ice_get_eeprom(struct rte_eth_dev *dev,
 			  struct rte_dev_eeprom_info *eeprom);
+static int ice_get_module_info(struct rte_eth_dev *dev,
+			       struct rte_eth_dev_module_info *modinfo);
+static int ice_get_module_eeprom(struct rte_eth_dev *dev,
+				 struct rte_dev_eeprom_info *info);
 static int ice_stats_get(struct rte_eth_dev *dev,
 			 struct rte_eth_stats *stats);
 static int ice_stats_reset(struct rte_eth_dev *dev);
@@ -165,6 +161,7 @@ static int ice_timesync_read_time(struct rte_eth_dev *dev,
 static int ice_timesync_write_time(struct rte_eth_dev *dev,
 				   const struct timespec *timestamp);
 static int ice_timesync_disable(struct rte_eth_dev *dev);
+static const uint32_t *ice_buffer_split_supported_hdr_ptypes_get(struct rte_eth_dev *dev);
 
 static const struct rte_pci_id pci_id_ice_map[] = {
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E823L_BACKPLANE) },
@@ -183,6 +180,7 @@ static const struct rte_pci_id pci_id_ice_map[] = {
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E823C_SFP) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E823C_10G_BASE_T) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E823C_SGMII) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822_SI_DFLT) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822C_BACKPLANE) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822C_QSFP) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822C_SFP) },
@@ -192,8 +190,26 @@ static const struct rte_pci_id pci_id_ice_map[] = {
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822L_SFP) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822L_10G_BASE_T) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E822L_SGMII) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E824S) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825C_BACKPLANE) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825C_QSFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825C_SFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825C_1GBE) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825X) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
+
+static int
+ice_tm_ops_get(struct rte_eth_dev *dev __rte_unused,
+		void *arg)
+{
+	if (!arg)
+		return -EINVAL;
+
+	*(const void **)arg = &ice_tm_ops;
+
+	return 0;
+}
 
 static const struct eth_dev_ops ice_eth_dev_ops = {
 	.dev_configure                = ice_dev_configure,
@@ -203,6 +219,8 @@ static const struct eth_dev_ops ice_eth_dev_ops = {
 	.dev_reset                    = ice_dev_reset,
 	.dev_set_link_up              = ice_dev_set_link_up,
 	.dev_set_link_down            = ice_dev_set_link_down,
+	.dev_led_on                   = ice_dev_led_on,
+	.dev_led_off                  = ice_dev_led_off,
 	.rx_queue_start               = ice_rx_queue_start,
 	.rx_queue_stop                = ice_rx_queue_stop,
 	.tx_queue_start               = ice_tx_queue_start,
@@ -238,6 +256,8 @@ static const struct eth_dev_ops ice_eth_dev_ops = {
 	.tx_burst_mode_get            = ice_tx_burst_mode_get,
 	.get_eeprom_length            = ice_get_eeprom_length,
 	.get_eeprom                   = ice_get_eeprom,
+	.get_module_info              = ice_get_module_info,
+	.get_module_eeprom            = ice_get_module_eeprom,
 	.stats_get                    = ice_stats_get,
 	.stats_reset                  = ice_stats_reset,
 	.xstats_get                   = ice_xstats_get,
@@ -255,6 +275,8 @@ static const struct eth_dev_ops ice_eth_dev_ops = {
 	.timesync_read_time           = ice_timesync_read_time,
 	.timesync_write_time          = ice_timesync_write_time,
 	.timesync_disable             = ice_timesync_disable,
+	.tm_ops_get                   = ice_tm_ops_get,
+	.buffer_split_supported_hdr_ptypes_get = ice_buffer_split_supported_hdr_ptypes_get,
 };
 
 /* store statistics names and its offset in stats structure */
@@ -587,6 +609,45 @@ handle_proto_xtr_arg(__rte_unused const char *key, const char *value,
 	return 0;
 }
 
+static int
+handle_field_offs_arg(__rte_unused const char *key, const char *value,
+				void *offs_args)
+{
+	uint8_t *offset = offs_args;
+
+	if (value == NULL || offs_args == NULL)
+		return -EINVAL;
+
+	if (!isdigit(*value))
+		return -1;
+
+	*offset = atoi(value);
+
+	return 0;
+}
+
+static int
+handle_field_name_arg(__rte_unused const char *key, const char *value,
+				void *name_args)
+{
+	char *name = name_args;
+	int ret;
+
+	if (name == NULL || name_args == NULL)
+		return -EINVAL;
+	if (isdigit(*value))
+		return -1;
+
+	ret = strlcpy(name, value, RTE_MBUF_DYN_NAMESIZE);
+	if (ret < 0 || ret >= RTE_MBUF_DYN_NAMESIZE) {
+		PMD_DRV_LOG(ERR,
+			    "The protocol extraction field name too long : '%s'",
+			    name);
+		return -1;
+	}
+	return 0;
+}
+
 static void
 ice_check_proto_xtr_support(struct ice_hw *hw)
 {
@@ -796,7 +857,7 @@ ice_vsi_config_tc_queue_mapping(struct ice_vsi *vsi,
 				struct ice_aqc_vsi_props *info,
 				uint8_t enabled_tcmap)
 {
-	uint16_t bsf, qp_idx;
+	uint16_t fls, qp_idx;
 
 	/* default tc 0 now. Multi-TC supporting need to be done later.
 	 * Configure TC and queue mapping parameters, for enabled TC,
@@ -807,16 +868,32 @@ ice_vsi_config_tc_queue_mapping(struct ice_vsi *vsi,
 		return -ENOTSUP;
 	}
 
-	vsi->nb_qps = RTE_MIN(vsi->nb_qps, ICE_MAX_Q_PER_TC);
-	bsf = rte_bsf32(vsi->nb_qps);
-	/* Adjust the queue number to actual queues that can be applied */
-	vsi->nb_qps = 0x1 << bsf;
+	/* vector 0 is reserved and 1 vector for ctrl vsi */
+	if (vsi->adapter->hw.func_caps.common_cap.num_msix_vectors < 2)
+		vsi->nb_qps = 0;
+	else
+		vsi->nb_qps = RTE_MIN
+			((uint16_t)vsi->adapter->hw.func_caps.common_cap.num_msix_vectors - 2,
+			RTE_MIN(vsi->nb_qps, ICE_MAX_Q_PER_TC));
+
+	/* nb_qps(hex)  -> fls */
+	/* 0000		-> 0 */
+	/* 0001		-> 0 */
+	/* 0002		-> 1 */
+	/* 0003 ~ 0004	-> 2 */
+	/* 0005 ~ 0008	-> 3 */
+	/* 0009 ~ 0010	-> 4 */
+	/* 0011 ~ 0020	-> 5 */
+	/* 0021 ~ 0040	-> 6 */
+	/* 0041 ~ 0080	-> 7 */
+	/* 0081 ~ 0100	-> 8 */
+	fls = (vsi->nb_qps == 0) ? 0 : rte_fls_u32(vsi->nb_qps - 1);
 
 	qp_idx = 0;
 	/* Set tc and queue mapping with VSI */
 	info->tc_mapping[0] = rte_cpu_to_le_16((qp_idx <<
 						ICE_AQ_VSI_TC_Q_OFFSET_S) |
-					       (bsf << ICE_AQ_VSI_TC_Q_NUM_S));
+					       (fls << ICE_AQ_VSI_TC_Q_NUM_S));
 
 	/* Associate queue number with VSI */
 	info->mapping_flags |= rte_cpu_to_le_16(ICE_AQ_VSI_Q_MAP_CONTIG);
@@ -1359,7 +1436,7 @@ ice_init_proto_xtr(struct rte_eth_dev *dev)
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
 	const struct proto_xtr_ol_flag *ol_flag;
 	bool proto_xtr_enable = false;
-	int offset;
+	int offset, field_offs;
 	uint16_t i;
 
 	pf->proto_xtr = rte_zmalloc(NULL, pf->lan_nb_qps, 0);
@@ -1381,26 +1458,34 @@ ice_init_proto_xtr(struct rte_eth_dev *dev)
 		}
 	}
 
-	if (likely(!proto_xtr_enable))
+	if (likely(!proto_xtr_enable)) {
+		ad->devargs.xtr_field_offs = -1;
 		return;
+	}
 
 	ice_check_proto_xtr_support(hw);
 
-	offset = rte_mbuf_dynfield_register(&ice_proto_xtr_metadata_param);
-	if (unlikely(offset == -1)) {
-		PMD_DRV_LOG(ERR,
-			    "Protocol extraction metadata is disabled in mbuf with error %d",
-			    -rte_errno);
+	/*check mbuf dynfield*/
+	field_offs = rte_mbuf_dynfield_lookup(ad->devargs.xtr_field_name, NULL);
+	if (ad->devargs.xtr_field_offs == field_offs) {
+		PMD_DRV_LOG(DEBUG,
+			"Protocol extraction metadata offset in mbuf is : %d",
+			ad->devargs.xtr_field_offs);
+	} else {
+		PMD_DRV_LOG(ERR, "Invalid field offset or name, no match dynfield, [%d],[%s]",
+			ad->devargs.xtr_field_offs, ad->devargs.xtr_field_name);
+		ad->devargs.xtr_field_offs = -1;
 		return;
 	}
 
 	PMD_DRV_LOG(DEBUG,
 		    "Protocol extraction metadata offset in mbuf is : %d",
-		    offset);
-	rte_net_ice_dynfield_proto_xtr_metadata_offs = offset;
+		    ad->devargs.xtr_field_offs);
 
 	for (i = 0; i < RTE_DIM(ice_proto_xtr_ol_flag_params); i++) {
 		ol_flag = &ice_proto_xtr_ol_flag_params[i];
+
+		ad->devargs.xtr_flag_offs[i] = 0xff;
 
 		if (!ol_flag->required)
 			continue;
@@ -1409,7 +1494,7 @@ ice_init_proto_xtr(struct rte_eth_dev *dev)
 			PMD_DRV_LOG(ERR,
 				    "Protocol extraction type %u is not supported in hardware",
 				    i);
-			rte_net_ice_dynfield_proto_xtr_metadata_offs = -1;
+			ad->devargs.xtr_field_offs = -1;
 			break;
 		}
 
@@ -1419,14 +1504,15 @@ ice_init_proto_xtr(struct rte_eth_dev *dev)
 				    "Protocol extraction offload '%s' failed to register with error %d",
 				    ol_flag->param.name, -rte_errno);
 
-			rte_net_ice_dynfield_proto_xtr_metadata_offs = -1;
+			ad->devargs.xtr_field_offs = -1;
 			break;
 		}
 
 		PMD_DRV_LOG(DEBUG,
 			    "Protocol extraction offload '%s' offset in mbuf is : %d",
 			    ol_flag->param.name, offset);
-		*ol_flag->ol_flag = 1ULL << offset;
+
+		ad->devargs.xtr_flag_offs[i] = offset;
 	}
 }
 
@@ -1757,17 +1843,17 @@ load_fw:
 	PMD_INIT_LOG(DEBUG, "DDP package name: %s", pkg_file);
 
 	err = ice_copy_and_init_pkg(hw, buf, bufsz);
-	if (err) {
+	if (!ice_is_init_pkg_successful(err)) {
 		PMD_INIT_LOG(ERR, "ice_copy_and_init_hw failed: %d\n", err);
-		goto out;
+		free(buf);
+		return -1;
 	}
 
 	/* store the loaded pkg type info */
 	adapter->active_pkg_type = ice_load_pkg_type(hw);
 
-out:
 	free(buf);
-	return err;
+	return 0;
 }
 
 static void
@@ -1966,6 +2052,16 @@ static int ice_parse_devargs(struct rte_eth_dev *dev)
 
 	ret = rte_kvargs_process(kvlist, ICE_PROTO_XTR_ARG,
 				 &handle_proto_xtr_arg, &ad->devargs);
+	if (ret)
+		goto bail;
+
+	ret = rte_kvargs_process(kvlist, ICE_FIELD_OFFS_ARG,
+				 &handle_field_offs_arg, &ad->devargs.xtr_field_offs);
+	if (ret)
+		goto bail;
+
+	ret = rte_kvargs_process(kvlist, ICE_FIELD_NAME_ARG,
+				 &handle_field_name_arg, &ad->devargs.xtr_field_name);
 	if (ret)
 		goto bail;
 
@@ -2300,6 +2396,20 @@ ice_dev_init(struct rte_eth_dev *dev)
 	/* Initialize RSS context for gtpu_eh */
 	ice_rss_ctx_init(pf);
 
+	/* Initialize TM configuration */
+	ice_tm_conf_init(dev);
+
+	if (ice_is_e810(hw))
+		hw->phy_cfg = ICE_PHY_E810;
+	else
+		hw->phy_cfg = ICE_PHY_E822;
+
+	if (hw->phy_cfg == ICE_PHY_E822) {
+		ret = ice_start_phy_timer_e822(hw, hw->pf_id, true);
+		if (ret)
+			PMD_INIT_LOG(ERR, "Failed to start phy timer\n");
+	}
+
 	if (!ad->is_safe_mode) {
 		ret = ice_flow_init(ad);
 		if (ret) {
@@ -2484,9 +2594,12 @@ ice_dev_close(struct rte_eth_dev *dev)
 	ice_free_hw_tbls(hw);
 	rte_free(hw->port_info);
 	hw->port_info = NULL;
-	ice_shutdown_all_ctrlq(hw);
+	ice_shutdown_all_ctrlq(hw, true);
 	rte_free(pf->proto_xtr);
 	pf->proto_xtr = NULL;
+
+	/* Uninit TM configuration */
+	ice_tm_conf_uninit(dev);
 
 	if (ad->devargs.pps_out_ena) {
 		ICE_WRITE_REG(hw, GLTSYN_AUX_OUT(pin_idx, timer), 0);
@@ -3633,7 +3746,7 @@ ice_dev_start(struct rte_eth_dev *dev)
 		ICE_FRAME_SIZE_MAX;
 
 	/* Set the max frame size to HW*/
-	ice_aq_set_mac_cfg(hw, max_frame_size, NULL);
+	ice_aq_set_mac_cfg(hw, max_frame_size, false, NULL);
 
 	if (ad->devargs.pps_out_ena) {
 		ret = ice_pps_out_cfg(hw, pin_idx, timer);
@@ -3720,7 +3833,8 @@ ice_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 			RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM |
 			RTE_ETH_RX_OFFLOAD_VLAN_EXTEND |
 			RTE_ETH_RX_OFFLOAD_RSS_HASH |
-			RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+			RTE_ETH_RX_OFFLOAD_TIMESTAMP |
+			RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT;
 		dev_info->tx_offload_capa |=
 			RTE_ETH_TX_OFFLOAD_QINQ_INSERT |
 			RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
@@ -3732,7 +3846,7 @@ ice_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		dev_info->flow_type_rss_offloads |= ICE_RSS_OFFLOAD_ALL;
 	}
 
-	dev_info->rx_queue_offload_capa = 0;
+	dev_info->rx_queue_offload_capa = RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT;
 	dev_info->tx_queue_offload_capa = RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	dev_info->reta_size = pf->hash_lut_size;
@@ -3800,6 +3914,11 @@ ice_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->default_txportconf.nb_queues = 1;
 	dev_info->default_rxportconf.ring_size = ICE_BUF_SIZE_MIN;
 	dev_info->default_txportconf.ring_size = ICE_BUF_SIZE_MIN;
+
+	dev_info->rx_seg_capa.max_nseg = ICE_RX_MAX_NSEG;
+	dev_info->rx_seg_capa.multi_pools = 1;
+	dev_info->rx_seg_capa.offset_allowed = 0;
+	dev_info->rx_seg_capa.offset_align_log2 = 0;
 
 	return 0;
 }
@@ -3995,6 +4114,24 @@ ice_dev_set_link_down(struct rte_eth_dev *dev)
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	return ice_force_phys_link_state(hw, false);
+}
+
+static int
+ice_dev_led_on(struct rte_eth_dev *dev)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int status = ice_aq_set_port_id_led(hw->port_info, false, NULL);
+
+	return status == ICE_SUCCESS ? 0 : -ENOTSUP;
+}
+
+static int
+ice_dev_led_off(struct rte_eth_dev *dev)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int status = ice_aq_set_port_id_led(hw->port_info, true, NULL);
+
+	return status == ICE_SUCCESS ? 0 : -ENOTSUP;
 }
 
 static int
@@ -4951,6 +5088,161 @@ ice_get_eeprom(struct rte_eth_dev *dev,
 	return 0;
 }
 
+static int
+ice_get_module_info(struct rte_eth_dev *dev,
+		    struct rte_eth_dev_module_info *modinfo)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	enum ice_status status;
+	u8 sff8472_comp = 0;
+	u8 sff8472_swap = 0;
+	u8 sff8636_rev = 0;
+	u8 value = 0;
+
+	status = ice_aq_sff_eeprom(hw, 0, ICE_I2C_EEPROM_DEV_ADDR, 0x00, 0x00,
+				   0, &value, 1, 0, NULL);
+	if (status)
+		return -EIO;
+
+	switch (value) {
+	case ICE_MODULE_TYPE_SFP:
+		status = ice_aq_sff_eeprom(hw, 0, ICE_I2C_EEPROM_DEV_ADDR,
+					   ICE_MODULE_SFF_8472_COMP, 0x00, 0,
+					   &sff8472_comp, 1, 0, NULL);
+		if (status)
+			return -EIO;
+		status = ice_aq_sff_eeprom(hw, 0, ICE_I2C_EEPROM_DEV_ADDR,
+					   ICE_MODULE_SFF_8472_SWAP, 0x00, 0,
+					   &sff8472_swap, 1, 0, NULL);
+		if (status)
+			return -EIO;
+
+		if (sff8472_swap & ICE_MODULE_SFF_ADDR_MODE) {
+			modinfo->type = ICE_MODULE_SFF_8079;
+			modinfo->eeprom_len = ICE_MODULE_SFF_8079_LEN;
+		} else if (sff8472_comp &&
+			   (sff8472_swap & ICE_MODULE_SFF_DIAG_CAPAB)) {
+			modinfo->type = ICE_MODULE_SFF_8472;
+			modinfo->eeprom_len = ICE_MODULE_SFF_8472_LEN;
+		} else {
+			modinfo->type = ICE_MODULE_SFF_8079;
+			modinfo->eeprom_len = ICE_MODULE_SFF_8079_LEN;
+		}
+		break;
+	case ICE_MODULE_TYPE_QSFP_PLUS:
+	case ICE_MODULE_TYPE_QSFP28:
+		status = ice_aq_sff_eeprom(hw, 0, ICE_I2C_EEPROM_DEV_ADDR,
+					   ICE_MODULE_REVISION_ADDR, 0x00, 0,
+					   &sff8636_rev, 1, 0, NULL);
+		if (status)
+			return -EIO;
+		/* Check revision compliance */
+		if (sff8636_rev > 0x02) {
+			/* Module is SFF-8636 compliant */
+			modinfo->type = ICE_MODULE_SFF_8636;
+			modinfo->eeprom_len = ICE_MODULE_QSFP_MAX_LEN;
+		} else {
+			modinfo->type = ICE_MODULE_SFF_8436;
+			modinfo->eeprom_len = ICE_MODULE_QSFP_MAX_LEN;
+		}
+		break;
+	default:
+		PMD_DRV_LOG(WARNING, "SFF Module Type not recognized.\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
+ice_get_module_eeprom(struct rte_eth_dev *dev,
+		      struct rte_dev_eeprom_info *info)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+#define SFF_READ_BLOCK_SIZE 8
+#define I2C_BUSY_TRY_TIMES 4
+#define I2C_USLEEP_MIN_TIME 1500
+#define I2C_USLEEP_MAX_TIME 2500
+	uint8_t value[SFF_READ_BLOCK_SIZE] = {0};
+	uint8_t addr = ICE_I2C_EEPROM_DEV_ADDR;
+	uint8_t *data = NULL;
+	enum ice_status status;
+	bool is_sfp = false;
+	uint32_t i, j;
+	uint32_t offset = 0;
+	uint8_t page = 0;
+
+	if (!info || !info->length || !info->data)
+		return -EINVAL;
+
+	status = ice_aq_sff_eeprom(hw, 0, addr, offset, page, 0, value, 1, 0,
+				   NULL);
+	if (status)
+		return -EIO;
+
+	if (value[0] == ICE_MODULE_TYPE_SFP)
+		is_sfp = true;
+
+	data = info->data;
+	memset(data, 0, info->length);
+	for (i = 0; i < info->length; i += SFF_READ_BLOCK_SIZE) {
+		offset = i + info->offset;
+		page = 0;
+
+		/* Check if we need to access the other memory page */
+		if (is_sfp) {
+			if (offset >= ICE_MODULE_SFF_8079_LEN) {
+				offset -= ICE_MODULE_SFF_8079_LEN;
+				addr = ICE_I2C_EEPROM_DEV_ADDR2;
+			}
+		} else {
+			while (offset >= ICE_MODULE_SFF_8436_LEN) {
+				/* Compute memory page number and offset. */
+				offset -= ICE_MODULE_SFF_8436_LEN / 2;
+				page++;
+			}
+		}
+
+		/* Bit 2 of eeprom address 0x02 declares upper
+		 * pages are disabled on QSFP modules.
+		 * SFP modules only ever use page 0.
+		 */
+		if (page == 0 || !(data[0x2] & 0x4)) {
+			/* If i2c bus is busy due to slow page change or
+			 * link management access, call can fail.
+			 * This is normal. So we retry this a few times.
+			 */
+			for (j = 0; j < I2C_BUSY_TRY_TIMES; j++) {
+				status = ice_aq_sff_eeprom(hw, 0, addr, offset,
+							   page, !is_sfp, value,
+							   SFF_READ_BLOCK_SIZE,
+							   0, NULL);
+				PMD_DRV_LOG(DEBUG, "SFF %02X %02X %02X %X = "
+					"%02X%02X%02X%02X."
+					"%02X%02X%02X%02X (%X)\n",
+					addr, offset, page, is_sfp,
+					value[0], value[1],
+					value[2], value[3],
+					value[4], value[5],
+					value[6], value[7],
+					status);
+				if (status) {
+					usleep_range(I2C_USLEEP_MIN_TIME,
+						     I2C_USLEEP_MAX_TIME);
+					memset(value, 0, SFF_READ_BLOCK_SIZE);
+					continue;
+				}
+				break;
+			}
+
+			/* Make sure we have enough room for the new block */
+			if ((i + SFF_READ_BLOCK_SIZE) <= info->length)
+				memcpy(data + i, value, SFF_READ_BLOCK_SIZE);
+		}
+	}
+
+	return 0;
+}
+
 static void
 ice_stat_update_32(struct ice_hw *hw,
 		   uint32_t reg,
@@ -5656,16 +5948,17 @@ ice_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_adapter *ad =
 			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	uint8_t tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
 	uint32_t hi, lo, lo2;
 	uint64_t time, ns;
 
-	lo = ICE_READ_REG(hw, GLTSYN_TIME_L(0));
-	hi = ICE_READ_REG(hw, GLTSYN_TIME_H(0));
-	lo2 = ICE_READ_REG(hw, GLTSYN_TIME_L(0));
+	lo = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
+	hi = ICE_READ_REG(hw, GLTSYN_TIME_H(tmr_idx));
+	lo2 = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
 
 	if (lo2 < lo) {
-		lo = ICE_READ_REG(hw, GLTSYN_TIME_L(0));
-		hi = ICE_READ_REG(hw, GLTSYN_TIME_H(0));
+		lo = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
+		hi = ICE_READ_REG(hw, GLTSYN_TIME_H(tmr_idx));
 	}
 
 	time = ((uint64_t)hi << 32) | lo;
@@ -5681,6 +5974,7 @@ ice_timesync_disable(struct rte_eth_dev *dev)
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_adapter *ad =
 			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	uint8_t tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
 	uint64_t val;
 	uint8_t lport;
 
@@ -5688,16 +5982,62 @@ ice_timesync_disable(struct rte_eth_dev *dev)
 
 	ice_clear_phy_tstamp(hw, lport, 0);
 
-	val = ICE_READ_REG(hw, GLTSYN_ENA(0));
+	val = ICE_READ_REG(hw, GLTSYN_ENA(tmr_idx));
 	val &= ~GLTSYN_ENA_TSYN_ENA_M;
-	ICE_WRITE_REG(hw, GLTSYN_ENA(0), val);
+	ICE_WRITE_REG(hw, GLTSYN_ENA(tmr_idx), val);
 
-	ICE_WRITE_REG(hw, GLTSYN_INCVAL_L(0), 0);
-	ICE_WRITE_REG(hw, GLTSYN_INCVAL_H(0), 0);
+	ICE_WRITE_REG(hw, GLTSYN_INCVAL_L(tmr_idx), 0);
+	ICE_WRITE_REG(hw, GLTSYN_INCVAL_H(tmr_idx), 0);
 
 	ad->ptp_ena = 0;
 
 	return 0;
+}
+
+static const uint32_t *
+ice_buffer_split_supported_hdr_ptypes_get(struct rte_eth_dev *dev __rte_unused)
+{
+	/* Buffer split protocol header capability. */
+	static const uint32_t ptypes[] = {
+		/* Non tunneled */
+		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_SCTP,
+
+		/* Tunneled */
+		RTE_PTYPE_TUNNEL_GRENAT,
+
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER,
+
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
+
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_INNER_L4_UDP,
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_INNER_L4_TCP,
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_INNER_L4_SCTP,
+
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_INNER_L4_UDP,
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_INNER_L4_TCP,
+		RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_INNER_L4_SCTP,
+
+		RTE_PTYPE_UNKNOWN
+	};
+
+	return ptypes;
 }
 
 static int
@@ -5745,3 +6085,8 @@ RTE_LOG_REGISTER_SUFFIX(ice_logtype_rx, rx, DEBUG);
 #ifdef RTE_ETHDEV_DEBUG_TX
 RTE_LOG_REGISTER_SUFFIX(ice_logtype_tx, tx, DEBUG);
 #endif
+
+bool is_ice_supported(struct rte_eth_dev *dev)
+{
+	return !strcmp(dev->device->driver->name, rte_ice_pmd.driver.name);
+}

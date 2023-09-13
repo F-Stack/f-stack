@@ -59,7 +59,9 @@ struct rte_gpu_info {
 	uint32_t processor_count;
 	/** Total memory available on device. */
 	size_t total_memory;
-	/* Local NUMA memory ID. -1 if unknown. */
+	/** GPU memory page size. */
+	size_t page_size;
+	/** Local NUMA memory ID. -1 if unknown. */
 	int16_t numa_node;
 };
 
@@ -124,8 +126,10 @@ struct rte_gpu_comm_list {
 	struct rte_gpu_comm_pkt *pkt_list;
 	/** Number of packets in the list. */
 	uint32_t num_pkts;
-	/** Status of the list. */
-	enum rte_gpu_comm_list_status status;
+	/** Status of the list. CPU pointer. */
+	enum rte_gpu_comm_list_status *status_h;
+	/** Status of the list. GPU pointer. */
+	enum rte_gpu_comm_list_status *status_d;
 };
 
 /**
@@ -364,18 +368,23 @@ int rte_gpu_info_get(int16_t dev_id, struct rte_gpu_info *info);
  * @param size
  *   Number of bytes to allocate.
  *   Requesting 0 will do nothing.
+ * @param align
+ *   If 0, the return is a pointer that is suitably aligned
+ *   for any kind of variable (in the same manner as malloc()).
+ *   Otherwise, the return is a pointer that is a multiple of *align*.
+ *   In this case, it must obviously be a power of two.
  *
  * @return
  *   A pointer to the allocated memory, otherwise NULL and rte_errno is set:
  *   - ENODEV if invalid dev_id
- *   - EINVAL if reserved flags
+ *   - EINVAL if align is not a power of two
  *   - ENOTSUP if operation not supported by the driver
  *   - E2BIG if size is higher than limit
  *   - ENOMEM if out of space
  *   - EPERM if driver error
  */
 __rte_experimental
-void *rte_gpu_mem_alloc(int16_t dev_id, size_t size)
+void *rte_gpu_mem_alloc(int16_t dev_id, size_t size, unsigned int align)
 __rte_alloc_size(2);
 
 /**
@@ -446,6 +455,55 @@ int rte_gpu_mem_register(int16_t dev_id, size_t size, void *ptr);
  */
 __rte_experimental
 int rte_gpu_mem_unregister(int16_t dev_id, void *ptr);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Map a chunk of GPU memory to make it accessible from the CPU
+ * using the memory pointer returned by the function.
+ * GPU memory has to be allocated via rte_gpu_mem_alloc().
+ *
+ * @param dev_id
+ *   Device ID requiring mapped memory.
+ * @param size
+ *   Number of bytes to map.
+ *   Requesting 0 will do nothing.
+ * @param ptr
+ *   Pointer to the GPU memory area to be mapped.
+ *   NULL is a no-op accepted value.
+
+ * @return
+ *   A pointer to the mapped GPU memory usable by the CPU, otherwise NULL and rte_errno is set:
+ *   - ENODEV if invalid dev_id
+ *   - ENOTSUP if operation not supported by the driver
+ *   - E2BIG if size is higher than limit
+ *   - ENOMEM if out of space
+ *   - EPERM if driver error
+ */
+__rte_experimental
+void *rte_gpu_mem_cpu_map(int16_t dev_id, size_t size, void *ptr);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Unmap a chunk of GPU memory previously mapped with rte_gpu_mem_cpu_map()
+ *
+ * @param dev_id
+ *   Reference device ID.
+ * @param ptr
+ *   Pointer to the GPU memory area to be unmapped.
+ *   NULL is a no-op accepted value.
+ *
+ * @return
+ *   0 on success, -rte_errno otherwise:
+ *   - ENODEV if invalid dev_id
+ *   - ENOTSUP if operation not supported by the driver
+ *   - EPERM if driver error
+ */
+__rte_experimental
+int rte_gpu_mem_cpu_unmap(int16_t dev_id, void *ptr);
 
 /**
  * @warning
@@ -624,6 +682,46 @@ int rte_gpu_comm_destroy_list(struct rte_gpu_comm_list *comm_list,
 __rte_experimental
 int rte_gpu_comm_populate_list_pkts(struct rte_gpu_comm_list *comm_list_item,
 		struct rte_mbuf **mbufs, uint32_t num_mbufs);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Set status flag value of a communication list item.
+ *
+ * @param comm_list_item
+ *   Communication list item to query.
+ * @param status
+ *   Status value to set.
+ *
+ * @return
+ *   0 on success, -rte_errno otherwise:
+ *   - EINVAL if invalid input params
+ */
+__rte_experimental
+int rte_gpu_comm_set_status(struct rte_gpu_comm_list *comm_list_item,
+		enum rte_gpu_comm_list_status status);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Get status flag value of a communication list item.
+ *
+ * @param comm_list_item
+ *   Communication list item to query.
+ *   Input parameter.
+ * @param status
+ *   Communication list item status flag value.
+ *   Output parameter.
+ *
+ * @return
+ *   0 on success, -rte_errno otherwise:
+ *   - EINVAL if invalid input params
+ */
+__rte_experimental
+int rte_gpu_comm_get_status(struct rte_gpu_comm_list *comm_list_item,
+		enum rte_gpu_comm_list_status *status);
 
 /**
  * @warning

@@ -2,6 +2,8 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include "test.h"
+
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -32,8 +34,6 @@
 #include <rte_ip.h>
 #include <rte_tcp.h>
 #include <rte_mbuf_dyn.h>
-
-#include "test.h"
 
 #define MEMPOOL_CACHE_SIZE      32
 #define MBUF_DATA_SIZE          2048
@@ -304,8 +304,7 @@ test_one_pktmbuf(struct rte_mempool *pktmbuf_pool)
 	return 0;
 
 fail:
-	if (m)
-		rte_pktmbuf_free(m);
+	rte_pktmbuf_free(m);
 	return -1;
 }
 
@@ -416,12 +415,9 @@ testclone_testupdate_testdetach(struct rte_mempool *pktmbuf_pool,
 	return 0;
 
 fail:
-	if (m)
-		rte_pktmbuf_free(m);
-	if (clone)
-		rte_pktmbuf_free(clone);
-	if (clone2)
-		rte_pktmbuf_free(clone2);
+	rte_pktmbuf_free(m);
+	rte_pktmbuf_free(clone);
+	rte_pktmbuf_free(clone2);
 	return -1;
 }
 
@@ -572,12 +568,9 @@ test_pktmbuf_copy(struct rte_mempool *pktmbuf_pool,
 	return 0;
 
 fail:
-	if (m)
-		rte_pktmbuf_free(m);
-	if (copy)
-		rte_pktmbuf_free(copy);
-	if (copy2)
-		rte_pktmbuf_free(copy2);
+	rte_pktmbuf_free(m);
+	rte_pktmbuf_free(copy);
+	rte_pktmbuf_free(copy2);
 	return -1;
 }
 
@@ -679,12 +672,9 @@ test_attach_from_different_pool(struct rte_mempool *pktmbuf_pool,
 	return 0;
 
 fail:
-	if (m)
-		rte_pktmbuf_free(m);
-	if (clone)
-		rte_pktmbuf_free(clone);
-	if (clone2)
-		rte_pktmbuf_free(clone2);
+	rte_pktmbuf_free(m);
+	rte_pktmbuf_free(clone);
+	rte_pktmbuf_free(clone2);
 	return -1;
 }
 
@@ -722,8 +712,7 @@ test_pktmbuf_pool(struct rte_mempool *pktmbuf_pool)
 	}
 	/* free them */
 	for (i=0; i<NB_MBUF; i++) {
-		if (m[i] != NULL)
-			rte_pktmbuf_free(m[i]);
+		rte_pktmbuf_free(m[i]);
 	}
 
 	return ret;
@@ -924,8 +913,7 @@ test_pktmbuf_pool_ptr(struct rte_mempool *pktmbuf_pool)
 
 	/* free them */
 	for (i=0; i<NB_MBUF; i++) {
-		if (m[i] != NULL)
-			rte_pktmbuf_free(m[i]);
+		rte_pktmbuf_free(m[i]);
 	}
 
 	for (i=0; i<NB_MBUF; i++)
@@ -947,8 +935,7 @@ test_pktmbuf_pool_ptr(struct rte_mempool *pktmbuf_pool)
 
 	/* free them */
 	for (i=0; i<NB_MBUF; i++) {
-		if (m[i] != NULL)
-			rte_pktmbuf_free(m[i]);
+		rte_pktmbuf_free(m[i]);
 	}
 
 	return ret;
@@ -1172,6 +1159,14 @@ err:
 #endif
 }
 
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_failing_mbuf_sanity_check(struct rte_mempool *pktmbuf_pool)
+{
+	RTE_SET_USED(pktmbuf_pool);
+	return TEST_SKIPPED;
+}
+#else
 /* Verify if mbuf can pass the check */
 static bool
 mbuf_check_pass(struct rte_mbuf *buf)
@@ -1215,11 +1210,13 @@ test_failing_mbuf_sanity_check(struct rte_mempool *pktmbuf_pool)
 		return -1;
 	}
 
-	badbuf = *buf;
-	badbuf.buf_iova = 0;
-	if (mbuf_check_pass(&badbuf)) {
-		printf("Error with bad-physaddr mbuf test\n");
-		return -1;
+	if (RTE_IOVA_AS_PA) {
+		badbuf = *buf;
+		rte_mbuf_iova_set(&badbuf, 0);
+		if (mbuf_check_pass(&badbuf)) {
+			printf("Error with bad-physaddr mbuf test\n");
+			return -1;
+		}
 	}
 
 	badbuf = *buf;
@@ -1245,6 +1242,8 @@ test_failing_mbuf_sanity_check(struct rte_mempool *pktmbuf_pool)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 static int
 test_mbuf_linearize(struct rte_mempool *pktmbuf_pool, int pkt_len,
@@ -1334,8 +1333,7 @@ test_mbuf_linearize(struct rte_mempool *pktmbuf_pool, int pkt_len,
 	return 0;
 
 fail:
-	if (mbuf)
-		rte_pktmbuf_free(mbuf);
+	rte_pktmbuf_free(mbuf);
 	return -1;
 }
 
@@ -2659,7 +2657,7 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 
 	flag3 = rte_mbuf_dynflag_register_bitnum(&dynflag3,
 						rte_bsf64(RTE_MBUF_F_LAST_FREE));
-	if (flag3 != rte_bsf64(RTE_MBUF_F_LAST_FREE))
+	if ((uint32_t)flag3 != rte_bsf64(RTE_MBUF_F_LAST_FREE))
 		GOTO_FAIL("failed to register dynamic flag 3, flag3=%d: %s",
 			flag3, strerror(errno));
 
@@ -2749,8 +2747,7 @@ test_nb_segs_and_next_reset(void)
 	return 0;
 
 fail:
-	if (pool != NULL)
-		rte_mempool_free(pool);
+	rte_mempool_free(pool);
 	return -1;
 }
 

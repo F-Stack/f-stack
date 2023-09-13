@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_ethdev.h>
 #include <rte_pci.h>
 #include <rte_malloc.h>
@@ -16,7 +16,7 @@
 #include <rte_io.h>
 #include <rte_rawdev.h>
 #include <rte_rawdev_pmd.h>
-#include <rte_bus_ifpga.h>
+#include <bus_ifpga_driver.h>
 #include <ifpga_common.h>
 #include <ifpga_logs.h>
 #include <ifpga_rawdev.h>
@@ -469,7 +469,6 @@ static int ipn3ke_vswitch_probe(struct rte_afu_device *afu_dev)
 	struct ipn3ke_hw *hw;
 	struct rte_eth_dev *i40e_eth;
 	struct ifpga_rawdev *ifpga_dev;
-	uint16_t port_id;
 	int i, j, retval;
 	char *fvl_bdf;
 
@@ -519,14 +518,12 @@ static int ipn3ke_vswitch_probe(struct rte_afu_device *afu_dev)
 
 		for (; j < 8; j++) {
 			fvl_bdf = ifpga_dev->fvl_bdf[j];
-			retval = rte_eth_dev_get_port_by_name(fvl_bdf,
-				&port_id);
-			if (retval) {
+			i40e_eth = rte_eth_dev_get_by_name(fvl_bdf);
+			if (!i40e_eth) {
 				continue;
 			} else {
-				i40e_eth = &rte_eth_devices[port_id];
 				rpst.i40e_pf_eth = i40e_eth;
-				rpst.i40e_pf_eth_port_id = port_id;
+				rpst.i40e_pf_eth_port_id = i40e_eth->data->port_id;
 
 				j++;
 				break;

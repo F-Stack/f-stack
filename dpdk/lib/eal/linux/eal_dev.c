@@ -2,22 +2,19 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
 
 #include <rte_string_fns.h>
 #include <rte_log.h>
-#include <rte_compat.h>
 #include <rte_dev.h>
-#include <rte_malloc.h>
 #include <rte_interrupts.h>
 #include <rte_alarm.h>
-#include <rte_bus.h>
-#include <rte_eal.h>
+#include <bus_driver.h>
 #include <rte_spinlock.h>
 #include <rte_errno.h>
 

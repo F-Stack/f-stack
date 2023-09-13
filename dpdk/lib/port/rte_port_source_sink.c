@@ -5,7 +5,6 @@
 #include <string.h>
 
 #include <rte_mbuf.h>
-#include <rte_mempool.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 
@@ -163,14 +162,10 @@ pcap_source_load(struct rte_port_source *port,
 	return 0;
 
 error_exit:
-	if (pkt_len_aligns)
-		rte_free(pkt_len_aligns);
-	if (port->pkt_len)
-		rte_free(port->pkt_len);
-	if (port->pkts)
-		rte_free(port->pkts);
-	if (port->pkt_buff)
-		rte_free(port->pkt_buff);
+	rte_free(pkt_len_aligns);
+	rte_free(port->pkt_len);
+	rte_free(port->pkts);
+	rte_free(port->pkt_buff);
 
 	return -1;
 }
@@ -242,12 +237,9 @@ rte_port_source_free(void *port)
 	if (p == NULL)
 		return 0;
 
-	if (p->pkt_len)
-		rte_free(p->pkt_len);
-	if (p->pkts)
-		rte_free(p->pkts);
-	if (p->pkt_buff)
-		rte_free(p->pkt_buff);
+	rte_free(p->pkt_len);
+	rte_free(p->pkts);
+	rte_free(p->pkt_buff);
 
 	rte_free(p);
 

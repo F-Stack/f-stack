@@ -172,13 +172,17 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		 * Avoid any rx/tx packet processing during firmware reset
 		 * operation.
 		 */
-		bnxt_stop_rxtx(bp);
+		bnxt_stop_rxtx(bp->eth_dev);
 
 		/* Ignore reset notify async events when stopping the port */
 		if (!bp->eth_dev->data->dev_started) {
 			bp->flags |= BNXT_FLAG_FATAL_ERROR;
 			return;
 		}
+
+		rte_eth_dev_callback_process(bp->eth_dev,
+					     RTE_ETH_EVENT_ERR_RECOVERING,
+					     NULL);
 
 		pthread_mutex_lock(&bp->err_recovery_lock);
 		event_data = data1;
@@ -406,15 +410,15 @@ bool bnxt_is_recovery_enabled(struct bnxt *bp)
 	return false;
 }
 
-void bnxt_stop_rxtx(struct bnxt *bp)
+void bnxt_stop_rxtx(struct rte_eth_dev *eth_dev)
 {
-	bp->eth_dev->rx_pkt_burst = &bnxt_dummy_recv_pkts;
-	bp->eth_dev->tx_pkt_burst = &bnxt_dummy_xmit_pkts;
+	eth_dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	eth_dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 
-	rte_eth_fp_ops[bp->eth_dev->data->port_id].rx_pkt_burst =
-		bp->eth_dev->rx_pkt_burst;
-	rte_eth_fp_ops[bp->eth_dev->data->port_id].tx_pkt_burst =
-		bp->eth_dev->tx_pkt_burst;
+	rte_eth_fp_ops[eth_dev->data->port_id].rx_pkt_burst =
+		eth_dev->rx_pkt_burst;
+	rte_eth_fp_ops[eth_dev->data->port_id].tx_pkt_burst =
+		eth_dev->tx_pkt_burst;
 	rte_mb();
 
 	/* Allow time for threads to exit the real burst functions. */

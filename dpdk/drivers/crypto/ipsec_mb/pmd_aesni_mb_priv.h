@@ -5,8 +5,6 @@
 #ifndef _PMD_AESNI_MB_PRIV_H_
 #define _PMD_AESNI_MB_PRIV_H_
 
-#include <intel-ipsec-mb.h>
-
 #if defined(RTE_LIB_SECURITY)
 #define AESNI_MB_DOCSIS_SEC_ENABLED 1
 #include <rte_security.h>
@@ -275,6 +273,43 @@ static const struct rte_cryptodev_capabilities aesni_mb_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* NULL (AUTH) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_NULL,
+				.block_size = 1,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.iv_size = { 0 }
+			}, },
+		}, },
+	},
+	{	/* NULL (CIPHER) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_NULL,
+				.block_size = 1,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.iv_size = { 0 }
+			}, },
+		}, }
+	},
 	{	/* AES CBC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -531,8 +566,13 @@ static const struct rte_cryptodev_capabilities aesni_mb_capabilities[] = {
 				},
 				.digest_size = {
 					.min = 4,
+#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
+					.max = 16,
+					.increment = 4
+#else
 					.max = 4,
 					.increment = 0
+#endif
 				},
 				.iv_size = {
 					.min = 16,
@@ -689,6 +729,10 @@ struct aesni_mb_qp_data {
 	 * by the driver when verifying a digest provided
 	 * by the user (using authentication verify operation)
 	 */
+	union {
+		struct gcm_context_data gcm_sgl_ctx;
+		struct chacha20_poly1305_context_data chacha_sgl_ctx;
+	};
 };
 
 /* Maximum length for digest */

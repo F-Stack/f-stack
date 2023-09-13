@@ -1053,7 +1053,7 @@ hns3_rss_set_default_args(struct hns3_hw *hw)
 {
 	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
 	uint16_t queue_num = hw->alloc_rss_size;
-	int i;
+	uint16_t i;
 
 	/* Default hash algorithm */
 	rss_cfg->hash_algo = HNS3_RSS_HASH_ALGO_TOEPLITZ;

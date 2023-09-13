@@ -1,4 +1,4 @@
-DPDK_22 {
+DPDK_23 {
 	global:
 
 	rte_dpaa2_mbuf_from_buf_addr;
@@ -11,5 +11,6 @@ INTERNAL {
 	global:
 
 	rte_dpaa2_bpid_info;
+	rte_dpaa2_bpid_info_init;
 	rte_dpaa2_mbuf_alloc_bulk;
 };

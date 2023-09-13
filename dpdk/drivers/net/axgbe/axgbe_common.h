@@ -33,7 +33,7 @@
 #include <rte_memzone.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
 #include <ethdev_pci.h>
 #include <rte_common.h>
@@ -901,6 +901,8 @@
 #define PCS_V2_WINDOW_SELECT		0x9064
 #define PCS_V2_RV_WINDOW_DEF		0x1060
 #define PCS_V2_RV_WINDOW_SELECT		0x1064
+#define PCS_V2_YC_WINDOW_DEF		0x18060
+#define PCS_V2_YC_WINDOW_SELECT		0x18064
 
 /* PCS register entry bit positions and sizes */
 #define PCS_V2_WINDOW_DEF_OFFSET_INDEX	6
@@ -1032,8 +1034,8 @@
 #define XP_PROP_0_PORT_ID_WIDTH			8
 #define XP_PROP_0_PORT_MODE_INDEX		8
 #define XP_PROP_0_PORT_MODE_WIDTH		4
-#define XP_PROP_0_PORT_SPEEDS_INDEX		23
-#define XP_PROP_0_PORT_SPEEDS_WIDTH		4
+#define XP_PROP_0_PORT_SPEEDS_INDEX		22
+#define XP_PROP_0_PORT_SPEEDS_WIDTH		5
 #define XP_PROP_1_MAX_RX_DMA_INDEX		24
 #define XP_PROP_1_MAX_RX_DMA_WIDTH		5
 #define XP_PROP_1_MAX_RX_QUEUES_INDEX		8
@@ -1270,8 +1272,16 @@
 #define MDIO_PMA_10GBR_FECCTRL		0x00ab
 #endif
 
+#ifndef MDIO_PMA_RX_CTRL1
+#define MDIO_PMA_RX_CTRL1		0x8051
+#endif
+
 #ifndef MDIO_PCS_DIG_CTRL
 #define MDIO_PCS_DIG_CTRL		0x8000
+#endif
+
+#ifndef MDIO_PCS_DIGITAL_STAT
+#define MDIO_PCS_DIGITAL_STAT		0x8010
 #endif
 
 #ifndef MDIO_AN_XNP
@@ -1314,6 +1324,11 @@
 #define MDIO_VEND2_PMA_CDR_CONTROL	0x8056
 #endif
 
+#ifndef MDIO_VEND2_PMA_MISC_CTRL0
+#define MDIO_VEND2_PMA_MISC_CTRL0	0x8090
+#endif
+
+
 #ifndef MDIO_CTRL1_SPEED1G
 #define MDIO_CTRL1_SPEED1G		(MDIO_CTRL1_SPEED10G & ~BMCR_SPEED100)
 #endif
@@ -1349,6 +1364,8 @@
 #define AXGBE_KR_TRAINING_ENABLE	BIT(1)
 
 #define AXGBE_PCS_CL37_BP		BIT(12)
+#define XGBE_PCS_PSEQ_STATE_MASK	0x1c
+#define XGBE_PCS_PSEQ_STATE_POWER_GOOD	0x10
 
 #define AXGBE_AN_CL37_INT_CMPLT		BIT(0)
 #define AXGBE_AN_CL37_INT_MASK		0x01
@@ -1391,6 +1408,14 @@ static inline uint32_t high32_value(uint64_t addr)
 {
 	return (addr >> 32) & 0x0ffffffff;
 }
+
+#define XGBE_PMA_PLL_CTRL_MASK         BIT(15)
+#define XGBE_PMA_PLL_CTRL_SET          BIT(15)
+#define XGBE_PMA_PLL_CTRL_CLEAR                0x0000
+
+#define XGBE_PMA_RX_RST_0_MASK         BIT(4)
+#define XGBE_PMA_RX_RST_0_RESET_ON     0x10
+#define XGBE_PMA_RX_RST_0_RESET_OFF    0x00
 
 /*END*/
 

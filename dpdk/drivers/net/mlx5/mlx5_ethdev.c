@@ -11,7 +11,7 @@
 #include <errno.h>
 
 #include <ethdev_driver.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_mbuf.h>
 #include <rte_common.h>
 #include <rte_interrupts.h>
@@ -27,6 +27,7 @@
 #include "mlx5_tx.h"
 #include "mlx5_autoconf.h"
 #include "mlx5_devx.h"
+#include "rte_pmd_mlx5.h"
 
 /**
  * Get the interface index from device name.
@@ -81,9 +82,10 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
-	priv->rss_conf.rss_key =
-		mlx5_realloc(priv->rss_conf.rss_key, MLX5_MEM_RTE,
-			    MLX5_RSS_HASH_KEY_LEN, 0, SOCKET_ID_ANY);
+	priv->rss_conf.rss_key = mlx5_realloc(priv->rss_conf.rss_key,
+					      MLX5_MEM_RTE,
+					      MLX5_RSS_HASH_KEY_LEN, 0,
+					      SOCKET_ID_ANY);
 	if (!priv->rss_conf.rss_key) {
 		DRV_LOG(ERR, "port %u cannot allocate RSS hash key memory (%u)",
 			dev->data->port_id, rxqs_n);
@@ -121,9 +123,17 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 			dev->data->port_id, priv->txqs_n, txqs_n);
 		priv->txqs_n = txqs_n;
 	}
-	if (rxqs_n > priv->config.ind_table_max_size) {
+	if (rxqs_n > priv->sh->dev_cap.ind_table_max_size) {
 		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u)",
 			dev->data->port_id, rxqs_n);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	if (priv->ext_rxqs && rxqs_n >= MLX5_EXTERNAL_RX_QUEUE_ID_MIN) {
+		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u), "
+			"the maximal number of internal Rx queues is %u",
+			dev->data->port_id, rxqs_n,
+			MLX5_EXTERNAL_RX_QUEUE_ID_MIN - 1);
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
@@ -173,11 +183,11 @@ mlx5_dev_configure_rss_reta(struct rte_eth_dev *dev)
 	for (i = 0, j = 0; i < rxqs_n; i++) {
 		struct mlx5_rxq_ctrl *rxq_ctrl = mlx5_rxq_ctrl_get(dev, i);
 
-		if (rxq_ctrl && rxq_ctrl->type == MLX5_RXQ_TYPE_STANDARD)
+		if (rxq_ctrl && !rxq_ctrl->is_hairpin)
 			rss_queue_arr[j++] = i;
 	}
 	rss_queue_n = j;
-	if (rss_queue_n > priv->config.ind_table_max_size) {
+	if (rss_queue_n > priv->sh->dev_cap.ind_table_max_size) {
 		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u)",
 			dev->data->port_id, rss_queue_n);
 		rte_errno = EINVAL;
@@ -193,8 +203,8 @@ mlx5_dev_configure_rss_reta(struct rte_eth_dev *dev)
 	 * The result is always rounded to the next power of two.
 	 */
 	reta_idx_n = (1 << log2above((rss_queue_n & (rss_queue_n - 1)) ?
-				priv->config.ind_table_max_size :
-				rss_queue_n));
+				     priv->sh->dev_cap.ind_table_max_size :
+				     rss_queue_n));
 	ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
 	if (ret) {
 		mlx5_free(rss_queue_arr);
@@ -266,7 +276,7 @@ static void
 mlx5_set_txlimit_params(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_dev_config *config = &priv->config;
+	struct mlx5_port_config *config = &priv->config;
 	unsigned int inlen;
 	uint16_t nb_max;
 
@@ -302,7 +312,6 @@ int
 mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_dev_config *config = &priv->config;
 	unsigned int max;
 
 	/* FIXME: we should ask the device for these values. */
@@ -313,8 +322,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	 * Since we need one CQ per QP, the limit is the minimum number
 	 * between the two values.
 	 */
-	max = RTE_MIN(priv->sh->device_attr.max_cq,
-		      priv->sh->device_attr.max_qp);
+	max = RTE_MIN(priv->sh->dev_cap.max_cq, priv->sh->dev_cap.max_qp);
 	/* max_rx_queues is uint16_t. */
 	max = RTE_MIN(max, (unsigned int)UINT16_MAX);
 	info->max_rx_queues = max;
@@ -322,8 +330,8 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->max_mac_addrs = MLX5_MAX_UC_MAC_ADDRESSES;
 	info->rx_queue_offload_capa = mlx5_get_rx_queue_offloads(dev);
 	info->rx_seg_capa.max_nseg = MLX5_MAX_RXQ_NSEG;
-	info->rx_seg_capa.multi_pools = !config->mprq.enabled;
-	info->rx_seg_capa.offset_allowed = !config->mprq.enabled;
+	info->rx_seg_capa.multi_pools = !priv->config.mprq.enabled;
+	info->rx_seg_capa.offset_allowed = !priv->config.mprq.enabled;
 	info->rx_seg_capa.offset_align_log2 = 0;
 	info->rx_offload_capa = (mlx5_get_rx_port_offloads() |
 				 info->rx_queue_offload_capa);
@@ -331,13 +339,13 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->dev_capa = RTE_ETH_DEV_CAPA_FLOW_SHARED_OBJECT_KEEP;
 	info->if_index = mlx5_ifindex(dev);
 	info->reta_size = priv->reta_idx_n ?
-		priv->reta_idx_n : config->ind_table_max_size;
+		priv->reta_idx_n : priv->sh->dev_cap.ind_table_max_size;
 	info->hash_key_size = MLX5_RSS_HASH_KEY_LEN;
 	info->speed_capa = priv->link_speed_capa;
 	info->flow_type_rss_offloads = ~MLX5_RSS_HF_MASK;
 	mlx5_set_default_params(dev, info);
 	mlx5_set_txlimit_params(dev, info);
-	if (priv->config.hca_attr.mem_rq_rmp &&
+	if (priv->sh->cdev->config.hca_attr.mem_rq_rmp &&
 	    priv->obj_ops.rxq_obj_new == devx_obj_ops.rxq_obj_new)
 		info->dev_capa |= RTE_ETH_DEV_CAPA_RXQ_SHARE;
 	info->switch_info.name = dev->data->name;
@@ -516,7 +524,7 @@ int
 mlx5_fw_version_get(struct rte_eth_dev *dev, char *fw_ver, size_t fw_size)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_dev_attr *attr = &priv->sh->device_attr;
+	struct mlx5_dev_cap *attr = &priv->sh->dev_cap;
 	size_t size = strnlen(attr->fw_ver, sizeof(attr->fw_ver)) + 1;
 
 	if (fw_size < size)
@@ -672,7 +680,7 @@ mlx5_port_to_eswitch_info(uint16_t port, bool valid)
 	}
 	dev = &rte_eth_devices[port];
 	priv = dev->data->dev_private;
-	if (!(priv->representor || priv->master)) {
+	if (!priv->sh->esw_mode) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -699,7 +707,7 @@ mlx5_dev_to_eswitch_info(struct rte_eth_dev *dev)
 	struct mlx5_priv *priv;
 
 	priv = dev->data->dev_private;
-	if (!(priv->representor || priv->master)) {
+	if (!priv->sh->esw_mode) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -721,9 +729,9 @@ int
 mlx5_hairpin_cap_get(struct rte_eth_dev *dev, struct rte_eth_hairpin_cap *cap)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_dev_config *config = &priv->config;
+	struct mlx5_hca_attr *hca_attr;
 
-	if (!priv->sh->devx || !config->dest_tir || !config->dv_flow_en) {
+	if (!mlx5_devx_obj_ops_en(priv->sh)) {
 		rte_errno = ENOTSUP;
 		return -rte_errno;
 	}
@@ -731,5 +739,10 @@ mlx5_hairpin_cap_get(struct rte_eth_dev *dev, struct rte_eth_hairpin_cap *cap)
 	cap->max_rx_2_tx = 1;
 	cap->max_tx_2_rx = 1;
 	cap->max_nb_desc = 8192;
+	hca_attr = &priv->sh->cdev->config.hca_attr;
+	cap->rx_cap.locked_device_memory = hca_attr->hairpin_data_buffer_locked;
+	cap->rx_cap.rte_memory = 0;
+	cap->tx_cap.locked_device_memory = 0;
+	cap->tx_cap.rte_memory = hca_attr->hairpin_sq_wq_in_host_mem;
 	return 0;
 }

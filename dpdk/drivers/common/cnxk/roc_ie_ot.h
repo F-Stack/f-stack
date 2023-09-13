@@ -1,12 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(C) 2021 Marvell.
+ * Copyright(C) 2022 Marvell.
  */
 
 #ifndef __ROC_IE_OT_H__
 #define __ROC_IE_OT_H__
-
-/* PKIND to be used for CPT Meta parsing */
-#define ROC_OT_CPT_META_PKIND 58
 
 /* CN10K IPSEC opcodes */
 #define ROC_IE_OT_MAJOR_OP_PROCESS_OUTBOUND_IPSEC 0x28UL
@@ -16,6 +13,12 @@
 #define ROC_IE_OT_MINOR_OP_WRITE_SA 0x09UL
 
 #define ROC_IE_OT_CTX_ILEN 2
+/* PKIND to be used for CPT Meta parsing */
+#define ROC_IE_OT_CPT_PKIND	  58
+#define ROC_IE_OT_CPT_TS_PKIND	  54
+#define ROC_IE_OT_SA_CTX_HDR_SIZE 1
+
+#define ROC_IE_OT_INPLACE_BIT BIT(6)
 
 enum roc_ie_ot_ucc_ipsec {
 	ROC_IE_OT_UCC_SUCCESS = 0x00,
@@ -43,8 +46,8 @@ enum roc_ie_ot_ucc_ipsec {
 	ROC_IE_OT_UCC_ERR_SA_ESP_BAD_KEYS = 0xc5,
 	ROC_IE_OT_UCC_ERR_SA_AH_BAD_KEYS = 0xc6,
 	ROC_IE_OT_UCC_ERR_SA_BAD_IP = 0xc7,
-	ROC_IE_OT_UCC_ERR_PKT_REPLAY_WINDOW = 0xc8,
-	ROC_IE_OT_UCC_ERR_PKT_IP_FRAG = 0xc9,
+	ROC_IE_OT_UCC_ERR_PKT_IP_FRAG = 0xc8,
+	ROC_IE_OT_UCC_ERR_PKT_REPLAY_WINDOW = 0xc9,
 	ROC_IE_OT_UCC_SUCCESS_SA_SOFTEXP_FIRST = 0xf0,
 	ROC_IE_OT_UCC_SUCCESS_PKT_IP_BADCSUM = 0xf1,
 	ROC_IE_OT_UCC_SUCCESS_SA_SOFTEXP_AGAIN = 0xf2,
@@ -153,6 +156,13 @@ enum {
 	ROC_IE_OT_REAS_STS_L3P_ERR = 8,
 	ROC_IE_OT_REAS_STS_MAX = 9
 };
+
+enum {
+	ROC_IE_OT_ERR_CTL_MODE_NONE = 0,
+	ROC_IE_OT_ERR_CTL_MODE_CLEAR = 1,
+	ROC_IE_OT_ERR_CTL_MODE_RING = 2,
+};
+
 /* Context units in bytes */
 #define ROC_CTX_UNIT_8B		  8
 #define ROC_CTX_UNIT_128B	  128
@@ -168,6 +178,28 @@ enum {
 #define ROC_AR_WINBITS_SZ                                                      \
 	(PLT_ALIGN_CEIL(ROC_AR_WIN_SIZE_MAX, BITS_PER_LONG_LONG) /             \
 	 BITS_PER_LONG_LONG)
+
+#define ROC_IPSEC_ERR_RING_MAX_ENTRY 65536
+
+union roc_ot_ipsec_err_ring_head {
+	uint64_t u64;
+	struct {
+		uint16_t tail_pos;
+		uint16_t tail_gen;
+		uint16_t head_pos;
+		uint16_t head_gen;
+	} s;
+};
+
+union roc_ot_ipsec_err_ring_entry {
+	uint64_t u64;
+	struct {
+		uint64_t data0 : 44;
+		uint64_t data1 : 9;
+		uint64_t rsvd : 3;
+		uint64_t comp_code : 8;
+	} s;
+};
 
 /* Common bit fields between inbound and outbound SA */
 union roc_ot_ipsec_sa_word2 {
@@ -235,7 +267,15 @@ union roc_ot_ipsec_outb_iv {
 };
 
 struct roc_ot_ipsec_outb_ctx_update_reg {
-	uint64_t rsvd;
+	union {
+		struct {
+			uint64_t reserved_0_2 : 3;
+			uint64_t address : 57;
+			uint64_t mode : 4;
+		} s;
+		uint64_t u64;
+	} err_ctl;
+
 	uint64_t esn_val;
 	uint64_t hard_life;
 	uint64_t soft_life;
@@ -336,7 +376,8 @@ struct roc_ot_ipsec_inb_sa {
 			uint64_t ip_hdr_verify : 2;
 			uint64_t udp_ports_verify : 1;
 
-			uint64_t rsvd6 : 7;
+			uint64_t l3hdr_on_err : 1;
+			uint64_t rsvd6 : 6;
 			uint64_t async_mode : 1;
 
 			uint64_t spi : 32;
@@ -413,7 +454,8 @@ struct roc_ot_ipsec_outb_sa {
 			uint64_t count_mib_pkts : 1;
 			uint64_t hw_ctx_off : 7;
 
-			uint64_t rsvd1 : 32;
+			uint64_t ctx_id : 16;
+			uint64_t rsvd1 : 16;
 
 			uint64_t ctx_push_size : 7;
 			uint64_t rsvd2 : 1;
@@ -517,4 +559,7 @@ PLT_STATIC_ASSERT(offsetof(struct roc_ot_ipsec_outb_sa, hmac_opad_ipad) ==
 PLT_STATIC_ASSERT(offsetof(struct roc_ot_ipsec_outb_sa, ctx) ==
 		  31 * sizeof(uint64_t));
 
+void __roc_api roc_ot_ipsec_inb_sa_init(struct roc_ot_ipsec_inb_sa *sa,
+					bool is_inline);
+void __roc_api roc_ot_ipsec_outb_sa_init(struct roc_ot_ipsec_outb_sa *sa);
 #endif /* __ROC_IE_OT_H__ */

@@ -20,6 +20,7 @@ extern "C" {
 
 #include <string.h>
 
+#include <rte_compat.h>
 #include <rte_mbuf.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
@@ -160,12 +161,19 @@ enum rte_crypto_cipher_algorithm {
 	 * for m_src and m_dst in the rte_crypto_sym_op must be NULL.
 	 */
 
-	RTE_CRYPTO_CIPHER_DES_DOCSISBPI
+	RTE_CRYPTO_CIPHER_DES_DOCSISBPI,
 	/**< DES algorithm using modes required by
 	 * DOCSIS Baseline Privacy Plus Spec.
 	 * Chained mbufs are not supported in this mode, i.e. rte_mbuf.next
 	 * for m_src and m_dst in the rte_crypto_sym_op must be NULL.
 	 */
+
+	RTE_CRYPTO_CIPHER_SM4_ECB,
+	/**< ShangMi 4 (SM4) algorithm in ECB mode */
+	RTE_CRYPTO_CIPHER_SM4_CBC,
+	/**< ShangMi 4 (SM4) algorithm in CBC mode */
+	RTE_CRYPTO_CIPHER_SM4_CTR
+	/**< ShangMi 4 (SM4) algorithm in CTR mode */
 };
 
 /** Cipher algorithm name strings */
@@ -363,8 +371,10 @@ enum rte_crypto_auth_algorithm {
 	/**< HMAC using 384 bit SHA3 algorithm. */
 	RTE_CRYPTO_AUTH_SHA3_512,
 	/**< 512 bit SHA3 algorithm. */
-	RTE_CRYPTO_AUTH_SHA3_512_HMAC
+	RTE_CRYPTO_AUTH_SHA3_512_HMAC,
 	/**< HMAC using 512 bit SHA3 algorithm. */
+	RTE_CRYPTO_AUTH_SM3
+	/**< ShangMi 3 (SM3) algorithm */
 };
 
 /** Authentication algorithm name strings */
@@ -564,6 +574,7 @@ enum rte_crypto_sym_xform_type {
  * hold a single transform, the type field is used to specify which transform
  * is contained within the union
  */
+/* Structure rte_crypto_sym_xform 8< */
 struct rte_crypto_sym_xform {
 	struct rte_crypto_sym_xform *next;
 	/**< next xform in chain */
@@ -579,8 +590,7 @@ struct rte_crypto_sym_xform {
 		/**< AEAD xform */
 	};
 };
-
-struct rte_cryptodev_sym_session;
+/* >8 End of structure rte_crypto_sym_xform. */
 
 /**
  * Symmetric Cryptographic Operation.
@@ -612,18 +622,17 @@ struct rte_cryptodev_sym_session;
  * destination buffer being at a different alignment, relative to buffer start,
  * to the data in the source buffer.
  */
+/* Structure rte_crypto_sym_op 8< */
 struct rte_crypto_sym_op {
 	struct rte_mbuf *m_src;	/**< source mbuf */
 	struct rte_mbuf *m_dst;	/**< destination mbuf */
 
 	RTE_STD_C11
 	union {
-		struct rte_cryptodev_sym_session *session;
-		/**< Handle for the initialised session context */
+		void *session;
+		/**< Handle for the initialised crypto/security session context */
 		struct rte_crypto_sym_xform *xform;
 		/**< Session-less API crypto operation parameters */
-		struct rte_security_session *sec_session;
-		/**< Handle for the initialised security session context */
 	};
 
 	RTE_STD_C11
@@ -875,6 +884,7 @@ struct rte_crypto_sym_op {
 		};
 	};
 };
+/* >8 End of structure rte_crypto_sym_op. */
 
 
 /**
@@ -923,8 +933,7 @@ __rte_crypto_sym_op_sym_xforms_alloc(struct rte_crypto_sym_op *sym_op,
  * @param	sess	cryptodev session
  */
 static inline int
-__rte_crypto_sym_op_attach_sym_session(struct rte_crypto_sym_op *sym_op,
-		struct rte_cryptodev_sym_session *sess)
+__rte_crypto_sym_op_attach_sym_session(struct rte_crypto_sym_op *sym_op, void *sess)
 {
 	sym_op->session = sess;
 
