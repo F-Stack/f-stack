@@ -160,7 +160,7 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
     }
 
     if (ret < 0)
-        printf("Failed to Configure network interface of %d %s\n", 
+        printf("Failed to Configure network interface of %d %s\n",
             port_id, if_up ? "up" : "down");
 
     return ret;
@@ -477,7 +477,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
         struct rte_kni_ops ops;
         struct rte_eth_dev_info dev_info;
         const struct rte_pci_device *pci_dev;
-        const struct rte_bus *bus = NULL;
+        int ret;
 
         kni_stat[port_id] = (struct kni_interface_stats*)rte_zmalloc(
             "kni:stat_lcore",
@@ -489,7 +489,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
 
         /* only support one kni */
         memset(&conf, 0, sizeof(conf));
-        snprintf(conf.name, RTE_KNI_NAMESIZE, "veth%u", port_id);
+        snprintf(conf.name, RTE_KNI_NAMESIZE, "vEth%u", port_id);
         conf.core_id = rte_lcore_id();
         conf.force_bind = 1;
         conf.group_id = port_id;
@@ -498,16 +498,11 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
         conf.mbuf_size = mtu + KNI_ENET_HEADER_SIZE + KNI_ENET_FCS_SIZE;
 
         memset(&dev_info, 0, sizeof(dev_info));
-        rte_eth_dev_info_get(port_id, &dev_info);
-
-        if (dev_info.device)
-            bus = rte_bus_find_by_device(dev_info.device);
-        if (bus && !strcmp(bus->name, "pci")) {
-            pci_dev = RTE_DEV_TO_PCI(dev_info.device);
-            conf.addr = pci_dev->addr;
-            conf.id = pci_dev->id;
+        ret = rte_eth_dev_info_get(port_id, &dev_info);
+        if (ret != 0) {
+            rte_panic("kni get dev info %u failed!\n", port_id);
         }
-        
+
         /* Get the interface default mac address */
         rte_eth_macaddr_get(port_id,
                 (struct rte_ether_addr *)&conf.mac_addr);
@@ -534,7 +529,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
     snprintf((char*)ring_name, RTE_KNI_NAMESIZE, "kni_ring_%u", port_id);
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size, 
+        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size,
             socket_id, RING_F_SC_DEQ);
 
         if (rte_ring_lookup(ring_name) != kni_rp[port_id])
