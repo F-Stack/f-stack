@@ -2,6 +2,34 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2023.09 F-Stack v1.21.3(LTS)
+
+  1. F-Stack lib, Sync some features from branch of dev:
+
+  - vlan_strip support kni.
+  - Fix Compile Error with gcc 11.3.0(in Ubuntu 22.04).
+  - Added F-Stack FreeBSD support. see 9f7a142 .
+  - Enable INET6 by default in helloworld. see 51c91ab .
+  - Added FDIR support. see 4854315 .
+  - To avoid compiling errors when gcc version >= 10. see 6daadb0 .
+  - Modify `struct linux_sockaddr` same to `struct sockaddr` in linux. see d96a9d1 .
+  - Sync some modified of ff_config.c, inclue set dpdk log level, Avoid memory leaks, suppor vip_addr and vip_addr6, etc. see git log lib/ff_config.c in branch of dev.
+  - Sync some modified of ff_syscall_wrapper.c, include ff_sendmsg, ff_recvmsg, ip6_opt_convert, etc. see git log lib/ff_syscall_wrapper.c in branch of dev.
+  - The CPU usage of packet_dispatcher() is modified to usr. see 0508c8b .
+  - If process_dispatch_ring() has data packet to be processed and it is considered non-idle state. see 81dd6c7 .
+  - Fix a plurality of packets may not statistics in ff_traffic.rx_packets and ff_traffic.rx_bytes. see 0b4a084 .
+  - Added FF_IPSEC=1 in lib/Makefile, disable by default.
+  - Some other modified.
+
+  2. DPDK:
+
+  - DPDK: Upgrade to 19.11.14(LTS).
+
+  3. APP:
+
+  - Fiexd some build errors of micro_thread on ubuntu 22.04.
+
+
 2022.09 F-Stack v1.21.2(LTS)
 
  1. F-Stack lib:
