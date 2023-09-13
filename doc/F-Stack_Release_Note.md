@@ -2,7 +2,7 @@
 
  F-Stack is an open source network framework based on DPDK.
 
-2022.03 F-Stack v1.22.1
+2023.09 F-Stack v1.22.1
 
   1. F-Stack lib:
 
