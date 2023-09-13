@@ -22,7 +22,8 @@ See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 Read DPDK Quick Started Guide or run the command below
 
 	cd /data/f-stack/dpdk
-	meson -Denable_kmods=true build
+	# re-enable kni now, to remove kni later
+	meson -Denable_kmods=true -Ddisable_libs=flow_classify build
 	ninja -C build
 	ninja -C build install
 

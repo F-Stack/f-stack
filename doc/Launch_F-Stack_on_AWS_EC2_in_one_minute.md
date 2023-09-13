@@ -12,7 +12,8 @@
 
     # Compile DPDK
     cd /data/f-stack/dpdk
-    meson -Denable_kmods=true build
+    # re-enable kni now, to remove kni later
+    meson -Denable_kmods=true -Ddisable_libs=flow_classify build
     ninja -C build
     ninja -C build install
 
