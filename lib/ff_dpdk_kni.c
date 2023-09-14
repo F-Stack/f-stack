@@ -489,7 +489,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
 
         /* only support one kni */
         memset(&conf, 0, sizeof(conf));
-        snprintf(conf.name, RTE_KNI_NAMESIZE, "vEth%u", port_id);
+        snprintf(conf.name, RTE_KNI_NAMESIZE, "veth%u", port_id);
         conf.core_id = rte_lcore_id();
         conf.force_bind = 1;
         conf.group_id = port_id;
