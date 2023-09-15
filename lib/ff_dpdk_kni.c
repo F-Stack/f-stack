@@ -147,6 +147,11 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
         rte_eth_dev_set_link_up(port_id) :
         rte_eth_dev_set_link_down(port_id);
 
+    /*
+     * Some NIC drivers will crash in secondary process after config kni , Such as ENA with DPDK-21.22.3.
+     * If you meet this crash, you can try disable the code below and return 0 directly.
+     * Or run primary first, then config kni interface in kernel, and run secondary processes last.
+     */
     if(-ENOTSUP == ret) {
         if (if_up != 0) {
             /* Configure network interface up */
