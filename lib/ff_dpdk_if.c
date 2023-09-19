@@ -582,7 +582,7 @@ init_port_start(void)
 #ifdef FF_KNI
     if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
 #ifdef FF_KNI_KNI
-        if (ff_global_cfg.kni.type == 1)
+        if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
 #endif
         {
             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */

@@ -571,7 +571,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
                 printf("create kni on port %u success!\n", port_id);
 
             kni_stat[port_id]->port_id = port_id;
-        }else if (type == KNI_TYPE_VIRTIO)
+        } else if (type == KNI_TYPE_VIRTIO)
 #endif
         {
             /*
@@ -623,7 +623,7 @@ ff_kni_process(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     kni_process_tx(port_id, queue_id, pkts_burst, count);
-    kni_process_rx(port_id, queue_id,pkts_burst, count);
+    kni_process_rx(port_id, queue_id, pkts_burst, count);
 }
 
 /* enqueue the packet, and own it */
