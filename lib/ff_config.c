@@ -697,6 +697,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.symmetric_rss = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
+    } else if (MATCH("kni", "type")) {
+        pconfig->kni.type= atoi(value);
     } else if (MATCH("kni", "kni_action")) {
         pconfig->kni.kni_action= strdup(value);
     } else if (MATCH("kni", "method")) {
@@ -1007,6 +1009,12 @@ ff_check_config(struct ff_config *cfg)
                 fprintf(stderr,
                          "primary lcore %d should stay in port %d's lcore_list.\n",
                          lcore_id, pc->port_id);
+                return -1;
+            }
+
+            if (cfg->kni.type != KNI_TYPE_KNI && cfg->kni.type != KNI_TYPE_VIRTIO) {
+                fprintf(stderr,
+                         "kni type value must be 0 or 1, now is:%d\n", cfg->kni.type);
                 return -1;
             }
         }

@@ -33,6 +33,7 @@ HOST_OS:=$(shell uname -s)
 # No DPDK KNI support on FreeBSD
 ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
+#FF_KNI_KNI=1
 endif
 
 #FF_FLOW_ISOLATE=1
@@ -80,6 +81,10 @@ endif
 
 ifdef FF_KNI
 HOST_CFLAGS+= -DFF_KNI
+endif
+
+ifdef FF_KNI_KNI
+HOST_CFLAGS+= -DFF_KNI_KNI
 endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}

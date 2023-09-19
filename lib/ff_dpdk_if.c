@@ -67,12 +67,13 @@
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
-#define KNI_QUEUE_SIZE 2048
+#define KNI_QUEUE_SIZE KNI_MBUF_MAX
 
-int enable_kni;
+int enable_kni = 0;
 static int kni_accept;
 static int knictl_action = FF_KNICTL_ACTION_DEFAULT;
 #endif
+int nb_dev_ports = 0;   /* primary is correct, secondary is not correct, but no impact now*/
 
 static int numa_on;
 
@@ -237,7 +238,9 @@ check_all_ports_link_status(void)
 static int
 init_lcore_conf(void)
 {
-    uint8_t nb_dev_ports = rte_eth_dev_count_avail();
+    if (nb_dev_ports == 0) {
+        nb_dev_ports = rte_eth_dev_count_avail();
+    }
     if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
     }
@@ -513,14 +516,16 @@ static enum FF_KNICTL_CMD get_kni_action(const char *c){
 static int
 init_kni(void)
 {
-    int nb_ports = rte_eth_dev_count_avail();
+    int nb_ports = nb_dev_ports;
+
     kni_accept = 0;
+
     if(strcasecmp(ff_global_cfg.kni.method, "accept") == 0)
         kni_accept = 1;
 
     knictl_action = get_kni_action(ff_global_cfg.kni.kni_action);
 
-    ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
+    ff_kni_init(nb_ports, ff_global_cfg.kni.type, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
 
     unsigned socket_id = lcore_conf.socket_id;
@@ -530,7 +535,7 @@ init_kni(void)
     int i, ret;
     for (i = 0; i < nb_ports; i++) {
         uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
-        ff_kni_alloc(port_id, socket_id, mbuf_pool, KNI_QUEUE_SIZE);
+        ff_kni_alloc(port_id, socket_id, ff_global_cfg.kni.type, i, mbuf_pool, KNI_QUEUE_SIZE);
     }
 
     return 0;
@@ -568,21 +573,47 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 static int
 init_port_start(void)
 {
-    int nb_ports = ff_global_cfg.dpdk.nb_ports;
+    int nb_ports = ff_global_cfg.dpdk.nb_ports, total_nb_ports;
     unsigned socketid = 0;
     struct rte_mempool *mbuf_pool;
     uint16_t i, j;
 
-    for (i = 0; i < nb_ports; i++) {
-        uint16_t port_id, u_port_id = ff_global_cfg.dpdk.portid_list[i];
-        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[u_port_id];
-        uint16_t nb_queues = pconf->nb_lcores;
-
-        if (pconf->nb_slaves > 0) {
-            rte_eth_bond_8023ad_dedicated_queues_enable(u_port_id);
+    total_nb_ports = nb_ports;
+#ifdef FF_KNI
+    if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+#ifdef FF_KNI_KNI
+        if (ff_global_cfg.kni.type == 1)
+#endif
+        {
+            total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
         }
-        for (j=0; j<=pconf->nb_slaves; j++) {
-            if (j < pconf->nb_slaves) {
+    }
+#endif
+    for (i = 0; i < total_nb_ports; i++) {
+        uint16_t port_id, u_port_id;
+        struct ff_port_cfg *pconf = NULL;
+        uint16_t nb_queues;
+        int nb_slaves;
+
+        if (i < nb_ports) {
+            u_port_id = ff_global_cfg.dpdk.portid_list[i];
+            pconf = &ff_global_cfg.dpdk.port_cfgs[u_port_id];
+            nb_queues = pconf->nb_lcores;
+            nb_slaves = pconf->nb_slaves;
+
+            if (nb_slaves > 0) {
+                rte_eth_bond_8023ad_dedicated_queues_enable(u_port_id);
+            }
+        } else {
+            /* kernel virtio user, port id start from `nb_dev_ports` */
+            u_port_id = i - nb_ports + nb_dev_ports;
+            nb_queues = 1; /* see ff_kni_alloc in ff_dpdk_kni.c */
+            nb_slaves = 0;
+        }
+
+
+        for (j = 0; j <= nb_slaves; j++) {
+            if (j < nb_slaves) {
                 port_id = pconf->slave_portid_list[j];
                 printf("To init %s's %d'st slave port[%d]\n",
                         ff_global_cfg.dpdk.bond_cfgs->name,
@@ -616,109 +647,108 @@ init_port_start(void)
 
             struct rte_ether_addr addr;
             rte_eth_macaddr_get(port_id, &addr);
-            printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-                       " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-                    (unsigned)port_id,
-                    addr.addr_bytes[0], addr.addr_bytes[1],
-                    addr.addr_bytes[2], addr.addr_bytes[3],
-                    addr.addr_bytes[4], addr.addr_bytes[5]);
+            printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+                    (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
-            rte_memcpy(pconf->mac,
-                addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+            /* Only config dev port, but not kernel virtio user port */
+            if (pconf) {
+                rte_memcpy(pconf->mac,
+                    addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 
-            /* Set RSS mode */
-            uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
-            port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
-            port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-            if (dev_info.hash_key_size == 52) {
-                rsskey = default_rsskey_52bytes;
-                rsskey_len = 52;
-            }
-            if (ff_global_cfg.dpdk.symmetric_rss) {
-                printf("Use symmetric Receive-side Scaling(RSS) key\n");
-                rsskey = symmetric_rsskey;
-            }
-            port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
-            port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
-            port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
-            if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                    RTE_ETH_RSS_PROTO_MASK) {
-                printf("Port %u modified RSS hash function based on hardware support,"
-                        "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-                        port_id, default_rss_hf,
-                        port_conf.rx_adv_conf.rss_conf.rss_hf);
-            }
-
-            if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
-                port_conf.txmode.offloads |=
-                    RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
-            }
-
-            /* Set Rx VLAN stripping */
-            if (ff_global_cfg.dpdk.vlan_strip) {
-                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
-                    port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+                /* Set RSS mode */
+                uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
+                port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+                port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
+                if (dev_info.hash_key_size == 52) {
+                    rsskey = default_rsskey_52bytes;
+                    rsskey_len = 52;
                 }
-            }
-
-            /* Enable HW CRC stripping */
-            port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
-
-            /* FIXME: Enable TCP LRO ?*/
-            #if 0
-            if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
-                printf("LRO is supported\n");
-                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
-                pconf->hw_features.rx_lro = 1;
-            }
-            #endif
-
-            /* Set Rx checksum checking */
-            if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
-                (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
-                (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
-                printf("RX checksum offload supported\n");
-                port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
-                pconf->hw_features.rx_csum = 1;
-            }
-
-            if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
-                if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
-                    printf("TX ip checksum offload supported\n");
-                    port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
-                    pconf->hw_features.tx_csum_ip = 1;
+                if (ff_global_cfg.dpdk.symmetric_rss) {
+                    printf("Use symmetric Receive-side Scaling(RSS) key\n");
+                    rsskey = symmetric_rsskey;
+                }
+                port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
+                port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
+                port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+                if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
+                        RTE_ETH_RSS_PROTO_MASK) {
+                    printf("Port %u modified RSS hash function based on hardware support,"
+                            "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                            port_id, default_rss_hf,
+                            port_conf.rx_adv_conf.rss_conf.rss_hf);
                 }
 
-                if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
-                    (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
-                    printf("TX TCP&UDP checksum offload supported\n");
-                    port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
-                    pconf->hw_features.tx_csum_l4 = 1;
+                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
+                    port_conf.txmode.offloads |=
+                        RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
                 }
-            } else {
-                printf("TX checksum offoad is disabled\n");
-            }
 
-            if (ff_global_cfg.dpdk.tso) {
-                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
-                    printf("TSO is supported\n");
-                    port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
-                    pconf->hw_features.tx_tso = 1;
+                /* Set Rx VLAN stripping */
+                if (ff_global_cfg.dpdk.vlan_strip) {
+                    if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
+                        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+                    }
                 }
-                else {
-                    printf("TSO is not supported\n");
+
+                /* Enable HW CRC stripping */
+                port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
+
+                /* FIXME: Enable TCP LRO ?*/
+                #if 0
+                if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
+                    printf("LRO is supported\n");
+                    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+                    pconf->hw_features.rx_lro = 1;
                 }
-            } else {
-                printf("TSO is disabled\n");
-            }
+                #endif
 
-            if (dev_info.reta_size) {
-                /* reta size must be power of 2 */
-                assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
+                /* Set Rx checksum checking */
+                if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+                    (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+                    (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
+                    printf("RX checksum offload supported\n");
+                    port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
+                    pconf->hw_features.rx_csum = 1;
+                }
 
-                rss_reta_size[port_id] = dev_info.reta_size;
-                printf("port[%d]: rss table size: %d\n", port_id,
-                    dev_info.reta_size);
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
+                    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
+                        printf("TX ip checksum offload supported\n");
+                        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+                        pconf->hw_features.tx_csum_ip = 1;
+                    }
+
+                    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+                        (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
+                        printf("TX TCP&UDP checksum offload supported\n");
+                        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
+                        pconf->hw_features.tx_csum_l4 = 1;
+                    }
+                } else {
+                    printf("TX checksum offoad is disabled\n");
+                }
+
+                if (ff_global_cfg.dpdk.tso) {
+                    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
+                        printf("TSO is supported\n");
+                        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
+                        pconf->hw_features.tx_tso = 1;
+                    }
+                    else {
+                        printf("TSO is not supported\n");
+                    }
+                } else {
+                    printf("TSO is disabled\n");
+                }
+
+                if (dev_info.reta_size) {
+                    /* reta size must be power of 2 */
+                    assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
+
+                    rss_reta_size[port_id] = dev_info.reta_size;
+                    printf("port[%d]: rss table size: %d\n", port_id,
+                        dev_info.reta_size);
+                }
             }
 
             if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -762,17 +792,12 @@ init_port_start(void)
                 }
             }
 
-
             if (strncmp(dev_info.driver_name, BOND_DRIVER_NAME,
                     strlen(dev_info.driver_name)) == 0) {
 
                 rte_eth_macaddr_get(port_id, &addr);
-                printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-                           " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-                        (unsigned)port_id,
-                        addr.addr_bytes[0], addr.addr_bytes[1],
-                        addr.addr_bytes[2], addr.addr_bytes[3],
-                        addr.addr_bytes[4], addr.addr_bytes[5]);
+                printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+                        (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
                 rte_memcpy(pconf->mac,
                     addr.addr_bytes, RTE_ETHER_ADDR_LEN);
@@ -796,15 +821,16 @@ init_port_start(void)
             if (ret < 0) {
                 return ret;
             }
-    //RSS reta update will failed when enable flow isolate
-    #ifndef FF_FLOW_ISOLATE
+
+//RSS reta update will failed when enable flow isolate
+#ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
                 /*
                  * FIXME: modify RSS set to FDIR
                  */
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
-    #endif
+#endif
 
             /* Enable RX in promiscuous mode for the Ethernet device. */
             if (ff_global_cfg.dpdk.promiscuous) {
