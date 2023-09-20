@@ -938,7 +938,7 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
   for (i = 0, j = 0; i < nb_queues; ++i)
    queue[j++] = i;
   struct rte_flow_action_rss rss = {
-   .types = ETH_RSS_NONFRAG_IPV4_TCP,
+   .types = RTE_ETH_RSS_NONFRAG_IPV4_TCP,
    .key_len = rsskey_len,
    .key = rsskey,
    .queue_num = j,
