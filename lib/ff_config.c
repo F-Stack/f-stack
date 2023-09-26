@@ -368,6 +368,14 @@ parse_port_slave_list(struct ff_port_cfg *cfg, const char *v_str)
 }
 
 static int
+parse_vlan_filter_list(struct ff_config *cfg, const char *v_str)
+{
+    cfg->dpdk.nb_vlan_filter = DPDK_MAX_VLAN_FILTER;
+    uint16_t *vlan_filter = cfg->dpdk.vlan_filter_id;
+    return __parse_config_list(vlan_filter, &cfg->dpdk.nb_vlan_filter, v_str);
+}
+
+static int
 vip_cfg_handler(struct ff_port_cfg *cur)
 {
     //vip cfg
@@ -689,6 +697,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.tx_csum_offoad_skip = atoi(value);
     } else if (MATCH("dpdk", "vlan_strip")) {
         pconfig->dpdk.vlan_strip = atoi(value);
+    } else if (MATCH("dpdk", "vlan_filter")) {
+        return parse_vlan_filter_list(pconfig, value);
     } else if (MATCH("dpdk", "idle_sleep")) {
         pconfig->dpdk.idle_sleep = atoi(value);
     } else if (MATCH("dpdk", "pkt_tx_delay")) {

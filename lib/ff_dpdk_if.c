@@ -658,6 +658,21 @@ init_port_start(void)
             if (ff_global_cfg.dpdk.vlan_strip) {
                 if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
                     port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+                    printf("RX vlan strip offload supported\n");
+                }
+            }
+
+            /*
+             * Set Rx VLAN filter, and then the dirvier(such as MLX5) will set
+             * FLOW RSS to enable L3/L4 RSS below vlan hdr.
+             * This action won't need after DPDK-20.11.
+             */
+            if (ff_global_cfg.dpdk.nb_vlan_filter) {
+                if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_FILTER) {
+                    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_FILTER;
+                    printf("RX vlan filter offload supported\n");
+                } else {
+                    printf("RX vlan filter offload not supported\n");
                 }
             }
 
@@ -728,6 +743,24 @@ init_port_start(void)
             ret = rte_eth_dev_configure(port_id, nb_queues, nb_queues, &port_conf);
             if (ret != 0) {
                 return ret;
+            }
+
+            /* Enable vlan filter for RSS */
+            if (ff_global_cfg.dpdk.nb_vlan_filter) {
+                uint16_t vlan_id ;
+                int on = 1, vlan_idx;
+
+                for (vlan_idx = 0; vlan_idx < ff_global_cfg.dpdk.nb_vlan_filter; vlan_idx++) {
+                    vlan_id = ff_global_cfg.dpdk.vlan_filter_id[vlan_idx];
+
+                    if (rte_eth_dev_vlan_filter(port_id, vlan_id, on)) {
+                         printf("Port %u set vlan %u on %d failed.\n",
+                            port_id, vlan_id, on);
+                    } else {
+                        printf("Port %u set vlan %u on %d success.\n",
+                            port_id, vlan_id, on);
+                    }
+                }
             }
 
             static uint16_t nb_rxd = RX_QUEUE_SIZE;

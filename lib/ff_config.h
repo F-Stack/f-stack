@@ -35,6 +35,7 @@ extern "C" {
 #define DPDK_CONFIG_NUM 16
 #define DPDK_CONFIG_MAXLEN 256
 #define DPDK_MAX_LCORE 128
+#define DPDK_MAX_VLAN_FILTER 128
 #define PCAP_SNAP_MINLEN 94
 #define PCAP_SAVE_MINLEN (2<<22)
 
@@ -150,6 +151,8 @@ struct ff_config {
         int tso;
         int tx_csum_offoad_skip;
         int vlan_strip;
+        int nb_vlan_filter;
+        uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
         int symmetric_rss;
 
         /* sleep x microseconds when no pkts incomming */
