@@ -754,10 +754,10 @@ init_port_start(void)
                     vlan_id = ff_global_cfg.dpdk.vlan_filter_id[vlan_idx];
 
                     if (rte_eth_dev_vlan_filter(port_id, vlan_id, on)) {
-                         printf("Port %u set vlan %u on %d failed.\n",
+                        printf("Port %u set vlan filter id %u on %d failed.\n",
                             port_id, vlan_id, on);
                     } else {
-                        printf("Port %u set vlan %u on %d success.\n",
+                        printf("Port %u set vlan filter id %u on %d success.\n",
                             port_id, vlan_id, on);
                     }
                 }
