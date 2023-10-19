@@ -1710,7 +1710,6 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	}
 
 	if (!real_if_indextoname(ifindex, ifname)) {
-
 		rte_errno = errno;
 		return -rte_errno;
 	}
