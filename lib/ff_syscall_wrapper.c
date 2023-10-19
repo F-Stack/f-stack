@@ -1452,7 +1452,11 @@ ff_kevent(int kq, const struct kevent *changelist, int nchanges,
 }
 
 int
+#if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 31)
+ff_gettimeofday(struct timeval *tv, void *tz)
+#else
 ff_gettimeofday(struct timeval *tv, struct timezone *tz)
+#endif
 {
     long nsec;
     ff_get_current_time(&(tv->tv_sec), &nsec);

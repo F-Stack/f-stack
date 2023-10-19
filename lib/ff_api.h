@@ -136,7 +136,12 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
     void *eventlist, int nevents, const struct timespec *timeout,
     void (*do_each)(void **, struct kevent *));
 
+#if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 31)
+int ff_gettimeofday(struct timeval *tv, void *tz);
+#else
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
+#endif
+
 
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
