@@ -39,7 +39,7 @@ $ cd /data/f-stack/lib
 $ make
 
 # Compile Nginx
-$ cd ../app/nginx-1.16.1
+$ cd ../app/nginx-1.25.2
 $ ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
 $ make
 $ make install

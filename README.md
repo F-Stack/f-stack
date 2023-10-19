@@ -123,7 +123,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
 #### Nginx
 
-    cd app/nginx-1.16.1
+    cd app/nginx-1.25.2
     bash ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
     make
     make install
