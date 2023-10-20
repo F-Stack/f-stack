@@ -2,6 +2,26 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2023.10 F-Stack v1.21.4(LTS)
+
+  1. F-Stack lib:
+
+  - Add vlan_filter argument in config.ini for RSS with vlan.
+    - Set Rx VLAN filter, and then the dirvier(such as MLX5) will set FLOW RSS to enable L3/L4 RSS below vlan hdr. This action won't need after DPDK-20.11.
+  - Fix Compile Error with gcc 12.2.0.
+  - gettimeofday automatically compatible with different glibc versions.
+  - Add an API ff_get_traffic to get traffic for QoS or other.
+
+  2. ff tools:
+
+  - Fix Compile Error with gcc 12.2.0.
+
+  3. APP:
+
+  - gettimeofday automatically compatible with different glibc versions.
+
+
+
 2023.09 F-Stack v1.21.3(LTS)
 
   1. F-Stack lib, Sync some features from branch of dev:
