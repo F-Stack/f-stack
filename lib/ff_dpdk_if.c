@@ -1704,6 +1704,11 @@ handle_traffic_msg(struct ff_msg *msg)
     msg->result = 0;
 }
 
+void ff_get_traffic(void *buffer)
+{
+    *(struct ff_traffic_args *)buffer = ff_traffic;
+}
+
 #ifdef FF_KNI
 static inline void
 handle_knictl_msg(struct ff_msg *msg)

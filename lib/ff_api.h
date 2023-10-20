@@ -154,6 +154,11 @@ extern int ff_fdisused(int fd);
 
 extern int ff_getmaxfd(void);
 
+/* Get traffic for QoS or other via API.
+ * The size of buffer must >= siezof(struct ff_traffic_args), now is 32 bytes.
+ */
+void ff_get_traffic(void *buffer);
+
 /* route api begin */
 enum FF_ROUTE_CTL {
     FF_ROUTE_ADD,
