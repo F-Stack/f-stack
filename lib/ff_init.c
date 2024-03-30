@@ -61,3 +61,9 @@ ff_run(loop_func_t loop, void *arg)
     ff_dpdk_run(loop, arg);
 }
 
+void
+ff_stop_run(void)
+{
+    ff_dpdk_stop();
+}
+

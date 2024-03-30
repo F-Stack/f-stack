@@ -49,6 +49,12 @@ However, it is  supported only before F-Stack is started.
   The ioctl() function manipulates the underlying device parameters of special files.
   more info see man ioctl.
 
+#### ff_stop_run
+
+	void ff_stop_run();
+
+  Stop the infinite poll loop started by `ff_run`.
+
 ### Network API
 
 #### ff_socket

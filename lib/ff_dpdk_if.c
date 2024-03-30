@@ -81,6 +81,7 @@ static int numa_on;
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
 static uint64_t usr_cb_tsc;
+static int stop_loop;
 
 static struct rte_timer freebsd_clock;
 
@@ -2252,6 +2253,11 @@ main_loop(void *arg)
     qconf = &lcore_conf;
 
     while (1) {
+
+        if (unlikely(stop_loop)) {
+            break;
+        }
+
         cur_tsc = rte_rdtsc();
         if (unlikely(freebsd_clock.expire < cur_tsc)) {
             rte_timer_manage();
@@ -2411,11 +2417,17 @@ void
 ff_dpdk_run(loop_func_t loop, void *arg) {
     struct loop_routine *lr = rte_malloc(NULL,
         sizeof(struct loop_routine), 0);
+    stop_loop = 0;
     lr->loop = loop;
     lr->arg = arg;
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
+}
+
+void
+ff_dpdk_stop(void) {
+    stop_loop = 1;
 }
 
 void
