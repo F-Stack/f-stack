@@ -419,7 +419,7 @@ ff_hook_getsockname(int fd, struct sockaddr *name,
     SYSCALL(FF_SO_GETSOCKNAME, args);
 
     if (ret == 0) {
-        socklen_t cplen = *namelen ? *sh_namelen > *namelen
+        socklen_t cplen = *namelen < *sh_namelen ? *namelen
             : *sh_namelen;
         rte_memcpy(name, sh_name, cplen);
         *namelen = *sh_namelen;
