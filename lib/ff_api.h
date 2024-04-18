@@ -55,6 +55,8 @@ int ff_init(int argc, char * const argv[]);
 
 void ff_run(loop_func_t loop, void *arg);
 
+void ff_stop_run(void);
+
 /* POSIX-LIKE api begin */
 
 int ff_fcntl(int fd, int cmd, ...);

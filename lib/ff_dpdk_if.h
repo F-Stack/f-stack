@@ -39,6 +39,7 @@ struct loop_routine {
 int ff_dpdk_init(int argc, char **argv);
 int ff_dpdk_if_up(void);
 void ff_dpdk_run(loop_func_t loop, void *arg);
+void ff_dpdk_stop(void);
 
 struct ff_dpdk_if_context;
 struct ff_port_cfg;
