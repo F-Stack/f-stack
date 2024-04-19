@@ -419,7 +419,7 @@ ff_hook_getsockname(int fd, struct sockaddr *name,
     SYSCALL(FF_SO_GETSOCKNAME, args);
 
     if (ret == 0) {
-        socklen_t cplen = *namelen ? *sh_namelen > *namelen
+        socklen_t cplen = *sh_namelen > *namelen ? *namelen
             : *sh_namelen;
         rte_memcpy(name, sh_name, cplen);
         *namelen = *sh_namelen;
@@ -475,7 +475,7 @@ ff_hook_getpeername(int fd, struct sockaddr *name,
     SYSCALL(FF_SO_GETPEERNAME, args);
 
     if (ret == 0) {
-        socklen_t cplen = *namelen ? *sh_namelen > *namelen
+        socklen_t cplen = *sh_namelen > *namelen ? *namelen
             : *sh_namelen;
         rte_memcpy(name, sh_name, cplen);
         *namelen = *sh_namelen;
@@ -794,7 +794,7 @@ ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
     if (ret >= 0) {
         rte_memcpy(buf, sh_buf, ret);
         if (from) {
-            socklen_t cplen = *fromlen ? *sh_fromlen > *fromlen
+            socklen_t cplen = *sh_fromlen > *fromlen ? *fromlen
                 : *sh_fromlen;
             rte_memcpy(from, sh_from, cplen);
             *fromlen = *sh_fromlen;
