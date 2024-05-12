@@ -35,7 +35,7 @@
 #include <sys/cdefs.h>
 #include <sys/_types.h>
 
-#if __has_extension(c_atomic) || __has_extension(cxx_atomic)
+#if defined(__clang__) && (__has_extension(c_atomic) || __has_extension(cxx_atomic))
 #define	__CLANG_ATOMICS
 #elif __GNUC_PREREQ__(4, 7)
 #define	__GNUC_ATOMICS
@@ -87,6 +87,9 @@
 #if defined(__CLANG_ATOMICS)
 #define	ATOMIC_VAR_INIT(value)		(value)
 #define	atomic_init(obj, value)		__c11_atomic_init(obj, value)
+#elif defined(__GNUC_ATOMICS)
+#define	ATOMIC_VAR_INIT(value)		(value)
+#define	atomic_init(obj, value)		__atomic_init(obj, value)
 #else
 #define	ATOMIC_VAR_INIT(value)		{ .__val = (value) }
 #define	atomic_init(obj, value)		((void)((obj)->__val = (value)))
