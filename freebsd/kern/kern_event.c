@@ -2221,7 +2221,11 @@ kqueue_wakeup(struct kqueue *kq)
 			kq->kq_state &= ~KQ_SEL;
 	}
 	if (!knlist_empty(&kq->kq_sel.si_note))
-		kqueue_schedtask(kq);
+#ifndef FSTACK
+        kqueue_schedtask(kq);
+#else
+        KNOTE_UNLOCKED(&kq->kq_sel.si_note, 0);
+#endif
 	if ((kq->kq_state & KQ_ASYNC) == KQ_ASYNC) {
 		pgsigio(&kq->kq_sigio, SIGIO, 0);
 	}
