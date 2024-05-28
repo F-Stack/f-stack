@@ -9,7 +9,7 @@
 #include <rte_kvargs.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #include <fcntl.h>
 #include <linux/ethtool.h>
@@ -487,11 +487,6 @@ mrvl_dev_configure(struct rte_eth_dev *dev)
 	    dev->data->dev_conf.rxmode.mq_mode != RTE_ETH_MQ_RX_RSS) {
 		MRVL_LOG(INFO, "Unsupported rx multi queue mode %d",
 			dev->data->dev_conf.rxmode.mq_mode);
-		return -EINVAL;
-	}
-
-	if (dev->data->dev_conf.rxmode.split_hdr_size) {
-		MRVL_LOG(INFO, "Split headers not supported");
 		return -EINVAL;
 	}
 

@@ -3,13 +3,13 @@
  */
 
 #include <rte_string_fns.h>
-#include <rte_bus_pci.h>
-#include <rte_bus_vdev.h>
+#include <bus_pci_driver.h>
+#include <bus_vdev_driver.h>
 #include <rte_common.h>
 #include <rte_cryptodev.h>
 #include <cryptodev_pmd.h>
 #include <rte_pci.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_malloc.h>
 
 #include "ccp_crypto.h"
@@ -22,7 +22,6 @@
 static unsigned int ccp_pmd_init_done;
 uint8_t ccp_cryptodev_driver_id;
 uint8_t cryptodev_cnt;
-extern void *sha_ctx;
 
 struct ccp_pmd_init_params {
 	struct rte_cryptodev_pmd_init_params def_p;
@@ -56,33 +55,23 @@ get_ccp_session(struct ccp_qp *qp, struct rte_crypto_op *op)
 		if (unlikely(op->sym->session == NULL))
 			return NULL;
 
-		sess = (struct ccp_session *)
-			get_sym_session_private_data(
-				op->sym->session,
-				ccp_cryptodev_driver_id);
+		sess = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 	} else if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
-		void *_sess;
-		void *_sess_private_data = NULL;
+		struct rte_cryptodev_sym_session *_sess;
 		struct ccp_private *internals;
 
-		if (rte_mempool_get(qp->sess_mp, &_sess))
-			return NULL;
-		if (rte_mempool_get(qp->sess_mp, (void **)&_sess_private_data))
+		if (rte_mempool_get(qp->sess_mp, (void **)&_sess))
 			return NULL;
 
-		sess = (struct ccp_session *)_sess_private_data;
+		sess = (void *)_sess->driver_priv_data;
 
 		internals = (struct ccp_private *)qp->dev->data->dev_private;
 		if (unlikely(ccp_set_session_parameters(sess, op->sym->xform,
 							internals) != 0)) {
 			rte_mempool_put(qp->sess_mp, _sess);
-			rte_mempool_put(qp->sess_mp_priv, _sess_private_data);
 			sess = NULL;
 		}
-		op->sym->session = (struct rte_cryptodev_sym_session *)_sess;
-		set_sym_session_private_data(op->sym->session,
-					 ccp_cryptodev_driver_id,
-					 _sess_private_data);
+		op->sym->session = _sess;
 	}
 
 	return sess;
@@ -161,13 +150,10 @@ ccp_pmd_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
 	for (i = 0; i < nb_dequeued; i++)
 		if (unlikely(ops[i]->sess_type ==
 			     RTE_CRYPTO_OP_SESSIONLESS)) {
-			struct ccp_session *sess = (struct ccp_session *)
-					get_sym_session_private_data(
-						ops[i]->sym->session,
-						ccp_cryptodev_driver_id);
+			struct ccp_session *sess =
+				CRYPTODEV_GET_SYM_SESS_PRIV(ops[i]->sym->session);
 
-			rte_mempool_put(qp->sess_mp_priv,
-					sess);
+			memset(sess, 0, sizeof(*sess));
 			rte_mempool_put(qp->sess_mp,
 					ops[i]->sym->session);
 			ops[i]->sym->session = NULL;
@@ -181,15 +167,9 @@ ccp_pmd_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
  * The set of PCI devices this driver supports
  */
 static struct rte_pci_id ccp_pci_id[] = {
-	{
-		RTE_PCI_DEVICE(0x1022, 0x1456), /* AMD CCP-5a */
-	},
-	{
-		RTE_PCI_DEVICE(0x1022, 0x1468), /* AMD CCP-5b */
-	},
-	{
-		RTE_PCI_DEVICE(0x1022, 0x15df), /* AMD CCP RV */
-	},
+	{ RTE_PCI_DEVICE(AMD_PCI_VENDOR_ID, AMD_PCI_CCP_5A), },
+	{ RTE_PCI_DEVICE(AMD_PCI_VENDOR_ID, AMD_PCI_CCP_5B), },
+	{ RTE_PCI_DEVICE(AMD_PCI_VENDOR_ID, AMD_PCI_CCP_RV), },
 	{.device_id = 0},
 };
 
@@ -213,7 +193,6 @@ cryptodev_ccp_remove(struct rte_pci_device *pci_dev)
 		return -ENODEV;
 
 	ccp_pmd_init_done = 0;
-	rte_free(sha_ctx);
 
 	RTE_LOG(INFO, PMD, "Closing ccp device %s on numa socket %u\n",
 			name, rte_socket_id());
@@ -243,14 +222,13 @@ cryptodev_ccp_create(const char *name,
 		goto init_error;
 	}
 
-	cryptodev_cnt = ccp_probe_devices(pci_dev, ccp_pci_id);
-
-	if (cryptodev_cnt == 0) {
+	if (ccp_probe_device(pci_dev) != 0) {
 		CCP_LOG_ERR("failed to detect CCP crypto device");
 		goto init_error;
 	}
+	cryptodev_cnt++;
 
-	printf("CCP : Crypto device count = %d\n", cryptodev_cnt);
+	CCP_LOG_DBG("CCP : Crypto device count = %d\n", cryptodev_cnt);
 	dev->device = &pci_dev->device;
 	dev->device->driver = &pci_drv->driver;
 	dev->driver_id = ccp_cryptodev_driver_id;
@@ -300,7 +278,6 @@ cryptodev_ccp_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		.auth_opt = CCP_PMD_AUTH_OPT_CCP,
 	};
 
-	sha_ctx = (void *)rte_malloc(NULL, SHA512_DIGEST_SIZE, 64);
 	if (ccp_pmd_init_done) {
 		RTE_LOG(INFO, PMD, "CCP PMD already initialized\n");
 		return -EFAULT;

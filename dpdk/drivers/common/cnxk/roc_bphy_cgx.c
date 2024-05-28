@@ -21,10 +21,13 @@
  *
  * Hence common longer mask may be used.
  */
-#define CGX_CMRX_RX_LMACS	0x128
-#define CGX_CMRX_RX_LMACS_LMACS GENMASK_ULL(3, 0)
-#define CGX_CMRX_SCRATCH0	0x1050
-#define CGX_CMRX_SCRATCH1	0x1058
+#define CGX_CMRX_RX_LMACS                     0x128
+#define CGX_CMRX_RX_LMACS_LMACS               GENMASK_ULL(3, 0)
+#define CGX_CMRX_SCRATCH0                     0x1050
+#define CGX_CMRX_SCRATCH1                     0x1058
+#define CGX_MTI_MAC100X_COMMAND_CONFIG        0x8010
+#define CGX_MTI_MAC100X_COMMAND_CONFIG_RX_ENA BIT_ULL(1)
+#define CGX_MTI_MAC100X_COMMAND_CONFIG_TX_ENA BIT_ULL(0)
 
 static uint64_t
 roc_bphy_cgx_read(struct roc_bphy_cgx *roc_cgx, uint64_t lmac, uint64_t offset)
@@ -170,8 +173,14 @@ out:
 static unsigned int
 roc_bphy_cgx_dev_id(struct roc_bphy_cgx *roc_cgx)
 {
-	uint64_t cgx_id = roc_model_is_cn10k() ? GENMASK_ULL(26, 24) :
-						 GENMASK_ULL(25, 24);
+	uint64_t cgx_id;
+
+	if (roc_model_is_cnf10kb())
+		cgx_id = GENMASK_ULL(27, 24);
+	else if (roc_model_is_cn10k())
+		cgx_id = GENMASK_ULL(26, 24);
+	else
+		cgx_id = GENMASK_ULL(25, 24);
 
 	return FIELD_GET(cgx_id, roc_cgx->bar0_pa);
 }
@@ -221,7 +230,7 @@ static int
 roc_bphy_cgx_start_stop_rxtx(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 			     bool start)
 {
-	uint64_t val;
+	uint64_t val, reg, rx_field, tx_field;
 
 	if (!roc_cgx)
 		return -EINVAL;
@@ -229,16 +238,24 @@ roc_bphy_cgx_start_stop_rxtx(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 	if (!roc_bphy_cgx_lmac_exists(roc_cgx, lmac))
 		return -ENODEV;
 
+	if (roc_model_is_cnf10kb()) {
+		reg = CGX_MTI_MAC100X_COMMAND_CONFIG;
+		rx_field = CGX_MTI_MAC100X_COMMAND_CONFIG_RX_ENA;
+		tx_field = CGX_MTI_MAC100X_COMMAND_CONFIG_TX_ENA;
+	} else {
+		reg = CGX_CMRX_CONFIG;
+		rx_field = CGX_CMRX_CONFIG_DATA_PKT_RX_EN;
+		tx_field = CGX_CMRX_CONFIG_DATA_PKT_TX_EN;
+	}
+
 	pthread_mutex_lock(&roc_cgx->lock);
-	val = roc_bphy_cgx_read(roc_cgx, lmac, CGX_CMRX_CONFIG);
-	val &= ~(CGX_CMRX_CONFIG_DATA_PKT_RX_EN |
-		 CGX_CMRX_CONFIG_DATA_PKT_TX_EN);
+	val = roc_bphy_cgx_read(roc_cgx, lmac, reg);
+	val &= ~(rx_field | tx_field);
 
 	if (start)
-		val |= FIELD_PREP(CGX_CMRX_CONFIG_DATA_PKT_RX_EN, 1) |
-		       FIELD_PREP(CGX_CMRX_CONFIG_DATA_PKT_TX_EN, 1);
+		val |= FIELD_PREP(rx_field, 1) | FIELD_PREP(tx_field, 1);
 
-	roc_bphy_cgx_write(roc_cgx, lmac, CGX_CMRX_CONFIG, val);
+	roc_bphy_cgx_write(roc_cgx, lmac, reg, val);
 	pthread_mutex_unlock(&roc_cgx->lock);
 
 	return 0;
@@ -347,8 +364,10 @@ roc_bphy_cgx_set_link_mode(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 {
 	uint64_t scr1, scr0;
 
-	if (roc_model_is_cn10k())
+	if (roc_model_is_cn9k() &&
+	    (mode->use_portm_idx || mode->portm_idx || mode->mode_group_idx)) {
 		return -ENOTSUP;
+	}
 
 	if (!roc_cgx)
 		return -EINVAL;
@@ -363,7 +382,12 @@ roc_bphy_cgx_set_link_mode(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_SPEED, mode->speed) |
 	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_DUPLEX, mode->full_duplex) |
 	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_AN, mode->an) |
-	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_PORT, mode->port) |
+	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_USE_PORTM_IDX,
+			  mode->use_portm_idx) |
+	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_PORTM_IDX,
+			  mode->portm_idx) |
+	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_MODE_GROUP_IDX,
+			  mode->mode_group_idx) |
 	       FIELD_PREP(SCR1_ETH_MODE_CHANGE_ARGS_MODE, BIT_ULL(mode->mode));
 
 	return roc_bphy_cgx_intf_req(roc_cgx, lmac, scr1, &scr0);
@@ -434,4 +458,98 @@ roc_bphy_cgx_fec_supported_get(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 	*fec = (enum roc_bphy_cgx_eth_link_fec)scr0;
 
 	return 0;
+}
+
+int
+roc_bphy_cgx_cpri_mode_change(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
+			      struct roc_bphy_cgx_cpri_mode_change *mode)
+{
+	uint64_t scr1, scr0;
+
+	if (!(roc_model_is_cnf95xxn_a0() ||
+	      roc_model_is_cnf95xxn_a1() ||
+	      roc_model_is_cnf95xxn_b0()))
+		return -ENOTSUP;
+
+	if (!roc_cgx)
+		return -EINVAL;
+
+	if (!roc_bphy_cgx_lmac_exists(roc_cgx, lmac))
+		return -ENODEV;
+
+	if (!mode)
+		return -EINVAL;
+
+	scr1 = FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_CPRI_MODE_CHANGE) |
+	       FIELD_PREP(SCR1_CPRI_MODE_CHANGE_ARGS_GSERC_IDX,
+			  mode->gserc_idx) |
+	       FIELD_PREP(SCR1_CPRI_MODE_CHANGE_ARGS_LANE_IDX, mode->lane_idx) |
+	       FIELD_PREP(SCR1_CPRI_MODE_CHANGE_ARGS_RATE, mode->rate) |
+	       FIELD_PREP(SCR1_CPRI_MODE_CHANGE_ARGS_DISABLE_LEQ,
+			  mode->disable_leq) |
+	       FIELD_PREP(SCR1_CPRI_MODE_CHANGE_ARGS_DISABLE_DFE,
+			  mode->disable_dfe);
+
+	return roc_bphy_cgx_intf_req(roc_cgx, lmac, scr1, &scr0);
+}
+
+int
+roc_bphy_cgx_cpri_mode_tx_control(struct roc_bphy_cgx *roc_cgx,
+				  unsigned int lmac,
+				  struct roc_bphy_cgx_cpri_mode_tx_ctrl *mode)
+{
+	uint64_t scr1, scr0;
+
+	if (!(roc_model_is_cnf95xxn_a0() ||
+	      roc_model_is_cnf95xxn_a1() ||
+	      roc_model_is_cnf95xxn_b0()))
+		return -ENOTSUP;
+
+	if (!roc_cgx)
+		return -EINVAL;
+
+	if (!roc_bphy_cgx_lmac_exists(roc_cgx, lmac))
+		return -ENODEV;
+
+	if (!mode)
+		return -EINVAL;
+
+	scr1 = FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_CPRI_TX_CONTROL) |
+	       FIELD_PREP(SCR1_CPRI_MODE_TX_CTRL_ARGS_GSERC_IDX,
+			  mode->gserc_idx) |
+	       FIELD_PREP(SCR1_CPRI_MODE_TX_CTRL_ARGS_LANE_IDX,
+			  mode->lane_idx) |
+	       FIELD_PREP(SCR1_CPRI_MODE_TX_CTRL_ARGS_ENABLE, mode->enable);
+
+	return roc_bphy_cgx_intf_req(roc_cgx, lmac, scr1, &scr0);
+}
+
+int
+roc_bphy_cgx_cpri_mode_misc(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
+			    struct roc_bphy_cgx_cpri_mode_misc *mode)
+{
+	uint64_t scr1, scr0;
+
+	if (!(roc_model_is_cnf95xxn_a0() ||
+	      roc_model_is_cnf95xxn_a1() ||
+	      roc_model_is_cnf95xxn_b0()))
+		return -ENOTSUP;
+
+	if (!roc_cgx)
+		return -EINVAL;
+
+	if (!roc_bphy_cgx_lmac_exists(roc_cgx, lmac))
+		return -ENODEV;
+
+	if (!mode)
+		return -EINVAL;
+
+	scr1 = FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_CPRI_MISC) |
+	       FIELD_PREP(SCR1_CPRI_MODE_MISC_ARGS_GSERC_IDX,
+			  mode->gserc_idx) |
+	       FIELD_PREP(SCR1_CPRI_MODE_MISC_ARGS_LANE_IDX,
+			  mode->lane_idx) |
+	       FIELD_PREP(SCR1_CPRI_MODE_MISC_ARGS_FLAGS, mode->flags);
+
+	return roc_bphy_cgx_intf_req(roc_cgx, lmac, scr1, &scr0);
 }

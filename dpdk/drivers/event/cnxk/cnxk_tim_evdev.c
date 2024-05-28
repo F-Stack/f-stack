@@ -2,10 +2,13 @@
  * Copyright(C) 2021 Marvell.
  */
 
+#include <math.h>
+
 #include "cnxk_eventdev.h"
 #include "cnxk_tim_evdev.h"
 
 static struct event_timer_adapter_ops cnxk_tim_ops;
+static cnxk_sso_set_priv_mem_t sso_set_priv_mem_fn;
 
 static int
 cnxk_tim_chnk_pool_create(struct cnxk_tim_ring *tim_ring,
@@ -56,7 +59,7 @@ cnxk_tim_chnk_pool_create(struct cnxk_tim_ring *tim_ring,
 		}
 		tim_ring->aura = roc_npa_aura_handle_to_aura(
 			tim_ring->chunk_pool->pool_id);
-		tim_ring->ena_dfb = 0;
+		tim_ring->ena_dfb = tim_ring->ena_periodic ? 1 : 0;
 	} else {
 		tim_ring->chunk_pool = rte_mempool_create(
 			pool_name, tim_ring->nb_chunks, tim_ring->chunk_sz,
@@ -110,7 +113,9 @@ cnxk_tim_ring_info_get(const struct rte_event_timer_adapter *adptr,
 	struct cnxk_tim_ring *tim_ring = adptr->data->adapter_priv;
 
 	adptr_info->max_tmo_ns = tim_ring->max_tout;
-	adptr_info->min_resolution_ns = tim_ring->tck_nsec;
+	adptr_info->min_resolution_ns = tim_ring->ena_periodic ?
+						tim_ring->max_tout :
+						tim_ring->tck_nsec;
 	rte_memcpy(&adptr_info->conf, &adptr->data->conf,
 		   sizeof(struct rte_event_timer_adapter_conf));
 }
@@ -120,7 +125,10 @@ cnxk_tim_ring_create(struct rte_event_timer_adapter *adptr)
 {
 	struct rte_event_timer_adapter_conf *rcfg = &adptr->data->conf;
 	struct cnxk_tim_evdev *dev = cnxk_tim_priv_get();
+	uint64_t min_intvl_ns, min_intvl_cyc;
 	struct cnxk_tim_ring *tim_ring;
+	enum roc_tim_clk_src clk_src;
+	uint64_t clk_freq = 0;
 	int i, rc;
 
 	if (dev == NULL)
@@ -139,31 +147,69 @@ cnxk_tim_ring_create(struct rte_event_timer_adapter *adptr)
 		goto tim_ring_free;
 	}
 
-	if (NSEC2TICK(RTE_ALIGN_MUL_CEIL(
-			      rcfg->timer_tick_ns,
-			      cnxk_tim_min_resolution_ns(cnxk_tim_cntfrq())),
-		      cnxk_tim_cntfrq()) <
-	    cnxk_tim_min_tmo_ticks(cnxk_tim_cntfrq())) {
-		if (rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_ADJUST_RES)
-			rcfg->timer_tick_ns = TICK2NSEC(
-				cnxk_tim_min_tmo_ticks(cnxk_tim_cntfrq()),
-				cnxk_tim_cntfrq());
-		else {
+	clk_src = cnxk_tim_convert_clk_src(rcfg->clk_src);
+	if (clk_src == ROC_TIM_CLK_SRC_INVALID) {
+		plt_err("Invalid clock source");
+		goto tim_hw_free;
+	}
+
+	rc = cnxk_tim_get_clk_freq(dev, clk_src, &clk_freq);
+	if (rc < 0) {
+		plt_err("Failed to get clock frequency");
+		goto tim_hw_free;
+	}
+
+	rc = roc_tim_lf_interval(&dev->tim, clk_src, clk_freq, &min_intvl_ns,
+				 &min_intvl_cyc);
+	if (rc < 0) {
+		plt_err("Failed to get min interval details");
+		goto tim_hw_free;
+	}
+
+	if (rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_PERIODIC) {
+		/* Use 2 buckets to avoid contention */
+		rcfg->timer_tick_ns /= 2;
+		tim_ring->ena_periodic = 1;
+	}
+
+	if (rcfg->timer_tick_ns < min_intvl_ns) {
+		if (rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_ADJUST_RES) {
+			rcfg->timer_tick_ns = min_intvl_ns;
+		} else {
 			rc = -ERANGE;
 			goto tim_hw_free;
 		}
 	}
+
+	if (tim_ring->ena_periodic)
+		rcfg->max_tmo_ns = rcfg->timer_tick_ns * 2;
+
+	if (rcfg->timer_tick_ns > rcfg->max_tmo_ns) {
+		plt_err("Max timeout to too high");
+		rc = -ERANGE;
+		goto tim_hw_free;
+	}
+
+	tim_ring->tck_int = round((double)rcfg->timer_tick_ns /
+				  cnxk_tim_ns_per_tck(clk_freq));
+	tim_ring->tck_nsec =
+		ceil(tim_ring->tck_int * cnxk_tim_ns_per_tck(clk_freq));
+
 	tim_ring->ring_id = adptr->data->id;
-	tim_ring->clk_src = (int)rcfg->clk_src;
-	tim_ring->tck_nsec = RTE_ALIGN_MUL_CEIL(
-		rcfg->timer_tick_ns,
-		cnxk_tim_min_resolution_ns(cnxk_tim_cntfrq()));
+	tim_ring->clk_src = clk_src;
 	tim_ring->max_tout = rcfg->max_tmo_ns;
 	tim_ring->nb_bkts = (tim_ring->max_tout / tim_ring->tck_nsec);
 	tim_ring->nb_timers = rcfg->nb_timers;
 	tim_ring->chunk_sz = dev->chunk_sz;
 	tim_ring->disable_npa = dev->disable_npa;
 	tim_ring->enable_stats = dev->enable_stats;
+	tim_ring->base = roc_tim_lf_base_get(&dev->tim, tim_ring->ring_id);
+	tim_ring->tbase = cnxk_tim_get_tick_base(clk_src, tim_ring->base);
+
+	if (roc_model_is_cn9k() && (tim_ring->clk_src == ROC_TIM_CLK_SRC_GTI))
+		tim_ring->tick_fn = cnxk_tim_cntvct;
+	else
+		tim_ring->tick_fn = cnxk_tim_tick_read;
 
 	for (i = 0; i < dev->ring_ctl_cnt; i++) {
 		struct cnxk_tim_ctl *ring_ctl = &dev->ring_ctl_data[i];
@@ -201,17 +247,15 @@ cnxk_tim_ring_create(struct rte_event_timer_adapter *adptr)
 	if (rc < 0)
 		goto tim_bkt_free;
 
-	rc = roc_tim_lf_config(
-		&dev->tim, tim_ring->ring_id,
-		cnxk_tim_convert_clk_src(tim_ring->clk_src), 0, 0,
-		tim_ring->nb_bkts, tim_ring->chunk_sz,
-		NSEC2TICK(tim_ring->tck_nsec, cnxk_tim_cntfrq()));
+	rc = roc_tim_lf_config(&dev->tim, tim_ring->ring_id, clk_src,
+			       tim_ring->ena_periodic, tim_ring->ena_dfb,
+			       tim_ring->nb_bkts, tim_ring->chunk_sz,
+			       tim_ring->tck_int, tim_ring->tck_nsec, clk_freq);
 	if (rc < 0) {
 		plt_err("Failed to configure timer ring");
 		goto tim_chnk_free;
 	}
 
-	tim_ring->base = roc_tim_lf_base_get(&dev->tim, tim_ring->ring_id);
 	plt_write64((uint64_t)tim_ring->bkt, tim_ring->base + TIM_LF_RING_BASE);
 	plt_write64(tim_ring->aura, tim_ring->base + TIM_LF_RING_AURA);
 
@@ -222,6 +266,7 @@ cnxk_tim_ring_create(struct rte_event_timer_adapter *adptr)
 	cnxk_sso_updt_xae_cnt(cnxk_sso_pmd_priv(dev->event_dev), tim_ring,
 			      RTE_EVENT_TYPE_TIMER);
 	cnxk_sso_xae_reconfigure(dev->event_dev);
+	sso_set_priv_mem_fn(dev->event_dev, NULL, 0);
 
 	plt_tim_dbg(
 		"Total memory used %" PRIu64 "MB\n",
@@ -260,31 +305,6 @@ cnxk_tim_ring_free(struct rte_event_timer_adapter *adptr)
 	return 0;
 }
 
-static void
-cnxk_tim_calibrate_start_tsc(struct cnxk_tim_ring *tim_ring)
-{
-#define CNXK_TIM_CALIB_ITER 1E6
-	uint32_t real_bkt, bucket;
-	int icount, ecount = 0;
-	uint64_t bkt_cyc;
-
-	for (icount = 0; icount < CNXK_TIM_CALIB_ITER; icount++) {
-		real_bkt = plt_read64(tim_ring->base + TIM_LF_RING_REL) >> 44;
-		bkt_cyc = cnxk_tim_cntvct();
-		bucket = (bkt_cyc - tim_ring->ring_start_cyc) /
-			 tim_ring->tck_int;
-		bucket = bucket % (tim_ring->nb_bkts);
-		tim_ring->ring_start_cyc =
-			bkt_cyc - (real_bkt * tim_ring->tck_int);
-		if (bucket != real_bkt)
-			ecount++;
-	}
-	tim_ring->last_updt_cyc = bkt_cyc;
-	plt_tim_dbg("Bucket mispredict %3.2f distance %d\n",
-		    100 - (((double)(icount - ecount) / (double)icount) * 100),
-		    bucket - real_bkt);
-}
-
 static int
 cnxk_tim_ring_start(const struct rte_event_timer_adapter *adptr)
 {
@@ -300,13 +320,16 @@ cnxk_tim_ring_start(const struct rte_event_timer_adapter *adptr)
 	if (rc < 0)
 		return rc;
 
-	tim_ring->tck_int = NSEC2TICK(tim_ring->tck_nsec, cnxk_tim_cntfrq());
-	tim_ring->tot_int = tim_ring->tck_int * tim_ring->nb_bkts;
 	tim_ring->fast_div = rte_reciprocal_value_u64(tim_ring->tck_int);
 	tim_ring->fast_bkt = rte_reciprocal_value_u64(tim_ring->nb_bkts);
 
-	cnxk_tim_calibrate_start_tsc(tim_ring);
+	if (roc_model_is_cn9k() && (tim_ring->clk_src == ROC_TIM_CLK_SRC_GTI)) {
+		uint64_t start_diff;
 
+		start_diff = cnxk_tim_cntvct(tim_ring->tbase) -
+			     cnxk_tim_tick_read(tim_ring->tbase);
+		tim_ring->ring_start_cyc += start_diff;
+	}
 	return rc;
 }
 
@@ -332,7 +355,8 @@ cnxk_tim_stats_get(const struct rte_event_timer_adapter *adapter,
 		   struct rte_event_timer_adapter_stats *stats)
 {
 	struct cnxk_tim_ring *tim_ring = adapter->data->adapter_priv;
-	uint64_t bkt_cyc = cnxk_tim_cntvct() - tim_ring->ring_start_cyc;
+	uint64_t bkt_cyc =
+		tim_ring->tick_fn(tim_ring->tbase) - tim_ring->ring_start_cyc;
 
 	stats->evtim_exp_count =
 		__atomic_load_n(&tim_ring->arm_cnt, __ATOMIC_RELAXED);
@@ -353,9 +377,11 @@ cnxk_tim_stats_reset(const struct rte_event_timer_adapter *adapter)
 
 int
 cnxk_tim_caps_get(const struct rte_eventdev *evdev, uint64_t flags,
-		  uint32_t *caps, const struct event_timer_adapter_ops **ops)
+		  uint32_t *caps, const struct event_timer_adapter_ops **ops,
+		  cnxk_sso_set_priv_mem_t priv_mem_fn)
 {
 	struct cnxk_tim_evdev *dev = cnxk_tim_priv_get();
+	struct cnxk_tim_ring *tim_ring;
 
 	RTE_SET_USED(flags);
 
@@ -367,6 +393,7 @@ cnxk_tim_caps_get(const struct rte_eventdev *evdev, uint64_t flags,
 	cnxk_tim_ops.start = cnxk_tim_ring_start;
 	cnxk_tim_ops.stop = cnxk_tim_ring_stop;
 	cnxk_tim_ops.get_info = cnxk_tim_ring_info_get;
+	sso_set_priv_mem_fn = priv_mem_fn;
 
 	if (dev->enable_stats) {
 		cnxk_tim_ops.stats_get = cnxk_tim_stats_get;
@@ -375,7 +402,14 @@ cnxk_tim_caps_get(const struct rte_eventdev *evdev, uint64_t flags,
 
 	/* Store evdev pointer for later use. */
 	dev->event_dev = (struct rte_eventdev *)(uintptr_t)evdev;
-	*caps = RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT;
+	*caps = RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT |
+		RTE_EVENT_TIMER_ADAPTER_CAP_PERIODIC;
+
+	tim_ring = ((struct rte_event_timer_adapter_data
+			     *)((char *)caps - offsetof(struct rte_event_timer_adapter_data, caps)))
+			   ->adapter_priv;
+	if (tim_ring != NULL && rte_eal_process_type() == RTE_PROC_SECONDARY)
+		cnxk_tim_set_fp_ops(tim_ring);
 	*ops = &cnxk_tim_ops;
 
 	return 0;
@@ -428,11 +462,16 @@ cnxk_tim_parse_ring_ctl_list(const char *value, void *opaque)
 	char *end = NULL;
 	char *f = s;
 
+	if (s == NULL || !strlen(s))
+		goto free;
+
 	while (*s) {
 		if (*s == '[')
 			start = s;
 		else if (*s == ']')
 			end = s;
+		else
+			continue;
 
 		if (start && start < end) {
 			*end = 0;
@@ -443,6 +482,7 @@ cnxk_tim_parse_ring_ctl_list(const char *value, void *opaque)
 		s++;
 	}
 
+free:
 	free(f);
 }
 
@@ -455,6 +495,44 @@ cnxk_tim_parse_kvargs_dict(const char *key, const char *value, void *opaque)
 	 * isn't allowed. 0 represents default.
 	 */
 	cnxk_tim_parse_ring_ctl_list(value, opaque);
+
+	return 0;
+}
+
+static void
+cnxk_tim_parse_clk_list(const char *value, void *opaque)
+{
+	enum roc_tim_clk_src src[] = {ROC_TIM_CLK_SRC_GPIO, ROC_TIM_CLK_SRC_PTP,
+				      ROC_TIM_CLK_SRC_SYNCE,
+				      ROC_TIM_CLK_SRC_INVALID};
+	struct cnxk_tim_evdev *dev = opaque;
+	char *str = strdup(value);
+	char *tok;
+	int i = 0;
+
+	if (str == NULL || !strlen(str))
+		goto free;
+
+	tok = strtok(str, "-");
+	while (tok != NULL && src[i] != ROC_TIM_CLK_SRC_INVALID) {
+		dev->ext_clk_freq[src[i]] = strtoull(tok, NULL, 10);
+		tok = strtok(NULL, "-");
+		i++;
+	}
+
+free:
+	free(str);
+}
+
+static int
+cnxk_tim_parse_kvargs_dsv(const char *key, const char *value, void *opaque)
+{
+	RTE_SET_USED(key);
+
+	/* DSV format GPIO-PTP-SYNCE-BTS use '-' as ','
+	 * isn't allowed. 0 represents default.
+	 */
+	cnxk_tim_parse_clk_list(value, opaque);
 
 	return 0;
 }
@@ -481,6 +559,8 @@ cnxk_tim_parse_devargs(struct rte_devargs *devargs, struct cnxk_tim_evdev *dev)
 			   &dev->min_ring_cnt);
 	rte_kvargs_process(kvlist, CNXK_TIM_RING_CTL,
 			   &cnxk_tim_parse_kvargs_dict, &dev);
+	rte_kvargs_process(kvlist, CNXK_TIM_EXT_CLK, &cnxk_tim_parse_kvargs_dsv,
+			   dev);
 
 	rte_kvargs_free(kvlist);
 }
@@ -529,7 +609,7 @@ cnxk_tim_fini(void)
 {
 	struct cnxk_tim_evdev *dev = cnxk_tim_priv_get();
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (dev == NULL || rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return;
 
 	roc_tim_fini(&dev->tim);

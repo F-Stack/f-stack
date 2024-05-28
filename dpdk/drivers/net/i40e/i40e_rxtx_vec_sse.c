@@ -595,8 +595,6 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
  /*
  * Notice:
  * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_I40E_VPMD_RX_BURST, only scan RTE_I40E_VPMD_RX_BURST
- *   numbers of DD bits
  */
 uint16_t
 i40e_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
@@ -708,9 +706,6 @@ i40e_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint64_t flags = I40E_TD_CMD;
 	uint64_t rs = I40E_TX_DESC_CMD_RS | I40E_TD_CMD;
 	int i;
-
-	/* cross rx_thresh boundary is not allowed */
-	nb_pkts = RTE_MIN(nb_pkts, txq->tx_rs_thresh);
 
 	if (txq->nb_tx_free < txq->tx_free_thresh)
 		i40e_tx_free_bufs(txq);

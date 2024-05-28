@@ -10,6 +10,7 @@
 
 #if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
 extern const struct mlx5_flow_driver_ops mlx5_flow_dv_drv_ops;
+extern const struct mlx5_flow_driver_ops mlx5_flow_hw_drv_ops;
 #endif
 
 /**
@@ -45,6 +46,7 @@ mlx5_flow_os_item_supported(int item)
 	case RTE_FLOW_ITEM_TYPE_TCP:
 	case RTE_FLOW_ITEM_TYPE_IPV6:
 	case RTE_FLOW_ITEM_TYPE_VLAN:
+	case RTE_FLOW_ITEM_TYPE_ESP:
 		return true;
 	default:
 		return false;
@@ -325,6 +327,30 @@ mlx5_flow_os_create_flow_action_default_miss(void **action)
 }
 
 /**
+ * Create flow action: send_to_kernel.
+ *
+ * @param[in] tbl
+ *   Pointer to destination root table.
+ * @param[in] priority
+ *   Priority to which traffic will arrive.
+ * @param[out] action
+ *   Pointer to a valid action on success, NULL otherwise.
+ *
+ * @return
+ *   0 on success, or -1 on failure and errno is set.
+ */
+static inline int
+mlx5_flow_os_create_flow_action_send_to_kernel(void *tbl, uint16_t priority,
+					  void **action)
+{
+	RTE_SET_USED(tbl);
+	RTE_SET_USED(priority);
+	*action = NULL;
+	rte_errno = ENOTSUP;
+	return -rte_errno;
+}
+
+/**
  * Create flow action: sampler
  *
  * @param[in] attr
@@ -425,4 +451,26 @@ int mlx5_flow_os_create_flow(void *matcher, void *match_value,
 			     size_t num_actions,
 			     void *actions[], void **flow);
 int mlx5_flow_os_destroy_flow(void *drv_flow_ptr);
+
+/**
+ * Validate ESP item.
+ *
+ * @param[in] item
+ *   Item specification.
+ * @param[in] item_flags
+ *   Bit-fields that holds the items detected until now.
+ * @param[in] target_protocol
+ *   The next protocol in the previous item.
+ * @param[out] error
+ *   Pointer to error structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_flow_os_validate_item_esp(const struct rte_flow_item *item,
+			    uint64_t item_flags,
+			    uint8_t target_protocol,
+			    struct rte_flow_error *error);
+
 #endif /* RTE_PMD_MLX5_FLOW_OS_H_ */

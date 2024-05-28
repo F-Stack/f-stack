@@ -102,8 +102,10 @@ test_large_array_element(void)
 
 	used = rte_tel_json_add_array_string(buf, sizeof(buf), used, str);
 	printf("%s: buf = '%s', expected = '%s'\n", __func__, buf, expected);
+	if (used != 0)
+		return -1;
 
-	return strlen(buf) != 0;
+	return strncmp(expected, buf, sizeof(buf));
 }
 
 static int
@@ -117,20 +119,98 @@ test_large_obj_element(void)
 
 	used = rte_tel_json_add_obj_u64(buf, sizeof(buf), used, str, 0);
 	printf("%s: buf = '%s', expected = '%s'\n", __func__, buf, expected);
+	if (used != 0)
+		return -1;
 
-	return strlen(buf) != 0;
+	return strncmp(expected, buf, sizeof(buf));
 }
+
+static int
+test_string_char_escaping(void)
+{
+	static const char str[] = "A string across\ntwo lines and \"with quotes\"!";
+	const char *expected = "\"A string across\\ntwo lines and \\\"with quotes\\\"!\"";
+	char buf[sizeof(str) + 10];
+	int used = 0;
+
+	used = rte_tel_json_str(buf, sizeof(buf), used, str);
+	printf("%s: buf = '%s', expected = '%s'\n", __func__, buf, expected);
+	if (used != (int)strlen(expected))
+		return -1;
+
+	return strncmp(expected, buf, sizeof(buf));
+}
+
+static int
+test_array_char_escaping(void)
+{
+	/* "meaning of life", with tab between first two words, '\n' at end,
+	 * and "life" in quotes, followed by "all the fish" in quotes
+	 */
+	const char *expected = "[\"meaning\\tof \\\"life\\\"\\n\",\"\\\"all the fish\\\"\"]";
+	char buf[1024];
+	int used = 0;
+
+	used = rte_tel_json_empty_array(buf, sizeof(buf), used);
+	if (used != 2 || strcmp(buf, "[]"))
+		return -1;
+
+	used = rte_tel_json_add_array_string(buf, sizeof(buf), used, "meaning\tof \"life\"\n");
+	used = rte_tel_json_add_array_string(buf, sizeof(buf), used, "\"all the fish\"");
+
+	printf("buf = '%s', expected = '%s'\n", buf, expected);
+	if (used != (int)strlen(expected))
+		return -1;
+	return strncmp(expected, buf, sizeof(buf));
+}
+
+static int
+test_obj_char_escaping(void)
+{
+	const char *expected = "{\"good\":\"Clint Eastwood\\n\","
+			"\"bad\":\"Lee\\tVan\\tCleef\","
+			"\"ugly\":\"\\rEli Wallach\"}";
+	char buf[1024];
+	int used = 0;
+
+	used = rte_tel_json_empty_obj(buf, sizeof(buf), used);
+	if (used != 2 || strcmp(buf, "{}"))
+		return -1;
+
+	used = rte_tel_json_add_obj_str(buf, sizeof(buf), used, "good", "Clint Eastwood\n");
+	used = rte_tel_json_add_obj_str(buf, sizeof(buf), used, "bad", "Lee\tVan\tCleef");
+	used = rte_tel_json_add_obj_str(buf, sizeof(buf), used, "ugly", "\rEli Wallach");
+
+	printf("buf = '%s', expected = '%s'\n", buf, expected);
+	if (used != (int)strlen(expected))
+		return -1;
+	return strncmp(expected, buf, sizeof(buf));
+}
+
+typedef int (*test_fn)(void);
 
 static int
 test_telemetry_json(void)
 {
-	if (test_basic_array() < 0 ||
-			test_basic_obj() < 0 ||
-			test_overflow_array() < 0 ||
-			test_overflow_obj() < 0 ||
-			test_large_array_element() < 0 ||
-			test_large_obj_element() < 0)
-		return -1;
+	unsigned int i;
+	test_fn fns[] = {
+			test_basic_array,
+			test_basic_obj,
+			test_overflow_array,
+			test_overflow_obj,
+			test_large_array_element,
+			test_large_obj_element,
+			test_string_char_escaping,
+			test_array_char_escaping,
+			test_obj_char_escaping
+	};
+	for (i = 0; i < RTE_DIM(fns); i++)
+		if (fns[i]() == 0)
+			printf("OK\n");
+		else {
+			printf("ERROR\n");
+			return -1;
+		}
 	return 0;
 }
 

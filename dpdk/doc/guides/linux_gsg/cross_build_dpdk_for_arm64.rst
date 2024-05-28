@@ -35,13 +35,14 @@ NUMA is required by most modern machines, not needed for non-NUMA architectures.
    git checkout v2.0.13 -b v2.0.13
    ./autogen.sh
    autoconf -i
-   ./configure --host=aarch64-linux-gnu CC=<compiler> --prefix=<numa install dir>
+   ./configure --host=aarch64-linux-gnu CC=aarch64-none-linux-gnu-gcc --prefix=<numa install dir>
    make install
 
 .. note::
 
-   The compiler above can be either aarch64-linux-gnu-gcc or clang.
-   See below for information on how to get specific compilers.
+   The compiler is ``aarch64-none-linux-gnu-gcc`` if you download GCC
+   using the below guide. If you're using a different compiler,
+   make sure you're using the proper executable name.
 
 The numa header files and lib file is generated in the include and lib folder
 respectively under ``<numa install dir>``.
@@ -98,10 +99,6 @@ For aarch32::
 Augment the GNU toolchain with NUMA support
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. note::
-
-   This way is optional, an alternative is to use extra CFLAGS and LDFLAGS.
-
 Copy the NUMA header files and lib to the cross compiler's directories:
 
 .. code-block:: console
@@ -110,24 +107,79 @@ Copy the NUMA header files and lib to the cross compiler's directories:
    cp <numa_install_dir>/lib/libnuma.a <cross_install_dir>/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/lib/gcc/aarch64-none-linux-gnu/9.2.1/
    cp <numa_install_dir>/lib/libnuma.so <cross_install_dir>/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/lib/gcc/aarch64-none-linux-gnu/9.2.1/
 
+.. note::
+
+   Using LDFLAGS and CFLAGS is not a viable alternative to copying the files.
+   The Meson docs say it is not recommended, as there are many caveats
+   to their use with Meson, especially when rebuilding the project.
+   A viable alternative would be to use the ``c_args`` and ``c_link_args``
+   options with Meson 0.51.0 and higher:
+
+   .. code-block:: console
+
+      -Dc_args=-I<numa_install_dir>/include -Dc_link_args=-L<numa_install_dir>/lib
+
+For Meson versions lower than 0.51.0, the ``c_args`` and ``c_link_args``
+options do not apply to cross compilation.
+However, the compiler/linker flags may be added to cross files under [properties]:
+
+.. code-block:: console
+
+   c_args = ['-I<numa_install_dir>/include']
+   c_link_args = ['-L<numa_install_dir>/lib']
+
 Cross Compiling DPDK with GNU toolchain using Meson
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. note::
+
+   The names of GCC binaries in cross files differ from the downloaded ones,
+   which have an extra ``-none-`` in their name.
+   Please modify the cross file binaries accordingly
+   when using the downloaded cross compilers.
+
+   An example cross file with modified names and added NUMA paths
+   would look like this:
+
+   .. code-block:: console
+
+      [binaries]
+      c = 'aarch64-none-linux-gnu-gcc'
+      cpp = 'aarch64-none-linux-gnu-cpp'
+      ar = 'aarch64-none-linux-gnu-gcc-ar'
+      strip = 'aarch64-none-linux-gnu-strip'
+      pkgconfig = 'aarch64-linux-gnu-pkg-config' # the downloaded binaries
+         # do not contain a pkgconfig binary, so it is not modified
+      pcap-config = ''
+
+      [host_machine]
+      system = 'linux'
+      cpu_family = 'aarch64'
+      cpu = 'armv8-a'
+      endian = 'little'
+
+      [properties]
+      # Generate binaries that are portable across all Armv8 machines
+      platform = 'generic'
+      c_args = ['-I<numa_install_dir>/include']  # replace <numa_install_dir>
+      c_link_args = ['-L<numa_install_dir>/lib'] # with your path
 
 To cross-compile DPDK on a desired target machine we can use the following
 command::
 
-   meson cross-build --cross-file <target_machine_configuration>
+   meson setup cross-build --cross-file <target_machine_configuration>
    ninja -C cross-build
 
 For example if the target machine is aarch64 we can use the following
-command::
+command, provided the cross file has been modified accordingly::
 
-   meson aarch64-build-gcc --cross-file config/arm/arm64_armv8_linux_gcc
+   meson setup aarch64-build-gcc --cross-file config/arm/arm64_armv8_linux_gcc
    ninja -C aarch64-build-gcc
 
-If the target machine is aarch32 we can use the following command::
+If the target machine is aarch32 we can use the following command,
+provided the cross file has been modified accordingly::
 
-   meson aarch32-build --cross-file config/arm/arm32_armv8_linux_gcc
+   meson setup aarch32-build --cross-file config/arm/arm32_armv8_linux_gcc
    ninja -C aarch32-build
 
 LLVM/Clang toolchain
@@ -178,7 +230,7 @@ Assuming the file with augmented ``c_args`` and ``c_link_args``
 is named ``arm64_armv8_linux_clang``,
 use the following command to cross-compile DPDK for the target machine::
 
-   meson aarch64-build-clang --cross-file config/arm/arm64_armv8_linux_clang
+   meson setup aarch64-build-clang --cross-file config/arm/arm64_armv8_linux_clang
    ninja -C aarch64-build-clang
 
 Cross Compiling DPDK with LLVM/Clang toolchain using Meson on Ubuntu 18.04
@@ -195,7 +247,7 @@ On Ubuntu 18.04, these packages are needed:
 
 Use the following command to cross-compile DPDK for the target machine::
 
-   meson aarch64-build-clang --cross-file config/arm/arm64_armv8_linux_clang_ubuntu1804
+   meson setup aarch64-build-clang --cross-file config/arm/arm64_armv8_linux_clang_ubuntu1804
    ninja -C aarch64-build-clang
 
 Building for an aarch64 SoC on an aarch64 build machine
@@ -206,7 +258,7 @@ you don't need a separate cross toolchain, just a different set of
 configuration options. To build for an aarch64 SoC, use the -Dplatform meson
 option::
 
-   meson soc_build -Dplatform=<target_soc>
+   meson setup soc_build -Dplatform=<target_soc>
 
 Substitute <target_soc> with one of the supported SoCs
 

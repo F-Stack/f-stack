@@ -2,12 +2,10 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
-#include <inttypes.h>
+#include <errno.h>
 #include <stdio.h>
 #include <math.h>
 
-#include <rte_common.h>
-#include <rte_log.h>
 #include <rte_cycles.h>
 
 #include "rte_meter.h"

@@ -10,7 +10,7 @@
 #include <rte_malloc.h>
 #include <rte_log.h>
 #include <rte_errno.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_pci.h>
 #include <rte_regexdev_driver.h>
 #include <rte_mbuf.h>
@@ -41,6 +41,39 @@
 /* In WQE set mode, the pi should be quarter of the MLX5_REGEX_MAX_WQE_INDEX. */
 #define MLX5_REGEX_UMR_QP_PI_IDX(pi, ops) \
 	(((pi) + (ops)) & (MLX5_REGEX_MAX_WQE_INDEX >> 2))
+#ifdef RTE_LIBRTE_MLX5_DEBUG
+#define MLX5_REGEX_DEBUG 0
+#endif
+#ifdef HAVE_MLX5_UMR_IMKEY
+static uint16_t max_nb_segs = MLX5_REGEX_MAX_KLM_NUM;
+#else
+static uint16_t max_nb_segs = 1;
+#endif
+
+uint16_t
+mlx5_regexdev_max_segs_get(void)
+{
+	return max_nb_segs;
+}
+
+#ifdef MLX5_REGEX_DEBUG
+static inline uint16_t
+validate_ops(struct rte_regex_ops **ops, uint16_t nb_ops)
+{
+	uint16_t nb_left = nb_ops;
+	struct rte_mbuf *mbuf;
+
+	while (nb_left--) {
+		mbuf = ops[nb_left]->mbuf;
+		if ((mbuf->pkt_len > MLX5_RXP_MAX_JOB_LENGTH) ||
+		    (mbuf->nb_segs > max_nb_segs)) {
+			DRV_LOG(ERR, "Failed to validate regex ops");
+			return 1;
+		}
+	}
+	return 0;
+}
+#endif
 
 static inline uint32_t
 qp_size_get(struct mlx5_regex_hw_qp *qp)
@@ -125,8 +158,12 @@ __prep_one(struct mlx5_regex_priv *priv, struct mlx5_regex_hw_qp *qp_obj,
 				op->group_id2 : 0;
 	uint16_t group3 = op->req_flags & RTE_REGEX_OPS_REQ_GROUP_ID3_VALID_F ?
 				op->group_id3 : 0;
-	uint8_t control = op->req_flags &
-				RTE_REGEX_OPS_REQ_MATCH_HIGH_PRIORITY_F ? 1 : 0;
+	uint8_t control = 0x0;
+
+	if (op->req_flags & RTE_REGEX_OPS_REQ_MATCH_HIGH_PRIORITY_F)
+		control = 0x1;
+	else if (op->req_flags & RTE_REGEX_OPS_REQ_STOP_ON_MATCH_F)
+		control = 0x2;
 
 	/* For backward compatibility. */
 	if (!(op->req_flags & (RTE_REGEX_OPS_REQ_GROUP_ID0_VALID_F |
@@ -174,8 +211,8 @@ send_doorbell(struct mlx5_regex_priv *priv, struct mlx5_regex_hw_qp *qp)
 			    (MLX5_SEND_WQE_BB << (priv->has_umr ? 2 : 0)) +
 			    (priv->has_umr ? MLX5_REGEX_UMR_WQE_SIZE : 0);
 	uint8_t *wqe = (uint8_t *)(uintptr_t)qp->qp_obj.wqes + wqe_offset;
-	uint32_t actual_pi = (priv->has_umr ? (qp->db_pi * 4 + 3) : qp->db_pi) &
-			     MLX5_REGEX_MAX_WQE_INDEX;
+	uint32_t actual_pi = (priv->has_umr ? ((1 + qp->db_pi) * 4) : qp->db_pi)
+			     & MLX5_REGEX_MAX_WQE_INDEX;
 
 	/* Or the fm_ce_se instead of set, avoid the fence be cleared. */
 	((struct mlx5_wqe_ctrl_seg *)wqe)->fm_ce_se |= MLX5_WQE_CTRL_CQ_UPDATE;
@@ -375,7 +412,12 @@ mlx5_regexdev_enqueue_gga(struct rte_regexdev *dev, uint16_t qp_id,
 	struct mlx5_regex_hw_qp *qp_obj;
 	size_t hw_qpid, nb_left = nb_ops, nb_desc;
 
-	while ((hw_qpid = ffs(queue->free_qps))) {
+#ifdef MLX5_REGEX_DEBUG
+	if (validate_ops(ops, nb_ops))
+		return 0;
+#endif
+
+	while ((hw_qpid = ffsll(queue->free_qps))) {
 		hw_qpid--; /* ffs returns 1 for bit 0 */
 		qp_obj = &queue->qps[hw_qpid];
 		nb_desc = get_free(qp_obj, priv->has_umr);
@@ -384,7 +426,7 @@ mlx5_regexdev_enqueue_gga(struct rte_regexdev *dev, uint16_t qp_id,
 			if (nb_desc > nb_left)
 				nb_desc = nb_left;
 			else
-				queue->free_qps &= ~(1 << hw_qpid);
+				queue->free_qps &= ~(1ULL << hw_qpid);
 			prep_regex_umr_wqe_set(priv, queue, qp_obj, ops,
 				nb_desc);
 			send_doorbell(priv, qp_obj);
@@ -409,7 +451,12 @@ mlx5_regexdev_enqueue(struct rte_regexdev *dev, uint16_t qp_id,
 	struct mlx5_regex_hw_qp *qp_obj;
 	size_t hw_qpid, job_id, i = 0;
 
-	while ((hw_qpid = ffs(queue->free_qps))) {
+#ifdef MLX5_REGEX_DEBUG
+	if (validate_ops(ops, nb_ops))
+		return 0;
+#endif
+
+	while ((hw_qpid = ffsll(queue->free_qps))) {
 		hw_qpid--; /* ffs returns 1 for bit 0 */
 		qp_obj = &queue->qps[hw_qpid];
 		while (get_free(qp_obj, priv->has_umr)) {
@@ -423,7 +470,7 @@ mlx5_regexdev_enqueue(struct rte_regexdev *dev, uint16_t qp_id,
 				goto out;
 			}
 		}
-		queue->free_qps &= ~(1 << hw_qpid);
+		queue->free_qps &= ~(1ULL << hw_qpid);
 		send_doorbell(priv, qp_obj);
 	}
 
@@ -556,7 +603,7 @@ mlx5_regexdev_dequeue(struct rte_regexdev *dev, uint16_t qp_id,
 		cq->ci = (cq->ci + 1) & 0xffffff;
 		rte_wmb();
 		cq->cq_obj.db_rec[0] = rte_cpu_to_be_32(cq->ci);
-		queue->free_qps |= (1 << hw_qpid);
+		queue->free_qps |= (1ULL << hw_qpid);
 	}
 
 out:
@@ -595,7 +642,7 @@ setup_qps(struct mlx5_regex_priv *priv, struct mlx5_regex_qp *queue)
 				     (uintptr_t)job->output);
 			wqe += 64;
 		}
-		queue->free_qps |= 1 << hw_qpid;
+		queue->free_qps |= 1ULL << hw_qpid;
 	}
 }
 

@@ -45,6 +45,13 @@ if static_ibverbs
     ext_deps += declare_dependency(link_args:ibv_ldflags.split())
 endif
 
+libmtcr_ul_found = false
+lib = cc.find_library('mtcr_ul', required:false)
+if lib.found()
+    libmtcr_ul_found = true
+    ext_deps += lib
+endif
+
 sources += files('mlx5_nl.c')
 sources += files('mlx5_common_auxiliary.c')
 sources += files('mlx5_common_os.c')
@@ -67,11 +74,15 @@ has_member_args = [
             'struct ibv_counters_init_attr', 'comp_mask' ],
         [ 'HAVE_MLX5DV_DEVX_UAR_OFFSET', 'infiniband/mlx5dv.h',
             'struct mlx5dv_devx_uar', 'mmap_off' ],
+        [ 'HAVE_MLX5DV_FLOW_MATCHER_FT_TYPE', 'infiniband/mlx5dv.h',
+            'struct mlx5dv_flow_matcher_attr', 'ft_type' ],
 ]
 # input array for meson symbol search:
 # [ "MACRO to define if found", "header for the search",
 #   "symbol to search" ]
 has_sym_args = [
+        [ 'HAVE_IBV_RX_HASH_IPSEC_SPI', 'infiniband/verbs.h',
+            'IBV_RX_HASH_IPSEC_SPI' ],
         [ 'HAVE_IBV_RELAXED_ORDERING', 'infiniband/verbs.h',
             'IBV_ACCESS_RELAXED_ORDERING ' ],
         [ 'HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT', 'infiniband/mlx5dv.h',
@@ -202,16 +213,26 @@ has_sym_args = [
             'mlx5dv_dr_domain_allow_duplicate_rules' ],
         [ 'HAVE_MLX5_IBV_REG_MR_IOVA', 'infiniband/verbs.h',
             'ibv_reg_mr_iova' ],
+        [ 'HAVE_MLX5_IBV_IMPORT_CTX_PD_AND_MR', 'infiniband/verbs.h',
+            'ibv_import_device' ],
+        [ 'HAVE_MLX5DV_DR_ACTION_CREATE_DEST_ROOT_TABLE', 'infiniband/mlx5dv.h',
+            'mlx5dv_dr_action_create_dest_root_table' ],
+        [ 'HAVE_IBV_FORK_UNNEEDED', 'infiniband/verbs.h',
+            'ibv_is_fork_initialized'],
 ]
-config = configuration_data()
+if  libmtcr_ul_found
+    has_sym_args += [
+        [ 'HAVE_MLX5_MSTFLINT', 'mstflint/mtcr.h', 'mopen' ],
+    ]
+endif
+
 foreach arg:has_sym_args
-    config.set(arg[0], cc.has_header_symbol(arg[1], arg[2], dependencies: libs))
+    mlx5_config.set(arg[0], cc.has_header_symbol(arg[1], arg[2], dependencies: libs))
 endforeach
 foreach arg:has_member_args
     file_prefix = '#include <' + arg[1] + '>'
-    config.set(arg[0], cc.has_member(arg[2], arg[3], prefix : file_prefix, dependencies: libs))
+    mlx5_config.set(arg[0], cc.has_member(arg[2], arg[3], prefix : file_prefix, dependencies: libs))
 endforeach
-configure_file(output : 'mlx5_autoconf.h', configuration : config)
 
 # Build Glue Library
 if dlopen_ibverbs
@@ -222,6 +243,7 @@ if dlopen_ibverbs
     dlopen_install_dir = [ eal_pmd_path + '-glue' ]
     dlopen_includes = [global_inc]
     dlopen_includes += include_directories('../../../../lib/eal/include/generic')
+    dlopen_includes += include_directories('..')
     shared_lib = shared_library(
             dlopen_lib_name,
             dlopen_sources,

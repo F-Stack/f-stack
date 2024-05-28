@@ -40,11 +40,9 @@ mlx5_vdpa_event_qp_global_release(struct mlx5_vdpa_priv *priv)
 }
 
 /* Prepare all the global resources for all the event objects.*/
-static int
+int
 mlx5_vdpa_event_qp_global_prepare(struct mlx5_vdpa_priv *priv)
 {
-	if (priv->eventc)
-		return 0;
 	priv->eventc = mlx5_os_devx_create_event_channel(priv->cdev->ctx,
 			   MLX5DV_DEVX_CREATE_EVENT_CHANNEL_FLAGS_OMIT_EV_DATA);
 	if (!priv->eventc) {
@@ -87,12 +85,13 @@ mlx5_vdpa_cq_arm(struct mlx5_vdpa_priv *priv, struct mlx5_vdpa_cq *cq)
 
 static int
 mlx5_vdpa_cq_create(struct mlx5_vdpa_priv *priv, uint16_t log_desc_n,
-		    int callfd, struct mlx5_vdpa_cq *cq)
+		int callfd, struct mlx5_vdpa_virtq *virtq)
 {
 	struct mlx5_devx_cq_attr attr = {
 		.use_first_only = 1,
 		.uar_page_id = mlx5_os_get_devx_uar_page_id(priv->uar.obj),
 	};
+	struct mlx5_vdpa_cq *cq = &virtq->eqp.cq;
 	uint16_t event_nums[1] = {0};
 	int ret;
 
@@ -104,10 +103,11 @@ mlx5_vdpa_cq_create(struct mlx5_vdpa_priv *priv, uint16_t log_desc_n,
 	cq->log_desc_n = log_desc_n;
 	rte_spinlock_init(&cq->sl);
 	/* Subscribe CQ event to the event channel controlled by the driver. */
-	ret = mlx5_os_devx_subscribe_devx_event(priv->eventc,
-						cq->cq_obj.cq->obj,
-						sizeof(event_nums), event_nums,
-						(uint64_t)(uintptr_t)cq);
+	ret = mlx5_glue->devx_subscribe_devx_event(priv->eventc,
+							cq->cq_obj.cq->obj,
+						   sizeof(event_nums),
+						   event_nums,
+						   (uint64_t)(uintptr_t)virtq);
 	if (ret) {
 		DRV_LOG(ERR, "Failed to subscribe CQE event.");
 		rte_errno = errno;
@@ -139,7 +139,7 @@ mlx5_vdpa_cq_poll(struct mlx5_vdpa_cq *cq)
 		};
 		uint32_t word;
 	} last_word;
-	uint16_t next_wqe_counter = cq->cq_ci;
+	uint16_t next_wqe_counter = eqp->qp_pi;
 	uint16_t cur_wqe_counter;
 	uint16_t comp;
 
@@ -158,9 +158,10 @@ mlx5_vdpa_cq_poll(struct mlx5_vdpa_cq *cq)
 		rte_io_wmb();
 		/* Ring CQ doorbell record. */
 		cq->cq_obj.db_rec[0] = rte_cpu_to_be_32(cq->cq_ci);
+		eqp->qp_pi += comp;
 		rte_io_wmb();
 		/* Ring SW QP doorbell record. */
-		eqp->sw_qp.db_rec[0] = rte_cpu_to_be_32(cq->cq_ci + cq_size);
+		eqp->sw_qp.db_rec[0] = rte_cpu_to_be_32(eqp->qp_pi + cq_size);
 	}
 	return comp;
 }
@@ -168,13 +169,17 @@ mlx5_vdpa_cq_poll(struct mlx5_vdpa_cq *cq)
 static void
 mlx5_vdpa_arm_all_cqs(struct mlx5_vdpa_priv *priv)
 {
+	struct mlx5_vdpa_virtq *virtq;
 	struct mlx5_vdpa_cq *cq;
 	int i;
 
 	for (i = 0; i < priv->nr_virtqs; i++) {
+		virtq = &priv->virtqs[i];
+		pthread_mutex_lock(&virtq->virtq_lock);
 		cq = &priv->virtqs[i].eqp.cq;
 		if (cq->cq_obj.cq && !cq->armed)
 			mlx5_vdpa_cq_arm(priv, cq);
+		pthread_mutex_unlock(&virtq->virtq_lock);
 	}
 }
 
@@ -221,21 +226,45 @@ mlx5_vdpa_queue_complete(struct mlx5_vdpa_cq *cq)
 static uint32_t
 mlx5_vdpa_queues_complete(struct mlx5_vdpa_priv *priv)
 {
-	int i;
+	struct mlx5_vdpa_virtq *virtq;
+	struct mlx5_vdpa_cq *cq;
 	uint32_t max = 0;
+	uint32_t comp;
+	int i;
 
 	for (i = 0; i < priv->nr_virtqs; i++) {
-		struct mlx5_vdpa_cq *cq = &priv->virtqs[i].eqp.cq;
-		uint32_t comp = mlx5_vdpa_queue_complete(cq);
-
+		virtq = &priv->virtqs[i];
+		pthread_mutex_lock(&virtq->virtq_lock);
+		cq = &virtq->eqp.cq;
+		comp = mlx5_vdpa_queue_complete(cq);
+		pthread_mutex_unlock(&virtq->virtq_lock);
 		if (comp > max)
 			max = comp;
 	}
 	return max;
 }
 
+void
+mlx5_vdpa_drain_cq(struct mlx5_vdpa_priv *priv)
+{
+	unsigned int i;
+
+	for (i = 0; i < priv->caps.max_num_virtio_queues; i++) {
+		struct mlx5_vdpa_cq *cq = &priv->virtqs[i].eqp.cq;
+
+		mlx5_vdpa_queue_complete(cq);
+		if (cq->cq_obj.cq) {
+			cq->cq_obj.cqes[0].wqe_counter =
+				rte_cpu_to_be_16(UINT16_MAX);
+			priv->virtqs[i].eqp.qp_pi = 0;
+			if (!cq->armed)
+				mlx5_vdpa_cq_arm(priv, cq);
+		}
+	}
+}
+
 /* Wait on all CQs channel for completion event. */
-static struct mlx5_vdpa_cq *
+static struct mlx5_vdpa_virtq *
 mlx5_vdpa_event_wait(struct mlx5_vdpa_priv *priv __rte_unused)
 {
 #ifdef HAVE_IBV_DEVX_EVENT
@@ -247,7 +276,8 @@ mlx5_vdpa_event_wait(struct mlx5_vdpa_priv *priv __rte_unused)
 					    sizeof(out.buf));
 
 	if (ret >= 0)
-		return (struct mlx5_vdpa_cq *)(uintptr_t)out.event_resp.cookie;
+		return (struct mlx5_vdpa_virtq *)
+				(uintptr_t)out.event_resp.cookie;
 	DRV_LOG(INFO, "Got error in devx_get_event, ret = %d, errno = %d.",
 		ret, errno);
 #endif
@@ -258,7 +288,7 @@ static void *
 mlx5_vdpa_event_handle(void *arg)
 {
 	struct mlx5_vdpa_priv *priv = arg;
-	struct mlx5_vdpa_cq *cq;
+	struct mlx5_vdpa_virtq *virtq;
 	uint32_t max;
 
 	switch (priv->event_mode) {
@@ -266,7 +296,6 @@ mlx5_vdpa_event_handle(void *arg)
 	case MLX5_VDPA_EVENT_MODE_FIXED_TIMER:
 		priv->timer_delay_us = priv->event_us;
 		while (1) {
-			pthread_mutex_lock(&priv->vq_config_lock);
 			max = mlx5_vdpa_queues_complete(priv);
 			if (max == 0 && priv->no_traffic_counter++ >=
 			    priv->no_traffic_max) {
@@ -274,32 +303,37 @@ mlx5_vdpa_event_handle(void *arg)
 					priv->vdev->device->name);
 				mlx5_vdpa_arm_all_cqs(priv);
 				do {
-					pthread_mutex_unlock
-							(&priv->vq_config_lock);
-					cq = mlx5_vdpa_event_wait(priv);
-					pthread_mutex_lock
-							(&priv->vq_config_lock);
-					if (cq == NULL ||
-					       mlx5_vdpa_queue_complete(cq) > 0)
+					virtq = mlx5_vdpa_event_wait(priv);
+					if (virtq == NULL)
 						break;
+					pthread_mutex_lock(
+						&virtq->virtq_lock);
+					if (mlx5_vdpa_queue_complete(
+						&virtq->eqp.cq) > 0) {
+						pthread_mutex_unlock(
+							&virtq->virtq_lock);
+						break;
+					}
+					pthread_mutex_unlock(
+						&virtq->virtq_lock);
 				} while (1);
 				priv->timer_delay_us = priv->event_us;
 				priv->no_traffic_counter = 0;
 			} else if (max != 0) {
 				priv->no_traffic_counter = 0;
 			}
-			pthread_mutex_unlock(&priv->vq_config_lock);
 			mlx5_vdpa_timer_sleep(priv, max);
 		}
 		return NULL;
 	case MLX5_VDPA_EVENT_MODE_ONLY_INTERRUPT:
 		do {
-			cq = mlx5_vdpa_event_wait(priv);
-			if (cq != NULL) {
-				pthread_mutex_lock(&priv->vq_config_lock);
-				if (mlx5_vdpa_queue_complete(cq) > 0)
-					mlx5_vdpa_cq_arm(priv, cq);
-				pthread_mutex_unlock(&priv->vq_config_lock);
+			virtq = mlx5_vdpa_event_wait(priv);
+			if (virtq != NULL) {
+				pthread_mutex_lock(&virtq->virtq_lock);
+				if (mlx5_vdpa_queue_complete(
+					&virtq->eqp.cq) > 0)
+					mlx5_vdpa_cq_arm(priv, &virtq->eqp.cq);
+				pthread_mutex_unlock(&virtq->virtq_lock);
 			}
 		} while (1);
 		return NULL;
@@ -321,7 +355,6 @@ mlx5_vdpa_err_interrupt_handler(void *cb_arg __rte_unused)
 	struct mlx5_vdpa_virtq *virtq;
 	uint64_t sec;
 
-	pthread_mutex_lock(&priv->vq_config_lock);
 	while (mlx5_glue->devx_get_event(priv->err_chnl, &out.event_resp,
 					 sizeof(out.buf)) >=
 				       (ssize_t)sizeof(out.event_resp.cookie)) {
@@ -333,11 +366,12 @@ mlx5_vdpa_err_interrupt_handler(void *cb_arg __rte_unused)
 			continue;
 		}
 		virtq = &priv->virtqs[vq_index];
+		pthread_mutex_lock(&virtq->virtq_lock);
 		if (!virtq->enable || virtq->version != version)
-			continue;
+			goto unlock;
 		if (rte_rdtsc() / rte_get_tsc_hz() < MLX5_VDPA_ERROR_TIME_SEC)
-			continue;
-		virtq->stopped = true;
+			goto unlock;
+		virtq->stopped = 1;
 		/* Query error info. */
 		if (mlx5_vdpa_virtq_query(priv, vq_index))
 			goto log;
@@ -366,8 +400,9 @@ log:
 		for (i = 1; i < RTE_DIM(virtq->err_time); i++)
 			virtq->err_time[i - 1] = virtq->err_time[i];
 		virtq->err_time[RTE_DIM(virtq->err_time) - 1] = rte_rdtsc();
+unlock:
+		pthread_mutex_unlock(&virtq->virtq_lock);
 	}
-	pthread_mutex_unlock(&priv->vq_config_lock);
 #endif
 }
 
@@ -389,22 +424,30 @@ mlx5_vdpa_err_event_setup(struct mlx5_vdpa_priv *priv)
 	flags = fcntl(priv->err_chnl->fd, F_GETFL);
 	ret = fcntl(priv->err_chnl->fd, F_SETFL, flags | O_NONBLOCK);
 	if (ret) {
+		rte_errno = errno;
 		DRV_LOG(ERR, "Failed to change device event channel FD.");
 		goto error;
 	}
-
+	priv->err_intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+	if (priv->err_intr_handle == NULL) {
+		DRV_LOG(ERR, "Fail to allocate intr_handle");
+		goto error;
+	}
 	if (rte_intr_fd_set(priv->err_intr_handle, priv->err_chnl->fd))
 		goto error;
 
 	if (rte_intr_type_set(priv->err_intr_handle, RTE_INTR_HANDLE_EXT))
 		goto error;
 
-	if (rte_intr_callback_register(priv->err_intr_handle,
-				       mlx5_vdpa_err_interrupt_handler,
-				       priv)) {
+	ret = rte_intr_callback_register(priv->err_intr_handle,
+					 mlx5_vdpa_err_interrupt_handler,
+					 priv);
+	if (ret != 0) {
 		rte_intr_fd_set(priv->err_intr_handle, 0);
 		DRV_LOG(ERR, "Failed to register error interrupt for device %d.",
 			priv->vid);
+		rte_errno = -ret;
 		goto error;
 	} else {
 		DRV_LOG(DEBUG, "Registered error interrupt for device%d.",
@@ -453,6 +496,7 @@ mlx5_vdpa_err_event_unset(struct mlx5_vdpa_priv *priv)
 		mlx5_glue->devx_destroy_event_channel(priv->err_chnl);
 		priv->err_chnl = NULL;
 	}
+	rte_intr_instance_free(priv->err_intr_handle);
 }
 
 int
@@ -464,7 +508,7 @@ mlx5_vdpa_cqe_event_setup(struct mlx5_vdpa_priv *priv)
 	pthread_attr_t attr;
 	char name[16];
 	const struct sched_param sp = {
-		.sched_priority = sched_get_priority_max(SCHED_RR),
+		.sched_priority = sched_get_priority_max(SCHED_RR) - 1,
 	};
 
 	if (!priv->eventc)
@@ -516,11 +560,18 @@ out:
 void
 mlx5_vdpa_cqe_event_unset(struct mlx5_vdpa_priv *priv)
 {
+	struct mlx5_vdpa_virtq *virtq;
 	void *status;
+	int i;
 
 	if (priv->timer_tid) {
 		pthread_cancel(priv->timer_tid);
 		pthread_join(priv->timer_tid, &status);
+		/* The mutex may stay locked after event thread cancel, initiate it. */
+		for (i = 0; i < priv->nr_virtqs; i++) {
+			virtq = &priv->virtqs[i];
+			pthread_mutex_init(&virtq->virtq_lock, NULL);
+		}
 	}
 	priv->timer_tid = 0;
 }
@@ -578,16 +629,45 @@ mlx5_vdpa_qps2rts(struct mlx5_vdpa_event_qp *eqp)
 }
 
 int
-mlx5_vdpa_event_qp_create(struct mlx5_vdpa_priv *priv, uint16_t desc_n,
-			  int callfd, struct mlx5_vdpa_event_qp *eqp)
+mlx5_vdpa_qps2rst2rts(struct mlx5_vdpa_event_qp *eqp)
 {
+	if (mlx5_devx_cmd_modify_qp_state(eqp->fw_qp, MLX5_CMD_OP_QP_2RST,
+					  eqp->sw_qp.qp->id)) {
+		DRV_LOG(ERR, "Failed to modify FW QP to RST state(%u).",
+			rte_errno);
+		return -1;
+	}
+	if (mlx5_devx_cmd_modify_qp_state(eqp->sw_qp.qp,
+			MLX5_CMD_OP_QP_2RST, eqp->fw_qp->id)) {
+		DRV_LOG(ERR, "Failed to modify SW QP to RST state(%u).",
+			rte_errno);
+		return -1;
+	}
+	return mlx5_vdpa_qps2rts(eqp);
+}
+
+int
+mlx5_vdpa_event_qp_prepare(struct mlx5_vdpa_priv *priv, uint16_t desc_n,
+	int callfd, struct mlx5_vdpa_virtq *virtq, bool reset)
+{
+	struct mlx5_vdpa_event_qp *eqp = &virtq->eqp;
 	struct mlx5_devx_qp_attr attr = {0};
 	uint16_t log_desc_n = rte_log2_u32(desc_n);
 	uint32_t ret;
 
-	if (mlx5_vdpa_event_qp_global_prepare(priv))
-		return -1;
-	if (mlx5_vdpa_cq_create(priv, log_desc_n, callfd, &eqp->cq))
+	if (eqp->cq.cq_obj.cq != NULL && log_desc_n == eqp->cq.log_desc_n) {
+		/* Reuse existing resources. */
+		eqp->cq.callfd = callfd;
+		/* FW will set event qp to error state in q destroy. */
+		if (reset && !mlx5_vdpa_qps2rst2rts(eqp))
+			rte_write32(rte_cpu_to_be_32(RTE_BIT32(log_desc_n)),
+					&eqp->sw_qp.db_rec[0]);
+		return 0;
+	}
+	if (eqp->fw_qp)
+		mlx5_vdpa_event_qp_destroy(eqp);
+	if (mlx5_vdpa_cq_create(priv, log_desc_n, callfd, virtq) ||
+		!eqp->cq.cq_obj.cq)
 		return -1;
 	attr.pd = priv->cdev->pdn;
 	attr.ts_format =
@@ -605,19 +685,22 @@ mlx5_vdpa_event_qp_create(struct mlx5_vdpa_priv *priv, uint16_t desc_n,
 	attr.ts_format =
 		mlx5_ts_format_conv(priv->cdev->config.hca_attr.qp_ts_format);
 	ret = mlx5_devx_qp_create(priv->cdev->ctx, &(eqp->sw_qp),
-					attr.num_of_receive_wqes *
-					MLX5_WSEG_SIZE, &attr, SOCKET_ID_ANY);
+				  attr.num_of_receive_wqes * MLX5_WSEG_SIZE,
+				  &attr, SOCKET_ID_ANY);
 	if (ret) {
 		DRV_LOG(ERR, "Failed to create SW QP(%u).", rte_errno);
 		goto error;
 	}
 	if (mlx5_vdpa_qps2rts(eqp))
 		goto error;
+	eqp->qp_pi = 0;
 	/* First ringing. */
-	rte_write32(rte_cpu_to_be_32(RTE_BIT32(log_desc_n)),
+	if (eqp->sw_qp.db_rec)
+		rte_write32(rte_cpu_to_be_32(RTE_BIT32(log_desc_n)),
 			&eqp->sw_qp.db_rec[0]);
 	return 0;
 error:
 	mlx5_vdpa_event_qp_destroy(eqp);
 	return -1;
 }
+

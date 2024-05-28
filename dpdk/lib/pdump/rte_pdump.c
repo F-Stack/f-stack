@@ -2,7 +2,8 @@
  * Copyright(c) 2016-2018 Intel Corporation
  */
 
-#include <rte_memcpy.h>
+#include <stdlib.h>
+
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
@@ -133,7 +134,7 @@ pdump_copy(uint16_t port_id, uint16_t queue,
 
 	__atomic_fetch_add(&stats->accepted, d_pkts, __ATOMIC_RELAXED);
 
-	ring_enq = rte_ring_enqueue_burst(ring, (void *)dup_bufs, d_pkts, NULL);
+	ring_enq = rte_ring_enqueue_burst(ring, (void *)&dup_bufs[0], d_pkts, NULL);
 	if (unlikely(ring_enq < d_pkts)) {
 		unsigned int drops = d_pkts - ring_enq;
 
@@ -535,6 +536,12 @@ pdump_prepare_client_request(const char *device, uint16_t queue,
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct pdump_request *req = (struct pdump_request *)mp_req.param;
 	struct pdump_response *resp;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		PDUMP_LOG(ERR,
+			  "pdump enable/disable not allowed in primary process\n");
+		return -EINVAL;
+	}
 
 	memset(req, 0, sizeof(*req));
 

@@ -128,7 +128,6 @@ struct dsw_queue_flow {
 enum dsw_migration_state {
 	DSW_MIGRATION_STATE_IDLE,
 	DSW_MIGRATION_STATE_PAUSING,
-	DSW_MIGRATION_STATE_FORWARDING,
 	DSW_MIGRATION_STATE_UNPAUSING
 };
 
@@ -191,6 +190,13 @@ struct dsw_port {
 	 */
 	uint16_t paused_events_len;
 	struct rte_event paused_events[DSW_MAX_EVENTS];
+
+	uint16_t emigrating_events_len;
+	/* Buffer for not-yet-processed events pertaining to a flow
+	 * emigrating from this port. These events will be forwarded
+	 * to the target port.
+	 */
+	struct rte_event emigrating_events[DSW_MAX_EVENTS];
 
 	uint16_t seen_events_len;
 	uint16_t seen_events_idx;
@@ -277,12 +283,12 @@ int dsw_xstats_get_names(const struct rte_eventdev *dev,
 			 enum rte_event_dev_xstats_mode mode,
 			 uint8_t queue_port_id,
 			 struct rte_event_dev_xstats_name *xstats_names,
-			 unsigned int *ids, unsigned int size);
+			 uint64_t *ids, unsigned int size);
 int dsw_xstats_get(const struct rte_eventdev *dev,
 		   enum rte_event_dev_xstats_mode mode, uint8_t queue_port_id,
-		   const unsigned int ids[], uint64_t values[], unsigned int n);
+		   const uint64_t ids[], uint64_t values[], unsigned int n);
 uint64_t dsw_xstats_get_by_name(const struct rte_eventdev *dev,
-				const char *name, unsigned int *id);
+				const char *name, uint64_t *id);
 
 static inline struct dsw_evdev *
 dsw_pmd_priv(const struct rte_eventdev *eventdev)

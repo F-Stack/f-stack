@@ -14,6 +14,7 @@
 #define NIX_TX_OFFLOAD_TSO_F	      BIT(4)
 #define NIX_TX_OFFLOAD_TSTAMP_F	      BIT(5)
 #define NIX_TX_OFFLOAD_SECURITY_F     BIT(6)
+#define NIX_TX_OFFLOAD_MAX	      (NIX_TX_OFFLOAD_SECURITY_F << 1)
 
 /* Flags to control xmit_prepare function.
  * Defining it from backwards to denote its been
@@ -55,6 +56,29 @@ cn9k_nix_tx_ext_subs(const uint16_t flags)
 			   (NIX_TX_OFFLOAD_VLAN_QINQ_F | NIX_TX_OFFLOAD_TSO_F))
 				  ? 1
 				  : 0);
+}
+
+static __rte_always_inline void
+cn9k_nix_tx_skeleton(struct cn9k_eth_txq *txq, uint64_t *cmd,
+		     const uint16_t flags, const uint16_t static_sz)
+{
+	if (static_sz)
+		cmd[0] = txq->send_hdr_w0;
+	else
+		cmd[0] = (txq->send_hdr_w0 & 0xFFFFF00000000000) |
+			 ((uint64_t)(cn9k_nix_tx_ext_subs(flags) + 1) << 40);
+	cmd[1] = 0;
+
+	if (flags & NIX_TX_NEED_EXT_HDR) {
+		if (flags & NIX_TX_OFFLOAD_TSTAMP_F)
+			cmd[2] = (NIX_SUBDC_EXT << 60) | BIT_ULL(15);
+		else
+			cmd[2] = NIX_SUBDC_EXT << 60;
+		cmd[3] = 0;
+		cmd[4] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
+	} else {
+		cmd[2] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
+	}
 }
 
 static __rte_always_inline void
@@ -111,13 +135,16 @@ cn9k_nix_xmit_prepare_tso(struct rte_mbuf *m, const uint64_t flags)
 
 static __rte_always_inline void
 cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
-		      const uint64_t lso_tun_fmt)
+		      const uint64_t lso_tun_fmt, uint8_t mark_flag,
+		      uint64_t mark_fmt)
 {
+	uint8_t mark_off = 0, mark_vlan = 0, markptr = 0;
 	struct nix_send_ext_s *send_hdr_ext;
 	struct nix_send_hdr_s *send_hdr;
 	uint64_t ol_flags = 0, mask;
 	union nix_send_hdr_w1_u w1;
 	union nix_send_sg_s *sg;
+	uint16_t mark_form = 0;
 
 	send_hdr = (struct nix_send_hdr_s *)cmd;
 	if (flags & NIX_TX_NEED_EXT_HDR) {
@@ -125,7 +152,9 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 		sg = (union nix_send_sg_s *)(cmd + 4);
 		/* Clear previous markings */
 		send_hdr_ext->w0.lso = 0;
+		send_hdr_ext->w0.mark_en = 0;
 		send_hdr_ext->w1.u = 0;
+		ol_flags = m->ol_flags;
 	} else {
 		sg = (union nix_send_sg_s *)(cmd + 2);
 	}
@@ -135,11 +164,11 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 		w1.u = 0;
 	}
 
-	if (!(flags & NIX_TX_MULTI_SEG_F)) {
+	if (!(flags & NIX_TX_MULTI_SEG_F))
 		send_hdr->w0.total = m->data_len;
-		send_hdr->w0.aura =
-			roc_npa_aura_handle_to_aura(m->pool->pool_id);
-	}
+	else
+		send_hdr->w0.total = m->pkt_len;
+	send_hdr->w0.aura = roc_npa_aura_handle_to_aura(m->pool->pool_id);
 
 	/*
 	 * L3type:  2 => IPV4
@@ -221,6 +250,10 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 	}
 
 	if (flags & NIX_TX_NEED_EXT_HDR && flags & NIX_TX_OFFLOAD_VLAN_QINQ_F) {
+		const uint8_t ipv6 = !!(ol_flags & RTE_MBUF_F_TX_IPV6);
+		const uint8_t ip = !!(ol_flags & (RTE_MBUF_F_TX_IPV4 |
+						  RTE_MBUF_F_TX_IPV6));
+
 		send_hdr_ext->w1.vlan1_ins_ena = !!(ol_flags & RTE_MBUF_F_TX_VLAN);
 		/* HW will update ptr after vlan0 update */
 		send_hdr_ext->w1.vlan1_ins_ptr = 12;
@@ -230,6 +263,21 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 		/* 2B before end of l2 header */
 		send_hdr_ext->w1.vlan0_ins_ptr = 12;
 		send_hdr_ext->w1.vlan0_ins_tci = m->vlan_tci_outer;
+		/* Fill for VLAN marking only when VLAN insertion enabled */
+		mark_vlan = ((mark_flag & CNXK_TM_MARK_VLAN_DEI) &
+			     (send_hdr_ext->w1.vlan1_ins_ena ||
+			      send_hdr_ext->w1.vlan0_ins_ena));
+		/* Mask requested flags with packet data information */
+		mark_off = mark_flag & ((ip << 2) | (ip << 1) | mark_vlan);
+		mark_off = ffs(mark_off & CNXK_TM_MARK_MASK);
+
+		mark_form = (mark_fmt >> ((mark_off - !!mark_off) << 4));
+		mark_form = (mark_form >> (ipv6 << 3)) & 0xFF;
+		markptr = m->l2_len + (mark_form >> 7) - (mark_vlan << 2);
+
+		send_hdr_ext->w0.mark_en = !!mark_off;
+		send_hdr_ext->w0.markform = mark_form & 0x7F;
+		send_hdr_ext->w0.markptr = markptr;
 	}
 
 	if (flags & NIX_TX_OFFLOAD_TSO_F && (ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
@@ -286,41 +334,39 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 		/* Mark mempool object as "put" since it is freed by NIX */
 		if (!send_hdr->w0.df)
 			RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+	} else {
+		sg->seg1_size = m->data_len;
+		*(rte_iova_t *)(sg + 1) = rte_mbuf_data_iova(m);
+
+		/* NOFF is handled later for multi-seg */
 	}
 }
 
 static __rte_always_inline void
-cn9k_nix_xmit_prepare_tstamp(uint64_t *cmd, const uint64_t *send_mem_desc,
+cn9k_nix_xmit_prepare_tstamp(struct cn9k_eth_txq *txq, uint64_t *cmd,
 			     const uint64_t ol_flags, const uint16_t no_segdw,
 			     const uint16_t flags)
 {
 	if (flags & NIX_TX_OFFLOAD_TSTAMP_F) {
 		struct nix_send_mem_s *send_mem;
 		uint16_t off = (no_segdw - 1) << 1;
-		const uint8_t is_ol_tstamp = !(ol_flags & RTE_MBUF_F_TX_IEEE1588_TMST);
+		const uint8_t is_ol_tstamp =
+			!(ol_flags & RTE_MBUF_F_TX_IEEE1588_TMST);
 
 		send_mem = (struct nix_send_mem_s *)(cmd + off);
-		if (flags & NIX_TX_MULTI_SEG_F) {
-			/* Retrieving the default desc values */
-			cmd[off] = send_mem_desc[6];
 
-			/* Using compiler barrier to avoid violation of C
-			 * aliasing rules.
-			 */
-			rte_compiler_barrier();
-		}
-
-		/* Packets for which RTE_MBUF_F_TX_IEEE1588_TMST is not set, tx tstamp
+		/* Packets for which PKT_TX_IEEE1588_TMST is not set, tx tstamp
 		 * should not be recorded, hence changing the alg type to
-		 * NIX_SENDMEMALG_SET and also changing send mem addr field to
+		 * NIX_SENDMEMALG_SUB and also changing send mem addr field to
 		 * next 8 bytes as it corrupts the actual Tx tstamp registered
 		 * address.
 		 */
+		send_mem->w0.cn9k.subdc = NIX_SUBDC_MEM;
 		send_mem->w0.cn9k.alg =
-			NIX_SENDMEMALG_SETTSTMP - (is_ol_tstamp);
+			NIX_SENDMEMALG_SETTSTMP + (is_ol_tstamp << 3);
 
-		send_mem->addr = (rte_iova_t)((uint64_t *)send_mem_desc[7] +
-					      (is_ol_tstamp));
+		send_mem->addr = (rte_iova_t)(((uint64_t *)txq->ts_mem) +
+				(is_ol_tstamp));
 	}
 }
 
@@ -340,6 +386,16 @@ static __rte_always_inline void
 cn9k_nix_xmit_prep_lmt(uint64_t *cmd, void *lmt_addr, const uint32_t flags)
 {
 	roc_lmt_mov(lmt_addr, cmd, cn9k_nix_tx_ext_subs(flags));
+}
+
+static __rte_always_inline void
+cn9k_nix_sec_fc_wait_one(const struct cn9k_eth_txq *txq)
+{
+	uint64_t nb_desc = txq->cpt_desc;
+	uint64_t *fc = txq->cpt_fc;
+
+	while (nb_desc <= __atomic_load_n(fc, __ATOMIC_RELAXED))
+		;
 }
 
 static __rte_always_inline uint64_t
@@ -366,8 +422,6 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 	uint8_t off, i;
 
 	send_hdr = (struct nix_send_hdr_s *)cmd;
-	send_hdr->w0.total = m->pkt_len;
-	send_hdr->w0.aura = roc_npa_aura_handle_to_aura(m->pool->pool_id);
 
 	if (flags & NIX_TX_NEED_EXT_HDR)
 		off = 2;
@@ -375,13 +429,29 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 		off = 0;
 
 	sg = (union nix_send_sg_s *)&cmd[2 + off];
-	/* Clear sg->u header before use */
-	sg->u &= 0xFC00000000000000;
-	sg_u = sg->u;
-	slist = &cmd[3 + off];
 
-	i = 0;
-	nb_segs = m->nb_segs;
+	/* Start from second segment, first segment is already there */
+	i = 1;
+	sg_u = sg->u;
+	nb_segs = m->nb_segs - 1;
+	m_next = m->next;
+	slist = &cmd[3 + off + 1];
+
+	/* Set invert df if buffer is not to be freed by H/W */
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
+		sg_u |= (cnxk_nix_prefree_seg(m) << 55);
+		rte_io_wmb();
+	}
+
+	/* Mark mempool object as "put" since it is freed by NIX */
+#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+	if (!(sg_u & (1ULL << 55)))
+		RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+	rte_io_wmb();
+#endif
+	m = m_next;
+	if (!m)
+		goto done;
 
 	/* Fill mbuf segments */
 	do {
@@ -416,6 +486,7 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 		m = m_next;
 	} while (nb_segs);
 
+done:
 	sg->u = sg_u;
 	sg->segs = i;
 	segdw = (uint64_t *)slist - (uint64_t *)&cmd[2 + off];
@@ -465,13 +536,14 @@ cn9k_nix_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts,
 {
 	struct cn9k_eth_txq *txq = tx_queue;
 	const rte_iova_t io_addr = txq->io_addr;
-	uint64_t lso_tun_fmt = 0;
+	uint64_t lso_tun_fmt = 0, mark_fmt = 0;
 	void *lmt_addr = txq->lmt_addr;
+	uint8_t mark_flag = 0;
 	uint16_t i;
 
 	NIX_XMIT_FC_OR_RETURN(txq, pkts);
 
-	roc_lmt_mov(cmd, &txq->cmd[0], cn9k_nix_tx_ext_subs(flags));
+	cn9k_nix_tx_skeleton(txq, cmd, flags, 1);
 
 	/* Perform header writes before barrier for TSO */
 	if (flags & NIX_TX_OFFLOAD_TSO_F) {
@@ -481,6 +553,11 @@ cn9k_nix_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts,
 			cn9k_nix_xmit_prepare_tso(tx_pkts[i], flags);
 	}
 
+	if (flags & NIX_TX_OFFLOAD_VLAN_QINQ_F) {
+		mark_fmt = txq->mark_fmt;
+		mark_flag = txq->mark_flag;
+	}
+
 	/* Lets commit any changes in the packet here as no further changes
 	 * to the packet will be done unless no fast free is enabled.
 	 */
@@ -488,9 +565,10 @@ cn9k_nix_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts,
 		rte_io_wmb();
 
 	for (i = 0; i < pkts; i++) {
-		cn9k_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt);
-		cn9k_nix_xmit_prepare_tstamp(cmd, &txq->cmd[0],
-					     tx_pkts[i]->ol_flags, 4, flags);
+		cn9k_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt,
+				      mark_flag, mark_fmt);
+		cn9k_nix_xmit_prepare_tstamp(txq, cmd, tx_pkts[i]->ol_flags, 4,
+					     flags);
 		cn9k_nix_xmit_one(cmd, lmt_addr, io_addr, flags);
 	}
 
@@ -506,14 +584,15 @@ cn9k_nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 {
 	struct cn9k_eth_txq *txq = tx_queue;
 	const rte_iova_t io_addr = txq->io_addr;
-	uint64_t lso_tun_fmt = 0;
+	uint64_t lso_tun_fmt = 0, mark_fmt = 0;
 	void *lmt_addr = txq->lmt_addr;
+	uint8_t mark_flag = 0;
 	uint16_t segdw;
 	uint64_t i;
 
 	NIX_XMIT_FC_OR_RETURN(txq, pkts);
 
-	roc_lmt_mov(cmd, &txq->cmd[0], cn9k_nix_tx_ext_subs(flags));
+	cn9k_nix_tx_skeleton(txq, cmd, flags, 1);
 
 	/* Perform header writes before barrier for TSO */
 	if (flags & NIX_TX_OFFLOAD_TSO_F) {
@@ -523,6 +602,11 @@ cn9k_nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 			cn9k_nix_xmit_prepare_tso(tx_pkts[i], flags);
 	}
 
+	if (flags & NIX_TX_OFFLOAD_VLAN_QINQ_F) {
+		mark_fmt = txq->mark_fmt;
+		mark_flag = txq->mark_flag;
+	}
+
 	/* Lets commit any changes in the packet here as no further changes
 	 * to the packet will be done unless no fast free is enabled.
 	 */
@@ -530,11 +614,11 @@ cn9k_nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 		rte_io_wmb();
 
 	for (i = 0; i < pkts; i++) {
-		cn9k_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt);
+		cn9k_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt,
+				      mark_flag, mark_fmt);
 		segdw = cn9k_nix_prepare_mseg(tx_pkts[i], cmd, flags);
-		cn9k_nix_xmit_prepare_tstamp(cmd, &txq->cmd[0],
-					     tx_pkts[i]->ol_flags, segdw,
-					     flags);
+		cn9k_nix_xmit_prepare_tstamp(txq, cmd, tx_pkts[i]->ol_flags,
+					     segdw, flags);
 		cn9k_nix_xmit_mseg_one(cmd, lmt_addr, io_addr, segdw);
 	}
 
@@ -861,28 +945,34 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 	if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
 		rte_io_wmb();
 
-	senddesc01_w0 = vld1q_dup_u64(&txq->cmd[0]);
+	senddesc01_w0 = vld1q_dup_u64(&txq->send_hdr_w0);
 	senddesc23_w0 = senddesc01_w0;
+
 	senddesc01_w1 = vdupq_n_u64(0);
 	senddesc23_w1 = senddesc01_w1;
+	sgdesc01_w0 = vdupq_n_u64((NIX_SUBDC_SG << 60) | BIT_ULL(48));
+	sgdesc23_w0 = sgdesc01_w0;
 
-	/* Load command defaults into vector variables. */
 	if (flags & NIX_TX_NEED_EXT_HDR) {
-		sendext01_w0 = vld1q_dup_u64(&txq->cmd[2]);
-		sendext23_w0 = sendext01_w0;
-		sendext01_w1 = vdupq_n_u64(12 | 12U << 24);
-		sendext23_w1 = sendext01_w1;
-		sgdesc01_w0 = vld1q_dup_u64(&txq->cmd[4]);
-		sgdesc23_w0 = sgdesc01_w0;
 		if (flags & NIX_TX_OFFLOAD_TSTAMP_F) {
-			sendmem01_w0 = vld1q_dup_u64(&txq->cmd[6]);
+			sendext01_w0 = vdupq_n_u64((NIX_SUBDC_EXT << 60) |
+						   BIT_ULL(15));
+			sendmem01_w0 =
+				vdupq_n_u64((NIX_SUBDC_MEM << 60) |
+					    (NIX_SENDMEMALG_SETTSTMP << 56));
 			sendmem23_w0 = sendmem01_w0;
-			sendmem01_w1 = vld1q_dup_u64(&txq->cmd[7]);
+			sendmem01_w1 = vdupq_n_u64(txq->ts_mem);
 			sendmem23_w1 = sendmem01_w1;
+		} else {
+			sendext01_w0 = vdupq_n_u64((NIX_SUBDC_EXT << 60));
 		}
-	} else {
-		sgdesc01_w0 = vld1q_dup_u64(&txq->cmd[2]);
-		sgdesc23_w0 = sgdesc01_w0;
+		sendext23_w0 = sendext01_w0;
+
+		if (flags & NIX_TX_OFFLOAD_VLAN_QINQ_F)
+			sendext01_w1 = vdupq_n_u64(12 | 12U << 24);
+		else
+			sendext01_w1 = vdupq_n_u64(0);
+		sendext23_w1 = sendext01_w1;
 	}
 
 	for (i = 0; i < pkts; i += NIX_DESCS_PER_LOOP) {
@@ -925,14 +1015,6 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 		mbuf2 = (uint64_t *)tx_pkts[2];
 		mbuf3 = (uint64_t *)tx_pkts[3];
 
-		mbuf0 = (uint64_t *)((uintptr_t)mbuf0 +
-				     offsetof(struct rte_mbuf, buf_iova));
-		mbuf1 = (uint64_t *)((uintptr_t)mbuf1 +
-				     offsetof(struct rte_mbuf, buf_iova));
-		mbuf2 = (uint64_t *)((uintptr_t)mbuf2 +
-				     offsetof(struct rte_mbuf, buf_iova));
-		mbuf3 = (uint64_t *)((uintptr_t)mbuf3 +
-				     offsetof(struct rte_mbuf, buf_iova));
 		/*
 		 * Get mbuf's, olflags, iova, pktlen, dataoff
 		 * dataoff_iovaX.D[0] = iova,
@@ -940,28 +1022,24 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 		 * len_olflagsX.D[0] = ol_flags,
 		 * len_olflagsX.D[1](63:32) = mbuf->pkt_len
 		 */
-		dataoff_iova0 = vld1q_u64(mbuf0);
-		len_olflags0 = vld1q_u64(mbuf0 + 2);
-		dataoff_iova1 = vld1q_u64(mbuf1);
-		len_olflags1 = vld1q_u64(mbuf1 + 2);
-		dataoff_iova2 = vld1q_u64(mbuf2);
-		len_olflags2 = vld1q_u64(mbuf2 + 2);
-		dataoff_iova3 = vld1q_u64(mbuf3);
-		len_olflags3 = vld1q_u64(mbuf3 + 2);
+		dataoff_iova0 =
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf0), 1);
+		len_olflags0 = vld1q_u64(mbuf0 + 3);
+		dataoff_iova1 =
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf1)->data_off, vld1q_u64(mbuf1), 1);
+		len_olflags1 = vld1q_u64(mbuf1 + 3);
+		dataoff_iova2 =
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf2)->data_off, vld1q_u64(mbuf2), 1);
+		len_olflags2 = vld1q_u64(mbuf2 + 3);
+		dataoff_iova3 =
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf3)->data_off, vld1q_u64(mbuf3), 1);
+		len_olflags3 = vld1q_u64(mbuf3 + 3);
 
 		/* Move mbufs to point pool */
-		mbuf0 = (uint64_t *)((uintptr_t)mbuf0 +
-				     offsetof(struct rte_mbuf, pool) -
-				     offsetof(struct rte_mbuf, buf_iova));
-		mbuf1 = (uint64_t *)((uintptr_t)mbuf1 +
-				     offsetof(struct rte_mbuf, pool) -
-				     offsetof(struct rte_mbuf, buf_iova));
-		mbuf2 = (uint64_t *)((uintptr_t)mbuf2 +
-				     offsetof(struct rte_mbuf, pool) -
-				     offsetof(struct rte_mbuf, buf_iova));
-		mbuf3 = (uint64_t *)((uintptr_t)mbuf3 +
-				     offsetof(struct rte_mbuf, pool) -
-				     offsetof(struct rte_mbuf, buf_iova));
+		mbuf0 = (uint64_t *)((uintptr_t)mbuf0 + offsetof(struct rte_mbuf, pool));
+		mbuf1 = (uint64_t *)((uintptr_t)mbuf1 + offsetof(struct rte_mbuf, pool));
+		mbuf2 = (uint64_t *)((uintptr_t)mbuf2 + offsetof(struct rte_mbuf, pool));
+		mbuf3 = (uint64_t *)((uintptr_t)mbuf3 + offsetof(struct rte_mbuf, pool));
 
 		if (flags & (NIX_TX_OFFLOAD_OL3_OL4_CSUM_F |
 			     NIX_TX_OFFLOAD_L3_L4_CSUM_F)) {
@@ -1010,17 +1088,6 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 		};
 		xtmp128 = vzip2q_u64(len_olflags0, len_olflags1);
 		ytmp128 = vzip2q_u64(len_olflags2, len_olflags3);
-
-		/* Clear dataoff_iovaX.D[1] bits other than dataoff(15:0) */
-		const uint64x2_t and_mask0 = {
-			0xFFFFFFFFFFFFFFFF,
-			0x000000000000FFFF,
-		};
-
-		dataoff_iova0 = vandq_u64(dataoff_iova0, and_mask0);
-		dataoff_iova1 = vandq_u64(dataoff_iova1, and_mask0);
-		dataoff_iova2 = vandq_u64(dataoff_iova2, and_mask0);
-		dataoff_iova3 = vandq_u64(dataoff_iova3, and_mask0);
 
 		/*
 		 * Pick only 16 bits of pktlen preset at bits 63:32
@@ -1625,28 +1692,28 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			mbuf3 = (uint64_t *)tx_pkts[3];
 
 			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf0))
-				vsetq_lane_u64(0x80000, xmask01, 0);
+				xmask01 = vsetq_lane_u64(0x80000, xmask01, 0);
 			else
 				RTE_MEMPOOL_CHECK_COOKIES(
 					((struct rte_mbuf *)mbuf0)->pool,
 					(void **)&mbuf0, 1, 0);
 
 			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf1))
-				vsetq_lane_u64(0x80000, xmask01, 1);
+				xmask01 = vsetq_lane_u64(0x80000, xmask01, 1);
 			else
 				RTE_MEMPOOL_CHECK_COOKIES(
 					((struct rte_mbuf *)mbuf1)->pool,
 					(void **)&mbuf1, 1, 0);
 
 			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf2))
-				vsetq_lane_u64(0x80000, xmask23, 0);
+				xmask23 = vsetq_lane_u64(0x80000, xmask23, 0);
 			else
 				RTE_MEMPOOL_CHECK_COOKIES(
 					((struct rte_mbuf *)mbuf2)->pool,
 					(void **)&mbuf2, 1, 0);
 
 			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf3))
-				vsetq_lane_u64(0x80000, xmask23, 1);
+				xmask23 = vsetq_lane_u64(0x80000, xmask23, 1);
 			else
 				RTE_MEMPOOL_CHECK_COOKIES(
 					((struct rte_mbuf *)mbuf3)->pool,
@@ -1822,279 +1889,264 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 #define T_SEC_F      NIX_TX_OFFLOAD_SECURITY_F
 
 /* [T_SEC_F] [TSP] [TSO] [NOFF] [VLAN] [OL3OL4CSUM] [L3L4CSUM] */
-#define NIX_TX_FASTPATH_MODES						\
-T(no_offload,				0, 0, 0, 0, 0, 0, 0,	4,	\
-		NIX_TX_OFFLOAD_NONE)					\
-T(l3l4csum,				0, 0, 0, 0, 0, 0, 1,	4,	\
-		L3L4CSUM_F)						\
-T(ol3ol4csum,				0, 0, 0, 0, 0, 1, 0,	4,	\
-		OL3OL4CSUM_F)						\
-T(ol3ol4csum_l3l4csum,			0, 0, 0, 0, 0, 1, 1,	4,	\
-		OL3OL4CSUM_F | L3L4CSUM_F)				\
-T(vlan,					0, 0, 0, 0, 1, 0, 0,	6,	\
-		VLAN_F)							\
-T(vlan_l3l4csum,			0, 0, 0, 0, 1, 0, 1,	6,	\
-		VLAN_F | L3L4CSUM_F)					\
-T(vlan_ol3ol4csum,			0, 0, 0, 0, 1, 1, 0,	6,	\
-		VLAN_F | OL3OL4CSUM_F)					\
-T(vlan_ol3ol4csum_l3l4csum,		0, 0, 0, 0, 1, 1, 1,	6,	\
-		VLAN_F | OL3OL4CSUM_F |	L3L4CSUM_F)			\
-T(noff,					0, 0, 0, 1, 0, 0, 0,	4,	\
-		NOFF_F)							\
-T(noff_l3l4csum,			0, 0, 0, 1, 0, 0, 1,	4,	\
-		NOFF_F | L3L4CSUM_F)					\
-T(noff_ol3ol4csum,			0, 0, 0, 1, 0, 1, 0,	4,	\
-		NOFF_F | OL3OL4CSUM_F)					\
-T(noff_ol3ol4csum_l3l4csum,		0, 0, 0, 1, 0, 1, 1,	4,	\
-		NOFF_F | OL3OL4CSUM_F |	L3L4CSUM_F)			\
-T(noff_vlan,				0, 0, 0, 1, 1, 0, 0,	6,	\
-		NOFF_F | VLAN_F)					\
-T(noff_vlan_l3l4csum,			0, 0, 0, 1, 1, 0, 1,	6,	\
-		NOFF_F | VLAN_F | L3L4CSUM_F)				\
-T(noff_vlan_ol3ol4csum,			0, 0, 0, 1, 1, 1, 0,	6,	\
-		NOFF_F | VLAN_F | OL3OL4CSUM_F)				\
-T(noff_vlan_ol3ol4csum_l3l4csum,	0, 0, 0, 1, 1, 1, 1,	6,	\
-		NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)		\
-T(tso,					0, 0, 1, 0, 0, 0, 0,	6,	\
-		TSO_F)							\
-T(tso_l3l4csum,				0, 0, 1, 0, 0, 0, 1,	6,	\
-		TSO_F | L3L4CSUM_F)					\
-T(tso_ol3ol4csum,			0, 0, 1, 0, 0, 1, 0,	6,	\
-		TSO_F | OL3OL4CSUM_F)					\
-T(tso_ol3ol4csum_l3l4csum,		0, 0, 1, 0, 0, 1, 1,	6,	\
-		TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)			\
-T(tso_vlan,				0, 0, 1, 0, 1, 0, 0,	6,	\
-		TSO_F | VLAN_F)						\
-T(tso_vlan_l3l4csum,			0, 0, 1, 0, 1, 0, 1,	6,	\
-		TSO_F | VLAN_F | L3L4CSUM_F)				\
-T(tso_vlan_ol3ol4csum,			0, 0, 1, 0, 1, 1, 0,	6,	\
-		TSO_F | VLAN_F | OL3OL4CSUM_F)				\
-T(tso_vlan_ol3ol4csum_l3l4csum,		0, 0, 1, 0, 1, 1, 1,	6,	\
-		TSO_F | VLAN_F | OL3OL4CSUM_F |	L3L4CSUM_F)		\
-T(tso_noff,				0, 0, 1, 1, 0, 0, 0,	6,	\
-		TSO_F | NOFF_F)						\
-T(tso_noff_l3l4csum,			0, 0, 1, 1, 0, 0, 1,	6,	\
-		TSO_F | NOFF_F | L3L4CSUM_F)				\
-T(tso_noff_ol3ol4csum,			0, 0, 1, 1, 0, 1, 0,	6,	\
-		TSO_F | NOFF_F | OL3OL4CSUM_F)				\
-T(tso_noff_ol3ol4csum_l3l4csum,		0, 0, 1, 1, 0, 1, 1,	6,	\
-		TSO_F | NOFF_F | OL3OL4CSUM_F |	L3L4CSUM_F)		\
-T(tso_noff_vlan,			0, 0, 1, 1, 1, 0, 0,	6,	\
-		TSO_F | NOFF_F | VLAN_F)				\
-T(tso_noff_vlan_l3l4csum,		0, 0, 1, 1, 1, 0, 1,	6,	\
-		TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)			\
-T(tso_noff_vlan_ol3ol4csum,		0, 0, 1, 1, 1, 1, 0,	6,	\
-		TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)			\
-T(tso_noff_vlan_ol3ol4csum_l3l4csum,	0, 0, 1, 1, 1, 1, 1,	6,	\
-		TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(ts,					0, 1, 0, 0, 0, 0, 0,	8,	\
-		TSP_F)							\
-T(ts_l3l4csum,				0, 1, 0, 0, 0, 0, 1,	8,	\
-		TSP_F | L3L4CSUM_F)					\
-T(ts_ol3ol4csum,			0, 1, 0, 0, 0, 1, 0,	8,	\
-		TSP_F | OL3OL4CSUM_F)					\
-T(ts_ol3ol4csum_l3l4csum,		0, 1, 0, 0, 0, 1, 1,	8,	\
-		TSP_F | OL3OL4CSUM_F | L3L4CSUM_F)			\
-T(ts_vlan,				0, 1, 0, 0, 1, 0, 0,	8,	\
-		TSP_F | VLAN_F)						\
-T(ts_vlan_l3l4csum,			0, 1, 0, 0, 1, 0, 1,	8,	\
-		TSP_F | VLAN_F | L3L4CSUM_F)				\
-T(ts_vlan_ol3ol4csum,			0, 1, 0, 0, 1, 1, 0,	8,	\
-		TSP_F | VLAN_F | OL3OL4CSUM_F)				\
-T(ts_vlan_ol3ol4csum_l3l4csum,		0, 1, 0, 0, 1, 1, 1,	8,	\
-		TSP_F | VLAN_F | OL3OL4CSUM_F |	L3L4CSUM_F)		\
-T(ts_noff,				0, 1, 0, 1, 0, 0, 0,	8,	\
-		TSP_F | NOFF_F)						\
-T(ts_noff_l3l4csum,			0, 1, 0, 1, 0, 0, 1,	8,	\
-		TSP_F | NOFF_F | L3L4CSUM_F)				\
-T(ts_noff_ol3ol4csum,			0, 1, 0, 1, 0, 1, 0,	8,	\
-		TSP_F | NOFF_F | OL3OL4CSUM_F)				\
-T(ts_noff_ol3ol4csum_l3l4csum,		0, 1, 0, 1, 0, 1, 1,	8,	\
-		TSP_F | NOFF_F | OL3OL4CSUM_F |	L3L4CSUM_F)		\
-T(ts_noff_vlan,				0, 1, 0, 1, 1, 0, 0,	8,	\
-		TSP_F | NOFF_F | VLAN_F)				\
-T(ts_noff_vlan_l3l4csum,		0, 1, 0, 1, 1, 0, 1,	8,	\
-		TSP_F | NOFF_F | VLAN_F | L3L4CSUM_F)			\
-T(ts_noff_vlan_ol3ol4csum,		0, 1, 0, 1, 1, 1, 0,	8,	\
-		TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)			\
-T(ts_noff_vlan_ol3ol4csum_l3l4csum,	0, 1, 0, 1, 1, 1, 1,	8,	\
-		TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(ts_tso,				0, 1, 1, 0, 0, 0, 0,	8,	\
-		TSP_F | TSO_F)						\
-T(ts_tso_l3l4csum,			0, 1, 1, 0, 0, 0, 1,	8,	\
-		TSP_F | TSO_F | L3L4CSUM_F)				\
-T(ts_tso_ol3ol4csum,			0, 1, 1, 0, 0, 1, 0,	8,	\
-		TSP_F | TSO_F | OL3OL4CSUM_F)				\
-T(ts_tso_ol3ol4csum_l3l4csum,		0, 1, 1, 0, 0, 1, 1,	8,	\
-		TSP_F | TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)		\
-T(ts_tso_vlan,				0, 1, 1, 0, 1, 0, 0,	8,	\
-		TSP_F | TSO_F | VLAN_F)					\
-T(ts_tso_vlan_l3l4csum,			0, 1, 1, 0, 1, 0, 1,	8,	\
-		TSP_F | TSO_F | VLAN_F | L3L4CSUM_F)			\
-T(ts_tso_vlan_ol3ol4csum,		0, 1, 1, 0, 1, 1, 0,	8,	\
-		TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F)			\
-T(ts_tso_vlan_ol3ol4csum_l3l4csum,	0, 1, 1, 0, 1, 1, 1,	8,	\
-		TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F |	L3L4CSUM_F)	\
-T(ts_tso_noff,				0, 1, 1, 1, 0, 0, 0,	8,	\
-		TSP_F | TSO_F | NOFF_F)					\
-T(ts_tso_noff_l3l4csum,			0, 1, 1, 1, 0, 0, 1,	8,	\
-		TSP_F | TSO_F | NOFF_F | L3L4CSUM_F)			\
-T(ts_tso_noff_ol3ol4csum,		0, 1, 1, 1, 0, 1, 0,	8,	\
-		TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F)			\
-T(ts_tso_noff_ol3ol4csum_l3l4csum,	0, 1, 1, 1, 0, 1, 1,	8,	\
-		TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F |	L3L4CSUM_F)	\
-T(ts_tso_noff_vlan,			0, 1, 1, 1, 1, 0, 0,	8,	\
-		TSP_F | TSO_F | NOFF_F | VLAN_F)			\
-T(ts_tso_noff_vlan_l3l4csum,		0, 1, 1, 1, 1, 0, 1,	8,	\
-		TSP_F | TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)		\
-T(ts_tso_noff_vlan_ol3ol4csum,		0, 1, 1, 1, 1, 1, 0,	8,	\
-		TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)		\
-T(ts_tso_noff_vlan_ol3ol4csum_l3l4csum,	0, 1, 1, 1, 1, 1, 1,	8,	\
-		TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)\
-T(sec,					1, 0, 0, 0, 0, 0, 0,	4,	\
-		T_SEC_F)						\
-T(sec_l3l4csum,				1, 0, 0, 0, 0, 0, 1,	4,	\
-		T_SEC_F | L3L4CSUM_F)					\
-T(sec_ol3ol4csum,			1, 0, 0, 0, 0, 1, 0,	4,	\
-		T_SEC_F | OL3OL4CSUM_F)					\
-T(sec_ol3ol4csum_l3l4csum,		1, 0, 0, 0, 0, 1, 1,	4,	\
-		T_SEC_F | OL3OL4CSUM_F | L3L4CSUM_F)			\
-T(sec_vlan,				1, 0, 0, 0, 1, 0, 0,	6,	\
-		T_SEC_F | VLAN_F)					\
-T(sec_vlan_l3l4csum,			1, 0, 0, 0, 1, 0, 1,	6,	\
-		T_SEC_F | VLAN_F | L3L4CSUM_F)				\
-T(sec_vlan_ol3ol4csum,			1, 0, 0, 0, 1, 1, 0,	6,	\
-		T_SEC_F | VLAN_F | OL3OL4CSUM_F)			\
-T(sec_vlan_ol3ol4csum_l3l4csum,		1, 0, 0, 0, 1, 1, 1,	6,	\
-		T_SEC_F | VLAN_F | OL3OL4CSUM_F |	L3L4CSUM_F)	\
-T(sec_noff,				1, 0, 0, 1, 0, 0, 0,	4,	\
-		T_SEC_F | NOFF_F)					\
-T(sec_noff_l3l4csum,			1, 0, 0, 1, 0, 0, 1,	4,	\
-		T_SEC_F | NOFF_F | L3L4CSUM_F)				\
-T(sec_noff_ol3ol4csum,			1, 0, 0, 1, 0, 1, 0,	4,	\
-		T_SEC_F | NOFF_F | OL3OL4CSUM_F)			\
-T(sec_noff_ol3ol4csum_l3l4csum,		1, 0, 0, 1, 0, 1, 1,	4,	\
-		T_SEC_F | NOFF_F | OL3OL4CSUM_F |	L3L4CSUM_F)	\
-T(sec_noff_vlan,			1, 0, 0, 1, 1, 0, 0,	6,	\
-		T_SEC_F | NOFF_F | VLAN_F)				\
-T(sec_noff_vlan_l3l4csum,		1, 0, 0, 1, 1, 0, 1,	6,	\
-		T_SEC_F | NOFF_F | VLAN_F | L3L4CSUM_F)			\
-T(sec_noff_vlan_ol3ol4csum,		1, 0, 0, 1, 1, 1, 0,	6,	\
-		T_SEC_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)		\
-T(sec_noff_vlan_ol3ol4csum_l3l4csum,	1, 0, 0, 1, 1, 1, 1,	6,	\
-		T_SEC_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(sec_tso,				1, 0, 1, 0, 0, 0, 0,	6,	\
-		T_SEC_F | TSO_F)					\
-T(sec_tso_l3l4csum,			1, 0, 1, 0, 0, 0, 1,	6,	\
-		T_SEC_F | TSO_F | L3L4CSUM_F)				\
-T(sec_tso_ol3ol4csum,			1, 0, 1, 0, 0, 1, 0,	6,	\
-		T_SEC_F | TSO_F | OL3OL4CSUM_F)				\
-T(sec_tso_ol3ol4csum_l3l4csum,		1, 0, 1, 0, 0, 1, 1,	6,	\
-		T_SEC_F | TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)		\
-T(sec_tso_vlan,				1, 0, 1, 0, 1, 0, 0,	6,	\
-		T_SEC_F | TSO_F | VLAN_F)				\
-T(sec_tso_vlan_l3l4csum,		1, 0, 1, 0, 1, 0, 1,	6,	\
-		T_SEC_F | TSO_F | VLAN_F | L3L4CSUM_F)			\
-T(sec_tso_vlan_ol3ol4csum,		1, 0, 1, 0, 1, 1, 0,	6,	\
-		T_SEC_F | TSO_F | VLAN_F | OL3OL4CSUM_F)		\
-T(sec_tso_vlan_ol3ol4csum_l3l4csum,	1, 0, 1, 0, 1, 1, 1,	6,	\
-		T_SEC_F | TSO_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(sec_tso_noff,				1, 0, 1, 1, 0, 0, 0,	6,	\
-		T_SEC_F | TSO_F | NOFF_F)				\
-T(sec_tso_noff_l3l4csum,		1, 0, 1, 1, 0, 0, 1,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | L3L4CSUM_F)			\
-T(sec_tso_noff_ol3ol4csum,		1, 0, 1, 1, 0, 1, 0,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | OL3OL4CSUM_F)		\
-T(sec_tso_noff_ol3ol4csum_l3l4csum,	1, 0, 1, 1, 0, 1, 1,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(sec_tso_noff_vlan,			1, 0, 1, 1, 1, 0, 0,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | VLAN_F)			\
-T(sec_tso_noff_vlan_l3l4csum,		1, 0, 1, 1, 1, 0, 1,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)		\
-T(sec_tso_noff_vlan_ol3ol4csum,		1, 0, 1, 1, 1, 1, 0,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)	\
-T(sec_tso_noff_vlan_ol3ol4csum_l3l4csum, 1, 0, 1, 1, 1, 1, 1,	6,	\
-		T_SEC_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)\
-T(sec_ts,				1, 1, 0, 0, 0, 0, 0,	8,	\
-		T_SEC_F | TSP_F)					\
-T(sec_ts_l3l4csum,			1, 1, 0, 0, 0, 0, 1,	8,	\
-		T_SEC_F | TSP_F | L3L4CSUM_F)				\
-T(sec_ts_ol3ol4csum,			1, 1, 0, 0, 0, 1, 0,	8,	\
-		T_SEC_F | TSP_F | OL3OL4CSUM_F)				\
-T(sec_ts_ol3ol4csum_l3l4csum,		1, 1, 0, 0, 0, 1, 1,	8,	\
-		T_SEC_F | TSP_F | OL3OL4CSUM_F | L3L4CSUM_F)		\
-T(sec_ts_vlan,				1, 1, 0, 0, 1, 0, 0,	8,	\
-		T_SEC_F | TSP_F | VLAN_F)				\
-T(sec_ts_vlan_l3l4csum,			1, 1, 0, 0, 1, 0, 1,	8,	\
-		T_SEC_F | TSP_F | VLAN_F | L3L4CSUM_F)			\
-T(sec_ts_vlan_ol3ol4csum,		1, 1, 0, 0, 1, 1, 0,	8,	\
-		T_SEC_F | TSP_F | VLAN_F | OL3OL4CSUM_F)		\
-T(sec_ts_vlan_ol3ol4csum_l3l4csum,	1, 1, 0, 0, 1, 1, 1,	8,	\
-		T_SEC_F | TSP_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(sec_ts_noff,				1, 1, 0, 1, 0, 0, 0,	8,	\
-		T_SEC_F | TSP_F | NOFF_F)				\
-T(sec_ts_noff_l3l4csum,			1, 1, 0, 1, 0, 0, 1,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | L3L4CSUM_F)			\
-T(sec_ts_noff_ol3ol4csum,		1, 1, 0, 1, 0, 1, 0,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | OL3OL4CSUM_F)		\
-T(sec_ts_noff_ol3ol4csum_l3l4csum,	1, 1, 0, 1, 0, 1, 1,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(sec_ts_noff_vlan,			1, 1, 0, 1, 1, 0, 0,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | VLAN_F)			\
-T(sec_ts_noff_vlan_l3l4csum,		1, 1, 0, 1, 1, 0, 1,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | VLAN_F | L3L4CSUM_F)		\
-T(sec_ts_noff_vlan_ol3ol4csum,		1, 1, 0, 1, 1, 1, 0,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)	\
-T(sec_ts_noff_vlan_ol3ol4csum_l3l4csum,	1, 1, 0, 1, 1, 1, 1,	8,	\
-		T_SEC_F | TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)\
-T(sec_ts_tso,				1, 1, 1, 0, 0, 0, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F)				\
-T(sec_ts_tso_l3l4csum,			1, 1, 1, 0, 0, 0, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | L3L4CSUM_F)			\
-T(sec_ts_tso_ol3ol4csum,		1, 1, 1, 0, 0, 1, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | OL3OL4CSUM_F)			\
-T(sec_ts_tso_ol3ol4csum_l3l4csum,	1, 1, 1, 0, 0, 1, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)	\
-T(sec_ts_tso_vlan,			1, 1, 1, 0, 1, 0, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | VLAN_F)			\
-T(sec_ts_tso_vlan_l3l4csum,		1, 1, 1, 0, 1, 0, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | VLAN_F | L3L4CSUM_F)		\
-T(sec_ts_tso_vlan_ol3ol4csum,		1, 1, 1, 0, 1, 1, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F)	\
-T(sec_ts_tso_vlan_ol3ol4csum_l3l4csum,	1, 1, 1, 0, 1, 1, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F) \
-T(sec_ts_tso_noff,			1, 1, 1, 1, 0, 0, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F)			\
-T(sec_ts_tso_noff_l3l4csum,		1, 1, 1, 1, 0, 0, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | L3L4CSUM_F)		\
-T(sec_ts_tso_noff_ol3ol4csum,		1, 1, 1, 1, 0, 1, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F)	\
-T(sec_ts_tso_noff_ol3ol4csum_l3l4csum,	1, 1, 1, 1, 0, 1, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F) \
-T(sec_ts_tso_noff_vlan,			1, 1, 1, 1, 1, 0, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F)		\
-T(sec_ts_tso_noff_vlan_l3l4csum,	1, 1, 1, 1, 1, 0, 1,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)	\
-T(sec_ts_tso_noff_vlan_ol3ol4csum,	1, 1, 1, 1, 1, 1, 0,	8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)\
-T(sec_ts_tso_noff_vlan_ol3ol4csum_l3l4csum, 1, 1, 1, 1, 1, 1, 1, 8,	\
-		T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | \
-		L3L4CSUM_F)
+#define NIX_TX_FASTPATH_MODES_0_15                                             \
+	T(no_offload, 6, NIX_TX_OFFLOAD_NONE)                                  \
+	T(l3l4csum, 6, L3L4CSUM_F)                                             \
+	T(ol3ol4csum, 6, OL3OL4CSUM_F)                                         \
+	T(ol3ol4csum_l3l4csum, 6, OL3OL4CSUM_F | L3L4CSUM_F)                   \
+	T(vlan, 6, VLAN_F)                                                     \
+	T(vlan_l3l4csum, 6, VLAN_F | L3L4CSUM_F)                               \
+	T(vlan_ol3ol4csum, 6, VLAN_F | OL3OL4CSUM_F)                           \
+	T(vlan_ol3ol4csum_l3l4csum, 6, VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)     \
+	T(noff, 6, NOFF_F)                                                     \
+	T(noff_l3l4csum, 6, NOFF_F | L3L4CSUM_F)                               \
+	T(noff_ol3ol4csum, 6, NOFF_F | OL3OL4CSUM_F)                           \
+	T(noff_ol3ol4csum_l3l4csum, 6, NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)     \
+	T(noff_vlan, 6, NOFF_F | VLAN_F)                                       \
+	T(noff_vlan_l3l4csum, 6, NOFF_F | VLAN_F | L3L4CSUM_F)                 \
+	T(noff_vlan_ol3ol4csum, 6, NOFF_F | VLAN_F | OL3OL4CSUM_F)             \
+	T(noff_vlan_ol3ol4csum_l3l4csum, 6,                                    \
+	  NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
 
-#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			       \
+#define NIX_TX_FASTPATH_MODES_16_31                                            \
+	T(tso, 6, TSO_F)                                                       \
+	T(tso_l3l4csum, 6, TSO_F | L3L4CSUM_F)                                 \
+	T(tso_ol3ol4csum, 6, TSO_F | OL3OL4CSUM_F)                             \
+	T(tso_ol3ol4csum_l3l4csum, 6, TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)       \
+	T(tso_vlan, 6, TSO_F | VLAN_F)                                         \
+	T(tso_vlan_l3l4csum, 6, TSO_F | VLAN_F | L3L4CSUM_F)                   \
+	T(tso_vlan_ol3ol4csum, 6, TSO_F | VLAN_F | OL3OL4CSUM_F)               \
+	T(tso_vlan_ol3ol4csum_l3l4csum, 6,                                     \
+	  TSO_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)                          \
+	T(tso_noff, 6, TSO_F | NOFF_F)                                         \
+	T(tso_noff_l3l4csum, 6, TSO_F | NOFF_F | L3L4CSUM_F)                   \
+	T(tso_noff_ol3ol4csum, 6, TSO_F | NOFF_F | OL3OL4CSUM_F)               \
+	T(tso_noff_ol3ol4csum_l3l4csum, 6,                                     \
+	  TSO_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)                          \
+	T(tso_noff_vlan, 6, TSO_F | NOFF_F | VLAN_F)                           \
+	T(tso_noff_vlan_l3l4csum, 6, TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)     \
+	T(tso_noff_vlan_ol3ol4csum, 6, TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F) \
+	T(tso_noff_vlan_ol3ol4csum_l3l4csum, 6,                                \
+	  TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES_32_47                                            \
+	T(ts, 8, TSP_F)                                                        \
+	T(ts_l3l4csum, 8, TSP_F | L3L4CSUM_F)                                  \
+	T(ts_ol3ol4csum, 8, TSP_F | OL3OL4CSUM_F)                              \
+	T(ts_ol3ol4csum_l3l4csum, 8, TSP_F | OL3OL4CSUM_F | L3L4CSUM_F)        \
+	T(ts_vlan, 8, TSP_F | VLAN_F)                                          \
+	T(ts_vlan_l3l4csum, 8, TSP_F | VLAN_F | L3L4CSUM_F)                    \
+	T(ts_vlan_ol3ol4csum, 8, TSP_F | VLAN_F | OL3OL4CSUM_F)                \
+	T(ts_vlan_ol3ol4csum_l3l4csum, 8,                                      \
+	  TSP_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)                          \
+	T(ts_noff, 8, TSP_F | NOFF_F)                                          \
+	T(ts_noff_l3l4csum, 8, TSP_F | NOFF_F | L3L4CSUM_F)                    \
+	T(ts_noff_ol3ol4csum, 8, TSP_F | NOFF_F | OL3OL4CSUM_F)                \
+	T(ts_noff_ol3ol4csum_l3l4csum, 8,                                      \
+	  TSP_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)                          \
+	T(ts_noff_vlan, 8, TSP_F | NOFF_F | VLAN_F)                            \
+	T(ts_noff_vlan_l3l4csum, 8, TSP_F | NOFF_F | VLAN_F | L3L4CSUM_F)      \
+	T(ts_noff_vlan_ol3ol4csum, 8, TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)  \
+	T(ts_noff_vlan_ol3ol4csum_l3l4csum, 8,                                 \
+	  TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES_48_63                                            \
+	T(ts_tso, 8, TSP_F | TSO_F)                                            \
+	T(ts_tso_l3l4csum, 8, TSP_F | TSO_F | L3L4CSUM_F)                      \
+	T(ts_tso_ol3ol4csum, 8, TSP_F | TSO_F | OL3OL4CSUM_F)                  \
+	T(ts_tso_ol3ol4csum_l3l4csum, 8,                                       \
+	  TSP_F | TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)                           \
+	T(ts_tso_vlan, 8, TSP_F | TSO_F | VLAN_F)                              \
+	T(ts_tso_vlan_l3l4csum, 8, TSP_F | TSO_F | VLAN_F | L3L4CSUM_F)        \
+	T(ts_tso_vlan_ol3ol4csum, 8, TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F)    \
+	T(ts_tso_vlan_ol3ol4csum_l3l4csum, 8,                                  \
+	  TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)                  \
+	T(ts_tso_noff, 8, TSP_F | TSO_F | NOFF_F)                              \
+	T(ts_tso_noff_l3l4csum, 8, TSP_F | TSO_F | NOFF_F | L3L4CSUM_F)        \
+	T(ts_tso_noff_ol3ol4csum, 8, TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F)    \
+	T(ts_tso_noff_ol3ol4csum_l3l4csum, 8,                                  \
+	  TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)                  \
+	T(ts_tso_noff_vlan, 8, TSP_F | TSO_F | NOFF_F | VLAN_F)                \
+	T(ts_tso_noff_vlan_l3l4csum, 8,                                        \
+	  TSP_F | TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)                        \
+	T(ts_tso_noff_vlan_ol3ol4csum, 8,                                      \
+	  TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)                      \
+	T(ts_tso_noff_vlan_ol3ol4csum_l3l4csum, 8,                             \
+	  TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES_64_79                                            \
+	T(sec, 6, T_SEC_F)                                                     \
+	T(sec_l3l4csum, 6, T_SEC_F | L3L4CSUM_F)                               \
+	T(sec_ol3ol4csum, 6, T_SEC_F | OL3OL4CSUM_F)                           \
+	T(sec_ol3ol4csum_l3l4csum, 6, T_SEC_F | OL3OL4CSUM_F | L3L4CSUM_F)     \
+	T(sec_vlan, 6, T_SEC_F | VLAN_F)                                       \
+	T(sec_vlan_l3l4csum, 6, T_SEC_F | VLAN_F | L3L4CSUM_F)                 \
+	T(sec_vlan_ol3ol4csum, 6, T_SEC_F | VLAN_F | OL3OL4CSUM_F)             \
+	T(sec_vlan_ol3ol4csum_l3l4csum, 6,                                     \
+	  T_SEC_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)                        \
+	T(sec_noff, 6, T_SEC_F | NOFF_F)                                       \
+	T(sec_noff_l3l4csum, 6, T_SEC_F | NOFF_F | L3L4CSUM_F)                 \
+	T(sec_noff_ol3ol4csum, 6, T_SEC_F | NOFF_F | OL3OL4CSUM_F)             \
+	T(sec_noff_ol3ol4csum_l3l4csum, 6,                                     \
+	  T_SEC_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)                        \
+	T(sec_noff_vlan, 6, T_SEC_F | NOFF_F | VLAN_F)                         \
+	T(sec_noff_vlan_l3l4csum, 6, T_SEC_F | NOFF_F | VLAN_F | L3L4CSUM_F)   \
+	T(sec_noff_vlan_ol3ol4csum, 6,                                         \
+	  T_SEC_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)                            \
+	T(sec_noff_vlan_ol3ol4csum_l3l4csum, 6,                                \
+	  T_SEC_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES_80_95                                            \
+	T(sec_tso, 6, T_SEC_F | TSO_F)                                         \
+	T(sec_tso_l3l4csum, 6, T_SEC_F | TSO_F | L3L4CSUM_F)                   \
+	T(sec_tso_ol3ol4csum, 6, T_SEC_F | TSO_F | OL3OL4CSUM_F)               \
+	T(sec_tso_ol3ol4csum_l3l4csum, 6,                                      \
+	  T_SEC_F | TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)                         \
+	T(sec_tso_vlan, 6, T_SEC_F | TSO_F | VLAN_F)                           \
+	T(sec_tso_vlan_l3l4csum, 6, T_SEC_F | TSO_F | VLAN_F | L3L4CSUM_F)     \
+	T(sec_tso_vlan_ol3ol4csum, 6, T_SEC_F | TSO_F | VLAN_F | OL3OL4CSUM_F) \
+	T(sec_tso_vlan_ol3ol4csum_l3l4csum, 6,                                 \
+	  T_SEC_F | TSO_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)                \
+	T(sec_tso_noff, 6, T_SEC_F | TSO_F | NOFF_F)                           \
+	T(sec_tso_noff_l3l4csum, 6, T_SEC_F | TSO_F | NOFF_F | L3L4CSUM_F)     \
+	T(sec_tso_noff_ol3ol4csum, 6, T_SEC_F | TSO_F | NOFF_F | OL3OL4CSUM_F) \
+	T(sec_tso_noff_ol3ol4csum_l3l4csum, 6,                                 \
+	  T_SEC_F | TSO_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)                \
+	T(sec_tso_noff_vlan, 6, T_SEC_F | TSO_F | NOFF_F | VLAN_F)             \
+	T(sec_tso_noff_vlan_l3l4csum, 6,                                       \
+	  T_SEC_F | TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)                      \
+	T(sec_tso_noff_vlan_ol3ol4csum, 6,                                     \
+	  T_SEC_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)                    \
+	T(sec_tso_noff_vlan_ol3ol4csum_l3l4csum, 6,                            \
+	  T_SEC_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES_96_111                                           \
+	T(sec_ts, 8, T_SEC_F | TSP_F)                                          \
+	T(sec_ts_l3l4csum, 8, T_SEC_F | TSP_F | L3L4CSUM_F)                    \
+	T(sec_ts_ol3ol4csum, 8, T_SEC_F | TSP_F | OL3OL4CSUM_F)                \
+	T(sec_ts_ol3ol4csum_l3l4csum, 8,                                       \
+	  T_SEC_F | TSP_F | OL3OL4CSUM_F | L3L4CSUM_F)                         \
+	T(sec_ts_vlan, 8, T_SEC_F | TSP_F | VLAN_F)                            \
+	T(sec_ts_vlan_l3l4csum, 8, T_SEC_F | TSP_F | VLAN_F | L3L4CSUM_F)      \
+	T(sec_ts_vlan_ol3ol4csum, 8, T_SEC_F | TSP_F | VLAN_F | OL3OL4CSUM_F)  \
+	T(sec_ts_vlan_ol3ol4csum_l3l4csum, 8,                                  \
+	  T_SEC_F | TSP_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)                \
+	T(sec_ts_noff, 8, T_SEC_F | TSP_F | NOFF_F)                            \
+	T(sec_ts_noff_l3l4csum, 8, T_SEC_F | TSP_F | NOFF_F | L3L4CSUM_F)      \
+	T(sec_ts_noff_ol3ol4csum, 8, T_SEC_F | TSP_F | NOFF_F | OL3OL4CSUM_F)  \
+	T(sec_ts_noff_ol3ol4csum_l3l4csum, 8,                                  \
+	  T_SEC_F | TSP_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)                \
+	T(sec_ts_noff_vlan, 8, T_SEC_F | TSP_F | NOFF_F | VLAN_F)              \
+	T(sec_ts_noff_vlan_l3l4csum, 8,                                        \
+	  T_SEC_F | TSP_F | NOFF_F | VLAN_F | L3L4CSUM_F)                      \
+	T(sec_ts_noff_vlan_ol3ol4csum, 8,                                      \
+	  T_SEC_F | TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)                    \
+	T(sec_ts_noff_vlan_ol3ol4csum_l3l4csum, 8,                             \
+	  T_SEC_F | TSP_F | NOFF_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES_112_127                                          \
+	T(sec_ts_tso, 8, T_SEC_F | TSP_F | TSO_F)                              \
+	T(sec_ts_tso_l3l4csum, 8, T_SEC_F | TSP_F | TSO_F | L3L4CSUM_F)        \
+	T(sec_ts_tso_ol3ol4csum, 8, T_SEC_F | TSP_F | TSO_F | OL3OL4CSUM_F)    \
+	T(sec_ts_tso_ol3ol4csum_l3l4csum, 8,                                   \
+	  T_SEC_F | TSP_F | TSO_F | OL3OL4CSUM_F | L3L4CSUM_F)                 \
+	T(sec_ts_tso_vlan, 8, T_SEC_F | TSP_F | TSO_F | VLAN_F)                \
+	T(sec_ts_tso_vlan_l3l4csum, 8,                                         \
+	  T_SEC_F | TSP_F | TSO_F | VLAN_F | L3L4CSUM_F)                       \
+	T(sec_ts_tso_vlan_ol3ol4csum, 8,                                       \
+	  T_SEC_F | TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F)                     \
+	T(sec_ts_tso_vlan_ol3ol4csum_l3l4csum, 8,                              \
+	  T_SEC_F | TSP_F | TSO_F | VLAN_F | OL3OL4CSUM_F | L3L4CSUM_F)        \
+	T(sec_ts_tso_noff, 8, T_SEC_F | TSP_F | TSO_F | NOFF_F)                \
+	T(sec_ts_tso_noff_l3l4csum, 8,                                         \
+	  T_SEC_F | TSP_F | TSO_F | NOFF_F | L3L4CSUM_F)                       \
+	T(sec_ts_tso_noff_ol3ol4csum, 8,                                       \
+	  T_SEC_F | TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F)                     \
+	T(sec_ts_tso_noff_ol3ol4csum_l3l4csum, 8,                              \
+	  T_SEC_F | TSP_F | TSO_F | NOFF_F | OL3OL4CSUM_F | L3L4CSUM_F)        \
+	T(sec_ts_tso_noff_vlan, 8, T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F)  \
+	T(sec_ts_tso_noff_vlan_l3l4csum, 8,                                    \
+	  T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F | L3L4CSUM_F)              \
+	T(sec_ts_tso_noff_vlan_ol3ol4csum, 8,                                  \
+	  T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F)            \
+	T(sec_ts_tso_noff_vlan_ol3ol4csum_l3l4csum, 8,                         \
+	  T_SEC_F | TSP_F | TSO_F | NOFF_F | VLAN_F | OL3OL4CSUM_F |           \
+		  L3L4CSUM_F)
+
+#define NIX_TX_FASTPATH_MODES                                                  \
+	NIX_TX_FASTPATH_MODES_0_15                                             \
+	NIX_TX_FASTPATH_MODES_16_31                                            \
+	NIX_TX_FASTPATH_MODES_32_47                                            \
+	NIX_TX_FASTPATH_MODES_48_63                                            \
+	NIX_TX_FASTPATH_MODES_64_79                                            \
+	NIX_TX_FASTPATH_MODES_80_95                                            \
+	NIX_TX_FASTPATH_MODES_96_111                                           \
+	NIX_TX_FASTPATH_MODES_112_127
+
+#define T(name, sz, flags)                                                     \
 	uint16_t __rte_noinline __rte_hot cn9k_nix_xmit_pkts_##name(           \
 		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts);     \
-									       \
 	uint16_t __rte_noinline __rte_hot cn9k_nix_xmit_pkts_mseg_##name(      \
 		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts);     \
-									       \
 	uint16_t __rte_noinline __rte_hot cn9k_nix_xmit_pkts_vec_##name(       \
 		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts);     \
-									       \
 	uint16_t __rte_noinline __rte_hot cn9k_nix_xmit_pkts_vec_mseg_##name(  \
 		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts);
 
 NIX_TX_FASTPATH_MODES
 #undef T
+
+#define NIX_TX_XMIT(fn, sz, flags)                                             \
+	uint16_t __rte_noinline __rte_hot fn(                                  \
+		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts)      \
+	{                                                                      \
+		uint64_t cmd[sz];                                              \
+		/* For TSO inner checksum is a must */                         \
+		if (((flags) & NIX_TX_OFFLOAD_TSO_F) &&                        \
+		    !((flags) & NIX_TX_OFFLOAD_L3_L4_CSUM_F))                  \
+			return 0;                                              \
+		return cn9k_nix_xmit_pkts(tx_queue, tx_pkts, pkts, cmd,        \
+					  flags);                              \
+	}
+
+#define NIX_TX_XMIT_MSEG(fn, sz, flags)                                        \
+	uint16_t __rte_noinline __rte_hot fn(                                  \
+		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts)      \
+	{                                                                      \
+		uint64_t cmd[(sz) + CNXK_NIX_TX_MSEG_SG_DWORDS - 2];           \
+		/* For TSO inner checksum is a must */                         \
+		if (((flags) & NIX_TX_OFFLOAD_TSO_F) &&                        \
+		    !((flags) & NIX_TX_OFFLOAD_L3_L4_CSUM_F))                  \
+			return 0;                                              \
+		return cn9k_nix_xmit_pkts_mseg(tx_queue, tx_pkts, pkts, cmd,   \
+					       (flags) | NIX_TX_MULTI_SEG_F);  \
+	}
+
+#define NIX_TX_XMIT_VEC(fn, sz, flags)                                         \
+	uint16_t __rte_noinline __rte_hot fn(                                  \
+		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts)      \
+	{                                                                      \
+		uint64_t cmd[sz];                                              \
+		/* For TSO inner checksum is a must */                         \
+		if (((flags) & NIX_TX_OFFLOAD_TSO_F) &&                        \
+		    !((flags) & NIX_TX_OFFLOAD_L3_L4_CSUM_F))                  \
+			return 0;                                              \
+		return cn9k_nix_xmit_pkts_vector(tx_queue, tx_pkts, pkts, cmd, \
+						 (flags));                     \
+	}
+
+#define NIX_TX_XMIT_VEC_MSEG(fn, sz, flags)                                    \
+	uint16_t __rte_noinline __rte_hot fn(                                  \
+		void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts)      \
+	{                                                                      \
+		uint64_t cmd[(sz) + CNXK_NIX_TX_MSEG_SG_DWORDS - 2];           \
+		/* For TSO inner checksum is a must */                         \
+		if (((flags) & NIX_TX_OFFLOAD_TSO_F) &&                        \
+		    !((flags) & NIX_TX_OFFLOAD_L3_L4_CSUM_F))                  \
+			return 0;                                              \
+		return cn9k_nix_xmit_pkts_vector(tx_queue, tx_pkts, pkts, cmd, \
+						 (flags) |                     \
+							 NIX_TX_MULTI_SEG_F);  \
+	}
 
 #endif /* __CN9K_TX_H__ */

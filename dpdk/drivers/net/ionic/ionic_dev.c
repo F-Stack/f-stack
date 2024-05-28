@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2018-2019 Pensando Systems, Inc. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2018-2022 Advanced Micro Devices, Inc.
  */
 
 #include <stdbool.h>
@@ -9,65 +9,6 @@
 #include "ionic_dev.h"
 #include "ionic_lif.h"
 #include "ionic.h"
-
-int
-ionic_dev_setup(struct ionic_adapter *adapter)
-{
-	struct ionic_dev_bar *bar = adapter->bars;
-	unsigned int num_bars = adapter->num_bars;
-	struct ionic_dev *idev = &adapter->idev;
-	uint32_t sig;
-	u_char *bar0_base;
-	unsigned int i;
-
-	/* BAR0: dev_cmd and interrupts */
-	if (num_bars < 1) {
-		IONIC_PRINT(ERR, "No bars found, aborting");
-		return -EFAULT;
-	}
-
-	if (bar->len < IONIC_BAR0_SIZE) {
-		IONIC_PRINT(ERR,
-			"Resource bar size %lu too small, aborting",
-			bar->len);
-		return -EFAULT;
-	}
-
-	bar0_base = bar->vaddr;
-	idev->dev_info = (union ionic_dev_info_regs *)
-		&bar0_base[IONIC_BAR0_DEV_INFO_REGS_OFFSET];
-	idev->dev_cmd = (union ionic_dev_cmd_regs *)
-		&bar0_base[IONIC_BAR0_DEV_CMD_REGS_OFFSET];
-	idev->intr_status = (struct ionic_intr_status *)
-		&bar0_base[IONIC_BAR0_INTR_STATUS_OFFSET];
-	idev->intr_ctrl = (struct ionic_intr *)
-		&bar0_base[IONIC_BAR0_INTR_CTRL_OFFSET];
-
-	sig = ioread32(&idev->dev_info->signature);
-	if (sig != IONIC_DEV_INFO_SIGNATURE) {
-		IONIC_PRINT(ERR, "Incompatible firmware signature %" PRIx32 "",
-			sig);
-		return -EFAULT;
-	}
-
-	for (i = 0; i < IONIC_DEVINFO_FWVERS_BUFLEN; i++)
-		adapter->fw_version[i] =
-			ioread8(&idev->dev_info->fw_version[i]);
-	adapter->fw_version[IONIC_DEVINFO_FWVERS_BUFLEN - 1] = '\0';
-
-	IONIC_PRINT(DEBUG, "Firmware version: %s", adapter->fw_version);
-
-	/* BAR1: doorbells */
-	bar++;
-	if (num_bars < 2) {
-		IONIC_PRINT(ERR, "Doorbell bar missing, aborting");
-		return -EFAULT;
-	}
-
-	idev->db_pages = bar->vaddr;
-
-	return 0;
-}
 
 /* Devcmd Interface */
 
@@ -377,6 +318,15 @@ ionic_cq_init(struct ionic_cq *cq, uint16_t num_descs)
 }
 
 void
+ionic_cq_reset(struct ionic_cq *cq)
+{
+	cq->tail_idx = 0;
+	cq->done_color = 1;
+
+	memset(cq->base, 0, sizeof(struct ionic_nop_comp) * cq->num_descs);
+}
+
+void
 ionic_cq_map(struct ionic_cq *cq, void *base, rte_iova_t base_pa)
 {
 	cq->base = base;
@@ -437,4 +387,11 @@ ionic_q_sg_map(struct ionic_queue *q, void *base, rte_iova_t base_pa)
 {
 	q->sg_base = base;
 	q->sg_base_pa = base_pa;
+}
+
+void
+ionic_q_reset(struct ionic_queue *q)
+{
+	q->head_idx = 0;
+	q->tail_idx = 0;
 }

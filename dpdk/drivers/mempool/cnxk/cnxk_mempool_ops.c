@@ -72,10 +72,10 @@ cnxk_mempool_calc_mem_size(const struct rte_mempool *mp, uint32_t obj_num,
 int
 cnxk_mempool_alloc(struct rte_mempool *mp)
 {
+	uint32_t block_count, flags = 0;
 	uint64_t aura_handle = 0;
 	struct npa_aura_s aura;
 	struct npa_pool_s pool;
-	uint32_t block_count;
 	size_t block_size;
 	int rc = -ERANGE;
 
@@ -100,8 +100,11 @@ cnxk_mempool_alloc(struct rte_mempool *mp)
 	if (mp->pool_config != NULL)
 		memcpy(&aura, mp->pool_config, sizeof(struct npa_aura_s));
 
+	if (aura.ena && aura.pool_addr == 0)
+		flags = ROC_NPA_ZERO_AURA_F;
+
 	rc = roc_npa_pool_create(&aura_handle, block_size, block_count, &aura,
-				 &pool);
+				 &pool, flags);
 	if (rc) {
 		plt_err("Failed to alloc pool or aura rc=%d", rc);
 		goto error;
@@ -123,6 +126,14 @@ cnxk_mempool_free(struct rte_mempool *mp)
 	int rc = 0;
 
 	plt_npa_dbg("aura_handle=0x%" PRIx64, mp->pool_id);
+
+	/* It can happen that rte_mempool_free() is called immediately after
+	 * rte_mempool_create_empty(). In such cases the NPA pool will not be
+	 * allocated.
+	 */
+	if (roc_npa_aura_handle_to_base(mp->pool_id) == 0)
+		return;
+
 	rc = roc_npa_pool_destroy(mp->pool_id);
 	if (rc)
 		plt_err("Failed to free pool or aura rc=%d", rc);

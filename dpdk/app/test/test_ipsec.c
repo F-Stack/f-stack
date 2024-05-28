@@ -2,6 +2,8 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
+#include "test.h"
+
 #include <time.h>
 
 #include <rte_common.h>
@@ -12,16 +14,25 @@
 #include <rte_cycles.h>
 #include <rte_bus_vdev.h>
 #include <rte_ip.h>
-
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
 #include <rte_lcore.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_ipsec(void)
+{
+	printf("ipsec not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_ipsec.h>
 #include <rte_random.h>
 #include <rte_esp.h>
 #include <rte_security_driver.h>
 
-#include "test.h"
 #include "test_cryptodev.h"
 
 #define VDEV_ARGS_SIZE	100
@@ -148,13 +159,12 @@ const struct supported_auth_algo auth_algos[] = {
 
 static int
 dummy_sec_create(void *device, struct rte_security_session_conf *conf,
-	struct rte_security_session *sess, struct rte_mempool *mp)
+	struct rte_security_session *sess)
 {
 	RTE_SET_USED(device);
 	RTE_SET_USED(conf);
-	RTE_SET_USED(mp);
+	RTE_SET_USED(sess);
 
-	sess->sess_private_data = NULL;
 	return 0;
 }
 
@@ -309,8 +319,10 @@ testsuite_setup(void)
 		}
 	}
 
-	if (ts_params->valid_dev_found == 0)
-		return TEST_FAILED;
+	if (ts_params->valid_dev_found == 0) {
+		RTE_LOG(WARNING, USER1, "No compatible crypto device found.\n");
+		return TEST_SKIPPED;
+	}
 
 	ts_params->mbuf_pool = rte_pktmbuf_pool_create(
 			"CRYPTO_MBUFPOOL",
@@ -357,20 +369,9 @@ testsuite_setup(void)
 		return TEST_FAILED;
 	}
 
-	ts_params->qp_conf.mp_session_private = rte_mempool_create(
-				"test_priv_sess_mp",
-				MAX_NB_SESSIONS,
-				sess_sz,
-				0, 0, NULL, NULL, NULL,
-				NULL, SOCKET_ID_ANY,
-				0);
-
-	TEST_ASSERT_NOT_NULL(ts_params->qp_conf.mp_session_private,
-			"private session mempool allocation failed");
-
 	ts_params->qp_conf.mp_session =
 		rte_cryptodev_sym_session_pool_create("test_sess_mp",
-			MAX_NB_SESSIONS, 0, 0, 0, SOCKET_ID_ANY);
+			MAX_NB_SESSIONS, sess_sz, 0, 0, SOCKET_ID_ANY);
 
 	TEST_ASSERT_NOT_NULL(ts_params->qp_conf.mp_session,
 			"session mempool allocation failed");
@@ -414,11 +415,6 @@ testsuite_teardown(void)
 	if (ts_params->qp_conf.mp_session != NULL) {
 		rte_mempool_free(ts_params->qp_conf.mp_session);
 		ts_params->qp_conf.mp_session = NULL;
-	}
-
-	if (ts_params->qp_conf.mp_session_private != NULL) {
-		rte_mempool_free(ts_params->qp_conf.mp_session_private);
-		ts_params->qp_conf.mp_session_private = NULL;
 	}
 }
 
@@ -616,7 +612,8 @@ setup_test_string_tunneled(struct rte_mempool *mpool, const char *string,
 		rte_memcpy(dst, string, len);
 		dst += len;
 		/* copy pad bytes */
-		rte_memcpy(dst, esp_pad_bytes, padlen);
+		rte_memcpy(dst, esp_pad_bytes, RTE_MIN(padlen,
+			sizeof(esp_pad_bytes)));
 		dst += padlen;
 		/* copy ESP tail header */
 		rte_memcpy(dst, &espt, sizeof(espt));
@@ -633,8 +630,7 @@ create_dummy_sec_session(struct ipsec_unitest_params *ut,
 	static struct rte_security_session_conf conf;
 
 	ut->ss[j].security.ses = rte_security_session_create(&dummy_sec_ctx,
-					&conf, qp->mp_session,
-					qp->mp_session_private);
+					&conf, qp->mp_session);
 
 	if (ut->ss[j].security.ses == NULL)
 		return -ENOMEM;
@@ -648,25 +644,15 @@ static int
 create_crypto_session(struct ipsec_unitest_params *ut,
 	struct rte_cryptodev_qp_conf *qp, uint8_t dev_id, uint32_t j)
 {
-	int32_t rc;
-	struct rte_cryptodev_sym_session *s;
+	void *s;
 
-	s = rte_cryptodev_sym_session_create(qp->mp_session);
+	s = rte_cryptodev_sym_session_create(dev_id, ut->crypto_xforms,
+			qp->mp_session);
 	if (s == NULL)
 		return -ENOMEM;
 
-	/* initialize SA crypto session for device */
-	rc = rte_cryptodev_sym_session_init(dev_id, s,
-			ut->crypto_xforms, qp->mp_session_private);
-	if (rc == 0) {
-		ut->ss[j].crypto.ses = s;
-		return 0;
-	} else {
-		/* failure, do cleanup */
-		rte_cryptodev_sym_session_clear(dev_id, s);
-		rte_cryptodev_sym_session_free(s);
-		return rc;
-	}
+	ut->ss[j].crypto.ses = s;
+	return 0;
 }
 
 static int
@@ -1182,8 +1168,7 @@ static void
 destroy_crypto_session(struct ipsec_unitest_params *ut,
 	uint8_t crypto_dev, uint32_t j)
 {
-	rte_cryptodev_sym_session_clear(crypto_dev, ut->ss[j].crypto.ses);
-	rte_cryptodev_sym_session_free(ut->ss[j].crypto.ses);
+	rte_cryptodev_sym_session_free(crypto_dev, ut->ss[j].crypto.ses);
 	memset(&ut->ss[j], 0, sizeof(ut->ss[j]));
 }
 
@@ -2544,5 +2529,7 @@ test_ipsec(void)
 {
 	return unit_test_suite_runner(&ipsec_testsuite);
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(ipsec_autotest, test_ipsec);

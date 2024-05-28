@@ -34,14 +34,14 @@ Using the option ``mac=fixed`` you can create a fixed known MAC address::
 
 The MAC address will have a fixed value with the last octet incrementing by one
 for each interface string containing ``mac=fixed``. The MAC address is formatted
-as 00:'d':'t':'a':'p':[00-FF]. Convert the characters to hex and you get the
-actual MAC address: ``00:64:74:61:70:[00-FF]``.
+as 02:'d':'t':'a':'p':[00-FF]. Convert the characters to hex and you get the
+actual MAC address: ``02:64:74:61:70:[00-FF]``.
 
-   --vdev=net_tap0,mac="00:64:74:61:70:11"
+   --vdev=net_tap0,mac="02:64:74:61:70:11"
 
 The MAC address will have a user value passed as string. The MAC address is in
 format with delimiter ``:``. The string is byte converted to hex and you get
-the actual MAC address: ``00:64:74:61:70:11``.
+the actual MAC address: ``02:64:74:61:70:11``.
 
 It is possible to specify a remote netdevice to capture packets from by adding
 ``remote=foo1``, for example::
@@ -82,6 +82,12 @@ If you have a Network Stack in your DPDK application or something like it you
 can utilize that stack to handle the network protocols. Plus you would be able
 to address the interface using an IP address assigned to the internal
 interface.
+
+Normally, when the DPDK application exits,
+the TAP device is marked down and is removed.
+But this behaviour can be overridden by the use of the persist flag, example::
+
+  --vdev=net_tap0,iface=tap0,persist ...
 
 The TUN PMD allows user to create a TUN device on host. The PMD allows user
 to transmit and receive packets via DPDK API calls with L3 header and payload.
@@ -298,3 +304,8 @@ Systems supporting flow API
 | Azure Ubuntu 16.04,| No limitation         |
 | kernel 4.13        |                       |
 +--------------------+-----------------------+
+
+Limitations
+-----------
+
+* Rx/Tx must have the same number of queues.

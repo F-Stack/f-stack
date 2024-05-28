@@ -16,7 +16,7 @@
 #include <rte_flow_driver.h>
 #include <rte_tailq.h>
 
-#include <rte_fslmc.h>
+#include <bus_fslmc_driver.h>
 #include <fsl_dpdmux.h>
 #include <fsl_dpkg.h>
 
@@ -336,7 +336,7 @@ dpaa2_create_dpdmux_device(int vdev_fd __rte_unused,
 
 		ret = dpdmux_if_set_errors_behavior(&dpdmux_dev->dpdmux,
 				CMD_PRI_LOW,
-				dpdmux_dev->token, dpdmux_id,
+				dpdmux_dev->token, DPAA2_DPDMUX_DPMAC_IDX,
 				&mux_err_cfg);
 		if (ret) {
 			DPAA2_PMD_ERR("dpdmux_if_set_errors_behavior %s err %d",
@@ -353,8 +353,7 @@ dpaa2_create_dpdmux_device(int vdev_fd __rte_unused,
 	return 0;
 
 init_err:
-	if (dpdmux_dev)
-		rte_free(dpdmux_dev);
+	rte_free(dpdmux_dev);
 
 	return -1;
 }

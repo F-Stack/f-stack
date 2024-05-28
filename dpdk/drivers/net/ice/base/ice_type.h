@@ -1,58 +1,19 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_TYPE_H_
 #define _ICE_TYPE_H_
 
-#define ETH_ALEN	6
-
-#define ETH_HEADER_LEN	14
-
-#define BIT(a) (1UL << (a))
-#define BIT_ULL(a) (1ULL << (a))
-
-#define BITS_PER_BYTE	8
-
-#define _FORCE_
-
-#define ICE_BYTES_PER_WORD	2
-#define ICE_BYTES_PER_DWORD	4
-#define ICE_MAX_TRAFFIC_CLASS	8
-
-/**
- * ROUND_UP - round up to next arbitrary multiple (not a power of 2)
- * @a: value to round up
- * @b: arbitrary multiple
- *
- * Round up to the next multiple of the arbitrary b.
- * Note, when b is a power of 2 use ICE_ALIGN() instead.
- */
-#define ROUND_UP(a, b)	((b) * DIVIDE_AND_ROUND_UP((a), (b)))
-
-#define MIN_T(_t, _a, _b)	min((_t)(_a), (_t)(_b))
-
-#define IS_ASCII(_ch)	((_ch) < 0x80)
-
-#define STRUCT_HACK_VAR_LEN
-/**
- * ice_struct_size - size of struct with C99 flexible array member
- * @ptr: pointer to structure
- * @field: flexible array member (last member of the structure)
- * @num: number of elements of that flexible array member
- */
-#define ice_struct_size(ptr, field, num) \
-	(sizeof(*(ptr)) + sizeof(*(ptr)->field) * (num))
-
-#define FLEX_ARRAY_SIZE(_ptr, _mem, cnt) ((cnt) * sizeof(_ptr->_mem[0]))
-
+#include "ice_defs.h"
 #include "ice_status.h"
 #include "ice_hw_autogen.h"
 #include "ice_devids.h"
 #include "ice_osdep.h"
 #include "ice_bitops.h" /* Must come before ice_controlq.h */
-#include "ice_controlq.h"
 #include "ice_lan_tx_rx.h"
+#include "ice_ddp.h"
+#include "ice_controlq.h"
 #include "ice_flex_type.h"
 #include "ice_protocol_type.h"
 #include "ice_sbq_cmd.h"
@@ -87,11 +48,37 @@ static inline bool ice_is_tc_ena(ice_bitmap_t bitmap, u8 tc)
 	return ice_is_bit_set(&bitmap, tc);
 }
 
-#define DIV_64BIT(n, d) ((n) / (d))
+/**
+ * DIV_S64 - Divide signed 64-bit value with signed 64-bit divisor
+ * @dividend: value to divide
+ * @divisor: value to divide by
+ *
+ * Use DIV_S64 for any 64-bit divide which operates on signed 64-bit dividends.
+ * Do not use this for unsigned 64-bit dividends as it will not produce
+ * correct results if the dividend is larger than S64_MAX.
+ */
+static inline s64 DIV_S64(s64 dividend, s64 divisor)
+{
+	return dividend / divisor;
+}
+
+/**
+ * DIV_U64 - Divide unsigned 64-bit value by unsigned 64-bit divisor
+ * @dividend: value to divide
+ * @divisor: value to divide by
+ *
+ * Use DIV_U64 for any 64-bit divide which operates on unsigned 64-bit
+ * dividends. Do not use this for signed 64-bit dividends as it will not
+ * handle negative values correctly.
+ */
+static inline u64 DIV_U64(u64 dividend, u64 divisor)
+{
+	return dividend / divisor;
+}
 
 static inline u64 round_up_64bit(u64 a, u32 b)
 {
-	return DIV_64BIT(((a) + (b) / 2), (b));
+	return DIV_U64(((a) + (b) / 2), (b));
 }
 
 static inline u32 ice_round_to_num(u32 N, u32 R)
@@ -165,11 +152,6 @@ enum ice_aq_res_ids {
 #define ICE_CHANGE_LOCK_TIMEOUT		1000
 #define ICE_GLOBAL_CFG_LOCK_TIMEOUT	3000
 
-enum ice_aq_res_access_type {
-	ICE_RES_READ = 1,
-	ICE_RES_WRITE
-};
-
 struct ice_driver_ver {
 	u8 major_ver;
 	u8 minor_ver;
@@ -198,7 +180,8 @@ enum ice_fec_mode {
 	ICE_FEC_NONE = 0,
 	ICE_FEC_RS,
 	ICE_FEC_BASER,
-	ICE_FEC_AUTO
+	ICE_FEC_AUTO,
+	ICE_FEC_DIS_AUTO
 };
 
 struct ice_phy_cache_mode_data {
@@ -222,6 +205,7 @@ enum ice_mac_type {
 	ICE_MAC_UNKNOWN = 0,
 	ICE_MAC_E810,
 	ICE_MAC_GENERIC,
+	ICE_MAC_GENERIC_3K,
 };
 
 /* Media Types */
@@ -297,6 +281,15 @@ struct ice_phy_info {
 };
 
 #define ICE_MAX_NUM_MIRROR_RULES	64
+
+#define ICE_L2TPV2_FLAGS_CTRL	0x8000
+#define ICE_L2TPV2_FLAGS_LEN	0x4000
+#define ICE_L2TPV2_FLAGS_SEQ	0x0800
+#define ICE_L2TPV2_FLAGS_OFF	0x0200
+#define ICE_L2TPV2_FLAGS_VER	0x0002
+
+#define ICE_L2TPV2_PKT_LENGTH	6
+#define ICE_PPP_PKT_LENGTH	4
 
 /* protocol enumeration for filters */
 enum ice_fltr_ptype {
@@ -495,6 +488,24 @@ enum ice_fltr_ptype {
 	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_TCP,
 	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_SCTP,
 	ICE_FLTR_PTYPE_NONF_IPV4_UDP_VXLAN_IPV4_OTHER,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_CONTROL,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV4_L2TPV2_PPP_IPV6_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_CONTROL,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP_IPV4,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP_IPV4_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP_IPV4_TCP,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP_IPV6,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP_IPV6_UDP,
+	ICE_FLTR_PTYPE_NONF_IPV6_L2TPV2_PPP_IPV6_TCP,
 	ICE_FLTR_PTYPE_MAX,
 };
 
@@ -610,6 +621,7 @@ struct ice_hw_common_caps {
 #define ICE_EXT_TOPO_DEV_IMG_LOAD_EN	BIT(0)
 	bool ext_topo_dev_img_prog_en[ICE_EXT_TOPO_DEV_IMG_COUNT];
 #define ICE_EXT_TOPO_DEV_IMG_PROG_EN	BIT(1)
+	bool tx_sched_topo_comp_mode_en;
 };
 
 /* IEEE 1588 TIME_SYNC specific info */
@@ -649,13 +661,12 @@ enum ice_clk_src {
 struct ice_ts_func_info {
 	/* Function specific info */
 	enum ice_time_ref_freq time_ref;
-	u8 clk_freq;
-	u8 clk_src;
-	u8 tmr_index_assoc;
-	u8 ena;
-	u8 tmr_index_owned;
-	u8 src_tmr_owned;
-	u8 tmr_ena;
+	u8 clk_src : 1;
+	u8 tmr_index_assoc : 1;
+	u8 ena : 1;
+	u8 tmr_index_owned : 1;
+	u8 src_tmr_owned : 1;
+	u8 tmr_ena : 1;
 };
 
 /* Device specific definitions */
@@ -667,18 +678,19 @@ struct ice_ts_func_info {
 #define ICE_TS_DEV_ENA_M		BIT(24)
 #define ICE_TS_TMR0_ENA_M		BIT(25)
 #define ICE_TS_TMR1_ENA_M		BIT(26)
+#define ICE_TS_LL_TX_TS_READ_M		BIT(28)
 
 struct ice_ts_dev_info {
 	/* Device specific info */
-	u32 ena_ports;
 	u32 tmr_own_map;
-	u32 tmr0_owner;
-	u32 tmr1_owner;
-	u8 tmr0_owned;
-	u8 tmr1_owned;
-	u8 ena;
-	u8 tmr0_ena;
-	u8 tmr1_ena;
+	u8 tmr0_owner;
+	u8 tmr1_owner;
+	u8 tmr0_owned : 1;
+	u8 tmr1_owned : 1;
+	u8 ena : 1;
+	u8 tmr0_ena : 1;
+	u8 tmr1_ena : 1;
+	u8 ts_ll_read : 1;
 };
 
 /* Function specific capabilities */
@@ -1084,10 +1096,6 @@ struct ice_port_info {
 #define ICE_SCHED_PORT_STATE_READY	0x1
 	u8 lport;
 #define ICE_LPORT_MASK			0xff
-	u16 dflt_tx_vsi_rule_id;
-	u16 dflt_tx_vsi_num;
-	u16 dflt_rx_vsi_rule_id;
-	u16 dflt_rx_vsi_num;
 	struct ice_fc_info fc;
 	struct ice_mac_info mac;
 	struct ice_phy_info phy;
@@ -1107,6 +1115,13 @@ struct ice_switch_info {
 	u16 max_used_prof_index;
 
 	ice_declare_bitmap(prof_res_bm[ICE_MAX_NUM_PROFILES], ICE_MAX_FV_WORDS);
+};
+
+/* PHY configuration */
+enum ice_phy_cfg {
+	ICE_PHY_E810 = 1,
+	ICE_PHY_E822,
+	ICE_PHY_ETH56G,
 };
 
 /* Port hardware description */
@@ -1133,6 +1148,7 @@ struct ice_hw {
 	u8 revision_id;
 
 	u8 pf_id;		/* device profile info */
+	enum ice_phy_cfg phy_cfg;
 	u8 logical_pf_id;
 
 	u16 max_burst_size;	/* driver sets this value */
@@ -1199,18 +1215,23 @@ struct ice_hw {
 	/* true if VSIs can share unicast MAC addr */
 	u8 umac_shared;
 
-#define ICE_PHY_PER_NAC		1
-#define ICE_MAX_QUAD		2
-#define ICE_NUM_QUAD_TYPE	2
-#define ICE_PORTS_PER_QUAD	4
-#define ICE_PHY_0_LAST_QUAD	1
-#define ICE_PORTS_PER_PHY	8
-#define ICE_NUM_EXTERNAL_PORTS		ICE_PORTS_PER_PHY
+#define ICE_PHY_PER_NAC_E822		1
+#define ICE_MAX_QUAD			2
+#define ICE_QUADS_PER_PHY_E822		2
+#define ICE_PORTS_PER_PHY_E822		8
+#define ICE_PORTS_PER_QUAD		4
+#define ICE_PORTS_PER_PHY_E810		4
+#define ICE_NUM_EXTERNAL_PORTS		(ICE_MAX_QUAD * ICE_PORTS_PER_QUAD)
+
+	/* bitmap of enabled logical ports */
+	u32 ena_lports;
 
 	/* Active package version (currently active) */
 	struct ice_pkg_ver active_pkg_ver;
 	u32 pkg_seg_id;
+	u32 pkg_sign_type;
 	u32 active_track_id;
+	u8 pkg_has_signing_seg:1;
 	u8 active_pkg_name[ICE_PKG_NAME_SIZE];
 	u8 active_pkg_in_nvm;
 
@@ -1262,7 +1283,7 @@ struct ice_hw {
 	struct LIST_HEAD_TYPE rss_list_head;
 	ice_declare_bitmap(hw_ptype, ICE_FLOW_PTYPE_MAX);
 	u8 dvm_ena;
-	__le16 io_expander_handle;
+	u16 io_expander_handle;
 };
 
 /* Statistics collected by each port, VSI, VEB, and S-channel */
@@ -1419,17 +1440,13 @@ struct ice_aq_get_set_rss_lut_params {
 #define ICE_SR_POR_REGISTERS_AUTOLOAD_PTR	0x118
 
 /* CSS Header words */
+#define ICE_NVM_CSS_HDR_LEN_L			0x02
+#define ICE_NVM_CSS_HDR_LEN_H			0x03
 #define ICE_NVM_CSS_SREV_L			0x14
 #define ICE_NVM_CSS_SREV_H			0x15
 
-/* Length of CSS header section in words */
-#define ICE_CSS_HEADER_LENGTH			330
-
-/* Offset of Shadow RAM copy in the NVM bank area. */
-#define ICE_NVM_SR_COPY_WORD_OFFSET		ROUND_UP(ICE_CSS_HEADER_LENGTH, 32)
-
-/* Size in bytes of Option ROM trailer */
-#define ICE_NVM_OROM_TRAILER_LENGTH		(2 * ICE_CSS_HEADER_LENGTH)
+/* Length of Authentication header section in words */
+#define ICE_NVM_AUTH_HEADER_LEN			0x08
 
 /* The Link Topology Netlist section is stored as a series of words. It is
  * stored in the NVM as a TLV, with the first two words containing the type
@@ -1517,5 +1534,16 @@ struct ice_aq_get_set_rss_lut_params {
 /* AQ API version for report default configuration */
 #define ICE_FW_API_REPORT_DFLT_CFG_MAJ		1
 #define ICE_FW_API_REPORT_DFLT_CFG_MIN		7
+
 #define ICE_FW_API_REPORT_DFLT_CFG_PATCH	3
+
+/* FW version for FEC disable in Auto FEC mode */
+#define ICE_FW_FEC_DIS_AUTO_BRANCH		1
+#define ICE_FW_FEC_DIS_AUTO_MAJ			7
+#define ICE_FW_FEC_DIS_AUTO_MIN			0
+#define ICE_FW_FEC_DIS_AUTO_PATCH		5
+
+/* AQ API version for FW auto drop reports */
+#define ICE_FW_API_AUTO_DROP_MAJ		1
+#define ICE_FW_API_AUTO_DROP_MIN		4
 #endif /* _ICE_TYPE_H_ */

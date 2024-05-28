@@ -10,12 +10,18 @@
 #define ROC_SE_FC_MINOR_OP_ENCRYPT    0x0
 #define ROC_SE_FC_MINOR_OP_DECRYPT    0x1
 #define ROC_SE_FC_MINOR_OP_HMAC_FIRST 0x10
+#define ROC_SE_FC_MINOR_OP_DOCSIS     0x40
 
 #define ROC_SE_MAJOR_OP_HASH	   0x34
 #define ROC_SE_MAJOR_OP_HMAC	   0x35
-#define ROC_SE_MAJOR_OP_ZUC_SNOW3G 0x37
+#define ROC_SE_MAJOR_OP_PDCP	   0x37
 #define ROC_SE_MAJOR_OP_KASUMI	   0x38
-#define ROC_SE_MAJOR_OP_MISC	   0x01
+#define ROC_SE_MAJOR_OP_PDCP_CHAIN 0x3C
+
+#define ROC_SE_MAJOR_OP_MISC		 0x01ULL
+#define ROC_SE_MISC_MINOR_OP_PASSTHROUGH 0x03ULL
+#define ROC_SE_MISC_MINOR_OP_DUMMY	 0x04ULL
+#define ROC_SE_MISC_MINOR_OP_HW_SUPPORT	 0x08ULL
 
 #define ROC_SE_MAX_AAD_SIZE 64
 #define ROC_SE_MAX_MAC_LEN  64
@@ -34,10 +40,11 @@
 #define ROC_SE_K_F8  0x4
 #define ROC_SE_K_F9  0x8
 
-#define ROC_SE_FC_GEN	 0x1
-#define ROC_SE_PDCP	 0x2
-#define ROC_SE_KASUMI	 0x3
-#define ROC_SE_HASH_HMAC 0x4
+#define ROC_SE_FC_GEN	  0x1
+#define ROC_SE_PDCP	  0x2
+#define ROC_SE_KASUMI	  0x3
+#define ROC_SE_HASH_HMAC  0x4
+#define ROC_SE_PDCP_CHAIN 0x5
 
 #define ROC_SE_OP_CIPHER_ENCRYPT 0x1
 #define ROC_SE_OP_CIPHER_DECRYPT 0x2
@@ -119,6 +126,8 @@ typedef enum {
 	ROC_SE_AES_CTR_EEA2 = 0x92,
 	ROC_SE_KASUMI_F8_CBC = 0x93,
 	ROC_SE_KASUMI_F8_ECB = 0x94,
+	ROC_SE_AES_DOCSISBPI = 0x95,
+	ROC_SE_DES_DOCSISBPI = 0x96,
 } roc_se_cipher_type;
 
 typedef enum {
@@ -174,6 +183,17 @@ struct roc_se_sglist_comp {
 	uint64_t ptr[4];
 };
 
+struct roc_se_sg2list_comp {
+	union {
+		uint64_t len;
+		struct {
+			uint16_t len[3];
+			uint16_t valid_segs;
+		} s;
+	} u;
+	uint64_t ptr[3];
+};
+
 struct roc_se_enc_context {
 	uint64_t iv_source : 1;
 	uint64_t aes_key : 2;
@@ -220,6 +240,42 @@ struct roc_se_onk_zuc_ctx {
 	uint8_t zuc_const[32];
 };
 
+struct roc_se_onk_zuc_chain_ctx {
+	union {
+		uint64_t u64;
+		struct {
+			uint64_t cipher_type : 2;
+			uint64_t rsvd58_59 : 2;
+			uint64_t auth_type : 2;
+			uint64_t rsvd62_63 : 2;
+			uint64_t mac_len : 4;
+			uint64_t ci_key_len : 2;
+			uint64_t auth_key_len : 2;
+			uint64_t rsvd42_47 : 6;
+			uint64_t state_conf : 2;
+			uint64_t rsvd0_39 : 40;
+		} s;
+	} w0;
+	union {
+		struct {
+			uint8_t encr_lfsr_state[64];
+			uint8_t auth_lfsr_state[64];
+		};
+		struct {
+			uint8_t ci_key[32];
+			uint8_t ci_zuc_const[32];
+			uint8_t auth_key[32];
+			uint8_t auth_zuc_const[32];
+		};
+	} st;
+};
+
+struct roc_se_zuc_snow3g_chain_ctx {
+	union {
+		struct roc_se_onk_zuc_chain_ctx onk_ctx;
+	} zuc;
+};
+
 struct roc_se_zuc_snow3g_ctx {
 	union {
 		struct roc_se_onk_zuc_ctx onk_ctx;
@@ -242,11 +298,45 @@ struct roc_se_buf_ptr {
 /* IOV Pointer */
 struct roc_se_iov_ptr {
 	int buf_cnt;
-	struct roc_se_buf_ptr bufs[0];
+	struct roc_se_buf_ptr bufs[];
+};
+
+#define ROC_SE_PDCP_ALG_TYPE_ZUC	  0
+#define ROC_SE_PDCP_ALG_TYPE_SNOW3G	  1
+#define ROC_SE_PDCP_ALG_TYPE_AES_CTR	  2
+#define ROC_SE_PDCP_ALG_TYPE_AES_CMAC	  3
+#define ROC_SE_PDCP_CHAIN_ALG_TYPE_SNOW3G 1
+#define ROC_SE_PDCP_CHAIN_ALG_TYPE_ZUC	  3
+
+#define ROC_SE_PDCP_CHAIN_CTX_LFSR   0
+#define ROC_SE_PDCP_CHAIN_CTX_KEY_IV 1
+
+struct roc_se_ctx {
+	/* Below fields are accessed by sw */
+	uint64_t enc_cipher : 8;
+	uint64_t hash_type : 8;
+	uint64_t mac_len : 8;
+	uint64_t auth_key_len : 16;
+	uint64_t fc_type : 4;
+	uint64_t hmac : 1;
+	uint64_t zsk_flags : 3;
+	uint64_t k_ecb : 1;
+	uint64_t pdcp_ci_alg : 2;
+	uint64_t pdcp_auth_alg : 2;
+	uint64_t ciph_then_auth : 1;
+	uint64_t auth_then_ciph : 1;
+	union cpt_inst_w4 template_w4;
+	/* Below fields are accessed by hardware */
+	union {
+		struct roc_se_context fctx;
+		struct roc_se_zuc_snow3g_ctx zs_ctx;
+		struct roc_se_zuc_snow3g_chain_ctx zs_ch_ctx;
+		struct roc_se_kasumi_ctx k_ctx;
+	} se_ctx;
+	uint8_t *auth_key;
 };
 
 struct roc_se_fc_params {
-	/* 0th cache line */
 	union {
 		struct roc_se_buf_ptr bufs[1];
 		struct {
@@ -256,45 +346,13 @@ struct roc_se_fc_params {
 	};
 	void *iv_buf;
 	void *auth_iv_buf;
+	struct roc_se_ctx *ctx;
 	struct roc_se_buf_ptr meta_buf;
-	struct roc_se_buf_ptr ctx_buf;
-	uint32_t rsvd2;
-	uint8_t rsvd3;
-	uint8_t iv_ovr;
 	uint8_t cipher_iv_len;
 	uint8_t auth_iv_len;
 
-	/* 1st cache line */
-	struct roc_se_buf_ptr aad_buf __plt_cache_aligned;
+	struct roc_se_buf_ptr aad_buf;
 	struct roc_se_buf_ptr mac_buf;
-};
-
-PLT_STATIC_ASSERT((offsetof(struct roc_se_fc_params, aad_buf) % 128) == 0);
-
-#define ROC_SE_PDCP_ALG_TYPE_ZUC     0
-#define ROC_SE_PDCP_ALG_TYPE_SNOW3G  1
-#define ROC_SE_PDCP_ALG_TYPE_AES_CTR 2
-
-struct roc_se_ctx {
-	/* Below fields are accessed by sw */
-	uint64_t enc_cipher : 8;
-	uint64_t hash_type : 8;
-	uint64_t mac_len : 8;
-	uint64_t auth_key_len : 8;
-	uint64_t fc_type : 4;
-	uint64_t hmac : 1;
-	uint64_t zsk_flags : 3;
-	uint64_t k_ecb : 1;
-	uint64_t pdcp_alg_type : 2;
-	uint64_t rsvd : 21;
-	union cpt_inst_w4 template_w4;
-	/* Below fields are accessed by hardware */
-	union {
-		struct roc_se_context fctx;
-		struct roc_se_zuc_snow3g_ctx zs_ctx;
-		struct roc_se_kasumi_ctx k_ctx;
-	} se_ctx;
-	uint8_t *auth_key;
 };
 
 static inline void

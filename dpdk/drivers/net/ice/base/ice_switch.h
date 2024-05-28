@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_SWITCH_H_
 #define _ICE_SWITCH_H_
 
-#include "ice_common.h"
+#include "ice_type.h"
 #include "ice_protocol_type.h"
 
 #define ICE_SW_CFG_MAX_BUF_LEN 2048
@@ -28,7 +28,10 @@
 #define ICE_PROFID_PPPOE_IPV6_UDP	39
 #define ICE_PROFID_PPPOE_IPV6_OTHER	40
 #define ICE_PROFID_IPV4_GTPC_TEID	41
+#define ICE_PROFID_IPV4_GTPC_NO_TEID		42
 #define ICE_PROFID_IPV4_GTPU_TEID		43
+#define ICE_PROFID_IPV6_GTPC_TEID		44
+#define ICE_PROFID_IPV6_GTPC_NO_TEID		45
 #define ICE_PROFID_IPV6_GTPU_TEID		46
 #define ICE_PROFID_IPV4_GTPU_EH_IPV4_OTHER	47
 #define ICE_PROFID_IPV4_GTPU_IPV4_OTHER		48
@@ -486,6 +489,8 @@ void ice_remove_vsi_fltr(struct ice_hw *hw, u16 vsi_handle);
 enum ice_status
 ice_cfg_dflt_vsi(struct ice_port_info *pi, u16 vsi_handle, bool set,
 		 u8 direction);
+bool ice_check_if_dflt_vsi(struct ice_port_info *pi, u16 vsi_handle,
+			   bool *rule_exists);
 enum ice_status
 ice_set_vsi_promisc(struct ice_hw *hw, u16 vsi_handle, u8 promisc_mask,
 		    u16 vid);

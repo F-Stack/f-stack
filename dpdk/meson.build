@@ -7,17 +7,19 @@ project('DPDK', 'C',
         version: run_command(find_program('cat', 'more'),
             files('VERSION'), check: true).stdout().strip(),
         license: 'BSD',
-        default_options: ['buildtype=release', 'default_library=static'],
-        meson_version: '>= 0.49.2'
+        default_options: [
+            'buildtype=release',
+            'default_library=static',
+            'warning_level=2',
+        ],
+        meson_version: '>= 0.53.2'
 )
 
 # check for developer mode
 developer_mode = false
 if get_option('developer_mode').auto()
-    if meson.version().version_compare('>=0.53') # fs module available
-        fs = import('fs')
-        developer_mode = fs.is_dir('.git')
-    endif
+    fs = import('fs')
+    developer_mode = fs.exists('.git')
 else
     developer_mode = get_option('developer_mode').enabled()
 endif
@@ -30,22 +32,33 @@ cc = meson.get_compiler('c')
 dpdk_source_root = meson.current_source_dir()
 dpdk_build_root = meson.current_build_dir()
 dpdk_conf = configuration_data()
+dpdk_includes = []
 dpdk_libraries = []
 dpdk_static_libraries = []
+dpdk_shared_lib_deps = []
+dpdk_static_lib_deps = []
 dpdk_chkinc_headers = []
 dpdk_driver_classes = []
 dpdk_drivers = []
 dpdk_extra_ldflags = []
+dpdk_libs_deprecated = []
+dpdk_apps_disabled = []
 dpdk_libs_disabled = []
 dpdk_drvs_disabled = []
+testpmd_drivers_sources = []
+testpmd_drivers_deps = []
 abi_version_file = files('ABI_VERSION')
 
 if host_machine.cpu_family().startswith('x86')
     arch_subdir = 'x86'
 elif host_machine.cpu_family().startswith('arm') or host_machine.cpu_family().startswith('aarch')
     arch_subdir = 'arm'
+elif host_machine.cpu_family().startswith('loongarch')
+    arch_subdir = 'loongarch'
 elif host_machine.cpu_family().startswith('ppc')
     arch_subdir = 'ppc'
+elif host_machine.cpu_family().startswith('riscv')
+    arch_subdir = 'riscv'
 endif
 
 # configure the build, and make sure configs here and in config folder are
@@ -99,8 +112,25 @@ configure_file(output: build_cfg,
 # build pkg-config files for dpdk
 subdir('buildtools/pkg-config')
 
-# final output, list all the libs and drivers to be built
-# this does not affect any part of the build, for information only.
+if meson.is_subproject()
+    subdir('buildtools/subproject')
+endif
+
+# Final output, list all the parts to be built.
+# This does not affect any part of the build, for information only.
+output_message = '\n=================\nApplications Enabled\n=================\n'
+output_message += '\napps:\n\t'
+output_count = 0
+foreach app:enabled_apps
+    output_message += app + ', '
+    output_count += 1
+    if output_count == 8
+        output_message += '\n\t'
+        output_count = 0
+    endif
+endforeach
+message(output_message + '\n')
+
 output_message = '\n=================\nLibraries Enabled\n=================\n'
 output_message += '\nlibs:\n\t'
 output_count = 0
@@ -131,6 +161,11 @@ endforeach
 message(output_message + '\n')
 
 output_message = '\n=================\nContent Skipped\n=================\n'
+output_message += '\napps:\n\t'
+foreach app:dpdk_apps_disabled
+    reason = get_variable(app.underscorify() + '_disable_reason')
+    output_message += app + ':\t' + reason + '\n\t'
+endforeach
 output_message += '\nlibs:\n\t'
 foreach lib:dpdk_libs_disabled
     reason = get_variable(lib.underscorify() + '_disable_reason')

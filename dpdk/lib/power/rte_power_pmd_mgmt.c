@@ -2,6 +2,8 @@
  * Copyright(c) 2020 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <rte_lcore.h>
 #include <rte_cycles.h>
 #include <rte_cpuflags.h>
@@ -10,8 +12,12 @@
 #include <rte_power_intrinsics.h>
 
 #include "rte_power_pmd_mgmt.h"
+#include "power_common.h"
 
-#define EMPTYPOLL_MAX  512
+unsigned int emptypoll_max;
+unsigned int pause_duration;
+unsigned int scale_freq_min[RTE_MAX_LCORE];
+unsigned int scale_freq_max[RTE_MAX_LCORE];
 
 /* store some internal state */
 static struct pmd_conf_data {
@@ -206,7 +212,7 @@ queue_can_sleep(struct pmd_core_cfg *cfg, struct queue_list_entry *qcfg)
 	qcfg->n_empty_polls++;
 
 	/* if we haven't reached threshold for empty polls, we can't sleep */
-	if (qcfg->n_empty_polls <= EMPTYPOLL_MAX)
+	if (qcfg->n_empty_polls <= emptypoll_max)
 		return false;
 
 	/*
@@ -290,7 +296,7 @@ clb_umwait(uint16_t port_id, uint16_t qidx, struct rte_mbuf **pkts __rte_unused,
 	/* this callback can't do more than one queue, omit multiqueue logic */
 	if (unlikely(nb_rx == 0)) {
 		queue_conf->n_empty_polls++;
-		if (unlikely(queue_conf->n_empty_polls > EMPTYPOLL_MAX)) {
+		if (unlikely(queue_conf->n_empty_polls > emptypoll_max)) {
 			struct rte_power_monitor_cond pmc;
 			int ret;
 
@@ -315,6 +321,7 @@ clb_pause(uint16_t port_id __rte_unused, uint16_t qidx __rte_unused,
 	struct queue_list_entry *queue_conf = arg;
 	struct pmd_core_cfg *lcore_conf;
 	const bool empty = nb_rx == 0;
+	uint32_t pause_duration = rte_power_pmd_mgmt_get_pause_duration();
 
 	lcore_conf = &lcore_cfgs[lcore];
 
@@ -334,11 +341,11 @@ clb_pause(uint16_t port_id __rte_unused, uint16_t qidx __rte_unused,
 		if (global_data.intrinsics_support.power_pause) {
 			const uint64_t cur = rte_rdtsc();
 			const uint64_t wait_tsc =
-					cur + global_data.tsc_per_us;
+					cur + global_data.tsc_per_us * pause_duration;
 			rte_power_pause(wait_tsc);
 		} else {
 			uint64_t i;
-			for (i = 0; i < global_data.pause_per_us; i++)
+			for (i = 0; i < global_data.pause_per_us * pause_duration; i++)
 				rte_pause();
 		}
 	}
@@ -661,12 +668,120 @@ rte_power_ethdev_pmgmt_queue_disable(unsigned int lcore_id,
 	return 0;
 }
 
+void
+rte_power_pmd_mgmt_set_emptypoll_max(unsigned int max)
+{
+	emptypoll_max = max;
+}
+
+unsigned int
+rte_power_pmd_mgmt_get_emptypoll_max(void)
+{
+	return emptypoll_max;
+}
+
+int
+rte_power_pmd_mgmt_set_pause_duration(unsigned int duration)
+{
+	if (duration == 0) {
+		RTE_LOG(ERR, POWER, "Pause duration must be greater than 0, value unchanged");
+		return -EINVAL;
+	}
+	pause_duration = duration;
+
+	return 0;
+}
+
+unsigned int
+rte_power_pmd_mgmt_get_pause_duration(void)
+{
+	return pause_duration;
+}
+
+int
+rte_power_pmd_mgmt_set_scaling_freq_min(unsigned int lcore, unsigned int min)
+{
+	if (lcore >= RTE_MAX_LCORE) {
+		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		return -EINVAL;
+	}
+
+	if (min > scale_freq_max[lcore]) {
+		RTE_LOG(ERR, POWER, "Invalid min frequency: Cannot be greater than max frequency");
+		return -EINVAL;
+	}
+	scale_freq_min[lcore] = min;
+
+	return 0;
+}
+
+int
+rte_power_pmd_mgmt_set_scaling_freq_max(unsigned int lcore, unsigned int max)
+{
+	if (lcore >= RTE_MAX_LCORE) {
+		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		return -EINVAL;
+	}
+
+	/* Zero means 'not set'. Use UINT32_MAX to enable RTE_MIN/MAX macro use when scaling. */
+	if (max == 0)
+		max = UINT32_MAX;
+	if (max < scale_freq_min[lcore]) {
+		RTE_LOG(ERR, POWER, "Invalid max frequency: Cannot be less than min frequency");
+		return -EINVAL;
+	}
+
+	scale_freq_max[lcore] = max;
+
+	return 0;
+}
+
+int
+rte_power_pmd_mgmt_get_scaling_freq_min(unsigned int lcore)
+{
+	if (lcore >= RTE_MAX_LCORE) {
+		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		return -EINVAL;
+	}
+
+	if (scale_freq_max[lcore] == 0)
+		RTE_LOG(DEBUG, POWER, "Scaling freq min config not set. Using sysfs min freq.\n");
+
+	return scale_freq_min[lcore];
+}
+
+int
+rte_power_pmd_mgmt_get_scaling_freq_max(unsigned int lcore)
+{
+	if (lcore >= RTE_MAX_LCORE) {
+		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		return -EINVAL;
+	}
+
+	if (scale_freq_max[lcore] == UINT32_MAX) {
+		RTE_LOG(DEBUG, POWER, "Scaling freq max config not set. Using sysfs max freq.\n");
+		return 0;
+	}
+
+	return scale_freq_max[lcore];
+}
+
 RTE_INIT(rte_power_ethdev_pmgmt_init) {
 	size_t i;
+	int j;
 
 	/* initialize all tailqs */
 	for (i = 0; i < RTE_DIM(lcore_cfgs); i++) {
 		struct pmd_core_cfg *cfg = &lcore_cfgs[i];
 		TAILQ_INIT(&cfg->head);
+	}
+
+	/* initialize config defaults */
+	emptypoll_max = 512;
+	pause_duration = 1;
+	/* scaling defaults out of range to ensure not used unless set by user or app */
+	for (j = 0; j < RTE_MAX_LCORE; j++) {
+		scale_freq_min[j] = 0;
+		scale_freq_max[j] = UINT32_MAX;
 	}
 }

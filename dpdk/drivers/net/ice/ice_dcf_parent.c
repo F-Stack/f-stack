@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2020 Intel Corporation
  */
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <pthread.h>
@@ -123,6 +124,9 @@ ice_dcf_vsi_update_service_handler(void *param)
 		container_of(hw, struct ice_dcf_adapter, real_hw);
 	struct ice_adapter *parent_adapter = &adapter->parent;
 
+	__atomic_fetch_add(&hw->vsi_update_thread_num, 1,
+		__ATOMIC_RELAXED);
+
 	pthread_detach(pthread_self());
 
 	rte_delay_us(ICE_DCF_VSI_UPDATE_SERVICE_INTERVAL);
@@ -152,6 +156,9 @@ ice_dcf_vsi_update_service_handler(void *param)
 	rte_spinlock_unlock(&vsi_update_lock);
 
 	free(param);
+
+	__atomic_fetch_sub(&hw->vsi_update_thread_num, 1,
+		__ATOMIC_RELEASE);
 
 	return NULL;
 }
@@ -465,6 +472,9 @@ ice_dcf_init_parent_adapter(struct rte_eth_dev *eth_dev)
 			parent_adapter->pf.main_vsi->idx, hw->pf_vsi_id);
 
 	ice_dcf_update_vf_vsi_map(parent_hw, hw->num_vfs, hw->vf_vsi_map);
+
+	if (ice_devargs_check(eth_dev->device->devargs, ICE_DCF_DEVARG_ACL))
+		parent_adapter->disabled_engine_mask |= BIT(ICE_FLOW_ENGINE_ACL);
 
 	err = ice_flow_init(parent_adapter);
 	if (err) {

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ *   Copyright 2016-2022 NXP
  *
  */
 #include <unistd.h>
@@ -30,10 +30,10 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include <fslmc_logs.h>
-#include <rte_fslmc.h>
+#include <bus_fslmc_driver.h>
 #include "dpaa2_hw_pvt.h"
 #include "dpaa2_hw_dpio.h"
 #include <mc/fsl_dpmng.h>
@@ -149,8 +149,7 @@ dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int cpu_id)
 	if (!token) {
 		DPAA2_BUS_WARN("Failed to get interrupt id for dpio.%d",
 			       dpio_id);
-		if (temp)
-			free(temp);
+		free(temp);
 		fclose(file);
 		return;
 	}
@@ -574,8 +573,7 @@ dpaa2_free_dq_storage(struct queue_storage_info_t *q_storage)
 	int i = 0;
 
 	for (i = 0; i < NUM_DQS_PER_QUEUE; i++) {
-		if (q_storage->dq_storage[i])
-			rte_free(q_storage->dq_storage[i]);
+		rte_free(q_storage->dq_storage[i]);
 	}
 }
 
@@ -616,7 +614,7 @@ dpaa2_free_eq_descriptors(void)
 
 		if (qbman_result_eqresp_rc(eqresp)) {
 			txq = eqresp_meta->dpaa2_q;
-			txq->cb_eqresp_free(dpio_dev->eqresp_ci);
+			txq->cb_eqresp_free(dpio_dev->eqresp_ci, txq);
 		}
 		qbman_result_eqresp_set_rspid(eqresp, 0);
 

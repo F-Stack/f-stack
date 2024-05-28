@@ -12,7 +12,6 @@
 #include <sys/ioctl.h>
 #include <linux/version.h>
 
-#include <rte_spinlock.h>
 #include <rte_string_fns.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
@@ -20,7 +19,6 @@
 #include <rte_kni.h>
 #include <rte_memzone.h>
 #include <rte_tailq.h>
-#include <rte_rwlock.h>
 #include <rte_eal_memconfig.h>
 #include <rte_kni_common.h>
 #include "rte_kni_fifo.h"
@@ -98,6 +96,8 @@ static volatile int kni_fd = -1;
 int
 rte_kni_init(unsigned int max_kni_ifaces __rte_unused)
 {
+	RTE_LOG(WARNING, KNI, "WARNING: KNI is deprecated and will be removed in DPDK 23.11\n");
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 	if (rte_eal_iova_mode() != RTE_IOVA_PA) {
 		RTE_LOG(ERR, KNI, "KNI requires IOVA as PA\n");
@@ -359,8 +359,7 @@ static void *
 va2pa(struct rte_mbuf *m)
 {
 	return (void *)((unsigned long)m -
-			((unsigned long)m->buf_addr -
-			 (unsigned long)m->buf_iova));
+			((unsigned long)m->buf_addr - (unsigned long)rte_mbuf_iova_get(m)));
 }
 
 static void *
@@ -635,8 +634,8 @@ rte_kni_rx_burst(struct rte_kni *kni, struct rte_mbuf **mbufs, unsigned int num)
 {
 	unsigned int ret = kni_fifo_get(kni->tx_q, (void **)mbufs, num);
 
-	/* If buffers removed, allocate mbufs and then put them into alloc_q */
-	if (ret)
+	/* If buffers removed or alloc_q is empty, allocate mbufs and then put them into alloc_q */
+	if (ret || (kni_fifo_count(kni->alloc_q) == 0))
 		kni_allocate_mbufs(kni);
 
 	return ret;

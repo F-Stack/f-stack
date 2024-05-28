@@ -174,16 +174,17 @@ Supports receiving segmented mbufs.
 
 .. _nic_features_buffer_split:
 
-Buffer Split on Rx
+Buffer split on Rx
 ------------------
 
 Scatters the packets being received on specified boundaries to segmented mbufs.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT``.
 * **[uses]       rte_eth_rxconf**: ``rx_conf.rx_seg, rx_conf.rx_nseg``.
+* **[implements] eth_dev_ops**: ``buffer_split_supported_hdr_ptypes_get``,
 * **[implements] datapath**: ``Buffer Split functionality``.
 * **[provides]   rte_eth_dev_info**: ``rx_offload_capa:RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT``.
-* **[related] API**: ``rte_eth_rx_queue_setup()``.
+* **[related] API**: ``rte_eth_rx_queue_setup()``, ``rte_eth_buffer_split_get_supported_hdr_ptypes()``.
 
 
 .. _nic_features_lro:
@@ -379,9 +380,12 @@ Flow control
 Supports configuring link flow control.
 
 * **[implements] eth_dev_ops**: ``flow_ctrl_get``, ``flow_ctrl_set``,
-  ``priority_flow_ctrl_set``.
+  ``priority_flow_ctrl_set``, ``priority_flow_ctrl_queue_info_get``,
+  ``priority_flow_ctrl_queue_configure``
 * **[related]    API**: ``rte_eth_dev_flow_ctrl_get()``, ``rte_eth_dev_flow_ctrl_set()``,
-  ``rte_eth_dev_priority_flow_ctrl_set()``.
+  ``rte_eth_dev_priority_flow_ctrl_set()``,
+  ``rte_eth_dev_priority_flow_ctrl_queue_info_get()``,
+  ``rte_eth_dev_priority_flow_ctrl_queue_configure()``.
 
 
 .. _nic_features_rate_limitation:
@@ -428,9 +432,9 @@ protocol operations. See security library and PMD documentation for more details
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:RTE_ETH_RX_OFFLOAD_SECURITY``,
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:RTE_ETH_TX_OFFLOAD_SECURITY``.
-* **[uses]       mbuf**: ``mbuf.l2_len``.
+* **[uses]       mbuf**: ``mbuf.l2_len``, ``mbuf.l3_len``, ``mbuf.ol_flags``.
 * **[implements] rte_security_ops**: ``session_create``, ``session_update``,
-  ``session_stats_get``, ``session_destroy``, ``set_pkt_metadata``, ``get_userdata``,
+  ``session_stats_get``, ``session_destroy``, ``set_pkt_metadata``,
   ``capabilities_get``.
 * **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:RTE_ETH_RX_OFFLOAD_SECURITY``,
   ``tx_offload_capa,tx_queue_offload_capa:RTE_ETH_TX_OFFLOAD_SECURITY``.
@@ -498,6 +502,19 @@ improves signal quality but also brings a delay to signals. This function can be
 * **[implements] eth_dev_ops**: ``fec_get_capability``, ``fec_get``, ``fec_set``.
 * **[provides]   rte_eth_fec_capa**: ``speed:RTE_ETH_SPEED_NUM_*``, ``capa:RTE_ETH_FEC_MODE_TO_CAPA()``.
 * **[related]    API**: ``rte_eth_fec_get_capability()``, ``rte_eth_fec_get()``, ``rte_eth_fec_set()``.
+
+
+.. _nic_features_ip_reassembly:
+
+IP reassembly
+-------------
+
+Supports IP reassembly in hardware.
+
+* **[provides] eth_dev_ops**: ``ip_reassembly_capability_get``,
+  ``ip_reassembly_conf_get``, ``ip_reassembly_conf_set``.
+* **[related]    API**: ``rte_eth_ip_reassembly_capability_get()``,
+  ``rte_eth_ip_reassembly_conf_get()``, ``rte_eth_ip_reassembly_conf_set()``.
 
 
 .. _nic_features_l3_checksum_offload:
@@ -711,6 +728,18 @@ Supports configuring per-queue stat counter mapping.
   ``rte_eth_dev_set_tx_queue_stats_mapping()``.
 
 
+.. _nic_features_congestion_management:
+
+Congestion management
+---------------------
+
+Supports congestion management.
+
+* **[implements] eth_dev_ops**: ``cman_info_get``, ``cman_config_set``, ``cman_config_get``.
+* **[related]    API**: ``rte_eth_cman_info_get()``, ``rte_eth_cman_config_init()``,
+  ``rte_eth_cman_config_set()``, ``rte_eth_cman_config_get()``.
+
+
 .. _nic_features_fw_version:
 
 FW version
@@ -816,6 +845,14 @@ ARMv8
 Support armv8a (64bit) architecture.
 
 
+.. _nic_features_loongarch64:
+
+LoongArch64
+-----------
+
+Support 64-bit LoongArch architecture.
+
+
 .. _nic_features_power8:
 
 Power8
@@ -825,6 +862,12 @@ Support PowerPC architecture.
 
 
 .. _nic_features_x86-32:
+
+rv64
+----
+
+Support 64-bit RISC-V architecture.
+
 
 x86-32
 ------
@@ -838,7 +881,6 @@ x86-64
 ------
 
 Support 64bits x86 architecture.
-
 
 .. _nic_features_usage_doc:
 

@@ -179,12 +179,16 @@ static const struct rte_txgbe_xstats_name_off rte_txgbe_stats_strings[] = {
 	HW_XSTAT(tx_total_packets),
 	HW_XSTAT(rx_total_missed_packets),
 	HW_XSTAT(rx_broadcast_packets),
+	HW_XSTAT(tx_broadcast_packets),
 	HW_XSTAT(rx_multicast_packets),
+	HW_XSTAT(tx_multicast_packets),
 	HW_XSTAT(rx_management_packets),
 	HW_XSTAT(tx_management_packets),
 	HW_XSTAT(rx_management_dropped),
+	HW_XSTAT(rx_dma_drop),
 
 	/* Basic Error */
+	HW_XSTAT(rx_rdb_drop),
 	HW_XSTAT(rx_crc_errors),
 	HW_XSTAT(rx_illegal_byte_errors),
 	HW_XSTAT(rx_error_bytes),
@@ -192,7 +196,7 @@ static const struct rte_txgbe_xstats_name_off rte_txgbe_stats_strings[] = {
 	HW_XSTAT(rx_length_errors),
 	HW_XSTAT(rx_undersize_errors),
 	HW_XSTAT(rx_fragment_errors),
-	HW_XSTAT(rx_oversize_errors),
+	HW_XSTAT(rx_oversize_cnt),
 	HW_XSTAT(rx_jabber_errors),
 	HW_XSTAT(rx_l3_l4_xsum_error),
 	HW_XSTAT(mac_local_errors),
@@ -541,6 +545,7 @@ null:
 static int
 eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 {
+	struct txgbe_adapter *ad = eth_dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct txgbe_hw *hw = TXGBE_DEV_HW(eth_dev);
 	struct txgbe_vfta *shadow_vfta = TXGBE_DEV_VFTA(eth_dev);
@@ -589,12 +594,27 @@ eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		return 0;
 	}
 
+	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+
+	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
-	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
+	if (pci_dev->id.subsystem_vendor_id == PCI_VENDOR_ID_WANGXUN) {
+		hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
+	} else {
+		u32 ssid;
+
+		ssid = txgbe_flash_read_dword(hw, 0xFFFDC);
+		if (ssid == 0x1) {
+			PMD_INIT_LOG(ERR,
+				"Read of internal subsystem device id failed\n");
+			return -ENODEV;
+		}
+		hw->subsystem_device_id = (u16)ssid >> 8 | (u16)ssid << 8;
+	}
 	hw->allow_unsupported_sfp = 1;
 
 	/* Reserve memory for interrupt status block */
@@ -821,10 +841,8 @@ static int txgbe_fdir_filter_uninit(struct rte_eth_dev *eth_dev)
 	struct txgbe_hw_fdir_info *fdir_info = TXGBE_DEV_FDIR(eth_dev);
 	struct txgbe_fdir_filter *fdir_filter;
 
-	if (fdir_info->hash_map)
-		rte_free(fdir_info->hash_map);
-	if (fdir_info->hash_handle)
-		rte_hash_free(fdir_info->hash_handle);
+	rte_free(fdir_info->hash_map);
+	rte_hash_free(fdir_info->hash_handle);
 
 	while ((fdir_filter = TAILQ_FIRST(&fdir_info->fdir_list))) {
 		TAILQ_REMOVE(&fdir_info->fdir_list,
@@ -841,10 +859,8 @@ static int txgbe_l2_tn_filter_uninit(struct rte_eth_dev *eth_dev)
 	struct txgbe_l2_tn_info *l2_tn_info = TXGBE_DEV_L2_TN(eth_dev);
 	struct txgbe_l2_tn_filter *l2_tn_filter;
 
-	if (l2_tn_info->hash_map)
-		rte_free(l2_tn_info->hash_map);
-	if (l2_tn_info->hash_handle)
-		rte_hash_free(l2_tn_info->hash_handle);
+	rte_free(l2_tn_info->hash_map);
+	rte_hash_free(l2_tn_info->hash_handle);
 
 	while ((l2_tn_filter = TAILQ_FIRST(&l2_tn_info->l2_tn_list))) {
 		TAILQ_REMOVE(&l2_tn_info->l2_tn_list,
@@ -1518,6 +1534,25 @@ txgbe_dev_configure(struct rte_eth_dev *dev)
 	return 0;
 }
 
+static void txgbe_reinit_gpio_intr(struct txgbe_hw *hw)
+{
+	u32 reg;
+
+	wr32(hw, TXGBE_GPIOINTMASK, 0xFF);
+	reg = rd32(hw, TXGBE_GPIORAWINTSTAT);
+
+	if (reg & TXGBE_GPIOBIT_2)
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_2);
+
+	if (reg & TXGBE_GPIOBIT_3)
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_3);
+
+	if (reg & TXGBE_GPIOBIT_6)
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_6);
+
+	wr32(hw, TXGBE_GPIOINTMASK, 0);
+}
+
 static void
 txgbe_dev_phy_intr_setup(struct rte_eth_dev *dev)
 {
@@ -1635,7 +1670,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Stop the link setup handler before resetting the HW. */
-	rte_eal_alarm_cancel(txgbe_dev_setup_link_alarm_handler, dev);
+	txgbe_dev_wait_setup_link_complete(dev, 0);
 
 	/* disable uio/vfio intr/eventfd mapping */
 	rte_intr_disable(intr_handle);
@@ -1655,6 +1690,10 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 	hw->mac.start_hw(hw);
 	hw->mac.get_link_status = true;
 	hw->dev_start = true;
+
+	/* workaround for GPIO intr lost when mng_veto bit is set */
+	if (txgbe_check_reset_blocked(hw))
+		txgbe_reinit_gpio_intr(hw);
 
 	/* configure PF module if SRIOV enabled */
 	txgbe_pf_host_configure(dev);
@@ -1709,7 +1748,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 	txgbe_configure_port(dev);
 	txgbe_configure_dcb(dev);
 
-	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_NONE) {
+	if (TXGBE_DEV_FDIR_CONF(dev)->mode != RTE_FDIR_MODE_NONE) {
 		err = txgbe_fdir_configure(dev);
 		if (err)
 			goto error;
@@ -1774,6 +1813,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 		speed = (TXGBE_LINK_SPEED_100M_FULL |
 			 TXGBE_LINK_SPEED_1GB_FULL |
 			 TXGBE_LINK_SPEED_10GB_FULL);
+		hw->autoneg = true;
 	} else {
 		if (*link_speeds & RTE_ETH_LINK_SPEED_10G)
 			speed |= TXGBE_LINK_SPEED_10GB_FULL;
@@ -1785,6 +1825,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 			speed |= TXGBE_LINK_SPEED_1GB_FULL;
 		if (*link_speeds & RTE_ETH_LINK_SPEED_100M)
 			speed |= TXGBE_LINK_SPEED_100M_FULL;
+		hw->autoneg = false;
 	}
 
 	err = hw->mac.setup_link(hw, speed, link_up);
@@ -1867,10 +1908,14 @@ txgbe_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	rte_eal_alarm_cancel(txgbe_dev_setup_link_alarm_handler, dev);
+	txgbe_dev_wait_setup_link_complete(dev, 0);
 
 	/* disable interrupts */
 	txgbe_disable_intr(hw);
+
+	/* workaround for GPIO intr lost when mng_veto bit is set */
+	if (txgbe_check_reset_blocked(hw))
+		txgbe_reinit_gpio_intr(hw);
 
 	/* reset the NIC */
 	txgbe_pf_reset_hw(hw);
@@ -2007,8 +2052,9 @@ txgbe_dev_close(struct rte_eth_dev *dev)
 		rte_delay_ms(100);
 	} while (retries++ < (10 + TXGBE_LINK_UP_TIME));
 
-	/* cancel the delay handler before remove dev */
+	/* cancel all alarm handler before remove dev */
 	rte_eal_alarm_cancel(txgbe_dev_interrupt_delayed_handler, dev);
+	rte_eal_alarm_cancel(txgbe_dev_setup_link_alarm_handler, dev);
 
 	/* uninitialize PF if max_vfs not zero */
 	txgbe_pf_host_uninit(dev);
@@ -2147,7 +2193,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 	hw_stats->rx_bytes += rd64(hw, TXGBE_DMARXOCTL);
 	hw_stats->tx_bytes += rd64(hw, TXGBE_DMATXOCTL);
 	hw_stats->rx_dma_drop += rd32(hw, TXGBE_DMARXDROP);
-	hw_stats->rx_drop_packets += rd32(hw, TXGBE_PBRXDROP);
+	hw_stats->rx_rdb_drop += rd32(hw, TXGBE_PBRXDROP);
 
 	/* MAC Stats */
 	hw_stats->rx_crc_errors += rd64(hw, TXGBE_MACRXERRCRCL);
@@ -2179,7 +2225,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 			rd64(hw, TXGBE_MACTX1024TOMAXL);
 
 	hw_stats->rx_undersize_errors += rd64(hw, TXGBE_MACRXERRLENL);
-	hw_stats->rx_oversize_errors += rd32(hw, TXGBE_MACRXOVERSIZE);
+	hw_stats->rx_oversize_cnt += rd32(hw, TXGBE_MACRXOVERSIZE);
 	hw_stats->rx_jabber_errors += rd32(hw, TXGBE_MACRXJABBER);
 
 	/* MNG Stats */
@@ -2301,8 +2347,7 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			  hw_stats->rx_mac_short_packet_dropped +
 			  hw_stats->rx_length_errors +
 			  hw_stats->rx_undersize_errors +
-			  hw_stats->rx_oversize_errors +
-			  hw_stats->rx_drop_packets +
+			  hw_stats->rx_rdb_drop +
 			  hw_stats->rx_illegal_byte_errors +
 			  hw_stats->rx_error_bytes +
 			  hw_stats->rx_fragment_errors +
@@ -2679,11 +2724,52 @@ txgbe_dev_setup_link_alarm_handler(void *param)
 	intr->flags &= ~TXGBE_FLAG_NEED_LINK_CONFIG;
 }
 
+/*
+ * If @timeout_ms was 0, it means that it will not return until link complete.
+ * It returns 1 on complete, return 0 on timeout.
+ */
+int
+txgbe_dev_wait_setup_link_complete(struct rte_eth_dev *dev, uint32_t timeout_ms)
+{
+#define WARNING_TIMEOUT    9000 /* 9s in total */
+	struct txgbe_adapter *ad = TXGBE_DEV_ADAPTER(dev);
+	uint32_t timeout = timeout_ms ? timeout_ms : WARNING_TIMEOUT;
+
+	while (__atomic_load_n(&ad->link_thread_running, __ATOMIC_SEQ_CST)) {
+		msec_delay(1);
+		timeout--;
+
+		if (timeout_ms) {
+			if (!timeout)
+				return 0;
+		} else if (!timeout) {
+			/* It will not return until link complete */
+			timeout = WARNING_TIMEOUT;
+			PMD_DRV_LOG(ERR, "TXGBE link thread not complete too long time!");
+		}
+	}
+
+	return 1;
+}
+
+static uint32_t
+txgbe_dev_setup_link_thread_handler(void *param)
+{
+	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
+	struct txgbe_adapter *ad = TXGBE_DEV_ADAPTER(dev);
+
+	rte_thread_detach(rte_thread_self());
+	txgbe_dev_setup_link_alarm_handler(dev);
+	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+	return 0;
+}
+
 /* return 0 means link status changed, -1 means not changed */
 int
 txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 			    int wait_to_complete)
 {
+	struct txgbe_adapter *ad = TXGBE_DEV_ADAPTER(dev);
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct rte_eth_link link;
 	u32 link_speed = TXGBE_LINK_SPEED_UNKNOWN;
@@ -2720,10 +2806,24 @@ txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 		if ((hw->subsystem_device_id & 0xFF) ==
 				TXGBE_DEV_ID_KR_KX_KX4) {
 			hw->mac.bp_down_event(hw);
-		} else if (hw->phy.media_type == txgbe_media_type_fiber) {
-			intr->flags |= TXGBE_FLAG_NEED_LINK_CONFIG;
-			rte_eal_alarm_set(10,
-				txgbe_dev_setup_link_alarm_handler, dev);
+		} else if (hw->phy.media_type == txgbe_media_type_fiber &&
+				dev->data->dev_conf.intr_conf.lsc != 0) {
+			txgbe_dev_wait_setup_link_complete(dev, 0);
+			if (!__atomic_test_and_set(&ad->link_thread_running, __ATOMIC_SEQ_CST)) {
+				/* To avoid race condition between threads, set
+				 * the TXGBE_FLAG_NEED_LINK_CONFIG flag only
+				 * when there is no link thread running.
+				 */
+				intr->flags |= TXGBE_FLAG_NEED_LINK_CONFIG;
+				if (rte_thread_create(&ad->link_thread_tid, NULL,
+					txgbe_dev_setup_link_thread_handler, dev) < 0) {
+					PMD_DRV_LOG(ERR, "Create link thread failed!");
+					__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+				}
+			} else {
+				PMD_DRV_LOG(ERR,
+					"Other link thread is running now!");
+			}
 		}
 		return rte_eth_linkstatus_set(dev, &link);
 	} else if (!hw->dev_start) {
@@ -2938,9 +3038,6 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 		rte_intr_type_get(intr_handle) != RTE_INTR_HANDLE_VFIO_MSIX)
 		wr32(hw, TXGBE_PX_INTA, 1);
 
-	/* clear all cause mask */
-	txgbe_disable_intr(hw);
-
 	/* read-on-clear nic registers here */
 	eicr = ((u32 *)hw->isb_mem)[TXGBE_ISB_MISC];
 	PMD_DRV_LOG(DEBUG, "eicr %x", eicr);
@@ -2963,6 +3060,8 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 	if (eicr & TXGBE_ICRMISC_GPIO)
 		intr->flags |= TXGBE_FLAG_PHY_INTERRUPT;
 
+
+	((u32 *)hw->isb_mem)[TXGBE_ISB_MISC] = 0;
 	return 0;
 }
 
@@ -3132,7 +3231,8 @@ txgbe_dev_interrupt_delayed_handler(void *param)
 	}
 
 	/* restore original mask */
-	intr->mask_misc |= TXGBE_ICRMISC_LSC;
+	if (dev->data->dev_conf.intr_conf.lsc == 1)
+		intr->mask_misc |= TXGBE_ICRMISC_LSC;
 
 	intr->mask = intr->mask_orig;
 	intr->mask_orig = 0;
@@ -3169,7 +3269,7 @@ txgbe_dev_led_on(struct rte_eth_dev *dev)
 	struct txgbe_hw *hw;
 
 	hw = TXGBE_DEV_HW(dev);
-	return txgbe_led_on(hw, 4) == 0 ? 0 : -ENOTSUP;
+	return txgbe_led_on(hw, TXGBE_LEDCTL_ACTIVE) == 0 ? 0 : -ENOTSUP;
 }
 
 static int
@@ -3178,7 +3278,7 @@ txgbe_dev_led_off(struct rte_eth_dev *dev)
 	struct txgbe_hw *hw;
 
 	hw = TXGBE_DEV_HW(dev);
-	return txgbe_led_off(hw, 4) == 0 ? 0 : -ENOTSUP;
+	return txgbe_led_off(hw, TXGBE_LEDCTL_ACTIVE) == 0 ? 0 : -ENOTSUP;
 }
 
 static int
@@ -3753,7 +3853,7 @@ txgbe_configure_msix(struct rte_eth_dev *dev)
 
 int
 txgbe_set_queue_rate_limit(struct rte_eth_dev *dev,
-			   uint16_t queue_idx, uint16_t tx_rate)
+			   uint16_t queue_idx, uint32_t tx_rate)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	uint32_t bcnrc_val;

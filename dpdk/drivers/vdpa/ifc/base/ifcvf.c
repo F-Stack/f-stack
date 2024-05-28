@@ -90,6 +90,15 @@ next:
 	if (!hw->lm_cfg)
 		WARNINGOUT("HW support live migration not support!\n");
 
+	/* For some hardware implementation, for example:
+	 * the BAR 4 of PF is NULL, while BAR 4 of VF is not.
+	 * This code makes sure hw->mq_cfg is a valid address.
+	 */
+	if (hw->mem_resource[4].addr)
+		hw->mq_cfg = hw->mem_resource[4].addr + IFCVF_MQ_OFFSET;
+	else
+		hw->mq_cfg = NULL;
+
 	if (hw->common_cfg == NULL || hw->notify_base == NULL ||
 			hw->isr == NULL || hw->dev_cfg == NULL) {
 		DEBUGOUT("capability incomplete\n");
@@ -193,6 +202,137 @@ io_write64_twopart(u64 val, u32 *lo, u32 *hi)
 	IFCVF_WRITE_REG32(val >> 32, hi);
 }
 
+STATIC void
+ifcvf_enable_mq(struct ifcvf_hw *hw)
+{
+	u8 *mq_cfg;
+	u8 qid;
+	int nr_queue = 0;
+
+	for (qid = 0; qid < hw->nr_vring; qid++) {
+		if (!hw->vring[qid].enable)
+			continue;
+		nr_queue++;
+	}
+
+	if (nr_queue == 0) {
+		WARNINGOUT("no enabled vring\n");
+		return;
+	}
+
+	mq_cfg = hw->mq_cfg;
+	if (mq_cfg) {
+		if (hw->device_type == IFCVF_BLK) {
+			*(u32 *)mq_cfg = nr_queue;
+			RTE_LOG(INFO, PMD, "%d queues are enabled\n", nr_queue);
+		} else {
+			*(u32 *)mq_cfg = nr_queue / 2;
+			RTE_LOG(INFO, PMD, "%d queue pairs are enabled\n",
+				nr_queue / 2);
+		}
+	}
+}
+
+int
+ifcvf_enable_vring_hw(struct ifcvf_hw *hw, int i)
+{
+	struct ifcvf_pci_common_cfg *cfg;
+	u8 *lm_cfg;
+	u16 notify_off;
+	int msix_vector;
+
+	if (i >= (int)hw->nr_vring)
+		return -1;
+
+	cfg = hw->common_cfg;
+	if (!cfg) {
+		RTE_LOG(ERR, PMD, "common_cfg in HW is NULL.\n");
+		return -1;
+	}
+
+	ifcvf_enable_mq(hw);
+
+	IFCVF_WRITE_REG16(i, &cfg->queue_select);
+	msix_vector = IFCVF_READ_REG16(&cfg->queue_msix_vector);
+	if (msix_vector != (i + 1)) {
+		IFCVF_WRITE_REG16(i + 1, &cfg->queue_msix_vector);
+		msix_vector = IFCVF_READ_REG16(&cfg->queue_msix_vector);
+		if (msix_vector == IFCVF_MSI_NO_VECTOR) {
+			RTE_LOG(ERR, PMD, "queue %d, msix vec alloc failed\n",
+				i);
+			return -1;
+		}
+	}
+
+	io_write64_twopart(hw->vring[i].desc, &cfg->queue_desc_lo,
+			&cfg->queue_desc_hi);
+	io_write64_twopart(hw->vring[i].avail, &cfg->queue_avail_lo,
+			&cfg->queue_avail_hi);
+	io_write64_twopart(hw->vring[i].used, &cfg->queue_used_lo,
+			&cfg->queue_used_hi);
+	IFCVF_WRITE_REG16(hw->vring[i].size, &cfg->queue_size);
+
+	lm_cfg = hw->lm_cfg;
+	if (lm_cfg) {
+		if (hw->device_type == IFCVF_BLK)
+			*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
+				i * IFCVF_LM_CFG_SIZE) =
+				(u32)hw->vring[i].last_avail_idx |
+				((u32)hw->vring[i].last_used_idx << 16);
+		else
+			*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
+				(i / 2) * IFCVF_LM_CFG_SIZE +
+				(i % 2) * 4) =
+				(u32)hw->vring[i].last_avail_idx |
+				((u32)hw->vring[i].last_used_idx << 16);
+	}
+
+	notify_off = IFCVF_READ_REG16(&cfg->queue_notify_off);
+	hw->notify_addr[i] = (void *)((u8 *)hw->notify_base +
+			notify_off * hw->notify_off_multiplier);
+	IFCVF_WRITE_REG16(1, &cfg->queue_enable);
+
+	return 0;
+}
+
+void
+ifcvf_disable_vring_hw(struct ifcvf_hw *hw, int i)
+{
+	struct ifcvf_pci_common_cfg *cfg;
+	u32 ring_state;
+	u8 *lm_cfg;
+
+	if (i >= (int)hw->nr_vring)
+		return;
+
+	cfg = hw->common_cfg;
+	if (!cfg) {
+		RTE_LOG(ERR, PMD, "common_cfg in HW is NULL.\n");
+		return;
+	}
+
+	IFCVF_WRITE_REG16(i, &cfg->queue_select);
+	IFCVF_WRITE_REG16(0, &cfg->queue_enable);
+
+	lm_cfg = hw->lm_cfg;
+	if (lm_cfg) {
+		if (hw->device_type == IFCVF_BLK) {
+			ring_state = *(u32 *)(lm_cfg +
+					IFCVF_LM_RING_STATE_OFFSET +
+					i * IFCVF_LM_CFG_SIZE);
+			hw->vring[i].last_avail_idx =
+				(u16)(ring_state & IFCVF_16_BIT_MASK);
+		} else {
+			ring_state = *(u32 *)(lm_cfg +
+					IFCVF_LM_RING_STATE_OFFSET +
+					(i / 2) * IFCVF_LM_CFG_SIZE +
+					(i % 2) * 4);
+			hw->vring[i].last_avail_idx = (u16)(ring_state >> 16);
+		}
+		hw->vring[i].last_used_idx = (u16)(ring_state >> 16);
+	}
+}
+
 STATIC int
 ifcvf_hw_enable(struct ifcvf_hw *hw)
 {
@@ -210,7 +350,11 @@ ifcvf_hw_enable(struct ifcvf_hw *hw)
 		return -1;
 	}
 
+	ifcvf_enable_mq(hw);
 	for (i = 0; i < hw->nr_vring; i++) {
+		if (!hw->vring[i].enable)
+			continue;
+
 		IFCVF_WRITE_REG16(i, &cfg->queue_select);
 		io_write64_twopart(hw->vring[i].desc, &cfg->queue_desc_lo,
 				&cfg->queue_desc_hi);
@@ -221,10 +365,17 @@ ifcvf_hw_enable(struct ifcvf_hw *hw)
 		IFCVF_WRITE_REG16(hw->vring[i].size, &cfg->queue_size);
 
 		if (lm_cfg) {
-			*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
-					(i / 2) * IFCVF_LM_CFG_SIZE + (i % 2) * 4) =
-				(u32)hw->vring[i].last_avail_idx |
-				((u32)hw->vring[i].last_used_idx << 16);
+			if (hw->device_type == IFCVF_BLK)
+				*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
+					i * IFCVF_LM_CFG_SIZE) =
+					(u32)hw->vring[i].last_avail_idx |
+					((u32)hw->vring[i].last_used_idx << 16);
+			else
+				*(u32 *)(lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
+					(i / 2) * IFCVF_LM_CFG_SIZE +
+					(i % 2) * 4) =
+					(u32)hw->vring[i].last_avail_idx |
+					((u32)hw->vring[i].last_used_idx << 16);
 		}
 
 		IFCVF_WRITE_REG16(i + 1, &cfg->queue_msix_vector);
@@ -250,17 +401,54 @@ ifcvf_hw_disable(struct ifcvf_hw *hw)
 	u32 i;
 	struct ifcvf_pci_common_cfg *cfg;
 	u32 ring_state;
+	int q_disable_try;
 
 	cfg = hw->common_cfg;
+	if (!cfg) {
+		DEBUGOUT("common_cfg in HW is NULL.\n");
+		return;
+	}
 
 	IFCVF_WRITE_REG16(IFCVF_MSI_NO_VECTOR, &cfg->msix_config);
 	for (i = 0; i < hw->nr_vring; i++) {
 		IFCVF_WRITE_REG16(i, &cfg->queue_select);
 		IFCVF_WRITE_REG16(0, &cfg->queue_enable);
 		IFCVF_WRITE_REG16(IFCVF_MSI_NO_VECTOR, &cfg->queue_msix_vector);
-		ring_state = *(u32 *)(hw->lm_cfg + IFCVF_LM_RING_STATE_OFFSET +
-				(i / 2) * IFCVF_LM_CFG_SIZE + (i % 2) * 4);
-		hw->vring[i].last_avail_idx = (u16)(ring_state >> 16);
+
+		if (!hw->lm_cfg) {
+			DEBUGOUT("live migration cfg in HW is NULL.\n");
+			continue;
+		}
+
+		/* Some ifc hardware require synchronization between disabling a
+		 * queue and saving queue-state from LM registers. When queue is
+		 * disabled from vDPA driver, ifc device stops executing new
+		 * virtio-cmds and then updates LM registers with used/avail
+		 * index. Before saving the queue-state, vDPA driver waits until
+		 * the queue is disabled from backend.
+		 */
+		q_disable_try = 10;
+		while (q_disable_try-- && IFCVF_READ_REG16(&cfg->queue_enable))
+			msec_delay(10);
+
+		if (!q_disable_try)
+			WARNINGOUT("Failed to disable Q:%u, Saved state could be invalid\n", i);
+
+		if (hw->device_type == IFCVF_BLK)
+			ring_state = *(u32 *)(hw->lm_cfg +
+					IFCVF_LM_RING_STATE_OFFSET +
+					i * IFCVF_LM_CFG_SIZE);
+		else
+			ring_state = *(u32 *)(hw->lm_cfg +
+					IFCVF_LM_RING_STATE_OFFSET +
+					(i / 2) * IFCVF_LM_CFG_SIZE +
+					(i % 2) * 4);
+
+		if (hw->device_type == IFCVF_BLK)
+			hw->vring[i].last_avail_idx =
+				(u16)(ring_state & IFCVF_16_BIT_MASK);
+		else
+			hw->vring[i].last_avail_idx = (u16)(ring_state >> 16);
 		hw->vring[i].last_used_idx = (u16)(ring_state >> 16);
 	}
 }

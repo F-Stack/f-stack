@@ -13,11 +13,7 @@
 
 #include "ipsec.h"
 #include "ipsec-secgw.h"
-
-#define SATP_OUT_IPV4(t)	\
-	((((t) & RTE_IPSEC_SATP_MODE_MASK) == RTE_IPSEC_SATP_MODE_TRANS && \
-	(((t) & RTE_IPSEC_SATP_IPV_MASK) == RTE_IPSEC_SATP_IPV4)) || \
-	((t) & RTE_IPSEC_SATP_MODE_MASK) == RTE_IPSEC_SATP_MODE_TUNLV4)
+#include "ipsec_worker.h"
 
 /* helper routine to free bulk of crypto-ops and related packets */
 static inline void
@@ -77,32 +73,18 @@ enqueue_cop_bulk(struct cdev_qp *cqp, struct rte_crypto_op *cop[], uint32_t num)
 }
 
 static inline int
-fill_ipsec_session(struct rte_ipsec_session *ss, struct ipsec_ctx *ctx,
-	struct ipsec_sa *sa)
+check_ipsec_session(const struct rte_ipsec_session *ss)
 {
-	int32_t rc;
-
-	/* setup crypto section */
 	if (ss->type == RTE_SECURITY_ACTION_TYPE_NONE ||
 			ss->type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO) {
-		RTE_ASSERT(ss->crypto.ses == NULL);
-		rc = create_lookaside_session(ctx, sa, ss);
-		if (rc != 0)
-			return rc;
-	/* setup session action type */
+		if (ss->crypto.ses == NULL)
+			return -ENOENT;
 	} else if (ss->type == RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL) {
-		RTE_ASSERT(ss->security.ses == NULL);
-		rc = create_lookaside_session(ctx, sa, ss);
-		if (rc != 0)
-			return rc;
+		if (ss->security.ses == NULL)
+			return -ENOENT;
 	} else
 		RTE_ASSERT(0);
-
-	rc = rte_ipsec_session_prepare(ss);
-	if (rc != 0)
-		memset(ss, 0, sizeof(*ss));
-
-	return rc;
+	return 0;
 }
 
 /*
@@ -187,7 +169,7 @@ ipsec_prepare_crypto_group(struct ipsec_ctx *ctx, struct ipsec_sa *sa,
 	uint32_t j, k;
 	struct ipsec_mbuf_metadata *priv;
 
-	cqp = &ctx->tbl[sa->cdev_id_qp];
+	cqp = sa->cqp[ctx->lcore_id];
 
 	/* for that app each mbuf has it's own crypto op */
 	for (j = 0; j != cnt; j++) {
@@ -206,49 +188,6 @@ ipsec_prepare_crypto_group(struct ipsec_ctx *ctx, struct ipsec_sa *sa,
 		enqueue_cop_bulk(cqp, cop, k);
 
 	return k;
-}
-
-/*
- * helper routine for inline and cpu(synchronous) processing
- * this is just to satisfy inbound_sa_check() and get_hop_for_offload_pkt().
- * Should be removed in future.
- */
-static inline void
-prep_process_group(void *sa, struct rte_mbuf *mb[], uint32_t cnt)
-{
-	uint32_t j;
-	struct ipsec_mbuf_metadata *priv;
-
-	for (j = 0; j != cnt; j++) {
-		priv = get_priv(mb[j]);
-		priv->sa = sa;
-		/* setup TSO related fields if TSO enabled*/
-		if (priv->sa->mss) {
-			uint32_t ptype = mb[j]->packet_type;
-			/* only TCP is supported */
-			if ((ptype & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_TCP) {
-				mb[j]->tso_segsz = priv->sa->mss;
-				if ((IS_TUNNEL(priv->sa->flags))) {
-					mb[j]->outer_l3_len = mb[j]->l3_len;
-					mb[j]->outer_l2_len = mb[j]->l2_len;
-					mb[j]->ol_flags |=
-						RTE_MBUF_F_TX_TUNNEL_ESP;
-					if (RTE_ETH_IS_IPV4_HDR(ptype))
-						mb[j]->ol_flags |=
-						RTE_MBUF_F_TX_OUTER_IP_CKSUM;
-				}
-				mb[j]->l4_len = sizeof(struct rte_tcp_hdr);
-				mb[j]->ol_flags |= (RTE_MBUF_F_TX_TCP_SEG |
-						RTE_MBUF_F_TX_TCP_CKSUM);
-				if (RTE_ETH_IS_IPV4_HDR(ptype))
-					mb[j]->ol_flags |=
-						RTE_MBUF_F_TX_OUTER_IPV4;
-				else
-					mb[j]->ol_flags |=
-						RTE_MBUF_F_TX_OUTER_IPV6;
-			}
-		}
-	}
 }
 
 /*
@@ -321,9 +260,8 @@ ipsec_process(struct ipsec_ctx *ctx, struct ipsec_traffic *trf)
 				ipsec_get_fallback_session(sa) :
 				ipsec_get_primary_session(sa);
 
-		/* no valid HW session for that SA, try to create one */
-		if (sa == NULL || (ips->crypto.ses == NULL &&
-				fill_ipsec_session(ips, ctx, sa) != 0))
+		/* no valid HW session for that SA */
+		if (sa == NULL || unlikely(check_ipsec_session(ips) != 0))
 			k = 0;
 
 		/* process packets inline */

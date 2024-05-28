@@ -10,17 +10,11 @@
 
 #include "hns3_common.h"
 #include "hns3_logs.h"
-#include "hns3_intr.h"
 #include "hns3_regs.h"
 #include "hns3_rxtx.h"
+#include "hns3_intr.h"
 
 #define SWITCH_CONTEXT_US	10
-
-#define HNS3_CHECK_MERGE_CNT(val)			\
-	do {						\
-		if (val)				\
-			hw->reset.stats.merge_cnt++;	\
-	} while (0)
 
 static const char *reset_string[HNS3_MAX_RESET] = {
 	"flr", "vf_func", "vf_pf_func", "vf_full", "vf_global",
@@ -1486,6 +1480,27 @@ static const struct hns3_hw_err_type hns3_hw_error_type[] = {
 	}
 };
 
+static void
+hns3_report_reset_begin(struct hns3_hw *hw)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[hw->data->port_id];
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_ERR_RECOVERING, NULL);
+}
+
+static void
+hns3_report_reset_success(struct hns3_hw *hw)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[hw->data->port_id];
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_RECOVERY_SUCCESS, NULL);
+}
+
+static void
+hns3_report_reset_failed(struct hns3_hw *hw)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[hw->data->port_id];
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_RECOVERY_FAILED, NULL);
+}
+
 static int
 hns3_config_ncsi_hw_err_int(struct hns3_adapter *hns, bool en)
 {
@@ -2525,20 +2540,20 @@ static void
 hns3_clear_reset_level(struct hns3_hw *hw, uint64_t *levels)
 {
 	uint64_t merge_cnt = hw->reset.stats.merge_cnt;
-	int64_t tmp;
+	uint64_t tmp;
 
 	switch (hw->reset.level) {
 	case HNS3_IMP_RESET:
 		hns3_atomic_clear_bit(HNS3_IMP_RESET, levels);
 		tmp = hns3_test_and_clear_bit(HNS3_GLOBAL_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		tmp = hns3_test_and_clear_bit(HNS3_FUNC_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		break;
 	case HNS3_GLOBAL_RESET:
 		hns3_atomic_clear_bit(HNS3_GLOBAL_RESET, levels);
 		tmp = hns3_test_and_clear_bit(HNS3_FUNC_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		break;
 	case HNS3_FUNC_RESET:
 		hns3_atomic_clear_bit(HNS3_FUNC_RESET, levels);
@@ -2546,19 +2561,19 @@ hns3_clear_reset_level(struct hns3_hw *hw, uint64_t *levels)
 	case HNS3_VF_RESET:
 		hns3_atomic_clear_bit(HNS3_VF_RESET, levels);
 		tmp = hns3_test_and_clear_bit(HNS3_VF_PF_FUNC_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		tmp = hns3_test_and_clear_bit(HNS3_VF_FUNC_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		break;
 	case HNS3_VF_FULL_RESET:
 		hns3_atomic_clear_bit(HNS3_VF_FULL_RESET, levels);
 		tmp = hns3_test_and_clear_bit(HNS3_VF_FUNC_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		break;
 	case HNS3_VF_PF_FUNC_RESET:
 		hns3_atomic_clear_bit(HNS3_VF_PF_FUNC_RESET, levels);
 		tmp = hns3_test_and_clear_bit(HNS3_VF_FUNC_RESET, levels);
-		HNS3_CHECK_MERGE_CNT(tmp);
+		merge_cnt = tmp > 0 ? merge_cnt + 1 : merge_cnt;
 		break;
 	case HNS3_VF_FUNC_RESET:
 		hns3_atomic_clear_bit(HNS3_VF_FUNC_RESET, levels);
@@ -2570,13 +2585,16 @@ hns3_clear_reset_level(struct hns3_hw *hw, uint64_t *levels)
 	default:
 		return;
 	};
-	if (merge_cnt != hw->reset.stats.merge_cnt)
+
+	if (merge_cnt != hw->reset.stats.merge_cnt) {
 		hns3_warn(hw,
 			  "No need to do low-level reset after %s reset. "
 			  "merge cnt: %" PRIu64 " total merge cnt: %" PRIu64,
 			  reset_string[hw->reset.level],
 			  hw->reset.stats.merge_cnt - merge_cnt,
 			  hw->reset.stats.merge_cnt);
+		hw->reset.stats.merge_cnt = merge_cnt;
+	}
 }
 
 static bool
@@ -2645,6 +2663,7 @@ hns3_reset_pre(struct hns3_adapter *hns)
 	if (hw->reset.stage == RESET_STAGE_NONE) {
 		__atomic_store_n(&hns->hw.reset.resetting, 1, __ATOMIC_RELAXED);
 		hw->reset.stage = RESET_STAGE_DOWN;
+		hns3_report_reset_begin(hw);
 		ret = hw->reset.ops->stop_service(hns);
 		hns3_clock_gettime(&tv);
 		if (ret) {
@@ -2754,6 +2773,7 @@ hns3_reset_post(struct hns3_adapter *hns)
 			  hns3_clock_calctime_ms(&tv_delta),
 			  tv.tv_sec, tv.tv_usec);
 		hw->reset.level = HNS3_NONE_RESET;
+		hns3_report_reset_success(hw);
 	}
 	return 0;
 
@@ -2770,6 +2790,38 @@ err:
 	return -EIO;
 }
 
+static void
+hns3_reset_fail_handle(struct hns3_adapter *hns)
+{
+	struct hns3_hw *hw = &hns->hw;
+	struct timeval tv_delta;
+	struct timeval tv;
+
+	hns3_clear_reset_level(hw, &hw->reset.pending);
+	if (hns3_reset_err_handle(hns)) {
+		hw->reset.stage = RESET_STAGE_PREWAIT;
+		hns3_schedule_reset(hns);
+		return;
+	}
+
+	rte_spinlock_lock(&hw->lock);
+	if (hw->reset.mbuf_deferred_free) {
+		hns3_dev_release_mbufs(hns);
+		hw->reset.mbuf_deferred_free = false;
+	}
+	rte_spinlock_unlock(&hw->lock);
+	__atomic_store_n(&hns->hw.reset.resetting, 0, __ATOMIC_RELAXED);
+	hw->reset.stage = RESET_STAGE_NONE;
+	hns3_clock_gettime(&tv);
+	timersub(&tv, &hw->reset.start_time, &tv_delta);
+	hns3_warn(hw, "%s reset fail delta %" PRIu64 " ms time=%ld.%.6ld",
+		  reset_string[hw->reset.level],
+		  hns3_clock_calctime_ms(&tv_delta),
+		  tv.tv_sec, tv.tv_usec);
+	hw->reset.level = HNS3_NONE_RESET;
+	hns3_report_reset_failed(hw);
+}
+
 /*
  * There are three scenarios as follows:
  * When the reset is not in progress, the reset process starts.
@@ -2784,7 +2836,6 @@ int
 hns3_reset_process(struct hns3_adapter *hns, enum hns3_reset_level new_level)
 {
 	struct hns3_hw *hw = &hns->hw;
-	struct timeval tv_delta;
 	struct timeval tv;
 	int ret;
 
@@ -2843,27 +2894,7 @@ retry:
 	if (ret == -EAGAIN)
 		return ret;
 err:
-	hns3_clear_reset_level(hw, &hw->reset.pending);
-	if (hns3_reset_err_handle(hns)) {
-		hw->reset.stage = RESET_STAGE_PREWAIT;
-		hns3_schedule_reset(hns);
-	} else {
-		rte_spinlock_lock(&hw->lock);
-		if (hw->reset.mbuf_deferred_free) {
-			hns3_dev_release_mbufs(hns);
-			hw->reset.mbuf_deferred_free = false;
-		}
-		rte_spinlock_unlock(&hw->lock);
-		__atomic_store_n(&hns->hw.reset.resetting, 0, __ATOMIC_RELAXED);
-		hw->reset.stage = RESET_STAGE_NONE;
-		hns3_clock_gettime(&tv);
-		timersub(&tv, &hw->reset.start_time, &tv_delta);
-		hns3_warn(hw, "%s reset fail delta %" PRIu64 " ms time=%ld.%.6ld",
-			  reset_string[hw->reset.level],
-			  hns3_clock_calctime_ms(&tv_delta),
-			  tv.tv_sec, tv.tv_usec);
-		hw->reset.level = HNS3_NONE_RESET;
-	}
+	hns3_reset_fail_handle(hns);
 
 	return -EIO;
 }

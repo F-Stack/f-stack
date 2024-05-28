@@ -11,7 +11,7 @@
 #include <sys/queue.h>
 
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <ethdev_driver.h>
 #include <rte_memory.h>
 #include <rte_lcore.h>
@@ -989,10 +989,6 @@ void bnxt_print_link_info(struct rte_eth_dev *eth_dev);
 uint16_t bnxt_rss_hash_tbl_size(const struct bnxt *bp);
 int bnxt_link_update_op(struct rte_eth_dev *eth_dev,
 			int wait_to_complete);
-uint16_t bnxt_dummy_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
-			      uint16_t nb_pkts);
-uint16_t bnxt_dummy_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
-			      uint16_t nb_pkts);
 
 extern const struct rte_flow_ops bnxt_flow_ops;
 

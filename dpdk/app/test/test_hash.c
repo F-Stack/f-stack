@@ -1159,8 +1159,7 @@ fbk_hash_unit_test(void)
 	RETURN_IF_ERROR_FBK(handle == NULL, "fbk hash creation should have succeeded");
 
 	tmp = rte_fbk_hash_create(&invalid_params_same_name_2);
-	if (tmp != NULL)
-		rte_fbk_hash_free(tmp);
+	rte_fbk_hash_free(tmp);
 	RETURN_IF_ERROR_FBK(tmp != NULL, "fbk hash creation should have failed");
 
 	/* we are not freeing  handle here because we need a hash list
@@ -1654,8 +1653,7 @@ test_hash_add_delete_jhash2(void)
 	ret = 0;
 
 fail_jhash2:
-	if (handle != NULL)
-		rte_hash_free(handle);
+	rte_hash_free(handle);
 
 	return ret;
 }
@@ -1689,8 +1687,7 @@ test_hash_add_delete_2_jhash2(void)
 	ret = 0;
 
 fail_2_jhash2:
-	if (handle != NULL)
-		rte_hash_free(handle);
+	rte_hash_free(handle);
 
 	return ret;
 }
@@ -1754,8 +1751,7 @@ test_hash_add_delete_jhash_1word(void)
 	ret = 0;
 
 fail_jhash_1word:
-	if (handle != NULL)
-		rte_hash_free(handle);
+	rte_hash_free(handle);
 
 	return ret;
 }
@@ -1789,8 +1785,7 @@ test_hash_add_delete_jhash_2word(void)
 	ret = 0;
 
 fail_jhash_2word:
-	if (handle != NULL)
-		rte_hash_free(handle);
+	rte_hash_free(handle);
 
 	return ret;
 }
@@ -1824,8 +1819,7 @@ test_hash_add_delete_jhash_3word(void)
 	ret = 0;
 
 fail_jhash_3word:
-	if (handle != NULL)
-		rte_hash_free(handle);
+	rte_hash_free(handle);
 
 	return ret;
 }

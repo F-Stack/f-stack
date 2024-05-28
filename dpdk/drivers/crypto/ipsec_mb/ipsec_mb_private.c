@@ -2,9 +2,10 @@
  * Copyright(c) 2021 Intel Corporation
  */
 
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_common.h>
 #include <rte_cryptodev.h>
+#include <rte_errno.h>
 
 #include "ipsec_mb_private.h"
 
@@ -42,6 +43,21 @@ ipsec_mb_enqueue_burst(void *__qp, struct rte_crypto_op **ops,
 	return nb_enqueued;
 }
 
+static int
+ipsec_mb_mp_request_register(void)
+{
+	RTE_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	return rte_mp_action_register(IPSEC_MB_MP_MSG,
+				ipsec_mb_ipc_request);
+}
+
+static void
+ipsec_mb_mp_request_unregister(void)
+{
+	RTE_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	rte_mp_action_unregister(IPSEC_MB_MP_MSG);
+}
+
 int
 ipsec_mb_create(struct rte_vdev_device *vdev,
 	enum ipsec_mb_pmd_types pmd_type)
@@ -53,6 +69,15 @@ ipsec_mb_create(struct rte_vdev_device *vdev,
 	const char *name, *args;
 	int retval;
 
+#if defined(RTE_ARCH_ARM)
+	if ((pmd_type != IPSEC_MB_PMD_TYPE_SNOW3G) &&
+		(pmd_type != IPSEC_MB_PMD_TYPE_ZUC))
+		return -ENOTSUP;
+#endif
+
+#if defined(RTE_ARCH_ARM64)
+	vector_mode = IPSEC_MB_ARM64;
+#elif defined(RTE_ARCH_X86_64)
 	if (vector_mode == IPSEC_MB_NOT_SUPPORTED) {
 		/* Check CPU for supported vector instruction set */
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F))
@@ -64,6 +89,10 @@ ipsec_mb_create(struct rte_vdev_device *vdev,
 		else
 			vector_mode = IPSEC_MB_SSE;
 	}
+#else
+	/* Unsupported architecture */
+	return -ENOTSUP;
+#endif
 
 	init_params.private_data_size = sizeof(struct ipsec_mb_dev_private) +
 		pmd_data->internals_priv_size;
@@ -139,7 +168,17 @@ ipsec_mb_create(struct rte_vdev_device *vdev,
 	IPSEC_MB_LOG(INFO, "IPSec Multi-buffer library version used: %s\n",
 		     imb_get_version_str());
 
-	return 0;
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		retval = ipsec_mb_mp_request_register();
+		if (retval && ((rte_errno == EEXIST) || (rte_errno == ENOTSUP)))
+			/* Safe to proceed, return 0 */
+			return 0;
+
+		if (retval)
+			IPSEC_MB_LOG(ERR,
+				"IPSec Multi-buffer register MP request failed.\n");
+	}
+	return retval;
 }
 
 int
@@ -173,6 +212,9 @@ ipsec_mb_remove(struct rte_vdev_device *vdev)
 
 	for (qp_id = 0; qp_id < cryptodev->data->nb_queue_pairs; qp_id++)
 		ipsec_mb_qp_release(cryptodev, qp_id);
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		ipsec_mb_mp_request_unregister();
 
 	return rte_cryptodev_pmd_destroy(cryptodev);
 }

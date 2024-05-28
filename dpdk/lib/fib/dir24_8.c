@@ -4,15 +4,11 @@
  */
 
 #include <stdint.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
 
 #include <rte_debug.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
-#include <rte_memory.h>
 #include <rte_vect.h>
 
 #include <rte_rib.h>
@@ -394,7 +390,7 @@ modify_fib(struct dir24_8_tbl *dp, struct rte_rib *rib, uint32_t ip,
 				(uint32_t)(1ULL << (32 - tmp_depth));
 		} else {
 			redge = ip + (uint32_t)(1ULL << (32 - depth));
-			if (ledge == redge)
+			if (ledge == redge && ledge != 0)
 				break;
 			ret = install_to_fib(dp, ledge, redge,
 				next_hop);

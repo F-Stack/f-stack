@@ -20,7 +20,7 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.23
+F-STACK_VERSION=1.24
 TGT_OS=$(shell uname)
 ifeq ($(TGT_OS),FreeBSD)
 CC=gcc
@@ -33,6 +33,7 @@ HOST_OS:=$(shell uname -s)
 # No DPDK KNI support on FreeBSD
 ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
+#FF_KNI_KNI=1
 endif
 
 #FF_FLOW_ISOLATE=1
@@ -80,6 +81,10 @@ endif
 
 ifdef FF_KNI
 HOST_CFLAGS+= -DFF_KNI
+endif
+
+ifdef FF_KNI_KNI
+HOST_CFLAGS+= -DFF_KNI_KNI
 endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}

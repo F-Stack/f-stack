@@ -38,7 +38,7 @@ roc_nix_tm_sq_aura_fc(struct roc_nix_sq *sq, bool enable)
 
 	req->aura.fc_ena = enable;
 	req->aura_mask.fc_ena = 1;
-	if (roc_model_is_cn9k() || roc_model_is_cn10ka_a0()) {
+	if (roc_model_is_cn9k() || roc_errata_npa_has_no_fc_stype_ststp()) {
 		req->aura.fc_stype = 0x0;      /* STF */
 		req->aura_mask.fc_stype = 0x0; /* STF */
 	} else {
@@ -67,7 +67,7 @@ roc_nix_tm_sq_aura_fc(struct roc_nix_sq *sq, bool enable)
 	if (enable)
 		*(volatile uint64_t *)sq->fc = rsp->aura.count;
 	else
-		*(volatile uint64_t *)sq->fc = sq->nb_sqb_bufs;
+		*(volatile uint64_t *)sq->fc = sq->aura_sqb_bufs;
 	/* Sync write barrier */
 	plt_wmb();
 	return 0;
@@ -173,8 +173,8 @@ nix_tm_shaper_profile_add(struct roc_nix *roc_nix,
 	if (commit_rate || commit_sz) {
 		if (commit_sz < min_burst || commit_sz > max_burst)
 			return NIX_ERR_TM_INVALID_COMMIT_SZ;
-		else if (!nix_tm_shaper_rate_conv(commit_rate, NULL, NULL,
-						  NULL))
+		else if (!nix_tm_shaper_rate_conv(commit_rate, NULL, NULL, NULL,
+						  profile->accuracy))
 			return NIX_ERR_TM_INVALID_COMMIT_RATE;
 	}
 
@@ -182,7 +182,8 @@ nix_tm_shaper_profile_add(struct roc_nix *roc_nix,
 	if (peak_sz || peak_rate) {
 		if (peak_sz < min_burst || peak_sz > max_burst)
 			return NIX_ERR_TM_INVALID_PEAK_SZ;
-		else if (!nix_tm_shaper_rate_conv(peak_rate, NULL, NULL, NULL))
+		else if (!nix_tm_shaper_rate_conv(peak_rate, NULL, NULL, NULL,
+						  profile->accuracy))
 			return NIX_ERR_TM_INVALID_PEAK_RATE;
 	}
 
@@ -230,6 +231,7 @@ roc_nix_tm_shaper_profile_add(struct roc_nix *roc_nix,
 	profile->pkt_len_adj = roc_profile->pkt_len_adj;
 	profile->pkt_mode = roc_profile->pkt_mode;
 	profile->free_fn = roc_profile->free_fn;
+	profile->accuracy = roc_profile->accuracy;
 
 	return nix_tm_shaper_profile_add(roc_nix, profile, 0);
 }
@@ -246,6 +248,8 @@ roc_nix_tm_shaper_profile_update(struct roc_nix *roc_nix,
 	profile->peak.rate = roc_profile->peak_rate;
 	profile->commit.size = roc_profile->commit_sz;
 	profile->peak.size = roc_profile->peak_sz;
+	profile->pkt_len_adj = roc_profile->pkt_len_adj;
+	profile->accuracy = roc_profile->accuracy;
 
 	return nix_tm_shaper_profile_add(roc_nix, profile, 1);
 }
@@ -288,6 +292,7 @@ roc_nix_tm_node_add(struct roc_nix *roc_nix, struct roc_nix_tm_node *roc_node)
 	node->pkt_mode_set = roc_node->pkt_mode_set;
 	node->free_fn = roc_node->free_fn;
 	node->tree = ROC_NIX_TM_USER;
+	node->rel_chan = NIX_TM_CHAN_INVALID;
 
 	return nix_tm_node_add(roc_nix, node);
 }
@@ -464,10 +469,16 @@ roc_nix_tm_hierarchy_disable(struct roc_nix *roc_nix)
 	/* Disable backpressure, it will be enabled back if needed on
 	 * hierarchy enable
 	 */
-	rc = nix_tm_bp_config_set(roc_nix, false);
-	if (rc) {
-		plt_err("Failed to disable backpressure for flush, rc=%d", rc);
-		goto cleanup;
+	for (i = 0; i < sq_cnt; i++) {
+		sq = nix->sqs[i];
+		if (!sq)
+			continue;
+
+		rc = nix_tm_bp_config_set(roc_nix, sq->qid, 0, false, false);
+		if (rc && rc != -ENOENT) {
+			plt_err("Failed to disable backpressure, rc=%d", rc);
+			goto cleanup;
+		}
 	}
 
 	/* Flush all tx queues */
@@ -524,7 +535,7 @@ roc_nix_tm_hierarchy_disable(struct roc_nix *roc_nix)
 		tail_off = (val >> 28) & 0x3F;
 
 		if (sqb_cnt > 1 || head_off != tail_off ||
-		    (*(uint64_t *)sq->fc != sq->nb_sqb_bufs))
+		    (*(uint64_t *)sq->fc != sq->aura_sqb_bufs))
 			plt_err("Failed to gracefully flush sq %u", sq->qid);
 	}
 
@@ -880,19 +891,29 @@ roc_nix_tm_node_parent_update(struct roc_nix *roc_nix, uint32_t node_id,
 		TAILQ_FOREACH(sibling, list, node) {
 			if (sibling->parent != node->parent)
 				continue;
-			k += nix_tm_sw_xoff_prep(sibling, true, &req->reg[k],
-						 &req->regval[k]);
+			k += nix_tm_sw_xoff_prep(sibling, true, &req->reg[k], &req->regval[k]);
+			if (k >= MAX_REGS_PER_MBOX_MSG) {
+				req->num_regs = k;
+				rc = mbox_process(mbox);
+				if (rc)
+					return rc;
+				k = 0;
+				req = mbox_alloc_msg_nix_txschq_cfg(mbox);
+				req->lvl = node->hw_lvl;
+			}
 		}
-		req->num_regs = k;
-		rc = mbox_process(mbox);
-		if (rc)
-			return rc;
 
-		/* Update new weight for current node */
-		req = mbox_alloc_msg_nix_txschq_cfg(mbox);
+		if (k) {
+			req->num_regs = k;
+			rc = mbox_process(mbox);
+			if (rc)
+				return rc;
+			/* Update new weight for current node */
+			req = mbox_alloc_msg_nix_txschq_cfg(mbox);
+		}
+
 		req->lvl = node->hw_lvl;
-		req->num_regs =
-			nix_tm_sched_reg_prep(nix, node, req->reg, req->regval);
+		req->num_regs = nix_tm_sched_reg_prep(nix, node, req->reg, req->regval);
 		rc = mbox_process(mbox);
 		if (rc)
 			return rc;
@@ -905,19 +926,29 @@ roc_nix_tm_node_parent_update(struct roc_nix *roc_nix, uint32_t node_id,
 		TAILQ_FOREACH(sibling, list, node) {
 			if (sibling->parent != node->parent)
 				continue;
-			k += nix_tm_sw_xoff_prep(sibling, false, &req->reg[k],
-						 &req->regval[k]);
+			k += nix_tm_sw_xoff_prep(sibling, false, &req->reg[k], &req->regval[k]);
+			if (k >= MAX_REGS_PER_MBOX_MSG) {
+				req->num_regs = k;
+				rc = mbox_process(mbox);
+				if (rc)
+					return rc;
+				k = 0;
+				req = mbox_alloc_msg_nix_txschq_cfg(mbox);
+				req->lvl = node->hw_lvl;
+			}
 		}
-		req->num_regs = k;
-		rc = mbox_process(mbox);
-		if (rc)
-			return rc;
 
-		/* XON Parent node */
-		req = mbox_alloc_msg_nix_txschq_cfg(mbox);
+		if (k) {
+			req->num_regs = k;
+			rc = mbox_process(mbox);
+			if (rc)
+				return rc;
+			/* XON Parent node */
+			req = mbox_alloc_msg_nix_txschq_cfg(mbox);
+		}
+
 		req->lvl = node->parent->hw_lvl;
-		req->num_regs = nix_tm_sw_xoff_prep(node->parent, false,
-						    req->reg, req->regval);
+		req->num_regs = nix_tm_sw_xoff_prep(node->parent, false, req->reg, req->regval);
 		rc = mbox_process(mbox);
 		if (rc)
 			return rc;

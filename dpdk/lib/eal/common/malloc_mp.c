@@ -2,10 +2,10 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 
-#include <rte_alarm.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 
@@ -250,7 +250,7 @@ handle_alloc_request(const struct malloc_mp_req *m,
 		return -1;
 	}
 
-	alloc_sz = RTE_ALIGN_CEIL(ar->align + ar->elt_size +
+	alloc_sz = RTE_ALIGN_CEIL(RTE_ALIGN_CEIL(ar->elt_size, ar->align) +
 			MALLOC_ELEM_OVERHEAD, ar->page_sz);
 	n_segs = alloc_sz / ar->page_sz;
 
@@ -805,4 +805,16 @@ register_mp_requests(void)
 		}
 	}
 	return 0;
+}
+
+void
+unregister_mp_requests(void)
+{
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		rte_mp_action_unregister(MP_ACTION_REQUEST);
+	} else {
+		rte_mp_action_unregister(MP_ACTION_SYNC);
+		rte_mp_action_unregister(MP_ACTION_ROLLBACK);
+		rte_mp_action_unregister(MP_ACTION_RESPONSE);
+	}
 }

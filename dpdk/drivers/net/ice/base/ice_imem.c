@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -69,7 +69,7 @@ static void _imem_alu_dump(struct ice_hw *hw, struct ice_alu *alu, int index)
 
 /**
  * ice_imem_dump - dump an imem item info
- * @ice_hw: pointer to the hardware structure
+ * @hw: pointer to the hardware structure
  * @item: imem item to dump
  */
 void ice_imem_dump(struct ice_hw *hw, struct ice_imem_item *item)
@@ -231,7 +231,7 @@ static void _imem_parse_item(struct ice_hw *hw, u16 idx, void *item,
 
 /**
  * ice_imem_table_get - create an imem table
- * @ice_hw: pointer to the hardware structure
+ * @hw: pointer to the hardware structure
  */
 struct ice_imem_item *ice_imem_table_get(struct ice_hw *hw)
 {

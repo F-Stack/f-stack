@@ -3,6 +3,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -14,7 +15,7 @@
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
 #include <ethdev_vdev.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_alarm.h>
 #include <rte_cycles.h>
 
@@ -89,10 +90,15 @@ virtio_user_set_status(struct virtio_hw *hw, uint8_t status)
 	if (status & VIRTIO_CONFIG_STATUS_FEATURES_OK &&
 			~old_status & VIRTIO_CONFIG_STATUS_FEATURES_OK)
 		virtio_user_dev_set_features(dev);
-	if (status & VIRTIO_CONFIG_STATUS_DRIVER_OK)
-		virtio_user_start_device(dev);
-	else if (status == VIRTIO_CONFIG_STATUS_RESET)
+
+	if (status & VIRTIO_CONFIG_STATUS_DRIVER_OK) {
+		if (virtio_user_start_device(dev)) {
+			virtio_user_dev_update_status(dev);
+			return;
+		}
+	} else if (status == VIRTIO_CONFIG_STATUS_RESET) {
 		virtio_user_reset(hw);
+	}
 
 	virtio_user_dev_set_status(dev, status);
 }
@@ -689,14 +695,10 @@ virtio_user_pmd_probe(struct rte_vdev_device *vdev)
 	ret = 0;
 
 end:
-	if (kvlist)
-		rte_kvargs_free(kvlist);
-	if (path)
-		free(path);
-	if (mac_addr)
-		free(mac_addr);
-	if (ifname)
-		free(ifname);
+	rte_kvargs_free(kvlist);
+	free(path);
+	free(mac_addr);
+	free(ifname);
 	return ret;
 }
 

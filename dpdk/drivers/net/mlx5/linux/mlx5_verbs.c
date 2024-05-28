@@ -869,13 +869,12 @@ mlx5_txq_ibv_qp_create(struct rte_eth_dev *dev, uint16_t idx)
 	/* CQ to be associated with the receive queue. */
 	qp_attr.recv_cq = txq_ctrl->obj->cq;
 	/* Max number of outstanding WRs. */
-	qp_attr.cap.max_send_wr = ((priv->sh->device_attr.max_qp_wr < desc) ?
-				   priv->sh->device_attr.max_qp_wr : desc);
+	qp_attr.cap.max_send_wr = RTE_MIN(priv->sh->dev_cap.max_qp_wr, desc);
 	/*
 	 * Max number of scatter/gather elements in a WR, must be 1 to prevent
 	 * libmlx5 from trying to affect must be 1 to prevent libmlx5 from
 	 * trying to affect too much memory. TX gather is not impacted by the
-	 * device_attr.max_sge limit and will still work properly.
+	 * dev_cap.max_sge limit and will still work properly.
 	 */
 	qp_attr.cap.max_send_sge = 1;
 	qp_attr.qp_type = IBV_QPT_RAW_PACKET,
@@ -924,7 +923,7 @@ mlx5_txq_ibv_uar_init(struct mlx5_txq_ctrl *txq_ctrl, void *bf_reg)
 		DRV_LOG(ERR, "Failed to get mem page size");
 		rte_errno = ENOMEM;
 	}
-	txq->db_heu = priv->sh->cdev->config.dbnc == MLX5_TXDB_HEURISTIC;
+	txq->db_heu = priv->sh->cdev->config.dbnc == MLX5_SQ_DB_HEURISTIC;
 	txq->db_nc = mlx5_db_map_type_get(uar_mmap_offset, page_size);
 	ppriv->uar_table[txq->idx].db = bf_reg;
 #ifndef RTE_ARCH_64
@@ -995,7 +994,7 @@ mlx5_txq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	qp.comp_mask = MLX5DV_QP_MASK_UAR_MMAP_OFFSET;
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 	/* If using DevX, need additional mask to read tisn value. */
-	if (priv->sh->devx && !priv->sh->tdn)
+	if (priv->sh->cdev->config.devx && !priv->sh->tdn)
 		qp.comp_mask |= MLX5DV_QP_MASK_RAW_QP_HANDLES;
 #endif
 	obj.cq.in = txq_obj->cq;
@@ -1033,13 +1032,17 @@ mlx5_txq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	txq_data->wqe_pi = 0;
 	txq_data->wqe_comp = 0;
 	txq_data->wqe_thres = txq_data->wqe_s / MLX5_TX_COMP_THRESH_INLINE_DIV;
+	txq_data->wait_on_time = !!(!priv->sh->config.tx_pp &&
+				 priv->sh->cdev->config.hca_attr.wait_on_time &&
+				 txq_data->offloads &
+				 RTE_ETH_TX_OFFLOAD_SEND_ON_TIMESTAMP);
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 	/*
 	 * If using DevX need to query and store TIS transport domain value.
 	 * This is done once per port.
 	 * Will use this value on Rx, when creating matching TIR.
 	 */
-	if (priv->sh->devx && !priv->sh->tdn) {
+	if (priv->sh->cdev->config.devx && !priv->sh->tdn) {
 		ret = mlx5_devx_cmd_qp_query_tis_td(txq_obj->qp, qp.tisn,
 						    &priv->sh->tdn);
 		if (ret) {

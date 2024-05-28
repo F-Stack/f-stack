@@ -19,7 +19,7 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_kvargs.h>
@@ -30,7 +30,7 @@
 #include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_hash_crc.h>
 #ifdef RTE_LIB_SECURITY
 #include <rte_security_driver.h>
@@ -1384,10 +1384,8 @@ static int ixgbe_fdir_filter_uninit(struct rte_eth_dev *eth_dev)
 		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(eth_dev->data->dev_private);
 	struct ixgbe_fdir_filter *fdir_filter;
 
-		if (fdir_info->hash_map)
-		rte_free(fdir_info->hash_map);
-	if (fdir_info->hash_handle)
-		rte_hash_free(fdir_info->hash_handle);
+	rte_free(fdir_info->hash_map);
+	rte_hash_free(fdir_info->hash_handle);
 
 	while ((fdir_filter = TAILQ_FIRST(&fdir_info->fdir_list))) {
 		TAILQ_REMOVE(&fdir_info->fdir_list,
@@ -1405,10 +1403,8 @@ static int ixgbe_l2_tn_filter_uninit(struct rte_eth_dev *eth_dev)
 		IXGBE_DEV_PRIVATE_TO_L2_TN_INFO(eth_dev->data->dev_private);
 	struct ixgbe_l2_tn_filter *l2_tn_filter;
 
-	if (l2_tn_info->hash_map)
-		rte_free(l2_tn_info->hash_map);
-	if (l2_tn_info->hash_handle)
-		rte_hash_free(l2_tn_info->hash_handle);
+	rte_free(l2_tn_info->hash_map);
+	rte_hash_free(l2_tn_info->hash_handle);
 
 	while ((l2_tn_filter = TAILQ_FIRST(&l2_tn_info->l2_tn_list))) {
 		TAILQ_REMOVE(&l2_tn_info->l2_tn_list,
@@ -2479,7 +2475,7 @@ ixgbe_dev_phy_intr_setup(struct rte_eth_dev *dev)
 
 int
 ixgbe_set_vf_rate_limit(struct rte_eth_dev *dev, uint16_t vf,
-			uint16_t tx_rate, uint64_t q_msk)
+			uint32_t tx_rate, uint64_t q_msk)
 {
 	struct ixgbe_hw *hw;
 	struct ixgbe_vf_info *vfinfo;
@@ -2694,7 +2690,7 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 	/* Configure DCB hw */
 	ixgbe_configure_dcb(dev);
 
-	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_NONE) {
+	if (IXGBE_DEV_FDIR_CONF(dev)->mode != RTE_FDIR_MODE_NONE) {
 		err = ixgbe_fdir_configure(dev);
 		if (err)
 			goto error;
@@ -3856,23 +3852,32 @@ static int
 ixgbe_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	u16 eeprom_verh, eeprom_verl;
-	u32 etrack_id;
+	struct ixgbe_nvm_version nvm_ver;
 	int ret;
 
-	ixgbe_read_eeprom(hw, 0x2e, &eeprom_verh);
-	ixgbe_read_eeprom(hw, 0x2d, &eeprom_verl);
+	ixgbe_get_oem_prod_version(hw, &nvm_ver);
+	if (nvm_ver.oem_valid) {
+		snprintf(fw_version, fw_size, "%x.%x.%x",
+			 nvm_ver.oem_major, nvm_ver.oem_minor,
+			 nvm_ver.oem_release);
+		return 0;
+	}
 
-	etrack_id = (eeprom_verh << 16) | eeprom_verl;
-	ret = snprintf(fw_version, fw_size, "0x%08x", etrack_id);
+	ixgbe_get_etk_id(hw, &nvm_ver);
+	ixgbe_get_orom_version(hw, &nvm_ver);
+
+	if (nvm_ver.or_valid) {
+		snprintf(fw_version, fw_size, "0x%08x, %d.%d.%d",
+			 nvm_ver.etk_id, nvm_ver.or_major,
+			 nvm_ver.or_build, nvm_ver.or_patch);
+		return 0;
+	}
+
+	ret = snprintf(fw_version, fw_size, "0x%08x", nvm_ver.etk_id);
 	if (ret < 0)
 		return -EINVAL;
 
-	ret += 1; /* add the size of '\0' */
-	if (fw_size < (size_t)ret)
-		return ret;
-	else
-		return 0;
+	return (fw_size < (size_t)ret++) ? ret : 0;
 }
 
 static int
@@ -4059,6 +4064,8 @@ ixgbevf_dev_info_get(struct rte_eth_dev *dev,
 
 	dev_info->rx_desc_lim = rx_desc_lim;
 	dev_info->tx_desc_lim = tx_desc_lim;
+
+	dev_info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PASSIVE;
 
 	return 0;
 }
@@ -6094,7 +6101,7 @@ ixgbe_configure_msix(struct rte_eth_dev *dev)
 
 int
 ixgbe_set_queue_rate_limit(struct rte_eth_dev *dev,
-			   uint16_t queue_idx, uint16_t tx_rate)
+			   uint16_t queue_idx, uint32_t tx_rate)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t rf_dec, rf_int;
@@ -7789,9 +7796,13 @@ static int
 ixgbevf_dev_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int mode = IXGBEVF_XCAST_MODE_NONE;
 	int ret;
 
-	switch (hw->mac.ops.update_xcast_mode(hw, IXGBEVF_XCAST_MODE_NONE)) {
+	if (dev->data->all_multicast)
+		mode = IXGBEVF_XCAST_MODE_ALLMULTI;
+
+	switch (hw->mac.ops.update_xcast_mode(hw, mode)) {
 	case IXGBE_SUCCESS:
 		ret = 0;
 		break;
@@ -7813,6 +7824,9 @@ ixgbevf_dev_allmulticast_enable(struct rte_eth_dev *dev)
 	int ret;
 	int mode = IXGBEVF_XCAST_MODE_ALLMULTI;
 
+	if (dev->data->promiscuous)
+		return 0;
+
 	switch (hw->mac.ops.update_xcast_mode(hw, mode)) {
 	case IXGBE_SUCCESS:
 		ret = 0;
@@ -7833,6 +7847,9 @@ ixgbevf_dev_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	int ret;
+
+	if (dev->data->promiscuous)
+		return 0;
 
 	switch (hw->mac.ops.update_xcast_mode(hw, IXGBEVF_XCAST_MODE_MULTI)) {
 	case IXGBE_SUCCESS:

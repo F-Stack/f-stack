@@ -15,7 +15,6 @@
  */
 
 #include <rte_memcpy.h>
-#include <rte_compat.h>
 #include <rte_common.h>
 
 #ifdef __cplusplus
@@ -319,9 +318,8 @@ rte_rib6_find_existing(const char *name);
  * Free an RIB object.
  *
  * @param rib
- *   RIB object handle
- * @return
- *   None
+ *   RIB object handle created with rte_rib6_create().
+ *   If rib is NULL, no operation is performed.
  */
 void
 rte_rib6_free(struct rte_rib6 *rib);

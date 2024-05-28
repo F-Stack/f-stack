@@ -9,6 +9,94 @@
 
 #include <string.h>
 #include <stdarg.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_missing_c_flag(void)
+{
+	printf("missing_c_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_main_lcore_flag(void)
+{
+	printf("main_lcore_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_n_flag(void)
+{
+	printf("invalid_n_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_no_hpet_flag(void)
+{
+	printf("no_hpet_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_no_huge_flag(void)
+{
+	printf("no_huge_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_allow_flag(void)
+{
+	printf("allow_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_b_flag(void)
+{
+	printf("invalid_b_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_vdev_flag(void)
+{
+	printf("invalid_vdev_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_invalid_r_flag(void)
+{
+	printf("invalid_r_flag not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_memory_flags(void)
+{
+	printf("memory_flags not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_file_prefix(void)
+{
+	printf("file_prefix not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_misc_flags(void)
+{
+	printf("misc_flags not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <libgen.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -771,6 +859,14 @@ test_no_huge_flag(void)
 	/* With --no-huge, -m and --socket-mem */
 	const char *argv4[] = {prgname, prefix, no_huge,
 			"-m", DEFAULT_MEM_SIZE, "--socket-mem=" DEFAULT_MEM_SIZE};
+
+	/* With --no-huge and --huge-worker-stack (should fail) */
+	const char * const argv5[] = {prgname, prefix, no_huge,
+			"--huge-worker-stack"};
+	/* With --no-huge and --huge-worker-stack=512 (should fail) */
+	const char * const argv6[] = {prgname, prefix, no_huge,
+			"--huge-worker-stack=512"};
+
 	if (launch_proc(argv1) != 0) {
 		printf("Error - process did not run ok with --no-huge flag\n");
 		return -1;
@@ -780,7 +876,7 @@ test_no_huge_flag(void)
 		return -1;
 	}
 #ifdef RTE_EXEC_ENV_FREEBSD
-	/* BSD target does not support NUMA, hence no --socket-mem tests */
+	/* no other tests are applicable to FreeBSD */
 	return 0;
 #endif
 
@@ -792,6 +888,14 @@ test_no_huge_flag(void)
 	if (launch_proc(argv4) == 0) {
 		printf("Error - process run ok with --no-huge, -m and "
 				"--socket-mem flags\n");
+		return -1;
+	}
+	if (launch_proc(argv5) == 0) {
+		printf("Error - process run ok with --no-huge and --huge-worker-stack flags");
+		return -1;
+	}
+	if (launch_proc(argv6) == 0) {
+		printf("Error - process run ok with --no-huge and --huge-worker-stack=size flags");
 		return -1;
 	}
 	return 0;
@@ -943,6 +1047,14 @@ test_misc_flags(void)
 	const char * const argv20[] = {prgname, "--file-prefix=uiodev",
 			"--create-uio-dev"};
 
+	/* Try running with --huge-worker-stack flag */
+	const char * const argv21[] = {prgname, prefix, mp_flag,
+				       "--huge-worker-stack"};
+
+	/* Try running with --huge-worker-stack=512 flag */
+	const char * const argv22[] = {prgname, prefix, mp_flag,
+				       "--huge-worker-stack=512"};
+
 	/* run all tests also applicable to FreeBSD first */
 
 	if (launch_proc(argv0) == 0) {
@@ -1042,6 +1154,14 @@ test_misc_flags(void)
 				"--create-uio-dev parameter\n");
 		goto fail;
 	}
+	if (launch_proc(argv21) != 0) {
+		printf("Error - process did not run ok with --huge-worker-stack parameter\n");
+		goto fail;
+	}
+	if (launch_proc(argv22) != 0) {
+		printf("Error - process did not run ok with --huge-worker-stack=size parameter\n");
+		goto fail;
+	}
 
 	rmdir(hugepath_dir3);
 	rmdir(hugepath_dir2);
@@ -1120,6 +1240,11 @@ test_file_prefix(void)
 	/* primary process with memtest1 and --single-file-segments mode */
 	const char * const argv8[] = {prgname, "-m",
 		DEFAULT_MEM_SIZE, "--single-file-segments",
+		"--file-prefix=" memtest1 };
+
+	/* primary process with memtest1 and --huge-unlink=never mode */
+	const char * const argv9[] = {prgname, "-m",
+		DEFAULT_MEM_SIZE, "--huge-unlink=never",
 		"--file-prefix=" memtest1 };
 
 	/* check if files for current prefix are present */
@@ -1287,6 +1412,25 @@ test_file_prefix(void)
 	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
 		printf("Error - hugepage files for %s were not deleted!\n",
 				memtest1);
+		return -1;
+	}
+
+	/* this process will run with --huge-unlink,
+	 * so it should not remove hugepage files when it exits
+	 */
+	if (launch_proc(argv9) != 0) {
+		printf("Error - failed to run with --huge-unlink=never\n");
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) == 0) {
+		printf("Error - hugepage files for %s were deleted!\n",
+				memtest1);
+		return -1;
+	}
+	if (process_hugefiles(memtest1, HUGEPAGE_DELETE) != 1) {
+		printf("Error - deleting hugepages failed!\n");
 		return -1;
 	}
 
@@ -1497,6 +1641,8 @@ test_memory_flags(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(eal_flags_c_opt_autotest, test_missing_c_flag);
 REGISTER_TEST_COMMAND(eal_flags_main_opt_autotest, test_main_lcore_flag);

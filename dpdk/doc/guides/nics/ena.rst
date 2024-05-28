@@ -87,6 +87,24 @@ Configuration information
      effect only if the device also supports large LLQ headers. Otherwise, the
      default value will be used.
 
+   * **miss_txc_to** (default 5)
+
+     Number of seconds after which the Tx packet will be considered missing.
+     If the missing packets number will exceed dynamically calculated threshold,
+     the driver will trigger the device reset which should be handled by the
+     application. Checking for missing Tx completions happens in the driver's
+     timer service. Setting this parameter to 0 disables this feature. Maximum
+     allowed value is 60 seconds.
+
+   * **enable_llq** (default 1)
+
+     Determines whenever the driver should use the LLQ (if it's available) or
+     not.
+
+     **NOTE: On the 6th generation AWS instances disabling LLQ may lead to a
+     huge performance degradation. In general disabling LLQ is highly not
+     recommended!**
+
 **ENA Configuration Parameters**
 
    * **Number of Queues**

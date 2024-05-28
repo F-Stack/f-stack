@@ -1465,8 +1465,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 	}
 	return flow;
 fail:
-	if (remote_flow)
-		rte_free(remote_flow);
+	rte_free(remote_flow);
 	if (flow)
 		tap_flow_free(pmd, flow);
 	return NULL;
@@ -1541,8 +1540,7 @@ tap_flow_destroy_pmd(struct pmd_internals *pmd,
 		}
 	}
 end:
-	if (remote_flow)
-		rte_free(remote_flow);
+	rte_free(remote_flow);
 	tap_flow_free(pmd, flow);
 	return ret;
 }
@@ -1684,7 +1682,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 	struct rte_flow_item *items = implicit_rte_flows[idx].items;
 	struct rte_flow_attr *attr = &implicit_rte_flows[idx].attr;
 	struct rte_flow_item_eth eth_local = { .type = 0 };
-	uint16_t if_index = pmd->remote_if_index;
+	unsigned int if_index = pmd->remote_if_index;
 	struct rte_flow *remote_flow = NULL;
 	struct nlmsg *msg = NULL;
 	int err = 0;
@@ -1764,8 +1762,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 success:
 	return 0;
 fail:
-	if (remote_flow)
-		rte_free(remote_flow);
+	rte_free(remote_flow);
 	return -1;
 }
 

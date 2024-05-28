@@ -741,11 +741,8 @@ mlx5_txpp_interrupt_handler(void *cb_arg)
 static void
 mlx5_txpp_stop_service(struct mlx5_dev_ctx_shared *sh)
 {
-	if (!rte_intr_fd_get(sh->txpp.intr_handle))
-		return;
-	mlx5_intr_callback_unregister(sh->txpp.intr_handle,
-				      mlx5_txpp_interrupt_handler, sh);
-	rte_intr_instance_free(sh->txpp.intr_handle);
+	mlx5_os_interrupt_handler_destroy(sh->txpp.intr_handle,
+					  mlx5_txpp_interrupt_handler, sh);
 }
 
 /* Attach interrupt handler and fires first request to Rearm Queue. */
@@ -769,23 +766,12 @@ mlx5_txpp_start_service(struct mlx5_dev_ctx_shared *sh)
 		rte_errno = errno;
 		return -rte_errno;
 	}
-	sh->txpp.intr_handle =
-			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
-	if (sh->txpp.intr_handle == NULL) {
-		DRV_LOG(ERR, "Fail to allocate intr_handle");
-		return -ENOMEM;
-	}
 	fd = mlx5_os_get_devx_channel_fd(sh->txpp.echan);
-	if (rte_intr_fd_set(sh->txpp.intr_handle, fd))
-		return -rte_errno;
-
-	if (rte_intr_type_set(sh->txpp.intr_handle, RTE_INTR_HANDLE_EXT))
-		return -rte_errno;
-
-	if (rte_intr_callback_register(sh->txpp.intr_handle,
-				       mlx5_txpp_interrupt_handler, sh)) {
-		rte_intr_fd_set(sh->txpp.intr_handle, 0);
-		DRV_LOG(ERR, "Failed to register CQE interrupt %d.", rte_errno);
+	sh->txpp.intr_handle = mlx5_os_interrupt_handler_create
+		(RTE_INTR_INSTANCE_F_SHARED, false,
+		 fd, mlx5_txpp_interrupt_handler, sh);
+	if (!sh->txpp.intr_handle) {
+		DRV_LOG(ERR, "Fail to allocate intr_handle");
 		return -rte_errno;
 	}
 	/* Subscribe CQ event to the event channel controlled by the driver. */
@@ -816,16 +802,16 @@ mlx5_txpp_start_service(struct mlx5_dev_ctx_shared *sh)
  * Returns 0 on success, negative otherwise
  */
 static int
-mlx5_txpp_create(struct mlx5_dev_ctx_shared *sh, struct mlx5_priv *priv)
+mlx5_txpp_create(struct mlx5_dev_ctx_shared *sh)
 {
-	int tx_pp = priv->config.tx_pp;
+	int tx_pp = sh->config.tx_pp;
 	int ret;
 
 	/* Store the requested pacing parameters. */
 	sh->txpp.tick = tx_pp >= 0 ? tx_pp : -tx_pp;
 	sh->txpp.test = !!(tx_pp < 0);
-	sh->txpp.skew = priv->config.tx_skew;
-	sh->txpp.freq = priv->config.hca_attr.dev_freq_khz;
+	sh->txpp.skew = sh->config.tx_skew;
+	sh->txpp.freq = sh->cdev->config.hca_attr.dev_freq_khz;
 	ret = mlx5_txpp_create_event_channel(sh);
 	if (ret)
 		goto exit;
@@ -891,7 +877,7 @@ mlx5_txpp_start(struct rte_eth_dev *dev)
 	struct mlx5_dev_ctx_shared *sh = priv->sh;
 	int err = 0;
 
-	if (!priv->config.tx_pp) {
+	if (!sh->config.tx_pp) {
 		/* Packet pacing is not requested for the device. */
 		MLX5_ASSERT(priv->txpp_en == 0);
 		return 0;
@@ -901,7 +887,7 @@ mlx5_txpp_start(struct rte_eth_dev *dev)
 		MLX5_ASSERT(sh->txpp.refcnt);
 		return 0;
 	}
-	if (priv->config.tx_pp > 0) {
+	if (sh->config.tx_pp > 0) {
 		err = rte_mbuf_dynflag_lookup
 			(RTE_MBUF_DYNFLAG_TX_TIMESTAMP_NAME, NULL);
 		/* No flag registered means no service needed. */
@@ -914,7 +900,7 @@ mlx5_txpp_start(struct rte_eth_dev *dev)
 		priv->txpp_en = 1;
 		++sh->txpp.refcnt;
 	} else {
-		err = mlx5_txpp_create(sh, priv);
+		err = mlx5_txpp_create(sh);
 		if (!err) {
 			MLX5_ASSERT(sh->txpp.tick);
 			priv->txpp_en = 1;
@@ -983,6 +969,8 @@ mlx5_txpp_read_clock(struct rte_eth_dev *dev, uint64_t *timestamp)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_dev_ctx_shared *sh = priv->sh;
+	struct mlx5_proc_priv *ppriv;
+	uint64_t ts;
 	int ret;
 
 	if (sh->txpp.refcnt) {
@@ -993,7 +981,6 @@ mlx5_txpp_read_clock(struct rte_eth_dev *dev, uint64_t *timestamp)
 			rte_int128_t u128;
 			struct mlx5_cqe_ts cts;
 		} to;
-		uint64_t ts;
 
 		mlx5_atomic_read_cqe((rte_int128_t *)&cqe->timestamp, &to.u128);
 		if (to.cts.op_own >> 4) {
@@ -1004,6 +991,18 @@ mlx5_txpp_read_clock(struct rte_eth_dev *dev, uint64_t *timestamp)
 			return -EIO;
 		}
 		ts = rte_be_to_cpu_64(to.cts.timestamp);
+		ts = mlx5_txpp_convert_rx_ts(sh, ts);
+		*timestamp = ts;
+		return 0;
+	}
+	/* Check and try to map HCA PIC BAR to allow reading real time. */
+	ppriv = dev->process_private;
+	if (ppriv && !ppriv->hca_bar &&
+	    sh->dev_cap.rt_timestamp && mlx5_dev_is_pci(dev->device))
+		mlx5_txpp_map_hca_bar(dev);
+	/* Check if we can read timestamp directly from hardware. */
+	if (ppriv && ppriv->hca_bar) {
+		ts = MLX5_GET64(initial_seg, ppriv->hca_bar, real_time);
 		ts = mlx5_txpp_convert_rx_ts(sh, ts);
 		*timestamp = ts;
 		return 0;
@@ -1064,11 +1063,9 @@ int mlx5_txpp_xstats_get_names(struct rte_eth_dev *dev __rte_unused,
 
 	if (n >= n_used + n_txpp && xstats_names) {
 		for (i = 0; i < n_txpp; ++i) {
-			strncpy(xstats_names[i + n_used].name,
+			strlcpy(xstats_names[i + n_used].name,
 				mlx5_txpp_stat_names[i],
 				RTE_ETH_XSTATS_NAME_SIZE);
-			xstats_names[i + n_used].name
-					[RTE_ETH_XSTATS_NAME_SIZE - 1] = 0;
 		}
 	}
 	return n_used + n_txpp;

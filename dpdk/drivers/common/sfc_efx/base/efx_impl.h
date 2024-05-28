@@ -173,7 +173,8 @@ typedef struct efx_rx_ops_s {
 #if EFSYS_OPT_RX_SCALE
 	efx_rc_t	(*erxo_scale_context_alloc)(efx_nic_t *,
 						    efx_rx_scale_context_type_t,
-						    uint32_t, uint32_t *);
+						    uint32_t, uint32_t,
+						    uint32_t *);
 	efx_rc_t	(*erxo_scale_context_free)(efx_nic_t *, uint32_t);
 	efx_rc_t	(*erxo_scale_mode_set)(efx_nic_t *, uint32_t,
 					       efx_rx_hash_alg_t,
@@ -1799,6 +1800,10 @@ typedef struct efx_mae_action_vlan_push_s {
 	uint16_t			emavp_tci_be;
 } efx_mae_action_vlan_push_t;
 
+/*
+ * Helper efx_mae_action_set_clear_fw_rsrc_ids() is responsible
+ * to initialise every field in this structure to INVALID value.
+ */
 typedef struct efx_mae_actions_rsrc_s {
 	efx_mae_mac_id_t		emar_dst_mac_id;
 	efx_mae_mac_id_t		emar_src_mac_id;

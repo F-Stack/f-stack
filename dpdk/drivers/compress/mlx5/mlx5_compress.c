@@ -5,7 +5,7 @@
 #include <rte_malloc.h>
 #include <rte_log.h>
 #include <rte_errno.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_spinlock.h>
 #include <rte_comp.h>
 #include <rte_compressdev.h>
@@ -96,9 +96,7 @@ static const struct rte_compressdev_capabilities mlx5_caps[] = {
 				      RTE_COMP_FF_HUFFMAN_DYNAMIC,
 		.window_size = {.min = 10, .max = 15, .increment = 1},
 	},
-	{
-		.algo = RTE_COMP_ALGO_LIST_END,
-	}
+	RTE_COMP_END_OF_CAPABILITIES_LIST()
 };
 
 static void
@@ -146,8 +144,7 @@ mlx5_compress_qp_release(struct rte_compressdev *dev, uint16_t qp_id)
 		void *opaq = qp->opaque_mr.addr;
 
 		mlx5_common_verbs_dereg_mr(&qp->opaque_mr);
-		if (opaq != NULL)
-			rte_free(opaq);
+		rte_free(opaq);
 	}
 	mlx5_mr_btree_free(&qp->mr_ctrl.cache_bh);
 	rte_free(qp);
@@ -246,8 +243,8 @@ mlx5_compress_qp_setup(struct rte_compressdev *dev, uint16_t qp_id,
 		mlx5_ts_format_conv(priv->cdev->config.hca_attr.qp_ts_format);
 	qp_attr.num_of_receive_wqes = 0;
 	qp_attr.num_of_send_wqbbs = RTE_BIT32(log_ops_n);
-	qp_attr.mmo = priv->mmo_decomp_qp && priv->mmo_comp_qp
-			&& priv->mmo_dma_qp;
+	qp_attr.mmo = priv->mmo_decomp_qp || priv->mmo_comp_qp ||
+		      priv->mmo_dma_qp;
 	ret = mlx5_devx_qp_create(priv->cdev->ctx, &qp->qp,
 					qp_attr.num_of_send_wqbbs *
 					MLX5_WQE_SIZE, &qp_attr, socket_id);
@@ -316,7 +313,7 @@ mlx5_compress_xform_create(struct rte_compressdev *dev,
 			DRV_LOG(ERR, "Not enough capabilities to support decompress operation, maybe old FW/OFED version?");
 			return -ENOTSUP;
 		}
-		if (xform->compress.hash_algo != RTE_COMP_HASH_ALGO_NONE) {
+		if (xform->decompress.hash_algo != RTE_COMP_HASH_ALGO_NONE) {
 			DRV_LOG(ERR, "SHA is not supported.");
 			return -ENOTSUP;
 		}
@@ -636,7 +633,7 @@ mlx5_compress_dequeue_burst(void *queue_pair, struct rte_comp_op **ops,
 				break;
 			case RTE_COMP_CHECKSUM_ADLER32:
 				op->output_chksum = (uint64_t)rte_be_to_cpu_32
-					    (opaq[idx].adler32) << 32;
+						    (opaq[idx].adler32);
 				break;
 			case RTE_COMP_CHECKSUM_CRC32_ADLER32:
 				op->output_chksum = (uint64_t)rte_be_to_cpu_32
@@ -668,41 +665,36 @@ mlx5_compress_args_check_handler(const char *key, const char *val, void *opaque)
 		errno = 0;
 		devarg_prms->log_block_sz = (uint32_t)strtoul(val, NULL, 10);
 		if (errno) {
-			DRV_LOG(WARNING, "%s: \"%s\" is an invalid integer."
-				, key, val);
+			DRV_LOG(WARNING, "%s: \"%s\" is an invalid integer.",
+				key, val);
 			return -errno;
 		}
-		return 0;
 	}
 	return 0;
 }
 
 static int
-mlx5_compress_handle_devargs(struct rte_devargs *devargs,
-			  struct mlx5_compress_devarg_params *devarg_prms,
-			  struct mlx5_hca_attr *att)
+mlx5_compress_handle_devargs(struct mlx5_kvargs_ctrl *mkvlist,
+			     struct mlx5_compress_devarg_params *devarg_prms,
+			     struct mlx5_hca_attr *att)
 {
-	struct rte_kvargs *kvlist;
+	const char **params = (const char *[]){
+		"log-block-size",
+		NULL,
+	};
 
 	devarg_prms->log_block_sz = MLX5_GGA_COMP_LOG_BLOCK_SIZE_MAX;
-	if (devargs == NULL)
+	if (mkvlist == NULL)
 		return 0;
-	kvlist = rte_kvargs_parse(devargs->args, NULL);
-	if (kvlist == NULL) {
-		DRV_LOG(ERR, "Failed to parse devargs.");
-		rte_errno = EINVAL;
-		return -1;
-	}
-	if (rte_kvargs_process(kvlist, NULL, mlx5_compress_args_check_handler,
-			   devarg_prms) != 0) {
+	if (mlx5_kvargs_process(mkvlist, params,
+				mlx5_compress_args_check_handler,
+				devarg_prms) != 0) {
 		DRV_LOG(ERR, "Devargs handler function Failed.");
-		rte_kvargs_free(kvlist);
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_kvargs_free(kvlist);
 	if (devarg_prms->log_block_sz > MLX5_GGA_COMP_LOG_BLOCK_SIZE_MAX ||
-		devarg_prms->log_block_sz < att->compress_min_block_size) {
+	    devarg_prms->log_block_sz < att->compress_min_block_size) {
 		DRV_LOG(WARNING, "Log block size provided is out of range("
 			"%u); default it to %u.",
 			devarg_prms->log_block_sz,
@@ -713,7 +705,8 @@ mlx5_compress_handle_devargs(struct rte_devargs *devargs,
 }
 
 static int
-mlx5_compress_dev_probe(struct mlx5_common_device *cdev)
+mlx5_compress_dev_probe(struct mlx5_common_device *cdev,
+			struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct rte_compressdev *compressdev;
 	struct mlx5_compress_priv *priv;
@@ -737,7 +730,7 @@ mlx5_compress_dev_probe(struct mlx5_common_device *cdev)
 		rte_errno = ENOTSUP;
 		return -ENOTSUP;
 	}
-	mlx5_compress_handle_devargs(cdev->dev->devargs, &devarg_prms, attr);
+	mlx5_compress_handle_devargs(mkvlist, &devarg_prms, attr);
 	compressdev = rte_compressdev_pmd_create(ibdev_name, cdev->dev,
 						 sizeof(*priv), &init_params);
 	if (compressdev == NULL) {
@@ -794,6 +787,10 @@ static const struct rte_pci_id mlx5_compress_pci_id_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
 				PCI_DEVICE_ID_MELLANOX_CONNECTX6DXBF)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+				PCI_DEVICE_ID_MELLANOX_CONNECTX7BF)
 	},
 	{
 		.vendor_id = 0

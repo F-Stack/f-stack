@@ -20,7 +20,7 @@
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_debug.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_eal.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
@@ -32,7 +32,7 @@
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_tailq.h>
 #include <rte_devargs.h>
 #include <rte_kvargs.h>
@@ -55,6 +55,82 @@ RTE_LOG_REGISTER_SUFFIX(nicvf_logtype_mbox, mbox, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(nicvf_logtype_init, init, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(nicvf_logtype_driver, driver, NOTICE);
 
+#define NICVF_QLM_MODE_SGMII  7
+#define NICVF_QLM_MODE_XFI   12
+
+enum nicvf_link_speed {
+	NICVF_LINK_SPEED_SGMII,
+	NICVF_LINK_SPEED_XAUI,
+	NICVF_LINK_SPEED_RXAUI,
+	NICVF_LINK_SPEED_10G_R,
+	NICVF_LINK_SPEED_40G_R,
+	NICVF_LINK_SPEED_RESERVE1,
+	NICVF_LINK_SPEED_QSGMII,
+	NICVF_LINK_SPEED_RESERVE2,
+	NICVF_LINK_SPEED_UNKNOWN = 255
+};
+
+static inline uint32_t
+nicvf_parse_link_speeds(uint32_t link_speeds)
+{
+	uint32_t link_speed = NICVF_LINK_SPEED_UNKNOWN;
+
+	if (link_speeds & RTE_ETH_LINK_SPEED_40G)
+		link_speed = NICVF_LINK_SPEED_40G_R;
+
+	if (link_speeds & RTE_ETH_LINK_SPEED_10G) {
+		link_speed  = NICVF_LINK_SPEED_XAUI;
+		link_speed |= NICVF_LINK_SPEED_RXAUI;
+		link_speed |= NICVF_LINK_SPEED_10G_R;
+	}
+
+	if (link_speeds & RTE_ETH_LINK_SPEED_5G)
+		link_speed = NICVF_LINK_SPEED_QSGMII;
+
+	if (link_speeds & RTE_ETH_LINK_SPEED_1G)
+		link_speed = NICVF_LINK_SPEED_SGMII;
+
+	return link_speed;
+}
+
+static inline uint8_t
+nicvf_parse_eth_link_duplex(uint32_t link_speeds)
+{
+	if ((link_speeds & RTE_ETH_LINK_SPEED_10M_HD) ||
+			(link_speeds & RTE_ETH_LINK_SPEED_100M_HD))
+		return RTE_ETH_LINK_HALF_DUPLEX;
+	else
+		return RTE_ETH_LINK_FULL_DUPLEX;
+}
+
+static int
+nicvf_apply_link_speed(struct rte_eth_dev *dev)
+{
+	struct nicvf *nic = nicvf_pmd_priv(dev);
+	struct rte_eth_conf *conf = &dev->data->dev_conf;
+	struct change_link_mode cfg;
+	if (conf->link_speeds == RTE_ETH_LINK_SPEED_AUTONEG)
+		/* TODO: Handle this case */
+		return 0;
+
+	cfg.speed = nicvf_parse_link_speeds(conf->link_speeds);
+	cfg.autoneg = (conf->link_speeds & RTE_ETH_LINK_SPEED_FIXED) ? 1 : 0;
+	cfg.duplex = nicvf_parse_eth_link_duplex(conf->link_speeds);
+	cfg.qlm_mode = ((conf->link_speeds & RTE_ETH_LINK_SPEED_1G) ?
+			NICVF_QLM_MODE_SGMII :
+			(conf->link_speeds & RTE_ETH_LINK_SPEED_10G) ?
+			NICVF_QLM_MODE_XFI : 0);
+
+	if (cfg.speed != NICVF_LINK_SPEED_UNKNOWN &&
+	    (cfg.speed != nic->speed || cfg.duplex != nic->duplex)) {
+		nic->speed = cfg.speed;
+		nic->duplex = cfg.duplex;
+		return nicvf_mbox_change_mode(nic, &cfg);
+	} else {
+		return 0;
+	}
+}
+
 static void
 nicvf_link_status_update(struct nicvf *nic,
 			 struct rte_eth_link *link)
@@ -71,6 +147,9 @@ nicvf_link_status_update(struct nicvf *nic,
 	link->link_autoneg = RTE_ETH_LINK_AUTONEG;
 }
 
+/*Poll for link status change by sending NIC_MBOX_MSG_BGX_LINK_CHANGE msg
+ * periodically to PF.
+ */
 static void
 nicvf_interrupt(void *arg)
 {
@@ -78,7 +157,10 @@ nicvf_interrupt(void *arg)
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 	struct rte_eth_link link;
 
-	if (nicvf_reg_poll_interrupts(nic) == NIC_MBOX_MSG_BGX_LINK_CHANGE) {
+	rte_eth_linkstatus_get(dev, &link);
+
+	nicvf_mbox_link_change(nic);
+	if (nic->link_up != link.link_status) {
 		if (dev->data->dev_conf.intr_conf.lsc) {
 			nicvf_link_status_update(nic, &link);
 			rte_eth_linkstatus_set(dev, &link);
@@ -89,7 +171,7 @@ nicvf_interrupt(void *arg)
 		}
 	}
 
-	rte_eal_alarm_set(NICVF_INTR_POLL_INTERVAL_MS * 1000,
+	rte_eal_alarm_set(NICVF_INTR_LINK_POLL_INTERVAL_MS * 1000,
 				nicvf_interrupt, dev);
 }
 
@@ -1397,6 +1479,10 @@ nicvf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_mac_addrs = 1;
 	dev_info->max_vfs = pci_dev->max_vfs;
 
+	dev_info->max_mtu = dev_info->max_rx_pktlen -
+				(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+	dev_info->min_mtu = dev_info->min_rx_bufsize - NIC_HW_L2_OVERHEAD;
+
 	dev_info->rx_offload_capa = NICVF_RX_OFFLOAD_CAPA;
 	dev_info->tx_offload_capa = NICVF_TX_OFFLOAD_CAPA;
 	dev_info->rx_queue_offload_capa = NICVF_RX_OFFLOAD_CAPA;
@@ -1722,6 +1808,13 @@ nicvf_dev_start(struct rte_eth_dev *dev)
 		return -EBUSY;
 	}
 
+	/* Apply new link configurations if changed */
+	ret = nicvf_apply_link_speed(dev);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "Failed to set link configuration\n");
+		return ret;
+	}
+
 	ret = nicvf_vf_start(dev, nic, rbdrsz);
 	if (ret != 0)
 		return ret;
@@ -1841,7 +1934,6 @@ nicvf_vf_stop(struct rte_eth_dev *dev, struct nicvf *nic, bool cleanup)
 static int
 nicvf_dev_close(struct rte_eth_dev *dev)
 {
-	size_t i;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
@@ -1850,13 +1942,7 @@ nicvf_dev_close(struct rte_eth_dev *dev)
 
 	nicvf_dev_stop_cleanup(dev, true);
 	nicvf_periodic_alarm_stop(nicvf_interrupt, dev);
-
-	for (i = 0; i < nic->sqs_count; i++) {
-		if (!nic->snicvf[i])
-			continue;
-
-		nicvf_periodic_alarm_stop(nicvf_vf_interrupt, nic->snicvf[i]);
-	}
+	nicvf_periodic_alarm_stop(nicvf_vf_interrupt, nic);
 
 	rte_intr_instance_free(nic->intr_handle);
 
@@ -1917,23 +2003,8 @@ nicvf_dev_configure(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
-	if (rxmode->split_hdr_size) {
-		PMD_INIT_LOG(INFO, "Rxmode does not support split header");
-		return -EINVAL;
-	}
-
-	if (conf->link_speeds & RTE_ETH_LINK_SPEED_FIXED) {
-		PMD_INIT_LOG(INFO, "Setting link speed/duplex not supported");
-		return -EINVAL;
-	}
-
 	if (conf->dcb_capability_en) {
 		PMD_INIT_LOG(INFO, "DCB enable not supported");
-		return -EINVAL;
-	}
-
-	if (conf->fdir_conf.mode != RTE_FDIR_MODE_NONE) {
-		PMD_INIT_LOG(INFO, "Flow director not supported");
 		return -EINVAL;
 	}
 
@@ -2169,6 +2240,14 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 	nicvf_disable_all_interrupts(nic);
 
+	/* To read mbox messages */
+	ret = nicvf_periodic_alarm_start(nicvf_vf_interrupt, nic);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "Failed to start period alarm");
+		goto fail;
+	}
+
+	/* To poll link status change*/
 	ret = nicvf_periodic_alarm_start(nicvf_interrupt, eth_dev);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Failed to start period alarm");
@@ -2189,6 +2268,9 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 			);
 	}
 
+	/* To make sure RX DMAC register is set to default value (0x3) */
+	nicvf_mbox_reset_xcast(nic);
+
 	ret = nicvf_base_init(nic);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Failed to execute nicvf_base_init");
@@ -2203,11 +2285,6 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 		eth_dev->data->dev_private = NULL;
 
 		nicvf_periodic_alarm_stop(nicvf_interrupt, eth_dev);
-		ret = nicvf_periodic_alarm_start(nicvf_vf_interrupt, nic);
-		if (ret) {
-			PMD_INIT_LOG(ERR, "Failed to start period alarm");
-			goto fail;
-		}
 
 		/* Detach port by returning positive error number */
 		return ENOTSUP;

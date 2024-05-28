@@ -2,6 +2,69 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2023.09 F-Stack v1.23
+
+  1. F-Stack lib, Sync some features from branch of dev:
+
+  - Added FDIR using general flow rules. @guhaoyu2005.
+  - Added more clear error message in case of failed config read. @d06alexandrov.
+  - vlan_strip support kni.
+  - Removed deleted sources from Makefile. @d06alexandrov.
+  - make it compilable under O2 optimization, pass gcc check. @renzibei.
+  - enable -O2 by default. Ref #711 #721.
+  - Fix #702 F-stack rack and BBR both causes PCB memory leak.
+  - tcp: Missing mfree in rack and bbr.
+  - when nginx use setsockopt ON_LINGER, the seq number of the RST packet is error. @wenchengji159357.
+  - While use bbr, the hz should be set to 1000000, match the bintime and timer of F-Stack. Ref #701 #702.
+  - Redis can listen IPv6 address.
+  - Fix Compile Error with gcc 11.3.0(in Ubuntu 22.04). Close #736.
+  - Fixed #705. While Adding -DNDEBUG flag will cause the helloworld example.
+  - Add some description of `ff_socket()` and `ff_write()`. Ref #709.
+  - Modify pci_whitelist to allow that from DPDK 20.11. Close #745.
+  - fix that vtoslab doesn't return the correct slab. @zhutian.
+  - When entering the softclock function for the first time,ticks is 2147423648,cc_softticks is 0. @wenchengji159357.
+  - Add adapter for LD_PRELOAD. EXPERIMENTAL.
+  - fix cmsg for sendmsg. @sarosh.
+  - Fixed an issue that before C99 mode..
+  - Fiexd some build errors of ipfw on ubuntu 22.04 (kernel:5.19.0-1025, gcc:11.4.0),
+  - fix some issue of ff_sendmsg and ff_recvmsg.
+  - Support LINUX_IP_TRANSPARENT and LINUX_IPV6_TRANSPARENT to IP_BINDANY and IPV6_BINDANY in lib/ff_syscall_wrapper.c.
+
+  2. DPDK:
+
+  - DPDK: Upgrade to 21.11.5.
+  - Fix I40E_DEV_ID_10G_BASE_T_X722 issue.
+  - Update igb_uio, sync from git://dpdk.org/dpdk-kmods.
+
+  3. APP:
+
+  - Nginx: Upgrade to Nginx-1.25.2 to support HTTP3. EXPERIMENTAL.
+  - Add adapter for LD_PRELOAD. EXPERIMENTAL.
+  - move /app/micro_thread to adapter/micro_thread.
+  - Fix netmask in nginx conf. @jiegec.
+  - Fiexd some build errors of micro_thread on ubuntu 22.04 (kernel:5.19.0-1025, gcc:11.4.0),
+
+  4. example:
+
+  - Set non blocking in example/main.c. Ref #709.
+  - Add helloworld_stack_epoll、 main_stack_epoll_pipeline and kevent for LD_PRELOAD demo.
+  - Fiexd some build errors of example on ubuntu 22.04 (kernel:5.19.0-1025, gcc:11.4.0).
+
+
+2023.09 F-Stack v1.22.1
+
+  1. F-Stack lib:
+
+  - Fix #702 F-stack rack and BBR both causes PCB memory leak.
+  - While use bbr, the hz should be set to 1000000, match the bintime and timer of F-Stack. Ref #701 #702
+  - Modify pci_whitelist to allow that from DPDK 20.11. Close #745.
+
+  2. DPDK:
+
+  - Upgrade to DPDK-20.11.9(LTS).
+
+
+
 2022.09 F-Stack v1.22
 
   1. Freebsd

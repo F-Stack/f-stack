@@ -66,10 +66,9 @@ ssize_t rte_ring_get_memsize(unsigned int count);
  * object table. It is advised to use rte_ring_get_memsize() to get the
  * appropriate size.
  *
- * The ring size is set to *count*, which must be a power of two. Water
- * marking is disabled by default. The real usable ring size is
- * *count-1* instead of *count* to differentiate a free ring from an
- * empty ring.
+ * The ring size is set to *count*, which must be a power of two.
+ * The real usable ring size is *count-1* instead of *count* to
+ * differentiate a full ring from an empty ring.
  *
  * The ring is not added in RTE_TAILQ_RING global list. Indeed, the
  * memory given by the caller may not be shareable among dpdk
@@ -80,7 +79,8 @@ ssize_t rte_ring_get_memsize(unsigned int count);
  * @param name
  *   The name of the ring.
  * @param count
- *   The number of elements in the ring (must be a power of 2).
+ *   The number of elements in the ring (must be a power of 2,
+ *   unless RING_F_EXACT_SZ is set in flags).
  * @param flags
  *   An OR of the following:
  *   - One of mutually exclusive flags that define producer behavior:
@@ -107,6 +107,13 @@ ssize_t rte_ring_get_memsize(unsigned int count);
  *        is "multi-consumer HTS mode".
  *     If none of these flags is set, then default "multi-consumer"
  *     behavior is selected.
+ *   - RING_F_EXACT_SZ: If this flag is set, the ring will hold exactly the
+ *     requested number of entries, and the requested size will be rounded up
+ *     to the next power of two, but the usable space will be exactly that
+ *     requested. Worst case, if a power-of-2 size is requested, half the
+ *     ring space will be wasted.
+ *     Without this flag set, the ring size requested must be a power of 2,
+ *     and the usable space will be that size - 1.
  * @return
  *   0 on success, or a negative value on error.
  */
@@ -119,17 +126,17 @@ int rte_ring_init(struct rte_ring *r, const char *name, unsigned int count,
  * This function uses ``memzone_reserve()`` to allocate memory. Then it
  * calls rte_ring_init() to initialize an empty ring.
  *
- * The new ring size is set to *count*, which must be a power of
- * two. Water marking is disabled by default. The real usable ring size
- * is *count-1* instead of *count* to differentiate a free ring from an
- * empty ring.
+ * The new ring size is set to *count*, which must be a power of two.
+ * The real usable ring size is *count-1* instead of *count* to
+ * differentiate a full ring from an empty ring.
  *
  * The ring is added in RTE_TAILQ_RING list.
  *
  * @param name
  *   The name of the ring.
  * @param count
- *   The size of the ring (must be a power of 2).
+ *   The size of the ring (must be a power of 2,
+ *   unless RING_F_EXACT_SZ is set in flags).
  * @param socket_id
  *   The *socket_id* argument is the socket identifier in case of
  *   NUMA. The value can be *SOCKET_ID_ANY* if there is no NUMA
@@ -160,11 +167,17 @@ int rte_ring_init(struct rte_ring *r, const char *name, unsigned int count,
  *        is "multi-consumer HTS mode".
  *     If none of these flags is set, then default "multi-consumer"
  *     behavior is selected.
+ *   - RING_F_EXACT_SZ: If this flag is set, the ring will hold exactly the
+ *     requested number of entries, and the requested size will be rounded up
+ *     to the next power of two, but the usable space will be exactly that
+ *     requested. Worst case, if a power-of-2 size is requested, half the
+ *     ring space will be wasted.
+ *     Without this flag set, the ring size requested must be a power of 2,
+ *     and the usable space will be that size - 1.
  * @return
  *   On success, the pointer to the new allocated ring. NULL on error with
  *    rte_errno set appropriately. Possible errno values include:
  *    - E_RTE_NO_CONFIG - function could not get pointer to rte_config structure
- *    - E_RTE_SECONDARY - function was called from a secondary process instance
  *    - EINVAL - count provided is not a power of 2
  *    - ENOSPC - the maximum number of memzones has already been allocated
  *    - EEXIST - a memzone with the same name already exists
@@ -177,7 +190,8 @@ struct rte_ring *rte_ring_create(const char *name, unsigned int count,
  * De-allocate all memory used by the ring.
  *
  * @param r
- *   Ring to free
+ *   Ring to free.
+ *   If NULL then, the function does nothing.
  */
 void rte_ring_free(struct rte_ring *r);
 

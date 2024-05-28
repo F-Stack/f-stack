@@ -157,7 +157,6 @@ The following are the application command-line options:
            crypto_mvsam
            crypto_null
            crypto_octeontx
-           crypto_octeontx2
            crypto_openssl
            crypto_qat
            crypto_scheduler
@@ -233,7 +232,6 @@ The following are the application command-line options:
         Set authentication algorithm name, where ``name`` is one
         of the following::
 
-           3des-cbc
            aes-cbc-mac
            aes-cmac
            aes-gmac
@@ -332,6 +330,15 @@ The following are the application command-line options:
 * ``--pdcp-ses-hfn-en``
 
         Enable fixed session based HFN instead of per packet HFN.
+
+* ``--enable-sdap``
+
+        Enable Service Data Adaptation Protocol.
+
+* ``--modex-len <n>``
+
+        Set modex length for asymmetric crypto perf test.
+        Supported lengths are 60, 128, 255, 448. Default length is 128.
 
 Test Vector File
 ~~~~~~~~~~~~~~~~

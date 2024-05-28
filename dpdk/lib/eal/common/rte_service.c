@@ -3,22 +3,17 @@
  */
 
 #include <stdio.h>
-#include <unistd.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <string.h>
 
-#include <rte_compat.h>
 #include <rte_service.h>
 #include <rte_service_component.h>
 
-#include <rte_eal.h>
 #include <rte_lcore.h>
+#include <rte_branch_prediction.h>
 #include <rte_common.h>
-#include <rte_debug.h>
 #include <rte_cycles.h>
 #include <rte_atomic.h>
-#include <rte_memory.h>
 #include <rte_malloc.h>
 #include <rte_spinlock.h>
 
@@ -56,9 +51,12 @@ struct rte_service_spec_impl {
 	 * on currently.
 	 */
 	uint32_t num_mapped_cores;
-	uint64_t calls;
-	uint64_t cycles_spent;
 } __rte_cache_aligned;
+
+struct service_stats {
+	uint64_t calls;
+	uint64_t cycles;
+};
 
 /* the internal values of a service core */
 struct core_state {
@@ -69,7 +67,8 @@ struct core_state {
 	uint8_t is_service_core; /* set if core is currently a service core */
 	uint8_t service_active_on_lcore[RTE_SERVICE_NUM_MAX];
 	uint64_t loops;
-	uint64_t calls_per_service[RTE_SERVICE_NUM_MAX];
+	uint64_t cycles;
+	struct service_stats service_stats[RTE_SERVICE_NUM_MAX];
 } __rte_cache_aligned;
 
 static uint32_t rte_service_count;
@@ -80,6 +79,11 @@ static uint32_t rte_service_library_initialized;
 int32_t
 rte_service_init(void)
 {
+	/* Hard limit due to the use of an uint64_t-based bitmask (and the
+	 * clzl intrinsic).
+	 */
+	RTE_BUILD_BUG_ON(RTE_SERVICE_NUM_MAX > 64);
+
 	if (rte_service_library_initialized) {
 		RTE_LOG(NOTICE, EAL,
 			"service library init() called, init flag %d\n",
@@ -103,14 +107,12 @@ rte_service_init(void)
 	}
 
 	int i;
-	int count = 0;
 	struct rte_config *cfg = rte_eal_get_configuration();
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		if (lcore_config[i].core_role == ROLE_SERVICE) {
 			if ((unsigned int)i == cfg->main_lcore)
 				continue;
 			rte_service_lcore_add(i);
-			count++;
 		}
 	}
 
@@ -137,13 +139,16 @@ rte_service_finalize(void)
 	rte_service_library_initialized = 0;
 }
 
-/* returns 1 if service is registered and has not been unregistered
- * Returns 0 if service never registered, or has been unregistered
- */
-static inline int
+static inline bool
+service_registered(uint32_t id)
+{
+	return rte_services[id].internal_flags & SERVICE_F_REGISTERED;
+}
+
+static inline bool
 service_valid(uint32_t id)
 {
-	return !!(rte_services[id].internal_flags & SERVICE_F_REGISTERED);
+	return id < RTE_SERVICE_NUM_MAX && service_registered(id);
 }
 
 static struct rte_service_spec_impl *
@@ -154,7 +159,7 @@ service_get(uint32_t id)
 
 /* validate ID and retrieve service pointer, or return error value */
 #define SERVICE_VALID_GET_OR_ERR_RET(id, service, retval) do {          \
-	if (id >= RTE_SERVICE_NUM_MAX || !service_valid(id))            \
+	if (!service_valid(id))                                         \
 		return retval;                                          \
 	service = &rte_services[id];                                    \
 } while (0)
@@ -216,7 +221,7 @@ rte_service_get_by_name(const char *name, uint32_t *service_id)
 
 	int i;
 	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++) {
-		if (service_valid(i) &&
+		if (service_registered(i) &&
 				strcmp(name, rte_services[i].spec.name) == 0) {
 			*service_id = i;
 			return 0;
@@ -253,7 +258,7 @@ rte_service_component_register(const struct rte_service_spec *spec,
 		return -EINVAL;
 
 	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++) {
-		if (!service_valid(i)) {
+		if (!service_registered(i)) {
 			free_slot = i;
 			break;
 		}
@@ -367,11 +372,29 @@ service_runner_do_callback(struct rte_service_spec_impl *s,
 
 	if (service_stats_enabled(s)) {
 		uint64_t start = rte_rdtsc();
-		s->spec.callback(userdata);
-		uint64_t end = rte_rdtsc();
-		s->cycles_spent += end - start;
-		cs->calls_per_service[service_idx]++;
-		s->calls++;
+		int rc = s->spec.callback(userdata);
+
+		/* The lcore service worker thread is the only writer,
+		 * and thus only a non-atomic load and an atomic store
+		 * is needed, and not the more expensive atomic
+		 * add.
+		 */
+		struct service_stats *service_stats =
+			&cs->service_stats[service_idx];
+
+		if (likely(rc != -EAGAIN)) {
+			uint64_t end = rte_rdtsc();
+			uint64_t cycles = end - start;
+
+			__atomic_store_n(&cs->cycles, cs->cycles + cycles,
+				__ATOMIC_RELAXED);
+			__atomic_store_n(&service_stats->cycles,
+				service_stats->cycles + cycles,
+				__ATOMIC_RELAXED);
+		}
+
+		__atomic_store_n(&service_stats->calls,
+			service_stats->calls + 1, __ATOMIC_RELAXED);
 	} else
 		s->spec.callback(userdata);
 }
@@ -419,7 +442,7 @@ rte_service_may_be_active(uint32_t id)
 	int32_t lcore_count = rte_service_lcore_list(ids, RTE_MAX_LCORE);
 	int i;
 
-	if (id >= RTE_SERVICE_NUM_MAX || !service_valid(id))
+	if (!service_valid(id))
 		return -EINVAL;
 
 	for (i = 0; i < lcore_count; i++) {
@@ -454,7 +477,7 @@ static int32_t
 service_runner_func(void *arg)
 {
 	RTE_SET_USED(arg);
-	uint32_t i;
+	uint8_t i;
 	const int lcore = rte_lcore_id();
 	struct core_state *cs = &lcore_states[lcore];
 
@@ -466,17 +489,30 @@ service_runner_func(void *arg)
 	 */
 	while (__atomic_load_n(&cs->runstate, __ATOMIC_ACQUIRE) ==
 			RUNSTATE_RUNNING) {
-		const uint64_t service_mask = cs->service_mask;
 
-		for (i = 0; i < RTE_SERVICE_NUM_MAX; i++) {
-			if (!service_valid(i))
-				continue;
+		const uint64_t service_mask = cs->service_mask;
+		uint8_t start_id;
+		uint8_t end_id;
+
+		if (service_mask == 0)
+			continue;
+
+		start_id = __builtin_ctzl(service_mask);
+		end_id = 64 - __builtin_clzl(service_mask);
+
+		for (i = start_id; i < end_id; i++) {
 			/* return value ignored as no change to code flow */
 			service_run(i, cs, service_mask, service_get(i), 1);
 		}
 
-		cs->loops++;
+		__atomic_store_n(&cs->loops, cs->loops + 1, __ATOMIC_RELAXED);
 	}
+
+	/* Switch off this core for all services, to ensure that future
+	 * calls to may_be_active() know this core is switched off.
+	 */
+	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++)
+		cs->service_active_on_lcore[i] = 0;
 
 	/* Use SEQ CST memory ordering to avoid any re-ordering around
 	 * this store, ensuring that once this store is visible, the service
@@ -591,8 +627,8 @@ static int32_t
 service_update(uint32_t sid, uint32_t lcore, uint32_t *set, uint32_t *enabled)
 {
 	/* validate ID, or return error value */
-	if (sid >= RTE_SERVICE_NUM_MAX || !service_valid(sid) ||
-	    lcore >= RTE_MAX_LCORE || !lcore_states[lcore].is_service_core)
+	if (!service_valid(sid) || lcore >= RTE_MAX_LCORE ||
+			!lcore_states[lcore].is_service_core)
 		return -EINVAL;
 
 	uint64_t sid_mask = UINT64_C(1) << sid;
@@ -774,11 +810,6 @@ rte_service_lcore_stop(uint32_t lcore)
 			__atomic_load_n(&rte_services[i].num_mapped_cores,
 				__ATOMIC_RELAXED));
 
-		/* Switch off this core for all services, to ensure that future
-		 * calls to may_be_active() know this core is switched off.
-		 */
-		cs->service_active_on_lcore[i] = 0;
-
 		/* if the core is mapped, and the service is running, and this
 		 * is the only core that is mapped, the service would cease to
 		 * run if this core stopped, so fail instead.
@@ -796,21 +827,84 @@ rte_service_lcore_stop(uint32_t lcore)
 	return 0;
 }
 
+static uint64_t
+lcore_attr_get_loops(unsigned int lcore)
+{
+	struct core_state *cs = &lcore_states[lcore];
+
+	return __atomic_load_n(&cs->loops, __ATOMIC_RELAXED);
+}
+
+static uint64_t
+lcore_attr_get_cycles(unsigned int lcore)
+{
+	struct core_state *cs = &lcore_states[lcore];
+
+	return __atomic_load_n(&cs->cycles, __ATOMIC_RELAXED);
+}
+
+static uint64_t
+lcore_attr_get_service_calls(uint32_t service_id, unsigned int lcore)
+{
+	struct core_state *cs = &lcore_states[lcore];
+
+	return __atomic_load_n(&cs->service_stats[service_id].calls,
+		__ATOMIC_RELAXED);
+}
+
+static uint64_t
+lcore_attr_get_service_cycles(uint32_t service_id, unsigned int lcore)
+{
+	struct core_state *cs = &lcore_states[lcore];
+
+	return __atomic_load_n(&cs->service_stats[service_id].cycles,
+		__ATOMIC_RELAXED);
+}
+
+typedef uint64_t (*lcore_attr_get_fun)(uint32_t service_id,
+				       unsigned int lcore);
+
+static uint64_t
+attr_get(uint32_t id, lcore_attr_get_fun lcore_attr_get)
+{
+	unsigned int lcore;
+	uint64_t sum = 0;
+
+	for (lcore = 0; lcore < RTE_MAX_LCORE; lcore++) {
+		if (lcore_states[lcore].is_service_core)
+			sum += lcore_attr_get(id, lcore);
+	}
+
+	return sum;
+}
+
+static uint64_t
+attr_get_service_calls(uint32_t service_id)
+{
+	return attr_get(service_id, lcore_attr_get_service_calls);
+}
+
+static uint64_t
+attr_get_service_cycles(uint32_t service_id)
+{
+	return attr_get(service_id, lcore_attr_get_service_cycles);
+}
+
 int32_t
 rte_service_attr_get(uint32_t id, uint32_t attr_id, uint64_t *attr_value)
 {
-	struct rte_service_spec_impl *s;
-	SERVICE_VALID_GET_OR_ERR_RET(id, s, -EINVAL);
+	if (!service_valid(id))
+		return -EINVAL;
 
 	if (!attr_value)
 		return -EINVAL;
 
 	switch (attr_id) {
-	case RTE_SERVICE_ATTR_CYCLES:
-		*attr_value = s->cycles_spent;
-		return 0;
 	case RTE_SERVICE_ATTR_CALL_COUNT:
-		*attr_value = s->calls;
+		*attr_value = attr_get_service_calls(id);
+		return 0;
+	case RTE_SERVICE_ATTR_CYCLES:
+		*attr_value = attr_get_service_cycles(id);
 		return 0;
 	default:
 		return -EINVAL;
@@ -832,7 +926,10 @@ rte_service_lcore_attr_get(uint32_t lcore, uint32_t attr_id,
 
 	switch (attr_id) {
 	case RTE_SERVICE_LCORE_ATTR_LOOPS:
-		*attr_value = cs->loops;
+		*attr_value = lcore_attr_get_loops(lcore);
+		return 0;
+	case RTE_SERVICE_LCORE_ATTR_CYCLES:
+		*attr_value = lcore_attr_get_cycles(lcore);
 		return 0;
 	default:
 		return -EINVAL;
@@ -842,11 +939,17 @@ rte_service_lcore_attr_get(uint32_t lcore, uint32_t attr_id,
 int32_t
 rte_service_attr_reset_all(uint32_t id)
 {
-	struct rte_service_spec_impl *s;
-	SERVICE_VALID_GET_OR_ERR_RET(id, s, -EINVAL);
+	unsigned int lcore;
 
-	s->cycles_spent = 0;
-	s->calls = 0;
+	if (!service_valid(id))
+		return -EINVAL;
+
+	for (lcore = 0; lcore < RTE_MAX_LCORE; lcore++) {
+		struct core_state *cs = &lcore_states[lcore];
+
+		cs->service_stats[id] = (struct service_stats) {};
+	}
+
 	return 0;
 }
 
@@ -868,17 +971,25 @@ rte_service_lcore_attr_reset_all(uint32_t lcore)
 }
 
 static void
-service_dump_one(FILE *f, struct rte_service_spec_impl *s)
+service_dump_one(FILE *f, uint32_t id)
 {
-	/* avoid divide by zero */
-	int calls = 1;
+	struct rte_service_spec_impl *s;
+	uint64_t service_calls;
+	uint64_t service_cycles;
 
-	if (s->calls != 0)
-		calls = s->calls;
+	service_calls = attr_get_service_calls(id);
+	service_cycles = attr_get_service_cycles(id);
+
+	/* avoid divide by zero */
+	if (service_calls == 0)
+		service_calls = 1;
+
+	s = service_get(id);
+
 	fprintf(f, "  %s: stats %d\tcalls %"PRIu64"\tcycles %"
-			PRIu64"\tavg: %"PRIu64"\n",
-			s->spec.name, service_stats_enabled(s), s->calls,
-			s->cycles_spent, s->cycles_spent / calls);
+		PRIu64"\tavg: %"PRIu64"\n",
+		s->spec.name, service_stats_enabled(s), service_calls,
+		service_cycles, service_cycles / service_calls);
 }
 
 static void
@@ -889,9 +1000,9 @@ service_dump_calls_per_lcore(FILE *f, uint32_t lcore)
 
 	fprintf(f, "%02d\t", lcore);
 	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++) {
-		if (!service_valid(i))
+		if (!service_registered(i))
 			continue;
-		fprintf(f, "%"PRIu64"\t", cs->calls_per_service[i]);
+		fprintf(f, "%"PRIu64"\t", cs->service_stats[i].calls);
 	}
 	fprintf(f, "\n");
 }
@@ -907,16 +1018,16 @@ rte_service_dump(FILE *f, uint32_t id)
 		struct rte_service_spec_impl *s;
 		SERVICE_VALID_GET_OR_ERR_RET(id, s, -EINVAL);
 		fprintf(f, "Service %s Summary\n", s->spec.name);
-		service_dump_one(f, s);
+		service_dump_one(f, id);
 		return 0;
 	}
 
 	/* print all services, as UINT32_MAX was passed as id */
 	fprintf(f, "Services Summary\n");
 	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++) {
-		if (!service_valid(i))
+		if (!service_registered(i))
 			continue;
-		service_dump_one(f, &rte_services[i]);
+		service_dump_one(f, i);
 	}
 
 	fprintf(f, "Service Cores Summary\n");

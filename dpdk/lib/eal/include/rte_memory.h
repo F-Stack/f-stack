@@ -19,8 +19,8 @@
 extern "C" {
 #endif
 
+#include <rte_bitops.h>
 #include <rte_common.h>
-#include <rte_compat.h>
 #include <rte_config.h>
 #include <rte_fbarray.h>
 
@@ -37,11 +37,14 @@ extern "C" {
 
 #define SOCKET_ID_ANY -1                    /**< Any NUMA socket. */
 
+/** Prevent this segment from being freed back to the OS. */
+#define RTE_MEMSEG_FLAG_DO_NOT_FREE RTE_BIT32(0)
+/** This segment is not filled with zeros. */
+#define RTE_MEMSEG_FLAG_DIRTY RTE_BIT32(1)
+
 /**
  * Physical memory segment descriptor.
  */
-#define RTE_MEMSEG_FLAG_DO_NOT_FREE (1 << 0)
-/**< Prevent this segment from being freed back to the OS. */
 struct rte_memseg {
 	rte_iova_t iova;            /**< Start IO address. */
 	RTE_STD_C11

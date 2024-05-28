@@ -16,6 +16,9 @@
 /* used for Rx Bulk Allocate */
 #define IAVF_RX_MAX_BURST         32
 
+/* Max data buffer size must be 16K - 128 bytes */
+#define IAVF_RX_MAX_DATA_BUF_SIZE (16 * 1024 - 128)
+
 /* used for Vector PMD */
 #define IAVF_VPMD_RX_MAX_BURST    32
 #define IAVF_VPMD_TX_MAX_BURST    32
@@ -24,13 +27,15 @@
 #define IAVF_VPMD_TX_MAX_FREE_BUF 64
 
 #define IAVF_TX_NO_VECTOR_FLAGS (				 \
+		RTE_ETH_TX_OFFLOAD_VLAN_INSERT |		 \
+		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |		 \
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |		 \
 		RTE_ETH_TX_OFFLOAD_TCP_TSO |		 \
+		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |    \
+		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |	\
 		RTE_ETH_TX_OFFLOAD_SECURITY)
 
 #define IAVF_TX_VECTOR_OFFLOAD (				 \
-		RTE_ETH_TX_OFFLOAD_VLAN_INSERT |		 \
-		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |		 \
 		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |		 \
 		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |		 \
 		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |		 \
@@ -53,10 +58,14 @@
 #define IAVF_TSO_MAX_SEG          UINT8_MAX
 #define IAVF_TX_MAX_MTU_SEG       8
 
+#define IAVF_TX_MIN_PKT_LEN 17
+
 #define IAVF_TX_CKSUM_OFFLOAD_MASK (		 \
 		RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
-		RTE_MBUF_F_TX_TCP_SEG)
+		RTE_MBUF_F_TX_TCP_SEG |          \
+		RTE_MBUF_F_TX_OUTER_IP_CKSUM |   \
+		RTE_MBUF_F_TX_OUTER_UDP_CKSUM)
 
 #define IAVF_TX_OFFLOAD_MASK (  \
 		RTE_MBUF_F_TX_OUTER_IPV6 |		 \
@@ -67,10 +76,20 @@
 		RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
 		RTE_MBUF_F_TX_TCP_SEG |		 \
+		RTE_MBUF_F_TX_TUNNEL_MASK |	\
+		RTE_MBUF_F_TX_OUTER_IP_CKSUM |  \
+		RTE_MBUF_F_TX_OUTER_UDP_CKSUM | \
 		RTE_ETH_TX_OFFLOAD_SECURITY)
 
 #define IAVF_TX_OFFLOAD_NOTSUP_MASK \
 		(RTE_MBUF_F_TX_OFFLOAD_MASK ^ IAVF_TX_OFFLOAD_MASK)
+
+/* HW requires that TX buffer size ranges from 1B up to (16K-1)B. */
+#define IAVF_MAX_DATA_PER_TXD \
+	(IAVF_TXD_QW1_TX_BUF_SZ_MASK >> IAVF_TXD_QW1_TX_BUF_SZ_SHIFT)
+
+extern uint64_t iavf_timestamp_dynflag;
+extern int iavf_timestamp_dynfield_offset;
 
 /**
  * Rx Flex Descriptors
@@ -220,6 +239,8 @@ struct iavf_rx_queue {
 		/* flexible descriptor metadata extraction offload flag */
 	struct iavf_rx_queue_stats stats;
 	uint64_t offloads;
+	uint64_t phc_time;
+	uint64_t hw_time_update;
 };
 
 struct iavf_tx_entry {
@@ -787,6 +808,24 @@ void iavf_fdir_rx_proc_enable(struct iavf_adapter *ad, bool on)
 				FDIR_PROC_ENABLE_PER_QUEUE(ad, on);
 		}
 	}
+}
+
+static inline
+uint64_t iavf_tstamp_convert_32b_64b(uint64_t time, uint32_t in_timestamp)
+{
+	const uint64_t mask = 0xFFFFFFFF;
+	uint32_t delta;
+	uint64_t ns;
+
+	delta = (in_timestamp - (uint32_t)(time & mask));
+	if (delta > (mask / 2)) {
+		delta = ((uint32_t)(time & mask) - in_timestamp);
+		ns = time - delta;
+	} else {
+		ns = time + delta;
+	}
+
+	return ns;
 }
 
 #ifdef RTE_LIBRTE_IAVF_DEBUG_DUMP_DESC

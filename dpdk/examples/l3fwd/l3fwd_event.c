@@ -73,6 +73,12 @@ l3fwd_eth_dev_port_setup(struct rte_eth_conf *port_conf)
 			rte_panic("Error during getting device (port %u) info:"
 				  "%s\n", port_id, strerror(-ret));
 
+		ret = config_port_max_pkt_len(&local_port_conf, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Invalid max packet length: %u (port %u)\n",
+				max_pkt_len, port_id);
+
 		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
 						RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -286,4 +292,52 @@ l3fwd_event_resource_setup(struct rte_eth_conf *port_conf)
 	evt_rsrc->ops.fib_event_loop =
 		fib_event_loop[evt_rsrc->vector_enabled][evt_rsrc->tx_mode_q]
 			      [evt_rsrc->has_burst];
+}
+
+static void
+l3fwd_event_vector_array_free(struct rte_event events[], uint16_t num)
+{
+	uint16_t i;
+
+	for (i = 0; i < num; i++) {
+		rte_pktmbuf_free_bulk(
+			&events[i].vec->mbufs[events[i].vec->elem_offset],
+			events[i].vec->nb_elem);
+		rte_mempool_put(rte_mempool_from_obj(events[i].vec),
+				events[i].vec);
+	}
+}
+
+static void
+l3fwd_event_port_flush(uint8_t event_d_id __rte_unused, struct rte_event ev,
+		       void *args __rte_unused)
+{
+	if (ev.event_type & RTE_EVENT_TYPE_VECTOR)
+		l3fwd_event_vector_array_free(&ev, 1);
+	else
+		rte_pktmbuf_free(ev.mbuf);
+}
+
+void
+l3fwd_event_worker_cleanup(uint8_t event_d_id, uint8_t event_p_id,
+			   struct rte_event events[], uint16_t nb_enq,
+			   uint16_t nb_deq, uint8_t is_vector)
+{
+	int i;
+
+	if (nb_deq) {
+		if (is_vector)
+			l3fwd_event_vector_array_free(events + nb_enq,
+						      nb_deq - nb_enq);
+		else
+			for (i = nb_enq; i < nb_deq; i++)
+				rte_pktmbuf_free(events[i].mbuf);
+
+		for (i = 0; i < nb_deq; i++)
+			events[i].op = RTE_EVENT_OP_RELEASE;
+		rte_event_enqueue_burst(event_d_id, event_p_id, events, nb_deq);
+	}
+
+	rte_event_port_quiesce(event_d_id, event_p_id, l3fwd_event_port_flush,
+			       NULL);
 }

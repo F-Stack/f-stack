@@ -1,4 +1,4 @@
-DPDK_22 {
+DPDK_23 {
 	global:
 
 	rte_vdpa_find_device_by_name;
@@ -41,14 +41,12 @@ DPDK_22 {
 	rte_vhost_get_mtu;
 	rte_vhost_get_negotiated_features;
 	rte_vhost_get_numa_node;
-	rte_vhost_get_queue_num;
 	rte_vhost_get_vdpa_device;
 	rte_vhost_get_vhost_ring_inflight;
 	rte_vhost_get_vhost_vring;
 	rte_vhost_get_vring_base;
 	rte_vhost_get_vring_base_from_inflight;
 	rte_vhost_get_vring_num;
-	rte_vhost_gpa_to_vva;
 	rte_vhost_log_used_vring;
 	rte_vhost_log_write;
 	rte_vhost_rx_queue_count;
@@ -59,6 +57,9 @@ DPDK_22 {
 	rte_vhost_set_vring_base;
 	rte_vhost_va_from_guest_pa;
 	rte_vhost_vring_call;
+	rte_vhost_vring_stats_get;
+	rte_vhost_vring_stats_get_names;
+	rte_vhost_vring_stats_reset;
 
 	local: *;
 };
@@ -84,6 +85,19 @@ EXPERIMENTAL {
 
 	# added in 21.11
 	rte_vhost_get_monitor_addr;
+
+	# added in 22.03
+	rte_vhost_async_dma_configure;
+
+	# added in 22.07
+	rte_vhost_async_get_inflight_thread_unsafe;
+	rte_vhost_async_try_dequeue_burst;
+	rte_vhost_driver_get_vdpa_dev_type;
+	rte_vhost_clear_queue;
+
+	# added in 22.11
+	rte_vhost_async_dma_unconfigure;
+	rte_vhost_vring_call_nonblock;
 };
 
 INTERNAL {

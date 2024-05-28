@@ -29,7 +29,7 @@
 #define IAVF_GTPU_EH_UPLINK 1
 
 #define IAVF_FDIR_INSET_ETH (\
-	IAVF_INSET_ETHERTYPE)
+	IAVF_INSET_DMAC | IAVF_INSET_SMAC | IAVF_INSET_ETHERTYPE)
 
 #define IAVF_FDIR_INSET_ETH_IPV4 (\
 	IAVF_INSET_IPV4_SRC | IAVF_INSET_IPV4_DST | \
@@ -168,7 +168,33 @@
 	IAVF_FDIR_INSET_GRE_IPV6 | IAVF_INSET_TUN_UDP_SRC_PORT | \
 	IAVF_INSET_TUN_UDP_DST_PORT)
 
+#define IAVF_FDIR_INSET_L2TPV2 (\
+	IAVF_INSET_SMAC | IAVF_INSET_DMAC | IAVF_INSET_L2TPV2)
+
+#define IAVF_FDIR_INSET_L2TPV2_PPP_IPV4 (\
+	IAVF_INSET_TUN_IPV4_SRC | IAVF_INSET_TUN_IPV4_DST)
+
+#define IAVF_FDIR_INSET_L2TPV2_PPP_IPV4_UDP (\
+	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4 | IAVF_INSET_TUN_UDP_SRC_PORT | \
+	IAVF_INSET_TUN_UDP_DST_PORT)
+
+#define IAVF_FDIR_INSET_L2TPV2_PPP_IPV4_TCP (\
+	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4 | IAVF_INSET_TUN_TCP_SRC_PORT | \
+	IAVF_INSET_TUN_TCP_DST_PORT)
+
+#define IAVF_FDIR_INSET_L2TPV2_PPP_IPV6 (\
+	IAVF_INSET_TUN_IPV6_SRC | IAVF_INSET_TUN_IPV6_DST)
+
+#define IAVF_FDIR_INSET_L2TPV2_PPP_IPV6_UDP (\
+	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6 | IAVF_INSET_TUN_UDP_SRC_PORT | \
+	IAVF_INSET_TUN_UDP_DST_PORT)
+
+#define IAVF_FDIR_INSET_L2TPV2_PPP_IPV6_TCP (\
+	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6 | IAVF_INSET_TUN_TCP_SRC_PORT | \
+	IAVF_INSET_TUN_TCP_DST_PORT)
+
 static struct iavf_pattern_match_item iavf_fdir_pattern[] = {
+	{iavf_pattern_raw,			 IAVF_INSET_NONE,		IAVF_INSET_NONE},
 	{iavf_pattern_ethertype,		 IAVF_FDIR_INSET_ETH,		IAVF_INSET_NONE},
 	{iavf_pattern_eth_ipv4,			 IAVF_FDIR_INSET_ETH_IPV4,	IAVF_INSET_NONE},
 	{iavf_pattern_eth_ipv4_udp,		 IAVF_FDIR_INSET_ETH_IPV4_UDP,	IAVF_INSET_NONE},
@@ -275,6 +301,23 @@ static struct iavf_pattern_match_item iavf_fdir_pattern[] = {
 	{iavf_pattern_eth_ipv6_gre_ipv6,	IAVF_FDIR_INSET_GRE_IPV6,	IAVF_INSET_NONE},
 	{iavf_pattern_eth_ipv6_gre_ipv6_tcp,	IAVF_FDIR_INSET_GRE_IPV6_TCP,	IAVF_INSET_NONE},
 	{iavf_pattern_eth_ipv6_gre_ipv6_udp,	IAVF_FDIR_INSET_GRE_IPV6_UDP,	IAVF_INSET_NONE},
+
+	{iavf_pattern_eth_ipv4_udp_l2tpv2,		IAVF_FDIR_INSET_L2TPV2,			IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp,		IAVF_FDIR_INSET_L2TPV2,			IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2,		IAVF_FDIR_INSET_L2TPV2,			IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp,		IAVF_FDIR_INSET_L2TPV2,			IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv4,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv4_udp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4_UDP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv4_tcp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4_TCP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv4,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv4_udp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4_UDP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv4_tcp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV4_TCP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv6,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv6_udp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6_UDP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv6_tcp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6_TCP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv6,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv6_udp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6_UDP,	IAVF_INSET_NONE},
+	{iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv6_tcp,	IAVF_FDIR_INSET_L2TPV2_PPP_IPV6_TCP,	IAVF_INSET_NONE},
 };
 
 static struct iavf_flow_parser iavf_fdir_parser;
@@ -678,6 +721,7 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 	struct virtchnl_proto_hdrs *hdrs =
 			&filter->add_fltr.rule_cfg.proto_hdrs;
 	enum rte_flow_item_type l3 = RTE_FLOW_ITEM_TYPE_END;
+	const struct rte_flow_item_raw *raw_spec, *raw_mask;
 	const struct rte_flow_item_eth *eth_spec, *eth_mask;
 	const struct rte_flow_item_ipv4 *ipv4_spec, *ipv4_last, *ipv4_mask;
 	const struct rte_flow_item_ipv6 *ipv6_spec, *ipv6_mask;
@@ -694,6 +738,8 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 	const struct rte_flow_item_pfcp *pfcp_spec, *pfcp_mask;
 	const struct rte_flow_item_ecpri *ecpri_spec, *ecpri_mask;
 	const struct rte_flow_item_gre *gre_spec, *gre_mask;
+	const struct rte_flow_item_l2tpv2 *l2tpv2_spec, *l2tpv2_mask;
+	const struct rte_flow_item_ppp *ppp_spec, *ppp_mask;
 	const struct rte_flow_item *item = pattern;
 	struct virtchnl_proto_hdr *hdr, *hdr1 = NULL;
 	struct rte_ecpri_common_hdr ecpri_common;
@@ -701,7 +747,8 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 	enum rte_flow_item_type item_type;
 	enum rte_flow_item_type next_type;
 	uint8_t tun_inner = 0;
-	uint16_t ether_type;
+	uint16_t ether_type, flags_version;
+	uint8_t item_num = 0;
 	int layer = 0;
 
 	uint8_t  ipv6_addr_mask[16] = {
@@ -719,8 +766,72 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 					   RTE_FLOW_ERROR_TYPE_ITEM, item,
 					   "Not support range");
 		}
+		item_num++;
 
 		switch (item_type) {
+		case RTE_FLOW_ITEM_TYPE_RAW: {
+			raw_spec = item->spec;
+			raw_mask = item->mask;
+
+			if (item_num != 1)
+				return -rte_errno;
+
+			if (raw_spec->length != raw_mask->length)
+				return -rte_errno;
+
+			uint16_t pkt_len = 0;
+			uint16_t tmp_val = 0;
+			uint8_t tmp = 0;
+			int i, j;
+
+			pkt_len = raw_spec->length;
+
+			for (i = 0, j = 0; i < pkt_len; i += 2, j++) {
+				tmp = raw_spec->pattern[i];
+				if (tmp >= 'a' && tmp <= 'f')
+					tmp_val = tmp - 'a' + 10;
+				if (tmp >= 'A' && tmp <= 'F')
+					tmp_val = tmp - 'A' + 10;
+				if (tmp >= '0' && tmp <= '9')
+					tmp_val = tmp - '0';
+
+				tmp_val *= 16;
+				tmp = raw_spec->pattern[i + 1];
+				if (tmp >= 'a' && tmp <= 'f')
+					tmp_val += (tmp - 'a' + 10);
+				if (tmp >= 'A' && tmp <= 'F')
+					tmp_val += (tmp - 'A' + 10);
+				if (tmp >= '0' && tmp <= '9')
+					tmp_val += (tmp - '0');
+
+				hdrs->raw.spec[j] = tmp_val;
+
+				tmp = raw_mask->pattern[i];
+				if (tmp >= 'a' && tmp <= 'f')
+					tmp_val = tmp - 'a' + 10;
+				if (tmp >= 'A' && tmp <= 'F')
+					tmp_val = tmp - 'A' + 10;
+				if (tmp >= '0' && tmp <= '9')
+					tmp_val = tmp - '0';
+
+				tmp_val *= 16;
+				tmp = raw_mask->pattern[i + 1];
+				if (tmp >= 'a' && tmp <= 'f')
+					tmp_val += (tmp - 'a' + 10);
+				if (tmp >= 'A' && tmp <= 'F')
+					tmp_val += (tmp - 'A' + 10);
+				if (tmp >= '0' && tmp <= '9')
+					tmp_val += (tmp - '0');
+
+				hdrs->raw.mask[j] = tmp_val;
+			}
+
+			hdrs->raw.pkt_len = pkt_len / 2;
+			hdrs->tunnel_level = 0;
+			hdrs->count = 0;
+			return 0;
+		}
+
 		case RTE_FLOW_ITEM_TYPE_ETH:
 			eth_spec = item->spec;
 			eth_mask = item->mask;
@@ -739,36 +850,40 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 			}
 
 			if (eth_spec && eth_mask) {
-				if (!rte_is_zero_ether_addr(&eth_mask->src) ||
-				    !rte_is_zero_ether_addr(&eth_mask->dst)) {
-					rte_flow_error_set(error, EINVAL,
-						RTE_FLOW_ERROR_TYPE_ITEM, item,
-						"Invalid MAC_addr mask.");
-					return -rte_errno;
-				}
-			}
-
-			if (eth_spec && eth_mask && eth_mask->type) {
-				if (eth_mask->type != RTE_BE16(0xffff)) {
-					rte_flow_error_set(error, EINVAL,
-						RTE_FLOW_ERROR_TYPE_ITEM,
-						item, "Invalid type mask.");
-					return -rte_errno;
+				if (!rte_is_zero_ether_addr(&eth_mask->dst)) {
+					input_set |= IAVF_INSET_DMAC;
+					VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr1,
+									ETH,
+									DST);
+				} else if (!rte_is_zero_ether_addr(&eth_mask->src)) {
+					input_set |= IAVF_INSET_SMAC;
+					VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr1,
+									ETH,
+									SRC);
 				}
 
-				ether_type = rte_be_to_cpu_16(eth_spec->type);
-				if (ether_type == RTE_ETHER_TYPE_IPV4 ||
-					ether_type == RTE_ETHER_TYPE_IPV6) {
-					rte_flow_error_set(error, EINVAL,
-						RTE_FLOW_ERROR_TYPE_ITEM,
-						item,
-						"Unsupported ether_type.");
-					return -rte_errno;
-				}
+				if (eth_mask->type) {
+					if (eth_mask->type != RTE_BE16(0xffff)) {
+						rte_flow_error_set(error, EINVAL,
+							RTE_FLOW_ERROR_TYPE_ITEM,
+							item, "Invalid type mask.");
+						return -rte_errno;
+					}
 
-				input_set |= IAVF_INSET_ETHERTYPE;
-				VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr1, ETH,
-								 ETHERTYPE);
+					ether_type = rte_be_to_cpu_16(eth_spec->type);
+					if (ether_type == RTE_ETHER_TYPE_IPV4 ||
+						ether_type == RTE_ETHER_TYPE_IPV6) {
+						rte_flow_error_set(error, EINVAL,
+							RTE_FLOW_ERROR_TYPE_ITEM,
+							item,
+							"Unsupported ether_type.");
+						return -rte_errno;
+					}
+
+					input_set |= IAVF_INSET_ETHERTYPE;
+					VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr1, ETH,
+									ETHERTYPE);
+				}
 
 				rte_memcpy(hdr1->buffer, eth_spec,
 					   sizeof(struct rte_ether_hdr));
@@ -816,6 +931,14 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 						   item, "Invalid IPv4 last.");
 				return -rte_errno;
 			}
+
+			/* Mask for IPv4 src/dst addrs not supported */
+			if (ipv4_mask->hdr.src_addr &&
+				ipv4_mask->hdr.src_addr != UINT32_MAX)
+				return -rte_errno;
+			if (ipv4_mask->hdr.dst_addr &&
+				ipv4_mask->hdr.dst_addr != UINT32_MAX)
+				return -rte_errno;
 
 			if (ipv4_mask->hdr.type_of_service ==
 			    UINT8_MAX) {
@@ -1007,6 +1130,14 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 					return -rte_errno;
 				}
 
+				/* Mask for UDP src/dst ports not supported */
+				if (udp_mask->hdr.src_port &&
+					udp_mask->hdr.src_port != UINT16_MAX)
+					return -rte_errno;
+				if (udp_mask->hdr.dst_port &&
+					udp_mask->hdr.dst_port != UINT16_MAX)
+					return -rte_errno;
+
 				if (udp_mask->hdr.src_port == UINT16_MAX) {
 					input_set |= IAVF_INSET_UDP_SRC_PORT;
 					VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr, UDP, SRC_PORT);
@@ -1056,6 +1187,14 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 					return -rte_errno;
 				}
 
+				/* Mask for TCP src/dst ports not supported */
+				if (tcp_mask->hdr.src_port &&
+					tcp_mask->hdr.src_port != UINT16_MAX)
+					return -rte_errno;
+				if (tcp_mask->hdr.dst_port &&
+					tcp_mask->hdr.dst_port != UINT16_MAX)
+					return -rte_errno;
+
 				if (tcp_mask->hdr.src_port == UINT16_MAX) {
 					input_set |= IAVF_INSET_TCP_SRC_PORT;
 					VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr, TCP, SRC_PORT);
@@ -1098,6 +1237,14 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 						"Invalid UDP mask");
 					return -rte_errno;
 				}
+
+				/* Mask for SCTP src/dst ports not supported */
+				if (sctp_mask->hdr.src_port &&
+					sctp_mask->hdr.src_port != UINT16_MAX)
+					return -rte_errno;
+				if (sctp_mask->hdr.dst_port &&
+					sctp_mask->hdr.dst_port != UINT16_MAX)
+					return -rte_errno;
 
 				if (sctp_mask->hdr.src_port == UINT16_MAX) {
 					input_set |= IAVF_INSET_SCTP_SRC_PORT;
@@ -1333,6 +1480,71 @@ iavf_fdir_parse_pattern(__rte_unused struct iavf_adapter *ad,
 			hdrs->count = ++layer;
 			break;
 
+		case RTE_FLOW_ITEM_TYPE_L2TPV2:
+			l2tpv2_spec = item->spec;
+			l2tpv2_mask = item->mask;
+
+			hdr = &hdrs->proto_hdr[layer];
+
+			VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, L2TPV2);
+
+			if (l2tpv2_spec && l2tpv2_mask) {
+				flags_version =
+					rte_be_to_cpu_16(l2tpv2_spec->hdr.common.flags_version);
+				if ((flags_version == RTE_L2TPV2_MSG_TYPE_CONTROL &&
+				     l2tpv2_mask->hdr.type3.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA &&
+				     l2tpv2_mask->hdr.type7.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_L &&
+				     l2tpv2_mask->hdr.type6.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_S &&
+				     l2tpv2_mask->hdr.type5.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_O &&
+				     l2tpv2_mask->hdr.type4.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_L_S &&
+				     l2tpv2_mask->hdr.type3.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_L_O &&
+				     l2tpv2_mask->hdr.type2.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_S_O &&
+				     l2tpv2_mask->hdr.type1.session_id == UINT16_MAX) ||
+				    (flags_version == RTE_L2TPV2_MSG_TYPE_DATA_L_S_O &&
+				     l2tpv2_mask->hdr.type0.session_id == UINT16_MAX)) {
+					input_set |= IAVF_L2TPV2_SESSION_ID;
+					if (flags_version & IAVF_L2TPV2_FLAGS_LEN)
+						VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr,
+								L2TPV2,
+								LEN_SESS_ID);
+					else
+						VIRTCHNL_ADD_PROTO_HDR_FIELD_BIT(hdr,
+								L2TPV2,
+								SESS_ID);
+				}
+
+				rte_memcpy(hdr->buffer, l2tpv2_spec,
+					   sizeof(*l2tpv2_spec));
+			}
+
+			tun_inner = 1;
+
+			hdrs->count = ++layer;
+			break;
+
+		case RTE_FLOW_ITEM_TYPE_PPP:
+			ppp_spec = item->spec;
+			ppp_mask = item->mask;
+
+			hdr = &hdrs->proto_hdr[layer];
+
+			VIRTCHNL_SET_PROTO_HDR_TYPE(hdr, PPP);
+
+			if (ppp_spec && ppp_mask) {
+				rte_memcpy(hdr->buffer, ppp_spec,
+					   sizeof(*ppp_spec));
+			}
+
+			hdrs->count = ++layer;
+			break;
+
 		case RTE_FLOW_ITEM_TYPE_VOID:
 			break;
 
@@ -1371,6 +1583,7 @@ iavf_fdir_parse(struct iavf_adapter *ad,
 		uint32_t array_len,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
+		uint32_t priority,
 		void **meta,
 		struct rte_flow_error *error)
 {
@@ -1380,6 +1593,9 @@ iavf_fdir_parse(struct iavf_adapter *ad,
 	int ret;
 
 	memset(filter, 0, sizeof(*filter));
+
+	if (priority >= 1)
+		return -rte_errno;
 
 	item = iavf_search_pattern_match_item(pattern, array, array_len, error);
 	if (!item)

@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2018-2019 Pensando Systems, Inc. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2018-2022 Advanced Micro Devices, Inc.
  */
 
 #include <errno.h>
@@ -55,16 +55,15 @@ ionic_rx_filter_save(struct ionic_lif *lif, uint32_t flow_id,
 	struct ionic_rx_filter *f;
 	uint32_t key;
 
-	f = rte_zmalloc("ionic", sizeof(*f), 0);
-
+	f = rte_zmalloc("ionic", sizeof(*f), RTE_CACHE_LINE_SIZE);
 	if (!f)
 		return -ENOMEM;
 
 	f->flow_id = flow_id;
 	f->filter_id = rte_le_to_cpu_32(ctx->comp.rx_filter_add.filter_id);
 	f->rxq_index = rxq_index;
-	f->match = rte_le_to_cpu_16(f->cmd.match);
 	memcpy(&f->cmd, &ctx->cmd, sizeof(f->cmd));
+	f->match = rte_le_to_cpu_16(f->cmd.match);
 
 	switch (f->match) {
 	case IONIC_RX_FILTER_MATCH_VLAN:

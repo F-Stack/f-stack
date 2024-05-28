@@ -14,6 +14,12 @@
 #include "ice_dcf.h"
 
 #define ICE_DCF_MAX_RINGS  1
+#define DCF_NUM_MACADDR_MAX	64
+#define ICE_DCF_FRAME_SIZE_MAX       9728
+#define ICE_DCF_VLAN_TAG_SIZE               4
+#define ICE_DCF_ETH_OVERHEAD \
+	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + ICE_DCF_VLAN_TAG_SIZE * 2)
+#define ICE_DCF_ETH_MAX_LEN (RTE_ETHER_MTU + ICE_DCF_ETH_OVERHEAD)
 
 struct ice_dcf_queue {
 	uint64_t dummy;
@@ -27,6 +33,10 @@ struct ice_dcf_adapter {
 	struct ice_adapter parent; /* Must be first */
 	struct ice_dcf_hw real_hw;
 
+	bool promisc_unicast_enabled;
+	bool promisc_multicast_enabled;
+	uint32_t mc_addrs_num;
+	struct rte_ether_addr mc_addrs[DCF_NUM_MACADDR_MAX];
 	int num_reprs;
 	struct ice_dcf_repr_info *repr_infos;
 };
@@ -54,12 +64,18 @@ struct ice_dcf_vf_repr {
 	struct ice_dcf_vlan outer_vlan_info; /* DCF always handle outer VLAN */
 };
 
+enum ice_dcf_devrarg {
+	ICE_DCF_DEVARG_CAP,
+	ICE_DCF_DEVARG_ACL,
+};
+
 extern const struct rte_tm_ops ice_dcf_tm_ops;
 void ice_dcf_handle_pf_event_msg(struct ice_dcf_hw *dcf_hw,
 				 uint8_t *msg, uint16_t msglen);
 int ice_dcf_init_parent_adapter(struct rte_eth_dev *eth_dev);
 void ice_dcf_uninit_parent_adapter(struct rte_eth_dev *eth_dev);
 
+int ice_devargs_check(struct rte_devargs *devargs, enum ice_dcf_devrarg devarg_type);
 int ice_dcf_vf_repr_init(struct rte_eth_dev *vf_rep_eth_dev, void *init_param);
 int ice_dcf_vf_repr_uninit(struct rte_eth_dev *vf_rep_eth_dev);
 int ice_dcf_vf_repr_init_vlan(struct rte_eth_dev *vf_rep_eth_dev);

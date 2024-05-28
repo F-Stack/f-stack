@@ -4,11 +4,11 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <rte_common.h>
 #include <rte_debug.h>
-#include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 
@@ -150,10 +150,6 @@ node_clone(struct node *node, const char *name)
 		rte_errno = EEXIST;
 		goto fail;
 	}
-
-	/* Check for duplicate name */
-	if (node_has_duplicate_entry(name))
-		goto fail;
 
 	reg = calloc(1, sizeof(*reg) + (sizeof(char *) * node->nb_edges));
 	if (reg == NULL) {
@@ -304,16 +300,16 @@ rte_node_edge_shrink(rte_node_t id, rte_edge_t size)
 		if (node->id == id) {
 			if (node->nb_edges < size) {
 				rte_errno = E2BIG;
-				goto fail;
+			} else {
+				node->nb_edges = size;
+				rc = size;
 			}
-			node->nb_edges = size;
-			rc = size;
 			break;
 		}
 	}
 
-fail:
 	graph_spinlock_unlock();
+fail:
 	return rc;
 }
 

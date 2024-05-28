@@ -2,16 +2,12 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
-#include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
-#include <unistd.h>
 #include <inttypes.h>
-#include <sys/queue.h>
 
 #include <rte_fbarray.h>
 #include <rte_memory.h>
@@ -143,9 +139,19 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 		return NULL;
 	} else if (requested_addr != NULL && addr_is_hint &&
 			aligned_addr != requested_addr) {
-		RTE_LOG(WARNING, EAL, "WARNING! Base virtual address hint (%p != %p) not respected!\n",
-			requested_addr, aligned_addr);
-		RTE_LOG(WARNING, EAL, "   This may cause issues with mapping memory into secondary processes\n");
+		/*
+		 * demote this warning to debug if we did not explicitly request
+		 * a base virtual address.
+		 */
+		if (internal_conf->base_virtaddr != 0) {
+			RTE_LOG(WARNING, EAL, "WARNING! Base virtual address hint (%p != %p) not respected!\n",
+				requested_addr, aligned_addr);
+			RTE_LOG(WARNING, EAL, "   This may cause issues with mapping memory into secondary processes\n");
+		} else {
+			RTE_LOG(DEBUG, EAL, "WARNING! Base virtual address hint (%p != %p) not respected!\n",
+				requested_addr, aligned_addr);
+			RTE_LOG(DEBUG, EAL, "   This may cause issues with mapping memory into secondary processes\n");
+		}
 	} else if (next_baseaddr != NULL) {
 		next_baseaddr = RTE_PTR_ADD(aligned_addr, *size);
 	}
@@ -1133,7 +1139,7 @@ handle_eal_heap_info_request(const char *cmd __rte_unused, const char *params,
 	malloc_heap_get_stats(heap, &sock_stats);
 
 	rte_tel_data_start_dict(d);
-	rte_tel_data_add_dict_int(d, "Head id", heap_id);
+	rte_tel_data_add_dict_u64(d, "Head_id", heap_id);
 	rte_tel_data_add_dict_string(d, "Name", heap->name);
 	rte_tel_data_add_dict_u64(d, "Heap_size",
 				  sock_stats.heap_totalsz_bytes);
@@ -1195,13 +1201,13 @@ handle_eal_memzone_info_request(const char *cmd __rte_unused,
 	mz = rte_fbarray_get(&mcfg->memzones, mz_idx);
 
 	rte_tel_data_start_dict(d);
-	rte_tel_data_add_dict_int(d, "Zone", mz_idx);
+	rte_tel_data_add_dict_u64(d, "Zone", mz_idx);
 	rte_tel_data_add_dict_string(d, "Name", mz->name);
-	rte_tel_data_add_dict_int(d, "Length", mz->len);
+	rte_tel_data_add_dict_u64(d, "Length", mz->len);
 	snprintf(addr, ADDR_STR, "%p", mz->addr);
 	rte_tel_data_add_dict_string(d, "Address", addr);
 	rte_tel_data_add_dict_int(d, "Socket", mz->socket_id);
-	rte_tel_data_add_dict_int(d, "Flags", mz->flags);
+	rte_tel_data_add_dict_u64(d, "Flags", mz->flags);
 
 	/* go through each page occupied by this memzone */
 	msl = rte_mem_virt2memseg_list(mz->addr);
@@ -1216,7 +1222,7 @@ handle_eal_memzone_info_request(const char *cmd __rte_unused,
 	ms_idx = RTE_PTR_DIFF(mz->addr, msl->base_va) / page_sz;
 	ms = rte_fbarray_get(&msl->memseg_arr, ms_idx);
 
-	rte_tel_data_add_dict_int(d, "Hugepage_size", page_sz);
+	rte_tel_data_add_dict_u64(d, "Hugepage_size", page_sz);
 	snprintf(addr, ADDR_STR, "%p", ms->addr);
 	rte_tel_data_add_dict_string(d, "Hugepage_base", addr);
 

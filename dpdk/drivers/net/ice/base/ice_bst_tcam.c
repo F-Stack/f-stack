@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -53,7 +53,7 @@ static void _bst_alu_dump(struct ice_hw *hw, struct ice_alu *alu, int index)
 
 /**
  * ice_bst_tcam_dump - dump a boost tcam info
- * @ice_hw: pointer to the hardware structure
+ * @hw: pointer to the hardware structure
  * @item: boost tcam to dump
  */
 void ice_bst_tcam_dump(struct ice_hw *hw, struct ice_bst_tcam_item *item)
@@ -205,7 +205,7 @@ static void _bst_parse_item(struct ice_hw *hw, u16 idx, void *item,
 
 /**
  * ice_bst_tcam_table_get - create a boost tcam table
- * @ice_hw: pointer to the hardware structure
+ * @hw: pointer to the hardware structure
  */
 struct ice_bst_tcam_item *ice_bst_tcam_table_get(struct ice_hw *hw)
 {
@@ -228,7 +228,7 @@ static void _parse_lbl_item(struct ice_hw *hw, u16 idx, void *item,
 
 /**
  * ice_bst_lbl_table_get - create a boost label table
- * @ice_hw: pointer to the hardware structure
+ * @hw: pointer to the hardware structure
  */
 struct ice_lbl_item *ice_bst_lbl_table_get(struct ice_hw *hw)
 {

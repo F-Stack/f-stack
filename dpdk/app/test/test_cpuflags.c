@@ -200,6 +200,128 @@ test_cpuflags(void)
 	CHECK_FOR_FLAG(RTE_CPUFLAG_INVTSC);
 #endif
 
+#if defined(RTE_ARCH_RISCV)
+
+	printf("Check for RISCV_ISA_A:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_A);
+
+	printf("Check for RISCV_ISA_B:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_B);
+
+	printf("Check for RISCV_ISA_C:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_C);
+
+	printf("Check for RISCV_ISA_D:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_D);
+
+	printf("Check for RISCV_ISA_E:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_E);
+
+	printf("Check for RISCV_ISA_F:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_F);
+
+	printf("Check for RISCV_ISA_G:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_G);
+
+	printf("Check for RISCV_ISA_H:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_H);
+
+	printf("Check for RISCV_ISA_I:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_I);
+
+	printf("Check for RISCV_ISA_J:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_J);
+
+	printf("Check for RISCV_ISA_K:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_K);
+
+	printf("Check for RISCV_ISA_L:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_L);
+
+	printf("Check for RISCV_ISA_M:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_M);
+
+	printf("Check for RISCV_ISA_N:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_N);
+
+	printf("Check for RISCV_ISA_O:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_O);
+
+	printf("Check for RISCV_ISA_P:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_P);
+
+	printf("Check for RISCV_ISA_Q:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_Q);
+
+	printf("Check for RISCV_ISA_R:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_R);
+
+	printf("Check for RISCV_ISA_S:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_S);
+
+	printf("Check for RISCV_ISA_T:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_T);
+
+	printf("Check for RISCV_ISA_U:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_U);
+
+	printf("Check for RISCV_ISA_V:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_V);
+
+	printf("Check for RISCV_ISA_W:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_W);
+
+	printf("Check for RISCV_ISA_X:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_X);
+
+	printf("Check for RISCV_ISA_Y:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_Y);
+
+	printf("Check for RISCV_ISA_Z:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_RISCV_ISA_Z);
+#endif
+
+#if defined(RTE_ARCH_LOONGARCH)
+	printf("Check for CPUCFG:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_CPUCFG);
+
+	printf("Check for LAM:\t\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LAM);
+
+	printf("Check for UAL:\t\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_UAL);
+
+	printf("Check for FPU:\t\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_FPU);
+
+	printf("Check for LSX:\t\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LSX);
+
+	printf("Check for LASX:\t\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LASX);
+
+	printf("Check for CRC32:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_CRC32);
+
+	printf("Check for COMPLEX:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_COMPLEX);
+
+	printf("Check for CRYPTO:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_CRYPTO);
+
+	printf("Check for LVZ:\t\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LVZ);
+
+	printf("Check for LBT_X86:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LBT_X86);
+
+	printf("Check for LBT_ARM:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LBT_ARM);
+
+	printf("Check for LBT_MIPS:\t");
+	CHECK_FOR_FLAG(RTE_CPUFLAG_LBT_MIPS);
+#endif
+
 	/*
 	 * Check if invalid data is handled properly
 	 */

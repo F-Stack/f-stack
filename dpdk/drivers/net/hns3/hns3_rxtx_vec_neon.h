@@ -2,8 +2,8 @@
  * Copyright(c) 2020-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_RXTX_VEC_NEON_H_
-#define _HNS3_RXTX_VEC_NEON_H_
+#ifndef HNS3_RXTX_VEC_NEON_H
+#define HNS3_RXTX_VEC_NEON_H
 
 #include <arm_neon.h>
 
@@ -142,8 +142,8 @@ hns3_recv_burst_vec(struct hns3_rx_queue *__restrict rxq,
 	/* mask to shuffle from desc to mbuf's rx_descriptor_fields1 */
 	uint8x16_t shuf_desc_fields_msk = {
 		0xff, 0xff, 0xff, 0xff,  /* packet type init zero */
-		22, 23, 0xff, 0xff,      /* rx.pkt_len to rte_mbuf.pkt_len */
-		20, 21,	                 /* size to rte_mbuf.data_len */
+		20, 21, 0xff, 0xff,      /* rx.pkt_len to rte_mbuf.pkt_len */
+		22, 23,	                 /* size to rte_mbuf.data_len */
 		0xff, 0xff,	         /* rte_mbuf.vlan_tci init zero */
 		8, 9, 10, 11,	         /* rx.rss_hash to rte_mbuf.hash.rss */
 	};
@@ -299,4 +299,4 @@ hns3_recv_burst_vec(struct hns3_rx_queue *__restrict rxq,
 
 	return nb_rx;
 }
-#endif /* _HNS3_RXTX_VEC_NEON_H_ */
+#endif /* HNS3_RXTX_VEC_NEON_H */

@@ -3,11 +3,18 @@
 
 .. include:: <isonum.txt>
 
-MLX5 Crypto Driver
-==================
+NVIDIA MLX5 Crypto Driver
+=========================
+
+.. note::
+
+   NVIDIA acquired Mellanox Technologies in 2020.
+   The DPDK documentation and code might still include instances
+   of or references to Mellanox trademarks (like BlueField and ConnectX)
+   that are now NVIDIA trademarks.
 
 The MLX5 crypto driver library
-(**librte_crypto_mlx5**) provides support for **Mellanox ConnectX-6**
+(**librte_crypto_mlx5**) provides support for **NVIDIA ConnectX-6**
 family adapters.
 
 Overview
@@ -28,24 +35,17 @@ when the MKEY is configured to perform crypto operations.
 
 The encryption does not require text to be aligned to the AES block size (128b).
 
-For security reasons and to increase robustness, this driver only deals with virtual
-memory addresses. The way resources allocations are handled by the kernel,
-combined with hardware specifications that allow handling virtual memory
-addresses directly, ensure that DPDK applications cannot access random
-physical memory (or memory that does not belong to the current process).
+See :doc:`../../platform/mlx5` guide for more design details.
 
-The PMD uses ``libibverbs`` and ``libmlx5`` to access the device firmware
-or to access the hardware components directly.
-There are different levels of objects and bypassing abilities.
-To get the best performances:
+Configuration
+-------------
 
-- Verbs is a complete high-level generic API (Linux only).
-- Direct Verbs is a device-specific API (Linux only).
-- DevX allows to access firmware objects.
+See the :ref:`mlx5 common configuration <mlx5_common_env>`.
 
-Enabling ``librte_crypto_mlx5`` causes DPDK applications
-to be linked against libibverbs on Linux OS.
+A device comes out of NVIDIA factory with pre-defined import methods.
+There are two possible import methods: wrapped or plaintext.
 
+In case the device is in wrapped mode, it needs to be moved to crypto operational mode.
 In order to move the device to crypto operational mode, credential and KEK
 (Key Encrypting Key) should be set as the first step.
 The credential will be used by the software in order to perform crypto login, and the KEK is
@@ -100,21 +100,26 @@ The mlxreg dedicated tool should be used as follows:
   The "wrapped_crypto_operational" value will be "0x00000001" if the mode was
   successfully changed to operational mode.
 
-  The mlx5 crypto PMD can be verified by running the test application::
+On the other hand, in case of plaintext mode, there is no need for all the above,
+DEK is passed in plaintext without keytag.
 
-     dpdk-test -c 1 -n 1 -w <dev>,class=crypto,wcs_file=<file_path>
-     RTE>>cryptodev_mlx5_autotest
+  The mlx5 crypto PMD can be verified by running the test application::
+    Wrapped mode:
+      dpdk-test -c 1 -n 1 -w <dev>,class=crypto,wcs_file=<file_path>
+      RTE>>cryptodev_mlx5_autotest
+
+    Plaintext mode:
+      dpdk-test -c 1 -n 1 -w <dev>,class=crypto
+      RTE>>cryptodev_mlx5_autotest
 
 
 Driver options
 --------------
 
-- ``class`` parameter [string]
+Please refer to :ref:`mlx5 common options <mlx5_common_driver_options>`
+for an additional list of options shared with other mlx5 drivers.
 
-  Select the class of the driver that should probe the device.
-  `crypto` for the mlx5 crypto driver.
-
-- ``wcs_file`` parameter [string] - mandatory
+- ``wcs_file`` parameter [string] - mandatory in wrapped mode
 
   File path including only the wrapped credential in string format of hexadecimal
   numbers, represent 48 bytes (8 bytes IV added by the AES key wrap algorithm).
@@ -141,9 +146,9 @@ Driver options
 Supported NICs
 --------------
 
-* Mellanox\ |reg| ConnectX\ |reg|-6 200G MCX654106A-HCAT (2x200G)
-* Mellanox\ |reg| BlueField-2 SmartNIC
-* Mellanox\ |reg| ConnectX\ |reg|-6 Dx
+* NVIDIA\ |reg| ConnectX\ |reg|-6 200G MCX654106A-HCAT (2x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Dx
+* NVIDIA\ |reg| BlueField-2 SmartNIC
 
 
 Limitations
@@ -167,14 +172,13 @@ FW Prerequisites
 Linux Prerequisites
 ~~~~~~~~~~~~~~~~~~~
 
-- Mellanox OFED version: **5.3**.
-  see :doc:`../../nics/mlx5` guide for more Mellanox OFED details.
-
+- NVIDIA MLNX_OFED version: **5.3**.
 - Compilation can be done also with rdma-core v15+.
-  see :doc:`../../nics/mlx5` guide for more rdma-core details.
+
+  See :ref:`mlx5 common prerequisites <mlx5_linux_prerequisites>` for more details.
 
 Windows Prerequisites
 ~~~~~~~~~~~~~~~~~~~~~
 
-- Mellanox WINOF-2 version: **2.60** or higher.
-  see :doc:`../../nics/mlx5` guide for more Mellanox WINOF-2 details.
+- NVIDIA WINOF-2 version: **2.60** or higher.
+  See :ref:`mlx5 common prerequisites <mlx5_windows_prerequisites>` for more details.

@@ -40,9 +40,9 @@ Common Offload HW Block Drivers
 
    See :doc:`../rawdevs/dpaa2_cmdif` for NXP dpaa2 AIOP command interface driver information.
 
-5. **Rawdev QDMA Driver**
+5. **DMA Driver**
 
-   See :doc:`../rawdevs/dpaa2_qdma` for NXP dpaa2 QDMA driver information.
+   See :doc:`../dmadevs/dpaa2` for NXP dpaa2 QDMA driver information.
 
 
 Steps To Setup Platform

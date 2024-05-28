@@ -362,10 +362,6 @@ process_ops(struct rte_crypto_op **ops, struct snow3g_session *session,
 		/* Free session if a session-less crypto op. */
 		if (ops[i]->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
 			memset(session, 0, sizeof(struct snow3g_session));
-			memset(ops[i]->sym->session, 0,
-			rte_cryptodev_sym_get_existing_header_session_size(
-					ops[i]->sym->session));
-			rte_mempool_put(qp->sess_mp_priv, session);
 			rte_mempool_put(qp->sess_mp, ops[i]->sym->session);
 			ops[i]->sym->session = NULL;
 		}
@@ -376,9 +372,10 @@ process_ops(struct rte_crypto_op **ops, struct snow3g_session *session,
 /** Process a crypto op with length/offset in bits. */
 static int
 process_op_bit(struct rte_crypto_op *op, struct snow3g_session *session,
-		struct ipsec_mb_qp *qp, uint16_t *accumulated_enqueued_ops)
+		struct ipsec_mb_qp *qp)
 {
-	uint32_t enqueued_op, processed_op;
+	unsigned int processed_op;
+	int ret;
 
 	switch (session->op) {
 	case IPSEC_MB_OP_ENCRYPT_ONLY:
@@ -417,16 +414,18 @@ process_op_bit(struct rte_crypto_op *op, struct snow3g_session *session,
 
 	/* Free session if a session-less crypto op. */
 	if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
-		memset(op->sym->session, 0, sizeof(struct snow3g_session));
-		rte_cryptodev_sym_session_free(op->sym->session);
+		memset(CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session), 0,
+			sizeof(struct snow3g_session));
+		rte_mempool_put(qp->sess_mp, (void *)op->sym->session);
 		op->sym->session = NULL;
 	}
 
 	if (unlikely(processed_op != 1))
 		return 0;
-	enqueued_op = rte_ring_enqueue(qp->ingress_queue, op);
-	qp->stats.enqueued_count += enqueued_op;
-	*accumulated_enqueued_ops += enqueued_op;
+
+	ret = rte_ring_enqueue(qp->ingress_queue, op);
+	if (ret != 0)
+		return ret;
 
 	return 1;
 }
@@ -442,7 +441,6 @@ snow3g_pmd_dequeue_burst(void *queue_pair,
 	struct snow3g_session *prev_sess = NULL, *curr_sess = NULL;
 	uint32_t i;
 	uint8_t burst_size = 0;
-	uint16_t enqueued_ops = 0;
 	uint8_t processed_ops;
 	uint32_t nb_dequeued;
 
@@ -482,8 +480,7 @@ snow3g_pmd_dequeue_burst(void *queue_pair,
 				prev_sess = NULL;
 			}
 
-			processed_ops = process_op_bit(curr_c_op, curr_sess,
-							qp, &enqueued_ops);
+			processed_ops = process_op_bit(curr_c_op, curr_sess, qp);
 			if (processed_ops != 1)
 				break;
 

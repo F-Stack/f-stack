@@ -110,6 +110,15 @@ The power management mechanism is used to save power when performing L3 forwardi
 Empty Poll API
 --------------
 
+Removal Warning
+~~~~~~~~~~~~~~~
+
+The experimental empty poll API will be removed from the library
+in a future DPDK release.
+The empty poll mechanism is superseded by the power PMD modes
+i.e. monitor, pause and scale.
+
+
 Abstract
 ~~~~~~~~
 
@@ -251,6 +260,88 @@ API Overview for Ethernet PMD Power Management
 * **Queue Enable**: Enable specific power scheme for certain queue/port/core.
 
 * **Queue Disable**: Disable power scheme for certain queue/port/core.
+
+* **Get Emptypoll Max**: Get the configured number of empty polls to wait before
+  entering sleep state.
+
+* **Set Emptypoll Max**: Set the number of empty polls to wait before entering
+  sleep state.
+
+* **Get Pause Duration**: Get the configured duration (microseconds) to be used
+  in the Pause callback.
+
+* **Set Pause Duration**: Set the duration of the pause (microseconds) used in
+  the Pause mode callback.
+
+* **Get Scaling Min Freq**: Get the configured minimum frequency (kHz) to be used
+  in Frequency Scaling mode.
+
+* **Set Scaling Min Freq**: Set the minimum frequency (kHz) to be used in Frequency
+  Scaling mode.
+
+* **Get Scaling Max Freq**: Get the configured maximum frequency (kHz) to be used
+  in Frequency Scaling mode.
+
+* **Set Scaling Max Freq**: Set the maximum frequency (kHz) to be used in Frequency
+  Scaling mode.
+
+Intel Uncore API
+----------------
+
+Abstract
+~~~~~~~~
+
+Uncore is a term used by Intel to describe the functions of a microprocessor
+that are not in the core, but which must be closely connected to the core
+to achieve high performance: L3 cache, on-die memory controller, etc.
+Significant power savings can be achieved by reducing the uncore frequency
+to its lowest value.
+
+The Linux kernel provides the driver "intel-uncore-frequency"
+to control the uncore frequency limits for x86 platform.
+The driver is available from kernel version 5.6 and above.
+Also CONFIG_INTEL_UNCORE_FREQ_CONTROL will need to be enabled in the kernel,
+which was added in 5.6.
+This manipulates the context of MSR 0x620,
+which sets min/max of the uncore for the SKU.
+
+API Overview for Intel Uncore
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Overview of each function in the Intel Uncore API,
+with explanation of what they do.
+Each function should not be called in the fast path.
+
+Uncore Power Init
+  Initialize uncore power, populate frequency array
+  and record original min & max for die on pkg.
+
+Uncore Power Exit
+  Exit uncore power, restoring original min & max for die on pkg.
+
+Get Uncore Power Freq
+  Get current uncore freq index for die on pkg.
+
+Set Uncore Power Freq
+  Set min & max uncore freq index for die on pkg
+  to specified index value (min and max will be the same).
+
+Uncore Power Max
+  Set min & max uncore freq to maximum frequency index for die on pkg
+  (min and max will be the same).
+
+Uncore Power Min
+  Set min & max uncore freq to minimum frequency index for die on pkg
+  (min and max will be the same).
+
+Get Num Freqs
+  Get the number of frequencies in the index array.
+
+Get Num Pkgs
+  Get the number of packages (CPU's) on the system.
+
+Get Num Dies
+  Get the number of die's on a given package.
 
 References
 ----------

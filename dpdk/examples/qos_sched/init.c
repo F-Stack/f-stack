@@ -3,6 +3,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <memory.h>
 
 #include <rte_log.h>
@@ -56,9 +57,6 @@ int mp_size = NB_MBUF;
 struct flow_conf qos_conf[MAX_DATA_STREAMS];
 
 static struct rte_eth_conf port_conf = {
-	.rxmode = {
-		.split_hdr_size = 0,
-	},
 	.txmode = {
 		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
@@ -81,6 +79,7 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	if (app_inited_port_mask & (1u << portid))
 		return 0;
 
+	memset(&rx_conf, 0, sizeof(struct rte_eth_rxconf));
 	rx_conf.rx_thresh.pthresh = rx_thresh.pthresh;
 	rx_conf.rx_thresh.hthresh = rx_thresh.hthresh;
 	rx_conf.rx_thresh.wthresh = rx_thresh.wthresh;
@@ -88,6 +87,7 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	rx_conf.rx_drop_en = 0;
 	rx_conf.rx_deferred_start = 0;
 
+	memset(&tx_conf, 0, sizeof(struct rte_eth_txconf));
 	tx_conf.tx_thresh.pthresh = tx_thresh.pthresh;
 	tx_conf.tx_thresh.hthresh = tx_thresh.hthresh;
 	tx_conf.tx_thresh.wthresh = tx_thresh.wthresh;
@@ -183,9 +183,7 @@ static struct rte_sched_pipe_params pipe_profiles[MAX_SCHED_PIPE_PROFILES] = {
 		.tc_rate = {305175, 305175, 305175, 305175, 305175, 305175,
 			305175, 305175, 305175, 305175, 305175, 305175, 305175},
 		.tc_period = 40,
-#ifdef RTE_SCHED_SUBPORT_TC_OV
 		.tc_ov_weight = 1,
-#endif
 
 		.wrr_weights = {1, 1, 1, 1},
 	},
@@ -203,78 +201,6 @@ static struct rte_sched_subport_profile_params
 	},
 };
 
-#ifdef RTE_SCHED_CMAN
-struct rte_sched_cman_params cman_params = {
-	.cman_mode = RTE_SCHED_CMAN_RED,
-	.red_params = {
-		/* Traffic Class 0 Colors Green / Yellow / Red */
-		[0][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[0][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[0][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 1 - Colors Green / Yellow / Red */
-		[1][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[1][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[1][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 2 - Colors Green / Yellow / Red */
-		[2][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[2][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[2][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 3 - Colors Green / Yellow / Red */
-		[3][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[3][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[3][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 4 - Colors Green / Yellow / Red */
-		[4][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[4][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[4][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 5 - Colors Green / Yellow / Red */
-		[5][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[5][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[5][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 6 - Colors Green / Yellow / Red */
-		[6][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[6][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[6][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 7 - Colors Green / Yellow / Red */
-		[7][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[7][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[7][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 8 - Colors Green / Yellow / Red */
-		[8][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[8][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[8][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 9 - Colors Green / Yellow / Red */
-		[9][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[9][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[9][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 10 - Colors Green / Yellow / Red */
-		[10][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[10][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[10][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 11 - Colors Green / Yellow / Red */
-		[11][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[11][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[11][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 12 - Colors Green / Yellow / Red */
-		[12][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[12][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[12][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-	},
-};
-#endif /* RTE_SCHED_CMAN */
-
 struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
 	{
 		.n_pipes_per_subport_enabled = 4096,
@@ -283,9 +209,7 @@ struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
 		.n_pipe_profiles = sizeof(pipe_profiles) /
 			sizeof(struct rte_sched_pipe_params),
 		.n_max_pipe_profiles = MAX_SCHED_PIPE_PROFILES,
-#ifdef RTE_SCHED_CMAN
-		.cman_params = &cman_params,
-#endif /* RTE_SCHED_CMAN */
+		.cman_params = NULL,
 	},
 };
 
@@ -358,20 +282,33 @@ app_init_sched_port(uint32_t portid, uint32_t socketid)
 static int
 app_load_cfg_profile(const char *profile)
 {
+	int ret  = 0;
 	if (profile == NULL)
 		return 0;
 	struct rte_cfgfile *file = rte_cfgfile_load(profile, 0);
 	if (file == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot load configuration profile %s\n", profile);
 
-	cfg_load_port(file, &port_params);
-	cfg_load_subport(file, subport_params);
-	cfg_load_subport_profile(file, subport_profile);
-	cfg_load_pipe(file, pipe_profiles);
+	ret = cfg_load_port(file, &port_params);
+	if (ret)
+		goto _app_load_cfg_profile_error_return;
 
+	ret = cfg_load_subport(file, subport_params);
+	if (ret)
+		goto _app_load_cfg_profile_error_return;
+
+	ret = cfg_load_subport_profile(file, subport_profile);
+	if (ret)
+		goto _app_load_cfg_profile_error_return;
+
+	ret = cfg_load_pipe(file, pipe_profiles);
+	if (ret)
+		goto _app_load_cfg_profile_error_return;
+
+_app_load_cfg_profile_error_return:
 	rte_cfgfile_close(file);
 
-	return 0;
+	return ret;
 }
 
 int app_init(void)
@@ -391,6 +328,8 @@ int app_init(void)
 	for(i = 0; i < nb_pfc; i++) {
 		uint32_t socket = rte_lcore_to_socket_id(qos_conf[i].rx_core);
 		struct rte_ring *ring;
+		struct rte_eth_link link = {0};
+		int retry_count = 100, retry_delay = 100; /* try every 100ms for 10 sec */
 
 		snprintf(ring_name, MAX_NAME_LEN, "ring-%u-%u", i, qos_conf[i].rx_core);
 		ring = rte_ring_lookup(ring_name);
@@ -420,6 +359,14 @@ int app_init(void)
 
 		app_init_port(qos_conf[i].rx_port, qos_conf[i].mbuf_pool);
 		app_init_port(qos_conf[i].tx_port, qos_conf[i].mbuf_pool);
+
+		rte_eth_link_get(qos_conf[i].tx_port, &link);
+		if (link.link_status == 0)
+			printf("Waiting for link on port %u\n", qos_conf[i].tx_port);
+		while (link.link_status == 0 && retry_count--) {
+			rte_delay_ms(retry_delay);
+			rte_eth_link_get(qos_conf[i].tx_port, &link);
+		}
 
 		qos_conf[i].sched_port = app_init_sched_port(qos_conf[i].tx_port, socket);
 	}

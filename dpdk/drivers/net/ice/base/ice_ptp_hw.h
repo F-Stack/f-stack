@@ -1,16 +1,17 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_PTP_HW_H_
 #define _ICE_PTP_HW_H_
 
 enum ice_ptp_tmr_cmd {
-	INIT_TIME,
-	INIT_INCVAL,
-	ADJ_TIME,
-	ADJ_TIME_AT_TIME,
-	READ_TIME
+	ICE_PTP_INIT_TIME,
+	ICE_PTP_INIT_INCVAL,
+	ICE_PTP_ADJ_TIME,
+	ICE_PTP_ADJ_TIME_AT_TIME,
+	ICE_PTP_READ_TIME,
+	ICE_PTP_NOP,
 };
 
 enum ice_ptp_serdes {
@@ -157,10 +158,11 @@ ice_ptp_prep_port_adj_e822(struct ice_hw *hw, u8 port, s64 time,
 enum ice_status
 ice_ptp_read_phy_incval_e822(struct ice_hw *hw, u8 port, u64 *incval);
 enum ice_status
-ice_ptp_read_port_capture(struct ice_hw *hw, u8 port, u64 *tx_ts, u64 *rx_ts);
+ice_ptp_read_port_capture_e822(struct ice_hw *hw, u8 port,
+			       u64 *tx_ts, u64 *rx_ts);
 enum ice_status
-ice_ptp_one_port_cmd(struct ice_hw *hw, u8 port, enum ice_ptp_tmr_cmd cmd,
-		     bool lock_sbq);
+ice_ptp_one_port_cmd_e822(struct ice_hw *hw, u8 port,
+			  enum ice_ptp_tmr_cmd cmd, bool lock_sbq);
 enum ice_status
 ice_cfg_cgu_pll_e822(struct ice_hw *hw, enum ice_time_ref_freq clk_freq,
 		     enum ice_clk_src clk_src);
@@ -221,14 +223,50 @@ enum ice_status ice_phy_cfg_rx_offset_e822(struct ice_hw *hw, u8 port);
 enum ice_status ice_phy_exit_bypass_e822(struct ice_hw *hw, u8 port);
 
 /* E810 family functions */
+bool ice_is_gps_present_e810t(struct ice_hw *hw);
 enum ice_status ice_ptp_init_phy_e810(struct ice_hw *hw);
 enum ice_status
-ice_read_e810t_pca9575_reg(struct ice_hw *hw, u8 offset, u8 *data);
+ice_read_pca9575_reg_e810t(struct ice_hw *hw, u8 offset, u8 *data);
 enum ice_status
-ice_write_e810t_pca9575_reg(struct ice_hw *hw, u8 offset, u8 data);
+ice_write_pca9575_reg_e810t(struct ice_hw *hw, u8 offset, u8 data);
 enum ice_status ice_read_sma_ctrl_e810t(struct ice_hw *hw, u8 *data);
 enum ice_status ice_write_sma_ctrl_e810t(struct ice_hw *hw, u8 data);
-bool ice_e810t_is_pca9575_present(struct ice_hw *hw);
+bool ice_is_pca9575_present(struct ice_hw *hw);
+
+void
+ice_ptp_process_cgu_err(struct ice_hw *hw, struct ice_rq_event_info *event);
+/* ETH56G family functions */
+enum ice_status
+ice_read_phy_reg_eth56g(struct ice_hw *hw, u8 port, u16 offset, u32 *val);
+enum ice_status
+ice_write_phy_reg_eth56g(struct ice_hw *hw, u8 port, u16 offset, u32 val);
+enum ice_status
+ice_read_phy_mem_eth56g(struct ice_hw *hw, u8 port, u16 offset, u32 *val);
+enum ice_status
+ice_write_phy_mem_eth56g(struct ice_hw *hw, u8 port, u16 offset, u32 val);
+
+enum ice_status
+ice_ptp_prep_port_adj_eth56g(struct ice_hw *hw, u8 port, s64 time,
+			     bool lock_sbq);
+
+enum ice_status
+ice_ptp_read_phy_incval_eth56g(struct ice_hw *hw, u8 port, u64 *incval);
+enum ice_status
+ice_ptp_read_port_capture_eth56g(struct ice_hw *hw, u8 port,
+				 u64 *tx_ts, u64 *rx_ts);
+enum ice_status
+ice_ptp_one_port_cmd_eth56g(struct ice_hw *hw, u8 port,
+			    enum ice_ptp_tmr_cmd cmd, bool lock_sbq);
+enum ice_status
+ice_ptp_read_tx_hwtstamp_status_eth56g(struct ice_hw *hw, u32 *ts_status);
+enum ice_status
+ice_stop_phy_timer_eth56g(struct ice_hw *hw, u8 port, bool soft_reset);
+enum ice_status
+ice_start_phy_timer_eth56g(struct ice_hw *hw, u8 port, bool bypass);
+enum ice_status ice_phy_cfg_tx_offset_eth56g(struct ice_hw *hw, u8 port);
+enum ice_status ice_phy_cfg_rx_offset_eth56g(struct ice_hw *hw, u8 port);
+
+enum ice_status ice_ptp_init_phy_cfg(struct ice_hw *hw);
 
 #define PFTSYN_SEM_BYTES	4
 
@@ -438,8 +476,8 @@ bool ice_e810t_is_pca9575_present(struct ice_hw *hw);
 #define INCVAL_HIGH_M			0xFF
 
 /* Timestamp block macros */
+#define TS_VALID			BIT(0)
 #define TS_LOW_M			0xFFFFFFFF
-#define TS_HIGH_M			0xFF
 #define TS_HIGH_S			32
 
 #define TS_PHY_LOW_M			0xFF
@@ -448,6 +486,16 @@ bool ice_e810t_is_pca9575_present(struct ice_hw *hw);
 
 #define BYTES_PER_IDX_ADDR_L_U		8
 #define BYTES_PER_IDX_ADDR_L		4
+
+/* Tx timestamp low latency read definitions */
+#define TS_LL_READ_RETRIES		200
+#define TS_LL_READ_TS			BIT(31)
+#define TS_LL_READ_TS_IDX_S		24
+#define TS_LL_READ_TS_IDX_M		MAKEMASK(0x3F, 0)
+#define TS_LL_READ_TS_IDX(__idx)	(TS_LL_READ_TS | \
+					 (((__idx) & TS_LL_READ_TS_IDX_M) << \
+					  TS_LL_READ_TS_IDX_S))
+#define TS_LL_READ_TS_HIGH_S		16
 
 /* Internal PHY timestamp address */
 #define TS_L(a, idx) ((a) + ((idx) * BYTES_PER_IDX_ADDR_L_U))
@@ -480,5 +528,80 @@ bool ice_e810t_is_pca9575_present(struct ice_hw *hw);
 #define ICE_E810T_SMA_MIN_BIT	3
 #define ICE_E810T_SMA_MAX_BIT	7
 #define ICE_E810T_P1_OFFSET	8
+/* 56G PHY quad register base addresses */
+#define ICE_PHY0_BASE			0x092000
+#define ICE_PHY1_BASE			0x126000
+#define ICE_PHY2_BASE			0x1BA000
+#define ICE_PHY3_BASE			0x24E000
+#define ICE_PHY4_BASE			0x2E2000
+
+/* Timestamp memory */
+#define PHY_PTP_LANE_ADDR_STEP		0x98
+
+#define PHY_PTP_MEM_START		0x1000
+#define PHY_PTP_MEM_LANE_STEP		0x04A0
+#define PHY_PTP_MEM_LOCATIONS		0x40
+
+/* Number of PHY ports */
+#define ICE_NUM_PHY_PORTS		5
+/* Timestamp PHY incval registers */
+#define PHY_REG_TIMETUS_L		0x8
+#define PHY_REG_TIMETUS_U		0xC
+
+/* Timestamp init registers */
+#define PHY_REG_RX_TIMER_INC_PRE_L	0x64
+#define PHY_REG_RX_TIMER_INC_PRE_U	0x68
+
+#define PHY_REG_TX_TIMER_INC_PRE_L	0x44
+#define PHY_REG_TX_TIMER_INC_PRE_U	0x48
+
+/* Timestamp match and adjust target registers */
+#define PHY_REG_RX_TIMER_CNT_ADJ_L	0x6C
+#define PHY_REG_RX_TIMER_CNT_ADJ_U	0x70
+
+#define PHY_REG_TX_TIMER_CNT_ADJ_L	0x4C
+#define PHY_REG_TX_TIMER_CNT_ADJ_U	0x50
+
+/* Timestamp command registers */
+#define PHY_REG_TX_TMR_CMD		0x40
+#define PHY_REG_RX_TMR_CMD		0x60
+
+/* Phy offset ready registers */
+#define PHY_REG_TX_OFFSET_READY		0x54
+#define PHY_REG_RX_OFFSET_READY		0x74
+/* Phy total offset registers */
+#define PHY_REG_TOTAL_TX_OFFSET_L	0x38
+#define PHY_REG_TOTAL_TX_OFFSET_U	0x3C
+
+#define PHY_REG_TOTAL_RX_OFFSET_L	0x58
+#define PHY_REG_TOTAL_RX_OFFSET_U	0x5C
+
+/* Timestamp capture registers */
+#define PHY_REG_TX_CAPTURE_L		0x78
+#define PHY_REG_TX_CAPTURE_U		0x7C
+
+#define PHY_REG_RX_CAPTURE_L		0x8C
+#define PHY_REG_RX_CAPTURE_U		0x90
+
+/* Memory status registers */
+#define PHY_REG_TX_MEMORY_STATUS_L	0x80
+#define PHY_REG_TX_MEMORY_STATUS_U	0x84
+
+/* Interrupt config register */
+#define PHY_REG_TS_INT_CONFIG		0x88
+
+#define PHY_PTP_INT_STATUS		0x7FD140
+
+#define PHY_TS_INT_CONFIG_THRESHOLD_S	0
+#define PHY_TS_INT_CONFIG_THRESHOLD_M	MAKEMASK(0x3F, 0)
+#define PHY_TS_INT_CONFIG_ENA_S		6
+#define PHY_TS_INT_CONFIG_ENA_M		BIT(6)
+
+/* Macros to derive offsets for TimeStampLow and TimeStampHigh */
+#define PHY_TSTAMP_L(x) (((x) * 8) + 0)
+#define PHY_TSTAMP_U(x) (((x) * 8) + 4)
+
+#define PHY_REG_REVISION		0x85000
+#define PHY_REVISION_ETH56G		0x10200
 
 #endif /* _ICE_PTP_HW_H_ */

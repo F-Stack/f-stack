@@ -20,7 +20,15 @@ struct cnxk_cpt_inst_tmpl {
 static inline int
 ipsec_xform_cipher_verify(struct rte_crypto_sym_xform *crypto_xform)
 {
-	if (crypto_xform->cipher.algo == RTE_CRYPTO_CIPHER_AES_CBC) {
+	if (crypto_xform->cipher.algo == RTE_CRYPTO_CIPHER_NULL)
+		return 0;
+
+	if (crypto_xform->cipher.algo == RTE_CRYPTO_CIPHER_DES_CBC &&
+	    crypto_xform->cipher.key.length == 8)
+		return 0;
+
+	if (crypto_xform->cipher.algo == RTE_CRYPTO_CIPHER_AES_CBC ||
+	    crypto_xform->cipher.algo == RTE_CRYPTO_CIPHER_AES_CTR) {
 		switch (crypto_xform->cipher.key.length) {
 		case 16:
 		case 24:
@@ -31,6 +39,10 @@ ipsec_xform_cipher_verify(struct rte_crypto_sym_xform *crypto_xform)
 		}
 		return 0;
 	}
+
+	if (crypto_xform->cipher.algo == RTE_CRYPTO_CIPHER_3DES_CBC &&
+	    crypto_xform->cipher.key.length == 24)
+		return 0;
 
 	return -ENOTSUP;
 }
@@ -43,14 +55,31 @@ ipsec_xform_auth_verify(struct rte_crypto_sym_xform *crypto_xform)
 	if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_NULL)
 		return 0;
 
+	if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_MD5_HMAC) {
+		if (keylen == 16)
+			return 0;
+	}
+
 	if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_SHA1_HMAC) {
 		if (keylen >= 20 && keylen <= 64)
 			return 0;
-	} else if (roc_model_is_cn9k() &&
-		   (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_SHA256_HMAC)) {
+	} else if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_SHA256_HMAC) {
 		if (keylen >= 32 && keylen <= 64)
 			return 0;
+	} else if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_SHA384_HMAC) {
+		if (keylen == 48)
+			return 0;
+	} else if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_SHA512_HMAC) {
+		if (keylen == 64)
+			return 0;
+	} else if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_AES_GMAC) {
+		if (keylen >= 16 && keylen <= 32)
+			return 0;
 	}
+
+	if (crypto_xform->auth.algo == RTE_CRYPTO_AUTH_AES_XCBC_MAC &&
+	    keylen == ROC_CPT_AES_XCBC_KEY_LENGTH)
+		return 0;
 
 	return -ENOTSUP;
 }
@@ -67,7 +96,8 @@ ipsec_xform_aead_verify(struct rte_security_ipsec_xform *ipsec_xform,
 	    crypto_xform->aead.op != RTE_CRYPTO_AEAD_OP_DECRYPT)
 		return -EINVAL;
 
-	if (crypto_xform->aead.algo == RTE_CRYPTO_AEAD_AES_GCM) {
+	if (crypto_xform->aead.algo == RTE_CRYPTO_AEAD_AES_GCM ||
+	    crypto_xform->aead.algo == RTE_CRYPTO_AEAD_AES_CCM) {
 		switch (crypto_xform->aead.key.length) {
 		case 16:
 		case 24:
@@ -109,28 +139,63 @@ cnxk_ipsec_xform_verify(struct rte_security_ipsec_xform *ipsec_xform,
 	if (crypto_xform->type == RTE_CRYPTO_SYM_XFORM_AEAD)
 		return ipsec_xform_aead_verify(ipsec_xform, crypto_xform);
 
-	if (crypto_xform->next == NULL)
-		return -EINVAL;
+	if (ipsec_xform->proto == RTE_SECURITY_IPSEC_SA_PROTO_AH) {
+		if (ipsec_xform->direction == RTE_SECURITY_IPSEC_SA_DIR_INGRESS) {
+			/* Ingress */
+			auth_xform = crypto_xform;
+			cipher_xform = crypto_xform->next;
 
-	if (ipsec_xform->direction == RTE_SECURITY_IPSEC_SA_DIR_INGRESS) {
-		/* Ingress */
-		if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_AUTH ||
-		    crypto_xform->next->type != RTE_CRYPTO_SYM_XFORM_CIPHER)
-			return -EINVAL;
-		auth_xform = crypto_xform;
-		cipher_xform = crypto_xform->next;
+			if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_AUTH)
+				return -EINVAL;
+
+			if ((cipher_xform != NULL) && ((cipher_xform->type !=
+			    RTE_CRYPTO_SYM_XFORM_CIPHER) ||
+			    (cipher_xform->cipher.algo !=
+			    RTE_CRYPTO_CIPHER_NULL)))
+				return -EINVAL;
+		} else {
+				/* Egress */
+			if (crypto_xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER) {
+				cipher_xform = crypto_xform;
+				auth_xform = crypto_xform->next;
+
+				if (auth_xform == NULL ||
+				    cipher_xform->cipher.algo !=
+				    RTE_CRYPTO_CIPHER_NULL)
+					return -EINVAL;
+			} else if (crypto_xform->type ==
+				   RTE_CRYPTO_SYM_XFORM_AUTH)
+				auth_xform = crypto_xform;
+			else
+				return -EINVAL;
+		}
 	} else {
-		/* Egress */
-		if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_CIPHER ||
-		    crypto_xform->next->type != RTE_CRYPTO_SYM_XFORM_AUTH)
+		if (crypto_xform->next == NULL)
 			return -EINVAL;
-		cipher_xform = crypto_xform;
-		auth_xform = crypto_xform->next;
-	}
 
-	ret = ipsec_xform_cipher_verify(cipher_xform);
-	if (ret)
-		return ret;
+		if (ipsec_xform->direction ==
+		    RTE_SECURITY_IPSEC_SA_DIR_INGRESS) {
+			/* Ingress */
+			if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_AUTH ||
+			    crypto_xform->next->type !=
+				    RTE_CRYPTO_SYM_XFORM_CIPHER)
+				return -EINVAL;
+			auth_xform = crypto_xform;
+			cipher_xform = crypto_xform->next;
+		} else {
+			/* Egress */
+			if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_CIPHER ||
+			    crypto_xform->next->type !=
+				    RTE_CRYPTO_SYM_XFORM_AUTH)
+				return -EINVAL;
+			cipher_xform = crypto_xform;
+			auth_xform = crypto_xform->next;
+		}
+
+		ret = ipsec_xform_cipher_verify(cipher_xform);
+		if (ret)
+			return ret;
+	}
 
 	return ipsec_xform_auth_verify(auth_xform);
 }

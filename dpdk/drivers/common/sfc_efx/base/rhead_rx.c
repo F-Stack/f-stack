@@ -88,11 +88,13 @@ rhead_rx_scale_context_alloc(
 	__in		efx_nic_t *enp,
 	__in		efx_rx_scale_context_type_t type,
 	__in		uint32_t num_queues,
+	__in		uint32_t table_nentries,
 	__out		uint32_t *rss_contextp)
 {
 	efx_rc_t rc;
 
-	rc = ef10_rx_scale_context_alloc(enp, type, num_queues, rss_contextp);
+	rc = ef10_rx_scale_context_alloc(enp, type, num_queues, table_nentries,
+		    rss_contextp);
 	if (rc != 0)
 		goto fail1;
 
@@ -162,16 +164,16 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn	efx_rc_t
+	__checkReturn		efx_rc_t
 rhead_rx_scale_tbl_set(
-	__in		efx_nic_t *enp,
-	__in		uint32_t rss_context,
-	__in_ecount(n)	unsigned int *table,
-	__in		size_t n)
+	__in			efx_nic_t *enp,
+	__in			uint32_t rss_context,
+	__in_ecount(nentries)	unsigned int *table,
+	__in			size_t nentries)
 {
 	efx_rc_t rc;
 
-	rc = ef10_rx_scale_tbl_set(enp, rss_context, table, n);
+	rc = ef10_rx_scale_tbl_set(enp, rss_context, table, nentries);
 	if (rc != 0)
 		goto fail1;
 

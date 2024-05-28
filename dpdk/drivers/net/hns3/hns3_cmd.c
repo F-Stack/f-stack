@@ -60,18 +60,14 @@ hns3_allocate_dma_mem(struct hns3_hw *hw, struct hns3_cmq_ring *ring,
 	ring->desc = mz->addr;
 	ring->desc_dma_addr = mz->iova;
 	ring->zone = (const void *)mz;
-	hns3_dbg(hw, "memzone %s allocated with physical address: %" PRIu64,
-		 mz->name, ring->desc_dma_addr);
+	hns3_dbg(hw, "cmd ring memzone name: %s", mz->name);
 
 	return 0;
 }
 
 static void
-hns3_free_dma_mem(struct hns3_hw *hw, struct hns3_cmq_ring *ring)
+hns3_free_dma_mem(struct hns3_cmq_ring *ring)
 {
-	hns3_dbg(hw, "memzone %s to be freed with physical address: %" PRIu64,
-		 ((const struct rte_memzone *)ring->zone)->name,
-		 ring->desc_dma_addr);
 	rte_memzone_free((const struct rte_memzone *)ring->zone);
 	ring->buf_size = 0;
 	ring->desc = NULL;
@@ -93,10 +89,10 @@ hns3_alloc_cmd_desc(struct hns3_hw *hw, struct hns3_cmq_ring *ring)
 }
 
 static void
-hns3_free_cmd_desc(struct hns3_hw *hw, struct hns3_cmq_ring *ring)
+hns3_free_cmd_desc(__rte_unused struct hns3_hw *hw, struct hns3_cmq_ring *ring)
 {
 	if (ring->desc)
-		hns3_free_dma_mem(hw, ring);
+		hns3_free_dma_mem(ring);
 }
 
 static int
@@ -112,7 +108,7 @@ hns3_alloc_cmd_queue(struct hns3_hw *hw, int ring_type)
 	ret = hns3_alloc_cmd_desc(hw, ring);
 	if (ret)
 		hns3_err(hw, "descriptor %s alloc error %d",
-			    (ring_type == HNS3_TYPE_CSQ) ? "CSQ" : "CRQ", ret);
+			 (ring_type == HNS3_TYPE_CSQ) ? "CSQ" : "CRQ", ret);
 
 	return ret;
 }

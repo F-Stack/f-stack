@@ -5,8 +5,6 @@
 #include <string.h>
 
 #include <rte_lcore.h>
-#include <rte_cycles.h>
-#include <rte_atomic.h>
 #include <rte_malloc.h>
 #include <inttypes.h>
 
@@ -457,8 +455,7 @@ rte_power_empty_poll_stat_free(void)
 
 	RTE_LOG(INFO, POWER, "Close the Empty Poll\n");
 
-	if (ep_params != NULL)
-		rte_free(ep_params);
+	rte_free(ep_params);
 }
 
 int

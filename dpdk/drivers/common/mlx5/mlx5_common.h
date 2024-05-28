@@ -7,7 +7,9 @@
 
 #include <stdio.h>
 
+#include <rte_compat.h>
 #include <rte_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_debug.h>
 #include <rte_atomic.h>
 #include <rte_rwlock.h>
@@ -201,7 +203,12 @@ check_cqe(volatile struct mlx5_cqe *cqe, const uint16_t cqes_n,
 
 	if (unlikely((op_owner != (!!(idx))) || (op_code == MLX5_CQE_INVALID)))
 		return MLX5_CQE_STATUS_HW_OWN;
-	rte_io_rmb();
+
+	/* Prevent speculative reading of other fields in CQE until
+	 * CQE is valid.
+	 */
+	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+
 	if (unlikely(op_code == MLX5_CQE_RESP_ERR ||
 		     op_code == MLX5_CQE_REQ_ERR))
 		return MLX5_CQE_STATUS_ERR;
@@ -219,6 +226,7 @@ check_cqe(volatile struct mlx5_cqe *cqe, const uint16_t cqes_n,
  *   - 0 on success.
  *   - Negative value and rte_errno is set otherwise.
  */
+__rte_internal
 int mlx5_dev_to_pci_str(const struct rte_device *dev, char *addr, size_t size);
 
 /*
@@ -279,6 +287,37 @@ struct mlx5_klm {
 	uint32_t mkey;
 	uint64_t address;
 };
+
+/** Control for key/values list. */
+struct mlx5_kvargs_ctrl {
+	struct rte_kvargs *kvlist; /* Structure containing list of key/values.*/
+	bool is_used[RTE_KVARGS_MAX]; /* Indicator which devargs were used. */
+};
+
+/**
+ * Call a handler function for each key/value in the list of keys.
+ *
+ * For each key/value association that matches the given key, calls the
+ * handler function with the for a given arg_name passing the value on the
+ * dictionary for that key and a given extra argument.
+ *
+ * @param mkvlist
+ *   The mlx5_kvargs structure.
+ * @param keys
+ *   A list of keys to process (table of const char *, the last must be NULL).
+ * @param handler
+ *   The function to call for each matching key.
+ * @param opaque_arg
+ *   A pointer passed unchanged to the handler.
+ *
+ * @return
+ *   - 0 on success
+ *   - Negative on error
+ */
+__rte_internal
+int
+mlx5_kvargs_process(struct mlx5_kvargs_ctrl *mkvlist, const char *const keys[],
+		    arg_handler_t handler, void *opaque_arg);
 
 /* All UAR arguments using doorbell register in datapath. */
 struct mlx5_uar_data {
@@ -414,6 +453,8 @@ void mlx5_common_init(void);
 struct mlx5_common_dev_config {
 	struct mlx5_hca_attr hca_attr; /* HCA attributes. */
 	int dbnc; /* Skip doorbell register write barrier. */
+	int device_fd; /* Device file descriptor for importation. */
+	int pd_handle; /* Protection Domain handle for importation.  */
 	unsigned int devx:1; /* Whether devx interface is available or not. */
 	unsigned int sys_mem_en:1; /* The default memory allocator. */
 	unsigned int mr_mempool_reg_en:1;
@@ -434,14 +475,32 @@ struct mlx5_common_device {
 };
 
 /**
+ * Indicates whether PD and CTX are imported from another process,
+ * or created by this process.
+ *
+ * @param cdev
+ *   Pointer to common device.
+ *
+ * @return
+ *   True if PD and CTX are imported from another process, False otherwise.
+ */
+static inline bool
+mlx5_imported_pd_and_ctx(struct mlx5_common_device *cdev)
+{
+	return cdev->config.device_fd != MLX5_ARG_UNSET &&
+	       cdev->config.pd_handle != MLX5_ARG_UNSET;
+}
+
+/**
  * Initialization function for the driver called during device probing.
  */
-typedef int (mlx5_class_driver_probe_t)(struct mlx5_common_device *dev);
+typedef int (mlx5_class_driver_probe_t)(struct mlx5_common_device *cdev,
+					struct mlx5_kvargs_ctrl *mkvlist);
 
 /**
  * Uninitialization function for the driver called during hot-unplugging.
  */
-typedef int (mlx5_class_driver_remove_t)(struct mlx5_common_device *dev);
+typedef int (mlx5_class_driver_remove_t)(struct mlx5_common_device *cdev);
 
 /** Device already probed can be probed again to check for new ports. */
 #define MLX5_DRV_PROBE_AGAIN 0x0004
@@ -487,6 +546,20 @@ __rte_internal
 bool
 mlx5_dev_is_pci(const struct rte_device *dev);
 
+/**
+ * Test PCI device is a VF device.
+ *
+ * @param pci_dev
+ *   Pointer to PCI device.
+ *
+ * @return
+ *   - True on PCI device is a VF device.
+ *   - False otherwise.
+ */
+__rte_internal
+bool
+mlx5_dev_is_vf_pci(const struct rte_pci_device *pci_dev);
+
 __rte_internal
 int
 mlx5_dev_mempool_subscribe(struct mlx5_common_device *cdev);
@@ -507,7 +580,9 @@ mlx5_devx_uar_release(struct mlx5_uar *uar);
 /* mlx5_common_os.c */
 
 int mlx5_os_open_device(struct mlx5_common_device *cdev, uint32_t classes);
-int mlx5_os_pd_create(struct mlx5_common_device *cdev);
+int mlx5_os_pd_prepare(struct mlx5_common_device *cdev);
+int mlx5_os_pd_release(struct mlx5_common_device *cdev);
+int mlx5_os_remote_pd_and_ctx_validate(struct mlx5_common_dev_config *config);
 
 /* mlx5 PMD wrapped MR struct. */
 struct mlx5_pmd_wrapped_mr {

@@ -56,6 +56,53 @@ roc_npc_mcam_free_entry(struct roc_npc *roc_npc, uint32_t entry)
 }
 
 int
+roc_npc_mcam_free(struct roc_npc *roc_npc, struct roc_npc_flow *mcam)
+{
+	int rc = 0;
+
+	if (mcam->use_ctr) {
+		rc = roc_npc_mcam_clear_counter(roc_npc, mcam->ctr_id);
+		if (rc)
+			return rc;
+
+		rc = roc_npc_mcam_free_counter(roc_npc, mcam->ctr_id);
+		if (rc)
+			return rc;
+	}
+
+	return roc_npc_mcam_free_entry(roc_npc, mcam->mcam_id);
+}
+
+int
+roc_npc_mcam_init(struct roc_npc *roc_npc, struct roc_npc_flow *flow,
+		  int mcam_id)
+{
+	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+	int rc;
+
+	rc = npc_mcam_init(npc, flow, mcam_id);
+	if (rc != 0) {
+		plt_err("npc: mcam initialisation write failed");
+		return rc;
+	}
+	return 0;
+}
+
+int
+roc_npc_mcam_move(struct roc_npc *roc_npc, uint16_t old_ent, uint16_t new_ent)
+{
+	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+	struct mbox *mbox = npc->mbox;
+	int rc;
+
+	rc = npc_mcam_move(mbox, old_ent, new_ent);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
+int
 roc_npc_mcam_free_all_resources(struct roc_npc *roc_npc)
 {
 	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
@@ -72,6 +119,14 @@ roc_npc_mcam_alloc_entries(struct roc_npc *roc_npc, int ref_entry,
 
 	return npc_mcam_alloc_entries(npc, ref_entry, alloc_entry, req_count,
 				      priority, resp_count);
+}
+
+int
+roc_npc_mcam_enable_all_entries(struct roc_npc *roc_npc, bool enable)
+{
+	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+
+	return npc_flow_enable_all_entries(npc, enable);
 }
 
 int
@@ -165,8 +220,6 @@ roc_npc_init(struct roc_npc *roc_npc)
 
 	roc_npc->kex_capability = npc_get_kex_capability(npc);
 	roc_npc->rx_parse_nibble = npc->keyx_supp_nmask[NPC_MCAM_RX];
-
-	npc->mark_actions = 0;
 
 	npc->mcam_entries = npc_mcam_tot_entries() >> npc->keyw[NPC_MCAM_RX];
 
@@ -288,6 +341,48 @@ roc_npc_validate_portid_action(struct roc_npc *roc_npc_src,
 }
 
 static int
+npc_parse_msns_action(struct roc_npc *roc_npc, const struct roc_npc_action *act,
+		      struct roc_npc_flow *flow, uint8_t *has_msns_action)
+{
+	const struct roc_npc_sec_action *sec_action;
+	union {
+		uint64_t reg;
+		union nix_rx_vtag_action_u act;
+	} vtag_act;
+
+	if (roc_npc->roc_nix->custom_sa_action == 0 ||
+	    roc_model_is_cn9k() == 1 || act->conf == NULL)
+		return 0;
+
+	*has_msns_action = true;
+	sec_action = act->conf;
+
+	vtag_act.reg = 0;
+	vtag_act.act.sa_xor = sec_action->sa_xor;
+	vtag_act.act.sa_hi = sec_action->sa_hi;
+	vtag_act.act.sa_lo = sec_action->sa_lo;
+
+	switch (sec_action->alg) {
+	case ROC_NPC_SEC_ACTION_ALG0:
+		break;
+	case ROC_NPC_SEC_ACTION_ALG1:
+		vtag_act.act.vtag1_valid = false;
+		vtag_act.act.vtag1_lid = ROC_NPC_SEC_ACTION_ALG1;
+		break;
+	case ROC_NPC_SEC_ACTION_ALG2:
+		vtag_act.act.vtag1_valid = false;
+		vtag_act.act.vtag1_lid = ROC_NPC_SEC_ACTION_ALG2;
+		break;
+	default:
+		return -1;
+	}
+
+	flow->vtag_action = vtag_act.reg;
+
+	return 0;
+}
+
+static int
 npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 		  const struct roc_npc_action actions[],
 		  struct roc_npc_flow *flow)
@@ -299,11 +394,14 @@ npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 	const struct roc_npc_action_queue *act_q;
 	const struct roc_npc_action_vf *vf_act;
 	bool vlan_insert_action = false;
+	uint8_t has_msns_act = 0;
 	int sel_act, req_act = 0;
 	uint16_t pf_func, vf_id;
+	struct roc_nix *roc_nix;
 	int errcode = 0;
 	int mark = 0;
 	int rq = 0;
+	int rc = 0;
 
 	/* Initialize actions */
 	flow->ctr_id = NPC_COUNTER_NONE;
@@ -323,18 +421,16 @@ npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 			}
 			mark = act_mark->id + 1;
 			req_act |= ROC_NPC_ACTION_TYPE_MARK;
-			npc->mark_actions += 1;
 			break;
 
 		case ROC_NPC_ACTION_TYPE_FLAG:
 			mark = NPC_FLOW_FLAG_VAL;
 			req_act |= ROC_NPC_ACTION_TYPE_FLAG;
-			npc->mark_actions += 1;
 			break;
 
 		case ROC_NPC_ACTION_TYPE_COUNT:
 			/* Indicates, need a counter */
-			flow->ctr_id = 1;
+			flow->use_ctr = 1;
 			req_act |= ROC_NPC_ACTION_TYPE_COUNT;
 			break;
 
@@ -388,12 +484,26 @@ npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 			 */
 			req_act |= ROC_NPC_ACTION_TYPE_SEC;
 			rq = 0;
+			roc_nix = roc_npc->roc_nix;
 
 			/* Special processing when with inline device */
-			if (roc_nix_inb_is_with_inl_dev(roc_npc->roc_nix) &&
+			if (roc_nix_inb_is_with_inl_dev(roc_nix) &&
 			    roc_nix_inl_dev_is_probed()) {
-				rq = 0;
+				struct roc_nix_rq *inl_rq;
+
+				inl_rq = roc_nix_inl_dev_rq(roc_nix);
+				if (!inl_rq) {
+					errcode = NPC_ERR_INTERNAL;
+					goto err_exit;
+				}
+				rq = inl_rq->qid;
 				pf_func = nix_inl_dev_pffunc_get();
+			}
+			rc = npc_parse_msns_action(roc_npc, actions, flow,
+						   &has_msns_act);
+			if (rc) {
+				errcode = NPC_ERR_ACTION_NOTSUP;
+				goto err_exit;
 			}
 			break;
 		case ROC_NPC_ACTION_TYPE_VLAN_STRIP:
@@ -430,6 +540,14 @@ npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 			ROC_NPC_ACTION_TYPE_VLAN_PCP_INSERT)) ==
 	    ROC_NPC_ACTION_TYPE_VLAN_PCP_INSERT) {
 		plt_err("PCP insert action can't be supported alone");
+		errcode = NPC_ERR_ACTION_NOTSUP;
+		goto err_exit;
+	}
+
+	if (has_msns_act && (vlan_insert_action ||
+			     (req_act & ROC_NPC_ACTION_TYPE_VLAN_STRIP))) {
+		plt_err("Both MSNS and VLAN insert/strip action can't be supported"
+			" together");
 		errcode = NPC_ERR_ACTION_NOTSUP;
 		goto err_exit;
 	}
@@ -566,10 +684,11 @@ npc_parse_pattern(struct npc *npc, const struct roc_npc_item_info pattern[],
 		  struct roc_npc_flow *flow, struct npc_parse_state *pst)
 {
 	npc_parse_stage_func_t parse_stage_funcs[] = {
-		npc_parse_meta_items, npc_parse_cpt_hdr, npc_parse_higig2_hdr,
-		npc_parse_la,	      npc_parse_lb,	 npc_parse_lc,
-		npc_parse_ld,	      npc_parse_le,	 npc_parse_lf,
-		npc_parse_lg,	      npc_parse_lh,
+		npc_parse_meta_items, npc_parse_mark_item,  npc_parse_pre_l2,
+		npc_parse_cpt_hdr,    npc_parse_higig2_hdr, npc_parse_la,
+		npc_parse_lb,	      npc_parse_lc,	    npc_parse_ld,
+		npc_parse_le,	      npc_parse_lf,	    npc_parse_lg,
+		npc_parse_lh,
 	};
 	uint8_t layer = 0;
 	int key_offset;
@@ -810,23 +929,6 @@ npc_rss_action_program(struct roc_npc *roc_npc,
 		}
 	}
 	return 0;
-}
-
-int
-roc_npc_mark_actions_get(struct roc_npc *roc_npc)
-{
-	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
-
-	return npc->mark_actions;
-}
-
-int
-roc_npc_mark_actions_sub_return(struct roc_npc *roc_npc, uint32_t count)
-{
-	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
-
-	npc->mark_actions -= count;
-	return npc->mark_actions;
 }
 
 static int
@@ -1140,18 +1242,56 @@ npc_vtag_action_program(struct roc_npc *roc_npc,
 	return 0;
 }
 
+static void
+roc_npc_sdp_channel_get(struct roc_npc *roc_npc, uint16_t *chan_base, uint16_t *chan_mask)
+{
+	struct roc_nix *roc_nix = roc_npc->roc_nix;
+	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
+	uint16_t num_chan, range, num_bits = 0;
+	uint16_t mask = 0;
+
+	*chan_base = nix->rx_chan_base;
+	num_chan = nix->rx_chan_cnt - 1;
+	if (num_chan) {
+		range = *chan_base ^ (*chan_base + num_chan);
+		num_bits = (sizeof(uint32_t) * 8) - __builtin_clz(range) - 1;
+		/* Set mask for (15 - numbits) MSB bits */
+		*chan_mask = (uint16_t)~GENMASK(num_bits, 0);
+	} else {
+		*chan_mask = (uint16_t)GENMASK(15, 0);
+	}
+
+	mask = (uint16_t)GENMASK(num_bits, 0);
+	if (mask > num_chan + 1)
+		plt_warn(
+			"npc: SDP channel base:%x, channel count:%x. channel mask:%x covers more than channel count",
+			*chan_base, nix->rx_chan_cnt, *chan_mask);
+}
+
 struct roc_npc_flow *
 roc_npc_flow_create(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 		    const struct roc_npc_item_info pattern[],
 		    const struct roc_npc_action actions[], int *errcode)
 {
 	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+	uint16_t sdp_chan_base = 0, sdp_chan_mask = 0;
 	struct roc_npc_flow *flow, *flow_iter;
 	struct npc_parse_state parse_state;
 	struct npc_flow_list *list;
 	int rc;
 
 	npc->channel = roc_npc->channel;
+	npc->is_sdp_link = roc_nix_is_sdp(roc_npc->roc_nix);
+	if (npc->is_sdp_link) {
+		if (roc_npc->is_sdp_mask_set) {
+			npc->sdp_channel = roc_npc->sdp_channel;
+			npc->sdp_channel_mask = roc_npc->sdp_channel_mask;
+		} else {
+			roc_npc_sdp_channel_get(roc_npc, &sdp_chan_base, &sdp_chan_mask);
+			npc->sdp_channel = sdp_chan_base;
+			npc->sdp_channel_mask = sdp_chan_mask;
+		}
+	}
 
 	flow = plt_zmalloc(sizeof(*flow), 0);
 	if (flow == NULL) {
@@ -1200,7 +1340,7 @@ roc_npc_flow_create(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 	return flow;
 
 set_rss_failed:
-	rc = npc_mcam_free_entry(npc, flow->mcam_id);
+	rc = roc_npc_mcam_free_entry(roc_npc, flow->mcam_id);
 	if (rc != 0) {
 		*errcode = rc;
 		plt_free(flow);
@@ -1246,17 +1386,7 @@ roc_npc_flow_destroy(struct roc_npc *roc_npc, struct roc_npc_flow *flow)
 			return rc;
 	}
 
-	if (flow->ctr_id != NPC_COUNTER_NONE) {
-		rc = roc_npc_mcam_clear_counter(roc_npc, flow->ctr_id);
-		if (rc != 0)
-			return rc;
-
-		rc = npc_mcam_free_counter(npc, flow->ctr_id);
-		if (rc != 0)
-			return rc;
-	}
-
-	rc = npc_mcam_free_entry(npc, flow->mcam_id);
+	rc = roc_npc_mcam_free(roc_npc, flow);
 	if (rc != 0)
 		return rc;
 

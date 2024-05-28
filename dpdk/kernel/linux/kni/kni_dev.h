@@ -27,7 +27,7 @@
 #include <linux/list.h>
 
 #include <rte_kni_common.h>
-#define KNI_KTHREAD_RESCHEDULE_INTERVAL 5 /* us */
+#define KNI_KTHREAD_MAX_RESCHEDULE_INTERVAL 1000000 /* us */
 
 #define MBUF_BURST_SZ 32
 
@@ -105,11 +105,13 @@ static inline phys_addr_t iova_to_phys(struct task_struct *tsk,
 
 	/* Read one page struct info */
 #ifdef HAVE_TSK_IN_GUP
-	ret = get_user_pages_remote(tsk, tsk->mm, iova, 1,
-				    FOLL_TOUCH, &page, NULL, NULL);
+	ret = get_user_pages_remote(tsk, tsk->mm, iova, 1, 0, &page, NULL, NULL);
 #else
-	ret = get_user_pages_remote(tsk->mm, iova, 1,
-				    FOLL_TOUCH, &page, NULL, NULL);
+  #ifdef HAVE_VMA_IN_GUP
+	ret = get_user_pages_remote(tsk->mm, iova, 1, 0, &page, NULL, NULL);
+  #else
+	ret = get_user_pages_remote(tsk->mm, iova, 1, 0, &page, NULL);
+  #endif
 #endif
 	if (ret < 0)
 		return 0;

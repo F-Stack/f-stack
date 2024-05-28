@@ -5,14 +5,11 @@
 #ifdef __RDSEED__
 #include <x86intrin.h>
 #endif
-#include <stdlib.h>
 #include <unistd.h>
 
 #include <rte_branch_prediction.h>
 #include <rte_cycles.h>
-#include <rte_eal.h>
 #include <rte_lcore.h>
-#include <rte_memory.h>
 #include <rte_random.h>
 
 struct rte_rand_state {
@@ -174,6 +171,25 @@ rte_rand_max(uint64_t upper_bound)
 	} while (unlikely(res >= upper_bound));
 
 	return res;
+}
+
+double
+rte_drand(void)
+{
+	static const uint64_t denom = (uint64_t)1 << 53;
+	uint64_t rand64 = rte_rand();
+
+	/*
+	 * The double mantissa only has 53 bits, so we uniformly mask off the
+	 * high 11 bits and then floating-point divide by 2^53 to achieve a
+	 * result in [0, 1).
+	 *
+	 * We are not allowed to emit 1.0, so denom must be one greater than
+	 * the possible range of the preceding step.
+	 */
+
+	rand64 &= denom - 1;
+	return (double)rand64 / denom;
 }
 
 static uint64_t

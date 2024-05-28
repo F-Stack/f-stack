@@ -7,11 +7,11 @@
  * for Solarflare) and Solarflare Communications, Inc.
  */
 
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_ether.h>
@@ -1668,14 +1668,12 @@ sfc_dev_rss_hash_update(struct rte_eth_dev *dev,
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
 	struct sfc_rss *rss = &sfc_sa2shared(sa)->rss;
 	unsigned int efx_hash_types;
-	uint32_t contexts[] = {EFX_RSS_CONTEXT_DEFAULT, rss->dummy_rss_context};
 	unsigned int n_contexts;
 	unsigned int mode_i = 0;
 	unsigned int key_i = 0;
+	uint32_t contexts[2];
 	unsigned int i = 0;
 	int rc = 0;
-
-	n_contexts = rss->dummy_rss_context == EFX_RSS_CONTEXT_DEFAULT ? 1 : 2;
 
 	if (sfc_sa2shared(sa)->isolated)
 		return -ENOTSUP;
@@ -1702,6 +1700,10 @@ sfc_dev_rss_hash_update(struct rte_eth_dev *dev,
 	rc = sfc_rx_hf_rte_to_efx(sa, rss_conf->rss_hf, &efx_hash_types);
 	if (rc != 0)
 		goto fail_rx_hf_rte_to_efx;
+
+	contexts[0] = EFX_RSS_CONTEXT_DEFAULT;
+	contexts[1] = rss->dummy_ctx.nic_handle;
+	n_contexts = (rss->dummy_ctx.nic_handle_refcnt == 0) ? 1 : 2;
 
 	for (mode_i = 0; mode_i < n_contexts; mode_i++) {
 		rc = efx_rx_scale_mode_set(sa->nic, contexts[mode_i],
@@ -2320,7 +2322,7 @@ sfc_rx_metadata_negotiate(struct rte_eth_dev *dev, uint64_t *features)
 	if ((sa->priv.dp_rx->features & SFC_DP_RX_FEAT_FLOW_MARK) != 0)
 		supported |= RTE_ETH_RX_METADATA_USER_MARK;
 
-	if (sfc_flow_tunnel_is_supported(sa))
+	if (sfc_ft_is_supported(sa))
 		supported |= RTE_ETH_RX_METADATA_TUNNEL_ID;
 
 	sa->negotiated_rx_metadata = supported & *features;

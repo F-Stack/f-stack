@@ -1051,14 +1051,14 @@ ef10_get_datapath_caps(
 	efx_nic_cfg_t *encp = &(enp->en_nic_cfg);
 	efx_mcdi_req_t req;
 	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_CAPABILITIES_IN_LEN,
-		MC_CMD_GET_CAPABILITIES_V7_OUT_LEN);
+		MC_CMD_GET_CAPABILITIES_V9_OUT_LEN);
 	efx_rc_t rc;
 
 	req.emr_cmd = MC_CMD_GET_CAPABILITIES;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_CAPABILITIES_IN_LEN;
 	req.emr_out_buf = payload;
-	req.emr_out_length = MC_CMD_GET_CAPABILITIES_V7_OUT_LEN;
+	req.emr_out_length = MC_CMD_GET_CAPABILITIES_V9_OUT_LEN;
 
 	efx_mcdi_execute_quiet(enp, &req);
 
@@ -1409,6 +1409,11 @@ ef10_get_datapath_caps(
 		 */
 		encp->enc_rx_scale_l4_hash_supported = B_TRUE;
 	}
+
+	if (CAP_FLAGS3(req, RSS_SELECTABLE_TABLE_SIZE))
+		encp->enc_rx_scale_tbl_entry_count_is_selectable = B_TRUE;
+	else
+		encp->enc_rx_scale_tbl_entry_count_is_selectable = B_FALSE;
 #endif /* EFSYS_OPT_RX_SCALE */
 
 	/* Check if the firmware supports "FLAG" and "MARK" filter actions */
@@ -1465,6 +1470,46 @@ ef10_get_datapath_caps(
 	encp->enc_mae_supported = B_FALSE;
 	encp->enc_mae_admin = B_FALSE;
 #endif /* EFSYS_OPT_MAE */
+
+#if EFSYS_OPT_RX_SCALE
+	if (req.emr_out_length_used >= MC_CMD_GET_CAPABILITIES_V9_OUT_LEN) {
+		encp->enc_rx_scale_indirection_max_nqueues =
+		    MCDI_OUT_DWORD(req,
+			GET_CAPABILITIES_V9_OUT_RSS_MAX_INDIRECTION_QUEUES);
+		encp->enc_rx_scale_tbl_min_nentries =
+		    MCDI_OUT_DWORD(req,
+			GET_CAPABILITIES_V9_OUT_RSS_MIN_INDIRECTION_TABLE_SIZE);
+		encp->enc_rx_scale_tbl_max_nentries =
+		    MCDI_OUT_DWORD(req,
+			GET_CAPABILITIES_V9_OUT_RSS_MAX_INDIRECTION_TABLE_SIZE);
+
+		if (CAP_FLAGS3(req, RSS_EVEN_SPREADING)) {
+#define	RSS_MAX_EVEN_SPREADING_QUEUES				\
+	GET_CAPABILITIES_V9_OUT_RSS_MAX_EVEN_SPREADING_QUEUES
+			/*
+			 * The even spreading mode distributes traffic across
+			 * the specified number of queues without the need to
+			 * allocate precious indirection entry pool resources.
+			 */
+			encp->enc_rx_scale_even_spread_max_nqueues =
+			    MCDI_OUT_DWORD(req, RSS_MAX_EVEN_SPREADING_QUEUES);
+#undef RSS_MAX_EVEN_SPREADING_QUEUES
+		} else {
+			/* There is no support for the even spread contexts. */
+			encp->enc_rx_scale_even_spread_max_nqueues = 0;
+		}
+	} else {
+		encp->enc_rx_scale_indirection_max_nqueues = EFX_MAXRSS;
+		encp->enc_rx_scale_tbl_min_nentries = EFX_RSS_TBL_SIZE;
+		encp->enc_rx_scale_tbl_max_nentries = EFX_RSS_TBL_SIZE;
+
+		/*
+		 * Assume that there is no support
+		 * for the even spread contexts.
+		 */
+		encp->enc_rx_scale_even_spread_max_nqueues = 0;
+	}
+#endif /* EFSYS_OPT_RX_SCALE */
 
 #undef CAP_FLAGS1
 #undef CAP_FLAGS2
@@ -1946,8 +1991,9 @@ efx_mcdi_nic_board_cfg(
 	if ((rc = ef10_mcdi_get_pf_count(enp, &encp->enc_hw_pf_count)) != 0)
 		goto fail4;
 
-	/* MAC address for this function */
-	if (EFX_PCI_FUNCTION_IS_PF(encp)) {
+	rc = efx_mcdi_client_mac_addr_get(enp, CLIENT_HANDLE_SELF, mac_addr);
+	if ((rc != 0) && EFX_PCI_FUNCTION_IS_PF(encp)) {
+		/* Fallback for legacy MAC address get approach (PF) */
 		rc = efx_mcdi_get_mac_address_pf(enp, mac_addr);
 #if EFSYS_OPT_ALLOW_UNCONFIGURED_NIC
 		/*
@@ -1966,9 +2012,11 @@ efx_mcdi_nic_board_cfg(
 			rc = EINVAL;
 		}
 #endif /* EFSYS_OPT_ALLOW_UNCONFIGURED_NIC */
-	} else {
+	} else if (rc != 0) {
+		/* Fallback for legacy MAC address get approach (VF) */
 		rc = efx_mcdi_get_mac_address_vf(enp, mac_addr);
 	}
+
 	if (rc != 0)
 		goto fail5;
 
@@ -2185,7 +2233,8 @@ ef10_nic_board_cfg(
 	/* Alignment for WPTR updates */
 	encp->enc_rx_push_align = EF10_RX_WPTR_ALIGN;
 
-	encp->enc_tx_dma_desc_size_max = EFX_MASK32(ESF_DZ_RX_KER_BYTE_CNT);
+	encp->enc_rx_dma_desc_size_max = EFX_MASK32(ESF_DZ_RX_KER_BYTE_CNT);
+	encp->enc_tx_dma_desc_size_max = EFX_MASK32(ESF_DZ_TX_KER_BYTE_CNT);
 	/* No boundary crossing limits */
 	encp->enc_tx_dma_desc_boundary = 0;
 

@@ -8,7 +8,6 @@
  */
 
 #include <stdio.h>
-#include <stdarg.h>
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -17,19 +16,11 @@
 
 #include <rte_common.h>
 #include <rte_log.h>
-#include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_malloc.h>
-#include <rte_launch.h>
-#include <rte_eal.h>
 #include <rte_eal_memconfig.h>
-#include <rte_atomic.h>
-#include <rte_per_lcore.h>
-#include <rte_lcore.h>
-#include <rte_branch_prediction.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
-#include <rte_spinlock.h>
 #include <rte_tailq.h>
 
 #include "rte_ring.h"
@@ -341,11 +332,6 @@ rte_ring_free(struct rte_ring *r)
 		return;
 	}
 
-	if (rte_memzone_free(r->memzone) != 0) {
-		RTE_LOG(ERR, RING, "Cannot free memory\n");
-		return;
-	}
-
 	ring_list = RTE_TAILQ_CAST(rte_ring_tailq.head, rte_ring_list);
 	rte_mcfg_tailq_write_lock();
 
@@ -363,6 +349,9 @@ rte_ring_free(struct rte_ring *r)
 	TAILQ_REMOVE(ring_list, te, next);
 
 	rte_mcfg_tailq_write_unlock();
+
+	if (rte_memzone_free(r->memzone) != 0)
+		RTE_LOG(ERR, RING, "Cannot free memory\n");
 
 	rte_free(te);
 }

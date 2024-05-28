@@ -4,6 +4,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 #include <errno.h>
@@ -56,8 +57,8 @@ do_write(char *vnf_mem)
 static inline void
 do_read(char *vnf_mem)
 {
+	uint64_t r __rte_unused;
 	uint64_t i = rte_rand();
-	uint64_t r;
 
 	r = vnf_mem[i % ((noisy_lkup_mem_sz * 1024 * 1024) /
 			RTE_CACHE_LINE_SIZE)];
@@ -213,9 +214,10 @@ flush:
 		sent = rte_eth_tx_burst(fs->tx_port, fs->tx_queue,
 					 tmp_pkts, nb_deqd);
 		if (unlikely(sent < nb_deqd) && fs->retry_enabled)
-			nb_tx += do_retry(nb_rx, nb_tx, tmp_pkts, fs);
-		inc_tx_burst_stats(fs, nb_tx);
+			sent += do_retry(nb_deqd, sent, tmp_pkts, fs);
+		inc_tx_burst_stats(fs, sent);
 		fs->fwd_dropped += drop_pkts(tmp_pkts, nb_deqd, sent);
+		nb_tx += sent;
 		ncf->prev_time = rte_get_timer_cycles();
 	}
 }

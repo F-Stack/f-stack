@@ -26,8 +26,8 @@
 #include <rte_cycles.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_dev.h>
-#include <rte_bus_vmbus.h>
+#include <dev_driver.h>
+#include <bus_vmbus_driver.h>
 
 #include "hn_logs.h"
 #include "hn_var.h"
@@ -329,7 +329,8 @@ void hn_rndis_receive_response(struct hn_data *hv,
 
 	hn_rndis_dump(data);
 
-	if (len < sizeof(3 * sizeof(uint32_t))) {
+	/* Check we can read first three data fields from RNDIS header */
+	if (len < 3 * sizeof(uint32_t)) {
 		PMD_DRV_LOG(ERR,
 			    "missing RNDIS header %u", len);
 		return;

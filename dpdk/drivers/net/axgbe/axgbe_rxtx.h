@@ -65,6 +65,12 @@ struct axgbe_rx_queue {
 	uint16_t crc_len;
 	/* address of  s/w rx buffers */
 	struct rte_mbuf **sw_ring;
+
+	/* For segemented packets - save the current state
+	 * of packet, if next descriptor is not ready yet
+	 */
+	struct rte_mbuf *saved_mbuf;
+
 	/* Port private data */
 	struct axgbe_port *pdata;
 	/* Number of Rx descriptors in queue */
@@ -167,6 +173,10 @@ int axgbe_dev_fw_version_get(struct rte_eth_dev *eth_dev,
 
 uint16_t axgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 uint16_t nb_pkts);
+
+uint16_t axgbe_xmit_pkts_seg(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts);
+
 uint16_t axgbe_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 uint16_t nb_pkts);
 

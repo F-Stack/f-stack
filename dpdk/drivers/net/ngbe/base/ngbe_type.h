@@ -9,7 +9,7 @@
 #define NGBE_LINK_UP_TIME	90 /* 9.0 Seconds */
 
 #define NGBE_FRAME_SIZE_MAX       (9728) /* Maximum frame size, +FCS */
-#define NGBE_FRAME_SIZE_DFT       (1522) /* Default frame size, +FCS */
+#define NGBE_FRAME_SIZE_DFT       (1518) /* Default frame size, +FCS */
 #define NGBE_NUM_POOL             (32)
 #define NGBE_PBRXSIZE_MAX         0x00080000 /* 512KB Packet Buffer */
 #define NGBE_PBTXSIZE_MAX         0x00005000 /* 20KB Packet Buffer */
@@ -18,7 +18,7 @@
 #define NGBE_MAX_UTA              128
 
 #define NGBE_PCI_MASTER_DISABLE_TIMEOUT	800
-
+#define NGBE_SPI_TIMEOUT	10000
 
 #define NGBE_ALIGN		128 /* as intel did */
 #define NGBE_ISB_SIZE		16
@@ -42,6 +42,12 @@ enum ngbe_eeprom_type {
 	ngbe_eeprom_spi,
 	ngbe_eeprom_flash,
 	ngbe_eeprom_none /* No NVM support */
+};
+
+enum ngbe_link_type {
+	ngbe_link_type_unknown = 0,
+	ngbe_link_fiber,
+	ngbe_link_copper
 };
 
 enum ngbe_mac_type {
@@ -136,9 +142,8 @@ struct ngbe_hw_stats {
 	u64 mng_bmc2host_packets;
 	u64 mng_host2bmc_packets;
 	/* Basix RxTx */
-	u64 rx_drop_packets;
-	u64 tx_drop_packets;
 	u64 rx_dma_drop;
+	u64 tx_dma_drop;
 	u64 tx_secdrp_packets;
 	u64 rx_packets;
 	u64 tx_packets;
@@ -164,7 +169,7 @@ struct ngbe_hw_stats {
 	u64 rx_length_errors;
 	u64 rx_undersize_errors;
 	u64 rx_fragment_errors;
-	u64 rx_oversize_errors;
+	u64 rx_oversize_cnt;
 	u64 rx_jabber_errors;
 	u64 rx_l3_l4_xsum_error;
 	u64 mac_local_errors;
@@ -312,6 +317,7 @@ struct ngbe_mac_info {
 	s32 (*check_overtemp)(struct ngbe_hw *hw);
 
 	enum ngbe_mac_type type;
+	enum ngbe_link_type link_type;
 	u8 addr[ETH_ADDR_LEN];
 	u8 perm_addr[ETH_ADDR_LEN];
 #define NGBE_MAX_MTA			128
@@ -348,6 +354,7 @@ struct ngbe_phy_info {
 				bool autoneg_wait_to_complete);
 	s32 (*check_link)(struct ngbe_hw *hw, u32 *speed, bool *link_up);
 	s32 (*set_phy_power)(struct ngbe_hw *hw, bool on);
+	s32 (*led_oem_chk)(struct ngbe_hw *hw, u32 *data);
 	s32 (*get_adv_pause)(struct ngbe_hw *hw, u8 *pause_bit);
 	s32 (*get_lp_adv_pause)(struct ngbe_hw *hw, u8 *pause_bit);
 	s32 (*set_pause_adv)(struct ngbe_hw *hw, u16 pause_bit);
@@ -420,8 +427,14 @@ struct ngbe_hw {
 
 	u32 q_rx_regs[8 * 4];
 	u32 q_tx_regs[8 * 4];
+	u32 gphy_efuse[2];
 	bool offset_loaded;
 	bool is_pf;
+	bool gpio_ctl;
+	bool lsc;
+	u32 led_conf;
+	bool init_phy;
+	rte_spinlock_t phy_lock;
 	struct {
 		u64 rx_qp_packets;
 		u64 tx_qp_packets;

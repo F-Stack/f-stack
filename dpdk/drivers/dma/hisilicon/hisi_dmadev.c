@@ -5,7 +5,7 @@
 #include <inttypes.h>
 #include <string.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_cycles.h>
 #include <rte_eal.h>
 #include <rte_io.h>
@@ -39,6 +39,8 @@ hisi_dma_queue_base(struct hisi_dma_dev *hw)
 {
 	if (hw->reg_layout == HISI_DMA_REG_LAYOUT_HIP08)
 		return HISI_DMA_HIP08_QUEUE_BASE;
+	else if (hw->reg_layout == HISI_DMA_REG_LAYOUT_HIP09)
+		return HISI_DMA_HIP09_QUEUE_BASE;
 	else
 		return 0;
 }
@@ -174,7 +176,7 @@ hisi_dma_reset_hw(struct hisi_dma_dev *hw)
 }
 
 static void
-hisi_dma_init_hw(struct hisi_dma_dev *hw)
+hisi_dma_init_common(struct hisi_dma_dev *hw)
 {
 	hisi_dma_write_queue(hw, HISI_DMA_QUEUE_SQ_BASE_L_REG,
 			     lower_32_bits(hw->sqe_iova));
@@ -192,6 +194,12 @@ hisi_dma_init_hw(struct hisi_dma_dev *hw)
 	hisi_dma_write_queue(hw, HISI_DMA_QUEUE_ERR_INT_NUM0_REG, 0);
 	hisi_dma_write_queue(hw, HISI_DMA_QUEUE_ERR_INT_NUM1_REG, 0);
 	hisi_dma_write_queue(hw, HISI_DMA_QUEUE_ERR_INT_NUM2_REG, 0);
+}
+
+static void
+hisi_dma_init_hw(struct hisi_dma_dev *hw)
+{
+	hisi_dma_init_common(hw);
 
 	if (hw->reg_layout == HISI_DMA_REG_LAYOUT_HIP08) {
 		hisi_dma_write_queue(hw, HISI_DMA_HIP08_QUEUE_ERR_INT_NUM3_REG,
@@ -206,9 +214,27 @@ hisi_dma_init_hw(struct hisi_dma_dev *hw)
 				HISI_DMA_HIP08_QUEUE_CTRL0_ERR_ABORT_B, false);
 		hisi_dma_update_queue_mbit(hw, HISI_DMA_QUEUE_INT_STATUS_REG,
 				HISI_DMA_HIP08_QUEUE_INT_MASK_M, true);
-		hisi_dma_update_queue_mbit(hw,
-				HISI_DMA_HIP08_QUEUE_INT_MASK_REG,
+		hisi_dma_update_queue_mbit(hw, HISI_DMA_QUEUE_INT_MASK_REG,
 				HISI_DMA_HIP08_QUEUE_INT_MASK_M, true);
+	} else if (hw->reg_layout == HISI_DMA_REG_LAYOUT_HIP09) {
+		hisi_dma_update_queue_mbit(hw, HISI_DMA_QUEUE_CTRL0_REG,
+				HISI_DMA_HIP09_QUEUE_CTRL0_ERR_ABORT_M, false);
+		hisi_dma_update_queue_mbit(hw, HISI_DMA_QUEUE_INT_STATUS_REG,
+				HISI_DMA_HIP09_QUEUE_INT_MASK_M, true);
+		hisi_dma_update_queue_mbit(hw, HISI_DMA_QUEUE_INT_MASK_REG,
+				HISI_DMA_HIP09_QUEUE_INT_MASK_M, true);
+		hisi_dma_update_queue_mbit(hw,
+				HISI_DMA_HIP09_QUEUE_ERR_INT_STATUS_REG,
+				HISI_DMA_HIP09_QUEUE_ERR_INT_MASK_M, true);
+		hisi_dma_update_queue_mbit(hw,
+				HISI_DMA_HIP09_QUEUE_ERR_INT_MASK_REG,
+				HISI_DMA_HIP09_QUEUE_ERR_INT_MASK_M, true);
+		hisi_dma_update_queue_bit(hw, HISI_DMA_QUEUE_CTRL1_REG,
+				HISI_DMA_HIP09_QUEUE_CTRL1_VA_ENABLE_B, true);
+		hisi_dma_update_bit(hw,
+				HISI_DMA_HIP09_QUEUE_CFG_REG(hw->queue_id),
+				HISI_DMA_HIP09_QUEUE_CFG_LINK_DOWN_MASK_B,
+				true);
 	}
 }
 
@@ -230,6 +256,8 @@ hisi_dma_reg_layout(uint8_t revision)
 {
 	if (revision == HISI_DMA_REVISION_HIP08B)
 		return HISI_DMA_REG_LAYOUT_HIP08;
+	else if (revision >= HISI_DMA_REVISION_HIP09A)
+		return HISI_DMA_REG_LAYOUT_HIP09;
 	else
 		return HISI_DMA_REG_LAYOUT_INVALID;
 }
@@ -300,11 +328,14 @@ hisi_dma_info_get(const struct rte_dma_dev *dev,
 		  struct rte_dma_info *dev_info,
 		  uint32_t info_sz)
 {
-	RTE_SET_USED(dev);
+	struct hisi_dma_dev *hw = dev->data->dev_private;
 	RTE_SET_USED(info_sz);
 
 	dev_info->dev_capa = RTE_DMA_CAPA_MEM_TO_MEM |
 			     RTE_DMA_CAPA_OPS_COPY;
+	if (hw->reg_layout == HISI_DMA_REG_LAYOUT_HIP09)
+		dev_info->dev_capa |= RTE_DMA_CAPA_HANDLES_ERRORS;
+
 	dev_info->max_vchans = 1;
 	dev_info->max_desc = HISI_DMA_MAX_DESC_NUM;
 	dev_info->min_desc = HISI_DMA_MIN_DESC_NUM;
@@ -376,6 +407,7 @@ hisi_dma_start(struct rte_dma_dev *dev)
 	hw->submitted = 0;
 	hw->completed = 0;
 	hw->errors = 0;
+	hw->qfulls = 0;
 
 	hisi_dma_update_queue_bit(hw, HISI_DMA_QUEUE_CTRL0_REG,
 				  HISI_DMA_QUEUE_CTRL0_EN_B, true);
@@ -424,33 +456,39 @@ hisi_dma_stats_reset(struct rte_dma_dev *dev, uint16_t vchan)
 	hw->submitted = 0;
 	hw->completed = 0;
 	hw->errors = 0;
+	hw->qfulls = 0;
+
+	return 0;
+}
+
+static int
+hisi_dma_vchan_status(const struct rte_dma_dev *dev, uint16_t vchan,
+		      enum rte_dma_vchan_status *status)
+{
+	struct hisi_dma_dev *hw = dev->data->dev_private;
+	uint32_t val;
+
+	RTE_SET_USED(vchan);
+
+	val = hisi_dma_read_queue(hw, HISI_DMA_QUEUE_FSM_REG);
+	val = FIELD_GET(HISI_DMA_QUEUE_FSM_STS_M, val);
+	if (val == HISI_DMA_STATE_RUN)
+		*status = RTE_DMA_VCHAN_ACTIVE;
+	else if (val == HISI_DMA_STATE_CPL)
+		*status = RTE_DMA_VCHAN_IDLE;
+	else
+		*status = RTE_DMA_VCHAN_HALTED_ERROR;
 
 	return 0;
 }
 
 static void
-hisi_dma_get_dump_range(struct hisi_dma_dev *hw, uint32_t *start, uint32_t *end)
-{
-	if (hw->reg_layout == HISI_DMA_REG_LAYOUT_HIP08) {
-		*start = HISI_DMA_HIP08_DUMP_START_REG;
-		*end = HISI_DMA_HIP08_DUMP_END_REG;
-	} else {
-		*start = 0;
-		*end = 0;
-	}
-}
-
-static void
-hisi_dma_dump_common(struct hisi_dma_dev *hw, FILE *f)
+hisi_dma_dump_range(struct hisi_dma_dev *hw, FILE *f, uint32_t start,
+		    uint32_t end)
 {
 #define DUMP_REGNUM_PER_LINE	4
 
-	uint32_t start, end;
 	uint32_t cnt, i;
-
-	hisi_dma_get_dump_range(hw, &start, &end);
-
-	(void)fprintf(f, "    common-register:\n");
 
 	cnt = 0;
 	for (i = start; i <= end; i += sizeof(uint32_t)) {
@@ -463,6 +501,40 @@ hisi_dma_dump_common(struct hisi_dma_dev *hw, FILE *f)
 	}
 	if (cnt % DUMP_REGNUM_PER_LINE)
 		(void)fprintf(f, "\n");
+}
+
+static void
+hisi_dma_dump_common(struct hisi_dma_dev *hw, FILE *f)
+{
+	struct {
+		uint8_t reg_layout;
+		uint32_t start;
+		uint32_t end;
+	} reg_info[] = {
+		{ HISI_DMA_REG_LAYOUT_HIP08,
+		  HISI_DMA_HIP08_DUMP_START_REG,
+		  HISI_DMA_HIP08_DUMP_END_REG },
+		{ HISI_DMA_REG_LAYOUT_HIP09,
+		  HISI_DMA_HIP09_DUMP_REGION_A_START_REG,
+		  HISI_DMA_HIP09_DUMP_REGION_A_END_REG },
+		{ HISI_DMA_REG_LAYOUT_HIP09,
+		  HISI_DMA_HIP09_DUMP_REGION_B_START_REG,
+		  HISI_DMA_HIP09_DUMP_REGION_B_END_REG },
+		{ HISI_DMA_REG_LAYOUT_HIP09,
+		  HISI_DMA_HIP09_DUMP_REGION_C_START_REG,
+		  HISI_DMA_HIP09_DUMP_REGION_C_END_REG },
+		{ HISI_DMA_REG_LAYOUT_HIP09,
+		  HISI_DMA_HIP09_DUMP_REGION_D_START_REG,
+		  HISI_DMA_HIP09_DUMP_REGION_D_END_REG },
+	};
+	uint32_t i;
+
+	(void)fprintf(f, "    common-register:\n");
+	for (i = 0; i < RTE_DIM(reg_info); i++) {
+		if (hw->reg_layout != reg_info[i].reg_layout)
+			continue;
+		hisi_dma_dump_range(hw, f, reg_info[i].start, reg_info[i].end);
+	}
 }
 
 static void
@@ -517,14 +589,14 @@ hisi_dma_dump(const struct rte_dma_dev *dev, FILE *f)
 		"    ridx: %u cridx: %u\n"
 		"    sq_head: %u sq_tail: %u cq_sq_head: %u\n"
 		"    cq_head: %u cqs_completed: %u cqe_vld: %u\n"
-		"    submitted: %" PRIu64 " completed: %" PRIu64 " errors %"
-		PRIu64"\n",
+		"    submitted: %" PRIu64 " completed: %" PRIu64 " errors: %"
+		PRIu64 " qfulls: %" PRIu64 "\n",
 		hw->revision, hw->queue_id,
 		hw->sq_depth_mask > 0 ? hw->sq_depth_mask + 1 : 0,
 		hw->ridx, hw->cridx,
 		hw->sq_head, hw->sq_tail, hw->cq_sq_head,
 		hw->cq_head, hw->cqs_completed, hw->cqe_vld,
-		hw->submitted, hw->completed, hw->errors);
+		hw->submitted, hw->completed, hw->errors, hw->qfulls);
 	hisi_dma_dump_queue(hw, f);
 	hisi_dma_dump_common(hw, f);
 
@@ -541,8 +613,10 @@ hisi_dma_copy(void *dev_private, uint16_t vchan,
 
 	RTE_SET_USED(vchan);
 
-	if (((hw->sq_tail + 1) & hw->sq_depth_mask) == hw->sq_head)
+	if (((hw->sq_tail + 1) & hw->sq_depth_mask) == hw->sq_head) {
+		hw->qfulls++;
 		return -ENOSPC;
+	}
 
 	sqe->dw0 = rte_cpu_to_le_32(SQE_OPCODE_M2M);
 	sqe->dw1 = 0;
@@ -763,6 +837,14 @@ hisi_dma_gen_dev_name(const struct rte_pci_device *pci_dev,
  *                           dev_stop|          |
  *                                   |          v
  *                                ------------------
+ *                                |      CPL       |
+ *                                ------------------
+ *                                   ^          |
+ *                      hardware     |          |
+ *                      completed all|          |dev_submit
+ *                      descriptors  |          |
+ *                                   |          |
+ *                                ------------------
  *                                |      RUN       |
  *                                ------------------
  *
@@ -776,6 +858,7 @@ static const struct rte_dma_dev_ops hisi_dmadev_ops = {
 	.vchan_setup      = hisi_dma_vchan_setup,
 	.stats_get        = hisi_dma_stats_get,
 	.stats_reset      = hisi_dma_stats_reset,
+	.vchan_status     = hisi_dma_vchan_status,
 	.dev_dump         = hisi_dma_dump,
 };
 

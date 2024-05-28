@@ -3,12 +3,9 @@
  */
 
 #include <rte_string_fns.h>
-#include <rte_compat.h>
 #include <rte_flow_classify.h>
 #include "rte_flow_classify_parse.h"
-#include <rte_flow_driver.h>
 #include <rte_table_acl.h>
-#include <stdbool.h>
 
 static uint32_t unique_id = 1;
 
@@ -261,6 +258,9 @@ rte_flow_classifier_create(struct rte_flow_classifier_params *params)
 {
 	struct rte_flow_classifier *cls;
 	int ret;
+
+	RTE_FLOW_CLASSIFY_LOG(WARNING,
+		"WARNING: flow_classify is deprecated and will be removed in DPDK 23.11\n");
 
 	/* Check input parameters */
 	ret = rte_flow_classifier_check_params(params);

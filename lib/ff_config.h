@@ -46,6 +46,10 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
 #define VIP_MAX_NUM 64
 
+/* exception path(KNI) type */
+#define KNI_TYPE_KNI        0
+#define KNI_TYPE_VIRTIO     1
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -175,6 +179,7 @@ struct ff_config {
 
     struct {
         int enable;
+        int type;
         char *kni_action;
         char *method;
         char *tcp_port;

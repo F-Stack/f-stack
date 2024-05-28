@@ -17,9 +17,6 @@ extern "C" {
 #endif
 
 #include <stdint.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <errno.h>
 #include <limits.h>
 
 #include <rte_config.h>
@@ -228,6 +225,31 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 #define __rte_noreturn __attribute__((noreturn))
 
 /**
+ * Issue a warning in case the function's return value is ignored.
+ *
+ * The use of this attribute should be restricted to cases where
+ * ignoring the marked function's return value is almost always a
+ * bug. With GCC, some effort is required to make clear that ignoring
+ * the return value is intentional. The usual void-casting method to
+ * mark something unused as used does not suppress the warning with
+ * this compiler.
+ *
+ * @code{.c}
+ * __rte_warn_unused_result int foo();
+ *
+ * void ignore_foo_result(void) {
+ *         foo(); // generates a warning with all compilers
+ *
+ *         (void)foo(); // still generates the warning with GCC (but not clang)
+ *
+ *         int unused __rte_unused;
+ *         unused = foo(); // does the trick with all compilers
+ *  }
+ * @endcode
+ */
+#define __rte_warn_unused_result __attribute__((warn_unused_result))
+
+/**
  * Force a function to be inlined
  */
 #define __rte_always_inline inline __attribute__((always_inline))
@@ -270,7 +292,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 /**
  * subtract a byte-value offset from a pointer
  */
-#define RTE_PTR_SUB(ptr, x) ((void*)((uintptr_t)ptr - (x)))
+#define RTE_PTR_SUB(ptr, x) ((void *)((uintptr_t)(ptr) - (x)))
 
 /**
  * get the difference between two pointer values, i.e. how far apart
@@ -295,7 +317,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * must be a power-of-two value.
  */
 #define RTE_PTR_ALIGN_FLOOR(ptr, align) \
-	((typeof(ptr))RTE_ALIGN_FLOOR((uintptr_t)ptr, align))
+	((typeof(ptr))RTE_ALIGN_FLOOR((uintptr_t)(ptr), align))
 
 /**
  * Macro to align a value to a given power-of-two. The resultant value
@@ -382,9 +404,9 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  *   True(1) where the pointer is correctly aligned, false(0) otherwise
  */
 static inline int
-rte_is_aligned(void *ptr, unsigned align)
+rte_is_aligned(const void * const __rte_restrict ptr, const unsigned int align)
 {
-	return RTE_PTR_ALIGN(ptr, align) == ptr;
+	return ((uintptr_t)ptr & (align - 1)) == 0;
 }
 
 /*********** Macros for compile type checks ********/
@@ -400,9 +422,7 @@ rte_is_aligned(void *ptr, unsigned align)
 #define RTE_CACHE_LINE_MASK (RTE_CACHE_LINE_SIZE-1)
 
 /** Return the first cache-aligned value greater or equal to size. */
-#define RTE_CACHE_LINE_ROUNDUP(size) \
-	(RTE_CACHE_LINE_SIZE * ((size + RTE_CACHE_LINE_SIZE - 1) / \
-	RTE_CACHE_LINE_SIZE))
+#define RTE_CACHE_LINE_ROUNDUP(size) RTE_ALIGN_CEIL(size, RTE_CACHE_LINE_SIZE)
 
 /** Cache line size in terms of log2 */
 #if RTE_CACHE_LINE_SIZE == 64
@@ -682,7 +702,7 @@ rte_log2_u32(uint32_t v)
  * @return
  *     The last (most-significant) bit set, or 0 if the input is 0.
  */
-static inline int
+static inline uint32_t
 rte_fls_u32(uint32_t x)
 {
 	return (x == 0) ? 0 : 32 - __builtin_clz(x);
@@ -699,7 +719,7 @@ rte_fls_u32(uint32_t x)
  * @return
  *     least significant set bit in the input parameter.
  */
-static inline int
+static inline uint32_t
 rte_bsf64(uint64_t v)
 {
 	return (uint32_t)__builtin_ctzll(v);
@@ -741,7 +761,7 @@ rte_bsf64_safe(uint64_t v, uint32_t *pos)
  * @return
  *     The last (most-significant) bit set, or 0 if the input is 0.
  */
-static inline int
+static inline uint32_t
 rte_fls_u64(uint64_t x)
 {
 	return (x == 0) ? 0 : 64 - __builtin_clzll(x);
@@ -850,34 +870,8 @@ rte_log2_u64(uint64_t v)
  * @return
  *     Number.
  */
-static inline uint64_t
-rte_str_to_size(const char *str)
-{
-	char *endptr;
-	unsigned long long size;
-
-	while (isspace((int)*str))
-		str++;
-	if (*str == '-')
-		return 0;
-
-	errno = 0;
-	size = strtoull(str, &endptr, 0);
-	if (errno)
-		return 0;
-
-	if (*endptr == ' ')
-		endptr++; /* allow 1 space gap */
-
-	switch (*endptr){
-	case 'G': case 'g': size *= 1024; /* fall-through */
-	case 'M': case 'm': size *= 1024; /* fall-through */
-	case 'K': case 'k': size *= 1024; /* fall-through */
-	default:
-		break;
-	}
-	return size;
-}
+uint64_t
+rte_str_to_size(const char *str);
 
 /**
  * Function to terminate the application immediately, printing an error

@@ -9,6 +9,7 @@
 #include <stdbool.h>
 
 #include <rte_common.h>
+#include <rte_cryptodev.h>
 #include <rte_ethdev.h>
 #include <rte_eventdev.h>
 #include <rte_lcore.h>
@@ -33,8 +34,11 @@
 #define EVT_QUEUE_PRIORITY       ("queue_priority")
 #define EVT_DEQ_TMO_NSEC         ("deq_tmo_nsec")
 #define EVT_PROD_ETHDEV          ("prod_type_ethdev")
+#define EVT_PROD_CRYPTODEV	 ("prod_type_cryptodev")
 #define EVT_PROD_TIMERDEV        ("prod_type_timerdev")
 #define EVT_PROD_TIMERDEV_BURST  ("prod_type_timerdev_burst")
+#define EVT_CRYPTO_ADPTR_MODE	 ("crypto_adptr_mode")
+#define EVT_CRYPTO_OP_TYPE	 ("crypto_op_type")
 #define EVT_NB_TIMERS            ("nb_timers")
 #define EVT_NB_TIMER_ADPTRS      ("nb_timer_adptrs")
 #define EVT_TIMER_TICK_NSEC      ("timer_tick_nsec")
@@ -48,6 +52,8 @@
 #define EVT_VECTOR_SZ            ("vector_size")
 #define EVT_VECTOR_TMO           ("vector_tmo_ns")
 #define EVT_PER_PORT_POOL	 ("per_port_pool")
+#define EVT_TX_FIRST		 ("tx_first")
+#define EVT_TX_PKT_SZ		 ("tx_pkt_sz")
 #define EVT_HELP                 ("help")
 
 void evt_options_default(struct evt_options *opt);
@@ -249,6 +255,8 @@ evt_prod_id_to_name(enum evt_prod_type prod_type)
 		return "Ethdev Rx Adapter";
 	case EVT_PROD_TYPE_EVENT_TIMER_ADPTR:
 		return "Event timer adapter";
+	case EVT_PROD_TYPE_EVENT_CRYPTO_ADPTR:
+		return "Event crypto adapter";
 	}
 
 	return "";
@@ -287,6 +295,16 @@ evt_dump_producer_type(struct evt_options *opt)
 		else
 			evt_dump("timer_tick_nsec", "%"PRIu64"",
 					opt->timer_tick_nsec);
+		break;
+	case EVT_PROD_TYPE_EVENT_CRYPTO_ADPTR:
+		snprintf(name, EVT_PROD_MAX_NAME_LEN,
+			 "Event crypto adapter producers");
+		evt_dump("crypto adapter mode", "%s",
+			 opt->crypto_adptr_mode ? "OP_FORWARD" : "OP_NEW");
+		evt_dump("crypto op type", "%s",
+			 (opt->crypto_op_type == RTE_CRYPTO_OP_TYPE_SYMMETRIC) ?
+			 "SYMMETRIC" : "ASYMMETRIC");
+		evt_dump("nb_cryptodev", "%u", rte_cryptodev_count());
 		break;
 	}
 	evt_dump("prod_type", "%s", name);

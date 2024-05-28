@@ -9,7 +9,7 @@
 #include <rte_regexdev.h>
 #include <rte_regexdev_core.h>
 #include <rte_regexdev_driver.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 
 #include <mlx5_common.h>
 #include <mlx5_common_mr.h>
@@ -67,7 +67,8 @@ mlx5_regex_get_name(char *name, struct rte_device *dev)
 }
 
 static int
-mlx5_regex_dev_probe(struct mlx5_common_device *cdev)
+mlx5_regex_dev_probe(struct mlx5_common_device *cdev,
+		     struct mlx5_kvargs_ctrl *mkvlist __rte_unused)
 {
 	struct mlx5_regex_priv *priv = NULL;
 	struct mlx5_hca_attr *attr = &cdev->config.hca_attr;
@@ -127,8 +128,7 @@ error:
 	if (priv->regexdev)
 		rte_regexdev_unregister(priv->regexdev);
 dev_error:
-	if (priv)
-		rte_free(priv);
+	rte_free(priv);
 	return -rte_errno;
 }
 

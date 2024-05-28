@@ -7,7 +7,6 @@
 #include <errno.h>
 
 #include <rte_common.h>
-#include <rte_prefetch.h>
 
 #include "rte_swx_table_selector.h"
 
@@ -233,7 +232,7 @@ table_params_copy(struct table *t, struct rte_swx_table_selector_params *params)
 	t->params.n_members_per_group_max = rte_align32pow2(params->n_members_per_group_max);
 
 	for (i = 0; i < 32; i++)
-		if (params->n_members_per_group_max == 1U << i)
+		if (t->params.n_members_per_group_max == 1U << i)
 			t->n_members_per_group_max_log2 = i;
 
 	/* t->params.selector_mask */

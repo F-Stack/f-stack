@@ -7,7 +7,7 @@
 
 #include <unistd.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_comp.h>
 #include <rte_compressdev.h>
 #include <rte_compressdev_pmd.h>
@@ -30,6 +30,7 @@ extern int octtx_zip_logtype_driver;
 #define PCI_VENDOR_ID_CAVIUM	0x177D
 /**< PCI device id of ZIP VF */
 #define PCI_DEVICE_ID_OCTEONTX_ZIPVF	0xA037
+#define PCI_DEVICE_ID_OCTEONTX2_ZIPVF	0xA083
 
 /* maximum number of zip vf devices */
 #define ZIP_MAX_VFS 8

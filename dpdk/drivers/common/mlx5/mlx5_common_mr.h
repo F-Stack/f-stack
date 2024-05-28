@@ -11,6 +11,7 @@
 #include <sys/queue.h>
 
 
+#include <rte_compat.h>
 #include <rte_rwlock.h>
 #include <rte_bitmap.h>
 #include <rte_mbuf.h>
@@ -81,7 +82,6 @@ struct mlx5_mr_share_cache {
 	uint32_t dev_gen; /* Generation number to flush local caches. */
 	rte_rwlock_t rwlock; /* MR cache Lock. */
 	rte_rwlock_t mprwlock; /* Mempool Registration Lock. */
-	uint8_t mp_cb_registered; /* Mempool are Registered. */
 	struct mlx5_mr_btree cache; /* Global MR cache table. */
 	struct mlx5_mr_list mr_list; /* Registered MR list. */
 	struct mlx5_mr_list mr_free_list; /* Freed MR list. */

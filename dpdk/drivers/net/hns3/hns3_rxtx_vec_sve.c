@@ -389,10 +389,12 @@ hns3_tx_fill_hw_ring_sve(struct hns3_tx_queue *txq,
 				   HNS3_UINT32_BIT;
 	svuint64_t base_addr, buf_iova, data_off, data_len, addr;
 	svuint64_t offsets = svindex_u64(0, BD_SIZE);
-	uint32_t i = 0;
-	svbool_t pg = svwhilelt_b64_u32(i, nb_pkts);
+	uint32_t cnt = svcntd();
+	svbool_t pg;
+	uint32_t i;
 
-	do {
+	for (i = 0; i < nb_pkts; /* i is updated in the inner loop */) {
+		pg = svwhilelt_b64_u32(i, nb_pkts);
 		base_addr = svld1_u64(pg, (uint64_t *)pkts);
 		/* calc mbuf's field buf_iova address */
 		buf_iova = svadd_n_u64_z(pg, base_addr,
@@ -435,17 +437,15 @@ hns3_tx_fill_hw_ring_sve(struct hns3_tx_queue *txq,
 				offsets, svdup_n_u64(valid_bit));
 
 		/* Increment bytes counter */
-		uint32_t idx;
-		for (idx = 0; idx < svcntd(); idx++)
-			txq->basic_stats.bytes += pkts[idx]->pkt_len;
+		txq->basic_stats.bytes +=
+			(svaddv_u64(pg, data_len) >> HNS3_UINT16_BIT);
 
 		/* update index for next loop */
-		i += svcntd();
-		pkts += svcntd();
-		txdp += svcntd();
-		tx_entry += svcntd();
-		pg = svwhilelt_b64_u32(i, nb_pkts);
-	} while (svptest_any(svptrue_b64(), pg));
+		i += cnt;
+		pkts += cnt;
+		txdp += cnt;
+		tx_entry += cnt;
+	}
 }
 
 static uint16_t
@@ -465,14 +465,16 @@ hns3_xmit_fixed_burst_vec_sve(void *__restrict tx_queue,
 		return 0;
 	}
 
-	if (txq->next_to_use + nb_pkts > txq->nb_tx_desc) {
+	if (txq->next_to_use + nb_pkts >= txq->nb_tx_desc) {
 		nb_tx = txq->nb_tx_desc - txq->next_to_use;
 		hns3_tx_fill_hw_ring_sve(txq, tx_pkts, nb_tx);
 		txq->next_to_use = 0;
 	}
 
-	hns3_tx_fill_hw_ring_sve(txq, tx_pkts + nb_tx, nb_pkts - nb_tx);
-	txq->next_to_use += nb_pkts - nb_tx;
+	if (nb_pkts > nb_tx) {
+		hns3_tx_fill_hw_ring_sve(txq, tx_pkts + nb_tx, nb_pkts - nb_tx);
+		txq->next_to_use += nb_pkts - nb_tx;
+	}
 
 	txq->tx_bd_ready -= nb_pkts;
 	hns3_write_txq_tail_reg(txq, nb_pkts);

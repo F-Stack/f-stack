@@ -185,6 +185,21 @@ roc_idev_cpt_get(void)
 	return NULL;
 }
 
+uint64_t *
+roc_nix_inl_outb_ring_base_get(struct roc_nix *roc_nix)
+{
+	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
+	struct idev_cfg *idev = idev_get_cfg();
+	struct nix_inl_dev *inl_dev;
+
+	if (!idev || !idev->nix_inl_dev)
+		return NULL;
+
+	inl_dev = idev->nix_inl_dev;
+
+	return (uint64_t *)&inl_dev->sa_soft_exp_ring[nix->outb_se_ring_base];
+}
+
 void
 roc_idev_cpt_set(struct roc_cpt *cpt)
 {
@@ -205,4 +220,34 @@ roc_idev_npa_nix_get(void)
 
 	dev = container_of(npa_lf, struct dev, npa);
 	return dev->roc_nix;
+}
+
+struct roc_sso *
+idev_sso_get(void)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+
+	if (idev != NULL)
+		return __atomic_load_n(&idev->sso, __ATOMIC_ACQUIRE);
+
+	return NULL;
+}
+
+void
+idev_sso_set(struct roc_sso *sso)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+
+	if (idev != NULL)
+		__atomic_store_n(&idev->sso, sso, __ATOMIC_RELEASE);
+}
+
+uint64_t
+roc_idev_nix_inl_meta_aura_get(void)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+
+	if (idev != NULL)
+		return idev->inl_cfg.meta_aura;
+	return 0;
 }

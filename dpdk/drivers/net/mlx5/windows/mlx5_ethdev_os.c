@@ -85,6 +85,8 @@ mlx5_get_ifname(const struct rte_eth_dev *dev, char (*ifname)[MLX5_NAMESIZE])
 int
 mlx5_get_mtu(struct rte_eth_dev *dev, uint16_t *mtu)
 {
+	int err;
+	uint32_t curr_mtu;
 	struct mlx5_priv *priv;
 	mlx5_context_st *context_obj;
 
@@ -94,7 +96,14 @@ mlx5_get_mtu(struct rte_eth_dev *dev, uint16_t *mtu)
 	}
 	priv = dev->data->dev_private;
 	context_obj = (mlx5_context_st *)priv->sh->cdev->ctx;
-	*mtu = context_obj->mlx5_dev.mtu_bytes;
+
+	err = mlx5_glue->devx_get_mtu(context_obj, &curr_mtu);
+	if (err != 0) {
+		DRV_LOG(WARNING, "Could not get the MTU!");
+		return err;
+	}
+	*mtu = (uint16_t)curr_mtu;
+
 	return 0;
 }
 
@@ -112,31 +121,23 @@ mlx5_get_mtu(struct rte_eth_dev *dev, uint16_t *mtu)
 int
 mlx5_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 {
-	RTE_SET_USED(dev);
-	RTE_SET_USED(mtu);
-	return -ENOTSUP;
-}
+	int err;
+	struct mlx5_priv *priv;
+	mlx5_context_st *context_obj;
 
-/*
- * Unregister callback handler safely. The handler may be active
- * while we are trying to unregister it, in this case code -EAGAIN
- * is returned by rte_intr_callback_unregister(). This routine checks
- * the return code and tries to unregister handler again.
- *
- * @param handle
- *   interrupt handle
- * @param cb_fn
- *   pointer to callback routine
- * @cb_arg
- *   opaque callback parameter
- */
-void
-mlx5_intr_callback_unregister(const struct rte_intr_handle *handle,
-			      rte_intr_callback_fn cb_fn, void *cb_arg)
-{
-	RTE_SET_USED(handle);
-	RTE_SET_USED(cb_fn);
-	RTE_SET_USED(cb_arg);
+	if (!dev) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	priv = dev->data->dev_private;
+	context_obj = (mlx5_context_st *)priv->sh->cdev->ctx;
+
+	err = mlx5_glue->devx_set_mtu(context_obj, mtu);
+	if (err != 0) {
+		DRV_LOG(WARNING, "Could not set the MTU!");
+		return err;
+	}
+	return 0;
 }
 
 /**
@@ -203,7 +204,16 @@ mlx5_os_get_stats_n(struct rte_eth_dev *dev)
 void
 mlx5_os_stats_init(struct rte_eth_dev *dev)
 {
-	RTE_SET_USED(dev);
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_stats_ctrl *stats_ctrl = &priv->stats_ctrl;
+	int ret;
+
+	/* Copy to base at first time. */
+	ret = mlx5_os_read_dev_stat(priv, "out_of_buffer", &stats_ctrl->imissed_base);
+	if (ret)
+		DRV_LOG(ERR, "port %u cannot read device counters: %s",
+			dev->data->port_id, strerror(rte_errno));
+	stats_ctrl->imissed = 0;
 }
 
 /**
@@ -404,5 +414,35 @@ mlx5_is_removed(struct rte_eth_dev *dev)
 int mlx5_get_flag_dropless_rq(struct rte_eth_dev *dev)
 {
 	RTE_SET_USED(dev);
+	return -ENOTSUP;
+}
+
+/**
+ * Unmaps HCA PCI BAR from the current process address space.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ */
+void mlx5_txpp_unmap_hca_bar(struct rte_eth_dev *dev)
+{
+	RTE_SET_USED(dev);
+}
+
+/**
+ * Maps HCA PCI BAR to the current process address space.
+ * Stores pointer in the process private structure allowing
+ * to read internal and real time counter directly from the HW.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success and not NULL pointer to mapped area in process structure.
+ *   negative otherwise and NULL pointer
+ */
+int mlx5_txpp_map_hca_bar(struct rte_eth_dev *dev)
+{
+	RTE_SET_USED(dev);
+	rte_errno = ENOTSUP;
 	return -ENOTSUP;
 }

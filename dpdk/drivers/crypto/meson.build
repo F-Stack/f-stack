@@ -16,9 +16,9 @@ drivers = [
         'nitrox',
         'null',
         'octeontx',
-        'octeontx2',
         'openssl',
         'scheduler',
+        'uadk',
         'virtio',
 ]
 

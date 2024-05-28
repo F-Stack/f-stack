@@ -2,9 +2,12 @@
  * Copyright(c) 2017-2018 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
+#include <dev_driver.h>
 #include <rte_eal.h>
 
 #include "rte_compressdev_internal.h"
@@ -19,6 +22,9 @@ rte_compressdev_pmd_parse_name_arg(const char *key __rte_unused,
 {
 	struct rte_compressdev_pmd_init_params *params = extra_args;
 	int n;
+
+	if (value == NULL || extra_args == NULL)
+		return -EINVAL;
 
 	n = strlcpy(params->name, value, RTE_COMPRESSDEV_NAME_MAX_LEN);
 	if (n >= RTE_COMPRESSDEV_NAME_MAX_LEN)
@@ -36,6 +42,9 @@ rte_compressdev_pmd_parse_uint_arg(const char *key __rte_unused,
 {
 	int i;
 	char *end;
+
+	if (value == NULL || extra_args == NULL)
+		return -EINVAL;
 
 	errno = 0;
 	i = strtol(value, &end, 10);

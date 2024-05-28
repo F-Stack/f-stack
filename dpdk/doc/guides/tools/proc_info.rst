@@ -1,10 +1,10 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2015 Intel Corporation.
 
-dpdk-procinfo Application
-=========================
+dpdk-proc-info Application
+==========================
 
-The dpdk-procinfo application is a Data Plane Development Kit (DPDK) application
+The dpdk-proc-info application is a Data Plane Development Kit (DPDK) application
 that runs as a DPDK secondary process and is capable of retrieving port
 statistics, resetting port statistics, printing DPDK memory information and
 displaying debug information for port.
@@ -17,9 +17,12 @@ The application has a number of command line options:
 
 .. code-block:: console
 
-   ./<build_dir>/app/dpdk-procinfo -- -m | [-p PORTMASK] [--stats | --xstats |
+   ./<build_dir>/app/dpdk-proc-info -- -m | [-p PORTMASK] [--stats | --xstats |
    --stats-reset | --xstats-reset] [ --show-port | --show-tm | --show-crypto |
-   --show-ring[=name] | --show-mempool[=name] | --iter-mempool=name ]
+   --show-ring[=name] | --show-mempool[=name] | --iter-mempool=name |
+   --show-port-private | --version | --firmware-version | --show-rss-reta |
+   --show-module-eeprom | --show-rx-descriptor queue_id:offset:num |
+   --show-tx-descriptor queue_id:offset:num ]
 
 Parameters
 ~~~~~~~~~~
@@ -69,17 +72,46 @@ mempool. For invalid or no mempool name, whole list is dump.
 The iter-mempool parameter iterates and displays mempool elements specified
 by name. For invalid or no mempool name no elements are displayed.
 
+**--show-port-private**
+The show-port-private parameter displays ports private information.
+
+**--version**
+The version parameter displays DPDK version.
+
+**--firmware-version**
+The firmware-version parameter displays ethdev firmware version.
+
+**--show-rss-reta**
+The show-rss-reta parameter displays ports rss redirection table.
+
+**--show-module-eeprom**
+The show-module-eeprom parameter displays ports module eeprom information.
+
+**--show-rx-descriptor queue_id:offset:num**
+The show-rx-descriptor parameter displays ports Rx descriptor information
+specified by queue_id, offset and num.
+queue_id: A Rx queue identifier on this port.
+offset: The offset of the descriptor starting from tail.
+num: The number of the descriptors to dump.
+
+**--show-tx-descriptor queue_id:offset:num**
+The show-tx-descriptor parameter displays ports Tx descriptor information
+specified by queue_id, offset and num.
+queue_id: A Tx queue identifier on this port.
+offset: The offset of the descriptor starting from tail.
+num: The number of the descriptors to dump.
+
 Limitations
 -----------
 
-* dpdk-procinfo should run alongside primary process with same DPDK version.
+* dpdk-proc-info should run alongside primary process with same DPDK version.
 
-* When running ``dpdk-procinfo`` with shared library mode, it is required to
+* When running ``dpdk-proc-info`` with shared library mode, it is required to
   pass the same NIC PMD libraries as used for the primary application. Any
   mismatch in PMD library arguments can lead to undefined behavior and results
   affecting primary application too.
 
-* Stats retrieval using ``dpdk-procinfo`` is not supported for virtual devices like PCAP and TAP.
+* Stats retrieval using ``dpdk-proc-info`` is not supported for virtual devices like PCAP and TAP.
 
-* Since default DPDK EAL arguments for ``dpdk-procinfo`` are ``-c1, -n4 & --proc-type=secondary``,
+* Since default DPDK EAL arguments for ``dpdk-proc-info`` are ``-c1, -n4 & --proc-type=secondary``,
   It is not expected that the user passes any EAL arguments.

@@ -93,6 +93,8 @@
 
 #define IAVF_VLAN_TAG_PCP_OFFSET 13
 
+#define IAVF_L2TPV2_FLAGS_LEN	0x4000
+
 struct iavf_adapter;
 struct iavf_rx_queue;
 struct iavf_tx_queue;
@@ -146,6 +148,13 @@ struct iavf_fdir_info {
 	struct iavf_fdir_conf conf;
 };
 
+struct iavf_fsub_conf {
+	struct virtchnl_flow_sub sub_fltr;
+	struct virtchnl_flow_unsub unsub_fltr;
+	uint64_t input_set;
+	uint32_t flow_id;
+};
+
 struct iavf_qv_map {
 	uint16_t queue_id;
 	uint16_t vector_id;
@@ -168,10 +177,20 @@ struct iavf_tm_node {
 	uint32_t weight;
 	uint32_t reference_count;
 	struct iavf_tm_node *parent;
+	struct iavf_tm_shaper_profile *shaper_profile;
 	struct rte_tm_node_params params;
 };
 
 TAILQ_HEAD(iavf_tm_node_list, iavf_tm_node);
+
+struct iavf_tm_shaper_profile {
+	TAILQ_ENTRY(iavf_tm_shaper_profile) node;
+	uint32_t shaper_profile_id;
+	uint32_t reference_count;
+	struct rte_tm_shaper_params profile;
+};
+
+TAILQ_HEAD(iavf_shaper_profile_list, iavf_tm_shaper_profile);
 
 /* node type of Traffic Manager */
 enum iavf_tm_node_type {
@@ -186,6 +205,7 @@ struct iavf_tm_conf {
 	struct iavf_tm_node *root; /* root node - vf vsi */
 	struct iavf_tm_node_list tc_list; /* node list for all the TCs */
 	struct iavf_tm_node_list queue_list; /* node list for all the queues */
+	struct iavf_shaper_profile_list shaper_profile_list;
 	uint32_t nb_tc_node;
 	uint32_t nb_queue_node;
 	bool committed;
@@ -242,6 +262,7 @@ struct iavf_info {
 	struct iavf_qv_map *qv_map; /* queue vector mapping */
 	struct iavf_flow_list flow_list;
 	rte_spinlock_t flow_ops_lock;
+	rte_spinlock_t aq_lock;
 	struct iavf_parser_list rss_parser_list;
 	struct iavf_parser_list dist_parser_list;
 	struct iavf_parser_list ipsec_crypto_parser_list;
@@ -255,6 +276,9 @@ struct iavf_info {
 	struct iavf_tm_conf tm_conf;
 
 	struct rte_eth_dev *eth_dev;
+
+	uint32_t ptp_caps;
+	rte_spinlock_t phc_time_aq_lock;
 };
 
 #define IAVF_MAX_PKT_TYPE 1024
@@ -279,6 +303,7 @@ enum iavf_proto_xtr_type {
 struct iavf_devargs {
 	uint8_t proto_xtr_dflt;
 	uint8_t proto_xtr[IAVF_MAX_QUEUE_NUM];
+	uint16_t quanta_size;
 };
 
 struct iavf_security_ctx;
@@ -400,6 +425,8 @@ _atomic_set_async_response_cmd(struct iavf_info *vf, enum virtchnl_ops ops)
 }
 int iavf_check_api_version(struct iavf_adapter *adapter);
 int iavf_get_vf_resource(struct iavf_adapter *adapter);
+void iavf_dev_event_handler_fini(void);
+int iavf_dev_event_handler_init(void);
 void iavf_handle_virtchnl_msg(struct rte_eth_dev *dev);
 int iavf_enable_vlan_strip(struct iavf_adapter *adapter);
 int iavf_disable_vlan_strip(struct iavf_adapter *adapter);
@@ -450,13 +477,25 @@ int iavf_add_del_mc_addr_list(struct iavf_adapter *adapter,
 int iavf_request_queues(struct rte_eth_dev *dev, uint16_t num);
 int iavf_get_max_rss_queue_region(struct iavf_adapter *adapter);
 int iavf_get_qos_cap(struct iavf_adapter *adapter);
+int iavf_set_q_bw(struct rte_eth_dev *dev,
+		  struct virtchnl_queues_bw_cfg *q_bw, uint16_t size);
 int iavf_set_q_tc_map(struct rte_eth_dev *dev,
 			struct virtchnl_queue_tc_mapping *q_tc_mapping,
 			uint16_t size);
+int iavf_set_vf_quanta_size(struct iavf_adapter *adapter, u16 start_queue_id,
+			    u16 num_queues);
 void iavf_tm_conf_init(struct rte_eth_dev *dev);
 void iavf_tm_conf_uninit(struct rte_eth_dev *dev);
 int iavf_ipsec_crypto_request(struct iavf_adapter *adapter,
 		uint8_t *msg, size_t msg_len,
 		uint8_t *resp_msg, size_t resp_msg_len);
 extern const struct rte_tm_ops iavf_tm_ops;
+int iavf_get_ptp_cap(struct iavf_adapter *adapter);
+int iavf_get_phc_time(struct iavf_rx_queue *rxq);
+int iavf_flow_sub(struct iavf_adapter *adapter,
+		  struct iavf_fsub_conf *filter);
+int iavf_flow_unsub(struct iavf_adapter *adapter,
+		    struct iavf_fsub_conf *filter);
+int iavf_flow_sub_check(struct iavf_adapter *adapter,
+			struct iavf_fsub_conf *filter);
 #endif /* _IAVF_ETHDEV_H_ */

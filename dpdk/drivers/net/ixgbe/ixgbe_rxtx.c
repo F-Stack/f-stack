@@ -1818,11 +1818,22 @@ ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * of accesses cannot be reordered by the compiler. If they were
 		 * not volatile, they could be reordered which could lead to
 		 * using invalid descriptor fields when read from rxd.
+		 *
+		 * Meanwhile, to prevent the CPU from executing out of order, we
+		 * need to use a proper memory barrier to ensure the memory
+		 * ordering below.
 		 */
 		rxdp = &rx_ring[rx_id];
 		staterr = rxdp->wb.upper.status_error;
 		if (!(staterr & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)))
 			break;
+
+		/*
+		 * Use acquire fence to ensure that status_error which includes
+		 * DD bit is loaded before loading of other descriptor words.
+		 */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+
 		rxd = *rxdp;
 
 		/*
@@ -2089,38 +2100,22 @@ ixgbe_recv_pkts_lro(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts,
 
 next_desc:
 		/*
-		 * The code in this whole file uses the volatile pointer to
-		 * ensure the read ordering of the status and the rest of the
-		 * descriptor fields (on the compiler level only!!!). This is so
-		 * UGLY - why not to just use the compiler barrier instead? DPDK
-		 * even has the rte_compiler_barrier() for that.
-		 *
-		 * But most importantly this is just wrong because this doesn't
-		 * ensure memory ordering in a general case at all. For
-		 * instance, DPDK is supposed to work on Power CPUs where
-		 * compiler barrier may just not be enough!
-		 *
-		 * I tried to write only this function properly to have a
-		 * starting point (as a part of an LRO/RSC series) but the
-		 * compiler cursed at me when I tried to cast away the
-		 * "volatile" from rx_ring (yes, it's volatile too!!!). So, I'm
-		 * keeping it the way it is for now.
-		 *
-		 * The code in this file is broken in so many other places and
-		 * will just not work on a big endian CPU anyway therefore the
-		 * lines below will have to be revisited together with the rest
-		 * of the ixgbe PMD.
-		 *
-		 * TODO:
-		 *    - Get rid of "volatile" and let the compiler do its job.
-		 *    - Use the proper memory barrier (rte_rmb()) to ensure the
-		 *      memory ordering below.
+		 * "Volatile" only prevents caching of the variable marked
+		 * volatile. Most important, "volatile" cannot prevent the CPU
+		 * from executing out of order. So, it is necessary to use a
+		 * proper memory barrier to ensure the memory ordering below.
 		 */
 		rxdp = &rx_ring[rx_id];
 		staterr = rte_le_to_cpu_32(rxdp->wb.upper.status_error);
 
 		if (!(staterr & IXGBE_RXDADV_STAT_DD))
 			break;
+
+		/*
+		 * Use acquire fence to ensure that status_error which includes
+		 * DD bit is loaded before loading of other descriptor words.
+		 */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		rxd = *rxdp;
 
@@ -2983,8 +2978,7 @@ ixgbe_reset_rx_queue(struct ixgbe_adapter *adapter, struct ixgbe_rx_queue *rxq)
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
 
-	if (rxq->pkt_first_seg != NULL)
-		rte_pktmbuf_free(rxq->pkt_first_seg);
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -3385,6 +3379,7 @@ ixgbe_dev_clear_queues(struct rte_eth_dev *dev)
 		if (txq != NULL) {
 			txq->ops->release_mbufs(txq);
 			txq->ops->reset(txq);
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 		}
 	}
 
@@ -3394,6 +3389,7 @@ ixgbe_dev_clear_queues(struct rte_eth_dev *dev)
 		if (rxq != NULL) {
 			ixgbe_rx_queue_release_mbufs(rxq);
 			ixgbe_reset_rx_queue(adapter, rxq);
+			dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 		}
 	}
 	/* If loopback mode was enabled, reconfigure the link accordingly */
@@ -5831,6 +5827,8 @@ ixgbevf_dev_rxtx_start(struct rte_eth_dev *dev)
 		} while (--poll_ms && !(txdctl & IXGBE_TXDCTL_ENABLE));
 		if (!poll_ms)
 			PMD_INIT_LOG(ERR, "Could not enable Tx Queue %d", i);
+		else
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 	}
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 
@@ -5848,6 +5846,8 @@ ixgbevf_dev_rxtx_start(struct rte_eth_dev *dev)
 		} while (--poll_ms && !(rxdctl & IXGBE_RXDCTL_ENABLE));
 		if (!poll_ms)
 			PMD_INIT_LOG(ERR, "Could not enable Rx Queue %d", i);
+		else
+			dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 		rte_wmb();
 		IXGBE_WRITE_REG(hw, IXGBE_VFRDT(i), rxq->nb_rx_desc - 1);
 
@@ -5958,8 +5958,11 @@ ixgbe_config_rss_filter(struct rte_eth_dev *dev,
 	return 0;
 }
 
-/* Stubs needed for linkage when RTE_ARCH_PPC_64 is set */
-#if defined(RTE_ARCH_PPC_64)
+/* Stubs needed for linkage when RTE_ARCH_PPC_64, RTE_ARCH_RISCV or
+ * RTE_ARCH_LOONGARCH is set.
+ */
+#if defined(RTE_ARCH_PPC_64) || defined(RTE_ARCH_RISCV) || \
+	defined(RTE_ARCH_LOONGARCH)
 int
 ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev __rte_unused *dev)
 {

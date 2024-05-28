@@ -43,7 +43,7 @@ Features and Limitations of virtio PMD
 In this release, the virtio PMD provides the basic functionality of packet reception and transmission.
 
 *   It supports merge-able buffers per packet when receiving packets and scattered buffer per packet
-    when transmitting packets. The packet size supported is from 64 to 1518.
+    when transmitting packets. The packet size supported is from 64 to 9728.
 
 *   It supports multicast packets and promiscuous mode.
 
@@ -85,6 +85,9 @@ The following prerequisites apply:
 
 *   Linux kernel with KVM module; vhost module loaded and ioeventfd supported.
     Qemu standard backend without vhost support isn't tested, and probably isn't supported.
+
+*   When using legacy interface, ``SYS_RAWIO`` capability is required
+    for ``iopl()`` call to enable access to PCI I/O ports.
 
 Virtio with kni vhost Back End
 ------------------------------

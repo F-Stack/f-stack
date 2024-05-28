@@ -494,8 +494,7 @@ mlx5_mr_free(struct mlx5_mr *mr, mlx5_dereg_mr_t dereg_mr_cb)
 		return;
 	DRV_LOG(DEBUG, "freeing MR(%p):", (void *)mr);
 	dereg_mr_cb(&mr->pmd_mr);
-	if (mr->ms_bmp != NULL)
-		rte_bitmap_free(mr->ms_bmp);
+	rte_bitmap_free(mr->ms_bmp);
 	mlx5_free(mr);
 }
 
@@ -1139,7 +1138,6 @@ mlx5_mr_create_cache(struct mlx5_mr_share_cache *share_cache, int socket)
 			      &share_cache->dereg_mr_cb);
 	rte_rwlock_init(&share_cache->rwlock);
 	rte_rwlock_init(&share_cache->mprwlock);
-	share_cache->mp_cb_registered = 0;
 	/* Initialize B-tree and allocate memory for global MR cache table. */
 	return mlx5_mr_btree_init(&share_cache->cache,
 				  MLX5_MR_BTREE_CACHE_N * 2, socket);

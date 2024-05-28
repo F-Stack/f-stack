@@ -62,7 +62,7 @@ mlx5_rxq_obj_modify_rq_vlan_strip(struct mlx5_rxq_priv *rxq, int on)
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int
+int
 mlx5_devx_modify_rq(struct mlx5_rxq_priv *rxq, uint8_t type)
 {
 	struct mlx5_devx_modify_rq_attr rq_attr;
@@ -76,6 +76,11 @@ mlx5_devx_modify_rq(struct mlx5_rxq_priv *rxq, uint8_t type)
 	case MLX5_RXQ_MOD_RST2RDY:
 		rq_attr.rq_state = MLX5_RQC_STATE_RST;
 		rq_attr.state = MLX5_RQC_STATE_RDY;
+		if (rxq->lwm) {
+			rq_attr.modify_bitmask |=
+				MLX5_MODIFY_RQ_IN_MODIFY_BITMASK_WQ_LWM;
+			rq_attr.lwm = rxq->lwm;
+		}
 		break;
 	case MLX5_RXQ_MOD_RDY2ERR:
 		rq_attr.rq_state = MLX5_RQC_STATE_RDY;
@@ -85,10 +90,16 @@ mlx5_devx_modify_rq(struct mlx5_rxq_priv *rxq, uint8_t type)
 		rq_attr.rq_state = MLX5_RQC_STATE_RDY;
 		rq_attr.state = MLX5_RQC_STATE_RST;
 		break;
+	case MLX5_RXQ_MOD_RDY2RDY:
+		rq_attr.rq_state = MLX5_RQC_STATE_RDY;
+		rq_attr.state = MLX5_RQC_STATE_RDY;
+		rq_attr.modify_bitmask |= MLX5_MODIFY_RQ_IN_MODIFY_BITMASK_WQ_LWM;
+		rq_attr.lwm = rxq->lwm;
+		break;
 	default:
 		break;
 	}
-	if (rxq->ctrl->type == MLX5_RXQ_TYPE_HAIRPIN)
+	if (rxq->ctrl->is_hairpin)
 		return mlx5_devx_cmd_modify_rq(rxq->ctrl->obj->rq, &rq_attr);
 	return mlx5_devx_cmd_modify_rq(rxq->devx_rq.rq, &rq_attr);
 }
@@ -162,7 +173,7 @@ mlx5_rxq_devx_obj_release(struct mlx5_rxq_priv *rxq)
 
 	if (rxq_obj == NULL)
 		return;
-	if (rxq_obj->rxq_ctrl->type == MLX5_RXQ_TYPE_HAIRPIN) {
+	if (rxq_obj->rxq_ctrl->is_hairpin) {
 		if (rxq_obj->rq == NULL)
 			return;
 		mlx5_devx_modify_rq(rxq, MLX5_RXQ_MOD_RDY2RST);
@@ -216,6 +227,52 @@ mlx5_rx_devx_get_event(struct mlx5_rxq_obj *rxq_obj)
 	return 0;
 #else
 	(void)rxq_obj;
+	rte_errno = ENOTSUP;
+	return -rte_errno;
+#endif /* HAVE_IBV_DEVX_EVENT */
+}
+
+/**
+ * Get LWM event for shared context, return the correct port/rxq for this event.
+ *
+ * @param priv
+ *   Mlx5_priv object.
+ * @param rxq_idx [out]
+ *   Which rxq gets this event.
+ * @param port_id [out]
+ *   Which port gets this event.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+mlx5_rx_devx_get_event_lwm(struct mlx5_priv *priv, int *rxq_idx, int *port_id)
+{
+#ifdef HAVE_IBV_DEVX_EVENT
+	union {
+		struct mlx5dv_devx_async_event_hdr event_resp;
+		uint8_t buf[sizeof(struct mlx5dv_devx_async_event_hdr) + 128];
+	} out;
+	int ret;
+
+	memset(&out, 0, sizeof(out));
+	ret = mlx5_glue->devx_get_event(priv->sh->devx_channel_lwm,
+					&out.event_resp,
+					sizeof(out.buf));
+	if (ret < 0) {
+		rte_errno = errno;
+		DRV_LOG(WARNING, "%s err\n", __func__);
+		return -rte_errno;
+	}
+	*port_id = (((uint32_t)out.event_resp.cookie) >>
+		    LWM_COOKIE_PORTID_OFFSET) & LWM_COOKIE_PORTID_MASK;
+	*rxq_idx = (((uint32_t)out.event_resp.cookie) >>
+		    LWM_COOKIE_RXQID_OFFSET) & LWM_COOKIE_RXQID_MASK;
+	return 0;
+#else
+	(void)priv;
+	(void)rxq_idx;
+	(void)port_id;
 	rte_errno = ENOTSUP;
 	return -rte_errno;
 #endif /* HAVE_IBV_DEVX_EVENT */
@@ -411,15 +468,18 @@ mlx5_rxq_obj_hairpin_new(struct mlx5_rxq_priv *rxq)
 {
 	uint16_t idx = rxq->idx;
 	struct mlx5_priv *priv = rxq->priv;
+	struct mlx5_hca_attr *hca_attr __rte_unused = &priv->sh->cdev->config.hca_attr;
 	struct mlx5_rxq_ctrl *rxq_ctrl = rxq->ctrl;
-	struct mlx5_devx_create_rq_attr attr = { 0 };
+	struct mlx5_devx_create_rq_attr unlocked_attr = { 0 };
+	struct mlx5_devx_create_rq_attr locked_attr = { 0 };
 	struct mlx5_rxq_obj *tmpl = rxq_ctrl->obj;
 	uint32_t max_wq_data;
 
 	MLX5_ASSERT(rxq != NULL && rxq->ctrl != NULL && tmpl != NULL);
 	tmpl->rxq_ctrl = rxq_ctrl;
-	attr.hairpin = 1;
-	max_wq_data = priv->config.hca_attr.log_max_hairpin_wq_data_sz;
+	unlocked_attr.hairpin = 1;
+	max_wq_data =
+		priv->sh->cdev->config.hca_attr.log_max_hairpin_wq_data_sz;
 	/* Jumbo frames > 9KB should be supported, and more packets. */
 	if (priv->config.log_hp_size != (uint32_t)MLX5_ARG_UNSET) {
 		if (priv->config.log_hp_size > max_wq_data) {
@@ -429,20 +489,50 @@ mlx5_rxq_obj_hairpin_new(struct mlx5_rxq_priv *rxq)
 			rte_errno = ERANGE;
 			return -rte_errno;
 		}
-		attr.wq_attr.log_hairpin_data_sz = priv->config.log_hp_size;
+		unlocked_attr.wq_attr.log_hairpin_data_sz = priv->config.log_hp_size;
 	} else {
-		attr.wq_attr.log_hairpin_data_sz =
+		unlocked_attr.wq_attr.log_hairpin_data_sz =
 				(max_wq_data < MLX5_HAIRPIN_JUMBO_LOG_SIZE) ?
 				 max_wq_data : MLX5_HAIRPIN_JUMBO_LOG_SIZE;
 	}
 	/* Set the packets number to the maximum value for performance. */
-	attr.wq_attr.log_hairpin_num_packets =
-			attr.wq_attr.log_hairpin_data_sz -
+	unlocked_attr.wq_attr.log_hairpin_num_packets =
+			unlocked_attr.wq_attr.log_hairpin_data_sz -
 			MLX5_HAIRPIN_QUEUE_STRIDE;
-	attr.counter_set_id = priv->counter_set_id;
+	unlocked_attr.counter_set_id = priv->counter_set_id;
 	rxq_ctrl->rxq.delay_drop = priv->config.hp_delay_drop;
-	attr.delay_drop_en = priv->config.hp_delay_drop;
-	tmpl->rq = mlx5_devx_cmd_create_rq(priv->sh->cdev->ctx, &attr,
+	unlocked_attr.delay_drop_en = priv->config.hp_delay_drop;
+	unlocked_attr.hairpin_data_buffer_type =
+			MLX5_RQC_HAIRPIN_DATA_BUFFER_TYPE_UNLOCKED_INTERNAL_BUFFER;
+	if (rxq->hairpin_conf.use_locked_device_memory) {
+		/*
+		 * It is assumed that configuration is verified against capabilities
+		 * during queue setup.
+		 */
+		MLX5_ASSERT(hca_attr->hairpin_data_buffer_locked);
+		rte_memcpy(&locked_attr, &unlocked_attr, sizeof(locked_attr));
+		locked_attr.hairpin_data_buffer_type =
+				MLX5_RQC_HAIRPIN_DATA_BUFFER_TYPE_LOCKED_INTERNAL_BUFFER;
+		tmpl->rq = mlx5_devx_cmd_create_rq(priv->sh->cdev->ctx, &locked_attr,
+						   rxq_ctrl->socket);
+		if (!tmpl->rq && rxq->hairpin_conf.force_memory) {
+			DRV_LOG(ERR, "Port %u Rx hairpin queue %u can't create RQ object"
+				     " with locked memory buffer",
+				     priv->dev_data->port_id, idx);
+			return -rte_errno;
+		} else if (!tmpl->rq && !rxq->hairpin_conf.force_memory) {
+			DRV_LOG(WARNING, "Port %u Rx hairpin queue %u can't create RQ object"
+					 " with locked memory buffer. Falling back to unlocked"
+					 " device memory.",
+					 priv->dev_data->port_id, idx);
+			rte_errno = 0;
+			goto create_rq_unlocked;
+		}
+		goto create_rq_set_state;
+	}
+
+create_rq_unlocked:
+	tmpl->rq = mlx5_devx_cmd_create_rq(priv->sh->cdev->ctx, &unlocked_attr,
 					   rxq_ctrl->socket);
 	if (!tmpl->rq) {
 		DRV_LOG(ERR,
@@ -451,6 +541,7 @@ mlx5_rxq_obj_hairpin_new(struct mlx5_rxq_priv *rxq)
 		rte_errno = errno;
 		return -rte_errno;
 	}
+create_rq_set_state:
 	priv->dev_data->rx_queue_state[idx] = RTE_ETH_QUEUE_STATE_HAIRPIN;
 	return 0;
 }
@@ -475,7 +566,7 @@ mlx5_rxq_devx_obj_new(struct mlx5_rxq_priv *rxq)
 
 	MLX5_ASSERT(rxq_data);
 	MLX5_ASSERT(tmpl);
-	if (rxq_ctrl->type == MLX5_RXQ_TYPE_HAIRPIN)
+	if (rxq_ctrl->is_hairpin)
 		return mlx5_rxq_obj_hairpin_new(rxq);
 	tmpl->rxq_ctrl = rxq_ctrl;
 	if (rxq_ctrl->irq && !rxq_ctrl->started) {
@@ -570,7 +661,7 @@ mlx5_devx_ind_table_create_rqt_attr(struct rte_eth_dev *dev,
 		rte_errno = ENOMEM;
 		return NULL;
 	}
-	rqt_attr->rqt_max_size = priv->config.ind_table_max_size;
+	rqt_attr->rqt_max_size = priv->sh->dev_cap.ind_table_max_size;
 	rqt_attr->rqt_actual_size = rqt_n;
 	if (queues == NULL) {
 		for (i = 0; i < rqt_n; i++)
@@ -579,13 +670,21 @@ mlx5_devx_ind_table_create_rqt_attr(struct rte_eth_dev *dev,
 		return rqt_attr;
 	}
 	for (i = 0; i != queues_n; ++i) {
-		struct mlx5_rxq_priv *rxq = mlx5_rxq_get(dev, queues[i]);
+		if (mlx5_is_external_rxq(dev, queues[i])) {
+			struct mlx5_external_rxq *ext_rxq =
+					mlx5_ext_rxq_get(dev, queues[i]);
 
-		MLX5_ASSERT(rxq != NULL);
-		if (rxq->ctrl->type == MLX5_RXQ_TYPE_HAIRPIN)
-			rqt_attr->rq_list[i] = rxq->ctrl->obj->rq->id;
-		else
-			rqt_attr->rq_list[i] = rxq->devx_rq.rq->id;
+			rqt_attr->rq_list[i] = ext_rxq->hw_id;
+		} else {
+			struct mlx5_rxq_priv *rxq =
+					mlx5_rxq_get(dev, queues[i]);
+
+			MLX5_ASSERT(rxq != NULL);
+			if (rxq->ctrl->is_hairpin)
+				rqt_attr->rq_list[i] = rxq->ctrl->obj->rq->id;
+			else
+				rqt_attr->rq_list[i] = rxq->devx_rq.rq->id;
+		}
 	}
 	MLX5_ASSERT(i > 0);
 	for (j = 0; i != rqt_n; ++j, ++i)
@@ -705,18 +804,19 @@ mlx5_devx_tir_attr_set(struct rte_eth_dev *dev, const uint8_t *rss_key,
 		       int tunnel, struct mlx5_devx_tir_attr *tir_attr)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	enum mlx5_rxq_type rxq_obj_type;
+	bool is_hairpin;
 	bool lro = false;
 	uint32_t i;
 
 	/* NULL queues designate drop queue. */
-	if (ind_tbl->queues != NULL) {
-		struct mlx5_rxq_ctrl *rxq_ctrl =
-				mlx5_rxq_ctrl_get(dev, ind_tbl->queues[0]);
-		rxq_obj_type = rxq_ctrl != NULL ? rxq_ctrl->type :
-						  MLX5_RXQ_TYPE_STANDARD;
+	if (ind_tbl->queues == NULL) {
+		is_hairpin = priv->drop_queue.rxq->ctrl->is_hairpin;
+	} else if (mlx5_is_external_rxq(dev, ind_tbl->queues[0])) {
+		/* External RxQ supports neither Hairpin nor LRO. */
+		is_hairpin = false;
+	} else {
+		is_hairpin = mlx5_rxq_is_hairpin(dev, ind_tbl->queues[0]);
 		lro = true;
-
 		/* Enable TIR LRO only if all the queues were configured for. */
 		for (i = 0; i < ind_tbl->queues_n; ++i) {
 			struct mlx5_rxq_data *rxq_i =
@@ -727,8 +827,6 @@ mlx5_devx_tir_attr_set(struct rte_eth_dev *dev, const uint8_t *rss_key,
 				break;
 			}
 		}
-	} else {
-		rxq_obj_type = priv->drop_queue.rxq->ctrl->type;
 	}
 	memset(tir_attr, 0, sizeof(*tir_attr));
 	tir_attr->disp_type = MLX5_TIRC_DISP_TYPE_INDIRECT;
@@ -757,21 +855,23 @@ mlx5_devx_tir_attr_set(struct rte_eth_dev *dev, const uint8_t *rss_key,
 			(!!(hash_fields & MLX5_L4_SRC_IBV_RX_HASH)) <<
 			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_SPORT |
 			(!!(hash_fields & MLX5_L4_DST_IBV_RX_HASH)) <<
-			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_DPORT;
+			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_DPORT |
+			(!!(hash_fields & IBV_RX_HASH_IPSEC_SPI)) <<
+			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_IPSEC_SPI;
 	}
-	if (rxq_obj_type == MLX5_RXQ_TYPE_HAIRPIN)
+	if (is_hairpin)
 		tir_attr->transport_domain = priv->sh->td->id;
 	else
 		tir_attr->transport_domain = priv->sh->tdn;
 	memcpy(tir_attr->rx_hash_toeplitz_key, rss_key, MLX5_RSS_HASH_KEY_LEN);
 	tir_attr->indirect_table = ind_tbl->rqt->id;
 	if (dev->data->dev_conf.lpbk_mode)
-		tir_attr->self_lb_block =
-					MLX5_TIRC_SELF_LB_BLOCK_BLOCK_UNICAST;
+		tir_attr->self_lb_block = MLX5_TIRC_SELF_LB_BLOCK_BLOCK_UNICAST;
 	if (lro) {
-		MLX5_ASSERT(priv->config.lro.supported);
-		tir_attr->lro_timeout_period_usecs = priv->config.lro.timeout;
-		tir_attr->lro_max_msg_sz = priv->max_lro_msg_size;
+		MLX5_ASSERT(priv->sh->config.lro_allowed);
+		tir_attr->lro_timeout_period_usecs = priv->config.lro_timeout;
+		tir_attr->lro_max_msg_sz =
+			priv->max_lro_msg_size / MLX5_LRO_SEG_CHUNK_SIZE;
 		tir_attr->lro_enable_mask =
 				MLX5_TIRC_LRO_ENABLE_MASK_IPV4_LRO |
 				MLX5_TIRC_LRO_ENABLE_MASK_IPV6_LRO;
@@ -809,6 +909,16 @@ mlx5_devx_hrxq_new(struct rte_eth_dev *dev, struct mlx5_hrxq *hrxq,
 		goto error;
 	}
 #if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	if (hrxq->hws_flags) {
+		hrxq->action = mlx5dr_action_create_dest_tir
+			(priv->dr_ctx,
+			 (struct mlx5dr_devx_obj *)hrxq->tir, hrxq->hws_flags);
+		if (!hrxq->action)
+			goto error;
+		return 0;
+	}
+#endif
 	if (mlx5_flow_os_create_flow_action_dest_devx_tir(hrxq->tir,
 							  &hrxq->action)) {
 		rte_errno = errno;
@@ -936,7 +1046,7 @@ mlx5_rxq_devx_obj_drop_create(struct rte_eth_dev *dev)
 	/* set the CPU socket ID where the rxq_ctrl was allocated */
 	rxq_ctrl->socket = socket_id;
 	rxq_obj->rxq_ctrl = rxq_ctrl;
-	rxq_ctrl->type = MLX5_RXQ_TYPE_STANDARD;
+	rxq_ctrl->is_hairpin = false;
 	rxq_ctrl->sh = priv->sh;
 	rxq_ctrl->obj = rxq_obj;
 	rxq->ctrl = rxq_ctrl;
@@ -1017,6 +1127,10 @@ mlx5_devx_drop_action_destroy(struct rte_eth_dev *dev)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq *hrxq = priv->drop_queue.hrxq;
 
+#if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
+	if (hrxq->action != NULL)
+		mlx5_flow_os_destroy_flow_action(hrxq->action);
+#endif
 	if (hrxq->tir != NULL)
 		mlx5_devx_tir_destroy(hrxq);
 	if (hrxq->ind_table->ind_table != NULL)
@@ -1046,6 +1160,8 @@ mlx5_devx_drop_action_create(struct rte_eth_dev *dev)
 		DRV_LOG(ERR, "Cannot create drop RX queue");
 		return ret;
 	}
+	if (priv->sh->config.dv_flow_en == 2)
+		return 0;
 	/* hrxq->ind_table queues are NULL, drop RX queue ID will be used */
 	ret = mlx5_devx_ind_table_new(dev, 0, hrxq->ind_table);
 	if (ret != 0) {
@@ -1109,19 +1225,25 @@ static int
 mlx5_txq_obj_hairpin_new(struct rte_eth_dev *dev, uint16_t idx)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_hca_attr *hca_attr = &priv->sh->cdev->config.hca_attr;
 	struct mlx5_txq_data *txq_data = (*priv->txqs)[idx];
 	struct mlx5_txq_ctrl *txq_ctrl =
 		container_of(txq_data, struct mlx5_txq_ctrl, txq);
-	struct mlx5_devx_create_sq_attr attr = { 0 };
+	struct mlx5_devx_create_sq_attr dev_mem_attr = { 0 };
+	struct mlx5_devx_create_sq_attr host_mem_attr = { 0 };
 	struct mlx5_txq_obj *tmpl = txq_ctrl->obj;
+	void *umem_buf = NULL;
+	void *umem_obj = NULL;
 	uint32_t max_wq_data;
 
 	MLX5_ASSERT(txq_data);
 	MLX5_ASSERT(tmpl);
 	tmpl->txq_ctrl = txq_ctrl;
-	attr.hairpin = 1;
-	attr.tis_lst_sz = 1;
-	max_wq_data = priv->config.hca_attr.log_max_hairpin_wq_data_sz;
+	dev_mem_attr.hairpin = 1;
+	dev_mem_attr.tis_lst_sz = 1;
+	dev_mem_attr.tis_num = mlx5_get_txq_tis_num(dev, idx);
+	max_wq_data =
+		priv->sh->cdev->config.hca_attr.log_max_hairpin_wq_data_sz;
 	/* Jumbo frames > 9KB should be supported, and more packets. */
 	if (priv->config.log_hp_size != (uint32_t)MLX5_ARG_UNSET) {
 		if (priv->config.log_hp_size > max_wq_data) {
@@ -1131,19 +1253,103 @@ mlx5_txq_obj_hairpin_new(struct rte_eth_dev *dev, uint16_t idx)
 			rte_errno = ERANGE;
 			return -rte_errno;
 		}
-		attr.wq_attr.log_hairpin_data_sz = priv->config.log_hp_size;
+		dev_mem_attr.wq_attr.log_hairpin_data_sz = priv->config.log_hp_size;
 	} else {
-		attr.wq_attr.log_hairpin_data_sz =
+		dev_mem_attr.wq_attr.log_hairpin_data_sz =
 				(max_wq_data < MLX5_HAIRPIN_JUMBO_LOG_SIZE) ?
 				 max_wq_data : MLX5_HAIRPIN_JUMBO_LOG_SIZE;
 	}
 	/* Set the packets number to the maximum value for performance. */
-	attr.wq_attr.log_hairpin_num_packets =
-			attr.wq_attr.log_hairpin_data_sz -
+	dev_mem_attr.wq_attr.log_hairpin_num_packets =
+			dev_mem_attr.wq_attr.log_hairpin_data_sz -
 			MLX5_HAIRPIN_QUEUE_STRIDE;
+	dev_mem_attr.hairpin_wq_buffer_type = MLX5_SQC_HAIRPIN_WQ_BUFFER_TYPE_INTERNAL_BUFFER;
+	if (txq_ctrl->hairpin_conf.use_rte_memory) {
+		uint32_t umem_size;
+		uint32_t umem_dbrec;
+		size_t alignment = MLX5_WQE_BUF_ALIGNMENT;
 
-	attr.tis_num = mlx5_get_txq_tis_num(dev, idx);
-	tmpl->sq = mlx5_devx_cmd_create_sq(priv->sh->cdev->ctx, &attr);
+		if (alignment == (size_t)-1) {
+			DRV_LOG(ERR, "Failed to get WQE buf alignment.");
+			rte_errno = ENOMEM;
+			return -rte_errno;
+		}
+		/*
+		 * It is assumed that configuration is verified against capabilities
+		 * during queue setup.
+		 */
+		MLX5_ASSERT(hca_attr->hairpin_sq_wq_in_host_mem);
+		MLX5_ASSERT(hca_attr->hairpin_sq_wqe_bb_size > 0);
+		rte_memcpy(&host_mem_attr, &dev_mem_attr, sizeof(host_mem_attr));
+		umem_size = MLX5_WQE_SIZE *
+			RTE_BIT32(host_mem_attr.wq_attr.log_hairpin_num_packets);
+		umem_dbrec = RTE_ALIGN(umem_size, MLX5_DBR_SIZE);
+		umem_size += MLX5_DBR_SIZE;
+		umem_buf = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, umem_size,
+				       alignment, priv->sh->numa_node);
+		if (umem_buf == NULL && txq_ctrl->hairpin_conf.force_memory) {
+			DRV_LOG(ERR, "Failed to allocate memory for hairpin TX queue");
+			rte_errno = ENOMEM;
+			return -rte_errno;
+		} else if (umem_buf == NULL && !txq_ctrl->hairpin_conf.force_memory) {
+			DRV_LOG(WARNING, "Failed to allocate memory for hairpin TX queue."
+					 " Falling back to TX queue located on the device.");
+			goto create_sq_on_device;
+		}
+		umem_obj = mlx5_os_umem_reg(priv->sh->cdev->ctx,
+					    (void *)(uintptr_t)umem_buf,
+					    umem_size,
+					    IBV_ACCESS_LOCAL_WRITE);
+		if (umem_obj == NULL && txq_ctrl->hairpin_conf.force_memory) {
+			DRV_LOG(ERR, "Failed to register UMEM for hairpin TX queue");
+			mlx5_free(umem_buf);
+			return -rte_errno;
+		} else if (umem_obj == NULL && !txq_ctrl->hairpin_conf.force_memory) {
+			DRV_LOG(WARNING, "Failed to register UMEM for hairpin TX queue."
+					 " Falling back to TX queue located on the device.");
+			rte_errno = 0;
+			mlx5_free(umem_buf);
+			goto create_sq_on_device;
+		}
+		host_mem_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC;
+		host_mem_attr.wq_attr.wq_umem_valid = 1;
+		host_mem_attr.wq_attr.wq_umem_id = mlx5_os_get_umem_id(umem_obj);
+		host_mem_attr.wq_attr.wq_umem_offset = 0;
+		host_mem_attr.wq_attr.dbr_umem_valid = 1;
+		host_mem_attr.wq_attr.dbr_umem_id = host_mem_attr.wq_attr.wq_umem_id;
+		host_mem_attr.wq_attr.dbr_addr = umem_dbrec;
+		host_mem_attr.wq_attr.log_wq_stride = rte_log2_u32(MLX5_WQE_SIZE);
+		host_mem_attr.wq_attr.log_wq_sz =
+				host_mem_attr.wq_attr.log_hairpin_num_packets *
+				hca_attr->hairpin_sq_wqe_bb_size;
+		host_mem_attr.wq_attr.log_wq_pg_sz = MLX5_LOG_PAGE_SIZE;
+		host_mem_attr.hairpin_wq_buffer_type = MLX5_SQC_HAIRPIN_WQ_BUFFER_TYPE_HOST_MEMORY;
+		tmpl->sq = mlx5_devx_cmd_create_sq(priv->sh->cdev->ctx, &host_mem_attr);
+		if (!tmpl->sq && txq_ctrl->hairpin_conf.force_memory) {
+			DRV_LOG(ERR,
+				"Port %u tx hairpin queue %u can't create SQ object.",
+				dev->data->port_id, idx);
+			claim_zero(mlx5_os_umem_dereg(umem_obj));
+			mlx5_free(umem_buf);
+			return -rte_errno;
+		} else if (!tmpl->sq && !txq_ctrl->hairpin_conf.force_memory) {
+			DRV_LOG(WARNING,
+				"Port %u tx hairpin queue %u failed to allocate SQ object"
+				" using host memory. Falling back to TX queue located"
+				" on the device",
+				dev->data->port_id, idx);
+			rte_errno = 0;
+			claim_zero(mlx5_os_umem_dereg(umem_obj));
+			mlx5_free(umem_buf);
+			goto create_sq_on_device;
+		}
+		tmpl->umem_buf_wq_buffer = umem_buf;
+		tmpl->umem_obj_wq_buffer = umem_obj;
+		return 0;
+	}
+
+create_sq_on_device:
+	tmpl->sq = mlx5_devx_cmd_create_sq(priv->sh->cdev->ctx, &dev_mem_attr);
 	if (!tmpl->sq) {
 		DRV_LOG(ERR,
 			"Port %u tx hairpin queue %u can't create SQ object.",
@@ -1197,8 +1403,8 @@ mlx5_txq_create_devx_sq_resources(struct rte_eth_dev *dev, uint16_t idx,
 	struct mlx5_devx_create_sq_attr sq_attr = {
 		.flush_in_error_en = 1,
 		.allow_multi_pkt_send_wqe = !!priv->config.mps,
-		.min_wqe_inline_mode = priv->config.hca_attr.vport_inline_mode,
-		.allow_swp = !!priv->config.swp,
+		.min_wqe_inline_mode = cdev->config.hca_attr.vport_inline_mode,
+		.allow_swp = !!priv->sh->dev_cap.swp,
 		.cqn = txq_obj->cq_obj.cq->id,
 		.tis_lst_sz = 1,
 		.wq_attr = (struct mlx5_devx_wq_attr){
@@ -1235,7 +1441,7 @@ mlx5_txq_devx_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_txq_ctrl *txq_ctrl =
 			container_of(txq_data, struct mlx5_txq_ctrl, txq);
 
-	if (txq_ctrl->type == MLX5_TXQ_TYPE_HAIRPIN)
+	if (txq_ctrl->is_hairpin)
 		return mlx5_txq_obj_hairpin_new(dev, idx);
 #if !defined(HAVE_MLX5DV_DEVX_UAR_OFFSET) && defined(HAVE_INFINIBAND_VERBS_H)
 	DRV_LOG(ERR, "Port %u Tx queue %u cannot create with DevX, no UAR.",
@@ -1307,7 +1513,7 @@ mlx5_txq_devx_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	wqe_size = RTE_ALIGN(wqe_size, MLX5_WQE_SIZE) / MLX5_WQE_SIZE;
 	/* Create Send Queue object with DevX. */
 	wqe_n = RTE_MIN((1UL << txq_data->elts_n) * wqe_size,
-			(uint32_t)priv->sh->device_attr.max_qp_wr);
+			(uint32_t)priv->sh->dev_cap.max_qp_wr);
 	log_desc_n = log2above(wqe_n);
 	ret = mlx5_txq_create_devx_sq_resources(dev, idx, log_desc_n);
 	if (ret) {
@@ -1329,8 +1535,10 @@ mlx5_txq_devx_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 	txq_data->qp_db = &txq_obj->sq_obj.db_rec[MLX5_SND_DBR];
 	*txq_data->qp_db = 0;
 	txq_data->qp_num_8s = txq_obj->sq_obj.sq->id << 8;
-	txq_data->db_heu = sh->cdev->config.dbnc == MLX5_TXDB_HEURISTIC;
+	txq_data->db_heu = sh->cdev->config.dbnc == MLX5_SQ_DB_HEURISTIC;
 	txq_data->db_nc = sh->tx_uar.dbnc;
+	txq_data->wait_on_time = !!(!sh->config.tx_pp &&
+				    sh->cdev->config.hca_attr.wait_on_time);
 	/* Change Send Queue state to Ready-to-Send. */
 	ret = mlx5_txq_devx_modify(txq_obj, MLX5_TXQ_MOD_RST2RDY, 0);
 	if (ret) {
@@ -1372,9 +1580,21 @@ void
 mlx5_txq_devx_obj_release(struct mlx5_txq_obj *txq_obj)
 {
 	MLX5_ASSERT(txq_obj);
-	if (txq_obj->txq_ctrl->type == MLX5_TXQ_TYPE_HAIRPIN) {
+	if (txq_obj->txq_ctrl->is_hairpin) {
+		if (txq_obj->sq) {
+			claim_zero(mlx5_devx_cmd_destroy(txq_obj->sq));
+			txq_obj->sq = NULL;
+		}
 		if (txq_obj->tis)
 			claim_zero(mlx5_devx_cmd_destroy(txq_obj->tis));
+		if (txq_obj->umem_obj_wq_buffer) {
+			claim_zero(mlx5_os_umem_dereg(txq_obj->umem_obj_wq_buffer));
+			txq_obj->umem_obj_wq_buffer = NULL;
+		}
+		if (txq_obj->umem_buf_wq_buffer) {
+			mlx5_free(txq_obj->umem_buf_wq_buffer);
+			txq_obj->umem_buf_wq_buffer = NULL;
+		}
 #if defined(HAVE_MLX5DV_DEVX_UAR_OFFSET) || !defined(HAVE_INFINIBAND_VERBS_H)
 	} else {
 		mlx5_txq_release_devx_resources(txq_obj);
@@ -1388,6 +1608,7 @@ struct mlx5_obj_ops devx_obj_ops = {
 	.rxq_event_get = mlx5_rx_devx_get_event,
 	.rxq_obj_modify = mlx5_devx_modify_rq,
 	.rxq_obj_release = mlx5_rxq_devx_obj_release,
+	.rxq_event_get_lwm = mlx5_rx_devx_get_event_lwm,
 	.ind_table_new = mlx5_devx_ind_table_new,
 	.ind_table_modify = mlx5_devx_ind_table_modify,
 	.ind_table_destroy = mlx5_devx_ind_table_destroy,

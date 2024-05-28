@@ -41,7 +41,8 @@ print_usage () {
 	usage: $(basename $0) [-h] [-q] [-v] [-nX|-r range|patch1 [patch2] ...]
 
 	Run Linux kernel checkpatch.pl with DPDK options.
-	The environment variable DPDK_CHECKPATCH_PATH must be set.
+	The environment variable DPDK_CHECKPATCH_PATH can be set, if not we will
+	try to find the script in the sources of the currently running kernel.
 
 	The patches to check can be from stdin, files specified on the command line,
 	latest git commits limited with -n option, or commits in the git range
@@ -142,6 +143,14 @@ check_forbidden_additions() { # <patch>
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
+	# forbid inclusion of driver specific headers in apps and examples
+	awk -v FOLDERS='app examples' \
+		-v EXPRESSIONS='include.*_driver\\.h include.*_pmd\\.h' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using driver specific headers in applications' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
 	# SVG must be included with wildcard extension to allow conversion
 	awk -v FOLDERS='doc' \
 		-v EXPRESSIONS='::[[:space:]]*[^[:space:]]*\\.svg' \
@@ -155,6 +164,14 @@ check_forbidden_additions() { # <patch>
 		-v EXPRESSIONS='http://.*dpdk.org' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using non https link to dpdk.org' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# '// XXX is not set' must be preferred over '#undef XXX'
+	awk -v FOLDERS='config/rte_config.h' \
+		-v EXPRESSIONS='#undef' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using "#undef XXX", prefer "// XXX is not set"' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -248,10 +265,15 @@ done
 shift $(($OPTIND - 1))
 
 if [ ! -f "$DPDK_CHECKPATCH_PATH" ] || [ ! -x "$DPDK_CHECKPATCH_PATH" ] ; then
-	print_usage >&2
-	echo
-	echo 'Cannot execute DPDK_CHECKPATCH_PATH' >&2
-	exit 1
+	default_path="/lib/modules/$(uname -r)/source/scripts/checkpatch.pl"
+	if [ -f "$default_path" ] && [ -x "$default_path" ] ; then
+		DPDK_CHECKPATCH_PATH="$default_path"
+	else
+		print_usage >&2
+		echo
+		echo 'Cannot execute DPDK_CHECKPATCH_PATH' >&2
+		exit 1
+	fi
 fi
 
 print_headline() { # <title>
@@ -262,12 +284,12 @@ print_headline() { # <title>
 total=0
 status=0
 
-check () { # <patch> <commit> <title>
+check () { # <patch-file> <commit>
 	local ret=0
+	local subject=''
 	headline_printed=false
 
 	total=$(($total + 1))
-	! $verbose || print_headline "$3"
 	if [ -n "$1" ] ; then
 		tmpinput=$1
 	else
@@ -282,10 +304,14 @@ check () { # <patch> <commit> <title>
 		fi
 	fi
 
+	# Subject can be on 2 lines
+	subject=$(sed '/^Subject: */!d;s///;N;s,\n[[:space:]]\+, ,;s,\n.*,,;q' "$tmpinput")
+	! $verbose || print_headline "$subject"
+
 	! $verbose || printf 'Running checkpatch.pl:\n'
 	report=$($DPDK_CHECKPATCH_PATH $options "$tmpinput" 2>/dev/null)
 	if [ $? -ne 0 ] ; then
-		$headline_printed || print_headline "$3"
+		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report" | sed -n '1,/^total:.*lines checked$/p'
 		ret=1
 	fi
@@ -293,7 +319,7 @@ check () { # <patch> <commit> <title>
 	! $verbose || printf '\nChecking API additions/removals:\n'
 	report=$($VALIDATE_NEW_API "$tmpinput")
 	if [ $? -ne 0 ] ; then
-		$headline_printed || print_headline "$3"
+		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report"
 		ret=1
 	fi
@@ -301,7 +327,7 @@ check () { # <patch> <commit> <title>
 	! $verbose || printf '\nChecking forbidden tokens additions:\n'
 	report=$(check_forbidden_additions "$tmpinput")
 	if [ $? -ne 0 ] ; then
-		$headline_printed || print_headline "$3"
+		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report"
 		ret=1
 	fi
@@ -309,7 +335,7 @@ check () { # <patch> <commit> <title>
 	! $verbose || printf '\nChecking __rte_experimental tags:\n'
 	report=$(check_experimental_tags "$tmpinput")
 	if [ $? -ne 0 ] ; then
-		$headline_printed || print_headline "$3"
+		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report"
 		ret=1
 	fi
@@ -317,7 +343,7 @@ check () { # <patch> <commit> <title>
 	! $verbose || printf '\nChecking __rte_internal tags:\n'
 	report=$(check_internal_tags "$tmpinput")
 	if [ $? -ne 0 ] ; then
-		$headline_printed || print_headline "$3"
+		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report"
 		ret=1
 	fi
@@ -325,7 +351,7 @@ check () { # <patch> <commit> <title>
 	! $verbose || printf '\nChecking release notes updates:\n'
 	report=$(check_release_notes "$tmpinput")
 	if [ $? -ne 0 ] ; then
-		$headline_printed || print_headline "$3"
+		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report"
 		ret=1
 	fi
@@ -341,20 +367,10 @@ check () { # <patch> <commit> <title>
 
 if [ -n "$1" ] ; then
 	for patch in "$@" ; do
-		# Subject can be on 2 lines
-		subject=$(sed '/^Subject: */!d;s///;N;s,\n[[:space:]]\+, ,;s,\n.*,,;q' "$patch")
-		check "$patch" '' "$subject"
+		check "$patch" ''
 	done
 elif [ ! -t 0 ] ; then # stdin
-	subject=$(while read header value ; do
-		if [ "$header" = 'Subject:' ] ; then
-			IFS= read next
-			continuation=$(echo "$next" | sed -n 's,^[[:space:]]\+, ,p')
-			echo $value$continuation
-			break
-		fi
-	done)
-	check '' '' "$subject"
+	check '' ''
 else
 	if [ $number -eq 0 ] ; then
 		commits=$(git rev-list --reverse $range)
@@ -362,8 +378,7 @@ else
 		commits=$(git rev-list --reverse --max-count=$number HEAD)
 	fi
 	for commit in $commits ; do
-		subject=$(git log --format='%s' -1 $commit)
-		check '' $commit "$subject"
+		check '' $commit
 	done
 fi
 pass=$(($total - $status))

@@ -4,7 +4,9 @@
 #ifdef RTE_EXEC_ENV_FREEBSD
 	#define _WITH_GETLINE
 #endif
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <rte_malloc.h>
 
@@ -28,6 +30,7 @@ free_test_vector(struct cperf_test_vector *vector, struct cperf_options *opts)
 		rte_free(vector->cipher_key.data);
 		rte_free(vector->auth_key.data);
 		rte_free(vector->ciphertext.data);
+		free(opts->test_file);
 	}
 
 	rte_free(vector);
@@ -551,10 +554,8 @@ parse_file(struct cperf_test_vector *vector, struct cperf_options *opts)
 err:
 	if (fp)
 		fclose(fp);
-	if (line)
-		free(line);
-	if (entry)
-		rte_free(entry);
+	free(line);
+	rte_free(entry);
 
 	return -1;
 }

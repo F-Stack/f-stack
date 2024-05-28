@@ -30,10 +30,10 @@
 #define BURST_SIZE 16
 
 enum operations {
-	ADD = 0,
-	LOOKUP,
-	LOOKUP_MULTI,
-	DELETE,
+	OP_ADD = 0,
+	OP_LOOKUP,
+	OP_LOOKUP_MULTI,
+	OP_DELETE,
 	NUM_OPERATIONS
 };
 
@@ -106,12 +106,7 @@ create_table(unsigned int with_data, unsigned int table_index,
 	ut_params.key_len = hashtest_key_lens[table_index];
 	ut_params.socket_id = rte_socket_id();
 	h[table_index] = rte_hash_find_existing(name);
-	if (h[table_index] != NULL)
-		/*
-		 * If table was already created, free it to create it again,
-		 * so we force it is empty
-		 */
-		rte_hash_free(h[table_index]);
+	rte_hash_free(h[table_index]);
 	h[table_index] = rte_hash_create(&ut_params);
 	if (h[table_index] == NULL) {
 		printf("Error creating table\n");
@@ -308,7 +303,7 @@ timed_adds(unsigned int with_hash, unsigned int with_data,
 	const uint64_t end_tsc = rte_rdtsc();
 	const uint64_t time_taken = end_tsc - start_tsc;
 
-	cycles[table_index][ADD][with_hash][with_data] = time_taken/keys_to_add;
+	cycles[table_index][OP_ADD][with_hash][with_data] = time_taken/keys_to_add;
 
 	return 0;
 }
@@ -385,7 +380,7 @@ timed_lookups(unsigned int with_hash, unsigned int with_data,
 	const uint64_t end_tsc = rte_rdtsc();
 	const uint64_t time_taken = end_tsc - start_tsc;
 
-	cycles[table_index][LOOKUP][with_hash][with_data] = time_taken/num_lookups;
+	cycles[table_index][OP_LOOKUP][with_hash][with_data] = time_taken/num_lookups;
 
 	return 0;
 }
@@ -480,6 +475,11 @@ timed_lookups_multi(unsigned int with_hash, unsigned int with_data,
 					(const void **)keys_burst,
 					&signatures[j * BURST_SIZE],
 					BURST_SIZE, positions_burst);
+				if (ret != 0) {
+					printf("rte_hash_lookup_with_hash_bulk failed with %d\n",
+						ret);
+					return -1;
+				}
 				for (k = 0; k < BURST_SIZE; k++) {
 					if (positions_burst[k] !=
 							positions[j *
@@ -492,10 +492,14 @@ timed_lookups_multi(unsigned int with_hash, unsigned int with_data,
 					}
 				}
 			} else {
-				rte_hash_lookup_bulk(h[table_index],
+				ret = rte_hash_lookup_bulk(h[table_index],
 						(const void **) keys_burst,
 						BURST_SIZE,
 						positions_burst);
+				if (ret != 0) {
+					printf("rte_hash_lookup_bulk failed with %d\n", ret);
+					return -1;
+				}
 				for (k = 0; k < BURST_SIZE; k++) {
 					if (positions_burst[k] != positions[j * BURST_SIZE + k]) {
 						printf("Key looked up in %d, should be in %d\n",
@@ -511,7 +515,7 @@ timed_lookups_multi(unsigned int with_hash, unsigned int with_data,
 	const uint64_t end_tsc = rte_rdtsc();
 	const uint64_t time_taken = end_tsc - start_tsc;
 
-	cycles[table_index][LOOKUP_MULTI][with_hash][with_data] =
+	cycles[table_index][OP_LOOKUP_MULTI][with_hash][with_data] =
 		time_taken/num_lookups;
 
 	return 0;
@@ -550,7 +554,7 @@ timed_deletes(unsigned int with_hash, unsigned int with_data,
 	const uint64_t end_tsc = rte_rdtsc();
 	const uint64_t time_taken = end_tsc - start_tsc;
 
-	cycles[table_index][DELETE][with_hash][with_data] = time_taken/keys_to_add;
+	cycles[table_index][OP_DELETE][with_hash][with_data] = time_taken/keys_to_add;
 
 	return 0;
 }
@@ -723,6 +727,10 @@ static int
 test_hash_perf(void)
 {
 	unsigned int with_pushes, with_locks;
+
+	if (RTE_EXEC_ENV_IS_WINDOWS)
+		return TEST_SKIPPED;
+
 	for (with_locks = 0; with_locks <= 1; with_locks++) {
 		if (with_locks)
 			printf("\nWith locks in the code\n");

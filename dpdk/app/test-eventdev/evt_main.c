@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
 
@@ -19,11 +20,7 @@ struct evt_test *test;
 static void
 signal_handler(int signum)
 {
-	int i;
-	static uint8_t once;
-
-	if ((signum == SIGINT || signum == SIGTERM) && !once) {
-		once = true;
+	if (signum == SIGINT || signum == SIGTERM) {
 		printf("\nSignal %d received, preparing to exit...\n",
 				signum);
 
@@ -31,33 +28,7 @@ signal_handler(int signum)
 			/* request all lcores to exit from the main loop */
 			*(int *)test->test_priv = true;
 			rte_wmb();
-
-			if (test->ops.ethdev_destroy)
-				test->ops.ethdev_destroy(test, &opt);
-
-			rte_eal_mp_wait_lcore();
-
-			if (test->ops.test_result)
-				test->ops.test_result(test, &opt);
-
-			if (opt.prod_type == EVT_PROD_TYPE_ETH_RX_ADPTR) {
-				RTE_ETH_FOREACH_DEV(i)
-					rte_eth_dev_close(i);
-			}
-
-			if (test->ops.eventdev_destroy)
-				test->ops.eventdev_destroy(test, &opt);
-
-			if (test->ops.mempool_destroy)
-				test->ops.mempool_destroy(test, &opt);
-
-			if (test->ops.test_destroy)
-				test->ops.test_destroy(test, &opt);
 		}
-
-		/* exit with the expected status */
-		signal(signum, SIG_DFL);
-		kill(getpid(), signum);
 	}
 }
 
@@ -162,11 +133,19 @@ main(int argc, char **argv)
 		}
 	}
 
+	/* Test specific cryptodev setup */
+	if (test->ops.cryptodev_setup) {
+		if (test->ops.cryptodev_setup(test, &opt)) {
+			evt_err("%s: cryptodev setup failed", opt.test_name);
+			goto ethdev_destroy;
+		}
+	}
+
 	/* Test specific eventdev setup */
 	if (test->ops.eventdev_setup) {
 		if (test->ops.eventdev_setup(test, &opt)) {
 			evt_err("%s: eventdev setup failed", opt.test_name);
-			goto ethdev_destroy;
+			goto cryptodev_destroy;
 		}
 	}
 
@@ -178,10 +157,29 @@ main(int argc, char **argv)
 		}
 	}
 
+	if (test->ops.ethdev_rx_stop)
+		test->ops.ethdev_rx_stop(test, &opt);
+
 	rte_eal_mp_wait_lcore();
 
-	/* Print the test result */
-	ret = test->ops.test_result(test, &opt);
+	if (test->ops.test_result)
+		test->ops.test_result(test, &opt);
+
+	if (test->ops.ethdev_destroy)
+		test->ops.ethdev_destroy(test, &opt);
+
+	if (test->ops.eventdev_destroy)
+		test->ops.eventdev_destroy(test, &opt);
+
+	if (test->ops.cryptodev_destroy)
+		test->ops.cryptodev_destroy(test, &opt);
+
+	if (test->ops.mempool_destroy)
+		test->ops.mempool_destroy(test, &opt);
+
+	if (test->ops.test_destroy)
+		test->ops.test_destroy(test, &opt);
+
 nocap:
 	if (ret == EVT_TEST_SUCCESS) {
 		printf("Result: "CLGRN"%s"CLNRM"\n", "Success");
@@ -196,6 +194,10 @@ nocap:
 eventdev_destroy:
 	if (test->ops.eventdev_destroy)
 		test->ops.eventdev_destroy(test, &opt);
+
+cryptodev_destroy:
+	if (test->ops.cryptodev_destroy)
+		test->ops.cryptodev_destroy(test, &opt);
 
 ethdev_destroy:
 	if (test->ops.ethdev_destroy)

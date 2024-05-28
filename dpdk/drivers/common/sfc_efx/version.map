@@ -89,6 +89,7 @@ INTERNAL {
 	efx_mae_action_rule_insert;
 	efx_mae_action_rule_remove;
 	efx_mae_action_set_alloc;
+	efx_mae_action_set_clear_fw_rsrc_ids;
 	efx_mae_action_set_fill_in_counter_id;
 	efx_mae_action_set_fill_in_dst_mac_id;
 	efx_mae_action_set_fill_in_eh_id;
@@ -103,6 +104,7 @@ INTERNAL {
 	efx_mae_action_set_populate_encap;
 	efx_mae_action_set_populate_flag;
 	efx_mae_action_set_populate_mark;
+	efx_mae_action_set_populate_mark_reset;
 	efx_mae_action_set_populate_set_dst_mac;
 	efx_mae_action_set_populate_set_src_mac;
 	efx_mae_action_set_populate_vlan_pop;
@@ -144,6 +146,8 @@ INTERNAL {
 	efx_mae_outer_rule_remove;
 	efx_mae_read_mport_journal;
 
+	efx_mcdi_client_mac_addr_get;
+	efx_mcdi_client_mac_addr_set;
 	efx_mcdi_fini;
 	efx_mcdi_get_client_handle;
 	efx_mcdi_get_own_client_handle;
@@ -216,6 +220,7 @@ INTERNAL {
 	efx_rx_qpost;
 	efx_rx_qpush;
 	efx_rx_scale_context_alloc;
+	efx_rx_scale_context_alloc_v2;
 	efx_rx_scale_context_free;
 	efx_rx_scale_default_support_get;
 	efx_rx_scale_hash_flags_get;

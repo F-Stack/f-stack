@@ -15,6 +15,7 @@
  *
  */
 
+#include <rte_compat.h>
 #include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
 
@@ -81,6 +82,7 @@ rte_reorder_create(const char *name, unsigned socket_id, unsigned int size);
  *   The initialized reorder buffer instance, or NULL on error
  *   On error case, rte_errno will be set appropriately:
  *    - EINVAL - invalid parameters
+ *    - ENOMEM - not enough memory to register dynamic field
  */
 struct rte_reorder_buffer *
 rte_reorder_init(struct rte_reorder_buffer *b, unsigned int bufsize,
@@ -114,9 +116,8 @@ rte_reorder_reset(struct rte_reorder_buffer *b);
  * Free reorder buffer instance.
  *
  * @param b
- *   reorder buffer instance
- * @return
- *   None
+ *   Pointer to reorder buffer instance.
+ *   If b is NULL, no operation is performed.
  */
 void
 rte_reorder_free(struct rte_reorder_buffer *b);

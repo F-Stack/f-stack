@@ -6,7 +6,6 @@
 #include <rte_net.h>
 #include <rte_vect.h>
 
-#include "rte_pmd_ice.h"
 #include "ice_rxtx.h"
 #include "ice_rxtx_vec_common.h"
 
@@ -15,16 +14,11 @@
 		RTE_MBUF_F_TX_TCP_SEG |		 \
 		RTE_MBUF_F_TX_OUTER_IP_CKSUM)
 
-/* Offset of mbuf dynamic field for protocol extraction data */
-int rte_net_ice_dynfield_proto_xtr_metadata_offs = -1;
-
-/* Mask of mbuf dynamic flags for protocol extraction type */
-uint64_t rte_net_ice_dynflag_proto_xtr_vlan_mask;
-uint64_t rte_net_ice_dynflag_proto_xtr_ipv4_mask;
-uint64_t rte_net_ice_dynflag_proto_xtr_ipv6_mask;
-uint64_t rte_net_ice_dynflag_proto_xtr_ipv6_flow_mask;
-uint64_t rte_net_ice_dynflag_proto_xtr_tcp_mask;
-uint64_t rte_net_ice_dynflag_proto_xtr_ip_offset_mask;
+/**
+ * The mbuf dynamic field pointer for protocol extraction metadata.
+ */
+#define ICE_DYNF_PROTO_XTR_METADATA(m, n) \
+	RTE_MBUF_DYNFIELD((m), (n), uint32_t *)
 
 static int
 ice_monitor_callback(const uint64_t value,
@@ -160,7 +154,7 @@ ice_rxd_to_pkt_fields_by_comms_aux_v1(struct ice_rx_queue *rxq,
 		if (metadata) {
 			mb->ol_flags |= rxq->xtr_ol_flag;
 
-			*RTE_NET_ICE_DYNF_PROTO_XTR_METADATA(mb) = metadata;
+			*ICE_DYNF_PROTO_XTR_METADATA(mb, rxq->xtr_field_offs) = metadata;
 		}
 	}
 #else
@@ -200,7 +194,7 @@ ice_rxd_to_pkt_fields_by_comms_aux_v2(struct ice_rx_queue *rxq,
 		if (metadata) {
 			mb->ol_flags |= rxq->xtr_ol_flag;
 
-			*RTE_NET_ICE_DYNF_PROTO_XTR_METADATA(mb) = metadata;
+			*ICE_DYNF_PROTO_XTR_METADATA(mb, rxq->xtr_field_offs) = metadata;
 		}
 	}
 #else
@@ -226,29 +220,12 @@ ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq, uint32_t rxdid)
 
 	switch (rxdid) {
 	case ICE_RXDID_COMMS_AUX_VLAN:
-		rxq->xtr_ol_flag = rte_net_ice_dynflag_proto_xtr_vlan_mask;
-		break;
-
 	case ICE_RXDID_COMMS_AUX_IPV4:
-		rxq->xtr_ol_flag = rte_net_ice_dynflag_proto_xtr_ipv4_mask;
-		break;
-
 	case ICE_RXDID_COMMS_AUX_IPV6:
-		rxq->xtr_ol_flag = rte_net_ice_dynflag_proto_xtr_ipv6_mask;
-		break;
-
 	case ICE_RXDID_COMMS_AUX_IPV6_FLOW:
-		rxq->xtr_ol_flag = rte_net_ice_dynflag_proto_xtr_ipv6_flow_mask;
-		break;
-
 	case ICE_RXDID_COMMS_AUX_TCP:
-		rxq->xtr_ol_flag = rte_net_ice_dynflag_proto_xtr_tcp_mask;
-		break;
-
 	case ICE_RXDID_COMMS_AUX_IP_OFFSET:
-		rxq->xtr_ol_flag = rte_net_ice_dynflag_proto_xtr_ip_offset_mask;
 		break;
-
 	case ICE_RXDID_COMMS_GENERIC:
 		/* fallthrough */
 	case ICE_RXDID_COMMS_OVS:
@@ -260,7 +237,7 @@ ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq, uint32_t rxdid)
 		break;
 	}
 
-	if (!rte_net_ice_dynf_proto_xtr_metadata_avail())
+	if (rxq->xtr_field_offs == -1)
 		rxq->xtr_ol_flag = 0;
 }
 
@@ -282,8 +259,8 @@ ice_program_hw_rx_queue(struct ice_rx_queue *rxq)
 	/* Set buffer size as the head split is disabled. */
 	buf_size = (uint16_t)(rte_pktmbuf_data_room_size(rxq->mp) -
 			      RTE_PKTMBUF_HEADROOM);
-	rxq->rx_hdr_len = 0;
-	rxq->rx_buf_len = RTE_ALIGN(buf_size, (1 << ICE_RLAN_CTX_DBUF_S));
+	rxq->rx_buf_len = RTE_ALIGN_FLOOR(buf_size, (1 << ICE_RLAN_CTX_DBUF_S));
+	rxq->rx_buf_len = RTE_MIN(rxq->rx_buf_len, ICE_RX_MAX_DATA_BUF_SIZE);
 	rxq->max_pkt_len =
 		RTE_MIN((uint32_t)ICE_SUPPORT_CHAIN_NUM * rxq->rx_buf_len,
 			frame_size);
@@ -297,7 +274,7 @@ ice_program_hw_rx_queue(struct ice_rx_queue *rxq)
 		return -EINVAL;
 	}
 
-	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+	if (!rxq->ts_enable && (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 		/* Register mbuf field and flag for Rx timestamp */
 		err = rte_mbuf_dyn_rx_timestamp_register(
 				&ice_timestamp_dynfield_offset,
@@ -307,15 +284,96 @@ ice_program_hw_rx_queue(struct ice_rx_queue *rxq)
 				"Cannot register mbuf field/flag for timestamp");
 			return -EINVAL;
 		}
+		rxq->ts_enable = true;
 	}
 
 	memset(&rx_ctx, 0, sizeof(rx_ctx));
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT) {
+		uint32_t proto_hdr;
+		proto_hdr = rxq->rxseg[0].proto_hdr;
+
+		if (proto_hdr == RTE_PTYPE_UNKNOWN) {
+			PMD_DRV_LOG(ERR, "Buffer split protocol must be configured");
+			return -EINVAL;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_L4_MASK) {
+		case RTE_PTYPE_L4_TCP:
+		case RTE_PTYPE_L4_UDP:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_TCP_UDP;
+			goto set_hsplit_finish;
+		case RTE_PTYPE_L4_SCTP:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_SCTP;
+			goto set_hsplit_finish;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_L3_MASK) {
+		case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
+		case RTE_PTYPE_L3_IPV6_EXT_UNKNOWN:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_IP;
+			goto set_hsplit_finish;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_L2_MASK) {
+		case RTE_PTYPE_L2_ETHER:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_L2;
+			rx_ctx.hsplit_1 = ICE_RLAN_RX_HSPLIT_1_SPLIT_L2;
+			goto set_hsplit_finish;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_INNER_L4_MASK) {
+		case RTE_PTYPE_INNER_L4_TCP:
+		case RTE_PTYPE_INNER_L4_UDP:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_TCP_UDP;
+			goto set_hsplit_finish;
+		case RTE_PTYPE_INNER_L4_SCTP:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_SCTP;
+			goto set_hsplit_finish;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_INNER_L3_MASK) {
+		case RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN:
+		case RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_IP;
+			goto set_hsplit_finish;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_INNER_L2_MASK) {
+		case RTE_PTYPE_INNER_L2_ETHER:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_0 = ICE_RLAN_RX_HSPLIT_0_SPLIT_L2;
+			goto set_hsplit_finish;
+		}
+
+		switch (proto_hdr & RTE_PTYPE_TUNNEL_MASK) {
+		case RTE_PTYPE_TUNNEL_GRENAT:
+			rx_ctx.dtype = ICE_RX_DTYPE_HEADER_SPLIT;
+			rx_ctx.hsplit_1 = ICE_RLAN_RX_HSPLIT_1_SPLIT_ALWAYS;
+			goto set_hsplit_finish;
+		}
+
+		PMD_DRV_LOG(ERR, "Buffer split protocol is not supported");
+		return -EINVAL;
+
+set_hsplit_finish:
+		rxq->rx_hdr_len = ICE_RX_HDR_BUF_SIZE;
+	} else {
+		rxq->rx_hdr_len = 0;
+		rx_ctx.dtype = 0; /* No Protocol Based Buffer Split mode */
+	}
 
 	rx_ctx.base = rxq->rx_ring_dma / ICE_QUEUE_BASE_ADDR_UNIT;
 	rx_ctx.qlen = rxq->nb_rx_desc;
 	rx_ctx.dbuf = rxq->rx_buf_len >> ICE_RLAN_CTX_DBUF_S;
 	rx_ctx.hbuf = rxq->rx_hdr_len >> ICE_RLAN_CTX_HBUF_S;
-	rx_ctx.dtype = 0; /* No Header Split mode */
 #ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
 	rx_ctx.dsize = 1; /* 32B descriptors */
 #endif
@@ -346,7 +404,7 @@ ice_program_hw_rx_queue(struct ice_rx_queue *rxq)
 		return -EINVAL;
 	}
 
-	ice_select_rxd_to_pkt_fields_handler(rxq, rxdid);
+	rxq->rxdid = rxdid;
 
 	/* Enable Flexible Descriptors in the queue context which
 	 * allows this driver to select a specific receive descriptor format
@@ -401,6 +459,7 @@ ice_alloc_rx_queue_mbufs(struct ice_rx_queue *rxq)
 
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
 		volatile union ice_rx_flex_desc *rxd;
+		rxd = &rxq->rx_ring[i];
 		struct rte_mbuf *mbuf = rte_mbuf_raw_alloc(rxq->mp);
 
 		if (unlikely(!mbuf)) {
@@ -408,8 +467,6 @@ ice_alloc_rx_queue_mbufs(struct ice_rx_queue *rxq)
 			return -ENOMEM;
 		}
 
-		rte_mbuf_refcnt_set(mbuf, 1);
-		mbuf->next = NULL;
 		mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 		mbuf->nb_segs = 1;
 		mbuf->port = rxq->port_id;
@@ -417,9 +474,32 @@ ice_alloc_rx_queue_mbufs(struct ice_rx_queue *rxq)
 		dma_addr =
 			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
-		rxd = &rxq->rx_ring[i];
-		rxd->read.pkt_addr = dma_addr;
-		rxd->read.hdr_addr = 0;
+		if (!(rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)) {
+			rte_mbuf_refcnt_set(mbuf, 1);
+			mbuf->next = NULL;
+			rxd->read.hdr_addr = 0;
+			rxd->read.pkt_addr = dma_addr;
+		} else {
+			struct rte_mbuf *mbuf_pay;
+			mbuf_pay = rte_mbuf_raw_alloc(rxq->rxseg[1].mp);
+			if (unlikely(!mbuf_pay)) {
+				PMD_DRV_LOG(ERR, "Failed to allocate payload mbuf for RX");
+				return -ENOMEM;
+			}
+
+			mbuf_pay->next = NULL;
+			mbuf_pay->data_off = RTE_PKTMBUF_HEADROOM;
+			mbuf_pay->nb_segs = 1;
+			mbuf_pay->port = rxq->port_id;
+			mbuf->next = mbuf_pay;
+
+			rxd->read.hdr_addr = dma_addr;
+			/* The LS bit should be set to zero regardless of
+			 * buffer split enablement.
+			 */
+			rxd->read.pkt_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf_pay));
+		}
+
 #ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
 		rxd->read.rsvd1 = 0;
 		rxd->read.rsvd2 = 0;
@@ -443,14 +523,14 @@ _ice_rx_queue_release_mbufs(struct ice_rx_queue *rxq)
 
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
 		if (rxq->sw_ring[i].mbuf) {
-			rte_pktmbuf_free_seg(rxq->sw_ring[i].mbuf);
+			rte_pktmbuf_free(rxq->sw_ring[i].mbuf);
 			rxq->sw_ring[i].mbuf = NULL;
 		}
 	}
 	if (rxq->rx_nb_avail == 0)
 		return;
 	for (i = 0; i < rxq->rx_nb_avail; i++)
-		rte_pktmbuf_free_seg(rxq->rx_stage[rxq->rx_next_avail + i]);
+		rte_pktmbuf_free(rxq->rx_stage[rxq->rx_next_avail + i]);
 
 	rxq->rx_nb_avail = 0;
 }
@@ -592,6 +672,8 @@ ice_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		return -EINVAL;
 	}
 
+	if (dev->data->dev_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+		rxq->ts_enable = true;
 	err = ice_program_hw_rx_queue(rxq);
 	if (err) {
 		PMD_DRV_LOG(ERR, "fail to program RX queue %u",
@@ -742,7 +824,7 @@ ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
 	rx_ctx.qlen = rxq->nb_rx_desc;
 	rx_ctx.dbuf = rxq->rx_buf_len >> ICE_RLAN_CTX_DBUF_S;
 	rx_ctx.hbuf = rxq->rx_hdr_len >> ICE_RLAN_CTX_HBUF_S;
-	rx_ctx.dtype = 0; /* No Header Split mode */
+	rx_ctx.dtype = 0; /* No Buffer Split mode */
 	rx_ctx.dsize = 1; /* 32B descriptors */
 	rx_ctx.rxmax = ICE_ETH_MAX_LEN;
 	/* TPH: Transaction Layer Packet (TLP) processing hints */
@@ -1076,6 +1158,8 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	uint16_t len;
 	int use_def_burst_func = 1;
 	uint64_t offloads;
+	uint16_t n_seg = rx_conf->rx_nseg;
+	uint16_t i;
 
 	if (nb_desc % ICE_ALIGN_RING_DESC != 0 ||
 	    nb_desc > ICE_MAX_RING_DESC ||
@@ -1086,6 +1170,15 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	offloads = rx_conf->offloads | dev->data->dev_conf.rxmode.offloads;
+
+	if (mp)
+		n_seg = 1;
+
+	if (n_seg > 1 && !(offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)) {
+		PMD_INIT_LOG(ERR, "port %u queue index %u split offload not configured",
+				dev->data->port_id, queue_idx);
+		return -EINVAL;
+	}
 
 	/* Free memory if needed */
 	if (dev->data->rx_queues[queue_idx]) {
@@ -1098,12 +1191,24 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 				 sizeof(struct ice_rx_queue),
 				 RTE_CACHE_LINE_SIZE,
 				 socket_id);
+
 	if (!rxq) {
 		PMD_INIT_LOG(ERR, "Failed to allocate memory for "
 			     "rx queue data structure");
 		return -ENOMEM;
 	}
-	rxq->mp = mp;
+
+	rxq->rxseg_nb = n_seg;
+	if (n_seg > 1) {
+		for (i = 0; i < n_seg; i++)
+			memcpy(&rxq->rxseg[i], &rx_conf->rx_seg[i].split,
+				sizeof(struct rte_eth_rxseg_split));
+
+		rxq->mp = rxq->rxseg[0].mp;
+	} else {
+		rxq->mp = mp;
+	}
+
 	rxq->nb_rx_desc = nb_desc;
 	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
 	rxq->queue_id = queue_idx;
@@ -1121,6 +1226,10 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 	rxq->proto_xtr = pf->proto_xtr != NULL ?
 			 pf->proto_xtr[queue_idx] : PROTO_XTR_NONE;
+	if (rxq->proto_xtr != PROTO_XTR_NONE &&
+			ad->devargs.xtr_flag_offs[rxq->proto_xtr] != 0xff)
+		rxq->xtr_ol_flag = 1ULL << ad->devargs.xtr_flag_offs[rxq->proto_xtr];
+	rxq->xtr_field_offs = ad->devargs.xtr_field_offs;
 
 	/* Allocate the maximum number of RX ring hardware descriptor. */
 	len = ICE_MAX_RING_DESC;
@@ -1197,7 +1306,8 @@ ice_rx_queue_release(void *rxq)
 		return;
 	}
 
-	q->rx_rel_mbufs(q);
+	if (q->rx_rel_mbufs != NULL)
+		q->rx_rel_mbufs(q);
 	rte_free(q->sw_ring);
 	rte_memzone_free(q->mz);
 	rte_free(q);
@@ -1407,7 +1517,8 @@ ice_tx_queue_release(void *txq)
 		return;
 	}
 
-	q->tx_rel_mbufs(q);
+	if (q->tx_rel_mbufs != NULL)
+		q->tx_rel_mbufs(q);
 	rte_free(q->sw_ring);
 	rte_memzone_free(q->mz);
 	rte_free(q);
@@ -1497,7 +1608,9 @@ ice_rxd_error_to_pkt_flags(uint16_t stat_err0)
 		return 0;
 
 	if (likely(!(stat_err0 & ICE_RX_FLEX_ERR0_BITS))) {
-		flags |= (RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD);
+		flags |= (RTE_MBUF_F_RX_IP_CKSUM_GOOD |
+			  RTE_MBUF_F_RX_L4_CKSUM_GOOD |
+			  RTE_MBUF_F_RX_OUTER_L4_CKSUM_GOOD);
 		return flags;
 	}
 
@@ -1568,7 +1681,7 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 	struct ice_rx_entry *rxep;
 	struct rte_mbuf *mb;
 	uint16_t stat_err0;
-	uint16_t pkt_len;
+	uint16_t pkt_len, hdr_len;
 	int32_t s[ICE_LOOK_AHEAD], nb_dd;
 	int32_t i, j, nb_rx = 0;
 	uint64_t pkt_flags = 0;
@@ -1623,6 +1736,27 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 				   ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
 			mb->data_len = pkt_len;
 			mb->pkt_len = pkt_len;
+
+			if (!(rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)) {
+				pkt_len = (rte_le_to_cpu_16(rxdp[j].wb.pkt_len) &
+					ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
+				mb->data_len = pkt_len;
+				mb->pkt_len = pkt_len;
+			} else {
+				mb->nb_segs = (uint16_t)(mb->nb_segs + mb->next->nb_segs);
+				mb->next->next = NULL;
+				hdr_len = rte_le_to_cpu_16(rxdp[j].wb.hdr_len_sph_flex_flags1) &
+						ICE_RX_FLEX_DESC_HEADER_LEN_M;
+				pkt_len = (rte_le_to_cpu_16(rxdp[j].wb.pkt_len) &
+					ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
+				mb->data_len = hdr_len;
+				mb->pkt_len = hdr_len + pkt_len;
+				mb->next->data_len = pkt_len;
+#ifdef RTE_ETHDEV_DEBUG_RX
+				rte_pktmbuf_dump(stdout, mb, rte_pktmbuf_pkt_len(mb));
+#endif
+			}
+
 			mb->ol_flags = 0;
 			stat_err0 = rte_le_to_cpu_16(rxdp[j].wb.status_error0);
 			pkt_flags = ice_rxd_error_to_pkt_flags(stat_err0);
@@ -1631,7 +1765,8 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 			ice_rxd_to_vlan_tci(mb, &rxdp[j]);
 			rxd_to_pkt_fields_ops[rxq->rxdid](rxq, mb, &rxdp[j]);
 #ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-			if (ice_timestamp_dynflag > 0) {
+			if (ice_timestamp_dynflag > 0 &&
+			    (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 				rxq->time_high =
 				rte_le_to_cpu_32(rxdp[j].wb.flex_ts.ts_high);
 				if (unlikely(is_tsinit)) {
@@ -1714,7 +1849,9 @@ ice_rx_alloc_bufs(struct ice_rx_queue *rxq)
 	struct rte_mbuf *mb;
 	uint16_t alloc_idx, i;
 	uint64_t dma_addr;
-	int diag;
+	int diag, diag_pay;
+	uint64_t pay_addr;
+	struct rte_mbuf *mbufs_pay[rxq->rx_free_thresh];
 
 	/* Allocate buffers in bulk */
 	alloc_idx = (uint16_t)(rxq->rx_free_trigger -
@@ -1727,6 +1864,15 @@ ice_rx_alloc_bufs(struct ice_rx_queue *rxq)
 		return -ENOMEM;
 	}
 
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT) {
+		diag_pay = rte_mempool_get_bulk(rxq->rxseg[1].mp,
+				(void *)mbufs_pay, rxq->rx_free_thresh);
+		if (unlikely(diag_pay != 0)) {
+			PMD_RX_LOG(ERR, "Failed to get payload mbufs in bulk");
+			return -ENOMEM;
+		}
+	}
+
 	rxdp = &rxq->rx_ring[alloc_idx];
 	for (i = 0; i < rxq->rx_free_thresh; i++) {
 		if (likely(i < (rxq->rx_free_thresh - 1)))
@@ -1735,13 +1881,21 @@ ice_rx_alloc_bufs(struct ice_rx_queue *rxq)
 
 		mb = rxep[i].mbuf;
 		rte_mbuf_refcnt_set(mb, 1);
-		mb->next = NULL;
 		mb->data_off = RTE_PKTMBUF_HEADROOM;
 		mb->nb_segs = 1;
 		mb->port = rxq->port_id;
 		dma_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mb));
-		rxdp[i].read.hdr_addr = 0;
-		rxdp[i].read.pkt_addr = dma_addr;
+
+		if (!(rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)) {
+			mb->next = NULL;
+			rxdp[i].read.hdr_addr = 0;
+			rxdp[i].read.pkt_addr = dma_addr;
+		} else {
+			mb->next = mbufs_pay[i];
+			pay_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbufs_pay[i]));
+			rxdp[i].read.hdr_addr = dma_addr;
+			rxdp[i].read.pkt_addr = pay_addr;
+		}
 	}
 
 	/* Update Rx tail register */
@@ -1964,6 +2118,10 @@ ice_recv_scattered_pkts(void *rx_queue,
 			} else
 				rxm->data_len = (uint16_t)(rx_packet_len -
 							   RTE_ETHER_CRC_LEN);
+		} else if (rx_packet_len == 0) {
+			rte_pktmbuf_free_seg(rxm);
+			first_seg->nb_segs--;
+			last_seg->next = NULL;
 		}
 
 		first_seg->port = rxq->port_id;
@@ -1974,7 +2132,8 @@ ice_recv_scattered_pkts(void *rx_queue,
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, first_seg, &rxd);
 		pkt_flags = ice_rxd_error_to_pkt_flags(rx_stat_err0);
 #ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-		if (ice_timestamp_dynflag > 0) {
+		if (ice_timestamp_dynflag > 0 &&
+		    (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 			rxq->time_high =
 			   rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high);
 			if (unlikely(is_tsinit)) {
@@ -2350,11 +2509,13 @@ ice_recv_pkts(void *rx_queue,
 	struct ice_rx_entry *sw_ring = rxq->sw_ring;
 	struct ice_rx_entry *rxe;
 	struct rte_mbuf *nmb; /* new allocated mbuf */
+	struct rte_mbuf *nmb_pay; /* new allocated payload mbuf */
 	struct rte_mbuf *rxm; /* pointer to store old mbuf in SW ring */
 	uint16_t rx_id = rxq->rx_tail;
 	uint16_t nb_rx = 0;
 	uint16_t nb_hold = 0;
 	uint16_t rx_packet_len;
+	uint16_t rx_header_len;
 	uint16_t rx_stat_err0;
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
@@ -2382,12 +2543,13 @@ ice_recv_pkts(void *rx_queue,
 		if (!(rx_stat_err0 & (1 << ICE_RX_FLEX_DESC_STATUS0_DD_S)))
 			break;
 
-		/* allocate mbuf */
+		/* allocate header mbuf */
 		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb)) {
 			rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
 			break;
 		}
+
 		rxd = *rxdp; /* copy descriptor in ring to temp variable*/
 
 		nb_hold++;
@@ -2400,24 +2562,60 @@ ice_recv_pkts(void *rx_queue,
 		dma_addr =
 			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 
-		/**
-		 * fill the read format of descriptor with physic address in
-		 * new allocated mbuf: nmb
-		 */
-		rxdp->read.hdr_addr = 0;
-		rxdp->read.pkt_addr = dma_addr;
+		if (!(rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)) {
+			/**
+			 * fill the read format of descriptor with physic address in
+			 * new allocated mbuf: nmb
+			 */
+			rxdp->read.hdr_addr = 0;
+			rxdp->read.pkt_addr = dma_addr;
+		} else {
+			/* allocate payload mbuf */
+			nmb_pay = rte_mbuf_raw_alloc(rxq->rxseg[1].mp);
+			if (unlikely(!nmb_pay)) {
+				rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
+				break;
+			}
 
-		/* calculate rx_packet_len of the received pkt */
-		rx_packet_len = (rte_le_to_cpu_16(rxd.wb.pkt_len) &
-				 ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
+			nmb->next = nmb_pay;
+			nmb_pay->next = NULL;
+
+			/**
+			 * fill the read format of descriptor with physic address in
+			 * new allocated mbuf: nmb
+			 */
+			rxdp->read.hdr_addr = dma_addr;
+			rxdp->read.pkt_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb_pay));
+		}
 
 		/* fill old mbuf with received descriptor: rxd */
 		rxm->data_off = RTE_PKTMBUF_HEADROOM;
 		rte_prefetch0(RTE_PTR_ADD(rxm->buf_addr, RTE_PKTMBUF_HEADROOM));
-		rxm->nb_segs = 1;
-		rxm->next = NULL;
-		rxm->pkt_len = rx_packet_len;
-		rxm->data_len = rx_packet_len;
+		if (!(rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)) {
+			rxm->nb_segs = 1;
+			rxm->next = NULL;
+			/* calculate rx_packet_len of the received pkt */
+			rx_packet_len = (rte_le_to_cpu_16(rxd.wb.pkt_len) &
+					ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
+			rxm->data_len = rx_packet_len;
+			rxm->pkt_len = rx_packet_len;
+		} else {
+			rxm->nb_segs = (uint16_t)(rxm->nb_segs + rxm->next->nb_segs);
+			rxm->next->next = NULL;
+			/* calculate rx_packet_len of the received pkt */
+			rx_header_len = rte_le_to_cpu_16(rxd.wb.hdr_len_sph_flex_flags1) &
+					ICE_RX_FLEX_DESC_HEADER_LEN_M;
+			rx_packet_len = (rte_le_to_cpu_16(rxd.wb.pkt_len) &
+					ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
+			rxm->data_len = rx_header_len;
+			rxm->pkt_len = rx_header_len + rx_packet_len;
+			rxm->next->data_len = rx_packet_len;
+
+#ifdef RTE_ETHDEV_DEBUG_RX
+			rte_pktmbuf_dump(stdout, rxm, rte_pktmbuf_pkt_len(rxm));
+#endif
+		}
+
 		rxm->port = rxq->port_id;
 		rxm->packet_type = ptype_tbl[ICE_RX_FLEX_DESC_PTYPE_M &
 			rte_le_to_cpu_16(rxd.wb.ptype_flex_flags0)];
@@ -2425,7 +2623,8 @@ ice_recv_pkts(void *rx_queue,
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, rxm, &rxd);
 		pkt_flags = ice_rxd_error_to_pkt_flags(rx_stat_err0);
 #ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-		if (ice_timestamp_dynflag > 0) {
+		if (ice_timestamp_dynflag > 0 &&
+		    (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 			rxq->time_high =
 			   rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high);
 			if (unlikely(is_tsinit)) {
@@ -2504,6 +2703,7 @@ ice_parse_tunneling_params(uint64_t ol_flags,
 		/* for non UDP / GRE tunneling, set to 00b */
 		break;
 	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE:
 	case RTE_MBUF_F_TX_TUNNEL_GTP:
 	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
 		*cd_tunneling |= ICE_TXD_CTX_UDP_TUNNELING;
@@ -2534,7 +2734,8 @@ ice_parse_tunneling_params(uint64_t ol_flags,
 	 * Shall be set only if L4TUNT = 01b and EIPT is not zero
 	 */
 	if (!(*cd_tunneling & ICE_TX_CTX_EIPT_NONE) &&
-	    (*cd_tunneling & ICE_TXD_CTX_UDP_TUNNELING))
+		(*cd_tunneling & ICE_TXD_CTX_UDP_TUNNELING) &&
+		(ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
 		*cd_tunneling |= ICE_TXD_CTX_QW0_L4T_CS_M;
 }
 
@@ -2545,10 +2746,7 @@ ice_txd_enable_checksum(uint64_t ol_flags,
 			union ice_tx_offload tx_offload)
 {
 	/* Set MACLEN */
-	if (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
-		*td_offset |= (tx_offload.outer_l2_len >> 1)
-			<< ICE_TX_DESC_LEN_MACLEN_S;
-	else
+	if (!(ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK))
 		*td_offset |= (tx_offload.l2_len >> 1)
 			<< ICE_TX_DESC_LEN_MACLEN_S;
 
@@ -2809,9 +3007,12 @@ ice_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		/* Fill in tunneling parameters if necessary */
 		cd_tunneling_params = 0;
-		if (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
+		if (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+			td_offset |= (tx_offload.outer_l2_len >> 1)
+				<< ICE_TX_DESC_LEN_MACLEN_S;
 			ice_parse_tunneling_params(ol_flags, tx_offload,
 						   &cd_tunneling_params);
+		}
 
 		/* Enable checksum offloading */
 		if (ol_flags & ICE_TX_CKSUM_OFFLOAD_MASK)
@@ -3452,6 +3653,22 @@ ice_set_tx_function_flag(struct rte_eth_dev *dev, struct ice_tx_queue *txq)
 #define ICE_MIN_TSO_MSS            64
 #define ICE_MAX_TSO_MSS            9728
 #define ICE_MAX_TSO_FRAME_SIZE     262144
+
+/*Check for empty mbuf*/
+static inline uint16_t
+ice_check_empty_mbuf(struct rte_mbuf *tx_pkt)
+{
+	struct rte_mbuf *txd = tx_pkt;
+
+	while (txd != NULL) {
+		if (txd->data_len == 0)
+			return -1;
+		txd = txd->next;
+	}
+
+	return 0;
+}
+
 uint16_t
 ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	      uint16_t nb_pkts)
@@ -3459,6 +3676,9 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	int i, ret;
 	uint64_t ol_flags;
 	struct rte_mbuf *m;
+	struct ice_tx_queue *txq = tx_queue;
+	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
+	uint16_t max_frame_size = dev->data->mtu + ICE_ETH_OVERHEAD;
 
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
@@ -3475,6 +3695,14 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
+		/* check the data_len in mbuf */
+		if (m->data_len < ICE_TX_MIN_PKT_LEN ||
+			m->data_len > max_frame_size) {
+			rte_errno = EINVAL;
+			PMD_DRV_LOG(ERR, "INVALID mbuf: bad data_len=[%hu]", m->data_len);
+			return i;
+		}
+
 #ifdef RTE_ETHDEV_DEBUG_TX
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
@@ -3485,6 +3713,12 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
 			rte_errno = -ret;
+			return i;
+		}
+
+		if (ice_check_empty_mbuf(m) != 0) {
+			rte_errno = EINVAL;
+			PMD_DRV_LOG(ERR, "INVALID mbuf:	last mbuf data_len=[0]");
 			return i;
 		}
 	}

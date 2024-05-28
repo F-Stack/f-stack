@@ -4,7 +4,9 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <rte_eal.h>
 #include <ethdev_driver.h>
@@ -134,15 +136,19 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 			mlx4_tx_uar_uninit_secondary(dev);
 			mlx4_proc_priv_uninit(dev);
 			ret = mlx4_proc_priv_init(dev);
-			if (ret)
+			if (ret) {
+				close(mp_msg->fds[0]);
 				return -rte_errno;
+			}
 			ret = mlx4_tx_uar_init_secondary(dev, mp_msg->fds[0]);
 			if (ret) {
+				close(mp_msg->fds[0]);
 				mlx4_proc_priv_uninit(dev);
 				return -rte_errno;
 			}
 		}
 #endif
+		close(mp_msg->fds[0]);
 		rte_mb();
 		mp_init_msg(dev, &mp_res, param->type);
 		res->result = 0;
@@ -150,8 +156,8 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 		break;
 	case MLX4_MP_REQ_STOP_RXTX:
 		INFO("port %u stopping datapath", dev->data->port_id);
-		dev->tx_pkt_burst = mlx4_tx_burst_removed;
-		dev->rx_pkt_burst = mlx4_rx_burst_removed;
+		dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
+		dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 		rte_mb();
 		mp_init_msg(dev, &mp_res, param->type);
 		res->result = 0;

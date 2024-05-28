@@ -47,14 +47,6 @@ rhead_virtio_qstart(
 		goto fail2;
 	}
 
-	if (evvdp != NULL) {
-		if ((evvdp->evvd_vq_cidx > evvcp->evvc_vq_size) ||
-		    (evvdp->evvd_vq_pidx > evvcp->evvc_vq_size)) {
-			rc = EINVAL;
-			goto fail3;
-		}
-	}
-
 	req.emr_cmd = MC_CMD_VIRTIO_INIT_QUEUE;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_VIRTIO_INIT_QUEUE_REQ_LEN;
@@ -103,10 +95,10 @@ rhead_virtio_qstart(
 		evvcp->evcc_features >> 32);
 
 	if (evvdp != NULL) {
-		MCDI_IN_SET_DWORD(req, VIRTIO_INIT_QUEUE_REQ_INITIAL_PIDX,
-			evvdp->evvd_vq_pidx);
-		MCDI_IN_SET_DWORD(req, VIRTIO_INIT_QUEUE_REQ_INITIAL_CIDX,
-			evvdp->evvd_vq_cidx);
+		MCDI_IN_SET_DWORD(req, VIRTIO_INIT_QUEUE_REQ_INITIAL_AVAIL_IDX,
+			evvdp->evvd_vq_avail_idx);
+		MCDI_IN_SET_DWORD(req, VIRTIO_INIT_QUEUE_REQ_INITIAL_USED_IDX,
+			evvdp->evvd_vq_used_idx);
 	}
 
 	MCDI_IN_SET_DWORD(req, VIRTIO_INIT_QUEUE_REQ_MPORT_SELECTOR,
@@ -116,15 +108,13 @@ rhead_virtio_qstart(
 
 	if (req.emr_rc != 0) {
 		rc = req.emr_rc;
-		goto fail4;
+		goto fail3;
 	}
 
 	evvp->evv_vi_index = vi_index;
 
 	return (0);
 
-fail4:
-	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:
@@ -171,10 +161,10 @@ rhead_virtio_qstop(
 	}
 
 	if (evvdp != NULL) {
-		evvdp->evvd_vq_pidx =
-		    MCDI_OUT_DWORD(req, VIRTIO_FINI_QUEUE_RESP_FINAL_PIDX);
-		evvdp->evvd_vq_cidx =
-		    MCDI_OUT_DWORD(req, VIRTIO_FINI_QUEUE_RESP_FINAL_CIDX);
+		evvdp->evvd_vq_avail_idx =
+		    MCDI_OUT_DWORD(req, VIRTIO_FINI_QUEUE_RESP_FINAL_AVAIL_IDX);
+		evvdp->evvd_vq_used_idx =
+		    MCDI_OUT_DWORD(req, VIRTIO_FINI_QUEUE_RESP_FINAL_USED_IDX);
 	}
 
 	return (0);

@@ -159,33 +159,6 @@ The command line options are:
     The default port is the port 9 which is defined for the discard protocol
     (RFC 863).
 
-*   ``--pkt-filter-mode=mode``
-
-    Set Flow Director mode where mode is either ``none`` (the default), ``signature`` or ``perfect``.
-    See :ref:`testpmd_flow_director` for more details.
-
-*   ``--pkt-filter-report-hash=mode``
-
-    Set Flow Director hash match reporting mode where mode is ``none``, ``match`` (the default) or ``always``.
-
-*   ``--pkt-filter-size=N``
-
-    Set Flow Director allocated memory size, where N is 64K, 128K or 256K.
-    Sizes are in kilobytes. The default is 64.
-
-*   ``--pkt-filter-flexbytes-offset=N``
-
-    Set the flexbytes offset.
-    The offset is defined in words (not bytes) counted from the first byte of the destination Ethernet MAC address,
-    where N is 0 <= N <= 32.
-    The default value is 0x6.
-
-*   ``--pkt-filter-drop-queue=N``
-
-    Set the drop-queue.
-    In perfect filter mode, when a rule is added with queue = -1, the packet will be enqueued into the RX drop-queue.
-    If the drop-queue does not exist, the packet is dropped. The default value is N=127.
-
 *   ``--disable-crc-strip``
 
     Disable hardware CRC stripping.
@@ -392,6 +365,10 @@ The command line options are:
     Set TX segment sizes or total packet length. Valid for ``tx-only``
     and ``flowgen`` forwarding modes.
 
+* ``--multi-rx-mempool``
+
+    Enable multiple mbuf pools per Rx queue.
+
 *   ``--txonly-multi-flow``
 
     Generate multiple flows in txonly mode.
@@ -441,12 +418,12 @@ The command line options are:
 
     Set the logical core N to perform bitrate calculation.
 
-*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|all>``
+*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|err_recovering|recovery_success|recovery_failed|all>``
 
     Enable printing the occurrence of the designated event. Using all will
     enable all of them.
 
-*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|all>``
+*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|err_recovering|recovery_success|recovery_failed|all>``
 
     Disable printing the occurrence of the designated event. Using all will
     disable all of them.
@@ -556,10 +533,16 @@ The command line options are:
 
     Enable display of RX and TX burst stats.
 
-*   ``--hairpin-mode=0xXX``
+*   ``--hairpin-mode=0xXXXX``
 
-    Set the hairpin port mode with bitmask, only valid when hairpin queues number is set::
+    Set the hairpin port configuration with bitmask, only valid when hairpin queues number is set::
 
+	bit 18 - hairpin TX queues will use RTE memory
+	bit 16 - hairpin TX queues will use locked device memory
+	bit 13 - hairpin RX queues will use RTE memory
+	bit 12 - hairpin RX queues will use locked device memory
+	bit 9 - force memory settings of hairpin TX queue
+	bit 8 - force memory settings of hairpin RX queue
 	bit 4 - explicit Tx flow rule
 	bit 1 - two hairpin ports paired
 	bit 0 - two hairpin ports loop
@@ -621,6 +604,7 @@ as follows:
 - ``dev_configure``
 - ``dev_start``
 - ``dev_stop``
+- ``dev_reset``
 - ``rx_queue_setup``
 - ``tx_queue_setup``
 - ``rx_queue_release``

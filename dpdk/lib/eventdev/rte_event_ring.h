@@ -21,8 +21,6 @@ extern "C" {
 #include <stdint.h>
 
 #include <rte_common.h>
-#include <rte_memory.h>
-#include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_ring_elem.h>
 #include "rte_eventdev.h"
@@ -236,7 +234,8 @@ rte_event_ring_lookup(const char *name);
  * De-allocate all memory used by the ring.
  *
  * @param r
- *   Ring to free
+ *   Pointer to ring to created with rte_event_ring_create().
+ *   If r is NULL, no operation is performed.
  */
 void
 rte_event_ring_free(struct rte_event_ring *r);

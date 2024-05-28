@@ -32,6 +32,7 @@
 #include <rte_mempool.h>
 
 extern int enable_kni;
+extern int nb_dev_ports;
 
 enum FilterReturn {
     FILTER_UNKNOWN = -1,
@@ -42,10 +43,10 @@ enum FilterReturn {
 #endif
 };
 
-void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
+void ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports,
     const char *udp_ports);
 
-void ff_kni_alloc(uint16_t port_id, unsigned socket_id,
+void ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
     struct rte_mempool *mbuf_pool, unsigned ring_queue_size);
 
 void ff_kni_process(uint16_t port_id, uint16_t queue_id,

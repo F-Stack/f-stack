@@ -5,6 +5,7 @@
 #include <net/if.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 
@@ -12,7 +13,8 @@
 #include <rte_log.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
+#include <rte_eal_paging.h>
 
 #include <mlx5_glue.h>
 #include <mlx5_common.h>
@@ -48,6 +50,10 @@
 TAILQ_HEAD(mlx5_vdpa_privs, mlx5_vdpa_priv) priv_list =
 					      TAILQ_HEAD_INITIALIZER(priv_list);
 static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+struct mlx5_vdpa_conf_thread_mng conf_thread_mng;
+
+static void mlx5_vdpa_dev_release(struct mlx5_vdpa_priv *priv);
 
 static struct mlx5_vdpa_priv *
 mlx5_vdpa_find_priv_resource_by_vdev(struct rte_vdpa_device *vdev)
@@ -132,6 +138,7 @@ mlx5_vdpa_set_vring_state(int vid, int vring, int state)
 	struct rte_vdpa_device *vdev = rte_vhost_get_vdpa_device(vid);
 	struct mlx5_vdpa_priv *priv =
 		mlx5_vdpa_find_priv_resource_by_vdev(vdev);
+	struct mlx5_vdpa_virtq *virtq;
 	int ret;
 
 	if (priv == NULL) {
@@ -142,9 +149,10 @@ mlx5_vdpa_set_vring_state(int vid, int vring, int state)
 		DRV_LOG(ERR, "Too big vring id: %d.", vring);
 		return -E2BIG;
 	}
-	pthread_mutex_lock(&priv->vq_config_lock);
+	virtq = &priv->virtqs[vring];
+	pthread_mutex_lock(&virtq->virtq_lock);
 	ret = mlx5_vdpa_virtq_enable(priv, vring, state);
-	pthread_mutex_unlock(&priv->vq_config_lock);
+	pthread_mutex_unlock(&virtq->virtq_lock);
 	return ret;
 }
 
@@ -238,32 +246,101 @@ mlx5_vdpa_mtu_set(struct mlx5_vdpa_priv *priv)
 	return kern_mtu == vhost_mtu ? 0 : -1;
 }
 
+void
+mlx5_vdpa_dev_cache_clean(struct mlx5_vdpa_priv *priv)
+{
+	/* Clean pre-created resource in dev removal only. */
+	if (!priv->queues)
+		mlx5_vdpa_virtqs_cleanup(priv);
+	mlx5_vdpa_mem_dereg(priv);
+}
+
+static bool
+mlx5_vdpa_wait_dev_close_tasks_done(struct mlx5_vdpa_priv *priv)
+{
+	uint32_t timeout = 0;
+
+	/* Check and wait all close tasks done. */
+	while (__atomic_load_n(&priv->dev_close_progress,
+		__ATOMIC_RELAXED) != 0 && timeout < 1000) {
+		rte_delay_us_sleep(10000);
+		timeout++;
+	}
+	if (priv->dev_close_progress) {
+		DRV_LOG(ERR,
+		"Failed to wait close device tasks done vid %d.",
+		priv->vid);
+		return true;
+	}
+	return false;
+}
+
+static int
+_internal_mlx5_vdpa_dev_close(struct mlx5_vdpa_priv *priv,
+		bool release_resource)
+{
+	int ret = 0;
+	int vid = priv->vid;
+
+	mlx5_vdpa_cqe_event_unset(priv);
+	if (priv->state == MLX5_VDPA_STATE_CONFIGURED) {
+		ret |= mlx5_vdpa_lm_log(priv);
+		priv->state = MLX5_VDPA_STATE_IN_PROGRESS;
+	}
+	if (priv->use_c_thread && !release_resource) {
+		if (priv->last_c_thrd_idx >=
+			(conf_thread_mng.max_thrds - 1))
+			priv->last_c_thrd_idx = 0;
+		else
+			priv->last_c_thrd_idx++;
+		__atomic_store_n(&priv->dev_close_progress,
+			1, __ATOMIC_RELAXED);
+		if (mlx5_vdpa_task_add(priv,
+			priv->last_c_thrd_idx,
+			MLX5_VDPA_TASK_DEV_CLOSE_NOWAIT,
+			NULL, NULL, NULL, 1)) {
+			DRV_LOG(ERR,
+			"Fail to add dev close task. ");
+			goto single_thrd;
+		}
+		priv->state = MLX5_VDPA_STATE_PROBED;
+		DRV_LOG(INFO, "vDPA device %d was closed.", vid);
+		return ret;
+	}
+single_thrd:
+	pthread_mutex_lock(&priv->steer_update_lock);
+	mlx5_vdpa_steer_unset(priv);
+	pthread_mutex_unlock(&priv->steer_update_lock);
+	mlx5_vdpa_virtqs_release(priv, release_resource);
+	mlx5_vdpa_drain_cq(priv);
+	if (priv->lm_mr.addr)
+		mlx5_os_wrapped_mkey_destroy(&priv->lm_mr);
+	if (!priv->connected)
+		mlx5_vdpa_dev_cache_clean(priv);
+	priv->vid = 0;
+	__atomic_store_n(&priv->dev_close_progress, 0,
+		__ATOMIC_RELAXED);
+	priv->state = MLX5_VDPA_STATE_PROBED;
+	DRV_LOG(INFO, "vDPA device %d was closed.", vid);
+	return ret;
+}
+
 static int
 mlx5_vdpa_dev_close(int vid)
 {
 	struct rte_vdpa_device *vdev = rte_vhost_get_vdpa_device(vid);
-	struct mlx5_vdpa_priv *priv =
-		mlx5_vdpa_find_priv_resource_by_vdev(vdev);
-	int ret = 0;
+	struct mlx5_vdpa_priv *priv;
 
+	if (!vdev) {
+		DRV_LOG(ERR, "Invalid vDPA device.");
+		return -1;
+	}
+	priv = mlx5_vdpa_find_priv_resource_by_vdev(vdev);
 	if (priv == NULL) {
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -1;
 	}
-	mlx5_vdpa_err_event_unset(priv);
-	mlx5_vdpa_cqe_event_unset(priv);
-	if (priv->configured)
-		ret |= mlx5_vdpa_lm_log(priv);
-	mlx5_vdpa_steer_unset(priv);
-	mlx5_vdpa_virtqs_release(priv);
-	mlx5_vdpa_event_qp_global_release(priv);
-	mlx5_vdpa_mem_dereg(priv);
-	priv->configured = 0;
-	priv->vid = 0;
-	/* The mutex may stay locked after event thread cancel - initiate it. */
-	pthread_mutex_init(&priv->vq_config_lock, NULL);
-	DRV_LOG(INFO, "vDPA device %d was closed.", vid);
-	return ret;
+	return _internal_mlx5_vdpa_dev_close(priv, false);
 }
 
 static int
@@ -277,21 +354,25 @@ mlx5_vdpa_dev_config(int vid)
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -EINVAL;
 	}
-	if (priv->configured && mlx5_vdpa_dev_close(vid)) {
+	if (priv->state == MLX5_VDPA_STATE_CONFIGURED &&
+	    mlx5_vdpa_dev_close(vid)) {
 		DRV_LOG(ERR, "Failed to reconfigure vid %d.", vid);
 		return -1;
 	}
+	if (mlx5_vdpa_wait_dev_close_tasks_done(priv))
+		return -1;
 	priv->vid = vid;
+	priv->connected = true;
 	if (mlx5_vdpa_mtu_set(priv))
 		DRV_LOG(WARNING, "MTU cannot be set on device %s.",
 				vdev->device->name);
-	if (mlx5_vdpa_mem_register(priv) || mlx5_vdpa_err_event_setup(priv) ||
+	if (mlx5_vdpa_mem_register(priv) ||
 	    mlx5_vdpa_virtqs_prepare(priv) || mlx5_vdpa_steer_setup(priv) ||
 	    mlx5_vdpa_cqe_event_setup(priv)) {
 		mlx5_vdpa_dev_close(vid);
 		return -1;
 	}
-	priv->configured = 1;
+	priv->state = MLX5_VDPA_STATE_CONFIGURED;
 	DRV_LOG(INFO, "vDPA device %d was configured.", vid);
 	return 0;
 }
@@ -373,12 +454,7 @@ mlx5_vdpa_get_stats(struct rte_vdpa_device *vdev, int qid,
 		DRV_LOG(ERR, "Invalid device: %s.", vdev->device->name);
 		return -ENODEV;
 	}
-	if (!priv->configured) {
-		DRV_LOG(ERR, "Device %s was not configured.",
-				vdev->device->name);
-		return -ENODATA;
-	}
-	if (qid >= (int)priv->nr_virtqs) {
+	if (qid >= (int)priv->caps.max_num_virtio_queues) {
 		DRV_LOG(ERR, "Too big vring id: %d for device %s.", qid,
 				vdev->device->name);
 		return -E2BIG;
@@ -401,12 +477,7 @@ mlx5_vdpa_reset_stats(struct rte_vdpa_device *vdev, int qid)
 		DRV_LOG(ERR, "Invalid device: %s.", vdev->device->name);
 		return -ENODEV;
 	}
-	if (!priv->configured) {
-		DRV_LOG(ERR, "Device %s was not configured.",
-				vdev->device->name);
-		return -ENODATA;
-	}
-	if (qid >= (int)priv->nr_virtqs) {
+	if (qid >= (int)priv->caps.max_num_virtio_queues) {
 		DRV_LOG(ERR, "Too big vring id: %d for device %s.", qid,
 				vdev->device->name);
 		return -E2BIG;
@@ -419,12 +490,35 @@ mlx5_vdpa_reset_stats(struct rte_vdpa_device *vdev, int qid)
 	return mlx5_vdpa_virtq_stats_reset(priv, qid);
 }
 
+static int
+mlx5_vdpa_dev_cleanup(int vid)
+{
+	struct rte_vdpa_device *vdev = rte_vhost_get_vdpa_device(vid);
+	struct mlx5_vdpa_priv *priv;
+
+	if (vdev == NULL)
+		return -1;
+	priv = mlx5_vdpa_find_priv_resource_by_vdev(vdev);
+	if (priv == NULL) {
+		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
+		return -1;
+	}
+	if (priv->state == MLX5_VDPA_STATE_PROBED) {
+		if (priv->use_c_thread)
+			mlx5_vdpa_wait_dev_close_tasks_done(priv);
+		mlx5_vdpa_dev_cache_clean(priv);
+	}
+	priv->connected = false;
+	return 0;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_queue_num = mlx5_vdpa_get_queue_num,
 	.get_features = mlx5_vdpa_get_vdpa_features,
 	.get_protocol_features = mlx5_vdpa_get_protocol_features,
 	.dev_conf = mlx5_vdpa_dev_config,
 	.dev_close = mlx5_vdpa_dev_close,
+	.dev_cleanup = mlx5_vdpa_dev_cleanup,
 	.set_vring_state = mlx5_vdpa_set_vring_state,
 	.set_features = mlx5_vdpa_features_set,
 	.migration_done = NULL,
@@ -443,8 +537,6 @@ mlx5_vdpa_args_check_handler(const char *key, const char *val, void *opaque)
 	unsigned long tmp;
 	int n_cores = sysconf(_SC_NPROCESSORS_ONLN);
 
-	if (strcmp(key, RTE_DEVARGS_KEY_CLASS) == 0)
-		return 0;
 	errno = 0;
 	tmp = strtoul(val, NULL, 0);
 	if (errno) {
@@ -465,12 +557,39 @@ mlx5_vdpa_args_check_handler(const char *key, const char *val, void *opaque)
 			DRV_LOG(WARNING, "Invalid event_core %s.", val);
 		else
 			priv->event_core = tmp;
+	} else if (strcmp(key, "max_conf_threads") == 0) {
+		if (tmp) {
+			priv->use_c_thread = true;
+			if (!conf_thread_mng.initializer_priv) {
+				conf_thread_mng.initializer_priv = priv;
+				if (tmp > MLX5_VDPA_MAX_C_THRD) {
+					DRV_LOG(WARNING,
+				"Invalid max_conf_threads %s "
+				"and set max_conf_threads to %d",
+				val, MLX5_VDPA_MAX_C_THRD);
+					tmp = MLX5_VDPA_MAX_C_THRD;
+				}
+				conf_thread_mng.max_thrds = tmp;
+			} else if (tmp != conf_thread_mng.max_thrds) {
+				DRV_LOG(WARNING,
+	"max_conf_threads is PMD argument and not per device, "
+	"only the first device configuration set it, current value is %d "
+	"and will not be changed to %d.",
+				conf_thread_mng.max_thrds, (int)tmp);
+			}
+		} else {
+			priv->use_c_thread = false;
+		}
 	} else if (strcmp(key, "hw_latency_mode") == 0) {
 		priv->hw_latency_mode = (uint32_t)tmp;
 	} else if (strcmp(key, "hw_max_latency_us") == 0) {
 		priv->hw_max_latency_us = (uint32_t)tmp;
 	} else if (strcmp(key, "hw_max_pending_comp") == 0) {
 		priv->hw_max_pending_comp = (uint32_t)tmp;
+	} else if (strcmp(key, "queue_size") == 0) {
+		priv->queue_size = (uint16_t)tmp;
+	} else if (strcmp(key, "queues") == 0) {
+		priv->queues = (uint16_t)tmp;
 	} else {
 		DRV_LOG(WARNING, "Invalid key %s.", key);
 	}
@@ -478,35 +597,224 @@ mlx5_vdpa_args_check_handler(const char *key, const char *val, void *opaque)
 }
 
 static void
-mlx5_vdpa_config_get(struct rte_devargs *devargs, struct mlx5_vdpa_priv *priv)
+mlx5_vdpa_config_get(struct mlx5_kvargs_ctrl *mkvlist,
+		     struct mlx5_vdpa_priv *priv)
 {
-	struct rte_kvargs *kvlist;
+	const char **params = (const char *[]){
+		"event_core",
+		"event_mode",
+		"event_us",
+		"hw_latency_mode",
+		"hw_max_latency_us",
+		"hw_max_pending_comp",
+		"no_traffic_time",
+		"queue_size",
+		"queues",
+		"max_conf_threads",
+		NULL,
+	};
 
 	priv->event_mode = MLX5_VDPA_EVENT_MODE_FIXED_TIMER;
 	priv->event_us = 0;
 	priv->event_core = -1;
 	priv->no_traffic_max = MLX5_VDPA_DEFAULT_NO_TRAFFIC_MAX;
-	if (devargs == NULL)
+	if (mkvlist == NULL)
 		return;
-	kvlist = rte_kvargs_parse(devargs->args, NULL);
-	if (kvlist == NULL)
-		return;
-	rte_kvargs_process(kvlist, NULL, mlx5_vdpa_args_check_handler, priv);
-	rte_kvargs_free(kvlist);
+	mlx5_kvargs_process(mkvlist, params, mlx5_vdpa_args_check_handler,
+			    priv);
 	if (!priv->event_us &&
 	    priv->event_mode == MLX5_VDPA_EVENT_MODE_DYNAMIC_TIMER)
 		priv->event_us = MLX5_VDPA_DEFAULT_TIMER_STEP_US;
+	if ((priv->queue_size && !priv->queues) ||
+		(!priv->queue_size && priv->queues)) {
+		priv->queue_size = 0;
+		priv->queues = 0;
+		DRV_LOG(WARNING, "Please provide both queue_size and queues.");
+	}
 	DRV_LOG(DEBUG, "event mode is %d.", priv->event_mode);
 	DRV_LOG(DEBUG, "event_us is %u us.", priv->event_us);
 	DRV_LOG(DEBUG, "no traffic max is %u.", priv->no_traffic_max);
+	DRV_LOG(DEBUG, "queues is %u, queue_size is %u.", priv->queues,
+		priv->queue_size);
+}
+
+void
+mlx5_vdpa_prepare_virtq_destroy(struct mlx5_vdpa_priv *priv)
+{
+	uint32_t max_queues, index;
+	struct mlx5_vdpa_virtq *virtq;
+
+	if (!priv->queues || !priv->queue_size)
+		return;
+	max_queues = ((priv->queues * 2) < priv->caps.max_num_virtio_queues) ?
+		(priv->queues * 2) : (priv->caps.max_num_virtio_queues);
+	if (mlx5_vdpa_is_modify_virtq_supported(priv))
+		mlx5_vdpa_steer_unset(priv);
+	for (index = 0; index < max_queues; ++index) {
+		virtq = &priv->virtqs[index];
+		if (virtq->virtq) {
+			pthread_mutex_lock(&virtq->virtq_lock);
+			mlx5_vdpa_virtq_unset(virtq);
+			pthread_mutex_unlock(&virtq->virtq_lock);
+		}
+	}
 }
 
 static int
-mlx5_vdpa_dev_probe(struct mlx5_common_device *cdev)
+mlx5_vdpa_virtq_resource_prepare(struct mlx5_vdpa_priv *priv)
+{
+	uint32_t remaining_cnt = 0, err_cnt = 0, task_num = 0;
+	uint32_t max_queues, index, thrd_idx, data[1];
+	struct mlx5_vdpa_virtq *virtq;
+
+	for (index = 0; index < priv->caps.max_num_virtio_queues;
+		index++) {
+		virtq = &priv->virtqs[index];
+		pthread_mutex_init(&virtq->virtq_lock, NULL);
+	}
+	if (!priv->queues || !priv->queue_size)
+		return 0;
+	max_queues = (priv->queues < priv->caps.max_num_virtio_queues) ?
+		(priv->queues * 2) : (priv->caps.max_num_virtio_queues);
+	if (priv->use_c_thread) {
+		uint32_t main_task_idx[max_queues];
+
+		for (index = 0; index < max_queues; ++index) {
+			thrd_idx = index % (conf_thread_mng.max_thrds + 1);
+			if (!thrd_idx) {
+				main_task_idx[task_num] = index;
+				task_num++;
+				continue;
+			}
+			thrd_idx = priv->last_c_thrd_idx + 1;
+			if (thrd_idx >= conf_thread_mng.max_thrds)
+				thrd_idx = 0;
+			priv->last_c_thrd_idx = thrd_idx;
+			data[0] = index;
+			if (mlx5_vdpa_task_add(priv, thrd_idx,
+				MLX5_VDPA_TASK_PREPARE_VIRTQ,
+				&remaining_cnt, &err_cnt,
+				(void **)&data, 1)) {
+				DRV_LOG(ERR, "Fail to add "
+				"task prepare virtq (%d).", index);
+				main_task_idx[task_num] = index;
+				task_num++;
+			}
+		}
+		for (index = 0; index < task_num; ++index)
+			if (mlx5_vdpa_virtq_single_resource_prepare(priv,
+				main_task_idx[index]))
+				goto error;
+		if (mlx5_vdpa_c_thread_wait_bulk_tasks_done(&remaining_cnt,
+			&err_cnt, 2000)) {
+			DRV_LOG(ERR,
+			"Failed to wait virt-queue prepare tasks ready.");
+			goto error;
+		}
+	} else {
+		for (index = 0; index < max_queues; ++index)
+			if (mlx5_vdpa_virtq_single_resource_prepare(priv,
+				index))
+				goto error;
+	}
+	if (mlx5_vdpa_is_modify_virtq_supported(priv))
+		if (mlx5_vdpa_steer_update(priv, true))
+			goto error;
+	return 0;
+error:
+	mlx5_vdpa_prepare_virtq_destroy(priv);
+	return -1;
+}
+
+static int
+mlx5_vdpa_create_dev_resources(struct mlx5_vdpa_priv *priv)
+{
+	struct mlx5_devx_tis_attr tis_attr = {0};
+	struct ibv_context *ctx = priv->cdev->ctx;
+	uint32_t i;
+	int retry;
+
+	for (retry = 0; retry < 7; retry++) {
+		priv->var = mlx5_glue->dv_alloc_var(ctx, 0);
+		if (priv->var != NULL)
+			break;
+		DRV_LOG(WARNING, "Failed to allocate VAR, retry %d.", retry);
+		/* Wait Qemu release VAR during vdpa restart, 0.1 sec based. */
+		usleep(100000U << retry);
+	}
+	if (!priv->var) {
+		DRV_LOG(ERR, "Failed to allocate VAR %u.", errno);
+		rte_errno = ENOMEM;
+		return -rte_errno;
+	}
+	/* Always map the entire page. */
+	priv->virtq_db_addr = mmap(NULL, priv->var->length, PROT_READ |
+				   PROT_WRITE, MAP_SHARED, ctx->cmd_fd,
+				   priv->var->mmap_off);
+	if (priv->virtq_db_addr == MAP_FAILED) {
+		DRV_LOG(ERR, "Failed to map doorbell page %u.", errno);
+		priv->virtq_db_addr = NULL;
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	/* Add within page offset for 64K page system. */
+	priv->virtq_db_addr = (char *)priv->virtq_db_addr +
+		((rte_mem_page_size() - 1) & priv->caps.doorbell_bar_offset);
+	DRV_LOG(DEBUG, "VAR address of doorbell mapping is %p.",
+		priv->virtq_db_addr);
+	priv->td = mlx5_devx_cmd_create_td(ctx);
+	if (!priv->td) {
+		DRV_LOG(ERR, "Failed to create transport domain.");
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	tis_attr.transport_domain = priv->td->id;
+	for (i = 0; i < priv->num_lag_ports; i++) {
+		/* 0 is auto affinity, non-zero value to propose port. */
+		tis_attr.lag_tx_port_affinity = i + 1;
+		priv->tiss[i] = mlx5_devx_cmd_create_tis(ctx, &tis_attr);
+		if (!priv->tiss[i]) {
+			DRV_LOG(ERR, "Failed to create TIS %u.", i);
+			return -rte_errno;
+		}
+	}
+	priv->null_mr = mlx5_glue->alloc_null_mr(priv->cdev->pd);
+	if (!priv->null_mr) {
+		DRV_LOG(ERR, "Failed to allocate null MR.");
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	DRV_LOG(DEBUG, "Dump fill Mkey = %u.", priv->null_mr->lkey);
+#ifdef HAVE_MLX5DV_DR
+	priv->steer.domain = mlx5_glue->dr_create_domain(ctx,
+					MLX5DV_DR_DOMAIN_TYPE_NIC_RX);
+	if (!priv->steer.domain) {
+		DRV_LOG(ERR, "Failed to create Rx domain.");
+		rte_errno = errno;
+		return -rte_errno;
+	}
+#endif
+	priv->steer.tbl = mlx5_glue->dr_create_flow_tbl(priv->steer.domain, 0);
+	if (!priv->steer.tbl) {
+		DRV_LOG(ERR, "Failed to create table 0 with Rx domain.");
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	if (mlx5_vdpa_err_event_setup(priv) != 0)
+		return -rte_errno;
+	if (mlx5_vdpa_event_qp_global_prepare(priv))
+		return -rte_errno;
+	if (mlx5_vdpa_virtq_resource_prepare(priv))
+		return -rte_errno;
+	return 0;
+}
+
+static int
+mlx5_vdpa_dev_probe(struct mlx5_common_device *cdev,
+		    struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct mlx5_vdpa_priv *priv = NULL;
 	struct mlx5_hca_attr *attr = &cdev->config.hca_attr;
-	int retry;
 
 	if (!attr->vdpa.valid || !attr->vdpa.max_num_virtio_queues) {
 		DRV_LOG(ERR, "Not enough capabilities to support vdpa, maybe "
@@ -530,46 +838,34 @@ mlx5_vdpa_dev_probe(struct mlx5_common_device *cdev)
 	priv->num_lag_ports = attr->num_lag_ports;
 	if (attr->num_lag_ports == 0)
 		priv->num_lag_ports = 1;
+	rte_spinlock_init(&priv->db_lock);
+	pthread_mutex_init(&priv->steer_update_lock, NULL);
 	priv->cdev = cdev;
-	for (retry = 0; retry < 7; retry++) {
-		priv->var = mlx5_glue->dv_alloc_var(priv->cdev->ctx, 0);
-		if (priv->var != NULL)
-			break;
-		DRV_LOG(WARNING, "Failed to allocate VAR, retry %d.\n", retry);
-		/* Wait Qemu release VAR during vdpa restart, 0.1 sec based. */
-		usleep(100000U << retry);
+	mlx5_vdpa_config_get(mkvlist, priv);
+	if (priv->use_c_thread) {
+		if (conf_thread_mng.initializer_priv == priv)
+			if (mlx5_vdpa_mult_threads_create(priv->event_core))
+				goto error;
+		__atomic_fetch_add(&conf_thread_mng.refcnt, 1,
+			__ATOMIC_RELAXED);
 	}
-	if (!priv->var) {
-		DRV_LOG(ERR, "Failed to allocate VAR %u.", errno);
+	if (mlx5_vdpa_create_dev_resources(priv))
 		goto error;
-	}
-	priv->err_intr_handle =
-		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
-	if (priv->err_intr_handle == NULL) {
-		DRV_LOG(ERR, "Fail to allocate intr_handle");
-		goto error;
-	}
 	priv->vdev = rte_vdpa_register_device(cdev->dev, &mlx5_vdpa_ops);
 	if (priv->vdev == NULL) {
 		DRV_LOG(ERR, "Failed to register vDPA device.");
 		rte_errno = rte_errno ? rte_errno : EINVAL;
 		goto error;
 	}
-	mlx5_vdpa_config_get(cdev->dev->devargs, priv);
-	SLIST_INIT(&priv->mr_list);
-	pthread_mutex_init(&priv->vq_config_lock, NULL);
 	pthread_mutex_lock(&priv_list_lock);
 	TAILQ_INSERT_TAIL(&priv_list, priv, next);
 	pthread_mutex_unlock(&priv_list_lock);
 	return 0;
-
 error:
-	if (priv) {
-		if (priv->var)
-			mlx5_glue->dv_free_var(priv->var);
-		rte_intr_instance_free(priv->err_intr_handle);
-		rte_free(priv);
-	}
+	if (conf_thread_mng.initializer_priv == priv)
+		mlx5_vdpa_mult_threads_destroy(false);
+	if (priv)
+		mlx5_vdpa_dev_release(priv);
 	return -rte_errno;
 }
 
@@ -589,20 +885,61 @@ mlx5_vdpa_dev_remove(struct mlx5_common_device *cdev)
 	if (found)
 		TAILQ_REMOVE(&priv_list, priv, next);
 	pthread_mutex_unlock(&priv_list_lock);
-	if (found) {
-		if (priv->configured)
-			mlx5_vdpa_dev_close(priv->vid);
-		if (priv->var) {
-			mlx5_glue->dv_free_var(priv->var);
-			priv->var = NULL;
-		}
-		if (priv->vdev)
-			rte_vdpa_unregister_device(priv->vdev);
-		pthread_mutex_destroy(&priv->vq_config_lock);
-		rte_intr_instance_free(priv->err_intr_handle);
-		rte_free(priv);
-	}
+	if (found)
+		mlx5_vdpa_dev_release(priv);
 	return 0;
+}
+
+static void
+mlx5_vdpa_release_dev_resources(struct mlx5_vdpa_priv *priv)
+{
+	uint32_t i;
+
+	if (priv->queues)
+		mlx5_vdpa_virtqs_cleanup(priv);
+	mlx5_vdpa_dev_cache_clean(priv);
+	for (i = 0; i < priv->caps.max_num_virtio_queues; i++) {
+		if (!priv->virtqs[i].counters)
+			continue;
+		claim_zero(mlx5_devx_cmd_destroy(priv->virtqs[i].counters));
+	}
+	mlx5_vdpa_event_qp_global_release(priv);
+	mlx5_vdpa_err_event_unset(priv);
+	if (priv->steer.tbl)
+		claim_zero(mlx5_glue->dr_destroy_flow_tbl(priv->steer.tbl));
+	if (priv->steer.domain)
+		claim_zero(mlx5_glue->dr_destroy_domain(priv->steer.domain));
+	if (priv->null_mr)
+		claim_zero(mlx5_glue->dereg_mr(priv->null_mr));
+	for (i = 0; i < priv->num_lag_ports; i++) {
+		if (priv->tiss[i])
+			claim_zero(mlx5_devx_cmd_destroy(priv->tiss[i]));
+	}
+	if (priv->td)
+		claim_zero(mlx5_devx_cmd_destroy(priv->td));
+	if (priv->virtq_db_addr)
+		/* Mask out the within page offset for munmap. */
+		claim_zero(munmap((void *)((uintptr_t)priv->virtq_db_addr &
+			~(rte_mem_page_size() - 1)), priv->var->length));
+	if (priv->var)
+		mlx5_glue->dv_free_var(priv->var);
+}
+
+static void
+mlx5_vdpa_dev_release(struct mlx5_vdpa_priv *priv)
+{
+	if (priv->state == MLX5_VDPA_STATE_CONFIGURED)
+		_internal_mlx5_vdpa_dev_close(priv, true);
+	if (priv->use_c_thread)
+		mlx5_vdpa_wait_dev_close_tasks_done(priv);
+	mlx5_vdpa_release_dev_resources(priv);
+	if (priv->vdev)
+		rte_vdpa_unregister_device(priv->vdev);
+	if (priv->use_c_thread)
+		if (__atomic_fetch_sub(&conf_thread_mng.refcnt,
+			1, __ATOMIC_RELAXED) == 1)
+			mlx5_vdpa_mult_threads_destroy(true);
+	rte_free(priv);
 }
 
 static const struct rte_pci_id mlx5_vdpa_pci_id_map[] = {
@@ -625,6 +962,10 @@ static const struct rte_pci_id mlx5_vdpa_pci_id_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
 				PCI_DEVICE_ID_MELLANOX_CONNECTX6DXBF)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+				PCI_DEVICE_ID_MELLANOX_CONNECTX6LX)
 	},
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,

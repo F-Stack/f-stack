@@ -5,8 +5,6 @@
 #include <stdio.h>
 
 #include <rte_common.h>
-#include <rte_mbuf.h>
-#include <rte_memory.h>
 #include <rte_malloc.h>
 #include <rte_log.h>
 
@@ -42,7 +40,7 @@ struct rte_bucket_4_8 {
 	uint64_t key[4];
 
 	/* Cache line 1 */
-	uint8_t data[0];
+	uint8_t data[];
 };
 #else
 struct rte_bucket_4_8 {
@@ -56,7 +54,7 @@ struct rte_bucket_4_8 {
 	uint64_t key[4];
 
 	/* Cache line 1 */
-	uint8_t data[0];
+	uint8_t data[];
 };
 #endif
 

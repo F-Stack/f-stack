@@ -1,13 +1,10 @@
-/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2018-2019 Pensando Systems, Inc. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2018-2022 Advanced Micro Devices, Inc.
  */
 
-#include <rte_pci.h>
-#include <rte_bus_pci.h>
 #include <rte_ethdev.h>
 #include <ethdev_driver.h>
 #include <rte_malloc.h>
-#include <ethdev_pci.h>
 
 #include "ionic_logs.h"
 #include "ionic.h"
@@ -57,13 +54,6 @@ static int  ionic_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
 static int  ionic_dev_fw_version_get(struct rte_eth_dev *eth_dev,
 	char *fw_version, size_t fw_size);
 
-static const struct rte_pci_id pci_id_ionic_map[] = {
-	{ RTE_PCI_DEVICE(IONIC_PENSANDO_VENDOR_ID, IONIC_DEV_ID_ETH_PF) },
-	{ RTE_PCI_DEVICE(IONIC_PENSANDO_VENDOR_ID, IONIC_DEV_ID_ETH_VF) },
-	{ RTE_PCI_DEVICE(IONIC_PENSANDO_VENDOR_ID, IONIC_DEV_ID_ETH_MGMT) },
-	{ .vendor_id = 0, /* sentinel */ },
-};
-
 static const struct rte_eth_desc_lim rx_desc_lim = {
 	.nb_max = IONIC_MAX_RING_DESC,
 	.nb_min = IONIC_MIN_RING_DESC,
@@ -80,6 +70,7 @@ static const struct rte_eth_desc_lim tx_desc_lim_v1 = {
 
 static const struct eth_dev_ops ionic_eth_dev_ops = {
 	.dev_infos_get          = ionic_dev_info_get,
+	.dev_supported_ptypes_get = ionic_dev_supported_ptypes_get,
 	.dev_configure          = ionic_dev_configure,
 	.mtu_set                = ionic_dev_mtu_set,
 	.dev_start              = ionic_dev_start,
@@ -328,7 +319,7 @@ ionic_dev_link_update(struct rte_eth_dev *eth_dev,
  * @return
  *  void
  */
-static void
+void
 ionic_dev_interrupt_handler(void *param)
 {
 	struct ionic_adapter *adapter = (struct ionic_adapter *)param;
@@ -343,18 +334,17 @@ static int
 ionic_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 {
 	struct ionic_lif *lif = IONIC_ETH_DEV_TO_LIF(eth_dev);
-	int err;
 
-	IONIC_PRINT_CALL();
+	if (lif->state & IONIC_LIF_F_UP) {
+		IONIC_PRINT(ERR, "Stop %s before setting mtu", lif->name);
+		return -EBUSY;
+	}
 
-	/*
-	 * Note: mtu check against IONIC_MIN_MTU, IONIC_MAX_MTU
-	 * is done by the API.
-	 */
+	/* Note: mtu check against min/max is done by the API */
+	IONIC_PRINT(INFO, "Setting mtu %u", mtu);
 
-	err = ionic_lif_change_mtu(lif, mtu);
-	if (err)
-		return err;
+	/* Update the frame size used by the Rx path */
+	lif->frame_size = mtu + IONIC_ETH_OVERHEAD;
 
 	return 0;
 }
@@ -376,12 +366,16 @@ ionic_dev_info_get(struct rte_eth_dev *eth_dev,
 		rte_le_to_cpu_32(cfg->queue_count[IONIC_QTYPE_TXQ]);
 
 	/* Also add ETHER_CRC_LEN if the adapter is able to keep CRC */
-	dev_info->min_rx_bufsize = IONIC_MIN_MTU + RTE_ETHER_HDR_LEN;
-	dev_info->max_rx_pktlen = IONIC_MAX_MTU + RTE_ETHER_HDR_LEN;
-	dev_info->max_mac_addrs = adapter->max_mac_addrs;
-	dev_info->min_mtu = IONIC_MIN_MTU;
-	dev_info->max_mtu = IONIC_MAX_MTU;
+	dev_info->min_mtu = RTE_MAX((uint32_t)IONIC_MIN_MTU,
+			rte_le_to_cpu_32(ident->lif.eth.min_mtu));
+	dev_info->max_mtu = RTE_MIN((uint32_t)IONIC_MAX_MTU,
+			rte_le_to_cpu_32(ident->lif.eth.max_mtu));
+	dev_info->min_rx_bufsize = dev_info->min_mtu + IONIC_ETH_OVERHEAD;
+	dev_info->max_rx_pktlen = dev_info->max_mtu + IONIC_ETH_OVERHEAD;
+	dev_info->max_lro_pkt_size =
+		eth_dev->data->dev_conf.rxmode.max_lro_pkt_size;
 
+	dev_info->max_mac_addrs = adapter->max_mac_addrs;
 	dev_info->hash_key_size = IONIC_RSS_HASH_KEY_SIZE;
 	dev_info->reta_size = rte_le_to_cpu_16(ident->lif.eth.rss_ind_tbl_sz);
 	dev_info->flow_type_rss_offloads = IONIC_ETH_RSS_OFFLOAD_ALL;
@@ -403,7 +397,7 @@ ionic_dev_info_get(struct rte_eth_dev *eth_dev,
 	 */
 
 	dev_info->rx_queue_offload_capa = 0;
-	dev_info->tx_queue_offload_capa = 0;
+	dev_info->tx_queue_offload_capa = RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	/*
 	 * Per-port capabilities
@@ -435,8 +429,8 @@ ionic_dev_info_get(struct rte_eth_dev *eth_dev,
 	dev_info->tx_desc_lim = tx_desc_lim_v1;
 
 	/* Driver-preferred Rx/Tx parameters */
-	dev_info->default_rxportconf.burst_size = 32;
-	dev_info->default_txportconf.burst_size = 32;
+	dev_info->default_rxportconf.burst_size = IONIC_DEF_TXRX_BURST;
+	dev_info->default_txportconf.burst_size = IONIC_DEF_TXRX_BURST;
 	dev_info->default_rxportconf.nb_queues = 1;
 	dev_info->default_txportconf.nb_queues = 1;
 	dev_info->default_rxportconf.ring_size = IONIC_DEF_TXRX_DESC;
@@ -834,8 +828,6 @@ ionic_dev_configure(struct rte_eth_dev *eth_dev)
 
 	ionic_lif_configure(lif);
 
-	ionic_lif_set_features(lif);
-
 	return 0;
 }
 
@@ -889,6 +881,22 @@ ionic_dev_start(struct rte_eth_dev *eth_dev)
 	if (dev_conf->lpbk_mode)
 		IONIC_PRINT(WARNING, "Loopback mode not supported");
 
+	/* Re-set features in case SG flag was added in rx_queue_setup() */
+	err = ionic_lif_set_features(lif);
+	if (err) {
+		IONIC_PRINT(ERR, "Cannot set LIF features: %d", err);
+		return err;
+	}
+
+	lif->frame_size = eth_dev->data->mtu + IONIC_ETH_OVERHEAD;
+
+	err = ionic_lif_change_mtu(lif, eth_dev->data->mtu);
+	if (err) {
+		IONIC_PRINT(ERR, "Cannot set LIF frame size %u: %d",
+			lif->frame_size, err);
+		return err;
+	}
+
 	err = ionic_lif_start(lif);
 	if (err) {
 		IONIC_PRINT(ERR, "Cannot start LIF: %d", err);
@@ -914,6 +922,18 @@ ionic_dev_start(struct rte_eth_dev *eth_dev)
 				speed);
 	}
 
+	if (lif->hw_features & IONIC_ETH_HW_RX_SG)
+		eth_dev->rx_pkt_burst = &ionic_recv_pkts_sg;
+	else
+		eth_dev->rx_pkt_burst = &ionic_recv_pkts;
+
+	if (lif->hw_features & IONIC_ETH_HW_TX_SG)
+		eth_dev->tx_pkt_burst = &ionic_xmit_pkts_sg;
+	else
+		eth_dev->tx_pkt_burst = &ionic_xmit_pkts;
+
+	eth_dev->tx_pkt_prepare = &ionic_prep_pkts;
+
 	ionic_dev_link_update(eth_dev, 0);
 
 	return 0;
@@ -934,8 +954,6 @@ ionic_dev_stop(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
-static void ionic_unconfigure_intr(struct ionic_adapter *adapter);
-
 /*
  * Reset and stop device.
  */
@@ -954,22 +972,24 @@ ionic_dev_close(struct rte_eth_dev *eth_dev)
 	ionic_lif_free_queues(lif);
 
 	IONIC_PRINT(NOTICE, "Removing device %s", eth_dev->device->name);
-	ionic_unconfigure_intr(adapter);
+	if (adapter->intf->unconfigure_intr)
+		(*adapter->intf->unconfigure_intr)(adapter);
 
 	rte_eth_dev_destroy(eth_dev, eth_ionic_dev_uninit);
 
 	ionic_port_reset(adapter);
 	ionic_reset(adapter);
+	if (adapter->intf->unmap_bars)
+		(*adapter->intf->unmap_bars)(adapter);
 
 	rte_free(adapter);
 
 	return 0;
 }
 
-static int
+int
 eth_ionic_dev_init(struct rte_eth_dev *eth_dev, void *init_params)
 {
-	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct ionic_lif *lif = IONIC_ETH_DEV_TO_LIF(eth_dev);
 	struct ionic_adapter *adapter = (struct ionic_adapter *)init_params;
 	int err;
@@ -977,15 +997,15 @@ eth_ionic_dev_init(struct rte_eth_dev *eth_dev, void *init_params)
 	IONIC_PRINT_CALL();
 
 	eth_dev->dev_ops = &ionic_eth_dev_ops;
-	eth_dev->rx_pkt_burst = &ionic_recv_pkts;
-	eth_dev->tx_pkt_burst = &ionic_xmit_pkts;
-	eth_dev->tx_pkt_prepare = &ionic_prep_pkts;
+	eth_dev->rx_descriptor_status = ionic_dev_rx_descriptor_status;
+	eth_dev->tx_descriptor_status = ionic_dev_tx_descriptor_status;
 
 	/* Multi-process not supported, primary does initialization anyway */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	if (adapter->intf->copy_bus_info)
+		(*adapter->intf->copy_bus_info)(adapter, eth_dev);
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	lif->eth_dev = eth_dev;
@@ -996,9 +1016,10 @@ eth_ionic_dev_init(struct rte_eth_dev *eth_dev, void *init_params)
 		adapter->max_mac_addrs);
 
 	/* Allocate memory for storing MAC addresses */
-	eth_dev->data->mac_addrs = rte_zmalloc("ionic",
-		RTE_ETHER_ADDR_LEN * adapter->max_mac_addrs, 0);
-
+	eth_dev->data->mac_addrs = rte_calloc("ionic",
+					adapter->max_mac_addrs,
+					RTE_ETHER_ADDR_LEN,
+					RTE_CACHE_LINE_SIZE);
 	if (eth_dev->data->mac_addrs == NULL) {
 		IONIC_PRINT(ERR, "Failed to allocate %u bytes needed to "
 			"store MAC addresses",
@@ -1056,71 +1077,12 @@ eth_ionic_dev_uninit(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
-static int
-ionic_configure_intr(struct ionic_adapter *adapter)
-{
-	struct rte_pci_device *pci_dev = adapter->pci_dev;
-	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
-	int err;
-
-	IONIC_PRINT(DEBUG, "Configuring %u intrs", adapter->nintrs);
-
-	if (rte_intr_efd_enable(intr_handle, adapter->nintrs)) {
-		IONIC_PRINT(ERR, "Fail to create eventfd");
-		return -1;
-	}
-
-	if (rte_intr_dp_is_en(intr_handle))
-		IONIC_PRINT(DEBUG,
-			"Packet I/O interrupt on datapath is enabled");
-
-	if (rte_intr_vec_list_alloc(intr_handle, "intr_vec", adapter->nintrs)) {
-		IONIC_PRINT(ERR, "Failed to allocate %u vectors",
-			    adapter->nintrs);
-		return -ENOMEM;
-	}
-
-	err = rte_intr_callback_register(intr_handle,
-		ionic_dev_interrupt_handler,
-		adapter);
-
-	if (err) {
-		IONIC_PRINT(ERR,
-			"Failure registering interrupts handler (%d)",
-			err);
-		return err;
-	}
-
-	/* enable intr mapping */
-	err = rte_intr_enable(intr_handle);
-
-	if (err) {
-		IONIC_PRINT(ERR, "Failure enabling interrupts (%d)", err);
-		return err;
-	}
-
-	return 0;
-}
-
-static void
-ionic_unconfigure_intr(struct ionic_adapter *adapter)
-{
-	struct rte_pci_device *pci_dev = adapter->pci_dev;
-	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
-
-	rte_intr_disable(intr_handle);
-
-	rte_intr_callback_unregister(intr_handle,
-		ionic_dev_interrupt_handler,
-		adapter);
-}
-
-static int
-eth_ionic_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
-		struct rte_pci_device *pci_dev)
+int
+eth_ionic_dev_probe(void *bus_dev, struct rte_device *rte_dev,
+	struct ionic_bars *bars, const struct ionic_dev_intf *intf,
+	uint16_t device_id, uint16_t vendor_id)
 {
 	char name[RTE_ETH_NAME_MAX_LEN];
-	struct rte_mem_resource *resource;
 	struct ionic_adapter *adapter;
 	struct ionic_hw *hw;
 	unsigned long i;
@@ -1135,21 +1097,19 @@ eth_ionic_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto err;
 	}
 
-	IONIC_PRINT(DEBUG, "Initializing device %s",
-		pci_dev->device.name);
-
-	adapter = rte_zmalloc("ionic", sizeof(*adapter), 0);
+	adapter = rte_zmalloc("ionic", sizeof(*adapter), RTE_CACHE_LINE_SIZE);
 	if (!adapter) {
 		IONIC_PRINT(ERR, "OOM");
 		err = -ENOMEM;
 		goto err;
 	}
 
-	adapter->pci_dev = pci_dev;
+	adapter->bus_dev = bus_dev;
 	hw = &adapter->hw;
 
-	hw->device_id = pci_dev->id.device_id;
-	hw->vendor_id = pci_dev->id.vendor_id;
+	/* Vendor and Device ID need to be set before init of shared code */
+	hw->device_id = device_id;
+	hw->vendor_id = vendor_id;
 
 	err = ionic_init_mac(hw);
 	if (err != 0) {
@@ -1158,19 +1118,30 @@ eth_ionic_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto err_free_adapter;
 	}
 
-	adapter->num_bars = 0;
-	for (i = 0; i < PCI_MAX_RESOURCE && i < IONIC_BARS_MAX; i++) {
-		resource = &pci_dev->mem_resource[i];
-		if (resource->phys_addr == 0 || resource->len == 0)
-			continue;
-		adapter->bars[adapter->num_bars].vaddr = resource->addr;
-		adapter->bars[adapter->num_bars].bus_addr = resource->phys_addr;
-		adapter->bars[adapter->num_bars].len = resource->len;
-		adapter->num_bars++;
+	adapter->bars.num_bars = bars->num_bars;
+	for (i = 0; i < bars->num_bars; i++) {
+		adapter->bars.bar[i].vaddr = bars->bar[i].vaddr;
+		adapter->bars.bar[i].bus_addr = bars->bar[i].bus_addr;
+		adapter->bars.bar[i].len = bars->bar[i].len;
+	}
+
+	if (intf->setup == NULL) {
+		IONIC_PRINT(ERR, "Device setup function is mandatory");
+		goto err_free_adapter;
+	}
+
+	adapter->intf = intf;
+
+	/* Parse device arguments */
+	if (adapter->intf->devargs) {
+		err = (*adapter->intf->devargs)(adapter, rte_dev->devargs);
+		if (err) {
+			IONIC_PRINT(ERR, "Cannot parse device arguments");
+			goto err_free_adapter;
+		}
 	}
 
 	/* Discover ionic dev resources */
-
 	err = ionic_setup(adapter);
 	if (err) {
 		IONIC_PRINT(ERR, "Cannot setup device: %d, aborting", err);
@@ -1227,20 +1198,20 @@ eth_ionic_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto err_free_adapter;
 	}
 
-	snprintf(name, sizeof(name), "%s_lif", pci_dev->device.name);
-	err = rte_eth_dev_create(&pci_dev->device,
-			name, sizeof(struct ionic_lif),
+	snprintf(name, sizeof(name), "%s_lif", rte_dev->name);
+	err = rte_eth_dev_create(rte_dev, name, sizeof(struct ionic_lif),
 			NULL, NULL, eth_ionic_dev_init, adapter);
 	if (err) {
 		IONIC_PRINT(ERR, "Cannot create eth device for %s", name);
 		goto err_free_adapter;
 	}
 
-	err = ionic_configure_intr(adapter);
-
-	if (err) {
-		IONIC_PRINT(ERR, "Failed to configure interrupts");
-		goto err_free_adapter;
+	if (adapter->intf->configure_intr) {
+		err = (*adapter->intf->configure_intr)(adapter);
+		if (err) {
+			IONIC_PRINT(ERR, "Failed to configure interrupts");
+			goto err_free_adapter;
+		}
 	}
 
 	return 0;
@@ -1251,33 +1222,22 @@ err:
 	return err;
 }
 
-static int
-eth_ionic_pci_remove(struct rte_pci_device *pci_dev)
+int
+eth_ionic_dev_remove(struct rte_device *rte_dev)
 {
 	char name[RTE_ETH_NAME_MAX_LEN];
 	struct rte_eth_dev *eth_dev;
 
 	/* Adapter lookup is using the eth_dev name */
-	snprintf(name, sizeof(name), "%s_lif", pci_dev->device.name);
+	snprintf(name, sizeof(name), "%s_lif", rte_dev->name);
 
 	eth_dev = rte_eth_dev_allocated(name);
 	if (eth_dev)
 		ionic_dev_close(eth_dev);
 	else
-		IONIC_PRINT(DEBUG, "Cannot find device %s",
-			pci_dev->device.name);
+		IONIC_PRINT(DEBUG, "Cannot find device %s", rte_dev->name);
 
 	return 0;
 }
 
-static struct rte_pci_driver rte_ionic_pmd = {
-	.id_table = pci_id_ionic_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
-	.probe = eth_ionic_pci_probe,
-	.remove = eth_ionic_pci_remove,
-};
-
-RTE_PMD_REGISTER_PCI(net_ionic, rte_ionic_pmd);
-RTE_PMD_REGISTER_PCI_TABLE(net_ionic, pci_id_ionic_map);
-RTE_PMD_REGISTER_KMOD_DEP(net_ionic, "* igb_uio | uio_pci_generic | vfio-pci");
 RTE_LOG_REGISTER_DEFAULT(ionic_logtype, NOTICE);

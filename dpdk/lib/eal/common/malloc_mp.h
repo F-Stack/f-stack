@@ -10,8 +10,6 @@
 
 #include <rte_common.h>
 #include <rte_random.h>
-#include <rte_spinlock.h>
-#include <rte_tailq.h>
 
 /* forward declarations */
 struct malloc_heap;
@@ -62,6 +60,9 @@ struct malloc_mp_req {
 
 int
 register_mp_requests(void);
+
+void
+unregister_mp_requests(void);
 
 int
 request_to_primary(struct malloc_mp_req *req);

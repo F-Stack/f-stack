@@ -55,6 +55,8 @@ int ff_init(int argc, char * const argv[]);
 
 void ff_run(loop_func_t loop, void *arg);
 
+void ff_stop_run(void);
+
 /* POSIX-LIKE api begin */
 
 int ff_fcntl(int fd, int cmd, ...);
@@ -136,7 +138,11 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
     void *eventlist, int nevents, const struct timespec *timeout,
     void (*do_each)(void **, struct kevent *));
 
+#if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 31)
+int ff_gettimeofday(struct timeval *tv, void *tz);
+#else
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
+#endif
 
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
@@ -148,6 +154,12 @@ int ff_dup2(int oldfd, int newfd);
 extern int ff_fdisused(int fd);
 
 extern int ff_getmaxfd(void);
+
+/*
+ * Get traffic for QoS or other via API.
+ * The size of buffer must >= siezof(struct ff_traffic_args), now is 32 bytes.
+ */
+void ff_get_traffic(void *buffer);
 
 /* route api begin */
 enum FF_ROUTE_CTL {

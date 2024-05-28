@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_ADMINQ_CMD_H_
@@ -9,9 +9,18 @@
  * descriptor format. It is shared between Firmware and Software.
  */
 
+#include "ice_osdep.h"
+#include "ice_defs.h"
+#include "ice_bitops.h"
+
 #define ICE_MAX_VSI			768
 #define ICE_AQC_TOPO_MAX_LEVEL_NUM	0x9
 #define ICE_AQ_SET_MAC_FRAME_SIZE_MAX	9728
+
+enum ice_aq_res_access_type {
+	ICE_RES_READ = 1,
+	ICE_RES_WRITE
+};
 
 struct ice_aqc_generic {
 	__le32 param0;
@@ -118,6 +127,9 @@ struct ice_aqc_list_caps_elem {
 #define ICE_AQC_CAPS_EXT_TOPO_DEV_IMG1			0x0082
 #define ICE_AQC_CAPS_EXT_TOPO_DEV_IMG2			0x0083
 #define ICE_AQC_CAPS_EXT_TOPO_DEV_IMG3			0x0084
+#define ICE_AQC_CAPS_TX_SCHED_TOPO_COMP_MODE		0x0085
+#define ICE_AQC_CAPS_NAC_TOPOLOGY			0x0087
+#define ICE_AQC_CAPS_ROCEV2_LAG				0x0092
 
 	u8 major_ver;
 	u8 minor_ver;
@@ -1035,6 +1047,24 @@ struct ice_aqc_get_topo {
 	__le32 addr_low;
 };
 
+/* Get/Set Tx Topology (indirect 0x0418/0x0417) */
+struct ice_aqc_get_set_tx_topo {
+	u8 set_flags;
+#define ICE_AQC_TX_TOPO_FLAGS_CORRER		BIT(0)
+#define ICE_AQC_TX_TOPO_FLAGS_SRC_RAM		BIT(1)
+#define ICE_AQC_TX_TOPO_FLAGS_SET_PSM		BIT(2)
+#define ICE_AQC_TX_TOPO_FLAGS_LOAD_NEW		BIT(4)
+#define ICE_AQC_TX_TOPO_FLAGS_ISSUED		BIT(5)
+	u8 get_flags;
+#define ICE_AQC_TX_TOPO_GET_NO_UPDATE		0
+#define ICE_AQC_TX_TOPO_GET_PSM			1
+#define ICE_AQC_TX_TOPO_GET_RAM			2
+	__le16 reserved1;
+	__le32 reserved2;
+	__le32 addr_high;
+	__le32 addr_low;
+};
+
 /* Update TSE (indirect 0x0403)
  * Get TSE (indirect 0x0404)
  * Add TSE (indirect 0x0401)
@@ -1186,6 +1216,22 @@ struct ice_aqc_rl_profile_elem {
 	__le16 rl_multiply;
 	__le16 wake_up_calc;
 	__le16 rl_encode;
+};
+
+/* Config Node Attributes (indirect 0x0419)
+ * Query Node Attributes (indirect 0x041A)
+ */
+struct ice_aqc_node_attr {
+	__le16 num_entries; /* Number of attributes structures in the buffer */
+	u8 reserved[6];
+	__le32 addr_high;
+	__le32 addr_low;
+};
+
+struct ice_aqc_node_attr_elem {
+	__le32 node_teid;
+	__le16 max_children;
+	__le16 children_level;
 };
 
 /* Configure L2 Node CGD (indirect 0x0414)
@@ -1352,7 +1398,7 @@ struct ice_aqc_get_phy_caps {
 #define ICE_PHY_TYPE_HIGH_100G_CAUI2		BIT_ULL(2)
 #define ICE_PHY_TYPE_HIGH_100G_AUI2_AOC_ACC	BIT_ULL(3)
 #define ICE_PHY_TYPE_HIGH_100G_AUI2		BIT_ULL(4)
-#define ICE_PHY_TYPE_HIGH_MAX_INDEX		5
+#define ICE_PHY_TYPE_HIGH_MAX_INDEX		4
 
 struct ice_aqc_get_phy_caps_data {
 	__le64 phy_type_low; /* Use values from ICE_PHY_TYPE_LOW_* */
@@ -1393,6 +1439,7 @@ struct ice_aqc_get_phy_caps_data {
 #define ICE_AQC_PHY_FEC_25G_RS_528_REQ			BIT(2)
 #define ICE_AQC_PHY_FEC_25G_KR_REQ			BIT(3)
 #define ICE_AQC_PHY_FEC_25G_RS_544_REQ			BIT(4)
+#define ICE_AQC_PHY_FEC_DIS				BIT(5)
 #define ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN		BIT(6)
 #define ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN		BIT(7)
 #define ICE_AQC_PHY_FEC_MASK				MAKEMASK(0xdf, 0)
@@ -1635,6 +1682,7 @@ struct ice_aqc_link_topo_params {
 #define ICE_AQC_LINK_TOPO_NODE_TYPE_CAGE	6
 #define ICE_AQC_LINK_TOPO_NODE_TYPE_MEZZ	7
 #define ICE_AQC_LINK_TOPO_NODE_TYPE_ID_EEPROM	8
+#define ICE_AQC_LINK_TOPO_NODE_TYPE_GPS		11
 #define ICE_AQC_LINK_TOPO_NODE_CTX_S		4
 #define ICE_AQC_LINK_TOPO_NODE_CTX_M		\
 				(0xF << ICE_AQC_LINK_TOPO_NODE_CTX_S)
@@ -1672,7 +1720,59 @@ struct ice_aqc_get_link_topo {
 	struct ice_aqc_link_topo_addr addr;
 	u8 node_part_num;
 #define ICE_ACQ_GET_LINK_TOPO_NODE_NR_PCA9575	0x21
+#define ICE_ACQ_GET_LINK_TOPO_NODE_NR_GEN_GPS	0x48
 	u8 rsvd[9];
+};
+
+/* Get Link Topology Pin (direct, 0x06E1) */
+struct ice_aqc_get_link_topo_pin {
+	struct ice_aqc_link_topo_addr addr;
+	u8 input_io_params;
+#define ICE_AQC_LINK_TOPO_INPUT_IO_FUNC_S	0
+#define ICE_AQC_LINK_TOPO_INPUT_IO_FUNC_M	\
+				(0x1F << ICE_AQC_LINK_TOPO_INPUT_IO_FUNC_S)
+#define ICE_AQC_LINK_TOPO_IO_FUNC_GPIO		0
+#define ICE_AQC_LINK_TOPO_IO_FUNC_RESET_N	1
+#define ICE_AQC_LINK_TOPO_IO_FUNC_INT_N		2
+#define ICE_AQC_LINK_TOPO_IO_FUNC_PRESENT_N	3
+#define ICE_AQC_LINK_TOPO_IO_FUNC_TX_DIS	4
+#define ICE_AQC_LINK_TOPO_IO_FUNC_MODSEL_N	5
+#define ICE_AQC_LINK_TOPO_IO_FUNC_LPMODE	6
+#define ICE_AQC_LINK_TOPO_IO_FUNC_TX_FAULT	7
+#define ICE_AQC_LINK_TOPO_IO_FUNC_RX_LOSS	8
+#define ICE_AQC_LINK_TOPO_IO_FUNC_RS0		9
+#define ICE_AQC_LINK_TOPO_IO_FUNC_RS1		10
+#define ICE_AQC_LINK_TOPO_IO_FUNC_EEPROM_WP	11
+/* 12 repeats intentionally due to two different uses depending on context */
+#define ICE_AQC_LINK_TOPO_IO_FUNC_LED		12
+#define ICE_AQC_LINK_TOPO_IO_FUNC_RED_LED	12
+#define ICE_AQC_LINK_TOPO_IO_FUNC_GREEN_LED	13
+#define ICE_AQC_LINK_TOPO_IO_FUNC_BLUE_LED	14
+#define ICE_AQC_LINK_TOPO_INPUT_IO_TYPE_S	5
+#define ICE_AQC_LINK_TOPO_INPUT_IO_TYPE_M	\
+			(0x7 << ICE_AQC_LINK_TOPO_INPUT_IO_TYPE_S)
+#define ICE_AQC_LINK_TOPO_INPUT_IO_TYPE_GPIO	3
+/* Use ICE_AQC_LINK_TOPO_NODE_TYPE_* for the type values */
+	u8 output_io_params;
+#define ICE_AQC_LINK_TOPO_OUTPUT_IO_FUNC_S	0
+#define ICE_AQC_LINK_TOPO_OUTPUT_IO_FUNC_M	\
+			(0x1F << \ ICE_AQC_LINK_TOPO_INPUT_IO_FUNC_NUM_S)
+/* Use ICE_AQC_LINK_TOPO_IO_FUNC_* for the non-numerical options */
+#define ICE_AQC_LINK_TOPO_OUTPUT_IO_TYPE_S	5
+#define ICE_AQC_LINK_TOPO_OUTPUT_IO_TYPE_M	\
+			(0x7 << ICE_AQC_LINK_TOPO_INPUT_IO_TYPE_S)
+/* Use ICE_AQC_LINK_TOPO_NODE_TYPE_* for the type values */
+	u8 output_io_flags;
+#define ICE_AQC_LINK_TOPO_OUTPUT_SPEED_S	0
+#define ICE_AQC_LINK_TOPO_OUTPUT_SPEED_M	\
+			(0x7 << ICE_AQC_LINK_TOPO_OUTPUT_SPEED_S)
+#define ICE_AQC_LINK_TOPO_OUTPUT_INT_S		3
+#define ICE_AQC_LINK_TOPO_OUTPUT_INT_M		\
+			(0x3 << ICE_AQC_LINK_TOPO_OUTPUT_INT_S)
+#define ICE_AQC_LINK_TOPO_OUTPUT_POLARITY	BIT(5)
+#define ICE_AQC_LINK_TOPO_OUTPUT_VALUE		BIT(6)
+#define ICE_AQC_LINK_TOPO_OUTPUT_DRIVEN		BIT(7)
+	u8 rsvd[7];
 };
 
 /* Read/Write I2C (direct, 0x06E2/0x06E3) */
@@ -1837,6 +1937,15 @@ struct ice_aqc_nvm {
 #define ICE_AQC_NVM_LLDP_STATUS_M_LEN		4 /* In Bits */
 #define ICE_AQC_NVM_LLDP_STATUS_RD_LEN		4 /* In Bytes */
 
+#define ICE_AQC_NVM_TX_TOPO_MOD_ID		0x14B
+
+struct ice_aqc_nvm_tx_topo_user_sel {
+	__le16 length;
+	u8 data;
+#define ICE_AQC_NVM_TX_TOPO_USER_SEL		BIT(4)
+	u8 reserved;
+};
+
 /* Used for 0x0704 as well as for 0x0705 commands */
 struct ice_aqc_nvm_cfg {
 	u8	cmd_flags;
@@ -1889,14 +1998,25 @@ struct ice_aqc_lldp_get_mib {
 #define ICE_AQ_LLDP_TX_ACTIVE			0
 #define ICE_AQ_LLDP_TX_SUSPENDED		1
 #define ICE_AQ_LLDP_TX_FLUSHED			3
+/* DCBX mode */
+#define ICE_AQ_LLDP_DCBX_S			6
+#define ICE_AQ_LLDP_DCBX_M			(0x3 << ICE_AQ_LLDP_DCBX_S)
+#define ICE_AQ_LLDP_DCBX_NA			0
+#define ICE_AQ_LLDP_DCBX_CEE			1
+#define ICE_AQ_LLDP_DCBX_IEEE			2
 /* The following bytes are reserved for the Get LLDP MIB command (0x0A00)
  * and in the LLDP MIB Change Event (0x0A01). They are valid for the
  * Get LLDP MIB (0x0A00) response only.
  */
-	u8 reserved1;
+	u8 state;
+#define ICE_AQ_LLDP_MIB_CHANGE_STATE_S		0
+#define ICE_AQ_LLDP_MIB_CHANGE_STATE_M		\
+				(0x1 << ICE_AQ_LLDP_MIB_CHANGE_STATE_S)
+#define ICE_AQ_LLDP_MIB_CHANGE_EXECUTED		0
+#define ICE_AQ_LLDP_MIB_CHANGE_PENDING		1
 	__le16 local_len;
 	__le16 remote_len;
-	u8 reserved2[2];
+	u8 reserved[2];
 	__le32 addr_high;
 	__le32 addr_low;
 };
@@ -1907,6 +2027,11 @@ struct ice_aqc_lldp_set_mib_change {
 	u8 command;
 #define ICE_AQ_LLDP_MIB_UPDATE_ENABLE		0x0
 #define ICE_AQ_LLDP_MIB_UPDATE_DIS		0x1
+#define ICE_AQ_LLDP_MIB_PENDING_S		1
+#define ICE_AQ_LLDP_MIB_PENDING_M		\
+				(0x1 << ICE_AQ_LLDP_MIB_PENDING_S)
+#define ICE_AQ_LLDP_MIB_PENDING_DISABLE		0
+#define ICE_AQ_LLDP_MIB_PENDING_ENABLE		1
 	u8 reserved[15];
 };
 
@@ -2703,8 +2828,8 @@ struct ice_aqc_get_pkg_info_resp {
 struct ice_aqc_driver_shared_params {
 	u8 set_or_get_op;
 #define ICE_AQC_DRIVER_PARAM_OP_MASK		BIT(0)
-#define ICE_AQC_DRIVER_PARAM_SET		0
-#define ICE_AQC_DRIVER_PARAM_GET		1
+#define ICE_AQC_DRIVER_PARAM_SET		((u8)0)
+#define ICE_AQC_DRIVER_PARAM_GET		((u8)1)
 	u8 param_indx;
 #define ICE_AQC_DRIVER_PARAM_MAX_IDX		15
 	u8 rsvd[2];
@@ -2733,17 +2858,19 @@ struct ice_aqc_event_lan_overflow {
 /* Debug Dump Internal Data (indirect 0xFF08) */
 struct ice_aqc_debug_dump_internals {
 	u8 cluster_id;
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_SW		0
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_ACL		1
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_TXSCHED	2
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_PROFILES	3
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_SW			0
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_ACL			1
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_TXSCHED		2
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_PROFILES		3
 /* EMP_DRAM only dumpable in device debug mode */
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_EMP_DRAM	4
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_LINK	5
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_EMP_DRAM		4
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_LINK		5
 /* AUX_REGS only dumpable in device debug mode */
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_AUX_REGS	6
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_DCB	7
-#define ICE_AQC_DBG_DUMP_CLUSTER_ID_L2P	8
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_AUX_REGS		6
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_DCB			7
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_L2P			8
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_QUEUE_MNG		9
+#define ICE_AQC_DBG_DUMP_CLUSTER_ID_FULL_CSR_SPACE	21
 	u8 reserved;
 	__le16 table_id; /* Used only for non-memory clusters */
 	__le32 idx; /* In table entries for tables, in bytes for memory */
@@ -2768,6 +2895,7 @@ struct ice_aqc_set_health_status_config {
 #define ICE_AQC_HEALTH_STATUS_ERR_MOD_NOT_PRESENT		0x106
 #define ICE_AQC_HEALTH_STATUS_INFO_MOD_UNDERUTILIZED		0x107
 #define ICE_AQC_HEALTH_STATUS_ERR_UNKNOWN_MOD_LENIENT		0x108
+#define ICE_AQC_HEALTH_STATUS_ERR_MOD_DIAGNOSTIC_FEATURE	0x109
 #define ICE_AQC_HEALTH_STATUS_ERR_INVALID_LINK_CFG		0x10B
 #define ICE_AQC_HEALTH_STATUS_ERR_PORT_ACCESS			0x10C
 #define ICE_AQC_HEALTH_STATUS_ERR_PORT_UNREACHABLE		0x10D
@@ -2789,7 +2917,16 @@ struct ice_aqc_set_health_status_config {
 #define ICE_AQC_HEALTH_STATUS_ERR_DDP_AUTH			0x504
 #define ICE_AQC_HEALTH_STATUS_ERR_NVM_COMPAT			0x505
 #define ICE_AQC_HEALTH_STATUS_ERR_OROM_COMPAT			0x506
+#define ICE_AQC_HEALTH_STATUS_ERR_NVM_SEC_VIOLATION		0x507
+#define ICE_AQC_HEALTH_STATUS_ERR_OROM_SEC_VIOLATION		0x508
 #define ICE_AQC_HEALTH_STATUS_ERR_DCB_MIB			0x509
+#define ICE_AQC_HEALTH_STATUS_ERR_MNG_TIMEOUT			0x50A
+#define ICE_AQC_HEALTH_STATUS_ERR_BMC_RESET			0x50B
+#define ICE_AQC_HEALTH_STATUS_ERR_LAST_MNG_FAIL			0x50C
+#define ICE_AQC_HEALTH_STATUS_ERR_RESOURCE_ALLOC_FAIL		0x50D
+#define ICE_AQC_HEALTH_STATUS_ERR_FW_LOOP			0x1000
+#define ICE_AQC_HEALTH_STATUS_ERR_FW_PFR_FAIL			0x1001
+#define ICE_AQC_HEALTH_STATUS_ERR_LAST_FAIL_AQ			0x1002
 
 /* Get Health Status codes (indirect 0xFF21) */
 struct ice_aqc_get_supported_health_status_codes {
@@ -2886,6 +3023,7 @@ struct ice_aq_desc {
 		struct ice_aqc_cfg_l2_node_cgd cfg_l2_node_cgd;
 		struct ice_aqc_query_port_ets port_ets;
 		struct ice_aqc_rl_profile rl_profile;
+		struct ice_aqc_node_attr node_attr;
 		struct ice_aqc_nvm nvm;
 		struct ice_aqc_nvm_cfg nvm_cfg;
 		struct ice_aqc_nvm_checksum nvm_checksum;
@@ -2936,6 +3074,7 @@ struct ice_aq_desc {
 		struct ice_aqc_get_link_status get_link_status;
 		struct ice_aqc_event_lan_overflow lan_overflow;
 		struct ice_aqc_get_link_topo get_link_topo;
+		struct ice_aqc_get_link_topo_pin get_link_topo_pin;
 		struct ice_aqc_set_health_status_config
 			set_health_status_config;
 		struct ice_aqc_get_supported_health_status_codes
@@ -2944,6 +3083,7 @@ struct ice_aq_desc {
 		struct ice_aqc_clear_health_status clear_health_status;
 		struct ice_aqc_prog_topo_dev_nvm prog_topo_dev_nvm;
 		struct ice_aqc_read_topo_dev_nvm read_topo_dev_nvm;
+		struct ice_aqc_get_set_tx_topo get_set_tx_topo;
 	} params;
 };
 
@@ -3100,6 +3240,10 @@ enum ice_adminq_opc {
 	ice_aqc_opc_query_node_to_root			= 0x0413,
 	ice_aqc_opc_cfg_l2_node_cgd			= 0x0414,
 	ice_aqc_opc_remove_rl_profiles			= 0x0415,
+	ice_aqc_opc_set_tx_topo				= 0x0417,
+	ice_aqc_opc_get_tx_topo				= 0x0418,
+	ice_aqc_opc_cfg_node_attr			= 0x0419,
+	ice_aqc_opc_query_node_attr			= 0x041A,
 
 	/* PHY commands */
 	ice_aqc_opc_get_phy_caps			= 0x0600,
@@ -3148,6 +3292,7 @@ enum ice_adminq_opc {
 	ice_aqc_opc_lldp_set_local_mib			= 0x0A08,
 	ice_aqc_opc_lldp_stop_start_specific_agent	= 0x0A09,
 	ice_aqc_opc_lldp_filter_ctrl			= 0x0A0A,
+	ice_execute_pending_lldp_mib			= 0x0A0B,
 
 	/* RSS commands */
 	ice_aqc_opc_set_rss_key				= 0x0B02,

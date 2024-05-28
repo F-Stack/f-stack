@@ -9,6 +9,19 @@
 #include "test.h"
 #include "test_trace.h"
 
+int app_dpdk_test_tp_count;
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+
+static int
+test_trace(void)
+{
+	printf("trace not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 static int32_t
 test_trace_point_globbing(void)
 {
@@ -70,7 +83,14 @@ failed:
 static int32_t
 test_trace_point_disable_enable(void)
 {
+	int expected;
 	int rc;
+
+	/* At tp registration, the associated counter increases once. */
+	expected = 1;
+	TEST_ASSERT_EQUAL(app_dpdk_test_tp_count, expected,
+		"Expecting %d, but got %d for app_dpdk_test_tp_count",
+		expected, app_dpdk_test_tp_count);
 
 	rc = rte_trace_point_disable(&__app_dpdk_test_tp);
 	if (rc < 0)
@@ -78,6 +98,12 @@ test_trace_point_disable_enable(void)
 
 	if (rte_trace_point_is_enabled(&__app_dpdk_test_tp))
 		goto failed;
+
+	/* No emission expected */
+	app_dpdk_test_tp("app.dpdk.test.tp");
+	TEST_ASSERT_EQUAL(app_dpdk_test_tp_count, expected,
+		"Expecting %d, but got %d for app_dpdk_test_tp_count",
+		expected, app_dpdk_test_tp_count);
 
 	rc = rte_trace_point_enable(&__app_dpdk_test_tp);
 	if (rc < 0)
@@ -88,6 +114,11 @@ test_trace_point_disable_enable(void)
 
 	/* Emit the trace */
 	app_dpdk_test_tp("app.dpdk.test.tp");
+	expected++;
+	TEST_ASSERT_EQUAL(app_dpdk_test_tp_count, expected,
+		"Expecting %d, but got %d for app_dpdk_test_tp_count",
+		expected, app_dpdk_test_tp_count);
+
 	return TEST_SUCCESS;
 
 failed:
@@ -100,9 +131,6 @@ test_trace_mode(void)
 	enum rte_trace_mode current;
 
 	current = rte_trace_mode_get();
-
-	if (!rte_trace_is_enabled())
-		return TEST_SKIPPED;
 
 	rte_trace_mode_set(RTE_TRACE_MODE_DISCARD);
 	if (rte_trace_mode_get() != RTE_TRACE_MODE_DISCARD)
@@ -172,6 +200,19 @@ test_generic_trace_points(void)
 	return TEST_SUCCESS;
 }
 
+static int
+test_trace_dump(void)
+{
+	rte_trace_dump(stdout);
+	return 0;
+}
+
+static int
+test_trace_metadata_dump(void)
+{
+	return rte_trace_metadata_dump(stdout);
+}
+
 static struct unit_test_suite trace_tests = {
 	.suite_name = "trace autotest",
 	.setup = NULL,
@@ -184,6 +225,8 @@ static struct unit_test_suite trace_tests = {
 		TEST_CASE(test_trace_point_globbing),
 		TEST_CASE(test_trace_point_regex),
 		TEST_CASE(test_trace_points_lookup),
+		TEST_CASE(test_trace_dump),
+		TEST_CASE(test_trace_metadata_dump),
 		TEST_CASES_END()
 	}
 };
@@ -194,21 +237,6 @@ test_trace(void)
 	return unit_test_suite_runner(&trace_tests);
 }
 
+#endif /* !RTE_EXEC_ENV_WINDOWS */
+
 REGISTER_TEST_COMMAND(trace_autotest, test_trace);
-
-static int
-test_trace_dump(void)
-{
-	rte_trace_dump(stdout);
-	return 0;
-}
-
-REGISTER_TEST_COMMAND(trace_dump, test_trace_dump);
-
-static int
-test_trace_metadata_dump(void)
-{
-	return rte_trace_metadata_dump(stdout);
-}
-
-REGISTER_TEST_COMMAND(trace_metadata_dump, test_trace_metadata_dump);

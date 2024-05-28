@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2018-2019 Pensando Systems, Inc. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2018-2022 Advanced Micro Devices, Inc.
  */
 
 #ifndef _IONIC_H_
@@ -8,14 +8,12 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-#include <rte_bus_pci.h>
-
 #include "ionic_dev.h"
 #include "ionic_if.h"
 #include "ionic_osdep.h"
 
 #define IONIC_DRV_NAME			"ionic"
-#define IONIC_DRV_DESCRIPTION		"Pensando Ethernet NIC Driver"
+#define IONIC_DRV_DESCRIPTION		"AMD Pensando Ethernet NIC Driver"
 #define IONIC_DRV_VERSION		"0.11.0-49"
 
 /* Vendor ID */
@@ -25,6 +23,9 @@
 #define IONIC_DEV_ID_ETH_PF		0x1002
 #define IONIC_DEV_ID_ETH_VF		0x1003
 #define IONIC_DEV_ID_ETH_MGMT		0x1004
+
+/* Devargs */
+#define PMD_IONIC_CMB_KVARG		"ionic_cmb"
 
 enum ionic_mac_type {
 	IONIC_MAC_UNKNOWN = 0,
@@ -42,6 +43,11 @@ struct ionic_hw {
 	uint16_t vendor_id;
 };
 
+struct ionic_bars {
+	struct ionic_dev_bar bar[IONIC_BARS_MAX];
+	uint32_t num_bars;
+};
+
 /*
  * Structure to store private data for each driver instance (for each adapter).
  */
@@ -49,20 +55,21 @@ struct ionic_adapter {
 	struct ionic_hw hw;
 	struct ionic_dev idev;
 	const char *name;
-	struct ionic_dev_bar bars[IONIC_BARS_MAX];
+	struct ionic_bars bars;
+	const struct ionic_dev_intf *intf;
 	struct ionic_identity	ident;
 	struct ionic_lif *lif;
-	uint32_t num_bars;
 	uint32_t max_ntxqs_per_lif;
 	uint32_t max_nrxqs_per_lif;
 	uint32_t max_mac_addrs;
 	uint32_t link_speed;
 	uint32_t nintrs;
 	bool intrs[IONIC_INTR_CTRL_REGS_MAX];
+	bool q_in_cmb;
 	bool link_up;
 	char fw_version[IONIC_DEVINFO_FWVERS_BUFLEN];
-	struct rte_pci_device *pci_dev;
-	LIST_ENTRY(ionic_adapter) pci_adapters;
+	void *bus_dev;
+	uint64_t cmb_offset;
 };
 
 /** ionic_admin_ctx - Admin command context.

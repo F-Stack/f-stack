@@ -8,7 +8,6 @@
 
 #include <stdint.h>
 
-#include <rte_compat.h>
 
 /**
  * @file rte_ipsec_sad.h
@@ -139,8 +138,6 @@ rte_ipsec_sad_find_existing(const char *name);
  *
  * @param sad
  *   pointer to the SAD object
- * @return
- *   None
  */
 void
 rte_ipsec_sad_destroy(struct rte_ipsec_sad *sad);

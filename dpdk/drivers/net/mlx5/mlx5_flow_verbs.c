@@ -122,7 +122,7 @@ flow_verbs_counter_get_by_idx(struct rte_eth_dev *dev,
 			      struct mlx5_flow_counter_pool **ppool)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_flow_counter_mng *cmng = &priv->sh->cmng;
+	struct mlx5_flow_counter_mng *cmng = &priv->sh->sws_cmng;
 	struct mlx5_flow_counter_pool *pool;
 
 	idx = (idx - 1) & (MLX5_CNT_SHARED_OFFSET - 1);
@@ -215,7 +215,7 @@ static uint32_t
 flow_verbs_counter_new(struct rte_eth_dev *dev, uint32_t id __rte_unused)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_flow_counter_mng *cmng = &priv->sh->cmng;
+	struct mlx5_flow_counter_mng *cmng = &priv->sh->sws_cmng;
 	struct mlx5_flow_counter_pool *pool = NULL;
 	struct mlx5_flow_counter *cnt = NULL;
 	uint32_t n_valid = cmng->n_valid;
@@ -232,27 +232,14 @@ flow_verbs_counter_new(struct rte_eth_dev *dev, uint32_t id __rte_unused)
 			break;
 	}
 	if (!cnt) {
-		struct mlx5_flow_counter_pool **pools;
 		uint32_t size;
 
-		if (n_valid == cmng->n) {
-			/* Resize the container pool array. */
-			size = sizeof(struct mlx5_flow_counter_pool *) *
-				     (n_valid + MLX5_CNT_CONTAINER_RESIZE);
-			pools = mlx5_malloc(MLX5_MEM_ZERO, size, 0,
-					    SOCKET_ID_ANY);
-			if (!pools)
-				return 0;
-			if (n_valid) {
-				memcpy(pools, cmng->pools,
-				       sizeof(struct mlx5_flow_counter_pool *) *
-				       n_valid);
-				mlx5_free(cmng->pools);
-			}
-			cmng->pools = pools;
-			cmng->n += MLX5_CNT_CONTAINER_RESIZE;
+		if (n_valid == MLX5_COUNTER_POOLS_MAX_NUM) {
+			DRV_LOG(ERR, "All counter is in used, try again later.");
+			rte_errno = EAGAIN;
+			return 0;
 		}
-		/* Allocate memory for new pool*/
+		/* Allocate memory for new pool */
 		size = sizeof(*pool) + sizeof(*cnt) * MLX5_COUNTERS_PER_POOL;
 		pool = mlx5_malloc(MLX5_MEM_ZERO, size, 0, SOCKET_ID_ANY);
 		if (!pool)
@@ -1208,6 +1195,54 @@ flow_verbs_translate_action_count(struct mlx5_flow *dev_flow,
 }
 
 /**
+ * Validates @p attributes of the flow rule.
+ *
+ * This function is used if and only if legacy Verbs flow engine is used.
+ *
+ * @param[in] dev
+ *   Pointer to the Ethernet device structure.
+ * @param[in] attributes
+ *   Pointer to flow attributes
+ * @param[out] error
+ *   Pointer to error structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+flow_verbs_validate_attributes(struct rte_eth_dev *dev,
+			       const struct rte_flow_attr *attributes,
+			       struct rte_flow_error *error)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	uint32_t priority_max = priv->sh->flow_max_priority - 1;
+
+	if (attributes->group)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_GROUP,
+					  NULL, "groups is not supported");
+	if (attributes->priority != MLX5_FLOW_LOWEST_PRIO_INDICATOR &&
+	    attributes->priority >= priority_max)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					  NULL, "priority out of range");
+	if (attributes->egress)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, NULL,
+					  "egress is not supported");
+	if (attributes->transfer)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
+					  NULL, "transfer is not supported");
+	if (!attributes->ingress)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ATTR_INGRESS,
+					  NULL,
+					  "ingress attribute is mandatory");
+	return 0;
+}
+
+/**
  * Internal validation function. For validating both actions and items.
  *
  * @param[in] dev
@@ -1245,10 +1280,12 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 	uint16_t ether_type = 0;
 	bool is_empty_vlan = false;
 	uint16_t udp_dport = 0;
+	/* Verbs interface does not support groups higher than 0. */
+	bool is_root = true;
 
 	if (items == NULL)
 		return -1;
-	ret = mlx5_flow_validate_attributes(dev, attr, error);
+	ret = flow_verbs_validate_attributes(dev, attr, error);
 	if (ret < 0)
 		return ret;
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
@@ -1380,7 +1417,7 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
 			ret = mlx5_flow_validate_item_vxlan(dev, udp_dport,
 							    items, item_flags,
-							    attr, error);
+							    is_root, error);
 			if (ret < 0)
 				return ret;
 			last_item = MLX5_FLOW_LAYER_VXLAN;
@@ -1447,7 +1484,8 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 			action_flags |= MLX5_FLOW_ACTION_MARK;
 			break;
 		case RTE_FLOW_ACTION_TYPE_DROP:
-			ret = mlx5_flow_validate_action_drop(action_flags,
+			ret = mlx5_flow_validate_action_drop(dev,
+							     is_root,
 							     attr,
 							     error);
 			if (ret < 0)
@@ -1985,7 +2023,6 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 			MLX5_ASSERT(priv->drop_queue.hrxq);
 			hrxq = priv->drop_queue.hrxq;
 		} else {
-			uint32_t hrxq_idx;
 			struct mlx5_flow_rss_desc *rss_desc = &wks->rss_desc;
 
 			MLX5_ASSERT(rss_desc->queue_num);
@@ -1994,9 +2031,7 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 			rss_desc->tunnel = !!(handle->layers &
 					      MLX5_FLOW_LAYER_TUNNEL);
 			rss_desc->shared_rss = 0;
-			hrxq_idx = mlx5_hrxq_get(dev, rss_desc);
-			hrxq = mlx5_ipool_get(priv->sh->ipool[MLX5_IPOOL_HRXQ],
-					      hrxq_idx);
+			hrxq = mlx5_hrxq_get(dev, rss_desc);
 			if (!hrxq) {
 				rte_flow_error_set
 					(error, rte_errno,
@@ -2004,7 +2039,7 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 					 "cannot get hash queue");
 				goto error;
 			}
-			handle->rix_hrxq = hrxq_idx;
+			handle->rix_hrxq = hrxq->idx;
 		}
 		MLX5_ASSERT(hrxq);
 		handle->drv_flow = mlx5_glue->create_flow

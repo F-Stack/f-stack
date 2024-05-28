@@ -2,10 +2,13 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_CMD_H_
-#define _HNS3_CMD_H_
+#ifndef HNS3_CMD_H
+#define HNS3_CMD_H
 
 #include <stdint.h>
+
+#include <rte_byteorder.h>
+#include <rte_spinlock.h>
 
 #define HNS3_CMDQ_TX_TIMEOUT		30000
 #define HNS3_CMDQ_CLEAR_WAIT_TIME	200
@@ -54,11 +57,6 @@ enum hns3_cmd_return_status {
 	HNS3_CMD_QUEUE_ILLEGAL  = 10,
 	HNS3_CMD_INVALID        = 11,
 	HNS3_CMD_ROH_CHECK_FAIL = 12
-};
-
-struct hns3_misc_vector {
-	uint8_t *addr;
-	int vector_irq;
 };
 
 struct hns3_cmq {
@@ -394,20 +392,6 @@ struct hns3_pkt_buf_alloc {
 	struct hns3_shared_buf s_buf;
 };
 
-#define HNS3_RX_COM_WL_EN_B	15
-struct hns3_rx_com_wl_buf_cmd {
-	uint16_t high_wl;
-	uint16_t low_wl;
-	uint8_t rsv[20];
-};
-
-#define HNS3_RX_PKT_EN_B	15
-struct hns3_rx_pkt_buf_cmd {
-	uint16_t high_pkt;
-	uint16_t low_pkt;
-	uint8_t rsv[20];
-};
-
 #define HNS3_PF_STATE_DONE_B	0
 #define HNS3_PF_STATE_MAIN_B	1
 #define HNS3_PF_STATE_BOND_B	2
@@ -622,6 +606,7 @@ struct hns3_rss_input_tuple_cmd {
 #define HNS3_RSS_CFG_TBL_SIZE_H		4
 #define HNS3_RSS_CFG_TBL_BW_H		2
 #define HNS3_RSS_CFG_TBL_BW_L		8
+#define HNS3_RSS_CFG_TBL_BW_H_M		0x3
 
 /* Configure the indirection table, opcode:0x0D07 */
 struct hns3_rss_indirection_table_cmd {
@@ -983,6 +968,12 @@ struct hns3_dev_specs_0_cmd {
 	uint32_t max_tm_rate;
 };
 
+struct hns3_dev_specs_1_cmd {
+	uint8_t rsv0[12];
+	uint8_t min_tx_pkt_len;
+	uint8_t rsv1[11];
+};
+
 struct hns3_query_rpu_cmd {
 	uint32_t tc_queue_num;
 	uint32_t rsv1[2];
@@ -1054,4 +1045,4 @@ int hns3_cmd_init(struct hns3_hw *hw);
 void hns3_cmd_destroy_queue(struct hns3_hw *hw);
 void hns3_cmd_uninit(struct hns3_hw *hw);
 
-#endif /* _HNS3_CMD_H_ */
+#endif /* HNS3_CMD_H */

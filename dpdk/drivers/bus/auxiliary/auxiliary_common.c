@@ -12,7 +12,7 @@
 #include <rte_errno.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
-#include <rte_bus.h>
+#include <bus_driver.h>
 #include <rte_per_lcore.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
@@ -23,7 +23,6 @@
 #include <rte_devargs.h>
 
 #include "private.h"
-#include "rte_bus_auxiliary.h"
 
 static struct rte_devargs *
 auxiliary_devargs_lookup(const char *name)
@@ -106,11 +105,13 @@ rte_auxiliary_probe_one_driver(struct rte_auxiliary_driver *drv,
 		return -1;
 	}
 
-	if (dev->device.numa_node < 0) {
-		if (rte_socket_count() > 1)
-			AUXILIARY_LOG(INFO, "Device %s is not NUMA-aware, defaulting socket to 0",
-					dev->name);
-		dev->device.numa_node = 0;
+	if (dev->device.numa_node < 0 && rte_socket_count() > 1)
+		RTE_LOG(INFO, EAL, "Device %s is not NUMA-aware\n", dev->name);
+
+	if (rte_dev_is_probed(&dev->device)) {
+		RTE_LOG(DEBUG, EAL, "Device %s is already probed on auxiliary bus\n",
+			dev->device.name);
+		return -EEXIST;
 	}
 
 	iova_mode = rte_eal_iova_mode();
@@ -259,7 +260,6 @@ void
 rte_auxiliary_register(struct rte_auxiliary_driver *driver)
 {
 	TAILQ_INSERT_TAIL(&auxiliary_bus.driver_list, driver, next);
-	driver->bus = &auxiliary_bus;
 }
 
 /* Unregister a driver */
@@ -267,7 +267,6 @@ void
 rte_auxiliary_unregister(struct rte_auxiliary_driver *driver)
 {
 	TAILQ_REMOVE(&auxiliary_bus.driver_list, driver, next);
-	driver->bus = NULL;
 }
 
 /* Add a device to auxiliary bus */

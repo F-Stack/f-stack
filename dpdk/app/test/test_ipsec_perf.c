@@ -2,16 +2,28 @@
  * Copyright(c) 2020 Intel Corporation
  */
 
+#include "test.h"
+
 #include <stdio.h>
 #include <rte_ip.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_mbuf.h>
 #include <rte_cycles.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_libipsec_perf(void)
+{
+	printf("ipsec_perf not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_ipsec.h>
 #include <rte_random.h>
 
-#include "test.h"
 #include "test_cryptodev.h"
 
 #define RING_SIZE	4096
@@ -215,7 +227,7 @@ static int
 create_sa(enum rte_security_session_action_type action_type,
 	  struct ipsec_sa *sa)
 {
-	static struct rte_cryptodev_sym_session dummy_ses;
+	void *dummy_ses = NULL;
 	size_t sz;
 	int rc;
 
@@ -235,7 +247,7 @@ create_sa(enum rte_security_session_action_type action_type,
 		"failed to allocate memory for rte_ipsec_sa\n");
 
 	sa->ss[0].type = action_type;
-	sa->ss[0].crypto.ses = &dummy_ses;
+	sa->ss[0].crypto.ses = dummy_ses;
 
 	rc = rte_ipsec_sa_init(sa->ss[0].sa, &sa->sa_prm, sz);
 	rc = (rc > 0 && (uint32_t)rc <= sz) ? 0 : -EINVAL;
@@ -585,6 +597,12 @@ test_libipsec_perf(void)
 	uint32_t i;
 	int ret;
 
+	ret = rte_cryptodev_count();
+	if (ret < 1) {
+		RTE_LOG(WARNING, USER1, "No crypto devices found?\n");
+		return TEST_SKIPPED;
+	}
+
 	if (testsuite_setup() < 0) {
 		testsuite_teardown();
 		return TEST_FAILED;
@@ -610,5 +628,7 @@ test_libipsec_perf(void)
 
 	return TEST_SUCCESS;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(ipsec_perf_autotest, test_libipsec_perf);

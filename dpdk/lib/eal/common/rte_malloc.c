@@ -13,11 +13,6 @@
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_eal_memconfig.h>
-#include <rte_branch_prediction.h>
-#include <rte_debug.h>
-#include <rte_launch.h>
-#include <rte_per_lcore.h>
-#include <rte_lcore.h>
 #include <rte_common.h>
 #include <rte_spinlock.h>
 
@@ -115,15 +110,22 @@ rte_zmalloc_socket(const char *type, size_t size, unsigned align, int socket)
 {
 	void *ptr = rte_malloc_socket(type, size, align, socket);
 
+	if (ptr != NULL) {
+		struct malloc_elem *elem = malloc_elem_from_data(ptr);
+
+		if (elem->dirty) {
+			memset(ptr, 0, size);
+		} else {
 #ifdef RTE_MALLOC_DEBUG
-	/*
-	 * If DEBUG is enabled, then freed memory is marked with poison
-	 * value and set to zero on allocation.
-	 * If DEBUG is not enabled then  memory is already zeroed.
-	 */
-	if (ptr != NULL)
-		memset(ptr, 0, size);
+			/*
+			 * If DEBUG is enabled, then freed memory is marked
+			 * with a poison value and set to zero on allocation.
+			 * If DEBUG is disabled then memory is already zeroed.
+			 */
+			memset(ptr, 0, size);
 #endif
+		}
+	}
 
 	rte_eal_trace_mem_zmalloc(type, size, align, socket, ptr);
 	return ptr;
@@ -348,16 +350,6 @@ rte_malloc_dump_stats(FILE *f, __rte_unused const char *type)
 		fprintf(f, "\tFree_count:%u,\n", sock_stats.free_count);
 	}
 	return;
-}
-
-/*
- * TODO: Set limit to memory that can be allocated to memory type
- */
-int
-rte_malloc_set_limit(__rte_unused const char *type,
-		__rte_unused size_t max)
-{
-	return 0;
 }
 
 /*

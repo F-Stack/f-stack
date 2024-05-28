@@ -6,7 +6,7 @@
 #include <sys/stat.h>
 #include <dlfcn.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <ethdev_pci.h>
 #include <rte_kvargs.h>
 
@@ -85,15 +85,58 @@ static const char * const valid_arguments[] = {
 	NULL
 };
 
+#define AR_VENDOR_ID 0x1d6c
 static const struct rte_pci_id pci_id_ark_map[] = {
-	{RTE_PCI_DEVICE(0x1d6c, 0x100d)},
-	{RTE_PCI_DEVICE(0x1d6c, 0x100e)},
-	{RTE_PCI_DEVICE(0x1d6c, 0x100f)},
-	{RTE_PCI_DEVICE(0x1d6c, 0x1010)},
-	{RTE_PCI_DEVICE(0x1d6c, 0x1017)},
-	{RTE_PCI_DEVICE(0x1d6c, 0x1018)},
-	{RTE_PCI_DEVICE(0x1d6c, 0x1019)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x100d)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x100e)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x100f)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1010)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1017)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1018)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1019)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101a)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101b)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101c)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101e)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101f)},
 	{.vendor_id = 0, /* sentinel */ },
+};
+
+/*
+ * This structure is used to statically define the capabilities
+ * of supported devices.
+ * Capabilities:
+ *  rqpacing -
+ * Some HW variants require that PCIe read-requests be correctly throttled.
+ * This is called "rqpacing" and has to do with credit and flow control
+ * on certain Arkville implementations.
+ */
+struct ark_caps {
+	bool rqpacing;
+	bool isvf;
+};
+struct ark_dev_caps {
+	uint32_t  device_id;
+	struct ark_caps  caps;
+};
+#define SET_DEV_CAPS(id, rqp, vf)			\
+	{id, {.rqpacing = rqp, .isvf = vf} }
+
+static const struct ark_dev_caps
+ark_device_caps[] = {
+		     SET_DEV_CAPS(0x100d, true, false),
+		     SET_DEV_CAPS(0x100e, true, false),
+		     SET_DEV_CAPS(0x100f, true, false),
+		     SET_DEV_CAPS(0x1010, false, false),
+		     SET_DEV_CAPS(0x1017, true, false),
+		     SET_DEV_CAPS(0x1018, true, false),
+		     SET_DEV_CAPS(0x1019, true, false),
+		     SET_DEV_CAPS(0x101a, true, false),
+		     SET_DEV_CAPS(0x101b, true, false),
+		     SET_DEV_CAPS(0x101c, true, true),
+		     SET_DEV_CAPS(0x101e, false, false),
+		     SET_DEV_CAPS(0x101f, false, false),
+		     {.device_id = 0,}
 };
 
 static int
@@ -256,6 +299,7 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 	int ret;
 	int port_count = 1;
 	int p;
+	bool rqpacing = false;
 
 	ark->eth_dev = dev;
 
@@ -270,9 +314,19 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 	rte_eth_copy_pci_info(dev, pci_dev);
 	dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
+	p = 0;
+	while (ark_device_caps[p].device_id != 0) {
+		if (pci_dev->id.device_id == ark_device_caps[p].device_id) {
+			rqpacing = ark_device_caps[p].caps.rqpacing;
+			ark->isvf = ark_device_caps[p].caps.isvf;
+			break;
+		}
+		p++;
+	}
+
 	/* Use dummy function until setup */
-	dev->rx_pkt_burst = &eth_ark_recv_pkts_noop;
-	dev->tx_pkt_burst = &eth_ark_xmit_pkts_noop;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 
 	ark->bar0 = (uint8_t *)pci_dev->mem_resource[0].addr;
 	ark->a_bar = (uint8_t *)pci_dev->mem_resource[2].addr;
@@ -288,8 +342,12 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 	ark->pktgen.v  = (void *)&ark->bar0[ARK_PKTGEN_BASE];
 	ark->pktchkr.v  = (void *)&ark->bar0[ARK_PKTCHKR_BASE];
 
-	ark->rqpacing =
-		(struct ark_rqpace_t *)(ark->bar0 + ARK_RCPACING_BASE);
+	if (rqpacing) {
+		ark->rqpacing =
+			(struct ark_rqpace_t *)(ark->bar0 + ARK_RCPACING_BASE);
+	} else {
+		ark->rqpacing = NULL;
+	}
 	ark->started = 0;
 	ark->pkt_dir_v = ARK_PKT_DIR_INIT_VAL;
 
@@ -309,13 +367,15 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 		return -1;
 	}
 	if (ark->sysctrl.t32[3] != 0) {
-		if (ark_rqp_lasped(ark->rqpacing)) {
-			ARK_PMD_LOG(ERR, "Arkville Evaluation System - "
-				    "Timer has Expired\n");
-			return -1;
+		if (ark->rqpacing) {
+			if (ark_rqp_lasped(ark->rqpacing)) {
+				ARK_PMD_LOG(ERR, "Arkville Evaluation System - "
+					    "Timer has Expired\n");
+				return -1;
+			}
+			ARK_PMD_LOG(WARNING, "Arkville Evaluation System - "
+				    "Timer is Running\n");
 		}
-		ARK_PMD_LOG(WARNING, "Arkville Evaluation System - "
-			    "Timer is Running\n");
 	}
 
 	ARK_PMD_LOG(DEBUG,
@@ -440,66 +500,44 @@ ark_config_device(struct rte_eth_dev *dev)
 	 * Make sure that the packet director, generator and checker are in a
 	 * known state
 	 */
-	ark->start_pg = 0;
-	ark->pg = ark_pktgen_init(ark->pktgen.v, 0, 1);
-	if (ark->pg == NULL)
-		return -1;
-	ark_pktgen_reset(ark->pg);
-	ark->pc = ark_pktchkr_init(ark->pktchkr.v, 0, 1);
-	if (ark->pc == NULL)
-		return -1;
-	ark_pktchkr_stop(ark->pc);
-	ark->pd = ark_pktdir_init(ark->pktdir.v);
-	if (ark->pd == NULL)
-		return -1;
-
+	if (!ark->isvf) {
+		ark->start_pg = 0;
+		ark->pg_running = 0;
+		ark->pg = ark_pktgen_init(ark->pktgen.v, 0, 1);
+		if (ark->pg == NULL)
+			return -1;
+		ark_pktgen_reset(ark->pg);
+		ark->pc = ark_pktchkr_init(ark->pktchkr.v, 0, 1);
+		if (ark->pc == NULL)
+			return -1;
+		ark_pktchkr_stop(ark->pc);
+		ark->pd = ark_pktdir_init(ark->pktdir.v);
+		if (ark->pd == NULL)
+			return -1;
+	}
 	/* Verify HW */
 	if (ark_udm_verify(ark->udm.v))
 		return -1;
 	if (ark_ddm_verify(ark->ddm.v))
 		return -1;
 
-	/* UDM */
-	if (ark_udm_reset(ark->udm.v)) {
-		ARK_PMD_LOG(ERR, "Unable to stop and reset UDM\n");
-		return -1;
-	}
-	/* Keep in reset until the MPU are cleared */
-
 	/* MPU reset */
 	mpu = ark->mpurx.v;
 	num_q = ark_api_num_queues(mpu);
 	ark->rx_queues = num_q;
 	for (i = 0; i < num_q; i++) {
-		ark_mpu_reset(mpu);
 		mpu = RTE_PTR_ADD(mpu, ARK_MPU_QOFFSET);
 	}
-
-	ark_udm_stop(ark->udm.v, 0);
-	ark_udm_configure(ark->udm.v,
-			  RTE_PKTMBUF_HEADROOM,
-			  RTE_MBUF_DEFAULT_DATAROOM,
-			  ARK_RX_WRITE_TIME_NS);
-	ark_udm_stats_reset(ark->udm.v);
-	ark_udm_stop(ark->udm.v, 0);
-
-	/* TX -- DDM */
-	if (ark_ddm_stop(ark->ddm.v, 1))
-		ARK_PMD_LOG(ERR, "Unable to stop DDM\n");
 
 	mpu = ark->mputx.v;
 	num_q = ark_api_num_queues(mpu);
 	ark->tx_queues = num_q;
 	for (i = 0; i < num_q; i++) {
-		ark_mpu_reset(mpu);
 		mpu = RTE_PTR_ADD(mpu, ARK_MPU_QOFFSET);
 	}
 
-	ark_ddm_reset(ark->ddm.v);
-	ark_ddm_stats_reset(ark->ddm.v);
-
-	ark_ddm_stop(ark->ddm.v, 0);
-	ark_rqp_stats_reset(ark->rqpacing);
+	if (!ark->isvf && ark->rqpacing)
+		ark_rqp_stats_reset(ark->rqpacing);
 
 	return 0;
 }
@@ -516,8 +554,10 @@ eth_ark_dev_uninit(struct rte_eth_dev *dev)
 		ark->user_ext.dev_uninit(dev,
 			 ark->user_data[dev->data->port_id]);
 
-	ark_pktgen_uninit(ark->pg);
-	ark_pktchkr_uninit(ark->pc);
+	if (!ark->isvf) {
+		ark_pktgen_uninit(ark->pg);
+		ark_pktchkr_uninit(ark->pc);
+	}
 
 	return 0;
 }
@@ -541,9 +581,6 @@ eth_ark_dev_start(struct rte_eth_dev *dev)
 	int i;
 
 	/* RX Side */
-	/* start UDM */
-	ark_udm_start(ark->udm.v);
-
 	for (i = 0; i < dev->data->nb_rx_queues; i++)
 		eth_ark_rx_start_queue(dev, i);
 
@@ -551,29 +588,31 @@ eth_ark_dev_start(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_tx_queues; i++)
 		eth_ark_tx_queue_start(dev, i);
 
-	/* start DDM */
-	ark_ddm_start(ark->ddm.v);
-
 	ark->started = 1;
 	/* set xmit and receive function */
 	dev->rx_pkt_burst = &eth_ark_recv_pkts;
 	dev->tx_pkt_burst = &eth_ark_xmit_pkts;
 
-	if (ark->start_pg)
+	if (!ark->isvf && ark->start_pg)
 		ark_pktchkr_run(ark->pc);
 
-	if (ark->start_pg && (dev->data->port_id == 0)) {
+	if (!ark->isvf && ark->start_pg && !ark->pg_running) {
 		pthread_t thread;
 
 		/* Delay packet generatpr start allow the hardware to be ready
 		 * This is only used for sanity checking with internal generator
 		 */
-		if (rte_ctrl_thread_create(&thread, "ark-delay-pg", NULL,
+		char tname[32];
+		snprintf(tname, sizeof(tname), "ark-delay-pg-%d",
+			 dev->data->port_id);
+
+		if (rte_ctrl_thread_create(&thread, tname, NULL,
 					   ark_pktgen_delay_start, ark->pg)) {
 			ARK_PMD_LOG(ERR, "Could not create pktgen "
 				    "starter thread\n");
 			return -1;
 		}
+		ark->pg_running = 1;
 	}
 
 	if (ark->user_ext.dev_start)
@@ -589,7 +628,6 @@ eth_ark_dev_stop(struct rte_eth_dev *dev)
 	uint16_t i;
 	int status;
 	struct ark_adapter *ark = dev->data->dev_private;
-	struct ark_mpu_t *mpu;
 
 	if (ark->started == 0)
 		return 0;
@@ -602,11 +640,17 @@ eth_ark_dev_stop(struct rte_eth_dev *dev)
 		       ark->user_data[dev->data->port_id]);
 
 	/* Stop the packet generator */
-	if (ark->start_pg)
+	if (!ark->isvf && ark->start_pg && ark->pg_running) {
 		ark_pktgen_pause(ark->pg);
+		ark->pg_running = 0;
+	}
 
-	dev->rx_pkt_burst = &eth_ark_recv_pkts_noop;
-	dev->tx_pkt_burst = &eth_ark_xmit_pkts_noop;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
+
+	/* Stop RX Side */
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		eth_ark_rx_stop_queue(dev, i);
 
 	/* STOP TX Side */
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
@@ -620,55 +664,13 @@ eth_ark_dev_stop(struct rte_eth_dev *dev)
 		}
 	}
 
-	/* Stop DDM */
-	/* Wait up to 0.1 second.  each stop is up to 1000 * 10 useconds */
-	for (i = 0; i < 10; i++) {
-		status = ark_ddm_stop(ark->ddm.v, 1);
-		if (status == 0)
-			break;
-	}
-	if (status || i != 0) {
-		ARK_PMD_LOG(ERR, "DDM stop anomaly. status:"
-			    " %d iter: %u. (%s)\n",
-			    status,
-			    i,
-			    __func__);
-		ark_ddm_dump(ark->ddm.v, "Stop anomaly");
-
-		mpu = ark->mputx.v;
-		for (i = 0; i < ark->tx_queues; i++) {
-			ark_mpu_dump(mpu, "DDM failure dump", i);
-			mpu = RTE_PTR_ADD(mpu, ARK_MPU_QOFFSET);
-		}
-	}
-
-	/* STOP RX Side */
-	/* Stop UDM  multiple tries attempted */
-	for (i = 0; i < 10; i++) {
-		status = ark_udm_stop(ark->udm.v, 1);
-		if (status == 0)
-			break;
-	}
-	if (status || i != 0) {
-		ARK_PMD_LOG(ERR, "UDM stop anomaly. status %d iter: %u. (%s)\n",
-			    status, i, __func__);
-		ark_udm_dump(ark->udm.v, "Stop anomaly");
-
-		mpu = ark->mpurx.v;
-		for (i = 0; i < ark->rx_queues; i++) {
-			ark_mpu_dump(mpu, "UDM Stop anomaly", i);
-			mpu = RTE_PTR_ADD(mpu, ARK_MPU_QOFFSET);
-		}
-	}
-
 	ark_udm_dump_stats(ark->udm.v, "Post stop");
-	ark_udm_dump_perf(ark->udm.v, "Post stop");
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++)
 		eth_ark_rx_dump_queue(dev, i, __func__);
 
 	/* Stop the packet checker if it is running */
-	if (ark->start_pg) {
+	if (!ark->isvf && ark->start_pg) {
 		ark_pktchkr_dump_stats(ark->pc);
 		ark_pktchkr_stop(ark->pc);
 	}
@@ -690,12 +692,16 @@ eth_ark_dev_close(struct rte_eth_dev *dev)
 		 ark->user_data[dev->data->port_id]);
 
 	eth_ark_dev_stop(dev);
-	eth_ark_udm_force_close(dev);
 
 	/*
-	 * TODO This should only be called once for the device during shutdown
+	 * This should only be called once for the device during shutdown
 	 */
-	ark_rqp_dump(ark->rqpacing);
+	if (ark->rqpacing)
+		ark_rqp_dump(ark->rqpacing);
+
+	/* return to power-on state */
+	if (ark->pd)
+		ark_pktdir_setup(ark->pd, ARK_PKT_DIR_INIT_VAL);
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		eth_ark_tx_queue_release(dev->data->tx_queues[i]);
@@ -981,6 +987,10 @@ eth_ark_check_args(struct ark_adapter *ark, const char *params)
 		goto free_kvlist;
 	}
 
+	if (ark->isvf) {
+		ret = 0;
+		goto free_kvlist;
+	}
 	ARK_PMD_LOG(INFO, "packet director set to 0x%x\n", ark->pkt_dir_v);
 	/* Setup the packet director */
 	ark_pktdir_setup(ark->pd, ark->pkt_dir_v);

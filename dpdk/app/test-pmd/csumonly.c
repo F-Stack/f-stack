@@ -28,7 +28,6 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_ip.h>
@@ -96,12 +95,13 @@ struct simple_gre_hdr {
 } __rte_packed;
 
 static uint16_t
-get_udptcp_checksum(void *l3_hdr, void *l4_hdr, uint16_t ethertype)
+get_udptcp_checksum(struct rte_mbuf *m, void *l3_hdr, uint16_t l4_off,
+		    uint16_t ethertype)
 {
 	if (ethertype == _htons(RTE_ETHER_TYPE_IPV4))
-		return rte_ipv4_udptcp_cksum(l3_hdr, l4_hdr);
+		return rte_ipv4_udptcp_cksum_mbuf(m, l3_hdr, l4_off);
 	else /* assume ethertype == RTE_ETHER_TYPE_IPV6 */
-		return rte_ipv6_udptcp_cksum(l3_hdr, l4_hdr);
+		return rte_ipv6_udptcp_cksum_mbuf(m, l3_hdr, l4_off);
 }
 
 /* Parse an IPv4 header to fill l3_len, l4_len, and l4_proto */
@@ -250,7 +250,7 @@ parse_gtp(struct rte_udp_hdr *udp_hdr,
 		info->l4_proto = 0;
 	}
 
-	info->l2_len += RTE_ETHER_GTP_HLEN;
+	info->l2_len += gtp_len + sizeof(*udp_hdr);
 }
 
 /* Parse a vxlan header */
@@ -457,7 +457,7 @@ parse_encap_ip(void *encap_ip, struct testpmd_offload_info *info)
  * depending on the testpmd command line configuration */
 static uint64_t
 process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
-	uint64_t tx_offloads)
+	uint64_t tx_offloads, struct rte_mbuf *m)
 {
 	struct rte_ipv4_hdr *ipv4_hdr = l3_hdr;
 	struct rte_udp_hdr *udp_hdr;
@@ -465,6 +465,7 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 	struct rte_sctp_hdr *sctp_hdr;
 	uint64_t ol_flags = 0;
 	uint32_t max_pkt_len, tso_segsz = 0;
+	uint16_t l4_off;
 
 	/* ensure packet is large enough to require tso */
 	if (!info->is_tunnel) {
@@ -507,9 +508,15 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 			if (tx_offloads & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) {
 				ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
 			} else {
+				if (info->is_tunnel)
+					l4_off = info->outer_l2_len +
+						 info->outer_l3_len +
+						 info->l2_len + info->l3_len;
+				else
+					l4_off = info->l2_len +	info->l3_len;
 				udp_hdr->dgram_cksum = 0;
 				udp_hdr->dgram_cksum =
-					get_udptcp_checksum(l3_hdr, udp_hdr,
+					get_udptcp_checksum(m, l3_hdr, l4_off,
 						info->ethertype);
 			}
 		}
@@ -524,9 +531,14 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 		else if (tx_offloads & RTE_ETH_TX_OFFLOAD_TCP_CKSUM) {
 			ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
 		} else {
+			if (info->is_tunnel)
+				l4_off = info->outer_l2_len + info->outer_l3_len +
+					 info->l2_len + info->l3_len;
+			else
+				l4_off = info->l2_len + info->l3_len;
 			tcp_hdr->cksum = 0;
 			tcp_hdr->cksum =
-				get_udptcp_checksum(l3_hdr, tcp_hdr,
+				get_udptcp_checksum(m, l3_hdr, l4_off,
 					info->ethertype);
 		}
 #ifdef RTE_LIB_GSO
@@ -554,7 +566,7 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 /* Calculate the checksum of outer header */
 static uint64_t
 process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
-	uint64_t tx_offloads, int tso_enabled)
+	uint64_t tx_offloads, int tso_enabled, struct rte_mbuf *m)
 {
 	struct rte_ipv4_hdr *ipv4_hdr = outer_l3_hdr;
 	struct rte_ipv6_hdr *ipv6_hdr = outer_l3_hdr;
@@ -608,12 +620,9 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 	/* do not recalculate udp cksum if it was 0 */
 	if (udp_hdr->dgram_cksum != 0) {
 		udp_hdr->dgram_cksum = 0;
-		if (info->outer_ethertype == _htons(RTE_ETHER_TYPE_IPV4))
-			udp_hdr->dgram_cksum =
-				rte_ipv4_udptcp_cksum(ipv4_hdr, udp_hdr);
-		else
-			udp_hdr->dgram_cksum =
-				rte_ipv6_udptcp_cksum(ipv6_hdr, udp_hdr);
+		udp_hdr->dgram_cksum = get_udptcp_checksum(m, outer_l3_hdr,
+					info->outer_l2_len + info->outer_l3_len,
+					info->outer_ethertype);
 	}
 
 	return ol_flags;
@@ -906,6 +915,12 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		 * and inner headers */
 
 		eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+		if (ports[fs->tx_port].fwd_mac_swap) {
+			rte_ether_addr_copy(&peer_eth_addrs[fs->peer_addr],
+					    &eth_hdr->dst_addr);
+			rte_ether_addr_copy(&ports[fs->tx_port].eth_addr,
+					    &eth_hdr->src_addr);
+		}
 		parse_ethernet(eth_hdr, &info);
 		l3_hdr = (char *)eth_hdr + info.l2_len;
 
@@ -977,7 +992,7 @@ tunnel_update:
 
 		/* process checksums of inner headers first */
 		tx_ol_flags |= process_inner_cksums(l3_hdr, &info,
-			tx_offloads);
+			tx_offloads, m);
 
 		/* Then process outer headers if any. Note that the software
 		 * checksum will be wrong if one of the inner checksums is
@@ -985,7 +1000,8 @@ tunnel_update:
 		if (info.is_tunnel == 1) {
 			tx_ol_flags |= process_outer_cksums(outer_l3_hdr, &info,
 					tx_offloads,
-					!!(tx_ol_flags & RTE_MBUF_F_TX_TCP_SEG));
+					!!(tx_ol_flags & RTE_MBUF_F_TX_TCP_SEG),
+					m);
 		}
 
 		/* step 3: fill the mbuf meta data (flags and header lengths) */
@@ -1152,10 +1168,13 @@ tunnel_update:
 
 	nb_prep = rte_eth_tx_prepare(fs->tx_port, fs->tx_queue,
 			tx_pkts_burst, nb_rx);
-	if (nb_prep != nb_rx)
+	if (nb_prep != nb_rx) {
 		fprintf(stderr,
 			"Preparing packet burst to transmit failed: %s\n",
 			rte_strerror(rte_errno));
+		fs->fwd_dropped += (nb_rx - nb_prep);
+		rte_pktmbuf_free_bulk(&tx_pkts_burst[nb_prep], nb_rx - nb_prep);
+	}
 
 	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, tx_pkts_burst,
 			nb_prep);
@@ -1163,12 +1182,12 @@ tunnel_update:
 	/*
 	 * Retry if necessary
 	 */
-	if (unlikely(nb_tx < nb_rx) && fs->retry_enabled) {
+	if (unlikely(nb_tx < nb_prep) && fs->retry_enabled) {
 		retry = 0;
-		while (nb_tx < nb_rx && retry++ < burst_tx_retry_num) {
+		while (nb_tx < nb_prep && retry++ < burst_tx_retry_num) {
 			rte_delay_us(burst_tx_delay_time);
 			nb_tx += rte_eth_tx_burst(fs->tx_port, fs->tx_queue,
-					&tx_pkts_burst[nb_tx], nb_rx - nb_tx);
+					&tx_pkts_burst[nb_tx], nb_prep - nb_tx);
 		}
 	}
 	fs->tx_packets += nb_tx;
@@ -1178,11 +1197,11 @@ tunnel_update:
 	fs->rx_bad_outer_ip_csum += rx_bad_outer_ip_csum;
 
 	inc_tx_burst_stats(fs, nb_tx);
-	if (unlikely(nb_tx < nb_rx)) {
-		fs->fwd_dropped += (nb_rx - nb_tx);
+	if (unlikely(nb_tx < nb_prep)) {
+		fs->fwd_dropped += (nb_prep - nb_tx);
 		do {
 			rte_pktmbuf_free(tx_pkts_burst[nb_tx]);
-		} while (++nb_tx < nb_rx);
+		} while (++nb_tx < nb_prep);
 	}
 
 	get_end_cycles(fs, start_tsc);

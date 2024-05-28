@@ -18,6 +18,7 @@
 
 #include "mlx5.h"
 #include "mlx5_autoconf.h"
+#include "rte_pmd_mlx5.h"
 
 /* Support tunnel matching. */
 #define MLX5_FLOW_TUNNEL 10
@@ -61,6 +62,7 @@ enum mlx5_rxq_err_state {
 	MLX5_RXQ_ERR_STATE_NO_ERROR = 0,
 	MLX5_RXQ_ERR_STATE_NEED_RESET,
 	MLX5_RXQ_ERR_STATE_NEED_READY,
+	MLX5_RXQ_ERR_STATE_IGNORE,
 };
 
 enum mlx5_rqx_code {
@@ -142,12 +144,6 @@ struct mlx5_rxq_data {
 	/* Buffer split segment descriptions - sizes, offsets, pools. */
 } __rte_cache_aligned;
 
-enum mlx5_rxq_type {
-	MLX5_RXQ_TYPE_STANDARD, /* Standard Rx queue. */
-	MLX5_RXQ_TYPE_HAIRPIN, /* Hairpin Rx queue. */
-	MLX5_RXQ_TYPE_UNDEFINED,
-};
-
 /* RX queue control descriptor. */
 struct mlx5_rxq_ctrl {
 	struct mlx5_rxq_data rxq; /* Data path structure. */
@@ -155,7 +151,7 @@ struct mlx5_rxq_ctrl {
 	LIST_HEAD(priv, mlx5_rxq_priv) owners; /* Owner rxq list. */
 	struct mlx5_rxq_obj *obj; /* Verbs/DevX elements. */
 	struct mlx5_dev_ctx_shared *sh; /* Shared context. */
-	enum mlx5_rxq_type type; /* Rxq type. */
+	bool is_hairpin; /* Whether RxQ type is Hairpin. */
 	unsigned int socket; /* CPU socket ID for allocations. */
 	LIST_ENTRY(mlx5_rxq_ctrl) share_entry; /* Entry in shared RXQ list. */
 	uint32_t share_group; /* Group ID of shared RXQ. */
@@ -180,6 +176,15 @@ struct mlx5_rxq_priv {
 	struct mlx5_devx_rq devx_rq;
 	struct rte_eth_hairpin_conf hairpin_conf; /* Hairpin configuration. */
 	uint32_t hairpin_status; /* Hairpin binding status. */
+	uint32_t lwm:16;
+	uint32_t lwm_event_pending:1;
+	uint32_t lwm_devx_subscribed:1;
+};
+
+/* External RX queue descriptor. */
+struct mlx5_external_rxq {
+	uint32_t hw_id; /* Queue index in the Hardware. */
+	uint32_t refcnt; /* Reference counter. */
 };
 
 /* mlx5_rxq.c */
@@ -205,12 +210,11 @@ void mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev);
 int mlx5_rx_intr_enable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int mlx5_rx_intr_disable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int mlx5_rxq_obj_verify(struct rte_eth_dev *dev);
-struct mlx5_rxq_ctrl *mlx5_rxq_new(struct rte_eth_dev *dev,
-				   struct mlx5_rxq_priv *rxq,
+struct mlx5_rxq_ctrl *mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx,
 				   uint16_t desc, unsigned int socket,
 				   const struct rte_eth_rxconf *conf,
 				   const struct rte_eth_rxseg_split *rx_seg,
-				   uint16_t n_seg);
+				   uint16_t n_seg, bool is_extmem);
 struct mlx5_rxq_ctrl *mlx5_rxq_hairpin_new
 	(struct rte_eth_dev *dev, struct mlx5_rxq_priv *rxq, uint16_t desc,
 	 const struct rte_eth_hairpin_conf *hairpin_conf);
@@ -219,16 +223,26 @@ uint32_t mlx5_rxq_deref(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_priv *mlx5_rxq_get(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_ctrl *mlx5_rxq_ctrl_get(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_data *mlx5_rxq_data_get(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_external_rxq *mlx5_ext_rxq_ref(struct rte_eth_dev *dev,
+					   uint16_t idx);
+uint32_t mlx5_ext_rxq_deref(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_external_rxq *mlx5_ext_rxq_get(struct rte_eth_dev *dev,
+					   uint16_t idx);
 int mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx);
 int mlx5_rxq_verify(struct rte_eth_dev *dev);
+int mlx5_ext_rxq_verify(struct rte_eth_dev *dev);
 int rxq_alloc_elts(struct mlx5_rxq_ctrl *rxq_ctrl);
 int mlx5_ind_table_obj_verify(struct rte_eth_dev *dev);
 struct mlx5_ind_table_obj *mlx5_ind_table_obj_get(struct rte_eth_dev *dev,
 						  const uint16_t *queues,
 						  uint32_t queues_n);
+struct mlx5_ind_table_obj *mlx5_ind_table_obj_new(struct rte_eth_dev *dev,
+						  const uint16_t *queues,
+						  uint32_t queues_n,
+						  bool standalone,
+						  bool ref_qs);
 int mlx5_ind_table_obj_release(struct rte_eth_dev *dev,
 			       struct mlx5_ind_table_obj *ind_tbl,
-			       bool standalone,
 			       bool deref_rxqs);
 int mlx5_ind_table_obj_setup(struct rte_eth_dev *dev,
 			     struct mlx5_ind_table_obj *ind_tbl,
@@ -251,11 +265,12 @@ struct mlx5_list_entry *mlx5_hrxq_clone_cb(void *tool_ctx,
 					   void *cb_ctx __rte_unused);
 void mlx5_hrxq_clone_free_cb(void *tool_ctx __rte_unused,
 			     struct mlx5_list_entry *entry);
-uint32_t mlx5_hrxq_get(struct rte_eth_dev *dev,
+struct mlx5_hrxq *mlx5_hrxq_get(struct rte_eth_dev *dev,
 		       struct mlx5_flow_rss_desc *rss_desc);
+int mlx5_hrxq_obj_release(struct rte_eth_dev *dev, struct mlx5_hrxq *hrxq);
 int mlx5_hrxq_release(struct rte_eth_dev *dev, uint32_t hxrq_idx);
 uint32_t mlx5_hrxq_verify(struct rte_eth_dev *dev);
-enum mlx5_rxq_type mlx5_rxq_get_type(struct rte_eth_dev *dev, uint16_t idx);
+bool mlx5_rxq_is_hairpin(struct rte_eth_dev *dev, uint16_t idx);
 const struct rte_eth_hairpin_conf *mlx5_rxq_get_hairpin_conf
 	(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_hrxq *mlx5_drop_action_create(struct rte_eth_dev *dev);
@@ -272,12 +287,11 @@ int mlx5_hrxq_modify(struct rte_eth_dev *dev, uint32_t hxrq_idx,
 
 uint16_t mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
 void mlx5_rxq_initialize(struct mlx5_rxq_data *rxq);
-__rte_noinline int mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec);
+__rte_noinline int mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec,
+				      uint16_t err_n, uint16_t *skip_cnt);
 void mlx5_mprq_buf_free(struct mlx5_mprq_buf *buf);
 uint16_t mlx5_rx_burst_mprq(void *dpdk_rxq, struct rte_mbuf **pkts,
 			    uint16_t pkts_n);
-uint16_t removed_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts,
-			  uint16_t pkts_n);
 int mlx5_rx_descriptor_status(void *rx_queue, uint16_t offset);
 uint32_t mlx5_rx_queue_count(void *rx_queue);
 void mlx5_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
@@ -285,6 +299,11 @@ void mlx5_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 int mlx5_rx_burst_mode_get(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 			   struct rte_eth_burst_mode *mode);
 int mlx5_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
+void mlx5_dev_interrupt_handler_lwm(void *args);
+int mlx5_rx_queue_lwm_set(struct rte_eth_dev *dev, uint16_t rx_queue_id,
+			  uint8_t lwm);
+int mlx5_rx_queue_lwm_query(struct rte_eth_dev *dev, uint16_t *rx_queue_id,
+			    uint8_t *lwm);
 
 /* Vectorized version of mlx5_rx.c */
 int mlx5_rxq_check_vec_support(struct mlx5_rxq_data *rxq_data);
@@ -631,8 +650,7 @@ mlx5_mprq_enabled(struct rte_eth_dev *dev)
 	for (i = 0; i < priv->rxqs_n; ++i) {
 		struct mlx5_rxq_ctrl *rxq_ctrl = mlx5_rxq_ctrl_get(dev, i);
 
-		if (rxq_ctrl == NULL ||
-		    rxq_ctrl->type != MLX5_RXQ_TYPE_STANDARD)
+		if (rxq_ctrl == NULL || rxq_ctrl->is_hairpin)
 			continue;
 		n_ibv++;
 		if (mlx5_rxq_mprq_enabled(&rxq_ctrl->rxq))
@@ -642,5 +660,33 @@ mlx5_mprq_enabled(struct rte_eth_dev *dev)
 	MLX5_ASSERT(n == 0 || n == n_ibv);
 	return n == n_ibv;
 }
+
+/**
+ * Check whether given RxQ is external.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param queue_idx
+ *   Rx queue index.
+ *
+ * @return
+ *   True if is external RxQ, otherwise false.
+ */
+static __rte_always_inline bool
+mlx5_is_external_rxq(struct rte_eth_dev *dev, uint16_t queue_idx)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_external_rxq *rxq;
+
+	if (!priv->ext_rxqs || queue_idx < MLX5_EXTERNAL_RX_QUEUE_ID_MIN)
+		return false;
+	rxq = &priv->ext_rxqs[queue_idx - MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
+	return !!__atomic_load_n(&rxq->refcnt, __ATOMIC_RELAXED);
+}
+
+#define LWM_COOKIE_RXQID_OFFSET 0
+#define LWM_COOKIE_RXQID_MASK 0xffff
+#define LWM_COOKIE_PORTID_OFFSET 16
+#define LWM_COOKIE_PORTID_MASK 0xffff
 
 #endif /* RTE_PMD_MLX5_RX_H_ */

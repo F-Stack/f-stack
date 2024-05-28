@@ -3,6 +3,7 @@
  * Copyright(c) 2014 6WIND S.A.
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -20,7 +21,6 @@
 #include <sys/queue.h>
 #include <sys/stat.h>
 
-#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_memory.h>
@@ -72,62 +72,6 @@ struct lcore_config lcore_config[RTE_MAX_LCORE];
 /* used by rte_rdtsc() */
 int rte_cycles_vmware_tsc_map;
 
-static const char *default_runtime_dir = "/var/run";
-
-int
-eal_create_runtime_dir(void)
-{
-	const char *directory = default_runtime_dir;
-	const char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
-	const char *fallback = "/tmp";
-	char run_dir[PATH_MAX];
-	char tmp[PATH_MAX];
-	int ret;
-
-	if (getuid() != 0) {
-		/* try XDG path first, fall back to /tmp */
-		if (xdg_runtime_dir != NULL)
-			directory = xdg_runtime_dir;
-		else
-			directory = fallback;
-	}
-	/* create DPDK subdirectory under runtime dir */
-	ret = snprintf(tmp, sizeof(tmp), "%s/dpdk", directory);
-	if (ret < 0 || ret == sizeof(tmp)) {
-		RTE_LOG(ERR, EAL, "Error creating DPDK runtime path name\n");
-		return -1;
-	}
-
-	/* create prefix-specific subdirectory under DPDK runtime dir */
-	ret = snprintf(run_dir, sizeof(run_dir), "%s/%s",
-			tmp, eal_get_hugefile_prefix());
-	if (ret < 0 || ret == sizeof(run_dir)) {
-		RTE_LOG(ERR, EAL, "Error creating prefix-specific runtime path name\n");
-		return -1;
-	}
-
-	/* create the path if it doesn't exist. no "mkdir -p" here, so do it
-	 * step by step.
-	 */
-	ret = mkdir(tmp, 0700);
-	if (ret < 0 && errno != EEXIST) {
-		RTE_LOG(ERR, EAL, "Error creating '%s': %s\n",
-			tmp, strerror(errno));
-		return -1;
-	}
-
-	ret = mkdir(run_dir, 0700);
-	if (ret < 0 && errno != EEXIST) {
-		RTE_LOG(ERR, EAL, "Error creating '%s': %s\n",
-			run_dir, strerror(errno));
-		return -1;
-	}
-
-	if (eal_set_runtime_dir(run_dir, sizeof(run_dir)))
-		return -1;
-
-	return 0;
-}
 
 int
 eal_clean_runtime_dir(void)
@@ -137,38 +81,6 @@ eal_clean_runtime_dir(void)
 	 */
 	return 0;
 }
-
-/* parse a sysfs (or other) file containing one integer value */
-int
-eal_parse_sysfs_value(const char *filename, unsigned long *val)
-{
-	FILE *f;
-	char buf[BUFSIZ];
-	char *end = NULL;
-
-	if ((f = fopen(filename, "r")) == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): cannot open sysfs value %s\n",
-			__func__, filename);
-		return -1;
-	}
-
-	if (fgets(buf, sizeof(buf), f) == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): cannot read sysfs value %s\n",
-			__func__, filename);
-		fclose(f);
-		return -1;
-	}
-	*val = strtoul(buf, &end, 0);
-	if ((buf[0] == '\0') || (end == NULL) || (*end != '\n')) {
-		RTE_LOG(ERR, EAL, "%s(): cannot parse sysfs value %s\n",
-				__func__, filename);
-		fclose(f);
-		return -1;
-	}
-	fclose(f);
-	return 0;
-}
-
 
 /* create memory configuration in shared/mmap memory. Take out
  * a write lock on the memsegs, so we can auto-detect primary/secondary.
@@ -544,9 +456,7 @@ eal_parse_args(int argc, char **argv)
 				RTE_LOG(ERR, EAL, "Could not store mbuf pool ops name\n");
 			else {
 				/* free old ops name */
-				if (internal_conf->user_mbuf_pool_ops_name !=
-						NULL)
-					free(internal_conf->user_mbuf_pool_ops_name);
+				free(internal_conf->user_mbuf_pool_ops_name);
 
 				internal_conf->user_mbuf_pool_ops_name =
 						ops_name;
@@ -669,7 +579,6 @@ int
 rte_eal_init(int argc, char **argv)
 {
 	int i, fctret, ret;
-	pthread_t thread_id;
 	static uint32_t run_once;
 	uint32_t has_run = 0;
 	char cpuset[RTE_CPU_AFFINITY_STR_LEN];
@@ -693,8 +602,6 @@ rte_eal_init(int argc, char **argv)
 		rte_errno = EALREADY;
 		return -1;
 	}
-
-	thread_id = pthread_self();
 
 	eal_reset_internal_config(internal_conf);
 
@@ -884,8 +791,8 @@ rte_eal_init(int argc, char **argv)
 
 	ret = eal_thread_dump_current_affinity(cpuset, sizeof(cpuset));
 
-	RTE_LOG(DEBUG, EAL, "Main lcore %u is ready (tid=%p;cpuset=[%s%s])\n",
-		config->main_lcore, thread_id, cpuset,
+	RTE_LOG(DEBUG, EAL, "Main lcore %u is ready (tid=%zx;cpuset=[%s%s])\n",
+		config->main_lcore, (uintptr_t)pthread_self(), cpuset,
 		ret == 0 ? "" : "...");
 
 	RTE_LCORE_FOREACH_WORKER(i) {
@@ -903,13 +810,13 @@ rte_eal_init(int argc, char **argv)
 
 		/* create a thread for each lcore */
 		ret = pthread_create(&lcore_config[i].thread_id, NULL,
-				     eal_thread_loop, NULL);
+				     eal_thread_loop, (void *)(uintptr_t)i);
 		if (ret != 0)
 			rte_panic("Cannot create thread\n");
 
 		/* Set thread_name for aid in debugging. */
 		snprintf(thread_name, sizeof(thread_name),
-				"lcore-worker-%d", i);
+				"rte-worker-%d", i);
 		rte_thread_setname(lcore_config[i].thread_id, thread_name);
 
 		ret = pthread_setaffinity_np(lcore_config[i].thread_id,
@@ -982,15 +889,26 @@ rte_eal_init(int argc, char **argv)
 int
 rte_eal_cleanup(void)
 {
+	static uint32_t run_once;
+	uint32_t has_run = 0;
+
+	if (!__atomic_compare_exchange_n(&run_once, &has_run, 1, 0,
+			__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+		RTE_LOG(WARNING, EAL, "Already called cleanup\n");
+		rte_errno = EALREADY;
+		return -1;
+	}
+
 	struct internal_config *internal_conf =
 		eal_get_internal_configuration();
 	rte_service_finalize();
 	rte_mp_channel_cleanup();
+	eal_bus_cleanup();
 	rte_trace_save();
 	eal_trace_fini();
+	rte_eal_alarm_cleanup();
 	/* after this point, any DPDK pointers will become dangling */
 	rte_eal_memory_detach();
-	rte_eal_alarm_cleanup();
 	eal_cleanup_config(internal_conf);
 	return 0;
 }

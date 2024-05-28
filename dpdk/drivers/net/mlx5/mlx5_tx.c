@@ -107,7 +107,7 @@ mlx5_tx_error_cqe_handle(struct mlx5_txq_data *__rte_restrict txq,
 			mlx5_dump_debug_information(name, "MLX5 Error CQ:",
 						    (const void *)((uintptr_t)
 						    txq->cqes),
-						    sizeof(*err_cqe) *
+						    sizeof(struct mlx5_cqe) *
 						    (1 << txq->cqe_n));
 			mlx5_dump_debug_information(name, "MLX5 Error SQ:",
 						    (const void *)((uintptr_t)
@@ -132,31 +132,6 @@ mlx5_tx_error_cqe_handle(struct mlx5_txq_data *__rte_restrict txq,
 		/* Release all the remaining buffers. */
 		txq_free_elts(txq_ctrl);
 	}
-	return 0;
-}
-
-/**
- * Dummy DPDK callback for TX.
- *
- * This function is used to temporarily replace the real callback during
- * unsafe control operations on the queue, or in case of error.
- *
- * @param dpdk_txq
- *   Generic pointer to TX queue structure.
- * @param[in] pkts
- *   Packets to transmit.
- * @param pkts_n
- *   Number of packets in array.
- *
- * @return
- *   Number of packets successfully transmitted (<= pkts_n).
- */
-uint16_t
-removed_tx_burst(void *dpdk_txq __rte_unused,
-		 struct rte_mbuf **pkts __rte_unused,
-		 uint16_t pkts_n __rte_unused)
-{
-	rte_mb();
 	return 0;
 }
 
@@ -517,7 +492,7 @@ eth_tx_burst_t
 mlx5_select_tx_function(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_dev_config *config = &priv->config;
+	struct mlx5_port_config *config = &priv->config;
 	uint64_t tx_offloads = dev->data->dev_conf.txmode.offloads;
 	unsigned int diff = 0, olx = 0, i, m;
 

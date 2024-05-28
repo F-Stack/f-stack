@@ -7,8 +7,12 @@ if not (is_linux or is_windows)
     subdir_done()
 endif
 
-fmt_name = 'mlx5_crypto'
 deps += ['common_mlx5', 'eal', 'cryptodev']
+if not dpdk_conf.has('RTE_COMMON_MLX5')
+    # avoid referencing undefined variables from common/mlx5
+    subdir_done()
+endif
+
 sources = files(
         'mlx5_crypto.c',
         'mlx5_crypto_dek.c',

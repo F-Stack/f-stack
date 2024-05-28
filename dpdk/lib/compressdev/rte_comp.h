@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#include <rte_mempool.h>
+#include <rte_compat.h>
 #include <rte_mbuf.h>
 
 /**
@@ -470,7 +470,8 @@ rte_comp_op_bulk_alloc(struct rte_mempool *mempool,
  * be returned to the mempool.
  *
  * @param op
- *   Compress operation
+ *   Compress operation pointer allocated from rte_comp_op_alloc()
+ *   If op is NULL, no operation is performed.
  */
 __rte_experimental
 void

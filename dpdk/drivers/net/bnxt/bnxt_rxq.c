@@ -360,9 +360,8 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	rxq->rx_free_thresh =
 		RTE_MIN(rte_align32pow2(nb_desc) / 4, RTE_BNXT_MAX_RX_BURST);
 
-	if (rx_conf->rx_drop_en != BNXT_DEFAULT_RX_DROP_EN)
-		PMD_DRV_LOG(NOTICE,
-			    "Per-queue config of drop-en is not supported.\n");
+	PMD_DRV_LOG(DEBUG,
+		    "App supplied RXQ drop_en status : %d\n", rx_conf->rx_drop_en);
 	rxq->drop_en = BNXT_DEFAULT_RX_DROP_EN;
 
 	PMD_DRV_LOG(DEBUG, "RX Buf MTU %d\n", eth_dev->data->mtu);
@@ -392,7 +391,7 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 			    "ring_dma_zone_reserve for rx_ring failed!\n");
 		goto err;
 	}
-	rte_atomic64_init(&rxq->rx_mbuf_alloc_fail);
+	rxq->rx_mbuf_alloc_fail = 0;
 
 	/* rxq 0 must not be stopped when used as async CPR */
 	if (!BNXT_NUM_ASYNC_CPR(bp) && queue_idx == 0)
@@ -471,6 +470,12 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		PMD_DRV_LOG(ERR, "Invalid Rx queue %d\n", rx_queue_id);
 		return -EINVAL;
 	}
+
+	/* reset the previous stats for the rx_queue since the counters
+	 * will be cleared when the queue is started.
+	 */
+	memset(&bp->prev_rx_ring_stats[rx_queue_id], 0,
+	       sizeof(struct bnxt_ring_stats));
 
 	/* Set the queue state to started here.
 	 * We check the status of the queue while posting buffer.

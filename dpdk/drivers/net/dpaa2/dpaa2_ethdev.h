@@ -1,16 +1,18 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2015-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2021 NXP
+ *   Copyright 2016-2022 NXP
  *
  */
 
 #ifndef _DPAA2_ETHDEV_H
 #define _DPAA2_ETHDEV_H
 
+#include <rte_compat.h>
 #include <rte_event_eth_rx_adapter.h>
 #include <rte_pmd_dpaa2.h>
 
+#include <bus_fslmc_driver.h>
 #include <dpaa2_hw_pvt.h>
 #include "dpaa2_tm.h"
 
@@ -25,6 +27,7 @@
 #define MAX_RX_QUEUES		128
 #define MAX_TX_QUEUES		16
 #define MAX_DPNI		8
+#define DPAA2_MAX_CHANNELS	16
 
 #define DPAA2_RX_DEFAULT_NBDESC 512
 
@@ -63,6 +66,21 @@
 #define DPAA2_RX_TAILDROP_OFF	0x04
 /* Tx confirmation enabled */
 #define DPAA2_TX_CONF_ENABLE	0x06
+
+/* DPDMUX index for DPMAC */
+#define DPAA2_DPDMUX_DPMAC_IDX 0
+
+/* HW loopback the egress traffic to self ingress*/
+#define DPAA2_TX_MAC_LOOPBACK_MODE 0x20
+
+#define DPAA2_TX_SERDES_LOOPBACK_MODE 0x40
+
+#define DPAA2_TX_DPNI_LOOPBACK_MODE 0x80
+
+#define DPAA2_TX_LOOPBACK_MODE \
+	(DPAA2_TX_MAC_LOOPBACK_MODE | \
+	DPAA2_TX_SERDES_LOOPBACK_MODE | \
+	DPAA2_TX_DPNI_LOOPBACK_MODE)
 
 #define DPAA2_RSS_OFFLOAD_ALL ( \
 	RTE_ETH_RSS_L2_PAYLOAD | \
@@ -103,6 +121,24 @@
 			(0x0003 | DPAA2_PKT_TYPE_IPV6_EXT)
 #define DPAA2_PKT_TYPE_VLAN_1		0x0160
 #define DPAA2_PKT_TYPE_VLAN_2		0x0260
+
+/* Global pool used by driver for SG list TX */
+extern struct rte_mempool *dpaa2_tx_sg_pool;
+/* Maximum SG segments */
+#define DPAA2_MAX_SGS 128
+/* SG pool size */
+#define DPAA2_POOL_SIZE 2048
+/* SG pool cache size */
+#define DPAA2_POOL_CACHE_SIZE 256
+/* structure to free external and indirect
+ * buffers.
+ */
+struct sw_buf_free {
+	/* To which packet this segment belongs */
+	uint16_t pkt_id;
+	/* The actual segment */
+	struct rte_mbuf *seg;
+};
 
 /* enable timestamp in mbuf*/
 extern bool dpaa2_enable_ts[];
@@ -160,15 +196,17 @@ struct dpaa2_dev_priv {
 	void *rx_vq[MAX_RX_QUEUES];
 	void *tx_vq[MAX_TX_QUEUES];
 	struct dpaa2_bp_list *bp_list; /**<Attached buffer pool list */
-	void *tx_conf_vq[MAX_TX_QUEUES];
+	void *tx_conf_vq[MAX_TX_QUEUES * DPAA2_MAX_CHANNELS];
 	void *rx_err_vq;
 	uint8_t flags; /*dpaa2 config flags */
 	uint8_t max_mac_filters;
 	uint8_t max_vlan_filters;
 	uint8_t num_rx_tc;
+	uint8_t num_tx_tc;
 	uint16_t qos_entries;
 	uint16_t fs_entries;
 	uint8_t dist_queues;
+	uint8_t num_channels;
 	uint8_t en_ordered;
 	uint8_t en_loose_ordered;
 	uint8_t max_cgs;
@@ -189,7 +227,9 @@ struct dpaa2_dev_priv {
 	struct dpaa2_queue *next_tx_conf_queue;
 
 	struct rte_eth_dev *eth_dev; /**< Pointer back to holding ethdev */
+	rte_spinlock_t lpbk_qp_lock;
 
+	uint8_t channel_inuse;
 	LIST_HEAD(, rte_flow) flows; /**< Configured flow rule handles. */
 	LIST_HEAD(nodes, dpaa2_tm_node) nodes;
 	LIST_HEAD(shaper_profiles, dpaa2_tm_shaper_profile) shaper_profiles;
@@ -204,7 +244,8 @@ int dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
 int dpaa2_remove_flow_dist(struct rte_eth_dev *eth_dev,
 			   uint8_t tc_index);
 
-int dpaa2_attach_bp_list(struct dpaa2_dev_priv *priv, void *blist);
+int dpaa2_attach_bp_list(struct dpaa2_dev_priv *priv,
+	struct fsl_mc_io *dpni, void *blist);
 
 __rte_internal
 int dpaa2_eth_eventq_attach(const struct rte_eth_dev *dev,
@@ -241,8 +282,11 @@ void dpaa2_dev_process_ordered_event(struct qbman_swp *swp,
 uint16_t dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts);
 uint16_t dpaa2_dev_tx_ordered(void *queue, struct rte_mbuf **bufs,
 			      uint16_t nb_pkts);
-uint16_t dummy_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts);
-void dpaa2_dev_free_eqresp_buf(uint16_t eqresp_ci);
+__rte_internal
+uint16_t dpaa2_dev_tx_multi_txq_ordered(void **queue,
+		struct rte_mbuf **bufs, uint16_t nb_pkts);
+
+void dpaa2_dev_free_eqresp_buf(uint16_t eqresp_ci, struct dpaa2_queue *dpaa2_q);
 void dpaa2_flow_clean(struct rte_eth_dev *dev);
 uint16_t dpaa2_dev_tx_conf(void *queue)  __rte_unused;
 int dpaa2_dev_is_dpaa2(struct rte_eth_dev *dev);
@@ -259,4 +303,13 @@ int dpaa2_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 						uint32_t flags __rte_unused);
 int dpaa2_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 					  struct timespec *timestamp);
+
+int dpaa2_dev_recycle_config(struct rte_eth_dev *eth_dev);
+int dpaa2_dev_recycle_deconfig(struct rte_eth_dev *eth_dev);
+int dpaa2_dev_recycle_qp_setup(struct rte_dpaa2_device *dpaa2_dev,
+	uint16_t qidx, uint64_t cntx,
+	eth_rx_burst_t tx_lpbk, eth_tx_burst_t rx_lpbk,
+	struct dpaa2_queue **txq,
+	struct dpaa2_queue **rxq);
+
 #endif /* _DPAA2_ETHDEV_H */

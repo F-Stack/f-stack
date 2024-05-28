@@ -8,8 +8,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <netinet/in.h>
-#include <termios.h>
 #include <inttypes.h>
 #include <errno.h>
 #include <sys/queue.h>
@@ -378,16 +376,5 @@ int commands_init(void)
 	}
 
 	cmd_autotest_autotest.string_data.str = commands;
-	return 0;
-}
-
-int command_valid(const char *cmd)
-{
-	struct test_command *t;
-
-	TAILQ_FOREACH(t, &commands_list, next) {
-		if (strcmp(t->command, cmd) == 0)
-			return 1;
-	}
 	return 0;
 }

@@ -22,6 +22,7 @@ The public API headers are grouped by topics:
   [compress](@ref rte_comp.h),
   [regexdev](@ref rte_regexdev.h),
   [dmadev](@ref rte_dmadev.h),
+  [gpudev](@ref rte_gpudev.h),
   [eventdev](@ref rte_eventdev.h),
   [event_eth_rx_adapter](@ref rte_event_eth_rx_adapter.h),
   [event_eth_tx_adapter](@ref rte_event_eth_tx_adapter.h),
@@ -44,10 +45,9 @@ The public API headers are grouped by topics:
   [KNI](@ref rte_kni.h),
   [ixgbe](@ref rte_pmd_ixgbe.h),
   [i40e](@ref rte_pmd_i40e.h),
-  [ice](@ref rte_pmd_ice.h),
   [iavf](@ref rte_pmd_iavf.h),
-  [ioat](@ref rte_ioat_rawdev.h),
   [bnxt](@ref rte_pmd_bnxt.h),
+  [cnxk](@ref rte_pmd_cnxk.h),
   [dpaa](@ref rte_pmd_dpaa.h),
   [dpaa2](@ref rte_pmd_dpaa2.h),
   [mlx5](@ref rte_pmd_mlx5.h),
@@ -75,6 +75,8 @@ The public API headers are grouped by topics:
   [mcslock](@ref rte_mcslock.h),
   [pflock](@ref rte_pflock.h),
   [rwlock](@ref rte_rwlock.h),
+  [seqcount](@ref rte_seqcount.h),
+  [seqlock](@ref rte_seqlock.h),
   [spinlock](@ref rte_spinlock.h),
   [ticketlock](@ref rte_ticketlock.h),
   [RCU](@ref rte_rcu_qsbr.h)
@@ -101,6 +103,7 @@ The public API headers are grouped by topics:
 
 - **layers**:
   [ethernet](@ref rte_ether.h),
+  [MACsec](@ref rte_macsec.h),
   [ARP](@ref rte_arp.h),
   [HIGIG](@ref rte_higig.h),
   [ICMP](@ref rte_icmp.h),

@@ -68,12 +68,13 @@ alloc_gpu_memory(uint16_t gpu_id)
 	void *ptr_1 = NULL;
 	void *ptr_2 = NULL;
 	size_t buf_bytes = 1024;
+	unsigned int align = 4096;
 	int ret;
 
 	printf("\n=======> TEST: Allocate GPU memory\n\n");
 
-	/* Alloc memory on GPU 0 */
-	ptr_1 = rte_gpu_mem_alloc(gpu_id, buf_bytes);
+	/* Alloc memory on GPU 0 without any specific alignment */
+	ptr_1 = rte_gpu_mem_alloc(gpu_id, buf_bytes, 0);
 	if (ptr_1 == NULL) {
 		fprintf(stderr, "rte_gpu_mem_alloc GPU memory returned error\n");
 		goto error;
@@ -81,13 +82,19 @@ alloc_gpu_memory(uint16_t gpu_id)
 	printf("GPU memory allocated at 0x%p size is %zd bytes\n",
 			ptr_1, buf_bytes);
 
-	ptr_2 = rte_gpu_mem_alloc(gpu_id, buf_bytes);
+	/* Alloc memory on GPU 0 with 4kB alignment */
+	ptr_2 = rte_gpu_mem_alloc(gpu_id, buf_bytes, align);
 	if (ptr_2 == NULL) {
 		fprintf(stderr, "rte_gpu_mem_alloc GPU memory returned error\n");
 		goto error;
 	}
 	printf("GPU memory allocated at 0x%p size is %zd bytes\n",
 			ptr_2, buf_bytes);
+
+	if (((uintptr_t)ptr_2) % align) {
+		fprintf(stderr, "Memory address 0x%p is not aligned to %u\n", ptr_2, align);
+		goto error;
+	}
 
 	ret = rte_gpu_mem_free(gpu_id, (uint8_t *)(ptr_1)+0x700);
 	if (ret < 0) {
@@ -179,6 +186,68 @@ error:
 }
 
 static int
+gpu_mem_cpu_map(uint16_t gpu_id)
+{
+	void *ptr_gpu = NULL;
+	void *ptr_cpu = NULL;
+	size_t buf_bytes = 1024;
+	unsigned int align = 4096;
+	int ret;
+
+	printf("\n=======> TEST: Map GPU memory for CPU visibility\n\n");
+
+	/* Alloc memory on GPU 0 with 4kB alignment */
+	ptr_gpu = rte_gpu_mem_alloc(gpu_id, buf_bytes, align);
+	if (ptr_gpu == NULL) {
+		fprintf(stderr, "rte_gpu_mem_alloc GPU memory returned error\n");
+		goto error;
+	}
+	printf("GPU memory allocated at 0x%p size is %zd bytes\n",
+			ptr_gpu, buf_bytes);
+
+	ptr_cpu = rte_gpu_mem_cpu_map(gpu_id, buf_bytes, ptr_gpu);
+	if (ptr_cpu == NULL) {
+		fprintf(stderr, "rte_gpu_mem_cpu_map returned error\n");
+		goto error;
+	}
+	printf("GPU memory CPU mapped at 0x%p\n", ptr_cpu);
+
+	((uint8_t *)ptr_cpu)[0] = 0x4;
+	((uint8_t *)ptr_cpu)[1] = 0x5;
+	((uint8_t *)ptr_cpu)[2] = 0x6;
+
+	printf("GPU memory first 3 bytes set from CPU: %x %x %x\n",
+			((uint8_t *)ptr_cpu)[0],
+			((uint8_t *)ptr_cpu)[1],
+			((uint8_t *)ptr_cpu)[2]);
+
+	ret = rte_gpu_mem_cpu_unmap(gpu_id, ptr_gpu);
+	if (ret < 0) {
+		fprintf(stderr, "rte_gpu_mem_cpu_unmap returned error %d\n", ret);
+		goto error;
+	}
+	printf("GPU memory CPU unmapped, 0x%p not valid anymore\n", ptr_cpu);
+
+	ret = rte_gpu_mem_free(gpu_id, ptr_gpu);
+	if (ret < 0) {
+		fprintf(stderr, "rte_gpu_mem_free returned error %d\n", ret);
+		goto error;
+	}
+	printf("GPU memory 0x%p freed\n", ptr_gpu);
+
+	printf("\n=======> TEST: PASSED\n");
+	return 0;
+
+error:
+
+	rte_gpu_mem_cpu_unmap(gpu_id, ptr_gpu);
+	rte_gpu_mem_free(gpu_id, ptr_gpu);
+
+	printf("\n=======> TEST: FAILED\n");
+	return -1;
+}
+
+static int
 create_update_comm_flag(uint16_t gpu_id)
 {
 	struct rte_gpu_comm_flag devflag;
@@ -255,7 +324,13 @@ simulate_gpu_task(struct rte_gpu_comm_list *comm_list_item, int num_pkts)
 		 * consume(comm_list_item->pkt_list[idx].addr);
 		 */
 	}
-	comm_list_item->status = RTE_GPU_COMM_LIST_DONE;
+	/*
+	 * A real GPU workload function can't directly call rte_gpu_comm_set_status
+	 * because it's a CPU-only function.
+	 * A real GPU workload should implement the content
+	 * of rte_gpu_comm_set_status() in GPU specific code.
+	 */
+	rte_gpu_comm_set_status(comm_list_item, RTE_GPU_COMM_LIST_DONE);
 
 	return 0;
 }
@@ -395,6 +470,7 @@ main(int argc, char **argv)
 	 */
 	alloc_gpu_memory(gpu_id);
 	register_cpu_memory(gpu_id);
+	gpu_mem_cpu_map(gpu_id);
 
 	/**
 	 * Communication items test

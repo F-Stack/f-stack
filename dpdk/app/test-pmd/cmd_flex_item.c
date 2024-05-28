@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <string.h>
 
@@ -366,8 +367,7 @@ flex_item_create(portid_t port_id, uint16_t flex_id, const char *filename)
 		       flow_error.message ? flow_error.message : "");
 	}
 out:
-	if (fp)
-		free(fp);
+	free(fp);
 }
 
 void

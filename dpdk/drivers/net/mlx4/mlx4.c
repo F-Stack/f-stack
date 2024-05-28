@@ -31,7 +31,7 @@
 #endif
 
 #include <rte_common.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
@@ -350,8 +350,8 @@ mlx4_dev_stop(struct rte_eth_dev *dev)
 		return 0;
 	DEBUG("%p: detaching flows from all RX queues", (void *)dev);
 	priv->started = 0;
-	dev->tx_pkt_burst = mlx4_tx_burst_removed;
-	dev->rx_pkt_burst = mlx4_rx_burst_removed;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx4_mp_req_stop_rxtx(dev);
@@ -383,8 +383,8 @@ mlx4_dev_close(struct rte_eth_dev *dev)
 	DEBUG("%p: closing device \"%s\"",
 	      (void *)dev,
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
-	dev->rx_pkt_burst = mlx4_rx_burst_removed;
-	dev->tx_pkt_burst = mlx4_tx_burst_removed;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx4_mp_req_stop_rxtx(dev);
@@ -877,6 +877,8 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		snprintf(name, sizeof(name), "%s port %u",
 			 mlx4_glue->get_device_name(ibv_dev), port);
 		if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+			int fd;
+
 			eth_dev = rte_eth_dev_attach_secondary(name);
 			if (eth_dev == NULL) {
 				ERROR("can not attach rte ethdev");
@@ -899,13 +901,14 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			if (err)
 				goto err_secondary;
 			/* Receive command fd from primary process. */
-			err = mlx4_mp_req_verbs_cmd_fd(eth_dev);
-			if (err < 0) {
+			fd = mlx4_mp_req_verbs_cmd_fd(eth_dev);
+			if (fd < 0) {
 				err = rte_errno;
 				goto err_secondary;
 			}
 			/* Remap UAR for Tx queues. */
-			err = mlx4_tx_uar_init_secondary(eth_dev, err);
+			err = mlx4_tx_uar_init_secondary(eth_dev, fd);
+			close(fd);
 			if (err) {
 				err = rte_errno;
 				goto err_secondary;

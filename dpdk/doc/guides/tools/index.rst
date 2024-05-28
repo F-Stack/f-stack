@@ -15,8 +15,10 @@ DPDK Tools User Guides
     dumpcap
     pdump
     flow-perf
+    securityperf
     testbbdev
     cryptoperf
     comp_perf
     testeventdev
     testregex
+    dts

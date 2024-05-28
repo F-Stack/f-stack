@@ -24,7 +24,6 @@ all_examples = [
         'ip_reassembly',
         'ipsec-secgw',
         'ipv4_multicast',
-        'kni',
         'l2fwd',
         'l2fwd-cat',
         'l2fwd-crypto',
@@ -32,7 +31,6 @@ all_examples = [
         'l2fwd-jobstats',
         'l2fwd-keepalive',
         'l3fwd',
-        'l3fwd-acl',
         'l3fwd-graph',
         'l3fwd-power',
         'link_status_interrupt',
@@ -43,8 +41,6 @@ all_examples = [
         'multi_process/symmetric_mp',
         'ntb',
         'packet_ordering',
-        'performance-thread/l3fwd-thread',
-        'performance-thread/pthread_shim',
         'pipeline',
         'ptpclient',
         'qos_meter',
@@ -100,7 +96,7 @@ foreach example: examples
     ldflags = default_ldflags
 
     ext_deps = []
-    includes = [include_directories(example)]
+    includes = [include_directories(example, 'common')]
     deps = ['eal', 'mempool', 'net', 'mbuf', 'ethdev', 'cmdline']
     subdir(example)
 

@@ -85,6 +85,17 @@ nicvf_mbox_send_msg_to_pf(struct nicvf *nic, struct nic_mbx *mbx)
 		nicvf_smp_wmb();
 
 		nicvf_mbox_send_msg_to_pf_raw(nic, mbx);
+
+		/* Handling case if mbox is called inside interrupt context,
+		 * Eg if hotplug attach/detach request is initiated from
+		 * secondary and primary handles the request in interrupt
+		 * context as part of multprocess framework.
+		 */
+		if (rte_thread_is_intr()) {
+			nicvf_delay_us(NICVF_MBOX_PF_RESPONSE_DELAY_US);
+			nicvf_reg_poll_interrupts(nic);
+		}
+
 		/* Give some time to get PF response */
 		nicvf_delay_us(NICVF_MBOX_PF_RESPONSE_DELAY_US);
 		timeout = NIC_MBOX_MSG_TIMEOUT;
@@ -100,10 +111,10 @@ nicvf_mbox_send_msg_to_pf(struct nicvf *nic, struct nic_mbx *mbx)
 			nicvf_delay_us(NICVF_MBOX_PF_RESPONSE_DELAY_US);
 			timeout -= sleep;
 		}
-		nicvf_log_error("PF didn't ack to msg 0x%02x %s VF%d (%d/%d)",
-				mbx->msg.msg, nicvf_mbox_msg_str(mbx->msg.msg),
-				nic->vf_id, i, retry);
 	}
+	nicvf_log_error("PF didn't ack to msg 0x%02x %s VF%d (%d/%d)",
+			mbx->msg.msg, nicvf_mbox_msg_str(mbx->msg.msg),
+			nic->vf_id, i, retry);
 	return -EBUSY;
 }
 
@@ -423,6 +434,22 @@ nicvf_mbox_set_link_up_down(struct nicvf *nic, bool enable)
 	mbx.lbk.enable = enable;
 	return nicvf_mbox_send_msg_to_pf(nic, &mbx);
 }
+
+
+int
+nicvf_mbox_change_mode(struct nicvf *nic, struct change_link_mode *cfg)
+{
+	struct nic_mbx mbx = { .msg = { 0 } };
+
+	mbx.mode.msg = NIC_MBOX_MSG_CHANGE_MODE;
+	mbx.mode.vf_id = nic->vf_id;
+	mbx.mode.speed = cfg->speed;
+	mbx.mode.duplex = cfg->duplex;
+	mbx.mode.autoneg = cfg->autoneg;
+	mbx.mode.qlm_mode = cfg->qlm_mode;
+	return nicvf_mbox_send_msg_to_pf(nic, &mbx);
+}
+
 void
 nicvf_mbox_shutdown(struct nicvf *nic)
 {
@@ -439,4 +466,22 @@ nicvf_mbox_cfg_done(struct nicvf *nic)
 
 	mbx.msg.msg = NIC_MBOX_MSG_CFG_DONE;
 	nicvf_mbox_send_async_msg_to_pf(nic, &mbx);
+}
+
+void
+nicvf_mbox_link_change(struct nicvf *nic)
+{
+	struct nic_mbx mbx = { .msg = { 0 } };
+
+	mbx.msg.msg = NIC_MBOX_MSG_BGX_LINK_CHANGE;
+	nicvf_mbox_send_async_msg_to_pf(nic, &mbx);
+}
+
+void
+nicvf_mbox_reset_xcast(struct nicvf *nic)
+{
+	struct nic_mbx mbx = { .msg = { 0 } };
+
+	mbx.msg.msg = NIC_MBOX_MSG_RESET_XCAST;
+	nicvf_mbox_send_msg_to_pf(nic, &mbx);
 }

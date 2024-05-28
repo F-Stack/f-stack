@@ -17,7 +17,6 @@
 
 #include <stdint.h>
 
-#include <rte_compat.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -114,9 +113,8 @@ rte_fib6_find_existing(const char *name);
  * Free an FIB object.
  *
  * @param fib
- *   FIB object handle
- * @return
- *   None
+ *   FIB object handle created by rte_fib6_create().
+ *   If fib is NULL, no operation is performed.
  */
 void
 rte_fib6_free(struct rte_fib6 *fib);

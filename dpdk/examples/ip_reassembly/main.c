@@ -87,11 +87,11 @@ static uint32_t max_flow_ttl = DEF_FLOW_TTL;
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
 
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+static uint16_t nb_rxd = RX_DESC_DEFAULT;
+static uint16_t nb_txd = TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
 static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
@@ -126,7 +126,7 @@ struct mbuf_table {
 	uint32_t len;
 	uint32_t head;
 	uint32_t tail;
-	struct rte_mbuf *m_table[0];
+	struct rte_mbuf *m_table[];
 };
 
 struct rx_queue {
@@ -163,7 +163,6 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode        = RTE_ETH_MQ_RX_RSS,
 		.mtu = JUMBO_FRAME_MAX_SIZE - RTE_ETHER_HDR_LEN -
 			RTE_ETHER_CRC_LEN,
-		.split_hdr_size = 0,
 		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {

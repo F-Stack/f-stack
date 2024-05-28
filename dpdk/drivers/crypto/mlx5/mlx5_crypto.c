@@ -7,7 +7,7 @@
 #include <rte_eal_paging.h>
 #include <rte_errno.h>
 #include <rte_log.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_memory.h>
 
 #include <mlx5_glue.h>
@@ -23,13 +23,13 @@
 #define MLX5_CRYPTO_MAX_QPS 128
 #define MLX5_CRYPTO_MAX_SEGS 56
 
-#define MLX5_CRYPTO_FEATURE_FLAGS \
+#define MLX5_CRYPTO_FEATURE_FLAGS(wrapped_mode) \
 	(RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO | RTE_CRYPTODEV_FF_HW_ACCELERATED | \
 	 RTE_CRYPTODEV_FF_IN_PLACE_SGL | RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT | \
 	 RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT | \
 	 RTE_CRYPTODEV_FF_OOP_LB_IN_SGL_OUT | \
 	 RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT | \
-	 RTE_CRYPTODEV_FF_CIPHER_WRAPPED_KEY | \
+	 (wrapped_mode ? RTE_CRYPTODEV_FF_CIPHER_WRAPPED_KEY : 0) | \
 	 RTE_CRYPTODEV_FF_CIPHER_MULTIPLE_DATA_UNITS)
 
 TAILQ_HEAD(mlx5_crypto_privs, mlx5_crypto_priv) mlx5_crypto_priv_list =
@@ -95,10 +95,13 @@ static void
 mlx5_crypto_dev_infos_get(struct rte_cryptodev *dev,
 			  struct rte_cryptodev_info *dev_info)
 {
+	struct mlx5_crypto_priv *priv = dev->data->dev_private;
+
 	RTE_SET_USED(dev);
 	if (dev_info != NULL) {
 		dev_info->driver_id = mlx5_crypto_driver_id;
-		dev_info->feature_flags = MLX5_CRYPTO_FEATURE_FLAGS;
+		dev_info->feature_flags =
+			MLX5_CRYPTO_FEATURE_FLAGS(priv->is_wrapped_mode);
 		dev_info->capabilities = mlx5_crypto_caps;
 		dev_info->max_nb_queue_pairs = MLX5_CRYPTO_MAX_QPS;
 		dev_info->min_mbuf_headroom_req = 0;
@@ -168,14 +171,13 @@ mlx5_crypto_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 static int
 mlx5_crypto_sym_session_configure(struct rte_cryptodev *dev,
 				  struct rte_crypto_sym_xform *xform,
-				  struct rte_cryptodev_sym_session *session,
-				  struct rte_mempool *mp)
+				  struct rte_cryptodev_sym_session *session)
 {
 	struct mlx5_crypto_priv *priv = dev->data->dev_private;
-	struct mlx5_crypto_session *sess_private_data;
+	struct mlx5_crypto_session *sess_private_data =
+		CRYPTODEV_GET_SYM_SESS_PRIV(session);
 	struct rte_crypto_cipher_xform *cipher;
 	uint8_t encryption_order;
-	int ret;
 
 	if (unlikely(xform->next != NULL)) {
 		DRV_LOG(ERR, "Xform next is not supported.");
@@ -186,17 +188,9 @@ mlx5_crypto_sym_session_configure(struct rte_cryptodev *dev,
 		DRV_LOG(ERR, "Only AES-XTS algorithm is supported.");
 		return -ENOTSUP;
 	}
-	ret = rte_mempool_get(mp, (void *)&sess_private_data);
-	if (ret != 0) {
-		DRV_LOG(ERR,
-			"Failed to get session %p private data from mempool.",
-			sess_private_data);
-		return -ENOMEM;
-	}
 	cipher = &xform->cipher;
 	sess_private_data->dek = mlx5_crypto_dek_prepare(priv, cipher);
 	if (sess_private_data->dek == NULL) {
-		rte_mempool_put(mp, sess_private_data);
 		DRV_LOG(ERR, "Failed to prepare dek.");
 		return -ENOMEM;
 	}
@@ -236,8 +230,6 @@ mlx5_crypto_sym_session_configure(struct rte_cryptodev *dev,
 	sess_private_data->dek_id =
 			rte_cpu_to_be_32(sess_private_data->dek->obj->id &
 					 0xffffff);
-	set_sym_session_private_data(session, dev->driver_id,
-				     sess_private_data);
 	DRV_LOG(DEBUG, "Session %p was configured.", sess_private_data);
 	return 0;
 }
@@ -247,16 +239,13 @@ mlx5_crypto_sym_session_clear(struct rte_cryptodev *dev,
 			      struct rte_cryptodev_sym_session *sess)
 {
 	struct mlx5_crypto_priv *priv = dev->data->dev_private;
-	struct mlx5_crypto_session *spriv = get_sym_session_private_data(sess,
-								dev->driver_id);
+	struct mlx5_crypto_session *spriv = CRYPTODEV_GET_SYM_SESS_PRIV(sess);
 
 	if (unlikely(spriv == NULL)) {
 		DRV_LOG(ERR, "Failed to get session %p private data.", spriv);
 		return;
 	}
 	mlx5_crypto_dek_destroy(priv, spriv->dek);
-	set_sym_session_private_data(sess, dev->driver_id, NULL);
-	rte_mempool_put(rte_mempool_from_obj(spriv), spriv);
 	DRV_LOG(DEBUG, "Session %p was cleared.", spriv);
 }
 
@@ -366,8 +355,7 @@ mlx5_crypto_wqe_set(struct mlx5_crypto_priv *priv,
 			 struct rte_crypto_op *op,
 			 struct mlx5_umr_wqe *umr)
 {
-	struct mlx5_crypto_session *sess = get_sym_session_private_data
-				(op->sym->session, mlx5_crypto_driver_id);
+	struct mlx5_crypto_session *sess = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 	struct mlx5_wqe_cseg *cseg = &umr->ctr;
 	struct mlx5_wqe_mkey_cseg *mkc = &umr->mkc;
 	struct mlx5_wqe_dseg *klms = &umr->kseg[0];
@@ -722,8 +710,6 @@ mlx5_crypto_args_check_handler(const char *key, const char *val, void *opaque)
 	int ret;
 	int i;
 
-	if (strcmp(key, "class") == 0)
-		return 0;
 	if (strcmp(key, "wcs_file") == 0) {
 		file = fopen(val, "rb");
 		if (file == NULL) {
@@ -763,48 +749,47 @@ mlx5_crypto_args_check_handler(const char *key, const char *val, void *opaque)
 		attr->credential_pointer = (uint32_t)tmp;
 	} else if (strcmp(key, "keytag") == 0) {
 		devarg_prms->keytag = tmp;
-	} else {
-		DRV_LOG(WARNING, "Invalid key %s.", key);
 	}
 	return 0;
 }
 
 static int
-mlx5_crypto_parse_devargs(struct rte_devargs *devargs,
-			  struct mlx5_crypto_devarg_params *devarg_prms)
+mlx5_crypto_parse_devargs(struct mlx5_kvargs_ctrl *mkvlist,
+			  struct mlx5_crypto_devarg_params *devarg_prms,
+			  bool wrapped_mode)
 {
 	struct mlx5_devx_crypto_login_attr *attr = &devarg_prms->login_attr;
-	struct rte_kvargs *kvlist;
+	const char **params = (const char *[]){
+		"credential_id",
+		"import_kek_id",
+		"keytag",
+		"max_segs_num",
+		"wcs_file",
+		NULL,
+	};
 
 	/* Default values. */
 	attr->credential_pointer = 0;
 	attr->session_import_kek_ptr = 0;
 	devarg_prms->keytag = 0;
 	devarg_prms->max_segs_num = 8;
-	if (devargs == NULL) {
+	if (mkvlist == NULL) {
+		if (!wrapped_mode)
+			return 0;
 		DRV_LOG(ERR,
-	"No login devargs in order to enable crypto operations in the device.");
+			"No login devargs in order to enable crypto operations in the device.");
 		rte_errno = EINVAL;
 		return -1;
 	}
-	kvlist = rte_kvargs_parse(devargs->args, NULL);
-	if (kvlist == NULL) {
-		DRV_LOG(ERR, "Failed to parse devargs.");
-		rte_errno = EINVAL;
-		return -1;
-	}
-	if (rte_kvargs_process(kvlist, NULL, mlx5_crypto_args_check_handler,
-			   devarg_prms) != 0) {
+	if (mlx5_kvargs_process(mkvlist, params, mlx5_crypto_args_check_handler,
+				devarg_prms) != 0) {
 		DRV_LOG(ERR, "Devargs handler function Failed.");
-		rte_kvargs_free(kvlist);
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_kvargs_free(kvlist);
-	if (devarg_prms->login_devarg == false) {
+	if (devarg_prms->login_devarg == false && wrapped_mode) {
 		DRV_LOG(ERR,
-	"No login credential devarg in order to enable crypto operations "
-	"in the device.");
+			"No login credential devarg in order to enable crypto operations in the device while in wrapped import method.");
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -887,7 +872,8 @@ mlx5_crypto_configure_wqe_size(struct mlx5_crypto_priv *priv,
 }
 
 static int
-mlx5_crypto_dev_probe(struct mlx5_common_device *cdev)
+mlx5_crypto_dev_probe(struct mlx5_common_device *cdev,
+		      struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct rte_cryptodev *crypto_dev;
 	struct mlx5_devx_obj *login;
@@ -902,6 +888,7 @@ mlx5_crypto_dev_probe(struct mlx5_common_device *cdev)
 	};
 	const char *ibdev_name = mlx5_os_get_ctx_device_name(cdev->ctx);
 	int ret;
+	bool wrapped_mode;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
 		DRV_LOG(ERR, "Non-primary process type is not supported.");
@@ -914,7 +901,8 @@ mlx5_crypto_dev_probe(struct mlx5_common_device *cdev)
 		rte_errno = ENOTSUP;
 		return -ENOTSUP;
 	}
-	ret = mlx5_crypto_parse_devargs(cdev->dev->devargs, &devarg_prms);
+	wrapped_mode = !!cdev->config.hca_attr.crypto_wrapped_import_method;
+	ret = mlx5_crypto_parse_devargs(mkvlist, &devarg_prms, wrapped_mode);
 	if (ret) {
 		DRV_LOG(ERR, "Failed to parse devargs.");
 		return -rte_errno;
@@ -930,25 +918,27 @@ mlx5_crypto_dev_probe(struct mlx5_common_device *cdev)
 	crypto_dev->dev_ops = &mlx5_crypto_ops;
 	crypto_dev->dequeue_burst = mlx5_crypto_dequeue_burst;
 	crypto_dev->enqueue_burst = mlx5_crypto_enqueue_burst;
-	crypto_dev->feature_flags = MLX5_CRYPTO_FEATURE_FLAGS;
+	crypto_dev->feature_flags = MLX5_CRYPTO_FEATURE_FLAGS(wrapped_mode);
 	crypto_dev->driver_id = mlx5_crypto_driver_id;
 	priv = crypto_dev->data->dev_private;
 	priv->cdev = cdev;
 	priv->crypto_dev = crypto_dev;
+	priv->is_wrapped_mode = wrapped_mode;
 	if (mlx5_devx_uar_prepare(cdev, &priv->uar) != 0) {
 		rte_cryptodev_pmd_destroy(priv->crypto_dev);
 		return -1;
 	}
-	login = mlx5_devx_cmd_create_crypto_login_obj(cdev->ctx,
+	if (wrapped_mode) {
+		login = mlx5_devx_cmd_create_crypto_login_obj(cdev->ctx,
 						      &devarg_prms.login_attr);
-	if (login == NULL) {
-		DRV_LOG(ERR, "Failed to configure login.");
-		mlx5_devx_uar_release(&priv->uar);
-		rte_cryptodev_pmd_destroy(priv->crypto_dev);
-		return -rte_errno;
+		if (login == NULL) {
+			DRV_LOG(ERR, "Failed to configure login.");
+			mlx5_devx_uar_release(&priv->uar);
+			rte_cryptodev_pmd_destroy(priv->crypto_dev);
+			return -rte_errno;
+		}
+		priv->login_obj = login;
 	}
-	priv->login_obj = login;
-	priv->keytag = rte_cpu_to_be_64(devarg_prms.keytag);
 	ret = mlx5_crypto_configure_wqe_size(priv,
 		cdev->config.hca_attr.max_wqe_sz_sq, devarg_prms.max_segs_num);
 	if (ret) {
@@ -957,6 +947,7 @@ mlx5_crypto_dev_probe(struct mlx5_common_device *cdev)
 		rte_cryptodev_pmd_destroy(priv->crypto_dev);
 		return -1;
 	}
+	priv->keytag = rte_cpu_to_be_64(devarg_prms.keytag);
 	DRV_LOG(INFO, "Max number of segments: %u.",
 		(unsigned int)RTE_MIN(
 			MLX5_CRYPTO_KLM_SEGS_NUM(priv->umr_wqe_size),

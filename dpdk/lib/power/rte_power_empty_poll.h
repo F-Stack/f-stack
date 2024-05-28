@@ -12,11 +12,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <rte_compat.h>
 #include <rte_common.h>
-#include <rte_byteorder.h>
-#include <rte_log.h>
 #include <rte_string_fns.h>
-#include <rte_power.h>
 #include <rte_timer.h>
 
 #ifdef __cplusplus

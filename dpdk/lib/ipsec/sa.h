@@ -5,7 +5,6 @@
 #ifndef _SA_H_
 #define _SA_H_
 
-#include <rte_rwlock.h>
 
 #define IPSEC_MAX_HDR_SIZE	64
 #define IPSEC_MAX_IV_SIZE	16
@@ -60,7 +59,7 @@ union sym_op_data {
 struct replay_sqn {
 	rte_rwlock_t rwl;
 	uint64_t sqn;
-	__extension__ uint64_t window[0];
+	__extension__ uint64_t window[];
 };
 
 /*IPSEC SA supported algorithms */

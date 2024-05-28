@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_PROTOCOL_TYPE_H_
@@ -45,13 +45,13 @@ enum ice_protocol_type {
 	ICE_VXLAN_GPE,
 	ICE_NVGRE,
 	ICE_GTP,
+	ICE_GTP_NO_PAY,
 	ICE_PPPOE,
 	ICE_PFCP,
 	ICE_L2TPV3,
 	ICE_ESP,
 	ICE_AH,
 	ICE_NAT_T,
-	ICE_GTP_NO_PAY,
 	ICE_VLAN_EX,
 	ICE_VLAN_IN,
 	ICE_FLG_DIR,
@@ -164,6 +164,7 @@ enum ice_prot_id {
 	ICE_PROT_IPV6_OF_OR_S	= 40,
 	ICE_PROT_IPV6_IL	= 41,
 	ICE_PROT_IPV6_IL_IL	= 42,
+	ICE_PROT_IPV6_NEXT_PROTO = 43,
 	ICE_PROT_IPV6_FRAG	= 47,
 	ICE_PROT_TCP_IL		= 49,
 	ICE_PROT_UDP_OF		= 52,

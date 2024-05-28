@@ -28,6 +28,7 @@
 #define TXGBE_FDIR_INIT_DONE_POLL		10
 #define TXGBE_FDIRCMD_CMD_POLL			10
 #define TXGBE_VF_INIT_TIMEOUT	200 /* Number of retries to clear RSTI */
+#define TXGBE_SPI_TIMEOUT	10000
 
 #define TXGBE_ALIGN		128 /* as intel did */
 
@@ -355,9 +356,9 @@ struct txgbe_hw_stats {
 	u64 tx_management_packets;
 	u64 rx_management_dropped;
 	u64 rx_dma_drop;
-	u64 rx_drop_packets;
 
 	/* Basic Error */
+	u64 rx_rdb_drop;
 	u64 rx_crc_errors;
 	u64 rx_illegal_byte_errors;
 	u64 rx_error_bytes;
@@ -365,7 +366,7 @@ struct txgbe_hw_stats {
 	u64 rx_length_errors;
 	u64 rx_undersize_errors;
 	u64 rx_fragment_errors;
-	u64 rx_oversize_errors;
+	u64 rx_oversize_cnt;
 	u64 rx_jabber_errors;
 	u64 rx_l3_l4_xsum_error;
 	u64 mac_local_errors;
@@ -782,6 +783,7 @@ struct txgbe_hw {
 	bool allow_unsupported_sfp;
 	bool need_crosstalk_fix;
 	bool dev_start;
+	bool autoneg;
 	struct txgbe_devargs devarg;
 
 	uint64_t isb_dma;

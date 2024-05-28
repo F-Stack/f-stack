@@ -19,9 +19,9 @@ extern "C" {
 
 #include <string.h>
 
-#include <rte_dev.h>
-#include <rte_common.h>
+#include <dev_driver.h>
 
+#include <rte_compat.h>
 #include "rte_compressdev.h"
 #include "rte_compressdev_internal.h"
 

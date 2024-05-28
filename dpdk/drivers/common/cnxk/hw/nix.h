@@ -419,6 +419,7 @@
 #define NIX_STAT_LF_RX_RX_RC_OCTS_DROP	 (0x16ull) /* [CN10K, .) */
 #define NIX_STAT_LF_RX_RX_RC_PKTS_DROP	 (0x17ull) /* [CN10K, .) */
 #define NIX_STAT_LF_RX_RX_CPT_DROP_PKTS	 (0x18ull) /* [CN10K, .) */
+#define NIX_STAT_LF_RX_RX_IPSECD_DROP_PKTS (0x19ull) /* [CN10K, .) */
 
 #define CGX_RX_PKT_CNT		 (0x0ull) /* [CN9K, CN10K) */
 #define CGX_RX_OCT_CNT		 (0x1ull) /* [CN9K, CN10K) */
@@ -829,7 +830,7 @@
 #define NIX_CHAN_LBKX_CHX(a, b)                                                \
 	(0x000ull | ((uint64_t)(a) << 8) | (uint64_t)(b))
 #define NIX_CHAN_CPT_CH_END   (0x4ffull) /* [CN10K, .) */
-#define NIX_CHAN_CPT_CH_START (0x400ull) /* [CN10K, .) */
+#define NIX_CHAN_CPT_CH_START (0x800ull) /* [CN10K, .) */
 #define NIX_CHAN_R4	      (0x400ull) /* [CN9K, CN10K) */
 #define NIX_CHAN_R5	      (0x500ull)
 #define NIX_CHAN_R6	      (0x600ull)
@@ -841,6 +842,11 @@
 /* [CN10K, .) */
 #define NIX_CHAN_RPMX_LMACX_CHX(a, b, c)                                       \
 	(0x800ull | ((uint64_t)(a) << 8) | ((uint64_t)(b) << 4) | (uint64_t)(c))
+
+/* The mask is to extract lower 10-bits of channel number
+ * which CPT will pass to X2P.
+ */
+#define NIX_CHAN_CPT_X2P_MASK (0x3ffull)
 
 #define NIX_INTF_SDP  (0x4ull)
 #define NIX_INTF_CGX0 (0x0ull) /* [CN9K, CN10K) */
@@ -1236,7 +1242,9 @@ struct nix_cn10k_rq_ctx_s {
 	uint64_t ipsech_ena : 1;
 	uint64_t ena_wqwd : 1;
 	uint64_t cq : 20;
-	uint64_t rsvd_36_24 : 13;
+	uint64_t rsvd_34_24 : 11;
+	uint64_t port_ol4_dis : 1;
+	uint64_t port_il4_dis : 1;
 	uint64_t lenerr_dis : 1;
 	uint64_t csum_il4_dis : 1;
 	uint64_t csum_ol4_dis : 1;
@@ -2110,6 +2118,7 @@ struct nix_lso_format {
 #define NIX_CN9K_MAX_HW_FRS 9212UL
 #define NIX_LBK_MAX_HW_FRS  65535UL
 #define NIX_SDP_MAX_HW_FRS  65535UL
+#define NIX_SDP_16K_HW_FRS  16380UL
 #define NIX_RPM_MAX_HW_FRS  16380UL
 #define NIX_MIN_HW_FRS	    60UL
 
@@ -2132,11 +2141,6 @@ struct nix_lso_format {
 #define NIX_BPF_RATE(policer_timeunit, exponent, mantissa, div_exp)            \
 	((NIX_BPF_RATE_CONST * ((256 + (mantissa)) << (exponent))) /           \
 	 (((1ull << (div_exp)) * 256 * policer_timeunit)))
-
-/* Meter rate limits in Bits/Sec */
-#define NIX_BPF_RATE_MIN NIX_BPF_RATE(1000000000, 0, 0, 0)
-#define NIX_BPF_RATE_MAX                                                       \
-	NIX_BPF_RATE(1, NIX_BPF_MAX_RATE_EXPONENT, NIX_BPF_MAX_RATE_MANTISSA, 0)
 
 #define NIX_BPF_DEFAULT_ADJUST_MANTISSA 511
 #define NIX_BPF_DEFAULT_ADJUST_EXPONENT 0

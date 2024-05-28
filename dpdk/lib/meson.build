@@ -67,6 +67,8 @@ libraries = [
 
 optional_libs = [
         'bitratestats',
+        'cfgfile',
+        'flow_classify',
         'gpudev',
         'gro',
         'gso',
@@ -74,14 +76,26 @@ optional_libs = [
         'jobstats',
         'latencystats',
         'metrics',
+        'node',
         'pdump',
+        'pipeline',
+        'port',
         'power',
+        'table',
         'vhost',
+]
+
+dpdk_libs_deprecated += [
+        'flow_classify',
+        'kni',
 ]
 
 disabled_libs = []
 opt_disabled_libs = run_command(list_dir_globs, get_option('disable_libs'),
         check: true).stdout().split()
+if dpdk_conf.get('RTE_IOVA_AS_PA') == 0
+    opt_disabled_libs += ['kni']
+endif
 foreach l:opt_disabled_libs
     if not optional_libs.contains(l)
         warning('Cannot disable mandatory library "@0@"'.format(l))
@@ -127,29 +141,44 @@ foreach l:libraries
     if disabled_libs.contains(l)
         build = false
         reason = 'explicitly disabled via build config'
+        if dpdk_libs_deprecated.contains(l)
+            reason += ' (deprecated lib)'
+        endif
     else
+        if dpdk_libs_deprecated.contains(l)
+            warning('Enabling deprecated library, "@0@"'.format(l))
+        endif
         subdir(l)
     endif
     if name != l
         warning('Library name, "@0@", and directory name, "@1@", do not match'.format(name, l))
     endif
 
+    shared_deps = ext_deps
+    static_deps = ext_deps
+    foreach d:deps
+        if not build
+            break
+        endif
+        if not is_variable('shared_rte_' + d)
+            build = false
+            reason = 'missing internal dependency, "@0@"'.format(d)
+            if dpdk_libs_deprecated.contains(d)
+                reason += ' (deprecated lib)'
+            endif
+            message('Disabling @1@ [@2@]: missing internal dependency "@0@"'
+                    .format(d, name, 'lib/' + l))
+        else
+            shared_deps += [get_variable('shared_rte_' + d)]
+            static_deps += [get_variable('static_rte_' + d)]
+        endif
+    endforeach
+
     if not build
         dpdk_libs_disabled += name
         set_variable(name.underscorify() + '_disable_reason', reason)
         continue
     endif
-
-    shared_deps = ext_deps
-    static_deps = ext_deps
-    foreach d:deps
-        if not is_variable('shared_rte_' + d)
-            error('Missing internal dependency "@0@" for @1@ [@2@]'
-                    .format(d, name, 'lib/' + l))
-        endif
-        shared_deps += [get_variable('shared_rte_' + d)]
-        static_deps += [get_variable('static_rte_' + d)]
-    endforeach
 
     enabled_libs += name
     dpdk_conf.set('RTE_LIB_' + name.to_upper(), 1)
@@ -159,9 +188,11 @@ foreach l:libraries
         install_headers(driver_sdk_headers)
     endif
     dpdk_chkinc_headers += headers
+    dpdk_chkinc_headers += driver_sdk_headers
 
     libname = 'rte_' + name
     includes += include_directories(l)
+    dpdk_includes += include_directories(l)
 
     if developer_mode and is_windows and use_function_versioning
         message('@0@: Function versioning is not supported by Windows.'.format(name))
@@ -253,6 +284,8 @@ foreach l:libraries
 
     set_variable('shared_rte_' + name, shared_dep)
     set_variable('static_rte_' + name, static_dep)
+    dpdk_shared_lib_deps += shared_dep
+    dpdk_static_lib_deps += static_dep
     if developer_mode
         message('lib/@0@: Defining dependency "@1@"'.format(l, name))
     endif

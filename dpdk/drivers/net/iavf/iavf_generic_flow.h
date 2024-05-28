@@ -35,6 +35,7 @@
 #define IAVF_PROT_L2TPV3OIP	    (1ULL << 24)
 #define IAVF_PROT_PFCP		    (1ULL << 25)
 #define IAVF_PROT_ECPRI		    (1ULL << 26)
+#define IAVF_PROT_L2TPV2	    (1ULL << 27)
 
 
 /* field */
@@ -62,6 +63,7 @@
 #define IAVF_PFCP_SEID		    (1ULL << 43)
 #define IAVF_ECPRI_PC_RTC_ID	    (1ULL << 42)
 #define IAVF_IP_PKID		    (1ULL << 41)
+#define IAVF_L2TPV2_SESSION_ID	    (1ULL << 40)
 
 /* input set */
 
@@ -175,6 +177,11 @@
 	(IAVF_PROT_PFCP | IAVF_PFCP_S_FIELD | IAVF_PFCP_SEID)
 #define IAVF_INSET_ECPRI \
 	(IAVF_PROT_ECPRI | IAVF_ECPRI_PC_RTC_ID)
+#define IAVF_INSET_L2TPV2 \
+	(IAVF_PROT_L2TPV2 | IAVF_L2TPV2_SESSION_ID)
+
+/* raw pattern */
+extern enum rte_flow_item_type iavf_pattern_raw[];
 
 /* empty pattern */
 extern enum rte_flow_item_type iavf_pattern_empty[];
@@ -410,6 +417,12 @@ extern enum rte_flow_item_type iavf_pattern_eth_ipv6_gre_ipv6_tcp[];
 extern enum rte_flow_item_type iavf_pattern_eth_ipv6_gre_ipv4_udp[];
 extern enum rte_flow_item_type iavf_pattern_eth_ipv6_gre_ipv6_udp[];
 
+/* L2TPv2 */
+extern enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2[];
+extern enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2_ppp[];
+extern enum rte_flow_item_type iavf_pattern_eth_ipv6_udp_l2tpv2[];
+extern enum rte_flow_item_type iavf_pattern_eth_ipv6_udp_l2tpv2_ppp[];
+
 /* PPPoL2TPv2oUDP */
 extern enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv4[];
 extern enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv6[];
@@ -458,6 +471,7 @@ typedef int (*parse_pattern_action_t)(struct iavf_adapter *ad,
 		uint32_t array_len,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
+		uint32_t priority,
 		void **meta,
 		struct rte_flow_error *error);
 
@@ -467,6 +481,7 @@ enum iavf_flow_engine_type {
 	IAVF_FLOW_ENGINE_IPSEC_CRYPTO,
 	IAVF_FLOW_ENGINE_FDIR,
 	IAVF_FLOW_ENGINE_HASH,
+	IAVF_FLOW_ENGINE_FSUB,
 	IAVF_FLOW_ENGINE_MAX,
 };
 

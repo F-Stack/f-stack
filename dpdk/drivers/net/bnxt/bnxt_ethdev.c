@@ -6,7 +6,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_malloc.h>
@@ -1017,7 +1017,6 @@ static int bnxt_dev_info_get_op(struct rte_eth_dev *eth_dev,
 		.tx_free_thresh = 32,
 		.tx_rs_thresh = 32,
 	};
-	eth_dev->data->dev_conf.intr_conf.lsc = 1;
 
 	dev_info->rx_desc_lim.nb_min = BNXT_MIN_RING_DESC;
 	dev_info->rx_desc_lim.nb_max = BNXT_MAX_RX_RING_DESC;
@@ -1062,6 +1061,8 @@ found:
 
 	dev_info->vmdq_pool_base = 0;
 	dev_info->vmdq_queue_base = 0;
+
+	dev_info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PROACTIVE;
 
 	return 0;
 }
@@ -1486,8 +1487,7 @@ static int bnxt_dev_stop(struct rte_eth_dev *eth_dev)
 	eth_dev->data->dev_started = 0;
 
 	/* Prevent crashes when queues are still in use */
-	eth_dev->rx_pkt_burst = &bnxt_dummy_recv_pkts;
-	eth_dev->tx_pkt_burst = &bnxt_dummy_xmit_pkts;
+	bnxt_stop_rxtx(eth_dev);
 
 	bnxt_disable_int(bp);
 
@@ -1605,7 +1605,7 @@ int bnxt_dev_start_op(struct rte_eth_dev *eth_dev)
 
 	eth_dev->data->dev_started = 1;
 
-	bnxt_link_update_op(eth_dev, 1);
+	bnxt_link_update_op(eth_dev, 0);
 
 	if (rx_offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 		vlan_mask |= RTE_ETH_VLAN_FILTER_MASK;
@@ -1655,6 +1655,7 @@ static void bnxt_drv_uninit(struct bnxt *bp)
 	bnxt_free_link_info(bp);
 	bnxt_free_parent_info(bp);
 	bnxt_uninit_locks(bp);
+	bnxt_free_rep_info(bp);
 
 	rte_memzone_free((const struct rte_memzone *)bp->tx_mem_zone);
 	bp->tx_mem_zone = NULL;
@@ -3031,7 +3032,7 @@ int bnxt_mtu_set_op(struct rte_eth_dev *eth_dev, uint16_t new_mtu)
 	/* Return if port is active */
 	if (eth_dev->data->dev_started) {
 		PMD_DRV_LOG(ERR, "Stop port before changing MTU\n");
-		return -EPERM;
+		return -EBUSY;
 	}
 
 	/* Exit if receive queues are not configured yet */
@@ -4382,19 +4383,25 @@ static void bnxt_dev_recover(void *arg)
 	PMD_DRV_LOG(INFO, "Port: %u Recovered from FW reset\n",
 		    bp->eth_dev->data->port_id);
 	pthread_mutex_unlock(&bp->err_recovery_lock);
-
+	rte_eth_dev_callback_process(bp->eth_dev,
+				     RTE_ETH_EVENT_RECOVERY_SUCCESS,
+				     NULL);
 	return;
 err_start:
 	bnxt_dev_stop(bp->eth_dev);
 err:
 	bp->flags |= BNXT_FLAG_FATAL_ERROR;
 	bnxt_uninit_resources(bp, false);
+	rte_eth_dev_callback_process(bp->eth_dev,
+				     RTE_ETH_EVENT_RECOVERY_FAILED,
+				     NULL);
 	if (bp->eth_dev->data->dev_conf.intr_conf.rmv)
 		rte_eth_dev_callback_process(bp->eth_dev,
 					     RTE_ETH_EVENT_INTR_RMV,
 					     NULL);
 	pthread_mutex_unlock(&bp->err_recovery_lock);
-	PMD_DRV_LOG(ERR, "Failed to recover from FW reset\n");
+	PMD_DRV_LOG(ERR, "Port %u: Failed to recover from FW reset\n",
+		    bp->eth_dev->data->port_id);
 }
 
 void bnxt_dev_reset_and_resume(void *arg)
@@ -4430,7 +4437,8 @@ void bnxt_dev_reset_and_resume(void *arg)
 
 	rc = rte_eal_alarm_set(us, bnxt_dev_recover, (void *)bp);
 	if (rc)
-		PMD_DRV_LOG(ERR, "Error setting recovery alarm");
+		PMD_DRV_LOG(ERR, "Port %u: Error setting recovery alarm",
+			    bp->eth_dev->data->port_id);
 }
 
 uint32_t bnxt_read_fw_status_reg(struct bnxt *bp, uint32_t index)
@@ -4554,9 +4562,13 @@ reset:
 	bp->flags |= BNXT_FLAG_FATAL_ERROR;
 	bp->flags |= BNXT_FLAG_FW_RESET;
 
-	bnxt_stop_rxtx(bp);
+	bnxt_stop_rxtx(bp->eth_dev);
 
 	PMD_DRV_LOG(ERR, "Detected FW dead condition\n");
+
+	rte_eth_dev_callback_process(bp->eth_dev,
+				     RTE_ETH_EVENT_ERR_RECOVERING,
+				     NULL);
 
 	if (bnxt_is_primary_func(bp))
 		wait_msec = info->primary_func_wait_period;
@@ -5846,6 +5858,7 @@ bnxt_dev_init(struct rte_eth_dev *eth_dev, void *params __rte_unused)
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC;
 
 	bp = eth_dev->data->dev_private;
 
@@ -5885,8 +5898,7 @@ static void bnxt_free_ctx_mem_buf(struct bnxt_ctx_mem_buf_info *ctx)
 	if (!ctx)
 		return;
 
-	if (ctx->va)
-		rte_free(ctx->va);
+	rte_free(ctx->va);
 
 	ctx->va = NULL;
 	ctx->dma = RTE_BAD_IOVA;
@@ -5977,9 +5989,7 @@ bnxt_uninit_resources(struct bnxt *bp, bool reconfig_dev)
 	bnxt_uninit_ctx_mem(bp);
 
 	bnxt_free_flow_stats_info(bp);
-	if (bp->rep_info != NULL)
-		bnxt_free_switch_domain(bp);
-	bnxt_free_rep_info(bp);
+	bnxt_free_switch_domain(bp);
 	rte_free(bp->ptp_cfg);
 	bp->ptp_cfg = NULL;
 	return rc;

@@ -5,7 +5,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -13,19 +12,14 @@
 #include <inttypes.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/queue.h>
 #include <sys/file.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #include <limits.h>
-#include <sys/ioctl.h>
-#include <sys/time.h>
 #include <signal.h>
 #include <setjmp.h>
 #ifdef F_ADD_SEALS /* if file sealing is supported, so is memfd */
-#include <linux/memfd.h>
 #define MEMFD_SUPPORTED
 #endif
 #ifdef RTE_EAL_NUMA_AWARE_HUGEPAGES
@@ -36,12 +30,9 @@
 #include <rte_errno.h>
 #include <rte_log.h>
 #include <rte_memory.h>
-#include <rte_launch.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_common.h>
-#include <rte_string_fns.h>
 
 #include "eal_private.h"
 #include "eal_memalloc.h"
@@ -86,7 +77,11 @@ uint64_t eal_get_baseaddr(void)
 	 * rte_mem_check_dma_mask for ensuring all memory is within supported
 	 * range.
 	 */
+#if defined(RTE_ARCH_LOONGARCH)
+	return 0x7000000000ULL;
+#else
 	return 0x100000000ULL;
+#endif
 }
 
 /*
@@ -686,6 +681,7 @@ remap_segment(struct hugepage_file *hugepages, int seg_start, int seg_end)
 
 	/* find free space in memseg lists */
 	for (msl_idx = 0; msl_idx < RTE_MAX_MEMSEG_LISTS; msl_idx++) {
+		int free_len;
 		bool empty;
 		msl = &mcfg->memsegs[msl_idx];
 		arr = &msl->memseg_arr;
@@ -697,24 +693,31 @@ remap_segment(struct hugepage_file *hugepages, int seg_start, int seg_end)
 
 		/* leave space for a hole if array is not empty */
 		empty = arr->count == 0;
-		ms_idx = rte_fbarray_find_next_n_free(arr, 0,
-				seg_len + (empty ? 0 : 1));
-
-		/* memseg list is full? */
+		/* find start of the biggest contiguous block and its size */
+		ms_idx = rte_fbarray_find_biggest_free(arr, 0);
 		if (ms_idx < 0)
 			continue;
-
+		/* hole is 1 segment long, so at least two segments long. */
+		free_len = rte_fbarray_find_contig_free(arr, ms_idx);
+		if (free_len < 2)
+			continue;
 		/* leave some space between memsegs, they are not IOVA
 		 * contiguous, so they shouldn't be VA contiguous either.
 		 */
-		if (!empty)
+		if (!empty) {
 			ms_idx++;
+			free_len--;
+		}
+
+		/* we might not get all of the space we wanted */
+		free_len = RTE_MIN(seg_len, free_len);
+		seg_end = seg_start + free_len;
+		seg_len = seg_end - seg_start;
 		break;
 	}
 	if (msl_idx == RTE_MAX_MEMSEG_LISTS) {
-		RTE_LOG(ERR, EAL, "Could not find space for memseg. Please increase %s and/or %s in configuration.\n",
-				RTE_STR(RTE_MAX_MEMSEG_PER_TYPE),
-				RTE_STR(RTE_MAX_MEM_MB_PER_TYPE));
+		RTE_LOG(ERR, EAL, "Could not find space for memseg. Please increase RTE_MAX_MEMSEG_PER_LIST "
+			"RTE_MAX_MEMSEG_PER_TYPE and/or RTE_MAX_MEM_MB_PER_TYPE in configuration.\n");
 		return -1;
 	}
 
@@ -792,7 +795,7 @@ remap_segment(struct hugepage_file *hugepages, int seg_start, int seg_end)
 	}
 	RTE_LOG(DEBUG, EAL, "Allocated %" PRIu64 "M on socket %i\n",
 			(seg_len * page_sz) >> 20, socket_id);
-	return 0;
+	return seg_len;
 }
 
 static uint64_t
@@ -962,8 +965,7 @@ prealloc_segments(struct hugepage_file *hugepages, int n_pages)
 				break;
 			}
 			if (msl_idx == RTE_MAX_MEMSEG_LISTS) {
-				RTE_LOG(ERR, EAL, "Not enough space in memseg lists, please increase %s\n",
-					RTE_STR(RTE_MAX_MEMSEG_LISTS));
+				RTE_LOG(ERR, EAL, "Not enough space in memseg lists, please increase RTE_MAX_MEMSEG_LISTS\n");
 				return -1;
 			}
 
@@ -1027,10 +1029,16 @@ remap_needed_hugepages(struct hugepage_file *hugepages, int n_pages)
 		if (new_memseg) {
 			/* if this isn't the first time, remap segment */
 			if (cur_page != 0) {
-				ret = remap_segment(hugepages, seg_start_page,
-						cur_page);
-				if (ret != 0)
-					return -1;
+				int n_remapped = 0;
+				int n_needed = cur_page - seg_start_page;
+				while (n_remapped < n_needed) {
+					ret = remap_segment(hugepages, seg_start_page,
+							cur_page);
+					if (ret < 0)
+						return -1;
+					n_remapped += ret;
+					seg_start_page += ret;
+				}
 			}
 			/* remember where we started */
 			seg_start_page = cur_page;
@@ -1039,10 +1047,16 @@ remap_needed_hugepages(struct hugepage_file *hugepages, int n_pages)
 	}
 	/* we were stopped, but we didn't remap the last segment, do it now */
 	if (cur_page != 0) {
-		ret = remap_segment(hugepages, seg_start_page,
-				cur_page);
-		if (ret != 0)
-			return -1;
+		int n_remapped = 0;
+		int n_needed = cur_page - seg_start_page;
+		while (n_remapped < n_needed) {
+			ret = remap_segment(hugepages, seg_start_page,
+					cur_page);
+			if (ret < 0)
+				return -1;
+			n_remapped += ret;
+			seg_start_page += ret;
+		}
 	}
 	return 0;
 }
@@ -1428,7 +1442,7 @@ eal_legacy_hugepage_init(void)
 	}
 
 	/* free the hugepage backing files */
-	if (internal_conf->hugepage_unlink &&
+	if (internal_conf->hugepage_file.unlink_before_mapping &&
 		unlink_hugepage_files(tmp_hp, internal_conf->num_hugepage_sizes) < 0) {
 		RTE_LOG(ERR, EAL, "Unlinking hugepage files failed!\n");
 		goto fail;
@@ -1817,8 +1831,7 @@ memseg_primary_init_32(void)
 
 				if (msl_idx >= RTE_MAX_MEMSEG_LISTS) {
 					RTE_LOG(ERR, EAL,
-						"No more space in memseg lists, please increase %s\n",
-						RTE_STR(RTE_MAX_MEMSEG_LISTS));
+						"No more space in memseg lists, please increase RTE_MAX_MEMSEG_LISTS\n");
 					return -1;
 				}
 

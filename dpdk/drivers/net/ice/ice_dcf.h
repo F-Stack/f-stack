@@ -15,6 +15,12 @@
 #include "base/ice_type.h"
 #include "ice_logs.h"
 
+/* ICE_DCF_DEV_PRIVATE_TO */
+#define ICE_DCF_DEV_PRIVATE_TO_ADAPTER(adapter) \
+	((struct ice_dcf_adapter *)adapter)
+#define ICE_DCF_DEV_PRIVATE_TO_VF(adapter) \
+	(&((struct ice_dcf_adapter *)adapter)->vf)
+
 struct dcf_virtchnl_cmd {
 	TAILQ_ENTRY(dcf_virtchnl_cmd) next;
 
@@ -74,6 +80,22 @@ struct ice_dcf_tm_conf {
 	bool committed;
 };
 
+struct ice_dcf_eth_stats {
+	u64 rx_bytes;			/* gorc */
+	u64 rx_unicast;			/* uprc */
+	u64 rx_multicast;		/* mprc */
+	u64 rx_broadcast;		/* bprc */
+	u64 rx_discards;		/* rdpc */
+	u64 rx_unknown_protocol;	/* rupp */
+	u64 tx_bytes;			/* gotc */
+	u64 tx_unicast;			/* uptc */
+	u64 tx_multicast;		/* mptc */
+	u64 tx_broadcast;		/* bptc */
+	u64 tx_discards;		/* tdpc */
+	u64 tx_errors;			/* tepc */
+	u64 rx_no_desc;			/* repc */
+	u64 rx_errors;			/* repc */
+};
 struct ice_dcf_hw {
 	struct iavf_hw avf;
 
@@ -82,6 +104,8 @@ struct ice_dcf_hw {
 	TAILQ_HEAD(, dcf_virtchnl_cmd) vc_cmd_queue;
 	void (*vc_event_msg_cb)(struct ice_dcf_hw *dcf_hw,
 				uint8_t *msg, uint16_t msglen);
+
+	int vsi_update_thread_num;
 
 	uint8_t *arq_buf;
 
@@ -107,6 +131,7 @@ struct ice_dcf_hw {
 	uint16_t nb_msix;
 	uint16_t rxq_map[16];
 	struct virtchnl_eth_stats eth_stats_offset;
+	struct virtchnl_vlan_caps vlan_v2_caps;
 
 	/* Link status */
 	bool link_up;
@@ -122,6 +147,8 @@ int ice_dcf_send_aq_cmd(void *dcf_hw, struct ice_aq_desc *desc,
 int ice_dcf_handle_vsi_update_event(struct ice_dcf_hw *hw);
 int ice_dcf_init_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw);
 void ice_dcf_uninit_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw);
+int ice_dcf_configure_rss_key(struct ice_dcf_hw *hw);
+int ice_dcf_configure_rss_lut(struct ice_dcf_hw *hw);
 int ice_dcf_init_rss(struct ice_dcf_hw *hw);
 int ice_dcf_configure_queues(struct ice_dcf_hw *hw);
 int ice_dcf_config_irq_map(struct ice_dcf_hw *hw);
@@ -129,7 +156,9 @@ int ice_dcf_switch_queue(struct ice_dcf_hw *hw, uint16_t qid, bool rx, bool on);
 int ice_dcf_disable_queues(struct ice_dcf_hw *hw);
 int ice_dcf_query_stats(struct ice_dcf_hw *hw,
 			struct virtchnl_eth_stats *pstats);
-int ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw, bool add);
+int ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw,
+				 struct rte_ether_addr *addr, bool add,
+				 uint8_t type);
 int ice_dcf_link_update(struct rte_eth_dev *dev,
 		    __rte_unused int wait_to_complete);
 void ice_dcf_tm_conf_init(struct rte_eth_dev *dev);

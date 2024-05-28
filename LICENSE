@@ -39,8 +39,8 @@ BSD 3-Clause, Copyright (c) 2009, Ben Hoyt.All rights reserved.
 
 6.Nginx
 
-BSD 2-Clause, Copyright (C) 2002-2019 Igor Sysoev
-Copyright (C) 2011-2019 Nginx, Inc.
+BSD 2-Clause, Copyright (C) 2002-2021 Igor Sysoev
+Copyright (C) 2011-2023 Nginx, Inc.
 All rights reserved.
 
 7.Redis

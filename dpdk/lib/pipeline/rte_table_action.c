@@ -11,12 +11,10 @@
 #include <rte_memcpy.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
-#include <rte_esp.h>
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_vxlan.h>
 #include <rte_cryptodev.h>
-#include <cryptodev_pmd.h>
 
 #include "rte_table_action.h"
 
@@ -1900,16 +1898,10 @@ sym_crypto_apply(struct sym_crypto_data *data,
 		}
 	}
 
-	session = rte_cryptodev_sym_session_create(cfg->mp_create);
+	session = rte_cryptodev_sym_session_create(cfg->cryptodev_id,
+			p->xform, cfg->mp_create);
 	if (!session)
 		return -ENOMEM;
-
-	ret = rte_cryptodev_sym_session_init(cfg->cryptodev_id, session,
-			p->xform, cfg->mp_init);
-	if (ret < 0) {
-		rte_cryptodev_sym_session_free(session);
-		return ret;
-	}
 
 	data->data_offset = (uint16_t)p->data_offset;
 	data->session = session;
@@ -1931,7 +1923,7 @@ pkt_work_sym_crypto(struct rte_mbuf *mbuf, struct sym_crypto_data *data,
 
 	op->type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
 	op->sess_type = RTE_CRYPTO_OP_WITH_SESSION;
-	op->phys_addr = mbuf->buf_iova + cfg->op_offset - sizeof(*mbuf);
+	op->phys_addr = rte_mbuf_iova_get(mbuf) + cfg->op_offset - sizeof(*mbuf);
 	op->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 	sym->m_src = mbuf;
 	sym->m_dst = NULL;

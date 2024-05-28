@@ -4,7 +4,6 @@
  */
 
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
 #ifndef RTE_EXEC_ENV_WINDOWS
 #include <syslog.h>
@@ -17,7 +16,6 @@
 #include <dlfcn.h>
 #include <libgen.h>
 #endif
-#include <sys/types.h>
 #include <sys/stat.h>
 #ifndef RTE_EXEC_ENV_WINDOWS
 #include <dirent.h>
@@ -74,7 +72,7 @@ eal_long_options[] = {
 	{OPT_FILE_PREFIX,       1, NULL, OPT_FILE_PREFIX_NUM      },
 	{OPT_HELP,              0, NULL, OPT_HELP_NUM             },
 	{OPT_HUGE_DIR,          1, NULL, OPT_HUGE_DIR_NUM         },
-	{OPT_HUGE_UNLINK,       0, NULL, OPT_HUGE_UNLINK_NUM      },
+	{OPT_HUGE_UNLINK,       2, NULL, OPT_HUGE_UNLINK_NUM      },
 	{OPT_IOVA_MODE,	        1, NULL, OPT_IOVA_MODE_NUM        },
 	{OPT_LCORES,            1, NULL, OPT_LCORES_NUM           },
 	{OPT_LOG_LEVEL,         1, NULL, OPT_LOG_LEVEL_NUM        },
@@ -105,6 +103,7 @@ eal_long_options[] = {
 	{OPT_TELEMETRY,         0, NULL, OPT_TELEMETRY_NUM        },
 	{OPT_NO_TELEMETRY,      0, NULL, OPT_NO_TELEMETRY_NUM     },
 	{OPT_FORCE_MAX_SIMD_BITWIDTH, 1, NULL, OPT_FORCE_MAX_SIMD_BITWIDTH_NUM},
+	{OPT_HUGE_WORKER_STACK, 2, NULL, OPT_HUGE_WORKER_STACK_NUM     },
 
 	{0,                     0, NULL, 0                        }
 };
@@ -311,6 +310,8 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 	internal_cfg->force_nchannel = 0;
 	internal_cfg->hugefile_prefix = NULL;
 	internal_cfg->hugepage_dir = NULL;
+	internal_cfg->hugepage_file.unlink_before_mapping = false;
+	internal_cfg->hugepage_file.unlink_existing = true;
 	internal_cfg->force_sockets = 0;
 	/* zero out the NUMA config */
 	for (i = 0; i < RTE_MAX_NUMA_NODES; i++)
@@ -741,8 +742,8 @@ check_core_list(int *lcores, unsigned int count)
 	return -1;
 }
 
-static int
-eal_parse_coremask(const char *coremask, int *cores)
+int
+rte_eal_parse_coremask(const char *coremask, int *cores)
 {
 	const char *coremask_orig = coremask;
 	int lcores[RTE_MAX_LCORE];
@@ -1596,6 +1597,28 @@ available_cores(void)
 	return str;
 }
 
+#define HUGE_UNLINK_NEVER "never"
+
+static int
+eal_parse_huge_unlink(const char *arg, struct hugepage_file_discipline *out)
+{
+	if (arg == NULL || strcmp(arg, "always") == 0) {
+		out->unlink_before_mapping = true;
+		return 0;
+	}
+	if (strcmp(arg, "existing") == 0) {
+		/* same as not specifying the option */
+		return 0;
+	}
+	if (strcmp(arg, HUGE_UNLINK_NEVER) == 0) {
+		RTE_LOG(WARNING, EAL, "Using --"OPT_HUGE_UNLINK"="
+			HUGE_UNLINK_NEVER" may create data leaks.\n");
+		out->unlink_existing = false;
+		return 0;
+	}
+	return -1;
+}
+
 int
 eal_parse_common_option(int opt, const char *optarg,
 			struct internal_config *conf)
@@ -1626,7 +1649,7 @@ eal_parse_common_option(int opt, const char *optarg,
 		if (eal_service_cores_parsed())
 			RTE_LOG(WARNING, EAL,
 				"Service cores parsed before dataplane cores. Please ensure -c is before -s or -S\n");
-		if (eal_parse_coremask(optarg, lcore_indexes) < 0) {
+		if (rte_eal_parse_coremask(optarg, lcore_indexes) < 0) {
 			RTE_LOG(ERR, EAL, "invalid coremask syntax\n");
 			return -1;
 		}
@@ -1737,7 +1760,10 @@ eal_parse_common_option(int opt, const char *optarg,
 
 	/* long options */
 	case OPT_HUGE_UNLINK_NUM:
-		conf->hugepage_unlink = 1;
+		if (eal_parse_huge_unlink(optarg, &conf->hugepage_file) < 0) {
+			RTE_LOG(ERR, EAL, "invalid --"OPT_HUGE_UNLINK" option\n");
+			return -1;
+		}
 		break;
 
 	case OPT_NO_HUGE_NUM:
@@ -1766,7 +1792,7 @@ eal_parse_common_option(int opt, const char *optarg,
 		conf->in_memory = 1;
 		/* in-memory is a superset of noshconf and huge-unlink */
 		conf->no_shconf = 1;
-		conf->hugepage_unlink = 1;
+		conf->hugepage_file.unlink_before_mapping = true;
 		break;
 
 	case OPT_PROC_TYPE_NUM:
@@ -1962,12 +1988,9 @@ compute_ctrl_threads_cpuset(struct internal_config *internal_cfg)
 int
 eal_cleanup_config(struct internal_config *internal_cfg)
 {
-	if (internal_cfg->hugefile_prefix != NULL)
-		free(internal_cfg->hugefile_prefix);
-	if (internal_cfg->hugepage_dir != NULL)
-		free(internal_cfg->hugepage_dir);
-	if (internal_cfg->user_mbuf_pool_ops_name != NULL)
-		free(internal_cfg->user_mbuf_pool_ops_name);
+	free(internal_cfg->hugefile_prefix);
+	free(internal_cfg->hugepage_dir);
+	free(internal_cfg->user_mbuf_pool_ops_name);
 
 	return 0;
 }
@@ -2050,9 +2073,16 @@ eal_check_common_options(struct internal_config *internal_cfg)
 			"be specified together with --"OPT_NO_HUGE"\n");
 		return -1;
 	}
-	if (internal_cfg->no_hugetlbfs && internal_cfg->hugepage_unlink &&
+	if (internal_cfg->no_hugetlbfs &&
+			internal_cfg->hugepage_file.unlink_before_mapping &&
 			!internal_cfg->in_memory) {
 		RTE_LOG(ERR, EAL, "Option --"OPT_HUGE_UNLINK" cannot "
+			"be specified together with --"OPT_NO_HUGE"\n");
+		return -1;
+	}
+	if (internal_cfg->no_hugetlbfs &&
+			internal_cfg->huge_worker_stack_size != 0) {
+		RTE_LOG(ERR, EAL, "Option --"OPT_HUGE_WORKER_STACK" cannot "
 			"be specified together with --"OPT_NO_HUGE"\n");
 		return -1;
 	}
@@ -2061,10 +2091,16 @@ eal_check_common_options(struct internal_config *internal_cfg)
 			" is only supported in non-legacy memory mode\n");
 	}
 	if (internal_cfg->single_file_segments &&
-			internal_cfg->hugepage_unlink &&
+			internal_cfg->hugepage_file.unlink_before_mapping &&
 			!internal_cfg->in_memory) {
 		RTE_LOG(ERR, EAL, "Option --"OPT_SINGLE_FILE_SEGMENTS" is "
 			"not compatible with --"OPT_HUGE_UNLINK"\n");
+		return -1;
+	}
+	if (!internal_cfg->hugepage_file.unlink_existing &&
+			internal_cfg->in_memory) {
+		RTE_LOG(ERR, EAL, "Option --"OPT_IN_MEMORY" is not compatible "
+			"with --"OPT_HUGE_UNLINK"="HUGE_UNLINK_NEVER"\n");
 		return -1;
 	}
 	if (internal_cfg->legacy_mem &&
@@ -2199,7 +2235,9 @@ eal_common_usage(void)
 	       "  --"OPT_NO_TELEMETRY"   Disable telemetry support\n"
 	       "  --"OPT_FORCE_MAX_SIMD_BITWIDTH" Force the max SIMD bitwidth\n"
 	       "\nEAL options for DEBUG use only:\n"
-	       "  --"OPT_HUGE_UNLINK"       Unlink hugepage files after init\n"
+	       "  --"OPT_HUGE_UNLINK"[=existing|always|never]\n"
+	       "                      When to unlink files in hugetlbfs\n"
+	       "                      ('existing' by default, no value means 'always')\n"
 	       "  --"OPT_NO_HUGE"           Use malloc instead of hugetlbfs\n"
 	       "  --"OPT_NO_PCI"            Disable PCI\n"
 	       "  --"OPT_NO_HPET"           Disable HPET\n"

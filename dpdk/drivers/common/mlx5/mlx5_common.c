@@ -21,6 +21,37 @@
 
 uint8_t haswell_broadwell_cpu;
 
+/* Driver type key for new device global syntax. */
+#define MLX5_DRIVER_KEY "driver"
+
+/* Device parameter to get file descriptor for import device. */
+#define MLX5_DEVICE_FD "cmd_fd"
+
+/* Device parameter to get PD number for import Protection Domain. */
+#define MLX5_PD_HANDLE "pd_handle"
+
+/* Enable extending memsegs when creating a MR. */
+#define MLX5_MR_EXT_MEMSEG_EN "mr_ext_memseg_en"
+
+/* Device parameter to configure implicit registration of mempool memory. */
+#define MLX5_MR_MEMPOOL_REG_EN "mr_mempool_reg_en"
+
+/* The default memory allocator used in PMD. */
+#define MLX5_SYS_MEM_EN "sys_mem_en"
+
+/*
+ * Device parameter to force doorbell register mapping
+ * to non-cached region eliminating the extra write memory barrier.
+ * Deprecated, ignored (Name changed to sq_db_nc).
+ */
+#define MLX5_TX_DB_NC "tx_db_nc"
+
+/*
+ * Device parameter to force doorbell register mapping
+ * to non-cached region eliminating the extra write memory barrier.
+ */
+#define MLX5_SQ_DB_NC "sq_db_nc"
+
 /* In case this is an x86_64 intel processor to check if
  * we should use relaxed ordering.
  */
@@ -92,6 +123,123 @@ driver_get(uint32_t class)
 	return NULL;
 }
 
+int
+mlx5_kvargs_process(struct mlx5_kvargs_ctrl *mkvlist, const char *const keys[],
+		    arg_handler_t handler, void *opaque_arg)
+{
+	const struct rte_kvargs_pair *pair;
+	uint32_t i, j;
+
+	MLX5_ASSERT(mkvlist && mkvlist->kvlist);
+	/* Process parameters. */
+	for (i = 0; i < mkvlist->kvlist->count; i++) {
+		pair = &mkvlist->kvlist->pairs[i];
+		for (j = 0; keys[j] != NULL; ++j) {
+			if (strcmp(pair->key, keys[j]) != 0)
+				continue;
+			if ((*handler)(pair->key, pair->value, opaque_arg) < 0)
+				return -1;
+			mkvlist->is_used[i] = true;
+			break;
+		}
+	}
+	return 0;
+}
+
+/**
+ * Prepare a mlx5 kvargs control.
+ *
+ * @param[out] mkvlist
+ *   Pointer to mlx5 kvargs control.
+ * @param[in] devargs
+ *   The input string containing the key/value associations.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+mlx5_kvargs_prepare(struct mlx5_kvargs_ctrl *mkvlist,
+		    const struct rte_devargs *devargs)
+{
+	struct rte_kvargs *kvlist;
+	uint32_t i;
+
+	if (mkvlist == NULL)
+		return 0;
+	MLX5_ASSERT(devargs != NULL && devargs->args != NULL);
+	kvlist = rte_kvargs_parse(devargs->args, NULL);
+	if (kvlist == NULL) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	/*
+	 * rte_kvargs_parse enable key without value, in mlx5 PMDs we disable
+	 * this syntax.
+	 */
+	for (i = 0; i < kvlist->count; i++) {
+		const struct rte_kvargs_pair *pair = &kvlist->pairs[i];
+		if (pair->value == NULL || *(pair->value) == '\0') {
+			DRV_LOG(ERR, "Key %s is missing value.", pair->key);
+			rte_kvargs_free(kvlist);
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+	}
+	/* Makes sure all devargs used array is false. */
+	memset(mkvlist, 0, sizeof(*mkvlist));
+	mkvlist->kvlist = kvlist;
+	DRV_LOG(DEBUG, "Parse successfully %u devargs.",
+		mkvlist->kvlist->count);
+	return 0;
+}
+
+/**
+ * Release a mlx5 kvargs control.
+ *
+ * @param[out] mkvlist
+ *   Pointer to mlx5 kvargs control.
+ */
+static void
+mlx5_kvargs_release(struct mlx5_kvargs_ctrl *mkvlist)
+{
+	if (mkvlist == NULL)
+		return;
+	rte_kvargs_free(mkvlist->kvlist);
+	memset(mkvlist, 0, sizeof(*mkvlist));
+}
+
+/**
+ * Validate device arguments list.
+ * It report about the first unknown parameter.
+ *
+ * @param[in] mkvlist
+ *   Pointer to mlx5 kvargs control.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+mlx5_kvargs_validate(struct mlx5_kvargs_ctrl *mkvlist)
+{
+	uint32_t i;
+
+	/* Secondary process should not handle devargs. */
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+	if (mkvlist == NULL)
+		return 0;
+	for (i = 0; i < mkvlist->kvlist->count; i++) {
+		if (mkvlist->is_used[i] == 0) {
+			DRV_LOG(ERR, "Key \"%s\" "
+				"is unknown for the provided classes.",
+				mkvlist->kvlist->pairs[i].key);
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+	}
+	return 0;
+}
+
 /**
  * Verify and store value for devargs.
  *
@@ -111,11 +259,9 @@ mlx5_common_args_check_handler(const char *key, const char *val, void *opaque)
 	struct mlx5_common_dev_config *config = opaque;
 	signed long tmp;
 
-	if (val == NULL || *val == '\0') {
-		DRV_LOG(ERR, "Key %s is missing value.", key);
-		rte_errno = EINVAL;
-		return -rte_errno;
-	}
+	if (strcmp(MLX5_DRIVER_KEY, key) == 0 ||
+	    strcmp(RTE_DEVARGS_KEY_CLASS, key) == 0)
+		return 0;
 	errno = 0;
 	tmp = strtol(val, NULL, 0);
 	if (errno) {
@@ -123,21 +269,31 @@ mlx5_common_args_check_handler(const char *key, const char *val, void *opaque)
 		DRV_LOG(WARNING, "%s: \"%s\" is an invalid integer.", key, val);
 		return -rte_errno;
 	}
-	if (strcmp(key, "tx_db_nc") == 0) {
-		if (tmp != MLX5_TXDB_CACHED &&
-		    tmp != MLX5_TXDB_NCACHED &&
-		    tmp != MLX5_TXDB_HEURISTIC) {
-			DRV_LOG(ERR, "Invalid Tx doorbell mapping parameter.");
+	if (strcmp(key, MLX5_TX_DB_NC) == 0)
+		DRV_LOG(WARNING,
+			"%s: deprecated parameter, converted to queue_db_nc",
+			key);
+	if (strcmp(key, MLX5_SQ_DB_NC) == 0 ||
+	    strcmp(key, MLX5_TX_DB_NC) == 0) {
+		if (tmp != MLX5_SQ_DB_CACHED &&
+		    tmp != MLX5_SQ_DB_NCACHED &&
+		    tmp != MLX5_SQ_DB_HEURISTIC) {
+			DRV_LOG(ERR,
+				"Invalid Send Queue doorbell mapping parameter.");
 			rte_errno = EINVAL;
 			return -rte_errno;
 		}
 		config->dbnc = tmp;
-	} else if (strcmp(key, "mr_ext_memseg_en") == 0) {
+	} else if (strcmp(key, MLX5_MR_EXT_MEMSEG_EN) == 0) {
 		config->mr_ext_memseg_en = !!tmp;
-	} else if (strcmp(key, "mr_mempool_reg_en") == 0) {
+	} else if (strcmp(key, MLX5_MR_MEMPOOL_REG_EN) == 0) {
 		config->mr_mempool_reg_en = !!tmp;
-	} else if (strcmp(key, "sys_mem_en") == 0) {
+	} else if (strcmp(key, MLX5_SYS_MEM_EN) == 0) {
 		config->sys_mem_en = !!tmp;
+	} else if (strcmp(key, MLX5_DEVICE_FD) == 0) {
+		config->device_fd = tmp;
+	} else if (strcmp(key, MLX5_PD_HANDLE) == 0) {
+		config->pd_handle = tmp;
 	}
 	return 0;
 }
@@ -154,10 +310,21 @@ mlx5_common_args_check_handler(const char *key, const char *val, void *opaque)
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx5_common_config_get(struct rte_devargs *devargs,
+mlx5_common_config_get(struct mlx5_kvargs_ctrl *mkvlist,
 		       struct mlx5_common_dev_config *config)
 {
-	struct rte_kvargs *kvlist;
+	const char **params = (const char *[]){
+		RTE_DEVARGS_KEY_CLASS,
+		MLX5_DRIVER_KEY,
+		MLX5_TX_DB_NC,
+		MLX5_SQ_DB_NC,
+		MLX5_MR_EXT_MEMSEG_EN,
+		MLX5_SYS_MEM_EN,
+		MLX5_MR_MEMPOOL_REG_EN,
+		MLX5_DEVICE_FD,
+		MLX5_PD_HANDLE,
+		NULL,
+	};
 	int ret = 0;
 
 	/* Set defaults. */
@@ -165,22 +332,26 @@ mlx5_common_config_get(struct rte_devargs *devargs,
 	config->mr_mempool_reg_en = 1;
 	config->sys_mem_en = 0;
 	config->dbnc = MLX5_ARG_UNSET;
-	if (devargs == NULL)
+	config->device_fd = MLX5_ARG_UNSET;
+	config->pd_handle = MLX5_ARG_UNSET;
+	if (mkvlist == NULL)
 		return 0;
-	kvlist = rte_kvargs_parse(devargs->args, NULL);
-	if (kvlist == NULL) {
+	/* Process common parameters. */
+	ret = mlx5_kvargs_process(mkvlist, params,
+				  mlx5_common_args_check_handler, config);
+	if (ret) {
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
-	ret = rte_kvargs_process(kvlist, NULL, mlx5_common_args_check_handler,
-				 config);
+	/* Validate user arguments for remote PD and CTX if it is given. */
+	ret = mlx5_os_remote_pd_and_ctx_validate(config);
 	if (ret)
-		ret = -rte_errno;
-	rte_kvargs_free(kvlist);
+		return ret;
 	DRV_LOG(DEBUG, "mr_ext_memseg_en is %u.", config->mr_ext_memseg_en);
 	DRV_LOG(DEBUG, "mr_mempool_reg_en is %u.", config->mr_mempool_reg_en);
 	DRV_LOG(DEBUG, "sys_mem_en is %u.", config->sys_mem_en);
-	DRV_LOG(DEBUG, "Tx doorbell mapping parameter is %d.", config->dbnc);
+	DRV_LOG(DEBUG, "Send Queue doorbell mapping parameter is %d.",
+		config->dbnc);
 	return ret;
 }
 
@@ -225,23 +396,20 @@ err:
 }
 
 static int
-parse_class_options(const struct rte_devargs *devargs)
+parse_class_options(const struct rte_devargs *devargs,
+		    struct mlx5_kvargs_ctrl *mkvlist)
 {
-	struct rte_kvargs *kvlist;
 	int ret = 0;
 
-	if (devargs == NULL)
+	if (mkvlist == NULL)
 		return 0;
+	MLX5_ASSERT(devargs != NULL);
 	if (devargs->cls != NULL && devargs->cls->name != NULL)
 		/* Global syntax, only one class type. */
 		return class_name_to_value(devargs->cls->name);
 	/* Legacy devargs support multiple classes. */
-	kvlist = rte_kvargs_parse(devargs->args, NULL);
-	if (kvlist == NULL)
-		return 0;
-	rte_kvargs_process(kvlist, RTE_DEVARGS_KEY_CLASS,
+	rte_kvargs_process(mkvlist->kvlist, RTE_DEVARGS_KEY_CLASS,
 			   devargs_class_handler, &ret);
-	rte_kvargs_free(kvlist);
 	return ret;
 }
 
@@ -409,6 +577,11 @@ mlx5_dev_mempool_event_cb(enum rte_mempool_event event, struct rte_mempool *mp,
 	}
 }
 
+/**
+ * Primary and secondary processes share the `cdev` pointer.
+ * Callbacks addresses are local in each process.
+ * Therefore, each process can register private callbacks.
+ */
 int
 mlx5_dev_mempool_subscribe(struct mlx5_common_device *cdev)
 {
@@ -417,18 +590,16 @@ mlx5_dev_mempool_subscribe(struct mlx5_common_device *cdev)
 	if (!cdev->config.mr_mempool_reg_en)
 		return 0;
 	rte_rwlock_write_lock(&cdev->mr_scache.mprwlock);
-	if (cdev->mr_scache.mp_cb_registered)
-		goto exit;
 	/* Callback for this device may be already registered. */
 	ret = rte_mempool_event_callback_register(mlx5_dev_mempool_event_cb,
 						  cdev);
-	if (ret != 0 && rte_errno != EEXIST)
-		goto exit;
 	/* Register mempools only once for this device. */
-	if (ret == 0)
+	if (ret == 0 && rte_eal_process_type() == RTE_PROC_PRIMARY) {
 		rte_mempool_walk(mlx5_dev_mempool_register_cb, cdev);
-	ret = 0;
-	cdev->mr_scache.mp_cb_registered = 1;
+		goto exit;
+	}
+	if (ret != 0 && rte_errno == EEXIST)
+		ret = 0;
 exit:
 	rte_rwlock_write_unlock(&cdev->mr_scache.mprwlock);
 	return ret;
@@ -439,8 +610,8 @@ mlx5_dev_mempool_unsubscribe(struct mlx5_common_device *cdev)
 {
 	int ret;
 
-	if (!cdev->mr_scache.mp_cb_registered ||
-	    !cdev->config.mr_mempool_reg_en)
+	MLX5_ASSERT(cdev->dev != NULL);
+	if (!cdev->config.mr_mempool_reg_en)
 		return;
 	/* Stop watching for mempool events and unregister all mempools. */
 	ret = rte_mempool_event_callback_unregister(mlx5_dev_mempool_event_cb,
@@ -497,7 +668,7 @@ static void
 mlx5_dev_hw_global_release(struct mlx5_common_device *cdev)
 {
 	if (cdev->pd != NULL) {
-		claim_zero(mlx5_os_dealloc_pd(cdev->pd));
+		claim_zero(mlx5_os_pd_release(cdev));
 		cdev->pd = NULL;
 	}
 	if (cdev->ctx != NULL) {
@@ -526,20 +697,27 @@ mlx5_dev_hw_global_prepare(struct mlx5_common_device *cdev, uint32_t classes)
 	ret = mlx5_os_open_device(cdev, classes);
 	if (ret < 0)
 		return ret;
-	/* Allocate Protection Domain object and extract its pdn. */
-	ret = mlx5_os_pd_create(cdev);
+	/*
+	 * When CTX is created by Verbs, query HCA attribute is unsupported.
+	 * When CTX is imported, we cannot know if it is created by DevX or
+	 * Verbs. So, we use query HCA attribute function to check it.
+	 */
+	if (cdev->config.devx || cdev->config.device_fd != MLX5_ARG_UNSET) {
+		/* Query HCA attributes. */
+		ret = mlx5_devx_cmd_query_hca_attr(cdev->ctx,
+						   &cdev->config.hca_attr);
+		if (ret) {
+			DRV_LOG(ERR, "Unable to read HCA caps in DevX mode.");
+			rte_errno = ENOTSUP;
+			goto error;
+		}
+		cdev->config.devx = 1;
+	}
+	DRV_LOG(DEBUG, "DevX is %ssupported.", cdev->config.devx ? "" : "NOT ");
+	/* Prepare Protection Domain object and extract its pdn. */
+	ret = mlx5_os_pd_prepare(cdev);
 	if (ret)
 		goto error;
-	/* All actions taken below are relevant only when DevX is supported */
-	if (cdev->config.devx == 0)
-		return 0;
-	/* Query HCA attributes. */
-	ret = mlx5_devx_cmd_query_hca_attr(cdev->ctx, &cdev->config.hca_attr);
-	if (ret) {
-		DRV_LOG(ERR, "Unable to read HCA capabilities.");
-		rte_errno = ENOTSUP;
-		goto error;
-	}
 	return 0;
 error:
 	mlx5_dev_hw_global_release(cdev);
@@ -564,7 +742,8 @@ mlx5_common_dev_release(struct mlx5_common_device *cdev)
 }
 
 static struct mlx5_common_device *
-mlx5_common_dev_create(struct rte_device *eal_dev, uint32_t classes)
+mlx5_common_dev_create(struct rte_device *eal_dev, uint32_t classes,
+		       struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct mlx5_common_device *cdev;
 	int ret;
@@ -579,7 +758,7 @@ mlx5_common_dev_create(struct rte_device *eal_dev, uint32_t classes)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		goto exit;
 	/* Parse device parameters. */
-	ret = mlx5_common_config_get(eal_dev->devargs, &cdev->config);
+	ret = mlx5_common_config_get(mkvlist, &cdev->config);
 	if (ret < 0) {
 		DRV_LOG(ERR, "Failed to process device arguments: %s",
 			strerror(rte_errno));
@@ -613,6 +792,102 @@ exit:
 	return cdev;
 }
 
+/**
+ * Validate common devargs when probing again.
+ *
+ * When common device probing again, it cannot change its configurations.
+ * If user ask non compatible configurations in devargs, it is error.
+ * This function checks the match between:
+ *  - Common device configurations requested by probe again devargs.
+ *  - Existing common device configurations.
+ *
+ * @param cdev
+ *   Pointer to mlx5 device structure.
+ * @param mkvlist
+ *   Pointer to mlx5 kvargs control, can be NULL if there is no devargs.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+mlx5_common_probe_again_args_validate(struct mlx5_common_device *cdev,
+				      struct mlx5_kvargs_ctrl *mkvlist)
+{
+	struct mlx5_common_dev_config *config;
+	int ret;
+
+	/* Secondary process should not handle devargs. */
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+	/* Probe again doesn't have to generate devargs. */
+	if (mkvlist == NULL)
+		return 0;
+	config = mlx5_malloc(MLX5_MEM_ZERO | MLX5_MEM_RTE,
+			     sizeof(struct mlx5_common_dev_config),
+			     RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	if (config == NULL) {
+		rte_errno = -ENOMEM;
+		return -rte_errno;
+	}
+	/*
+	 * Creates a temporary common configure structure according to new
+	 * devargs attached in probing again.
+	 */
+	ret = mlx5_common_config_get(mkvlist, config);
+	if (ret) {
+		DRV_LOG(ERR, "Failed to process device configure: %s",
+			strerror(rte_errno));
+		mlx5_free(config);
+		return ret;
+	}
+	/*
+	 * Checks the match between the temporary structure and the existing
+	 * common device structure.
+	 */
+	if (cdev->config.mr_ext_memseg_en != config->mr_ext_memseg_en) {
+		DRV_LOG(ERR, "\"" MLX5_MR_EXT_MEMSEG_EN "\" "
+			"configuration mismatch for device %s.",
+			cdev->dev->name);
+		goto error;
+	}
+	if (cdev->config.mr_mempool_reg_en != config->mr_mempool_reg_en) {
+		DRV_LOG(ERR, "\"" MLX5_MR_MEMPOOL_REG_EN "\" "
+			"configuration mismatch for device %s.",
+			cdev->dev->name);
+		goto error;
+	}
+	if (cdev->config.device_fd != config->device_fd) {
+		DRV_LOG(ERR, "\"" MLX5_DEVICE_FD "\" "
+			"configuration mismatch for device %s.",
+			cdev->dev->name);
+		goto error;
+	}
+	if (cdev->config.pd_handle != config->pd_handle) {
+		DRV_LOG(ERR, "\"" MLX5_PD_HANDLE "\" "
+			"configuration mismatch for device %s.",
+			cdev->dev->name);
+		goto error;
+	}
+	if (cdev->config.sys_mem_en != config->sys_mem_en) {
+		DRV_LOG(ERR, "\"" MLX5_SYS_MEM_EN "\" "
+			"configuration mismatch for device %s.",
+			cdev->dev->name);
+		goto error;
+	}
+	if (cdev->config.dbnc != config->dbnc) {
+		DRV_LOG(ERR, "\"" MLX5_SQ_DB_NC "\" "
+			"configuration mismatch for device %s.",
+			cdev->dev->name);
+		goto error;
+	}
+	mlx5_free(config);
+	return 0;
+error:
+	mlx5_free(config);
+	rte_errno = EINVAL;
+	return -rte_errno;
+}
+
 static int
 drivers_remove(struct mlx5_common_device *cdev, uint32_t enabled_classes)
 {
@@ -639,7 +914,8 @@ drivers_remove(struct mlx5_common_device *cdev, uint32_t enabled_classes)
 }
 
 static int
-drivers_probe(struct mlx5_common_device *cdev, uint32_t user_classes)
+drivers_probe(struct mlx5_common_device *cdev, uint32_t user_classes,
+	      struct mlx5_kvargs_ctrl *mkvlist)
 {
 	struct mlx5_class_driver *driver;
 	uint32_t enabled_classes = 0;
@@ -658,7 +934,7 @@ drivers_probe(struct mlx5_common_device *cdev, uint32_t user_classes)
 			ret = -EEXIST;
 			goto probe_err;
 		}
-		ret = driver->probe(cdev);
+		ret = driver->probe(cdev, mkvlist);
 		if (ret < 0) {
 			DRV_LOG(ERR, "Failed to load driver %s",
 				driver->name);
@@ -684,27 +960,59 @@ int
 mlx5_common_dev_probe(struct rte_device *eal_dev)
 {
 	struct mlx5_common_device *cdev;
+	struct mlx5_kvargs_ctrl mkvlist;
+	struct mlx5_kvargs_ctrl *mkvlist_p = NULL;
 	uint32_t classes = 0;
 	bool new_device = false;
 	int ret;
 
 	DRV_LOG(INFO, "probe device \"%s\".", eal_dev->name);
-	ret = parse_class_options(eal_dev->devargs);
+	if (eal_dev->devargs != NULL && eal_dev->devargs->args != NULL)
+		mkvlist_p = &mkvlist;
+	ret = mlx5_kvargs_prepare(mkvlist_p, eal_dev->devargs);
+	if (ret < 0) {
+		DRV_LOG(ERR, "Unsupported device arguments: %s",
+			eal_dev->devargs->args);
+		return ret;
+	}
+	ret = parse_class_options(eal_dev->devargs, mkvlist_p);
 	if (ret < 0) {
 		DRV_LOG(ERR, "Unsupported mlx5 class type: %s",
 			eal_dev->devargs->args);
-		return ret;
+		goto class_err;
 	}
 	classes = ret;
 	if (classes == 0)
 		/* Default to net class. */
 		classes = MLX5_CLASS_ETH;
+	/*
+	 * MLX5 common driver supports probing again in two scenarios:
+	 * - Add new driver under existing common device (regardless of the
+	 *   driver's own support in probing again).
+	 * - Transfer the probing again support of the drivers themselves.
+	 *
+	 * In both scenarios it uses in the existing device. here it looks for
+	 * device that match to rte device, if it exists, the request classes
+	 * were probed with this device.
+	 */
 	cdev = to_mlx5_device(eal_dev);
 	if (!cdev) {
-		cdev = mlx5_common_dev_create(eal_dev, classes);
-		if (!cdev)
-			return -ENOMEM;
+		/* It isn't probing again, creates a new device. */
+		cdev = mlx5_common_dev_create(eal_dev, classes, mkvlist_p);
+		if (!cdev) {
+			ret = -ENOMEM;
+			goto class_err;
+		}
 		new_device = true;
+	} else {
+		/* It is probing again, validate common devargs match. */
+		ret = mlx5_common_probe_again_args_validate(cdev, mkvlist_p);
+		if (ret) {
+			DRV_LOG(ERR,
+				"Probe again parameters aren't compatible : %s",
+				strerror(rte_errno));
+			goto class_err;
+		}
 	}
 	/*
 	 * Validate combination here.
@@ -716,13 +1024,30 @@ mlx5_common_dev_probe(struct rte_device *eal_dev)
 		DRV_LOG(ERR, "Unsupported mlx5 classes combination.");
 		goto class_err;
 	}
-	ret = drivers_probe(cdev, classes);
+	ret = drivers_probe(cdev, classes, mkvlist_p);
 	if (ret)
 		goto class_err;
+	/*
+	 * Validate that all devargs have been used, unused key -> unknown Key.
+	 * When probe again validate is failed, the added drivers aren't removed
+	 * here but when device is released.
+	 */
+	ret = mlx5_kvargs_validate(mkvlist_p);
+	if (ret)
+		goto class_err;
+	mlx5_kvargs_release(mkvlist_p);
 	return 0;
 class_err:
-	if (new_device)
+	if (new_device) {
+		/*
+		 * For new device, classes_loaded is always 0 before
+		 * drivers_probe function.
+		 */
+		if (cdev->classes_loaded)
+			drivers_remove(cdev, cdev->classes_loaded);
 		mlx5_common_dev_release(cdev);
+	}
+	mlx5_kvargs_release(mkvlist_p);
 	return ret;
 }
 
@@ -994,7 +1319,7 @@ mlx5_devx_alloc_uar(struct mlx5_common_device *cdev)
 	for (retry = 0; retry < MLX5_ALLOC_UAR_RETRY; ++retry) {
 #ifdef MLX5DV_UAR_ALLOC_TYPE_NC
 		/* Control the mapping type according to the settings. */
-		uar_mapping = (cdev->config.dbnc == MLX5_TXDB_NCACHED) ?
+		uar_mapping = (cdev->config.dbnc == MLX5_SQ_DB_NCACHED) ?
 			    MLX5DV_UAR_ALLOC_TYPE_NC : MLX5DV_UAR_ALLOC_TYPE_BF;
 #else
 		/*

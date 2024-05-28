@@ -119,6 +119,11 @@ siena_board_cfg(
 	encp->enc_rx_push_align = 1;
 
 #if EFSYS_OPT_RX_SCALE
+	encp->enc_rx_scale_indirection_max_nqueues = EFX_MAXRSS;
+
+	/* There is no support for the even spread contexts. */
+	encp->enc_rx_scale_even_spread_max_nqueues = 0;
+
 	/* There is one RSS context per function */
 	encp->enc_rx_scale_max_exclusive_contexts = 1;
 
@@ -141,6 +146,7 @@ siena_board_cfg(
 	 */
 	encp->enc_evq_init_done_ev_supported = B_TRUE;
 
+	encp->enc_rx_dma_desc_size_max = EFX_MASK32(FSF_AZ_RX_KER_BYTE_COUNT);
 	encp->enc_tx_dma_desc_size_max = EFX_MASK32(FSF_AZ_TX_KER_BYTE_COUNT);
 	/* Fragments must not span 4k boundaries. */
 	encp->enc_tx_dma_desc_boundary = 4096;

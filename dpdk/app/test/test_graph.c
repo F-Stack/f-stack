@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(C) 2020 Marvell International Ltd.
  */
+
+#include "test.h"
+
 #include <assert.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -9,13 +12,22 @@
 #include <unistd.h>
 
 #include <rte_errno.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_node_list_dump(void)
+{
+	printf("node_list_dump not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_graph.h>
 #include <rte_graph_worker.h>
 #include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
 #include <rte_random.h>
-
-#include "test.h"
 
 static uint16_t test_node_worker_source(struct rte_graph *graph,
 					struct rte_node *node, void **objs,
@@ -538,6 +550,12 @@ test_node_clone(void)
 	node_id = rte_node_from_name("test_node00");
 	tm->test_node[0].idx = node_id;
 
+	dummy_id = rte_node_clone(node_id, "test_node00");
+	if (rte_node_is_invalid(dummy_id)) {
+		printf("Got invalid id when clone, Expecting fail\n");
+		return -1;
+	}
+
 	/* Clone with same name, should fail */
 	dummy_id = rte_node_clone(node_id, "test_node00");
 	if (!rte_node_is_invalid(dummy_id)) {
@@ -841,4 +859,7 @@ test_node_list_dump(void)
 
 	return TEST_SUCCESS;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
+
 REGISTER_TEST_COMMAND(node_list_dump, test_node_list_dump);

@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2018-2019 Pensando Systems, Inc. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2018-2022 Advanced Micro Devices, Inc.
  */
 
 #ifndef _IONIC_DEV_H_
@@ -11,19 +11,26 @@
 #include "ionic_if.h"
 #include "ionic_regs.h"
 
+#define VLAN_TAG_SIZE			4
+
 #define IONIC_MIN_MTU			RTE_ETHER_MIN_MTU
-#define IONIC_MAX_MTU			9194
+#define IONIC_MAX_MTU			9378
+#define IONIC_ETH_OVERHEAD		(RTE_ETHER_HDR_LEN + VLAN_TAG_SIZE)
 
 #define IONIC_MAX_RING_DESC		32768
 #define IONIC_MIN_RING_DESC		16
 #define IONIC_DEF_TXRX_DESC		4096
-
-#define IONIC_LIFS_MAX			1024
+#define IONIC_DEF_TXRX_BURST		32
 
 #define IONIC_DEVCMD_TIMEOUT		5	/* devcmd_timeout */
 #define IONIC_DEVCMD_CHECK_PERIOD_US	10	/* devcmd status chk period */
+#define IONIC_DEVCMD_RETRY_WAIT_US	20000
 
-#define	IONIC_ALIGN             4096
+#define IONIC_Q_WDOG_MS			10	/* 10ms */
+#define IONIC_Q_WDOG_MAX_MS		5000	/* 5s */
+#define IONIC_ADMINQ_WDOG_MS		500	/* 500ms */
+
+#define IONIC_ALIGN			4096
 
 struct ionic_adapter;
 
@@ -131,11 +138,12 @@ struct ionic_dev {
 #define Q_NEXT_TO_POST(_q, _n)	(((_q)->head_idx + (_n)) & ((_q)->size_mask))
 #define Q_NEXT_TO_SRVC(_q, _n)	(((_q)->tail_idx + (_n)) & ((_q)->size_mask))
 
-#define IONIC_INFO_IDX(_q, _i)	(_i)
+#define IONIC_INFO_IDX(_q, _i)	((_i) * (_q)->num_segs)
 #define IONIC_INFO_PTR(_q, _i)	(&(_q)->info[IONIC_INFO_IDX((_q), _i)])
 
 struct ionic_queue {
 	uint16_t num_descs;
+	uint16_t num_segs;
 	uint16_t head_idx;
 	uint16_t tail_idx;
 	uint16_t size_mask;
@@ -172,13 +180,25 @@ struct ionic_cq {
 struct ionic_lif;
 struct ionic_adapter;
 struct ionic_qcq;
+struct rte_mempool;
+struct rte_eth_dev;
+struct rte_devargs;
+
+struct ionic_dev_intf {
+	int  (*setup)(struct ionic_adapter *adapter);
+	int  (*devargs)(struct ionic_adapter *adapter,
+			struct rte_devargs *devargs);
+	void (*copy_bus_info)(struct ionic_adapter *adapter,
+			struct rte_eth_dev *eth_dev);
+	int  (*configure_intr)(struct ionic_adapter *adapter);
+	void (*unconfigure_intr)(struct ionic_adapter *adapter);
+	void (*unmap_bars)(struct ionic_adapter *adapter);
+};
 
 void ionic_intr_init(struct ionic_dev *idev, struct ionic_intr_info *intr,
 	unsigned long index);
 
 const char *ionic_opcode_to_str(enum ionic_cmd_opcode opcode);
-
-int ionic_dev_setup(struct ionic_adapter *adapter);
 
 void ionic_dev_cmd_go(struct ionic_dev *idev, union ionic_dev_cmd *cmd);
 uint8_t ionic_dev_cmd_status(struct ionic_dev *idev);
@@ -215,6 +235,7 @@ struct ionic_doorbell __iomem *ionic_db_map(struct ionic_lif *lif,
 	struct ionic_queue *q);
 
 int ionic_cq_init(struct ionic_cq *cq, uint16_t num_descs);
+void ionic_cq_reset(struct ionic_cq *cq);
 void ionic_cq_map(struct ionic_cq *cq, void *base, rte_iova_t base_pa);
 typedef bool (*ionic_cq_cb)(struct ionic_cq *cq, uint16_t cq_desc_index,
 		void *cb_arg);
@@ -222,6 +243,7 @@ uint32_t ionic_cq_service(struct ionic_cq *cq, uint32_t work_to_do,
 	ionic_cq_cb cb, void *cb_arg);
 
 int ionic_q_init(struct ionic_queue *q, uint32_t index, uint16_t num_descs);
+void ionic_q_reset(struct ionic_queue *q);
 void ionic_q_map(struct ionic_queue *q, void *base, rte_iova_t base_pa);
 void ionic_q_sg_map(struct ionic_queue *q, void *base, rte_iova_t base_pa);
 

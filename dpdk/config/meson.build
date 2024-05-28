@@ -121,6 +121,8 @@ if cpu_instruction_set == 'generic'
         cpu_instruction_set = 'generic'
     elif host_machine.cpu_family().startswith('ppc')
         cpu_instruction_set = 'power8'
+    elif host_machine.cpu_family().startswith('riscv')
+        cpu_instruction_set = 'riscv'
     endif
 endif
 
@@ -137,7 +139,7 @@ endif
 
 toolchain = cc.get_id()
 dpdk_conf.set_quoted('RTE_TOOLCHAIN', toolchain)
-dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
+dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper().underscorify(), 1)
 
 dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
 dpdk_conf.set('RTE_ARCH_32', cc.sizeof('void *') == 4)
@@ -189,7 +191,7 @@ if find_libnuma
 endif
 
 has_libfdt = 0
-fdt_dep = cc.find_library('libfdt', required: false)
+fdt_dep = cc.find_library('fdt', required: false)
 if fdt_dep.found() and cc.has_header('fdt.h')
     dpdk_conf.set10('RTE_HAS_LIBFDT', true)
     has_libfdt = 1
@@ -197,11 +199,12 @@ if fdt_dep.found() and cc.has_header('fdt.h')
     dpdk_extra_ldflags += '-lfdt'
 endif
 
-libexecinfo = cc.find_library('libexecinfo', required: false)
-if libexecinfo.found() and cc.has_header('execinfo.h')
+libexecinfo = cc.find_library('execinfo', required: false)
+if libexecinfo.found()
     add_project_link_arguments('-lexecinfo', language: 'c')
     dpdk_extra_ldflags += '-lexecinfo'
 endif
+dpdk_conf.set('RTE_BACKTRACE', cc.has_header('execinfo.h') or is_windows)
 
 libarchive = dependency('libarchive', required: false, method: 'pkg-config')
 if libarchive.found()
@@ -222,6 +225,12 @@ endif
 jansson_dep = dependency('jansson', required: false, method: 'pkg-config')
 if jansson_dep.found()
     dpdk_conf.set('RTE_HAS_JANSSON', 1)
+endif
+
+# check for OpenSSL
+openssl_dep = dependency('openssl', required: false, method: 'pkg-config')
+if openssl_dep.found()
+    dpdk_conf.set('RTE_HAS_OPENSSL', 1)
 endif
 
 # check for pcap
@@ -247,10 +256,9 @@ endif
 add_project_arguments('-include', 'rte_config.h', language: 'c')
 
 # enable extra warnings and disable any unwanted warnings
+# -Wall is added by default at warning level 1, and -Wextra
+# at warning level 2 (DPDK default)
 warning_flags = [
-        # -Wall is added by meson by default, so add -Wextra only
-        '-Wextra',
-
         # additional warnings in alphabetical order
         '-Wcast-qual',
         '-Wdeprecated',
@@ -308,6 +316,7 @@ endif
 if get_option('mbuf_refcnt_atomic')
     dpdk_conf.set('RTE_MBUF_REFCNT_ATOMIC', true)
 endif
+dpdk_conf.set10('RTE_IOVA_AS_PA', get_option('enable_iova_as_pa'))
 
 compile_time_cpuflags = []
 subdir(arch_subdir)
@@ -357,7 +366,7 @@ if max_numa_nodes == 'detect'
         error('Discovery of max_numa_nodes not supported for cross-compilation.')
     endif
     # overwrite the default value with discovered values
-    max_numa_nodes = run_command(get_numa_count_cmd).stdout().to_int()
+    max_numa_nodes = run_command(get_numa_count_cmd, check: true).stdout().to_int()
     message('Found @0@ numa nodes'.format(max_numa_nodes))
     dpdk_conf.set('RTE_MAX_NUMA_NODES', max_numa_nodes)
 elif max_numa_nodes != 'default'

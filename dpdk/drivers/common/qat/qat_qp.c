@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2018 Intel Corporation
+ * Copyright(c) 2015-2022 Intel Corporation
  */
 
 #include <rte_common.h>
 #include <rte_cycles.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_atomic.h>
 #include <rte_prefetch.h>
 
@@ -175,11 +175,9 @@ qat_qp_setup(struct qat_pci_device *qat_dev,
 
 create_err:
 	if (qp) {
-		if (qp->op_cookie_pool)
-			rte_mempool_free(qp->op_cookie_pool);
+		rte_mempool_free(qp->op_cookie_pool);
 
-		if (qp->op_cookies)
-			rte_free(qp->op_cookies);
+		rte_free(qp->op_cookies);
 
 		rte_free(qp);
 	}
@@ -329,8 +327,7 @@ qat_qp_release(enum qat_device_gen qat_dev_gen, struct qat_qp **qp_addr)
 	for (i = 0; i < qp->nb_descriptors; i++)
 		rte_mempool_put(qp->op_cookie_pool, qp->op_cookies[i]);
 
-	if (qp->op_cookie_pool)
-		rte_mempool_free(qp->op_cookie_pool);
+	rte_mempool_free(qp->op_cookie_pool);
 
 	rte_free(qp->op_cookies);
 	rte_free(qp);
@@ -373,8 +370,8 @@ adf_queue_arb_enable(struct qat_pci_device *qat_dev, struct qat_queue *txq,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_arb_enable,
-			-ENOTSUP);
+	if (ops->qat_qp_adf_arb_enable == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_adf_arb_enable(txq, base_addr, lock);
 	return 0;
 }
@@ -386,8 +383,8 @@ adf_queue_arb_disable(enum qat_device_gen qat_dev_gen, struct qat_queue *txq,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_arb_disable,
-			-ENOTSUP);
+	if (ops->qat_qp_adf_arb_disable == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_adf_arb_disable(txq, base_addr, lock);
 	return 0;
 }
@@ -399,8 +396,8 @@ qat_qp_build_ring_base(struct qat_pci_device *qat_dev, void *io_addr,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_build_ring_base,
-			-ENOTSUP);
+	if (ops->qat_qp_build_ring_base == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_build_ring_base(io_addr, queue);
 	return 0;
 }
@@ -412,8 +409,8 @@ qat_qps_per_service(struct qat_pci_device *qat_dev,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_rings_per_service,
-			-ENOTSUP);
+	if (ops->qat_qp_rings_per_service == NULL)
+		return -ENOTSUP;
 	return ops->qat_qp_rings_per_service(qat_dev, service);
 }
 
@@ -424,7 +421,8 @@ qat_qp_get_hw_data(struct qat_pci_device *qat_dev,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_get_hw_data, NULL);
+	if (ops->qat_qp_get_hw_data == NULL)
+		return NULL;
 	return ops->qat_qp_get_hw_data(qat_dev, service, qp_id);
 }
 
@@ -434,8 +432,8 @@ qat_read_qp_config(struct qat_pci_device *qat_dev)
 	struct qat_dev_hw_spec_funcs *ops_hw =
 		qat_dev_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops_hw->qat_dev_read_config,
-			-ENOTSUP);
+	if (ops_hw->qat_dev_read_config == NULL)
+		return -ENOTSUP;
 	return ops_hw->qat_dev_read_config(qat_dev);
 }
 
@@ -445,24 +443,10 @@ adf_configure_queues(struct qat_qp *qp, enum qat_device_gen qat_dev_gen)
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_configure_queues,
-			-ENOTSUP);
+	if (ops->qat_qp_adf_configure_queues == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_adf_configure_queues(qp);
 	return 0;
-}
-
-static inline void
-txq_write_tail(enum qat_device_gen qat_dev_gen,
-		struct qat_qp *qp, struct qat_queue *q)
-{
-	struct qat_qp_hw_spec_funcs *ops =
-		qat_qp_hw_spec[qat_dev_gen];
-
-	/*
-	 * Pointer check should be done during
-	 * initialization
-	 */
-	ops->qat_qp_csr_write_tail(qp, q);
 }
 
 static inline void
@@ -486,8 +470,8 @@ qat_qp_csr_setup(struct qat_pci_device *qat_dev,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_csr_setup,
-			-ENOTSUP);
+	if (ops->qat_qp_csr_setup == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_csr_setup(qat_dev, io_addr, qp);
 	return 0;
 }
@@ -550,7 +534,8 @@ adf_modulo(uint32_t data, uint32_t modulo_mask)
 }
 
 uint16_t
-qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
+qat_enqueue_op_burst(void *qp, qat_op_build_request_t op_build_request,
+		void **ops, uint16_t nb_ops)
 {
 	register struct qat_queue *queue;
 	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
@@ -600,29 +585,18 @@ qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 		}
 	}
 
-#ifdef BUILD_QAT_SYM
+#ifdef RTE_LIB_SECURITY
 	if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC)
 		qat_sym_preprocess_requests(ops, nb_ops_possible);
 #endif
 
+	memset(tmp_qp->opaque, 0xff, sizeof(tmp_qp->opaque));
+
 	while (nb_ops_sent != nb_ops_possible) {
-		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC) {
-#ifdef BUILD_QAT_SYM
-			ret = qat_sym_build_request(*ops, base_addr + tail,
+		ret = op_build_request(*ops, base_addr + tail,
 				tmp_qp->op_cookies[tail >> queue->trailz],
-				tmp_qp->qat_dev_gen);
-#endif
-		} else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION) {
-			ret = qat_comp_build_request(*ops, base_addr + tail,
-				tmp_qp->op_cookies[tail >> queue->trailz],
-				tmp_qp->qat_dev_gen);
-		} else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC) {
-#ifdef BUILD_QAT_ASYM
-			ret = qat_asym_build_request(*ops, base_addr + tail,
-				tmp_qp->op_cookies[tail >> queue->trailz],
-				tmp_qp->qat_dev_gen);
-#endif
-		}
+				tmp_qp->opaque, tmp_qp->qat_dev_gen);
+
 		if (ret != 0) {
 			tmp_qp->stats.enqueue_err_count++;
 			/* This message cannot be enqueued */
@@ -643,181 +617,9 @@ kick_tail:
 	return nb_ops_sent;
 }
 
-/* Use this for compression only - but keep consistent with above common
- * function as much as possible.
- */
 uint16_t
-qat_enqueue_comp_op_burst(void *qp, void **ops, uint16_t nb_ops)
-{
-	register struct qat_queue *queue;
-	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
-	register uint32_t nb_ops_sent = 0;
-	register int nb_desc_to_build;
-	uint16_t nb_ops_possible = nb_ops;
-	register uint8_t *base_addr;
-	register uint32_t tail;
-
-	int descriptors_built, total_descriptors_built = 0;
-	int nb_remaining_descriptors;
-	int overflow = 0;
-
-	if (unlikely(nb_ops == 0))
-		return 0;
-
-	/* read params used a lot in main loop into registers */
-	queue = &(tmp_qp->tx_q);
-	base_addr = (uint8_t *)queue->base_addr;
-	tail = queue->tail;
-
-	/* Find how many can actually fit on the ring */
-	{
-		/* dequeued can only be written by one thread, but it may not
-		 * be this thread. As it's 4-byte aligned it will be read
-		 * atomically here by any Intel CPU.
-		 * enqueued can wrap before dequeued, but cannot
-		 * lap it as var size of enq/deq (uint32_t) > var size of
-		 * max_inflights (uint16_t). In reality inflights is never
-		 * even as big as max uint16_t, as it's <= ADF_MAX_DESC.
-		 * On wrapping, the calculation still returns the correct
-		 * positive value as all three vars are unsigned.
-		 */
-		uint32_t inflights =
-			tmp_qp->enqueued - tmp_qp->dequeued;
-
-		/* Find how many can actually fit on the ring */
-		overflow = (inflights + nb_ops) - tmp_qp->max_inflights;
-		if (overflow > 0) {
-			nb_ops_possible = nb_ops - overflow;
-			if (nb_ops_possible == 0)
-				return 0;
-		}
-
-		/* QAT has plenty of work queued already, so don't waste cycles
-		 * enqueueing, wait til the application has gathered a bigger
-		 * burst or some completed ops have been dequeued
-		 */
-		if (tmp_qp->min_enq_burst_threshold && inflights >
-				QAT_QP_MIN_INFL_THRESHOLD && nb_ops_possible <
-				tmp_qp->min_enq_burst_threshold) {
-			tmp_qp->stats.threshold_hit_count++;
-			return 0;
-		}
-	}
-
-	/* At this point nb_ops_possible is assuming a 1:1 mapping
-	 * between ops and descriptors.
-	 * Fewer may be sent if some ops have to be split.
-	 * nb_ops_possible is <= burst size.
-	 * Find out how many spaces are actually available on the qp in case
-	 * more are needed.
-	 */
-	nb_remaining_descriptors = nb_ops_possible
-			 + ((overflow >= 0) ? 0 : overflow * (-1));
-	QAT_DP_LOG(DEBUG, "Nb ops requested %d, nb descriptors remaining %d",
-			nb_ops, nb_remaining_descriptors);
-
-	while (nb_ops_sent != nb_ops_possible &&
-				nb_remaining_descriptors > 0) {
-		struct qat_comp_op_cookie *cookie =
-				tmp_qp->op_cookies[tail >> queue->trailz];
-
-		descriptors_built = 0;
-
-		QAT_DP_LOG(DEBUG, "--- data length: %u",
-			   ((struct rte_comp_op *)*ops)->src.length);
-
-		nb_desc_to_build = qat_comp_build_request(*ops,
-				base_addr + tail, cookie, tmp_qp->qat_dev_gen);
-		QAT_DP_LOG(DEBUG, "%d descriptors built, %d remaining, "
-			"%d ops sent, %d descriptors needed",
-			total_descriptors_built, nb_remaining_descriptors,
-			nb_ops_sent, nb_desc_to_build);
-
-		if (unlikely(nb_desc_to_build < 0)) {
-			/* this message cannot be enqueued */
-			tmp_qp->stats.enqueue_err_count++;
-			if (nb_ops_sent == 0)
-				return 0;
-			goto kick_tail;
-		} else if (unlikely(nb_desc_to_build > 1)) {
-			/* this op is too big and must be split - get more
-			 * descriptors and retry
-			 */
-
-			QAT_DP_LOG(DEBUG, "Build %d descriptors for this op",
-					nb_desc_to_build);
-
-			nb_remaining_descriptors -= nb_desc_to_build;
-			if (nb_remaining_descriptors >= 0) {
-				/* There are enough remaining descriptors
-				 * so retry
-				 */
-				int ret2 = qat_comp_build_multiple_requests(
-						*ops, tmp_qp, tail,
-						nb_desc_to_build);
-
-				if (unlikely(ret2 < 1)) {
-					QAT_DP_LOG(DEBUG,
-							"Failed to build (%d) descriptors, status %d",
-							nb_desc_to_build, ret2);
-
-					qat_comp_free_split_op_memzones(cookie,
-							nb_desc_to_build - 1);
-
-					tmp_qp->stats.enqueue_err_count++;
-
-					/* This message cannot be enqueued */
-					if (nb_ops_sent == 0)
-						return 0;
-					goto kick_tail;
-				} else {
-					descriptors_built = ret2;
-					total_descriptors_built +=
-							descriptors_built;
-					nb_remaining_descriptors -=
-							descriptors_built;
-					QAT_DP_LOG(DEBUG,
-							"Multiple descriptors (%d) built ok",
-							descriptors_built);
-				}
-			} else {
-				QAT_DP_LOG(ERR, "For the current op, number of requested descriptors (%d) "
-						"exceeds number of available descriptors (%d)",
-						nb_desc_to_build,
-						nb_remaining_descriptors +
-							nb_desc_to_build);
-
-				qat_comp_free_split_op_memzones(cookie,
-						nb_desc_to_build - 1);
-
-				/* Not enough extra descriptors */
-				if (nb_ops_sent == 0)
-					return 0;
-				goto kick_tail;
-			}
-		} else {
-			descriptors_built = 1;
-			total_descriptors_built++;
-			nb_remaining_descriptors--;
-			QAT_DP_LOG(DEBUG, "Single descriptor built ok");
-		}
-
-		tail = adf_modulo(tail + (queue->msg_size * descriptors_built),
-				  queue->modulo_mask);
-		ops++;
-		nb_ops_sent++;
-	}
-
-kick_tail:
-	queue->tail = tail;
-	tmp_qp->enqueued += total_descriptors_built;
-	tmp_qp->stats.enqueued_count += nb_ops_sent;
-	txq_write_tail(tmp_qp->qat_dev_gen, tmp_qp, queue);
-	return nb_ops_sent;
-}
-
-uint16_t
-qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
+qat_dequeue_op_burst(void *qp, void **ops,
+		qat_op_dequeue_t qat_dequeue_process_response, uint16_t nb_ops)
 {
 	struct qat_queue *rx_queue;
 	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
@@ -835,19 +637,10 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 
 		nb_fw_responses = 1;
 
-		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC)
-			qat_sym_process_response(ops, resp_msg,
-				tmp_qp->op_cookies[head >> rx_queue->trailz]);
-		else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION)
-			nb_fw_responses = qat_comp_process_response(
+		nb_fw_responses = qat_dequeue_process_response(
 				ops, resp_msg,
 				tmp_qp->op_cookies[head >> rx_queue->trailz],
 				&tmp_qp->stats.dequeue_err_count);
-#ifdef BUILD_QAT_ASYM
-		else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC)
-			qat_asym_process_response(ops, resp_msg,
-				tmp_qp->op_cookies[head >> rx_queue->trailz]);
-#endif
 
 		head = adf_modulo(head + rx_queue->msg_size,
 				  rx_queue->modulo_mask);

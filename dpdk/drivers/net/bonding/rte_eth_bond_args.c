@@ -4,7 +4,8 @@
 
 #include <rte_devargs.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
 #include <rte_kvargs.h>
 
 #include "rte_eth_bond.h"
@@ -210,6 +211,12 @@ bond_ethdev_parse_socket_id_kvarg(const char *key __rte_unused,
 	socket_id = strtol(value, &endptr, 10);
 	if (*endptr != 0 || errno != 0)
 		return -1;
+
+	/* SOCKET_ID_ANY also consider a valid socket id */
+	if ((int8_t)socket_id == SOCKET_ID_ANY) {
+		*(int *)extra_args = SOCKET_ID_ANY;
+		return 0;
+	}
 
 	/* validate socket id value */
 	if (socket_id >= 0 && socket_id < RTE_MAX_NUMA_NODES) {

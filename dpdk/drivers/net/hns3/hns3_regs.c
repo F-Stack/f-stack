@@ -15,7 +15,7 @@
 #define REG_NUM_PER_LINE	4
 #define REG_LEN_PER_LINE	(REG_NUM_PER_LINE * sizeof(uint32_t))
 
-static int hns3_get_dfx_reg_line(struct hns3_hw *hw, uint32_t *length);
+static int hns3_get_dfx_reg_line(struct hns3_hw *hw, uint32_t *lines);
 
 static const uint32_t cmdq_reg_addrs[] = {HNS3_CMDQ_TX_ADDR_L_REG,
 					  HNS3_CMDQ_TX_ADDR_H_REG,
@@ -294,8 +294,9 @@ hns3_direct_access_regs(struct hns3_hw *hw, uint32_t *data)
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	uint32_t *origin_data_ptr = data;
 	uint32_t reg_offset;
-	int reg_num;
-	int i, j;
+	size_t reg_num;
+	uint16_t j;
+	size_t i;
 
 	/* fetching per-PF registers values from PF PCIe register space */
 	reg_num = sizeof(cmdq_reg_addrs) / sizeof(uint32_t);

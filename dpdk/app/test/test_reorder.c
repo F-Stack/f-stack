@@ -2,6 +2,8 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include "test.h"
+
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -9,11 +11,19 @@
 #include <rte_cycles.h>
 #include <rte_errno.h>
 #include <rte_mbuf.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_reorder(void)
+{
+	printf("reorder not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+#else
+
 #include <rte_reorder.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
-
-#include "test.h"
 
 #define BURST 32
 #define REORDER_BUFFER_SIZE 16384
@@ -208,8 +218,7 @@ test_reorder_insert(void)
 exit:
 	rte_reorder_free(b);
 	for (i = 0; i < num_bufs; i++) {
-		if (bufs[i] != NULL)
-			rte_pktmbuf_free(bufs[i]);
+		rte_pktmbuf_free(bufs[i]);
 	}
 	return ret;
 }
@@ -268,8 +277,8 @@ test_reorder_drain(void)
 		ret = -1;
 		goto exit;
 	}
-	if (robufs[0] != NULL)
-		rte_pktmbuf_free(robufs[0]);
+	rte_pktmbuf_free(robufs[0]);
+	memset(robufs, 0, sizeof(robufs));
 
 	/* Insert more packets
 	 * RB[] = {NULL, NULL, NULL, NULL}
@@ -303,9 +312,9 @@ test_reorder_drain(void)
 		goto exit;
 	}
 	for (i = 0; i < 3; i++) {
-		if (robufs[i] != NULL)
-			rte_pktmbuf_free(robufs[i]);
+		rte_pktmbuf_free(robufs[i]);
 	}
+	memset(robufs, 0, sizeof(robufs));
 
 	/*
 	 * RB[] = {NULL, NULL, NULL, NULL}
@@ -322,10 +331,8 @@ test_reorder_drain(void)
 exit:
 	rte_reorder_free(b);
 	for (i = 0; i < num_bufs; i++) {
-		if (bufs[i] != NULL)
-			rte_pktmbuf_free(bufs[i]);
-		if (robufs[i] != NULL)
-			rte_pktmbuf_free(robufs[i]);
+		rte_pktmbuf_free(bufs[i]);
+		rte_pktmbuf_free(robufs[i]);
 	}
 	return ret;
 }
@@ -389,5 +396,7 @@ test_reorder(void)
 {
 	return unit_test_suite_runner(&reorder_test_suite);
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(reorder_autotest, test_reorder);

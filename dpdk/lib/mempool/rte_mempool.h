@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2014 Intel Corporation.
  * Copyright(c) 2016 6WIND S.A.
+ * Copyright(c) 2022 SmartShare Systems
  */
 
 #ifndef _RTE_MEMPOOL_H_
@@ -34,17 +35,14 @@
  */
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
-#include <errno.h>
 #include <inttypes.h>
 
+#include <rte_compat.h>
 #include <rte_config.h>
 #include <rte_spinlock.h>
-#include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_lcore.h>
-#include <rte_memory.h>
 #include <rte_branch_prediction.h>
 #include <rte_ring.h>
 #include <rte_memcpy.h>
@@ -60,7 +58,7 @@ extern "C" {
 #define RTE_MEMPOOL_HEADER_COOKIE2  0xf2eef2eedadd2e55ULL /**< Header cookie. */
 #define RTE_MEMPOOL_TRAILER_COOKIE  0xadd2e55badbadbadULL /**< Trailer cookie.*/
 
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
 /**
  * A structure that stores the mempool statistics (per-lcore).
  * Note: Cache stats (put_cache_bulk/objs, get_cache_bulk/objs) are not
@@ -90,11 +88,26 @@ struct rte_mempool_cache {
 	uint32_t size;	      /**< Size of the cache */
 	uint32_t flushthresh; /**< Threshold before we flush excess elements */
 	uint32_t len;	      /**< Current cache count */
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
+	uint32_t unused;
 	/*
+	 * Alternative location for the most frequently updated mempool statistics (per-lcore),
+	 * providing faster update access when using a mempool cache.
+	 */
+	struct {
+		uint64_t put_bulk;          /**< Number of puts. */
+		uint64_t put_objs;          /**< Number of objects successfully put. */
+		uint64_t get_success_bulk;  /**< Successful allocation number. */
+		uint64_t get_success_objs;  /**< Objects successfully allocated. */
+	} stats;                        /**< Statistics */
+#endif
+	/**
+	 * Cache objects
+	 *
 	 * Cache is allocated to this size to allow it to overflow in certain
 	 * cases to avoid needless emptying of cache.
 	 */
-	void *objs[RTE_MEMPOOL_CACHE_MAX_SIZE * 3]; /**< Cache objects */
+	void *objs[RTE_MEMPOOL_CACHE_MAX_SIZE * 2] __rte_cache_aligned;
 } __rte_cache_aligned;
 
 /**
@@ -115,12 +128,6 @@ struct rte_mempool_objsz {
 
 /* "MP_<name>" */
 #define	RTE_MEMPOOL_MZ_FORMAT	RTE_MEMPOOL_MZ_PREFIX "%s"
-
-#define	MEMPOOL_PG_SHIFT_MAX \
-	RTE_DEPRECATED(MEMPOOL_PG_SHIFT_MAX) (sizeof(uintptr_t) * CHAR_BIT - 1)
-
-/** Deprecated. Mempool over one chunk of physically continuous memory */
-#define	MEMPOOL_PG_NUM_DEFAULT	RTE_DEPRECATED(MEMPOOL_PG_NUM_DEFAULT) 1
 
 #ifndef RTE_MEMPOOL_ALIGN
 /**
@@ -245,9 +252,12 @@ struct rte_mempool {
 	uint32_t nb_mem_chunks;          /**< Number of memory chunks */
 	struct rte_mempool_memhdr_list mem_list; /**< List of memory chunks */
 
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
-	/** Per-lcore statistics. */
-	struct rte_mempool_debug_stats stats[RTE_MAX_LCORE];
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
+	/** Per-lcore statistics.
+	 *
+	 * Plus one, for unregistered non-EAL threads.
+	 */
+	struct rte_mempool_debug_stats stats[RTE_MAX_LCORE + 1];
 #endif
 }  __rte_cache_aligned;
 
@@ -300,25 +310,44 @@ struct rte_mempool {
 	| RTE_MEMPOOL_F_SC_GET \
 	| RTE_MEMPOOL_F_NO_IOVA_CONTIG \
 	)
+
 /**
- * @internal When debug is enabled, store some statistics.
+ * @internal When stats is enabled, store some statistics.
  *
  * @param mp
  *   Pointer to the memory pool.
  * @param name
  *   Name of the statistics field to increment in the memory pool.
  * @param n
- *   Number to add to the object-oriented statistics.
+ *   Number to add to the statistics.
  */
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
-#define RTE_MEMPOOL_STAT_ADD(mp, name, n) do {                  \
-		unsigned __lcore_id = rte_lcore_id();           \
-		if (__lcore_id < RTE_MAX_LCORE) {               \
-			mp->stats[__lcore_id].name += n;        \
-		}                                               \
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
+#define RTE_MEMPOOL_STAT_ADD(mp, name, n) do {                                  \
+		unsigned int __lcore_id = rte_lcore_id();                       \
+		if (likely(__lcore_id < RTE_MAX_LCORE))                         \
+			(mp)->stats[__lcore_id].name += (n);                    \
+		else                                                            \
+			__atomic_fetch_add(&((mp)->stats[RTE_MAX_LCORE].name),  \
+					   (n), __ATOMIC_RELAXED);              \
 	} while (0)
 #else
 #define RTE_MEMPOOL_STAT_ADD(mp, name, n) do {} while (0)
+#endif
+
+/**
+ * @internal When stats is enabled, store some statistics.
+ *
+ * @param cache
+ *   Pointer to the memory pool cache.
+ * @param name
+ *   Name of the statistics field to increment in the memory pool cache.
+ * @param n
+ *   Number to add to the statistics.
+ */
+#ifdef RTE_LIBRTE_MEMPOOL_STATS
+#define RTE_MEMPOOL_CACHE_STAT_ADD(cache, name, n) ((cache)->stats.name += (n))
+#else
+#define RTE_MEMPOOL_CACHE_STAT_ADD(cache, name, n) do {} while (0)
 #endif
 
 /**
@@ -332,10 +361,6 @@ struct rte_mempool {
 #define RTE_MEMPOOL_HEADER_SIZE(mp, cs) \
 	(sizeof(*(mp)) + (((cs) == 0) ? 0 : \
 	(sizeof(struct rte_mempool_cache) * RTE_MAX_LCORE)))
-
-/** Deprecated. Use RTE_MEMPOOL_HEADER_SIZE() for internal purposes only. */
-#define MEMPOOL_HEADER_SIZE(mp, cs) \
-	RTE_DEPRECATED(MEMPOOL_HEADER_SIZE) RTE_MEMPOOL_HEADER_SIZE(mp, cs)
 
 /* return the header of a mempool object (internal) */
 static inline struct rte_mempool_objhdr *
@@ -800,12 +825,19 @@ rte_mempool_ops_enqueue_bulk(struct rte_mempool *mp, void * const *obj_table,
 		unsigned n)
 {
 	struct rte_mempool_ops *ops;
+	int ret;
 
 	RTE_MEMPOOL_STAT_ADD(mp, put_common_pool_bulk, 1);
 	RTE_MEMPOOL_STAT_ADD(mp, put_common_pool_objs, n);
 	rte_mempool_trace_ops_enqueue_bulk(mp, obj_table, n);
 	ops = rte_mempool_get_ops(mp->ops_index);
-	return ops->enqueue(mp, obj_table, n);
+	ret = ops->enqueue(mp, obj_table, n);
+#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+	if (unlikely(ret < 0))
+		RTE_LOG(CRIT, MEMPOOL, "cannot enqueue %u objects to mempool %s\n",
+			n, mp->name);
+#endif
+	return ret;
 }
 
 /**
@@ -938,10 +970,6 @@ int rte_mempool_register_ops(const struct rte_mempool_ops *ops);
 		rte_mempool_register_ops(&ops);			\
 	}
 
-/** Deprecated. Use RTE_MEMPOOL_REGISTER_OPS() instead. */
-#define MEMPOOL_REGISTER_OPS(ops) \
-	RTE_DEPRECATED(MEMPOOL_REGISTER_OPS) RTE_MEMPOOL_REGISTER_OPS(ops)
-
 /**
  * An object callback function for mempool.
  *
@@ -1041,7 +1069,6 @@ typedef void (rte_mempool_ctor_t)(struct rte_mempool *, void *);
  *   The pointer to the new allocated mempool, on success. NULL on error
  *   with rte_errno set appropriately. Possible rte_errno values include:
  *    - E_RTE_NO_CONFIG - function could not get pointer to rte_config structure
- *    - E_RTE_SECONDARY - function was called from a secondary process instance
  *    - EINVAL - cache size provided is too large or an unknown flag was passed
  *    - ENOSPC - the maximum number of memzones has already been allocated
  *    - EEXIST - a memzone with the same name already exists
@@ -1101,6 +1128,7 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
  *
  * @param mp
  *   A pointer to the mempool structure.
+ *   If NULL then, the function does nothing.
  */
 void
 rte_mempool_free(struct rte_mempool *mp);
@@ -1336,45 +1364,49 @@ rte_mempool_do_generic_put(struct rte_mempool *mp, void * const *obj_table,
 {
 	void **cache_objs;
 
+	/* No cache provided */
+	if (unlikely(cache == NULL))
+		goto driver_enqueue;
+
+	/* increment stat now, adding in mempool always success */
+	RTE_MEMPOOL_CACHE_STAT_ADD(cache, put_bulk, 1);
+	RTE_MEMPOOL_CACHE_STAT_ADD(cache, put_objs, n);
+
+	/* The request itself is too big for the cache */
+	if (unlikely(n > cache->flushthresh))
+		goto driver_enqueue_stats_incremented;
+
+	/*
+	 * The cache follows the following algorithm:
+	 *   1. If the objects cannot be added to the cache without crossing
+	 *      the flush threshold, flush the cache to the backend.
+	 *   2. Add the objects to the cache.
+	 */
+
+	if (cache->len + n <= cache->flushthresh) {
+		cache_objs = &cache->objs[cache->len];
+		cache->len += n;
+	} else {
+		cache_objs = &cache->objs[0];
+		rte_mempool_ops_enqueue_bulk(mp, cache_objs, cache->len);
+		cache->len = n;
+	}
+
+	/* Add the objects to the cache. */
+	rte_memcpy(cache_objs, obj_table, sizeof(void *) * n);
+
+	return;
+
+driver_enqueue:
+
 	/* increment stat now, adding in mempool always success */
 	RTE_MEMPOOL_STAT_ADD(mp, put_bulk, 1);
 	RTE_MEMPOOL_STAT_ADD(mp, put_objs, n);
 
-	/* No cache provided or if put would overflow mem allocated for cache */
-	if (unlikely(cache == NULL || n > RTE_MEMPOOL_CACHE_MAX_SIZE))
-		goto ring_enqueue;
+driver_enqueue_stats_incremented:
 
-	cache_objs = &cache->objs[cache->len];
-
-	/*
-	 * The cache follows the following algorithm
-	 *   1. Add the objects to the cache
-	 *   2. Anything greater than the cache min value (if it crosses the
-	 *   cache flush threshold) is flushed to the ring.
-	 */
-
-	/* Add elements back into the cache */
-	rte_memcpy(&cache_objs[0], obj_table, sizeof(void *) * n);
-
-	cache->len += n;
-
-	if (cache->len >= cache->flushthresh) {
-		rte_mempool_ops_enqueue_bulk(mp, &cache->objs[cache->size],
-				cache->len - cache->size);
-		cache->len = cache->size;
-	}
-
-	return;
-
-ring_enqueue:
-
-	/* push remaining objects in ring */
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
-	if (rte_mempool_ops_enqueue_bulk(mp, obj_table, n) < 0)
-		rte_panic("cannot put objects in mempool\n");
-#else
+	/* push objects to the backend */
 	rte_mempool_ops_enqueue_bulk(mp, obj_table, n);
-#endif
 }
 
 
@@ -1453,65 +1485,92 @@ rte_mempool_put(struct rte_mempool *mp, void *obj)
  *   A pointer to a mempool cache structure. May be NULL if not needed.
  * @return
  *   - >=0: Success; number of objects supplied.
- *   - <0: Error; code of ring dequeue function.
+ *   - <0: Error; code of driver dequeue function.
  */
 static __rte_always_inline int
 rte_mempool_do_generic_get(struct rte_mempool *mp, void **obj_table,
 			   unsigned int n, struct rte_mempool_cache *cache)
 {
 	int ret;
+	unsigned int remaining = n;
 	uint32_t index, len;
 	void **cache_objs;
 
-	/* No cache provided or cannot be satisfied from cache */
-	if (unlikely(cache == NULL || n >= cache->size))
-		goto ring_dequeue;
+	/* No cache provided */
+	if (unlikely(cache == NULL))
+		goto driver_dequeue;
 
-	cache_objs = cache->objs;
+	/* Use the cache as much as we have to return hot objects first */
+	len = RTE_MIN(remaining, cache->len);
+	cache_objs = &cache->objs[cache->len];
+	cache->len -= len;
+	remaining -= len;
+	for (index = 0; index < len; index++)
+		*obj_table++ = *--cache_objs;
 
-	/* Can this be satisfied from the cache? */
-	if (cache->len < n) {
-		/* No. Backfill the cache first, and then fill from it */
-		uint32_t req = n + (cache->size - cache->len);
+	if (remaining == 0) {
+		/* The entire request is satisfied from the cache. */
 
-		/* How many do we require i.e. number to fill the cache + the request */
-		ret = rte_mempool_ops_dequeue_bulk(mp,
-			&cache->objs[cache->len], req);
-		if (unlikely(ret < 0)) {
-			/*
-			 * In the off chance that we are buffer constrained,
-			 * where we are not able to allocate cache + n, go to
-			 * the ring directly. If that fails, we are truly out of
-			 * buffers.
-			 */
-			goto ring_dequeue;
-		}
+		RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_bulk, 1);
+		RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_objs, n);
 
-		cache->len += req;
+		return 0;
 	}
 
-	/* Now fill in the response ... */
-	for (index = 0, len = cache->len - 1; index < n; ++index, len--, obj_table++)
-		*obj_table = cache_objs[len];
+	/* if dequeue below would overflow mem allocated for cache */
+	if (unlikely(remaining > RTE_MEMPOOL_CACHE_MAX_SIZE))
+		goto driver_dequeue;
 
-	cache->len -= n;
+	/* Fill the cache from the backend; fetch size + remaining objects. */
+	ret = rte_mempool_ops_dequeue_bulk(mp, cache->objs,
+			cache->size + remaining);
+	if (unlikely(ret < 0)) {
+		/*
+		 * We are buffer constrained, and not able to allocate
+		 * cache + remaining.
+		 * Do not fill the cache, just satisfy the remaining part of
+		 * the request directly from the backend.
+		 */
+		goto driver_dequeue;
+	}
 
-	RTE_MEMPOOL_STAT_ADD(mp, get_success_bulk, 1);
-	RTE_MEMPOOL_STAT_ADD(mp, get_success_objs, n);
+	/* Satisfy the remaining part of the request from the filled cache. */
+	cache_objs = &cache->objs[cache->size + remaining];
+	for (index = 0; index < remaining; index++)
+		*obj_table++ = *--cache_objs;
+
+	cache->len = cache->size;
+
+	RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_bulk, 1);
+	RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_objs, n);
 
 	return 0;
 
-ring_dequeue:
+driver_dequeue:
 
-	/* get remaining objects from ring */
-	ret = rte_mempool_ops_dequeue_bulk(mp, obj_table, n);
+	/* Get remaining objects directly from the backend. */
+	ret = rte_mempool_ops_dequeue_bulk(mp, obj_table, remaining);
 
 	if (ret < 0) {
+		if (likely(cache != NULL)) {
+			cache->len = n - remaining;
+			/*
+			 * No further action is required to roll the first part
+			 * of the request back into the cache, as objects in
+			 * the cache are intact.
+			 */
+		}
+
 		RTE_MEMPOOL_STAT_ADD(mp, get_fail_bulk, 1);
 		RTE_MEMPOOL_STAT_ADD(mp, get_fail_objs, n);
 	} else {
-		RTE_MEMPOOL_STAT_ADD(mp, get_success_bulk, 1);
-		RTE_MEMPOOL_STAT_ADD(mp, get_success_objs, n);
+		if (likely(cache != NULL)) {
+			RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_bulk, 1);
+			RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_objs, n);
+		} else {
+			RTE_MEMPOOL_STAT_ADD(mp, get_success_bulk, 1);
+			RTE_MEMPOOL_STAT_ADD(mp, get_success_objs, n);
+		}
 	}
 
 	return ret;
@@ -1850,6 +1909,8 @@ typedef void (rte_mempool_event_callback)(
  * Register a callback function invoked on mempool life cycle event.
  * The function will be invoked in the process
  * that performs an action which triggers the callback.
+ * Registration is process-private,
+ * i.e. each process must manage callbacks on its own if needed.
  *
  * @param func
  *   Callback function.

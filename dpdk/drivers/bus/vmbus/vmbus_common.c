@@ -11,7 +11,6 @@
 #include <sys/mman.h>
 
 #include <rte_log.h>
-#include <rte_bus.h>
 #include <rte_eal.h>
 #include <rte_tailq.h>
 #include <rte_devargs.h>
@@ -112,12 +111,8 @@ vmbus_probe_one_driver(struct rte_vmbus_driver *dr,
 	/* reference driver structure */
 	dev->driver = dr;
 
-	if (dev->device.numa_node < 0) {
-		if (rte_socket_count() > 1)
-			VMBUS_LOG(INFO, "Device %s is not NUMA-aware, defaulting socket to 0",
-					guid);
-		dev->device.numa_node = 0;
-	}
+	if (dev->device.numa_node < 0 && rte_socket_count() > 1)
+		VMBUS_LOG(INFO, "Device %s is not NUMA-aware", guid);
 
 	/* call the driver probe() function */
 	VMBUS_LOG(INFO, "  probe driver: %s", dr->driver.name);
@@ -235,7 +230,6 @@ rte_vmbus_register(struct rte_vmbus_driver *driver)
 		"Registered driver %s", driver->driver.name);
 
 	TAILQ_INSERT_TAIL(&rte_vmbus_bus.driver_list, driver, next);
-	driver->bus = &rte_vmbus_bus;
 }
 
 /* unregister vmbus driver */
@@ -243,7 +237,6 @@ void
 rte_vmbus_unregister(struct rte_vmbus_driver *driver)
 {
 	TAILQ_REMOVE(&rte_vmbus_bus.driver_list, driver, next);
-	driver->bus = NULL;
 }
 
 /* Add a device to VMBUS bus */

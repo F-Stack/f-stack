@@ -13,7 +13,6 @@
 
 #include <stdint.h>
 
-#include <rte_compat.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -85,7 +84,6 @@ rte_epoll_wait(int epfd, struct rte_epoll_event *events,
  *   - On success, returns the number of available event.
  *   - On failure, a negative value.
  */
-__rte_experimental
 int
 rte_epoll_wait_interruptible(int epfd, struct rte_epoll_event *events,
 	       int maxevents, int timeout);

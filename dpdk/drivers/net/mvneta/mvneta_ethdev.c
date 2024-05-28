@@ -7,7 +7,7 @@
 #include <rte_string_fns.h>
 #include <ethdev_driver.h>
 #include <rte_kvargs.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #include <stdio.h>
 #include <fcntl.h>
@@ -119,11 +119,6 @@ mvneta_dev_configure(struct rte_eth_dev *dev)
 			dev->data->dev_conf.rxmode.mq_mode);
 		if (dev->data->nb_rx_queues > 1)
 			return -EINVAL;
-	}
-
-	if (dev->data->dev_conf.rxmode.split_hdr_size) {
-		MVNETA_LOG(INFO, "Split headers not supported");
-		return -EINVAL;
 	}
 
 	if (dev->data->dev_conf.txmode.offloads & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)

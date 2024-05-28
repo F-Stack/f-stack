@@ -48,6 +48,12 @@ const struct rte_flow_ops iavf_flow_ops = {
 	.query = iavf_flow_query,
 };
 
+/* raw */
+enum rte_flow_item_type iavf_pattern_raw[] = {
+	RTE_FLOW_ITEM_TYPE_RAW,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
 /* empty */
 enum rte_flow_item_type iavf_pattern_empty[] = {
 	RTE_FLOW_ITEM_TYPE_END,
@@ -1611,6 +1617,40 @@ enum rte_flow_item_type iavf_pattern_eth_ipv6_gre_ipv6_udp[] = {
 	RTE_FLOW_ITEM_TYPE_END,
 };
 
+enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_IPV4,
+	RTE_FLOW_ITEM_TYPE_UDP,
+	RTE_FLOW_ITEM_TYPE_L2TPV2,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
+enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2_ppp[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_IPV4,
+	RTE_FLOW_ITEM_TYPE_UDP,
+	RTE_FLOW_ITEM_TYPE_L2TPV2,
+	RTE_FLOW_ITEM_TYPE_PPP,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
+enum rte_flow_item_type iavf_pattern_eth_ipv6_udp_l2tpv2[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_UDP,
+	RTE_FLOW_ITEM_TYPE_L2TPV2,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
+enum rte_flow_item_type iavf_pattern_eth_ipv6_udp_l2tpv2_ppp[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_UDP,
+	RTE_FLOW_ITEM_TYPE_L2TPV2,
+	RTE_FLOW_ITEM_TYPE_PPP,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
 /* PPPoL2TPv2oUDP */
 enum rte_flow_item_type iavf_pattern_eth_ipv4_udp_l2tpv2_ppp_ipv4[] = {
 	RTE_FLOW_ITEM_TYPE_ETH,
@@ -1745,6 +1785,7 @@ enum rte_flow_item_type iavf_pattern_eth_ipv6_udp_l2tpv2_ppp_ipv6_tcp[] = {
 typedef struct iavf_flow_engine * (*parse_engine_t)(struct iavf_adapter *ad,
 		struct rte_flow *flow,
 		struct iavf_parser_list *parser_list,
+		uint32_t priority,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error);
@@ -1826,6 +1867,8 @@ iavf_register_parser(struct iavf_flow_parser *parser,
 {
 	struct iavf_parser_list *list = NULL;
 	struct iavf_flow_parser_node *parser_node;
+	struct iavf_flow_parser_node *existing_node;
+	void *temp;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(ad);
 
 	parser_node = rte_zmalloc("iavf_parser", sizeof(*parser_node), 0);
@@ -1840,14 +1883,26 @@ iavf_register_parser(struct iavf_flow_parser *parser,
 		TAILQ_INSERT_TAIL(list, parser_node, node);
 	} else if (parser->engine->type == IAVF_FLOW_ENGINE_FDIR) {
 		list = &vf->dist_parser_list;
+		RTE_TAILQ_FOREACH_SAFE(existing_node, list, node, temp) {
+			if (existing_node->parser->engine->type ==
+			    IAVF_FLOW_ENGINE_FSUB) {
+				TAILQ_INSERT_AFTER(list, existing_node,
+						   parser_node, node);
+				goto DONE;
+			}
+		}
 		TAILQ_INSERT_HEAD(list, parser_node, node);
 	} else if (parser->engine->type == IAVF_FLOW_ENGINE_IPSEC_CRYPTO) {
 		list = &vf->ipsec_crypto_parser_list;
+		TAILQ_INSERT_HEAD(list, parser_node, node);
+	} else if (parser->engine->type == IAVF_FLOW_ENGINE_FSUB) {
+		list = &vf->dist_parser_list;
 		TAILQ_INSERT_HEAD(list, parser_node, node);
 	} else {
 		return -EINVAL;
 	}
 
+DONE:
 	return 0;
 }
 
@@ -1862,7 +1917,8 @@ iavf_unregister_parser(struct iavf_flow_parser *parser,
 
 	if (parser->engine->type == IAVF_FLOW_ENGINE_HASH)
 		list = &vf->rss_parser_list;
-	else if (parser->engine->type == IAVF_FLOW_ENGINE_FDIR)
+	else if ((parser->engine->type == IAVF_FLOW_ENGINE_FDIR) ||
+		 (parser->engine->type == IAVF_FLOW_ENGINE_FSUB))
 		list = &vf->dist_parser_list;
 
 	if (list == NULL)
@@ -1896,11 +1952,11 @@ iavf_flow_valid_attr(const struct rte_flow_attr *attr,
 		return -rte_errno;
 	}
 
-	/* Not supported */
-	if (attr->priority) {
+	/* support priority for flow subscribe */
+	if (attr->priority > 1) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
-				attr, "Not support priority.");
+				attr, "Only support priority 0 and 1.");
 		return -rte_errno;
 	}
 
@@ -2043,6 +2099,7 @@ static struct iavf_flow_engine *
 iavf_parse_engine_create(struct iavf_adapter *ad,
 		struct rte_flow *flow,
 		struct iavf_parser_list *parser_list,
+		uint32_t priority,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error)
@@ -2056,7 +2113,7 @@ iavf_parse_engine_create(struct iavf_adapter *ad,
 		if (parser_node->parser->parse_pattern_action(ad,
 				parser_node->parser->array,
 				parser_node->parser->array_len,
-				pattern, actions, &meta, error) < 0)
+				pattern, actions, priority, &meta, error) < 0)
 			continue;
 
 		engine = parser_node->parser->engine;
@@ -2072,6 +2129,7 @@ static struct iavf_flow_engine *
 iavf_parse_engine_validate(struct iavf_adapter *ad,
 		struct rte_flow *flow,
 		struct iavf_parser_list *parser_list,
+		uint32_t priority,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error)
@@ -2085,7 +2143,7 @@ iavf_parse_engine_validate(struct iavf_adapter *ad,
 		if (parser_node->parser->parse_pattern_action(ad,
 				parser_node->parser->array,
 				parser_node->parser->array_len,
-				pattern, actions, &meta,  error) < 0)
+				pattern, actions, priority, &meta, error) < 0)
 			continue;
 
 		engine = parser_node->parser->engine;
@@ -2146,18 +2204,18 @@ iavf_flow_process_filter(struct rte_eth_dev *dev,
 	if (ret)
 		return ret;
 
-	*engine = iavf_parse_engine(ad, flow, &vf->rss_parser_list, pattern,
-				    actions, error);
+	*engine = iavf_parse_engine(ad, flow, &vf->rss_parser_list,
+				    attr->priority, pattern, actions, error);
 	if (*engine)
 		return 0;
 
-	*engine = iavf_parse_engine(ad, flow, &vf->dist_parser_list, pattern,
-				    actions, error);
+	*engine = iavf_parse_engine(ad, flow, &vf->dist_parser_list,
+				    attr->priority, pattern, actions, error);
 	if (*engine)
 		return 0;
 
 	*engine = iavf_parse_engine(ad, flow, &vf->ipsec_crypto_parser_list,
-			pattern, actions, error);
+				    attr->priority, pattern, actions, error);
 	if (*engine)
 		return 0;
 
@@ -2220,11 +2278,12 @@ iavf_flow_create(struct rte_eth_dev *dev,
 	}
 
 	flow->engine = engine;
+	rte_spinlock_lock(&vf->flow_ops_lock);
 	TAILQ_INSERT_TAIL(&vf->flow_list, flow, node);
+	rte_spinlock_unlock(&vf->flow_ops_lock);
 	PMD_DRV_LOG(INFO, "Succeeded to create (%d) flow", engine->type);
 
 free_flow:
-	rte_spinlock_unlock(&vf->flow_ops_lock);
 	return flow;
 }
 
@@ -2334,4 +2393,3 @@ iavf_flow_query(struct rte_eth_dev *dev,
 	}
 	return ret;
 }
-

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -24,7 +25,7 @@
 #include <rte_memory.h>
 #include <rte_eal_paging.h>
 #include <rte_eal.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
 
@@ -1796,22 +1797,25 @@ static int
 virtio_configure_intr(struct rte_eth_dev *dev)
 {
 	struct virtio_hw *hw = dev->data->dev_private;
+	int ret;
 
 	if (!rte_intr_cap_multiple(dev->intr_handle)) {
 		PMD_INIT_LOG(ERR, "Multiple intr vector not supported");
 		return -ENOTSUP;
 	}
 
-	if (rte_intr_efd_enable(dev->intr_handle, dev->data->nb_rx_queues)) {
+	ret = rte_intr_efd_enable(dev->intr_handle, dev->data->nb_rx_queues);
+	if (ret < 0) {
 		PMD_INIT_LOG(ERR, "Fail to create eventfd");
-		return -1;
+		return ret;
 	}
 
-	if (rte_intr_vec_list_alloc(dev->intr_handle, "intr_vec",
-				    hw->max_queue_pairs)) {
+	ret = rte_intr_vec_list_alloc(dev->intr_handle, "intr_vec",
+				      hw->max_queue_pairs);
+	if (ret < 0) {
 		PMD_INIT_LOG(ERR, "Failed to allocate %u rxq vectors",
 			     hw->max_queue_pairs);
-		return -ENOMEM;
+		return ret;
 	}
 
 	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC) {
@@ -1832,12 +1836,13 @@ virtio_configure_intr(struct rte_eth_dev *dev)
 	 */
 	if (virtio_intr_enable(dev) < 0) {
 		PMD_DRV_LOG(ERR, "interrupt enable failed");
-		return -1;
+		return -EINVAL;
 	}
 
-	if (virtio_queues_bind_intr(dev) < 0) {
+	ret = virtio_queues_bind_intr(dev);
+	if (ret < 0) {
 		PMD_INIT_LOG(ERR, "Failed to bind queue/interrupt");
-		return -1;
+		return ret;
 	}
 
 	return 0;
@@ -2160,7 +2165,7 @@ virtio_dev_rss_init(struct rte_eth_dev *eth_dev)
 				eth_dev->device->numa_node);
 		if (!hw->rss_key) {
 			PMD_INIT_LOG(ERR, "Failed to allocate RSS key");
-			return -1;
+			return -ENOMEM;
 		}
 	}
 
@@ -2182,7 +2187,7 @@ virtio_dev_rss_init(struct rte_eth_dev *eth_dev)
 				eth_dev->device->numa_node);
 		if (!hw->rss_reta) {
 			PMD_INIT_LOG(ERR, "Failed to allocate RSS reta");
-			return -1;
+			return -ENOMEM;
 		}
 
 		hw->rss_rx_queues = 0;
@@ -2222,7 +2227,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	/* Tell the host we've known how to drive the device. */
 	virtio_set_status(hw, VIRTIO_CONFIG_STATUS_DRIVER);
 	if (virtio_ethdev_negotiate_features(hw, req_features) < 0)
-		return -1;
+		return -EINVAL;
 
 	hw->weak_barriers = !virtio_with_feature(hw, VIRTIO_F_ORDER_PLATFORM);
 
@@ -2304,7 +2309,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 			if (config->mtu < RTE_ETHER_MIN_MTU) {
 				PMD_INIT_LOG(ERR, "invalid max MTU value (%u)",
 						config->mtu);
-				return -1;
+				return -EINVAL;
 			}
 
 			hw->max_mtu = config->mtu;
@@ -2317,9 +2322,11 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 		}
 
 		hw->rss_hash_types = 0;
-		if (virtio_with_feature(hw, VIRTIO_NET_F_RSS))
-			if (virtio_dev_rss_init(eth_dev))
-				return -1;
+		if (virtio_with_feature(hw, VIRTIO_NET_F_RSS)) {
+			ret = virtio_dev_rss_init(eth_dev);
+			if (ret < 0)
+				return ret;
+		}
 
 		PMD_INIT_LOG(DEBUG, "config->max_virtqueue_pairs=%d",
 				config->max_virtqueue_pairs);
@@ -2341,10 +2348,11 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 		return ret;
 
 	if (eth_dev->data->dev_conf.intr_conf.rxq) {
-		if (virtio_configure_intr(eth_dev) < 0) {
+		ret = virtio_configure_intr(eth_dev);
+		if (ret < 0) {
 			PMD_INIT_LOG(ERR, "failed to configure interrupt");
 			virtio_free_queues(hw);
-			return -1;
+			return ret;
 		}
 	}
 
@@ -2456,6 +2464,9 @@ virtio_dev_speed_capa_get(uint32_t speed)
 static int vectorized_check_handler(__rte_unused const char *key,
 		const char *value, void *ret_val)
 {
+	if (value == NULL || ret_val == NULL)
+		return -EINVAL;
+
 	if (strcmp(value, "1") == 0)
 		*(int *)ret_val = 1;
 	else
@@ -2612,6 +2623,13 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 	/* if request features changed, reinit the device */
 	if (req_features != hw->req_guest_features) {
 		ret = virtio_init_device(dev, req_features);
+		if (ret < 0)
+			return ret;
+	}
+
+	/* if queues are not allocated, reinit the device */
+	if (hw->vqs == NULL) {
+		ret = virtio_init_device(dev, hw->req_guest_features);
 		if (ret < 0)
 			return ret;
 	}
@@ -2806,7 +2824,8 @@ virtio_dev_start(struct rte_eth_dev *dev)
 			return -EINVAL;
 	}
 
-	PMD_INIT_LOG(DEBUG, "nb_queues=%d", nb_queues);
+	PMD_INIT_LOG(DEBUG, "nb_queues=%u (port=%u)", nb_queues,
+		     dev->data->port_id);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		vq = virtnet_rxq_to_vq(dev->data->rx_queues[i]);
@@ -2820,7 +2839,8 @@ virtio_dev_start(struct rte_eth_dev *dev)
 		virtqueue_notify(vq);
 	}
 
-	PMD_INIT_LOG(DEBUG, "Notified backend at initialization");
+	PMD_INIT_LOG(DEBUG, "Notified backend at initialization (port=%u)",
+		     dev->data->port_id);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		vq = virtnet_rxq_to_vq(dev->data->rx_queues[i]);

@@ -84,6 +84,13 @@ struct rte_flow_ops {
 		 void **context,
 		 uint32_t nb_contexts,
 		 struct rte_flow_error *err);
+	/** See rte_flow_get_q_aged_flows() */
+	int (*get_q_aged_flows)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 void **contexts,
+		 uint32_t nb_contexts,
+		 struct rte_flow_error *error);
 	/** See rte_flow_action_handle_create() */
 	struct rte_flow_action_handle *(*action_handle_create)
 		(struct rte_eth_dev *dev,
@@ -151,6 +158,123 @@ struct rte_flow_ops {
 	int (*flex_item_release)
 		(struct rte_eth_dev *dev,
 		 const struct rte_flow_item_flex_handle *handle,
+		 struct rte_flow_error *error);
+	/** See rte_flow_info_get() */
+	int (*info_get)
+		(struct rte_eth_dev *dev,
+		 struct rte_flow_port_info *port_info,
+		 struct rte_flow_queue_info *queue_info,
+		 struct rte_flow_error *err);
+	/** See rte_flow_configure() */
+	int (*configure)
+		(struct rte_eth_dev *dev,
+		 const struct rte_flow_port_attr *port_attr,
+		 uint16_t nb_queue,
+		 const struct rte_flow_queue_attr *queue_attr[],
+		 struct rte_flow_error *err);
+	/** See rte_flow_pattern_template_create() */
+	struct rte_flow_pattern_template *(*pattern_template_create)
+		(struct rte_eth_dev *dev,
+		 const struct rte_flow_pattern_template_attr *template_attr,
+		 const struct rte_flow_item pattern[],
+		 struct rte_flow_error *err);
+	/** See rte_flow_pattern_template_destroy() */
+	int (*pattern_template_destroy)
+		(struct rte_eth_dev *dev,
+		 struct rte_flow_pattern_template *pattern_template,
+		 struct rte_flow_error *err);
+	/** See rte_flow_actions_template_create() */
+	struct rte_flow_actions_template *(*actions_template_create)
+		(struct rte_eth_dev *dev,
+		 const struct rte_flow_actions_template_attr *template_attr,
+		 const struct rte_flow_action actions[],
+		 const struct rte_flow_action masks[],
+		 struct rte_flow_error *err);
+	/** See rte_flow_actions_template_destroy() */
+	int (*actions_template_destroy)
+		(struct rte_eth_dev *dev,
+		 struct rte_flow_actions_template *actions_template,
+		 struct rte_flow_error *err);
+	/** See rte_flow_template_table_create() */
+	struct rte_flow_template_table *(*template_table_create)
+		(struct rte_eth_dev *dev,
+		 const struct rte_flow_template_table_attr *table_attr,
+		 struct rte_flow_pattern_template *pattern_templates[],
+		 uint8_t nb_pattern_templates,
+		 struct rte_flow_actions_template *actions_templates[],
+		 uint8_t nb_actions_templates,
+		 struct rte_flow_error *err);
+	/** See rte_flow_template_table_destroy() */
+	int (*template_table_destroy)
+		(struct rte_eth_dev *dev,
+		 struct rte_flow_template_table *template_table,
+		 struct rte_flow_error *err);
+	/** See rte_flow_async_create() */
+	struct rte_flow *(*async_create)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 const struct rte_flow_op_attr *op_attr,
+		 struct rte_flow_template_table *template_table,
+		 const struct rte_flow_item pattern[],
+		 uint8_t pattern_template_index,
+		 const struct rte_flow_action actions[],
+		 uint8_t actions_template_index,
+		 void *user_data,
+		 struct rte_flow_error *err);
+	/** See rte_flow_async_destroy() */
+	int (*async_destroy)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 const struct rte_flow_op_attr *op_attr,
+		 struct rte_flow *flow,
+		 void *user_data,
+		 struct rte_flow_error *err);
+	/** See rte_flow_push() */
+	int (*push)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 struct rte_flow_error *err);
+	/** See rte_flow_pull() */
+	int (*pull)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 struct rte_flow_op_result res[],
+		 uint16_t n_res,
+		 struct rte_flow_error *error);
+	/** See rte_flow_async_action_handle_create() */
+	struct rte_flow_action_handle *(*async_action_handle_create)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 const struct rte_flow_op_attr *op_attr,
+		 const struct rte_flow_indir_action_conf *indir_action_conf,
+		 const struct rte_flow_action *action,
+		 void *user_data,
+		 struct rte_flow_error *err);
+	/** See rte_flow_async_action_handle_destroy() */
+	int (*async_action_handle_destroy)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 const struct rte_flow_op_attr *op_attr,
+		 struct rte_flow_action_handle *action_handle,
+		 void *user_data,
+		 struct rte_flow_error *error);
+	/** See rte_flow_async_action_handle_update() */
+	int (*async_action_handle_update)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 const struct rte_flow_op_attr *op_attr,
+		 struct rte_flow_action_handle *action_handle,
+		 const void *update,
+		 void *user_data,
+		 struct rte_flow_error *error);
+	/** See rte_flow_async_action_handle_query() */
+	int (*async_action_handle_query)
+		(struct rte_eth_dev *dev,
+		 uint32_t queue_id,
+		 const struct rte_flow_op_attr *op_attr,
+		 const struct rte_flow_action_handle *action_handle,
+		 void *data,
+		 void *user_data,
 		 struct rte_flow_error *error);
 };
 

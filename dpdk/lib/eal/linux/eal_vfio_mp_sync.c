@@ -2,10 +2,10 @@
  * Copyright(c) 2010-2018 Intel Corporation
  */
 
+#include <errno.h>
 #include <unistd.h>
 #include <string.h>
 
-#include <rte_compat.h>
 #include <rte_errno.h>
 #include <rte_log.h>
 #include <rte_vfio.h>

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -106,7 +106,7 @@ void *ice_parser_sect_item_get(u32 sect_type, void *section,
  * @item_size: item size in byte
  * @length: number of items in the table to create
  * @item_get: the function will be parsed to ice_pkg_enum_entry
- * @parser_item: the function to parse the item
+ * @parse_item: the function to parse the item
  * @no_offset: ignore header offset, calculate index from 0
  */
 void *ice_parser_create_table(struct ice_hw *hw, u32 sect_type,
@@ -359,6 +359,7 @@ static void _bst_vm_set(struct ice_parser *psr, const char *prefix, bool on)
 /**
  * ice_parser_dvm_set - configure double vlan mode for parser
  * @psr: pointer to a parser instance
+ * @on: true to turn on; false to turn off
  */
 void ice_parser_dvm_set(struct ice_parser *psr, bool on)
 {
@@ -478,8 +479,8 @@ static bool _nearest_proto_id(struct ice_parser_result *rslt, u16 offset,
  * ice_parser_profile_init  - initialize a FXP profile base on parser result
  * @rslt: a instance of a parser result
  * @pkt_buf: packet data buffer
- * @pkt_msk: packet mask buffer
- * @pkt_len: packet length
+ * @msk_buf: packet mask buffer
+ * @buf_len: packet length
  * @blk: FXP pipeline stage
  * @prefix_match: match protocol stack exactly or only prefix
  * @prof: input/output parameter to save the profile
@@ -551,4 +552,39 @@ void ice_parser_profile_dump(struct ice_hw *hw, struct ice_parser_profile *prof)
 
 	ice_info(hw, "flags = 0x%04x\n", prof->flags);
 	ice_info(hw, "flags_msk = 0x%04x\n", prof->flags_msk);
+}
+
+/**
+ * ice_check_ddp_support_proto_id - check DDP package file support protocol ID
+ * @hw: pointer to the HW struct
+ * @proto_id: protocol ID value
+ *
+ * This function maintains the compatibility of the program process by checking
+ * whether the current DDP file supports the required protocol ID.
+ */
+bool ice_check_ddp_support_proto_id(struct ice_hw *hw,
+				    enum ice_prot_id proto_id)
+{
+	struct ice_proto_grp_item *proto_grp_table;
+	struct ice_proto_grp_item *proto_grp;
+	bool exist = false;
+	u16 idx, i;
+
+	proto_grp_table = ice_proto_grp_table_get(hw);
+	if (!proto_grp_table)
+		return false;
+
+	for (idx = 0; idx < ICE_PROTO_GRP_TABLE_SIZE; idx++) {
+		proto_grp = &proto_grp_table[idx];
+		for (i = 0; i < ICE_PROTO_COUNT_PER_GRP; i++) {
+			if (proto_grp->po[i].proto_id == proto_id) {
+				exist = true;
+				goto exit;
+			}
+		}
+	}
+
+exit:
+	ice_free(hw, proto_grp_table);
+	return exist;
 }

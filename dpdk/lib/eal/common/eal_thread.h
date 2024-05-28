@@ -5,13 +5,14 @@
 #ifndef EAL_THREAD_H
 #define EAL_THREAD_H
 
+#include <rte_common.h>
 #include <rte_lcore.h>
 
 /**
- * basic loop of thread, called for each thread by eal_init().
+ * Basic loop of EAL thread, called for each worker thread by rte_eal_init().
  *
  * @param arg
- *   opaque pointer
+ *   The lcore_id (passed as an integer) of this worker thread.
  */
 __rte_noreturn void *eal_thread_loop(void *arg);
 
@@ -57,5 +58,34 @@ eal_thread_dump_affinity(rte_cpuset_t *cpuset, char *str, unsigned int size);
  */
 int
 eal_thread_dump_current_affinity(char *str, unsigned int size);
+
+/**
+ * Called by the main thread to wake up a worker in 'WAIT' state.
+ * This function blocks until the worker acknowledge it started processing a
+ * new command.
+ * This function is private to EAL.
+ *
+ * @param worker_id
+ *   The lcore_id of a worker thread.
+ * @return
+ *   0 on success, negative errno on error
+ */
+int
+eal_thread_wake_worker(unsigned int worker_id);
+
+/**
+ * Called by a worker thread to sleep after entering 'WAIT' state.
+ * This function is private to EAL.
+ */
+void
+eal_thread_wait_command(void);
+
+/**
+ * Called by a worker thread to acknowledge new command after leaving 'WAIT'
+ * state.
+ * This function is private to EAL.
+ */
+void
+eal_thread_ack_command(void);
 
 #endif /* EAL_THREAD_H */

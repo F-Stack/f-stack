@@ -640,14 +640,13 @@ set_session_parameter(struct iavf_security_ctx *iavf_sctx,
 static int
 iavf_ipsec_crypto_session_create(void *device,
 				 struct rte_security_session_conf *conf,
-				 struct rte_security_session *session,
-				 struct rte_mempool *mempool)
+				 struct rte_security_session *session)
 {
 	struct rte_eth_dev *ethdev = device;
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(ethdev->data->dev_private);
 	struct iavf_security_ctx *iavf_sctx = adapter->security_ctx;
-	struct iavf_security_session *iavf_session = NULL;
+	struct iavf_security_session *iavf_session = SECURITY_GET_SESS_PRIV(session);
 	int sa_idx;
 	int ret = 0;
 
@@ -655,12 +654,6 @@ iavf_ipsec_crypto_session_create(void *device,
 	ret = iavf_ipsec_crypto_session_validate_conf(iavf_sctx, conf);
 	if (ret)
 		return ret;
-
-	/* allocate session context */
-	if (rte_mempool_get(mempool, (void **)&iavf_session)) {
-		PMD_DRV_LOG(ERR, "Cannot get object from sess mempool");
-		return -ENOMEM;
-	}
 
 	/* add SA to hardware database */
 	sa_idx = iavf_ipsec_crypto_security_association_add(adapter, conf);
@@ -675,15 +668,11 @@ iavf_ipsec_crypto_session_create(void *device,
 				RTE_SECURITY_IPSEC_SA_DIR_INGRESS ?
 				"inbound" : "outbound");
 
-		rte_mempool_put(mempool, iavf_session);
 		return -EFAULT;
 	}
 
 	/* save data plane required session parameters */
 	set_session_parameter(iavf_sctx, iavf_session, conf, sa_idx);
-
-	/* save to security session private data */
-	set_sec_session_private_data(session, iavf_session);
 
 	return 0;
 }
@@ -702,25 +691,17 @@ iavf_ipsec_crypto_action_valid(struct rte_eth_dev *ethdev,
 {
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(ethdev->data->dev_private);
-	struct iavf_security_session *sess = session->sess_private_data;
+	const struct iavf_security_session *sess = (const void *)session->driver_priv_data;
 
 	/* verify we have a valid session and that it belong to this adapter */
 	if (unlikely(sess == NULL || sess->adapter != adapter))
 		return false;
 
-	/* SPI value must be non-zero */
-	if (spi == 0)
+	/* SPI value must be non-zero and must match flow SPI*/
+	if (spi == 0 || (htonl(sess->sa.spi) != spi))
 		return false;
-	/* Session SPI must patch flow SPI*/
-	else if (sess->sa.spi == spi) {
-		return true;
-		/**
-		 * TODO: We should add a way of tracking valid hw SA indices to
-		 * make validation less brittle
-		 */
-	}
 
-		return true;
+	return true;
 }
 
 /**
@@ -880,7 +861,7 @@ iavf_ipsec_crypto_session_update(void *device,
 	int rc = 0;
 
 	adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(eth_dev->data->dev_private);
-	iavf_sess = (struct iavf_security_session *)session->sess_private_data;
+	iavf_sess = SECURITY_GET_SESS_PRIV(session);
 
 	/* verify we have a valid session and that it belong to this adapter */
 	if (unlikely(iavf_sess == NULL || iavf_sess->adapter != adapter))
@@ -893,11 +874,12 @@ iavf_ipsec_crypto_session_update(void *device,
 		 * iavf_security_session for outbound SA for use
 		 * in *iavf_ipsec_crypto_pkt_metadata_set* function.
 		 */
+		iavf_sess->esn.hi = conf->ipsec.esn.hi;
+		iavf_sess->esn.low = conf->ipsec.esn.low;
 		if (iavf_sess->direction == RTE_SECURITY_IPSEC_SA_DIR_INGRESS)
 			rc = iavf_ipsec_crypto_sa_update_esn(adapter,
 					iavf_sess);
-		else
-			iavf_sess->esn.hi = conf->ipsec.esn.hi;
+
 	}
 
 	return rc;
@@ -1045,14 +1027,14 @@ iavf_ipsec_crypto_session_destroy(void *device,
 	int ret;
 
 	adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(eth_dev->data->dev_private);
-	iavf_sess = (struct iavf_security_session *)session->sess_private_data;
+	iavf_sess = SECURITY_GET_SESS_PRIV(session);
 
 	/* verify we have a valid session and that it belong to this adapter */
 	if (unlikely(iavf_sess == NULL || iavf_sess->adapter != adapter))
 		return -EINVAL;
 
 	ret = iavf_ipsec_crypto_sa_del(adapter, iavf_sess);
-	rte_mempool_put(rte_mempool_from_obj(iavf_sess), (void *)iavf_sess);
+	memset(iavf_sess, 0, sizeof(struct iavf_security_session));
 	return ret;
 }
 
@@ -1140,7 +1122,7 @@ iavf_ipsec_crypto_pkt_metadata_set(void *device,
 	struct iavf_adapter *adapter =
 			IAVF_DEV_PRIVATE_TO_ADAPTER(ethdev->data->dev_private);
 	struct iavf_security_ctx *iavf_sctx = adapter->security_ctx;
-	struct iavf_security_session *iavf_sess = session->sess_private_data;
+	struct iavf_security_session *iavf_sess = SECURITY_GET_SESS_PRIV(session);
 	struct iavf_ipsec_crypto_pkt_metadata *md;
 	struct rte_esp_tail *esp_tail;
 	uint64_t *sqn = params;
@@ -1481,7 +1463,6 @@ static struct rte_security_ops iavf_ipsec_crypto_ops = {
 	.session_stats_get		= iavf_ipsec_crypto_session_stats_get,
 	.session_destroy		= iavf_ipsec_crypto_session_destroy,
 	.set_pkt_metadata		= iavf_ipsec_crypto_pkt_metadata_set,
-	.get_userdata			= NULL,
 	.capabilities_get		= iavf_ipsec_crypto_capabilities_get,
 };
 
@@ -1862,6 +1843,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 		struct rte_flow_error *error)
 {
 	struct iavf_ipsec_flow_item *ipsec_flow = meta;
+	int flow_id = -1;
 	if (!ipsec_flow) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -1870,8 +1852,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 	}
 
 	if (ipsec_flow->is_ipv4) {
-		ipsec_flow->id =
-			iavf_ipsec_crypto_inbound_security_policy_add(ad,
+		flow_id = iavf_ipsec_crypto_inbound_security_policy_add(ad,
 			ipsec_flow->spi,
 			1,
 			ipsec_flow->ipv4_hdr.dst_addr,
@@ -1880,8 +1861,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 			ipsec_flow->is_udp,
 			ipsec_flow->udp_hdr.dst_port);
 	} else {
-		ipsec_flow->id =
-			iavf_ipsec_crypto_inbound_security_policy_add(ad,
+		flow_id = iavf_ipsec_crypto_inbound_security_policy_add(ad,
 			ipsec_flow->spi,
 			0,
 			0,
@@ -1891,13 +1871,14 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 			ipsec_flow->udp_hdr.dst_port);
 	}
 
-	if (ipsec_flow->id < 1) {
+	if (flow_id < 1) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 				"Failed to add SA.");
 		return -rte_errno;
 	}
 
+	ipsec_flow->id = flow_id;
 	flow->rule = ipsec_flow;
 
 	return 0;
@@ -1932,15 +1913,19 @@ static struct iavf_flow_engine iavf_ipsec_flow_engine = {
 
 static int
 iavf_ipsec_flow_parse(struct iavf_adapter *ad,
-		       struct iavf_pattern_match_item *array,
-		       uint32_t array_len,
-		       const struct rte_flow_item pattern[],
-		       const struct rte_flow_action actions[],
-		       void **meta,
-		       struct rte_flow_error *error)
+		      struct iavf_pattern_match_item *array,
+		      uint32_t array_len,
+		      const struct rte_flow_item pattern[],
+		      const struct rte_flow_action actions[],
+		      uint32_t priority,
+		      void **meta,
+		      struct rte_flow_error *error)
 {
 	struct iavf_pattern_match_item *item = NULL;
 	int ret = -1;
+
+	if (priority >= 1)
+		return -rte_errno;
 
 	item = iavf_search_pattern_match_item(pattern, array, array_len, error);
 	if (item && item->meta) {

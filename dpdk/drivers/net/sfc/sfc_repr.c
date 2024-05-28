@@ -9,6 +9,8 @@
 
 #include <stdint.h>
 
+#include <rte_flow_driver.h>
+#include <rte_flow.h>
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
@@ -443,11 +445,6 @@ sfc_repr_check_conf(struct sfc_repr *sr, uint16_t nb_rx_queues,
 		ret = -EINVAL;
 	}
 
-	if (conf->fdir_conf.mode != RTE_FDIR_MODE_NONE) {
-		sfcr_err(sr, "Flow Director not supported");
-		ret = -EINVAL;
-	}
-
 	if (conf->intr_conf.lsc != 0) {
 		sfcr_err(sr, "link status change interrupt not supported");
 		ret = -EINVAL;
@@ -839,6 +836,8 @@ sfc_repr_dev_close(struct rte_eth_dev *dev)
 
 	(void)sfc_repr_proxy_del_port(srs->pf_port_id, srs->repr_id);
 
+	sfc_mae_clear_switch_port(srs->switch_domain_id, srs->switch_port_id);
+
 	dev->rx_pkt_burst = NULL;
 	dev->tx_pkt_burst = NULL;
 	dev->dev_ops = NULL;
@@ -851,6 +850,17 @@ sfc_repr_dev_close(struct rte_eth_dev *dev)
 	free(sr);
 
 	return 0;
+}
+
+static int
+sfc_repr_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
+{
+	struct sfc_repr_shared *srs = sfc_repr_shared_by_eth_dev(dev);
+	int ret;
+
+	ret = sfc_repr_proxy_repr_entity_mac_addr_set(srs->pf_port_id,
+						      srs->repr_id, mac_addr);
+	return -ret;
 }
 
 static int
@@ -882,6 +892,29 @@ sfc_repr_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	return 0;
 }
 
+static int
+sfc_repr_flow_pick_transfer_proxy(struct rte_eth_dev *dev,
+				  uint16_t *transfer_proxy_port,
+				  struct rte_flow_error *error)
+{
+	struct sfc_repr_shared *srs = sfc_repr_shared_by_eth_dev(dev);
+
+	return rte_flow_pick_transfer_proxy(srs->pf_port_id,
+					    transfer_proxy_port, error);
+}
+
+const struct rte_flow_ops sfc_repr_flow_ops = {
+	.pick_transfer_proxy = sfc_repr_flow_pick_transfer_proxy,
+};
+
+static int
+sfc_repr_dev_flow_ops_get(struct rte_eth_dev *dev __rte_unused,
+			  const struct rte_flow_ops **ops)
+{
+	*ops = &sfc_repr_flow_ops;
+	return 0;
+}
+
 static const struct eth_dev_ops sfc_repr_dev_ops = {
 	.dev_configure			= sfc_repr_dev_configure,
 	.dev_start			= sfc_repr_dev_start,
@@ -889,11 +922,13 @@ static const struct eth_dev_ops sfc_repr_dev_ops = {
 	.dev_close			= sfc_repr_dev_close,
 	.dev_infos_get			= sfc_repr_dev_infos_get,
 	.link_update			= sfc_repr_dev_link_update,
+	.mac_addr_set			= sfc_repr_mac_addr_set,
 	.stats_get			= sfc_repr_stats_get,
 	.rx_queue_setup			= sfc_repr_rx_queue_setup,
 	.rx_queue_release		= sfc_repr_rx_queue_release,
 	.tx_queue_setup			= sfc_repr_tx_queue_setup,
 	.tx_queue_release		= sfc_repr_tx_queue_release,
+	.flow_ops_get			= sfc_repr_dev_flow_ops_get,
 };
 
 
@@ -956,9 +991,9 @@ sfc_repr_eth_dev_init(struct rte_eth_dev *dev, void *init_params)
 	}
 
 	ret = sfc_repr_proxy_add_port(repr_data->pf_port_id,
-				      srs->switch_port_id,
-				      dev->data->port_id,
-				      &repr_data->mport_sel);
+				      srs->switch_port_id, dev->data->port_id,
+				      &repr_data->mport_sel, repr_data->intf,
+				      repr_data->pf, repr_data->vf);
 	if (ret != 0) {
 		SFC_GENERIC_LOG(ERR, "%s() failed to add repr proxy port",
 				__func__);
@@ -996,6 +1031,16 @@ sfc_repr_eth_dev_init(struct rte_eth_dev *dev, void *init_params)
 		goto fail_mac_addrs;
 	}
 
+	rte_eth_random_addr(dev->data->mac_addrs[0].addr_bytes);
+
+	ret = sfc_repr_proxy_repr_entity_mac_addr_set(repr_data->pf_port_id,
+						      srs->repr_id,
+						      &dev->data->mac_addrs[0]);
+	if (ret != 0) {
+		ret = -ret;
+		goto fail_mac_addr_set;
+	}
+
 	dev->rx_pkt_burst = sfc_repr_rx_burst;
 	dev->tx_pkt_burst = sfc_repr_tx_burst;
 	dev->dev_ops = &sfc_repr_dev_ops;
@@ -1005,6 +1050,7 @@ sfc_repr_eth_dev_init(struct rte_eth_dev *dev, void *init_params)
 
 	return 0;
 
+fail_mac_addr_set:
 fail_mac_addrs:
 	sfc_repr_unlock(sr);
 	free(sr);

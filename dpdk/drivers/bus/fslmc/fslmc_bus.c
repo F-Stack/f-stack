@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016,2018-2019 NXP
+ *   Copyright 2016,2018-2021 NXP
  *
  */
 
@@ -9,14 +9,14 @@
 #include <stdbool.h>
 
 #include <rte_log.h>
-#include <rte_bus.h>
+#include <bus_driver.h>
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
 #include <ethdev_driver.h>
 #include <rte_mbuf_dyn.h>
 
-#include <rte_fslmc.h>
+#include "private.h"
 #include <fslmc_vfio.h>
 #include "fslmc_logs.h"
 
@@ -136,10 +136,6 @@ scan_one_fslmc_device(char *dev_name)
 	if (!dev_name)
 		return ret;
 
-	/* Ignore the Container name itself */
-	if (!strncmp("dprc", dev_name, 4))
-		return 0;
-
 	/* Creating a temporary copy to perform cut-parse over string */
 	dup_dev_name = strdup(dev_name);
 	if (!dup_dev_name) {
@@ -160,6 +156,7 @@ scan_one_fslmc_device(char *dev_name)
 	}
 
 	dev->device.bus = &rte_fslmc_bus.bus;
+	dev->device.numa_node = SOCKET_ID_ANY;
 
 	/* Allocate interrupt instance */
 	dev->intr_handle =
@@ -197,6 +194,8 @@ scan_one_fslmc_device(char *dev_name)
 		dev->dev_type = DPAA2_MUX;
 	else if (!strncmp("dprtc", t_ptr, 5))
 		dev->dev_type = DPAA2_DPRTC;
+	else if (!strncmp("dprc", t_ptr, 4))
+		dev->dev_type = DPAA2_DPRC;
 	else
 		dev->dev_type = DPAA2_UNKNOWN;
 
@@ -223,13 +222,11 @@ scan_one_fslmc_device(char *dev_name)
 	insert_in_device_list(dev);
 
 	/* Don't need the duplicated device filesystem entry anymore */
-	if (dup_dev_name)
-		free(dup_dev_name);
+	free(dup_dev_name);
 
 	return 0;
 cleanup:
-	if (dup_dev_name)
-		free(dup_dev_name);
+	free(dup_dev_name);
 	if (dev) {
 		rte_intr_instance_free(dev->intr_handle);
 		free(dev);
@@ -337,6 +334,13 @@ rte_fslmc_scan(void)
 	if (!dir) {
 		DPAA2_BUS_ERR("Unable to open VFIO group directory");
 		goto scan_fail;
+	}
+
+	/* Scan the DPRC container object */
+	ret = scan_one_fslmc_device(fslmc_container);
+	if (ret != 0) {
+		/* Error in parsing directory - exit gracefully */
+		goto scan_fail_cleanup;
 	}
 
 	while ((entry = readdir(dir)) != NULL) {
@@ -527,27 +531,19 @@ rte_fslmc_driver_register(struct rte_dpaa2_driver *driver)
 	RTE_VERIFY(driver);
 
 	TAILQ_INSERT_TAIL(&rte_fslmc_bus.driver_list, driver, next);
-	/* Update Bus references */
-	driver->fslmc_bus = &rte_fslmc_bus;
 }
 
 /*un-register a fslmc bus based dpaa2 driver */
 void
 rte_fslmc_driver_unregister(struct rte_dpaa2_driver *driver)
 {
-	struct rte_fslmc_bus *fslmc_bus;
-
-	fslmc_bus = driver->fslmc_bus;
-
 	/* Cleanup the PA->VA Translation table; From wherever this function
 	 * is called from.
 	 */
 	if (rte_eal_iova_mode() == RTE_IOVA_PA)
 		dpaax_iova_table_depopulate();
 
-	TAILQ_REMOVE(&fslmc_bus->driver_list, driver, next);
-	/* Update Bus references */
-	driver->fslmc_bus = NULL;
+	TAILQ_REMOVE(&rte_fslmc_bus.driver_list, driver, next);
 }
 
 /*

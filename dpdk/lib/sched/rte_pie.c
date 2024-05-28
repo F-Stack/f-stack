@@ -2,13 +2,11 @@
  * Copyright(c) 2020 Intel Corporation
  */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "rte_pie.h"
-#include <rte_common.h>
-#include <rte_cycles.h>
-#include <rte_malloc.h>
 
 #ifdef __INTEL_COMPILER
 #pragma warning(disable:2259) /* conversion may lose significant bits */

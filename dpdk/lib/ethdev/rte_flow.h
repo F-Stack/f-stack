@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <rte_arp.h>
+#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_ether.h>
 #include <rte_icmp.h>
@@ -26,21 +26,24 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_vxlan.h>
-#include <rte_byteorder.h>
 #include <rte_esp.h>
 #include <rte_higig.h>
 #include <rte_ecpri.h>
 #include <rte_bitops.h>
-#include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
 #include <rte_meter.h>
 #include <rte_gtp.h>
 #include <rte_l2tpv2.h>
 #include <rte_ppp.h>
+#include <rte_gre.h>
+#include <rte_macsec.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define RTE_FLOW_LOG(level, ...) \
+	rte_log(RTE_LOG_ ## level, rte_eth_dev_logtype, "" __VA_ARGS__)
 
 /**
  * Flow rule attributes.
@@ -87,28 +90,10 @@ struct rte_flow_attr {
 	uint32_t priority; /**< Rule priority level within group. */
 	/**
 	 * The rule in question applies to ingress traffic (non-"transfer").
-	 *
-	 * @deprecated
-	 * It has been possible to combine this attribute with "transfer".
-	 * Doing so has been assumed to restrict the scope of matching
-	 * to traffic going from within the embedded switch toward the
-	 * ethdev the flow rule being created through. This behaviour
-	 * is deprecated. During the transition period, one may still
-	 * rely on it, but PMDs and applications are encouraged to
-	 * gradually move away from this approach.
 	 */
 	uint32_t ingress:1;
 	/**
 	 * The rule in question applies to egress traffic (non-"transfer").
-	 *
-	 * @deprecated
-	 * It has been possible to combine this attribute with "transfer".
-	 * Doing so has been assumed to restrict the scope of matching
-	 * to traffic sent by the application by virtue of the ethdev
-	 * the flow rule being created through. This behaviour is now
-	 * deprecated. During the transition period, one may still
-	 * rely on it, but PMDs and applications are encouraged to
-	 * gradually move away from this approach.
 	 */
 	uint32_t egress:1;
 	/**
@@ -186,48 +171,6 @@ enum rte_flow_item_type {
 	 * See struct rte_flow_item_any.
 	 */
 	RTE_FLOW_ITEM_TYPE_ANY,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR
-	 * @see RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT
-	 *
-	 * [META]
-	 *
-	 * Matches traffic originating from (ingress) or going to (egress)
-	 * the physical function of the current device.
-	 *
-	 * No associated specification structure.
-	 */
-	RTE_FLOW_ITEM_TYPE_PF,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR
-	 * @see RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT
-	 *
-	 * [META]
-	 *
-	 * Matches traffic originating from (ingress) or going to (egress) a
-	 * given virtual function of the current device.
-	 *
-	 * See struct rte_flow_item_vf.
-	 */
-	RTE_FLOW_ITEM_TYPE_VF,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR
-	 * @see RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT
-	 *
-	 * [META]
-	 *
-	 * Matches traffic originating from (ingress) or going to (egress) a
-	 * physical port of the underlying device.
-	 *
-	 * See struct rte_flow_item_phy_port.
-	 */
-	RTE_FLOW_ITEM_TYPE_PHY_PORT,
 
 	/**
 	 * @deprecated
@@ -660,6 +603,27 @@ enum rte_flow_item_type {
 	 * See struct rte_flow_item_ppp.
 	 */
 	RTE_FLOW_ITEM_TYPE_PPP,
+
+	/**
+	 * Matches GRE optional fields.
+	 *
+	 * See struct rte_flow_item_gre_opt.
+	 */
+	RTE_FLOW_ITEM_TYPE_GRE_OPTION,
+
+	/**
+	 * Matches MACsec Ethernet Header.
+	 *
+	 * See struct rte_flow_item_macsec.
+	 */
+	RTE_FLOW_ITEM_TYPE_MACSEC,
+
+	/**
+	 * Matches Meter Color Marker.
+	 *
+	 * See struct rte_flow_item_meter_color.
+	 */
+	RTE_FLOW_ITEM_TYPE_METER_COLOR,
 };
 
 /**
@@ -711,74 +675,6 @@ static const struct rte_flow_item_any rte_flow_item_any_mask = {
  * @see RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR
  * @see RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT
  *
- * RTE_FLOW_ITEM_TYPE_VF
- *
- * Matches traffic originating from (ingress) or going to (egress) a given
- * virtual function of the current device.
- *
- * If supported, should work even if the virtual function is not managed by
- * the application and thus not associated with a DPDK port ID.
- *
- * Note this pattern item does not match VF representors traffic which, as
- * separate entities, should be addressed through their own DPDK port IDs.
- *
- * - Can be specified multiple times to match traffic addressed to several
- *   VF IDs.
- * - Can be combined with a PF item to match both PF and VF traffic.
- *
- * A zeroed mask can be used to match any VF ID.
- */
-struct rte_flow_item_vf {
-	uint32_t id; /**< VF ID. */
-};
-
-/** Default mask for RTE_FLOW_ITEM_TYPE_VF. */
-#ifndef __cplusplus
-static const struct rte_flow_item_vf rte_flow_item_vf_mask = {
-	.id = 0x00000000,
-};
-#endif
-
-/**
- * @deprecated
- * @see RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR
- * @see RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT
- *
- * RTE_FLOW_ITEM_TYPE_PHY_PORT
- *
- * Matches traffic originating from (ingress) or going to (egress) a
- * physical port of the underlying device.
- *
- * The first PHY_PORT item overrides the physical port normally associated
- * with the specified DPDK input port (port_id). This item can be provided
- * several times to match additional physical ports.
- *
- * Note that physical ports are not necessarily tied to DPDK input ports
- * (port_id) when those are not under DPDK control. Possible values are
- * specific to each device, they are not necessarily indexed from zero and
- * may not be contiguous.
- *
- * As a device property, the list of allowed values as well as the value
- * associated with a port_id should be retrieved by other means.
- *
- * A zeroed mask can be used to match any port index.
- */
-struct rte_flow_item_phy_port {
-	uint32_t index; /**< Physical port index. */
-};
-
-/** Default mask for RTE_FLOW_ITEM_TYPE_PHY_PORT. */
-#ifndef __cplusplus
-static const struct rte_flow_item_phy_port rte_flow_item_phy_port_mask = {
-	.index = 0x00000000,
-};
-#endif
-
-/**
- * @deprecated
- * @see RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR
- * @see RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT
- *
  * RTE_FLOW_ITEM_TYPE_PORT_ID
  *
  * Matches traffic originating from (ingress) or going to (egress) a given
@@ -787,11 +683,6 @@ static const struct rte_flow_item_phy_port rte_flow_item_phy_port_mask = {
  * Normally only supported if the port ID in question is known by the
  * underlying PMD and related to the device the flow rule is created
  * against.
- *
- * This must not be confused with @p PHY_PORT which refers to the physical
- * port of a device, whereas @p PORT_ID refers to a struct rte_eth_dev
- * object on the application side (also known as "port representor"
- * depending on the kind of underlying device).
  */
 struct rte_flow_item_port_id {
 	uint32_t id; /**< DPDK port ID. */
@@ -1194,6 +1085,26 @@ static const struct rte_flow_item_gre rte_flow_item_gre_mask = {
 	.protocol = RTE_BE16(0xffff),
 };
 #endif
+
+/**
+ * RTE_FLOW_ITEM_TYPE_GRE_OPTION.
+ *
+ * Matches GRE optional fields in header.
+ */
+struct rte_flow_item_gre_opt {
+	struct rte_gre_hdr_opt_checksum_rsvd checksum_rsvd;
+	struct rte_gre_hdr_opt_key key;
+	struct rte_gre_hdr_opt_sequence sequence;
+};
+
+/**
+ * RTE_FLOW_ITEM_TYPE_MACSEC.
+ *
+ * Matches MACsec header.
+ */
+struct rte_flow_item_macsec {
+	struct rte_macsec_hdr macsec_hdr;
+};
 
 /**
  * RTE_FLOW_ITEM_TYPE_FUZZY
@@ -1899,9 +1810,6 @@ static const struct rte_flow_item_conntrack rte_flow_item_conntrack_mask = {
 #endif
 
 /**
- * @warning
- * @b EXPERIMENTAL: this structure may change without prior notice
- *
  * Provides an ethdev port ID for use with the following items:
  * RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR,
  * RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT.
@@ -2180,6 +2088,22 @@ struct rte_flow_item_flex_conf {
 };
 
 /**
+ * RTE_FLOW_ITEM_TYPE_METER_COLOR.
+ *
+ * Matches Color Marker set by a Meter.
+ */
+struct rte_flow_item_meter_color {
+	enum rte_color color; /**< Meter color marker. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_METER_COLOR. */
+#ifndef __cplusplus
+static const struct rte_flow_item_meter_color rte_flow_item_meter_color_mask = {
+	.color = RTE_COLORS,
+};
+#endif
+
+/**
  * Action types.
  *
  * Each possible action is represented by a type.
@@ -2328,18 +2252,6 @@ enum rte_flow_action_type {
 	 * @see RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR
 	 * @see RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT
 	 *
-	 * Directs packets to a given physical port index of the underlying
-	 * device.
-	 *
-	 * See struct rte_flow_action_phy_port.
-	 */
-	RTE_FLOW_ACTION_TYPE_PHY_PORT,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR
-	 * @see RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT
-	 *
 	 * Directs matching traffic to a given DPDK port ID.
 	 *
 	 * See struct rte_flow_action_port_id.
@@ -2363,39 +2275,6 @@ enum rte_flow_action_type {
 	RTE_FLOW_ACTION_TYPE_SECURITY,
 
 	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
-	 *
-	 * Implements OFPAT_SET_MPLS_TTL ("MPLS TTL") as defined by the
-	 * OpenFlow Switch Specification.
-	 *
-	 * See struct rte_flow_action_of_set_mpls_ttl.
-	 */
-	RTE_FLOW_ACTION_TYPE_OF_SET_MPLS_TTL,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
-	 *
-	 * Implements OFPAT_DEC_MPLS_TTL ("decrement MPLS TTL") as defined
-	 * by the OpenFlow Switch Specification.
-	 *
-	 * No associated configuration structure.
-	 */
-	RTE_FLOW_ACTION_TYPE_OF_DEC_MPLS_TTL,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
-	 *
-	 * Implements OFPAT_SET_NW_TTL ("IP TTL") as defined by the OpenFlow
-	 * Switch Specification.
-	 *
-	 * See struct rte_flow_action_of_set_nw_ttl.
-	 */
-	RTE_FLOW_ACTION_TYPE_OF_SET_NW_TTL,
-
-	/**
 	 * @warning This is a legacy action.
 	 * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
 	 *
@@ -2405,30 +2284,6 @@ enum rte_flow_action_type {
 	 * No associated configuration structure.
 	 */
 	RTE_FLOW_ACTION_TYPE_OF_DEC_NW_TTL,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
-	 *
-	 * Implements OFPAT_COPY_TTL_OUT ("copy TTL "outwards" -- from
-	 * next-to-outermost to outermost") as defined by the OpenFlow
-	 * Switch Specification.
-	 *
-	 * No associated configuration structure.
-	 */
-	RTE_FLOW_ACTION_TYPE_OF_COPY_TTL_OUT,
-
-	/**
-	 * @deprecated
-	 * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
-	 *
-	 * Implements OFPAT_COPY_TTL_IN ("copy TTL "inwards" -- from
-	 * outermost to next-to-outermost") as defined by the OpenFlow
-	 * Switch Specification.
-	 *
-	 * No associated configuration structure.
-	 */
-	RTE_FLOW_ACTION_TYPE_OF_COPY_TTL_IN,
 
 	/**
 	 * Implements OFPAT_POP_VLAN ("pop the outer VLAN tag") as defined
@@ -2785,9 +2640,11 @@ enum rte_flow_action_type {
 	 * flow.
 	 *
 	 * See struct rte_flow_action_age.
+	 * See function rte_flow_get_q_aged_flows
 	 * See function rte_flow_get_aged_flows
 	 * see enum RTE_ETH_EVENT_FLOW_AGED
 	 * See struct rte_flow_query_age
+	 * See struct rte_flow_update_age
 	 */
 	RTE_FLOW_ACTION_TYPE_AGE,
 
@@ -2860,6 +2717,25 @@ enum rte_flow_action_type {
 	 * @see struct rte_flow_action_ethdev
 	 */
 	RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT,
+
+	/**
+	 * Traffic metering and marking (MTR).
+	 *
+	 * @see struct rte_flow_action_meter_mark
+	 * See file rte_mtr.h for MTR profile object configuration.
+	 */
+	RTE_FLOW_ACTION_TYPE_METER_MARK,
+
+	/**
+	 * Send packets to the kernel, without going to userspace at all.
+	 * The packets will be received by the kernel driver sharing
+	 * the same device as the DPDK port on which this action is configured.
+	 * This action mostly suits bifurcated driver model.
+	 * This is an ingress non-transfer action only.
+	 *
+	 * No associated configuration structure.
+	 */
+	RTE_FLOW_ACTION_TYPE_SEND_TO_KERNEL,
 };
 
 /**
@@ -2911,8 +2787,8 @@ struct rte_flow_action_queue {
  * on the flow. RTE_ETH_EVENT_FLOW_AGED event is triggered when a
  * port detects new aged-out flows.
  *
- * The flow context and the flow handle will be reported by the
- * rte_flow_get_aged_flows API.
+ * The flow context and the flow handle will be reported by the either
+ * rte_flow_get_aged_flows or rte_flow_get_q_aged_flows APIs.
  */
 struct rte_flow_action_age {
 	uint32_t timeout:24; /**< Time in seconds. */
@@ -2933,6 +2809,33 @@ struct rte_flow_query_age {
 	/** sec_since_last_hit value is valid. */
 	uint32_t sec_since_last_hit_valid:1;
 	uint32_t sec_since_last_hit:24; /**< Seconds since last traffic hit. */
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ACTION_TYPE_AGE
+ *
+ * Update indirect AGE action attributes:
+ *  - Timeout can be updated including stop/start action:
+ *     +-------------+-------------+------------------------------+
+ *     | Old Timeout | New Timeout | Updating                     |
+ *     +=============+=============+==============================+
+ *     | 0           | positive    | Start aging with new value   |
+ *     +-------------+-------------+------------------------------+
+ *     | positive    | 0           | Stop aging			  |
+ *     +-------------+-------------+------------------------------+
+ *     | positive    | positive    | Change timeout to new value  |
+ *     +-------------+-------------+------------------------------+
+ *  - sec_since_last_hit can be reset.
+ */
+struct rte_flow_update_age {
+	uint32_t reserved:6; /**< Reserved, must be zero. */
+	uint32_t timeout_valid:1; /**< The timeout is valid for update. */
+	uint32_t timeout:24; /**< Time in seconds. */
+	/** Means that aging should assume packet passed the aging. */
+	uint32_t touch:1;
 };
 
 /**
@@ -3064,24 +2967,6 @@ struct rte_flow_action_vf {
  * @see RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR
  * @see RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT
  *
- * RTE_FLOW_ACTION_TYPE_PHY_PORT
- *
- * Directs packets to a given physical port index of the underlying
- * device.
- *
- * @see RTE_FLOW_ITEM_TYPE_PHY_PORT
- */
-struct rte_flow_action_phy_port {
-	uint32_t original:1; /**< Use original port index if possible. */
-	uint32_t reserved:31; /**< Reserved, must be zero. */
-	uint32_t index; /**< Physical port index. */
-};
-
-/**
- * @deprecated
- * @see RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR
- * @see RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT
- *
  * RTE_FLOW_ACTION_TYPE_PORT_ID
  *
  * Directs matching traffic to a given DPDK port ID.
@@ -3138,32 +3023,6 @@ struct rte_flow_action_meter {
  */
 struct rte_flow_action_security {
 	void *security_session; /**< Pointer to security session structure. */
-};
-
-/**
- * @deprecated
- * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
- *
- * RTE_FLOW_ACTION_TYPE_OF_SET_MPLS_TTL
- *
- * Implements OFPAT_SET_MPLS_TTL ("MPLS TTL") as defined by the OpenFlow
- * Switch Specification.
- */
-struct rte_flow_action_of_set_mpls_ttl {
-	uint8_t mpls_ttl; /**< MPLS TTL. */
-};
-
-/**
- * @deprecated
- * @see RTE_FLOW_ACTION_TYPE_MODIFY_FIELD
- *
- * RTE_FLOW_ACTION_TYPE_OF_SET_NW_TTL
- *
- * Implements OFPAT_SET_NW_TTL ("IP TTL") as defined by the OpenFlow Switch
- * Specification.
- */
-struct rte_flow_action_of_set_nw_ttl {
-	uint8_t nw_ttl; /**< IP TTL. */
 };
 
 /**
@@ -3624,9 +3483,6 @@ struct rte_flow_action_meter_color {
 };
 
 /**
- * @warning
- * @b EXPERIMENTAL: this structure may change without prior notice
- *
  * Provides an ethdev port ID for use with the following actions:
  * RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR,
  * RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT.
@@ -3668,6 +3524,10 @@ enum rte_flow_field_id {
 	RTE_FLOW_FIELD_META,		/**< Metadata value. */
 	RTE_FLOW_FIELD_POINTER,		/**< Memory pointer. */
 	RTE_FLOW_FIELD_VALUE,		/**< Immediate value. */
+	RTE_FLOW_FIELD_IPV4_ECN,	/**< IPv4 ECN. */
+	RTE_FLOW_FIELD_IPV6_ECN,	/**< IPv6 ECN. */
+	RTE_FLOW_FIELD_GTP_PSC_QFI,	/**< GTP QFI. */
+	RTE_FLOW_FIELD_METER_COLOR,	/**< Meter color marker. */
 };
 
 /**
@@ -3728,6 +3588,54 @@ struct rte_flow_action_modify_field {
 	uint32_t width; /**< Number of bits to use from a source field. */
 };
 
+/**
+ * RTE_FLOW_ACTION_TYPE_METER_MARK
+ *
+ * Traffic metering and marking (MTR).
+ *
+ * Meters a packet stream and marks its packets either
+ * green, yellow, or red according to the specified profile.
+ * The policy is optional and may be specified for defining
+ * subsequent actions based on a color assigned by MTR.
+ * Alternatively, the METER_COLOR item may be used for this.
+ */
+struct rte_flow_action_meter_mark {
+
+	/**< Profile config retrieved with rte_mtr_profile_get(). */
+	struct rte_flow_meter_profile *profile;
+	/**< Policy config retrieved with rte_mtr_policy_get(). */
+	struct rte_flow_meter_policy *policy;
+	/** Metering mode: 0 - Color-Blind, 1 - Color-Aware. */
+	int color_mode;
+	/** Initial Color applied to packets in Color-Aware mode. */
+	enum rte_color init_color;
+	/** Metering state: 0 - Disabled, 1 - Enabled. */
+	int state;
+};
+
+/**
+ * RTE_FLOW_ACTION_TYPE_METER_MARK
+ *
+ * Wrapper structure for the context update interface.
+ *
+ */
+struct rte_flow_update_meter_mark {
+	/** New meter_mark parameters to be updated. */
+	struct rte_flow_action_meter_mark meter_mark;
+	/** The profile will be updated. */
+	uint32_t profile_valid:1;
+	/** The policy will be updated. */
+	uint32_t policy_valid:1;
+	/** The color mode will be updated. */
+	uint32_t color_mode_valid:1;
+	/** The initial color will be updated. */
+	uint32_t init_color_valid:1;
+	/** The meter state will be updated. */
+	uint32_t state_valid:1;
+	/** Reserved bits for the future usage. */
+	uint32_t reserved:27;
+};
+
 /* Mbuf dynamic field offset for metadata. */
 extern int32_t rte_flow_dynf_metadata_offs;
 
@@ -3740,11 +3648,7 @@ extern uint64_t rte_flow_dynf_metadata_mask;
 
 /* Mbuf dynamic flags for metadata. */
 #define RTE_MBUF_DYNFLAG_RX_METADATA (rte_flow_dynf_metadata_mask)
-#define PKT_RX_DYNF_METADATA RTE_DEPRECATED(PKT_RX_DYNF_METADATA) \
-		RTE_MBUF_DYNFLAG_RX_METADATA
 #define RTE_MBUF_DYNFLAG_TX_METADATA (rte_flow_dynf_metadata_mask)
-#define PKT_TX_DYNF_METADATA RTE_DEPRECATED(PKT_TX_DYNF_METADATA) \
-		RTE_MBUF_DYNFLAG_TX_METADATA
 
 __rte_experimental
 static inline uint32_t
@@ -3779,6 +3683,20 @@ struct rte_flow_action {
  * destroy it or retrieve counters).
  */
 struct rte_flow;
+
+/**
+ * Opaque type for Meter profile object returned by MTR API.
+ *
+ * This handle can be used to create Meter actions instead of profile ID.
+ */
+struct rte_flow_meter_profile;
+
+/**
+ * Opaque type for Meter policy object returned by MTR API.
+ *
+ * This handle can be used to create Meter actions instead of policy ID.
+ */
+struct rte_flow_meter_policy;
 
 /**
  * @warning
@@ -4233,6 +4151,10 @@ rte_flow_query(uint16_t port_id,
  *
  * Isolated mode guarantees that all ingress traffic comes from defined flow
  * rules only (current and future).
+ * When enabled with a bifurcated driver,
+ * non-matched packets are routed to the kernel driver interface.
+ * When disabled (the default),
+ * there may be some default rules routing traffic to the DPDK port.
  *
  * Besides making ingress more deterministic, it allows PMDs to safely reuse
  * resources otherwise assigned to handle the remaining traffic, such as
@@ -4421,6 +4343,50 @@ __rte_experimental
 int
 rte_flow_get_aged_flows(uint16_t port_id, void **contexts,
 			uint32_t nb_contexts, struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Get aged-out flows of a given port on the given flow queue.
+ *
+ * If application configure port attribute with RTE_FLOW_PORT_FLAG_STRICT_QUEUE,
+ * there is no RTE_ETH_EVENT_FLOW_AGED event and this function must be called to
+ * get the aged flows synchronously.
+ *
+ * If application configure port attribute without
+ * RTE_FLOW_PORT_FLAG_STRICT_QUEUE, RTE_ETH_EVENT_FLOW_AGED event will be
+ * triggered at least one new aged out flow was detected on any flow queue after
+ * the last call to rte_flow_get_q_aged_flows.
+ * In addition, the @p queue_id will be ignored.
+ * This function can be called to get the aged flows asynchronously from the
+ * event callback or synchronously regardless the event.
+ *
+ * @param[in] port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] queue_id
+ *   Flow queue to query. Ignored when RTE_FLOW_PORT_FLAG_STRICT_QUEUE not set.
+ * @param[in, out] contexts
+ *   The address of an array of pointers to the aged-out flows contexts.
+ * @param[in] nb_contexts
+ *   The length of context array pointers.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL. Initialized in case of
+ *   error only.
+ *
+ * @return
+ *   if nb_contexts is 0, return the amount of all aged contexts.
+ *   if nb_contexts is not 0 , return the amount of aged flows reported
+ *   in the context array, otherwise negative errno value.
+ *
+ * @see rte_flow_action_age
+ * @see RTE_ETH_EVENT_FLOW_AGED
+ * @see rte_flow_port_flag
+ */
+__rte_experimental
+int
+rte_flow_get_q_aged_flows(uint16_t port_id, uint32_t queue_id, void **contexts,
+			  uint32_t nb_contexts, struct rte_flow_error *error);
 
 /**
  * Specify indirect action object configuration
@@ -4777,9 +4743,6 @@ rte_flow_tunnel_item_release(uint16_t port_id,
 			     struct rte_flow_error *error);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Get a proxy port to manage "transfer" flows.
  *
  * Managing "transfer" flows requires that the user communicate them
@@ -4804,7 +4767,6 @@ rte_flow_tunnel_item_release(uint16_t port_id,
  * @return
  *   0 on success, a negative error code otherwise
  */
-__rte_experimental
 int
 rte_flow_pick_transfer_proxy(uint16_t port_id, uint16_t *proxy_port_id,
 			     struct rte_flow_error *error);
@@ -4852,6 +4814,813 @@ int
 rte_flow_flex_item_release(uint16_t port_id,
 			   const struct rte_flow_item_flex_handle *handle,
 			   struct rte_flow_error *error);
+
+/**
+ * Indicate all operations for a given flow rule will _strictly_
+ * happen on the same queue (create/destroy/query/update).
+ */
+#define RTE_FLOW_PORT_FLAG_STRICT_QUEUE RTE_BIT32(0)
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Information about flow engine resources.
+ * The zero value means a resource is not supported.
+ *
+ */
+struct rte_flow_port_info {
+	/**
+	 * Maximum number of queues for asynchronous operations.
+	 */
+	uint32_t max_nb_queues;
+	/**
+	 * Maximum number of counters.
+	 * @see RTE_FLOW_ACTION_TYPE_COUNT
+	 */
+	uint32_t max_nb_counters;
+	/**
+	 * Maximum number of aging objects.
+	 * @see RTE_FLOW_ACTION_TYPE_AGE
+	 */
+	uint32_t max_nb_aging_objects;
+	/**
+	 * Maximum number traffic meters.
+	 * @see RTE_FLOW_ACTION_TYPE_METER
+	 */
+	uint32_t max_nb_meters;
+	/**
+	 * Maximum number connection trackings.
+	 * @see RTE_FLOW_ACTION_TYPE_CONNTRACK
+	 */
+	uint32_t max_nb_conn_tracks;
+	/**
+	 * Port supported flags (RTE_FLOW_PORT_FLAG_*).
+	 */
+	uint32_t supported_flags;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Information about flow engine asynchronous queues.
+ * The value only valid if @p port_attr.max_nb_queues is not zero.
+ *
+ */
+struct rte_flow_queue_info {
+	/**
+	 * Maximum number of operations a queue can hold.
+	 */
+	uint32_t max_size;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Get information about flow engine resources.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[out] port_info
+ *   A pointer to a structure of type *rte_flow_port_info*
+ *   to be filled with the resources information of the port.
+ * @param[out] queue_info
+ *   A pointer to a structure of type *rte_flow_queue_info*
+ *   to be filled with the asynchronous queues information.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_info_get(uint16_t port_id,
+		  struct rte_flow_port_info *port_info,
+		  struct rte_flow_queue_info *queue_info,
+		  struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Flow engine resources settings.
+ * The zero value means on demand resource allocations only.
+ *
+ */
+struct rte_flow_port_attr {
+	/**
+	 * Number of counters to configure.
+	 * @see RTE_FLOW_ACTION_TYPE_COUNT
+	 */
+	uint32_t nb_counters;
+	/**
+	 * Number of aging objects to configure.
+	 * @see RTE_FLOW_ACTION_TYPE_AGE
+	 */
+	uint32_t nb_aging_objects;
+	/**
+	 * Number of traffic meters to configure.
+	 * @see RTE_FLOW_ACTION_TYPE_METER
+	 */
+	uint32_t nb_meters;
+	/**
+	 * Number of connection trackings to configure.
+	 * @see RTE_FLOW_ACTION_TYPE_CONNTRACK
+	 */
+	uint32_t nb_conn_tracks;
+	/**
+	 * Port flags (RTE_FLOW_PORT_FLAG_*).
+	 */
+	uint32_t flags;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Flow engine asynchronous queues settings.
+ * The value means default value picked by PMD.
+ *
+ */
+struct rte_flow_queue_attr {
+	/**
+	 * Number of flow rule operations a queue can hold.
+	 */
+	uint32_t size;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Configure the port's flow API engine.
+ *
+ * This API can only be invoked before the application
+ * starts using the rest of the flow library functions.
+ *
+ * The API can be invoked multiple times to change the settings.
+ * The port, however, may reject changes and keep the old config.
+ *
+ * Parameters in configuration attributes must not exceed
+ * numbers of resources returned by the rte_flow_info_get API.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] port_attr
+ *   Port configuration attributes.
+ * @param[in] nb_queue
+ *   Number of flow queues to be configured.
+ * @param[in] queue_attr
+ *   Array that holds attributes for each flow queue.
+ *   Number of elements is set in @p port_attr.nb_queues.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_configure(uint16_t port_id,
+		   const struct rte_flow_port_attr *port_attr,
+		   uint16_t nb_queue,
+		   const struct rte_flow_queue_attr *queue_attr[],
+		   struct rte_flow_error *error);
+
+/**
+ * Opaque type returned after successful creation of pattern template.
+ * This handle can be used to manage the created pattern template.
+ */
+struct rte_flow_pattern_template;
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Flow pattern template attributes.
+ */
+__extension__
+struct rte_flow_pattern_template_attr {
+	/**
+	 * Relaxed matching policy.
+	 * - If 1, matching is performed only on items with the mask member set
+	 * and matching on protocol layers specified without any masks is skipped.
+	 * - If 0, matching on protocol layers specified without any masks is done
+	 * as well. This is the standard behaviour of Flow API now.
+	 */
+	uint32_t relaxed_matching:1;
+	/**
+	 * Flow direction for the pattern template.
+	 * At least one direction must be specified.
+	 */
+	/** Pattern valid for rules applied to ingress traffic. */
+	uint32_t ingress:1;
+	/** Pattern valid for rules applied to egress traffic. */
+	uint32_t egress:1;
+	/** Pattern valid for rules applied to transfer traffic. */
+	uint32_t transfer:1;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Create flow pattern template.
+ *
+ * The pattern template defines common matching fields without values.
+ * For example, matching on 5 tuple TCP flow, the template will be
+ * eth(null) + IPv4(source + dest) + TCP(s_port + d_port),
+ * while values for each rule will be set during the flow rule creation.
+ * The number and order of items in the template must be the same
+ * at the rule creation.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] template_attr
+ *   Pattern template attributes.
+ * @param[in] pattern
+ *   Pattern specification (list terminated by the END pattern item).
+ *   The spec member of an item is not used unless the end member is used.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   Handle on success, NULL otherwise and rte_errno is set.
+ */
+__rte_experimental
+struct rte_flow_pattern_template *
+rte_flow_pattern_template_create(uint16_t port_id,
+		const struct rte_flow_pattern_template_attr *template_attr,
+		const struct rte_flow_item pattern[],
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Destroy flow pattern template.
+ *
+ * This function may be called only when
+ * there are no more tables referencing this template.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] pattern_template
+ *   Handle of the template to be destroyed.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_pattern_template_destroy(uint16_t port_id,
+		struct rte_flow_pattern_template *pattern_template,
+		struct rte_flow_error *error);
+
+/**
+ * Opaque type returned after successful creation of actions template.
+ * This handle can be used to manage the created actions template.
+ */
+struct rte_flow_actions_template;
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Flow actions template attributes.
+ */
+__extension__
+struct rte_flow_actions_template_attr {
+	/**
+	 * Flow direction for the actions template.
+	 * At least one direction must be specified.
+	 */
+	/** Action valid for rules applied to ingress traffic. */
+	uint32_t ingress:1;
+	/** Action valid for rules applied to egress traffic. */
+	uint32_t egress:1;
+	/** Action valid for rules applied to transfer traffic. */
+	uint32_t transfer:1;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Create flow actions template.
+ *
+ * The actions template holds a list of action types without values.
+ * For example, the template to change TCP ports is TCP(s_port + d_port),
+ * while values for each rule will be set during the flow rule creation.
+ * The number and order of actions in the template must be the same
+ * at the rule creation.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] template_attr
+ *   Template attributes.
+ * @param[in] actions
+ *   Associated actions (list terminated by the END action).
+ *   The spec member is only used if @p masks spec is non-zero.
+ * @param[in] masks
+ *   List of actions that marks which of the action's member is constant.
+ *   A mask has the same format as the corresponding action.
+ *   If the action field in @p masks is not 0,
+ *   the corresponding value in an action from @p actions will be the part
+ *   of the template and used in all flow rules.
+ *   The order of actions in @p masks is the same as in @p actions.
+ *   In case of indirect actions present in @p actions,
+ *   the actual action type should be present in @p mask.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   Handle on success, NULL otherwise and rte_errno is set.
+ */
+__rte_experimental
+struct rte_flow_actions_template *
+rte_flow_actions_template_create(uint16_t port_id,
+		const struct rte_flow_actions_template_attr *template_attr,
+		const struct rte_flow_action actions[],
+		const struct rte_flow_action masks[],
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Destroy flow actions template.
+ *
+ * This function may be called only when
+ * there are no more tables referencing this template.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] actions_template
+ *   Handle to the template to be destroyed.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_actions_template_destroy(uint16_t port_id,
+		struct rte_flow_actions_template *actions_template,
+		struct rte_flow_error *error);
+
+/**
+ * Opaque type returned after successful creation of a template table.
+ * This handle can be used to manage the created template table.
+ */
+struct rte_flow_template_table;
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Table attributes.
+ */
+struct rte_flow_template_table_attr {
+	/**
+	 * Flow attributes to be used in each rule generated from this table.
+	 */
+	struct rte_flow_attr flow_attr;
+	/**
+	 * Maximum number of flow rules that this table holds.
+	 */
+	uint32_t nb_flows;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Create flow template table.
+ *
+ * A template table consists of multiple pattern templates and actions
+ * templates associated with a single set of rule attributes (group ID,
+ * priority and traffic direction).
+ *
+ * Each rule is free to use any combination of pattern and actions templates
+ * and specify particular values for items and actions it would like to change.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] table_attr
+ *   Template table attributes.
+ * @param[in] pattern_templates
+ *   Array of pattern templates to be used in this table.
+ * @param[in] nb_pattern_templates
+ *   The number of pattern templates in the pattern_templates array.
+ * @param[in] actions_templates
+ *   Array of actions templates to be used in this table.
+ * @param[in] nb_actions_templates
+ *   The number of actions templates in the actions_templates array.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   Handle on success, NULL otherwise and rte_errno is set.
+ */
+__rte_experimental
+struct rte_flow_template_table *
+rte_flow_template_table_create(uint16_t port_id,
+		const struct rte_flow_template_table_attr *table_attr,
+		struct rte_flow_pattern_template *pattern_templates[],
+		uint8_t nb_pattern_templates,
+		struct rte_flow_actions_template *actions_templates[],
+		uint8_t nb_actions_templates,
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Destroy flow template table.
+ *
+ * This function may be called only when
+ * there are no more flow rules referencing this table.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] template_table
+ *   Handle to the table to be destroyed.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_template_table_destroy(uint16_t port_id,
+		struct rte_flow_template_table *template_table,
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Asynchronous operation attributes.
+ */
+__extension__
+struct rte_flow_op_attr {
+	 /**
+	  * When set, the requested action will not be sent to the HW immediately.
+	  * The application must call the rte_flow_queue_push to actually send it.
+	  */
+	uint32_t postpone:1;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Enqueue rule creation operation.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param queue_id
+ *   Flow queue used to insert the rule.
+ * @param[in] op_attr
+ *   Rule creation operation attributes.
+ * @param[in] template_table
+ *   Template table to select templates from.
+ * @param[in] pattern
+ *   List of pattern items to be used.
+ *   The list order should match the order in the pattern template.
+ *   The spec is the only relevant member of the item that is being used.
+ * @param[in] pattern_template_index
+ *   Pattern template index in the table.
+ * @param[in] actions
+ *   List of actions to be used.
+ *   The list order should match the order in the actions template.
+ * @param[in] actions_template_index
+ *   Actions template index in the table.
+ * @param[in] user_data
+ *   The user data that will be returned on the completion events.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   Handle on success, NULL otherwise and rte_errno is set.
+ *   The rule handle doesn't mean that the rule has been populated.
+ *   Only completion result indicates that if there was success or failure.
+ */
+__rte_experimental
+struct rte_flow *
+rte_flow_async_create(uint16_t port_id,
+		      uint32_t queue_id,
+		      const struct rte_flow_op_attr *op_attr,
+		      struct rte_flow_template_table *template_table,
+		      const struct rte_flow_item pattern[],
+		      uint8_t pattern_template_index,
+		      const struct rte_flow_action actions[],
+		      uint8_t actions_template_index,
+		      void *user_data,
+		      struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Enqueue rule destruction operation.
+ *
+ * This function enqueues a destruction operation on the queue.
+ * Application should assume that after calling this function
+ * the rule handle is not valid anymore.
+ * Completion indicates the full removal of the rule from the HW.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param queue_id
+ *   Flow queue which is used to destroy the rule.
+ *   This must match the queue on which the rule was created.
+ * @param[in] op_attr
+ *   Rule destruction operation attributes.
+ * @param[in] flow
+ *   Flow handle to be destroyed.
+ * @param[in] user_data
+ *   The user data that will be returned on the completion events.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_async_destroy(uint16_t port_id,
+		       uint32_t queue_id,
+		       const struct rte_flow_op_attr *op_attr,
+		       struct rte_flow *flow,
+		       void *user_data,
+		       struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Push all internally stored rules to the HW.
+ * Postponed rules are rules that were inserted with the postpone flag set.
+ * Can be used to notify the HW about batch of rules prepared by the SW to
+ * reduce the number of communications between the HW and SW.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param queue_id
+ *   Flow queue to be pushed.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_push(uint16_t port_id,
+	      uint32_t queue_id,
+	      struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Asynchronous operation status.
+ */
+enum rte_flow_op_status {
+	/**
+	 * The operation was completed successfully.
+	 */
+	RTE_FLOW_OP_SUCCESS,
+	/**
+	 * The operation was not completed successfully.
+	 */
+	RTE_FLOW_OP_ERROR,
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Asynchronous operation result.
+ */
+__extension__
+struct rte_flow_op_result {
+	/**
+	 * Returns the status of the operation that this completion signals.
+	 */
+	enum rte_flow_op_status status;
+	/**
+	 * The user data that will be returned on the completion events.
+	 */
+	void *user_data;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Pull a rte flow operation.
+ * The application must invoke this function in order to complete
+ * the flow rule offloading and to retrieve the flow rule operation status.
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param queue_id
+ *   Flow queue which is used to pull the operation.
+ * @param[out] res
+ *   Array of results that will be set.
+ * @param[in] n_res
+ *   Maximum number of results that can be returned.
+ *   This value is equal to the size of the res array.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   Number of results that were pulled,
+ *   a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_pull(uint16_t port_id,
+	      uint32_t queue_id,
+	      struct rte_flow_op_result res[],
+	      uint16_t n_res,
+	      struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Enqueue indirect action creation operation.
+ * @see rte_flow_action_handle_create
+ *
+ * @param[in] port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] queue_id
+ *   Flow queue which is used to create the rule.
+ * @param[in] op_attr
+ *   Indirect action creation operation attributes.
+ * @param[in] indir_action_conf
+ *   Action configuration for the indirect action object creation.
+ * @param[in] action
+ *   Specific configuration of the indirect action object.
+ * @param[in] user_data
+ *   The user data that will be returned on the completion events.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   A valid handle in case of success, NULL otherwise and rte_errno is set.
+ */
+__rte_experimental
+struct rte_flow_action_handle *
+rte_flow_async_action_handle_create(uint16_t port_id,
+		uint32_t queue_id,
+		const struct rte_flow_op_attr *op_attr,
+		const struct rte_flow_indir_action_conf *indir_action_conf,
+		const struct rte_flow_action *action,
+		void *user_data,
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Enqueue indirect action destruction operation.
+ * The destroy queue must be the same
+ * as the queue on which the action was created.
+ *
+ * @param[in] port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] queue_id
+ *   Flow queue which is used to destroy the rule.
+ * @param[in] op_attr
+ *   Indirect action destruction operation attributes.
+ * @param[in] action_handle
+ *   Handle for the indirect action object to be destroyed.
+ * @param[in] user_data
+ *   The user data that will be returned on the completion events.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_async_action_handle_destroy(uint16_t port_id,
+		uint32_t queue_id,
+		const struct rte_flow_op_attr *op_attr,
+		struct rte_flow_action_handle *action_handle,
+		void *user_data,
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Enqueue indirect action update operation.
+ * @see rte_flow_action_handle_create
+ *
+ * @param[in] port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] queue_id
+ *   Flow queue which is used to update the rule.
+ * @param[in] op_attr
+ *   Indirect action update operation attributes.
+ * @param[in] action_handle
+ *   Handle for the indirect action object to be updated.
+ * @param[in] update
+ *   Update profile specification used to modify the action pointed by handle.
+ *   *update* could be with the same type of the immediate action corresponding
+ *   to the *handle* argument when creating, or a wrapper structure includes
+ *   action configuration to be updated and bit fields to indicate the member
+ *   of fields inside the action to update.
+ * @param[in] user_data
+ *   The user data that will be returned on the completion events.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ *   PMDs initialize this structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_async_action_handle_update(uint16_t port_id,
+		uint32_t queue_id,
+		const struct rte_flow_op_attr *op_attr,
+		struct rte_flow_action_handle *action_handle,
+		const void *update,
+		void *user_data,
+		struct rte_flow_error *error);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Enqueue indirect action query operation.
+ *
+ * Retrieve action-specific data such as counters.
+ * Data is gathered by special action which may be present/referenced in
+ * more than one flow rule definition.
+ * Data will be available only when completion event returns.
+ *
+ * @see rte_flow_async_action_handle_query
+ *
+ * @param port_id
+ *   Port identifier of Ethernet device.
+ * @param[in] queue_id
+ *   Flow queue which is used to query the action.
+ * @param[in] op_attr
+ *   Indirect action update operation attributes.
+ * @param[in] action_handle
+ *   Handle for the action object to query.
+ * @param[in, out] data
+ *   Pointer to storage for the associated query data type.
+ *   The out data will be available only when completion event returns
+ *   from rte_flow_pull.
+ * @param[in] user_data
+ *   The user data that will be returned on the completion events.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL. PMDs initialize this
+ *   structure in case of error only.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_async_action_handle_query(uint16_t port_id,
+		uint32_t queue_id,
+		const struct rte_flow_op_attr *op_attr,
+		const struct rte_flow_action_handle *action_handle,
+		void *data,
+		void *user_data,
+		struct rte_flow_error *error);
 
 #ifdef __cplusplus
 }

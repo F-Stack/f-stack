@@ -33,7 +33,7 @@
 #include <rte_malloc.h>
 #include <rte_ring.h>
 
-#include <rte_dpaa_bus.h>
+#include <bus_dpaa_driver.h>
 #include <rte_dpaa_logs.h>
 #include <dpaa_mempool.h>
 
@@ -133,6 +133,8 @@ static const struct rte_dpaa_xstats_name_off dpaa_xstats_strings[] = {
 };
 
 static struct rte_dpaa_driver rte_dpaa_pmd;
+int dpaa_valid_dev;
+struct rte_mempool *dpaa_tx_sg_pool;
 
 static int
 dpaa_eth_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info);
@@ -195,6 +197,7 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	struct rte_eth_conf *eth_conf = &dev->data->dev_conf;
 	uint64_t rx_offloads = eth_conf->rxmode.offloads;
 	uint64_t tx_offloads = eth_conf->txmode.offloads;
+	struct dpaa_if *dpaa_intf = dev->data->dev_private;
 	struct rte_device *rdev = dev->device;
 	struct rte_eth_link *link = &dev->data->dev_link;
 	struct rte_dpaa_device *dpaa_dev;
@@ -203,13 +206,23 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle;
 	uint32_t max_rx_pktlen;
 	int speed, duplex;
-	int ret;
+	int ret, rx_status;
 
 	PMD_INIT_FUNC_TRACE();
 
 	dpaa_dev = container_of(rdev, struct rte_dpaa_device, device);
 	intr_handle = dpaa_dev->intr_handle;
 	__fif = container_of(fif, struct __fman_if, __if);
+
+	/* Check if interface is enabled in case of shared MAC */
+	if (fif->is_shared_mac) {
+		rx_status = fman_if_get_rx_status(fif);
+		if (!rx_status) {
+			DPAA_PMD_ERR("%s Interface not enabled in kernel!",
+				     dpaa_intf->name);
+			return -EHOSTDOWN;
+		}
+	}
 
 	/* Rx offloads which are enabled by default */
 	if (dev_rx_offloads_nodis & ~rx_offloads) {
@@ -349,7 +362,8 @@ dpaa_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_L4_FRAG,
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_UDP,
-		RTE_PTYPE_L4_SCTP
+		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_TUNNEL_ESP
 	};
 
 	PMD_INIT_FUNC_TRACE();
@@ -463,8 +477,7 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 	}
 
 	/* release configuration memory */
-	if (dpaa_intf->fc_conf)
-		rte_free(dpaa_intf->fc_conf);
+	rte_free(dpaa_intf->fc_conf);
 
 	/* Release RX congestion Groups */
 	if (dpaa_intf->cgr_rx) {
@@ -978,8 +991,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	} else {
 		DPAA_PMD_WARN("The requested maximum Rx packet size (%u) is"
 		     " larger than a single mbuf (%u) and scattered"
-		     " mode has not been requested",
-		     max_rx_pktlen, buffsz - RTE_PKTMBUF_HEADROOM);
+		     " mode has not been requested", max_rx_pktlen, buffsz);
 	}
 
 	dpaa_intf->bp_info = DPAA_MEMPOOL_TO_POOL_INFO(mp);
@@ -994,7 +1006,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		if (vsp_id >= 0) {
 			ret = dpaa_port_vsp_update(dpaa_intf, fmc_q, vsp_id,
 					DPAA_MEMPOOL_TO_POOL_INFO(mp)->bpid,
-					fif);
+					fif, buffsz + RTE_PKTMBUF_HEADROOM);
 			if (ret) {
 				DPAA_PMD_ERR("dpaa_port_vsp_update failed");
 				return ret;
@@ -1486,7 +1498,7 @@ static int dpaa_dev_queue_intr_disable(struct rte_eth_dev *dev,
 
 	temp1 = read(rxq->q_fd, &temp, sizeof(temp));
 	if (temp1 != sizeof(temp))
-		DPAA_PMD_ERR("irq read error");
+		DPAA_PMD_DEBUG("read did not return anything");
 
 	qman_fq_portal_thread_irq(rxq->qp);
 
@@ -1738,6 +1750,10 @@ static int dpaa_tx_queue_init(struct qman_fq *fq,
 	/* no tx-confirmation */
 	opts.fqd.context_a.hi = 0x80000000 | fman_dealloc_bufs_mask_hi;
 	opts.fqd.context_a.lo = 0 | fman_dealloc_bufs_mask_lo;
+	if (fman_ip_rev >= FMAN_V3) {
+		/* Set B0V bit in contextA to set ASPID to 0 */
+		opts.fqd.context_a.hi |= 0x04000000;
+	}
 	DPAA_PMD_DEBUG("init tx fq %p, fqid 0x%x", fq, fq->fqid);
 
 	if (cgr_tx) {
@@ -2209,7 +2225,20 @@ rte_dpaa_probe(struct rte_dpaa_driver *dpaa_drv,
 	/* Invoke PMD device initialization function */
 	diag = dpaa_dev_init(eth_dev);
 	if (diag == 0) {
+		if (!dpaa_tx_sg_pool) {
+			dpaa_tx_sg_pool =
+				rte_pktmbuf_pool_create("dpaa_mbuf_tx_sg_pool",
+				DPAA_POOL_SIZE,
+				DPAA_POOL_CACHE_SIZE, 0,
+				DPAA_MAX_SGS * sizeof(struct qm_sg_entry),
+				rte_socket_id());
+			if (dpaa_tx_sg_pool == NULL) {
+				DPAA_PMD_ERR("SG pool creation failed\n");
+				return -ENOMEM;
+			}
+		}
 		rte_eth_dev_probing_finish(eth_dev);
+		dpaa_valid_dev++;
 		return 0;
 	}
 
@@ -2227,6 +2256,9 @@ rte_dpaa_remove(struct rte_dpaa_device *dpaa_dev)
 
 	eth_dev = dpaa_dev->eth_dev;
 	dpaa_eth_dev_close(eth_dev);
+	dpaa_valid_dev--;
+	if (!dpaa_valid_dev)
+		rte_mempool_free(dpaa_tx_sg_pool);
 	ret = rte_eth_dev_release_port(eth_dev);
 
 	return ret;

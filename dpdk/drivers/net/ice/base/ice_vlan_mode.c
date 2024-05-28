@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
 
+#include "ice_ddp.h"
 /**
  * ice_pkg_get_supported_vlan_mode - chk if DDP supports Double VLAN mode (DVM)
  * @hw: pointer to the HW struct

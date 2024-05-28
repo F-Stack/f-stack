@@ -2,8 +2,11 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_REGS_H_
-#define _HNS3_REGS_H_
+#ifndef HNS3_REGS_H
+#define HNS3_REGS_H
+
+#include <ethdev_driver.h>
+#include <rte_dev_info.h>
 
 /* bar registers for cmdq */
 #define HNS3_CMDQ_TX_ADDR_L_REG		0x27000
@@ -121,33 +124,10 @@
 #define HNS3_TQP_INTR_RL_DEFAULT		0
 #define HNS3_TQP_INTR_QL_DEFAULT		0
 
-/* Register bit for 1588 event */
-#define HNS3_VECTOR0_1588_INT_B	                0
-
-#define HNS3_PTP_BASE_ADDRESS			0x29000
-
-#define HNS3_TX_1588_SEQID_BACK			(HNS3_PTP_BASE_ADDRESS + 0x0)
-#define HNS3_TX_1588_TSP_BACK_0			(HNS3_PTP_BASE_ADDRESS + 0x4)
-#define HNS3_TX_1588_TSP_BACK_1			(HNS3_PTP_BASE_ADDRESS + 0x8)
-#define HNS3_TX_1588_TSP_BACK_2			(HNS3_PTP_BASE_ADDRESS + 0xc)
-
-#define HNS3_TX_1588_BACK_TSP_CNT		(HNS3_PTP_BASE_ADDRESS + 0x30)
-
-#define HNS3_CFG_TIME_SYNC_H			(HNS3_PTP_BASE_ADDRESS + 0x50)
-#define HNS3_CFG_TIME_SYNC_M			(HNS3_PTP_BASE_ADDRESS + 0x54)
-#define HNS3_CFG_TIME_SYNC_L			(HNS3_PTP_BASE_ADDRESS + 0x58)
-#define HNS3_CFG_TIME_SYNC_RDY			(HNS3_PTP_BASE_ADDRESS + 0x5c)
-
-#define HNS3_CFG_TIME_CYC_EN			(HNS3_PTP_BASE_ADDRESS + 0x70)
-
-#define HNS3_CURR_TIME_OUT_H			(HNS3_PTP_BASE_ADDRESS + 0x74)
-#define HNS3_CURR_TIME_OUT_L			(HNS3_PTP_BASE_ADDRESS + 0x78)
-#define HNS3_CURR_TIME_OUT_NS			(HNS3_PTP_BASE_ADDRESS + 0x7c)
-
 /* gl_usec convert to hardware count, as writing each 1 represents 2us */
 #define HNS3_GL_USEC_TO_REG(gl_usec)		((gl_usec) >> 1)
 /* rl_usec convert to hardware count, as writing each 1 represents 4us */
 #define HNS3_RL_USEC_TO_REG(rl_usec)		((rl_usec) >> 2)
 
 int hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs);
-#endif /* _HNS3_REGS_H_ */
+#endif /* HNS3_REGS_H */

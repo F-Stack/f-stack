@@ -92,6 +92,10 @@ For more detail on SR-IOV, please refer to the following documents:
     available for IAVF PMD. The same devargs with the same parameters can be applied to IAVF PMD, for detail please reference
     the section ``Protocol extraction for per queue`` of ice.rst.
 
+    Quanta size configuration is also supported when IAVF is backed by an Intel® E810 device by setting ``devargs``
+    parameter ``quanta_size`` like ``-a 18:00.0,quanta_size=2048``. The default value is 1024, and quanta size should be
+    set as the product of 64 in legacy host interface mode.
+
 The PCIE host-interface of Intel Ethernet Switch FM10000 Series VF infrastructure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -643,3 +647,77 @@ Inline IPsec Support
     supports inline IPsec processing for IAVF PMD. For more details see the
     IPsec Security Gateway Sample Application and Security library
     documentation.
+
+
+Limitations or Knowing issues
+-----------------------------
+
+16 Byte RX Descriptor setting is not available
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Currently the VF's RX descriptor size is decided by PF. There's no PF-VF
+interface for VF to request the RX descriptor size, also no interface to notify
+VF its own RX descriptor size.
+For all available versions of the kernel PF drivers, these drivers don't
+support 16 bytes RX descriptor. If the Linux kernel driver is used as host driver,
+while DPDK iavf PMD is used as the VF driver, DPDK cannot choose 16 bytes receive
+descriptor. The reason is that the RX descriptor is already set to 32 bytes by
+the all existing kernel driver.
+In the future, if the any kernel driver supports 16 bytes RX descriptor, user
+should make sure the DPDK VF uses the same RX descriptor size.
+
+i40e: VF performance is impacted by PCI extended tag setting
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To reach maximum NIC performance in the VF the PCI extended tag must be
+enabled. But the kernel driver does not set this feature during initialization.
+So when running traffic on a VF which is managed by the kernel PF driver, a
+significant NIC performance downgrade has been observed (for 64 byte packets,
+there is about 25% line-rate downgrade for a 25GbE device and about 35% for a
+40GbE device).
+
+For kernel version >= 4.11, the kernel's PCI driver will enable the extended
+tag if it detects that the device supports it. So by default, this is not an
+issue. For kernels <= 4.11 or when the PCI extended tag is disabled it can be
+enabled using the steps below.
+
+#. Get the current value of the PCI configure register::
+
+      setpci -s <XX:XX.X> a8.w
+
+#. Set bit 8::
+
+      value = value | 0x100
+
+#. Set the PCI configure register with new value::
+
+      setpci -s <XX:XX.X> a8.w=<value>
+
+i40e: Vlan strip of VF
+~~~~~~~~~~~~~~~~~~~~~~
+
+The VF vlan strip function is only supported in the i40e kernel driver >= 2.1.26.
+
+i40e: Vlan filtering of VF
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For i40e driver 2.17.15, configuring VLAN filters from the DPDK VF is unsupported.
+When applying VLAN filters on the VF it must first be configured from the
+corresponding PF.
+
+ice: VF inserts VLAN tag incorrectly on AVX-512 Tx path
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the kernel driver requests the VF to use the L2TAG2 field of the Tx context
+descriptor to insert the hardware offload VLAN tag,
+AVX-512 Tx path cannot handle this case correctly
+due to its lack of support for the Tx context descriptor.
+
+The VLAN tag will be inserted to the wrong location (inner of QinQ)
+on AVX-512 Tx path.
+That is inconsistent with the behavior of PF (outer of QinQ).
+The ice kernel driver version newer than 1.8.9 requests to use L2TAG2
+and has this issue.
+
+Set the parameter `--force-max-simd-bitwidth` as 64/128/256
+to avoid selecting AVX-512 Tx path.

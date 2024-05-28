@@ -4,11 +4,12 @@
  * Copyright (c) 2020 Samsung Electronics Co., Ltd All Rights Reserved
  */
 
+#include <ctype.h>
+#include <stdlib.h>
+
 #include <rte_cryptodev.h>
-#include <rte_malloc.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_telemetry.h>
-#include "rte_compat.h"
 #include "rte_security.h"
 #include "rte_security_driver.h"
 
@@ -41,35 +42,42 @@ rte_security_dynfield_register(void)
 	return rte_security_dynfield_offset;
 }
 
-struct rte_security_session *
+void *
 rte_security_session_create(struct rte_security_ctx *instance,
 			    struct rte_security_session_conf *conf,
-			    struct rte_mempool *mp,
-			    struct rte_mempool *priv_mp)
+			    struct rte_mempool *mp)
 {
 	struct rte_security_session *sess = NULL;
+	uint32_t sess_priv_size;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_create, NULL, NULL);
 	RTE_PTR_OR_ERR_RET(conf, NULL);
 	RTE_PTR_OR_ERR_RET(mp, NULL);
-	RTE_PTR_OR_ERR_RET(priv_mp, NULL);
+
+	sess_priv_size = instance->ops->session_get_size(instance->device);
+	if (mp->elt_size < (sizeof(struct rte_security_session) + sess_priv_size))
+		return NULL;
 
 	if (rte_mempool_get(mp, (void **)&sess))
 		return NULL;
 
-	if (instance->ops->session_create(instance->device, conf,
-				sess, priv_mp)) {
+	/* Clear session priv data */
+	memset(sess->driver_priv_data, 0, sess_priv_size);
+
+	sess->driver_priv_data_iova = rte_mempool_virt2iova(sess) +
+			offsetof(struct rte_security_session, driver_priv_data);
+	if (instance->ops->session_create(instance->device, conf, sess)) {
 		rte_mempool_put(mp, (void *)sess);
 		return NULL;
 	}
 	instance->sess_cnt++;
 
-	return sess;
+	return (void *)sess;
 }
 
 int
 rte_security_session_update(struct rte_security_ctx *instance,
-			    struct rte_security_session *sess,
+			    void *sess,
 			    struct rte_security_session_conf *conf)
 {
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_update, -EINVAL,
@@ -85,12 +93,13 @@ rte_security_session_get_size(struct rte_security_ctx *instance)
 {
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_get_size, 0, 0);
 
-	return instance->ops->session_get_size(instance->device);
+	return (sizeof(struct rte_security_session) +
+			instance->ops->session_get_size(instance->device));
 }
 
 int
 rte_security_session_stats_get(struct rte_security_ctx *instance,
-			       struct rte_security_session *sess,
+			       void *sess,
 			       struct rte_security_stats *stats)
 {
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_stats_get, -EINVAL,
@@ -102,8 +111,7 @@ rte_security_session_stats_get(struct rte_security_ctx *instance,
 }
 
 int
-rte_security_session_destroy(struct rte_security_ctx *instance,
-			     struct rte_security_session *sess)
+rte_security_session_destroy(struct rte_security_ctx *instance, void *sess)
 {
 	int ret;
 
@@ -124,8 +132,94 @@ rte_security_session_destroy(struct rte_security_ctx *instance,
 }
 
 int
+rte_security_macsec_sc_create(struct rte_security_ctx *instance,
+			      struct rte_security_macsec_sc *conf)
+{
+	int sc_id;
+
+	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sc_create, -EINVAL, -ENOTSUP);
+	RTE_PTR_OR_ERR_RET(conf, -EINVAL);
+
+	sc_id = instance->ops->macsec_sc_create(instance->device, conf);
+	if (sc_id >= 0)
+		instance->macsec_sc_cnt++;
+
+	return sc_id;
+}
+
+int
+rte_security_macsec_sa_create(struct rte_security_ctx *instance,
+			      struct rte_security_macsec_sa *conf)
+{
+	int sa_id;
+
+	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sa_create, -EINVAL, -ENOTSUP);
+	RTE_PTR_OR_ERR_RET(conf, -EINVAL);
+
+	sa_id = instance->ops->macsec_sa_create(instance->device, conf);
+	if (sa_id >= 0)
+		instance->macsec_sa_cnt++;
+
+	return sa_id;
+}
+
+int
+rte_security_macsec_sc_destroy(struct rte_security_ctx *instance, uint16_t sc_id)
+{
+	int ret;
+
+	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sc_destroy, -EINVAL, -ENOTSUP);
+
+	ret = instance->ops->macsec_sc_destroy(instance->device, sc_id);
+	if (ret != 0)
+		return ret;
+
+	if (instance->macsec_sc_cnt)
+		instance->macsec_sc_cnt--;
+
+	return 0;
+}
+
+int
+rte_security_macsec_sa_destroy(struct rte_security_ctx *instance, uint16_t sa_id)
+{
+	int ret;
+
+	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sa_destroy, -EINVAL, -ENOTSUP);
+
+	ret = instance->ops->macsec_sa_destroy(instance->device, sa_id);
+	if (ret != 0)
+		return ret;
+
+	if (instance->macsec_sa_cnt)
+		instance->macsec_sa_cnt--;
+
+	return 0;
+}
+
+int
+rte_security_macsec_sc_stats_get(struct rte_security_ctx *instance, uint16_t sc_id,
+				 struct rte_security_macsec_sc_stats *stats)
+{
+	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sc_stats_get, -EINVAL, -ENOTSUP);
+	RTE_PTR_OR_ERR_RET(stats, -EINVAL);
+
+	return instance->ops->macsec_sc_stats_get(instance->device, sc_id, stats);
+}
+
+int
+rte_security_macsec_sa_stats_get(struct rte_security_ctx *instance, uint16_t sa_id,
+				 struct rte_security_macsec_sa_stats *stats)
+{
+	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sa_stats_get, -EINVAL, -ENOTSUP);
+	RTE_PTR_OR_ERR_RET(stats, -EINVAL);
+
+	return instance->ops->macsec_sa_stats_get(instance->device, sa_id, stats);
+}
+
+int
 __rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
-				struct rte_security_session *sess,
+				void *sess,
 				struct rte_mbuf *m, void *params)
 {
 #ifdef RTE_DEBUG
@@ -133,25 +227,10 @@ __rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
 	RTE_PTR_OR_ERR_RET(instance, -EINVAL);
 	RTE_PTR_OR_ERR_RET(instance->ops, -EINVAL);
 #endif
-	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->set_pkt_metadata, -ENOTSUP);
+	if (*instance->ops->set_pkt_metadata == NULL)
+		return -ENOTSUP;
 	return instance->ops->set_pkt_metadata(instance->device,
 					       sess, m, params);
-}
-
-void *
-__rte_security_get_userdata(struct rte_security_ctx *instance, uint64_t md)
-{
-	void *userdata = NULL;
-
-#ifdef RTE_DEBUG
-	RTE_PTR_OR_ERR_RET(instance, NULL);
-	RTE_PTR_OR_ERR_RET(instance->ops, NULL);
-#endif
-	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->get_userdata, NULL);
-	if (instance->ops->get_userdata(instance->device, md, &userdata))
-		return NULL;
-
-	return userdata;
 }
 
 const struct rte_security_capability *

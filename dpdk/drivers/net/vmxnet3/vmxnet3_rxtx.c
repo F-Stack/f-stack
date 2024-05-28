@@ -412,8 +412,8 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	nb_tx = 0;
 	while (nb_tx < nb_pkts) {
-		Vmxnet3_GenericDesc *gdesc;
-		vmxnet3_buf_info_t *tbi;
+		Vmxnet3_GenericDesc *gdesc = NULL;
+		vmxnet3_buf_info_t *tbi = NULL;
 		uint32_t first2fill, avail, dw2;
 		struct rte_mbuf *txm = tx_pkts[nb_tx];
 		struct rte_mbuf *m_seg = txm;
@@ -457,17 +457,17 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			continue;
 		}
 
+		/* Skip empty packets */
+		if (unlikely(rte_pktmbuf_pkt_len(txm) == 0)) {
+			txq->stats.drop_total++;
+			rte_pktmbuf_free(txm);
+			nb_tx++;
+			continue;
+		}
+
 		if (txm->nb_segs == 1 &&
 		    rte_pktmbuf_pkt_len(txm) <= txq->txdata_desc_size) {
 			struct Vmxnet3_TxDataDesc *tdd;
-
-			/* Skip empty packets */
-			if (unlikely(rte_pktmbuf_pkt_len(txm) == 0)) {
-				txq->stats.drop_total++;
-				rte_pktmbuf_free(txm);
-				nb_tx++;
-				continue;
-			}
 
 			tdd = (struct Vmxnet3_TxDataDesc *)
 				((uint8 *)txq->data_ring.base +
@@ -481,6 +481,10 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		dw2 = (txq->cmd_ring.gen ^ 0x1) << VMXNET3_TXD_GEN_SHIFT;
 		first2fill = txq->cmd_ring.next2fill;
 		do {
+			/* Skip empty segments */
+			if (unlikely(m_seg->data_len == 0))
+				continue;
+
 			/* Remember the transmit buffer for cleanup */
 			tbi = txq->cmd_ring.buf_info + txq->cmd_ring.next2fill;
 
@@ -489,10 +493,6 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * maximum size of mbuf segment size.
 			 */
 			gdesc = txq->cmd_ring.base + txq->cmd_ring.next2fill;
-
-			/* Skip empty segments */
-			if (unlikely(m_seg->data_len == 0))
-				continue;
 
 			if (copy_size) {
 				uint64 offset =
@@ -514,6 +514,11 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			/* use the right gen for non-SOP desc */
 			dw2 = txq->cmd_ring.gen << VMXNET3_TXD_GEN_SHIFT;
 		} while ((m_seg = m_seg->next) != NULL);
+		/* We must have executed the complete preceding loop at least
+		 * once without skipping an empty segment, as we can't have
+		 * a packet with only empty segments.
+		 * Thus, tbi and gdesc have been initialized.
+		 */
 
 		/* set the last buf_info for the pkt */
 		tbi->m = txm;
@@ -759,6 +764,23 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 		/* Check packet type, checksum errors, etc. */
 		if (rcd->cnc) {
 			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+
+			if (rcd->v4) {
+				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
+				if (rcd->tcp)
+					packet_type |= RTE_PTYPE_L4_TCP;
+				else if (rcd->udp)
+					packet_type |= RTE_PTYPE_L4_UDP;
+			} else if (rcd->v6) {
+				packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
+				if (rcd->tcp)
+					packet_type |= RTE_PTYPE_L4_TCP;
+				else if (rcd->udp)
+					packet_type |= RTE_PTYPE_L4_UDP;
+			} else {
+				packet_type |= RTE_PTYPE_UNKNOWN;
+			}
+
 		} else {
 			if (rcd->v4) {
 				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
@@ -1019,6 +1041,36 @@ rcd_done:
 	return nb_rx;
 }
 
+uint32_t
+vmxnet3_dev_rx_queue_count(void *rx_queue)
+{
+	const vmxnet3_rx_queue_t *rxq;
+	const Vmxnet3_RxCompDesc *rcd;
+	uint32_t idx, nb_rxd = 0;
+	uint8_t gen;
+
+	rxq = rx_queue;
+	if (unlikely(rxq->stopped)) {
+		PMD_RX_LOG(DEBUG, "Rx queue is stopped.");
+		return 0;
+	}
+
+	gen = rxq->comp_ring.gen;
+	idx = rxq->comp_ring.next2proc;
+	rcd = &rxq->comp_ring.base[idx].rcd;
+	while (rcd->gen == gen) {
+		if (rcd->eop)
+			++nb_rxd;
+		if (++idx == rxq->comp_ring.size) {
+			idx = 0;
+			gen ^= 1;
+		}
+		rcd = &rxq->comp_ring.base[idx].rcd;
+	}
+
+	return nb_rxd;
+}
+
 int
 vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			   uint16_t queue_idx,
@@ -1264,11 +1316,18 @@ vmxnet3_dev_rxtx_init(struct rte_eth_dev *dev)
 		for (j = 0; j < VMXNET3_RX_CMDRING_SIZE; j++) {
 			/* Passing 0 as alloc_num will allocate full ring */
 			ret = vmxnet3_post_rx_bufs(rxq, j);
-			if (ret <= 0) {
+
+			/* Zero number of descriptors in the configuration of the RX queue */
+			if (ret == 0) {
 				PMD_INIT_LOG(ERR,
-					     "ERROR: Posting Rxq: %d buffers ring: %d",
-					     i, j);
-				return -ret;
+					"Invalid configuration in Rx queue: %d, buffers ring: %d\n",
+					i, j);
+				return -EINVAL;
+			}
+			/* Return the error number */
+			if (ret < 0) {
+				PMD_INIT_LOG(ERR, "Posting Rxq: %d buffers ring: %d", i, j);
+				return ret;
 			}
 			/*
 			 * Updating device with the index:next2fill to fill the
@@ -1370,7 +1429,7 @@ vmxnet3_rss_configure(struct rte_eth_dev *dev)
 	/* loading hashKeySize */
 	dev_rss_conf->hashKeySize = VMXNET3_RSS_MAX_KEY_SIZE;
 	/* loading indTableSize: Must not exceed VMXNET3_RSS_MAX_IND_TABLE_SIZE (128)*/
-	dev_rss_conf->indTableSize = (uint16_t)(hw->num_rx_queues * 4);
+	dev_rss_conf->indTableSize = (uint16_t)((MAX_RX_QUEUES(hw)) * 4);
 
 	if (port_rss_conf->rss_key == NULL) {
 		/* Default hash key */

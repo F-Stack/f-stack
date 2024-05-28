@@ -72,7 +72,7 @@ ice_rx_reassemble_packets(struct ice_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 	/* save the partial packet for next time */
 	rxq->pkt_first_seg = start;
 	rxq->pkt_last_seg = end;
-	rte_memcpy(rx_bufs, pkts, pkt_idx * (sizeof(*pkts)));
+	memcpy(rx_bufs, pkts, pkt_idx * (sizeof(*pkts)));
 	return pkt_idx;
 }
 
@@ -289,6 +289,9 @@ ice_rx_vec_queue_default(struct ice_rx_queue *rxq)
 		return -1;
 
 	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+		return -1;
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)
 		return -1;
 
 	if (rxq->offloads & ICE_RX_VECTOR_OFFLOAD)

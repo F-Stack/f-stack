@@ -68,7 +68,6 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 	struct rte_mempool *mbuf_pool,
 	struct rte_mempool *op_mpool,
 	struct rte_mempool *sess_mpool,
-	struct rte_mempool *sess_priv_mpool,
 	uint8_t dev_id,
 	char *test_msg)
 {
@@ -81,7 +80,7 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 	struct rte_crypto_sym_op *sym_op = NULL;
 	struct rte_crypto_op *op = NULL;
 	struct rte_cryptodev_info dev_info;
-	struct rte_cryptodev_sym_session *sess = NULL;
+	void *sess = NULL;
 
 	int status = TEST_SUCCESS;
 	const struct blockcipher_test_data *tdata = t->test_data;
@@ -96,7 +95,9 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 	uint8_t tmp_dst_buf[MBUF_SIZE];
 	uint32_t pad_len;
 
-	int nb_segs = 1;
+	int nb_segs_in = 1;
+	int nb_segs_out = 1;
+	uint64_t sgl_type = t->sgl_flag;
 	uint32_t nb_iterates = 0;
 
 	rte_cryptodev_info_get(dev_id, &dev_info);
@@ -121,30 +122,31 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 		}
 	}
 	if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_SG) {
-		uint64_t oop_flag = RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT;
-
-		if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_OOP) {
-			if (!(feat_flags & oop_flag)) {
-				printf("Device doesn't support out-of-place "
-					"scatter-gather in input mbuf. "
-					"Test Skipped.\n");
-				snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
-					"SKIPPED");
-				return TEST_SKIPPED;
-			}
-		} else {
-			if (!(feat_flags & RTE_CRYPTODEV_FF_IN_PLACE_SGL)) {
-				printf("Device doesn't support in-place "
-					"scatter-gather mbufs. "
-					"Test Skipped.\n");
-				snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
-					"SKIPPED");
-				return TEST_SKIPPED;
-			}
+		if (sgl_type == 0) {
+			if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_OOP)
+				sgl_type = RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT;
+			else
+				sgl_type = RTE_CRYPTODEV_FF_IN_PLACE_SGL;
 		}
 
-		nb_segs = 3;
+		if (!(feat_flags & sgl_type)) {
+			printf("Device doesn't support scatter-gather type."
+				" Test Skipped.\n");
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
+				"SKIPPED");
+			return TEST_SKIPPED;
+		}
+
+		if (sgl_type == RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT ||
+				sgl_type == RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT ||
+				sgl_type == RTE_CRYPTODEV_FF_IN_PLACE_SGL)
+			nb_segs_in = t->sgl_segs == 0 ? 3 : t->sgl_segs;
+
+		if (sgl_type == RTE_CRYPTODEV_FF_OOP_LB_IN_SGL_OUT ||
+				sgl_type == RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT)
+			nb_segs_out = t->sgl_segs == 0 ? 3 : t->sgl_segs;
 	}
+
 	if (!!(feat_flags & RTE_CRYPTODEV_FF_CIPHER_WRAPPED_KEY) ^
 		tdata->wrapped_key) {
 		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
@@ -207,7 +209,7 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 
 	/* for contiguous mbuf, nb_segs is 1 */
 	ibuf = create_segmented_mbuf(mbuf_pool,
-			tdata->ciphertext.len, nb_segs, src_pattern);
+			tdata->ciphertext.len, nb_segs_in, src_pattern);
 	if (ibuf == NULL) {
 		snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN,
 			"line %u FAILED: %s",
@@ -256,7 +258,8 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 	}
 
 	if (t->feature_mask & BLOCKCIPHER_TEST_FEATURE_OOP) {
-		obuf = rte_pktmbuf_alloc(mbuf_pool);
+		obuf = create_segmented_mbuf(mbuf_pool,
+			tdata->ciphertext.len, nb_segs_out, dst_pattern);
 		if (!obuf) {
 			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "line %u "
 				"FAILED: %s", __LINE__,
@@ -514,11 +517,9 @@ iterate:
 	 */
 	if (!(t->feature_mask & BLOCKCIPHER_TEST_FEATURE_SESSIONLESS) &&
 			nb_iterates == 0) {
-		sess = rte_cryptodev_sym_session_create(sess_mpool);
-
-		status = rte_cryptodev_sym_session_init(dev_id, sess,
-				init_xform, sess_priv_mpool);
-		if (status == -ENOTSUP) {
+		sess = rte_cryptodev_sym_session_create(dev_id, init_xform,
+				sess_mpool);
+		if (sess == NULL) {
 			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "UNSUPPORTED");
 			status = TEST_SKIPPED;
 			goto error_exit;
@@ -801,24 +802,17 @@ iterate:
 
 error_exit:
 	if (!(t->feature_mask & BLOCKCIPHER_TEST_FEATURE_SESSIONLESS)) {
-		if (sess) {
-			rte_cryptodev_sym_session_clear(dev_id, sess);
-			rte_cryptodev_sym_session_free(sess);
-		}
-		if (cipher_xform)
-			rte_free(cipher_xform);
-		if (auth_xform)
-			rte_free(auth_xform);
+		if (sess)
+			rte_cryptodev_sym_session_free(dev_id, sess);
+		rte_free(cipher_xform);
+		rte_free(auth_xform);
 	}
 
-	if (op)
-		rte_crypto_op_free(op);
+	rte_crypto_op_free(op);
 
-	if (obuf)
-		rte_pktmbuf_free(obuf);
+	rte_pktmbuf_free(obuf);
 
-	if (ibuf)
-		rte_pktmbuf_free(ibuf);
+	rte_pktmbuf_free(ibuf);
 
 	return status;
 }
@@ -834,7 +828,6 @@ blockcipher_test_case_run(const void *data)
 			p_testsuite_params->mbuf_pool,
 			p_testsuite_params->op_mpool,
 			p_testsuite_params->session_mpool,
-			p_testsuite_params->session_priv_mpool,
 			p_testsuite_params->valid_devs[0],
 			test_msg);
 	return status;

@@ -23,7 +23,7 @@ DEFAULT_PREFIX = 'rte'
 CMDS = []
 
 
-def read_socket(sock, buf_len, echo=True):
+def read_socket(sock, buf_len, echo=True, pretty=False):
     """ Read data from socket and return it in JSON format """
     reply = sock.recv(buf_len).decode()
     try:
@@ -33,7 +33,8 @@ def read_socket(sock, buf_len, echo=True):
         sock.close()
         raise
     if echo:
-        print(json.dumps(ret))
+        indent = 2 if pretty else None
+        print(json.dumps(ret, indent=indent))
     return ret
 
 
@@ -75,9 +76,13 @@ def print_socket_options(prefix, paths):
 def get_dpdk_runtime_dir(fp):
     """ Using the same logic as in DPDK's EAL, get the DPDK runtime directory
     based on the file-prefix and user """
-    if (os.getuid() == 0):
-        return os.path.join('/var/run/dpdk', fp)
-    return os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/tmp'), 'dpdk', fp)
+    run_dir = os.environ.get('RUNTIME_DIRECTORY')
+    if not run_dir:
+        if (os.getuid() == 0):
+            run_dir = '/var/run'
+        else:
+            run_dir = os.environ.get('XDG_RUNTIME_DIR', '/tmp')
+    return os.path.join(run_dir, 'dpdk', fp)
 
 
 def list_fp():
@@ -123,7 +128,7 @@ def handle_socket(args, path):
         else:
             list_fp()
         return
-    json_reply = read_socket(sock, 1024, prompt)
+    json_reply = read_socket(sock, 1024, prompt, prompt)
     output_buf_len = json_reply["max_output_len"]
     app_name = get_app_name(json_reply["pid"])
     if app_name and prompt:
@@ -139,7 +144,7 @@ def handle_socket(args, path):
         while text != "quit":
             if text.startswith('/'):
                 sock.send(text.encode())
-                read_socket(sock, output_buf_len)
+                read_socket(sock, output_buf_len, pretty=prompt)
             text = input(prompt).strip()
     except EOFError:
         pass

@@ -3,14 +3,13 @@
  * Copyright(c) 2012-2014 6WIND S.A.
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <stdarg.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <syslog.h>
 #include <getopt.h>
 #include <sys/file.h>
 #include <dirent.h>
@@ -20,32 +19,24 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/mman.h>
-#include <sys/queue.h>
 #include <sys/stat.h>
 #if defined(RTE_ARCH_X86)
 #include <sys/io.h>
 #endif
 #include <linux/version.h>
 
-#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_memory.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
 #include <rte_errno.h>
-#include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_service_component.h>
 #include <rte_log.h>
-#include <rte_random.h>
-#include <rte_cycles.h>
 #include <rte_string_fns.h>
 #include <rte_cpuflags.h>
-#include <rte_interrupts.h>
 #include <rte_bus.h>
-#include <rte_dev.h>
-#include <rte_devargs.h>
 #include <rte_version.h>
 #include <malloc_heap.h>
 #include <rte_vfio.h>
@@ -86,62 +77,6 @@ struct lcore_config lcore_config[RTE_MAX_LCORE];
 /* used by rte_rdtsc() */
 int rte_cycles_vmware_tsc_map;
 
-static const char *default_runtime_dir = "/var/run";
-
-int
-eal_create_runtime_dir(void)
-{
-	const char *directory = default_runtime_dir;
-	const char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
-	const char *fallback = "/tmp";
-	char run_dir[PATH_MAX];
-	char tmp[PATH_MAX];
-	int ret;
-
-	if (getuid() != 0) {
-		/* try XDG path first, fall back to /tmp */
-		if (xdg_runtime_dir != NULL)
-			directory = xdg_runtime_dir;
-		else
-			directory = fallback;
-	}
-	/* create DPDK subdirectory under runtime dir */
-	ret = snprintf(tmp, sizeof(tmp), "%s/dpdk", directory);
-	if (ret < 0 || ret == sizeof(tmp)) {
-		RTE_LOG(ERR, EAL, "Error creating DPDK runtime path name\n");
-		return -1;
-	}
-
-	/* create prefix-specific subdirectory under DPDK runtime dir */
-	ret = snprintf(run_dir, sizeof(run_dir), "%s/%s",
-			tmp, eal_get_hugefile_prefix());
-	if (ret < 0 || ret == sizeof(run_dir)) {
-		RTE_LOG(ERR, EAL, "Error creating prefix-specific runtime path name\n");
-		return -1;
-	}
-
-	/* create the path if it doesn't exist. no "mkdir -p" here, so do it
-	 * step by step.
-	 */
-	ret = mkdir(tmp, 0700);
-	if (ret < 0 && errno != EEXIST) {
-		RTE_LOG(ERR, EAL, "Error creating '%s': %s\n",
-			tmp, strerror(errno));
-		return -1;
-	}
-
-	ret = mkdir(run_dir, 0700);
-	if (ret < 0 && errno != EEXIST) {
-		RTE_LOG(ERR, EAL, "Error creating '%s': %s\n",
-			run_dir, strerror(errno));
-		return -1;
-	}
-
-	if (eal_set_runtime_dir(run_dir, sizeof(run_dir)))
-		return -1;
-
-	return 0;
-}
 
 int
 eal_clean_runtime_dir(void)
@@ -227,37 +162,6 @@ error:
 		strerror(errno));
 
 	return -1;
-}
-
-/* parse a sysfs (or other) file containing one integer value */
-int
-eal_parse_sysfs_value(const char *filename, unsigned long *val)
-{
-	FILE *f;
-	char buf[BUFSIZ];
-	char *end = NULL;
-
-	if ((f = fopen(filename, "r")) == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): cannot open sysfs value %s\n",
-			__func__, filename);
-		return -1;
-	}
-
-	if (fgets(buf, sizeof(buf), f) == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): cannot read sysfs value %s\n",
-			__func__, filename);
-		fclose(f);
-		return -1;
-	}
-	*val = strtoul(buf, &end, 0);
-	if ((buf[0] == '\0') || (end == NULL) || (*end != '\n')) {
-		RTE_LOG(ERR, EAL, "%s(): cannot parse sysfs value %s\n",
-				__func__, filename);
-		fclose(f);
-		return -1;
-	}
-	fclose(f);
-	return 0;
 }
 
 
@@ -548,6 +452,10 @@ eal_usage(const char *prgname)
 	       "  --"OPT_LEGACY_MEM"        Legacy memory mode (no dynamic allocation, contiguous segments)\n"
 	       "  --"OPT_SINGLE_FILE_SEGMENTS" Put all hugepage memory in single files\n"
 	       "  --"OPT_MATCH_ALLOCATIONS" Free hugepages exactly as allocated\n"
+	       "  --"OPT_HUGE_WORKER_STACK"[=size]\n"
+	       "                      Allocate worker thread stacks from hugepage memory.\n"
+	       "                      Size is in units of kbytes and defaults to system\n"
+	       "                      thread stack size if not specified.\n"
 	       "\n");
 	/* Allow the application to print its usage message too if hook is set */
 	if (hook) {
@@ -676,6 +584,43 @@ eal_log_level_parse(int argc, char **argv)
 	optarg = old_optarg;
 }
 
+static int
+eal_parse_huge_worker_stack(const char *arg)
+{
+	struct internal_config *cfg = eal_get_internal_configuration();
+
+	if (arg == NULL || arg[0] == '\0') {
+		pthread_attr_t attr;
+		int ret;
+
+		if (pthread_attr_init(&attr) != 0) {
+			RTE_LOG(ERR, EAL, "Could not retrieve default stack size\n");
+			return -1;
+		}
+		ret = pthread_attr_getstacksize(&attr, &cfg->huge_worker_stack_size);
+		pthread_attr_destroy(&attr);
+		if (ret != 0) {
+			RTE_LOG(ERR, EAL, "Could not retrieve default stack size\n");
+			return -1;
+		}
+	} else {
+		unsigned long stack_size;
+		char *end;
+
+		errno = 0;
+		stack_size = strtoul(arg, &end, 10);
+		if (errno || end == NULL || stack_size == 0 ||
+				stack_size >= (size_t)-1 / 1024)
+			return -1;
+
+		cfg->huge_worker_stack_size = stack_size * 1024;
+	}
+
+	RTE_LOG(DEBUG, EAL, "Each worker thread will use %zu kB of DPDK memory as stack\n",
+		cfg->huge_worker_stack_size / 1024);
+	return 0;
+}
+
 /* Parse the argument given in the command line of the application */
 static int
 eal_parse_args(int argc, char **argv)
@@ -730,8 +675,7 @@ eal_parse_args(int argc, char **argv)
 				RTE_LOG(ERR, EAL, "Could not store hugepage directory\n");
 			else {
 				/* free old hugepage dir */
-				if (internal_conf->hugepage_dir != NULL)
-					free(internal_conf->hugepage_dir);
+				free(internal_conf->hugepage_dir);
 				internal_conf->hugepage_dir = hdir;
 			}
 			break;
@@ -743,8 +687,7 @@ eal_parse_args(int argc, char **argv)
 				RTE_LOG(ERR, EAL, "Could not store file prefix\n");
 			else {
 				/* free old prefix */
-				if (internal_conf->hugefile_prefix != NULL)
-					free(internal_conf->hugefile_prefix);
+				free(internal_conf->hugefile_prefix);
 				internal_conf->hugefile_prefix = prefix;
 			}
 			break;
@@ -804,9 +747,7 @@ eal_parse_args(int argc, char **argv)
 				RTE_LOG(ERR, EAL, "Could not store mbuf pool ops name\n");
 			else {
 				/* free old ops name */
-				if (internal_conf->user_mbuf_pool_ops_name !=
-						NULL)
-					free(internal_conf->user_mbuf_pool_ops_name);
+				free(internal_conf->user_mbuf_pool_ops_name);
 
 				internal_conf->user_mbuf_pool_ops_name =
 						ops_name;
@@ -815,6 +756,16 @@ eal_parse_args(int argc, char **argv)
 		}
 		case OPT_MATCH_ALLOCATIONS_NUM:
 			internal_conf->match_allocations = 1;
+			break;
+
+		case OPT_HUGE_WORKER_STACK_NUM:
+			if (eal_parse_huge_worker_stack(optarg) < 0) {
+				RTE_LOG(ERR, EAL, "invalid parameter for --"
+					OPT_HUGE_WORKER_STACK"\n");
+				eal_usage(prgname);
+				ret = -1;
+				goto out;
+			}
 			break;
 
 		default:
@@ -958,12 +909,57 @@ is_iommu_enabled(void)
 	return n > 2;
 }
 
+static int
+eal_worker_thread_create(unsigned int lcore_id)
+{
+	pthread_attr_t *attrp = NULL;
+	void *stack_ptr = NULL;
+	pthread_attr_t attr;
+	size_t stack_size;
+	int ret = -1;
+
+	stack_size = eal_get_internal_configuration()->huge_worker_stack_size;
+	if (stack_size != 0) {
+		/* Allocate NUMA aware stack memory and set pthread attributes */
+		stack_ptr = rte_zmalloc_socket("lcore_stack", stack_size,
+			RTE_CACHE_LINE_SIZE, rte_lcore_to_socket_id(lcore_id));
+		if (stack_ptr == NULL) {
+			rte_eal_init_alert("Cannot allocate worker lcore stack memory");
+			rte_errno = ENOMEM;
+			goto out;
+		}
+
+		if (pthread_attr_init(&attr) != 0) {
+			rte_eal_init_alert("Cannot init pthread attributes");
+			rte_errno = EFAULT;
+			goto out;
+		}
+		attrp = &attr;
+
+		if (pthread_attr_setstack(attrp, stack_ptr, stack_size) != 0) {
+			rte_eal_init_alert("Cannot set pthread stack attributes");
+			rte_errno = EFAULT;
+			goto out;
+		}
+	}
+
+	if (pthread_create(&lcore_config[lcore_id].thread_id, attrp,
+			eal_thread_loop, (void *)(uintptr_t)lcore_id) == 0)
+		ret = 0;
+
+out:
+	if (ret != 0)
+		rte_free(stack_ptr);
+	if (attrp != NULL)
+		pthread_attr_destroy(attrp);
+	return ret;
+}
+
 /* Launch threads, called at application init(). */
 int
 rte_eal_init(int argc, char **argv)
 {
 	int i, fctret, ret;
-	pthread_t thread_id;
 	static uint32_t run_once;
 	uint32_t has_run = 0;
 	const char *p;
@@ -991,7 +987,6 @@ rte_eal_init(int argc, char **argv)
 
 	p = strrchr(argv[0], '/');
 	strlcpy(logid, p ? p + 1 : argv[0], sizeof(logid));
-	thread_id = pthread_self();
 
 	eal_reset_internal_config(internal_conf);
 
@@ -1061,12 +1056,6 @@ rte_eal_init(int argc, char **argv)
 		}
 	}
 
-	/* register multi-process action callbacks for hotplug */
-	if (eal_mp_dev_hotplug_init() < 0) {
-		rte_eal_init_alert("failed to register mp callback for hotplug");
-		return -1;
-	}
-
 	if (rte_bus_scan()) {
 		rte_eal_init_alert("Cannot scan the buses for devices");
 		rte_errno = ENODEV;
@@ -1129,6 +1118,12 @@ rte_eal_init(int argc, char **argv)
 
 	if (rte_eal_iova_mode() == RTE_IOVA_PA && !phys_addrs) {
 		rte_eal_init_alert("Cannot use IOVA as 'PA' since physical addresses are not available");
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA && !RTE_IOVA_AS_PA) {
+		rte_eal_init_alert("Cannot use IOVA as 'PA' as it is disabled during build");
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -1205,6 +1200,12 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	/* register multi-process action callbacks for hotplug after memory init */
+	if (eal_mp_dev_hotplug_init() < 0) {
+		rte_eal_init_alert("failed to register mp callback for hotplug");
+		return -1;
+	}
+
 	if (rte_eal_tailqs_init() < 0) {
 		rte_eal_init_alert("Cannot init tail queues for objects");
 		rte_errno = EFAULT;
@@ -1230,7 +1231,7 @@ rte_eal_init(int argc, char **argv)
 
 	ret = eal_thread_dump_current_affinity(cpuset, sizeof(cpuset));
 	RTE_LOG(DEBUG, EAL, "Main lcore %u is ready (tid=%zx;cpuset=[%s%s])\n",
-		config->main_lcore, (uintptr_t)thread_id, cpuset,
+		config->main_lcore, (uintptr_t)pthread_self(), cpuset,
 		ret == 0 ? "" : "...");
 
 	RTE_LCORE_FOREACH_WORKER(i) {
@@ -1247,14 +1248,13 @@ rte_eal_init(int argc, char **argv)
 		lcore_config[i].state = WAIT;
 
 		/* create a thread for each lcore */
-		ret = pthread_create(&lcore_config[i].thread_id, NULL,
-				     eal_thread_loop, NULL);
+		ret = eal_worker_thread_create(i);
 		if (ret != 0)
 			rte_panic("Cannot create thread\n");
 
 		/* Set thread_name for aid in debugging. */
 		snprintf(thread_name, sizeof(thread_name),
-			"lcore-worker-%d", i);
+			"rte-worker-%d", i);
 		ret = rte_thread_setname(lcore_config[i].thread_id,
 						thread_name);
 		if (ret != 0)
@@ -1354,13 +1354,24 @@ mark_freeable(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
 int
 rte_eal_cleanup(void)
 {
+	static uint32_t run_once;
+	uint32_t has_run = 0;
+
+	if (!__atomic_compare_exchange_n(&run_once, &has_run, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+		RTE_LOG(WARNING, EAL, "Already called cleanup\n");
+		rte_errno = EALREADY;
+		return -1;
+	}
+
 	/* if we're in a primary process, we need to mark hugepages as freeable
 	 * so that finalization can release them back to the system.
 	 */
 	struct internal_config *internal_conf =
 		eal_get_internal_configuration();
 
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
+			internal_conf->hugepage_file.unlink_existing)
 		rte_memseg_walk(mark_freeable, NULL);
 
 	rte_service_finalize();
@@ -1368,12 +1379,16 @@ rte_eal_cleanup(void)
 	vfio_mp_sync_cleanup();
 #endif
 	rte_mp_channel_cleanup();
+	eal_bus_cleanup();
 	rte_trace_save();
 	eal_trace_fini();
+	eal_mp_dev_hotplug_cleanup();
+	rte_eal_alarm_cleanup();
 	/* after this point, any DPDK pointers will become dangling */
 	rte_eal_memory_detach();
-	rte_eal_alarm_cleanup();
+	rte_eal_malloc_heap_cleanup();
 	eal_cleanup_config(internal_conf);
+	rte_eal_log_cleanup();
 	return 0;
 }
 

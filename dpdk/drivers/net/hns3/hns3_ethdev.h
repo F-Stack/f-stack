@@ -2,8 +2,8 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_ETHDEV_H_
-#define _HNS3_ETHDEV_H_
+#ifndef HNS3_ETHDEV_H
+#define HNS3_ETHDEV_H
 
 #include <pthread.h>
 #include <ethdev_driver.h>
@@ -75,7 +75,6 @@
 #define HNS3_DEFAULT_MTU		1500UL
 #define HNS3_DEFAULT_FRAME_LEN		(HNS3_DEFAULT_MTU + HNS3_ETH_OVERHEAD)
 #define HNS3_HIP08_MIN_TX_PKT_LEN	33
-#define HNS3_HIP09_MIN_TX_PKT_LEN	9
 
 #define HNS3_BITS_PER_BYTE	8
 
@@ -155,8 +154,6 @@ struct hns3_tc_queue_info {
 
 struct hns3_cfg {
 	uint8_t tc_num;
-	uint16_t tqp_desc_num;
-	uint16_t rx_buf_len;
 	uint16_t rss_size_max;
 	uint8_t phy_addr;
 	uint8_t media_type;
@@ -520,8 +517,6 @@ struct hns3_hw {
 	uint16_t intr_tqps_num;     /* num queue pairs mapping interrupt */
 	uint16_t rss_size_max;      /* HW defined max RSS task queue */
 	uint16_t rx_buf_len;        /* hold min hardware rx buf len */
-	uint16_t num_tx_desc;       /* desc num of per tx queue */
-	uint16_t num_rx_desc;       /* desc num of per rx queue */
 	uint32_t mng_entry_num;     /* number of manager table entry */
 	uint32_t mac_entry_num;     /* number of mac-vlan table entry */
 
@@ -554,7 +549,7 @@ struct hns3_hw {
 	 * The minimum length of the packet supported by hardware in the Tx
 	 * direction.
 	 */
-	uint32_t min_tx_pkt_len;
+	uint8_t min_tx_pkt_len;
 
 	struct hns3_queue_intr intr;
 	/*
@@ -810,7 +805,6 @@ struct hns3_pf {
 	uint8_t tc_max; /* max number of tc driver supported */
 	uint8_t local_max_tc; /* max number of local tc */
 	uint8_t pfc_max;
-	uint8_t prio_tc[HNS3_MAX_USER_PRIO]; /* TC indexed by prio */
 	uint16_t pause_time;
 	bool support_fc_autoneg;       /* support FC autonegotiate */
 	bool support_multi_tc_pause;
@@ -877,14 +871,7 @@ struct hns3_adapter {
 	struct hns3_ptype_table ptype_tbl __rte_cache_aligned;
 };
 
-#define HNS3_DEVARG_RX_FUNC_HINT	"rx_func_hint"
-#define HNS3_DEVARG_TX_FUNC_HINT	"tx_func_hint"
-
-#define HNS3_DEVARG_DEV_CAPS_MASK	"dev_caps_mask"
-
-#define HNS3_DEVARG_MBX_TIME_LIMIT_MS	"mbx_time_limit_ms"
-
-enum {
+enum hns3_dev_cap {
 	HNS3_DEV_SUPPORT_DCB_B,
 	HNS3_DEV_SUPPORT_COPPER_B,
 	HNS3_DEV_SUPPORT_FD_QUEUE_REGION_B,
@@ -903,11 +890,11 @@ enum {
 	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_##_name##_B)
 
 #define HNS3_DEV_PRIVATE_TO_HW(adapter) \
-	(&((struct hns3_adapter *)adapter)->hw)
+	(&((struct hns3_adapter *)(adapter))->hw)
 #define HNS3_DEV_PRIVATE_TO_PF(adapter) \
-	(&((struct hns3_adapter *)adapter)->pf)
+	(&((struct hns3_adapter *)(adapter))->pf)
 #define HNS3_DEV_PRIVATE_TO_VF(adapter) \
-	(&((struct hns3_adapter *)adapter)->vf)
+	(&((struct hns3_adapter *)(adapter))->vf)
 #define HNS3_DEV_HW_TO_ADAPTER(hw) \
 	container_of(hw, struct hns3_adapter, hw)
 
@@ -1002,15 +989,6 @@ static inline uint32_t hns3_read_reg(void *base, uint32_t reg)
 #define hns3_read_dev(a, reg) \
 	hns3_read_reg((a)->io_base, (reg))
 
-#define NEXT_ITEM_OF_ACTION(act, actions, index)                        \
-	do {								\
-		act = (actions) + (index);				\
-		while (act->type == RTE_FLOW_ACTION_TYPE_VOID) {	\
-			(index)++;					\
-			act = actions + index;				\
-		}							\
-	} while (0)
-
 static inline uint64_t
 hns3_atomic_test_bit(unsigned int nr, volatile uint64_t *addr)
 {
@@ -1032,7 +1010,7 @@ hns3_atomic_clear_bit(unsigned int nr, volatile uint64_t *addr)
 	__atomic_fetch_and(addr, ~(1UL << nr), __ATOMIC_RELAXED);
 }
 
-static inline int64_t
+static inline uint64_t
 hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 {
 	uint64_t mask = (1UL << nr);
@@ -1040,6 +1018,8 @@ hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 	return __atomic_fetch_and(addr, ~mask, __ATOMIC_RELAXED) & mask;
 }
 
+int
+hns3_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf);
 uint32_t hns3_get_speed_capa(struct hns3_hw *hw);
 
 int hns3_buffer_alloc(struct hns3_hw *hw);
@@ -1050,21 +1030,6 @@ void hns3vf_update_link_status(struct hns3_hw *hw, uint8_t link_status,
 			  uint32_t link_speed, uint8_t link_duplex);
 void hns3vf_update_push_lsc_cap(struct hns3_hw *hw, bool supported);
 
-int hns3_restore_ptp(struct hns3_adapter *hns);
-int hns3_mbuf_dyn_rx_timestamp_register(struct rte_eth_dev *dev,
-				    struct rte_eth_conf *conf);
-int hns3_ptp_init(struct hns3_hw *hw);
-int hns3_timesync_enable(struct rte_eth_dev *dev);
-int hns3_timesync_disable(struct rte_eth_dev *dev);
-int hns3_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
-				struct timespec *timestamp,
-				uint32_t flags __rte_unused);
-int hns3_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
-				struct timespec *timestamp);
-int hns3_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts);
-int hns3_timesync_write_time(struct rte_eth_dev *dev,
-			const struct timespec *ts);
-int hns3_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta);
 
 static inline bool
 is_reset_pending(struct hns3_adapter *hns)
@@ -1077,4 +1042,4 @@ is_reset_pending(struct hns3_adapter *hns)
 	return ret;
 }
 
-#endif /* _HNS3_ETHDEV_H_ */
+#endif /* HNS3_ETHDEV_H */

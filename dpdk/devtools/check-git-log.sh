@@ -54,6 +54,7 @@ fixes=$(git log --format='%h %s' --reverse $range | grep -i ': *fix' | cut -d' '
 stablefixes=$($selfdir/git-log-fixes.sh $range | sed '/(N\/A)$/d'  | cut -d' ' -f2)
 tags=$(git log --format='%b' --reverse $range | grep -i -e 'by *:' -e 'fix.*:')
 bytag='\(Reported\|Suggested\|Signed-off\|Acked\|Reviewed\|Tested\)-by:'
+reltag='Coverity issue:\|Bugzilla ID:\|Fixes:\|Cc:'
 
 failure=false
 
@@ -119,7 +120,7 @@ words="$selfdir/words-case.txt"
 for word in $(cat $words); do
 	bad=$(echo "$headlines" | grep -iw $word | grep -vw $word)
 	if [ "$word" = "Tx" ]; then
-		bad=$(echo $bad | grep -v 'OCTEON\ TX')
+		bad=$(echo $bad | grep -v 'OCTEON TX')
 	fi
 	for bad_line in $bad; do
 		bad_word=$(echo $bad_line | cut -d":" -f2 | grep -iwo $word)
@@ -201,6 +202,78 @@ bad=$(for fix in $stablefixes ; do
 		git log --format='\t%s' -1 $fix
 done)
 [ -z "$bad" ] || { printf "Is it candidate for Cc: stable@dpdk.org backport?\n$bad\n"\
+	&& failure=true;}
+
+# check tag sequence
+bad=$(for commit in $commits; do
+	body=$(git log --format='%b' -1 $commit)
+	echo "$body" |
+	grep -o -e "$reltag\|^[[:blank:]]*$\|$bytag" |
+	# retrieve tags only
+	cut -f1 -d":" |
+	# it is okay to have several tags of the same type
+	# but for processing we need to squash them
+	uniq |
+	# make sure the tags are in the proper order as presented in SEQ
+	awk -v subject="$(git log --format='\t%s' -1 $commit)" 'BEGIN{
+		SEQ[0] = "Coverity issue";
+		SEQ[1] = "Bugzilla ID";
+		SEQ[2] = "Fixes";
+		SEQ[3] = "Cc";
+		SEQ[4] = "^$";
+		SEQ[5] = "Reported-by";
+		SEQ[6] = "Suggested-by";
+		SEQ[7] = "Signed-off-by";
+		SEQ[8] = "Acked-by";
+		SEQ[9] = "Reviewed-by";
+		SEQ[10] = "Tested-by";
+		latest = 0;
+		chronological = 0;
+	}
+	{
+		for (seq = 0; seq < length(SEQ); seq++) {
+			if (chronological == 1)
+				continue;
+			if (match($0, SEQ[seq])) {
+				if (seq < latest) {
+					print subject " (" $0 ":)";
+					break;
+				} else {
+					latest = seq;
+				}
+			}
+		}
+		if (match($0, "Signed-off-by"))
+			chronological = 1;
+	 }'
+done)
+[ -z "$bad" ] || { printf "Wrong tag order: \n$bad\n"\
+	&& failure=true;}
+
+# check required tag
+bad=$(for commit in $commits; do
+	body=$(git log --format='%b' -1 $commit)
+	echo $body | grep -q "Signed-off-by:" ||
+	git log --format='\t%s' -1 $commit
+done)
+[ -z "$bad" ] || { printf "Missing 'Signed-off-by:' tag: \n$bad\n"\
+	&& failure=true;}
+
+# check names
+names=$(git log --format='From: %an <%ae>%n%b' --reverse $range |
+	sed -rn 's,.*: (.*<.*@.*>),\1,p' |
+	sort -u)
+bad=$(for contributor in $names ; do
+	contributor=$(echo $contributor | sed 's,(,\\(,')
+	! grep -qE "^$contributor($| <)" $selfdir/../.mailmap || continue
+	name=${contributor%% <*}
+	if grep -q "^$name <" $selfdir/../.mailmap ; then
+		printf "\t$contributor is not the primary email address\n"
+	else
+		printf "\t$contributor is unknown in .mailmap\n"
+	fi
+done)
+[ -z "$bad" ] || { printf "Contributor name/email mismatch with .mailmap: \n$bad\n"\
 	&& failure=true;}
 
 total=$(echo "$commits" | wc -l)

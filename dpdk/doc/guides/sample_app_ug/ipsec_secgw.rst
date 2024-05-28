@@ -82,9 +82,10 @@ The application supports two modes of operation: poll mode and event mode.
   to help application to have multiple worker threads by maximizing performance from
   every type of event device without affecting existing paths/use cases. The worker
   to be used will be determined by the operating conditions and the underlying device
-  capabilities. **Currently the application provides non-burst, internal port worker
-  threads and supports inline protocol only.** It also provides infrastructure for
-  non-internal port however does not define any worker threads.
+  capabilities.
+  **Currently the application provides non-burst, internal port worker threads.**
+  It also provides infrastructure for non-internal port
+  however does not define any worker threads.
 
   Event mode also supports event vectorization. The event devices, ethernet device
   pairs which support the capability ``RTE_EVENT_ETH_RX_ADAPTER_CAP_EVENT_VECTOR`` can
@@ -94,6 +95,9 @@ The application supports two modes of operation: poll mode and event mode.
   (default vector-size is 16) and vector-tmo (default vector-tmo is 102400ns).
   By default event vectorization is disabled and it can be enabled using event-vector
   option.
+  For the event devices, crypto device pairs which support the capability
+  ``RTE_EVENT_CRYPTO_ADAPTER_CAP_EVENT_VECTOR`` vector aggregation
+  could also be enable using event-vector option.
 
 Additionally the event mode introduces two submodes of processing packets:
 
@@ -115,9 +119,9 @@ Constraints
 
 *  No IPv6 options headers.
 *  No AH mode.
-*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, HMAC-SHA1,
-   HMAC-SHA256, AES-GMAC, AES_CTR, AES_XCBC_MAC, AES_CCM, CHACHA20_POLY1305
-   and NULL.
+*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, 3DES-CBC, DES-CBC,
+   HMAC-SHA1, HMAC-SHA256, AES-GMAC, AES_CTR, AES_XCBC_MAC, AES_CCM,
+   CHACHA20_POLY1305 and NULL.
 *  Each SA must be handle by a unique lcore (*1 RX queue per port*).
 
 Compiling the Application
@@ -151,6 +155,7 @@ The application has a number of command line options::
                         --reassemble NUM
                         --mtu MTU
                         --frag-ttl FRAG_TTL_NS
+                        --desc-nb NUMBER_OF_DESC
 
 Where:
 
@@ -250,6 +255,16 @@ Where:
     Should be lower for low number of reassembly buckets.
     Valid values: from 1 ns to 10 s. Default value: 10000000 (10 s).
 
+*   ``--per-port-pool``: Enable per ethdev port pktmbuf pool.
+     By default one packet mbuf pool per socket is created and configured
+     via Rx queue setup.
+
+*   ``--vector-pool-sz``: Number of buffers in vector pool.
+    By default, vector pool size depeneds on packet pool size
+    and size of each vector.
+
+*   ``--desc-nb NUMBER_OF_DESC``: Number of descriptors per queue pair.
+    Default value: 2048.
 
 The mapping of lcores to port/queues is similar to other l3fwd applications.
 
@@ -523,7 +538,7 @@ The SA rule syntax is shown as follows:
 
     sa <dir> <spi> <cipher_algo> <cipher_key> <auth_algo> <auth_key>
     <mode> <src_ip> <dst_ip> <action_type> <port_id> <fallback>
-    <flow-direction> <port_id> <queue_id> <udp-encap>
+    <flow-direction> <port_id> <queue_id> <udp-encap> <reassembly_en>
 
 where each options means:
 
@@ -560,6 +575,7 @@ where each options means:
    * *aes-256-cbc*: AES-CBC 256-bit algorithm
    * *aes-128-ctr*: AES-CTR 128-bit algorithm
    * *3des-cbc*: 3DES-CBC 192-bit algorithm
+   * *des-cbc*: DES-CBC 64-bit algorithm
 
  * Syntax: *cipher_algo <your algorithm>*
 
@@ -588,6 +604,7 @@ where each options means:
     * *null*: NULL algorithm
     * *sha1-hmac*: HMAC SHA1 algorithm
     * *sha256-hmac*: HMAC SHA256 algorithm
+    * *aes-xcbc-mac*: AES XCBC MAC algorithm
 
 ``<auth_key>``
 
@@ -777,6 +794,16 @@ where each options means:
 
    * *esn N* N is the initial ESN value
 
+ ``<reassembly_en>``
+
+ * Option to enable HW reassembly per SA.
+
+ * Optional: Yes, it is disabled by default
+
+ * Syntax:
+
+   * *reassembly_en*
+
 Example SA rules:
 
 .. code-block:: console
@@ -881,16 +908,35 @@ The flow rule syntax is shown as follows:
 
 .. code-block:: console
 
-    flow <ip_ver> <src_ip> <dst_ip> <port> <queue>
-
+    flow <mark> <eth> <ip_ver> <src_ip> <dst_ip> <port> <queue> \
+         <count> <security> <set_mark>
 
 where each options means:
+
+``<mark>``
+
+ * Set RTE_FLOW_ITEM_TYPE_MARK pattern item in the flow rule with the given
+   mark value. This option can be used to match an arbitrary integer value
+   which was set using the RTE_FLOW_ACTION_TYPE_MARK action (see ``<set_mark>``)
+   in a previously matched rule.
+
+ * Optional: Yes, this pattern is not set by default.
+
+ * Syntax: *mark X*
+
+``<eth>``
+
+ * Set RTE_FLOW_ITEM_TYPE_ETH pattern item. This matches all ethernet packets.
+
+ * Optional: Yes, this pattern is not set by default.
+
+ * Syntax: *eth*
 
 ``<ip_ver>``
 
  * IP protocol version
 
- * Optional: No
+ * Optional: Yes, this pattern is not set by default.
 
  * Available options:
 
@@ -935,6 +981,32 @@ where each options means:
 
  * Syntax: *queue X*
 
+``<count>``
+
+ * Set RTE_FLOW_ACTION_TYPE_COUNT action.
+
+ * Optional: yes, this action is not set by default.
+
+ * Syntax: *count*
+
+``<security>``
+
+ * Set RTE_FLOW_ITEM_TYPE_ESP pattern and RTE_FLOW_ACTION_TYPE_SECURITY action.
+
+ * Optional: yes, this pattern and action are not set by default.
+
+ * Syntax: *security*
+
+``<set_mark>``
+
+ * Set RTE_FLOW_ACTION_TYPE_MARK action in the flow rule with the given mark
+   value. This option can be used to set the given integer value(mark) to
+   packets and set RTE_MBUF_F_RX_FDIR and RTE_MBUF_F_RX_FDIR_ID mbuf flags.
+
+ * Optional: yes, this action is not set by default.
+
+ * Syntax: *set_mark X*
+
 Example flow rules:
 
 .. code-block:: console
@@ -942,6 +1014,18 @@ Example flow rules:
     flow ipv4 dst 172.16.1.5/32 port 0 queue 0
 
     flow ipv6 dst 1111:1111:1111:1111:1111:1111:1111:5555/116 port 1 queue 0
+
+    flow mark 123 ipv4 dst 192.168.0.0/16 port 0 queue 0 count
+
+    flow eth ipv4 dst 192.168.0.0/16 port 0 queue 0 count
+
+    flow ipv4 dst 192.168.0.0/16 port 0 queue 0 count
+
+    flow ipv4 dst 192.168.0.0/16 port 0 queue 0
+
+    flow port 0 security set_mark 123
+
+    flow ipv4 dst 1.1.0.0/16 port 0 count set_mark 123 security
 
 
 Neighbour rule syntax

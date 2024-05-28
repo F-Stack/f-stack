@@ -10,6 +10,7 @@
 /* System headers */
 #include <stdbool.h>
 #include <ethdev_driver.h>
+#include <rte_compat.h>
 #include <rte_event_eth_rx_adapter.h>
 
 #include <fsl_usd.h>
@@ -32,6 +33,13 @@
 #define DPAA_MAX_RX_PKT_LEN  10240
 
 #define DPAA_SGT_MAX_ENTRIES 16 /* maximum number of entries in SG Table */
+
+/* Maximum SG segments supported on all cores*/
+#define DPAA_MAX_SGS 128
+/* SG pool size */
+#define DPAA_POOL_SIZE 2048
+/* SG pool cache size */
+#define DPAA_POOL_CACHE_SIZE 256
 
 /* RX queue tail drop threshold (CGR Based) in frame count */
 #define CGR_RX_PERFQ_THRESH 256
@@ -102,6 +110,18 @@
 #define DPAA_DEFAULT_RXQ_VSP_ID		1
 
 #define FMC_FILE "/tmp/fmc.bin"
+
+extern struct rte_mempool *dpaa_tx_sg_pool;
+
+/* structure to free external and indirect
+ * buffers.
+ */
+struct dpaa_sw_buf_free {
+	/* To which packet this segment belongs */
+	uint16_t pkt_id;
+	/* The actual segment */
+	struct rte_mbuf *seg;
+};
 
 /* Each network interface is represented by one of these */
 struct dpaa_if {
