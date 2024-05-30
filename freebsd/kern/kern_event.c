@@ -1672,6 +1672,7 @@ kqueue_release(struct kqueue *kq, int locked)
 		KQ_UNLOCK(kq);
 }
 
+#ifndef FSTACK
 static void
 kqueue_schedtask(struct kqueue *kq)
 {
@@ -1685,6 +1686,7 @@ kqueue_schedtask(struct kqueue *kq)
 		kq->kq_state |= KQ_TASKSCHED;
 	}
 }
+#endif
 
 /*
  * Expand the kq to make sure we have storage for fops/ident pair.
