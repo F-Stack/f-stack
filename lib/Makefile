@@ -262,6 +262,7 @@ endif
 
 FF_HOST_SRCS+=              \
 	ff_host_interface.c \
+	ff_thread.c			\
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_dpdk_if.c        \

@@ -147,6 +147,10 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
 
+int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr, 
+    void * (* start_routine) (void *), void * arg);
+int ff_pthread_join(pthread_t thread, void **retval);
+
 /* POSIX-LIKE api end */
 
 
