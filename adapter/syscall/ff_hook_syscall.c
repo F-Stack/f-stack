@@ -1542,6 +1542,18 @@ ff_hook_close(int fd)
 
     SYSCALL(FF_SO_CLOSE, args);
 
+#ifdef FF_KERNEL_EVENT
+    if (ret == 0 && fstack_kernel_fd_map[fd]) {
+        int kernel_fd_ret = ff_linux_close(fstack_kernel_fd_map[fd]);
+        if (kernel_fd_ret < 0) {
+            ERR_LOG("fstack_kernel_fd_map[%d]=%d, ff_linux_close returns %d, errno=%d\n",
+                fd, fstack_kernel_fd_map[fd], kernel_fd_ret, errno);
+        } else {
+            fstack_kernel_fd_map[fd] = 0;
+        }
+    }
+#endif
+
     RETURN_NOFREE();
 }
 
