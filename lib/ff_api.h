@@ -203,7 +203,7 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  *   The queue id that the packet will be dispatched to.
  * @return FF_DISPATCH_ERROR (-1)
  *   Error occurs or packet is handled by user, packet will be freed.
-* @return FF_DISPATCH_RESPONSE (-2)
+ * @return FF_DISPATCH_RESPONSE (-2)
  *   Packet is handled by user, packet will be responsed.
  *
  */
