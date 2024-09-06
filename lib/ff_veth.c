@@ -496,6 +496,8 @@ ff_veth_setaddr6(struct ff_veth_softc *sc)
 
     ifr6.ifra_lifetime.ia6t_pltime = ifr6.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
 
+    ifr6.ifra_flags |= IN6_IFF_AUTOCONF;
+
     struct socket *so = NULL;
     socreate(AF_INET6, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
     int ret = ifioctl(so, SIOCAIFADDR_IN6, (caddr_t)&ifr6, curthread);
@@ -549,6 +551,8 @@ ff_veth_setvaddr6(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     }
 
     ifr6.ifra_lifetime.ia6t_pltime = ifr6.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
+
+    ifr6.ifra_flags |= IN6_IFF_AUTOCONF;
 
     struct socket *so = NULL;
     socreate(AF_INET6, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
