@@ -466,8 +466,8 @@ ff_veth_setvaddr(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
         sa.sin_addr.s_addr = 0xFFFFFFFF;
         bcopy(&sa, &req.ifra_mask, sizeof(sa));
 
-        // Only support 'x.x.x.255' broadaddr now
-        sa.sin_addr.s_addr = sc->vip[i] | 0xFF000000;
+        // Only support 'x.x.x.x' broadaddr now
+        sa.sin_addr.s_addr = sc->vip[i] /*| 0xFF000000*/;
         bcopy(&sa, &req.ifra_broadaddr, sizeof(sa));
 
         ret = ifioctl(so, SIOCAIFADDR, (caddr_t)&req, curthread);
