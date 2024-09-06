@@ -62,3 +62,4 @@ ff_get_traffic
 ff_pthread_create
 ff_pthread_join
 pcurthread
+ff_dpdk_raw_packet_send
