@@ -109,6 +109,7 @@ endif
 
 ifdef FF_IPFW
 HOST_CFLAGS+= -DFF_IPFW
+CFLAGS+= -DFF_IPFW
 endif
 
 ifdef FF_USE_PAGE_ARRAY

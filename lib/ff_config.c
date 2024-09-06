@@ -376,76 +376,162 @@ parse_vlan_filter_list(struct ff_config *cfg, const char *v_str)
 }
 
 static int
-vip_cfg_handler(struct ff_port_cfg *cur)
+vip_cfg_handler(struct ff_port_cfg *cur_port_cfg, struct ff_vlan_cfg *cur_vlan_cfg)
 {
     //vip cfg
-    int ret;
-    char *vip_addr_array[VIP_MAX_NUM];
+    int ret, nb_vip;
+    char *vip_addr_array[VIP_MAX_NUM], *vip_addr_str;
+    char **vip_addr_array_p;
 
-    ret = rte_strsplit(cur->vip_addr_str, strlen(cur->vip_addr_str), &vip_addr_array[0], VIP_MAX_NUM, ';');
-    if (ret <= 0) {
-        fprintf(stdout, "vip_cfg_handler nb_vip is 0, not set vip_addr or set invalid vip_addr %s\n",
-            cur->vip_addr_str);
+    if (cur_port_cfg) {
+        vip_addr_str = cur_port_cfg->vip_addr_str;
+    } else if (cur_vlan_cfg) {
+        vip_addr_str = cur_vlan_cfg->vip_addr_str;
+    } else {
+        fprintf(stdout, "vip_cfg_handler cur_port_cfg and cur_vlan_cfg both NULL, not set vip_addr\n");
         return 1;
     }
 
-    cur->nb_vip = ret;
+    ret = rte_strsplit(vip_addr_str, strlen(vip_addr_str), &vip_addr_array[0], VIP_MAX_NUM, ';');
+    if (ret <= 0) {
+        fprintf(stdout, "vip_cfg_handler nb_vip is 0, not set vip_addr or set invalid vip_addr %s\n",
+            vip_addr_str);
+        return 1;
+    }
 
-    cur->vip_addr_array = (char **)calloc(cur->nb_vip, sizeof(char *));
-    if (cur->vip_addr_array == NULL) {
+    nb_vip = ret;
+
+    vip_addr_array_p = (char **)calloc(nb_vip, sizeof(char *));
+    if (vip_addr_array_p == NULL) {
         fprintf(stderr, "vip_cfg_handler malloc failed\n");
         goto err;
     }
 
-    memcpy(cur->vip_addr_array, vip_addr_array, cur->nb_vip * sizeof(char *));
+    memcpy(vip_addr_array_p, vip_addr_array, nb_vip * sizeof(char *));
+
+    if (cur_port_cfg) {
+        cur_port_cfg->nb_vip = nb_vip;
+        cur_port_cfg->vip_addr_array = vip_addr_array_p;
+    } else if (cur_vlan_cfg) {
+        cur_vlan_cfg->nb_vip = nb_vip;
+        cur_vlan_cfg->vip_addr_array = vip_addr_array_p;
+    }
 
     return 1;
 
 err:
-    cur->nb_vip = 0;
-    if (cur->vip_addr_array) {
-        free(cur->vip_addr_array);
-        cur->vip_addr_array = NULL;
-    }
-
     return 0;
 }
 
 #ifdef INET6
 static int
-vip6_cfg_handler(struct ff_port_cfg *cur)
+vip6_cfg_handler(struct ff_port_cfg *cur_port_cfg, struct ff_vlan_cfg *cur_vlan_cfg)
 {
     //vip6 cfg
-    int ret;
-    char *vip_addr6_array[VIP_MAX_NUM];
+    int ret, nb_vip6;
+    char *vip_addr6_array[VIP_MAX_NUM], *vip_addr6_str;
+    char **vip_addr6_array_p;
 
-    ret = rte_strsplit(cur->vip_addr6_str, strlen(cur->vip_addr6_str),
-                                    &vip_addr6_array[0], VIP_MAX_NUM, ';');
-    if (ret == 0) {
-        fprintf(stdout, "vip6_cfg_handler nb_vip6 is 0, not set vip_addr6 or set invalid vip_addr6 %s\n",
-            cur->vip_addr6_str);
+    if (cur_port_cfg) {
+        vip_addr6_str = cur_port_cfg->vip_addr6_str;
+    } else if (cur_vlan_cfg) {
+        vip_addr6_str = cur_vlan_cfg->vip_addr6_str;
+    } else {
+        fprintf(stdout, "vip6_cfg_handler cur_port_cfg and cur_vlan_cfg both NULL, not set vip_addr\n");
         return 1;
     }
 
-    cur->nb_vip6 = ret;
-
-    cur->vip_addr6_array = (char **) calloc(cur->nb_vip6, sizeof(char *));
-    if (cur->vip_addr6_array == NULL) {
-        fprintf(stderr, "vip6_cfg_handler malloc failed\n");
-        goto fail;
+    ret = rte_strsplit(vip_addr6_str, strlen(vip_addr6_str),
+                                    &vip_addr6_array[0], VIP_MAX_NUM, ';');
+    if (ret == 0) {
+        fprintf(stdout, "vip6_cfg_handler nb_vip6 is 0, not set vip_addr6 or set invalid vip_addr6 %s\n",
+            vip_addr6_str);
+        return 1;
     }
 
-    memcpy(cur->vip_addr6_array, vip_addr6_array, cur->nb_vip6 * sizeof(char *));
+    nb_vip6 = ret;
+
+    vip_addr6_array_p = (char **) calloc(nb_vip6, sizeof(char *));
+    if (vip_addr6_array_p == NULL) {
+        fprintf(stderr, "vip6_cfg_handler malloc failed\n");
+        goto err;
+    }
+
+    memcpy(vip_addr6_array_p, vip_addr6_array, nb_vip6 * sizeof(char *));
+
+    if (cur_port_cfg) {
+        cur_port_cfg->nb_vip6 = nb_vip6;
+        cur_port_cfg->vip_addr6_array = vip_addr6_array_p;
+    } else if (cur_vlan_cfg) {
+        cur_vlan_cfg->nb_vip6 = nb_vip6;
+        cur_vlan_cfg->vip_addr6_array = vip_addr6_array_p;
+    }
 
     return 1;
 
-fail:
-    cur->nb_vip6 = 0;
-    if (cur->vip_addr6_array) {
-        free(cur->vip_addr6_array);
-        cur->vip_addr6_array = NULL;
+err:
+    return 0;
+}
+#endif
+
+#ifdef FF_IPFW
+static int
+ipfw_pr_cfg_handler(struct ff_port_cfg *cur_port_cfg, struct ff_vlan_cfg *cur_vlan_cfg)
+{
+    //vip cfg
+    int ret, nb_vip, i;
+    char *vip_addr_array[VIP_MAX_NUM], *vip_addr_mask_array[2], *vip_addr_str;
+    struct ff_ipfw_pr_cfg *vipfw_pr_cfg_p;
+
+    if (cur_port_cfg) {
+        vip_addr_str = cur_port_cfg->pr_addr_str;
+    } else if (cur_vlan_cfg) {
+        vip_addr_str = cur_vlan_cfg->pr_addr_str;
+    } else {
+        fprintf(stdout, "ipfw_pr_cfg_handlercur_port_cfg and cur_vlan_cfg both NULL, not set vip_addr\n");
+        return 1;
     }
 
+    ret = rte_strsplit(vip_addr_str, strlen(vip_addr_str), &vip_addr_array[0], VIP_MAX_NUM, ';');
+    if (ret <= 0) {
+        fprintf(stdout, "ipfw_pr_cfg_handler nb_vip is 0, not set vip_addr or set invalid vip_addr %s\n",
+            vip_addr_str);
+        return 1;
+    }
+
+    nb_vip = ret;
+
+    vipfw_pr_cfg_p = (struct ff_ipfw_pr_cfg *)calloc(nb_vip, sizeof(struct ff_ipfw_pr_cfg));
+    if (vipfw_pr_cfg_p == NULL) {
+        fprintf(stderr, "ipfw_pr_cfg_handler malloc failed\n");
+        goto err;
+    }
+
+    for (i = 0; i < nb_vip; i++) {
+        vip_addr_str = vip_addr_array[i];
+        ret = rte_strsplit(vip_addr_str, strlen(vip_addr_str), &vip_addr_mask_array[0], 2, ' ');
+        if (ret != 2) {
+            fprintf(stdout, "ipfw_pr_cfg_handler addr and netmask format error %s\n",
+                vip_addr_str);
+            free(vipfw_pr_cfg_p);
+            return 1;
+        };
+
+        vipfw_pr_cfg_p[i].addr = vip_addr_mask_array[0];
+        vipfw_pr_cfg_p[i].netmask = vip_addr_mask_array[1];
+    }
+
+    if (cur_port_cfg) {
+        cur_port_cfg->nb_pr = nb_vip;
+        cur_port_cfg->pr_cfg = vipfw_pr_cfg_p;
+    } else if (cur_vlan_cfg) {
+        cur_vlan_cfg->nb_pr = nb_vip;
+        cur_vlan_cfg->pr_cfg = vipfw_pr_cfg_p;
+    }
+
+    return 1;
+
+err:
     return 0;
 }
 #endif
@@ -515,11 +601,20 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
     } else if (strcmp(name, "vip_addr") == 0) {
         cur->vip_addr_str = strdup(value);
         if (cur->vip_addr_str) {
-            return vip_cfg_handler(cur);
+            return vip_cfg_handler(cur, NULL);
         }
     } else if (strcmp(name, "vip_ifname") == 0) {
         cur->vip_ifname = strdup(value);
     }
+
+#ifdef FF_IPFW
+    else if (strcmp(name, "ipfw_pr") == 0) {
+        cur->pr_addr_str = strdup(value);
+        if (cur->pr_addr_str) {
+            return ipfw_pr_cfg_handler(cur, NULL);
+        }
+    }
+#endif
 
 #ifdef INET6
     else if (0 == strcmp(name, "addr6")) {
@@ -531,7 +626,112 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
     } else if (strcmp(name, "vip_addr6") == 0) {
         cur->vip_addr6_str = strdup(value);
         if (cur->vip_addr6_str) {
-            return vip6_cfg_handler(cur);
+            return vip6_cfg_handler(cur, NULL);
+        }
+    } else if (0 == strcmp(name, "vip_prefix_len")) {
+        cur->vip_prefix_len = atoi(value);
+    }
+#endif
+
+    return 1;
+}
+
+static int
+vlan_cfg_handler(struct ff_config *cfg, const char *section,
+    const char *name, const char *value) {
+    int vlanid, vlan_index, portid;
+    int ret;
+
+    if (cfg->dpdk.nb_vlan_filter == 0) {
+        fprintf(stderr, "vlan_cfg_handler: must config dpdk.vlan_filter first\n");
+        return 0;
+    }
+
+    if (cfg->dpdk.vlan_cfgs == NULL) {
+        struct ff_vlan_cfg *vc = calloc(DPDK_MAX_VLAN_FILTER, sizeof(struct ff_vlan_cfg));
+        if (vc == NULL) {
+            fprintf(stderr, "vlan_cfg_handler malloc failed\n");
+            return 0;
+        }
+        cfg->dpdk.vlan_cfgs = vc;
+    }
+
+    ret = sscanf(section, "vlan%d", &vlanid);
+    if (ret != 1) {
+        fprintf(stderr, "vlan_cfg_handler section[%s] error\n", section);
+        return 0;
+    }
+
+    /* just return true if vlanid not in vlan_filter */
+    for (vlan_index = 0; vlan_index < cfg->dpdk.nb_vlan_filter; vlan_index ++) {
+        if (vlanid == cfg->dpdk.vlan_filter_id[vlan_index]) {
+            break;
+        }
+
+        if (vlan_index >= cfg->dpdk.nb_vlan_filter) {
+            fprintf(stderr, "vlan_cfg_handler section[%s] mot match vlan filter, ignore it\n", section);
+            return 1;
+        }
+    }
+
+    struct ff_vlan_cfg *cur = &cfg->dpdk.vlan_cfgs[vlan_index];
+    if (cur->name == NULL) {
+        cur->name = strdup(section);
+        cur->vlan_id = vlanid;
+        cur->vlan_idx = vlan_index;
+    }
+
+    /* vlan not need `if_name`, should use [portN]'s `if_name` */
+    /*if (strcmp(name, "if_name") == 0) {
+        cur->ifname = strdup(value);
+    } else */
+    if (strcmp(name, "portid") == 0) {
+        portid = atoi(value);
+        if (portid > cfg->dpdk.max_portid) {
+            fprintf(stderr, "vlan_cfg_handler portid %d bigger than max port id\n", portid);
+            return 1;
+        }
+        struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
+        cur->port_id = portid;
+        pc->vlan_cfgs[pc->nb_vlan] = cur;
+        pc->nb_vlan++;
+    } else if (strcmp(name, "addr") == 0) {
+        cur->addr = strdup(value);
+    } else if (strcmp(name, "netmask") == 0) {
+        cur->netmask = strdup(value);
+    } else if (strcmp(name, "broadcast") == 0) {
+        cur->broadcast = strdup(value);
+    } else if (strcmp(name, "gateway") == 0) {
+        cur->gateway = strdup(value);
+    } else if (strcmp(name, "vip_addr") == 0) {
+        cur->vip_addr_str = strdup(value);
+        if (cur->vip_addr_str) {
+            return vip_cfg_handler(NULL, cur);
+        }
+    /*} else if (strcmp(name, "vip_ifname") == 0) {
+        cur->vip_ifname = strdup(value);*/
+    }
+
+#ifdef FF_IPFW
+    else if (strcmp(name, "ipfw_pr") == 0) {
+        cur->pr_addr_str = strdup(value);
+        if (cur->pr_addr_str) {
+            return ipfw_pr_cfg_handler(NULL, cur);
+        }
+    }
+#endif
+
+#ifdef INET6
+    else if (0 == strcmp(name, "addr6")) {
+        cur->addr6_str = strdup(value);
+    } else if (0 == strcmp(name, "prefix_len")) {
+        cur->prefix_len = atoi(value);
+    } else if (0 == strcmp(name, "gateway6")) {
+        cur->gateway6_str = strdup(value);
+    } else if (strcmp(name, "vip_addr6") == 0) {
+        cur->vip_addr6_str = strdup(value);
+        if (cur->vip_addr6_str) {
+            return vip6_cfg_handler(NULL, cur);
         }
     } else if (0 == strcmp(name, "vip_prefix_len")) {
         cur->vip_prefix_len = atoi(value);
@@ -731,6 +931,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return freebsd_conf_handler(pconfig, "sysctl", name, value);
     } else if (strncmp(section, "port", 4) == 0) {
         return port_cfg_handler(pconfig, section, name, value);
+    } else if (strncmp(section, "vlan", 4) == 0) {
+        return vlan_cfg_handler(pconfig, section, name, value);
     } else if (strncmp(section, "vdev", 4) == 0) {
         return vdev_cfg_handler(pconfig, section, name, value);
     } else if (strncmp(section, "bond", 4) == 0) {
