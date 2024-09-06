@@ -213,6 +213,22 @@ typedef int (*dispatch_func_t)(void *data, uint16_t *len,
 /* regist a packet dispath function */
 void ff_regist_packet_dispatcher(dispatch_func_t func);
 
+/*
+ * RAW packet send direty with DPDK by user APP.
+ *
+ * @param data
+ *   The data pointer of this packet.
+ * @param total
+ *   The total length of this packet.
+ * @param port_id
+ *   Current port of this packet.
+ *
+ * @return error_no
+ *   0 means success.
+ *  -1 means error.
+ */
+int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
+
 /* dispatch api end */
 
 /* pcb lddr api begin */

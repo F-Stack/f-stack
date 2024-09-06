@@ -1999,6 +1999,48 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     return send_single_packet(head, ctx->port_id);
 }
 
+int
+ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
+{
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
+    if (head == NULL) {
+        return -1;
+    }
+
+    head->pkt_len = total;
+    head->nb_segs = 0;
+
+    int off = 0;
+    struct rte_mbuf *cur = head, *prev = NULL;
+    while(total > 0) {
+        if (cur == NULL) {
+            cur = rte_pktmbuf_alloc(mbuf_pool);
+            if (cur == NULL) {
+                rte_pktmbuf_free(head);
+                return -1;
+            }
+        }
+
+        if (prev != NULL) {
+            prev->next = cur;
+        }
+        head->nb_segs++;
+
+        prev = cur;
+        void *cur_data = rte_pktmbuf_mtod(cur, void*);
+        int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
+        memcpy(cur_data, data + off, len);
+
+        cur->data_len = len;
+        off += len;
+        total -= len;
+        cur = NULL;
+    }
+
+    return send_single_packet(head, port_id);
+}
+
 static int
 main_loop(void *arg)
 {

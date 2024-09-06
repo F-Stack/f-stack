@@ -58,3 +58,4 @@ ff_zc_mbuf_get
 ff_zc_mbuf_write
 ff_zc_mbuf_read
 ff_get_traffic
+ff_dpdk_raw_packet_send
