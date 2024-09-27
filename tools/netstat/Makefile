@@ -70,7 +70,7 @@ nl_defs.h: nlist_symbols
 		print "extern struct nlist nl[];"; \
 		i = 0; \
 	    } \
-            !/^\#/ { printf("#define\tN%s\t%s\n", toupper($$2), i++); }' \
+	    !/^\#/ { printf("#define\tN%s\t%s\n", toupper($$2), i++); }' \
             < $^ > $@
 else
 nl_defs.h: nlist_symbols
@@ -80,6 +80,6 @@ nl_defs.h: nlist_symbols
 		print "extern struct nlist nl[];"; \
 		i = 0; \
 	    } \
-            !/^\#/ { printf("\#define\tN%s\t%s\n", toupper($$2), i++); }' \
+	    !/^\#/ { printf("\#define\tN%s\t%s\n", toupper($$2), i++); }' \
             < $^ > $@
 endif
