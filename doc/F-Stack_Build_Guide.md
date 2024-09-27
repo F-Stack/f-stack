@@ -58,15 +58,6 @@ $ cd ../examples
 $ make
 ```
 
-## Compile tools in Ubuntu
-
-- remove '\\' in statement printf at f-stack/tools/netstat/Makefile line 70, now it should be:
-
-```
--   printf("\#define\tN%s\t%s\n", toupper($$2), i++);
-+   printf("#define\tN%s\t%s\n", toupper($$2), i++);
-```
-
 ## Compile dpdk in virtual machine
 
 - f-stack/dpdk/kernel/linux/igb_uio/igb_uio.c line 274:
