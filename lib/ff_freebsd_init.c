@@ -79,7 +79,7 @@ int lo_set_defaultaddr(void)
     char *netmask="255.0.0.0";
     struct ifnet *ifp=NULL;
     int ret;
-	
+
     IFNET_WLOCK();
     TAILQ_FOREACH(ifp, &V_ifnet, if_link)
         if ( (ifp->if_flags & IFF_LOOPBACK) != 0 )
@@ -88,16 +88,16 @@ int lo_set_defaultaddr(void)
 
     if(ifp == NULL)
         return -1;
- 
+
     bzero(&req, sizeof req);
     strcpy(req.ifra_name, ifp->if_xname);
-	
+
     struct sockaddr_in sa;
     bzero(&sa, sizeof(sa));
-	
+
     sa.sin_len = sizeof(sa);
     sa.sin_family = AF_INET;
-    
+
     inet_pton(AF_INET, addr, &sa.sin_addr.s_addr);
     bcopy(&sa, &req.ifra_addr, sizeof(sa));
 
@@ -113,7 +113,7 @@ int lo_set_defaultaddr(void)
         return ret;
 
     ret = ifioctl(so, SIOCAIFADDR, (caddr_t)&req, curthread);
-    sofree(so);
+    soclose(so);
 
     return ret;
 }
