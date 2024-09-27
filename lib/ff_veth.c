@@ -467,7 +467,7 @@ ff_veth_setaddr(struct ff_veth_softc *sc, const char *if_name)
     socreate(AF_INET, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
     int ret = ifioctl(so, SIOCAIFADDR, (caddr_t)&req, curthread);
 
-    sofree(so);
+    soclose(so);
 
     return ret;
 }
@@ -548,7 +548,7 @@ ff_veth_setvaddr(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char *
     }
 
 done:
-    sofree(so);
+    soclose(so);
 
     return ret;
 }
@@ -741,7 +741,7 @@ ff_veth_setaddr6(struct ff_veth_softc *sc, const char *if_name)
     socreate(AF_INET6, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
     int ret = ifioctl(so, SIOCAIFADDR_IN6, (caddr_t)&ifr6, curthread);
 
-    sofree(so);
+    soclose(so);
 
     return ret;
 }
@@ -818,7 +818,7 @@ ff_veth_setvaddr6(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char 
     }
 
 done:
-    sofree(so);
+    soclose(so);
 
     return ret;
 }
