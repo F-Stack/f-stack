@@ -44,6 +44,10 @@
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
 
+#ifndef IPPROTO_OSPFIGP
+#define IPPROTO_OSPFIGP 89  /**< OSPFIGP */
+#endif
+
 /* Callback for request of changing MTU */
 /* Total octets in ethernet header */
 #define KNI_ENET_HEADER_SIZE    14
@@ -91,6 +95,8 @@ struct kni_interface_stats {
 
 struct rte_ring **kni_rp;
 struct kni_interface_stats **kni_stat;
+
+struct kni_ratelimit kni_rate_limt = {0, 0, 0};
 
 static void
 set_bitmap(uint16_t port, unsigned char *bitmap)
@@ -219,8 +225,23 @@ kni_process_tx(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     /* read packet from kni ring(phy port) and transmit to kni */
-    uint16_t nb_tx, nb_kni_tx = 0;
+    uint16_t nb_tx, nb_to_tx, nb_kni_tx;
     nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count, NULL);
+
+    /*
+     * The total ratelimit forwarded to the kernel, may a few more packets being sent, but it doesn’t matter,
+     * If there are too many processes, there is also the possibility that the control packet will be ratelimited.
+     */
+    if (ff_global_cfg.kni.kernel_packets_ratelimit) {
+        if (likely(kni_rate_limt.kernel_packets < ff_global_cfg.kni.kernel_packets_ratelimit)) {
+            nb_to_tx = nb_tx;
+        } else {
+            nb_to_tx = 0;
+        }
+        kni_rate_limt.kernel_packets += nb_tx;
+    } else {
+        nb_to_tx = nb_tx;
+    }
 
 #ifdef FF_KNI_KNI
     if (ff_global_cfg.kni.type == KNI_TYPE_KNI) {
@@ -229,14 +250,13 @@ kni_process_tx(uint16_t port_id, uint16_t queue_id,
          * must Call regularly rte_kni_tx_burst(kni, NULL, 0).
          * detail https://embedded.communities.intel.com/thread/6668
          */
-        nb_kni_tx = rte_kni_tx_burst(kni_stat[port_id]->kni, pkts_burst, nb_tx);
+        nb_kni_tx = rte_kni_tx_burst(kni_stat[port_id]->kni, pkts_burst, nb_to_tx);
         rte_kni_handle_request(kni_stat[port_id]->kni);
     } else if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
 #endif
     {
-        nb_kni_tx = rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, nb_tx);
+        nb_kni_tx = rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, nb_to_tx);
     }
-
     if(nb_kni_tx < nb_tx) {
         uint16_t i;
         for(i = nb_kni_tx; i < nb_tx; ++i)
@@ -419,22 +439,28 @@ protocol_filter_ip(const void *data, uint16_t len, uint16_t eth_frame_type)
     next_len = len - hdr_len;
 
     switch (proto) {
+#ifdef FF_KNI
+        /* The opsf protocol is forwarded to kni and the ratelimited separately */
+        case IPPROTO_OSPFIGP:
+                return FILTER_OSPF;
+#endif
+
         case IPPROTO_TCP:
 #ifdef FF_KNI
             if (!enable_kni)
-                break;
-#else
-            break;
 #endif
+                break;
+
             return protocol_filter_tcp(next, next_len);
+
         case IPPROTO_UDP:
 #ifdef FF_KNI
             if (!enable_kni)
-                break;
-#else
-            break;
 #endif
+                break;
+
             return protocol_filter_udp(next, next_len);
+
         case IPPROTO_IPIP:
             return protocol_filter_ip(next, next_len, RTE_ETHER_TYPE_IPV4);
 #ifdef INET6
@@ -628,12 +654,34 @@ ff_kni_process(uint16_t port_id, uint16_t queue_id,
 
 /* enqueue the packet, and own it */
 int
-ff_kni_enqueue(uint16_t port_id, struct rte_mbuf *pkt)
+ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
 {
+    if (filter >= FILTER_ARP) {
+        if (ff_global_cfg.kni.console_packets_ratelimit) {
+            kni_rate_limt.console_packets++;
+            if (kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit) {
+                goto error;
+            }
+        }
+    } else {
+        if (ff_global_cfg.kni.general_packets_ratelimit) {
+            kni_rate_limt.gerneal_packets++;
+            if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit) {
+                goto error;
+            }
+        }
+    }
+
     int ret = rte_ring_enqueue(kni_rp[port_id], pkt);
-    if (ret < 0)
-        rte_pktmbuf_free(pkt);
+    if (ret < 0) {
+        goto error;
+    }
 
     return 0;
+
+error:
+    rte_pktmbuf_free(pkt);
+
+    return -1;
 }
 

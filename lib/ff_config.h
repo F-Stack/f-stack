@@ -38,6 +38,16 @@ extern "C" {
 #define DPDK_MAX_VLAN_FILTER 128
 #define PCAP_SNAP_MINLEN 94
 #define PCAP_SAVE_MINLEN (2<<22)
+/*
+ * KNI ratelimit default value.
+ * The total speed limit for a single process entering the kni ring is 10,000 QPS,
+ * 1000 QPS for general packets, 9000 QPS for console packets (ospf/arp, etc.)
+ * The total speed limit for kni forwarding to the kernel is 20,000 QPS.
+ */
+#define KNI_RATELIMT_PROCESS  (10000)
+#define KNI_RATELIMT_GENERAL (1000)
+#define KNI_RATELIMT_CONSOLE    (KNI_RATELIMT_PROCESS - KNI_RATELIMT_GENERAL)
+#define KNI_RATELIMT_KERNEL (KNI_RATELIMT_PROCESS * 2)
 
 extern int dpdk_argc;
 extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
@@ -241,6 +251,9 @@ struct ff_config {
     struct {
         int enable;
         int type;
+        int console_packets_ratelimit;
+        int general_packets_ratelimit;
+        int kernel_packets_ratelimit;
         char *kni_action;
         char *method;
         char *tcp_port;
