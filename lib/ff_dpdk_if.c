@@ -1343,8 +1343,14 @@ protocol_filter(const void *data, uint16_t len)
         len -= sizeof(struct rte_vlan_hdr);
     }
 
-    if(ether_type == RTE_ETHER_TYPE_ARP)
+    if(ether_type == RTE_ETHER_TYPE_ARP) {
         return FILTER_ARP;
+    }
+
+    /* Multicast protocol, such as stp(used by zebra), is forwarded to kni and has a separate speed limit */
+    if (rte_is_multicast_ether_addr(&hdr->d_addr)) {
+        return FILTER_MULTI;
+    }
 
 #if (!defined(__FreeBSD__) && defined(INET6) ) || \
         ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
@@ -1536,7 +1542,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
                     ff_add_vlan_tag(mbuf_clone);
-                    ff_kni_enqueue(port_id, mbuf_clone);
+                    ff_kni_enqueue(filter, port_id, mbuf_clone);
                 }
             }
 #endif
@@ -1545,15 +1551,15 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         } else if (enable_kni) {
             if (knictl_action == FF_KNICTL_ACTION_ALL_TO_KNI){
                 ff_add_vlan_tag(rtem);
-                ff_kni_enqueue(port_id, rtem);
+                ff_kni_enqueue(filter, port_id, rtem);
             } else if (knictl_action == FF_KNICTL_ACTION_ALL_TO_FF){
                 ff_veth_input(ctx, rtem);
             } else if (knictl_action == FF_KNICTL_ACTION_DEFAULT){
                 if (enable_kni &&
                         ((filter == FILTER_KNI && kni_accept) ||
-                        (filter == FILTER_UNKNOWN && !kni_accept)) ) {
+                        ((filter == FILTER_UNKNOWN || filter >= FILTER_OSPF) && !kni_accept)) ) {
                     ff_add_vlan_tag(rtem);
-                    ff_kni_enqueue(port_id, rtem);
+                    ff_kni_enqueue(filter, port_id, rtem);
                 } else {
                     ff_veth_input(ctx, rtem);
                 }
@@ -2067,6 +2073,31 @@ main_loop(void *arg)
         cur_tsc = rte_rdtsc();
         if (unlikely(freebsd_clock.expire < cur_tsc)) {
             rte_timer_manage();
+
+#ifdef FF_KNI
+            /* reset kni ratelimt */
+            if (enable_kni) {
+                static time_t last_sec = 0;
+                time_t sec;
+                long nsec;
+
+                ff_get_current_time(&sec, &nsec);
+                if (sec > last_sec) {
+                    if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit ||
+                        kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit ||
+                        kni_rate_limt.kernel_packets > ff_global_cfg.kni.kernel_packets_ratelimit) {
+                        printf("kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
+                            kni_rate_limt.gerneal_packets, ff_global_cfg.kni.general_packets_ratelimit,
+                            kni_rate_limt.console_packets, ff_global_cfg.kni.console_packets_ratelimit,
+                            kni_rate_limt.kernel_packets, ff_global_cfg.kni.kernel_packets_ratelimit, last_sec, sec);
+                    }
+                    last_sec = sec;
+                    kni_rate_limt.gerneal_packets = 0;
+                    kni_rate_limt.console_packets = 0;
+                    kni_rate_limt.kernel_packets = 0;
+                }
+            }
+#endif
         }
 
         idle = 1;

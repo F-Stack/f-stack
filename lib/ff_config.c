@@ -907,6 +907,12 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.symmetric_rss = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
+    } else if (MATCH("kni", "console_packets_ratelimit")) {
+        pconfig->kni.console_packets_ratelimit= atoi(value);
+    } else if (MATCH("kni", "general_packets_ratelimit")) {
+        pconfig->kni.general_packets_ratelimit= atoi(value);
+    } else if (MATCH("kni", "kernel_packets_ratelimit")) {
+        pconfig->kni.kernel_packets_ratelimit= atoi(value);
     } else if (MATCH("kni", "kni_action")) {
         pconfig->kni.kni_action= strdup(value);
     } else if (MATCH("kni", "method")) {
@@ -1238,6 +1244,10 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
+
+    cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
+    cfg->kni.general_packets_ratelimit = KNI_RATELIMT_GENERAL;
+    cfg->kni.kernel_packets_ratelimit = KNI_RATELIMT_KERNEL;
 
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;
