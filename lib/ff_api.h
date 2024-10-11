@@ -51,6 +51,8 @@ struct linux_sockaddr {
 
 typedef int (*loop_func_t)(void *arg);
 
+extern __thread struct thread *pcurthread;
+
 int ff_init(int argc, char * const argv[]);
 
 void ff_run(loop_func_t loop, void *arg);
