@@ -512,7 +512,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         struct rte_eth_dev_info dev_info;
-        struct rte_ether_addr addr = {0};
+        struct rte_ether_addr addr = {{0}};
         int ret;
 
         kni_stat[port_id] = (struct kni_interface_stats*)rte_zmalloc(
