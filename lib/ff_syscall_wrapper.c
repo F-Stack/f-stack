@@ -184,6 +184,9 @@
 
 /* msghdr define start */
 
+static /*__thread*/ struct iovec msg_iov_tmp[UIO_MAXIOV];
+static /*__thread*/ size_t msg_iovlen_tmp;
+
 struct linux_msghdr {
     void *msg_name;             /* Address to send to/receive from.  */
     socklen_t msg_namelen;      /* Length of address data.  */
@@ -641,6 +644,7 @@ linux2freebsd_cmsg(const struct linux_msghdr *linux_msg, struct msghdr *freebsd_
 /*
  * While sendmsg, need convert msg_name and msg_control from Linux to FreeBSD.
  * While recvmsg, need convert msg_name and msg_control from FreeBSD to Linux.
+ * Note: linux2freebsd_msghdr and freebsd2linux_msghdr must be called in sequence and in pairs.
  */
 static int
 freebsd2linux_msghdr(struct linux_msghdr *linux_msg, struct msghdr *freebsd_msg, int send_flag)
@@ -657,6 +661,8 @@ freebsd2linux_msghdr(struct linux_msghdr *linux_msg, struct msghdr *freebsd_msg,
 
     linux_msg->msg_iov = freebsd_msg->msg_iov;
     linux_msg->msg_iovlen = freebsd_msg->msg_iovlen;
+    /* Restore the old iov pointer, compatible with the Linux interface */
+    memcpy(linux_msg->msg_iov, msg_iov_tmp, msg_iovlen_tmp * sizeof(struct iovec));
 
     if(freebsd_msg->msg_control && linux_msg->msg_control && !send_flag) {
         freebsd2linux_cmsghdr(linux_msg, freebsd_msg);
@@ -684,6 +690,12 @@ linux2freebsd_msghdr(const struct linux_msghdr *linux_msg, struct msghdr *freebs
     }
     freebsd_msg->msg_namelen = linux_msg->msg_namelen;
 
+    /* Save the old iov pointer, compatible with the Linux interface */
+    msg_iovlen_tmp = linux_msg->msg_iovlen;
+    if (msg_iovlen_tmp > UIO_MAXIOV) {
+        return -1; // EMSGSIZE;
+    }
+    memcpy(msg_iov_tmp, linux_msg->msg_iov, msg_iovlen_tmp * sizeof(struct iovec));
     freebsd_msg->msg_iov = linux_msg->msg_iov;
     freebsd_msg->msg_iovlen = linux_msg->msg_iovlen;
 
