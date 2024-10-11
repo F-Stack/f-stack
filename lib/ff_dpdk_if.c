@@ -2076,7 +2076,10 @@ main_loop(void *arg)
 
 #ifdef FF_KNI
             /* reset kni ratelimt */
-            if (enable_kni) {
+            if (enable_kni &&
+                    (ff_global_cfg.kni.console_packets_ratelimit ||
+                        ff_global_cfg.kni.general_packets_ratelimit ||
+                        ff_global_cfg.kni.kernel_packets_ratelimit)) {
                 static time_t last_sec = 0;
                 time_t sec;
                 long nsec;

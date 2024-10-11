@@ -1245,9 +1245,10 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
-    cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
-    cfg->kni.general_packets_ratelimit = KNI_RATELIMT_GENERAL;
-    cfg->kni.kernel_packets_ratelimit = KNI_RATELIMT_KERNEL;
+    /* KNI ratelimit default disabled */
+    //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
+    //cfg->kni.general_packets_ratelimit = KNI_RATELIMT_GENERAL;
+    //cfg->kni.kernel_packets_ratelimit = KNI_RATELIMT_KERNEL;
 
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;

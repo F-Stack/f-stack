@@ -214,12 +214,16 @@ kni_process_tx(uint16_t port_id, uint16_t queue_id,
      * The total ratelimit forwarded to the kernel, may a few more packets being sent, but it doesn’t matter,
      * If there are too many processes, there is also the possibility that the control packet will be ratelimited.
      */
-    if (likely(kni_rate_limt.kernel_packets < ff_global_cfg.kni.kernel_packets_ratelimit)) {
-        nb_to_tx = nb_tx;
+    if (ff_global_cfg.kni.kernel_packets_ratelimit) {
+        if (likely(kni_rate_limt.kernel_packets < ff_global_cfg.kni.kernel_packets_ratelimit)) {
+            nb_to_tx = nb_tx;
+        } else {
+            nb_to_tx = 0;
+        }
+        kni_rate_limt.kernel_packets += nb_tx;
     } else {
-        nb_to_tx = 0;
+        nb_to_tx = nb_tx;
     }
-    kni_rate_limt.kernel_packets += nb_tx;
 
     /* NB.
      * if nb_tx is 0,it must call rte_kni_tx_burst
@@ -586,14 +590,18 @@ int
 ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
 {
     if (filter >= FILTER_ARP) {
-        kni_rate_limt.console_packets++;
-        if (kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit) {
-            goto error;
+        if (ff_global_cfg.kni.console_packets_ratelimit) {
+            kni_rate_limt.console_packets++;
+            if (kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit) {
+                goto error;
+            }
         }
     } else {
-        kni_rate_limt.gerneal_packets++;
-        if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit) {
-            goto error;
+        if (ff_global_cfg.kni.general_packets_ratelimit) {
+            kni_rate_limt.gerneal_packets++;
+            if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit) {
+                goto error;
+            }
         }
     }
 
