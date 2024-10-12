@@ -55,7 +55,7 @@
 
 TAILQ_HEAD(prisonlist, prison);
 
-__thread struct thread *pcurthread;
+__thread struct thread *pcurthread = NULL;
 
 struct cdev;
 struct vnode *rootvnode;
