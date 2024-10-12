@@ -5,7 +5,7 @@
 /*-
  * Copyright (c) 1996-1999 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -16,7 +16,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -62,7 +62,7 @@ enum {
 struct sockaddr_ng {
 	unsigned char	sg_len;		/* total length */
 	sa_family_t	sg_family;	/* address family */
-	char		sg_data[14];	/* actually longer; address value */
+	char		sg_data[32];	/* see NG_NODESIZ in ng_message.h */
 };
 
 #endif /* _NETGRAPH_NG_SOCKET_H_ */
