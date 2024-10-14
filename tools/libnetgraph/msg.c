@@ -233,10 +233,14 @@ NgDeliverMsg(int cs, const char *path,
 	/* Prepare socket address */
 	sg->sg_family = AF_NETGRAPH;
 	/* XXX handle overflow */
+#if __GNUC__ >= 13
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
 	strncpy(sg->sg_data, path, NG_PATHSIZ);
+#if __GNUC__ >= 13
 #pragma GCC diagnostic pop
+#endif
 	sg->sg_len = strlen(sg->sg_data) + 1 + NGSA_OVERHEAD;
 
 	/* Debugging */
