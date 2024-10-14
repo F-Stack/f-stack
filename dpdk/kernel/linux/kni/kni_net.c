@@ -832,8 +832,13 @@ static const struct net_device_ops kni_net_netdev_ops = {
 static void kni_get_drvinfo(struct net_device *dev,
 			    struct ethtool_drvinfo *info)
 {
+#if __GNUC__ >= 13
 	strscpy(info->version, KNI_VERSION, sizeof(info->version));
 	strscpy(info->driver, "kni", sizeof(info->driver));
+#else
+	strlcpy(info->version, KNI_VERSION, sizeof(info->version));
+	strlcpy(info->driver, "kni", sizeof(info->driver));
+#endif
 }
 
 static const struct ethtool_ops kni_net_ethtool_ops = {
