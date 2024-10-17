@@ -2,6 +2,73 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2024.10 F-Stack v1.24
+
+1. F-Stack lib, Sync some features from branch of dev:
+
+- Restore vEth0 to veth0 now.
+- Add kni type argument in config.ini and FF_KNI_KNI in lib/Makefile to set exception path type.
+- FF_FLOW_ISOLATE support DPDK-22.11.
+- Add net.add_addr_allfibs=1 in config.ini.
+- gettimeofday automatically compatible with different glibc versions.
+- Add an API ff_get_traffic to get traffic for QoS or other.
+- Add ff_stop_run to stop the poll loop. @renzibei
+- Add POSIX Like functions for pthread_create and pthread_join. @Radu Nichita
+- Fix pthread issue. @Vitaly Pavlov
+- Fix a build error with gcc-4.8.5.
+- Modify ff_port_cfg.port_id's type from uint8_t to unint16_t.
+- Modify INI_MAX_LINE from 200 to 2048 in lib/ff_ini_parser.h.
+- IPv6 addr and vaddr set autoconf by default.
+- Modify IPv4 vip addrs' broadaddr from x.x.x.255 to x.x.x.x, same as vip addr, because vips' netmask only support `255.255.255.255` now.
+- Add APi ff_dpdk_raw_packet_send to suppoort RAW packet send direty with DPDK by user APP not via socket.
+- Support automatic configuration of vlan and vlan ip, routing and the simplest policy routing.
+- Use soclose() instead of sofree() when initializing the configuration stack IP.
+- Support KNI ratelimit, default disable.
+- The msghdr.msg_iov->iov_base and msghdr.msg_iov->iov_len of ff_sendmsg() and ff_recvmsg() compatible with the Linux.
+
+1. FreeBSD
+
+- Add atomic_fcmpset_int32.
+- Fix some build errors of freebsd with gcc-12.2.0.
+- For f-stack to support QAT accelerator cards. @wenchengji.
+- Fix some build errors of freebsd with gcc-13.2.0.
+- Fix issue in Freebsd when building with GCC 14.1.0. @bjosv
+
+1. ff toos
+
+- Fix ff tools build error with gcc-13.2.0.
+- Fix netstat tool compilation on linux. Support `mawk` of ubuntu. @taras
+
+1. DPDK
+
+- DPDK: Upgrade to 22.11.6.
+- Fix a compilation warning of drivers mlx5.
+- Bump black from 22.10.0 to 24.3.0 in /dpdk/dts. @dependabot[bot]
+- kni_net.c compatible with -Wstringop-overflow with different gcc versions.
+
+1. APP
+
+- Nginx: gettimeofday automatically compatible with different glibc versions.
+- Nginx: Nginx's stream support transparent.
+
+1. adapter
+
+- syscall: Fix cplen calculation errors in ff_hook_syscall.c. @zhaozihanzzh
+- syscall: Close kernel epoll fd in ff_hook_close when using FF_KERNEL_EVENT. @zhaozihanzzh
+
+1. doc
+
+- modify doc that re-enable kni now, to remove kni later.
+- Modify nginx-1.16.1 to nginx-1.25.2 in docs.
+- Remove doc/F-Stack_Binary_Release_Quick_Start.md.
+- chore: update freebsd version in readme. @JamLee
+- Update ff tools README.md, use `ff_netstat -rnW` to display wider device name.
+- Update F-Stack_Quick_Start_Guide.md, add a cmd. @万能的翔王大人
+- Fix a typo in doc/F-Stack_Nginx_APP_Guide.md: "kernel_network_stack" -> "proxy_kernel_network_stack".
+-  Disable build driver crypto/openssl for Redhat/Centos 7.x.
+
+
+
 2023.09 F-Stack v1.23
 
   1. F-Stack lib, Sync some features from branch of dev:
