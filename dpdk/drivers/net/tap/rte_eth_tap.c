@@ -559,7 +559,7 @@ tap_tx_l3_cksum(char *packet, uint64_t ol_flags, unsigned int l2_len,
 {
 	void *l3_hdr = packet + l2_len;
 
-	if (ol_flags & (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4)) {
+	if (ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
 		struct rte_ipv4_hdr *iph = l3_hdr;
 		uint16_t cksum;
 
@@ -642,16 +642,25 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 
 		nb_segs = mbuf->nb_segs;
 		if (txq->csum &&
-		    ((mbuf->ol_flags & (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4) ||
+		    ((mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM ||
 		      (mbuf->ol_flags & RTE_MBUF_F_TX_L4_MASK) == RTE_MBUF_F_TX_UDP_CKSUM ||
 		      (mbuf->ol_flags & RTE_MBUF_F_TX_L4_MASK) == RTE_MBUF_F_TX_TCP_CKSUM))) {
+			unsigned int l4_len = 0;
+
 			is_cksum = 1;
+
+			if ((mbuf->ol_flags & RTE_MBUF_F_TX_L4_MASK) ==
+					RTE_MBUF_F_TX_UDP_CKSUM)
+				l4_len = sizeof(struct rte_udp_hdr);
+			else if ((mbuf->ol_flags & RTE_MBUF_F_TX_L4_MASK) ==
+					RTE_MBUF_F_TX_TCP_CKSUM)
+				l4_len = sizeof(struct rte_tcp_hdr);
 
 			/* Support only packets with at least layer 4
 			 * header included in the first segment
 			 */
 			seg_len = rte_pktmbuf_data_len(mbuf);
-			l234_hlen = mbuf->l2_len + mbuf->l3_len + mbuf->l4_len;
+			l234_hlen = mbuf->l2_len + mbuf->l3_len + l4_len;
 			if (seg_len < l234_hlen)
 				return -1;
 
@@ -661,7 +670,7 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 			rte_memcpy(m_copy, rte_pktmbuf_mtod(mbuf, void *),
 					l234_hlen);
 			tap_tx_l3_cksum(m_copy, mbuf->ol_flags,
-				       mbuf->l2_len, mbuf->l3_len, mbuf->l4_len,
+				       mbuf->l2_len, mbuf->l3_len, l4_len,
 				       &l4_cksum, &l4_phdr_cksum,
 				       &l4_raw_cksum);
 			iovecs[k].iov_base = m_copy;
@@ -1853,6 +1862,7 @@ tap_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
 		RTE_PTYPE_L4_UDP,
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_UNKNOWN
 	};
 
 	return ptypes;
@@ -2267,29 +2277,6 @@ set_remote_iface(const char *key __rte_unused,
 	return 0;
 }
 
-static int parse_user_mac(struct rte_ether_addr *user_mac,
-		const char *value)
-{
-	unsigned int index = 0;
-	char mac_temp[strlen(ETH_TAP_USR_MAC_FMT) + 1], *mac_byte = NULL;
-
-	if (user_mac == NULL || value == NULL)
-		return 0;
-
-	strlcpy(mac_temp, value, sizeof(mac_temp));
-	mac_byte = strtok(mac_temp, ":");
-
-	while ((mac_byte != NULL) &&
-			(strlen(mac_byte) <= 2) &&
-			(strlen(mac_byte) == strspn(mac_byte,
-					ETH_TAP_CMP_MAC_FMT))) {
-		user_mac->addr_bytes[index++] = strtoul(mac_byte, NULL, 16);
-		mac_byte = strtok(NULL, ":");
-	}
-
-	return index;
-}
-
 static int
 set_mac_type(const char *key __rte_unused,
 	     const char *value,
@@ -2311,7 +2298,7 @@ set_mac_type(const char *key __rte_unused,
 		goto success;
 	}
 
-	if (parse_user_mac(user_mac, value) != 6)
+	if (rte_ether_unformat_addr(value, user_mac) < 0)
 		goto error;
 success:
 	TAP_LOG(DEBUG, "TAP user MAC param (%s)", value);

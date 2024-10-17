@@ -962,8 +962,6 @@ setup_acl(const int socket_id)
 	acl_log("IPv6 ACL entries %u:\n", acl_num_ipv6);
 	dump_ipv6_rules((struct acl6_rule *)acl_base_ipv6, acl_num_ipv6, 1);
 
-	memset(&acl_config, 0, sizeof(acl_config));
-
 	/* Check sockets a context should be created on */
 	if (socket_id >= NB_SOCKETS) {
 		acl_log("Socket %d is out "
@@ -972,6 +970,9 @@ setup_acl(const int socket_id)
 		acl_free_routes();
 		return;
 	}
+
+	rte_acl_free(acl_config.acx_ipv4[socket_id]);
+	rte_acl_free(acl_config.acx_ipv6[socket_id]);
 
 	acl_config.acx_ipv4[socket_id] = app_acl_init(route_base_ipv4,
 		acl_base_ipv4, route_num_ipv4, acl_num_ipv4,
@@ -997,7 +998,7 @@ acl_main_loop(__rte_unused void *dummy)
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int i, nb_rx;
 	uint16_t portid;
-	uint8_t queueid;
+	uint16_t queueid;
 	struct lcore_conf *qconf;
 	int socketid;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1)
@@ -1020,7 +1021,7 @@ acl_main_loop(__rte_unused void *dummy)
 		portid = qconf->rx_queue_list[i].port_id;
 		queueid = qconf->rx_queue_list[i].queue_id;
 		RTE_LOG(INFO, L3FWD,
-			" -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
+			" -- lcoreid=%u portid=%u rxqueueid=%" PRIu16 "\n",
 			lcore_id, portid, queueid);
 	}
 
@@ -1073,9 +1074,9 @@ acl_main_loop(__rte_unused void *dummy)
 
 					l3fwd_acl_send_packets(
 						qconf,
-						pkts_burst,
+						acl_search.m_ipv4,
 						acl_search.res_ipv4,
-						nb_rx);
+						acl_search.num_ipv4);
 				}
 
 				if (acl_search.num_ipv6) {
@@ -1088,9 +1089,9 @@ acl_main_loop(__rte_unused void *dummy)
 
 					l3fwd_acl_send_packets(
 						qconf,
-						pkts_burst,
+						acl_search.m_ipv6,
 						acl_search.res_ipv6,
-						nb_rx);
+						acl_search.num_ipv6);
 				}
 			}
 		}

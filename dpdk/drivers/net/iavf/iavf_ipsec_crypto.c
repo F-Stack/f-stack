@@ -828,6 +828,7 @@ iavf_ipsec_crypto_sa_update_esn(struct iavf_adapter *adapter,
 	/* set request params */
 	request->ipsec_data.sa_update->sa_index = sess->sa.hw_idx;
 	request->ipsec_data.sa_update->esn_hi = sess->esn.hi;
+	request->ipsec_data.sa_update->esn_low = sess->esn.low;
 
 	/* send virtual channel request to add SA to hardware database */
 	rc = iavf_ipsec_crypto_request(adapter,
@@ -1484,8 +1485,11 @@ iavf_security_ctx_create(struct iavf_adapter *adapter)
 	if (adapter->security_ctx == NULL) {
 		adapter->security_ctx = rte_malloc("iavf_security_ctx",
 				sizeof(struct iavf_security_ctx), 0);
-		if (adapter->security_ctx == NULL)
+		if (adapter->security_ctx == NULL) {
+			rte_free(adapter->vf.eth_dev->security_ctx);
+			adapter->vf.eth_dev->security_ctx = NULL;
 			return -ENOMEM;
+		}
 	}
 
 	return 0;

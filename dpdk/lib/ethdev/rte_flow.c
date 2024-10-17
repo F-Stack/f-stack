@@ -206,7 +206,7 @@ static const struct rte_flow_desc_data rte_flow_desc_action[] = {
 		       sizeof(struct rte_flow_action_of_push_mpls)),
 	MK_FLOW_ACTION(VXLAN_ENCAP, sizeof(struct rte_flow_action_vxlan_encap)),
 	MK_FLOW_ACTION(VXLAN_DECAP, 0),
-	MK_FLOW_ACTION(NVGRE_ENCAP, sizeof(struct rte_flow_action_vxlan_encap)),
+	MK_FLOW_ACTION(NVGRE_ENCAP, sizeof(struct rte_flow_action_nvgre_encap)),
 	MK_FLOW_ACTION(NVGRE_DECAP, 0),
 	MK_FLOW_ACTION(RAW_ENCAP, sizeof(struct rte_flow_action_raw_encap)),
 	MK_FLOW_ACTION(RAW_DECAP, sizeof(struct rte_flow_action_raw_decap)),
@@ -547,6 +547,7 @@ rte_flow_conv_item_spec(void *buf, const size_t size,
 	switch (item->type) {
 		union {
 			const struct rte_flow_item_raw *raw;
+			const struct rte_flow_item_geneve_opt *geneve_opt;
 		} spec;
 		union {
 			const struct rte_flow_item_raw *raw;
@@ -556,10 +557,13 @@ rte_flow_conv_item_spec(void *buf, const size_t size,
 		} mask;
 		union {
 			const struct rte_flow_item_raw *raw;
+			const struct rte_flow_item_geneve_opt *geneve_opt;
 		} src;
 		union {
 			struct rte_flow_item_raw *raw;
+			struct rte_flow_item_geneve_opt *geneve_opt;
 		} dst;
+		void *deep_src;
 		size_t tmp;
 
 	case RTE_FLOW_ITEM_TYPE_RAW:
@@ -588,12 +592,29 @@ rte_flow_conv_item_spec(void *buf, const size_t size,
 			tmp = last.raw->length & mask.raw->length;
 		if (tmp) {
 			off = RTE_ALIGN_CEIL(off, sizeof(*dst.raw->pattern));
-			if (size >= off + tmp)
-				dst.raw->pattern = rte_memcpy
-					((void *)((uintptr_t)dst.raw + off),
-					 src.raw->pattern, tmp);
+			if (size >= off + tmp) {
+				deep_src = (void *)((uintptr_t)dst.raw + off);
+				dst.raw->pattern = rte_memcpy(deep_src,
+							      src.raw->pattern,
+							      tmp);
+			}
 			off += tmp;
 		}
+		break;
+	case RTE_FLOW_ITEM_TYPE_GENEVE_OPT:
+		off = rte_flow_conv_copy(buf, data, size,
+					 rte_flow_desc_item, item->type);
+		spec.geneve_opt = item->spec;
+		src.geneve_opt = data;
+		dst.geneve_opt = buf;
+		tmp = spec.geneve_opt->option_len << 2;
+		if (size > 0 && src.geneve_opt->data) {
+			deep_src = (void *)((uintptr_t)(dst.geneve_opt + 1));
+			dst.geneve_opt->data = rte_memcpy(deep_src,
+							  src.geneve_opt->data,
+							  tmp);
+		}
+		off += tmp;
 		break;
 	default:
 		off = rte_flow_conv_copy(buf, data, size,
@@ -654,7 +675,7 @@ rte_flow_conv_action_conf(void *buf, const size_t size,
 		if (src.rss->key_len && src.rss->key) {
 			off = RTE_ALIGN_CEIL(off, sizeof(*dst.rss->key));
 			tmp = sizeof(*src.rss->key) * src.rss->key_len;
-			if (size >= off + tmp)
+			if (size >= (uint64_t)off + (uint64_t)tmp)
 				dst.rss->key = rte_memcpy
 					((void *)((uintptr_t)dst.rss + off),
 					 src.rss->key, tmp);
@@ -663,7 +684,7 @@ rte_flow_conv_action_conf(void *buf, const size_t size,
 		if (src.rss->queue_num) {
 			off = RTE_ALIGN_CEIL(off, sizeof(*dst.rss->queue));
 			tmp = sizeof(*src.rss->queue) * src.rss->queue_num;
-			if (size >= off + tmp)
+			if (size >= (uint64_t)off + (uint64_t)tmp)
 				dst.rss->queue = rte_memcpy
 					((void *)((uintptr_t)dst.rss + off),
 					 src.rss->queue, tmp);
@@ -1887,6 +1908,8 @@ rte_flow_async_action_handle_query(uint16_t port_id,
 	const struct rte_flow_ops *ops = rte_flow_ops_get(port_id, error);
 	int ret;
 
+	if (unlikely(!ops))
+		return -rte_errno;
 	ret = ops->async_action_handle_query(dev, queue_id, op_attr,
 					  action_handle, data, user_data, error);
 	return flow_err(port_id, ret, error);

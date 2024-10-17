@@ -150,16 +150,17 @@ cnxk_sso_dev_validate(const struct rte_eventdev *event_dev)
 
 	deq_tmo_ns = conf->dequeue_timeout_ns;
 
-	if (deq_tmo_ns == 0)
-		deq_tmo_ns = dev->min_dequeue_timeout_ns;
-	if (deq_tmo_ns < dev->min_dequeue_timeout_ns ||
-	    deq_tmo_ns > dev->max_dequeue_timeout_ns) {
+	if (deq_tmo_ns && (deq_tmo_ns < dev->min_dequeue_timeout_ns ||
+			   deq_tmo_ns > dev->max_dequeue_timeout_ns)) {
 		plt_err("Unsupported dequeue timeout requested");
 		return -EINVAL;
 	}
 
-	if (conf->event_dev_cfg & RTE_EVENT_DEV_CFG_PER_DEQUEUE_TIMEOUT)
+	if (conf->event_dev_cfg & RTE_EVENT_DEV_CFG_PER_DEQUEUE_TIMEOUT) {
+		if (deq_tmo_ns == 0)
+			deq_tmo_ns = dev->min_dequeue_timeout_ns;
 		dev->is_timeout_deq = 1;
+	}
 
 	dev->deq_tmo_ns = deq_tmo_ns;
 
@@ -500,6 +501,9 @@ parse_qos_list(const char *value, void *opaque)
 	char *end = NULL;
 	char *f = s;
 
+	if (s == NULL)
+		return;
+
 	while (*s) {
 		if (*s == '[')
 			start = s;
@@ -551,7 +555,7 @@ cnxk_sso_parse_devargs(struct cnxk_sso_evdev *dev, struct rte_devargs *devargs)
 			   &dev->force_ena_bp);
 	rte_kvargs_process(kvlist, CN9K_SSO_SINGLE_WS, &parse_kvargs_flag,
 			   &single_ws);
-	rte_kvargs_process(kvlist, CN10K_SSO_GW_MODE, &parse_kvargs_flag,
+	rte_kvargs_process(kvlist, CN10K_SSO_GW_MODE, &parse_kvargs_value,
 			   &dev->gw_mode);
 	dev->dual_ws = !single_ws;
 	rte_kvargs_free(kvlist);
@@ -587,7 +591,7 @@ cnxk_sso_init(struct rte_eventdev *event_dev)
 	}
 
 	dev->is_timeout_deq = 0;
-	dev->min_dequeue_timeout_ns = 0;
+	dev->min_dequeue_timeout_ns = USEC2NSEC(1);
 	dev->max_dequeue_timeout_ns = USEC2NSEC(0x3FF);
 	dev->max_num_events = -1;
 	dev->nb_event_queues = 0;

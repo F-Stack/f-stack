@@ -45,6 +45,7 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 	struct rte_eth_conf *dev_conf;
 	struct rte_eth_rxmode *rxmode;
 	uint32_t intr_vector;
+	uint16_t i;
 	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -113,6 +114,8 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 	if (nfp_net_reconfig(hw, new_ctrl, update) < 0)
 		return -EIO;
 
+	hw->ctrl = new_ctrl;
+
 	/*
 	 * Allocating rte mbufs for configured rx queues.
 	 * This requires queues being enabled before
@@ -122,7 +125,10 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 		goto error;
 	}
 
-	hw->ctrl = new_ctrl;
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	return 0;
 
@@ -314,8 +320,6 @@ nfp_netvf_init(struct rte_eth_dev *eth_dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	rte_eth_copy_pci_info(eth_dev, pci_dev);
-
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
@@ -446,6 +450,8 @@ nfp_netvf_init(struct rte_eth_dev *eth_dev)
 					   (void *)eth_dev);
 		/* Telling the firmware about the LSC interrupt entry */
 		nn_cfg_writeb(hw, NFP_NET_CFG_LSC, NFP_NET_IRQ_LSC_IDX);
+		/* Unmask the LSC interrupt */
+		nfp_net_irq_unmask(eth_dev);
 		/* Recording current stats counters values */
 		nfp_net_stats_reset(eth_dev);
 	}

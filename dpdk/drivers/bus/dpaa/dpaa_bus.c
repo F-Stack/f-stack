@@ -187,6 +187,7 @@ dpaa_create_device_list(void)
 		if (dev->intr_handle == NULL) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate intr handle");
 			ret = -ENOMEM;
+			free(dev);
 			goto cleanup;
 		}
 
@@ -220,7 +221,7 @@ dpaa_create_device_list(void)
 
 	if (dpaa_sec_available()) {
 		DPAA_BUS_LOG(INFO, "DPAA SEC devices are not available");
-		return 0;
+		goto qdma_dpaa;
 	}
 
 	/* Creating SEC Devices */
@@ -238,6 +239,7 @@ dpaa_create_device_list(void)
 		if (dev->intr_handle == NULL) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate intr handle");
 			ret = -ENOMEM;
+			free(dev);
 			goto cleanup;
 		}
 
@@ -259,6 +261,7 @@ dpaa_create_device_list(void)
 
 	rte_dpaa_bus.device_count += i;
 
+qdma_dpaa:
 	/* Creating QDMA Device */
 	for (i = 0; i < RTE_DPAA_QDMA_DEVICES; i++) {
 		dev = calloc(1, sizeof(struct rte_dpaa_device));
@@ -791,6 +794,10 @@ dpaa_bus_dev_iterate(const void *start, const char *str,
 
 	/* Now that name=device_name format is available, split */
 	dup = strdup(str);
+	if (dup == NULL) {
+		DPAA_BUS_DEBUG("Dup string (%s) failed!\n", str);
+		return NULL;
+	}
 	dev_name = dup + strlen("name=");
 
 	if (start != NULL) {

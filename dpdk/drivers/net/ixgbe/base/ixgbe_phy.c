@@ -432,8 +432,7 @@ enum ixgbe_phy_type ixgbe_get_phy_type_from_id(u32 phy_id)
 	case TN1010_PHY_ID:
 		phy_type = ixgbe_phy_tn;
 		break;
-	case X550_PHY_ID2:
-	case X550_PHY_ID3:
+	case X550_PHY_ID:
 	case X540_PHY_ID:
 		phy_type = ixgbe_phy_aq;
 		break;
@@ -915,6 +914,10 @@ static s32 ixgbe_get_copper_speeds_supported(struct ixgbe_hw *hw)
 		hw->phy.speeds_supported |= IXGBE_LINK_SPEED_100_FULL;
 
 	switch (hw->mac.type) {
+	case ixgbe_mac_X550:
+		hw->phy.speeds_supported |= IXGBE_LINK_SPEED_2_5GB_FULL;
+		hw->phy.speeds_supported |= IXGBE_LINK_SPEED_5GB_FULL;
+		break;
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
 		hw->phy.speeds_supported &= ~IXGBE_LINK_SPEED_100_FULL;

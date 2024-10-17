@@ -351,8 +351,6 @@ struct ice_fdir_filter_conf {
 	u8 pkt_len;
 };
 
-#define ICE_MAX_FDIR_FILTER_NUM		(1024 * 16)
-
 struct ice_fdir_fltr_pattern {
 	enum ice_fltr_ptype flow_type;
 
@@ -550,6 +548,10 @@ struct ice_pf {
 	uint64_t supported_rxdid; /* bitmap for supported RXDID */
 	uint64_t rss_hf;
 	struct ice_tm_conf tm_conf;
+	/* lock prevent race condition between lsc interrupt handler
+	 * and link status update during dev_start.
+	 */
+	rte_spinlock_t link_lock;
 };
 
 #define ICE_MAX_QUEUE_NUM  2048

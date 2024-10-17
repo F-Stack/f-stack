@@ -28,9 +28,8 @@ ice_sched_add_root_node(struct ice_port_info *pi,
 	if (!root)
 		return ICE_ERR_NO_MEMORY;
 
-	/* coverity[suspicious_sizeof] */
 	root->children = (struct ice_sched_node **)
-		ice_calloc(hw, hw->max_children[0], sizeof(*root));
+		ice_calloc(hw, hw->max_children[0], sizeof(*root->children));
 	if (!root->children) {
 		ice_free(hw, root);
 		return ICE_ERR_NO_MEMORY;
@@ -180,9 +179,9 @@ ice_sched_add_node(struct ice_port_info *pi, u8 layer,
 	if (!node)
 		return ICE_ERR_NO_MEMORY;
 	if (hw->max_children[layer]) {
-		/* coverity[suspicious_sizeof] */
 		node->children = (struct ice_sched_node **)
-			ice_calloc(hw, hw->max_children[layer], sizeof(*node));
+			ice_calloc(hw, hw->max_children[layer],
+				   sizeof(*node->children));
 		if (!node->children) {
 			ice_free(hw, node);
 			return ICE_ERR_NO_MEMORY;
@@ -1057,11 +1056,11 @@ ice_sched_add_nodes_to_layer(struct ice_port_info *pi,
 	u32 *first_teid_ptr = first_node_teid;
 	u16 new_num_nodes = num_nodes;
 	enum ice_status status = ICE_SUCCESS;
+	u32 temp;
 
 	*num_nodes_added = 0;
 	while (*num_nodes_added < num_nodes) {
 		u16 max_child_nodes, num_added = 0;
-		u32 temp;
 
 		status = ice_sched_add_nodes_to_hw_layer(pi, tc_node, parent,
 							 layer,	new_num_nodes,

@@ -104,7 +104,7 @@ struct xsk_umem_info {
 struct rx_stats {
 	uint64_t rx_pkts;
 	uint64_t rx_bytes;
-	uint64_t rx_dropped;
+	uint64_t imissed_offset;
 };
 
 struct pkt_rx_queue {
@@ -112,6 +112,7 @@ struct pkt_rx_queue {
 	struct xsk_umem_info *umem;
 	struct xsk_socket *xsk;
 	struct rte_mempool *mb_pool;
+	uint16_t port;
 
 	struct rx_stats stats;
 
@@ -289,6 +290,7 @@ af_xdp_rx_zc(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	unsigned long rx_bytes = 0;
 	int i;
 	struct rte_mbuf *fq_bufs[ETH_AF_XDP_RX_BATCH_SIZE];
+	struct rte_eth_dev *dev = &rte_eth_devices[rxq->port];
 
 	nb_pkts = xsk_ring_cons__peek(rx, nb_pkts, &idx_rx);
 
@@ -316,6 +318,8 @@ af_xdp_rx_zc(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		 * xsk_ring_cons__peek
 		 */
 		rx->cached_cons -= nb_pkts;
+		dev->data->rx_mbuf_alloc_failed += nb_pkts;
+
 		return 0;
 	}
 
@@ -338,6 +342,7 @@ af_xdp_rx_zc(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		bufs[i]->data_off = offset - sizeof(struct rte_mbuf) -
 			rte_pktmbuf_priv_size(umem->mb_pool) -
 			umem->mb_pool->header_size;
+		bufs[i]->port = rxq->port;
 
 		rte_pktmbuf_pkt_len(bufs[i]) = len;
 		rte_pktmbuf_data_len(bufs[i]) = len;
@@ -366,6 +371,7 @@ af_xdp_rx_cp(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	int i;
 	uint32_t free_thresh = fq->size >> 1;
 	struct rte_mbuf *mbufs[ETH_AF_XDP_RX_BATCH_SIZE];
+	struct rte_eth_dev *dev = &rte_eth_devices[rxq->port];
 
 	if (xsk_prod_nb_free(fq, free_thresh) >= free_thresh)
 		(void)reserve_fill_queue(umem, nb_pkts, NULL, fq);
@@ -384,6 +390,7 @@ af_xdp_rx_cp(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		 * xsk_ring_cons__peek
 		 */
 		rx->cached_cons -= nb_pkts;
+		dev->data->rx_mbuf_alloc_failed += nb_pkts;
 		return 0;
 	}
 
@@ -404,6 +411,7 @@ af_xdp_rx_cp(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		rte_pktmbuf_data_len(mbufs[i]) = len;
 		rx_bytes += len;
 		bufs[i] = mbufs[i];
+		bufs[i]->port = rxq->port;
 	}
 
 	xsk_ring_cons__release(rx, nb_pkts);
@@ -672,7 +680,13 @@ eth_af_xdp_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
 
 	return 0;
 }
@@ -681,7 +695,14 @@ eth_dev_start(struct rte_eth_dev *dev)
 static int
 eth_dev_stop(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	}
+
 	return 0;
 }
 
@@ -832,7 +853,6 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 		stats->ipackets += stats->q_ipackets[i];
 		stats->ibytes += stats->q_ibytes[i];
-		stats->imissed += rxq->stats.rx_dropped;
 		stats->oerrors += txq->stats.tx_dropped;
 		fd = process_private->rxq_xsk_fds[i];
 		ret = fd >= 0 ? getsockopt(fd, SOL_XDP, XDP_STATISTICS,
@@ -841,7 +861,7 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			AF_XDP_LOG(ERR, "getsockopt() failed for XDP_STATISTICS.\n");
 			return -1;
 		}
-		stats->imissed += xdp_stats.rx_dropped;
+		stats->imissed += xdp_stats.rx_dropped - rxq->stats.imissed_offset;
 
 		stats->opackets += stats->q_opackets[i];
 		stats->obytes += stats->q_obytes[i];
@@ -854,13 +874,25 @@ static int
 eth_stats_reset(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *internals = dev->data->dev_private;
-	int i;
+	struct pmd_process_private *process_private = dev->process_private;
+	struct xdp_statistics xdp_stats;
+	socklen_t optlen;
+	int i, ret, fd;
 
 	for (i = 0; i < internals->queue_cnt; i++) {
 		memset(&internals->rx_queues[i].stats, 0,
 					sizeof(struct rx_stats));
 		memset(&internals->tx_queues[i].stats, 0,
 					sizeof(struct tx_stats));
+		fd = process_private->rxq_xsk_fds[i];
+		optlen = sizeof(struct xdp_statistics);
+		ret = fd >= 0 ? getsockopt(fd, SOL_XDP, XDP_STATISTICS,
+					   &xdp_stats, &optlen) : -1;
+		if (ret != 0) {
+			AF_XDP_LOG(ERR, "getsockopt() failed for XDP_STATISTICS.\n");
+			return -1;
+		}
+		internals->rx_queues[i].stats.imissed_offset = xdp_stats.rx_dropped;
 	}
 
 	return 0;
@@ -925,6 +957,9 @@ remove_xdp_program(struct pmd_internals *internals)
 static void
 xdp_umem_destroy(struct xsk_umem_info *umem)
 {
+	(void)xsk_umem__delete(umem->umem);
+	umem->umem = NULL;
+
 #if defined(XDP_UMEM_UNALIGNED_CHUNK_FLAG)
 	umem->mb_pool = NULL;
 #else
@@ -957,11 +992,8 @@ eth_dev_close(struct rte_eth_dev *dev)
 			break;
 		xsk_socket__delete(rxq->xsk);
 
-		if (__atomic_sub_fetch(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE)
-				== 0) {
-			(void)xsk_umem__delete(rxq->umem->umem);
+		if (__atomic_sub_fetch(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE) - 1 == 0)
 			xdp_umem_destroy(rxq->umem);
-		}
 
 		/* free pkt_tx_queue */
 		rte_free(rxq->pair);
@@ -1198,6 +1230,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 		AF_XDP_LOG(ERR, "Failed to reserve memzone for af_xdp umem.\n");
 		goto err;
 	}
+	umem->mz = mz;
 
 	ret = xsk_umem__create(&umem->umem, mz->addr,
 			       ETH_AF_XDP_NUM_BUFFERS * ETH_AF_XDP_FRAME_SIZE,
@@ -1208,7 +1241,6 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals,
 		AF_XDP_LOG(ERR, "Failed to create umem\n");
 		goto err;
 	}
-	umem->mz = mz;
 
 	return umem;
 
@@ -1481,6 +1513,8 @@ eth_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->fds[0].events = POLLIN;
 
 	process_private->rxq_xsk_fds[rx_queue_id] = rxq->fds[0].fd;
+
+	rxq->port = dev->data->port_id;
 
 	dev->data->rx_queues[rx_queue_id] = rxq;
 	return 0;

@@ -15,10 +15,6 @@ INTERNAL {
 	cnxk_logtype_sso;
 	cnxk_logtype_tim;
 	cnxk_logtype_tm;
-	cnxk_onf_ipsec_inb_sa_fill;
-	cnxk_onf_ipsec_outb_sa_fill;
-	cnxk_onf_ipsec_inb_sa_valid;
-	cnxk_onf_ipsec_outb_sa_valid;
 	cnxk_ot_ipsec_inb_sa_fill;
 	cnxk_ot_ipsec_outb_sa_fill;
 	cnxk_ot_ipsec_inb_sa_valid;
@@ -353,6 +349,7 @@ INTERNAL {
 	roc_npc_mcam_write_entry;
 	roc_npc_mcam_read_counter;
 	roc_npc_profile_name_get;
+	roc_npc_sdp_channel_get;
 	roc_npc_validate_portid_action;
 	roc_ot_ipsec_inb_sa_init;
 	roc_ot_ipsec_outb_sa_init;

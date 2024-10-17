@@ -275,15 +275,25 @@ rte_eth_dev_create(struct rte_device *device, const char *name,
 			return -ENODEV;
 
 		if (priv_data_size) {
+			/* try alloc private data on device-local node. */
 			ethdev->data->dev_private = rte_zmalloc_socket(
 				name, priv_data_size, RTE_CACHE_LINE_SIZE,
 				device->numa_node);
 
-			if (!ethdev->data->dev_private) {
-				RTE_ETHDEV_LOG(ERR,
-					"failed to allocate private data\n");
-				retval = -ENOMEM;
-				goto probe_failed;
+			/* fall back to alloc on any socket on failure */
+			if (ethdev->data->dev_private == NULL) {
+				ethdev->data->dev_private = rte_zmalloc(name,
+						priv_data_size, RTE_CACHE_LINE_SIZE);
+
+				if (ethdev->data->dev_private == NULL) {
+					RTE_ETHDEV_LOG(ERR, "failed to allocate private data\n");
+					retval = -ENOMEM;
+					goto probe_failed;
+				}
+				/* got memory, but not local, so issue warning */
+				RTE_ETHDEV_LOG(WARNING,
+						"Private data for ethdev '%s' not allocated on local NUMA node %d\n",
+						device->name, device->numa_node);
 			}
 		}
 	} else {
@@ -465,7 +475,7 @@ rte_eth_devargs_parse(const char *dargs, struct rte_eth_devargs *eth_da)
 		pair = &args.pairs[i];
 		if (strcmp("representor", pair->key) == 0) {
 			if (eth_da->type != RTE_ETH_REPRESENTOR_NONE) {
-				RTE_LOG(ERR, EAL, "duplicated representor key: %s\n",
+				RTE_ETHDEV_LOG(ERR, "duplicated representor key: %s\n",
 					dargs);
 				result = -1;
 				goto parse_cleanup;
@@ -691,7 +701,7 @@ rte_eth_representor_id_get(uint16_t port_id,
 		if (info->ranges[i].controller != controller)
 			continue;
 		if (info->ranges[i].id_end < info->ranges[i].id_base) {
-			RTE_LOG(WARNING, EAL, "Port %hu invalid representor ID Range %u - %u, entry %d\n",
+			RTE_ETHDEV_LOG(WARNING, "Port %hu invalid representor ID Range %u - %u, entry %d\n",
 				port_id, info->ranges[i].id_base,
 				info->ranges[i].id_end, i);
 			continue;

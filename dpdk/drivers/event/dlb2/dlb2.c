@@ -72,6 +72,7 @@ static struct rte_event_dev_info evdev_dlb2_default_info = {
 	.max_single_link_event_port_queue_pairs =
 		DLB2_MAX_NUM_DIR_PORTS(DLB2_HW_V2),
 	.event_dev_cap = (RTE_EVENT_DEV_CAP_EVENT_QOS |
+			  RTE_EVENT_DEV_CAP_NONSEQ_MODE |
 			  RTE_EVENT_DEV_CAP_DISTRIBUTED_SCHED |
 			  RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES |
 			  RTE_EVENT_DEV_CAP_BURST_MODE |
@@ -215,7 +216,6 @@ static int
 dlb2_hw_query_resources(struct dlb2_eventdev *dlb2)
 {
 	struct dlb2_hw_dev *handle = &dlb2->qm_instance;
-	struct dlb2_hw_resource_info *dlb2_info = &handle->info;
 	int num_ldb_ports;
 	int ret;
 
@@ -276,8 +276,6 @@ dlb2_hw_query_resources(struct dlb2_eventdev *dlb2)
 
 	handle->info.hw_rsrc_max.reorder_window_size =
 		dlb2->hw_rsrc_query_results.num_hist_list_entries;
-
-	rte_memcpy(dlb2_info, &handle->info.hw_rsrc_max, sizeof(*dlb2_info));
 
 	return 0;
 }

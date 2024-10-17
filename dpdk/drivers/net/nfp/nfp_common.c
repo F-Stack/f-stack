@@ -279,7 +279,7 @@ int
 nfp_net_set_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 {
 	struct nfp_net_hw *hw;
-	uint32_t update, ctrl;
+	uint32_t update, new_ctrl;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	if ((hw->ctrl & NFP_NET_CFG_CTRL_ENABLE) &&
@@ -294,14 +294,18 @@ nfp_net_set_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 
 	/* Signal the NIC about the change */
 	update = NFP_NET_CFG_UPDATE_MACADDR;
-	ctrl = hw->ctrl;
+	new_ctrl = hw->ctrl;
 	if ((hw->ctrl & NFP_NET_CFG_CTRL_ENABLE) &&
 	    (hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR))
-		ctrl |= NFP_NET_CFG_CTRL_LIVE_ADDR;
-	if (nfp_net_reconfig(hw, ctrl, update) < 0) {
+		new_ctrl |= NFP_NET_CFG_CTRL_LIVE_ADDR;
+
+	if (nfp_net_reconfig(hw, new_ctrl, update) < 0) {
 		PMD_INIT_LOG(INFO, "MAC address update failed");
 		return -EIO;
 	}
+
+	hw->ctrl = new_ctrl;
+
 	return 0;
 }
 
@@ -885,7 +889,7 @@ nfp_net_dev_link_status_print(struct rte_eth_dev *dev)
  * If MSI-X auto-masking is enabled clear the mask bit, otherwise
  * clear the ICR for the entry.
  */
-static void
+void
 nfp_net_irq_unmask(struct rte_eth_dev *dev)
 {
 	struct nfp_net_hw *hw;
@@ -1337,6 +1341,7 @@ nfp_net_stop_rx_queue(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		this_rx_q = (struct nfp_net_rxq *)dev->data->rx_queues[i];
 		nfp_net_reset_rx_queue(this_rx_q);
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 }
 
@@ -1362,6 +1367,7 @@ nfp_net_stop_tx_queue(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		this_tx_q = (struct nfp_net_txq *)dev->data->tx_queues[i];
 		nfp_net_reset_tx_queue(this_tx_q);
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 }
 

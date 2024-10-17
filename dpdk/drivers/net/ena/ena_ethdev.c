@@ -37,10 +37,10 @@
 #define ENA_MIN_RING_DESC	128
 
 /*
- * We should try to keep ENA_CLEANUP_BUF_SIZE lower than
+ * We should try to keep ENA_CLEANUP_BUF_THRESH lower than
  * RTE_MEMPOOL_CACHE_MAX_SIZE, so we can fit this in mempool local cache.
  */
-#define ENA_CLEANUP_BUF_SIZE	256
+#define ENA_CLEANUP_BUF_THRESH	256
 
 #define ENA_PTYPE_HAS_HASH	(RTE_PTYPE_L4_TCP | RTE_PTYPE_L4_UDP)
 
@@ -590,18 +590,13 @@ static inline void ena_rx_mbuf_prepare(struct ena_ring *rx_ring,
 		packet_type |= RTE_PTYPE_L3_IPV6;
 	}
 
-	if (!ena_rx_ctx->l4_csum_checked || ena_rx_ctx->frag) {
+	if (!ena_rx_ctx->l4_csum_checked || ena_rx_ctx->frag ||
+		!(packet_type & (RTE_PTYPE_L4_TCP | RTE_PTYPE_L4_UDP))) {
 		ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
 	} else {
 		if (unlikely(ena_rx_ctx->l4_csum_err)) {
 			++rx_stats->l4_csum_bad;
-			/*
-			 * For the L4 Rx checksum offload the HW may indicate
-			 * bad checksum although it's valid. Because of that,
-			 * we're setting the UNKNOWN flag to let the app
-			 * re-verify the checksum.
-			 */
-			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 		} else {
 			++rx_stats->l4_csum_good;
 			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
@@ -739,7 +734,7 @@ static void ena_config_host_info(struct ena_com_dev *ena_dev)
 
 	rc = ena_com_set_host_attributes(ena_dev);
 	if (rc) {
-		if (rc == -ENA_COM_UNSUPPORTED)
+		if (rc == ENA_COM_UNSUPPORTED)
 			PMD_DRV_LOG(WARNING, "Cannot set host attributes\n");
 		else
 			PMD_DRV_LOG(ERR, "Cannot set host attributes\n");
@@ -779,7 +774,7 @@ static void ena_config_debug_area(struct ena_adapter *adapter)
 
 	rc = ena_com_set_host_attributes(&adapter->ena_dev);
 	if (rc) {
-		if (rc == -ENA_COM_UNSUPPORTED)
+		if (rc == ENA_COM_UNSUPPORTED)
 			PMD_DRV_LOG(WARNING, "Cannot set host attributes\n");
 		else
 			PMD_DRV_LOG(ERR, "Cannot set host attributes\n");
@@ -1171,6 +1166,7 @@ static int ena_start(struct rte_eth_dev *dev)
 	struct ena_adapter *adapter = dev->data->dev_private;
 	uint64_t ticks;
 	int rc = 0;
+	uint16_t i;
 
 	/* Cannot allocate memory in secondary process */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -1208,6 +1204,11 @@ static int ena_start(struct rte_eth_dev *dev)
 	++adapter->dev_stats.dev_start;
 	adapter->state = ENA_ADAPTER_STATE_RUNNING;
 
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	return 0;
 
 err_rss_init:
@@ -1223,6 +1224,7 @@ static int ena_stop(struct rte_eth_dev *dev)
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
+	uint16_t i;
 	int rc;
 
 	/* Cannot free memory in secondary process */
@@ -1253,6 +1255,11 @@ static int ena_stop(struct rte_eth_dev *dev)
 	++adapter->dev_stats.dev_stop;
 	adapter->state = ENA_ADAPTER_STATE_STOPPED;
 	dev->data->dev_started = 0;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -3006,33 +3013,12 @@ static int ena_xmit_mbuf(struct ena_ring *tx_ring, struct rte_mbuf *mbuf)
 	return 0;
 }
 
-static __rte_always_inline size_t
-ena_tx_cleanup_mbuf_fast(struct rte_mbuf **mbufs_to_clean,
-			 struct rte_mbuf *mbuf,
-			 size_t mbuf_cnt,
-			 size_t buf_size)
-{
-	struct rte_mbuf *m_next;
-
-	while (mbuf != NULL) {
-		m_next = mbuf->next;
-		mbufs_to_clean[mbuf_cnt++] = mbuf;
-		if (mbuf_cnt == buf_size) {
-			rte_mempool_put_bulk(mbufs_to_clean[0]->pool, (void **)mbufs_to_clean,
-				(unsigned int)mbuf_cnt);
-			mbuf_cnt = 0;
-		}
-		mbuf = m_next;
-	}
-
-	return mbuf_cnt;
-}
-
 static int ena_tx_cleanup(void *txp, uint32_t free_pkt_cnt)
 {
-	struct rte_mbuf *mbufs_to_clean[ENA_CLEANUP_BUF_SIZE];
+	struct rte_mbuf *pkts_to_clean[ENA_CLEANUP_BUF_THRESH];
 	struct ena_ring *tx_ring = (struct ena_ring *)txp;
 	size_t mbuf_cnt = 0;
+	size_t pkt_cnt = 0;
 	unsigned int total_tx_descs = 0;
 	unsigned int total_tx_pkts = 0;
 	uint16_t cleanup_budget;
@@ -3063,8 +3049,13 @@ static int ena_tx_cleanup(void *txp, uint32_t free_pkt_cnt)
 
 		mbuf = tx_info->mbuf;
 		if (fast_free) {
-			mbuf_cnt = ena_tx_cleanup_mbuf_fast(mbufs_to_clean, mbuf, mbuf_cnt,
-				ENA_CLEANUP_BUF_SIZE);
+			pkts_to_clean[pkt_cnt++] = mbuf;
+			mbuf_cnt += mbuf->nb_segs;
+			if (mbuf_cnt >= ENA_CLEANUP_BUF_THRESH) {
+				rte_pktmbuf_free_bulk(pkts_to_clean, pkt_cnt);
+				mbuf_cnt = 0;
+				pkt_cnt = 0;
+			}
 		} else {
 			rte_pktmbuf_free(mbuf);
 		}
@@ -3088,8 +3079,7 @@ static int ena_tx_cleanup(void *txp, uint32_t free_pkt_cnt)
 	}
 
 	if (mbuf_cnt != 0)
-		rte_mempool_put_bulk(mbufs_to_clean[0]->pool,
-			(void **)mbufs_to_clean, mbuf_cnt);
+		rte_pktmbuf_free_bulk(pkts_to_clean, pkt_cnt);
 
 	/* Notify completion handler that full cleanup was performed */
 	if (free_pkt_cnt == 0 || total_tx_pkts < cleanup_budget)

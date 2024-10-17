@@ -355,7 +355,7 @@ cn9k_nix_xmit_prepare_tstamp(struct cn9k_eth_txq *txq, uint64_t *cmd,
 
 		send_mem = (struct nix_send_mem_s *)(cmd + off);
 
-		/* Packets for which PKT_TX_IEEE1588_TMST is not set, tx tstamp
+		/* Packets for which RTE_MBUF_F_TX_IEEE1588_TMST is not set, Tx tstamp
 		 * should not be recorded, hence changing the alg type to
 		 * NIX_SENDMEMALG_SUB and also changing send mem addr field to
 		 * next 8 bytes as it corrupts the actual Tx tstamp registered
@@ -449,6 +449,10 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 		RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
 	rte_io_wmb();
 #endif
+#ifdef RTE_ENABLE_ASSERT
+	m->next = NULL;
+	m->nb_segs = 1;
+#endif
 	m = m_next;
 	if (!m)
 		goto done;
@@ -483,6 +487,9 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 			sg_u = sg->u;
 			slist++;
 		}
+#ifdef RTE_ENABLE_ASSERT
+		m->next = NULL;
+#endif
 		m = m_next;
 	} while (nb_segs);
 
@@ -496,6 +503,9 @@ done:
 	segdw += (off >> 1) + 1 + !!(flags & NIX_TX_OFFLOAD_TSTAMP_F);
 	send_hdr->w0.sizem1 = segdw - 1;
 
+#ifdef RTE_ENABLE_ASSERT
+	rte_io_wmb();
+#endif
 	return segdw;
 }
 
@@ -699,6 +709,10 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 	rte_io_wmb();
 #endif
 
+#ifdef RTE_ENABLE_ASSERT
+	m->next = NULL;
+	m->nb_segs = 1;
+#endif
 	m = m_next;
 	/* Fill mbuf segments */
 	do {
@@ -728,6 +742,9 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 			sg_u = sg->u;
 			slist++;
 		}
+#ifdef RTE_ENABLE_ASSERT
+		m->next = NULL;
+#endif
 		m = m_next;
 	} while (nb_segs);
 
@@ -743,6 +760,9 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 		 !!(flags & NIX_TX_OFFLOAD_TSTAMP_F);
 	sh->sizem1 = segdw - 1;
 
+#ifdef RTE_ENABLE_ASSERT
+	rte_io_wmb();
+#endif
 	return segdw;
 }
 

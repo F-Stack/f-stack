@@ -898,7 +898,7 @@ cn10k_nix_xmit_prepare_tstamp(struct cn10k_eth_txq *txq, uintptr_t lmt_addr,
 		struct nix_send_mem_s *send_mem;
 
 		send_mem = (struct nix_send_mem_s *)(lmt + off);
-		/* Packets for which PKT_TX_IEEE1588_TMST is not set, tx tstamp
+		/* Packets for which RTE_MBUF_F_TX_IEEE1588_TMST is not set, Tx tstamp
 		 * should not be recorded, hence changing the alg type to
 		 * NIX_SENDMEMALG_SUB and also changing send mem addr field to
 		 * next 8 bytes as it corrupts the actual Tx tstamp registered
@@ -943,6 +943,7 @@ cn10k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 	len -= sg_u & 0xFFFF;
 	nb_segs = m->nb_segs - 1;
 	m_next = m->next;
+	m->nb_segs = 1;
 	slist = &cmd[3 + off + 1];
 
 	/* Set invert df if buffer is not to be freed by H/W */
@@ -1387,6 +1388,9 @@ cn10k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 	len -= dlen;
 	sg_u = sg_u | ((uint64_t)dlen);
 
+	/* Mark mempool object as "put" since it is freed by NIX */
+	RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+
 	nb_segs = m->nb_segs - 1;
 	m_next = m->next;
 
@@ -1401,6 +1405,7 @@ cn10k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 #endif
 
 	m->next = NULL;
+	m->nb_segs = 1;
 	m = m_next;
 	/* Fill mbuf segments */
 	do {
@@ -1433,6 +1438,9 @@ cn10k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 			slist++;
 		}
 		m->next = NULL;
+		/* Mark mempool object as "put" since it is freed by NIX */
+		RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+
 		m = m_next;
 	} while (nb_segs);
 
@@ -1469,6 +1477,8 @@ cn10k_nix_prepare_mseg_vec(struct rte_mbuf *m, uint64_t *cmd, uint64x2_t *cmd0,
 			RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
 		rte_io_wmb();
 #endif
+		/* Mark mempool object as "put" since it is freed by NIX */
+		RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
 		return;
 	}
 
@@ -1513,6 +1523,11 @@ cn10k_nix_prep_lmt_mseg_vector(struct rte_mbuf **mbufs, uint64x2_t *cmd0,
 			*data128 |= ((__uint128_t)7) << *shift;
 			*shift += 3;
 
+			/* Mark mempool object as "put" since it is freed by NIX */
+			RTE_MEMPOOL_CHECK_COOKIES(mbufs[0]->pool, (void **)&mbufs[0], 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(mbufs[1]->pool, (void **)&mbufs[1], 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(mbufs[2]->pool, (void **)&mbufs[2], 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(mbufs[3]->pool, (void **)&mbufs[3], 1, 0);
 			return 1;
 		}
 	}
@@ -1539,6 +1554,11 @@ cn10k_nix_prep_lmt_mseg_vector(struct rte_mbuf **mbufs, uint64x2_t *cmd0,
 				vst1q_u64(lmt_addr + 10, cmd2[j + 1]);
 				vst1q_u64(lmt_addr + 12, cmd1[j + 1]);
 				vst1q_u64(lmt_addr + 14, cmd3[j + 1]);
+
+				/* Mark mempool object as "put" since it is freed by NIX */
+				RTE_MEMPOOL_CHECK_COOKIES(mbufs[j]->pool, (void **)&mbufs[j], 1, 0);
+				RTE_MEMPOOL_CHECK_COOKIES(mbufs[j + 1]->pool,
+							  (void **)&mbufs[j + 1], 1, 0);
 			} else if (flags & NIX_TX_NEED_EXT_HDR) {
 				/* EXT header take 3 each, space for 2 segs.*/
 				cn10k_nix_prepare_mseg_vec(mbufs[j],
@@ -1823,7 +1843,8 @@ again:
 	}
 
 	for (i = 0; i < burst; i += NIX_DESCS_PER_LOOP) {
-		if (flags & NIX_TX_OFFLOAD_SECURITY_F && c_lnum + 2 > 16) {
+		if (flags & NIX_TX_OFFLOAD_SECURITY_F &&
+		    (((int)((16 - c_lnum) << 1) - c_loff) < 4)) {
 			burst = i;
 			break;
 		}
@@ -1909,13 +1930,13 @@ again:
 			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf0), 1);
 		len_olflags0 = vld1q_u64(mbuf0 + 3);
 		dataoff_iova1 =
-			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf1), 1);
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf1)->data_off, vld1q_u64(mbuf1), 1);
 		len_olflags1 = vld1q_u64(mbuf1 + 3);
 		dataoff_iova2 =
-			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf2), 1);
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf2)->data_off, vld1q_u64(mbuf2), 1);
 		len_olflags2 = vld1q_u64(mbuf2 + 3);
 		dataoff_iova3 =
-			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf3), 1);
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf3)->data_off, vld1q_u64(mbuf3), 1);
 		len_olflags3 = vld1q_u64(mbuf3 + 3);
 
 		/* Move mbufs to point pool */

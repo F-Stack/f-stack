@@ -465,13 +465,19 @@ typedef int (*rte_mempool_alloc_t)(struct rte_mempool *mp);
 typedef void (*rte_mempool_free_t)(struct rte_mempool *mp);
 
 /**
- * Enqueue an object into the external pool.
+ * Enqueue 'n' objects into the external pool.
+ * @return
+ *   - 0: Success
+ *   - <0: Error
  */
 typedef int (*rte_mempool_enqueue_t)(struct rte_mempool *mp,
 		void * const *obj_table, unsigned int n);
 
 /**
- * Dequeue an object from the external pool.
+ * Dequeue 'n' objects from the external pool.
+ * @return
+ *   - 0: Success
+ *   - <0: Error
  */
 typedef int (*rte_mempool_dequeue_t)(struct rte_mempool *mp,
 		void **obj_table, unsigned int n);
@@ -1484,7 +1490,7 @@ rte_mempool_put(struct rte_mempool *mp, void *obj)
  * @param cache
  *   A pointer to a mempool cache structure. May be NULL if not needed.
  * @return
- *   - >=0: Success; number of objects supplied.
+ *   - 0: Success.
  *   - <0: Error; code of driver dequeue function.
  */
 static __rte_always_inline int

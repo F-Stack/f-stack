@@ -234,15 +234,28 @@ struct mlx5_counter_ctrl {
 struct mlx5_xstats_ctrl {
 	/* Number of device stats. */
 	uint16_t stats_n;
+	/* Number of device stats, for the 2nd port in bond. */
+	uint16_t stats_n_2nd;
 	/* Number of device stats identified by PMD. */
-	uint16_t  mlx5_stats_n;
+	uint16_t mlx5_stats_n;
+	/* First device counters index. */
+	uint16_t dev_cnt_start;
 	/* Index in the device counters table. */
 	uint16_t dev_table_idx[MLX5_MAX_XSTATS];
+	/* Index in the output table. */
+	uint16_t xstats_o_idx[MLX5_MAX_XSTATS];
 	uint64_t base[MLX5_MAX_XSTATS];
 	uint64_t xstats[MLX5_MAX_XSTATS];
 	uint64_t hw_stats[MLX5_MAX_XSTATS];
 	struct mlx5_counter_ctrl info[MLX5_MAX_XSTATS];
+	/* Index in the device counters table, for the 2nd port in bond. */
+	uint16_t dev_table_idx_2nd[MLX5_MAX_XSTATS];
+	/* Index in the output table, for the 2nd port in bond. */
+	uint16_t xstats_o_idx_2nd[MLX5_MAX_XSTATS];
 };
+
+/* xstats array size. */
+extern const unsigned int xstats_n;
 
 struct mlx5_stats_ctrl {
 	/* Base for imissed counter. */
@@ -1245,7 +1258,7 @@ struct mlx5_aso_ct_action {
 	/* General action object for reply dir. */
 	void *dr_action_rply;
 	uint32_t refcnt; /* Action used count in device flows. */
-	uint16_t offset; /* Offset of ASO CT in DevX objects bulk. */
+	uint32_t offset; /* Offset of ASO CT in DevX objects bulk. */
 	uint16_t peer; /* The only peer port index could also use this CT. */
 	enum mlx5_aso_ct_state state; /* ASO CT state. */
 	bool is_original; /* The direction of the DR action to be used. */
@@ -1404,6 +1417,8 @@ struct mlx5_dev_ctx_shared {
 		struct mlx5_hlist *flow_tbls; /* SWS flow table. */
 		struct mlx5_hlist *groups; /* HWS flow group. */
 	};
+	struct mlx5_hlist *mreg_cp_tbl;
+	/* Hash table of Rx metadata register copy table. */
 	struct mlx5_flow_tunnel_hub *tunnel_hub;
 	/* Direct Rules tables for FDB, NIC TX+RX */
 	void *dr_drop_action; /* Pointer to DR drop action, any domain. */
@@ -1455,6 +1470,8 @@ struct mlx5_dev_ctx_shared {
 	uint32_t host_shaper_rate:8;
 	uint32_t lwm_triggered:1;
 	struct mlx5_hws_cnt_svc_mng *cnt_svc;
+	rte_spinlock_t cpool_lock;
+	LIST_HEAD(hws_cpool_list, mlx5_hws_cnt_pool) hws_cpool_list; /* Count pool list. */
 	struct mlx5_dev_shared_port port[]; /* per device port data array. */
 };
 
@@ -1637,10 +1654,50 @@ struct mlx5_obj_ops {
 
 #define MLX5_RSS_HASH_FIELDS_LEN RTE_DIM(mlx5_rss_hash_fields)
 
+enum mlx5_hw_ctrl_flow_type {
+	MLX5_HW_CTRL_FLOW_TYPE_GENERAL,
+	MLX5_HW_CTRL_FLOW_TYPE_SQ_MISS_ROOT,
+	MLX5_HW_CTRL_FLOW_TYPE_SQ_MISS,
+	MLX5_HW_CTRL_FLOW_TYPE_DEFAULT_JUMP,
+	MLX5_HW_CTRL_FLOW_TYPE_TX_META_COPY,
+	MLX5_HW_CTRL_FLOW_TYPE_TX_REPR_MATCH,
+	MLX5_HW_CTRL_FLOW_TYPE_LACP_RX,
+	MLX5_HW_CTRL_FLOW_TYPE_DEFAULT_RX_RSS,
+};
+
+/** Additional info about control flow rule. */
+struct mlx5_hw_ctrl_flow_info {
+	/** Determines the kind of control flow rule. */
+	enum mlx5_hw_ctrl_flow_type type;
+	union {
+		/**
+		 * If control flow is a SQ miss flow (root or not),
+		 * then fields contains matching SQ number.
+		 */
+		uint32_t esw_mgr_sq;
+		/**
+		 * If control flow is a Tx representor matching,
+		 * then fields contains matching SQ number.
+		 */
+		uint32_t tx_repr_sq;
+	};
+};
+
+/** Entry for tracking control flow rules in HWS. */
 struct mlx5_hw_ctrl_flow {
 	LIST_ENTRY(mlx5_hw_ctrl_flow) next;
+	/**
+	 * Owner device is a port on behalf of which flow rule was created.
+	 *
+	 * It's different from the port which really created the flow rule
+	 * if and only if flow rule is created on transfer proxy port
+	 * on behalf of representor port.
+	 */
 	struct rte_eth_dev *owner_dev;
+	/** Pointer to flow rule handle. */
 	struct rte_flow *flow;
+	/** Additional information about the control flow rule. */
+	struct mlx5_hw_ctrl_flow_info info;
 };
 
 struct mlx5_flow_hw_ctrl_rx;
@@ -1688,10 +1745,8 @@ struct mlx5_priv {
 	void *root_drop_action; /* Pointer to root drop action. */
 	rte_spinlock_t hw_ctrl_lock;
 	LIST_HEAD(hw_ctrl_flow, mlx5_hw_ctrl_flow) hw_ctrl_flows;
-	struct rte_flow_template_table *hw_esw_sq_miss_root_tbl;
-	struct rte_flow_template_table *hw_esw_sq_miss_tbl;
-	struct rte_flow_template_table *hw_esw_zero_tbl;
-	struct rte_flow_template_table *hw_tx_meta_cpy_tbl;
+	LIST_HEAD(hw_ext_ctrl_flow, mlx5_hw_ctrl_flow) hw_ext_ctrl_flows;
+	struct mlx5_flow_hw_ctrl_fdb *hw_ctrl_fdb;
 	struct rte_flow_pattern_template *hw_tx_repr_tagging_pt;
 	struct rte_flow_actions_template *hw_tx_repr_tagging_at;
 	struct rte_flow_template_table *hw_tx_repr_tagging_tbl;
@@ -1723,8 +1778,6 @@ struct mlx5_priv {
 	int nl_socket_rdma; /* Netlink socket (NETLINK_RDMA). */
 	int nl_socket_route; /* Netlink socket (NETLINK_ROUTE). */
 	struct mlx5_nl_vlan_vmwa_context *vmwa_context; /* VLAN WA context. */
-	struct mlx5_hlist *mreg_cp_tbl;
-	/* Hash table of Rx metadata register copy table. */
 	struct mlx5_mtr_config mtr_config; /* Meter configuration */
 	uint8_t mtr_sfx_reg; /* Meter prefix-suffix flow match REG_C. */
 	uint8_t mtr_color_reg; /* Meter color match REG_C. */
@@ -1771,6 +1824,8 @@ struct mlx5_priv {
 	struct mlx5dr_action *hw_drop[2];
 	/* HW steering global tag action. */
 	struct mlx5dr_action *hw_tag[2];
+	/* HW steering global default miss action. */
+	struct mlx5dr_action *hw_def_miss;
 	/* HW steering create ongoing rte flow table list header. */
 	LIST_HEAD(flow_hw_tbl_ongo, rte_flow_template_table) flow_hw_tbl_ongo;
 	struct mlx5_indexed_pool *acts_ipool; /* Action data indexed pool. */
@@ -1928,8 +1983,9 @@ int mlx5_get_module_eeprom(struct rte_eth_dev *dev,
 			   struct rte_dev_eeprom_info *info);
 int mlx5_os_read_dev_stat(struct mlx5_priv *priv,
 			  const char *ctr_name, uint64_t *stat);
-int mlx5_os_read_dev_counters(struct rte_eth_dev *dev, uint64_t *stats);
-int mlx5_os_get_stats_n(struct rte_eth_dev *dev);
+int mlx5_os_read_dev_counters(struct rte_eth_dev *dev, bool bond_master, uint64_t *stats);
+int mlx5_os_get_stats_n(struct rte_eth_dev *dev, bool bond_master,
+			uint16_t *n_stats, uint16_t *n_stats_sec);
 void mlx5_os_stats_init(struct rte_eth_dev *dev);
 int mlx5_get_flag_dropless_rq(struct rte_eth_dev *dev);
 

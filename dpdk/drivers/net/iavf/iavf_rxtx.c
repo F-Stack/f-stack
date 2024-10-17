@@ -2483,7 +2483,7 @@ iavf_fill_ctx_desc_segmentation_field(volatile uint64_t *field,
 			total_length -= m->outer_l3_len + m->outer_l2_len;
 	}
 
-#ifdef RTE_LIBRTE_IAVF_DEBUG_TX
+#ifdef RTE_ETHDEV_DEBUG_TX
 	if (!m->l4_len || !m->tso_segsz)
 		PMD_TX_LOG(DEBUG, "L4 length %d, LSO Segment size %d",
 			 m->l4_len, m->tso_segsz);
@@ -2597,6 +2597,10 @@ iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
 		l2tag1 |= m->vlan_tci;
 	}
 
+	if ((m->ol_flags &
+	    (IAVF_TX_CKSUM_OFFLOAD_MASK | RTE_MBUF_F_TX_SEC_OFFLOAD)) == 0)
+		goto skip_cksum;
+
 	/* Set MACLEN */
 	if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK &&
 			!(m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD))
@@ -2656,6 +2660,7 @@ iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
 		break;
 	}
 
+skip_cksum:
 	*qw1 = rte_cpu_to_le_64((((uint64_t)command <<
 		IAVF_TXD_DATA_QW1_CMD_SHIFT) & IAVF_TXD_DATA_QW1_CMD_MASK) |
 		(((uint64_t)offset << IAVF_TXD_DATA_QW1_OFFSET_SHIFT) &
@@ -2825,7 +2830,7 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			txe->last_id = desc_idx_last;
 			desc_idx = txe->next_id;
 			txe = txn;
-			}
+		}
 
 		if (nb_desc_ipsec) {
 			volatile struct iavf_tx_ipsec_desc *ipsec_desc =
@@ -2838,7 +2843,7 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			if (txe->mbuf) {
 				rte_pktmbuf_free_seg(txe->mbuf);
 				txe->mbuf = NULL;
-		}
+			}
 
 			iavf_fill_ipsec_desc(ipsec_desc, ipsec_md, &ipseclen);
 
@@ -2971,7 +2976,6 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	struct rte_mbuf *m;
 	struct iavf_tx_queue *txq = tx_queue;
 	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
-	uint16_t max_frame_size = dev->data->mtu + IAVF_ETH_OVERHEAD;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct iavf_adapter *adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 
@@ -2989,7 +2993,8 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 				return i;
 			}
 		} else if ((m->tso_segsz < IAVF_MIN_TSO_MSS) ||
-			   (m->tso_segsz > IAVF_MAX_TSO_MSS)) {
+			   (m->tso_segsz > IAVF_MAX_TSO_MSS) ||
+			   (m->nb_segs > txq->nb_tx_desc)) {
 			/* MSS outside the range are considered malicious */
 			rte_errno = EINVAL;
 			return i;
@@ -3000,11 +3005,8 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
-		/* check the data_len in mbuf */
-		if (m->data_len < IAVF_TX_MIN_PKT_LEN ||
-			m->data_len > max_frame_size) {
+		if (m->pkt_len < IAVF_TX_MIN_PKT_LEN) {
 			rte_errno = EINVAL;
-			PMD_DRV_LOG(ERR, "INVALID mbuf: bad data_len=[%hu]", m->data_len);
 			return i;
 		}
 

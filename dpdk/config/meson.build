@@ -91,13 +91,14 @@ else
             cpu_instruction_set = 'generic'
         endif
     endif
+    if platform == 'native'
+        if cpu_instruction_set == 'auto'
+            cpu_instruction_set = 'native'
+        endif
+    endif
 endif
 
-if platform == 'native'
-    if cpu_instruction_set == 'auto'
-        cpu_instruction_set = 'native'
-    endif
-elif platform == 'generic'
+if platform == 'generic'
     if cpu_instruction_set == 'auto'
         cpu_instruction_set = 'generic'
     endif
@@ -122,7 +123,7 @@ if cpu_instruction_set == 'generic'
     elif host_machine.cpu_family().startswith('ppc')
         cpu_instruction_set = 'power8'
     elif host_machine.cpu_family().startswith('riscv')
-        cpu_instruction_set = 'riscv'
+        cpu_instruction_set = 'rv64gc'
     endif
 endif
 
@@ -146,6 +147,9 @@ dpdk_conf.set('RTE_ARCH_32', cc.sizeof('void *') == 4)
 
 if not is_windows
     add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
+    if cc.has_link_argument('-Wl,--undefined-version')
+        add_project_link_arguments('-Wl,--undefined-version', language: 'c')
+    endif
 endif
 
 # use pthreads if available for the platform

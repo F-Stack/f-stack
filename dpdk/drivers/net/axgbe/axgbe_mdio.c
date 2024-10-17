@@ -200,13 +200,14 @@ static void axgbe_switch_mode(struct axgbe_port *pdata)
 	axgbe_change_mode(pdata, pdata->phy_if.phy_impl.switch_mode(pdata));
 }
 
-static void axgbe_set_mode(struct axgbe_port *pdata,
+static bool axgbe_set_mode(struct axgbe_port *pdata,
 			   enum axgbe_mode mode)
 {
 	if (mode == axgbe_cur_mode(pdata))
-		return;
+		return false;
 
 	axgbe_change_mode(pdata, mode);
+	return true;
 }
 
 static bool axgbe_use_mode(struct axgbe_port *pdata,
@@ -357,6 +358,7 @@ static enum axgbe_an axgbe_an73_tx_training(struct axgbe_port *pdata,
 	reg |= AXGBE_KR_TRAINING_ENABLE;
 	reg |= AXGBE_KR_TRAINING_START;
 	XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL, reg);
+	pdata->kr_start_time = rte_get_timer_cycles();
 
 	PMD_DRV_LOG(DEBUG, "KR training initiated\n");
 	if (pdata->phy_if.phy_impl.kr_training_post)
@@ -487,6 +489,7 @@ static enum axgbe_an axgbe_an73_incompat_link(struct axgbe_port *pdata)
 
 	axgbe_an_disable(pdata);
 	axgbe_switch_mode(pdata);
+	pdata->an_result = AXGBE_AN_READY;
 	axgbe_an_restart(pdata);
 
 	return AXGBE_AN_INCOMPAT_LINK;
@@ -967,11 +970,34 @@ static void axgbe_check_link_timeout(struct axgbe_port *pdata)
 {
 	unsigned long link_timeout;
 	unsigned long ticks;
+	unsigned long kr_time;
+	int wait;
 
 	link_timeout = pdata->link_check + (AXGBE_LINK_TIMEOUT *
 					    2 *  rte_get_timer_hz());
 	ticks = rte_get_timer_cycles();
 	if (time_after(ticks, link_timeout)) {
+		if ((axgbe_cur_mode(pdata) == AXGBE_MODE_KR) &&
+		    pdata->phy.autoneg == AUTONEG_ENABLE) {
+			/* AN restart should not happen while KR training is in progress.
+			 * The while loop ensures no AN restart during KR training,
+			 * waits up to 500ms and AN restart is triggered only if KR
+			 * training is failed.
+			 */
+			wait = AXGBE_KR_TRAINING_WAIT_ITER;
+			while (wait--) {
+				kr_time = pdata->kr_start_time +
+					  msecs_to_timer_cycles(AXGBE_AN_MS_TIMEOUT);
+				ticks = rte_get_timer_cycles();
+				if (time_after(ticks, kr_time))
+					break;
+				/* AN restart is not required, if AN result is COMPLETE */
+				if (pdata->an_result == AXGBE_AN_COMPLETE)
+					return;
+				rte_delay_us(10500);
+			}
+		}
+
 		PMD_DRV_LOG(NOTICE, "AN link timeout\n");
 		axgbe_phy_config_aneg(pdata);
 	}
@@ -982,7 +1008,7 @@ static enum axgbe_mode axgbe_phy_status_aneg(struct axgbe_port *pdata)
 	return pdata->phy_if.phy_impl.an_outcome(pdata);
 }
 
-static void axgbe_phy_status_result(struct axgbe_port *pdata)
+static bool axgbe_phy_status_result(struct axgbe_port *pdata)
 {
 	enum axgbe_mode mode;
 
@@ -1016,7 +1042,10 @@ static void axgbe_phy_status_result(struct axgbe_port *pdata)
 
 	pdata->phy.duplex = DUPLEX_FULL;
 
-	axgbe_set_mode(pdata, mode);
+	if (axgbe_set_mode(pdata, mode))
+		return true;
+	else
+		return false;
 }
 
 static int autoneg_time_out(unsigned long autoneg_start_time)
@@ -1051,7 +1080,7 @@ static void axgbe_phy_status(struct axgbe_port *pdata)
 							     &an_restart);
 	if (an_restart) {
 		axgbe_phy_config_aneg(pdata);
-		return;
+		goto adjust_link;
 	}
 
 	if (pdata->phy.link) {
@@ -1083,7 +1112,10 @@ static void axgbe_phy_status(struct axgbe_port *pdata)
 				return;
 			}
 		}
-		axgbe_phy_status_result(pdata);
+
+		if (axgbe_phy_status_result(pdata))
+			return;
+
 		if (rte_bit_relaxed_get32(AXGBE_LINK_INIT, &pdata->dev_state))
 			rte_bit_relaxed_clear32(AXGBE_LINK_INIT,
 						&pdata->dev_state);

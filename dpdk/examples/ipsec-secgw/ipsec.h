@@ -117,7 +117,7 @@ struct ipsec_sa {
 	uint32_t spi;
 	struct cdev_qp *cqp[RTE_MAX_LCORE];
 	uint64_t seq;
-	uint32_t salt;
+	rte_be32_t salt;
 	uint32_t fallback_sessions;
 	enum rte_crypto_cipher_algorithm cipher_algo;
 	enum rte_crypto_auth_algorithm auth_algo;
@@ -249,11 +249,18 @@ struct offloads {
 
 extern struct offloads tx_offloads;
 
+/*
+ * This structure is used for the key in hash table.
+ * Padding is to force the struct to use 8 bytes,
+ * to ensure memory is not read past this structs boundary
+ * (hash key calculation reads 8 bytes if this struct is size 5 bytes).
+ */
 struct cdev_key {
-	uint16_t lcore_id;
+	uint32_t lcore_id;
 	uint8_t cipher_algo;
 	uint8_t auth_algo;
 	uint8_t aead_algo;
+	uint8_t padding; /* padding to 8-byte size should be zeroed */
 };
 
 struct socket_ctx {
@@ -278,7 +285,7 @@ struct cnt_blk {
 
 struct lcore_rx_queue {
 	uint16_t port_id;
-	uint8_t queue_id;
+	uint16_t queue_id;
 	struct rte_security_ctx *sec_ctx;
 } __rte_cache_aligned;
 

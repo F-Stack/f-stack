@@ -197,12 +197,14 @@ cn10k_sso_hws_reset(void *arg, void *hws)
 			cnxk_sso_hws_swtag_untag(base +
 						 SSOW_LF_GWS_OP_SWTAG_UNTAG);
 		plt_write64(0, base + SSOW_LF_GWS_OP_DESCHED);
+	} else if (pend_tt != SSO_TT_EMPTY) {
+		plt_write64(0, base + SSOW_LF_GWS_OP_SWTAG_FLUSH);
 	}
 
 	/* Wait for desched to complete. */
 	do {
 		pend_state = plt_read64(base + SSOW_LF_GWS_PENDSTATE);
-	} while (pend_state & BIT_ULL(58));
+	} while (pend_state & (BIT_ULL(58) | BIT_ULL(56)));
 
 	switch (dev->gw_mode) {
 	case CN10K_GW_MODE_PREF:
@@ -711,11 +713,16 @@ cn10k_sso_port_quiesce(struct rte_eventdev *event_dev, void *port,
 	cn10k_sso_hws_get_work_empty(ws, &ev,
 				     (NIX_RX_OFFLOAD_MAX - 1) | NIX_RX_REAS_F |
 					     NIX_RX_MULTI_SEG_F | CPT_RX_WQE_F);
-	if (is_pend && ev.u64) {
+	if (is_pend && ev.u64)
 		if (flush_cb)
 			flush_cb(event_dev->data->dev_id, ev, args);
+	ptag = (plt_read64(ws->base + SSOW_LF_GWS_TAG) >> 32) & SSO_TT_EMPTY;
+	if (ptag != SSO_TT_EMPTY)
 		cnxk_sso_hws_swtag_flush(ws->base);
-	}
+
+	do {
+		ptag = plt_read64(ws->base + SSOW_LF_GWS_PENDSTATE);
+	} while (ptag & BIT_ULL(56));
 
 	/* Check if we have work in PRF_WQE0, if so extract it. */
 	switch (dev->gw_mode) {
@@ -741,8 +748,11 @@ cn10k_sso_port_quiesce(struct rte_eventdev *event_dev, void *port,
 		if (ev.u64) {
 			if (flush_cb)
 				flush_cb(event_dev->data->dev_id, ev, args);
-			cnxk_sso_hws_swtag_flush(ws->base);
 		}
+		cnxk_sso_hws_swtag_flush(ws->base);
+		do {
+			ptag = plt_read64(ws->base + SSOW_LF_GWS_PENDSTATE);
+		} while (ptag & BIT_ULL(56));
 	}
 	ws->swtag_req = 0;
 	plt_write64(0, ws->base + SSOW_LF_GWS_OP_GWC_INVAL);
@@ -1024,8 +1034,8 @@ static int
 cn10k_crypto_adapter_caps_get(const struct rte_eventdev *event_dev,
 			      const struct rte_cryptodev *cdev, uint32_t *caps)
 {
-	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k");
-	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k");
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k", ENOTSUP);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k", ENOTSUP);
 
 	*caps = RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD |
 		RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA |
@@ -1043,8 +1053,8 @@ cn10k_crypto_adapter_qp_add(const struct rte_eventdev *event_dev,
 	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
 	int ret;
 
-	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k");
-	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k");
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k", EINVAL);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k", EINVAL);
 
 	dev->is_ca_internal_port = 1;
 	cn10k_sso_fp_fns_set((struct rte_eventdev *)(uintptr_t)event_dev);
@@ -1059,8 +1069,8 @@ static int
 cn10k_crypto_adapter_qp_del(const struct rte_eventdev *event_dev, const struct rte_cryptodev *cdev,
 			    int32_t queue_pair_id)
 {
-	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k");
-	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k");
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k", EINVAL);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k", EINVAL);
 
 	return cnxk_crypto_adapter_qp_del(cdev, queue_pair_id);
 }
@@ -1078,8 +1088,8 @@ cn10k_crypto_adapter_vec_limits(const struct rte_eventdev *event_dev,
 				const struct rte_cryptodev *cdev,
 				struct rte_event_crypto_adapter_vector_limits *limits)
 {
-	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k");
-	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k");
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn10k", EINVAL);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn10k", EINVAL);
 
 	limits->log2_sz = false;
 	limits->min_sz = 0;

@@ -72,6 +72,7 @@ ice_read_flat_nvm(struct ice_hw *hw, u32 offset, u32 *length, u8 *data,
 	enum ice_status status;
 	u32 inlen = *length;
 	u32 bytes_read = 0;
+	int retry_cnt = 0;
 	bool last_cmd;
 
 	ice_debug(hw, ICE_DBG_TRACE, "%s\n", __func__);
@@ -106,11 +107,24 @@ ice_read_flat_nvm(struct ice_hw *hw, u32 offset, u32 *length, u8 *data,
 					 offset, (u16)read_size,
 					 data + bytes_read, last_cmd,
 					 read_shadow_ram, NULL);
-		if (status)
-			break;
-
-		bytes_read += read_size;
-		offset += read_size;
+		if (status) {
+			if (hw->adminq.sq_last_status != ICE_AQ_RC_EBUSY ||
+			    retry_cnt > ICE_SQ_SEND_MAX_EXECUTE)
+				break;
+			ice_debug(hw, ICE_DBG_NVM,
+				  "NVM read EBUSY error, retry %d\n",
+				  retry_cnt + 1);
+			ice_release_nvm(hw);
+			msleep(ICE_SQ_SEND_DELAY_TIME_MS);
+			status = ice_acquire_nvm(hw, ICE_RES_READ);
+			if (status)
+				break;
+			retry_cnt++;
+		} else {
+			bytes_read += read_size;
+			offset += read_size;
+			retry_cnt = 0;
+		}
 	} while (!last_cmd);
 
 	*length = bytes_read;
@@ -474,7 +488,7 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 {
 	enum ice_status status;
 	u16 pfa_len, pfa_ptr;
-	u16 next_tlv;
+	u32 next_tlv;
 
 	status = ice_read_sr_word(hw, ICE_SR_PFA_PTR, &pfa_ptr);
 	if (status != ICE_SUCCESS) {
@@ -490,25 +504,30 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 	 * of TLVs to find the requested one.
 	 */
 	next_tlv = pfa_ptr + 1;
-	while (next_tlv < pfa_ptr + pfa_len) {
+	while (next_tlv < ((u32)pfa_ptr + pfa_len)) {
 		u16 tlv_sub_module_type;
 		u16 tlv_len;
 
 		/* Read TLV type */
-		status = ice_read_sr_word(hw, next_tlv, &tlv_sub_module_type);
+		status = ice_read_sr_word(hw, (u16)next_tlv,
+					  &tlv_sub_module_type);
 		if (status != ICE_SUCCESS) {
 			ice_debug(hw, ICE_DBG_INIT, "Failed to read TLV type.\n");
 			break;
 		}
 		/* Read TLV length */
-		status = ice_read_sr_word(hw, next_tlv + 1, &tlv_len);
+		status = ice_read_sr_word(hw, (u16)(next_tlv + 1), &tlv_len);
 		if (status != ICE_SUCCESS) {
 			ice_debug(hw, ICE_DBG_INIT, "Failed to read TLV length.\n");
 			break;
 		}
+		if (tlv_len > pfa_len) {
+			ice_debug(hw, ICE_DBG_INIT, "Invalid TLV length.\n");
+			return ICE_ERR_INVAL_SIZE;
+		}
 		if (tlv_sub_module_type == module_type) {
 			if (tlv_len) {
-				*module_tlv = next_tlv;
+				*module_tlv = (u16)next_tlv;
 				*module_tlv_len = tlv_len;
 				return ICE_SUCCESS;
 			}

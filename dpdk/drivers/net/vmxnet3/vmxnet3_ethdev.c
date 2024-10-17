@@ -257,6 +257,7 @@ vmxnet3_disable_all_intrs(struct vmxnet3_hw *hw)
 		vmxnet3_disable_intr(hw, i);
 }
 
+#ifndef RTE_EXEC_ENV_FREEBSD
 /*
  * Enable all intrs used by the device
  */
@@ -280,6 +281,7 @@ vmxnet3_enable_all_intrs(struct vmxnet3_hw *hw)
 			vmxnet3_enable_intr(hw, i);
 	}
 }
+#endif
 
 /*
  * Gets tx data ring descriptor size.
@@ -957,6 +959,7 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 {
 	int ret;
 	struct vmxnet3_hw *hw = dev->data->dev_private;
+	uint16_t i;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1035,6 +1038,7 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 	/* Setting proper Rx Mode and issue Rx Mode Update command */
 	vmxnet3_dev_set_rxmode(hw, VMXNET3_RXM_UCAST | VMXNET3_RXM_BCAST, 1);
 
+#ifndef RTE_EXEC_ENV_FREEBSD
 	/* Setup interrupt callback  */
 	rte_intr_callback_register(dev->intr_handle,
 				   vmxnet3_interrupt_handler, dev);
@@ -1046,6 +1050,7 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 
 	/* enable all intrs */
 	vmxnet3_enable_all_intrs(hw);
+#endif
 
 	vmxnet3_process_events(dev);
 
@@ -1057,6 +1062,11 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 	 * interrupt being fired.
 	 */
 	__vmxnet3_dev_link_update(dev, 0);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	return VMXNET3_SUCCESS;
 }
@@ -1070,6 +1080,7 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 	struct rte_eth_link link;
 	struct vmxnet3_hw *hw = dev->data->dev_private;
 	struct rte_intr_handle *intr_handle = dev->intr_handle;
+	uint16_t i;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
@@ -1124,6 +1135,11 @@ vmxnet3_dev_stop(struct rte_eth_dev *dev)
 
 	hw->adapter_stopped = 1;
 	dev->data->dev_started = 0;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -1810,11 +1826,13 @@ done:
 static int
 vmxnet3_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
 {
+#ifndef RTE_EXEC_ENV_FREEBSD
 	struct vmxnet3_hw *hw = dev->data->dev_private;
 
 	vmxnet3_enable_intr(hw,
 			    rte_intr_vec_list_index_get(dev->intr_handle,
 							       queue_id));
+#endif
 
 	return 0;
 }

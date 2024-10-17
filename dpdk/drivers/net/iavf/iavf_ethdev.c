@@ -131,6 +131,8 @@ static int iavf_dev_rx_queue_intr_enable(struct rte_eth_dev *dev,
 					uint16_t queue_id);
 static int iavf_dev_rx_queue_intr_disable(struct rte_eth_dev *dev,
 					 uint16_t queue_id);
+static void iavf_dev_interrupt_handler(void *param);
+static void iavf_disable_irq0(struct iavf_hw *hw);
 static int iavf_dev_flow_ops_get(struct rte_eth_dev *dev,
 				 const struct rte_flow_ops **ops);
 static int iavf_set_mc_addr_list(struct rte_eth_dev *dev,
@@ -607,7 +609,8 @@ iavf_dev_init_vlan(struct rte_eth_dev *dev)
 					RTE_ETH_VLAN_FILTER_MASK |
 					RTE_ETH_VLAN_EXTEND_MASK);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Failed to update vlan offload");
+		PMD_DRV_LOG(INFO,
+			"VLAN offloading is not supported, or offloading was refused by the PF");
 		return err;
 	}
 
@@ -683,9 +686,7 @@ iavf_dev_configure(struct rte_eth_dev *dev)
 		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
 	}
 
-	ret = iavf_dev_init_vlan(dev);
-	if (ret)
-		PMD_DRV_LOG(ERR, "configure VLAN failed: %d", ret);
+	iavf_dev_init_vlan(dev);
 
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
 		if (iavf_init_rss(ad) != 0) {
@@ -1139,7 +1140,6 @@ iavf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
 		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |
 		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |
 		RTE_ETH_TX_OFFLOAD_TCP_TSO |
 		RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
 		RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |
@@ -1147,6 +1147,10 @@ iavf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
 		RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	/* X710 does not support outer udp checksum */
+	if (adapter->hw.mac.type != IAVF_MAC_XL710)
+		dev_info->tx_offload_capa |= RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
 
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_CRC)
 		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_KEEP_CRC;
@@ -1181,6 +1185,8 @@ iavf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_max = IAVF_MAX_RING_DESC,
 		.nb_min = IAVF_MIN_RING_DESC,
 		.nb_align = IAVF_ALIGN_RING_DESC,
+		.nb_mtu_seg_max = IAVF_TX_MAX_MTU_SEG,
+		.nb_seg_max = IAVF_MAX_RING_DESC,
 	};
 
 	dev_info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PASSIVE;
@@ -1353,6 +1359,7 @@ iavf_dev_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct rte_eth_conf *dev_conf = &dev->data->dev_conf;
 	int err;
 
 	if (adapter->closed)
@@ -1371,6 +1378,23 @@ iavf_dev_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 	err = iavf_add_del_vlan(adapter, vlan_id, on);
 	if (err)
 		return -EIO;
+
+	/* For i40e kernel driver which only supports vlan(v1) VIRTCHNL OP,
+	 * it will set strip on when setting filter on but dpdk side will not
+	 * change strip flag. To be consistent with dpdk side, disable strip
+	 * again.
+	 *
+	 * For i40e kernel driver which supports vlan v2, dpdk will invoke vlan v2
+	 * related function, so it won't go through here.
+	 */
+	if (adapter->hw.mac.type == IAVF_MAC_XL710 ||
+	    adapter->hw.mac.type == IAVF_MAC_X722_VF) {
+		if (on && !(dev_conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)) {
+			err = iavf_disable_vlan_strip(adapter);
+			if (err)
+				return -EIO;
+		}
+	}
 	return 0;
 }
 
@@ -2671,18 +2695,19 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 		ret = iavf_security_ctx_create(adapter);
 		if (ret) {
 			PMD_INIT_LOG(ERR, "failed to create ipsec crypto security instance");
-			return ret;
+			goto flow_init_err;
 		}
 
 		ret = iavf_security_init(adapter);
 		if (ret) {
 			PMD_INIT_LOG(ERR, "failed to initialized ipsec crypto resources");
-			return ret;
+			goto security_init_err;
 		}
 	}
 
 	iavf_default_rss_disable(adapter);
 
+	iavf_dev_stats_reset(eth_dev);
 
 	/* Start device watchdog */
 	iavf_dev_watchdog_enable(adapter);
@@ -2690,7 +2715,23 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 
 	return 0;
 
+security_init_err:
+	iavf_security_ctx_destroy(adapter);
+
 flow_init_err:
+	iavf_disable_irq0(hw);
+
+	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {
+		/* disable uio intr before callback unregiser */
+		rte_intr_disable(pci_dev->intr_handle);
+
+		/* unregister callback func from eal lib */
+		rte_intr_callback_unregister(pci_dev->intr_handle,
+					     iavf_dev_interrupt_handler, eth_dev);
+	} else {
+		rte_eal_alarm_cancel(iavf_dev_alarm_handler, eth_dev);
+	}
+
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;
 
@@ -2720,19 +2761,6 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	}
 
 	ret = iavf_dev_stop(dev);
-
-	/*
-	 * Release redundant queue resource when close the dev
-	 * so that other vfs can re-use the queues.
-	 */
-	if (vf->lv_enabled) {
-		ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
-		if (ret)
-			PMD_DRV_LOG(ERR, "Reset the num of queues failed");
-
-		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
-	}
-
 	adapter->closed = true;
 
 	/* free iAVF security device context all related resources */
@@ -2748,6 +2776,18 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	 */
 	if (vf->promisc_unicast_enabled || vf->promisc_multicast_enabled)
 		iavf_config_promisc(adapter, false, false);
+
+	/*
+	 * Release redundant queue resource when close the dev
+	 * so that other vfs can re-use the queues.
+	 */
+	if (vf->lv_enabled) {
+		ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
+		if (ret)
+			PMD_DRV_LOG(ERR, "Reset the num of queues failed");
+
+		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
+	}
 
 	iavf_shutdown_adminq(hw);
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {

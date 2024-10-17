@@ -507,6 +507,8 @@ hns3_parse_capability(struct hns3_hw *hw,
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_RAS_IMP_B, 1);
 	if (hns3_get_bit(caps, HNS3_CAPS_TM_B))
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_TM_B, 1);
+	if (hns3_get_bit(caps, HNS3_CAPS_GRO_B))
+		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_GRO_B, 1);
 }
 
 static uint32_t
@@ -517,6 +519,43 @@ hns3_build_api_caps(void)
 	hns3_set_bit(api_caps, HNS3_API_CAP_FLEX_RSS_TBL_B, 1);
 
 	return rte_cpu_to_le_32(api_caps);
+}
+
+static void
+hns3_set_dcb_capability(struct hns3_hw *hw)
+{
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+	struct rte_pci_device *pci_dev;
+	struct rte_eth_dev *eth_dev;
+	uint16_t device_id;
+
+	if (hns->is_vf)
+		return;
+
+	eth_dev = &rte_eth_devices[hw->data->port_id];
+	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+	device_id = pci_dev->id.device_id;
+
+	if (device_id == HNS3_DEV_ID_25GE_RDMA ||
+	    device_id == HNS3_DEV_ID_50GE_RDMA ||
+	    device_id == HNS3_DEV_ID_100G_RDMA_MACSEC ||
+	    device_id == HNS3_DEV_ID_200G_RDMA ||
+	    device_id == HNS3_DEV_ID_100G_ROH ||
+	    device_id == HNS3_DEV_ID_200G_ROH)
+		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_DCB_B, 1);
+}
+
+static void
+hns3_set_default_capability(struct hns3_hw *hw)
+{
+	hns3_set_dcb_capability(hw);
+
+	/*
+	 * The firmware of the network engines with HIP08 do not report some
+	 * capabilities, like GRO. Set default capabilities for it.
+	 */
+	if (hw->revision < PCI_REVISION_ID_HIP09_A)
+		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_GRO_B, 1);
 }
 
 static int
@@ -536,6 +575,9 @@ hns3_cmd_query_firmware_version_and_capability(struct hns3_hw *hw)
 		return ret;
 
 	hw->fw_version = rte_le_to_cpu_32(resp->firmware);
+
+	hns3_set_default_capability(hw);
+
 	/*
 	 * Make sure mask the capability before parse capability because it
 	 * may overwrite resp's data.
@@ -659,9 +701,6 @@ hns3_cmd_init(struct hns3_hw *hw)
 	hw->cmq.csq.next_to_use = 0;
 	hw->cmq.crq.next_to_clean = 0;
 	hw->cmq.crq.next_to_use = 0;
-	hw->mbx_resp.head = 0;
-	hw->mbx_resp.tail = 0;
-	hw->mbx_resp.lost = 0;
 	hns3_cmd_init_regs(hw);
 
 	rte_spinlock_unlock(&hw->cmq.crq.lock);

@@ -70,6 +70,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 	struct rte_eth_conf *dev_conf;
 	struct rte_eth_rxmode *rxmode;
 	uint32_t intr_vector;
+	uint16_t i;
 	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -154,6 +155,8 @@ nfp_net_start(struct rte_eth_dev *dev)
 
 	nn_cfg_writel(hw, NFP_NET_CFG_CTRL, new_ctrl);
 	if (nfp_net_reconfig(hw, new_ctrl, update) < 0)
+	hw->ctrl = new_ctrl;
+
 		return -EIO;
 
 	/*
@@ -172,7 +175,10 @@ nfp_net_start(struct rte_eth_dev *dev)
 		nfp_eth_set_configured(dev->process_private,
 				       hw->nfp_idx, 1);
 
-	hw->ctrl = new_ctrl;
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	return 0;
 
@@ -258,6 +264,45 @@ nfp_net_set_link_down(struct rte_eth_dev *dev)
 					      hw->nfp_idx, 0);
 }
 
+static void
+nfp_cleanup_port_app_fw_nic(struct nfp_pf_dev *pf_dev,
+		uint8_t id)
+{
+	struct nfp_app_fw_nic *app_fw_nic;
+
+	app_fw_nic = pf_dev->app_fw_priv;
+	if (app_fw_nic->ports[id] != NULL)
+		app_fw_nic->ports[id] = NULL;
+}
+
+static void
+nfp_uninit_app_fw_nic(struct nfp_pf_dev *pf_dev)
+{
+	nfp_cpp_area_release_free(pf_dev->ctrl_area);
+	rte_free(pf_dev->app_fw_priv);
+}
+
+void
+nfp_pf_uninit(struct nfp_pf_dev *pf_dev)
+{
+	nfp_cpp_area_release_free(pf_dev->hwqueues_area);
+	free(pf_dev->sym_tbl);
+	free(pf_dev->nfp_eth_table);
+	free(pf_dev->hwinfo);
+	nfp_cpp_free(pf_dev->cpp);
+	rte_free(pf_dev);
+}
+
+static int
+nfp_pf_secondary_uninit(struct nfp_pf_dev *pf_dev)
+{
+	free(pf_dev->sym_tbl);
+	nfp_cpp_free(pf_dev->cpp);
+	rte_free(pf_dev);
+
+	return 0;
+}
+
 /* Reset and stop device. The device can not be restarted. */
 static int
 nfp_net_close(struct rte_eth_dev *dev)
@@ -268,8 +313,19 @@ nfp_net_close(struct rte_eth_dev *dev)
 	struct nfp_app_fw_nic *app_fw_nic;
 	int i;
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	/*
+	 * In secondary process, a released eth device can be found by its name
+	 * in shared memory.
+	 * If the state of the eth device is RTE_ETH_DEV_UNUSED, it means the
+	 * eth device has been released.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		if (dev->state == RTE_ETH_DEV_UNUSED)
+			return 0;
+
+		nfp_pf_secondary_uninit(dev->process_private);
 		return 0;
+	}
 
 	PMD_INIT_LOG(DEBUG, "Close");
 
@@ -297,8 +353,11 @@ nfp_net_close(struct rte_eth_dev *dev)
 	/* Only free PF resources after all physical ports have been closed */
 	/* Mark this port as unused and free device priv resources*/
 	nn_cfg_writeb(hw, NFP_NET_CFG_LSC, 0xff);
-	app_fw_nic->ports[hw->idx] = NULL;
-	rte_eth_dev_release_port(dev);
+
+	if (pf_dev->app_fw_id != NFP_APP_FW_CORE_NIC)
+		return -EINVAL;
+
+	nfp_cleanup_port_app_fw_nic(pf_dev, hw->idx);
 
 	for (i = 0; i < app_fw_nic->total_phyports; i++) {
 		/* Check to see if ports are still in use */
@@ -306,26 +365,15 @@ nfp_net_close(struct rte_eth_dev *dev)
 			return 0;
 	}
 
-	/* Now it is safe to free all PF resources */
-	PMD_INIT_LOG(INFO, "Freeing PF resources");
-	nfp_cpp_area_free(pf_dev->ctrl_area);
-	nfp_cpp_area_free(pf_dev->hwqueues_area);
-	free(pf_dev->hwinfo);
-	free(pf_dev->sym_tbl);
-	nfp_cpp_free(pf_dev->cpp);
-	rte_free(app_fw_nic);
-	rte_free(pf_dev);
-
+	/* Enable in nfp_net_start() */
 	rte_intr_disable(pci_dev->intr_handle);
 
-	/* unregister callback func from eal lib */
+	/* Register in nfp_net_init() */
 	rte_intr_callback_unregister(pci_dev->intr_handle,
 			nfp_net_dev_interrupt_handler, (void *)dev);
 
-	/*
-	 * The ixgbe PMD disables the pcie master on the
-	 * device. The i40e does not...
-	 */
+	nfp_uninit_app_fw_nic(pf_dev);
+	nfp_pf_uninit(pf_dev);
 
 	return 0;
 }
@@ -686,6 +734,8 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 			nfp_net_dev_interrupt_handler, (void *)eth_dev);
 	/* Telling the firmware about the LSC interrupt entry */
 	nn_cfg_writeb(hw, NFP_NET_CFG_LSC, NFP_NET_IRQ_LSC_IDX);
+	/* Unmask the LSC interrupt */
+	nfp_net_irq_unmask(eth_dev);
 	/* Recording current stats counters values */
 	nfp_net_stats_reset(eth_dev);
 
@@ -913,10 +963,9 @@ port_cleanup:
 			struct rte_eth_dev *tmp_dev;
 			tmp_dev = app_fw_nic->ports[i]->eth_dev;
 			rte_eth_dev_release_port(tmp_dev);
-			app_fw_nic->ports[i] = NULL;
 		}
 	}
-	nfp_cpp_area_free(pf_dev->ctrl_area);
+	nfp_cpp_area_release_free(pf_dev->ctrl_area);
 app_cleanup:
 	rte_free(app_fw_nic);
 
@@ -926,7 +975,8 @@ app_cleanup:
 static int
 nfp_pf_init(struct rte_pci_device *pci_dev)
 {
-	int ret;
+	uint32_t i;
+	int ret = 0;
 	int err = 0;
 	uint64_t addr;
 	uint32_t cpp_id;
@@ -972,6 +1022,10 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 		ret = -EIO;
 		goto hwinfo_cleanup;
 	}
+
+	/* Force the physical port down to clear the possible DMA error */
+	for (i = 0; i < nfp_eth_table->count; i++)
+		nfp_eth_set_configured(cpp, nfp_eth_table->ports[i].index, 0);
 
 	if (nfp_fw_setup(pci_dev, cpp, nfp_eth_table, hwinfo)) {
 		PMD_INIT_LOG(ERR, "Error when uploading firmware");
@@ -1076,7 +1130,7 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	return 0;
 
 hwqueues_cleanup:
-	nfp_cpp_area_free(pf_dev->hwqueues_area);
+	nfp_cpp_area_release_free(pf_dev->hwqueues_area);
 pf_cleanup:
 	rte_free(pf_dev);
 sym_tbl_cleanup:

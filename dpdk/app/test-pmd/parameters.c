@@ -101,10 +101,6 @@ usage(char* progname)
 	printf("  --eth-peer=X,M:M:M:M:M:M: set the MAC address of the X peer "
 	       "port (0 <= X < %d).\n", RTE_MAX_ETHPORTS);
 #endif
-#ifdef RTE_LIB_LATENCYSTATS
-	printf("  --latencystats=N: enable latency and jitter statistics "
-	       "monitoring on forwarding lcore id N.\n");
-#endif
 	printf("  --disable-crc-strip: disable CRC stripping by hardware.\n");
 	printf("  --enable-scatter: enable scattered Rx.\n");
 	printf("  --enable-lro: enable large receive offload.\n");
@@ -167,8 +163,14 @@ usage(char* progname)
 	printf("  --disable-device-start: do not automatically start port\n");
 	printf("  --no-lsc-interrupt: disable link status change interrupt.\n");
 	printf("  --no-rmv-interrupt: disable device removal interrupt.\n");
+#ifdef RTE_LIB_BITRATESTATS
 	printf("  --bitrate-stats=N: set the logical core N to perform "
 		"bit-rate calculation.\n");
+#endif
+#ifdef RTE_LIB_LATENCYSTATS
+	printf("  --latencystats=N: enable latency and jitter statistics "
+	       "monitoring on forwarding lcore id N.\n");
+#endif
 	printf("  --print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|flow_aged|err_recovering|recovery_success|recovery_failed|all>: "
 	       "enable print of designated event or all of them.\n");
 	printf("  --mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|flow_aged|err_recovering|recovery_success|recovery_failed||all>: "
@@ -761,7 +763,7 @@ launch_args_parse(int argc, char** argv)
 				n = strtoul(optarg, &end, 10);
 				if ((optarg[0] == '\0') || (end == NULL) ||
 						(*end != '\0'))
-					break;
+					rte_exit(EXIT_FAILURE, "Invalid stats-period value\n");
 
 				stats_period = n;
 				break;
@@ -862,8 +864,8 @@ launch_args_parse(int argc, char** argv)
 			}
 			if (!strcmp(lgopts[opt_idx].name, "nb-cores")) {
 				n = atoi(optarg);
-				if (n > 0 && n <= nb_lcores)
-					nb_fwd_lcores = (uint8_t) n;
+				if (n > 0 && (lcoreid_t)n <= nb_lcores)
+					nb_fwd_lcores = (lcoreid_t) n;
 				else
 					rte_exit(EXIT_FAILURE,
 						 "nb-cores should be > 0 and <= %d\n",
@@ -1113,7 +1115,9 @@ launch_args_parse(int argc, char** argv)
 								0,
 								&dev_info);
 					if (ret != 0)
-						return;
+						rte_exit(EXIT_FAILURE, "Failed to get driver "
+							"recommended burst size, please provide a "
+							"value between 1 and %d\n", MAX_PKT_BURST);
 
 					rec_nb_pkts = dev_info
 						.default_rxportconf.burst_size;
@@ -1465,7 +1469,7 @@ launch_args_parse(int argc, char** argv)
 			break;
 		default:
 			usage(argv[0]);
-			fprintf(stderr, "Invalid option: %s\n", argv[optind]);
+			fprintf(stderr, "Invalid option: %s\n", argv[optind - 1]);
 			rte_exit(EXIT_FAILURE,
 				 "Command line is incomplete or incorrect\n");
 			break;

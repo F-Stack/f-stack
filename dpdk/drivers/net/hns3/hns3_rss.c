@@ -153,8 +153,7 @@ static const struct {
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_SCTP_EN_IP_S) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_SCTP_EN_IP_D) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV4_SCTP_EN_SCTP_S) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV4_SCTP_EN_SCTP_D) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV4_SCTP_EN_SCTP_VER),
+	  BIT_ULL(HNS3_RSS_FIELD_IPV4_SCTP_EN_SCTP_D),
 	  HNS3_RSS_TUPLE_IPV4_SCTP_M },
 
 	/* IPV6-FRAG */
@@ -274,8 +273,7 @@ static const struct {
 	  BIT_ULL(HNS3_RSS_FIELD_IPV6_SCTP_EN_IP_S) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV6_SCTP_EN_IP_D) |
 	  BIT_ULL(HNS3_RSS_FIELD_IPV6_SCTP_EN_SCTP_D) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV6_SCTP_EN_SCTP_S) |
-	  BIT_ULL(HNS3_RSS_FIELD_IPV6_SCTP_EN_SCTP_VER),
+	  BIT_ULL(HNS3_RSS_FIELD_IPV6_SCTP_EN_SCTP_S),
 	  HNS3_RSS_TUPLE_IPV6_SCTP_M },
 };
 
@@ -283,7 +281,7 @@ static const struct {
  * rss_generic_config command function, opcode:0x0D01.
  * Used to set algorithm and hash key of RSS.
  */
-int
+static int
 hns3_rss_set_algo_key(struct hns3_hw *hw, uint8_t hash_algo,
 		      const uint8_t *key, uint8_t key_len)
 {
@@ -324,7 +322,7 @@ hns3_rss_set_algo_key(struct hns3_hw *hw, uint8_t hash_algo,
 	return 0;
 }
 
-int
+static int
 hns3_rss_get_algo_key(struct hns3_hw *hw,  uint8_t *hash_algo,
 		      uint8_t *key, uint8_t key_len)
 {
@@ -771,7 +769,7 @@ hns3_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 {
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
-	uint8_t hash_algo;
+	uint8_t hash_algo = 0;
 	int ret;
 
 	rte_spinlock_lock(&hw->lock);
@@ -993,7 +991,7 @@ hns3_update_rss_algo_key(struct hns3_hw *hw, uint8_t hash_func,
 {
 	uint8_t rss_key[HNS3_RSS_KEY_SIZE_MAX] = {0};
 	bool modify_key, modify_algo;
-	uint8_t hash_algo;
+	uint8_t hash_algo = 0;
 	int ret;
 
 	modify_key = (key != NULL && key_len > 0);

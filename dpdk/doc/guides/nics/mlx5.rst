@@ -455,8 +455,12 @@ Limitations
     encapsulation actions.
   - For NIC Rx flow, supports ``MARK``, ``COUNT``, ``QUEUE``, ``RSS`` in the
     sample actions list.
-  - For E-Switch mirroring flow, supports ``RAW ENCAP``, ``Port ID``,
-    ``VXLAN ENCAP``, ``NVGRE ENCAP`` in the sample actions list.
+  - For E-Switch mirroring flow, supports ``RAW_ENCAP``, ``PORT_ID``,
+    ``VXLAN_ENCAP``, ``NVGRE_ENCAP`` in the sample actions list.
+  - For E-Switch mirroring flow with sample ratio = 1, the ``ENCAP`` action
+    supports uplink port only.
+  - For E-Switch mirroring flow with sample ratio = 1, the ``PORT`` and ``JUMP`` actions
+    are not supported without presented ``ENCAP`` action in the sample actions list.
   - For ConnectX-5 trusted device, the application metadata with SET_TAG index 0
     is not supported before ``RTE_FLOW_ACTION_TYPE_SAMPLE`` action.
 
@@ -557,8 +561,8 @@ Limitations
 
   - Cannot co-exist with ASO meter, ASO age action in a single flow rule.
   - Flow rules insertion rate and memory consumption need more optimization.
-  - 256 ports maximum.
-  - 4M connections maximum with ``dv_flow_en`` 1 mode. 16M with ``dv_flow_en`` 2.
+  - 16 ports maximum.
+  - 32M connections maximum.
 
 - Multi-thread flow insertion:
 

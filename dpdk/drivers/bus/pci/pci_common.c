@@ -304,7 +304,7 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 		}
 	}
 
-	RTE_LOG(INFO, EAL, "Probe PCI driver: %s (%x:%x) device: "PCI_PRI_FMT" (socket %i)\n",
+	RTE_LOG(INFO, EAL, "Probe PCI driver: %s (%x:%04x) device: "PCI_PRI_FMT" (socket %i)\n",
 			dr->driver.name, dev->id.vendor_id, dev->id.device_id,
 			loc->domain, loc->bus, loc->devid, loc->function,
 			dev->device.numa_node);
@@ -882,6 +882,16 @@ rte_pci_set_bus_master(struct rte_pci_device *dev, bool enable)
 	}
 
 	return 0;
+}
+
+int
+rte_pci_pasid_set_state(const struct rte_pci_device *dev,
+		off_t offset, bool enable)
+{
+	uint16_t pasid = enable;
+	return rte_pci_write_config(dev, &pasid, sizeof(pasid), offset) < 0
+		? -1
+		: 0;
 }
 
 struct rte_pci_bus rte_pci_bus = {

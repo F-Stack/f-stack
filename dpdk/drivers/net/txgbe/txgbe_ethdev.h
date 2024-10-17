@@ -40,6 +40,7 @@
 /*Default value of Max Rx Queue*/
 #define TXGBE_MAX_RX_QUEUE_NUM	128
 #define TXGBE_VMDQ_DCB_NB_QUEUES     TXGBE_MAX_RX_QUEUE_NUM
+#define TXGBE_NONE_MODE_TX_NB_QUEUES 64
 
 #ifndef NBBY
 #define NBBY	8	/* number of bits in a byte */
@@ -54,7 +55,7 @@
 #define TXGBE_5TUPLE_MAX_PRI            7
 #define TXGBE_5TUPLE_MIN_PRI            1
 
-
+#define TXGBE_MAX_MTU			9414
 /* The overhead from MTU to max frame size. */
 #define TXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
 

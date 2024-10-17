@@ -564,27 +564,17 @@ tx_desc_ol_flags_to_ptype(uint64_t oflags)
 	switch (oflags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
 	case RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE:
-		ptype |= RTE_PTYPE_L2_ETHER |
-			 RTE_PTYPE_L3_IPV4 |
-			 RTE_PTYPE_TUNNEL_GRENAT;
+		ptype |= RTE_PTYPE_TUNNEL_GRENAT;
 		break;
 	case RTE_MBUF_F_TX_TUNNEL_GRE:
-		ptype |= RTE_PTYPE_L2_ETHER |
-			 RTE_PTYPE_L3_IPV4 |
-			 RTE_PTYPE_TUNNEL_GRE;
-		ptype |= RTE_PTYPE_INNER_L2_ETHER;
+		ptype |= RTE_PTYPE_TUNNEL_GRE;
 		break;
 	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
-		ptype |= RTE_PTYPE_L2_ETHER |
-			 RTE_PTYPE_L3_IPV4 |
-			 RTE_PTYPE_TUNNEL_GENEVE;
-		ptype |= RTE_PTYPE_INNER_L2_ETHER;
+		ptype |= RTE_PTYPE_TUNNEL_GENEVE;
 		break;
 	case RTE_MBUF_F_TX_TUNNEL_IPIP:
 	case RTE_MBUF_F_TX_TUNNEL_IP:
-		ptype |= RTE_PTYPE_L2_ETHER |
-			 RTE_PTYPE_L3_IPV4 |
-			 RTE_PTYPE_TUNNEL_IP;
+		ptype |= RTE_PTYPE_TUNNEL_IP;
 		break;
 	}
 
@@ -668,11 +658,20 @@ txgbe_xmit_cleanup(struct txgbe_tx_queue *txq)
 	return 0;
 }
 
+#define GRE_CHECKSUM_PRESENT	0x8000
+#define GRE_KEY_PRESENT		0x2000
+#define GRE_SEQUENCE_PRESENT	0x1000
+#define GRE_EXT_LEN		4
+#define GRE_SUPPORTED_FIELDS	(GRE_CHECKSUM_PRESENT | GRE_KEY_PRESENT |\
+				 GRE_SEQUENCE_PRESENT)
+
 static inline uint8_t
 txgbe_get_tun_len(struct rte_mbuf *mbuf)
 {
 	struct txgbe_genevehdr genevehdr;
 	const struct txgbe_genevehdr *gh;
+	const struct txgbe_grehdr *grh;
+	struct txgbe_grehdr grehdr;
 	uint8_t tun_len;
 
 	switch (mbuf->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
@@ -685,11 +684,16 @@ txgbe_get_tun_len(struct rte_mbuf *mbuf)
 			+ sizeof(struct txgbe_vxlanhdr);
 		break;
 	case RTE_MBUF_F_TX_TUNNEL_GRE:
-		tun_len = sizeof(struct txgbe_nvgrehdr);
+		tun_len = sizeof(struct txgbe_grehdr);
+		grh = rte_pktmbuf_read(mbuf,
+			mbuf->outer_l2_len + mbuf->outer_l3_len,
+			sizeof(grehdr), &grehdr);
+		if (grh->flags & rte_cpu_to_be_16(GRE_SUPPORTED_FIELDS))
+			tun_len += GRE_EXT_LEN;
 		break;
 	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
-		gh = rte_pktmbuf_read(mbuf,
-			mbuf->outer_l2_len + mbuf->outer_l3_len,
+		gh = rte_pktmbuf_read(mbuf, mbuf->outer_l2_len +
+			mbuf->outer_l3_len + sizeof(struct txgbe_udphdr),
 			sizeof(genevehdr), &genevehdr);
 		tun_len = sizeof(struct txgbe_udphdr)
 			+ sizeof(struct txgbe_genevehdr)
@@ -703,25 +707,26 @@ txgbe_get_tun_len(struct rte_mbuf *mbuf)
 }
 
 static inline uint8_t
-txgbe_parse_tun_ptid(struct rte_mbuf *tx_pkt)
+txgbe_parse_tun_ptid(struct rte_mbuf *tx_pkt, uint8_t tun_len)
 {
-	uint64_t l2_none, l2_mac, l2_mac_vlan;
+	uint64_t inner_l2_len;
 	uint8_t ptid = 0;
 
-	if ((tx_pkt->ol_flags & (RTE_MBUF_F_TX_TUNNEL_VXLAN |
-				RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE)) == 0)
-		return ptid;
+	inner_l2_len = tx_pkt->l2_len - tun_len;
 
-	l2_none = sizeof(struct txgbe_udphdr) + sizeof(struct txgbe_vxlanhdr);
-	l2_mac = l2_none + sizeof(struct rte_ether_hdr);
-	l2_mac_vlan = l2_mac + sizeof(struct rte_vlan_hdr);
-
-	if (tx_pkt->l2_len == l2_none)
+	switch (inner_l2_len) {
+	case 0:
 		ptid = TXGBE_PTID_TUN_EIG;
-	else if (tx_pkt->l2_len == l2_mac)
+		break;
+	case sizeof(struct rte_ether_hdr):
 		ptid = TXGBE_PTID_TUN_EIGM;
-	else if (tx_pkt->l2_len == l2_mac_vlan)
+		break;
+	case sizeof(struct rte_ether_hdr) + sizeof(struct rte_vlan_hdr):
 		ptid = TXGBE_PTID_TUN_EIGMV;
+		break;
+	default:
+		ptid = TXGBE_PTID_TUN_EI;
+	}
 
 	return ptid;
 }
@@ -788,8 +793,6 @@ txgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		tx_ol_req = ol_flags & TXGBE_TX_OFFLOAD_MASK;
 		if (tx_ol_req) {
 			tx_offload.ptid = tx_desc_ol_flags_to_ptid(tx_ol_req);
-			if (tx_offload.ptid & TXGBE_PTID_PKT_TUN)
-				tx_offload.ptid |= txgbe_parse_tun_ptid(tx_pkt);
 			tx_offload.l2_len = tx_pkt->l2_len;
 			tx_offload.l3_len = tx_pkt->l3_len;
 			tx_offload.l4_len = tx_pkt->l4_len;
@@ -798,6 +801,9 @@ txgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			tx_offload.outer_l2_len = tx_pkt->outer_l2_len;
 			tx_offload.outer_l3_len = tx_pkt->outer_l3_len;
 			tx_offload.outer_tun_len = txgbe_get_tun_len(tx_pkt);
+			if (tx_offload.ptid & TXGBE_PTID_PKT_TUN)
+				tx_offload.ptid |= txgbe_parse_tun_ptid(tx_pkt,
+							tx_offload.outer_tun_len);
 
 #ifdef RTE_LIB_SECURITY
 			if (use_ipsec) {
@@ -1475,11 +1481,22 @@ txgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * of accesses cannot be reordered by the compiler. If they were
 		 * not volatile, they could be reordered which could lead to
 		 * using invalid descriptor fields when read from rxd.
+		 *
+		 * Meanwhile, to prevent the CPU from executing out of order, we
+		 * need to use a proper memory barrier to ensure the memory
+		 * ordering below.
 		 */
 		rxdp = &rx_ring[rx_id];
 		staterr = rxdp->qw1.lo.status;
 		if (!(staterr & rte_cpu_to_le_32(TXGBE_RXD_STAT_DD)))
 			break;
+
+		/*
+		 * Use acquire fence to ensure that status_error which includes
+		 * DD bit is loaded before loading of other descriptor words.
+		 */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+
 		rxd = *rxdp;
 
 		/*
@@ -1725,38 +1742,22 @@ txgbe_recv_pkts_lro(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts,
 
 next_desc:
 		/*
-		 * The code in this whole file uses the volatile pointer to
-		 * ensure the read ordering of the status and the rest of the
-		 * descriptor fields (on the compiler level only!!!). This is so
-		 * UGLY - why not to just use the compiler barrier instead? DPDK
-		 * even has the rte_compiler_barrier() for that.
-		 *
-		 * But most importantly this is just wrong because this doesn't
-		 * ensure memory ordering in a general case at all. For
-		 * instance, DPDK is supposed to work on Power CPUs where
-		 * compiler barrier may just not be enough!
-		 *
-		 * I tried to write only this function properly to have a
-		 * starting point (as a part of an LRO/RSC series) but the
-		 * compiler cursed at me when I tried to cast away the
-		 * "volatile" from rx_ring (yes, it's volatile too!!!). So, I'm
-		 * keeping it the way it is for now.
-		 *
-		 * The code in this file is broken in so many other places and
-		 * will just not work on a big endian CPU anyway therefore the
-		 * lines below will have to be revisited together with the rest
-		 * of the txgbe PMD.
-		 *
-		 * TODO:
-		 *    - Get rid of "volatile" and let the compiler do its job.
-		 *    - Use the proper memory barrier (rte_rmb()) to ensure the
-		 *      memory ordering below.
+		 * "Volatile" only prevents caching of the variable marked
+		 * volatile. Most important, "volatile" cannot prevent the CPU
+		 * from executing out of order. So, it is necessary to use a
+		 * proper memory barrier to ensure the memory ordering below.
 		 */
 		rxdp = &rx_ring[rx_id];
 		staterr = rte_le_to_cpu_32(rxdp->qw1.lo.status);
 
 		if (!(staterr & TXGBE_RXD_STAT_DD))
 			break;
+
+		/*
+		 * Use acquire fence to ensure that status_error which includes
+		 * DD bit is loaded before loading of other descriptor words.
+		 */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		rxd = *rxdp;
 
@@ -2134,6 +2135,7 @@ txgbe_tx_queue_release(struct txgbe_tx_queue *txq)
 	if (txq != NULL && txq->ops != NULL) {
 		txq->ops->release_mbufs(txq);
 		txq->ops->free_swring(txq);
+		rte_memzone_free(txq->mz);
 		rte_free(txq);
 	}
 }
@@ -2345,6 +2347,7 @@ txgbe_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	txq->mz = tz;
 	txq->nb_tx_desc = nb_desc;
 	txq->tx_free_thresh = tx_free_thresh;
 	txq->pthresh = tx_conf->tx_thresh.pthresh;
@@ -2462,6 +2465,7 @@ txgbe_rx_queue_release(struct txgbe_rx_queue *rxq)
 		txgbe_rx_queue_release_mbufs(rxq);
 		rte_free(rxq->sw_ring);
 		rte_free(rxq->sw_sc_ring);
+		rte_memzone_free(rxq->mz);
 		rte_free(rxq);
 	}
 }
@@ -2555,6 +2559,7 @@ txgbe_reset_rx_queue(struct txgbe_adapter *adapter, struct txgbe_rx_queue *rxq)
 	rxq->rx_free_trigger = (uint16_t)(rxq->rx_free_thresh - 1);
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
 }
@@ -2635,6 +2640,7 @@ txgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	rxq->mz = rz;
 	/*
 	 * Zero init all the descriptors in the ring.
 	 */
@@ -2805,6 +2811,8 @@ txgbe_dev_clear_queues(struct rte_eth_dev *dev)
 			txq->ops->release_mbufs(txq);
 			txq->ops->reset(txq);
 		}
+
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -2814,6 +2822,8 @@ txgbe_dev_clear_queues(struct rte_eth_dev *dev)
 			txgbe_rx_queue_release_mbufs(rxq);
 			txgbe_reset_rx_queue(adapter, rxq);
 		}
+
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 }
 
@@ -5004,6 +5014,8 @@ txgbevf_dev_rxtx_start(struct rte_eth_dev *dev)
 		} while (--poll_ms && !(txdctl & TXGBE_TXCFG_ENA));
 		if (!poll_ms)
 			PMD_INIT_LOG(ERR, "Could not enable Tx Queue %d", i);
+		else
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 	}
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxq = dev->data->rx_queues[i];
@@ -5018,6 +5030,8 @@ txgbevf_dev_rxtx_start(struct rte_eth_dev *dev)
 		} while (--poll_ms && !(rxdctl & TXGBE_RXCFG_ENA));
 		if (!poll_ms)
 			PMD_INIT_LOG(ERR, "Could not enable Rx Queue %d", i);
+		else
+			dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 		rte_wmb();
 		wr32(hw, TXGBE_RXWP(i), rxq->nb_rx_desc - 1);
 	}
@@ -5065,6 +5079,7 @@ txgbe_config_rss_filter(struct rte_eth_dev *dev,
 	uint32_t reta;
 	uint16_t i;
 	uint16_t j;
+	uint16_t queue;
 	struct rte_eth_rss_conf rss_conf = {
 		.rss_key = conf->conf.key_len ?
 			(void *)(uintptr_t)conf->conf.key : NULL,
@@ -5097,7 +5112,12 @@ txgbe_config_rss_filter(struct rte_eth_dev *dev,
 	for (i = 0, j = 0; i < RTE_ETH_RSS_RETA_SIZE_128; i++, j++) {
 		if (j == conf->conf.queue_num)
 			j = 0;
-		reta = (reta >> 8) | LS32(conf->conf.queue[j], 24, 0xFF);
+		if (RTE_ETH_DEV_SRIOV(dev).active)
+			queue = RTE_ETH_DEV_SRIOV(dev).def_pool_q_idx +
+				conf->conf.queue[j];
+		else
+			queue = conf->conf.queue[j];
+		reta = (reta >> 8) | LS32(queue, 24, 0xFF);
 		if ((i & 3) == 3)
 			wr32at(hw, TXGBE_REG_RSSTBL, i >> 2, reta);
 	}

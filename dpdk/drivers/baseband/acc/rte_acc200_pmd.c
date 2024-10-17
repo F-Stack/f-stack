@@ -24,9 +24,9 @@
 #include "acc200_pmd.h"
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
-RTE_LOG_REGISTER_DEFAULT(acc200_logtype, DEBUG);
+RTE_LOG_REGISTER_SUFFIX(acc200_logtype, acc200, DEBUG);
 #else
-RTE_LOG_REGISTER_DEFAULT(acc200_logtype, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(acc200_logtype, acc200, NOTICE);
 #endif
 
 /* Calculate the offset of the enqueue register. */
@@ -1910,7 +1910,8 @@ enqueue_ldpc_enc_one_op_tb(struct acc_queue *q, struct rte_bbdev_enc_op *op,
 	uint16_t init_enq_descs = enq_descs;
 	uint32_t in_offset = 0, out_offset = 0;
 
-	input_len_B = ((op->ldpc_enc.basegraph == 1 ? 22 : 10) * op->ldpc_enc.z_c) >> 3;
+	input_len_B = ((op->ldpc_enc.basegraph == 1 ? 22 : 10) * op->ldpc_enc.z_c
+			- op->ldpc_enc.n_filler) >> 3;
 
 	if (check_bit(op->ldpc_enc.op_flags, RTE_BBDEV_LDPC_CRC_24B_ATTACH))
 		input_len_B -= 3;

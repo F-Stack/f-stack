@@ -99,6 +99,8 @@ rte_event_dev_info_get(uint8_t dev_id, struct rte_event_dev_info *dev_info)
 	dev_info->dequeue_timeout_ns = dev->data->dev_conf.dequeue_timeout_ns;
 
 	dev_info->dev = dev->dev;
+	if (dev->dev != NULL && dev->dev->driver != NULL)
+		dev_info->driver_name = dev->dev->driver->name;
 	return 0;
 }
 
@@ -930,7 +932,7 @@ rte_event_port_link(uint8_t dev_id, uint8_t port_id,
 	dev = &rte_eventdevs[dev_id];
 
 	if (*dev->dev_ops->port_link == NULL) {
-		RTE_EDEV_LOG_ERR("Function not supported\n");
+		RTE_EDEV_LOG_ERR("Function not supported");
 		rte_errno = ENOTSUP;
 		return 0;
 	}
@@ -1261,8 +1263,8 @@ rte_event_vector_pool_create(const char *name, unsigned int n,
 	int ret;
 
 	if (!nb_elem) {
-		RTE_LOG(ERR, EVENTDEV,
-			"Invalid number of elements=%d requested\n", nb_elem);
+		RTE_EDEV_LOG_ERR("Invalid number of elements=%d requested",
+			nb_elem);
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -1277,7 +1279,7 @@ rte_event_vector_pool_create(const char *name, unsigned int n,
 	mp_ops_name = rte_mbuf_best_mempool_ops();
 	ret = rte_mempool_set_ops_byname(mp, mp_ops_name, NULL);
 	if (ret != 0) {
-		RTE_LOG(ERR, EVENTDEV, "error setting mempool handler\n");
+		RTE_EDEV_LOG_ERR("error setting mempool handler");
 		goto err;
 	}
 
@@ -1832,7 +1834,7 @@ handle_dev_dump(const char *cmd __rte_unused,
 
 	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
 
-	buf = calloc(sizeof(char), RTE_TEL_MAX_SINGLE_STRING_LEN);
+	buf = calloc(RTE_TEL_MAX_SINGLE_STRING_LEN, sizeof(char));
 	if (buf == NULL)
 		return -ENOMEM;
 

@@ -75,7 +75,7 @@ enum {
 /* Now, the maximal ports will be supported is 16, action number is 32M. */
 #define MLX5_INDIRECT_ACT_CT_MAX_PORT 0x10
 
-#define MLX5_INDIRECT_ACT_CT_OWNER_SHIFT 22
+#define MLX5_INDIRECT_ACT_CT_OWNER_SHIFT 25
 #define MLX5_INDIRECT_ACT_CT_OWNER_MASK (MLX5_INDIRECT_ACT_CT_MAX_PORT - 1)
 
 /* 29-31: type, 25-28: owner port, 0-24: index */
@@ -1594,6 +1594,28 @@ flow_hw_get_reg_id(enum rte_flow_item_type type, uint32_t id)
 	}
 }
 
+static __rte_always_inline int
+flow_hw_get_port_id_from_ctx(void *dr_ctx, uint32_t *port_val)
+{
+#if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
+	uint32_t port;
+
+	MLX5_ETH_FOREACH_DEV(port, NULL) {
+		struct mlx5_priv *priv;
+		priv = rte_eth_devices[port].data->dev_private;
+
+		if (priv->dr_ctx == dr_ctx) {
+			*port_val = port;
+			return 0;
+		}
+	}
+#else
+	RTE_SET_USED(dr_ctx);
+	RTE_SET_USED(port_val);
+#endif
+	return -EINVAL;
+}
+
 void flow_hw_set_port_info(struct rte_eth_dev *dev);
 void flow_hw_clear_port_info(struct rte_eth_dev *dev);
 
@@ -1926,7 +1948,6 @@ struct mlx5_flow_driver_ops {
 struct mlx5_flow_workspace *mlx5_flow_push_thread_workspace(void);
 void mlx5_flow_pop_thread_workspace(void);
 struct mlx5_flow_workspace *mlx5_flow_get_thread_workspace(void);
-void mlx5_flow_workspace_gc_release(void);
 
 __extension__
 struct flow_grp_info {
@@ -2185,6 +2206,25 @@ struct mlx5_flow_hw_ctrl_rx {
 	struct rte_flow_actions_template *rss[MLX5_FLOW_HW_CTRL_RX_EXPANDED_RSS_MAX];
 	struct mlx5_flow_hw_ctrl_rx_table tables[MLX5_FLOW_HW_CTRL_RX_ETH_PATTERN_MAX]
 						[MLX5_FLOW_HW_CTRL_RX_EXPANDED_RSS_MAX];
+};
+
+/* Contains all templates required for control flow rules in FDB with HWS. */
+struct mlx5_flow_hw_ctrl_fdb {
+	struct rte_flow_pattern_template *esw_mgr_items_tmpl;
+	struct rte_flow_actions_template *regc_jump_actions_tmpl;
+	struct rte_flow_template_table *hw_esw_sq_miss_root_tbl;
+	struct rte_flow_pattern_template *regc_sq_items_tmpl;
+	struct rte_flow_actions_template *port_actions_tmpl;
+	struct rte_flow_template_table *hw_esw_sq_miss_tbl;
+	struct rte_flow_pattern_template *port_items_tmpl;
+	struct rte_flow_actions_template *jump_one_actions_tmpl;
+	struct rte_flow_template_table *hw_esw_zero_tbl;
+	struct rte_flow_pattern_template *tx_meta_items_tmpl;
+	struct rte_flow_actions_template *tx_meta_actions_tmpl;
+	struct rte_flow_template_table *hw_tx_meta_cpy_tbl;
+	struct rte_flow_pattern_template *lacp_rx_items_tmpl;
+	struct rte_flow_actions_template *lacp_rx_actions_tmpl;
+	struct rte_flow_template_table *hw_lacp_rx_tbl;
 };
 
 #define MLX5_CTRL_PROMISCUOUS    (RTE_BIT32(0))
@@ -2582,10 +2622,13 @@ int mlx5_flow_pick_transfer_proxy(struct rte_eth_dev *dev,
 int mlx5_flow_hw_flush_ctrl_flows(struct rte_eth_dev *dev);
 
 int mlx5_flow_hw_esw_create_sq_miss_flow(struct rte_eth_dev *dev,
-					 uint32_t sqn);
+					 uint32_t sqn, bool external);
+int mlx5_flow_hw_esw_destroy_sq_miss_flow(struct rte_eth_dev *dev,
+					  uint32_t sqn);
 int mlx5_flow_hw_esw_create_default_jump_flow(struct rte_eth_dev *dev);
 int mlx5_flow_hw_create_tx_default_mreg_copy_flow(struct rte_eth_dev *dev);
-int mlx5_flow_hw_tx_repr_matching_flow(struct rte_eth_dev *dev, uint32_t sqn);
+int mlx5_flow_hw_tx_repr_matching_flow(struct rte_eth_dev *dev, uint32_t sqn, bool external);
+int mlx5_flow_hw_lacp_rx_flow(struct rte_eth_dev *dev);
 int mlx5_flow_actions_validate(struct rte_eth_dev *dev,
 		const struct rte_flow_actions_template_attr *attr,
 		const struct rte_flow_action actions[],

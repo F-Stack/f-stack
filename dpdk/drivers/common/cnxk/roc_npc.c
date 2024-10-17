@@ -634,11 +634,15 @@ npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 	if (req_act == ROC_NPC_ACTION_TYPE_VLAN_STRIP) {
 		/* Only VLAN action is provided */
 		flow->npc_action = NIX_RX_ACTIONOP_UCAST;
-	} else if (req_act &
-		   (ROC_NPC_ACTION_TYPE_PF | ROC_NPC_ACTION_TYPE_VF)) {
-		flow->npc_action = NIX_RX_ACTIONOP_UCAST;
-		if (req_act & ROC_NPC_ACTION_TYPE_QUEUE)
-			flow->npc_action |= (uint64_t)rq << 20;
+	} else if (req_act & (ROC_NPC_ACTION_TYPE_PF | ROC_NPC_ACTION_TYPE_VF)) {
+		/* Check if any other action is set */
+		if ((req_act == ROC_NPC_ACTION_TYPE_PF) || (req_act == ROC_NPC_ACTION_TYPE_VF)) {
+			flow->npc_action = NIX_RX_ACTIONOP_DEFAULT;
+		} else {
+			flow->npc_action = NIX_RX_ACTIONOP_UCAST;
+			if (req_act & ROC_NPC_ACTION_TYPE_QUEUE)
+				flow->npc_action |= (uint64_t)rq << 20;
+		}
 	} else if (req_act & ROC_NPC_ACTION_TYPE_DROP) {
 		flow->npc_action = NIX_RX_ACTIONOP_DROP;
 	} else if (req_act & ROC_NPC_ACTION_TYPE_QUEUE) {
@@ -649,8 +653,7 @@ npc_parse_actions(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 	} else if (req_act & ROC_NPC_ACTION_TYPE_SEC) {
 		flow->npc_action = NIX_RX_ACTIONOP_UCAST_IPSEC;
 		flow->npc_action |= (uint64_t)rq << 20;
-	} else if (req_act &
-		   (ROC_NPC_ACTION_TYPE_FLAG | ROC_NPC_ACTION_TYPE_MARK)) {
+	} else if (req_act & (ROC_NPC_ACTION_TYPE_FLAG | ROC_NPC_ACTION_TYPE_MARK)) {
 		flow->npc_action = NIX_RX_ACTIONOP_UCAST;
 	} else if (req_act & ROC_NPC_ACTION_TYPE_COUNT) {
 		/* Keep ROC_NPC_ACTION_TYPE_COUNT_ACT always at the end
@@ -832,8 +835,34 @@ npc_rss_action_configure(struct roc_npc *roc_npc,
 	uint8_t key[ROC_NIX_RSS_KEY_LEN];
 	const uint8_t *key_ptr;
 	uint8_t flowkey_algx;
+	uint32_t key_len;
 	uint16_t *reta;
 	int rc;
+
+	roc_nix_rss_key_get(roc_nix, key);
+	if (rss->key == NULL) {
+		key_ptr = key;
+	} else {
+		key_len = rss->key_len;
+		if (key_len > ROC_NIX_RSS_KEY_LEN)
+			key_len = ROC_NIX_RSS_KEY_LEN;
+
+		for (i = 0; i < key_len; i++) {
+			if (key[i] != rss->key[i]) {
+				plt_err("RSS key config not supported");
+				plt_err("New Key:");
+				for (i = 0; i < key_len; i++)
+					plt_dump_no_nl("0x%.2x ", rss->key[i]);
+				plt_dump_no_nl("\n");
+				plt_err("Configured Key:");
+				for (i = 0; i < ROC_NIX_RSS_KEY_LEN; i++)
+					plt_dump_no_nl("0x%.2x ", key[i]);
+				plt_dump_no_nl("\n");
+				return -ENOTSUP;
+			}
+		}
+		key_ptr = rss->key;
+	}
 
 	rc = npc_rss_free_grp_get(npc, &rss_grp_idx);
 	/* RSS group :0 is not usable for flow rss action */
@@ -848,13 +877,6 @@ npc_rss_action_configure(struct roc_npc *roc_npc,
 	}
 
 	*rss_grp = rss_grp_idx;
-
-	if (rss->key == NULL) {
-		roc_nix_rss_key_default_fill(roc_nix, key);
-		key_ptr = key;
-	} else {
-		key_ptr = rss->key;
-	}
 
 	roc_nix_rss_key_set(roc_nix, key_ptr);
 
@@ -1242,7 +1264,7 @@ npc_vtag_action_program(struct roc_npc *roc_npc,
 	return 0;
 }
 
-static void
+void
 roc_npc_sdp_channel_get(struct roc_npc *roc_npc, uint16_t *chan_base, uint16_t *chan_mask)
 {
 	struct roc_nix *roc_nix = roc_npc->roc_nix;
@@ -1257,8 +1279,9 @@ roc_npc_sdp_channel_get(struct roc_npc *roc_npc, uint16_t *chan_base, uint16_t *
 		num_bits = (sizeof(uint32_t) * 8) - __builtin_clz(range) - 1;
 		/* Set mask for (15 - numbits) MSB bits */
 		*chan_mask = (uint16_t)~GENMASK(num_bits, 0);
+		*chan_mask &= 0xFFF;
 	} else {
-		*chan_mask = (uint16_t)GENMASK(15, 0);
+		*chan_mask = (uint16_t)GENMASK(11, 0);
 	}
 
 	mask = (uint16_t)GENMASK(num_bits, 0);

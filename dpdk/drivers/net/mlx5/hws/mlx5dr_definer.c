@@ -8,7 +8,7 @@
 #define BAD_PORT	0xBAD
 #define ETH_TYPE_IPV4_VXLAN	0x0800
 #define ETH_TYPE_IPV6_VXLAN	0x86DD
-#define ETH_VXLAN_DEFAULT_PORT	4789
+#define UDP_VXLAN_PORT	4789
 
 #define STE_NO_VLAN	0x0
 #define STE_SVLAN	0x1
@@ -30,6 +30,10 @@
 				 (((_v) & (mask)) << \
 				  (bit_off))); \
 	} while (0)
+
+/* Getter function based on bit offset and mask, for 32bit DW*/
+#define DR_GET_32(p, byte_off, bit_off, mask) \
+	((rte_be_to_cpu_32(*((const rte_be32_t *)(p) + ((byte_off) / 4))) >> (bit_off)) & (mask))
 
 /* Setter function based on bit offset and mask */
 #define DR_SET(p, v, byte_off, bit_off, mask) \
@@ -153,7 +157,7 @@ struct mlx5dr_definer_conv_data {
 	X(SET,		gtp_ext_hdr_pdu,	v->hdr.type,		rte_flow_item_gtp_psc) \
 	X(SET,		gtp_ext_hdr_qfi,	v->hdr.qfi,		rte_flow_item_gtp_psc) \
 	X(SET,		vxlan_flags,		v->flags,		rte_flow_item_vxlan) \
-	X(SET,		vxlan_udp_port,		ETH_VXLAN_DEFAULT_PORT,	rte_flow_item_vxlan) \
+	X(SET,		vxlan_udp_port,		UDP_VXLAN_PORT,		rte_flow_item_vxlan) \
 	X(SET,		source_qp,		v->queue,		mlx5_rte_flow_item_sq) \
 	X(SET,		tag,			v->data,		rte_flow_item_tag) \
 	X(SET,		metadata,		v->data,		rte_flow_item_meta) \
@@ -163,7 +167,9 @@ struct mlx5dr_definer_conv_data {
 	X(SET_BE32,	gre_opt_key,		v->key.key,		rte_flow_item_gre_opt) \
 	X(SET_BE32,	gre_opt_seq,		v->sequence.sequence,	rte_flow_item_gre_opt) \
 	X(SET_BE16,	gre_opt_checksum,	v->checksum_rsvd.checksum,	rte_flow_item_gre_opt) \
-	X(SET,		meter_color,		rte_col_2_mlx5_col(v->color),	rte_flow_item_meter_color)
+	X(SET,		meter_color,		rte_col_2_mlx5_col(v->color),	rte_flow_item_meter_color) \
+	X(SET,		cvlan,			STE_CVLAN,		rte_flow_item_vlan) \
+	X(SET_BE16,	inner_type,		v->inner_type,		rte_flow_item_vlan)
 
 /* Item set function format */
 #define X(set_type, func_name, value, item_type) \
@@ -269,7 +275,7 @@ mlx5dr_definer_integrity_set(struct mlx5dr_definer_fc *fc,
 {
 	bool inner = (fc->fname == MLX5DR_DEFINER_FNAME_INTEGRITY_I);
 	const struct rte_flow_item_integrity *v = item_spec;
-	uint32_t ok1_bits = 0;
+	uint32_t ok1_bits = DR_GET_32(tag, fc->byte_off, fc->bit_off, fc->bit_mask);
 
 	if (v->l3_ok)
 		ok1_bits |= inner ? BIT(MLX5DR_DEFINER_OKS1_SECOND_L3_OK) |
@@ -477,6 +483,15 @@ mlx5dr_definer_conv_item_vlan(struct mlx5dr_definer_conv_data *cd,
 	struct mlx5dr_definer_fc *fc;
 	bool inner = cd->tunnel;
 
+	if (!cd->relaxed) {
+		/* Mark packet as tagged (CVLAN) */
+		fc = &cd->fc[DR_CALC_FNAME(VLAN_TYPE, inner)];
+		fc->item_idx = item_idx;
+		fc->tag_mask_set = &mlx5dr_definer_ones_set;
+		fc->tag_set = &mlx5dr_definer_cvlan_set;
+		DR_CALC_SET(fc, eth_l2, first_vlan_qualifier, inner);
+	}
+
 	if (!m)
 		return 0;
 
@@ -485,8 +500,7 @@ mlx5dr_definer_conv_item_vlan(struct mlx5dr_definer_conv_data *cd,
 		return rte_errno;
 	}
 
-	if (!cd->relaxed || m->has_more_vlan) {
-		/* Mark packet as tagged (CVLAN or SVLAN) even if TCI is not specified.*/
+	if (m->has_more_vlan) {
 		fc = &cd->fc[DR_CALC_FNAME(VLAN_TYPE, inner)];
 		fc->item_idx = item_idx;
 		fc->tag_mask_set = &mlx5dr_definer_ones_set;
@@ -504,7 +518,7 @@ mlx5dr_definer_conv_item_vlan(struct mlx5dr_definer_conv_data *cd,
 	if (m->inner_type) {
 		fc = &cd->fc[DR_CALC_FNAME(ETH_TYPE, inner)];
 		fc->item_idx = item_idx;
-		fc->tag_set = &mlx5dr_definer_eth_type_set;
+		fc->tag_set = &mlx5dr_definer_inner_type_set;
 		DR_CALC_SET(fc, eth_l2, l3_ethertype, inner);
 	}
 
@@ -824,6 +838,12 @@ mlx5dr_definer_conv_item_gtp(struct mlx5dr_definer_conv_data *cd,
 	const struct rte_flow_item_gtp *m = item->mask;
 	struct mlx5dr_definer_fc *fc;
 
+	if (cd->tunnel) {
+		DR_LOG(ERR, "Inner GTPU item not supported");
+		rte_errno = ENOTSUP;
+		return rte_errno;
+	}
+
 	/* Overwrite GTPU dest port if not present */
 	fc = &cd->fc[DR_CALC_FNAME(L4_DPORT, false)];
 	if (!fc->tag_set && !cd->relaxed) {
@@ -996,9 +1016,20 @@ mlx5dr_definer_conv_item_vxlan(struct mlx5dr_definer_conv_data *cd,
 	struct mlx5dr_definer_fc *fc;
 	bool inner = cd->tunnel;
 
-	/* In order to match on VXLAN we must match on ether_type, ip_protocol
-	 * and l4_dport.
-	 */
+	if (m && (m->rsvd0[0] != 0 || m->rsvd0[1] != 0 || m->rsvd0[2] != 0 ||
+	    m->rsvd1 != 0)) {
+		DR_LOG(ERR, "reserved fields are not supported");
+		rte_errno = ENOTSUP;
+		return rte_errno;
+	}
+
+	if (inner) {
+		DR_LOG(ERR, "Inner VXLAN item not supported");
+		rte_errno = ENOTSUP;
+		return rte_errno;
+	}
+
+	/* In order to match on VXLAN we must match on ip_protocol and l4_dport */
 	if (!cd->relaxed) {
 		fc = &cd->fc[DR_CALC_FNAME(IP_PROTOCOL, inner)];
 		if (!fc->tag_set) {
@@ -1021,12 +1052,6 @@ mlx5dr_definer_conv_item_vxlan(struct mlx5dr_definer_conv_data *cd,
 		return 0;
 
 	if (m->flags) {
-		if (inner) {
-			DR_LOG(ERR, "Inner VXLAN flags item not supported");
-			rte_errno = ENOTSUP;
-			return rte_errno;
-		}
-
 		fc = &cd->fc[MLX5DR_DEFINER_FNAME_VXLAN_FLAGS];
 		fc->item_idx = item_idx;
 		fc->tag_set = &mlx5dr_definer_vxlan_flags_set;
@@ -1036,12 +1061,6 @@ mlx5dr_definer_conv_item_vxlan(struct mlx5dr_definer_conv_data *cd,
 	}
 
 	if (!is_mem_zero(m->vni, 3)) {
-		if (inner) {
-			DR_LOG(ERR, "Inner VXLAN vni item not supported");
-			rte_errno = ENOTSUP;
-			return rte_errno;
-		}
-
 		fc = &cd->fc[MLX5DR_DEFINER_FNAME_VXLAN_VNI];
 		fc->item_idx = item_idx;
 		fc->tag_set = &mlx5dr_definer_vxlan_vni_set;
@@ -1328,7 +1347,6 @@ mlx5dr_definer_conv_item_integrity(struct mlx5dr_definer_conv_data *cd,
 {
 	const struct rte_flow_item_integrity *m = item->mask;
 	struct mlx5dr_definer_fc *fc;
-	bool inner = cd->tunnel;
 
 	if (!m)
 		return 0;
@@ -1339,7 +1357,7 @@ mlx5dr_definer_conv_item_integrity(struct mlx5dr_definer_conv_data *cd,
 	}
 
 	if (m->l3_ok || m->ipv4_csum_ok || m->l4_ok || m->l4_csum_ok) {
-		fc = &cd->fc[DR_CALC_FNAME(INTEGRITY, inner)];
+		fc = &cd->fc[DR_CALC_FNAME(INTEGRITY, m->level)];
 		fc->item_idx = item_idx;
 		fc->tag_set = &mlx5dr_definer_integrity_set;
 		DR_CALC_SET_HDR(fc, oks1, oks1_bits);
@@ -1569,8 +1587,7 @@ mlx5dr_definer_conv_items_to_hl(struct mlx5dr_context *ctx,
 			break;
 		case RTE_FLOW_ITEM_TYPE_INTEGRITY:
 			ret = mlx5dr_definer_conv_item_integrity(&cd, items, i);
-			item_flags |= cd.tunnel ? MLX5_FLOW_ITEM_INNER_INTEGRITY :
-						  MLX5_FLOW_ITEM_OUTER_INTEGRITY;
+			item_flags |= MLX5_FLOW_ITEM_INTEGRITY;
 			break;
 		case RTE_FLOW_ITEM_TYPE_CONNTRACK:
 			ret = mlx5dr_definer_conv_item_conntrack(&cd, items, i);
@@ -1635,11 +1652,15 @@ mlx5dr_definer_find_byte_in_tag(struct mlx5dr_definer *definer,
 				uint32_t *tag_byte_off)
 {
 	uint8_t byte_offset;
-	int i;
+	int i, dw_to_scan;
+
+	/* Avoid accessing unused DW selectors */
+	dw_to_scan = mlx5dr_definer_is_jumbo(definer) ?
+		DW_SELECTORS : DW_SELECTORS_MATCH;
 
 	/* Add offset since each DW covers multiple BYTEs */
 	byte_offset = hl_byte_off % DW_SIZE;
-	for (i = 0; i < DW_SELECTORS; i++) {
+	for (i = 0; i < dw_to_scan; i++) {
 		if (definer->dw_selector[i] == hl_byte_off / DW_SIZE) {
 			*tag_byte_off = byte_offset + DW_SIZE * (DW_SELECTORS - i - 1);
 			return 0;
@@ -1821,7 +1842,7 @@ mlx5dr_definer_find_best_hl_fit(struct mlx5dr_context *ctx,
 		return 0;
 	}
 
-	DR_LOG(ERR, "Unable to find supporting match/jumbo definer combination");
+	DR_LOG(DEBUG, "Unable to find supporting match/jumbo definer combination");
 	rte_errno = ENOTSUP;
 	return rte_errno;
 }
@@ -1913,7 +1934,7 @@ int mlx5dr_definer_get(struct mlx5dr_context *ctx,
 	/* Convert items to hl and allocate the field copy array (fc) */
 	ret = mlx5dr_definer_conv_items_to_hl(ctx, mt, hl);
 	if (ret) {
-		DR_LOG(ERR, "Failed to convert items to hl");
+		DR_LOG(DEBUG, "Failed to convert items to hl");
 		goto free_hl;
 	}
 

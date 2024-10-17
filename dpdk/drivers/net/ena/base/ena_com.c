@@ -34,6 +34,8 @@
 
 #define ENA_REGS_ADMIN_INTR_MASK 1
 
+#define ENA_MAX_BACKOFF_DELAY_EXP 16U
+
 #define ENA_MIN_ADMIN_POLL_US 100
 
 #define ENA_MAX_ADMIN_POLL_US 5000
@@ -171,6 +173,7 @@ static int ena_com_admin_init_aenq(struct ena_com_dev *ena_dev,
 static void comp_ctxt_release(struct ena_com_admin_queue *queue,
 				     struct ena_comp_ctx *comp_ctx)
 {
+	comp_ctx->user_cqe = NULL;
 	comp_ctx->occupied = false;
 	ATOMIC32_DEC(&queue->outstanding_cmds);
 }
@@ -464,6 +467,9 @@ static void ena_com_handle_single_admin_completion(struct ena_com_admin_queue *a
 		return;
 	}
 
+	if (!comp_ctx->occupied)
+		return;
+
 	comp_ctx->status = ENA_CMD_COMPLETED;
 	comp_ctx->comp_status = cqe->acq_common_descriptor.status;
 
@@ -539,8 +545,9 @@ static int ena_com_comp_status_to_errno(struct ena_com_admin_queue *admin_queue,
 
 static void ena_delay_exponential_backoff_us(u32 exp, u32 delay_us)
 {
+	exp = ENA_MIN32(ENA_MAX_BACKOFF_DELAY_EXP, exp);
 	delay_us = ENA_MAX32(ENA_MIN_ADMIN_POLL_US, delay_us);
-	delay_us = ENA_MIN32(delay_us * (1U << exp), ENA_MAX_ADMIN_POLL_US);
+	delay_us = ENA_MIN32(ENA_MAX_ADMIN_POLL_US, delay_us * (1U << exp));
 	ENA_USLEEP(delay_us);
 }
 

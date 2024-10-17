@@ -45,14 +45,22 @@ cnxk_dmadev_configure(struct rte_dma_dev *dev,
 	int rc = 0;
 
 	RTE_SET_USED(conf);
-	RTE_SET_USED(conf);
 	RTE_SET_USED(conf_sz);
-	RTE_SET_USED(conf_sz);
-	dpivf = dev->fp_obj->dev_private;
-	rc = roc_dpi_configure(&dpivf->rdpi);
-	if (rc < 0)
-		plt_err("DMA configure failed err = %d", rc);
 
+	dpivf = dev->fp_obj->dev_private;
+
+	if (dpivf->flag & CNXK_DPI_DEV_CONFIG)
+		return rc;
+
+	rc = roc_dpi_configure(&dpivf->rdpi);
+	if (rc < 0) {
+		plt_err("DMA configure failed err = %d", rc);
+		goto done;
+	}
+
+	dpivf->flag |= CNXK_DPI_DEV_CONFIG;
+
+done:
 	return rc;
 }
 
@@ -68,6 +76,9 @@ cnxk_dmadev_vchan_setup(struct rte_dma_dev *dev, uint16_t vchan,
 
 	RTE_SET_USED(vchan);
 	RTE_SET_USED(conf_sz);
+
+	if (dpivf->flag & CNXK_DPI_VCHAN_CONFIG)
+		return 0;
 
 	header->cn9k.pt = DPI_HDR_PT_ZBW_CA;
 
@@ -108,6 +119,7 @@ cnxk_dmadev_vchan_setup(struct rte_dma_dev *dev, uint16_t vchan,
 	dpivf->conf.c_desc.max_cnt = DPI_MAX_DESC;
 	dpivf->conf.c_desc.head = 0;
 	dpivf->conf.c_desc.tail = 0;
+	dpivf->flag |= CNXK_DPI_VCHAN_CONFIG;
 
 	return 0;
 }
@@ -124,6 +136,10 @@ cn10k_dmadev_vchan_setup(struct rte_dma_dev *dev, uint16_t vchan,
 
 	RTE_SET_USED(vchan);
 	RTE_SET_USED(conf_sz);
+
+
+	if (dpivf->flag & CNXK_DPI_VCHAN_CONFIG)
+		return 0;
 
 	header->cn10k.pt = DPI_HDR_PT_ZBW_CA;
 
@@ -164,6 +180,7 @@ cn10k_dmadev_vchan_setup(struct rte_dma_dev *dev, uint16_t vchan,
 	dpivf->conf.c_desc.max_cnt = DPI_MAX_DESC;
 	dpivf->conf.c_desc.head = 0;
 	dpivf->conf.c_desc.tail = 0;
+	dpivf->flag |= CNXK_DPI_VCHAN_CONFIG;
 
 	return 0;
 }
@@ -173,9 +190,14 @@ cnxk_dmadev_start(struct rte_dma_dev *dev)
 {
 	struct cnxk_dpi_vf_s *dpivf = dev->fp_obj->dev_private;
 
+	if (dpivf->flag & CNXK_DPI_DEV_START)
+		return 0;
+
 	dpivf->desc_idx = 0;
 	dpivf->num_words = 0;
 	roc_dpi_enable(&dpivf->rdpi);
+
+	dpivf->flag |= CNXK_DPI_DEV_START;
 
 	return 0;
 }
@@ -186,6 +208,8 @@ cnxk_dmadev_stop(struct rte_dma_dev *dev)
 	struct cnxk_dpi_vf_s *dpivf = dev->fp_obj->dev_private;
 
 	roc_dpi_disable(&dpivf->rdpi);
+
+	dpivf->flag &= ~CNXK_DPI_DEV_START;
 
 	return 0;
 }
@@ -198,6 +222,8 @@ cnxk_dmadev_close(struct rte_dma_dev *dev)
 	roc_dpi_disable(&dpivf->rdpi);
 	roc_dpi_dev_fini(&dpivf->rdpi);
 
+	dpivf->flag = 0;
+
 	return 0;
 }
 
@@ -206,8 +232,7 @@ __dpi_queue_write(struct roc_dpi *dpi, uint64_t *cmds, int cmd_count)
 {
 	uint64_t *ptr = dpi->chunk_base;
 
-	if ((cmd_count < DPI_MIN_CMD_SIZE) || (cmd_count > DPI_MAX_CMD_SIZE) ||
-	    cmds == NULL)
+	if ((cmd_count < DPI_MIN_CMD_SIZE) || (cmd_count > DPI_MAX_CMD_SIZE) || cmds == NULL)
 		return -EINVAL;
 
 	/*
@@ -223,11 +248,15 @@ __dpi_queue_write(struct roc_dpi *dpi, uint64_t *cmds, int cmd_count)
 		int count;
 		uint64_t *new_buff = dpi->chunk_next;
 
-		dpi->chunk_next =
-			(void *)roc_npa_aura_op_alloc(dpi->aura_handle, 0);
+		dpi->chunk_next = (void *)roc_npa_aura_op_alloc(dpi->aura_handle, 0);
 		if (!dpi->chunk_next) {
-			plt_err("Failed to alloc next buffer from NPA");
-			return -ENOMEM;
+			plt_dp_dbg("Failed to alloc next buffer from NPA");
+
+			/* NPA failed to allocate a buffer. Restoring chunk_next
+			 * to its original address.
+			 */
+			dpi->chunk_next = new_buff;
+			return -ENOSPC;
 		}
 
 		/*
@@ -261,13 +290,17 @@ __dpi_queue_write(struct roc_dpi *dpi, uint64_t *cmds, int cmd_count)
 		/* queue index may be greater than pool size */
 		if (dpi->chunk_head >= dpi->pool_size_m1) {
 			new_buff = dpi->chunk_next;
-			dpi->chunk_next =
-				(void *)roc_npa_aura_op_alloc(dpi->aura_handle,
-							      0);
+			dpi->chunk_next = (void *)roc_npa_aura_op_alloc(dpi->aura_handle, 0);
 			if (!dpi->chunk_next) {
-				plt_err("Failed to alloc next buffer from NPA");
-				return -ENOMEM;
+				plt_dp_dbg("Failed to alloc next buffer from NPA");
+
+				/* NPA failed to allocate a buffer. Restoring chunk_next
+				 * to its original address.
+				 */
+				dpi->chunk_next = new_buff;
+				return -ENOSPC;
 			}
+
 			/* Write next buffer address */
 			*ptr = (uint64_t)new_buff;
 			dpi->chunk_base = new_buff;
@@ -628,8 +661,7 @@ static const struct rte_dma_dev_ops cnxk_dmadev_ops = {
 };
 
 static int
-cnxk_dmadev_probe(struct rte_pci_driver *pci_drv __rte_unused,
-		  struct rte_pci_device *pci_dev)
+cnxk_dmadev_probe(struct rte_pci_driver *pci_drv __rte_unused, struct rte_pci_device *pci_dev)
 {
 	struct cnxk_dpi_vf_s *dpivf = NULL;
 	char name[RTE_DEV_NAME_MAX_LEN];
@@ -648,8 +680,7 @@ cnxk_dmadev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	memset(name, 0, sizeof(name));
 	rte_pci_device_name(&pci_dev->addr, name, sizeof(name));
 
-	dmadev = rte_dma_pmd_allocate(name, pci_dev->device.numa_node,
-				      sizeof(*dpivf));
+	dmadev = rte_dma_pmd_allocate(name, pci_dev->device.numa_node, sizeof(*dpivf));
 	if (dmadev == NULL) {
 		plt_err("dma device allocation failed for %s", name);
 		return -ENOMEM;
@@ -681,6 +712,8 @@ cnxk_dmadev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	rc = roc_dpi_dev_init(rdpi);
 	if (rc < 0)
 		goto err_out_free;
+
+	dmadev->state = RTE_DMA_DEV_READY;
 
 	return 0;
 

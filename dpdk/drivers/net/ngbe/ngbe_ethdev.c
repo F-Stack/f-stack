@@ -90,6 +90,7 @@ static int ngbe_dev_misc_interrupt_setup(struct rte_eth_dev *dev);
 static int ngbe_dev_rxq_interrupt_setup(struct rte_eth_dev *dev);
 static void ngbe_dev_interrupt_handler(void *param);
 static void ngbe_configure_msix(struct rte_eth_dev *dev);
+static void ngbe_pbthresh_set(struct rte_eth_dev *dev);
 
 #define NGBE_SET_HWSTRIP(h, q) do {\
 		uint32_t idx = (q) / (sizeof((h)->bitmap[0]) * NBBY); \
@@ -545,7 +546,7 @@ static int eth_ngbe_pci_remove(struct rte_pci_device *pci_dev)
 	if (ethdev == NULL)
 		return 0;
 
-	return rte_eth_dev_destroy(ethdev, eth_ngbe_dev_uninit);
+	return rte_eth_dev_pci_generic_remove(pci_dev, eth_ngbe_dev_uninit);
 }
 
 static struct rte_pci_driver rte_ngbe_pmd = {
@@ -1037,6 +1038,7 @@ ngbe_dev_start(struct rte_eth_dev *dev)
 	}
 
 	hw->mac.setup_pba(hw);
+	ngbe_pbthresh_set(dev);
 	ngbe_configure_port(dev);
 
 	err = ngbe_dev_rxtx_start(dev);
@@ -1165,7 +1167,7 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 	int vf;
 
 	if (hw->adapter_stopped)
-		return 0;
+		goto out;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1186,8 +1188,6 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 	for (vf = 0; vfinfo != NULL && vf < pci_dev->max_vfs; vf++)
 		vfinfo[vf].clear_to_send = false;
-
-	hw->phy.set_phy_power(hw, false);
 
 	ngbe_dev_clear_queues(dev);
 
@@ -1214,6 +1214,10 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 	hw->adapter_stopped = true;
 	dev->data->dev_started = 0;
+
+out:
+	/* close phy to prevent reset in dev_close from restarting physical link */
+	hw->phy.set_phy_power(hw, false);
 
 	return 0;
 }
@@ -1257,6 +1261,9 @@ ngbe_dev_close(struct rte_eth_dev *dev)
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
 
 	ngbe_pf_reset_hw(hw);
 
@@ -1804,7 +1811,9 @@ ngbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_rx_queues = (uint16_t)hw->mac.max_rx_queues;
 	dev_info->max_tx_queues = (uint16_t)hw->mac.max_tx_queues;
 	dev_info->min_rx_bufsize = 1024;
-	dev_info->max_rx_pktlen = 15872;
+	dev_info->max_rx_pktlen = NGBE_MAX_MTU + NGBE_ETH_OVERHEAD;
+	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
+	dev_info->max_mtu = NGBE_MAX_MTU;
 	dev_info->max_mac_addrs = hw->mac.num_rar_entries;
 	dev_info->max_hash_mac_addrs = NGBE_VMDQ_NUM_UC_MAC;
 	dev_info->max_vfs = pci_dev->max_vfs;
@@ -1937,6 +1946,8 @@ ngbe_dev_link_update_share(struct rte_eth_dev *dev,
 			wr32m(hw, NGBE_MACTXCFG, NGBE_MACTXCFG_SPEED_MASK,
 				NGBE_MACTXCFG_SPEED_1G | NGBE_MACTXCFG_TE);
 		}
+		wr32m(hw, NGBE_MACRXFLT, NGBE_MACRXFLT_PROMISC,
+			NGBE_MACRXFLT_PROMISC);
 	}
 
 	return rte_eth_linkstatus_set(dev, &link);
@@ -2354,6 +2365,93 @@ ngbe_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 
 	PMD_INIT_LOG(ERR, "ngbe_fc_enable = 0x%x", err);
 	return -EIO;
+}
+
+/* Additional bittime to account for NGBE framing */
+#define NGBE_ETH_FRAMING 20
+
+/*
+ * ngbe_fc_hpbthresh_set - calculate high water mark for flow control
+ *
+ * @dv_id: device interface delay
+ * @pb: packet buffer to calculate
+ */
+static s32
+ngbe_fc_hpbthresh_set(struct rte_eth_dev *dev)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+	u32 max_frame_size, tc, dv_id, rx_pb;
+	s32 kb, marker;
+
+	/* Calculate max LAN frame size */
+	max_frame_size = rd32m(hw, NGBE_FRMSZ, NGBE_FRMSZ_MAX_MASK);
+	tc = max_frame_size + NGBE_ETH_FRAMING;
+
+	/* Calculate delay value for device */
+	dv_id = NGBE_DV(tc, tc);
+
+	/* Loopback switch introduces additional latency */
+	if (pci_dev->max_vfs)
+		dv_id += NGBE_B2BT(tc);
+
+	/* Delay value is calculated in bit times convert to KB */
+	kb = NGBE_BT2KB(dv_id);
+	rx_pb = rd32(hw, NGBE_PBRXSIZE) >> 10;
+
+	marker = rx_pb - kb;
+
+	/* It is possible that the packet buffer is not large enough
+	 * to provide required headroom. In this case throw an error
+	 * to user and do the best we can.
+	 */
+	if (marker < 0) {
+		PMD_DRV_LOG(WARNING, "Packet Buffer can not provide enough headroom to support flow control.");
+		marker = tc + 1;
+	}
+
+	return marker;
+}
+
+/*
+ * ngbe_fc_lpbthresh_set - calculate low water mark for flow control
+ *
+ * @dv_id: device interface delay
+ */
+static s32
+ngbe_fc_lpbthresh_set(struct rte_eth_dev *dev)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+	u32 max_frame_size, tc, dv_id;
+	s32 kb;
+
+	/* Calculate max LAN frame size */
+	max_frame_size = rd32m(hw, NGBE_FRMSZ, NGBE_FRMSZ_MAX_MASK);
+	tc = max_frame_size + NGBE_ETH_FRAMING;
+
+	/* Calculate delay value for device */
+	dv_id = NGBE_LOW_DV(tc);
+
+	/* Delay value is calculated in bit times convert to KB */
+	kb = NGBE_BT2KB(dv_id);
+
+	return kb;
+}
+
+/*
+ * ngbe_pbthresh_setup - calculate and setup high low water marks
+ */
+static void
+ngbe_pbthresh_set(struct rte_eth_dev *dev)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+
+	hw->fc.high_water = ngbe_fc_hpbthresh_set(dev);
+	hw->fc.low_water = ngbe_fc_lpbthresh_set(dev);
+
+	/* Low water marks must not be larger than high water marks */
+	if (hw->fc.low_water > hw->fc.high_water)
+		hw->fc.low_water = 0;
 }
 
 int

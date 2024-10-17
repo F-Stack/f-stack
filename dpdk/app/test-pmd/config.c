@@ -2700,8 +2700,7 @@ port_queue_flow_create(portid_t port_id, queueid_t queue_id,
 	flow = rte_flow_async_create(port_id, queue_id, &op_attr, pt->table,
 		pattern, pattern_idx, actions, actions_idx, job, &error);
 	if (!flow) {
-		uint32_t flow_id = pf->id;
-		port_queue_flow_destroy(port_id, queue_id, true, 1, &flow_id);
+		free(pf);
 		free(job);
 		return port_flow_complain(&error);
 	}
@@ -4245,9 +4244,9 @@ fwd_stream_on_other_lcores(uint16_t domain_id, lcoreid_t src_lc,
 				continue;
 			printf("Shared Rx queue group %u queue %hu can't be scheduled on different cores:\n",
 			       share_group, share_rxq);
-			printf("  lcore %hhu Port %hu queue %hu\n",
+			printf("  lcore %u Port %hu queue %hu\n",
 			       src_lc, src_port, src_rxq);
-			printf("  lcore %hhu Port %hu queue %hu\n",
+			printf("  lcore %u Port %hu queue %hu\n",
 			       lc_id, fs->rx_port, fs->rx_queue);
 			printf("Please use --nb-cores=%hu to limit number of forwarding cores\n",
 			       nb_rxq);
@@ -4428,7 +4427,6 @@ rss_fwd_config_setup(void)
 	queueid_t  nb_q;
 	streamid_t  sm_id;
 	int start;
-	int end;
 
 	nb_q = nb_rxq;
 	if (nb_q > nb_txq)
@@ -4436,7 +4434,7 @@ rss_fwd_config_setup(void)
 	cur_fwd_config.nb_fwd_lcores = (lcoreid_t) nb_fwd_lcores;
 	cur_fwd_config.nb_fwd_ports = nb_fwd_ports;
 	cur_fwd_config.nb_fwd_streams =
-		(streamid_t) (nb_q * cur_fwd_config.nb_fwd_ports);
+		(streamid_t) (nb_q / num_procs * cur_fwd_config.nb_fwd_ports);
 
 	if (cur_fwd_config.nb_fwd_streams < cur_fwd_config.nb_fwd_lcores)
 		cur_fwd_config.nb_fwd_lcores =
@@ -4458,7 +4456,6 @@ rss_fwd_config_setup(void)
 	 * the 2~3 queue for secondary process.
 	 */
 	start = proc_id * nb_q / num_procs;
-	end = start + nb_q / num_procs;
 	rxp = 0;
 	rxq = start;
 	for (sm_id = 0; sm_id < cur_fwd_config.nb_fwd_streams; sm_id++) {
@@ -4477,8 +4474,6 @@ rss_fwd_config_setup(void)
 			continue;
 		rxp = 0;
 		rxq++;
-		if (rxq >= end)
-			rxq = start;
 	}
 }
 
@@ -4623,7 +4618,7 @@ icmp_echo_config_setup(void)
 	lcoreid_t lc_id;
 	uint16_t  sm_id;
 
-	if ((nb_txq * nb_fwd_ports) < nb_fwd_lcores)
+	if ((lcoreid_t)(nb_txq * nb_fwd_ports) < nb_fwd_lcores)
 		cur_fwd_config.nb_fwd_lcores = (lcoreid_t)
 			(nb_txq * nb_fwd_ports);
 	else

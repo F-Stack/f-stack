@@ -1061,7 +1061,7 @@ eal_memalloc_alloc_seg_bulk(struct rte_memseg **ms, int n_segs, size_t page_sz,
 	/* memalloc is locked, so it's safe to use thread-unsafe version */
 	ret = rte_memseg_list_walk_thread_unsafe(alloc_seg_walk, &wa);
 	if (ret == 0) {
-		RTE_LOG(ERR, EAL, "%s(): couldn't find suitable memseg_list\n",
+		RTE_LOG(DEBUG, EAL, "%s(): couldn't find suitable memseg_list\n",
 			__func__);
 		ret = -1;
 	} else if (ret > 0) {
@@ -1740,7 +1740,10 @@ eal_memalloc_init(void)
 		eal_get_internal_configuration();
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
-		if (rte_memseg_list_walk(secondary_msl_create_walk, NULL) < 0)
+		/*  memory_hotplug_lock is held during initialization, so it's
+		 *  safe to call thread-unsafe version.
+		 */
+		if (rte_memseg_list_walk_thread_unsafe(secondary_msl_create_walk, NULL) < 0)
 			return -1;
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
 			internal_conf->in_memory) {
@@ -1778,7 +1781,7 @@ eal_memalloc_init(void)
 	}
 
 	/* initialize all of the fd lists */
-	if (rte_memseg_list_walk(fd_list_create_walk, NULL))
+	if (rte_memseg_list_walk_thread_unsafe(fd_list_create_walk, NULL))
 		return -1;
 	return 0;
 }

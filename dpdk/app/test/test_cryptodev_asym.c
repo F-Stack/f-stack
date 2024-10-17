@@ -54,11 +54,15 @@ union test_case_structure {
 	struct rsa_test_data_2 rsa_data;
 };
 
+struct vector_details {
+	uint32_t vector_size;
+	const void *address;
+};
 struct test_cases_array {
 	uint32_t size;
-	const void *address[TEST_VECTOR_SIZE];
+	struct vector_details details[TEST_VECTOR_SIZE];
 };
-static struct test_cases_array test_vector = {0, { NULL } };
+static struct test_cases_array test_vector = {0, {} };
 
 static uint32_t test_index;
 
@@ -513,14 +517,14 @@ error_exit:
 }
 
 static int
-test_one_case(const void *test_case, int sessionless)
+test_one_case(struct vector_details test_case, int sessionless)
 {
 	int status = TEST_SUCCESS, i = 0;
 	char test_msg[ASYM_TEST_MSG_LEN + 1];
 
 	/* Map the case to union */
 	union test_case_structure tc;
-	memcpy(&tc, test_case, sizeof(tc));
+	rte_memcpy(&tc, test_case.address, RTE_MIN(sizeof(tc), test_case.vector_size));
 
 	if (tc.modex.xform_type == RTE_CRYPTO_ASYM_XFORM_MODEX
 			|| tc.modex.xform_type == RTE_CRYPTO_ASYM_XFORM_MODINV) {
@@ -572,7 +576,8 @@ load_test_vectors(void)
 				"TEST_VECTOR_SIZE too small\n");
 			return -1;
 		}
-		test_vector.address[test_vector.size] = &modex_test_case[i];
+		test_vector.details[test_vector.size].address = &modex_test_case[i];
+		test_vector.details[test_vector.size].vector_size = sizeof(modex_test_case[i]);
 		test_vector.size++;
 	}
 	/* Load MODINV vector*/
@@ -583,7 +588,8 @@ load_test_vectors(void)
 				"TEST_VECTOR_SIZE too small\n");
 			return -1;
 		}
-		test_vector.address[test_vector.size] = &modinv_test_case[i];
+		test_vector.details[test_vector.size].address = &modinv_test_case[i];
+		test_vector.details[test_vector.size].vector_size = sizeof(modinv_test_case[i]);
 		test_vector.size++;
 	}
 	/* Load RSA vector*/
@@ -594,7 +600,8 @@ load_test_vectors(void)
 				"TEST_VECTOR_SIZE too small\n");
 			return -1;
 		}
-		test_vector.address[test_vector.size] = &rsa_test_case_list[i];
+		test_vector.details[test_vector.size].address = &rsa_test_case_list[i];
+		test_vector.details[test_vector.size].vector_size = sizeof(rsa_test_case_list[i]);
 		test_vector.size++;
 	}
 	return 0;
@@ -619,12 +626,12 @@ test_one_by_one(void)
 	/* Go through all test cases */
 	test_index = 0;
 	for (i = 0; i < test_vector.size; i++) {
-		if (test_one_case(test_vector.address[i], 0) != TEST_SUCCESS)
+		if (test_one_case(test_vector.details[i], 0) != TEST_SUCCESS)
 			status = TEST_FAILED;
 	}
 	if (sessionless) {
 		for (i = 0; i < test_vector.size; i++) {
-			if (test_one_case(test_vector.address[i], 1)
+			if (test_one_case(test_vector.details[i], 1)
 					!= TEST_SUCCESS)
 				status = TEST_FAILED;
 		}
@@ -946,8 +953,6 @@ ut_setup_asym(void)
 			qp_id, ts_params->valid_devs[0]);
 	}
 
-	rte_cryptodev_stats_reset(ts_params->valid_devs[0]);
-
 	/* Start the device */
 	TEST_ASSERT_SUCCESS(rte_cryptodev_start(ts_params->valid_devs[0]),
 						"Failed to start cryptodev %u",
@@ -960,9 +965,6 @@ static void
 ut_teardown_asym(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
-	struct rte_cryptodev_stats stats;
-
-	rte_cryptodev_stats_get(ts_params->valid_devs[0], &stats);
 
 	/* Stop the device */
 	rte_cryptodev_stop(ts_params->valid_devs[0]);
@@ -1021,7 +1023,7 @@ test_capability(void)
 				RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO)) {
 		RTE_LOG(INFO, USER1,
 				"Device doesn't support asymmetric. Test Skipped\n");
-		return TEST_SUCCESS;
+		return TEST_SKIPPED;
 	}
 
 	/* print xform capability */
@@ -1036,6 +1038,7 @@ test_capability(void)
 			capa = rte_cryptodev_asym_capability_get(dev_id,
 				(const struct
 				rte_cryptodev_asym_capability_idx *) &idx);
+			TEST_ASSERT_NOT_NULL(capa, "Failed to get asymmetric capability");
 			print_asym_capa(capa);
 			}
 	}
@@ -1602,7 +1605,7 @@ error_exit:
 }
 
 static int
-test_dh_keygenration(void)
+test_dh_key_generation(void)
 {
 	int status;
 
@@ -2204,7 +2207,7 @@ static struct unit_test_suite cryptodev_openssl_asym_testsuite  = {
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_capability),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_dsa),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
-				test_dh_keygenration),
+				test_dh_key_generation),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_rsa_enc_dec),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
 				test_rsa_sign_verify),

@@ -34,6 +34,17 @@ Supports getting the speed capabilities that the current device is capable of.
 * **[related]  API**: ``rte_eth_dev_info_get()``.
 
 
+.. _nic_features_link_speeds_config:
+
+Link speed configuration
+------------------------
+
+Supports configurating fixed speed and link autonegotiation.
+
+* **[uses]     user config**: ``dev_conf.link_speeds:RTE_ETH_LINK_SPEED_*``.
+* **[related]  API**: ``rte_eth_dev_configure()``.
+
+
 .. _nic_features_link_status:
 
 Link status
@@ -738,6 +749,19 @@ Supports congestion management.
 * **[implements] eth_dev_ops**: ``cman_info_get``, ``cman_config_set``, ``cman_config_get``.
 * **[related]    API**: ``rte_eth_cman_info_get()``, ``rte_eth_cman_config_init()``,
   ``rte_eth_cman_config_set()``, ``rte_eth_cman_config_get()``.
+
+
+.. _nic_features_traffic_manager:
+
+Traffic manager
+---------------
+
+Supports Traffic manager.
+
+* **[implements] rte_tm_ops**: ``capabilities_get``, ``shaper_profile_add``,
+  ``hierarchy_commit`` and so on.
+* **[related]    API**: ``rte_tm_capabilities_get()``, ``rte_tm_shaper_profile_add()``,
+  ``rte_tm_hierarchy_commit()`` and so on.
 
 
 .. _nic_features_fw_version:

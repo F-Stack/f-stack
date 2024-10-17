@@ -1514,8 +1514,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	}
 	/* Firmware of SFP x722 does not support 802.1ad frames ability */
 	if (hw->device_id == I40E_DEV_ID_SFP_X722 ||
-		hw->device_id == I40E_DEV_ID_SFP_I_X722 ||
-		hw->device_id == I40E_DEV_ID_10G_BASE_T_X722)
+		hw->device_id == I40E_DEV_ID_SFP_I_X722)
 		hw->flags &= ~I40E_HW_FLAG_802_1AD_CAPABLE;
 
 	PMD_INIT_LOG(INFO, "FW %d.%d API %d.%d NVM %02d.%02d.%02d eetrack %04x",
@@ -3722,8 +3721,12 @@ i40e_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
 		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
-		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |
 		dev_info->tx_queue_offload_capa;
+	if (hw->mac.type == I40E_MAC_X722) {
+		dev_info->tx_offload_capa |=
+			RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
+	}
+
 	dev_info->dev_capa =
 		RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 		RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;
@@ -6007,14 +6010,16 @@ i40e_vsi_setup(struct i40e_pf *pf,
 		}
 	}
 
-	/* MAC/VLAN configuration */
-	rte_memcpy(&filter.mac_addr, &broadcast, RTE_ETHER_ADDR_LEN);
-	filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
+	if (vsi->type != I40E_VSI_FDIR) {
+		/* MAC/VLAN configuration for non-FDIR VSI*/
+		rte_memcpy(&filter.mac_addr, &broadcast, RTE_ETHER_ADDR_LEN);
+		filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
 
-	ret = i40e_vsi_add_mac(vsi, &filter);
-	if (ret != I40E_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to add MACVLAN filter");
-		goto fail_msix_alloc;
+		ret = i40e_vsi_add_mac(vsi, &filter);
+		if (ret != I40E_SUCCESS) {
+			PMD_DRV_LOG(ERR, "Failed to add MACVLAN filter");
+			goto fail_msix_alloc;
+		}
 	}
 
 	/* Get VSI BW information */

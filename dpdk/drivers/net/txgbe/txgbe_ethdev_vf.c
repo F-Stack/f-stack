@@ -295,6 +295,8 @@ eth_txgbevf_dev_init(struct rte_eth_dev *eth_dev)
 	err = hw->mac.start_hw(hw);
 	if (err) {
 		PMD_INIT_LOG(ERR, "VF Initialization Failure: %d", err);
+		rte_free(eth_dev->data->mac_addrs);
+		eth_dev->data->mac_addrs = NULL;
 		return -EIO;
 	}
 
@@ -670,8 +672,10 @@ txgbevf_dev_start(struct rte_eth_dev *dev)
 		 * now only one vector is used for Rx queue
 		 */
 		intr_vector = 1;
-		if (rte_intr_efd_enable(intr_handle, intr_vector))
+		if (rte_intr_efd_enable(intr_handle, intr_vector)) {
+			txgbe_dev_clear_queues(dev);
 			return -1;
+		}
 	}
 
 	if (rte_intr_dp_is_en(intr_handle)) {
@@ -679,6 +683,7 @@ txgbevf_dev_start(struct rte_eth_dev *dev)
 						   dev->data->nb_rx_queues)) {
 			PMD_INIT_LOG(ERR, "Failed to allocate %d rx_queues"
 				     " intr_vec", dev->data->nb_rx_queues);
+			txgbe_dev_clear_queues(dev);
 			return -ENOMEM;
 		}
 	}
@@ -965,7 +970,7 @@ txgbevf_set_ivar_map(struct txgbe_hw *hw, int8_t direction,
 		wr32(hw, TXGBE_VFIVARMISC, tmp);
 	} else {
 		/* rx or tx cause */
-		/* Workaround for ICR lost */
+		msix_vector |= TXGBE_VFIVAR_VLD; /* Workaround for ICR lost */
 		idx = ((16 * (queue & 1)) + (8 * direction));
 		tmp = rd32(hw, TXGBE_VFIVAR(queue >> 1));
 		tmp &= ~(0xFF << idx);
@@ -1201,9 +1206,13 @@ static int
 txgbevf_dev_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	int mode = TXGBEVF_XCAST_MODE_NONE;
 	int ret;
 
-	switch (hw->mac.update_xcast_mode(hw, TXGBEVF_XCAST_MODE_NONE)) {
+	if (dev->data->all_multicast)
+		mode = TXGBEVF_XCAST_MODE_ALLMULTI;
+
+	switch (hw->mac.update_xcast_mode(hw, mode)) {
 	case 0:
 		ret = 0;
 		break;
@@ -1223,6 +1232,9 @@ txgbevf_dev_allmulticast_enable(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	int ret;
+
+	if (dev->data->promiscuous)
+		return 0;
 
 	switch (hw->mac.update_xcast_mode(hw, TXGBEVF_XCAST_MODE_ALLMULTI)) {
 	case 0:
@@ -1244,6 +1256,9 @@ txgbevf_dev_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	int ret;
+
+	if (dev->data->promiscuous)
+		return 0;
 
 	switch (hw->mac.update_xcast_mode(hw, TXGBEVF_XCAST_MODE_MULTI)) {
 	case 0:

@@ -86,9 +86,14 @@ hns3_rx_queue_release(void *queue)
 	struct hns3_rx_queue *rxq = queue;
 	if (rxq) {
 		hns3_rx_queue_release_mbufs(rxq);
-		if (rxq->mz)
+		if (rxq->mz) {
 			rte_memzone_free(rxq->mz);
-		rte_free(rxq->sw_ring);
+			rxq->mz = NULL;
+		}
+		if (rxq->sw_ring) {
+			rte_free(rxq->sw_ring);
+			rxq->sw_ring = NULL;
+		}
 		rte_free(rxq);
 	}
 }
@@ -99,10 +104,18 @@ hns3_tx_queue_release(void *queue)
 	struct hns3_tx_queue *txq = queue;
 	if (txq) {
 		hns3_tx_queue_release_mbufs(txq);
-		if (txq->mz)
+		if (txq->mz) {
 			rte_memzone_free(txq->mz);
-		rte_free(txq->sw_ring);
-		rte_free(txq->free);
+			txq->mz = NULL;
+		}
+		if (txq->sw_ring) {
+			rte_free(txq->sw_ring);
+			txq->sw_ring = NULL;
+		}
+		if (txq->free) {
+			rte_free(txq->free);
+			txq->free = NULL;
+		}
 		rte_free(txq);
 	}
 }
@@ -261,11 +274,26 @@ hns3_free_all_queues(struct rte_eth_dev *dev)
 }
 
 static int
+hns3_check_rx_dma_addr(struct hns3_hw *hw, uint64_t dma_addr)
+{
+	uint64_t rem;
+
+	rem = dma_addr & (hw->rx_dma_addr_align - 1);
+	if (rem > 0) {
+		hns3_err(hw, "The IO address of the beginning of the mbuf data "
+			 "must be %u-byte aligned", hw->rx_dma_addr_align);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
 hns3_alloc_rx_queue_mbufs(struct hns3_hw *hw, struct hns3_rx_queue *rxq)
 {
 	struct rte_mbuf *mbuf;
 	uint64_t dma_addr;
 	uint16_t i;
+	int ret;
 
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
 		mbuf = rte_mbuf_raw_alloc(rxq->mb_pool);
@@ -286,6 +314,12 @@ hns3_alloc_rx_queue_mbufs(struct hns3_hw *hw, struct hns3_rx_queue *rxq)
 		dma_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 		rxq->rx_ring[i].addr = dma_addr;
 		rxq->rx_ring[i].rx.bd_base_info = 0;
+
+		ret = hns3_check_rx_dma_addr(hw, dma_addr);
+		if (ret != 0) {
+			hns3_rx_queue_release_mbufs(rxq);
+			return ret;
+		}
 	}
 
 	return 0;
@@ -686,13 +720,12 @@ tqp_reset_fail:
 static int
 hns3vf_reset_tqp(struct hns3_hw *hw, uint16_t queue_id)
 {
-	uint8_t msg_data[2];
+	struct hns3_vf_to_pf_msg req;
 	int ret;
 
-	memcpy(msg_data, &queue_id, sizeof(uint16_t));
-
-	ret = hns3_send_mbx_msg(hw, HNS3_MBX_QUEUE_RESET, 0, msg_data,
-				 sizeof(msg_data), true, NULL, 0);
+	hns3vf_mbx_setup(&req, HNS3_MBX_QUEUE_RESET, 0);
+	memcpy(req.data, &queue_id, sizeof(uint16_t));
+	ret = hns3vf_mbx_send(hw, &req, true, NULL, 0);
 	if (ret)
 		hns3_err(hw, "fail to reset tqp, queue_id = %u, ret = %d.",
 			 queue_id, ret);
@@ -769,15 +802,14 @@ static int
 hns3vf_reset_all_tqps(struct hns3_hw *hw)
 {
 #define HNS3VF_RESET_ALL_TQP_DONE	1U
+	struct hns3_vf_to_pf_msg req;
 	uint8_t reset_status;
-	uint8_t msg_data[2];
 	int ret;
 	uint16_t i;
 
-	memset(msg_data, 0, sizeof(msg_data));
-	ret = hns3_send_mbx_msg(hw, HNS3_MBX_QUEUE_RESET, 0, msg_data,
-				sizeof(msg_data), true, &reset_status,
-				sizeof(reset_status));
+	hns3vf_mbx_setup(&req, HNS3_MBX_QUEUE_RESET, 0);
+	ret = hns3vf_mbx_send(hw, &req, true,
+			      &reset_status, sizeof(reset_status));
 	if (ret) {
 		hns3_err(hw, "fail to send rcb reset mbx, ret = %d.", ret);
 		return ret;
@@ -1789,6 +1821,12 @@ hns3_rx_queue_conf_check(struct hns3_hw *hw, const struct rte_eth_rxconf *conf,
 		return -EINVAL;
 	}
 
+	if (conf->rx_free_thresh >= nb_desc) {
+		hns3_err(hw, "rx_free_thresh (%u) must be less than %u",
+			 conf->rx_free_thresh, nb_desc);
+		return -EINVAL;
+	}
+
 	if (conf->rx_drop_en == 0)
 		hns3_warn(hw, "if no descriptors available, packets are always "
 			  "dropped and rx_drop_en (1) is fixed on");
@@ -2388,8 +2426,7 @@ hns3_rx_ptp_timestamp_handle(struct hns3_rx_queue *rxq, struct rte_mbuf *mbuf,
 {
 	struct hns3_pf *pf = HNS3_DEV_PRIVATE_TO_PF(rxq->hns);
 
-	mbuf->ol_flags |= RTE_MBUF_F_RX_IEEE1588_PTP |
-			  RTE_MBUF_F_RX_IEEE1588_TMST;
+	mbuf->ol_flags |= RTE_MBUF_F_RX_IEEE1588_TMST;
 	if (hns3_timestamp_rx_dynflag > 0) {
 		*RTE_MBUF_DYNFIELD(mbuf, hns3_timestamp_dynfield_offset,
 			rte_mbuf_timestamp_t *) = timestamp;
@@ -2667,6 +2704,7 @@ hns3_recv_scattered_pkts(void *rx_queue,
 			continue;
 		}
 
+		first_seg->ol_flags = 0;
 		if (unlikely(bd_base_info & BIT(HNS3_RXD_TS_VLD_B)))
 			hns3_rx_ptp_timestamp_handle(rxq, first_seg, timestamp);
 
@@ -2696,7 +2734,7 @@ hns3_recv_scattered_pkts(void *rx_queue,
 
 		first_seg->port = rxq->port_id;
 		first_seg->hash.rss = rte_le_to_cpu_32(rxd.rx.rss_hash);
-		first_seg->ol_flags = RTE_MBUF_F_RX_RSS_HASH;
+		first_seg->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 		if (unlikely(bd_base_info & BIT(HNS3_RXD_LUM_B))) {
 			first_seg->hash.fdir.hi =
 				rte_le_to_cpu_16(rxd.rx.fd_id);
@@ -3117,6 +3155,9 @@ hns3_config_gro(struct hns3_hw *hw, bool en)
 	struct hns3_cfg_gro_status_cmd *req;
 	struct hns3_cmd_desc desc;
 	int ret;
+
+	if (!hns3_dev_get_support(hw, GRO))
+		return 0;
 
 	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_GRO_GENERIC_CONFIG, false);
 	req = (struct hns3_cfg_gro_status_cmd *)desc.data;
@@ -3607,58 +3648,6 @@ hns3_pkt_need_linearized(struct rte_mbuf *tx_pkts, uint32_t bd_num,
 	return false;
 }
 
-static bool
-hns3_outer_ipv4_cksum_prepared(struct rte_mbuf *m, uint64_t ol_flags,
-				uint32_t *l4_proto)
-{
-	struct rte_ipv4_hdr *ipv4_hdr;
-	ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
-					   m->outer_l2_len);
-	if (ol_flags & RTE_MBUF_F_TX_OUTER_IP_CKSUM)
-		ipv4_hdr->hdr_checksum = 0;
-	if (ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM) {
-		struct rte_udp_hdr *udp_hdr;
-		/*
-		 * If OUTER_UDP_CKSUM is support, HW can calculate the pseudo
-		 * header for TSO packets
-		 */
-		if (ol_flags & RTE_MBUF_F_TX_TCP_SEG)
-			return true;
-		udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *,
-				m->outer_l2_len + m->outer_l3_len);
-		udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(ipv4_hdr, ol_flags);
-
-		return true;
-	}
-	*l4_proto = ipv4_hdr->next_proto_id;
-	return false;
-}
-
-static bool
-hns3_outer_ipv6_cksum_prepared(struct rte_mbuf *m, uint64_t ol_flags,
-				uint32_t *l4_proto)
-{
-	struct rte_ipv6_hdr *ipv6_hdr;
-	ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv6_hdr *,
-					   m->outer_l2_len);
-	if (ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM) {
-		struct rte_udp_hdr *udp_hdr;
-		/*
-		 * If OUTER_UDP_CKSUM is support, HW can calculate the pseudo
-		 * header for TSO packets
-		 */
-		if (ol_flags & RTE_MBUF_F_TX_TCP_SEG)
-			return true;
-		udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *,
-				m->outer_l2_len + m->outer_l3_len);
-		udp_hdr->dgram_cksum = rte_ipv6_phdr_cksum(ipv6_hdr, ol_flags);
-
-		return true;
-	}
-	*l4_proto = ipv6_hdr->proto;
-	return false;
-}
-
 static void
 hns3_outer_header_cksum_prepare(struct rte_mbuf *m)
 {
@@ -3666,29 +3655,38 @@ hns3_outer_header_cksum_prepare(struct rte_mbuf *m)
 	uint32_t paylen, hdr_len, l4_proto;
 	struct rte_udp_hdr *udp_hdr;
 
-	if (!(ol_flags & (RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IPV6)))
+	if (!(ol_flags & (RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IPV6)) &&
+			((ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM) ||
+			!(ol_flags & RTE_MBUF_F_TX_TCP_SEG)))
 		return;
 
 	if (ol_flags & RTE_MBUF_F_TX_OUTER_IPV4) {
-		if (hns3_outer_ipv4_cksum_prepared(m, ol_flags, &l4_proto))
-			return;
+		struct rte_ipv4_hdr *ipv4_hdr;
+
+		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
+			m->outer_l2_len);
+		l4_proto = ipv4_hdr->next_proto_id;
 	} else {
-		if (hns3_outer_ipv6_cksum_prepared(m, ol_flags, &l4_proto))
-			return;
+		struct rte_ipv6_hdr *ipv6_hdr;
+
+		ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv6_hdr *,
+					   m->outer_l2_len);
+		l4_proto = ipv6_hdr->proto;
 	}
 
+	if (l4_proto != IPPROTO_UDP)
+		return;
+
 	/* driver should ensure the outer udp cksum is 0 for TUNNEL TSO */
-	if (l4_proto == IPPROTO_UDP && (ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
-		hdr_len = m->l2_len + m->l3_len + m->l4_len;
-		hdr_len += m->outer_l2_len + m->outer_l3_len;
-		paylen = m->pkt_len - hdr_len;
-		if (paylen <= m->tso_segsz)
-			return;
-		udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *,
-						  m->outer_l2_len +
-						  m->outer_l3_len);
-		udp_hdr->dgram_cksum = 0;
-	}
+	hdr_len = m->l2_len + m->l3_len + m->l4_len;
+	hdr_len += m->outer_l2_len + m->outer_l3_len;
+	paylen = m->pkt_len - hdr_len;
+	if (paylen <= m->tso_segsz)
+		return;
+	udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *,
+					  m->outer_l2_len +
+					  m->outer_l3_len);
+	udp_hdr->dgram_cksum = 0;
 }
 
 static int

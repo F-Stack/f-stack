@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
+#include <sys/ioctl.h>
 
 #include <rte_string_fns.h>
 #include <rte_byteorder.h>
@@ -165,8 +166,14 @@ dpaa_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	uint32_t frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN
 				+ VLAN_TAG_SIZE;
 	uint32_t buffsz = dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM;
+	struct fman_if *fif = dev->process_private;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (fif->is_shared_mac) {
+		DPAA_PMD_ERR("Cannot configure mtu from DPDK in VSP mode.");
+		return -ENOTSUP;
+	}
 
 	/*
 	 * Refuse mtu that requires the support of scattered packets
@@ -206,7 +213,8 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle;
 	uint32_t max_rx_pktlen;
 	int speed, duplex;
-	int ret, rx_status;
+	int ret, rx_status, socket_fd;
+	struct ifreq ifr;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -222,6 +230,26 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 				     dpaa_intf->name);
 			return -EHOSTDOWN;
 		}
+
+		socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+		if (socket_fd == -1) {
+			DPAA_PMD_ERR("Cannot open IF socket");
+			return -errno;
+		}
+
+		strncpy(ifr.ifr_name, dpaa_intf->name, IFNAMSIZ - 1);
+
+		if (ioctl(socket_fd, SIOCGIFMTU, &ifr) < 0) {
+			DPAA_PMD_ERR("Cannot get interface mtu");
+			close(socket_fd);
+			return -errno;
+		}
+
+		close(socket_fd);
+		DPAA_PMD_INFO("Using kernel configured mtu size(%u)",
+			     ifr.ifr_mtu);
+
+		eth_conf->rxmode.mtu = ifr.ifr_mtu;
 	}
 
 	/* Rx offloads which are enabled by default */
@@ -249,7 +277,8 @@ dpaa_eth_dev_configure(struct rte_eth_dev *dev)
 		max_rx_pktlen = DPAA_MAX_RX_PKT_LEN;
 	}
 
-	fman_if_set_maxfrm(dev->process_private, max_rx_pktlen);
+	if (!fif->is_shared_mac)
+		fman_if_set_maxfrm(dev->process_private, max_rx_pktlen);
 
 	if (rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER) {
 		DPAA_PMD_DEBUG("enabling scatter mode");
@@ -363,7 +392,8 @@ dpaa_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_UDP,
 		RTE_PTYPE_L4_SCTP,
-		RTE_PTYPE_TUNNEL_ESP
+		RTE_PTYPE_TUNNEL_ESP,
+		RTE_PTYPE_UNKNOWN
 	};
 
 	PMD_INIT_FUNC_TRACE();
@@ -399,6 +429,7 @@ static void dpaa_interrupt_handler(void *param)
 static int dpaa_eth_dev_start(struct rte_eth_dev *dev)
 {
 	struct dpaa_if *dpaa_intf = dev->data->dev_private;
+	uint16_t i;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -413,12 +444,18 @@ static int dpaa_eth_dev_start(struct rte_eth_dev *dev)
 
 	fman_if_enable_rx(dev->process_private);
 
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	return 0;
 }
 
 static int dpaa_eth_dev_stop(struct rte_eth_dev *dev)
 {
 	struct fman_if *fif = dev->process_private;
+	uint16_t i;
 
 	PMD_INIT_FUNC_TRACE();
 	dev->data->dev_started = 0;
@@ -426,6 +463,11 @@ static int dpaa_eth_dev_stop(struct rte_eth_dev *dev)
 	if (!fif->is_shared_mac)
 		fman_if_disable_rx(fif);
 	dev->tx_pkt_burst = dpaa_eth_tx_drop_all;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }

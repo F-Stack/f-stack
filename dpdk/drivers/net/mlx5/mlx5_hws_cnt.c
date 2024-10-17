@@ -25,28 +25,32 @@ static void
 __hws_cnt_id_load(struct mlx5_hws_cnt_pool *cpool)
 {
 	uint32_t preload;
-	uint32_t q_num = cpool->cache->q_num;
+	uint32_t q_num;
 	uint32_t cnt_num = mlx5_hws_cnt_pool_get_size(cpool);
 	cnt_id_t cnt_id;
 	uint32_t qidx, iidx = 0;
 	struct rte_ring *qcache = NULL;
 
-	/*
-	 * Counter ID order is important for tracking the max number of in used
-	 * counter for querying, which means counter internal index order must
-	 * be from zero to the number user configured, i.e: 0 - 8000000.
-	 * Need to load counter ID in this order into the cache firstly,
-	 * and then the global free list.
-	 * In the end, user fetch the counter from minimal to the maximum.
-	 */
-	preload = RTE_MIN(cpool->cache->preload_sz, cnt_num / q_num);
-	for (qidx = 0; qidx < q_num; qidx++) {
-		for (; iidx < preload * (qidx + 1); iidx++) {
-			cnt_id = mlx5_hws_cnt_id_gen(cpool, iidx);
-			qcache = cpool->cache->qcache[qidx];
-			if (qcache)
-				rte_ring_enqueue_elem(qcache, &cnt_id,
-						sizeof(cnt_id));
+	/* If counter cache was disabled, only free list must prepopulated. */
+	if (cpool->cache != NULL) {
+		q_num = cpool->cache->q_num;
+		/*
+		 * Counter ID order is important for tracking the max number of in used
+		 * counter for querying, which means counter internal index order must
+		 * be from zero to the number user configured, i.e: 0 - 8000000.
+		 * Need to load counter ID in this order into the cache firstly,
+		 * and then the global free list.
+		 * In the end, user fetch the counter from minimal to the maximum.
+		 */
+		preload = RTE_MIN(cpool->cache->preload_sz, cnt_num / q_num);
+		for (qidx = 0; qidx < q_num; qidx++) {
+			for (; iidx < preload * (qidx + 1); iidx++) {
+				cnt_id = mlx5_hws_cnt_id_gen(cpool, iidx);
+				qcache = cpool->cache->qcache[qidx];
+				if (qcache)
+					rte_ring_enqueue_elem(qcache, &cnt_id,
+							sizeof(cnt_id));
+			}
 		}
 	}
 	for (; iidx < cnt_num; iidx++) {
@@ -306,31 +310,79 @@ mlx5_hws_cnt_svc(void *opaque)
 		(struct mlx5_dev_ctx_shared *)opaque;
 	uint64_t interval =
 		(uint64_t)sh->cnt_svc->query_interval * (US_PER_S / MS_PER_S);
-	uint16_t port_id;
+	struct mlx5_hws_cnt_pool *hws_cpool;
 	uint64_t start_cycle, query_cycle = 0;
 	uint64_t query_us;
 	uint64_t sleep_us;
 
 	while (sh->cnt_svc->svc_running != 0) {
+		if (rte_spinlock_trylock(&sh->cpool_lock) == 0)
+			continue;
 		start_cycle = rte_rdtsc();
-		MLX5_ETH_FOREACH_DEV(port_id, sh->cdev->dev) {
-			struct mlx5_priv *opriv =
-				rte_eth_devices[port_id].data->dev_private;
-			if (opriv != NULL &&
-			    opriv->sh == sh &&
-			    opriv->hws_cpool != NULL) {
-				__mlx5_hws_cnt_svc(sh, opriv->hws_cpool);
-				if (opriv->hws_age_req)
-					mlx5_hws_aging_check(opriv,
-							     opriv->hws_cpool);
-			}
+		/* 200ms for 16M counters. */
+		LIST_FOREACH(hws_cpool, &sh->hws_cpool_list, next) {
+			struct mlx5_priv *opriv = hws_cpool->priv;
+
+			__mlx5_hws_cnt_svc(sh, hws_cpool);
+			if (opriv->hws_age_req)
+				mlx5_hws_aging_check(opriv, hws_cpool);
 		}
 		query_cycle = rte_rdtsc() - start_cycle;
+		rte_spinlock_unlock(&sh->cpool_lock);
 		query_us = query_cycle / (rte_get_timer_hz() / US_PER_S);
 		sleep_us = interval - query_us;
 		if (interval > query_us)
 			rte_delay_us_sleep(sleep_us);
 	}
+	return NULL;
+}
+
+static bool
+mlx5_hws_cnt_should_enable_cache(const struct mlx5_hws_cnt_pool_cfg *pcfg,
+				 const struct mlx5_hws_cache_param *ccfg)
+{
+	/*
+	 * Enable cache if and only if there are enough counters requested
+	 * to populate all of the caches.
+	 */
+	return pcfg->request_num >= ccfg->q_num * ccfg->size;
+}
+
+static struct mlx5_hws_cnt_pool_caches *
+mlx5_hws_cnt_cache_init(const struct mlx5_hws_cnt_pool_cfg *pcfg,
+			const struct mlx5_hws_cache_param *ccfg)
+{
+	struct mlx5_hws_cnt_pool_caches *cache;
+	char mz_name[RTE_MEMZONE_NAMESIZE];
+	uint32_t qidx;
+
+	/* If counter pool is big enough, setup the counter pool cache. */
+	cache = mlx5_malloc(MLX5_MEM_ANY | MLX5_MEM_ZERO,
+			sizeof(*cache) +
+			sizeof(((struct mlx5_hws_cnt_pool_caches *)0)->qcache[0])
+				* ccfg->q_num, 0, SOCKET_ID_ANY);
+	if (cache == NULL)
+		return NULL;
+	/* Store the necessary cache parameters. */
+	cache->fetch_sz = ccfg->fetch_sz;
+	cache->preload_sz = ccfg->preload_sz;
+	cache->threshold = ccfg->threshold;
+	cache->q_num = ccfg->q_num;
+	for (qidx = 0; qidx < ccfg->q_num; qidx++) {
+		snprintf(mz_name, sizeof(mz_name), "%s_qc/%x", pcfg->name, qidx);
+		cache->qcache[qidx] = rte_ring_create(mz_name, ccfg->size,
+				SOCKET_ID_ANY,
+				RING_F_SP_ENQ | RING_F_SC_DEQ |
+				RING_F_EXACT_SZ);
+		if (cache->qcache[qidx] == NULL)
+			goto error;
+	}
+	return cache;
+
+error:
+	while (qidx--)
+		rte_ring_free(cache->qcache[qidx]);
+	mlx5_free(cache);
 	return NULL;
 }
 
@@ -342,7 +394,6 @@ mlx5_hws_cnt_pool_init(struct mlx5_dev_ctx_shared *sh,
 	char mz_name[RTE_MEMZONE_NAMESIZE];
 	struct mlx5_hws_cnt_pool *cntp;
 	uint64_t cnt_num = 0;
-	uint32_t qidx;
 
 	MLX5_ASSERT(pcfg);
 	MLX5_ASSERT(ccfg);
@@ -352,17 +403,6 @@ mlx5_hws_cnt_pool_init(struct mlx5_dev_ctx_shared *sh,
 		return NULL;
 
 	cntp->cfg = *pcfg;
-	cntp->cache = mlx5_malloc(MLX5_MEM_ANY | MLX5_MEM_ZERO,
-			sizeof(*cntp->cache) +
-			sizeof(((struct mlx5_hws_cnt_pool_caches *)0)->qcache[0])
-				* ccfg->q_num, 0, SOCKET_ID_ANY);
-	if (cntp->cache == NULL)
-		goto error;
-	 /* store the necessary cache parameters. */
-	cntp->cache->fetch_sz = ccfg->fetch_sz;
-	cntp->cache->preload_sz = ccfg->preload_sz;
-	cntp->cache->threshold = ccfg->threshold;
-	cntp->cache->q_num = ccfg->q_num;
 	if (pcfg->request_num > sh->hws_max_nb_counters) {
 		DRV_LOG(ERR, "Counter number %u "
 			"is greater than the maximum supported (%u).",
@@ -409,13 +449,10 @@ mlx5_hws_cnt_pool_init(struct mlx5_dev_ctx_shared *sh,
 		DRV_LOG(ERR, "failed to create reuse list ring");
 		goto error;
 	}
-	for (qidx = 0; qidx < ccfg->q_num; qidx++) {
-		snprintf(mz_name, sizeof(mz_name), "%s_qc/%x", pcfg->name, qidx);
-		cntp->cache->qcache[qidx] = rte_ring_create(mz_name, ccfg->size,
-				SOCKET_ID_ANY,
-				RING_F_SP_ENQ | RING_F_SC_DEQ |
-				RING_F_EXACT_SZ);
-		if (cntp->cache->qcache[qidx] == NULL)
+	/* Allocate counter cache only if needed. */
+	if (mlx5_hws_cnt_should_enable_cache(pcfg, ccfg)) {
+		cntp->cache = mlx5_hws_cnt_cache_init(pcfg, ccfg);
+		if (cntp->cache == NULL)
 			goto error;
 	}
 	/* Initialize the time for aging-out calculation. */
@@ -659,6 +696,10 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 	if (ret != 0)
 		goto error;
 	priv->sh->cnt_svc->refcnt++;
+	cpool->priv = priv;
+	rte_spinlock_lock(&priv->sh->cpool_lock);
+	LIST_INSERT_HEAD(&priv->sh->hws_cpool_list, cpool, next);
+	rte_spinlock_unlock(&priv->sh->cpool_lock);
 	return cpool;
 error:
 	mlx5_hws_cnt_pool_destroy(priv->sh, cpool);
@@ -671,6 +712,15 @@ mlx5_hws_cnt_pool_destroy(struct mlx5_dev_ctx_shared *sh,
 {
 	if (cpool == NULL)
 		return;
+	/*
+	 * 16M counter consumes 200ms to finish the query.
+	 * Maybe blocked for at most 200ms here.
+	 */
+	rte_spinlock_lock(&sh->cpool_lock);
+	/* Try to remove cpool before it was added to list caused segfault. */
+	if (!LIST_EMPTY(&sh->hws_cpool_list) && cpool->next.le_prev)
+		LIST_REMOVE(cpool, next);
+	rte_spinlock_unlock(&sh->cpool_lock);
 	if (--sh->cnt_svc->refcnt == 0)
 		mlx5_hws_cnt_svc_deinit(sh);
 	mlx5_hws_cnt_pool_action_destroy(cpool);
@@ -1228,11 +1278,13 @@ mlx5_hws_age_pool_destroy(struct mlx5_priv *priv)
 {
 	struct mlx5_age_info *age_info = GET_PORT_AGE_INFO(priv);
 
+	rte_spinlock_lock(&priv->sh->cpool_lock);
 	MLX5_ASSERT(priv->hws_age_req);
 	mlx5_hws_age_info_destroy(priv);
 	mlx5_ipool_destroy(age_info->ages_ipool);
 	age_info->ages_ipool = NULL;
 	priv->hws_age_req = 0;
+	rte_spinlock_unlock(&priv->sh->cpool_lock);
 }
 
 #endif

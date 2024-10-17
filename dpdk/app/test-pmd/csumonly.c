@@ -568,21 +568,23 @@ static uint64_t
 process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 	uint64_t tx_offloads, int tso_enabled, struct rte_mbuf *m)
 {
-	struct rte_ipv4_hdr *ipv4_hdr = outer_l3_hdr;
-	struct rte_ipv6_hdr *ipv6_hdr = outer_l3_hdr;
 	struct rte_udp_hdr *udp_hdr;
 	uint64_t ol_flags = 0;
 
 	if (info->outer_ethertype == _htons(RTE_ETHER_TYPE_IPV4)) {
-		ipv4_hdr->hdr_checksum = 0;
 		ol_flags |= RTE_MBUF_F_TX_OUTER_IPV4;
 
-		if (tx_offloads	& RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM)
+		if (tx_offloads	& RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM) {
 			ol_flags |= RTE_MBUF_F_TX_OUTER_IP_CKSUM;
-		else
+		} else {
+			struct rte_ipv4_hdr *ipv4_hdr = outer_l3_hdr;
+
+			ipv4_hdr->hdr_checksum = 0;
 			ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);
-	} else
+		}
+	} else {
 		ol_flags |= RTE_MBUF_F_TX_OUTER_IPV6;
+	}
 
 	if (info->outer_l4_proto != IPPROTO_UDP)
 		return ol_flags;
@@ -595,13 +597,6 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 
 	/* Skip SW outer UDP checksum generation if HW supports it */
 	if (tx_offloads & RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM) {
-		if (info->outer_ethertype == _htons(RTE_ETHER_TYPE_IPV4))
-			udp_hdr->dgram_cksum
-				= rte_ipv4_phdr_cksum(ipv4_hdr, ol_flags);
-		else
-			udp_hdr->dgram_cksum
-				= rte_ipv6_phdr_cksum(ipv6_hdr, ol_flags);
-
 		ol_flags |= RTE_MBUF_F_TX_OUTER_UDP_CKSUM;
 		return ol_flags;
 	}
@@ -867,17 +862,29 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue, pkts_burst,
 				 nb_pkt_per_burst);
 	inc_rx_burst_stats(fs, nb_rx);
-	if (unlikely(nb_rx == 0))
-		return;
+	if (unlikely(nb_rx == 0)) {
+#ifndef RTE_LIB_GRO
+		return ;
+#else
+		gro_enable = gro_ports[fs->rx_port].enable;
+		/*
+		 * Check if packets need to be flushed in the GRO context
+		 * due to a timeout.
+		 *
+		 * Continue only in GRO heavyweight mode and if there are
+		 * packets in the GRO context.
+		 */
+		if (!gro_enable || (gro_flush_cycles == GRO_DEFAULT_FLUSH_CYCLES) ||
+			(rte_gro_get_pkt_count(current_fwd_lcore()->gro_ctx) == 0))
+			return ;
+#endif
+	}
 
 	fs->rx_packets += nb_rx;
 	rx_bad_ip_csum = 0;
 	rx_bad_l4_csum = 0;
 	rx_bad_outer_l4_csum = 0;
 	rx_bad_outer_ip_csum = 0;
-#ifdef RTE_LIB_GRO
-	gro_enable = gro_ports[fs->rx_port].enable;
-#endif
 
 	txp = &ports[fs->tx_port];
 	tx_offloads = txp->dev_conf.txmode.offloads;
@@ -1105,6 +1112,7 @@ tunnel_update:
 	}
 
 #ifdef RTE_LIB_GRO
+	gro_enable = gro_ports[fs->rx_port].enable;
 	if (unlikely(gro_enable)) {
 		if (gro_flush_cycles == GRO_DEFAULT_FLUSH_CYCLES) {
 			nb_rx = rte_gro_reassemble_burst(pkts_burst, nb_rx,
@@ -1124,6 +1132,8 @@ tunnel_update:
 						gro_pkts_num);
 				fs->gro_times = 0;
 			}
+			if (nb_rx == 0)
+				return;
 		}
 
 		pkts_ip_csum_recalc(pkts_burst, nb_rx, tx_offloads);

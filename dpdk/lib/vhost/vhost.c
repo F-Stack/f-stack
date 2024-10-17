@@ -1294,6 +1294,7 @@ rte_vhost_vring_call(int vid, uint16_t vring_idx)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
+	int ret = 0;
 
 	dev = get_device(vid);
 	if (!dev)
@@ -1308,14 +1309,20 @@ rte_vhost_vring_call(int vid, uint16_t vring_idx)
 
 	rte_spinlock_lock(&vq->access_lock);
 
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	if (vq_is_packed(dev))
 		vhost_vring_call_packed(dev, vq);
 	else
 		vhost_vring_call_split(dev, vq);
 
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
-	return 0;
+	return ret;
 }
 
 int
@@ -1323,6 +1330,7 @@ rte_vhost_vring_call_nonblock(int vid, uint16_t vring_idx)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
+	int ret = 0;
 
 	dev = get_device(vid);
 	if (!dev)
@@ -1338,14 +1346,20 @@ rte_vhost_vring_call_nonblock(int vid, uint16_t vring_idx)
 	if (!rte_spinlock_trylock(&vq->access_lock))
 		return -EAGAIN;
 
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	if (vq_is_packed(dev))
 		vhost_vring_call_packed(dev, vq);
 	else
 		vhost_vring_call_split(dev, vq);
 
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
-	return 0;
+	return ret;
 }
 
 uint16_t
@@ -1368,7 +1382,10 @@ rte_vhost_avail_entries(int vid, uint16_t queue_id)
 
 	rte_spinlock_lock(&vq->access_lock);
 
-	if (unlikely(!vq->enabled || vq->avail == NULL))
+	if (unlikely(!vq->access_ok))
+		goto out;
+
+	if (unlikely(!vq->enabled))
 		goto out;
 
 	ret = *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx;
@@ -1460,9 +1477,15 @@ rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 
 	rte_spinlock_lock(&vq->access_lock);
 
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	vq->notif_enable = enable;
 	ret = vhost_enable_guest_notification(dev, vq, enable);
 
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
 	return ret;
@@ -1523,7 +1546,10 @@ rte_vhost_rx_queue_count(int vid, uint16_t qid)
 
 	rte_spinlock_lock(&vq->access_lock);
 
-	if (unlikely(!vq->enabled || vq->avail == NULL))
+	if (unlikely(!vq->access_ok))
+		goto out;
+
+	if (unlikely(!vq->enabled))
 		goto out;
 
 	ret = *((volatile uint16_t *)&vq->avail->idx) - vq->last_avail_idx;
@@ -1758,7 +1784,15 @@ rte_vhost_async_channel_register(int vid, uint16_t queue_id)
 		return -1;
 
 	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	ret = async_channel_register(dev, vq);
+
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
 	return ret;
@@ -1814,6 +1848,11 @@ rte_vhost_async_channel_unregister(int vid, uint16_t queue_id)
 		return ret;
 	}
 
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	if (!vq->async) {
 		ret = 0;
 	} else if (vq->async->pkts_inflight_n) {
@@ -1825,6 +1864,7 @@ rte_vhost_async_channel_unregister(int vid, uint16_t queue_id)
 		ret = 0;
 	}
 
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
 	return ret;
@@ -1968,9 +2008,15 @@ rte_vhost_async_get_inflight(int vid, uint16_t queue_id)
 		return ret;
 	}
 
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	if (vq->async)
 		ret = vq->async->pkts_inflight_n;
 
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
 	return ret;
@@ -2014,6 +2060,7 @@ rte_vhost_get_monitor_addr(int vid, uint16_t queue_id,
 {
 	struct virtio_net *dev = get_device(vid);
 	struct vhost_virtqueue *vq;
+	int ret = 0;
 
 	if (dev == NULL)
 		return -1;
@@ -2023,6 +2070,13 @@ rte_vhost_get_monitor_addr(int vid, uint16_t queue_id,
 	vq = dev->virtqueue[queue_id];
 	if (vq == NULL)
 		return -1;
+
+	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
 
 	if (vq_is_packed(dev)) {
 		struct vring_packed_desc *desc;
@@ -2043,7 +2097,10 @@ rte_vhost_get_monitor_addr(int vid, uint16_t queue_id,
 		pmc->match = 0;
 	}
 
-	return 0;
+out_unlock:
+	rte_spinlock_unlock(&vq->access_lock);
+
+	return ret;
 }
 
 
@@ -2081,6 +2138,7 @@ rte_vhost_vring_stats_get(int vid, uint16_t queue_id,
 	struct virtio_net *dev = get_device(vid);
 	struct vhost_virtqueue *vq;
 	unsigned int i;
+	int ret = VHOST_NB_VQ_STATS;
 
 	if (dev == NULL)
 		return -1;
@@ -2097,20 +2155,29 @@ rte_vhost_vring_stats_get(int vid, uint16_t queue_id,
 	vq = dev->virtqueue[queue_id];
 
 	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
+
 	for (i = 0; i < VHOST_NB_VQ_STATS; i++) {
 		stats[i].value =
 			*(uint64_t *)(((char *)vq) + vhost_vq_stat_strings[i].offset);
 		stats[i].id = i;
 	}
+
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
-	return VHOST_NB_VQ_STATS;
+	return ret;
 }
 
 int rte_vhost_vring_stats_reset(int vid, uint16_t queue_id)
 {
 	struct virtio_net *dev = get_device(vid);
 	struct vhost_virtqueue *vq;
+	int ret = 0;
 
 	if (dev == NULL)
 		return -1;
@@ -2124,10 +2191,17 @@ int rte_vhost_vring_stats_reset(int vid, uint16_t queue_id)
 	vq = dev->virtqueue[queue_id];
 
 	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(!vq->access_ok)) {
+		ret = -1;
+		goto out_unlock;
+	}
 	memset(&vq->stats, 0, sizeof(vq->stats));
+
+out_unlock:
 	rte_spinlock_unlock(&vq->access_lock);
 
-	return 0;
+	return ret;
 }
 
 int

@@ -1320,6 +1320,8 @@ virtio_mac_addr_add(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr,
 		struct virtio_net_ctrl_mac *tbl
 			= rte_is_multicast_ether_addr(addr) ? mc : uc;
 
+		if (rte_is_zero_ether_addr(addr))
+			break;
 		memcpy(&tbl->macs[tbl->entries++], addr, RTE_ETHER_ADDR_LEN);
 	}
 
@@ -2237,8 +2239,6 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	else
 		eth_dev->data->dev_flags &= ~RTE_ETH_DEV_INTR_LSC;
 
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
-
 	/* Setting up rx_header size for the device */
 	if (virtio_with_feature(hw, VIRTIO_NET_F_MRG_RXBUF) ||
 	    virtio_with_feature(hw, VIRTIO_F_VERSION_1) ||
@@ -2355,6 +2355,14 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 			return ret;
 		}
 	}
+
+	if (eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
+		/* Enable vector (0) for Link State Interrupt */
+		if (VIRTIO_OPS(hw)->set_config_irq(hw, 0) ==
+				VIRTIO_MSI_NO_VECTOR) {
+			PMD_DRV_LOG(ERR, "failed to set config vector");
+			return -EBUSY;
+		}
 
 	virtio_reinit_complete(hw);
 
@@ -2675,14 +2683,6 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 	hw->has_tx_offload = tx_offload_enabled(hw);
 	hw->has_rx_offload = rx_offload_enabled(hw);
 
-	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
-		/* Enable vector (0) for Link State Interrupt */
-		if (VIRTIO_OPS(hw)->set_config_irq(hw, 0) ==
-				VIRTIO_MSI_NO_VECTOR) {
-			PMD_DRV_LOG(ERR, "failed to set config vector");
-			return -EBUSY;
-		}
-
 	if (virtio_with_packed_queue(hw)) {
 #if defined(RTE_ARCH_X86_64) && defined(CC_AVX512_SUPPORT)
 		if ((hw->use_vec_rx || hw->use_vec_tx) &&
@@ -2855,6 +2855,11 @@ virtio_dev_start(struct rte_eth_dev *dev)
 	set_rxtx_funcs(dev);
 	hw->started = 1;
 
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	/* Initialize Link state */
 	virtio_dev_link_update(dev, 0);
 
@@ -2944,6 +2949,7 @@ virtio_dev_stop(struct rte_eth_dev *dev)
 	struct virtio_hw *hw = dev->data->dev_private;
 	struct rte_eth_link link;
 	struct rte_eth_intr_conf *intr_conf = &dev->data->dev_conf.intr_conf;
+	uint16_t i;
 
 	PMD_INIT_LOG(DEBUG, "stop");
 	dev->data->dev_started = 0;
@@ -2970,6 +2976,11 @@ virtio_dev_stop(struct rte_eth_dev *dev)
 	rte_eth_linkstatus_set(dev, &link);
 out_unlock:
 	rte_spinlock_unlock(&hw->state_lock);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }

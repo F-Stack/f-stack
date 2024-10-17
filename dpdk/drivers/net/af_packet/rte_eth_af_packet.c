@@ -6,6 +6,7 @@
  * All rights reserved.
  */
 
+#include <rte_common.h>
 #include <rte_string_fns.h>
 #include <rte_mbuf.h>
 #include <ethdev_driver.h>
@@ -39,7 +40,7 @@
 #define DFLT_FRAME_SIZE		(1 << 11)
 #define DFLT_FRAME_COUNT	(1 << 9)
 
-struct pkt_rx_queue {
+struct __rte_cache_aligned pkt_rx_queue {
 	int sockfd;
 
 	struct iovec *rd;
@@ -55,7 +56,7 @@ struct pkt_rx_queue {
 	volatile unsigned long rx_bytes;
 };
 
-struct pkt_tx_queue {
+struct __rte_cache_aligned pkt_tx_queue {
 	int sockfd;
 	unsigned int frame_data_size;
 
@@ -313,7 +314,14 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
+	struct pmd_internals *internals = dev->data->dev_private;
+	uint16_t i;
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
+	for (i = 0; i < internals->nb_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
 	return 0;
 }
 
@@ -341,6 +349,8 @@ eth_dev_stop(struct rte_eth_dev *dev)
 
 		internals->rx_queue[i].sockfd = -1;
 		internals->tx_queue[i].sockfd = -1;
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;

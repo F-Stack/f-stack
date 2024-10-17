@@ -15,7 +15,6 @@ test_sources = files(
         'test_barrier.c',
         'test_bitops.c',
         'test_bitmap.c',
-        'test_bpf.c',
         'test_byteorder.c',
         'test_cksum.c',
         'test_cksum_perf.c',
@@ -161,8 +160,6 @@ fast_tests = [
         ['acl_autotest', true, true],
         ['atomic_autotest', false, true],
         ['bitmap_autotest', true, true],
-        ['bpf_autotest', true, true],
-        ['bpf_convert_autotest', true, true],
         ['bitops_autotest', true, true],
         ['byteorder_autotest', true, true],
         ['cksum_autotest', true, true],
@@ -190,7 +187,6 @@ fast_tests = [
         ['fib_autotest', true, true],
         ['fib6_autotest', true, true],
         ['func_reentrancy_autotest', false, true],
-        ['graph_autotest', true, true],
         ['hash_autotest', true, true],
         ['interrupt_autotest', true, true],
         ['ipfrag_autotest', false, true],
@@ -297,7 +293,6 @@ perf_test_names = [
         'trace_perf_autotest',
         'ipsec_perf_autotest',
         'thash_perf_autotest',
-        'graph_perf_autotest',
 ]
 
 driver_test_names = [
@@ -323,6 +318,10 @@ driver_test_names = [
 dump_test_names = []
 
 if not is_windows
+    fast_tests += [['graph_autotest', true, true]]
+
+    perf_test_names += 'graph_perf_autotest'
+
     driver_test_names += [
             'cryptodev_openssl_asym_autotest',
             'eventdev_selftest_octeontx',
@@ -428,6 +427,14 @@ if dpdk_conf.has('RTE_HAS_LIBPCAP')
     endif
 endif
 
+if arch_subdir != 'x86' or dpdk_conf.get('RTE_ARCH_64')
+    test_sources += 'test_bpf.c'
+    fast_tests += [
+        ['bpf_autotest', true, true],
+        ['bpf_convert_autotest', true, true],
+    ]
+endif
+
 if cc.has_argument('-Wno-format-truncation')
     cflags += '-Wno-format-truncation'
 endif
@@ -472,15 +479,21 @@ dpdk_test = executable('dpdk-test',
              driver_install_path),
         install: true)
 
-has_hugepage = run_command(py3, 'has_hugepage.py', check: true).stdout().strip() != '0'
-message('hugepage availability: @0@'.format(has_hugepage))
-
 # some perf tests (eg: memcpy perf autotest)take very long
 # to complete, so timeout to 10 minutes
 timeout_seconds = 600
 timeout_seconds_fast = 10
 
 test_no_huge_args = ['--no-huge', '-m', '2048']
+has_hugepage = run_command(py3, 'has_hugepage.py', check: true).stdout().strip() != '0'
+message('hugepage availability: @0@'.format(has_hugepage))
+if not has_hugepage
+    if arch_subdir == 'ppc'
+        # On ppc64, without huge pages, PA would be the default but fails like:
+        # EAL: Cannot use IOVA as 'PA' since physical addresses are not available
+        test_no_huge_args += '--iova-mode=va'
+    endif
+endif
 
 foreach arg : fast_tests
     test_args = []

@@ -50,6 +50,21 @@ struct mana_shared_data {
 #define MAX_TX_WQE_SIZE 512
 #define MAX_RX_WQE_SIZE 256
 
+/* For 32 bit only */
+#ifdef RTE_ARCH_32
+#define	GDMA_SHORT_DB_INC_MASK 0xffff
+#define	GDMA_SHORT_DB_QID_MASK 0xfff
+
+#define GDMA_SHORT_DB_MAX_WQE	(0x10000 / GDMA_WQE_ALIGNMENT_UNIT_SIZE)
+
+#define TX_WQE_SHORT_DB_THRESHOLD			\
+	(GDMA_SHORT_DB_MAX_WQE -			\
+	(MAX_TX_WQE_SIZE / GDMA_WQE_ALIGNMENT_UNIT_SIZE))
+#define RX_WQE_SHORT_DB_THRESHOLD			\
+	(GDMA_SHORT_DB_MAX_WQE -			\
+	(MAX_RX_WQE_SIZE / GDMA_WQE_ALIGNMENT_UNIT_SIZE))
+#endif
+
 /* Values from the GDMA specification document, WQE format description */
 #define INLINE_OOB_SMALL_SIZE_IN_BYTES 8
 #define INLINE_OOB_LARGE_SIZE_IN_BYTES 24
@@ -424,6 +439,11 @@ struct mana_rxq {
 	 */
 	uint32_t desc_ring_head, desc_ring_tail;
 
+#ifdef RTE_ARCH_32
+	/* For storing wqe increment count btw each short doorbell ring */
+	uint32_t wqe_cnt_to_short_db;
+#endif
+
 	struct mana_gdma_queue gdma_rq;
 	struct mana_gdma_queue gdma_cq;
 	struct gdma_comp *gdma_comp_buf;
@@ -442,7 +462,7 @@ extern int mana_logtype_init;
 		__func__, ## args)
 
 #define DP_LOG(level, fmt, args...) \
-	RTE_LOG_DP(level, PMD, fmt, ## args)
+	RTE_LOG_DP(level, PMD, fmt "\n", ## args)
 
 #define PMD_INIT_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, mana_logtype_init, "%s(): " fmt "\n",\
@@ -450,8 +470,14 @@ extern int mana_logtype_init;
 
 #define PMD_INIT_FUNC_TRACE() PMD_INIT_LOG(DEBUG, " >>")
 
+#ifdef RTE_ARCH_32
+int mana_ring_short_doorbell(void *db_page, enum gdma_queue_types queue_type,
+			     uint32_t queue_id, uint32_t tail_incr,
+			     uint8_t arm);
+#else
 int mana_ring_doorbell(void *db_page, enum gdma_queue_types queue_type,
 		       uint32_t queue_id, uint32_t tail, uint8_t arm);
+#endif
 int mana_rq_ring_doorbell(struct mana_rxq *rxq);
 
 int gdma_post_work_request(struct mana_gdma_queue *queue,
@@ -491,9 +517,9 @@ void mana_del_pmd_mr(struct mana_mr_cache *mr);
 void mana_mempool_chunk_cb(struct rte_mempool *mp, void *opaque,
 			   struct rte_mempool_memhdr *memhdr, unsigned int idx);
 
-struct mana_mr_cache *mana_mr_btree_lookup(struct mana_mr_btree *bt,
-					   uint16_t *idx,
-					   uintptr_t addr, size_t len);
+int mana_mr_btree_lookup(struct mana_mr_btree *bt, uint16_t *idx,
+			 uintptr_t addr, size_t len,
+			 struct mana_mr_cache **cache);
 int mana_mr_btree_insert(struct mana_mr_btree *bt, struct mana_mr_cache *entry);
 int mana_mr_btree_init(struct mana_mr_btree *bt, int n, int socket);
 void mana_mr_btree_free(struct mana_mr_btree *bt);

@@ -468,6 +468,12 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"mac_addr add port (port_id) vf (vf_id) (mac_address)\n"
 			"    Add a MAC address for a VF on the port.\n\n"
 
+			"mcast_addr add (port_id) (mcast_addr)\n"
+			"    Add a multicast MAC addresses on port_id.\n\n"
+
+			"mcast_addr remove (port_id) (mcast_addr)\n"
+			"    Remove a multicast MAC address from port_id.\n\n"
+
 			"set vf mac addr (port_id) (vf_id) (XX:XX:XX:XX:XX:XX)\n"
 			"    Set the MAC address for a VF from the PF.\n\n"
 
@@ -3448,6 +3454,8 @@ parse_hdrs_list(const char *str, const char *item_name, unsigned int max_items,
 
 	nb_item = 0;
 	char *str2 = strdup(str);
+	if (str2 == NULL)
+		return nb_item;
 	cur = strtok_r(str2, ",", &tmp);
 	while (cur != NULL) {
 		parsed_items[nb_item] = get_ptype(cur);
@@ -4887,19 +4895,6 @@ cmd_tso_set_parsed(void *parsed_result,
 			ports[res->port_id].tso_segsz);
 	}
 	cmd_config_queue_tx_offloads(&ports[res->port_id]);
-
-	/* display warnings if configuration is not supported by the NIC */
-	ret = eth_dev_info_get_print_err(res->port_id, &dev_info);
-	if (ret != 0)
-		return;
-
-	if ((ports[res->port_id].tso_segsz != 0) &&
-		(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) == 0) {
-		fprintf(stderr,
-			"Warning: TSO enabled but not supported by port %d\n",
-			res->port_id);
-	}
-
 	cmd_reconfig_device_queue(res->port_id, 1, 1);
 }
 
@@ -4957,39 +4952,27 @@ struct cmd_tunnel_tso_set_result {
 	portid_t port_id;
 };
 
-static struct rte_eth_dev_info
-check_tunnel_tso_nic_support(portid_t port_id)
+static void
+check_tunnel_tso_nic_support(portid_t port_id, uint64_t tx_offload_capa)
 {
-	struct rte_eth_dev_info dev_info;
-
-	if (eth_dev_info_get_print_err(port_id, &dev_info) != 0)
-		return dev_info;
-
-	if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO))
-		fprintf(stderr,
-			"Warning: VXLAN TUNNEL TSO not supported therefore not enabled for port %d\n",
+	if (!(tx_offload_capa & RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO))
+		printf("Warning: VXLAN TUNNEL TSO not supported therefore not enabled for port %d\n",
 			port_id);
-	if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO))
-		fprintf(stderr,
-			"Warning: GRE TUNNEL TSO not supported therefore not enabled for port %d\n",
+	if (!(tx_offload_capa & RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO))
+		printf("Warning: GRE TUNNEL TSO not supported therefore not enabled for port %d\n",
 			port_id);
-	if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO))
-		fprintf(stderr,
-			"Warning: IPIP TUNNEL TSO not supported therefore not enabled for port %d\n",
+	if (!(tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO))
+		printf("Warning: IPIP TUNNEL TSO not supported therefore not enabled for port %d\n",
 			port_id);
-	if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO))
-		fprintf(stderr,
-			"Warning: GENEVE TUNNEL TSO not supported therefore not enabled for port %d\n",
+	if (!(tx_offload_capa & RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO))
+		printf("Warning: GENEVE TUNNEL TSO not supported therefore not enabled for port %d\n",
 			port_id);
-	if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IP_TNL_TSO))
-		fprintf(stderr,
-			"Warning: IP TUNNEL TSO not supported therefore not enabled for port %d\n",
+	if (!(tx_offload_capa & RTE_ETH_TX_OFFLOAD_IP_TNL_TSO))
+		printf("Warning: IP TUNNEL TSO not supported therefore not enabled for port %d\n",
 			port_id);
-	if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_TNL_TSO))
-		fprintf(stderr,
-			"Warning: UDP TUNNEL TSO not supported therefore not enabled for port %d\n",
+	if (!(tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_TNL_TSO))
+		printf("Warning: UDP TUNNEL TSO not supported therefore not enabled for port %d\n",
 			port_id);
-	return dev_info;
 }
 
 static void
@@ -4999,6 +4982,13 @@ cmd_tunnel_tso_set_parsed(void *parsed_result,
 {
 	struct cmd_tunnel_tso_set_result *res = parsed_result;
 	struct rte_eth_dev_info dev_info;
+	uint64_t all_tunnel_tso = RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_IP_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_UDP_TNL_TSO;
+	int ret;
 
 	if (port_id_is_invalid(res->port_id, ENABLED_WARN))
 		return;
@@ -5010,28 +5000,19 @@ cmd_tunnel_tso_set_parsed(void *parsed_result,
 	if (!strcmp(res->mode, "set"))
 		ports[res->port_id].tunnel_tso_segsz = res->tso_segsz;
 
-	dev_info = check_tunnel_tso_nic_support(res->port_id);
 	if (ports[res->port_id].tunnel_tso_segsz == 0) {
-		ports[res->port_id].dev_conf.txmode.offloads &=
-			~(RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
-			  RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |
-			  RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
-			  RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
-			  RTE_ETH_TX_OFFLOAD_IP_TNL_TSO |
-			  RTE_ETH_TX_OFFLOAD_UDP_TNL_TSO);
+		ports[res->port_id].dev_conf.txmode.offloads &= ~all_tunnel_tso;
 		printf("TSO for tunneled packets is disabled\n");
 	} else {
-		uint64_t tso_offloads = (RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
-					 RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |
-					 RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
-					 RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
-					 RTE_ETH_TX_OFFLOAD_IP_TNL_TSO |
-					 RTE_ETH_TX_OFFLOAD_UDP_TNL_TSO);
+		ret = eth_dev_info_get_print_err(res->port_id, &dev_info);
+		if (ret != 0)
+			return;
 
-		ports[res->port_id].dev_conf.txmode.offloads |=
-			(tso_offloads & dev_info.tx_offload_capa);
-		printf("TSO segment size for tunneled packets is %d\n",
-			ports[res->port_id].tunnel_tso_segsz);
+		if ((all_tunnel_tso & dev_info.tx_offload_capa) == 0) {
+			fprintf(stderr, "Error: port=%u don't support tunnel TSO offloads.\n",
+				res->port_id);
+			return;
+		}
 
 		/* Below conditions are needed to make it work:
 		 * (1) tunnel TSO is supported by the NIC;
@@ -5044,14 +5025,23 @@ cmd_tunnel_tso_set_parsed(void *parsed_result,
 		 * is not necessary for IPv6 tunneled pkts because there's no
 		 * checksum in IP header anymore.
 		 */
-
-		if (!ports[res->port_id].parse_tunnel)
+		if (!ports[res->port_id].parse_tunnel) {
 			fprintf(stderr,
-				"Warning: csum parse_tunnel must be set so that tunneled packets are recognized\n");
+				"Error: csum parse_tunnel must be set so that tunneled packets are recognized\n");
+			return;
+		}
 		if (!(ports[res->port_id].dev_conf.txmode.offloads &
-		      RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM))
+		      RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM)) {
 			fprintf(stderr,
-				"Warning: csum set outer-ip must be set to hw if outer L3 is IPv4; not necessary for IPv6\n");
+				"Error: csum set outer-ip must be set to hw if outer L3 is IPv4; not necessary for IPv6\n");
+			return;
+		}
+
+		check_tunnel_tso_nic_support(res->port_id, dev_info.tx_offload_capa);
+		ports[res->port_id].dev_conf.txmode.offloads |=
+				(all_tunnel_tso & dev_info.tx_offload_capa);
+		printf("TSO segment size for tunneled packets is %d\n",
+			ports[res->port_id].tunnel_tso_segsz);
 	}
 
 	cmd_config_queue_tx_offloads(&ports[res->port_id]);

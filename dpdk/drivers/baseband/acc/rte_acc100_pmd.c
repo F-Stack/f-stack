@@ -26,9 +26,9 @@
 #include "acc200_cfg.h"
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
-RTE_LOG_REGISTER_DEFAULT(acc100_logtype, DEBUG);
+RTE_LOG_REGISTER_SUFFIX(acc100_logtype, acc100, DEBUG);
 #else
-RTE_LOG_REGISTER_DEFAULT(acc100_logtype, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(acc100_logtype, acc100, NOTICE);
 #endif
 
 /* Calculate the offset of the enqueue register */
@@ -1221,7 +1221,7 @@ acc100_fcw_ld_fill(struct rte_bbdev_dec_op *op, struct acc_fcw_ld *fcw,
 				- op->ldpc_dec.n_filler);
 
 		/* Alignment on next 64B - Already enforced from HC output */
-		harq_in_length = RTE_ALIGN_FLOOR(harq_in_length, ACC_HARQ_ALIGN_64B);
+		harq_in_length = RTE_ALIGN_CEIL(harq_in_length, ACC_HARQ_ALIGN_64B);
 
 		/* Stronger alignment requirement when in decompression mode */
 		if (fcw->hcin_decomp_mode > 0)

@@ -44,7 +44,6 @@
 #include <pcap/pcap.h>
 #include <pcap/bpf.h>
 
-#define RING_NAME "capture-ring"
 #define MONITOR_INTERVAL  (500 * 1000)
 #define MBUF_POOL_CACHE_SIZE 32
 #define BURST_SIZE 32
@@ -547,6 +546,11 @@ static void dpdk_init(void)
 		eal_argv[i++] = strdup(file_prefix);
 	}
 
+	for (i = 0; i < (unsigned int)eal_argc; i++) {
+		if (eal_argv[i] == NULL)
+			rte_panic("No memory\n");
+	}
+
 	if (rte_eal_init(eal_argc, eal_argv) < 0)
 		rte_exit(EXIT_FAILURE, "EAL init failed: is primary process running?\n");
 }
@@ -555,6 +559,7 @@ static void dpdk_init(void)
 static struct rte_ring *create_ring(void)
 {
 	struct rte_ring *ring;
+	char ring_name[RTE_RING_NAMESIZE];
 	size_t size, log2;
 
 	/* Find next power of 2 >= size. */
@@ -568,31 +573,31 @@ static struct rte_ring *create_ring(void)
 		ring_size = size;
 	}
 
-	ring = rte_ring_lookup(RING_NAME);
-	if (ring == NULL) {
-		ring = rte_ring_create(RING_NAME, ring_size,
-					rte_socket_id(), 0);
-		if (ring == NULL)
-			rte_exit(EXIT_FAILURE, "Could not create ring :%s\n",
-				 rte_strerror(rte_errno));
-	}
+	/* Want one ring per invocation of program */
+	snprintf(ring_name, sizeof(ring_name),
+		 "dumpcap-%d", getpid());
+
+	ring = rte_ring_create(ring_name, ring_size,
+			       rte_socket_id(), 0);
+	if (ring == NULL)
+		rte_exit(EXIT_FAILURE, "Could not create ring :%s\n",
+			 rte_strerror(rte_errno));
+
 	return ring;
 }
 
 static struct rte_mempool *create_mempool(void)
 {
-	static const char pool_name[] = "capture_mbufs";
+	char pool_name[RTE_MEMPOOL_NAMESIZE];
 	size_t num_mbufs = 2 * ring_size;
 	struct rte_mempool *mp;
 
-	mp = rte_mempool_lookup(pool_name);
-	if (mp)
-		return mp;
+	snprintf(pool_name, sizeof(pool_name), "capture_%d", getpid());
 
 	mp = rte_pktmbuf_pool_create_by_ops(pool_name, num_mbufs,
 					    MBUF_POOL_CACHE_SIZE, 0,
 					    rte_pcapng_mbuf_size(snaplen),
-					    rte_socket_id(), "ring_mp_sc");
+					    rte_socket_id(), "ring_mp_mc");
 	if (mp == NULL)
 		rte_exit(EXIT_FAILURE,
 			 "Mempool (%s) creation failed: %s\n", pool_name,
@@ -800,6 +805,11 @@ int main(int argc, char **argv)
 {
 	struct rte_ring *r;
 	struct rte_mempool *mp;
+	struct sigaction action = {
+		.sa_flags = SA_RESTART,
+		.sa_handler = signal_handler,
+	};
+	struct sigaction origaction;
 	dumpcap_out_t out;
 	char *p;
 
@@ -826,6 +836,14 @@ int main(int argc, char **argv)
 
 	if (TAILQ_EMPTY(&interfaces))
 		set_default_interface();
+
+	sigemptyset(&action.sa_mask);
+	sigaction(SIGTERM, &action, NULL);
+	sigaction(SIGINT, &action, NULL);
+	sigaction(SIGPIPE, &action, NULL);
+	sigaction(SIGHUP, NULL, &origaction);
+	if (origaction.sa_handler == SIG_DFL)
+		sigaction(SIGHUP, &action, NULL);
 
 	r = create_ring();
 	mp = create_mempool();

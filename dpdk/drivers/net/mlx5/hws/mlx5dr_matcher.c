@@ -739,6 +739,13 @@ static int mlx5dr_matcher_init_root(struct mlx5dr_matcher *matcher)
 		return rte_errno;
 	}
 
+	ret = flow_hw_get_port_id_from_ctx(ctx, &flow_attr.port_id);
+	if (ret) {
+		DR_LOG(ERR, "Failed to get port id for dev %s", ctx->ibv_ctx->device->name);
+		rte_errno = EINVAL;
+		return rte_errno;
+	}
+
 	mask = simple_calloc(1, MLX5_ST_SZ_BYTES(fte_match_param) +
 			     offsetof(struct mlx5dv_flow_match_parameters, match_buf));
 	if (!mask) {

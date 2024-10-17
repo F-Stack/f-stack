@@ -1995,7 +1995,7 @@ port config - queue ring size
 
 Configure a rx/tx queue ring size::
 
-   testpmd> port (port_id) (rxq|txq) (queue_id) ring_size (value)
+   testpmd> port config (port_id) (rxq|txq) (queue_id) ring_size (value)
 
 Only take effect after command that (re-)start the port or command that setup specific queue.
 
@@ -2843,14 +2843,6 @@ where:
 * ``red`` enable 1, disable 0 marking IP ecn for yellow marked packets with ecn of 2'b01  or 2'b10
   to ecn of 2'b11 when IP is caring TCP or SCTP
 
-Filter Functions
-----------------
-
-This section details the available filter functions that are available.
-
-Note these functions interface the deprecated legacy filtering framework,
-superseded by *rte_flow*. See `Flow rules management`_.
-
 .. _testpmd_rte_flow:
 
 Flow rules management
@@ -2859,10 +2851,6 @@ Flow rules management
 Control of the generic flow API (*rte_flow*) is fully exposed through the
 ``flow`` command (configuration, validation, creation, destruction, queries
 and operation modes).
-
-Considering *rte_flow* overlaps with all `Filter Functions`_, using both
-features simultaneously may cause undefined side-effects and is therefore
-not recommended.
 
 ``flow`` syntax
 ~~~~~~~~~~~~~~~

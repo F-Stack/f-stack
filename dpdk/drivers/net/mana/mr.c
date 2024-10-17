@@ -40,7 +40,7 @@ mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 	struct ibv_mr *ibv_mr;
 	struct mana_range ranges[pool->nb_mem_chunks];
 	uint32_t i;
-	struct mana_mr_cache *mr;
+	struct mana_mr_cache mr;
 	int ret;
 
 	rte_mempool_mem_iter(pool, mana_mempool_chunk_cb, ranges);
@@ -53,7 +53,7 @@ mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 		}
 
 		DP_LOG(DEBUG,
-		       "registering memory chunk start 0x%" PRIx64 " len %u",
+		       "registering memory chunk start 0x%" PRIxPTR " len %u",
 		       ranges[i].start, ranges[i].len);
 
 		if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
@@ -62,7 +62,7 @@ mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 						    ranges[i].len);
 			if (ret) {
 				DP_LOG(ERR,
-				       "MR failed start 0x%" PRIx64 " len %u",
+				       "MR failed start 0x%" PRIxPTR " len %u",
 				       ranges[i].start, ranges[i].len);
 				return ret;
 			}
@@ -72,17 +72,16 @@ mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 		ibv_mr = ibv_reg_mr(priv->ib_pd, (void *)ranges[i].start,
 				    ranges[i].len, IBV_ACCESS_LOCAL_WRITE);
 		if (ibv_mr) {
-			DP_LOG(DEBUG, "MR lkey %u addr %p len %" PRIu64,
+			DP_LOG(DEBUG, "MR lkey %u addr %p len %zu",
 			       ibv_mr->lkey, ibv_mr->addr, ibv_mr->length);
 
-			mr = rte_calloc("MANA MR", 1, sizeof(*mr), 0);
-			mr->lkey = ibv_mr->lkey;
-			mr->addr = (uintptr_t)ibv_mr->addr;
-			mr->len = ibv_mr->length;
-			mr->verb_obj = ibv_mr;
+			mr.lkey = ibv_mr->lkey;
+			mr.addr = (uintptr_t)ibv_mr->addr;
+			mr.len = ibv_mr->length;
+			mr.verb_obj = ibv_mr;
 
 			rte_spinlock_lock(&priv->mr_btree_lock);
-			ret = mana_mr_btree_insert(&priv->mr_btree, mr);
+			ret = mana_mr_btree_insert(&priv->mr_btree, &mr);
 			rte_spinlock_unlock(&priv->mr_btree_lock);
 			if (ret) {
 				ibv_dereg_mr(ibv_mr);
@@ -90,7 +89,7 @@ mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 				return ret;
 			}
 
-			ret = mana_mr_btree_insert(local_tree, mr);
+			ret = mana_mr_btree_insert(local_tree, &mr);
 			if (ret) {
 				/* Don't need to clean up MR as it's already
 				 * in the global tree
@@ -99,7 +98,7 @@ mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 				return ret;
 			}
 		} else {
-			DP_LOG(ERR, "MR failed at 0x%" PRIx64 " len %u",
+			DP_LOG(ERR, "MR failed at 0x%" PRIxPTR " len %u",
 			       ranges[i].start, ranges[i].len);
 			return -errno;
 		}
@@ -138,20 +137,27 @@ mana_find_pmd_mr(struct mana_mr_btree *local_mr_btree, struct mana_priv *priv,
 
 try_again:
 	/* First try to find the MR in local queue tree */
-	mr = mana_mr_btree_lookup(local_mr_btree, &idx,
-				  (uintptr_t)mbuf->buf_addr, mbuf->buf_len);
+	ret = mana_mr_btree_lookup(local_mr_btree, &idx,
+				   (uintptr_t)mbuf->buf_addr, mbuf->buf_len,
+				   &mr);
+	if (ret)
+		return NULL;
+
 	if (mr) {
-		DP_LOG(DEBUG, "Local mr lkey %u addr 0x%" PRIx64 " len %" PRIu64,
+		DP_LOG(DEBUG, "Local mr lkey %u addr 0x%" PRIxPTR " len %zu",
 		       mr->lkey, mr->addr, mr->len);
 		return mr;
 	}
 
 	/* If not found, try to find the MR in global tree */
 	rte_spinlock_lock(&priv->mr_btree_lock);
-	mr = mana_mr_btree_lookup(&priv->mr_btree, &idx,
-				  (uintptr_t)mbuf->buf_addr,
-				  mbuf->buf_len);
+	ret = mana_mr_btree_lookup(&priv->mr_btree, &idx,
+				   (uintptr_t)mbuf->buf_addr,
+				   mbuf->buf_len, &mr);
 	rte_spinlock_unlock(&priv->mr_btree_lock);
+
+	if (ret)
+		return NULL;
 
 	/* If found in the global tree, add it to the local tree */
 	if (mr) {
@@ -162,7 +168,7 @@ try_again:
 		}
 
 		DP_LOG(DEBUG,
-		       "Added local MR key %u addr 0x%" PRIx64 " len %" PRIu64,
+		       "Added local MR key %u addr 0x%" PRIxPTR " len %zu",
 		       mr->lkey, mr->addr, mr->len);
 		return mr;
 	}
@@ -228,22 +234,23 @@ mana_mr_btree_expand(struct mana_mr_btree *bt, int n)
 /*
  * Look for a region of memory in MR cache.
  */
-struct mana_mr_cache *
-mana_mr_btree_lookup(struct mana_mr_btree *bt, uint16_t *idx,
-		     uintptr_t addr, size_t len)
+int mana_mr_btree_lookup(struct mana_mr_btree *bt, uint16_t *idx,
+			 uintptr_t addr, size_t len,
+			 struct mana_mr_cache **cache)
 {
 	struct mana_mr_cache *table;
 	uint16_t n;
 	uint16_t base = 0;
 	int ret;
 
-	n = bt->len;
+	*cache = NULL;
 
+	n = bt->len;
 	/* Try to double the cache if it's full */
 	if (n == bt->size) {
 		ret = mana_mr_btree_expand(bt, bt->size << 1);
 		if (ret)
-			return NULL;
+			return ret;
 	}
 
 	table = bt->table;
@@ -262,14 +269,16 @@ mana_mr_btree_lookup(struct mana_mr_btree *bt, uint16_t *idx,
 
 	*idx = base;
 
-	if (addr + len <= table[base].addr + table[base].len)
-		return &table[base];
+	if (addr + len <= table[base].addr + table[base].len) {
+		*cache = &table[base];
+		return 0;
+	}
 
 	DP_LOG(DEBUG,
-	       "addr 0x%" PRIx64 " len %zu idx %u sum 0x%" PRIx64 " not found",
+	       "addr 0x%" PRIxPTR " len %zu idx %u sum 0x%" PRIxPTR " not found",
 	       addr, len, *idx, addr + len);
 
-	return NULL;
+	return 0;
 }
 
 int
@@ -314,14 +323,21 @@ mana_mr_btree_insert(struct mana_mr_btree *bt, struct mana_mr_cache *entry)
 	struct mana_mr_cache *table;
 	uint16_t idx = 0;
 	uint16_t shift;
+	int ret;
 
-	if (mana_mr_btree_lookup(bt, &idx, entry->addr, entry->len)) {
-		DP_LOG(DEBUG, "Addr 0x%" PRIx64 " len %zu exists in btree",
+	ret = mana_mr_btree_lookup(bt, &idx, entry->addr, entry->len, &table);
+	if (ret)
+		return ret;
+
+	if (table) {
+		DP_LOG(DEBUG, "Addr 0x%" PRIxPTR " len %zu exists in btree",
 		       entry->addr, entry->len);
 		return 0;
 	}
 
 	if (bt->len >= bt->size) {
+		DP_LOG(ERR, "Btree overflow detected len %u size %u",
+		       bt->len, bt->size);
 		bt->overflow = 1;
 		return -1;
 	}
@@ -340,7 +356,7 @@ mana_mr_btree_insert(struct mana_mr_btree *bt, struct mana_mr_cache *entry)
 	bt->len++;
 
 	DP_LOG(DEBUG,
-	       "Inserted MR b-tree table %p idx %d addr 0x%" PRIx64 " len %zu",
+	       "Inserted MR b-tree table %p idx %d addr 0x%" PRIxPTR " len %zu",
 	       table, idx, entry->addr, entry->len);
 
 	return 0;

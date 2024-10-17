@@ -69,6 +69,7 @@ enum axgbe_sfp_cable {
 	AXGBE_SFP_CABLE_UNKNOWN = 0,
 	AXGBE_SFP_CABLE_ACTIVE,
 	AXGBE_SFP_CABLE_PASSIVE,
+	AXGBE_SFP_CABLE_FIBER,
 };
 
 enum axgbe_sfp_base {
@@ -116,9 +117,7 @@ enum axgbe_sfp_speed {
 
 #define AXGBE_SFP_BASE_BR			12
 #define AXGBE_SFP_BASE_BR_1GBE_MIN		0x0a
-#define AXGBE_SFP_BASE_BR_1GBE_MAX		0x0d
 #define AXGBE_SFP_BASE_BR_10GBE_MIN		0x64
-#define AXGBE_SFP_BASE_BR_10GBE_MAX		0x68
 
 #define AXGBE_SFP_BASE_CU_CABLE_LEN		18
 
@@ -535,25 +534,22 @@ static void axgbe_phy_sfp_phy_settings(struct axgbe_port *pdata)
 static bool axgbe_phy_sfp_bit_rate(struct axgbe_sfp_eeprom *sfp_eeprom,
 				   enum axgbe_sfp_speed sfp_speed)
 {
-	u8 *sfp_base, min, max;
+	u8 *sfp_base, min;
 
 	sfp_base = sfp_eeprom->base;
 
 	switch (sfp_speed) {
 	case AXGBE_SFP_SPEED_1000:
 		min = AXGBE_SFP_BASE_BR_1GBE_MIN;
-		max = AXGBE_SFP_BASE_BR_1GBE_MAX;
 		break;
 	case AXGBE_SFP_SPEED_10000:
 		min = AXGBE_SFP_BASE_BR_10GBE_MIN;
-		max = AXGBE_SFP_BASE_BR_10GBE_MAX;
 		break;
 	default:
 		return false;
 	}
 
-	return ((sfp_base[AXGBE_SFP_BASE_BR] >= min) &&
-		(sfp_base[AXGBE_SFP_BASE_BR] <= max));
+	return sfp_base[AXGBE_SFP_BASE_BR] >= min;
 }
 
 static void axgbe_phy_sfp_external_phy(struct axgbe_port *pdata)
@@ -577,6 +573,9 @@ static bool axgbe_phy_belfuse_parse_quirks(struct axgbe_port *pdata)
 	if (memcmp(&sfp_eeprom->base[AXGBE_SFP_BASE_VENDOR_NAME],
 		   AXGBE_BEL_FUSE_VENDOR, strlen(AXGBE_BEL_FUSE_VENDOR)))
 		return false;
+
+	/* Reset PHY - wait for self-clearing reset bit to clear */
+	pdata->phy_if.phy_impl.reset(pdata);
 
 	if (!memcmp(&sfp_eeprom->base[AXGBE_SFP_BASE_VENDOR_PN],
 		    AXGBE_BEL_FUSE_PARTNO, strlen(AXGBE_BEL_FUSE_PARTNO))) {
@@ -613,16 +612,21 @@ static void axgbe_phy_sfp_parse_eeprom(struct axgbe_port *pdata)
 
 	axgbe_phy_sfp_parse_quirks(pdata);
 
-	/* Assume ACTIVE cable unless told it is PASSIVE */
+	/* Assume FIBER cable unless told otherwise */
 	if (sfp_base[AXGBE_SFP_BASE_CABLE] & AXGBE_SFP_BASE_CABLE_PASSIVE) {
 		phy_data->sfp_cable = AXGBE_SFP_CABLE_PASSIVE;
 		phy_data->sfp_cable_len = sfp_base[AXGBE_SFP_BASE_CU_CABLE_LEN];
-	} else {
+	} else if (sfp_base[AXGBE_SFP_BASE_CABLE] & AXGBE_SFP_BASE_CABLE_ACTIVE) {
 		phy_data->sfp_cable = AXGBE_SFP_CABLE_ACTIVE;
+	} else {
+		phy_data->sfp_cable = AXGBE_SFP_CABLE_FIBER;
 	}
 
 	/* Determine the type of SFP */
-	if (sfp_base[AXGBE_SFP_BASE_10GBE_CC] & AXGBE_SFP_BASE_10GBE_CC_SR)
+	if (phy_data->sfp_cable != AXGBE_SFP_CABLE_FIBER &&
+		 axgbe_phy_sfp_bit_rate(sfp_eeprom, AXGBE_SFP_SPEED_10000))
+		phy_data->sfp_base = AXGBE_SFP_BASE_10000_CR;
+	else if (sfp_base[AXGBE_SFP_BASE_10GBE_CC] & AXGBE_SFP_BASE_10GBE_CC_SR)
 		phy_data->sfp_base = AXGBE_SFP_BASE_10000_SR;
 	else if (sfp_base[AXGBE_SFP_BASE_10GBE_CC] & AXGBE_SFP_BASE_10GBE_CC_LR)
 		phy_data->sfp_base = AXGBE_SFP_BASE_10000_LR;
@@ -639,9 +643,6 @@ static void axgbe_phy_sfp_parse_eeprom(struct axgbe_port *pdata)
 		phy_data->sfp_base = AXGBE_SFP_BASE_1000_CX;
 	else if (sfp_base[AXGBE_SFP_BASE_1GBE_CC] & AXGBE_SFP_BASE_1GBE_CC_T)
 		phy_data->sfp_base = AXGBE_SFP_BASE_1000_T;
-	else if ((phy_data->sfp_cable == AXGBE_SFP_CABLE_PASSIVE) &&
-		 axgbe_phy_sfp_bit_rate(sfp_eeprom, AXGBE_SFP_SPEED_10000))
-		phy_data->sfp_base = AXGBE_SFP_BASE_10000_CR;
 
 	switch (phy_data->sfp_base) {
 	case AXGBE_SFP_BASE_1000_T:
@@ -1225,6 +1226,10 @@ static void axgbe_phy_rx_reset(struct axgbe_port *pdata)
 
 static void axgbe_phy_pll_ctrl(struct axgbe_port *pdata, bool enable)
 {
+	/* PLL_CTRL feature needs to be enabled for fixed PHY modes (Non-Autoneg) only */
+	if (pdata->phy.autoneg != AUTONEG_DISABLE)
+		return;
+
 	XMDIO_WRITE_BITS(pdata, MDIO_MMD_PMAPMD, MDIO_VEND2_PMA_MISC_CTRL0,
 			XGBE_PMA_PLL_CTRL_MASK,
 			enable ? XGBE_PMA_PLL_CTRL_SET
@@ -1269,8 +1274,9 @@ static void axgbe_phy_perform_ratechange(struct axgbe_port *pdata,
 	axgbe_phy_rx_reset(pdata);
 
 reenable_pll:
-	 /* Re-enable the PLL control */
-	axgbe_phy_pll_ctrl(pdata, true);
+	/* Enable PLL re-initialization, not needed for PHY Power Off and RRC cmds */
+	if (cmd != 0 && cmd != 5)
+		axgbe_phy_pll_ctrl(pdata, true);
 
 	PMD_DRV_LOG(NOTICE, "firmware mailbox command did not complete\n");
 }
@@ -1697,8 +1703,15 @@ static int axgbe_phy_link_status(struct axgbe_port *pdata, int *an_restart)
 	if (reg & MDIO_STAT1_LSTATUS)
 		return 1;
 
+	if (pdata->phy.autoneg == AUTONEG_ENABLE &&
+			phy_data->port_mode == AXGBE_PORT_MODE_BACKPLANE) {
+		if (rte_bit_relaxed_get32(AXGBE_LINK_INIT, &pdata->dev_state)) {
+			*an_restart = 1;
+		}
+	}
+
 	/* No link, attempt a receiver reset cycle */
-	if (phy_data->rrc_count++) {
+	if (pdata->vdata->enable_rrc && phy_data->rrc_count++) {
 		phy_data->rrc_count = 0;
 		axgbe_phy_rrc(pdata);
 	}

@@ -157,15 +157,24 @@ static int
 dma_dev_data_prepare(void)
 {
 	size_t size;
+	void *ptr;
 
 	if (rte_dma_devices != NULL)
 		return 0;
 
-	size = dma_devices_max * sizeof(struct rte_dma_dev);
-	rte_dma_devices = malloc(size);
-	if (rte_dma_devices == NULL)
+	/* The DMA device object is expected to align cacheline,
+	 * but the return value of malloc may not be aligned to the cache line.
+	 * Therefore, extra memory is applied for realignment.
+	 * Note: posix_memalign/aligned_alloc are not used
+	 * because not always available, depending on libc.
+	 */
+	size = dma_devices_max * sizeof(struct rte_dma_dev) + RTE_CACHE_LINE_SIZE;
+	ptr = malloc(size);
+	if (ptr == NULL)
 		return -ENOMEM;
-	memset(rte_dma_devices, 0, size);
+	memset(ptr, 0, size);
+
+	rte_dma_devices = RTE_PTR_ALIGN(ptr, RTE_CACHE_LINE_SIZE);
 
 	return 0;
 }
@@ -710,7 +719,7 @@ rte_dma_vchan_status(int16_t dev_id, uint16_t vchan, enum rte_dma_vchan_status *
 		return -EINVAL;
 
 	if (vchan >= dev->data->dev_conf.nb_vchans) {
-		RTE_DMA_LOG(ERR, "Device %u vchan %u out of range\n", dev_id, vchan);
+		RTE_DMA_LOG(ERR, "Device %u vchan %u out of range", dev_id, vchan);
 		return -EINVAL;
 	}
 
@@ -1011,7 +1020,7 @@ dmadev_handle_dev_dump(const char *cmd __rte_unused,
 	if (*end_param != '\0')
 		RTE_DMA_LOG(WARNING, "Extra parameters passed to dmadev telemetry command, ignoring");
 
-	buf = calloc(sizeof(char), RTE_TEL_MAX_SINGLE_STRING_LEN);
+	buf = calloc(RTE_TEL_MAX_SINGLE_STRING_LEN, sizeof(char));
 	if (buf == NULL)
 		return -ENOMEM;
 

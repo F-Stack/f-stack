@@ -226,17 +226,17 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 		if (rxq == NULL)
 			continue;
 		rxq_ctrl = rxq->ctrl;
-		if (!rxq_ctrl->started) {
+		if (!rxq_ctrl->started)
 			if (mlx5_rxq_ctrl_prepare(dev, rxq_ctrl, i) < 0)
 				goto error;
-			LIST_INSERT_HEAD(&priv->rxqsobj, rxq_ctrl->obj, next);
-		}
 		ret = priv->obj_ops.rxq_obj_new(rxq);
 		if (ret) {
 			mlx5_free(rxq_ctrl->obj);
 			rxq_ctrl->obj = NULL;
 			goto error;
 		}
+		if (!rxq_ctrl->started)
+			LIST_INSERT_HEAD(&priv->rxqsobj, rxq_ctrl->obj, next);
 		rxq_ctrl->started = true;
 	}
 	return 0;
@@ -346,8 +346,8 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 		ret = mlx5_devx_cmd_modify_sq(sq, &sq_attr);
 		if (ret)
 			goto error;
-		rq_attr.state = MLX5_SQC_STATE_RDY;
-		rq_attr.rq_state = MLX5_SQC_STATE_RST;
+		rq_attr.state = MLX5_RQC_STATE_RDY;
+		rq_attr.rq_state = MLX5_RQC_STATE_RST;
 		rq_attr.hairpin_peer_sq = sq->id;
 		rq_attr.hairpin_peer_vhca =
 				priv->sh->cdev->config.hca_attr.vhca_id;
@@ -601,8 +601,8 @@ mlx5_hairpin_queue_peer_bind(struct rte_eth_dev *dev, uint16_t cur_queue,
 				" mismatch", dev->data->port_id, cur_queue);
 			return -rte_errno;
 		}
-		rq_attr.state = MLX5_SQC_STATE_RDY;
-		rq_attr.rq_state = MLX5_SQC_STATE_RST;
+		rq_attr.state = MLX5_RQC_STATE_RDY;
+		rq_attr.rq_state = MLX5_RQC_STATE_RST;
 		rq_attr.hairpin_peer_sq = peer_info->qp_id;
 		rq_attr.hairpin_peer_vhca = peer_info->vhca_id;
 		ret = mlx5_devx_cmd_modify_rq(rxq_ctrl->obj->rq, &rq_attr);
@@ -666,7 +666,7 @@ mlx5_hairpin_queue_peer_unbind(struct rte_eth_dev *dev, uint16_t cur_queue,
 			return -rte_errno;
 		}
 		sq_attr.state = MLX5_SQC_STATE_RST;
-		sq_attr.sq_state = MLX5_SQC_STATE_RST;
+		sq_attr.sq_state = MLX5_SQC_STATE_RDY;
 		ret = mlx5_devx_cmd_modify_sq(txq_ctrl->obj->sq, &sq_attr);
 		if (ret == 0)
 			txq_ctrl->hairpin_status = 0;
@@ -700,8 +700,8 @@ mlx5_hairpin_queue_peer_unbind(struct rte_eth_dev *dev, uint16_t cur_queue,
 				dev->data->port_id, cur_queue);
 			return -rte_errno;
 		}
-		rq_attr.state = MLX5_SQC_STATE_RST;
-		rq_attr.rq_state = MLX5_SQC_STATE_RST;
+		rq_attr.state = MLX5_RQC_STATE_RST;
+		rq_attr.rq_state = MLX5_RQC_STATE_RDY;
 		ret = mlx5_devx_cmd_modify_rq(rxq_ctrl->obj->rq, &rq_attr);
 		if (ret == 0)
 			rxq->hairpin_status = 0;
@@ -845,6 +845,11 @@ error:
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (txq_ctrl == NULL)
 			continue;
+		if (!txq_ctrl->is_hairpin ||
+		    txq_ctrl->hairpin_conf.peers[0].port != rx_port) {
+			mlx5_txq_release(dev, i);
+			continue;
+		}
 		rx_queue = txq_ctrl->hairpin_conf.peers[0].queue;
 		rte_eth_hairpin_queue_peer_unbind(rx_port, rx_queue, 0);
 		mlx5_hairpin_queue_peer_unbind(dev, i, 1);
@@ -1493,14 +1498,16 @@ mlx5_traffic_enable_hws(struct rte_eth_dev *dev)
 		if (!txq)
 			continue;
 		queue = mlx5_txq_get_sqn(txq);
-		if ((priv->representor || priv->master) && config->dv_esw_en) {
-			if (mlx5_flow_hw_esw_create_sq_miss_flow(dev, queue)) {
+		if ((priv->representor || priv->master) &&
+		    config->dv_esw_en &&
+		    config->fdb_def_rule) {
+			if (mlx5_flow_hw_esw_create_sq_miss_flow(dev, queue, false)) {
 				mlx5_txq_release(dev, i);
 				goto error;
 			}
 		}
 		if (config->dv_esw_en && config->repr_matching) {
-			if (mlx5_flow_hw_tx_repr_matching_flow(dev, queue)) {
+			if (mlx5_flow_hw_tx_repr_matching_flow(dev, queue, false)) {
 				mlx5_txq_release(dev, i);
 				goto error;
 			}
@@ -1519,6 +1526,9 @@ mlx5_traffic_enable_hws(struct rte_eth_dev *dev)
 	}
 	if (priv->isolated)
 		return 0;
+	if (!priv->sh->config.lacp_by_user && priv->pf_bond >= 0 && priv->master)
+		if (mlx5_flow_hw_lacp_rx_flow(dev))
+			goto error;
 	if (dev->data->promiscuous)
 		flags |= MLX5_CTRL_PROMISCUOUS;
 	if (dev->data->all_multicast)
@@ -1624,14 +1634,14 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 		DRV_LOG(INFO, "port %u FDB default rule is disabled",
 			dev->data->port_id);
 	}
-	if (!priv->sh->config.lacp_by_user && priv->pf_bond >= 0) {
+	if (!priv->sh->config.lacp_by_user && priv->pf_bond >= 0 && priv->master) {
 		ret = mlx5_flow_lacp_miss(dev);
 		if (ret)
 			DRV_LOG(INFO, "port %u LACP rule cannot be created - "
 				"forward LACP to kernel.", dev->data->port_id);
 		else
-			DRV_LOG(INFO, "LACP traffic will be missed in port %u."
-				, dev->data->port_id);
+			DRV_LOG(INFO, "LACP traffic will be missed in port %u.",
+				dev->data->port_id);
 	}
 	if (priv->isolated)
 		return 0;

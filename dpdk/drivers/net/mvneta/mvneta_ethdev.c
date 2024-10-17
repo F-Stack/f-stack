@@ -198,7 +198,8 @@ mvneta_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
 		RTE_PTYPE_L3_IPV4,
 		RTE_PTYPE_L3_IPV6,
 		RTE_PTYPE_L4_TCP,
-		RTE_PTYPE_L4_UDP
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_UNKNOWN
 	};
 
 	return ptypes;
@@ -376,6 +377,10 @@ mvneta_dev_start(struct rte_eth_dev *dev)
 		goto out;
 	}
 
+	/* start rx queues */
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	/* start tx queues */
 	for (i = 0; i < dev->data->nb_tx_queues; i++)
 		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
@@ -400,6 +405,7 @@ static int
 mvneta_dev_stop(struct rte_eth_dev *dev)
 {
 	struct mvneta_priv *priv = dev->data->dev_private;
+	uint16_t i;
 
 	dev->data->dev_started = 0;
 
@@ -411,6 +417,14 @@ mvneta_dev_stop(struct rte_eth_dev *dev)
 	neta_ppio_deinit(priv->ppio);
 
 	priv->ppio = NULL;
+
+	/* stop rx queues */
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+
+	/* stop tx queues */
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }

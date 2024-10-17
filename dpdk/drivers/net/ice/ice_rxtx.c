@@ -2149,7 +2149,7 @@ ice_recv_scattered_pkts(void *rx_queue,
 			}
 			rxq->hw_time_update = rte_get_timer_cycles() /
 					     (rte_get_timer_hz() / 1000);
-			*RTE_MBUF_DYNFIELD(rxm,
+			*RTE_MBUF_DYNFIELD(first_seg,
 					   (ice_timestamp_dynfield_offset),
 					   rte_mbuf_timestamp_t *) = ts_ns;
 			pkt_flags |= ice_timestamp_dynflag;
@@ -2733,9 +2733,9 @@ ice_parse_tunneling_params(uint64_t ol_flags,
 	 * Calculate the tunneling UDP checksum.
 	 * Shall be set only if L4TUNT = 01b and EIPT is not zero
 	 */
-	if (!(*cd_tunneling & ICE_TX_CTX_EIPT_NONE) &&
-		(*cd_tunneling & ICE_TXD_CTX_UDP_TUNNELING) &&
-		(ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
+	if ((*cd_tunneling & ICE_TXD_CTX_QW0_EIPT_M) &&
+			(*cd_tunneling & ICE_TXD_CTX_UDP_TUNNELING) &&
+			(ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
 		*cd_tunneling |= ICE_TXD_CTX_QW0_L4T_CS_M;
 }
 
@@ -3670,23 +3670,34 @@ ice_check_empty_mbuf(struct rte_mbuf *tx_pkt)
 }
 
 uint16_t
-ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+ice_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	      uint16_t nb_pkts)
 {
 	int i, ret;
 	uint64_t ol_flags;
 	struct rte_mbuf *m;
-	struct ice_tx_queue *txq = tx_queue;
-	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
-	uint16_t max_frame_size = dev->data->mtu + ICE_ETH_OVERHEAD;
 
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
 		ol_flags = m->ol_flags;
 
-		if (ol_flags & RTE_MBUF_F_TX_TCP_SEG &&
+		if (!(ol_flags & RTE_MBUF_F_TX_TCP_SEG) &&
+		    /**
+		     * No TSO case: nb->segs, pkt_len to not exceed
+		     * the limites.
+		     */
+		    (m->nb_segs > ICE_TX_MTU_SEG_MAX ||
+		     m->pkt_len > ICE_FRAME_SIZE_MAX)) {
+			rte_errno = EINVAL;
+			return i;
+		} else if (ol_flags & RTE_MBUF_F_TX_TCP_SEG &&
+		    /** TSO case: tso_segsz, nb_segs, pkt_len not exceed
+		     * the limits.
+		     */
 		    (m->tso_segsz < ICE_MIN_TSO_MSS ||
 		     m->tso_segsz > ICE_MAX_TSO_MSS ||
+		     m->nb_segs >
+			((struct ice_tx_queue *)tx_queue)->nb_tx_desc ||
 		     m->pkt_len > ICE_MAX_TSO_FRAME_SIZE)) {
 			/**
 			 * MSS outside the range are considered malicious
@@ -3695,11 +3706,8 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
-		/* check the data_len in mbuf */
-		if (m->data_len < ICE_TX_MIN_PKT_LEN ||
-			m->data_len > max_frame_size) {
+		if (m->pkt_len < ICE_TX_MIN_PKT_LEN) {
 			rte_errno = EINVAL;
-			PMD_DRV_LOG(ERR, "INVALID mbuf: bad data_len=[%hu]", m->data_len);
 			return i;
 		}
 
@@ -3718,7 +3726,6 @@ ice_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 
 		if (ice_check_empty_mbuf(m) != 0) {
 			rte_errno = EINVAL;
-			PMD_DRV_LOG(ERR, "INVALID mbuf:	last mbuf data_len=[0]");
 			return i;
 		}
 	}

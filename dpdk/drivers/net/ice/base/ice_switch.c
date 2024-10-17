@@ -4339,7 +4339,7 @@ ice_add_update_vsi_list(struct ice_hw *hw,
 		u16 vsi_handle_arr[2];
 
 		/* A rule already exists with the new VSI being added */
-		if (cur_fltr->fwd_id.hw_vsi_id == new_fltr->fwd_id.hw_vsi_id)
+		if (cur_fltr->vsi_handle == new_fltr->vsi_handle)
 			return ICE_ERR_ALREADY_EXISTS;
 
 		vsi_handle_arr[0] = cur_fltr->vsi_handle;
@@ -4387,7 +4387,7 @@ ice_add_update_vsi_list(struct ice_hw *hw,
 
 		/* A rule already exists with the new VSI being added */
 		if (ice_is_bit_set(m_entry->vsi_list_info->vsi_map, vsi_handle))
-			return ICE_SUCCESS;
+			return ICE_ERR_ALREADY_EXISTS;
 
 		/* Update the previously created VSI list set with
 		 * the new VSI ID passed in
@@ -7124,7 +7124,7 @@ ice_find_free_recp_res_idx(struct ice_hw *hw, const ice_bitmap_t *profiles,
 	ice_xor_bitmap(free_idx, used_idx, possible_idx, ICE_MAX_FV_WORDS);
 
 	/* return number of free indexes */
-	return (u16)ice_bitmap_hweight(free_idx, ICE_MAX_FV_WORDS);
+	return ice_bitmap_hweight(free_idx, ICE_MAX_FV_WORDS);
 }
 
 /**
@@ -7822,6 +7822,7 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	enum ice_status status = ICE_SUCCESS;
 	struct ice_sw_recipe *rm;
 	u8 i;
+	u16 cnt;
 
 	if (!ice_is_prof_rule(rinfo->tun_type) && !lkups_cnt)
 		return ICE_ERR_PARAM;

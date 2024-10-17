@@ -951,6 +951,9 @@ mrvl_dev_start(struct rte_eth_dev *dev)
 			goto out;
 	}
 
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	mrvl_flow_init(dev);
 	mrvl_mtr_init(dev);
 	mrvl_set_tx_function(dev);
@@ -1076,6 +1079,13 @@ mrvl_flush_bpool(struct rte_eth_dev *dev)
 static int
 mrvl_dev_stop(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+
 	return mrvl_dev_set_link_down(dev);
 }
 
@@ -1767,7 +1777,8 @@ mrvl_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
 		RTE_PTYPE_L3_IPV6_EXT,
 		RTE_PTYPE_L2_ETHER_ARP,
 		RTE_PTYPE_L4_TCP,
-		RTE_PTYPE_L4_UDP
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_UNKNOWN
 	};
 
 	return ptypes;

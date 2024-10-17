@@ -115,6 +115,8 @@ npa_aura_pool_fini(struct mbox *mbox, uint32_t aura_id, uint64_t aura_handle)
 	aura_req->op = NPA_AQ_INSTOP_WRITE;
 	aura_req->aura.ena = 0;
 	aura_req->aura_mask.ena = ~aura_req->aura_mask.ena;
+	aura_req->aura.bp_ena = 0;
+	aura_req->aura_mask.bp_ena = ~aura_req->aura_mask.bp_ena;
 
 	rc = mbox_process(mbox);
 	if (rc < 0)
@@ -370,7 +372,11 @@ npa_aura_pool_pair_alloc(struct npa_lf *lf, const uint32_t block_size,
 	/* Update pool fields */
 	pool->stack_base = mz->iova;
 	pool->ena = 1;
-	pool->buf_size = block_size / ROC_ALIGN;
+	/* In opaque mode buffer size must be 0 */
+	if (!pool->nat_align)
+		pool->buf_size = 0;
+	else
+		pool->buf_size = block_size / ROC_ALIGN;
 	pool->stack_max_pages = stack_size;
 	pool->shift = plt_log2_u32(block_count);
 	pool->shift = pool->shift < 8 ? 0 : pool->shift - 8;

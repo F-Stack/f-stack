@@ -70,8 +70,7 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 				 RTE_ETH_RX_OFFLOAD_SCATTER |
 				 RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
 				 RTE_ETH_RX_OFFLOAD_VLAN_FILTER |
-				 RTE_ETH_RX_OFFLOAD_RSS_HASH |
-				 RTE_ETH_RX_OFFLOAD_TCP_LRO);
+				 RTE_ETH_RX_OFFLOAD_RSS_HASH);
 	info->tx_offload_capa = (RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
 				 RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
 				 RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
@@ -85,7 +84,7 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 				 RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE |
 				 RTE_ETH_TX_OFFLOAD_VLAN_INSERT);
 
-	if (!hw->port_base_vlan_cfg.state)
+	if (!hns->is_vf && !hw->port_base_vlan_cfg.state)
 		info->tx_offload_capa |= RTE_ETH_TX_OFFLOAD_QINQ_INSERT;
 
 	if (hns3_dev_get_support(hw, OUTER_UDP_CKSUM))
@@ -99,6 +98,8 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 
 	if (hns3_dev_get_support(hw, PTP))
 		info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+	if (hns3_dev_get_support(hw, GRO))
+		info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
 
 	info->rx_desc_lim = (struct rte_eth_desc_lim) {
 		.nb_max = HNS3_MAX_RING_DESC,
@@ -218,7 +219,7 @@ hns3_parse_dev_caps_mask(const char *key, const char *value, void *extra_args)
 static int
 hns3_parse_mbx_time_limit(const char *key, const char *value, void *extra_args)
 {
-	uint32_t val;
+	uint64_t val;
 
 	RTE_SET_USED(key);
 
@@ -351,7 +352,7 @@ hns3_set_mc_addr_chk_param(struct hns3_hw *hw,
 		hns3_err(hw, "failed to set mc mac addr, nb_mc_addr(%u) "
 			 "invalid. valid range: 0~%d",
 			 nb_mc_addr, HNS3_MC_MACADDR_NUM);
-		return -EINVAL;
+		return -ENOSPC;
 	}
 
 	/* Check if input mac addresses are valid */
@@ -409,12 +410,22 @@ hns3_set_mc_mac_addr_list(struct rte_eth_dev *dev,
 			  uint32_t nb_mc_addr)
 {
 	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	struct rte_ether_addr *addr;
 	int cur_addr_num;
 	int set_addr_num;
 	int num;
 	int ret;
 	int i;
+
+	if (mc_addr_set == NULL || nb_mc_addr == 0) {
+		rte_spinlock_lock(&hw->lock);
+		ret = hns3_configure_all_mc_mac_addr(hns, true);
+		if (ret == 0)
+			hw->mc_addrs_num = 0;
+		rte_spinlock_unlock(&hw->lock);
+		return ret;
+	}
 
 	/* Check if input parameters are valid */
 	ret = hns3_set_mc_addr_chk_param(hw, mc_addr_set, nb_mc_addr);

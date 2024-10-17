@@ -19,7 +19,6 @@
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_ethdev.h>
-#include <rte_malloc.h>
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_launch.h>
@@ -131,6 +130,8 @@ struct desc_param {
 
 static struct desc_param rx_desc_param;
 static struct desc_param tx_desc_param;
+
+#define RSS_HASH_KEY_SIZE 64
 
 /* display usage */
 static void
@@ -719,24 +720,23 @@ metrics_display(int port_id)
 		return;
 	}
 
-	metrics = rte_malloc("proc_info_metrics",
-		sizeof(struct rte_metric_value) * len, 0);
+	metrics = malloc(sizeof(struct rte_metric_value) * len);
 	if (metrics == NULL) {
 		printf("Cannot allocate memory for metrics\n");
 		return;
 	}
 
-	names =  rte_malloc(NULL, sizeof(struct rte_metric_name) * len, 0);
+	names = malloc(sizeof(struct rte_metric_name) * len);
 	if (names == NULL) {
 		printf("Cannot allocate memory for metrics names\n");
-		rte_free(metrics);
+		free(metrics);
 		return;
 	}
 
 	if (len != rte_metrics_get_names(names, len)) {
 		printf("Cannot get metrics names\n");
-		rte_free(metrics);
-		rte_free(names);
+		free(metrics);
+		free(names);
 		return;
 	}
 
@@ -748,8 +748,8 @@ metrics_display(int port_id)
 	ret = rte_metrics_get_values(port_id, metrics, len);
 	if (ret < 0 || ret > len) {
 		printf("Cannot get metrics values\n");
-		rte_free(metrics);
-		rte_free(names);
+		free(metrics);
+		free(names);
 		return;
 	}
 
@@ -758,8 +758,8 @@ metrics_display(int port_id)
 		printf("%s: %"PRIu64"\n", names[i].name, metrics[i].value);
 
 	printf("%s############################\n", nic_stats_border);
-	rte_free(metrics);
-	rte_free(names);
+	free(metrics);
+	free(names);
 }
 #endif
 
@@ -823,6 +823,7 @@ show_port(void)
 		struct rte_eth_fc_conf fc_conf;
 		struct rte_ether_addr mac;
 		struct rte_eth_dev_owner owner;
+		uint8_t rss_key[RSS_HASH_KEY_SIZE];
 
 		/* Skip if port is not in mask */
 		if ((enabled_port_mask & (1ul << i)) == 0)
@@ -981,17 +982,18 @@ show_port(void)
 			printf("\n");
 		}
 
+		rss_conf.rss_key = rss_key;
+		rss_conf.rss_key_len = dev_info.hash_key_size;
 		ret = rte_eth_dev_rss_hash_conf_get(i, &rss_conf);
 		if (ret == 0) {
-			if (rss_conf.rss_key) {
-				printf("  - RSS\n");
-				printf("\t  -- RSS len %u key (hex):",
-						rss_conf.rss_key_len);
-				for (k = 0; k < rss_conf.rss_key_len; k++)
-					printf(" %x", rss_conf.rss_key[k]);
-				printf("\t  -- hf 0x%"PRIx64"\n",
-						rss_conf.rss_hf);
-			}
+			printf("  - RSS info\n");
+			printf("\t  -- key len : %u\n",
+					rss_conf.rss_key_len);
+			printf("\t  -- key (hex) : ");
+			for (k = 0; k < rss_conf.rss_key_len; k++)
+				printf("%02x", rss_conf.rss_key[k]);
+			printf("\n\t  -- hash function : 0x%"PRIx64"\n",
+					rss_conf.rss_hf);
 		}
 
 #ifdef RTE_LIB_SECURITY

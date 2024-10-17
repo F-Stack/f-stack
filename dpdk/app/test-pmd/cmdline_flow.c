@@ -2980,7 +2980,7 @@ static const struct token token_list[] = {
 	[QUEUE_DESTROY] = {
 		.name = "destroy",
 		.help = "destroy a flow rule",
-		.next = NEXT(NEXT_ENTRY(QUEUE_DESTROY_ID),
+		.next = NEXT(NEXT_ENTRY(QUEUE_DESTROY_POSTPONE),
 			     NEXT_ENTRY(COMMON_QUEUE_ID)),
 		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
 		.call = parse_qo_destroy,
@@ -4772,9 +4772,12 @@ static const struct token token_list[] = {
 	[ITEM_CONNTRACK] = {
 		.name = "conntrack",
 		.help = "conntrack state",
+		.priv = PRIV_ITEM(CONNTRACK,
+				  sizeof(struct rte_flow_item_conntrack)),
 		.next = NEXT(NEXT_ENTRY(ITEM_NEXT), NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_conntrack, flags)),
+		.call = parse_vc,
 	},
 	[ITEM_PORT_REPRESENTOR] = {
 		.name = "port_representor",

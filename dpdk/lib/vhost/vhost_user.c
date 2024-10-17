@@ -1745,6 +1745,7 @@ vhost_user_set_inflight_fd(struct virtio_net **pdev,
 		if (!vq)
 			continue;
 
+		cleanup_vq_inflight(dev, vq);
 		if (vq_is_packed(dev)) {
 			vq->inflight_packed = addr;
 			vq->inflight_packed->desc_num = queue_size;
@@ -2144,7 +2145,9 @@ vhost_user_get_vring_base(struct virtio_net **pdev,
 
 	vhost_user_iotlb_flush_all(vq);
 
+	rte_spinlock_lock(&vq->access_lock);
 	vring_invalidate(dev, vq);
+	rte_spinlock_unlock(&vq->access_lock);
 
 	return RTE_VHOST_MSG_RESULT_REPLY;
 }

@@ -28,7 +28,9 @@
 #define HNS3_DEV_ID_25GE_RDMA			0xA222
 #define HNS3_DEV_ID_50GE_RDMA			0xA224
 #define HNS3_DEV_ID_100G_RDMA_MACSEC		0xA226
+#define HNS3_DEV_ID_100G_ROH	                0xA227
 #define HNS3_DEV_ID_200G_RDMA			0xA228
+#define HNS3_DEV_ID_200G_ROH	                0xA22C
 #define HNS3_DEV_ID_100G_VF			0xA22E
 #define HNS3_DEV_ID_100G_RDMA_PFC_VF		0xA22F
 
@@ -483,6 +485,9 @@ struct hns3_queue_intr {
 #define HNS3_PKTS_DROP_STATS_MODE1		0
 #define HNS3_PKTS_DROP_STATS_MODE2		1
 
+#define HNS3_RX_DMA_ADDR_ALIGN_128	128
+#define HNS3_RX_DMA_ADDR_ALIGN_64	64
+
 struct hns3_hw {
 	struct rte_eth_dev_data *data;
 	void *io_base;
@@ -550,6 +555,11 @@ struct hns3_hw {
 	 * direction.
 	 */
 	uint8_t min_tx_pkt_len;
+	/*
+	 * The required alignment of the DMA address of the RX buffer.
+	 * See HNS3_RX_DMA_ADDR_ALIGN_XXX for available values.
+	 */
+	uint16_t rx_dma_addr_align;
 
 	struct hns3_queue_intr intr;
 	/*
@@ -884,6 +894,7 @@ enum hns3_dev_cap {
 	HNS3_DEV_SUPPORT_RAS_IMP_B,
 	HNS3_DEV_SUPPORT_TM_B,
 	HNS3_DEV_SUPPORT_VF_VLAN_FLT_MOD_B,
+	HNS3_DEV_SUPPORT_GRO_B,
 };
 
 #define hns3_dev_get_support(hw, _name) \
@@ -1029,6 +1040,8 @@ void hns3_update_linkstatus_and_event(struct hns3_hw *hw, bool query);
 void hns3vf_update_link_status(struct hns3_hw *hw, uint8_t link_status,
 			  uint32_t link_speed, uint8_t link_duplex);
 void hns3vf_update_push_lsc_cap(struct hns3_hw *hw, bool supported);
+void hns3_clear_reset_event(struct hns3_hw *hw);
+void hns3vf_clear_reset_event(struct hns3_hw *hw);
 
 
 static inline bool
@@ -1040,6 +1053,17 @@ is_reset_pending(struct hns3_adapter *hns)
 	else
 		ret = hns3_is_reset_pending(hns);
 	return ret;
+}
+
+static inline void
+hns3_clear_reset_status(struct hns3_hw *hw)
+{
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+
+	if (hns->is_vf)
+		hns3vf_clear_reset_event(hw);
+	else
+		hns3_clear_reset_event(hw);
 }
 
 #endif /* HNS3_ETHDEV_H */

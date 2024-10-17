@@ -561,7 +561,7 @@ ionic_dev_rss_reta_query(struct rte_eth_dev *eth_dev,
 	struct ionic_lif *lif = IONIC_ETH_DEV_TO_LIF(eth_dev);
 	struct ionic_adapter *adapter = lif->adapter;
 	struct ionic_identity *ident = &adapter->ident;
-	int i, num;
+	int i, j, num;
 	uint16_t tbl_sz = rte_le_to_cpu_16(ident->lif.eth.rss_ind_tbl_sz);
 
 	IONIC_PRINT_CALL();
@@ -582,9 +582,10 @@ ionic_dev_rss_reta_query(struct rte_eth_dev *eth_dev,
 	num = reta_size / RTE_ETH_RETA_GROUP_SIZE;
 
 	for (i = 0; i < num; i++) {
-		memcpy(reta_conf->reta,
-			&lif->rss_ind_tbl[i * RTE_ETH_RETA_GROUP_SIZE],
-			RTE_ETH_RETA_GROUP_SIZE);
+		for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++) {
+			reta_conf->reta[j] =
+				lif->rss_ind_tbl[(i * RTE_ETH_RETA_GROUP_SIZE) + j];
+		}
 		reta_conf++;
 	}
 
@@ -969,19 +970,21 @@ ionic_dev_close(struct rte_eth_dev *eth_dev)
 
 	ionic_lif_stop(lif);
 
-	ionic_lif_free_queues(lif);
-
 	IONIC_PRINT(NOTICE, "Removing device %s", eth_dev->device->name);
 	if (adapter->intf->unconfigure_intr)
 		(*adapter->intf->unconfigure_intr)(adapter);
 
-	rte_eth_dev_destroy(eth_dev, eth_ionic_dev_uninit);
-
 	ionic_port_reset(adapter);
 	ionic_reset(adapter);
+
+	ionic_lif_free_queues(lif);
+	ionic_lif_deinit(lif);
+	ionic_lif_free(lif); /* Does not free LIF object */
+
 	if (adapter->intf->unmap_bars)
 		(*adapter->intf->unmap_bars)(adapter);
 
+	lif->adapter = NULL;
 	rte_free(adapter);
 
 	return 0;
@@ -1058,21 +1061,18 @@ err:
 static int
 eth_ionic_dev_uninit(struct rte_eth_dev *eth_dev)
 {
-	struct ionic_lif *lif = IONIC_ETH_DEV_TO_LIF(eth_dev);
-	struct ionic_adapter *adapter = lif->adapter;
-
 	IONIC_PRINT_CALL();
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	adapter->lif = NULL;
+	if (eth_dev->state != RTE_ETH_DEV_UNUSED)
+		ionic_dev_close(eth_dev);
 
-	ionic_lif_deinit(lif);
-	ionic_lif_free(lif);
-
-	if (!(lif->state & IONIC_LIF_F_FW_RESET))
-		ionic_lif_reset(lif);
+	eth_dev->dev_ops = NULL;
+	eth_dev->rx_pkt_burst = NULL;
+	eth_dev->tx_pkt_burst = NULL;
+	eth_dev->tx_pkt_prepare = NULL;
 
 	return 0;
 }
@@ -1227,17 +1227,18 @@ eth_ionic_dev_remove(struct rte_device *rte_dev)
 {
 	char name[RTE_ETH_NAME_MAX_LEN];
 	struct rte_eth_dev *eth_dev;
+	int ret = 0;
 
 	/* Adapter lookup is using the eth_dev name */
 	snprintf(name, sizeof(name), "%s_lif", rte_dev->name);
 
 	eth_dev = rte_eth_dev_allocated(name);
 	if (eth_dev)
-		ionic_dev_close(eth_dev);
+		ret = rte_eth_dev_destroy(eth_dev, eth_ionic_dev_uninit);
 	else
 		IONIC_PRINT(DEBUG, "Cannot find device %s", rte_dev->name);
 
-	return 0;
+	return ret;
 }
 
 RTE_LOG_REGISTER_DEFAULT(ionic_logtype, NOTICE);

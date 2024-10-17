@@ -241,7 +241,12 @@ static const struct mlx5_indexed_pool_config mlx5_ipool_cfg[] = {
 		.type = "mlx5_port_id_ipool",
 	},
 	[MLX5_IPOOL_JUMP] = {
-		.size = sizeof(struct mlx5_flow_tbl_data_entry),
+		/*
+		 * MLX5_IPOOL_JUMP ipool entry size depends on selected flow engine.
+		 * When HW steering is enabled mlx5_flow_group struct is used.
+		 * Otherwise mlx5_flow_tbl_data_entry struct is used.
+		 */
+		.size = 0,
 		.trunk_size = 64,
 		.grow_trunk = 3,
 		.grow_shift = 2,
@@ -902,6 +907,14 @@ mlx5_flow_ipool_create(struct mlx5_dev_ctx_shared *sh)
 				sizeof(struct mlx5_flow_handle) :
 				MLX5_FLOW_HANDLE_VERBS_SIZE;
 			break;
+#if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
+		/* Set MLX5_IPOOL_JUMP ipool entry size depending on selected flow engine. */
+		case MLX5_IPOOL_JUMP:
+			cfg.size = sh->config.dv_flow_en == 2 ?
+				sizeof(struct mlx5_flow_group) :
+				sizeof(struct mlx5_flow_tbl_data_entry);
+			break;
+#endif
 		}
 		if (sh->config.reclaim_mode) {
 			cfg.release_mem_en = 1;
@@ -1599,6 +1612,9 @@ mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
 	/* Add context to the global device list. */
 	LIST_INSERT_HEAD(&mlx5_dev_ctx_list, sh, next);
 	rte_spinlock_init(&sh->geneve_tlv_opt_sl);
+	/* Init counter pool list header and lock. */
+	LIST_INIT(&sh->hws_cpool_list);
+	rte_spinlock_init(&sh->cpool_lock);
 exit:
 	pthread_mutex_unlock(&mlx5_dev_ctx_list_mutex);
 	return sh;
@@ -1730,7 +1746,6 @@ mlx5_free_shared_dev_ctx(struct mlx5_dev_ctx_shared *sh)
 	if (LIST_EMPTY(&mlx5_dev_ctx_list)) {
 		mlx5_os_net_cleanup();
 		mlx5_flow_os_release_workspace();
-		mlx5_flow_workspace_gc_release();
 	}
 	pthread_mutex_unlock(&mlx5_dev_ctx_list_mutex);
 	if (sh->flex_parsers_dv) {
@@ -2043,6 +2058,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	mlx5_flex_item_port_cleanup(dev);
 #ifdef HAVE_MLX5_HWS_SUPPORT
 	flow_hw_destroy_vport_action(dev);
+	/* dr context will be closed after mlx5_os_free_shared_dr. */
 	flow_hw_resource_release(dev);
 	flow_hw_clear_port_info(dev);
 	if (priv->sh->config.dv_flow_en == 2) {
@@ -2059,7 +2075,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		mlx5_free(priv->rxq_privs);
 		priv->rxq_privs = NULL;
 	}
-	if (priv->txqs != NULL) {
+	if (priv->txqs != NULL && dev->data->tx_queues != NULL) {
 		/* XXX race condition if mlx5_tx_burst() is still running. */
 		rte_delay_us_sleep(1000);
 		for (i = 0; (i != priv->txqs_n); ++i)
@@ -2068,16 +2084,20 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		priv->txqs = NULL;
 	}
 	mlx5_proc_priv_uninit(dev);
+	if (priv->drop_queue.hrxq)
+		mlx5_drop_action_destroy(dev);
 	if (priv->q_counters) {
 		mlx5_devx_cmd_destroy(priv->q_counters);
 		priv->q_counters = NULL;
 	}
-	if (priv->drop_queue.hrxq)
-		mlx5_drop_action_destroy(dev);
-	if (priv->mreg_cp_tbl)
-		mlx5_hlist_destroy(priv->mreg_cp_tbl);
 	mlx5_mprq_free_mp(dev);
 	mlx5_os_free_shared_dr(priv);
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	if (priv->dr_ctx) {
+		claim_zero(mlx5dr_context_close(priv->dr_ctx));
+		priv->dr_ctx = NULL;
+	}
+#endif
 	if (priv->rss_conf.rss_key != NULL)
 		mlx5_free(priv->rss_conf.rss_key);
 	if (priv->reta_idx != NULL)
@@ -2479,7 +2499,7 @@ mlx5_port_args_config(struct mlx5_priv *priv, struct mlx5_kvargs_ctrl *mkvlist,
 	config->mprq.max_memcpy_len = MLX5_MPRQ_MEMCPY_DEFAULT_LEN;
 	config->mprq.min_rxqs_num = MLX5_MPRQ_MIN_RXQS;
 	config->mprq.log_stride_num = MLX5_MPRQ_DEFAULT_LOG_STRIDE_NUM;
-	config->mprq.log_stride_size = MLX5_MPRQ_DEFAULT_LOG_STRIDE_SIZE;
+	config->mprq.log_stride_size = MLX5_ARG_UNSET;
 	config->log_hp_size = MLX5_ARG_UNSET;
 	config->std_delay_drop = 0;
 	config->hp_delay_drop = 0;

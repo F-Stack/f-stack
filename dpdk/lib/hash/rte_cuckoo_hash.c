@@ -166,6 +166,7 @@ rte_hash_create(const struct rte_hash_parameters *params)
 	/* Check for valid parameters */
 	if ((params->entries > RTE_HASH_ENTRIES_MAX) ||
 			(params->entries < RTE_HASH_BUCKET_ENTRIES) ||
+			(params->name == NULL) ||
 			(params->key_len == 0)) {
 		rte_errno = EINVAL;
 		RTE_LOG(ERR, HASH, "rte_hash_create has invalid parameters\n");
@@ -1542,6 +1543,7 @@ rte_hash_rcu_qsbr_add(struct rte_hash *h, struct rte_hash_rcu_config *cfg)
 		if (params.size == 0)
 			params.size = total_entries;
 		params.trigger_reclaim_limit = cfg->trigger_reclaim_limit;
+		params.max_reclaim_size = cfg->max_reclaim_size;
 		if (params.max_reclaim_size == 0)
 			params.max_reclaim_size = RTE_HASH_RCU_DQ_RECLAIM_MAX;
 		params.esize = sizeof(struct __rte_hash_rcu_dq_entry);
@@ -1860,11 +1862,15 @@ compare_signatures(uint32_t *prim_hash_matches, uint32_t *sec_hash_matches,
 				_mm_load_si128(
 					(__m128i const *)prim_bkt->sig_current),
 				_mm_set1_epi16(sig)));
+		/* Extract the even-index bits only */
+		*prim_hash_matches &= 0x5555;
 		/* Compare all signatures in the bucket */
 		*sec_hash_matches = _mm_movemask_epi8(_mm_cmpeq_epi16(
 				_mm_load_si128(
 					(__m128i const *)sec_bkt->sig_current),
 				_mm_set1_epi16(sig)));
+		/* Extract the even-index bits only */
+		*sec_hash_matches &= 0x5555;
 		break;
 #elif defined(__ARM_NEON)
 	case RTE_HASH_COMPARE_NEON: {

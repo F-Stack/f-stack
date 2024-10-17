@@ -97,6 +97,7 @@ struct mlx5_hws_cnt_pool_caches {
 };
 
 struct mlx5_hws_cnt_pool {
+	LIST_ENTRY(mlx5_hws_cnt_pool) next;
 	struct mlx5_hws_cnt_pool_cfg cfg __rte_cache_aligned;
 	struct mlx5_hws_cnt_dcs_mng dcs_mng __rte_cache_aligned;
 	uint32_t query_gen __rte_cache_aligned;
@@ -107,6 +108,7 @@ struct mlx5_hws_cnt_pool {
 	struct rte_ring *wait_reset_list;
 	struct mlx5_hws_cnt_pool_caches *cache;
 	uint64_t time_of_last_age_check;
+	struct mlx5_priv *priv;
 } __rte_cache_aligned;
 
 /* HWS AGE status. */
@@ -529,6 +531,32 @@ mlx5_hws_cnt_pool_get(struct mlx5_hws_cnt_pool *cpool, uint32_t *queue,
 	cpool->pool[iidx].in_used = true;
 	cpool->pool[iidx].age_idx = age_idx;
 	return 0;
+}
+
+/**
+ * Decide if the given queue can be used to perform counter allocation/deallcation
+ * based on counter configuration
+ *
+ * @param[in] priv
+ *   Pointer to the port private data structure.
+ * @param[in] queue
+ *   Pointer to the queue index.
+ *
+ * @return
+ *   @p queue if cache related to the queue can be used. NULL otherwise.
+ */
+static __rte_always_inline uint32_t *
+mlx5_hws_cnt_get_queue(struct mlx5_priv *priv, uint32_t *queue)
+{
+	if (priv && priv->hws_cpool) {
+		/* Do not use queue cache if counter cache is disabled. */
+		if (priv->hws_cpool->cache == NULL)
+			return NULL;
+		return queue;
+	}
+	/* This case should not be reached if counter pool was successfully configured. */
+	MLX5_ASSERT(false);
+	return NULL;
 }
 
 static __rte_always_inline unsigned int

@@ -386,6 +386,13 @@ static int mlx5dr_rule_create_root(struct mlx5dr_rule *rule,
 	uint8_t match_criteria;
 	int ret;
 
+	ret = flow_hw_get_port_id_from_ctx(ctx, &flow_attr.port_id);
+	if (ret) {
+		DR_LOG(ERR, "Failed to get port id for dev %s", ctx->ibv_ctx->device->name);
+		rte_errno = EINVAL;
+		return rte_errno;
+	}
+
 	attr = simple_calloc(num_actions, sizeof(*attr));
 	if (!attr) {
 		rte_errno = ENOMEM;
