@@ -51,7 +51,8 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # Compile DPDK
     cd dpdk/
     # re-enable kni now, to remove kni later
-    meson -Denable_kmods=true -Ddisable_libs=flow_classify build
+    # disable crypto/openssl for Redhat/Centos 7.x.
+    meson -Denable_kmods=true -Ddisable_libs=flow_classify -Ddisable_drivers=crypto/openssl build
     ninja -C build
     ninja -C build install
 
