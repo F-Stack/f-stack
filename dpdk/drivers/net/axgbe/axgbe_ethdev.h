@@ -111,6 +111,7 @@
 /* Auto-negotiation */
 #define AXGBE_AN_MS_TIMEOUT		500
 #define AXGBE_LINK_TIMEOUT		5
+#define AXGBE_KR_TRAINING_WAIT_ITER	50
 
 #define AXGBE_SGMII_AN_LINK_STATUS	BIT(1)
 #define AXGBE_SGMII_AN_LINK_SPEED	(BIT(2) | BIT(3))
@@ -463,6 +464,7 @@ struct axgbe_version_data {
 	unsigned int ecc_support;
 	unsigned int i2c_support;
 	unsigned int an_cdr_workaround;
+	unsigned int enable_rrc;
 };
 
 struct axgbe_mmc_stats {
@@ -582,6 +584,7 @@ struct axgbe_port {
 	unsigned int tx_pbl;
 	unsigned int tx_osp_mode;
 	unsigned int tx_max_fifo_size;
+	unsigned int multi_segs_tx;
 
 	/* Rx settings */
 	unsigned int rx_sf_mode;
@@ -652,6 +655,7 @@ struct axgbe_port {
 	unsigned int parallel_detect;
 	unsigned int fec_ability;
 	unsigned long an_start;
+	unsigned long kr_start_time;
 	enum axgbe_an_mode an_mode;
 
 	/* I2C support */

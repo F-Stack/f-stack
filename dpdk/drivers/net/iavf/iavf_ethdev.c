@@ -2,6 +2,7 @@
  * Copyright(c) 2017 Intel Corporation
  */
 
+#include <ctype.h>
 #include <sys/queue.h>
 #include <stdio.h>
 #include <errno.h>
@@ -24,7 +25,7 @@
 #include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include "iavf.h"
 #include "iavf_rxtx.h"
@@ -34,9 +35,14 @@
 
 /* devargs */
 #define IAVF_PROTO_XTR_ARG         "proto_xtr"
+#define IAVF_QUANTA_SIZE_ARG       "quanta_size"
+
+uint64_t iavf_timestamp_dynflag;
+int iavf_timestamp_dynfield_offset = -1;
 
 static const char * const iavf_valid_args[] = {
 	IAVF_PROTO_XTR_ARG,
+	IAVF_QUANTA_SIZE_ARG,
 	NULL
 };
 
@@ -125,6 +131,8 @@ static int iavf_dev_rx_queue_intr_enable(struct rte_eth_dev *dev,
 					uint16_t queue_id);
 static int iavf_dev_rx_queue_intr_disable(struct rte_eth_dev *dev,
 					 uint16_t queue_id);
+static void iavf_dev_interrupt_handler(void *param);
+static void iavf_disable_irq0(struct iavf_hw *hw);
 static int iavf_dev_flow_ops_get(struct rte_eth_dev *dev,
 				 const struct rte_flow_ops **ops);
 static int iavf_set_mc_addr_list(struct rte_eth_dev *dev,
@@ -601,7 +609,8 @@ iavf_dev_init_vlan(struct rte_eth_dev *dev)
 					RTE_ETH_VLAN_FILTER_MASK |
 					RTE_ETH_VLAN_EXTEND_MASK);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Failed to update vlan offload");
+		PMD_DRV_LOG(INFO,
+			"VLAN offloading is not supported, or offloading was refused by the PF");
 		return err;
 	}
 
@@ -677,9 +686,7 @@ iavf_dev_configure(struct rte_eth_dev *dev)
 		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
 	}
 
-	ret = iavf_dev_init_vlan(dev);
-	if (ret)
-		PMD_DRV_LOG(ERR, "configure VLAN failed: %d", ret);
+	iavf_dev_init_vlan(dev);
 
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
 		if (iavf_init_rss(ad) != 0) {
@@ -697,6 +704,7 @@ iavf_init_rxq(struct rte_eth_dev *dev, struct iavf_rx_queue *rxq)
 	struct rte_eth_dev_data *dev_data = dev->data;
 	uint16_t buf_size, max_pkt_len;
 	uint32_t frame_size = dev->data->mtu + IAVF_ETH_OVERHEAD;
+	enum iavf_status err;
 
 	buf_size = rte_pktmbuf_data_room_size(rxq->mp) - RTE_PKTMBUF_HEADROOM;
 
@@ -713,6 +721,18 @@ iavf_init_rxq(struct rte_eth_dev *dev, struct iavf_rx_queue *rxq)
 			    (uint32_t)IAVF_ETH_MAX_LEN,
 			    (uint32_t)IAVF_FRAME_SIZE_MAX);
 		return -EINVAL;
+	}
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		/* Register mbuf field and flag for Rx timestamp */
+		err = rte_mbuf_dyn_rx_timestamp_register(
+			&iavf_timestamp_dynfield_offset,
+			&iavf_timestamp_dynflag);
+		if (err) {
+			PMD_DRV_LOG(ERR,
+				    "Cannot register mbuf field/flag for timestamp");
+			return -EINVAL;
+		}
 	}
 
 	rxq->max_pkt_len = max_pkt_len;
@@ -970,10 +990,20 @@ iavf_dev_start(struct rte_eth_dev *dev)
 			return -1;
 		}
 
+	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_CAP_PTP) {
+		if (iavf_get_ptp_cap(adapter)) {
+			PMD_INIT_LOG(ERR, "Failed to get ptp capability");
+			return -1;
+		}
+	}
+
 	if (iavf_init_queues(dev) != 0) {
 		PMD_DRV_LOG(ERR, "failed to do Queue init");
 		return -1;
 	}
+
+	if (iavf_set_vf_quanta_size(adapter, index, num_queue_pairs) != 0)
+		PMD_DRV_LOG(WARNING, "configure quanta size failed");
 
 	/* If needed, send configure queues msg multiple times to make the
 	 * adminq buffer length smaller than the 4K limitation.
@@ -1010,6 +1040,8 @@ iavf_dev_start(struct rte_eth_dev *dev)
 	/* Set all multicast addresses */
 	iavf_add_del_mc_addr_list(adapter, vf->mc_addrs, vf->mc_addrs_num,
 				  true);
+
+	rte_spinlock_init(&vf->phc_time_aq_lock);
 
 	if (iavf_start_queues(dev) != 0) {
 		PMD_DRV_LOG(ERR, "enable queues failed");
@@ -1116,8 +1148,15 @@ iavf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
 		RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
+	/* X710 does not support outer udp checksum */
+	if (adapter->hw.mac.type != IAVF_MAC_XL710)
+		dev_info->tx_offload_capa |= RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
+
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_CRC)
 		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_KEEP_CRC;
+
+	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_CAP_PTP)
+		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
 
 	if (iavf_ipsec_crypto_supported(adapter)) {
 		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_SECURITY;
@@ -1146,7 +1185,11 @@ iavf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_max = IAVF_MAX_RING_DESC,
 		.nb_min = IAVF_MIN_RING_DESC,
 		.nb_align = IAVF_ALIGN_RING_DESC,
+		.nb_mtu_seg_max = IAVF_TX_MAX_MTU_SEG,
+		.nb_seg_max = IAVF_MAX_RING_DESC,
 	};
+
+	dev_info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PASSIVE;
 
 	return 0;
 }
@@ -1316,6 +1359,7 @@ iavf_dev_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct rte_eth_conf *dev_conf = &dev->data->dev_conf;
 	int err;
 
 	if (adapter->closed)
@@ -1334,6 +1378,23 @@ iavf_dev_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 	err = iavf_add_del_vlan(adapter, vlan_id, on);
 	if (err)
 		return -EIO;
+
+	/* For i40e kernel driver which only supports vlan(v1) VIRTCHNL OP,
+	 * it will set strip on when setting filter on but dpdk side will not
+	 * change strip flag. To be consistent with dpdk side, disable strip
+	 * again.
+	 *
+	 * For i40e kernel driver which supports vlan v2, dpdk will invoke vlan v2
+	 * related function, so it won't go through here.
+	 */
+	if (adapter->hw.mac.type == IAVF_MAC_XL710 ||
+	    adapter->hw.mac.type == IAVF_MAC_X722_VF) {
+		if (on && !(dev_conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)) {
+			err = iavf_disable_vlan_strip(adapter);
+			if (err)
+				return -EIO;
+		}
+	}
 	return 0;
 }
 
@@ -2145,6 +2206,25 @@ iavf_handle_proto_xtr_arg(__rte_unused const char *key, const char *value,
 	return 0;
 }
 
+static int
+parse_u16(__rte_unused const char *key, const char *value, void *args)
+{
+	u16 *num = (u16 *)args;
+	u16 tmp;
+
+	errno = 0;
+	tmp = strtoull(value, NULL, 10);
+	if (errno || !tmp) {
+		PMD_DRV_LOG(WARNING, "%s: \"%s\" is not a valid u16",
+			    key, value);
+		return -1;
+	}
+
+	*num = tmp;
+
+	return 0;
+}
+
 static int iavf_parse_devargs(struct rte_eth_dev *dev)
 {
 	struct iavf_adapter *ad =
@@ -2170,6 +2250,19 @@ static int iavf_parse_devargs(struct rte_eth_dev *dev)
 				 &iavf_handle_proto_xtr_arg, &ad->devargs);
 	if (ret)
 		goto bail;
+
+	ret = rte_kvargs_process(kvlist, IAVF_QUANTA_SIZE_ARG,
+				 &parse_u16, &ad->devargs.quanta_size);
+	if (ret)
+		goto bail;
+
+	if (ad->devargs.quanta_size != 0 &&
+	    (ad->devargs.quanta_size < 256 || ad->devargs.quanta_size > 4096 ||
+	     ad->devargs.quanta_size & 0x40)) {
+		PMD_INIT_LOG(ERR, "invalid quanta size\n");
+		ret = -EINVAL;
+		goto bail;
+	}
 
 bail:
 	rte_kvargs_free(kvlist);
@@ -2330,6 +2423,9 @@ iavf_init_vf(struct rte_eth_dev *dev)
 			goto err_rss;
 		}
 	}
+
+	if (vf->vsi_res->num_queue_pairs > IAVF_MAX_NUM_QUEUES_DFLT)
+		vf->lv_enabled = true;
 
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC) {
 		if (iavf_get_supported_rxdid(adapter) != 0) {
@@ -2538,6 +2634,9 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 	adapter->dev_data = eth_dev->data;
 	adapter->stopped = 1;
 
+	if (iavf_dev_event_handler_init())
+		goto init_vf_err;
+
 	if (iavf_init_vf(eth_dev) != 0) {
 		PMD_INIT_LOG(ERR, "Init vf failed");
 		return -1;
@@ -2564,6 +2663,7 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 		rte_eth_random_addr(hw->mac.addr);
 	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.addr,
 			&eth_dev->data->mac_addrs[0]);
+
 
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {
 		/* register callback func to eal lib */
@@ -2595,18 +2695,19 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 		ret = iavf_security_ctx_create(adapter);
 		if (ret) {
 			PMD_INIT_LOG(ERR, "failed to create ipsec crypto security instance");
-			return ret;
+			goto flow_init_err;
 		}
 
 		ret = iavf_security_init(adapter);
 		if (ret) {
 			PMD_INIT_LOG(ERR, "failed to initialized ipsec crypto resources");
-			return ret;
+			goto security_init_err;
 		}
 	}
 
 	iavf_default_rss_disable(adapter);
 
+	iavf_dev_stats_reset(eth_dev);
 
 	/* Start device watchdog */
 	iavf_dev_watchdog_enable(adapter);
@@ -2614,7 +2715,23 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 
 	return 0;
 
+security_init_err:
+	iavf_security_ctx_destroy(adapter);
+
 flow_init_err:
+	iavf_disable_irq0(hw);
+
+	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {
+		/* disable uio intr before callback unregiser */
+		rte_intr_disable(pci_dev->intr_handle);
+
+		/* unregister callback func from eal lib */
+		rte_intr_callback_unregister(pci_dev->intr_handle,
+					     iavf_dev_interrupt_handler, eth_dev);
+	} else {
+		rte_eal_alarm_cancel(iavf_dev_alarm_handler, eth_dev);
+	}
+
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;
 
@@ -2644,19 +2761,6 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	}
 
 	ret = iavf_dev_stop(dev);
-
-	/*
-	 * Release redundant queue resource when close the dev
-	 * so that other vfs can re-use the queues.
-	 */
-	if (vf->lv_enabled) {
-		ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
-		if (ret)
-			PMD_DRV_LOG(ERR, "Reset the num of queues failed");
-
-		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
-	}
-
 	adapter->closed = true;
 
 	/* free iAVF security device context all related resources */
@@ -2672,6 +2776,18 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	 */
 	if (vf->promisc_unicast_enabled || vf->promisc_multicast_enabled)
 		iavf_config_promisc(adapter, false, false);
+
+	/*
+	 * Release redundant queue resource when close the dev
+	 * so that other vfs can re-use the queues.
+	 */
+	if (vf->lv_enabled) {
+		ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
+		if (ret)
+			PMD_DRV_LOG(ERR, "Reset the num of queues failed");
+
+		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
+	}
 
 	iavf_shutdown_adminq(hw);
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {
@@ -2731,6 +2847,8 @@ iavf_dev_uninit(struct rte_eth_dev *dev)
 		return -EPERM;
 
 	iavf_dev_close(dev);
+
+	iavf_dev_event_handler_fini();
 
 	return 0;
 }

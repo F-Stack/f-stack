@@ -146,6 +146,8 @@ INTERNAL {
 	efx_mae_outer_rule_remove;
 	efx_mae_read_mport_journal;
 
+	efx_mcdi_client_mac_addr_get;
+	efx_mcdi_client_mac_addr_set;
 	efx_mcdi_fini;
 	efx_mcdi_get_client_handle;
 	efx_mcdi_get_own_client_handle;
@@ -218,6 +220,7 @@ INTERNAL {
 	efx_rx_qpost;
 	efx_rx_qpush;
 	efx_rx_scale_context_alloc;
+	efx_rx_scale_context_alloc_v2;
 	efx_rx_scale_context_free;
 	efx_rx_scale_default_support_get;
 	efx_rx_scale_hash_flags_get;

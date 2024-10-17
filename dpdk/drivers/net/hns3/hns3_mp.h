@@ -2,8 +2,10 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_MP_H_
-#define _HNS3_MP_H_
+#ifndef HNS3_MP_H
+#define HNS3_MP_H
+
+#include <ethdev_driver.h>
 
 /* Local data for primary or secondary process. */
 struct hns3_process_local_data {
@@ -19,4 +21,4 @@ void hns3_mp_req_stop_tx(struct rte_eth_dev *dev);
 int hns3_mp_init(struct rte_eth_dev *dev);
 void hns3_mp_uninit(struct rte_eth_dev *dev);
 
-#endif /* _HNS3_MP_H_ */
+#endif /* HNS3_MP_H */

@@ -22,7 +22,6 @@ struct scheduler_worker {
 	uint8_t dev_id;
 	uint16_t qp_id;
 	uint32_t nb_inflight_cops;
-
 	uint8_t driver_id;
 };
 
@@ -37,6 +36,8 @@ struct scheduler_ctx {
 
 	struct scheduler_worker workers[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKERS];
 	uint32_t nb_workers;
+	/* reference count when the workers are incremented/decremented */
+	uint32_t ref_cnt;
 
 	enum rte_cryptodev_scheduler_mode mode;
 
@@ -61,6 +62,11 @@ struct scheduler_qp_ctx {
 	struct rte_ring *order_ring;
 } __rte_cache_aligned;
 
+struct scheduler_session_ctx {
+	uint32_t ref_cnt;
+	struct rte_cryptodev_sym_session *worker_sess[
+		RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKERS];
+};
 
 extern uint8_t cryptodev_scheduler_driver_id;
 
@@ -99,6 +105,118 @@ scheduler_order_drain(struct rte_ring *order_ring,
 
 	rte_ring_dequeue_finish(order_ring, nb_ops_to_deq);
 	return nb_ops_to_deq;
+}
+
+static __rte_always_inline void
+scheduler_set_worker_session(struct rte_crypto_op **ops, uint16_t nb_ops,
+		uint8_t worker_index)
+{
+	struct rte_crypto_op **op = ops;
+	uint16_t n = nb_ops;
+
+	if (n >= 4) {
+		rte_prefetch0(op[0]->sym->session);
+		rte_prefetch0(op[1]->sym->session);
+		rte_prefetch0(op[2]->sym->session);
+		rte_prefetch0(op[3]->sym->session);
+	}
+
+	while (n >= 4) {
+		if (n >= 8) {
+			rte_prefetch0(op[4]->sym->session);
+			rte_prefetch0(op[5]->sym->session);
+			rte_prefetch0(op[6]->sym->session);
+			rte_prefetch0(op[7]->sym->session);
+		}
+
+		if (op[0]->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			struct scheduler_session_ctx *sess_ctx =
+				CRYPTODEV_GET_SYM_SESS_PRIV(op[0]->sym->session);
+			op[0]->sym->session =
+				sess_ctx->worker_sess[worker_index];
+		}
+
+		if (op[1]->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			struct scheduler_session_ctx *sess_ctx =
+				CRYPTODEV_GET_SYM_SESS_PRIV(op[1]->sym->session);
+			op[1]->sym->session =
+				sess_ctx->worker_sess[worker_index];
+		}
+
+		if (op[2]->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			struct scheduler_session_ctx *sess_ctx =
+				CRYPTODEV_GET_SYM_SESS_PRIV(op[2]->sym->session);
+			op[2]->sym->session =
+				sess_ctx->worker_sess[worker_index];
+		}
+
+		if (op[3]->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			struct scheduler_session_ctx *sess_ctx =
+				CRYPTODEV_GET_SYM_SESS_PRIV(op[3]->sym->session);
+			op[3]->sym->session =
+				sess_ctx->worker_sess[worker_index];
+		}
+
+		op += 4;
+		n -= 4;
+	}
+
+	while (n--) {
+		if (op[0]->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+			struct scheduler_session_ctx *sess_ctx =
+				CRYPTODEV_GET_SYM_SESS_PRIV(op[0]->sym->session);
+
+			op[0]->sym->session =
+				sess_ctx->worker_sess[worker_index];
+			op++;
+		}
+	}
+}
+
+static __rte_always_inline void
+scheduler_retrieve_session(struct rte_crypto_op **ops, uint16_t nb_ops)
+{
+	uint16_t n = nb_ops;
+	struct rte_crypto_op **op = ops;
+
+	if (n >= 4) {
+		rte_prefetch0(op[0]->sym->session);
+		rte_prefetch0(op[1]->sym->session);
+		rte_prefetch0(op[2]->sym->session);
+		rte_prefetch0(op[3]->sym->session);
+	}
+
+	while (n >= 4) {
+		if (n >= 8) {
+			rte_prefetch0(op[4]->sym->session);
+			rte_prefetch0(op[5]->sym->session);
+			rte_prefetch0(op[6]->sym->session);
+			rte_prefetch0(op[7]->sym->session);
+		}
+
+		if (op[0]->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+			op[0]->sym->session = (void *)(uintptr_t)
+				rte_cryptodev_sym_session_opaque_data_get(op[0]->sym->session);
+		if (op[1]->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+			op[1]->sym->session = (void *)(uintptr_t)
+				rte_cryptodev_sym_session_opaque_data_get(op[1]->sym->session);
+		if (op[2]->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+			op[2]->sym->session = (void *)(uintptr_t)
+				rte_cryptodev_sym_session_opaque_data_get(op[2]->sym->session);
+		if (op[3]->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+			op[3]->sym->session = (void *)(uintptr_t)
+				rte_cryptodev_sym_session_opaque_data_get(op[3]->sym->session);
+
+		op += 4;
+		n -= 4;
+	}
+
+	while (n--) {
+		if (op[0]->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+			op[0]->sym->session = (void *)(uintptr_t)
+				rte_cryptodev_sym_session_opaque_data_get(op[0]->sym->session);
+		op++;
+	}
 }
 
 /** device specific operations function pointer structure */

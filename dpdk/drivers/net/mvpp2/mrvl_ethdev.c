@@ -9,7 +9,7 @@
 #include <rte_kvargs.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #include <fcntl.h>
 #include <linux/ethtool.h>
@@ -490,11 +490,6 @@ mrvl_dev_configure(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
-	if (dev->data->dev_conf.rxmode.split_hdr_size) {
-		MRVL_LOG(INFO, "Split headers not supported");
-		return -EINVAL;
-	}
-
 	if (dev->data->dev_conf.rxmode.mtu > priv->max_mtu) {
 		MRVL_LOG(ERR, "MTU %u is larger than max_mtu %u\n",
 			 dev->data->dev_conf.rxmode.mtu,
@@ -956,6 +951,9 @@ mrvl_dev_start(struct rte_eth_dev *dev)
 			goto out;
 	}
 
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	mrvl_flow_init(dev);
 	mrvl_mtr_init(dev);
 	mrvl_set_tx_function(dev);
@@ -1081,6 +1079,13 @@ mrvl_flush_bpool(struct rte_eth_dev *dev)
 static int
 mrvl_dev_stop(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+
 	return mrvl_dev_set_link_down(dev);
 }
 
@@ -1772,7 +1777,8 @@ mrvl_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
 		RTE_PTYPE_L3_IPV6_EXT,
 		RTE_PTYPE_L2_ETHER_ARP,
 		RTE_PTYPE_L4_TCP,
-		RTE_PTYPE_L4_UDP
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_UNKNOWN
 	};
 
 	return ptypes;

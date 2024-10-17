@@ -640,14 +640,13 @@ set_session_parameter(struct iavf_security_ctx *iavf_sctx,
 static int
 iavf_ipsec_crypto_session_create(void *device,
 				 struct rte_security_session_conf *conf,
-				 struct rte_security_session *session,
-				 struct rte_mempool *mempool)
+				 struct rte_security_session *session)
 {
 	struct rte_eth_dev *ethdev = device;
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(ethdev->data->dev_private);
 	struct iavf_security_ctx *iavf_sctx = adapter->security_ctx;
-	struct iavf_security_session *iavf_session = NULL;
+	struct iavf_security_session *iavf_session = SECURITY_GET_SESS_PRIV(session);
 	int sa_idx;
 	int ret = 0;
 
@@ -655,12 +654,6 @@ iavf_ipsec_crypto_session_create(void *device,
 	ret = iavf_ipsec_crypto_session_validate_conf(iavf_sctx, conf);
 	if (ret)
 		return ret;
-
-	/* allocate session context */
-	if (rte_mempool_get(mempool, (void **)&iavf_session)) {
-		PMD_DRV_LOG(ERR, "Cannot get object from sess mempool");
-		return -ENOMEM;
-	}
 
 	/* add SA to hardware database */
 	sa_idx = iavf_ipsec_crypto_security_association_add(adapter, conf);
@@ -675,15 +668,11 @@ iavf_ipsec_crypto_session_create(void *device,
 				RTE_SECURITY_IPSEC_SA_DIR_INGRESS ?
 				"inbound" : "outbound");
 
-		rte_mempool_put(mempool, iavf_session);
 		return -EFAULT;
 	}
 
 	/* save data plane required session parameters */
 	set_session_parameter(iavf_sctx, iavf_session, conf, sa_idx);
-
-	/* save to security session private data */
-	set_sec_session_private_data(session, iavf_session);
 
 	return 0;
 }
@@ -702,7 +691,7 @@ iavf_ipsec_crypto_action_valid(struct rte_eth_dev *ethdev,
 {
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(ethdev->data->dev_private);
-	struct iavf_security_session *sess = session->sess_private_data;
+	const struct iavf_security_session *sess = (const void *)session->driver_priv_data;
 
 	/* verify we have a valid session and that it belong to this adapter */
 	if (unlikely(sess == NULL || sess->adapter != adapter))
@@ -839,6 +828,7 @@ iavf_ipsec_crypto_sa_update_esn(struct iavf_adapter *adapter,
 	/* set request params */
 	request->ipsec_data.sa_update->sa_index = sess->sa.hw_idx;
 	request->ipsec_data.sa_update->esn_hi = sess->esn.hi;
+	request->ipsec_data.sa_update->esn_low = sess->esn.low;
 
 	/* send virtual channel request to add SA to hardware database */
 	rc = iavf_ipsec_crypto_request(adapter,
@@ -872,7 +862,7 @@ iavf_ipsec_crypto_session_update(void *device,
 	int rc = 0;
 
 	adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(eth_dev->data->dev_private);
-	iavf_sess = (struct iavf_security_session *)session->sess_private_data;
+	iavf_sess = SECURITY_GET_SESS_PRIV(session);
 
 	/* verify we have a valid session and that it belong to this adapter */
 	if (unlikely(iavf_sess == NULL || iavf_sess->adapter != adapter))
@@ -1038,14 +1028,14 @@ iavf_ipsec_crypto_session_destroy(void *device,
 	int ret;
 
 	adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(eth_dev->data->dev_private);
-	iavf_sess = (struct iavf_security_session *)session->sess_private_data;
+	iavf_sess = SECURITY_GET_SESS_PRIV(session);
 
 	/* verify we have a valid session and that it belong to this adapter */
 	if (unlikely(iavf_sess == NULL || iavf_sess->adapter != adapter))
 		return -EINVAL;
 
 	ret = iavf_ipsec_crypto_sa_del(adapter, iavf_sess);
-	rte_mempool_put(rte_mempool_from_obj(iavf_sess), (void *)iavf_sess);
+	memset(iavf_sess, 0, sizeof(struct iavf_security_session));
 	return ret;
 }
 
@@ -1133,7 +1123,7 @@ iavf_ipsec_crypto_pkt_metadata_set(void *device,
 	struct iavf_adapter *adapter =
 			IAVF_DEV_PRIVATE_TO_ADAPTER(ethdev->data->dev_private);
 	struct iavf_security_ctx *iavf_sctx = adapter->security_ctx;
-	struct iavf_security_session *iavf_sess = session->sess_private_data;
+	struct iavf_security_session *iavf_sess = SECURITY_GET_SESS_PRIV(session);
 	struct iavf_ipsec_crypto_pkt_metadata *md;
 	struct rte_esp_tail *esp_tail;
 	uint64_t *sqn = params;
@@ -1474,7 +1464,6 @@ static struct rte_security_ops iavf_ipsec_crypto_ops = {
 	.session_stats_get		= iavf_ipsec_crypto_session_stats_get,
 	.session_destroy		= iavf_ipsec_crypto_session_destroy,
 	.set_pkt_metadata		= iavf_ipsec_crypto_pkt_metadata_set,
-	.get_userdata			= NULL,
 	.capabilities_get		= iavf_ipsec_crypto_capabilities_get,
 };
 
@@ -1496,8 +1485,11 @@ iavf_security_ctx_create(struct iavf_adapter *adapter)
 	if (adapter->security_ctx == NULL) {
 		adapter->security_ctx = rte_malloc("iavf_security_ctx",
 				sizeof(struct iavf_security_ctx), 0);
-		if (adapter->security_ctx == NULL)
+		if (adapter->security_ctx == NULL) {
+			rte_free(adapter->vf.eth_dev->security_ctx);
+			adapter->vf.eth_dev->security_ctx = NULL;
 			return -ENOMEM;
+		}
 	}
 
 	return 0;
@@ -1925,15 +1917,19 @@ static struct iavf_flow_engine iavf_ipsec_flow_engine = {
 
 static int
 iavf_ipsec_flow_parse(struct iavf_adapter *ad,
-		       struct iavf_pattern_match_item *array,
-		       uint32_t array_len,
-		       const struct rte_flow_item pattern[],
-		       const struct rte_flow_action actions[],
-		       void **meta,
-		       struct rte_flow_error *error)
+		      struct iavf_pattern_match_item *array,
+		      uint32_t array_len,
+		      const struct rte_flow_item pattern[],
+		      const struct rte_flow_action actions[],
+		      uint32_t priority,
+		      void **meta,
+		      struct rte_flow_error *error)
 {
 	struct iavf_pattern_match_item *item = NULL;
 	int ret = -1;
+
+	if (priority >= 1)
+		return -rte_errno;
 
 	item = iavf_search_pattern_match_item(pattern, array, array_len, error);
 	if (item && item->meta) {

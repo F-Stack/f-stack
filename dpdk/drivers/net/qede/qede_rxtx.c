@@ -698,12 +698,10 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 		}
 	}
 
-	if (qdev->fp_array)
-		rte_free(qdev->fp_array);
+	rte_free(qdev->fp_array);
 	qdev->fp_array = NULL;
 
-	if (qdev->fp_array_cmt)
-		rte_free(qdev->fp_array_cmt);
+	rte_free(qdev->fp_array_cmt);
 	qdev->fp_array_cmt = NULL;
 }
 
@@ -2714,15 +2712,6 @@ qede_xmit_pkts_cmt(void *p_fp_cmt, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 	return eng0_pkts + eng1_pkts;
 }
-
-uint16_t
-qede_rxtx_pkts_dummy(__rte_unused void *p_rxq,
-		     __rte_unused struct rte_mbuf **pkts,
-		     __rte_unused uint16_t nb_pkts)
-{
-	return 0;
-}
-
 
 /* this function does a fake walk through over completion queue
  * to calculate number of BDs used by HW.

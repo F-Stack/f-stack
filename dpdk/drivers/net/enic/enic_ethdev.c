@@ -6,9 +6,9 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_geneve.h>
@@ -368,6 +368,7 @@ static int enicpmd_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct rte_eth_link link;
 	struct enic *enic = pmd_priv(eth_dev);
+	uint16_t i;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
@@ -377,6 +378,11 @@ static int enicpmd_dev_stop(struct rte_eth_dev *eth_dev)
 
 	memset(&link, 0, sizeof(link));
 	rte_eth_linkstatus_set(eth_dev, &link);
+
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -538,7 +544,7 @@ static const uint32_t *enicpmd_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_UNKNOWN
 	};
 
-	if (dev->rx_pkt_burst != enic_dummy_recv_pkts &&
+	if (dev->rx_pkt_burst != rte_eth_pkt_burst_dummy &&
 	    dev->rx_pkt_burst != NULL) {
 		struct enic *enic = pmd_priv(dev);
 		if (enic->overlay_offload)

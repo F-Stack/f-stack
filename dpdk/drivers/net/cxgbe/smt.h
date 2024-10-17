@@ -31,7 +31,7 @@ struct smt_data {
 	unsigned int smt_size;
 	unsigned int smt_start;
 	rte_rwlock_t lock;
-	struct smt_entry smtab[0];
+	struct smt_entry smtab[];
 };
 
 struct smt_data *t4_init_smt(u32 smt_start_idx, u32 smt_size);
@@ -42,4 +42,3 @@ struct smt_entry *cxgbe_smt_alloc_switching(struct rte_eth_dev *dev, u8 *smac);
 void cxgbe_smt_release(struct smt_entry *e);
 
 #endif  /* __CXGBE_SMT_H_ */
-

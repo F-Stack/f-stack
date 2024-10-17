@@ -2,19 +2,10 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
-#include <string.h>
 #include <stdio.h>
-#include <stdint.h>
 #include <sys/types.h>
 #include <syslog.h>
-#include <sys/queue.h>
 
-#include <rte_memory.h>
-#include <rte_eal.h>
-#include <rte_launch.h>
-#include <rte_per_lcore.h>
-#include <rte_lcore.h>
-#include <rte_spinlock.h>
 #include <rte_log.h>
 
 #include "eal_log.h"
@@ -37,8 +28,16 @@ console_log_write(__rte_unused void *c, const char *buf, size_t size)
 	return ret;
 }
 
+static int
+console_log_close(__rte_unused void *c)
+{
+	closelog();
+	return 0;
+}
+
 static cookie_io_functions_t console_log_func = {
 	.write = console_log_write,
+	.close = console_log_close,
 };
 
 /*

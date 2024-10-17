@@ -24,10 +24,10 @@
 #include <unistd.h>
 
 #include <rte_alarm.h>
-#include <rte_bus.h>
-#include <rte_bus_vdev.h>
+#include <bus_driver.h>
+#include <bus_vdev_driver.h>
 #include <rte_common.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>
@@ -717,8 +717,7 @@ vdev_netvsc_vdev_probe(struct rte_vdev_device *dev)
 error:
 	++vdev_netvsc_ctx_inst;
 ignore:
-	if (kvargs)
-		rte_kvargs_free(kvargs);
+	rte_kvargs_free(kvargs);
 	/* Reset alarm if there are device context created */
 	if (vdev_netvsc_ctx_count) {
 		ret = rte_eal_alarm_set(VDEV_NETVSC_PROBE_MS * 1000,

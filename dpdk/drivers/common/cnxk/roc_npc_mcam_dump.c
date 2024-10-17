@@ -69,6 +69,10 @@ static const char *const ltype_str[NPC_MAX_LID][NPC_MAX_LT] = {
 	[NPC_LID_LA][NPC_LT_LA_IH_NIX_ETHER] = "LA_IH_NIX_ETHER",
 	[NPC_LID_LA][NPC_LT_LA_HIGIG2_ETHER] = "LA_HIGIG2_ETHER",
 	[NPC_LID_LA][NPC_LT_LA_IH_NIX_HIGIG2_ETHER] = "LA_IH_NIX_HIGIG2_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM_L2_90B_ETHER] = "LA_CUSTOM_L2_90B_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CPT_HDR] = "LA_CPT_HDR",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM_L2_24B_ETHER] = "LA_CUSTOM_L2_24B_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM_PRE_L2_ETHER] = "NPC_LT_LA_CUSTOM_PRE_L2_ETHER",
 	[NPC_LID_LB][0] = "NONE",
 	[NPC_LID_LB][NPC_LT_LB_CTAG] = "LB_CTAG",
 	[NPC_LID_LB][NPC_LT_LB_STAG_QINQ] = "LB_STAG_QINQ",
@@ -442,6 +446,10 @@ npc_flow_dump_rx_action(FILE *file, uint64_t npc_action)
 		plt_strlcpy(index_name, "Multicast/mirror table index",
 			    NPC_MAX_FIELD_NAME_SIZE);
 		break;
+	case NIX_RX_ACTIONOP_DEFAULT:
+		fprintf(file, "NIX_RX_ACTIONOP_DEFAULT (%" PRIu64 ")\n",
+			(uint64_t)NIX_RX_ACTIONOP_DEFAULT);
+		break;
 	default:
 		plt_err("Unknown NIX_RX_ACTIONOP found");
 		return;
@@ -586,12 +594,21 @@ roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc,
 		       struct roc_npc_flow *flow)
 {
 	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+	struct npc_mcam_read_entry_req *mcam_read_req;
+	struct npc_mcam_read_entry_rsp *mcam_read_rsp;
+	uint64_t count = 0;
 	bool is_rx = 0;
-	int i;
+	int i, rc = 0;
 
 	fprintf(file, "MCAM Index:%d\n", flow->mcam_id);
-	fprintf(file, "Interface :%s (%d)\n", intf_str[flow->nix_intf],
-		flow->nix_intf);
+	if (flow->ctr_id != NPC_COUNTER_NONE && flow->use_ctr) {
+		rc = roc_npc_mcam_read_counter(roc_npc, flow->ctr_id, &count);
+		if (rc)
+			return;
+		fprintf(file, "Hit count: %" PRIu64 "\n", count);
+	}
+
+	fprintf(file, "Interface :%s (%d)\n", intf_str[flow->nix_intf], flow->nix_intf);
 	fprintf(file, "Priority  :%d\n", flow->priority);
 
 	if (flow->nix_intf == NIX_INTF_RX)
@@ -607,6 +624,28 @@ roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc,
 	for (i = 0; i < ROC_NPC_MAX_MCAM_WIDTH_DWORDS; i++) {
 		fprintf(file, "\tDW%d     :%016lX\n", i, flow->mcam_data[i]);
 		fprintf(file, "\tDW%d_Mask:%016lX\n", i, flow->mcam_mask[i]);
+	}
+
+	mcam_read_req = mbox_alloc_msg_npc_mcam_read_entry(npc->mbox);
+	if (mcam_read_req == NULL) {
+		plt_err("Failed to alloc msg");
+		return;
+	}
+
+	mcam_read_req->entry = flow->mcam_id;
+	rc = mbox_process_msg(npc->mbox, (void *)&mcam_read_rsp);
+	if (rc) {
+		plt_err("Failed to fetch MCAM entry:%d", flow->mcam_id);
+		return;
+	}
+
+	fprintf(file, "HW MCAM Data :\n");
+
+	for (i = 0; i < ROC_NPC_MAX_MCAM_WIDTH_DWORDS; i++) {
+		fprintf(file, "\tDW%d     :%016lX\n", i,
+			mcam_read_rsp->entry_data.kw[i]);
+		fprintf(file, "\tDW%d_Mask:%016lX\n", i,
+			mcam_read_rsp->entry_data.kw_mask[i]);
 	}
 
 	fprintf(file, "\n");

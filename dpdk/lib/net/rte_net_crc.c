@@ -3,13 +3,11 @@
  */
 
 #include <stddef.h>
-#include <string.h>
 #include <stdint.h>
 
 #include <rte_cpuflags.h>
 #include <rte_common.h>
 #include <rte_net_crc.h>
-#include <rte_eal.h>
 #include <rte_log.h>
 #include <rte_vect.h>
 
@@ -181,7 +179,7 @@ avx512_vpclmulqdq_get_handlers(void)
 			max_simd_bitwidth >= RTE_VECT_SIMD_512)
 		return handlers_avx512;
 #endif
-	NET_LOG(INFO, "Requirements not met, can't use AVX512\n");
+	NET_LOG(INFO, "Requirements not met, can't use AVX512");
 	return NULL;
 }
 
@@ -207,7 +205,7 @@ sse42_pclmulqdq_get_handlers(void)
 			max_simd_bitwidth >= RTE_VECT_SIMD_128)
 		return handlers_sse42;
 #endif
-	NET_LOG(INFO, "Requirements not met, can't use SSE\n");
+	NET_LOG(INFO, "Requirements not met, can't use SSE");
 	return NULL;
 }
 
@@ -233,7 +231,7 @@ neon_pmull_get_handlers(void)
 			max_simd_bitwidth >= RTE_VECT_SIMD_128)
 		return handlers_neon;
 #endif
-	NET_LOG(INFO, "Requirements not met, can't use NEON\n");
+	NET_LOG(INFO, "Requirements not met, can't use NEON");
 	return NULL;
 }
 

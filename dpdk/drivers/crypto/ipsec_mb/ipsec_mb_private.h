@@ -5,9 +5,13 @@
 #ifndef _IPSEC_MB_PRIVATE_H_
 #define _IPSEC_MB_PRIVATE_H_
 
+#if defined(RTE_ARCH_ARM)
+#include <ipsec-mb.h>
+#else
 #include <intel-ipsec-mb.h>
+#endif
 #include <cryptodev_pmd.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #if defined(RTE_LIB_SECURITY)
 #define IPSEC_MB_DOCSIS_SEC_ENABLED 1
@@ -21,12 +25,16 @@
 /* Maximum length for memzone name */
 #define IPSEC_MB_MAX_MZ_NAME 32
 
+/* ipsec mb multi-process queue pair config */
+#define IPSEC_MB_MP_MSG "ipsec_mb_mp_msg"
+
 enum ipsec_mb_vector_mode {
 	IPSEC_MB_NOT_SUPPORTED = 0,
 	IPSEC_MB_SSE,
 	IPSEC_MB_AVX,
 	IPSEC_MB_AVX2,
-	IPSEC_MB_AVX512
+	IPSEC_MB_AVX512,
+	IPSEC_MB_ARM64,
 };
 
 extern enum ipsec_mb_vector_mode vector_mode;
@@ -120,7 +128,7 @@ struct ipsec_mb_dev_private {
 	/**< PMD  type */
 	uint32_t max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
-	__extension__ uint8_t priv[0];
+	__extension__ uint8_t priv[];
 };
 
 /** IPSEC Multi buffer queue pair common queue pair data for all PMDs */
@@ -131,8 +139,6 @@ struct ipsec_mb_qp {
 	struct rte_ring *ingress_queue;
 	/**< Ring for placing operations ready for processing */
 	struct rte_mempool *sess_mp;
-	/**< Session Mempool */
-	struct rte_mempool *sess_mp_priv;
 	/**< Session Private Data Mempool */
 	struct rte_cryptodev_stats stats;
 	/**< Queue pair statistics */
@@ -143,13 +149,44 @@ struct ipsec_mb_qp {
 	 * slot to be used in temp_digests,
 	 * to store the digest for a given operation
 	 */
+	uint16_t qp_used_by_pid;
+	/**< The process id used for queue pairs **/
 	IMB_MGR *mb_mgr;
-	/* Multi buffer manager */
+	/**< Multi buffer manager */
 	const struct rte_memzone *mb_mgr_mz;
-	/* Shared memzone for storing mb_mgr */
-	__extension__ uint8_t additional_data[0];
+	/**< Shared memzone for storing mb_mgr */
+	__extension__ uint8_t additional_data[];
 	/**< Storing PMD specific additional data */
 };
+
+/** Request types for IPC. */
+enum ipsec_mb_mp_req_type {
+	RTE_IPSEC_MB_MP_REQ_NONE, /**< unknown event type */
+	RTE_IPSEC_MB_MP_REQ_QP_SET, /**< Queue pair setup request */
+	RTE_IPSEC_MB_MP_REQ_QP_FREE /**< Queue pair free request */
+};
+
+/** Parameters for IPC. */
+struct ipsec_mb_mp_param {
+	enum ipsec_mb_mp_req_type type; /**< IPC request type */
+	int dev_id;
+	/**< The identifier of the device */
+	int qp_id;
+	/**< The index of the queue pair to be configured */
+	int socket_id;
+	/**< Socket to allocate resources on */
+	uint16_t process_id;
+	/**< The pid who send out the requested */
+	uint32_t nb_descriptors;
+	/**< Number of descriptors per queue pair */
+	void *mp_session;
+	/**< The mempool for creating session in sessionless mode */
+	int result;
+	/**< The request result for response message */
+};
+
+int
+ipsec_mb_ipc_request(const struct rte_mp_msg *mp_msg, const void *peer);
 
 static __rte_always_inline void *
 ipsec_mb_get_qp_private_data(struct ipsec_mb_qp *qp)
@@ -394,8 +431,7 @@ ipsec_mb_sym_session_get_size(struct rte_cryptodev *dev);
 int ipsec_mb_sym_session_configure(
 	struct rte_cryptodev *dev,
 	struct rte_crypto_sym_xform *xform,
-	struct rte_cryptodev_sym_session *sess,
-	struct rte_mempool *mempool);
+	struct rte_cryptodev_sym_session *sess);
 
 /** Clear the memory of session so it does not leave key material behind */
 void
@@ -406,50 +442,50 @@ ipsec_mb_sym_session_clear(struct rte_cryptodev *dev,
 static __rte_always_inline void *
 ipsec_mb_get_session_private(struct ipsec_mb_qp *qp, struct rte_crypto_op *op)
 {
-	void *sess = NULL;
+	struct rte_cryptodev_sym_session *sess = NULL;
 	uint32_t driver_id = ipsec_mb_get_driver_id(qp->pmd_type);
 	struct rte_crypto_sym_op *sym_op = op->sym;
 	uint8_t sess_type = op->sess_type;
 	void *_sess;
-	void *_sess_private_data = NULL;
 	struct ipsec_mb_internals *pmd_data = &ipsec_mb_pmds[qp->pmd_type];
 
 	switch (sess_type) {
 	case RTE_CRYPTO_OP_WITH_SESSION:
 		if (likely(sym_op->session != NULL))
-			sess = get_sym_session_private_data(sym_op->session,
-							    driver_id);
+			sess = sym_op->session;
+		else
+			goto error_exit;
 	break;
 	case RTE_CRYPTO_OP_SESSIONLESS:
 		if (!qp->sess_mp ||
 		    rte_mempool_get(qp->sess_mp, (void **)&_sess))
 			return NULL;
 
-		if (!qp->sess_mp_priv ||
-		    rte_mempool_get(qp->sess_mp_priv,
-					(void **)&_sess_private_data))
-			return NULL;
-
-		sess = _sess_private_data;
-		if (unlikely(pmd_data->session_configure(qp->mb_mgr,
-				sess, sym_op->xform) != 0)) {
+		sess = _sess;
+		if (sess->sess_data_sz < pmd_data->session_priv_size) {
 			rte_mempool_put(qp->sess_mp, _sess);
-			rte_mempool_put(qp->sess_mp_priv, _sess_private_data);
-			sess = NULL;
+			goto error_exit;
 		}
 
-		sym_op->session = (struct rte_cryptodev_sym_session *)_sess;
-		set_sym_session_private_data(sym_op->session, driver_id,
-					     _sess_private_data);
+		if (unlikely(pmd_data->session_configure(qp->mb_mgr,
+			CRYPTODEV_GET_SYM_SESS_PRIV(sess), sym_op->xform) != 0)) {
+			rte_mempool_put(qp->sess_mp, _sess);
+			goto error_exit;
+		}
+
+		sess->driver_id = driver_id;
+		sym_op->session = sess;
+
 	break;
 	default:
 		IPSEC_MB_LOG(ERR, "Unrecognized session type %u", sess_type);
 	}
 
-	if (unlikely(sess == NULL))
-		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+	return CRYPTODEV_GET_SYM_SESS_PRIV(sess);
 
-	return sess;
+error_exit:
+	op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+	return NULL;
 }
 
 #endif /* _IPSEC_MB_PRIVATE_H_ */

@@ -18,7 +18,7 @@
 #define NGBE_MAX_UTA              128
 
 #define NGBE_PCI_MASTER_DISABLE_TIMEOUT	800
-
+#define NGBE_SPI_TIMEOUT	10000
 
 #define NGBE_ALIGN		128 /* as intel did */
 #define NGBE_ISB_SIZE		16
@@ -42,6 +42,12 @@ enum ngbe_eeprom_type {
 	ngbe_eeprom_spi,
 	ngbe_eeprom_flash,
 	ngbe_eeprom_none /* No NVM support */
+};
+
+enum ngbe_link_type {
+	ngbe_link_type_unknown = 0,
+	ngbe_link_fiber,
+	ngbe_link_copper
 };
 
 enum ngbe_mac_type {
@@ -109,6 +115,46 @@ struct ngbe_fc_info {
 	enum ngbe_fc_mode current_mode; /* FC mode in effect */
 	enum ngbe_fc_mode requested_mode; /* FC mode requested by caller */
 };
+
+/* Flow Control Data Sheet defined values
+ * Calculation and defines taken from 802.1bb Annex O
+ */
+/* BitTimes (BT) conversion */
+#define NGBE_BT2KB(BT)         (((BT) + (8 * 1024 - 1)) / (8 * 1024))
+#define NGBE_B2BT(BT)          ((BT) * 8)
+
+/* Calculate Delay to respond to PFC */
+#define NGBE_PFC_D     672
+
+/* Calculate Cable Delay */
+#define NGBE_CABLE_DC  5556 /* Delay Copper */
+
+/* Calculate Interface Delay */
+#define NGBE_PHY_D     12800
+#define NGBE_MAC_D     4096
+#define NGBE_XAUI_D    (2 * 1024)
+
+#define NGBE_ID        (NGBE_MAC_D + NGBE_XAUI_D + NGBE_PHY_D)
+
+/* Calculate Delay incurred from higher layer */
+#define NGBE_HD        6144
+
+/* Calculate PCI Bus delay for low thresholds */
+#define NGBE_PCI_DELAY 10000
+
+/* Calculate delay value in bit times */
+#define NGBE_DV(_max_frame_link, _max_frame_tc) \
+			((36 * \
+			  (NGBE_B2BT(_max_frame_link) + \
+			   NGBE_PFC_D + \
+			   (2 * NGBE_CABLE_DC) + \
+			   (2 * NGBE_ID) + \
+			   NGBE_HD) / 25 + 1) + \
+			 2 * NGBE_B2BT(_max_frame_tc))
+
+#define NGBE_LOW_DV(_max_frame_tc) \
+			(2 * ((2 * NGBE_B2BT(_max_frame_tc) + \
+			      (36 * NGBE_PCI_DELAY / 25) + 1)))
 
 /* Statistics counters collected by the MAC */
 /* PB[] RxTx */
@@ -311,6 +357,7 @@ struct ngbe_mac_info {
 	s32 (*check_overtemp)(struct ngbe_hw *hw);
 
 	enum ngbe_mac_type type;
+	enum ngbe_link_type link_type;
 	u8 addr[ETH_ADDR_LEN];
 	u8 perm_addr[ETH_ADDR_LEN];
 #define NGBE_MAX_MTA			128
@@ -347,6 +394,7 @@ struct ngbe_phy_info {
 				bool autoneg_wait_to_complete);
 	s32 (*check_link)(struct ngbe_hw *hw, u32 *speed, bool *link_up);
 	s32 (*set_phy_power)(struct ngbe_hw *hw, bool on);
+	s32 (*led_oem_chk)(struct ngbe_hw *hw, u32 *data);
 	s32 (*get_adv_pause)(struct ngbe_hw *hw, u8 *pause_bit);
 	s32 (*get_lp_adv_pause)(struct ngbe_hw *hw, u8 *pause_bit);
 	s32 (*set_pause_adv)(struct ngbe_hw *hw, u16 pause_bit);
@@ -419,8 +467,14 @@ struct ngbe_hw {
 
 	u32 q_rx_regs[8 * 4];
 	u32 q_tx_regs[8 * 4];
+	u32 gphy_efuse[2];
 	bool offset_loaded;
 	bool is_pf;
+	bool gpio_ctl;
+	bool lsc;
+	u32 led_conf;
+	bool init_phy;
+	rte_spinlock_t phy_lock;
 	struct {
 		u64 rx_qp_packets;
 		u64 tx_qp_packets;

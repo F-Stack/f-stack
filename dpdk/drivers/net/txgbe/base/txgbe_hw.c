@@ -462,7 +462,7 @@ void txgbe_set_lan_id_multi_port(struct txgbe_hw *hw)
  **/
 s32 txgbe_stop_hw(struct txgbe_hw *hw)
 {
-	u32 reg_val;
+	s32 status = 0;
 	u16 i;
 
 	/*
@@ -484,16 +484,26 @@ s32 txgbe_stop_hw(struct txgbe_hw *hw)
 	wr32(hw, TXGBE_ICR(0), TXGBE_ICR_MASK);
 	wr32(hw, TXGBE_ICR(1), TXGBE_ICR_MASK);
 
-	/* Disable the transmit unit.  Each queue must be disabled. */
-	for (i = 0; i < hw->mac.max_tx_queues; i++)
-		wr32(hw, TXGBE_TXCFG(i), TXGBE_TXCFG_FLUSH);
+	wr32(hw, TXGBE_BMECTL, 0x3);
 
 	/* Disable the receive unit by stopping each queue */
-	for (i = 0; i < hw->mac.max_rx_queues; i++) {
-		reg_val = rd32(hw, TXGBE_RXCFG(i));
-		reg_val &= ~TXGBE_RXCFG_ENA;
-		wr32(hw, TXGBE_RXCFG(i), reg_val);
-	}
+	for (i = 0; i < hw->mac.max_rx_queues; i++)
+		wr32(hw, TXGBE_RXCFG(i), 0);
+
+	/* flush all queues disables */
+	txgbe_flush(hw);
+	msec_delay(2);
+
+	/* Prevent the PCI-E bus from hanging by disabling PCI-E master
+	 * access and verify no pending requests
+	 */
+	status = txgbe_set_pcie_master(hw, false);
+	if (status)
+		return status;
+
+	/* Disable the transmit unit.  Each queue must be disabled. */
+	for (i = 0; i < hw->mac.max_tx_queues; i++)
+		wr32(hw, TXGBE_TXCFG(i), 0);
 
 	/* flush all queues disables */
 	txgbe_flush(hw);
@@ -511,12 +521,9 @@ s32 txgbe_led_on(struct txgbe_hw *hw, u32 index)
 {
 	u32 led_reg = rd32(hw, TXGBE_LEDCTL);
 
-	if (index > 4)
-		return TXGBE_ERR_PARAM;
-
 	/* To turn on the LED, set mode to ON. */
-	led_reg |= TXGBE_LEDCTL_SEL(index);
-	led_reg |= TXGBE_LEDCTL_ORD(index);
+	led_reg |= index << TXGBE_LEDCTL_ORD_SHIFT;
+	led_reg |= index;
 	wr32(hw, TXGBE_LEDCTL, led_reg);
 	txgbe_flush(hw);
 
@@ -532,12 +539,9 @@ s32 txgbe_led_off(struct txgbe_hw *hw, u32 index)
 {
 	u32 led_reg = rd32(hw, TXGBE_LEDCTL);
 
-	if (index > 4)
-		return TXGBE_ERR_PARAM;
-
 	/* To turn off the LED, set mode to OFF. */
-	led_reg &= ~(TXGBE_LEDCTL_SEL(index));
-	led_reg &= ~(TXGBE_LEDCTL_ORD(index));
+	led_reg &= ~(index << TXGBE_LEDCTL_ORD_SHIFT);
+	led_reg |= index;
 	wr32(hw, TXGBE_LEDCTL, led_reg);
 	txgbe_flush(hw);
 
@@ -1178,6 +1182,38 @@ out:
 		hw->fc.fc_was_autonegged = false;
 		hw->fc.current_mode = hw->fc.requested_mode;
 	}
+}
+
+s32 txgbe_set_pcie_master(struct txgbe_hw *hw, bool enable)
+{
+	struct rte_pci_device *pci_dev = (struct rte_pci_device *)hw->back;
+	s32 status = 0;
+	u32 i;
+
+	if (rte_pci_set_bus_master(pci_dev, enable) < 0) {
+		DEBUGOUT("Cannot configure PCI bus master.");
+		return -1;
+	}
+
+	if (enable)
+		goto out;
+
+	/* Exit if master requests are blocked */
+	if (!(rd32(hw, TXGBE_BMEPEND)))
+		goto out;
+
+	/* Poll for master request bit to clear */
+	for (i = 0; i < TXGBE_PCI_MASTER_DISABLE_TIMEOUT; i++) {
+		usec_delay(100);
+		if (!(rd32(hw, TXGBE_BMEPEND)))
+			goto out;
+	}
+
+	DEBUGOUT("PCIe transaction pending bit also did not clear.");
+	status = TXGBE_ERR_MASTER_REQUESTS_PENDING;
+
+out:
+	return status;
 }
 
 /**
@@ -2628,6 +2664,45 @@ out:
 	return err;
 }
 
+/* cmd_addr is used for some special command:
+ * 1. to be sector address, when implemented erase sector command
+ * 2. to be flash address when implemented read, write flash address
+ *
+ * Return 0 on success, return 1 on failure.
+ */
+u32 txgbe_fmgr_cmd_op(struct txgbe_hw *hw, u32 cmd, u32 cmd_addr)
+{
+	u32 cmd_val, i;
+
+	cmd_val = TXGBE_SPICMD_CMD(cmd) | TXGBE_SPICMD_CLK(3) | cmd_addr;
+	wr32(hw, TXGBE_SPICMD, cmd_val);
+
+	for (i = 0; i < TXGBE_SPI_TIMEOUT; i++) {
+		if (rd32(hw, TXGBE_SPISTAT) & TXGBE_SPISTAT_OPDONE)
+			break;
+
+		usec_delay(10);
+	}
+
+	if (i == TXGBE_SPI_TIMEOUT)
+		return 1;
+
+	return 0;
+}
+
+u32 txgbe_flash_read_dword(struct txgbe_hw *hw, u32 addr)
+{
+	u32 status;
+
+	status = txgbe_fmgr_cmd_op(hw, 1, addr);
+	if (status == 0x1) {
+		DEBUGOUT("Read flash timeout.");
+		return status;
+	}
+
+	return rd32(hw, TXGBE_SPIDAT);
+}
+
 /**
  *  txgbe_init_ops_pf - Inits func ptrs and MAC type
  *  @hw: pointer to hardware structure
@@ -2968,9 +3043,9 @@ void txgbe_disable_tx_laser_multispeed_fiber(struct txgbe_hw *hw)
 {
 	u32 esdp_reg = rd32(hw, TXGBE_GPIODATA);
 
-	/* Blocked by MNG FW so bail */
-	if (txgbe_check_reset_blocked(hw))
-		return;
+	if (txgbe_close_notify(hw))
+		txgbe_led_off(hw, TXGBE_LEDCTL_UP | TXGBE_LEDCTL_10G |
+				TXGBE_LEDCTL_1G | TXGBE_LEDCTL_ACTIVE);
 
 	/* Disable Tx laser; allow 100us to go dark per spec */
 	esdp_reg |= (TXGBE_GPIOBIT_0 | TXGBE_GPIOBIT_1);
@@ -2990,6 +3065,9 @@ void txgbe_disable_tx_laser_multispeed_fiber(struct txgbe_hw *hw)
 void txgbe_enable_tx_laser_multispeed_fiber(struct txgbe_hw *hw)
 {
 	u32 esdp_reg = rd32(hw, TXGBE_GPIODATA);
+
+	if (txgbe_open_notify(hw))
+		wr32(hw, TXGBE_LEDCTL, 0);
 
 	/* Enable Tx laser; allow 100ms to light up */
 	esdp_reg &= ~(TXGBE_GPIOBIT_0 | TXGBE_GPIOBIT_1);
@@ -3012,10 +3090,6 @@ void txgbe_enable_tx_laser_multispeed_fiber(struct txgbe_hw *hw)
  **/
 void txgbe_flap_tx_laser_multispeed_fiber(struct txgbe_hw *hw)
 {
-	/* Blocked by MNG FW so bail */
-	if (txgbe_check_reset_blocked(hw))
-		return;
-
 	if (hw->mac.autotry_restart) {
 		txgbe_disable_tx_laser_multispeed_fiber(hw);
 		txgbe_enable_tx_laser_multispeed_fiber(hw);
@@ -3406,18 +3480,9 @@ s32 txgbe_reset_hw(struct txgbe_hw *hw)
 	autoc = hw->mac.autoc_read(hw);
 
 mac_reset_top:
-	/*
-	 * Issue global reset to the MAC.  Needs to be SW reset if link is up.
-	 * If link reset is used when link is up, it might reset the PHY when
-	 * mng is using it.  If link is down or the flag to force full link
-	 * reset is set, then perform link reset.
-	 */
-	if (txgbe_mng_present(hw)) {
-		txgbe_hic_reset(hw);
-	} else {
-		wr32(hw, TXGBE_RST, TXGBE_RST_LAN(hw->bus.lan_id));
-		txgbe_flush(hw);
-	}
+	/* Do LAN reset, the MNG domain will not be reset. */
+	wr32(hw, TXGBE_RST, TXGBE_RST_LAN(hw->bus.lan_id));
+	txgbe_flush(hw);
 	usec_delay(10);
 
 	txgbe_reset_misc(hw);

@@ -4,7 +4,6 @@
 
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
-#include <rte_cycles.h>
 #include <rte_ethdev.h>
 
 #include "gro_tcp4.h"
@@ -312,7 +311,7 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 			 * length is greater than the max value. Store
 			 * the packet into the flow.
 			 */
-			if (insert_new_item(tbl, pkt, start_time, prev_idx,
+			if (insert_new_item(tbl, pkt, start_time, cur_idx,
 						sent_seq, ip_id, is_atomic) ==
 					INVALID_ARRAY_INDEX)
 				return -1;

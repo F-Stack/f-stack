@@ -2,9 +2,10 @@
  * Copyright (c) 2021 NVIDIA Corporation & Affiliates
  */
 
+#include <stdlib.h>
+
 #include <rte_eal.h>
 #include <rte_tailq.h>
-#include <rte_rwlock.h>
 #include <rte_string_fns.h>
 #include <rte_memzone.h>
 #include <rte_malloc.h>
@@ -530,7 +531,7 @@ rte_gpu_info_get(int16_t dev_id, struct rte_gpu_info *info)
 }
 
 void *
-rte_gpu_mem_alloc(int16_t dev_id, size_t size)
+rte_gpu_mem_alloc(int16_t dev_id, size_t size, unsigned int align)
 {
 	struct rte_gpu *dev;
 	void *ptr;
@@ -552,7 +553,13 @@ rte_gpu_mem_alloc(int16_t dev_id, size_t size)
 	if (size == 0) /* dry-run */
 		return NULL;
 
-	ret = dev->ops.mem_alloc(dev, size, &ptr);
+	if (align && !rte_is_power_of_2(align)) {
+		GPU_LOG(ERR, "requested alignment is not a power of two %u", align);
+		rte_errno = EINVAL;
+		return NULL;
+	}
+
+	ret = dev->ops.mem_alloc(dev, size, align, &ptr);
 
 	switch (ret) {
 	case 0:
@@ -635,6 +642,67 @@ rte_gpu_mem_unregister(int16_t dev_id, void *ptr)
 		return 0;
 
 	return GPU_DRV_RET(dev->ops.mem_unregister(dev, ptr));
+}
+
+void *
+rte_gpu_mem_cpu_map(int16_t dev_id, size_t size, void *ptr)
+{
+	struct rte_gpu *dev;
+	void *ptr_out;
+	int ret;
+
+	dev = gpu_get_by_id(dev_id);
+	if (dev == NULL) {
+		GPU_LOG(ERR, "mem CPU map for invalid device ID %d", dev_id);
+		rte_errno = ENODEV;
+		return NULL;
+	}
+
+	if (dev->ops.mem_cpu_map == NULL) {
+		GPU_LOG(ERR, "mem CPU map not supported");
+		rte_errno = ENOTSUP;
+		return NULL;
+	}
+
+	if (ptr == NULL || size == 0) /* dry-run  */
+		return NULL;
+
+	ret = GPU_DRV_RET(dev->ops.mem_cpu_map(dev, size, ptr, &ptr_out));
+
+	switch (ret) {
+	case 0:
+		return ptr_out;
+	case -ENOMEM:
+	case -E2BIG:
+		rte_errno = -ret;
+		return NULL;
+	default:
+		rte_errno = -EPERM;
+		return NULL;
+	}
+}
+
+int
+rte_gpu_mem_cpu_unmap(int16_t dev_id, void *ptr)
+{
+	struct rte_gpu *dev;
+
+	dev = gpu_get_by_id(dev_id);
+	if (dev == NULL) {
+		GPU_LOG(ERR, "cpu_unmap mem for invalid device ID %d", dev_id);
+		rte_errno = ENODEV;
+		return -rte_errno;
+	}
+
+	if (dev->ops.mem_cpu_unmap == NULL) {
+		rte_errno = ENOTSUP;
+		return -rte_errno;
+	}
+
+	if (ptr == NULL) /* dry-run */
+		return 0;
+
+	return GPU_DRV_RET(dev->ops.mem_cpu_unmap(dev, ptr));
 }
 
 int
@@ -756,6 +824,7 @@ rte_gpu_comm_create_list(uint16_t dev_id,
 	uint32_t idx_l;
 	int ret;
 	struct rte_gpu *dev;
+	struct rte_gpu_info info;
 
 	if (num_comm_items == 0) {
 		rte_errno = EINVAL;
@@ -765,6 +834,12 @@ rte_gpu_comm_create_list(uint16_t dev_id,
 	dev = gpu_get_by_id(dev_id);
 	if (dev == NULL) {
 		GPU_LOG(ERR, "memory barrier for invalid device ID %d", dev_id);
+		rte_errno = ENODEV;
+		return NULL;
+	}
+
+	ret = rte_gpu_info_get(dev_id, &info);
+	if (ret < 0) {
 		rte_errno = ENODEV;
 		return NULL;
 	}
@@ -783,6 +858,46 @@ rte_gpu_comm_create_list(uint16_t dev_id,
 		return NULL;
 	}
 
+	/*
+	 * Use GPU memory CPU map feature if enabled in the driver
+	 * to allocate the status flags of the list.
+	 * Allocating this flag in GPU memory will reduce
+	 * the latency when GPU workload is polling this flag.
+	 */
+	comm_list[0].status_d = rte_gpu_mem_alloc(dev_id,
+			sizeof(enum rte_gpu_comm_list_status) * num_comm_items,
+			info.page_size);
+	if (ret < 0) {
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+
+	comm_list[0].status_h = rte_gpu_mem_cpu_map(dev_id,
+			sizeof(enum rte_gpu_comm_list_status) * num_comm_items,
+			comm_list[0].status_d);
+	if (comm_list[0].status_h == NULL) {
+		/*
+		 * If CPU mapping is not supported by driver
+		 * use regular CPU registered memory.
+		 */
+		comm_list[0].status_h = rte_zmalloc(NULL,
+				sizeof(enum rte_gpu_comm_list_status) * num_comm_items, 0);
+		if (comm_list[0].status_h == NULL) {
+			rte_errno = ENOMEM;
+			return NULL;
+		}
+
+		ret = rte_gpu_mem_register(dev_id,
+				sizeof(enum rte_gpu_comm_list_status) * num_comm_items,
+				comm_list[0].status_h);
+		if (ret < 0) {
+			rte_errno = ENOMEM;
+			return NULL;
+		}
+
+		comm_list[0].status_d = comm_list[0].status_h;
+	}
+
 	for (idx_l = 0; idx_l < num_comm_items; idx_l++) {
 		comm_list[idx_l].pkt_list = rte_zmalloc(NULL,
 				sizeof(struct rte_gpu_comm_pkt) * RTE_GPU_COMM_LIST_PKTS_MAX, 0);
@@ -799,7 +914,6 @@ rte_gpu_comm_create_list(uint16_t dev_id,
 			return NULL;
 		}
 
-		RTE_GPU_VOLATILE(comm_list[idx_l].status) = RTE_GPU_COMM_LIST_FREE;
 		comm_list[idx_l].num_pkts = 0;
 		comm_list[idx_l].dev_id = dev_id;
 
@@ -808,6 +922,17 @@ rte_gpu_comm_create_list(uint16_t dev_id,
 		if (comm_list[idx_l].mbufs == NULL) {
 			rte_errno = ENOMEM;
 			return NULL;
+		}
+
+		if (idx_l > 0) {
+			comm_list[idx_l].status_h = &(comm_list[0].status_h[idx_l]);
+			comm_list[idx_l].status_d = &(comm_list[0].status_d[idx_l]);
+
+			ret = rte_gpu_comm_set_status(&comm_list[idx_l], RTE_GPU_COMM_LIST_FREE);
+			if (ret < 0) {
+				rte_errno = ENOMEM;
+				return NULL;
+			}
 		}
 	}
 
@@ -846,6 +971,14 @@ rte_gpu_comm_destroy_list(struct rte_gpu_comm_list *comm_list,
 		return -1;
 	}
 
+	ret = rte_gpu_mem_cpu_unmap(dev_id, comm_list[0].status_d);
+	if (ret == 0) {
+		rte_gpu_mem_free(dev_id, comm_list[0].status_d);
+	} else {
+		rte_gpu_mem_unregister(dev_id, comm_list[0].status_h);
+		rte_free(comm_list[0].status_h);
+	}
+
 	rte_free(comm_list);
 
 	return 0;
@@ -856,6 +989,7 @@ rte_gpu_comm_populate_list_pkts(struct rte_gpu_comm_list *comm_list_item,
 		struct rte_mbuf **mbufs, uint32_t num_mbufs)
 {
 	uint32_t idx;
+	int ret;
 
 	if (comm_list_item == NULL || comm_list_item->pkt_list == NULL ||
 			mbufs == NULL || num_mbufs > RTE_GPU_COMM_LIST_PKTS_MAX) {
@@ -879,7 +1013,39 @@ rte_gpu_comm_populate_list_pkts(struct rte_gpu_comm_list *comm_list_item,
 
 	RTE_GPU_VOLATILE(comm_list_item->num_pkts) = num_mbufs;
 	rte_gpu_wmb(comm_list_item->dev_id);
-	RTE_GPU_VOLATILE(comm_list_item->status) = RTE_GPU_COMM_LIST_READY;
+	ret = rte_gpu_comm_set_status(comm_list_item, RTE_GPU_COMM_LIST_READY);
+	if (ret < 0) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+
+	return 0;
+}
+
+int
+rte_gpu_comm_set_status(struct rte_gpu_comm_list *comm_list_item,
+		enum rte_gpu_comm_list_status status)
+{
+	if (comm_list_item == NULL) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+
+	RTE_GPU_VOLATILE(comm_list_item->status_h[0]) = status;
+
+	return 0;
+}
+
+int
+rte_gpu_comm_get_status(struct rte_gpu_comm_list *comm_list_item,
+		enum rte_gpu_comm_list_status *status)
+{
+	if (comm_list_item == NULL || status == NULL) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+
+	*status = RTE_GPU_VOLATILE(comm_list_item->status_h[0]);
 
 	return 0;
 }
@@ -888,14 +1054,21 @@ int
 rte_gpu_comm_cleanup_list(struct rte_gpu_comm_list *comm_list_item)
 {
 	uint32_t idx = 0;
+	enum rte_gpu_comm_list_status status;
+	int ret;
 
 	if (comm_list_item == NULL) {
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
 
-	if (RTE_GPU_VOLATILE(comm_list_item->status) ==
-			RTE_GPU_COMM_LIST_READY) {
+	ret = rte_gpu_comm_get_status(comm_list_item, &status);
+	if (ret < 0) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+
+	if (status == RTE_GPU_COMM_LIST_READY) {
 		GPU_LOG(ERR, "packet list is still in progress");
 		rte_errno = EINVAL;
 		return -rte_errno;
@@ -910,7 +1083,11 @@ rte_gpu_comm_cleanup_list(struct rte_gpu_comm_list *comm_list_item)
 		comm_list_item->mbufs[idx] = NULL;
 	}
 
-	RTE_GPU_VOLATILE(comm_list_item->status) = RTE_GPU_COMM_LIST_FREE;
+	ret = rte_gpu_comm_set_status(comm_list_item, RTE_GPU_COMM_LIST_FREE);
+	if (ret < 0) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
 	RTE_GPU_VOLATILE(comm_list_item->num_pkts) = 0;
 	rte_mb();
 

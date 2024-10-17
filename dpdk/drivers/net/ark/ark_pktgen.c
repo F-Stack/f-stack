@@ -2,6 +2,7 @@
  * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
+#include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
 
@@ -107,7 +108,7 @@ ark_pktgen_paused(ark_pkt_gen_t handle)
 	struct ark_pkt_gen_inst *inst = (struct ark_pkt_gen_inst *)handle;
 	uint32_t r = inst->regs->pkt_start_stop;
 
-	return (((r >> 16) & 1) == 1);
+	return (((r >> 24) & 1) == 1) || (((r >> 16) & 1) == 1)  || (r == 0);
 }
 
 void

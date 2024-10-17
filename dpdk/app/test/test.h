@@ -5,7 +5,9 @@
 #ifndef _TEST_H_
 #define _TEST_H_
 
+#include <errno.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <sys/queue.h>
 
 #include <rte_hexdump.h>
@@ -125,7 +127,7 @@ struct unit_test_case {
 		{ setup, teardown, NULL, testcase, #testcase, 1, data }
 
 #define TEST_CASE_NAMED_ST(name, setup, teardown, testcase) \
-		{ setup, teardown, NULL, testcase, name, 1, NULL }
+		{ setup, teardown, testcase, NULL, name, 1, NULL }
 
 #define TEST_CASE_NAMED_WITH_DATA(name, setup, teardown, testcase, data) \
 		{ setup, teardown, NULL, testcase, name, 1, data }

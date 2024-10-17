@@ -41,6 +41,15 @@ roc_atomic64_cas(uint64_t compare, uint64_t swap, int64_t *ptr)
 	return compare;
 }
 
+static __plt_always_inline uint64_t
+roc_atomic64_casl(uint64_t compare, uint64_t swap, int64_t *ptr)
+{
+	PLT_SET_USED(swap);
+	PLT_SET_USED(ptr);
+
+	return compare;
+}
+
 static inline uint64_t
 roc_atomic64_add_nosync(int64_t incr, int64_t *ptr)
 {
@@ -91,6 +100,21 @@ roc_lmt_submit_steorl(uint64_t data, plt_iova_t io_address)
 
 static __plt_always_inline void
 roc_lmt_mov(void *out, const void *in, const uint32_t lmtext)
+{
+	PLT_SET_USED(in);
+	PLT_SET_USED(lmtext);
+	memset(out, 0, sizeof(__uint128_t) * (lmtext ? lmtext > 1 ? 4 : 3 : 2));
+}
+
+static __plt_always_inline void
+roc_lmt_mov64(void *out, const void *in)
+{
+	PLT_SET_USED(out);
+	PLT_SET_USED(in);
+}
+
+static __plt_always_inline void
+roc_lmt_mov_nv(void *out, const void *in, const uint32_t lmtext)
 {
 	PLT_SET_USED(in);
 	PLT_SET_USED(lmtext);

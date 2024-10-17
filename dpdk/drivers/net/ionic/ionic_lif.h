@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2018-2019 Pensando Systems, Inc. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2018-2022 Advanced Micro Devices, Inc.
  */
 
 #ifndef _IONIC_LIF_H_
@@ -16,6 +16,8 @@
 
 #define IONIC_ADMINQ_LENGTH	16	/* must be a power of two */
 #define IONIC_NOTIFYQ_LENGTH	64	/* must be a power of two */
+
+#define IONIC_MBUF_BULK_ALLOC	64	/* Multiple of 4 */
 
 #define IONIC_RSS_OFFLOAD_ALL ( \
 	IONIC_RSS_TYPE_IPV4 | \
@@ -39,9 +41,7 @@ struct ionic_tx_stats {
 struct ionic_rx_stats {
 	uint64_t packets;
 	uint64_t bytes;
-	uint64_t no_cb_arg;
 	uint64_t bad_cq_status;
-	uint64_t no_room;
 	uint64_t bad_len;
 	uint64_t mtods;
 };
@@ -49,9 +49,11 @@ struct ionic_rx_stats {
 #define IONIC_QCQ_F_INITED	BIT(0)
 #define IONIC_QCQ_F_SG		BIT(1)
 #define IONIC_QCQ_F_DEFERRED	BIT(4)
+#define IONIC_QCQ_F_CMB		BIT(5)
 #define IONIC_QCQ_F_CSUM_L3	BIT(7)
 #define IONIC_QCQ_F_CSUM_UDP	BIT(8)
 #define IONIC_QCQ_F_CSUM_TCP	BIT(9)
+#define IONIC_QCQ_F_FAST_FREE	BIT(10)
 
 /* Queue / Completion Queue */
 struct ionic_qcq {
@@ -81,10 +83,21 @@ struct ionic_rx_qcq {
 
 	/* cacheline2 */
 	struct rte_mempool *mb_pool;
+	uint64_t rearm_data;
+	uint64_t rearm_seg_data;
+	uint64_t last_wdog_cycles;
+	uint64_t wdog_ms;
+	uint16_t frame_size;	/* Based on configured MTU */
+	uint16_t hdr_seg_size;	/* Length of first segment of RX chain */
+	uint16_t seg_size;	/* Length of all subsequent segments */
 	uint16_t flags;
+	uint16_t mb_idx;
 
 	/* cacheline3 (inside stats) */
 	struct ionic_rx_stats stats;
+
+	/* cacheline4+ */
+	struct rte_mbuf *mbs[IONIC_MBUF_BULK_ALLOC] __rte_cache_aligned;
 };
 
 struct ionic_tx_qcq {
@@ -92,7 +105,9 @@ struct ionic_tx_qcq {
 	struct ionic_qcq qcq;
 
 	/* cacheline2 */
+	uint64_t last_wdog_cycles;
 	uint16_t num_segs_fw;	/* # segs supported by current FW */
+	uint16_t free_thresh;
 	uint16_t flags;
 
 	struct ionic_tx_stats stats;
@@ -116,6 +131,7 @@ struct ionic_qtype_info {
 #define IONIC_LIF_F_LINK_CHECK_NEEDED	BIT(1)
 #define IONIC_LIF_F_UP			BIT(2)
 #define IONIC_LIF_F_FW_RESET		BIT(3)
+#define IONIC_LIF_F_Q_IN_CMB		BIT(4)
 
 #define IONIC_LIF_NAME_MAX_SZ		(32)
 
@@ -123,6 +139,7 @@ struct ionic_lif {
 	struct ionic_adapter *adapter;
 	struct rte_eth_dev *eth_dev;
 	uint16_t port_id;  /**< Device port identifier */
+	uint16_t frame_size;
 	uint32_t hw_index;
 	uint32_t state;
 	uint32_t ntxqcqs;
@@ -174,6 +191,7 @@ void ionic_lif_stop(struct ionic_lif *lif);
 
 void ionic_lif_configure(struct ionic_lif *lif);
 void ionic_lif_configure_vlan_offload(struct ionic_lif *lif, int mask);
+void ionic_lif_configure_rx_sg_offload(struct ionic_lif *lif);
 void ionic_lif_reset(struct ionic_lif *lif);
 
 int ionic_intr_alloc(struct ionic_lif *lif, struct ionic_intr_info *intr);
@@ -181,7 +199,7 @@ int ionic_intr_alloc(struct ionic_lif *lif, struct ionic_intr_info *intr);
 int ionic_qcq_service(struct ionic_qcq *qcq, int budget, ionic_cq_cb cb,
 	void *cb_arg);
 
-int ionic_lif_change_mtu(struct ionic_lif *lif, int new_mtu);
+int ionic_lif_change_mtu(struct ionic_lif *lif, uint32_t new_mtu);
 
 int ionic_dev_add_mac(struct rte_eth_dev *eth_dev,
 	struct rte_ether_addr *mac_addr,
@@ -198,15 +216,12 @@ int ionic_dev_allmulticast_enable(struct rte_eth_dev *dev);
 int ionic_dev_allmulticast_disable(struct rte_eth_dev *dev);
 
 int ionic_rx_qcq_alloc(struct ionic_lif *lif, uint32_t socket_id,
-	uint32_t index, uint16_t nrxq_descs,
+	uint32_t index, uint16_t nrxq_descs, struct rte_mempool *mp,
 	struct ionic_rx_qcq **qcq_out);
 int ionic_tx_qcq_alloc(struct ionic_lif *lif, uint32_t socket_id,
 	uint32_t index, uint16_t ntxq_descs,
 	struct ionic_tx_qcq **qcq_out);
 void ionic_qcq_free(struct ionic_qcq *qcq);
-
-int ionic_qcq_enable(struct ionic_qcq *qcq);
-int ionic_qcq_disable(struct ionic_qcq *qcq);
 
 int ionic_lif_rxq_init(struct ionic_rx_qcq *rxq);
 void ionic_lif_rxq_deinit(struct ionic_rx_qcq *rxq);

@@ -4,8 +4,13 @@
 if not is_linux or not dpdk_conf.get('RTE_ARCH_64')
     build = false
     reason = 'only supported on 64-bit Linux'
+    subdir_done()
 endif
 sources = files(
+        'flower/nfp_flower.c',
+        'flower/nfp_flower_cmsg.c',
+        'flower/nfp_flower_ctrl.c',
+        'flower/nfp_flower_representor.c',
         'nfpcore/nfp_cpp_pcie_ops.c',
         'nfpcore/nfp_nsp.c',
         'nfpcore/nfp_cppcore.c',
@@ -23,4 +28,7 @@ sources = files(
         'nfp_cpp_bridge.c',
         'nfp_ethdev_vf.c',
         'nfp_ethdev.c',
+        'nfp_flow.c',
 )
+
+deps += ['hash']

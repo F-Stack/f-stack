@@ -21,7 +21,7 @@
 #include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include "ice_dcf.h"
 #include "ice_rxtx.h"
@@ -589,6 +589,29 @@ ice_dcf_get_supported_rxdid(struct ice_dcf_hw *hw)
 	return 0;
 }
 
+static int
+dcf_get_vlan_offload_caps_v2(struct ice_dcf_hw *hw)
+{
+	struct virtchnl_vlan_caps vlan_v2_caps;
+	struct dcf_virtchnl_cmd args;
+	int ret;
+
+	memset(&args, 0, sizeof(args));
+	args.v_op = VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS;
+	args.rsp_msgbuf = (uint8_t *)&vlan_v2_caps;
+	args.rsp_buflen = sizeof(vlan_v2_caps);
+
+	ret = ice_dcf_execute_virtchnl_cmd(hw, &args);
+	if (ret) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to execute command of VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS");
+		return ret;
+	}
+
+	rte_memcpy(&hw->vlan_v2_caps, &vlan_v2_caps, sizeof(vlan_v2_caps));
+	return 0;
+}
+
 int
 ice_dcf_init_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 {
@@ -705,6 +728,10 @@ ice_dcf_init_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 	rte_intr_enable(pci_dev->intr_handle);
 	ice_dcf_enable_irq0(hw);
 
+	if ((hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2) &&
+	    dcf_get_vlan_offload_caps_v2(hw))
+		goto err_rss;
+
 	return 0;
 
 err_rss:
@@ -767,7 +794,7 @@ ice_dcf_uninit_hw(struct rte_eth_dev *eth_dev, struct ice_dcf_hw *hw)
 	hw->ets_config = NULL;
 }
 
-static int
+int
 ice_dcf_configure_rss_key(struct ice_dcf_hw *hw)
 {
 	struct virtchnl_rss_key *rss_key;
@@ -799,7 +826,7 @@ ice_dcf_configure_rss_key(struct ice_dcf_hw *hw)
 	return err;
 }
 
-static int
+int
 ice_dcf_configure_rss_lut(struct ice_dcf_hw *hw)
 {
 	struct virtchnl_rss_lut *rss_lut;
@@ -1099,10 +1126,11 @@ ice_dcf_query_stats(struct ice_dcf_hw *hw,
 }
 
 int
-ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw, bool add)
+ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw,
+			     struct rte_ether_addr *addr,
+			     bool add, uint8_t type)
 {
 	struct virtchnl_ether_addr_list *list;
-	struct rte_ether_addr *addr;
 	struct dcf_virtchnl_cmd args;
 	int len, err = 0;
 
@@ -1115,7 +1143,6 @@ ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw, bool add)
 	}
 
 	len = sizeof(struct virtchnl_ether_addr_list);
-	addr = hw->eth_dev->data->mac_addrs;
 	len += sizeof(struct virtchnl_ether_addr);
 
 	list = rte_zmalloc(NULL, len, 0);
@@ -1126,9 +1153,10 @@ ice_dcf_add_del_all_mac_addr(struct ice_dcf_hw *hw, bool add)
 
 	rte_memcpy(list->list[0].addr, addr->addr_bytes,
 			sizeof(addr->addr_bytes));
+
 	PMD_DRV_LOG(DEBUG, "add/rm mac:" RTE_ETHER_ADDR_PRT_FMT,
 			    RTE_ETHER_ADDR_BYTES(addr));
-
+	list->list[0].type = type;
 	list->vsi_id = hw->vsi_res->vsi_id;
 	list->num_elements = 1;
 

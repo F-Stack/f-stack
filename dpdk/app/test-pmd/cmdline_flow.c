@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <errno.h>
 #include <ctype.h>
@@ -53,9 +54,14 @@ enum index {
 	COMMON_GROUP_ID,
 	COMMON_PRIORITY_LEVEL,
 	COMMON_INDIRECT_ACTION_ID,
+	COMMON_PROFILE_ID,
 	COMMON_POLICY_ID,
 	COMMON_FLEX_HANDLE,
 	COMMON_FLEX_TOKEN,
+	COMMON_PATTERN_TEMPLATE_ID,
+	COMMON_ACTIONS_TEMPLATE_ID,
+	COMMON_TABLE_ID,
+	COMMON_QUEUE_ID,
 
 	/* TOP-level command. */
 	ADD,
@@ -72,6 +78,11 @@ enum index {
 	/* Top-level command. */
 	FLOW,
 	/* Sub-level commands. */
+	INFO,
+	CONFIGURE,
+	PATTERN_TEMPLATE,
+	ACTIONS_TEMPLATE,
+	TABLE,
 	INDIRECT_ACTION,
 	VALIDATE,
 	CREATE,
@@ -84,11 +95,98 @@ enum index {
 	ISOLATE,
 	TUNNEL,
 	FLEX,
+	QUEUE,
+	PUSH,
+	PULL,
 
 	/* Flex arguments */
 	FLEX_ITEM_INIT,
 	FLEX_ITEM_CREATE,
 	FLEX_ITEM_DESTROY,
+
+	/* Pattern template arguments. */
+	PATTERN_TEMPLATE_CREATE,
+	PATTERN_TEMPLATE_DESTROY,
+	PATTERN_TEMPLATE_CREATE_ID,
+	PATTERN_TEMPLATE_DESTROY_ID,
+	PATTERN_TEMPLATE_RELAXED_MATCHING,
+	PATTERN_TEMPLATE_INGRESS,
+	PATTERN_TEMPLATE_EGRESS,
+	PATTERN_TEMPLATE_TRANSFER,
+	PATTERN_TEMPLATE_SPEC,
+
+	/* Actions template arguments. */
+	ACTIONS_TEMPLATE_CREATE,
+	ACTIONS_TEMPLATE_DESTROY,
+	ACTIONS_TEMPLATE_CREATE_ID,
+	ACTIONS_TEMPLATE_DESTROY_ID,
+	ACTIONS_TEMPLATE_INGRESS,
+	ACTIONS_TEMPLATE_EGRESS,
+	ACTIONS_TEMPLATE_TRANSFER,
+	ACTIONS_TEMPLATE_SPEC,
+	ACTIONS_TEMPLATE_MASK,
+
+	/* Queue arguments. */
+	QUEUE_CREATE,
+	QUEUE_DESTROY,
+	QUEUE_AGED,
+	QUEUE_INDIRECT_ACTION,
+
+	/* Queue create arguments. */
+	QUEUE_CREATE_ID,
+	QUEUE_CREATE_POSTPONE,
+	QUEUE_TEMPLATE_TABLE,
+	QUEUE_PATTERN_TEMPLATE,
+	QUEUE_ACTIONS_TEMPLATE,
+	QUEUE_SPEC,
+
+	/* Queue destroy arguments. */
+	QUEUE_DESTROY_ID,
+	QUEUE_DESTROY_POSTPONE,
+
+	/* Queue indirect action arguments */
+	QUEUE_INDIRECT_ACTION_CREATE,
+	QUEUE_INDIRECT_ACTION_UPDATE,
+	QUEUE_INDIRECT_ACTION_DESTROY,
+	QUEUE_INDIRECT_ACTION_QUERY,
+
+	/* Queue indirect action create arguments */
+	QUEUE_INDIRECT_ACTION_CREATE_ID,
+	QUEUE_INDIRECT_ACTION_INGRESS,
+	QUEUE_INDIRECT_ACTION_EGRESS,
+	QUEUE_INDIRECT_ACTION_TRANSFER,
+	QUEUE_INDIRECT_ACTION_CREATE_POSTPONE,
+	QUEUE_INDIRECT_ACTION_SPEC,
+
+	/* Queue indirect action update arguments */
+	QUEUE_INDIRECT_ACTION_UPDATE_POSTPONE,
+
+	/* Queue indirect action destroy arguments */
+	QUEUE_INDIRECT_ACTION_DESTROY_ID,
+	QUEUE_INDIRECT_ACTION_DESTROY_POSTPONE,
+
+	/* Queue indirect action query arguments */
+	QUEUE_INDIRECT_ACTION_QUERY_POSTPONE,
+
+	/* Push arguments. */
+	PUSH_QUEUE,
+
+	/* Pull arguments. */
+	PULL_QUEUE,
+
+	/* Table arguments. */
+	TABLE_CREATE,
+	TABLE_DESTROY,
+	TABLE_CREATE_ID,
+	TABLE_DESTROY_ID,
+	TABLE_GROUP,
+	TABLE_PRIORITY,
+	TABLE_INGRESS,
+	TABLE_EGRESS,
+	TABLE_TRANSFER,
+	TABLE_RULES_NUMBER,
+	TABLE_PATTERN_TEMPLATE,
+	TABLE_ACTIONS_TEMPLATE,
 
 	/* Tunnel arguments. */
 	TUNNEL_CREATE,
@@ -122,6 +220,15 @@ enum index {
 	DUMP_ALL,
 	DUMP_ONE,
 
+	/* Configure arguments */
+	CONFIG_QUEUES_NUMBER,
+	CONFIG_QUEUES_SIZE,
+	CONFIG_COUNTERS_NUMBER,
+	CONFIG_AGING_OBJECTS_NUMBER,
+	CONFIG_METERS_NUMBER,
+	CONFIG_CONN_TRACK_NUMBER,
+	CONFIG_FLAGS,
+
 	/* Indirect action arguments */
 	INDIRECT_ACTION_CREATE,
 	INDIRECT_ACTION_UPDATE,
@@ -151,11 +258,6 @@ enum index {
 	ITEM_INVERT,
 	ITEM_ANY,
 	ITEM_ANY_NUM,
-	ITEM_PF,
-	ITEM_VF,
-	ITEM_VF_ID,
-	ITEM_PHY_PORT,
-	ITEM_PHY_PORT_INDEX,
 	ITEM_PORT_ID,
 	ITEM_PORT_ID_ID,
 	ITEM_MARK,
@@ -166,6 +268,7 @@ enum index {
 	ITEM_RAW_OFFSET,
 	ITEM_RAW_LIMIT,
 	ITEM_RAW_PATTERN,
+	ITEM_RAW_PATTERN_HEX,
 	ITEM_ETH,
 	ITEM_ETH_DST,
 	ITEM_ETH_SRC,
@@ -271,6 +374,10 @@ enum index {
 	ITEM_META_DATA,
 	ITEM_GRE_KEY,
 	ITEM_GRE_KEY_VALUE,
+	ITEM_GRE_OPTION,
+	ITEM_GRE_OPTION_CHECKSUM,
+	ITEM_GRE_OPTION_KEY,
+	ITEM_GRE_OPTION_SEQUENCE,
 	ITEM_GTP_PSC,
 	ITEM_GTP_PSC_QFI,
 	ITEM_GTP_PSC_PDU_T,
@@ -322,13 +429,30 @@ enum index {
 	ITEM_FLEX_ITEM_HANDLE,
 	ITEM_FLEX_PATTERN_HANDLE,
 	ITEM_L2TPV2,
-	ITEM_L2TPV2_COMMON,
-	ITEM_L2TPV2_COMMON_TYPE,
-	ITEM_L2TPV2_COMMON_TYPE_DATA_L,
-	ITEM_L2TPV2_COMMON_TYPE_CTRL,
+	ITEM_L2TPV2_TYPE,
+	ITEM_L2TPV2_TYPE_DATA,
+	ITEM_L2TPV2_TYPE_DATA_L,
+	ITEM_L2TPV2_TYPE_DATA_S,
+	ITEM_L2TPV2_TYPE_DATA_O,
+	ITEM_L2TPV2_TYPE_DATA_L_S,
+	ITEM_L2TPV2_TYPE_CTRL,
+	ITEM_L2TPV2_MSG_DATA_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_SESSION_ID,
 	ITEM_L2TPV2_MSG_DATA_L_LENGTH,
 	ITEM_L2TPV2_MSG_DATA_L_TUNNEL_ID,
 	ITEM_L2TPV2_MSG_DATA_L_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_S_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_S_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_S_NS,
+	ITEM_L2TPV2_MSG_DATA_S_NR,
+	ITEM_L2TPV2_MSG_DATA_O_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_O_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_O_OFFSET,
+	ITEM_L2TPV2_MSG_DATA_L_S_LENGTH,
+	ITEM_L2TPV2_MSG_DATA_L_S_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_L_S_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_L_S_NS,
+	ITEM_L2TPV2_MSG_DATA_L_S_NR,
 	ITEM_L2TPV2_MSG_CTRL_LENGTH,
 	ITEM_L2TPV2_MSG_CTRL_TUNNEL_ID,
 	ITEM_L2TPV2_MSG_CTRL_SESSION_ID,
@@ -338,6 +462,9 @@ enum index {
 	ITEM_PPP_ADDR,
 	ITEM_PPP_CTRL,
 	ITEM_PPP_PROTO_ID,
+	ITEM_METER,
+	ITEM_METER_COLOR,
+	ITEM_METER_COLOR_NAME,
 
 	/* Validate/create actions. */
 	ACTIONS,
@@ -372,9 +499,6 @@ enum index {
 	ACTION_VF,
 	ACTION_VF_ORIGINAL,
 	ACTION_VF_ID,
-	ACTION_PHY_PORT,
-	ACTION_PHY_PORT_ORIGINAL,
-	ACTION_PHY_PORT_INDEX,
 	ACTION_PORT_ID,
 	ACTION_PORT_ID_ORIGINAL,
 	ACTION_PORT_ID_ID,
@@ -385,14 +509,15 @@ enum index {
 	ACTION_METER_COLOR_YELLOW,
 	ACTION_METER_COLOR_RED,
 	ACTION_METER_ID,
-	ACTION_OF_SET_MPLS_TTL,
-	ACTION_OF_SET_MPLS_TTL_MPLS_TTL,
-	ACTION_OF_DEC_MPLS_TTL,
-	ACTION_OF_SET_NW_TTL,
-	ACTION_OF_SET_NW_TTL_NW_TTL,
+	ACTION_METER_MARK,
+	ACTION_METER_PROFILE,
+	ACTION_METER_PROFILE_ID2PTR,
+	ACTION_METER_POLICY,
+	ACTION_METER_POLICY_ID2PTR,
+	ACTION_METER_COLOR_MODE,
+	ACTION_METER_INIT_COLOR,
+	ACTION_METER_STATE,
 	ACTION_OF_DEC_NW_TTL,
-	ACTION_OF_COPY_TTL_OUT,
-	ACTION_OF_COPY_TTL_IN,
 	ACTION_OF_POP_VLAN,
 	ACTION_OF_PUSH_VLAN,
 	ACTION_OF_PUSH_VLAN_ETHERTYPE,
@@ -461,6 +586,9 @@ enum index {
 	ACTION_SET_IPV6_DSCP_VALUE,
 	ACTION_AGE,
 	ACTION_AGE_TIMEOUT,
+	ACTION_AGE_UPDATE,
+	ACTION_AGE_UPDATE_TIMEOUT,
+	ACTION_AGE_UPDATE_TOUCH,
 	ACTION_SAMPLE,
 	ACTION_SAMPLE_RATIO,
 	ACTION_SAMPLE_INDEX,
@@ -492,6 +620,7 @@ enum index {
 	ACTION_PORT_REPRESENTOR_PORT_ID,
 	ACTION_REPRESENTED_PORT,
 	ACTION_REPRESENTED_PORT_ETHDEV_PORT_ID,
+	ACTION_SEND_TO_KERNEL,
 };
 
 /** Maximum size for pattern in struct rte_flow_item_raw. */
@@ -661,6 +790,8 @@ struct action_vxlan_encap_data sample_vxlan_encap[RAW_SAMPLE_CONFS_MAX_NUM];
 struct action_nvgre_encap_data sample_nvgre_encap[RAW_SAMPLE_CONFS_MAX_NUM];
 struct action_rss_data sample_rss_data[RAW_SAMPLE_CONFS_MAX_NUM];
 struct rte_flow_action_vf sample_vf[RAW_SAMPLE_CONFS_MAX_NUM];
+struct rte_flow_action_ethdev sample_port_representor[RAW_SAMPLE_CONFS_MAX_NUM];
+struct rte_flow_action_ethdev sample_represented_port[RAW_SAMPLE_CONFS_MAX_NUM];
 
 static const char *const modify_field_ops[] = {
 	"set", "add", "sub", NULL
@@ -675,7 +806,12 @@ static const char *const modify_field_ids[] = {
 	"tcp_seq_num", "tcp_ack_num", "tcp_flags",
 	"udp_port_src", "udp_port_dst",
 	"vxlan_vni", "geneve_vni", "gtp_teid",
-	"tag", "mark", "meta", "pointer", "value", NULL
+	"tag", "mark", "meta", "pointer", "value",
+	"ipv4_ecn", "ipv6_ecn", "gtp_psc_qfi", "meter_color", NULL
+};
+
+static const char *const meter_colors[] = {
+	"green", "yellow", "red", "all", NULL
 };
 
 /** Maximum number of subsequent tokens and arguments on the stack. */
@@ -845,7 +981,30 @@ struct token {
 struct buffer {
 	enum index command; /**< Flow command. */
 	portid_t port; /**< Affected port ID. */
+	queueid_t queue; /** Async queue ID. */
+	bool postpone; /** Postpone async operation */
 	union {
+		struct {
+			struct rte_flow_port_attr port_attr;
+			uint32_t nb_queue;
+			struct rte_flow_queue_attr queue_attr;
+		} configure; /**< Configuration arguments. */
+		struct {
+			uint32_t *template_id;
+			uint32_t template_id_n;
+		} templ_destroy; /**< Template destroy arguments. */
+		struct {
+			uint32_t id;
+			struct rte_flow_template_table_attr attr;
+			uint32_t *pat_templ_id;
+			uint32_t pat_templ_id_n;
+			uint32_t *act_templ_id;
+			uint32_t act_templ_id_n;
+		} table; /**< Table arguments. */
+		struct {
+			uint32_t *table_id;
+			uint32_t table_id_n;
+		} table_destroy; /**< Template destroy arguments. */
 		struct {
 			uint32_t *action_id;
 			uint32_t action_id_n;
@@ -854,10 +1013,14 @@ struct buffer {
 			uint32_t action_id;
 		} ia; /* Indirect action query arguments */
 		struct {
+			uint32_t table_id;
+			uint32_t pat_templ_id;
+			uint32_t act_templ_id;
 			struct rte_flow_attr attr;
 			struct tunnel_ops tunnel_ops;
 			struct rte_flow_item *pattern;
 			struct rte_flow_action *actions;
+			struct rte_flow_action *masks;
 			uint32_t pattern_n;
 			uint32_t actions_n;
 			uint8_t *data;
@@ -924,6 +1087,138 @@ static const enum index next_flex_item[] = {
 	FLEX_ITEM_INIT,
 	FLEX_ITEM_CREATE,
 	FLEX_ITEM_DESTROY,
+	ZERO,
+};
+
+static const enum index next_config_attr[] = {
+	CONFIG_QUEUES_NUMBER,
+	CONFIG_QUEUES_SIZE,
+	CONFIG_COUNTERS_NUMBER,
+	CONFIG_AGING_OBJECTS_NUMBER,
+	CONFIG_METERS_NUMBER,
+	CONFIG_CONN_TRACK_NUMBER,
+	CONFIG_FLAGS,
+	END,
+	ZERO,
+};
+
+static const enum index next_pt_subcmd[] = {
+	PATTERN_TEMPLATE_CREATE,
+	PATTERN_TEMPLATE_DESTROY,
+	ZERO,
+};
+
+static const enum index next_pt_attr[] = {
+	PATTERN_TEMPLATE_CREATE_ID,
+	PATTERN_TEMPLATE_RELAXED_MATCHING,
+	PATTERN_TEMPLATE_INGRESS,
+	PATTERN_TEMPLATE_EGRESS,
+	PATTERN_TEMPLATE_TRANSFER,
+	PATTERN_TEMPLATE_SPEC,
+	ZERO,
+};
+
+static const enum index next_pt_destroy_attr[] = {
+	PATTERN_TEMPLATE_DESTROY_ID,
+	END,
+	ZERO,
+};
+
+static const enum index next_at_subcmd[] = {
+	ACTIONS_TEMPLATE_CREATE,
+	ACTIONS_TEMPLATE_DESTROY,
+	ZERO,
+};
+
+static const enum index next_at_attr[] = {
+	ACTIONS_TEMPLATE_CREATE_ID,
+	ACTIONS_TEMPLATE_INGRESS,
+	ACTIONS_TEMPLATE_EGRESS,
+	ACTIONS_TEMPLATE_TRANSFER,
+	ACTIONS_TEMPLATE_SPEC,
+	ZERO,
+};
+
+static const enum index next_at_destroy_attr[] = {
+	ACTIONS_TEMPLATE_DESTROY_ID,
+	END,
+	ZERO,
+};
+
+static const enum index next_table_subcmd[] = {
+	TABLE_CREATE,
+	TABLE_DESTROY,
+	ZERO,
+};
+
+static const enum index next_table_attr[] = {
+	TABLE_CREATE_ID,
+	TABLE_GROUP,
+	TABLE_PRIORITY,
+	TABLE_INGRESS,
+	TABLE_EGRESS,
+	TABLE_TRANSFER,
+	TABLE_RULES_NUMBER,
+	TABLE_PATTERN_TEMPLATE,
+	TABLE_ACTIONS_TEMPLATE,
+	END,
+	ZERO,
+};
+
+static const enum index next_table_destroy_attr[] = {
+	TABLE_DESTROY_ID,
+	END,
+	ZERO,
+};
+
+static const enum index next_queue_subcmd[] = {
+	QUEUE_CREATE,
+	QUEUE_DESTROY,
+	QUEUE_AGED,
+	QUEUE_INDIRECT_ACTION,
+	ZERO,
+};
+
+static const enum index next_queue_destroy_attr[] = {
+	QUEUE_DESTROY_ID,
+	END,
+	ZERO,
+};
+
+static const enum index next_qia_subcmd[] = {
+	QUEUE_INDIRECT_ACTION_CREATE,
+	QUEUE_INDIRECT_ACTION_UPDATE,
+	QUEUE_INDIRECT_ACTION_DESTROY,
+	QUEUE_INDIRECT_ACTION_QUERY,
+	ZERO,
+};
+
+static const enum index next_qia_create_attr[] = {
+	QUEUE_INDIRECT_ACTION_CREATE_ID,
+	QUEUE_INDIRECT_ACTION_INGRESS,
+	QUEUE_INDIRECT_ACTION_EGRESS,
+	QUEUE_INDIRECT_ACTION_TRANSFER,
+	QUEUE_INDIRECT_ACTION_CREATE_POSTPONE,
+	QUEUE_INDIRECT_ACTION_SPEC,
+	ZERO,
+};
+
+static const enum index next_qia_update_attr[] = {
+	QUEUE_INDIRECT_ACTION_UPDATE_POSTPONE,
+	QUEUE_INDIRECT_ACTION_SPEC,
+	ZERO,
+};
+
+static const enum index next_qia_destroy_attr[] = {
+	QUEUE_INDIRECT_ACTION_DESTROY_POSTPONE,
+	QUEUE_INDIRECT_ACTION_DESTROY_ID,
+	END,
+	ZERO,
+};
+
+static const enum index next_qia_query_attr[] = {
+	QUEUE_INDIRECT_ACTION_QUERY_POSTPONE,
+	END,
 	ZERO,
 };
 
@@ -1006,9 +1301,6 @@ static const enum index next_item[] = {
 	ITEM_VOID,
 	ITEM_INVERT,
 	ITEM_ANY,
-	ITEM_PF,
-	ITEM_VF,
-	ITEM_PHY_PORT,
 	ITEM_PORT_ID,
 	ITEM_MARK,
 	ITEM_RAW,
@@ -1042,6 +1334,7 @@ static const enum index next_item[] = {
 	ITEM_ICMP6_ND_OPT_TLA_ETH,
 	ITEM_META,
 	ITEM_GRE_KEY,
+	ITEM_GRE_OPTION,
 	ITEM_GTP_PSC,
 	ITEM_PPPOES,
 	ITEM_PPPOED,
@@ -1061,6 +1354,7 @@ static const enum index next_item[] = {
 	ITEM_FLEX,
 	ITEM_L2TPV2,
 	ITEM_PPP,
+	ITEM_METER,
 	END_SET,
 	ZERO,
 };
@@ -1073,18 +1367,6 @@ static const enum index item_fuzzy[] = {
 
 static const enum index item_any[] = {
 	ITEM_ANY_NUM,
-	ITEM_NEXT,
-	ZERO,
-};
-
-static const enum index item_vf[] = {
-	ITEM_VF_ID,
-	ITEM_NEXT,
-	ZERO,
-};
-
-static const enum index item_phy_port[] = {
-	ITEM_PHY_PORT_INDEX,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -1107,6 +1389,7 @@ static const enum index item_raw[] = {
 	ITEM_RAW_OFFSET,
 	ITEM_RAW_LIMIT,
 	ITEM_RAW_PATTERN,
+	ITEM_RAW_PATTERN_HEX,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -1228,6 +1511,14 @@ static const enum index item_gre[] = {
 
 static const enum index item_gre_key[] = {
 	ITEM_GRE_KEY_VALUE,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_gre_option[] = {
+	ITEM_GRE_OPTION_CHECKSUM,
+	ITEM_GRE_OPTION_KEY,
+	ITEM_GRE_OPTION_SEQUENCE,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -1449,19 +1740,70 @@ static const enum index item_flex[] = {
 };
 
 static const enum index item_l2tpv2[] = {
-	ITEM_L2TPV2_COMMON,
+	ITEM_L2TPV2_TYPE,
 	ITEM_NEXT,
 	ZERO,
 };
 
-static const enum index item_l2tpv2_common[] = {
-	ITEM_L2TPV2_COMMON_TYPE,
+static const enum index item_l2tpv2_type[] = {
+	ITEM_L2TPV2_TYPE_DATA,
+	ITEM_L2TPV2_TYPE_DATA_L,
+	ITEM_L2TPV2_TYPE_DATA_S,
+	ITEM_L2TPV2_TYPE_DATA_O,
+	ITEM_L2TPV2_TYPE_DATA_L_S,
+	ITEM_L2TPV2_TYPE_CTRL,
 	ZERO,
 };
 
-static const enum index item_l2tpv2_common_type[] = {
-	ITEM_L2TPV2_COMMON_TYPE_DATA_L,
-	ITEM_L2TPV2_COMMON_TYPE_CTRL,
+static const enum index item_l2tpv2_type_data[] = {
+	ITEM_L2TPV2_MSG_DATA_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_SESSION_ID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_l2tpv2_type_data_l[] = {
+	ITEM_L2TPV2_MSG_DATA_L_LENGTH,
+	ITEM_L2TPV2_MSG_DATA_L_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_L_SESSION_ID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_l2tpv2_type_data_s[] = {
+	ITEM_L2TPV2_MSG_DATA_S_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_S_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_S_NS,
+	ITEM_L2TPV2_MSG_DATA_S_NR,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_l2tpv2_type_data_o[] = {
+	ITEM_L2TPV2_MSG_DATA_O_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_O_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_O_OFFSET,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_l2tpv2_type_data_l_s[] = {
+	ITEM_L2TPV2_MSG_DATA_L_S_LENGTH,
+	ITEM_L2TPV2_MSG_DATA_L_S_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_DATA_L_S_SESSION_ID,
+	ITEM_L2TPV2_MSG_DATA_L_S_NS,
+	ITEM_L2TPV2_MSG_DATA_L_S_NR,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_l2tpv2_type_ctrl[] = {
+	ITEM_L2TPV2_MSG_CTRL_LENGTH,
+	ITEM_L2TPV2_MSG_CTRL_TUNNEL_ID,
+	ITEM_L2TPV2_MSG_CTRL_SESSION_ID,
+	ITEM_L2TPV2_MSG_CTRL_NS,
+	ITEM_L2TPV2_MSG_CTRL_NR,
+	ITEM_NEXT,
 	ZERO,
 };
 
@@ -1469,6 +1811,12 @@ static const enum index item_ppp[] = {
 	ITEM_PPP_ADDR,
 	ITEM_PPP_CTRL,
 	ITEM_PPP_PROTO_ID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_meter[] = {
+	ITEM_METER_COLOR,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -1486,16 +1834,11 @@ static const enum index next_action[] = {
 	ACTION_RSS,
 	ACTION_PF,
 	ACTION_VF,
-	ACTION_PHY_PORT,
 	ACTION_PORT_ID,
 	ACTION_METER,
 	ACTION_METER_COLOR,
-	ACTION_OF_SET_MPLS_TTL,
-	ACTION_OF_DEC_MPLS_TTL,
-	ACTION_OF_SET_NW_TTL,
+	ACTION_METER_MARK,
 	ACTION_OF_DEC_NW_TTL,
-	ACTION_OF_COPY_TTL_OUT,
-	ACTION_OF_COPY_TTL_IN,
 	ACTION_OF_POP_VLAN,
 	ACTION_OF_PUSH_VLAN,
 	ACTION_OF_SET_VLAN_VID,
@@ -1534,6 +1877,7 @@ static const enum index next_action[] = {
 	ACTION_SET_IPV4_DSCP,
 	ACTION_SET_IPV6_DSCP,
 	ACTION_AGE,
+	ACTION_AGE_UPDATE,
 	ACTION_SAMPLE,
 	ACTION_INDIRECT,
 	ACTION_MODIFY_FIELD,
@@ -1541,6 +1885,7 @@ static const enum index next_action[] = {
 	ACTION_CONNTRACK_UPDATE,
 	ACTION_PORT_REPRESENTOR,
 	ACTION_REPRESENTED_PORT,
+	ACTION_SEND_TO_KERNEL,
 	ZERO,
 };
 
@@ -1580,13 +1925,6 @@ static const enum index action_vf[] = {
 	ZERO,
 };
 
-static const enum index action_phy_port[] = {
-	ACTION_PHY_PORT_ORIGINAL,
-	ACTION_PHY_PORT_INDEX,
-	ACTION_NEXT,
-	ZERO,
-};
-
 static const enum index action_port_id[] = {
 	ACTION_PORT_ID_ORIGINAL,
 	ACTION_PORT_ID_ID,
@@ -1606,14 +1944,12 @@ static const enum index action_meter_color[] = {
 	ZERO,
 };
 
-static const enum index action_of_set_mpls_ttl[] = {
-	ACTION_OF_SET_MPLS_TTL_MPLS_TTL,
-	ACTION_NEXT,
-	ZERO,
-};
-
-static const enum index action_of_set_nw_ttl[] = {
-	ACTION_OF_SET_NW_TTL_NW_TTL,
+static const enum index action_meter_mark[] = {
+	ACTION_METER_PROFILE,
+	ACTION_METER_POLICY,
+	ACTION_METER_COLOR_MODE,
+	ACTION_METER_INIT_COLOR,
+	ACTION_METER_STATE,
 	ACTION_NEXT,
 	ZERO,
 };
@@ -1778,6 +2114,14 @@ static const enum index action_age[] = {
 	ZERO,
 };
 
+static const enum index action_age_update[] = {
+	ACTION_AGE_UPDATE,
+	ACTION_AGE_UPDATE_TIMEOUT,
+	ACTION_AGE_UPDATE_TOUCH,
+	ACTION_NEXT,
+	ZERO,
+};
+
 static const enum index action_sample[] = {
 	ACTION_SAMPLE,
 	ACTION_SAMPLE_RATIO,
@@ -1856,6 +2200,9 @@ static int parse_vc_spec(struct context *, const struct token *,
 			 const char *, unsigned int, void *, unsigned int);
 static int parse_vc_conf(struct context *, const struct token *,
 			 const char *, unsigned int, void *, unsigned int);
+static int parse_vc_conf_timeout(struct context *, const struct token *,
+				 const char *, unsigned int, void *,
+				 unsigned int);
 static int parse_vc_item_ecpri_type(struct context *, const struct token *,
 				    const char *, unsigned int,
 				    void *, unsigned int);
@@ -1962,6 +2309,38 @@ static int parse_aged(struct context *, const struct token *,
 static int parse_isolate(struct context *, const struct token *,
 			 const char *, unsigned int,
 			 void *, unsigned int);
+static int parse_configure(struct context *, const struct token *,
+			   const char *, unsigned int,
+			   void *, unsigned int);
+static int parse_template(struct context *, const struct token *,
+			  const char *, unsigned int,
+			  void *, unsigned int);
+static int parse_template_destroy(struct context *, const struct token *,
+				  const char *, unsigned int,
+				  void *, unsigned int);
+static int parse_table(struct context *, const struct token *,
+		       const char *, unsigned int, void *, unsigned int);
+static int parse_table_destroy(struct context *, const struct token *,
+			       const char *, unsigned int,
+			       void *, unsigned int);
+static int parse_qo(struct context *, const struct token *,
+		    const char *, unsigned int,
+		    void *, unsigned int);
+static int parse_qo_destroy(struct context *, const struct token *,
+			    const char *, unsigned int,
+			    void *, unsigned int);
+static int parse_qia(struct context *, const struct token *,
+		     const char *, unsigned int,
+		     void *, unsigned int);
+static int parse_qia_destroy(struct context *, const struct token *,
+			     const char *, unsigned int,
+			     void *, unsigned int);
+static int parse_push(struct context *, const struct token *,
+		      const char *, unsigned int,
+		      void *, unsigned int);
+static int parse_pull(struct context *, const struct token *,
+		      const char *, unsigned int,
+		      void *, unsigned int);
 static int parse_tunnel(struct context *, const struct token *,
 			const char *, unsigned int,
 			void *, unsigned int);
@@ -2009,6 +2388,17 @@ static int parse_ia_id2ptr(struct context *ctx, const struct token *token,
 static int parse_mp(struct context *, const struct token *,
 		    const char *, unsigned int,
 		    void *, unsigned int);
+static int parse_meter_profile_id2ptr(struct context *ctx,
+				      const struct token *token,
+				      const char *str, unsigned int len,
+				      void *buf, unsigned int size);
+static int parse_meter_policy_id2ptr(struct context *ctx,
+				     const struct token *token,
+				     const char *str, unsigned int len,
+				     void *buf, unsigned int size);
+static int parse_meter_color(struct context *ctx, const struct token *token,
+			     const char *str, unsigned int len, void *buf,
+			     unsigned int size);
 static int comp_none(struct context *, const struct token *,
 		     unsigned int, char *, unsigned int);
 static int comp_boolean(struct context *, const struct token *,
@@ -2031,6 +2421,16 @@ static int comp_set_modify_field_op(struct context *, const struct token *,
 			      unsigned int, char *, unsigned int);
 static int comp_set_modify_field_id(struct context *, const struct token *,
 			      unsigned int, char *, unsigned int);
+static int comp_pattern_template_id(struct context *, const struct token *,
+				    unsigned int, char *, unsigned int);
+static int comp_actions_template_id(struct context *, const struct token *,
+				    unsigned int, char *, unsigned int);
+static int comp_table_id(struct context *, const struct token *,
+			 unsigned int, char *, unsigned int);
+static int comp_queue_id(struct context *, const struct token *,
+			 unsigned int, char *, unsigned int);
+static int comp_meter_color(struct context *, const struct token *,
+			    unsigned int, char *, unsigned int);
 
 /** Token definitions. */
 static const struct token token_list[] = {
@@ -2160,6 +2560,13 @@ static const struct token token_list[] = {
 		.call = parse_int,
 		.comp = comp_none,
 	},
+	[COMMON_PROFILE_ID] = {
+		.name = "{profile_id}",
+		.type = "PROFILE_ID",
+		.help = "profile id",
+		.call = parse_int,
+		.comp = comp_none,
+	},
 	[COMMON_POLICY_ID] = {
 		.name = "{policy_id}",
 		.type = "POLICY_ID",
@@ -2181,13 +2588,46 @@ static const struct token token_list[] = {
 		.call = parse_flex_handle,
 		.comp = comp_none,
 	},
+	[COMMON_PATTERN_TEMPLATE_ID] = {
+		.name = "{pattern_template_id}",
+		.type = "PATTERN_TEMPLATE_ID",
+		.help = "pattern template id",
+		.call = parse_int,
+		.comp = comp_pattern_template_id,
+	},
+	[COMMON_ACTIONS_TEMPLATE_ID] = {
+		.name = "{actions_template_id}",
+		.type = "ACTIONS_TEMPLATE_ID",
+		.help = "actions template id",
+		.call = parse_int,
+		.comp = comp_actions_template_id,
+	},
+	[COMMON_TABLE_ID] = {
+		.name = "{table_id}",
+		.type = "TABLE_ID",
+		.help = "table id",
+		.call = parse_int,
+		.comp = comp_table_id,
+	},
+	[COMMON_QUEUE_ID] = {
+		.name = "{queue_id}",
+		.type = "QUEUE_ID",
+		.help = "queue id",
+		.call = parse_int,
+		.comp = comp_queue_id,
+	},
 	/* Top-level command. */
 	[FLOW] = {
 		.name = "flow",
 		.type = "{command} {port_id} [{arg} [...]]",
 		.help = "manage ingress/egress flow rules",
 		.next = NEXT(NEXT_ENTRY
-			     (INDIRECT_ACTION,
+			     (INFO,
+			      CONFIGURE,
+			      PATTERN_TEMPLATE,
+			      ACTIONS_TEMPLATE,
+			      TABLE,
+			      INDIRECT_ACTION,
 			      VALIDATE,
 			      CREATE,
 			      DESTROY,
@@ -2198,8 +2638,549 @@ static const struct token token_list[] = {
 			      QUERY,
 			      ISOLATE,
 			      TUNNEL,
-			      FLEX)),
+			      FLEX,
+			      QUEUE,
+			      PUSH,
+			      PULL)),
 		.call = parse_init,
+	},
+	/* Top-level command. */
+	[INFO] = {
+		.name = "info",
+		.help = "get information about flow engine",
+		.next = NEXT(NEXT_ENTRY(END),
+			     NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_configure,
+	},
+	/* Top-level command. */
+	[CONFIGURE] = {
+		.name = "configure",
+		.help = "configure flow engine",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_configure,
+	},
+	/* Configure arguments. */
+	[CONFIG_QUEUES_NUMBER] = {
+		.name = "queues_number",
+		.help = "number of queues",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.nb_queue)),
+	},
+	[CONFIG_QUEUES_SIZE] = {
+		.name = "queues_size",
+		.help = "number of elements in queues",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.queue_attr.size)),
+	},
+	[CONFIG_COUNTERS_NUMBER] = {
+		.name = "counters_number",
+		.help = "number of counters",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.port_attr.nb_counters)),
+	},
+	[CONFIG_AGING_OBJECTS_NUMBER] = {
+		.name = "aging_counters_number",
+		.help = "number of aging objects",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.port_attr.nb_aging_objects)),
+	},
+	[CONFIG_METERS_NUMBER] = {
+		.name = "meters_number",
+		.help = "number of meters",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.port_attr.nb_meters)),
+	},
+	[CONFIG_CONN_TRACK_NUMBER] = {
+		.name = "conn_tracks_number",
+		.help = "number of connection trackings",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.port_attr.nb_conn_tracks)),
+	},
+	[CONFIG_FLAGS] = {
+		.name = "flags",
+		.help = "configuration flags",
+		.next = NEXT(next_config_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.configure.port_attr.flags)),
+	},
+	/* Top-level command. */
+	[PATTERN_TEMPLATE] = {
+		.name = "pattern_template",
+		.type = "{command} {port_id} [{arg} [...]]",
+		.help = "manage pattern templates",
+		.next = NEXT(next_pt_subcmd, NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_template,
+	},
+	/* Sub-level commands. */
+	[PATTERN_TEMPLATE_CREATE] = {
+		.name = "create",
+		.help = "create pattern template",
+		.next = NEXT(next_pt_attr),
+		.call = parse_template,
+	},
+	[PATTERN_TEMPLATE_DESTROY] = {
+		.name = "destroy",
+		.help = "destroy pattern template",
+		.next = NEXT(NEXT_ENTRY(PATTERN_TEMPLATE_DESTROY_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_template_destroy,
+	},
+	/* Pattern template arguments. */
+	[PATTERN_TEMPLATE_CREATE_ID] = {
+		.name = "pattern_template_id",
+		.help = "specify a pattern template id to create",
+		.next = NEXT(next_pt_attr,
+			     NEXT_ENTRY(COMMON_PATTERN_TEMPLATE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.pat_templ_id)),
+	},
+	[PATTERN_TEMPLATE_DESTROY_ID] = {
+		.name = "pattern_template",
+		.help = "specify a pattern template id to destroy",
+		.next = NEXT(next_pt_destroy_attr,
+			     NEXT_ENTRY(COMMON_PATTERN_TEMPLATE_ID)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.templ_destroy.template_id)),
+		.call = parse_template_destroy,
+	},
+	[PATTERN_TEMPLATE_RELAXED_MATCHING] = {
+		.name = "relaxed",
+		.help = "is matching relaxed",
+		.next = NEXT(next_pt_attr,
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY_BF(struct buffer,
+			     args.vc.attr.reserved, 1)),
+	},
+	[PATTERN_TEMPLATE_INGRESS] = {
+		.name = "ingress",
+		.help = "attribute pattern to ingress",
+		.next = NEXT(next_pt_attr),
+		.call = parse_template,
+	},
+	[PATTERN_TEMPLATE_EGRESS] = {
+		.name = "egress",
+		.help = "attribute pattern to egress",
+		.next = NEXT(next_pt_attr),
+		.call = parse_template,
+	},
+	[PATTERN_TEMPLATE_TRANSFER] = {
+		.name = "transfer",
+		.help = "attribute pattern to transfer",
+		.next = NEXT(next_pt_attr),
+		.call = parse_template,
+	},
+	[PATTERN_TEMPLATE_SPEC] = {
+		.name = "template",
+		.help = "specify item to create pattern template",
+		.next = NEXT(next_item),
+	},
+	/* Top-level command. */
+	[ACTIONS_TEMPLATE] = {
+		.name = "actions_template",
+		.type = "{command} {port_id} [{arg} [...]]",
+		.help = "manage actions templates",
+		.next = NEXT(next_at_subcmd, NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_template,
+	},
+	/* Sub-level commands. */
+	[ACTIONS_TEMPLATE_CREATE] = {
+		.name = "create",
+		.help = "create actions template",
+		.next = NEXT(next_at_attr),
+		.call = parse_template,
+	},
+	[ACTIONS_TEMPLATE_DESTROY] = {
+		.name = "destroy",
+		.help = "destroy actions template",
+		.next = NEXT(NEXT_ENTRY(ACTIONS_TEMPLATE_DESTROY_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_template_destroy,
+	},
+	/* Actions template arguments. */
+	[ACTIONS_TEMPLATE_CREATE_ID] = {
+		.name = "actions_template_id",
+		.help = "specify an actions template id to create",
+		.next = NEXT(NEXT_ENTRY(ACTIONS_TEMPLATE_MASK),
+			     NEXT_ENTRY(ACTIONS_TEMPLATE_SPEC),
+			     NEXT_ENTRY(COMMON_ACTIONS_TEMPLATE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.act_templ_id)),
+	},
+	[ACTIONS_TEMPLATE_DESTROY_ID] = {
+		.name = "actions_template",
+		.help = "specify an actions template id to destroy",
+		.next = NEXT(next_at_destroy_attr,
+			     NEXT_ENTRY(COMMON_ACTIONS_TEMPLATE_ID)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.templ_destroy.template_id)),
+		.call = parse_template_destroy,
+	},
+	[ACTIONS_TEMPLATE_INGRESS] = {
+		.name = "ingress",
+		.help = "attribute actions to ingress",
+		.next = NEXT(next_at_attr),
+		.call = parse_template,
+	},
+	[ACTIONS_TEMPLATE_EGRESS] = {
+		.name = "egress",
+		.help = "attribute actions to egress",
+		.next = NEXT(next_at_attr),
+		.call = parse_template,
+	},
+	[ACTIONS_TEMPLATE_TRANSFER] = {
+		.name = "transfer",
+		.help = "attribute actions to transfer",
+		.next = NEXT(next_at_attr),
+		.call = parse_template,
+	},
+	[ACTIONS_TEMPLATE_SPEC] = {
+		.name = "template",
+		.help = "specify action to create actions template",
+		.next = NEXT(next_action),
+		.call = parse_template,
+	},
+	[ACTIONS_TEMPLATE_MASK] = {
+		.name = "mask",
+		.help = "specify action mask to create actions template",
+		.next = NEXT(next_action),
+		.call = parse_template,
+	},
+	/* Top-level command. */
+	[TABLE] = {
+		.name = "template_table",
+		.type = "{command} {port_id} [{arg} [...]]",
+		.help = "manage template tables",
+		.next = NEXT(next_table_subcmd, NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_table,
+	},
+	/* Sub-level commands. */
+	[TABLE_CREATE] = {
+		.name = "create",
+		.help = "create template table",
+		.next = NEXT(next_table_attr),
+		.call = parse_table,
+	},
+	[TABLE_DESTROY] = {
+		.name = "destroy",
+		.help = "destroy template table",
+		.next = NEXT(NEXT_ENTRY(TABLE_DESTROY_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_table_destroy,
+	},
+	/* Table  arguments. */
+	[TABLE_CREATE_ID] = {
+		.name = "table_id",
+		.help = "specify table id to create",
+		.next = NEXT(next_table_attr,
+			     NEXT_ENTRY(COMMON_TABLE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.table.id)),
+	},
+	[TABLE_DESTROY_ID] = {
+		.name = "table",
+		.help = "specify table id to destroy",
+		.next = NEXT(next_table_destroy_attr,
+			     NEXT_ENTRY(COMMON_TABLE_ID)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.table_destroy.table_id)),
+		.call = parse_table_destroy,
+	},
+	[TABLE_GROUP] = {
+		.name = "group",
+		.help = "specify a group",
+		.next = NEXT(next_table_attr, NEXT_ENTRY(COMMON_GROUP_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.table.attr.flow_attr.group)),
+	},
+	[TABLE_PRIORITY] = {
+		.name = "priority",
+		.help = "specify a priority level",
+		.next = NEXT(next_table_attr, NEXT_ENTRY(COMMON_PRIORITY_LEVEL)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.table.attr.flow_attr.priority)),
+	},
+	[TABLE_EGRESS] = {
+		.name = "egress",
+		.help = "affect rule to egress",
+		.next = NEXT(next_table_attr),
+		.call = parse_table,
+	},
+	[TABLE_INGRESS] = {
+		.name = "ingress",
+		.help = "affect rule to ingress",
+		.next = NEXT(next_table_attr),
+		.call = parse_table,
+	},
+	[TABLE_TRANSFER] = {
+		.name = "transfer",
+		.help = "affect rule to transfer",
+		.next = NEXT(next_table_attr),
+		.call = parse_table,
+	},
+	[TABLE_RULES_NUMBER] = {
+		.name = "rules_number",
+		.help = "number of rules in table",
+		.next = NEXT(next_table_attr,
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.table.attr.nb_flows)),
+		.call = parse_table,
+	},
+	[TABLE_PATTERN_TEMPLATE] = {
+		.name = "pattern_template",
+		.help = "specify pattern template id",
+		.next = NEXT(next_table_attr,
+			     NEXT_ENTRY(COMMON_PATTERN_TEMPLATE_ID)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.table.pat_templ_id)),
+		.call = parse_table,
+	},
+	[TABLE_ACTIONS_TEMPLATE] = {
+		.name = "actions_template",
+		.help = "specify actions template id",
+		.next = NEXT(next_table_attr,
+			     NEXT_ENTRY(COMMON_ACTIONS_TEMPLATE_ID)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.table.act_templ_id)),
+		.call = parse_table,
+	},
+	/* Top-level command. */
+	[QUEUE] = {
+		.name = "queue",
+		.help = "queue a flow rule operation",
+		.next = NEXT(next_queue_subcmd, NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_qo,
+	},
+	/* Sub-level commands. */
+	[QUEUE_CREATE] = {
+		.name = "create",
+		.help = "create a flow rule",
+		.next = NEXT(NEXT_ENTRY(QUEUE_TEMPLATE_TABLE),
+			     NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
+		.call = parse_qo,
+	},
+	[QUEUE_DESTROY] = {
+		.name = "destroy",
+		.help = "destroy a flow rule",
+		.next = NEXT(NEXT_ENTRY(QUEUE_DESTROY_POSTPONE),
+			     NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
+		.call = parse_qo_destroy,
+	},
+	[QUEUE_AGED] = {
+		.name = "aged",
+		.help = "list and destroy aged flows",
+		.next = NEXT(next_aged_attr, NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
+		.call = parse_aged,
+	},
+	[QUEUE_INDIRECT_ACTION] = {
+		.name = "indirect_action",
+		.help = "queue indirect actions",
+		.next = NEXT(next_qia_subcmd, NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
+		.call = parse_qia,
+	},
+	/* Queue  arguments. */
+	[QUEUE_TEMPLATE_TABLE] = {
+		.name = "template_table",
+		.help = "specify table id",
+		.next = NEXT(NEXT_ENTRY(QUEUE_PATTERN_TEMPLATE),
+			     NEXT_ENTRY(COMMON_TABLE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.vc.table_id)),
+		.call = parse_qo,
+	},
+	[QUEUE_PATTERN_TEMPLATE] = {
+		.name = "pattern_template",
+		.help = "specify pattern template index",
+		.next = NEXT(NEXT_ENTRY(QUEUE_ACTIONS_TEMPLATE),
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.vc.pat_templ_id)),
+		.call = parse_qo,
+	},
+	[QUEUE_ACTIONS_TEMPLATE] = {
+		.name = "actions_template",
+		.help = "specify actions template index",
+		.next = NEXT(NEXT_ENTRY(QUEUE_CREATE_POSTPONE),
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.vc.act_templ_id)),
+		.call = parse_qo,
+	},
+	[QUEUE_CREATE_POSTPONE] = {
+		.name = "postpone",
+		.help = "postpone create operation",
+		.next = NEXT(NEXT_ENTRY(ITEM_PATTERN),
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, postpone)),
+		.call = parse_qo,
+	},
+	[QUEUE_DESTROY_POSTPONE] = {
+		.name = "postpone",
+		.help = "postpone destroy operation",
+		.next = NEXT(NEXT_ENTRY(QUEUE_DESTROY_ID),
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, postpone)),
+		.call = parse_qo_destroy,
+	},
+	[QUEUE_DESTROY_ID] = {
+		.name = "rule",
+		.help = "specify rule id to destroy",
+		.next = NEXT(next_queue_destroy_attr,
+			NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.destroy.rule)),
+		.call = parse_qo_destroy,
+	},
+	/* Queue indirect action arguments */
+	[QUEUE_INDIRECT_ACTION_CREATE] = {
+		.name = "create",
+		.help = "create indirect action",
+		.next = NEXT(next_qia_create_attr),
+		.call = parse_qia,
+	},
+	[QUEUE_INDIRECT_ACTION_UPDATE] = {
+		.name = "update",
+		.help = "update indirect action",
+		.next = NEXT(next_qia_update_attr,
+			     NEXT_ENTRY(COMMON_INDIRECT_ACTION_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.attr.group)),
+		.call = parse_qia,
+	},
+	[QUEUE_INDIRECT_ACTION_DESTROY] = {
+		.name = "destroy",
+		.help = "destroy indirect action",
+		.next = NEXT(next_qia_destroy_attr),
+		.call = parse_qia_destroy,
+	},
+	[QUEUE_INDIRECT_ACTION_QUERY] = {
+		.name = "query",
+		.help = "query indirect action",
+		.next = NEXT(next_qia_query_attr,
+			     NEXT_ENTRY(COMMON_INDIRECT_ACTION_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.attr.group)),
+		.call = parse_qia,
+	},
+	/* Indirect action destroy arguments. */
+	[QUEUE_INDIRECT_ACTION_DESTROY_POSTPONE] = {
+		.name = "postpone",
+		.help = "postpone destroy operation",
+		.next = NEXT(next_qia_destroy_attr,
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, postpone)),
+	},
+	[QUEUE_INDIRECT_ACTION_DESTROY_ID] = {
+		.name = "action_id",
+		.help = "specify a indirect action id to destroy",
+		.next = NEXT(next_qia_destroy_attr,
+			     NEXT_ENTRY(COMMON_INDIRECT_ACTION_ID)),
+		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
+					    args.ia_destroy.action_id)),
+		.call = parse_qia_destroy,
+	},
+	/* Indirect action update arguments. */
+	[QUEUE_INDIRECT_ACTION_UPDATE_POSTPONE] = {
+		.name = "postpone",
+		.help = "postpone update operation",
+		.next = NEXT(next_qia_update_attr,
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, postpone)),
+	},
+	/* Indirect action update arguments. */
+	[QUEUE_INDIRECT_ACTION_QUERY_POSTPONE] = {
+		.name = "postpone",
+		.help = "postpone query operation",
+		.next = NEXT(next_qia_query_attr,
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, postpone)),
+	},
+	/* Indirect action create arguments. */
+	[QUEUE_INDIRECT_ACTION_CREATE_ID] = {
+		.name = "action_id",
+		.help = "specify a indirect action id to create",
+		.next = NEXT(next_qia_create_attr,
+			     NEXT_ENTRY(COMMON_INDIRECT_ACTION_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.attr.group)),
+	},
+	[QUEUE_INDIRECT_ACTION_INGRESS] = {
+		.name = "ingress",
+		.help = "affect rule to ingress",
+		.next = NEXT(next_qia_create_attr),
+		.call = parse_qia,
+	},
+	[QUEUE_INDIRECT_ACTION_EGRESS] = {
+		.name = "egress",
+		.help = "affect rule to egress",
+		.next = NEXT(next_qia_create_attr),
+		.call = parse_qia,
+	},
+	[QUEUE_INDIRECT_ACTION_TRANSFER] = {
+		.name = "transfer",
+		.help = "affect rule to transfer",
+		.next = NEXT(next_qia_create_attr),
+		.call = parse_qia,
+	},
+	[QUEUE_INDIRECT_ACTION_CREATE_POSTPONE] = {
+		.name = "postpone",
+		.help = "postpone create operation",
+		.next = NEXT(next_qia_create_attr,
+			     NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, postpone)),
+	},
+	[QUEUE_INDIRECT_ACTION_SPEC] = {
+		.name = "action",
+		.help = "specify action to create indirect handle",
+		.next = NEXT(next_action),
+	},
+	/* Top-level command. */
+	[PUSH] = {
+		.name = "push",
+		.help = "push enqueued operations",
+		.next = NEXT(NEXT_ENTRY(PUSH_QUEUE), NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_push,
+	},
+	/* Sub-level commands. */
+	[PUSH_QUEUE] = {
+		.name = "queue",
+		.help = "specify queue id",
+		.next = NEXT(NEXT_ENTRY(END), NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
+	},
+	/* Top-level command. */
+	[PULL] = {
+		.name = "pull",
+		.help = "pull flow operations results",
+		.next = NEXT(NEXT_ENTRY(PULL_QUEUE), NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_pull,
+	},
+	/* Sub-level commands. */
+	[PULL_QUEUE] = {
+		.name = "queue",
+		.help = "specify queue id",
+		.next = NEXT(NEXT_ENTRY(END), NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
 	},
 	/* Top-level command. */
 	[INDIRECT_ACTION] = {
@@ -2524,7 +3505,7 @@ static const struct token token_list[] = {
 		.name = "end",
 		.help = "end list of pattern items",
 		.priv = PRIV_ITEM(END, 0),
-		.next = NEXT(NEXT_ENTRY(ACTIONS)),
+		.next = NEXT(NEXT_ENTRY(ACTIONS, END)),
 		.call = parse_vc,
 	},
 	[ITEM_VOID] = {
@@ -2553,41 +3534,6 @@ static const struct token token_list[] = {
 		.help = "number of layers covered",
 		.next = NEXT(item_any, NEXT_ENTRY(COMMON_UNSIGNED), item_param),
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_any, num)),
-	},
-	[ITEM_PF] = {
-		.name = "pf",
-		.help = "match traffic from/to the physical function",
-		.priv = PRIV_ITEM(PF, 0),
-		.next = NEXT(NEXT_ENTRY(ITEM_NEXT)),
-		.call = parse_vc,
-	},
-	[ITEM_VF] = {
-		.name = "vf",
-		.help = "match traffic from/to a virtual function ID",
-		.priv = PRIV_ITEM(VF, sizeof(struct rte_flow_item_vf)),
-		.next = NEXT(item_vf),
-		.call = parse_vc,
-	},
-	[ITEM_VF_ID] = {
-		.name = "id",
-		.help = "VF ID",
-		.next = NEXT(item_vf, NEXT_ENTRY(COMMON_UNSIGNED), item_param),
-		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_vf, id)),
-	},
-	[ITEM_PHY_PORT] = {
-		.name = "phy_port",
-		.help = "match traffic from/to a specific physical port",
-		.priv = PRIV_ITEM(PHY_PORT,
-				  sizeof(struct rte_flow_item_phy_port)),
-		.next = NEXT(item_phy_port),
-		.call = parse_vc,
-	},
-	[ITEM_PHY_PORT_INDEX] = {
-		.name = "index",
-		.help = "physical port index",
-		.next = NEXT(item_phy_port, NEXT_ENTRY(COMMON_UNSIGNED),
-			     item_param),
-		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_phy_port, index)),
 	},
 	[ITEM_PORT_ID] = {
 		.name = "port_id",
@@ -2656,6 +3602,19 @@ static const struct token token_list[] = {
 		.help = "byte string to look for",
 		.next = NEXT(item_raw,
 			     NEXT_ENTRY(COMMON_STRING),
+			     NEXT_ENTRY(ITEM_PARAM_IS,
+					ITEM_PARAM_SPEC,
+					ITEM_PARAM_MASK)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_raw, pattern),
+			     ARGS_ENTRY(struct rte_flow_item_raw, length),
+			     ARGS_ENTRY_ARB(sizeof(struct rte_flow_item_raw),
+					    ITEM_RAW_PATTERN_SIZE)),
+	},
+	[ITEM_RAW_PATTERN_HEX] = {
+		.name = "pattern_hex",
+		.help = "hex string to look for",
+		.next = NEXT(item_raw,
+			     NEXT_ENTRY(COMMON_HEX),
 			     NEXT_ENTRY(ITEM_PARAM_IS,
 					ITEM_PARAM_SPEC,
 					ITEM_PARAM_MASK)),
@@ -3479,6 +4438,38 @@ static const struct token token_list[] = {
 			     item_param),
 		.args = ARGS(ARG_ENTRY_HTON(rte_be32_t)),
 	},
+	[ITEM_GRE_OPTION] = {
+		.name = "gre_option",
+		.help = "match GRE optional fields",
+		.priv = PRIV_ITEM(GRE_OPTION,
+				  sizeof(struct rte_flow_item_gre_opt)),
+		.next = NEXT(item_gre_option),
+		.call = parse_vc,
+	},
+	[ITEM_GRE_OPTION_CHECKSUM] = {
+		.name = "checksum",
+		.help = "match GRE checksum",
+		.next = NEXT(item_gre_option, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gre_opt,
+					     checksum_rsvd.checksum)),
+	},
+	[ITEM_GRE_OPTION_KEY] = {
+		.name = "key",
+		.help = "match GRE key",
+		.next = NEXT(item_gre_option, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gre_opt,
+					     key.key)),
+	},
+	[ITEM_GRE_OPTION_SEQUENCE] = {
+		.name = "sequence",
+		.help = "match GRE sequence",
+		.next = NEXT(item_gre_option, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gre_opt,
+					     sequence.sequence)),
+	},
 	[ITEM_GTP_PSC] = {
 		.name = "gtp_psc",
 		.help = "match GTP extension header with type 0x85",
@@ -3781,9 +4772,12 @@ static const struct token token_list[] = {
 	[ITEM_CONNTRACK] = {
 		.name = "conntrack",
 		.help = "conntrack state",
+		.priv = PRIV_ITEM(CONNTRACK,
+				  sizeof(struct rte_flow_item_conntrack)),
 		.next = NEXT(NEXT_ENTRY(ITEM_NEXT), NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_conntrack, flags)),
+		.call = parse_vc,
 	},
 	[ITEM_PORT_REPRESENTOR] = {
 		.name = "port_representor",
@@ -3843,31 +4837,46 @@ static const struct token token_list[] = {
 		.next = NEXT(item_l2tpv2),
 		.call = parse_vc,
 	},
-	[ITEM_L2TPV2_COMMON] = {
-		.name = "common",
-		.help = "L2TPv2 common header",
-		.next = NEXT(item_l2tpv2_common),
-	},
-	[ITEM_L2TPV2_COMMON_TYPE] = {
+	[ITEM_L2TPV2_TYPE] = {
 		.name = "type",
-		.help = "type of common header",
-		.next = NEXT(item_l2tpv2_common_type),
+		.help = "type of l2tpv2",
+		.next = NEXT(item_l2tpv2_type),
 		.args = ARGS(ARG_ENTRY_HTON(struct rte_flow_item_l2tpv2)),
 	},
-	[ITEM_L2TPV2_COMMON_TYPE_DATA_L] = {
+	[ITEM_L2TPV2_TYPE_DATA] = {
+		.name = "data",
+		.help = "Type #7: data message without any options",
+		.next = NEXT(item_l2tpv2_type_data),
+		.call = parse_vc_item_l2tpv2_type,
+	},
+	[ITEM_L2TPV2_MSG_DATA_TUNNEL_ID] = {
+		.name = "tunnel_id",
+		.help = "tunnel identifier",
+		.next = NEXT(item_l2tpv2_type_data,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type7.tunnel_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_SESSION_ID] = {
+		.name = "session_id",
+		.help = "session identifier",
+		.next = NEXT(item_l2tpv2_type_data,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type7.session_id)),
+	},
+	[ITEM_L2TPV2_TYPE_DATA_L] = {
 		.name = "data_l",
 		.help = "Type #6: data message with length option",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_DATA_L_LENGTH,
-					ITEM_L2TPV2_MSG_DATA_L_TUNNEL_ID,
-					ITEM_L2TPV2_MSG_DATA_L_SESSION_ID,
-					ITEM_NEXT)),
+		.next = NEXT(item_l2tpv2_type_data_l),
 		.call = parse_vc_item_l2tpv2_type,
 	},
 	[ITEM_L2TPV2_MSG_DATA_L_LENGTH] = {
 		.name = "length",
 		.help = "message length",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_DATA_L_LENGTH,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_data_l,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3876,8 +4885,7 @@ static const struct token token_list[] = {
 	[ITEM_L2TPV2_MSG_DATA_L_TUNNEL_ID] = {
 		.name = "tunnel_id",
 		.help = "tunnel identifier",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_DATA_L_TUNNEL_ID,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_data_l,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3886,29 +4894,150 @@ static const struct token token_list[] = {
 	[ITEM_L2TPV2_MSG_DATA_L_SESSION_ID] = {
 		.name = "session_id",
 		.help = "session identifier",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_DATA_L_SESSION_ID,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_data_l,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
 					     hdr.type6.session_id)),
 	},
-	[ITEM_L2TPV2_COMMON_TYPE_CTRL] = {
+	[ITEM_L2TPV2_TYPE_DATA_S] = {
+		.name = "data_s",
+		.help = "Type #5: data message with ns, nr option",
+		.next = NEXT(item_l2tpv2_type_data_s),
+		.call = parse_vc_item_l2tpv2_type,
+	},
+	[ITEM_L2TPV2_MSG_DATA_S_TUNNEL_ID] = {
+		.name = "tunnel_id",
+		.help = "tunnel identifier",
+		.next = NEXT(item_l2tpv2_type_data_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type5.tunnel_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_S_SESSION_ID] = {
+		.name = "session_id",
+		.help = "session identifier",
+		.next = NEXT(item_l2tpv2_type_data_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type5.session_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_S_NS] = {
+		.name = "ns",
+		.help = "sequence number for message",
+		.next = NEXT(item_l2tpv2_type_data_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type5.ns)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_S_NR] = {
+		.name = "nr",
+		.help = "sequence number for next receive message",
+		.next = NEXT(item_l2tpv2_type_data_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type5.nr)),
+	},
+	[ITEM_L2TPV2_TYPE_DATA_O] = {
+		.name = "data_o",
+		.help = "Type #4: data message with offset option",
+		.next = NEXT(item_l2tpv2_type_data_o),
+		.call = parse_vc_item_l2tpv2_type,
+	},
+	[ITEM_L2TPV2_MSG_DATA_O_TUNNEL_ID] = {
+		.name = "tunnel_id",
+		.help = "tunnel identifier",
+		.next = NEXT(item_l2tpv2_type_data_o,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type4.tunnel_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_O_SESSION_ID] = {
+		.name = "session_id",
+		.help = "session identifier",
+		.next = NEXT(item_l2tpv2_type_data_o,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type5.session_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_O_OFFSET] = {
+		.name = "offset_size",
+		.help = "the size of offset padding",
+		.next = NEXT(item_l2tpv2_type_data_o,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type4.offset_size)),
+	},
+	[ITEM_L2TPV2_TYPE_DATA_L_S] = {
+		.name = "data_l_s",
+		.help = "Type #3: data message contains length, ns, nr "
+			"options",
+		.next = NEXT(item_l2tpv2_type_data_l_s),
+		.call = parse_vc_item_l2tpv2_type,
+	},
+	[ITEM_L2TPV2_MSG_DATA_L_S_LENGTH] = {
+		.name = "length",
+		.help = "message length",
+		.next = NEXT(item_l2tpv2_type_data_l_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type3.length)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_L_S_TUNNEL_ID] = {
+		.name = "tunnel_id",
+		.help = "tunnel identifier",
+		.next = NEXT(item_l2tpv2_type_data_l_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type3.tunnel_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_L_S_SESSION_ID] = {
+		.name = "session_id",
+		.help = "session identifier",
+		.next = NEXT(item_l2tpv2_type_data_l_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type3.session_id)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_L_S_NS] = {
+		.name = "ns",
+		.help = "sequence number for message",
+		.next = NEXT(item_l2tpv2_type_data_l_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type3.ns)),
+	},
+	[ITEM_L2TPV2_MSG_DATA_L_S_NR] = {
+		.name = "nr",
+		.help = "sequence number for next receive message",
+		.next = NEXT(item_l2tpv2_type_data_l_s,
+			     NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
+					     hdr.type3.nr)),
+	},
+	[ITEM_L2TPV2_TYPE_CTRL] = {
 		.name = "control",
-		.help = "Type #3: conrtol message contains length, ns, nr options",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_CTRL_LENGTH,
-					ITEM_L2TPV2_MSG_CTRL_TUNNEL_ID,
-					ITEM_L2TPV2_MSG_CTRL_SESSION_ID,
-					ITEM_L2TPV2_MSG_CTRL_NS,
-					ITEM_L2TPV2_MSG_CTRL_NR,
-					ITEM_NEXT)),
+		.help = "Type #3: conrtol message contains length, ns, nr "
+			"options",
+		.next = NEXT(item_l2tpv2_type_ctrl),
 		.call = parse_vc_item_l2tpv2_type,
 	},
 	[ITEM_L2TPV2_MSG_CTRL_LENGTH] = {
 		.name = "length",
 		.help = "message length",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_CTRL_LENGTH,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_ctrl,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3917,8 +5046,7 @@ static const struct token token_list[] = {
 	[ITEM_L2TPV2_MSG_CTRL_TUNNEL_ID] = {
 		.name = "tunnel_id",
 		.help = "tunnel identifier",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_CTRL_TUNNEL_ID,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_ctrl,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3927,8 +5055,7 @@ static const struct token token_list[] = {
 	[ITEM_L2TPV2_MSG_CTRL_SESSION_ID] = {
 		.name = "session_id",
 		.help = "session identifier",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_CTRL_SESSION_ID,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_ctrl,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3937,8 +5064,7 @@ static const struct token token_list[] = {
 	[ITEM_L2TPV2_MSG_CTRL_NS] = {
 		.name = "ns",
 		.help = "sequence number for message",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_CTRL_NS,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_ctrl,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3947,8 +5073,7 @@ static const struct token token_list[] = {
 	[ITEM_L2TPV2_MSG_CTRL_NR] = {
 		.name = "nr",
 		.help = "sequence number for next receive message",
-		.next = NEXT(NEXT_ENTRY(ITEM_L2TPV2_MSG_CTRL_NS,
-					ITEM_L2TPV2_COMMON, ITEM_NEXT),
+		.next = NEXT(item_l2tpv2_type_ctrl,
 			     NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_l2tpv2,
@@ -3982,6 +5107,29 @@ static const struct token token_list[] = {
 			     item_param),
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_ppp,
 					hdr.proto_id)),
+	},
+	[ITEM_METER] = {
+		.name = "meter",
+		.help = "match meter color",
+		.priv = PRIV_ITEM(METER_COLOR,
+				  sizeof(struct rte_flow_item_meter_color)),
+		.next = NEXT(item_meter),
+		.call = parse_vc,
+	},
+	[ITEM_METER_COLOR] = {
+		.name = "color",
+		.help = "meter color",
+		.next = NEXT(item_meter,
+			     NEXT_ENTRY(ITEM_METER_COLOR_NAME),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_meter_color,
+					color)),
+	},
+	[ITEM_METER_COLOR_NAME] = {
+		.name = "color_name",
+		.help = "meter color name",
+		.call = parse_meter_color,
+		.comp = comp_meter_color,
 	},
 	/* Validate/create actions. */
 	[ACTIONS] = {
@@ -4212,30 +5360,6 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_vf, id)),
 		.call = parse_vc_conf,
 	},
-	[ACTION_PHY_PORT] = {
-		.name = "phy_port",
-		.help = "direct packets to physical port index",
-		.priv = PRIV_ACTION(PHY_PORT,
-				    sizeof(struct rte_flow_action_phy_port)),
-		.next = NEXT(action_phy_port),
-		.call = parse_vc,
-	},
-	[ACTION_PHY_PORT_ORIGINAL] = {
-		.name = "original",
-		.help = "use original port index if possible",
-		.next = NEXT(action_phy_port, NEXT_ENTRY(COMMON_BOOLEAN)),
-		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_action_phy_port,
-					   original, 1)),
-		.call = parse_vc_conf,
-	},
-	[ACTION_PHY_PORT_INDEX] = {
-		.name = "index",
-		.help = "physical port index",
-		.next = NEXT(action_phy_port, NEXT_ENTRY(COMMON_UNSIGNED)),
-		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_phy_port,
-					index)),
-		.call = parse_vc_conf,
-	},
 	[ACTION_PORT_ID] = {
 		.name = "port_id",
 		.help = "direct matching traffic to a given DPDK port ID",
@@ -4305,66 +5429,66 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_meter, mtr_id)),
 		.call = parse_vc_conf,
 	},
-	[ACTION_OF_SET_MPLS_TTL] = {
-		.name = "of_set_mpls_ttl",
-		.help = "OpenFlow's OFPAT_SET_MPLS_TTL",
-		.priv = PRIV_ACTION
-			(OF_SET_MPLS_TTL,
-			 sizeof(struct rte_flow_action_of_set_mpls_ttl)),
-		.next = NEXT(action_of_set_mpls_ttl),
+	[ACTION_METER_MARK] = {
+		.name = "meter_mark",
+		.help = "meter the directed packets using profile and policy",
+		.priv = PRIV_ACTION(METER_MARK,
+				    sizeof(struct rte_flow_action_meter_mark)),
+		.next = NEXT(action_meter_mark),
 		.call = parse_vc,
 	},
-	[ACTION_OF_SET_MPLS_TTL_MPLS_TTL] = {
-		.name = "mpls_ttl",
-		.help = "MPLS TTL",
-		.next = NEXT(action_of_set_mpls_ttl,
-			     NEXT_ENTRY(COMMON_UNSIGNED)),
-		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_of_set_mpls_ttl,
-					mpls_ttl)),
+	[ACTION_METER_PROFILE] = {
+		.name = "mtr_profile",
+		.help = "meter profile id to use",
+		.next = NEXT(NEXT_ENTRY(ACTION_METER_PROFILE_ID2PTR)),
+		.args = ARGS(ARGS_ENTRY_ARB(0, sizeof(uint32_t))),
+	},
+	[ACTION_METER_PROFILE_ID2PTR] = {
+		.name = "{mtr_profile_id}",
+		.type = "PROFILE_ID",
+		.help = "meter profile id",
+		.next = NEXT(action_meter_mark),
+		.call = parse_meter_profile_id2ptr,
+		.comp = comp_none,
+	},
+	[ACTION_METER_POLICY] = {
+		.name = "mtr_policy",
+		.help = "meter policy id to use",
+		.next = NEXT(NEXT_ENTRY(ACTION_METER_POLICY_ID2PTR)),
+		ARGS(ARGS_ENTRY_ARB(0, sizeof(uint32_t))),
+	},
+	[ACTION_METER_POLICY_ID2PTR] = {
+		.name = "{mtr_policy_id}",
+		.type = "POLICY_ID",
+		.help = "meter policy id",
+		.next = NEXT(action_meter_mark),
+		.call = parse_meter_policy_id2ptr,
+		.comp = comp_none,
+	},
+	[ACTION_METER_COLOR_MODE] = {
+		.name = "mtr_color_mode",
+		.help = "meter color awareness mode",
+		.next = NEXT(action_meter_mark, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_meter_mark, color_mode)),
 		.call = parse_vc_conf,
 	},
-	[ACTION_OF_DEC_MPLS_TTL] = {
-		.name = "of_dec_mpls_ttl",
-		.help = "OpenFlow's OFPAT_DEC_MPLS_TTL",
-		.priv = PRIV_ACTION(OF_DEC_MPLS_TTL, 0),
-		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
-		.call = parse_vc,
+	[ACTION_METER_INIT_COLOR] = {
+		.name = "mtr_init_color",
+		.help = "meter initial color",
+		.next = NEXT(action_meter_mark, NEXT_ENTRY(ITEM_METER_COLOR_NAME)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_meter_mark, init_color)),
 	},
-	[ACTION_OF_SET_NW_TTL] = {
-		.name = "of_set_nw_ttl",
-		.help = "OpenFlow's OFPAT_SET_NW_TTL",
-		.priv = PRIV_ACTION
-			(OF_SET_NW_TTL,
-			 sizeof(struct rte_flow_action_of_set_nw_ttl)),
-		.next = NEXT(action_of_set_nw_ttl),
-		.call = parse_vc,
-	},
-	[ACTION_OF_SET_NW_TTL_NW_TTL] = {
-		.name = "nw_ttl",
-		.help = "IP TTL",
-		.next = NEXT(action_of_set_nw_ttl, NEXT_ENTRY(COMMON_UNSIGNED)),
-		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_of_set_nw_ttl,
-					nw_ttl)),
+	[ACTION_METER_STATE] = {
+		.name = "mtr_state",
+		.help = "meter state",
+		.next = NEXT(action_meter_mark, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_meter_mark, state)),
 		.call = parse_vc_conf,
 	},
 	[ACTION_OF_DEC_NW_TTL] = {
 		.name = "of_dec_nw_ttl",
 		.help = "OpenFlow's OFPAT_DEC_NW_TTL",
 		.priv = PRIV_ACTION(OF_DEC_NW_TTL, 0),
-		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
-		.call = parse_vc,
-	},
-	[ACTION_OF_COPY_TTL_OUT] = {
-		.name = "of_copy_ttl_out",
-		.help = "OpenFlow's OFPAT_COPY_TTL_OUT",
-		.priv = PRIV_ACTION(OF_COPY_TTL_OUT, 0),
-		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
-		.call = parse_vc,
-	},
-	[ACTION_OF_COPY_TTL_IN] = {
-		.name = "of_copy_ttl_in",
-		.help = "OpenFlow's OFPAT_COPY_TTL_IN",
-		.priv = PRIV_ACTION(OF_COPY_TTL_IN, 0),
 		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
 		.call = parse_vc,
 	},
@@ -4934,6 +6058,13 @@ static const struct token token_list[] = {
 					width)),
 		.call = parse_vc_conf,
 	},
+	[ACTION_SEND_TO_KERNEL] = {
+		.name = "send_to_kernel",
+		.help = "send packets to kernel",
+		.priv = PRIV_ACTION(SEND_TO_KERNEL, 0),
+		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
+		.call = parse_vc,
+	},
 	/* Top level command. */
 	[SET] = {
 		.name = "set",
@@ -5092,6 +6223,30 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_action_age,
 					   timeout, 24)),
 		.next = NEXT(action_age, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_AGE_UPDATE] = {
+		.name = "age_update",
+		.help = "update aging parameter",
+		.next = NEXT(action_age_update),
+		.priv = PRIV_ACTION(AGE,
+				    sizeof(struct rte_flow_update_age)),
+		.call = parse_vc,
+	},
+	[ACTION_AGE_UPDATE_TIMEOUT] = {
+		.name = "timeout",
+		.help = "age timeout update value",
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_update_age,
+					   timeout, 24)),
+		.next = NEXT(action_age_update, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.call = parse_vc_conf_timeout,
+	},
+	[ACTION_AGE_UPDATE_TOUCH] = {
+		.name = "touch",
+		.help = "this flow is touched",
+		.next = NEXT(action_age_update, NEXT_ENTRY(COMMON_BOOLEAN)),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_update_age,
+					   touch, 1)),
 		.call = parse_vc_conf,
 	},
 	[ACTION_SAMPLE] = {
@@ -5570,6 +6725,112 @@ parse_ia_destroy(struct context *ctx, const struct token *token,
 	return len;
 }
 
+/** Parse tokens for indirect action commands. */
+static int
+parse_qia(struct context *ctx, const struct token *token,
+	  const char *str, unsigned int len,
+	  void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != QUEUE)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->args.vc.data = (uint8_t *)out + size;
+		return len;
+	}
+	switch (ctx->curr) {
+	case QUEUE_INDIRECT_ACTION:
+		return len;
+	case QUEUE_INDIRECT_ACTION_CREATE:
+	case QUEUE_INDIRECT_ACTION_UPDATE:
+		out->args.vc.actions =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		out->args.vc.attr.group = UINT32_MAX;
+		/* fallthrough */
+	case QUEUE_INDIRECT_ACTION_QUERY:
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	case QUEUE_INDIRECT_ACTION_EGRESS:
+		out->args.vc.attr.egress = 1;
+		return len;
+	case QUEUE_INDIRECT_ACTION_INGRESS:
+		out->args.vc.attr.ingress = 1;
+		return len;
+	case QUEUE_INDIRECT_ACTION_TRANSFER:
+		out->args.vc.attr.transfer = 1;
+		return len;
+	case QUEUE_INDIRECT_ACTION_CREATE_POSTPONE:
+		return len;
+	default:
+		return -1;
+	}
+}
+
+/** Parse tokens for indirect action destroy command. */
+static int
+parse_qia_destroy(struct context *ctx, const struct token *token,
+		  const char *str, unsigned int len,
+		  void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+	uint32_t *action_id;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command || out->command == QUEUE) {
+		if (ctx->curr != QUEUE_INDIRECT_ACTION_DESTROY)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.ia_destroy.action_id =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		return len;
+	}
+	switch (ctx->curr) {
+	case QUEUE_INDIRECT_ACTION:
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	case QUEUE_INDIRECT_ACTION_DESTROY_ID:
+		action_id = out->args.ia_destroy.action_id
+				+ out->args.ia_destroy.action_id_n++;
+		if ((uint8_t *)action_id > (uint8_t *)out + size)
+			return -1;
+		ctx->objdata = 0;
+		ctx->object = action_id;
+		ctx->objmask = NULL;
+		return len;
+	case QUEUE_INDIRECT_ACTION_DESTROY_POSTPONE:
+		return len;
+	default:
+		return -1;
+	}
+}
+
 /** Parse tokens for meter policy action commands. */
 static int
 parse_mp(struct context *ctx, const struct token *token,
@@ -5628,7 +6889,9 @@ parse_vc(struct context *ctx, const struct token *token,
 	if (!out)
 		return len;
 	if (!out->command) {
-		if (ctx->curr != VALIDATE && ctx->curr != CREATE)
+		if (ctx->curr != VALIDATE && ctx->curr != CREATE &&
+		    ctx->curr != PATTERN_TEMPLATE_CREATE &&
+		    ctx->curr != ACTIONS_TEMPLATE_CREATE)
 			return -1;
 		if (sizeof(*out) > size)
 			return -1;
@@ -5678,6 +6941,14 @@ parse_vc(struct context *ctx, const struct token *token,
 		ctx->object = out->args.vc.pattern;
 		ctx->objmask = NULL;
 		return len;
+	case ITEM_END:
+		if ((out->command == VALIDATE || out->command == CREATE) &&
+		    ctx->last)
+			return -1;
+		if (out->command == PATTERN_TEMPLATE_CREATE &&
+		    !ctx->last)
+			return -1;
+		break;
 	case ACTIONS:
 		out->args.vc.actions =
 			(void *)RTE_ALIGN_CEIL((uintptr_t)
@@ -5817,6 +7088,33 @@ parse_vc_conf(struct context *ctx, const struct token *token,
 	return len;
 }
 
+/** Parse action configuration field. */
+static int
+parse_vc_conf_timeout(struct context *ctx, const struct token *token,
+		      const char *str, unsigned int len,
+		      void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+	struct rte_flow_update_age *update;
+
+	(void)size;
+	if (ctx->curr != ACTION_AGE_UPDATE_TIMEOUT)
+		return -1;
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	/* Point to selected object. */
+	ctx->object = out->args.vc.data;
+	ctx->objmask = NULL;
+	/* Update the timeout is valid. */
+	update = (struct rte_flow_update_age *)out->args.vc.data;
+	update->timeout_valid = 1;
+	return len;
+}
+
 /** Parse eCPRI common header type field. */
 static int
 parse_vc_item_ecpri_type(struct context *ctx, const struct token *token,
@@ -5889,11 +7187,23 @@ parse_vc_item_l2tpv2_type(struct context *ctx, const struct token *token,
 	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
 		return -1;
 	switch (ctx->curr) {
-	case ITEM_L2TPV2_COMMON_TYPE_DATA_L:
-		msg_type |= 0x4000;
+	case ITEM_L2TPV2_TYPE_DATA:
+		msg_type |= RTE_L2TPV2_MSG_TYPE_DATA;
 		break;
-	case ITEM_L2TPV2_COMMON_TYPE_CTRL:
-		msg_type |= 0xC800;
+	case ITEM_L2TPV2_TYPE_DATA_L:
+		msg_type |= RTE_L2TPV2_MSG_TYPE_DATA_L;
+		break;
+	case ITEM_L2TPV2_TYPE_DATA_S:
+		msg_type |= RTE_L2TPV2_MSG_TYPE_DATA_S;
+		break;
+	case ITEM_L2TPV2_TYPE_DATA_O:
+		msg_type |= RTE_L2TPV2_MSG_TYPE_DATA_O;
+		break;
+	case ITEM_L2TPV2_TYPE_DATA_L_S:
+		msg_type |= RTE_L2TPV2_MSG_TYPE_DATA_L_S;
+		break;
+	case ITEM_L2TPV2_TYPE_CTRL:
+		msg_type |= RTE_L2TPV2_MSG_TYPE_CONTROL;
 		break;
 	default:
 		return -1;
@@ -6431,15 +7741,15 @@ parse_vc_action_l2_encap(struct context *ctx, const struct token *token,
 	       l2_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
 	       l2_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
-	memcpy(header, &eth, sizeof(eth));
-	header += sizeof(eth);
+	memcpy(header, &eth.hdr, sizeof(struct rte_ether_hdr));
+	header += sizeof(struct rte_ether_hdr);
 	if (l2_encap_conf.select_vlan) {
 		if (l2_encap_conf.select_ipv4)
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
-		memcpy(header, &vlan, sizeof(vlan));
-		header += sizeof(vlan);
+		memcpy(header, &vlan.hdr, sizeof(struct rte_vlan_hdr));
+		header += sizeof(struct rte_vlan_hdr);
 	}
 	action_encap_data->conf.size = header -
 		action_encap_data->data;
@@ -6487,11 +7797,11 @@ parse_vc_action_l2_decap(struct context *ctx, const struct token *token,
 	header = action_decap_data->data;
 	if (l2_decap_conf.select_vlan)
 		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
-	memcpy(header, &eth, sizeof(eth));
-	header += sizeof(eth);
+	memcpy(header, &eth.hdr, sizeof(struct rte_ether_hdr));
+	header += sizeof(struct rte_ether_hdr);
 	if (l2_decap_conf.select_vlan) {
-		memcpy(header, &vlan, sizeof(vlan));
-		header += sizeof(vlan);
+		memcpy(header, &vlan.hdr, sizeof(struct rte_vlan_hdr));
+		header += sizeof(struct rte_vlan_hdr);
 	}
 	action_decap_data->conf.size = header -
 		action_decap_data->data;
@@ -6571,15 +7881,15 @@ parse_vc_action_mplsogre_encap(struct context *ctx, const struct token *token,
 	       mplsogre_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
 	       mplsogre_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
-	memcpy(header, &eth, sizeof(eth));
-	header += sizeof(eth);
+	memcpy(header, &eth.hdr, sizeof(struct rte_ether_hdr));
+	header += sizeof(struct rte_ether_hdr);
 	if (mplsogre_encap_conf.select_vlan) {
 		if (mplsogre_encap_conf.select_ipv4)
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
-		memcpy(header, &vlan, sizeof(vlan));
-		header += sizeof(vlan);
+		memcpy(header, &vlan.hdr, sizeof(struct rte_vlan_hdr));
+		header += sizeof(struct rte_vlan_hdr);
 	}
 	if (mplsogre_encap_conf.select_ipv4) {
 		memcpy(header, &ipv4, sizeof(ipv4));
@@ -6666,15 +7976,15 @@ parse_vc_action_mplsogre_decap(struct context *ctx, const struct token *token,
 	       mplsogre_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
 	       mplsogre_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
-	memcpy(header, &eth, sizeof(eth));
-	header += sizeof(eth);
+	memcpy(header, &eth.hdr, sizeof(struct rte_ether_hdr));
+	header += sizeof(struct rte_ether_hdr);
 	if (mplsogre_encap_conf.select_vlan) {
 		if (mplsogre_encap_conf.select_ipv4)
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
-		memcpy(header, &vlan, sizeof(vlan));
-		header += sizeof(vlan);
+		memcpy(header, &vlan.hdr, sizeof(struct rte_vlan_hdr));
+		header += sizeof(struct rte_vlan_hdr);
 	}
 	if (mplsogre_encap_conf.select_ipv4) {
 		memcpy(header, &ipv4, sizeof(ipv4));
@@ -6765,15 +8075,15 @@ parse_vc_action_mplsoudp_encap(struct context *ctx, const struct token *token,
 	       mplsoudp_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
 	       mplsoudp_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
-	memcpy(header, &eth, sizeof(eth));
-	header += sizeof(eth);
+	memcpy(header, &eth.hdr, sizeof(struct rte_ether_hdr));
+	header += sizeof(struct rte_ether_hdr);
 	if (mplsoudp_encap_conf.select_vlan) {
 		if (mplsoudp_encap_conf.select_ipv4)
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
-		memcpy(header, &vlan, sizeof(vlan));
-		header += sizeof(vlan);
+		memcpy(header, &vlan.hdr, sizeof(struct rte_vlan_hdr));
+		header += sizeof(struct rte_vlan_hdr);
 	}
 	if (mplsoudp_encap_conf.select_ipv4) {
 		memcpy(header, &ipv4, sizeof(ipv4));
@@ -6862,15 +8172,15 @@ parse_vc_action_mplsoudp_decap(struct context *ctx, const struct token *token,
 	       mplsoudp_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
 	       mplsoudp_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
-	memcpy(header, &eth, sizeof(eth));
-	header += sizeof(eth);
+	memcpy(header, &eth.hdr, sizeof(struct rte_ether_hdr));
+	header += sizeof(struct rte_ether_hdr);
 	if (mplsoudp_encap_conf.select_vlan) {
 		if (mplsoudp_encap_conf.select_ipv4)
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
 			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
-		memcpy(header, &vlan, sizeof(vlan));
-		header += sizeof(vlan);
+		memcpy(header, &vlan.hdr, sizeof(struct rte_vlan_hdr));
+		header += sizeof(struct rte_vlan_hdr);
 	}
 	if (mplsoudp_encap_conf.select_ipv4) {
 		memcpy(header, &ipv4, sizeof(ipv4));
@@ -7423,8 +8733,8 @@ parse_aged(struct context *ctx, const struct token *token,
 	/* Nothing else to do if there is no buffer. */
 	if (!out)
 		return len;
-	if (!out->command) {
-		if (ctx->curr != AGED)
+	if (!out->command || out->command == QUEUE) {
+		if (ctx->curr != AGED && ctx->curr != QUEUE_AGED)
 			return -1;
 		if (sizeof(*out) > size)
 			return -1;
@@ -7461,6 +8771,438 @@ parse_isolate(struct context *ctx, const struct token *token,
 		ctx->objdata = 0;
 		ctx->object = out;
 		ctx->objmask = NULL;
+	}
+	return len;
+}
+
+/** Parse tokens for info/configure command. */
+static int
+parse_configure(struct context *ctx, const struct token *token,
+		const char *str, unsigned int len,
+		void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != INFO && ctx->curr != CONFIGURE)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+	}
+	return len;
+}
+
+/** Parse tokens for template create command. */
+static int
+parse_template(struct context *ctx, const struct token *token,
+	       const char *str, unsigned int len,
+	       void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != PATTERN_TEMPLATE &&
+		    ctx->curr != ACTIONS_TEMPLATE)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.vc.data = (uint8_t *)out + size;
+		return len;
+	}
+	switch (ctx->curr) {
+	case PATTERN_TEMPLATE_CREATE:
+		out->args.vc.pattern =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		out->args.vc.pat_templ_id = UINT32_MAX;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	case PATTERN_TEMPLATE_EGRESS:
+		out->args.vc.attr.egress = 1;
+		return len;
+	case PATTERN_TEMPLATE_INGRESS:
+		out->args.vc.attr.ingress = 1;
+		return len;
+	case PATTERN_TEMPLATE_TRANSFER:
+		out->args.vc.attr.transfer = 1;
+		return len;
+	case ACTIONS_TEMPLATE_CREATE:
+		out->args.vc.act_templ_id = UINT32_MAX;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	case ACTIONS_TEMPLATE_SPEC:
+		out->args.vc.actions =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		ctx->object = out->args.vc.actions;
+		ctx->objmask = NULL;
+		return len;
+	case ACTIONS_TEMPLATE_MASK:
+		out->args.vc.masks =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)
+					       (out->args.vc.actions +
+						out->args.vc.actions_n),
+					       sizeof(double));
+		ctx->object = out->args.vc.masks;
+		ctx->objmask = NULL;
+		return len;
+	case ACTIONS_TEMPLATE_EGRESS:
+		out->args.vc.attr.egress = 1;
+		return len;
+	case ACTIONS_TEMPLATE_INGRESS:
+		out->args.vc.attr.ingress = 1;
+		return len;
+	case ACTIONS_TEMPLATE_TRANSFER:
+		out->args.vc.attr.transfer = 1;
+		return len;
+	default:
+		return -1;
+	}
+}
+
+/** Parse tokens for template destroy command. */
+static int
+parse_template_destroy(struct context *ctx, const struct token *token,
+		       const char *str, unsigned int len,
+		       void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+	uint32_t *template_id;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command ||
+		out->command == PATTERN_TEMPLATE ||
+		out->command == ACTIONS_TEMPLATE) {
+		if (ctx->curr != PATTERN_TEMPLATE_DESTROY &&
+			ctx->curr != ACTIONS_TEMPLATE_DESTROY)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.templ_destroy.template_id =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		return len;
+	}
+	template_id = out->args.templ_destroy.template_id
+		    + out->args.templ_destroy.template_id_n++;
+	if ((uint8_t *)template_id > (uint8_t *)out + size)
+		return -1;
+	ctx->objdata = 0;
+	ctx->object = template_id;
+	ctx->objmask = NULL;
+	return len;
+}
+
+/** Parse tokens for table create command. */
+static int
+parse_table(struct context *ctx, const struct token *token,
+	    const char *str, unsigned int len,
+	    void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+	uint32_t *template_id;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != TABLE)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	}
+	switch (ctx->curr) {
+	case TABLE_CREATE:
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.table.id = UINT32_MAX;
+		return len;
+	case TABLE_PATTERN_TEMPLATE:
+		out->args.table.pat_templ_id =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		template_id = out->args.table.pat_templ_id
+				+ out->args.table.pat_templ_id_n++;
+		if ((uint8_t *)template_id > (uint8_t *)out + size)
+			return -1;
+		ctx->objdata = 0;
+		ctx->object = template_id;
+		ctx->objmask = NULL;
+		return len;
+	case TABLE_ACTIONS_TEMPLATE:
+		out->args.table.act_templ_id =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)
+					       (out->args.table.pat_templ_id +
+						out->args.table.pat_templ_id_n),
+					       sizeof(double));
+		template_id = out->args.table.act_templ_id
+				+ out->args.table.act_templ_id_n++;
+		if ((uint8_t *)template_id > (uint8_t *)out + size)
+			return -1;
+		ctx->objdata = 0;
+		ctx->object = template_id;
+		ctx->objmask = NULL;
+		return len;
+	case TABLE_INGRESS:
+		out->args.table.attr.flow_attr.ingress = 1;
+		return len;
+	case TABLE_EGRESS:
+		out->args.table.attr.flow_attr.egress = 1;
+		return len;
+	case TABLE_TRANSFER:
+		out->args.table.attr.flow_attr.transfer = 1;
+		return len;
+	case TABLE_RULES_NUMBER:
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	default:
+		return -1;
+	}
+}
+
+/** Parse tokens for table destroy command. */
+static int
+parse_table_destroy(struct context *ctx, const struct token *token,
+		    const char *str, unsigned int len,
+		    void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+	uint32_t *table_id;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command || out->command == TABLE) {
+		if (ctx->curr != TABLE_DESTROY)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.table_destroy.table_id =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		return len;
+	}
+	table_id = out->args.table_destroy.table_id
+		    + out->args.table_destroy.table_id_n++;
+	if ((uint8_t *)table_id > (uint8_t *)out + size)
+		return -1;
+	ctx->objdata = 0;
+	ctx->object = table_id;
+	ctx->objmask = NULL;
+	return len;
+}
+
+/** Parse tokens for queue create commands. */
+static int
+parse_qo(struct context *ctx, const struct token *token,
+	 const char *str, unsigned int len,
+	 void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != QUEUE)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.vc.data = (uint8_t *)out + size;
+		return len;
+	}
+	switch (ctx->curr) {
+	case QUEUE_CREATE:
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		return len;
+	case QUEUE_TEMPLATE_TABLE:
+	case QUEUE_PATTERN_TEMPLATE:
+	case QUEUE_ACTIONS_TEMPLATE:
+	case QUEUE_CREATE_POSTPONE:
+		return len;
+	case ITEM_PATTERN:
+		out->args.vc.pattern =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		ctx->object = out->args.vc.pattern;
+		ctx->objmask = NULL;
+		return len;
+	case ACTIONS:
+		out->args.vc.actions =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)
+					       (out->args.vc.pattern +
+						out->args.vc.pattern_n),
+					       sizeof(double));
+		ctx->object = out->args.vc.actions;
+		ctx->objmask = NULL;
+		return len;
+	default:
+		return -1;
+	}
+}
+
+/** Parse tokens for queue destroy command. */
+static int
+parse_qo_destroy(struct context *ctx, const struct token *token,
+		 const char *str, unsigned int len,
+		 void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+	uint32_t *flow_id;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command || out->command == QUEUE) {
+		if (ctx->curr != QUEUE_DESTROY)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.destroy.rule =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		return len;
+	}
+	switch (ctx->curr) {
+	case QUEUE_DESTROY_ID:
+		flow_id = out->args.destroy.rule
+				+ out->args.destroy.rule_n++;
+		if ((uint8_t *)flow_id > (uint8_t *)out + size)
+			return -1;
+		ctx->objdata = 0;
+		ctx->object = flow_id;
+		ctx->objmask = NULL;
+		return len;
+	case QUEUE_DESTROY_POSTPONE:
+		return len;
+	default:
+		return -1;
+	}
+}
+
+/** Parse tokens for push queue command. */
+static int
+parse_push(struct context *ctx, const struct token *token,
+	   const char *str, unsigned int len,
+	   void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != PUSH)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.vc.data = (uint8_t *)out + size;
+	}
+	return len;
+}
+
+/** Parse tokens for pull command. */
+static int
+parse_pull(struct context *ctx, const struct token *token,
+	   const char *str, unsigned int len,
+	   void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	if (!out->command) {
+		if (ctx->curr != PULL)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		ctx->objdata = 0;
+		ctx->object = out;
+		ctx->objmask = NULL;
+		out->args.vc.data = (uint8_t *)out + size;
 	}
 	return len;
 }
@@ -8071,6 +9813,68 @@ parse_ia_id2ptr(struct context *ctx, const struct token *token,
 	return ret;
 }
 
+static int
+parse_meter_profile_id2ptr(struct context *ctx, const struct token *token,
+		const char *str, unsigned int len,
+		void *buf, unsigned int size)
+{
+	struct rte_flow_action *action = ctx->object;
+	struct rte_flow_action_meter_mark *meter;
+	struct rte_flow_meter_profile *profile = NULL;
+	uint32_t id = 0;
+	int ret;
+
+	(void)buf;
+	(void)size;
+	ctx->objdata = 0;
+	ctx->object = &id;
+	ctx->objmask = NULL;
+	ret = parse_int(ctx, token, str, len, ctx->object, sizeof(id));
+	ctx->object = action;
+	if (ret != (int)len)
+		return ret;
+	/* set meter profile */
+	if (action) {
+		meter = (struct rte_flow_action_meter_mark *)
+			(uintptr_t)(action->conf);
+		profile = port_meter_profile_get_by_id(ctx->port, id);
+		meter->profile = profile;
+		ret = (profile) ? ret : -1;
+	}
+	return ret;
+}
+
+static int
+parse_meter_policy_id2ptr(struct context *ctx, const struct token *token,
+		const char *str, unsigned int len,
+		void *buf, unsigned int size)
+{
+	struct rte_flow_action *action = ctx->object;
+	struct rte_flow_action_meter_mark *meter;
+	struct rte_flow_meter_policy *policy = NULL;
+	uint32_t id = 0;
+	int ret;
+
+	(void)buf;
+	(void)size;
+	ctx->objdata = 0;
+	ctx->object = &id;
+	ctx->objmask = NULL;
+	ret = parse_int(ctx, token, str, len, ctx->object, sizeof(id));
+	ctx->object = action;
+	if (ret != (int)len)
+		return ret;
+	/* set meter policy */
+	if (action) {
+		meter = (struct rte_flow_action_meter_mark *)
+			(uintptr_t)(action->conf);
+		policy = port_meter_policy_get_by_id(ctx->port, id);
+		meter->policy = policy;
+		ret = (policy) ? ret : -1;
+	}
+	return ret;
+}
+
 /** Parse set command, initialize output buffer for subsequent tokens. */
 static int
 parse_set_raw_encap_decap(struct context *ctx, const struct token *token,
@@ -8231,6 +10035,30 @@ parse_flex_handle(struct context *ctx, const struct token *token,
 		return -1;
 	}
 	return ret;
+}
+
+/** Parse Meter color name */
+static int
+parse_meter_color(struct context *ctx, const struct token *token,
+		  const char *str, unsigned int len, void *buf,
+		  unsigned int size)
+{
+	struct rte_flow_item_meter_color *meter_color;
+	unsigned int i;
+
+	(void)token;
+	(void)buf;
+	(void)size;
+	for (i = 0; meter_colors[i]; ++i)
+		if (!strcmp_partial(meter_colors[i], str, len))
+			break;
+	if (!meter_colors[i])
+		return -1;
+	if (!ctx->object)
+		return len;
+	meter_color = ctx->object;
+	meter_color->color = (enum rte_color)i;
+	return len;
 }
 
 /** No completion. */
@@ -8427,6 +10255,114 @@ comp_set_modify_field_id(struct context *ctx, const struct token *token,
 	if (ctx->curr == ACTION_MODIFY_FIELD_SRC_TYPE ||
 	    (strcmp(name, "pointer") && strcmp(name, "value")))
 		return strlcpy(buf, name, size);
+	return -1;
+}
+
+/** Complete available pattern template IDs. */
+static int
+comp_pattern_template_id(struct context *ctx, const struct token *token,
+			 unsigned int ent, char *buf, unsigned int size)
+{
+	unsigned int i = 0;
+	struct rte_port *port;
+	struct port_template *pt;
+
+	(void)token;
+	if (port_id_is_invalid(ctx->port, DISABLED_WARN) ||
+	    ctx->port == (portid_t)RTE_PORT_ALL)
+		return -1;
+	port = &ports[ctx->port];
+	for (pt = port->pattern_templ_list; pt != NULL; pt = pt->next) {
+		if (buf && i == ent)
+			return snprintf(buf, size, "%u", pt->id);
+		++i;
+	}
+	if (buf)
+		return -1;
+	return i;
+}
+
+/** Complete available actions template IDs. */
+static int
+comp_actions_template_id(struct context *ctx, const struct token *token,
+			 unsigned int ent, char *buf, unsigned int size)
+{
+	unsigned int i = 0;
+	struct rte_port *port;
+	struct port_template *pt;
+
+	(void)token;
+	if (port_id_is_invalid(ctx->port, DISABLED_WARN) ||
+	    ctx->port == (portid_t)RTE_PORT_ALL)
+		return -1;
+	port = &ports[ctx->port];
+	for (pt = port->actions_templ_list; pt != NULL; pt = pt->next) {
+		if (buf && i == ent)
+			return snprintf(buf, size, "%u", pt->id);
+		++i;
+	}
+	if (buf)
+		return -1;
+	return i;
+}
+
+/** Complete available table IDs. */
+static int
+comp_table_id(struct context *ctx, const struct token *token,
+	      unsigned int ent, char *buf, unsigned int size)
+{
+	unsigned int i = 0;
+	struct rte_port *port;
+	struct port_table *pt;
+
+	(void)token;
+	if (port_id_is_invalid(ctx->port, DISABLED_WARN) ||
+	    ctx->port == (portid_t)RTE_PORT_ALL)
+		return -1;
+	port = &ports[ctx->port];
+	for (pt = port->table_list; pt != NULL; pt = pt->next) {
+		if (buf && i == ent)
+			return snprintf(buf, size, "%u", pt->id);
+		++i;
+	}
+	if (buf)
+		return -1;
+	return i;
+}
+
+/** Complete available queue IDs. */
+static int
+comp_queue_id(struct context *ctx, const struct token *token,
+	      unsigned int ent, char *buf, unsigned int size)
+{
+	unsigned int i = 0;
+	struct rte_port *port;
+
+	(void)token;
+	if (port_id_is_invalid(ctx->port, DISABLED_WARN) ||
+	    ctx->port == (portid_t)RTE_PORT_ALL)
+		return -1;
+	port = &ports[ctx->port];
+	for (i = 0; i < port->queue_nb; i++) {
+		if (buf && i == ent)
+			return snprintf(buf, size, "%u", i);
+	}
+	if (buf)
+		return -1;
+	return i;
+}
+
+/** Complete available Meter colors. */
+static int
+comp_meter_color(struct context *ctx, const struct token *token,
+		 unsigned int ent, char *buf, unsigned int size)
+{
+	RTE_SET_USED(ctx);
+	RTE_SET_USED(token);
+	if (!buf)
+		return RTE_DIM(meter_colors);
+	if (ent < RTE_DIM(meter_colors) - 1)
+		return strlcpy(buf, meter_colors[ent], size);
 	return -1;
 }
 
@@ -8689,6 +10625,107 @@ static void
 cmd_flow_parsed(const struct buffer *in)
 {
 	switch (in->command) {
+	case INFO:
+		port_flow_get_info(in->port);
+		break;
+	case CONFIGURE:
+		port_flow_configure(in->port,
+				    &in->args.configure.port_attr,
+				    in->args.configure.nb_queue,
+				    &in->args.configure.queue_attr);
+		break;
+	case PATTERN_TEMPLATE_CREATE:
+		port_flow_pattern_template_create(in->port,
+				in->args.vc.pat_templ_id,
+				&((const struct rte_flow_pattern_template_attr) {
+					.relaxed_matching = in->args.vc.attr.reserved,
+					.ingress = in->args.vc.attr.ingress,
+					.egress = in->args.vc.attr.egress,
+					.transfer = in->args.vc.attr.transfer,
+				}),
+				in->args.vc.pattern);
+		break;
+	case PATTERN_TEMPLATE_DESTROY:
+		port_flow_pattern_template_destroy(in->port,
+				in->args.templ_destroy.template_id_n,
+				in->args.templ_destroy.template_id);
+		break;
+	case ACTIONS_TEMPLATE_CREATE:
+		port_flow_actions_template_create(in->port,
+				in->args.vc.act_templ_id,
+				&((const struct rte_flow_actions_template_attr) {
+					.ingress = in->args.vc.attr.ingress,
+					.egress = in->args.vc.attr.egress,
+					.transfer = in->args.vc.attr.transfer,
+				}),
+				in->args.vc.actions,
+				in->args.vc.masks);
+		break;
+	case ACTIONS_TEMPLATE_DESTROY:
+		port_flow_actions_template_destroy(in->port,
+				in->args.templ_destroy.template_id_n,
+				in->args.templ_destroy.template_id);
+		break;
+	case TABLE_CREATE:
+		port_flow_template_table_create(in->port, in->args.table.id,
+			&in->args.table.attr, in->args.table.pat_templ_id_n,
+			in->args.table.pat_templ_id, in->args.table.act_templ_id_n,
+			in->args.table.act_templ_id);
+		break;
+	case TABLE_DESTROY:
+		port_flow_template_table_destroy(in->port,
+					in->args.table_destroy.table_id_n,
+					in->args.table_destroy.table_id);
+		break;
+	case QUEUE_CREATE:
+		port_queue_flow_create(in->port, in->queue, in->postpone,
+				       in->args.vc.table_id, in->args.vc.pat_templ_id,
+				       in->args.vc.act_templ_id, in->args.vc.pattern,
+				       in->args.vc.actions);
+		break;
+	case QUEUE_DESTROY:
+		port_queue_flow_destroy(in->port, in->queue, in->postpone,
+					in->args.destroy.rule_n,
+					in->args.destroy.rule);
+		break;
+	case PUSH:
+		port_queue_flow_push(in->port, in->queue);
+		break;
+	case PULL:
+		port_queue_flow_pull(in->port, in->queue);
+		break;
+	case QUEUE_AGED:
+		port_queue_flow_aged(in->port, in->queue,
+				     in->args.aged.destroy);
+		break;
+	case QUEUE_INDIRECT_ACTION_CREATE:
+		port_queue_action_handle_create(
+				in->port, in->queue, in->postpone,
+				in->args.vc.attr.group,
+				&((const struct rte_flow_indir_action_conf) {
+					.ingress = in->args.vc.attr.ingress,
+					.egress = in->args.vc.attr.egress,
+					.transfer = in->args.vc.attr.transfer,
+				}),
+				in->args.vc.actions);
+		break;
+	case QUEUE_INDIRECT_ACTION_DESTROY:
+		port_queue_action_handle_destroy(in->port,
+					   in->queue, in->postpone,
+					   in->args.ia_destroy.action_id_n,
+					   in->args.ia_destroy.action_id);
+		break;
+	case QUEUE_INDIRECT_ACTION_UPDATE:
+		port_queue_action_handle_update(in->port,
+						in->queue, in->postpone,
+						in->args.vc.attr.group,
+						in->args.vc.actions);
+		break;
+	case QUEUE_INDIRECT_ACTION_QUERY:
+		port_queue_action_handle_query(in->port,
+					       in->queue, in->postpone,
+					       in->args.vc.attr.group);
+		break;
 	case INDIRECT_ACTION_CREATE:
 		port_action_handle_create(
 				in->port, in->args.vc.attr.group,
@@ -8856,9 +10893,6 @@ flow_item_default_mask(const struct rte_flow_item *item)
 	case RTE_FLOW_ITEM_TYPE_ANY:
 		mask = &rte_flow_item_any_mask;
 		break;
-	case RTE_FLOW_ITEM_TYPE_VF:
-		mask = &rte_flow_item_vf_mask;
-		break;
 	case RTE_FLOW_ITEM_TYPE_PORT_ID:
 		mask = &rte_flow_item_port_id_mask;
 		break;
@@ -8952,6 +10986,9 @@ flow_item_default_mask(const struct rte_flow_item *item)
 		break;
 	case RTE_FLOW_ITEM_TYPE_PPP:
 		mask = &rte_flow_item_ppp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_METER_COLOR:
+		mask = &rte_flow_item_meter_color_mask;
 		break;
 	default:
 		break;
@@ -9051,6 +11088,18 @@ cmd_set_raw_parsed_sample(const struct buffer *in)
 			size = sizeof(struct rte_flow_action_nvgre_encap);
 			parse_setup_nvgre_encap_data(&sample_nvgre_encap[idx]);
 			action->conf = &sample_nvgre_encap[idx];
+			break;
+		case RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR:
+			size = sizeof(struct rte_flow_action_ethdev);
+			rte_memcpy(&sample_port_representor[idx],
+					(const void *)action->conf, size);
+			action->conf = &sample_port_representor[idx];
+			break;
+		case RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT:
+			size = sizeof(struct rte_flow_action_ethdev);
+			rte_memcpy(&sample_represented_port[idx],
+					(const void *)action->conf, size);
+			action->conf = &sample_represented_port[idx];
 			break;
 		default:
 			fprintf(stderr, "Error - Not supported action\n");
@@ -9230,6 +11279,33 @@ cmd_set_raw_parsed(const struct buffer *in)
 				((const struct rte_flow_item_flex *)
 				item->spec)->length : 0;
 			break;
+		case RTE_FLOW_ITEM_TYPE_GRE_OPTION:
+			size = 0;
+			if (item->spec) {
+				const struct rte_flow_item_gre_opt
+					*opt = item->spec;
+				if (opt->checksum_rsvd.checksum) {
+					*total_size +=
+						sizeof(opt->checksum_rsvd);
+					rte_memcpy(data_tail - (*total_size),
+						   &opt->checksum_rsvd,
+						   sizeof(opt->checksum_rsvd));
+				}
+				if (opt->key.key) {
+					*total_size += sizeof(opt->key.key);
+					rte_memcpy(data_tail - (*total_size),
+						   &opt->key.key,
+						   sizeof(opt->key.key));
+				}
+				if (opt->sequence.sequence) {
+					*total_size += sizeof(opt->sequence.sequence);
+					rte_memcpy(data_tail - (*total_size),
+						   &opt->sequence.sequence,
+						   sizeof(opt->sequence.sequence));
+				}
+			}
+			proto = 0x2F;
+			break;
 		default:
 			fprintf(stderr, "Error - Not supported item\n");
 			goto error;
@@ -9378,16 +11454,16 @@ cmd_show_set_raw_parsed(void *parsed_result, struct cmdline *cl, void *data)
 	} while (all && ++index < RAW_ENCAP_CONFS_MAX_NUM);
 }
 
-cmdline_parse_token_string_t cmd_show_set_raw_cmd_show =
+static cmdline_parse_token_string_t cmd_show_set_raw_cmd_show =
 	TOKEN_STRING_INITIALIZER(struct cmd_show_set_raw_result,
 			cmd_show, "show");
-cmdline_parse_token_string_t cmd_show_set_raw_cmd_what =
+static cmdline_parse_token_string_t cmd_show_set_raw_cmd_what =
 	TOKEN_STRING_INITIALIZER(struct cmd_show_set_raw_result,
 			cmd_what, "raw_encap#raw_decap");
-cmdline_parse_token_num_t cmd_show_set_raw_cmd_index =
+static cmdline_parse_token_num_t cmd_show_set_raw_cmd_index =
 	TOKEN_NUM_INITIALIZER(struct cmd_show_set_raw_result,
 			cmd_index, RTE_UINT16);
-cmdline_parse_token_string_t cmd_show_set_raw_cmd_all =
+static cmdline_parse_token_string_t cmd_show_set_raw_cmd_all =
 	TOKEN_STRING_INITIALIZER(struct cmd_show_set_raw_result,
 			cmd_all, "all");
 cmdline_parse_inst_t cmd_show_set_raw = {

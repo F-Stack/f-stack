@@ -80,6 +80,11 @@ txgbe_hic_unlocked(struct txgbe_hw *hw, u32 *buffer, u32 length, u32 timeout)
 		return TXGBE_ERR_HOST_INTERFACE_COMMAND;
 	}
 
+	if ((rd32(hw, TXGBE_MNGMBX) & 0xff0000) >> 16 == 0x80) {
+		DEBUGOUT("It's unknown command.");
+		return TXGBE_ERR_MNG_ACCESS_FAILED;
+	}
+
 	return 0;
 }
 
@@ -136,21 +141,7 @@ txgbe_host_interface_command(struct txgbe_hw *hw, u32 *buffer,
 	for (bi = 0; bi < dword_len; bi++)
 		buffer[bi] = rd32a(hw, TXGBE_MNGMBX, bi);
 
-	/*
-	 * If there is any thing in data position pull it in
-	 * Read Flash command requires reading buffer length from
-	 * two byes instead of one byte
-	 */
-	if (resp->cmd == 0x30) {
-		for (; bi < dword_len + 2; bi++)
-			buffer[bi] = rd32a(hw, TXGBE_MNGMBX, bi);
-
-		buf_len = (((u16)(resp->cmd_or_resp.ret_status) << 3)
-				  & 0xF00) | resp->buf_len;
-		hdr_size += (2 << 2);
-	} else {
-		buf_len = resp->buf_len;
-	}
+	buf_len = resp->buf_len;
 	if (!buf_len)
 		goto rel_out;
 
@@ -256,6 +247,66 @@ s32 txgbe_hic_sr_write(struct txgbe_hw *hw, u32 addr, u8 *buf, int len)
 	UNREFERENCED_PARAMETER(&command);
 
 	return err;
+}
+
+s32 txgbe_close_notify(struct txgbe_hw *hw)
+{
+	u32 tmp;
+	s32 status;
+	struct txgbe_hic_write_shadow_ram buffer;
+
+	buffer.hdr.req.cmd = FW_DW_CLOSE_NOTIFY;
+	buffer.hdr.req.buf_lenh = 0;
+	buffer.hdr.req.buf_lenl = 0;
+	buffer.hdr.req.checksum = FW_DEFAULT_CHECKSUM;
+
+	/* one word */
+	buffer.length = 0;
+	buffer.address = 0;
+
+	status = txgbe_host_interface_command(hw, (u32 *)&buffer,
+					      sizeof(buffer),
+					      TXGBE_HI_COMMAND_TIMEOUT, false);
+	if (status)
+		return status;
+
+	tmp = rd32a(hw, TXGBE_MNGMBX, 1);
+	if (tmp == TXGBE_CHECKSUM_CAP_ST_PASS)
+		status = 0;
+	else
+		status = TXGBE_ERR_EEPROM_CHECKSUM;
+
+	return status;
+}
+
+s32 txgbe_open_notify(struct txgbe_hw *hw)
+{
+	u32 tmp;
+	s32 status;
+	struct txgbe_hic_write_shadow_ram buffer;
+
+	buffer.hdr.req.cmd = FW_DW_OPEN_NOTIFY;
+	buffer.hdr.req.buf_lenh = 0;
+	buffer.hdr.req.buf_lenl = 0;
+	buffer.hdr.req.checksum = FW_DEFAULT_CHECKSUM;
+
+	/* one word */
+	buffer.length = 0;
+	buffer.address = 0;
+
+	status = txgbe_host_interface_command(hw, (u32 *)&buffer,
+					      sizeof(buffer),
+					      TXGBE_HI_COMMAND_TIMEOUT, false);
+	if (status)
+		return status;
+
+	tmp = rd32a(hw, TXGBE_MNGMBX, 1);
+	if (tmp == TXGBE_CHECKSUM_CAP_ST_PASS)
+		status = 0;
+	else
+		status = TXGBE_ERR_EEPROM_CHECKSUM;
+
+	return status;
 }
 
 /**

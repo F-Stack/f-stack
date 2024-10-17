@@ -5,17 +5,12 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#include <rte_debug.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_graph.h>
 #include <rte_graph_worker.h>
 #include <rte_ip.h>
 #include <rte_lpm.h>
-#include <rte_mbuf.h>
-#include <rte_tcp.h>
-#include <rte_udp.h>
-#include <rte_vect.h>
 
 #include "rte_node_ip4_api.h"
 
@@ -148,7 +143,7 @@ rte_node_ip4_route_add(uint32_t ip, uint8_t depth, uint16_t next_hop,
 				  ip, depth, val);
 		if (ret < 0) {
 			node_err("ip4_lookup",
-				 "Unable to add entry %s / %d nh (%x) to LPM table on sock %d, rc=%d\n",
+				 "Unable to add entry %s / %d nh (%x) to LPM table on sock %d, rc=%d",
 				 abuf, depth, val, socket, ret);
 			return ret;
 		}

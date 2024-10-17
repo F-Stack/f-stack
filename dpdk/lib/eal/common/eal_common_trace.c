@@ -2,8 +2,8 @@
  * Copyright(C) 2020 Marvell International Ltd.
  */
 
+#include <stdlib.h>
 #include <fnmatch.h>
-#include <inttypes.h>
 #include <sys/queue.h>
 #include <regex.h>
 
@@ -180,15 +180,18 @@ rte_trace_pattern(const char *pattern, bool enable)
 	int rc = 0, found = 0;
 
 	STAILQ_FOREACH(tp, &tp_list, next) {
-		if (fnmatch(pattern, tp->name, 0) == 0) {
-			if (enable)
-				rc = rte_trace_point_enable(tp->handle);
-			else
-				rc = rte_trace_point_disable(tp->handle);
-			found = 1;
+		if (fnmatch(pattern, tp->name, 0) != 0)
+			continue;
+
+		if (enable)
+			rc = rte_trace_point_enable(tp->handle);
+		else
+			rc = rte_trace_point_disable(tp->handle);
+		if (rc < 0) {
+			found = 0;
+			break;
 		}
-		if (rc < 0)
-			return rc;
+		found = 1;
 	}
 
 	return rc | found;
@@ -205,17 +208,18 @@ rte_trace_regexp(const char *regex, bool enable)
 		return -EINVAL;
 
 	STAILQ_FOREACH(tp, &tp_list, next) {
-		if (regexec(&r, tp->name, 0, NULL, 0) == 0) {
-			if (enable)
-				rc = rte_trace_point_enable(tp->handle);
-			else
-				rc = rte_trace_point_disable(tp->handle);
-			found = 1;
-		}
+		if (regexec(&r, tp->name, 0, NULL, 0) != 0)
+			continue;
+
+		if (enable)
+			rc = rte_trace_point_enable(tp->handle);
+		else
+			rc = rte_trace_point_disable(tp->handle);
 		if (rc < 0) {
 			found = 0;
 			break;
 		}
+		found = 1;
 	}
 	regfree(&r);
 
@@ -231,7 +235,7 @@ rte_trace_point_lookup(const char *name)
 		return NULL;
 
 	STAILQ_FOREACH(tp, &tp_list, next)
-		if (strncmp(tp->name, name, TRACE_POINT_NAME_SIZE) == 0)
+		if (strcmp(tp->name, name) == 0)
 			return tp->handle;
 
 	return NULL;
@@ -488,10 +492,7 @@ __rte_trace_point_register(rte_trace_point_t *handle, const char *name,
 	}
 
 	/* Initialize the trace point */
-	if (rte_strscpy(tp->name, name, TRACE_POINT_NAME_SIZE) < 0) {
-		trace_err("name is too long");
-		goto free;
-	}
+	tp->name = name;
 
 	/* Copy the accumulated fields description and clear it for the next
 	 * trace point.
@@ -513,8 +514,7 @@ __rte_trace_point_register(rte_trace_point_t *handle, const char *name,
 
 	/* All Good !!! */
 	return 0;
-free:
-	free(tp);
+
 fail:
 	if (trace.register_errno == 0)
 		trace.register_errno = rte_errno;

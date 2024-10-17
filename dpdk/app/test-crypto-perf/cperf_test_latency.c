@@ -24,7 +24,7 @@ struct cperf_latency_ctx {
 
 	struct rte_mempool *pool;
 
-	struct rte_cryptodev_sym_session *sess;
+	void *sess;
 
 	cperf_populate_ops_t populate_ops;
 
@@ -43,23 +43,32 @@ struct priv_op_data {
 static void
 cperf_latency_test_free(struct cperf_latency_ctx *ctx)
 {
-	if (ctx) {
-		if (ctx->sess) {
-			rte_cryptodev_sym_session_clear(ctx->dev_id, ctx->sess);
-			rte_cryptodev_sym_session_free(ctx->sess);
+	if (ctx == NULL)
+		return;
+
+	if (ctx->sess != NULL) {
+		if (ctx->options->op_type == CPERF_ASYM_MODEX)
+			rte_cryptodev_asym_session_free(ctx->dev_id, ctx->sess);
+#ifdef RTE_LIB_SECURITY
+		else if (ctx->options->op_type == CPERF_PDCP ||
+			 ctx->options->op_type == CPERF_DOCSIS ||
+			 ctx->options->op_type == CPERF_IPSEC) {
+			struct rte_security_ctx *sec_ctx =
+				rte_cryptodev_get_sec_ctx(ctx->dev_id);
+			rte_security_session_destroy(sec_ctx, ctx->sess);
 		}
-
-		if (ctx->pool)
-			rte_mempool_free(ctx->pool);
-
-		rte_free(ctx->res);
-		rte_free(ctx);
+#endif
+		else
+			rte_cryptodev_sym_session_free(ctx->dev_id, ctx->sess);
 	}
+
+	rte_mempool_free(ctx->pool);
+	rte_free(ctx->res);
+	rte_free(ctx);
 }
 
 void *
 cperf_latency_test_constructor(struct rte_mempool *sess_mp,
-		struct rte_mempool *sess_priv_mp,
 		uint8_t dev_id, uint16_t qp_id,
 		const struct cperf_options *options,
 		const struct cperf_test_vector *test_vector,
@@ -84,7 +93,7 @@ cperf_latency_test_constructor(struct rte_mempool *sess_mp,
 		sizeof(struct rte_crypto_sym_op) +
 		sizeof(struct cperf_op_result *);
 
-	ctx->sess = op_fns->sess_create(sess_mp, sess_priv_mp, dev_id, options,
+	ctx->sess = op_fns->sess_create(sess_mp, dev_id, options,
 			test_vector, iv_offset);
 	if (ctx->sess == NULL)
 		goto err;
@@ -113,7 +122,11 @@ store_timestamp(struct rte_crypto_op *op, uint64_t timestamp)
 {
 	struct priv_op_data *priv_data;
 
-	priv_data = (struct priv_op_data *) (op->sym + 1);
+	if (op->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+		priv_data = (struct priv_op_data *) (op->sym + 1);
+	else
+		priv_data = (struct priv_op_data *) (op->asym + 1);
+
 	priv_data->result->status = op->status;
 	priv_data->result->tsc_end = timestamp;
 }
@@ -200,7 +213,13 @@ cperf_latency_test_runner(void *arg)
 					ctx->dst_buf_offset,
 					burst_size, ctx->sess, ctx->options,
 					ctx->test_vector, iv_offset,
-					&imix_idx, NULL);
+					&imix_idx, &tsc_start);
+
+			/* Populate the mbuf with the test vector */
+			for (i = 0; i < burst_size; i++)
+				cperf_mbuf_set(ops[i]->sym->m_src,
+						ctx->options,
+						ctx->test_vector);
 
 			tsc_start = rte_rdtsc_precise();
 
@@ -235,9 +254,13 @@ cperf_latency_test_runner(void *arg)
 				ctx->res[tsc_idx].tsc_start = tsc_start;
 				/*
 				 * Private data structure starts after the end of the
-				 * rte_crypto_sym_op structure.
+				 * rte_crypto_sym_op (or rte_crypto_asym_op) structure.
 				 */
-				priv_data = (struct priv_op_data *) (ops[i]->sym + 1);
+				if (ops[i]->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+					priv_data = (struct priv_op_data *) (ops[i]->sym + 1);
+				else
+					priv_data = (struct priv_op_data *) (ops[i]->asym + 1);
+
 				priv_data->result = (void *)&ctx->res[tsc_idx];
 				tsc_idx++;
 			}

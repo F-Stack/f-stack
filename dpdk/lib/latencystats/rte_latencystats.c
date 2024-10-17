@@ -2,13 +2,9 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
-#include <unistd.h>
-#include <sys/types.h>
-#include <stdbool.h>
 #include <math.h>
 
 #include <rte_string_fns.h>
-#include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
 #include <rte_log.h>
 #include <rte_cycles.h>
@@ -168,7 +164,7 @@ calc_latency(uint16_t pid __rte_unused,
 	 * a constant smoothing factor between 0 and 1. The value
 	 * is used below for measuring average latency.
 	 */
-	const float alpha = 0.2;
+	const float alpha = 0.2f;
 
 	now = rte_rdtsc();
 	for (i = 0; i < nb_pkts; i++) {

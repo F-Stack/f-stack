@@ -72,10 +72,18 @@ static VirtualAlloc2_type VirtualAlloc2_ptr;
 
 #ifdef RTE_TOOLCHAIN_GCC
 
+#ifndef MEM_COALESCE_PLACEHOLDERS
 #define MEM_COALESCE_PLACEHOLDERS 0x00000001
+#endif
+#ifndef MEM_PRESERVE_PLACEHOLDER
 #define MEM_PRESERVE_PLACEHOLDER  0x00000002
+#endif
+#ifndef MEM_REPLACE_PLACEHOLDER
 #define MEM_REPLACE_PLACEHOLDER   0x00004000
+#endif
+#ifndef MEM_RESERVE_PLACEHOLDER
 #define MEM_RESERVE_PLACEHOLDER   0x00040000
+#endif
 
 int
 eal_mem_win32api_init(void)
@@ -102,7 +110,7 @@ eal_mem_win32api_init(void)
 	VirtualAlloc2_ptr = (VirtualAlloc2_type)(
 		(void *)GetProcAddress(library, function));
 	if (VirtualAlloc2_ptr == NULL) {
-		RTE_LOG_WIN32_ERR("GetProcAddress(\"%s\", \"%s\")\n",
+		RTE_LOG_WIN32_ERR("GetProcAddress(\"%s\", \"%s\")",
 			library_name, function);
 
 		/* Contrary to the docs, Server 2016 is not supported. */
@@ -190,8 +198,7 @@ eal_mem_virt2iova_init(void)
 	ret = 0;
 
 exit:
-	if (detail != NULL)
-		free(detail);
+	free(detail);
 	if (list != INVALID_HANDLE_VALUE)
 		SetupDiDestroyDeviceInfoList(list);
 

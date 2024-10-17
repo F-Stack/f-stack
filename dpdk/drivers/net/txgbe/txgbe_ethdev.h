@@ -20,7 +20,7 @@
 #include <rte_ethdev_core.h>
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_tm_driver.h>
 
 /* need update link, bit flag */
@@ -40,6 +40,7 @@
 /*Default value of Max Rx Queue*/
 #define TXGBE_MAX_RX_QUEUE_NUM	128
 #define TXGBE_VMDQ_DCB_NB_QUEUES     TXGBE_MAX_RX_QUEUE_NUM
+#define TXGBE_NONE_MODE_TX_NB_QUEUES 64
 
 #ifndef NBBY
 #define NBBY	8	/* number of bits in a byte */
@@ -54,7 +55,7 @@
 #define TXGBE_5TUPLE_MAX_PRI            7
 #define TXGBE_5TUPLE_MIN_PRI            1
 
-
+#define TXGBE_MAX_MTU			9414
 /* The overhead from MTU to max frame size. */
 #define TXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
 
@@ -346,6 +347,7 @@ struct txgbe_tm_conf {
 struct txgbe_adapter {
 	struct txgbe_hw             hw;
 	struct txgbe_hw_stats       stats;
+	struct rte_eth_fdir_conf    fdir_conf;
 	struct txgbe_hw_fdir_info   fdir;
 	struct txgbe_interrupt      intr;
 	struct txgbe_stat_mappings  stat_mappings;
@@ -368,10 +370,15 @@ struct txgbe_adapter {
 
 	/* For RSS reta table update */
 	uint8_t rss_reta_updated;
+
+	uint32_t link_thread_running;
+	rte_thread_t link_thread_tid;
 };
 
 #define TXGBE_DEV_ADAPTER(dev) \
 	((struct txgbe_adapter *)(dev)->data->dev_private)
+
+#define TXGBE_DEV_FDIR_CONF(dev)	(&TXGBE_DEV_ADAPTER(dev)->fdir_conf)
 
 #define TXGBE_DEV_HW(dev) \
 	(&((struct txgbe_adapter *)(dev)->data->dev_private)->hw)
@@ -557,6 +564,9 @@ void txgbe_configure_dcb(struct rte_eth_dev *dev);
 int
 txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 		int wait_to_complete);
+int
+txgbe_dev_wait_setup_link_complete(struct rte_eth_dev *dev,
+		uint32_t timeout_ms);
 int txgbe_pf_host_init(struct rte_eth_dev *eth_dev);
 
 void txgbe_pf_host_uninit(struct rte_eth_dev *eth_dev);
@@ -583,7 +593,7 @@ int txgbe_tm_ops_get(struct rte_eth_dev *dev, void *ops);
 void txgbe_tm_conf_init(struct rte_eth_dev *dev);
 void txgbe_tm_conf_uninit(struct rte_eth_dev *dev);
 int txgbe_set_queue_rate_limit(struct rte_eth_dev *dev, uint16_t queue_idx,
-			       uint16_t tx_rate);
+			       uint32_t tx_rate);
 int txgbe_rss_conf_init(struct txgbe_rte_flow_rss_conf *out,
 			const struct rte_flow_action_rss *in);
 int txgbe_action_rss_same(const struct rte_flow_action_rss *comp,

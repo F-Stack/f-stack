@@ -35,8 +35,19 @@ extern "C" {
 #define DPDK_CONFIG_NUM 16
 #define DPDK_CONFIG_MAXLEN 256
 #define DPDK_MAX_LCORE 128
+#define DPDK_MAX_VLAN_FILTER 128
 #define PCAP_SNAP_MINLEN 94
 #define PCAP_SAVE_MINLEN (2<<22)
+/*
+ * KNI ratelimit default value.
+ * The total speed limit for a single process entering the kni ring is 10,000 QPS,
+ * 1000 QPS for general packets, 9000 QPS for console packets (ospf/arp, etc.)
+ * The total speed limit for kni forwarding to the kernel is 20,000 QPS.
+ */
+#define KNI_RATELIMT_PROCESS  (10000)
+#define KNI_RATELIMT_GENERAL (1000)
+#define KNI_RATELIMT_CONSOLE    (KNI_RATELIMT_PROCESS - KNI_RATELIMT_GENERAL)
+#define KNI_RATELIMT_KERNEL (KNI_RATELIMT_PROCESS * 2)
 
 extern int dpdk_argc;
 extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
@@ -46,6 +57,10 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
 #define VIP_MAX_NUM 64
 
+/* exception path(KNI) type */
+#define KNI_TYPE_KNI        0
+#define KNI_TYPE_VIRTIO     1
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -54,12 +69,23 @@ struct ff_hw_features {
     uint8_t tx_tso;
 };
 
-struct ff_port_cfg {
+#ifdef FF_IPFW
+struct ff_ipfw_pr_cfg {
+    //uint32_t rule_num;
+    //uint32_t fib_num; /* Use portN or vlanN's idx * 100 */
+    char *addr;
+    char *netmask;
+};
+#endif
+
+struct ff_vlan_cfg {
     char *name;
     char *ifname;
-    uint8_t port_id;
-    uint8_t mac[6];
-    struct ff_hw_features hw_features;
+    /* global vlan idx, also use for route table's fib num */
+    int vlan_idx;
+    uint16_t vlan_id;
+    uint16_t port_id;
+
     char *addr;
     char *netmask;
     char *broadcast;
@@ -69,6 +95,49 @@ struct ff_port_cfg {
     char *vip_addr_str;
     char **vip_addr_array;
     uint32_t nb_vip;
+
+    /* simple policy routing, only need rule num(100/200/300/400), ip/mask,fib num(0/1/2/3/4)  */
+    char *pr_addr_str;
+
+#ifdef FF_IPFW
+    struct ff_ipfw_pr_cfg *pr_cfg;
+    uint32_t nb_pr;
+#endif
+
+#ifdef INET6
+    char *addr6_str;
+    char *gateway6_str;
+    uint8_t prefix_len;
+
+    char *vip_addr6_str;
+    char **vip_addr6_array;
+    uint32_t nb_vip6;
+    uint8_t vip_prefix_len;
+#endif
+};
+
+struct ff_port_cfg {
+    char *name;
+    char *ifname;
+    uint16_t port_id;
+    uint8_t mac[6];
+    struct ff_hw_features hw_features;
+
+    char *addr;
+    char *netmask;
+    char *broadcast;
+    char *gateway;
+
+    char *vip_ifname;
+    char *vip_addr_str;
+    char **vip_addr_array;
+    uint32_t nb_vip;
+
+#ifdef FF_IPFW
+    char *pr_addr_str;
+    struct ff_ipfw_pr_cfg *pr_cfg;
+    uint32_t nb_pr;
+#endif
 
 #ifdef INET6
     char *addr6_str;
@@ -85,6 +154,9 @@ struct ff_port_cfg {
     int nb_slaves;
     uint16_t lcore_list[DPDK_MAX_LCORE];
     uint16_t *slave_portid_list;
+
+    int nb_vlan;
+    struct ff_vlan_cfg *vlan_cfgs[DPDK_MAX_VLAN_FILTER];
 };
 
 struct ff_vdev_cfg {
@@ -150,6 +222,8 @@ struct ff_config {
         int tso;
         int tx_csum_offoad_skip;
         int vlan_strip;
+        int nb_vlan_filter;
+        uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
         int symmetric_rss;
 
         /* sleep x microseconds when no pkts incomming */
@@ -169,12 +243,17 @@ struct ff_config {
         uint16_t log_level;
         // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
+        struct ff_vlan_cfg *vlan_cfgs;
         struct ff_vdev_cfg *vdev_cfgs;
         struct ff_bond_cfg *bond_cfgs;
     } dpdk;
 
     struct {
         int enable;
+        int type;
+        int console_packets_ratelimit;
+        int general_packets_ratelimit;
+        int kernel_packets_ratelimit;
         char *kni_action;
         char *method;
         char *tcp_port;

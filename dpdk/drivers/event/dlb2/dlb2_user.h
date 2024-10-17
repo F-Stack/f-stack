@@ -47,6 +47,8 @@ enum dlb2_error {
 	DLB2_ST_NO_MEMORY,
 	DLB2_ST_INVALID_LOCK_ID_COMP_LEVEL,
 	DLB2_ST_INVALID_COS_ID,
+	DLB2_ST_INVALID_CQ_WEIGHT_LIMIT,
+	DLB2_ST_FEATURE_UNAVAILABLE,
 };
 
 static const char dlb2_error_strings[][128] = {
@@ -87,6 +89,8 @@ static const char dlb2_error_strings[][128] = {
 	"DLB2_ST_NO_MEMORY",
 	"DLB2_ST_INVALID_LOCK_ID_COMP_LEVEL",
 	"DLB2_ST_INVALID_COS_ID",
+	"DLB2_ST_INVALID_CQ_WEIGHT_LIMIT",
+	"DLB2_ST_FEATURE_UNAVAILABLE",
 };
 
 struct dlb2_cmd_response {
@@ -446,7 +450,7 @@ struct dlb2_create_dir_queue_args {
  * - num_hist_list_entries: Number of history list entries. This must be
  *	greater than or equal cq_depth.
  * - cos_id: class-of-service to allocate this port from. Must be between 0 and
- *	3, inclusive.
+ *	3, inclusive. Should be 255 if default.
  * - cos_strict: If set, return an error if there are no available ports in the
  *	requested class-of-service. Else, allocate the port from a different
  *	class-of-service if the requested class has no available ports.
@@ -494,6 +498,7 @@ struct dlb2_create_dir_port_args {
 	__u16 cq_depth;
 	__u16 cq_depth_threshold;
 	__s32 queue_id;
+	__u8 is_producer;
 };
 
 /*
@@ -685,6 +690,31 @@ struct dlb2_pending_port_unmaps_args {
 	/* Input parameters */
 	__u32 port_id;
 	__u32 padding0;
+};
+
+/*
+ * DLB2_DOMAIN_CMD_ENABLE_CQ_WEIGHT: Enable QE-weight based scheduling on a
+ *      load-balanced port's CQ and configures the CQ's weight limit.
+ *
+ *      This must be called after creating the port but before starting the
+ *      domain. The QE weight limit must be non-zero and cannot exceed the
+ *      CQ's depth.
+ *
+ * Input parameters:
+ * - port_id: Load-balanced port ID.
+ * - limit: QE weight limit.
+ *
+ * Output parameters:
+ * - response.status: Detailed error code. In certain cases, such as if the
+ *      ioctl request arg is invalid, the driver won't set status.
+ * - response.id: number of unmaps in progress.
+ */
+struct dlb2_enable_cq_weight_args {
+	/* Output parameters */
+	struct dlb2_cmd_response response;
+	/* Input parameters */
+	__u32 port_id;
+	__u32 limit;
 };
 
 /*

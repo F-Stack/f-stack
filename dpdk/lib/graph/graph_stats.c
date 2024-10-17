@@ -4,6 +4,7 @@
 
 #include <fnmatch.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 #include <rte_common.h>
 #include <rte_errno.h>
@@ -233,8 +234,7 @@ free:
 static void
 cluster_fini(struct cluster *cluster)
 {
-	if (cluster->graphs)
-		free(cluster->graphs);
+	free(cluster->graphs);
 }
 
 static int

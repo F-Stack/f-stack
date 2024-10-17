@@ -13,7 +13,6 @@ extern "C" {
  * RTE SWX Pipeline
  */
 
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -46,21 +45,37 @@ extern "C" {
 struct rte_swx_pipeline;
 
 /**
+ * Pipeline find
+ *
+ * @param[in] name
+ *   Pipeline name.
+ * @return
+ *   Valid pipeline handle if found or NULL otherwise.
+ */
+__rte_experimental
+struct rte_swx_pipeline *
+rte_swx_pipeline_find(const char *name);
+
+/**
  * Pipeline configure
  *
  * @param[out] p
  *   Pipeline handle. Must point to valid memory. Contains valid pipeline handle
  *   when the function returns successfully.
+ * @param[in] name
+ *   Pipeline unique name.
  * @param[in] numa_node
  *   Non-Uniform Memory Access (NUMA) node.
  * @return
  *   0 on success or the following error codes otherwise:
  *   -EINVAL: Invalid argument;
- *   -ENOMEM: Not enough space/cannot allocate memory.
+ *   -ENOMEM: Not enough space/cannot allocate memory;
+ *   -EEXIST: Pipeline with this name already exists.
  */
 __rte_experimental
 int
 rte_swx_pipeline_config(struct rte_swx_pipeline **p,
+			const char *name,
 			int numa_node);
 
 /*
@@ -160,6 +175,46 @@ rte_swx_pipeline_port_out_config(struct rte_swx_pipeline *p,
 				 uint32_t port_id,
 				 const char *port_type_name,
 				 void *args);
+/*
+ * Packet mirroring
+ */
+
+/** Default number of packet mirroring slots. */
+#ifndef RTE_SWX_PACKET_MIRRORING_SLOTS_DEFAULT
+#define RTE_SWX_PACKET_MIRRORING_SLOTS_DEFAULT 4
+#endif
+
+/** Default maximum number of packet mirroring sessions. */
+#ifndef RTE_SWX_PACKET_MIRRORING_SESSIONS_DEFAULT
+#define RTE_SWX_PACKET_MIRRORING_SESSIONS_DEFAULT 64
+#endif
+
+/** Packet mirroring parameters. */
+struct rte_swx_pipeline_mirroring_params {
+	/** Number of packet mirroring slots. */
+	uint32_t n_slots;
+
+	/** Maximum number of packet mirroring sessions. */
+	uint32_t n_sessions;
+};
+
+/**
+ * Packet mirroring configure
+ *
+ * @param[in] p
+ *   Pipeline handle.
+ * @param[in] params
+ *   Packet mirroring parameters.
+ * @return
+ *   0 on success or the following error codes otherwise:
+ *   -EINVAL: Invalid argument;
+ *   -ENOMEM: Not enough memory;
+ *   -EEXIST: Pipeline was already built successfully.
+ */
+__rte_experimental
+int
+rte_swx_pipeline_mirroring_config(struct rte_swx_pipeline *p,
+				  struct rte_swx_pipeline_mirroring_params *params);
 
 /*
  * Extern objects and functions
@@ -272,6 +327,30 @@ rte_swx_pipeline_extern_func_register(struct rte_swx_pipeline *p,
 				      const char *name,
 				      const char *mailbox_struct_type_name,
 				      rte_swx_extern_func_t func);
+/*
+ * Hash function.
+ */
+
+/**
+ * Pipeline hash function register
+ *
+ * @param[in] p
+ *   Pipeline handle.
+ * @param[in] name
+ *   Hash function name.
+ * @param[in] func
+ *   Hash function.
+ * @return
+ *   0 on success or the following error codes otherwise:
+ *   -EINVAL: Invalid argument;
+ *   -ENOMEM: Not enough space/cannot allocate memory;
+ *   -EEXIST: Hash function with this name already exists.
+ */
+__rte_experimental
+int
+rte_swx_pipeline_hash_func_register(struct rte_swx_pipeline *p,
+				    const char *name,
+				    rte_swx_hash_func_t func);
 
 /*
  * Packet headers and meta-data
@@ -590,11 +669,12 @@ struct rte_swx_pipeline_table_params {
 	 */
 	const char *default_action_name;
 
-	/** Default action data. The size of this array is the action data size
-	 * of the default action. Must be NULL if the default action data size
-	 * is zero.
+	/** Default action arguments. Specified as a string with the format
+	 * "ARG0_NAME ARG0_VALUE ...". The number of arguments in this string
+	 * must match exactly the number of arguments of the default action.
+	 * Must be NULL if the default action does not have any arguments.
 	 */
-	uint8_t *default_action_data;
+	const char *default_action_args;
 
 	/** If non-zero (true), then the default action of the current table
 	 * cannot be changed. If zero (false), then the default action can be
@@ -602,6 +682,13 @@ struct rte_swx_pipeline_table_params {
 	 * list.
 	 */
 	int default_action_is_const;
+
+	/** Hash function name. When not set to NULL, it must point to one of
+	 * the hash functions that were registered for the current pipeline.
+	 * Ignored by the table implementation when not needed. When needed but
+	 * NULL, the table implementation will select the hash function to use.
+	 */
+	const char *hash_func_name;
 };
 
 /**
@@ -729,11 +816,12 @@ struct rte_swx_pipeline_learner_params {
 	 */
 	const char *default_action_name;
 
-	/** Default action data. The size of this array is the action data size
-	 * of the default action. Must be NULL if the default action data size
-	 * is zero.
+	/** Default action arguments. Specified as a string with the format
+	 * "ARG0_NAME ARG0_VALUE ...". The number of arguments in this string
+	 * must match exactly the number of arguments of the default action.
+	 * Must be NULL if the default action does not have any arguments.
 	 */
-	uint8_t *default_action_data;
+	const char *default_action_args;
 
 	/** If non-zero (true), then the default action of the current table
 	 * cannot be changed. If zero (false), then the default action can be
@@ -741,6 +829,12 @@ struct rte_swx_pipeline_learner_params {
 	 * list.
 	 */
 	int default_action_is_const;
+
+	/** Hash function name. When not set to NULL, it must point to one of
+	 * the hash functions that were registered for the current pipeline.
+	 * When NULL, the default hash function will be used.
+	 */
+	const char *hash_func_name;
 };
 
 /**
@@ -755,7 +849,9 @@ struct rte_swx_pipeline_learner_params {
  * @param[in] size
  *   The maximum number of table entries. Must be non-zero.
  * @param[in] timeout
- *   Table entry timeout in seconds. Must be non-zero.
+ *   Array of possible table entry timeouts in seconds. Must be non-NULL.
+ * @param[in] n_timeouts
+ *   Number of elements in the *timeout* array.
  * @return
  *   0 on success or the following error codes otherwise:
  *   -EINVAL: Invalid argument;
@@ -769,7 +865,8 @@ rte_swx_pipeline_learner_config(struct rte_swx_pipeline *p,
 				const char *name,
 				struct rte_swx_pipeline_learner_params *params,
 				uint32_t size,
-				uint32_t timeout);
+				uint32_t *timeout,
+				uint32_t n_timeouts);
 
 /**
  * Pipeline register array configure
@@ -857,12 +954,12 @@ int
 rte_swx_pipeline_build(struct rte_swx_pipeline *p);
 
 /**
- * Pipeline build from specification file
+ * Pipeline C code generate based on input specification file
  *
- * @param[in] p
- *   Pipeline handle.
- * @param[in] spec
- *   Pipeline specification file.
+ * @param[in] spec_file
+ *   Pipeline specification file (.spec) provided as input.
+ * @param[in] code_file
+ *   Pipeline C language file (.c) to be generated.
  * @param[out] err_line
  *   In case of error and non-NULL, the line number within the *spec* file where
  *   the error occurred. The first line number in the file is 1.
@@ -872,15 +969,48 @@ rte_swx_pipeline_build(struct rte_swx_pipeline *p);
  *   0 on success or the following error codes otherwise:
  *   -EINVAL: Invalid argument;
  *   -ENOMEM: Not enough space/cannot allocate memory;
- *   -EEXIST: Resource with the same name already exists;
+ *   -EEXIST: Resource with the same name already exists.
+ */
+__rte_experimental
+int
+rte_swx_pipeline_codegen(FILE *spec_file,
+			 FILE *code_file,
+			 uint32_t *err_line,
+			 const char **err_msg);
+
+/**
+ * Pipeline build from shared object library
+ *
+ * The shared object library must be built from the C language source code file
+ * previously generated by the rte_swx_pipeline_codegen() API function.
+ *
+ * The pipeline I/O specification file defines the I/O ports of the pipeline.
+ *
+ * @param[out] p
+ *   Pipeline handle. Must point to valid memory. Contains valid pipeline handle
+ *   when the function returns successfully.
+ * @param[in] name
+ *   Pipeline unique name.
+ * @param[in] lib_file_name
+ *   Shared object library file name.
+ * @param[in] iospec_file
+ *   Pipeline I/O specification file.
+ * @param[in] numa_node
+ *   Non-Uniform Memory Access (NUMA) node.
+ * @return
+ *   0 on success or the following error codes otherwise:
+ *   -EINVAL: Invalid argument;
+ *   -ENOMEM: Not enough space/cannot allocate memory;
+ *   -EEXIST: Pipeline with this name already exists;
  *   -ENODEV: Extern object or table creation error.
  */
 __rte_experimental
 int
-rte_swx_pipeline_build_from_spec(struct rte_swx_pipeline *p,
-				 FILE *spec,
-				 uint32_t *err_line,
-				 const char **err_msg);
+rte_swx_pipeline_build_from_lib(struct rte_swx_pipeline **p,
+				const char *name,
+				const char *lib_file_name,
+				FILE *iospec_file,
+				int numa_node);
 
 /**
  * Pipeline run
@@ -902,6 +1032,7 @@ rte_swx_pipeline_run(struct rte_swx_pipeline *p,
  *
  * @param[in] p
  *   Pipeline handle.
+ *   If p is NULL, no operation is performed.
  */
 __rte_experimental
 void

@@ -14,6 +14,7 @@
 #include "nfp_mip.h"
 #include "nfp_rtsym.h"
 #include "nfp6000/nfp6000.h"
+#include "../nfp_logs.h"
 
 /* These need to match the linker */
 #define SYM_TGT_LMEM		0
@@ -93,25 +94,6 @@ nfp_rtsym_table_read(struct nfp_cpp *cpp)
 
 	return rtbl;
 }
-
-/*
- * This looks more complex than it should be. But we need to get the type for
- * the ~ right in round_down (it needs to be as wide as the result!), and we
- * want to evaluate the macro arguments just once each.
- */
-#define __round_mask(x, y) ((__typeof__(x))((y) - 1))
-
-#define round_up(x, y) \
-	(__extension__ ({ \
-		typeof(x) _x = (x); \
-		((((_x) - 1) | __round_mask(_x, y)) + 1); \
-	}))
-
-#define round_down(x, y) \
-	(__extension__ ({ \
-		typeof(x) _x = (x); \
-		((_x) & ~__round_mask(_x, y)); \
-	}))
 
 struct nfp_rtsym_table *
 __nfp_rtsym_table_read(struct nfp_cpp *cpp, const struct nfp_mip *mip)
@@ -237,6 +219,7 @@ nfp_rtsym_size(const struct nfp_rtsym *sym)
 {
 	switch (sym->type) {
 	case NFP_RTSYM_TYPE_NONE:
+		PMD_DRV_LOG(ERR, "rtsym '%s': type NONE", sym->name);
 		return 0;
 	case NFP_RTSYM_TYPE_OBJECT:    /* Fall through */
 	case NFP_RTSYM_TYPE_FUNCTION:
@@ -244,6 +227,7 @@ nfp_rtsym_size(const struct nfp_rtsym *sym)
 	case NFP_RTSYM_TYPE_ABS:
 		return sizeof(uint64_t);
 	default:
+		PMD_DRV_LOG(ERR, "rtsym '%s': unknown type: %d", sym->name, sym->type);
 		return 0;
 	}
 }
@@ -257,8 +241,11 @@ nfp_rtsym_to_dest(struct nfp_cpp *cpp,
 		uint32_t *cpp_id,
 		uint64_t *addr)
 {
-	if (sym->type != NFP_RTSYM_TYPE_OBJECT)
+	if (sym->type != NFP_RTSYM_TYPE_OBJECT) {
+		PMD_DRV_LOG(ERR, "rtsym '%s': direct access to non-object rtsym",
+				sym->name);
 		return -EINVAL;
+	}
 
 	*addr = sym->addr + offset;
 
@@ -273,6 +260,8 @@ nfp_rtsym_to_dest(struct nfp_cpp *cpp,
 		*cpp_id = NFP_CPP_ISLAND_ID(NFP_CPP_TARGET_MU, action, token,
 				sym->domain);
 	} else {
+		PMD_DRV_LOG(ERR, "rtsym '%s': unhandled target encoding: %d",
+				sym->name, sym->target);
 		return -EINVAL;
 	}
 
@@ -291,8 +280,10 @@ nfp_rtsym_readl(struct nfp_cpp *cpp,
 	uint64_t addr;
 	uint32_t cpp_id;
 
-	if (offset + 4 > nfp_rtsym_size(sym))
+	if (offset + 4 > nfp_rtsym_size(sym)) {
+		PMD_DRV_LOG(ERR, "rtsym '%s': readl out of bounds", sym->name);
 		return -ENXIO;
+	}
 
 	ret = nfp_rtsym_to_dest(cpp, sym, action, token, offset, &cpp_id, &addr);
 	if (ret != 0)
@@ -313,8 +304,10 @@ nfp_rtsym_readq(struct nfp_cpp *cpp,
 	uint64_t addr;
 	uint32_t cpp_id;
 
-	if (offset + 8 > nfp_rtsym_size(sym))
+	if (offset + 8 > nfp_rtsym_size(sym)) {
+		PMD_DRV_LOG(ERR, "rtsym '%s': readq out of bounds", sym->name);
 		return -ENXIO;
+	}
 
 	if (sym->type == NFP_RTSYM_TYPE_ABS) {
 		*value = sym->addr;
@@ -354,10 +347,6 @@ nfp_rtsym_read_le(struct nfp_rtsym_table *rtbl, const char *name, int *error)
 		goto exit;
 	}
 
-#ifdef DEBUG
-	printf("Reading symbol %s with size %" PRIu64 " at %" PRIx64 "\n",
-		name, sym->size, sym->addr);
-#endif
 	switch (sym->size) {
 	case 4:
 		err = nfp_rtsym_readl(rtbl->cpp, sym, NFP_CPP_ACTION_RW, 0, 0, &val32);
@@ -406,8 +395,10 @@ nfp_rtsym_map(struct nfp_rtsym_table *rtbl, const char *name,
 
 	ret = nfp_rtsym_to_dest(rtbl->cpp, sym, NFP_CPP_ACTION_RW, 0, 0,
 			&cpp_id, &addr);
-	if (ret != 0)
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "rtsym '%s': mapping failed", name);
 		return NULL;
+	}
 
 	if (sym->size < min_size) {
 		printf("Symbol %s too small (%" PRIu64 " < %u)\n", name,

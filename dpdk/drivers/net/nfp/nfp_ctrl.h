@@ -119,6 +119,7 @@
 #define NFP_NET_CFG_MACADDR             0x0024
 
 #define NFP_NET_CFG_CTRL_LSO_ANY (NFP_NET_CFG_CTRL_LSO | NFP_NET_CFG_CTRL_LSO2)
+#define NFP_NET_CFG_CTRL_RSS_ANY (NFP_NET_CFG_CTRL_RSS | NFP_NET_CFG_CTRL_RSS2)
 
 /*
  * Read-only words (0x0030 - 0x0050):
@@ -135,6 +136,8 @@
  * - define more STS bits
  */
 #define NFP_NET_CFG_VERSION             0x0030
+#define   NFP_NET_CFG_VERSION_DP_NFD3   0
+#define   NFP_NET_CFG_VERSION_DP_NFDK   1
 #define   NFP_NET_CFG_VERSION_RESERVED_MASK	(0xff << 24)
 #define   NFP_NET_CFG_VERSION_CLASS_MASK  (0xff << 16)
 #define   NFP_NET_CFG_VERSION_CLASS(x)    (((x) & 0xff) << 16)

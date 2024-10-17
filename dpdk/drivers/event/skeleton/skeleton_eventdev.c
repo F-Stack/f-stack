@@ -12,13 +12,13 @@
 #include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_debug.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_eal.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_memory.h>
 #include <rte_lcore.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #include "skeleton_eventdev.h"
 
@@ -427,12 +427,12 @@ RTE_PMD_REGISTER_PCI_TABLE(event_skeleton_pci, pci_id_skeleton_map);
 /* VDEV based event device */
 
 static int
-skeleton_eventdev_create(const char *name, int socket_id)
+skeleton_eventdev_create(const char *name, int socket_id, struct rte_vdev_device *vdev)
 {
 	struct rte_eventdev *eventdev;
 
 	eventdev = rte_event_pmd_vdev_init(name,
-			sizeof(struct skeleton_eventdev), socket_id);
+			sizeof(struct skeleton_eventdev), socket_id, vdev);
 	if (eventdev == NULL) {
 		PMD_DRV_ERR("Failed to create eventdev vdev %s", name);
 		goto fail;
@@ -458,7 +458,7 @@ skeleton_eventdev_probe(struct rte_vdev_device *vdev)
 	name = rte_vdev_device_name(vdev);
 	RTE_LOG(INFO, PMD, "Initializing %s on NUMA node %d\n", name,
 			rte_socket_id());
-	return skeleton_eventdev_create(name, rte_socket_id());
+	return skeleton_eventdev_create(name, rte_socket_id(), vdev);
 }
 
 static int

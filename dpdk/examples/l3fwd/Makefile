@@ -5,7 +5,7 @@
 APP = l3fwd
 
 # all source are stored in SRCS-y
-SRCS-y := main.c l3fwd_lpm.c l3fwd_fib.c l3fwd_em.c l3fwd_event.c
+SRCS-y := main.c l3fwd_acl.c l3fwd_lpm.c l3fwd_fib.c l3fwd_em.c l3fwd_event.c
 SRCS-y += l3fwd_event_generic.c l3fwd_event_internal_port.c
 
 PKGCONF ?= pkg-config
@@ -36,6 +36,8 @@ $(warning "pkg-config output list does not contain drivers between 'whole-archiv
 $(error "Cannot generate statically-linked binaries with this version of pkg-config")
 endif
 endif
+
+CFLAGS += -I../common
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)

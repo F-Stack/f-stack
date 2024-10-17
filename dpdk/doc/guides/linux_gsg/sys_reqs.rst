@@ -8,11 +8,6 @@ System Requirements
 
 This chapter describes the packages required to compile the DPDK.
 
-.. note::
-
-    If the DPDK is being used on an Intel® Communications Chipset 89xx Series platform,
-    please consult the *Intel® Communications Chipset 89xx Series Software for Linux Getting Started Guide*.
-
 BIOS Setting Prerequisite on x86
 --------------------------------
 
@@ -21,13 +16,6 @@ However, for additional HPET timer and power management functionality,
 and high performance of small packets, BIOS setting changes may be needed.
 Consult the section on :ref:`Enabling Additional Functionality <Enabling_Additional_Functionality>`
 for more information on the required changes.
-
-.. note::
-
-   If UEFI secure boot is enabled, the Linux kernel may disallow the use of
-   UIO on the system. Therefore, devices for use by DPDK should be bound to the
-   ``vfio-pci`` kernel module rather than ``igb_uio`` or ``uio_pci_generic``.
-   For more details see :ref:`linux_gsg_binding_kernel`.
 
 Compilation of the DPDK
 -----------------------
@@ -39,15 +27,23 @@ Compilation of the DPDK
     The setup commands and installed packages needed on various systems may be different.
     For details on Linux distributions and the versions tested, please consult the DPDK Release Notes.
 
-*   General development tools including a supported C compiler such as gcc (version 4.9+) or clang (version 3.4+).
+*   General development tools including a supported C compiler such as gcc (version 4.9+) or clang (version 3.4+),
+    and ``pkg-config`` or ``pkgconf`` to be used when building end-user binaries against DPDK.
 
     * For RHEL/Fedora systems these can be installed using ``dnf groupinstall "Development Tools"``
     * For Ubuntu/Debian systems these can be installed using ``apt install build-essential``
-    * For Alpine Linux, ``apk add gcc libc-dev bsd-compat-headers``
+    * For Alpine Linux, ``apk add alpine-sdk bsd-compat-headers``
 
-*   Python 3.5 or later.
+.. note::
 
-*   Meson (version 0.49.2+) and ninja
+   pkg-config 0.27, supplied with RHEL-7,
+   does not process the Libs.private section correctly,
+   resulting in statically linked applications not being linked properly.
+   Use an updated version of ``pkg-config`` or ``pkgconf`` instead when building applications
+
+*   Python 3.6 or later.
+
+*   Meson (version 0.53.2+) and ninja
 
     * ``meson`` & ``ninja-build`` packages in most Linux distributions
     * If the packaged version is below the minimum version, the latest versions
@@ -99,20 +95,6 @@ For poll-mode drivers, the additional dependencies for each driver can be
 found in that driver's documentation in the relevant DPDK guide document,
 e.g. :doc:`../nics/index`
 
-
-Building DPDK Applications
---------------------------
-
-The tool pkg-config or pkgconf, integrated in most build systems,
-must be used to parse options and dependencies from libdpdk.pc.
-
-.. note::
-
-   pkg-config 0.27, supplied with RHEL-7,
-   does not process the Libs.private section correctly,
-   resulting in statically linked applications not being linked properly.
-
-
 Running DPDK Applications
 -------------------------
 
@@ -123,7 +105,7 @@ System Software
 
 **Required:**
 
-*   Kernel version >= 4.4
+*   Kernel version >= 4.14
 
     The kernel version required is based on the oldest long term stable kernel available
     at kernel.org when the DPDK version is in development.

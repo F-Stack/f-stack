@@ -67,18 +67,20 @@
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
-#define KNI_QUEUE_SIZE 2048
+#define KNI_QUEUE_SIZE KNI_MBUF_MAX
 
-int enable_kni;
+int enable_kni = 0;
 static int kni_accept;
 static int knictl_action = FF_KNICTL_ACTION_DEFAULT;
 #endif
+int nb_dev_ports = 0;   /* primary is correct, secondary is not correct, but no impact now*/
 
 static int numa_on;
 
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
 static uint64_t usr_cb_tsc;
+static int stop_loop;
 
 static struct rte_timer freebsd_clock;
 
@@ -202,7 +204,7 @@ check_all_ports_link_status(void)
                     printf("Port %d Link Up - speed %u "
                         "Mbps - %s\n", (int)portid,
                         (unsigned)link.link_speed,
-                        (link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
+                        (link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
                         ("full-duplex") : ("half-duplex\n"));
                 } else {
                     printf("Port %d Link Down\n", (int)portid);
@@ -237,7 +239,9 @@ check_all_ports_link_status(void)
 static int
 init_lcore_conf(void)
 {
-    uint8_t nb_dev_ports = rte_eth_dev_count_avail();
+    if (nb_dev_ports == 0) {
+        nb_dev_ports = rte_eth_dev_count_avail();
+    }
     if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
     }
@@ -513,14 +517,16 @@ static enum FF_KNICTL_CMD get_kni_action(const char *c){
 static int
 init_kni(void)
 {
-    int nb_ports = rte_eth_dev_count_avail();
+    int nb_ports = nb_dev_ports;
+
     kni_accept = 0;
+
     if(strcasecmp(ff_global_cfg.kni.method, "accept") == 0)
         kni_accept = 1;
 
     knictl_action = get_kni_action(ff_global_cfg.kni.kni_action);
 
-    ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
+    ff_kni_init(nb_ports, ff_global_cfg.kni.type, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
 
     unsigned socket_id = lcore_conf.socket_id;
@@ -530,7 +536,7 @@ init_kni(void)
     int i, ret;
     for (i = 0; i < nb_ports; i++) {
         uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
-        ff_kni_alloc(port_id, socket_id, mbuf_pool, KNI_QUEUE_SIZE);
+        ff_kni_alloc(port_id, socket_id, ff_global_cfg.kni.type, i, mbuf_pool, KNI_QUEUE_SIZE);
     }
 
     return 0;
@@ -546,14 +552,14 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
         return;
     }
 
-    int reta_conf_size = RTE_MAX(1, reta_size / RTE_RETA_GROUP_SIZE);
+    int reta_conf_size = RTE_MAX(1, reta_size / RTE_ETH_RETA_GROUP_SIZE);
     struct rte_eth_rss_reta_entry64 reta_conf[reta_conf_size];
 
     /* config HW indirection table */
     unsigned i, j, hash=0;
     for (i = 0; i < reta_conf_size; i++) {
         reta_conf[i].mask = ~0ULL;
-        for (j = 0; j < RTE_RETA_GROUP_SIZE; j++) {
+        for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++) {
             reta_conf[i].reta[j] = hash++ % nb_queues;
         }
     }
@@ -568,21 +574,47 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 static int
 init_port_start(void)
 {
-    int nb_ports = ff_global_cfg.dpdk.nb_ports;
+    int nb_ports = ff_global_cfg.dpdk.nb_ports, total_nb_ports;
     unsigned socketid = 0;
     struct rte_mempool *mbuf_pool;
     uint16_t i, j;
 
-    for (i = 0; i < nb_ports; i++) {
-        uint16_t port_id, u_port_id = ff_global_cfg.dpdk.portid_list[i];
-        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[u_port_id];
-        uint16_t nb_queues = pconf->nb_lcores;
-
-        if (pconf->nb_slaves > 0) {
-            rte_eth_bond_8023ad_dedicated_queues_enable(u_port_id);
+    total_nb_ports = nb_ports;
+#ifdef FF_KNI
+    if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+#ifdef FF_KNI_KNI
+        if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
+#endif
+        {
+            total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
         }
-        for (j=0; j<=pconf->nb_slaves; j++) {
-            if (j < pconf->nb_slaves) {
+    }
+#endif
+    for (i = 0; i < total_nb_ports; i++) {
+        uint16_t port_id, u_port_id;
+        struct ff_port_cfg *pconf = NULL;
+        uint16_t nb_queues;
+        int nb_slaves;
+
+        if (i < nb_ports) {
+            u_port_id = ff_global_cfg.dpdk.portid_list[i];
+            pconf = &ff_global_cfg.dpdk.port_cfgs[u_port_id];
+            nb_queues = pconf->nb_lcores;
+            nb_slaves = pconf->nb_slaves;
+
+            if (nb_slaves > 0) {
+                rte_eth_bond_8023ad_dedicated_queues_enable(u_port_id);
+            }
+        } else {
+            /* kernel virtio user, port id start from `nb_dev_ports` */
+            u_port_id = i - nb_ports + nb_dev_ports;
+            nb_queues = 1; /* see ff_kni_alloc in ff_dpdk_kni.c */
+            nb_slaves = 0;
+        }
+
+
+        for (j = 0; j <= nb_slaves; j++) {
+            if (j < nb_slaves) {
                 port_id = pconf->slave_portid_list[j];
                 printf("To init %s's %d'st slave port[%d]\n",
                         ff_global_cfg.dpdk.bond_cfgs->name,
@@ -616,109 +648,108 @@ init_port_start(void)
 
             struct rte_ether_addr addr;
             rte_eth_macaddr_get(port_id, &addr);
-            printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-                       " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-                    (unsigned)port_id,
-                    addr.addr_bytes[0], addr.addr_bytes[1],
-                    addr.addr_bytes[2], addr.addr_bytes[3],
-                    addr.addr_bytes[4], addr.addr_bytes[5]);
+            printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+                    (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
-            rte_memcpy(pconf->mac,
-                addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+            /* Only config dev port, but not kernel virtio user port */
+            if (pconf) {
+                rte_memcpy(pconf->mac,
+                    addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 
-            /* Set RSS mode */
-            uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
-            port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
-            port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-            if (dev_info.hash_key_size == 52) {
-                rsskey = default_rsskey_52bytes;
-                rsskey_len = 52;
-            }
-            if (ff_global_cfg.dpdk.symmetric_rss) {
-                printf("Use symmetric Receive-side Scaling(RSS) key\n");
-                rsskey = symmetric_rsskey;
-            }
-            port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
-            port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
-            port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
-            if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                    ETH_RSS_PROTO_MASK) {
-                printf("Port %u modified RSS hash function based on hardware support,"
-                        "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-                        port_id, default_rss_hf,
-                        port_conf.rx_adv_conf.rss_conf.rss_hf);
-            }
-
-            if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE) {
-                port_conf.txmode.offloads |=
-                    DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-            }
-
-            /* Set Rx VLAN stripping */
-            if (ff_global_cfg.dpdk.vlan_strip) {
-                if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-                    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+                /* Set RSS mode */
+                uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
+                port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+                port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
+                if (dev_info.hash_key_size == 52) {
+                    rsskey = default_rsskey_52bytes;
+                    rsskey_len = 52;
                 }
-            }
-
-            /* Enable HW CRC stripping */
-            port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_KEEP_CRC;
-
-            /* FIXME: Enable TCP LRO ?*/
-            #if 0
-            if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
-                printf("LRO is supported\n");
-                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
-                pconf->hw_features.rx_lro = 1;
-            }
-            #endif
-
-            /* Set Rx checksum checking */
-            if ((dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-                (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-                (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
-                printf("RX checksum offload supported\n");
-                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
-                pconf->hw_features.rx_csum = 1;
-            }
-
-            if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
-                if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
-                    printf("TX ip checksum offload supported\n");
-                    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
-                    pconf->hw_features.tx_csum_ip = 1;
+                if (ff_global_cfg.dpdk.symmetric_rss) {
+                    printf("Use symmetric Receive-side Scaling(RSS) key\n");
+                    rsskey = symmetric_rsskey;
+                }
+                port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
+                port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
+                port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+                if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
+                        RTE_ETH_RSS_PROTO_MASK) {
+                    printf("Port %u modified RSS hash function based on hardware support,"
+                            "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                            port_id, default_rss_hf,
+                            port_conf.rx_adv_conf.rss_conf.rss_hf);
                 }
 
-                if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-                    (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
-                    printf("TX TCP&UDP checksum offload supported\n");
-                    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM;
-                    pconf->hw_features.tx_csum_l4 = 1;
+                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
+                    port_conf.txmode.offloads |=
+                        RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
                 }
-            } else {
-                printf("TX checksum offoad is disabled\n");
-            }
 
-            if (ff_global_cfg.dpdk.tso) {
-                if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
-                    printf("TSO is supported\n");
-                    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
-                    pconf->hw_features.tx_tso = 1;
+                /* Set Rx VLAN stripping */
+                if (ff_global_cfg.dpdk.vlan_strip) {
+                    if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
+                        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+                    }
                 }
-                else {
-                    printf("TSO is not supported\n");
+
+                /* Enable HW CRC stripping */
+                port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
+
+                /* FIXME: Enable TCP LRO ?*/
+                #if 0
+                if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
+                    printf("LRO is supported\n");
+                    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+                    pconf->hw_features.rx_lro = 1;
                 }
-            } else {
-                printf("TSO is disabled\n");
-            }
+                #endif
 
-            if (dev_info.reta_size) {
-                /* reta size must be power of 2 */
-                assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
+                /* Set Rx checksum checking */
+                if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+                    (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+                    (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
+                    printf("RX checksum offload supported\n");
+                    port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
+                    pconf->hw_features.rx_csum = 1;
+                }
 
-                rss_reta_size[port_id] = dev_info.reta_size;
-                printf("port[%d]: rss table size: %d\n", port_id,
-                    dev_info.reta_size);
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
+                    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
+                        printf("TX ip checksum offload supported\n");
+                        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+                        pconf->hw_features.tx_csum_ip = 1;
+                    }
+
+                    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+                        (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
+                        printf("TX TCP&UDP checksum offload supported\n");
+                        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
+                        pconf->hw_features.tx_csum_l4 = 1;
+                    }
+                } else {
+                    printf("TX checksum offoad is disabled\n");
+                }
+
+                if (ff_global_cfg.dpdk.tso) {
+                    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
+                        printf("TSO is supported\n");
+                        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
+                        pconf->hw_features.tx_tso = 1;
+                    }
+                    else {
+                        printf("TSO is not supported\n");
+                    }
+                } else {
+                    printf("TSO is disabled\n");
+                }
+
+                if (dev_info.reta_size) {
+                    /* reta size must be power of 2 */
+                    assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
+
+                    rss_reta_size[port_id] = dev_info.reta_size;
+                    printf("port[%d]: rss table size: %d\n", port_id,
+                        dev_info.reta_size);
+                }
             }
 
             if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -762,17 +793,12 @@ init_port_start(void)
                 }
             }
 
-
             if (strncmp(dev_info.driver_name, BOND_DRIVER_NAME,
                     strlen(dev_info.driver_name)) == 0) {
 
                 rte_eth_macaddr_get(port_id, &addr);
-                printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-                           " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-                        (unsigned)port_id,
-                        addr.addr_bytes[0], addr.addr_bytes[1],
-                        addr.addr_bytes[2], addr.addr_bytes[3],
-                        addr.addr_bytes[4], addr.addr_bytes[5]);
+                printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+                        (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
                 rte_memcpy(pconf->mac,
                     addr.addr_bytes, RTE_ETHER_ADDR_LEN);
@@ -796,15 +822,16 @@ init_port_start(void)
             if (ret < 0) {
                 return ret;
             }
-    //RSS reta update will failed when enable flow isolate
-    #ifndef FF_FLOW_ISOLATE
+
+//RSS reta update will failed when enable flow isolate
+#ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
                 /*
                  * FIXME: modify RSS set to FDIR
                  */
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
-    #endif
+#endif
 
             /* Enable RX in promiscuous mode for the Ethernet device. */
             if (ff_global_cfg.dpdk.promiscuous) {
@@ -912,7 +939,7 @@ create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
   for (i = 0, j = 0; i < nb_queues; ++i)
    queue[j++] = i;
   struct rte_flow_action_rss rss = {
-   .types = ETH_RSS_NONFRAG_IPV4_TCP,
+   .types = RTE_ETH_RSS_NONFRAG_IPV4_TCP,
    .key_len = rsskey_len,
    .key = rsskey,
    .queue_num = j,
@@ -1060,12 +1087,12 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
  * using case of FDIR is (but not limited to), using multiple processes to
  * listen on different ports.
  *
- * This function can be called either in FSTACK or in end-application. 
+ * This function can be called either in FSTACK or in end-application.
  *
  * Example:
  *  Given 2 fstack instances A and B. Instance A listens on port 80, and
  *  instance B listens on port 81. We want to process the traffic to port 80
- *  on rx queue 0, and the traffic to port 81 on rx queue 1. 
+ *  on rx queue 0, and the traffic to port 81 on rx queue 1.
  *  // port 80 rx queue 0
  *  ret = fdir_add_tcp_flow(port_id, 0, FF_FLOW_INGRESS, 0, 80);
  *  // port 81 rx queue 1
@@ -1074,27 +1101,27 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
 #define FF_FLOW_EGRESS		1
 #define FF_FLOW_INGRESS		2
 /**
- * Create a flow rule that moves packets with matching src and dest tcp port 
- * to the target queue. 
- * 
+ * Create a flow rule that moves packets with matching src and dest tcp port
+ * to the target queue.
+ *
  * This function uses general flow rules and doesn't rely on the flow_isolation
  * that not all the FDIR capable NIC support.
  *
  * @param port_id
  *   The selected port.
- * @param queue 
+ * @param queue
  *   The target queue.
- * @param dir 
- *   The direction of the traffic. 
- *   1 for egress, 2 for ingress and sum(1+2) for both. 
- * @param tcp_sport 
+ * @param dir
+ *   The direction of the traffic.
+ *   1 for egress, 2 for ingress and sum(1+2) for both.
+ * @param tcp_sport
  *   The src tcp port to match.
  * @param tcp_dport
  *   The dest tcp port to match.
  *
  */
 static int
-fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir, 
+fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir,
 		uint16_t tcp_sport, uint16_t tcp_dport)
 {
     struct rte_flow_attr attr;
@@ -1115,7 +1142,7 @@ fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir,
      */
     memset(&attr, 0, sizeof(struct rte_flow_attr));
     attr.ingress = ((dir & FF_FLOW_INGRESS) > 0);
-    attr.egress = ((dir & FF_FLOW_EGRESS) > 0); 
+    attr.egress = ((dir & FF_FLOW_EGRESS) > 0);
 
     /*
      * create the action sequence.
@@ -1134,7 +1161,7 @@ fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir,
     memset(&tcp_spec, 0, sizeof(struct rte_flow_item_tcp));
     memset(&tcp_mask, 0, sizeof(struct rte_flow_item_tcp));
     tcp_spec.hdr.src_port = htons(tcp_sport);
-    tcp_mask.hdr.src_port = (tcp_sport == 0 ? 0: 0xffff); 
+    tcp_mask.hdr.src_port = (tcp_sport == 0 ? 0: 0xffff);
     tcp_spec.hdr.dst_port = htons(tcp_dport);
     tcp_mask.hdr.dst_port = (tcp_dport == 0 ? 0: 0xffff);
     flow_pattern[2].type = RTE_FLOW_ITEM_TYPE_TCP;
@@ -1148,7 +1175,7 @@ fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir,
 	return (1);
 
     flow = rte_flow_create(port_id, &attr, flow_pattern, flow_action, &rfe);
-    if (!flow) 
+    if (!flow)
 	return port_flow_complain(&rfe);
 
     return (0);
@@ -1300,8 +1327,14 @@ protocol_filter(const void *data, uint16_t len)
         len -= sizeof(struct rte_vlan_hdr);
     }
 
-    if(ether_type == RTE_ETHER_TYPE_ARP)
+    if(ether_type == RTE_ETHER_TYPE_ARP) {
         return FILTER_ARP;
+    }
+
+    /* Multicast protocol, such as stp(used by zebra), is forwarded to kni and has a separate speed limit */
+    if (rte_is_multicast_ether_addr(&hdr->dst_addr)) {
+        return FILTER_MULTI;
+    }
 
 #if (!defined(__FreeBSD__) && defined(INET6) ) || \
     ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
@@ -1493,7 +1526,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
                     ff_add_vlan_tag(mbuf_clone);
-                    ff_kni_enqueue(port_id, mbuf_clone);
+                    ff_kni_enqueue(filter, port_id, mbuf_clone);
                 }
             }
 #endif
@@ -1502,15 +1535,15 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         } else if (enable_kni) {
             if (knictl_action == FF_KNICTL_ACTION_ALL_TO_KNI){
                 ff_add_vlan_tag(rtem);
-                ff_kni_enqueue(port_id, rtem);
+                ff_kni_enqueue(filter, port_id, rtem);
             } else if (knictl_action == FF_KNICTL_ACTION_ALL_TO_FF){
                 ff_veth_input(ctx, rtem);
             } else if (knictl_action == FF_KNICTL_ACTION_DEFAULT){
                 if (enable_kni &&
                         ((filter == FILTER_KNI && kni_accept) ||
-                        (filter == FILTER_UNKNOWN && !kni_accept)) ) {
+                        ((filter == FILTER_UNKNOWN || filter >= FILTER_OSPF) && !kni_accept)) ) {
                     ff_add_vlan_tag(rtem);
-                    ff_kni_enqueue(port_id, rtem);
+                    ff_kni_enqueue(filter, port_id, rtem);
                 } else {
                     ff_veth_input(ctx, rtem);
                 }
@@ -1659,6 +1692,11 @@ handle_traffic_msg(struct ff_msg *msg)
 {
     msg->traffic = ff_traffic;
     msg->result = 0;
+}
+
+void ff_get_traffic(void *buffer)
+{
+    *(struct ff_traffic_args *)buffer = ff_traffic;
 }
 
 #ifdef FF_KNI
@@ -1951,6 +1989,48 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     return send_single_packet(head, ctx->port_id);
 }
 
+int
+ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
+{
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
+    if (head == NULL) {
+        return -1;
+    }
+
+    head->pkt_len = total;
+    head->nb_segs = 0;
+
+    int off = 0;
+    struct rte_mbuf *cur = head, *prev = NULL;
+    while(total > 0) {
+        if (cur == NULL) {
+            cur = rte_pktmbuf_alloc(mbuf_pool);
+            if (cur == NULL) {
+                rte_pktmbuf_free(head);
+                return -1;
+            }
+        }
+
+        if (prev != NULL) {
+            prev->next = cur;
+        }
+        head->nb_segs++;
+
+        prev = cur;
+        void *cur_data = rte_pktmbuf_mtod(cur, void*);
+        int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
+        memcpy(cur_data, data + off, len);
+
+        cur->data_len = len;
+        off += len;
+        total -= len;
+        cur = NULL;
+    }
+
+    return send_single_packet(head, port_id);
+}
+
 static int
 main_loop(void *arg)
 {
@@ -1974,9 +2054,42 @@ main_loop(void *arg)
     qconf = &lcore_conf;
 
     while (1) {
+
+        if (unlikely(stop_loop)) {
+            break;
+        }
+
         cur_tsc = rte_rdtsc();
         if (unlikely(freebsd_clock.expire < cur_tsc)) {
             rte_timer_manage();
+
+#ifdef FF_KNI
+            /* reset kni ratelimt */
+            if (enable_kni &&
+                    (ff_global_cfg.kni.console_packets_ratelimit ||
+                        ff_global_cfg.kni.general_packets_ratelimit ||
+                        ff_global_cfg.kni.kernel_packets_ratelimit)) {
+                static time_t last_sec = 0;
+                time_t sec;
+                long nsec;
+
+                ff_get_current_time(&sec, &nsec);
+                if (sec > last_sec) {
+                    if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit ||
+                        kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit ||
+                        kni_rate_limt.kernel_packets > ff_global_cfg.kni.kernel_packets_ratelimit) {
+                        printf("kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
+                            kni_rate_limt.gerneal_packets, ff_global_cfg.kni.general_packets_ratelimit,
+                            kni_rate_limt.console_packets, ff_global_cfg.kni.console_packets_ratelimit,
+                            kni_rate_limt.kernel_packets, ff_global_cfg.kni.kernel_packets_ratelimit, last_sec, sec);
+                    }
+                    last_sec = sec;
+                    kni_rate_limt.gerneal_packets = 0;
+                    kni_rate_limt.console_packets = 0;
+                    kni_rate_limt.kernel_packets = 0;
+                }
+            }
+#endif
         }
 
         idle = 1;
@@ -2105,11 +2218,17 @@ void
 ff_dpdk_run(loop_func_t loop, void *arg) {
     struct loop_routine *lr = rte_malloc(NULL,
         sizeof(struct loop_routine), 0);
+    stop_loop = 0;
     lr->loop = loop;
     lr->arg = arg;
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MAIN);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
+}
+
+void
+ff_dpdk_stop(void) {
+    stop_loop = 1;
 }
 
 void

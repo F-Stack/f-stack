@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/queue.h>
@@ -43,6 +42,7 @@ struct vhost_user_socket {
 	bool linearbuf;
 	bool async_copy;
 	bool net_compliant_ol_flags;
+	bool stats_enabled;
 
 	/*
 	 * The "supported_features" indicates the feature bits the
@@ -100,7 +100,7 @@ static struct vhost_user vhost_user = {
  * with number of fds read.
  */
 int
-read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
+read_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int max_fds,
 		int *fd_num)
 {
 	struct iovec iov;
@@ -124,16 +124,17 @@ read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
 	ret = recvmsg(sockfd, &msgh, 0);
 	if (ret <= 0) {
 		if (ret)
-			VHOST_LOG_CONFIG(ERR, "recvmsg failed\n");
+			VHOST_LOG_CONFIG(ifname, ERR, "recvmsg failed on fd %d (%s)\n",
+				sockfd, strerror(errno));
 		return ret;
 	}
 
 	if (msgh.msg_flags & MSG_TRUNC)
-		VHOST_LOG_CONFIG(ERR, "truncated msg\n");
+		VHOST_LOG_CONFIG(ifname, ERR, "truncated msg (fd %d)\n", sockfd);
 
 	/* MSG_CTRUNC may be caused by LSM misconfiguration */
 	if (msgh.msg_flags & MSG_CTRUNC)
-		VHOST_LOG_CONFIG(ERR, "truncated control data (fd %d)\n", sockfd);
+		VHOST_LOG_CONFIG(ifname, ERR, "truncated control data (fd %d)\n", sockfd);
 
 	for (cmsg = CMSG_FIRSTHDR(&msgh); cmsg != NULL;
 		cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
@@ -154,7 +155,7 @@ read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
 }
 
 int
-send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
+send_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int fd_num)
 {
 
 	struct iovec iov;
@@ -176,7 +177,7 @@ send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 		msgh.msg_controllen = sizeof(control);
 		cmsg = CMSG_FIRSTHDR(&msgh);
 		if (cmsg == NULL) {
-			VHOST_LOG_CONFIG(ERR, "cmsg == NULL\n");
+			VHOST_LOG_CONFIG(ifname, ERR, "cmsg == NULL\n");
 			errno = EINVAL;
 			return -1;
 		}
@@ -194,7 +195,8 @@ send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0) {
-		VHOST_LOG_CONFIG(ERR,  "sendmsg error\n");
+		VHOST_LOG_CONFIG(ifname, ERR, "sendmsg error on fd %d (%s)\n",
+			sockfd, strerror(errno));
 		return ret;
 	}
 
@@ -228,7 +230,8 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	vhost_set_ifname(vid, vsocket->path, size);
 
 	vhost_setup_virtio_net(vid, vsocket->use_builtin_virtio_net,
-		vsocket->net_compliant_ol_flags);
+		vsocket->net_compliant_ol_flags, vsocket->stats_enabled,
+		vsocket->iommu_support);
 
 	vhost_attach_vdpa_device(vid, vsocket->vdpa_dev);
 
@@ -245,12 +248,12 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 			dev->async_copy = 1;
 	}
 
-	VHOST_LOG_CONFIG(INFO, "new device, handle is %d, path is %s\n", vid, vsocket->path);
+	VHOST_LOG_CONFIG(vsocket->path, INFO, "new device, handle is %d\n", vid);
 
 	if (vsocket->notify_ops->new_connection) {
 		ret = vsocket->notify_ops->new_connection(vid);
 		if (ret < 0) {
-			VHOST_LOG_CONFIG(ERR,
+			VHOST_LOG_CONFIG(vsocket->path, ERR,
 				"failed to add vhost user connection with fd %d\n",
 				fd);
 			goto err_cleanup;
@@ -263,7 +266,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	ret = fdset_add(&vhost_user.fdset, fd, vhost_user_read_cb,
 			NULL, conn);
 	if (ret < 0) {
-		VHOST_LOG_CONFIG(ERR,
+		VHOST_LOG_CONFIG(vsocket->path, ERR,
 			"failed to add fd %d into vhost server fdset\n",
 			fd);
 
@@ -297,7 +300,7 @@ vhost_user_server_new_connection(int fd, void *dat, int *remove __rte_unused)
 	if (fd < 0)
 		return;
 
-	VHOST_LOG_CONFIG(INFO, "new vhost user connection is %d\n", fd);
+	VHOST_LOG_CONFIG(vsocket->path, INFO, "new vhost user connection is %d\n", fd);
 	vhost_user_add_connection(fd, vsocket);
 }
 
@@ -345,13 +348,13 @@ create_unix_socket(struct vhost_user_socket *vsocket)
 	fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (fd < 0)
 		return -1;
-	VHOST_LOG_CONFIG(INFO, "vhost-user %s: socket created, fd: %d\n",
+	VHOST_LOG_CONFIG(vsocket->path, INFO, "vhost-user %s: socket created, fd: %d\n",
 		vsocket->is_server ? "server" : "client", fd);
 
 	if (!vsocket->is_server && fcntl(fd, F_SETFL, O_NONBLOCK)) {
-		VHOST_LOG_CONFIG(ERR,
-			"vhost-user: can't set nonblocking mode for socket, fd: "
-			"%d (%s)\n", fd, strerror(errno));
+		VHOST_LOG_CONFIG(vsocket->path, ERR,
+			"vhost-user: can't set nonblocking mode for socket, fd: %d (%s)\n",
+			fd, strerror(errno));
 		close(fd);
 		return -1;
 	}
@@ -384,12 +387,11 @@ vhost_user_start_server(struct vhost_user_socket *vsocket)
 	 */
 	ret = bind(fd, (struct sockaddr *)&vsocket->un, sizeof(vsocket->un));
 	if (ret < 0) {
-		VHOST_LOG_CONFIG(ERR,
-			"failed to bind to %s: %s; remove it and try again\n",
-			path, strerror(errno));
+		VHOST_LOG_CONFIG(path, ERR, "failed to bind: %s; remove it and try again\n",
+			strerror(errno));
 		goto err;
 	}
-	VHOST_LOG_CONFIG(INFO, "bind to %s\n", path);
+	VHOST_LOG_CONFIG(path, INFO, "binding succeeded\n");
 
 	ret = listen(fd, MAX_VIRTIO_BACKLOG);
 	if (ret < 0)
@@ -398,8 +400,7 @@ vhost_user_start_server(struct vhost_user_socket *vsocket)
 	ret = fdset_add(&vhost_user.fdset, fd, vhost_user_server_new_connection,
 		  NULL, vsocket);
 	if (ret < 0) {
-		VHOST_LOG_CONFIG(ERR,
-			"failed to add listen fd %d to vhost server fdset\n",
+		VHOST_LOG_CONFIG(path, ERR, "failed to add listen fd %d to vhost server fdset\n",
 			fd);
 		goto err;
 	}
@@ -429,7 +430,7 @@ static struct vhost_user_reconnect_list reconn_list;
 static pthread_t reconn_tid;
 
 static int
-vhost_user_connect_nonblock(int fd, struct sockaddr *un, size_t sz)
+vhost_user_connect_nonblock(char *path, int fd, struct sockaddr *un, size_t sz)
 {
 	int ret, flags;
 
@@ -439,13 +440,12 @@ vhost_user_connect_nonblock(int fd, struct sockaddr *un, size_t sz)
 
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0) {
-		VHOST_LOG_CONFIG(ERR,
-			"can't get flags for connfd %d\n", fd);
+		VHOST_LOG_CONFIG(path, ERR, "can't get flags for connfd %d (%s)\n",
+			fd, strerror(errno));
 		return -2;
 	}
 	if ((flags & O_NONBLOCK) && fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)) {
-		VHOST_LOG_CONFIG(ERR,
-				"can't disable nonblocking on fd %d\n", fd);
+		VHOST_LOG_CONFIG(path, ERR, "can't disable nonblocking on fd %d\n", fd);
 		return -2;
 	}
 	return 0;
@@ -468,12 +468,12 @@ vhost_user_client_reconnect(void *arg __rte_unused)
 		     reconn != NULL; reconn = next) {
 			next = TAILQ_NEXT(reconn, next);
 
-			ret = vhost_user_connect_nonblock(reconn->fd,
+			ret = vhost_user_connect_nonblock(reconn->vsocket->path, reconn->fd,
 						(struct sockaddr *)&reconn->un,
 						sizeof(reconn->un));
 			if (ret == -2) {
 				close(reconn->fd);
-				VHOST_LOG_CONFIG(ERR,
+				VHOST_LOG_CONFIG(reconn->vsocket->path, ERR,
 					"reconnection for fd %d failed\n",
 					reconn->fd);
 				goto remove_fd;
@@ -481,8 +481,7 @@ vhost_user_client_reconnect(void *arg __rte_unused)
 			if (ret == -1)
 				continue;
 
-			VHOST_LOG_CONFIG(INFO,
-				"%s: connected\n", reconn->vsocket->path);
+			VHOST_LOG_CONFIG(reconn->vsocket->path, INFO, "connected\n");
 			vhost_user_add_connection(reconn->fd, reconn->vsocket);
 remove_fd:
 			TAILQ_REMOVE(&reconn_list.head, reconn, next);
@@ -503,7 +502,7 @@ vhost_user_reconnect_init(void)
 
 	ret = pthread_mutex_init(&reconn_list.mutex, NULL);
 	if (ret < 0) {
-		VHOST_LOG_CONFIG(ERR, "failed to initialize mutex\n");
+		VHOST_LOG_CONFIG("thread", ERR, "%s: failed to initialize mutex\n", __func__);
 		return ret;
 	}
 	TAILQ_INIT(&reconn_list.head);
@@ -511,11 +510,11 @@ vhost_user_reconnect_init(void)
 	ret = rte_ctrl_thread_create(&reconn_tid, "vhost_reconn", NULL,
 			     vhost_user_client_reconnect, NULL);
 	if (ret != 0) {
-		VHOST_LOG_CONFIG(ERR, "failed to create reconnect thread\n");
-		if (pthread_mutex_destroy(&reconn_list.mutex)) {
-			VHOST_LOG_CONFIG(ERR,
-				"failed to destroy reconnect mutex\n");
-		}
+		VHOST_LOG_CONFIG("thread", ERR, "failed to create reconnect thread\n");
+		if (pthread_mutex_destroy(&reconn_list.mutex))
+			VHOST_LOG_CONFIG("thread", ERR,
+				"%s: failed to destroy reconnect mutex\n",
+				__func__);
 	}
 
 	return ret;
@@ -529,27 +528,24 @@ vhost_user_start_client(struct vhost_user_socket *vsocket)
 	const char *path = vsocket->path;
 	struct vhost_user_reconnect *reconn;
 
-	ret = vhost_user_connect_nonblock(fd, (struct sockaddr *)&vsocket->un,
+	ret = vhost_user_connect_nonblock(vsocket->path, fd, (struct sockaddr *)&vsocket->un,
 					  sizeof(vsocket->un));
 	if (ret == 0) {
 		vhost_user_add_connection(fd, vsocket);
 		return 0;
 	}
 
-	VHOST_LOG_CONFIG(WARNING,
-		"failed to connect to %s: %s\n",
-		path, strerror(errno));
+	VHOST_LOG_CONFIG(path, WARNING, "failed to connect: %s\n", strerror(errno));
 
 	if (ret == -2 || !vsocket->reconnect) {
 		close(fd);
 		return -1;
 	}
 
-	VHOST_LOG_CONFIG(INFO, "%s: reconnecting...\n", path);
+	VHOST_LOG_CONFIG(path, INFO, "reconnecting...\n");
 	reconn = malloc(sizeof(*reconn));
 	if (reconn == NULL) {
-		VHOST_LOG_CONFIG(ERR,
-			"failed to allocate memory for reconnect\n");
+		VHOST_LOG_CONFIG(path, ERR, "failed to allocate memory for reconnect\n");
 		close(fd);
 		return -1;
 	}
@@ -629,6 +625,34 @@ rte_vhost_driver_get_vdpa_device(const char *path)
 }
 
 int
+rte_vhost_driver_get_vdpa_dev_type(const char *path, uint32_t *type)
+{
+	struct vhost_user_socket *vsocket;
+	struct rte_vdpa_device *vdpa_dev;
+	int ret = 0;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (!vsocket) {
+		VHOST_LOG_CONFIG(path, ERR, "socket file is not registered yet.\n");
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	vdpa_dev = vsocket->vdpa_dev;
+	if (!vdpa_dev) {
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	*type = vdpa_dev->type;
+
+unlock_exit:
+	pthread_mutex_unlock(&vhost_user.mutex);
+	return ret;
+}
+
+int
 rte_vhost_driver_disable_features(const char *path, uint64_t features)
 {
 	struct vhost_user_socket *vsocket;
@@ -703,8 +727,7 @@ rte_vhost_driver_get_features(const char *path, uint64_t *features)
 	pthread_mutex_lock(&vhost_user.mutex);
 	vsocket = find_vhost_user_socket(path);
 	if (!vsocket) {
-		VHOST_LOG_CONFIG(ERR,
-			"socket file %s is not registered yet.\n", path);
+		VHOST_LOG_CONFIG(path, ERR, "socket file is not registered yet.\n");
 		ret = -1;
 		goto unlock_exit;
 	}
@@ -716,9 +739,7 @@ rte_vhost_driver_get_features(const char *path, uint64_t *features)
 	}
 
 	if (vdpa_dev->ops->get_features(vdpa_dev, &vdpa_features) < 0) {
-		VHOST_LOG_CONFIG(ERR,
-				"failed to get vdpa features "
-				"for socket file %s.\n", path);
+		VHOST_LOG_CONFIG(path, ERR, "failed to get vdpa features for socket file.\n");
 		ret = -1;
 		goto unlock_exit;
 	}
@@ -756,8 +777,7 @@ rte_vhost_driver_get_protocol_features(const char *path,
 	pthread_mutex_lock(&vhost_user.mutex);
 	vsocket = find_vhost_user_socket(path);
 	if (!vsocket) {
-		VHOST_LOG_CONFIG(ERR,
-			"socket file %s is not registered yet.\n", path);
+		VHOST_LOG_CONFIG(path, ERR, "socket file is not registered yet.\n");
 		ret = -1;
 		goto unlock_exit;
 	}
@@ -770,9 +790,7 @@ rte_vhost_driver_get_protocol_features(const char *path,
 
 	if (vdpa_dev->ops->get_protocol_features(vdpa_dev,
 				&vdpa_protocol_features) < 0) {
-		VHOST_LOG_CONFIG(ERR,
-				"failed to get vdpa protocol features "
-				"for socket file %s.\n", path);
+		VHOST_LOG_CONFIG(path, ERR, "failed to get vdpa protocol features.\n");
 		ret = -1;
 		goto unlock_exit;
 	}
@@ -796,8 +814,7 @@ rte_vhost_driver_get_queue_num(const char *path, uint32_t *queue_num)
 	pthread_mutex_lock(&vhost_user.mutex);
 	vsocket = find_vhost_user_socket(path);
 	if (!vsocket) {
-		VHOST_LOG_CONFIG(ERR,
-			"socket file %s is not registered yet.\n", path);
+		VHOST_LOG_CONFIG(path, ERR, "socket file is not registered yet.\n");
 		ret = -1;
 		goto unlock_exit;
 	}
@@ -809,9 +826,7 @@ rte_vhost_driver_get_queue_num(const char *path, uint32_t *queue_num)
 	}
 
 	if (vdpa_dev->ops->get_queue_num(vdpa_dev, &vdpa_queue_num) < 0) {
-		VHOST_LOG_CONFIG(ERR,
-				"failed to get vdpa queue number "
-				"for socket file %s.\n", path);
+		VHOST_LOG_CONFIG(path, ERR, "failed to get vdpa queue number.\n");
 		ret = -1;
 		goto unlock_exit;
 	}
@@ -854,8 +869,7 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	pthread_mutex_lock(&vhost_user.mutex);
 
 	if (vhost_user.vsocket_cnt == MAX_VHOST_SOCKET) {
-		VHOST_LOG_CONFIG(ERR,
-			"error: the number of vhost sockets reaches maximum\n");
+		VHOST_LOG_CONFIG(path, ERR, "the number of vhost sockets reaches maximum\n");
 		goto out;
 	}
 
@@ -865,16 +879,14 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	memset(vsocket, 0, sizeof(struct vhost_user_socket));
 	vsocket->path = strdup(path);
 	if (vsocket->path == NULL) {
-		VHOST_LOG_CONFIG(ERR,
-			"error: failed to copy socket path string\n");
+		VHOST_LOG_CONFIG(path, ERR, "failed to copy socket path string\n");
 		vhost_user_socket_mem_free(vsocket);
 		goto out;
 	}
 	TAILQ_INIT(&vsocket->conn_list);
 	ret = pthread_mutex_init(&vsocket->conn_mutex, NULL);
 	if (ret) {
-		VHOST_LOG_CONFIG(ERR,
-			"error: failed to init connection mutex\n");
+		VHOST_LOG_CONFIG(path, ERR, "failed to init connection mutex\n");
 		goto out_free;
 	}
 	vsocket->vdpa_dev = NULL;
@@ -882,13 +894,13 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	vsocket->linearbuf = flags & RTE_VHOST_USER_LINEARBUF_SUPPORT;
 	vsocket->async_copy = flags & RTE_VHOST_USER_ASYNC_COPY;
 	vsocket->net_compliant_ol_flags = flags & RTE_VHOST_USER_NET_COMPLIANT_OL_FLAGS;
+	vsocket->stats_enabled = flags & RTE_VHOST_USER_NET_STATS_ENABLE;
+	vsocket->iommu_support = flags & RTE_VHOST_USER_IOMMU_SUPPORT;
 
 	if (vsocket->async_copy &&
 		(flags & (RTE_VHOST_USER_IOMMU_SUPPORT |
 		RTE_VHOST_USER_POSTCOPY_SUPPORT))) {
-		VHOST_LOG_CONFIG(ERR, "error: enabling async copy and IOMMU "
-			"or post-copy feature simultaneously is not "
-			"supported\n");
+		VHOST_LOG_CONFIG(path, ERR, "async copy with IOMMU or post-copy not supported\n");
 		goto out_mutex;
 	}
 
@@ -912,8 +924,7 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	if (vsocket->async_copy) {
 		vsocket->supported_features &= ~(1ULL << VHOST_F_LOG_ALL);
 		vsocket->features &= ~(1ULL << VHOST_F_LOG_ALL);
-		VHOST_LOG_CONFIG(INFO,
-			"Logging feature is disabled in async copy mode\n");
+		VHOST_LOG_CONFIG(path, INFO, "logging feature is disabled in async copy mode\n");
 	}
 
 	/*
@@ -927,9 +938,8 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 				(1ULL << VIRTIO_NET_F_HOST_TSO6) |
 				(1ULL << VIRTIO_NET_F_HOST_UFO);
 
-		VHOST_LOG_CONFIG(INFO,
-			"Linear buffers requested without external buffers, "
-			"disabling host segmentation offloading support\n");
+		VHOST_LOG_CONFIG(path, INFO, "Linear buffers requested without external buffers,\n");
+		VHOST_LOG_CONFIG(path, INFO, "disabling host segmentation offloading support\n");
 		vsocket->supported_features &= ~seg_offload_features;
 		vsocket->features &= ~seg_offload_features;
 	}
@@ -944,8 +954,7 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 			~(1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT);
 	} else {
 #ifndef RTE_LIBRTE_VHOST_POSTCOPY
-		VHOST_LOG_CONFIG(ERR,
-			"Postcopy requested but not compiled\n");
+		VHOST_LOG_CONFIG(path, ERR, "Postcopy requested but not compiled\n");
 		ret = -1;
 		goto out_mutex;
 #endif
@@ -972,8 +981,7 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 
 out_mutex:
 	if (pthread_mutex_destroy(&vsocket->conn_mutex)) {
-		VHOST_LOG_CONFIG(ERR,
-			"error: failed to destroy connection mutex\n");
+		VHOST_LOG_CONFIG(path, ERR, "failed to destroy connection mutex\n");
 	}
 out_free:
 	vhost_user_socket_mem_free(vsocket);
@@ -1061,9 +1069,7 @@ again:
 				goto again;
 			}
 
-			VHOST_LOG_CONFIG(INFO,
-				"free connfd = %d for device '%s'\n",
-				conn->connfd, path);
+			VHOST_LOG_CONFIG(path, INFO, "free connfd %d\n", conn->connfd);
 			close(conn->connfd);
 			vhost_destroy_device(conn->vid);
 			TAILQ_REMOVE(&vsocket->conn_list, conn, next);
@@ -1139,8 +1145,7 @@ rte_vhost_driver_start(const char *path)
 		 * rebuild the wait list of poll.
 		 */
 		if (fdset_pipe_init(&vhost_user.fdset) < 0) {
-			VHOST_LOG_CONFIG(ERR,
-				"failed to create pipe for vhost fdset\n");
+			VHOST_LOG_CONFIG(path, ERR, "failed to create pipe for vhost fdset\n");
 			return -1;
 		}
 
@@ -1148,9 +1153,7 @@ rte_vhost_driver_start(const char *path)
 			"vhost-events", NULL, fdset_event_dispatch,
 			&vhost_user.fdset);
 		if (ret != 0) {
-			VHOST_LOG_CONFIG(ERR,
-				"failed to create fdset handling thread\n");
-
+			VHOST_LOG_CONFIG(path, ERR, "failed to create fdset handling thread\n");
 			fdset_pipe_uninit(&vhost_user.fdset);
 			return -1;
 		}

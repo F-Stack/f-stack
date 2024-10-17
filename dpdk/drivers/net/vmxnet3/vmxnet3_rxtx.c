@@ -764,6 +764,23 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 		/* Check packet type, checksum errors, etc. */
 		if (rcd->cnc) {
 			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+
+			if (rcd->v4) {
+				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
+				if (rcd->tcp)
+					packet_type |= RTE_PTYPE_L4_TCP;
+				else if (rcd->udp)
+					packet_type |= RTE_PTYPE_L4_UDP;
+			} else if (rcd->v6) {
+				packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
+				if (rcd->tcp)
+					packet_type |= RTE_PTYPE_L4_TCP;
+				else if (rcd->udp)
+					packet_type |= RTE_PTYPE_L4_UDP;
+			} else {
+				packet_type |= RTE_PTYPE_UNKNOWN;
+			}
+
 		} else {
 			if (rcd->v4) {
 				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
@@ -1022,6 +1039,36 @@ rcd_done:
 	}
 
 	return nb_rx;
+}
+
+uint32_t
+vmxnet3_dev_rx_queue_count(void *rx_queue)
+{
+	const vmxnet3_rx_queue_t *rxq;
+	const Vmxnet3_RxCompDesc *rcd;
+	uint32_t idx, nb_rxd = 0;
+	uint8_t gen;
+
+	rxq = rx_queue;
+	if (unlikely(rxq->stopped)) {
+		PMD_RX_LOG(DEBUG, "Rx queue is stopped.");
+		return 0;
+	}
+
+	gen = rxq->comp_ring.gen;
+	idx = rxq->comp_ring.next2proc;
+	rcd = &rxq->comp_ring.base[idx].rcd;
+	while (rcd->gen == gen) {
+		if (rcd->eop)
+			++nb_rxd;
+		if (++idx == rxq->comp_ring.size) {
+			idx = 0;
+			gen ^= 1;
+		}
+		rcd = &rxq->comp_ring.base[idx].rcd;
+	}
+
+	return nb_rxd;
 }
 
 int
@@ -1382,7 +1429,7 @@ vmxnet3_rss_configure(struct rte_eth_dev *dev)
 	/* loading hashKeySize */
 	dev_rss_conf->hashKeySize = VMXNET3_RSS_MAX_KEY_SIZE;
 	/* loading indTableSize: Must not exceed VMXNET3_RSS_MAX_IND_TABLE_SIZE (128)*/
-	dev_rss_conf->indTableSize = (uint16_t)(hw->num_rx_queues * 4);
+	dev_rss_conf->indTableSize = (uint16_t)((MAX_RX_QUEUES(hw)) * 4);
 
 	if (port_rss_conf->rss_key == NULL) {
 		/* Default hash key */

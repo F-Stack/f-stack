@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_COMMON_H_
@@ -32,7 +32,7 @@ enum ice_status ice_reset(struct ice_hw *hw, enum ice_reset_req req);
 
 enum ice_status ice_create_all_ctrlq(struct ice_hw *hw);
 enum ice_status ice_init_all_ctrlq(struct ice_hw *hw);
-void ice_shutdown_all_ctrlq(struct ice_hw *hw);
+void ice_shutdown_all_ctrlq(struct ice_hw *hw, bool unloading);
 void ice_destroy_all_ctrlq(struct ice_hw *hw);
 enum ice_status
 ice_clean_rq_elem(struct ice_hw *hw, struct ice_ctl_q_info *cq,
@@ -145,6 +145,16 @@ enum ice_status
 ice_aq_get_phy_caps(struct ice_port_info *pi, bool qual_mods, u8 report_mode,
 		    struct ice_aqc_get_phy_caps_data *caps,
 		    struct ice_sq_cd *cd);
+enum ice_status
+ice_aq_get_netlist_node_pin(struct ice_hw *hw,
+			    struct ice_aqc_get_link_topo_pin *cmd,
+			    u16 *node_handle);
+enum ice_status
+ice_aq_get_netlist_node(struct ice_hw *hw, struct ice_aqc_get_link_topo *cmd,
+			u8 *node_part_number, u16 *node_handle);
+enum ice_status
+ice_find_netlist_node(struct ice_hw *hw, u8 node_type_ctx, u8 node_part_number,
+		      u16 *node_handle);
 void
 ice_update_phy_type(u64 *phy_type_low, u64 *phy_type_high,
 		    u16 link_speeds_bitmap);
@@ -157,6 +167,7 @@ enum ice_status
 ice_aq_set_phy_cfg(struct ice_hw *hw, struct ice_port_info *pi,
 		   struct ice_aqc_set_phy_cfg_data *cfg, struct ice_sq_cd *cd);
 bool ice_fw_supports_link_override(struct ice_hw *hw);
+bool ice_fw_supports_fec_dis_auto(struct ice_hw *hw);
 enum ice_status
 ice_get_link_default_override(struct ice_link_default_override_tlv *ldo,
 			      struct ice_port_info *pi);
@@ -181,7 +192,8 @@ enum ice_status
 ice_aq_set_link_restart_an(struct ice_port_info *pi, bool ena_link,
 			   struct ice_sq_cd *cd);
 enum ice_status
-ice_aq_set_mac_cfg(struct ice_hw *hw, u16 max_frame_size, struct ice_sq_cd *cd);
+ice_aq_set_mac_cfg(struct ice_hw *hw, u16 max_frame_size, bool auto_drop,
+		   struct ice_sq_cd *cd);
 enum ice_status
 ice_aq_get_link_info(struct ice_port_info *pi, bool ena_lse,
 		     struct ice_link_status *link, struct ice_sq_cd *cd);
@@ -248,6 +260,7 @@ void ice_print_rollback_msg(struct ice_hw *hw);
 bool ice_is_generic_mac(struct ice_hw *hw);
 bool ice_is_e810(struct ice_hw *hw);
 bool ice_is_e810t(struct ice_hw *hw);
+bool ice_is_e823(struct ice_hw *hw);
 enum ice_status
 ice_sched_query_elem(struct ice_hw *hw, u32 node_teid,
 		     struct ice_aqc_txsched_elem_data *buf);
@@ -270,6 +283,7 @@ ice_aq_set_lldp_mib(struct ice_hw *hw, u8 mib_type, void *buf, u16 buf_size,
 bool ice_fw_supports_lldp_fltr_ctrl(struct ice_hw *hw);
 enum ice_status
 ice_lldp_fltr_add_remove(struct ice_hw *hw, u16 vsi_num, bool add);
+enum ice_status ice_lldp_execute_pending_mib(struct ice_hw *hw);
 enum ice_status
 ice_aq_read_i2c(struct ice_hw *hw, struct ice_aqc_link_topo_addr topo_addr,
 		u16 bus_addr, __le16 addr, u8 params, u8 *data,
@@ -279,4 +293,6 @@ ice_aq_write_i2c(struct ice_hw *hw, struct ice_aqc_link_topo_addr topo_addr,
 		 u16 bus_addr, __le16 addr, u8 params, u8 *data,
 		 struct ice_sq_cd *cd);
 bool ice_fw_supports_report_dflt_cfg(struct ice_hw *hw);
+/* AQ API version for FW auto drop reports */
+bool ice_is_fw_auto_drop_supported(struct ice_hw *hw);
 #endif /* _ICE_COMMON_H_ */

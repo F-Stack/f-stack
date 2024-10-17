@@ -25,9 +25,9 @@
 #include <rte_errno.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_net.h>
-#include <rte_bus_vmbus.h>
+#include <bus_vmbus_driver.h>
 #include <rte_spinlock.h>
 
 #include "hn_logs.h"
@@ -315,8 +315,7 @@ hn_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 error:
-	if (txq->txdesc_pool)
-		rte_mempool_free(txq->txdesc_pool);
+	rte_mempool_free(txq->txdesc_pool);
 	rte_memzone_free(txq->tx_rndis_mz);
 	rte_free(txq);
 	return err;
@@ -365,8 +364,7 @@ hn_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 	if (!txq)
 		return;
 
-	if (txq->txdesc_pool)
-		rte_mempool_free(txq->txdesc_pool);
+	rte_mempool_free(txq->txdesc_pool);
 
 	rte_memzone_free(txq->tx_rndis_mz);
 	rte_free(txq);
@@ -614,7 +612,9 @@ static void hn_rxpkt(struct hn_rx_queue *rxq, struct hn_rx_bufinfo *rxb,
 					   RTE_PTYPE_L4_MASK);
 
 	if (info->vlan_info != HN_NDIS_VLAN_INFO_INVALID) {
-		m->vlan_tci = info->vlan_info;
+		m->vlan_tci = RTE_VLAN_TCI_MAKE(NDIS_VLAN_INFO_ID(info->vlan_info),
+						NDIS_VLAN_INFO_PRI(info->vlan_info),
+						NDIS_VLAN_INFO_CFI(info->vlan_info));
 		m->ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED | RTE_MBUF_F_RX_VLAN;
 
 		/* NDIS always strips tag, put it back if necessary */
@@ -1334,7 +1334,9 @@ static void hn_encap(struct rndis_packet_msg *pkt,
 	if (m->ol_flags & RTE_MBUF_F_TX_VLAN) {
 		pi_data = hn_rndis_pktinfo_append(pkt, NDIS_VLAN_INFO_SIZE,
 						  NDIS_PKTINFO_TYPE_VLAN);
-		*pi_data = m->vlan_tci;
+		*pi_data = NDIS_VLAN_INFO_MAKE(RTE_VLAN_TCI_ID(m->vlan_tci),
+					       RTE_VLAN_TCI_PRI(m->vlan_tci),
+					       RTE_VLAN_TCI_DEI(m->vlan_tci));
 	}
 
 	if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {

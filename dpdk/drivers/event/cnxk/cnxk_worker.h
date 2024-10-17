@@ -45,18 +45,22 @@ cnxk_sso_hws_swtag_untag(uintptr_t swtag_untag_op)
 }
 
 static __rte_always_inline void
-cnxk_sso_hws_swtag_flush(uint64_t tag_op, uint64_t flush_op)
+cnxk_sso_hws_swtag_flush(uint64_t base)
 {
-	if (CNXK_TT_FROM_TAG(plt_read64(tag_op)) == SSO_TT_EMPTY)
+	/* Ensure that there is no previous flush is pending. */
+	while (plt_read64(base + SSOW_LF_GWS_PENDSTATE) & BIT_ULL(56))
+		;
+	if (CNXK_TT_FROM_TAG(plt_read64(base + SSOW_LF_GWS_TAG)) ==
+	    SSO_TT_EMPTY)
 		return;
-	plt_write64(0, flush_op);
+	plt_write64(0, base + SSOW_LF_GWS_OP_SWTAG_FLUSH);
 }
 
-static __rte_always_inline void
+static __rte_always_inline uint64_t
 cnxk_sso_hws_swtag_wait(uintptr_t tag_op)
 {
-#ifdef RTE_ARCH_ARM64
 	uint64_t swtp;
+#ifdef RTE_ARCH_ARM64
 
 	asm volatile(PLT_CPU_FEATURE_PREAMBLE
 		     "		ldr %[swtb], [%[swtp_loc]]	\n"
@@ -70,9 +74,19 @@ cnxk_sso_hws_swtag_wait(uintptr_t tag_op)
 		     : [swtp_loc] "r"(tag_op));
 #else
 	/* Wait for the SWTAG/SWTAG_FULL operation */
-	while (plt_read64(tag_op) & BIT_ULL(62))
-		;
+	do {
+		swtp = plt_read64(tag_op);
+	} while (swtp & BIT_ULL(62));
 #endif
+
+	return swtp;
+}
+
+static __rte_always_inline void
+cnxk_sso_hws_desched(uint64_t u64, uint64_t base)
+{
+	plt_write64(u64, base + SSOW_LF_GWS_OP_UPD_WQP_GRP1);
+	plt_write64(0, base + SSOW_LF_GWS_OP_DESCHED);
 }
 
 #endif

@@ -5,6 +5,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -20,6 +21,7 @@
 #include <cmdline_parse_string.h>
 #include <cmdline_parse_num.h>
 #include <cmdline.h>
+#include "vdpa_blk_compact.h"
 
 #define MAX_PATH_LEN 128
 #define MAX_VDPA_SAMPLE_PORTS 1024
@@ -118,7 +120,7 @@ new_device(int vid)
 				"Failed to get generic device for port %d\n", i);
 			continue;
 		}
-		printf("\nnew port %s, device : %s\n", ifname, dev->name);
+		printf("\nnew port %s, device : %s\n", ifname, rte_dev_name(dev));
 		vports[i].vid = vid;
 		break;
 	}
@@ -148,7 +150,7 @@ destroy_device(int vid)
 			continue;
 		}
 
-		printf("\ndestroy port %s, device: %s\n", ifname, dev->name);
+		printf("\ndestroy port %s, device: %s\n", ifname, rte_dev_name(dev));
 		break;
 	}
 }
@@ -159,8 +161,53 @@ static const struct rte_vhost_device_ops vdpa_sample_devops = {
 };
 
 static int
+vdpa_blk_device_set_features_and_protocol(const char *path)
+{
+	uint64_t protocol_features = 0;
+	int ret;
+
+	ret = rte_vhost_driver_set_features(path, VHOST_BLK_FEATURES);
+	if (ret != 0) {
+		RTE_LOG(ERR, VDPA,
+			"rte_vhost_driver_set_features for %s failed.\n",
+			path);
+		goto out;
+	}
+
+	ret = rte_vhost_driver_disable_features(path,
+		VHOST_BLK_DISABLED_FEATURES);
+	if (ret != 0) {
+		RTE_LOG(ERR, VDPA,
+			"rte_vhost_driver_disable_features for %s failed.\n",
+			path);
+		goto out;
+	}
+
+	ret = rte_vhost_driver_get_protocol_features(path, &protocol_features);
+	if (ret != 0) {
+		RTE_LOG(ERR, VDPA,
+			"rte_vhost_driver_get_protocol_features for %s failed.\n",
+			path);
+		goto out;
+	}
+
+	protocol_features |= VHOST_BLK_PROTOCOL_FEATURES;
+
+	ret = rte_vhost_driver_set_protocol_features(path, protocol_features);
+	if (ret != 0) {
+		RTE_LOG(ERR, VDPA,
+			"rte_vhost_driver_set_protocol_features for %s failed.\n",
+			path);
+	}
+
+out:
+	return ret;
+}
+
+static int
 start_vdpa(struct vdpa_port *vport)
 {
+	uint32_t device_type = 0;
 	int ret;
 	char *socket_path = vport->ifname;
 
@@ -191,6 +238,16 @@ start_vdpa(struct vdpa_port *vport)
 		rte_exit(EXIT_FAILURE,
 			"attach vdpa device failed: %s\n",
 			socket_path);
+
+	ret = rte_vhost_driver_get_vdpa_dev_type(socket_path, &device_type);
+	if (ret == 0 && device_type == RTE_VHOST_VDPA_DEVICE_TYPE_BLK) {
+		RTE_LOG(NOTICE, VDPA, "%s is a blk device\n", socket_path);
+		ret = vdpa_blk_device_set_features_and_protocol(socket_path);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"set vhost blk driver features and protocol features failed: %s\n",
+				socket_path);
+	}
 
 	if (rte_vhost_driver_start(socket_path) < 0)
 		rte_exit(EXIT_FAILURE,
@@ -297,23 +354,23 @@ static void cmd_list_vdpa_devices_parsed(
 
 	cmdline_printf(cl, "device name\tqueue num\tsupported features\n");
 	RTE_DEV_FOREACH(dev, "class=vdpa", &dev_iter) {
-		vdev = rte_vdpa_find_device_by_name(dev->name);
+		vdev = rte_vdpa_find_device_by_name(rte_dev_name(dev));
 		if (!vdev)
 			continue;
 		if (rte_vdpa_get_queue_num(vdev, &queue_num) < 0) {
 			RTE_LOG(ERR, VDPA,
 				"failed to get vdpa queue number "
-				"for device %s.\n", dev->name);
+				"for device %s.\n", rte_dev_name(dev));
 			continue;
 		}
 		if (rte_vdpa_get_features(vdev, &features) < 0) {
 			RTE_LOG(ERR, VDPA,
 				"failed to get vdpa features "
-				"for device %s.\n", dev->name);
+				"for device %s.\n", rte_dev_name(dev));
 			continue;
 		}
 		cmdline_printf(cl, "%s\t\t%" PRIu32 "\t\t0x%" PRIx64 "\n",
-			dev->name, queue_num, features);
+			rte_dev_name(dev), queue_num, features);
 	}
 }
 
@@ -550,10 +607,10 @@ main(int argc, char *argv[])
 		cmdline_stdin_exit(cl);
 	} else {
 		RTE_DEV_FOREACH(dev, "class=vdpa", &dev_iter) {
-			vdev = rte_vdpa_find_device_by_name(dev->name);
+			vdev = rte_vdpa_find_device_by_name(rte_dev_name(dev));
 			if (vdev == NULL) {
 				rte_panic("Failed to find vDPA dev for %s\n",
-						dev->name);
+						rte_dev_name(dev));
 			}
 			vports[devcnt].dev = vdev;
 			snprintf(vports[devcnt].ifname, MAX_PATH_LEN, "%s%d",

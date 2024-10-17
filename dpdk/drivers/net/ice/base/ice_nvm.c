@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -72,6 +72,7 @@ ice_read_flat_nvm(struct ice_hw *hw, u32 offset, u32 *length, u8 *data,
 	enum ice_status status;
 	u32 inlen = *length;
 	u32 bytes_read = 0;
+	int retry_cnt = 0;
 	bool last_cmd;
 
 	ice_debug(hw, ICE_DBG_TRACE, "%s\n", __func__);
@@ -106,11 +107,24 @@ ice_read_flat_nvm(struct ice_hw *hw, u32 offset, u32 *length, u8 *data,
 					 offset, (u16)read_size,
 					 data + bytes_read, last_cmd,
 					 read_shadow_ram, NULL);
-		if (status)
-			break;
-
-		bytes_read += read_size;
-		offset += read_size;
+		if (status) {
+			if (hw->adminq.sq_last_status != ICE_AQ_RC_EBUSY ||
+			    retry_cnt > ICE_SQ_SEND_MAX_EXECUTE)
+				break;
+			ice_debug(hw, ICE_DBG_NVM,
+				  "NVM read EBUSY error, retry %d\n",
+				  retry_cnt + 1);
+			ice_release_nvm(hw);
+			msleep(ICE_SQ_SEND_DELAY_TIME_MS);
+			status = ice_acquire_nvm(hw, ICE_RES_READ);
+			if (status)
+				break;
+			retry_cnt++;
+		} else {
+			bytes_read += read_size;
+			offset += read_size;
+			retry_cnt = 0;
+		}
 	} while (!last_cmd);
 
 	*length = bytes_read;
@@ -171,7 +185,7 @@ ice_read_sr_buf_aq(struct ice_hw *hw, u16 offset, u16 *words, u16 *data)
 	status = ice_read_flat_nvm(hw, offset * 2, &bytes, (u8 *)data, true);
 
 	/* Report the number of words successfully read */
-	*words = bytes / 2;
+	*words = (u16)(bytes / 2);
 
 	/* Byte swap the words up to the amount we actually read */
 	for (i = 0; i < *words; i++)
@@ -351,6 +365,42 @@ ice_read_nvm_module(struct ice_hw *hw, enum ice_bank_select bank, u32 offset, u1
 }
 
 /**
+ * ice_get_nvm_css_hdr_len - Read the CSS header length from the NVM CSS header
+ * @hw: pointer to the HW struct
+ * @bank: whether to read from the active or inactive flash bank
+ * @hdr_len: storage for header length in words
+ *
+ * Read the CSS header length from the NVM CSS header and add the Authentication
+ * header size, and then convert to words.
+ */
+static enum ice_status
+ice_get_nvm_css_hdr_len(struct ice_hw *hw, enum ice_bank_select bank,
+			u32 *hdr_len)
+{
+	u16 hdr_len_l, hdr_len_h;
+	enum ice_status status;
+	u32 hdr_len_dword;
+
+	status = ice_read_nvm_module(hw, bank, ICE_NVM_CSS_HDR_LEN_L,
+				     &hdr_len_l);
+	if (status)
+		return status;
+
+	status = ice_read_nvm_module(hw, bank, ICE_NVM_CSS_HDR_LEN_H,
+				     &hdr_len_h);
+	if (status)
+		return status;
+
+	/* CSS header length is in DWORD, so convert to words and add
+	 * authentication header size
+	 */
+	hdr_len_dword = hdr_len_h << 16 | hdr_len_l;
+	*hdr_len = (hdr_len_dword * 2) + ICE_NVM_AUTH_HEADER_LEN;
+
+	return ICE_SUCCESS;
+}
+
+/**
  * ice_read_nvm_sr_copy - Read a word from the Shadow RAM copy in the NVM bank
  * @hw: pointer to the HW structure
  * @bank: whether to read from the active or inactive NVM module
@@ -363,7 +413,16 @@ ice_read_nvm_module(struct ice_hw *hw, enum ice_bank_select bank, u32 offset, u1
 static enum ice_status
 ice_read_nvm_sr_copy(struct ice_hw *hw, enum ice_bank_select bank, u32 offset, u16 *data)
 {
-	return ice_read_nvm_module(hw, bank, ICE_NVM_SR_COPY_WORD_OFFSET + offset, data);
+	enum ice_status status;
+	u32 hdr_len;
+
+	status = ice_get_nvm_css_hdr_len(hw, bank, &hdr_len);
+	if (status)
+		return status;
+
+	hdr_len = ROUND_UP(hdr_len, 32);
+
+	return ice_read_nvm_module(hw, bank, hdr_len + offset, data);
 }
 
 /**
@@ -429,7 +488,7 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 {
 	enum ice_status status;
 	u16 pfa_len, pfa_ptr;
-	u16 next_tlv;
+	u32 next_tlv;
 
 	status = ice_read_sr_word(hw, ICE_SR_PFA_PTR, &pfa_ptr);
 	if (status != ICE_SUCCESS) {
@@ -445,25 +504,30 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 	 * of TLVs to find the requested one.
 	 */
 	next_tlv = pfa_ptr + 1;
-	while (next_tlv < pfa_ptr + pfa_len) {
+	while (next_tlv < ((u32)pfa_ptr + pfa_len)) {
 		u16 tlv_sub_module_type;
 		u16 tlv_len;
 
 		/* Read TLV type */
-		status = ice_read_sr_word(hw, next_tlv, &tlv_sub_module_type);
+		status = ice_read_sr_word(hw, (u16)next_tlv,
+					  &tlv_sub_module_type);
 		if (status != ICE_SUCCESS) {
 			ice_debug(hw, ICE_DBG_INIT, "Failed to read TLV type.\n");
 			break;
 		}
 		/* Read TLV length */
-		status = ice_read_sr_word(hw, next_tlv + 1, &tlv_len);
+		status = ice_read_sr_word(hw, (u16)(next_tlv + 1), &tlv_len);
 		if (status != ICE_SUCCESS) {
 			ice_debug(hw, ICE_DBG_INIT, "Failed to read TLV length.\n");
 			break;
 		}
+		if (tlv_len > pfa_len) {
+			ice_debug(hw, ICE_DBG_INIT, "Invalid TLV length.\n");
+			return ICE_ERR_INVAL_SIZE;
+		}
 		if (tlv_sub_module_type == module_type) {
 			if (tlv_len) {
-				*module_tlv = next_tlv;
+				*module_tlv = (u16)next_tlv;
 				*module_tlv_len = tlv_len;
 				return ICE_SUCCESS;
 			}
@@ -633,22 +697,26 @@ enum ice_status ice_get_inactive_nvm_ver(struct ice_hw *hw, struct ice_nvm_info 
  */
 static enum ice_status ice_get_orom_srev(struct ice_hw *hw, enum ice_bank_select bank, u32 *srev)
 {
+	u32 orom_size_word = hw->flash.banks.orom_size / 2;
 	enum ice_status status;
 	u16 srev_l, srev_h;
 	u32 css_start;
+	u32 hdr_len;
 
-	if (hw->flash.banks.orom_size < ICE_NVM_OROM_TRAILER_LENGTH) {
+	status = ice_get_nvm_css_hdr_len(hw, bank, &hdr_len);
+	if (status)
+		return status;
+
+	if (orom_size_word < hdr_len) {
 		ice_debug(hw, ICE_DBG_NVM, "Unexpected Option ROM Size of %u\n",
 			  hw->flash.banks.orom_size);
 		return ICE_ERR_CFG;
 	}
 
 	/* calculate how far into the Option ROM the CSS header starts. Note
-	 * that ice_read_orom_module takes a word offset so we need to
-	 * divide by 2 here.
+	 * that ice_read_orom_module takes a word offset
 	 */
-	css_start = (hw->flash.banks.orom_size - ICE_NVM_OROM_TRAILER_LENGTH) / 2;
-
+	css_start = orom_size_word - hdr_len;
 	status = ice_read_orom_module(hw, bank, css_start + ICE_NVM_CSS_SREV_L, &srev_l);
 	if (status)
 		return status;
@@ -676,7 +744,6 @@ ice_get_orom_civd_data(struct ice_hw *hw, enum ice_bank_select bank,
 		       struct ice_orom_civd_info *civd)
 {
 	struct ice_orom_civd_info tmp;
-	enum ice_status status;
 	u32 offset;
 
 	/* The CIVD section is located in the Option ROM aligned to 512 bytes.
@@ -685,6 +752,7 @@ ice_get_orom_civd_data(struct ice_hw *hw, enum ice_bank_select bank,
 	 * equal 0.
 	 */
 	for (offset = 0; (offset + 512) <= hw->flash.banks.orom_size; offset += 512) {
+		enum ice_status status;
 		u8 sum = 0, i;
 
 		status = ice_read_flash_module(hw, bank, ICE_SR_1ST_OROM_BANK_PTR,

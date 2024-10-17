@@ -13,7 +13,7 @@
 #include <rte_log.h>
 #include <rte_pci.h>
 #include <rte_mbuf.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_memzone.h>
 #include <rte_memcpy.h>
 #include <rte_rawdev.h>
@@ -1045,6 +1045,11 @@ ntb_dev_close(struct rte_rawdev *dev)
 	hw->queue_pairs = 0;
 
 	intr_handle = hw->pci_dev->intr_handle;
+	/* Disable interrupt only once */
+	if (!rte_intr_nb_efd_get(intr_handle) &&
+	    !rte_intr_max_intr_get(intr_handle))
+		return 0;
+
 	/* Clean datapath event and vec mapping */
 	rte_intr_efd_disable(intr_handle);
 	rte_intr_vec_list_free(intr_handle);

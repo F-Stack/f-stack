@@ -12,6 +12,12 @@
 
 #include "eal_filesystem.h"
 
+#ifdef RTE_ARCH_X86
+#include <cpuid.h>
+#else
+#define __cpuid(n, a, b, c, d)
+#endif
+
 static int eth_axgbe_dev_init(struct rte_eth_dev *eth_dev);
 static int  axgbe_dev_configure(struct rte_eth_dev *dev);
 static int  axgbe_dev_start(struct rte_eth_dev *dev);
@@ -172,7 +178,14 @@ static const struct axgbe_xstats axgbe_xstats_strings[] = {
 
 /* The set of PCI devices this driver supports */
 #define AMD_PCI_VENDOR_ID       0x1022
-#define AMD_PCI_RV_ROOT_COMPLEX_ID	0x15d0
+
+#define	Fam17h	0x17
+#define	Fam19h	0x19
+
+#define	CPUID_VENDOR_AuthenticAMD_ebx	0x68747541
+#define	CPUID_VENDOR_AuthenticAMD_ecx	0x444d4163
+#define	CPUID_VENDOR_AuthenticAMD_edx	0x69746e65
+
 #define AMD_PCI_AXGBE_DEVICE_V2A 0x1458
 #define AMD_PCI_AXGBE_DEVICE_V2B 0x1459
 
@@ -192,6 +205,7 @@ static struct axgbe_version_data axgbe_v2a = {
 	.ecc_support			= 1,
 	.i2c_support			= 1,
 	.an_cdr_workaround		= 1,
+	.enable_rrc			= 1,
 };
 
 static struct axgbe_version_data axgbe_v2b = {
@@ -204,6 +218,7 @@ static struct axgbe_version_data axgbe_v2b = {
 	.ecc_support			= 1,
 	.i2c_support			= 1,
 	.an_cdr_workaround		= 1,
+	.enable_rrc			= 1,
 };
 
 static const struct rte_eth_desc_lim rx_desc_lim = {
@@ -1226,6 +1241,7 @@ axgbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
 		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |
 		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM  |
+		RTE_ETH_TX_OFFLOAD_MULTI_SEGS  |
 		RTE_ETH_TX_OFFLOAD_UDP_CKSUM   |
 		RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
 
@@ -2120,29 +2136,6 @@ static void axgbe_default_config(struct axgbe_port *pdata)
 }
 
 /*
- * Return PCI root complex device id on success else 0
- */
-static uint16_t
-get_pci_rc_devid(void)
-{
-	char pci_sysfs[PATH_MAX];
-	const struct rte_pci_addr pci_rc_addr = {0, 0, 0, 0};
-	unsigned long device_id;
-
-	snprintf(pci_sysfs, sizeof(pci_sysfs), "%s/" PCI_PRI_FMT "/device",
-		 rte_pci_get_sysfs_path(), pci_rc_addr.domain,
-		 pci_rc_addr.bus, pci_rc_addr.devid, pci_rc_addr.function);
-
-	/* get device id */
-	if (eal_parse_sysfs_value(pci_sysfs, &device_id) < 0) {
-		PMD_INIT_LOG(ERR, "Error in reading PCI sysfs\n");
-		return 0;
-	}
-
-	return (uint16_t)device_id;
-}
-
-/*
  * It returns 0 on success.
  */
 static int
@@ -2154,6 +2147,9 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 	uint32_t reg, mac_lo, mac_hi;
 	uint32_t len;
 	int ret;
+
+	unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+	unsigned char cpu_family = 0, cpu_model = 0;
 
 	eth_dev->dev_ops = &axgbe_eth_dev_ops;
 
@@ -2178,17 +2174,6 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 	pci_dev = RTE_DEV_TO_PCI(eth_dev->device);
 	pdata->pci_dev = pci_dev;
 
-	/*
-	 * Use root complex device ID to differentiate RV AXGBE vs SNOWY AXGBE
-	 */
-	if ((get_pci_rc_devid()) == AMD_PCI_RV_ROOT_COMPLEX_ID) {
-		pdata->xpcs_window_def_reg = PCS_V2_RV_WINDOW_DEF;
-		pdata->xpcs_window_sel_reg = PCS_V2_RV_WINDOW_SELECT;
-	} else {
-		pdata->xpcs_window_def_reg = PCS_V2_WINDOW_DEF;
-		pdata->xpcs_window_sel_reg = PCS_V2_WINDOW_SELECT;
-	}
-
 	pdata->xgmac_regs =
 		(void *)pci_dev->mem_resource[AXGBE_AXGMAC_BAR].addr;
 	pdata->xprop_regs = (void *)((uint8_t *)pdata->xgmac_regs
@@ -2202,6 +2187,61 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 		pdata->vdata = &axgbe_v2a;
 	else
 		pdata->vdata = &axgbe_v2b;
+
+	/*
+	 * Use CPUID to get Family and model ID to identify the CPU
+	 */
+	__cpuid(0x0, eax, ebx, ecx, edx);
+
+	if (ebx == CPUID_VENDOR_AuthenticAMD_ebx &&
+		edx == CPUID_VENDOR_AuthenticAMD_edx &&
+		ecx == CPUID_VENDOR_AuthenticAMD_ecx) {
+		int unknown_cpu = 0;
+		eax = 0, ebx = 0, ecx = 0, edx = 0;
+
+		__cpuid(0x1, eax, ebx, ecx, edx);
+
+		cpu_family = ((GET_BITS(eax, 8, 4)) + (GET_BITS(eax, 20, 8)));
+		cpu_model = ((GET_BITS(eax, 4, 4)) | (((GET_BITS(eax, 16, 4)) << 4) & 0xF0));
+
+		switch (cpu_family) {
+		case Fam17h:
+		/* V1000/R1000 */
+		if (cpu_model >= 0x10 && cpu_model <= 0x1F) {
+			pdata->xpcs_window_def_reg = PCS_V2_RV_WINDOW_DEF;
+			pdata->xpcs_window_sel_reg = PCS_V2_RV_WINDOW_SELECT;
+		/* EPYC 3000 */
+		} else if (cpu_model >= 0x01 && cpu_model <= 0x0F) {
+			pdata->xpcs_window_def_reg = PCS_V2_WINDOW_DEF;
+			pdata->xpcs_window_sel_reg = PCS_V2_WINDOW_SELECT;
+		} else {
+			unknown_cpu = 1;
+		}
+		break;
+		case Fam19h:
+		/* V3000 (Yellow Carp) */
+		if (cpu_model >= 0x44 && cpu_model <= 0x47) {
+			pdata->xpcs_window_def_reg = PCS_V2_YC_WINDOW_DEF;
+			pdata->xpcs_window_sel_reg = PCS_V2_YC_WINDOW_SELECT;
+
+			/* Yellow Carp devices do not need cdr workaround */
+			pdata->vdata->an_cdr_workaround = 0;
+
+			/* Yellow Carp devices do not need rrc */
+			pdata->vdata->enable_rrc = 0;
+		} else {
+			unknown_cpu = 1;
+		}
+		break;
+		default:
+			unknown_cpu = 1;
+			break;
+		}
+		if (unknown_cpu) {
+			PMD_DRV_LOG(ERR, "Unknown CPU family, no supported axgbe device found\n");
+			return -ENODEV;
+		}
+	}
 
 	/* Configure the PCS indirect addressing support */
 	reg = XPCS32_IOREAD(pdata, pdata->xpcs_window_def_reg);
@@ -2326,12 +2366,14 @@ static int
 axgbe_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev;
+	struct axgbe_port *pdata;
 
 	PMD_INIT_FUNC_TRACE();
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
+	pdata = eth_dev->data->dev_private;
 	pci_dev = RTE_DEV_TO_PCI(eth_dev->device);
 	axgbe_dev_clear_queues(eth_dev);
 
@@ -2340,6 +2382,9 @@ axgbe_dev_close(struct rte_eth_dev *eth_dev)
 	rte_intr_callback_unregister(pci_dev->intr_handle,
 				     axgbe_dev_interrupt_handler,
 				     (void *)eth_dev);
+
+	/* Disable all interrupts in the hardware */
+	XP_IOWRITE(pdata, XP_INT_EN, 0x0);
 
 	return 0;
 }

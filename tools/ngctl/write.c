@@ -4,14 +4,14 @@
  *
  * Copyright (c) 2002 Archie L. Cobbs
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Archie L. Cobbs;
  * provided, however, that:
  * 1. Any and all reproductions of the source or object code must include the
  *    copyright notice above and the following disclaimer of warranties
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY ARCHIE L. COBBS AS IS", AND TO
  * THE MAXIMUM EXTENT PERMITTED BY LAW, ARCHIE L. COBBS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -108,7 +108,14 @@ WriteCmd(int ac, char **av)
 	/* Send data */
 	sag->sg_len = 3 + strlen(hook);
 	sag->sg_family = AF_NETGRAPH;
+#if __GNUC__ >= 13
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
 	strlcpy(sag->sg_data, hook, sizeof(sagbuf) - 2);
+#if __GNUC__ >= 13
+#pragma GCC diagnostic pop
+#endif
 	if (sendto(dsock, buf, len,
 	    0, (struct sockaddr *)sag, sag->sg_len) == -1) {
 		warn("writing to hook \"%s\"", hook);

@@ -40,6 +40,14 @@ struct simd_bitwidth {
 	uint16_t bitwidth; /**< bitwidth value */
 };
 
+/** Hugepage backing files discipline. */
+struct hugepage_file_discipline {
+	/** Unlink files before mapping them to leave no trace in hugetlbfs. */
+	bool unlink_before_mapping;
+	/** Unlink existing files at startup, re-create them before mapping. */
+	bool unlink_existing;
+};
+
 /**
  * internal configuration
  */
@@ -48,7 +56,7 @@ struct internal_config {
 	volatile unsigned force_nchannel; /**< force number of channels */
 	volatile unsigned force_nrank;    /**< force number of ranks */
 	volatile unsigned no_hugetlbfs;   /**< true to disable hugetlbfs */
-	unsigned hugepage_unlink;         /**< true to unlink backing files */
+	struct hugepage_file_discipline hugepage_file;
 	volatile unsigned no_pci;         /**< true to disable PCI */
 	volatile unsigned no_hpet;        /**< true to disable HPET */
 	volatile unsigned vmware_tsc_map; /**< true to use VMware TSC mapping
@@ -94,6 +102,7 @@ struct internal_config {
 	unsigned int no_telemetry; /**< true to disable Telemetry */
 	struct simd_bitwidth max_simd_bitwidth;
 	/**< max simd bitwidth path to use */
+	size_t huge_worker_stack_size; /**< worker thread stack size */
 };
 
 void eal_reset_internal_config(struct internal_config *internal_cfg);

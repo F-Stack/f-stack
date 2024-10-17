@@ -17,6 +17,7 @@ extern "C" {
 
 #include <stdint.h>
 
+#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_mbuf.h>
 #include <rte_memory.h>
@@ -47,6 +48,15 @@ extern "C" {
 #define RTE_BBDEV_TURBO_MAX_CODE_BLOCKS (64)
 /* LDPC:  Maximum number of Code Blocks in Transport Block.*/
 #define RTE_BBDEV_LDPC_MAX_CODE_BLOCKS (256)
+/* 12 CS maximum */
+#define RTE_BBDEV_MAX_CS_2 (6)
+
+/*
+ * Maximum size to be used to manage the enum rte_bbdev_op_type
+ * including padding for future enum insertion.
+ * The enum values must be explicitly kept smaller or equal to this padded maximum size.
+ */
+#define RTE_BBDEV_OP_TYPE_SIZE_MAX 8
 
 /** Flags for turbo decoder operation and capability structure */
 enum rte_bbdev_op_td_flag_bitmasks {
@@ -209,6 +219,26 @@ enum rte_bbdev_op_ldpcenc_flag_bitmasks {
 	RTE_BBDEV_LDPC_ENC_SCATTER_GATHER = (1ULL << 6),
 	/** Set if a device supports concatenation of non byte aligned output */
 	RTE_BBDEV_LDPC_ENC_CONCATENATION = (1ULL << 7)
+};
+
+/** Flags for FFT operation and capability structure. */
+enum rte_bbdev_op_fft_flag_bitmasks {
+	/** Flexible windowing capability. */
+	RTE_BBDEV_FFT_WINDOWING = (1ULL << 0),
+	/** Flexible adjustment of Cyclic Shift time offset. */
+	RTE_BBDEV_FFT_CS_ADJUSTMENT = (1ULL << 1),
+	/** Set for bypass the DFT and get directly into iDFT input. */
+	RTE_BBDEV_FFT_DFT_BYPASS = (1ULL << 2),
+	/** Set for bypass the IDFT and get directly the DFT output. */
+	RTE_BBDEV_FFT_IDFT_BYPASS = (1ULL << 3),
+	/** Set for bypass time domain windowing. */
+	RTE_BBDEV_FFT_WINDOWING_BYPASS = (1ULL << 4),
+	/** Set for optional power measurement on DFT output. */
+	RTE_BBDEV_FFT_POWER_MEAS = (1ULL << 5),
+	/** Set if the input data used FP16 format. */
+	RTE_BBDEV_FFT_FP16_INPUT = (1ULL << 6),
+	/** Set if the output data uses FP16 format. */
+	RTE_BBDEV_FFT_FP16_OUTPUT = (1ULL << 7)
 };
 
 /** Flags for the Code Block/Transport block mode  */
@@ -374,6 +404,8 @@ struct rte_bbdev_op_dec_ldpc_tb_params {
  * The output mbuf data structure is expected to be allocated by the
  * application with enough room for the output data.
  */
+
+/* Structure rte_bbdev_op_turbo_dec 8< */
 struct rte_bbdev_op_turbo_dec {
 	/** The Virtual Circular Buffer, wk, size 3*Kpi for each CB */
 	struct rte_bbdev_op_data input;
@@ -417,6 +449,7 @@ struct rte_bbdev_op_turbo_dec {
 		struct rte_bbdev_op_dec_turbo_tb_params tb_params;
 	};
 };
+/* >8 End of structure rte_bbdev_op_turbo_dec. */
 
 /** Operation structure for LDPC decode.
  *
@@ -447,6 +480,8 @@ struct rte_bbdev_op_turbo_dec {
  * The output mbuf data structure is expected to be allocated by the
  * application with enough room for the output data.
  */
+
+/* Structure rte_bbdev_op_ldpc_dec 8< */
 struct rte_bbdev_op_ldpc_dec {
 	/** The Virtual Circular Buffer for this code block, one LLR
 	 * per bit of the original CB.
@@ -507,6 +542,7 @@ struct rte_bbdev_op_ldpc_dec {
 		struct rte_bbdev_op_dec_ldpc_tb_params tb_params;
 	};
 };
+/* >8 End of structure rte_bbdev_op_ldpc_dec. */
 
 /** Turbo encode code block parameters */
 struct rte_bbdev_op_enc_turbo_cb_params {
@@ -615,6 +651,8 @@ struct rte_bbdev_op_enc_ldpc_tb_params {
  * The output mbuf data structure is expected to be allocated by the
  * application with enough room for the output data.
  */
+
+/* Structure rte_bbdev_op_turbo_enc 8< */
 struct rte_bbdev_op_turbo_enc {
 	/** The input CB or TB data */
 	struct rte_bbdev_op_data input;
@@ -634,6 +672,7 @@ struct rte_bbdev_op_turbo_enc {
 		struct rte_bbdev_op_enc_turbo_tb_params tb_params;
 	};
 };
+/* >8 End of structure rte_bbdev_op_turbo_enc. */
 
 /** Operation structure for LDPC encode.
  * An operation can be performed on one CB at a time "CB-mode".
@@ -648,6 +687,8 @@ struct rte_bbdev_op_turbo_enc {
  * The output mbuf data structure is expected to be allocated by the
  * application with enough room for the output data.
  */
+
+/* Structure rte_bbdev_op_ldpc_enc 8< */
 struct rte_bbdev_op_ldpc_enc {
 	/** The input TB or CB data */
 	struct rte_bbdev_op_data input;
@@ -688,6 +729,59 @@ struct rte_bbdev_op_ldpc_enc {
 		struct rte_bbdev_op_enc_ldpc_tb_params tb_params;
 	};
 };
+/* >8 End of structure rte_bbdev_op_ldpc_enc. */
+
+/** Operation structure for FFT processing.
+ *
+ * The operation processes the data for multiple antennas in a single call
+ * (i.e. for all the REs belonging to a given SRS sequence for instance).
+ *
+ * The output mbuf data structure is expected to be allocated by the
+ * application with enough room for the output data.
+ */
+
+/* Structure rte_bbdev_op_fft 8< */
+struct rte_bbdev_op_fft {
+	/** Input data starting from first antenna. */
+	struct rte_bbdev_op_data base_input;
+	/** Output data starting from first antenna and first cyclic shift. */
+	struct rte_bbdev_op_data base_output;
+	/** Optional power measurement output data. */
+	struct rte_bbdev_op_data power_meas_output;
+	/** Flags from rte_bbdev_op_fft_flag_bitmasks. */
+	uint32_t op_flags;
+	/** Input sequence size in 32-bits points. */
+	uint16_t input_sequence_size;
+	/** Padding at the start of the sequence. */
+	uint16_t input_leading_padding;
+	/** Output sequence size in 32-bits points. */
+	uint16_t output_sequence_size;
+	/** Depadding at the start of the DFT output. */
+	uint16_t output_leading_depadding;
+	/** Window index being used for each cyclic shift output. */
+	uint8_t window_index[RTE_BBDEV_MAX_CS_2];
+	/** Bitmap of the cyclic shift output requested. */
+	uint16_t cs_bitmap;
+	/** Number of antennas as a log2 – 8 to 128. */
+	uint8_t num_antennas_log2;
+	/** iDFT size as a log2 - 32 to 2048. */
+	uint8_t idft_log2;
+	/** DFT size as a log2 - 8 to 2048. */
+	uint8_t dft_log2;
+	/** Adjustment of position of the cyclic shifts - -31 to 31. */
+	int8_t cs_time_adjustment;
+	/** iDFT shift down. */
+	int8_t idft_shift;
+	/** DFT shift down. */
+	int8_t dft_shift;
+	/** NCS reciprocal factor. */
+	uint16_t ncs_reciprocal;
+	/** Power measurement out shift down. */
+	uint16_t power_shift;
+	/** Adjust the FP6 exponent for INT<->FP16 conversion. */
+	uint16_t fp16_exp_adjust;
+};
+/* >8 End of structure rte_bbdev_op_fft. */
 
 /** List of the capabilities for the Turbo Decoder */
 struct rte_bbdev_op_cap_turbo_dec {
@@ -741,14 +835,28 @@ struct rte_bbdev_op_cap_ldpc_enc {
 	uint16_t num_buffers_dst;
 };
 
-/** Different operation types supported by the device */
+/** List of the capabilities for the FFT. */
+struct rte_bbdev_op_cap_fft {
+	/** Flags from *rte_bbdev_op_fft_flag_bitmasks*. */
+	uint32_t capability_flags;
+	/** Number of input code block buffers. */
+	uint16_t num_buffers_src;
+	/** Number of output code block buffers. */
+	uint16_t num_buffers_dst;
+};
+
+/** Different operation types supported by the device.
+ *  The related macro RTE_BBDEV_OP_TYPE_SIZE_MAX can be used as an absolute maximum for
+ *  notably sizing array while allowing for future enumeration insertion.
+ */
 enum rte_bbdev_op_type {
 	RTE_BBDEV_OP_NONE,  /**< Dummy operation that does nothing */
 	RTE_BBDEV_OP_TURBO_DEC,  /**< Turbo decode */
 	RTE_BBDEV_OP_TURBO_ENC,  /**< Turbo encode */
 	RTE_BBDEV_OP_LDPC_DEC,  /**< LDPC decode */
 	RTE_BBDEV_OP_LDPC_ENC,  /**< LDPC encode */
-	RTE_BBDEV_OP_TYPE_COUNT,  /**< Count of different op types */
+	RTE_BBDEV_OP_FFT,  /**< FFT */
+	/* Note: RTE_BBDEV_OP_TYPE_SIZE_MAX must be larger or equal to maximum enum value */
 };
 
 /** Bit indexes of possible errors reported through status field */
@@ -791,6 +899,18 @@ struct rte_bbdev_dec_op {
 	};
 };
 
+/** Structure specifying a single FFT operation. */
+struct rte_bbdev_fft_op {
+	/** Status of operation performed. */
+	int status;
+	/** Mempool used for op instance. */
+	struct rte_mempool *mempool;
+	/** Opaque pointer for user data. */
+	void *opaque_data;
+	/** Contains turbo decoder specific parameters. */
+	struct rte_bbdev_op_fft fft;
+};
+
 /** Operation capabilities supported by a device */
 struct rte_bbdev_op_cap {
 	enum rte_bbdev_op_type type;  /**< Type of operation */
@@ -799,6 +919,7 @@ struct rte_bbdev_op_cap {
 		struct rte_bbdev_op_cap_turbo_enc turbo_enc;
 		struct rte_bbdev_op_cap_ldpc_dec ldpc_dec;
 		struct rte_bbdev_op_cap_ldpc_enc ldpc_enc;
+		struct rte_bbdev_op_cap_fft fft;
 	} cap;  /**< Operation-type specific capabilities */
 };
 
@@ -864,7 +985,6 @@ rte_bbdev_enc_op_alloc_bulk(struct rte_mempool *mempool,
 		struct rte_bbdev_enc_op **ops, uint16_t num_ops)
 {
 	struct rte_bbdev_op_pool_private *priv;
-	int ret;
 
 	/* Check type */
 	priv = (struct rte_bbdev_op_pool_private *)
@@ -874,11 +994,7 @@ rte_bbdev_enc_op_alloc_bulk(struct rte_mempool *mempool,
 		return -EINVAL;
 
 	/* Get elements */
-	ret = rte_mempool_get_bulk(mempool, (void **)ops, num_ops);
-	if (unlikely(ret < 0))
-		return ret;
-
-	return 0;
+	return rte_mempool_get_bulk(mempool, (void **)ops, num_ops);
 }
 
 /**
@@ -900,7 +1016,6 @@ rte_bbdev_dec_op_alloc_bulk(struct rte_mempool *mempool,
 		struct rte_bbdev_dec_op **ops, uint16_t num_ops)
 {
 	struct rte_bbdev_op_pool_private *priv;
-	int ret;
 
 	/* Check type */
 	priv = (struct rte_bbdev_op_pool_private *)
@@ -910,11 +1025,37 @@ rte_bbdev_dec_op_alloc_bulk(struct rte_mempool *mempool,
 		return -EINVAL;
 
 	/* Get elements */
-	ret = rte_mempool_get_bulk(mempool, (void **)ops, num_ops);
-	if (unlikely(ret < 0))
-		return ret;
+	return rte_mempool_get_bulk(mempool, (void **)ops, num_ops);
+}
 
-	return 0;
+/**
+ * Bulk allocate FFT operations from a mempool with default parameters.
+ *
+ * @param mempool
+ *   Operation mempool, created by *rte_bbdev_op_pool_create*.
+ * @param ops
+ *   Output array to place allocated operations.
+ * @param num_ops
+ *   Number of operations to allocate.
+ *
+ * @returns
+ *   - 0 on success.
+ *   - EINVAL if invalid mempool is provided.
+ */
+__rte_experimental
+static inline int
+rte_bbdev_fft_op_alloc_bulk(struct rte_mempool *mempool,
+		struct rte_bbdev_fft_op **ops, uint16_t num_ops)
+{
+	struct rte_bbdev_op_pool_private *priv;
+
+	/* Check type */
+	priv = (struct rte_bbdev_op_pool_private *)rte_mempool_get_priv(mempool);
+	if (unlikely(priv->type != RTE_BBDEV_OP_FFT))
+		return -EINVAL;
+
+	/* Get elements */
+	return rte_mempool_get_bulk(mempool, (void **)ops, num_ops);
 }
 
 /**
@@ -946,6 +1087,24 @@ rte_bbdev_dec_op_free_bulk(struct rte_bbdev_dec_op **ops, unsigned int num_ops)
  */
 static inline void
 rte_bbdev_enc_op_free_bulk(struct rte_bbdev_enc_op **ops, unsigned int num_ops)
+{
+	if (num_ops > 0)
+		rte_mempool_put_bulk(ops[0]->mempool, (void **)ops, num_ops);
+}
+
+/**
+ * Free encode operation structures that were allocated by
+ * *rte_bbdev_fft_op_alloc_bulk*.
+ * All structures must belong to the same mempool.
+ *
+ * @param ops
+ *   Operation structures.
+ * @param num_ops
+ *   Number of structures.
+ */
+__rte_experimental
+static inline void
+rte_bbdev_fft_op_free_bulk(struct rte_bbdev_fft_op **ops, unsigned int num_ops)
 {
 	if (num_ops > 0)
 		rte_mempool_put_bulk(ops[0]->mempool, (void **)ops, num_ops);

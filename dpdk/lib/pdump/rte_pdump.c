@@ -2,7 +2,8 @@
  * Copyright(c) 2016-2018 Intel Corporation
  */
 
-#include <rte_memcpy.h>
+#include <stdlib.h>
+
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
@@ -563,9 +564,10 @@ pdump_prepare_client_request(const char *device, uint16_t queue,
 	if (rte_mp_request_sync(&mp_req, &mp_reply, &ts) == 0) {
 		mp_rep = &mp_reply.msgs[0];
 		resp = (struct pdump_response *)mp_rep->param;
-		rte_errno = resp->err_value;
-		if (!resp->err_value)
+		if (resp->err_value == 0)
 			ret = 0;
+		else
+			rte_errno = -resp->err_value;
 		free(mp_reply.msgs);
 	}
 

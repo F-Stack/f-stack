@@ -10,7 +10,7 @@
 #include <fcntl.h>
 
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_memzone.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -1639,7 +1639,7 @@ int enic_set_mtu(struct enic *enic, uint16_t new_mtu)
 	 * packet length.
 	 */
 	if (!eth_dev->data->dev_started)
-		goto set_mtu_done;
+		return rc;
 
 	/*
 	 * The device has started, re-do RQs on the fly. In the process, we
@@ -1664,7 +1664,7 @@ int enic_set_mtu(struct enic *enic, uint16_t new_mtu)
 	}
 
 	/* replace Rx function with a no-op to avoid getting stale pkts */
-	eth_dev->rx_pkt_burst = enic_dummy_recv_pkts;
+	eth_dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_eth_fp_ops[enic->port_id].rx_pkt_burst = eth_dev->rx_pkt_burst;
 	rte_mb();
 

@@ -8,59 +8,6 @@
 Enabling Additional Functionality
 =================================
 
-.. _High_Precision_Event_Timer:
-
-High Precision Event Timer (HPET) Functionality
------------------------------------------------
-
-BIOS Support
-~~~~~~~~~~~~
-
-The High Precision Timer (HPET) must be enabled in the platform BIOS if the HPET is to be used.
-Otherwise, the Time Stamp Counter (TSC) is used by default.
-The BIOS is typically accessed by pressing F2 while the platform is starting up.
-The user can then navigate to the HPET option. On the Crystal Forest platform BIOS, the path is:
-**Advanced -> PCH-IO Configuration -> High Precision Timer ->** (Change from Disabled to Enabled if necessary).
-
-On a system that has already booted, the following command can be issued to check if HPET is enabled::
-
-   grep hpet /proc/timer_list
-
-If no entries are returned, HPET must be enabled in the BIOS (as per the instructions above) and the system rebooted.
-
-Linux Kernel Support
-~~~~~~~~~~~~~~~~~~~~
-
-The DPDK makes use of the platform HPET timer by mapping the timer counter into the process address space, and as such,
-requires that the ``HPET_MMAP`` kernel configuration option be enabled.
-
-.. warning::
-
-    On Fedora, and other common distributions such as Ubuntu, the ``HPET_MMAP`` kernel option is not enabled by default.
-    To recompile the Linux kernel with this option enabled, please consult the distributions documentation for the relevant instructions.
-
-Enabling HPET in the DPDK
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-By default, HPET support is disabled in the DPDK build configuration files.
-To use HPET, use the following meson build option which will enable the HPET settings at compile time::
-
-   meson configure -Duse_hpet=true
-
-For an application to use the ``rte_get_hpet_cycles()`` and ``rte_get_hpet_hz()`` API calls,
-and optionally to make the HPET the default time source for the rte_timer library,
-the new ``rte_eal_hpet_init()`` API call should be called at application initialization.
-This API call will ensure that the HPET is accessible, returning an error to the application if it is not,
-for example, if ``HPET_MMAP`` is not enabled in the kernel.
-The application can then determine what action to take, if any, if the HPET is not available at run-time.
-
-.. note::
-
-    For applications that require timing APIs, but not the HPET timer specifically,
-    it is recommended that the ``rte_get_timer_cycles()`` and ``rte_get_timer_hz()`` API calls be used instead of the HPET-specific APIs.
-    These generic APIs can work with either TSC or HPET time sources, depending on what is requested by an application call to ``rte_eal_hpet_init()``,
-    if any, and on what is available on the system at runtime.
-
 .. _Running_Without_Root_Privileges:
 
 Running DPDK Applications Without Root Privileges
@@ -86,9 +33,11 @@ A good way for managing multiple applications using hugepages
 is to mount the filesystem with group permissions
 and add a supplementary group to each application or container.
 
-One option is to mount manually::
+One option is to use the script provided by this project::
 
-  mount -t hugetlbfs -o pagesize=1G,uid=`id -u`,gid=`id -g` nodev $HOME/huge-1G
+  export HUGEDIR=$HOME/huge-1G
+  mkdir -p $HUGEDIR
+  sudo dpdk-hugepages.py --mount --directory $HUGEDIR --user `id -u` --group `id -g`
 
 In production environment, the OS can manage mount points
 (`systemd example <https://github.com/systemd/systemd/blob/main/units/dev-hugepages.mount>`_).
@@ -106,12 +55,12 @@ Refer to the `documentation <https://www.kernel.org/doc/Documentation/vm/hugetlb
 If the driver requires using physical addresses (PA),
 the executable file must be granted additional capabilities:
 
-* ``SYS_ADMIN`` to read ``/proc/self/pagemaps``
+* ``DAC_READ_SEARCH`` and ``SYS_ADMIN`` to read ``/proc/self/pagemaps``
 * ``IPC_LOCK`` to lock hugepages in memory
 
 .. code-block:: console
 
-   setcap cap_ipc_lock,cap_sys_admin+ep <executable>
+   setcap cap_dac_read_search,cap_ipc_lock,cap_sys_admin+ep <executable>
 
 If physical addresses are not accessible,
 the following message will appear during EAL initialization::
@@ -135,6 +84,8 @@ need to be adjusted in order to ensure normal DPDK operation:
 
 The above limits can usually be adjusted by editing
 ``/etc/security/limits.conf`` file, and rebooting.
+
+See :ref:`Hugepage Mapping <hugepage_mapping>` section to learn how these limits affect EAL.
 
 Device Control
 ~~~~~~~~~~~~~~
@@ -174,45 +125,64 @@ Using Linux Core Isolation to Reduce Context Switches
 -----------------------------------------------------
 
 While the threads used by a DPDK application are pinned to logical cores on the system,
-it is possible for the Linux scheduler to run other tasks on those cores also.
-To help prevent additional workloads from running on those cores,
-it is possible to use the ``isolcpus`` Linux kernel parameter to isolate them from the general Linux scheduler.
+it is possible for the Linux scheduler to run other tasks on those cores.
+To help prevent additional workloads, timers, RCU processing and IRQs
+from running on those cores, it is possible to use
+the Linux kernel parameters ``isolcpus``, ``nohz_full``, ``irqaffinity``
+to isolate them from the general Linux scheduler tasks.
 
-For example, if DPDK applications are to run on logical cores 2, 4 and 6,
+For example, if a given CPU has 0-7 cores
+and DPDK applications are to run on logical cores 2, 4 and 6,
 the following should be added to the kernel parameter list:
 
 .. code-block:: console
 
-    isolcpus=2,4,6
-
-Loading the DPDK KNI Kernel Module
-----------------------------------
-
-To run the DPDK Kernel NIC Interface (KNI) sample application, an extra kernel module (the kni module) must be loaded into the running kernel.
-The module is found in the kernel/linux sub-directory of the DPDK build directory.
-It should be loaded using the insmod command::
-
-   insmod <build_dir>/kernel/linux/kni/rte_kni.ko
+   isolcpus=2,4,6 nohz_full=2,4,6 irqaffinity=0,1,3,5,7
 
 .. note::
 
-   See the "Kernel NIC Interface Sample Application" chapter in the *DPDK Sample Applications User Guide* for more details.
+   More detailed information about the above parameters can be found at
+   `NO_HZ <https://www.kernel.org/doc/html/latest/timers/no_hz.html>`_,
+   `IRQ <https://www.kernel.org/doc/html/latest/core-api/irq/>`_,
+   and `kernel parameters
+   <https://www.kernel.org/doc/html/latest/admin-guide/kernel-parameters.html>`_
 
-Using Linux IOMMU Pass-Through to Run DPDK with Intel® VT-d
------------------------------------------------------------
+For more fine grained control over resource management and performance tuning
+one can look into "Linux cgroups",
+`cpusets <https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v1/cpusets.html>`_,
+`cpuset man pages <https://man7.org/linux/man-pages/man7/cpuset.7.html>`_, and
+`systemd CPU affinity <https://www.freedesktop.org/software/systemd/man/systemd.exec.html>`_.
 
-To enable Intel® VT-d in a Linux kernel, a number of kernel configuration options must be set. These include:
+Also see
+`CPU isolation example <https://www.suse.com/c/cpu-isolation-practical-example-part-5/>`_
+and `systemd core isolation example <https://www.rcannings.com/systemd-core-isolation/>`_.
 
-*   ``IOMMU_SUPPORT``
+.. _High_Precision_Event_Timer:
 
-*   ``IOMMU_API``
+High Precision Event Timer (HPET) Functionality
+-----------------------------------------------
 
-*   ``INTEL_IOMMU``
+DPDK can support the system HPET as a timer source rather than the system default timers,
+such as the core Time-Stamp Counter (TSC) on x86 systems.
+To enable HPET support in DPDK:
 
-In addition, to run the DPDK with Intel® VT-d, the ``iommu=pt`` kernel parameter must be used when using ``igb_uio`` driver.
-This results in pass-through of the DMAR (DMA Remapping) lookup in the host.
-Also, if ``INTEL_IOMMU_DEFAULT_ON`` is not set in the kernel, the ``intel_iommu=on`` kernel parameter must be used too.
-This ensures that the Intel IOMMU is being initialized as expected.
+#. Ensure that HPET is enabled in BIOS settings.
+#. Enable ``HPET_MMAP`` support in kernel configuration.
+   Note that this my involve doing a kernel rebuild,
+   as many common linux distributions do *not* have this setting
+   enabled by default in their kernel builds.
+#. Enable DPDK support for HPET by using the build-time meson option ``use_hpet``,
+   for example, ``meson configure -Duse_hpet=true``
 
-Please note that while using ``iommu=pt`` is compulsory for ``igb_uio`` driver,
-the ``vfio-pci`` driver can actually work with both ``iommu=pt`` and ``iommu=on``.
+For an application to use the ``rte_get_hpet_cycles()`` and ``rte_get_hpet_hz()`` API calls,
+and optionally to make the HPET the default time source for the rte_timer library,
+the ``rte_eal_hpet_init()`` API call should be called at application initialization.
+This API call will ensure that the HPET is accessible,
+returning an error to the application if it is not.
+
+For applications that require timing APIs, but not the HPET timer specifically,
+it is recommended that the ``rte_get_timer_cycles()`` and ``rte_get_timer_hz()``
+API calls be used instead of the HPET-specific APIs.
+These generic APIs can work with either TSC or HPET time sources,
+depending on what is requested by an application call to ``rte_eal_hpet_init()``,
+if any, and on what is available on the system at runtime.

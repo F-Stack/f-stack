@@ -545,13 +545,12 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     return ff_kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
 }
 
-/*
- * It is need to modify the definition, such as Ubuntu 22.04 or later.
- *
- * int(struct timeval * restrict,  void * restrict)
- */
 int
+#if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 31)
+gettimeofday(struct timeval *tv, void *tz)
+#else
 gettimeofday(struct timeval *tv, struct timezone *tz)
+#endif
 {
     if (unlikely(inited == 0)) {
         return SYSCALL(gettimeofday)(tv, tz);

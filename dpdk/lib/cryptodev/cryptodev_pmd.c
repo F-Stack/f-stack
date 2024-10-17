@@ -2,7 +2,10 @@
  * Copyright(c) 2017 Intel Corporation
  */
 
+#include <stdlib.h>
 #include <sys/queue.h>
+
+#include <dev_driver.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
@@ -233,4 +236,20 @@ cryptodev_fp_ops_set(struct rte_crypto_fp_ops *fp_ops,
 	fp_ops->qp.data = dev->data->queue_pairs;
 	fp_ops->qp.enq_cb = dev->enq_cbs;
 	fp_ops->qp.deq_cb = dev->deq_cbs;
+}
+
+void *
+rte_cryptodev_session_event_mdata_get(struct rte_crypto_op *op)
+{
+	if (op->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC &&
+			op->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+		return rte_cryptodev_sym_session_get_user_data(op->sym->session);
+	else if (op->type == RTE_CRYPTO_OP_TYPE_ASYMMETRIC &&
+			op->sess_type == RTE_CRYPTO_OP_WITH_SESSION)
+		return op->asym->session->event_mdata;
+	else if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS &&
+			op->private_data_offset)
+		return ((uint8_t *)op + op->private_data_offset);
+	else
+		return NULL;
 }

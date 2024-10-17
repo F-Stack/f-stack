@@ -8,6 +8,11 @@ if not (is_linux or is_windows)
 endif
 
 deps += ['common_mlx5', 'eal', 'cryptodev']
+if not dpdk_conf.has('RTE_COMMON_MLX5')
+    # avoid referencing undefined variables from common/mlx5
+    subdir_done()
+endif
+
 sources = files(
         'mlx5_crypto.c',
         'mlx5_crypto_dek.c',

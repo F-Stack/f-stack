@@ -21,7 +21,7 @@
 #include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_string_fns.h>
 #include <rte_errno.h>
 #include <rte_memory.h>
@@ -55,7 +55,7 @@ static const char * const valid_arguments[] = {
 };
 
 static const struct rte_eth_link pmd_link = {
-	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_speed = RTE_ETH_SPEED_NUM_100G,
 	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
 	.link_status = RTE_ETH_LINK_DOWN,
 	.link_autoneg = RTE_ETH_LINK_AUTONEG
@@ -88,17 +88,14 @@ memif_mp_send_region(const struct rte_mp_msg *msg, const void *peer)
 	const struct mp_region_msg *msg_param = (const struct mp_region_msg *)msg->param;
 	struct rte_mp_msg reply;
 	struct mp_region_msg *reply_param = (struct mp_region_msg *)reply.param;
-	uint16_t port_id;
-	int ret;
 
 	/* Get requested port */
-	ret = rte_eth_dev_get_port_by_name(msg_param->port_name, &port_id);
-	if (ret) {
+	dev = rte_eth_dev_get_by_name(msg_param->port_name);
+	if (!dev) {
 		MIF_LOG(ERR, "Failed to get port id for %s",
 			msg_param->port_name);
 		return -1;
 	}
-	dev = &rte_eth_devices[port_id];
 	proc_private = dev->process_private;
 
 	memset(&reply, 0, sizeof(reply));
@@ -264,8 +261,6 @@ memif_free_stored_mbufs(struct pmd_process_private *proc_private, struct memif_q
 	cur_tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
 	while (mq->last_tail != cur_tail) {
 		RTE_MBUF_PREFETCH_TO_FREE(mq->buffers[(mq->last_tail + 1) & mask]);
-		/* Decrement refcnt and free mbuf. (current segment) */
-		rte_mbuf_refcnt_update(mq->buffers[mq->last_tail & mask], -1);
 		rte_pktmbuf_free_seg(mq->buffers[mq->last_tail & mask]);
 		mq->last_tail++;
 	}
@@ -710,10 +705,6 @@ memif_tx_one_zc(struct pmd_process_private *proc_private, struct memif_queue *mq
 next_in_chain:
 	/* store pointer to mbuf to free it later */
 	mq->buffers[slot & mask] = mbuf;
-	/* Increment refcnt to make sure the buffer is not freed before server
-	 * receives it. (current segment)
-	 */
-	rte_mbuf_refcnt_update(mbuf, 1);
 	/* populate descriptor */
 	d0 = &ring->desc[slot & mask];
 	d0->length = rte_pktmbuf_data_len(mbuf);
@@ -1243,6 +1234,7 @@ memif_dev_start(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 	int ret = 0;
+	uint16_t i;
 
 	switch (pmd->role) {
 	case MEMIF_ROLE_CLIENT:
@@ -1257,13 +1249,28 @@ memif_dev_start(struct rte_eth_dev *dev)
 		break;
 	}
 
+	if (ret == 0) {
+		for (i = 0; i < dev->data->nb_rx_queues; i++)
+			dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+		for (i = 0; i < dev->data->nb_tx_queues; i++)
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
+
 	return ret;
 }
 
 static int
 memif_dev_stop(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	memif_disconnect(dev);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+
 	return 0;
 }
 
@@ -1712,8 +1719,7 @@ memif_check_socket_filename(const char *filename)
 		ret = -EINVAL;
 	}
 
-	if (dir != NULL)
-		rte_free(dir);
+	rte_free(dir);
 
 	return ret;
 }
@@ -1884,8 +1890,7 @@ rte_pmd_memif_probe(struct rte_vdev_device *vdev)
 			   log2_ring_size, pkt_buffer_size, secret, ether_addr);
 
 exit:
-	if (kvlist != NULL)
-		rte_kvargs_free(kvlist);
+	rte_kvargs_free(kvlist);
 	return ret;
 }
 

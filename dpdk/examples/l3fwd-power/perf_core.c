@@ -2,7 +2,9 @@
  * Copyright(c) 2010-2018 Intel Corporation
  */
 
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <rte_common.h>
@@ -20,9 +22,9 @@ static uint16_t nb_hp_lcores;
 
 struct perf_lcore_params {
 	uint16_t port_id;
-	uint8_t queue_id;
+	uint16_t queue_id;
 	uint8_t high_perf;
-	uint8_t lcore_idx;
+	uint32_t lcore_idx;
 } __rte_cache_aligned;
 
 static struct perf_lcore_params prf_lc_prms[MAX_LCORE_PARAMS];
@@ -130,6 +132,12 @@ parse_perf_config(const char *q_arg)
 	char *str_fld[_NUM_FLD];
 	int i;
 	unsigned int size;
+	unsigned int max_fld[_NUM_FLD] = {
+		RTE_MAX_ETHPORTS,
+		RTE_MAX_QUEUES_PER_PORT,
+		255,
+		RTE_MAX_LCORE
+	};
 
 	nb_prf_lc_prms = 0;
 
@@ -150,7 +158,8 @@ parse_perf_config(const char *q_arg)
 		for (i = 0; i < _NUM_FLD; i++) {
 			errno = 0;
 			int_fld[i] = strtoul(str_fld[i], &end, 0);
-			if (errno != 0 || end == str_fld[i] || int_fld[i] > 255)
+			if (errno != 0 || end == str_fld[i] || int_fld[i] > max_fld[i])
+
 				return -1;
 		}
 		if (nb_prf_lc_prms >= MAX_LCORE_PARAMS) {
@@ -159,13 +168,13 @@ parse_perf_config(const char *q_arg)
 			return -1;
 		}
 		prf_lc_prms[nb_prf_lc_prms].port_id =
-				(uint8_t)int_fld[FLD_PORT];
+				(uint16_t)int_fld[FLD_PORT];
 		prf_lc_prms[nb_prf_lc_prms].queue_id =
-				(uint8_t)int_fld[FLD_QUEUE];
+				(uint16_t)int_fld[FLD_QUEUE];
 		prf_lc_prms[nb_prf_lc_prms].high_perf =
 				!!(uint8_t)int_fld[FLD_LCORE_HP];
 		prf_lc_prms[nb_prf_lc_prms].lcore_idx =
-				(uint8_t)int_fld[FLD_LCORE_IDX];
+				(uint32_t)int_fld[FLD_LCORE_IDX];
 		++nb_prf_lc_prms;
 	}
 

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_LAN_TX_RX_H_
@@ -544,7 +544,7 @@ struct ice_32b_rx_flex_desc_nic_raw_csum {
 	__le32 rss_hash;
 
 	/* Qword 2 */
-	__le16 status_error1; /* bit 6 Raw CSUM present */
+	__le16 status_error1; /* bit 11 Raw CSUM present */
 	u8 flexi_flags2;
 	u8 ts_low;
 	__le16 l2tag2_1st;
@@ -1074,10 +1074,9 @@ struct ice_tx_ctx_desc {
 	__le64 qw1;
 };
 
-#define ICE_TX_GSC_DESC_START	0  /* 7 BITS */
-#define ICE_TX_GSC_DESC_OFFSET	7  /* 4 BITS */
-#define ICE_TX_GSC_DESC_TYPE	11 /* 2 BITS */
-#define ICE_TX_GSC_DESC_ENA	13 /* 1 BIT */
+#define ICE_TX_GCS_DESC_START	0  /* 8 BITS */
+#define ICE_TX_GCS_DESC_OFFSET	8  /* 4 BITS */
+#define ICE_TX_GCS_DESC_TYPE	12 /* 3 BITS */
 
 #define ICE_TXD_CTX_QW1_DTYPE_S	0
 #define ICE_TXD_CTX_QW1_DTYPE_M	(0xFUL << ICE_TXD_CTX_QW1_DTYPE_S)

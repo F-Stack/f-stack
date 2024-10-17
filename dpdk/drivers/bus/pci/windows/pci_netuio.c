@@ -8,6 +8,7 @@
 #include <rte_errno.h>
 #include <rte_log.h>
 #include <rte_eal.h>
+#include <rte_bus_pci.h>
 
 #ifdef __MINGW32__
 #include <ddk/ndisguid.h>
@@ -180,8 +181,7 @@ end:
 			CloseHandle(netuio);
 	}
 
-	if (dev_ifx_detail)
-		free(dev_ifx_detail);
+	free(dev_ifx_detail);
 
 	if (di_set != INVALID_HANDLE_VALUE)
 		SetupDiDestroyDeviceInfoList(di_set);

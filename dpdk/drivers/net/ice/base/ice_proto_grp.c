@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
 #include "ice_parser_util.h"
 
-#define ICE_PROTO_GRP_TABLE_SIZE 192
 
 static void _proto_off_dump(struct ice_hw *hw, struct ice_proto_off *po,
 			    int idx)

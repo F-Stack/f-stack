@@ -29,12 +29,12 @@
 #include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
-#include <rte_bus.h>
+#include <bus_driver.h>
 #include <rte_mbuf_pool_ops.h>
 #include <rte_mbuf_dyn.h>
 
 #include <dpaa_of.h>
-#include <rte_dpaa_bus.h>
+#include <bus_dpaa_driver.h>
 #include <rte_dpaa_logs.h>
 #include <dpaax_iova_table.h>
 
@@ -42,6 +42,14 @@
 #include <fsl_qman.h>
 #include <fsl_bman.h>
 #include <netcfg.h>
+
+struct rte_dpaa_bus {
+	struct rte_bus bus;
+	TAILQ_HEAD(, rte_dpaa_device) device_list;
+	TAILQ_HEAD(, rte_dpaa_driver) driver_list;
+	int device_count;
+	int detected;
+};
 
 static struct rte_dpaa_bus rte_dpaa_bus;
 struct netcfg_info *dpaa_netcfg;
@@ -171,6 +179,7 @@ dpaa_create_device_list(void)
 		}
 
 		dev->device.bus = &rte_dpaa_bus.bus;
+		dev->device.numa_node = SOCKET_ID_ANY;
 
 		/* Allocate interrupt handle instance */
 		dev->intr_handle =
@@ -178,6 +187,7 @@ dpaa_create_device_list(void)
 		if (dev->intr_handle == NULL) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate intr handle");
 			ret = -ENOMEM;
+			free(dev);
 			goto cleanup;
 		}
 
@@ -211,7 +221,7 @@ dpaa_create_device_list(void)
 
 	if (dpaa_sec_available()) {
 		DPAA_BUS_LOG(INFO, "DPAA SEC devices are not available");
-		return 0;
+		goto qdma_dpaa;
 	}
 
 	/* Creating SEC Devices */
@@ -229,6 +239,7 @@ dpaa_create_device_list(void)
 		if (dev->intr_handle == NULL) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate intr handle");
 			ret = -ENOMEM;
+			free(dev);
 			goto cleanup;
 		}
 
@@ -250,6 +261,7 @@ dpaa_create_device_list(void)
 
 	rte_dpaa_bus.device_count += i;
 
+qdma_dpaa:
 	/* Creating QDMA Device */
 	for (i = 0; i < RTE_DPAA_QDMA_DEVICES; i++) {
 		dev = calloc(1, sizeof(struct rte_dpaa_device));
@@ -429,6 +441,7 @@ rte_dpaa_bus_parse(const char *name, void *out)
 {
 	unsigned int i, j;
 	size_t delta;
+	size_t max_name_len;
 
 	/* There are two ways of passing device name, with and without
 	 * separator. "dpaa_bus:fm1-mac3" with separator, and "fm1-mac3"
@@ -444,14 +457,21 @@ rte_dpaa_bus_parse(const char *name, void *out)
 		delta = 5;
 	}
 
-	if (sscanf(&name[delta], "fm%u-mac%u", &i, &j) != 2 ||
-	    i >= 2 || j >= 16) {
-		return -EINVAL;
+	if (strncmp("dpaa_sec", &name[delta], 8) == 0) {
+		if (sscanf(&name[delta], "dpaa_sec-%u", &i) != 1 ||
+				i < 1 || i > 4)
+			return -EINVAL;
+		max_name_len = sizeof("dpaa_sec-.") - 1;
+	} else {
+		if (sscanf(&name[delta], "fm%u-mac%u", &i, &j) != 2 ||
+				i >= 2 || j >= 16)
+			return -EINVAL;
+
+		max_name_len = sizeof("fm.-mac..") - 1;
 	}
 
 	if (out != NULL) {
 		char *out_name = out;
-		const size_t max_name_len = sizeof("fm.-mac..") - 1;
 
 		/* Do not check for truncation, either name ends with
 		 * '\0' or the device name is followed by parameters and there
@@ -512,23 +532,15 @@ rte_dpaa_driver_register(struct rte_dpaa_driver *driver)
 	BUS_INIT_FUNC_TRACE();
 
 	TAILQ_INSERT_TAIL(&rte_dpaa_bus.driver_list, driver, next);
-	/* Update Bus references */
-	driver->dpaa_bus = &rte_dpaa_bus;
 }
 
 /* un-register a dpaa bus based dpaa driver */
 void
 rte_dpaa_driver_unregister(struct rte_dpaa_driver *driver)
 {
-	struct rte_dpaa_bus *dpaa_bus;
-
 	BUS_INIT_FUNC_TRACE();
 
-	dpaa_bus = driver->dpaa_bus;
-
-	TAILQ_REMOVE(&dpaa_bus->driver_list, driver, next);
-	/* Update Bus references */
-	driver->dpaa_bus = NULL;
+	TAILQ_REMOVE(&rte_dpaa_bus.driver_list, driver, next);
 }
 
 static int
@@ -647,6 +659,11 @@ rte_dpaa_bus_probe(void)
 	if (TAILQ_EMPTY(&rte_dpaa_bus.device_list))
 		return 0;
 
+	/* Register DPAA mempool ops only if any DPAA device has
+	 * been detected.
+	 */
+	rte_mbuf_set_platform_mempool_ops(DPAA_MEMPOOL_OPS_NAME);
+
 	svr_file = fopen(DPAA_SOC_ID_FILE, "r");
 	if (svr_file) {
 		if (fscanf(svr_file, "svr:%x", &svr_ver) > 0)
@@ -695,11 +712,6 @@ rte_dpaa_bus_probe(void)
 			break;
 		}
 	}
-
-	/* Register DPAA mempool ops only if any DPAA device has
-	 * been detected.
-	 */
-	rte_mbuf_set_platform_mempool_ops(DPAA_MEMPOOL_OPS_NAME);
 
 	return 0;
 }
@@ -782,6 +794,10 @@ dpaa_bus_dev_iterate(const void *start, const char *str,
 
 	/* Now that name=device_name format is available, split */
 	dup = strdup(str);
+	if (dup == NULL) {
+		DPAA_BUS_DEBUG("Dup string (%s) failed!\n", str);
+		return NULL;
+	}
 	dev_name = dup + strlen("name=");
 
 	if (start != NULL) {

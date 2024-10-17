@@ -19,10 +19,11 @@ extern "C" {
 
 #include <string.h>
 
+#include <rte_compat.h>
 #include <rte_config.h>
 #include <rte_debug.h>
 #include <rte_eal.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #include "eventdev_pmd.h"
 
@@ -44,7 +45,7 @@ extern "C" {
 __rte_internal
 static inline struct rte_eventdev *
 rte_event_pmd_vdev_init(const char *name, size_t dev_private_size,
-		int socket_id)
+		int socket_id, struct rte_vdev_device *vdev)
 {
 
 	struct rte_eventdev *eventdev;
@@ -66,6 +67,7 @@ rte_event_pmd_vdev_init(const char *name, size_t dev_private_size,
 			rte_panic("Cannot allocate memzone for private device"
 					" data");
 	}
+	eventdev->dev = &vdev->device;
 
 	return eventdev;
 }

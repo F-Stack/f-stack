@@ -16,7 +16,8 @@ $ git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
 # compile dpdk
 $ cd /data/f-stack/dpdk
-$ meson -Denable_kmods=true build
+# re-enable kni now, to remove kni later
+$ meson -Denable_kmods=true -Ddisable_libs=flow_classify build
 $ ninja -C build
 $ ninja -C build install
 
@@ -38,7 +39,7 @@ $ cd /data/f-stack/lib
 $ make
 
 # Compile Nginx
-$ cd ../app/nginx-1.16.1
+$ cd ../app/nginx-1.25.2
 $ ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
 $ make
 $ make install
@@ -56,15 +57,6 @@ $ make
 # Compile helloworld examples
 $ cd ../examples
 $ make
-```
-
-## Compile tools in Ubuntu
-
-- remove '\\' in statement printf at f-stack/tools/netstat/Makefile line 70, now it should be:
-
-```
--   printf("\#define\tN%s\t%s\n", toupper($$2), i++);
-+   printf("#define\tN%s\t%s\n", toupper($$2), i++);
 ```
 
 ## Compile dpdk in virtual machine

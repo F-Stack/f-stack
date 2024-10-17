@@ -73,7 +73,7 @@ typedef cpuset_t rte_cpuset_t;
 	CPU_COPY(&tmp, dst); \
 } while (0)
 #else
-#if __FreeBSD_version >= 1301000
+if __FreeBSD_version >= 1301000
 #define RTE_CPU_NOT(dst, src) do \
 { \
 	cpuset_t tmp; \

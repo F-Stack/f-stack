@@ -61,6 +61,7 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
 * ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 * ``RTE_CRYPTO_AUTH_ZUC_EIA3``
+* ``RTE_CRYPTO_AUTH_AES_CMAC``
 
 AEAD algorithms:
 
@@ -246,23 +247,66 @@ CN9XX Features supported
 * IPv4
 * IPv6
 * ESP
+* ESN
+* Anti-replay
 * Tunnel mode
 * Transport mode(IPv4)
 * UDP Encapsulation
+* AH
+
+AEAD algorithms
++++++++++++++++
+
 * AES-128/192/256-GCM
-* AES-128/192/256-CBC-SHA1-HMAC
-* AES-128/192/256-CBC-SHA256-128-HMAC
-* ESN
-* Anti-replay
+
+Cipher algorithms
++++++++++++++++++
+
+* NULL
+* AES-128/192/256-CBC
+* AES-128/192/256-CTR
+
+Auth algorithms
++++++++++++++++
+
+* SHA1-HMAC
+* SHA256-128-HMAC
+* SHA384-192-HMAC
+* SHA512-256-HMAC
+* AES-XCBC-96
+* AES-GMAC
 
 CN10XX Features supported
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * IPv4
 * ESP
+* ESN
+* Anti-replay
 * Tunnel mode
 * Transport mode
 * UDP Encapsulation
+* AH
+
+AEAD algorithms
++++++++++++++++
+
 * AES-128/192/256-GCM
-* AES-128/192/256-CBC-NULL
-* AES-128/192/256-CBC-SHA1-HMAC
+
+Cipher algorithms
++++++++++++++++++
+
+* NULL
+* AES-128/192/256-CBC
+* AES-128/192/256-CTR
+
+Auth algorithms
++++++++++++++++
+
+* NULL
+* SHA1-HMAC
+* SHA256-128-HMAC
+* SHA384-192-HMAC
+* SHA512-256-HMAC
+* AES-XCBC-96
+* AES-GMAC

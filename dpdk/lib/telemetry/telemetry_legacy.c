@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2020 Intel Corporation
  */
-
+#include <ctype.h>
+#include <errno.h>
 #ifndef RTE_EXEC_ENV_WINDOWS
 #include <unistd.h>
 #include <sys/socket.h>
@@ -93,7 +94,7 @@ register_client(const char *cmd __rte_unused, const char *params,
 	}
 #ifndef RTE_EXEC_ENV_WINDOWS
 	strlcpy(data, strchr(params, ':'), sizeof(data));
-	memcpy(data, &data[strlen(":\"")], strlen(data));
+	memmove(data, &data[strlen(":\"")], strlen(data));
 	if (!strchr(data, '\"')) {
 		fprintf(stderr, "Invalid client data\n");
 		return -1;

@@ -20,7 +20,7 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.23
+F-STACK_VERSION=1.24
 TGT_OS=$(shell uname)
 ifeq ($(TGT_OS),FreeBSD)
 CC=gcc
@@ -33,6 +33,7 @@ HOST_OS:=$(shell uname -s)
 # No DPDK KNI support on FreeBSD
 ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
+#FF_KNI_KNI=1
 endif
 
 #FF_FLOW_ISOLATE=1
@@ -82,6 +83,10 @@ ifdef FF_KNI
 HOST_CFLAGS+= -DFF_KNI
 endif
 
+ifdef FF_KNI_KNI
+HOST_CFLAGS+= -DFF_KNI_KNI
+endif
+
 HOST_CFLAGS+= ${DPDK_CFLAGS}
 HOST_CFLAGS+= ${CONF_CFLAGS}
 
@@ -99,6 +104,7 @@ endif
 
 ifdef FF_IPFW
 HOST_CFLAGS+= -DFF_IPFW
+CFLAGS+= -DFF_IPFW
 endif
 
 ifdef FF_USE_PAGE_ARRAY
@@ -109,13 +115,18 @@ HOST_CFLAGS+= -DINET
 CFLAGS+= -DINET
 
 GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
-ifeq "$(GCCVERGE10)" "1" 
+ifeq "$(GCCVERGE10)" "1"
     CFLAGS+= -Wno-error=stringop-overflow
 endif 
 
 GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
-ifeq "$(GCCVERGE11)" "1" 
+ifeq "$(GCCVERGE11)" "1"
     CFLAGS+= -Wno-error=stringop-overread
+endif
+
+GCCVERGE13 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 13)
+ifeq "$(GCCVERGE13)" "1"
+    CFLAGS+= -Wno-error=dangling-pointer
 endif
 
 ifdef FF_INET6
@@ -257,6 +268,7 @@ endif
 
 FF_HOST_SRCS+=              \
 	ff_host_interface.c \
+	ff_thread.c			\
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_dpdk_if.c        \

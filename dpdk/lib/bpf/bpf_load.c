@@ -2,20 +2,12 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
-#include <unistd.h>
-#include <inttypes.h>
 
-#include <rte_common.h>
 #include <rte_log.h>
-#include <rte_debug.h>
-#include <rte_memory.h>
-#include <rte_eal.h>
-#include <rte_byteorder.h>
 #include <rte_errno.h>
 
 #include "bpf_impl.h"
@@ -42,7 +34,8 @@ bpf_load(const struct rte_bpf_prm *prm)
 
 	memcpy(&bpf->prm, prm, sizeof(bpf->prm));
 
-	memcpy(buf + bsz, prm->xsym, xsz);
+	if (xsz > 0)
+		memcpy(buf + bsz, prm->xsym, xsz);
 	memcpy(buf + bsz + xsz, prm->ins, insz);
 
 	bpf->prm.xsym = (void *)(buf + bsz);

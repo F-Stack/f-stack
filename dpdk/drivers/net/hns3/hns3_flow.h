@@ -2,16 +2,18 @@
  * Copyright(C) 2021 HiSilicon Limited
  */
 
-#ifndef _HNS3_FLOW_H_
-#define _HNS3_FLOW_H_
+#ifndef HNS3_FLOW_H
+#define HNS3_FLOW_H
 
 #include <rte_flow.h>
+#include <ethdev_driver.h>
 
+#include "hns3_rss.h"
 #include "hns3_fdir.h"
 
 struct hns3_flow_counter {
 	LIST_ENTRY(hns3_flow_counter) next; /* Pointer to the next counter. */
-	uint32_t shared:1;   /* Share counter ID with other flow rules. */
+	uint32_t indirect:1; /* Indirect counter flag */
 	uint32_t ref_cnt:31; /* Reference counter. */
 	uint16_t id;   /* Counter ID. */
 	uint64_t hits; /* Number of packets matched by the rule. */
@@ -43,6 +45,14 @@ struct hns3_flow_mem {
 	struct rte_flow *flow;
 };
 
+enum {
+	HNS3_INDIRECT_ACTION_TYPE_COUNT = 1,
+};
+
+struct rte_flow_action_handle {
+	int indirect_type;
+	uint32_t counter_id;
+};
 
 union hns3_filter_conf {
 	struct hns3_fdir_rule fdir_conf;
@@ -63,4 +73,4 @@ void hns3_flow_init(struct rte_eth_dev *dev);
 void hns3_flow_uninit(struct rte_eth_dev *dev);
 int hns3_restore_filter(struct hns3_adapter *hns);
 
-#endif /* _HNS3_FLOW_H_ */
+#endif /* HNS3_FLOW_H */

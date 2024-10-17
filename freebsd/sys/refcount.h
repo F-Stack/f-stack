@@ -117,6 +117,15 @@ refcount_acquire_checked(volatile u_int *count)
  * This functions returns non-zero if the refcount was
  * incremented. Else zero is returned.
  */
+#ifdef FSTACK
+/*
+ * Note: If loop dead in this function,
+ *       Maybe CAS that atomic_fcmpset_int run not correctly in this function,
+ *       You can try modify `atomic_fcmpset_int` to `atomic_fcmpset_int32`.
+ *
+ *      See also `atomic_fcmpset_int32` in `freebsd/amd64/include/atomic.h`
+ */
+#endif
 static __inline __result_use_check bool
 refcount_acquire_if_gt(volatile u_int *count, u_int n)
 {

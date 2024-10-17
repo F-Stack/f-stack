@@ -295,6 +295,15 @@ i40e_parse_tunneling_params(uint64_t ol_flags,
 	 */
 	*cd_tunneling |= (tx_offload.l2_len >> 1) <<
 		I40E_TXD_CTX_QW0_NATLEN_SHIFT;
+
+	/**
+	 * Calculate the tunneling UDP checksum (only supported with X722).
+	 * Shall be set only if L4TUNT = 01b and EIPT is not zero
+	 */
+	if ((*cd_tunneling & I40E_TXD_CTX_QW0_EXT_IP_MASK) &&
+			(*cd_tunneling & I40E_TXD_CTX_UDP_TUNNELING) &&
+			(ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
+		*cd_tunneling |= I40E_TXD_CTX_QW0_L4T_CS_MASK;
 }
 
 static inline void
@@ -1523,6 +1532,7 @@ i40e_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 	while (nb_pkts) {
 		uint16_t ret, num;
 
+		/* cross rs_thresh boundary is not allowed */
 		num = (uint16_t)RTE_MIN(nb_pkts, txq->tx_rs_thresh);
 		ret = i40e_xmit_fixed_burst_vec(tx_queue, &tx_pkts[nb_tx],
 						num);
@@ -1917,6 +1927,12 @@ i40e_dev_rx_queue_setup_runtime(struct rte_eth_dev *dev,
 		if (use_def_burst_func)
 			ad->rx_bulk_alloc_allowed = false;
 		i40e_set_rx_function(dev);
+
+		if (ad->rx_vec_allowed && i40e_rxq_vec_setup(rxq)) {
+			PMD_DRV_LOG(ERR, "Failed vector rx setup.");
+			return -EINVAL;
+		}
+
 		return 0;
 	} else if (ad->rx_vec_allowed && !rte_is_power_of_2(rxq->nb_rx_desc)) {
 		PMD_DRV_LOG(ERR, "Vector mode is allowed, but descriptor"
@@ -2573,8 +2589,7 @@ i40e_reset_rx_queue(struct i40e_rx_queue *rxq)
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
 
-	if (rxq->pkt_first_seg != NULL)
-		rte_pktmbuf_free(rxq->pkt_first_seg);
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;

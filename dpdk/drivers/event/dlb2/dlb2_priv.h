@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2016-2020 Intel Corporation
+ * Copyright(c) 2016-2022 Intel Corporation
  */
 
 #ifndef _DLB2_PRIV_H_
@@ -28,6 +28,11 @@
 #define DLB2_SW_CREDIT_P_QUANTA_DEFAULT 256 /* Producer */
 #define DLB2_SW_CREDIT_C_QUANTA_DEFAULT 256 /* Consumer */
 #define DLB2_DEPTH_THRESH_DEFAULT 256
+#define DLB2_MIN_CQ_DEPTH_OVERRIDE 32
+#define DLB2_MAX_CQ_DEPTH_OVERRIDE 128
+#define DLB2_MIN_ENQ_DEPTH_OVERRIDE 32
+#define DLB2_MAX_ENQ_DEPTH_OVERRIDE 1024
+
 
 /*  command line arg strings */
 #define NUMA_NODE_ARG "numa_node"
@@ -35,12 +40,18 @@
 #define DLB2_NUM_DIR_CREDITS "num_dir_credits"
 #define DEV_ID_ARG "dev_id"
 #define DLB2_QID_DEPTH_THRESH_ARG "qid_depth_thresh"
-#define DLB2_COS_ARG "cos"
 #define DLB2_POLL_INTERVAL_ARG "poll_interval"
 #define DLB2_SW_CREDIT_QUANTA_ARG "sw_credit_quanta"
 #define DLB2_HW_CREDIT_QUANTA_ARG "hw_credit_quanta"
 #define DLB2_DEPTH_THRESH_ARG "default_depth_thresh"
 #define DLB2_VECTOR_OPTS_ENAB_ARG "vector_opts_enable"
+#define DLB2_MAX_CQ_DEPTH "max_cq_depth"
+#define DLB2_MAX_ENQ_DEPTH "max_enqueue_depth"
+#define DLB2_CQ_WEIGHT "cq_weight"
+#define DLB2_PORT_COS "port_cos"
+#define DLB2_COS_BW "cos_bw"
+#define DLB2_PRODUCER_COREMASK "producer_coremask"
+#define DLB2_DEFAULT_LDB_PORT_ALLOCATION_ARG "default_port_allocation"
 
 /* Begin HW related defines and structs */
 
@@ -81,17 +92,19 @@
 #define DLB2_NUM_SN_GROUPS 2
 #define DLB2_MAX_LDB_SN_ALLOC 1024
 #define DLB2_MAX_QUEUE_DEPTH_THRESHOLD 8191
+#define DLB2_MAX_NUM_LDB_PORTS_PER_COS (DLB2_MAX_NUM_LDB_PORTS/DLB2_COS_NUM_VALS)
 
 /* 2048 total hist list entries and 64 total ldb ports, which
  * makes for 2048/64 == 32 hist list entries per port. However, CQ
  * depth must be a power of 2 and must also be >= HIST LIST entries.
  * As a result we just limit the maximum dequeue depth to 32.
  */
+#define DLB2_MAX_HL_ENTRIES 2048
 #define DLB2_MIN_CQ_DEPTH 1
-#define DLB2_MAX_CQ_DEPTH 32
+#define DLB2_DEFAULT_CQ_DEPTH 32
 #define DLB2_MIN_HARDWARE_CQ_DEPTH 8
 #define DLB2_NUM_HIST_LIST_ENTRIES_PER_LDB_PORT \
-	DLB2_MAX_CQ_DEPTH
+	DLB2_DEFAULT_CQ_DEPTH
 
 #define DLB2_HW_DEVICE_FROM_PCI_ID(_pdev) \
 	(((_pdev->id.device_id == PCI_DEVICE_ID_INTEL_DLB2_5_PF) ||        \
@@ -110,7 +123,7 @@
 
 #define DLB2_NUM_QES_PER_CACHE_LINE 4
 
-#define DLB2_MAX_ENQUEUE_DEPTH 64
+#define DLB2_MAX_ENQUEUE_DEPTH 32
 #define DLB2_MIN_ENQUEUE_DEPTH 4
 
 #define DLB2_NAME_SIZE 64
@@ -245,7 +258,7 @@ struct dlb2_enqueue_qe {
 	/* Word 4 */
 	uint16_t lock_id;
 	uint8_t meas_lat:1;
-	uint8_t rsvd1:2;
+	uint8_t weight:2; /* DLB 2.5 and above */
 	uint8_t no_dec:1;
 	uint8_t cmp_id:4;
 	union {
@@ -373,6 +386,9 @@ struct dlb2_port {
 	struct dlb2_eventdev_port *ev_port; /* back ptr */
 	bool use_scalar; /* force usage of scalar code */
 	uint16_t hw_credit_quanta;
+	bool use_avx512;
+	uint32_t cq_weight;
+	bool is_producer; /* True if port is of type producer */
 };
 
 /* Per-process per-port mmio and memory pointers */
@@ -405,11 +421,12 @@ struct dlb2_config {
 };
 
 enum dlb2_cos {
-	DLB2_COS_DEFAULT = -1,
+	DLB2_COS_DEFAULT = 255,
 	DLB2_COS_0 = 0,
 	DLB2_COS_1,
 	DLB2_COS_2,
-	DLB2_COS_3
+	DLB2_COS_3,
+	DLB2_COS_NUM_VALS
 };
 
 struct dlb2_hw_dev {
@@ -417,7 +434,6 @@ struct dlb2_hw_dev {
 	struct dlb2_hw_resource_info info;
 	void *pf_dev; /* opaque pointer to PF PMD dev (struct dlb2_dev) */
 	uint32_t domain_id;
-	enum dlb2_cos cos_id;
 	rte_spinlock_t resource_lock; /* for MP support */
 } __rte_cache_aligned;
 
@@ -515,11 +531,14 @@ struct dlb2_eventdev_port {
 	 */
 	uint16_t outstanding_releases;
 	uint16_t inflight_max; /* app requested max inflights for this port */
+	int enq_retries; /* Number of attempts before ret ENOSPC */
 	/* setup_done is set when the event port is setup */
 	bool setup_done;
 	/* enq_configured is set when the qm port is created */
 	bool enq_configured;
 	uint8_t implicit_release; /* release events before dequeuing */
+	uint32_t cq_weight; /* DLB2.5 and above ldb ports only */
+	int cos_id; /*ldb port class of service */
 }  __rte_cache_aligned;
 
 struct dlb2_queue {
@@ -572,6 +591,8 @@ struct dlb2_eventdev {
 	int max_num_events_override;
 	int num_dir_credits_override;
 	bool vector_opts_enabled;
+	int max_cq_depth;
+	int max_enq_depth;
 	volatile enum dlb2_run_state run_state;
 	uint16_t num_dir_queues; /* total num of evdev dir queues requested */
 	union {
@@ -613,11 +634,26 @@ struct dlb2_eventdev {
 			uint32_t credit_pool __rte_cache_aligned;
 		};
 	};
+	uint32_t cos_ports[DLB2_COS_NUM_VALS]; /* total ldb ports in each class */
+	uint32_t cos_bw[DLB2_COS_NUM_VALS]; /* bandwidth per cos domain */
+	uint8_t max_cos_port; /* Max LDB port from any cos */
 };
 
 /* used for collecting and passing around the dev args */
 struct dlb2_qid_depth_thresholds {
 	int val[DLB2_MAX_NUM_QUEUES_ALL];
+};
+
+struct dlb2_cq_weight {
+	int limit[DLB2_MAX_NUM_PORTS_ALL];
+};
+
+struct dlb2_port_cos {
+	int cos_id[DLB2_MAX_NUM_PORTS_ALL];
+};
+
+struct dlb2_cos_bw {
+	int val[DLB2_COS_NUM_VALS];
 };
 
 struct dlb2_devargs {
@@ -626,12 +662,18 @@ struct dlb2_devargs {
 	int num_dir_credits_override;
 	int dev_id;
 	struct dlb2_qid_depth_thresholds qid_depth_thresholds;
-	enum dlb2_cos cos_id;
 	int poll_interval;
 	int sw_credit_quanta;
 	int hw_credit_quanta;
 	int default_depth_thresh;
 	bool vector_opts_enabled;
+	int max_cq_depth;
+	int max_enq_depth;
+	struct dlb2_cq_weight cq_weight;
+	struct dlb2_port_cos port_cos;
+	struct dlb2_cos_bw cos_bw;
+	const char *producer_coremask;
+	bool default_ldb_port_allocation;
 };
 
 /* End Eventdev related defines and structs */
@@ -646,20 +688,20 @@ void dlb2_xstats_uninit(struct dlb2_eventdev *dlb2);
 
 int dlb2_eventdev_xstats_get(const struct rte_eventdev *dev,
 		enum rte_event_dev_xstats_mode mode, uint8_t queue_port_id,
-		const unsigned int ids[], uint64_t values[], unsigned int n);
+		const uint64_t ids[], uint64_t values[], unsigned int n);
 
 int dlb2_eventdev_xstats_get_names(const struct rte_eventdev *dev,
 		enum rte_event_dev_xstats_mode mode, uint8_t queue_port_id,
 		struct rte_event_dev_xstats_name *xstat_names,
-		unsigned int *ids, unsigned int size);
+		uint64_t *ids, unsigned int size);
 
 uint64_t dlb2_eventdev_xstats_get_by_name(const struct rte_eventdev *dev,
-					  const char *name, unsigned int *id);
+					  const char *name, uint64_t *id);
 
 int dlb2_eventdev_xstats_reset(struct rte_eventdev *dev,
 		enum rte_event_dev_xstats_mode mode,
 		int16_t queue_port_id,
-		const uint32_t ids[],
+		const uint64_t ids[],
 		uint32_t nb_ids);
 
 int test_dlb2_eventdev(void);
@@ -678,6 +720,15 @@ int dlb2_parse_params(const char *params,
 		      const char *name,
 		      struct dlb2_devargs *dlb2_args,
 		      uint8_t version);
+
+void dlb2_event_build_hcws(struct dlb2_port *qm_port,
+			   const struct rte_event ev[],
+			   int num,
+			   uint8_t *sched_type,
+			   uint8_t *queue_id);
+
+/* Extern functions */
+extern int rte_eal_parse_coremask(const char *coremask, int *cores);
 
 /* Extern globals */
 extern struct process_local_port_data dlb2_port[][DLB2_NUM_PORT_TYPES];

@@ -2,10 +2,10 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 
-#include <rte_alarm.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 
@@ -755,7 +755,8 @@ request_to_primary(struct malloc_mp_req *user_req)
 	do {
 		ret = pthread_cond_timedwait(&entry->cond,
 				&mp_request_list.lock, &ts);
-	} while (ret != 0 && ret != ETIMEDOUT);
+	} while ((ret != 0 && ret != ETIMEDOUT) &&
+			entry->state == REQ_STATE_ACTIVE);
 
 	if (entry->state != REQ_STATE_COMPLETE) {
 		RTE_LOG(ERR, EAL, "Request timed out\n");
@@ -805,4 +806,16 @@ register_mp_requests(void)
 		}
 	}
 	return 0;
+}
+
+void
+unregister_mp_requests(void)
+{
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		rte_mp_action_unregister(MP_ACTION_REQUEST);
+	} else {
+		rte_mp_action_unregister(MP_ACTION_SYNC);
+		rte_mp_action_unregister(MP_ACTION_ROLLBACK);
+		rte_mp_action_unregister(MP_ACTION_RESPONSE);
+	}
 }

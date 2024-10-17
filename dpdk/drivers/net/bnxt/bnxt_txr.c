@@ -123,6 +123,26 @@ bnxt_xmit_need_long_bd(struct rte_mbuf *tx_pkt, struct bnxt_tx_queue *txq)
 	return false;
 }
 
+static bool
+bnxt_zero_data_len_tso_segsz(struct rte_mbuf *tx_pkt, uint8_t data_len_chk)
+{
+	const char *type_str = "Data len";
+	uint16_t len_to_check = tx_pkt->data_len;
+
+	if (data_len_chk == 0) {
+		type_str = "TSO Seg size";
+		len_to_check = tx_pkt->tso_segsz;
+	}
+
+	if (len_to_check == 0) {
+		PMD_DRV_LOG(ERR, "Error! Tx pkt %s == 0\n", type_str);
+		rte_pktmbuf_dump(stdout, tx_pkt, 64);
+		rte_dump_stack();
+		return true;
+	}
+	return false;
+}
+
 static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				struct bnxt_tx_queue *txq,
 				uint16_t *coal_pkts,
@@ -179,7 +199,8 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	}
 
 	/* Check non zero data_len */
-	RTE_VERIFY(tx_pkt->data_len);
+	if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, 1)))
+		return -EIO;
 
 	prod = RING_IDX(ring, txr->tx_raw_prod);
 	tx_buf = &txr->tx_buf_ring[prod];
@@ -256,7 +277,8 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 			 */
 			txbd1->kid_or_ts_low_hdr_size = hdr_size >> 1;
 			txbd1->kid_or_ts_high_mss = tx_pkt->tso_segsz;
-			RTE_VERIFY(txbd1->kid_or_ts_high_mss);
+			if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, 0)))
+				return -EIO;
 
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_IIP_TCP_UDP_CKSUM) ==
 			   PKT_TX_OIP_IIP_TCP_UDP_CKSUM) {
@@ -330,7 +352,8 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	m_seg = tx_pkt->next;
 	while (m_seg) {
 		/* Check non zero data_len */
-		RTE_VERIFY(m_seg->data_len);
+		if (unlikely(bnxt_zero_data_len_tso_segsz(m_seg, 1)))
+			return -EIO;
 		txr->tx_raw_prod = RING_NEXT(txr->tx_raw_prod);
 
 		prod = RING_IDX(ring, txr->tx_raw_prod);
@@ -493,6 +516,19 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 uint16_t bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			       uint16_t nb_pkts)
 {
+	struct bnxt_tx_queue *txq = tx_queue;
+	uint16_t rc;
+
+	pthread_mutex_lock(&txq->txq_lock);
+	rc = _bnxt_xmit_pkts(tx_queue, tx_pkts, nb_pkts);
+	pthread_mutex_unlock(&txq->txq_lock);
+
+	return rc;
+}
+
+uint16_t _bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+			 uint16_t nb_pkts)
+{
 	int rc;
 	uint16_t nb_tx_pkts = 0;
 	uint16_t coal_pkts = 0;
@@ -525,20 +561,6 @@ uint16_t bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	}
 
 	return nb_tx_pkts;
-}
-
-/*
- * Dummy DPDK callback for TX.
- *
- * This function is used to temporarily replace the real callback during
- * unsafe control operations on the queue, or in case of error.
- */
-uint16_t
-bnxt_dummy_xmit_pkts(void *tx_queue __rte_unused,
-		     struct rte_mbuf **tx_pkts __rte_unused,
-		     uint16_t nb_pkts __rte_unused)
-{
-	return 0;
 }
 
 int bnxt_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)

@@ -1081,7 +1081,11 @@ sfc_rx_mb_pool_buf_size(struct sfc_adapter *sa, struct rte_mempool *mb_pool)
 		buf_size = EFX_P2ALIGN(uint32_t, buf_size, nic_align_end);
 	}
 
-	return buf_size;
+	/*
+	 * Buffer length field of a Rx descriptor may not be wide
+	 * enough to store a 16-bit data count taken from an mbuf.
+	 */
+	return MIN(buf_size, encp->enc_rx_dma_desc_size_max);
 }
 
 int
@@ -1186,7 +1190,7 @@ sfc_rx_qinit(struct sfc_adapter *sa, sfc_sw_index_t sw_index,
 		rxq_info->type_flags |= EFX_RXQ_FLAG_USER_FLAG;
 
 	if ((sa->negotiated_rx_metadata & RTE_ETH_RX_METADATA_USER_MARK) != 0 ||
-	    sfc_flow_tunnel_is_active(sa))
+	    sfc_ft_is_active(sa))
 		rxq_info->type_flags |= EFX_RXQ_FLAG_USER_MARK;
 
 	rc = sfc_ev_qinit(sa, SFC_EVQ_TYPE_RX, sw_index,
@@ -1240,7 +1244,7 @@ sfc_rx_qinit(struct sfc_adapter *sa, sfc_sw_index_t sw_index,
 	info.batch_max = encp->enc_rx_batch_max;
 	info.prefix_size = encp->enc_rx_prefix_size;
 
-	if (sfc_flow_tunnel_is_active(sa))
+	if (sfc_ft_is_active(sa))
 		info.user_mark_mask = SFC_FT_USER_MARK_MASK;
 	else
 		info.user_mark_mask = UINT32_MAX;

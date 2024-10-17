@@ -276,46 +276,30 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				_mm256_loadu_si256((void *)&sw_ring[i + 4]));
 #endif
 
-		__m256i raw_desc0_1, raw_desc2_3, raw_desc4_5, raw_desc6_7;
-#ifdef RTE_LIBRTE_I40E_16BYTE_RX_DESC
-		/* for AVX we need alignment otherwise loads are not atomic */
-		if (avx_aligned) {
-			/* load in descriptors, 2 at a time, in reverse order */
-			raw_desc6_7 = _mm256_load_si256((void *)(rxdp + 6));
-			rte_compiler_barrier();
-			raw_desc4_5 = _mm256_load_si256((void *)(rxdp + 4));
-			rte_compiler_barrier();
-			raw_desc2_3 = _mm256_load_si256((void *)(rxdp + 2));
-			rte_compiler_barrier();
-			raw_desc0_1 = _mm256_load_si256((void *)(rxdp + 0));
-		} else
-#endif
-		do {
-			const __m128i raw_desc7 = _mm_load_si128((void *)(rxdp + 7));
-			rte_compiler_barrier();
-			const __m128i raw_desc6 = _mm_load_si128((void *)(rxdp + 6));
-			rte_compiler_barrier();
-			const __m128i raw_desc5 = _mm_load_si128((void *)(rxdp + 5));
-			rte_compiler_barrier();
-			const __m128i raw_desc4 = _mm_load_si128((void *)(rxdp + 4));
-			rte_compiler_barrier();
-			const __m128i raw_desc3 = _mm_load_si128((void *)(rxdp + 3));
-			rte_compiler_barrier();
-			const __m128i raw_desc2 = _mm_load_si128((void *)(rxdp + 2));
-			rte_compiler_barrier();
-			const __m128i raw_desc1 = _mm_load_si128((void *)(rxdp + 1));
-			rte_compiler_barrier();
-			const __m128i raw_desc0 = _mm_load_si128((void *)(rxdp + 0));
+		const __m128i raw_desc7 = _mm_load_si128((void *)(rxdp + 7));
+		rte_compiler_barrier();
+		const __m128i raw_desc6 = _mm_load_si128((void *)(rxdp + 6));
+		rte_compiler_barrier();
+		const __m128i raw_desc5 = _mm_load_si128((void *)(rxdp + 5));
+		rte_compiler_barrier();
+		const __m128i raw_desc4 = _mm_load_si128((void *)(rxdp + 4));
+		rte_compiler_barrier();
+		const __m128i raw_desc3 = _mm_load_si128((void *)(rxdp + 3));
+		rte_compiler_barrier();
+		const __m128i raw_desc2 = _mm_load_si128((void *)(rxdp + 2));
+		rte_compiler_barrier();
+		const __m128i raw_desc1 = _mm_load_si128((void *)(rxdp + 1));
+		rte_compiler_barrier();
+		const __m128i raw_desc0 = _mm_load_si128((void *)(rxdp + 0));
 
-			raw_desc6_7 = _mm256_inserti128_si256(
-					_mm256_castsi128_si256(raw_desc6), raw_desc7, 1);
-			raw_desc4_5 = _mm256_inserti128_si256(
-					_mm256_castsi128_si256(raw_desc4), raw_desc5, 1);
-			raw_desc2_3 = _mm256_inserti128_si256(
-					_mm256_castsi128_si256(raw_desc2), raw_desc3, 1);
-			raw_desc0_1 = _mm256_inserti128_si256(
-					_mm256_castsi128_si256(raw_desc0), raw_desc1, 1);
-		} while (0);
+		const __m256i raw_desc6_7 = _mm256_inserti128_si256(
+				_mm256_castsi128_si256(raw_desc6), raw_desc7, 1);
+		const __m256i raw_desc4_5 = _mm256_inserti128_si256(
+				_mm256_castsi128_si256(raw_desc4), raw_desc5, 1);
+		const __m256i raw_desc2_3 = _mm256_inserti128_si256(
+				_mm256_castsi128_si256(raw_desc2), raw_desc3, 1);
+		const __m256i raw_desc0_1 = _mm256_inserti128_si256(
+				_mm256_castsi128_si256(raw_desc0), raw_desc1, 1);
 
 		if (split_packet) {
 			int j;
@@ -766,9 +750,6 @@ i40e_xmit_fixed_burst_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint64_t flags = I40E_TD_CMD;
 	uint64_t rs = I40E_TX_DESC_CMD_RS | I40E_TD_CMD;
 
-	/* cross rx_thresh boundary is not allowed */
-	nb_pkts = RTE_MIN(nb_pkts, txq->tx_rs_thresh);
-
 	if (txq->nb_tx_free < txq->tx_free_thresh)
 		i40e_tx_free_bufs(txq);
 
@@ -832,6 +813,7 @@ i40e_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 	while (nb_pkts) {
 		uint16_t ret, num;
 
+		/* cross rs_thresh boundary is not allowed */
 		num = (uint16_t)RTE_MIN(nb_pkts, txq->tx_rs_thresh);
 		ret = i40e_xmit_fixed_burst_vec_avx2(tx_queue, &tx_pkts[nb_tx],
 						num);

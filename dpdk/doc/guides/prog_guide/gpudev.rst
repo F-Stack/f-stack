@@ -12,7 +12,7 @@ By means of the generic GPU interface provided by this library,
 it is possible to allocate a chunk of GPU memory and use it
 to create a DPDK mempool with external mbufs having the payload
 on the GPU memory, enabling any network interface card
-(which support this feature like Mellanox NIC)
+supporting this feature
 to directly transmit and receive packets using GPU memory.
 
 Additionally, this library provides a number of functions
@@ -72,6 +72,15 @@ gpudev can register a CPU memory area to make it visible from a GPU device.
 Later, it's also possible to unregister that memory with gpudev.
 CPU memory registered outside of the gpudev library
 (e.g. with GPU specific library) cannot be unregistered by the gpudev library.
+
+CPU mapping
+~~~~~~~~~~~
+
+gpudev can map into the CPU address space a GPU memory address allocated with gpudev.
+gpudev returns a pointer the CPU can use to access (ready or write) GPU memory.
+Later, it's also possible to unmap that memory with gpudev.
+GPU memory CPU mapped outside of the gpudev library (e.g. with GPU specific library)
+cannot be unmapped by the gpudev library.
 
 Memory Barrier
 ~~~~~~~~~~~~~~
@@ -207,7 +216,7 @@ about how to use functions in this library in case of a CUDA application.
 
        /* GPU kernel keeps checking this flag to know if it has to quit or wait for more packets. */
        while (*quit_flag_ptr == 0) {
-           if (comm_list[comm_list_index]->status != RTE_GPU_COMM_LIST_READY)
+           if (comm_list[comm_list_index]->status_d[0] != RTE_GPU_COMM_LIST_READY)
                continue;
 
            if (threadIdx.x < comm_list[comm_list_index]->num_pkts)

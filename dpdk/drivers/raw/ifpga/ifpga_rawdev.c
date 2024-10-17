@@ -10,13 +10,13 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/epoll.h>
+
 #include <rte_log.h>
-#include <rte_bus.h>
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_kvargs.h>
 #include <rte_alarm.h>
 #include <rte_interrupts.h>
@@ -26,7 +26,7 @@
 #include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_common.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_string_fns.h>
 #include <rte_pmd_i40e.h>
 
@@ -35,7 +35,7 @@
 #include "base/ifpga_api.h"
 #include "rte_rawdev.h"
 #include "rte_rawdev_pmd.h"
-#include "rte_bus_ifpga.h"
+#include "bus_ifpga_driver.h"
 #include "ifpga_common.h"
 #include "ifpga_logs.h"
 #include "ifpga_rawdev.h"
@@ -47,11 +47,13 @@
 #define PCIE_DEVICE_ID_PF_INT_6_X    0xBCC0
 #define PCIE_DEVICE_ID_PF_DSC_1_X    0x09C4
 #define PCIE_DEVICE_ID_PAC_N3000     0x0B30
+#define PCIE_DEVICE_ID_PAC_N6000     0xBCCE
 /* VF Device */
 #define PCIE_DEVICE_ID_VF_INT_5_X    0xBCBF
 #define PCIE_DEVICE_ID_VF_INT_6_X    0xBCC1
 #define PCIE_DEVICE_ID_VF_DSC_1_X    0x09C5
 #define PCIE_DEVICE_ID_VF_PAC_N3000  0x0B31
+#define PCIE_DEVICE_ID_VF_PAC_N6000  0xBCCF
 #define RTE_MAX_RAW_DEVICE           10
 
 static const struct rte_pci_id pci_ifpga_map[] = {
@@ -63,6 +65,8 @@ static const struct rte_pci_id pci_ifpga_map[] = {
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCIE_DEVICE_ID_VF_DSC_1_X) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCIE_DEVICE_ID_PAC_N3000),},
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCIE_DEVICE_ID_VF_PAC_N3000),},
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCIE_DEVICE_ID_PAC_N6000),},
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCIE_DEVICE_ID_VF_PAC_N6000),},
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -110,6 +114,7 @@ ifpga_rawdev_find_free_device_index(void)
 
 	return IFPGA_RAWDEV_NUM;
 }
+
 static struct ifpga_rawdev *
 ifpga_rawdev_allocate(struct rte_rawdev *rawdev)
 {
@@ -365,7 +370,7 @@ ifpga_monitor_sensor(struct rte_rawdev *raw_dev,
 		return -ENODEV;
 
 	mgr = opae_adapter_get_mgr(adapter);
-	if (!mgr)
+	if (!mgr || !mgr->sensor_list)
 		return -ENODEV;
 
 	opae_mgr_for_each_sensor(mgr, sensor) {
@@ -377,7 +382,7 @@ ifpga_monitor_sensor(struct rte_rawdev *raw_dev,
 			goto fail;
 
 		if (value == 0xdeadbeef) {
-			IFPGA_RAWDEV_PMD_ERR("dev_id %d sensor %s value %x\n",
+			IFPGA_RAWDEV_PMD_DEBUG("dev_id %d sensor %s value %x\n",
 					raw_dev->dev_id, sensor->name, value);
 			continue;
 		}
@@ -708,7 +713,8 @@ ifpga_rawdev_configure(const struct rte_rawdev *dev,
 {
 	IFPGA_RAWDEV_PMD_FUNC_TRACE();
 
-	RTE_FUNC_PTR_OR_ERR_RET(dev, -EINVAL);
+	if (dev == NULL)
+		return -EINVAL;
 
 	return config ? 0 : 1;
 }
@@ -721,7 +727,8 @@ ifpga_rawdev_start(struct rte_rawdev *dev)
 
 	IFPGA_RAWDEV_PMD_FUNC_TRACE();
 
-	RTE_FUNC_PTR_OR_ERR_RET(dev, -EINVAL);
+	if (dev == NULL)
+		return -EINVAL;
 
 	adapter = ifpga_rawdev_get_priv(dev);
 	if (!adapter)
@@ -880,8 +887,7 @@ rte_fpga_do_pr(struct rte_rawdev *rawdev, int port_id,
 	}
 
 free_buffer:
-	if (buf_to_free)
-		rte_free(buf_to_free);
+	rte_free(buf_to_free);
 close_fd:
 	close(file_fd);
 	file_fd = 0;
@@ -894,7 +900,7 @@ ifpga_rawdev_pr(struct rte_rawdev *dev,
 {
 	struct opae_adapter *adapter;
 	struct opae_manager *mgr;
-	struct opae_board_info *info;
+	struct opae_board_info *info = NULL;
 	struct rte_afu_pr_conf *afu_pr_conf;
 	int ret;
 	struct uuid uuid;
@@ -922,17 +928,14 @@ ifpga_rawdev_pr(struct rte_rawdev *dev,
 	}
 
 	mgr = opae_adapter_get_mgr(adapter);
-	if (!mgr) {
-		IFPGA_RAWDEV_PMD_ERR("opae_manager of opae_adapter is NULL");
-		return -1;
+	if (mgr) {
+		if (ifpga_mgr_ops.get_board_info(mgr, &info)) {
+			IFPGA_RAWDEV_PMD_ERR("ifpga manager get_board_info fail!");
+			return -1;
+		}
 	}
 
-	if (ifpga_mgr_ops.get_board_info(mgr, &info)) {
-		IFPGA_RAWDEV_PMD_ERR("ifpga manager get_board_info fail!");
-		return -1;
-	}
-
-	if (info->lightweight) {
+	if (info && info->lightweight) {
 		/* set uuid to all 0, when fpga is lightweight image */
 		memset(&afu_pr_conf->afu_id.uuid.uuid_low, 0, sizeof(u64));
 		memset(&afu_pr_conf->afu_id.uuid.uuid_high, 0, sizeof(u64));
@@ -954,7 +957,7 @@ ifpga_rawdev_pr(struct rte_rawdev *dev,
 			__func__,
 			(unsigned long)afu_pr_conf->afu_id.uuid.uuid_low,
 			(unsigned long)afu_pr_conf->afu_id.uuid.uuid_high);
-		}
+	}
 	return 0;
 }
 
@@ -1593,7 +1596,7 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 	ret = opae_adapter_init(adapter, pci_dev->device.name, data);
 	if (ret) {
 		ret = -ENOMEM;
-		goto free_adapter_data;
+		goto cleanup;
 	}
 
 	rawdev->dev_ops = &ifpga_rawdev_ops;
@@ -1603,29 +1606,23 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 	/* must enumerate the adapter before use it */
 	ret = opae_adapter_enumerate(adapter);
 	if (ret)
-		goto free_adapter_data;
+		goto cleanup;
 
 	/* get opae_manager to rawdev */
 	mgr = opae_adapter_get_mgr(adapter);
 	if (mgr) {
-		/* PF function */
-		IFPGA_RAWDEV_PMD_INFO("this is a PF function");
+		ret = ifpga_register_msix_irq(dev, 0, IFPGA_FME_IRQ, 0, 0,
+				fme_interrupt_handler, "fme_irq", mgr);
+		if (ret)
+			goto cleanup;
 	}
-
-	ret = ifpga_register_msix_irq(dev, 0, IFPGA_FME_IRQ, 0, 0,
-			fme_interrupt_handler, "fme_irq", mgr);
-	if (ret)
-		goto free_adapter_data;
 
 	ret = ifpga_monitor_start_func(dev);
 	if (ret)
-		goto free_adapter_data;
+		goto cleanup;
 
 	return ret;
 
-free_adapter_data:
-	if (data)
-		opae_adapter_data_free(data);
 cleanup:
 	if (rawdev)
 		rte_rawdev_pmd_release(rawdev);
@@ -1757,7 +1754,7 @@ ifpga_vdev_parse_devargs(struct rte_devargs *devargs,
 
 	if (rte_kvargs_count(kvlist, IFPGA_ARG_PORT) == 1) {
 		if (rte_kvargs_process(kvlist, IFPGA_ARG_PORT,
-			&rte_ifpga_get_integer32_arg, &port) < 0) {
+				ifpga_get_integer32_arg, &port) < 0) {
 			IFPGA_RAWDEV_PMD_ERR("error to parse %s",
 				IFPGA_ARG_PORT);
 			goto end;
@@ -1773,8 +1770,7 @@ ifpga_vdev_parse_devargs(struct rte_devargs *devargs,
 	ret = 0;
 
 end:
-	if (kvlist)
-		rte_kvargs_free(kvlist);
+	rte_kvargs_free(kvlist);
 
 	return ret;
 }
@@ -1893,11 +1889,6 @@ RTE_PMD_REGISTER_PARAM_STRING(ifpga_rawdev_cfg,
 	"ifpga=<string> "
 	"port=<int> "
 	"afu_bts=<path>");
-
-struct rte_pci_bus *ifpga_get_pci_bus(void)
-{
-	return rte_ifpga_rawdev_pmd.bus;
-}
 
 int ifpga_rawdev_partial_reconfigure(struct rte_rawdev *dev, int port,
 	const char *file)

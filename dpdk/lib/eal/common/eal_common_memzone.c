@@ -2,20 +2,16 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
-#include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <stdarg.h>
 #include <inttypes.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/queue.h>
 
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_common.h>
@@ -300,8 +296,7 @@ rte_memzone_free(const struct rte_memzone *mz)
 
 	rte_rwlock_write_unlock(&mcfg->mlock);
 
-	if (addr != NULL)
-		rte_free(addr);
+	rte_free(addr);
 
 	rte_eal_trace_memzone_free(name, addr, ret);
 	return ret;

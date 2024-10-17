@@ -2,6 +2,7 @@
  * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <rte_string_fns.h>
@@ -113,7 +114,7 @@ ark_pktchkr_stopped(ark_pkt_chkr_t handle)
 	struct ark_pkt_chkr_inst *inst = (struct ark_pkt_chkr_inst *)handle;
 	uint32_t r = inst->sregs->pkt_start_stop;
 
-	return (((r >> 16) & 1) == 1);
+	return (((r >> 16) & 1) == 1) || (r == 0);
 }
 
 void

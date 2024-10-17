@@ -37,6 +37,7 @@
 #define MBOX_BGX_PORT_GET_FIFO_CFG	18
 #define MBOX_BGX_PORT_FLOW_CTRL_CFG	19
 #define MBOX_BGX_PORT_SET_LINK_STATE	20
+#define MBOX_BGX_PORT_CHANGE_MODE	21
 
 /* BGX port configuration parameters: */
 typedef struct octeontx_mbox_bgx_port_conf {
@@ -116,6 +117,8 @@ typedef struct octeontx_mbox_bgx_port_stats {
 	uint64_t rx_oversize_errors;
 	uint64_t rx_fragmented_errors;
 	uint64_t rx_jabber_errors;
+	uint64_t rx_pause_packets;
+	uint64_t tx_pause_packets;
 } octeontx_mbox_bgx_port_stats_t;
 
 struct octeontx_mbox_bgx_port_mac_filter {
@@ -143,6 +146,15 @@ typedef struct octeontx_mbox_bgx_port_fc_cfg {
 	bgx_port_fc_t fc_cfg;
 } octeontx_mbox_bgx_port_fc_cfg_t;
 
+/* BGX change mode  */
+typedef struct octeontx_mbox_bgx_port_change_mode {
+	uint16_t padding;
+	uint8_t  qlm_mode;
+	bool	 autoneg;
+	uint8_t  duplex;
+	uint32_t speed;
+} octeontx_mbox_bgx_port_change_mode_t;
+
 int octeontx_bgx_port_open(int port, octeontx_mbox_bgx_port_conf_t *conf);
 int octeontx_bgx_port_close(int port);
 int octeontx_bgx_port_start(int port);
@@ -151,8 +163,10 @@ int octeontx_bgx_port_get_config(int port, octeontx_mbox_bgx_port_conf_t *conf);
 int octeontx_bgx_port_status(int port, octeontx_mbox_bgx_port_status_t *stat);
 int octeontx_bgx_port_stats(int port, octeontx_mbox_bgx_port_stats_t *stats);
 int octeontx_bgx_port_stats_clr(int port);
+int octeontx_bgx_port_xstats(int port, octeontx_mbox_bgx_port_stats_t *stats);
 int octeontx_bgx_port_link_status(int port);
 int octeontx_bgx_port_promisc_set(int port, int en);
+int octeontx_bgx_port_multicast_set(int port, int en);
 int octeontx_bgx_port_mac_set(int port, uint8_t *mac_addr);
 int octeontx_bgx_port_mac_add(int port, uint8_t *mac_addr, int index);
 int octeontx_bgx_port_mac_del(int port, uint32_t index);
@@ -163,6 +177,8 @@ int octeontx_bgx_port_get_fifo_cfg(int port,
 				   octeontx_mbox_bgx_port_fifo_cfg_t *cfg);
 int octeontx_bgx_port_flow_ctrl_cfg(int port,
 				    octeontx_mbox_bgx_port_fc_cfg_t *cfg);
+int octeontx_bgx_port_change_mode(int port,
+				  octeontx_mbox_bgx_port_change_mode_t *cfg);
 
 #endif	/* __OCTEONTX_BGX_H__ */
 

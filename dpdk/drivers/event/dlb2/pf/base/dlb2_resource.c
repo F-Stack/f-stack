@@ -51,6 +51,7 @@ static void dlb2_init_domain_rsrc_lists(struct dlb2_hw_domain *domain)
 	dlb2_list_init_head(&domain->used_dir_pq_pairs);
 	dlb2_list_init_head(&domain->avail_ldb_queues);
 	dlb2_list_init_head(&domain->avail_dir_pq_pairs);
+	dlb2_list_init_head(&domain->rsvd_dir_pq_pairs);
 
 	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
 		dlb2_list_init_head(&domain->used_ldb_ports[i]);
@@ -106,8 +107,10 @@ void dlb2_resource_free(struct dlb2_hw *hw)
  * Return:
  * Returns 0 upon success, <0 otherwise.
  */
-int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
+int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver, const void *probe_args)
 {
+	const struct dlb2_devargs *args = (const struct dlb2_devargs *)probe_args;
+	bool ldb_port_default = args ? args->default_ldb_port_allocation : false;
 	struct dlb2_list_entry *list;
 	unsigned int i;
 	int ret;
@@ -122,6 +125,7 @@ int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
 	 * the distance from 1 to 0 and to 2, the distance from 2 to 1 and to
 	 * 3, etc.).
 	 */
+
 	const u8 init_ldb_port_allocation[DLB2_MAX_NUM_LDB_PORTS] = {
 		0,  7,  14,  5, 12,  3, 10,  1,  8, 15,  6, 13,  4, 11,  2,  9,
 		16, 23, 30, 21, 28, 19, 26, 17, 24, 31, 22, 29, 20, 27, 18, 25,
@@ -164,7 +168,10 @@ int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
 		int cos_id = i >> DLB2_NUM_COS_DOMAINS;
 		struct dlb2_ldb_port *port;
 
-		port = &hw->rsrcs.ldb_ports[init_ldb_port_allocation[i]];
+		if (ldb_port_default == true)
+			port = &hw->rsrcs.ldb_ports[init_ldb_port_allocation[i]];
+		else
+			port = &hw->rsrcs.ldb_ports[hw->ldb_pp_allocations[i]];
 
 		dlb2_list_add(&hw->pf.avail_ldb_ports[cos_id],
 			      &port->func_list);
@@ -172,7 +179,8 @@ int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
 
 	hw->pf.num_avail_dir_pq_pairs = DLB2_MAX_NUM_DIR_PORTS(hw->ver);
 	for (i = 0; i < hw->pf.num_avail_dir_pq_pairs; i++) {
-		list = &hw->rsrcs.dir_pq_pairs[i].func_list;
+		int index = hw->dir_pp_allocations[i];
+		list = &hw->rsrcs.dir_pq_pairs[index].func_list;
 
 		dlb2_list_add(&hw->pf.avail_dir_pq_pairs, list);
 	}
@@ -235,9 +243,6 @@ int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver)
 		hw->rsrcs.sn_groups[i].sequence_numbers_per_queue = 64;
 		hw->rsrcs.sn_groups[i].slot_use_bitmap = 0;
 	}
-
-	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
-		hw->cos_reservation[i] = 100 / DLB2_NUM_COS_DOMAINS;
 
 	return 0;
 
@@ -572,11 +577,14 @@ static int dlb2_attach_ldb_ports(struct dlb2_hw *hw,
 	/* Allocate num_ldb_ports from any class-of-service */
 	for (i = 0; i < args->num_ldb_ports; i++) {
 		for (j = 0; j < DLB2_NUM_COS_DOMAINS; j++) {
+			/* Allocate from best performing cos */
+			u32 cos_idx = j + DLB2_MAX_NUM_LDB_PORTS;
+			u32 cos_id = hw->ldb_pp_allocations[cos_idx];
 			ret = __dlb2_attach_ldb_ports(hw,
 						      rsrcs,
 						      domain,
 						      1,
-						      j,
+						      cos_id,
 						      resp);
 			if (ret == 0)
 				break;
@@ -595,6 +603,7 @@ static int dlb2_attach_dir_ports(struct dlb2_hw *hw,
 				 u32 num_ports,
 				 struct dlb2_cmd_response *resp)
 {
+	int num_res = hw->num_prod_cores;
 	unsigned int i;
 
 	if (rsrcs->num_avail_dir_pq_pairs < num_ports) {
@@ -614,12 +623,19 @@ static int dlb2_attach_dir_ports(struct dlb2_hw *hw,
 			return -EFAULT;
 		}
 
+		if (num_res) {
+			dlb2_list_add(&domain->rsvd_dir_pq_pairs,
+				      &port->domain_list);
+			num_res--;
+		} else {
+			dlb2_list_add(&domain->avail_dir_pq_pairs,
+			&port->domain_list);
+		}
+
 		dlb2_list_del(&rsrcs->avail_dir_pq_pairs, &port->func_list);
 
 		port->domain_id = domain->id;
 		port->owned = true;
-
-		dlb2_list_add(&domain->avail_dir_pq_pairs, &port->domain_list);
 	}
 
 	rsrcs->num_avail_dir_pq_pairs -= num_ports;
@@ -738,6 +754,217 @@ static int dlb2_attach_ldb_queues(struct dlb2_hw *hw,
 	}
 
 	rsrcs->num_avail_ldb_queues -= num_queues;
+
+	return 0;
+}
+
+static int
+dlb2_pp_profile(struct dlb2_hw *hw, int port, int cpu, bool is_ldb)
+{
+	u64 cycle_start = 0ULL, cycle_end = 0ULL;
+	struct dlb2_hcw hcw_mem[DLB2_HCW_MEM_SIZE], *hcw;
+	void __iomem *pp_addr;
+	cpu_set_t cpuset;
+	int i;
+
+	CPU_ZERO(&cpuset);
+	CPU_SET(cpu, &cpuset);
+	sched_setaffinity(0, sizeof(cpuset), &cpuset);
+
+	pp_addr = os_map_producer_port(hw, port, is_ldb);
+
+	/* Point hcw to a 64B-aligned location */
+	hcw = (struct dlb2_hcw *)((uintptr_t)&hcw_mem[DLB2_HCW_64B_OFF] &
+	      ~DLB2_HCW_ALIGN_MASK);
+
+	/*
+	 * Program the first HCW for a completion and token return and
+	 * the other HCWs as NOOPS
+	 */
+
+	memset(hcw, 0, (DLB2_HCW_MEM_SIZE - DLB2_HCW_64B_OFF) * sizeof(*hcw));
+	hcw->qe_comp = 1;
+	hcw->cq_token = 1;
+	hcw->lock_id = 1;
+
+	cycle_start = rte_get_tsc_cycles();
+	for (i = 0; i < DLB2_NUM_PROBE_ENQS; i++)
+		dlb2_movdir64b(pp_addr, hcw);
+
+	cycle_end = rte_get_tsc_cycles();
+
+	os_unmap_producer_port(hw, pp_addr);
+	return (int)(cycle_end - cycle_start);
+}
+
+static void *
+dlb2_pp_profile_func(void *data)
+{
+	struct dlb2_pp_thread_data *thread_data = data;
+	int cycles;
+
+	cycles = dlb2_pp_profile(thread_data->hw, thread_data->pp,
+	thread_data->cpu, thread_data->is_ldb);
+
+	thread_data->cycles = cycles;
+
+	return NULL;
+}
+
+static int dlb2_pp_cycle_comp(const void *a, const void *b)
+{
+	const struct dlb2_pp_thread_data *x = a;
+	const struct dlb2_pp_thread_data *y = b;
+
+	return x->cycles - y->cycles;
+}
+
+
+/* Probe producer ports from different CPU cores */
+static void
+dlb2_get_pp_allocation(struct dlb2_hw *hw, int cpu, int port_type)
+{
+	struct dlb2_pp_thread_data dlb2_thread_data[DLB2_MAX_NUM_DIR_PORTS_V2_5];
+	struct dlb2_dev *dlb2_dev = container_of(hw, struct dlb2_dev, hw);
+	struct dlb2_pp_thread_data cos_cycles[DLB2_NUM_COS_DOMAINS];
+	int ver = DLB2_HW_DEVICE_FROM_PCI_ID(dlb2_dev->pdev);
+	int num_ports_per_sort, num_ports, num_sort, i, err;
+	bool is_ldb = (port_type == DLB2_LDB_PORT);
+	int *port_allocations;
+	pthread_t pthread;
+
+	if (is_ldb) {
+		port_allocations = hw->ldb_pp_allocations;
+		num_ports = DLB2_MAX_NUM_LDB_PORTS;
+		num_sort = DLB2_NUM_COS_DOMAINS;
+	} else {
+		port_allocations = hw->dir_pp_allocations;
+		num_ports = DLB2_MAX_NUM_DIR_PORTS(ver);
+		num_sort = 1;
+	}
+
+	num_ports_per_sort = num_ports / num_sort;
+
+	dlb2_dev->enqueue_four = dlb2_movdir64b;
+
+	DLB2_LOG_INFO(" for %s: cpu core used in pp profiling: %d\n",
+		      is_ldb ? "LDB" : "DIR", cpu);
+
+	memset(cos_cycles, 0, num_sort * sizeof(struct dlb2_pp_thread_data));
+	for (i = 0; i < num_ports; i++) {
+		int cos = (i >> DLB2_NUM_COS_DOMAINS) % DLB2_NUM_COS_DOMAINS;
+		dlb2_thread_data[i].is_ldb = is_ldb;
+		dlb2_thread_data[i].pp = i;
+		dlb2_thread_data[i].cycles = 0;
+		dlb2_thread_data[i].hw = hw;
+		dlb2_thread_data[i].cpu = cpu;
+
+		err = pthread_create(&pthread, NULL, &dlb2_pp_profile_func,
+				     &dlb2_thread_data[i]);
+		if (err) {
+			DLB2_LOG_ERR(": thread creation failed! err=%d", err);
+			return;
+		}
+
+		err = pthread_join(pthread, NULL);
+		if (err) {
+			DLB2_LOG_ERR(": thread join failed! err=%d", err);
+			return;
+		}
+
+		if (is_ldb)
+			cos_cycles[cos].cycles += dlb2_thread_data[i].cycles;
+
+		if ((i + 1) % num_ports_per_sort == 0) {
+			int index = 0;
+
+			if (is_ldb) {
+				cos_cycles[cos].pp = cos;
+				index = cos * num_ports_per_sort;
+			}
+			/*
+			 * For LDB ports first sort with in a cos. Later sort
+			 * the best cos based on total cycles for the cos.
+			 * For DIR ports, there is a single sort across all
+			 * ports.
+			 */
+			qsort(&dlb2_thread_data[index], num_ports_per_sort,
+			      sizeof(struct dlb2_pp_thread_data),
+			      dlb2_pp_cycle_comp);
+		}
+	}
+
+	/*
+	 * Sort by best cos aggregated over all ports per cos
+	 * Note: After DLB2_MAX_NUM_LDB_PORTS sorted cos is stored and so'pp'
+	 * is cos_id and not port id.
+	 */
+	if (is_ldb) {
+		qsort(cos_cycles, num_sort, sizeof(struct dlb2_pp_thread_data),
+		      dlb2_pp_cycle_comp);
+		for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
+			port_allocations[i + DLB2_MAX_NUM_LDB_PORTS] = cos_cycles[i].pp;
+	}
+
+	for (i = 0; i < num_ports; i++) {
+		port_allocations[i] = dlb2_thread_data[i].pp;
+		DLB2_LOG_INFO(": pp %d cycles %d", port_allocations[i],
+			      dlb2_thread_data[i].cycles);
+	}
+
+}
+
+int
+dlb2_resource_probe(struct dlb2_hw *hw, const void *probe_args)
+{
+	const struct dlb2_devargs *args = (const struct dlb2_devargs *)probe_args;
+	const char *mask = args ? args->producer_coremask : NULL;
+	int cpu = 0, cnt = 0, cores[RTE_MAX_LCORE], i;
+
+	if (args) {
+		mask = (const char *)args->producer_coremask;
+	}
+
+	if (mask && rte_eal_parse_coremask(mask, cores)) {
+		DLB2_LOG_ERR(": Invalid producer coremask=%s", mask);
+		return -1;
+	}
+
+	hw->num_prod_cores = 0;
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
+		bool is_pcore = (mask && cores[i] != -1);
+
+		if (rte_lcore_is_enabled(i)) {
+			if (is_pcore) {
+				/*
+				 * Populate the producer cores from parsed
+				 * coremask
+				 */
+				hw->prod_core_list[cores[i]] = i;
+				hw->num_prod_cores++;
+
+			} else if ((++cnt == DLB2_EAL_PROBE_CORE ||
+			   rte_lcore_count() < DLB2_EAL_PROBE_CORE)) {
+				/*
+				 * If no producer coremask is provided, use the
+				 * second EAL core to probe
+				 */
+				cpu = i;
+				break;
+			}
+		} else if (is_pcore) {
+			DLB2_LOG_ERR("Producer coremask(%s) must be a subset of EAL coremask",
+				     mask);
+			return -1;
+		}
+
+	}
+	/* Use the first core in producer coremask to probe */
+	if (hw->num_prod_cores)
+		cpu = hw->prod_core_list[0];
+
+	dlb2_get_pp_allocation(hw, cpu, DLB2_LDB_PORT);
+	dlb2_get_pp_allocation(hw, cpu, DLB2_DIR_PORT);
 
 	return 0;
 }
@@ -4337,7 +4564,8 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 		return -EINVAL;
 	}
 
-	if (args->cos_id >= DLB2_NUM_COS_DOMAINS) {
+	if (args->cos_id >= DLB2_NUM_COS_DOMAINS &&
+	    (args->cos_id != DLB2_COS_DEFAULT || args->cos_strict)) {
 		resp->status = DLB2_ST_INVALID_COS_ID;
 		return -EINVAL;
 	}
@@ -4348,7 +4576,13 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 					  typeof(*port));
 	} else {
 		for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++) {
-			id = (args->cos_id + i) % DLB2_NUM_COS_DOMAINS;
+			if (args->cos_id == DLB2_COS_DEFAULT) {
+				/* Allocate from best performing cos */
+				u32 cos_idx = i + DLB2_MAX_NUM_LDB_PORTS;
+				id = hw->ldb_pp_allocations[cos_idx];
+			} else {
+				id = (args->cos_id + i) % DLB2_NUM_COS_DOMAINS;
+			}
 
 			port = DLB2_DOM_LIST_HEAD(domain->avail_ldb_ports[id],
 						  typeof(*port));
@@ -4361,6 +4595,8 @@ dlb2_verify_create_ldb_port_args(struct dlb2_hw *hw,
 		resp->status = DLB2_ST_LDB_PORTS_UNAVAILABLE;
 		return -EINVAL;
 	}
+
+	DLB2_LOG_INFO(": LDB: cos=%d port:%d\n", id, port->id.phys_id);
 
 	/* Check cache-line alignment */
 	if ((cq_dma_base & 0x3F) != 0) {
@@ -4571,13 +4807,25 @@ dlb2_verify_create_dir_port_args(struct dlb2_hw *hw,
 		/*
 		 * If the port's queue is not configured, validate that a free
 		 * port-queue pair is available.
+		 * First try the 'res' list if the port is producer OR if
+		 * 'avail' list is empty else fall back to 'avail' list
 		 */
-		pq = DLB2_DOM_LIST_HEAD(domain->avail_dir_pq_pairs,
-					typeof(*pq));
+		if (!dlb2_list_empty(&domain->rsvd_dir_pq_pairs) &&
+		    (args->is_producer ||
+		     dlb2_list_empty(&domain->avail_dir_pq_pairs)))
+			pq = DLB2_DOM_LIST_HEAD(domain->rsvd_dir_pq_pairs,
+						typeof(*pq));
+		else
+			pq = DLB2_DOM_LIST_HEAD(domain->avail_dir_pq_pairs,
+						typeof(*pq));
+
 		if (!pq) {
 			resp->status = DLB2_ST_DIR_PORTS_UNAVAILABLE;
 			return -EINVAL;
 		}
+		DLB2_LOG_INFO(": DIR: port:%d is_producer=%d\n",
+			      pq->id.phys_id, args->is_producer);
+
 	}
 
 	/* Check cache-line alignment */
@@ -4878,11 +5126,18 @@ int dlb2_hw_create_dir_port(struct dlb2_hw *hw,
 		return ret;
 
 	/*
-	 * Configuration succeeded, so move the resource from the 'avail' to
-	 * the 'used' list (if it's not already there).
+	 * Configuration succeeded, so move the resource from the 'avail' or
+	 * 'res' to the 'used' list (if it's not already there).
 	 */
 	if (args->queue_id == -1) {
-		dlb2_list_del(&domain->avail_dir_pq_pairs, &port->domain_list);
+		struct dlb2_list_head *res = &domain->rsvd_dir_pq_pairs;
+		struct dlb2_list_head *avail = &domain->avail_dir_pq_pairs;
+
+		if ((args->is_producer && !dlb2_list_empty(res)) ||
+		     dlb2_list_empty(avail))
+			dlb2_list_del(res, &port->domain_list);
+		else
+			dlb2_list_del(avail, &port->domain_list);
 
 		dlb2_list_add(&domain->used_dir_pq_pairs, &port->domain_list);
 	}
@@ -6273,3 +6528,288 @@ int dlb2_set_group_sequence_numbers(struct dlb2_hw *hw,
 	return 0;
 }
 
+/**
+ * dlb2_hw_set_qe_arbiter_weights() - program QE arbiter weights
+ * @hw: dlb2_hw handle for a particular device.
+ * @weight: 8-entry array of arbiter weights.
+ *
+ * weight[N] programs priority N's weight. In cases where the 8 priorities are
+ * reduced to 4 bins, the mapping is:
+ * - weight[1] programs bin 0
+ * - weight[3] programs bin 1
+ * - weight[5] programs bin 2
+ * - weight[7] programs bin 3
+ */
+void dlb2_hw_set_qe_arbiter_weights(struct dlb2_hw *hw, u8 weight[8])
+{
+	u32 reg = 0;
+
+	DLB2_BITS_SET(reg, weight[1], DLB2_ATM_CFG_ARB_WEIGHTS_RDY_BIN_BIN0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_ATM_CFG_ARB_WEIGHTS_RDY_BIN_BIN1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_ATM_CFG_ARB_WEIGHTS_RDY_BIN_BIN2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_ATM_CFG_ARB_WEIGHTS_RDY_BIN_BIN3);
+	DLB2_CSR_WR(hw, DLB2_ATM_CFG_ARB_WEIGHTS_RDY_BIN, reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_NALB_0_PRI0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_NALB_0_PRI1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_NALB_0_PRI2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_NALB_0_PRI3);
+	DLB2_CSR_WR(hw, DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_NALB_0(hw->ver), reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI3);
+	DLB2_CSR_WR(hw, DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0(hw->ver), reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0_PRI3);
+	DLB2_CSR_WR(hw, DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_REPLAY_0, reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_DIR_0_PRI0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_DIR_0_PRI1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_DIR_0_PRI2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_DIR_0_PRI3);
+	DLB2_CSR_WR(hw, DLB2_DP_CFG_ARB_WEIGHTS_TQPRI_DIR_0, reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_ATQ_0_PRI0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_ATQ_0_PRI1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_ATQ_0_PRI2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_ATQ_0_PRI3);
+	DLB2_CSR_WR(hw, DLB2_NALB_CFG_ARB_WEIGHTS_TQPRI_ATQ_0(hw->ver), reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_ATM_CFG_ARB_WEIGHTS_SCHED_BIN_BIN0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_ATM_CFG_ARB_WEIGHTS_SCHED_BIN_BIN1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_ATM_CFG_ARB_WEIGHTS_SCHED_BIN_BIN2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_ATM_CFG_ARB_WEIGHTS_SCHED_BIN_BIN3);
+	DLB2_CSR_WR(hw, DLB2_ATM_CFG_ARB_WEIGHTS_SCHED_BIN, reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_AQED_CFG_ARB_WEIGHTS_TQPRI_ATM_0_PRI0);
+	DLB2_BITS_SET(reg, weight[3], DLB2_AQED_CFG_ARB_WEIGHTS_TQPRI_ATM_0_PRI1);
+	DLB2_BITS_SET(reg, weight[5], DLB2_AQED_CFG_ARB_WEIGHTS_TQPRI_ATM_0_PRI2);
+	DLB2_BITS_SET(reg, weight[7], DLB2_AQED_CFG_ARB_WEIGHTS_TQPRI_ATM_0_PRI3);
+	DLB2_CSR_WR(hw, DLB2_AQED_CFG_ARB_WEIGHTS_TQPRI_ATM_0, reg);
+}
+
+/**
+ * dlb2_hw_set_qid_arbiter_weights() - program QID arbiter weights
+ * @hw: dlb2_hw handle for a particular device.
+ * @weight: 8-entry array of arbiter weights.
+ *
+ * weight[N] programs priority N's weight. In cases where the 8 priorities are
+ * reduced to 4 bins, the mapping is:
+ * - weight[1] programs bin 0
+ * - weight[3] programs bin 1
+ * - weight[5] programs bin 2
+ * - weight[7] programs bin 3
+ */
+void dlb2_hw_set_qid_arbiter_weights(struct dlb2_hw *hw, u8 weight[8])
+{
+	u32 reg = 0;
+
+	DLB2_BITS_SET(reg, weight[1], DLB2_LSP_CFG_ARB_WEIGHT_LDB_QID_0_PRI0_WEIGHT);
+	DLB2_BITS_SET(reg, weight[3], DLB2_LSP_CFG_ARB_WEIGHT_LDB_QID_0_PRI1_WEIGHT);
+	DLB2_BITS_SET(reg, weight[5], DLB2_LSP_CFG_ARB_WEIGHT_LDB_QID_0_PRI2_WEIGHT);
+	DLB2_BITS_SET(reg, weight[7], DLB2_LSP_CFG_ARB_WEIGHT_LDB_QID_0_PRI3_WEIGHT);
+	DLB2_CSR_WR(hw, DLB2_LSP_CFG_ARB_WEIGHT_LDB_QID_0(hw->ver), reg);
+
+	reg = 0;
+	DLB2_BITS_SET(reg, weight[1], DLB2_LSP_CFG_ARB_WEIGHT_ATM_NALB_QID_0_PRI0_WEIGHT);
+	DLB2_BITS_SET(reg, weight[3], DLB2_LSP_CFG_ARB_WEIGHT_ATM_NALB_QID_0_PRI1_WEIGHT);
+	DLB2_BITS_SET(reg, weight[5], DLB2_LSP_CFG_ARB_WEIGHT_ATM_NALB_QID_0_PRI2_WEIGHT);
+	DLB2_BITS_SET(reg, weight[7], DLB2_LSP_CFG_ARB_WEIGHT_ATM_NALB_QID_0_PRI3_WEIGHT);
+	DLB2_CSR_WR(hw, DLB2_LSP_CFG_ARB_WEIGHT_ATM_NALB_QID_0(hw->ver), reg);
+}
+
+static void dlb2_log_enable_cq_weight(struct dlb2_hw *hw,
+				      u32 domain_id,
+				      struct dlb2_enable_cq_weight_args *args,
+				      bool vdev_req,
+				      unsigned int vdev_id)
+{
+	DLB2_HW_DBG(hw, "DLB2 enable CQ weight arguments:\n");
+	DLB2_HW_DBG(hw, "\tvdev_req %d, vdev_id %d\n", vdev_req, vdev_id);
+	DLB2_HW_DBG(hw, "\tDomain ID: %d\n", domain_id);
+	DLB2_HW_DBG(hw, "\tPort ID:   %d\n", args->port_id);
+	DLB2_HW_DBG(hw, "\tLimit:   %d\n", args->limit);
+}
+
+static int
+dlb2_verify_enable_cq_weight_args(struct dlb2_hw *hw,
+				  u32 domain_id,
+				  struct dlb2_enable_cq_weight_args *args,
+				  struct dlb2_cmd_response *resp,
+				  bool vdev_req,
+				  unsigned int vdev_id)
+{
+	struct dlb2_hw_domain *domain;
+	struct dlb2_ldb_port *port;
+
+	if (hw->ver == DLB2_HW_V2) {
+		DLB2_HW_ERR(hw,
+			    "[%s():%d] CQ weight feature requires DLB 2.5 or later\n",
+			    __func__, __LINE__);
+		resp->status = DLB2_ST_FEATURE_UNAVAILABLE;
+		return -EINVAL;
+	}
+
+	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
+
+	if (!domain) {
+		resp->status = DLB2_ST_INVALID_DOMAIN_ID;
+		return -EINVAL;
+	}
+
+	if (!domain->configured) {
+		resp->status = DLB2_ST_DOMAIN_NOT_CONFIGURED;
+		return -EINVAL;
+	}
+
+	if (domain->started) {
+		resp->status = DLB2_ST_DOMAIN_STARTED;
+		return -EINVAL;
+	}
+
+	port = dlb2_get_domain_used_ldb_port(args->port_id, vdev_req, domain);
+	if (!port || !port->configured) {
+		resp->status = DLB2_ST_INVALID_PORT_ID;
+		return -EINVAL;
+	}
+
+	if (args->limit == 0 || args->limit > port->cq_depth) {
+		resp->status = DLB2_ST_INVALID_CQ_WEIGHT_LIMIT;
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int dlb2_hw_enable_cq_weight(struct dlb2_hw *hw,
+			     u32 domain_id,
+			     struct dlb2_enable_cq_weight_args *args,
+			     struct dlb2_cmd_response *resp,
+			     bool vdev_req,
+			     unsigned int vdev_id)
+{
+	struct dlb2_hw_domain *domain;
+	struct dlb2_ldb_port *port;
+	int ret, id;
+	u32 reg = 0;
+
+	dlb2_log_enable_cq_weight(hw, domain_id, args, vdev_req, vdev_id);
+
+	/*
+	 * Verify that hardware resources are available before attempting to
+	 * satisfy the request. This simplifies the error unwinding code.
+	 */
+	ret = dlb2_verify_enable_cq_weight_args(hw,
+						domain_id,
+						args,
+						resp,
+						vdev_req,
+						vdev_id);
+	if (ret)
+		return ret;
+
+	domain = dlb2_get_domain_from_id(hw, domain_id, vdev_req, vdev_id);
+	if (!domain) {
+		DLB2_HW_ERR(hw,
+			    "[%s():%d] Internal error: domain not found\n",
+			    __func__, __LINE__);
+		return -EFAULT;
+	}
+
+	id = args->port_id;
+
+	port = dlb2_get_domain_used_ldb_port(id, vdev_req, domain);
+	if (!port) {
+		DLB2_HW_ERR(hw,
+			    "[%s():	%d] Internal error: port not found\n",
+			    __func__, __LINE__);
+		return -EFAULT;
+	}
+
+	DLB2_BIT_SET(reg, DLB2_LSP_CFG_CQ_LDB_WU_LIMIT_V);
+	DLB2_BITS_SET(reg, args->limit, DLB2_LSP_CFG_CQ_LDB_WU_LIMIT_LIMIT);
+
+	DLB2_CSR_WR(hw, DLB2_LSP_CFG_CQ_LDB_WU_LIMIT(port->id.phys_id), reg);
+
+	resp->status = 0;
+
+	return 0;
+}
+
+static void dlb2_log_set_cos_bandwidth(struct dlb2_hw *hw, u32 cos_id, u8 bw)
+{
+	DLB2_HW_DBG(hw, "DLB2 set port CoS bandwidth:\n");
+	DLB2_HW_DBG(hw, "\tCoS ID:    %u\n", cos_id);
+	DLB2_HW_DBG(hw, "\tBandwidth: %u\n", bw);
+}
+
+#define DLB2_MAX_BW_PCT 100
+
+/**
+ * dlb2_hw_set_cos_bandwidth() - set a bandwidth allocation percentage for a
+ *      port class-of-service.
+ * @hw: dlb2_hw handle for a particular device.
+ * @cos_id: class-of-service ID.
+ * @bandwidth: class-of-service bandwidth.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise.
+ *
+ * Errors:
+ * EINVAL - Invalid cos ID, bandwidth is greater than 100, or bandwidth would
+ *          cause the total bandwidth across all classes of service to exceed
+ *          100%.
+ */
+int dlb2_hw_set_cos_bandwidth(struct dlb2_hw *hw, u32 cos_id, u8 bandwidth)
+{
+	unsigned int i;
+	u32 reg;
+	u8 total;
+
+	if (cos_id >= DLB2_NUM_COS_DOMAINS)
+		return -EINVAL;
+
+	if (bandwidth > DLB2_MAX_BW_PCT)
+		return -EINVAL;
+
+	total = 0;
+
+	for (i = 0; i < DLB2_NUM_COS_DOMAINS; i++)
+		total += (i == cos_id) ? bandwidth : hw->cos_reservation[i];
+
+	if (total > DLB2_MAX_BW_PCT)
+		return -EINVAL;
+
+	reg = DLB2_CSR_RD(hw, DLB2_LSP_CFG_SHDW_RANGE_COS(hw->ver, cos_id));
+
+	/*
+	 * Normalize the bandwidth to a value in the range 0-255. Integer
+	 * division may leave unreserved scheduling slots; these will be
+	 * divided among the 4 classes of service.
+	 */
+	DLB2_BITS_SET(reg, (bandwidth * 256) / 100, DLB2_LSP_CFG_SHDW_RANGE_COS_BW_RANGE);
+	DLB2_CSR_WR(hw, DLB2_LSP_CFG_SHDW_RANGE_COS(hw->ver, cos_id), reg);
+
+	reg = 0;
+	DLB2_BIT_SET(reg, DLB2_LSP_CFG_SHDW_CTRL_TRANSFER);
+	/* Atomically transfer the newly configured service weight */
+	DLB2_CSR_WR(hw, DLB2_LSP_CFG_SHDW_CTRL(hw->ver), reg);
+
+	dlb2_log_set_cos_bandwidth(hw, cos_id, bandwidth);
+
+	hw->cos_reservation[cos_id] = bandwidth;
+
+	return 0;
+}

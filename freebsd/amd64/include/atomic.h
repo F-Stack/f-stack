@@ -227,6 +227,34 @@ atomic_fcmpset_##TYPE(volatile u_##TYPE *dst, u_##TYPE *expect, u_##TYPE src) \
 	return (res);					\
 }
 
+#ifdef FSTACK
+/*
+ * The atomic_fcmpset_int above run error sometimes,
+ * it's return value is 0 while CAS success, and then loop long time.
+ * And no reason found yet.
+ *
+ * But use the function can fix it.
+ * This function copied from DPDK's rte_atomic.h
+ */
+static __inline int					\
+atomic_fcmpset_int32(volatile u_int *dst, u_int *expect, u_int src) \
+{										\
+	u_char res;							\
+										\
+	__asm __volatile(					\
+	"	" MPLOCKED "		"			\
+	"cmpxchgl %[src], %[dst];"			\
+	"sete %[res];"						\
+	: [res] "=a" (res),     /* output */ \
+	  [dst] "=m" (*dst)					\
+	: [src] "r" (src),      /* input */	\
+	  "a" (*expect),					\
+	  "m" (*dst) 						\
+	: "memory");            /* no-clobber list */ \
+	return (res);						\
+}
+#endif
+
 ATOMIC_CMPSET(char);
 ATOMIC_CMPSET(short);
 ATOMIC_CMPSET(int);

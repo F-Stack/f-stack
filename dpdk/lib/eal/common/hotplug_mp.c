@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2018 Intel Corporation
  */
+#include <stdlib.h>
 #include <string.h>
 
+#include <bus_driver.h>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_alarm.h>
@@ -461,4 +463,9 @@ int eal_mp_dev_hotplug_init(void)
 	}
 
 	return 0;
+}
+
+void eal_mp_dev_hotplug_cleanup(void)
+{
+	rte_mp_action_unregister(EAL_DEV_MP_ACTION_REQUEST);
 }

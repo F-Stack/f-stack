@@ -19,7 +19,7 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_kvargs.h>
@@ -30,7 +30,7 @@
 #include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_hash_crc.h>
 #ifdef RTE_LIB_SECURITY
 #include <rte_security_driver.h>
@@ -1187,7 +1187,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	diag = ixgbe_validate_eeprom_checksum(hw, &csum);
 	if (diag != IXGBE_SUCCESS) {
 		PMD_INIT_LOG(ERR, "The EEPROM checksum is not valid: %d", diag);
-		return -EIO;
+		ret = -EIO;
+		goto err_exit;
 	}
 
 #ifdef RTE_LIBRTE_IXGBE_BYPASS
@@ -1225,7 +1226,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		PMD_INIT_LOG(ERR, "Unsupported SFP+ Module");
 	if (diag) {
 		PMD_INIT_LOG(ERR, "Hardware Initialization Failure: %d", diag);
-		return -EIO;
+		ret = -EIO;
+		goto err_exit;
 	}
 
 	/* Reset the hw statistics */
@@ -1245,7 +1247,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 			     "Failed to allocate %u bytes needed to store "
 			     "MAC addresses",
 			     RTE_ETHER_ADDR_LEN * hw->mac.num_rar_entries);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_exit;
 	}
 	/* Copy the permanent MAC address */
 	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.perm_addr,
@@ -1260,7 +1263,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 			     RTE_ETHER_ADDR_LEN * IXGBE_VMDQ_NUM_UC_MAC);
 		rte_free(eth_dev->data->mac_addrs);
 		eth_dev->data->mac_addrs = NULL;
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_exit;
 	}
 
 	/* initialize the vfta */
@@ -1344,6 +1348,11 @@ err_pf_host_init:
 	eth_dev->data->mac_addrs = NULL;
 	rte_free(eth_dev->data->hash_mac_addrs);
 	eth_dev->data->hash_mac_addrs = NULL;
+err_exit:
+#ifdef RTE_LIB_SECURITY
+	rte_free(eth_dev->security_ctx);
+	eth_dev->security_ctx = NULL;
+#endif
 	return ret;
 }
 
@@ -1384,10 +1393,8 @@ static int ixgbe_fdir_filter_uninit(struct rte_eth_dev *eth_dev)
 		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(eth_dev->data->dev_private);
 	struct ixgbe_fdir_filter *fdir_filter;
 
-		if (fdir_info->hash_map)
-		rte_free(fdir_info->hash_map);
-	if (fdir_info->hash_handle)
-		rte_hash_free(fdir_info->hash_handle);
+	rte_free(fdir_info->hash_map);
+	rte_hash_free(fdir_info->hash_handle);
 
 	while ((fdir_filter = TAILQ_FIRST(&fdir_info->fdir_list))) {
 		TAILQ_REMOVE(&fdir_info->fdir_list,
@@ -1405,10 +1412,8 @@ static int ixgbe_l2_tn_filter_uninit(struct rte_eth_dev *eth_dev)
 		IXGBE_DEV_PRIVATE_TO_L2_TN_INFO(eth_dev->data->dev_private);
 	struct ixgbe_l2_tn_filter *l2_tn_filter;
 
-	if (l2_tn_info->hash_map)
-		rte_free(l2_tn_info->hash_map);
-	if (l2_tn_info->hash_handle)
-		rte_hash_free(l2_tn_info->hash_handle);
+	rte_free(l2_tn_info->hash_map);
+	rte_hash_free(l2_tn_info->hash_handle);
 
 	while ((l2_tn_filter = TAILQ_FIRST(&l2_tn_info->l2_tn_list))) {
 		TAILQ_REMOVE(&l2_tn_info->l2_tn_list,
@@ -2479,7 +2484,7 @@ ixgbe_dev_phy_intr_setup(struct rte_eth_dev *dev)
 
 int
 ixgbe_set_vf_rate_limit(struct rte_eth_dev *dev, uint16_t vf,
-			uint16_t tx_rate, uint64_t q_msk)
+			uint32_t tx_rate, uint64_t q_msk)
 {
 	struct ixgbe_hw *hw;
 	struct ixgbe_vf_info *vfinfo;
@@ -2694,7 +2699,7 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 	/* Configure DCB hw */
 	ixgbe_configure_dcb(dev);
 
-	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_NONE) {
+	if (IXGBE_DEV_FDIR_CONF(dev)->mode != RTE_FDIR_MODE_NONE) {
 		err = ixgbe_fdir_configure(dev);
 		if (err)
 			goto error;
@@ -4069,6 +4074,8 @@ ixgbevf_dev_info_get(struct rte_eth_dev *dev,
 	dev_info->rx_desc_lim = rx_desc_lim;
 	dev_info->tx_desc_lim = tx_desc_lim;
 
+	dev_info->err_handle_mode = RTE_ETH_ERROR_HANDLE_MODE_PASSIVE;
+
 	return 0;
 }
 
@@ -4275,6 +4282,9 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 	int diag;
 	int wait = 1;
 	u32 esdp_reg;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return -1;
 
 	memset(&link, 0, sizeof(link));
 	link.link_status = RTE_ETH_LINK_DOWN;
@@ -4650,14 +4660,20 @@ ixgbe_dev_interrupt_action(struct rte_eth_dev *dev)
 			timeout = IXGBE_LINK_DOWN_CHECK_TIMEOUT;
 
 		ixgbe_dev_link_status_print(dev);
-		if (rte_eal_alarm_set(timeout * 1000,
-				      ixgbe_dev_interrupt_delayed_handler, (void *)dev) < 0)
-			PMD_DRV_LOG(ERR, "Error setting alarm");
-		else {
-			/* remember original mask */
-			intr->mask_original = intr->mask;
-			/* only disable lsc interrupt */
-			intr->mask &= ~IXGBE_EIMS_LSC;
+
+		/* Don't program delayed handler if LSC interrupt is disabled.
+		 * It means one is already programmed.
+		 */
+		if (intr->mask & IXGBE_EIMS_LSC) {
+			if (rte_eal_alarm_set(timeout * 1000,
+					      ixgbe_dev_interrupt_delayed_handler, (void *)dev) < 0)
+				PMD_DRV_LOG(ERR, "Error setting alarm");
+			else {
+				/* remember original mask */
+				intr->mask_original = intr->mask;
+				/* only disable lsc interrupt */
+				intr->mask &= ~IXGBE_EIMS_LSC;
+			}
 		}
 	}
 
@@ -6103,7 +6119,7 @@ ixgbe_configure_msix(struct rte_eth_dev *dev)
 
 int
 ixgbe_set_queue_rate_limit(struct rte_eth_dev *dev,
-			   uint16_t queue_idx, uint16_t tx_rate)
+			   uint16_t queue_idx, uint32_t tx_rate)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t rf_dec, rf_int;

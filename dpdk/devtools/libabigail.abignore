@@ -1,3 +1,7 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Core suppression rules: DO NOT TOUCH ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 [suppress_function]
         symbol_version = EXPERIMENTAL
 [suppress_variable]
@@ -12,22 +16,21 @@
 [suppress_variable]
         name_regexp = _pmd_info$
 
-; Ignore changes to rte_crypto_asym_op, asymmetric crypto API is experimental
+; Ignore changes on soname for mlx glue internal drivers
+[suppress_file]
+        soname_regexp = ^librte_.*mlx.*glue\.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Experimental APIs exceptions ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Ignore changes to asymmetric crypto API which is experimental
 [suppress_type]
         name = rte_crypto_asym_op
+[suppress_type]
+        type_kind = enum
+        changed_enumerators = RTE_CRYPTO_ASYM_XFORM_ECPM, RTE_CRYPTO_ASYM_XFORM_TYPE_LIST_END
 
-; Ignore section attribute fixes in experimental regexdev library
-[suppress_file]
-        soname_regexp = ^librte_regexdev\.
-
-; Ignore changes in common mlx5 driver, should be all internal
-[suppress_file]
-        soname_regexp = ^librte_common_mlx5\.
-
-; Ignore visibility fix of local functions in experimental auxiliary driver
-[suppress_file]
-        soname_regexp = ^librte_bus_auxiliary\.
-
-; Ignore visibility fix of local functions in experimental gpudev library
-[suppress_file]
-        soname_regexp = ^librte_gpudev\.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Temporary exceptions till next major ABI version ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

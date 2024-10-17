@@ -11,7 +11,7 @@
 #include <sys/queue.h>
 
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <ethdev_driver.h>
 #include <rte_memory.h>
 #include <rte_lcore.h>
@@ -441,8 +441,8 @@ struct bnxt_ring_mem_info {
 
 struct bnxt_ctx_pg_info {
 	uint32_t	entries;
-	void		*ctx_pg_arr[MAX_CTX_PAGES];
-	rte_iova_t	ctx_dma_arr[MAX_CTX_PAGES];
+	void		**ctx_pg_arr;
+	rte_iova_t	*ctx_dma_arr;
 	struct bnxt_ring_mem_info ring_mem;
 };
 
@@ -542,7 +542,6 @@ struct bnxt_mark_info {
 
 struct bnxt_rep_info {
 	struct rte_eth_dev	*vfr_eth_dev;
-	pthread_mutex_t		vfr_lock;
 	pthread_mutex_t		vfr_start_lock;
 	bool			conduit_valid;
 };
@@ -867,6 +866,7 @@ struct bnxt {
 	struct rte_ether_addr	*mcast_addr_list;
 	rte_iova_t		mc_list_dma_addr;
 	uint32_t		nb_mc_addr;
+#define BNXT_DFLT_MAX_MC_ADDR	16 /* for compatibility with older firmware */
 	uint32_t		max_mcast_addr; /* maximum number of mcast filters supported */
 
 	struct rte_eth_rss_conf	rss_conf; /* RSS configuration. */
@@ -989,10 +989,6 @@ void bnxt_print_link_info(struct rte_eth_dev *eth_dev);
 uint16_t bnxt_rss_hash_tbl_size(const struct bnxt *bp);
 int bnxt_link_update_op(struct rte_eth_dev *eth_dev,
 			int wait_to_complete);
-uint16_t bnxt_dummy_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
-			      uint16_t nb_pkts);
-uint16_t bnxt_dummy_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
-			      uint16_t nb_pkts);
 
 extern const struct rte_flow_ops bnxt_flow_ops;
 

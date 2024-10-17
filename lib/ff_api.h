@@ -51,9 +51,13 @@ struct linux_sockaddr {
 
 typedef int (*loop_func_t)(void *arg);
 
+extern __thread struct thread *pcurthread;
+
 int ff_init(int argc, char * const argv[]);
 
 void ff_run(loop_func_t loop, void *arg);
+
+void ff_stop_run(void);
 
 /* POSIX-LIKE api begin */
 
@@ -136,10 +140,18 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
     void *eventlist, int nevents, const struct timespec *timeout,
     void (*do_each)(void **, struct kevent *));
 
+#if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 31)
+int ff_gettimeofday(struct timeval *tv, void *tz);
+#else
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
+#endif
 
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
+
+int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr, 
+    void * (* start_routine) (void *), void * arg);
+int ff_pthread_join(pthread_t thread, void **retval);
 
 /* POSIX-LIKE api end */
 
@@ -148,6 +160,12 @@ int ff_dup2(int oldfd, int newfd);
 extern int ff_fdisused(int fd);
 
 extern int ff_getmaxfd(void);
+
+/*
+ * Get traffic for QoS or other via API.
+ * The size of buffer must >= siezof(struct ff_traffic_args), now is 32 bytes.
+ */
+void ff_get_traffic(void *buffer);
 
 /* route api begin */
 enum FF_ROUTE_CTL {
@@ -202,6 +220,22 @@ typedef int (*dispatch_func_t)(void *data, uint16_t *len,
 
 /* regist a packet dispath function */
 void ff_regist_packet_dispatcher(dispatch_func_t func);
+
+/*
+ * RAW packet send direty with DPDK by user APP.
+ *
+ * @param data
+ *   The data pointer of this packet.
+ * @param total
+ *   The total length of this packet.
+ * @param port_id
+ *   Current port of this packet.
+ *
+ * @return error_no
+ *   0 means success.
+ *  -1 means error.
+ */
+int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
 
 /* dispatch api end */
 

@@ -3,12 +3,14 @@
  *  All rights reserved.
  */
 
+#include <stdlib.h>
+
 #include <rte_mbuf.h>
 #include <ethdev_driver.h>
 #include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_kvargs.h>
 #include <rte_spinlock.h>
 
@@ -186,20 +188,35 @@ eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	if (dev == NULL)
 		return -EINVAL;
 
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	return 0;
 }
 
 static int
 eth_dev_stop(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	if (dev == NULL)
 		return 0;
 
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -717,8 +734,7 @@ rte_pmd_null_probe(struct rte_vdev_device *dev)
 	ret = eth_dev_null_create(dev, &args);
 
 free_kvlist:
-	if (kvlist)
-		rte_kvargs_free(kvlist);
+	rte_kvargs_free(kvlist);
 	return ret;
 }
 

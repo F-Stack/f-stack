@@ -1,4 +1,4 @@
-DPDK_22 {
+DPDK_23 {
 	global:
 
 	rte_member_add;
@@ -13,4 +13,13 @@ DPDK_22 {
 	rte_member_reset;
 
 	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	# added in 22.11
+	rte_member_add_byte_count;
+	rte_member_query_count;
+	rte_member_report_heavyhitter;
 };

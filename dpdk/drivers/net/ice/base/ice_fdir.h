@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_FDIR_H_
 #define _ICE_FDIR_H_
 
-#include "ice_common.h"
+#include "ice_type.h"
 
 #define ICE_FDIR_IP_PROTOCOLS
 #define ICE_IP_PROTO_TCP		6
@@ -26,6 +26,8 @@
 #define ICE_FDIR_V4_V6_GTPOGRE_EH_PKT_OFF	102
 #define ICE_FDIR_V6_V4_GTPOGRE_EH_PKT_OFF	102
 #define ICE_FDIR_V6_V6_GTPOGRE_EH_PKT_OFF	122
+#define ICE_FDIR_IPV4_L2TPV2_PPP_PKT_OFF	52
+#define ICE_FDIR_IPV6_L2TPV2_PPP_PKT_OFF	72
 
 #define ICE_FDIR_TUN_PKT_OFF		50
 #define ICE_FDIR_MAX_RAW_PKT_SIZE	(512 + ICE_FDIR_TUN_PKT_OFF)
@@ -96,6 +98,10 @@
 #define ICE_IPV4_VXLAN_VNI_OFFSET	46
 #define ICE_ECPRI_TP0_PC_ID_OFFSET	18
 #define ICE_IPV4_UDP_ECPRI_TP0_PC_ID_OFFSET			46
+#define ICE_IPV4_L2TPV2_SESS_ID_OFFSET		46
+#define ICE_IPV6_L2TPV2_SESS_ID_OFFSET		66
+#define ICE_IPV4_L2TPV2_LEN_SESS_ID_OFFSET	48
+#define ICE_IPV6_L2TPV2_LEN_SESS_ID_OFFSET	68
 
 #define ICE_FDIR_MAX_FLTRS		16384
 
@@ -222,6 +228,16 @@ struct ice_fdir_ecpri {
 	__be16 pc_id;
 };
 
+struct ice_fdir_l2tpv2 {
+	__be16 flags_version;
+	__be16 length;
+	__be16 tunnel_id;
+	__be16 session_id;
+	__be16 ns;
+	__be16 nr;
+	__be16 offset_size;
+};
+
 struct ice_fdir_extra {
 	u8 dst_mac[ETH_ALEN];	/* dest MAC address */
 	u8 src_mac[ETH_ALEN];	/* src MAC address */
@@ -261,6 +277,9 @@ struct ice_fdir_fltr {
 	struct ice_fdir_ecpri ecpri_data;
 	struct ice_fdir_ecpri ecpri_mask;
 
+	struct ice_fdir_l2tpv2 l2tpv2_data;
+	struct ice_fdir_l2tpv2 l2tpv2_mask;
+
 	struct ice_fdir_extra ext_data;
 	struct ice_fdir_extra ext_mask;
 
@@ -293,6 +312,11 @@ struct ice_fdir_base_pkt {
 	u16 tun_pkt_len;
 	const u8 *tun_pkt;
 };
+
+bool
+ice_fdir_comp_rules_basic(struct ice_fdir_fltr *a,  struct ice_fdir_fltr *b);
+bool
+ice_fdir_comp_rules_extended(struct ice_fdir_fltr *a,  struct ice_fdir_fltr *b);
 
 enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id);
 enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id);

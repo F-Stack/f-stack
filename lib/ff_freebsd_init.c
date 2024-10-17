@@ -115,7 +115,7 @@ int lo_set_defaultaddr(void)
         return ret;
 
     ret = ifioctl(so, SIOCAIFADDR, (caddr_t)&req, curthread);
-    sofree(so);
+    soclose(so);
 
     return ret;
 }

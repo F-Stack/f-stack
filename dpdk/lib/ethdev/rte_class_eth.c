@@ -2,16 +2,15 @@
  * Copyright(c) 2018 Gaëtan Rivet
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <rte_class.h>
-#include <rte_compat.h>
 #include <rte_errno.h>
 #include <rte_kvargs.h>
 #include <rte_log.h>
 
 #include "rte_ethdev.h"
-#include "rte_ethdev_core.h"
 #include "ethdev_driver.h"
 #include "ethdev_private.h"
 
@@ -166,7 +165,7 @@ eth_dev_iterate(const void *start,
 			valid_keys = eth_params_keys;
 		kvargs = rte_kvargs_parse(str, valid_keys);
 		if (kvargs == NULL) {
-			RTE_LOG(ERR, EAL, "cannot parse argument list\n");
+			RTE_ETHDEV_LOG(ERR, "cannot parse argument list\n");
 			rte_errno = EINVAL;
 			return NULL;
 		}

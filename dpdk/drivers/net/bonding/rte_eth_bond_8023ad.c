@@ -10,7 +10,6 @@
 #include <rte_malloc.h>
 #include <rte_errno.h>
 #include <rte_cycles.h>
-#include <rte_compat.h>
 
 #include "eth_bond_private.h"
 
@@ -636,9 +635,12 @@ tx_machine(struct bond_dev_private *internals, uint16_t slave_id)
 			return;
 		}
 	} else {
-		uint16_t pkts_sent = rte_eth_tx_burst(slave_id,
+		uint16_t pkts_sent = rte_eth_tx_prepare(slave_id,
 				internals->mode4.dedicated_queues.tx_qid,
 				&lacp_pkt, 1);
+		pkts_sent = rte_eth_tx_burst(slave_id,
+				internals->mode4.dedicated_queues.tx_qid,
+				&lacp_pkt, pkts_sent);
 		if (pkts_sent != 1) {
 			rte_pktmbuf_free(lacp_pkt);
 			set_warning_flags(port, WRN_TX_QUEUE_FULL);
@@ -652,12 +654,9 @@ tx_machine(struct bond_dev_private *internals, uint16_t slave_id)
 }
 
 static uint16_t
-max_index(uint64_t *a, int n)
+max_index(uint64_t *a, uint16_t n)
 {
-	if (n <= 0)
-		return -1;
-
-	int i, max_i = 0;
+	uint16_t i, max_i = 0;
 	uint64_t max = a[0];
 
 	for (i = 1; i < n; ++i) {
@@ -866,7 +865,6 @@ bond_mode_8023ad_periodic_cb(void *arg)
 	struct bond_dev_private *internals = bond_dev->data->dev_private;
 	struct port *port;
 	struct rte_eth_link link_info;
-	struct rte_ether_addr slave_addr;
 	struct rte_mbuf *lacp_pkt = NULL;
 	uint16_t slave_id;
 	uint16_t i;
@@ -893,7 +891,6 @@ bond_mode_8023ad_periodic_cb(void *arg)
 			key = 0;
 		}
 
-		rte_eth_macaddr_get(slave_id, &slave_addr);
 		port = &bond_mode_8023ad_ports[slave_id];
 
 		key = rte_cpu_to_be_16(key);
@@ -905,8 +902,8 @@ bond_mode_8023ad_periodic_cb(void *arg)
 			SM_FLAG_SET(port, NTT);
 		}
 
-		if (!rte_is_same_ether_addr(&port->actor.system, &slave_addr)) {
-			rte_ether_addr_copy(&slave_addr, &port->actor.system);
+		if (!rte_is_same_ether_addr(&internals->mode4.mac_addr, &port->actor.system)) {
+			rte_ether_addr_copy(&internals->mode4.mac_addr, &port->actor.system);
 			if (port->aggregator_port_id == slave_id)
 				SM_FLAG_SET(port, NTT);
 		}
@@ -1172,21 +1169,20 @@ void
 bond_mode_8023ad_mac_address_update(struct rte_eth_dev *bond_dev)
 {
 	struct bond_dev_private *internals = bond_dev->data->dev_private;
-	struct rte_ether_addr slave_addr;
 	struct port *slave, *agg_slave;
 	uint16_t slave_id, i, j;
 
 	bond_mode_8023ad_stop(bond_dev);
 
+	rte_eth_macaddr_get(internals->port_id, &internals->mode4.mac_addr);
 	for (i = 0; i < internals->active_slave_count; i++) {
 		slave_id = internals->active_slaves[i];
 		slave = &bond_mode_8023ad_ports[slave_id];
-		rte_eth_macaddr_get(slave_id, &slave_addr);
 
-		if (rte_is_same_ether_addr(&slave_addr, &slave->actor.system))
+		if (rte_is_same_ether_addr(&internals->mode4.mac_addr, &slave->actor.system))
 			continue;
 
-		rte_ether_addr_copy(&slave_addr, &slave->actor.system);
+		rte_ether_addr_copy(&internals->mode4.mac_addr, &slave->actor.system);
 		/* Do nothing if this port is not an aggregator. In other case
 		 * Set NTT flag on every port that use this aggregator. */
 		if (slave->aggregator_port_id != slave_id)
@@ -1371,9 +1367,12 @@ bond_mode_8023ad_handle_slow_pkt(struct bond_dev_private *internals,
 			}
 		} else {
 			/* Send packet directly to the slow queue */
-			uint16_t tx_count = rte_eth_tx_burst(slave_id,
+			uint16_t tx_count = rte_eth_tx_prepare(slave_id,
 					internals->mode4.dedicated_queues.tx_qid,
 					&pkt, 1);
+			tx_count = rte_eth_tx_burst(slave_id,
+					internals->mode4.dedicated_queues.tx_qid,
+					&pkt, tx_count);
 			if (tx_count != 1) {
 				/* reset timer */
 				port->rx_marker_timer = 0;

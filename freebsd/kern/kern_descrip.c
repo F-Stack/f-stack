@@ -3136,6 +3136,16 @@ fget_unlocked_seq(struct filedesc *fdp, int fd, cap_rights_t *needrightsp,
  * if anything goes wrong. In practice this only happens when userspace is
  * racing with itself.
  */
+#ifdef FSTACK
+/*
+ * Note: If loop dead in this function,
+ *       Maybe CAS run not correctly in `refcount_acquire_if_not_zero`,
+ *       You can try modify `atomic_fcmpset_int` to `atomic_fcmpset_int32`
+ *       in function `refcount_acquire_if_gt` of `refcount.h`
+ *
+ *      See also `atomic_fcmpset_int32` in `freebsd/amd64/include/atomic.h`
+ */
+#endif
 int
 fget_unlocked(struct filedesc *fdp, int fd, cap_rights_t *needrightsp,
     struct file **fpp)
@@ -5137,7 +5147,7 @@ ff_getmaxfd(void)
 {
 	struct thread *td = curthread;
 	return 	getmaxfd(td);
-	
+
 }
 
 #endif

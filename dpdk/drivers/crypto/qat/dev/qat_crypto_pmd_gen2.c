@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2017-2021 Intel Corporation
+ * Copyright(c) 2017-2022 Intel Corporation
  */
 
 #include <rte_cryptodev.h>
@@ -166,6 +166,91 @@ qat_sym_crypto_qp_setup_gen2(struct rte_cryptodev *dev, uint16_t qp_id,
 	return 0;
 }
 
+void
+qat_sym_session_set_ext_hash_flags_gen2(struct qat_sym_session *session,
+		uint8_t hash_flag)
+{
+	struct icp_qat_fw_comn_req_hdr *header = &session->fw_req.comn_hdr;
+	struct icp_qat_fw_cipher_auth_cd_ctrl_hdr *cd_ctrl =
+			(struct icp_qat_fw_cipher_auth_cd_ctrl_hdr *)
+			session->fw_req.cd_ctrl.content_desc_ctrl_lw;
+
+	/* Set the Use Extended Protocol Flags bit in LW 1 */
+	QAT_FIELD_SET(header->comn_req_flags,
+			QAT_COMN_EXT_FLAGS_USED,
+			QAT_COMN_EXT_FLAGS_BITPOS,
+			QAT_COMN_EXT_FLAGS_MASK);
+
+	/* Set Hash Flags in LW 28 */
+	cd_ctrl->hash_flags |= hash_flag;
+
+	/* Set proto flags in LW 1 */
+	switch (session->qat_cipher_alg) {
+	case ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2:
+		ICP_QAT_FW_LA_PROTO_SET(header->serv_specif_flags,
+				ICP_QAT_FW_LA_SNOW_3G_PROTO);
+		ICP_QAT_FW_LA_ZUC_3G_PROTO_FLAG_SET(
+				header->serv_specif_flags, 0);
+		break;
+	case ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3:
+		ICP_QAT_FW_LA_PROTO_SET(header->serv_specif_flags,
+				ICP_QAT_FW_LA_NO_PROTO);
+		ICP_QAT_FW_LA_ZUC_3G_PROTO_FLAG_SET(
+				header->serv_specif_flags,
+				ICP_QAT_FW_LA_ZUC_3G_PROTO);
+		break;
+	default:
+		ICP_QAT_FW_LA_PROTO_SET(header->serv_specif_flags,
+				ICP_QAT_FW_LA_NO_PROTO);
+		ICP_QAT_FW_LA_ZUC_3G_PROTO_FLAG_SET(
+				header->serv_specif_flags, 0);
+		break;
+	}
+}
+
+static int
+qat_sym_crypto_set_session_gen2(void *cdev, void *session)
+{
+	struct rte_cryptodev *dev = cdev;
+	struct qat_sym_session *ctx = session;
+	const struct qat_cryptodev_private *qat_private =
+			dev->data->dev_private;
+	int ret;
+
+	ret = qat_sym_crypto_set_session_gen1(cdev, session);
+	if (ret == -ENOTSUP) {
+		/* GEN1 returning -ENOTSUP as it cannot handle some mixed algo,
+		 * but some are not supported by GEN2, so checking here
+		 */
+		if ((qat_private->internal_capabilities &
+				QAT_SYM_CAP_MIXED_CRYPTO) == 0)
+			return -ENOTSUP;
+
+		if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3 &&
+				ctx->qat_cipher_alg !=
+				ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3) {
+			qat_sym_session_set_ext_hash_flags_gen2(ctx,
+				1 << ICP_QAT_FW_AUTH_HDR_FLAG_ZUC_EIA3_BITPOS);
+		} else if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_SNOW_3G_UIA2 &&
+				ctx->qat_cipher_alg !=
+				ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2) {
+			qat_sym_session_set_ext_hash_flags_gen2(ctx,
+				1 << ICP_QAT_FW_AUTH_HDR_FLAG_SNOW3G_UIA2_BITPOS);
+		} else if ((ctx->aes_cmac ||
+				ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL) &&
+				(ctx->qat_cipher_alg ==
+				ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2 ||
+				ctx->qat_cipher_alg ==
+				ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3)) {
+			qat_sym_session_set_ext_hash_flags_gen2(ctx, 0);
+		}
+
+		ret = 0;
+	}
+
+	return ret;
+}
+
 struct rte_cryptodev_ops qat_sym_crypto_ops_gen2 = {
 
 	/* Device related operations */
@@ -190,13 +275,42 @@ struct rte_cryptodev_ops qat_sym_crypto_ops_gen2 = {
 	.sym_configure_raw_dp_ctx = qat_sym_configure_dp_ctx,
 };
 
-static struct qat_capabilities_info
-qat_sym_crypto_cap_get_gen2(struct qat_pci_device *qat_dev __rte_unused)
+static int
+qat_sym_crypto_cap_get_gen2(struct qat_cryptodev_private *internals,
+			const char *capa_memz_name,
+			const uint16_t __rte_unused slice_map)
 {
-	struct qat_capabilities_info capa_info;
-	capa_info.data = qat_sym_crypto_caps_gen2;
-	capa_info.size = sizeof(qat_sym_crypto_caps_gen2);
-	return capa_info;
+	const uint32_t size = sizeof(qat_sym_crypto_caps_gen2);
+	uint32_t i;
+
+	internals->capa_mz = rte_memzone_lookup(capa_memz_name);
+	if (internals->capa_mz == NULL) {
+		internals->capa_mz = rte_memzone_reserve(capa_memz_name,
+				size, rte_socket_id(), 0);
+		if (internals->capa_mz == NULL) {
+			QAT_LOG(DEBUG,
+				"Error allocating memzone for capabilities");
+			return -1;
+		}
+	}
+
+	struct rte_cryptodev_capabilities *addr =
+			(struct rte_cryptodev_capabilities *)
+				internals->capa_mz->addr;
+	const struct rte_cryptodev_capabilities *capabilities =
+		qat_sym_crypto_caps_gen2;
+	const uint32_t capa_num =
+		size / sizeof(struct rte_cryptodev_capabilities);
+	uint32_t curr_capa = 0;
+
+	for (i = 0; i < capa_num; i++) {
+		memcpy(addr + curr_capa, capabilities + i,
+			sizeof(struct rte_cryptodev_capabilities));
+		curr_capa++;
+	}
+	internals->qat_dev_capabilities = internals->capa_mz->addr;
+
+	return 0;
 }
 
 RTE_INIT(qat_sym_crypto_gen2_init)
@@ -204,6 +318,10 @@ RTE_INIT(qat_sym_crypto_gen2_init)
 	qat_sym_gen_dev_ops[QAT_GEN2].cryptodev_ops = &qat_sym_crypto_ops_gen2;
 	qat_sym_gen_dev_ops[QAT_GEN2].get_capabilities =
 			qat_sym_crypto_cap_get_gen2;
+	qat_sym_gen_dev_ops[QAT_GEN2].set_session =
+			qat_sym_crypto_set_session_gen2;
+	qat_sym_gen_dev_ops[QAT_GEN2].set_raw_dp_ctx =
+			qat_sym_configure_raw_dp_ctx_gen1;
 	qat_sym_gen_dev_ops[QAT_GEN2].get_feature_flags =
 			qat_sym_crypto_feature_flags_get_gen1;
 
@@ -221,4 +339,6 @@ RTE_INIT(qat_asym_crypto_gen2_init)
 			qat_asym_crypto_cap_get_gen1;
 	qat_asym_gen_dev_ops[QAT_GEN2].get_feature_flags =
 			qat_asym_crypto_feature_flags_get_gen1;
+	qat_asym_gen_dev_ops[QAT_GEN2].set_session =
+			qat_asym_crypto_set_session_gen1;
 }

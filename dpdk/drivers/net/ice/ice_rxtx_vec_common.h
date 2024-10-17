@@ -251,6 +251,10 @@ ice_rxq_vec_setup_default(struct ice_rx_queue *rxq)
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |		\
 		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |	\
 		RTE_ETH_TX_OFFLOAD_TCP_TSO |	\
+		RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |    \
+		RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |    \
+		RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |    \
+		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |    \
 		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM)
 
 #define ICE_TX_VECTOR_OFFLOAD (				\
@@ -289,6 +293,9 @@ ice_rx_vec_queue_default(struct ice_rx_queue *rxq)
 		return -1;
 
 	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+		return -1;
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT)
 		return -1;
 
 	if (rxq->offloads & ICE_RX_VECTOR_OFFLOAD)

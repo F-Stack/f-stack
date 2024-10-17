@@ -190,9 +190,8 @@ af_pf_wait_msg(struct dev *dev, uint16_t vf, int num_msg)
 			vf_msg = mbox_alloc_msg(&dev->mbox_vfpf_up, vf, sz);
 			if (vf_msg) {
 				mbox_req_init(MBOX_MSG_CGX_LINK_EVENT, vf_msg);
-				memcpy((uint8_t *)vf_msg +
-				       sizeof(struct mbox_msghdr), &linfo,
-				       sizeof(struct cgx_link_user_info));
+				mbox_memcpy((uint8_t *)vf_msg + sizeof(struct mbox_msghdr), &linfo,
+					    sizeof(struct cgx_link_user_info));
 
 				vf_msg->rc = msg->rc;
 				vf_msg->pcifunc = msg->pcifunc;
@@ -421,6 +420,24 @@ process_msgs(struct dev *dev, struct mbox *mbox)
 			/* Get our identity */
 			dev->pf_func = msg->pcifunc;
 			break;
+		case MBOX_MSG_CGX_PRIO_FLOW_CTRL_CFG:
+			/* Handling the case where one VF tries to disable PFC
+			 * while PFC already configured on other VFs. This is
+			 * not an error but a warning which can be ignored.
+			 */
+#define LMAC_AF_ERR_PERM_DENIED -1103
+			if (msg->rc) {
+				if (msg->rc == LMAC_AF_ERR_PERM_DENIED) {
+					plt_mbox_dbg(
+						"Receive Flow control disable not permitted "
+						"as its used by other PFVFs");
+					msg->rc = 0;
+				} else {
+					plt_err("Message (%s) response has err=%d",
+						mbox_id2name(msg->id), msg->rc);
+				}
+			}
+			break;
 
 		default:
 			if (msg->rc)
@@ -449,6 +466,8 @@ pf_vf_mbox_send_up_msg(struct dev *dev, void *rec_msg)
 	size_t size;
 
 	size = PLT_ALIGN(mbox_id2size(msg->hdr.id), MBOX_MSG_ALIGN);
+	if (size < sizeof(struct mbox_msghdr))
+		return;
 	/* Send UP message to all VF's */
 	for (vf = 0; vf < vf_mbox->ndevs; vf++) {
 		/* VF active */
@@ -1095,6 +1114,29 @@ fail:
 	return -errno;
 }
 
+static bool
+dev_cache_line_size_valid(void)
+{
+	if (roc_model_is_cn9k()) {
+		if (PLT_CACHE_LINE_SIZE != 128) {
+			plt_err("Cache line size of %d is wrong for CN9K",
+				PLT_CACHE_LINE_SIZE);
+			return false;
+		}
+	} else if (roc_model_is_cn10k()) {
+		if (PLT_CACHE_LINE_SIZE == 128) {
+			plt_warn("Cache line size of %d might affect performance",
+				 PLT_CACHE_LINE_SIZE);
+		} else if (PLT_CACHE_LINE_SIZE != 64) {
+			plt_err("Cache line size of %d is wrong for CN10K",
+				PLT_CACHE_LINE_SIZE);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 int
 dev_init(struct dev *dev, struct plt_pci_device *pci_dev)
 {
@@ -1102,6 +1144,9 @@ dev_init(struct dev *dev, struct plt_pci_device *pci_dev)
 	uintptr_t bar2, bar4, mbox;
 	uintptr_t vf_mbase = 0;
 	uint64_t intr_offset;
+
+	if (!dev_cache_line_size_valid())
+		return -EFAULT;
 
 	bar2 = (uintptr_t)pci_dev->mem_resource[2].addr;
 	bar4 = (uintptr_t)pci_dev->mem_resource[4].addr;

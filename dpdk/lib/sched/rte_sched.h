@@ -56,7 +56,6 @@ extern "C" {
  *
  */
 
-#include <sys/types.h>
 #include <rte_compat.h>
 #include <rte_mbuf.h>
 #include <rte_meter.h>
@@ -329,7 +328,8 @@ rte_sched_port_config(struct rte_sched_port_params *params);
  * Hierarchical scheduler port free
  *
  * @param port
- *   Handle to port scheduler instance
+ *   Handle to port scheduler instance.
+ *   If port is NULL, no operation is performed.
  */
 void
 rte_sched_port_free(struct rte_sched_port *port);
@@ -579,6 +579,24 @@ rte_sched_port_enqueue(struct rte_sched_port *port, struct rte_mbuf **pkts, uint
  */
 int
 rte_sched_port_dequeue(struct rte_sched_port *port, struct rte_mbuf **pkts, uint32_t n_pkts);
+
+/**
+ * Hierarchical scheduler subport traffic class
+ * oversubscription enable/disable.
+ * This function should be called at the time of subport initialization.
+ *
+ * @param port
+ *   Handle to port scheduler instance
+ * @param subport_id
+ *   Subport ID
+ * @param tc_ov_enable
+ *  Boolean flag to enable/disable TC OV
+ * @return
+ *   0 upon success, error code otherwise
+ */
+__rte_experimental
+int
+rte_sched_subport_tc_ov_config(struct rte_sched_port *port, uint32_t subport_id, bool tc_ov_enable);
 
 #ifdef __cplusplus
 }

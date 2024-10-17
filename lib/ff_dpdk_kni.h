@@ -32,20 +32,36 @@
 #include <rte_mempool.h>
 
 extern int enable_kni;
+extern int nb_dev_ports;
+
+struct kni_ratelimit {
+    /* Important control plane packets enqueue to kni ring, such as arp, stp, ospf, etc. statistics for each process. */
+    uint64_t console_packets;
+
+    /* gerneal packets enqueue to kni ring, such ICMP pkts, statistics for each process. */
+    uint64_t gerneal_packets;
+
+    /* All packets forwarded to the kernel, statistics for primary process. */
+    uint64_t kernel_packets;
+};
+
+extern struct kni_ratelimit kni_rate_limt;
 
 enum FilterReturn {
     FILTER_UNKNOWN = -1,
-    FILTER_ARP = 1,
-    FILTER_KNI = 2,
+    FILTER_KNI = 1,
+    FILTER_ARP = 2,
 #ifdef INET6
     FILTER_NDP = 3,  // Neighbor Solicitation/Advertisement, Router Solicitation/Advertisement/Redirect
 #endif
+    FILTER_OSPF = 4,
+    FILTER_MULTI = 5,
 };
 
-void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
+void ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports,
     const char *udp_ports);
 
-void ff_kni_alloc(uint16_t port_id, unsigned socket_id,
+void ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
     struct rte_mempool *mbuf_pool, unsigned ring_queue_size);
 
 void ff_kni_process(uint16_t port_id, uint16_t queue_id,
@@ -53,7 +69,7 @@ void ff_kni_process(uint16_t port_id, uint16_t queue_id,
 
 enum FilterReturn ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type);
 
-int ff_kni_enqueue(uint16_t port_id, struct rte_mbuf *pkt);
+int ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt);
 
 
 #endif /* ifndef _FSTACK_DPDK_KNI_H */

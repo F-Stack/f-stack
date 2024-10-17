@@ -49,6 +49,8 @@ endif
 
 include ${TOPDIR}/tools/prog.mk
 
+UNAME := $(shell uname)
+
 nl_symbols.c: nlist_symbols
 	awk '\
 	    BEGIN { \
@@ -60,6 +62,17 @@ nl_symbols.c: nlist_symbols
 	    END { print "\t{ .n_name = NULL },\n};" } \
 	    ' < $^ > $@
 
+ifeq ($(UNAME), Linux)
+nl_defs.h: nlist_symbols
+	awk '\
+	    BEGIN { \
+		print "#include <nlist.h>"; \
+		print "extern struct nlist nl[];"; \
+		i = 0; \
+	    } \
+	    !/^\#/ { printf("#define\tN%s\t%s\n", toupper($$2), i++); }' \
+            < $^ > $@
+else
 nl_defs.h: nlist_symbols
 	awk '\
 	    BEGIN { \
@@ -69,4 +82,4 @@ nl_defs.h: nlist_symbols
 	    } \
 	    !/^\#/ { printf("\#define\tN%s\t%s\n", toupper($$2), i++); }' \
             < $^ > $@
-
+endif

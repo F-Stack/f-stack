@@ -1,11 +1,12 @@
 [binaries]
-c = 'clang'
-cpp = 'clang++'
+c = ['ccache', 'clang']
+cpp = ['ccache', 'clang++']
 ar = 'llvm-ar'
 strip = 'llvm-strip'
 llvm-config = 'llvm-config'
 pcap-config = 'llvm-config'
 pkgconfig = 'aarch64-linux-gnu-pkg-config'
+pkg-config = 'aarch64-linux-gnu-pkg-config'
 
 [host_machine]
 system = 'linux'

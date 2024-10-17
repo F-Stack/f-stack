@@ -74,6 +74,10 @@ int mlx5_regex_configure(struct rte_regexdev *dev,
 			 const struct rte_regexdev_config *cfg);
 int mlx5_regex_rules_db_import(struct rte_regexdev *dev,
 			       const char *rule_db, uint32_t rule_db_len);
+int mlx5_regex_check_rof_version(uint32_t combined_rof_version);
+int mlx5_regex_parse_rules_db(struct mlx5_regex_priv *priv,
+			       const char **rule_db, uint32_t *rule_db_len);
+int mlx5_regex_get_rxp_vers(uint32_t regexp_version, uint32_t *target_rxp_vers);
 
 /* mlx5_regex_devx.c */
 int mlx5_devx_regex_rules_program(void *ctx, uint8_t engine, uint32_t rof_mkey,
@@ -94,4 +98,6 @@ uint16_t mlx5_regexdev_dequeue(struct rte_regexdev *dev, uint16_t qp_id,
 		       struct rte_regex_ops **ops, uint16_t nb_ops);
 uint16_t mlx5_regexdev_enqueue_gga(struct rte_regexdev *dev, uint16_t qp_id,
 		       struct rte_regex_ops **ops, uint16_t nb_ops);
+uint16_t mlx5_regexdev_max_segs_get(void);
+
 #endif /* MLX5_REGEX_H */

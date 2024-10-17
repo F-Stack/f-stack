@@ -264,7 +264,7 @@
 #endif
 
 #if !defined(__cplusplus) && !__has_extension(c_atomic) && \
-	!__has_extension(cxx_atomic) && !__GNUC_PREREQ__(4, 7)
+	!__has_extension(cxx_atomic) && !__GNUC_PREREQ__(4, 9)
 /*
  * No native support for _Atomic(). Place object in structure to prevent
  * most forms of direct non-atomic access.
@@ -795,7 +795,7 @@
  * Type Safety Checking
  *
  * Clang provides additional attributes to enable checking type safety
- * properties that cannot be enforced by the C type system. 
+ * properties that cannot be enforced by the C type system.
  */
 
 #if __has_attribute(__argument_with_type_tag__) && \

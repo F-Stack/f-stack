@@ -55,10 +55,10 @@ struct mlx5_vdpa_event_qp {
 	struct mlx5_vdpa_cq cq;
 	struct mlx5_devx_obj *fw_qp;
 	struct mlx5_devx_qp sw_qp;
+	uint16_t qp_pi;
 };
 
 struct mlx5_vdpa_query_mr {
-	SLIST_ENTRY(mlx5_vdpa_query_mr) next;
 	union {
 		struct ibv_mr *mr;
 		struct mlx5_devx_obj *mkey;
@@ -72,14 +72,68 @@ enum {
 	MLX5_VDPA_NOTIFIER_STATE_ERR
 };
 
+#define MLX5_VDPA_USED_RING_LEN(size) \
+	((size) * sizeof(struct vring_used_elem) + sizeof(uint16_t) * 3)
+#define MLX5_VDPA_MAX_C_THRD 256
+#define MLX5_VDPA_MAX_TASKS_PER_THRD 4096
+#define MLX5_VDPA_TASKS_PER_DEV 64
+#define MLX5_VDPA_MAX_MRS 0xFFFF
+
+/* Vdpa task types. */
+enum mlx5_vdpa_task_type {
+	MLX5_VDPA_TASK_REG_MR = 1,
+	MLX5_VDPA_TASK_SETUP_VIRTQ,
+	MLX5_VDPA_TASK_STOP_VIRTQ,
+	MLX5_VDPA_TASK_DEV_CLOSE_NOWAIT,
+	MLX5_VDPA_TASK_PREPARE_VIRTQ,
+};
+
+/* Generic task information and size must be multiple of 4B. */
+struct mlx5_vdpa_task {
+	struct mlx5_vdpa_priv *priv;
+	enum mlx5_vdpa_task_type type;
+	uint32_t *remaining_cnt;
+	uint32_t *err_cnt;
+	uint32_t idx;
+} __rte_packed __rte_aligned(4);
+
+/* Generic mlx5_vdpa_c_thread information. */
+struct mlx5_vdpa_c_thread {
+	pthread_t tid;
+	struct rte_ring *rng;
+	pthread_cond_t c_cond;
+};
+
+struct mlx5_vdpa_conf_thread_mng {
+	void *initializer_priv;
+	uint32_t refcnt;
+	uint32_t max_thrds;
+	pthread_mutex_t cthrd_lock;
+	struct mlx5_vdpa_c_thread cthrd[MLX5_VDPA_MAX_C_THRD];
+};
+extern struct mlx5_vdpa_conf_thread_mng conf_thread_mng;
+
+struct mlx5_vdpa_vmem_info {
+	struct rte_vhost_memory *vmem;
+	uint32_t entries_num;
+	uint64_t gcd;
+	uint64_t size;
+	uint8_t mode;
+};
+
 struct mlx5_vdpa_virtq {
 	SLIST_ENTRY(mlx5_vdpa_virtq) next;
-	uint8_t enable;
 	uint16_t index;
 	uint16_t vq_size;
 	uint8_t notifier_state;
-	bool stopped;
+	uint32_t configured:1;
+	uint32_t enable:1;
+	uint32_t stopped:1;
+	uint32_t rx_csum:1;
+	uint32_t virtio_version_1_0:1;
+	uint32_t event_mode:3;
 	uint32_t version;
+	pthread_mutex_t virtq_lock;
 	struct mlx5_vdpa_priv *priv;
 	struct mlx5_devx_obj *virtq;
 	struct mlx5_devx_obj *counters;
@@ -92,6 +146,7 @@ struct mlx5_vdpa_virtq {
 	struct rte_intr_handle *intr_handle;
 	uint64_t err_time[3]; /* RDTSC time of recent errors. */
 	uint32_t n_retry;
+	struct mlx5_devx_virtio_q_couners_attr stats;
 	struct mlx5_devx_virtio_q_couners_attr reset;
 };
 
@@ -113,10 +168,19 @@ enum {
 	MLX5_VDPA_EVENT_MODE_ONLY_INTERRUPT
 };
 
+enum mlx5_dev_state {
+	MLX5_VDPA_STATE_PROBED = 0,
+	MLX5_VDPA_STATE_CONFIGURED,
+	MLX5_VDPA_STATE_IN_PROGRESS /* Shutting down. */
+};
+
 struct mlx5_vdpa_priv {
 	TAILQ_ENTRY(mlx5_vdpa_priv) next;
-	uint8_t configured;
-	pthread_mutex_t vq_config_lock;
+	bool connected;
+	bool use_c_thread;
+	enum mlx5_dev_state state;
+	rte_spinlock_t db_lock;
+	pthread_mutex_t steer_update_lock;
 	uint64_t no_traffic_counter;
 	pthread_t timer_tid;
 	int event_mode;
@@ -127,13 +191,15 @@ struct mlx5_vdpa_priv {
 	uint8_t hw_latency_mode; /* Hardware CQ moderation mode. */
 	uint16_t hw_max_latency_us; /* Hardware CQ moderation period in usec. */
 	uint16_t hw_max_pending_comp; /* Hardware CQ moderation counter. */
+	uint16_t queue_size; /* virtq depth for pre-creating virtq resource */
+	uint16_t queues; /* Max virtq pair for pre-creating virtq resource */
 	struct rte_vdpa_device *vdev; /* vDPA device. */
 	struct mlx5_common_device *cdev; /* Backend mlx5 device. */
 	int vid; /* vhost device id. */
 	struct mlx5_hca_vdpa_attr caps;
 	uint32_t gpa_mkey_index;
 	struct ibv_mr *null_mr;
-	struct rte_vhost_memory *vmem;
+	struct mlx5_vdpa_vmem_info vmem_info;
 	struct mlx5dv_devx_event_channel *eventc;
 	struct mlx5dv_devx_event_channel *err_chnl;
 	struct mlx5_uar uar;
@@ -144,11 +210,14 @@ struct mlx5_vdpa_priv {
 	uint8_t num_lag_ports;
 	uint64_t features; /* Negotiated features. */
 	uint16_t log_max_rqt_size;
+	uint16_t last_c_thrd_idx;
+	uint16_t dev_close_progress;
+	uint16_t num_mrs; /* Number of memory regions. */
 	struct mlx5_vdpa_steer steer;
 	struct mlx5dv_var *var;
 	void *virtq_db_addr;
 	struct mlx5_pmd_wrapped_mr lm_mr;
-	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr) mr_list;
+	struct mlx5_vdpa_query_mr **mrs;
 	struct mlx5_vdpa_virtq virtqs[];
 };
 
@@ -210,14 +279,17 @@ int mlx5_vdpa_mem_register(struct mlx5_vdpa_priv *priv);
  *   Number of descriptors.
  * @param[in] callfd
  *   The guest notification file descriptor.
- * @param[in/out] eqp
- *   Pointer to the event QP structure.
+ * @param[in/out] virtq
+ *   Pointer to the virt-queue structure.
+ * @param[in] reset
+ *   If true, it will reset event qp.
  *
  * @return
  *   0 on success, -1 otherwise and rte_errno is set.
  */
-int mlx5_vdpa_event_qp_create(struct mlx5_vdpa_priv *priv, uint16_t desc_n,
-			      int callfd, struct mlx5_vdpa_event_qp *eqp);
+int
+mlx5_vdpa_event_qp_prepare(struct mlx5_vdpa_priv *priv, uint16_t desc_n,
+	int callfd, struct mlx5_vdpa_virtq *virtq, bool reset);
 
 /**
  * Destroy an event QP and all its related resources.
@@ -226,6 +298,15 @@ int mlx5_vdpa_event_qp_create(struct mlx5_vdpa_priv *priv, uint16_t desc_n,
  *   Pointer to the event QP structure.
  */
 void mlx5_vdpa_event_qp_destroy(struct mlx5_vdpa_event_qp *eqp);
+
+/**
+ * Create all the event global resources.
+ *
+ * @param[in] priv
+ *   The vdpa driver private structure.
+ */
+int
+mlx5_vdpa_event_qp_global_prepare(struct mlx5_vdpa_priv *priv);
 
 /**
  * Release all the event global resources.
@@ -274,12 +355,24 @@ int mlx5_vdpa_err_event_setup(struct mlx5_vdpa_priv *priv);
 void mlx5_vdpa_err_event_unset(struct mlx5_vdpa_priv *priv);
 
 /**
- * Release a virtq and all its related resources.
+ * Release virtqs and resources except that to be reused.
+ *
+ * @param[in] priv
+ *   The vdpa driver private structure.
+ * @param[in] release_resource
+ *   The vdpa driver release resource without prepare resource.
+ */
+void
+mlx5_vdpa_virtqs_release(struct mlx5_vdpa_priv *priv,
+		bool release_resource);
+
+/**
+ * Cleanup cached resources of all virtqs.
  *
  * @param[in] priv
  *   The vdpa driver private structure.
  */
-void mlx5_vdpa_virtqs_release(struct mlx5_vdpa_priv *priv);
+void mlx5_vdpa_virtqs_cleanup(struct mlx5_vdpa_priv *priv);
 
 /**
  * Create all the HW virtqs resources and all their related resources.
@@ -308,7 +401,7 @@ int mlx5_vdpa_virtqs_prepare(struct mlx5_vdpa_priv *priv);
 int mlx5_vdpa_virtq_enable(struct mlx5_vdpa_priv *priv, int index, int enable);
 
 /**
- * Unset steering and release all its related resources- stop traffic.
+ * Unset steering - stop traffic.
  *
  * @param[in] priv
  *   The vdpa driver private structure.
@@ -320,11 +413,13 @@ void mlx5_vdpa_steer_unset(struct mlx5_vdpa_priv *priv);
  *
  * @param[in] priv
  *   The vdpa driver private structure.
+ * @param[in] is_dummy
+ *   If set, it is updated with dummy queue for prepare resource.
  *
  * @return
  *   0 on success, a negative value otherwise.
  */
-int mlx5_vdpa_steer_update(struct mlx5_vdpa_priv *priv);
+int mlx5_vdpa_steer_update(struct mlx5_vdpa_priv *priv, bool is_dummy);
 
 /**
  * Setup steering and all its related resources to enable RSS traffic from the
@@ -452,4 +547,62 @@ mlx5_vdpa_virtq_stats_get(struct mlx5_vdpa_priv *priv, int qid,
  */
 int
 mlx5_vdpa_virtq_stats_reset(struct mlx5_vdpa_priv *priv, int qid);
+
+/**
+ * Drain virtq CQ CQE.
+ *
+ * @param[in] priv
+ *   The vdpa driver private structure.
+ */
+void
+mlx5_vdpa_drain_cq(struct mlx5_vdpa_priv *priv);
+
+bool
+mlx5_vdpa_is_modify_virtq_supported(struct mlx5_vdpa_priv *priv);
+
+/**
+ * Create configuration multi-threads resource
+ *
+ * @param[in] cpu_core
+ *   CPU core number to set configuration threads affinity to.
+ *
+ * @return
+ *   0 on success, a negative value otherwise.
+ */
+int
+mlx5_vdpa_mult_threads_create(int cpu_core);
+
+/**
+ * Destroy configuration multi-threads resource
+ *
+ */
+void
+mlx5_vdpa_mult_threads_destroy(bool need_unlock);
+
+bool
+mlx5_vdpa_task_add(struct mlx5_vdpa_priv *priv,
+		uint32_t thrd_idx,
+		enum mlx5_vdpa_task_type task_type,
+		uint32_t *remaining_cnt, uint32_t *err_cnt,
+		void **task_data, uint32_t num);
+int
+mlx5_vdpa_register_mr(struct mlx5_vdpa_priv *priv, uint32_t idx);
+bool
+mlx5_vdpa_c_thread_wait_bulk_tasks_done(uint32_t *remaining_cnt,
+		uint32_t *err_cnt, uint32_t sleep_time);
+int
+mlx5_vdpa_virtq_setup(struct mlx5_vdpa_priv *priv, int index, bool reg_kick);
+void
+mlx5_vdpa_dev_cache_clean(struct mlx5_vdpa_priv *priv);
+void
+mlx5_vdpa_virtq_unreg_intr_handle_all(struct mlx5_vdpa_priv *priv);
+bool
+mlx5_vdpa_virtq_single_resource_prepare(struct mlx5_vdpa_priv *priv,
+		int index);
+int
+mlx5_vdpa_qps2rst2rts(struct mlx5_vdpa_event_qp *eqp);
+void
+mlx5_vdpa_virtq_unset(struct mlx5_vdpa_virtq *virtq);
+void
+mlx5_vdpa_prepare_virtq_destroy(struct mlx5_vdpa_priv *priv);
 #endif /* RTE_PMD_MLX5_VDPA_H_ */

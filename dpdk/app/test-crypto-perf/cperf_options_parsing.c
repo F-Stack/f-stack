@@ -3,6 +3,7 @@
  */
 
 #include <getopt.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <rte_cryptodev.h>
@@ -10,6 +11,7 @@
 #include <rte_ether.h>
 
 #include "cperf_options.h"
+#include "cperf_test_vectors.h"
 
 #define AES_BLOCK_SIZE 16
 #define DES_BLOCK_SIZE 8
@@ -57,10 +59,13 @@ usage(char *progname)
 		" --pmd-cyclecount-delay-ms N: set delay between enqueue\n"
 		"           and dequeue in pmd-cyclecount benchmarking mode\n"
 		" --csv-friendly: enable test result output CSV friendly\n"
+		" --modex-len N: modex length, supported lengths are "
+		"60, 128, 255, 448. Default: 128\n"
 #ifdef RTE_LIB_SECURITY
 		" --pdcp-sn-sz N: set PDCP SN size N <5/7/12/15/18>\n"
 		" --pdcp-domain DOMAIN: set PDCP domain <control/user>\n"
 		" --pdcp-ses-hfn-en: enable session based fixed HFN\n"
+		" --enable-sdap: enable sdap\n"
 		" --docsis-hdr-sz: set DOCSIS header size\n"
 #endif
 		" -h: prints this help\n",
@@ -314,6 +319,16 @@ parse_pool_sz(struct cperf_options *opts, const char *arg)
 }
 
 static int
+parse_modex_len(struct cperf_options *opts, const char *arg)
+{
+	int ret =  parse_uint16_t(&opts->modex_len, arg);
+
+	if (ret)
+		RTE_LOG(ERR, USER1, "failed to parse modex len");
+	return ret;
+}
+
+static int
 parse_burst_sz(struct cperf_options *opts, const char *arg)
 {
 	int ret;
@@ -501,6 +516,10 @@ parse_test_file(struct cperf_options *opts,
 		const char *arg)
 {
 	opts->test_file = strdup(arg);
+	if (opts->test_file == NULL) {
+		RTE_LOG(ERR, USER1, "Dup vector file failed!\n");
+		return -1;
+	}
 	if (access(opts->test_file, F_OK) != -1)
 		return 0;
 	RTE_LOG(ERR, USER1, "Test vector file doesn't exist\n");
@@ -532,6 +551,15 @@ parse_silent(struct cperf_options *opts,
 		const char *arg __rte_unused)
 {
 	opts->silent = 1;
+
+	return 0;
+}
+
+static int
+parse_enable_sdap(struct cperf_options *opts,
+		const char *arg __rte_unused)
+{
+	opts->pdcp_sdap = 1;
 
 	return 0;
 }
@@ -823,6 +851,7 @@ struct long_opt_parser {
 static struct option lgopts[] = {
 
 	{ CPERF_PTEST_TYPE, required_argument, 0, 0 },
+	{ CPERF_MODEX_LEN, required_argument, 0, 0 },
 
 	{ CPERF_POOL_SIZE, required_argument, 0, 0 },
 	{ CPERF_TOTAL_OPS, required_argument, 0, 0 },
@@ -866,6 +895,7 @@ static struct option lgopts[] = {
 	{ CPERF_PDCP_SN_SZ, required_argument, 0, 0 },
 	{ CPERF_PDCP_DOMAIN, required_argument, 0, 0 },
 	{ CPERF_PDCP_SES_HFN_EN, no_argument, 0, 0 },
+	{ CPERF_ENABLE_SDAP, no_argument, 0, 0 },
 	{ CPERF_DOCSIS_HDR_SZ, required_argument, 0, 0 },
 #endif
 	{ CPERF_CSV, no_argument, 0, 0},
@@ -938,8 +968,10 @@ cperf_options_default(struct cperf_options *opts)
 	opts->pdcp_sn_sz = 12;
 	opts->pdcp_domain = RTE_SECURITY_PDCP_MODE_CONTROL;
 	opts->pdcp_ses_hfn_en = 0;
+	opts->pdcp_sdap = 0;
 	opts->docsis_hdr_sz = 17;
 #endif
+	opts->modex_data = (struct cperf_modex_test_data *)&modex_perf_data[0];
 }
 
 static int
@@ -947,6 +979,7 @@ cperf_opts_parse_long(int opt_idx, struct cperf_options *opts)
 {
 	struct long_opt_parser parsermap[] = {
 		{ CPERF_PTEST_TYPE,	parse_cperf_test_type },
+		{ CPERF_MODEX_LEN,	parse_modex_len },
 		{ CPERF_SILENT,		parse_silent },
 		{ CPERF_POOL_SIZE,	parse_pool_sz },
 		{ CPERF_TOTAL_OPS,	parse_total_ops },
@@ -979,6 +1012,7 @@ cperf_opts_parse_long(int opt_idx, struct cperf_options *opts)
 		{ CPERF_PDCP_SN_SZ,	parse_pdcp_sn_sz },
 		{ CPERF_PDCP_DOMAIN,	parse_pdcp_domain },
 		{ CPERF_PDCP_SES_HFN_EN,	parse_pdcp_ses_hfn_en },
+		{ CPERF_ENABLE_SDAP,	parse_enable_sdap },
 		{ CPERF_DOCSIS_HDR_SZ,	parse_docsis_hdr_sz },
 #endif
 		{ CPERF_CSV,		parse_csv_friendly},
@@ -1115,9 +1149,25 @@ check_docsis_buffer_length(struct cperf_options *options)
 }
 #endif
 
+static bool
+is_valid_chained_op(struct cperf_options *options)
+{
+	if (options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT &&
+			options->auth_op == RTE_CRYPTO_AUTH_OP_GENERATE)
+		return true;
+
+	if (options->cipher_op == RTE_CRYPTO_CIPHER_OP_DECRYPT &&
+			options->auth_op == RTE_CRYPTO_AUTH_OP_VERIFY)
+		return true;
+
+	return false;
+}
+
 int
 cperf_options_check(struct cperf_options *options)
 {
+	int i;
+
 	if (options->op_type == CPERF_CIPHER_ONLY ||
 			options->op_type == CPERF_DOCSIS)
 		options->digest_sz = 0;
@@ -1219,20 +1269,20 @@ cperf_options_check(struct cperf_options *options)
 		return -EINVAL;
 	}
 
+	if (options->op_type == CPERF_CIPHER_THEN_AUTH ||
+			options->op_type == CPERF_AUTH_THEN_CIPHER) {
+		if (!is_valid_chained_op(options)) {
+			RTE_LOG(ERR, USER1, "Invalid chained operation.\n");
+			return -EINVAL;
+		}
+	}
+
 	if (options->op_type == CPERF_CIPHER_THEN_AUTH) {
 		if (options->cipher_op != RTE_CRYPTO_CIPHER_OP_ENCRYPT &&
 				options->auth_op !=
 				RTE_CRYPTO_AUTH_OP_GENERATE) {
 			RTE_LOG(ERR, USER1, "Option cipher then auth must use"
 					" options: encrypt and generate.\n");
-			return -EINVAL;
-		}
-	} else if (options->op_type == CPERF_AUTH_THEN_CIPHER) {
-		if (options->cipher_op != RTE_CRYPTO_CIPHER_OP_DECRYPT &&
-				options->auth_op !=
-				RTE_CRYPTO_AUTH_OP_VERIFY) {
-			RTE_LOG(ERR, USER1, "Option auth then cipher must use"
-					" options: decrypt and verify.\n");
 			return -EINVAL;
 		}
 	}
@@ -1242,6 +1292,30 @@ cperf_options_check(struct cperf_options *options)
 			options->op_type == CPERF_AUTH_THEN_CIPHER) {
 		if (check_cipher_buffer_length(options) < 0)
 			return -EINVAL;
+	}
+
+	if (options->modex_len) {
+		if (options->op_type != CPERF_ASYM_MODEX) {
+			RTE_LOG(ERR, USER1, "Option modex len should be used only with "
+					" optype: modex.\n");
+			return -EINVAL;
+		}
+
+		for (i = 0; i < (int)RTE_DIM(modex_perf_data); i++) {
+			if (modex_perf_data[i].modulus.len ==
+			    options->modex_len) {
+				options->modex_data =
+					(struct cperf_modex_test_data
+						 *)&modex_perf_data[i];
+				break;
+			}
+		}
+		if (i == (int)RTE_DIM(modex_perf_data)) {
+			RTE_LOG(ERR, USER1,
+				"Option modex len: %d is not supported\n",
+				options->modex_len);
+			return -EINVAL;
+		}
 	}
 
 #ifdef RTE_LIB_SECURITY

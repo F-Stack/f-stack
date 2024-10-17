@@ -32,7 +32,9 @@
 #include <rte_ether.h>
 #include <rte_bus_pci.h>
 #include <rte_ethdev.h>
+#ifdef FF_KNI_KNI
 #include <rte_kni.h>
+#endif
 #include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_ip.h>
@@ -42,12 +44,20 @@
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
 
+#ifndef IPPROTO_OSPFIGP
+#define IPPROTO_OSPFIGP 89  /**< OSPFIGP */
+#endif
+
 /* Callback for request of changing MTU */
 /* Total octets in ethernet header */
 #define KNI_ENET_HEADER_SIZE    14
 
 /* Total octets in the FCS */
 #define KNI_ENET_FCS_SIZE       4
+
+#ifndef RTE_KNI_NAMESIZE
+#define RTE_KNI_NAMESIZE 16
+#endif
 
 #define set_bit(n, m)   (n | magic_bits[m])
 #define clear_bit(n, m) (n & (~magic_bits[m]))
@@ -63,7 +73,12 @@ static unsigned char *tcp_port_bitmap = NULL;
 
 /* Structure type for recording kni interface specific stats */
 struct kni_interface_stats {
+#ifdef FF_KNI_KNI
     struct rte_kni *kni;
+#endif
+
+    /* port id of dev or virtio_user */
+    uint16_t port_id;
 
     /* number of pkts received from NIC, and sent to KNI */
     uint64_t rx_packets;
@@ -80,6 +95,8 @@ struct kni_interface_stats {
 
 struct rte_ring **kni_rp;
 struct kni_interface_stats **kni_stat;
+
+struct kni_ratelimit kni_rate_limt = {0, 0, 0};
 
 static void
 set_bitmap(uint16_t port, unsigned char *bitmap)
@@ -123,6 +140,7 @@ kni_set_bitmap(const char *p, unsigned char *port_bitmap)
     }
 }
 
+#ifdef FF_KNI_KNI
 /* Currently we don't support change mtu. */
 static int
 kni_change_mtu(uint16_t port_id, unsigned new_mtu)
@@ -147,6 +165,11 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
         rte_eth_dev_set_link_up(port_id) :
         rte_eth_dev_set_link_down(port_id);
 
+    /*
+     * Some NIC drivers will crash in secondary process after config kni , Such as ENA with DPDK-21.22.3.
+     * If you meet this crash, you can try disable the code below and return 0 directly.
+     * Or run primary first, then config kni interface in kernel, and run secondary processes last.
+     */
     if(-ENOTSUP == ret) {
         if (if_up != 0) {
             /* Configure network interface up */
@@ -160,7 +183,7 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
     }
 
     if (ret < 0)
-        printf("Failed to Configure network interface of %d %s\n", 
+        printf("Failed to Configure network interface of %d %s\n",
             port_id, if_up ? "up" : "down");
 
     return ret;
@@ -195,22 +218,46 @@ kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
 
     return ret;
 }
+#endif
 
 static int
 kni_process_tx(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     /* read packet from kni ring(phy port) and transmit to kni */
-    uint16_t nb_tx, nb_kni_tx;
+    uint16_t nb_tx, nb_to_tx, nb_kni_tx = 0;
     nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count, NULL);
 
-    /* NB.
-     * if nb_tx is 0,it must call rte_kni_tx_burst
-     * must Call regularly rte_kni_tx_burst(kni, NULL, 0).
-     * detail https://embedded.communities.intel.com/thread/6668
+    /*
+     * The total ratelimit forwarded to the kernel, may a few more packets being sent, but it doesn’t matter,
+     * If there are too many processes, there is also the possibility that the control packet will be ratelimited.
      */
-    nb_kni_tx = rte_kni_tx_burst(kni_stat[port_id]->kni, pkts_burst, nb_tx);
-    rte_kni_handle_request(kni_stat[port_id]->kni);
+    if (ff_global_cfg.kni.kernel_packets_ratelimit) {
+        if (likely(kni_rate_limt.kernel_packets < ff_global_cfg.kni.kernel_packets_ratelimit)) {
+            nb_to_tx = nb_tx;
+        } else {
+            nb_to_tx = 0;
+        }
+        kni_rate_limt.kernel_packets += nb_tx;
+    } else {
+        nb_to_tx = nb_tx;
+    }
+
+#ifdef FF_KNI_KNI
+    if (ff_global_cfg.kni.type == KNI_TYPE_KNI) {
+        /* NB.
+         * if nb_tx is 0,it must call rte_kni_tx_burst
+         * must Call regularly rte_kni_tx_burst(kni, NULL, 0).
+         * detail https://embedded.communities.intel.com/thread/6668
+         */
+        nb_kni_tx = rte_kni_tx_burst(kni_stat[port_id]->kni, pkts_burst, nb_to_tx);
+        rte_kni_handle_request(kni_stat[port_id]->kni);
+    } else if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
+#endif
+    {
+        nb_kni_tx = rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, nb_to_tx);
+    }
+
     if(nb_kni_tx < nb_tx) {
         uint16_t i;
         for(i = nb_kni_tx; i < nb_tx; ++i)
@@ -227,10 +274,18 @@ static int
 kni_process_rx(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
-    uint16_t nb_kni_rx, nb_rx;
+    uint16_t nb_kni_rx = 0, nb_rx;
 
-    /* read packet from kni, and transmit to phy port */
-    nb_kni_rx = rte_kni_rx_burst(kni_stat[port_id]->kni, pkts_burst, count);
+#ifdef FF_KNI_KNI
+    if (ff_global_cfg.kni.type == KNI_TYPE_KNI) {
+        /* read packet from kni, and transmit to phy port */
+        nb_kni_rx = rte_kni_rx_burst(kni_stat[port_id]->kni, pkts_burst, count);
+    } else if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
+#endif
+    {
+        nb_kni_rx = rte_eth_rx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, count);
+    }
+
     if (nb_kni_rx > 0) {
         nb_rx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_kni_rx);
         if (nb_rx < nb_kni_rx) {
@@ -385,22 +440,28 @@ protocol_filter_ip(const void *data, uint16_t len, uint16_t eth_frame_type)
     next_len = len - hdr_len;
 
     switch (proto) {
+#ifdef FF_KNI
+        /* The opsf protocol is forwarded to kni and the ratelimited separately */
+        case IPPROTO_OSPFIGP:
+                return FILTER_OSPF;
+#endif
+
         case IPPROTO_TCP:
 #ifdef FF_KNI
             if (!enable_kni)
-                break;
-#else
-            break;
 #endif
+                break;
+
             return protocol_filter_tcp(next, next_len);
+
         case IPPROTO_UDP:
 #ifdef FF_KNI
             if (!enable_kni)
-                break;
-#else
-            break;
 #endif
+                break;
+
             return protocol_filter_udp(next, next_len);
+
         case IPPROTO_IPIP:
             return protocol_filter_ip(next, next_len, RTE_ETHER_TYPE_IPV4);
 #ifdef INET6
@@ -421,7 +482,7 @@ ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type)
 }
 
 void
-ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
+ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports, const char *udp_ports)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         kni_stat = rte_zmalloc("kni:stat",
@@ -431,7 +492,11 @@ ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
             rte_exit(EXIT_FAILURE, "rte_zmalloc(1 (struct netio_kni_stat *)) "
                 "failed\n");
 
-        rte_kni_init(nb_ports);
+        if (type == KNI_TYPE_KNI) {
+#ifdef FF_KNI_KNI
+            rte_kni_init(nb_ports);
+#endif
+        }
     }
 
     uint16_t lcoreid = rte_lcore_id();
@@ -469,72 +534,102 @@ ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 }
 
 void
-ff_kni_alloc(uint16_t port_id, unsigned socket_id,
+ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
     struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        struct rte_kni_conf conf;
-        struct rte_kni_ops ops;
         struct rte_eth_dev_info dev_info;
-        const struct rte_pci_device *pci_dev;
-        const struct rte_bus *bus = NULL;
+        struct rte_ether_addr addr = {{0}};
+        int ret;
 
         kni_stat[port_id] = (struct kni_interface_stats*)rte_zmalloc(
             "kni:stat_lcore",
             sizeof(struct kni_interface_stats),
             RTE_CACHE_LINE_SIZE);
 
-        if (kni_stat[port_id] == NULL)
+        if (kni_stat[port_id] == NULL) {
             rte_panic("rte_zmalloc kni_interface_stats failed\n");
-
-        /* only support one kni */
-        memset(&conf, 0, sizeof(conf));
-        snprintf(conf.name, RTE_KNI_NAMESIZE, "veth%u", port_id);
-        conf.core_id = rte_lcore_id();
-        conf.force_bind = 1;
-        conf.group_id = port_id;
-        uint16_t mtu;
-        rte_eth_dev_get_mtu(port_id, &mtu);
-        conf.mbuf_size = mtu + KNI_ENET_HEADER_SIZE + KNI_ENET_FCS_SIZE;
-
-        memset(&dev_info, 0, sizeof(dev_info));
-        rte_eth_dev_info_get(port_id, &dev_info);
-
-        if (dev_info.device)
-            bus = rte_bus_find_by_device(dev_info.device);
-        if (bus && !strcmp(bus->name, "pci")) {
-            pci_dev = RTE_DEV_TO_PCI(dev_info.device);
-            conf.addr = pci_dev->addr;
-            conf.id = pci_dev->id;
         }
-        
-        /* Get the interface default mac address */
-        rte_eth_macaddr_get(port_id,
-                (struct rte_ether_addr *)&conf.mac_addr);
-
-        memset(&ops, 0, sizeof(ops));
-        ops.port_id = port_id;
-        ops.change_mtu = kni_change_mtu;
-        ops.config_network_if = kni_config_network_interface;
-        ops.config_mac_address = kni_config_mac_address;
-
-        kni_stat[port_id]->kni = rte_kni_alloc(mbuf_pool, &conf, &ops);
-        if (kni_stat[port_id]->kni == NULL)
-            rte_panic("create kni on port %u failed!\n", port_id);
-        else
-            printf("create kni on port %u success!\n", port_id);
 
         kni_stat[port_id]->rx_packets = 0;
         kni_stat[port_id]->rx_dropped = 0;
         kni_stat[port_id]->tx_packets = 0;
         kni_stat[port_id]->tx_dropped = 0;
+
+        memset(&dev_info, 0, sizeof(dev_info));
+        ret = rte_eth_dev_info_get(port_id, &dev_info);
+        if (ret != 0) {
+            rte_panic("kni get dev info %u failed!\n", port_id);
+        }
+
+        /* Get the interface default mac address */
+        rte_eth_macaddr_get(port_id,
+                (struct rte_ether_addr *)&addr);
+
+        printf("ff_kni_alloc get Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+            (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
+
+#ifdef FF_KNI_KNI
+        if (type == KNI_TYPE_KNI) {
+            struct rte_kni_conf conf;
+            struct rte_kni_ops ops;
+
+            /* only support one kni */
+            memset(&conf, 0, sizeof(conf));
+            snprintf(conf.name, RTE_KNI_NAMESIZE, "veth%u", port_id);
+            conf.core_id = rte_lcore_id();
+            conf.force_bind = 1;
+            conf.group_id = port_id;
+            uint16_t mtu;
+            rte_eth_dev_get_mtu(port_id, &mtu);
+            conf.mbuf_size = mtu + KNI_ENET_HEADER_SIZE + KNI_ENET_FCS_SIZE;
+            rte_memcpy(&conf.addr, addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+
+            memset(&ops, 0, sizeof(ops));
+            ops.port_id = port_id;
+            ops.change_mtu = kni_change_mtu;
+            ops.config_network_if = kni_config_network_interface;
+            ops.config_mac_address = kni_config_mac_address;
+
+            kni_stat[port_id]->kni = rte_kni_alloc(mbuf_pool, &conf, &ops);
+            if (kni_stat[port_id]->kni == NULL)
+                rte_panic("create kni on port %u failed!\n", port_id);
+            else
+                printf("create kni on port %u success!\n", port_id);
+
+            kni_stat[port_id]->port_id = port_id;
+        } else if (type == KNI_TYPE_VIRTIO)
+#endif
+        {
+            /*
+             * to add virtio port for exception path(KNI),
+             * see https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html#virtio-user-as-exception-path
+             */
+            char port_name[32];
+            char port_args[256];
+
+            /* set the name and arguments */
+            snprintf(port_name, sizeof(port_name), "virtio_user%u", port_id);
+            snprintf(port_args, sizeof(port_args),
+                "path=/dev/vhost-net,queues=1,queue_size=%u,iface=veth%d,mac=" RTE_ETHER_ADDR_PRT_FMT,
+                ring_queue_size, port_id, RTE_ETHER_ADDR_BYTES(&addr));
+            printf("ff_kni_alloc to rte_eal_hotplug_add virtio user port, portname:%s, portargs:%s\n",
+                port_name, port_args);
+
+            /* add the vdev for virtio_user */
+            if (rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
+                rte_exit(EXIT_FAILURE, "ff_kni_alloc cannot create virtio user paired port for port %u\n", port_id);
+            }
+
+            kni_stat[port_id]->port_id = port_idx + nb_dev_ports;
+        }
     }
 
     char ring_name[RTE_KNI_NAMESIZE];
     snprintf((char*)ring_name, RTE_KNI_NAMESIZE, "kni_ring_%u", port_id);
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size, 
+        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size,
             socket_id, RING_F_SC_DEQ);
 
         if (rte_ring_lookup(ring_name) != kni_rp[port_id])
@@ -560,12 +655,34 @@ ff_kni_process(uint16_t port_id, uint16_t queue_id,
 
 /* enqueue the packet, and own it */
 int
-ff_kni_enqueue(uint16_t port_id, struct rte_mbuf *pkt)
+ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
 {
+    if (filter >= FILTER_ARP) {
+        if (ff_global_cfg.kni.console_packets_ratelimit) {
+            kni_rate_limt.console_packets++;
+            if (kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit) {
+                goto error;
+            }
+        }
+    } else {
+        if (ff_global_cfg.kni.general_packets_ratelimit) {
+            kni_rate_limt.gerneal_packets++;
+            if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit) {
+                goto error;
+            }
+        }
+    }
+
     int ret = rte_ring_enqueue(kni_rp[port_id], pkt);
-    if (ret < 0)
-        rte_pktmbuf_free(pkt);
+    if (ret < 0) {
+        goto error;
+    }
 
     return 0;
+
+error:
+    rte_pktmbuf_free(pkt);
+
+    return -1;
 }
 

@@ -40,7 +40,7 @@ dummy_mbuf_prep(struct rte_mbuf *mb, uint8_t buf[], uint32_t buf_len,
 	uint8_t *db;
 
 	mb->buf_addr = buf;
-	mb->buf_iova = (uintptr_t)buf;
+	rte_mbuf_iova_set(mb, (uintptr_t)buf);
 	mb->buf_len = buf_len;
 	rte_mbuf_refcnt_set(mb, 1);
 
@@ -279,8 +279,7 @@ test_write_over_limit_iov_max(void)
 static void
 test_cleanup(void)
 {
-	if (mp)
-		rte_mempool_free(mp);
+	rte_mempool_free(mp);
 
 	if (pcapng)
 		rte_pcapng_close(pcapng);

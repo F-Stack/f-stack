@@ -68,9 +68,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
-#include <sys/types.h>
 
-#include <rte_compat.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -319,6 +317,15 @@ int rte_mbuf_dyn_rx_timestamp_register(int *field_offset, uint64_t *rx_flag);
  *   - ENOMEM: allocation failure.
  */
 int rte_mbuf_dyn_tx_timestamp_register(int *field_offset, uint64_t *tx_flag);
+
+/**
+ * For the PMDs which support IP reassembly of packets, PMD will update the
+ * packet with RTE_MBUF_DYNFLAG_IP_REASSEMBLY_INCOMPLETE_NAME to denote that
+ * IP reassembly is incomplete and application can retrieve the packets back
+ * using RTE_MBUF_DYNFIELD_IP_REASSEMBLY_NAME.
+ */
+#define RTE_MBUF_DYNFIELD_IP_REASSEMBLY_NAME "rte_dynfield_ip_reassembly"
+#define RTE_MBUF_DYNFLAG_IP_REASSEMBLY_INCOMPLETE_NAME "rte_dynflag_ip_reassembly_incomplete"
 
 #ifdef __cplusplus
 }

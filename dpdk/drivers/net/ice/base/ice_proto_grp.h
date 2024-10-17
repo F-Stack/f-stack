@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_PROTO_GRP_H_
 #define _ICE_PROTO_GRP_H_
 
 #define ICE_PROTO_COUNT_PER_GRP 8
+#define ICE_PROTO_GRP_TABLE_SIZE 192
 
 struct ice_proto_off {
 	bool polarity; /* true: positive, false: nagtive */

@@ -12,7 +12,8 @@
 
     # Compile DPDK
     cd /data/f-stack/dpdk
-    meson -Denable_kmods=true build
+    # re-enable kni now, to remove kni later
+    meson -Denable_kmods=true -Ddisable_libs=flow_classify build
     ninja -C build
     ninja -C build install
 
@@ -74,7 +75,7 @@
     make
 
     # Compile Nginx
-    cd ../app/nginx-1.16.1
+    cd ../app/nginx-1.25.2
     ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
     make
     make install

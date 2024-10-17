@@ -13,6 +13,8 @@ INTERNAL {
 	mlx5_common_verbs_dereg_mr; # WINDOWS_NO_EXPORT
 
 	mlx5_dev_is_pci;
+	mlx5_dev_is_vf_pci;
+	mlx5_dev_to_pci_str;
 	mlx5_dev_mempool_unregister;
 	mlx5_dev_mempool_subscribe;
 
@@ -39,6 +41,7 @@ INTERNAL {
 	mlx5_devx_cmd_create_virtq;
 	mlx5_devx_cmd_destroy;
 	mlx5_devx_cmd_flow_counter_alloc;
+	mlx5_devx_cmd_flow_counter_alloc_general;
 	mlx5_devx_cmd_flow_counter_query;
 	mlx5_devx_cmd_flow_dump;
 	mlx5_devx_cmd_flow_single_dump;
@@ -55,8 +58,8 @@ INTERNAL {
 	mlx5_devx_cmd_query_parse_samples;
 	mlx5_devx_cmd_query_virtio_q_counters; # WINDOWS_NO_EXPORT
 	mlx5_devx_cmd_query_virtq;
-	mlx5_devx_cmd_queue_counter_alloc; # WINDOWS_NO_EXPORT
-	mlx5_devx_cmd_queue_counter_query; # WINDOWS_NO_EXPORT
+	mlx5_devx_cmd_queue_counter_alloc;
+	mlx5_devx_cmd_queue_counter_query;
 	mlx5_devx_cmd_register_read;
 	mlx5_devx_cmd_register_write;
 	mlx5_devx_cmd_wq_query; # WINDOWS_NO_EXPORT
@@ -84,6 +87,8 @@ INTERNAL {
 	mlx5_get_pci_addr; # WINDOWS_NO_EXPORT
 
 	mlx5_glue;
+
+	mlx5_kvargs_process;
 
 	mlx5_list_create;
 	mlx5_list_register;
@@ -150,5 +155,7 @@ INTERNAL {
 	mlx5_mr_mempool2mr_bh;
 	mlx5_mr_mempool_populate_cache;
 
+	mlx5_os_interrupt_handler_create; # WINDOWS_NO_EXPORT
+	mlx5_os_interrupt_handler_destroy; # WINDOWS_NO_EXPORT
 	local: *;
 };

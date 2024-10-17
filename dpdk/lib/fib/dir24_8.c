@@ -4,15 +4,11 @@
  */
 
 #include <stdint.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
 
 #include <rte_debug.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
-#include <rte_memory.h>
 #include <rte_vect.h>
 
 #include <rte_rib.h>
@@ -392,6 +388,12 @@ modify_fib(struct dir24_8_tbl *dp, struct rte_rib *rib, uint32_t ip,
 				return ret;
 			ledge = redge +
 				(uint32_t)(1ULL << (32 - tmp_depth));
+			/*
+			 * we got to the end of address space
+			 * and wrapped around
+			 */
+			if (ledge == 0)
+				break;
 		} else {
 			redge = ip + (uint32_t)(1ULL << (32 - depth));
 			if (ledge == redge && ledge != 0)

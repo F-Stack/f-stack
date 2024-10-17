@@ -20,7 +20,7 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_tailq.h>
@@ -31,7 +31,7 @@
 #include <ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include "cxgbe.h"
 #include "cxgbe_pfvf.h"
@@ -414,6 +414,7 @@ int cxgbe_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adapter = pi->adapter;
+	uint16_t i;
 
 	CXGBE_FUNC_TRACE();
 
@@ -428,6 +429,11 @@ int cxgbe_dev_stop(struct rte_eth_dev *eth_dev)
 	 */
 	t4_sge_eth_clear_queues(pi);
 	eth_dev->data->scattered_rx = 0;
+
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -709,6 +715,9 @@ static int cxgbe_dev_stats_get(struct rte_eth_dev *eth_dev,
 			      ps.rx_ovflow2 + ps.rx_ovflow3 +
 			      ps.rx_trunc0 + ps.rx_trunc1 +
 			      ps.rx_trunc2 + ps.rx_trunc3;
+	for (i = 0; i < NCHAN; i++)
+		eth_stats->imissed += ps.rx_tp_tnl_cong_drops[i];
+
 	eth_stats->ierrors  = ps.rx_symbol_err + ps.rx_fcs_err +
 			      ps.rx_jabber + ps.rx_too_long + ps.rx_runt +
 			      ps.rx_len_err;
@@ -851,6 +860,14 @@ static const struct cxgbe_dev_xstats_name_off cxgbe_dev_port_stats_strings[] = {
 	{"rx_bg1_truncated_packets", offsetof(struct port_stats, rx_trunc1)},
 	{"rx_bg2_truncated_packets", offsetof(struct port_stats, rx_trunc2)},
 	{"rx_bg3_truncated_packets", offsetof(struct port_stats, rx_trunc3)},
+	{"rx_tp_tnl_cong_drops0",
+	 offsetof(struct port_stats, rx_tp_tnl_cong_drops[0])},
+	{"rx_tp_tnl_cong_drops1",
+	 offsetof(struct port_stats, rx_tp_tnl_cong_drops[1])},
+	{"rx_tp_tnl_cong_drops2",
+	 offsetof(struct port_stats, rx_tp_tnl_cong_drops[2])},
+	{"rx_tp_tnl_cong_drops3",
+	 offsetof(struct port_stats, rx_tp_tnl_cong_drops[3])},
 };
 
 static const struct cxgbe_dev_xstats_name_off

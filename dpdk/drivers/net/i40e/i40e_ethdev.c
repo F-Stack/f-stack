@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2017 Intel Corporation
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -15,7 +16,7 @@
 #include <rte_eal.h>
 #include <rte_string_fns.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
@@ -23,7 +24,7 @@
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_alarm.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_tailq.h>
 #include <rte_hash_crc.h>
 #include <rte_bitmap.h>
@@ -1710,11 +1711,6 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	 */
 	i40e_add_tx_flow_control_drop_filter(pf);
 
-	/* Set the max frame size to 0x2600 by default,
-	 * in case other drivers changed the default value.
-	 */
-	i40e_aq_set_mac_config(hw, I40E_FRAME_SIZE_MAX, TRUE, false, 0, NULL);
-
 	/* initialize RSS rule list */
 	TAILQ_INIT(&pf->rss_config_list);
 
@@ -1782,10 +1778,8 @@ i40e_rm_ethtype_filter_list(struct i40e_pf *pf)
 
 	ethertype_rule = &pf->ethertype;
 	/* Remove all ethertype filter rules and hash */
-	if (ethertype_rule->hash_map)
-		rte_free(ethertype_rule->hash_map);
-	if (ethertype_rule->hash_table)
-		rte_hash_free(ethertype_rule->hash_table);
+	rte_free(ethertype_rule->hash_map);
+	rte_hash_free(ethertype_rule->hash_table);
 
 	while ((p_ethertype = TAILQ_FIRST(&ethertype_rule->ethertype_list))) {
 		TAILQ_REMOVE(&ethertype_rule->ethertype_list,
@@ -1802,10 +1796,8 @@ i40e_rm_tunnel_filter_list(struct i40e_pf *pf)
 
 	tunnel_rule = &pf->tunnel;
 	/* Remove all tunnel director rules and hash */
-	if (tunnel_rule->hash_map)
-		rte_free(tunnel_rule->hash_map);
-	if (tunnel_rule->hash_table)
-		rte_hash_free(tunnel_rule->hash_table);
+	rte_free(tunnel_rule->hash_map);
+	rte_hash_free(tunnel_rule->hash_table);
 
 	while ((p_tunnel = TAILQ_FIRST(&tunnel_rule->tunnel_list))) {
 		TAILQ_REMOVE(&tunnel_rule->tunnel_list, p_tunnel, rules);
@@ -1834,16 +1826,11 @@ i40e_fdir_memory_cleanup(struct i40e_pf *pf)
 	fdir_info = &pf->fdir;
 
 	/* flow director memory cleanup */
-	if (fdir_info->hash_map)
-		rte_free(fdir_info->hash_map);
-	if (fdir_info->hash_table)
-		rte_hash_free(fdir_info->hash_table);
-	if (fdir_info->fdir_flow_pool.bitmap)
-		rte_free(fdir_info->fdir_flow_pool.bitmap);
-	if (fdir_info->fdir_flow_pool.pool)
-		rte_free(fdir_info->fdir_flow_pool.pool);
-	if (fdir_info->fdir_filter_array)
-		rte_free(fdir_info->fdir_filter_array);
+	rte_free(fdir_info->hash_map);
+	rte_hash_free(fdir_info->hash_table);
+	rte_free(fdir_info->fdir_flow_pool.bitmap);
+	rte_free(fdir_info->fdir_flow_pool.pool);
+	rte_free(fdir_info->fdir_filter_array);
 }
 
 void i40e_flex_payload_reg_set_default(struct i40e_hw *hw)
@@ -1900,24 +1887,6 @@ i40e_dev_configure(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
 		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
-	/* Only legacy filter API needs the following fdir config. So when the
-	 * legacy filter API is deprecated, the following codes should also be
-	 * removed.
-	 */
-	if (dev->data->dev_conf.fdir_conf.mode == RTE_FDIR_MODE_PERFECT) {
-		ret = i40e_fdir_setup(pf);
-		if (ret != I40E_SUCCESS) {
-			PMD_DRV_LOG(ERR, "Failed to setup flow director.");
-			return -ENOTSUP;
-		}
-		ret = i40e_fdir_configure(dev);
-		if (ret < 0) {
-			PMD_DRV_LOG(ERR, "failed to configure fdir.");
-			goto err;
-		}
-	} else
-		i40e_fdir_teardown(pf);
-
 	ret = i40e_dev_init_vlan(dev);
 	if (ret < 0)
 		goto err;
@@ -1959,12 +1928,6 @@ err_dcb:
 	rte_free(pf->vmdq);
 	pf->vmdq = NULL;
 err:
-	/* Need to release fdir resource if exists.
-	 * Only legacy filter API needs the following fdir config. So when the
-	 * legacy filter API is deprecated, the following code should also be
-	 * removed.
-	 */
-	i40e_fdir_teardown(pf);
 	return ret;
 }
 
@@ -2365,6 +2328,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	uint32_t intr_vector = 0;
 	struct i40e_vsi *vsi;
 	uint16_t nb_rxq, nb_txq;
+	uint16_t max_frame_size;
 
 	hw->adapter_stopped = 0;
 
@@ -2496,7 +2460,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 			PMD_DRV_LOG(WARNING, "Fail to set phy mask");
 
 		/* Call get_link_info aq command to enable/disable LSE */
-		i40e_dev_link_update(dev, 0);
+		i40e_dev_link_update(dev, 1);
 	}
 
 	if (dev->data->dev_conf.intr_conf.rxq == 0) {
@@ -2513,6 +2477,13 @@ i40e_dev_start(struct rte_eth_dev *dev)
 		PMD_DRV_LOG(WARNING,
 			    "please call hierarchy_commit() "
 			    "before starting the port");
+
+	max_frame_size = dev->data->mtu ?
+		dev->data->mtu + I40E_ETH_OVERHEAD :
+		I40E_FRAME_SIZE_MAX;
+
+	/* Set the max frame size to HW*/
+	i40e_aq_set_mac_config(hw, max_frame_size, TRUE, false, 0, NULL);
 
 	return I40E_SUCCESS;
 
@@ -2620,13 +2591,6 @@ i40e_dev_close(struct rte_eth_dev *dev)
 	/* Disable interrupt */
 	i40e_pf_disable_irq0(hw);
 	rte_intr_disable(intr_handle);
-
-	/*
-	 * Only legacy filter API needs the following fdir config. So when the
-	 * legacy filter API is deprecated, the following code should also be
-	 * removed.
-	 */
-	i40e_fdir_teardown(pf);
 
 	/* shutdown and destroy the HMC */
 	i40e_shutdown_lan_hmc(hw);
@@ -3758,8 +3722,12 @@ i40e_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
 		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
-		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |
 		dev_info->tx_queue_offload_capa;
+	if (hw->mac.type == I40E_MAC_X722) {
+		dev_info->tx_offload_capa |=
+			RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
+	}
+
 	dev_info->dev_capa =
 		RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 		RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;
@@ -3929,6 +3897,7 @@ i40e_vlan_tpid_set(struct rte_eth_dev *dev,
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	int qinq = dev->data->dev_conf.rxmode.offloads &
 		   RTE_ETH_RX_OFFLOAD_VLAN_EXTEND;
+	u16 sw_flags = 0, valid_flags = 0;
 	int ret = 0;
 
 	if ((vlan_type != RTE_ETH_VLAN_TYPE_INNER &&
@@ -3947,6 +3916,10 @@ i40e_vlan_tpid_set(struct rte_eth_dev *dev,
 	/* 802.1ad frames ability is added in NVM API 1.7*/
 	if (hw->flags & I40E_HW_FLAG_802_1AD_CAPABLE) {
 		if (qinq) {
+			if (pf->fw8_3gt) {
+				sw_flags = I40E_AQ_SET_SWITCH_CFG_OUTER_VLAN;
+				valid_flags = I40E_AQ_SET_SWITCH_CFG_OUTER_VLAN;
+			}
 			if (vlan_type == RTE_ETH_VLAN_TYPE_OUTER)
 				hw->first_tag = rte_cpu_to_le_16(tpid);
 			else if (vlan_type == RTE_ETH_VLAN_TYPE_INNER)
@@ -3955,7 +3928,8 @@ i40e_vlan_tpid_set(struct rte_eth_dev *dev,
 			if (vlan_type == RTE_ETH_VLAN_TYPE_OUTER)
 				hw->second_tag = rte_cpu_to_le_16(tpid);
 		}
-		ret = i40e_aq_set_switch_config(hw, 0, 0, 0, NULL);
+		ret = i40e_aq_set_switch_config(hw, sw_flags,
+						valid_flags, 0, NULL);
 		if (ret != I40E_SUCCESS) {
 			PMD_DRV_LOG(ERR,
 				    "Set switch config failed aq_err: %d",
@@ -4007,8 +3981,13 @@ static int
 i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct i40e_mac_filter_info *mac_filter;
 	struct i40e_vsi *vsi = pf->main_vsi;
 	struct rte_eth_rxmode *rxmode;
+	struct i40e_mac_filter *f;
+	int i, num;
+	void *temp;
+	int ret;
 
 	rxmode = &dev->data->dev_conf.rxmode;
 	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
@@ -4027,6 +4006,33 @@ i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	}
 
 	if (mask & RTE_ETH_VLAN_EXTEND_MASK) {
+		i = 0;
+		num = vsi->mac_num;
+		mac_filter = rte_zmalloc("mac_filter_info_data",
+				 num * sizeof(*mac_filter), 0);
+		if (mac_filter == NULL) {
+			PMD_DRV_LOG(ERR, "failed to allocate memory");
+			return I40E_ERR_NO_MEMORY;
+		}
+
+		/*
+		 * Outer VLAN processing is supported after firmware v8.4, kernel driver
+		 * also change the default behavior to support this feature. To align with
+		 * kernel driver, set switch config in 'i40e_vlan_tpie_set' to support for
+		 * outer VLAN processing. But it is forbidden for firmware to change the
+		 * Inner/Outer VLAN configuration while there are MAC/VLAN filters in the
+		 * switch table. Therefore, we need to clear the MAC table before setting
+		 * config, and then restore the MAC table after setting. This feature is
+		 * recommended to be used in firmware v8.6.
+		 */
+		/* Remove all existing mac */
+		RTE_TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
+			mac_filter[i] = f->mac_info;
+			ret = i40e_vsi_delete_mac(vsi, &f->mac_info.mac_addr);
+			if (ret)
+				PMD_DRV_LOG(ERR, "i40e vsi delete mac fail.");
+			i++;
+		}
 		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_EXTEND) {
 			i40e_vsi_config_double_vlan(vsi, TRUE);
 			/* Set global registers with default ethertype. */
@@ -4034,9 +4040,16 @@ i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 					   RTE_ETHER_TYPE_VLAN);
 			i40e_vlan_tpid_set(dev, RTE_ETH_VLAN_TYPE_INNER,
 					   RTE_ETHER_TYPE_VLAN);
-		}
-		else
+		} else {
 			i40e_vsi_config_double_vlan(vsi, FALSE);
+		}
+		/* Restore all mac */
+		for (i = 0; i < num; i++) {
+			ret = i40e_vsi_add_mac(vsi, &mac_filter[i]);
+			if (ret)
+				PMD_DRV_LOG(ERR, "i40e vsi add mac fail.");
+		}
+		rte_free(mac_filter);
 	}
 
 	if (mask & RTE_ETH_QINQ_STRIP_MASK) {
@@ -4864,6 +4877,17 @@ i40e_pf_parameter_init(struct rte_eth_dev *dev)
 			"Failed to allocate %u VSIs, which exceeds the hardware maximum %u",
 			vsi_count, hw->func_caps.num_vsis);
 		return -EINVAL;
+	}
+
+	/**
+	 * Enable outer VLAN processing if firmware version is greater
+	 * than v8.3
+	 */
+	if (hw->aq.fw_maj_ver > 8 ||
+	    (hw->aq.fw_maj_ver == 8 && hw->aq.fw_min_ver > 3)) {
+		pf->fw8_3gt = true;
+	} else {
+		pf->fw8_3gt = false;
 	}
 
 	return 0;
@@ -5987,14 +6011,16 @@ i40e_vsi_setup(struct i40e_pf *pf,
 		}
 	}
 
-	/* MAC/VLAN configuration */
-	rte_memcpy(&filter.mac_addr, &broadcast, RTE_ETHER_ADDR_LEN);
-	filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
+	if (vsi->type != I40E_VSI_FDIR) {
+		/* MAC/VLAN configuration for non-FDIR VSI*/
+		rte_memcpy(&filter.mac_addr, &broadcast, RTE_ETHER_ADDR_LEN);
+		filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
 
-	ret = i40e_vsi_add_mac(vsi, &filter);
-	if (ret != I40E_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to add MACVLAN filter");
-		goto fail_msix_alloc;
+		ret = i40e_vsi_add_mac(vsi, &filter);
+		if (ret != I40E_SUCCESS) {
+			PMD_DRV_LOG(ERR, "Failed to add MACVLAN filter");
+			goto fail_msix_alloc;
+		}
 	}
 
 	/* Get VSI BW information */
@@ -6121,6 +6147,7 @@ i40e_dev_init_vlan(struct rte_eth_dev *dev)
 	       RTE_ETH_QINQ_STRIP_MASK |
 	       RTE_ETH_VLAN_FILTER_MASK |
 	       RTE_ETH_VLAN_EXTEND_MASK;
+
 	ret = i40e_vlan_offload_set(dev, mask);
 	if (ret) {
 		PMD_DRV_LOG(INFO, "Failed to update vlan offload");

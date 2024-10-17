@@ -2,6 +2,8 @@
  * Copyright(c) 2010-2016 Intel Corporation
  */
 
+#ifndef RTE_EXEC_ENV_WINDOWS
+
 #include <string.h>
 #include <rte_byteorder.h>
 #include <rte_table_lpm_ipv6.h>
@@ -51,7 +53,7 @@ struct rte_bucket_4_8 {
 	uint64_t next_valid;
 	uint64_t key[4];
 	/* Cache line 1 */
-	uint8_t data[0];
+	uint8_t data[];
 };
 
 #if RTE_TABLE_HASH_LRU_STRATEGY == 3
@@ -1052,3 +1054,5 @@ test_table_hash_cuckoo(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */

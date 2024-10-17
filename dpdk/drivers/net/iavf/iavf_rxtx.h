@@ -31,10 +31,8 @@
 		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |		 \
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |		 \
 		RTE_ETH_TX_OFFLOAD_TCP_TSO |		 \
-		RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |	 \
-		RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |	 \
-		RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |	 \
-		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |	 \
+		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |    \
+		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |	\
 		RTE_ETH_TX_OFFLOAD_SECURITY)
 
 #define IAVF_TX_VECTOR_OFFLOAD (				 \
@@ -65,7 +63,9 @@
 #define IAVF_TX_CKSUM_OFFLOAD_MASK (		 \
 		RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
-		RTE_MBUF_F_TX_TCP_SEG)
+		RTE_MBUF_F_TX_TCP_SEG |          \
+		RTE_MBUF_F_TX_OUTER_IP_CKSUM |   \
+		RTE_MBUF_F_TX_OUTER_UDP_CKSUM)
 
 #define IAVF_TX_OFFLOAD_MASK (  \
 		RTE_MBUF_F_TX_OUTER_IPV6 |		 \
@@ -76,10 +76,20 @@
 		RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
 		RTE_MBUF_F_TX_TCP_SEG |		 \
-		RTE_ETH_TX_OFFLOAD_SECURITY)
+		RTE_MBUF_F_TX_TUNNEL_MASK |	\
+		RTE_MBUF_F_TX_OUTER_IP_CKSUM |  \
+		RTE_MBUF_F_TX_OUTER_UDP_CKSUM | \
+		RTE_MBUF_F_TX_SEC_OFFLOAD)
 
 #define IAVF_TX_OFFLOAD_NOTSUP_MASK \
 		(RTE_MBUF_F_TX_OFFLOAD_MASK ^ IAVF_TX_OFFLOAD_MASK)
+
+/* HW requires that TX buffer size ranges from 1B up to (16K-1)B. */
+#define IAVF_MAX_DATA_PER_TXD \
+	(IAVF_TXD_QW1_TX_BUF_SZ_MASK >> IAVF_TXD_QW1_TX_BUF_SZ_SHIFT)
+
+extern uint64_t iavf_timestamp_dynflag;
+extern int iavf_timestamp_dynfield_offset;
 
 /**
  * Rx Flex Descriptors
@@ -229,6 +239,8 @@ struct iavf_rx_queue {
 		/* flexible descriptor metadata extraction offload flag */
 	struct iavf_rx_queue_stats stats;
 	uint64_t offloads;
+	uint64_t phc_time;
+	uint64_t hw_time_update;
 };
 
 struct iavf_tx_entry {
@@ -796,6 +808,24 @@ void iavf_fdir_rx_proc_enable(struct iavf_adapter *ad, bool on)
 				FDIR_PROC_ENABLE_PER_QUEUE(ad, on);
 		}
 	}
+}
+
+static inline
+uint64_t iavf_tstamp_convert_32b_64b(uint64_t time, uint32_t in_timestamp)
+{
+	const uint64_t mask = 0xFFFFFFFF;
+	uint32_t delta;
+	uint64_t ns;
+
+	delta = (in_timestamp - (uint32_t)(time & mask));
+	if (delta > (mask / 2)) {
+		delta = ((uint32_t)(time & mask) - in_timestamp);
+		ns = time - delta;
+	} else {
+		ns = time + delta;
+	}
+
+	return ns;
 }
 
 #ifdef RTE_LIBRTE_IAVF_DEBUG_DUMP_DESC

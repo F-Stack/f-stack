@@ -32,6 +32,14 @@ static const struct eth_dev_ops bnxt_rep_dev_ops = {
 	.flow_ops_get = bnxt_flow_ops_get_op
 };
 
+static bool bnxt_rep_check_parent(struct bnxt_representor *rep)
+{
+	if (!rep->parent_dev->data->dev_private)
+		return false;
+
+	return true;
+}
+
 uint16_t
 bnxt_vfr_recv(uint16_t port_id, uint16_t queue_id, struct rte_mbuf *mbuf)
 {
@@ -124,8 +132,8 @@ bnxt_rep_tx_burst(void *tx_queue,
 	qid = vfr_txq->txq->queue_id;
 	vf_rep_bp = vfr_txq->bp;
 	parent = vf_rep_bp->parent_dev->data->dev_private;
-	pthread_mutex_lock(&parent->rep_info->vfr_lock);
 	ptxq = parent->tx_queues[qid];
+	pthread_mutex_lock(&ptxq->txq_lock);
 
 	ptxq->vfr_tx_cfa_action = vf_rep_bp->vfr_tx_cfa_action;
 
@@ -134,9 +142,9 @@ bnxt_rep_tx_burst(void *tx_queue,
 		vf_rep_bp->tx_pkts[qid]++;
 	}
 
-	rc = bnxt_xmit_pkts(ptxq, tx_pkts, nb_pkts);
+	rc = _bnxt_xmit_pkts(ptxq, tx_pkts, nb_pkts);
 	ptxq->vfr_tx_cfa_action = 0;
-	pthread_mutex_unlock(&parent->rep_info->vfr_lock);
+	pthread_mutex_unlock(&ptxq->txq_lock);
 
 	return rc;
 }
@@ -266,12 +274,12 @@ int bnxt_representor_uninit(struct rte_eth_dev *eth_dev)
 	PMD_DRV_LOG(DEBUG, "BNXT Port:%d VFR uninit\n", eth_dev->data->port_id);
 	eth_dev->data->mac_addrs = NULL;
 
-	parent_bp = rep->parent_dev->data->dev_private;
-	if (!parent_bp) {
+	if (!bnxt_rep_check_parent(rep)) {
 		PMD_DRV_LOG(DEBUG, "BNXT Port:%d already freed\n",
 			    eth_dev->data->port_id);
 		return 0;
 	}
+	parent_bp = rep->parent_dev->data->dev_private;
 
 	parent_bp->num_reps--;
 	vf_id = rep->vf_id;
@@ -509,8 +517,7 @@ int bnxt_rep_dev_stop_op(struct rte_eth_dev *eth_dev)
 	struct bnxt_representor *vfr_bp = eth_dev->data->dev_private;
 
 	/* Avoid crashes as we are about to free queues */
-	eth_dev->rx_pkt_burst = &bnxt_dummy_recv_pkts;
-	eth_dev->tx_pkt_burst = &bnxt_dummy_xmit_pkts;
+	bnxt_stop_rxtx(eth_dev);
 
 	BNXT_TF_DBG(DEBUG, "BNXT Port:%d VFR stop\n", eth_dev->data->port_id);
 
@@ -540,11 +547,12 @@ int bnxt_rep_dev_info_get_op(struct rte_eth_dev *eth_dev,
 	int rc = 0;
 
 	/* MAC Specifics */
-	parent_bp = rep_bp->parent_dev->data->dev_private;
-	if (!parent_bp) {
-		PMD_DRV_LOG(ERR, "Rep parent NULL!\n");
+	if (!bnxt_rep_check_parent(rep_bp)) {
+		/* Need not be an error scenario, if parent is closed first */
+		PMD_DRV_LOG(INFO, "Rep parent port does not exist.\n");
 		return rc;
 	}
+	parent_bp = rep_bp->parent_dev->data->dev_private;
 	PMD_DRV_LOG(DEBUG, "Representor dev_info_get_op\n");
 	dev_info->max_mac_addrs = parent_bp->max_l2_ctx;
 	dev_info->max_hash_mac_addrs = 0;
@@ -731,10 +739,10 @@ int bnxt_rep_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	struct bnxt_tx_queue *parent_txq, *txq;
 	struct bnxt_vf_rep_tx_queue *vfr_txq;
 
-	if (queue_idx >= rep_bp->rx_nr_rings) {
+	if (queue_idx >= rep_bp->tx_nr_rings) {
 		PMD_DRV_LOG(ERR,
 			    "Cannot create Tx rings %d. %d rings available\n",
-			    queue_idx, rep_bp->rx_nr_rings);
+			    queue_idx, rep_bp->tx_nr_rings);
 		return -EINVAL;
 	}
 

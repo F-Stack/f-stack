@@ -31,7 +31,7 @@
 #endif
 
 #include <rte_common.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
@@ -292,6 +292,7 @@ mlx4_dev_start(struct rte_eth_dev *dev)
 {
 	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
+	uint16_t i;
 	int ret;
 
 	if (priv->started)
@@ -327,6 +328,12 @@ mlx4_dev_start(struct rte_eth_dev *dev)
 	dev->rx_pkt_burst = mlx4_rx_burst;
 	/* Enable datapath on secondary process. */
 	mlx4_mp_req_start_rxtx(dev);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	return 0;
 err:
 	mlx4_dev_stop(dev);
@@ -345,19 +352,25 @@ static int
 mlx4_dev_stop(struct rte_eth_dev *dev)
 {
 	struct mlx4_priv *priv = dev->data->dev_private;
+	uint16_t i;
 
 	if (!priv->started)
 		return 0;
 	DEBUG("%p: detaching flows from all RX queues", (void *)dev);
 	priv->started = 0;
-	dev->tx_pkt_burst = mlx4_tx_burst_removed;
-	dev->rx_pkt_burst = mlx4_rx_burst_removed;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx4_mp_req_stop_rxtx(dev);
 	mlx4_flow_sync(priv, NULL);
 	mlx4_rxq_intr_disable(priv);
 	mlx4_rss_deinit(priv);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -383,8 +396,8 @@ mlx4_dev_close(struct rte_eth_dev *dev)
 	DEBUG("%p: closing device \"%s\"",
 	      (void *)dev,
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
-	dev->rx_pkt_burst = mlx4_rx_burst_removed;
-	dev->tx_pkt_burst = mlx4_tx_burst_removed;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx4_mp_req_stop_rxtx(dev);

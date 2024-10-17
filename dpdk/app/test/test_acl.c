@@ -11,6 +11,16 @@
 #include <rte_mbuf.h>
 #include <rte_byteorder.h>
 #include <rte_ip.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_acl(void)
+{
+	printf("ACL not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
 #include <rte_acl.h>
 #include <rte_common.h>
 
@@ -1161,8 +1171,7 @@ test_create_find_add(void)
 		printf("Line %i: Creating context with existing name "
 			"test failed!\n",
 			__LINE__);
-		if (tmp)
-			rte_acl_free(tmp);
+		rte_acl_free(tmp);
 		goto err;
 	}
 
@@ -1172,8 +1181,7 @@ test_create_find_add(void)
 		printf("Line %i: Creating context with existing "
 			"name test 2 failed!\n",
 			__LINE__);
-		if (tmp)
-			rte_acl_free(tmp);
+		rte_acl_free(tmp);
 		goto err;
 	}
 
@@ -1181,16 +1189,14 @@ test_create_find_add(void)
 	tmp = rte_acl_find_existing(acx_name);
 	if (tmp != acx) {
 		printf("Line %i: Finding %s failed!\n", __LINE__, acx_name);
-		if (tmp)
-			rte_acl_free(tmp);
+		rte_acl_free(tmp);
 		goto err;
 	}
 
 	tmp = rte_acl_find_existing(acx2_name);
 	if (tmp != acx2) {
 		printf("Line %i: Finding %s failed!\n", __LINE__, acx2_name);
-		if (tmp)
-			rte_acl_free(tmp);
+		rte_acl_free(tmp);
 		goto err;
 	}
 
@@ -1740,5 +1746,7 @@ test_acl(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(acl_autotest, test_acl);

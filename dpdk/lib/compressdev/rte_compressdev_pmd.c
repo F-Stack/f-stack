@@ -2,9 +2,12 @@
  * Copyright(c) 2017-2018 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
+#include <dev_driver.h>
 #include <rte_eal.h>
 
 #include "rte_compressdev_internal.h"
@@ -97,12 +100,12 @@ rte_compressdev_pmd_create(const char *name,
 	struct rte_compressdev *compressdev;
 
 	if (params->name[0] != '\0') {
-		COMPRESSDEV_LOG(INFO, "User specified device name = %s\n",
+		COMPRESSDEV_LOG(INFO, "User specified device name = %s",
 				params->name);
 		name = params->name;
 	}
 
-	COMPRESSDEV_LOG(INFO, "Creating compressdev %s\n", name);
+	COMPRESSDEV_LOG(INFO, "Creating compressdev %s", name);
 
 	COMPRESSDEV_LOG(INFO, "Init parameters - name: %s, socket id: %d",
 			name, params->socket_id);

@@ -2,12 +2,16 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_DCB_H_
-#define _HNS3_DCB_H_
+#ifndef HNS3_DCB_H
+#define HNS3_DCB_H
 
 #include <stdint.h>
 
+#include <ethdev_driver.h>
+#include <rte_ethdev.h>
+
 #include "hns3_cmd.h"
+#include "hns3_ethdev.h"
 
 #define HNS3_ETHER_MAX_RATE		100000
 
@@ -211,4 +215,4 @@ int hns3_update_queue_map_configure(struct hns3_adapter *hns);
 int hns3_port_shaper_update(struct hns3_hw *hw, uint32_t speed);
 uint8_t hns3_txq_mapped_tc_get(struct hns3_hw *hw, uint16_t txq_no);
 
-#endif /* _HNS3_DCB_H_ */
+#endif /* HNS3_DCB_H */

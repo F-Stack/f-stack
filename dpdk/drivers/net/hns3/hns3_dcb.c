@@ -621,7 +621,7 @@ hns3_set_rss_size(struct hns3_hw *hw, uint16_t nb_rx_q)
 	struct hns3_rss_conf *rss_cfg = &hw->rss_info;
 	uint16_t rx_qnum_per_tc;
 	uint16_t used_rx_queues;
-	int i;
+	uint16_t i;
 
 	rx_qnum_per_tc = nb_rx_q / hw->num_tc;
 	if (rx_qnum_per_tc > hw->rss_size_max) {
@@ -743,19 +743,9 @@ static int
 hns3_dcb_update_tc_queue_mapping(struct hns3_hw *hw, uint16_t nb_rx_q,
 				 uint16_t nb_tx_q)
 {
-	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
-	struct hns3_pf *pf = &hns->pf;
-	int ret;
-
 	hw->num_tc = hw->dcb_info.num_tc;
-	ret = hns3_queue_to_tc_mapping(hw, nb_rx_q, nb_tx_q);
-	if (ret)
-		return ret;
 
-	if (!hns->is_vf)
-		memcpy(pf->prio_tc, hw->dcb_info.prio_tc, HNS3_MAX_USER_PRIO);
-
-	return 0;
+	return hns3_queue_to_tc_mapping(hw, nb_rx_q, nb_tx_q);
 }
 
 int
@@ -879,9 +869,8 @@ hns3_dcb_pri_tc_base_dwrr_cfg(struct hns3_hw *hw)
 
 		ret = hns3_dcb_pri_weight_cfg(hw, i, dwrr);
 		if (ret) {
-			hns3_err(hw,
-			       "fail to send priority weight cmd: %d, ret = %d",
-			       i, ret);
+			hns3_err(hw, "fail to send priority weight cmd: %d, ret = %d",
+				 i, ret);
 			return ret;
 		}
 
@@ -1093,7 +1082,7 @@ hns3_dcb_map_cfg(struct hns3_hw *hw)
 
 	ret = hns3_pg_to_pri_map(hw);
 	if (ret) {
-		hns3_err(hw, "pri_to_pg mapping fail: %d", ret);
+		hns3_err(hw, "pg_to_pri mapping fail: %d", ret);
 		return ret;
 	}
 
@@ -1510,7 +1499,6 @@ hns3_dcb_info_update(struct hns3_adapter *hns, uint8_t num_tc)
 static int
 hns3_dcb_hw_configure(struct hns3_adapter *hns)
 {
-	struct rte_eth_dcb_rx_conf *dcb_rx_conf;
 	struct hns3_pf *pf = &hns->pf;
 	struct hns3_hw *hw = &hns->hw;
 	enum hns3_fc_status fc_status = hw->current_fc_status;
@@ -1530,12 +1518,8 @@ hns3_dcb_hw_configure(struct hns3_adapter *hns)
 	}
 
 	if (hw->data->dev_conf.dcb_capability_en & RTE_ETH_DCB_PFC_SUPPORT) {
-		dcb_rx_conf = &hw->data->dev_conf.rx_adv_conf.dcb_rx_conf;
-		if (dcb_rx_conf->nb_tcs == 0)
-			hw->dcb_info.pfc_en = 1; /* tc0 only */
-		else
-			hw->dcb_info.pfc_en =
-			RTE_LEN2MASK((uint8_t)dcb_rx_conf->nb_tcs, uint8_t);
+		hw->dcb_info.pfc_en =
+			RTE_LEN2MASK((uint8_t)HNS3_MAX_USER_PRIO, uint8_t);
 
 		hw->dcb_info.hw_pfc_map =
 				hns3_dcb_undrop_tc_map(hw, hw->dcb_info.pfc_en);

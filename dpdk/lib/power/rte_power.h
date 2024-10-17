@@ -10,10 +10,9 @@
  * RTE Power Management
  */
 
+#include <rte_compat.h>
 #include <rte_common.h>
-#include <rte_byteorder.h>
 #include <rte_log.h>
-#include <rte_string_fns.h>
 #include <rte_power_guest_channel.h>
 
 #ifdef __cplusplus

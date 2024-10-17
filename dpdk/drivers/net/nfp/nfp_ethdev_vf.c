@@ -19,21 +19,9 @@
 #include "nfpcore/nfp_rtsym.h"
 
 #include "nfp_common.h"
+#include "nfp_ctrl.h"
 #include "nfp_rxtx.h"
 #include "nfp_logs.h"
-#include "nfp_ctrl.h"
-
-static void nfp_netvf_read_mac(struct nfp_net_hw *hw);
-static int nfp_netvf_start(struct rte_eth_dev *dev);
-static int nfp_netvf_stop(struct rte_eth_dev *dev);
-static int nfp_netvf_set_link_up(struct rte_eth_dev *dev);
-static int nfp_netvf_set_link_down(struct rte_eth_dev *dev);
-static int nfp_netvf_close(struct rte_eth_dev *dev);
-static int nfp_netvf_init(struct rte_eth_dev *eth_dev);
-static int nfp_vf_pci_uninit(struct rte_eth_dev *eth_dev);
-static int eth_nfp_vf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
-	struct rte_pci_device *pci_dev);
-static int eth_nfp_vf_pci_remove(struct rte_pci_device *pci_dev);
 
 static void
 nfp_netvf_read_mac(struct nfp_net_hw *hw)
@@ -57,6 +45,7 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 	struct rte_eth_conf *dev_conf;
 	struct rte_eth_rxmode *rxmode;
 	uint32_t intr_vector;
+	uint16_t i;
 	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -107,7 +96,10 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 	if (rxmode->mq_mode & RTE_ETH_MQ_RX_RSS) {
 		nfp_net_rss_config_default(dev);
 		update |= NFP_NET_CFG_UPDATE_RSS;
-		new_ctrl |= NFP_NET_CFG_CTRL_RSS;
+		if (hw->cap & NFP_NET_CFG_CTRL_RSS2)
+			new_ctrl |= NFP_NET_CFG_CTRL_RSS2;
+		else
+			new_ctrl |= NFP_NET_CFG_CTRL_RSS;
 	}
 
 	/* Enable device */
@@ -122,6 +114,8 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 	if (nfp_net_reconfig(hw, new_ctrl, update) < 0)
 		return -EIO;
 
+	hw->ctrl = new_ctrl;
+
 	/*
 	 * Allocating rte mbufs for configured rx queues.
 	 * This requires queues being enabled before
@@ -131,7 +125,10 @@ nfp_netvf_start(struct rte_eth_dev *dev)
 		goto error;
 	}
 
-	hw->ctrl = new_ctrl;
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	return 0;
 
@@ -157,24 +154,14 @@ error:
 static int
 nfp_netvf_stop(struct rte_eth_dev *dev)
 {
-	struct nfp_net_txq *this_tx_q;
-	struct nfp_net_rxq *this_rx_q;
-	int i;
-
 	PMD_INIT_LOG(DEBUG, "Stop");
 
 	nfp_net_disable_queues(dev);
 
 	/* Clear queues */
-	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		this_tx_q = (struct nfp_net_txq *)dev->data->tx_queues[i];
-		nfp_net_reset_tx_queue(this_tx_q);
-	}
+	nfp_net_stop_tx_queue(dev);
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		this_rx_q = (struct nfp_net_rxq *)dev->data->rx_queues[i];
-		nfp_net_reset_rx_queue(this_rx_q);
-	}
+	nfp_net_stop_rx_queue(dev);
 
 	return 0;
 }
@@ -197,9 +184,6 @@ static int
 nfp_netvf_close(struct rte_eth_dev *dev)
 {
 	struct rte_pci_device *pci_dev;
-	struct nfp_net_txq *this_tx_q;
-	struct nfp_net_rxq *this_rx_q;
-	int i;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
@@ -216,17 +200,9 @@ nfp_netvf_close(struct rte_eth_dev *dev)
 	nfp_net_disable_queues(dev);
 
 	/* Clear queues */
-	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		this_tx_q =  (struct nfp_net_txq *)dev->data->tx_queues[i];
-		nfp_net_reset_tx_queue(this_tx_q);
-		nfp_net_tx_queue_release(dev, i);
-	}
+	nfp_net_close_tx_queue(dev);
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		this_rx_q =  (struct nfp_net_rxq *)dev->data->rx_queues[i];
-		nfp_net_reset_rx_queue(this_rx_q);
-		nfp_net_rx_queue_release(dev, i);
-	}
+	nfp_net_close_rx_queue(dev);
 
 	rte_intr_disable(pci_dev->intr_handle);
 
@@ -263,7 +239,7 @@ static const struct eth_dev_ops nfp_netvf_eth_dev_ops = {
 	.dev_infos_get		= nfp_net_infos_get,
 	.dev_supported_ptypes_get = nfp_net_supported_ptypes_get,
 	.mtu_set		= nfp_net_dev_mtu_set,
-	.mac_addr_set           = nfp_set_mac_addr,
+	.mac_addr_set		= nfp_net_set_mac_addr,
 	.vlan_offload_set	= nfp_net_vlan_offload_set,
 	.reta_update		= nfp_net_reta_update,
 	.reta_query		= nfp_net_reta_query,
@@ -276,6 +252,33 @@ static const struct eth_dev_ops nfp_netvf_eth_dev_ops = {
 	.rx_queue_intr_enable   = nfp_rx_queue_intr_enable,
 	.rx_queue_intr_disable  = nfp_rx_queue_intr_disable,
 };
+
+static inline int
+nfp_netvf_ethdev_ops_mount(struct nfp_net_hw *hw, struct rte_eth_dev *eth_dev)
+{
+	switch (NFD_CFG_CLASS_VER_of(hw->ver)) {
+	case NFP_NET_CFG_VERSION_DP_NFD3:
+		eth_dev->tx_pkt_burst = &nfp_net_nfd3_xmit_pkts;
+		break;
+	case NFP_NET_CFG_VERSION_DP_NFDK:
+		if (NFD_CFG_MAJOR_VERSION_of(hw->ver) < 5) {
+			PMD_DRV_LOG(ERR, "NFDK must use ABI 5 or newer, found: %d",
+				NFD_CFG_MAJOR_VERSION_of(hw->ver));
+			return -EINVAL;
+		}
+		eth_dev->tx_pkt_burst = &nfp_net_nfdk_xmit_pkts;
+		break;
+	default:
+		PMD_DRV_LOG(ERR, "The version of firmware is not correct.");
+		return -EINVAL;
+	}
+
+	eth_dev->dev_ops = &nfp_netvf_eth_dev_ops;
+	eth_dev->rx_queue_count = nfp_net_rx_queue_count;
+	eth_dev->rx_pkt_burst = &nfp_net_recv_pkts;
+
+	return 0;
+}
 
 static int
 nfp_netvf_init(struct rte_eth_dev *eth_dev)
@@ -294,26 +297,28 @@ nfp_netvf_init(struct rte_eth_dev *eth_dev)
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 
-	/* NFP can not handle DMA addresses requiring more than 40 bits */
-	if (rte_mem_check_dma_mask(40)) {
-		RTE_LOG(ERR, PMD, "device %s can not be used:",
-				   pci_dev->device.name);
-		RTE_LOG(ERR, PMD, "\trestricted dma mask to 40 bits!\n");
-		return -ENODEV;
-	};
-
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 
-	eth_dev->dev_ops = &nfp_netvf_eth_dev_ops;
-	eth_dev->rx_queue_count = nfp_net_rx_queue_count;
-	eth_dev->rx_pkt_burst = &nfp_net_recv_pkts;
-	eth_dev->tx_pkt_burst = &nfp_net_xmit_pkts;
+	hw->ctrl_bar = (uint8_t *)pci_dev->mem_resource[0].addr;
+	if (hw->ctrl_bar == NULL) {
+		PMD_DRV_LOG(ERR,
+			"hw->ctrl_bar is NULL. BAR0 not configured");
+		return -ENODEV;
+	}
+
+	PMD_INIT_LOG(DEBUG, "ctrl bar: %p", hw->ctrl_bar);
+
+	hw->ver = nn_cfg_readl(hw, NFP_NET_CFG_VERSION);
+
+	if (nfp_net_check_dma_mask(hw, pci_dev->name) != 0)
+		return -ENODEV;
+
+	if (nfp_netvf_ethdev_ops_mount(hw, eth_dev))
+		return -EINVAL;
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
-
-	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
@@ -325,25 +330,17 @@ nfp_netvf_init(struct rte_eth_dev *eth_dev)
 		     pci_dev->addr.domain, pci_dev->addr.bus,
 		     pci_dev->addr.devid, pci_dev->addr.function);
 
-	hw->ctrl_bar = (uint8_t *)pci_dev->mem_resource[0].addr;
-	if (hw->ctrl_bar == NULL) {
-		PMD_DRV_LOG(ERR,
-			"hw->ctrl_bar is NULL. BAR0 not configured");
-		return -ENODEV;
-	}
-
-	PMD_INIT_LOG(DEBUG, "ctrl bar: %p", hw->ctrl_bar);
-
 	hw->max_rx_queues = nn_cfg_readl(hw, NFP_NET_CFG_MAX_RXRINGS);
 	hw->max_tx_queues = nn_cfg_readl(hw, NFP_NET_CFG_MAX_TXRINGS);
 
 	/* Work out where in the BAR the queues start. */
 	switch (pci_dev->id.device_id) {
+	case PCI_DEVICE_ID_NFP3800_VF_NIC:
 	case PCI_DEVICE_ID_NFP6000_VF_NIC:
 		start_q = nn_cfg_readl(hw, NFP_NET_CFG_START_TXQ);
-		tx_bar_off = (uint64_t)start_q * NFP_QCP_QUEUE_ADDR_SZ;
+		tx_bar_off = nfp_pci_queue(pci_dev, start_q);
 		start_q = nn_cfg_readl(hw, NFP_NET_CFG_START_RXQ);
-		rx_bar_off = (uint64_t)start_q * NFP_QCP_QUEUE_ADDR_SZ;
+		rx_bar_off = nfp_pci_queue(pci_dev, start_q);
 		break;
 	default:
 		PMD_DRV_LOG(ERR, "nfp_net: no device ID matching");
@@ -365,7 +362,6 @@ nfp_netvf_init(struct rte_eth_dev *eth_dev)
 	nfp_net_cfg_queue_setup(hw);
 
 	/* Get some of the read-only fields from the config BAR */
-	hw->ver = nn_cfg_readl(hw, NFP_NET_CFG_VERSION);
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
 	hw->mtu = RTE_ETHER_MTU;
@@ -454,6 +450,8 @@ nfp_netvf_init(struct rte_eth_dev *eth_dev)
 					   (void *)eth_dev);
 		/* Telling the firmware about the LSC interrupt entry */
 		nn_cfg_writeb(hw, NFP_NET_CFG_LSC, NFP_NET_IRQ_LSC_IDX);
+		/* Unmask the LSC interrupt */
+		nfp_net_irq_unmask(eth_dev);
 		/* Recording current stats counters values */
 		nfp_net_stats_reset(eth_dev);
 	}
@@ -471,6 +469,18 @@ dev_err_ctrl_map:
 static const struct rte_pci_id pci_id_nfp_vf_net_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
+			       PCI_DEVICE_ID_NFP3800_VF_NIC)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
+			       PCI_DEVICE_ID_NFP6000_VF_NIC)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_CORIGINE,
+			       PCI_DEVICE_ID_NFP3800_VF_NIC)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_CORIGINE,
 			       PCI_DEVICE_ID_NFP6000_VF_NIC)
 	},
 	{

@@ -26,8 +26,8 @@
 #include <rte_cycles.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_dev.h>
-#include <rte_bus_vmbus.h>
+#include <dev_driver.h>
+#include <bus_vmbus_driver.h>
 
 #include "hn_logs.h"
 #include "hn_var.h"
@@ -35,7 +35,7 @@
 #include "hn_rndis.h"
 #include "ndis.h"
 
-#define RNDIS_TIMEOUT_SEC 5
+#define RNDIS_TIMEOUT_SEC 60
 #define RNDIS_DELAY_MS    10
 
 #define HN_RNDIS_XFER_SIZE		0x4000

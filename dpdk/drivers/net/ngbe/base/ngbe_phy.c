@@ -54,8 +54,7 @@ static bool ngbe_probe_phy(struct ngbe_hw *hw, u16 phy_addr)
 	if (ngbe_get_phy_id(hw))
 		return false;
 
-	hw->phy.type = ngbe_get_phy_type_from_id(hw);
-	if (hw->phy.type == ngbe_phy_unknown)
+	if (ngbe_get_phy_type_from_id(hw))
 		return false;
 
 	return true;
@@ -163,35 +162,38 @@ s32 ngbe_get_phy_id(struct ngbe_hw *hw)
 
 /**
  *  ngbe_get_phy_type_from_id - Get the phy type
- *  @phy_id: PHY ID information
  *
  **/
-enum ngbe_phy_type ngbe_get_phy_type_from_id(struct ngbe_hw *hw)
+s32 ngbe_get_phy_type_from_id(struct ngbe_hw *hw)
 {
-	enum ngbe_phy_type phy_type;
+	s32 status = 0;
 
 	switch (hw->phy.id) {
 	case NGBE_PHYID_RTL:
-		phy_type = ngbe_phy_rtl;
+		hw->phy.type = ngbe_phy_rtl;
 		break;
 	case NGBE_PHYID_MVL:
 		if (hw->phy.media_type == ngbe_media_type_fiber)
-			phy_type = ngbe_phy_mvl_sfi;
+			hw->phy.type = ngbe_phy_mvl_sfi;
+		else if (hw->phy.media_type == ngbe_media_type_copper)
+			hw->phy.type = ngbe_phy_mvl;
 		else
-			phy_type = ngbe_phy_mvl;
+			status = ngbe_check_phy_mode_mvl(hw);
 		break;
-	case NGBE_PHYID_YT:
+	case NGBE_PHYID_YT8521:
+	case NGBE_PHYID_YT8531:
 		if (hw->phy.media_type == ngbe_media_type_fiber)
-			phy_type = ngbe_phy_yt8521s_sfi;
+			hw->phy.type = ngbe_phy_yt8521s_sfi;
 		else
-			phy_type = ngbe_phy_yt8521s;
+			hw->phy.type = ngbe_phy_yt8521s;
 		break;
 	default:
-		phy_type = ngbe_phy_unknown;
+		hw->phy.type = ngbe_phy_unknown;
+		status = NGBE_ERR_DEVICE_NOT_SUPPORTED;
 		break;
 	}
 
-	return phy_type;
+	return status;
 }
 
 /**
@@ -288,15 +290,9 @@ s32 ngbe_read_phy_reg(struct ngbe_hw *hw, u32 reg_addr,
 			       u32 device_type, u16 *phy_data)
 {
 	s32 err;
-	u32 gssr = hw->phy.phy_semaphore_mask;
-
-	if (hw->mac.acquire_swfw_sync(hw, gssr))
-		return NGBE_ERR_SWFW_SYNC;
 
 	err = hw->phy.read_reg_unlocked(hw, reg_addr, device_type,
 					phy_data);
-
-	hw->mac.release_swfw_sync(hw, gssr);
 
 	return err;
 }
@@ -348,15 +344,9 @@ s32 ngbe_write_phy_reg(struct ngbe_hw *hw, u32 reg_addr,
 				u32 device_type, u16 phy_data)
 {
 	s32 err;
-	u32 gssr = hw->phy.phy_semaphore_mask;
-
-	if (hw->mac.acquire_swfw_sync(hw, gssr))
-		err = NGBE_ERR_SWFW_SYNC;
 
 	err = hw->phy.write_reg_unlocked(hw, reg_addr, device_type,
 					 phy_data);
-
-	hw->mac.release_swfw_sync(hw, gssr);
 
 	return err;
 }
@@ -379,11 +369,13 @@ s32 ngbe_init_phy(struct ngbe_hw *hw)
 
 	switch (hw->sub_device_id) {
 	case NGBE_SUB_DEV_ID_EM_RTL_SGMII:
+	case NGBE_SUB_DEV_ID_EM_RTL_YT8521S_SFP:
 		hw->phy.read_reg_unlocked = ngbe_read_phy_reg_rtl;
 		hw->phy.write_reg_unlocked = ngbe_write_phy_reg_rtl;
 		break;
 	case NGBE_SUB_DEV_ID_EM_MVL_RGMII:
 	case NGBE_SUB_DEV_ID_EM_MVL_SFP:
+	case NGBE_SUB_DEV_ID_EM_MVL_MIX:
 		hw->phy.read_reg_unlocked = ngbe_read_phy_reg_mvl;
 		hw->phy.write_reg_unlocked = ngbe_write_phy_reg_mvl;
 		break;
@@ -408,6 +400,7 @@ s32 ngbe_init_phy(struct ngbe_hw *hw)
 		hw->phy.init_hw = ngbe_init_phy_rtl;
 		hw->phy.check_link = ngbe_check_phy_link_rtl;
 		hw->phy.setup_link = ngbe_setup_phy_link_rtl;
+		hw->phy.set_phy_power = ngbe_set_phy_power_rtl;
 		hw->phy.get_adv_pause = ngbe_get_phy_advertised_pause_rtl;
 		hw->phy.get_lp_adv_pause = ngbe_get_phy_lp_advertised_pause_rtl;
 		hw->phy.set_pause_adv = ngbe_set_phy_pause_adv_rtl;
@@ -417,6 +410,7 @@ s32 ngbe_init_phy(struct ngbe_hw *hw)
 		hw->phy.init_hw = ngbe_init_phy_mvl;
 		hw->phy.check_link = ngbe_check_phy_link_mvl;
 		hw->phy.setup_link = ngbe_setup_phy_link_mvl;
+		hw->phy.set_phy_power = ngbe_set_phy_power_mvl;
 		hw->phy.get_adv_pause = ngbe_get_phy_advertised_pause_mvl;
 		hw->phy.get_lp_adv_pause = ngbe_get_phy_lp_advertised_pause_mvl;
 		hw->phy.set_pause_adv = ngbe_set_phy_pause_adv_mvl;
@@ -426,6 +420,7 @@ s32 ngbe_init_phy(struct ngbe_hw *hw)
 		hw->phy.init_hw = ngbe_init_phy_yt;
 		hw->phy.check_link = ngbe_check_phy_link_yt;
 		hw->phy.setup_link = ngbe_setup_phy_link_yt;
+		hw->phy.set_phy_power = ngbe_set_phy_power_yt;
 		hw->phy.get_adv_pause = ngbe_get_phy_advertised_pause_yt;
 		hw->phy.get_lp_adv_pause = ngbe_get_phy_lp_advertised_pause_yt;
 		hw->phy.set_pause_adv = ngbe_set_phy_pause_adv_yt;

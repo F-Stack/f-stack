@@ -30,12 +30,6 @@
 #define HISI_DMA_MAX_DESC_NUM			8192
 #define HISI_DMA_MIN_DESC_NUM			32
 
-/**
- * The HIP08B(HiSilicon IP08) and later Chip(e.g. HiSilicon IP09) are DMA iEPs,
- * they have the same pci device id but with different pci revision.
- * Unfortunately, they have different register layouts, so the layout
- * enumerations are defined.
- */
 enum {
 	HISI_DMA_REG_LAYOUT_INVALID = 0,
 	HISI_DMA_REG_LAYOUT_HIP08
@@ -67,9 +61,6 @@ enum {
  * length of queue-region. The global offset for a single queue register is
  * calculated by:
  *     offset = queue-base + (queue-id * queue-region) + reg-offset-in-region.
- *
- * The first part of queue region is basically the same for HIP08 and later chip
- * register layouts, therefore, HISI_QUEUE_* registers are defined for it.
  */
 #define HISI_DMA_QUEUE_SQ_BASE_L_REG		0x0
 #define HISI_DMA_QUEUE_SQ_BASE_H_REG		0x4
@@ -87,6 +78,7 @@ enum {
 #define HISI_DMA_QUEUE_FSM_REG			0x30
 #define HISI_DMA_QUEUE_FSM_STS_M		GENMASK(3, 0)
 #define HISI_DMA_QUEUE_INT_STATUS_REG		0x40
+#define HISI_DMA_QUEUE_INT_MASK_REG		0x44
 #define HISI_DMA_QUEUE_ERR_INT_NUM0_REG		0x84
 #define HISI_DMA_QUEUE_ERR_INT_NUM1_REG		0x88
 #define HISI_DMA_QUEUE_ERR_INT_NUM2_REG		0x8C
@@ -97,7 +89,6 @@ enum {
  */
 #define HISI_DMA_HIP08_QUEUE_BASE			0x0
 #define HISI_DMA_HIP08_QUEUE_CTRL0_ERR_ABORT_B		2
-#define HISI_DMA_HIP08_QUEUE_INT_MASK_REG		0x44
 #define HISI_DMA_HIP08_QUEUE_INT_MASK_M			GENMASK(14, 0)
 #define HISI_DMA_HIP08_QUEUE_ERR_INT_NUM3_REG		0x90
 #define HISI_DMA_HIP08_QUEUE_ERR_INT_NUM4_REG		0x94
@@ -110,11 +101,16 @@ enum {
 
 /**
  * In fact, there are multiple states, but it need to pay attention to
- * the following two states for the driver:
+ * the following three states for the driver:
  */
 enum {
 	HISI_DMA_STATE_IDLE = 0,
 	HISI_DMA_STATE_RUN,
+	/**
+	 * All of the submitted descriptor are finished, and the queue
+	 * is waiting for new descriptors.
+	 */
+	HISI_DMA_STATE_CPL,
 };
 
 /**
@@ -219,6 +215,7 @@ struct hisi_dma_dev {
 	uint64_t submitted;
 	uint64_t completed;
 	uint64_t errors;
+	uint64_t qfulls;
 
 	/**
 	 * The following fields are not accessed in the I/O path, so they are

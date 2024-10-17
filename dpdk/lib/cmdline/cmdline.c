@@ -9,8 +9,6 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include <inttypes.h>
-#include <fcntl.h>
 #include <errno.h>
 
 #include <rte_string_fns.h>
@@ -175,6 +173,7 @@ cmdline_quit(struct cmdline *cl)
 {
 	if (!cl)
 		return;
+	cmdline_cancel(cl);
 	rdline_quit(&cl->rdl);
 }
 

@@ -704,7 +704,6 @@ mrvl_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 			break;
 
 		qp->sess_mp = qp_conf->mp_session;
-		qp->sess_mp_priv = qp_conf->mp_session_private;
 
 		memset(&qp->stats, 0, sizeof(qp->stats));
 		dev->data->queue_pairs[qp_id] = qp;
@@ -736,8 +735,7 @@ mrvl_crypto_pmd_sym_session_get_size(__rte_unused struct rte_cryptodev *dev)
 static int
 mrvl_crypto_pmd_sym_session_configure(__rte_unused struct rte_cryptodev *dev,
 		struct rte_crypto_sym_xform *xform,
-		struct rte_cryptodev_sym_session *sess,
-		struct rte_mempool *mp)
+		struct rte_cryptodev_sym_session *sess)
 {
 	struct mrvl_crypto_session *mrvl_sess;
 	void *sess_private_data;
@@ -748,23 +746,15 @@ mrvl_crypto_pmd_sym_session_configure(__rte_unused struct rte_cryptodev *dev,
 		return -EINVAL;
 	}
 
-	if (rte_mempool_get(mp, &sess_private_data)) {
-		CDEV_LOG_ERR("Couldn't get object from session mempool.");
-		return -ENOMEM;
-	}
-
+	sess_private_data = sess->driver_priv_data;
 	memset(sess_private_data, 0, sizeof(struct mrvl_crypto_session));
 
 	ret = mrvl_crypto_set_session_parameters(sess_private_data, xform);
 	if (ret != 0) {
 		MRVL_LOG(ERR, "Failed to configure session parameters!");
-
-		/* Return session to mempool */
-		rte_mempool_put(mp, sess_private_data);
 		return ret;
 	}
 
-	set_sym_session_private_data(sess, dev->driver_id, sess_private_data);
 
 	mrvl_sess = (struct mrvl_crypto_session *)sess_private_data;
 	if (sam_session_create(&mrvl_sess->sam_sess_params,
@@ -774,10 +764,8 @@ mrvl_crypto_pmd_sym_session_configure(__rte_unused struct rte_cryptodev *dev,
 	}
 
 	/* free the keys memory allocated for session creation */
-	if (mrvl_sess->sam_sess_params.cipher_key != NULL)
-		free(mrvl_sess->sam_sess_params.cipher_key);
-	if (mrvl_sess->sam_sess_params.auth_key != NULL)
-		free(mrvl_sess->sam_sess_params.auth_key);
+	free(mrvl_sess->sam_sess_params.cipher_key);
+	free(mrvl_sess->sam_sess_params.auth_key);
 
 	return 0;
 }
@@ -789,12 +777,11 @@ mrvl_crypto_pmd_sym_session_configure(__rte_unused struct rte_cryptodev *dev,
  * @returns 0. Always.
  */
 static void
-mrvl_crypto_pmd_sym_session_clear(struct rte_cryptodev *dev,
+mrvl_crypto_pmd_sym_session_clear(struct rte_cryptodev *dev __rte_unused,
 		struct rte_cryptodev_sym_session *sess)
 {
 
-	uint8_t index = dev->driver_id;
-	void *sess_priv = get_sym_session_private_data(sess, index);
+	void *sess_priv = sess->driver_priv_data;
 
 	/* Zero out the whole structure */
 	if (sess_priv) {
@@ -805,11 +792,6 @@ mrvl_crypto_pmd_sym_session_clear(struct rte_cryptodev *dev,
 		    sam_session_destroy(mrvl_sess->sam_sess) < 0) {
 			MRVL_LOG(ERR, "Error while destroying session!");
 		}
-
-		memset(mrvl_sess, 0, sizeof(struct mrvl_crypto_session));
-		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
-		set_sym_session_private_data(sess, index, NULL);
-		rte_mempool_put(sess_mp, sess_priv);
 	}
 }
 
@@ -850,21 +832,15 @@ struct rte_cryptodev_ops *rte_mrvl_crypto_pmd_ops = &mrvl_crypto_pmd_ops;
 static int
 mrvl_crypto_pmd_security_session_create(__rte_unused void *dev,
 				 struct rte_security_session_conf *conf,
-				 struct rte_security_session *sess,
-				 struct rte_mempool *mempool)
+				 struct rte_security_session *sess)
 {
 	struct mrvl_crypto_session *mrvl_sess;
-	void *sess_private_data;
+	void *sess_private_data = SECURITY_GET_SESS_PRIV(sess);
 	int ret;
 
 	if (sess == NULL) {
 		MRVL_LOG(ERR, "Invalid session struct.");
 		return -EINVAL;
-	}
-
-	if (rte_mempool_get(mempool, &sess_private_data)) {
-		MRVL_LOG(ERR, "Couldn't get object from session mempool.");
-		return -ENOMEM;
 	}
 
 	switch (conf->protocol) {
@@ -880,8 +856,6 @@ mrvl_crypto_pmd_security_session_create(__rte_unused void *dev,
 		if (ret != 0) {
 			MRVL_LOG(ERR, "Failed to configure session parameters.");
 
-			/* Return session to mempool */
-			rte_mempool_put(mempool, sess_private_data);
 			return ret;
 		}
 
@@ -895,8 +869,6 @@ mrvl_crypto_pmd_security_session_create(__rte_unused void *dev,
 				&mrvl_sess->sam_sess);
 		if (ret < 0) {
 			MRVL_LOG(ERR, "PMD: failed to create IPSEC session.");
-			/* Return session to mempool */
-			rte_mempool_put(mempool, sess_private_data);
 			return ret;
 		}
 		break;
@@ -906,8 +878,6 @@ mrvl_crypto_pmd_security_session_create(__rte_unused void *dev,
 		return -EINVAL;
 	}
 
-	set_sec_session_private_data(sess, sess_private_data);
-
 	return ret;
 }
 
@@ -916,13 +886,12 @@ static int
 mrvl_crypto_pmd_security_session_destroy(void *dev __rte_unused,
 		struct rte_security_session *sess)
 {
-	void *sess_priv = get_sec_session_private_data(sess);
+	void *sess_priv = SECURITY_GET_SESS_PRIV(sess);
 
 	/* Zero out the whole structure */
 	if (sess_priv) {
 		struct mrvl_crypto_session *mrvl_sess =
 			(struct mrvl_crypto_session *)sess_priv;
-		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
 
 		if (mrvl_sess->sam_sess &&
 		    sam_session_destroy(mrvl_sess->sam_sess) < 0) {
@@ -933,10 +902,14 @@ mrvl_crypto_pmd_security_session_destroy(void *dev __rte_unused,
 		rte_free(mrvl_sess->sam_sess_params.auth_key);
 		rte_free(mrvl_sess->sam_sess_params.cipher_iv);
 		memset(sess, 0, sizeof(struct rte_security_session));
-		set_sec_session_private_data(sess, NULL);
-		rte_mempool_put(sess_mp, sess_priv);
 	}
 	return 0;
+}
+
+static unsigned int
+mrvl_crypto_pmd_security_session_get_size(void *device __rte_unused)
+{
+	return sizeof(struct mrvl_crypto_session);
 }
 
 static const
@@ -1003,6 +976,7 @@ mrvl_crypto_pmd_security_capabilities_get(void *device __rte_unused)
 struct rte_security_ops mrvl_sec_security_pmd_ops = {
 	.session_create = mrvl_crypto_pmd_security_session_create,
 	.session_update = NULL,
+	.session_get_size = mrvl_crypto_pmd_security_session_get_size,
 	.session_stats_get = NULL,
 	.session_destroy = mrvl_crypto_pmd_security_session_destroy,
 	.set_pkt_metadata = NULL,

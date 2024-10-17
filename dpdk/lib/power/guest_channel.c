@@ -4,9 +4,7 @@
 
 #include <glob.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
-#include <signal.h>
 #include <limits.h>
 #include <fcntl.h>
 #include <string.h>
@@ -91,7 +89,7 @@ guest_channel_host_connect(const char *path, unsigned int lcore_id)
 	flags |= O_NONBLOCK;
 	if (fcntl(fd, F_SETFL, flags) < 0) {
 		RTE_LOG(ERR, GUEST_CHANNEL, "Failed on setting non-blocking mode for "
-				"file %s", fd_path);
+				"file %s\n", fd_path);
 		goto error;
 	}
 	/* QEMU needs a delay after connection */

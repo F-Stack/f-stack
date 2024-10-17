@@ -13,8 +13,12 @@ More information about CN9K and CN10K SoC can be found at `Marvell Official Webs
 Supported OCTEON cnxk SoCs
 --------------------------
 
+- CN93xx
+- CN96xx
+- CN98xx
 - CN106xx
 - CNF105xx
+- CN103XX
 
 Resource Virtualization Unit architecture
 -----------------------------------------
@@ -70,6 +74,8 @@ DPDK subsystem.
    +---+-----+--------------------------------------------------------------+
    | 11| BPHY| rte_rawdev                                                   |
    +---+-----+--------------------------------------------------------------+
+   | 12| GPIO| rte_rawdev                                                   |
+   +---+-----+--------------------------------------------------------------+
 
 PF0 is called the administrative / admin function (AF) and has exclusive
 privileges to provision RVU functional block's LFs to each of the PF/VF.
@@ -105,7 +111,9 @@ where even VF bound to the first domain and odd VF bound to the second domain.
 Typical application usage models are,
 
 #. Communication between the Linux kernel and DPDK application.
+
 #. Exception path to Linux kernel from DPDK application as SW ``KNI`` replacement.
+
 #. Communication between two different DPDK applications.
 
 SDP interface
@@ -124,6 +132,7 @@ can bind PF or VF to use SDP interface and it will be enumerated as ethdev ports
 The primary use case for SDP is to enable the smart NIC use case. Typical usage models are,
 
 #. Communication channel between remote host and cnxk SoC over PCIe.
+
 #. Transfer packets received from network interface to remote host over PCIe and
    vice-versa.
 
@@ -155,6 +164,9 @@ This section lists dataplane H/W block(s) available in cnxk SoC.
 
 #. **Dmadev Driver**
    See :doc:`../dmadevs/cnxk` for DPI Dmadev driver information.
+
+#. **Regex Device Driver**
+   See :doc:`../regexdevs/cn9k` for REE Regex device driver information.
 
 Procedure to Setup Platform
 ---------------------------
@@ -566,19 +578,41 @@ Compile DPDK
 
 DPDK may be compiled either natively on OCTEON CN9K/CN10K platform or cross-compiled on
 an x86 based platform.
+Meson build option ``enable_iova_as_pa`` is disabled on CNXK platforms.
+So only PMDs supporting this option are enabled on CNXK platform builds.
 
 Native Compilation
 ~~~~~~~~~~~~~~~~~~
 
+Refer to :doc:`../linux_gsg/build_dpdk` for generic native builds.
+
+CN9K:
+
 .. code-block:: console
 
-        meson setup build
+        meson setup -Dplatform=cn9k build
+        ninja -C build
+
+CN10K:
+
+.. code-block:: console
+
+        meson setup -Dplatform=cn10k build
         ninja -C build
 
 Cross Compilation
 ~~~~~~~~~~~~~~~~~
 
 Refer to :doc:`../linux_gsg/cross_build_dpdk_for_arm64` for generic arm64 details.
+
+CN9K:
+
+.. code-block:: console
+
+        meson setup build --cross-file config/arm/arm64_cn9k_linux_gcc
+        ninja -C build
+
+CN10K:
 
 .. code-block:: console
 
@@ -591,3 +625,18 @@ Refer to :doc:`../linux_gsg/cross_build_dpdk_for_arm64` for generic arm64 detail
    if Marvell toolchain is available then it can be used by overriding the
    c, cpp, ar, strip ``binaries`` attributes to respective Marvell
    toolchain binaries in ``config/arm/arm64_cn10k_linux_gcc`` file.
+
+Environment Variables
+~~~~~~~~~~~~~~~~~~~~~
+
+* ``BPHY_INTR_MLOCK_DISABLE``
+   When defined disables memory locking in
+   BPHY environment.
+
+* ``ROC_CN10K_MBOX_TIMEOUT``, ``ROC_MBOX_TIMEOUT``
+   When set, overrides MBOX timeout by value in milli seconds.
+
+* ``ETH_SEC_IV_OVR``
+   When set, overrides outbound inline SA IV. By default IV is generated
+   by HW. Format of variable is string of comma separated one byte values as
+   for ex: "0x0, 0x10, 0x20, ..."

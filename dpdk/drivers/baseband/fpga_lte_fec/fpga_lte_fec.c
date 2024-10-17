@@ -6,12 +6,12 @@
 
 #include <rte_common.h>
 #include <rte_log.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_malloc.h>
 #include <rte_mempool.h>
 #include <rte_errno.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_byteorder.h>
 #ifdef RTE_BBDEV_OFFLOAD_COST
 #include <rte_cycles.h>
@@ -645,6 +645,7 @@ fpga_dev_info_get(struct rte_bbdev *dev,
 	dev_info->capabilities = bbdev_capabilities;
 	dev_info->cpu_flag_reqs = NULL;
 	dev_info->data_endianness = RTE_LITTLE_ENDIAN;
+	dev_info->device_status = RTE_BBDEV_DEV_NOT_SUPPORTED;
 
 	/* Calculates number of queues assigned to device */
 	dev_info->max_num_queues = 0;
@@ -654,6 +655,14 @@ fpga_dev_info_get(struct rte_bbdev *dev,
 		if (hw_q_id != FPGA_INVALID_HW_QUEUE_ID)
 			dev_info->max_num_queues++;
 	}
+	/* Expose number of queue per operation type */
+	dev_info->num_queues[RTE_BBDEV_OP_NONE] = 0;
+	dev_info->num_queues[RTE_BBDEV_OP_TURBO_DEC] = dev_info->max_num_queues / 2;
+	dev_info->num_queues[RTE_BBDEV_OP_TURBO_ENC] = dev_info->max_num_queues / 2;
+	dev_info->num_queues[RTE_BBDEV_OP_LDPC_DEC] = 0;
+	dev_info->num_queues[RTE_BBDEV_OP_LDPC_ENC] = 0;
+	dev_info->queue_priority[RTE_BBDEV_OP_TURBO_DEC] = 1;
+	dev_info->queue_priority[RTE_BBDEV_OP_TURBO_ENC] = 1;
 }
 
 /**

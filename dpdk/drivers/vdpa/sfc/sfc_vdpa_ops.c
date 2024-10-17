@@ -24,14 +24,16 @@
 		 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
 		 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
 		 (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
-		 (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD))
+		 (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) | \
+		 (1ULL << VHOST_USER_PROTOCOL_F_MQ))
 
 /*
  * Set of features which are enabled by default.
  * Protocol feature bit is needed to enable notification notifier ctrl.
  */
 #define SFC_VDPA_DEFAULT_FEATURES \
-		(1ULL << VHOST_USER_F_PROTOCOL_FEATURES)
+		((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
+		 (1ULL << VIRTIO_NET_F_MQ))
 
 #define SFC_VDPA_MSIX_IRQ_SET_BUF_LEN \
 		(sizeof(struct vfio_irq_set) + \
@@ -258,8 +260,8 @@ sfc_vdpa_virtq_start(struct sfc_vdpa_ops_data *ops_data, int vq_num)
 	vq_cfg.evvc_used_ring_addr  = vring.used;
 	vq_cfg.evvc_vq_size = vring.size;
 
-	vq_dyncfg.evvd_vq_pidx = vring.last_used_idx;
-	vq_dyncfg.evvd_vq_cidx = vring.last_avail_idx;
+	vq_dyncfg.evvd_vq_used_idx  = vring.last_used_idx;
+	vq_dyncfg.evvd_vq_avail_idx = vring.last_avail_idx;
 
 	/* MSI-X vector is function-relative */
 	vq_cfg.evvc_msix_vector = RTE_INTR_VEC_RXTX_OFFSET + vq_num;
@@ -321,8 +323,8 @@ sfc_vdpa_virtq_stop(struct sfc_vdpa_ops_data *ops_data, int vq_num)
 	/* stop the vq */
 	rc = efx_virtio_qstop(vq, &vq_idx);
 	if (rc == 0) {
-		ops_data->vq_cxt[vq_num].cidx = vq_idx.evvd_vq_cidx;
-		ops_data->vq_cxt[vq_num].pidx = vq_idx.evvd_vq_pidx;
+		ops_data->vq_cxt[vq_num].cidx = vq_idx.evvd_vq_used_idx;
+		ops_data->vq_cxt[vq_num].pidx = vq_idx.evvd_vq_avail_idx;
 	}
 	ops_data->vq_cxt[vq_num].enable = B_FALSE;
 

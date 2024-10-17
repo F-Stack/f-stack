@@ -3,6 +3,7 @@
  */
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <errno.h>
 
 #include <rte_eal.h>

@@ -31,6 +31,7 @@
 
 #define NGBE_QUEUE_ITR_INTERVAL_DEFAULT	500 /* 500us */
 
+#define NGBE_MAX_MTU		9414
 /* The overhead from MTU to max frame size. */
 #define NGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
 
@@ -341,7 +342,6 @@ void ngbe_vlan_hw_strip_bitmap_set(struct rte_eth_dev *dev,
 		uint16_t queue, bool on);
 void ngbe_config_vlan_strip_on_all_queues(struct rte_eth_dev *dev,
 						  int mask);
-void ngbe_dev_setup_link_alarm_handler(void *param);
 void ngbe_read_stats_registers(struct ngbe_hw *hw,
 			   struct ngbe_hw_stats *hw_stats);
 

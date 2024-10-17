@@ -366,7 +366,8 @@ test_bbdev_configure_stop_queue(void)
 	 * - queue should be started if deferred_start ==
 	 */
 	ts_params->qconf.deferred_start = 0;
-	rte_bbdev_queue_configure(dev_id, queue_id, &ts_params->qconf);
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_configure(dev_id, queue_id, &ts_params->qconf),
+			"Failed test for rte_bbdev_queue_configure");
 	rte_bbdev_start(dev_id);
 
 	TEST_ASSERT_SUCCESS(return_value = rte_bbdev_queue_info_get(dev_id,
@@ -521,7 +522,7 @@ test_bbdev_op_pool(void)
 	rte_mempool_free(mp);
 
 	TEST_ASSERT((mp = rte_bbdev_op_pool_create("Test_INV",
-			RTE_BBDEV_OP_TYPE_COUNT, size, cache_size, 0)) == NULL,
+			RTE_BBDEV_OP_TYPE_SIZE_MAX, size, cache_size, 0)) == NULL,
 			"Failed test for rte_bbdev_op_pool_create: "
 			"returned value is not NULL for invalid type");
 

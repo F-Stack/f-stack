@@ -297,6 +297,30 @@ ARK PMD supports the following Arkville RTL PCIe instances including:
 * ``1d6c:1017`` - AR-ARK-FX1 [Arkville 64B Multi-Homed Primary Endpoint]
 * ``1d6c:1018`` - AR-ARK-FX1 [Arkville 64B Multi-Homed Secondary Endpoint]
 * ``1d6c:1019`` - AR-ARK-FX1 [Arkville 64B Multi-Homed Tertiary Endpoint]
+* ``1d6c:101a`` - AR-ARK-SRIOV-FX0 [Arkville 32B Primary Physical Function]
+* ``1d6c:101b`` - AR-ARK-SRIOV-FX1 [Arkville 64B Primary Physical Function]
+* ``1d6c:101c`` - AR-ARK-SRIOV-VF [Arkville Virtual Function]
+* ``1d6c:101e`` - AR-ARKA-FX1 [Arkville 64B DPDK Data Mover for Agilex R-Tile]
+* ``1d6c:101f`` - AR-TK242 [2x100GbE Packet Capture Device]
+
+DPDK and Arkville Firmware Versioning
+-------------------------------------
+
+Arkville's firmware releases and its PMD have version dependencies which
+must be stepped together at certain releases. PMD code ensures the
+versions are compatible. The following lists shows where version
+compatible steps have occurred between DPDK releases and the corresponding
+Arkville releases.  Intermediate releases not listed below remain
+compatible, e.g., DPDK releases 21.05, 21.08, and 21.11 are all compatible
+with Arkville releases 21.05, 21.08 and 21.11. LTS versions of DPDK remain
+compatible with the corresponding Arkville version.  If other combinations
+are required, please contact Atomic Rules support.
+
+* DPDK 22.07 requires Arkville 22.07.
+* DPDK 22.03 requires Arkville 22.03.
+* DPDK 21.05 requires Arkville 21.05.
+* DPDK 18.11 requires Arkville 18.11.
+* DPDK 17.05 requires Arkville 17.05 -- initial version.
 
 Supported Operating Systems
 ---------------------------
@@ -320,7 +344,6 @@ Unsupported Features
 Features that may be part of, or become part of, the Arkville RTL IP that are
 not currently supported or exposed by the ARK PMD include:
 
-* PCIe SR-IOV Virtual Functions (VFs)
 * Arkville's Packet Generator Control and Status
 * Arkville's Packet Director Control and Status
 * Arkville's Packet Checker Control and Status

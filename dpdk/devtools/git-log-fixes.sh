@@ -13,7 +13,7 @@ print_help ()
 	cat <<- END_OF_HELP
 
 	Find fixes to backport on previous versions.
-	It looks for the word "fix" in the headline or a tag "Fixes" or "Reverts".
+	It looks for a tag "Fixes" or for "Cc: stable@dpdk.org".
 	The oldest bug origin is printed as well as partially fixed versions.
 	END_OF_HELP
 }
@@ -76,7 +76,7 @@ origin_version () # <origin_hash> ...
 			# look chained fix of fix recursively
 			local rootver="$(origin_version $roothashes)"
 			[ -n "$rootver" ] || continue
-			echo "$rootver (partially fixed in $origver)"
+			echo "$rootver (partially fixed in $origin @ $origver)"
 		else
 			echo "$origver"
 		fi
@@ -109,8 +109,7 @@ while read id headline ; do
 	origins=$(origin_filter $id)
 	stable=$(stable_tag $id)
 	fixes=$(fixes_tag $id)
-	[ "$stable" = "S" ] || [ "$fixes" = "F" ] || [ -n "$origins" ] || \
-		echo "$headline" | grep -q fix || continue
+	[ "$stable" = "S" ] || [ "$fixes" = "F" ] || [ -n "$origins" ] || continue
 	version=$(commit_version $id)
 	if [ -n "$origins" ] ; then
 		origver="$(origin_version $origins)"

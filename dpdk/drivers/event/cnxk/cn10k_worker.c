@@ -18,8 +18,12 @@ cn10k_sso_hws_enq(void *port, const struct rte_event *ev)
 		cn10k_sso_hws_forward_event(ws, ev);
 		break;
 	case RTE_EVENT_OP_RELEASE:
-		cnxk_sso_hws_swtag_flush(ws->base + SSOW_LF_GWS_WQE0,
-					 ws->base + SSOW_LF_GWS_OP_SWTAG_FLUSH);
+		if (ws->swtag_req) {
+			cnxk_sso_hws_desched(ev->u64, ws->base);
+			ws->swtag_req = 0;
+			break;
+		}
+		cnxk_sso_hws_swtag_flush(ws->base);
 		break;
 	default:
 		return 0;
@@ -59,15 +63,4 @@ cn10k_sso_hws_enq_fwd_burst(void *port, const struct rte_event ev[],
 	cn10k_sso_hws_forward_event(ws, ev);
 
 	return 1;
-}
-
-uint16_t __rte_hot
-cn10k_sso_hws_ca_enq(void *port, struct rte_event ev[], uint16_t nb_events)
-{
-	struct cn10k_sso_hws *ws = port;
-
-	RTE_SET_USED(nb_events);
-
-	return cn10k_cpt_crypto_adapter_enqueue(ws->base + SSOW_LF_GWS_TAG,
-						ev->event_ptr);
 }

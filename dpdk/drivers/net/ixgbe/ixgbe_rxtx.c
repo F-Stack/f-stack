@@ -2978,8 +2978,7 @@ ixgbe_reset_rx_queue(struct ixgbe_adapter *adapter, struct ixgbe_rx_queue *rxq)
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
 
-	if (rxq->pkt_first_seg != NULL)
-		rte_pktmbuf_free(rxq->pkt_first_seg);
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -5741,6 +5740,25 @@ ixgbevf_dev_rx_init(struct rte_eth_dev *dev)
 		IXGBE_PSRTYPE_RQPL_SHIFT;
 	IXGBE_WRITE_REG(hw, IXGBE_VFPSRTYPE, psrtype);
 
+	/* Initialize the rss for x550_vf cards if enabled */
+	switch (hw->mac.type) {
+	case ixgbe_mac_X550_vf:
+	case ixgbe_mac_X550EM_x_vf:
+	case ixgbe_mac_X550EM_a_vf:
+		switch (dev->data->dev_conf.rxmode.mq_mode) {
+		case RTE_ETH_MQ_RX_RSS:
+		case RTE_ETH_MQ_RX_DCB_RSS:
+		case RTE_ETH_MQ_RX_VMDQ_RSS:
+			ixgbe_rss_configure(dev);
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+
 	ixgbe_set_rx_function(dev);
 
 	return 0;
@@ -5959,8 +5977,11 @@ ixgbe_config_rss_filter(struct rte_eth_dev *dev,
 	return 0;
 }
 
-/* Stubs needed for linkage when RTE_ARCH_PPC_64 is set */
-#if defined(RTE_ARCH_PPC_64)
+/* Stubs needed for linkage when RTE_ARCH_PPC_64, RTE_ARCH_RISCV or
+ * RTE_ARCH_LOONGARCH is set.
+ */
+#if defined(RTE_ARCH_PPC_64) || defined(RTE_ARCH_RISCV) || \
+	defined(RTE_ARCH_LOONGARCH)
 int
 ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev __rte_unused *dev)
 {

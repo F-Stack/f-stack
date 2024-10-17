@@ -162,7 +162,7 @@ init_params(int use_ext, int use_htm, int rw_lf, int use_jhash)
 
 	handle = rte_hash_create(&hash_params);
 	if (handle == NULL) {
-		printf("hash creation failed");
+		printf("hash creation failed\n");
 		return -1;
 	}
 
@@ -664,8 +664,12 @@ test_hash_rw_perf_main(void)
 	printf("Results summary:\n");
 	printf("================\n");
 
-	printf("single read: %u\n", htm_results.single_read);
-	printf("single write: %u\n", htm_results.single_write);
+	printf("HTM:\n");
+	printf("  single read: %u\n", htm_results.single_read);
+	printf("  single write: %u\n", htm_results.single_write);
+	printf("non HTM:\n");
+	printf("  single read: %u\n", non_htm_results.single_read);
+	printf("  single write: %u\n", non_htm_results.single_write);
 	for (i = 0; i < NUM_TEST; i++) {
 		printf("+++ core_cnt: %u +++\n", core_cnt[i]);
 		printf("HTM:\n");

@@ -4,22 +4,22 @@
 
 .. include:: <isonum.txt>
 
-MLX5 poll mode driver
-=====================
+NVIDIA MLX5 Ethernet Driver
+===========================
 
-The MLX5 poll mode driver library (**librte_net_mlx5**) provides support
-for **Mellanox ConnectX-4**, **Mellanox ConnectX-4 Lx** , **Mellanox
-ConnectX-5**, **Mellanox ConnectX-6**, **Mellanox ConnectX-6 Dx**, **Mellanox
-ConnectX-6 Lx**, **Mellanox BlueField** and **Mellanox BlueField-2** families
-of 10/25/40/50/100/200 Gb/s adapters as well as their virtual functions (VF)
-in SR-IOV context.
+.. note::
 
-Information and documentation about these adapters can be found on the
-`Mellanox website <http://www.mellanox.com>`__. Help is also provided by the
-`Mellanox community <http://community.mellanox.com/welcome>`__.
+   NVIDIA acquired Mellanox Technologies in 2020.
+   The DPDK documentation and code might still include instances
+   of or references to Mellanox trademarks (like BlueField and ConnectX)
+   that are now NVIDIA trademarks.
 
-There is also a `section dedicated to this poll mode driver
-<https://developer.nvidia.com/networking/dpdk>`_.
+The mlx5 Ethernet poll mode driver library (**librte_net_mlx5**) provides support
+for **NVIDIA ConnectX-4**, **NVIDIA ConnectX-4 Lx** , **NVIDIA ConnectX-5**,
+**NVIDIA ConnectX-6**, **NVIDIA ConnectX-6 Dx**, **NVIDIA ConnectX-6 Lx**,
+**NVIDIA ConnectX-7**, **NVIDIA BlueField** and **NVIDIA BlueField-2**
+families of 10/25/40/50/100/200 Gb/s adapters
+as well as their virtual functions (VF) in SR-IOV context.
 
 
 Design
@@ -29,12 +29,6 @@ Besides its dependency on libibverbs (that implies libmlx5 and associated
 kernel support), librte_net_mlx5 relies heavily on system calls for control
 operations such as querying/updating the MTU and flow control parameters.
 
-For security reasons and robustness, this driver only deals with virtual
-memory addresses. The way resources allocations are handled by the kernel,
-combined with hardware specifications that allow to handle virtual memory
-addresses directly, ensure that DPDK applications cannot access random
-physical memory (or memory that does not belong to the current process).
-
 This capability allows the PMD to coexist with kernel network interfaces
 which remain functional, although they stop receiving unicast packets as
 long as they share the same MAC address.
@@ -42,18 +36,8 @@ This means legacy linux control tools (for example: ethtool, ifconfig and
 more) can operate on the same network interfaces that owned by the DPDK
 application.
 
-The PMD can use libibverbs and libmlx5 to access the device firmware
-or directly the hardware components.
-There are different levels of objects and bypassing abilities
-to get the best performances:
-
-- Verbs is a complete high-level generic API
-- Direct Verbs is a device-specific API
-- DevX allows to access firmware objects
-- Direct Rules manages flow steering at low-level hardware layer
-
-Enabling librte_net_mlx5 causes DPDK applications to be linked against
-libibverbs.
+See :doc:`../../platform/mlx5` guide for more design details,
+including prerequisites installation.
 
 Features
 --------
@@ -62,6 +46,9 @@ Features
 - Multiple TX and RX queues.
 - Shared Rx queue.
 - Rx queue delay drop.
+- Rx queue available descriptor threshold event.
+- Host shaper support.
+- Support steering for external Rx queue created outside the PMD.
 - Support for scattered TX frames.
 - Advanced support for scattered Rx frames with tunable buffer attributes.
 - IPv4, IPv6, TCPv4, TCPv6, UDPv4 and UDPv6 RSS on any number of queues.
@@ -104,6 +91,8 @@ Features
 - Matching on IPv4 Internet Header Length (IHL).
 - Matching on GTP extension header with raw encap/decap action.
 - Matching on Geneve TLV option header with raw encap/decap action.
+- Matching on ESP header SPI field.
+- Modify IPv4/IPv6 ECN field.
 - RSS support in sample action.
 - E-Switch mirroring and jump.
 - E-Switch mirroring and modify.
@@ -111,10 +100,12 @@ Features
   flow group.
 - Flow metering, including meter policy API.
 - Flow meter hierarchy.
+- Flow meter mark.
 - Flow integrity offload API.
 - Connection tracking.
 - Sub-Function representors.
 - Sub-Function.
+- Matching on represented port.
 
 
 Limitations
@@ -138,6 +129,9 @@ Limitations
 - For secondary process:
 
   - Forked secondary process not supported.
+  - MPRQ is not supported. Callback to free externally attached MPRQ buffer is set
+    in a primary process, but has a different virtual address in a secondary process.
+    Calling a function at the wrong address leads to a segmentation fault.
   - External memory unregistered in EAL memseg list cannot be used for DMA
     unless such memory has been registered by ``mlx5_mr_update_ext_mp()`` in
     primary process and remapped to the same virtual address in secondary
@@ -148,6 +142,38 @@ Limitations
 
   - Counters of received packets and bytes number of devices in same share group are same.
   - Counters of received packets and bytes number of queues in same group and queue ID are same.
+
+- Available descriptor threshold event:
+
+  - Does not support shared Rx queue and hairpin Rx queue.
+
+- Host shaper:
+
+  - Support BlueField series NIC from BlueField 2.
+  - When configuring host shaper with MLX5_HOST_SHAPER_FLAG_AVAIL_THRESH_TRIGGERED flag set,
+    only rates 0 and 100Mbps are supported.
+
+- HW steering:
+
+  - WQE based high scaling and safer flow insertion/destruction.
+  - Set ``dv_flow_en`` to 2 in order to enable HW steering.
+  - Async queue-based ``rte_flow_async`` APIs supported only.
+  - NIC ConnectX-5 and before are not supported.
+  - Partial match with item template is not supported.
+  - IPv6 5-tuple matching is not supported.
+  - With E-Switch enabled, ports which share the E-Switch domain
+    should be started and stopped in a specific order:
+
+    - When starting ports, the transfer proxy port should be started first
+      and port representors should follow.
+    - When stopping ports, all of the port representors
+      should be stopped before stopping the transfer proxy port.
+
+    If ports are started/stopped in an incorrect order,
+    ``rte_eth_dev_start()``/``rte_eth_dev_stop()`` will return an appropriate error code:
+
+    - ``-EAGAIN`` for ``rte_eth_dev_start()``.
+    - ``-EBUSY`` for ``rte_eth_dev_stop()``.
 
 - When using Verbs flow engine (``dv_flow_en`` = 0), flow pattern without any
   specific VLAN will match for VLAN packets as well:
@@ -281,6 +307,9 @@ Limitations
   Rx mbufs must be freed before the device is closed. Otherwise, the mempool of
   the external buffers will be freed by PMD and the application which still
   holds the external buffers may be corrupted.
+  User-managed mempools with external pinned data buffers
+  cannot be used in conjunction with MPRQ
+  since packets may be already attached to PMD-managed external buffers.
 
 - If Multi-Packet Rx queue is configured (``mprq_en``) and Rx CQE compression is
   enabled (``rxq_cqe_comp_en``) at the same time, RSS hash result is not fully
@@ -426,24 +455,50 @@ Limitations
     encapsulation actions.
   - For NIC Rx flow, supports ``MARK``, ``COUNT``, ``QUEUE``, ``RSS`` in the
     sample actions list.
-  - For E-Switch mirroring flow, supports ``RAW ENCAP``, ``Port ID``,
-    ``VXLAN ENCAP``, ``NVGRE ENCAP`` in the sample actions list.
+  - For E-Switch mirroring flow, supports ``RAW_ENCAP``, ``PORT_ID``,
+    ``VXLAN_ENCAP``, ``NVGRE_ENCAP`` in the sample actions list.
+  - For E-Switch mirroring flow with sample ratio = 1, the ``ENCAP`` action
+    supports uplink port only.
+  - For E-Switch mirroring flow with sample ratio = 1, the ``PORT`` and ``JUMP`` actions
+    are not supported without presented ``ENCAP`` action in the sample actions list.
   - For ConnectX-5 trusted device, the application metadata with SET_TAG index 0
     is not supported before ``RTE_FLOW_ACTION_TYPE_SAMPLE`` action.
 
 - Modify Field flow:
 
-  - Supports the 'set' operation only for ``RTE_FLOW_ACTION_TYPE_MODIFY_FIELD`` action.
+  - Supports the 'set' and 'add' operations for ``RTE_FLOW_ACTION_TYPE_MODIFY_FIELD`` action.
   - Modification of an arbitrary place in a packet via the special ``RTE_FLOW_FIELD_START`` Field ID is not supported.
   - Modification of the 802.1Q Tag, VXLAN Network or GENEVE Network ID's is not supported.
   - Encapsulation levels are not supported, can modify outermost header fields only.
-  - Offsets must be 32-bits aligned, cannot skip past the boundary of a field.
+  - Offsets cannot skip past the boundary of a field.
   - If the field type is ``RTE_FLOW_FIELD_MAC_TYPE``
     and packet contains one or more VLAN headers,
     the meaningful type field following the last VLAN header
     is used as modify field operation argument.
     The modify field action is not intended to modify VLAN headers type field,
     dedicated VLAN push and pop actions should be used instead.
+  - For packet fields (e.g. MAC addresses, IPv4 addresses or L4 ports)
+    offset specifies the number of bits to skip from field's start,
+    starting from MSB in the first byte, in the network order.
+  - For flow metadata fields (e.g. META or TAG)
+    offset specifies the number of bits to skip from field's start,
+    starting from LSB in the least significant byte, in the host order.
+
+- Age action:
+
+  - with HW steering (``dv_flow_en=2``)
+
+    - Using the same indirect count action combined with multiple age actions
+      in different flows may cause a wrong age state for the age actions.
+    - Creating/destroying flow rules with indirect age action when it is active
+      (timeout != 0) may cause a wrong age state for the indirect age action.
+
+    - The driver reuses counters for aging action, so for optimization
+      the values in ``rte_flow_port_attr`` structure should describe:
+
+      - ``nb_counters`` is the number of flow rules using counter (with/without age)
+        in addition to flow rules using only age (without count action).
+      - ``nb_aging_objects`` is the number of flow rules containing age action.
 
 - IPv6 header item 'proto' field, indicating the next header protocol, should
   not be set as extension header.
@@ -468,13 +523,24 @@ Limitations
      - yellow: NULL or END.
      - RED: DROP / END.
   - The only supported meter policy actions:
-     - green: QUEUE, RSS, PORT_ID, REPRESENTED_PORT, JUMP, DROP, MARK and SET_TAG.
-     - yellow: QUEUE, RSS, PORT_ID, REPRESENTED_PORT, JUMP, DROP, MARK and SET_TAG.
+     - green: QUEUE, RSS, PORT_ID, REPRESENTED_PORT, JUMP, DROP, MODIFY_FIELD, MARK, METER and SET_TAG.
+     - yellow: QUEUE, RSS, PORT_ID, REPRESENTED_PORT, JUMP, DROP, MODIFY_FIELD, MARK, METER and SET_TAG.
      - RED: must be DROP.
   - Policy actions of RSS for green and yellow should have the same configuration except queues.
   - Policy with RSS/queue action is not supported when ``dv_xmeta_en`` enabled.
+  - If green action is METER, yellow action must be the same METER action or NULL.
   - meter profile packet mode is supported.
   - meter profiles of RFC2697, RFC2698 and RFC4115 are supported.
+  - RFC4115 implementation is following MEF, meaning yellow traffic may reclaim unused green bandwidth when green token bucket is full.
+  - When using DV flow engine (``dv_flow_en`` = 1),
+    if meter has drop count
+    or meter hierarchy contains any meter that uses drop count,
+    it cannot be used by flow rule matching all ports.
+  - When using DV flow engine (``dv_flow_en`` = 1),
+    if meter hierarchy contains any meter that has MODIFY_FIELD/SET_TAG,
+    it cannot be used by flow matching all ports.
+  - When using HWS flow engine (``dv_flow_en`` = 2),
+    only meter mark action is supported.
 
 - Integrity:
 
@@ -495,8 +561,8 @@ Limitations
 
   - Cannot co-exist with ASO meter, ASO age action in a single flow rule.
   - Flow rules insertion rate and memory consumption need more optimization.
-  - 256 ports maximum.
-  - 4M connections maximum.
+  - 16 ports maximum.
+  - 32M connections maximum.
 
 - Multi-thread flow insertion:
 
@@ -509,7 +575,7 @@ Limitations
 
 - Bonding under socket direct mode
 
-  - Needs OFED 5.4+.
+  - Needs MLNX_OFED 5.4+.
 
 - Timestamps:
 
@@ -525,7 +591,18 @@ Limitations
     from the reference "Clock Queue" completions,
     the scheduled send timestamps should not be specified with non-zero MSB.
 
+- Match on GRE header supports the following fields:
+
+  - c_rsvd0_v: C bit, K bit, S bit
+  - protocol type
+  - checksum
+  - key
+  - sequence
+
+  Matching on checksum and sequence needs MLNX_OFED 5.6+.
+
 - The NIC egress flow rules on representor port are not supported.
+
 
 Statistics
 ----------
@@ -534,79 +611,35 @@ MLX5 supports various methods to report statistics:
 
 Port statistics can be queried using ``rte_eth_stats_get()``. The received and sent statistics are through SW only and counts the number of packets received or sent successfully by the PMD. The imissed counter is the amount of packets that could not be delivered to SW because a queue was full. Packets not received due to congestion in the bus or on the NIC can be queried via the rx_discards_phy xstats counter.
 
-Extended statistics can be queried using ``rte_eth_xstats_get()``. The extended statistics expose a wider set of counters counted by the device. The extended port statistics counts the number of packets received or sent successfully by the port. As Mellanox NICs are using the :ref:`Bifurcated Linux Driver <linux_gsg_linux_drivers>` those counters counts also packet received or sent by the Linux kernel. The counters with ``_phy`` suffix counts the total events on the physical port, therefore not valid for VF.
+Extended statistics can be queried using ``rte_eth_xstats_get()``. The extended statistics expose a wider set of counters counted by the device. The extended port statistics counts the number of packets received or sent successfully by the port. As NVIDIA NICs are using the :ref:`Bifurcated Linux Driver <linux_gsg_linux_drivers>` those counters counts also packet received or sent by the Linux kernel. The counters with ``_phy`` suffix counts the total events on the physical port, therefore not valid for VF.
 
 Finally per-flow statistics can by queried using ``rte_flow_query`` when attaching a count action for specific flow. The flow counter counts the number of packets received successfully by the port and match the specific flow.
+
+
+Compilation
+-----------
+
+See :ref:`mlx5 common compilation <mlx5_common_compilation>`.
+
 
 Configuration
 -------------
 
-Compilation options
-~~~~~~~~~~~~~~~~~~~
+Environment Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ibverbs libraries can be linked with this PMD in a number of ways,
-configured by the ``ibverbs_link`` build option:
+See :ref:`mlx5 common configuration <mlx5_common_env>`.
 
-- ``shared`` (default): the PMD depends on some .so files.
-
-- ``dlopen``: Split the dependencies glue in a separate library
-  loaded when needed by dlopen.
-  It make dependencies on libibverbs and libmlx4 optional,
-  and has no performance impact.
-
-- ``static``: Embed static flavor of the dependencies libibverbs and libmlx4
-  in the PMD shared library or the executable static binary.
-
-Environment variables
-~~~~~~~~~~~~~~~~~~~~~
-
-- ``MLX5_GLUE_PATH``
-
-  A list of directories in which to search for the rdma-core "glue" plug-in,
-  separated by colons or semi-colons.
-
-- ``MLX5_SHUT_UP_BF``
-
-  Configures HW Tx doorbell register as IO-mapped.
-
-  By default, the HW Tx doorbell is configured as a write-combining register.
-  The register would be flushed to HW usually when the write-combining buffer
-  becomes full, but it depends on CPU design.
-
-Run-time configuration
+Firmware configuration
 ~~~~~~~~~~~~~~~~~~~~~~
 
-- librte_net_mlx5 brings kernel network interfaces up during initialization
-  because it is affected by their state. Forcing them down prevents packets
-  reception.
-
-- **ethtool** operations on related kernel interfaces also affect the PMD.
-
-Run as non-root
-^^^^^^^^^^^^^^^
-
-In order to run as a non-root user,
-some capabilities must be granted to the application::
-
-   setcap cap_sys_admin,cap_net_admin,cap_net_raw,cap_ipc_lock+ep <dpdk-app>
-
-Below are the reasons of the need for each capability:
-
-``cap_sys_admin``
-   When using physical addresses (PA mode), with Linux >= 4.0,
-   for access to ``/proc/self/pagemap``.
-
-``cap_net_admin``
-   For device configuration.
-
-``cap_net_raw``
-   For raw ethernet queue allocation through kernel driver.
-
-``cap_ipc_lock``
-   For DMA memory pinning.
+See :ref:`mlx5_firmware_config` guide.
 
 Driver options
-^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~
+
+Please refer to :ref:`mlx5 common options <mlx5_common_driver_options>`
+for an additional list of options shared with other mlx5 drivers.
 
 - ``rxq_cqe_comp_en`` parameter [int]
 
@@ -661,7 +694,7 @@ Driver options
   dropping a packet. Once the timer is expired, the delay drop will be
   deactivated for all the Rx queues with this feature enable. To re-activate
   it, a rearming is needed and it is part of the kernel driver starting from
-  OFED 5.5.
+  MLNX_OFED 5.5.
 
   To enable / disable the delay drop rearming, the private flag ``dropless_rq``
   can be set and queried via ethtool:
@@ -898,37 +931,9 @@ Driver options
 
 - ``tx_db_nc`` parameter [int]
 
-  The rdma core library can map doorbell register in two ways, depending on the
-  environment variable "MLX5_SHUT_UP_BF":
-
-  - As regular cached memory (usually with write combining attribute), if the
-    variable is either missing or set to zero.
-  - As non-cached memory, if the variable is present and set to not "0" value.
-
-  The type of mapping may slightly affect the Tx performance, the optimal choice
-  is strongly relied on the host architecture and should be deduced practically.
-
-  If ``tx_db_nc`` is set to zero, the doorbell is forced to be mapped to regular
-  memory (with write combining), the PMD will perform the extra write memory barrier
-  after writing to doorbell, it might increase the needed CPU clocks per packet
-  to send, but latency might be improved.
-
-  If ``tx_db_nc`` is set to one, the doorbell is forced to be mapped to non
-  cached memory, the PMD will not perform the extra write memory barrier
-  after writing to doorbell, on some architectures it might improve the
-  performance.
-
-  If ``tx_db_nc`` is set to two, the doorbell is forced to be mapped to regular
-  memory, the PMD will use heuristics to decide whether write memory barrier
-  should be performed. For bursts with size multiple of recommended one (64 pkts)
-  it is supposed the next burst is coming and no need to issue the extra memory
-  barrier (it is supposed to be issued in the next coming burst, at least after
-  descriptor writing). It might increase latency (on some hosts till next
-  packets transmit) and should be used with care.
-
-  If ``tx_db_nc`` is omitted or set to zero, the preset (if any) environment
-  variable "MLX5_SHUT_UP_BF" value is used. If there is no "MLX5_SHUT_UP_BF",
-  the default ``tx_db_nc`` value is zero for ARM64 hosts and one for others.
+  This parameter name is deprecated and ignored.
+  The new name for this parameter is ``sq_db_nc``.
+  See :ref:`common driver options <mlx5_common_driver_options>`.
 
 - ``tx_pp`` parameter [int]
 
@@ -940,6 +945,11 @@ Driver options
   of granularity and engages the special test mode the check the schedule rate.
   By default (if the ``tx_pp`` is not specified) send scheduling on timestamps
   feature is disabled.
+
+  Starting with ConnectX-7 the capability to schedule traffic directly
+  on timestamp specified in descriptor is provided,
+  no extra objects are needed anymore and scheduling capability
+  is advertised and handled regardless ``tx_pp`` parameter presence.
 
 - ``tx_skew`` parameter [int]
 
@@ -1017,6 +1027,10 @@ Driver options
   - 3, this engages tunnel offload mode. In E-Switch configuration, that
     mode implicitly activates ``dv_xmeta_en=1``.
 
+  - 4, this mode is only supported in HWS (``dv_flow_en=2``).
+    The Rx/Tx metadata with 32b width copy between FDB and NIC is supported.
+    The mark is only supported in NIC and there is no copy supported.
+
   +------+-----------+-----------+-------------+-------------+
   | Mode | ``MARK``  | ``META``  | ``META`` Tx | FDB/Through |
   +======+===========+===========+=============+=============+
@@ -1049,16 +1063,32 @@ Driver options
 
 - ``dv_flow_en`` parameter [int]
 
-  A nonzero value enables the DV flow steering assuming it is supported
-  by the driver (RDMA Core library version is rdma-core-24.0 or higher).
+  Value 0 means legacy Verbs flow offloading.
 
-  Enabled by default if supported.
+  Value 1 enables the DV flow steering assuming it is supported by the
+  driver (requires rdma-core 24 or higher).
+
+  Value 2 enables the WQE based hardware steering.
+  In this mode, only queue-based flow management is supported.
+
+  It is configured by default to 1 (DV flow steering) if supported.
+  Otherwise, the value is 0 which indicates legacy Verbs flow offloading.
 
 - ``dv_esw_en`` parameter [int]
 
   A nonzero value enables E-Switch using Direct Rules.
 
   Enabled by default if supported.
+
+- ``fdb_def_rule_en`` parameter [int]
+
+  A non-zero value enables to create a dedicated rule on E-Switch root table.
+  This dedicated rule forwards all incoming packets into table 1.
+  Other rules will be created in E-Switch table original table level plus one,
+  to improve the flow insertion rate due to skipping root table managed by firmware.
+  If set to 0, all rules will be created on the original E-Switch table level.
+
+  By default, the PMD will set this value to 1.
 
 - ``lacp_by_user`` parameter [int]
 
@@ -1069,30 +1099,6 @@ Driver options
   itself and not steer LACP traffic to the kernel.
 
   Disabled by default (set to 0).
-
-- ``mr_ext_memseg_en`` parameter [int]
-
-  A nonzero value enables extending memseg when registering DMA memory. If
-  enabled, the number of entries in MR (Memory Region) lookup table on datapath
-  is minimized and it benefits performance. On the other hand, it worsens memory
-  utilization because registered memory is pinned by kernel driver. Even if a
-  page in the extended chunk is freed, that doesn't become reusable until the
-  entire memory is freed.
-
-  Enabled by default.
-
-- ``mr_mempool_reg_en`` parameter [int]
-
-  A nonzero value enables implicit registration of DMA memory of all mempools
-  except those having ``RTE_MEMPOOL_F_NON_IO``. This flag is set automatically
-  for mempools populated with non-contiguous objects or those without IOVA.
-  The effect is that when a packet from a mempool is transmitted,
-  its memory is already registered for DMA in the PMD and no registration
-  will happen on the data path. The tradeoff is extra work on the creation
-  of each mempool and increased HW resource use if some mempools
-  are not used with MLX5 devices.
-
-  Enabled by default.
 
 - ``representor`` parameter [list]
 
@@ -1113,6 +1119,20 @@ Driver options
   To probe VF port representors 0 through 2 on both PFs of bonding device::
 
     <Primary_PCI_BDF>,representor=pf[0,1]vf[0-2]
+
+- ``repr_matching_en`` parameter [int]
+
+  - 0. If representor matching is disabled, then there will be no implicit
+    item added. As a result, ingress flow rules will match traffic
+    coming to any port, not only the port on which flow rule is created.
+    Because of that, default flow rules for ingress traffic cannot be created
+    and port starts in isolated mode by default. Port cannot be switched back
+    to non-isolated mode.
+
+  - 1. If representor matching is enabled (default setting),
+    then each ingress pattern template has an implicit REPRESENTED_PORT
+    item added. Flow rules based on this pattern template will match
+    the vport associated with port on which rule is created.
 
 - ``max_dump_files_num`` parameter [int]
 
@@ -1164,13 +1184,6 @@ Driver options
 
   By default, the PMD will set this value to 0.
 
-- ``sys_mem_en`` parameter [int]
-
-  A non-zero value enables the PMD memory management allocating memory
-  from system by default, without explicit rte memory flag.
-
-  By default, the PMD will set this value to 0.
-
 - ``decap_en`` parameter [int]
 
   Some devices do not support FCS (frame checksum) scattering for
@@ -1194,258 +1207,11 @@ Driver options
 
   By default, the PMD will set this value to 1.
 
-.. _mlx5_firmware_config:
-
-Firmware configuration
-~~~~~~~~~~~~~~~~~~~~~~
-
-Firmware features can be configured as key/value pairs.
-
-The command to set a value is::
-
-  mlxconfig -d <device> set <key>=<value>
-
-The command to query a value is::
-
-  mlxconfig -d <device> query | grep <key>
-
-The device name for the command ``mlxconfig`` can be either the PCI address,
-or the mst device name found with::
-
-  mst status
-
-Below are some firmware configurations listed.
-
-- link type::
-
-    LINK_TYPE_P1
-    LINK_TYPE_P2
-    value: 1=Infiniband 2=Ethernet 3=VPI(auto-sense)
-
-- enable SR-IOV::
-
-    SRIOV_EN=1
-
-- maximum number of SR-IOV virtual functions::
-
-    NUM_OF_VFS=<max>
-
-- enable DevX (required by Direct Rules and other features)::
-
-    UCTX_EN=1
-
-- aggressive CQE zipping::
-
-    CQE_COMPRESSION=1
-
-- L3 VXLAN and VXLAN-GPE destination UDP port::
-
-    IP_OVER_VXLAN_EN=1
-    IP_OVER_VXLAN_PORT=<udp dport>
-
-- enable VXLAN-GPE tunnel flow matching::
-
-    FLEX_PARSER_PROFILE_ENABLE=0
-    or
-    FLEX_PARSER_PROFILE_ENABLE=2
-
-- enable IP-in-IP tunnel flow matching::
-
-    FLEX_PARSER_PROFILE_ENABLE=0
-
-- enable MPLS flow matching::
-
-    FLEX_PARSER_PROFILE_ENABLE=1
-
-- enable ICMP(code/type/identifier/sequence number) / ICMP6(code/type) fields matching::
-
-    FLEX_PARSER_PROFILE_ENABLE=2
-
-- enable Geneve flow matching::
-
-   FLEX_PARSER_PROFILE_ENABLE=0
-   or
-   FLEX_PARSER_PROFILE_ENABLE=1
-
-- enable Geneve TLV option flow matching::
-
-   FLEX_PARSER_PROFILE_ENABLE=0
-
-- enable GTP flow matching::
-
-   FLEX_PARSER_PROFILE_ENABLE=3
-
-- enable eCPRI flow matching::
-
-   FLEX_PARSER_PROFILE_ENABLE=4
-   PROG_PARSE_GRAPH=1
-
-- enable dynamic flex parser for flex item::
-
-   FLEX_PARSER_PROFILE_ENABLE=4
-   PROG_PARSE_GRAPH=1
-
-- enable realtime timestamp format::
-
-   REAL_TIME_CLOCK_ENABLE=1
-
-Linux Prerequisites
--------------------
-
-This driver relies on external libraries and kernel drivers for resources
-allocations and initialization. The following dependencies are not part of
-DPDK and must be installed separately:
-
-- **libibverbs**
-
-  User space Verbs framework used by librte_net_mlx5. This library provides
-  a generic interface between the kernel and low-level user space drivers
-  such as libmlx5.
-
-  It allows slow and privileged operations (context initialization, hardware
-  resources allocations) to be managed by the kernel and fast operations to
-  never leave user space.
-
-- **libmlx5**
-
-  Low-level user space driver library for Mellanox
-  ConnectX-4/ConnectX-5/ConnectX-6/BlueField devices, it is automatically loaded
-  by libibverbs.
-
-  This library basically implements send/receive calls to the hardware
-  queues.
-
-- **Kernel modules**
-
-  They provide the kernel-side Verbs API and low level device drivers that
-  manage actual hardware initialization and resources sharing with user
-  space processes.
-
-  Unlike most other PMDs, these modules must remain loaded and bound to
-  their devices:
-
-  - mlx5_core: hardware driver managing Mellanox
-    ConnectX-4/ConnectX-5/ConnectX-6/BlueField devices and related Ethernet kernel
-    network devices.
-  - mlx5_ib: InfiniBand device driver.
-  - ib_uverbs: user space driver for Verbs (entry point for libibverbs).
-
-- **Firmware update**
-
-  Mellanox OFED/EN releases include firmware updates for
-  ConnectX-4/ConnectX-5/ConnectX-6/BlueField adapters.
-
-  Because each release provides new features, these updates must be applied to
-  match the kernel modules and libraries they come with.
-
-.. note::
-
-   Both libraries are BSD and GPL licensed. Linux kernel modules are GPL
-   licensed.
-
-Installation
-~~~~~~~~~~~~
-
-Either RDMA Core library with a recent enough Linux kernel release
-(recommended) or Mellanox OFED/EN, which provides compatibility with older
-releases.
-
-RDMA Core with Linux Kernel
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-- Minimal kernel version : v4.14 or the most recent 4.14-rc (see `Linux installation documentation`_)
-- Minimal rdma-core version: v15+ commit 0c5f5765213a ("Merge pull request #227 from yishaih/tm")
-  (see `RDMA Core installation documentation`_)
-- When building for i686 use:
-
-  - rdma-core version 18.0 or above built with 32bit support.
-  - Kernel version 4.14.41 or above.
-
-- Starting with rdma-core v21, static libraries can be built::
-
-    cd build
-    CFLAGS=-fPIC cmake -DIN_PLACE=1 -DENABLE_STATIC=1 -GNinja ..
-    ninja
-
-.. _`Linux installation documentation`: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/plain/Documentation/admin-guide/README.rst
-.. _`RDMA Core installation documentation`: https://raw.githubusercontent.com/linux-rdma/rdma-core/master/README.md
-
-
-Mellanox OFED/EN
-^^^^^^^^^^^^^^^^
-
-- Mellanox OFED version: **4.5** and above /
-  Mellanox EN version: **4.5** and above
-- firmware version:
-
-  - ConnectX-4: **12.21.1000** and above.
-  - ConnectX-4 Lx: **14.21.1000** and above.
-  - ConnectX-5: **16.21.1000** and above.
-  - ConnectX-5 Ex: **16.21.1000** and above.
-  - ConnectX-6: **20.27.0090** and above.
-  - ConnectX-6 Dx: **22.27.0090** and above.
-  - BlueField: **18.25.1010** and above.
-
-While these libraries and kernel modules are available on OpenFabrics
-Alliance's `website <https://www.openfabrics.org/>`__ and provided by package
-managers on most distributions, this PMD requires Ethernet extensions that
-may not be supported at the moment (this is a work in progress).
-
-`Mellanox OFED
-<https://network.nvidia.com/products/infiniband-drivers/linux/mlnx_ofed/>`__ and
-`Mellanox EN
-<https://network.nvidia.com/products/ethernet-drivers/linux/mlnx_en/>`__
-include the necessary support and should be used in the meantime. For DPDK,
-only libibverbs, libmlx5, mlnx-ofed-kernel packages and firmware updates are
-required from that distribution.
-
-.. note::
-
-   Several versions of Mellanox OFED/EN are available. Installing the version
-   this DPDK release was developed and tested against is strongly
-   recommended. Please check the `linux prerequisites`_.
-
-Windows Prerequisites
----------------------
-
-This driver relies on external libraries and kernel drivers for resources
-allocations and initialization. The dependencies in the following sub-sections
-are not part of DPDK, and must be installed separately.
-
-Compilation Prerequisites
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-DevX SDK installation
-^^^^^^^^^^^^^^^^^^^^^
-
-The DevX SDK must be installed on the machine building the Windows PMD.
-Additional information can be found at
-`How to Integrate Windows DevX in Your Development Environment
-<https://docs.mellanox.com/display/winof2v250/RShim+Drivers+and+Usage#RShimDriversandUsage-DevXInterface>`__.
-
-Runtime Prerequisites
-~~~~~~~~~~~~~~~~~~~~~
-
-WinOF2 version 2.60 or higher must be installed on the machine.
-
-WinOF2 installation
-^^^^^^^^^^^^^^^^^^^
-
-The driver can be downloaded from the following site:
-`WINOF2
-<https://www.mellanox.com/products/adapter-software/ethernet/windows/winof-2>`__
-
-DevX Enablement
-^^^^^^^^^^^^^^^
-
-DevX for Windows must be enabled in the Windows registry.
-The keys ``DevxEnabled`` and ``DevxFsRules`` must be set.
-Additional information can be found in the WinOF2 user manual.
 
 Supported NICs
 --------------
 
-The following Mellanox device families are supported by the same mlx5 driver:
+The following NVIDIA device families are supported by the same mlx5 driver:
 
   - ConnectX-4
   - ConnectX-4 Lx
@@ -1454,181 +1220,56 @@ The following Mellanox device families are supported by the same mlx5 driver:
   - ConnectX-6
   - ConnectX-6 Dx
   - ConnectX-6 Lx
+  - ConnectX-7
   - BlueField
   - BlueField-2
 
 Below are detailed device names:
 
-* Mellanox\ |reg| ConnectX\ |reg|-4 10G MCX4111A-XCAT (1x10G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 10G MCX412A-XCAT (2x10G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 25G MCX4111A-ACAT (1x25G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 25G MCX412A-ACAT (2x25G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 40G MCX413A-BCAT (1x40G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 40G MCX4131A-BCAT (1x40G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 40G MCX415A-BCAT (1x40G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX413A-GCAT (1x50G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX4131A-GCAT (1x50G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX414A-BCAT (2x50G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX415A-GCAT (1x50G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX416A-BCAT (2x50G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX416A-GCAT (2x50G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 50G MCX415A-CCAT (1x100G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 100G MCX416A-CCAT (2x100G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 Lx 10G MCX4111A-XCAT (1x10G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 Lx 10G MCX4121A-XCAT (2x10G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 Lx 25G MCX4111A-ACAT (1x25G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 Lx 25G MCX4121A-ACAT (2x25G)
-* Mellanox\ |reg| ConnectX\ |reg|-4 Lx 40G MCX4131A-BCAT (1x40G)
-* Mellanox\ |reg| ConnectX\ |reg|-5 100G MCX556A-ECAT (2x100G)
-* Mellanox\ |reg| ConnectX\ |reg|-5 Ex EN 100G MCX516A-CDAT (2x100G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 200G MCX654106A-HCAT (2x200G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 Dx EN 100G MCX623106AN-CDAT (2x100G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 Dx EN 200G MCX623105AN-VDAT (1x200G)
-* Mellanox\ |reg| ConnectX\ |reg|-6 Lx EN 25G MCX631102AN-ADAT (2x25G)
-
-Quick Start Guide on OFED/EN
-----------------------------
-
-1. Download latest Mellanox OFED/EN. For more info check the `linux prerequisites`_.
+* NVIDIA\ |reg| ConnectX\ |reg|-4 10G MCX4111A-XCAT (1x10G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 10G MCX412A-XCAT (2x10G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 25G MCX4111A-ACAT (1x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 25G MCX412A-ACAT (2x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 40G MCX413A-BCAT (1x40G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 40G MCX4131A-BCAT (1x40G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 40G MCX415A-BCAT (1x40G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX413A-GCAT (1x50G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX4131A-GCAT (1x50G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX414A-BCAT (2x50G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX415A-GCAT (1x50G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX416A-BCAT (2x50G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX416A-GCAT (2x50G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 50G MCX415A-CCAT (1x100G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 100G MCX416A-CCAT (2x100G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 Lx 10G MCX4111A-XCAT (1x10G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 Lx 10G MCX4121A-XCAT (2x10G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 Lx 25G MCX4111A-ACAT (1x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 Lx 25G MCX4121A-ACAT (2x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-4 Lx 40G MCX4131A-BCAT (1x40G)
+* NVIDIA\ |reg| ConnectX\ |reg|-5 100G MCX556A-ECAT (2x100G)
+* NVIDIA\ |reg| ConnectX\ |reg|-5 Ex EN 100G MCX516A-CDAT (2x100G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 200G MCX654106A-HCAT (2x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 100G MCX623106AN-CDAT (2x100G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 200G MCX623105AN-VDAT (1x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-6 Lx EN 25G MCX631102AN-ADAT (2x25G)
+* NVIDIA\ |reg| ConnectX\ |reg|-7 200G CX713106AE-HEA_QP1_Ax (2x200G)
+* NVIDIA\ |reg| BlueField\ |reg|-2 25G MBF2H332A-AEEOT_A1 (2x25G)
 
 
-2. Install the required libraries and kernel modules either by installing
-   only the required set, or by installing the entire Mellanox OFED/EN::
+Sub-Function
+------------
 
-        ./mlnxofedinstall --upstream-libs --dpdk
-
-3. Verify the firmware is the correct one::
-
-        ibv_devinfo
-
-4. Verify all ports links are set to Ethernet::
-
-        mlxconfig -d <mst device> query | grep LINK_TYPE
-        LINK_TYPE_P1                        ETH(2)
-        LINK_TYPE_P2                        ETH(2)
-
-   Link types may have to be configured to Ethernet::
-
-        mlxconfig -d <mst device> set LINK_TYPE_P1/2=1/2/3
-
-        * LINK_TYPE_P1=<1|2|3> , 1=Infiniband 2=Ethernet 3=VPI(auto-sense)
-
-   For hypervisors, verify SR-IOV is enabled on the NIC::
-
-        mlxconfig -d <mst device> query | grep SRIOV_EN
-        SRIOV_EN                            True(1)
-
-   If needed, configure SR-IOV::
-
-        mlxconfig -d <mst device> set SRIOV_EN=1 NUM_OF_VFS=16
-        mlxfwreset -d <mst device> reset
-
-5. Restart the driver::
-
-        /etc/init.d/openibd restart
-
-   or::
-
-        service openibd restart
-
-   If link type was changed, firmware must be reset as well::
-
-        mlxfwreset -d <mst device> reset
-
-   For hypervisors, after reset write the sysfs number of virtual functions
-   needed for the PF.
-
-   To dynamically instantiate a given number of virtual functions (VFs)::
-
-        echo [num_vfs] > /sys/class/infiniband/mlx5_0/device/sriov_numvfs
-
-6. Install DPDK and you are ready to go.
-   See :doc:`compilation instructions <../linux_gsg/build_dpdk>`.
-
-Enable switchdev mode
----------------------
-
-Switchdev mode is a mode in E-Switch, that binds between representor and VF or SF.
-Representor is a port in DPDK that is connected to a VF or SF in such a way
-that assuming there are no offload flows, each packet that is sent from the VF or SF
-will be received by the corresponding representor. While each packet that is or SF
-sent to a representor will be received by the VF or SF.
-This is very useful in case of SRIOV mode, where the first packet that is sent
-by the VF or SF will be received by the DPDK application which will decide if this
-flow should be offloaded to the E-Switch. After offloading the flow packet
-that the VF or SF that are matching the flow will not be received any more by
-the DPDK application.
-
-1. Enable SRIOV mode::
-
-        mlxconfig -d <mst device> set SRIOV_EN=true
-
-2. Configure the max number of VFs::
-
-        mlxconfig -d <mst device> set NUM_OF_VFS=<num of vfs>
-
-3. Reset the FW::
-
-        mlxfwreset -d <mst device> reset
-
-3. Configure the actual number of VFs::
-
-        echo <num of vfs > /sys/class/net/<net device>/device/sriov_numvfs
-
-4. Unbind the device (can be rebind after the switchdev mode)::
-
-        echo -n "<device pci address" > /sys/bus/pci/drivers/mlx5_core/unbind
-
-5. Enable switchdev mode::
-
-        echo switchdev > /sys/class/net/<net device>/compat/devlink/mode
-
-Sub-Function support
---------------------
-
-Sub-Function is a portion of the PCI device, a SF netdev has its own
-dedicated queues (txq, rxq).
-A SF shares PCI level resources with other SFs and/or with its parent PCI function.
-
-0. Requirement::
-
-        OFED version >= 5.4-0.3.3.0
-
-1. Configure SF feature::
-
-        # Run mlxconfig on both PFs on host and ECPFs on BlueField.
-        mlxconfig -d <mst device> set PER_PF_NUM_SF=1 PF_TOTAL_SF=252 PF_SF_BAR_SIZE=12
-
-2. Enable switchdev mode::
-
-        mlxdevm dev eswitch set pci/<DBDF> mode switchdev
-
-3. Add SF port::
-
-        mlxdevm port add pci/<DBDF> flavour pcisf pfnum 0 sfnum <sfnum>
-
-        Get SFID from output: pci/<DBDF>/<SFID>
-
-4. Modify MAC address::
-
-        mlxdevm port function set pci/<DBDF>/<SFID> hw_addr <MAC>
-
-5. Activate SF port::
-
-        mlxdevm port function set pci/<DBDF>/<ID> state active
-
-6. Devargs to probe SF device::
-
-        auxiliary:mlx5_core.sf.<num>,dv_flow_en=1
+See :ref:`mlx5_sub_function`.
 
 Sub-Function representor support
---------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A SF netdev supports E-Switch representation offload
 similar to PF and VF representors.
 Use <sfnum> to probe SF representor::
 
-        testpmd> port attach <PCI_BDF>,representor=sf<sfnum>,dv_flow_en=1
+   testpmd> port attach <PCI_BDF>,representor=sf<sfnum>,dv_flow_en=1
+
 
 Performance tuning
 ------------------
@@ -1722,6 +1363,14 @@ There are multiple Rx burst functions with different advantages and limitations.
 Supported hardware offloads
 ---------------------------
 
+Below tables show offload support depending on hardware, firmware,
+and Linux software support.
+
+The :ref:`Linux prerequisites <mlx5_linux_prerequisites>`
+are Linux kernel and rdma-core libraries.
+These dependencies are also packaged in MLNX_OFED or MLNX_EN,
+shortened below as "OFED".
+
 .. table:: Minimal SW/HW versions for queue offloads
 
    ============== ===== ===== ========= ===== ========== =============
@@ -1805,6 +1454,11 @@ Supported hardware offloads
    | | Header rewrite      | | DPDK 20.02    | | DPDK 20.02    |
    | | (set_dscp)          | | OFED 5.0      | | OFED 5.0      |
    | |                     | | rdma-core 24  | | rdma-core 24  |
+   | |                     | | ConnectX-5    | | ConnectX-5    |
+   +-----------------------+-----------------+-----------------+
+   | | Header rewrite      | | DPDK 22.07    | | DPDK 22.07    |
+   | | (ipv4_ecn /         | | OFED 5.6-2    | | OFED 5.6-2    |
+   | | ipv6_ecn)           | | rdma-core 41  | | rdma-core 41  |
    | |                     | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
    | Jump                  | | DPDK 19.05    | | DPDK 19.02    |
@@ -1900,6 +1554,14 @@ Supported hardware offloads
    |                       | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
 
+.. table:: Minimal SW/HW versions for flow template API
+
+   +-----------------+--------------------+--------------------+
+   | DPDK            | NIC                | Firmware           |
+   +=================+====================+====================+
+   | 22.11           | ConnectX-6 Dx      | xx.35.1012         |
+   +-----------------+--------------------+--------------------+
+
 Notes for metadata
 ------------------
 
@@ -1926,6 +1588,48 @@ directly but neither destroyed nor flushed.
 
 The application should re-create the flows as required after the port restart.
 
+
+Notes for hairpin
+-----------------
+
+NVIDIA ConnectX and BlueField devices support
+specifying memory placement for hairpin Rx and Tx queues.
+This feature requires NVIDIA MLNX_OFED 5.8.
+
+By default, data buffers and packet descriptors for hairpin queues
+are placed in device memory
+which is shared with other resources (e.g. flow rules).
+
+Starting with DPDK 22.11 and NVIDIA MLNX_OFED 5.8,
+applications are allowed to:
+
+#. Place data buffers and Rx packet descriptors in dedicated device memory.
+   Application can request that configuration
+   through ``use_locked_device_memory`` configuration option.
+
+   Placing data buffers and Rx packet descriptors in dedicated device memory
+   can decrease latency on hairpinned traffic,
+   since traffic processing for the hairpin queue will not be memory starved.
+
+   However, reserving device memory for hairpin Rx queues
+   may decrease throughput under heavy load,
+   since less resources will be available on device.
+
+   This option is supported only for Rx hairpin queues.
+
+#. Place Tx packet descriptors in host memory.
+   Application can request that configuration
+   through ``use_rte_memory`` configuration option.
+
+   Placing Tx packet descritors in host memory can increase traffic throughput.
+   This results in more resources available on the device for other purposes,
+   which reduces memory contention on device.
+   Side effect of this option is visible increase in latency,
+   since each packet incurs additional PCI transactions.
+
+   This option is supported only for Tx hairpin queues.
+
+
 Notes for testpmd
 -----------------
 
@@ -1944,7 +1648,7 @@ behavior as librte_net_mlx4::
 Usage example
 -------------
 
-This section demonstrates how to launch **testpmd** with Mellanox
+This section demonstrates how to launch **testpmd** with NVIDIA
 ConnectX-4/ConnectX-5/ConnectX-6/BlueField devices managed by librte_net_mlx5.
 
 #. Load the kernel modules::
@@ -2102,3 +1806,213 @@ both the meters in hierarchy on that flow.
    add port meter policy 0 2 g_actions meter mtr_id M / end y_actions end r_actions drop / end
    create port meter 0 N 2 2 yes 0xffff 1 0
    flow create 0 ingress group 1 pattern eth / end actions meter mtr_id N / end
+
+How to configure a VF as trusted
+--------------------------------
+
+This section demonstrates how to configure a virtual function (VF) interface as trusted.
+Trusted VF is needed to offload rules with rte_flow to a group that is bigger than 0.
+The configuration is done in two parts: driver and FW.
+
+The procedure below is an example of using a ConnectX-5 adapter card (pf0) with 2 VFs:
+
+#. Create 2 VFs on the PF pf0 when in Legacy SR-IOV mode::
+
+   $ echo 2 > /sys/class/net/pf0/device/mlx5_num_vfs
+
+#. Verify the VFs are created:
+
+   .. code-block:: console
+
+      $ lspci | grep Mellanox
+      82:00.0 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5]
+      82:00.1 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5]
+      82:00.2 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5 Virtual Function]
+      82:00.3 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5 Virtual Function]
+
+#. Unbind all VFs. For each VF PCIe, using the following command to unbind the driver::
+
+   $ echo "0000:82:00.2" >> /sys/bus/pci/drivers/mlx5_core/unbind
+
+#. Set the VFs to be trusted for the kernel by using one of the methods below:
+
+      - Using sysfs file::
+
+        $ echo ON | tee /sys/class/net/pf0/device/sriov/0/trust
+        $ echo ON | tee /sys/class/net/pf0/device/sriov/1/trust
+
+      - Using “ip link” command::
+
+        $ ip link set p0 vf 0 trust on
+        $ ip link set p0 vf 1 trust on
+
+#. Configure all VFs using mlxreg::
+
+   $ mlxreg -d /dev/mst/mt4121_pciconf0 --reg_name VHCA_TRUST_LEVEL --yes --set "all_vhca=0x1,trust_level=0x1"
+
+   .. note::
+
+      Firmware version used must be >= xx.29.1016 and MFT >= 4.18
+
+#. For each VF PCIe, using the following command to bind the driver::
+
+   $ echo "0000:82:00.2" >> /sys/bus/pci/drivers/mlx5_core/bind
+
+Host shaper
+-----------
+
+Host shaper register is per host port register
+which sets a shaper on the host port.
+All VF/host PF representors belonging to one host port share one host shaper.
+For example, if representor 0 and representor 1 belong to the same host port,
+and a host shaper rate of 1Gbps is configured,
+the shaper throttles both representors traffic from the host.
+
+Host shaper has two modes for setting the shaper,
+immediate and deferred to available descriptor threshold event trigger.
+
+In immediate mode, the rate limit is configured immediately to host shaper.
+
+When deferring to the available descriptor threshold trigger,
+the shaper is not set until an available descriptor threshold event
+is received by any Rx queue in a VF representor belonging to the host port.
+The only rate supported for deferred mode is 100Mbps
+(there is no limit on the supported rates for immediate mode).
+In deferred mode, the shaper is set on the host port by the firmware
+upon receiving the available descriptor threshold event,
+which allows throttling host traffic on available descriptor threshold events
+at minimum latency, preventing excess drops in the Rx queue.
+
+Dependency on mstflint package
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In order to configure host shaper register,
+``librte_net_mlx5`` depends on ``libmtcr_ul``
+which can be installed from MLNX_OFED mstflint package.
+Meson detects ``libmtcr_ul`` existence at configure stage.
+If the library is detected, the application must link with ``-lmtcr_ul``,
+as done by the pkg-config file libdpdk.pc.
+
+Available descriptor threshold and host shaper
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There is a command to configure the available descriptor threshold in testpmd.
+Testpmd also contains sample logic to handle available descriptor threshold events.
+The typical workflow is:
+testpmd configures available descriptor threshold for Rx queues,
+enables ``avail_thresh_triggered`` in host shaper and registers a callback.
+When traffic from the host is too high
+and Rx queue emptiness is below the available descriptor threshold,
+the PMD receives an event
+and the firmware configures a 100Mbps shaper on the host port automatically.
+Then the PMD call the callback registered previously,
+which will delay a while to let Rx queue empty,
+then disable host shaper.
+
+Let's assume we have a simple BlueField 2 setup:
+port 0 is uplink, port 1 is VF representor.
+Each port has 2 Rx queues.
+To control traffic from the host to the Arm device,
+we can enable the available descriptor threshold in testpmd by:
+
+.. code-block:: console
+
+   testpmd> mlx5 set port 1 host_shaper avail_thresh_triggered 1 rate 0
+   testpmd> set port 1 rxq 0 avail_thresh 70
+   testpmd> set port 1 rxq 1 avail_thresh 70
+
+The first command disables the current host shaper
+and enables the available descriptor threshold triggered mode.
+The other commands configure the available descriptor threshold
+to 70% of Rx queue size for both Rx queues.
+
+When traffic from the host is too high,
+testpmd console prints log about available descriptor threshold event,
+then host shaper is disabled.
+The traffic rate from the host is controlled and less drop happens in Rx queues.
+
+The threshold event and shaper can be disabled like this:
+
+.. code-block:: console
+
+   testpmd> mlx5 set port 1 host_shaper avail_thresh_triggered 0 rate 0
+   testpmd> set port 1 rxq 0 avail_thresh 0
+   testpmd> set port 1 rxq 1 avail_thresh 0
+
+It is recommended an application disables the available descriptor threshold
+and ``avail_thresh_triggered`` before exit,
+if it enables them before.
+
+The shaper can also be configured with a value, the rate unit is 100Mbps.
+Below, the command sets the current shaper to 5Gbps
+and disables ``avail_thresh_triggered``.
+
+.. code-block:: console
+
+   testpmd> mlx5 set port 1 host_shaper avail_thresh_triggered 0 rate 50
+
+
+Testpmd
+-------
+
+port attach with socket path
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is possible to allocate a port with ``libibverbs`` from external application.
+For importing the external port with extra device arguments,
+there is a specific testpmd command
+similar to :ref:`port attach command <port_attach>`::
+
+   testpmd> mlx5 port attach (identifier) socket=(path)
+
+where:
+
+* ``identifier``: device identifier with optional parameters
+  as same as :ref:`port attach command <port_attach>`.
+* ``path``: path to IPC server socket created by the external application.
+
+This command performs:
+
+#. Open IPC client socket using the given path, and connect it.
+
+#. Import ibverbs context and ibverbs protection domain.
+
+#. Add two device arguments for context (``cmd_fd``)
+   and protection domain (``pd_handle``) to the device identifier.
+   See :ref:`mlx5 driver options <mlx5_common_driver_options>` for more
+   information about these device arguments.
+
+#. Call the regular ``port attach`` function with updated identifier.
+
+For example, to attach a port whose PCI address is ``0000:0a:00.0``
+and its socket path is ``/var/run/import_ipc_socket``:
+
+.. code-block:: console
+
+   testpmd> mlx5 port attach 0000:0a:00.0 socket=/var/run/import_ipc_socket
+   testpmd: MLX5 socket path is /var/run/import_ipc_socket
+   testpmd: Attach port with extra devargs 0000:0a:00.0,cmd_fd=40,pd_handle=1
+   Attaching a new port...
+   EAL: Probe PCI driver: mlx5_pci (15b3:101d) device: 0000:0a:00.0 (socket 0)
+   Port 0 is attached. Now total ports is 1
+   Done
+
+
+port map external Rx queue
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+External Rx queue indexes mapping management.
+
+Map HW queue index (32-bit) to ethdev queue index (16-bit) for external Rx queue::
+
+   testpmd> mlx5 port (port_id) ext_rxq map (sw_queue_id) (hw_queue_id)
+
+Unmap external Rx queue::
+
+   testpmd> mlx5 port (port_id) ext_rxq unmap (sw_queue_id)
+
+where:
+
+* ``sw_queue_id``: queue index in range [64536, 65535].
+  This range is the highest 1000 numbers.
+* ``hw_queue_id``: queue index given by HW in queue creation.

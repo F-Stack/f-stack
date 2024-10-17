@@ -17,7 +17,7 @@
 #include "ngbe_rxtx.h"
 
 #ifdef RTE_LIBRTE_IEEE1588
-#define NGBE_TX_IEEE1588_TMST PKT_TX_IEEE1588_TMST
+#define NGBE_TX_IEEE1588_TMST RTE_MBUF_F_TX_IEEE1588_TMST
 #else
 #define NGBE_TX_IEEE1588_TMST 0
 #endif
@@ -702,7 +702,7 @@ ngbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		cmd_type_len = NGBE_TXD_FCS;
 
 #ifdef RTE_LIBRTE_IEEE1588
-		if (ol_flags & PKT_TX_IEEE1588_TMST)
+		if (ol_flags & RTE_MBUF_F_TX_IEEE1588_TMST)
 			cmd_type_len |= NGBE_TXD_1588;
 #endif
 
@@ -880,7 +880,7 @@ ngbe_rxd_pkt_info_to_pkt_flags(uint32_t pkt_info)
 	};
 #ifdef RTE_LIBRTE_IEEE1588
 	static uint64_t ip_pkt_etqf_map[8] = {
-		0, 0, 0, PKT_RX_IEEE1588_PTP,
+		0, 0, 0, RTE_MBUF_F_RX_IEEE1588_PTP,
 		0, 0, 0, 0,
 	};
 	int etfid = ngbe_etflt_id(NGBE_RXD_PTID(pkt_info));
@@ -910,7 +910,7 @@ rx_desc_status_to_pkt_flags(uint32_t rx_status, uint64_t vlan_flags)
 
 #ifdef RTE_LIBRTE_IEEE1588
 	if (rx_status & NGBE_RXD_STAT_1588)
-		pkt_flags = pkt_flags | PKT_RX_IEEE1588_TMST;
+		pkt_flags = pkt_flags | RTE_MBUF_F_RX_IEEE1588_TMST;
 #endif
 	return pkt_flags;
 }
@@ -1223,11 +1223,22 @@ ngbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * of accesses cannot be reordered by the compiler. If they were
 		 * not volatile, they could be reordered which could lead to
 		 * using invalid descriptor fields when read from rxd.
+		 *
+		 * Meanwhile, to prevent the CPU from executing out of order, we
+		 * need to use a proper memory barrier to ensure the memory
+		 * ordering below.
 		 */
 		rxdp = &rx_ring[rx_id];
 		staterr = rxdp->qw1.lo.status;
 		if (!(staterr & rte_cpu_to_le_32(NGBE_RXD_STAT_DD)))
 			break;
+
+		/*
+		 * Use acquire fence to ensure that status_error which includes
+		 * DD bit is loaded before loading of other descriptor words.
+		 */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+
 		rxd = *rxdp;
 
 		/*
@@ -1453,6 +1464,12 @@ next_desc:
 
 		if (!(staterr & NGBE_RXD_STAT_DD))
 			break;
+
+		/*
+		 * Use acquire fence to ensure that status_error which includes
+		 * DD bit is loaded before loading of other descriptor words.
+		 */
+		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		rxd = *rxdp;
 
@@ -1774,6 +1791,7 @@ ngbe_tx_queue_release(struct ngbe_tx_queue *txq)
 		if (txq->ops != NULL) {
 			txq->ops->release_mbufs(txq);
 			txq->ops->free_swring(txq);
+			rte_memzone_free(txq->mz);
 		}
 		rte_free(txq);
 	}
@@ -1978,6 +1996,7 @@ ngbe_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	txq->mz = tz;
 	txq->nb_tx_desc = nb_desc;
 	txq->tx_free_thresh = tx_free_thresh;
 	txq->pthresh = tx_conf->tx_thresh.pthresh;
@@ -2080,6 +2099,7 @@ ngbe_rx_queue_release(struct ngbe_rx_queue *rxq)
 		ngbe_rx_queue_release_mbufs(rxq);
 		rte_free(rxq->sw_ring);
 		rte_free(rxq->sw_sc_ring);
+		rte_memzone_free(rxq->mz);
 		rte_free(rxq);
 	}
 }
@@ -2170,6 +2190,7 @@ ngbe_reset_rx_queue(struct ngbe_adapter *adapter, struct ngbe_rx_queue *rxq)
 	rxq->rx_free_trigger = (uint16_t)(rxq->rx_free_thresh - 1);
 	rxq->rx_tail = 0;
 	rxq->nb_rx_hold = 0;
+	rte_pktmbuf_free(rxq->pkt_first_seg);
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
 }
@@ -2260,6 +2281,7 @@ ngbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	rxq->mz = rz;
 	/*
 	 * Zero init all the descriptors in the ring.
 	 */
@@ -2415,6 +2437,7 @@ ngbe_dev_clear_queues(struct rte_eth_dev *dev)
 		if (txq != NULL) {
 			txq->ops->release_mbufs(txq);
 			txq->ops->reset(txq);
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 		}
 	}
 
@@ -2424,6 +2447,7 @@ ngbe_dev_clear_queues(struct rte_eth_dev *dev)
 		if (rxq != NULL) {
 			ngbe_rx_queue_release_mbufs(rxq);
 			ngbe_reset_rx_queue(adapter, rxq);
+			dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 		}
 	}
 }

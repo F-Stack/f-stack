@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2019 Intel Corporation
+ * Copyright(c) 2015-2022 Intel Corporation
  */
 #ifndef _QAT_SYM_SESSION_H_
 #define _QAT_SYM_SESSION_H_
@@ -63,6 +63,16 @@ enum qat_sym_proto_flag {
 	QAT_CRYPTO_PROTO_FLAG_ZUC = 4
 };
 
+struct qat_sym_session;
+
+/*
+ * typedef qat_op_build_request_t function pointer, passed in as argument
+ * in enqueue op burst, where a build request assigned base on the type of
+ * crypto op.
+ */
+typedef int (*qat_sym_build_request_t)(void *in_op, struct qat_sym_session *ctx,
+		uint8_t *out_msg, void *op_cookie);
+
 /* Common content descriptor */
 struct qat_sym_cd {
 	struct icp_qat_hw_cipher_algo_blk cipher;
@@ -95,7 +105,7 @@ struct qat_sym_session {
 	uint16_t auth_key_length;
 	uint16_t digest_length;
 	rte_spinlock_t lock;	/* protects this struct */
-	enum qat_device_gen min_qat_dev_gen;
+	uint16_t dev_id;
 	uint8_t aes_cmac;
 	uint8_t is_single_pass;
 	uint8_t is_single_pass_gmac;
@@ -107,17 +117,18 @@ struct qat_sym_session {
 	/* Some generations need different setup of counter */
 	uint32_t slice_types;
 	enum qat_sym_proto_flag qat_proto_flag;
+	qat_sym_build_request_t build_request[2];
 };
 
 int
 qat_sym_session_configure(struct rte_cryptodev *dev,
 		struct rte_crypto_sym_xform *xform,
-		struct rte_cryptodev_sym_session *sess,
-		struct rte_mempool *mempool);
+		struct rte_cryptodev_sym_session *sess);
 
 int
 qat_sym_session_set_parameters(struct rte_cryptodev *dev,
-		struct rte_crypto_sym_xform *xform, void *session_private);
+		struct rte_crypto_sym_xform *xform, void *session_private,
+		rte_iova_t session_private_iova);
 
 int
 qat_sym_session_configure_aead(struct rte_cryptodev *dev,
@@ -166,9 +177,11 @@ qat_sym_validate_zuc_key(int key_len, enum icp_qat_hw_cipher_algo *alg);
 #ifdef RTE_LIB_SECURITY
 int
 qat_security_session_create(void *dev, struct rte_security_session_conf *conf,
-		struct rte_security_session *sess, struct rte_mempool *mempool);
+		struct rte_security_session *sess);
 int
 qat_security_session_destroy(void *dev, struct rte_security_session *sess);
+unsigned int
+qat_security_session_get_size(void *dev __rte_unused);
 #endif
 
 #endif /* _QAT_SYM_SESSION_H_ */

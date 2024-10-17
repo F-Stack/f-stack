@@ -15,7 +15,7 @@
 #include <rte_ip_frag.h>
 #include <rte_devargs.h>
 #include <rte_kvargs.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_alarm.h>
 #include <rte_cycles.h>
 #include <rte_string_fns.h>
@@ -619,8 +619,11 @@ bond_ethdev_tx_burst_round_robin(void *queue, struct rte_mbuf **bufs,
 	/* Send packet burst on each slave device */
 	for (i = 0; i < num_of_slaves; i++) {
 		if (slave_nb_pkts[i] > 0) {
+			num_tx_slave = rte_eth_tx_prepare(slaves[i],
+					bd_tx_q->queue_id, slave_bufs[i],
+					slave_nb_pkts[i]);
 			num_tx_slave = rte_eth_tx_burst(slaves[i], bd_tx_q->queue_id,
-					slave_bufs[i], slave_nb_pkts[i]);
+					slave_bufs[i], num_tx_slave);
 
 			/* if tx burst fails move packets to end of bufs */
 			if (unlikely(num_tx_slave < slave_nb_pkts[i])) {
@@ -645,6 +648,7 @@ bond_ethdev_tx_burst_active_backup(void *queue,
 {
 	struct bond_dev_private *internals;
 	struct bond_tx_queue *bd_tx_q;
+	uint16_t nb_prep_pkts;
 
 	bd_tx_q = (struct bond_tx_queue *)queue;
 	internals = bd_tx_q->dev_private;
@@ -652,8 +656,11 @@ bond_ethdev_tx_burst_active_backup(void *queue,
 	if (internals->active_slave_count < 1)
 		return 0;
 
+	nb_prep_pkts = rte_eth_tx_prepare(internals->current_primary_port,
+				bd_tx_q->queue_id, bufs, nb_pkts);
+
 	return rte_eth_tx_burst(internals->current_primary_port, bd_tx_q->queue_id,
-			bufs, nb_pkts);
+			bufs, nb_prep_pkts);
 }
 
 static inline uint16_t
@@ -927,7 +934,7 @@ bond_ethdev_tx_burst_tlb(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 	struct rte_eth_dev *primary_port =
 			&rte_eth_devices[internals->primary_port];
-	uint16_t num_tx_total = 0;
+	uint16_t num_tx_total = 0, num_tx_prep;
 	uint16_t i, j;
 
 	uint16_t num_of_slaves = internals->active_slave_count;
@@ -968,8 +975,10 @@ bond_ethdev_tx_burst_tlb(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 #endif
 		}
 
-		num_tx_total += rte_eth_tx_burst(slaves[i], bd_tx_q->queue_id,
+		num_tx_prep = rte_eth_tx_prepare(slaves[i], bd_tx_q->queue_id,
 				bufs + num_tx_total, nb_pkts - num_tx_total);
+		num_tx_total += rte_eth_tx_burst(slaves[i], bd_tx_q->queue_id,
+				bufs + num_tx_total, num_tx_prep);
 
 		if (num_tx_total == nb_pkts)
 			break;
@@ -1081,8 +1090,10 @@ bond_ethdev_tx_burst_alb(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	/* Send ARP packets on proper slaves */
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
 		if (slave_bufs_pkts[i] > 0) {
-			num_send = rte_eth_tx_burst(i, bd_tx_q->queue_id,
+			num_send = rte_eth_tx_prepare(i, bd_tx_q->queue_id,
 					slave_bufs[i], slave_bufs_pkts[i]);
+			num_send = rte_eth_tx_burst(i, bd_tx_q->queue_id,
+					slave_bufs[i], num_send);
 			for (j = 0; j < slave_bufs_pkts[i] - num_send; j++) {
 				bufs[nb_pkts - 1 - num_not_send - j] =
 						slave_bufs[i][nb_pkts - 1 - j];
@@ -1105,8 +1116,10 @@ bond_ethdev_tx_burst_alb(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	/* Send update packets on proper slaves */
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
 		if (update_bufs_pkts[i] > 0) {
+			num_send = rte_eth_tx_prepare(i, bd_tx_q->queue_id,
+					update_bufs[i], update_bufs_pkts[i]);
 			num_send = rte_eth_tx_burst(i, bd_tx_q->queue_id, update_bufs[i],
-					update_bufs_pkts[i]);
+					num_send);
 			for (j = num_send; j < update_bufs_pkts[i]; j++) {
 				rte_pktmbuf_free(update_bufs[i][j]);
 			}
@@ -1175,9 +1188,12 @@ tx_burst_balance(void *queue, struct rte_mbuf **bufs, uint16_t nb_bufs,
 		if (slave_nb_bufs[i] == 0)
 			continue;
 
-		slave_tx_count = rte_eth_tx_burst(slave_port_ids[i],
+		slave_tx_count = rte_eth_tx_prepare(slave_port_ids[i],
 				bd_tx_q->queue_id, slave_bufs[i],
 				slave_nb_bufs[i]);
+		slave_tx_count = rte_eth_tx_burst(slave_port_ids[i],
+				bd_tx_q->queue_id, slave_bufs[i],
+				slave_tx_count);
 
 		total_tx_count += slave_tx_count;
 
@@ -1260,8 +1276,10 @@ tx_burst_8023ad(void *queue, struct rte_mbuf **bufs, uint16_t nb_bufs,
 
 		if (rte_ring_dequeue(port->tx_ring,
 				     (void **)&ctrl_pkt) != -ENOENT) {
-			slave_tx_count = rte_eth_tx_burst(slave_port_ids[i],
+			slave_tx_count = rte_eth_tx_prepare(slave_port_ids[i],
 					bd_tx_q->queue_id, &ctrl_pkt, 1);
+			slave_tx_count = rte_eth_tx_burst(slave_port_ids[i],
+					bd_tx_q->queue_id, &ctrl_pkt, slave_tx_count);
 			/*
 			 * re-enqueue LAG control plane packets to buffering
 			 * ring if transmission fails so the packet isn't lost.
@@ -1332,6 +1350,9 @@ bond_ethdev_tx_burst_broadcast(void *queue, struct rte_mbuf **bufs,
 
 	if (num_of_slaves < 1)
 		return 0;
+
+	/* It is rare that bond different PMDs together, so just call tx-prepare once */
+	nb_pkts = rte_eth_tx_prepare(slaves[0], bd_tx_q->queue_id, bufs, nb_pkts);
 
 	/* Increment reference count on mbufs */
 	for (i = 0; i < nb_pkts; i++)
@@ -1734,6 +1755,8 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 
 	slave_eth_dev->data->dev_conf.rxmode.mtu =
 			bonded_eth_dev->data->dev_conf.rxmode.mtu;
+	slave_eth_dev->data->dev_conf.link_speeds =
+			bonded_eth_dev->data->dev_conf.link_speeds;
 
 	slave_eth_dev->data->dev_conf.txmode.offloads =
 			bonded_eth_dev->data->dev_conf.txmode.offloads;
@@ -1836,15 +1859,6 @@ slave_start(struct rte_eth_dev *bonded_eth_dev,
 			RTE_BOND_LOG(ERR, "bond_ethdev_8023ad_flow_destroy: port=%d, err (%d)",
 				slave_eth_dev->data->port_id, errval);
 		}
-
-		errval = bond_ethdev_8023ad_flow_set(bonded_eth_dev,
-				slave_eth_dev->data->port_id);
-		if (errval != 0) {
-			RTE_BOND_LOG(ERR,
-				"bond_ethdev_8023ad_flow_set: port=%d, err (%d)",
-				slave_eth_dev->data->port_id, errval);
-			return errval;
-		}
 	}
 
 	/* Start device */
@@ -1853,6 +1867,18 @@ slave_start(struct rte_eth_dev *bonded_eth_dev,
 		RTE_BOND_LOG(ERR, "rte_eth_dev_start: port=%u, err (%d)",
 				slave_eth_dev->data->port_id, errval);
 		return -1;
+	}
+
+	if (internals->mode == BONDING_MODE_8023AD &&
+			internals->mode4.dedicated_queues.enabled == 1) {
+		errval = bond_ethdev_8023ad_flow_set(bonded_eth_dev,
+				slave_eth_dev->data->port_id);
+		if (errval != 0) {
+			RTE_BOND_LOG(ERR,
+				"bond_ethdev_8023ad_flow_set: port=%d, err (%d)",
+				slave_eth_dev->data->port_id, errval);
+			return errval;
+		}
 	}
 
 	/* If RSS is enabled for bonding, synchronize RETA */
@@ -2063,6 +2089,11 @@ bond_ethdev_start(struct rte_eth_dev *eth_dev)
 			internals->mode == BONDING_MODE_ALB)
 		bond_tlb_enable(internals);
 
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	return 0;
 
 out_err:
@@ -2129,6 +2160,10 @@ bond_ethdev_stop(struct rte_eth_dev *eth_dev)
 	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	eth_dev->data->dev_started = 0;
 
+	if (internals->link_status_polling_enabled) {
+		rte_eal_alarm_cancel(bond_ethdev_slave_link_status_change_monitor,
+			(void *)&rte_eth_devices[internals->port_id]);
+	}
 	internals->link_status_polling_enabled = 0;
 	for (i = 0; i < internals->slave_count; i++) {
 		uint16_t slave_id = internals->slaves[i].port_id;
@@ -2148,31 +2183,36 @@ bond_ethdev_stop(struct rte_eth_dev *eth_dev)
 			deactivate_slave(eth_dev, slave_id);
 	}
 
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+
 	return 0;
 }
 
-int
-bond_ethdev_close(struct rte_eth_dev *dev)
+static void
+bond_ethdev_cfg_cleanup(struct rte_eth_dev *dev, bool remove)
 {
 	struct bond_dev_private *internals = dev->data->dev_private;
 	uint16_t bond_port_id = internals->port_id;
 	int skipped = 0;
 	struct rte_flow_error ferror;
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
-
-	RTE_BOND_LOG(INFO, "Closing bonded device %s", dev->device->name);
-
 	/* Flush flows in all back-end devices before removing them */
 	bond_flow_ops.flush(dev, &ferror);
 
 	while (internals->slave_count != skipped) {
 		uint16_t port_id = internals->slaves[skipped].port_id;
+		int ret;
 
-		if (rte_eth_dev_stop(port_id) != 0) {
+		ret = rte_eth_dev_stop(port_id);
+		if (ret != 0) {
 			RTE_BOND_LOG(ERR, "Failed to stop device on port %u",
 				     port_id);
+		}
+
+		if (ret != 0 || !remove) {
 			skipped++;
 			continue;
 		}
@@ -2184,6 +2224,20 @@ bond_ethdev_close(struct rte_eth_dev *dev)
 			skipped++;
 		}
 	}
+}
+
+int
+bond_ethdev_close(struct rte_eth_dev *dev)
+{
+	struct bond_dev_private *internals = dev->data->dev_private;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	RTE_BOND_LOG(INFO, "Closing bonded device %s", dev->device->name);
+
+	bond_ethdev_cfg_cleanup(dev, true);
+
 	bond_ethdev_free_queues(dev);
 	rte_bitmap_reset(internals->vlan_filter_bmp);
 	rte_bitmap_free(internals->vlan_filter_bmp);
@@ -2194,8 +2248,7 @@ bond_ethdev_close(struct rte_eth_dev *dev)
 	 */
 	rte_mempool_free(internals->mode6.mempool);
 
-	if (internals->kvlist != NULL)
-		rte_kvargs_free(internals->kvlist);
+	rte_kvargs_free(internals->kvlist);
 
 	return 0;
 }
@@ -2281,6 +2334,7 @@ bond_ethdev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	dev_info->reta_size = internals->reta_size;
 	dev_info->hash_key_size = internals->rss_key_len;
+	dev_info->speed_capa = internals->speed_capa;
 
 	return 0;
 }
@@ -3480,8 +3534,10 @@ bond_probe(struct rte_vdev_device *dev)
 
 	kvlist = rte_kvargs_parse(rte_vdev_device_args(dev),
 		pmd_bond_init_valid_arguments);
-	if (kvlist == NULL)
+	if (kvlist == NULL) {
+		RTE_BOND_LOG(ERR, "Invalid args in %s", rte_vdev_device_args(dev));
 		return -1;
+	}
 
 	/* Parse link bonding mode */
 	if (rte_kvargs_count(kvlist, PMD_BOND_MODE_KVARG) == 1) {
@@ -3603,6 +3659,7 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 	struct rte_kvargs *kvlist = internals->kvlist;
 	int arg_count;
 	uint16_t port_id = dev - rte_eth_devices;
+	uint32_t link_speeds;
 	uint8_t agg_mode;
 
 	static const uint8_t default_rss_key[40] = {
@@ -3613,6 +3670,9 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 	};
 
 	unsigned i, j;
+
+
+	bond_ethdev_cfg_cleanup(dev, false);
 
 	/*
 	 * If RSS is enabled, fill table with default values and
@@ -3661,6 +3721,29 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 		}
 	}
 
+	link_speeds = dev->data->dev_conf.link_speeds;
+	/*
+	 * The default value of 'link_speeds' is zero. From its definition,
+	 * this value actually means auto-negotiation. But not all PMDs support
+	 * auto-negotiation. So ignore the check for the auto-negotiation and
+	 * only consider fixed speed to reduce the impact on PMDs.
+	 */
+	if (link_speeds & RTE_ETH_LINK_SPEED_FIXED) {
+		if ((link_speeds &
+		    (internals->speed_capa & ~RTE_ETH_LINK_SPEED_FIXED)) == 0) {
+			RTE_BOND_LOG(ERR, "the fixed speed is not supported by all slave devices.");
+			return -EINVAL;
+		}
+		/*
+		 * Two '1' in binary of 'link_speeds': bit0 and a unique
+		 * speed bit.
+		 */
+		if (__builtin_popcountl(link_speeds) != 2) {
+			RTE_BOND_LOG(ERR, "please set a unique speed.");
+			return -EINVAL;
+		}
+	}
+
 	/* set the max_rx_pktlen */
 	internals->max_rx_pktlen = internals->candidate_max_rx_pktlen;
 
@@ -3668,8 +3751,10 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 	 * if no kvlist, it means that this bonded device has been created
 	 * through the bonding api.
 	 */
-	if (!kvlist)
+	if (!kvlist || internals->kvargs_processing_is_done)
 		return 0;
+
+	internals->kvargs_processing_is_done = true;
 
 	/* Parse MAC address for bonded device */
 	arg_count = rte_kvargs_count(kvlist, PMD_BOND_MAC_ADDR_KVARG);

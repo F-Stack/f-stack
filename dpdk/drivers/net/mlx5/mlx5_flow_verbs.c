@@ -122,7 +122,7 @@ flow_verbs_counter_get_by_idx(struct rte_eth_dev *dev,
 			      struct mlx5_flow_counter_pool **ppool)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_flow_counter_mng *cmng = &priv->sh->cmng;
+	struct mlx5_flow_counter_mng *cmng = &priv->sh->sws_cmng;
 	struct mlx5_flow_counter_pool *pool;
 
 	idx = (idx - 1) & (MLX5_CNT_SHARED_OFFSET - 1);
@@ -215,7 +215,7 @@ static uint32_t
 flow_verbs_counter_new(struct rte_eth_dev *dev, uint32_t id __rte_unused)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_flow_counter_mng *cmng = &priv->sh->cmng;
+	struct mlx5_flow_counter_mng *cmng = &priv->sh->sws_cmng;
 	struct mlx5_flow_counter_pool *pool = NULL;
 	struct mlx5_flow_counter *cnt = NULL;
 	uint32_t n_valid = cmng->n_valid;
@@ -1195,6 +1195,54 @@ flow_verbs_translate_action_count(struct mlx5_flow *dev_flow,
 }
 
 /**
+ * Validates @p attributes of the flow rule.
+ *
+ * This function is used if and only if legacy Verbs flow engine is used.
+ *
+ * @param[in] dev
+ *   Pointer to the Ethernet device structure.
+ * @param[in] attributes
+ *   Pointer to flow attributes
+ * @param[out] error
+ *   Pointer to error structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+flow_verbs_validate_attributes(struct rte_eth_dev *dev,
+			       const struct rte_flow_attr *attributes,
+			       struct rte_flow_error *error)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	uint32_t priority_max = priv->sh->flow_max_priority - 1;
+
+	if (attributes->group)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_GROUP,
+					  NULL, "groups is not supported");
+	if (attributes->priority != MLX5_FLOW_LOWEST_PRIO_INDICATOR &&
+	    attributes->priority >= priority_max)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					  NULL, "priority out of range");
+	if (attributes->egress)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, NULL,
+					  "egress is not supported");
+	if (attributes->transfer)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
+					  NULL, "transfer is not supported");
+	if (!attributes->ingress)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ATTR_INGRESS,
+					  NULL,
+					  "ingress attribute is mandatory");
+	return 0;
+}
+
+/**
  * Internal validation function. For validating both actions and items.
  *
  * @param[in] dev
@@ -1237,7 +1285,7 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 
 	if (items == NULL)
 		return -1;
-	ret = mlx5_flow_validate_attributes(dev, attr, error);
+	ret = flow_verbs_validate_attributes(dev, attr, error);
 	if (ret < 0)
 		return ret;
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
@@ -1369,7 +1417,7 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
 			ret = mlx5_flow_validate_item_vxlan(dev, udp_dport,
 							    items, item_flags,
-							    attr, error);
+							    is_root, error);
 			if (ret < 0)
 				return ret;
 			last_item = MLX5_FLOW_LAYER_VXLAN;
@@ -1975,7 +2023,6 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 			MLX5_ASSERT(priv->drop_queue.hrxq);
 			hrxq = priv->drop_queue.hrxq;
 		} else {
-			uint32_t hrxq_idx;
 			struct mlx5_flow_rss_desc *rss_desc = &wks->rss_desc;
 
 			MLX5_ASSERT(rss_desc->queue_num);
@@ -1984,9 +2031,7 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 			rss_desc->tunnel = !!(handle->layers &
 					      MLX5_FLOW_LAYER_TUNNEL);
 			rss_desc->shared_rss = 0;
-			hrxq_idx = mlx5_hrxq_get(dev, rss_desc);
-			hrxq = mlx5_ipool_get(priv->sh->ipool[MLX5_IPOOL_HRXQ],
-					      hrxq_idx);
+			hrxq = mlx5_hrxq_get(dev, rss_desc);
 			if (!hrxq) {
 				rte_flow_error_set
 					(error, rte_errno,
@@ -1994,7 +2039,7 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 					 "cannot get hash queue");
 				goto error;
 			}
-			handle->rix_hrxq = hrxq_idx;
+			handle->rix_hrxq = hrxq->idx;
 		}
 		MLX5_ASSERT(hrxq);
 		handle->drv_flow = mlx5_glue->create_flow

@@ -498,8 +498,8 @@ hns3_update_port_rx_ssu_drop_stats(struct hns3_hw *hw)
 
 	req = (struct hns3_query_ssu_cmd *)desc[0].data;
 	cnt = rte_le_to_cpu_32(req->oq_drop_cnt) +
-		rte_le_to_cpu_32(req->full_drop_cnt) +
-		rte_le_to_cpu_32(req->part_drop_cnt);
+	      rte_le_to_cpu_32(req->full_drop_cnt) +
+	      rte_le_to_cpu_32(req->part_drop_cnt);
 
 	stats->ssu_rx_drop_cnt += cnt;
 
@@ -523,8 +523,8 @@ hns3_update_port_tx_ssu_drop_stats(struct hns3_hw *hw)
 
 	req = (struct hns3_query_ssu_cmd *)desc[0].data;
 	cnt = rte_le_to_cpu_32(req->oq_drop_cnt) +
-		rte_le_to_cpu_32(req->full_drop_cnt) +
-		rte_le_to_cpu_32(req->part_drop_cnt);
+	      rte_le_to_cpu_32(req->full_drop_cnt) +
+	      rte_le_to_cpu_32(req->part_drop_cnt);
 
 	hw->oerror_stats += cnt;
 
@@ -771,7 +771,7 @@ hns3_mac_stats_reset(struct hns3_hw *hw)
 	return 0;
 }
 
-static int
+static uint16_t
 hns3_get_imissed_stats_num(struct hns3_adapter *hns)
 {
 #define NO_IMISSED_STATS_NUM   0
@@ -993,7 +993,7 @@ hns3_imissed_stats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_rx_missed_stats *imissed_stats = &hw->imissed_stats;
-	int imissed_stats_num;
+	uint16_t imissed_stats_num;
 	int cnt = *count;
 	char *addr;
 	uint16_t i;
@@ -1170,7 +1170,7 @@ hns3_imissed_stats_name_get(struct rte_eth_dev *dev,
 {
 	struct hns3_adapter *hns = dev->data->dev_private;
 	uint32_t cnt = *count;
-	int imissed_stats_num;
+	uint16_t imissed_stats_num;
 	uint16_t i;
 
 	imissed_stats_num = hns3_get_imissed_stats_num(hns);
@@ -1322,8 +1322,8 @@ hns3_dev_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
 	len = cnt_stats * sizeof(struct rte_eth_xstat);
 	values_copy = rte_zmalloc("hns3_xstats_values", len, 0);
 	if (values_copy == NULL) {
-		hns3_err(hw, "Failed to allocate 0x%" PRIx64 " bytes needed "
-			     "to store statistics values", len);
+		hns3_err(hw, "Failed to allocate 0x%" PRIx64 " bytes needed to store statistics values",
+			 len);
 		return -ENOMEM;
 	}
 
@@ -1344,8 +1344,8 @@ hns3_dev_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
 
 	for (i = 0; i < size; i++) {
 		if (ids[i] >= cnt_stats) {
-			hns3_err(hw, "ids[%u] (%" PRIu64 ") is invalid, "
-				     "should < %u", i, ids[i], cnt_stats);
+			hns3_err(hw, "ids[%u] (%" PRIu64 ") is invalid, should < %u",
+				 i, ids[i], cnt_stats);
 			rte_free(values_copy);
 			return -EINVAL;
 		}
@@ -1404,8 +1404,8 @@ hns3_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
 	len = cnt_stats * sizeof(struct rte_eth_xstat_name);
 	names_copy = rte_zmalloc("hns3_xstats_names", len, 0);
 	if (names_copy == NULL) {
-		hns3_err(hw, "Failed to allocate 0x%" PRIx64 " bytes needed "
-			     "to store statistics names", len);
+		hns3_err(hw, "Failed to allocate 0x%" PRIx64 " bytes needed to store statistics names",
+			 len);
 		return -ENOMEM;
 	}
 
@@ -1413,8 +1413,8 @@ hns3_dev_xstats_get_names_by_id(struct rte_eth_dev *dev,
 
 	for (i = 0; i < size; i++) {
 		if (ids[i] >= cnt_stats) {
-			hns3_err(hw, "ids[%u] (%" PRIu64 ") is invalid, "
-				     "should < %u", i, ids[i], cnt_stats);
+			hns3_err(hw, "ids[%u] (%" PRIu64 ") is invalid, should < %u",
+				 i, ids[i], cnt_stats);
 			rte_free(names_copy);
 			return -EINVAL;
 		}
@@ -1485,14 +1485,14 @@ hns3_tqp_stats_init(struct hns3_hw *hw)
 	struct hns3_tqp_stats *tqp_stats = &hw->tqp_stats;
 
 	tqp_stats->rcb_rx_ring_pktnum = rte_zmalloc("hns3_rx_ring_pkt_num",
-					 sizeof(uint64_t) * hw->tqps_num, 0);
+					sizeof(uint64_t) * hw->tqps_num, 0);
 	if (tqp_stats->rcb_rx_ring_pktnum == NULL) {
 		hns3_err(hw, "failed to allocate rx_ring pkt_num.");
 		return -ENOMEM;
 	}
 
 	tqp_stats->rcb_tx_ring_pktnum = rte_zmalloc("hns3_tx_ring_pkt_num",
-					 sizeof(uint64_t) * hw->tqps_num, 0);
+					sizeof(uint64_t) * hw->tqps_num, 0);
 	if (tqp_stats->rcb_tx_ring_pktnum == NULL) {
 		hns3_err(hw, "failed to allocate tx_ring pkt_num.");
 		rte_free(tqp_stats->rcb_rx_ring_pktnum);
@@ -1539,8 +1539,13 @@ hns3_stats_init(struct hns3_hw *hw)
 		return ret;
 	}
 
-	if (!hns->is_vf)
-		hns3_mac_stats_reset(hw);
+	if (!hns->is_vf) {
+		ret = hns3_mac_stats_reset(hw);
+		if (ret) {
+			hns3_err(hw, "reset mac stats failed, ret = %d", ret);
+			return ret;
+		}
+	}
 
 	return hns3_tqp_stats_init(hw);
 }

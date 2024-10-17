@@ -8,16 +8,25 @@ if is_windows
 endif
 
 IMB_required_ver = '1.0.0'
+IMB_header = '#include<intel-ipsec-mb.h>'
+if arch_subdir == 'arm'
+    IMB_header = '#include<ipsec-mb.h>'
+endif
 lib = cc.find_library('IPSec_MB', required: false)
 if not lib.found()
     build = false
     reason = 'missing dependency, "libIPSec_MB"'
+# if the lib is found, check it's the right format
+elif meson.version().version_compare('>=0.60') and not cc.links(
+        'int main(void) {return 0;}', dependencies: lib)
+    build = false
+    reason = 'incompatible dependency, "libIPSec_MB"'
 else
     ext_deps += lib
 
     # version comes with quotes, so we split based on " and take the middle
     imb_ver = cc.get_define('IMB_VERSION_STR',
-        prefix : '#include<intel-ipsec-mb.h>').split('"')[1]
+        prefix : IMB_header).split('"')[1]
 
     if (imb_ver == '') or (imb_ver.version_compare('<' + IMB_required_ver))
         reason = 'IPSec_MB version >= @0@ is required, found version @1@'.format(
@@ -37,3 +46,4 @@ sources = files(
         'pmd_zuc.c',
 )
 deps += ['bus_vdev', 'net', 'security']
+pmd_supports_disable_iova_as_pa = true

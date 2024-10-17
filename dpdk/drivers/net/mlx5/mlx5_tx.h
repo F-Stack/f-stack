@@ -138,6 +138,8 @@ struct mlx5_txq_data {
 	uint16_t vlan_en:1; /* VLAN insertion in WQE is supported. */
 	uint16_t db_nc:1; /* Doorbell mapped to non-cached region. */
 	uint16_t db_heu:1; /* Doorbell heuristic write barrier. */
+	uint16_t rt_timestamp:1; /* Realtime timestamp format. */
+	uint16_t wait_on_time:1; /* WQE with timestamp is supported. */
 	uint16_t fast_free:1; /* mbuf fast free on Tx is enabled. */
 	uint16_t inlen_send; /* Ordinary send data inline size. */
 	uint16_t inlen_empw; /* eMPW max packet size to inline. */
@@ -157,6 +159,7 @@ struct mlx5_txq_data {
 	volatile uint32_t *cq_db; /* Completion queue doorbell. */
 	uint16_t port_id; /* Port ID of device. */
 	uint16_t idx; /* Queue index. */
+	uint64_t rt_timemask; /* Scheduling timestamp mask. */
 	uint64_t ts_mask; /* Timestamp flag dynamic mask. */
 	int32_t ts_offset; /* Timestamp field dynamic offset. */
 	struct mlx5_dev_ctx_shared *sh; /* Shared context. */
@@ -167,17 +170,12 @@ struct mlx5_txq_data {
 	/* Storage for queued packets, must be the last field. */
 } __rte_cache_aligned;
 
-enum mlx5_txq_type {
-	MLX5_TXQ_TYPE_STANDARD, /* Standard Tx queue. */
-	MLX5_TXQ_TYPE_HAIRPIN, /* Hairpin Tx queue. */
-};
-
 /* TX queue control descriptor. */
 struct mlx5_txq_ctrl {
 	LIST_ENTRY(mlx5_txq_ctrl) next; /* Pointer to the next element. */
 	uint32_t refcnt; /* Reference counter. */
 	unsigned int socket; /* CPU socket ID for allocations. */
-	enum mlx5_txq_type type; /* The txq ctrl type. */
+	bool is_hairpin; /* Whether TxQ type is Hairpin. */
 	unsigned int max_inline_data; /* Max inline data. */
 	unsigned int max_tso_header; /* Max TSO header size. */
 	struct mlx5_txq_obj *obj; /* Verbs/DevX queue object. */
@@ -215,6 +213,7 @@ struct mlx5_txq_ctrl *mlx5_txq_get(struct rte_eth_dev *dev, uint16_t idx);
 int mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx);
 int mlx5_txq_releasable(struct rte_eth_dev *dev, uint16_t idx);
 int mlx5_txq_verify(struct rte_eth_dev *dev);
+int mlx5_txq_get_sqn(struct mlx5_txq_ctrl *txq);
 void txq_alloc_elts(struct mlx5_txq_ctrl *txq_ctrl);
 void txq_free_elts(struct mlx5_txq_ctrl *txq_ctrl);
 uint64_t mlx5_get_tx_port_offloads(struct rte_eth_dev *dev);
@@ -222,8 +221,6 @@ void mlx5_txq_dynf_timestamp_set(struct rte_eth_dev *dev);
 
 /* mlx5_tx.c */
 
-uint16_t removed_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts,
-			  uint16_t pkts_n);
 void mlx5_tx_handle_completion(struct mlx5_txq_data *__rte_restrict txq,
 			       unsigned int olx __rte_unused);
 int mlx5_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -780,7 +777,7 @@ mlx5_tx_cseg_init(struct mlx5_txq_data *__rte_restrict txq,
  *   compile time and may be used for optimization.
  */
 static __rte_always_inline void
-mlx5_tx_wseg_init(struct mlx5_txq_data *restrict txq,
+mlx5_tx_qseg_init(struct mlx5_txq_data *restrict txq,
 		  struct mlx5_txq_local *restrict loc __rte_unused,
 		  struct mlx5_wqe *restrict wqe,
 		  unsigned int wci,
@@ -793,6 +790,43 @@ mlx5_tx_wseg_init(struct mlx5_txq_data *restrict txq,
 	qs->qpn_cqn = rte_cpu_to_be_32(txq->sh->txpp.clock_queue.cq_obj.cq->id);
 	qs->reserved0 = RTE_BE32(0);
 	qs->reserved1 = RTE_BE32(0);
+}
+
+/**
+ * Build the Wait on Time Segment with specified timestamp value.
+ *
+ * @param txq
+ *   Pointer to TX queue structure.
+ * @param loc
+ *   Pointer to burst routine local context.
+ * @param wqe
+ *   Pointer to WQE to fill with built Control Segment.
+ * @param ts
+ *   Timesatmp value to wait.
+ * @param olx
+ *   Configured Tx offloads mask. It is fully defined at
+ *   compile time and may be used for optimization.
+ */
+static __rte_always_inline void
+mlx5_tx_wseg_init(struct mlx5_txq_data *restrict txq,
+		  struct mlx5_txq_local *restrict loc __rte_unused,
+		  struct mlx5_wqe *restrict wqe,
+		  uint64_t ts,
+		  unsigned int olx __rte_unused)
+{
+	struct mlx5_wqe_wseg *ws;
+
+	ws = RTE_PTR_ADD(wqe, MLX5_WSEG_SIZE);
+	ws->operation = rte_cpu_to_be_32(MLX5_WAIT_COND_CYCLIC_SMALLER);
+	ws->lkey = RTE_BE32(0);
+	ws->va_high = RTE_BE32(0);
+	ws->va_low = RTE_BE32(0);
+	if (txq->rt_timestamp) {
+		ts = ts % (uint64_t)NS_PER_S
+		   | (ts / (uint64_t)NS_PER_S) << 32;
+	}
+	ws->value = rte_cpu_to_be_64(ts);
+	ws->mask = txq->rt_timemask;
 }
 
 /**
@@ -1609,6 +1643,9 @@ dseg_done:
  *   Pointer to TX queue structure.
  * @param loc
  *   Pointer to burst routine local context.
+ * @param elts
+ *   Number of free elements in elts buffer to be checked, for zero
+ *   value the check is optimized out by compiler.
  * @param olx
  *   Configured Tx offloads mask. It is fully defined at
  *   compile time and may be used for optimization.
@@ -1627,9 +1664,9 @@ mlx5_tx_schedule_send(struct mlx5_txq_data *restrict txq,
 {
 	if (MLX5_TXOFF_CONFIG(TXPP) &&
 	    loc->mbuf->ol_flags & txq->ts_mask) {
+		struct mlx5_dev_ctx_shared *sh;
 		struct mlx5_wqe *wqe;
 		uint64_t ts;
-		int32_t wci;
 
 		/*
 		 * Estimate the required space quickly and roughly.
@@ -1641,13 +1678,32 @@ mlx5_tx_schedule_send(struct mlx5_txq_data *restrict txq,
 			return MLX5_TXCMP_CODE_EXIT;
 		/* Convert the timestamp into completion to wait. */
 		ts = *RTE_MBUF_DYNFIELD(loc->mbuf, txq->ts_offset, uint64_t *);
-		wci = mlx5_txpp_convert_tx_ts(txq->sh, ts);
-		if (unlikely(wci < 0))
-			return MLX5_TXCMP_CODE_SINGLE;
-		/* Build the WAIT WQE with specified completion. */
 		wqe = txq->wqes + (txq->wqe_ci & txq->wqe_m);
-		mlx5_tx_cseg_init(txq, loc, wqe, 2, MLX5_OPCODE_WAIT, olx);
-		mlx5_tx_wseg_init(txq, loc, wqe, wci, olx);
+		sh = txq->sh;
+		if (txq->wait_on_time) {
+			/* The wait on time capability should be used. */
+			ts -= sh->txpp.skew;
+			mlx5_tx_cseg_init(txq, loc, wqe,
+					  1 + sizeof(struct mlx5_wqe_wseg) /
+					      MLX5_WSEG_SIZE,
+					  MLX5_OPCODE_WAIT |
+					  MLX5_OPC_MOD_WAIT_TIME << 24, olx);
+			mlx5_tx_wseg_init(txq, loc, wqe, ts, olx);
+		} else {
+			/* Legacy cross-channel operation should be used. */
+			int32_t wci;
+
+			wci = mlx5_txpp_convert_tx_ts(sh, ts);
+			if (unlikely(wci < 0))
+				return MLX5_TXCMP_CODE_SINGLE;
+			/* Build the WAIT WQE with specified completion. */
+			mlx5_tx_cseg_init(txq, loc, wqe,
+					  1 + sizeof(struct mlx5_wqe_qseg) /
+					      MLX5_WSEG_SIZE,
+					  MLX5_OPCODE_WAIT |
+					  MLX5_OPC_MOD_WAIT_CQ_PI << 24, olx);
+			mlx5_tx_qseg_init(txq, loc, wqe, wci, olx);
+		}
 		++txq->wqe_ci;
 		--loc->wqe_free;
 		return MLX5_TXCMP_CODE_MULTI;
@@ -1667,9 +1723,6 @@ mlx5_tx_schedule_send(struct mlx5_txq_data *restrict txq,
  *   Pointer to TX queue structure.
  * @param loc
  *   Pointer to burst routine local context.
- * @param elts
- *   Number of free elements in elts buffer to be checked, for zero
- *   value the check is optimized out by compiler.
  * @param olx
  *   Configured Tx offloads mask. It is fully defined at
  *   compile time and may be used for optimization.
@@ -1922,7 +1975,7 @@ mlx5_tx_packet_multi_inline(struct mlx5_txq_data *__rte_restrict txq,
 		uintptr_t start;
 
 		mbuf = loc->mbuf;
-		nxlen = rte_pktmbuf_data_len(mbuf);
+		nxlen = rte_pktmbuf_data_len(mbuf) + vlan;
 		/*
 		 * Packet length exceeds the allowed inline data length,
 		 * check whether the minimal inlining is required.

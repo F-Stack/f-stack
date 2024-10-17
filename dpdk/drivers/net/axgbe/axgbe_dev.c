@@ -63,15 +63,27 @@ static int mdio_complete(struct axgbe_port *pdata)
 	return 0;
 }
 
+static unsigned int axgbe_create_mdio_sca(int port, int reg)
+{
+	unsigned int mdio_sca, da;
+
+	da = (reg & MII_ADDR_C45) ? reg >> 16 : 0;
+
+	mdio_sca = 0;
+	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, RA, reg);
+	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, PA, port);
+	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, DA, da);
+
+	return mdio_sca;
+}
+
 static int axgbe_write_ext_mii_regs(struct axgbe_port *pdata, int addr,
 				    int reg, u16 val)
 {
 	unsigned int mdio_sca, mdio_sccd;
 	uint64_t timeout;
 
-	mdio_sca = 0;
-	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, REG, reg);
-	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, DA, addr);
+	mdio_sca = axgbe_create_mdio_sca(addr, reg);
 	AXGMAC_IOWRITE(pdata, MAC_MDIOSCAR, mdio_sca);
 
 	mdio_sccd = 0;
@@ -97,9 +109,7 @@ static int axgbe_read_ext_mii_regs(struct axgbe_port *pdata, int addr,
 	unsigned int mdio_sca, mdio_sccd;
 	uint64_t timeout;
 
-	mdio_sca = 0;
-	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, REG, reg);
-	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, DA, addr);
+	mdio_sca = axgbe_create_mdio_sca(addr, reg);
 	AXGMAC_IOWRITE(pdata, MAC_MDIOSCAR, mdio_sca);
 
 	mdio_sccd = 0;
@@ -259,20 +269,28 @@ static int axgbe_set_speed(struct axgbe_port *pdata, int speed)
 	return 0;
 }
 
+static unsigned int axgbe_get_fc_queue_count(struct axgbe_port *pdata)
+{
+	unsigned int max_q_count = AXGMAC_MAX_FLOW_CONTROL_QUEUES;
+
+	/* From MAC ver 30H the TFCR is per priority, instead of per queue */
+	if (AXGMAC_GET_BITS(pdata->hw_feat.version, MAC_VR, SNPSVER) >= 0x30)
+		return max_q_count;
+	else
+		return (RTE_MIN(pdata->tx_q_count, max_q_count));
+}
+
 static int axgbe_disable_tx_flow_control(struct axgbe_port *pdata)
 {
-	unsigned int max_q_count, q_count;
 	unsigned int reg, reg_val;
-	unsigned int i;
+	unsigned int i, q_count;
 
 	/* Clear MTL flow control */
 	for (i = 0; i < pdata->rx_q_count; i++)
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_RQOMR, EHFC, 0);
 
 	/* Clear MAC flow control */
-	max_q_count = AXGMAC_MAX_FLOW_CONTROL_QUEUES;
-	q_count = RTE_MIN(pdata->tx_q_count,
-			max_q_count);
+	q_count = axgbe_get_fc_queue_count(pdata);
 	reg = MAC_Q0TFCR;
 	for (i = 0; i < q_count; i++) {
 		reg_val = AXGMAC_IOREAD(pdata, reg);
@@ -287,9 +305,8 @@ static int axgbe_disable_tx_flow_control(struct axgbe_port *pdata)
 
 static int axgbe_enable_tx_flow_control(struct axgbe_port *pdata)
 {
-	unsigned int max_q_count, q_count;
 	unsigned int reg, reg_val;
-	unsigned int i;
+	unsigned int i, q_count;
 
 	/* Set MTL flow control */
 	for (i = 0; i < pdata->rx_q_count; i++) {
@@ -306,9 +323,7 @@ static int axgbe_enable_tx_flow_control(struct axgbe_port *pdata)
 	}
 
 	/* Set MAC flow control */
-	max_q_count = AXGMAC_MAX_FLOW_CONTROL_QUEUES;
-	q_count = RTE_MIN(pdata->tx_q_count,
-			max_q_count);
+	q_count = axgbe_get_fc_queue_count(pdata);
 	reg = MAC_Q0TFCR;
 	for (i = 0; i < q_count; i++) {
 		reg_val = AXGMAC_IOREAD(pdata, reg);
@@ -637,23 +652,21 @@ static void axgbe_config_dma_cache(struct axgbe_port *pdata)
 	unsigned int arcache, awcache, arwcache;
 
 	arcache = 0;
-	AXGMAC_SET_BITS(arcache, DMA_AXIARCR, DRC, 0x3);
+	AXGMAC_SET_BITS(arcache, DMA_AXIARCR, DRC, 0xf);
+	AXGMAC_SET_BITS(arcache, DMA_AXIARCR, TEC, 0xf);
+	AXGMAC_SET_BITS(arcache, DMA_AXIARCR, THC, 0xf);
 	AXGMAC_IOWRITE(pdata, DMA_AXIARCR, arcache);
 
 	awcache = 0;
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, DWC, 0x3);
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RPC, 0x3);
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RPD, 0x1);
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RHC, 0x3);
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RHD, 0x1);
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RDC, 0x3);
-	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RDD, 0x1);
+	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, DWC, 0xf);
+	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RPC, 0xf);
+	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RHC, 0xf);
+	AXGMAC_SET_BITS(awcache, DMA_AXIAWCR, RDC, 0xf);
 	AXGMAC_IOWRITE(pdata, DMA_AXIAWCR, awcache);
 
 	arwcache = 0;
-	AXGMAC_SET_BITS(arwcache, DMA_AXIAWRCR, TDWD, 0x1);
-	AXGMAC_SET_BITS(arwcache, DMA_AXIAWRCR, TDWC, 0x3);
-	AXGMAC_SET_BITS(arwcache, DMA_AXIAWRCR, RDRC, 0x3);
+	AXGMAC_SET_BITS(arwcache, DMA_AXIAWRCR, TDWC, 0xf);
+	AXGMAC_SET_BITS(arwcache, DMA_AXIAWRCR, RDRC, 0xf);
 	AXGMAC_IOWRITE(pdata, DMA_AXIAWRCR, arwcache);
 }
 

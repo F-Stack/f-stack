@@ -75,16 +75,16 @@ roc_dpi_configure(struct roc_dpi *roc_dpi)
 
 	memset(&aura, 0, sizeof(aura));
 	rc = roc_npa_pool_create(&aura_handle, DPI_CMD_QUEUE_SIZE,
-				 DPI_CMD_QUEUE_BUFS, &aura, &pool);
+				 DPI_CMD_QUEUE_BUFS, &aura, &pool, 0);
 	if (rc) {
 		plt_err("Failed to create NPA pool, err %d\n", rc);
 		return rc;
 	}
 
-	snprintf(name, sizeof(name), "dpimem%d", roc_dpi->vfid);
+	snprintf(name, sizeof(name), "dpimem%d:%d:%d:%d", pci_dev->addr.domain, pci_dev->addr.bus,
+		 pci_dev->addr.devid, pci_dev->addr.function);
 	buflen = DPI_CMD_QUEUE_SIZE * DPI_CMD_QUEUE_BUFS;
-	dpi_mz = plt_memzone_reserve_aligned(name, buflen, 0,
-					     DPI_CMD_QUEUE_SIZE);
+	dpi_mz = plt_memzone_reserve_aligned(name, buflen, 0, DPI_CMD_QUEUE_SIZE);
 	if (dpi_mz == NULL) {
 		plt_err("dpi memzone reserve failed");
 		rc = -ENOMEM;

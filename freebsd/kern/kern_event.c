@@ -1672,6 +1672,7 @@ kqueue_release(struct kqueue *kq, int locked)
 		KQ_UNLOCK(kq);
 }
 
+#ifndef FSTACK
 static void
 kqueue_schedtask(struct kqueue *kq)
 {
@@ -1685,6 +1686,7 @@ kqueue_schedtask(struct kqueue *kq)
 		kq->kq_state |= KQ_TASKSCHED;
 	}
 }
+#endif
 
 /*
  * Expand the kq to make sure we have storage for fops/ident pair.
@@ -2221,7 +2223,11 @@ kqueue_wakeup(struct kqueue *kq)
 			kq->kq_state &= ~KQ_SEL;
 	}
 	if (!knlist_empty(&kq->kq_sel.si_note))
+#ifndef FSTACK
 		kqueue_schedtask(kq);
+#else
+		KNOTE_UNLOCKED(&kq->kq_sel.si_note, 0);
+#endif
 	if ((kq->kq_state & KQ_ASYNC) == KQ_ASYNC) {
 		pgsigio(&kq->kq_sigio, SIGIO, 0);
 	}

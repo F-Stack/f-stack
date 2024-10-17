@@ -660,8 +660,8 @@ main(int argc, char **argv)
 			rte_panic("Invalid port pair config\n");
 	}
 
-	nb_mbufs = RTE_MAX(nb_ports * (RTE_TEST_RX_DESC_DEFAULT +
-				       RTE_TEST_TX_DESC_DEFAULT +
+	nb_mbufs = RTE_MAX(nb_ports * (RX_DESC_DEFAULT +
+				       TX_DESC_DEFAULT +
 				       MAX_PKT_BURST + rte_lcore_count() *
 				       MEMPOOL_CACHE_SIZE), 8192U);
 
@@ -678,8 +678,10 @@ main(int argc, char **argv)
 
 		vec_size = rsrc->evt_vec.size;
 		nb_vec = (nb_mbufs + vec_size - 1) / vec_size;
+		nb_vec = RTE_MAX(512U, nb_vec);
+		nb_vec += rte_lcore_count() * 32;
 		rsrc->evt_vec_pool = rte_event_vector_pool_create(
-			"vector_pool", nb_vec, 0, vec_size, rte_socket_id());
+			"vector_pool", nb_vec, 32, vec_size, rte_socket_id());
 		if (rsrc->evt_vec_pool == NULL)
 			rte_panic("Cannot init event vector pool\n");
 	}

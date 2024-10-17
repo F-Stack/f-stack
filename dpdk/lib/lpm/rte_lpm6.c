@@ -4,23 +4,16 @@
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <sys/queue.h>
 
 #include <rte_log.h>
-#include <rte_branch_prediction.h>
 #include <rte_common.h>
-#include <rte_memory.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
-#include <rte_eal.h>
 #include <rte_eal_memconfig.h>
-#include <rte_per_lcore.h>
 #include <rte_string_fns.h>
 #include <rte_errno.h>
-#include <rte_rwlock.h>
-#include <rte_spinlock.h>
 #include <rte_hash.h>
 #include <assert.h>
 #include <rte_jhash.h>
@@ -286,7 +279,7 @@ rte_lpm6_create(const char *name, int socket_id,
 
 	rules_tbl = rte_hash_create(&rule_hash_tbl_params);
 	if (rules_tbl == NULL) {
-		RTE_LOG(ERR, LPM, "LPM rules hash table allocation failed: %s (%d)",
+		RTE_LOG(ERR, LPM, "LPM rules hash table allocation failed: %s (%d)\n",
 				  rte_strerror(rte_errno), rte_errno);
 		goto fail_wo_unlock;
 	}
@@ -296,7 +289,7 @@ rte_lpm6_create(const char *name, int socket_id,
 			sizeof(uint32_t) * config->number_tbl8s,
 			RTE_CACHE_LINE_SIZE);
 	if (tbl8_pool == NULL) {
-		RTE_LOG(ERR, LPM, "LPM tbl8 pool allocation failed: %s (%d)",
+		RTE_LOG(ERR, LPM, "LPM tbl8 pool allocation failed: %s (%d)\n",
 				  rte_strerror(rte_errno), rte_errno);
 		rte_errno = ENOMEM;
 		goto fail_wo_unlock;
@@ -307,7 +300,7 @@ rte_lpm6_create(const char *name, int socket_id,
 			sizeof(struct rte_lpm_tbl8_hdr) * config->number_tbl8s,
 			RTE_CACHE_LINE_SIZE);
 	if (tbl8_hdrs == NULL) {
-		RTE_LOG(ERR, LPM, "LPM tbl8 headers allocation failed: %s (%d)",
+		RTE_LOG(ERR, LPM, "LPM tbl8 headers allocation failed: %s (%d)\n",
 				  rte_strerror(rte_errno), rte_errno);
 		rte_errno = ENOMEM;
 		goto fail_wo_unlock;

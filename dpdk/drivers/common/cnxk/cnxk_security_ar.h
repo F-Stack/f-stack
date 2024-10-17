@@ -13,11 +13,11 @@
 
 /* u64 array size to fit anti replay window bits */
 #define AR_WIN_ARR_SZ                                                          \
-	(PLT_ALIGN_CEIL(CNXK_ON_AR_WIN_SIZE_MAX, BITS_PER_LONG_LONG) /        \
+	(PLT_ALIGN_CEIL(CNXK_ON_AR_WIN_SIZE_MAX + 1, BITS_PER_LONG_LONG) /     \
 	 BITS_PER_LONG_LONG)
 
 #define WORD_SHIFT 6
-#define WORD_SIZE  (1 << WORD_SHIFT)
+#define WORD_SIZE  (1ULL << WORD_SHIFT)
 #define WORD_MASK  (WORD_SIZE - 1)
 
 #define IPSEC_ANTI_REPLAY_FAILED (-1)

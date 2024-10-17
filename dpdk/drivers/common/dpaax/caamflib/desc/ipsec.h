@@ -727,6 +727,74 @@ static inline void __gen_auth_key(struct program *program,
 }
 
 /**
+ * rta_inline_ipsec_query() - Provide indications on which data items can be inlined
+ *                      and which shall be referenced in IPsec shared descriptor.
+ * @sd_base_len: Shared descriptor base length - bytes consumed by the commands,
+ *               excluding the data items to be inlined (or corresponding
+ *               pointer if an item is not inlined). Each cnstr_* function that
+ *               generates descriptors should have a define mentioning
+ *               corresponding length.
+ * @jd_len: Maximum length of the job descriptor(s) that will be used
+ *          together with the shared descriptor.
+ * @data_len: Array of lengths of the data items trying to be inlined
+ * @inl_mask: 32bit mask with bit x = 1 if data item x can be inlined, 0
+ *            otherwise.
+ * @count: Number of data items (size of @data_len array); must be <= 32
+ * @auth_algtype: Authentication algorithm type.
+ * @auth_index: Index value of data_len for authentication key length.
+ *		-1 if authentication key length is not present in data_len.
+ *
+ * Return: 0 if data can be inlined / referenced, negative value if not. If 0,
+ *         check @inl_mask for details.
+ */
+static inline int
+rta_inline_ipsec_query(unsigned int sd_base_len,
+		       unsigned int jd_len,
+		       unsigned int *data_len,
+		       uint32_t *inl_mask,
+		       unsigned int count,
+		       uint32_t auth_algtype,
+		       int32_t auth_index)
+{
+	uint32_t dkp_protid;
+
+	switch (auth_algtype & OP_PCL_IPSEC_AUTH_MASK) {
+	case OP_PCL_IPSEC_HMAC_MD5_96:
+	case OP_PCL_IPSEC_HMAC_MD5_128:
+		dkp_protid = OP_PCLID_DKP_MD5;
+		break;
+	case OP_PCL_IPSEC_HMAC_SHA1_96:
+	case OP_PCL_IPSEC_HMAC_SHA1_160:
+		dkp_protid = OP_PCLID_DKP_SHA1;
+		break;
+	case OP_PCL_IPSEC_HMAC_SHA2_256_128:
+		dkp_protid = OP_PCLID_DKP_SHA256;
+		break;
+	case OP_PCL_IPSEC_HMAC_SHA2_384_192:
+		dkp_protid = OP_PCLID_DKP_SHA384;
+		break;
+	case OP_PCL_IPSEC_HMAC_SHA2_512_256:
+		dkp_protid = OP_PCLID_DKP_SHA512;
+		break;
+	default:
+		return rta_inline_query(sd_base_len,
+				       jd_len,
+				       data_len,
+				       inl_mask, count);
+	}
+
+	/* Updating the maximum supported inline key length */
+	if (auth_index != -1) {
+		if (split_key_len(dkp_protid) > data_len[auth_index])
+			data_len[auth_index] = split_key_len(dkp_protid);
+	}
+	return rta_inline_query(sd_base_len,
+			       jd_len,
+			       data_len,
+			       inl_mask, count);
+}
+
+/**
  * cnstr_shdsc_ipsec_encap - IPSec ESP encapsulation protocol-level shared
  *                           descriptor.
  * @descbuf: pointer to buffer used for descriptor construction
@@ -774,14 +842,9 @@ cnstr_shdsc_ipsec_encap(uint32_t *descbuf, bool ps, bool swap,
 	COPY_DATA(p, pdb->ip_hdr, pdb->ip_hdr_len);
 	SET_LABEL(p, hdr);
 	pkeyjmp = JUMP(p, keyjmp, LOCAL_JUMP, ALL_TRUE, BOTH|SHRD);
-	if (authdata->keylen) {
-		if (rta_sec_era < RTA_SEC_ERA_6)
-			KEY(p, MDHA_SPLIT_KEY, authdata->key_enc_flags,
-			    authdata->key, authdata->keylen,
-			    INLINE_KEY(authdata));
-		else
-			__gen_auth_key(p, authdata);
-	}
+	if (authdata->keylen)
+		__gen_auth_key(p, authdata);
+
 	if (cipherdata->keylen)
 		KEY(p, KEY1, cipherdata->key_enc_flags, cipherdata->key,
 		    cipherdata->keylen, INLINE_KEY(cipherdata));
@@ -841,14 +904,9 @@ cnstr_shdsc_ipsec_decap(uint32_t *descbuf, bool ps, bool swap,
 	__rta_copy_ipsec_decap_pdb(p, pdb, cipherdata->algtype);
 	SET_LABEL(p, hdr);
 	pkeyjmp = JUMP(p, keyjmp, LOCAL_JUMP, ALL_TRUE, BOTH|SHRD);
-	if (authdata->keylen) {
-		if (rta_sec_era < RTA_SEC_ERA_6)
-			KEY(p, MDHA_SPLIT_KEY, authdata->key_enc_flags,
-			    authdata->key, authdata->keylen,
-			    INLINE_KEY(authdata));
-		else
-			__gen_auth_key(p, authdata);
-	}
+	if (authdata->keylen)
+		__gen_auth_key(p, authdata);
+
 	if (cipherdata->keylen)
 		KEY(p, KEY1, cipherdata->key_enc_flags, cipherdata->key,
 		    cipherdata->keylen, INLINE_KEY(cipherdata));
@@ -1248,12 +1306,6 @@ cnstr_shdsc_ipsec_new_encap(uint32_t *descbuf, bool ps,
 	LABEL(l2copy);
 	REFERENCE(pl2copy);
 
-	if (rta_sec_era < RTA_SEC_ERA_8) {
-		pr_err("IPsec new mode encap: available only for Era %d or above\n",
-		       USER_SEC_ERA(RTA_SEC_ERA_8));
-		return -ENOTSUP;
-	}
-
 	PROGRAM_CNTXT_INIT(p, descbuf, 0);
 	if (swap)
 		PROGRAM_SET_BSWAP(p);
@@ -1362,12 +1414,6 @@ cnstr_shdsc_ipsec_new_decap(uint32_t *descbuf, bool ps,
 	REFERENCE(pkeyjmp);
 	LABEL(hdr);
 	REFERENCE(phdr);
-
-	if (rta_sec_era < RTA_SEC_ERA_8) {
-		pr_err("IPsec new mode decap: available only for Era %d or above\n",
-		       USER_SEC_ERA(RTA_SEC_ERA_8));
-		return -ENOTSUP;
-	}
 
 	PROGRAM_CNTXT_INIT(p, descbuf, 0);
 	if (swap)

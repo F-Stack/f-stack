@@ -494,8 +494,7 @@ mlx5_mr_free(struct mlx5_mr *mr, mlx5_dereg_mr_t dereg_mr_cb)
 		return;
 	DRV_LOG(DEBUG, "freeing MR(%p):", (void *)mr);
 	dereg_mr_cb(&mr->pmd_mr);
-	if (mr->ms_bmp != NULL)
-		rte_bitmap_free(mr->ms_bmp);
+	rte_bitmap_free(mr->ms_bmp);
 	mlx5_free(mr);
 }
 
@@ -1382,7 +1381,7 @@ mlx5_mempool_get_chunks(struct rte_mempool *mp, struct mlx5_range **out,
 
 	DRV_LOG(DEBUG, "Collecting chunks of regular mempool %s", mp->name);
 	n = mp->nb_mem_chunks;
-	*out = calloc(sizeof(**out), n);
+	*out = calloc(n, sizeof(**out));
 	if (*out == NULL)
 		return -1;
 	rte_mempool_mem_iter(mp, mlx5_range_from_mempool_chunk, *out);

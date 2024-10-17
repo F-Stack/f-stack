@@ -59,7 +59,7 @@ mlx5_txq_start(struct rte_eth_dev *dev)
 
 		if (!txq_ctrl)
 			continue;
-		if (txq_ctrl->type == MLX5_TXQ_TYPE_STANDARD)
+		if (!txq_ctrl->is_hairpin)
 			txq_alloc_elts(txq_ctrl);
 		MLX5_ASSERT(!txq_ctrl->obj);
 		txq_ctrl->obj = mlx5_malloc(flags, sizeof(struct mlx5_txq_obj),
@@ -77,7 +77,7 @@ mlx5_txq_start(struct rte_eth_dev *dev)
 			txq_ctrl->obj = NULL;
 			goto error;
 		}
-		if (txq_ctrl->type == MLX5_TXQ_TYPE_STANDARD) {
+		if (!txq_ctrl->is_hairpin) {
 			size_t size = txq_data->cqe_s * sizeof(*txq_data->fcqs);
 
 			txq_data->fcqs = mlx5_malloc(flags, size,
@@ -167,7 +167,7 @@ mlx5_rxq_ctrl_prepare(struct rte_eth_dev *dev, struct mlx5_rxq_ctrl *rxq_ctrl,
 {
 	int ret = 0;
 
-	if (rxq_ctrl->type == MLX5_RXQ_TYPE_STANDARD) {
+	if (!rxq_ctrl->is_hairpin) {
 		/*
 		 * Pre-register the mempools. Regardless of whether
 		 * the implicit registration is enabled or not,
@@ -215,10 +215,10 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 		/* Should not release Rx queues but return immediately. */
 		return -rte_errno;
 	}
-	DRV_LOG(DEBUG, "Port %u device_attr.max_qp_wr is %d.",
-		dev->data->port_id, priv->sh->device_attr.max_qp_wr);
-	DRV_LOG(DEBUG, "Port %u device_attr.max_sge is %d.",
-		dev->data->port_id, priv->sh->device_attr.max_sge);
+	DRV_LOG(DEBUG, "Port %u dev_cap.max_qp_wr is %d.",
+		dev->data->port_id, priv->sh->dev_cap.max_qp_wr);
+	DRV_LOG(DEBUG, "Port %u dev_cap.max_sge is %d.",
+		dev->data->port_id, priv->sh->dev_cap.max_sge);
 	for (i = 0; i != priv->rxqs_n; ++i) {
 		struct mlx5_rxq_priv *rxq = mlx5_rxq_ref(dev, i);
 		struct mlx5_rxq_ctrl *rxq_ctrl;
@@ -226,17 +226,17 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 		if (rxq == NULL)
 			continue;
 		rxq_ctrl = rxq->ctrl;
-		if (!rxq_ctrl->started) {
+		if (!rxq_ctrl->started)
 			if (mlx5_rxq_ctrl_prepare(dev, rxq_ctrl, i) < 0)
 				goto error;
-			LIST_INSERT_HEAD(&priv->rxqsobj, rxq_ctrl->obj, next);
-		}
 		ret = priv->obj_ops.rxq_obj_new(rxq);
 		if (ret) {
 			mlx5_free(rxq_ctrl->obj);
 			rxq_ctrl->obj = NULL;
 			goto error;
 		}
+		if (!rxq_ctrl->started)
+			LIST_INSERT_HEAD(&priv->rxqsobj, rxq_ctrl->obj, next);
 		rxq_ctrl->started = true;
 	}
 	return 0;
@@ -280,7 +280,7 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (!txq_ctrl)
 			continue;
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN ||
+		if (!txq_ctrl->is_hairpin ||
 		    txq_ctrl->hairpin_conf.peers[0].port != self_port) {
 			mlx5_txq_release(dev, i);
 			continue;
@@ -299,7 +299,7 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 		if (!txq_ctrl)
 			continue;
 		/* Skip hairpin queues with other peer ports. */
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN ||
+		if (!txq_ctrl->is_hairpin ||
 		    txq_ctrl->hairpin_conf.peers[0].port != self_port) {
 			mlx5_txq_release(dev, i);
 			continue;
@@ -322,7 +322,7 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 			return -rte_errno;
 		}
 		rxq_ctrl = rxq->ctrl;
-		if (rxq_ctrl->type != MLX5_RXQ_TYPE_HAIRPIN ||
+		if (!rxq_ctrl->is_hairpin ||
 		    rxq->hairpin_conf.peers[0].queue != i) {
 			rte_errno = ENOMEM;
 			DRV_LOG(ERR, "port %u Tx queue %d can't be binded to "
@@ -341,14 +341,16 @@ mlx5_hairpin_auto_bind(struct rte_eth_dev *dev)
 		sq_attr.state = MLX5_SQC_STATE_RDY;
 		sq_attr.sq_state = MLX5_SQC_STATE_RST;
 		sq_attr.hairpin_peer_rq = rq->id;
-		sq_attr.hairpin_peer_vhca = priv->config.hca_attr.vhca_id;
+		sq_attr.hairpin_peer_vhca =
+				priv->sh->cdev->config.hca_attr.vhca_id;
 		ret = mlx5_devx_cmd_modify_sq(sq, &sq_attr);
 		if (ret)
 			goto error;
-		rq_attr.state = MLX5_SQC_STATE_RDY;
-		rq_attr.rq_state = MLX5_SQC_STATE_RST;
+		rq_attr.state = MLX5_RQC_STATE_RDY;
+		rq_attr.rq_state = MLX5_RQC_STATE_RST;
 		rq_attr.hairpin_peer_sq = sq->id;
-		rq_attr.hairpin_peer_vhca = priv->config.hca_attr.vhca_id;
+		rq_attr.hairpin_peer_vhca =
+				priv->sh->cdev->config.hca_attr.vhca_id;
 		ret = mlx5_devx_cmd_modify_rq(rq, &rq_attr);
 		if (ret)
 			goto error;
@@ -410,7 +412,7 @@ mlx5_hairpin_queue_peer_update(struct rte_eth_dev *dev, uint16_t peer_queue,
 				dev->data->port_id, peer_queue);
 			return -rte_errno;
 		}
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (!txq_ctrl->is_hairpin) {
 			rte_errno = EINVAL;
 			DRV_LOG(ERR, "port %u queue %d is not a hairpin Txq",
 				dev->data->port_id, peer_queue);
@@ -424,8 +426,8 @@ mlx5_hairpin_queue_peer_update(struct rte_eth_dev *dev, uint16_t peer_queue,
 			mlx5_txq_release(dev, peer_queue);
 			return -rte_errno;
 		}
-		peer_info->qp_id = txq_ctrl->obj->sq->id;
-		peer_info->vhca_id = priv->config.hca_attr.vhca_id;
+		peer_info->qp_id = mlx5_txq_get_sqn(txq_ctrl);
+		peer_info->vhca_id = priv->sh->cdev->config.hca_attr.vhca_id;
 		/* 1-to-1 mapping, only the first one is used. */
 		peer_info->peer_q = txq_ctrl->hairpin_conf.peers[0].queue;
 		peer_info->tx_explicit = txq_ctrl->hairpin_conf.tx_explicit;
@@ -442,7 +444,7 @@ mlx5_hairpin_queue_peer_update(struct rte_eth_dev *dev, uint16_t peer_queue,
 			return -rte_errno;
 		}
 		rxq_ctrl = rxq->ctrl;
-		if (rxq_ctrl->type != MLX5_RXQ_TYPE_HAIRPIN) {
+		if (!rxq_ctrl->is_hairpin) {
 			rte_errno = EINVAL;
 			DRV_LOG(ERR, "port %u queue %d is not a hairpin Rxq",
 				dev->data->port_id, peer_queue);
@@ -455,7 +457,7 @@ mlx5_hairpin_queue_peer_update(struct rte_eth_dev *dev, uint16_t peer_queue,
 			return -rte_errno;
 		}
 		peer_info->qp_id = rxq_ctrl->obj->rq->id;
-		peer_info->vhca_id = priv->config.hca_attr.vhca_id;
+		peer_info->vhca_id = priv->sh->cdev->config.hca_attr.vhca_id;
 		peer_info->peer_q = rxq->hairpin_conf.peers[0].queue;
 		peer_info->tx_explicit = rxq->hairpin_conf.tx_explicit;
 		peer_info->manual_bind = rxq->hairpin_conf.manual_bind;
@@ -508,7 +510,7 @@ mlx5_hairpin_queue_peer_bind(struct rte_eth_dev *dev, uint16_t cur_queue,
 				dev->data->port_id, cur_queue);
 			return -rte_errno;
 		}
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (!txq_ctrl->is_hairpin) {
 			rte_errno = EINVAL;
 			DRV_LOG(ERR, "port %u queue %d not a hairpin Txq",
 				dev->data->port_id, cur_queue);
@@ -568,7 +570,7 @@ mlx5_hairpin_queue_peer_bind(struct rte_eth_dev *dev, uint16_t cur_queue,
 			return -rte_errno;
 		}
 		rxq_ctrl = rxq->ctrl;
-		if (rxq_ctrl->type != MLX5_RXQ_TYPE_HAIRPIN) {
+		if (!rxq_ctrl->is_hairpin) {
 			rte_errno = EINVAL;
 			DRV_LOG(ERR, "port %u queue %d not a hairpin Rxq",
 				dev->data->port_id, cur_queue);
@@ -599,8 +601,8 @@ mlx5_hairpin_queue_peer_bind(struct rte_eth_dev *dev, uint16_t cur_queue,
 				" mismatch", dev->data->port_id, cur_queue);
 			return -rte_errno;
 		}
-		rq_attr.state = MLX5_SQC_STATE_RDY;
-		rq_attr.rq_state = MLX5_SQC_STATE_RST;
+		rq_attr.state = MLX5_RQC_STATE_RDY;
+		rq_attr.rq_state = MLX5_RQC_STATE_RST;
 		rq_attr.hairpin_peer_sq = peer_info->qp_id;
 		rq_attr.hairpin_peer_vhca = peer_info->vhca_id;
 		ret = mlx5_devx_cmd_modify_rq(rxq_ctrl->obj->rq, &rq_attr);
@@ -642,7 +644,7 @@ mlx5_hairpin_queue_peer_unbind(struct rte_eth_dev *dev, uint16_t cur_queue,
 				dev->data->port_id, cur_queue);
 			return -rte_errno;
 		}
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (!txq_ctrl->is_hairpin) {
 			rte_errno = EINVAL;
 			DRV_LOG(ERR, "port %u queue %d not a hairpin Txq",
 				dev->data->port_id, cur_queue);
@@ -664,7 +666,7 @@ mlx5_hairpin_queue_peer_unbind(struct rte_eth_dev *dev, uint16_t cur_queue,
 			return -rte_errno;
 		}
 		sq_attr.state = MLX5_SQC_STATE_RST;
-		sq_attr.sq_state = MLX5_SQC_STATE_RST;
+		sq_attr.sq_state = MLX5_SQC_STATE_RDY;
 		ret = mlx5_devx_cmd_modify_sq(txq_ctrl->obj->sq, &sq_attr);
 		if (ret == 0)
 			txq_ctrl->hairpin_status = 0;
@@ -681,7 +683,7 @@ mlx5_hairpin_queue_peer_unbind(struct rte_eth_dev *dev, uint16_t cur_queue,
 			return -rte_errno;
 		}
 		rxq_ctrl = rxq->ctrl;
-		if (rxq_ctrl->type != MLX5_RXQ_TYPE_HAIRPIN) {
+		if (!rxq_ctrl->is_hairpin) {
 			rte_errno = EINVAL;
 			DRV_LOG(ERR, "port %u queue %d not a hairpin Rxq",
 				dev->data->port_id, cur_queue);
@@ -698,8 +700,8 @@ mlx5_hairpin_queue_peer_unbind(struct rte_eth_dev *dev, uint16_t cur_queue,
 				dev->data->port_id, cur_queue);
 			return -rte_errno;
 		}
-		rq_attr.state = MLX5_SQC_STATE_RST;
-		rq_attr.rq_state = MLX5_SQC_STATE_RST;
+		rq_attr.state = MLX5_RQC_STATE_RST;
+		rq_attr.rq_state = MLX5_RQC_STATE_RDY;
 		ret = mlx5_devx_cmd_modify_rq(rxq_ctrl->obj->rq, &rq_attr);
 		if (ret == 0)
 			rxq->hairpin_status = 0;
@@ -749,7 +751,7 @@ mlx5_hairpin_bind_single_port(struct rte_eth_dev *dev, uint16_t rx_port)
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (txq_ctrl == NULL)
 			continue;
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (!txq_ctrl->is_hairpin) {
 			mlx5_txq_release(dev, i);
 			continue;
 		}
@@ -789,7 +791,7 @@ mlx5_hairpin_bind_single_port(struct rte_eth_dev *dev, uint16_t rx_port)
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (txq_ctrl == NULL)
 			continue;
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (!txq_ctrl->is_hairpin) {
 			mlx5_txq_release(dev, i);
 			continue;
 		}
@@ -816,8 +818,8 @@ mlx5_hairpin_bind_single_port(struct rte_eth_dev *dev, uint16_t rx_port)
 		}
 		/* Pass TxQ's information to peer RxQ and try binding. */
 		cur.peer_q = rx_queue;
-		cur.qp_id = txq_ctrl->obj->sq->id;
-		cur.vhca_id = priv->config.hca_attr.vhca_id;
+		cur.qp_id = mlx5_txq_get_sqn(txq_ctrl);
+		cur.vhca_id = priv->sh->cdev->config.hca_attr.vhca_id;
 		cur.tx_explicit = txq_ctrl->hairpin_conf.tx_explicit;
 		cur.manual_bind = txq_ctrl->hairpin_conf.manual_bind;
 		/*
@@ -843,6 +845,11 @@ error:
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (txq_ctrl == NULL)
 			continue;
+		if (!txq_ctrl->is_hairpin ||
+		    txq_ctrl->hairpin_conf.peers[0].port != rx_port) {
+			mlx5_txq_release(dev, i);
+			continue;
+		}
 		rx_queue = txq_ctrl->hairpin_conf.peers[0].queue;
 		rte_eth_hairpin_queue_peer_unbind(rx_port, rx_queue, 0);
 		mlx5_hairpin_queue_peer_unbind(dev, i, 1);
@@ -884,7 +891,7 @@ mlx5_hairpin_unbind_single_port(struct rte_eth_dev *dev, uint16_t rx_port)
 		txq_ctrl = mlx5_txq_get(dev, i);
 		if (txq_ctrl == NULL)
 			continue;
-		if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+		if (!txq_ctrl->is_hairpin) {
 			mlx5_txq_release(dev, i);
 			continue;
 		}
@@ -1014,7 +1021,7 @@ mlx5_hairpin_get_peer_ports(struct rte_eth_dev *dev, uint16_t *peer_ports,
 			txq_ctrl = mlx5_txq_get(dev, i);
 			if (!txq_ctrl)
 				continue;
-			if (txq_ctrl->type != MLX5_TXQ_TYPE_HAIRPIN) {
+			if (!txq_ctrl->is_hairpin) {
 				mlx5_txq_release(dev, i);
 				continue;
 			}
@@ -1038,7 +1045,7 @@ mlx5_hairpin_get_peer_ports(struct rte_eth_dev *dev, uint16_t *peer_ports,
 			if (rxq == NULL)
 				continue;
 			rxq_ctrl = rxq->ctrl;
-			if (rxq_ctrl->type != MLX5_RXQ_TYPE_HAIRPIN)
+			if (!rxq_ctrl->is_hairpin)
 				continue;
 			pp = rxq->hairpin_conf.peers[0].port;
 			if (pp >= RTE_MAX_ETHPORTS) {
@@ -1063,6 +1070,69 @@ mlx5_hairpin_get_peer_ports(struct rte_eth_dev *dev, uint16_t *peer_ports,
 	return ret;
 }
 
+#ifdef HAVE_MLX5_HWS_SUPPORT
+
+/**
+ * Check if starting representor port is allowed.
+ *
+ * If transfer proxy port is configured for HWS, then starting representor port
+ * is allowed if and only if transfer proxy port is started as well.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   If stopping representor port is allowed, then 0 is returned.
+ *   Otherwise rte_errno is set, and negative errno value is returned.
+ */
+static int
+mlx5_hw_representor_port_allowed_start(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct rte_eth_dev *proxy_dev;
+	struct mlx5_priv *proxy_priv;
+	uint16_t proxy_port_id = UINT16_MAX;
+	int ret;
+
+	MLX5_ASSERT(priv->sh->config.dv_flow_en == 2);
+	MLX5_ASSERT(priv->sh->config.dv_esw_en);
+	MLX5_ASSERT(priv->representor);
+	ret = rte_flow_pick_transfer_proxy(dev->data->port_id, &proxy_port_id, NULL);
+	if (ret) {
+		if (ret == -ENODEV)
+			DRV_LOG(ERR, "Starting representor port %u is not allowed. Transfer "
+				     "proxy port is not available.", dev->data->port_id);
+		else
+			DRV_LOG(ERR, "Failed to pick transfer proxy for port %u (ret = %d)",
+				dev->data->port_id, ret);
+		return ret;
+	}
+	proxy_dev = &rte_eth_devices[proxy_port_id];
+	proxy_priv = proxy_dev->data->dev_private;
+	if (proxy_priv->dr_ctx == NULL) {
+		DRV_LOG(DEBUG, "Starting representor port %u is allowed, but default traffic flows"
+			       " will not be created. Transfer proxy port must be configured"
+			       " for HWS and started.",
+			       dev->data->port_id);
+		return 0;
+	}
+	if (!proxy_dev->data->dev_started) {
+		DRV_LOG(ERR, "Failed to start port %u: transfer proxy (port %u) must be started",
+			     dev->data->port_id, proxy_port_id);
+		rte_errno = EAGAIN;
+		return -rte_errno;
+	}
+	if (priv->sh->config.repr_matching && !priv->dr_ctx) {
+		DRV_LOG(ERR, "Failed to start port %u: with representor matching enabled, port "
+			     "must be configured for HWS", dev->data->port_id);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	return 0;
+}
+
+#endif
+
 /**
  * DPDK callback to start the device.
  *
@@ -1073,6 +1143,10 @@ mlx5_hairpin_get_peer_ports(struct rte_eth_dev *dev, uint16_t *peer_ports,
  *
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
+ *   The following error values are defined:
+ *
+ *   - -EAGAIN: If port representor cannot be started,
+ *     because transfer proxy port is not started.
  */
 int
 mlx5_dev_start(struct rte_eth_dev *dev)
@@ -1082,6 +1156,19 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 	int fine_inline;
 
 	DRV_LOG(DEBUG, "port %u starting device", dev->data->port_id);
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	if (priv->sh->config.dv_flow_en == 2) {
+		/* If there is no E-Switch, then there are no start/stop order limitations. */
+		if (!priv->sh->config.dv_esw_en)
+			goto continue_dev_start;
+		/* If master is being started, then it is always allowed. */
+		if (priv->master)
+			goto continue_dev_start;
+		if (mlx5_hw_representor_port_allowed_start(dev))
+			return -rte_errno;
+	}
+continue_dev_start:
+#endif
 	fine_inline = rte_mbuf_dynflag_lookup
 		(RTE_PMD_MLX5_FINE_GRANULARITY_INLINE, NULL);
 	if (fine_inline >= 0)
@@ -1118,8 +1205,8 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 			dev->data->port_id, strerror(rte_errno));
 		goto error;
 	}
-	if ((priv->sh->devx && priv->config.dv_flow_en &&
-	    priv->config.dest_tir) && priv->obj_ops.lb_dummy_queue_create) {
+	if (mlx5_devx_obj_ops_en(priv->sh) &&
+	    priv->obj_ops.lb_dummy_queue_create) {
 		ret = priv->obj_ops.lb_dummy_queue_create(dev);
 		if (ret)
 			goto error;
@@ -1131,7 +1218,7 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 		goto error;
 	}
 	if (priv->config.std_delay_drop || priv->config.hp_delay_drop) {
-		if (!priv->config.vf && !priv->config.sf &&
+		if (!priv->sh->dev_cap.vf && !priv->sh->dev_cap.sf &&
 		    !priv->representor) {
 			ret = mlx5_get_flag_dropless_rq(dev);
 			if (ret < 0)
@@ -1184,6 +1271,16 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 			dev->data->port_id, rte_strerror(rte_errno));
 		goto error;
 	}
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	if (priv->sh->config.dv_flow_en == 2) {
+		ret = flow_hw_table_update(dev, NULL);
+		if (ret) {
+			DRV_LOG(ERR, "port %u failed to update HWS tables",
+				dev->data->port_id);
+			goto error;
+		}
+	}
+#endif
 	ret = mlx5_traffic_enable(dev);
 	if (ret) {
 		DRV_LOG(ERR, "port %u failed to set defaults flows",
@@ -1252,6 +1349,53 @@ error:
 	return -rte_errno;
 }
 
+#ifdef HAVE_MLX5_HWS_SUPPORT
+/**
+ * Check if stopping transfer proxy port is allowed.
+ *
+ * If transfer proxy port is configured for HWS, then it is allowed to stop it
+ * if and only if all other representor ports are stopped.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   If stopping transfer proxy port is allowed, then 0 is returned.
+ *   Otherwise rte_errno is set, and negative errno value is returned.
+ */
+static int
+mlx5_hw_proxy_port_allowed_stop(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	bool representor_started = false;
+	uint16_t port_id;
+
+	MLX5_ASSERT(priv->sh->config.dv_flow_en == 2);
+	MLX5_ASSERT(priv->sh->config.dv_esw_en);
+	MLX5_ASSERT(priv->master);
+	/* If transfer proxy port was not configured for HWS, then stopping it is allowed. */
+	if (!priv->dr_ctx)
+		return 0;
+	MLX5_ETH_FOREACH_DEV(port_id, dev->device) {
+		const struct rte_eth_dev *port_dev = &rte_eth_devices[port_id];
+		const struct mlx5_priv *port_priv = port_dev->data->dev_private;
+
+		if (port_id != dev->data->port_id &&
+		    port_priv->domain_id == priv->domain_id &&
+		    port_dev->data->dev_started)
+			representor_started = true;
+	}
+	if (representor_started) {
+		DRV_LOG(ERR, "Failed to stop port %u: attached representor ports"
+			     " must be stopped before stopping transfer proxy port",
+			     dev->data->port_id);
+		rte_errno = EBUSY;
+		return -rte_errno;
+	}
+	return 0;
+}
+#endif
+
 /**
  * DPDK callback to stop the device.
  *
@@ -1259,28 +1403,58 @@ error:
  *
  * @param dev
  *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ *   The following error values are defined:
+ *
+ *   - -EBUSY: If transfer proxy port cannot be stopped,
+ *     because other port representors are still running.
  */
 int
 mlx5_dev_stop(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	if (priv->sh->config.dv_flow_en == 2) {
+		/* If there is no E-Switch, then there are no start/stop order limitations. */
+		if (!priv->sh->config.dv_esw_en)
+			goto continue_dev_stop;
+		/* If representor is being stopped, then it is always allowed. */
+		if (priv->representor)
+			goto continue_dev_stop;
+		if (mlx5_hw_proxy_port_allowed_stop(dev)) {
+			dev->data->dev_started = 1;
+			return -rte_errno;
+		}
+	}
+continue_dev_stop:
+#endif
 	dev->data->dev_started = 0;
 	/* Prevent crashes when queues are still in use. */
-	dev->rx_pkt_burst = removed_rx_burst;
-	dev->tx_pkt_burst = removed_tx_burst;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx5_mp_os_req_stop_rxtx(dev);
 	rte_delay_us_sleep(1000 * priv->rxqs_n);
 	DRV_LOG(DEBUG, "port %u stopping device", dev->data->port_id);
-	mlx5_flow_stop_default(dev);
+	if (priv->sh->config.dv_flow_en == 2) {
+		if (!__atomic_load_n(&priv->hws_mark_refcnt, __ATOMIC_RELAXED))
+			flow_hw_rxq_flag_set(dev, false);
+	} else {
+		mlx5_flow_stop_default(dev);
+	}
 	/* Control flows for default traffic can be removed firstly. */
 	mlx5_traffic_disable(dev);
 	/* All RX queue flags will be cleared in the flush interface. */
 	mlx5_flow_list_flush(dev, MLX5_FLOW_TYPE_GEN, true);
 	mlx5_flow_meter_rxq_flush(dev);
 	mlx5_action_handle_detach(dev);
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	mlx5_flow_hw_cleanup_ctrl_rx_templates(dev);
+#endif
 	mlx5_rx_intr_vec_disable(dev);
 	priv->sh->port[priv->dev_port - 1].ih_port_id = RTE_MAX_ETHPORTS;
 	priv->sh->port[priv->dev_port - 1].devx_ih_port_id = RTE_MAX_ETHPORTS;
@@ -1294,11 +1468,89 @@ mlx5_dev_stop(struct rte_eth_dev *dev)
 	return 0;
 }
 
+#ifdef HAVE_MLX5_HWS_SUPPORT
+
+static int
+mlx5_traffic_enable_hws(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_sh_config *config = &priv->sh->config;
+	uint64_t flags = 0;
+	unsigned int i;
+	int ret;
+
+	/*
+	 * With extended metadata enabled, the Tx metadata copy is handled by default
+	 * Tx tagging flow rules, so default Tx flow rule is not needed. It is only
+	 * required when representor matching is disabled.
+	 */
+	if (config->dv_esw_en &&
+	    !config->repr_matching &&
+	    config->dv_xmeta_en == MLX5_XMETA_MODE_META32_HWS &&
+	    priv->master) {
+		if (mlx5_flow_hw_create_tx_default_mreg_copy_flow(dev))
+			goto error;
+	}
+	for (i = 0; i < priv->txqs_n; ++i) {
+		struct mlx5_txq_ctrl *txq = mlx5_txq_get(dev, i);
+		uint32_t queue;
+
+		if (!txq)
+			continue;
+		queue = mlx5_txq_get_sqn(txq);
+		if ((priv->representor || priv->master) &&
+		    config->dv_esw_en &&
+		    config->fdb_def_rule) {
+			if (mlx5_flow_hw_esw_create_sq_miss_flow(dev, queue, false)) {
+				mlx5_txq_release(dev, i);
+				goto error;
+			}
+		}
+		if (config->dv_esw_en && config->repr_matching) {
+			if (mlx5_flow_hw_tx_repr_matching_flow(dev, queue, false)) {
+				mlx5_txq_release(dev, i);
+				goto error;
+			}
+		}
+		mlx5_txq_release(dev, i);
+	}
+	if (config->fdb_def_rule) {
+		if ((priv->master || priv->representor) && config->dv_esw_en) {
+			if (!mlx5_flow_hw_esw_create_default_jump_flow(dev))
+				priv->fdb_def_rule = 1;
+			else
+				goto error;
+		}
+	} else {
+		DRV_LOG(INFO, "port %u FDB default rule is disabled", dev->data->port_id);
+	}
+	if (priv->isolated)
+		return 0;
+	if (!priv->sh->config.lacp_by_user && priv->pf_bond >= 0 && priv->master)
+		if (mlx5_flow_hw_lacp_rx_flow(dev))
+			goto error;
+	if (dev->data->promiscuous)
+		flags |= MLX5_CTRL_PROMISCUOUS;
+	if (dev->data->all_multicast)
+		flags |= MLX5_CTRL_ALL_MULTICAST;
+	else
+		flags |= MLX5_CTRL_BROADCAST | MLX5_CTRL_IPV4_MULTICAST | MLX5_CTRL_IPV6_MULTICAST;
+	flags |= MLX5_CTRL_DMAC;
+	if (priv->vlan_filter_n)
+		flags |= MLX5_CTRL_VLAN_FILTER;
+	return mlx5_flow_hw_ctrl_flows(dev, flags);
+error:
+	ret = rte_errno;
+	mlx5_flow_hw_flush_ctrl_flows(dev);
+	rte_errno = ret;
+	return -rte_errno;
+}
+
+#endif
+
 /**
  * Enable traffic flows configured by control plane
  *
- * @param dev
- *   Pointer to Ethernet device private data.
  * @param dev
  *   Pointer to Ethernet device structure.
  *
@@ -1332,6 +1584,10 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 	unsigned int j;
 	int ret;
 
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	if (priv->sh->config.dv_flow_en == 2)
+		return mlx5_traffic_enable_hws(dev);
+#endif
 	/*
 	 * Hairpin txq default flow should be created no matter if it is
 	 * isolation mode. Or else all the packets to be sent will be sent
@@ -1342,19 +1598,22 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 		if (!txq_ctrl)
 			continue;
 		/* Only Tx implicit mode requires the default Tx flow. */
-		if (txq_ctrl->type == MLX5_TXQ_TYPE_HAIRPIN &&
+		if (txq_ctrl->is_hairpin &&
 		    txq_ctrl->hairpin_conf.tx_explicit == 0 &&
 		    txq_ctrl->hairpin_conf.peers[0].port ==
 		    priv->dev_data->port_id) {
-			ret = mlx5_ctrl_flow_source_queue(dev, i);
+			ret = mlx5_ctrl_flow_source_queue(dev,
+					mlx5_txq_get_sqn(txq_ctrl));
 			if (ret) {
 				mlx5_txq_release(dev, i);
 				goto error;
 			}
 		}
-		if ((priv->representor || priv->master) &&
-		    priv->config.dv_esw_en) {
-			if (mlx5_flow_create_devx_sq_miss_flow(dev, i) == 0) {
+		if (priv->sh->config.dv_esw_en) {
+			uint32_t q = mlx5_txq_get_sqn(txq_ctrl);
+
+			if (mlx5_flow_create_devx_sq_miss_flow(dev, q) == 0) {
+				mlx5_txq_release(dev, i);
 				DRV_LOG(ERR,
 					"Port %u Tx queue %u SQ create representor devx default miss rule failed.",
 					dev->data->port_id, i);
@@ -1363,22 +1622,26 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 		}
 		mlx5_txq_release(dev, i);
 	}
-	if ((priv->master || priv->representor) && priv->config.dv_esw_en) {
-		if (mlx5_flow_create_esw_table_zero_flow(dev))
-			priv->fdb_def_rule = 1;
-		else
-			DRV_LOG(INFO, "port %u FDB default rule cannot be"
-				" configured - only Eswitch group 0 flows are"
-				" supported.", dev->data->port_id);
+	if (priv->sh->config.fdb_def_rule) {
+		if (priv->sh->config.dv_esw_en) {
+			if (mlx5_flow_create_esw_table_zero_flow(dev))
+				priv->fdb_def_rule = 1;
+			else
+				DRV_LOG(INFO, "port %u FDB default rule cannot be configured - only Eswitch group 0 flows are supported.",
+					dev->data->port_id);
+		}
+	} else {
+		DRV_LOG(INFO, "port %u FDB default rule is disabled",
+			dev->data->port_id);
 	}
-	if (!priv->config.lacp_by_user && priv->pf_bond >= 0) {
+	if (!priv->sh->config.lacp_by_user && priv->pf_bond >= 0 && priv->master) {
 		ret = mlx5_flow_lacp_miss(dev);
 		if (ret)
 			DRV_LOG(INFO, "port %u LACP rule cannot be created - "
 				"forward LACP to kernel.", dev->data->port_id);
 		else
-			DRV_LOG(INFO, "LACP traffic will be missed in port %u."
-				, dev->data->port_id);
+			DRV_LOG(INFO, "LACP traffic will be missed in port %u.",
+				dev->data->port_id);
 	}
 	if (priv->isolated)
 		return 0;
@@ -1487,7 +1750,14 @@ error:
 void
 mlx5_traffic_disable(struct rte_eth_dev *dev)
 {
-	mlx5_flow_list_flush(dev, MLX5_FLOW_TYPE_CTL, false);
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (priv->sh->config.dv_flow_en == 2)
+		mlx5_flow_hw_flush_ctrl_flows(dev);
+	else
+#endif
+		mlx5_flow_list_flush(dev, MLX5_FLOW_TYPE_CTL, false);
 }
 
 /**
@@ -1504,6 +1774,9 @@ mlx5_traffic_restart(struct rte_eth_dev *dev)
 {
 	if (dev->data->dev_started) {
 		mlx5_traffic_disable(dev);
+#ifdef HAVE_MLX5_HWS_SUPPORT
+		mlx5_flow_hw_cleanup_ctrl_rx_templates(dev);
+#endif
 		return mlx5_traffic_enable(dev);
 	}
 	return 0;

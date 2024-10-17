@@ -46,8 +46,8 @@
 #define MAX_RX_QUEUE_PER_LCORE 16
 #define MAX_TX_QUEUE_PER_PORT 16
 
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
 
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 #define MEMPOOL_CACHE_SIZE 256
@@ -140,5 +140,8 @@ l2fwd_get_rsrc(void)
 }
 
 int l2fwd_event_init_ports(struct l2fwd_resources *rsrc);
+void l2fwd_event_worker_cleanup(uint8_t event_d_id, uint8_t port_id,
+				struct rte_event events[], uint16_t nb_enq,
+				uint16_t nb_deq, uint8_t is_vector);
 
 #endif /* __L2FWD_COMMON_H__ */

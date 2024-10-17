@@ -2,6 +2,7 @@
  * Copyright(c) 2017 Cavium, Inc
  */
 
+#include <errno.h>
 #include <string.h>
 
 #include "octeontx_bgx.h"
@@ -141,6 +142,42 @@ octeontx_bgx_port_status(int port, octeontx_mbox_bgx_port_status_t *stat)
 
 	stat->link_up = bgx_stat.link_up;
 
+	return res;
+}
+
+int
+octeontx_bgx_port_multicast_set(int port, int en)
+{
+	struct octeontx_mbox_hdr hdr;
+	uint8_t	prom;
+	int res;
+
+	hdr.coproc = OCTEONTX_BGX_COPROC;
+	hdr.msg = MBOX_BGX_PORT_SET_MCAST;
+	hdr.vfid = port;
+	prom = en ? 1 : 0;
+
+	res = octeontx_mbox_send(&hdr, &prom, sizeof(prom), NULL, 0);
+	if (res < 0)
+		return -EACCES;
+
+	return res;
+}
+
+int
+octeontx_bgx_port_xstats(int port, octeontx_mbox_bgx_port_stats_t *stats)
+{
+	struct octeontx_mbox_hdr hdr;
+	int len = sizeof(octeontx_mbox_bgx_port_stats_t);
+	int res;
+
+	hdr.coproc = OCTEONTX_BGX_COPROC;
+	hdr.msg = MBOX_BGX_PORT_GET_STATS;
+	hdr.vfid = port;
+
+	res = octeontx_mbox_send(&hdr, NULL, 0, stats, len);
+	if (res < 0)
+		return -EACCES;
 	return res;
 }
 
@@ -375,4 +412,23 @@ int octeontx_bgx_port_flow_ctrl_cfg(int port,
 
 done:
 	return 0;
+}
+
+int octeontx_bgx_port_change_mode(int port,
+				  octeontx_mbox_bgx_port_change_mode_t *cfg)
+{
+	int len = sizeof(octeontx_mbox_bgx_port_change_mode_t), res;
+	octeontx_mbox_bgx_port_change_mode_t conf;
+	struct octeontx_mbox_hdr hdr;
+
+	hdr.coproc = OCTEONTX_BGX_COPROC;
+	hdr.msg = MBOX_BGX_PORT_CHANGE_MODE;
+	hdr.vfid = port;
+
+	memcpy(&conf, cfg, len);
+	res = octeontx_mbox_send(&hdr, &conf, len, NULL, 0);
+	if (res < 0)
+		return -EACCES;
+
+	return res;
 }

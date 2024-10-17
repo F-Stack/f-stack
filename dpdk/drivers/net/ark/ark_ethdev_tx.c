@@ -39,8 +39,8 @@ struct ark_tx_queue {
 	uint32_t queue_mask;
 
 	/* 3 indexes to the paired data rings. */
-	int32_t prod_index;		/* where to put the next one */
-	int32_t free_index;		/* mbuf has been freed */
+	uint32_t prod_index;		/* where to put the next one */
+	uint32_t free_index;		/* mbuf has been freed */
 
 	/* The queue Id is used to identify the HW Q */
 	uint16_t phys_qid;
@@ -49,7 +49,7 @@ struct ark_tx_queue {
 
 	/* next cache line - fields written by device */
 	RTE_MARKER cacheline1 __rte_cache_min_aligned;
-	volatile int32_t cons_index;		/* hw is done, can be freed */
+	volatile uint32_t cons_index;		/* hw is done, can be freed */
 } __rte_cache_aligned;
 
 /* Forward declarations */
@@ -58,12 +58,6 @@ static int eth_ark_tx_jumbo(struct ark_tx_queue *queue,
 			    uint32_t *user_meta, uint8_t meta_cnt);
 static int eth_ark_tx_hw_queue_config(struct ark_tx_queue *queue);
 static void free_completed_tx(struct ark_tx_queue *queue);
-
-static inline void
-ark_tx_hw_queue_stop(struct ark_tx_queue *queue)
-{
-	ark_mpu_stop(queue->mpu);
-}
 
 /* ************************************************************************* */
 static inline void
@@ -107,15 +101,6 @@ eth_ark_tx_desc_fill(struct ark_tx_queue *queue,
 
 /* ************************************************************************* */
 uint16_t
-eth_ark_xmit_pkts_noop(void *vtxq __rte_unused,
-		       struct rte_mbuf **tx_pkts __rte_unused,
-		       uint16_t nb_pkts __rte_unused)
-{
-	return 0;
-}
-
-/* ************************************************************************* */
-uint16_t
 eth_ark_xmit_pkts(void *vtxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
 	struct ark_tx_queue *queue;
@@ -123,7 +108,7 @@ eth_ark_xmit_pkts(void *vtxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	uint32_t user_meta[5];
 
 	int stat;
-	int32_t prod_index_limit;
+	uint32_t prod_index_limit;
 	uint16_t nb;
 	uint8_t user_len = 0;
 	const uint32_t min_pkt_len = ARK_MIN_TX_PKTLEN;
@@ -138,8 +123,13 @@ eth_ark_xmit_pkts(void *vtxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	/* leave 4 elements mpu data */
 	prod_index_limit = queue->queue_size + queue->free_index - 4;
 
+	/* Populate the buffer bringing prod_index up to or slightly beyond
+	 * prod_index_limit. Prod_index will increment by 2 or more each
+	 * iteration.  Note: indexes are uint32_t, cast to (signed) int32_t
+	 * to catch the slight overage case;  e.g. (200 - 201)
+	 */
 	for (nb = 0;
-	     (nb < nb_pkts) && (prod_index_limit - queue->prod_index) > 0;
+	     (nb < nb_pkts) && (int32_t)(prod_index_limit - queue->prod_index) > 0;
 	     ++nb) {
 		mbuf = tx_pkts[nb];
 
@@ -209,13 +199,13 @@ eth_ark_tx_jumbo(struct ark_tx_queue *queue, struct rte_mbuf *mbuf,
 		 uint32_t *user_meta, uint8_t meta_cnt)
 {
 	struct rte_mbuf *next;
-	int32_t free_queue_space;
+	uint32_t free_queue_space;
 	uint8_t flags = ARK_DDM_SOP;
 
 	free_queue_space = queue->queue_mask -
 		(queue->prod_index - queue->free_index);
 	/* We need up to 4 mbufs for first header and 2 for subsequent ones */
-	if (unlikely(free_queue_space < (2 + (2 * mbuf->nb_segs))))
+	if (unlikely(free_queue_space < (2U + (2U * mbuf->nb_segs))))
 		return -1;
 
 	while (mbuf != NULL) {
@@ -244,7 +234,7 @@ eth_ark_tx_queue_setup(struct rte_eth_dev *dev,
 	struct ark_tx_queue *queue;
 	int status;
 
-	int qidx = queue_idx;
+	int qidx = ark->qbase + queue_idx;
 
 	if (!rte_is_power_of_2(nb_desc)) {
 		ARK_PMD_LOG(ERR,
@@ -318,7 +308,6 @@ static int
 eth_ark_tx_hw_queue_config(struct ark_tx_queue *queue)
 {
 	rte_iova_t queue_base, ring_base, cons_index_addr;
-	uint32_t write_interval_ns;
 
 	/* Verify HW -- MPU */
 	if (ark_mpu_verify(queue->mpu, sizeof(union ark_tx_meta)))
@@ -335,28 +324,9 @@ eth_ark_tx_hw_queue_config(struct ark_tx_queue *queue)
 	/* Stop and Reset and configure MPU */
 	ark_mpu_configure(queue->mpu, ring_base, queue->queue_size, 1);
 
-	/*
-	 * Adjust the write interval based on queue size --
-	 * increase pcie traffic  when low mbuf count
-	 * Queue sizes less than 128 are not allowed
-	 */
-	switch (queue->queue_size) {
-	case 128:
-		write_interval_ns = 500;
-		break;
-	case 256:
-		write_interval_ns = 500;
-		break;
-	case 512:
-		write_interval_ns = 1000;
-		break;
-	default:
-		write_interval_ns = 2000;
-		break;
-	}
-
 	/* Completion address in UDM */
-	ark_ddm_setup(queue->ddm, cons_index_addr, write_interval_ns);
+	ark_ddm_queue_setup(queue->ddm, cons_index_addr);
+	ark_ddm_queue_reset_stats(queue->ddm);
 
 	return 0;
 }
@@ -369,7 +339,8 @@ eth_ark_tx_queue_release(void *vtx_queue)
 
 	queue = (struct ark_tx_queue *)vtx_queue;
 
-	ark_tx_hw_queue_stop(queue);
+	ark_ddm_queue_enable(queue->ddm, 0);
+	ark_mpu_stop(queue->mpu);
 
 	queue->cons_index = queue->prod_index;
 	free_completed_tx(queue);
@@ -395,6 +366,7 @@ eth_ark_tx_queue_stop(struct rte_eth_dev *dev, uint16_t queue_id)
 			return -1;
 	}
 
+	ark_ddm_queue_enable(queue->ddm, 0);
 	ark_mpu_stop(queue->mpu);
 	free_completed_tx(queue);
 
@@ -413,6 +385,7 @@ eth_ark_tx_queue_start(struct rte_eth_dev *dev, uint16_t queue_id)
 		return 0;
 
 	ark_mpu_start(queue->mpu);
+	ark_ddm_queue_enable(queue->ddm, 1);
 	dev->data->tx_queue_state[queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	return 0;
@@ -424,10 +397,11 @@ free_completed_tx(struct ark_tx_queue *queue)
 {
 	struct rte_mbuf *mbuf;
 	union ark_tx_meta *meta;
-	int32_t top_index;
+	uint32_t top_index;
 
 	top_index = queue->cons_index;	/* read once */
-	while ((top_index - queue->free_index) > 0) {
+
+	while ((int32_t)(top_index - queue->free_index) > 0) {
 		meta = &queue->meta_q[queue->free_index & queue->queue_mask];
 		if (likely((meta->flags & ARK_DDM_SOP) != 0)) {
 			mbuf = queue->bufs[queue->free_index &

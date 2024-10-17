@@ -8,12 +8,16 @@
 #define DPI_QUEUE_STOP		0x0
 #define DPI_QUEUE_START		0x1
 #define STRM_INC(s)		((s).tail = ((s).tail + 1) % (s).max_cnt)
-#define DPI_MAX_DESC		DPI_MAX_POINTER
+#define DPI_MAX_DESC		1024
 
 /* Set Completion data to 0xFF when request submitted,
  * upon successful request completion engine reset to completion status
  */
 #define DPI_REQ_CDATA		0xFF
+
+#define CNXK_DPI_DEV_CONFIG   (1ULL << 0)
+#define CNXK_DPI_VCHAN_CONFIG (1ULL << 1)
+#define CNXK_DPI_DEV_START    (1ULL << 2)
 
 struct cnxk_dpi_compl_s {
 	uint64_t cdata;
@@ -39,6 +43,7 @@ struct cnxk_dpi_vf_s {
 	uint64_t cmd[DPI_MAX_CMD_SIZE];
 	uint32_t num_words;
 	uint16_t desc_idx;
+	uint16_t flag;
 };
 
 #endif

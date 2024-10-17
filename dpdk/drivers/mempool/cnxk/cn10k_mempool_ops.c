@@ -9,6 +9,7 @@
 
 #define BATCH_ALLOC_SZ              ROC_CN10K_NPA_BATCH_ALLOC_MAX_PTRS
 #define BATCH_OP_DATA_TABLE_MZ_NAME "batch_op_data_table_mz"
+#define BATCH_ALLOC_WAIT_US         5
 
 enum batch_op_status {
 	BATCH_ALLOC_OP_NOT_ISSUED = 0,
@@ -109,6 +110,12 @@ batch_op_fini(struct rte_mempool *mp)
 	int i;
 
 	op_data = batch_op_data_get(mp->pool_id);
+	if (!op_data) {
+		/* Batch op data can be uninitialized in case of empty
+		 * mempools.
+		 */
+		return;
+	}
 
 	rte_wmb();
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
@@ -144,6 +151,12 @@ cn10k_mempool_enq(struct rte_mempool *mp, void *const *obj_table,
 	 */
 	rte_io_wmb();
 
+	/* For non-EAL threads, rte_lcore_id() will not be valid. Hence
+	 * fallback to bulk alloc
+	 */
+	if (unlikely(rte_lcore_id() == LCORE_ID_ANY))
+		return cnxk_mempool_enq(mp, obj_table, n);
+
 	if (n == 1) {
 		roc_npa_aura_op_free(mp->pool_id, 1, ptr[0]);
 		return 0;
@@ -171,8 +184,8 @@ cn10k_mempool_get_count(const struct rte_mempool *mp)
 		struct batch_op_mem *mem = &op_data->mem[i];
 
 		if (mem->status == BATCH_ALLOC_OP_ISSUED)
-			count += roc_npa_aura_batch_alloc_count(mem->objs,
-								BATCH_ALLOC_SZ);
+			count += roc_npa_aura_batch_alloc_count(
+				mem->objs, BATCH_ALLOC_SZ, BATCH_ALLOC_WAIT_US);
 
 		if (mem->status == BATCH_ALLOC_OP_DONE)
 			count += mem->sz;
@@ -243,6 +256,12 @@ cn10k_mempool_deq(struct rte_mempool *mp, void **obj_table, unsigned int n)
 			mem->status = !rc;
 		}
 	}
+
+	/* For non-EAL threads, rte_lcore_id() will not be valid. Hence
+	 * fallback to bulk alloc
+	 */
+	if (unlikely(rte_lcore_id() == LCORE_ID_ANY))
+		return cnxk_mempool_deq(mp, obj_table, n);
 
 	if (unlikely(count != n)) {
 		/* No partial alloc allowed. Free up allocated pointers */

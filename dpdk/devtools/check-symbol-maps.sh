@@ -8,7 +8,7 @@ cd $(dirname $0)/..
 export LC_ALL=C
 
 if [ $# = 0 ] ; then
-    set -- $(find lib drivers -name '*.map')
+    set -- $(find lib drivers -name '*.map' -a ! -path drivers/version.map)
 fi
 
 ret=0
@@ -57,6 +57,20 @@ local_miss_maps=$(grep -L 'local: \*;' $@ || true)
 if [ -n "$local_miss_maps" ] ; then
     echo "Found maps without local catch-all:"
     echo "$local_miss_maps"
+    ret=1
+fi
+
+find_empty_maps ()
+{
+    for map in $@ ; do
+        [ $(buildtools/map-list-symbol.sh $map | wc -l) != '0' ] || echo $map
+    done
+}
+
+empty_maps=$(find_empty_maps $@)
+if [ -n "$empty_maps" ] ; then
+    echo "Found empty maps:"
+    echo "$empty_maps"
     ret=1
 fi
 

@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <rte_memory.h>
@@ -70,7 +71,7 @@ struct vhost_iotlb_msg {
 struct vhost_vdpa_config {
 	uint32_t off;
 	uint32_t len;
-	uint8_t buf[0];
+	uint8_t buf[];
 };
 
 struct vhost_msg {

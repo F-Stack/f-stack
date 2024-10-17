@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2018 Intel Corporation
+ * Copyright(c) 2015-2022 Intel Corporation
  */
 
 #include <rte_common.h>
 #include <rte_cycles.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_atomic.h>
 #include <rte_prefetch.h>
 
@@ -175,11 +175,9 @@ qat_qp_setup(struct qat_pci_device *qat_dev,
 
 create_err:
 	if (qp) {
-		if (qp->op_cookie_pool)
-			rte_mempool_free(qp->op_cookie_pool);
+		rte_mempool_free(qp->op_cookie_pool);
 
-		if (qp->op_cookies)
-			rte_free(qp->op_cookies);
+		rte_free(qp->op_cookies);
 
 		rte_free(qp);
 	}
@@ -329,8 +327,7 @@ qat_qp_release(enum qat_device_gen qat_dev_gen, struct qat_qp **qp_addr)
 	for (i = 0; i < qp->nb_descriptors; i++)
 		rte_mempool_put(qp->op_cookie_pool, qp->op_cookies[i]);
 
-	if (qp->op_cookie_pool)
-		rte_mempool_free(qp->op_cookie_pool);
+	rte_mempool_free(qp->op_cookie_pool);
 
 	rte_free(qp->op_cookies);
 	rte_free(qp);
@@ -373,8 +370,8 @@ adf_queue_arb_enable(struct qat_pci_device *qat_dev, struct qat_queue *txq,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_arb_enable,
-			-ENOTSUP);
+	if (ops->qat_qp_adf_arb_enable == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_adf_arb_enable(txq, base_addr, lock);
 	return 0;
 }
@@ -386,8 +383,8 @@ adf_queue_arb_disable(enum qat_device_gen qat_dev_gen, struct qat_queue *txq,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_arb_disable,
-			-ENOTSUP);
+	if (ops->qat_qp_adf_arb_disable == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_adf_arb_disable(txq, base_addr, lock);
 	return 0;
 }
@@ -399,8 +396,8 @@ qat_qp_build_ring_base(struct qat_pci_device *qat_dev, void *io_addr,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_build_ring_base,
-			-ENOTSUP);
+	if (ops->qat_qp_build_ring_base == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_build_ring_base(io_addr, queue);
 	return 0;
 }
@@ -412,8 +409,8 @@ qat_qps_per_service(struct qat_pci_device *qat_dev,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_rings_per_service,
-			-ENOTSUP);
+	if (ops->qat_qp_rings_per_service == NULL)
+		return -ENOTSUP;
 	return ops->qat_qp_rings_per_service(qat_dev, service);
 }
 
@@ -424,7 +421,8 @@ qat_qp_get_hw_data(struct qat_pci_device *qat_dev,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_get_hw_data, NULL);
+	if (ops->qat_qp_get_hw_data == NULL)
+		return NULL;
 	return ops->qat_qp_get_hw_data(qat_dev, service, qp_id);
 }
 
@@ -434,8 +432,8 @@ qat_read_qp_config(struct qat_pci_device *qat_dev)
 	struct qat_dev_hw_spec_funcs *ops_hw =
 		qat_dev_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops_hw->qat_dev_read_config,
-			-ENOTSUP);
+	if (ops_hw->qat_dev_read_config == NULL)
+		return -ENOTSUP;
 	return ops_hw->qat_dev_read_config(qat_dev);
 }
 
@@ -445,8 +443,8 @@ adf_configure_queues(struct qat_qp *qp, enum qat_device_gen qat_dev_gen)
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_adf_configure_queues,
-			-ENOTSUP);
+	if (ops->qat_qp_adf_configure_queues == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_adf_configure_queues(qp);
 	return 0;
 }
@@ -472,8 +470,8 @@ qat_qp_csr_setup(struct qat_pci_device *qat_dev,
 	struct qat_qp_hw_spec_funcs *ops =
 		qat_qp_hw_spec[qat_dev->qat_dev_gen];
 
-	RTE_FUNC_PTR_OR_ERR_RET(ops->qat_qp_csr_setup,
-			-ENOTSUP);
+	if (ops->qat_qp_csr_setup == NULL)
+		return -ENOTSUP;
 	ops->qat_qp_csr_setup(qat_dev, io_addr, qp);
 	return 0;
 }
@@ -536,7 +534,8 @@ adf_modulo(uint32_t data, uint32_t modulo_mask)
 }
 
 uint16_t
-qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
+qat_enqueue_op_burst(void *qp, qat_op_build_request_t op_build_request,
+		void **ops, uint16_t nb_ops)
 {
 	register struct qat_queue *queue;
 	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
@@ -586,29 +585,18 @@ qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 		}
 	}
 
-#ifdef BUILD_QAT_SYM
+#ifdef RTE_LIB_SECURITY
 	if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC)
 		qat_sym_preprocess_requests(ops, nb_ops_possible);
 #endif
 
+	memset(tmp_qp->opaque, 0xff, sizeof(tmp_qp->opaque));
+
 	while (nb_ops_sent != nb_ops_possible) {
-		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC) {
-#ifdef BUILD_QAT_SYM
-			ret = qat_sym_build_request(*ops, base_addr + tail,
+		ret = op_build_request(*ops, base_addr + tail,
 				tmp_qp->op_cookies[tail >> queue->trailz],
-				tmp_qp->qat_dev_gen);
-#endif
-		} else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION) {
-			ret = qat_comp_build_request(*ops, base_addr + tail,
-				tmp_qp->op_cookies[tail >> queue->trailz],
-				tmp_qp->qat_dev_gen);
-		} else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC) {
-#ifdef BUILD_QAT_ASYM
-			ret = qat_asym_build_request(*ops, base_addr + tail,
-				tmp_qp->op_cookies[tail >> queue->trailz],
-				tmp_qp->qat_dev_gen);
-#endif
-		}
+				tmp_qp->opaque, tmp_qp->qat_dev_gen);
+
 		if (ret != 0) {
 			tmp_qp->stats.enqueue_err_count++;
 			/* This message cannot be enqueued */
@@ -630,7 +618,8 @@ kick_tail:
 }
 
 uint16_t
-qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
+qat_dequeue_op_burst(void *qp, void **ops,
+		qat_op_dequeue_t qat_dequeue_process_response, uint16_t nb_ops)
 {
 	struct qat_queue *rx_queue;
 	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
@@ -648,19 +637,10 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 
 		nb_fw_responses = 1;
 
-		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC)
-			qat_sym_process_response(ops, resp_msg,
-				tmp_qp->op_cookies[head >> rx_queue->trailz]);
-		else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION)
-			nb_fw_responses = qat_comp_process_response(
+		nb_fw_responses = qat_dequeue_process_response(
 				ops, resp_msg,
 				tmp_qp->op_cookies[head >> rx_queue->trailz],
 				&tmp_qp->stats.dequeue_err_count);
-#ifdef BUILD_QAT_ASYM
-		else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC)
-			qat_asym_process_response(ops, resp_msg,
-				tmp_qp->op_cookies[head >> rx_queue->trailz]);
-#endif
 
 		head = adf_modulo(head + rx_queue->msg_size,
 				  rx_queue->modulo_mask);

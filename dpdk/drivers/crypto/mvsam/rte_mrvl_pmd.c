@@ -9,7 +9,7 @@
 #include <rte_cryptodev.h>
 #include <cryptodev_pmd.h>
 #include <rte_security_driver.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
 #include <rte_kvargs.h>
@@ -597,13 +597,7 @@ mrvl_request_prepare_crp(struct sam_cio_op_params *request,
 		return -EINVAL;
 	}
 
-	sess = (struct mrvl_crypto_session *)get_sym_session_private_data(
-					     op->sym->session,
-					     cryptodev_driver_id);
-	if (unlikely(sess == NULL)) {
-		MRVL_LOG(ERR, "Session was not created for this device!");
-		return -EINVAL;
-	}
+	sess = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
 	request->sa = sess->sam_sess;
 	request->cookie = op;
@@ -773,8 +767,7 @@ mrvl_request_prepare_sec(struct sam_cio_ipsec_params *request,
 		return -EINVAL;
 	}
 
-	sess = (struct mrvl_crypto_session *)get_sec_session_private_data(
-			op->sym->sec_session);
+	sess = SECURITY_GET_SESS_PRIV(op->sym->session);
 	if (unlikely(sess == NULL)) {
 		MRVL_LOG(ERR, "Session was not created for this device! %d",
 			 cryptodev_driver_id);

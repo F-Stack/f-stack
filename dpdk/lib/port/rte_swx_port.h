@@ -148,6 +148,33 @@ typedef void
 			     struct rte_swx_pkt *pkt);
 
 /**
+ * Output port packet fast clone and transmit
+ *
+ * @param[in] port
+ *   Output port handle.
+ * @param[in] pkt
+ *   Packet to be transmitted.
+ */
+typedef void
+(*rte_swx_port_out_pkt_fast_clone_tx_t)(void *port,
+					struct rte_swx_pkt *pkt);
+
+/**
+ * Output port packet clone and transmit
+ *
+ * @param[in] port
+ *   Output port handle.
+ * @param[in] pkt
+ *   Packet to be transmitted.
+ * @param[in] truncation_length
+ *   Packet length to be cloned.
+ */
+typedef void
+(*rte_swx_port_out_pkt_clone_tx_t)(void *port,
+				   struct rte_swx_pkt *pkt,
+				   uint32_t truncation_length);
+
+/**
  * Output port flush
  *
  * @param[in] port
@@ -158,11 +185,23 @@ typedef void
 
 /** Output port statistics counters. */
 struct rte_swx_port_out_stats {
-	/** Number of packets. */
+	/** Number of packets successfully transmitted. */
 	uint64_t n_pkts;
 
-	/** Number of bytes. */
+	/** Number of bytes successfully transmitted. */
 	uint64_t n_bytes;
+
+	/** Number of packets dropped. */
+	uint64_t n_pkts_drop;
+
+	/** Number of bytes dropped. */
+	uint64_t n_bytes_drop;
+
+	/** Number of packets cloned successfully. */
+	uint64_t n_pkts_clone;
+
+	/** Number of packets with clone errors. */
+	uint64_t n_pkts_clone_err;
 };
 
 /**
@@ -187,6 +226,12 @@ struct rte_swx_port_out_ops {
 
 	/** Packet transmission. Must be non-NULL. */
 	rte_swx_port_out_pkt_tx_t pkt_tx;
+
+	/** Packet fast clone and transmission. Must be non-NULL. */
+	rte_swx_port_out_pkt_fast_clone_tx_t pkt_fast_clone_tx;
+
+	/** Packet clone and transmission. Must be non-NULL. */
+	rte_swx_port_out_pkt_clone_tx_t pkt_clone_tx;
 
 	/** Flush. May be NULL. */
 	rte_swx_port_out_flush_t flush;

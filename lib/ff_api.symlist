@@ -5,6 +5,7 @@ ff_setsockopt
 ff_getsockopt
 ff_ioctl
 ff_close
+ff_compat
 ff_read
 ff_readv
 ff_write
@@ -57,3 +58,8 @@ ff_mbuf_set_vlan_info
 ff_zc_mbuf_get
 ff_zc_mbuf_write
 ff_zc_mbuf_read
+ff_get_traffic
+ff_pthread_create
+ff_pthread_join
+pcurthread
+ff_dpdk_raw_packet_send
