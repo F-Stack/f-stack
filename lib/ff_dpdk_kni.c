@@ -225,7 +225,7 @@ kni_process_tx(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     /* read packet from kni ring(phy port) and transmit to kni */
-    uint16_t nb_tx, nb_to_tx, nb_kni_tx;
+    uint16_t nb_tx, nb_to_tx, nb_kni_tx = 0;
     nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count, NULL);
 
     /*
@@ -257,6 +257,7 @@ kni_process_tx(uint16_t port_id, uint16_t queue_id,
     {
         nb_kni_tx = rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, nb_to_tx);
     }
+
     if(nb_kni_tx < nb_tx) {
         uint16_t i;
         for(i = nb_kni_tx; i < nb_tx; ++i)
