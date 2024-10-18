@@ -2,6 +2,43 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2024.10 F-Stack v1.21.5(LTS)
+
+1. F-Stack lib:
+
+- Modify ff_port_cfg.port_id's type from uint8_t to unint16_t.
+- Modify INI_MAX_LINE from 200 to 2048 in lib/ff_ini_parser.h.
+- IPv6 addr and vaddr set autoconf by default.
+- Modify IPv4 vip addrs' broadaddr from x.x.x.255 to x.x.x.x, same as vip addr, because vips' netmask only support `255.255.255.255` now.
+- Add APi ff_dpdk_raw_packet_send to suppoort RAW packet send direty with DPDK by user APP not via socket.
+- Support automatic configuration of vlan and vlan ip, routing and the simplest policy routing.
+- Use soclose() instead of sofree() when initializing the configuration stack IP.
+- Support KNI ratelimit, default disable.
+- The msghdr.msg_iov->iov_base and msghdr.msg_iov->iov_len of ff_sendmsg() and ff_recvmsg() compatible with the Linux.
+
+1. FreeBSD
+
+- Fix issue in Freebsd when building with GCC 14.1.0. @bjosv
+
+1. ff toos
+
+- Fix ff tools build error with gcc-13.2.0.
+
+1. DPDK
+
+- Fix some build errors of dpdk-19.11.14 with gcc-13.2.0.
+
+1. APP
+
+- Nginx: Nginx's stream support transparent.
+
+1. doc
+
+- Update ff tools README.md, use `ff_netstat -rnW` to display wider device name.
+- Fix a typo in doc/F-Stack_Nginx_APP_Guide.md: "kernel_network_stack" -> "proxy_kernel_network_stack".
+
+
+
 2023.10 F-Stack v1.21.4(LTS)
 
   1. F-Stack lib:
