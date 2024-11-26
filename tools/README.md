@@ -102,8 +102,8 @@ Examples:
 
        ./sbin/route -p 0 flush
 
-    FreeBSD uses `netstat -rnW ` to list the route table which we havn't ported,
-    you can execute the following command instead, `-d` means debug mode, `-v`
+    FreeBSD uses `netstat -rnW ` to list the route table which we have ported,
+    you also can execute the following command instead, `-d` means debug mode, `-v`
     means verbose.
        ./sbin/route -p 0 -d -v flush
 ```
