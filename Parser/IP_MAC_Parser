@@ -1,116 +1,85 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
-#include <stdio.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
-
-#define NUM_MBUFS (4096 - 1)
 #define BURST_SIZE 32
+#define OUTPUT_FILE "packet_data.txt"
 
-int gDpdkPortId = 0; // 网络适配器
+// 解析数据包
+static void parse_packet(struct rte_mbuf *mbuf, FILE *output_file) {
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ip_hdr;
 
-// DPDK中用于保存以太网端口配置参数的结构体类型
-static const struct rte_eth_conf port_conf_default = {
-    .rxmode = {.max_rx_pkt_len = RTE_ETHER_MAX_LEN}
-};
-
-// 初始化以太网端口
-static void z_init_port(struct rte_mempool *mbuf_pool) {
-    uint16_t nb_sys_ports = rte_eth_dev_count_avail();
-    if (nb_sys_ports == 0) {
-        rte_exit(EXIT_FAILURE, "No support eth found\n");
+    // 确保数据包长度足够
+    if (mbuf->pkt_len < sizeof(struct rte_ether_hdr)) {
+        fprintf(stderr, "Packet too short for Ethernet header\n");
+        return;
     }
 
-    struct rte_eth_dev_info dev_info;
-    rte_eth_dev_info_get(gDpdkPortId, &dev_info);
+    eth_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+    fprintf(output_file, "Ethernet Header:\n");
+    fprintf(output_file, "  Src MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+            eth_hdr->src_addr.addr_bytes[0], eth_hdr->src_addr.addr_bytes[1],
+            eth_hdr->src_addr.addr_bytes[2], eth_hdr->src_addr.addr_bytes[3],
+            eth_hdr->src_addr.addr_bytes[4], eth_hdr->src_addr.addr_bytes[5]);
+    fprintf(output_file, "  Dst MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+            eth_hdr->dst_addr.addr_bytes[0], eth_hdr->dst_addr.addr_bytes[1],
+            eth_hdr->dst_addr.addr_bytes[2], eth_hdr->dst_addr.addr_bytes[3],
+            eth_hdr->dst_addr.addr_bytes[4], eth_hdr->dst_addr.addr_bytes[5]);
 
-    const int num_rx_queues = 1; // 接收队列
-    struct rte_eth_conf port_conf = port_conf_default;
-
-    if (rte_eth_dev_configure(gDpdkPortId, num_rx_queues, 0, &port_conf) < 0) {
-        rte_exit(EXIT_FAILURE, "Could not configure port\n");
+    // 解析 IPv4 数据包
+    if (mbuf->pkt_len >= sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)) {
+        ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
+        fprintf(output_file, "IPv4 Header:\n");
+        fprintf(output_file, "  Src IP: %u.%u.%u.%u\n",
+                (ip_hdr->src_addr) & 0xFF, (ip_hdr->src_addr >> 8) & 0xFF,
+                (ip_hdr->src_addr >> 16) & 0xFF, (ip_hdr->src_addr >> 24) & 0xFF);
+        fprintf(output_file, "  Dst IP: %u.%u.%u.%u\n",
+                (ip_hdr->dst_addr) & 0xFF, (ip_hdr->dst_addr >> 8) & 0xFF,
+                (ip_hdr->dst_addr >> 16) & 0xFF, (ip_hdr->dst_addr >> 24) & 0xFF);
     }
-
-    if (rte_eth_rx_queue_setup(gDpdkPortId, 0, 1024, rte_eth_dev_socket_id(gDpdkPortId), NULL, mbuf_pool) < 0) {
-        rte_exit(EXIT_FAILURE, "Could not setup RX queue\n");
-    }
-
-    if (rte_eth_dev_start(gDpdkPortId) < 0) {
-        rte_exit(EXIT_FAILURE, "Could not start\n");
-    }
-
-    rte_eth_promiscuous_enable(gDpdkPortId);
 }
 
-int main(int argc, char *argv[]) {
-    // 初始化 DPDK
-    if (rte_eal_init(argc, argv) < 0) {
-        rte_exit(EXIT_FAILURE, "Error with EAL init\n");
-    }
+int main(int argc, char **argv) {
+    struct rte_mempool *mbuf_pool;
+    uint16_t portid = 0;
+
+    // 初始化 DPDK 环境
+    if (rte_eal_init(argc, argv) < 0)
+        rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
 
     // 创建内存池
-    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create("mbuf pool", NUM_MBUFS, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    if (mbuf_pool == NULL) {
-        rte_exit(EXIT_FAILURE, "Could not create mbuf pool\n");
-    }
+    mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", 8192, 256, 0,
+                                        RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (mbuf_pool == NULL)
+        rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
-    // 初始化以太网端口
-    z_init_port(mbuf_pool);
+    // 启动网卡
+    if (rte_eth_dev_start(portid) != 0)
+        rte_exit(EXIT_FAILURE, "Error starting Ethernet device\n");
 
-    // 打开文件用于存储解析结果
-    int fd = open("parsed_packets.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        rte_exit(EXIT_FAILURE, "Could not open output file\n");
-    }
+    struct rte_mbuf *bufs[BURST_SIZE];
+    FILE *output_file = fopen(OUTPUT_FILE, "w");
 
+    if (!output_file)
+        rte_exit(EXIT_FAILURE, "Error opening output file\n");
+
+    // 数据包处理循环
     while (1) {
-        struct rte_mbuf *mbufs[BURST_SIZE];
-        unsigned num_recvd = rte_eth_rx_burst(gDpdkPortId, 0, mbufs, BURST_SIZE);
-        if (num_recvd > BURST_SIZE) {
-            rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
+        const uint16_t nb_rx = rte_eth_rx_burst(portid, 0, bufs, BURST_SIZE);
+        for (int i = 0; i < nb_rx; i++) {
+            parse_packet(bufs[i], output_file);
+            rte_pktmbuf_free(bufs[i]);
         }
-
-        for (unsigned i = 0; i < num_recvd; i++) {
-            struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr *);
-
-            // 解析以太网头
-            char eth_src[18], eth_dst[18];
-            snprintf(eth_src, sizeof(eth_src), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     eth_hdr->s_addr.addr_bytes[0], eth_hdr->s_addr.addr_bytes[1],
-                     eth_hdr->s_addr.addr_bytes[2], eth_hdr->s_addr.addr_bytes[3],
-                     eth_hdr->s_addr.addr_bytes[4], eth_hdr->s_addr.addr_bytes[5]);
-
-            snprintf(eth_dst, sizeof(eth_dst), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
-                     eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
-                     eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
-
-            // 判断是否为 IPv4
-            if (eth_hdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-                struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-
-                // 解析 IPv4 头
-                struct in_addr src_addr, dst_addr;
-                src_addr.s_addr = ip_hdr->src_addr;
-                dst_addr.s_addr = ip_hdr->dst_addr;
-
-                char buffer[256];
-                int len = snprintf(buffer, sizeof(buffer),
-                                   "Ethernet: src=%s, dst=%s\nIP: src=%s, dst=%s\n\n",
-                                   eth_src, eth_dst, inet_ntoa(src_addr), inet_ntoa(dst_addr));
-
-                if (write(fd, buffer, len) < 0) {
-                    rte_exit(EXIT_FAILURE, "Error writing to file\n");
-                }
-            }
-
-            rte_pktmbuf_free(mbufs[i]);
-        }
+        fflush(output_file);
     }
 
-    close(fd);
+    fclose(output_file);
+    rte_eth_dev_stop(portid);
     return 0;
 }
+
+
