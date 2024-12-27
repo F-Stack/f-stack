@@ -67,6 +67,8 @@ cd /data/f-stack/app/redis-6.2.6/deps/jemalloc
 ./autogen.sh
 cd /data/f-stack/app/redis-6.2.6  
 make
+cd /data/f-stack
+./start.sh -b ./app/redis-6.2.6/src/redis-server -o app/redis-6.2.6/redis.conf 
 
 cd /data/f-stack/tools 
 make
