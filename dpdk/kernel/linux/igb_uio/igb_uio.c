@@ -271,7 +271,7 @@ igbuio_pci_enable_interrupts(struct rte_uio_pci_dev *udev)
 #endif
 	fallthrough;
 	case RTE_INTR_MODE_LEGACY:
-		if (pci_intx_mask_supported(udev->pdev)) {
+		if (true || pci_intx_mask_supported(udev->pdev)) {
 			dev_dbg(&udev->pdev->dev, "using INTX");
 			udev->info.irq_flags = IRQF_SHARED | IRQF_NO_THREAD;
 			udev->info.irq = udev->pdev->irq;
