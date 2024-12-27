@@ -1,20 +1,15 @@
-RTE_SDK ?= /data/f-stack/dpdk
-RTE_TARGET ?= $(RTE_SDK)/build
-
-CC = gcc
-CFLAGS = -O3 -g -Wall -Wextra -Werror -I$(BUILD_DIR)/include
-LDFLAGS = -L$(BUILD_DIR)/lib -Wl,-rpath=$(BUILD_DIR)/lib
-LDLIBS = -ldpdk
-
-TARGET = IP_MAC_Parser
+APP = SRCS = IP_MAC_Parser.c
 SRCS = IP_MAC_Parser.c
 
-all: $(TARGET)
+DPDK_PATH = /data/f-stack/dpdk
+PKGCONF = pkg-config
+CFLAGS += -O3 -Wall -Wextra $(shell pkg-config --cflags libdpdk)
+LDFLAGS += $(shell pkg-config --libs libdpdk)
 
-$(TARGET): $(SRCS)
-	$(CC) $(CFLAGS) $(SRCS) -o $@ $(LDFLAGS) $(LDLIBS)
+all:
+	$(CC) $(CFLAGS) $(SRCS) -o build/$(APP) $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f build/$(APP)
 
-.PHONY: all clean
+
