@@ -37,10 +37,10 @@ add_vlan(struct rte_flow_item *items,
 	__rte_unused struct additional_para para)
 {
 	static struct rte_flow_item_vlan vlan_spec = {
-		.tci = RTE_BE16(VLAN_VALUE),
+		.hdr.vlan_tci = RTE_BE16(VLAN_VALUE),
 	};
 	static struct rte_flow_item_vlan vlan_mask = {
-		.tci = RTE_BE16(0xffff),
+		.hdr.vlan_tci = RTE_BE16(0xffff),
 	};
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_VLAN;
@@ -128,12 +128,12 @@ add_vxlan(struct rte_flow_item *items,
 
 	/* Set standard vxlan vni */
 	for (i = 0; i < 3; i++) {
-		vxlan_specs[ti].vni[2 - i] = vni_value >> (i * 8);
-		vxlan_masks[ti].vni[2 - i] = 0xff;
+		vxlan_specs[ti].hdr.vni[2 - i] = vni_value >> (i * 8);
+		vxlan_masks[ti].hdr.vni[2 - i] = 0xff;
 	}
 
 	/* Standard vxlan flags */
-	vxlan_specs[ti].flags = 0x8;
+	vxlan_specs[ti].hdr.flags = 0x8;
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_VXLAN;
 	items[items_counter].spec = &vxlan_specs[ti];
@@ -155,12 +155,12 @@ add_vxlan_gpe(struct rte_flow_item *items,
 
 	/* Set vxlan-gpe vni */
 	for (i = 0; i < 3; i++) {
-		vxlan_gpe_specs[ti].vni[2 - i] = vni_value >> (i * 8);
-		vxlan_gpe_masks[ti].vni[2 - i] = 0xff;
+		vxlan_gpe_specs[ti].hdr.vni[2 - i] = vni_value >> (i * 8);
+		vxlan_gpe_masks[ti].hdr.vni[2 - i] = 0xff;
 	}
 
 	/* vxlan-gpe flags */
-	vxlan_gpe_specs[ti].flags = 0x0c;
+	vxlan_gpe_specs[ti].hdr.flags = 0x0c;
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_VXLAN_GPE;
 	items[items_counter].spec = &vxlan_gpe_specs[ti];
@@ -213,10 +213,10 @@ add_gtp(struct rte_flow_item *items,
 	__rte_unused struct additional_para para)
 {
 	static struct rte_flow_item_gtp gtp_spec = {
-		.teid = RTE_BE32(TEID_VALUE),
+		.hdr.teid = RTE_BE32(TEID_VALUE),
 	};
 	static struct rte_flow_item_gtp gtp_mask = {
-		.teid = RTE_BE32(0xffffffff),
+		.hdr.teid = RTE_BE32(0xffffffff),
 	};
 
 	items[items_counter].type = RTE_FLOW_ITEM_TYPE_GTP;

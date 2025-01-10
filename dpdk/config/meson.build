@@ -14,9 +14,39 @@ foreach env:supported_exec_envs
     set_variable('is_' + env, exec_env == env)
 endforeach
 
+exec_envs = {'freebsd': 0, 'linux': 1, 'windows': 2}
+foreach env, id:exec_envs
+    dpdk_conf.set('RTE_ENV_' + env.to_upper(), id)
+    dpdk_conf.set10('RTE_EXEC_ENV_IS_' + env.to_upper(), (exec_env == env))
+endforeach
+dpdk_conf.set('RTE_EXEC_ENV', exec_envs[exec_env])
+dpdk_conf.set('RTE_EXEC_ENV_' + exec_env.to_upper(), 1)
+
 # MS linker requires special treatment.
 # TODO: use cc.get_linker_id() with Meson >= 0.54
-is_ms_linker = is_windows and (cc.get_id() == 'clang')
+is_ms_compiler = is_windows and (cc.get_id() == 'msvc')
+is_ms_linker = is_windows and (cc.get_id() == 'clang' or is_ms_compiler)
+
+if is_ms_compiler
+    # force the use of intrinsics the MSVC compiler (except x86)
+    # does not support inline assembly
+    dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
+
+    # suppress warnings raised for using standard library functions
+    # the MSVC compiler regards as unsafe but are used by DPDK
+    dpdk_conf.set('_CRT_SECURE_NO_WARNINGS', 1)
+
+    # temporarily disable msvc specific warnings
+    # - 4244 compiler detected conversion of integer to smaller type
+    # - 4267 compiler detected conversion of size_t to smaller type
+    add_project_arguments('/wd4244', '/wd4267', language: 'c')
+
+    # enable non-locking atomic operations
+    add_project_arguments('/experimental:c11atomics', language: 'c')
+
+    # enable typeof operator
+    add_project_arguments('/d1experimental:typeof', language: 'c')
+endif
 
 # set the major version, which might be used by drivers and libraries
 # depending on the configuration options
@@ -130,12 +160,24 @@ endif
 dpdk_conf.set('RTE_MACHINE', cpu_instruction_set)
 machine_args = []
 
-# ppc64 does not support -march= at all, use -mcpu and -mtune for that
-if host_machine.cpu_family().startswith('ppc')
-    machine_args += '-mcpu=' + cpu_instruction_set
-    machine_args += '-mtune=' + cpu_instruction_set
-else
-    machine_args += '-march=' + cpu_instruction_set
+if not is_ms_compiler
+    # ppc64 does not support -march= at all, use -mcpu and -mtune for that
+    if host_machine.cpu_family().startswith('ppc')
+        machine_args += '-mcpu=' + cpu_instruction_set
+        machine_args += '-mtune=' + cpu_instruction_set
+        compiler_arch_support = cc.has_argument('-mcpu=' + cpu_instruction_set)
+    else
+        machine_args += '-march=' + cpu_instruction_set
+        # arm manages generic/auto config in config/arm/meson.build
+        if cpu_instruction_set != 'generic' and cpu_instruction_set != 'auto'
+            compiler_arch_support = cc.has_argument('-march=' + cpu_instruction_set)
+        else
+            compiler_arch_support = true
+        endif
+    endif
+    if not compiler_arch_support
+        error('Compiler does not support "@0@" arch flag.'.format(cpu_instruction_set))
+    endif
 endif
 
 toolchain = cc.get_id()
@@ -178,7 +220,7 @@ if link_lib != ''
 endif
 
 # check for libraries used in multiple places in DPDK
-has_libnuma = 0
+has_libnuma = false
 find_libnuma = true
 if meson.is_cross_build() and not meson.get_cross_property('numa', true)
     # don't look for libnuma if explicitly disabled in cross build
@@ -188,17 +230,17 @@ if find_libnuma
     numa_dep = cc.find_library('numa', required: false)
     if numa_dep.found() and cc.has_header('numaif.h')
         dpdk_conf.set10('RTE_HAS_LIBNUMA', true)
-        has_libnuma = 1
+        has_libnuma = true
         add_project_link_arguments('-lnuma', language: 'c')
         dpdk_extra_ldflags += '-lnuma'
     endif
 endif
 
-has_libfdt = 0
+has_libfdt = false
 fdt_dep = cc.find_library('fdt', required: false)
 if fdt_dep.found() and cc.has_header('fdt.h')
     dpdk_conf.set10('RTE_HAS_LIBFDT', true)
-    has_libfdt = 1
+    has_libfdt = true
     add_project_link_arguments('-lfdt', language: 'c')
     dpdk_extra_ldflags += '-lfdt'
 endif
@@ -213,11 +255,6 @@ dpdk_conf.set('RTE_BACKTRACE', cc.has_header('execinfo.h') or is_windows)
 libarchive = dependency('libarchive', required: false, method: 'pkg-config')
 if libarchive.found()
     dpdk_conf.set('RTE_HAS_LIBARCHIVE', 1)
-    # Push libarchive link dependency at the project level to support
-    # statically linking dpdk apps. Details at:
-    # https://inbox.dpdk.org/dev/20210605004024.660267a1@sovereign/
-    add_project_link_arguments('-larchive', language: 'c')
-    dpdk_extra_ldflags += '-larchive'
 endif
 
 # check for libbsd
@@ -257,7 +294,11 @@ if cc.get_id() == 'clang' and dpdk_conf.get('RTE_ARCH_64') == false
 endif
 
 # add -include rte_config to cflags
-add_project_arguments('-include', 'rte_config.h', language: 'c')
+if is_ms_compiler
+    add_project_arguments('/FI', 'rte_config.h', language: 'c')
+else
+    add_project_arguments('-include', 'rte_config.h', language: 'c')
+endif
 
 # enable extra warnings and disable any unwanted warnings
 # -Wall is added by default at warning level 1, and -Wextra
@@ -307,6 +348,7 @@ endforeach
 # set other values pulled from the build options
 dpdk_conf.set('RTE_MAX_ETHPORTS', get_option('max_ethports'))
 dpdk_conf.set('RTE_LIBEAL_USE_HPET', get_option('use_hpet'))
+dpdk_conf.set('RTE_ENABLE_STDATOMIC', get_option('enable_stdatomic'))
 dpdk_conf.set('RTE_ENABLE_TRACE_FP', get_option('enable_trace_fp'))
 # values which have defaults which may be overridden
 dpdk_conf.set('RTE_MAX_VFIO_GROUPS', 64)
@@ -320,7 +362,7 @@ endif
 if get_option('mbuf_refcnt_atomic')
     dpdk_conf.set('RTE_MBUF_REFCNT_ATOMIC', true)
 endif
-dpdk_conf.set10('RTE_IOVA_AS_PA', get_option('enable_iova_as_pa'))
+dpdk_conf.set10('RTE_IOVA_IN_MBUF', get_option('enable_iova_as_pa'))
 
 compile_time_cpuflags = []
 subdir(arch_subdir)
@@ -384,6 +426,15 @@ if not dpdk_conf.has('RTE_MAX_LCORE')
 endif
 if not dpdk_conf.has('RTE_MAX_NUMA_NODES')
     error('Number of NUMA nodes not specified.')
+endif
+if (is_linux and
+        dpdk_conf.get('RTE_MAX_NUMA_NODES') > 1 and
+        not meson.is_cross_build() and
+        not has_libnuma)
+    error('''
+No NUMA library (development package) found, yet DPDK configured for multiple NUMA nodes.
+Please install libnuma, or set 'max_numa_nodes' option to '1' to build without NUMA support.
+''')
 endif
 
 # set the install path for the drivers

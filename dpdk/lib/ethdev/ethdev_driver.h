@@ -16,8 +16,9 @@ extern "C" {
  *
  * These APIs for the use from Ethernet drivers, user applications shouldn't
  * use them.
- *
  */
+
+#include <pthread.h>
 
 #include <dev_driver.h>
 #include <rte_compat.h>
@@ -29,7 +30,7 @@ extern "C" {
  * queue on Rx and Tx.
  */
 struct rte_eth_rxtx_callback {
-	struct rte_eth_rxtx_callback *next;
+	RTE_ATOMIC(struct rte_eth_rxtx_callback *) next;
 	union{
 		rte_rx_callback_fn rx;
 		rte_tx_callback_fn tx;
@@ -59,6 +60,10 @@ struct rte_eth_dev {
 	eth_rx_descriptor_status_t rx_descriptor_status;
 	/** Check the status of a Tx descriptor */
 	eth_tx_descriptor_status_t tx_descriptor_status;
+	/** Pointer to PMD transmit mbufs reuse function */
+	eth_recycle_tx_mbufs_reuse_t recycle_tx_mbufs_reuse;
+	/** Pointer to PMD receive descriptors refill function */
+	eth_recycle_rx_descriptors_refill_t recycle_rx_descriptors_refill;
 
 	/**
 	 * Device data that is shared between primary and secondary processes
@@ -75,12 +80,12 @@ struct rte_eth_dev {
 	 * User-supplied functions called from rx_burst to post-process
 	 * received packets before passing them to the user
 	 */
-	struct rte_eth_rxtx_callback *post_rx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+	RTE_ATOMIC(struct rte_eth_rxtx_callback *) post_rx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
 	/**
 	 * User-supplied functions called from tx_burst to pre-process
 	 * received packets before passing them to the driver for transmission
 	 */
-	struct rte_eth_rxtx_callback *pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+	RTE_ATOMIC(struct rte_eth_rxtx_callback *) pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
 
 	enum rte_eth_dev_state state; /**< Flag indicating the port state */
 	void *security_ctx; /**< Context for security ops */
@@ -507,6 +512,10 @@ typedef void (*eth_rxq_info_get_t)(struct rte_eth_dev *dev,
 
 typedef void (*eth_txq_info_get_t)(struct rte_eth_dev *dev,
 	uint16_t tx_queue_id, struct rte_eth_txq_info *qinfo);
+
+typedef void (*eth_recycle_rxq_info_get_t)(struct rte_eth_dev *dev,
+	uint16_t rx_queue_id,
+	struct rte_eth_recycle_rxq_info *recycle_rxq_info);
 
 typedef int (*eth_burst_mode_get_t)(struct rte_eth_dev *dev,
 	uint16_t queue_id, struct rte_eth_burst_mode *mode);
@@ -1176,6 +1185,38 @@ typedef int (*eth_tx_descriptor_dump_t)(const struct rte_eth_dev *dev,
 					uint16_t num, FILE *file);
 
 /**
+ * @internal
+ * Get the number of aggregated ports.
+ *
+ * @param dev
+ *   Port (ethdev) handle.
+ *
+ * @return
+ *   Negative errno value on error, 0 or positive on success.
+ *
+ * @retval >=0
+ *   The number of aggregated port if success.
+ */
+typedef int (*eth_count_aggr_ports_t)(struct rte_eth_dev *dev);
+
+/**
+ * @internal
+ * Map a Tx queue with an aggregated port of the DPDK port.
+ *
+ * @param dev
+ *   Port (ethdev) handle.
+ * @param tx_queue_id
+ *   The index of the transmit queue used in rte_eth_tx_burst().
+ * @param affinity
+ *   The number of the aggregated port.
+ *
+ * @return
+ *   Negative on error, 0 on success.
+ */
+typedef int (*eth_map_aggr_tx_affinity_t)(struct rte_eth_dev *dev, uint16_t tx_queue_id,
+					  uint8_t affinity);
+
+/**
  * @internal A structure containing the functions exported by an Ethernet driver.
  */
 struct eth_dev_ops {
@@ -1219,6 +1260,8 @@ struct eth_dev_ops {
 	eth_rxq_info_get_t         rxq_info_get;
 	/** Retrieve Tx queue information */
 	eth_txq_info_get_t         txq_info_get;
+	/** Retrieve mbufs recycle Rx queue information */
+	eth_recycle_rxq_info_get_t recycle_rxq_info_get;
 	eth_burst_mode_get_t       rx_burst_mode_get; /**< Get Rx burst mode */
 	eth_burst_mode_get_t       tx_burst_mode_get; /**< Get Tx burst mode */
 	eth_fw_version_get_t       fw_version_get; /**< Get firmware version */
@@ -1407,6 +1450,11 @@ struct eth_dev_ops {
 	eth_cman_config_set_t cman_config_set;
 	/** Retrieve congestion management configuration */
 	eth_cman_config_get_t cman_config_get;
+
+	/** Get the number of aggregated ports */
+	eth_count_aggr_ports_t count_aggr_ports;
+	/** Map a Tx queue with an aggregated port of the DPDK port */
+	eth_map_aggr_tx_affinity_t map_aggr_tx_affinity;
 };
 
 /**
@@ -1607,18 +1655,13 @@ static inline int
 rte_eth_linkstatus_set(struct rte_eth_dev *dev,
 		       const struct rte_eth_link *new_link)
 {
-	uint64_t *dev_link = (uint64_t *)&(dev->data->dev_link);
-	union {
-		uint64_t val64;
-		struct rte_eth_link link;
-	} orig;
+	struct rte_eth_link old_link;
 
-	RTE_BUILD_BUG_ON(sizeof(*new_link) != sizeof(uint64_t));
+	old_link.val64 = rte_atomic_exchange_explicit(&dev->data->dev_link.val64,
+						      new_link->val64,
+						      rte_memory_order_seq_cst);
 
-	orig.val64 = __atomic_exchange_n(dev_link, *(const uint64_t *)new_link,
-					__ATOMIC_SEQ_CST);
-
-	return (orig.link.link_status == new_link->link_status) ? -1 : 0;
+	return (old_link.link_status == new_link->link_status) ? -1 : 0;
 }
 
 /**
@@ -1634,12 +1677,11 @@ static inline void
 rte_eth_linkstatus_get(const struct rte_eth_dev *dev,
 		       struct rte_eth_link *link)
 {
-	uint64_t *src = (uint64_t *)&(dev->data->dev_link);
-	uint64_t *dst = (uint64_t *)link;
+	struct rte_eth_link curr_link;
 
-	RTE_BUILD_BUG_ON(sizeof(*link) != sizeof(uint64_t));
-
-	*dst = __atomic_load_n(src, __ATOMIC_SEQ_CST);
+	curr_link.val64 = rte_atomic_load_explicit(&dev->data->dev_link.val64,
+						   rte_memory_order_seq_cst);
+	rte_atomic_store_explicit(&link->val64, curr_link.val64, rte_memory_order_seq_cst);
 }
 
 /**

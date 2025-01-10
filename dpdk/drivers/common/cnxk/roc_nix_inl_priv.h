@@ -57,6 +57,7 @@ struct nix_inl_dev {
 	bool is_nix1;
 	uint8_t spb_drop_pc;
 	uint8_t lpb_drop_pc;
+	uint64_t sso_work_cnt;
 
 	/* NIX/CPT data */
 	void *inb_sa_base;
@@ -66,7 +67,7 @@ struct nix_inl_dev {
 	struct roc_cpt_lf cpt_lf;
 
 	/* OUTB soft expiry poll thread */
-	pthread_t soft_exp_poll_thread;
+	plt_thread_t soft_exp_poll_thread;
 	uint32_t soft_exp_poll_freq;
 	uint64_t *sa_soft_exp_ring;
 	bool set_soft_exp_poll;
@@ -90,6 +91,12 @@ struct nix_inl_dev {
 	bool ts_ena;
 	uint32_t nb_meta_bufs;
 	uint32_t meta_buf_sz;
+
+	/* NPC */
+	int *ipsec_index;
+	uint32_t curr_ipsec_idx;
+	uint32_t max_ipsec_rules;
+	uint32_t alloc_ipsec_rules;
 };
 
 int nix_inl_sso_register_irqs(struct nix_inl_dev *inl_dev);

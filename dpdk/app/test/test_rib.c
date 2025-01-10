@@ -10,23 +10,6 @@
 #include <stdlib.h>
 
 #include <rte_ip.h>
-
-#ifdef RTE_EXEC_ENV_WINDOWS
-static int
-test_rib(void)
-{
-	printf("rib not supported on Windows, skipping test\n");
-	return TEST_SKIPPED;
-}
-
-static int
-test_slow_rib(void)
-{
-	printf("slow_rib not supported on Windows, skipping test\n");
-	return TEST_SKIPPED;
-}
-#else
-
 #include <rte_rib.h>
 
 typedef int32_t (*rte_rib_test)(void);
@@ -380,7 +363,5 @@ test_slow_rib(void)
 	return unit_test_suite_runner(&rib_slow_tests);
 }
 
-#endif /* !RTE_EXEC_ENV_WINDOWS */
-
-REGISTER_TEST_COMMAND(rib_autotest, test_rib);
-REGISTER_TEST_COMMAND(rib_slow_autotest, test_slow_rib);
+REGISTER_FAST_TEST(rib_autotest, true, true, test_rib);
+REGISTER_PERF_TEST(rib_slow_autotest, test_slow_rib);

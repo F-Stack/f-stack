@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _VIRTCHNL2_H_
@@ -12,14 +12,34 @@
 
 #include "virtchnl2_lan_desc.h"
 
-/* Error Codes
- * Note that many older versions of various iAVF drivers convert the reported
- * status code directly into an iavf_status enumeration. For this reason, it
- * is important that the values of these enumerations line up.
- */
-#define		VIRTCHNL2_STATUS_SUCCESS		0
-#define		VIRTCHNL2_STATUS_ERR_PARAM		-5
-#define		VIRTCHNL2_STATUS_ERR_OPCODE_MISMATCH	-38
+/* VIRTCHNL2_ERROR_CODES */
+/* success */
+#define	VIRTCHNL2_STATUS_SUCCESS	0
+/* Operation not permitted, used in case of command not permitted for sender */
+#define	VIRTCHNL2_STATUS_ERR_EPERM	1
+/* Bad opcode - virtchnl interface problem */
+#define	VIRTCHNL2_STATUS_ERR_ESRCH	3
+/* I/O error - HW access error */
+#define	VIRTCHNL2_STATUS_ERR_EIO	5
+/* No such resource - Referenced resource is not allacated */
+#define	VIRTCHNL2_STATUS_ERR_ENXIO	6
+/* Permission denied - Resource is not permitted to caller */
+#define	VIRTCHNL2_STATUS_ERR_EACCES	13
+/* Device or resource busy - In case shared resource is in use by others */
+#define	VIRTCHNL2_STATUS_ERR_EBUSY	16
+/* Object already exists and not free */
+#define	VIRTCHNL2_STATUS_ERR_EEXIST	17
+/* Invalid input argument in command */
+#define	VIRTCHNL2_STATUS_ERR_EINVAL	22
+/* No space left or allocation failure */
+#define	VIRTCHNL2_STATUS_ERR_ENOSPC	28
+/* Parameter out of range */
+#define	VIRTCHNL2_STATUS_ERR_ERANGE	34
+
+/* Op not allowed in current dev mode */
+#define	VIRTCHNL2_STATUS_ERR_EMODE	200
+/* State Machine error - Command sequence problem */
+#define	VIRTCHNL2_STATUS_ERR_ESM	201
 
 /* These macros are used to generate compilation errors if a structure/union
  * is not exactly the correct length. It gives a divide by zero error if the
@@ -69,12 +89,18 @@
 	 * VIRTCHNL2_OP_GET_PTYPE_INFO_RAW
 	 */
 	/* opcodes 529, 530, and 531 are reserved */
-#define		VIRTCHNL2_OP_CREATE_ADI			532
-#define		VIRTCHNL2_OP_DESTROY_ADI		533
+#define		VIRTCHNL2_OP_NON_FLEX_CREATE_ADI	532
+#define		VIRTCHNL2_OP_NON_FLEX_DESTROY_ADI	533
 #define		VIRTCHNL2_OP_LOOPBACK			534
 #define		VIRTCHNL2_OP_ADD_MAC_ADDR		535
 #define		VIRTCHNL2_OP_DEL_MAC_ADDR		536
 #define		VIRTCHNL2_OP_CONFIG_PROMISCUOUS_MODE	537
+#define		VIRTCHNL2_OP_ADD_QUEUE_GROUPS		538
+#define		VIRTCHNL2_OP_DEL_QUEUE_GROUPS		539
+#define		VIRTCHNL2_OP_GET_PORT_STATS		540
+	/* TimeSync opcodes */
+#define		VIRTCHNL2_OP_GET_PTP_CAPS		541
+#define		VIRTCHNL2_OP_GET_PTP_TX_TSTAMP_LATCHES	542
 
 #define VIRTCHNL2_RDMA_INVALID_QUEUE_IDX	0xFFFF
 
@@ -208,11 +234,12 @@
 #define VIRTCHNL2_CAP_RX_FLEX_DESC		BIT(17)
 #define VIRTCHNL2_CAP_PTYPE			BIT(18)
 #define VIRTCHNL2_CAP_LOOPBACK			BIT(19)
-#define VIRTCHNL2_CAP_OEM			BIT(20)
-
-/* VIRTCHNL2_DEVICE_TYPE */
-/* underlying device type */
-#define VIRTCHNL2_MEV_DEVICE			0
+/* Enable miss completion types plus ability to detect a miss completion if a
+ * reserved bit is set in a standared completion's tag.
+ */
+#define VIRTCHNL2_CAP_MISS_COMPL_TAG		BIT(20)
+/* this must be the last capability */
+#define VIRTCHNL2_CAP_OEM			BIT(63)
 
 /* VIRTCHNL2_TXQ_SCHED_MODE
  * Transmit Queue Scheduling Modes - Queue mode is the legacy mode i.e. inorder
@@ -267,6 +294,7 @@
 /* These messages are only sent to PF from CP */
 #define VIRTCHNL2_EVENT_START_RESET_ADI		2
 #define VIRTCHNL2_EVENT_FINISH_RESET_ADI	3
+#define VIRTCHNL2_EVENT_ADI_ACTIVE		4
 
 /* VIRTCHNL2_QUEUE_TYPE
  * Transmit and Receive queue types are valid in legacy as well as split queue
@@ -292,8 +320,6 @@
  */
 #define VIRTCHNL2_ITR_IDX_0			0
 #define VIRTCHNL2_ITR_IDX_1			1
-#define VIRTCHNL2_ITR_IDX_2			2
-#define VIRTCHNL2_ITR_IDX_NO_ITR		3
 
 /* VIRTCHNL2_VECTOR_LIMITS
  * Since PF/VF messages are limited by __le16 size, precalculate the maximum
@@ -329,6 +355,14 @@
  */
 #define VIRTCHNL2_UNICAST_PROMISC		BIT(0)
 #define VIRTCHNL2_MULTICAST_PROMISC		BIT(1)
+
+/* VIRTCHNL2_QUEUE_GROUP_TYPE
+ * Type of queue groups
+ * 0 till 0xFF is for general use
+ */
+#define VIRTCHNL2_QUEUE_GROUP_DATA		1
+#define VIRTCHNL2_QUEUE_GROUP_MBX		2
+#define VIRTCHNL2_QUEUE_GROUP_CONFIG		3
 
 /* VIRTCHNL2_PROTO_HDR_TYPE
  * Protocol header type within a packet segment. A segment consists of one or
@@ -426,13 +460,13 @@
 
 
 /* VIRTCHNL2_OP_VERSION
- * VF posts its version number to the CP. CP responds with its version number
+ * PF/VF posts its version number to the CP. CP responds with its version number
  * in the same format, along with a return code.
- * If there is a major version mismatch, then the VF cannot operate.
- * If there is a minor version mismatch, then the VF can operate but should
+ * If there is a major version mismatch, then the PF/VF cannot operate.
+ * If there is a minor version mismatch, then the PF/VF can operate but should
  * add a warning to the system log.
  *
- * This version opcode  MUST always be specified as == 1, regardless of other
+ * This version opcode MUST always be specified as == 1, regardless of other
  * changes in the API. The CP must always respond to this message without
  * error regardless of version mismatch.
  */
@@ -513,10 +547,9 @@ struct virtchnl2_get_capabilities {
 	 */
 	u8 max_sg_bufs_per_tx_pkt;
 
-	/* see VIRTCHNL2_ITR_IDX definition */
-	u8 itr_idx_map;
-
-	__le16 pad1;
+	u8 reserved1;
+	/* upper bound of number of ADIs supported */
+	__le16 max_adis;
 
 	/* version of Control Plane that is running */
 	__le16 oem_cp_ver_major;
@@ -524,7 +557,12 @@ struct virtchnl2_get_capabilities {
 	/* see VIRTCHNL2_DEVICE_TYPE definitions */
 	__le32 device_type;
 
-	u8 reserved[12];
+	/* min packet length supported by device for single segment offload */
+	u8 min_sso_packet_len;
+	/* max number of header buffers that can be used for an LSO */
+	u8 max_hdr_buf_per_lso;
+
+	u8 reserved[10];
 };
 
 VIRTCHNL2_CHECK_STRUCT_LEN(80, virtchnl2_get_capabilities);
@@ -553,6 +591,9 @@ struct virtchnl2_queue_reg_chunks {
 };
 
 VIRTCHNL2_CHECK_STRUCT_LEN(40, virtchnl2_queue_reg_chunks);
+
+/* VIRTCHNL2_VPORT_FLAGS */
+#define VIRTCHNL2_VPORT_UPLINK_PORT	BIT(0)
 
 #define VIRTCHNL2_ETH_LENGTH_OF_ADDRESS  6
 
@@ -592,17 +633,14 @@ struct virtchnl2_create_vport {
 	__le16 max_mtu;
 	__le32 vport_id;
 	u8 default_mac_addr[VIRTCHNL2_ETH_LENGTH_OF_ADDRESS];
-	__le16 pad;
+	/* see VIRTCHNL2_VPORT_FLAGS definitions */
+	__le16 vport_flags;
 	/* see VIRTCHNL2_RX_DESC_IDS definitions */
 	__le64 rx_desc_ids;
 	/* see VIRTCHNL2_TX_DESC_IDS definitions */
 	__le64 tx_desc_ids;
 
-#define MAX_Q_REGIONS 16
-	__le32 max_qs_per_qregion[MAX_Q_REGIONS];
-	__le32 qregion_total_qs;
-	__le16 qregion_type;
-	__le16 pad2;
+	u8 reserved1[72];
 
 	/* see VIRTCHNL2_RSS_ALGORITHM definitions */
 	__le32 rss_algorithm;
@@ -665,9 +703,7 @@ struct virtchnl2_txq_info {
 	 */
 	__le16 peer_rx_queue_id;
 
-	/* value ranges from 0 to 15 */
-	__le16 qregion_id;
-	u8 pad[2];
+	u8 pad[4];
 
 	/* Egress pasid is used for SIOV use case */
 	__le32 egress_pasid;
@@ -734,10 +770,7 @@ struct virtchnl2_rxq_info {
 	 * if this field is set
 	 */
 	u8 bufq2_ena;
-	u8 pad2;
-
-	/* value ranges from 0 to 15 */
-	__le16 qregion_id;
+	u8 pad2[3];
 
 	/* Ingress pasid is used for SIOV use case */
 	__le32 ingress_pasid;
@@ -785,6 +818,133 @@ struct virtchnl2_add_queues {
 
 VIRTCHNL2_CHECK_STRUCT_LEN(56, virtchnl2_add_queues);
 
+/* Queue Groups Extension */
+
+struct virtchnl2_rx_queue_group_info {
+	/* IN/OUT, user can ask to update rss_lut size originally allocated
+	 * by CreateVport command. New size will be returned if allocation
+	 * succeeded, otherwise original rss_size from CreateVport will
+	 * be returned.
+	 */
+	__le16 rss_lut_size;
+	/* Future extension purpose */
+	u8 pad[6];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(8, virtchnl2_rx_queue_group_info);
+
+struct virtchnl2_tx_queue_group_info { /* IN */
+	/* TX TC queue group will be connected to */
+	u8 tx_tc;
+	/* Each group can have its own priority, value 0-7, while each group
+	 * with unique priority is strict priority.
+	 * It can be single set of queue groups which configured with
+	 * same priority, then they are assumed part of WFQ arbitration
+	 * group and are expected to be assigned with weight.
+	 */
+	u8 priority;
+	/* Determines if queue group is expected to be Strict Priority
+	 * according to its priority
+	 */
+	u8 is_sp;
+	u8 pad;
+
+	/* Peak Info Rate Weight in case Queue Group is part of WFQ
+	 * arbitration set.
+	 * The weights of the groups are independent of each other.
+	 * Possible values: 1-200
+	 */
+	__le16 pir_weight;
+	/* Future extension purpose for CIR only */
+	u8 cir_pad[2];
+	/* Future extension purpose*/
+	u8 pad2[8];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(16, virtchnl2_tx_queue_group_info);
+
+struct virtchnl2_queue_group_id {
+	/* Queue group ID - depended on it's type
+	 * Data: is an ID which is relative to Vport
+	 * Config & Mailbox: is an ID which is relative to func.
+	 * This ID is use in future calls, i.e. delete.
+	 * Requested by host and assigned by Control plane.
+	 */
+	__le16 queue_group_id;
+	/* Functional type: see VIRTCHNL2_QUEUE_GROUP_TYPE definitions */
+	__le16 queue_group_type;
+	u8 pad[4];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(8, virtchnl2_queue_group_id);
+
+struct virtchnl2_queue_group_info {
+	/* IN */
+	struct virtchnl2_queue_group_id qg_id;
+	/* IN, Number of queue of different types in the group. */
+	__le16 num_tx_q;
+	__le16 num_tx_complq;
+	__le16 num_rx_q;
+	__le16 num_rx_bufq;
+
+	struct virtchnl2_tx_queue_group_info tx_q_grp_info;
+	struct virtchnl2_rx_queue_group_info rx_q_grp_info;
+	/* Future extension purpose */
+	u8 pad[40];
+	struct virtchnl2_queue_reg_chunks chunks; /* OUT */
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(120, virtchnl2_queue_group_info);
+
+struct virtchnl2_queue_groups {
+	__le16 num_queue_groups;
+	u8 pad[6];
+	struct virtchnl2_queue_group_info groups[1];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(128, virtchnl2_queue_groups);
+
+/* VIRTCHNL2_OP_ADD_QUEUE_GROUPS
+ * PF sends this message to request additional transmit/receive queue groups
+ * beyond the ones that were assigned via CREATE_VPORT request.
+ * virtchnl2_add_queue_groups structure is used to specify the number of each
+ * type of queues. CP responds with the same structure with the actual number of
+ * groups and queues assigned followed by num_queue_groups and num_chunks of
+ * virtchnl2_queue_groups and virtchnl2_queue_chunk structures.
+ */
+struct virtchnl2_add_queue_groups {
+	/* IN, vport_id to add queue group to, same as allocated by CreateVport.
+	 * NA for mailbox and other types not assigned to vport
+	 */
+	__le32 vport_id;
+	u8 pad[4];
+	/* IN/OUT */
+	struct virtchnl2_queue_groups qg_info;
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(136, virtchnl2_add_queue_groups);
+
+/* VIRTCHNL2_OP_DEL_QUEUE_GROUPS
+ * PF sends this message to delete queue groups.
+ * PF sends virtchnl2_delete_queue_groups struct to specify the queue groups
+ * to be deleted. CP performs requested action and returns status and update
+ * num_queue_groups with number of successfully deleted queue groups.
+ */
+struct virtchnl2_delete_queue_groups {
+	/* IN, vport_id to delete queue group from, same as
+	 * allocated by CreateVport.
+	 */
+	__le32 vport_id;
+	/* IN/OUT, Defines number of groups provided below */
+	__le16 num_queue_groups;
+	u8 pad[2];
+
+	/* IN, IDs & types of Queue Groups to delete */
+	struct virtchnl2_queue_group_id qg_ids[1];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(16, virtchnl2_delete_queue_groups);
+
 /* Structure to specify a chunk of contiguous interrupt vectors */
 struct virtchnl2_vector_chunk {
 	__le16 start_vector_id;
@@ -801,11 +961,17 @@ struct virtchnl2_vector_chunk {
 	 * interrupt indices without modifying the state of the interrupt.
 	 */
 	__le32 dynctl_reg_start;
+	/* register spacing between dynctl registers of 2 consecutive vectors */
 	__le32 dynctl_reg_spacing;
 
 	__le32 itrn_reg_start;
+	/* register spacing between itrn registers of 2 consecutive vectors */
 	__le32 itrn_reg_spacing;
-	u8 reserved[8];
+	/* register spacing between itrn registers of the same vector
+	 * where n=0..2
+	 */
+	__le32 itrn_index_spacing;
+	u8 reserved[4];
 };
 
 VIRTCHNL2_CHECK_STRUCT_LEN(32, virtchnl2_vector_chunk);
@@ -895,14 +1061,34 @@ struct virtchnl2_sriov_vfs_info {
 
 VIRTCHNL2_CHECK_STRUCT_LEN(4, virtchnl2_sriov_vfs_info);
 
-/* VIRTCHNL2_OP_CREATE_ADI
+/* structure to specify single chunk of queue */
+/* 'chunks' is fixed size(not flexible) and will be deprecated at some point */
+struct virtchnl2_non_flex_queue_reg_chunks {
+	__le16 num_chunks;
+	u8 reserved[6];
+	struct virtchnl2_queue_reg_chunk chunks[1];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(40, virtchnl2_non_flex_queue_reg_chunks);
+
+/* structure to specify single chunk of interrupt vector */
+/* 'vchunks' is fixed size(not flexible) and will be deprecated at some point */
+struct virtchnl2_non_flex_vector_chunks {
+	__le16 num_vchunks;
+	u8 reserved[14];
+	struct virtchnl2_vector_chunk vchunks[1];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(48, virtchnl2_non_flex_vector_chunks);
+
+/* VIRTCHNL2_OP_NON_FLEX_CREATE_ADI
  * PF sends this message to CP to create ADI by filling in required
- * fields of virtchnl2_create_adi structure.
- * CP responds with the updated virtchnl2_create_adi structure containing the
- * necessary fields followed by chunks which in turn will have an array of
+ * fields of virtchnl2_non_flex_create_adi structure.
+ * CP responds with the updated virtchnl2_non_flex_create_adi structure containing
+ * the necessary fields followed by chunks which in turn will have an array of
  * num_chunks entries of virtchnl2_queue_chunk structures.
  */
-struct virtchnl2_create_adi {
+struct virtchnl2_non_flex_create_adi {
 	/* PF sends PASID to CP */
 	__le32 pasid;
 	/*
@@ -912,29 +1098,31 @@ struct virtchnl2_create_adi {
 	__le16 mbx_id;
 	/* PF sends mailbox vector id to CP */
 	__le16 mbx_vec_id;
+	/* PF populates this ADI index */
+	__le16 adi_index;
 	/* CP populates ADI id */
 	__le16 adi_id;
 	u8 reserved[64];
-	u8 pad[6];
+	u8 pad[4];
 	/* CP populates queue chunks */
-	struct virtchnl2_queue_reg_chunks chunks;
+	struct virtchnl2_non_flex_queue_reg_chunks chunks;
 	/* PF sends vector chunks to CP */
-	struct virtchnl2_vector_chunks vchunks;
+	struct virtchnl2_non_flex_vector_chunks vchunks;
 };
 
-VIRTCHNL2_CHECK_STRUCT_LEN(168, virtchnl2_create_adi);
+VIRTCHNL2_CHECK_STRUCT_LEN(168, virtchnl2_non_flex_create_adi);
 
 /* VIRTCHNL2_OP_DESTROY_ADI
  * PF sends this message to CP to destroy ADI by filling
  * in the adi_id in virtchnl2_destropy_adi structure.
  * CP responds with the status of the requested operation.
  */
-struct virtchnl2_destroy_adi {
+struct virtchnl2_non_flex_destroy_adi {
 	__le16 adi_id;
 	u8 reserved[2];
 };
 
-VIRTCHNL2_CHECK_STRUCT_LEN(4, virtchnl2_destroy_adi);
+VIRTCHNL2_CHECK_STRUCT_LEN(4, virtchnl2_non_flex_destroy_adi);
 
 /* Based on the descriptor type the PF supports, CP fills ptype_id_10 or
  * ptype_id_8 for flex and base descriptor respectively. If ptype_id_10 value
@@ -1006,6 +1194,74 @@ struct virtchnl2_vport_stats {
 };
 
 VIRTCHNL2_CHECK_STRUCT_LEN(128, virtchnl2_vport_stats);
+
+/* physical port statistics */
+struct virtchnl2_phy_port_stats {
+	__le64 rx_bytes;
+	__le64 rx_unicast_pkts;
+	__le64 rx_multicast_pkts;
+	__le64 rx_broadcast_pkts;
+	__le64 rx_size_64_pkts;
+	__le64 rx_size_127_pkts;
+	__le64 rx_size_255_pkts;
+	__le64 rx_size_511_pkts;
+	__le64 rx_size_1023_pkts;
+	__le64 rx_size_1518_pkts;
+	__le64 rx_size_jumbo_pkts;
+	__le64 rx_xon_events;
+	__le64 rx_xoff_events;
+	__le64 rx_undersized_pkts;
+	__le64 rx_fragmented_pkts;
+	__le64 rx_oversized_pkts;
+	__le64 rx_jabber_pkts;
+	__le64 rx_csum_errors;
+	__le64 rx_length_errors;
+	__le64 rx_dropped_pkts;
+	__le64 rx_crc_errors;
+	/* Frames with length < 64 and a bad CRC */
+	__le64 rx_runt_errors;
+	__le64 rx_illegal_bytes;
+	__le64 rx_total_pkts;
+	u8 rx_reserved[128];
+
+	__le64 tx_bytes;
+	__le64 tx_unicast_pkts;
+	__le64 tx_multicast_pkts;
+	__le64 tx_broadcast_pkts;
+	__le64 tx_errors;
+	__le64 tx_timeout_events;
+	__le64 tx_size_64_pkts;
+	__le64 tx_size_127_pkts;
+	__le64 tx_size_255_pkts;
+	__le64 tx_size_511_pkts;
+	__le64 tx_size_1023_pkts;
+	__le64 tx_size_1518_pkts;
+	__le64 tx_size_jumbo_pkts;
+	__le64 tx_xon_events;
+	__le64 tx_xoff_events;
+	__le64 tx_dropped_link_down_pkts;
+	__le64 tx_total_pkts;
+	u8 tx_reserved[128];
+	__le64 mac_local_faults;
+	__le64 mac_remote_faults;
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(600, virtchnl2_phy_port_stats);
+
+/* VIRTCHNL2_OP_GET_PORT_STATS
+ * PF/VF sends this message to CP to get the updated stats by specifying the
+ * vport_id. CP responds with stats in struct virtchnl2_port_stats that
+ * includes both physical port as well as vport statistics.
+ */
+struct virtchnl2_port_stats {
+	__le32 vport_id;
+	u8 pad[4];
+
+	struct virtchnl2_phy_port_stats phy_port_stats;
+	struct virtchnl2_vport_stats virt_port_stats;
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(736, virtchnl2_port_stats);
 
 /* VIRTCHNL2_OP_EVENT
  * CP sends this message to inform the PF/VF driver of events that may affect
@@ -1166,6 +1422,112 @@ struct virtchnl2_promisc_info {
 
 VIRTCHNL2_CHECK_STRUCT_LEN(8, virtchnl2_promisc_info);
 
+/* VIRTCHNL2_PTP_CAPS
+ * PTP capabilities
+ */
+#define VIRTCHNL2_PTP_CAP_LEGACY_CROSS_TIME	BIT(0)
+#define VIRTCHNL2_PTP_CAP_PTM			BIT(1)
+#define VIRTCHNL2_PTP_CAP_DEVICE_CLOCK_CONTROL	BIT(2)
+#define VIRTCHNL2_PTP_CAP_TX_TSTAMPS_DIRECT	BIT(3)
+#define	VIRTCHNL2_PTP_CAP_TX_TSTAMPS_VIRTCHNL	BIT(4)
+
+/* Legacy cross time registers offsets */
+struct virtchnl2_ptp_legacy_cross_time_reg {
+	__le32 shadow_time_0;
+	__le32 shadow_time_l;
+	__le32 shadow_time_h;
+	__le32 cmd_sync;
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(16, virtchnl2_ptp_legacy_cross_time_reg);
+
+/* PTM cross time registers offsets */
+struct virtchnl2_ptp_ptm_cross_time_reg {
+	__le32 art_l;
+	__le32 art_h;
+	__le32 cmd_sync;
+	u8 pad[4];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(16, virtchnl2_ptp_ptm_cross_time_reg);
+
+/* Registers needed to control the main clock */
+struct virtchnl2_ptp_device_clock_control {
+	__le32 cmd;
+	__le32 incval_l;
+	__le32 incval_h;
+	__le32 shadj_l;
+	__le32 shadj_h;
+	u8 pad[4];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(24, virtchnl2_ptp_device_clock_control);
+
+/* Structure that defines tx tstamp entry - index and register offset */
+struct virtchnl2_ptp_tx_tstamp_entry {
+	__le32 tx_latch_register_base;
+	__le32 tx_latch_register_offset;
+	u8 index;
+	u8 pad[7];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(16, virtchnl2_ptp_tx_tstamp_entry);
+
+/* Structure that defines tx tstamp entries - total number of latches
+ * and the array of entries.
+ */
+struct virtchnl2_ptp_tx_tstamp {
+	__le16 num_latches;
+	/* latch size expressed in bits */
+	__le16 latch_size;
+	u8 pad[4];
+	struct virtchnl2_ptp_tx_tstamp_entry ptp_tx_tstamp_entries[1];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(24, virtchnl2_ptp_tx_tstamp);
+
+/* VIRTCHNL2_OP_GET_PTP_CAPS
+ * PV/VF sends this message to negotiate PTP capabilities. CP updates bitmap
+ * with supported features and fulfills appropriate structures.
+ */
+struct virtchnl2_get_ptp_caps {
+	/* PTP capability bitmap */
+	/* see VIRTCHNL2_PTP_CAPS definitions */
+	__le32 ptp_caps;
+	u8 pad[4];
+
+	struct virtchnl2_ptp_legacy_cross_time_reg legacy_cross_time_reg;
+	struct virtchnl2_ptp_ptm_cross_time_reg ptm_cross_time_reg;
+	struct virtchnl2_ptp_device_clock_control device_clock_control;
+	struct virtchnl2_ptp_tx_tstamp tx_tstamp;
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(88, virtchnl2_get_ptp_caps);
+
+/* Structure that describes tx tstamp values, index and validity */
+struct virtchnl2_ptp_tx_tstamp_latch {
+	__le32 tstamp_h;
+	__le32 tstamp_l;
+	u8 index;
+	u8 valid;
+	u8 pad[6];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(16, virtchnl2_ptp_tx_tstamp_latch);
+
+/* VIRTCHNL2_OP_GET_PTP_TX_TSTAMP_LATCHES
+ * PF/VF sends this message to receive a specified number of timestamps
+ * entries.
+ */
+struct virtchnl2_ptp_tx_tstamp_latches {
+	__le16 num_latches;
+	/* latch size expressed in bits */
+	__le16 latch_size;
+	u8 pad[4];
+	struct virtchnl2_ptp_tx_tstamp_latch tstamp_latches[1];
+};
+
+VIRTCHNL2_CHECK_STRUCT_LEN(24, virtchnl2_ptp_tx_tstamp_latches);
 
 static inline const char *virtchnl2_op_str(__le32 v_opcode)
 {
@@ -1224,10 +1586,20 @@ static inline const char *virtchnl2_op_str(__le32 v_opcode)
 		return "VIRTCHNL2_OP_EVENT";
 	case VIRTCHNL2_OP_RESET_VF:
 		return "VIRTCHNL2_OP_RESET_VF";
-	case VIRTCHNL2_OP_CREATE_ADI:
-		return "VIRTCHNL2_OP_CREATE_ADI";
-	case VIRTCHNL2_OP_DESTROY_ADI:
-		return "VIRTCHNL2_OP_DESTROY_ADI";
+	case VIRTCHNL2_OP_NON_FLEX_CREATE_ADI:
+		return "VIRTCHNL2_OP_NON_FLEX_CREATE_ADI";
+	case VIRTCHNL2_OP_NON_FLEX_DESTROY_ADI:
+		return "VIRTCHNL2_OP_NON_FLEX_DESTROY_ADI";
+	case VIRTCHNL2_OP_ADD_QUEUE_GROUPS:
+		return "VIRTCHNL2_OP_ADD_QUEUE_GROUPS";
+	case VIRTCHNL2_OP_DEL_QUEUE_GROUPS:
+		return "VIRTCHNL2_OP_DEL_QUEUE_GROUPS";
+	case VIRTCHNL2_OP_GET_PORT_STATS:
+		return "VIRTCHNL2_OP_GET_PORT_STATS";
+	case VIRTCHNL2_OP_GET_PTP_CAPS:
+		return "VIRTCHNL2_OP_GET_PTP_CAPS";
+	case VIRTCHNL2_OP_GET_PTP_TX_TSTAMP_LATCHES:
+		return "VIRTCHNL2_OP_GET_PTP_TX_TSTAMP_LATCHES";
 	default:
 		return "Unsupported (update virtchnl2.h)";
 	}
@@ -1272,11 +1644,11 @@ virtchnl2_vc_validate_vf_msg(__rte_unused struct virtchnl2_version_info *ver, u3
 				      sizeof(struct virtchnl2_queue_reg_chunk);
 		}
 		break;
-	case VIRTCHNL2_OP_CREATE_ADI:
-		valid_len = sizeof(struct virtchnl2_create_adi);
+	case VIRTCHNL2_OP_NON_FLEX_CREATE_ADI:
+		valid_len = sizeof(struct virtchnl2_non_flex_create_adi);
 		if (msglen >= valid_len) {
-			struct virtchnl2_create_adi *cadi =
-				(struct virtchnl2_create_adi *)msg;
+			struct virtchnl2_non_flex_create_adi *cadi =
+				(struct virtchnl2_non_flex_create_adi *)msg;
 
 			if (cadi->chunks.num_chunks == 0) {
 				/* zero chunks is allowed as input */
@@ -1293,8 +1665,8 @@ virtchnl2_vc_validate_vf_msg(__rte_unused struct virtchnl2_version_info *ver, u3
 				      sizeof(struct virtchnl2_vector_chunk);
 		}
 		break;
-	case VIRTCHNL2_OP_DESTROY_ADI:
-		valid_len = sizeof(struct virtchnl2_destroy_adi);
+	case VIRTCHNL2_OP_NON_FLEX_DESTROY_ADI:
+		valid_len = sizeof(struct virtchnl2_non_flex_destroy_adi);
 		break;
 	case VIRTCHNL2_OP_DESTROY_VPORT:
 	case VIRTCHNL2_OP_ENABLE_VPORT:
@@ -1356,6 +1728,54 @@ virtchnl2_vc_validate_vf_msg(__rte_unused struct virtchnl2_version_info *ver, u3
 			}
 			valid_len += (qs->chunks.num_chunks - 1) *
 				      sizeof(struct virtchnl2_queue_chunk);
+		}
+		break;
+	case VIRTCHNL2_OP_ADD_QUEUE_GROUPS:
+		valid_len = sizeof(struct virtchnl2_add_queue_groups);
+		if (msglen != valid_len) {
+			__le32 i = 0, offset = 0;
+			struct virtchnl2_add_queue_groups *add_queue_grp =
+				(struct virtchnl2_add_queue_groups *)msg;
+			struct virtchnl2_queue_groups *groups = &(add_queue_grp->qg_info);
+			struct virtchnl2_queue_group_info *grp_info;
+			__le32 chunk_size = sizeof(struct virtchnl2_queue_reg_chunk);
+			__le32 group_size = sizeof(struct virtchnl2_queue_group_info);
+			__le32 total_chunks_size;
+
+			if (groups->num_queue_groups == 0) {
+				err_msg_format = true;
+				break;
+			}
+			valid_len += (groups->num_queue_groups - 1) *
+				      sizeof(struct virtchnl2_queue_group_info);
+			offset = (u8 *)(&groups->groups[0]) - (u8 *)groups;
+
+			for (i = 0; i < groups->num_queue_groups; i++) {
+				grp_info = (struct virtchnl2_queue_group_info *)
+						   ((u8 *)groups + offset);
+				if (grp_info->chunks.num_chunks == 0) {
+					offset += group_size;
+					continue;
+				}
+				total_chunks_size = (grp_info->chunks.num_chunks - 1) * chunk_size;
+				offset += group_size + total_chunks_size;
+				valid_len += total_chunks_size;
+			}
+		}
+		break;
+	case VIRTCHNL2_OP_DEL_QUEUE_GROUPS:
+		valid_len = sizeof(struct virtchnl2_delete_queue_groups);
+		if (msglen != valid_len) {
+			struct virtchnl2_delete_queue_groups *del_queue_grp =
+				(struct virtchnl2_delete_queue_groups *)msg;
+
+			if (del_queue_grp->num_queue_groups == 0) {
+				err_msg_format = true;
+				break;
+			}
+
+			valid_len += (del_queue_grp->num_queue_groups - 1) *
+				      sizeof(struct virtchnl2_queue_group_id);
 		}
 		break;
 	case VIRTCHNL2_OP_MAP_QUEUE_VECTOR:
@@ -1444,17 +1864,52 @@ virtchnl2_vc_validate_vf_msg(__rte_unused struct virtchnl2_version_info *ver, u3
 	case VIRTCHNL2_OP_GET_STATS:
 		valid_len = sizeof(struct virtchnl2_vport_stats);
 		break;
+	case VIRTCHNL2_OP_GET_PORT_STATS:
+		valid_len = sizeof(struct virtchnl2_port_stats);
+		break;
 	case VIRTCHNL2_OP_RESET_VF:
+		break;
+	case VIRTCHNL2_OP_GET_PTP_CAPS:
+		valid_len = sizeof(struct virtchnl2_get_ptp_caps);
+
+		if (msglen > valid_len) {
+			struct virtchnl2_get_ptp_caps *ptp_caps =
+			(struct virtchnl2_get_ptp_caps *)msg;
+
+			if (ptp_caps->tx_tstamp.num_latches == 0) {
+				err_msg_format = true;
+				break;
+			}
+
+			valid_len += ((ptp_caps->tx_tstamp.num_latches - 1) *
+				      sizeof(struct virtchnl2_ptp_tx_tstamp_entry));
+		}
+		break;
+	case VIRTCHNL2_OP_GET_PTP_TX_TSTAMP_LATCHES:
+		valid_len = sizeof(struct virtchnl2_ptp_tx_tstamp_latches);
+
+		if (msglen > valid_len) {
+			struct virtchnl2_ptp_tx_tstamp_latches *tx_tstamp_latches =
+			(struct virtchnl2_ptp_tx_tstamp_latches *)msg;
+
+			if (tx_tstamp_latches->num_latches == 0) {
+				err_msg_format = true;
+				break;
+			}
+
+			valid_len += ((tx_tstamp_latches->num_latches - 1) *
+				      sizeof(struct virtchnl2_ptp_tx_tstamp_latch));
+		}
 		break;
 	/* These are always errors coming from the VF. */
 	case VIRTCHNL2_OP_EVENT:
 	case VIRTCHNL2_OP_UNKNOWN:
 	default:
-		return VIRTCHNL2_STATUS_ERR_PARAM;
+		return VIRTCHNL2_STATUS_ERR_ESRCH;
 	}
 	/* few more checks */
 	if (err_msg_format || valid_len != msglen)
-		return VIRTCHNL2_STATUS_ERR_OPCODE_MISMATCH;
+		return VIRTCHNL2_STATUS_ERR_EINVAL;
 
 	return 0;
 }

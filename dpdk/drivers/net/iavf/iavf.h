@@ -18,7 +18,8 @@
 
 #define IAVF_AQ_LEN               32
 #define IAVF_AQ_BUF_SZ            4096
-#define IAVF_RESET_WAIT_CNT       500
+#define IAVF_RESET_WAIT_CNT       2000
+#define IAVF_RESET_DETECTED_CNT   500
 #define IAVF_BUF_SIZE_MIN         1024
 #define IAVF_FRAME_SIZE_MAX       9728
 #define IAVF_QUEUE_BASE_ADDR_UNIT 128
@@ -31,7 +32,7 @@
 
 #define IAVF_NUM_MACADDR_MAX      64
 
-#define IAVF_DEV_WATCHDOG_PERIOD     0
+#define IAVF_DEV_WATCHDOG_PERIOD     2000 /* microseconds, set 0 to disable*/
 
 #define IAVF_DEFAULT_RX_PTHRESH      8
 #define IAVF_DEFAULT_RX_HTHRESH      8
@@ -277,6 +278,8 @@ struct iavf_info {
 
 	struct rte_eth_dev *eth_dev;
 
+	bool in_reset_recovery;
+
 	uint32_t ptp_caps;
 	rte_spinlock_t phc_time_aq_lock;
 };
@@ -304,6 +307,9 @@ struct iavf_devargs {
 	uint8_t proto_xtr_dflt;
 	uint8_t proto_xtr[IAVF_MAX_QUEUE_NUM];
 	uint16_t quanta_size;
+	uint32_t watchdog_period;
+	int auto_reset;
+	int no_poll_on_link_down;
 };
 
 struct iavf_security_ctx;
@@ -322,6 +328,9 @@ struct iavf_adapter {
 	uint32_t ptype_tbl[IAVF_MAX_PKT_TYPE] __rte_cache_min_aligned;
 	bool stopped;
 	bool closed;
+	bool no_poll;
+	eth_rx_burst_t rx_pkt_burst;
+	eth_tx_burst_t tx_pkt_burst;
 	uint16_t fdir_ref_cnt;
 	struct iavf_devargs devargs;
 };
@@ -425,6 +434,9 @@ _atomic_set_async_response_cmd(struct iavf_info *vf, enum virtchnl_ops ops)
 }
 int iavf_check_api_version(struct iavf_adapter *adapter);
 int iavf_get_vf_resource(struct iavf_adapter *adapter);
+void iavf_dev_event_post(struct rte_eth_dev *dev,
+		enum rte_eth_event_type event,
+		void *param, size_t param_alloc_size);
 void iavf_dev_event_handler_fini(void);
 int iavf_dev_event_handler_init(void);
 void iavf_handle_virtchnl_msg(struct rte_eth_dev *dev);
@@ -498,4 +510,8 @@ int iavf_flow_unsub(struct iavf_adapter *adapter,
 		    struct iavf_fsub_conf *filter);
 int iavf_flow_sub_check(struct iavf_adapter *adapter,
 			struct iavf_fsub_conf *filter);
+void iavf_dev_watchdog_enable(struct iavf_adapter *adapter);
+void iavf_dev_watchdog_disable(struct iavf_adapter *adapter);
+void iavf_handle_hw_reset(struct rte_eth_dev *dev);
+void iavf_set_no_poll(struct iavf_adapter *adapter, bool link_change);
 #endif /* _IAVF_ETHDEV_H_ */

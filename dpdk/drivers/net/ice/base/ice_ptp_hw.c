@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #include "ice_type.h"
@@ -2817,8 +2817,8 @@ ice_ptp_one_port_cmd_e822(struct ice_hw *hw, u8 port, enum ice_ptp_tmr_cmd cmd,
 	val &= ~TS_CMD_MASK;
 	val |= cmd_val;
 
-	status = ice_write_phy_reg_e822_lp(hw, port, P_REG_TX_TMR_CMD, val,
-					   lock_sbq);
+	status = ice_write_phy_reg_e822_lp(hw, port, P_REG_TX_TMR_CMD,
+					val | TS_CMD_RX_TYPE, lock_sbq);
 	if (status) {
 		ice_debug(hw, ICE_DBG_PTP, "Failed to write back TX_TMR_CMD, status %d\n",
 			  status);
@@ -2839,8 +2839,8 @@ ice_ptp_one_port_cmd_e822(struct ice_hw *hw, u8 port, enum ice_ptp_tmr_cmd cmd,
 	val &= ~TS_CMD_MASK;
 	val |= cmd_val;
 
-	status = ice_write_phy_reg_e822_lp(hw, port, P_REG_RX_TMR_CMD,
-					   val | TS_CMD_RX_TYPE, lock_sbq);
+	status = ice_write_phy_reg_e822_lp(hw, port, P_REG_RX_TMR_CMD, val,
+					   lock_sbq);
 	if (status) {
 		ice_debug(hw, ICE_DBG_PTP, "Failed to write back RX_TMR_CMD, status %d\n",
 			  status);

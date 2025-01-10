@@ -121,9 +121,11 @@ convention.
 .. note::
 
    The ``RTE_TRACE_POINT_REGISTER`` defines the placeholder for the
-   ``rte_trace_point_t`` tracepoint object. The user must export a
-   ``__<trace_function_name>`` symbol in the library ``.map`` file for this
-   tracepoint to be used out of the library, in shared builds.
+   ``rte_trace_point_t`` tracepoint object.
+   For generic tracepoint or for tracepoint used in public header files,
+   the user must export a ``__<trace_function_name>`` symbol
+   in the library ``.map`` file for this tracepoint
+   to be used out of the library, in shared builds.
    For example, ``__app_trace_string`` will be the exported symbol in the
    above example.
 
@@ -173,13 +175,13 @@ events.
 
 There are many tools you can use to read DPDK traces:
 
-1. ``babeltrace`` is a command-line utility that converts trace formats; it
-supports the format that DPDK trace library produces, CTF, as well as a
-basic text output that can be grep'ed.
-The babeltrace command is part of the Open Source Babeltrace project.
+#. ``babeltrace`` is a command-line utility that converts trace formats; it
+   supports the format that DPDK trace library produces, CTF, as well as a
+   basic text output that can be grep'ed.
+   The babeltrace command is part of the Open Source Babeltrace project.
 
-2. ``Trace Compass`` is a graphical user interface for viewing and analyzing
-any type of logs or traces, including DPDK traces.
+#. ``Trace Compass`` is a graphical user interface for viewing and analyzing
+   any type of logs or traces, including DPDK traces.
 
 Use the babeltrace command-line tool
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -352,3 +354,16 @@ event ID.
 The ``packet.header`` and ``packet.context`` will be written in the slow path
 at the time of trace memory creation. The ``trace.header`` and trace payload
 will be emitted when the tracepoint function is invoked.
+
+Limitations
+-----------
+
+- The ``rte_trace_point_emit_blob()`` function can capture a maximum blob
+  of length ``RTE_TRACE_BLOB_LEN_MAX`` bytes.
+  The application can call ``rte_trace_point_emit_blob()`` multiple times
+  with length less than or equal to ``RTE_TRACE_BLOB_LEN_MAX``,
+  if it needs to capture more than ``RTE_TRACE_BLOB_LEN_MAX`` bytes.
+- If the length passed to the ``rte_trace_point_emit_blob()``
+  is less than ``RTE_TRACE_BLOB_LEN_MAX``,
+  then the trailing ``(RTE_TRACE_BLOB_LEN_MAX - len)`` bytes in the trace
+  are set to zero.

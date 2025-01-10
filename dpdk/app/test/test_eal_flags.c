@@ -671,14 +671,14 @@ test_missing_c_flag(void)
 	    launch_proc(argv26) == 0 || launch_proc(argv27) == 0 ||
 	    launch_proc(argv28) == 0 || launch_proc(argv30) == 0) {
 		printf("Error - "
-		       "process ran without error with invalid --lcores flag\n");
+		       "process ran without error with invalid --lcore flag\n");
 		return -1;
 	}
 
 	if (rte_lcore_is_enabled(0) && rte_lcore_is_enabled(1) &&
 	    rte_lcore_is_enabled(2) && rte_lcore_is_enabled(3) &&
-	    rte_lcore_is_enabled(3) && rte_lcore_is_enabled(5) &&
-	    rte_lcore_is_enabled(4) && rte_lcore_is_enabled(7) &&
+	    rte_lcore_is_enabled(4) && rte_lcore_is_enabled(5) &&
+	    rte_lcore_is_enabled(6) && rte_lcore_is_enabled(7) &&
 	    launch_proc(argv29) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
@@ -1017,7 +1017,7 @@ test_misc_flags(void)
 
 	/* try running with base-virtaddr param */
 	const char *argv13[] = {prgname, "--file-prefix=virtaddr",
-			"--base-virtaddr=0x12345678"};
+			"--base-virtaddr=0x23456789"};
 
 	/* try running with --vfio-intr INTx flag */
 	const char *argv14[] = {prgname, "--file-prefix=intr",
@@ -1644,15 +1644,15 @@ test_memory_flags(void)
 
 #endif /* !RTE_EXEC_ENV_WINDOWS */
 
-REGISTER_TEST_COMMAND(eal_flags_c_opt_autotest, test_missing_c_flag);
-REGISTER_TEST_COMMAND(eal_flags_main_opt_autotest, test_main_lcore_flag);
-REGISTER_TEST_COMMAND(eal_flags_n_opt_autotest, test_invalid_n_flag);
-REGISTER_TEST_COMMAND(eal_flags_hpet_autotest, test_no_hpet_flag);
-REGISTER_TEST_COMMAND(eal_flags_no_huge_autotest, test_no_huge_flag);
-REGISTER_TEST_COMMAND(eal_flags_a_opt_autotest, test_allow_flag);
-REGISTER_TEST_COMMAND(eal_flags_b_opt_autotest, test_invalid_b_flag);
-REGISTER_TEST_COMMAND(eal_flags_vdev_opt_autotest, test_invalid_vdev_flag);
-REGISTER_TEST_COMMAND(eal_flags_r_opt_autotest, test_invalid_r_flag);
-REGISTER_TEST_COMMAND(eal_flags_mem_autotest, test_memory_flags);
-REGISTER_TEST_COMMAND(eal_flags_file_prefix_autotest, test_file_prefix);
-REGISTER_TEST_COMMAND(eal_flags_misc_autotest, test_misc_flags);
+REGISTER_FAST_TEST(eal_flags_c_opt_autotest, false, false, test_missing_c_flag);
+REGISTER_FAST_TEST(eal_flags_main_opt_autotest, false, false, test_main_lcore_flag);
+REGISTER_FAST_TEST(eal_flags_n_opt_autotest, false, false, test_invalid_n_flag);
+REGISTER_FAST_TEST(eal_flags_hpet_autotest, false, false, test_no_hpet_flag);
+REGISTER_FAST_TEST(eal_flags_no_huge_autotest, false, false, test_no_huge_flag);
+REGISTER_FAST_TEST(eal_flags_a_opt_autotest, false, false, test_allow_flag);
+REGISTER_FAST_TEST(eal_flags_b_opt_autotest, false, false, test_invalid_b_flag);
+REGISTER_FAST_TEST(eal_flags_vdev_opt_autotest, false, false, test_invalid_vdev_flag);
+REGISTER_FAST_TEST(eal_flags_r_opt_autotest, false, false, test_invalid_r_flag);
+REGISTER_FAST_TEST(eal_flags_mem_autotest, false, false, test_memory_flags);
+REGISTER_FAST_TEST(eal_flags_file_prefix_autotest, false, false, test_file_prefix);
+REGISTER_FAST_TEST(eal_flags_misc_autotest, false, false, test_misc_flags);

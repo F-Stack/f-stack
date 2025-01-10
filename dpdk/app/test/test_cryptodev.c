@@ -17,6 +17,7 @@
 
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
+#include <rte_ethdev.h>
 #include <rte_ip.h>
 #include <rte_string_fns.h>
 #include <rte_tcp.h>
@@ -44,6 +45,7 @@
 #include "test_cryptodev_aead_test_vectors.h"
 #include "test_cryptodev_hmac_test_vectors.h"
 #include "test_cryptodev_mixed_test_vectors.h"
+#include "test_cryptodev_sm4_test_vectors.h"
 #ifdef RTE_LIB_SECURITY
 #include "test_cryptodev_security_ipsec.h"
 #include "test_cryptodev_security_ipsec_test_vectors.h"
@@ -197,7 +199,7 @@ static struct crypto_unittest_params unittest_params;
 static bool enq_cb_called;
 static bool deq_cb_called;
 
-void
+int
 process_sym_raw_dp_op(uint8_t dev_id, uint16_t qp_id,
 		struct rte_crypto_op *op, uint8_t is_cipher, uint8_t is_auth,
 		uint8_t len_in_bits, uint8_t cipher_iv_len)
@@ -223,26 +225,25 @@ process_sym_raw_dp_op(uint8_t dev_id, uint16_t qp_id,
 	int enqueue_status, dequeue_status;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 	int is_sgl = sop->m_src->nb_segs > 1;
-	int is_oop = 0;
+	int ret = TEST_SUCCESS, is_oop = 0;
 
 	ctx_service_size = rte_cryptodev_get_raw_dp_ctx_size(dev_id);
-	if (ctx_service_size < 0) {
-		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
-		return;
-	}
+	if (ctx_service_size < 0)
+		return TEST_SKIPPED;
 
 	ctx = malloc(ctx_service_size);
-	if (!ctx) {
-		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
-		return;
-	}
+	if (ctx == NULL)
+		return TEST_FAILED;
 
 	/* Both are enums, setting crypto_sess will suit any session type */
 	sess.crypto_sess = op->sym->session;
 
-	if (rte_cryptodev_configure_raw_dp_ctx(dev_id, qp_id, ctx,
-			op->sess_type, sess, 0) < 0) {
-		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
+	ret = rte_cryptodev_configure_raw_dp_ctx(dev_id, qp_id, ctx, op->sess_type, sess, 0);
+	if (ret == -ENOTSUP) {
+		ret = TEST_SKIPPED;
+		goto exit;
+	} else if (ret) {
+		ret = TEST_FAILED;
 		goto exit;
 	}
 
@@ -435,6 +436,7 @@ process_sym_raw_dp_op(uint8_t dev_id, uint16_t qp_id,
 
 exit:
 	free(ctx);
+	return ret;
 }
 
 static void
@@ -1427,6 +1429,93 @@ ut_setup_security(void)
 	return dev_configure_and_start(0);
 }
 
+static int
+ut_setup_security_rx_inject(void)
+{
+	struct rte_mempool *mbuf_pool = rte_mempool_lookup("CRYPTO_MBUFPOOL");
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct rte_eth_conf port_conf = {
+		.rxmode = {
+			.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM |
+				    RTE_ETH_RX_OFFLOAD_SECURITY,
+		},
+		.txmode = {
+			.offloads = RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+		},
+		.lpbk_mode = 1,  /* Enable loopback */
+	};
+	struct rte_cryptodev_info dev_info;
+	struct rte_eth_rxconf rx_conf = {
+		.rx_thresh = {
+			.pthresh = 8,
+			.hthresh = 8,
+			.wthresh = 8,
+		},
+		.rx_free_thresh = 32,
+	};
+	uint16_t nb_ports;
+	void *sec_ctx;
+	int ret;
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	if (!(dev_info.feature_flags & RTE_CRYPTODEV_FF_SECURITY_RX_INJECT) ||
+	    !(dev_info.feature_flags & RTE_CRYPTODEV_FF_SECURITY)) {
+		RTE_LOG(INFO, USER1,
+			"Feature requirements for IPsec Rx inject test case not met\n");
+		return TEST_SKIPPED;
+	}
+
+	sec_ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
+	if (sec_ctx == NULL)
+		return TEST_SKIPPED;
+
+	nb_ports = rte_eth_dev_count_avail();
+	if (nb_ports == 0)
+		return TEST_SKIPPED;
+
+	ret = rte_eth_dev_configure(0 /* port_id */,
+				    1 /* nb_rx_queue */,
+				    0 /* nb_tx_queue */,
+				    &port_conf);
+	if (ret) {
+		printf("Could not configure ethdev port 0 [err=%d]\n", ret);
+		return TEST_SKIPPED;
+	}
+
+	/* Rx queue setup */
+	ret = rte_eth_rx_queue_setup(0 /* port_id */,
+				     0 /* rx_queue_id */,
+				     1024 /* nb_rx_desc */,
+				     SOCKET_ID_ANY,
+				     &rx_conf,
+				     mbuf_pool);
+	if (ret) {
+		printf("Could not setup eth port 0 queue 0\n");
+		return TEST_SKIPPED;
+	}
+
+	ret = rte_security_rx_inject_configure(sec_ctx, 0, true);
+	if (ret) {
+		printf("Could not enable Rx inject offload");
+		return TEST_SKIPPED;
+	}
+
+	ret = rte_eth_dev_start(0);
+	if (ret) {
+		printf("Could not start ethdev");
+		return TEST_SKIPPED;
+	}
+
+	ret = rte_eth_promiscuous_enable(0);
+	if (ret) {
+		printf("Could not enable promiscuous mode");
+		return TEST_SKIPPED;
+	}
+
+	/* Configure and start cryptodev with no features disabled */
+	return dev_configure_and_start(0);
+}
+
 void
 ut_teardown(void)
 {
@@ -1477,6 +1566,33 @@ ut_teardown(void)
 
 	/* Stop the device */
 	rte_cryptodev_stop(ts_params->valid_devs[0]);
+}
+
+static void
+ut_teardown_rx_inject(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	void *sec_ctx;
+	int ret;
+
+	if  (rte_eth_dev_count_avail() != 0) {
+		ret = rte_eth_dev_reset(0);
+		if (ret)
+			printf("Could not reset eth port 0");
+
+	}
+
+	ut_teardown();
+
+	sec_ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
+	if (sec_ctx == NULL)
+		return;
+
+	ret = rte_security_rx_inject_configure(sec_ctx, 0, false);
+	if (ret) {
+		printf("Could not disable Rx inject offload");
+		return;
+	}
 }
 
 static int
@@ -2342,6 +2458,8 @@ test_AES_CBC_HMAC_SHA512_decrypt_perform(void *sess,
 		const uint8_t *digest,
 		const uint8_t *iv)
 {
+	int ret;
+
 	/* Generate test mbuf data and digest */
 	ut_params->ibuf = setup_test_string(ts_params->mbuf_pool,
 			(const char *)
@@ -2387,10 +2505,11 @@ test_AES_CBC_HMAC_SHA512_decrypt_perform(void *sess,
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		ret = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 0, 0);
+		if (ret != TEST_SUCCESS)
+			return ret;
+	} else
 		TEST_ASSERT_NOT_NULL(
 				process_crypto_request(ts_params->valid_devs[0],
 					ut_params->op),
@@ -2556,17 +2675,14 @@ create_wireless_algo_cipher_auth_session(uint8_t dev_id,
 		enum rte_crypto_auth_operation auth_op,
 		enum rte_crypto_auth_algorithm auth_algo,
 		enum rte_crypto_cipher_algorithm cipher_algo,
-		const uint8_t *key, uint8_t key_len,
+		const uint8_t *a_key, uint8_t a_key_len,
+		const uint8_t *c_key, uint8_t c_key_len,
 		uint8_t auth_iv_len, uint8_t auth_len,
 		uint8_t cipher_iv_len)
 
 {
-	uint8_t cipher_auth_key[key_len];
-
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
-
-	memcpy(cipher_auth_key, key, key_len);
 
 	/* Setup Authentication Parameters */
 	ut_params->auth_xform.type = RTE_CRYPTO_SYM_XFORM_AUTH;
@@ -2574,9 +2690,8 @@ create_wireless_algo_cipher_auth_session(uint8_t dev_id,
 
 	ut_params->auth_xform.auth.op = auth_op;
 	ut_params->auth_xform.auth.algo = auth_algo;
-	ut_params->auth_xform.auth.key.length = key_len;
-	/* Hash key = cipher key */
-	ut_params->auth_xform.auth.key.data = cipher_auth_key;
+	ut_params->auth_xform.auth.key.length = a_key_len;
+	ut_params->auth_xform.auth.key.data = a_key;
 	ut_params->auth_xform.auth.digest_length = auth_len;
 	/* Auth IV will be after cipher IV */
 	ut_params->auth_xform.auth.iv.offset = IV_OFFSET + cipher_iv_len;
@@ -2588,12 +2703,13 @@ create_wireless_algo_cipher_auth_session(uint8_t dev_id,
 
 	ut_params->cipher_xform.cipher.algo = cipher_algo;
 	ut_params->cipher_xform.cipher.op = cipher_op;
-	ut_params->cipher_xform.cipher.key.data = cipher_auth_key;
-	ut_params->cipher_xform.cipher.key.length = key_len;
+	ut_params->cipher_xform.cipher.key.data = c_key;
+	ut_params->cipher_xform.cipher.key.length = c_key_len;
 	ut_params->cipher_xform.cipher.iv.offset = IV_OFFSET;
 	ut_params->cipher_xform.cipher.iv.length = cipher_iv_len;
 
-	debug_hexdump(stdout, "key:", key, key_len);
+	debug_hexdump(stdout, "Auth key:", a_key, c_key_len);
+	debug_hexdump(stdout, "Cipher key:", c_key, c_key_len);
 
 	/* Create Crypto session*/
 	ut_params->sess = rte_cryptodev_sym_session_create(dev_id,
@@ -2679,23 +2795,21 @@ create_wireless_algo_auth_cipher_session(uint8_t dev_id,
 		enum rte_crypto_auth_operation auth_op,
 		enum rte_crypto_auth_algorithm auth_algo,
 		enum rte_crypto_cipher_algorithm cipher_algo,
-		const uint8_t *key, const uint8_t key_len,
+		const uint8_t *a_key, const uint8_t a_key_len,
+		const uint8_t *c_key, const uint8_t c_key_len,
 		uint8_t auth_iv_len, uint8_t auth_len,
 		uint8_t cipher_iv_len)
 {
-	uint8_t auth_cipher_key[key_len];
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
-
-	memcpy(auth_cipher_key, key, key_len);
 
 	/* Setup Authentication Parameters */
 	ut_params->auth_xform.type = RTE_CRYPTO_SYM_XFORM_AUTH;
 	ut_params->auth_xform.auth.op = auth_op;
 	ut_params->auth_xform.next = &ut_params->cipher_xform;
 	ut_params->auth_xform.auth.algo = auth_algo;
-	ut_params->auth_xform.auth.key.length = key_len;
-	ut_params->auth_xform.auth.key.data = auth_cipher_key;
+	ut_params->auth_xform.auth.key.length = a_key_len;
+	ut_params->auth_xform.auth.key.data = a_key;
 	ut_params->auth_xform.auth.digest_length = auth_len;
 	/* Auth IV will be after cipher IV */
 	ut_params->auth_xform.auth.iv.offset = IV_OFFSET + cipher_iv_len;
@@ -2706,12 +2820,13 @@ create_wireless_algo_auth_cipher_session(uint8_t dev_id,
 	ut_params->cipher_xform.next = NULL;
 	ut_params->cipher_xform.cipher.algo = cipher_algo;
 	ut_params->cipher_xform.cipher.op = cipher_op;
-	ut_params->cipher_xform.cipher.key.data = auth_cipher_key;
-	ut_params->cipher_xform.cipher.key.length = key_len;
+	ut_params->cipher_xform.cipher.key.data = c_key;
+	ut_params->cipher_xform.cipher.key.length = c_key_len;
 	ut_params->cipher_xform.cipher.iv.offset = IV_OFFSET;
 	ut_params->cipher_xform.cipher.iv.length = cipher_iv_len;
 
-	debug_hexdump(stdout, "key:", key, key_len);
+	debug_hexdump(stdout, "Auth key:", a_key, a_key_len);
+	debug_hexdump(stdout, "Cipher key:", c_key, c_key_len);
 
 	/* Create Crypto session*/
 	if (cipher_op == RTE_CRYPTO_CIPHER_OP_DECRYPT) {
@@ -3145,10 +3260,12 @@ test_snow3g_authentication(const struct snow3g_hash_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 1, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 1,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op);
 	ut_params->obuf = ut_params->op->sym->m_src;
@@ -3237,10 +3354,12 @@ test_snow3g_authentication_verify(const struct snow3g_hash_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 1, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 1,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -3324,10 +3443,12 @@ test_kasumi_authentication(const struct kasumi_hash_test_data *tdata)
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 1, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 1,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -3411,10 +3532,12 @@ test_kasumi_authentication_verify(const struct kasumi_hash_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 1, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 1,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -3635,10 +3758,12 @@ test_kasumi_encryption(const struct kasumi_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -3734,10 +3859,12 @@ test_kasumi_encryption_sgl(const struct kasumi_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4093,10 +4220,12 @@ test_kasumi_decryption(const struct kasumi_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4185,10 +4314,12 @@ test_snow3g_encryption(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4286,10 +4417,12 @@ test_snow3g_encryption_oop(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4405,10 +4538,12 @@ test_snow3g_encryption_oop_sgl(const struct snow3g_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4536,10 +4671,12 @@ test_snow3g_encryption_offset_oop(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4638,10 +4775,12 @@ static int test_snow3g_decryption(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4738,10 +4877,12 @@ static int test_snow3g_decryption_oop(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4832,10 +4973,12 @@ test_zuc_cipher_auth(const struct wireless_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -4910,6 +5053,7 @@ test_snow3g_cipher_auth(const struct snow3g_test_data *tdata)
 			RTE_CRYPTO_AUTH_SNOW3G_UIA2,
 			RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			tdata->auth_iv.len, tdata->digest.len,
 			tdata->cipher_iv.len);
 	if (retval != 0)
@@ -4944,10 +5088,12 @@ test_snow3g_cipher_auth(const struct snow3g_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -5039,6 +5185,7 @@ test_snow3g_auth_cipher(const struct snow3g_test_data *tdata,
 			RTE_CRYPTO_AUTH_SNOW3G_UIA2,
 			RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			tdata->auth_iv.len, tdata->digest.len,
 			tdata->cipher_iv.len);
 	if (retval != 0)
@@ -5094,10 +5241,12 @@ test_snow3g_auth_cipher(const struct snow3g_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -5244,6 +5393,7 @@ test_snow3g_auth_cipher_sgl(const struct snow3g_test_data *tdata,
 			RTE_CRYPTO_AUTH_SNOW3G_UIA2,
 			RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			tdata->auth_iv.len, tdata->digest.len,
 			tdata->cipher_iv.len);
 
@@ -5301,10 +5451,12 @@ test_snow3g_auth_cipher_sgl(const struct snow3g_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -5445,6 +5597,7 @@ test_kasumi_auth_cipher(const struct kasumi_test_data *tdata,
 			RTE_CRYPTO_AUTH_KASUMI_F9,
 			RTE_CRYPTO_CIPHER_KASUMI_F8,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			0, tdata->digest.len,
 			tdata->cipher_iv.len);
 
@@ -5502,10 +5655,12 @@ test_kasumi_auth_cipher(const struct kasumi_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -5649,6 +5804,7 @@ test_kasumi_auth_cipher_sgl(const struct kasumi_test_data *tdata,
 			RTE_CRYPTO_AUTH_KASUMI_F9,
 			RTE_CRYPTO_CIPHER_KASUMI_F8,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			0, tdata->digest.len,
 			tdata->cipher_iv.len);
 
@@ -5706,10 +5862,12 @@ test_kasumi_auth_cipher_sgl(const struct kasumi_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -5830,6 +5988,7 @@ test_kasumi_cipher_auth(const struct kasumi_test_data *tdata)
 			RTE_CRYPTO_AUTH_KASUMI_F9,
 			RTE_CRYPTO_CIPHER_KASUMI_F8,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			0, tdata->digest.len,
 			tdata->cipher_iv.len);
 	if (retval != 0)
@@ -5864,10 +6023,12 @@ test_kasumi_cipher_auth(const struct kasumi_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -5957,15 +6118,18 @@ check_auth_capability(const struct crypto_testsuite_params *ts_params,
 }
 
 static int
-test_zuc_encryption(const struct wireless_test_data *tdata)
+test_zuc_cipher(const struct wireless_test_data *tdata,
+		enum rte_crypto_cipher_operation direction)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
 	int retval;
-	uint8_t *plaintext, *ciphertext;
-	unsigned plaintext_pad_len;
-	unsigned plaintext_len;
+	uint8_t *plaintext = NULL;
+	uint8_t *ciphertext = NULL;
+	unsigned int plaintext_pad_len, ciphertext_pad_len;
+	unsigned int plaintext_len = 0;
+	unsigned int ciphertext_len = 0;
 	struct rte_cryptodev_info dev_info;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -5987,7 +6151,7 @@ test_zuc_encryption(const struct wireless_test_data *tdata)
 
 	/* Create ZUC session */
 	retval = create_wireless_algo_cipher_session(ts_params->valid_devs[0],
-					RTE_CRYPTO_CIPHER_OP_ENCRYPT,
+					direction,
 					RTE_CRYPTO_CIPHER_ZUC_EEA3,
 					tdata->key.data, tdata->key.len,
 					tdata->cipher_iv.len);
@@ -6000,15 +6164,27 @@ test_zuc_encryption(const struct wireless_test_data *tdata)
 	memset(rte_pktmbuf_mtod(ut_params->ibuf, uint8_t *), 0,
 	       rte_pktmbuf_tailroom(ut_params->ibuf));
 
-	plaintext_len = ceil_byte_length(tdata->plaintext.len);
-	/* Append data which is padded to a multiple */
-	/* of the algorithms block size */
-	plaintext_pad_len = RTE_ALIGN_CEIL(plaintext_len, 8);
-	plaintext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
+	if (direction == RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
+		plaintext_len = ceil_byte_length(tdata->plaintext.len);
+		/* Append data which is padded to a multiple */
+		/* of the algorithms block size */
+		plaintext_pad_len = RTE_ALIGN_CEIL(plaintext_len, 8);
+		plaintext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
 				plaintext_pad_len);
-	memcpy(plaintext, tdata->plaintext.data, plaintext_len);
+		memcpy(plaintext, tdata->plaintext.data, plaintext_len);
 
-	debug_hexdump(stdout, "plaintext:", plaintext, plaintext_len);
+		debug_hexdump(stdout, "plaintext:", plaintext, plaintext_len);
+	} else {
+		ciphertext_len = ceil_byte_length(tdata->ciphertext.len);
+		/* Append data which is padded to a multiple */
+		/* of the algorithms block size */
+		ciphertext_pad_len = RTE_ALIGN_CEIL(ciphertext_len, 8);
+		ciphertext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
+				ciphertext_pad_len);
+		memcpy(ciphertext, tdata->ciphertext.data, ciphertext_len);
+
+		debug_hexdump(stdout, "ciphertext:", ciphertext, ciphertext_len);
+	}
 
 	/* Create ZUC operation */
 	retval = create_wireless_algo_cipher_operation(tdata->cipher_iv.data,
@@ -6018,43 +6194,68 @@ test_zuc_encryption(const struct wireless_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
 
 	ut_params->obuf = ut_params->op->sym->m_dst;
-	if (ut_params->obuf)
-		ciphertext = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
-	else
-		ciphertext = plaintext;
 
-	debug_hexdump(stdout, "ciphertext:", ciphertext, plaintext_len);
+	if (direction == RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
+		if (ut_params->obuf)
+			ciphertext = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
+		else
+			ciphertext = plaintext;
 
-	/* Validate obuf */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
-		ciphertext,
-		tdata->ciphertext.data,
-		tdata->validCipherLenInBits.len,
-		"ZUC Ciphertext data not as expected");
+		debug_hexdump(stdout, "ciphertext:", ciphertext, plaintext_len);
+
+		/* Validate obuf */
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+				ciphertext,
+				tdata->ciphertext.data,
+				tdata->validCipherLenInBits.len,
+				"ZUC Ciphertext data not as expected");
+	} else {
+		if (ut_params->obuf)
+			plaintext = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
+		else
+			plaintext = ciphertext;
+
+		debug_hexdump(stdout, "plaintext:", plaintext, ciphertext_len);
+
+		const uint8_t *reference_plaintext = tdata->plaintext.data +
+				(tdata->validCipherOffsetInBits.len >> 3);
+
+		/* Validate obuf */
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+				plaintext,
+				reference_plaintext,
+				tdata->validCipherLenInBits.len,
+				"ZUC Plaintext data not as expected");
+	}
+
 	return 0;
 }
 
 static int
-test_zuc_encryption_sgl(const struct wireless_test_data *tdata)
+test_zuc_cipher_sgl(const struct wireless_test_data *tdata,
+		enum rte_crypto_cipher_operation direction)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
 	int retval;
 
-	unsigned int plaintext_pad_len;
-	unsigned int plaintext_len;
-	const uint8_t *ciphertext;
-	uint8_t ciphertext_buffer[2048];
+	unsigned int plaintext_pad_len, ciphertext_pad_len;
+	unsigned int plaintext_len = 0;
+	unsigned int ciphertext_len = 0;
+	const uint8_t *ciphertext, *plaintext;
+	uint8_t buffer[2048];
 	struct rte_cryptodev_info dev_info;
 
 	/* Check if device supports ZUC EEA3 */
@@ -6081,21 +6282,36 @@ test_zuc_encryption_sgl(const struct wireless_test_data *tdata)
 		return TEST_SKIPPED;
 	}
 
-	plaintext_len = ceil_byte_length(tdata->plaintext.len);
+	if (direction == RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
+		plaintext_len = ceil_byte_length(tdata->plaintext.len);
 
-	/* Append data which is padded to a multiple */
-	/* of the algorithms block size */
-	plaintext_pad_len = RTE_ALIGN_CEIL(plaintext_len, 8);
+		/* Append data which is padded to a multiple */
+		/* of the algorithms block size */
+		plaintext_pad_len = RTE_ALIGN_CEIL(plaintext_len, 8);
 
-	ut_params->ibuf = create_segmented_mbuf(ts_params->mbuf_pool,
-			plaintext_pad_len, 10, 0);
+		ut_params->ibuf = create_segmented_mbuf(ts_params->mbuf_pool,
+				plaintext_pad_len, 10, 0);
 
-	pktmbuf_write(ut_params->ibuf, 0, plaintext_len,
-			tdata->plaintext.data);
+		pktmbuf_write(ut_params->ibuf, 0, plaintext_len,
+				tdata->plaintext.data);
+	} else {
+		ciphertext_len = ceil_byte_length(tdata->ciphertext.len);
+
+		/* Append data which is padded to a multiple */
+		/* of the algorithms block size */
+		ciphertext_pad_len = RTE_ALIGN_CEIL(ciphertext_len, 8);
+
+		ut_params->ibuf = create_segmented_mbuf(ts_params->mbuf_pool,
+				ciphertext_pad_len, 10, 0);
+
+		pktmbuf_write(ut_params->ibuf, 0, ciphertext_len,
+				tdata->ciphertext.data);
+
+	}
 
 	/* Create ZUC session */
 	retval = create_wireless_algo_cipher_session(ts_params->valid_devs[0],
-			RTE_CRYPTO_CIPHER_OP_ENCRYPT,
+			direction,
 			RTE_CRYPTO_CIPHER_ZUC_EEA3,
 			tdata->key.data, tdata->key.len,
 			tdata->cipher_iv.len);
@@ -6103,8 +6319,10 @@ test_zuc_encryption_sgl(const struct wireless_test_data *tdata)
 		return retval;
 
 	/* Clear mbuf payload */
-
-	pktmbuf_write(ut_params->ibuf, 0, plaintext_len, tdata->plaintext.data);
+	if (direction == RTE_CRYPTO_CIPHER_OP_ENCRYPT)
+		pktmbuf_write(ut_params->ibuf, 0, plaintext_len, tdata->plaintext.data);
+	else
+		pktmbuf_write(ut_params->ibuf, 0, ciphertext_len, tdata->ciphertext.data);
 
 	/* Create ZUC operation */
 	retval = create_wireless_algo_cipher_operation(tdata->cipher_iv.data,
@@ -6113,37 +6331,60 @@ test_zuc_encryption_sgl(const struct wireless_test_data *tdata)
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 0, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 0, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 						ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
 
 	ut_params->obuf = ut_params->op->sym->m_dst;
-	if (ut_params->obuf)
-		ciphertext = rte_pktmbuf_read(ut_params->obuf,
-			0, plaintext_len, ciphertext_buffer);
-	else
-		ciphertext = rte_pktmbuf_read(ut_params->ibuf,
-			0, plaintext_len, ciphertext_buffer);
 
-	/* Validate obuf */
-	debug_hexdump(stdout, "ciphertext:", ciphertext, plaintext_len);
+	if (direction == RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
+		if (ut_params->obuf)
+			ciphertext = rte_pktmbuf_read(ut_params->obuf,
+				0, plaintext_len, buffer);
+		else
+			ciphertext = rte_pktmbuf_read(ut_params->ibuf,
+				0, plaintext_len, buffer);
 
-	/* Validate obuf */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
-		ciphertext,
-		tdata->ciphertext.data,
-		tdata->validCipherLenInBits.len,
-		"ZUC Ciphertext data not as expected");
+		/* Validate obuf */
+		debug_hexdump(stdout, "ciphertext:", ciphertext, plaintext_len);
+
+		/* Validate obuf */
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+			ciphertext,
+			tdata->ciphertext.data,
+			tdata->validCipherLenInBits.len,
+			"ZUC Ciphertext data not as expected");
+	} else {
+		if (ut_params->obuf)
+			plaintext = rte_pktmbuf_read(ut_params->obuf,
+				0, ciphertext_len, buffer);
+		else
+			plaintext = rte_pktmbuf_read(ut_params->ibuf,
+				0, ciphertext_len, buffer);
+
+		/* Validate obuf */
+		debug_hexdump(stdout, "plaintext:", plaintext, ciphertext_len);
+
+		/* Validate obuf */
+		TEST_ASSERT_BUFFERS_ARE_EQUAL_BIT(
+			plaintext,
+			tdata->plaintext.data,
+			tdata->validCipherLenInBits.len,
+			"ZUC Plaintext data not as expected");
+		}
 
 	return 0;
 }
 
 static int
-test_zuc_authentication(const struct wireless_test_data *tdata)
+test_zuc_authentication(const struct wireless_test_data *tdata,
+		enum rte_crypto_auth_operation auth_op)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -6183,8 +6424,7 @@ test_zuc_authentication(const struct wireless_test_data *tdata)
 	retval = create_wireless_algo_hash_session(ts_params->valid_devs[0],
 			tdata->key.data, tdata->key.len,
 			tdata->auth_iv.len, tdata->digest.len,
-			RTE_CRYPTO_AUTH_OP_GENERATE,
-			RTE_CRYPTO_AUTH_ZUC_EIA3);
+			auth_op, RTE_CRYPTO_AUTH_ZUC_EIA3);
 	if (retval != 0)
 		return retval;
 
@@ -6203,18 +6443,20 @@ test_zuc_authentication(const struct wireless_test_data *tdata)
 	memcpy(plaintext, tdata->plaintext.data, plaintext_len);
 
 	/* Create ZUC operation */
-	retval = create_wireless_algo_hash_operation(NULL, tdata->digest.len,
+	retval = create_wireless_algo_hash_operation(tdata->digest.data,
+			tdata->digest.len,
 			tdata->auth_iv.data, tdata->auth_iv.len,
-			plaintext_pad_len, RTE_CRYPTO_AUTH_OP_GENERATE,
-			tdata->validAuthLenInBits.len,
-			0);
+			plaintext_pad_len,
+			auth_op, tdata->validAuthLenInBits.len, 0);
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 1, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 1,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op);
 	TEST_ASSERT_NOT_NULL(ut_params->op, "failed to retrieve obuf");
@@ -6222,12 +6464,21 @@ test_zuc_authentication(const struct wireless_test_data *tdata)
 	ut_params->digest = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *)
 			+ plaintext_pad_len;
 
+	if (auth_op != RTE_CRYPTO_AUTH_OP_VERIFY) {
+		/* Validate obuf */
+		TEST_ASSERT_BUFFERS_ARE_EQUAL(
+				ut_params->digest,
+				tdata->digest.data,
+				tdata->digest.len,
+				"ZUC Generated auth tag not as expected");
+		return 0;
+	}
+
 	/* Validate obuf */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-	ut_params->digest,
-	tdata->digest.data,
-	tdata->digest.len,
-	"ZUC Generated auth tag not as expected");
+	if (ut_params->op->status == RTE_CRYPTO_OP_STATUS_SUCCESS)
+		return 0;
+	else
+		return -1;
 
 	return 0;
 }
@@ -6303,6 +6554,7 @@ test_zuc_auth_cipher(const struct wireless_test_data *tdata,
 			RTE_CRYPTO_AUTH_ZUC_EIA3,
 			RTE_CRYPTO_CIPHER_ZUC_EEA3,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			tdata->auth_iv.len, tdata->digest.len,
 			tdata->cipher_iv.len);
 
@@ -6360,10 +6612,12 @@ test_zuc_auth_cipher(const struct wireless_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -6506,6 +6760,7 @@ test_zuc_auth_cipher_sgl(const struct wireless_test_data *tdata,
 			RTE_CRYPTO_AUTH_ZUC_EIA3,
 			RTE_CRYPTO_CIPHER_ZUC_EEA3,
 			tdata->key.data, tdata->key.len,
+			tdata->key.data, tdata->key.len,
 			tdata->auth_iv.len, tdata->digest.len,
 			tdata->cipher_iv.len);
 
@@ -6563,10 +6818,12 @@ test_zuc_auth_cipher_sgl(const struct wireless_test_data *tdata,
 	if (retval < 0)
 		return retval;
 
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 1, tdata->cipher_iv.len);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 1,
+					       tdata->cipher_iv.len);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -7179,103 +7436,197 @@ test_kasumi_cipher_auth_test_case_1(void)
 static int
 test_zuc_encryption_test_case_1(void)
 {
-	return test_zuc_encryption(&zuc_test_case_cipher_193b);
+	return test_zuc_cipher(&zuc_test_case_cipher_193b,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
 test_zuc_encryption_test_case_2(void)
 {
-	return test_zuc_encryption(&zuc_test_case_cipher_800b);
+	return test_zuc_cipher(&zuc_test_case_cipher_800b,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
 test_zuc_encryption_test_case_3(void)
 {
-	return test_zuc_encryption(&zuc_test_case_cipher_1570b);
+	return test_zuc_cipher(&zuc_test_case_cipher_1570b,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
 test_zuc_encryption_test_case_4(void)
 {
-	return test_zuc_encryption(&zuc_test_case_cipher_2798b);
+	return test_zuc_cipher(&zuc_test_case_cipher_2798b,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
 test_zuc_encryption_test_case_5(void)
 {
-	return test_zuc_encryption(&zuc_test_case_cipher_4019b);
+	return test_zuc_cipher(&zuc_test_case_cipher_4019b,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
 test_zuc_encryption_test_case_6_sgl(void)
 {
-	return test_zuc_encryption_sgl(&zuc_test_case_cipher_193b);
+	return test_zuc_cipher_sgl(&zuc_test_case_cipher_193b,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
+}
+
+static int
+test_zuc_decryption_test_case_1(void)
+{
+	return test_zuc_cipher(&zuc_test_case_cipher_193b,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
+}
+
+static int
+test_zuc_decryption_test_case_2(void)
+{
+	return test_zuc_cipher(&zuc_test_case_cipher_800b,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
+}
+
+static int
+test_zuc_decryption_test_case_3(void)
+{
+	return test_zuc_cipher(&zuc_test_case_cipher_1570b,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
+}
+
+static int
+test_zuc_decryption_test_case_4(void)
+{
+	return test_zuc_cipher(&zuc_test_case_cipher_2798b,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
+}
+
+static int
+test_zuc_decryption_test_case_5(void)
+{
+	return test_zuc_cipher(&zuc_test_case_cipher_4019b,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
+}
+
+static int
+test_zuc_decryption_test_case_6_sgl(void)
+{
+	return test_zuc_cipher_sgl(&zuc_test_case_cipher_193b,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
 }
 
 static int
 test_zuc_hash_generate_test_case_1(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_1b);
+	return test_zuc_authentication(&zuc_test_case_auth_1b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_2(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_90b);
+	return test_zuc_authentication(&zuc_test_case_auth_90b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_3(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_577b);
+	return test_zuc_authentication(&zuc_test_case_auth_577b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_4(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_2079b);
+	return test_zuc_authentication(&zuc_test_case_auth_2079b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_5(void)
 {
-	return test_zuc_authentication(&zuc_test_auth_5670b);
+	return test_zuc_authentication(&zuc_test_auth_5670b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_6(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_128b);
+	return test_zuc_authentication(&zuc_test_case_auth_128b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_7(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_2080b);
+	return test_zuc_authentication(&zuc_test_case_auth_2080b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
 test_zuc_hash_generate_test_case_8(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_584b);
+	return test_zuc_authentication(&zuc_test_case_auth_584b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
 }
 
 static int
-test_zuc_hash_generate_test_case_9(void)
+test_zuc_hash_verify_test_case_1(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_32b);
+	return test_zuc_authentication(&zuc_test_case_auth_1b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
 }
 
 static int
-test_zuc_hash_generate_test_case_10(void)
+test_zuc_hash_verify_test_case_2(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_64b);
+	return test_zuc_authentication(&zuc_test_case_auth_90b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
 }
 
 static int
-test_zuc_hash_generate_test_case_11(void)
+test_zuc_hash_verify_test_case_3(void)
 {
-	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_128b);
+	return test_zuc_authentication(&zuc_test_case_auth_577b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc_hash_verify_test_case_4(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_2079b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc_hash_verify_test_case_5(void)
+{
+	return test_zuc_authentication(&zuc_test_auth_5670b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc_hash_verify_test_case_6(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_128b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc_hash_verify_test_case_7(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_2080b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc_hash_verify_test_case_8(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_584b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
 }
 
 static int
@@ -7377,25 +7728,179 @@ test_zuc_auth_cipher_verify_test_case_2_oop(void)
 static int
 test_zuc256_encryption_test_case_1(void)
 {
-	return test_zuc_encryption(&zuc256_test_case_cipher_1);
+	return test_zuc_cipher(&zuc256_test_case_cipher_1,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
 test_zuc256_encryption_test_case_2(void)
 {
-	return test_zuc_encryption(&zuc256_test_case_cipher_2);
+	return test_zuc_cipher(&zuc256_test_case_cipher_2,
+			RTE_CRYPTO_CIPHER_OP_ENCRYPT);
 }
 
 static int
-test_zuc256_authentication_test_case_1(void)
+test_zuc256_decryption_test_case_1(void)
 {
-	return test_zuc_authentication(&zuc256_test_case_auth_1);
+	return test_zuc_cipher(&zuc256_test_case_cipher_1,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
 }
 
 static int
-test_zuc256_authentication_test_case_2(void)
+test_zuc256_decryption_test_case_2(void)
 {
-	return test_zuc_authentication(&zuc256_test_case_auth_2);
+	return test_zuc_cipher(&zuc256_test_case_cipher_2,
+			RTE_CRYPTO_CIPHER_OP_DECRYPT);
+}
+
+static int
+test_zuc256_hash_generate_4b_tag_test_case_1(void)
+{
+	return test_zuc_authentication(&zuc256_test_case_auth_1,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
+}
+
+static int
+test_zuc256_hash_generate_4b_tag_test_case_2(void)
+{
+	return test_zuc_authentication(&zuc256_test_case_auth_2,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
+}
+
+static int
+test_zuc256_hash_generate_4b_tag_test_case_3(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_32b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
+}
+
+static int
+test_zuc256_hash_generate_8b_tag_test_case_1(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_64b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
+}
+
+static int
+test_zuc256_hash_generate_16b_tag_test_case_1(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_128b,
+			RTE_CRYPTO_AUTH_OP_GENERATE);
+}
+
+static int
+test_zuc256_hash_verify_4b_tag_test_case_1(void)
+{
+	return test_zuc_authentication(&zuc256_test_case_auth_1,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc256_hash_verify_4b_tag_test_case_2(void)
+{
+	return test_zuc_authentication(&zuc256_test_case_auth_2,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc256_hash_verify_4b_tag_test_case_3(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_32b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc256_hash_verify_8b_tag_test_case_1(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_64b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc256_hash_verify_16b_tag_test_case_1(void)
+{
+	return test_zuc_authentication(&zuc_test_case_auth_4000b_mac_128b,
+			RTE_CRYPTO_AUTH_OP_VERIFY);
+}
+
+static int
+test_zuc256_cipher_auth_4b_tag_test_case_1(void)
+{
+	return test_zuc_cipher_auth(&zuc256_test_case_cipher_auth_1);
+}
+
+static int
+test_zuc256_cipher_auth_4b_tag_test_case_2(void)
+{
+	return test_zuc_cipher_auth(&zuc256_test_case_cipher_auth_2);
+}
+
+static int
+test_zuc256_cipher_auth_8b_tag_test_case_1(void)
+{
+	return test_zuc_cipher_auth(&zuc256_test_case_cipher_auth_3);
+}
+
+static int
+test_zuc256_cipher_auth_16b_tag_test_case_1(void)
+{
+	return test_zuc_cipher_auth(&zuc256_test_case_cipher_auth_4);
+}
+
+static int
+test_zuc256_auth_cipher_4b_tag_test_case_1(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_1, IN_PLACE, 0);
+}
+
+static int
+test_zuc256_auth_cipher_4b_tag_test_case_2(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_2, IN_PLACE, 0);
+}
+
+static int
+test_zuc256_auth_cipher_8b_tag_test_case_1(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_3, IN_PLACE, 0);
+}
+
+static int
+test_zuc256_auth_cipher_16b_tag_test_case_1(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_4, IN_PLACE, 0);
+}
+
+static int
+test_zuc256_auth_cipher_verify_4b_tag_test_case_1(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_1, IN_PLACE, 1);
+}
+
+static int
+test_zuc256_auth_cipher_verify_4b_tag_test_case_2(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_2, IN_PLACE, 1);
+}
+
+static int
+test_zuc256_auth_cipher_verify_8b_tag_test_case_1(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_3, IN_PLACE, 1);
+}
+
+static int
+test_zuc256_auth_cipher_verify_16b_tag_test_case_1(void)
+{
+	return test_zuc_auth_cipher(
+		&zuc256_auth_cipher_test_case_4, IN_PLACE, 1);
 }
 
 static int
@@ -7444,6 +7949,9 @@ test_mixed_auth_cipher(const struct mixed_cipher_auth_test_data *tdata,
 	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
 		return TEST_SKIPPED;
 
+	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
+		return TEST_SKIPPED;
+
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
 
 	uint64_t feat_flags = dev_info.feature_flags;
@@ -7462,6 +7970,7 @@ test_mixed_auth_cipher(const struct mixed_cipher_auth_test_data *tdata,
 				tdata->auth_algo,
 				tdata->cipher_algo,
 				tdata->auth_key.data, tdata->auth_key.len,
+				tdata->cipher_key.data, tdata->cipher_key.len,
 				tdata->auth_iv.len, tdata->digest_enc.len,
 				tdata->cipher_iv.len);
 	else
@@ -7472,6 +7981,7 @@ test_mixed_auth_cipher(const struct mixed_cipher_auth_test_data *tdata,
 				tdata->auth_algo,
 				tdata->cipher_algo,
 				tdata->auth_key.data, tdata->auth_key.len,
+				tdata->cipher_key.data, tdata->cipher_key.len,
 				tdata->auth_iv.len, tdata->digest_enc.len,
 				tdata->cipher_iv.len);
 	if (retval != 0)
@@ -7641,9 +8151,6 @@ test_mixed_auth_cipher_sgl(const struct mixed_cipher_auth_test_data *tdata,
 	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
 		return TEST_SKIPPED;
 
-	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
-		return TEST_SKIPPED;
-
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
 
 	uint64_t feat_flags = dev_info.feature_flags;
@@ -7678,6 +8185,7 @@ test_mixed_auth_cipher_sgl(const struct mixed_cipher_auth_test_data *tdata,
 				tdata->auth_algo,
 				tdata->cipher_algo,
 				tdata->auth_key.data, tdata->auth_key.len,
+				tdata->cipher_key.data, tdata->cipher_key.len,
 				tdata->auth_iv.len, tdata->digest_enc.len,
 				tdata->cipher_iv.len);
 	else
@@ -7688,6 +8196,7 @@ test_mixed_auth_cipher_sgl(const struct mixed_cipher_auth_test_data *tdata,
 				tdata->auth_algo,
 				tdata->cipher_algo,
 				tdata->auth_key.data, tdata->auth_key.len,
+				tdata->cipher_key.data, tdata->cipher_key.len,
 				tdata->auth_iv.len, tdata->digest_enc.len,
 				tdata->cipher_iv.len);
 	if (retval != 0)
@@ -8481,10 +8990,12 @@ test_authenticated_encryption(const struct aead_test_data *tdata)
 	/* Process crypto operation */
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_aead_op(ts_params->valid_devs[0], ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 0, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 0, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
@@ -8537,9 +9048,7 @@ security_proto_supported(enum rte_security_session_action_type action,
 	const struct rte_security_capability *capability;
 	uint16_t i = 0;
 
-	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-				rte_cryptodev_get_sec_ctx(
-				ts_params->valid_devs[0]);
+	void *ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
 
 
 	capabilities = rte_security_capabilities_get(ctx);
@@ -8579,9 +9088,7 @@ static int test_pdcp_proto(int i, int oop, enum rte_crypto_cipher_operation opc,
 	struct crypto_unittest_params *ut_params = &unittest_params;
 	uint8_t *plaintext;
 	int ret = TEST_SUCCESS;
-	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-				rte_cryptodev_get_sec_ctx(
-				ts_params->valid_devs[0]);
+	void *ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
 	struct rte_cryptodev_info dev_info;
 	uint64_t feat_flags;
 
@@ -8708,8 +9215,10 @@ static int test_pdcp_proto(int i, int oop, enum rte_crypto_cipher_operation opc,
 		/* filling lengths */
 		ut_params->op->sym->cipher.data.length = ut_params->op->sym->m_src->pkt_len;
 		ut_params->op->sym->auth.data.length = ut_params->op->sym->m_src->pkt_len;
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 1, 1, 0, 0);
+
+		ret = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 0, 0);
+		if (ret != TEST_SUCCESS)
+			return ret;
 	} else {
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0], ut_params->op);
 	}
@@ -8784,9 +9293,7 @@ test_pdcp_proto_SGL(int i, int oop,
 	unsigned int trn_data = 0;
 	struct rte_cryptodev_info dev_info;
 	uint64_t feat_flags;
-	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-				rte_cryptodev_get_sec_ctx(
-				ts_params->valid_devs[0]);
+	void *ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
 	struct rte_mbuf *temp_mbuf;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -8989,8 +9496,10 @@ test_pdcp_proto_SGL(int i, int oop,
 				+= temp_mbuf->pkt_len;
 			temp_mbuf = temp_mbuf->next;
 		}
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 1, 1, 0, 0);
+
+		ret = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 0, 0);
+		if (ret != TEST_SUCCESS)
+			return ret;
 	} else {
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 							ut_params->op);
@@ -9356,6 +9865,264 @@ test_PDCP_SDAP_PROTO_decap_all(void)
 	return (all_err == TEST_SUCCESS) ? TEST_SUCCESS : TEST_FAILED;
 }
 
+static inline void
+ext_mbuf_callback_fn_free(void *addr __rte_unused, void *opaque __rte_unused)
+{
+}
+
+static inline void
+ext_mbuf_memzone_free(int nb_segs)
+{
+	int i;
+
+	for (i = 0; i <= nb_segs; i++) {
+		char mz_name[RTE_MEMZONE_NAMESIZE];
+		const struct rte_memzone *memzone;
+		snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "ext_buf_%d", i);
+		memzone = rte_memzone_lookup(mz_name);
+		if (memzone != NULL) {
+			rte_memzone_free(memzone);
+			memzone = NULL;
+		}
+	}
+}
+
+static inline struct rte_mbuf *
+ext_mbuf_create(struct rte_mempool *mbuf_pool, int pkt_len,
+		int nb_segs, const void *input_text)
+{
+	struct rte_mbuf *m = NULL, *mbuf = NULL;
+	size_t data_off = 0;
+	uint8_t *dst;
+	int i, size;
+	int t_len;
+
+	if (pkt_len < 1) {
+		printf("Packet size must be 1 or more (is %d)\n", pkt_len);
+		return NULL;
+	}
+
+	if (nb_segs < 1) {
+		printf("Number of segments must be 1 or more (is %d)\n",
+				nb_segs);
+		return NULL;
+	}
+
+	t_len = pkt_len >= nb_segs ? pkt_len / nb_segs : 1;
+	size = pkt_len;
+
+	/* Create chained mbuf_src with external buffer */
+	for (i = 0; size > 0; i++) {
+		struct rte_mbuf_ext_shared_info *ret_shinfo = NULL;
+		uint16_t data_len = RTE_MIN(size, t_len);
+		char mz_name[RTE_MEMZONE_NAMESIZE];
+		const struct rte_memzone *memzone;
+		void *ext_buf_addr = NULL;
+		rte_iova_t buf_iova;
+		bool freed = false;
+		uint16_t buf_len;
+
+		buf_len = RTE_ALIGN_CEIL(data_len + 1024 +
+			sizeof(struct rte_mbuf_ext_shared_info), 8);
+
+		snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "ext_buf_%d", i);
+		memzone = rte_memzone_lookup(mz_name);
+		if (memzone != NULL && memzone->len != buf_len) {
+			rte_memzone_free(memzone);
+			memzone = NULL;
+		}
+		if (memzone == NULL) {
+			memzone = rte_memzone_reserve_aligned(mz_name, buf_len, SOCKET_ID_ANY,
+				RTE_MEMZONE_IOVA_CONTIG, RTE_CACHE_LINE_SIZE);
+			if (memzone == NULL) {
+				printf("Can't allocate memory zone %s\n", mz_name);
+				return NULL;
+			}
+		}
+
+		ext_buf_addr = memzone->addr;
+		memcpy(ext_buf_addr, RTE_PTR_ADD(input_text, data_off), data_len);
+
+		/* Create buffer to hold rte_mbuf header */
+		m = rte_pktmbuf_alloc(mbuf_pool);
+		if (i == 0)
+			mbuf = m;
+
+		if (m == NULL) {
+			printf("Cannot create segment for source mbuf");
+			goto fail;
+		}
+
+		/* Save shared data (like callback function) in external buffer's end */
+		ret_shinfo = rte_pktmbuf_ext_shinfo_init_helper(ext_buf_addr, &buf_len,
+			ext_mbuf_callback_fn_free, &freed);
+		if (ret_shinfo == NULL) {
+			printf("Shared mem initialization failed!\n");
+			goto fail;
+		}
+
+		buf_iova = rte_mem_virt2iova(ext_buf_addr);
+
+		/* Attach external buffer to mbuf */
+		rte_pktmbuf_attach_extbuf(m, ext_buf_addr, buf_iova, buf_len,
+			ret_shinfo);
+		if (m->ol_flags != RTE_MBUF_F_EXTERNAL) {
+			printf("External buffer is not attached to mbuf\n");
+			goto fail;
+		}
+
+		dst = (uint8_t *)rte_pktmbuf_append(m, data_len);
+		if (dst == NULL) {
+			printf("Cannot append %d bytes to the mbuf\n", data_len);
+			goto fail;
+		}
+
+		if (mbuf != m)
+			rte_pktmbuf_chain(mbuf, m);
+
+		size -= data_len;
+		data_off += data_len;
+	}
+
+	return mbuf;
+
+fail:
+	rte_pktmbuf_free(mbuf);
+	ext_mbuf_memzone_free(nb_segs);
+	return NULL;
+}
+
+static int
+test_ipsec_proto_crypto_op_enq(struct crypto_testsuite_params *ts_params,
+			       struct crypto_unittest_params *ut_params,
+			       struct rte_security_ipsec_xform *ipsec_xform,
+			       const struct ipsec_test_data *td,
+			       const struct ipsec_test_flags *flags,
+			       int pkt_num)
+{
+	uint8_t dev_id = ts_params->valid_devs[0];
+	enum rte_security_ipsec_sa_direction dir;
+	int ret;
+
+	dir = ipsec_xform->direction;
+
+	/* Generate crypto op data structure */
+	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
+				RTE_CRYPTO_OP_TYPE_SYMMETRIC);
+	if (!ut_params->op) {
+		printf("Could not allocate crypto op");
+		return TEST_FAILED;
+	}
+
+	/* Attach session to operation */
+	rte_security_attach_session(ut_params->op, ut_params->sec_session);
+
+	/* Set crypto operation mbufs */
+	ut_params->op->sym->m_src = ut_params->ibuf;
+	ut_params->op->sym->m_dst = NULL;
+
+	/* Copy IV in crypto operation when IV generation is disabled */
+	if (dir == RTE_SECURITY_IPSEC_SA_DIR_EGRESS &&
+	    ipsec_xform->options.iv_gen_disable == 1) {
+		uint8_t *iv = rte_crypto_op_ctod_offset(ut_params->op,
+							uint8_t *,
+							IV_OFFSET);
+		int len;
+
+		if (td->aead)
+			len = td->xform.aead.aead.iv.length;
+		else if (td->aes_gmac)
+			len = td->xform.chain.auth.auth.iv.length;
+		else
+			len = td->xform.chain.cipher.cipher.iv.length;
+
+		memcpy(iv, td->iv.data, len);
+	}
+
+	/* Process crypto operation */
+	process_crypto_request(dev_id, ut_params->op);
+
+	ret = test_ipsec_status_check(td, ut_params->op, flags, dir, pkt_num);
+
+	rte_crypto_op_free(ut_params->op);
+	ut_params->op = NULL;
+
+	return ret;
+}
+
+static int
+test_ipsec_proto_mbuf_enq(struct crypto_testsuite_params *ts_params,
+			  struct crypto_unittest_params *ut_params,
+			  void *ctx)
+{
+	uint64_t timeout, userdata;
+	struct rte_ether_hdr *hdr;
+	struct rte_mbuf *m;
+	void **sec_sess;
+	int ret;
+
+	RTE_SET_USED(ts_params);
+
+	hdr = (void *)rte_pktmbuf_prepend(ut_params->ibuf, sizeof(struct rte_ether_hdr));
+	hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+
+	ut_params->ibuf->l2_len = sizeof(struct rte_ether_hdr);
+	ut_params->ibuf->port = 0;
+
+	sec_sess = &ut_params->sec_session;
+	ret = rte_security_inb_pkt_rx_inject(ctx, &ut_params->ibuf, sec_sess, 1);
+
+	if (ret != 1)
+		return TEST_FAILED;
+
+	ut_params->ibuf = NULL;
+
+	/* Add a timeout for 1 s */
+	timeout = rte_get_tsc_cycles() + rte_get_tsc_hz();
+
+	do {
+		/* Get packet from port 0, queue 0 */
+		ret = rte_eth_rx_burst(0, 0, &m, 1);
+	} while ((ret == 0) && (rte_get_tsc_cycles() < timeout));
+
+	if (ret == 0) {
+		printf("Could not receive packets from ethdev\n");
+		return TEST_FAILED;
+	}
+
+	if (m == NULL) {
+		printf("Received mbuf is NULL\n");
+		return TEST_FAILED;
+	}
+
+	ut_params->ibuf = m;
+
+	if (!(m->ol_flags & RTE_MBUF_F_RX_SEC_OFFLOAD)) {
+		printf("Received packet is not Rx security processed\n");
+		return TEST_FAILED;
+	}
+
+	if (m->ol_flags & RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED) {
+		printf("Received packet has failed Rx security processing\n");
+		return TEST_FAILED;
+	}
+
+	/*
+	 * 'ut_params' is set as userdata. Verify that the field is returned
+	 * correctly.
+	 */
+	userdata = *(uint64_t *)rte_security_dynfield(m);
+	if (userdata != (uint64_t)ut_params) {
+		printf("Userdata retrieved not matching expected\n");
+		return TEST_FAILED;
+	}
+
+	/* Trim L2 header */
+	rte_pktmbuf_adj(m, sizeof(struct rte_ether_hdr));
+
+	return TEST_SUCCESS;
+}
+
 static int
 test_ipsec_proto_process(const struct ipsec_test_data td[],
 			 struct ipsec_test_data res_d[],
@@ -9369,6 +10136,7 @@ test_ipsec_proto_process(const struct ipsec_test_data td[],
 				0xe82c, 0x4887};
 	const struct rte_ipv4_hdr *ipv4 =
 			(const struct rte_ipv4_hdr *)td[0].output_text.data;
+	int nb_segs = flags->nb_segs_in_mbuf ? flags->nb_segs_in_mbuf : 1;
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 	struct rte_security_capability_idx sec_cap_idx;
@@ -9377,9 +10145,9 @@ test_ipsec_proto_process(const struct ipsec_test_data td[],
 	uint8_t dev_id = ts_params->valid_devs[0];
 	enum rte_security_ipsec_sa_direction dir;
 	struct ipsec_test_data *res_d_tmp = NULL;
+	uint8_t input_text[IPSEC_TEXT_MAX_LEN];
 	int salt_len, i, ret = TEST_SUCCESS;
-	struct rte_security_ctx *ctx;
-	uint8_t *input_text;
+	void *ctx;
 	uint32_t src, dst;
 	uint32_t verify;
 
@@ -9544,6 +10312,9 @@ test_ipsec_proto_process(const struct ipsec_test_data td[],
 		}
 	}
 
+	if (dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS && flags->rx_inject)
+		sess_conf.userdata = ut_params;
+
 	/* Create security session */
 	ut_params->sec_session = rte_security_session_create(ctx, &sess_conf,
 					ts_params->session_mpool);
@@ -9564,64 +10335,35 @@ test_ipsec_proto_process(const struct ipsec_test_data td[],
 			}
 		}
 
-		/* Setup source mbuf payload */
-		ut_params->ibuf = rte_pktmbuf_alloc(ts_params->mbuf_pool);
-		memset(rte_pktmbuf_mtod(ut_params->ibuf, uint8_t *), 0,
-				rte_pktmbuf_tailroom(ut_params->ibuf));
-
-		input_text = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
-				td[i].input_text.len);
-
-		memcpy(input_text, td[i].input_text.data,
-		       td[i].input_text.len);
-
-		if (test_ipsec_pkt_update(input_text, flags))
-			return TEST_FAILED;
-
-		/* Generate crypto op data structure */
-		ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
-					RTE_CRYPTO_OP_TYPE_SYMMETRIC);
-		if (!ut_params->op) {
-			printf("TestCase %s line %d: %s\n",
-				__func__, __LINE__,
-				"failed to allocate crypto op");
+		/* Copy test data before modification */
+		memcpy(input_text, td[i].input_text.data, td[i].input_text.len);
+		if (test_ipsec_pkt_update(input_text, flags)) {
 			ret = TEST_FAILED;
-			goto crypto_op_free;
+			goto mbuf_free;
 		}
 
-		/* Attach session to operation */
-		rte_security_attach_session(ut_params->op,
-					    ut_params->sec_session);
-
-		/* Set crypto operation mbufs */
-		ut_params->op->sym->m_src = ut_params->ibuf;
-		ut_params->op->sym->m_dst = NULL;
-
-		/* Copy IV in crypto operation when IV generation is disabled */
-		if (dir == RTE_SECURITY_IPSEC_SA_DIR_EGRESS &&
-		    ipsec_xform.options.iv_gen_disable == 1) {
-			uint8_t *iv = rte_crypto_op_ctod_offset(ut_params->op,
-								uint8_t *,
-								IV_OFFSET);
-			int len;
-
-			if (td[i].aead)
-				len = td[i].xform.aead.aead.iv.length;
-			else if (td[i].aes_gmac)
-				len = td[i].xform.chain.auth.auth.iv.length;
-			else
-				len = td[i].xform.chain.cipher.cipher.iv.length;
-
-			memcpy(iv, td[i].iv.data, len);
+		/* Setup source mbuf payload */
+		if (flags->use_ext_mbuf) {
+			ut_params->ibuf = ext_mbuf_create(ts_params->mbuf_pool,
+					td[i].input_text.len, nb_segs, input_text);
+		} else {
+			ut_params->ibuf = create_segmented_mbuf(ts_params->mbuf_pool,
+					td[i].input_text.len, nb_segs, 0);
+			pktmbuf_write(ut_params->ibuf, 0, td[i].input_text.len, input_text);
 		}
 
-		/* Process crypto operation */
-		process_crypto_request(dev_id, ut_params->op);
+		if (dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS && flags->rx_inject)
+			ret = test_ipsec_proto_mbuf_enq(ts_params, ut_params,
+							ctx);
+		else
+			ret = test_ipsec_proto_crypto_op_enq(ts_params,
+							     ut_params,
+							     &ipsec_xform,
+							     &td[i], flags,
+							     i + 1);
 
-		ret = test_ipsec_status_check(&td[i], ut_params->op, flags, dir,
-					      i + 1);
 		if (ret != TEST_SUCCESS)
-			goto crypto_op_free;
+			goto mbuf_free;
 
 		if (res_d != NULL)
 			res_d_tmp = &res_d[i];
@@ -9629,23 +10371,20 @@ test_ipsec_proto_process(const struct ipsec_test_data td[],
 		ret = test_ipsec_post_process(ut_params->ibuf, &td[i],
 					      res_d_tmp, silent, flags);
 		if (ret != TEST_SUCCESS)
-			goto crypto_op_free;
+			goto mbuf_free;
 
 		ret = test_ipsec_stats_verify(ctx, ut_params->sec_session,
 					      flags, dir);
 		if (ret != TEST_SUCCESS)
-			goto crypto_op_free;
-
-		rte_crypto_op_free(ut_params->op);
-		ut_params->op = NULL;
+			goto mbuf_free;
 
 		rte_pktmbuf_free(ut_params->ibuf);
 		ut_params->ibuf = NULL;
 	}
 
-crypto_op_free:
-	rte_crypto_op_free(ut_params->op);
-	ut_params->op = NULL;
+mbuf_free:
+	if (flags->use_ext_mbuf)
+		ext_mbuf_memzone_free(nb_segs);
 
 	rte_pktmbuf_free(ut_params->ibuf);
 	ut_params->ibuf = NULL;
@@ -9664,6 +10403,27 @@ test_ipsec_proto_known_vec(const void *test_data)
 	struct ipsec_test_flags flags;
 
 	memset(&flags, 0, sizeof(flags));
+
+	memcpy(&td_outb, test_data, sizeof(td_outb));
+
+	if (td_outb.aes_gmac || td_outb.aead ||
+	    ((td_outb.ipsec_xform.proto != RTE_SECURITY_IPSEC_SA_PROTO_AH) &&
+	     (td_outb.xform.chain.cipher.cipher.algo != RTE_CRYPTO_CIPHER_NULL))) {
+		/* Disable IV gen to be able to test with known vectors */
+		td_outb.ipsec_xform.options.iv_gen_disable = 1;
+	}
+
+	return test_ipsec_proto_process(&td_outb, NULL, 1, false, &flags);
+}
+
+static int
+test_ipsec_proto_known_vec_ext_mbuf(const void *test_data)
+{
+	struct ipsec_test_data td_outb;
+	struct ipsec_test_flags flags;
+
+	memset(&flags, 0, sizeof(flags));
+	flags.use_ext_mbuf = true;
 
 	memcpy(&td_outb, test_data, sizeof(td_outb));
 
@@ -9709,6 +10469,24 @@ test_ipsec_proto_known_vec_fragmented(const void *test_data)
 	td_outb.ipsec_xform.options.iv_gen_disable = 1;
 
 	return test_ipsec_proto_process(&td_outb, NULL, 1, false, &flags);
+}
+
+static int
+test_ipsec_proto_known_vec_inb_rx_inject(const void *test_data)
+{
+	const struct ipsec_test_data *td = test_data;
+	struct ipsec_test_flags flags;
+	struct ipsec_test_data td_inb;
+
+	memset(&flags, 0, sizeof(flags));
+	flags.rx_inject = true;
+
+	if (td->ipsec_xform.direction == RTE_SECURITY_IPSEC_SA_DIR_EGRESS)
+		test_ipsec_td_in_from_out(td, &td_inb);
+	else
+		memcpy(&td_inb, td, sizeof(td_inb));
+
+	return test_ipsec_proto_process(&td_inb, NULL, 1, false, &flags);
 }
 
 static int
@@ -10275,6 +11053,47 @@ test_ipsec_proto_ipv6_set_dscp_1_inner_0(void)
 }
 
 static int
+test_ipsec_proto_sgl(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct rte_cryptodev_info dev_info;
+
+	struct ipsec_test_flags flags = {
+		.nb_segs_in_mbuf = 5
+	};
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	if (!(dev_info.feature_flags & RTE_CRYPTODEV_FF_IN_PLACE_SGL)) {
+		printf("Device doesn't support in-place scatter-gather. "
+				"Test Skipped.\n");
+		return TEST_SKIPPED;
+	}
+
+	return test_ipsec_proto_all(&flags);
+}
+
+static int
+test_ipsec_proto_sgl_ext_mbuf(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct rte_cryptodev_info dev_info;
+
+	struct ipsec_test_flags flags = {
+		.nb_segs_in_mbuf = 5,
+		.use_ext_mbuf = 1
+	};
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	if (!(dev_info.feature_flags & RTE_CRYPTODEV_FF_IN_PLACE_SGL)) {
+		printf("Device doesn't support in-place scatter-gather. "
+				"Test Skipped.\n");
+		return TEST_SKIPPED;
+	}
+
+	return test_ipsec_proto_all(&flags);
+}
+
+static int
 test_ipsec_pkt_replay(const void *test_data, const uint64_t esn[],
 		      bool replayed_pkt[], uint32_t nb_pkts, bool esn_en,
 		      uint64_t winsz)
@@ -10496,9 +11315,7 @@ test_docsis_proto_uplink(const void *data)
 	uint32_t crc_data_len;
 	int ret = TEST_SUCCESS;
 
-	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-					rte_cryptodev_get_sec_ctx(
-						ts_params->valid_devs[0]);
+	void *ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
 
 	/* Verify the capabilities */
 	struct rte_security_capability_idx sec_cap_idx;
@@ -10680,9 +11497,7 @@ test_docsis_proto_downlink(const void *data)
 	int32_t cipher_len, crc_len;
 	int ret = TEST_SUCCESS;
 
-	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-					rte_cryptodev_get_sec_ctx(
-						ts_params->valid_devs[0]);
+	void *ctx = rte_cryptodev_get_sec_ctx(ts_params->valid_devs[0]);
 
 	/* Verify the capabilities */
 	struct rte_security_capability_idx sec_cap_idx;
@@ -11141,7 +11956,7 @@ test_authenticated_decryption(const struct aead_test_data *tdata)
 			tdata->key.data, tdata->key.len,
 			tdata->aad.len, tdata->auth_tag.len,
 			tdata->iv.len);
-	if (retval < 0)
+	if (retval != TEST_SUCCESS)
 		return retval;
 
 	/* alloc mbuf and set payload */
@@ -11168,10 +11983,12 @@ test_authenticated_decryption(const struct aead_test_data *tdata)
 	/* Process crypto operation */
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_aead_op(ts_params->valid_devs[0], ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 0, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 0, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
@@ -11507,10 +12324,12 @@ test_authenticated_encryption_oop(const struct aead_test_data *tdata)
 	ut_params->op->sym->m_dst = ut_params->obuf;
 
 	/* Process crypto operation */
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-			ut_params->op, 0, 0, 0, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 0, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
 
@@ -11588,7 +12407,7 @@ test_authenticated_decryption_oop(const struct aead_test_data *tdata)
 			tdata->key.data, tdata->key.len,
 			tdata->aad.len, tdata->auth_tag.len,
 			tdata->iv.len);
-	if (retval != TEST_SUCCESS)
+	if (retval < 0)
 		return retval;
 
 	/* alloc mbuf and set payload */
@@ -11611,10 +12430,12 @@ test_authenticated_decryption_oop(const struct aead_test_data *tdata)
 	ut_params->op->sym->m_dst = ut_params->obuf;
 
 	/* Process crypto operation */
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 0, 0, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 0, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
 
@@ -11815,10 +12636,12 @@ test_authenticated_decryption_sessionless(
 			"crypto op session type not sessionless");
 
 	/* Process crypto operation */
-	if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 0, 0, 0);
-	else
+	if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 0, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(process_crypto_request(
 			ts_params->valid_devs[0], ut_params->op),
 				"failed to process sym crypto op");
@@ -12029,6 +12852,85 @@ test_stats(void)
 	return TEST_SUCCESS;
 }
 
+static int
+test_device_reconfigure(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	uint16_t orig_nb_qps = ts_params->conf.nb_queue_pairs;
+	struct rte_cryptodev_qp_conf qp_conf = {
+		.nb_descriptors = MAX_NUM_OPS_INFLIGHT,
+		.mp_session = ts_params->session_mpool
+	};
+	uint16_t qp_id, dev_id, num_devs = 0;
+
+	TEST_ASSERT((num_devs = rte_cryptodev_count()) >= 1,
+			"Need at least %d devices for test", 1);
+
+	dev_id = ts_params->valid_devs[0];
+
+	/* Stop the device in case it's started so it can be configured */
+	rte_cryptodev_stop(dev_id);
+
+	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(dev_id, &ts_params->conf),
+			"Failed test for rte_cryptodev_configure: "
+			"dev_num %u", dev_id);
+
+	/* Reconfigure with same configure params */
+	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(dev_id, &ts_params->conf),
+			"Failed test for rte_cryptodev_configure: "
+			"dev_num %u", dev_id);
+
+	/* Reconfigure with just one queue pair */
+	ts_params->conf.nb_queue_pairs = 1;
+
+	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(ts_params->valid_devs[0],
+			&ts_params->conf),
+			"Failed to configure cryptodev: dev_id %u, qp_id %u",
+			ts_params->valid_devs[0], ts_params->conf.nb_queue_pairs);
+
+	for (qp_id = 0; qp_id < ts_params->conf.nb_queue_pairs; qp_id++) {
+		TEST_ASSERT_SUCCESS(rte_cryptodev_queue_pair_setup(
+				ts_params->valid_devs[0], qp_id, &qp_conf,
+				rte_cryptodev_socket_id(
+						ts_params->valid_devs[0])),
+				"Failed test for "
+				"rte_cryptodev_queue_pair_setup: num_inflights "
+				"%u on qp %u on cryptodev %u",
+				qp_conf.nb_descriptors, qp_id,
+				ts_params->valid_devs[0]);
+	}
+
+	/* Reconfigure with max number of queue pairs */
+	ts_params->conf.nb_queue_pairs = orig_nb_qps;
+
+	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(ts_params->valid_devs[0],
+			&ts_params->conf),
+			"Failed to configure cryptodev: dev_id %u, qp_id %u",
+			ts_params->valid_devs[0], ts_params->conf.nb_queue_pairs);
+
+	qp_conf.mp_session = ts_params->session_mpool;
+
+	for (qp_id = 0; qp_id < ts_params->conf.nb_queue_pairs; qp_id++) {
+		TEST_ASSERT_SUCCESS(rte_cryptodev_queue_pair_setup(
+				ts_params->valid_devs[0], qp_id, &qp_conf,
+				rte_cryptodev_socket_id(
+						ts_params->valid_devs[0])),
+				"Failed test for "
+				"rte_cryptodev_queue_pair_setup: num_inflights "
+				"%u on qp %u on cryptodev %u",
+				qp_conf.nb_descriptors, qp_id,
+				ts_params->valid_devs[0]);
+	}
+
+	/* Start the device */
+	TEST_ASSERT_SUCCESS(rte_cryptodev_start(ts_params->valid_devs[0]),
+			"Failed to start cryptodev %u",
+			ts_params->valid_devs[0]);
+
+	/* Test expected values */
+	return test_AES_CBC_HMAC_SHA1_encrypt_digest();
+}
+
 static int MD5_HMAC_create_session(struct crypto_testsuite_params *ts_params,
 				   struct crypto_unittest_params *ut_params,
 				   enum rte_crypto_auth_operation op,
@@ -12105,6 +13007,7 @@ test_MD5_HMAC_generate(const struct HMAC_MD5_vector *test_case)
 {
 	uint16_t plaintext_pad_len;
 	uint8_t *plaintext, *auth_tag;
+	int ret;
 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -12146,10 +13049,11 @@ test_MD5_HMAC_generate(const struct HMAC_MD5_vector *test_case)
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		ret = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 0, 0);
+		if (ret != TEST_SUCCESS)
+			return ret;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op),
@@ -12178,6 +13082,7 @@ static int
 test_MD5_HMAC_verify(const struct HMAC_MD5_vector *test_case)
 {
 	uint8_t *plaintext;
+	int ret;
 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -12217,10 +13122,11 @@ test_MD5_HMAC_verify(const struct HMAC_MD5_vector *test_case)
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		ret = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 0, 0);
+		if (ret != TEST_SUCCESS)
+			return ret;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 				ut_params->op),
@@ -12262,8 +13168,8 @@ test_multi_session(void)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 	struct rte_cryptodev_info dev_info;
+	int i, nb_sess, ret = TEST_SUCCESS;
 	void **sessions;
-	uint16_t i;
 
 	/* Verify the capabilities */
 	struct rte_cryptodev_sym_capability_idx cap_idx;
@@ -12293,21 +13199,25 @@ test_multi_session(void)
 		sessions[i] = rte_cryptodev_sym_session_create(
 			ts_params->valid_devs[0], &ut_params->auth_xform,
 				ts_params->session_mpool);
-		if (sessions[i] == NULL && rte_errno == ENOTSUP)
-			return TEST_SKIPPED;
+		if (sessions[i] == NULL && rte_errno == ENOTSUP) {
+			nb_sess = i;
+			ret = TEST_SKIPPED;
+			break;
+		}
 
 		TEST_ASSERT_NOT_NULL(sessions[i],
 				"Session creation failed at session number %u",
 				i);
+
 		/* Attempt to send a request on each session */
-		TEST_ASSERT_SUCCESS( test_AES_CBC_HMAC_SHA512_decrypt_perform(
+		ret = test_AES_CBC_HMAC_SHA512_decrypt_perform(
 			sessions[i],
 			ut_params,
 			ts_params,
 			catch_22_quote_2_512_bytes_AES_CBC_ciphertext,
 			catch_22_quote_2_512_bytes_AES_CBC_HMAC_SHA512_digest,
-			aes_cbc_iv),
-			"Failed to perform decrypt on request number %u.", i);
+			aes_cbc_iv);
+
 		/* free crypto operation structure */
 		rte_crypto_op_free(ut_params->op);
 
@@ -12326,16 +13236,26 @@ test_multi_session(void)
 			rte_pktmbuf_free(ut_params->ibuf);
 			ut_params->ibuf = 0;
 		}
+
+		if (ret != TEST_SUCCESS) {
+			i++;
+			break;
+		}
 	}
 
-	for (i = 0; i < MAX_NB_SESSIONS; i++) {
+	nb_sess = i;
+
+	for (i = 0; i < nb_sess; i++) {
 		rte_cryptodev_sym_session_free(ts_params->valid_devs[0],
 				sessions[i]);
 	}
 
 	rte_free(sessions);
 
-	return TEST_SUCCESS;
+	if (ret != TEST_SKIPPED)
+		TEST_ASSERT_SUCCESS(ret, "Failed to perform decrypt on request number %u.", i - 1);
+
+	return ret;
 }
 
 struct multi_session_params {
@@ -12354,8 +13274,9 @@ test_multi_session_random_usage(void)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct rte_cryptodev_info dev_info;
+	int index = 0, ret = TEST_SUCCESS;
+	uint32_t nb_sess, i, j;
 	void **sessions;
-	uint32_t i, j;
 	struct multi_session_params ut_paramz[] = {
 
 		{
@@ -12414,27 +13335,30 @@ test_multi_session_random_usage(void)
 				ts_params->valid_devs[0],
 				&ut_paramz[i].ut_params.auth_xform,
 				ts_params->session_mpool);
-		if (sessions[i] == NULL && rte_errno == ENOTSUP)
-			return TEST_SKIPPED;
+		if (sessions[i] == NULL && rte_errno == ENOTSUP) {
+			nb_sess = i;
+			ret = TEST_SKIPPED;
+			goto session_clear;
+		}
 
 		TEST_ASSERT_NOT_NULL(sessions[i],
 				"Session creation failed at session number %u",
 				i);
 	}
 
+	nb_sess = i;
+
 	srand(time(NULL));
 	for (i = 0; i < 40000; i++) {
 
 		j = rand() % MB_SESSION_NUMBER;
 
-		TEST_ASSERT_SUCCESS(
-			test_AES_CBC_HMAC_SHA512_decrypt_perform(
+		ret = test_AES_CBC_HMAC_SHA512_decrypt_perform(
 					sessions[j],
 					&ut_paramz[j].ut_params,
 					ts_params, ut_paramz[j].cipher,
 					ut_paramz[j].digest,
-					ut_paramz[j].iv),
-			"Failed to perform decrypt on request number %u.", i);
+					ut_paramz[j].iv);
 
 		rte_crypto_op_free(ut_paramz[j].ut_params.op);
 
@@ -12454,14 +13378,23 @@ test_multi_session_random_usage(void)
 			rte_pktmbuf_free(ut_paramz[j].ut_params.ibuf);
 			ut_paramz[j].ut_params.ibuf = 0;
 		}
+
+		if (ret != TEST_SKIPPED) {
+			index = i;
+			break;
+		}
 	}
 
-	for (i = 0; i < MB_SESSION_NUMBER; i++) {
+session_clear:
+	for (i = 0; i < nb_sess; i++) {
 		rte_cryptodev_sym_session_free(ts_params->valid_devs[0],
 				sessions[i]);
 	}
 
 	rte_free(sessions);
+
+	if (ret != TEST_SKIPPED)
+		TEST_ASSERT_SUCCESS(ret, "Failed to perform decrypt on request number %u.", index);
 
 	return TEST_SUCCESS;
 }
@@ -12692,6 +13625,10 @@ test_enq_callback_setup(void)
 	uint16_t qp_id = 0;
 	int j = 0;
 
+	/* Skip test if synchronous API is used */
+	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
+		return TEST_SKIPPED;
+
 	/* Verify the crypto capabilities for which enqueue/dequeue is done. */
 	cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
 	cap_idx.algo.auth = RTE_CRYPTO_AUTH_NULL;
@@ -12794,7 +13731,7 @@ test_enq_callback_setup(void)
 			"qp %u on cryptodev %u",
 			qp_id, ts_params->valid_devs[0]);
 
-	TEST_ASSERT(enq_cb_called == true, "Crypto enqueue callback not called");
+	TEST_ASSERT(deq_cb_called == true, "Crypto dequeue callback not called");
 
 	return TEST_SUCCESS;
 }
@@ -12812,6 +13749,10 @@ test_deq_callback_setup(void)
 	struct rte_cryptodev_cb *cb;
 	uint16_t qp_id = 0;
 	int j = 0;
+
+	/* Skip test if synchronous API is used */
+	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
+		return TEST_SKIPPED;
 
 	/* Verify the crypto capabilities for which enqueue/dequeue is done. */
 	cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
@@ -12915,7 +13856,7 @@ test_deq_callback_setup(void)
 			"qp %u on cryptodev %u",
 			qp_id, ts_params->valid_devs[0]);
 
-	TEST_ASSERT(deq_cb_called == true, "Crypto dequeue callback not called");
+	TEST_ASSERT(enq_cb_called == true, "Crypto enqueue callback not called");
 
 	return TEST_SUCCESS;
 }
@@ -13138,10 +14079,12 @@ test_AES_GMAC_authentication(const struct gmac_test_data *tdata)
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
@@ -13270,10 +14213,12 @@ test_AES_GMAC_authentication_verify(const struct gmac_test_data *tdata)
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
@@ -14008,10 +14953,12 @@ test_authentication_verify_fail_when_data_corruption(
 		TEST_ASSERT_NOT_EQUAL(ut_params->op->status,
 			RTE_CRYPTO_OP_STATUS_SUCCESS,
 			"authentication not failed");
-	} else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 0, 0);
-	else {
+	} else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else {
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 	}
@@ -14097,10 +15044,12 @@ test_authentication_verify_GMAC_fail_when_corruption(
 		TEST_ASSERT_NOT_EQUAL(ut_params->op->status,
 			RTE_CRYPTO_OP_STATUS_SUCCESS,
 			"authentication not failed");
-	} else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 1, 0, 0);
-	else {
+	} else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else {
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 		TEST_ASSERT_NULL(ut_params->op, "authentication not failed");
@@ -14187,10 +15136,12 @@ test_authenticated_decryption_fail_when_corruption(
 		TEST_ASSERT_NOT_EQUAL(ut_params->op->status,
 			RTE_CRYPTO_OP_STATUS_SUCCESS,
 			"authentication not failed");
-	} else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 0, 0);
-	else {
+	} else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else {
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 		TEST_ASSERT_NULL(ut_params->op, "authentication not failed");
@@ -14292,10 +15243,12 @@ test_authenticated_encrypt_with_esn(
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(
 			ts_params->valid_devs[0], ut_params->op);
 
@@ -14422,10 +15375,12 @@ test_authenticated_decrypt_with_esn(
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_crypt_auth_op(ts_params->valid_devs[0],
 			ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 1, 1, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 1, 1, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		ut_params->op = process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op);
 
@@ -14780,10 +15735,12 @@ test_authenticated_encryption_SGL(const struct aead_test_data *tdata,
 	if (oop == IN_PLACE &&
 			gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
 		process_cpu_aead_op(ts_params->valid_devs[0], ut_params->op);
-	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST)
-		process_sym_raw_dp_op(ts_params->valid_devs[0], 0,
-				ut_params->op, 0, 0, 0, 0);
-	else
+	else if (global_api_test_type == CRYPTODEV_RAW_API_TEST) {
+		retval = process_sym_raw_dp_op(ts_params->valid_devs[0], 0, ut_params->op, 0, 0, 0,
+					       0);
+		if (retval != TEST_SUCCESS)
+			return retval;
+	} else
 		TEST_ASSERT_NOT_NULL(
 			process_crypto_request(ts_params->valid_devs[0],
 			ut_params->op), "failed to process sym crypto op");
@@ -15296,6 +16253,10 @@ static struct unit_test_suite ipsec_proto_testsuite  = {
 			ut_setup_security, ut_teardown,
 			test_ipsec_proto_known_vec, &pkt_aes_128_gcm),
 		TEST_CASE_NAMED_WITH_DATA(
+			"Outbound known vector ext_mbuf mode (ESP tunnel mode IPv4 AES-GCM 128)",
+			ut_setup_security, ut_teardown,
+			test_ipsec_proto_known_vec_ext_mbuf, &pkt_aes_128_gcm),
+		TEST_CASE_NAMED_WITH_DATA(
 			"Outbound known vector (ESP tunnel mode IPv4 AES-GCM 192)",
 			ut_setup_security, ut_teardown,
 			test_ipsec_proto_known_vec, &pkt_aes_192_gcm),
@@ -15673,6 +16634,18 @@ static struct unit_test_suite ipsec_proto_testsuite  = {
 			"Tunnel header IPv6 decrement inner hop limit",
 			ut_setup_security, ut_teardown,
 			test_ipsec_proto_ipv6_hop_limit_decrement),
+		TEST_CASE_NAMED_ST(
+			"Multi-segmented mode",
+			ut_setup_security, ut_teardown,
+			test_ipsec_proto_sgl),
+		TEST_CASE_NAMED_ST(
+			"Multi-segmented external mbuf mode",
+			ut_setup_security, ut_teardown,
+			test_ipsec_proto_sgl_ext_mbuf),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Inbound known vector (ESP tunnel mode IPv4 AES-GCM 128) Rx inject",
+			ut_setup_security_rx_inject, ut_teardown_rx_inject,
+			test_ipsec_proto_known_vec_inb_rx_inject, &pkt_aes_128_gcm),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -15762,6 +16735,8 @@ static struct unit_test_suite cryptodev_gen_testsuite  = {
 	.suite_name = "Crypto General Unit Test Suite",
 	.setup = crypto_gen_testsuite_setup,
 	.unit_test_cases = {
+		TEST_CASE_ST(ut_setup, ut_teardown,
+				test_device_reconfigure),
 		TEST_CASE_ST(ut_setup, ut_teardown,
 				test_device_configure_invalid_dev_id),
 		TEST_CASE_ST(ut_setup, ut_teardown,
@@ -16214,6 +17189,20 @@ static struct unit_test_suite cryptodev_zuc_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_zuc_encryption_test_case_6_sgl),
 
+		/** ZUC decrypt only (EEA3) */
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_decryption_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_decryption_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_decryption_test_case_3),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_decryption_test_case_4),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_decryption_test_case_5),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_decryption_test_case_6_sgl),
+
 		/** ZUC authenticate (EIA3) */
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_zuc_hash_generate_test_case_1),
@@ -16231,13 +17220,24 @@ static struct unit_test_suite cryptodev_zuc_testsuite  = {
 			test_zuc_hash_generate_test_case_7),
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_zuc_hash_generate_test_case_8),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_9),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_10),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_11),
 
+		/** ZUC verify (EIA3) */
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_3),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_4),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_5),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_6),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_7),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc_hash_verify_test_case_8),
 
 		/** ZUC alg-chain (EEA3/EIA3) */
 		TEST_CASE_ST(ut_setup, ut_teardown,
@@ -16279,11 +17279,65 @@ static struct unit_test_suite cryptodev_zuc_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_zuc256_encryption_test_case_2),
 
+		/** ZUC-256 decrypt only **/
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_decryption_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_decryption_test_case_2),
+
 		/** ZUC-256 authentication only **/
 		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc256_authentication_test_case_1),
+			test_zuc256_hash_generate_4b_tag_test_case_1),
 		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc256_authentication_test_case_2),
+			test_zuc256_hash_generate_4b_tag_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_generate_4b_tag_test_case_3),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_generate_8b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_generate_16b_tag_test_case_1),
+
+		/** ZUC-256 authentication verify only **/
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_verify_4b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_verify_4b_tag_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_verify_4b_tag_test_case_3),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_verify_8b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_hash_verify_16b_tag_test_case_1),
+
+		/** ZUC-256 encrypt and authenticate **/
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_cipher_auth_4b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_cipher_auth_4b_tag_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_cipher_auth_8b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_cipher_auth_16b_tag_test_case_1),
+
+		/** ZUC-256 generate auth, then encrypt */
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_4b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_4b_tag_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_8b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_16b_tag_test_case_1),
+
+		/** ZUC-256 decrypt, then verify auth */
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_verify_4b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_verify_4b_tag_test_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_verify_8b_tag_test_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_zuc256_auth_cipher_verify_16b_tag_test_case_1),
 
 		TEST_CASES_END()
 	}
@@ -16589,6 +17643,8 @@ run_cryptodev_testsuite(const char *pmd_name)
 		BLKCIPHER_3DES_CIPHERONLY_TYPE,
 		BLKCIPHER_DES_CIPHERONLY_TYPE,
 		BLKCIPHER_DES_DOCSIS_TYPE,
+		BLKCIPHER_SM4_CHAIN_TYPE,
+		BLKCIPHER_SM4_CIPHERONLY_TYPE,
 		BLKCIPHER_AUTHONLY_TYPE};
 	struct unit_test_suite *static_suites[] = {
 		&cryptodev_multi_session_testsuite,
@@ -16844,6 +17900,12 @@ test_cryptodev_scheduler(void)
 		&scheduler_config,
 		&end_testsuite
 	};
+	struct unit_test_suite *sched_mode_static_suites[] = {
+#ifdef RTE_LIB_SECURITY
+		&docsis_proto_testsuite,
+#endif
+		&end_testsuite
+	};
 	static struct unit_test_suite ts = {
 		.suite_name = "Scheduler Unit Test Suite",
 		.setup = scheduler_testsuite_setup,
@@ -16869,9 +17931,13 @@ test_cryptodev_scheduler(void)
 		uint8_t blk_i = 0;
 		sched_mode_suites[sched_i]->unit_test_suites = malloc(sizeof
 				(struct unit_test_suite *) *
-				(RTE_DIM(blk_suites) + 1));
+				(RTE_DIM(blk_suites) +
+				RTE_DIM(sched_mode_static_suites) + 1));
 		ADD_BLOCKCIPHER_TESTSUITE(blk_i, (*sched_mode_suites[sched_i]),
 				blk_suites, RTE_DIM(blk_suites));
+		ADD_STATIC_TESTSUITE(blk_i, (*sched_mode_suites[sched_i]),
+				sched_mode_static_suites,
+				RTE_DIM(sched_mode_static_suites));
 		sched_mode_suites[sched_i]->unit_test_suites[blk_i] = &end_testsuite;
 	}
 
@@ -16892,7 +17958,7 @@ test_cryptodev_scheduler(void)
 	return ret;
 }
 
-REGISTER_TEST_COMMAND(cryptodev_scheduler_autotest, test_cryptodev_scheduler);
+REGISTER_DRIVER_TEST(cryptodev_scheduler_autotest, test_cryptodev_scheduler);
 
 #endif
 
@@ -16939,13 +18005,11 @@ test_cryptodev_bcmfs(void)
 }
 
 static int
-test_cryptodev_qat_raw_api(void)
+run_cryptodev_raw_testsuite(const char *pmd_name)
 {
-	static const char *pmd_name = RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD);
 	int ret;
 
-	ret = require_feature_flag(pmd_name, RTE_CRYPTODEV_FF_SYM_RAW_DP,
-			"RAW API");
+	ret = require_feature_flag(pmd_name, RTE_CRYPTODEV_FF_SYM_RAW_DP, "RAW API");
 	if (ret)
 		return ret;
 
@@ -16954,6 +18018,12 @@ test_cryptodev_qat_raw_api(void)
 	global_api_test_type = CRYPTODEV_API_TEST;
 
 	return ret;
+}
+
+static int
+test_cryptodev_qat_raw_api(void)
+{
+	return run_cryptodev_raw_testsuite(RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD));
 }
 
 static int
@@ -16969,72 +18039,56 @@ test_cryptodev_cn10k(void)
 }
 
 static int
+test_cryptodev_cn10k_raw_api(void)
+{
+	return run_cryptodev_raw_testsuite(RTE_STR(CRYPTODEV_NAME_CN10K_PMD));
+}
+
+static int
 test_cryptodev_dpaa2_sec_raw_api(void)
 {
-	static const char *pmd_name = RTE_STR(CRYPTODEV_NAME_DPAA2_SEC_PMD);
-	int ret;
-
-	ret = require_feature_flag(pmd_name, RTE_CRYPTODEV_FF_SYM_RAW_DP,
-			"RAW API");
-	if (ret)
-		return ret;
-
-	global_api_test_type = CRYPTODEV_RAW_API_TEST;
-	ret = run_cryptodev_testsuite(pmd_name);
-	global_api_test_type = CRYPTODEV_API_TEST;
-
-	return ret;
+	return run_cryptodev_raw_testsuite(RTE_STR(CRYPTODEV_NAME_DPAA2_SEC_PMD));
 }
 
 static int
 test_cryptodev_dpaa_sec_raw_api(void)
 {
-	static const char *pmd_name = RTE_STR(CRYPTODEV_NAME_DPAA_SEC_PMD);
-	int ret;
-
-	ret = require_feature_flag(pmd_name, RTE_CRYPTODEV_FF_SYM_RAW_DP,
-			"RAW API");
-	if (ret)
-		return ret;
-
-	global_api_test_type = CRYPTODEV_RAW_API_TEST;
-	ret = run_cryptodev_testsuite(pmd_name);
-	global_api_test_type = CRYPTODEV_API_TEST;
-
-	return ret;
+	return run_cryptodev_raw_testsuite(RTE_STR(CRYPTODEV_NAME_DPAA_SEC_PMD));
 }
 
-REGISTER_TEST_COMMAND(cryptodev_dpaa2_sec_raw_api_autotest,
+REGISTER_DRIVER_TEST(cryptodev_cn10k_raw_api_autotest,
+		test_cryptodev_cn10k_raw_api);
+REGISTER_DRIVER_TEST(cryptodev_dpaa2_sec_raw_api_autotest,
 		test_cryptodev_dpaa2_sec_raw_api);
-REGISTER_TEST_COMMAND(cryptodev_dpaa_sec_raw_api_autotest,
+REGISTER_DRIVER_TEST(cryptodev_dpaa_sec_raw_api_autotest,
 		test_cryptodev_dpaa_sec_raw_api);
-REGISTER_TEST_COMMAND(cryptodev_qat_raw_api_autotest,
+REGISTER_DRIVER_TEST(cryptodev_qat_raw_api_autotest,
 		test_cryptodev_qat_raw_api);
-REGISTER_TEST_COMMAND(cryptodev_qat_autotest, test_cryptodev_qat);
-REGISTER_TEST_COMMAND(cryptodev_aesni_mb_autotest, test_cryptodev_aesni_mb);
-REGISTER_TEST_COMMAND(cryptodev_cpu_aesni_mb_autotest,
+REGISTER_DRIVER_TEST(cryptodev_qat_autotest, test_cryptodev_qat);
+REGISTER_DRIVER_TEST(cryptodev_aesni_mb_autotest, test_cryptodev_aesni_mb);
+REGISTER_DRIVER_TEST(cryptodev_cpu_aesni_mb_autotest,
 	test_cryptodev_cpu_aesni_mb);
-REGISTER_TEST_COMMAND(cryptodev_chacha_poly_mb_autotest,
+REGISTER_DRIVER_TEST(cryptodev_chacha_poly_mb_autotest,
 	test_cryptodev_chacha_poly_mb);
-REGISTER_TEST_COMMAND(cryptodev_openssl_autotest, test_cryptodev_openssl);
-REGISTER_TEST_COMMAND(cryptodev_aesni_gcm_autotest, test_cryptodev_aesni_gcm);
-REGISTER_TEST_COMMAND(cryptodev_cpu_aesni_gcm_autotest,
+REGISTER_DRIVER_TEST(cryptodev_openssl_autotest, test_cryptodev_openssl);
+REGISTER_DRIVER_TEST(cryptodev_aesni_gcm_autotest, test_cryptodev_aesni_gcm);
+REGISTER_DRIVER_TEST(cryptodev_cpu_aesni_gcm_autotest,
 	test_cryptodev_cpu_aesni_gcm);
-REGISTER_TEST_COMMAND(cryptodev_mlx5_autotest, test_cryptodev_mlx5);
-REGISTER_TEST_COMMAND(cryptodev_null_autotest, test_cryptodev_null);
-REGISTER_TEST_COMMAND(cryptodev_sw_snow3g_autotest, test_cryptodev_sw_snow3g);
-REGISTER_TEST_COMMAND(cryptodev_sw_kasumi_autotest, test_cryptodev_sw_kasumi);
-REGISTER_TEST_COMMAND(cryptodev_sw_zuc_autotest, test_cryptodev_sw_zuc);
-REGISTER_TEST_COMMAND(cryptodev_sw_armv8_autotest, test_cryptodev_armv8);
-REGISTER_TEST_COMMAND(cryptodev_sw_mvsam_autotest, test_cryptodev_mrvl);
-REGISTER_TEST_COMMAND(cryptodev_dpaa2_sec_autotest, test_cryptodev_dpaa2_sec);
-REGISTER_TEST_COMMAND(cryptodev_dpaa_sec_autotest, test_cryptodev_dpaa_sec);
-REGISTER_TEST_COMMAND(cryptodev_ccp_autotest, test_cryptodev_ccp);
-REGISTER_TEST_COMMAND(cryptodev_uadk_autotest, test_cryptodev_uadk);
-REGISTER_TEST_COMMAND(cryptodev_virtio_autotest, test_cryptodev_virtio);
-REGISTER_TEST_COMMAND(cryptodev_octeontx_autotest, test_cryptodev_octeontx);
-REGISTER_TEST_COMMAND(cryptodev_caam_jr_autotest, test_cryptodev_caam_jr);
-REGISTER_TEST_COMMAND(cryptodev_nitrox_autotest, test_cryptodev_nitrox);
-REGISTER_TEST_COMMAND(cryptodev_bcmfs_autotest, test_cryptodev_bcmfs);
-REGISTER_TEST_COMMAND(cryptodev_cn9k_autotest, test_cryptodev_cn9k);
-REGISTER_TEST_COMMAND(cryptodev_cn10k_autotest, test_cryptodev_cn10k);
+REGISTER_DRIVER_TEST(cryptodev_mlx5_autotest, test_cryptodev_mlx5);
+REGISTER_DRIVER_TEST(cryptodev_null_autotest, test_cryptodev_null);
+REGISTER_DRIVER_TEST(cryptodev_sw_snow3g_autotest, test_cryptodev_sw_snow3g);
+REGISTER_DRIVER_TEST(cryptodev_sw_kasumi_autotest, test_cryptodev_sw_kasumi);
+REGISTER_DRIVER_TEST(cryptodev_sw_zuc_autotest, test_cryptodev_sw_zuc);
+REGISTER_DRIVER_TEST(cryptodev_sw_armv8_autotest, test_cryptodev_armv8);
+REGISTER_DRIVER_TEST(cryptodev_sw_mvsam_autotest, test_cryptodev_mrvl);
+REGISTER_DRIVER_TEST(cryptodev_dpaa2_sec_autotest, test_cryptodev_dpaa2_sec);
+REGISTER_DRIVER_TEST(cryptodev_dpaa_sec_autotest, test_cryptodev_dpaa_sec);
+REGISTER_DRIVER_TEST(cryptodev_ccp_autotest, test_cryptodev_ccp);
+REGISTER_DRIVER_TEST(cryptodev_uadk_autotest, test_cryptodev_uadk);
+REGISTER_DRIVER_TEST(cryptodev_virtio_autotest, test_cryptodev_virtio);
+REGISTER_DRIVER_TEST(cryptodev_octeontx_autotest, test_cryptodev_octeontx);
+REGISTER_DRIVER_TEST(cryptodev_caam_jr_autotest, test_cryptodev_caam_jr);
+REGISTER_DRIVER_TEST(cryptodev_nitrox_autotest, test_cryptodev_nitrox);
+REGISTER_DRIVER_TEST(cryptodev_bcmfs_autotest, test_cryptodev_bcmfs);
+REGISTER_DRIVER_TEST(cryptodev_cn9k_autotest, test_cryptodev_cn9k);
+REGISTER_DRIVER_TEST(cryptodev_cn10k_autotest, test_cryptodev_cn10k);

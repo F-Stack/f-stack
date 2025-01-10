@@ -193,7 +193,7 @@ static struct {
 static inline int
 mrvl_reserve_bit(int *bitmap, int max)
 {
-	int n = sizeof(*bitmap) * 8 - __builtin_clz(*bitmap);
+	int n = sizeof(*bitmap) * 8 - rte_clz32(*bitmap);
 
 	if (n >= max)
 		return -1;
@@ -853,7 +853,7 @@ mrvl_dev_start(struct rte_eth_dev *dev)
 	}
 
 	/*
-	 * In case there are some some stale uc/mc mac addresses flush them
+	 * In case there are some stale uc/mc mac addresses flush them
 	 * here. It cannot be done during mrvl_dev_close() as port information
 	 * is already gone at that point (due to pp2_ppio_deinit() in
 	 * mrvl_dev_stop()).

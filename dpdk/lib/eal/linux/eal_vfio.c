@@ -1370,19 +1370,6 @@ rte_vfio_get_group_num(const char *sysfs_base,
 }
 
 static int
-type1_map_contig(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
-		size_t len, void *arg)
-{
-	int *vfio_container_fd = arg;
-
-	if (msl->external)
-		return 0;
-
-	return vfio_type1_dma_mem_map(*vfio_container_fd, ms->addr_64, ms->iova,
-			len, 1);
-}
-
-static int
 type1_map(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
 		void *arg)
 {
@@ -1394,10 +1381,6 @@ type1_map(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
 
 	/* skip any segments with invalid IOVA addresses */
 	if (ms->iova == RTE_BAD_IOVA)
-		return 0;
-
-	/* if IOVA mode is VA, we've already mapped the internal segments */
-	if (!msl->external && rte_eal_iova_mode() == RTE_IOVA_VA)
 		return 0;
 
 	return vfio_type1_dma_mem_map(*vfio_container_fd, ms->addr_64, ms->iova,
@@ -1464,18 +1447,6 @@ vfio_type1_dma_mem_map(int vfio_container_fd, uint64_t vaddr, uint64_t iova,
 static int
 vfio_type1_dma_map(int vfio_container_fd)
 {
-	if (rte_eal_iova_mode() == RTE_IOVA_VA) {
-		/* with IOVA as VA mode, we can get away with mapping contiguous
-		 * chunks rather than going page-by-page.
-		 */
-		int ret = rte_memseg_contig_walk(type1_map_contig,
-				&vfio_container_fd);
-		if (ret)
-			return ret;
-		/* we have to continue the walk because we've skipped the
-		 * external segments during the config walk.
-		 */
-	}
 	return rte_memseg_walk(type1_map, &vfio_container_fd);
 }
 
@@ -1711,7 +1682,7 @@ spapr_dma_win_size(void)
 	RTE_LOG(DEBUG, EAL, "Setting DMA window size to 0x%" PRIx64 "\n",
 		spapr_dma_win_len);
 	spapr_dma_win_page_sz = param.page_sz;
-	rte_mem_set_dma_mask(__builtin_ctzll(spapr_dma_win_len));
+	rte_mem_set_dma_mask(rte_ctz64(spapr_dma_win_len));
 	return 0;
 }
 
@@ -1749,7 +1720,7 @@ vfio_spapr_create_dma_window(int vfio_container_fd)
 
 	/* create a new DMA window (start address is not selectable) */
 	create.window_size = spapr_dma_win_len;
-	create.page_shift  = __builtin_ctzll(spapr_dma_win_page_sz);
+	create.page_shift  = rte_ctz64(spapr_dma_win_page_sz);
 	create.levels = 1;
 	ret = ioctl(vfio_container_fd, VFIO_IOMMU_SPAPR_TCE_CREATE, &create);
 #ifdef VFIO_IOMMU_SPAPR_INFO_DDW

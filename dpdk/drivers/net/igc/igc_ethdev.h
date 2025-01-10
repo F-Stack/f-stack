@@ -7,6 +7,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_flow.h>
+#include <rte_time.h>
 
 #include "base/igc_osdep.h"
 #include "base/igc_hw.h"
@@ -75,7 +76,8 @@ extern "C" {
 	RTE_ETH_RX_OFFLOAD_SCTP_CKSUM  | \
 	RTE_ETH_RX_OFFLOAD_KEEP_CRC    | \
 	RTE_ETH_RX_OFFLOAD_SCATTER     | \
-	RTE_ETH_RX_OFFLOAD_RSS_HASH)
+	RTE_ETH_RX_OFFLOAD_RSS_HASH    | \
+	RTE_ETH_RX_OFFLOAD_TIMESTAMP)
 
 #define IGC_TX_OFFLOAD_ALL	(    \
 	RTE_ETH_TX_OFFLOAD_VLAN_INSERT | \
@@ -85,7 +87,8 @@ extern "C" {
 	RTE_ETH_TX_OFFLOAD_SCTP_CKSUM  | \
 	RTE_ETH_TX_OFFLOAD_TCP_TSO     | \
 	RTE_ETH_TX_OFFLOAD_UDP_TSO	   | \
-	RTE_ETH_TX_OFFLOAD_MULTI_SEGS)
+	RTE_ETH_TX_OFFLOAD_MULTI_SEGS  | \
+	RTE_ETH_TX_OFFLOAD_SEND_ON_TIMESTAMP)
 
 #define IGC_RSS_OFFLOAD_ALL	(    \
 	RTE_ETH_RSS_IPV4               | \
@@ -174,7 +177,6 @@ struct igc_ntuple_info {
 
 /* Structure of n-tuple filter */
 struct igc_ntuple_filter {
-	RTE_STD_C11
 	union {
 		uint64_t hash_val;
 		struct igc_ntuple_info tuple_info;
@@ -212,7 +214,6 @@ enum igc_filter_type {
 struct rte_flow {
 	TAILQ_ENTRY(rte_flow) node;
 	enum igc_filter_type filter_type;
-	RTE_STD_C11
 	char filter[0];		/* filter data */
 };
 
@@ -238,6 +239,9 @@ struct igc_adapter {
 	struct igc_syn_filter syn_filter;
 	struct igc_rss_filter rss_filter;
 	struct igc_flow_list flow_list;
+
+	int64_t base_time;
+	uint32_t cycle_time;
 };
 
 #define IGC_DEV_PRIVATE(_dev)	((_dev)->data->dev_private)

@@ -9,6 +9,7 @@ sources = files(
         'rte_class_eth.c',
         'rte_ethdev.c',
         'rte_ethdev_cman.c',
+        'rte_ethdev_telemetry.c',
         'rte_flow.c',
         'rte_mtr.c',
         'rte_tm.c',
@@ -22,7 +23,6 @@ sources = files(
 headers = files(
         'rte_cman.h',
         'rte_ethdev.h',
-        'rte_ethdev_trace.h',
         'rte_ethdev_trace_fp.h',
         'rte_dev_info.h',
         'rte_flow.h',
@@ -45,3 +45,7 @@ driver_sdk_headers += files(
 )
 
 deps += ['net', 'kvargs', 'meter', 'telemetry']
+
+if is_freebsd
+    annotate_locks = false
+endif

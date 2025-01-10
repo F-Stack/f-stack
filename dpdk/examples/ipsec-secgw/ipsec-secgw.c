@@ -568,7 +568,7 @@ process_pkts_outbound_nosp(struct ipsec_ctx *ipsec_ctx,
 
 static inline void
 process_pkts(struct lcore_conf *qconf, struct rte_mbuf **pkts,
-	     uint16_t nb_pkts, uint16_t portid, struct rte_security_ctx *ctx)
+	     uint16_t nb_pkts, uint16_t portid, void *ctx)
 {
 	struct ipsec_traffic traffic;
 
@@ -626,12 +626,13 @@ drain_inbound_crypto_queues(const struct lcore_conf *qconf,
 	uint32_t n;
 	struct ipsec_traffic trf;
 	unsigned int lcoreid = rte_lcore_id();
+	const int nb_pkts = RTE_DIM(trf.ipsec.pkts);
 
 	if (app_sa_prm.enable == 0) {
 
 		/* dequeue packets from crypto-queue */
 		n = ipsec_inbound_cqp_dequeue(ctx, trf.ipsec.pkts,
-			RTE_DIM(trf.ipsec.pkts));
+			RTE_MIN(MAX_PKT_BURST, nb_pkts));
 
 		trf.ip4.num = 0;
 		trf.ip6.num = 0;
@@ -663,12 +664,13 @@ drain_outbound_crypto_queues(const struct lcore_conf *qconf,
 {
 	uint32_t n;
 	struct ipsec_traffic trf;
+	const int nb_pkts = RTE_DIM(trf.ipsec.pkts);
 
 	if (app_sa_prm.enable == 0) {
 
 		/* dequeue packets from crypto-queue */
 		n = ipsec_outbound_cqp_dequeue(ctx, trf.ipsec.pkts,
-			RTE_DIM(trf.ipsec.pkts));
+			RTE_MIN(MAX_PKT_BURST, nb_pkts));
 
 		trf.ip4.num = 0;
 		trf.ip6.num = 0;
@@ -1557,6 +1559,8 @@ add_cdev_mapping(const struct rte_cryptodev_info *dev_info, uint16_t cdev_id,
 	struct lcore_conf *qconf;
 	struct ipsec_ctx *ipsec_ctx;
 	const char *str;
+	void *sec_ctx;
+	const struct rte_security_capability *sec_cap;
 
 	qconf = &lcore_conf[params->lcore_id];
 
@@ -1571,8 +1575,8 @@ add_cdev_mapping(const struct rte_cryptodev_info *dev_info, uint16_t cdev_id,
 	}
 
 	/* Required cryptodevs with operation chaining */
-	if (!(dev_info->feature_flags &
-				RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING))
+	if (!(dev_info->feature_flags & RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING) &&
+			!(dev_info->feature_flags & RTE_CRYPTODEV_FF_SECURITY))
 		return ret;
 
 	for (i = dev_info->capabilities;
@@ -1590,6 +1594,41 @@ add_cdev_mapping(const struct rte_cryptodev_info *dev_info, uint16_t cdev_id,
 			continue;
 
 		for (j = dev_info->capabilities;
+				j->op != RTE_CRYPTO_OP_TYPE_UNDEFINED; j++) {
+			if (j->op != RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+				continue;
+
+			if (j->sym.xform_type != RTE_CRYPTO_SYM_XFORM_AUTH)
+				continue;
+
+			ret |= add_mapping(str, cdev_id, qp, params,
+						ipsec_ctx, i, j, NULL);
+		}
+	}
+
+	sec_ctx = rte_cryptodev_get_sec_ctx(cdev_id);
+	if (sec_ctx == NULL)
+		return ret;
+
+	sec_cap = rte_security_capabilities_get(sec_ctx);
+	if (sec_cap == NULL)
+		return ret;
+
+	for (i = sec_cap->crypto_capabilities;
+			i->op != RTE_CRYPTO_OP_TYPE_UNDEFINED; i++) {
+		if (i->op != RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+			continue;
+
+		if (i->sym.xform_type == RTE_CRYPTO_SYM_XFORM_AEAD) {
+			ret |= add_mapping(str, cdev_id, qp, params,
+					ipsec_ctx, NULL, NULL, i);
+			continue;
+		}
+
+		if (i->sym.xform_type != RTE_CRYPTO_SYM_XFORM_CIPHER)
+			continue;
+
+		for (j = sec_cap->crypto_capabilities;
 				j->op != RTE_CRYPTO_OP_TYPE_UNDEFINED; j++) {
 			if (j->op != RTE_CRYPTO_OP_TYPE_SYMMETRIC)
 				continue;
@@ -2594,14 +2633,12 @@ handle_telemetry_cmd_ipsec_secgw_stats(const char *cmd __rte_unused,
 	}
 
 	/* add telemetry key/values pairs */
-	rte_tel_data_add_dict_u64(data, "packets received",
-				total_pkts_rx);
+	rte_tel_data_add_dict_uint(data, "packets received", total_pkts_rx);
 
-	rte_tel_data_add_dict_u64(data, "packets transmitted",
-				total_pkts_tx);
+	rte_tel_data_add_dict_uint(data, "packets transmitted", total_pkts_tx);
 
-	rte_tel_data_add_dict_u64(data, "packets dropped",
-				total_pkts_dropped);
+	rte_tel_data_add_dict_uint(data, "packets dropped",
+				   total_pkts_dropped);
 
 
 	return 0;
@@ -2701,30 +2738,30 @@ handle_telemetry_cmd_ipsec_secgw_stats_outbound(const char *cmd __rte_unused,
 
 	/* add spd 4 telemetry key/values pairs */
 
-	rte_tel_data_add_dict_u64(spd4_data, "protect",
-		total_stats.outbound.spd4.protect);
-	rte_tel_data_add_dict_u64(spd4_data, "bypass",
-		total_stats.outbound.spd4.bypass);
-	rte_tel_data_add_dict_u64(spd4_data, "discard",
-		total_stats.outbound.spd4.discard);
+	rte_tel_data_add_dict_uint(spd4_data, "protect",
+				   total_stats.outbound.spd4.protect);
+	rte_tel_data_add_dict_uint(spd4_data, "bypass",
+				   total_stats.outbound.spd4.bypass);
+	rte_tel_data_add_dict_uint(spd4_data, "discard",
+				   total_stats.outbound.spd4.discard);
 
 	rte_tel_data_add_dict_container(data, "spd4", spd4_data, 0);
 
 	/* add spd 6 telemetry key/values pairs */
 
-	rte_tel_data_add_dict_u64(spd6_data, "protect",
-		total_stats.outbound.spd6.protect);
-	rte_tel_data_add_dict_u64(spd6_data, "bypass",
-		total_stats.outbound.spd6.bypass);
-	rte_tel_data_add_dict_u64(spd6_data, "discard",
-		total_stats.outbound.spd6.discard);
+	rte_tel_data_add_dict_uint(spd6_data, "protect",
+				   total_stats.outbound.spd6.protect);
+	rte_tel_data_add_dict_uint(spd6_data, "bypass",
+				   total_stats.outbound.spd6.bypass);
+	rte_tel_data_add_dict_uint(spd6_data, "discard",
+				   total_stats.outbound.spd6.discard);
 
 	rte_tel_data_add_dict_container(data, "spd6", spd6_data, 0);
 
 	/* add sad telemetry key/values pairs */
 
-	rte_tel_data_add_dict_u64(sad_data, "miss",
-		total_stats.outbound.sad.miss);
+	rte_tel_data_add_dict_uint(sad_data, "miss",
+				   total_stats.outbound.sad.miss);
 
 	rte_tel_data_add_dict_container(data, "sad", sad_data, 0);
 
@@ -2775,30 +2812,30 @@ handle_telemetry_cmd_ipsec_secgw_stats_inbound(const char *cmd __rte_unused,
 
 	/* add sad telemetry key/values pairs */
 
-	rte_tel_data_add_dict_u64(sad_data, "miss",
-		total_stats.inbound.sad.miss);
+	rte_tel_data_add_dict_uint(sad_data, "miss",
+				   total_stats.inbound.sad.miss);
 
 	rte_tel_data_add_dict_container(data, "sad", sad_data, 0);
 
 	/* add spd 4 telemetry key/values pairs */
 
-	rte_tel_data_add_dict_u64(spd4_data, "protect",
-		total_stats.inbound.spd4.protect);
-	rte_tel_data_add_dict_u64(spd4_data, "bypass",
-		total_stats.inbound.spd4.bypass);
-	rte_tel_data_add_dict_u64(spd4_data, "discard",
-		total_stats.inbound.spd4.discard);
+	rte_tel_data_add_dict_uint(spd4_data, "protect",
+				   total_stats.inbound.spd4.protect);
+	rte_tel_data_add_dict_uint(spd4_data, "bypass",
+				   total_stats.inbound.spd4.bypass);
+	rte_tel_data_add_dict_uint(spd4_data, "discard",
+				   total_stats.inbound.spd4.discard);
 
 	rte_tel_data_add_dict_container(data, "spd4", spd4_data, 0);
 
 	/* add spd 6 telemetry key/values pairs */
 
-	rte_tel_data_add_dict_u64(spd6_data, "protect",
-		total_stats.inbound.spd6.protect);
-	rte_tel_data_add_dict_u64(spd6_data, "bypass",
-		total_stats.inbound.spd6.bypass);
-	rte_tel_data_add_dict_u64(spd6_data, "discard",
-		total_stats.inbound.spd6.discard);
+	rte_tel_data_add_dict_uint(spd6_data, "protect",
+				   total_stats.inbound.spd6.protect);
+	rte_tel_data_add_dict_uint(spd6_data, "bypass",
+				   total_stats.inbound.spd6.bypass);
+	rte_tel_data_add_dict_uint(spd6_data, "discard",
+				   total_stats.inbound.spd6.discard);
 
 	rte_tel_data_add_dict_container(data, "spd6", spd6_data, 0);
 
@@ -2845,14 +2882,12 @@ handle_telemetry_cmd_ipsec_secgw_stats_routing(const char *cmd __rte_unused,
 	update_statistics(&total_stats, coreid);
 
 	/* add lpm 4 telemetry key/values pairs */
-	rte_tel_data_add_dict_u64(lpm4_data, "miss",
-		total_stats.lpm4.miss);
+	rte_tel_data_add_dict_uint(lpm4_data, "miss", total_stats.lpm4.miss);
 
 	rte_tel_data_add_dict_container(data, "IPv4 LPM", lpm4_data, 0);
 
 	/* add lpm 6 telemetry key/values pairs */
-	rte_tel_data_add_dict_u64(lpm6_data, "miss",
-		total_stats.lpm6.miss);
+	rte_tel_data_add_dict_uint(lpm6_data, "miss", total_stats.lpm6.miss);
 
 	rte_tel_data_add_dict_container(data, "IPv6 LPM", lpm6_data, 0);
 

@@ -1013,6 +1013,9 @@ vhost_driver_setup(struct rte_eth_dev *eth_dev)
 			goto drv_unreg;
 	}
 
+	if (rte_vhost_driver_set_max_queue_num(internal->iface_name, internal->max_queues))
+		goto drv_unreg;
+
 	if (rte_vhost_driver_callback_register(internal->iface_name,
 					       &vhost_ops) < 0) {
 		VHOST_LOG(ERR, "Can't register callbacks\n");
@@ -1308,6 +1311,7 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	unsigned i;
 	unsigned long rx_total = 0, tx_total = 0;
 	unsigned long rx_total_bytes = 0, tx_total_bytes = 0;
+	unsigned long tx_total_errors = 0;
 	struct vhost_queue *vq;
 
 	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS &&
@@ -1332,12 +1336,15 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 		stats->q_obytes[i] = vq->stats.bytes;
 		tx_total_bytes += stats->q_obytes[i];
+
+		tx_total_errors += vq->stats.missed_pkts;
 	}
 
 	stats->ipackets = rx_total;
 	stats->opackets = tx_total;
 	stats->ibytes = rx_total_bytes;
 	stats->obytes = tx_total_bytes;
+	stats->oerrors = tx_total_errors;
 
 	return 0;
 }
@@ -1447,6 +1454,26 @@ vhost_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc)
 	return 0;
 }
 
+static int
+vhost_dev_priv_dump(struct rte_eth_dev *dev, FILE *f)
+{
+	struct pmd_internal *internal = dev->data->dev_private;
+
+	fprintf(f, "iface_name: %s\n", internal->iface_name);
+	fprintf(f, "flags: 0x%" PRIx64 "\n", internal->flags);
+	fprintf(f, "disable_flags: 0x%" PRIx64 "\n", internal->disable_flags);
+	fprintf(f, "features: 0x%" PRIx64 "\n", internal->features);
+	fprintf(f, "max_queues: %u\n", internal->max_queues);
+	fprintf(f, "vid: %d\n", internal->vid);
+	fprintf(f, "started: %d\n", rte_atomic32_read(&internal->started));
+	fprintf(f, "dev_attached: %d\n", rte_atomic32_read(&internal->dev_attached));
+	fprintf(f, "vlan_strip: %d\n", internal->vlan_strip);
+	fprintf(f, "rx_sw_csum: %d\n", internal->rx_sw_csum);
+	fprintf(f, "tx_sw_csum: %d\n", internal->tx_sw_csum);
+
+	return 0;
+}
+
 static const struct eth_dev_ops ops = {
 	.dev_start = eth_dev_start,
 	.dev_stop = eth_dev_stop,
@@ -1467,6 +1494,7 @@ static const struct eth_dev_ops ops = {
 	.rx_queue_intr_enable = eth_rxq_intr_enable,
 	.rx_queue_intr_disable = eth_rxq_intr_disable,
 	.get_monitor_addr = vhost_get_monitor_addr,
+	.eth_dev_priv_dump = vhost_dev_priv_dump,
 };
 
 static int

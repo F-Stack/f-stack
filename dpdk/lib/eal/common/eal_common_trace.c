@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <fnmatch.h>
+#include <pthread.h>
 #include <sys/queue.h>
 #include <regex.h>
 
@@ -96,18 +97,18 @@ eal_trace_fini(void)
 bool
 rte_trace_is_enabled(void)
 {
-	return __atomic_load_n(&trace.status, __ATOMIC_ACQUIRE) != 0;
+	return rte_atomic_load_explicit(&trace.status, rte_memory_order_acquire) != 0;
 }
 
 static void
 trace_mode_set(rte_trace_point_t *t, enum rte_trace_mode mode)
 {
 	if (mode == RTE_TRACE_MODE_OVERWRITE)
-		__atomic_and_fetch(t, ~__RTE_TRACE_FIELD_ENABLE_DISCARD,
-			__ATOMIC_RELEASE);
+		rte_atomic_fetch_and_explicit(t, ~__RTE_TRACE_FIELD_ENABLE_DISCARD,
+			rte_memory_order_release);
 	else
-		__atomic_or_fetch(t, __RTE_TRACE_FIELD_ENABLE_DISCARD,
-			__ATOMIC_RELEASE);
+		rte_atomic_fetch_or_explicit(t, __RTE_TRACE_FIELD_ENABLE_DISCARD,
+			rte_memory_order_release);
 }
 
 void
@@ -141,7 +142,7 @@ rte_trace_point_is_enabled(rte_trace_point_t *t)
 	if (trace_point_is_invalid(t))
 		return false;
 
-	val = __atomic_load_n(t, __ATOMIC_ACQUIRE);
+	val = rte_atomic_load_explicit(t, rte_memory_order_acquire);
 	return (val & __RTE_TRACE_FIELD_ENABLE_MASK) != 0;
 }
 
@@ -153,9 +154,10 @@ rte_trace_point_enable(rte_trace_point_t *t)
 	if (trace_point_is_invalid(t))
 		return -ERANGE;
 
-	prev = __atomic_fetch_or(t, __RTE_TRACE_FIELD_ENABLE_MASK, __ATOMIC_RELEASE);
+	prev = rte_atomic_fetch_or_explicit(t, __RTE_TRACE_FIELD_ENABLE_MASK,
+		rte_memory_order_release);
 	if ((prev & __RTE_TRACE_FIELD_ENABLE_MASK) == 0)
-		__atomic_add_fetch(&trace.status, 1, __ATOMIC_RELEASE);
+		rte_atomic_fetch_add_explicit(&trace.status, 1, rte_memory_order_release);
 	return 0;
 }
 
@@ -167,9 +169,10 @@ rte_trace_point_disable(rte_trace_point_t *t)
 	if (trace_point_is_invalid(t))
 		return -ERANGE;
 
-	prev = __atomic_fetch_and(t, ~__RTE_TRACE_FIELD_ENABLE_MASK, __ATOMIC_RELEASE);
+	prev = rte_atomic_fetch_and_explicit(t, ~__RTE_TRACE_FIELD_ENABLE_MASK,
+		rte_memory_order_release);
 	if ((prev & __RTE_TRACE_FIELD_ENABLE_MASK) != 0)
-		__atomic_sub_fetch(&trace.status, 1, __ATOMIC_RELEASE);
+		rte_atomic_fetch_sub_explicit(&trace.status, 1, rte_memory_order_release);
 	return 0;
 }
 
@@ -298,6 +301,19 @@ rte_trace_dump(FILE *f)
 		trace_point_dump(f, tp);
 }
 
+static void
+thread_get_name(rte_thread_t id, char *name, size_t len)
+{
+#if defined(RTE_EXEC_ENV_LINUX) && defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 12)
+	pthread_getname_np((pthread_t)id.opaque_id, name, len);
+#endif
+#endif
+	RTE_SET_USED(id);
+	RTE_SET_USED(name);
+	RTE_SET_USED(len);
+}
+
 void
 __rte_trace_mem_per_thread_alloc(void)
 {
@@ -356,7 +372,7 @@ found:
 	/* Store the thread name */
 	char *name = header->stream_header.thread_name;
 	memset(name, 0, __RTE_TRACE_EMIT_STRING_LEN_MAX);
-	rte_thread_getname(pthread_self(), name,
+	thread_get_name(rte_thread_self(), name,
 		__RTE_TRACE_EMIT_STRING_LEN_MAX);
 
 	trace->lcore_meta[count].mem = header;
@@ -510,7 +526,7 @@ __rte_trace_point_register(rte_trace_point_t *handle, const char *name,
 
 	/* Add the trace point at tail */
 	STAILQ_INSERT_TAIL(&tp_list, tp, next);
-	__atomic_thread_fence(__ATOMIC_RELEASE);
+	__atomic_thread_fence(rte_memory_order_release);
 
 	/* All Good !!! */
 	return 0;

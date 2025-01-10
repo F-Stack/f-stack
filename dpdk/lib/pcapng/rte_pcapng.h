@@ -6,10 +6,6 @@
  * @file
  * RTE pcapng
  *
- * @warning
- * @b EXPERIMENTAL:
- * All functions in this file may be changed or removed without prior notice.
- *
  * Pcapng is an evolution from the pcap format, created to address some of
  * its deficiencies. Namely, the lack of extensibility and inability to store
  * additional information.
@@ -25,7 +21,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
-#include <rte_compat.h>
+
 #include <rte_mempool.h>
 
 #ifdef __cplusplus
@@ -54,7 +50,6 @@ typedef struct rte_pcapng rte_pcapng_t;
  * @return
  *   handle to library, or NULL in case of error (and rte_errno is set).
  */
-__rte_experimental
 rte_pcapng_t *
 rte_pcapng_fdopen(int fd,
 		  const char *osname, const char *hardware,
@@ -66,9 +61,32 @@ rte_pcapng_fdopen(int fd,
  * @param self
  *  handle to library
  */
-__rte_experimental
 void
 rte_pcapng_close(rte_pcapng_t *self);
+
+/**
+ * Add interface information to the capture file
+ *
+ * @param self
+ *  The handle to the packet capture file
+ * @param port
+ *  The Ethernet port to report stats on.
+ * @param ifname (optional)
+ *  Interface name to record in the file.
+ *  If not specified, name will be constructed from port
+ * @param ifdescr (optional)
+ *  Interface description to record in the file.
+ * @param filter
+ *  Capture filter to record in the file.
+ *
+ * Interfaces must be added to the output file after opening
+ * and before any packet record. All ports used in packet capture
+ * must be added.
+ */
+int
+rte_pcapng_add_interface(rte_pcapng_t *self, uint16_t port,
+			 const char *ifname, const char *ifdescr,
+			 const char *filter);
 
 /**
  * Direction flag
@@ -96,22 +114,20 @@ enum rte_pcapng_direction {
  * @param length
  *   The upper limit on bytes to copy.  Passing UINT32_MAX
  *   means all data (after offset).
- * @param timestamp
- *   The timestamp in TSC cycles.
  * @param direction
  *   The direction of the packer: receive, transmit or unknown.
+ * @param comment
+ *   Packet comment.
  *
  * @return
  *   - The pointer to the new mbuf formatted for pcapng_write
  *   - NULL if allocation fails.
- *
  */
-__rte_experimental
 struct rte_mbuf *
 rte_pcapng_copy(uint16_t port_id, uint32_t queue,
 		const struct rte_mbuf *m, struct rte_mempool *mp,
-		uint32_t length, uint64_t timestamp,
-		enum rte_pcapng_direction direction);
+		uint32_t length,
+		enum rte_pcapng_direction direction, const char *comment);
 
 
 /**
@@ -123,7 +139,6 @@ rte_pcapng_copy(uint16_t port_id, uint32_t queue,
  *   The minimum size of mbuf data to handle packet with length bytes.
  *   Accounting for required header and trailer fields
  */
-__rte_experimental
 uint32_t
 rte_pcapng_mbuf_size(uint32_t length);
 
@@ -148,7 +163,6 @@ rte_pcapng_mbuf_size(uint32_t length);
  *  The number of bytes written to file, -1 on failure to write file.
  *  The mbuf's in *pkts* are always freed.
  */
-__rte_experimental
 ssize_t
 rte_pcapng_write_packets(rte_pcapng_t *self,
 			 struct rte_mbuf *pkts[], uint16_t nb_pkts);
@@ -162,29 +176,21 @@ rte_pcapng_write_packets(rte_pcapng_t *self,
  *  The handle to the packet capture file
  * @param port
  *  The Ethernet port to report stats on.
- * @param comment
- *   Optional comment to add to statistics.
- * @param start_time
- *  The time when packet capture was started in nanoseconds.
- *  Optional: can be zero if not known.
- * @param end_time
- *  The time when packet capture was stopped in nanoseconds.
- *  Optional: can be zero if not finished;
  * @param ifrecv
  *  The number of packets received by capture.
  *  Optional: use UINT64_MAX if not known.
  * @param ifdrop
  *  The number of packets missed by the capture process.
  *  Optional: use UINT64_MAX if not known.
+ * @param comment
+ *  Optional comment to add to statistics.
  * @return
  *  number of bytes written to file, -1 on failure to write file
  */
-__rte_experimental
 ssize_t
 rte_pcapng_write_stats(rte_pcapng_t *self, uint16_t port,
-		       const char *comment,
-		       uint64_t start_time, uint64_t end_time,
-		       uint64_t ifrecv, uint64_t ifdrop);
+		       uint64_t ifrecv, uint64_t ifdrop,
+		       const char *comment);
 
 #ifdef __cplusplus
 }

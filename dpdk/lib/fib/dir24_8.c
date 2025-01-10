@@ -155,7 +155,7 @@ tbl8_get_idx(struct dir24_8_tbl *dp)
 			(dp->tbl8_idxes[i] == UINT64_MAX); i++)
 		;
 	if (i < (dp->number_tbl8s >> BITMAP_SLAB_BIT_SIZE_LOG2)) {
-		bit_idx = __builtin_ctzll(~dp->tbl8_idxes[i]);
+		bit_idx = rte_ctz64(~dp->tbl8_idxes[i]);
 		dp->tbl8_idxes[i] |= (1ULL << bit_idx);
 		return (i << BITMAP_SLAB_BIT_SIZE_LOG2) + bit_idx;
 	}
@@ -526,8 +526,8 @@ dir24_8_create(const char *name, int socket_id, struct rte_fib_conf *fib_conf)
 
 	snprintf(mem_name, sizeof(mem_name), "DP_%s", name);
 	dp = rte_zmalloc_socket(name, sizeof(struct dir24_8_tbl) +
-		DIR24_8_TBL24_NUM_ENT * (1 << nh_sz), RTE_CACHE_LINE_SIZE,
-		socket_id);
+		DIR24_8_TBL24_NUM_ENT * (1 << nh_sz) + sizeof(uint32_t),
+		RTE_CACHE_LINE_SIZE, socket_id);
 	if (dp == NULL) {
 		rte_errno = ENOMEM;
 		return NULL;

@@ -268,9 +268,15 @@ rte_ether_format_addr(char *buf, uint16_t size,
  *
  * @param str
  *   A pointer to buffer contains the formatted MAC address.
- *   The supported formats are:
- *     XX:XX:XX:XX:XX:XX or XXXX:XXXX:XXXX
+ *   Accepts either byte or word format separated by colon,
+ *   hyphen or period.
+ *
+ *   The example formats are:
+ *     XX:XX:XX:XX:XX:XX - Canonical form
+ *     XX-XX-XX-XX-XX-XX - Windows and IEEE 802
+ *     XXXX.XXXX.XXXX    - Cisco
  *   where XX is a hex digit: 0-9, a-f, or A-F.
+ *   In the byte format, leading zeros are optional.
  * @param eth_addr
  *   A pointer to a ether_addr structure.
  * @return
@@ -364,7 +370,7 @@ static inline int rte_vlan_strip(struct rte_mbuf *m)
  *   The packet mbuf.
  * @return
  *   - 0: On success
- *   -EPERM: mbuf is is shared overwriting would be unsafe
+ *   -EPERM: mbuf is shared overwriting would be unsafe
  *   -ENOSPC: not enough headroom in mbuf
  */
 static inline int rte_vlan_insert(struct rte_mbuf **m)

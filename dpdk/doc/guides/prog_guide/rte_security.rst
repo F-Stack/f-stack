@@ -399,6 +399,82 @@ The API ``rte_security_macsec_sc_create`` returns a handle for SC,
 and this handle is set in ``rte_security_macsec_xform``
 to create a MACsec session using ``rte_security_session_create``.
 
+TLS-Record Protocol
+~~~~~~~~~~~~~~~~~~~
+
+The Transport Layer Protocol provides communications security over the Internet.
+The protocol allows client/server applications to communicate in a way
+that is designed to prevent eavesdropping, tampering, or message forgery.
+
+TLS protocol is composed of two layers: the TLS Record Protocol and the TLS Handshake Protocol.
+At the lowest level, layered on top of some reliable transport protocol (e.g., TCP),
+is the TLS Record Protocol.
+The TLS Record Protocol provides connection security that has two basic properties:
+
+   - The connection is private.
+     Symmetric cryptography is used for data encryption (e.g., AES, DES, etc.).
+     The keys for this symmetric encryption are generated uniquely
+     for each connection and are based on a secret negotiated during TLS Handshake Protocol.
+     The Record Protocol can also be used without encryption.
+
+   - The connection is reliable.
+     Message transport includes a message integrity check using a keyed MAC.
+     Secure hash functions (e.g., SHA-1, etc.) are used for MAC computations.
+     The Record Protocol can operate without a MAC when it is being used as a transport
+     for negotiating security parameters by another protocol.
+
+.. code-block:: c
+
+             Record Write                   Record Read
+             ------------                   -----------
+
+             TLSPlaintext                  TLSCiphertext
+                  |                              |
+                  ~                              ~
+                  |                              |
+                  V                              V
+       +----------|-----------+       +----------|-----------+
+       | Generate sequence no.|       | Generate sequence no.|
+       +----------|-----------+       +----------------------+
+                  |                   |    AR check (DTLS)   |
+       +----------|-----------+       +----------|-----------+
+       |  Insert TLS header   |                  |
+       |     & trailer.       |       +----------|-----------+
+       | (including padding)  |       | Decrypt & MAC verify |
+       +----------|-----------+       +----------|-----------+
+                  |                              |
+        +---------|-----------+       +----------|-----------+
+        |    MAC generate &   |       |  Remove TLS header   |
+        |      Encrypt        |       |      & trailer.      |
+        +---------|-----------+       | (including padding)  |
+                  |                   +----------|-----------+
+                  |                              |
+                  ~                              ~
+                  |                              |
+                  V                              V
+            TLSCiphertext                  TLSPlaintext
+
+TLS and DTLS header formation (in record write operation)
+would depend on type of content.
+It is a per packet variable and would need to be handled by the same session.
+Application may pass this info to a cryptodev performing lookaside protocol offload
+by passing the same in ``rte_crypto_op.param1``.
+
+In record read operation, application is required to preserve any info
+it may need from the TLS/DTLS header (such as content type and sequence number)
+as the cryptodev would remove the header and padding
+as part of the lookaside protocol processing.
+With TLS 1.3, the actual content type is part of the trailer (before padding)
+and would be stripped by the PMD.
+For applications that may need this info,
+PMD would return the value in ``rte_crypto_op.param1`` field.
+
+Supported Versions
+^^^^^^^^^^^^^^^^^^
+
+* TLS 1.2
+* TLS 1.3
+* DTLS 1.2
 
 Device Features and Capabilities
 ---------------------------------
@@ -637,7 +713,7 @@ And the session mempool object size should be enough to accommodate
 Once the session mempools have been created, ``rte_security_session_create()``
 is used to allocate and initialize a session for the required crypto/ethernet device.
 
-Session APIs need a parameter ``rte_security_ctx`` to identify the crypto/ethernet
+Session APIs need an opaque handle to identify the crypto/ethernet
 security ops. This parameter can be retrieved using the APIs
 ``rte_cryptodev_get_sec_ctx()`` (for crypto device) or ``rte_eth_dev_get_sec_ctx``
 (for ethernet port).
@@ -693,10 +769,6 @@ The ``rte_security_session_protocol`` is defined as
    :start-after: Enumeration of rte_security_session_protocol 8<
    :end-before: >8 End enumeration of rte_security_session_protocol.
 
-Currently the library defines configuration parameters for IPsec and PDCP only.
-For other protocols like MACSec, structures and enums are defined as place holders
-which will be updated in the future.
-
 IPsec related configuration parameters are defined in ``rte_security_ipsec_xform``
 
 MACsec related configuration parameters are defined in ``rte_security_macsec_xform``
@@ -704,6 +776,8 @@ MACsec related configuration parameters are defined in ``rte_security_macsec_xfo
 PDCP related configuration parameters are defined in ``rte_security_pdcp_xform``
 
 DOCSIS related configuration parameters are defined in ``rte_security_docsis_xform``
+
+TLS record related configuration parameters are defined in ``rte_security_tls_record_xform``
 
 
 Security API

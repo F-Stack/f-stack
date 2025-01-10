@@ -5,12 +5,9 @@
 #ifndef _PMD_AESNI_MB_PRIV_H_
 #define _PMD_AESNI_MB_PRIV_H_
 
-#if defined(RTE_LIB_SECURITY)
-#define AESNI_MB_DOCSIS_SEC_ENABLED 1
 #include <rte_security.h>
 #include <rte_security_driver.h>
 #include <rte_ether.h>
-#endif
 
 #include "ipsec_mb_private.h"
 
@@ -19,6 +16,10 @@
 #define HMAC_MAX_BLOCK_SIZE 128
 #define HMAC_IPAD_VALUE			(0x36)
 #define HMAC_OPAD_VALUE			(0x5C)
+
+#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
+#define MAX_NUM_SEGS 16
+#endif
 
 static const struct rte_cryptodev_capabilities aesni_mb_capabilities[] = {
 	{	/* MD5 HMAC */
@@ -729,6 +730,9 @@ struct aesni_mb_qp_data {
 	 * by the driver when verifying a digest provided
 	 * by the user (using authentication verify operation)
 	 */
+#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
+	struct IMB_SGL_IOV sgl_segs[MAX_NUM_SEGS];
+#endif
 	union {
 		struct gcm_context_data gcm_sgl_ctx;
 		struct chacha20_poly1305_context_data chacha_sgl_ctx;
@@ -845,17 +849,16 @@ get_digest_byte_length(IMB_HASH_ALG algo)
 
 /** AES-NI multi-buffer private session structure */
 struct aesni_mb_session {
-	IMB_CIPHER_MODE cipher_mode;
-	IMB_CIPHER_DIRECTION cipher_direction;
-	IMB_HASH_ALG hash_alg;
-	IMB_CHAIN_ORDER chain_order;
-	/*  common job fields */
+	IMB_JOB template_job;
+	/*< Template job structure */
+	uint32_t session_id;
+	/*< IPSec MB session ID */
+	pid_t pid;
+	/*< Process ID that created session */
 	struct {
-		uint16_t length;
 		uint16_t offset;
 	} iv;
 	struct {
-		uint16_t length;
 		uint16_t offset;
 	} auth_iv;
 	/* *< IV parameters
@@ -864,13 +867,6 @@ struct aesni_mb_session {
 	/* * Cipher Parameters
 	 */
 	struct {
-		/* * Cipher direction - encrypt / decrypt */
-		IMB_CIPHER_DIRECTION direction;
-		/* * Cipher mode - CBC / Counter */
-		IMB_CIPHER_MODE mode;
-
-		uint64_t key_length_in_bytes;
-
 		union {
 			struct {
 				uint32_t encode[60] __rte_aligned(16);
@@ -903,7 +899,6 @@ struct aesni_mb_session {
 
 	/* *< Authentication Parameters */
 	struct {
-		IMB_HASH_ALG algo; /* *< Authentication Algorithm */
 		enum rte_crypto_auth_operation operation;
 		/* *< auth operation generate or verify */
 		union {
@@ -944,23 +939,16 @@ struct aesni_mb_session {
 			kasumi_key_sched_t pKeySched_kasumi_auth;
 			/* *< KASUMI scheduled authentication key */
 		};
-		/* * Generated digest size by the Multi-buffer library */
-		uint16_t gen_digest_len;
 		/* * Requested digest size from Cryptodev */
 		uint16_t req_digest_len;
 
 	} auth;
-	struct {
-		/* * AAD data length */
-		uint16_t aad_len;
-	} aead;
 } __rte_cache_aligned;
 
 typedef void (*hash_one_block_t)(const void *data, void *digest);
 typedef void (*aes_keyexp_t)(const void *key, void *enc_exp_keys,
 			void *dec_exp_keys);
 
-#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
 static const struct rte_cryptodev_capabilities
 					aesni_mb_pmd_security_crypto_cap[] = {
 	{	/* AES DOCSIS BPI */
@@ -1008,6 +996,5 @@ static const struct rte_security_capability aesni_mb_pmd_security_cap[] = {
 		.action = RTE_SECURITY_ACTION_TYPE_NONE
 	}
 };
-#endif
 
 #endif /* _PMD_AESNI_MB_PRIV_H_ */

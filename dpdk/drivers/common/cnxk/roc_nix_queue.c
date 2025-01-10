@@ -7,6 +7,9 @@
 #include "roc_api.h"
 #include "roc_priv.h"
 
+/* Default SQB slack per SQ */
+#define ROC_NIX_SQB_SLACK_DFLT 24
+
 static inline uint32_t
 nix_qsize_to_val(enum nix_q_size qsize)
 {
@@ -47,15 +50,18 @@ nix_rq_vwqe_flush(struct roc_nix_rq *rq, uint16_t vwqe_interval)
 int
 nix_rq_ena_dis(struct dev *dev, struct roc_nix_rq *rq, bool enable)
 {
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
 	/* Pkts will be dropped silently if RQ is disabled */
 	if (roc_model_is_cn9k()) {
 		struct nix_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_aq_enq(mbox);
-		if (!aq)
-			return -ENOSPC;
+		if (!aq) {
+			rc = -ENOSPC;
+			goto exit;
+		}
 
 		aq->qidx = rq->qid;
 		aq->ctype = NIX_AQ_CTYPE_RQ;
@@ -67,8 +73,10 @@ nix_rq_ena_dis(struct dev *dev, struct roc_nix_rq *rq, bool enable)
 		struct nix_cn10k_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-		if (!aq)
-			return -ENOSPC;
+		if (!aq) {
+			rc = -ENOSPC;
+			goto exit;
+		}
 
 		aq->qidx = rq->qid;
 		aq->ctype = NIX_AQ_CTYPE_RQ;
@@ -78,7 +86,10 @@ nix_rq_ena_dis(struct dev *dev, struct roc_nix_rq *rq, bool enable)
 		aq->rq_mask.ena = ~(aq->rq_mask.ena);
 	}
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
@@ -94,7 +105,7 @@ roc_nix_rq_ena_dis(struct roc_nix_rq *rq, bool enable)
 
 	/* Check for meta aura if RQ is enabled */
 	if (enable && nix->need_meta_aura)
-		rc = roc_nix_inl_meta_aura_check(rq);
+		rc = roc_nix_inl_meta_aura_check(rq->roc_nix, rq);
 	return rc;
 }
 
@@ -103,7 +114,7 @@ roc_nix_rq_is_sso_enable(struct roc_nix *roc_nix, uint32_t qid)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
 	struct dev *dev = &nix->dev;
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	bool sso_enable;
 	int rc;
 
@@ -112,15 +123,17 @@ roc_nix_rq_is_sso_enable(struct roc_nix *roc_nix, uint32_t qid)
 		struct nix_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_aq_enq(mbox);
-		if (!aq)
-			return -ENOSPC;
+		if (!aq) {
+			rc = -ENOSPC;
+			goto exit;
+		}
 
 		aq->qidx = qid;
 		aq->ctype = NIX_AQ_CTYPE_RQ;
 		aq->op = NIX_AQ_INSTOP_READ;
 		rc = mbox_process_msg(mbox, (void *)&rsp);
 		if (rc)
-			return rc;
+			goto exit;
 
 		sso_enable = rsp->rq.sso_ena;
 	} else {
@@ -128,8 +141,10 @@ roc_nix_rq_is_sso_enable(struct roc_nix *roc_nix, uint32_t qid)
 		struct nix_cn10k_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-		if (!aq)
-			return -ENOSPC;
+		if (!aq) {
+			rc = -ENOSPC;
+			goto exit;
+		}
 
 		aq->qidx = qid;
 		aq->ctype = NIX_AQ_CTYPE_RQ;
@@ -137,12 +152,15 @@ roc_nix_rq_is_sso_enable(struct roc_nix *roc_nix, uint32_t qid)
 
 		rc = mbox_process_msg(mbox, (void *)&rsp);
 		if (rc)
-			return rc;
+			goto exit;
 
 		sso_enable = rsp->rq.sso_ena;
 	}
 
-	return sso_enable ? true : false;
+	rc = sso_enable ? true : false;
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 static int
@@ -170,36 +188,45 @@ nix_rq_aura_buf_type_update(struct roc_nix_rq *rq, bool set)
 		struct nix_aq_enq_rsp *rsp;
 		struct nix_aq_enq_req *aq;
 
-		aq = mbox_alloc_msg_nix_aq_enq(mbox);
-		if (!aq)
+		aq = mbox_alloc_msg_nix_aq_enq(mbox_get(mbox));
+		if (!aq) {
+			mbox_put(mbox);
 			return -ENOSPC;
+		}
 
 		aq->qidx = rq->qid;
 		aq->ctype = NIX_AQ_CTYPE_RQ;
 		aq->op = NIX_AQ_INSTOP_READ;
 		rc = mbox_process_msg(mbox, (void *)&rsp);
-		if (rc)
+		if (rc) {
+			mbox_put(mbox);
 			return rc;
+		}
 
 		/* Get aura handle from aura */
 		lpb_aura = roc_npa_aura_handle_gen(rsp->rq.lpb_aura, aura_base);
 		if (rsp->rq.spb_ena)
 			spb_aura = roc_npa_aura_handle_gen(rsp->rq.spb_aura, aura_base);
+		mbox_put(mbox);
 	} else {
 		struct nix_cn10k_aq_enq_rsp *rsp;
 		struct nix_cn10k_aq_enq_req *aq;
 
-		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-		if (!aq)
+		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox_get(mbox));
+		if (!aq) {
+			mbox_put(mbox);
 			return -ENOSPC;
+		}
 
 		aq->qidx = rq->qid;
 		aq->ctype = NIX_AQ_CTYPE_RQ;
 		aq->op = NIX_AQ_INSTOP_READ;
 
 		rc = mbox_process_msg(mbox, (void *)&rsp);
-		if (rc)
+		if (rc) {
+			mbox_put(mbox);
 			return rc;
+		}
 
 		/* Get aura handle from aura */
 		lpb_aura = roc_npa_aura_handle_gen(rsp->rq.lpb_aura, aura_base);
@@ -207,6 +234,8 @@ nix_rq_aura_buf_type_update(struct roc_nix_rq *rq, bool set)
 			spb_aura = roc_npa_aura_handle_gen(rsp->rq.spb_aura, aura_base);
 		if (rsp->rq.vwqe_ena)
 			vwqe_aura = roc_npa_aura_handle_gen(rsp->rq.wqe_aura, aura_base);
+
+		mbox_put(mbox);
 	}
 
 skip_ctx_read:
@@ -238,12 +267,15 @@ skip_ctx_read:
 static int
 nix_rq_cn9k_cman_cfg(struct dev *dev, struct roc_nix_rq *rq)
 {
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	struct nix_aq_enq_req *aq;
+	int rc;
 
 	aq = mbox_alloc_msg_nix_aq_enq(mbox);
-	if (!aq)
-		return -ENOSPC;
+	if (!aq) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	aq->qidx = rq->qid;
 	aq->ctype = NIX_AQ_CTYPE_RQ;
@@ -272,7 +304,10 @@ nix_rq_cn9k_cman_cfg(struct dev *dev, struct roc_nix_rq *rq)
 		aq->rq_mask.xqe_pass = ~(aq->rq_mask.xqe_pass);
 	}
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
@@ -441,6 +476,9 @@ nix_rq_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints, bool cfg,
 	if (rq->ipsech_ena) {
 		aq->rq.ipsech_ena = 1;
 		aq->rq.ipsecd_drop_en = 1;
+		aq->rq.ena_wqwd = 1;
+		aq->rq.wqe_skip = rq->wqe_skip;
+		aq->rq.wqe_caching = 1;
 	}
 
 	aq->rq.lpb_aura = roc_npa_aura_handle_to_aura(rq->aura_handle);
@@ -573,11 +611,14 @@ static int
 nix_rq_cman_cfg(struct dev *dev, struct roc_nix_rq *rq)
 {
 	struct nix_cn10k_aq_enq_req *aq;
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
 	aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-	if (!aq)
-		return -ENOSPC;
+	if (!aq) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	aq->qidx = rq->qid;
 	aq->ctype = NIX_AQ_CTYPE_RQ;
@@ -606,48 +647,62 @@ nix_rq_cman_cfg(struct dev *dev, struct roc_nix_rq *rq)
 		aq->rq_mask.xqe_pass = ~(aq->rq_mask.xqe_pass);
 	}
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
 roc_nix_rq_init(struct roc_nix *roc_nix, struct roc_nix_rq *rq, bool ena)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
-	struct mbox *mbox = (&nix->dev)->mbox;
+	struct mbox *mbox = mbox_get((&nix->dev)->mbox);
 	bool is_cn9k = roc_model_is_cn9k();
 	struct dev *dev = &nix->dev;
 	int rc;
 
-	if (roc_nix == NULL || rq == NULL)
+	if (roc_nix == NULL || rq == NULL) {
+		mbox_put(mbox);
 		return NIX_ERR_PARAM;
+	}
 
-	if (rq->qid >= nix->nb_rx_queues)
+	if (rq->qid >= nix->nb_rx_queues) {
+		mbox_put(mbox);
 		return NIX_ERR_QUEUE_INVALID_RANGE;
+	}
 
 	rq->roc_nix = roc_nix;
+	rq->tc = ROC_NIX_PFC_CLASS_INVALID;
 
 	if (is_cn9k)
 		rc = nix_rq_cn9k_cfg(dev, rq, nix->qints, false, ena);
 	else
 		rc = nix_rq_cfg(dev, rq, nix->qints, false, ena);
 
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	rc = mbox_process(mbox);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
+	mbox_put(mbox);
 
 	/* Update aura buf type to indicate its use */
 	nix_rq_aura_buf_type_update(rq, true);
 
 	/* Check for meta aura if RQ is enabled */
 	if (ena && nix->need_meta_aura) {
-		rc = roc_nix_inl_meta_aura_check(rq);
+		rc = roc_nix_inl_meta_aura_check(roc_nix, rq);
 		if (rc)
 			return rc;
 	}
 
+	nix->rqs[rq->qid] = rq;
 	return nix_tel_node_add_rq(rq);
 }
 
@@ -655,9 +710,10 @@ int
 roc_nix_rq_modify(struct roc_nix *roc_nix, struct roc_nix_rq *rq, bool ena)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
-	struct mbox *mbox = (&nix->dev)->mbox;
+	struct mbox *m_box = (&nix->dev)->mbox;
 	bool is_cn9k = roc_model_is_cn9k();
 	struct dev *dev = &nix->dev;
+	struct mbox *mbox;
 	int rc;
 
 	if (roc_nix == NULL || rq == NULL)
@@ -670,25 +726,32 @@ roc_nix_rq_modify(struct roc_nix *roc_nix, struct roc_nix_rq *rq, bool ena)
 	nix_rq_aura_buf_type_update(rq, false);
 
 	rq->roc_nix = roc_nix;
+	rq->tc = ROC_NIX_PFC_CLASS_INVALID;
 
+	mbox = mbox_get(m_box);
 	if (is_cn9k)
 		rc = nix_rq_cn9k_cfg(dev, rq, nix->qints, true, ena);
 	else
 		rc = nix_rq_cfg(dev, rq, nix->qints, true, ena);
 
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	rc = mbox_process(mbox);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
+	mbox_put(mbox);
 
 	/* Update aura attribute to indicate its use */
 	nix_rq_aura_buf_type_update(rq, true);
 
 	/* Check for meta aura if RQ is enabled */
 	if (ena && nix->need_meta_aura) {
-		rc = roc_nix_inl_meta_aura_check(rq);
+		rc = roc_nix_inl_meta_aura_check(roc_nix, rq);
 		if (rc)
 			return rc;
 	}
@@ -725,6 +788,7 @@ roc_nix_rq_cman_config(struct roc_nix *roc_nix, struct roc_nix_rq *rq)
 int
 roc_nix_rq_fini(struct roc_nix_rq *rq)
 {
+	struct nix *nix = roc_nix_to_nix_priv(rq->roc_nix);
 	int rc;
 
 	/* Disabling RQ is sufficient */
@@ -734,6 +798,8 @@ roc_nix_rq_fini(struct roc_nix_rq *rq)
 
 	/* Update aura attribute to indicate its use for */
 	nix_rq_aura_buf_type_update(rq, false);
+
+	nix->rqs[rq->qid] = NULL;
 	return 0;
 }
 
@@ -743,6 +809,8 @@ roc_nix_cq_init(struct roc_nix *roc_nix, struct roc_nix_cq *cq)
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
 	struct mbox *mbox = (&nix->dev)->mbox;
 	volatile struct nix_cq_ctx_s *cq_ctx;
+	uint16_t drop_thresh = NIX_CQ_THRESH_LEVEL;
+	uint16_t cpt_lbpid = nix->cpt_lbpid;
 	enum nix_q_size qsize;
 	size_t desc_sz;
 	int rc;
@@ -769,9 +837,11 @@ roc_nix_cq_init(struct roc_nix *roc_nix, struct roc_nix_cq *cq)
 	if (roc_model_is_cn9k()) {
 		struct nix_aq_enq_req *aq;
 
-		aq = mbox_alloc_msg_nix_aq_enq(mbox);
-		if (!aq)
+		aq = mbox_alloc_msg_nix_aq_enq(mbox_get(mbox));
+		if (!aq) {
+			mbox_put(mbox);
 			return -ENOSPC;
+		}
 
 		aq->qidx = cq->qid;
 		aq->ctype = NIX_AQ_CTYPE_CQ;
@@ -780,9 +850,11 @@ roc_nix_cq_init(struct roc_nix *roc_nix, struct roc_nix_cq *cq)
 	} else {
 		struct nix_cn10k_aq_enq_req *aq;
 
-		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-		if (!aq)
+		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox_get(mbox));
+		if (!aq) {
+			mbox_put(mbox);
 			return -ENOSPC;
+		}
 
 		aq->qidx = cq->qid;
 		aq->ctype = NIX_AQ_CTYPE_CQ;
@@ -797,6 +869,19 @@ roc_nix_cq_init(struct roc_nix *roc_nix, struct roc_nix_cq *cq)
 	cq_ctx->avg_level = 0xff;
 	cq_ctx->cq_err_int_ena = BIT(NIX_CQERRINT_CQE_FAULT);
 	cq_ctx->cq_err_int_ena |= BIT(NIX_CQERRINT_DOOR_ERR);
+	if (roc_feature_nix_has_late_bp() && roc_nix_inl_inb_is_enabled(roc_nix)) {
+		cq_ctx->cq_err_int_ena |= BIT(NIX_CQERRINT_CPT_DROP);
+		cq_ctx->cpt_drop_err_en = 1;
+		/* Enable Late BP only when non zero CPT BPID */
+		if (cpt_lbpid) {
+			cq_ctx->lbp_ena = 1;
+			cq_ctx->lbpid_low = cpt_lbpid & 0x7;
+			cq_ctx->lbpid_med = (cpt_lbpid >> 3) & 0x7;
+			cq_ctx->lbpid_high = (cpt_lbpid >> 6) & 0x7;
+			cq_ctx->lbp_frac = NIX_CQ_LPB_THRESH_FRAC;
+		}
+		drop_thresh = NIX_CQ_SEC_THRESH_LEVEL;
+	}
 
 	/* Many to one reduction */
 	cq_ctx->qint_idx = cq->qid % nix->qints;
@@ -812,7 +897,7 @@ roc_nix_cq_init(struct roc_nix *roc_nix, struct roc_nix_cq *cq)
 		cq_ctx->drop_ena = 1;
 		cq->drop_thresh = min_rx_drop;
 	} else {
-		cq->drop_thresh = NIX_CQ_THRESH_LEVEL;
+		cq->drop_thresh = drop_thresh;
 		/* Drop processing or red drop cannot be enabled due to
 		 * due to packets coming for second pass from CPT.
 		 */
@@ -821,16 +906,17 @@ roc_nix_cq_init(struct roc_nix *roc_nix, struct roc_nix_cq *cq)
 			cq_ctx->drop_ena = 1;
 		}
 	}
+	cq_ctx->bp = cq->drop_thresh;
 
-	/* TX pause frames enable flow ctrl on RX side */
-	if (nix->tx_pause) {
-		/* Single BPID is allocated for all rx channels for now */
-		cq_ctx->bpid = nix->bpid[0];
-		cq_ctx->bp = cq->drop_thresh;
-		cq_ctx->bp_ena = 1;
+	if (roc_feature_nix_has_cqe_stash()) {
+		if (cq_ctx->caching) {
+			cq_ctx->stashing = 1;
+			cq_ctx->stash_thresh = cq->stash_thresh;
+		}
 	}
 
 	rc = mbox_process(mbox);
+	mbox_put(mbox);
 	if (rc)
 		goto free_mem;
 
@@ -853,15 +939,17 @@ roc_nix_cq_fini(struct roc_nix_cq *cq)
 		return NIX_ERR_PARAM;
 
 	nix = roc_nix_to_nix_priv(cq->roc_nix);
-	mbox = (&nix->dev)->mbox;
+	mbox = mbox_get((&nix->dev)->mbox);
 
 	/* Disable CQ */
 	if (roc_model_is_cn9k()) {
 		struct nix_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_aq_enq(mbox);
-		if (!aq)
+		if (!aq) {
+			mbox_put(mbox);
 			return -ENOSPC;
+		}
 
 		aq->qidx = cq->qid;
 		aq->ctype = NIX_AQ_CTYPE_CQ;
@@ -874,8 +962,10 @@ roc_nix_cq_fini(struct roc_nix_cq *cq)
 		struct nix_cn10k_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-		if (!aq)
+		if (!aq) {
+			mbox_put(mbox);
 			return -ENOSPC;
+		}
 
 		aq->qidx = cq->qid;
 		aq->ctype = NIX_AQ_CTYPE_CQ;
@@ -884,12 +974,19 @@ roc_nix_cq_fini(struct roc_nix_cq *cq)
 		aq->cq.bp_ena = 0;
 		aq->cq_mask.ena = ~aq->cq_mask.ena;
 		aq->cq_mask.bp_ena = ~aq->cq_mask.bp_ena;
+		if (roc_feature_nix_has_late_bp() && roc_nix_inl_inb_is_enabled(cq->roc_nix)) {
+			aq->cq.lbp_ena = 0;
+			aq->cq_mask.lbp_ena = ~aq->cq_mask.lbp_ena;
+		}
 	}
 
 	rc = mbox_process(mbox);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
+	mbox_put(mbox);
 	plt_free(cq->desc_base);
 	return 0;
 }
@@ -898,7 +995,7 @@ static int
 sqb_pool_populate(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
-	uint16_t sqes_per_sqb, count, nb_sqb_bufs;
+	uint16_t sqes_per_sqb, count, nb_sqb_bufs, thr;
 	struct npa_pool_s pool;
 	struct npa_aura_s aura;
 	uint64_t blk_sz;
@@ -911,22 +1008,24 @@ sqb_pool_populate(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 	else
 		sqes_per_sqb = (blk_sz / 8) / 8;
 
+	/* Reserve One SQE in each SQB to hold pointer for next SQB */
+	sqes_per_sqb -= 1;
+
 	sq->nb_desc = PLT_MAX(512U, sq->nb_desc);
-	nb_sqb_bufs = sq->nb_desc / sqes_per_sqb;
-	nb_sqb_bufs += NIX_SQB_LIST_SPACE;
+	nb_sqb_bufs = PLT_DIV_CEIL(sq->nb_desc, sqes_per_sqb);
+	thr = PLT_DIV_CEIL((nb_sqb_bufs * ROC_NIX_SQB_THRESH), 100);
+	nb_sqb_bufs += NIX_SQB_PREFETCH;
 	/* Clamp up the SQB count */
-	nb_sqb_bufs = PLT_MIN(roc_nix->max_sqb_count,
-			      (uint16_t)PLT_MAX(NIX_DEF_SQB, nb_sqb_bufs));
+	nb_sqb_bufs = PLT_MIN(roc_nix->max_sqb_count, (uint16_t)PLT_MAX(NIX_DEF_SQB, nb_sqb_bufs));
 
 	sq->nb_sqb_bufs = nb_sqb_bufs;
 	sq->sqes_per_sqb_log2 = (uint16_t)plt_log2_u32(sqes_per_sqb);
-	sq->nb_sqb_bufs_adj =
-		nb_sqb_bufs -
-		(PLT_ALIGN_MUL_CEIL(nb_sqb_bufs, sqes_per_sqb) / sqes_per_sqb);
-	sq->nb_sqb_bufs_adj =
-		(sq->nb_sqb_bufs_adj * ROC_NIX_SQB_LOWER_THRESH) / 100;
+	sq->nb_sqb_bufs_adj = nb_sqb_bufs;
 
-	nb_sqb_bufs += roc_nix->sqb_slack;
+	if (roc_nix->sqb_slack)
+		nb_sqb_bufs += roc_nix->sqb_slack;
+	else
+		nb_sqb_bufs += PLT_MAX((int)thr, (int)ROC_NIX_SQB_SLACK_DFLT);
 	/* Explicitly set nat_align alone as by default pool is with both
 	 * nat_align and buf_offset = 1 which we don't want for SQB.
 	 */
@@ -940,9 +1039,8 @@ sqb_pool_populate(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 	else
 		aura.fc_stype = 0x3; /* STSTP */
 	aura.fc_addr = (uint64_t)sq->fc;
-	aura.fc_hyst_bits = 1; /* Store count on all updates */
-	rc = roc_npa_pool_create(&sq->aura_handle, blk_sz, nb_sqb_bufs, &aura,
-				 &pool, 0);
+	aura.fc_hyst_bits = sq->fc_hyst_bits & 0xF;
+	rc = roc_npa_pool_create(&sq->aura_handle, blk_sz, nb_sqb_bufs, &aura, &pool, 0);
 	if (rc)
 		goto fail;
 
@@ -967,7 +1065,7 @@ sqb_pool_populate(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 		goto npa_fail;
 	}
 
-	roc_npa_aura_op_range_set(sq->aura_handle, (uint64_t)sq->sqe_mem, iova);
+	roc_npa_pool_op_range_set(sq->aura_handle, (uint64_t)sq->sqe_mem, iova);
 	roc_npa_aura_limit_modify(sq->aura_handle, nb_sqb_bufs);
 	sq->aura_sqb_bufs = nb_sqb_bufs;
 
@@ -1020,18 +1118,15 @@ sq_cn9k_init(struct nix *nix, struct roc_nix_sq *sq, uint32_t rr_quantum,
 	aq->sq.sq_int_ena |= BIT(NIX_SQINT_MNQ_ERR);
 
 	/* Many to one reduction */
-	/* Assigning QINT 0 to all the SQs, an errata exists where NIXTX can
-	 * send incorrect QINT_IDX when reporting queue interrupt (QINT). This
-	 * might result in software missing the interrupt.
-	 */
-	aq->sq.qint_idx = 0;
+	aq->sq.qint_idx = sq->qid % nix->qints;
+
 	return 0;
 }
 
 static int
 sq_cn9k_fini(struct nix *nix, struct roc_nix_sq *sq)
 {
-	struct mbox *mbox = (&nix->dev)->mbox;
+	struct mbox *mbox = mbox_get((&nix->dev)->mbox);
 	struct nix_aq_enq_rsp *rsp;
 	struct nix_aq_enq_req *aq;
 	uint16_t sqes_per_sqb;
@@ -1039,24 +1134,32 @@ sq_cn9k_fini(struct nix *nix, struct roc_nix_sq *sq)
 	int rc, count;
 
 	aq = mbox_alloc_msg_nix_aq_enq(mbox);
-	if (!aq)
+	if (!aq) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 
 	aq->qidx = sq->qid;
 	aq->ctype = NIX_AQ_CTYPE_SQ;
 	aq->op = NIX_AQ_INSTOP_READ;
 	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	/* Check if sq is already cleaned up */
-	if (!rsp->sq.ena)
+	if (!rsp->sq.ena) {
+		mbox_put(mbox);
 		return 0;
+	}
 
 	/* Disable sq */
 	aq = mbox_alloc_msg_nix_aq_enq(mbox);
-	if (!aq)
+	if (!aq) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 
 	aq->qidx = sq->qid;
 	aq->ctype = NIX_AQ_CTYPE_SQ;
@@ -1064,20 +1167,26 @@ sq_cn9k_fini(struct nix *nix, struct roc_nix_sq *sq)
 	aq->sq_mask.ena = ~aq->sq_mask.ena;
 	aq->sq.ena = 0;
 	rc = mbox_process(mbox);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	/* Read SQ and free sqb's */
 	aq = mbox_alloc_msg_nix_aq_enq(mbox);
-	if (!aq)
+	if (!aq) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 
 	aq->qidx = sq->qid;
 	aq->ctype = NIX_AQ_CTYPE_SQ;
 	aq->op = NIX_AQ_INSTOP_READ;
 	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	if (aq->sq.smq_pend)
 		plt_err("SQ has pending SQE's");
@@ -1089,9 +1198,8 @@ sq_cn9k_fini(struct nix *nix, struct roc_nix_sq *sq)
 	while (count) {
 		void *next_sqb;
 
-		next_sqb = *(void **)((uintptr_t)sqb_buf +
-				      (uint32_t)((sqes_per_sqb - 1) *
-						 sq->max_sqe_sz));
+		next_sqb = *(void **)((uint64_t *)sqb_buf +
+				      (uint32_t)((sqes_per_sqb - 1) * (0x2 >> sq->max_sqe_sz) * 8));
 		roc_npa_aura_op_free(sq->aura_handle, 1, (uint64_t)sqb_buf);
 		sqb_buf = next_sqb;
 		count--;
@@ -1100,13 +1208,14 @@ sq_cn9k_fini(struct nix *nix, struct roc_nix_sq *sq)
 	/* Free next to use sqb */
 	if (rsp->sq.next_sqb)
 		roc_npa_aura_op_free(sq->aura_handle, 1, rsp->sq.next_sqb);
+	mbox_put(mbox);
 	return 0;
 }
 
 static int
-sq_init(struct nix *nix, struct roc_nix_sq *sq, uint32_t rr_quantum,
-	uint16_t smq)
+sq_init(struct nix *nix, struct roc_nix_sq *sq, uint32_t rr_quantum, uint16_t smq)
 {
+	struct roc_nix *roc_nix = nix_priv_to_roc_nix(nix);
 	struct mbox *mbox = (&nix->dev)->mbox;
 	struct nix_cn10k_aq_enq_req *aq;
 
@@ -1122,7 +1231,10 @@ sq_init(struct nix *nix, struct roc_nix_sq *sq, uint32_t rr_quantum,
 	aq->sq.max_sqe_size = sq->max_sqe_sz;
 	aq->sq.smq = smq;
 	aq->sq.smq_rr_weight = rr_quantum;
-	aq->sq.default_chan = nix->tx_chan_base;
+	if (roc_nix_is_sdp(roc_nix))
+		aq->sq.default_chan = nix->tx_chan_base + (sq->qid % nix->tx_chan_cnt);
+	else
+		aq->sq.default_chan = nix->tx_chan_base;
 	aq->sq.sqe_stype = NIX_STYPE_STF;
 	aq->sq.ena = 1;
 	aq->sq.sso_ena = !!sq->sso_ena;
@@ -1137,18 +1249,22 @@ sq_init(struct nix *nix, struct roc_nix_sq *sq, uint32_t rr_quantum,
 	aq->sq.sq_int_ena |= BIT(NIX_SQINT_SEND_ERR);
 	aq->sq.sq_int_ena |= BIT(NIX_SQINT_MNQ_ERR);
 
-	/* Assigning QINT 0 to all the SQs, an errata exists where NIXTX can
-	 * send incorrect QINT_IDX when reporting queue interrupt (QINT). This
-	 * might result in software missing the interrupt.
-	 */
-	aq->sq.qint_idx = 0;
+	/* Many to one reduction */
+	aq->sq.qint_idx = sq->qid % nix->qints;
+	if (roc_errata_nix_assign_incorrect_qint()) {
+		/* Assigning QINT 0 to all the SQs, an errata exists where NIXTX can
+		 * send incorrect QINT_IDX when reporting queue interrupt (QINT). This
+		 * might result in software missing the interrupt.
+		 */
+		aq->sq.qint_idx = 0;
+	}
 	return 0;
 }
 
 static int
 sq_fini(struct nix *nix, struct roc_nix_sq *sq)
 {
-	struct mbox *mbox = (&nix->dev)->mbox;
+	struct mbox *mbox = mbox_get((&nix->dev)->mbox);
 	struct nix_cn10k_aq_enq_rsp *rsp;
 	struct nix_cn10k_aq_enq_req *aq;
 	uint16_t sqes_per_sqb;
@@ -1156,24 +1272,32 @@ sq_fini(struct nix *nix, struct roc_nix_sq *sq)
 	int rc, count;
 
 	aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-	if (!aq)
+	if (!aq) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 
 	aq->qidx = sq->qid;
 	aq->ctype = NIX_AQ_CTYPE_SQ;
 	aq->op = NIX_AQ_INSTOP_READ;
 	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	/* Check if sq is already cleaned up */
-	if (!rsp->sq.ena)
+	if (!rsp->sq.ena) {
+		mbox_put(mbox);
 		return 0;
+	}
 
 	/* Disable sq */
 	aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-	if (!aq)
+	if (!aq) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 
 	aq->qidx = sq->qid;
 	aq->ctype = NIX_AQ_CTYPE_SQ;
@@ -1181,20 +1305,26 @@ sq_fini(struct nix *nix, struct roc_nix_sq *sq)
 	aq->sq_mask.ena = ~aq->sq_mask.ena;
 	aq->sq.ena = 0;
 	rc = mbox_process(mbox);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	/* Read SQ and free sqb's */
 	aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
-	if (!aq)
+	if (!aq) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 
 	aq->qidx = sq->qid;
 	aq->ctype = NIX_AQ_CTYPE_SQ;
 	aq->op = NIX_AQ_INSTOP_READ;
 	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
 
 	if (aq->sq.smq_pend)
 		plt_err("SQ has pending SQE's");
@@ -1206,9 +1336,8 @@ sq_fini(struct nix *nix, struct roc_nix_sq *sq)
 	while (count) {
 		void *next_sqb;
 
-		next_sqb = *(void **)((uintptr_t)sqb_buf +
-				      (uint32_t)((sqes_per_sqb - 1) *
-						 sq->max_sqe_sz));
+		next_sqb = *(void **)((uint64_t *)sqb_buf +
+				      (uint32_t)((sqes_per_sqb - 1) * (0x2 >> sq->max_sqe_sz) * 8));
 		roc_npa_aura_op_free(sq->aura_handle, 1, (uint64_t)sqb_buf);
 		sqb_buf = next_sqb;
 		count--;
@@ -1217,6 +1346,7 @@ sq_fini(struct nix *nix, struct roc_nix_sq *sq)
 	/* Free next to use sqb */
 	if (rsp->sq.next_sqb)
 		roc_npa_aura_op_free(sq->aura_handle, 1, rsp->sq.next_sqb);
+	mbox_put(mbox);
 	return 0;
 }
 
@@ -1224,9 +1354,10 @@ int
 roc_nix_sq_init(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
-	struct mbox *mbox = (&nix->dev)->mbox;
+	struct mbox *m_box = (&nix->dev)->mbox;
 	uint16_t qid, smq = UINT16_MAX;
 	uint32_t rr_quantum = 0;
+	struct mbox *mbox;
 	int rc;
 
 	if (sq == NULL)
@@ -1237,6 +1368,7 @@ roc_nix_sq_init(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 		return NIX_ERR_QUEUE_INVALID_RANGE;
 
 	sq->roc_nix = roc_nix;
+	sq->tc = ROC_NIX_PFC_CLASS_INVALID;
 	/*
 	 * Allocate memory for flow control updates from HW.
 	 * Alloc one cache line, so that fits all FC_STYPE modes.
@@ -1257,18 +1389,25 @@ roc_nix_sq_init(struct roc_nix *roc_nix, struct roc_nix_sq *sq)
 		goto nomem;
 	}
 
+	mbox = mbox_get(m_box);
 	/* Init SQ context */
 	if (roc_model_is_cn9k())
 		rc = sq_cn9k_init(nix, sq, rr_quantum, smq);
 	else
 		rc = sq_init(nix, sq, rr_quantum, smq);
 
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		goto nomem;
+	}
+
 
 	rc = mbox_process(mbox);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		goto nomem;
+	}
+	mbox_put(mbox);
 
 	nix->sqs[qid] = sq;
 	sq->io_addr = nix->base + NIX_LF_OP_SENDX(0);
@@ -1313,12 +1452,15 @@ roc_nix_sq_fini(struct roc_nix_sq *sq)
 		rc |= sq_fini(roc_nix_to_nix_priv(sq->roc_nix), sq);
 
 	/* Sync NDC-NIX-TX for LF */
-	ndc_req = mbox_alloc_msg_ndc_sync_op(mbox);
-	if (ndc_req == NULL)
+	ndc_req = mbox_alloc_msg_ndc_sync_op(mbox_get(mbox));
+	if (ndc_req == NULL) {
+		mbox_put(mbox);
 		return -ENOSPC;
+	}
 	ndc_req->nix_lf_tx_sync = 1;
 	if (mbox_process(mbox))
 		rc |= NIX_ERR_NDC_SYNC;
+	mbox_put(mbox);
 
 	rc |= nix_tm_sq_flush_post(sq);
 
@@ -1385,4 +1527,26 @@ roc_nix_sq_head_tail_get(struct roc_nix *roc_nix, uint16_t qid, uint32_t *head,
 
 	/* Update tail index as per used sqb count */
 	*tail += (sqes_per_sqb * (sqb_cnt - 1));
+}
+
+int
+roc_nix_q_err_cb_register(struct roc_nix *roc_nix, q_err_get_t sq_err_handle)
+{
+	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
+	struct dev *dev = &nix->dev;
+
+	if (sq_err_handle == NULL)
+		return NIX_ERR_PARAM;
+
+	dev->ops->q_err_cb = (q_err_cb_t)sq_err_handle;
+	return 0;
+}
+
+void
+roc_nix_q_err_cb_unregister(struct roc_nix *roc_nix)
+{
+	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
+	struct dev *dev = &nix->dev;
+
+	dev->ops->q_err_cb = NULL;
 }

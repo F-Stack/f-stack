@@ -1,17 +1,16 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _IDPF_LAN_TXRX_H_
 #define _IDPF_LAN_TXRX_H_
-#ifndef __KERNEL__
+
 #include "idpf_osdep.h"
-#endif
 
 enum idpf_rss_hash {
-	/* Values 0 - 28 are reserved for future use */
-	IDPF_HASH_INVALID		= 0,
-	IDPF_HASH_NONF_UNICAST_IPV4_UDP	= 29,
+	IDPF_HASH_INVALID			= 0,
+	/* Values 1 - 28 are reserved for future use */
+	IDPF_HASH_NONF_UNICAST_IPV4_UDP		= 29,
 	IDPF_HASH_NONF_MULTICAST_IPV4_UDP,
 	IDPF_HASH_NONF_IPV4_UDP,
 	IDPF_HASH_NONF_IPV4_TCP_SYN_NO_ACK,
@@ -20,7 +19,7 @@ enum idpf_rss_hash {
 	IDPF_HASH_NONF_IPV4_OTHER,
 	IDPF_HASH_FRAG_IPV4,
 	/* Values 37-38 are reserved */
-	IDPF_HASH_NONF_UNICAST_IPV6_UDP	= 39,
+	IDPF_HASH_NONF_UNICAST_IPV6_UDP		= 39,
 	IDPF_HASH_NONF_MULTICAST_IPV6_UDP,
 	IDPF_HASH_NONF_IPV6_UDP,
 	IDPF_HASH_NONF_IPV6_TCP_SYN_NO_ACK,
@@ -33,96 +32,81 @@ enum idpf_rss_hash {
 	IDPF_HASH_NONF_FCOE_RX,
 	IDPF_HASH_NONF_FCOE_OTHER,
 	/* Values 51-62 are reserved */
-	IDPF_HASH_L2_PAYLOAD		= 63,
+	IDPF_HASH_L2_PAYLOAD			= 63,
 	IDPF_HASH_MAX
 };
 
 /* Supported RSS offloads */
-#define IDPF_DEFAULT_RSS_HASH ( \
-	BIT_ULL(IDPF_HASH_NONF_IPV4_UDP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV4_SCTP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV4_TCP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV4_OTHER) | \
-	BIT_ULL(IDPF_HASH_FRAG_IPV4) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV6_UDP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV6_TCP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV6_SCTP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV6_OTHER) | \
-	BIT_ULL(IDPF_HASH_FRAG_IPV6) | \
+#define IDPF_DEFAULT_RSS_HASH			\
+	(BIT_ULL(IDPF_HASH_NONF_IPV4_UDP) |	\
+	BIT_ULL(IDPF_HASH_NONF_IPV4_SCTP) |	\
+	BIT_ULL(IDPF_HASH_NONF_IPV4_TCP) |	\
+	BIT_ULL(IDPF_HASH_NONF_IPV4_OTHER) |	\
+	BIT_ULL(IDPF_HASH_FRAG_IPV4) |		\
+	BIT_ULL(IDPF_HASH_NONF_IPV6_UDP) |	\
+	BIT_ULL(IDPF_HASH_NONF_IPV6_TCP) |	\
+	BIT_ULL(IDPF_HASH_NONF_IPV6_SCTP) |	\
+	BIT_ULL(IDPF_HASH_NONF_IPV6_OTHER) |	\
+	BIT_ULL(IDPF_HASH_FRAG_IPV6) |		\
 	BIT_ULL(IDPF_HASH_L2_PAYLOAD))
 
-	/* TODO: Wrap below comment under internal flag
-	 * Below 6 pcktypes are not supported by FVL or older products
-	 * They are supported by FPK and future products
-	 */
 #define IDPF_DEFAULT_RSS_HASH_EXPANDED (IDPF_DEFAULT_RSS_HASH | \
-	BIT_ULL(IDPF_HASH_NONF_IPV4_TCP_SYN_NO_ACK) | \
-	BIT_ULL(IDPF_HASH_NONF_UNICAST_IPV4_UDP) | \
-	BIT_ULL(IDPF_HASH_NONF_MULTICAST_IPV4_UDP) | \
-	BIT_ULL(IDPF_HASH_NONF_IPV6_TCP_SYN_NO_ACK) | \
-	BIT_ULL(IDPF_HASH_NONF_UNICAST_IPV6_UDP) | \
+	BIT_ULL(IDPF_HASH_NONF_IPV4_TCP_SYN_NO_ACK) |		\
+	BIT_ULL(IDPF_HASH_NONF_UNICAST_IPV4_UDP) |		\
+	BIT_ULL(IDPF_HASH_NONF_MULTICAST_IPV4_UDP) |		\
+	BIT_ULL(IDPF_HASH_NONF_IPV6_TCP_SYN_NO_ACK) |		\
+	BIT_ULL(IDPF_HASH_NONF_UNICAST_IPV6_UDP) |		\
 	BIT_ULL(IDPF_HASH_NONF_MULTICAST_IPV6_UDP))
 
 /* For idpf_splitq_base_tx_compl_desc */
-#define IDPF_TXD_COMPLQ_GEN_S	15
+#define IDPF_TXD_COMPLQ_GEN_S		15
 #define IDPF_TXD_COMPLQ_GEN_M		BIT_ULL(IDPF_TXD_COMPLQ_GEN_S)
 #define IDPF_TXD_COMPLQ_COMPL_TYPE_S	11
-#define IDPF_TXD_COMPLQ_COMPL_TYPE_M	\
-	MAKEMASK(0x7UL, IDPF_TXD_COMPLQ_COMPL_TYPE_S)
-#define IDPF_TXD_COMPLQ_QID_S	0
-#define IDPF_TXD_COMPLQ_QID_M		MAKEMASK(0x3FFUL, IDPF_TXD_COMPLQ_QID_S)
+#define IDPF_TXD_COMPLQ_COMPL_TYPE_M	GENMASK_ULL(13, 11)
+#define IDPF_TXD_COMPLQ_QID_S		0
+#define IDPF_TXD_COMPLQ_QID_M		GENMASK_ULL(9, 0)
 
 /* For base mode TX descriptors */
 
-#define IDPF_TXD_CTX_QW0_TUNN_L4T_CS_S	23
-#define IDPF_TXD_CTX_QW0_TUNN_L4T_CS_M	BIT_ULL(IDPF_TXD_CTX_QW0_TUNN_L4T_CS_S)
-#define IDPF_TXD_CTX_QW0_TUNN_DECTTL_S	19
-#define IDPF_TXD_CTX_QW0_TUNN_DECTTL_M	\
-	(0xFULL << IDPF_TXD_CTX_QW0_TUNN_DECTTL_S)
-#define IDPF_TXD_CTX_QW0_TUNN_NATLEN_S	12
-#define IDPF_TXD_CTX_QW0_TUNN_NATLEN_M	\
-	(0X7FULL << IDPF_TXD_CTX_QW0_TUNN_NATLEN_S)
+#define IDPF_TXD_CTX_QW0_TUNN_L4T_CS_S		23
+#define IDPF_TXD_CTX_QW0_TUNN_L4T_CS_M		\
+	BIT_ULL(IDPF_TXD_CTX_QW0_TUNN_L4T_CS_S)
+#define IDPF_TXD_CTX_QW0_TUNN_DECTTL_S		19
+#define IDPF_TXD_CTX_QW0_TUNN_DECTTL_M		GENMASK_ULL(22, 19)
+#define IDPF_TXD_CTX_QW0_TUNN_NATLEN_S		12
+#define IDPF_TXD_CTX_QW0_TUNN_NATLEN_M		GENMASK_ULL(18, 12)
 #define IDPF_TXD_CTX_QW0_TUNN_EIP_NOINC_S	11
-#define IDPF_TXD_CTX_QW0_TUNN_EIP_NOINC_M    \
+#define IDPF_TXD_CTX_QW0_TUNN_EIP_NOINC_M	\
 	BIT_ULL(IDPF_TXD_CTX_QW0_TUNN_EIP_NOINC_S)
 #define IDPF_TXD_CTX_EIP_NOINC_IPID_CONST	\
 	IDPF_TXD_CTX_QW0_TUNN_EIP_NOINC_M
-#define IDPF_TXD_CTX_QW0_TUNN_NATT_S	        9
-#define IDPF_TXD_CTX_QW0_TUNN_NATT_M	(0x3ULL << IDPF_TXD_CTX_QW0_TUNN_NATT_S)
-#define IDPF_TXD_CTX_UDP_TUNNELING	BIT_ULL(IDPF_TXD_CTX_QW0_TUNN_NATT_S)
-#define IDPF_TXD_CTX_GRE_TUNNELING	(0x2ULL << IDPF_TXD_CTX_QW0_TUNN_NATT_S)
+#define IDPF_TXD_CTX_QW0_TUNN_NATT_S		9
+#define IDPF_TXD_CTX_QW0_TUNN_NATT_M		GENMASK_ULL(10, 9)
+#define IDPF_TXD_CTX_UDP_TUNNELING		BIT_ULL(9)
+#define IDPF_TXD_CTX_GRE_TUNNELING		BIT_ULL(10)
 #define IDPF_TXD_CTX_QW0_TUNN_EXT_IPLEN_S	2
-#define IDPF_TXD_CTX_QW0_TUNN_EXT_IPLEN_M	\
-	(0x3FULL << IDPF_TXD_CTX_QW0_TUNN_EXT_IPLEN_S)
-#define IDPF_TXD_CTX_QW0_TUNN_EXT_IP_S	0
-#define IDPF_TXD_CTX_QW0_TUNN_EXT_IP_M	\
-	(0x3ULL << IDPF_TXD_CTX_QW0_TUNN_EXT_IP_S)
+#define IDPF_TXD_CTX_QW0_TUNN_EXT_IPLEN_M	GENMASK_ULL(7, 2)
+#define IDPF_TXD_CTX_QW0_TUNN_EXT_IP_S		0
+#define IDPF_TXD_CTX_QW0_TUNN_EXT_IP_M		GENMASK_ULL(1, 0)
 
-#define IDPF_TXD_CTX_QW1_MSS_S		50
-#define IDPF_TXD_CTX_QW1_MSS_M		\
-	MAKEMASK(0x3FFFULL, IDPF_TXD_CTX_QW1_MSS_S)
-#define IDPF_TXD_CTX_QW1_TSO_LEN_S	30
-#define IDPF_TXD_CTX_QW1_TSO_LEN_M	\
-	MAKEMASK(0x3FFFFULL, IDPF_TXD_CTX_QW1_TSO_LEN_S)
-#define IDPF_TXD_CTX_QW1_CMD_S		4
-#define IDPF_TXD_CTX_QW1_CMD_M		\
-	MAKEMASK(0xFFFUL, IDPF_TXD_CTX_QW1_CMD_S)
-#define IDPF_TXD_CTX_QW1_DTYPE_S	0
-#define IDPF_TXD_CTX_QW1_DTYPE_M	\
-	MAKEMASK(0xFUL, IDPF_TXD_CTX_QW1_DTYPE_S)
-#define IDPF_TXD_QW1_L2TAG1_S		48
-#define IDPF_TXD_QW1_L2TAG1_M		\
-	MAKEMASK(0xFFFFULL, IDPF_TXD_QW1_L2TAG1_S)
-#define IDPF_TXD_QW1_TX_BUF_SZ_S	34
-#define IDPF_TXD_QW1_TX_BUF_SZ_M	\
-	MAKEMASK(0x3FFFULL, IDPF_TXD_QW1_TX_BUF_SZ_S)
-#define IDPF_TXD_QW1_OFFSET_S		16
-#define IDPF_TXD_QW1_OFFSET_M		\
-	MAKEMASK(0x3FFFFULL, IDPF_TXD_QW1_OFFSET_S)
-#define IDPF_TXD_QW1_CMD_S		4
-#define IDPF_TXD_QW1_CMD_M		MAKEMASK(0xFFFUL, IDPF_TXD_QW1_CMD_S)
-#define IDPF_TXD_QW1_DTYPE_S		0
-#define IDPF_TXD_QW1_DTYPE_M		MAKEMASK(0xFUL, IDPF_TXD_QW1_DTYPE_S)
+#define IDPF_TXD_CTX_QW1_MSS_S			50
+#define IDPF_TXD_CTX_QW1_MSS_M			GENMASK_ULL(63, 50)
+#define IDPF_TXD_CTX_QW1_TSO_LEN_S		30
+#define IDPF_TXD_CTX_QW1_TSO_LEN_M		GENMASK_ULL(47, 30)
+#define IDPF_TXD_CTX_QW1_CMD_S			4
+#define IDPF_TXD_CTX_QW1_CMD_M			GENMASK_ULL(15, 4)
+#define IDPF_TXD_CTX_QW1_DTYPE_S		0
+#define IDPF_TXD_CTX_QW1_DTYPE_M		GENMASK_ULL(3, 0)
+#define IDPF_TXD_QW1_L2TAG1_S			48
+#define IDPF_TXD_QW1_L2TAG1_M			GENMASK_ULL(63, 48)
+#define IDPF_TXD_QW1_TX_BUF_SZ_S		34
+#define IDPF_TXD_QW1_TX_BUF_SZ_M		GENMASK_ULL(47, 34)
+#define IDPF_TXD_QW1_OFFSET_S			16
+#define IDPF_TXD_QW1_OFFSET_M			GENMASK_ULL(33, 16)
+#define IDPF_TXD_QW1_CMD_S			4
+#define IDPF_TXD_QW1_CMD_M			GENMASK_ULL(15, 4)
+#define IDPF_TXD_QW1_DTYPE_S			0
+#define IDPF_TXD_QW1_DTYPE_M			GENMASK_ULL(3, 0)
 
 /* TX Completion Descriptor Completion Types */
 #define IDPF_TXD_COMPLT_ITR_FLUSH	0
@@ -135,19 +119,19 @@ enum idpf_rss_hash {
 enum idpf_tx_desc_dtype_value {
 	IDPF_TX_DESC_DTYPE_DATA				= 0,
 	IDPF_TX_DESC_DTYPE_CTX				= 1,
-	IDPF_TX_DESC_DTYPE_REINJECT_CTX			= 2,
-	IDPF_TX_DESC_DTYPE_FLEX_DATA			= 3,
-	IDPF_TX_DESC_DTYPE_FLEX_CTX			= 4,
+	/* DTYPE 2 is reserved
+	 * DTYPE 3 is free for future use
+	 * DTYPE 4 is reserved
+	 */
 	IDPF_TX_DESC_DTYPE_FLEX_TSO_CTX			= 5,
-	IDPF_TX_DESC_DTYPE_FLEX_TSYN_L2TAG1		= 6,
+	/* DTYPE 6 is reserved */
 	IDPF_TX_DESC_DTYPE_FLEX_L2TAG1_L2TAG2		= 7,
-	IDPF_TX_DESC_DTYPE_FLEX_TSO_L2TAG2_PARSTAG_CTX	= 8,
-	IDPF_TX_DESC_DTYPE_FLEX_HOSTSPLIT_SA_TSO_CTX	= 9,
-	IDPF_TX_DESC_DTYPE_FLEX_HOSTSPLIT_SA_CTX	= 10,
-	IDPF_TX_DESC_DTYPE_FLEX_L2TAG2_CTX		= 11,
+	/* DTYPE 8, 9 are free for future use
+	 * DTYPE 10 is reserved
+	 * DTYPE 11 is free for future use
+	 */
 	IDPF_TX_DESC_DTYPE_FLEX_FLOW_SCHE		= 12,
-	IDPF_TX_DESC_DTYPE_FLEX_HOSTSPLIT_TSO_CTX	= 13,
-	IDPF_TX_DESC_DTYPE_FLEX_HOSTSPLIT_CTX		= 14,
+	/* DTYPE 13, 14 are free for future use */
 	/* DESC_DONE - HW has completed write-back of descriptor */
 	IDPF_TX_DESC_DTYPE_DESC_DONE			= 15,
 };
@@ -173,10 +157,10 @@ enum idpf_tx_desc_len_fields {
 	IDPF_TX_DESC_LEN_L4_LEN_S	= 14 /* 4 BITS */
 };
 
-#define IDPF_TXD_QW1_MACLEN_M MAKEMASK(0x7FUL, IDPF_TX_DESC_LEN_MACLEN_S)
-#define IDPF_TXD_QW1_IPLEN_M  MAKEMASK(0x7FUL, IDPF_TX_DESC_LEN_IPLEN_S)
-#define IDPF_TXD_QW1_L4LEN_M  MAKEMASK(0xFUL, IDPF_TX_DESC_LEN_L4_LEN_S)
-#define IDPF_TXD_QW1_FCLEN_M  MAKEMASK(0xFUL, IDPF_TX_DESC_LEN_L4_LEN_S)
+#define IDPF_TXD_QW1_MACLEN_M		GENMASK_ULL(6, 0)
+#define IDPF_TXD_QW1_IPLEN_M		GENMASK_ULL(13, 7)
+#define IDPF_TXD_QW1_L4LEN_M		GENMASK_ULL(17, 14)
+#define IDPF_TXD_QW1_FCLEN_M		GENMASK_ULL(17, 14)
 
 enum idpf_tx_base_desc_cmd_bits {
 	IDPF_TX_DESC_CMD_EOP			= 0x0001,
@@ -241,29 +225,18 @@ enum idpf_tx_flex_desc_cmd_bits {
 struct idpf_flex_tx_desc {
 	__le64 buf_addr;	/* Packet buffer address */
 	struct {
-		__le16 cmd_dtype;
-#define IDPF_FLEX_TXD_QW1_DTYPE_S		0
-#define IDPF_FLEX_TXD_QW1_DTYPE_M		\
-		MAKEMASK(0x1FUL, IDPF_FLEX_TXD_QW1_DTYPE_S)
+#define IDPF_FLEX_TXD_QW1_DTYPE_S	0
+#define IDPF_FLEX_TXD_QW1_DTYPE_M	GENMASK(4, 0)
 #define IDPF_FLEX_TXD_QW1_CMD_S		5
-#define IDPF_FLEX_TXD_QW1_CMD_M		MAKEMASK(0x7FFUL, IDPF_TXD_QW1_CMD_S)
+#define IDPF_FLEX_TXD_QW1_CMD_M		GENMASK(15, 5)
+		__le16 cmd_dtype;
 		union {
-			/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_DATA_(0x03) */
-			u8 raw[4];
-
-			/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_TSYN_L2TAG1 (0x06) */
-			struct {
-				__le16 l2tag1;
-				u8 flex;
-				u8 tsync;
-			} tsync;
-
 			/* DTYPE=IDPF_TX_DESC_DTYPE_FLEX_L2TAG1_L2TAG2 (0x07) */
 			struct {
 				__le16 l2tag1;
 				__le16 l2tag2;
 			} l2tags;
-		} flex;
+		};
 		__le16 buf_size;
 	} qw1;
 };
@@ -313,16 +286,6 @@ struct idpf_flex_tx_tso_ctx_qw {
 };
 
 union idpf_flex_tx_ctx_desc {
-	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_CTX (0x04) */
-	struct {
-		u8 qw0_flex[8];
-		struct {
-			__le16 cmd_dtype;
-			__le16 l2tag1;
-			u8 qw1_flex[4];
-		} qw1;
-	} gen;
-
 	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_TSO_CTX (0x05) */
 	struct {
 		struct idpf_flex_tx_tso_ctx_qw qw0;
@@ -331,98 +294,6 @@ union idpf_flex_tx_ctx_desc {
 			u8 flex[6];
 		} qw1;
 	} tso;
-
-	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_TSO_L2TAG2_PARSTAG_CTX (0x08) */
-	struct {
-		struct idpf_flex_tx_tso_ctx_qw qw0;
-		struct {
-			__le16 cmd_dtype;
-			__le16 l2tag2;
-			u8 flex0;
-			u8 ptag;
-			u8 flex1[2];
-		} qw1;
-	} tso_l2tag2_ptag;
-
-	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_L2TAG2_CTX (0x0B) */
-	struct {
-		u8 qw0_flex[8];
-		struct {
-			__le16 cmd_dtype;
-			__le16 l2tag2;
-			u8 flex[4];
-		} qw1;
-	} l2tag2;
-
-	/* DTYPE = IDPF_TX_DESC_DTYPE_REINJECT_CTX (0x02) */
-	struct {
-		struct {
-			__le32 sa_domain;
-#define IDPF_TXD_FLEX_CTX_SA_DOM_M	0xFFFF
-#define IDPF_TXD_FLEX_CTX_SA_DOM_VAL	0x10000
-			__le32 sa_idx;
-#define IDPF_TXD_FLEX_CTX_SAIDX_M	0x1FFFFF
-		} qw0;
-		struct {
-			__le16 cmd_dtype;
-			__le16 txr2comp;
-#define IDPF_TXD_FLEX_CTX_TXR2COMP	0x1
-			__le16 miss_txq_comp_tag;
-			__le16 miss_txq_id;
-		} qw1;
-	} reinjection_pkt;
 };
 
-/* Host Split Context Descriptors */
-struct idpf_flex_tx_hs_ctx_desc {
-	union {
-		struct {
-			__le32 host_fnum_tlen;
-#define IDPF_TXD_FLEX_CTX_TLEN_S	0
-/* see IDPF_TXD_FLEX_CTX_TLEN_M for mask definition */
-#define IDPF_TXD_FLEX_CTX_FNUM_S	18
-#define IDPF_TXD_FLEX_CTX_FNUM_M	0x7FF
-#define IDPF_TXD_FLEX_CTX_HOST_S	29
-#define IDPF_TXD_FLEX_CTX_HOST_M	0x7
-			__le16 ftype_mss_rt;
-#define IDPF_TXD_FLEX_CTX_MSS_RT_0	0
-#define IDPF_TXD_FLEX_CTX_MSS_RT_M	0x3FFF
-#define IDPF_TXD_FLEX_CTX_FTYPE_S	14
-#define IDPF_TXD_FLEX_CTX_FTYPE_VF	MAKEMASK(0x0, IDPF_TXD_FLEX_CTX_FTYPE_S)
-#define IDPF_TXD_FLEX_CTX_FTYPE_VDEV	MAKEMASK(0x1, IDPF_TXD_FLEX_CTX_FTYPE_S)
-#define IDPF_TXD_FLEX_CTX_FTYPE_PF	MAKEMASK(0x2, IDPF_TXD_FLEX_CTX_FTYPE_S)
-			u8 hdr_len;
-			u8 ptag;
-		} tso;
-		struct {
-			u8 flex0[2];
-			__le16 host_fnum_ftype;
-			u8 flex1[3];
-			u8 ptag;
-		} no_tso;
-	} qw0;
-
-	__le64 qw1_cmd_dtype;
-#define IDPF_TXD_FLEX_CTX_QW1_PASID_S		16
-#define IDPF_TXD_FLEX_CTX_QW1_PASID_M		0xFFFFF
-#define IDPF_TXD_FLEX_CTX_QW1_PASID_VALID_S	36
-#define IDPF_TXD_FLEX_CTX_QW1_PASID_VALID	\
-		MAKEMASK(0x1, IDPF_TXD_FLEX_CTX_PASID_VALID_S)
-#define IDPF_TXD_FLEX_CTX_QW1_TPH_S		37
-#define IDPF_TXD_FLEX_CTX_QW1_TPH \
-		MAKEMASK(0x1, IDPF_TXD_FLEX_CTX_TPH_S)
-#define IDPF_TXD_FLEX_CTX_QW1_PFNUM_S		38
-#define IDPF_TXD_FLEX_CTX_QW1_PFNUM_M		0xF
-/* The following are only valid for DTYPE = 0x09 and DTYPE = 0x0A */
-#define IDPF_TXD_FLEX_CTX_QW1_SAIDX_S		42
-#define IDPF_TXD_FLEX_CTX_QW1_SAIDX_M		0x1FFFFF
-#define IDPF_TXD_FLEX_CTX_QW1_SAIDX_VAL_S	63
-#define IDPF_TXD_FLEX_CTX_QW1_SAIDX_VALID	\
-		MAKEMASK(0x1, IDPF_TXD_FLEX_CTX_QW1_SAIDX_VAL_S)
-/* The following are only valid for DTYPE = 0x0D and DTYPE = 0x0E */
-#define IDPF_TXD_FLEX_CTX_QW1_FLEX0_S		48
-#define IDPF_TXD_FLEX_CTX_QW1_FLEX0_M		0xFF
-#define IDPF_TXD_FLEX_CTX_QW1_FLEX1_S		56
-#define IDPF_TXD_FLEX_CTX_QW1_FLEX1_M		0xFF
-};
 #endif /* _IDPF_LAN_TXRX_H_ */

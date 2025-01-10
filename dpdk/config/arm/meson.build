@@ -60,6 +60,7 @@ implementer_generic = {
 part_number_config_arm = {
     '0xd03': {'compiler_options':  ['-mcpu=cortex-a53']},
     '0xd04': {'compiler_options':  ['-mcpu=cortex-a35']},
+    '0xd05': {'compiler_options':  ['-mcpu=cortex-a55']},
     '0xd07': {'compiler_options':  ['-mcpu=cortex-a57']},
     '0xd08': {'compiler_options':  ['-mcpu=cortex-a72']},
     '0xd09': {'compiler_options':  ['-mcpu=cortex-a73']},
@@ -67,14 +68,14 @@ part_number_config_arm = {
     '0xd0b': {'compiler_options':  ['-mcpu=cortex-a76']},
     '0xd0c': {
         'march': 'armv8.2-a',
-        'march_features': ['crypto'],
+        'march_features': ['crypto', 'rcpc'],
         'compiler_options':  ['-mcpu=neoverse-n1'],
         'flags': [
             ['RTE_MACHINE', '"neoverse-n1"'],
             ['RTE_ARM_FEATURE_ATOMICS', true],
             ['RTE_MAX_MEM_MB', 1048576],
-            ['RTE_MAX_LCORE', 160],
-            ['RTE_MAX_NUMA_NODES', 2]
+            ['RTE_MAX_LCORE', 256],
+            ['RTE_MAX_NUMA_NODES', 8]
         ]
     },
     '0xd40': {
@@ -87,14 +88,17 @@ part_number_config_arm = {
             ['RTE_MAX_NUMA_NODES', 1]
         ]
     },
+    '0xd42': {
+        'march': 'armv8.4-a',
+    },
     '0xd49': {
-        'march': 'armv8.5-a',
         'march_features': ['sve2'],
+        'compiler_options': ['-mcpu=neoverse-n2'],
         'flags': [
             ['RTE_MACHINE', '"neoverse-n2"'],
             ['RTE_ARM_FEATURE_ATOMICS', true],
-            ['RTE_MAX_LCORE', 64],
-            ['RTE_MAX_NUMA_NODES', 1]
+            ['RTE_MAX_LCORE', 128],
+            ['RTE_MAX_NUMA_NODES', 2]
         ]
     }
 }
@@ -164,16 +168,30 @@ implementer_cavium = {
 implementer_ampere = {
     'description': 'Ampere Computing',
     'flags': [
-        ['RTE_MACHINE', '"emag"'],
         ['RTE_CACHE_LINE_SIZE', 64],
-        ['RTE_MAX_LCORE', 32],
-        ['RTE_MAX_NUMA_NODES', 1]
+        ['RTE_MAX_LCORE', 1024],
+        ['RTE_MAX_NUMA_NODES', 8]
     ],
     'part_number_config': {
         '0x0': {
             'march': 'armv8-a',
             'march_features': ['crc', 'crypto'],
-            'compiler_options':  ['-mtune=emag']
+            'compiler_options':  ['-mtune=emag'],
+            'flags': [
+                ['RTE_MACHINE', '"eMAG"'],
+                ['RTE_MAX_LCORE', 32],
+                ['RTE_MAX_NUMA_NODES', 1]
+            ]
+        },
+        '0xac3': {
+            'march': 'armv8.6-a',
+            'march_features': ['crc', 'crypto'],
+            'compiler_options':  ['-mcpu=ampere1'],
+            'flags': [
+                ['RTE_MACHINE', '"AmpereOne"'],
+                ['RTE_MAX_LCORE', 320],
+                ['RTE_MAX_NUMA_NODES', 8]
+            ]
         }
     }
 }
@@ -201,6 +219,16 @@ implementer_hisilicon = {
             'march_features': ['crypto', 'sve'],
             'flags': [
                 ['RTE_MACHINE', '"Kunpeng 930"'],
+                ['RTE_ARM_FEATURE_ATOMICS', true],
+                ['RTE_MAX_LCORE', 1280],
+                ['RTE_MAX_NUMA_NODES', 16]
+            ]
+        },
+        '0xd03': {
+            'march': 'armv8.5-a',
+            'march_features': ['crypto', 'sve'],
+            'flags': [
+                ['RTE_MACHINE', '"hip10"'],
                 ['RTE_ARM_FEATURE_ATOMICS', true],
                 ['RTE_MAX_LCORE', 1280],
                 ['RTE_MAX_NUMA_NODES', 16]
@@ -266,6 +294,7 @@ implementers = {
     '0x50': implementer_ampere,
     '0x51': implementer_qualcomm,
     '0x70': implementer_phytium,
+    '0xc0': implementer_ampere,
 }
 
 # SoC specific armv8 flags have the highest priority
@@ -280,6 +309,20 @@ soc_generic_aarch32 = {
     'description': 'Generic un-optimized build for armv8 aarch32 exec mode',
     'implementer': 'generic',
     'part_number': 'generic_aarch32'
+}
+
+soc_altra = {
+    'description': 'Ampere Altra/AltraMax',
+    'implementer': '0x41',
+    'part_number': '0xd0c',
+    'numa': true
+}
+
+soc_ampereone = {
+    'description': 'Ampere AmpereOne',
+    'implementer': '0xc0',
+    'part_number': '0xac3',
+    'numa': true
 }
 
 soc_armada = {
@@ -304,6 +347,18 @@ soc_bluefield = {
     'numa': false
 }
 
+soc_cdx = {
+    'description': 'AMD CDX',
+    'implementer': '0x41',
+    'part_number': '0xd42',
+    'flags': [
+        ['RTE_MACHINE', '"cdx"'],
+        ['RTE_MAX_LCORE', 16],
+        ['RTE_MAX_NUMA_NODES', 1]
+    ],
+    'numa': false
+}
+
 soc_centriq2400 = {
     'description': 'Qualcomm Centriq 2400',
     'implementer': '0x51',
@@ -318,7 +373,7 @@ soc_cn10k = {
         ['RTE_MAX_LCORE', 24],
         ['RTE_MAX_NUMA_NODES', 1],
         ['RTE_MEMPOOL_ALIGN', 128],
-        ['RTE_IOVA_AS_PA', 0]
+        ['RTE_IOVA_IN_MBUF', 0]
     ],
     'part_number': '0xd49',
     'extra_march_features': ['crypto'],
@@ -374,6 +429,13 @@ soc_graviton3 = {
     'numa': false
 }
 
+soc_hip10 = {
+    'description': 'HiSilicon HIP10',
+    'implementer': '0x48',
+    'part_number': '0xd03',
+    'numa': true
+}
+
 soc_kunpeng920 = {
     'description': 'HiSilicon Kunpeng 920',
     'implementer': '0x48',
@@ -411,7 +473,7 @@ soc_cn9k = {
     'part_number': '0xb2',
     'numa': false,
     'flags': [
-        ['RTE_IOVA_AS_PA', 0]
+        ['RTE_IOVA_IN_MBUF', 0]
     ]
 }
 
@@ -444,12 +506,27 @@ soc_thunderxt83 = {
     'part_number': '0xa3'
 }
 
+soc_bluefield3 = {
+  'description': 'NVIDIA BlueField-3',
+  'implementer': '0x41',
+   'flags': [
+          ['RTE_MAX_LCORE', 32],
+          ['RTE_MAX_NUMA_NODES', 1]
+      ],
+   'part_number': '0xd42',
+   'numa': false
+}
+
 '''
 Start of SoCs list
 generic:         Generic un-optimized build for armv8 aarch64 execution mode.
 generic_aarch32: Generic un-optimized build for armv8 aarch32 execution mode.
+altra:           Ampere Altra/AltraMax
+ampereone:       Ampere AmpereOne
 armada:          Marvell ARMADA
 bluefield:       NVIDIA BlueField
+bluefield3:      NVIDIA BlueField-3
+cdx:             AMD CDX
 centriq2400:     Qualcomm Centriq 2400
 cn9k:            Marvell OCTEON 9
 cn10k:           Marvell OCTEON 10
@@ -459,6 +536,7 @@ ft2000plus:      Phytium FT-2000+
 tys2500:         Phytium TengYun S2500
 graviton2:       AWS Graviton2
 graviton3:       AWS Graviton3
+hip10:           HiSilicon HIP10
 kunpeng920:      HiSilicon Kunpeng 920
 kunpeng930:      HiSilicon Kunpeng 930
 n1sdp:           Arm Neoverse N1SDP
@@ -474,8 +552,12 @@ End of SoCs list
 socs = {
     'generic': soc_generic,
     'generic_aarch32': soc_generic_aarch32,
+    'altra': soc_altra,
+    'ampereone': soc_ampereone,
     'armada': soc_armada,
     'bluefield': soc_bluefield,
+    'bluefield3': soc_bluefield3,
+    'cdx': soc_cdx,
     'centriq2400': soc_centriq2400,
     'cn9k': soc_cn9k,
     'cn10k' : soc_cn10k,
@@ -485,6 +567,7 @@ socs = {
     'tys2500': soc_tys2500,
     'graviton2': soc_graviton2,
     'graviton3': soc_graviton3,
+    'hip10': soc_hip10,
     'kunpeng920': soc_kunpeng920,
     'kunpeng930': soc_kunpeng930,
     'n1sdp': soc_n1sdp,
@@ -577,7 +660,7 @@ if update_flags
         part_number = soc_config['part_number']
         soc_flags = soc_config.get('flags', [])
         if not soc_config.get('numa', true)
-            has_libnuma = 0
+            has_libnuma = false
         endif
 
         disable_drivers += ',' + soc_config.get('disable_drivers', '')

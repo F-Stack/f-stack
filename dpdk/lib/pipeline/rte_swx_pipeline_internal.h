@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/queue.h>
 
+#include <rte_bitops.h>
 #include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
@@ -200,6 +201,22 @@ struct hash_func_runtime {
 };
 
 /*
+ * RSS.
+ */
+struct rss {
+	TAILQ_ENTRY(rss) node;
+	char name[RTE_SWX_NAME_SIZE];
+	uint32_t id;
+};
+
+TAILQ_HEAD(rss_tailq, rss);
+
+struct rss_runtime {
+	uint32_t key_size; /* key size in bytes. */
+	uint8_t key[0]; /* key. */
+};
+
+/*
  * Header.
  */
 struct header {
@@ -311,8 +328,9 @@ enum instruction_type {
 	INSTR_MOV_MH,  /* dst = MEF, src = H; size(dst) <= 64 bits, size(src) <= 64 bits. */
 	INSTR_MOV_HM,  /* dst = H, src = MEFT; size(dst) <= 64 bits, size(src) <= 64 bits. */
 	INSTR_MOV_HH,  /* dst = H, src = H; size(dst) <= 64 bits, size(src) <= 64 bits. */
-	INSTR_MOV_DMA, /* dst = HMEF, src = HMEF; size(dst) = size(src) > 64 bits, NBO format. */
-	INSTR_MOV_128, /* dst = HMEF, src = HMEF; size(dst) = size(src) = 128 bits, NBO format. */
+	INSTR_MOV_DMA, /* dst and src in NBO format. */
+	INSTR_MOV_128, /* dst and src in NBO format, size(dst) = size(src) = 128 bits. */
+	INSTR_MOV_128_32, /* dst and src in NBO format, size(dst) = 128 bits, size(src) = 32 b. */
 	INSTR_MOV_I,   /* dst = HMEF, src = I; size(dst) <= 64 bits. */
 
 	/* dma h.header t.field
@@ -524,6 +542,15 @@ enum instruction_type {
 	 */
 	INSTR_HASH_FUNC,
 
+	/* rss RSS_OBJ_NAME dst src_first src_last
+	 * Compute the RSS hash value over range of struct fields.
+	 * dst = M
+	 * src_first = HMEFT
+	 * src_last = HMEFT
+	 * src_first and src_last must be fields within the same struct
+	 */
+	INSTR_RSS,
+
 	/* jmp LABEL
 	 * Unconditional jump
 	 */
@@ -677,6 +704,21 @@ struct instr_hash_func {
 	} src;
 };
 
+struct instr_rss {
+	uint8_t rss_obj_id;
+
+	struct {
+		uint8_t offset;
+		uint8_t n_bits;
+	} dst;
+
+	struct {
+		uint8_t struct_id;
+		uint16_t offset;
+		uint16_t n_bytes;
+	} src;
+};
+
 struct instr_dst_src {
 	struct instr_operand dst;
 	union {
@@ -763,6 +805,7 @@ struct instruction {
 		struct instr_extern_obj ext_obj;
 		struct instr_extern_func ext_func;
 		struct instr_hash_func hash_func;
+		struct instr_rss rss;
 		struct instr_jmp jmp;
 	};
 };
@@ -1465,7 +1508,7 @@ instr_operand_nbo(struct thread *t, const struct instr_operand *x)
 #endif
 
 #ifndef RTE_SWX_PIPELINE_INSTRUCTION_TABLE_SIZE_MAX
-#define RTE_SWX_PIPELINE_INSTRUCTION_TABLE_SIZE_MAX 256
+#define RTE_SWX_PIPELINE_INSTRUCTION_TABLE_SIZE_MAX 1024
 #endif
 
 struct rte_swx_pipeline {
@@ -1480,6 +1523,7 @@ struct rte_swx_pipeline {
 	struct extern_obj_tailq extern_objs;
 	struct extern_func_tailq extern_funcs;
 	struct hash_func_tailq hash_funcs;
+	struct rss_tailq rss;
 	struct header_tailq headers;
 	struct struct_type *metadata_st;
 	uint32_t metadata_struct_id;
@@ -1502,6 +1546,7 @@ struct rte_swx_pipeline {
 	struct selector_statistics *selector_stats;
 	struct learner_statistics *learner_stats;
 	struct hash_func_runtime *hash_func_runtime;
+	struct rss_runtime **rss_runtime;
 	struct regarray_runtime *regarray_runtime;
 	struct metarray_runtime *metarray_runtime;
 	struct instruction *instructions;
@@ -1518,6 +1563,7 @@ struct rte_swx_pipeline {
 	uint32_t n_extern_objs;
 	uint32_t n_extern_funcs;
 	uint32_t n_hash_funcs;
+	uint32_t n_rss;
 	uint32_t n_actions;
 	uint32_t n_tables;
 	uint32_t n_selectors;
@@ -2468,6 +2514,58 @@ __instr_hash_func_exec(struct rte_swx_pipeline *p,
 }
 
 /*
+ * rss.
+ */
+static inline uint32_t
+rss_func(void *rss_key, uint32_t rss_key_size, void *input_data, uint32_t input_data_size)
+{
+	uint32_t *key = (uint32_t *)rss_key;
+	uint32_t *data = (uint32_t *)input_data;
+	uint32_t key_size = rss_key_size >> 2;
+	uint32_t data_size = input_data_size >> 2;
+	uint32_t hash_val = 0, i;
+
+	for (i = 0; i < data_size; i++) {
+		uint32_t d;
+
+		for (d = data[i]; d; d &= (d - 1)) {
+			uint32_t key0, key1, pos;
+
+			pos = rte_bsf32(d);
+			key0 = key[i % key_size] << (31 - pos);
+			key1 = key[(i + 1) % key_size] >> (pos + 1);
+			hash_val ^= key0 | key1;
+		}
+	}
+
+	return hash_val;
+}
+
+static inline void
+__instr_rss_exec(struct rte_swx_pipeline *p,
+		 struct thread *t,
+		 const struct instruction *ip)
+{
+	uint32_t rss_obj_id = ip->rss.rss_obj_id;
+	uint32_t dst_offset = ip->rss.dst.offset;
+	uint32_t n_dst_bits = ip->rss.dst.n_bits;
+	uint32_t src_struct_id = ip->rss.src.struct_id;
+	uint32_t src_offset = ip->rss.src.offset;
+	uint32_t n_src_bytes = ip->rss.src.n_bytes;
+
+	struct rss_runtime *r = p->rss_runtime[rss_obj_id];
+	uint8_t *src_ptr = t->structs[src_struct_id];
+	uint32_t result;
+
+	TRACE("[Thread %2u] rss %u\n",
+	      p->thread_id,
+	      rss_obj_id);
+
+	result = rss_func(r->key, r->key_size, &src_ptr[src_offset], n_src_bytes);
+	METADATA_WRITE(t, dst_offset, n_dst_bits, result);
+}
+
+/*
  * mov.
  */
 static inline void
@@ -2515,48 +2613,31 @@ __instr_mov_dma_exec(struct rte_swx_pipeline *p __rte_unused,
 		     struct thread *t,
 		     const struct instruction *ip)
 {
-	uint8_t *dst_struct = t->structs[ip->mov.dst.struct_id];
-	uint64_t *dst64_ptr = (uint64_t *)&dst_struct[ip->mov.dst.offset];
-	uint32_t *dst32_ptr;
-	uint16_t *dst16_ptr;
-	uint8_t *dst8_ptr;
+	uint8_t *dst = t->structs[ip->mov.dst.struct_id] + ip->mov.dst.offset;
+	uint8_t *src = t->structs[ip->mov.src.struct_id] + ip->mov.src.offset;
 
-	uint8_t *src_struct = t->structs[ip->mov.src.struct_id];
-	uint64_t *src64_ptr = (uint64_t *)&src_struct[ip->mov.src.offset];
-	uint32_t *src32_ptr;
-	uint16_t *src16_ptr;
-	uint8_t *src8_ptr;
-
-	uint32_t n = ip->mov.dst.n_bits >> 3, i;
+	uint32_t n_dst = ip->mov.dst.n_bits >> 3;
+	uint32_t n_src = ip->mov.src.n_bits >> 3;
 
 	TRACE("[Thread %2u] mov (dma) %u bytes\n", p->thread_id, n);
 
-	/* 8-byte transfers. */
-	for (i = 0; i < n >> 3; i++)
-		*dst64_ptr++ = *src64_ptr++;
+	/* Both dst and src are in NBO format. */
+	if (n_dst > n_src) {
+		uint32_t n_dst_zero = n_dst - n_src;
 
-	/* 4-byte transfers. */
-	n &= 7;
-	dst32_ptr = (uint32_t *)dst64_ptr;
-	src32_ptr = (uint32_t *)src64_ptr;
+		/* Zero padding the most significant bytes in dst. */
+		memset(dst, 0, n_dst_zero);
+		dst += n_dst_zero;
 
-	for (i = 0; i < n >> 2; i++)
-		*dst32_ptr++ = *src32_ptr++;
+		/* Copy src to dst. */
+		memcpy(dst, src, n_src);
+	} else {
+		uint32_t n_src_skipped = n_src - n_dst;
 
-	/* 2-byte transfers. */
-	n &= 3;
-	dst16_ptr = (uint16_t *)dst32_ptr;
-	src16_ptr = (uint16_t *)src32_ptr;
-
-	for (i = 0; i < n >> 1; i++)
-		*dst16_ptr++ = *src16_ptr++;
-
-	/* 1-byte transfer. */
-	n &= 1;
-	dst8_ptr = (uint8_t *)dst16_ptr;
-	src8_ptr = (uint8_t *)src16_ptr;
-	if (n)
-		*dst8_ptr = *src8_ptr;
+		/* Copy src to dst. */
+		src += n_src_skipped;
+		memcpy(dst, src, n_dst);
+	}
 }
 
 static inline void
@@ -2574,6 +2655,25 @@ __instr_mov_128_exec(struct rte_swx_pipeline *p __rte_unused,
 
 	dst64_ptr[0] = src64_ptr[0];
 	dst64_ptr[1] = src64_ptr[1];
+}
+
+static inline void
+__instr_mov_128_32_exec(struct rte_swx_pipeline *p __rte_unused,
+			struct thread *t,
+			const struct instruction *ip)
+{
+	uint8_t *dst = t->structs[ip->mov.dst.struct_id] + ip->mov.dst.offset;
+	uint8_t *src = t->structs[ip->mov.src.struct_id] + ip->mov.src.offset;
+
+	uint32_t *dst32 = (uint32_t *)dst;
+	uint32_t *src32 = (uint32_t *)src;
+
+	TRACE("[Thread %2u] mov (128 <- 32)\n", p->thread_id);
+
+	dst32[0] = 0;
+	dst32[1] = 0;
+	dst32[2] = 0;
+	dst32[3] = src32[0];
 }
 
 static inline void

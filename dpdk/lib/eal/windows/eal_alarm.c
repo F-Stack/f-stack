@@ -9,8 +9,7 @@
 #include <rte_alarm.h>
 #include <rte_spinlock.h>
 
-#include <rte_eal_trace.h>
-
+#include <eal_trace_internal.h>
 #include "eal_windows.h"
 
 enum alarm_state {
@@ -225,6 +224,7 @@ struct intr_task {
 
 static void
 intr_thread_entry(void *arg)
+	__rte_no_thread_safety_analysis
 {
 	struct intr_task *task = arg;
 	task->func(task->arg);
@@ -233,6 +233,7 @@ intr_thread_entry(void *arg)
 
 static int
 intr_thread_exec_sync(void (*func)(void *arg), void *arg)
+	__rte_no_thread_safety_analysis
 {
 	struct intr_task task;
 	int ret;

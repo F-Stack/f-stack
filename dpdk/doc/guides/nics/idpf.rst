@@ -6,8 +6,8 @@
 IDPF Poll Mode Driver
 =====================
 
-The [*EXPERIMENTAL*] idpf PMD (**librte_net_idpf**) provides poll mode driver support
-for Intel\ |reg| Infrastructure Processing Unit (Intel\ |reg| IPU) E2100.
+The idpf PMD (**librte_net_idpf**) provides poll mode driver support for
+Intel\ |reg| Infrastructure Processing Unit (Intel\ |reg| IPU) E2100.
 
 
 Linux Prerequisites
@@ -19,11 +19,27 @@ To get better performance on Intel platforms,
 please follow the :doc:`../linux_gsg/nic_perf_intel_platform`.
 
 
-Pre-Installation Configuration
-------------------------------
+Recommended Matching List
+-------------------------
 
-Runtime Config Options
-~~~~~~~~~~~~~~~~~~~~~~
+It is highly recommended to upgrade the idpf kernel driver, MEV-ts release
+to avoid compatibility issues with the idpf PMD.
+Here is the suggested matching list which has been tested and verified.
+
+   +------------+---------------+------------------+
+   |    DPDK    | Kernel Driver |  MEV-ts release  |
+   +============+===============+==================+
+   |    23.07   |    0.0.710    |      0.9.1       |
+   +------------+---------------+------------------+
+   |    23.11   |    0.0.720    |       1.0        |
+   +------------+---------------+------------------+
+
+
+Configuration
+-------------
+
+Runtime Configuration
+~~~~~~~~~~~~~~~~~~~~~
 
 - ``vport`` (default ``0``)
 

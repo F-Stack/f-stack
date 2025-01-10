@@ -31,6 +31,7 @@ sources = files(
         'mlx5_rxtx.c',
         'mlx5_stats.c',
         'mlx5_trigger.c',
+        'mlx5_trace.c',
         'mlx5_tx.c',
         'mlx5_tx_empw.c',
         'mlx5_tx_mpw.c',
@@ -47,13 +48,17 @@ if is_linux
     sources += files(
             'mlx5_flow_hw.c',
             'mlx5_hws_cnt.c',
+            'mlx5_flow_quota.c',
             'mlx5_flow_verbs.c',
     )
-    if (dpdk_conf.has('RTE_ARCH_X86_64')
-        or dpdk_conf.has('RTE_ARCH_ARM64')
-        or dpdk_conf.has('RTE_ARCH_PPC_64'))
-        sources += files('mlx5_rxtx_vec.c')
-    endif
+endif
+
+if is_linux and (dpdk_conf.has('RTE_ARCH_X86_64')
+              or dpdk_conf.has('RTE_ARCH_ARM64')
+              or dpdk_conf.has('RTE_ARCH_PPC_64'))
+    sources += files('mlx5_rxtx_vec.c')
+else
+    sources += files('mlx5_rxtx_vec_null.c')
 endif
 
 cflags_options = [
@@ -74,8 +79,12 @@ else
     cflags += [ '-UPEDANTIC' ]
 endif
 
+require_iova_in_mbuf = false
+
 testpmd_sources += files('mlx5_testpmd.c')
 
 subdir(exec_env)
 
 subdir('hws')
+
+annotate_locks = false

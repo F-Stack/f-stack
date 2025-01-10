@@ -24,11 +24,54 @@
 #include <rte_ip.h>
 #include <rte_net.h>
 #include <rte_vect.h>
+#include <rte_vxlan.h>
+#include <rte_gtp.h>
+#include <rte_geneve.h>
 
 #include "iavf.h"
 #include "iavf_rxtx.h"
 #include "iavf_ipsec_crypto.h"
 #include "rte_pmd_iavf.h"
+
+#define GRE_CHECKSUM_PRESENT	0x8000
+#define GRE_KEY_PRESENT		0x2000
+#define GRE_SEQUENCE_PRESENT	0x1000
+#define GRE_EXT_LEN		4
+#define GRE_SUPPORTED_FIELDS	(GRE_CHECKSUM_PRESENT | GRE_KEY_PRESENT |\
+				 GRE_SEQUENCE_PRESENT)
+
+#ifndef IPPROTO_IPIP
+#define IPPROTO_IPIP 4
+#endif
+#ifndef IPPROTO_GRE
+#define IPPROTO_GRE	47
+#endif
+
+static uint16_t vxlan_gpe_udp_port = RTE_VXLAN_GPE_DEFAULT_PORT;
+static uint16_t geneve_udp_port = RTE_GENEVE_DEFAULT_PORT;
+
+struct simple_gre_hdr {
+	uint16_t flags;
+	uint16_t proto;
+} __rte_packed;
+
+/* structure that caches offload info for the current packet */
+struct offload_info {
+	uint16_t ethertype;
+	uint8_t gso_enable;
+	uint16_t l2_len;
+	uint16_t l3_len;
+	uint16_t l4_len;
+	uint8_t l4_proto;
+	uint8_t is_tunnel;
+	uint16_t outer_ethertype;
+	uint16_t outer_l2_len;
+	uint16_t outer_l3_len;
+	uint8_t outer_l4_proto;
+	uint16_t tso_segsz;
+	uint16_t tunnel_tso_segsz;
+	uint32_t pkt_len;
+};
 
 /* Offset of mbuf dynamic field for protocol extraction's metadata */
 int rte_pmd_ifd_dynfield_proto_xtr_metadata_offs = -1;
@@ -712,6 +755,13 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	if (check_rx_vec_allow(rxq) == false)
 		ad->rx_vec_allowed = false;
 
+#if defined RTE_ARCH_X86 || defined RTE_ARCH_ARM
+	/* check vector conflict */
+	if (ad->rx_vec_allowed && iavf_rxq_vec_setup(rxq)) {
+		PMD_DRV_LOG(ERR, "Failed vector rx setup.");
+		return -EINVAL;
+	}
+#endif
 	return 0;
 }
 
@@ -727,6 +777,7 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf =
 		IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	struct iavf_vsi *vsi = &vf->vsi;
 	struct iavf_tx_queue *txq;
 	const struct rte_memzone *mz;
 	uint32_t ring_size;
@@ -782,10 +833,13 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		else
 			insertion_cap = insertion_support->inner;
 
-		if (insertion_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG1)
+		if (insertion_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG1) {
 			txq->vlan_flag = IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG1;
-		else if (insertion_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG2)
+			PMD_INIT_LOG(DEBUG, "VLAN insertion_cap: L2TAG1");
+		} else if (insertion_cap & VIRTCHNL_VLAN_TAG_LOCATION_L2TAG2) {
 			txq->vlan_flag = IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2;
+			PMD_INIT_LOG(DEBUG, "VLAN insertion_cap: L2TAG2");
+		}
 	} else {
 		txq->vlan_flag = IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG1;
 	}
@@ -797,6 +851,7 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->port_id = dev->data->port_id;
 	txq->offloads = offloads;
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
+	txq->vsi = vsi;
 
 	if (iavf_ipsec_crypto_supported(adapter))
 		txq->ipsec_crypto_pkt_md_offset =
@@ -1048,29 +1103,12 @@ iavf_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 	rte_free(q);
 }
 
-void
-iavf_stop_queues(struct rte_eth_dev *dev)
+static void
+iavf_reset_queues(struct rte_eth_dev *dev)
 {
-	struct iavf_adapter *adapter =
-		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
-	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct iavf_rx_queue *rxq;
 	struct iavf_tx_queue *txq;
-	int ret, i;
-
-	/* Stop All queues */
-	if (!vf->lv_enabled) {
-		ret = iavf_disable_queues(adapter);
-		if (ret)
-			PMD_DRV_LOG(WARNING, "Fail to stop queues");
-	} else {
-		ret = iavf_disable_queues_lv(adapter);
-		if (ret)
-			PMD_DRV_LOG(WARNING, "Fail to stop queues for large VF");
-	}
-
-	if (ret)
-		PMD_DRV_LOG(WARNING, "Fail to stop queues");
+	int i;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		txq = dev->data->tx_queues[i];
@@ -1088,6 +1126,37 @@ iavf_stop_queues(struct rte_eth_dev *dev)
 		reset_rx_queue(rxq);
 		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
+}
+
+void
+iavf_stop_queues(struct rte_eth_dev *dev)
+{
+	struct iavf_adapter *adapter =
+		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	int ret;
+
+	/* adminq will be disabled when vf is resetting. */
+	if (vf->in_reset_recovery) {
+		iavf_reset_queues(dev);
+		return;
+	}
+
+	/* Stop All queues */
+	if (!vf->lv_enabled) {
+		ret = iavf_disable_queues(adapter);
+		if (ret)
+			PMD_DRV_LOG(WARNING, "Fail to stop queues");
+	} else {
+		ret = iavf_disable_queues_lv(adapter);
+		if (ret)
+			PMD_DRV_LOG(WARNING, "Fail to stop queues for large VF");
+	}
+
+	if (ret)
+		PMD_DRV_LOG(WARNING, "Fail to stop queues");
+
+	iavf_reset_queues(dev);
 }
 
 #define IAVF_RX_FLEX_ERR0_BITS	\
@@ -2958,12 +3027,606 @@ iavf_check_vlan_up2tc(struct iavf_tx_queue *txq, struct rte_mbuf *m)
 	up = m->vlan_tci >> IAVF_VLAN_TAG_PCP_OFFSET;
 
 	if (!(vf->qos_cap->cap[txq->tc].tc_prio & BIT(up))) {
-		PMD_TX_LOG(ERR, "packet with vlan pcp %u cannot transmit in queue %u\n",
+		PMD_TX_LOG(ERR, "packet with vlan pcp %u cannot transmit in queue %u",
 			up, txq->queue_id);
 		return -1;
 	} else {
 		return 0;
 	}
+}
+
+/* Parse an IPv4 header to fill l3_len, l4_len, and l4_proto */
+static inline void
+parse_ipv4(struct rte_ipv4_hdr *ipv4_hdr, struct offload_info *info)
+{
+	struct rte_tcp_hdr *tcp_hdr;
+
+	info->l3_len = rte_ipv4_hdr_len(ipv4_hdr);
+	info->l4_proto = ipv4_hdr->next_proto_id;
+
+	/* only fill l4_len for TCP, it's useful for TSO */
+	if (info->l4_proto == IPPROTO_TCP) {
+		tcp_hdr = (struct rte_tcp_hdr *)
+			((char *)ipv4_hdr + info->l3_len);
+		info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
+	} else if (info->l4_proto == IPPROTO_UDP) {
+		info->l4_len = sizeof(struct rte_udp_hdr);
+	} else {
+		info->l4_len = 0;
+	}
+}
+
+/* Parse an IPv6 header to fill l3_len, l4_len, and l4_proto */
+static inline void
+parse_ipv6(struct rte_ipv6_hdr *ipv6_hdr, struct offload_info *info)
+{
+	struct rte_tcp_hdr *tcp_hdr;
+
+	info->l3_len = sizeof(struct rte_ipv6_hdr);
+	info->l4_proto = ipv6_hdr->proto;
+
+	/* only fill l4_len for TCP, it's useful for TSO */
+	if (info->l4_proto == IPPROTO_TCP) {
+		tcp_hdr = (struct rte_tcp_hdr *)
+			((char *)ipv6_hdr + info->l3_len);
+		info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
+	} else if (info->l4_proto == IPPROTO_UDP) {
+		info->l4_len = sizeof(struct rte_udp_hdr);
+	} else {
+		info->l4_len = 0;
+	}
+}
+
+/*
+ * Parse an ethernet header to fill the ethertype, l2_len, l3_len and
+ * ipproto. This function is able to recognize IPv4/IPv6 with optional VLAN
+ * headers. The l4_len argument is only set in case of TCP (useful for TSO).
+ */
+static inline void
+parse_ethernet(struct rte_ether_hdr *eth_hdr, struct offload_info *info)
+{
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_vlan_hdr *vlan_hdr;
+
+	info->l2_len = sizeof(struct rte_ether_hdr);
+	info->ethertype = eth_hdr->ether_type;
+
+	while (info->ethertype == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN) ||
+	       info->ethertype == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
+		vlan_hdr = (struct rte_vlan_hdr *)
+			((char *)eth_hdr + info->l2_len);
+		info->l2_len  += sizeof(struct rte_vlan_hdr);
+		info->ethertype = vlan_hdr->eth_proto;
+	}
+
+	switch (info->ethertype) {
+	case RTE_STATIC_BSWAP16(RTE_ETHER_TYPE_IPV4):
+		ipv4_hdr = (struct rte_ipv4_hdr *)
+			((char *)eth_hdr + info->l2_len);
+		parse_ipv4(ipv4_hdr, info);
+		break;
+	case RTE_STATIC_BSWAP16(RTE_ETHER_TYPE_IPV6):
+		ipv6_hdr = (struct rte_ipv6_hdr *)
+			((char *)eth_hdr + info->l2_len);
+		parse_ipv6(ipv6_hdr, info);
+		break;
+	default:
+		info->l4_len = 0;
+		info->l3_len = 0;
+		info->l4_proto = 0;
+		break;
+	}
+}
+
+/* Fill in outer layers length */
+static inline void
+update_tunnel_outer(struct offload_info *info)
+{
+	info->is_tunnel = 1;
+	info->outer_ethertype = info->ethertype;
+	info->outer_l2_len = info->l2_len;
+	info->outer_l3_len = info->l3_len;
+	info->outer_l4_proto = info->l4_proto;
+}
+
+/*
+ * Parse a GTP protocol header.
+ * No optional fields and next extension header type.
+ */
+static inline void
+parse_gtp(struct rte_udp_hdr *udp_hdr,
+	  struct offload_info *info)
+{
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_gtp_hdr *gtp_hdr;
+	uint8_t gtp_len = sizeof(*gtp_hdr);
+	uint8_t ip_ver;
+
+	/* Check UDP destination port. */
+	if (udp_hdr->dst_port != rte_cpu_to_be_16(RTE_GTPC_UDP_PORT) &&
+	    udp_hdr->src_port != rte_cpu_to_be_16(RTE_GTPC_UDP_PORT) &&
+	    udp_hdr->dst_port != rte_cpu_to_be_16(RTE_GTPU_UDP_PORT))
+		return;
+
+	update_tunnel_outer(info);
+	info->l2_len = 0;
+
+	gtp_hdr = (struct rte_gtp_hdr *)((char *)udp_hdr +
+		  sizeof(struct rte_udp_hdr));
+
+	/*
+	 * Check message type. If message type is 0xff, it is
+	 * a GTP data packet. If not, it is a GTP control packet
+	 */
+	if (gtp_hdr->msg_type == 0xff) {
+		ip_ver = *(uint8_t *)((char *)udp_hdr +
+			 sizeof(struct rte_udp_hdr) +
+			 sizeof(struct rte_gtp_hdr));
+		ip_ver = (ip_ver) & 0xf0;
+
+		if (ip_ver == RTE_GTP_TYPE_IPV4) {
+			ipv4_hdr = (struct rte_ipv4_hdr *)((char *)gtp_hdr +
+				   gtp_len);
+			info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+			parse_ipv4(ipv4_hdr, info);
+		} else if (ip_ver == RTE_GTP_TYPE_IPV6) {
+			ipv6_hdr = (struct rte_ipv6_hdr *)((char *)gtp_hdr +
+				   gtp_len);
+			info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+			parse_ipv6(ipv6_hdr, info);
+		}
+	} else {
+		info->ethertype = 0;
+		info->l4_len = 0;
+		info->l3_len = 0;
+		info->l4_proto = 0;
+	}
+
+	info->l2_len += RTE_ETHER_GTP_HLEN;
+}
+
+/* Parse a VXLAN header */
+static inline void
+parse_vxlan(struct rte_udp_hdr *udp_hdr,
+	    struct offload_info *info)
+{
+	struct rte_ether_hdr *eth_hdr;
+
+	/* check UDP destination port, RTE_VXLAN_DEFAULT_PORT (4789) is the
+	 * default VXLAN port (rfc7348) or that the Rx offload flag is set
+	 * (i40e only currently)
+	 */
+	if (udp_hdr->dst_port != rte_cpu_to_be_16(RTE_VXLAN_DEFAULT_PORT))
+		return;
+
+	update_tunnel_outer(info);
+
+	eth_hdr = (struct rte_ether_hdr *)((char *)udp_hdr +
+		sizeof(struct rte_udp_hdr) +
+		sizeof(struct rte_vxlan_hdr));
+
+	parse_ethernet(eth_hdr, info);
+	info->l2_len += RTE_ETHER_VXLAN_HLEN; /* add UDP + VXLAN */
+}
+
+/* Parse a VXLAN-GPE header */
+static inline void
+parse_vxlan_gpe(struct rte_udp_hdr *udp_hdr,
+	    struct offload_info *info)
+{
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_vxlan_gpe_hdr *vxlan_gpe_hdr;
+	uint8_t vxlan_gpe_len = sizeof(*vxlan_gpe_hdr);
+
+	/* Check UDP destination port. */
+	if (udp_hdr->dst_port != rte_cpu_to_be_16(vxlan_gpe_udp_port))
+		return;
+
+	vxlan_gpe_hdr = (struct rte_vxlan_gpe_hdr *)((char *)udp_hdr +
+				sizeof(struct rte_udp_hdr));
+
+	if (!vxlan_gpe_hdr->proto || vxlan_gpe_hdr->proto ==
+	    RTE_VXLAN_GPE_TYPE_IPV4) {
+		update_tunnel_outer(info);
+
+		ipv4_hdr = (struct rte_ipv4_hdr *)((char *)vxlan_gpe_hdr +
+			   vxlan_gpe_len);
+
+		parse_ipv4(ipv4_hdr, info);
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+		info->l2_len = 0;
+
+	} else if (vxlan_gpe_hdr->proto == RTE_VXLAN_GPE_TYPE_IPV6) {
+		update_tunnel_outer(info);
+
+		ipv6_hdr = (struct rte_ipv6_hdr *)((char *)vxlan_gpe_hdr +
+			   vxlan_gpe_len);
+
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+		parse_ipv6(ipv6_hdr, info);
+		info->l2_len = 0;
+
+	} else if (vxlan_gpe_hdr->proto == RTE_VXLAN_GPE_TYPE_ETH) {
+		update_tunnel_outer(info);
+
+		eth_hdr = (struct rte_ether_hdr *)((char *)vxlan_gpe_hdr +
+			  vxlan_gpe_len);
+
+		parse_ethernet(eth_hdr, info);
+	} else {
+		return;
+	}
+
+	info->l2_len += RTE_ETHER_VXLAN_GPE_HLEN;
+}
+
+/* Parse a GENEVE header */
+static inline void
+parse_geneve(struct rte_udp_hdr *udp_hdr,
+	    struct offload_info *info)
+{
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_geneve_hdr *geneve_hdr;
+	uint16_t geneve_len;
+
+	/* Check UDP destination port. */
+	if (udp_hdr->dst_port != rte_cpu_to_be_16(geneve_udp_port))
+		return;
+
+	geneve_hdr = (struct rte_geneve_hdr *)((char *)udp_hdr +
+				sizeof(struct rte_udp_hdr));
+	geneve_len = sizeof(struct rte_geneve_hdr) + geneve_hdr->opt_len * 4;
+	if (!geneve_hdr->proto || geneve_hdr->proto ==
+	    rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+		update_tunnel_outer(info);
+		ipv4_hdr = (struct rte_ipv4_hdr *)((char *)geneve_hdr +
+			   geneve_len);
+		parse_ipv4(ipv4_hdr, info);
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+		info->l2_len = 0;
+	} else if (geneve_hdr->proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+		update_tunnel_outer(info);
+		ipv6_hdr = (struct rte_ipv6_hdr *)((char *)geneve_hdr +
+			   geneve_len);
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+		parse_ipv6(ipv6_hdr, info);
+		info->l2_len = 0;
+
+	} else if (geneve_hdr->proto == rte_cpu_to_be_16(RTE_GENEVE_TYPE_ETH)) {
+		update_tunnel_outer(info);
+		eth_hdr = (struct rte_ether_hdr *)((char *)geneve_hdr +
+			  geneve_len);
+		parse_ethernet(eth_hdr, info);
+	} else {
+		return;
+	}
+
+	info->l2_len +=
+		(sizeof(struct rte_udp_hdr) + sizeof(struct rte_geneve_hdr) +
+		((struct rte_geneve_hdr *)geneve_hdr)->opt_len * 4);
+}
+
+/* Parse a GRE header */
+static inline void
+parse_gre(struct simple_gre_hdr *gre_hdr, struct offload_info *info)
+{
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	uint8_t gre_len = 0;
+
+	gre_len += sizeof(struct simple_gre_hdr);
+
+	if (gre_hdr->flags & rte_cpu_to_be_16(GRE_KEY_PRESENT))
+		gre_len += GRE_EXT_LEN;
+	if (gre_hdr->flags & rte_cpu_to_be_16(GRE_SEQUENCE_PRESENT))
+		gre_len += GRE_EXT_LEN;
+	if (gre_hdr->flags & rte_cpu_to_be_16(GRE_CHECKSUM_PRESENT))
+		gre_len += GRE_EXT_LEN;
+
+	if (gre_hdr->proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+		update_tunnel_outer(info);
+
+		ipv4_hdr = (struct rte_ipv4_hdr *)((char *)gre_hdr + gre_len);
+
+		parse_ipv4(ipv4_hdr, info);
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+		info->l2_len = 0;
+
+	} else if (gre_hdr->proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+		update_tunnel_outer(info);
+
+		ipv6_hdr = (struct rte_ipv6_hdr *)((char *)gre_hdr + gre_len);
+
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+		parse_ipv6(ipv6_hdr, info);
+		info->l2_len = 0;
+
+	} else if (gre_hdr->proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_TEB)) {
+		update_tunnel_outer(info);
+
+		eth_hdr = (struct rte_ether_hdr *)((char *)gre_hdr + gre_len);
+
+		parse_ethernet(eth_hdr, info);
+	} else {
+		return;
+	}
+
+	info->l2_len += gre_len;
+}
+
+/* Parse an encapsulated IP or IPv6 header */
+static inline void
+parse_encap_ip(void *encap_ip, struct offload_info *info)
+{
+	struct rte_ipv4_hdr *ipv4_hdr = encap_ip;
+	struct rte_ipv6_hdr *ipv6_hdr = encap_ip;
+	uint8_t ip_version;
+
+	ip_version = (ipv4_hdr->version_ihl & 0xf0) >> 4;
+
+	if (ip_version != 4 && ip_version != 6)
+		return;
+
+	info->is_tunnel = 1;
+	info->outer_ethertype = info->ethertype;
+	info->outer_l2_len = info->l2_len;
+	info->outer_l3_len = info->l3_len;
+
+	if (ip_version == 4) {
+		parse_ipv4(ipv4_hdr, info);
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+	} else {
+		parse_ipv6(ipv6_hdr, info);
+		info->ethertype = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+	}
+	info->l2_len = 0;
+}
+
+static  inline int
+check_mbuf_len(struct offload_info *info, struct rte_mbuf *m)
+{
+	if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+		if (info->outer_l2_len != m->outer_l2_len) {
+			PMD_TX_LOG(ERR, "outer_l2_len error in mbuf. Original "
+			"length: %hu, calculated length: %u", m->outer_l2_len,
+			info->outer_l2_len);
+			return -1;
+		}
+		if (info->outer_l3_len != m->outer_l3_len) {
+			PMD_TX_LOG(ERR, "outer_l3_len error in mbuf. Original "
+			"length: %hu,calculated length: %u", m->outer_l3_len,
+			info->outer_l3_len);
+			return -1;
+		}
+	}
+
+	if (info->l2_len != m->l2_len) {
+		PMD_TX_LOG(ERR, "l2_len error in mbuf. Original "
+		"length: %hu, calculated length: %u", m->l2_len,
+		info->l2_len);
+		return -1;
+	}
+	if (info->l3_len != m->l3_len) {
+		PMD_TX_LOG(ERR, "l3_len error in mbuf. Original "
+		"length: %hu, calculated length: %u", m->l3_len,
+		info->l3_len);
+		return -1;
+	}
+	if (info->l4_len != m->l4_len) {
+		PMD_TX_LOG(ERR, "l4_len error in mbuf. Original "
+		"length: %hu, calculated length: %u", m->l4_len,
+		info->l4_len);
+		return -1;
+	}
+
+	return 0;
+}
+
+static  inline int
+check_ether_type(struct offload_info *info, struct rte_mbuf *m)
+{
+	int ret = 0;
+
+	if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+		if (info->outer_ethertype ==
+			rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+			if (!(m->ol_flags & RTE_MBUF_F_TX_OUTER_IPV4)) {
+				PMD_TX_LOG(ERR, "Outer ethernet type is ipv4, "
+				"tx offload missing `RTE_MBUF_F_TX_OUTER_IPV4` flag.");
+				ret = -1;
+			}
+			if (m->ol_flags & RTE_MBUF_F_TX_OUTER_IPV6) {
+				PMD_TX_LOG(ERR, "Outer ethernet type is ipv4, tx "
+				"offload contains wrong `RTE_MBUF_F_TX_OUTER_IPV6` flag");
+				ret = -1;
+			}
+		} else if (info->outer_ethertype ==
+			rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+			if (!(m->ol_flags & RTE_MBUF_F_TX_OUTER_IPV6)) {
+				PMD_TX_LOG(ERR, "Outer ethernet type is ipv6, "
+				"tx offload missing `RTE_MBUF_F_TX_OUTER_IPV6` flag.");
+				ret = -1;
+			}
+			if (m->ol_flags & RTE_MBUF_F_TX_OUTER_IPV4) {
+				PMD_TX_LOG(ERR, "Outer ethernet type is ipv6, tx "
+				"offload contains wrong `RTE_MBUF_F_TX_OUTER_IPV4` flag");
+				ret = -1;
+			}
+		}
+	}
+
+	if (info->ethertype ==
+		rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+		if (!(m->ol_flags & RTE_MBUF_F_TX_IPV4)) {
+			PMD_TX_LOG(ERR, "Ethernet type is ipv4, tx offload "
+			"missing `RTE_MBUF_F_TX_IPV4` flag.");
+			ret = -1;
+		}
+		if (m->ol_flags & RTE_MBUF_F_TX_IPV6) {
+			PMD_TX_LOG(ERR, "Ethernet type is ipv4, tx "
+			"offload contains wrong `RTE_MBUF_F_TX_IPV6` flag");
+			ret = -1;
+		}
+	} else if (info->ethertype ==
+		rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+		if (!(m->ol_flags & RTE_MBUF_F_TX_IPV6)) {
+			PMD_TX_LOG(ERR, "Ethernet type is ipv6, tx offload "
+			"missing `RTE_MBUF_F_TX_IPV6` flag.");
+			ret = -1;
+		}
+		if (m->ol_flags & RTE_MBUF_F_TX_IPV4) {
+			PMD_TX_LOG(ERR, "Ethernet type is ipv6, tx offload "
+			"contains wrong `RTE_MBUF_F_TX_IPV4` flag");
+			ret = -1;
+		}
+	}
+
+	return ret;
+}
+
+/* Check whether the parameters of mbuf are correct. */
+__rte_unused static  inline int
+iavf_check_mbuf(struct rte_mbuf *m)
+{
+	struct rte_ether_hdr *eth_hdr;
+	void *l3_hdr = NULL; /* can be IPv4 or IPv6 */
+	struct offload_info info = {0};
+	uint64_t ol_flags = m->ol_flags;
+	uint64_t tunnel_type = ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK;
+
+	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	parse_ethernet(eth_hdr, &info);
+	l3_hdr = (char *)eth_hdr + info.l2_len;
+	if (info.l4_proto == IPPROTO_UDP) {
+		struct rte_udp_hdr *udp_hdr;
+
+		udp_hdr = (struct rte_udp_hdr *)
+			((char *)l3_hdr + info.l3_len);
+		parse_gtp(udp_hdr, &info);
+		if (info.is_tunnel) {
+			if (!tunnel_type) {
+				PMD_TX_LOG(ERR, "gtp tunnel packet missing tx "
+				"offload missing `RTE_MBUF_F_TX_TUNNEL_GTP` flag.");
+				return -1;
+			}
+			if (tunnel_type != RTE_MBUF_F_TX_TUNNEL_GTP) {
+				PMD_TX_LOG(ERR, "gtp tunnel packet, tx offload has wrong "
+				"`%s` flag, correct is `RTE_MBUF_F_TX_TUNNEL_GTP` flag",
+				rte_get_tx_ol_flag_name(tunnel_type));
+				return -1;
+			}
+			goto check_len;
+		}
+		parse_vxlan_gpe(udp_hdr, &info);
+		if (info.is_tunnel) {
+			if (!tunnel_type) {
+				PMD_TX_LOG(ERR, "vxlan gpe tunnel packet missing tx "
+				"offload missing `RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE` flag.");
+				return -1;
+			}
+			if (tunnel_type != RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE) {
+				PMD_TX_LOG(ERR, "vxlan gpe tunnel packet, tx offload has "
+				"wrong `%s` flag, correct is "
+				"`RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE` flag",
+				rte_get_tx_ol_flag_name(tunnel_type));
+				return -1;
+			}
+			goto check_len;
+		}
+		parse_vxlan(udp_hdr, &info);
+		if (info.is_tunnel) {
+			if (!tunnel_type) {
+				PMD_TX_LOG(ERR, "vxlan tunnel packet missing tx "
+				"offload missing `RTE_MBUF_F_TX_TUNNEL_VXLAN` flag.");
+				return -1;
+			}
+			if (tunnel_type != RTE_MBUF_F_TX_TUNNEL_VXLAN) {
+				PMD_TX_LOG(ERR, "vxlan tunnel packet, tx offload has "
+				"wrong `%s` flag, correct is "
+				"`RTE_MBUF_F_TX_TUNNEL_VXLAN` flag",
+				rte_get_tx_ol_flag_name(tunnel_type));
+				return -1;
+			}
+			goto check_len;
+		}
+		parse_geneve(udp_hdr, &info);
+		if (info.is_tunnel) {
+			if (!tunnel_type) {
+				PMD_TX_LOG(ERR, "geneve tunnel packet missing tx "
+				"offload missing `RTE_MBUF_F_TX_TUNNEL_GENEVE` flag.");
+				return -1;
+			}
+			if (tunnel_type != RTE_MBUF_F_TX_TUNNEL_GENEVE) {
+				PMD_TX_LOG(ERR, "geneve tunnel packet, tx offload has "
+				"wrong `%s` flag, correct is "
+				"`RTE_MBUF_F_TX_TUNNEL_GENEVE` flag",
+				rte_get_tx_ol_flag_name(tunnel_type));
+				return -1;
+			}
+			goto check_len;
+		}
+		/* Always keep last. */
+		if (unlikely(RTE_ETH_IS_TUNNEL_PKT(m->packet_type)
+			!= 0)) {
+			PMD_TX_LOG(ERR, "Unknown tunnel packet. UDP dst port: %hu",
+				udp_hdr->dst_port);
+				return -1;
+		}
+	} else if (info.l4_proto == IPPROTO_GRE) {
+		struct simple_gre_hdr *gre_hdr;
+
+		gre_hdr = (struct simple_gre_hdr *)((char *)l3_hdr +
+			info.l3_len);
+		parse_gre(gre_hdr, &info);
+		if (info.is_tunnel) {
+			if (!tunnel_type) {
+				PMD_TX_LOG(ERR, "gre tunnel packet missing tx "
+				"offload missing `RTE_MBUF_F_TX_TUNNEL_GRE` flag.");
+				return -1;
+			}
+			if (tunnel_type != RTE_MBUF_F_TX_TUNNEL_GRE) {
+				PMD_TX_LOG(ERR, "gre tunnel packet, tx offload has "
+				"wrong `%s` flag, correct is "
+				"`RTE_MBUF_F_TX_TUNNEL_GRE` flag",
+				rte_get_tx_ol_flag_name(tunnel_type));
+				return -1;
+			}
+			goto check_len;
+		}
+	} else if (info.l4_proto == IPPROTO_IPIP) {
+		void *encap_ip_hdr;
+
+		encap_ip_hdr = (char *)l3_hdr + info.l3_len;
+		parse_encap_ip(encap_ip_hdr, &info);
+		if (info.is_tunnel) {
+			if (!tunnel_type) {
+				PMD_TX_LOG(ERR, "Ipip tunnel packet missing tx "
+				"offload missing `RTE_MBUF_F_TX_TUNNEL_IPIP` flag.");
+				return -1;
+			}
+			if (tunnel_type != RTE_MBUF_F_TX_TUNNEL_IPIP) {
+				PMD_TX_LOG(ERR, "Ipip tunnel packet, tx offload has "
+				"wrong `%s` flag, correct is "
+				"`RTE_MBUF_F_TX_TUNNEL_IPIP` flag",
+				rte_get_tx_ol_flag_name(tunnel_type));
+				return -1;
+			}
+			goto check_len;
+		}
+	}
+
+check_len:
+	if (check_mbuf_len(&info, m) != 0)
+		return -1;
+
+	return check_ether_type(&info, m);
 }
 
 /* TX prep functions */
@@ -2987,7 +3650,7 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		ol_flags = m->ol_flags;
 
 		/* Check condition for nb_segs > IAVF_TX_MAX_MTU_SEG. */
-		if (!(ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
+		if (!(ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG))) {
 			if (m->nb_segs > IAVF_TX_MAX_MTU_SEG) {
 				rte_errno = EINVAL;
 				return i;
@@ -3005,7 +3668,11 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
-		if (m->pkt_len < IAVF_TX_MIN_PKT_LEN) {
+		/* valid packets are greater than min size, and single-buffer pkts
+		 * must have data_len == pkt_len
+		 */
+		if (m->pkt_len < IAVF_TX_MIN_PKT_LEN ||
+				(m->nb_segs == 1 && m->data_len != m->pkt_len)) {
 			rte_errno = EINVAL;
 			return i;
 		}
@@ -3031,9 +3698,41 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 				return i;
 			}
 		}
+
+#ifdef RTE_ETHDEV_DEBUG_TX
+		ret = iavf_check_mbuf(m);
+		if (ret != 0) {
+			rte_errno = EINVAL;
+			return i;
+		}
+#endif
 	}
 
 	return i;
+}
+
+static uint16_t
+iavf_recv_pkts_no_poll(void *rx_queue, struct rte_mbuf **rx_pkts,
+				uint16_t nb_pkts)
+{
+	struct iavf_rx_queue *rxq = rx_queue;
+	if (!rxq->vsi || rxq->vsi->adapter->no_poll)
+		return 0;
+
+	return rxq->vsi->adapter->rx_pkt_burst(rx_queue,
+								rx_pkts, nb_pkts);
+}
+
+static uint16_t
+iavf_xmit_pkts_no_poll(void *tx_queue, struct rte_mbuf **tx_pkts,
+				uint16_t nb_pkts)
+{
+	struct iavf_tx_queue *txq = tx_queue;
+	if (!txq->vsi || txq->vsi->adapter->no_poll)
+		return 0;
+
+	return txq->vsi->adapter->tx_pkt_burst(tx_queue,
+								tx_pkts, nb_pkts);
 }
 
 /* choose rx function*/
@@ -3043,6 +3742,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	int no_poll_on_link_down = adapter->devargs.no_poll_on_link_down;
 	int i;
 	struct iavf_rx_queue *rxq;
 	bool use_flex = true;
@@ -3086,25 +3786,41 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 		}
 
 		if (dev->data->scattered_rx) {
-			if (!use_avx512) {
+			if (!use_avx2 && !use_avx512) {
 				PMD_DRV_LOG(DEBUG,
-					    "Using %sVector Scattered Rx (port %d).",
-					    use_avx2 ? "avx2 " : "",
+					    "Using Vector Scattered Rx (port %d).",
 					    dev->data->port_id);
 			} else {
-				if (check_ret == IAVF_VECTOR_PATH)
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 Vector Scattered Rx (port %d).",
-						    dev->data->port_id);
-				else
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 OFFLOAD Vector Scattered Rx (port %d).",
-						    dev->data->port_id);
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 OFFLOAD Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+				} else {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 OFFLOAD Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+				}
 			}
 			if (use_flex) {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_scattered_pkts_vec_avx2_flex_rxd :
-					iavf_recv_scattered_pkts_vec_flex_rxd;
+				dev->rx_pkt_burst = iavf_recv_scattered_pkts_vec_flex_rxd;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2_flex_rxd;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2_flex_rxd_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3116,9 +3832,15 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 				}
 #endif
 			} else {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_scattered_pkts_vec_avx2 :
-					iavf_recv_scattered_pkts_vec;
+				dev->rx_pkt_burst = iavf_recv_scattered_pkts_vec;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3131,24 +3853,40 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 #endif
 			}
 		} else {
-			if (!use_avx512) {
-				PMD_DRV_LOG(DEBUG, "Using %sVector Rx (port %d).",
-					    use_avx2 ? "avx2 " : "",
+			if (!use_avx2 && !use_avx512) {
+				PMD_DRV_LOG(DEBUG, "Using Vector Rx (port %d).",
 					    dev->data->port_id);
 			} else {
-				if (check_ret == IAVF_VECTOR_PATH)
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 Vector Rx (port %d).",
-						    dev->data->port_id);
-				else
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 OFFLOAD Vector Rx (port %d).",
-						    dev->data->port_id);
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 Vector Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 OFFLOAD Vector Rx (port %d).",
+							    dev->data->port_id);
+				} else {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 Vector Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 OFFLOAD Vector Rx (port %d).",
+							    dev->data->port_id);
+				}
 			}
 			if (use_flex) {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_pkts_vec_avx2_flex_rxd :
-					iavf_recv_pkts_vec_flex_rxd;
+				dev->rx_pkt_burst = iavf_recv_pkts_vec_flex_rxd;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2_flex_rxd;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2_flex_rxd_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3160,9 +3898,15 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 				}
 #endif
 			} else {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_pkts_vec_avx2 :
-					iavf_recv_pkts_vec;
+				dev->rx_pkt_burst = iavf_recv_pkts_vec;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3176,6 +3920,10 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			}
 		}
 
+		if (no_poll_on_link_down) {
+			adapter->rx_pkt_burst = dev->rx_pkt_burst;
+			dev->rx_pkt_burst = iavf_recv_pkts_no_poll;
+		}
 		return;
 	}
 #elif defined RTE_ARCH_ARM
@@ -3191,6 +3939,11 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			(void)iavf_rxq_vec_setup(rxq);
 		}
 		dev->rx_pkt_burst = iavf_recv_pkts_vec;
+
+		if (no_poll_on_link_down) {
+			adapter->rx_pkt_burst = dev->rx_pkt_burst;
+			dev->rx_pkt_burst = iavf_recv_pkts_no_poll;
+		}
 		return;
 	}
 #endif
@@ -3213,12 +3966,20 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 		else
 			dev->rx_pkt_burst = iavf_recv_pkts;
 	}
+
+	if (no_poll_on_link_down) {
+		adapter->rx_pkt_burst = dev->rx_pkt_burst;
+		dev->rx_pkt_burst = iavf_recv_pkts_no_poll;
+	}
 }
 
 /* choose tx function*/
 void
 iavf_set_tx_function(struct rte_eth_dev *dev)
 {
+	struct iavf_adapter *adapter =
+		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	int no_poll_on_link_down = adapter->devargs.no_poll_on_link_down;
 #ifdef RTE_ARCH_X86
 	struct iavf_tx_queue *txq;
 	int i;
@@ -3231,14 +3992,14 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 
 	if (check_ret >= 0 &&
 	    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
-		/* SSE and AVX2 not support offload path yet. */
+		/* SSE not support offload path yet. */
 		if (check_ret == IAVF_VECTOR_PATH) {
 			use_sse = true;
-			if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
-			     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
-			    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
-				use_avx2 = true;
 		}
+		if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
+		     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
+		    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
+			use_avx2 = true;
 #ifdef CC_AVX512_SUPPORT
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1 &&
 		    rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512BW) == 1 &&
@@ -3249,25 +4010,43 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 		if (!use_sse && !use_avx2 && !use_avx512)
 			goto normal;
 
-		if (!use_avx512) {
-			PMD_DRV_LOG(DEBUG, "Using %sVector Tx (port %d).",
-				    use_avx2 ? "avx2 " : "",
-				    dev->data->port_id);
-			dev->tx_pkt_burst = use_avx2 ?
-					    iavf_xmit_pkts_vec_avx2 :
-					    iavf_xmit_pkts_vec;
-		}
 		dev->tx_pkt_prepare = NULL;
+		if (use_sse) {
+			PMD_DRV_LOG(DEBUG, "Using Vector Tx (port %d).",
+				    dev->data->port_id);
+			dev->tx_pkt_burst = iavf_xmit_pkts_vec;
+		}
+		if (use_avx2) {
+			if (check_ret == IAVF_VECTOR_PATH) {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx2;
+				PMD_DRV_LOG(DEBUG, "Using AVX2 Vector Tx (port %d).",
+					    dev->data->port_id);
+			} else if (check_ret == IAVF_VECTOR_CTX_OFFLOAD_PATH) {
+				PMD_DRV_LOG(DEBUG,
+					"AVX2 does not support outer checksum offload.");
+				goto normal;
+			} else {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx2_offload;
+				dev->tx_pkt_prepare = iavf_prep_pkts;
+				PMD_DRV_LOG(DEBUG, "Using AVX2 OFFLOAD Vector Tx (port %d).",
+					    dev->data->port_id);
+			}
+		}
 #ifdef CC_AVX512_SUPPORT
 		if (use_avx512) {
 			if (check_ret == IAVF_VECTOR_PATH) {
 				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx512;
 				PMD_DRV_LOG(DEBUG, "Using AVX512 Vector Tx (port %d).",
 					    dev->data->port_id);
-			} else {
+			} else if (check_ret == IAVF_VECTOR_OFFLOAD_PATH) {
 				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx512_offload;
 				dev->tx_pkt_prepare = iavf_prep_pkts;
 				PMD_DRV_LOG(DEBUG, "Using AVX512 OFFLOAD Vector Tx (port %d).",
+					    dev->data->port_id);
+			} else {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx512_ctx_offload;
+				dev->tx_pkt_prepare = iavf_prep_pkts;
+				PMD_DRV_LOG(DEBUG, "Using AVX512 CONTEXT OFFLOAD Vector Tx (port %d).",
 					    dev->data->port_id);
 			}
 		}
@@ -3287,6 +4066,10 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 #endif
 		}
 
+		if (no_poll_on_link_down) {
+			adapter->tx_pkt_burst = dev->tx_pkt_burst;
+			dev->tx_pkt_burst = iavf_xmit_pkts_no_poll;
+		}
 		return;
 	}
 
@@ -3296,6 +4079,11 @@ normal:
 		    dev->data->port_id);
 	dev->tx_pkt_burst = iavf_xmit_pkts;
 	dev->tx_pkt_prepare = iavf_prep_pkts;
+
+	if (no_poll_on_link_down) {
+		adapter->tx_pkt_burst = dev->tx_pkt_burst;
+		dev->tx_pkt_burst = iavf_xmit_pkts_no_poll;
+	}
 }
 
 static int

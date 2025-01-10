@@ -25,7 +25,6 @@
  * not used as offload flags to pick function
  */
 #define NIX_RX_MULTI_SEG_F BIT(14)
-#define CPT_RX_WQE_F	   BIT(15)
 
 #define CNXK_NIX_CQ_ENTRY_SZ 128
 #define NIX_DESCS_PER_LOOP   4
@@ -789,7 +788,7 @@ cn9k_nix_recv_pkts_vector(void *rx_queue, struct rte_mbuf **rx_pkts,
 				 */
 				rxq->tstamp->rx_ready = 1;
 				rxq->tstamp->rx_tstamp =
-					ts[31 - __builtin_clz(res)];
+					ts[31 - rte_clz32(res)];
 			}
 		}
 

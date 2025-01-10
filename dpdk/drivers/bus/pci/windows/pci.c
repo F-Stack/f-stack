@@ -88,6 +88,30 @@ rte_pci_write_config(const struct rte_pci_device *dev __rte_unused,
 	return 0;
 }
 
+/* Read PCI MMIO space. */
+int
+rte_pci_mmio_read(const struct rte_pci_device *dev, int bar,
+		      void *buf, size_t len, off_t offset)
+{
+	if (bar >= PCI_MAX_RESOURCE || dev->mem_resource[bar].addr == NULL ||
+			(uint64_t)offset + len > dev->mem_resource[bar].len)
+		return -1;
+	memcpy(buf, (uint8_t *)dev->mem_resource[bar].addr + offset, len);
+	return len;
+}
+
+/* Write PCI MMIO space. */
+int
+rte_pci_mmio_write(const struct rte_pci_device *dev, int bar,
+		       const void *buf, size_t len, off_t offset)
+{
+	if (bar >= PCI_MAX_RESOURCE || dev->mem_resource[bar].addr == NULL ||
+			(uint64_t)offset + len > dev->mem_resource[bar].len)
+		return -1;
+	memcpy((uint8_t *)dev->mem_resource[bar].addr + offset, buf, len);
+	return len;
+}
+
 enum rte_iova_mode
 pci_device_iova_mode(const struct rte_pci_driver *pdrv __rte_unused,
 		const struct rte_pci_device *pdev __rte_unused)
@@ -336,6 +360,7 @@ set_kernel_driver_type(PSP_DEVINFO_DATA device_info_data,
 static int
 pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 {
+	struct rte_pci_device_internal *pdev = NULL;
 	struct rte_pci_device *dev = NULL;
 	int ret = -1;
 	char  pci_device_info[REGSTR_VAL_MAX_HCID_LEN];
@@ -370,11 +395,14 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 		goto end;
 	}
 
-	dev = malloc(sizeof(*dev));
-	if (dev == NULL)
+	pdev = malloc(sizeof(*pdev));
+	if (pdev == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot allocate memory for internal pci device\n");
 		goto end;
+	}
 
-	memset(dev, 0, sizeof(*dev));
+	memset(pdev, 0, sizeof(*pdev));
+	dev = &pdev->device;
 
 	dev->device.bus = &rte_pci_bus.bus;
 	dev->addr = addr;
@@ -409,7 +437,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 				dev2->max_vfs = dev->max_vfs;
 				memmove(dev2->mem_resource, dev->mem_resource,
 					sizeof(dev->mem_resource));
-				pci_free(dev);
+				pci_free(pdev);
 			}
 			return 0;
 		}
@@ -418,7 +446,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 
 	return 0;
 end:
-	pci_free(dev);
+	pci_free(pdev);
 	return ret;
 }
 

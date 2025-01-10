@@ -5,6 +5,8 @@
 #ifndef __CPT_HW_H__
 #define __CPT_HW_H__
 
+#include "roc_platform.h"
+
 /* Register offsets */
 
 #define CPT_COMP_NOT_DONE (0x0ull)
@@ -14,6 +16,8 @@
 #define CPT_COMP_HWERR	  (0x4ull)
 #define CPT_COMP_INSTERR  (0x5ull)
 #define CPT_COMP_WARN	  (0x6ull) /* [CN10K, .) */
+
+#define CPT_COMP_HWGOOD_MASK ((1U << CPT_COMP_WARN) | (1U << CPT_COMP_GOOD))
 
 #define CPT_LF_INT_VEC_MISC	(0x0ull)
 #define CPT_LF_INT_VEC_DONE	(0x1ull)
@@ -45,7 +49,40 @@
 #define CPT_AF_LFX_CTL(a)  (0x27000ull | (uint64_t)(a) << 3)
 #define CPT_AF_LFX_CTL2(a) (0x29000ull | (uint64_t)(a) << 3)
 
+enum cpt_eng_type {
+	CPT_ENG_TYPE_AE = 1,
+	CPT_ENG_TYPE_SE = 2,
+	CPT_ENG_TYPE_IE = 3,
+	CPT_MAX_ENG_TYPES,
+};
+
 /* Structures definitions */
+
+/* CPT HW capabilities */
+union cpt_eng_caps {
+	uint64_t __io u;
+	struct {
+		uint64_t __io reserved_0_4 : 5;
+		uint64_t __io mul : 1;
+		uint64_t __io sha1_sha2 : 1;
+		uint64_t __io chacha20 : 1;
+		uint64_t __io zuc_snow3g : 1;
+		uint64_t __io sha3 : 1;
+		uint64_t __io aes : 1;
+		uint64_t __io kasumi : 1;
+		uint64_t __io des : 1;
+		uint64_t __io crc : 1;
+		uint64_t __io mmul : 1;
+		uint64_t __io reserved_15_20 : 6;
+		uint64_t __io sm3 : 1;
+		uint64_t __io sm4 : 1;
+		uint64_t __io reserved_23_34 : 12;
+		uint64_t __io sg_ver2 : 1;
+		uint64_t __io sm2 : 1;
+		uint64_t __io pdcp_chain_zuc256 : 1;
+		uint64_t __io reserved_38_63 : 26;
+	};
+};
 
 union cpt_lf_ctl {
 	uint64_t u;
@@ -65,6 +102,17 @@ union cpt_lf_ctx_flush {
 		uint64_t cptr : 46;
 		uint64_t inval : 1;
 		uint64_t reserved_47_63 : 17;
+	} s;
+};
+
+union cpt_lf_ctx_err {
+	uint64_t u;
+	struct {
+		uint64_t flush_st_flt : 1;
+		uint64_t busy_flr : 1;
+		uint64_t busy_sw_flush : 1;
+		uint64_t reload_faulted : 1;
+		uint64_t reserved_4_63 : 1;
 	} s;
 };
 

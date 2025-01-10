@@ -584,7 +584,7 @@ dpaa2_tm_configure_queue(struct rte_eth_dev *dev, struct dpaa2_tm_node *node)
 		return -1;
 	}
 
-	DPAA2_PMD_DEBUG("tc_id = %d, channel = %d\n\n", tc_id,
+	DPAA2_PMD_DEBUG("tc_id = %d, channel = %d", tc_id,
 			node->parent->channel_id);
 	ret = dpni_set_queue(dpni, CMD_PRI_LOW, priv->token, DPNI_QUEUE_TX,
 			     ((node->parent->channel_id << 8) | tc_id),
@@ -653,7 +653,7 @@ dpaa2_tm_sort_and_configure(struct rte_eth_dev *dev,
 	int i;
 
 	if (n == 1) {
-		DPAA2_PMD_DEBUG("node id = %d\n, priority = %d, index = %d\n",
+		DPAA2_PMD_DEBUG("node id = %d, priority = %d, index = %d",
 				nodes[n - 1]->id, nodes[n - 1]->priority,
 				n - 1);
 		dpaa2_tm_configure_queue(dev, nodes[n - 1]);
@@ -669,7 +669,7 @@ dpaa2_tm_sort_and_configure(struct rte_eth_dev *dev,
 	}
 	dpaa2_tm_sort_and_configure(dev, nodes, n - 1);
 
-	DPAA2_PMD_DEBUG("node id = %d\n, priority = %d, index = %d\n",
+	DPAA2_PMD_DEBUG("node id = %d, priority = %d, index = %d",
 			nodes[n - 1]->id, nodes[n - 1]->priority,
 			n - 1);
 	dpaa2_tm_configure_queue(dev, nodes[n - 1]);
@@ -684,6 +684,7 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 	struct dpaa2_tm_node *leaf_node, *temp_leaf_node, *channel_node;
 	struct fsl_mc_io *dpni = (struct fsl_mc_io *)dev->process_private;
 	int ret, t;
+	bool conf_schedule = false;
 
 	/* Populate TCs */
 	LIST_FOREACH(channel_node, &priv->nodes, next) {
@@ -709,7 +710,7 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 			}
 		}
 		if (i > 0) {
-			DPAA2_PMD_DEBUG("Configure queues\n");
+			DPAA2_PMD_DEBUG("Configure queues");
 			dpaa2_tm_sort_and_configure(dev, nodes, i);
 		}
 	}
@@ -733,13 +734,13 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 				node->profile->params.peak.rate / (1024 * 1024);
 			/* root node */
 			if (node->parent == NULL) {
-				DPAA2_PMD_DEBUG("LNI S.rate = %u, burst =%u\n",
+				DPAA2_PMD_DEBUG("LNI S.rate = %u, burst =%u",
 						tx_cr_shaper.rate_limit,
 						tx_cr_shaper.max_burst_size);
 				param = 0x2;
 				param |= node->profile->params.pkt_length_adjust << 16;
 			} else {
-				DPAA2_PMD_DEBUG("Channel = %d S.rate = %u\n",
+				DPAA2_PMD_DEBUG("Channel = %d S.rate = %u",
 						node->channel_id,
 						tx_cr_shaper.rate_limit);
 				param = (node->channel_id << 8);
@@ -757,7 +758,7 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 	}
 
 	LIST_FOREACH(channel_node, &priv->nodes, next) {
-		int wfq_grp = 0, is_wfq_grp = 0, conf[DPNI_MAX_TC];
+		int wfq_grp = 0, is_wfq_grp = 0, conf[priv->nb_tx_queues];
 		struct dpni_tx_priorities_cfg prio_cfg;
 
 		memset(&prio_cfg, 0, sizeof(prio_cfg));
@@ -767,6 +768,7 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 		if (channel_node->level_id != CHANNEL_LEVEL)
 			continue;
 
+		conf_schedule = false;
 		LIST_FOREACH(leaf_node, &priv->nodes, next) {
 			struct dpaa2_queue *leaf_dpaa2_q;
 			uint8_t leaf_tc_id;
@@ -789,6 +791,7 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 			if (leaf_node->parent != channel_node)
 				continue;
 
+			conf_schedule = true;
 			leaf_dpaa2_q =  (struct dpaa2_queue *)dev->data->tx_queues[leaf_node->id];
 			leaf_tc_id = leaf_dpaa2_q->tc_index;
 			/* Process sibling leaf nodes */
@@ -829,8 +832,8 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 						goto out;
 					}
 					is_wfq_grp = 1;
-					conf[temp_leaf_node->id] = 1;
 				}
+				conf[temp_leaf_node->id] = 1;
 			}
 			if (is_wfq_grp) {
 				if (wfq_grp == 0) {
@@ -851,6 +854,9 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 			}
 			conf[leaf_node->id] = 1;
 		}
+		if (!conf_schedule)
+			continue;
+
 		if (wfq_grp > 1) {
 			prio_cfg.separate_groups = 1;
 			if (prio_cfg.prio_group_B < prio_cfg.prio_group_A) {
@@ -864,6 +870,16 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 
 		prio_cfg.prio_group_A = 1;
 		prio_cfg.channel_idx = channel_node->channel_id;
+		DPAA2_PMD_DEBUG("########################################");
+		DPAA2_PMD_DEBUG("Channel idx = %d", prio_cfg.channel_idx);
+		for (t = 0; t < DPNI_MAX_TC; t++)
+			DPAA2_PMD_DEBUG("tc = %d mode = %d, delta = %d", t,
+					prio_cfg.tc_sched[t].mode,
+					prio_cfg.tc_sched[t].delta_bandwidth);
+
+		DPAA2_PMD_DEBUG("prioritya = %d, priorityb = %d, separate grps"
+				" = %d", prio_cfg.prio_group_A,
+				prio_cfg.prio_group_B, prio_cfg.separate_groups);
 		ret = dpni_set_tx_priorities(dpni, 0, priv->token, &prio_cfg);
 		if (ret) {
 			ret = -rte_tm_error_set(error, EINVAL,
@@ -871,15 +887,6 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 					"Scheduling Failed\n");
 			goto out;
 		}
-		DPAA2_PMD_DEBUG("########################################\n");
-		DPAA2_PMD_DEBUG("Channel idx = %d\n", prio_cfg.channel_idx);
-		for (t = 0; t < DPNI_MAX_TC; t++) {
-			DPAA2_PMD_DEBUG("tc = %d mode = %d ", t, prio_cfg.tc_sched[t].mode);
-			DPAA2_PMD_DEBUG("delta = %d\n", prio_cfg.tc_sched[t].delta_bandwidth);
-		}
-		DPAA2_PMD_DEBUG("prioritya = %d\n", prio_cfg.prio_group_A);
-		DPAA2_PMD_DEBUG("priorityb = %d\n", prio_cfg.prio_group_B);
-		DPAA2_PMD_DEBUG("separate grps = %d\n\n", prio_cfg.separate_groups);
 	}
 	return 0;
 

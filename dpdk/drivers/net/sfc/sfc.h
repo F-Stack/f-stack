@@ -31,6 +31,7 @@
 #include "sfc_flow_tunnel.h"
 #include "sfc_sriov.h"
 #include "sfc_mae.h"
+#include "sfc_tbls.h"
 #include "sfc_dp.h"
 #include "sfc_sw_stats.h"
 #include "sfc_repr_proxy.h"
@@ -68,9 +69,13 @@ struct sfc_port {
 
 	uint32_t			phy_adv_cap_mask;
 	uint32_t			phy_adv_cap;
+	uint32_t			fec_cfg;
+	bool				fec_auto;
 
 	unsigned int			flow_ctrl;
 	boolean_t			flow_ctrl_autoneg;
+	boolean_t			include_fcs;
+	boolean_t			vlan_strip;
 	size_t				pdu;
 
 	/*
@@ -244,8 +249,10 @@ struct sfc_adapter {
 	struct sfc_ft_ctx		ft_ctx_pool[SFC_FT_MAX_NTUNNELS];
 	struct sfc_filter		filter;
 	struct sfc_mae			mae;
+	struct sfc_tbls			hw_tables;
 	struct sfc_repr_proxy		repr_proxy;
 
+	struct sfc_flow_indir_actions	flow_indir_actions;
 	struct sfc_flow_list		flow_list;
 
 	unsigned int			rxq_max;
@@ -333,41 +340,12 @@ sfc_sa2shared(struct sfc_adapter *sa)
  * change the lock in one place.
  */
 
-static inline void
-sfc_adapter_lock_init(struct sfc_adapter *sa)
-{
-	rte_spinlock_init(&sa->lock);
-}
-
-static inline int
-sfc_adapter_is_locked(struct sfc_adapter *sa)
-{
-	return rte_spinlock_is_locked(&sa->lock);
-}
-
-static inline void
-sfc_adapter_lock(struct sfc_adapter *sa)
-{
-	rte_spinlock_lock(&sa->lock);
-}
-
-static inline int
-sfc_adapter_trylock(struct sfc_adapter *sa)
-{
-	return rte_spinlock_trylock(&sa->lock);
-}
-
-static inline void
-sfc_adapter_unlock(struct sfc_adapter *sa)
-{
-	rte_spinlock_unlock(&sa->lock);
-}
-
-static inline void
-sfc_adapter_lock_fini(__rte_unused struct sfc_adapter *sa)
-{
-	/* Just for symmetry of the API */
-}
+#define sfc_adapter_lock_init(sa) rte_spinlock_init(&(sa)->lock)
+#define sfc_adapter_is_locked(sa) rte_spinlock_is_locked(&(sa)->lock)
+#define sfc_adapter_lock(sa) rte_spinlock_lock(&(sa)->lock)
+#define sfc_adapter_trylock(sa) rte_spinlock_trylock(&(sa)->lock)
+#define sfc_adapter_unlock(sa) rte_spinlock_unlock(&(sa)->lock)
+#define sfc_adapter_lock_fini(sa) RTE_SET_USED(sa)
 
 static inline unsigned int
 sfc_nb_counter_rxq(const struct sfc_adapter_shared *sas)

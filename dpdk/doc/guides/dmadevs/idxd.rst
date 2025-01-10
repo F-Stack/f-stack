@@ -35,6 +35,12 @@ Device Setup
 Intel\ |reg| DSA devices can use the IDXD kernel driver or DPDK-supported drivers,
 such as ``vfio-pci``. Both are supported by the IDXD PMD.
 
+.. note::
+
+   To use Intel\ |reg| DSA devices in DPDK multi-process applications,
+   the devices should be bound to the vfio-pci driver.
+   Multi-process is not supported when using the kernel IDXD driver.
+
 Intel\ |reg| DSA devices using IDXD kernel driver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -116,6 +122,13 @@ and to bind them to a suitable DPDK-supported driver, such as ``vfio-pci``.
 For example::
 
 	$ dpdk-devbind.py -b vfio-pci 6a:01.0
+
+.. note::
+
+   Since each individual queue on the HW device is its own separate dmadev instance,
+   the internal DMA device name includes the HW queue ID as a suffix on the PCI address.
+   The above device when used by a DPDK application will be accessible via dmadevs with names:
+   ``0000:6a:01.0-q0``, ``00006a:01.0-q1``, etc.
 
 Device Probing and Initialization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

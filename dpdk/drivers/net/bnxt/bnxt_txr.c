@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -143,6 +143,49 @@ bnxt_zero_data_len_tso_segsz(struct rte_mbuf *tx_pkt, uint8_t data_len_chk)
 	return false;
 }
 
+static bool
+bnxt_check_pkt_needs_ts(struct rte_mbuf *m)
+{
+	const struct rte_ether_hdr *eth_hdr;
+	struct rte_ether_hdr _eth_hdr;
+	uint16_t eth_type, proto;
+	uint32_t off = 0;
+	/*
+	 * Check that the received packet is a eCPRI packet
+	 */
+	eth_hdr = rte_pktmbuf_read(m, off, sizeof(_eth_hdr), &_eth_hdr);
+	eth_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+	off += sizeof(*eth_hdr);
+	if (eth_type == RTE_ETHER_TYPE_ECPRI)
+		return true;
+	/* Check for single tagged and double tagged VLANs */
+	if (eth_type == RTE_ETHER_TYPE_VLAN) {
+		const struct rte_vlan_hdr *vh;
+		struct rte_vlan_hdr vh_copy;
+
+		vh = rte_pktmbuf_read(m, off, sizeof(*vh), &vh_copy);
+		if (unlikely(vh == NULL))
+			return false;
+		off += sizeof(*vh);
+		proto = rte_be_to_cpu_16(vh->eth_proto);
+		if (proto == RTE_ETHER_TYPE_ECPRI)
+			return true;
+		if (proto == RTE_ETHER_TYPE_VLAN) {
+			const struct rte_vlan_hdr *vh;
+			struct rte_vlan_hdr vh_copy;
+
+			vh = rte_pktmbuf_read(m, off, sizeof(*vh), &vh_copy);
+			if (unlikely(vh == NULL))
+				return false;
+			off += sizeof(*vh);
+			proto = rte_be_to_cpu_16(vh->eth_proto);
+			if (proto == RTE_ETHER_TYPE_ECPRI)
+				return true;
+		}
+	}
+	return false;
+}
+
 static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				struct bnxt_tx_queue *txq,
 				uint16_t *coal_pkts,
@@ -157,6 +200,7 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	bool long_bd = false;
 	unsigned short nr_bds;
 	uint16_t prod;
+	bool pkt_needs_ts = 0;
 	struct rte_mbuf *m_seg;
 	struct rte_mbuf **tx_buf;
 	static const uint32_t lhint_arr[4] = {
@@ -202,9 +246,13 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, 1)))
 		return -EIO;
 
+	if (unlikely(txq->bp->ptp_cfg != NULL && txq->bp->ptp_all_rx_tstamp == 1))
+		pkt_needs_ts = bnxt_check_pkt_needs_ts(tx_pkt);
+
 	prod = RING_IDX(ring, txr->tx_raw_prod);
 	tx_buf = &txr->tx_buf_ring[prod];
 	*tx_buf = tx_pkt;
+	txr->nr_bds[prod] = nr_bds;
 
 	txbd = &txr->tx_desc_ring[prod];
 	txbd->opaque = *coal_pkts;
@@ -255,17 +303,24 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		 */
 		txbd1->kid_or_ts_high_mss = 0;
 
-		if (txq->vfr_tx_cfa_action)
-			txbd1->cfa_action = txq->vfr_tx_cfa_action;
-		else
-			txbd1->cfa_action = txq->bp->tx_cfa_action;
+		if (txq->vfr_tx_cfa_action) {
+			txbd1->cfa_action = txq->vfr_tx_cfa_action & 0xffff;
+			txbd1->cfa_action_high = (txq->vfr_tx_cfa_action >> 16) &
+				TX_BD_LONG_CFA_ACTION_HIGH_MASK;
+		} else {
+			txbd1->cfa_action = txq->bp->tx_cfa_action & 0xffff;
+			txbd1->cfa_action_high = (txq->bp->tx_cfa_action >> 16) &
+				TX_BD_LONG_CFA_ACTION_HIGH_MASK;
+		}
 
 		if (tx_pkt->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			uint16_t hdr_size;
 
 			/* TSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_LSO |
-					 TX_BD_LONG_LFLAGS_T_IPID;
+					 TX_BD_LONG_LFLAGS_T_IPID |
+					 TX_BD_LONG_LFLAGS_TCP_UDP_CHKSUM |
+					 TX_BD_LONG_LFLAGS_T_IP_CHKSUM;
 			hdr_size = tx_pkt->l2_len + tx_pkt->l3_len +
 					tx_pkt->l4_len;
 			hdr_size += (tx_pkt->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
@@ -341,7 +396,7 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 			/* IP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_T_IP_CHKSUM;
 		} else if ((tx_pkt->ol_flags & RTE_MBUF_F_TX_IEEE1588_TMST) ==
-			   RTE_MBUF_F_TX_IEEE1588_TMST) {
+			   RTE_MBUF_F_TX_IEEE1588_TMST || pkt_needs_ts) {
 			/* PTP */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_STAMP;
 		}
@@ -427,8 +482,7 @@ static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
 		unsigned short nr_bds;
 
 		tx_buf = &txr->tx_buf_ring[RING_IDX(ring, raw_cons)];
-		nr_bds = (*tx_buf)->nb_segs +
-			 bnxt_xmit_need_long_bd(*tx_buf, txq);
+		nr_bds = txr->nr_bds[RING_IDX(ring, raw_cons)];
 		for (j = 0; j < nr_bds; j++) {
 			mbuf = *tx_buf;
 			*tx_buf = NULL;

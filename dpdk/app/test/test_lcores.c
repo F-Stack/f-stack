@@ -2,23 +2,23 @@
  * Copyright (c) 2020 Red Hat, Inc.
  */
 
-#include <pthread.h>
 #include <string.h>
 
 #include <rte_common.h>
 #include <rte_errno.h>
 #include <rte_lcore.h>
+#include <rte_thread.h>
 
 #include "test.h"
 
 struct thread_context {
 	enum { Thread_INIT, Thread_ERROR, Thread_DONE } state;
 	bool lcore_id_any;
-	pthread_t id;
+	rte_thread_t id;
 	unsigned int *registered_count;
 };
 
-static void *thread_loop(void *arg)
+static uint32_t thread_loop(void *arg)
 {
 	struct thread_context *t = arg;
 	unsigned int lcore_id;
@@ -39,7 +39,7 @@ static void *thread_loop(void *arg)
 		t->state = Thread_ERROR;
 	}
 	/* Report register happened to the control thread. */
-	__atomic_add_fetch(t->registered_count, 1, __ATOMIC_RELEASE);
+	__atomic_fetch_add(t->registered_count, 1, __ATOMIC_RELEASE);
 
 	/* Wait for release from the control thread. */
 	while (__atomic_load_n(t->registered_count, __ATOMIC_ACQUIRE) != 0)
@@ -55,7 +55,7 @@ static void *thread_loop(void *arg)
 	if (t->state != Thread_ERROR)
 		t->state = Thread_DONE;
 
-	return NULL;
+	return 0;
 }
 
 static int
@@ -77,7 +77,7 @@ test_non_eal_lcores(unsigned int eal_threads_count)
 		t->state = Thread_INIT;
 		t->registered_count = &registered_count;
 		t->lcore_id_any = false;
-		if (pthread_create(&t->id, NULL, thread_loop, t) != 0)
+		if (rte_thread_create(&t->id, NULL, thread_loop, t) != 0)
 			break;
 		non_eal_threads_count++;
 	}
@@ -96,7 +96,7 @@ test_non_eal_lcores(unsigned int eal_threads_count)
 	t->state = Thread_INIT;
 	t->registered_count = &registered_count;
 	t->lcore_id_any = true;
-	if (pthread_create(&t->id, NULL, thread_loop, t) == 0) {
+	if (rte_thread_create(&t->id, NULL, thread_loop, t) == 0) {
 		non_eal_threads_count++;
 		printf("non-EAL threads count: %u\n", non_eal_threads_count);
 		while (__atomic_load_n(&registered_count, __ATOMIC_ACQUIRE) !=
@@ -110,7 +110,7 @@ skip_lcore_any:
 	ret = 0;
 	for (i = 0; i < non_eal_threads_count; i++) {
 		t = &thread_contexts[i];
-		pthread_join(t->id, NULL);
+		rte_thread_join(t->id, NULL);
 		if (t->state != Thread_DONE)
 			ret = -1;
 	}
@@ -262,7 +262,7 @@ test_non_eal_lcores_callback(unsigned int eal_threads_count)
 	t->state = Thread_INIT;
 	t->registered_count = &registered_count;
 	t->lcore_id_any = false;
-	if (pthread_create(&t->id, NULL, thread_loop, t) != 0)
+	if (rte_thread_create(&t->id, NULL, thread_loop, t) != 0)
 		goto cleanup_threads;
 	non_eal_threads_count++;
 	while (__atomic_load_n(&registered_count, __ATOMIC_ACQUIRE) !=
@@ -285,7 +285,7 @@ test_non_eal_lcores_callback(unsigned int eal_threads_count)
 	t->state = Thread_INIT;
 	t->registered_count = &registered_count;
 	t->lcore_id_any = true;
-	if (pthread_create(&t->id, NULL, thread_loop, t) != 0)
+	if (rte_thread_create(&t->id, NULL, thread_loop, t) != 0)
 		goto cleanup_threads;
 	non_eal_threads_count++;
 	while (__atomic_load_n(&registered_count, __ATOMIC_ACQUIRE) !=
@@ -309,7 +309,7 @@ test_non_eal_lcores_callback(unsigned int eal_threads_count)
 	ret = 0;
 	for (i = 0; i < non_eal_threads_count; i++) {
 		t = &thread_contexts[i];
-		pthread_join(t->id, NULL);
+		rte_thread_join(t->id, NULL);
 		if (t->state != Thread_DONE)
 			ret = -1;
 	}
@@ -330,7 +330,7 @@ cleanup_threads:
 	__atomic_store_n(&registered_count, 0, __ATOMIC_RELEASE);
 	for (i = 0; i < non_eal_threads_count; i++) {
 		t = &thread_contexts[i];
-		pthread_join(t->id, NULL);
+		rte_thread_join(t->id, NULL);
 	}
 error:
 	if (handle[1] != NULL)
@@ -340,7 +340,7 @@ error:
 	return -1;
 }
 
-static void *ctrl_thread_loop(void *arg)
+static uint32_t ctrl_thread_loop(void *arg)
 {
 	struct thread_context *t = arg;
 
@@ -349,7 +349,7 @@ static void *ctrl_thread_loop(void *arg)
 	/* Set the thread state to DONE */
 	t->state = Thread_DONE;
 
-	return NULL;
+	return 0;
 }
 
 static int
@@ -361,15 +361,15 @@ test_ctrl_thread(void)
 	/* Create one control thread */
 	t = &ctrl_thread_context;
 	t->state = Thread_INIT;
-	if (rte_ctrl_thread_create(&t->id, "test_ctrl_threads",
-					NULL, ctrl_thread_loop, t) != 0)
+	if (rte_thread_create_control(&t->id, "dpdk-test-ctrlt",
+				ctrl_thread_loop, t) != 0)
 		return -1;
 
 	/* Wait till the control thread exits.
 	 * This also acts as the barrier such that the memory operations
 	 * in control thread are visible to this thread.
 	 */
-	pthread_join(t->id, NULL);
+	rte_thread_join(t->id, NULL);
 
 	/* Check if the control thread set the correct state */
 	if (t->state != Thread_DONE)
@@ -383,9 +383,6 @@ test_lcores(void)
 {
 	unsigned int eal_threads_count = 0;
 	unsigned int i;
-
-	if (RTE_EXEC_ENV_IS_WINDOWS)
-		return TEST_SKIPPED;
 
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		if (!rte_lcore_has_role(i, ROLE_OFF))
@@ -414,4 +411,4 @@ test_lcores(void)
 	return TEST_SUCCESS;
 }
 
-REGISTER_TEST_COMMAND(lcores_autotest, test_lcores);
+REGISTER_FAST_TEST(lcores_autotest, true, true, test_lcores);

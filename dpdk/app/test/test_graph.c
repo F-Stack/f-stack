@@ -661,6 +661,215 @@ test_create_graph(void)
 }
 
 static int
+test_graph_clone(void)
+{
+	rte_graph_t cloned_graph_id = RTE_GRAPH_ID_INVALID;
+	rte_graph_t main_graph_id = RTE_GRAPH_ID_INVALID;
+	struct rte_graph_param graph_conf = {0};
+	int ret = 0;
+
+	main_graph_id = rte_graph_from_name("worker0");
+	if (main_graph_id == RTE_GRAPH_ID_INVALID) {
+		printf("Must create main graph first\n");
+		ret = -1;
+	}
+
+	graph_conf.dispatch.mp_capacity = 1024;
+	graph_conf.dispatch.wq_size_max = 32;
+
+	cloned_graph_id = rte_graph_clone(main_graph_id, "cloned-test0", &graph_conf);
+
+	if (cloned_graph_id == RTE_GRAPH_ID_INVALID) {
+		printf("Graph creation failed with error = %d\n", rte_errno);
+		ret = -1;
+	}
+
+	if (strcmp(rte_graph_id_to_name(cloned_graph_id), "worker0-cloned-test0")) {
+		printf("Cloned graph should name as %s but get %s\n", "worker0-cloned-test",
+		       rte_graph_id_to_name(cloned_graph_id));
+		ret = -1;
+	}
+
+	rte_graph_destroy(cloned_graph_id);
+
+	return ret;
+}
+
+static int
+test_graph_id_collisions(void)
+{
+	static const char *node_patterns[] = {"test_node_source1", "test_node00"};
+	struct rte_graph_param gconf = {
+		.socket_id = SOCKET_ID_ANY,
+		.nb_node_patterns = 2,
+		.node_patterns = node_patterns,
+	};
+	rte_graph_t g1, g2, g3, g4;
+
+	g1 = rte_graph_create("worker1", &gconf);
+	if (g1 == RTE_GRAPH_ID_INVALID) {
+		printf("Graph 1 creation failed with error = %d\n", rte_errno);
+		return -1;
+	}
+	g2 = rte_graph_create("worker2", &gconf);
+	if (g2 == RTE_GRAPH_ID_INVALID) {
+		printf("Graph 2 creation failed with error = %d\n", rte_errno);
+		return -1;
+	}
+	g3 = rte_graph_create("worker3", &gconf);
+	if (g3 == RTE_GRAPH_ID_INVALID) {
+		printf("Graph 3 creation failed with error = %d\n", rte_errno);
+		return -1;
+	}
+	if (g1 == g2 || g2 == g3 || g1 == g3) {
+		printf("Graph ids should be different\n");
+		return -1;
+	}
+	if (rte_graph_destroy(g2) < 0) {
+		printf("Graph 2 suppression failed\n");
+		return -1;
+	}
+	g4 = rte_graph_create("worker4", &gconf);
+	if (g4 == RTE_GRAPH_ID_INVALID) {
+		printf("Graph 4 creation failed with error = %d\n", rte_errno);
+		return -1;
+	}
+	if (g1 == g3 || g1 == g4 || g3 == g4) {
+		printf("Graph ids should be different\n");
+		return -1;
+	}
+	g2 = rte_graph_clone(g1, "worker2", &gconf);
+	if (g2 == RTE_GRAPH_ID_INVALID) {
+		printf("Graph 4 creation failed with error = %d\n", rte_errno);
+		return -1;
+	}
+	if (g1 == g2 || g1 == g3 || g1 == g4 || g2 == g3 || g2 == g4 || g3 == g4) {
+		printf("Graph ids should be different\n");
+		return -1;
+	}
+	if (rte_graph_destroy(g1) < 0) {
+		printf("Graph 1 suppression failed\n");
+		return -1;
+	}
+	if (rte_graph_destroy(g2) < 0) {
+		printf("Graph 2 suppression failed\n");
+		return -1;
+	}
+	if (rte_graph_destroy(g3) < 0) {
+		printf("Graph 3 suppression failed\n");
+		return -1;
+	}
+	if (rte_graph_destroy(g4) < 0) {
+		printf("Graph 4 suppression failed\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int
+test_graph_model_mcore_dispatch_node_lcore_affinity_set(void)
+{
+	rte_graph_t cloned_graph_id = RTE_GRAPH_ID_INVALID;
+	unsigned int worker_lcore = RTE_MAX_LCORE;
+	struct rte_graph_param graph_conf = {0};
+	rte_node_t nid = RTE_NODE_ID_INVALID;
+	char node_name[64] = "test_node00";
+	struct rte_node *node;
+	int ret = 0;
+
+	worker_lcore = rte_get_next_lcore(worker_lcore, true, 1);
+	ret = rte_graph_model_mcore_dispatch_node_lcore_affinity_set(node_name, worker_lcore);
+	if (ret == 0)
+		printf("Set node %s affinity to lcore %u\n", node_name, worker_lcore);
+
+	nid = rte_node_from_name(node_name);
+	cloned_graph_id = rte_graph_clone(graph_id, "cloned-test1", &graph_conf);
+	node = rte_graph_node_get(cloned_graph_id, nid);
+
+	if (node->dispatch.lcore_id != worker_lcore) {
+		printf("set node affinity failed\n");
+		ret = -1;
+	}
+
+	rte_graph_destroy(cloned_graph_id);
+
+	return ret;
+}
+
+static int
+test_graph_model_mcore_dispatch_core_bind_unbind(void)
+{
+	rte_graph_t cloned_graph_id = RTE_GRAPH_ID_INVALID;
+	unsigned int worker_lcore = RTE_MAX_LCORE;
+	struct rte_graph_param graph_conf = {0};
+	struct rte_graph *graph;
+	int ret = 0;
+
+	worker_lcore = rte_get_next_lcore(worker_lcore, true, 1);
+	cloned_graph_id = rte_graph_clone(graph_id, "cloned-test2", &graph_conf);
+
+	ret = rte_graph_worker_model_set(RTE_GRAPH_MODEL_MCORE_DISPATCH);
+	if (ret != 0) {
+		printf("Set graph mcore dispatch model failed\n");
+		goto fail;
+	}
+
+	ret = rte_graph_model_mcore_dispatch_core_bind(cloned_graph_id, worker_lcore);
+	if (ret != 0) {
+		printf("bind graph %d to lcore %u failed\n", graph_id, worker_lcore);
+		goto fail;
+	}
+
+	graph = rte_graph_lookup("worker0-cloned-test2");
+
+	if (graph->dispatch.lcore_id != worker_lcore) {
+		printf("bind graph %s(id:%d) with lcore %u failed\n",
+		       graph->name, graph->id, worker_lcore);
+		ret = -1;
+		goto fail;
+	}
+
+	rte_graph_model_mcore_dispatch_core_unbind(cloned_graph_id);
+	if (graph->dispatch.lcore_id != RTE_MAX_LCORE) {
+		printf("unbind graph %s(id:%d) failed %d\n",
+		       graph->name, graph->id, graph->dispatch.lcore_id);
+		ret = -1;
+	}
+
+fail:
+	rte_graph_destroy(cloned_graph_id);
+
+	return ret;
+}
+
+static int
+test_graph_worker_model_set_get(void)
+{
+	rte_graph_t cloned_graph_id = RTE_GRAPH_ID_INVALID;
+	struct rte_graph_param graph_conf = {0};
+	struct rte_graph *graph;
+	int ret = 0;
+
+	cloned_graph_id = rte_graph_clone(graph_id, "cloned-test3", &graph_conf);
+	ret = rte_graph_worker_model_set(RTE_GRAPH_MODEL_MCORE_DISPATCH);
+	if (ret != 0) {
+		printf("Set graph mcore dispatch model failed\n");
+		goto fail;
+	}
+
+	graph = rte_graph_lookup("worker0-cloned-test3");
+	if (rte_graph_worker_model_get(graph) != RTE_GRAPH_MODEL_MCORE_DISPATCH) {
+		printf("Get graph worker model failed\n");
+		ret = -1;
+	}
+
+fail:
+	rte_graph_destroy(cloned_graph_id);
+
+	return ret;
+}
+
+static int
 test_graph_walk(void)
 {
 	struct rte_graph *graph = rte_graph_lookup("worker0");
@@ -837,6 +1046,11 @@ static struct unit_test_suite graph_testsuite = {
 		TEST_CASE(test_update_edges),
 		TEST_CASE(test_lookup_functions),
 		TEST_CASE(test_create_graph),
+		TEST_CASE(test_graph_clone),
+		TEST_CASE(test_graph_id_collisions),
+		TEST_CASE(test_graph_model_mcore_dispatch_node_lcore_affinity_set),
+		TEST_CASE(test_graph_model_mcore_dispatch_core_bind_unbind),
+		TEST_CASE(test_graph_worker_model_set_get),
 		TEST_CASE(test_graph_lookup_functions),
 		TEST_CASE(test_graph_walk),
 		TEST_CASE(test_print_stats),
@@ -850,7 +1064,7 @@ graph_autotest_fn(void)
 	return unit_test_suite_runner(&graph_testsuite);
 }
 
-REGISTER_TEST_COMMAND(graph_autotest, graph_autotest_fn);
+REGISTER_FAST_TEST(graph_autotest, true, true, graph_autotest_fn);
 
 static int
 test_node_list_dump(void)
@@ -862,4 +1076,4 @@ test_node_list_dump(void)
 
 #endif /* !RTE_EXEC_ENV_WINDOWS */
 
-REGISTER_TEST_COMMAND(node_list_dump, test_node_list_dump);
+REGISTER_FAST_TEST(node_list_dump, true, true, test_node_list_dump);

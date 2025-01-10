@@ -16,120 +16,7 @@
 static __rte_always_inline void
 ice_rxq_rearm(struct ice_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
-	struct rte_mempool_cache *cache = rte_mempool_default_cache(rxq->mp,
-			rte_lcore_id());
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	if (unlikely(!cache))
-		return ice_rxq_rearm_common(rxq, true);
-
-	/* We need to pull 'n' more MBUFs into the software ring */
-	if (cache->len < ICE_RXQ_REARM_THRESH) {
-		uint32_t req = ICE_RXQ_REARM_THRESH + (cache->size -
-				cache->len);
-
-		int ret = rte_mempool_ops_dequeue_bulk(rxq->mp,
-				&cache->objs[cache->len], req);
-		if (ret == 0) {
-			cache->len += req;
-		} else {
-			if (rxq->rxrearm_nb + ICE_RXQ_REARM_THRESH >=
-			    rxq->nb_rx_desc) {
-				__m128i dma_addr0;
-
-				dma_addr0 = _mm_setzero_si128();
-				for (i = 0; i < ICE_DESCS_PER_LOOP; i++) {
-					rxep[i].mbuf = &rxq->fake_mbuf;
-					_mm_store_si128
-						((__m128i *)&rxdp[i].read,
-							dma_addr0);
-				}
-			}
-			rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-				ICE_RXQ_REARM_THRESH;
-			return;
-		}
-	}
-
-	const __m512i iova_offsets =  _mm512_set1_epi64
-		(offsetof(struct rte_mbuf, buf_iova));
-	const __m512i headroom = _mm512_set1_epi64(RTE_PKTMBUF_HEADROOM);
-
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-	/* shuffle the iova into correct slots. Values 4-7 will contain
-	 * zeros, so use 7 for a zero-value.
-	 */
-	const __m512i permute_idx = _mm512_set_epi64(7, 7, 3, 1, 7, 7, 2, 0);
-#else
-	const __m512i permute_idx = _mm512_set_epi64(7, 3, 6, 2, 5, 1, 4, 0);
-#endif
-
-	/* fill up the rxd in vector, process 8 mbufs in one loop */
-	for (i = 0; i < ICE_RXQ_REARM_THRESH / 8; i++) {
-		const __m512i mbuf_ptrs = _mm512_loadu_si512
-			(&cache->objs[cache->len - 8]);
-		_mm512_store_si512(rxep, mbuf_ptrs);
-
-		/* gather iova of mbuf0-7 into one zmm reg */
-		const __m512i iova_base_addrs = _mm512_i64gather_epi64
-			(_mm512_add_epi64(mbuf_ptrs, iova_offsets),
-				0, /* base */
-				1  /* scale */);
-		const __m512i iova_addrs = _mm512_add_epi64(iova_base_addrs,
-				headroom);
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-		const __m512i iovas0 = _mm512_castsi256_si512
-			(_mm512_extracti64x4_epi64(iova_addrs, 0));
-		const __m512i iovas1 = _mm512_castsi256_si512
-			(_mm512_extracti64x4_epi64(iova_addrs, 1));
-
-		/* permute leaves iova 2-3 in hdr_addr of desc 0-1
-		 * but these are ignored by driver since header split not
-		 * enabled. Similarly for desc 4 & 5.
-		 */
-		const __m512i desc0_1 = _mm512_permutexvar_epi64
-			(permute_idx, iovas0);
-		const __m512i desc2_3 = _mm512_bsrli_epi128(desc0_1, 8);
-
-		const __m512i desc4_5 = _mm512_permutexvar_epi64
-			(permute_idx, iovas1);
-		const __m512i desc6_7 = _mm512_bsrli_epi128(desc4_5, 8);
-
-		_mm512_store_si512((void *)rxdp, desc0_1);
-		_mm512_store_si512((void *)(rxdp + 2), desc2_3);
-		_mm512_store_si512((void *)(rxdp + 4), desc4_5);
-		_mm512_store_si512((void *)(rxdp + 6), desc6_7);
-#else
-		/* permute leaves iova 4-7 in hdr_addr of desc 0-3
-		 * but these are ignored by driver since header split not
-		 * enabled.
-		 */
-		const __m512i desc0_3 = _mm512_permutexvar_epi64
-			(permute_idx, iova_addrs);
-		const __m512i desc4_7 = _mm512_bsrli_epi128(desc0_3, 8);
-
-		_mm512_store_si512((void *)rxdp, desc0_3);
-		_mm512_store_si512((void *)(rxdp + 4), desc4_7);
-#endif
-		rxep += 8, rxdp += 8, cache->len -= 8;
-	}
-
-	rxq->rxrearm_start += ICE_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
-		rxq->rxrearm_start = 0;
-
-	rxq->rxrearm_nb -= ICE_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
-
-	/* Update the tail pointer on the NIC */
-	ICE_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
+	ice_rxq_rearm_common(rxq, true);
 }
 
 static inline __m256i
@@ -793,11 +680,11 @@ _ice_recv_raw_pkts_vec_avx512(struct ice_rx_queue *rxq,
 		status0_7 = _mm256_packs_epi32(status0_7,
 					       _mm256_setzero_si256());
 
-		uint64_t burst = __builtin_popcountll
+		uint64_t burst = rte_popcount64
 					(_mm_cvtsi128_si64
 						(_mm256_extracti128_si256
 							(status0_7, 1)));
-		burst += __builtin_popcountll
+		burst += rte_popcount64
 				(_mm_cvtsi128_si64
 					(_mm256_castsi256_si128(status0_7)));
 		received += burst;
@@ -1020,6 +907,7 @@ ice_tx_free_bufs_avx512(struct ice_tx_queue *txq)
 		uint32_t copied = 0;
 		/* n is multiple of 32 */
 		while (copied < n) {
+#ifdef RTE_ARCH_64
 			const __m512i a = _mm512_loadu_si512(&txep[copied]);
 			const __m512i b = _mm512_loadu_si512(&txep[copied + 8]);
 			const __m512i c = _mm512_loadu_si512(&txep[copied + 16]);
@@ -1029,6 +917,12 @@ ice_tx_free_bufs_avx512(struct ice_tx_queue *txq)
 			_mm512_storeu_si512(&cache_objs[copied + 8], b);
 			_mm512_storeu_si512(&cache_objs[copied + 16], c);
 			_mm512_storeu_si512(&cache_objs[copied + 24], d);
+#else
+			const __m512i a = _mm512_loadu_si512(&txep[copied]);
+			const __m512i b = _mm512_loadu_si512(&txep[copied + 16]);
+			_mm512_storeu_si512(&cache_objs[copied], a);
+			_mm512_storeu_si512(&cache_objs[copied + 16], b);
+#endif
 			copied += 32;
 		}
 		cache->len += n;
@@ -1092,8 +986,7 @@ ice_vtx1(volatile struct ice_tx_desc *txdp,
 	if (do_offload)
 		ice_txd_enable_offload(pkt, &high_qw);
 
-	__m128i descriptor = _mm_set_epi64x(high_qw,
-				pkt->buf_iova + pkt->data_off);
+	__m128i descriptor = _mm_set_epi64x(high_qw, rte_pktmbuf_iova(pkt));
 	_mm_store_si128((__m128i *)txdp, descriptor);
 }
 
@@ -1132,14 +1025,10 @@ ice_vtx(volatile struct ice_tx_desc *txdp, struct rte_mbuf **pkt,
 
 		__m512i desc0_3 =
 			_mm512_set_epi64
-				(hi_qw3,
-				 pkt[3]->buf_iova + pkt[3]->data_off,
-				 hi_qw2,
-				 pkt[2]->buf_iova + pkt[2]->data_off,
-				 hi_qw1,
-				 pkt[1]->buf_iova + pkt[1]->data_off,
-				 hi_qw0,
-				 pkt[0]->buf_iova + pkt[0]->data_off);
+				(hi_qw3, rte_pktmbuf_iova(pkt[3]),
+				 hi_qw2, rte_pktmbuf_iova(pkt[2]),
+				 hi_qw1, rte_pktmbuf_iova(pkt[1]),
+				 hi_qw0, rte_pktmbuf_iova(pkt[0]));
 		_mm512_storeu_si512((void *)txdp, desc0_3);
 	}
 

@@ -81,7 +81,8 @@
 		RTE_MBUF_F_TX_IP_CKSUM |	\
 		RTE_MBUF_F_TX_L4_MASK |	\
 		RTE_MBUF_F_TX_TCP_SEG |	\
-		RTE_MBUF_F_TX_UDP_SEG)
+		RTE_MBUF_F_TX_UDP_SEG | \
+		RTE_MBUF_F_TX_IEEE1588_TMST)
 
 #define IGC_TX_OFFLOAD_SEG	(RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG)
 
@@ -93,123 +94,7 @@
 
 #define IGC_TX_OFFLOAD_NOTSUP_MASK (RTE_MBUF_F_TX_OFFLOAD_MASK ^ IGC_TX_OFFLOAD_MASK)
 
-/**
- * Structure associated with each descriptor of the RX ring of a RX queue.
- */
-struct igc_rx_entry {
-	struct rte_mbuf *mbuf; /**< mbuf associated with RX descriptor. */
-};
-
-/**
- * Structure associated with each RX queue.
- */
-struct igc_rx_queue {
-	struct rte_mempool  *mb_pool;   /**< mbuf pool to populate RX ring. */
-	volatile union igc_adv_rx_desc *rx_ring;
-	/**< RX ring virtual address. */
-	uint64_t            rx_ring_phys_addr; /**< RX ring DMA address. */
-	volatile uint32_t   *rdt_reg_addr; /**< RDT register address. */
-	volatile uint32_t   *rdh_reg_addr; /**< RDH register address. */
-	struct igc_rx_entry *sw_ring;   /**< address of RX software ring. */
-	struct rte_mbuf *pkt_first_seg; /**< First segment of current packet. */
-	struct rte_mbuf *pkt_last_seg;  /**< Last segment of current packet. */
-	uint16_t            nb_rx_desc; /**< number of RX descriptors. */
-	uint16_t            rx_tail;    /**< current value of RDT register. */
-	uint16_t            nb_rx_hold; /**< number of held free RX desc. */
-	uint16_t            rx_free_thresh; /**< max free RX desc to hold. */
-	uint16_t            queue_id;   /**< RX queue index. */
-	uint16_t            reg_idx;    /**< RX queue register index. */
-	uint16_t            port_id;    /**< Device port identifier. */
-	uint8_t             pthresh;    /**< Prefetch threshold register. */
-	uint8_t             hthresh;    /**< Host threshold register. */
-	uint8_t             wthresh;    /**< Write-back threshold register. */
-	uint8_t             crc_len;    /**< 0 if CRC stripped, 4 otherwise. */
-	uint8_t             drop_en;	/**< If not 0, set SRRCTL.Drop_En. */
-	uint32_t            flags;      /**< RX flags. */
-	uint64_t	    offloads;   /**< offloads of RTE_ETH_RX_OFFLOAD_* */
-};
-
-/** Offload features */
-union igc_tx_offload {
-	uint64_t data;
-	struct {
-		uint64_t l3_len:9; /**< L3 (IP) Header Length. */
-		uint64_t l2_len:7; /**< L2 (MAC) Header Length. */
-		uint64_t vlan_tci:16;
-		/**< VLAN Tag Control Identifier(CPU order). */
-		uint64_t l4_len:8; /**< L4 (TCP/UDP) Header Length. */
-		uint64_t tso_segsz:16; /**< TCP TSO segment size. */
-		/* uint64_t unused:8; */
-	};
-};
-
-/*
- * Compare mask for igc_tx_offload.data,
- * should be in sync with igc_tx_offload layout.
- */
-#define TX_MACIP_LEN_CMP_MASK	0x000000000000FFFFULL /**< L2L3 header mask. */
-#define TX_VLAN_CMP_MASK	0x00000000FFFF0000ULL /**< Vlan mask. */
-#define TX_TCP_LEN_CMP_MASK	0x000000FF00000000ULL /**< TCP header mask. */
-#define TX_TSO_MSS_CMP_MASK	0x00FFFF0000000000ULL /**< TSO segsz mask. */
-/** Mac + IP + TCP + Mss mask. */
-#define TX_TSO_CMP_MASK	\
-	(TX_MACIP_LEN_CMP_MASK | TX_TCP_LEN_CMP_MASK | TX_TSO_MSS_CMP_MASK)
-
-/**
- * Structure to check if new context need be built
- */
-struct igc_advctx_info {
-	uint64_t flags;           /**< ol_flags related to context build. */
-	/** tx offload: vlan, tso, l2-l3-l4 lengths. */
-	union igc_tx_offload tx_offload;
-	/** compare mask for tx offload. */
-	union igc_tx_offload tx_offload_mask;
-};
-
-/**
- * Hardware context number
- */
-enum {
-	IGC_CTX_0    = 0, /**< CTX0    */
-	IGC_CTX_1    = 1, /**< CTX1    */
-	IGC_CTX_NUM  = 2, /**< CTX_NUM */
-};
-
-/**
- * Structure associated with each descriptor of the TX ring of a TX queue.
- */
-struct igc_tx_entry {
-	struct rte_mbuf *mbuf; /**< mbuf associated with TX desc, if any. */
-	uint16_t next_id; /**< Index of next descriptor in ring. */
-	uint16_t last_id; /**< Index of last scattered descriptor. */
-};
-
-/**
- * Structure associated with each TX queue.
- */
-struct igc_tx_queue {
-	volatile union igc_adv_tx_desc *tx_ring; /**< TX ring address */
-	uint64_t               tx_ring_phys_addr; /**< TX ring DMA address. */
-	struct igc_tx_entry    *sw_ring; /**< virtual address of SW ring. */
-	volatile uint32_t      *tdt_reg_addr; /**< Address of TDT register. */
-	uint32_t               txd_type;      /**< Device-specific TXD type */
-	uint16_t               nb_tx_desc;    /**< number of TX descriptors. */
-	uint16_t               tx_tail;  /**< Current value of TDT register. */
-	uint16_t               tx_head;
-	/**< Index of first used TX descriptor. */
-	uint16_t               queue_id; /**< TX queue index. */
-	uint16_t               reg_idx;  /**< TX queue register index. */
-	uint16_t               port_id;  /**< Device port identifier. */
-	uint8_t                pthresh;  /**< Prefetch threshold register. */
-	uint8_t                hthresh;  /**< Host threshold register. */
-	uint8_t                wthresh;  /**< Write-back threshold register. */
-	uint8_t                ctx_curr;
-
-	/**< Start context position for transmit queue. */
-	struct igc_advctx_info ctx_cache[IGC_CTX_NUM];
-	/**< Hardware context history.*/
-	uint64_t	       offloads; /**< offloads of RTE_ETH_TX_OFFLOAD_* */
-};
+#define IGC_TS_HDR_LEN 16
 
 static inline uint64_t
 rx_desc_statuserr_to_pkt_flags(uint32_t statuserr)
@@ -340,6 +225,9 @@ rx_desc_get_pkt_info(struct igc_rx_queue *rxq, struct rte_mbuf *rxm,
 
 	pkt_flags |= rx_desc_statuserr_to_pkt_flags(staterr);
 
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+		pkt_flags |= RTE_MBUF_F_RX_IEEE1588_PTP;
+
 	rxm->ol_flags = pkt_flags;
 	pkt_info = rte_le_to_cpu_16(rxd->wb.lower.lo_dword.hs_rss.pkt_info);
 	rxm->packet_type = rx_desc_pkt_info_to_pkt_type(pkt_info);
@@ -446,17 +334,39 @@ igc_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		rxdp->read.hdr_addr = 0;
-		rxdp->read.pkt_addr =
+
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+			rxdp->read.pkt_addr =
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb)) -
+			IGC_TS_HDR_LEN;
+		else
+			rxdp->read.pkt_addr =
 			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
+
 		rxm->next = NULL;
 
 		rxm->data_off = RTE_PKTMBUF_HEADROOM;
 		data_len = rte_le_to_cpu_16(rxd.wb.upper.length) - rxq->crc_len;
+		/*
+		 * When the RTE_ETH_RX_OFFLOAD_TIMESTAMP offload is enabled the
+		 * length in the descriptor still accounts for the timestamp so
+		 * it must be subtracted.
+		 */
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+			data_len -= IGC_TS_HDR_LEN;
 		rxm->data_len = data_len;
 		rxm->pkt_len = data_len;
 		rxm->nb_segs = 1;
 
 		rx_desc_get_pkt_info(rxq, rxm, &rxd, staterr);
+
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+			uint32_t *ts = rte_pktmbuf_mtod_offset(rxm,
+					uint32_t *, -IGC_TS_HDR_LEN);
+			rxq->rx_timestamp = (uint64_t)ts[3] * NSEC_PER_SEC +
+					ts[2];
+			rxm->timesync = rxq->queue_id;
+		}
 
 		/*
 		 * Store the mbuf address into the next entry of the array
@@ -590,8 +500,15 @@ next_desc:
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		rxdp->read.hdr_addr = 0;
-		rxdp->read.pkt_addr =
+
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+			rxdp->read.pkt_addr =
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb)) -
+				IGC_TS_HDR_LEN;
+		else
+			rxdp->read.pkt_addr =
 			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
+
 		rxm->next = NULL;
 
 		/*
@@ -599,6 +516,24 @@ next_desc:
 		 */
 		rxm->data_off = RTE_PKTMBUF_HEADROOM;
 		data_len = rte_le_to_cpu_16(rxd.wb.upper.length);
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+			/*
+			 * When the RTE_ETH_RX_OFFLOAD_TIMESTAMP offload is enabled
+			 * the pkt_addr of all software ring entries is moved forward
+			 * by IGC_TS_HDR_LEN (see igc_alloc_rx_queue_mbufs()) so that
+			 * when the hardware writes the packet with a prepended
+			 * timestamp the actual packet data still starts at the
+			 * normal data offset. The length in the descriptor still
+			 * accounts for the timestamp so it needs to be subtracted.
+			 * Follow-up mbufs do not have the timestamp so the data
+			 * offset must be adjusted to point to the start of the packet
+			 * data.
+			 */
+			if (first_seg == NULL)
+				data_len -= IGC_TS_HDR_LEN;
+			else
+				rxm->data_off -= IGC_TS_HDR_LEN;
+		}
 		rxm->data_len = data_len;
 
 		/*
@@ -647,6 +582,7 @@ next_desc:
 				last_seg->data_len = last_seg->data_len -
 					 (RTE_ETHER_CRC_LEN - data_len);
 				last_seg->next = NULL;
+				rxm = last_seg;
 			} else {
 				rxm->data_len = (uint16_t)
 					(data_len - RTE_ETHER_CRC_LEN);
@@ -654,6 +590,14 @@ next_desc:
 		}
 
 		rx_desc_get_pkt_info(rxq, first_seg, &rxd, staterr);
+
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+			uint32_t *ts = rte_pktmbuf_mtod_offset(first_seg,
+					uint32_t *, -IGC_TS_HDR_LEN);
+			rxq->rx_timestamp = (uint64_t)ts[3] * NSEC_PER_SEC +
+					ts[2];
+			rxm->timesync = rxq->queue_id;
+		}
 
 		/*
 		 * Store the mbuf address into the next entry of the array
@@ -800,7 +744,10 @@ igc_alloc_rx_queue_mbufs(struct igc_rx_queue *rxq)
 		dma_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 		rxd = &rxq->rx_ring[i];
 		rxd->read.hdr_addr = 0;
-		rxd->read.pkt_addr = dma_addr;
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+			rxd->read.pkt_addr = dma_addr - IGC_TS_HDR_LEN;
+		else
+			rxd->read.pkt_addr = dma_addr;
 		rxe[i].mbuf = mbuf;
 	}
 
@@ -1102,6 +1049,9 @@ igc_rx_init(struct rte_eth_dev *dev)
 
 		rxq = dev->data->rx_queues[i];
 		rxq->flags = 0;
+
+		if (offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+			rxq->offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
 
 		/* Allocate buffers for descriptor rings and set up queue */
 		ret = igc_alloc_rx_queue_mbufs(rxq);
@@ -1488,6 +1438,19 @@ what_advctx_update(struct igc_tx_queue *txq, uint64_t flags,
 	return IGC_CTX_NUM;
 }
 
+static uint32_t igc_tx_launchtime(uint64_t txtime, uint16_t port_id)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	struct igc_adapter *adapter = IGC_DEV_PRIVATE(dev);
+	uint64_t base_time = adapter->base_time;
+	uint64_t cycle_time = adapter->cycle_time;
+	uint32_t launchtime;
+
+	launchtime = (txtime - base_time) % cycle_time;
+
+	return rte_cpu_to_le_32(launchtime);
+}
+
 /*
  * This is a separate function, looking for optimization opportunity here
  * Rework required to go with the pre-defined values.
@@ -1495,7 +1458,8 @@ what_advctx_update(struct igc_tx_queue *txq, uint64_t flags,
 static inline void
 igc_set_xmit_ctx(struct igc_tx_queue *txq,
 		volatile struct igc_adv_tx_context_desc *ctx_txd,
-		uint64_t ol_flags, union igc_tx_offload tx_offload)
+		uint64_t ol_flags, union igc_tx_offload tx_offload,
+		uint64_t txtime)
 {
 	uint32_t type_tucmd_mlhl;
 	uint32_t mss_l4len_idx;
@@ -1569,16 +1533,23 @@ igc_set_xmit_ctx(struct igc_tx_queue *txq,
 		}
 	}
 
-	txq->ctx_cache[ctx_curr].flags = ol_flags;
-	txq->ctx_cache[ctx_curr].tx_offload.data =
-		tx_offload_mask.data & tx_offload.data;
-	txq->ctx_cache[ctx_curr].tx_offload_mask = tx_offload_mask;
+	if (!txtime) {
+		txq->ctx_cache[ctx_curr].flags = ol_flags;
+		txq->ctx_cache[ctx_curr].tx_offload.data =
+			tx_offload_mask.data & tx_offload.data;
+		txq->ctx_cache[ctx_curr].tx_offload_mask = tx_offload_mask;
+	}
 
 	ctx_txd->type_tucmd_mlhl = rte_cpu_to_le_32(type_tucmd_mlhl);
 	vlan_macip_lens = (uint32_t)tx_offload.data;
 	ctx_txd->vlan_macip_lens = rte_cpu_to_le_32(vlan_macip_lens);
 	ctx_txd->mss_l4len_idx = rte_cpu_to_le_32(mss_l4len_idx);
-	ctx_txd->u.launch_time = 0;
+
+	if (txtime)
+		ctx_txd->u.launch_time = igc_tx_launchtime(txtime,
+							   txq->port_id);
+	else
+		ctx_txd->u.launch_time = 0;
 }
 
 static inline uint32_t
@@ -1628,6 +1599,7 @@ igc_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	uint64_t tx_ol_req;
 	uint32_t new_ctx = 0;
 	union igc_tx_offload tx_offload = {0};
+	uint64_t ts;
 
 	tx_id = txq->tx_tail;
 	txe = &sw_ring[tx_id];
@@ -1775,8 +1747,16 @@ igc_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 					txe->mbuf = NULL;
 				}
 
-				igc_set_xmit_ctx(txq, ctx_txd, tx_ol_req,
-						tx_offload);
+				if (igc_tx_timestamp_dynflag > 0) {
+					ts = *RTE_MBUF_DYNFIELD(tx_pkt,
+						igc_tx_timestamp_dynfield_offset,
+						uint64_t *);
+					igc_set_xmit_ctx(txq, ctx_txd,
+						tx_ol_req, tx_offload, ts);
+				} else {
+					igc_set_xmit_ctx(txq, ctx_txd,
+						tx_ol_req, tx_offload, 0);
+				}
 
 				txe->last_id = tx_last;
 				tx_id = txe->next_id;
@@ -2160,9 +2140,11 @@ void
 igc_tx_init(struct rte_eth_dev *dev)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	uint64_t offloads = dev->data->dev_conf.txmode.offloads;
 	uint32_t tctl;
 	uint32_t txdctl;
 	uint16_t i;
+	int err;
 
 	/* Setup the Base and Length of the Tx Descriptor Rings. */
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
@@ -2191,6 +2173,16 @@ igc_tx_init(struct rte_eth_dev *dev)
 		txdctl |= IGC_TXDCTL_QUEUE_ENABLE;
 		IGC_WRITE_REG(hw, IGC_TXDCTL(txq->reg_idx), txdctl);
 		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
+
+	if (offloads & RTE_ETH_TX_OFFLOAD_SEND_ON_TIMESTAMP) {
+		err = rte_mbuf_dyn_tx_timestamp_register
+			(&igc_tx_timestamp_dynfield_offset,
+			 &igc_tx_timestamp_dynflag);
+		if (err) {
+			PMD_DRV_LOG(ERR,
+				"Cannot register mbuf field/flag for timestamp");
+		}
 	}
 
 	igc_config_collision_dist(hw);

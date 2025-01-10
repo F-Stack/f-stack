@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <rte_compat.h>
+#include <rte_common.h>
 
 /** Maximum length for string used in object. */
 #define RTE_TEL_MAX_STRING_LEN 128
@@ -28,7 +30,7 @@ extern "C" {
  * The telemetry library provides a method to retrieve statistics from
  * DPDK by sending a request message over a socket. DPDK will send
  * a JSON encoded response containing telemetry data.
- ***/
+ */
 
 /** opaque structure used internally for managing data from callbacks */
 struct rte_tel_data;
@@ -41,10 +43,12 @@ struct rte_tel_data;
  */
 enum rte_tel_value_type {
 	RTE_TEL_STRING_VAL, /** a string value */
-	RTE_TEL_INT_VAL,    /** a signed 32-bit int value */
-	RTE_TEL_U64_VAL,    /** an unsigned 64-bit int value */
+	RTE_TEL_INT_VAL,    /** a signed 64-bit int value */
+	RTE_TEL_UINT_VAL,  /** an unsigned 64-bit int value */
 	RTE_TEL_CONTAINER, /** a container struct */
 };
+
+#define RTE_TEL_U64_VAL RTE_TEL_UINT_VAL
 
 /**
  * Start an array of the specified type for returning from a callback
@@ -115,12 +119,12 @@ rte_tel_data_add_array_string(struct rte_tel_data *d, const char *str);
  *   0 on success, negative errno on error
  */
 int
-rte_tel_data_add_array_int(struct rte_tel_data *d, int x);
+rte_tel_data_add_array_int(struct rte_tel_data *d, int64_t x);
 
 /**
- * Add a uint64_t to an array.
+ * Add an unsigned value to an array.
  * The array must have been started by rte_tel_data_start_array() with
- * RTE_TEL_U64_VAL as the type parameter.
+ * RTE_TEL_UINT_VAL as the type parameter.
  *
  * @param d
  *   The data structure passed to the callback
@@ -130,7 +134,23 @@ rte_tel_data_add_array_int(struct rte_tel_data *d, int x);
  *   0 on success, negative errno on error
  */
 int
-rte_tel_data_add_array_u64(struct rte_tel_data *d, uint64_t x);
+rte_tel_data_add_array_uint(struct rte_tel_data *d, uint64_t x);
+
+ /**
+ * Add a uint64_t to an array.
+ * The array must have been started by rte_tel_data_start_array() with
+ * RTE_TEL_UINT_VAL as the type parameter.
+ *
+ * @param d
+ *   The data structure passed to the callback
+ * @param x
+ *   The number to be returned in the array
+ * @return
+ *   0 on success, negative errno on error
+ */
+int
+rte_tel_data_add_array_u64(struct rte_tel_data *d, uint64_t x)
+	__rte_deprecated_msg("use 'rte_tel_data_add_array_uint' instead");
 
 /**
  * Add a container to an array. A container is an existing telemetry data
@@ -152,6 +172,28 @@ rte_tel_data_add_array_u64(struct rte_tel_data *d, uint64_t x);
 int
 rte_tel_data_add_array_container(struct rte_tel_data *d,
 		struct rte_tel_data *val, int keep);
+
+/**
+ * Convert an unsigned integer to hexadecimal encoded strings
+ * and add this string to an array.
+ * The array must have been started by rte_tel_data_start_array()
+ * with RTE_TEL_STRING_VAL as the type parameter.
+ *
+ * @param d
+ *   The data structure passed to the callback.
+ * @param val
+ *   The number to be returned in the array as a hexadecimal encoded strings.
+ * @param display_bitwidth
+ *   The display bit width of the 'val'. If 'display_bitwidth' is zero, the
+ *   value is stored in the array as no-padding zero hexadecimal encoded string,
+ *   or the value is stored as padding zero to specified hexadecimal width.
+ * @return
+ *   0 on success, negative errno on error.
+ */
+__rte_experimental
+int
+rte_tel_data_add_array_uint_hex(struct rte_tel_data *d, uint64_t val,
+		uint8_t display_bitwidth);
 
 /**
  * Add a string value to a dictionary.
@@ -187,9 +229,27 @@ rte_tel_data_add_dict_string(struct rte_tel_data *d, const char *name,
  *   0 on success, negative errno on error, E2BIG on string truncation of name.
  */
 int
-rte_tel_data_add_dict_int(struct rte_tel_data *d, const char *name, int val);
+rte_tel_data_add_dict_int(struct rte_tel_data *d, const char *name, int64_t val);
 
 /**
+ * Add an unsigned value to a dictionary.
+ * The dict must have been started by rte_tel_data_start_dict().
+ *
+ * @param d
+ *   The data structure passed to the callback
+ * @param name
+ *   The name the value is to be stored under in the dict
+ *   Must contain only alphanumeric characters or the symbols: '_' or '/'
+ * @param val
+ *   The number to be stored in the dict
+ * @return
+ *   0 on success, negative errno on error, E2BIG on string truncation of name.
+ */
+int
+rte_tel_data_add_dict_uint(struct rte_tel_data *d,
+		const char *name, uint64_t val);
+
+ /**
  * Add a uint64_t value to a dictionary.
  * The dict must have been started by rte_tel_data_start_dict().
  *
@@ -205,7 +265,8 @@ rte_tel_data_add_dict_int(struct rte_tel_data *d, const char *name, int val);
  */
 int
 rte_tel_data_add_dict_u64(struct rte_tel_data *d,
-		const char *name, uint64_t val);
+		const char *name, uint64_t val)
+	__rte_deprecated_msg("use 'rte_tel_data_add_dict_uint' instead");
 
 /**
  * Add a container to a dictionary. A container is an existing telemetry data
@@ -230,6 +291,30 @@ rte_tel_data_add_dict_u64(struct rte_tel_data *d,
 int
 rte_tel_data_add_dict_container(struct rte_tel_data *d, const char *name,
 		struct rte_tel_data *val, int keep);
+
+/**
+ * Convert an unsigned integer to hexadecimal encoded strings
+ * and add this string to an dictionary.
+ * The dict must have been started by rte_tel_data_start_dict().
+ *
+ * @param d
+ *   The data structure passed to the callback.
+ * @param name
+ *   The name of the value is to be stored in the dict.
+ *   Must contain only alphanumeric characters or the symbols: '_' or '/'.
+ * @param val
+ *   The number to be stored in the dict as a hexadecimal encoded strings.
+ * @param display_bitwidth
+ *   The display bit width of the 'val'. If 'display_bitwidth' is zero, the
+ *   value is stored in the array as no-padding zero hexadecimal encoded string,
+ *   or the value is stored as padding zero to specified hexadecimal width.
+ * @return
+ *   0 on success, negative errno on error.
+ */
+__rte_experimental
+int
+rte_tel_data_add_dict_uint_hex(struct rte_tel_data *d, const char *name,
+		uint64_t val, uint8_t display_bitwidth);
 
 /**
  * This telemetry callback is used when registering a telemetry command.

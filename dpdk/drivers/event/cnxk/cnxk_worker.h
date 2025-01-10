@@ -5,7 +5,14 @@
 #ifndef __CNXK_WORKER_H__
 #define __CNXK_WORKER_H__
 
-#include "cnxk_eventdev.h"
+#if defined(__aarch64__)
+#include "roc_io.h"
+#else
+#include "roc_io_generic.h"
+#endif
+
+#include "cnxk_eventdev_dp.h"
+#include "hw/ssow.h"
 
 /* SSO Operations */
 
@@ -47,12 +54,6 @@ cnxk_sso_hws_swtag_untag(uintptr_t swtag_untag_op)
 static __rte_always_inline void
 cnxk_sso_hws_swtag_flush(uint64_t base)
 {
-	/* Ensure that there is no previous flush is pending. */
-	while (plt_read64(base + SSOW_LF_GWS_PENDSTATE) & BIT_ULL(56))
-		;
-	if (CNXK_TT_FROM_TAG(plt_read64(base + SSOW_LF_GWS_TAG)) ==
-	    SSO_TT_EMPTY)
-		return;
 	plt_write64(0, base + SSOW_LF_GWS_OP_SWTAG_FLUSH);
 }
 
@@ -64,12 +65,12 @@ cnxk_sso_hws_swtag_wait(uintptr_t tag_op)
 
 	asm volatile(PLT_CPU_FEATURE_PREAMBLE
 		     "		ldr %[swtb], [%[swtp_loc]]	\n"
-		     "		tbz %[swtb], 62, done%=		\n"
+		     "		tbz %[swtb], 62, .Ldone%=	\n"
 		     "		sevl				\n"
-		     "rty%=:	wfe				\n"
+		     ".Lrty%=:	wfe				\n"
 		     "		ldr %[swtb], [%[swtp_loc]]	\n"
-		     "		tbnz %[swtb], 62, rty%=		\n"
-		     "done%=:					\n"
+		     "		tbnz %[swtb], 62, .Lrty%=	\n"
+		     ".Ldone%=:					\n"
 		     : [swtb] "=&r"(swtp)
 		     : [swtp_loc] "r"(tag_op));
 #else

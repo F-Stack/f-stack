@@ -26,14 +26,15 @@ virtio_rxq_rearm_vec(struct virtnet_rx *rxvq)
 	struct virtqueue *vq = virtnet_rxq_to_vq(rxvq);
 
 	desc_idx = vq->vq_avail_idx & (vq->vq_nentries - 1);
-	sw_ring = &vq->sw_ring[desc_idx];
+	sw_ring = &vq->rxq.sw_ring[desc_idx];
 	start_dp = &vq->vq_split.ring.desc[desc_idx];
 
 	ret = rte_mempool_get_bulk(rxvq->mpool, (void **)sw_ring,
 		RTE_VIRTIO_VPMD_RX_REARM_THRESH);
 	if (unlikely(ret)) {
-		rte_eth_devices[rxvq->port_id].data->rx_mbuf_alloc_failed +=
-			RTE_VIRTIO_VPMD_RX_REARM_THRESH;
+		struct rte_eth_dev *dev = &rte_eth_devices[vq->hw->port_id];
+
+		dev->data->rx_mbuf_alloc_failed += RTE_VIRTIO_VPMD_RX_REARM_THRESH;
 		return;
 	}
 

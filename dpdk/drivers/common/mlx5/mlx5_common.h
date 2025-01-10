@@ -130,16 +130,16 @@ enum {
 	PCI_DEVICE_ID_MELLANOX_CONNECTX5VF = 0x1018,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX5EX = 0x1019,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX5EXVF = 0x101a,
-	PCI_DEVICE_ID_MELLANOX_CONNECTX5BF = 0xa2d2,
-	PCI_DEVICE_ID_MELLANOX_CONNECTX5BFVF = 0xa2d3,
+	PCI_DEVICE_ID_MELLANOX_BLUEFIELD = 0xa2d2,
+	PCI_DEVICE_ID_MELLANOX_BLUEFIELDVF = 0xa2d3,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6 = 0x101b,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6VF = 0x101c,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6DX = 0x101d,
 	PCI_DEVICE_ID_MELLANOX_CONNECTXVF = 0x101e,
-	PCI_DEVICE_ID_MELLANOX_CONNECTX6DXBF = 0xa2d6,
+	PCI_DEVICE_ID_MELLANOX_BLUEFIELD2 = 0xa2d6,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6LX = 0x101f,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX7 = 0x1021,
-	PCI_DEVICE_ID_MELLANOX_CONNECTX7BF = 0Xa2dc,
+	PCI_DEVICE_ID_MELLANOX_BLUEFIELD3 = 0Xa2dc,
 };
 
 /* Maximum number of simultaneous unicast MAC addresses. */
@@ -169,6 +169,7 @@ struct mlx5_switch_info {
 	int32_t ctrl_num; /**< Controller number (valid for c#pf#vf# format). */
 	int32_t pf_num; /**< PF number (valid for pfxvfx format only). */
 	int32_t port_name; /**< Representor port name. */
+	int32_t mpesw_owner; /**< MPESW owner port number. */
 	uint64_t switch_id; /**< Switch identifier. */
 };
 
@@ -180,7 +181,30 @@ enum mlx5_cqe_status {
 };
 
 /**
- * Check whether CQE is valid.
+ * Check whether CQE has an error opcode.
+ *
+ * @param op_code
+ *   Opcode to check.
+ *
+ * @return
+ *   The CQE status.
+ */
+static __rte_always_inline enum mlx5_cqe_status
+check_cqe_error(const uint8_t op_code)
+{
+	/* Prevent speculative reading of other fields in CQE until
+	 * CQE is valid.
+	 */
+	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+	if (unlikely(op_code == MLX5_CQE_RESP_ERR ||
+		     op_code == MLX5_CQE_REQ_ERR))
+		return MLX5_CQE_STATUS_ERR;
+	return MLX5_CQE_STATUS_SW_OWN;
+}
+
+/**
+ * Check whether CQE is valid using owner bit.
  *
  * @param cqe
  *   Pointer to CQE.
@@ -201,18 +225,37 @@ check_cqe(volatile struct mlx5_cqe *cqe, const uint16_t cqes_n,
 	const uint8_t op_owner = MLX5_CQE_OWNER(op_own);
 	const uint8_t op_code = MLX5_CQE_OPCODE(op_own);
 
-	if (unlikely((op_owner != (!!(idx))) || (op_code == MLX5_CQE_INVALID)))
+	if (unlikely((op_owner != (!!(idx))) ||
+		     (op_code == MLX5_CQE_INVALID)))
 		return MLX5_CQE_STATUS_HW_OWN;
+	return check_cqe_error(op_code);
+}
 
-	/* Prevent speculative reading of other fields in CQE until
-	 * CQE is valid.
-	 */
-	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+/**
+ * Check whether CQE is valid using validity iteration count.
+ *
+ * @param cqe
+ *   Pointer to CQE.
+ * @param cqes_n
+ *   Log 2 of completion queue size.
+ * @param ci
+ *   Consumer index.
+ *
+ * @return
+ *   The CQE status.
+ */
+static __rte_always_inline enum mlx5_cqe_status
+check_cqe_iteration(volatile struct mlx5_cqe *cqe, const uint16_t cqes_n,
+		    const uint32_t ci)
+{
+	const uint8_t op_own = cqe->op_own;
+	const uint8_t op_code = MLX5_CQE_OPCODE(op_own);
+	const uint8_t vic = ci >> cqes_n;
 
-	if (unlikely(op_code == MLX5_CQE_RESP_ERR ||
-		     op_code == MLX5_CQE_REQ_ERR))
-		return MLX5_CQE_STATUS_ERR;
-	return MLX5_CQE_STATUS_SW_OWN;
+	if (unlikely((cqe->validity_iteration_count != vic) ||
+		     (op_code == MLX5_CQE_INVALID)))
+		return MLX5_CQE_STATUS_HW_OWN;
+	return check_cqe_error(op_code);
 }
 
 /*

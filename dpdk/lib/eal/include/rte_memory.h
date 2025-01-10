@@ -22,6 +22,7 @@ extern "C" {
 #include <rte_bitops.h>
 #include <rte_common.h>
 #include <rte_config.h>
+#include <rte_eal_memconfig.h>
 #include <rte_fbarray.h>
 
 #define RTE_PGSIZE_4K   (1ULL << 12)
@@ -47,7 +48,6 @@ extern "C" {
  */
 struct rte_memseg {
 	rte_iova_t iova;            /**< Start IO address. */
-	RTE_STD_C11
 	union {
 		void *addr;         /**< Start virtual address. */
 		uint64_t addr_64;   /**< Makes sure addr is always 64 bits */
@@ -65,7 +65,6 @@ struct rte_memseg {
  * together with the array itself.
  */
 struct rte_memseg_list {
-	RTE_STD_C11
 	union {
 		void *base_va;
 		/**< Base virtual address for this memseg list. */
@@ -252,7 +251,8 @@ rte_memseg_contig_walk(rte_memseg_contig_walk_t func, void *arg);
  *   -1 if user function reported error
  */
 int
-rte_memseg_list_walk(rte_memseg_list_walk_t func, void *arg);
+rte_memseg_list_walk(rte_memseg_list_walk_t func, void *arg)
+	__rte_locks_excluded(rte_mcfg_mem_get_lock());
 
 /**
  * Walk list of all memsegs without performing any locking.

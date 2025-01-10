@@ -4,7 +4,6 @@
 pkgconf = find_program('pkg-config', 'pkgconf', required: false)
 check_symbols = find_program('check-symbols.sh')
 ldflags_ibverbs_static = find_program('options-ibverbs-static.sh')
-objdump = find_program('objdump', 'llvm-objdump')
 
 python3_required_modules = []
 if host_machine.system() != 'windows'
@@ -22,8 +21,15 @@ map_to_win_cmd = py3 + files('map_to_win.py')
 sphinx_wrapper = py3 + files('call-sphinx-build.py')
 get_cpu_count_cmd = py3 + files('get-cpu-count.py')
 get_numa_count_cmd = py3 + files('get-numa-count.py')
-binutils_avx512_check = (py3 + files('binutils-avx512-check.py') +
-                        [objdump] + cc.cmd_array())
+get_test_suites_cmd = py3 + files('get-test-suites.py')
+has_hugepages_cmd = py3 + files('has-hugepages.py')
+cmdline_gen_cmd = py3 + files('dpdk-cmdline-gen.py')
+
+# install any build tools that end-users might want also
+install_data([
+            'dpdk-cmdline-gen.py',
+        ],
+        install_dir: 'bin')
 
 # select library and object file format
 pmdinfo = py3 + files('gen-pmdinfo-cfile.py') + [meson.current_build_dir()]

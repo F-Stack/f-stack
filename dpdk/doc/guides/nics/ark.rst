@@ -52,6 +52,10 @@ board. While specific capabilities such as number of physical
 hardware queue-pairs are negotiated; the driver is designed to
 remain constant over a broad and extendable feature set.
 
+* FPGA Vendors Supported: AMD/Xilinx and Intel
+* Number of RX/TX Queue-Pairs: up to 128
+* PCIe Endpoint Technology: Gen3, Gen4, Gen5
+
 Intentionally, Arkville by itself DOES NOT provide common NIC
 capabilities such as offload or receive-side scaling (RSS).
 These capabilities would be viewed as a gate-level "tax" on
@@ -73,7 +77,7 @@ between the user's FPGA application and the existing DPDK features via
 the PMD.
 
 Device Parameters
--------------------
+-----------------
 
 The ARK PMD supports device parameters that are used for packet
 routing and for internal packet generation and packet checking.  This
@@ -302,6 +306,20 @@ ARK PMD supports the following Arkville RTL PCIe instances including:
 * ``1d6c:101c`` - AR-ARK-SRIOV-VF [Arkville Virtual Function]
 * ``1d6c:101e`` - AR-ARKA-FX1 [Arkville 64B DPDK Data Mover for Agilex R-Tile]
 * ``1d6c:101f`` - AR-TK242 [2x100GbE Packet Capture Device]
+* ``1d6c:1022`` - AR-ARKA-FX2 [Arkville 128B DPDK Data Mover for Agilex]
+
+Arkville RTL Core Configurations
+--------------------------------
+
+Arkville's RTL core may be configured by the user with different
+datapath widths to balance throughput against FPGA logic area.
+The ARK PMD has introspection on the RTL core configuration and acts accordingly.
+All Arkville configurations present identical RTL user-facing AXI
+stream interfaces for both AMD/Xilinx and Intel FPGAs.
+
+* ARK-FX0 - 256-bit 32B datapath (PCIe Gen3, Gen4)
+* ARK-FX1 - 512-bit 64B datapath (PCIe Gen3, Gen4, Gen5)
+* ARK-FX2 - 1024-bit 128B datapath (PCIe Gen5x16 Only)
 
 DPDK and Arkville Firmware Versioning
 -------------------------------------
@@ -316,6 +334,7 @@ with Arkville releases 21.05, 21.08 and 21.11. LTS versions of DPDK remain
 compatible with the corresponding Arkville version.  If other combinations
 are required, please contact Atomic Rules support.
 
+* DPDK 23.11 requires Arkville 23.11.
 * DPDK 22.07 requires Arkville 22.07.
 * DPDK 22.03 requires Arkville 22.03.
 * DPDK 21.05 requires Arkville 21.05.
@@ -334,6 +353,8 @@ Supported Features
 ------------------
 
 * Dynamic ARK PMD extensions
+* Dynamic per-queue MBUF (re)sizing up to 32KB
+* SR-IOV, VF-based queue-separation
 * Multiple receive and transmit queues
 * Jumbo frames up to 9K
 * Hardware Statistics

@@ -41,15 +41,13 @@
 	ICE_ACL_INSET_ETH_IPV4 | \
 	ICE_INSET_SCTP_SRC_PORT | ICE_INSET_SCTP_DST_PORT)
 
-static struct ice_flow_parser ice_acl_parser;
-
 struct acl_rule {
 	enum ice_fltr_ptype flow_type;
 	uint64_t entry_id[4];
 };
 
 static struct
-ice_pattern_match_item ice_acl_pattern[] = {
+ice_pattern_match_item ice_acl_supported_pattern[] = {
 	{pattern_eth_ipv4,	ICE_ACL_INSET_ETH_IPV4,		ICE_INSET_NONE,	ICE_INSET_NONE},
 	{pattern_eth_ipv4_udp,	ICE_ACL_INSET_ETH_IPV4_UDP,	ICE_INSET_NONE,	ICE_INSET_NONE},
 	{pattern_eth_ipv4_tcp,	ICE_ACL_INSET_ETH_IPV4_TCP,	ICE_INSET_NONE,	ICE_INSET_NONE},
@@ -675,36 +673,36 @@ ice_acl_parse_pattern(__rte_unused struct ice_adapter *ad,
 			eth_mask = item->mask;
 
 			if (eth_spec && eth_mask) {
-				if (rte_is_broadcast_ether_addr(&eth_mask->src) ||
-				    rte_is_broadcast_ether_addr(&eth_mask->dst)) {
+				if (rte_is_broadcast_ether_addr(&eth_mask->hdr.src_addr) ||
+				    rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr)) {
 					rte_flow_error_set(error, EINVAL,
 						RTE_FLOW_ERROR_TYPE_ITEM,
 						item, "Invalid mac addr mask");
 					return -rte_errno;
 				}
 
-				if (!rte_is_zero_ether_addr(&eth_spec->src) &&
-				    !rte_is_zero_ether_addr(&eth_mask->src)) {
+				if (!rte_is_zero_ether_addr(&eth_spec->hdr.src_addr) &&
+				    !rte_is_zero_ether_addr(&eth_mask->hdr.src_addr)) {
 					input_set |= ICE_INSET_SMAC;
 					ice_memcpy(&filter->input.ext_data.src_mac,
-						   &eth_spec->src,
+						   &eth_spec->hdr.src_addr,
 						   RTE_ETHER_ADDR_LEN,
 						   ICE_NONDMA_TO_NONDMA);
 					ice_memcpy(&filter->input.ext_mask.src_mac,
-						   &eth_mask->src,
+						   &eth_mask->hdr.src_addr,
 						   RTE_ETHER_ADDR_LEN,
 						   ICE_NONDMA_TO_NONDMA);
 				}
 
-				if (!rte_is_zero_ether_addr(&eth_spec->dst) &&
-				    !rte_is_zero_ether_addr(&eth_mask->dst)) {
+				if (!rte_is_zero_ether_addr(&eth_spec->hdr.dst_addr) &&
+				    !rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr)) {
 					input_set |= ICE_INSET_DMAC;
 					ice_memcpy(&filter->input.ext_data.dst_mac,
-						   &eth_spec->dst,
+						   &eth_spec->hdr.dst_addr,
 						   RTE_ETHER_ADDR_LEN,
 						   ICE_NONDMA_TO_NONDMA);
 					ice_memcpy(&filter->input.ext_mask.dst_mac,
-						   &eth_mask->dst,
+						   &eth_mask->hdr.dst_addr,
 						   RTE_ETHER_ADDR_LEN,
 						   ICE_NONDMA_TO_NONDMA);
 				}
@@ -993,10 +991,6 @@ ice_acl_init(struct ice_adapter *ad)
 	int ret = 0;
 	struct ice_pf *pf = &ad->pf;
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
-	struct ice_flow_parser *parser = &ice_acl_parser;
-
-	if (!ad->hw.dcf_enabled)
-		return 0;
 
 	ret = ice_acl_prof_alloc(hw);
 	if (ret) {
@@ -1013,11 +1007,7 @@ ice_acl_init(struct ice_adapter *ad)
 	if (ret)
 		return ret;
 
-	ret = ice_acl_prof_init(pf);
-	if (ret)
-		return ret;
-
-	return ice_register_parser(parser, ad);
+	return ice_acl_prof_init(pf);
 }
 
 static void
@@ -1040,10 +1030,8 @@ ice_acl_uninit(struct ice_adapter *ad)
 {
 	struct ice_pf *pf = &ad->pf;
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
-	struct ice_flow_parser *parser = &ice_acl_parser;
 
 	if (ad->hw.dcf_enabled) {
-		ice_unregister_parser(parser, ad);
 		ice_deinit_acl(pf);
 		ice_acl_prof_free(hw);
 	}
@@ -1059,11 +1047,11 @@ ice_flow_engine ice_acl_engine = {
 	.type = ICE_FLOW_ENGINE_ACL,
 };
 
-static struct
+struct
 ice_flow_parser ice_acl_parser = {
 	.engine = &ice_acl_engine,
-	.array = ice_acl_pattern,
-	.array_len = RTE_DIM(ice_acl_pattern),
+	.array = ice_acl_supported_pattern,
+	.array_len = RTE_DIM(ice_acl_supported_pattern),
 	.parse_pattern_action = ice_acl_parse,
 	.stage = ICE_FLOW_STAGE_DISTRIBUTOR,
 };

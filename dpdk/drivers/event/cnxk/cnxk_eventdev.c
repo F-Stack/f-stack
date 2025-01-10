@@ -2,7 +2,10 @@
  * Copyright(C) 2021 Marvell.
  */
 
+#include "roc_npa.h"
+
 #include "cnxk_eventdev.h"
+#include "cnxk_eventdev_dp.h"
 
 void
 cnxk_sso_info_get(struct cnxk_sso_evdev *dev,
@@ -27,7 +30,9 @@ cnxk_sso_info_get(struct cnxk_sso_evdev *dev,
 				  RTE_EVENT_DEV_CAP_NONSEQ_MODE |
 				  RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 				  RTE_EVENT_DEV_CAP_MAINTENANCE_FREE |
-				  RTE_EVENT_DEV_CAP_RUNTIME_QUEUE_ATTR;
+				  RTE_EVENT_DEV_CAP_RUNTIME_QUEUE_ATTR |
+				  RTE_EVENT_DEV_CAP_PROFILE_LINK;
+	dev_info->max_profiles_per_port = CNXK_SSO_MAX_PROFILES;
 }
 
 int
@@ -36,7 +41,11 @@ cnxk_sso_xaq_allocate(struct cnxk_sso_evdev *dev)
 	uint32_t xae_cnt;
 	int rc;
 
-	xae_cnt = dev->sso.iue;
+	if (dev->num_events > 0)
+		xae_cnt = dev->num_events;
+	else
+		xae_cnt = dev->sso.iue;
+
 	if (dev->xae_cnt)
 		xae_cnt += dev->xae_cnt;
 	if (dev->adptr_xae_cnt)
@@ -109,8 +118,8 @@ cnxk_setup_event_ports(const struct rte_eventdev *event_dev,
 	return 0;
 hws_fini:
 	for (i = i - 1; i >= 0; i--) {
-		event_dev->data->ports[i] = NULL;
 		rte_free(cnxk_sso_hws_get_cookie(event_dev->data->ports[i]));
+		event_dev->data->ports[i] = NULL;
 	}
 	return -ENOMEM;
 }
@@ -121,28 +130,31 @@ cnxk_sso_restore_links(const struct rte_eventdev *event_dev,
 {
 	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
 	uint16_t *links_map, hwgrp[CNXK_SSO_MAX_HWGRP];
-	int i, j;
+	int i, j, k;
 
 	for (i = 0; i < dev->nb_event_ports; i++) {
-		uint16_t nb_hwgrp = 0;
+		for (k = 0; k < CNXK_SSO_MAX_PROFILES; k++) {
+			uint16_t nb_hwgrp = 0;
 
-		links_map = event_dev->data->links_map;
-		/* Point links_map to this port specific area */
-		links_map += (i * RTE_EVENT_MAX_QUEUES_PER_DEV);
+			links_map = event_dev->data->links_map[k];
+			/* Point links_map to this port specific area */
+			links_map += (i * RTE_EVENT_MAX_QUEUES_PER_DEV);
 
-		for (j = 0; j < dev->nb_event_queues; j++) {
-			if (links_map[j] == 0xdead)
-				continue;
-			hwgrp[nb_hwgrp] = j;
-			nb_hwgrp++;
+			for (j = 0; j < dev->nb_event_queues; j++) {
+				if (links_map[j] == 0xdead)
+					continue;
+				hwgrp[nb_hwgrp] = j;
+				nb_hwgrp++;
+			}
+
+			link_fn(dev, event_dev->data->ports[i], hwgrp, nb_hwgrp, k);
 		}
-
-		link_fn(dev, event_dev->data->ports[i], hwgrp, nb_hwgrp);
 	}
 }
 
 int
-cnxk_sso_dev_validate(const struct rte_eventdev *event_dev)
+cnxk_sso_dev_validate(const struct rte_eventdev *event_dev, uint32_t deq_depth,
+		      uint32_t enq_depth)
 {
 	struct rte_event_dev_config *conf = &event_dev->data->dev_conf;
 	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
@@ -171,12 +183,12 @@ cnxk_sso_dev_validate(const struct rte_eventdev *event_dev)
 		return -EINVAL;
 	}
 
-	if (conf->nb_event_port_dequeue_depth > 1) {
+	if (conf->nb_event_port_dequeue_depth > deq_depth) {
 		plt_err("Unsupported event port deq depth requested");
 		return -EINVAL;
 	}
 
-	if (conf->nb_event_port_enqueue_depth > 1) {
+	if (conf->nb_event_port_enqueue_depth > enq_depth) {
 		plt_err("Unsupported event port enq depth requested");
 		return -EINVAL;
 	}
@@ -186,6 +198,7 @@ cnxk_sso_dev_validate(const struct rte_eventdev *event_dev)
 
 	dev->nb_event_queues = conf->nb_event_queues;
 	dev->nb_event_ports = conf->nb_event_ports;
+	dev->num_events = conf->nb_events_limit;
 
 	return 0;
 }
@@ -427,7 +440,7 @@ cnxk_sso_close(struct rte_eventdev *event_dev, cnxk_sso_unlink_t unlink_fn)
 {
 	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
 	uint16_t all_queues[CNXK_SSO_MAX_HWGRP];
-	uint16_t i;
+	uint16_t i, j;
 	void *ws;
 
 	if (!dev->configured)
@@ -438,7 +451,8 @@ cnxk_sso_close(struct rte_eventdev *event_dev, cnxk_sso_unlink_t unlink_fn)
 
 	for (i = 0; i < dev->nb_event_ports; i++) {
 		ws = event_dev->data->ports[i];
-		unlink_fn(dev, ws, all_queues, dev->nb_event_queues);
+		for (j = 0; j < CNXK_SSO_MAX_PROFILES; j++)
+			unlink_fn(dev, ws, all_queues, dev->nb_event_queues, j);
 		rte_free(cnxk_sso_hws_get_cookie(ws));
 		event_dev->data->ports[i] = NULL;
 	}
@@ -456,6 +470,8 @@ cnxk_sso_close(struct rte_eventdev *event_dev, cnxk_sso_unlink_t unlink_fn)
 
 	return 0;
 }
+
+typedef void (*param_parse_t)(char *value, void *opaque);
 
 static void
 parse_queue_param(char *value, void *opaque)
@@ -494,7 +510,44 @@ parse_queue_param(char *value, void *opaque)
 }
 
 static void
-parse_qos_list(const char *value, void *opaque)
+parse_stash_param(char *value, void *opaque)
+{
+	struct cnxk_sso_stash queue_stash = {0};
+	struct cnxk_sso_evdev *dev = opaque;
+	struct cnxk_sso_stash *old_ptr;
+	char *tok = strtok(value, "|");
+	uint16_t *val;
+
+	if (!strlen(value))
+		return;
+
+	val = (uint16_t *)&queue_stash;
+	while (tok != NULL) {
+		*val = atoi(tok);
+		tok = strtok(NULL, "|");
+		val++;
+	}
+
+	if (val != (&queue_stash.stash_length + 1)) {
+		plt_err("Invalid QoS parameter expected [Qx|stash_offset|stash_length]");
+		return;
+	}
+
+	dev->stash_cnt++;
+	old_ptr = dev->stash_parse_data;
+	dev->stash_parse_data =
+		rte_realloc(dev->stash_parse_data,
+			    sizeof(struct cnxk_sso_stash) * dev->stash_cnt, 0);
+	if (dev->stash_parse_data == NULL) {
+		dev->stash_parse_data = old_ptr;
+		dev->stash_cnt--;
+		return;
+	}
+	dev->stash_parse_data[dev->stash_cnt - 1] = queue_stash;
+}
+
+static void
+parse_list(const char *value, void *opaque, param_parse_t fn)
 {
 	char *s = strdup(value);
 	char *start = NULL;
@@ -512,7 +565,7 @@ parse_qos_list(const char *value, void *opaque)
 
 		if (start && start < end) {
 			*end = 0;
-			parse_queue_param(start + 1, opaque);
+			fn(start + 1, opaque);
 			s = end;
 			start = end;
 		}
@@ -523,14 +576,27 @@ parse_qos_list(const char *value, void *opaque)
 }
 
 static int
-parse_sso_kvargs_dict(const char *key, const char *value, void *opaque)
+parse_sso_kvargs_qos_dict(const char *key, const char *value, void *opaque)
 {
 	RTE_SET_USED(key);
 
 	/* Dict format [Qx-TAQ-IAQ][Qz-TAQ-IAQ] use '-' cause ',' isn't allowed.
 	 * Everything is expressed in percentages, 0 represents default.
 	 */
-	parse_qos_list(value, opaque);
+	parse_list(value, opaque, parse_queue_param);
+
+	return 0;
+}
+
+static int
+parse_sso_kvargs_stash_dict(const char *key, const char *value, void *opaque)
+{
+	RTE_SET_USED(key);
+
+	/* Dict format [Qx|<stash_offset>|<stash_length>] use '|' cause ','
+	 * isn't allowed.
+	 */
+	parse_list(value, opaque, parse_stash_param);
 
 	return 0;
 }
@@ -549,14 +615,16 @@ cnxk_sso_parse_devargs(struct cnxk_sso_evdev *dev, struct rte_devargs *devargs)
 
 	rte_kvargs_process(kvlist, CNXK_SSO_XAE_CNT, &parse_kvargs_value,
 			   &dev->xae_cnt);
-	rte_kvargs_process(kvlist, CNXK_SSO_GGRP_QOS, &parse_sso_kvargs_dict,
-			   dev);
+	rte_kvargs_process(kvlist, CNXK_SSO_GGRP_QOS,
+			   &parse_sso_kvargs_qos_dict, dev);
 	rte_kvargs_process(kvlist, CNXK_SSO_FORCE_BP, &parse_kvargs_flag,
 			   &dev->force_ena_bp);
 	rte_kvargs_process(kvlist, CN9K_SSO_SINGLE_WS, &parse_kvargs_flag,
 			   &single_ws);
 	rte_kvargs_process(kvlist, CN10K_SSO_GW_MODE, &parse_kvargs_value,
 			   &dev->gw_mode);
+	rte_kvargs_process(kvlist, CN10K_SSO_STASH,
+			   &parse_sso_kvargs_stash_dict, dev);
 	dev->dual_ws = !single_ws;
 	rte_kvargs_free(kvlist);
 }
@@ -577,6 +645,14 @@ cnxk_sso_init(struct rte_eventdev *event_dev)
 	}
 
 	dev = cnxk_sso_pmd_priv(event_dev);
+	dev->fc_cache_space = rte_zmalloc("fc_cache", PLT_CACHE_LINE_SIZE,
+					  PLT_CACHE_LINE_SIZE);
+	if (dev->fc_cache_space == NULL) {
+		plt_memzone_free(mz);
+		plt_err("Failed to reserve memory for XAQ fc cache");
+		return -ENOMEM;
+	}
+
 	pci_dev = container_of(event_dev->dev, struct rte_pci_device, device);
 	dev->sso.pci_dev = pci_dev;
 
@@ -625,4 +701,18 @@ int
 cnxk_sso_remove(struct rte_pci_device *pci_dev)
 {
 	return rte_event_pmd_pci_remove(pci_dev, cnxk_sso_fini);
+}
+
+void
+cn9k_sso_set_rsrc(void *arg)
+{
+	struct cnxk_sso_evdev *dev = arg;
+
+	if (dev->dual_ws)
+		dev->max_event_ports = dev->sso.max_hws / CN9K_DUAL_WS_NB_WS;
+	else
+		dev->max_event_ports = dev->sso.max_hws;
+	dev->max_event_queues = dev->sso.max_hwgrp > RTE_EVENT_MAX_QUEUES_PER_DEV ?
+					RTE_EVENT_MAX_QUEUES_PER_DEV :
+					dev->sso.max_hwgrp;
 }

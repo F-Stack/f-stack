@@ -12,6 +12,17 @@ PIPEFAIL=""
 set -o | grep -q pipefail && set -o pipefail && PIPEFAIL=1
 
 srcdir=$(dirname $(readlink -f $0))/..
+
+# Load config options:
+# - DPDK_BUILD_TEST_DIR
+#
+# - DPDK_MESON_OPTIONS
+#
+# - DPDK_ABI_REF_DIR
+# - DPDK_ABI_REF_SRC
+# - DPDK_ABI_REF_VERSION
+#
+# - DPDK_BUILD_TEST_EXAMPLES
 . $srcdir/devtools/load-devel-config
 
 MESON=${MESON:-meson}
@@ -109,10 +120,10 @@ config () # <dir> <builddir> <meson options>
 		return
 	fi
 	options=
-	# deprecated libs may be disabled by default, so for complete builds ensure
-	# no libs are disabled
-	if ! echo $* | grep -q -- 'disable_libs' ; then
-		options="$options -Ddisable_libs="
+	# deprecated libs are disabled by default, so for complete builds
+	# enable them
+	if ! echo $* | grep -q -- 'enable_deprecated_libs' ; then
+		options="$options -Denable_deprecated_libs=*"
 	fi
 	if echo $* | grep -qw -- '--default-library=shared' ; then
 		options="$options -Dexamples=all"
@@ -124,8 +135,8 @@ config () # <dir> <builddir> <meson options>
 		options="$options -D$option"
 	done
 	options="$options $*"
-	echo "$MESON $options $dir $builddir" >&$verbose
-	$MESON $options $dir $builddir
+	echo "$MESON setup $options $dir $builddir" >&$verbose
+	$MESON setup $options $dir $builddir
 }
 
 compile () # <builddir>
@@ -147,8 +158,8 @@ compile () # <builddir>
 install_target () # <builddir> <installdir>
 {
 	rm -rf $2
-	echo "DESTDIR=$2 $ninja_cmd -C $1 install" >&$verbose
-	DESTDIR=$2 $ninja_cmd -C $1 install >&$veryverbose
+	echo "DESTDIR=$2 $MESON install -C $1" >&$verbose
+	DESTDIR=$2 $MESON install -C $1 >&$veryverbose
 }
 
 build () # <directory> <target cc | cross file> <ABI check> [meson options]
@@ -177,10 +188,15 @@ build () # <directory> <target cc | cross file> <ABI check> [meson options]
 		if [ ! -d $abirefdir/$targetdir ]; then
 			# clone current sources
 			if [ ! -d $abirefdir/src ]; then
-				git clone --local --no-hardlinks \
+				abirefsrc=${DPDK_ABI_REF_SRC:-$srcdir}
+				abirefcloneopts=
+				if [ -d $abirefsrc ]; then
+					abirefcloneopts="--local --no-hardlinks"
+				fi
+				git clone $abirefcloneopts \
 					--single-branch \
 					-b $DPDK_ABI_REF_VERSION \
-					$srcdir $abirefdir/src
+					$abirefsrc $abirefdir/src
 			fi
 
 			rm -rf $abirefdir/build
@@ -188,7 +204,6 @@ build () # <directory> <target cc | cross file> <ABI check> [meson options]
 				-Dexamples= $*
 			compile $abirefdir/build
 			install_target $abirefdir/build $abirefdir/$targetdir
-			$srcdir/devtools/gen-abi.sh $abirefdir/$targetdir
 
 			# save disk space by removing static libs and apps
 			find $abirefdir/$targetdir/usr/local -name '*.a' -delete
@@ -199,10 +214,6 @@ build () # <directory> <target cc | cross file> <ABI check> [meson options]
 		install_target $builds_dir/$targetdir \
 			$(readlink -f $builds_dir/$targetdir/install)
 		echo "Checking ABI compatibility of $targetdir" >&$verbose
-		echo $srcdir/devtools/gen-abi.sh \
-			$(readlink -f $builds_dir/$targetdir/install) >&$veryverbose
-		$srcdir/devtools/gen-abi.sh \
-			$(readlink -f $builds_dir/$targetdir/install) >&$veryverbose
 		echo $srcdir/devtools/check-abi.sh $abirefdir/$targetdir \
 			$(readlink -f $builds_dir/$targetdir/install) >&$veryverbose
 		$srcdir/devtools/check-abi.sh $abirefdir/$targetdir \
@@ -216,11 +227,13 @@ for c in gcc clang ; do
 	for s in static shared ; do
 		if [ $s = shared ] ; then
 			abicheck=ABI
+			stdatomic=-Denable_stdatomic=true
 		else
 			abicheck=skipABI # save time and disk space
+			stdatomic=-Denable_stdatomic=false
 		fi
 		export CC="$CCACHE $c"
-		build build-$c-$s $c $abicheck --default-library=$s
+		build build-$c-$s $c $abicheck $stdatomic --default-library=$s
 		unset CC
 	done
 done
@@ -271,6 +284,9 @@ build build-loongarch64-generic-gcc $f ABI $use_shared
 
 # IBM POWER
 f=$srcdir/config/ppc/ppc64le-power8-linux-gcc
+if grep -q 'NAME="Ubuntu"' /etc/os-release ; then
+	f=$f-ubuntu
+fi
 build build-ppc64-power8-gcc $f ABI $use_shared
 
 # generic RISC-V
@@ -287,7 +303,24 @@ pc_file=$(find $DESTDIR -name libdpdk.pc)
 export PKG_CONFIG_PATH=$(dirname $pc_file):$PKG_CONFIG_PATH
 libdir=$(dirname $(find $DESTDIR -name librte_eal.so))
 export LD_LIBRARY_PATH=$libdir:$LD_LIBRARY_PATH
+export PATH=$(dirname $(find $DESTDIR -name dpdk-devbind.py)):$PATH
 examples=${DPDK_BUILD_TEST_EXAMPLES:-"cmdline helloworld l2fwd l3fwd skeleton timer"}
+if [ "$examples" = 'all' ]; then
+	examples=$(find $build_path/examples -maxdepth 1 -type f -name "dpdk-*" |
+	while read target; do
+		target=${target%%:*}
+		target=${target#$build_path/examples/dpdk-}
+		if [ -e $srcdir/examples/$target/Makefile ]; then
+			echo $target
+			continue
+		fi
+		# Some examples binaries are built from an example sub
+		# directory, discover the "top level" example name.
+		find $srcdir/examples -name Makefile |
+		sed -n "s,$srcdir/examples/\([^/]*\)\(/.*\|\)/$target/Makefile,\1,p"
+	done | sort -u |
+	tr '\n' ' ')
+fi
 # if pkg-config defines the necessary flags, test building some examples
 if pkg-config --define-prefix libdpdk >/dev/null 2>&1; then
 	export PKGCONF="pkg-config --define-prefix"

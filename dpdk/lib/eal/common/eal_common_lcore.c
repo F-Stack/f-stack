@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,9 @@
 #include <rte_errno.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
+#ifndef RTE_EXEC_ENV_WINDOWS
+#include <rte_telemetry.h>
+#endif
 
 #include "eal_private.h"
 #include "eal_thread.h"
@@ -419,35 +423,66 @@ rte_lcore_iterate(rte_lcore_iterate_cb cb, void *arg)
 	return ret;
 }
 
+static const char *
+lcore_role_str(enum rte_lcore_role_t role)
+{
+	switch (role) {
+	case ROLE_RTE:
+		return "RTE";
+	case ROLE_SERVICE:
+		return "SERVICE";
+	case ROLE_NON_EAL:
+		return "NON_EAL";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+static rte_lcore_usage_cb lcore_usage_cb;
+
+void
+rte_lcore_register_usage_cb(rte_lcore_usage_cb cb)
+{
+	lcore_usage_cb = cb;
+}
+
+static float
+calc_usage_ratio(const struct rte_lcore_usage *usage)
+{
+	return usage->total_cycles != 0 ?
+		(usage->busy_cycles * 100.0) / usage->total_cycles : (float)0;
+}
+
 static int
 lcore_dump_cb(unsigned int lcore_id, void *arg)
 {
 	struct rte_config *cfg = rte_eal_get_configuration();
 	char cpuset[RTE_CPU_AFFINITY_STR_LEN];
-	const char *role;
+	struct rte_lcore_usage usage;
+	rte_lcore_usage_cb usage_cb;
+	char *usage_str = NULL;
 	FILE *f = arg;
 	int ret;
 
-	switch (cfg->lcore_role[lcore_id]) {
-	case ROLE_RTE:
-		role = "RTE";
-		break;
-	case ROLE_SERVICE:
-		role = "SERVICE";
-		break;
-	case ROLE_NON_EAL:
-		role = "NON_EAL";
-		break;
-	default:
-		role = "UNKNOWN";
-		break;
+	/* The callback may not set all the fields in the structure, so clear it here. */
+	memset(&usage, 0, sizeof(usage));
+	/* Guard against concurrent modification of lcore_usage_cb. */
+	usage_cb = lcore_usage_cb;
+	if (usage_cb != NULL && usage_cb(lcore_id, &usage) == 0) {
+		if (asprintf(&usage_str, ", busy cycles %"PRIu64"/%"PRIu64" (ratio %.02f%%)",
+				usage.busy_cycles, usage.total_cycles,
+				calc_usage_ratio(&usage)) < 0) {
+			return -ENOMEM;
+		}
 	}
-
 	ret = eal_thread_dump_affinity(&lcore_config[lcore_id].cpuset, cpuset,
 		sizeof(cpuset));
-	fprintf(f, "lcore %u, socket %u, role %s, cpuset %s%s\n", lcore_id,
-		rte_lcore_to_socket_id(lcore_id), role, cpuset,
-		ret == 0 ? "" : "...");
+	fprintf(f, "lcore %u, socket %u, role %s, cpuset %s%s%s\n", lcore_id,
+		rte_lcore_to_socket_id(lcore_id),
+		lcore_role_str(cfg->lcore_role[lcore_id]), cpuset,
+		ret == 0 ? "" : "...", usage_str != NULL ? usage_str : "");
+	free(usage_str);
+
 	return 0;
 }
 
@@ -456,3 +491,181 @@ rte_lcore_dump(FILE *f)
 {
 	rte_lcore_iterate(lcore_dump_cb, f);
 }
+
+#ifndef RTE_EXEC_ENV_WINDOWS
+static int
+lcore_telemetry_id_cb(unsigned int lcore_id, void *arg)
+{
+	struct rte_tel_data *d = arg;
+
+	return rte_tel_data_add_array_int(d, lcore_id);
+}
+
+static int
+handle_lcore_list(const char *cmd __rte_unused, const char *params __rte_unused,
+	struct rte_tel_data *d)
+{
+	int ret;
+
+	ret = rte_tel_data_start_array(d, RTE_TEL_INT_VAL);
+	if (ret == 0)
+		ret = rte_lcore_iterate(lcore_telemetry_id_cb, d);
+
+	return ret;
+}
+
+struct lcore_telemetry_info {
+	unsigned int lcore_id;
+	struct rte_tel_data *d;
+};
+
+static void
+format_usage_ratio(char *buf, uint16_t size, const struct rte_lcore_usage *usage)
+{
+	float ratio = calc_usage_ratio(usage);
+	snprintf(buf, size, "%.02f%%", ratio);
+}
+
+static int
+lcore_telemetry_info_cb(unsigned int lcore_id, void *arg)
+{
+	struct rte_config *cfg = rte_eal_get_configuration();
+	struct lcore_telemetry_info *info = arg;
+	char ratio_str[RTE_TEL_MAX_STRING_LEN];
+	struct rte_lcore_usage usage;
+	struct rte_tel_data *cpuset;
+	rte_lcore_usage_cb usage_cb;
+	unsigned int cpu;
+
+	if (lcore_id != info->lcore_id)
+		return 0;
+
+	rte_tel_data_start_dict(info->d);
+	rte_tel_data_add_dict_int(info->d, "lcore_id", lcore_id);
+	rte_tel_data_add_dict_int(info->d, "socket", rte_lcore_to_socket_id(lcore_id));
+	rte_tel_data_add_dict_string(info->d, "role", lcore_role_str(cfg->lcore_role[lcore_id]));
+	cpuset = rte_tel_data_alloc();
+	if (cpuset == NULL)
+		return -ENOMEM;
+	rte_tel_data_start_array(cpuset, RTE_TEL_INT_VAL);
+	for (cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+		if (CPU_ISSET(cpu, &lcore_config[lcore_id].cpuset))
+			rte_tel_data_add_array_int(cpuset, cpu);
+	}
+	rte_tel_data_add_dict_container(info->d, "cpuset", cpuset, 0);
+	/* The callback may not set all the fields in the structure, so clear it here. */
+	memset(&usage, 0, sizeof(usage));
+	/* Guard against concurrent modification of lcore_usage_cb. */
+	usage_cb = lcore_usage_cb;
+	if (usage_cb != NULL && usage_cb(lcore_id, &usage) == 0) {
+		rte_tel_data_add_dict_uint(info->d, "total_cycles", usage.total_cycles);
+		rte_tel_data_add_dict_uint(info->d, "busy_cycles", usage.busy_cycles);
+		format_usage_ratio(ratio_str, sizeof(ratio_str), &usage);
+		rte_tel_data_add_dict_string(info->d, "usage_ratio", ratio_str);
+	}
+
+	/* Return non-zero positive value to stop iterating over lcore_id. */
+	return 1;
+}
+
+static int
+handle_lcore_info(const char *cmd __rte_unused, const char *params, struct rte_tel_data *d)
+{
+	struct lcore_telemetry_info info = { .d = d };
+	unsigned long lcore_id;
+	char *endptr;
+
+	if (params == NULL)
+		return -EINVAL;
+	errno = 0;
+	lcore_id = strtoul(params, &endptr, 10);
+	if (errno)
+		return -errno;
+	if (*params == '\0' || *endptr != '\0' || lcore_id >= RTE_MAX_LCORE)
+		return -EINVAL;
+
+	info.lcore_id = lcore_id;
+
+	return rte_lcore_iterate(lcore_telemetry_info_cb, &info);
+}
+
+struct lcore_telemetry_usage {
+	struct rte_tel_data *lcore_ids;
+	struct rte_tel_data *total_cycles;
+	struct rte_tel_data *busy_cycles;
+	struct rte_tel_data *usage_ratio;
+};
+
+static int
+lcore_telemetry_usage_cb(unsigned int lcore_id, void *arg)
+{
+	char ratio_str[RTE_TEL_MAX_STRING_LEN];
+	struct lcore_telemetry_usage *u = arg;
+	struct rte_lcore_usage usage;
+	rte_lcore_usage_cb usage_cb;
+
+	/* The callback may not set all the fields in the structure, so clear it here. */
+	memset(&usage, 0, sizeof(usage));
+	/* Guard against concurrent modification of lcore_usage_cb. */
+	usage_cb = lcore_usage_cb;
+	if (usage_cb != NULL && usage_cb(lcore_id, &usage) == 0) {
+		rte_tel_data_add_array_uint(u->lcore_ids, lcore_id);
+		rte_tel_data_add_array_uint(u->total_cycles, usage.total_cycles);
+		rte_tel_data_add_array_uint(u->busy_cycles, usage.busy_cycles);
+		format_usage_ratio(ratio_str, sizeof(ratio_str), &usage);
+		rte_tel_data_add_array_string(u->usage_ratio, ratio_str);
+	}
+
+	return 0;
+}
+
+static int
+handle_lcore_usage(const char *cmd __rte_unused, const char *params __rte_unused,
+	struct rte_tel_data *d)
+{
+	struct lcore_telemetry_usage usage;
+	struct rte_tel_data *total_cycles;
+	struct rte_tel_data *busy_cycles;
+	struct rte_tel_data *usage_ratio;
+	struct rte_tel_data *lcore_ids;
+
+	lcore_ids = rte_tel_data_alloc();
+	total_cycles = rte_tel_data_alloc();
+	busy_cycles = rte_tel_data_alloc();
+	usage_ratio = rte_tel_data_alloc();
+	if (lcore_ids == NULL || total_cycles == NULL || busy_cycles == NULL ||
+	    usage_ratio == NULL) {
+		rte_tel_data_free(lcore_ids);
+		rte_tel_data_free(total_cycles);
+		rte_tel_data_free(busy_cycles);
+		rte_tel_data_free(usage_ratio);
+		return -ENOMEM;
+	}
+
+	rte_tel_data_start_dict(d);
+	rte_tel_data_start_array(lcore_ids, RTE_TEL_UINT_VAL);
+	rte_tel_data_start_array(total_cycles, RTE_TEL_UINT_VAL);
+	rte_tel_data_start_array(busy_cycles, RTE_TEL_UINT_VAL);
+	rte_tel_data_start_array(usage_ratio, RTE_TEL_STRING_VAL);
+	rte_tel_data_add_dict_container(d, "lcore_ids", lcore_ids, 0);
+	rte_tel_data_add_dict_container(d, "total_cycles", total_cycles, 0);
+	rte_tel_data_add_dict_container(d, "busy_cycles", busy_cycles, 0);
+	rte_tel_data_add_dict_container(d, "usage_ratio", usage_ratio, 0);
+	usage.lcore_ids = lcore_ids;
+	usage.total_cycles = total_cycles;
+	usage.busy_cycles = busy_cycles;
+	usage.usage_ratio = usage_ratio;
+
+	return rte_lcore_iterate(lcore_telemetry_usage_cb, &usage);
+}
+
+RTE_INIT(lcore_telemetry)
+{
+	rte_telemetry_register_cmd("/eal/lcore/list", handle_lcore_list,
+		"List of lcore ids. Takes no parameters");
+	rte_telemetry_register_cmd("/eal/lcore/info", handle_lcore_info,
+		"Returns lcore info. Parameters: int lcore_id");
+	rte_telemetry_register_cmd("/eal/lcore/usage", handle_lcore_usage,
+		"Returns lcore cycles usage. Takes no parameters");
+}
+#endif /* !RTE_EXEC_ENV_WINDOWS */

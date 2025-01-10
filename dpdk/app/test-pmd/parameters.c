@@ -177,6 +177,7 @@ usage(char* progname)
 	       "disable print of designated event or all of them.\n");
 	printf("  --flow-isolate-all: "
 	       "requests flow API isolated mode on all ports at initialization time.\n");
+	printf("  --disable-flow-flush: disable port flow flush when stop port.\n");
 	printf("  --tx-offloads=0xXXXXXXXX: hexadecimal bitmask of TX queue offloads\n");
 	printf("  --rx-offloads=0xXXXXXXXX: hexadecimal bitmask of RX queue offloads\n");
 	printf("  --hot-plug: enable hot plug for device.\n");
@@ -191,6 +192,7 @@ usage(char* progname)
 	       "    anon: use regular DPDK memory to create and anonymous memory to populate mempool\n"
 	       "    xmem: use anonymous memory to create and populate mempool\n"
 	       "    xmemhuge: use anonymous hugepage memory to create and populate mempool\n");
+	printf("  --noisy-forward-mode=<io|mac|macswap|5tswap>: set the sub-fwd mode, defaults to io\n");
 	printf("  --noisy-tx-sw-buffer-size=N: size of FIFO buffer\n");
 	printf("  --noisy-tx-sw-buffer-flushtime=N: flush FIFO after N ms\n");
 	printf("  --noisy-lkup-memory=N: allocate N MB of VNF memory\n");
@@ -551,6 +553,12 @@ parse_link_speed(int n)
 	case 1000:
 		speed |= RTE_ETH_LINK_SPEED_1G;
 		break;
+	case 2500:
+		speed |= RTE_ETH_LINK_SPEED_2_5G;
+		break;
+	case 5000:
+		speed |= RTE_ETH_LINK_SPEED_5G;
+		break;
 	case 10000:
 		speed |= RTE_ETH_LINK_SPEED_10G;
 		break;
@@ -568,6 +576,9 @@ parse_link_speed(int n)
 		break;
 	case 200000:
 		speed |= RTE_ETH_LINK_SPEED_200G;
+		break;
+	case 400000:
+		speed |= RTE_ETH_LINK_SPEED_400G;
 		break;
 	case 100:
 	case 10:
@@ -669,6 +680,7 @@ launch_args_parse(int argc, char** argv)
 		{ "rxfreet",                    1, 0, 0 },
 		{ "no-flush-rx",	0, 0, 0 },
 		{ "flow-isolate-all",	        0, 0, 0 },
+		{ "disable-flow-flush",         0, 0, 0 },
 		{ "rxoffs",			1, 0, 0 },
 		{ "rxpkts",			1, 0, 0 },
 		{ "rxhdrs",			1, 0, 0 },
@@ -695,6 +707,7 @@ launch_args_parse(int argc, char** argv)
 		{ "mp-alloc",			1, 0, 0 },
 		{ "tx-ip",			1, 0, 0 },
 		{ "tx-udp",			1, 0, 0 },
+		{ "noisy-forward-mode",		1, 0, 0 },
 		{ "noisy-tx-sw-buffer-size",	1, 0, 0 },
 		{ "noisy-tx-sw-buffer-flushtime", 1, 0, 0 },
 		{ "noisy-lkup-memory",		1, 0, 0 },
@@ -1334,6 +1347,8 @@ launch_args_parse(int argc, char** argv)
 				rmv_interrupt = 0;
 			if (!strcmp(lgopts[opt_idx].name, "flow-isolate-all"))
 				flow_isolate_all = 1;
+			if (!strcmp(lgopts[opt_idx].name, "disable-flow-flush"))
+				no_flow_flush = 1;
 			if (!strcmp(lgopts[opt_idx].name, "tx-offloads")) {
 				char *end = NULL;
 				n = strtoull(optarg, &end, 16);
@@ -1440,6 +1455,19 @@ launch_args_parse(int argc, char** argv)
 				else
 					rte_exit(EXIT_FAILURE,
 						 "noisy-lkup-num-reads-writes must be >= 0\n");
+			}
+			if (!strcmp(lgopts[opt_idx].name,
+				    "noisy-forward-mode")) {
+				int i;
+				for (i = 0; i < NOISY_FWD_MODE_MAX; i++)
+					if (!strcmp(optarg, noisy_fwd_mode_desc[i])) {
+						noisy_fwd_mode = i;
+						break;
+					}
+				if (i == NOISY_FWD_MODE_MAX)
+					rte_exit(EXIT_FAILURE, "noisy-forward-mode %s invalid,"
+						 " must be a valid noisy-forward-mode value\n",
+						 optarg);
 			}
 			if (!strcmp(lgopts[opt_idx].name, "no-iova-contig"))
 				mempool_flags = RTE_MEMPOOL_F_NO_IOVA_CONTIG;

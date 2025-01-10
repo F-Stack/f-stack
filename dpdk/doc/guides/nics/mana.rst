@@ -7,11 +7,6 @@ MANA poll mode driver library
 The MANA poll mode driver library (**librte_net_mana**) implements support
 for Microsoft Azure Network Adapter VF in SR-IOV context.
 
-Features
---------
-
-Features of the MANA Ethdev PMD are:
-
 Prerequisites
 -------------
 
@@ -62,8 +57,8 @@ Driver compilation and testing
 Refer to the document
 :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>` for details.
 
-MANA PMD arguments
-------------------
+Runtime Configuration
+---------------------
 
 The user can specify below argument in devargs.
 

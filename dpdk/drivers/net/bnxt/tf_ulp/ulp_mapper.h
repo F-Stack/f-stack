@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -52,6 +52,7 @@ struct bnxt_ulp_mapper_parms {
 	struct ulp_regfile			*regfile;
 	struct bnxt_ulp_context			*ulp_ctx;
 	uint32_t				fid;
+	uint32_t				rid;
 	enum bnxt_ulp_fdb_type			flow_type;
 	struct bnxt_ulp_mapper_data		*mapper_data;
 	struct bnxt_ulp_device_params		*device_params;
@@ -133,5 +134,4 @@ ulp_mapper_get_shared_fid(struct bnxt_ulp_context *ulp,
 			  uint32_t id,
 			  uint16_t key,
 			  uint32_t *fid);
-
 #endif /* _ULP_MAPPER_H_ */

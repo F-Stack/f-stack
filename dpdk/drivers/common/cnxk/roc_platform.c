@@ -21,6 +21,31 @@ roc_plt_init_cb_register(roc_plt_init_cb_t cb)
 	return 0;
 }
 
+uint16_t
+roc_plt_control_lmt_id_get(void)
+{
+	uint32_t lcore_id = plt_lcore_id();
+	if (lcore_id != LCORE_ID_ANY)
+		return lcore_id << ROC_LMT_LINES_PER_CORE_LOG2;
+	else
+		/* Return Last LMT ID to be use in control path functionality */
+		return ROC_NUM_LMT_LINES - 1;
+}
+
+uint16_t
+roc_plt_lmt_validate(void)
+{
+	if (!roc_model_is_cn9k()) {
+		/* Last LMT line is reserved for control specific operation and can be
+		 * use from any EAL or non EAL cores.
+		 */
+		if ((RTE_MAX_LCORE << ROC_LMT_LINES_PER_CORE_LOG2) >
+		    (ROC_NUM_LMT_LINES - 1))
+			return 0;
+	}
+	return 1;
+}
+
 int
 roc_plt_init(void)
 {
@@ -60,13 +85,15 @@ roc_plt_init(void)
 	return 0;
 }
 
-RTE_LOG_REGISTER(cnxk_logtype_base, pmd.cnxk.base, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_mbox, pmd.cnxk.mbox, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_cpt, pmd.crypto.cnxk, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_npa, pmd.mempool.cnxk, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_nix, pmd.net.cnxk, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_npc, pmd.net.cnxk.flow, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_sso, pmd.event.cnxk, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_tim, pmd.event.cnxk.timer, NOTICE);
-RTE_LOG_REGISTER(cnxk_logtype_tm, pmd.net.cnxk.tm, NOTICE);
-RTE_LOG_REGISTER_DEFAULT(cnxk_logtype_ree, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_base, base, INFO);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_mbox, mbox, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_cpt, crypto, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_ml, ml, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_npa, mempool, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_nix, nix, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_npc, flow, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_sso, event, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_tim, timer, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_tm, tm, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_dpi, dpi, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_ree, ree, NOTICE);

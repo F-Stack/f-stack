@@ -9,6 +9,7 @@
 # given as a dep, no need to mention ring. This is especially true for the
 # core libs which are widely reused, so their deps are kept to a minimum.
 libraries = [
+        'log',
         'kvargs', # eal depends on kvargs
         'telemetry', # basic info querying
         'eal', # everything depends on eal
@@ -32,14 +33,15 @@ libraries = [
         'compressdev',
         'cryptodev',
         'distributor',
+        'dmadev',  # eventdev depends on this
         'efd',
         'eventdev',
+        'dispatcher', # dispatcher depends on eventdev
         'gpudev',
         'gro',
         'gso',
         'ip_frag',
         'jobstats',
-        'kni',
         'latencystats',
         'lpm',
         'member',
@@ -47,7 +49,7 @@ libraries = [
         'power',
         'rawdev',
         'regexdev',
-        'dmadev',
+        'mldev',
         'rib',
         'reorder',
         'sched',
@@ -55,55 +57,88 @@ libraries = [
         'stack',
         'vhost',
         'ipsec', # ipsec lib depends on net, crypto and security
+        'pdcp', # pdcp lib depends on crypto and security
         'fib', #fib lib depends on rib
         'port', # pkt framework libs which use other libs from above
         'pdump', # pdump lib depends on bpf
         'table',
         'pipeline',
-        'flow_classify', # flow_classify lib depends on pkt framework table lib
         'graph',
         'node',
 ]
 
+if is_ms_compiler
+    libraries = [
+            'log',
+            'kvargs',
+            'telemetry',
+    ]
+endif
+
 optional_libs = [
+        'bbdev',
         'bitratestats',
+        'bpf',
         'cfgfile',
-        'flow_classify',
+        'compressdev',
+        'cryptodev',
+        'dispatcher',
+        'distributor',
+        'dmadev',
+        'efd',
+        'eventdev',
         'gpudev',
+        'graph',
         'gro',
         'gso',
-        'kni',
+        'ip_frag',
+        'ipsec',
         'jobstats',
         'latencystats',
+        'member',
         'metrics',
+        'mldev',
         'node',
+        'pcapng',
+        'pdcp',
         'pdump',
         'pipeline',
         'port',
         'power',
+        'rawdev',
+        'regexdev',
+        'reorder',
+        'sched',
+        'security',
         'table',
         'vhost',
 ]
 
-dpdk_libs_deprecated += [
-        'flow_classify',
-        'kni',
-]
-
-disabled_libs = []
-opt_disabled_libs = run_command(list_dir_globs, get_option('disable_libs'),
-        check: true).stdout().split()
-if dpdk_conf.get('RTE_IOVA_AS_PA') == 0
-    opt_disabled_libs += ['kni']
-endif
-foreach l:opt_disabled_libs
+always_enable = []
+foreach l:libraries
     if not optional_libs.contains(l)
-        warning('Cannot disable mandatory library "@0@"'.format(l))
-        continue
+        always_enable += l
     endif
-    disabled_libs += l
 endforeach
 
+enable_deprecated_libs = []
+foreach l:run_command(list_dir_globs, get_option('enable_deprecated_libs'),
+        check: true).stdout().split()
+    if not dpdk_libs_deprecated.contains(l)
+        continue
+    endif
+    enable_deprecated_libs += l
+endforeach
+
+disable_libs = run_command(list_dir_globs, get_option('disable_libs'), check: true).stdout().split()
+
+enable_libs = run_command(list_dir_globs, get_option('enable_libs'), check: true).stdout().split()
+require_libs = true
+if enable_libs.length() == 0
+    require_libs = false
+    enable_libs += optional_libs
+endif
+enable_libs += always_enable
 
 default_cflags = machine_args
 default_cflags += ['-DALLOW_EXPERIMENTAL_API']
@@ -113,13 +148,12 @@ if cc.has_argument('-Wno-format-truncation')
     default_cflags += '-Wno-format-truncation'
 endif
 
-enabled_libs = [] # used to print summary at the end
-
 foreach l:libraries
     build = true
     reason = '<unknown reason>' # set if build == false to explain why
     name = l
     use_function_versioning = false
+    annotate_locks = true
     sources = []
     headers = []
     indirect_headers = [] # public headers not directly included by apps
@@ -138,17 +172,31 @@ foreach l:libraries
         deps += ['eal']
     endif
 
-    if disabled_libs.contains(l)
-        build = false
-        reason = 'explicitly disabled via build config'
-        if dpdk_libs_deprecated.contains(l)
-            reason += ' (deprecated lib)'
-        endif
-    else
-        if dpdk_libs_deprecated.contains(l)
+    if dpdk_libs_deprecated.contains(l)
+        if not enable_deprecated_libs.contains(l)
+            build = false
+            reason = 'not in enabled deprecated libraries build config'
+        else
             warning('Enabling deprecated library, "@0@"'.format(l))
         endif
+    elif not enable_libs.contains(l)
+        build = false
+        reason = 'not in enabled libraries build config'
+    elif disable_libs.contains(l)
+        if always_enable.contains(l)
+            warning('Cannot disable mandatory library "@0@"'.format(l))
+        else
+            build = false
+            reason = 'explicitly disabled via build config'
+        endif
+    endif
+
+    if build
         subdir(l)
+        if not build and require_libs
+            error('Cannot build explicitly requested lib "@0@".\n'.format(name)
+                    +'\tReason: ' + reason)
+        endif
     endif
     if name != l
         warning('Library name, "@0@", and directory name, "@1@", do not match'.format(name, l))
@@ -168,6 +216,10 @@ foreach l:libraries
             endif
             message('Disabling @1@ [@2@]: missing internal dependency "@0@"'
                     .format(d, name, 'lib/' + l))
+            if require_libs
+                error('Cannot build explicitly requested lib "@0@".\n'.format(name)
+                        + '\tPlease add missing dependency "@0@" to "enable_libs" option'.format(d))
+            endif
         else
             shared_deps += [get_variable('shared_rte_' + d)]
             static_deps += [get_variable('static_rte_' + d)]
@@ -180,7 +232,7 @@ foreach l:libraries
         continue
     endif
 
-    enabled_libs += name
+    dpdk_libs_enabled += name
     dpdk_conf.set('RTE_LIB_' + name.to_upper(), 1)
     install_headers(headers)
     install_headers(indirect_headers)
@@ -202,6 +254,10 @@ foreach l:libraries
         cflags += '-DRTE_USE_FUNCTION_VERSIONING'
     endif
     cflags += '-DRTE_LOG_DEFAULT_LOGTYPE=lib.' + l
+    if annotate_locks and cc.get_id() == 'clang' and cc.version().version_compare('>=3.5.0')
+        cflags += '-DRTE_ANNOTATE_LOCKS'
+        cflags += '-Wthread-safety'
+    endif
 
     # first build static lib
     static_lib = static_library(libname,
@@ -224,34 +280,42 @@ foreach l:libraries
         # RTE_BUILD_SHARED_LIB defined
         cflags += '-DRTE_BUILD_SHARED_LIB'
     endif
-    version_map = '@0@/@1@/version.map'.format(
-            meson.current_source_dir(), l)
-    implib = 'librte_' + l + '.dll.a'
 
-    def_file = custom_target(libname + '_def',
-            command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
-            input: version_map,
-            output: '@0@_exports.def'.format(libname))
-
-    mingw_map = custom_target(libname + '_mingw',
-            command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
-            input: version_map,
-            output: '@0@_mingw.map'.format(libname))
+    version_map = '@0@/@1@/version.map'.format(meson.current_source_dir(), l)
+    lk_deps = [version_map]
 
     if is_ms_linker
-        lk_args = ['-Wl,/def:' + def_file.full_path()]
-        if meson.version().version_compare('<0.54.0')
-            lk_args += ['-Wl,/implib:lib\\' + implib]
+        def_file = custom_target(libname + '_def',
+                command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+                input: version_map,
+                output: '@0@_exports.def'.format(libname))
+        lk_deps += [def_file]
+
+        if is_ms_compiler
+            lk_args = ['/def:' + def_file.full_path()]
+            if meson.version().version_compare('<0.54.0')
+                lk_args += ['/implib:lib\\librte_' + l + '.dll.a']
+            endif
+        else
+            lk_args = ['-Wl,/def:' + def_file.full_path()]
+            if meson.version().version_compare('<0.54.0')
+                lk_args += ['-Wl,/implib:lib\\librte_' + l + '.dll.a']
+            endif
         endif
     else
         if is_windows
+            mingw_map = custom_target(libname + '_mingw',
+                    command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+                    input: version_map,
+                    output: '@0@_mingw.map'.format(libname))
+            lk_deps += [mingw_map]
+
             lk_args = ['-Wl,--version-script=' + mingw_map.full_path()]
         else
             lk_args = ['-Wl,--version-script=' + version_map]
         endif
     endif
 
-    lk_deps = [version_map, def_file, mingw_map]
     if developer_mode and not is_windows
         # on unix systems check the output of the
         # check-symbols.sh script, using it as a

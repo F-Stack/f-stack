@@ -225,6 +225,7 @@ lpm_main_loop(__rte_unused void *dummy)
 	return 0;
 }
 
+#ifdef RTE_LIB_EVENTDEV
 static __rte_always_inline uint16_t
 lpm_process_event_pkt(const struct lcore_conf *lconf, struct rte_mbuf *mbuf)
 {
@@ -553,6 +554,7 @@ lpm_event_main_loop_tx_q_burst_vector(__rte_unused void *dummy)
 	lpm_event_loop_vector(evt_rsrc, L3FWD_EVENT_TX_ENQ);
 	return 0;
 }
+#endif
 
 void
 setup_lpm(const int socketid)
@@ -673,16 +675,17 @@ lpm_check_ptype(int portid)
 			ptype_l3_ipv6 = 1;
 	}
 
-	if (ptype_l3_ipv4 == 0)
+	if (!ipv6 && !ptype_l3_ipv4) {
 		printf("port %d cannot parse RTE_PTYPE_L3_IPV4\n", portid);
+		return 0;
+	}
 
-	if (ptype_l3_ipv6 == 0)
+	if (ipv6 && !ptype_l3_ipv6) {
 		printf("port %d cannot parse RTE_PTYPE_L3_IPV6\n", portid);
+		return 0;
+	}
 
-	if (ptype_l3_ipv4 && ptype_l3_ipv6)
-		return 1;
-
-	return 0;
+	return 1;
 
 }
 

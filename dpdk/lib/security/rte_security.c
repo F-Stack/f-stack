@@ -27,7 +27,10 @@
 } while (0)
 
 #define RTE_SECURITY_DYNFIELD_NAME "rte_security_dynfield_metadata"
+#define RTE_SECURITY_OOP_DYNFIELD_NAME "rte_security_oop_dynfield_metadata"
+
 int rte_security_dynfield_offset = -1;
+int rte_security_oop_dynfield_offset = -1;
 
 int
 rte_security_dynfield_register(void)
@@ -42,12 +45,27 @@ rte_security_dynfield_register(void)
 	return rte_security_dynfield_offset;
 }
 
+int
+rte_security_oop_dynfield_register(void)
+{
+	static const struct rte_mbuf_dynfield dynfield_desc = {
+		.name = RTE_SECURITY_OOP_DYNFIELD_NAME,
+		.size = sizeof(rte_security_oop_dynfield_t),
+		.align = __alignof__(rte_security_oop_dynfield_t),
+	};
+
+	rte_security_oop_dynfield_offset =
+		rte_mbuf_dynfield_register(&dynfield_desc);
+	return rte_security_oop_dynfield_offset;
+}
+
 void *
-rte_security_session_create(struct rte_security_ctx *instance,
+rte_security_session_create(void *ctx,
 			    struct rte_security_session_conf *conf,
 			    struct rte_mempool *mp)
 {
 	struct rte_security_session *sess = NULL;
+	struct rte_security_ctx *instance = ctx;
 	uint32_t sess_priv_size;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_create, NULL, NULL);
@@ -76,10 +94,10 @@ rte_security_session_create(struct rte_security_ctx *instance,
 }
 
 int
-rte_security_session_update(struct rte_security_ctx *instance,
-			    void *sess,
-			    struct rte_security_session_conf *conf)
+rte_security_session_update(void *ctx, void *sess, struct rte_security_session_conf *conf)
 {
+	struct rte_security_ctx *instance = ctx;
+
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_update, -EINVAL,
 			-ENOTSUP);
 	RTE_PTR_OR_ERR_RET(sess, -EINVAL);
@@ -89,8 +107,10 @@ rte_security_session_update(struct rte_security_ctx *instance,
 }
 
 unsigned int
-rte_security_session_get_size(struct rte_security_ctx *instance)
+rte_security_session_get_size(void *ctx)
 {
+	struct rte_security_ctx *instance = ctx;
+
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_get_size, 0, 0);
 
 	return (sizeof(struct rte_security_session) +
@@ -98,10 +118,10 @@ rte_security_session_get_size(struct rte_security_ctx *instance)
 }
 
 int
-rte_security_session_stats_get(struct rte_security_ctx *instance,
-			       void *sess,
-			       struct rte_security_stats *stats)
+rte_security_session_stats_get(void *ctx, void *sess, struct rte_security_stats *stats)
 {
+	struct rte_security_ctx *instance = ctx;
+
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_stats_get, -EINVAL,
 			-ENOTSUP);
 	/* Parameter sess can be NULL in case of getting global statistics. */
@@ -111,8 +131,9 @@ rte_security_session_stats_get(struct rte_security_ctx *instance,
 }
 
 int
-rte_security_session_destroy(struct rte_security_ctx *instance, void *sess)
+rte_security_session_destroy(void *ctx, void *sess)
 {
+	struct rte_security_ctx *instance = ctx;
 	int ret;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, session_destroy, -EINVAL,
@@ -132,9 +153,9 @@ rte_security_session_destroy(struct rte_security_ctx *instance, void *sess)
 }
 
 int
-rte_security_macsec_sc_create(struct rte_security_ctx *instance,
-			      struct rte_security_macsec_sc *conf)
+rte_security_macsec_sc_create(void *ctx, struct rte_security_macsec_sc *conf)
 {
+	struct rte_security_ctx *instance = ctx;
 	int sc_id;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sc_create, -EINVAL, -ENOTSUP);
@@ -148,9 +169,9 @@ rte_security_macsec_sc_create(struct rte_security_ctx *instance,
 }
 
 int
-rte_security_macsec_sa_create(struct rte_security_ctx *instance,
-			      struct rte_security_macsec_sa *conf)
+rte_security_macsec_sa_create(void *ctx, struct rte_security_macsec_sa *conf)
 {
+	struct rte_security_ctx *instance = ctx;
 	int sa_id;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sa_create, -EINVAL, -ENOTSUP);
@@ -164,13 +185,15 @@ rte_security_macsec_sa_create(struct rte_security_ctx *instance,
 }
 
 int
-rte_security_macsec_sc_destroy(struct rte_security_ctx *instance, uint16_t sc_id)
+rte_security_macsec_sc_destroy(void *ctx, uint16_t sc_id,
+			       enum rte_security_macsec_direction dir)
 {
+	struct rte_security_ctx *instance = ctx;
 	int ret;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sc_destroy, -EINVAL, -ENOTSUP);
 
-	ret = instance->ops->macsec_sc_destroy(instance->device, sc_id);
+	ret = instance->ops->macsec_sc_destroy(instance->device, sc_id, dir);
 	if (ret != 0)
 		return ret;
 
@@ -181,13 +204,15 @@ rte_security_macsec_sc_destroy(struct rte_security_ctx *instance, uint16_t sc_id
 }
 
 int
-rte_security_macsec_sa_destroy(struct rte_security_ctx *instance, uint16_t sa_id)
+rte_security_macsec_sa_destroy(void *ctx, uint16_t sa_id,
+			       enum rte_security_macsec_direction dir)
 {
+	struct rte_security_ctx *instance = ctx;
 	int ret;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sa_destroy, -EINVAL, -ENOTSUP);
 
-	ret = instance->ops->macsec_sa_destroy(instance->device, sa_id);
+	ret = instance->ops->macsec_sa_destroy(instance->device, sa_id, dir);
 	if (ret != 0)
 		return ret;
 
@@ -198,30 +223,35 @@ rte_security_macsec_sa_destroy(struct rte_security_ctx *instance, uint16_t sa_id
 }
 
 int
-rte_security_macsec_sc_stats_get(struct rte_security_ctx *instance, uint16_t sc_id,
+rte_security_macsec_sc_stats_get(void *ctx, uint16_t sc_id,
+				 enum rte_security_macsec_direction dir,
 				 struct rte_security_macsec_sc_stats *stats)
 {
+	struct rte_security_ctx *instance = ctx;
+
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sc_stats_get, -EINVAL, -ENOTSUP);
 	RTE_PTR_OR_ERR_RET(stats, -EINVAL);
 
-	return instance->ops->macsec_sc_stats_get(instance->device, sc_id, stats);
+	return instance->ops->macsec_sc_stats_get(instance->device, sc_id, dir, stats);
 }
 
 int
-rte_security_macsec_sa_stats_get(struct rte_security_ctx *instance, uint16_t sa_id,
+rte_security_macsec_sa_stats_get(void *ctx, uint16_t sa_id,
+				 enum rte_security_macsec_direction dir,
 				 struct rte_security_macsec_sa_stats *stats)
 {
+	struct rte_security_ctx *instance = ctx;
+
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, macsec_sa_stats_get, -EINVAL, -ENOTSUP);
 	RTE_PTR_OR_ERR_RET(stats, -EINVAL);
 
-	return instance->ops->macsec_sa_stats_get(instance->device, sa_id, stats);
+	return instance->ops->macsec_sa_stats_get(instance->device, sa_id, dir, stats);
 }
 
 int
-__rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
-				void *sess,
-				struct rte_mbuf *m, void *params)
+__rte_security_set_pkt_metadata(void *ctx, void *sess, struct rte_mbuf *m, void *params)
 {
+	struct rte_security_ctx *instance = ctx;
 #ifdef RTE_DEBUG
 	RTE_PTR_OR_ERR_RET(sess, -EINVAL);
 	RTE_PTR_OR_ERR_RET(instance, -EINVAL);
@@ -234,19 +264,21 @@ __rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
 }
 
 const struct rte_security_capability *
-rte_security_capabilities_get(struct rte_security_ctx *instance)
+rte_security_capabilities_get(void *ctx)
 {
+	struct rte_security_ctx *instance = ctx;
+
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, capabilities_get, NULL, NULL);
 
 	return instance->ops->capabilities_get(instance->device);
 }
 
 const struct rte_security_capability *
-rte_security_capability_get(struct rte_security_ctx *instance,
-			    struct rte_security_capability_idx *idx)
+rte_security_capability_get(void *ctx, struct rte_security_capability_idx *idx)
 {
 	const struct rte_security_capability *capabilities;
 	const struct rte_security_capability *capability;
+	struct rte_security_ctx *instance = ctx;
 	uint16_t i = 0;
 
 	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, capabilities_get, NULL, NULL);
@@ -278,11 +310,41 @@ rte_security_capability_get(struct rte_security_ctx *instance,
 				if (capability->docsis.direction ==
 							idx->docsis.direction)
 					return capability;
+			} else if (idx->protocol ==
+						RTE_SECURITY_PROTOCOL_MACSEC) {
+				if (idx->macsec.alg == capability->macsec.alg)
+					return capability;
+			} else if (idx->protocol == RTE_SECURITY_PROTOCOL_TLS_RECORD) {
+				if (capability->tls_record.ver == idx->tls_record.ver &&
+				    capability->tls_record.type == idx->tls_record.type)
+					return capability;
 			}
 		}
 	}
 
 	return NULL;
+}
+
+int
+rte_security_rx_inject_configure(void *ctx, uint16_t port_id, bool enable)
+{
+	struct rte_security_ctx *instance = ctx;
+
+	RTE_PTR_OR_ERR_RET(instance, -EINVAL);
+	RTE_PTR_OR_ERR_RET(instance->ops, -ENOTSUP);
+	RTE_PTR_OR_ERR_RET(instance->ops->rx_inject_configure, -ENOTSUP);
+
+	return instance->ops->rx_inject_configure(instance->device, port_id, enable);
+}
+
+uint16_t
+rte_security_inb_pkt_rx_inject(void *ctx, struct rte_mbuf **pkts, void **sess,
+			       uint16_t nb_pkts)
+{
+	struct rte_security_ctx *instance = ctx;
+
+	return instance->ops->inb_pkt_rx_inject(instance->device, pkts,
+						(struct rte_security_session **)sess, nb_pkts);
 }
 
 static int
@@ -316,14 +378,14 @@ crypto_caps_array(struct rte_tel_data *d,
 	uint64_t caps_val[CRYPTO_CAPS_SZ];
 	unsigned int i = 0, j;
 
-	rte_tel_data_start_array(d, RTE_TEL_U64_VAL);
+	rte_tel_data_start_array(d, RTE_TEL_UINT_VAL);
 
 	while ((dev_caps = &capabilities[i++])->op !=
 	   RTE_CRYPTO_OP_TYPE_UNDEFINED) {
 		memset(&caps_val, 0, CRYPTO_CAPS_SZ * sizeof(caps_val[0]));
 		rte_memcpy(caps_val, dev_caps, sizeof(capabilities[0]));
 		for (j = 0; j < CRYPTO_CAPS_SZ; j++)
-			rte_tel_data_add_array_u64(d, caps_val[j]);
+			rte_tel_data_add_array_uint(d, caps_val[j]);
 	}
 
 	return (i - 1);
@@ -341,14 +403,14 @@ sec_caps_array(struct rte_tel_data *d,
 	uint64_t caps_val[SEC_CAPS_SZ];
 	unsigned int i = 0, j;
 
-	rte_tel_data_start_array(d, RTE_TEL_U64_VAL);
+	rte_tel_data_start_array(d, RTE_TEL_UINT_VAL);
 
 	while ((dev_caps = &capabilities[i++])->action !=
 	   RTE_SECURITY_ACTION_TYPE_NONE) {
 		memset(&caps_val, 0, SEC_CAPS_SZ * sizeof(caps_val[0]));
 		rte_memcpy(caps_val, dev_caps, sizeof(capabilities[0]));
 		for (j = 0; j < SEC_CAPS_SZ; j++)
-			rte_tel_data_add_array_u64(d, caps_val[j]);
+			rte_tel_data_add_array_uint(d, caps_val[j]);
 	}
 
 	return i - 1;
@@ -376,12 +438,12 @@ static int
 security_capabilities_from_dev_id(int dev_id, const void **caps)
 {
 	const struct rte_security_capability *capabilities;
-	struct rte_security_ctx *sec_ctx;
+	void *sec_ctx;
 
 	if (rte_cryptodev_is_valid_dev(dev_id) == 0)
 		return -EINVAL;
 
-	sec_ctx = (struct rte_security_ctx *)rte_cryptodev_get_sec_ctx(dev_id);
+	sec_ctx = rte_cryptodev_get_sec_ctx(dev_id);
 	RTE_PTR_OR_ERR_RET(sec_ctx, -EINVAL);
 
 	capabilities = rte_security_capabilities_get(sec_ctx);

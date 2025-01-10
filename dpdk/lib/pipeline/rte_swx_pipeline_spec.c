@@ -102,7 +102,6 @@ extobj_statement_parse(struct extobj_spec *s,
 
 /*
  * struct.
- *
  */
 static void
 struct_spec_free(struct struct_spec *s)
@@ -279,7 +278,6 @@ error:
 
 /*
  * header.
- *
  */
 static void
 header_spec_free(struct header_spec *s)
@@ -331,7 +329,6 @@ header_statement_parse(struct header_spec *s,
 
 /*
  * metadata.
- *
  */
 static void
 metadata_spec_free(struct metadata_spec *s)
@@ -375,7 +372,6 @@ metadata_statement_parse(struct metadata_spec *s,
 
 /*
  * action.
- *
  */
 static void
 action_spec_free(struct action_spec *s)
@@ -504,7 +500,6 @@ action_block_parse(struct action_spec *s,
 
 /*
  * table.
- *
  */
 static void
 table_spec_free(struct table_spec *s)
@@ -1059,7 +1054,6 @@ table_block_parse(struct table_spec *s,
 
 /*
  * selector.
- *
  */
 static void
 selector_spec_free(struct selector_spec *s)
@@ -1345,7 +1339,6 @@ selector_block_parse(struct selector_spec *s,
 
 /*
  * learner.
- *
  */
 static void
 learner_spec_free(struct learner_spec *s)
@@ -1927,7 +1920,6 @@ learner_block_parse(struct learner_spec *s,
 
 /*
  * regarray.
- *
  */
 static void
 regarray_spec_free(struct regarray_spec *s)
@@ -1995,7 +1987,6 @@ regarray_statement_parse(struct regarray_spec *s,
 
 /*
  * metarray.
- *
  */
 static void
 metarray_spec_free(struct metarray_spec *s)
@@ -2050,8 +2041,52 @@ metarray_statement_parse(struct metarray_spec *s,
 }
 
 /*
- * apply.
  *
+ * rss
+ */
+
+static void
+rss_spec_free(struct rss_spec *s)
+{
+	if (!s)
+		return;
+
+	free(s->name);
+	s->name = NULL;
+}
+
+static int
+rss_statement_parse(struct rss_spec *s,
+			 char **tokens,
+			 uint32_t n_tokens,
+			 uint32_t n_lines,
+			 uint32_t *err_line,
+			 const char **err_msg)
+{
+	/* Check format. */
+	if ((n_tokens != 2)) {
+		if (err_line)
+			*err_line = n_lines;
+		if (err_msg)
+			*err_msg = "Invalid rss statement.";
+		return -EINVAL;
+	}
+
+	/* spec. */
+	s->name = strdup(tokens[1]);
+	if (!s->name) {
+		if (err_line)
+			*err_line = n_lines;
+		if (err_msg)
+			*err_msg = "Memory allocation failed.";
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+/*
+ * apply.
  */
 static void
 apply_spec_free(struct apply_spec *s)
@@ -2241,6 +2276,17 @@ pipeline_spec_codegen(FILE *f,
 		fprintf(f, "\t},\n");
 	}
 
+	fprintf(f, "};\n\n");
+
+	/* rss. */
+	fprintf(f, "static struct rss_spec rss[] = {\n");
+
+	for (i = 0; i < s->n_rss; i++) {
+		struct rss_spec *rss_spec = &s->rss[i];
+		fprintf(f, "\t[%d] = {\n", i);
+		fprintf(f, "\t\t.name = \"%s\",\n", rss_spec->name);
+		fprintf(f, "\t},\n");
+	}
 	fprintf(f, "};\n\n");
 
 	/* struct. */
@@ -2794,6 +2840,7 @@ pipeline_spec_codegen(FILE *f,
 	fprintf(f, "\t.learners = learners,\n");
 	fprintf(f, "\t.regarrays = regarrays,\n");
 	fprintf(f, "\t.metarrays = metarrays,\n");
+	fprintf(f, "\t.rss = rss,\n");
 	fprintf(f, "\t.apply = apply,\n");
 	fprintf(f, "\t.n_extobjs = sizeof(extobjs) / sizeof(extobjs[0]),\n");
 	fprintf(f, "\t.n_structs = sizeof(structs) / sizeof(structs[0]),\n");
@@ -2805,6 +2852,7 @@ pipeline_spec_codegen(FILE *f,
 	fprintf(f, "\t.n_learners = sizeof(learners) / sizeof(learners[0]),\n");
 	fprintf(f, "\t.n_regarrays = sizeof(regarrays) / sizeof(regarrays[0]),\n");
 	fprintf(f, "\t.n_metarrays = sizeof(metarrays) / sizeof(metarrays[0]),\n");
+	fprintf(f, "\t.n_rss = sizeof(rss) / sizeof(rss[0]),\n");
 	fprintf(f, "\t.n_apply = sizeof(apply) / sizeof(apply[0]),\n");
 	fprintf(f, "};\n");
 }
@@ -2824,6 +2872,7 @@ pipeline_spec_parse(FILE *spec,
 	struct learner_spec learner_spec = {0};
 	struct regarray_spec regarray_spec = {0};
 	struct metarray_spec metarray_spec = {0};
+	struct rss_spec rss_spec = {0};
 	struct apply_spec apply_spec = {0};
 	struct pipeline_spec *s = NULL;
 	uint32_t n_lines = 0;
@@ -3372,6 +3421,40 @@ pipeline_spec_parse(FILE *spec,
 			continue;
 		}
 
+		/* rss object configuration */
+		if (!strcmp(tokens[0], "rss")) {
+			struct rss_spec *new_rss;
+
+			status = rss_statement_parse(&rss_spec,
+						     tokens,
+						     n_tokens,
+						     n_lines,
+						     err_line,
+						     err_msg);
+			if (status)
+				goto error;
+
+			new_rss = realloc(s->rss,
+				(s->n_rss + 1) * sizeof(struct rss_spec));
+			if (!new_rss) {
+				if (err_line)
+					*err_line = n_lines;
+				if (err_msg)
+					*err_msg = "Memory allocation failed.";
+				status = -ENOMEM;
+				goto error;
+			}
+
+			s->rss = new_rss;
+			memcpy(&s->rss[s->n_rss],
+			       &rss_spec,
+			       sizeof(struct rss_spec));
+			s->n_rss++;
+			memset(&rss_spec, 0, sizeof(struct rss_spec));
+
+			continue;
+		}
+
 		/* apply. */
 		if (!strcmp(tokens[0], "apply")) {
 			status = apply_statement_parse(&block_mask,
@@ -3418,6 +3501,7 @@ error:
 	learner_spec_free(&learner_spec);
 	regarray_spec_free(&regarray_spec);
 	metarray_spec_free(&metarray_spec);
+	rss_spec_free(&rss_spec);
 	apply_spec_free(&apply_spec);
 	pipeline_spec_free(s);
 
@@ -3458,6 +3542,18 @@ pipeline_spec_configure(struct rte_swx_pipeline *p,
 		if (status) {
 			if (err_msg)
 				*err_msg = "Register array configuration error.";
+			return status;
+		}
+	}
+
+	/* rss. */
+	for (i = 0; i < s->n_rss; i++) {
+		struct rss_spec *rss_spec = &s->rss[i];
+
+		status = rte_swx_pipeline_rss_config(p, rss_spec->name);
+		if (status) {
+			if (err_msg)
+				*err_msg = "rss object configuration error.";
 			return status;
 		}
 	}

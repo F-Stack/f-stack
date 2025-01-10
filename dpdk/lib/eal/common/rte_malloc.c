@@ -16,7 +16,7 @@
 #include <rte_common.h>
 #include <rte_spinlock.h>
 
-#include <rte_eal_trace.h>
+#include <eal_trace_internal.h>
 
 #include <rte_malloc.h>
 #include "malloc_elem.h"
@@ -657,10 +657,7 @@ rte_malloc_heap_destroy(const char *heap_name)
 	/* sanity checks done, now we can destroy the heap */
 	rte_spinlock_lock(&heap->lock);
 	ret = malloc_heap_destroy(heap);
-
-	/* if we failed, lock is still active */
-	if (ret < 0)
-		rte_spinlock_unlock(&heap->lock);
+	rte_spinlock_unlock(&heap->lock);
 unlock:
 	rte_mcfg_mem_write_unlock();
 

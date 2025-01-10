@@ -41,6 +41,7 @@ Cipher algorithms:
 * ``RTE_CRYPTO_CIPHER_KASUMI_F8``
 * ``RTE_CRYPTO_CIPHER_SNOW3G_UEA2``
 * ``RTE_CRYPTO_CIPHER_ZUC_EEA3``
+* ``RTE_CRYPTO_CIPHER_SM4``
 
 Hash algorithms:
 
@@ -59,13 +60,25 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA3_224``
+* ``RTE_CRYPTO_AUTH_SHA3_224_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA3_256``
+* ``RTE_CRYPTO_AUTH_SHA3_256_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA3_384``
+* ``RTE_CRYPTO_AUTH_SHA3_384_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA3_512``
+* ``RTE_CRYPTO_AUTH_SHA3_512_HMAC``
+* ``RTE_CRYPTO_AUTH_SHAKE_128``
+* ``RTE_CRYPTO_AUTH_SHAKE_256``
 * ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 * ``RTE_CRYPTO_AUTH_ZUC_EIA3``
 * ``RTE_CRYPTO_AUTH_AES_CMAC``
+* ``RTE_CRYPTO_AUTH_SM3``
 
 AEAD algorithms:
 
 * ``RTE_CRYPTO_AEAD_AES_GCM``
+* ``RTE_CRYPTO_AEAD_AES_CCM``
 * ``RTE_CRYPTO_AEAD_CHACHA20_POLY1305``
 
 Asymmetric Crypto Algorithms
@@ -184,7 +197,7 @@ Debugging Options
     +---+------------+-------------------------------------------------------+
     | # | Component  | EAL log command                                       |
     +===+============+=======================================================+
-    | 1 | CPT        | --log-level='pmd\.crypto\.cnxk,8'                     |
+    | 1 | CPT        | --log-level='pmd\.common\.cnxk\.crypto,8'             |
     +---+------------+-------------------------------------------------------+
 
 Testing

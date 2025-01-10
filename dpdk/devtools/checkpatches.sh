@@ -33,7 +33,7 @@ VOLATILE,PREFER_PACKED,PREFER_ALIGNED,PREFER_PRINTF,STRLCPY,\
 PREFER_KERNEL_TYPES,PREFER_FALLTHROUGH,BIT_MACRO,CONST_STRUCT,\
 SPLIT_STRING,LONG_LINE_STRING,C99_COMMENT_TOLERANCE,\
 LINE_SPACING,PARENTHESIS_ALIGNMENT,NETWORKING_BLOCK_COMMENT_STYLE,\
-NEW_TYPEDEFS,COMPARISON_TO_NULL"
+NEW_TYPEDEFS,COMPARISON_TO_NULL,AVOID_BUG"
 options="$options $DPDK_CHECKPATCH_OPTIONS"
 
 print_usage () {
@@ -78,14 +78,6 @@ check_forbidden_additions() { # <patch>
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
-	# forbid variable declaration inside "for" loop
-	awk -v FOLDERS='.' \
-		-v EXPRESSIONS='for[[:space:]]*\\((char|u?int|unsigned|s?size_t)' \
-		-v RET_ON_FAIL=1 \
-		-v MESSAGE='Declaring a variable inside for()' \
-		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
-		"$1" || res=1
-
 	# refrain from new additions of 16/32/64 bits rte_atomicNN_xxx()
 	awk -v FOLDERS="lib drivers app examples" \
 		-v EXPRESSIONS="rte_atomic[0-9][0-9]_.*\\\(" \
@@ -110,12 +102,28 @@ check_forbidden_additions() { # <patch>
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
-	# refrain from using compiler __atomic_thread_fence()
+	# refrain from using compiler __rte_atomic_thread_fence()
 	# It should be avoided on x86 for SMP case.
 	awk -v FOLDERS="lib drivers app examples" \
-		-v EXPRESSIONS="__atomic_thread_fence\\\(" \
+		-v EXPRESSIONS="__rte_atomic_thread_fence\\\(" \
 		-v RET_ON_FAIL=1 \
-		-v MESSAGE='Using __atomic_thread_fence' \
+		-v MESSAGE='Using __rte_atomic_thread_fence, prefer rte_atomic_thread_fence' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# refrain from using compiler __atomic_xxx builtins
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS="__atomic_.*\\\( __ATOMIC_(RELAXED|CONSUME|ACQUIRE|RELEASE|ACQ_REL|SEQ_CST)" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using __atomic_xxx/__ATOMIC_XXX built-ins, prefer rte_atomic_xxx/rte_memory_order_xxx' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# refrain from using some pthread functions
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS="pthread_(create|join|detach|set(_?name_np|affinity_np)|attr_set(inheritsched|schedpolicy))\\\(" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using pthread functions, prefer rte_thread' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -124,6 +132,22 @@ check_forbidden_additions() { # <patch>
 		-v EXPRESSIONS='\\<__reserved\\>' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using __reserved' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid use of non abstracted bit count operations
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS='\\<__builtin_(clz|clzll|ctz|ctzll|popcount|popcountll)\\>' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using __builtin helpers for bit count operations' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid inclusion of Linux header for PCI constants
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS='include.*linux/pci_regs\\.h' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using linux/pci_regs.h, prefer rte_pci.h' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -143,11 +167,36 @@ check_forbidden_additions() { # <patch>
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
+	# forbid non-internal thread in drivers and libs
+	awk -v FOLDERS='lib drivers' \
+		-v EXPRESSIONS="rte_thread_(set_name|create_control)\\\(" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Prefer rte_thread_(set_prefixed_name|create_internal_control)' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid rte_ symbols in cnxk base driver
+	awk -v FOLDERS='drivers/common/cnxk/roc_*' \
+		-v SKIP_FILES='roc_platform*' \
+		-v EXPRESSIONS="rte_ RTE_" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Use plt_ symbols instead of rte_ API in cnxk base driver' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
 	# forbid inclusion of driver specific headers in apps and examples
 	awk -v FOLDERS='app examples' \
 		-v EXPRESSIONS='include.*_driver\\.h include.*_pmd\\.h' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using driver specific headers in applications' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# prevent addition of tests not in one of our test suites
+	awk -v FOLDERS='app/test' \
+		-v EXPRESSIONS='REGISTER_TEST_COMMAND' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using REGISTER_TEST_COMMAND instead of REGISTER_<suite_name>_TEST' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -164,6 +213,14 @@ check_forbidden_additions() { # <patch>
 		-v EXPRESSIONS='http://.*dpdk.org' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using non https link to dpdk.org' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# prefer Sphinx references for internal documentation
+	awk -v FOLDERS='doc' \
+		-v EXPRESSIONS='//doc.dpdk.org/guides/' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using explicit URL to doc.dpdk.org, prefer :ref: or :doc:' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 

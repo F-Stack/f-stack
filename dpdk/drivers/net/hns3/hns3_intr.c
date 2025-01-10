@@ -1806,7 +1806,7 @@ enable_tm_err_intr(struct hns3_adapter *hns, bool en)
 
 	ret = hns3_cmd_send(hw, &desc, 1);
 	if (ret)
-		hns3_err(hw, "fail to %s TM QCN mem errors, ret = %d\n",
+		hns3_err(hw, "fail to %s TM QCN mem errors, ret = %d",
 			 en ? "enable" : "disable", ret);
 
 	return ret;
@@ -1847,7 +1847,7 @@ enable_common_err_intr(struct hns3_adapter *hns, bool en)
 
 	ret = hns3_cmd_send(hw, &desc[0], RTE_DIM(desc));
 	if (ret)
-		hns3_err(hw, "fail to %s common err interrupts, ret = %d\n",
+		hns3_err(hw, "fail to %s common err interrupts, ret = %d",
 			 en ? "enable" : "disable", ret);
 
 	return ret;
@@ -1984,7 +1984,7 @@ query_num_bds(struct hns3_hw *hw, bool is_ras, uint32_t *mpf_bd_num,
 	pf_bd_num_val = rte_le_to_cpu_32(desc.data[1]);
 	if (mpf_bd_num_val < mpf_min_bd_num || pf_bd_num_val < pf_min_bd_num) {
 		hns3_err(hw, "error bd num: mpf(%u), min_mpf(%u), "
-			 "pf(%u), min_pf(%u)\n", mpf_bd_num_val, mpf_min_bd_num,
+			 "pf(%u), min_pf(%u)", mpf_bd_num_val, mpf_min_bd_num,
 			 pf_bd_num_val, pf_min_bd_num);
 		return -EINVAL;
 	}
@@ -2061,7 +2061,7 @@ hns3_handle_hw_error(struct hns3_adapter *hns, struct hns3_cmd_desc *desc,
 		opcode = HNS3_OPC_QUERY_CLEAR_PF_RAS_INT;
 		break;
 	default:
-		hns3_err(hw, "error hardware err_type = %d\n", err_type);
+		hns3_err(hw, "error hardware err_type = %d", err_type);
 		return -EINVAL;
 	}
 
@@ -2069,7 +2069,7 @@ hns3_handle_hw_error(struct hns3_adapter *hns, struct hns3_cmd_desc *desc,
 	hns3_cmd_setup_basic_desc(&desc[0], opcode, true);
 	ret = hns3_cmd_send(hw, &desc[0], num);
 	if (ret) {
-		hns3_err(hw, "query hw err int 0x%x cmd failed, ret = %d\n",
+		hns3_err(hw, "query hw err int 0x%x cmd failed, ret = %d",
 			 opcode, ret);
 		return ret;
 	}
@@ -2097,7 +2097,7 @@ hns3_handle_hw_error(struct hns3_adapter *hns, struct hns3_cmd_desc *desc,
 	hns3_cmd_reuse_desc(&desc[0], false);
 	ret = hns3_cmd_send(hw, &desc[0], num);
 	if (ret)
-		hns3_err(hw, "clear all hw err int cmd failed, ret = %d\n",
+		hns3_err(hw, "clear all hw err int cmd failed, ret = %d",
 			 ret);
 
 	return ret;
@@ -2252,6 +2252,12 @@ hns3_handle_module_error_data(struct hns3_hw *hw, uint32_t *buf,
 	sum_err_info = (struct hns3_sum_err_info *)&buf[offset++];
 	mod_num = sum_err_info->mod_num;
 	reset_type = sum_err_info->reset_type;
+
+	if (reset_type >= HNS3_MAX_RESET) {
+		hns3_err(hw, "invalid reset type = %u", reset_type);
+		return;
+	}
+
 	if (reset_type && reset_type != HNS3_NONE_RESET)
 		hns3_atomic_set_bit(reset_type, &hw->reset.request);
 

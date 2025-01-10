@@ -439,8 +439,10 @@ static const struct rte_pci_id pci_id_i40e_map[] = {
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_XXV710_N3000) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_10G_BASE_T_BC) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_5G_BASE_T_BC) },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_1G_BASE_T_BC) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_10G_B) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_10G_SFP) },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_SFP_X722_A) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -496,6 +498,7 @@ static const struct eth_dev_ops i40e_eth_dev_ops = {
 	.flow_ops_get                 = i40e_dev_flow_ops_get,
 	.rxq_info_get                 = i40e_rxq_info_get,
 	.txq_info_get                 = i40e_txq_info_get,
+	.recycle_rxq_info_get         = i40e_recycle_rxq_info_get,
 	.rx_burst_mode_get            = i40e_rx_burst_mode_get,
 	.tx_burst_mode_get            = i40e_tx_burst_mode_get,
 	.timesync_enable              = i40e_timesync_enable,
@@ -650,7 +653,7 @@ eth_i40e_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	if (eth_da.nb_representor_ports > 0 &&
 	    eth_da.type != RTE_ETH_REPRESENTOR_VF) {
-		PMD_DRV_LOG(ERR, "unsupported representor type: %s\n",
+		PMD_DRV_LOG(ERR, "unsupported representor type: %s",
 			    pci_dev->device.devargs->args);
 		return -ENOTSUP;
 	}
@@ -1477,10 +1480,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 
 	val = I40E_READ_REG(hw, I40E_GL_FWSTS);
 	if (val & I40E_GL_FWSTS_FWS1B_MASK) {
-		PMD_INIT_LOG(ERR, "\nERROR: "
-			"Firmware recovery mode detected. Limiting functionality.\n"
-			"Refer to the Intel(R) Ethernet Adapters and Devices "
-			"User Guide for details on firmware recovery mode.");
+		PMD_INIT_LOG(ERR, "ERROR: Firmware recovery mode detected. Limiting functionality.");
 		return -EIO;
 	}
 
@@ -1514,8 +1514,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	}
 	/* Firmware of SFP x722 does not support 802.1ad frames ability */
 	if (hw->device_id == I40E_DEV_ID_SFP_X722 ||
-		hw->device_id == I40E_DEV_ID_SFP_I_X722 ||
-		hw->device_id == I40E_DEV_ID_10G_BASE_T_X722)
+		hw->device_id == I40E_DEV_ID_SFP_I_X722)
 		hw->flags &= ~I40E_HW_FLAG_802_1AD_CAPABLE;
 
 	PMD_INIT_LOG(INFO, "FW %d.%d API %d.%d NVM %02d.%02d.%02d eetrack %04x",
@@ -2220,7 +2219,7 @@ i40e_phy_conf_link(struct i40e_hw *hw,
 	status = i40e_aq_get_phy_capabilities(hw, false, true, &phy_ab,
 					      NULL);
 	if (status) {
-		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d",
 				status);
 		return ret;
 	}
@@ -2230,7 +2229,7 @@ i40e_phy_conf_link(struct i40e_hw *hw,
 	status = i40e_aq_get_phy_capabilities(hw, false, false, &phy_ab,
 					      NULL);
 	if (status) {
-		PMD_DRV_LOG(ERR, "Failed to get the current PHY config: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get the current PHY config: %d",
 				status);
 		return ret;
 	}
@@ -2255,7 +2254,7 @@ i40e_phy_conf_link(struct i40e_hw *hw,
 	 * Warn users and config the default available speeds.
 	 */
 	if (is_up && !(force_speed & avail_speed)) {
-		PMD_DRV_LOG(WARNING, "Invalid speed setting, set to default!\n");
+		PMD_DRV_LOG(WARNING, "Invalid speed setting, set to default!");
 		phy_conf.link_speed = avail_speed;
 	} else {
 		phy_conf.link_speed = is_up ? force_speed : avail_speed;
@@ -4640,30 +4639,6 @@ i40e_free_virt_mem_d(__rte_unused struct i40e_hw *hw,
 	return I40E_SUCCESS;
 }
 
-void
-i40e_init_spinlock_d(struct i40e_spinlock *sp)
-{
-	rte_spinlock_init(&sp->spinlock);
-}
-
-void
-i40e_acquire_spinlock_d(struct i40e_spinlock *sp)
-{
-	rte_spinlock_lock(&sp->spinlock);
-}
-
-void
-i40e_release_spinlock_d(struct i40e_spinlock *sp)
-{
-	rte_spinlock_unlock(&sp->spinlock);
-}
-
-void
-i40e_destroy_spinlock_d(__rte_unused struct i40e_spinlock *sp)
-{
-	return;
-}
-
 /**
  * Get the hardware capabilities, which will be parsed
  * and saved into struct i40e_hw.
@@ -5652,6 +5627,46 @@ i40e_enable_pf_lb(struct i40e_pf *pf)
 			    hw->aq.asq_last_status);
 }
 
+/* i40e_pf_set_source_prune
+ * @pf: pointer to the pf structure
+ * @on: Enable/disable source prune
+ *
+ * set source prune on pf
+ */
+int
+i40e_pf_set_source_prune(struct i40e_pf *pf, int on)
+{
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	struct i40e_vsi_context ctxt;
+	int ret;
+
+	memset(&ctxt, 0, sizeof(ctxt));
+	ctxt.seid = pf->main_vsi_seid;
+	ctxt.pf_num = hw->pf_id;
+	ret = i40e_aq_get_vsi_params(hw, &ctxt, NULL);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "cannot get pf vsi config, err %d, aq_err %d",
+			    ret, hw->aq.asq_last_status);
+		return ret;
+	}
+	ctxt.flags = I40E_AQ_VSI_TYPE_PF;
+	ctxt.info.valid_sections =
+		rte_cpu_to_le_16(I40E_AQ_VSI_PROP_SWITCH_VALID);
+	if (on)
+		ctxt.info.switch_id &=
+			~rte_cpu_to_le_16(I40E_AQ_VSI_SW_ID_FLAG_LOCAL_LB);
+	else
+		ctxt.info.switch_id |=
+			rte_cpu_to_le_16(I40E_AQ_VSI_SW_ID_FLAG_LOCAL_LB);
+
+	ret = i40e_aq_update_vsi_params(hw, &ctxt, NULL);
+	if (ret)
+		PMD_DRV_LOG(ERR, "update vsi switch failed, aq_err=%d",
+			    hw->aq.asq_last_status);
+
+	return ret;
+}
+
 /* Setup a VSI */
 struct i40e_vsi *
 i40e_vsi_setup(struct i40e_pf *pf,
@@ -5708,6 +5723,9 @@ i40e_vsi_setup(struct i40e_pf *pf,
 			return NULL;
 		}
 	}
+
+	/* source prune is disabled to support VRRP in default*/
+	i40e_pf_set_source_prune(pf, 0);
 
 	vsi = rte_zmalloc("i40e_vsi", sizeof(struct i40e_vsi), 0);
 	if (!vsi) {
@@ -6793,7 +6811,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 				I40E_GL_MDET_TX_QUEUE_SHIFT) -
 					hw->func_caps.base_queue;
 		PMD_DRV_LOG(WARNING, "Malicious Driver Detection event 0x%02x on TX "
-			"queue %d PF number 0x%02x VF number 0x%02x device %s\n",
+			"queue %d PF number 0x%02x VF number 0x%02x device %s",
 				event, queue, pf_num, vf_num, dev->data->name);
 		I40E_WRITE_REG(hw, I40E_GL_MDET_TX, I40E_MDD_CLEAR32);
 		mdd_detected = true;
@@ -6809,7 +6827,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 					hw->func_caps.base_queue;
 
 		PMD_DRV_LOG(WARNING, "Malicious Driver Detection event 0x%02x on RX "
-				"queue %d of function 0x%02x device %s\n",
+				"queue %d of function 0x%02x device %s",
 					event, queue, func, dev->data->name);
 		I40E_WRITE_REG(hw, I40E_GL_MDET_RX, I40E_MDD_CLEAR32);
 		mdd_detected = true;
@@ -6819,13 +6837,13 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 		reg = I40E_READ_REG(hw, I40E_PF_MDET_TX);
 		if (reg & I40E_PF_MDET_TX_VALID_MASK) {
 			I40E_WRITE_REG(hw, I40E_PF_MDET_TX, I40E_MDD_CLEAR16);
-			PMD_DRV_LOG(WARNING, "TX driver issue detected on PF\n");
+			PMD_DRV_LOG(WARNING, "TX driver issue detected on PF");
 		}
 		reg = I40E_READ_REG(hw, I40E_PF_MDET_RX);
 		if (reg & I40E_PF_MDET_RX_VALID_MASK) {
 			I40E_WRITE_REG(hw, I40E_PF_MDET_RX,
 					I40E_MDD_CLEAR16);
-			PMD_DRV_LOG(WARNING, "RX driver issue detected on PF\n");
+			PMD_DRV_LOG(WARNING, "RX driver issue detected on PF");
 		}
 	}
 
@@ -6838,7 +6856,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 					I40E_MDD_CLEAR16);
 			vf->num_mdd_events++;
 			PMD_DRV_LOG(WARNING, "TX driver issue detected on VF %d %-"
-					PRIu64 "times\n",
+					PRIu64 "times",
 					i, vf->num_mdd_events);
 		}
 
@@ -6848,7 +6866,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 					I40E_MDD_CLEAR16);
 			vf->num_mdd_events++;
 			PMD_DRV_LOG(WARNING, "RX driver issue detected on VF %d %-"
-					PRIu64 "times\n",
+					PRIu64 "times",
 					i, vf->num_mdd_events);
 		}
 	}
@@ -11283,7 +11301,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 	if (!(hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE)) {
 		PMD_DRV_LOG(ERR,
 			    "Module EEPROM memory read not supported. "
-			    "Please update the NVM image.\n");
+			    "Please update the NVM image.");
 		return -EINVAL;
 	}
 
@@ -11294,7 +11312,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 	if (hw->phy.link_info.phy_type == I40E_PHY_TYPE_EMPTY) {
 		PMD_DRV_LOG(ERR,
 			    "Cannot read module EEPROM memory. "
-			    "No module connected.\n");
+			    "No module connected.");
 		return -EINVAL;
 	}
 
@@ -11324,7 +11342,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 		if (sff8472_swap & I40E_MODULE_SFF_ADDR_MODE) {
 			PMD_DRV_LOG(WARNING,
 				    "Module address swap to access "
-				    "page 0xA2 is not supported.\n");
+				    "page 0xA2 is not supported.");
 			modinfo->type = RTE_ETH_MODULE_SFF_8079;
 			modinfo->eeprom_len = RTE_ETH_MODULE_SFF_8079_LEN;
 		} else if (sff8472_comp == 0x00) {
@@ -11360,7 +11378,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 		modinfo->eeprom_len = I40E_MODULE_QSFP_MAX_LEN;
 		break;
 	default:
-		PMD_DRV_LOG(ERR, "Module type unrecognized\n");
+		PMD_DRV_LOG(ERR, "Module type unrecognized");
 		return -EINVAL;
 	}
 	return 0;
@@ -11662,7 +11680,7 @@ i40e_update_customized_pctype(struct rte_eth_dev *dev, uint8_t *pkg,
 			}
 		}
 		name[strlen(name) - 1] = '\0';
-		PMD_DRV_LOG(INFO, "name = %s\n", name);
+		PMD_DRV_LOG(INFO, "name = %s", name);
 		if (!strcmp(name, "GTPC"))
 			new_pctype =
 				i40e_find_customized_pctype(pf,
@@ -11806,7 +11824,7 @@ i40e_update_customized_ptype(struct rte_eth_dev *dev, uint8_t *pkg,
 					continue;
 				memset(name, 0, sizeof(name));
 				strcpy(name, proto[n].name);
-				PMD_DRV_LOG(INFO, "name = %s\n", name);
+				PMD_DRV_LOG(INFO, "name = %s", name);
 				if (!strncasecmp(name, "PPPOE", 5))
 					ptype_mapping[i].sw_ptype |=
 						RTE_PTYPE_L2_ETHER_PPPOE;

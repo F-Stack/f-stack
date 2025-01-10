@@ -18,17 +18,18 @@ and common offload HW drivers of **NVIDIA BlueField** family SoC.
 Supported BlueField Platforms
 -----------------------------
 
-- `BlueField 2 <https://docs.nvidia.com/networking/display/BlueField2DPUENUG/Introduction>`_
+- `BlueField-2 <https://docs.nvidia.com/networking/display/BlueField2DPUENUG/Introduction>`_
+- `BlueField-3 <https://docs.nvidia.com/networking/display/BlueField3DPU/Introduction>`_
 
 
 Common Offload HW Drivers
 -------------------------
 
-1. **NIC Driver**
+#. **NIC Driver**
 
    See :doc:`../nics/mlx5` for NVIDIA mlx5 NIC driver information.
 
-2. **Cryptodev Driver**
+#. **Cryptodev Driver**
 
    This is based on the crypto extension support of armv8. See
    :doc:`../cryptodevs/armv8` for armv8 crypto driver information.

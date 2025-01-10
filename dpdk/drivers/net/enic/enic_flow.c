@@ -656,17 +656,17 @@ enic_copy_item_eth_v2(struct copy_item_args *arg)
 	if (!mask)
 		mask = &rte_flow_item_eth_mask;
 
-	memcpy(enic_spec.dst_addr.addr_bytes, spec->dst.addr_bytes,
+	memcpy(enic_spec.dst_addr.addr_bytes, spec->hdr.dst_addr.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
-	memcpy(enic_spec.src_addr.addr_bytes, spec->src.addr_bytes,
+	memcpy(enic_spec.src_addr.addr_bytes, spec->hdr.src_addr.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
 
-	memcpy(enic_mask.dst_addr.addr_bytes, mask->dst.addr_bytes,
+	memcpy(enic_mask.dst_addr.addr_bytes, mask->hdr.dst_addr.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
-	memcpy(enic_mask.src_addr.addr_bytes, mask->src.addr_bytes,
+	memcpy(enic_mask.src_addr.addr_bytes, mask->hdr.src_addr.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
-	enic_spec.ether_type = spec->type;
-	enic_mask.ether_type = mask->type;
+	enic_spec.ether_type = spec->hdr.ether_type;
+	enic_mask.ether_type = mask->hdr.ether_type;
 
 	/* outer header */
 	memcpy(gp->layer[FILTER_GENERIC_1_L2].mask, &enic_mask,
@@ -715,16 +715,16 @@ enic_copy_item_vlan_v2(struct copy_item_args *arg)
 		struct rte_vlan_hdr *vlan;
 
 		vlan = (struct rte_vlan_hdr *)(eth_mask + 1);
-		vlan->eth_proto = mask->inner_type;
+		vlan->eth_proto = mask->hdr.eth_proto;
 		vlan = (struct rte_vlan_hdr *)(eth_val + 1);
-		vlan->eth_proto = spec->inner_type;
+		vlan->eth_proto = spec->hdr.eth_proto;
 	} else {
-		eth_mask->ether_type = mask->inner_type;
-		eth_val->ether_type = spec->inner_type;
+		eth_mask->ether_type = mask->hdr.eth_proto;
+		eth_val->ether_type = spec->hdr.eth_proto;
 	}
 	/* For TCI, use the vlan mask/val fields (little endian). */
-	gp->mask_vlan = rte_be_to_cpu_16(mask->tci);
-	gp->val_vlan = rte_be_to_cpu_16(spec->tci);
+	gp->mask_vlan = rte_be_to_cpu_16(mask->hdr.vlan_tci);
+	gp->val_vlan = rte_be_to_cpu_16(spec->hdr.vlan_tci);
 	return 0;
 }
 
@@ -1351,14 +1351,14 @@ static void
 enic_dump_actions(const struct filter_action_v2 *ea)
 {
 	if (ea->type == FILTER_ACTION_RQ_STEERING) {
-		ENICPMD_LOG(INFO, "Action(V1), queue: %u\n", ea->rq_idx);
+		ENICPMD_LOG(INFO, "Action(V1), queue: %u", ea->rq_idx);
 	} else if (ea->type == FILTER_ACTION_V2) {
-		ENICPMD_LOG(INFO, "Actions(V2)\n");
+		ENICPMD_LOG(INFO, "Actions(V2)");
 		if (ea->flags & FILTER_ACTION_RQ_STEERING_FLAG)
-			ENICPMD_LOG(INFO, "\tqueue: %u\n",
+			ENICPMD_LOG(INFO, "\tqueue: %u",
 			       enic_sop_rq_idx_to_rte_idx(ea->rq_idx));
 		if (ea->flags & FILTER_ACTION_FILTER_ID_FLAG)
-			ENICPMD_LOG(INFO, "\tfilter_id: %u\n", ea->filter_id);
+			ENICPMD_LOG(INFO, "\tfilter_id: %u", ea->filter_id);
 	}
 }
 
@@ -1374,13 +1374,13 @@ enic_dump_filter(const struct filter_v2 *filt)
 
 	switch (filt->type) {
 	case FILTER_IPV4_5TUPLE:
-		ENICPMD_LOG(INFO, "FILTER_IPV4_5TUPLE\n");
+		ENICPMD_LOG(INFO, "FILTER_IPV4_5TUPLE");
 		break;
 	case FILTER_USNIC_IP:
 	case FILTER_DPDK_1:
 		/* FIXME: this should be a loop */
 		gp = &filt->u.generic_1;
-		ENICPMD_LOG(INFO, "Filter: vlan: 0x%04x, mask: 0x%04x\n",
+		ENICPMD_LOG(INFO, "Filter: vlan: 0x%04x, mask: 0x%04x",
 		       gp->val_vlan, gp->mask_vlan);
 
 		if (gp->mask_flags & FILTER_GENERIC_1_IPV4)
@@ -1438,7 +1438,7 @@ enic_dump_filter(const struct filter_v2 *filt)
 				 ? "ipfrag(y)" : "ipfrag(n)");
 		else
 			sprintf(ipfrag, "%s ", "ipfrag(x)");
-		ENICPMD_LOG(INFO, "\tFlags: %s%s%s%s%s%s%s%s\n", ip4, ip6, udp,
+		ENICPMD_LOG(INFO, "\tFlags: %s%s%s%s%s%s%s%s", ip4, ip6, udp,
 			 tcp, tcpudp, ip4csum, l4csum, ipfrag);
 
 		for (i = 0; i < FILTER_GENERIC_1_NUM_LAYERS; i++) {
@@ -1455,7 +1455,7 @@ enic_dump_filter(const struct filter_v2 *filt)
 				bp += 2;
 			}
 			*bp = '\0';
-			ENICPMD_LOG(INFO, "\tL%u mask: %s\n", i + 2, buf);
+			ENICPMD_LOG(INFO, "\tL%u mask: %s", i + 2, buf);
 			bp = buf;
 			for (j = 0; j <= mbyte; j++) {
 				sprintf(bp, "%02x",
@@ -1463,11 +1463,11 @@ enic_dump_filter(const struct filter_v2 *filt)
 				bp += 2;
 			}
 			*bp = '\0';
-			ENICPMD_LOG(INFO, "\tL%u  val: %s\n", i + 2, buf);
+			ENICPMD_LOG(INFO, "\tL%u  val: %s", i + 2, buf);
 		}
 		break;
 	default:
-		ENICPMD_LOG(INFO, "FILTER UNKNOWN\n");
+		ENICPMD_LOG(INFO, "FILTER UNKNOWN");
 		break;
 	}
 }

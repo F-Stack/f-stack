@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <pthread.h>
 #include <unistd.h>
 
 #include <rte_spinlock.h>
@@ -115,7 +114,7 @@ ice_dcf_update_pf_vsi_map(struct ice_hw *hw, uint16_t pf_vsi_idx,
 			pf_vsi_idx, vsi_ctx->vsi_num);
 }
 
-static void*
+static uint32_t
 ice_dcf_vsi_update_service_handler(void *param)
 {
 	struct ice_dcf_reset_event_param *reset_param = param;
@@ -127,7 +126,7 @@ ice_dcf_vsi_update_service_handler(void *param)
 	__atomic_fetch_add(&hw->vsi_update_thread_num, 1,
 		__ATOMIC_RELAXED);
 
-	pthread_detach(pthread_self());
+	rte_thread_detach(rte_thread_self());
 
 	rte_delay_us(ICE_DCF_VSI_UPDATE_SERVICE_INTERVAL);
 
@@ -160,16 +159,15 @@ ice_dcf_vsi_update_service_handler(void *param)
 	__atomic_fetch_sub(&hw->vsi_update_thread_num, 1,
 		__ATOMIC_RELEASE);
 
-	return NULL;
+	return 0;
 }
 
 static void
 start_vsi_reset_thread(struct ice_dcf_hw *dcf_hw, bool vfr, uint16_t vf_id)
 {
-#define THREAD_NAME_LEN	16
 	struct ice_dcf_reset_event_param *param;
-	char name[THREAD_NAME_LEN];
-	pthread_t thread;
+	char name[RTE_THREAD_INTERNAL_NAME_SIZE];
+	rte_thread_t thread;
 	int ret;
 
 	param = malloc(sizeof(*param));
@@ -182,8 +180,8 @@ start_vsi_reset_thread(struct ice_dcf_hw *dcf_hw, bool vfr, uint16_t vf_id)
 	param->vfr = vfr;
 	param->vf_id = vf_id;
 
-	snprintf(name, sizeof(name), "ice-reset-%u", vf_id);
-	ret = rte_ctrl_thread_create(&thread, name, NULL,
+	snprintf(name, sizeof(name), "ice-rst%u", vf_id);
+	ret = rte_thread_create_internal_control(&thread, name,
 				     ice_dcf_vsi_update_service_handler, param);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "Failed to start the thread for reset handling");
@@ -475,6 +473,9 @@ ice_dcf_init_parent_adapter(struct rte_eth_dev *eth_dev)
 
 	if (ice_devargs_check(eth_dev->device->devargs, ICE_DCF_DEVARG_ACL))
 		parent_adapter->disabled_engine_mask |= BIT(ICE_FLOW_ENGINE_ACL);
+
+	parent_adapter->disabled_engine_mask |= BIT(ICE_FLOW_ENGINE_FDIR);
+	parent_adapter->disabled_engine_mask |= BIT(ICE_FLOW_ENGINE_HASH);
 
 	err = ice_flow_init(parent_adapter);
 	if (err) {

@@ -243,8 +243,8 @@ rte_table_hash_ext_create(void *params, int socket_id, uint32_t entry_size)
 
 	/* Internal */
 	t->bucket_mask = t->n_buckets - 1;
-	t->key_size_shl = __builtin_ctzl(p->key_size);
-	t->data_size_shl = __builtin_ctzl(entry_size);
+	t->key_size_shl = rte_ctz32(p->key_size);
+	t->data_size_shl = rte_ctz32(entry_size);
 
 	/* Tables */
 	key_mask_offset = 0;
@@ -469,7 +469,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	struct rte_table_hash *t = (struct rte_table_hash *) table;
 	uint64_t pkts_mask_out = 0;
 
-	__rte_unused uint32_t n_pkts_in = __builtin_popcountll(pkts_mask);
+	__rte_unused uint32_t n_pkts_in = rte_popcount64(pkts_mask);
 
 	for ( ; pkts_mask; ) {
 		struct bucket *bkt0, *bkt;
@@ -478,7 +478,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
 		uint64_t pkt_mask, sig;
 		uint32_t pkt_index, bkt_index, i;
 
-		pkt_index = __builtin_ctzll(pkts_mask);
+		pkt_index = rte_ctz64(pkts_mask);
 		pkt_mask = 1LLU << pkt_index;
 		pkts_mask &= ~pkt_mask;
 
@@ -514,8 +514,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	return 0;
 }
 
-/***
- *
+/*
  * mask = match bitmask
  * match = at least one match
  * match_many = more than one match
@@ -552,8 +551,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
  * match = 0xFFFELLU
  * match_many = 0xFEE8LLU
  * match_pos = 0x12131210LLU
- *
- ***/
+ */
 
 #define LUT_MATCH						0xFFFELLU
 #define LUT_MATCH_MANY						0xFEE8LLU
@@ -671,12 +669,12 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	struct rte_mbuf *mbuf00, *mbuf01;				\
 	uint32_t key_offset = t->key_offset;			\
 									\
-	pkt00_index = __builtin_ctzll(pkts_mask);			\
+	pkt00_index = rte_ctz64(pkts_mask);			\
 	pkt00_mask = 1LLU << pkt00_index;				\
 	pkts_mask &= ~pkt00_mask;					\
 	mbuf00 = pkts[pkt00_index];					\
 									\
-	pkt01_index = __builtin_ctzll(pkts_mask);			\
+	pkt01_index = rte_ctz64(pkts_mask);			\
 	pkt01_mask = 1LLU << pkt01_index;				\
 	pkts_mask &= ~pkt01_mask;					\
 	mbuf01 = pkts[pkt01_index];					\
@@ -692,12 +690,12 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	struct rte_mbuf *mbuf00, *mbuf01;				\
 	uint32_t key_offset = t->key_offset;			\
 									\
-	pkt00_index = __builtin_ctzll(pkts_mask);			\
+	pkt00_index = rte_ctz64(pkts_mask);			\
 	pkt00_mask = 1LLU << pkt00_index;				\
 	pkts_mask &= ~pkt00_mask;					\
 	mbuf00 = pkts[pkt00_index];					\
 									\
-	pkt01_index = __builtin_ctzll(pkts_mask);			\
+	pkt01_index = rte_ctz64(pkts_mask);			\
 	if (pkts_mask == 0)						\
 		pkt01_index = pkt00_index;				\
 	pkt01_mask = 1LLU << pkt01_index;				\
@@ -830,22 +828,21 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	pkts_mask_out |= match_keys;					\
 }
 
-/***
-* The lookup function implements a 4-stage pipeline, with each stage processing
-* two different packets. The purpose of pipelined implementation is to hide the
-* latency of prefetching the data structures and loosen the data dependency
-* between instructions.
-*
-*  p00  _______   p10  _______   p20  _______   p30  _______
-*----->|       |----->|       |----->|       |----->|       |----->
-*      |   0   |      |   1   |      |   2   |      |   3   |
-*----->|_______|----->|_______|----->|_______|----->|_______|----->
-*  p01            p11            p21            p31
-*
-* The naming convention is:
-*    pXY = packet Y of stage X, X = 0 .. 3, Y = 0 .. 1
-*
-***/
+/*
+ * The lookup function implements a 4-stage pipeline, with each stage processing
+ * two different packets. The purpose of pipelined implementation is to hide the
+ * latency of prefetching the data structures and loosen the data dependency
+ * between instructions.
+ *
+ *  p00  _______   p10  _______   p20  _______   p30  _______
+ *----->|       |----->|       |----->|       |----->|       |----->
+ *      |   0   |      |   1   |      |   2   |      |   3   |
+ *----->|_______|----->|_______|----->|_______|----->|_______|----->
+ *  p01            p11            p21            p31
+ *
+ * The naming convention is:
+ *    pXY = packet Y of stage X, X = 0 .. 3, Y = 0 .. 1
+ */
 static int rte_table_hash_ext_lookup(
 	void *table,
 	struct rte_mbuf **pkts,
@@ -860,15 +857,15 @@ static int rte_table_hash_ext_lookup(
 	uint64_t pkts_mask_out = 0, pkts_mask_match_many = 0;
 	int status = 0;
 
-	__rte_unused uint32_t n_pkts_in = __builtin_popcountll(pkts_mask);
+	__rte_unused uint32_t n_pkts_in = rte_popcount64(pkts_mask);
 	RTE_TABLE_HASH_EXT_STATS_PKTS_IN_ADD(t, n_pkts_in);
 
 	/* Cannot run the pipeline with less than 7 packets */
-	if (__builtin_popcountll(pkts_mask) < 7) {
+	if (rte_popcount64(pkts_mask) < 7) {
 		status = rte_table_hash_ext_lookup_unoptimized(table, pkts,
 			pkts_mask, lookup_hit_mask, entries);
 		RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in -
-				__builtin_popcountll(*lookup_hit_mask));
+				rte_popcount64(*lookup_hit_mask));
 		return status;
 	}
 
@@ -979,7 +976,7 @@ static int rte_table_hash_ext_lookup(
 	}
 
 	*lookup_hit_mask = pkts_mask_out;
-	RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in - __builtin_popcountll(pkts_mask_out));
+	RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in - rte_popcount64(pkts_mask_out));
 	return status;
 }
 

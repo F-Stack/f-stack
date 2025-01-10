@@ -81,7 +81,6 @@ struct rte_sched_queue {
 
 struct rte_sched_queue_extra {
 	struct rte_sched_queue_stats stats;
-	RTE_STD_C11
 	union {
 		struct rte_red red;
 		struct rte_pie pie;
@@ -180,7 +179,6 @@ struct rte_sched_subport {
 	bool cman_enabled;
 	enum rte_sched_cman_mode cman;
 
-	RTE_STD_C11
 	union {
 		struct rte_red_config red_config[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][RTE_COLORS];
 		struct rte_pie_config pie_config[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
@@ -975,7 +973,7 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 	port->n_max_subport_profiles = params->n_max_subport_profiles;
 	port->n_pipes_per_subport = params->n_pipes_per_subport;
 	port->n_pipes_per_subport_log2 =
-			__builtin_ctz(params->n_pipes_per_subport);
+			rte_ctz32(params->n_pipes_per_subport);
 	port->socket = params->socket;
 
 	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
@@ -1226,7 +1224,7 @@ rte_sched_subport_config(struct rte_sched_port *port,
 	/** Memory is allocated only on first invocation of the api for a
 	 * given subport. Subsequent invocation on same subport will just
 	 * update subport bandwidth parameter.
-	 **/
+	 */
 	if (port->subports[subport_id] == NULL) {
 
 		status = rte_sched_subport_check_params(params,
@@ -2043,7 +2041,6 @@ rte_sched_port_enqueue_qwa(struct rte_sched_port *port,
  *       |   0   |      |   1   |      |   2   |      |   3   |
  * ----->|_______|----->|_______|----->|_______|----->|_______|----->
  *   p01            p11            p21            p31
- *
  */
 int
 rte_sched_port_enqueue(struct rte_sched_port *port, struct rte_mbuf **pkts,

@@ -8,12 +8,19 @@ if not is_linux or not dpdk_conf.get('RTE_ARCH_64')
     subdir_done()
 endif
 
+if meson.is_cross_build()
+        soc_type = meson.get_cross_property('platform', '')
+else
+        soc_type = platform
+endif
+
+if soc_type != 'cn9k' and soc_type != 'cn10k'
+        soc_type = 'all'
+endif
+
 sources = files(
-        'cn9k_eventdev.c',
-        'cn9k_worker.c',
-        'cn10k_eventdev.c',
-        'cn10k_worker.c',
         'cnxk_eventdev.c',
+        'cnxk_worker.c',
         'cnxk_eventdev_adptr.c',
         'cnxk_eventdev_selftest.c',
         'cnxk_eventdev_stats.c',
@@ -21,6 +28,13 @@ sources = files(
         'cnxk_tim_worker.c',
 )
 
+if soc_type == 'cn9k' or soc_type == 'all'
+sources += files(
+        'cn9k_eventdev.c',
+        'cn9k_worker.c',
+)
+
+if host_machine.cpu_family().startswith('aarch')
 sources += files(
         'deq/cn9k/deq_0_15_burst.c',
         'deq/cn9k/deq_16_31_burst.c',
@@ -86,70 +100,6 @@ sources += files(
         'deq/cn9k/deq_80_95_tmo_seg_burst.c',
         'deq/cn9k/deq_96_111_tmo_seg_burst.c',
         'deq/cn9k/deq_112_127_tmo_seg_burst.c',
-        'deq/cn9k/deq_0_15_ca.c',
-        'deq/cn9k/deq_16_31_ca.c',
-        'deq/cn9k/deq_32_47_ca.c',
-        'deq/cn9k/deq_48_63_ca.c',
-        'deq/cn9k/deq_64_79_ca.c',
-        'deq/cn9k/deq_80_95_ca.c',
-        'deq/cn9k/deq_96_111_ca.c',
-        'deq/cn9k/deq_112_127_ca.c',
-        'deq/cn9k/deq_0_15_ca_burst.c',
-        'deq/cn9k/deq_16_31_ca_burst.c',
-        'deq/cn9k/deq_32_47_ca_burst.c',
-        'deq/cn9k/deq_48_63_ca_burst.c',
-        'deq/cn9k/deq_64_79_ca_burst.c',
-        'deq/cn9k/deq_80_95_ca_burst.c',
-        'deq/cn9k/deq_96_111_ca_burst.c',
-        'deq/cn9k/deq_112_127_ca_burst.c',
-        'deq/cn9k/deq_0_15_ca_seg.c',
-        'deq/cn9k/deq_16_31_ca_seg.c',
-        'deq/cn9k/deq_32_47_ca_seg.c',
-        'deq/cn9k/deq_48_63_ca_seg.c',
-        'deq/cn9k/deq_64_79_ca_seg.c',
-        'deq/cn9k/deq_80_95_ca_seg.c',
-        'deq/cn9k/deq_96_111_ca_seg.c',
-        'deq/cn9k/deq_112_127_ca_seg.c',
-        'deq/cn9k/deq_0_15_ca_seg_burst.c',
-        'deq/cn9k/deq_16_31_ca_seg_burst.c',
-        'deq/cn9k/deq_32_47_ca_seg_burst.c',
-        'deq/cn9k/deq_48_63_ca_seg_burst.c',
-        'deq/cn9k/deq_64_79_ca_seg_burst.c',
-        'deq/cn9k/deq_80_95_ca_seg_burst.c',
-        'deq/cn9k/deq_96_111_ca_seg_burst.c',
-        'deq/cn9k/deq_112_127_ca_seg_burst.c',
-        'deq/cn9k/deq_0_15_ca_tmo.c',
-        'deq/cn9k/deq_16_31_ca_tmo.c',
-        'deq/cn9k/deq_32_47_ca_tmo.c',
-        'deq/cn9k/deq_48_63_ca_tmo.c',
-        'deq/cn9k/deq_64_79_ca_tmo.c',
-        'deq/cn9k/deq_80_95_ca_tmo.c',
-        'deq/cn9k/deq_96_111_ca_tmo.c',
-        'deq/cn9k/deq_112_127_ca_tmo.c',
-        'deq/cn9k/deq_0_15_ca_tmo_burst.c',
-        'deq/cn9k/deq_16_31_ca_tmo_burst.c',
-        'deq/cn9k/deq_32_47_ca_tmo_burst.c',
-        'deq/cn9k/deq_48_63_ca_tmo_burst.c',
-        'deq/cn9k/deq_64_79_ca_tmo_burst.c',
-        'deq/cn9k/deq_80_95_ca_tmo_burst.c',
-        'deq/cn9k/deq_96_111_ca_tmo_burst.c',
-        'deq/cn9k/deq_112_127_ca_tmo_burst.c',
-        'deq/cn9k/deq_0_15_ca_tmo_seg.c',
-        'deq/cn9k/deq_16_31_ca_tmo_seg.c',
-        'deq/cn9k/deq_32_47_ca_tmo_seg.c',
-        'deq/cn9k/deq_48_63_ca_tmo_seg.c',
-        'deq/cn9k/deq_64_79_ca_tmo_seg.c',
-        'deq/cn9k/deq_80_95_ca_tmo_seg.c',
-        'deq/cn9k/deq_96_111_ca_tmo_seg.c',
-        'deq/cn9k/deq_112_127_ca_tmo_seg.c',
-        'deq/cn9k/deq_0_15_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_16_31_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_32_47_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_48_63_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_64_79_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_80_95_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_96_111_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_112_127_ca_tmo_seg_burst.c',
 )
 
 sources += files(
@@ -217,70 +167,6 @@ sources += files(
         'deq/cn9k/deq_80_95_dual_tmo_seg_burst.c',
         'deq/cn9k/deq_96_111_dual_tmo_seg_burst.c',
         'deq/cn9k/deq_112_127_dual_tmo_seg_burst.c',
-        'deq/cn9k/deq_0_15_dual_ca.c',
-        'deq/cn9k/deq_16_31_dual_ca.c',
-        'deq/cn9k/deq_32_47_dual_ca.c',
-        'deq/cn9k/deq_48_63_dual_ca.c',
-        'deq/cn9k/deq_64_79_dual_ca.c',
-        'deq/cn9k/deq_80_95_dual_ca.c',
-        'deq/cn9k/deq_96_111_dual_ca.c',
-        'deq/cn9k/deq_112_127_dual_ca.c',
-        'deq/cn9k/deq_0_15_dual_ca_burst.c',
-        'deq/cn9k/deq_16_31_dual_ca_burst.c',
-        'deq/cn9k/deq_32_47_dual_ca_burst.c',
-        'deq/cn9k/deq_48_63_dual_ca_burst.c',
-        'deq/cn9k/deq_64_79_dual_ca_burst.c',
-        'deq/cn9k/deq_80_95_dual_ca_burst.c',
-        'deq/cn9k/deq_96_111_dual_ca_burst.c',
-        'deq/cn9k/deq_112_127_dual_ca_burst.c',
-        'deq/cn9k/deq_0_15_dual_ca_seg.c',
-        'deq/cn9k/deq_16_31_dual_ca_seg.c',
-        'deq/cn9k/deq_32_47_dual_ca_seg.c',
-        'deq/cn9k/deq_48_63_dual_ca_seg.c',
-        'deq/cn9k/deq_64_79_dual_ca_seg.c',
-        'deq/cn9k/deq_80_95_dual_ca_seg.c',
-        'deq/cn9k/deq_96_111_dual_ca_seg.c',
-        'deq/cn9k/deq_112_127_dual_ca_seg.c',
-        'deq/cn9k/deq_0_15_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_16_31_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_32_47_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_48_63_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_64_79_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_80_95_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_96_111_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_112_127_dual_ca_seg_burst.c',
-        'deq/cn9k/deq_0_15_dual_ca_tmo.c',
-        'deq/cn9k/deq_16_31_dual_ca_tmo.c',
-        'deq/cn9k/deq_32_47_dual_ca_tmo.c',
-        'deq/cn9k/deq_48_63_dual_ca_tmo.c',
-        'deq/cn9k/deq_64_79_dual_ca_tmo.c',
-        'deq/cn9k/deq_80_95_dual_ca_tmo.c',
-        'deq/cn9k/deq_96_111_dual_ca_tmo.c',
-        'deq/cn9k/deq_112_127_dual_ca_tmo.c',
-        'deq/cn9k/deq_0_15_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_16_31_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_32_47_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_48_63_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_64_79_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_80_95_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_96_111_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_112_127_dual_ca_tmo_burst.c',
-        'deq/cn9k/deq_0_15_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_16_31_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_32_47_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_48_63_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_64_79_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_80_95_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_96_111_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_112_127_dual_ca_tmo_seg.c',
-        'deq/cn9k/deq_0_15_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_16_31_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_32_47_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_48_63_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_64_79_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_80_95_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_96_111_dual_ca_tmo_seg_burst.c',
-        'deq/cn9k/deq_112_127_dual_ca_tmo_seg_burst.c',
 )
 
 sources += files(
@@ -320,7 +206,16 @@ sources += files(
         'tx/cn9k/tx_96_111_dual_seg.c',
         'tx/cn9k/tx_112_127_dual_seg.c',
 )
+endif
+endif
 
+if soc_type == 'cn10k' or soc_type == 'all'
+sources += files(
+        'cn10k_eventdev.c',
+        'cn10k_worker.c',
+)
+
+if host_machine.cpu_family().startswith('aarch')
 sources += files(
         'deq/cn10k/deq_0_15_burst.c',
         'deq/cn10k/deq_16_31_burst.c',
@@ -386,70 +281,6 @@ sources += files(
         'deq/cn10k/deq_80_95_tmo_seg_burst.c',
         'deq/cn10k/deq_96_111_tmo_seg_burst.c',
         'deq/cn10k/deq_112_127_tmo_seg_burst.c',
-        'deq/cn10k/deq_0_15_ca.c',
-        'deq/cn10k/deq_16_31_ca.c',
-        'deq/cn10k/deq_32_47_ca.c',
-        'deq/cn10k/deq_48_63_ca.c',
-        'deq/cn10k/deq_64_79_ca.c',
-        'deq/cn10k/deq_80_95_ca.c',
-        'deq/cn10k/deq_96_111_ca.c',
-        'deq/cn10k/deq_112_127_ca.c',
-        'deq/cn10k/deq_0_15_ca_burst.c',
-        'deq/cn10k/deq_16_31_ca_burst.c',
-        'deq/cn10k/deq_32_47_ca_burst.c',
-        'deq/cn10k/deq_48_63_ca_burst.c',
-        'deq/cn10k/deq_64_79_ca_burst.c',
-        'deq/cn10k/deq_80_95_ca_burst.c',
-        'deq/cn10k/deq_96_111_ca_burst.c',
-        'deq/cn10k/deq_112_127_ca_burst.c',
-        'deq/cn10k/deq_0_15_ca_seg.c',
-        'deq/cn10k/deq_16_31_ca_seg.c',
-        'deq/cn10k/deq_32_47_ca_seg.c',
-        'deq/cn10k/deq_48_63_ca_seg.c',
-        'deq/cn10k/deq_64_79_ca_seg.c',
-        'deq/cn10k/deq_80_95_ca_seg.c',
-        'deq/cn10k/deq_96_111_ca_seg.c',
-        'deq/cn10k/deq_112_127_ca_seg.c',
-        'deq/cn10k/deq_0_15_ca_seg_burst.c',
-        'deq/cn10k/deq_16_31_ca_seg_burst.c',
-        'deq/cn10k/deq_32_47_ca_seg_burst.c',
-        'deq/cn10k/deq_48_63_ca_seg_burst.c',
-        'deq/cn10k/deq_64_79_ca_seg_burst.c',
-        'deq/cn10k/deq_80_95_ca_seg_burst.c',
-        'deq/cn10k/deq_96_111_ca_seg_burst.c',
-        'deq/cn10k/deq_112_127_ca_seg_burst.c',
-        'deq/cn10k/deq_0_15_ca_tmo.c',
-        'deq/cn10k/deq_16_31_ca_tmo.c',
-        'deq/cn10k/deq_32_47_ca_tmo.c',
-        'deq/cn10k/deq_48_63_ca_tmo.c',
-        'deq/cn10k/deq_64_79_ca_tmo.c',
-        'deq/cn10k/deq_80_95_ca_tmo.c',
-        'deq/cn10k/deq_96_111_ca_tmo.c',
-        'deq/cn10k/deq_112_127_ca_tmo.c',
-        'deq/cn10k/deq_0_15_ca_tmo_burst.c',
-        'deq/cn10k/deq_16_31_ca_tmo_burst.c',
-        'deq/cn10k/deq_32_47_ca_tmo_burst.c',
-        'deq/cn10k/deq_48_63_ca_tmo_burst.c',
-        'deq/cn10k/deq_64_79_ca_tmo_burst.c',
-        'deq/cn10k/deq_80_95_ca_tmo_burst.c',
-        'deq/cn10k/deq_96_111_ca_tmo_burst.c',
-        'deq/cn10k/deq_112_127_ca_tmo_burst.c',
-        'deq/cn10k/deq_0_15_ca_tmo_seg.c',
-        'deq/cn10k/deq_16_31_ca_tmo_seg.c',
-        'deq/cn10k/deq_32_47_ca_tmo_seg.c',
-        'deq/cn10k/deq_48_63_ca_tmo_seg.c',
-        'deq/cn10k/deq_64_79_ca_tmo_seg.c',
-        'deq/cn10k/deq_80_95_ca_tmo_seg.c',
-        'deq/cn10k/deq_96_111_ca_tmo_seg.c',
-        'deq/cn10k/deq_112_127_ca_tmo_seg.c',
-        'deq/cn10k/deq_0_15_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_16_31_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_32_47_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_48_63_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_64_79_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_80_95_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_96_111_ca_tmo_seg_burst.c',
-        'deq/cn10k/deq_112_127_ca_tmo_seg_burst.c',
 )
 
 sources += files(
@@ -470,13 +301,23 @@ sources += files(
         'tx/cn10k/tx_96_111_seg.c',
         'tx/cn10k/tx_112_127_seg.c',
 )
+endif
+endif
 
 extra_flags = ['-flax-vector-conversions', '-Wno-strict-aliasing']
+if cc.get_id() == 'clang'
+        extra_flags += ['-Wno-asm-operand-widths']
+endif
+
 foreach flag: extra_flags
     if cc.has_argument(flag)
         cflags += flag
     endif
 endforeach
 
+headers = files('rte_pmd_cnxk_eventdev.h')
 deps += ['bus_pci', 'common_cnxk', 'net_cnxk', 'crypto_cnxk']
-pmd_supports_disable_iova_as_pa = true
+
+require_iova_in_mbuf = false
+
+annotate_locks = false

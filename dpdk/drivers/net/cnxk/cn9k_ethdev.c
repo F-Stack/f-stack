@@ -30,7 +30,7 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)
 		flags |= NIX_RX_MULTI_SEG_F;
 
-	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP))
+	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) || dev->ptp_en)
 		flags |= NIX_RX_OFFLOAD_TSTAMP_F;
 
 	if (!dev->ptype_disable)
@@ -38,9 +38,6 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
 		flags |= NIX_RX_OFFLOAD_SECURITY_F;
-
-	if (dev->rx_mark_update)
-		flags |= NIX_RX_OFFLOAD_MARK_UPDATE_F;
 
 	return flags;
 }
@@ -50,6 +47,7 @@ nix_tx_offload_flags(struct rte_eth_dev *eth_dev)
 {
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
 	uint64_t conf = dev->tx_offloads;
+	struct roc_nix *nix = &dev->nix;
 	uint16_t flags = 0;
 
 	/* Fastpath is dependent on these enums */
@@ -113,6 +111,9 @@ nix_tx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->tx_mark)
 		flags |= NIX_TX_OFFLOAD_VLAN_QINQ_F;
 
+	if (nix->tx_compl_ena)
+		flags |= NIX_TX_OFFLOAD_MBUF_NOFF_F;
+
 	return flags;
 }
 
@@ -166,11 +167,55 @@ nix_form_default_desc(struct cnxk_eth_dev *dev, struct cn9k_eth_txq *txq,
 }
 
 static int
+cn9k_nix_tx_compl_setup(struct cnxk_eth_dev *dev,
+		struct cn9k_eth_txq *txq,
+		struct roc_nix_sq *sq, uint16_t nb_desc)
+{
+	struct roc_nix_cq *cq;
+
+	cq = &dev->cqs[sq->cqid];
+	txq->tx_compl.desc_base = (uintptr_t)cq->desc_base;
+	txq->tx_compl.cq_door = cq->door;
+	txq->tx_compl.cq_status = cq->status;
+	txq->tx_compl.wdata = cq->wdata;
+	txq->tx_compl.head = cq->head;
+	txq->tx_compl.qmask = cq->qmask;
+	/* Total array size holding buffers is equal to
+	 * number of entries in cq and sq
+	 * max buffer in array = desc in cq + desc in sq
+	 */
+	txq->tx_compl.nb_desc_mask = (2 * rte_align32pow2(nb_desc)) - 1;
+	txq->tx_compl.ena = true;
+
+	txq->tx_compl.ptr = (struct rte_mbuf **)plt_zmalloc(txq->tx_compl.nb_desc_mask *
+			sizeof(struct rte_mbuf *), 0);
+	if (!txq->tx_compl.ptr)
+		return -1;
+
+	return 0;
+}
+
+static void
+cn9k_nix_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t qid)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *nix = &dev->nix;
+	struct cn9k_eth_txq *txq;
+
+	cnxk_nix_tx_queue_release(eth_dev, qid);
+	txq = eth_dev->data->tx_queues[qid];
+
+	if (nix->tx_compl_ena)
+		plt_free(txq->tx_compl.ptr);
+}
+
+static int
 cn9k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 			uint16_t nb_desc, unsigned int socket,
 			const struct rte_eth_txconf *tx_conf)
 {
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *nix = &dev->nix;
 	uint64_t mark_fmt, mark_flag;
 	struct roc_cpt_lf *inl_lf;
 	struct cn9k_eth_txq *txq;
@@ -190,6 +235,11 @@ cn9k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 	/* Update fast path queue */
 	txq = eth_dev->data->tx_queues[qid];
 	txq->fc_mem = sq->fc;
+	if (nix->tx_compl_ena) {
+		rc = cn9k_nix_tx_compl_setup(dev, txq, sq, nb_desc);
+		if (rc)
+			return rc;
+	}
 	txq->lmt_addr = sq->lmt_addr;
 	txq->io_addr = sq->io_addr;
 	txq->nb_sqb_bufs_adj = sq->nb_sqb_bufs_adj;
@@ -279,7 +329,12 @@ static int
 cn9k_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qidx)
 {
 	struct cn9k_eth_txq *txq = eth_dev->data->tx_queues[qidx];
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	uint16_t flags = dev->tx_offload_flags;
+	struct roc_nix *nix = &dev->nix;
+	uint32_t head = 0, tail = 0;
 	int rc;
+
 
 	rc = cnxk_nix_tx_queue_stop(eth_dev, qidx);
 	if (rc)
@@ -287,6 +342,21 @@ cn9k_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qidx)
 
 	/* Clear fc cache pkts to trigger worker stop */
 	txq->fc_cache_pkts = 0;
+
+	if ((flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) && txq->tx_compl.ena) {
+		struct roc_nix_sq *sq = &dev->sqs[qidx];
+		do {
+			handle_tx_completion_pkts(txq, 0);
+			/* Check if SQ is empty */
+			roc_nix_sq_head_tail_get(nix, sq->qid, &head, &tail);
+			if (head != tail)
+				continue;
+
+			/* Check if completion CQ is empty */
+			roc_nix_cq_head_tail_get(nix, sq->cqid, &head, &tail);
+		} while (head != tail);
+	}
+
 	return 0;
 }
 
@@ -362,7 +432,7 @@ cn9k_nix_ptp_info_update_cb(struct roc_nix *nix, bool ptp_en)
 	struct cnxk_eth_dev *dev = (struct cnxk_eth_dev *)nix;
 	struct rte_eth_dev *eth_dev;
 	struct cn9k_eth_rxq *rxq;
-	int i;
+	int i, rc;
 
 	if (!dev)
 		return -EINVAL;
@@ -385,8 +455,21 @@ cn9k_nix_ptp_info_update_cb(struct roc_nix *nix, bool ptp_en)
 		 * and MTU setting also requires MBOX message to be
 		 * sent(VF->PF)
 		 */
+		if (dev->ptp_en) {
+			rc = rte_mbuf_dyn_rx_timestamp_register
+				(&dev->tstamp.tstamp_dynfield_offset,
+				 &dev->tstamp.rx_tstamp_dynflag);
+			if (rc != 0) {
+				plt_err("Failed to register Rx timestamp field/flag");
+				return -EINVAL;
+			}
+		}
 		eth_dev->rx_pkt_burst = nix_ptp_vf_burst;
+		rte_eth_fp_ops[eth_dev->data->port_id].rx_pkt_burst = eth_dev->rx_pkt_burst;
 		rte_mb();
+		if (dev->cnxk_sso_ptp_tstamp_cb)
+			dev->cnxk_sso_ptp_tstamp_cb(eth_dev->data->port_id,
+						    NIX_RX_OFFLOAD_TSTAMP_F, dev->ptp_en);
 	}
 
 	return 0;
@@ -484,27 +567,6 @@ cn9k_nix_timesync_read_tx_timestamp(struct rte_eth_dev *eth_dev,
 	*timestamp = rte_ns_to_timespec(ns);
 	*tstamp->tx_tstamp = 0;
 	rte_wmb();
-
-	return 0;
-}
-
-static int
-cn9k_nix_rx_metadata_negotiate(struct rte_eth_dev *eth_dev, uint64_t *features)
-{
-	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
-
-	*features &=
-		(RTE_ETH_RX_METADATA_USER_FLAG | RTE_ETH_RX_METADATA_USER_MARK);
-
-	if (*features) {
-		dev->rx_offload_flags |= NIX_RX_OFFLOAD_MARK_UPDATE_F;
-		dev->rx_mark_update = true;
-	} else {
-		dev->rx_offload_flags &= ~NIX_RX_OFFLOAD_MARK_UPDATE_F;
-		dev->rx_mark_update = false;
-	}
-
-	cn9k_eth_set_rx_function(eth_dev);
 
 	return 0;
 }
@@ -634,6 +696,7 @@ nix_eth_dev_ops_override(void)
 	/* Update platform specific ops */
 	cnxk_eth_dev_ops.dev_configure = cn9k_nix_configure;
 	cnxk_eth_dev_ops.tx_queue_setup = cn9k_nix_tx_queue_setup;
+	cnxk_eth_dev_ops.tx_queue_release = cn9k_nix_tx_queue_release;
 	cnxk_eth_dev_ops.rx_queue_setup = cn9k_nix_rx_queue_setup;
 	cnxk_eth_dev_ops.tx_queue_stop = cn9k_nix_tx_queue_stop;
 	cnxk_eth_dev_ops.dev_start = cn9k_nix_dev_start;
@@ -641,7 +704,6 @@ nix_eth_dev_ops_override(void)
 	cnxk_eth_dev_ops.timesync_enable = cn9k_nix_timesync_enable;
 	cnxk_eth_dev_ops.timesync_disable = cn9k_nix_timesync_disable;
 	cnxk_eth_dev_ops.mtr_ops_get = NULL;
-	cnxk_eth_dev_ops.rx_metadata_negotiate = cn9k_nix_rx_metadata_negotiate;
 	cnxk_eth_dev_ops.timesync_read_tx_timestamp =
 		cn9k_nix_timesync_read_tx_timestamp;
 }
@@ -674,6 +736,7 @@ npc_flow_ops_override(void)
 	/* Update platform specific ops */
 	cnxk_flow_ops.create = cn9k_flow_create;
 	cnxk_flow_ops.destroy = cn9k_flow_destroy;
+	cnxk_flow_ops.info_get = cn9k_flow_info_get;
 }
 
 static int

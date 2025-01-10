@@ -52,7 +52,7 @@
  * Only 64-bits of the memory is actually used though.
  */
 union rte_distributor_buffer_single {
-	volatile int64_t bufptr64;
+	volatile RTE_ATOMIC(int64_t) bufptr64;
 	char pad[RTE_CACHE_LINE_SIZE*3];
 } __rte_cache_aligned;
 
@@ -113,12 +113,12 @@ enum rte_distributor_match_function {
  * There is a separate cacheline for returns in the burst API.
  */
 struct rte_distributor_buffer {
-	volatile int64_t bufptr64[RTE_DIST_BURST_SIZE]
+	volatile RTE_ATOMIC(int64_t) bufptr64[RTE_DIST_BURST_SIZE]
 		__rte_cache_aligned; /* <= outgoing to worker */
 
 	int64_t pad1 __rte_cache_aligned;    /* <= one cache line  */
 
-	volatile int64_t retptr64[RTE_DIST_BURST_SIZE]
+	volatile RTE_ATOMIC(int64_t) retptr64[RTE_DIST_BURST_SIZE]
 		__rte_cache_aligned; /* <= incoming from worker */
 
 	int64_t pad2 __rte_cache_aligned;    /* <= one cache line  */

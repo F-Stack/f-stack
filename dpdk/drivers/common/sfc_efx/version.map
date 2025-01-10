@@ -71,6 +71,7 @@ INTERNAL {
 	efx_mac_drain;
 	efx_mac_fcntl_get;
 	efx_mac_fcntl_set;
+	efx_mac_include_fcs_set;
 	efx_mac_filter_default_rxq_clear;
 	efx_mac_filter_default_rxq_set;
 	efx_mac_filter_get_all_ucast_mcast;
@@ -96,6 +97,8 @@ INTERNAL {
 	efx_mae_action_set_fill_in_src_mac_id;
 	efx_mae_action_set_free;
 	efx_mae_action_set_get_nb_count;
+	efx_mae_action_set_list_alloc;
+	efx_mae_action_set_list_free;
 	efx_mae_action_set_populate_count;
 	efx_mae_action_set_populate_decap;
 	efx_mae_action_set_populate_decr_ip_ttl;
@@ -105,26 +108,34 @@ INTERNAL {
 	efx_mae_action_set_populate_flag;
 	efx_mae_action_set_populate_mark;
 	efx_mae_action_set_populate_mark_reset;
+	efx_mae_action_set_populate_nat;
 	efx_mae_action_set_populate_set_dst_mac;
 	efx_mae_action_set_populate_set_src_mac;
 	efx_mae_action_set_populate_vlan_pop;
 	efx_mae_action_set_populate_vlan_push;
+	efx_mae_action_set_replay;
 	efx_mae_action_set_spec_fini;
 	efx_mae_action_set_spec_init;
 	efx_mae_action_set_specs_equal;
 	efx_mae_counters_alloc;
+	efx_mae_counters_alloc_type;
 	efx_mae_counters_free;
+	efx_mae_counters_free_type;
 	efx_mae_counters_stream_give_credits;
 	efx_mae_counters_stream_start;
 	efx_mae_counters_stream_stop;
 	efx_mae_encap_header_alloc;
 	efx_mae_encap_header_free;
+	efx_mae_encap_header_update;
 	efx_mae_fini;
 	efx_mae_get_limits;
 	efx_mae_init;
 	efx_mae_mac_addr_alloc;
 	efx_mae_mac_addr_free;
 	efx_mae_match_spec_bit_set;
+	efx_mae_match_spec_clone;
+	efx_mae_match_spec_ct_mark_set;
+	efx_mae_match_spec_field_get;
 	efx_mae_match_spec_field_set;
 	efx_mae_match_spec_fini;
 	efx_mae_match_spec_init;
@@ -141,6 +152,7 @@ INTERNAL {
 	efx_mae_mport_free;
 	efx_mae_mport_id_by_selector;
 	efx_mae_mport_invalid;
+	efx_mae_outer_rule_do_ct_set;
 	efx_mae_outer_rule_insert;
 	efx_mae_outer_rule_recirc_id_set;
 	efx_mae_outer_rule_remove;
@@ -203,6 +215,7 @@ INTERNAL {
 	efx_port_init;
 	efx_port_loopback_set;
 	efx_port_poll;
+	efx_port_vlan_strip_set;
 
 	efx_pseudo_hdr_hash_get;
 	efx_pseudo_hdr_pkt_length_get;
@@ -232,6 +245,13 @@ INTERNAL {
 
 	efx_sram_buf_tbl_clear;
 	efx_sram_buf_tbl_set;
+
+	efx_table_describe;
+	efx_table_entry_delete;
+	efx_table_entry_insert;
+	efx_table_is_supported;
+	efx_table_list;
+	efx_table_supported_num_get;
 
 	efx_tunnel_config_clear;
 	efx_tunnel_config_udp_add;

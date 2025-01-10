@@ -16,7 +16,10 @@
 #include <rte_memzone.h>
 #include <rte_reciprocal.h>
 
-#include "roc_api.h"
+#include "hw/tim.h"
+
+#include "roc_model.h"
+#include "roc_tim.h"
 
 #define NSECPERSEC		 1E9
 #define USECPERSEC		 1E6
@@ -24,10 +27,9 @@
 
 #define CNXK_TIM_EVDEV_NAME	    cnxk_tim_eventdev
 #define CNXK_TIM_MAX_BUCKETS	    (0xFFFFF)
-#define CNXK_TIM_RING_DEF_CHUNK_SZ  (256)
+#define CNXK_TIM_RING_DEF_CHUNK_SZ  (1024)
 #define CNXK_TIM_CHUNK_ALIGNMENT    (16)
-#define CNXK_TIM_MAX_BURST	    \
-			(RTE_CACHE_LINE_SIZE / CNXK_TIM_CHUNK_ALIGNMENT)
+#define CNXK_TIM_MAX_BURST	    (16)
 #define CNXK_TIM_NB_CHUNK_SLOTS(sz) (((sz) / CNXK_TIM_CHUNK_ALIGNMENT) - 1)
 #define CNXK_TIM_MIN_CHUNK_SLOTS    (0x1)
 #define CNXK_TIM_MAX_CHUNK_SLOTS    (0x1FFE)
@@ -79,7 +81,7 @@
 	(TIM_BUCKET_CHUNK_REMAIN | (1ull << TIM_BUCKET_W1_S_LOCK))
 
 typedef void (*cnxk_sso_set_priv_mem_t)(const struct rte_eventdev *event_dev,
-					void *lookup_mem, uint64_t aura);
+					void *lookup_mem);
 
 struct cnxk_tim_ctl {
 	uint16_t ring;
@@ -317,6 +319,9 @@ uint16_t
 cnxk_tim_timer_cancel_burst(const struct rte_event_timer_adapter *adptr,
 			    struct rte_event_timer **tim,
 			    const uint16_t nb_timers);
+
+int cnxk_tim_remaining_ticks_get(const struct rte_event_timer_adapter *adapter,
+				 const struct rte_event_timer *evtim, uint64_t *ticks_remaining);
 
 int cnxk_tim_caps_get(const struct rte_eventdev *dev, uint64_t flags,
 		      uint32_t *caps,

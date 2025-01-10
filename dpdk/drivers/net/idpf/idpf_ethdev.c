@@ -9,6 +9,7 @@
 #include <rte_memzone.h>
 #include <rte_dev.h>
 #include <errno.h>
+#include <rte_alarm.h>
 
 #include "idpf_ethdev.h"
 #include "idpf_rxtx.h"
@@ -22,8 +23,6 @@ rte_spinlock_t idpf_adapter_lock;
 struct idpf_adapter_list idpf_adapter_list;
 bool idpf_adapter_list_init;
 
-uint64_t idpf_timestamp_dynflag;
-
 static const char * const idpf_valid_args[] = {
 	IDPF_TX_SINGLE_Q,
 	IDPF_RX_SINGLE_Q,
@@ -31,18 +30,122 @@ static const char * const idpf_valid_args[] = {
 	NULL
 };
 
+uint32_t idpf_supported_speeds[] = {
+	RTE_ETH_SPEED_NUM_NONE,
+	RTE_ETH_SPEED_NUM_10M,
+	RTE_ETH_SPEED_NUM_100M,
+	RTE_ETH_SPEED_NUM_1G,
+	RTE_ETH_SPEED_NUM_2_5G,
+	RTE_ETH_SPEED_NUM_5G,
+	RTE_ETH_SPEED_NUM_10G,
+	RTE_ETH_SPEED_NUM_20G,
+	RTE_ETH_SPEED_NUM_25G,
+	RTE_ETH_SPEED_NUM_40G,
+	RTE_ETH_SPEED_NUM_50G,
+	RTE_ETH_SPEED_NUM_56G,
+	RTE_ETH_SPEED_NUM_100G,
+	RTE_ETH_SPEED_NUM_200G
+};
+
+static const uint64_t idpf_map_hena_rss[] = {
+	[IDPF_HASH_NONF_UNICAST_IPV4_UDP] =
+			RTE_ETH_RSS_NONFRAG_IPV4_UDP,
+	[IDPF_HASH_NONF_MULTICAST_IPV4_UDP] =
+			RTE_ETH_RSS_NONFRAG_IPV4_UDP,
+	[IDPF_HASH_NONF_IPV4_UDP] =
+			RTE_ETH_RSS_NONFRAG_IPV4_UDP,
+	[IDPF_HASH_NONF_IPV4_TCP_SYN_NO_ACK] =
+			RTE_ETH_RSS_NONFRAG_IPV4_TCP,
+	[IDPF_HASH_NONF_IPV4_TCP] =
+			RTE_ETH_RSS_NONFRAG_IPV4_TCP,
+	[IDPF_HASH_NONF_IPV4_SCTP] =
+			RTE_ETH_RSS_NONFRAG_IPV4_SCTP,
+	[IDPF_HASH_NONF_IPV4_OTHER] =
+			RTE_ETH_RSS_NONFRAG_IPV4_OTHER,
+	[IDPF_HASH_FRAG_IPV4] = RTE_ETH_RSS_FRAG_IPV4,
+
+	/* IPv6 */
+	[IDPF_HASH_NONF_UNICAST_IPV6_UDP] =
+			RTE_ETH_RSS_NONFRAG_IPV6_UDP,
+	[IDPF_HASH_NONF_MULTICAST_IPV6_UDP] =
+			RTE_ETH_RSS_NONFRAG_IPV6_UDP,
+	[IDPF_HASH_NONF_IPV6_UDP] =
+			RTE_ETH_RSS_NONFRAG_IPV6_UDP,
+	[IDPF_HASH_NONF_IPV6_TCP_SYN_NO_ACK] =
+			RTE_ETH_RSS_NONFRAG_IPV6_TCP,
+	[IDPF_HASH_NONF_IPV6_TCP] =
+			RTE_ETH_RSS_NONFRAG_IPV6_TCP,
+	[IDPF_HASH_NONF_IPV6_SCTP] =
+			RTE_ETH_RSS_NONFRAG_IPV6_SCTP,
+	[IDPF_HASH_NONF_IPV6_OTHER] =
+			RTE_ETH_RSS_NONFRAG_IPV6_OTHER,
+	[IDPF_HASH_FRAG_IPV6] = RTE_ETH_RSS_FRAG_IPV6,
+
+	/* L2 Payload */
+	[IDPF_HASH_L2_PAYLOAD] = RTE_ETH_RSS_L2_PAYLOAD
+};
+
+static const uint64_t idpf_ipv4_rss = RTE_ETH_RSS_NONFRAG_IPV4_UDP |
+			  RTE_ETH_RSS_NONFRAG_IPV4_TCP |
+			  RTE_ETH_RSS_NONFRAG_IPV4_SCTP |
+			  RTE_ETH_RSS_NONFRAG_IPV4_OTHER |
+			  RTE_ETH_RSS_FRAG_IPV4;
+
+static const uint64_t idpf_ipv6_rss = RTE_ETH_RSS_NONFRAG_IPV6_UDP |
+			  RTE_ETH_RSS_NONFRAG_IPV6_TCP |
+			  RTE_ETH_RSS_NONFRAG_IPV6_SCTP |
+			  RTE_ETH_RSS_NONFRAG_IPV6_OTHER |
+			  RTE_ETH_RSS_FRAG_IPV6;
+
+struct rte_idpf_xstats_name_off {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+	unsigned int offset;
+};
+
+static const struct rte_idpf_xstats_name_off rte_idpf_stats_strings[] = {
+	{"rx_bytes", offsetof(struct virtchnl2_vport_stats, rx_bytes)},
+	{"rx_unicast_packets", offsetof(struct virtchnl2_vport_stats, rx_unicast)},
+	{"rx_multicast_packets", offsetof(struct virtchnl2_vport_stats, rx_multicast)},
+	{"rx_broadcast_packets", offsetof(struct virtchnl2_vport_stats, rx_broadcast)},
+	{"rx_dropped_packets", offsetof(struct virtchnl2_vport_stats, rx_discards)},
+	{"rx_errors", offsetof(struct virtchnl2_vport_stats, rx_errors)},
+	{"rx_unknown_protocol_packets", offsetof(struct virtchnl2_vport_stats,
+						 rx_unknown_protocol)},
+	{"tx_bytes", offsetof(struct virtchnl2_vport_stats, tx_bytes)},
+	{"tx_unicast_packets", offsetof(struct virtchnl2_vport_stats, tx_unicast)},
+	{"tx_multicast_packets", offsetof(struct virtchnl2_vport_stats, tx_multicast)},
+	{"tx_broadcast_packets", offsetof(struct virtchnl2_vport_stats, tx_broadcast)},
+	{"tx_dropped_packets", offsetof(struct virtchnl2_vport_stats, tx_discards)},
+	{"tx_error_packets", offsetof(struct virtchnl2_vport_stats, tx_errors)}};
+
+#define IDPF_NB_XSTATS (sizeof(rte_idpf_stats_strings) / \
+		sizeof(rte_idpf_stats_strings[0]))
+
 static int
 idpf_dev_link_update(struct rte_eth_dev *dev,
 		     __rte_unused int wait_to_complete)
 {
+	struct idpf_vport *vport = dev->data->dev_private;
 	struct rte_eth_link new_link;
+	unsigned int i;
 
 	memset(&new_link, 0, sizeof(new_link));
 
-	new_link.link_speed = RTE_ETH_SPEED_NUM_NONE;
+	/* initialize with default value */
+	new_link.link_speed = vport->link_up ? RTE_ETH_SPEED_NUM_UNKNOWN : RTE_ETH_SPEED_NUM_NONE;
+
+	/* update in case a match */
+	for (i = 0; i < RTE_DIM(idpf_supported_speeds); i++) {
+		if (vport->link_speed == idpf_supported_speeds[i]) {
+			new_link.link_speed = vport->link_speed;
+			break;
+		}
+	}
+
 	new_link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
-	new_link.link_autoneg = !(dev->data->dev_conf.link_speeds &
-				  RTE_ETH_LINK_SPEED_FIXED);
+	new_link.link_status = vport->link_up ? RTE_ETH_LINK_UP : RTE_ETH_LINK_DOWN;
+	new_link.link_autoneg = (dev->data->dev_conf.link_speeds & RTE_ETH_LINK_SPEED_FIXED) ?
+				 RTE_ETH_LINK_FIXED : RTE_ETH_LINK_AUTONEG;
 
 	return rte_eth_linkstatus_set(dev, &new_link);
 }
@@ -53,13 +156,16 @@ idpf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	struct idpf_vport *vport = dev->data->dev_private;
 	struct idpf_adapter *adapter = vport->adapter;
 
-	dev_info->max_rx_queues = adapter->caps->max_rx_q;
-	dev_info->max_tx_queues = adapter->caps->max_tx_q;
+	dev_info->max_rx_queues = adapter->caps.max_rx_q;
+	dev_info->max_tx_queues = adapter->caps.max_tx_q;
 	dev_info->min_rx_bufsize = IDPF_MIN_BUF_SIZE;
-	dev_info->max_rx_pktlen = IDPF_MAX_FRAME_SIZE;
+	dev_info->max_rx_pktlen = vport->max_mtu + IDPF_ETH_OVERHEAD;
 
-	dev_info->max_mtu = dev_info->max_rx_pktlen - IDPF_ETH_OVERHEAD;
+	dev_info->max_mtu = vport->max_mtu;
 	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
+
+	dev_info->hash_key_size = vport->rss_key_size;
+	dev_info->reta_size = vport->rss_lut_size;
 
 	dev_info->flow_type_rss_offloads = IDPF_RSS_OFFLOAD_ALL;
 
@@ -68,7 +174,8 @@ idpf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_RX_OFFLOAD_UDP_CKSUM            |
 		RTE_ETH_RX_OFFLOAD_TCP_CKSUM            |
 		RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM     |
-		RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP		|
+		RTE_ETH_RX_OFFLOAD_SCATTER;
 
 	dev_info->tx_offload_capa =
 		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM		|
@@ -104,13 +211,22 @@ idpf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 }
 
 static int
-idpf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu __rte_unused)
+idpf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 {
+	struct idpf_vport *vport = dev->data->dev_private;
+
 	/* mtu setting is forbidden if port is start */
 	if (dev->data->dev_started) {
 		PMD_DRV_LOG(ERR, "port must be stopped before configuration");
 		return -EBUSY;
 	}
+
+	if (mtu > vport->max_mtu) {
+		PMD_DRV_LOG(ERR, "MTU should be less than %d", vport->max_mtu);
+		return -EINVAL;
+	}
+
+	vport->max_pkt_len = mtu + IDPF_ETH_OVERHEAD;
 
 	return 0;
 }
@@ -133,213 +249,182 @@ idpf_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
 	return ptypes;
 }
 
-static int
-idpf_init_vport_req_info(struct rte_eth_dev *dev)
+static uint64_t
+idpf_get_mbuf_alloc_failed_stats(struct rte_eth_dev *dev)
 {
-	struct idpf_vport *vport = dev->data->dev_private;
-	struct idpf_adapter *adapter = vport->adapter;
-	struct virtchnl2_create_vport *vport_info;
-	uint16_t idx = adapter->cur_vport_idx;
+	uint64_t mbuf_alloc_failed = 0;
+	struct idpf_rx_queue *rxq;
+	int i = 0;
 
-	if (idx == IDPF_INVALID_VPORT_IDX) {
-		PMD_INIT_LOG(ERR, "Invalid vport index.");
-		return -EINVAL;
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxq = dev->data->rx_queues[i];
+		mbuf_alloc_failed += __atomic_load_n(&rxq->rx_stats.mbuf_alloc_failed,
+						     __ATOMIC_RELAXED);
 	}
 
-	if (adapter->vport_req_info[idx] == NULL) {
-		adapter->vport_req_info[idx] = rte_zmalloc(NULL,
-				sizeof(struct virtchnl2_create_vport), 0);
-		if (adapter->vport_req_info[idx] == NULL) {
-			PMD_INIT_LOG(ERR, "Failed to allocate vport_req_info");
-			return -ENOMEM;
-		}
-	}
-
-	vport_info =
-		(struct virtchnl2_create_vport *)adapter->vport_req_info[idx];
-
-	vport_info->vport_type = rte_cpu_to_le_16(VIRTCHNL2_VPORT_TYPE_DEFAULT);
-	if (adapter->txq_model == 0) {
-		vport_info->txq_model =
-			rte_cpu_to_le_16(VIRTCHNL2_QUEUE_MODEL_SPLIT);
-		vport_info->num_tx_q = IDPF_DEFAULT_TXQ_NUM;
-		vport_info->num_tx_complq =
-			IDPF_DEFAULT_TXQ_NUM * IDPF_TX_COMPLQ_PER_GRP;
-	} else {
-		vport_info->txq_model =
-			rte_cpu_to_le_16(VIRTCHNL2_QUEUE_MODEL_SINGLE);
-		vport_info->num_tx_q = IDPF_DEFAULT_TXQ_NUM;
-		vport_info->num_tx_complq = 0;
-	}
-	if (adapter->rxq_model == 0) {
-		vport_info->rxq_model =
-			rte_cpu_to_le_16(VIRTCHNL2_QUEUE_MODEL_SPLIT);
-		vport_info->num_rx_q = IDPF_DEFAULT_RXQ_NUM;
-		vport_info->num_rx_bufq =
-			IDPF_DEFAULT_RXQ_NUM * IDPF_RX_BUFQ_PER_GRP;
-	} else {
-		vport_info->rxq_model =
-			rte_cpu_to_le_16(VIRTCHNL2_QUEUE_MODEL_SINGLE);
-		vport_info->num_rx_q = IDPF_DEFAULT_RXQ_NUM;
-		vport_info->num_rx_bufq = 0;
-	}
-
-	return 0;
+	return mbuf_alloc_failed;
 }
 
 static int
-idpf_parse_devarg_id(char *name)
+idpf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
-	uint16_t val;
-	char *p;
-
-	p = strstr(name, "vport_");
-
-	if (p == NULL)
-		return -EINVAL;
-
-	p += sizeof("vport_") - 1;
-
-	val = strtoul(p, NULL, 10);
-
-	return val;
-}
-
-#define IDPF_RSS_KEY_LEN 52
-
-static int
-idpf_init_vport(struct rte_eth_dev *dev)
-{
-	struct idpf_vport *vport = dev->data->dev_private;
-	struct idpf_adapter *adapter = vport->adapter;
-	uint16_t idx = adapter->cur_vport_idx;
-	struct virtchnl2_create_vport *vport_info =
-		(struct virtchnl2_create_vport *)adapter->vport_recv_info[idx];
-	int i, type, ret;
-
-	vport->vport_id = vport_info->vport_id;
-	vport->txq_model = vport_info->txq_model;
-	vport->rxq_model = vport_info->rxq_model;
-	vport->num_tx_q = vport_info->num_tx_q;
-	vport->num_tx_complq = vport_info->num_tx_complq;
-	vport->num_rx_q = vport_info->num_rx_q;
-	vport->num_rx_bufq = vport_info->num_rx_bufq;
-	vport->max_mtu = vport_info->max_mtu;
-	rte_memcpy(vport->default_mac_addr,
-		   vport_info->default_mac_addr, ETH_ALEN);
-	vport->rss_algorithm = vport_info->rss_algorithm;
-	vport->rss_key_size = RTE_MIN(IDPF_RSS_KEY_LEN,
-				     vport_info->rss_key_size);
-	vport->rss_lut_size = vport_info->rss_lut_size;
-	vport->sw_idx = idx;
-
-	for (i = 0; i < vport_info->chunks.num_chunks; i++) {
-		type = vport_info->chunks.chunks[i].type;
-		switch (type) {
-		case VIRTCHNL2_QUEUE_TYPE_TX:
-			vport->chunks_info.tx_start_qid =
-				vport_info->chunks.chunks[i].start_queue_id;
-			vport->chunks_info.tx_qtail_start =
-				vport_info->chunks.chunks[i].qtail_reg_start;
-			vport->chunks_info.tx_qtail_spacing =
-				vport_info->chunks.chunks[i].qtail_reg_spacing;
-			break;
-		case VIRTCHNL2_QUEUE_TYPE_RX:
-			vport->chunks_info.rx_start_qid =
-				vport_info->chunks.chunks[i].start_queue_id;
-			vport->chunks_info.rx_qtail_start =
-				vport_info->chunks.chunks[i].qtail_reg_start;
-			vport->chunks_info.rx_qtail_spacing =
-				vport_info->chunks.chunks[i].qtail_reg_spacing;
-			break;
-		case VIRTCHNL2_QUEUE_TYPE_TX_COMPLETION:
-			vport->chunks_info.tx_compl_start_qid =
-				vport_info->chunks.chunks[i].start_queue_id;
-			vport->chunks_info.tx_compl_qtail_start =
-				vport_info->chunks.chunks[i].qtail_reg_start;
-			vport->chunks_info.tx_compl_qtail_spacing =
-				vport_info->chunks.chunks[i].qtail_reg_spacing;
-			break;
-		case VIRTCHNL2_QUEUE_TYPE_RX_BUFFER:
-			vport->chunks_info.rx_buf_start_qid =
-				vport_info->chunks.chunks[i].start_queue_id;
-			vport->chunks_info.rx_buf_qtail_start =
-				vport_info->chunks.chunks[i].qtail_reg_start;
-			vport->chunks_info.rx_buf_qtail_spacing =
-				vport_info->chunks.chunks[i].qtail_reg_spacing;
-			break;
-		default:
-			PMD_INIT_LOG(ERR, "Unsupported queue type");
-			break;
-		}
-	}
-
-	ret = idpf_parse_devarg_id(dev->data->name);
-	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Failed to parse devarg id.");
-		return -EINVAL;
-	}
-	vport->devarg_id = ret;
-
-	vport->dev_data = dev->data;
-
-	adapter->vports[idx] = vport;
-
-	return 0;
-}
-
-static int
-idpf_config_rss(struct idpf_vport *vport)
-{
+	struct idpf_vport *vport =
+		(struct idpf_vport *)dev->data->dev_private;
+	struct virtchnl2_vport_stats *pstats = NULL;
 	int ret;
 
-	ret = idpf_vc_set_rss_key(vport);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to configure RSS key");
-		return ret;
-	}
+	ret = idpf_vc_stats_query(vport, &pstats);
+	if (ret == 0) {
+		uint8_t crc_stats_len = (dev->data->dev_conf.rxmode.offloads &
+					 RTE_ETH_RX_OFFLOAD_KEEP_CRC) ? 0 :
+					 RTE_ETHER_CRC_LEN;
 
-	ret = idpf_vc_set_rss_lut(vport);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to configure RSS lut");
-		return ret;
-	}
+		idpf_vport_stats_update(&vport->eth_stats_offset, pstats);
+		stats->ipackets = pstats->rx_unicast + pstats->rx_multicast +
+				pstats->rx_broadcast;
+		stats->opackets = pstats->tx_broadcast + pstats->tx_multicast +
+						pstats->tx_unicast;
+		stats->ierrors = pstats->rx_errors;
+		stats->imissed = pstats->rx_discards;
+		stats->oerrors = pstats->tx_errors + pstats->tx_discards;
+		stats->ibytes = pstats->rx_bytes;
+		stats->ibytes -= stats->ipackets * crc_stats_len;
+		stats->obytes = pstats->tx_bytes;
 
-	ret = idpf_vc_set_rss_hash(vport);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to configure RSS hash");
-		return ret;
+		dev->data->rx_mbuf_alloc_failed = idpf_get_mbuf_alloc_failed_stats(dev);
+		stats->rx_nombuf = dev->data->rx_mbuf_alloc_failed;
+	} else {
+		PMD_DRV_LOG(ERR, "Get statistics failed");
 	}
-
 	return ret;
+}
+
+static void
+idpf_reset_mbuf_alloc_failed_stats(struct rte_eth_dev *dev)
+{
+	struct idpf_rx_queue *rxq;
+	int i;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxq = dev->data->rx_queues[i];
+		__atomic_store_n(&rxq->rx_stats.mbuf_alloc_failed, 0, __ATOMIC_RELAXED);
+	}
+}
+
+static int
+idpf_dev_stats_reset(struct rte_eth_dev *dev)
+{
+	struct idpf_vport *vport =
+		(struct idpf_vport *)dev->data->dev_private;
+	struct virtchnl2_vport_stats *pstats = NULL;
+	int ret;
+
+	ret = idpf_vc_stats_query(vport, &pstats);
+	if (ret != 0)
+		return ret;
+
+	/* set stats offset base on current values */
+	vport->eth_stats_offset = *pstats;
+
+	idpf_reset_mbuf_alloc_failed_stats(dev);
+
+	return 0;
+}
+
+static int idpf_dev_xstats_reset(struct rte_eth_dev *dev)
+{
+	idpf_dev_stats_reset(dev);
+	return 0;
+}
+
+static int idpf_dev_xstats_get(struct rte_eth_dev *dev,
+			       struct rte_eth_xstat *xstats, unsigned int n)
+{
+	struct idpf_vport *vport =
+		(struct idpf_vport *)dev->data->dev_private;
+	struct virtchnl2_vport_stats *pstats = NULL;
+	unsigned int i;
+	int ret;
+
+	if (n < IDPF_NB_XSTATS)
+		return IDPF_NB_XSTATS;
+
+	if (!xstats)
+		return 0;
+
+	ret = idpf_vc_stats_query(vport, &pstats);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "Get statistics failed");
+		return 0;
+	}
+
+	idpf_vport_stats_update(&vport->eth_stats_offset, pstats);
+
+	/* loop over xstats array and values from pstats */
+	for (i = 0; i < IDPF_NB_XSTATS; i++) {
+		xstats[i].id = i;
+		xstats[i].value = *(uint64_t *)(((char *)pstats) +
+			rte_idpf_stats_strings[i].offset);
+	}
+	return IDPF_NB_XSTATS;
+}
+
+static int idpf_dev_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
+				     struct rte_eth_xstat_name *xstats_names,
+				     __rte_unused unsigned int limit)
+{
+	unsigned int i;
+
+	if (xstats_names)
+		for (i = 0; i < IDPF_NB_XSTATS; i++) {
+			snprintf(xstats_names[i].name,
+				 sizeof(xstats_names[i].name),
+				 "%s", rte_idpf_stats_strings[i].name);
+		}
+	return IDPF_NB_XSTATS;
+}
+
+static int idpf_config_rss_hf(struct idpf_vport *vport, uint64_t rss_hf)
+{
+	uint64_t hena = 0;
+	uint16_t i;
+
+	/**
+	 * RTE_ETH_RSS_IPV4 and RTE_ETH_RSS_IPV6 can be considered as 2
+	 * generalizations of all other IPv4 and IPv6 RSS types.
+	 */
+	if (rss_hf & RTE_ETH_RSS_IPV4)
+		rss_hf |= idpf_ipv4_rss;
+
+	if (rss_hf & RTE_ETH_RSS_IPV6)
+		rss_hf |= idpf_ipv6_rss;
+
+	for (i = 0; i < RTE_DIM(idpf_map_hena_rss); i++) {
+		if (idpf_map_hena_rss[i] & rss_hf)
+			hena |= BIT_ULL(i);
+	}
+
+	/**
+	 * At present, cp doesn't process the virtual channel msg of rss_hf configuration,
+	 * tips are given below.
+	 */
+	if (hena != vport->rss_hf)
+		PMD_DRV_LOG(WARNING, "Updating RSS Hash Function is not supported at present.");
+
+	return 0;
 }
 
 static int
 idpf_init_rss(struct idpf_vport *vport)
 {
 	struct rte_eth_rss_conf *rss_conf;
-	uint16_t i, nb_q, lut_size;
+	struct rte_eth_dev_data *dev_data;
+	uint16_t i, nb_q;
 	int ret = 0;
 
-	rss_conf = &vport->dev_data->dev_conf.rx_adv_conf.rss_conf;
-	nb_q = vport->dev_data->nb_rx_queues;
-
-	vport->rss_key = rte_zmalloc("rss_key",
-				     vport->rss_key_size, 0);
-	if (vport->rss_key == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate RSS key");
-		ret = -ENOMEM;
-		goto err_alloc_key;
-	}
-
-	lut_size = vport->rss_lut_size;
-	vport->rss_lut = rte_zmalloc("rss_lut",
-				     sizeof(uint32_t) * lut_size, 0);
-	if (vport->rss_lut == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate RSS lut");
-		ret = -ENOMEM;
-		goto err_alloc_lut;
-	}
+	dev_data = vport->dev_data;
+	rss_conf = &dev_data->dev_conf.rx_adv_conf.rss_conf;
+	nb_q = dev_data->nb_rx_queues;
 
 	if (rss_conf->rss_key == NULL) {
 		for (i = 0; i < vport->rss_key_size; i++)
@@ -347,34 +432,203 @@ idpf_init_rss(struct idpf_vport *vport)
 	} else if (rss_conf->rss_key_len != vport->rss_key_size) {
 		PMD_INIT_LOG(ERR, "Invalid RSS key length in RSS configuration, should be %d",
 			     vport->rss_key_size);
-		ret = -EINVAL;
-		goto err_cfg_key;
+		return -EINVAL;
 	} else {
 		rte_memcpy(vport->rss_key, rss_conf->rss_key,
 			   vport->rss_key_size);
 	}
 
-	for (i = 0; i < lut_size; i++)
+	for (i = 0; i < vport->rss_lut_size; i++)
 		vport->rss_lut[i] = i % nb_q;
 
 	vport->rss_hf = IDPF_DEFAULT_RSS_HASH_EXPANDED;
 
-	ret = idpf_config_rss(vport);
-	if (ret != 0) {
+	ret = idpf_vport_rss_config(vport);
+	if (ret != 0)
 		PMD_INIT_LOG(ERR, "Failed to configure RSS");
-		goto err_cfg_key;
+
+	return ret;
+}
+
+static int
+idpf_rss_reta_update(struct rte_eth_dev *dev,
+		     struct rte_eth_rss_reta_entry64 *reta_conf,
+		     uint16_t reta_size)
+{
+	struct idpf_vport *vport = dev->data->dev_private;
+	struct idpf_adapter *adapter = vport->adapter;
+	uint16_t idx, shift;
+	int ret = 0;
+	uint16_t i;
+
+	if (adapter->caps.rss_caps == 0 || dev->data->nb_rx_queues == 0) {
+		PMD_DRV_LOG(DEBUG, "RSS is not supported");
+		return -ENOTSUP;
 	}
 
-	return ret;
+	if (reta_size != vport->rss_lut_size) {
+		PMD_DRV_LOG(ERR, "The size of hash lookup table configured "
+				 "(%d) doesn't match the number of hardware can "
+				 "support (%d)",
+			    reta_size, vport->rss_lut_size);
+		return -EINVAL;
+	}
 
-err_cfg_key:
-	rte_free(vport->rss_lut);
-	vport->rss_lut = NULL;
-err_alloc_lut:
-	rte_free(vport->rss_key);
-	vport->rss_key = NULL;
-err_alloc_key:
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
+		if (reta_conf[idx].mask & (1ULL << shift))
+			vport->rss_lut[i] = reta_conf[idx].reta[shift];
+	}
+
+	/* send virtchnl ops to configure RSS */
+	ret = idpf_vc_rss_lut_set(vport);
+	if (ret)
+		PMD_INIT_LOG(ERR, "Failed to configure RSS lut");
+
 	return ret;
+}
+
+static int
+idpf_rss_reta_query(struct rte_eth_dev *dev,
+		    struct rte_eth_rss_reta_entry64 *reta_conf,
+		    uint16_t reta_size)
+{
+	struct idpf_vport *vport = dev->data->dev_private;
+	struct idpf_adapter *adapter = vport->adapter;
+	uint16_t idx, shift;
+	int ret = 0;
+	uint16_t i;
+
+	if (adapter->caps.rss_caps == 0 || dev->data->nb_rx_queues == 0) {
+		PMD_DRV_LOG(DEBUG, "RSS is not supported");
+		return -ENOTSUP;
+	}
+
+	if (reta_size != vport->rss_lut_size) {
+		PMD_DRV_LOG(ERR, "The size of hash lookup table configured "
+			"(%d) doesn't match the number of hardware can "
+			"support (%d)", reta_size, vport->rss_lut_size);
+		return -EINVAL;
+	}
+
+	ret = idpf_vc_rss_lut_get(vport);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "Failed to get RSS LUT");
+		return ret;
+	}
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_ETH_RETA_GROUP_SIZE;
+		shift = i % RTE_ETH_RETA_GROUP_SIZE;
+		if (reta_conf[idx].mask & (1ULL << shift))
+			reta_conf[idx].reta[shift] = vport->rss_lut[i];
+	}
+
+	return 0;
+}
+
+static int
+idpf_rss_hash_update(struct rte_eth_dev *dev,
+		     struct rte_eth_rss_conf *rss_conf)
+{
+	struct idpf_vport *vport = dev->data->dev_private;
+	struct idpf_adapter *adapter = vport->adapter;
+	int ret = 0;
+
+	if (adapter->caps.rss_caps == 0 || dev->data->nb_rx_queues == 0) {
+		PMD_DRV_LOG(DEBUG, "RSS is not supported");
+		return -ENOTSUP;
+	}
+
+	if (!rss_conf->rss_key || rss_conf->rss_key_len == 0) {
+		PMD_DRV_LOG(DEBUG, "No key to be configured");
+		goto skip_rss_key;
+	} else if (rss_conf->rss_key_len != vport->rss_key_size) {
+		PMD_DRV_LOG(ERR, "The size of hash key configured "
+				 "(%d) doesn't match the size of hardware can "
+				 "support (%d)",
+			    rss_conf->rss_key_len,
+			    vport->rss_key_size);
+		return -EINVAL;
+	}
+
+	rte_memcpy(vport->rss_key, rss_conf->rss_key,
+		   vport->rss_key_size);
+	ret = idpf_vc_rss_key_set(vport);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to configure RSS key");
+		return ret;
+	}
+
+skip_rss_key:
+	ret = idpf_config_rss_hf(vport, rss_conf->rss_hf);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to configure RSS hash");
+		return ret;
+	}
+
+	return 0;
+}
+
+static uint64_t
+idpf_map_general_rss_hf(uint64_t config_rss_hf, uint64_t last_general_rss_hf)
+{
+	uint64_t valid_rss_hf = 0;
+	uint16_t i;
+
+	for (i = 0; i < RTE_DIM(idpf_map_hena_rss); i++) {
+		uint64_t bit = BIT_ULL(i);
+
+		if (bit & config_rss_hf)
+			valid_rss_hf |= idpf_map_hena_rss[i];
+	}
+
+	if (valid_rss_hf & idpf_ipv4_rss)
+		valid_rss_hf |= last_general_rss_hf & RTE_ETH_RSS_IPV4;
+
+	if (valid_rss_hf & idpf_ipv6_rss)
+		valid_rss_hf |= last_general_rss_hf & RTE_ETH_RSS_IPV6;
+
+	return valid_rss_hf;
+}
+
+static int
+idpf_rss_hash_conf_get(struct rte_eth_dev *dev,
+		       struct rte_eth_rss_conf *rss_conf)
+{
+	struct idpf_vport *vport = dev->data->dev_private;
+	struct idpf_adapter *adapter = vport->adapter;
+	int ret = 0;
+
+	if (adapter->caps.rss_caps == 0 || dev->data->nb_rx_queues == 0) {
+		PMD_DRV_LOG(DEBUG, "RSS is not supported");
+		return -ENOTSUP;
+	}
+
+	ret = idpf_vc_rss_hash_get(vport);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "Failed to get RSS hf");
+		return ret;
+	}
+
+	rss_conf->rss_hf = idpf_map_general_rss_hf(vport->rss_hf, vport->last_general_rss_hf);
+
+	if (!rss_conf->rss_key)
+		return 0;
+
+	ret = idpf_vc_rss_key_get(vport);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "Failed to get RSS key");
+		return ret;
+	}
+
+	if (rss_conf->rss_key_len > vport->rss_key_size)
+		rss_conf->rss_key_len = vport->rss_key_size;
+
+	rte_memcpy(rss_conf->rss_key, vport->rss_key, rss_conf->rss_key_len);
+
+	return 0;
 }
 
 static int
@@ -422,7 +676,7 @@ idpf_dev_configure(struct rte_eth_dev *dev)
 		return -ENOTSUP;
 	}
 
-	if (adapter->caps->rss_caps != 0 && dev->data->nb_rx_queues != 0) {
+	if (adapter->caps.rss_caps != 0 && dev->data->nb_rx_queues != 0) {
 		ret = idpf_init_rss(vport);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Failed to init rss");
@@ -433,6 +687,10 @@ idpf_dev_configure(struct rte_eth_dev *dev)
 		return -1;
 	}
 
+	vport->max_pkt_len =
+		(dev->data->mtu == 0) ? IDPF_DEFAULT_MTU : dev->data->mtu +
+		IDPF_ETH_OVERHEAD;
+
 	return 0;
 }
 
@@ -440,84 +698,9 @@ static int
 idpf_config_rx_queues_irqs(struct rte_eth_dev *dev)
 {
 	struct idpf_vport *vport = dev->data->dev_private;
-	struct idpf_adapter *adapter = vport->adapter;
-	struct virtchnl2_queue_vector *qv_map;
-	struct idpf_hw *hw = &adapter->hw;
-	uint32_t dynctl_reg_start;
-	uint32_t itrn_reg_start;
-	uint32_t dynctl_val, itrn_val;
-	uint16_t i;
+	uint16_t nb_rx_queues = dev->data->nb_rx_queues;
 
-	qv_map = rte_zmalloc("qv_map",
-			dev->data->nb_rx_queues *
-			sizeof(struct virtchnl2_queue_vector), 0);
-	if (qv_map == NULL) {
-		PMD_DRV_LOG(ERR, "Failed to allocate %d queue-vector map",
-			    dev->data->nb_rx_queues);
-		goto qv_map_alloc_err;
-	}
-
-	/* Rx interrupt disabled, Map interrupt only for writeback */
-
-	/* The capability flags adapter->caps->other_caps should be
-	 * compared with bit VIRTCHNL2_CAP_WB_ON_ITR here. The if
-	 * condition should be updated when the FW can return the
-	 * correct flag bits.
-	 */
-	dynctl_reg_start =
-		vport->recv_vectors->vchunks.vchunks->dynctl_reg_start;
-	itrn_reg_start =
-		vport->recv_vectors->vchunks.vchunks->itrn_reg_start;
-	dynctl_val = IDPF_READ_REG(hw, dynctl_reg_start);
-	PMD_DRV_LOG(DEBUG, "Value of dynctl_reg_start is 0x%x",
-		    dynctl_val);
-	itrn_val = IDPF_READ_REG(hw, itrn_reg_start);
-	PMD_DRV_LOG(DEBUG, "Value of itrn_reg_start is 0x%x", itrn_val);
-	/* Force write-backs by setting WB_ON_ITR bit in DYN_CTL
-	 * register. WB_ON_ITR and INTENA are mutually exclusive
-	 * bits. Setting WB_ON_ITR bits means TX and RX Descs
-	 * are written back based on ITR expiration irrespective
-	 * of INTENA setting.
-	 */
-	/* TBD: need to tune INTERVAL value for better performance. */
-	if (itrn_val != 0)
-		IDPF_WRITE_REG(hw,
-			       dynctl_reg_start,
-			       VIRTCHNL2_ITR_IDX_0  <<
-			       PF_GLINT_DYN_CTL_ITR_INDX_S |
-			       PF_GLINT_DYN_CTL_WB_ON_ITR_M |
-			       itrn_val <<
-			       PF_GLINT_DYN_CTL_INTERVAL_S);
-	else
-		IDPF_WRITE_REG(hw,
-			       dynctl_reg_start,
-			       VIRTCHNL2_ITR_IDX_0  <<
-			       PF_GLINT_DYN_CTL_ITR_INDX_S |
-			       PF_GLINT_DYN_CTL_WB_ON_ITR_M |
-			       IDPF_DFLT_INTERVAL <<
-			       PF_GLINT_DYN_CTL_INTERVAL_S);
-
-	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		/* map all queues to the same vector */
-		qv_map[i].queue_id = vport->chunks_info.rx_start_qid + i;
-		qv_map[i].vector_id =
-			vport->recv_vectors->vchunks.vchunks->start_vector_id;
-	}
-	vport->qv_map = qv_map;
-
-	if (idpf_vc_config_irq_map_unmap(vport, true) != 0) {
-		PMD_DRV_LOG(ERR, "config interrupt mapping failed");
-		goto config_irq_map_err;
-	}
-
-	return 0;
-
-config_irq_map_err:
-	rte_free(vport->qv_map);
-	vport->qv_map = NULL;
-
-qv_map_alloc_err:
-	return -1;
+	return idpf_vport_irq_map_config(vport, nb_rx_queues);
 }
 
 static int
@@ -557,61 +740,60 @@ static int
 idpf_dev_start(struct rte_eth_dev *dev)
 {
 	struct idpf_vport *vport = dev->data->dev_private;
-	struct idpf_adapter *adapter = vport->adapter;
-	uint16_t num_allocated_vectors =
-		adapter->caps->num_allocated_vectors;
+	struct idpf_adapter *base = vport->adapter;
+	struct idpf_adapter_ext *adapter = IDPF_ADAPTER_TO_EXT(base);
+	uint16_t num_allocated_vectors = base->caps.num_allocated_vectors;
 	uint16_t req_vecs_num;
 	int ret;
-
-	if (dev->data->mtu > vport->max_mtu) {
-		PMD_DRV_LOG(ERR, "MTU should be less than %d", vport->max_mtu);
-		ret = -EINVAL;
-		goto err_mtu;
-	}
-
-	vport->max_pkt_len = dev->data->mtu + IDPF_ETH_OVERHEAD;
 
 	req_vecs_num = IDPF_DFLT_Q_VEC_NUM;
 	if (req_vecs_num + adapter->used_vecs_num > num_allocated_vectors) {
 		PMD_DRV_LOG(ERR, "The accumulated request vectors' number should be less than %d",
 			    num_allocated_vectors);
 		ret = -EINVAL;
-		goto err_mtu;
+		goto err_vec;
 	}
 
-	ret = idpf_vc_alloc_vectors(vport, req_vecs_num);
+	ret = idpf_vc_vectors_alloc(vport, req_vecs_num);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "Failed to allocate interrupt vectors");
-		goto err_mtu;
+		goto err_vec;
 	}
 	adapter->used_vecs_num += req_vecs_num;
 
 	ret = idpf_config_rx_queues_irqs(dev);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "Failed to configure irqs");
-		goto err_mtu;
+		goto err_irq;
 	}
 
 	ret = idpf_start_queues(dev);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "Failed to start queues");
-		goto err_mtu;
+		goto err_startq;
 	}
 
 	idpf_set_rx_function(dev);
 	idpf_set_tx_function(dev);
 
-	ret = idpf_vc_ena_dis_vport(vport, true);
+	ret = idpf_vc_vport_ena_dis(vport, true);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "Failed to enable vport");
 		goto err_vport;
 	}
 
+	if (idpf_dev_stats_reset(dev))
+		PMD_DRV_LOG(ERR, "Failed to reset stats");
+
 	return 0;
 
 err_vport:
 	idpf_stop_queues(dev);
-err_mtu:
+err_startq:
+	idpf_vport_irq_unmap_config(vport, dev->data->nb_rx_queues);
+err_irq:
+	idpf_vc_vectors_dealloc(vport);
+err_vec:
 	return ret;
 }
 
@@ -623,14 +805,13 @@ idpf_dev_stop(struct rte_eth_dev *dev)
 	if (dev->data->dev_started == 0)
 		return 0;
 
-	idpf_vc_ena_dis_vport(vport, false);
+	idpf_vc_vport_ena_dis(vport, false);
 
 	idpf_stop_queues(dev);
 
-	idpf_vc_config_irq_map_unmap(vport, false);
+	idpf_vport_irq_unmap_config(vport, dev->data->nb_rx_queues);
 
-	if (vport->recv_vectors != NULL)
-		idpf_vc_dealloc_vectors(vport);
+	idpf_vc_vectors_dealloc(vport);
 
 	return 0;
 }
@@ -639,56 +820,74 @@ static int
 idpf_dev_close(struct rte_eth_dev *dev)
 {
 	struct idpf_vport *vport = dev->data->dev_private;
-	struct idpf_adapter *adapter = vport->adapter;
+	struct idpf_adapter_ext *adapter = IDPF_ADAPTER_TO_EXT(vport->adapter);
 
 	idpf_dev_stop(dev);
 
-	idpf_vc_destroy_vport(vport);
-
-	rte_free(vport->rss_lut);
-	vport->rss_lut = NULL;
-
-	rte_free(vport->rss_key);
-	vport->rss_key = NULL;
-
-	rte_free(vport->recv_vectors);
-	vport->recv_vectors = NULL;
-
-	rte_free(vport->qv_map);
-	vport->qv_map = NULL;
+	idpf_vport_deinit(vport);
 
 	adapter->cur_vports &= ~RTE_BIT32(vport->devarg_id);
-
-	rte_free(vport);
+	adapter->cur_vport_nb--;
 	dev->data->dev_private = NULL;
+	adapter->vports[vport->sw_idx] = NULL;
+	rte_free(vport);
 
 	return 0;
 }
 
+static const struct eth_dev_ops idpf_eth_dev_ops = {
+	.dev_configure			= idpf_dev_configure,
+	.dev_close			= idpf_dev_close,
+	.rx_queue_setup			= idpf_rx_queue_setup,
+	.tx_queue_setup			= idpf_tx_queue_setup,
+	.dev_infos_get			= idpf_dev_info_get,
+	.dev_start			= idpf_dev_start,
+	.dev_stop			= idpf_dev_stop,
+	.link_update			= idpf_dev_link_update,
+	.rx_queue_start			= idpf_rx_queue_start,
+	.tx_queue_start			= idpf_tx_queue_start,
+	.rx_queue_stop			= idpf_rx_queue_stop,
+	.tx_queue_stop			= idpf_tx_queue_stop,
+	.rx_queue_release		= idpf_dev_rx_queue_release,
+	.tx_queue_release		= idpf_dev_tx_queue_release,
+	.mtu_set			= idpf_dev_mtu_set,
+	.dev_supported_ptypes_get	= idpf_dev_supported_ptypes_get,
+	.stats_get			= idpf_dev_stats_get,
+	.stats_reset			= idpf_dev_stats_reset,
+	.reta_update			= idpf_rss_reta_update,
+	.reta_query			= idpf_rss_reta_query,
+	.rss_hash_update		= idpf_rss_hash_update,
+	.rss_hash_conf_get		= idpf_rss_hash_conf_get,
+	.xstats_get			= idpf_dev_xstats_get,
+	.xstats_get_names		= idpf_dev_xstats_get_names,
+	.xstats_reset			= idpf_dev_xstats_reset,
+};
+
 static int
-insert_value(struct idpf_adapter *adapter, uint16_t id)
+insert_value(struct idpf_devargs *devargs, uint16_t id)
 {
 	uint16_t i;
 
-	for (i = 0; i < adapter->req_vport_nb; i++) {
-		if (adapter->req_vports[i] == id)
+	/* ignore duplicate */
+	for (i = 0; i < devargs->req_vport_nb; i++) {
+		if (devargs->req_vports[i] == id)
 			return 0;
 	}
 
-	if (adapter->req_vport_nb >= RTE_DIM(adapter->req_vports)) {
+	if (devargs->req_vport_nb >= RTE_DIM(devargs->req_vports)) {
 		PMD_INIT_LOG(ERR, "Total vport number can't be > %d",
 			     IDPF_MAX_VPORT_NUM);
 		return -EINVAL;
 	}
 
-	adapter->req_vports[adapter->req_vport_nb] = id;
-	adapter->req_vport_nb++;
+	devargs->req_vports[devargs->req_vport_nb] = id;
+	devargs->req_vport_nb++;
 
 	return 0;
 }
 
 static const char *
-parse_range(const char *value, struct idpf_adapter *adapter)
+parse_range(const char *value, struct idpf_devargs *devargs)
 {
 	uint16_t lo, hi, i;
 	int n = 0;
@@ -699,13 +898,13 @@ parse_range(const char *value, struct idpf_adapter *adapter)
 	if (result == 1) {
 		if (lo >= IDPF_MAX_VPORT_NUM)
 			return NULL;
-		if (insert_value(adapter, lo) != 0)
+		if (insert_value(devargs, lo) != 0)
 			return NULL;
 	} else if (result == 2) {
 		if (lo > hi || hi >= IDPF_MAX_VPORT_NUM)
 			return NULL;
 		for (i = lo; i <= hi; i++) {
-			if (insert_value(adapter, i) != 0)
+			if (insert_value(devargs, i) != 0)
 				return NULL;
 		}
 	} else {
@@ -718,17 +917,16 @@ parse_range(const char *value, struct idpf_adapter *adapter)
 static int
 parse_vport(const char *key, const char *value, void *args)
 {
-	struct idpf_adapter *adapter = args;
+	struct idpf_devargs *devargs = args;
 	const char *pos = value;
-	int i;
 
-	adapter->req_vport_nb = 0;
+	devargs->req_vport_nb = 0;
 
 	if (*pos == '[')
 		pos++;
 
 	while (1) {
-		pos = parse_range(pos, adapter);
+		pos = parse_range(pos, devargs);
 		if (pos == NULL) {
 			PMD_INIT_LOG(ERR, "invalid value:\"%s\" for key:\"%s\", ",
 				     value, key);
@@ -743,24 +941,6 @@ parse_vport(const char *key, const char *value, void *args)
 		PMD_INIT_LOG(ERR, "invalid value:\"%s\" for key:\"%s\", ",
 			     value, key);
 		return -EINVAL;
-	}
-
-	if (adapter->cur_vport_nb + adapter->req_vport_nb >
-	    IDPF_MAX_VPORT_NUM) {
-		PMD_INIT_LOG(ERR, "Total vport number can't be > %d",
-			     IDPF_MAX_VPORT_NUM);
-		return -EINVAL;
-	}
-
-	for (i = 0; i < adapter->req_vport_nb; i++) {
-		if ((adapter->cur_vports & RTE_BIT32(adapter->req_vports[i])) == 0) {
-			adapter->cur_vports |= RTE_BIT32(adapter->req_vports[i]);
-			adapter->cur_vport_nb++;
-		} else {
-			PMD_INIT_LOG(ERR, "Vport %d has been created",
-				     adapter->req_vports[i]);
-			return -EINVAL;
-		}
 	}
 
 	return 0;
@@ -788,11 +968,14 @@ parse_bool(const char *key, const char *value, void *args)
 }
 
 static int
-idpf_parse_devargs(struct rte_pci_device *pci_dev, struct idpf_adapter *adapter)
+idpf_parse_devargs(struct rte_pci_device *pci_dev, struct idpf_adapter_ext *adapter,
+		   struct idpf_devargs *idpf_args)
 {
 	struct rte_devargs *devargs = pci_dev->device.devargs;
 	struct rte_kvargs *kvlist;
-	int ret;
+	int i, ret;
+
+	idpf_args->req_vport_nb = 0;
 
 	if (devargs == NULL)
 		return 0;
@@ -803,18 +986,36 @@ idpf_parse_devargs(struct rte_pci_device *pci_dev, struct idpf_adapter *adapter)
 		return -EINVAL;
 	}
 
+	/* check parsed devargs */
+	if (adapter->cur_vport_nb + idpf_args->req_vport_nb >
+	    IDPF_MAX_VPORT_NUM) {
+		PMD_INIT_LOG(ERR, "Total vport number can't be > %d",
+			     IDPF_MAX_VPORT_NUM);
+		ret = -EINVAL;
+		goto bail;
+	}
+
+	for (i = 0; i < idpf_args->req_vport_nb; i++) {
+		if (adapter->cur_vports & RTE_BIT32(idpf_args->req_vports[i])) {
+			PMD_INIT_LOG(ERR, "Vport %d has been created",
+				     idpf_args->req_vports[i]);
+			ret = -EINVAL;
+			goto bail;
+		}
+	}
+
 	ret = rte_kvargs_process(kvlist, IDPF_VPORT, &parse_vport,
-				 adapter);
+				 idpf_args);
 	if (ret != 0)
 		goto bail;
 
 	ret = rte_kvargs_process(kvlist, IDPF_TX_SINGLE_Q, &parse_bool,
-				 &adapter->txq_model);
+				 &adapter->base.is_tx_singleq);
 	if (ret != 0)
 		goto bail;
 
 	ret = rte_kvargs_process(kvlist, IDPF_RX_SINGLE_Q, &parse_bool,
-				 &adapter->rxq_model);
+				 &adapter->base.is_rx_singleq);
 	if (ret != 0)
 		goto bail;
 
@@ -823,179 +1024,194 @@ bail:
 	return ret;
 }
 
-static void
-idpf_reset_pf(struct idpf_hw *hw)
+static struct idpf_vport *
+idpf_find_vport(struct idpf_adapter_ext *adapter, uint32_t vport_id)
 {
-	uint32_t reg;
-
-	reg = IDPF_READ_REG(hw, PFGEN_CTRL);
-	IDPF_WRITE_REG(hw, PFGEN_CTRL, (reg | PFGEN_CTRL_PFSWR));
-}
-
-#define IDPF_RESET_WAIT_CNT 100
-static int
-idpf_check_pf_reset_done(struct idpf_hw *hw)
-{
-	uint32_t reg;
+	struct idpf_vport *vport = NULL;
 	int i;
 
-	for (i = 0; i < IDPF_RESET_WAIT_CNT; i++) {
-		reg = IDPF_READ_REG(hw, PFGEN_RSTAT);
-		if (reg != 0xFFFFFFFF && (reg & PFGEN_RSTAT_PFR_STATE_M))
-			return 0;
-		rte_delay_ms(1000);
+	for (i = 0; i < adapter->cur_vport_nb; i++) {
+		vport = adapter->vports[i];
+		if (vport->vport_id != vport_id)
+			continue;
+		else
+			return vport;
 	}
 
-	PMD_INIT_LOG(ERR, "IDPF reset timeout");
-	return -EBUSY;
+	return vport;
 }
 
-#define CTLQ_NUM 2
-static int
-idpf_init_mbx(struct idpf_hw *hw)
+static void
+idpf_handle_event_msg(struct idpf_vport *vport, uint8_t *msg, uint16_t msglen)
 {
-	struct idpf_ctlq_create_info ctlq_info[CTLQ_NUM] = {
-		{
-			.type = IDPF_CTLQ_TYPE_MAILBOX_TX,
-			.id = IDPF_CTLQ_ID,
-			.len = IDPF_CTLQ_LEN,
-			.buf_size = IDPF_DFLT_MBX_BUF_SIZE,
-			.reg = {
-				.head = PF_FW_ATQH,
-				.tail = PF_FW_ATQT,
-				.len = PF_FW_ATQLEN,
-				.bah = PF_FW_ATQBAH,
-				.bal = PF_FW_ATQBAL,
-				.len_mask = PF_FW_ATQLEN_ATQLEN_M,
-				.len_ena_mask = PF_FW_ATQLEN_ATQENABLE_M,
-				.head_mask = PF_FW_ATQH_ATQH_M,
-			}
-		},
-		{
-			.type = IDPF_CTLQ_TYPE_MAILBOX_RX,
-			.id = IDPF_CTLQ_ID,
-			.len = IDPF_CTLQ_LEN,
-			.buf_size = IDPF_DFLT_MBX_BUF_SIZE,
-			.reg = {
-				.head = PF_FW_ARQH,
-				.tail = PF_FW_ARQT,
-				.len = PF_FW_ARQLEN,
-				.bah = PF_FW_ARQBAH,
-				.bal = PF_FW_ARQBAL,
-				.len_mask = PF_FW_ARQLEN_ARQLEN_M,
-				.len_ena_mask = PF_FW_ARQLEN_ARQENABLE_M,
-				.head_mask = PF_FW_ARQH_ARQH_M,
-			}
-		}
-	};
-	struct idpf_ctlq_info *ctlq;
+	struct virtchnl2_event *vc_event = (struct virtchnl2_event *)msg;
+	struct rte_eth_dev_data *data = vport->dev_data;
+	struct rte_eth_dev *dev = &rte_eth_devices[data->port_id];
+
+	if (msglen < sizeof(struct virtchnl2_event)) {
+		PMD_DRV_LOG(ERR, "Error event");
+		return;
+	}
+
+	switch (vc_event->event) {
+	case VIRTCHNL2_EVENT_LINK_CHANGE:
+		PMD_DRV_LOG(DEBUG, "VIRTCHNL2_EVENT_LINK_CHANGE");
+		vport->link_up = !!(vc_event->link_status);
+		vport->link_speed = vc_event->link_speed;
+		idpf_dev_link_update(dev, 0);
+		break;
+	default:
+		PMD_DRV_LOG(ERR, " unknown event received %u", vc_event->event);
+		break;
+	}
+}
+
+static void
+idpf_handle_virtchnl_msg(struct idpf_adapter_ext *adapter_ex)
+{
+	struct idpf_adapter *adapter = &adapter_ex->base;
+	struct idpf_dma_mem *dma_mem = NULL;
+	struct idpf_hw *hw = &adapter->hw;
+	struct virtchnl2_event *vc_event;
+	struct idpf_ctlq_msg ctlq_msg;
+	enum idpf_mbx_opc mbx_op;
+	struct idpf_vport *vport;
+	uint16_t pending = 1;
+	uint32_t vc_op;
 	int ret;
 
-	ret = idpf_ctlq_init(hw, CTLQ_NUM, ctlq_info);
-	if (ret != 0)
-		return ret;
+	while (pending) {
+		ret = idpf_vc_ctlq_recv(hw->arq, &pending, &ctlq_msg);
+		if (ret) {
+			PMD_DRV_LOG(INFO, "Failed to read msg from virtual channel, ret: %d", ret);
+			return;
+		}
 
-	LIST_FOR_EACH_ENTRY_SAFE(ctlq, NULL, &hw->cq_list_head,
-				 struct idpf_ctlq_info, cq_list) {
-		if (ctlq->q_id == IDPF_CTLQ_ID &&
-		    ctlq->cq_type == IDPF_CTLQ_TYPE_MAILBOX_TX)
-			hw->asq = ctlq;
-		if (ctlq->q_id == IDPF_CTLQ_ID &&
-		    ctlq->cq_type == IDPF_CTLQ_TYPE_MAILBOX_RX)
-			hw->arq = ctlq;
+		rte_memcpy(adapter->mbx_resp, ctlq_msg.ctx.indirect.payload->va,
+			   IDPF_DFLT_MBX_BUF_SIZE);
+
+		mbx_op = rte_le_to_cpu_16(ctlq_msg.opcode);
+		vc_op = rte_le_to_cpu_32(ctlq_msg.cookie.mbx.chnl_opcode);
+		adapter->cmd_retval = rte_le_to_cpu_32(ctlq_msg.cookie.mbx.chnl_retval);
+
+		switch (mbx_op) {
+		case idpf_mbq_opc_send_msg_to_peer_pf:
+		case idpf_mbq_opc_send_msg_to_peer_drv:
+			if (vc_op == VIRTCHNL2_OP_EVENT) {
+				if (ctlq_msg.data_len < sizeof(struct virtchnl2_event)) {
+					PMD_DRV_LOG(ERR, "Error event");
+					return;
+				}
+				vc_event = (struct virtchnl2_event *)adapter->mbx_resp;
+				vport = idpf_find_vport(adapter_ex, vc_event->vport_id);
+				if (!vport) {
+					PMD_DRV_LOG(ERR, "Can't find vport.");
+					return;
+				}
+				idpf_handle_event_msg(vport, adapter->mbx_resp,
+						      ctlq_msg.data_len);
+			} else {
+				if (vc_op == adapter->pend_cmd)
+					notify_cmd(adapter, adapter->cmd_retval);
+				else
+					PMD_DRV_LOG(ERR, "command mismatch, expect %u, get %u",
+						    adapter->pend_cmd, vc_op);
+
+				PMD_DRV_LOG(DEBUG, " Virtual channel response is received,"
+					    "opcode = %d", vc_op);
+			}
+			goto post_buf;
+		default:
+			PMD_DRV_LOG(DEBUG, "Request %u is not supported yet", mbx_op);
+		}
 	}
 
-	if (hw->asq == NULL || hw->arq == NULL) {
-		idpf_ctlq_deinit(hw);
-		ret = -ENOENT;
-	}
+post_buf:
+	if (ctlq_msg.data_len)
+		dma_mem = ctlq_msg.ctx.indirect.payload;
+	else
+		pending = 0;
 
-	return ret;
+	ret = idpf_vc_ctlq_post_rx_buffs(hw, hw->arq, &pending, &dma_mem);
+	if (ret && dma_mem)
+		idpf_free_dma_mem(hw, dma_mem);
 }
 
-static int
-idpf_adapter_init(struct rte_pci_device *pci_dev, struct idpf_adapter *adapter)
+static void
+idpf_dev_alarm_handler(void *param)
 {
-	struct idpf_hw *hw = &adapter->hw;
+	struct idpf_adapter_ext *adapter = param;
+
+	idpf_handle_virtchnl_msg(adapter);
+
+	rte_eal_alarm_set(IDPF_ALARM_INTERVAL, idpf_dev_alarm_handler, adapter);
+}
+
+static struct virtchnl2_get_capabilities req_caps = {
+	.csum_caps =
+	VIRTCHNL2_CAP_TX_CSUM_L3_IPV4          |
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV4_TCP      |
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV4_UDP      |
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV4_SCTP     |
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_TCP      |
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_UDP      |
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_SCTP     |
+	VIRTCHNL2_CAP_TX_CSUM_GENERIC          |
+	VIRTCHNL2_CAP_RX_CSUM_L3_IPV4          |
+	VIRTCHNL2_CAP_RX_CSUM_L4_IPV4_TCP      |
+	VIRTCHNL2_CAP_RX_CSUM_L4_IPV4_UDP      |
+	VIRTCHNL2_CAP_RX_CSUM_L4_IPV4_SCTP     |
+	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_TCP      |
+	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_UDP      |
+	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_SCTP     |
+	VIRTCHNL2_CAP_RX_CSUM_GENERIC,
+
+	.rss_caps =
+	VIRTCHNL2_CAP_RSS_IPV4_TCP             |
+	VIRTCHNL2_CAP_RSS_IPV4_UDP             |
+	VIRTCHNL2_CAP_RSS_IPV4_SCTP            |
+	VIRTCHNL2_CAP_RSS_IPV4_OTHER           |
+	VIRTCHNL2_CAP_RSS_IPV6_TCP             |
+	VIRTCHNL2_CAP_RSS_IPV6_UDP             |
+	VIRTCHNL2_CAP_RSS_IPV6_SCTP            |
+	VIRTCHNL2_CAP_RSS_IPV6_OTHER           |
+	VIRTCHNL2_CAP_RSS_IPV4_AH              |
+	VIRTCHNL2_CAP_RSS_IPV4_ESP             |
+	VIRTCHNL2_CAP_RSS_IPV4_AH_ESP          |
+	VIRTCHNL2_CAP_RSS_IPV6_AH              |
+	VIRTCHNL2_CAP_RSS_IPV6_ESP             |
+	VIRTCHNL2_CAP_RSS_IPV6_AH_ESP,
+
+	.other_caps = VIRTCHNL2_CAP_WB_ON_ITR
+};
+
+static int
+idpf_adapter_ext_init(struct rte_pci_device *pci_dev, struct idpf_adapter_ext *adapter)
+{
+	struct idpf_adapter *base = &adapter->base;
+	struct idpf_hw *hw = &base->hw;
 	int ret = 0;
 
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 	hw->hw_addr_len = pci_dev->mem_resource[0].len;
-	hw->back = adapter;
+	hw->back = base;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	hw->device_id = pci_dev->id.device_id;
 	hw->subsystem_vendor_id = pci_dev->id.subsystem_vendor_id;
 
 	strncpy(adapter->name, pci_dev->device.name, PCI_PRI_STR_SIZE);
 
-	idpf_reset_pf(hw);
-	ret = idpf_check_pf_reset_done(hw);
+	rte_memcpy(&base->caps, &req_caps, sizeof(struct virtchnl2_get_capabilities));
+
+	ret = idpf_adapter_init(base);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "IDPF is still resetting");
-		goto err;
+		PMD_INIT_LOG(ERR, "Failed to init adapter");
+		goto err_adapter_init;
 	}
 
-	ret = idpf_init_mbx(hw);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to init mailbox");
-		goto err;
-	}
+	rte_eal_alarm_set(IDPF_ALARM_INTERVAL, idpf_dev_alarm_handler, adapter);
 
-	adapter->mbx_resp = rte_zmalloc("idpf_adapter_mbx_resp",
-					IDPF_DFLT_MBX_BUF_SIZE, 0);
-	if (adapter->mbx_resp == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate idpf_adapter_mbx_resp memory");
-		ret = -ENOMEM;
-		goto err_mbx;
-	}
-
-	ret = idpf_vc_check_api_version(adapter);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to check api version");
-		goto err_api;
-	}
-
-	ret = idpf_get_pkt_type(adapter);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to set ptype table");
-		goto err_api;
-	}
-
-	adapter->caps = rte_zmalloc("idpf_caps",
-				sizeof(struct virtchnl2_get_capabilities), 0);
-	if (adapter->caps == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate idpf_caps memory");
-		ret = -ENOMEM;
-		goto err_api;
-	}
-
-	ret = idpf_vc_get_caps(adapter);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to get capabilities");
-		goto err_caps;
-	}
-
-	adapter->max_vport_nb = adapter->caps->max_vports;
-
-	adapter->vport_req_info = rte_zmalloc("vport_req_info",
-					      adapter->max_vport_nb *
-					      sizeof(*adapter->vport_req_info),
-					      0);
-	if (adapter->vport_req_info == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate vport_req_info memory");
-		ret = -ENOMEM;
-		goto err_caps;
-	}
-
-	adapter->vport_recv_info = rte_zmalloc("vport_recv_info",
-					       adapter->max_vport_nb *
-					       sizeof(*adapter->vport_recv_info),
-					       0);
-	if (adapter->vport_recv_info == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate vport_recv_info memory");
-		ret = -ENOMEM;
-		goto err_vport_recv_info;
-	}
+	adapter->max_vport_nb = adapter->base.caps.max_vports;
 
 	adapter->vports = rte_zmalloc("vports",
 				      adapter->max_vport_nb *
@@ -1004,15 +1220,8 @@ idpf_adapter_init(struct rte_pci_device *pci_dev, struct idpf_adapter *adapter)
 	if (adapter->vports == NULL) {
 		PMD_INIT_LOG(ERR, "Failed to allocate vports memory");
 		ret = -ENOMEM;
-		goto err_vports;
+		goto err_vports_alloc;
 	}
-
-	adapter->max_rxq_per_msg = (IDPF_DFLT_MBX_BUF_SIZE -
-				sizeof(struct virtchnl2_config_rx_queues)) /
-				sizeof(struct virtchnl2_rxq_info);
-	adapter->max_txq_per_msg = (IDPF_DFLT_MBX_BUF_SIZE -
-				sizeof(struct virtchnl2_config_tx_queues)) /
-				sizeof(struct virtchnl2_txq_info);
 
 	adapter->cur_vports = 0;
 	adapter->cur_vport_nb = 0;
@@ -1021,55 +1230,25 @@ idpf_adapter_init(struct rte_pci_device *pci_dev, struct idpf_adapter *adapter)
 
 	return ret;
 
-err_vports:
-	rte_free(adapter->vport_recv_info);
-	adapter->vport_recv_info = NULL;
-err_vport_recv_info:
-	rte_free(adapter->vport_req_info);
-	adapter->vport_req_info = NULL;
-err_caps:
-	rte_free(adapter->caps);
-	adapter->caps = NULL;
-err_api:
-	rte_free(adapter->mbx_resp);
-	adapter->mbx_resp = NULL;
-err_mbx:
-	idpf_ctlq_deinit(hw);
-err:
+err_vports_alloc:
+	rte_eal_alarm_cancel(idpf_dev_alarm_handler, adapter);
+	idpf_adapter_deinit(base);
+err_adapter_init:
 	return ret;
 }
 
-static const struct eth_dev_ops idpf_eth_dev_ops = {
-	.dev_configure			= idpf_dev_configure,
-	.dev_close			= idpf_dev_close,
-	.rx_queue_setup			= idpf_rx_queue_setup,
-	.tx_queue_setup			= idpf_tx_queue_setup,
-	.dev_infos_get			= idpf_dev_info_get,
-	.dev_start			= idpf_dev_start,
-	.dev_stop			= idpf_dev_stop,
-	.link_update			= idpf_dev_link_update,
-	.rx_queue_start			= idpf_rx_queue_start,
-	.tx_queue_start			= idpf_tx_queue_start,
-	.rx_queue_stop			= idpf_rx_queue_stop,
-	.tx_queue_stop			= idpf_tx_queue_stop,
-	.rx_queue_release		= idpf_dev_rx_queue_release,
-	.tx_queue_release		= idpf_dev_tx_queue_release,
-	.mtu_set			= idpf_dev_mtu_set,
-	.dev_supported_ptypes_get	= idpf_dev_supported_ptypes_get,
-};
-
 static uint16_t
-idpf_get_vport_idx(struct idpf_vport **vports, uint16_t max_vport_nb)
+idpf_vport_idx_alloc(struct idpf_adapter_ext *ad)
 {
 	uint16_t vport_idx;
 	uint16_t i;
 
-	for (i = 0; i < max_vport_nb; i++) {
-		if (vports[i] == NULL)
+	for (i = 0; i < ad->max_vport_nb; i++) {
+		if (ad->vports[i] == NULL)
 			break;
 	}
 
-	if (i == max_vport_nb)
+	if (i == ad->max_vport_nb)
 		vport_idx = IDPF_INVALID_VPORT_IDX;
 	else
 		vport_idx = i;
@@ -1078,65 +1257,66 @@ idpf_get_vport_idx(struct idpf_vport **vports, uint16_t max_vport_nb)
 }
 
 static int
-idpf_dev_init(struct rte_eth_dev *dev, void *init_params)
+idpf_dev_vport_init(struct rte_eth_dev *dev, void *init_params)
 {
 	struct idpf_vport *vport = dev->data->dev_private;
-	struct idpf_adapter *adapter = init_params;
+	struct idpf_vport_param *param = init_params;
+	struct idpf_adapter_ext *adapter = param->adapter;
+	/* for sending create vport virtchnl msg prepare */
+	struct virtchnl2_create_vport create_vport_info;
 	int ret = 0;
 
 	dev->dev_ops = &idpf_eth_dev_ops;
-	vport->adapter = adapter;
+	vport->adapter = &adapter->base;
+	vport->sw_idx = param->idx;
+	vport->devarg_id = param->devarg_id;
 
-	ret = idpf_init_vport_req_info(dev);
+	memset(&create_vport_info, 0, sizeof(create_vport_info));
+	ret = idpf_vport_info_init(vport, &create_vport_info);
 	if (ret != 0) {
 		PMD_INIT_LOG(ERR, "Failed to init vport req_info.");
 		goto err;
 	}
 
-	ret = idpf_vc_create_vport(adapter);
-	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to create vport.");
-		goto err_create_vport;
-	}
-
-	ret = idpf_init_vport(dev);
+	ret = idpf_vport_init(vport, &create_vport_info, dev->data);
 	if (ret != 0) {
 		PMD_INIT_LOG(ERR, "Failed to init vports.");
-		goto err_init_vport;
+		goto err;
 	}
-
-	adapter->cur_vport_idx = idpf_get_vport_idx(adapter->vports,
-						    adapter->max_vport_nb);
 
 	dev->data->mac_addrs = rte_zmalloc(NULL, RTE_ETHER_ADDR_LEN, 0);
 	if (dev->data->mac_addrs == NULL) {
 		PMD_INIT_LOG(ERR, "Cannot allocate mac_addr memory.");
 		ret = -ENOMEM;
-		goto err_init_vport;
+		goto err_mac_addrs;
 	}
 
 	rte_ether_addr_copy((struct rte_ether_addr *)vport->default_mac_addr,
 			    &dev->data->mac_addrs[0]);
 
+	adapter->vports[param->idx] = vport;
+	adapter->cur_vports |= RTE_BIT32(param->devarg_id);
+	adapter->cur_vport_nb++;
+
 	return 0;
 
-err_init_vport:
-	idpf_vc_destroy_vport(vport);
-err_create_vport:
-	rte_free(vport->adapter->vport_req_info[vport->adapter->cur_vport_idx]);
+err_mac_addrs:
+	adapter->vports[param->idx] = NULL;  /* reset */
+	idpf_vport_deinit(vport);
 err:
 	return ret;
 }
 
 static const struct rte_pci_id pci_id_idpf_map[] = {
 	{ RTE_PCI_DEVICE(IDPF_INTEL_VENDOR_ID, IDPF_DEV_ID_PF) },
+	{ RTE_PCI_DEVICE(IDPF_INTEL_VENDOR_ID, IDPF_DEV_ID_SRIOV) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
-struct idpf_adapter *
-idpf_find_adapter(struct rte_pci_device *pci_dev)
+static struct idpf_adapter_ext *
+idpf_find_adapter_ext(struct rte_pci_device *pci_dev)
 {
-	struct idpf_adapter *adapter;
+	struct idpf_adapter_ext *adapter;
 	int found = 0;
 
 	if (pci_dev == NULL)
@@ -1158,36 +1338,10 @@ idpf_find_adapter(struct rte_pci_device *pci_dev)
 }
 
 static void
-idpf_adapter_rel(struct idpf_adapter *adapter)
+idpf_adapter_ext_deinit(struct idpf_adapter_ext *adapter)
 {
-	struct idpf_hw *hw = &adapter->hw;
-	int i;
-
-	idpf_ctlq_deinit(hw);
-
-	rte_free(adapter->caps);
-	adapter->caps = NULL;
-
-	rte_free(adapter->mbx_resp);
-	adapter->mbx_resp = NULL;
-
-	if (adapter->vport_req_info != NULL) {
-		for (i = 0; i < adapter->max_vport_nb; i++) {
-			rte_free(adapter->vport_req_info[i]);
-			adapter->vport_req_info[i] = NULL;
-		}
-		rte_free(adapter->vport_req_info);
-		adapter->vport_req_info = NULL;
-	}
-
-	if (adapter->vport_recv_info != NULL) {
-		for (i = 0; i < adapter->max_vport_nb; i++) {
-			rte_free(adapter->vport_recv_info[i]);
-			adapter->vport_recv_info[i] = NULL;
-		}
-		rte_free(adapter->vport_recv_info);
-		adapter->vport_recv_info = NULL;
-	}
+	rte_eal_alarm_cancel(idpf_dev_alarm_handler, adapter);
+	idpf_adapter_deinit(&adapter->base);
 
 	rte_free(adapter->vports);
 	adapter->vports = NULL;
@@ -1197,7 +1351,9 @@ static int
 idpf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	       struct rte_pci_device *pci_dev)
 {
-	struct idpf_adapter *adapter;
+	struct idpf_vport_param vport_param;
+	struct idpf_adapter_ext *adapter;
+	struct idpf_devargs devargs;
 	char name[RTE_ETH_NAME_MAX_LEN];
 	int i, retval;
 	bool first_probe = false;
@@ -1208,17 +1364,17 @@ idpf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		idpf_adapter_list_init = true;
 	}
 
-	adapter = idpf_find_adapter(pci_dev);
+	adapter = idpf_find_adapter_ext(pci_dev);
 	if (adapter == NULL) {
 		first_probe = true;
-		adapter = rte_zmalloc("idpf_adapter",
-						sizeof(struct idpf_adapter), 0);
+		adapter = rte_zmalloc("idpf_adapter_ext",
+				      sizeof(struct idpf_adapter_ext), 0);
 		if (adapter == NULL) {
 			PMD_INIT_LOG(ERR, "Failed to allocate adapter.");
 			return -ENOMEM;
 		}
 
-		retval = idpf_adapter_init(pci_dev, adapter);
+		retval = idpf_adapter_ext_init(pci_dev, adapter);
 		if (retval != 0) {
 			PMD_INIT_LOG(ERR, "Failed to init adapter.");
 			return retval;
@@ -1229,36 +1385,48 @@ idpf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_spinlock_unlock(&idpf_adapter_lock);
 	}
 
-	retval = idpf_parse_devargs(pci_dev, adapter);
+	retval = idpf_parse_devargs(pci_dev, adapter, &devargs);
 	if (retval != 0) {
 		PMD_INIT_LOG(ERR, "Failed to parse private devargs");
 		goto err;
 	}
 
-	if (adapter->req_vport_nb == 0) {
+	if (devargs.req_vport_nb == 0) {
 		/* If no vport devarg, create vport 0 by default. */
+		vport_param.adapter = adapter;
+		vport_param.devarg_id = 0;
+		vport_param.idx = idpf_vport_idx_alloc(adapter);
+		if (vport_param.idx == IDPF_INVALID_VPORT_IDX) {
+			PMD_INIT_LOG(ERR, "No space for vport %u", vport_param.devarg_id);
+			return 0;
+		}
 		snprintf(name, sizeof(name), "idpf_%s_vport_0",
 			 pci_dev->device.name);
 		retval = rte_eth_dev_create(&pci_dev->device, name,
 					    sizeof(struct idpf_vport),
-					    NULL, NULL, idpf_dev_init,
-					    adapter);
+					    NULL, NULL, idpf_dev_vport_init,
+					    &vport_param);
 		if (retval != 0)
 			PMD_DRV_LOG(ERR, "Failed to create default vport 0");
-		adapter->cur_vports |= RTE_BIT32(0);
-		adapter->cur_vport_nb++;
 	} else {
-		for (i = 0; i < adapter->req_vport_nb; i++) {
+		for (i = 0; i < devargs.req_vport_nb; i++) {
+			vport_param.adapter = adapter;
+			vport_param.devarg_id = devargs.req_vports[i];
+			vport_param.idx = idpf_vport_idx_alloc(adapter);
+			if (vport_param.idx == IDPF_INVALID_VPORT_IDX) {
+				PMD_INIT_LOG(ERR, "No space for vport %u", vport_param.devarg_id);
+				break;
+			}
 			snprintf(name, sizeof(name), "idpf_%s_vport_%d",
 				 pci_dev->device.name,
-				 adapter->req_vports[i]);
+				 devargs.req_vports[i]);
 			retval = rte_eth_dev_create(&pci_dev->device, name,
 						    sizeof(struct idpf_vport),
-						    NULL, NULL, idpf_dev_init,
-						    adapter);
+						    NULL, NULL, idpf_dev_vport_init,
+						    &vport_param);
 			if (retval != 0)
 				PMD_DRV_LOG(ERR, "Failed to create vport %d",
-					    adapter->req_vports[i]);
+					    vport_param.devarg_id);
 		}
 	}
 
@@ -1269,7 +1437,7 @@ err:
 		rte_spinlock_lock(&idpf_adapter_lock);
 		TAILQ_REMOVE(&idpf_adapter_list, adapter, next);
 		rte_spinlock_unlock(&idpf_adapter_lock);
-		idpf_adapter_rel(adapter);
+		idpf_adapter_ext_deinit(adapter);
 		rte_free(adapter);
 	}
 	return retval;
@@ -1278,7 +1446,7 @@ err:
 static int
 idpf_pci_remove(struct rte_pci_device *pci_dev)
 {
-	struct idpf_adapter *adapter = idpf_find_adapter(pci_dev);
+	struct idpf_adapter_ext *adapter = idpf_find_adapter_ext(pci_dev);
 	uint16_t port_id;
 
 	/* Ethdev created can be found RTE_ETH_FOREACH_DEV_OF through rte_device */
@@ -1289,7 +1457,7 @@ idpf_pci_remove(struct rte_pci_device *pci_dev)
 	rte_spinlock_lock(&idpf_adapter_lock);
 	TAILQ_REMOVE(&idpf_adapter_list, adapter, next);
 	rte_spinlock_unlock(&idpf_adapter_lock);
-	idpf_adapter_rel(adapter);
+	idpf_adapter_ext_deinit(adapter);
 	rte_free(adapter);
 
 	return 0;
@@ -1311,9 +1479,9 @@ RTE_PMD_REGISTER_PCI(net_idpf, rte_idpf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_idpf, pci_id_idpf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_idpf, "* igb_uio | vfio-pci");
 RTE_PMD_REGISTER_PARAM_STRING(net_idpf,
-			      IDPF_TX_SINGLE_Q "=<0|1> "
-			      IDPF_RX_SINGLE_Q "=<0|1> "
-			      IDPF_VPORT "=[vport_set0,[vport_set1],...]");
+	IDPF_TX_SINGLE_Q "=<0|1> "
+	IDPF_RX_SINGLE_Q "=<0|1> "
+	IDPF_VPORT "=[<begin>[-<end>][,<begin >[-<end>]][, ... ]]");
 
 RTE_LOG_REGISTER_SUFFIX(idpf_logtype_init, init, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(idpf_logtype_driver, driver, NOTICE);

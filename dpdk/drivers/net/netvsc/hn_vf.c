@@ -239,7 +239,7 @@ int hn_vf_add(struct rte_eth_dev *dev, struct hn_data *hv)
 
 	port = hv->vf_ctx.vf_port;
 
-	/* If the primary device has started, this is a VF host add.
+	/* If the primary device has started, this is a VF hot add.
 	 * Configure and start VF device.
 	 */
 	if (dev->data->dev_started) {
@@ -261,6 +261,12 @@ int hn_vf_add(struct rte_eth_dev *dev, struct hn_data *hv)
 			PMD_DRV_LOG(ERR,
 				    "Failed to configure VF queues port %d",
 				    port);
+			goto exit;
+		}
+
+		ret = rte_eth_dev_set_mtu(port, dev->data->mtu);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "Failed to set VF MTU");
 			goto exit;
 		}
 
@@ -534,11 +540,6 @@ int hn_vf_stop(struct rte_eth_dev *dev)
 		return ret;					\
 	}
 
-void hn_vf_reset(struct rte_eth_dev *dev)
-{
-	VF_ETHDEV_FUNC(dev, rte_eth_dev_reset);
-}
-
 int hn_vf_close(struct rte_eth_dev *dev)
 {
 	int ret = 0;
@@ -779,6 +780,21 @@ int hn_vf_reta_hash_update(struct rte_eth_dev *dev,
 	if (vf_dev && vf_dev->dev_ops->reta_update)
 		ret = vf_dev->dev_ops->reta_update(vf_dev,
 						   reta_conf, reta_size);
+	rte_rwlock_read_unlock(&hv->vf_lock);
+
+	return ret;
+}
+
+int hn_vf_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
+{
+	struct hn_data *hv = dev->data->dev_private;
+	struct rte_eth_dev *vf_dev;
+	int ret = 0;
+
+	rte_rwlock_read_lock(&hv->vf_lock);
+	vf_dev = hn_get_vf_dev(hv);
+	if (hv->vf_ctx.vf_vsc_switched && vf_dev)
+		ret = rte_eth_dev_set_mtu(vf_dev->data->port_id, mtu);
 	rte_rwlock_read_unlock(&hv->vf_lock);
 
 	return ret;

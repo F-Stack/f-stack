@@ -5,7 +5,19 @@
 #ifndef _ROC_NPA_H_
 #define _ROC_NPA_H_
 
-#define ROC_AURA_ID_MASK       (BIT_ULL(16) - 1)
+#include <stdint.h>
+
+#include "hw/npa.h"
+
+#include "roc_bits.h"
+#include "roc_constants.h"
+#if defined(__aarch64__)
+#include "roc_io.h"
+#else
+#include "roc_io_generic.h"
+#endif
+#include "roc_npa_dp.h"
+
 #define ROC_AURA_OP_LIMIT_MASK (BIT_ULL(36) - 1)
 
 #define ROC_NPA_MAX_BLOCK_SZ		   (128 * 1024)
@@ -40,18 +52,6 @@ roc_npa_aura_handle_gen(uint32_t aura_id, uintptr_t addr)
 }
 
 static inline uint64_t
-roc_npa_aura_handle_to_aura(uint64_t aura_handle)
-{
-	return aura_handle & ROC_AURA_ID_MASK;
-}
-
-static inline uintptr_t
-roc_npa_aura_handle_to_base(uint64_t aura_handle)
-{
-	return (uintptr_t)(aura_handle & ~ROC_AURA_ID_MASK);
-}
-
-static inline uint64_t
 roc_npa_aura_op_alloc(uint64_t aura_handle, const int drop)
 {
 	uint64_t wdata = roc_npa_aura_handle_to_aura(aura_handle);
@@ -63,18 +63,6 @@ roc_npa_aura_op_alloc(uint64_t aura_handle, const int drop)
 	addr = (int64_t *)(roc_npa_aura_handle_to_base(aura_handle) +
 			   NPA_LF_AURA_OP_ALLOCX(0));
 	return roc_atomic64_add_nosync(wdata, addr);
-}
-
-static inline void
-roc_npa_aura_op_free(uint64_t aura_handle, const int fabs, uint64_t iova)
-{
-	uint64_t reg = roc_npa_aura_handle_to_aura(aura_handle);
-	const uint64_t addr =
-		roc_npa_aura_handle_to_base(aura_handle) + NPA_LF_AURA_OP_FREE0;
-	if (fabs)
-		reg |= BIT_ULL(63); /* FABS */
-
-	roc_store_pair(iova, reg, addr);
 }
 
 static inline uint64_t
@@ -221,7 +209,6 @@ roc_npa_aura_batch_alloc_issue(uint64_t aura_handle, uint64_t *buf,
 			       unsigned int num, const int dis_wait,
 			       const int drop)
 {
-	unsigned int i;
 	int64_t *addr;
 	uint64_t res;
 	union {
@@ -231,10 +218,6 @@ roc_npa_aura_batch_alloc_issue(uint64_t aura_handle, uint64_t *buf,
 
 	if (num > ROC_CN10K_NPA_BATCH_ALLOC_MAX_PTRS)
 		return -1;
-
-	/* Zero first word of every cache line */
-	for (i = 0; i < num; i += (ROC_ALIGN / sizeof(uint64_t)))
-		buf[i] = 0;
 
 	addr = (int64_t *)(roc_npa_aura_handle_to_base(aura_handle) +
 			   NPA_LF_AURA_BATCH_ALLOC);
@@ -252,6 +235,9 @@ roc_npa_aura_batch_alloc_issue(uint64_t aura_handle, uint64_t *buf,
 	return 0;
 }
 
+/*
+ * Wait for a batch alloc operation on a cache line to complete.
+ */
 static inline void
 roc_npa_batch_alloc_wait(uint64_t *cache_line, unsigned int wait_us)
 {
@@ -267,6 +253,23 @@ roc_npa_batch_alloc_wait(uint64_t *cache_line, unsigned int wait_us)
 			break;
 }
 
+/*
+ * Count the number of pointers in a single batch alloc cache line.
+ */
+static inline unsigned int
+roc_npa_aura_batch_alloc_count_line(uint64_t *line, unsigned int wait_us)
+{
+	struct npa_batch_alloc_status_s *status;
+
+	status = (struct npa_batch_alloc_status_s *)line;
+	roc_npa_batch_alloc_wait(line, wait_us);
+
+	return status->count;
+}
+
+/*
+ * Count the number of pointers in a sequence of batch alloc cache lines.
+ */
 static inline unsigned int
 roc_npa_aura_batch_alloc_count(uint64_t *aligned_buf, unsigned int num,
 			       unsigned int wait_us)
@@ -291,6 +294,40 @@ roc_npa_aura_batch_alloc_count(uint64_t *aligned_buf, unsigned int num,
 	return count;
 }
 
+/*
+ * Extract allocated pointers from a single batch alloc cache line. This api
+ * only extracts the required number of pointers from the cache line and it
+ * adjusts the statsus->count so that a subsequent call to this api can
+ * extract the remaining pointers in the cache line appropriately.
+ */
+static inline unsigned int
+roc_npa_aura_batch_alloc_extract_line(uint64_t *buf, uint64_t *line,
+				      unsigned int num, unsigned int *rem)
+{
+	struct npa_batch_alloc_status_s *status;
+	unsigned int avail;
+
+	status = (struct npa_batch_alloc_status_s *)line;
+	roc_npa_batch_alloc_wait(line, 0);
+	avail = status->count;
+	num = avail > num ? num : avail;
+	if (num)
+		memcpy(buf, &line[avail - num], num * sizeof(uint64_t));
+	avail -= num;
+	if (avail == 0) {
+		/* Clear the lowest 7 bits of the first pointer */
+		buf[0] &= ~0x7FUL;
+		status->ccode = 0;
+	}
+	status->count = avail;
+	*rem = avail;
+
+	return num;
+}
+
+/*
+ * Extract all allocated pointers from a sequence of batch alloc cache lines.
+ */
 static inline unsigned int
 roc_npa_aura_batch_alloc_extract(uint64_t *buf, uint64_t *aligned_buf,
 				 unsigned int num)
@@ -342,11 +379,15 @@ roc_npa_aura_op_bulk_free(uint64_t aura_handle, uint64_t const *buf,
 	}
 }
 
+/*
+ * Issue a batch alloc operation on a sequence of cache lines, wait for the
+ * batch alloc to complete and copy the pointers out into the user buffer.
+ */
 static inline unsigned int
 roc_npa_aura_op_batch_alloc(uint64_t aura_handle, uint64_t *buf,
-			    uint64_t *aligned_buf, unsigned int num,
-			    const int dis_wait, const int drop,
-			    const int partial)
+			    unsigned int num, uint64_t *aligned_buf,
+			    unsigned int aligned_buf_sz, const int dis_wait,
+			    const int drop, const int partial)
 {
 	unsigned int count, chunk, num_alloc;
 
@@ -356,9 +397,12 @@ roc_npa_aura_op_batch_alloc(uint64_t aura_handle, uint64_t *buf,
 
 	count = 0;
 	while (num) {
-		chunk = (num > ROC_CN10K_NPA_BATCH_ALLOC_MAX_PTRS) ?
-				      ROC_CN10K_NPA_BATCH_ALLOC_MAX_PTRS :
-				      num;
+		/* Make sure that the pointers allocated fit into the cache
+		 * lines reserved.
+		 */
+		chunk = aligned_buf_sz / sizeof(uint64_t);
+		chunk = PLT_MIN(num, chunk);
+		chunk = PLT_MIN((int)chunk, ROC_CN10K_NPA_BATCH_ALLOC_MAX_PTRS);
 
 		if (roc_npa_aura_batch_alloc_issue(aura_handle, aligned_buf,
 						   chunk, dis_wait, drop))
@@ -747,10 +791,22 @@ int __roc_api roc_npa_pool_range_update_check(uint64_t aura_handle);
 void __roc_api roc_npa_aura_op_range_set(uint64_t aura_handle,
 					 uint64_t start_iova,
 					 uint64_t end_iova);
+void __roc_api roc_npa_aura_op_range_get(uint64_t aura_handle,
+					 uint64_t *start_iova,
+					 uint64_t *end_iova);
+void __roc_api roc_npa_pool_op_range_set(uint64_t aura_handle,
+					 uint64_t start_iova,
+					 uint64_t end_iova);
+int __roc_api roc_npa_aura_create(uint64_t *aura_handle, uint32_t block_count,
+				  struct npa_aura_s *aura, int pool_id,
+				  uint32_t flags);
+int __roc_api roc_npa_aura_destroy(uint64_t aura_handle);
 uint64_t __roc_api roc_npa_zero_aura_handle(void);
 int __roc_api roc_npa_buf_type_update(uint64_t aura_handle, enum roc_npa_buf_type type, int cnt);
 uint64_t __roc_api roc_npa_buf_type_mask(uint64_t aura_handle);
 uint64_t __roc_api roc_npa_buf_type_limit_get(uint64_t type_mask);
+int __roc_api roc_npa_aura_bp_configure(uint64_t aura_id, uint16_t bpid, uint8_t bp_intf,
+					uint8_t bp_thresh, bool enable);
 
 /* Init callbacks */
 typedef int (*roc_npa_lf_init_cb_t)(struct plt_pci_device *pci_dev);
@@ -765,5 +821,8 @@ int __roc_api roc_npa_pool_op_pc_reset(uint64_t aura_handle);
 
 int __roc_api roc_npa_aura_drop_set(uint64_t aura_handle, uint64_t limit,
 				    bool ena);
+
+void __roc_api roc_npa_dev_lock(void);
+void __roc_api roc_npa_dev_unlock(void);
 
 #endif /* _ROC_NPA_H_ */

@@ -81,8 +81,8 @@ __list_lookup(struct mlx5_list_inconst *l_inconst,
 	while (entry != NULL) {
 		if (l_const->cb_match(l_const->ctx, entry, ctx) == 0) {
 			if (reuse) {
-				ret = __atomic_add_fetch(&entry->ref_cnt, 1,
-							 __ATOMIC_RELAXED) - 1;
+				ret = __atomic_fetch_add(&entry->ref_cnt, 1,
+							 __ATOMIC_RELAXED);
 				DRV_LOG(DEBUG, "mlx5 list %s entry %p ref: %u.",
 					l_const->name, (void *)entry,
 					entry->ref_cnt);
@@ -217,7 +217,7 @@ _mlx5_list_register(struct mlx5_list_inconst *l_inconst,
 		entry->lcore_idx = (uint32_t)lcore_index;
 		LIST_INSERT_HEAD(&l_inconst->cache[lcore_index]->h,
 				 entry, next);
-		__atomic_add_fetch(&l_inconst->count, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_add(&l_inconst->count, 1, __ATOMIC_RELAXED);
 		DRV_LOG(DEBUG, "MLX5 list %s c%d entry %p new: %u.",
 			l_const->name, lcore_index,
 			(void *)entry, entry->ref_cnt);
@@ -254,7 +254,7 @@ _mlx5_list_register(struct mlx5_list_inconst *l_inconst,
 	l_inconst->gen_cnt++;
 	rte_rwlock_write_unlock(&l_inconst->lock);
 	LIST_INSERT_HEAD(&l_inconst->cache[lcore_index]->h, local_entry, next);
-	__atomic_add_fetch(&l_inconst->count, 1, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&l_inconst->count, 1, __ATOMIC_RELAXED);
 	DRV_LOG(DEBUG, "mlx5 list %s entry %p new: %u.", l_const->name,
 		(void *)entry, entry->ref_cnt);
 	return local_entry;
@@ -285,7 +285,7 @@ _mlx5_list_unregister(struct mlx5_list_inconst *l_inconst,
 {
 	struct mlx5_list_entry *gentry = entry->gentry;
 
-	if (__atomic_sub_fetch(&entry->ref_cnt, 1, __ATOMIC_RELAXED) != 0)
+	if (__atomic_fetch_sub(&entry->ref_cnt, 1, __ATOMIC_RELAXED) - 1 != 0)
 		return 1;
 	if (entry->lcore_idx == (uint32_t)lcore_idx) {
 		LIST_REMOVE(entry, next);
@@ -294,23 +294,23 @@ _mlx5_list_unregister(struct mlx5_list_inconst *l_inconst,
 		else
 			l_const->cb_remove(l_const->ctx, entry);
 	} else {
-		__atomic_add_fetch(&l_inconst->cache[entry->lcore_idx]->inv_cnt,
+		__atomic_fetch_add(&l_inconst->cache[entry->lcore_idx]->inv_cnt,
 				   1, __ATOMIC_RELAXED);
 	}
 	if (!l_const->lcores_share) {
-		__atomic_sub_fetch(&l_inconst->count, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_sub(&l_inconst->count, 1, __ATOMIC_RELAXED);
 		DRV_LOG(DEBUG, "mlx5 list %s entry %p removed.",
 			l_const->name, (void *)entry);
 		return 0;
 	}
-	if (__atomic_sub_fetch(&gentry->ref_cnt, 1, __ATOMIC_RELAXED) != 0)
+	if (__atomic_fetch_sub(&gentry->ref_cnt, 1, __ATOMIC_RELAXED) - 1 != 0)
 		return 1;
 	rte_rwlock_write_lock(&l_inconst->lock);
 	if (likely(gentry->ref_cnt == 0)) {
 		LIST_REMOVE(gentry, next);
 		rte_rwlock_write_unlock(&l_inconst->lock);
 		l_const->cb_remove(l_const->ctx, gentry);
-		__atomic_sub_fetch(&l_inconst->count, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_sub(&l_inconst->count, 1, __ATOMIC_RELAXED);
 		DRV_LOG(DEBUG, "mlx5 list %s entry %p removed.",
 			l_const->name, (void *)gentry);
 		return 0;

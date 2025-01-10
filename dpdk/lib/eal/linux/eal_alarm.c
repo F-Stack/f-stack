@@ -5,16 +5,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sys/queue.h>
 #include <sys/time.h>
 #include <sys/timerfd.h>
 
+#include <eal_trace_internal.h>
 #include <rte_interrupts.h>
 #include <rte_alarm.h>
 #include <rte_common.h>
 #include <rte_errno.h>
 #include <rte_spinlock.h>
-#include <rte_eal_trace.h>
 
 #include <eal_private.h>
 

@@ -15,6 +15,10 @@ mana_stop_tx_queues(struct rte_eth_dev *dev)
 	struct mana_priv *priv = dev->data->dev_private;
 	int i, ret;
 
+	for (i = 0; i < priv->num_queues; i++)
+		if (dev->data->tx_queue_state[i] == RTE_ETH_QUEUE_STATE_STOPPED)
+			return -EINVAL;
+
 	for (i = 0; i < priv->num_queues; i++) {
 		struct mana_txq *txq = dev->data->tx_queues[i];
 
@@ -43,12 +47,16 @@ mana_stop_tx_queues(struct rte_eth_dev *dev)
 
 			txq->desc_ring_tail =
 				(txq->desc_ring_tail + 1) % txq->num_desc;
+			txq->desc_ring_len--;
 		}
 		txq->desc_ring_head = 0;
 		txq->desc_ring_tail = 0;
+		txq->desc_ring_len = 0;
 
 		memset(&txq->gdma_sq, 0, sizeof(txq->gdma_sq));
 		memset(&txq->gdma_cq, 0, sizeof(txq->gdma_cq));
+
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 
 	return 0;
@@ -61,6 +69,11 @@ mana_start_tx_queues(struct rte_eth_dev *dev)
 	int ret, i;
 
 	/* start TX queues */
+
+	for (i = 0; i < priv->num_queues; i++)
+		if (dev->data->tx_queue_state[i] == RTE_ETH_QUEUE_STATE_STARTED)
+			return -EINVAL;
+
 	for (i = 0; i < priv->num_queues; i++) {
 		struct mana_txq *txq;
 		struct ibv_qp_init_attr qp_attr = { 0 };
@@ -140,6 +153,8 @@ mana_start_tx_queues(struct rte_eth_dev *dev)
 			txq->gdma_cq.id, txq->gdma_cq.buffer,
 			txq->gdma_cq.count, txq->gdma_cq.size,
 			txq->gdma_cq.head);
+
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 	}
 
 	return 0;
@@ -173,7 +188,7 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	int ret;
 	void *db_page;
 	uint16_t pkt_sent = 0;
-	uint32_t num_comp;
+	uint32_t num_comp, i;
 #ifdef RTE_ARCH_32
 	uint32_t wqe_count = 0;
 #endif
@@ -182,7 +197,8 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	num_comp = gdma_poll_completion_queue(&txq->gdma_cq,
 			txq->gdma_comp_buf, txq->num_desc);
 
-	for (uint32_t i = 0; i < num_comp; i++) {
+	i = 0;
+	while (i < num_comp) {
 		struct mana_txq_desc *desc =
 			&txq->desc_ring[txq->desc_ring_tail];
 		struct mana_tx_comp_oob *oob = (struct mana_tx_comp_oob *)
@@ -207,7 +223,16 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		desc->pkt = NULL;
 		txq->desc_ring_tail = (txq->desc_ring_tail + 1) % txq->num_desc;
+		txq->desc_ring_len--;
 		txq->gdma_sq.tail += desc->wqe_size_in_bu;
+
+		/* If TX CQE suppression is used, don't read more CQE but move
+		 * on to the next packet
+		 */
+		if (desc->suppress_tx_cqe)
+			continue;
+
+		i++;
 	}
 
 	/* Post send requests to GDMA */
@@ -217,6 +242,9 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		struct transmit_oob_v2 tx_oob;
 		struct one_sgl sgl;
 		uint16_t seg_idx;
+
+		if (txq->desc_ring_len >= txq->num_desc)
+			break;
 
 		/* Drop the packet if it exceeds max segments */
 		if (m_pkt->nb_segs > priv->max_send_sge) {
@@ -313,7 +341,6 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			tx_oob.short_oob.tx_compute_UDP_checksum = 0;
 		}
 
-		tx_oob.short_oob.suppress_tx_CQE_generation = 0;
 		tx_oob.short_oob.VCQ_number = txq->gdma_cq.id;
 
 		tx_oob.short_oob.VSQ_frame_num =
@@ -365,6 +392,16 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		if (seg_idx != m_pkt->nb_segs)
 			continue;
 
+		/* If we can at least queue post two WQEs and there are at
+		 * least two packets to send, use TX CQE suppression for the
+		 * current WQE
+		 */
+		if (txq->desc_ring_len + 1 < txq->num_desc &&
+		    pkt_idx + 1 < nb_pkts)
+			tx_oob.short_oob.suppress_tx_CQE_generation = 1;
+		else
+			tx_oob.short_oob.suppress_tx_CQE_generation = 0;
+
 		struct gdma_work_request work_req;
 		uint32_t wqe_size_in_bu;
 
@@ -387,8 +424,11 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			/* Update queue for tracking pending requests */
 			desc->pkt = m_pkt;
 			desc->wqe_size_in_bu = wqe_size_in_bu;
+			desc->suppress_tx_cqe =
+				tx_oob.short_oob.suppress_tx_CQE_generation;
 			txq->desc_ring_head =
 				(txq->desc_ring_head + 1) % txq->num_desc;
+			txq->desc_ring_len++;
 
 			pkt_sent++;
 

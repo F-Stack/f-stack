@@ -4,7 +4,7 @@
 
 #include <rte_trace_point_register.h>
 
-#include "rte_cryptodev_trace.h"
+#include "cryptodev_trace.h"
 
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_configure,
 	lib.cryptodev.configure)
@@ -72,6 +72,15 @@ RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_get_auth_algo_enum,
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_get_cipher_algo_enum,
 	lib.cryptodev.get.cipher.algo.enum)
 
+RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_get_aead_algo_string,
+	lib.cryptodev.get.aead.algo.string)
+
+RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_get_auth_algo_string,
+	lib.cryptodev.get.auth.algo.string)
+
+RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_get_cipher_algo_string,
+	lib.cryptodev.get.cipher.algo.string)
+
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_get_dev_id,
 	lib.cryptodev.get.dev.id)
 
@@ -126,11 +135,17 @@ RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_get_private_session_size,
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_get_xform_enum,
 	lib.cryptodev.asym.get.xform.enum)
 
+RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_get_xform_string,
+	lib.cryptodev.asym.get.xform.string)
+
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_xform_capability_check_modlen,
 	lib.cryptodev.asym.xform.capability.check.modlen)
 
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_xform_capability_check_optype,
 	lib.cryptodev.asym.xform.capability.check.optype)
+
+RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_xform_capability_check_hash,
+	lib.cryptodev.asym.xform.capability.check.hash)
 
 RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_sym_cpu_crypto_process,
 	lib.cryptodev.sym.cpu.crypto.process)

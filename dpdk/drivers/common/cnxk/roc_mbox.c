@@ -10,18 +10,6 @@
 #include "roc_api.h"
 #include "roc_priv.h"
 
-#define RVU_AF_AFPF_MBOX0 (0x02000)
-#define RVU_AF_AFPF_MBOX1 (0x02008)
-
-#define RVU_PF_PFAF_MBOX0 (0xC00)
-#define RVU_PF_PFAF_MBOX1 (0xC08)
-
-#define RVU_PF_VFX_PFVF_MBOX0 (0x0000)
-#define RVU_PF_VFX_PFVF_MBOX1 (0x0008)
-
-#define RVU_VF_VFPF_MBOX0 (0x0000)
-#define RVU_VF_VFPF_MBOX1 (0x0008)
-
 /* RCLK, SCLK in MHz */
 uint16_t dev_rclk_freq;
 uint16_t dev_sclk_freq;
@@ -50,14 +38,12 @@ mbox_reset(struct mbox *mbox, int devid)
 	struct mbox_hdr *rx_hdr =
 		(struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->rx_start);
 
-	plt_spinlock_lock(&mdev->mbox_lock);
 	mdev->msg_size = 0;
 	mdev->rsp_size = 0;
 	tx_hdr->msg_size = 0;
 	tx_hdr->num_msgs = 0;
 	rx_hdr->msg_size = 0;
 	rx_hdr->num_msgs = 0;
-	plt_spinlock_unlock(&mdev->mbox_lock);
 }
 
 int
@@ -167,7 +153,6 @@ mbox_alloc_msg_rsp(struct mbox *mbox, int devid, int size, int size_rsp)
 	struct mbox_dev *mdev = &mbox->dev[devid];
 	struct mbox_msghdr *msghdr = NULL;
 
-	plt_spinlock_lock(&mdev->mbox_lock);
 	size = PLT_ALIGN(size, MBOX_MSG_ALIGN);
 	size_rsp = PLT_ALIGN(size_rsp, MBOX_MSG_ALIGN);
 	/* Check if there is space in mailbox */
@@ -191,23 +176,42 @@ mbox_alloc_msg_rsp(struct mbox *mbox, int devid, int size, int size_rsp)
 	mdev->rsp_size += size_rsp;
 	msghdr->next_msgoff = mdev->msg_size + msgs_offset();
 exit:
-	plt_spinlock_unlock(&mdev->mbox_lock);
 
 	return msghdr;
 }
 
 /**
  * @internal
- * Send a mailbox message
+ * Synchronization between UP and DOWN messages
  */
-void
-mbox_msg_send(struct mbox *mbox, int devid)
+bool
+mbox_wait_for_zero(struct mbox *mbox, int devid)
+{
+	uint64_t data;
+
+	data = plt_read64((volatile void *)(mbox->reg_base +
+				(mbox->trigger | (devid << mbox->tr_shift))));
+
+	/* If data is non-zero wait for ~1ms and return to caller
+	 * whether data has changed to zero or not after the wait.
+	 */
+	if (data)
+		usleep(1000);
+	else
+		return true;
+
+	data = plt_read64((volatile void *)(mbox->reg_base +
+				(mbox->trigger | (devid << mbox->tr_shift))));
+	return data == 0;
+}
+
+static void
+mbox_msg_send_data(struct mbox *mbox, int devid, uint8_t data)
 {
 	struct mbox_dev *mdev = &mbox->dev[devid];
-	struct mbox_hdr *tx_hdr =
-		(struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->tx_start);
-	struct mbox_hdr *rx_hdr =
-		(struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->rx_start);
+	struct mbox_hdr *tx_hdr = (struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->tx_start);
+	struct mbox_hdr *rx_hdr = (struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->rx_start);
+	uint64_t intr_val;
 
 	/* Reset header for next messages */
 	tx_hdr->msg_size = mdev->msg_size;
@@ -224,12 +228,36 @@ mbox_msg_send(struct mbox *mbox, int devid)
 	/* Sync mbox data into memory */
 	plt_wmb();
 
+	/* Check for any pending interrupt */
+	intr_val = plt_read64(
+		(volatile void *)(mbox->reg_base + (mbox->trigger | (devid << mbox->tr_shift))));
+
+	intr_val |= (uint64_t)data;
 	/* The interrupt should be fired after num_msgs is written
 	 * to the shared memory
 	 */
-	plt_write64(1, (volatile void *)(mbox->reg_base +
-					 (mbox->trigger |
-					  (devid << mbox->tr_shift))));
+	plt_write64(intr_val, (volatile void *)(mbox->reg_base +
+						(mbox->trigger | (devid << mbox->tr_shift))));
+}
+
+/**
+ * @internal
+ * Send a mailbox message
+ */
+void
+mbox_msg_send(struct mbox *mbox, int devid)
+{
+	mbox_msg_send_data(mbox, devid, MBOX_DOWN_MSG);
+}
+
+/**
+ * @internal
+ * Send an UP mailbox message
+ */
+void
+mbox_msg_send_up(struct mbox *mbox, int devid)
+{
+	mbox_msg_send_data(mbox, devid, MBOX_UP_MSG);
 }
 
 /**
@@ -326,6 +354,11 @@ mbox_wait(struct mbox *mbox, int devid, uint32_t rst_timo)
 	uint32_t timeout = 0, sleep = 1;
 
 	rst_timo = rst_timo * 1000; /* Milli seconds to micro seconds */
+
+	/* Waiting for mdev->msgs_acked tp become equal to mdev->num_msgs,
+	 * mdev->msgs_acked are incremented at process_msgs() in interrupt
+	 * thread context.
+	 */
 	while (mdev->num_msgs > mdev->msgs_acked) {
 		plt_delay_us(sleep);
 		timeout += sleep;
@@ -409,11 +442,14 @@ send_ready_msg(struct mbox *mbox, uint16_t *pcifunc)
 	struct ready_msg_rsp *rsp;
 	int rc;
 
-	mbox_alloc_msg_ready(mbox);
+	mbox_alloc_msg_ready(mbox_get(mbox));
 
 	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
+	if (rc) {
+		mbox_put(mbox);
 		return rc;
+	}
+	mbox_put(mbox);
 
 	if (rsp->hdr.ver != MBOX_VERSION) {
 		plt_err("Incompatible MBox versions(AF: 0x%04x Client: 0x%04x)",

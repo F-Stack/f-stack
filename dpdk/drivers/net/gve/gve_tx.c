@@ -260,6 +260,7 @@ gve_tx_burst_qpl(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf *tx_pkt, *first;
 	uint16_t sw_id = txq->sw_tail;
 	uint16_t nb_used, i;
+	uint64_t bytes = 0;
 	uint16_t nb_tx = 0;
 	uint32_t hlen;
 
@@ -355,6 +356,8 @@ gve_tx_burst_qpl(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		txq->nb_free -= nb_used;
 		txq->sw_nb_free -= first->nb_segs;
 		tx_tail += nb_used;
+
+		bytes += first->pkt_len;
 	}
 
 end_of_tx:
@@ -362,6 +365,10 @@ end_of_tx:
 		rte_write32(rte_cpu_to_be_32(tx_tail), txq->qtx_tail);
 		txq->tx_tail = tx_tail;
 		txq->sw_tail = sw_id;
+
+		txq->stats.packets += nb_tx;
+		txq->stats.bytes += bytes;
+		txq->stats.errors += nb_pkts - nb_tx;
 	}
 
 	return nb_tx;
@@ -380,6 +387,7 @@ gve_tx_burst_ra(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf *tx_pkt, *first;
 	uint16_t nb_used, hlen, i;
 	uint64_t ol_flags, addr;
+	uint64_t bytes = 0;
 	uint16_t nb_tx = 0;
 
 	txr = txq->tx_desc_ring;
@@ -438,12 +446,18 @@ gve_tx_burst_ra(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		txq->nb_free -= nb_used;
 		tx_tail += nb_used;
+
+		bytes += first->pkt_len;
 	}
 
 end_of_tx:
 	if (nb_tx) {
 		rte_write32(rte_cpu_to_be_32(tx_tail), txq->qtx_tail);
 		txq->tx_tail = tx_tail;
+
+		txq->stats.packets += nb_tx;
+		txq->stats.bytes += bytes;
+		txq->stats.errors += nb_pkts - nb_tx;
 	}
 
 	return nb_tx;
@@ -650,21 +664,66 @@ err_txq:
 	return err;
 }
 
+int
+gve_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
+{
+	struct gve_priv *hw = dev->data->dev_private;
+	struct gve_tx_queue *txq;
+
+	if (tx_queue_id >= dev->data->nb_tx_queues)
+		return -EINVAL;
+
+	txq = dev->data->tx_queues[tx_queue_id];
+
+	txq->qtx_tail = &hw->db_bar2[rte_be_to_cpu_32(txq->qres->db_index)];
+	txq->qtx_head =
+		&hw->cnt_array[rte_be_to_cpu_32(txq->qres->counter_index)];
+
+	rte_write32(rte_cpu_to_be_32(GVE_IRQ_MASK), txq->ntfy_addr);
+
+	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
+
+	return 0;
+}
+
+int
+gve_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
+{
+	struct gve_tx_queue *txq;
+
+	if (tx_queue_id >= dev->data->nb_tx_queues)
+		return -EINVAL;
+
+	txq = dev->data->tx_queues[tx_queue_id];
+	gve_release_txq_mbufs(txq);
+	gve_reset_txq(txq);
+
+	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
+
+	return 0;
+}
+
 void
 gve_stop_tx_queues(struct rte_eth_dev *dev)
 {
 	struct gve_priv *hw = dev->data->dev_private;
-	struct gve_tx_queue *txq;
 	uint16_t i;
 	int err;
+
+	if (!gve_is_gqi(hw))
+		return gve_stop_tx_queues_dqo(dev);
 
 	err = gve_adminq_destroy_tx_queues(hw, dev->data->nb_tx_queues);
 	if (err != 0)
 		PMD_DRV_LOG(WARNING, "failed to destroy txqs");
 
-	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		txq = dev->data->tx_queues[i];
-		gve_release_txq_mbufs(txq);
-		gve_reset_txq(txq);
-	}
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		if (gve_tx_queue_stop(dev, i) != 0)
+			PMD_DRV_LOG(WARNING, "Fail to stop Tx queue %d", i);
+}
+
+void
+gve_set_tx_function(struct rte_eth_dev *dev)
+{
+	dev->tx_pkt_burst = gve_tx_burst;
 }

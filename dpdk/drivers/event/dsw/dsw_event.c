@@ -45,12 +45,12 @@ dsw_port_acquire_credits(struct dsw_evdev *dsw, struct dsw_port *port,
 	 * allocation.
 	 */
 	new_total_on_loan =
-	    __atomic_add_fetch(&dsw->credits_on_loan, acquired_credits,
-			       __ATOMIC_RELAXED);
+	    __atomic_fetch_add(&dsw->credits_on_loan, acquired_credits,
+			       __ATOMIC_RELAXED) + acquired_credits;
 
 	if (unlikely(new_total_on_loan > dsw->max_inflight)) {
 		/* Some other port took the last credits */
-		__atomic_sub_fetch(&dsw->credits_on_loan, acquired_credits,
+		__atomic_fetch_sub(&dsw->credits_on_loan, acquired_credits,
 				   __ATOMIC_RELAXED);
 		return false;
 	}
@@ -77,7 +77,7 @@ dsw_port_return_credits(struct dsw_evdev *dsw, struct dsw_port *port,
 
 		port->inflight_credits = leave_credits;
 
-		__atomic_sub_fetch(&dsw->credits_on_loan, return_credits,
+		__atomic_fetch_sub(&dsw->credits_on_loan, return_credits,
 				   __ATOMIC_RELAXED);
 
 		DSW_LOG_DP_PORT(DEBUG, port->id,
@@ -527,7 +527,7 @@ dsw_select_emigration_target(struct dsw_evdev *dsw,
 	target_qfs[*targets_len] = *candidate_qf;
 	(*targets_len)++;
 
-	__atomic_add_fetch(&dsw->ports[candidate_port_id].immigration_load,
+	__atomic_fetch_add(&dsw->ports[candidate_port_id].immigration_load,
 			   candidate_flow_load, __ATOMIC_RELAXED);
 
 	return true;
@@ -590,7 +590,6 @@ dsw_port_transmit_buffered(struct dsw_evdev *dsw, struct dsw_port *source_port,
 	struct dsw_port *dest_port = &(dsw->ports[dest_port_id]);
 	uint16_t *buffer_len = &source_port->out_buffer_len[dest_port_id];
 	struct rte_event *buffer = source_port->out_buffer[dest_port_id];
-	uint16_t enqueued = 0;
 
 	if (*buffer_len == 0)
 		return;
@@ -598,13 +597,8 @@ dsw_port_transmit_buffered(struct dsw_evdev *dsw, struct dsw_port *source_port,
 	/* The rings are dimensioned to fit all in-flight events (even
 	 * on a single ring), so looping will work.
 	 */
-	do {
-		enqueued +=
-			rte_event_ring_enqueue_burst(dest_port->in_ring,
-						     buffer+enqueued,
-						     *buffer_len-enqueued,
-						     NULL);
-	} while (unlikely(enqueued != *buffer_len));
+	rte_event_ring_enqueue_bulk(dest_port->in_ring, buffer, *buffer_len,
+				    NULL);
 
 	(*buffer_len) = 0;
 }

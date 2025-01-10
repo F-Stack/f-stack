@@ -20,6 +20,7 @@ Network Interface Controller Drivers
     bnx2x
     bnxt
     cnxk
+    cpfl
     cxgbe
     dpaa
     dpaa2
@@ -42,8 +43,6 @@ Network Interface Controller Drivers
     ionic
     ipn3ke
     ixgbe
-    kni
-    liquidio
     mana
     memif
     mlx4

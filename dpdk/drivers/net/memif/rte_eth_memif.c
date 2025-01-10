@@ -37,6 +37,8 @@
 #define ETH_MEMIF_RING_SIZE_ARG		"rsize"
 #define ETH_MEMIF_SOCKET_ARG		"socket"
 #define ETH_MEMIF_SOCKET_ABSTRACT_ARG	"socket-abstract"
+#define ETH_MEMIF_OWNER_UID_ARG		"owner-uid"
+#define ETH_MEMIF_OWNER_GID_ARG		"owner-gid"
 #define ETH_MEMIF_MAC_ARG		"mac"
 #define ETH_MEMIF_ZC_ARG		"zero-copy"
 #define ETH_MEMIF_SECRET_ARG		"secret"
@@ -48,6 +50,8 @@ static const char * const valid_arguments[] = {
 	ETH_MEMIF_RING_SIZE_ARG,
 	ETH_MEMIF_SOCKET_ARG,
 	ETH_MEMIF_SOCKET_ABSTRACT_ARG,
+	ETH_MEMIF_OWNER_UID_ARG,
+	ETH_MEMIF_OWNER_GID_ARG,
 	ETH_MEMIF_MAC_ARG,
 	ETH_MEMIF_ZC_ARG,
 	ETH_MEMIF_SECRET_ARG,
@@ -295,7 +299,7 @@ eth_memif_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		rte_eth_devices[mq->in_port].process_private;
 	memif_ring_t *ring = memif_get_ring_from_queue(proc_private, mq);
 	uint16_t cur_slot, last_slot, n_slots, ring_size, mask, s0;
-	uint16_t n_rx_pkts = 0;
+	uint16_t pkts, rx_pkts, n_rx_pkts = 0;
 	uint16_t mbuf_size = rte_pktmbuf_data_room_size(mq->mempool) -
 		RTE_PKTMBUF_HEADROOM;
 	uint16_t src_len, src_off, dst_len, dst_off, cp_len;
@@ -340,66 +344,131 @@ eth_memif_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		goto refill;
 	n_slots = last_slot - cur_slot;
 
-	while (n_slots && n_rx_pkts < nb_pkts) {
-		mbuf_head = rte_pktmbuf_alloc(mq->mempool);
-		if (unlikely(mbuf_head == NULL))
+	if (likely(mbuf_size >= pmd->cfg.pkt_buffer_size)) {
+		struct rte_mbuf *mbufs[MAX_PKT_BURST];
+next_bulk:
+		ret = rte_pktmbuf_alloc_bulk(mq->mempool, mbufs, MAX_PKT_BURST);
+		if (unlikely(ret < 0))
 			goto no_free_bufs;
-		mbuf = mbuf_head;
-		mbuf->port = mq->in_port;
-		dst_off = 0;
 
-next_slot:
-		s0 = cur_slot & mask;
-		d0 = &ring->desc[s0];
+		rx_pkts = 0;
+		pkts = nb_pkts < MAX_PKT_BURST ? nb_pkts : MAX_PKT_BURST;
+		while (n_slots && rx_pkts < pkts) {
+			mbuf_head = mbufs[rx_pkts];
+			mbuf = mbuf_head;
 
-		src_len = d0->length;
-		src_off = 0;
+next_slot1:
+			mbuf->port = mq->in_port;
+			s0 = cur_slot & mask;
+			d0 = &ring->desc[s0];
 
-		do {
-			dst_len = mbuf_size - dst_off;
-			if (dst_len == 0) {
-				dst_off = 0;
-				dst_len = mbuf_size;
+			cp_len = d0->length;
 
-				/* store pointer to tail */
+			rte_pktmbuf_data_len(mbuf) = cp_len;
+			rte_pktmbuf_pkt_len(mbuf) = cp_len;
+			if (mbuf != mbuf_head)
+				rte_pktmbuf_pkt_len(mbuf_head) += cp_len;
+
+			rte_memcpy(rte_pktmbuf_mtod(mbuf, void *),
+				(uint8_t *)memif_get_buffer(proc_private, d0), cp_len);
+
+			cur_slot++;
+			n_slots--;
+
+			if (d0->flags & MEMIF_DESC_FLAG_NEXT) {
 				mbuf_tail = mbuf;
 				mbuf = rte_pktmbuf_alloc(mq->mempool);
-				if (unlikely(mbuf == NULL))
+				if (unlikely(mbuf == NULL)) {
+					rte_pktmbuf_free_bulk(mbufs + rx_pkts,
+							MAX_PKT_BURST - rx_pkts);
 					goto no_free_bufs;
-				mbuf->port = mq->in_port;
+				}
 				ret = memif_pktmbuf_chain(mbuf_head, mbuf_tail, mbuf);
 				if (unlikely(ret < 0)) {
 					MIF_LOG(ERR, "number-of-segments-overflow");
 					rte_pktmbuf_free(mbuf);
+					rte_pktmbuf_free_bulk(mbufs + rx_pkts,
+							MAX_PKT_BURST - rx_pkts);
 					goto no_free_bufs;
 				}
+				goto next_slot1;
 			}
-			cp_len = RTE_MIN(dst_len, src_len);
 
-			rte_pktmbuf_data_len(mbuf) += cp_len;
-			rte_pktmbuf_pkt_len(mbuf) = rte_pktmbuf_data_len(mbuf);
-			if (mbuf != mbuf_head)
-				rte_pktmbuf_pkt_len(mbuf_head) += cp_len;
+			mq->n_bytes += rte_pktmbuf_pkt_len(mbuf_head);
+			*bufs++ = mbuf_head;
+			rx_pkts++;
+			n_rx_pkts++;
+		}
 
-			rte_memcpy(rte_pktmbuf_mtod_offset(mbuf, void *,
-							   dst_off),
-				(uint8_t *)memif_get_buffer(proc_private, d0) +
-				src_off, cp_len);
+		if (rx_pkts < MAX_PKT_BURST) {
+			rte_pktmbuf_free_bulk(mbufs + rx_pkts, MAX_PKT_BURST - rx_pkts);
+		} else {
+			nb_pkts -= rx_pkts;
+			if (nb_pkts)
+				goto next_bulk;
+		}
+	} else {
+		while (n_slots && n_rx_pkts < nb_pkts) {
+			mbuf_head = rte_pktmbuf_alloc(mq->mempool);
+			if (unlikely(mbuf_head == NULL))
+				goto no_free_bufs;
+			mbuf = mbuf_head;
+			mbuf->port = mq->in_port;
 
-			src_off += cp_len;
-			dst_off += cp_len;
-			src_len -= cp_len;
-		} while (src_len);
+next_slot2:
+			s0 = cur_slot & mask;
+			d0 = &ring->desc[s0];
 
-		cur_slot++;
-		n_slots--;
+			src_len = d0->length;
+			dst_off = 0;
+			src_off = 0;
 
-		if (d0->flags & MEMIF_DESC_FLAG_NEXT)
-			goto next_slot;
+			do {
+				dst_len = mbuf_size - dst_off;
+				if (dst_len == 0) {
+					dst_off = 0;
+					dst_len = mbuf_size;
 
-		mq->n_bytes += rte_pktmbuf_pkt_len(mbuf_head);
-		*bufs++ = mbuf_head;
-		n_rx_pkts++;
+					/* store pointer to tail */
+					mbuf_tail = mbuf;
+					mbuf = rte_pktmbuf_alloc(mq->mempool);
+					if (unlikely(mbuf == NULL))
+						goto no_free_bufs;
+					mbuf->port = mq->in_port;
+					ret = memif_pktmbuf_chain(mbuf_head, mbuf_tail, mbuf);
+					if (unlikely(ret < 0)) {
+						MIF_LOG(ERR, "number-of-segments-overflow");
+						rte_pktmbuf_free(mbuf);
+						goto no_free_bufs;
+					}
+				}
+				cp_len = RTE_MIN(dst_len, src_len);
+
+				rte_pktmbuf_data_len(mbuf) += cp_len;
+				rte_pktmbuf_pkt_len(mbuf) = rte_pktmbuf_data_len(mbuf);
+				if (mbuf != mbuf_head)
+					rte_pktmbuf_pkt_len(mbuf_head) += cp_len;
+
+				rte_memcpy(rte_pktmbuf_mtod_offset(mbuf, void *,
+								   dst_off),
+					(uint8_t *)memif_get_buffer(proc_private, d0) +
+					src_off, cp_len);
+
+				src_off += cp_len;
+				dst_off += cp_len;
+				src_len -= cp_len;
+			} while (src_len);
+
+			cur_slot++;
+			n_slots--;
+
+			if (d0->flags & MEMIF_DESC_FLAG_NEXT)
+				goto next_slot2;
+
+			mq->n_bytes += rte_pktmbuf_pkt_len(mbuf_head);
+			*bufs++ = mbuf_head;
+			n_rx_pkts++;
+		}
 	}
 
 no_free_bufs:
@@ -531,6 +600,10 @@ refill:
 	ret = rte_pktmbuf_alloc_bulk(mq->mempool, &mq->buffers[head & mask], n_slots);
 	if (unlikely(ret < 0))
 		goto no_free_mbufs;
+	if (unlikely(n_slots > ring_size - (head & mask))) {
+		rte_memcpy(mq->buffers, &mq->buffers[ring_size],
+			(n_slots + (head & mask) - ring_size) * sizeof(struct rte_mbuf *));
+	}
 
 	while (n_slots--) {
 		s0 = head++ & mask;
@@ -613,62 +686,112 @@ eth_memif_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		n_free = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE) - slot;
 	}
 
-	while (n_tx_pkts < nb_pkts && n_free) {
-		mbuf_head = *bufs++;
-		nb_segs = mbuf_head->nb_segs;
-		mbuf = mbuf_head;
+	uint16_t i;
+	struct rte_mbuf **buf_tmp = bufs;
+	mbuf_head = *buf_tmp++;
+	struct rte_mempool *mp = mbuf_head->pool;
 
-		saved_slot = slot;
-		d0 = &ring->desc[slot & mask];
-		dst_off = 0;
-		dst_len = (type == MEMIF_RING_C2S) ?
-			pmd->run.pkt_buffer_size : d0->length;
+	for (i = 1; i < nb_pkts; i++) {
+		mbuf_head = *buf_tmp++;
+		if (mbuf_head->pool != mp)
+			break;
+	}
 
-next_in_chain:
-		src_off = 0;
-		src_len = rte_pktmbuf_data_len(mbuf);
+	uint16_t mbuf_size = rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM;
+	if (i == nb_pkts && pmd->cfg.pkt_buffer_size >= mbuf_size) {
+		buf_tmp = bufs;
+		while (n_tx_pkts < nb_pkts && n_free) {
+			mbuf_head = *bufs++;
+			nb_segs = mbuf_head->nb_segs;
+			mbuf = mbuf_head;
 
-		while (src_len) {
-			if (dst_len == 0) {
+			saved_slot = slot;
+
+next_in_chain1:
+			d0 = &ring->desc[slot & mask];
+			cp_len = rte_pktmbuf_data_len(mbuf);
+
+			rte_memcpy((uint8_t *)memif_get_buffer(proc_private, d0),
+				rte_pktmbuf_mtod(mbuf, void *), cp_len);
+
+			d0->length = cp_len;
+			mq->n_bytes += cp_len;
+			slot++;
+			n_free--;
+
+			if (--nb_segs > 0) {
 				if (n_free) {
-					slot++;
-					n_free--;
 					d0->flags |= MEMIF_DESC_FLAG_NEXT;
-					d0 = &ring->desc[slot & mask];
-					dst_off = 0;
-					dst_len = (type == MEMIF_RING_C2S) ?
-					    pmd->run.pkt_buffer_size : d0->length;
-					d0->flags = 0;
+					mbuf = mbuf->next;
+					goto next_in_chain1;
 				} else {
 					slot = saved_slot;
-					goto no_free_slots;
+					goto free_mbufs;
 				}
 			}
-			cp_len = RTE_MIN(dst_len, src_len);
 
-			rte_memcpy((uint8_t *)memif_get_buffer(proc_private,
-							       d0) + dst_off,
-				rte_pktmbuf_mtod_offset(mbuf, void *, src_off),
-				cp_len);
-
-			mq->n_bytes += cp_len;
-			src_off += cp_len;
-			dst_off += cp_len;
-			src_len -= cp_len;
-			dst_len -= cp_len;
-
-			d0->length = dst_off;
+			n_tx_pkts++;
 		}
+free_mbufs:
+		rte_pktmbuf_free_bulk(buf_tmp, n_tx_pkts);
+	} else {
+		while (n_tx_pkts < nb_pkts && n_free) {
+			mbuf_head = *bufs++;
+			nb_segs = mbuf_head->nb_segs;
+			mbuf = mbuf_head;
 
-		if (--nb_segs > 0) {
-			mbuf = mbuf->next;
-			goto next_in_chain;
+			saved_slot = slot;
+			d0 = &ring->desc[slot & mask];
+			dst_off = 0;
+			dst_len = (type == MEMIF_RING_C2S) ?
+				pmd->run.pkt_buffer_size : d0->length;
+
+next_in_chain2:
+			src_off = 0;
+			src_len = rte_pktmbuf_data_len(mbuf);
+
+			while (src_len) {
+				if (dst_len == 0) {
+					if (n_free) {
+						slot++;
+						n_free--;
+						d0->flags |= MEMIF_DESC_FLAG_NEXT;
+						d0 = &ring->desc[slot & mask];
+						dst_off = 0;
+						dst_len = (type == MEMIF_RING_C2S) ?
+						    pmd->run.pkt_buffer_size : d0->length;
+						d0->flags = 0;
+					} else {
+						slot = saved_slot;
+						goto no_free_slots;
+					}
+				}
+				cp_len = RTE_MIN(dst_len, src_len);
+
+				rte_memcpy((uint8_t *)memif_get_buffer(proc_private,
+								       d0) + dst_off,
+					rte_pktmbuf_mtod_offset(mbuf, void *, src_off),
+					cp_len);
+
+				mq->n_bytes += cp_len;
+				src_off += cp_len;
+				dst_off += cp_len;
+				src_len -= cp_len;
+				dst_len -= cp_len;
+
+				d0->length = dst_off;
+			}
+
+			if (--nb_segs > 0) {
+				mbuf = mbuf->next;
+				goto next_in_chain2;
+			}
+
+			n_tx_pkts++;
+			slot++;
+			n_free--;
+			rte_pktmbuf_free(mbuf_head);
 		}
-
-		n_tx_pkts++;
-		slot++;
-		n_free--;
-		rte_pktmbuf_free(mbuf_head);
 	}
 
 no_free_slots:
@@ -691,7 +814,6 @@ no_free_slots:
 	mq->n_pkts += n_tx_pkts;
 	return n_tx_pkts;
 }
-
 
 static int
 memif_tx_one_zc(struct pmd_process_private *proc_private, struct memif_queue *mq,
@@ -1127,8 +1249,12 @@ memif_init_queues(struct rte_eth_dev *dev)
 		}
 		mq->buffers = NULL;
 		if (pmd->flags & ETH_MEMIF_FLAG_ZERO_COPY) {
+			/*
+			 * Allocate 2x ring_size to reserve a contiguous array for
+			 * rte_pktmbuf_alloc_bulk (to store allocated mbufs).
+			 */
 			mq->buffers = rte_zmalloc("bufs", sizeof(struct rte_mbuf *) *
-						  (1 << mq->log2_ring_size), 0);
+						  (1 << (mq->log2_ring_size + 1)), 0);
 			if (mq->buffers == NULL)
 				return -ENOMEM;
 		}
@@ -1174,7 +1300,7 @@ memif_connect(struct rte_eth_dev *dev)
 						PROT_READ | PROT_WRITE,
 						MAP_SHARED, mr->fd, 0);
 				if (mr->addr == MAP_FAILED) {
-					MIF_LOG(ERR, "mmap failed: %s\n",
+					MIF_LOG(ERR, "mmap failed: %s",
 						strerror(errno));
 					return -1;
 				}
@@ -1525,7 +1651,7 @@ static const struct eth_dev_ops ops = {
 static int
 memif_create(struct rte_vdev_device *vdev, enum memif_role_t role,
 	     memif_interface_id_t id, uint32_t flags,
-	     const char *socket_filename,
+	     const char *socket_filename, uid_t owner_uid, gid_t owner_gid,
 	     memif_log2_ring_size_t log2_ring_size,
 	     uint16_t pkt_buffer_size, const char *secret,
 	     struct rte_ether_addr *ether_addr)
@@ -1564,6 +1690,8 @@ memif_create(struct rte_vdev_device *vdev, enum memif_role_t role,
 	/* Zero-copy flag irelevant to server. */
 	if (pmd->role == MEMIF_ROLE_SERVER)
 		pmd->flags &= ~ETH_MEMIF_FLAG_ZERO_COPY;
+	pmd->owner_uid = owner_uid;
+	pmd->owner_gid = owner_gid;
 
 	ret = memif_socket_init(eth_dev, socket_filename);
 	if (ret < 0)
@@ -1751,6 +1879,30 @@ memif_set_is_socket_abstract(const char *key __rte_unused, const char *value, vo
 }
 
 static int
+memif_set_owner(const char *key, const char *value, void *extra_args)
+{
+	RTE_ASSERT(sizeof(uid_t) == sizeof(uint32_t));
+	RTE_ASSERT(sizeof(gid_t) == sizeof(uint32_t));
+
+	unsigned long val;
+	char *end = NULL;
+	uint32_t *id = (uint32_t *)extra_args;
+
+	val = strtoul(value, &end, 10);
+	if (*value == '\0' || *end != '\0') {
+		MIF_LOG(ERR, "Failed to parse %s: %s.", key, value);
+		return -EINVAL;
+	}
+	if (val >= UINT32_MAX) {
+		MIF_LOG(ERR, "Invalid %s: %s.", key, value);
+		return -ERANGE;
+	}
+
+	*id = val;
+	return 0;
+}
+
+static int
 memif_set_mac(const char *key __rte_unused, const char *value, void *extra_args)
 {
 	struct rte_ether_addr *ether_addr = (struct rte_ether_addr *)extra_args;
@@ -1782,6 +1934,8 @@ rte_pmd_memif_probe(struct rte_vdev_device *vdev)
 	uint16_t pkt_buffer_size = ETH_MEMIF_DEFAULT_PKT_BUFFER_SIZE;
 	memif_log2_ring_size_t log2_ring_size = ETH_MEMIF_DEFAULT_RING_SIZE;
 	const char *socket_filename = ETH_MEMIF_DEFAULT_SOCKET_FILENAME;
+	uid_t owner_uid = -1;
+	gid_t owner_gid = -1;
 	uint32_t flags = 0;
 	const char *secret = NULL;
 	struct rte_ether_addr *ether_addr = rte_zmalloc("",
@@ -1865,6 +2019,14 @@ rte_pmd_memif_probe(struct rte_vdev_device *vdev)
 					 &memif_set_is_socket_abstract, &flags);
 		if (ret < 0)
 			goto exit;
+		ret = rte_kvargs_process(kvlist, ETH_MEMIF_OWNER_UID_ARG,
+					 &memif_set_owner, &owner_uid);
+		if (ret < 0)
+			goto exit;
+		ret = rte_kvargs_process(kvlist, ETH_MEMIF_OWNER_GID_ARG,
+					 &memif_set_owner, &owner_gid);
+		if (ret < 0)
+			goto exit;
 		ret = rte_kvargs_process(kvlist, ETH_MEMIF_MAC_ARG,
 					 &memif_set_mac, ether_addr);
 		if (ret < 0)
@@ -1886,7 +2048,7 @@ rte_pmd_memif_probe(struct rte_vdev_device *vdev)
 	}
 
 	/* create interface */
-	ret = memif_create(vdev, role, id, flags, socket_filename,
+	ret = memif_create(vdev, role, id, flags, socket_filename, owner_uid, owner_gid,
 			   log2_ring_size, pkt_buffer_size, secret, ether_addr);
 
 exit:
@@ -1919,7 +2081,9 @@ RTE_PMD_REGISTER_PARAM_STRING(net_memif,
 			      ETH_MEMIF_PKT_BUFFER_SIZE_ARG "=<int>"
 			      ETH_MEMIF_RING_SIZE_ARG "=<int>"
 			      ETH_MEMIF_SOCKET_ARG "=<string>"
-				  ETH_MEMIF_SOCKET_ABSTRACT_ARG "=yes|no"
+			      ETH_MEMIF_SOCKET_ABSTRACT_ARG "=yes|no"
+			      ETH_MEMIF_OWNER_UID_ARG "=<int>"
+			      ETH_MEMIF_OWNER_GID_ARG "=<int>"
 			      ETH_MEMIF_MAC_ARG "=xx:xx:xx:xx:xx:xx"
 			      ETH_MEMIF_ZC_ARG "=yes|no"
 			      ETH_MEMIF_SECRET_ARG "=<string>");

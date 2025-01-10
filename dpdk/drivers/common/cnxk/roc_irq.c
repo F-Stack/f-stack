@@ -15,7 +15,7 @@
 
 #define MSIX_IRQ_SET_BUF_LEN                                                   \
 	(sizeof(struct vfio_irq_set) + sizeof(int) *			       \
-			(plt_intr_max_intr_get(intr_handle)))
+			((uint32_t)plt_intr_max_intr_get(intr_handle)))
 
 static int
 irq_get_info(struct plt_intr_handle *intr_handle)
@@ -122,6 +122,17 @@ dev_irqs_disable(struct plt_intr_handle *intr_handle)
 	/* Clear max_intr to indicate re-init next time */
 	plt_intr_max_intr_set(intr_handle, 0);
 	return plt_intr_disable(intr_handle);
+}
+
+int
+dev_irq_reconfigure(struct plt_intr_handle *intr_handle, uint16_t max_intr)
+{
+	/* Disable interrupts if enabled. */
+	if (plt_intr_max_intr_get(intr_handle))
+		dev_irqs_disable(intr_handle);
+
+	plt_intr_max_intr_set(intr_handle, max_intr);
+	return irq_init(intr_handle);
 }
 
 int

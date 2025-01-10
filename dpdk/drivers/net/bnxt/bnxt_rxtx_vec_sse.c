@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Copyright(c) 2019-2021 Broadcom All rights reserved. */
+/* Copyright(c) 2019-2023 Broadcom All rights reserved. */
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -259,7 +259,7 @@ recv_burst_vec_sse(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 * the number of valid descriptors.
 		 */
 		valid = _mm_cvtsi128_si64(_mm_packs_epi32(info3_v, info3_v));
-		num_valid = __builtin_popcountll(valid & desc_valid_mask);
+		num_valid = rte_popcount64(valid & desc_valid_mask);
 
 		if (num_valid == 0)
 			break;

@@ -134,6 +134,7 @@ test_power(void)
 	const enum power_management_env envs[] = {PM_ENV_ACPI_CPUFREQ,
 			PM_ENV_KVM_VM,
 			PM_ENV_PSTATE_CPUFREQ,
+			PM_ENV_AMD_PSTATE_CPUFREQ,
 			PM_ENV_CPPC_CPUFREQ};
 
 	unsigned int i;
@@ -172,4 +173,4 @@ fail_all:
 }
 #endif
 
-REGISTER_TEST_COMMAND(power_autotest, test_power);
+REGISTER_FAST_TEST(power_autotest, true, true, test_power);

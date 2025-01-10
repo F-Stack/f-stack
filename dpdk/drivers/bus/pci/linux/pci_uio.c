@@ -10,7 +10,6 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/sysmacros.h>
-#include <linux/pci_regs.h>
 
 #if defined(RTE_ARCH_X86)
 #include <sys/io.h>
@@ -55,33 +54,26 @@ pci_uio_write_config(const struct rte_intr_handle *intr_handle,
 	return pwrite(uio_cfg_fd, buf, len, offset);
 }
 
-static int
-pci_uio_set_bus_master(int dev_fd)
+int
+pci_uio_mmio_read(const struct rte_pci_device *dev, int bar,
+		  void *buf, size_t len, off_t offset)
 {
-	uint16_t reg;
-	int ret;
-
-	ret = pread(dev_fd, &reg, sizeof(reg), PCI_COMMAND);
-	if (ret != sizeof(reg)) {
-		RTE_LOG(ERR, EAL,
-			"Cannot read command from PCI config space!\n");
+	if (bar >= PCI_MAX_RESOURCE || dev->mem_resource[bar].addr == NULL ||
+			(uint64_t)offset + len > dev->mem_resource[bar].len)
 		return -1;
-	}
+	memcpy(buf, (uint8_t *)dev->mem_resource[bar].addr + offset, len);
+	return len;
+}
 
-	/* return if bus mastering is already on */
-	if (reg & PCI_COMMAND_MASTER)
-		return 0;
-
-	reg |= PCI_COMMAND_MASTER;
-
-	ret = pwrite(dev_fd, &reg, sizeof(reg), PCI_COMMAND);
-	if (ret != sizeof(reg)) {
-		RTE_LOG(ERR, EAL,
-			"Cannot write command to PCI config space!\n");
+int
+pci_uio_mmio_write(const struct rte_pci_device *dev, int bar,
+		   const void *buf, size_t len, off_t offset)
+{
+	if (bar >= PCI_MAX_RESOURCE || dev->mem_resource[bar].addr == NULL ||
+			(uint64_t)offset + len > dev->mem_resource[bar].len)
 		return -1;
-	}
-
-	return 0;
+	memcpy((uint8_t *)dev->mem_resource[bar].addr + offset, buf, len);
+	return len;
 }
 
 static int
@@ -277,7 +269,7 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 			goto error;
 
 		/* set bus master that is not done by uio_pci_generic */
-		if (pci_uio_set_bus_master(uio_cfg_fd)) {
+		if (rte_pci_set_bus_master(dev, true)) {
 			RTE_LOG(ERR, EAL, "Cannot set up bus mastering!\n");
 			goto error;
 		}

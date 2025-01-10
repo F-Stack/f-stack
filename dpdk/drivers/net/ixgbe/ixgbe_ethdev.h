@@ -6,6 +6,7 @@
 #define _IXGBE_ETHDEV_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <sys/queue.h>
 
 #include "base/ixgbe_type.h"
@@ -510,8 +511,8 @@ struct ixgbe_adapter {
 	 */
 	uint8_t pflink_fullchk;
 	uint8_t mac_ctrl_frame_fwd;
-	rte_atomic32_t link_thread_running;
-	pthread_t link_thread_tid;
+	bool link_thread_running;
+	rte_thread_t link_thread_tid;
 };
 
 struct ixgbe_vf_representor {
@@ -624,6 +625,9 @@ void ixgbe_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 
 void ixgbe_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
+
+void ixgbe_recycle_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+		struct rte_eth_recycle_rxq_info *recycle_rxq_info);
 
 int ixgbevf_dev_rx_init(struct rte_eth_dev *dev);
 

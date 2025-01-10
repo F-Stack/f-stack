@@ -118,28 +118,32 @@ mlx5_flex_get_bitfield(const struct rte_flow_item_flex *item,
 		       uint32_t pos, uint32_t width, uint32_t shift)
 {
 	const uint8_t *ptr = item->pattern + pos / CHAR_BIT;
-	uint32_t val, vbits;
+	uint32_t val, vbits, skip = pos % CHAR_BIT;
 
 	/* Proceed the bitfield start byte. */
 	MLX5_ASSERT(width <= sizeof(uint32_t) * CHAR_BIT && width);
 	MLX5_ASSERT(width + shift <= sizeof(uint32_t) * CHAR_BIT);
 	if (item->length <= pos / CHAR_BIT)
 		return 0;
-	val = *ptr++ >> (pos % CHAR_BIT);
+	/* Bits are enumerated in byte in network order: 01234567 */
+	val = *ptr++;
 	vbits = CHAR_BIT - pos % CHAR_BIT;
-	pos = (pos + vbits) / CHAR_BIT;
+	pos = RTE_ALIGN_CEIL(pos, CHAR_BIT) / CHAR_BIT;
 	vbits = RTE_MIN(vbits, width);
-	val &= RTE_BIT32(vbits) - 1;
+	/* Load bytes to cover the field width, checking pattern boundary */
 	while (vbits < width && pos < item->length) {
 		uint32_t part = RTE_MIN(width - vbits, (uint32_t)CHAR_BIT);
 		uint32_t tmp = *ptr++;
 
-		pos++;
-		tmp &= RTE_BIT32(part) - 1;
-		val |= tmp << vbits;
+		val |= tmp << RTE_ALIGN_CEIL(vbits, CHAR_BIT);
 		vbits += part;
+		pos++;
 	}
-	return rte_bswap32(val <<= shift);
+	val = rte_cpu_to_be_32(val);
+	val <<= skip;
+	val >>= shift;
+	val &= (RTE_BIT64(width) - 1) << (sizeof(uint32_t) * CHAR_BIT - shift - width);
+	return val;
 }
 
 #define SET_FP_MATCH_SAMPLE_ID(x, def, msk, val, sid) \
@@ -198,6 +202,118 @@ mlx5_flex_set_match_sample(void *misc4_m, void *misc4_v,
 	}
 #undef SET_FP_MATCH_SAMPLE_ID
 }
+
+/**
+ * Get the flex parser sample id and corresponding mask
+ * per shift and width information.
+ *
+ * @param[in] tp
+ *   Mlx5 flex item sample mapping handle.
+ * @param[in] idx
+ *   Mapping index.
+ * @param[in, out] pos
+ *   Where to search the value and mask.
+ * @param[in] is_inner
+ *   For inner matching or not.
+ *
+ * @return
+ *   0 on success, -1 to ignore.
+ */
+int
+mlx5_flex_get_sample_id(const struct mlx5_flex_item *tp,
+			uint32_t idx, uint32_t *pos, bool is_inner)
+{
+	const struct mlx5_flex_pattern_field *map = tp->map + idx;
+	uint32_t id = map->reg_id;
+
+	/* Skip placeholders for DUMMY fields. */
+	if (id == MLX5_INVALID_SAMPLE_REG_ID) {
+		*pos += map->width;
+		return -1;
+	}
+	MLX5_ASSERT(map->width);
+	MLX5_ASSERT(id < tp->devx_fp->num_samples);
+	if (tp->tunnel_mode == FLEX_TUNNEL_MODE_MULTI && is_inner) {
+		uint32_t num_samples = tp->devx_fp->num_samples / 2;
+
+		MLX5_ASSERT(tp->devx_fp->num_samples % 2 == 0);
+		MLX5_ASSERT(id < num_samples);
+		id += num_samples;
+	}
+	return id;
+}
+
+/**
+ * Get the flex parser mapping value per definer format_select_dw.
+ *
+ * @param[in] item
+ *   Rte flex item pointer.
+ * @param[in] flex
+ *   Mlx5 flex item sample mapping handle.
+ * @param[in] byte_off
+ *   Mlx5 flex item format_select_dw.
+ * @param[in] tunnel
+ *   Tunnel mode or not.
+ * @param[in, def] value
+ *   Value calculated for this flex parser, either spec or mask.
+ *
+ * @return
+ *   0 on success, -1 for error.
+ */
+int
+mlx5_flex_get_parser_value_per_byte_off(const struct rte_flow_item_flex *item,
+					void *flex, uint32_t byte_off,
+					bool tunnel, uint32_t *value)
+{
+	struct mlx5_flex_pattern_field *map;
+	struct mlx5_flex_item *tp = flex;
+	uint32_t i, pos, val;
+	int id;
+
+	*value = 0;
+	for (i = 0, pos = 0; i < tp->mapnum && pos < item->length * CHAR_BIT; i++) {
+		map = tp->map + i;
+		id = mlx5_flex_get_sample_id(tp, i, &pos, tunnel);
+		if (id == -1)
+			continue;
+		if (id >= (int)tp->devx_fp->num_samples || id >= MLX5_GRAPH_NODE_SAMPLE_NUM)
+			return -1;
+		if (byte_off == tp->devx_fp->sample_info[id].sample_dw_data * sizeof(uint32_t)) {
+			val = mlx5_flex_get_bitfield(item, pos, map->width, map->shift);
+			*value |= val;
+		}
+		pos += map->width;
+	}
+	return 0;
+}
+
+/**
+ * Get the flex parser tunnel mode.
+ *
+ * @param[in] item
+ *   RTE Flex item.
+ * @param[in, out] tunnel_mode
+ *   Pointer to return tunnel mode.
+ *
+ * @return
+ *   0 on success, otherwise negative error code.
+ */
+int
+mlx5_flex_get_tunnel_mode(const struct rte_flow_item *item,
+			  enum rte_flow_item_flex_tunnel_mode *tunnel_mode)
+{
+	if (item && item->spec && tunnel_mode) {
+		const struct rte_flow_item_flex *spec = item->spec;
+		struct mlx5_flex_item *flex = (struct mlx5_flex_item *)spec->handle;
+
+		if (flex) {
+			*tunnel_mode = flex->tunnel_mode;
+			return 0;
+		}
+	}
+	return -EINVAL;
+}
+
 /**
  * Translate item pattern into matcher fields according to translation
  * array.
@@ -228,38 +344,33 @@ mlx5_flex_flow_translate_item(struct rte_eth_dev *dev,
 	void *misc4_v = MLX5_ADDR_OF(fte_match_param, key, misc_parameters_4);
 	struct mlx5_flex_item *tp;
 	uint32_t i, pos = 0;
+	uint32_t sample_id;
 
 	RTE_SET_USED(dev);
 	MLX5_ASSERT(item->spec && item->mask);
 	spec = item->spec;
 	mask = item->mask;
 	tp = (struct mlx5_flex_item *)spec->handle;
-	MLX5_ASSERT(mlx5_flex_index(dev->data->dev_private, tp) >= 0);
-	for (i = 0; i < tp->mapnum; i++) {
+	for (i = 0; i < tp->mapnum && pos < (spec->length * CHAR_BIT); i++) {
 		struct mlx5_flex_pattern_field *map = tp->map + i;
-		uint32_t id = map->reg_id;
-		uint32_t def = (RTE_BIT64(map->width) - 1) << map->shift;
-		uint32_t val, msk;
+		uint32_t val, msk, def;
+		int id = mlx5_flex_get_sample_id(tp, i, &pos, is_inner);
 
-		/* Skip placeholders for DUMMY fields. */
-		if (id == MLX5_INVALID_SAMPLE_REG_ID) {
-			pos += map->width;
+		if (id == -1)
 			continue;
-		}
+		MLX5_ASSERT(id < (int)tp->devx_fp->num_samples);
+		if (id >= (int)tp->devx_fp->num_samples ||
+		    id >= MLX5_GRAPH_NODE_SAMPLE_NUM)
+			return;
+		def = (uint32_t)(RTE_BIT64(map->width) - 1);
+		def <<= (sizeof(uint32_t) * CHAR_BIT - map->shift - map->width);
 		val = mlx5_flex_get_bitfield(spec, pos, map->width, map->shift);
-		msk = mlx5_flex_get_bitfield(mask, pos, map->width, map->shift);
-		MLX5_ASSERT(map->width);
-		MLX5_ASSERT(id < tp->devx_fp->num_samples);
-		if (tp->tunnel_mode == FLEX_TUNNEL_MODE_MULTI && is_inner) {
-			uint32_t num_samples = tp->devx_fp->num_samples / 2;
-
-			MLX5_ASSERT(tp->devx_fp->num_samples % 2 == 0);
-			MLX5_ASSERT(id < num_samples);
-			id += num_samples;
-		}
+		msk = pos < (mask->length * CHAR_BIT) ?
+		      mlx5_flex_get_bitfield(mask, pos, map->width, map->shift) : def;
+		sample_id = tp->devx_fp->sample_ids[id];
 		mlx5_flex_set_match_sample(misc4_m, misc4_v,
-					   def, msk & def, val & msk & def,
-					   tp->devx_fp->sample_ids[id], id);
+					   def, msk, val & msk,
+					   sample_id, id);
 		pos += map->width;
 	}
 }
@@ -294,7 +405,7 @@ mlx5_flex_acquire_index(struct rte_eth_dev *dev,
 		return ret;
 	}
 	if (acquire)
-		__atomic_add_fetch(&flex->refcnt, 1, __ATOMIC_RELEASE);
+		__atomic_fetch_add(&flex->refcnt, 1, __ATOMIC_RELEASE);
 	return ret;
 }
 
@@ -329,7 +440,7 @@ mlx5_flex_release_index(struct rte_eth_dev *dev,
 		rte_errno = -EINVAL;
 		return -EINVAL;
 	}
-	__atomic_sub_fetch(&flex->refcnt, 1, __ATOMIC_RELEASE);
+	__atomic_fetch_sub(&flex->refcnt, 1, __ATOMIC_RELEASE);
 	return 0;
 }
 
@@ -338,12 +449,14 @@ mlx5_flex_release_index(struct rte_eth_dev *dev,
  *
  *   shift      mask
  * ------- ---------------
- *    0     b111100  0x3C
- *    1     b111110  0x3E
- *    2     b111111  0x3F
- *    3     b011111  0x1F
- *    4     b001111  0x0F
- *    5     b000111  0x07
+ *    0     b11111100  0x3C
+ *    1     b01111110  0x3E
+ *    2     b00111111  0x3F
+ *    3     b00011111  0x1F
+ *    4     b00001111  0x0F
+ *    5     b00000111  0x07
+ *    6     b00000011  0x03
+ *    7     b00000001  0x01
  */
 static uint8_t
 mlx5_flex_hdr_len_mask(uint8_t shift,
@@ -353,8 +466,7 @@ mlx5_flex_hdr_len_mask(uint8_t shift,
 	int diff = shift - MLX5_PARSE_GRAPH_NODE_HDR_LEN_SHIFT_DWORD;
 
 	base_mask = mlx5_hca_parse_graph_node_base_hdr_len_mask(attr);
-	return diff == 0 ? base_mask :
-	       diff < 0 ? (base_mask << -diff) & base_mask : base_mask >> diff;
+	return diff < 0 ? base_mask << -diff : base_mask >> diff;
 }
 
 static int
@@ -365,7 +477,6 @@ mlx5_flex_translate_length(struct mlx5_hca_flex_attr *attr,
 {
 	const struct rte_flow_item_flex_field *field = &conf->next_header;
 	struct mlx5_devx_graph_node_attr *node = &devx->devx_conf;
-	uint32_t len_width, mask;
 
 	if (field->field_base % CHAR_BIT)
 		return rte_flow_error_set
@@ -393,49 +504,90 @@ mlx5_flex_translate_length(struct mlx5_hca_flex_attr *attr,
 				 "negative header length field base (FIXED)");
 		node->header_length_mode = MLX5_GRAPH_NODE_LEN_FIXED;
 		break;
-	case FIELD_MODE_OFFSET:
+	case FIELD_MODE_OFFSET: {
+		uint32_t msb, lsb;
+		int32_t shift = field->offset_shift;
+		uint32_t offset = field->offset_base;
+		uint32_t mask = field->offset_mask;
+		uint32_t wmax = attr->header_length_mask_width +
+				MLX5_PARSE_GRAPH_NODE_HDR_LEN_SHIFT_DWORD;
+
 		if (!(attr->header_length_mode &
 		    RTE_BIT32(MLX5_GRAPH_NODE_LEN_FIELD)))
 			return rte_flow_error_set
 				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
 				 "unsupported header length field mode (OFFSET)");
+		if (!field->field_size)
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "field size is a must for offset mode");
+		if ((offset ^ (field->field_size + offset)) >> 5)
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "field crosses the 32-bit word boundary");
+		/* Hardware counts in dwords, all shifts done by offset within mask */
+		if (shift < 0 || (uint32_t)shift >= wmax)
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "header length field shift exceeds limits (OFFSET)");
+		if (!mask)
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "zero length field offset mask (OFFSET)");
+		msb = rte_fls_u32(mask) - 1;
+		lsb = rte_bsf32(mask);
+		if (!rte_is_power_of_2((mask >> lsb) + 1))
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "length field offset mask not contiguous (OFFSET)");
+		if (msb >= field->field_size)
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "length field offset mask exceeds field size (OFFSET)");
+		if (msb >= wmax)
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "length field offset mask exceeds supported width (OFFSET)");
+		if (mask & ~mlx5_flex_hdr_len_mask(shift, attr))
+			return rte_flow_error_set
+				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+				 "mask and shift combination not supported (OFFSET)");
+		msb++;
+		offset += field->field_size - msb;
+		if (msb < attr->header_length_mask_width) {
+			if (attr->header_length_mask_width - msb > offset)
+				return rte_flow_error_set
+					(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
+					 "field size plus offset_base is too small");
+			offset += msb;
+			/*
+			 * Here we can move to preceding dword. Hardware does
+			 * cyclic left shift so we should avoid this and stay
+			 * at current dword offset.
+			 */
+			offset = (offset & ~0x1Fu) |
+				 ((offset - attr->header_length_mask_width) & 0x1F);
+		}
 		node->header_length_mode = MLX5_GRAPH_NODE_LEN_FIELD;
-		if (field->offset_mask == 0 ||
-		    !rte_is_power_of_2(field->offset_mask + 1))
-			return rte_flow_error_set
-				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
-				 "invalid length field offset mask (OFFSET)");
-		len_width = rte_fls_u32(field->offset_mask);
-		if (len_width > attr->header_length_mask_width)
-			return rte_flow_error_set
-				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
-				 "length field offset mask too wide (OFFSET)");
-		mask = mlx5_flex_hdr_len_mask(field->offset_shift, attr);
-		if (mask < field->offset_mask)
-			return rte_flow_error_set
-				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
-				 "length field shift too big (OFFSET)");
-		node->header_length_field_mask = RTE_MIN(mask,
-							 field->offset_mask);
+		node->header_length_field_mask = mask;
+		node->header_length_field_shift = shift;
+		node->header_length_field_offset = offset;
 		break;
+	}
 	case FIELD_MODE_BITMASK:
 		if (!(attr->header_length_mode &
 		    RTE_BIT32(MLX5_GRAPH_NODE_LEN_BITMASK)))
 			return rte_flow_error_set
 				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
 				 "unsupported header length field mode (BITMASK)");
-		if (attr->header_length_mask_width < field->field_size)
+		if (field->offset_shift > 15 || field->offset_shift < 0)
 			return rte_flow_error_set
 				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
-				 "header length field width exceeds limit");
+				 "header length field shift exceeds limit (BITMASK)");
 		node->header_length_mode = MLX5_GRAPH_NODE_LEN_BITMASK;
-		mask = mlx5_flex_hdr_len_mask(field->offset_shift, attr);
-		if (mask < field->offset_mask)
-			return rte_flow_error_set
-				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
-				 "length field shift too big (BITMASK)");
-		node->header_length_field_mask = RTE_MIN(mask,
-							 field->offset_mask);
+		node->header_length_field_mask = field->offset_mask;
+		node->header_length_field_shift = field->offset_shift;
+		node->header_length_field_offset = field->offset_base;
 		break;
 	default:
 		return rte_flow_error_set
@@ -448,15 +600,6 @@ mlx5_flex_translate_length(struct mlx5_hca_flex_attr *attr,
 			(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
 			 "header length field base exceeds limit");
 	node->header_length_base_value = field->field_base / CHAR_BIT;
-	if (field->field_mode == FIELD_MODE_OFFSET ||
-	    field->field_mode == FIELD_MODE_BITMASK) {
-		if (field->offset_shift > 15 || field->offset_shift < 0)
-			return rte_flow_error_set
-				(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
-				 "header length field shift exceeds limit");
-		node->header_length_field_shift	= field->offset_shift;
-		node->header_length_field_offset = field->offset_base;
-	}
 	return 0;
 }
 
@@ -1044,6 +1187,22 @@ mlx5_flex_arc_in_udp(const struct rte_flow_item *item,
 }
 
 static int
+mlx5_flex_arc_in_ipv6(const struct rte_flow_item *item,
+		      struct rte_flow_error *error)
+{
+	const struct rte_flow_item_ipv6 *spec = item->spec;
+	const struct rte_flow_item_ipv6 *mask = item->mask;
+	struct rte_flow_item_ipv6 ip = { .hdr.proto = 0xff };
+
+	if (memcmp(mask, &ip, sizeof(struct rte_flow_item_ipv6))) {
+		return rte_flow_error_set
+			(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, item,
+			 "invalid ipv6 item mask, full mask is desired");
+	}
+	return spec->hdr.proto;
+}
+
+static int
 mlx5_flex_translate_arc_in(struct mlx5_hca_flex_attr *attr,
 			   const struct rte_flow_item_flex_conf *conf,
 			   struct mlx5_flex_parser_devx *devx,
@@ -1088,6 +1247,9 @@ mlx5_flex_translate_arc_in(struct mlx5_hca_flex_attr *attr,
 			break;
 		case RTE_FLOW_ITEM_TYPE_UDP:
 			ret = mlx5_flex_arc_in_udp(rte_item, error);
+			break;
+		case RTE_FLOW_ITEM_TYPE_IPV6:
+			ret = mlx5_flex_arc_in_ipv6(rte_item, error);
 			break;
 		default:
 			MLX5_ASSERT(false);
@@ -1213,7 +1375,7 @@ flow_dv_item_create(struct rte_eth_dev *dev,
 	}
 	flex->devx_fp = container_of(ent, struct mlx5_flex_parser_devx, entry);
 	/* Mark initialized flex item valid. */
-	__atomic_add_fetch(&flex->refcnt, 1, __ATOMIC_RELEASE);
+	__atomic_fetch_add(&flex->refcnt, 1, __ATOMIC_RELEASE);
 	return (struct rte_flow_item_flex_handle *)flex;
 
 error:
@@ -1281,6 +1443,8 @@ mlx5_flex_parser_create_cb(void *list_ctx, void *ctx)
 {
 	struct mlx5_dev_ctx_shared *sh = list_ctx;
 	struct mlx5_flex_parser_devx *fp, *conf = ctx;
+	uint32_t i;
+	uint8_t sample_info = sh->cdev->config.hca_attr.flex.query_match_sample_info;
 	int ret;
 
 	fp = mlx5_malloc(MLX5_MEM_ZERO,	sizeof(struct mlx5_flex_parser_devx),
@@ -1298,9 +1462,17 @@ mlx5_flex_parser_create_cb(void *list_ctx, void *ctx)
 	/* Query the firmware assigned sample ids. */
 	ret = mlx5_devx_cmd_query_parse_samples(fp->devx_obj,
 						fp->sample_ids,
-						fp->num_samples);
+						fp->num_samples,
+						&fp->anchor_id);
 	if (ret)
 		goto error;
+	/* Query sample information per ID. */
+	for (i = 0; i < fp->num_samples && sample_info; i++) {
+		ret = mlx5_devx_cmd_match_sample_info_query(sh->cdev->ctx, fp->sample_ids[i],
+							    &fp->sample_info[i]);
+		if (ret)
+			goto error;
+	}
 	DRV_LOG(DEBUG, "DEVx flex parser %p created, samples num: %u",
 		(const void *)fp, fp->num_samples);
 	return &fp->entry;

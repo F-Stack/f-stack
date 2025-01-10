@@ -351,28 +351,19 @@ struct adapter {
  * t4_os_rwlock_init - initialize rwlock
  * @lock: the rwlock
  */
-static inline void t4_os_rwlock_init(rte_rwlock_t *lock)
-{
-	rte_rwlock_init(lock);
-}
+#define t4_os_rwlock_init(lock) rte_rwlock_init(lock)
 
 /**
  * t4_os_write_lock - get a write lock
  * @lock: the rwlock
  */
-static inline void t4_os_write_lock(rte_rwlock_t *lock)
-{
-	rte_rwlock_write_lock(lock);
-}
+#define t4_os_write_lock(lock) rte_rwlock_write_lock(lock)
 
 /**
  * t4_os_write_unlock - unlock a write lock
  * @lock: the rwlock
  */
-static inline void t4_os_write_unlock(rte_rwlock_t *lock)
-{
-	rte_rwlock_write_unlock(lock);
-}
+#define t4_os_write_unlock(lock) rte_rwlock_write_unlock(lock)
 
 /**
  * ethdev2pinfo - return the port_info structure associated with a rte_eth_dev
@@ -520,13 +511,7 @@ static inline void t4_write_reg64(struct adapter *adapter, u32 reg_addr,
 	CXGBE_WRITE_REG64(adapter, reg_addr, val);
 }
 
-#define PCI_STATUS              0x06    /* 16 bits */
-#define PCI_STATUS_CAP_LIST     0x10    /* Support Capability List */
-#define PCI_CAPABILITY_LIST     0x34
-/* Offset of first capability list entry */
-#define PCI_CAP_ID_EXP          0x10    /* PCI Express */
-#define PCI_CAP_LIST_ID         0       /* Capability ID */
-#define PCI_CAP_LIST_NEXT       1       /* Next capability in the list */
+#define PCI_CAP_ID_EXP          RTE_PCI_CAP_ID_EXP
 #define PCI_EXP_DEVCTL          0x0008  /* Device control */
 #define PCI_EXP_DEVCTL2         40      /* Device Control 2 */
 #define PCI_EXP_DEVCTL_EXT_TAG  0x0100  /* Extended Tag Field Enable */
@@ -629,31 +614,12 @@ static inline void t4_os_pci_read_cfg(struct adapter *adapter, size_t addr,
  */
 static inline int t4_os_find_pci_capability(struct adapter *adapter, int cap)
 {
-	u16 status;
-	int ttl = 48;
-	u8 pos = 0;
-	u8 id = 0;
-
-	t4_os_pci_read_cfg2(adapter, PCI_STATUS, &status);
-	if (!(status & PCI_STATUS_CAP_LIST)) {
+	if (!rte_pci_has_capability_list(adapter->pdev)) {
 		dev_err(adapter, "PCIe capability reading failed\n");
 		return -1;
 	}
 
-	t4_os_pci_read_cfg(adapter, PCI_CAPABILITY_LIST, &pos);
-	while (ttl-- && pos >= 0x40) {
-		pos &= ~3;
-		t4_os_pci_read_cfg(adapter, (pos + PCI_CAP_LIST_ID), &id);
-
-		if (id == 0xff)
-			break;
-
-		if (id == cap)
-			return (int)pos;
-
-		t4_os_pci_read_cfg(adapter, (pos + PCI_CAP_LIST_NEXT), &pos);
-	}
-	return 0;
+	return rte_pci_find_capability(adapter->pdev, cap);
 }
 
 /**
@@ -678,37 +644,25 @@ static inline void t4_os_set_hw_addr(struct adapter *adapter, int port_idx,
  * t4_os_lock_init - initialize spinlock
  * @lock: the spinlock
  */
-static inline void t4_os_lock_init(rte_spinlock_t *lock)
-{
-	rte_spinlock_init(lock);
-}
+#define t4_os_lock_init(lock) rte_spinlock_init(lock)
 
 /**
  * t4_os_lock - spin until lock is acquired
  * @lock: the spinlock
  */
-static inline void t4_os_lock(rte_spinlock_t *lock)
-{
-	rte_spinlock_lock(lock);
-}
+#define t4_os_lock(lock) rte_spinlock_lock(lock)
 
 /**
  * t4_os_unlock - unlock a spinlock
  * @lock: the spinlock
  */
-static inline void t4_os_unlock(rte_spinlock_t *lock)
-{
-	rte_spinlock_unlock(lock);
-}
+#define t4_os_unlock(lock) rte_spinlock_unlock(lock)
 
 /**
  * t4_os_trylock - try to get a lock
  * @lock: the spinlock
  */
-static inline int t4_os_trylock(rte_spinlock_t *lock)
-{
-	return rte_spinlock_trylock(lock);
-}
+#define t4_os_trylock(lock) rte_spinlock_trylock(lock)
 
 /**
  * t4_os_init_list_head - initialize

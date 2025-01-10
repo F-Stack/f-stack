@@ -16,147 +16,25 @@
 /******************************************************************************
  * If user knows a specific offload is not enabled by APP,
  * the macro can be commented to save the effort of fast path.
- * Currently below 2 features are supported in RX path,
+ * Currently below 6 features are supported in RX path,
  * 1, checksum offload
  * 2, VLAN/QINQ stripping
  * 3, RSS hash
  * 4, packet type analysis
  * 5, flow director ID report
+ * 6, timestamp offload
  ******************************************************************************/
 #define IAVF_RX_CSUM_OFFLOAD
 #define IAVF_RX_VLAN_OFFLOAD
 #define IAVF_RX_RSS_OFFLOAD
 #define IAVF_RX_PTYPE_OFFLOAD
 #define IAVF_RX_FDIR_OFFLOAD
+#define IAVF_RX_TS_OFFLOAD
 
 static __rte_always_inline void
 iavf_rxq_rearm(struct iavf_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union iavf_rx_desc *rxdp;
-	struct rte_mempool_cache *cache =
-		rte_mempool_default_cache(rxq->mp, rte_lcore_id());
-	struct rte_mbuf **rxp = &rxq->sw_ring[rxq->rxrearm_start];
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	if (unlikely(!cache))
-		return iavf_rxq_rearm_common(rxq, true);
-
-	/* We need to pull 'n' more MBUFs into the software ring from mempool
-	 * We inline the mempool function here, so we can vectorize the copy
-	 * from the cache into the shadow ring.
-	 */
-
-	/* Can this be satisfied from the cache? */
-	if (cache->len < IAVF_RXQ_REARM_THRESH) {
-		/* No. Backfill the cache first, and then fill from it */
-		uint32_t req = IAVF_RXQ_REARM_THRESH + (cache->size -
-							cache->len);
-
-		/* How many do we require i.e. number to fill the cache + the request */
-		int ret = rte_mempool_ops_dequeue_bulk
-				(rxq->mp, &cache->objs[cache->len], req);
-		if (ret == 0) {
-			cache->len += req;
-		} else {
-			if (rxq->rxrearm_nb + IAVF_RXQ_REARM_THRESH >=
-			    rxq->nb_rx_desc) {
-				__m128i dma_addr0;
-
-				dma_addr0 = _mm_setzero_si128();
-				for (i = 0; i < IAVF_VPMD_DESCS_PER_LOOP; i++) {
-					rxp[i] = &rxq->fake_mbuf;
-					_mm_storeu_si128((__m128i *)&rxdp[i].read,
-							 dma_addr0);
-				}
-			}
-			rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-					IAVF_RXQ_REARM_THRESH;
-			return;
-		}
-	}
-
-	const __m512i iova_offsets =  _mm512_set1_epi64(offsetof
-							(struct rte_mbuf, buf_iova));
-	const __m512i headroom = _mm512_set1_epi64(RTE_PKTMBUF_HEADROOM);
-
-#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
-	/* to shuffle the addresses to correct slots. Values 4-7 will contain
-	 * zeros, so use 7 for a zero-value.
-	 */
-	const __m512i permute_idx = _mm512_set_epi64(7, 7, 3, 1, 7, 7, 2, 0);
-#else
-	const __m512i permute_idx = _mm512_set_epi64(7, 3, 6, 2, 5, 1, 4, 0);
-#endif
-
-	/* Initialize the mbufs in vector, process 8 mbufs in one loop, taking
-	 * from mempool cache and populating both shadow and HW rings
-	 */
-	for (i = 0; i < IAVF_RXQ_REARM_THRESH / IAVF_DESCS_PER_LOOP_AVX; i++) {
-		const __m512i mbuf_ptrs = _mm512_loadu_si512
-			(&cache->objs[cache->len - IAVF_DESCS_PER_LOOP_AVX]);
-		_mm512_storeu_si512(rxp, mbuf_ptrs);
-
-		const __m512i iova_base_addrs = _mm512_i64gather_epi64
-				(_mm512_add_epi64(mbuf_ptrs, iova_offsets),
-				 0, /* base */
-				 1  /* scale */);
-		const __m512i iova_addrs = _mm512_add_epi64(iova_base_addrs,
-				headroom);
-#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
-		const __m512i iovas0 = _mm512_castsi256_si512
-				(_mm512_extracti64x4_epi64(iova_addrs, 0));
-		const __m512i iovas1 = _mm512_castsi256_si512
-				(_mm512_extracti64x4_epi64(iova_addrs, 1));
-
-		/* permute leaves desc 2-3 addresses in header address slots 0-1
-		 * but these are ignored by driver since header split not
-		 * enabled. Similarly for desc 6 & 7.
-		 */
-		const __m512i desc0_1 = _mm512_permutexvar_epi64
-				(permute_idx,
-				 iovas0);
-		const __m512i desc2_3 = _mm512_bsrli_epi128(desc0_1, 8);
-
-		const __m512i desc4_5 = _mm512_permutexvar_epi64
-				(permute_idx,
-				 iovas1);
-		const __m512i desc6_7 = _mm512_bsrli_epi128(desc4_5, 8);
-
-		_mm512_storeu_si512((void *)rxdp, desc0_1);
-		_mm512_storeu_si512((void *)(rxdp + 2), desc2_3);
-		_mm512_storeu_si512((void *)(rxdp + 4), desc4_5);
-		_mm512_storeu_si512((void *)(rxdp + 6), desc6_7);
-#else
-		/* permute leaves desc 4-7 addresses in header address slots 0-3
-		 * but these are ignored by driver since header split not
-		 * enabled.
-		 */
-		const __m512i desc0_3 = _mm512_permutexvar_epi64(permute_idx,
-								 iova_addrs);
-		const __m512i desc4_7 = _mm512_bsrli_epi128(desc0_3, 8);
-
-		_mm512_storeu_si512((void *)rxdp, desc0_3);
-		_mm512_storeu_si512((void *)(rxdp + 4), desc4_7);
-#endif
-		rxp += IAVF_DESCS_PER_LOOP_AVX;
-		rxdp += IAVF_DESCS_PER_LOOP_AVX;
-		cache->len -= IAVF_DESCS_PER_LOOP_AVX;
-	}
-
-	rxq->rxrearm_start += IAVF_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
-		rxq->rxrearm_start = 0;
-
-	rxq->rxrearm_nb -= IAVF_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			   (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
-
-	/* Update the tail pointer on the NIC */
-	IAVF_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
+	iavf_rxq_rearm_common(rxq, true);
 }
 
 #define IAVF_RX_LEN_MASK 0x80808080
@@ -661,11 +539,11 @@ _iavf_recv_raw_pkts_vec_avx512(struct iavf_rx_queue *rxq,
 		status0_7 = _mm256_packs_epi32(status0_7,
 					       _mm256_setzero_si256());
 
-		uint64_t burst = __builtin_popcountll
+		uint64_t burst = rte_popcount64
 					(_mm_cvtsi128_si64
 						(_mm256_extracti128_si256
 							(status0_7, 1)));
-		burst += __builtin_popcountll
+		burst += rte_popcount64
 				(_mm_cvtsi128_si64
 					(_mm256_castsi256_si128(status0_7)));
 		received += burst;
@@ -711,9 +589,9 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 					bool offload)
 {
 	struct iavf_adapter *adapter = rxq->vsi->adapter;
-
+#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 	uint64_t offloads = adapter->dev_data->dev_conf.rxmode.offloads;
-
+#endif
 #ifdef IAVF_RX_PTYPE_OFFLOAD
 	const uint32_t *type_table = adapter->ptype_tbl;
 #endif
@@ -741,6 +619,25 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 	if (!(rxdp->wb.status_error0 &
 	      rte_cpu_to_le_32(1 << IAVF_RX_FLEX_DESC_STATUS0_DD_S)))
 		return 0;
+
+#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
+#ifdef IAVF_RX_TS_OFFLOAD
+	uint8_t inflection_point = 0;
+	bool is_tsinit = false;
+	__m256i hw_low_last = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, (uint32_t)rxq->phc_time);
+
+	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+
+		if (unlikely(sw_cur_time - rxq->hw_time_update > 4)) {
+			hw_low_last = _mm256_setzero_si256();
+			is_tsinit = 1;
+		} else {
+			hw_low_last = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, (uint32_t)rxq->phc_time);
+		}
+	}
+#endif
+#endif
 
 	/* constants used in processing loop */
 	const __m512i crc_adjust =
@@ -1205,12 +1102,13 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 		if (offload) {
-#ifdef IAVF_RX_RSS_OFFLOAD
+#if defined(IAVF_RX_RSS_OFFLOAD) || defined(IAVF_RX_TS_OFFLOAD)
 			/**
 			 * needs to load 2nd 16B of each desc for RSS hash parsing,
 			 * will cause performance drop to get into this context.
 			 */
 			if (offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH ||
+				offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP ||
 			    rxq->rx_flags & IAVF_RX_FLAGS_VLAN_TAG_LOC_L2TAG2_2) {
 				/* load bottom half of every 32B desc */
 				const __m128i raw_desc_bh7 =
@@ -1262,6 +1160,7 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 						(_mm256_castsi128_si256(raw_desc_bh0),
 						 raw_desc_bh1, 1);
 
+#ifdef IAVF_RX_RSS_OFFLOAD
 				if (offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH) {
 					/**
 					 * to shift the 32b RSS hash value to the
@@ -1402,7 +1301,125 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 					mb0_1 = _mm256_or_si256
 							(mb0_1, vlan_tci0_1);
 				}
-			} /* if() on RSS hash parsing */
+#endif /* IAVF_RX_RSS_OFFLOAD */
+
+#ifdef IAVF_RX_TS_OFFLOAD
+				if (offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+					uint32_t mask = 0xFFFFFFFF;
+					__m256i ts;
+					__m256i ts_low = _mm256_setzero_si256();
+					__m256i ts_low1;
+					__m256i ts_low2;
+					__m256i max_ret;
+					__m256i cmp_ret;
+					uint8_t ret = 0;
+					uint8_t shift = 8;
+					__m256i ts_desp_mask = _mm256_set_epi32(mask, 0, 0, 0, mask, 0, 0, 0);
+					__m256i cmp_mask = _mm256_set1_epi32(mask);
+					__m256i ts_permute_mask = _mm256_set_epi32(7, 3, 6, 2, 5, 1, 4, 0);
+
+					ts = _mm256_and_si256(raw_desc_bh0_1, ts_desp_mask);
+					ts_low = _mm256_or_si256(ts_low, _mm256_srli_si256(ts, 3 * 4));
+					ts = _mm256_and_si256(raw_desc_bh2_3, ts_desp_mask);
+					ts_low = _mm256_or_si256(ts_low, _mm256_srli_si256(ts, 2 * 4));
+					ts = _mm256_and_si256(raw_desc_bh4_5, ts_desp_mask);
+					ts_low = _mm256_or_si256(ts_low, _mm256_srli_si256(ts, 4));
+					ts = _mm256_and_si256(raw_desc_bh6_7, ts_desp_mask);
+					ts_low = _mm256_or_si256(ts_low, ts);
+
+					ts_low1 = _mm256_permutevar8x32_epi32(ts_low, ts_permute_mask);
+					ts_low2 = _mm256_permutevar8x32_epi32(ts_low1,
+								_mm256_set_epi32(6, 5, 4, 3, 2, 1, 0, 7));
+					ts_low2 = _mm256_and_si256(ts_low2,
+								_mm256_set_epi32(mask, mask, mask, mask, mask, mask, mask, 0));
+					ts_low2 = _mm256_or_si256(ts_low2, hw_low_last);
+					hw_low_last = _mm256_and_si256(ts_low1,
+								_mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, mask));
+
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 0],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 0);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 1],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 1);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 2],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 2);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 3],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 3);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 4],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 4);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 5],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 5);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 6],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 6);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 7],
+						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 7);
+
+					if (unlikely(is_tsinit)) {
+						uint32_t in_timestamp;
+
+						if (iavf_get_phc_time(rxq))
+							PMD_DRV_LOG(ERR, "get physical time failed");
+						in_timestamp = *RTE_MBUF_DYNFIELD(rx_pkts[i + 0],
+										iavf_timestamp_dynfield_offset, uint32_t *);
+						rxq->phc_time = iavf_tstamp_convert_32b_64b(rxq->phc_time, in_timestamp);
+					}
+
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 0],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 1],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 2],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 3],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 4],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 5],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 6],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+					*RTE_MBUF_DYNFIELD(rx_pkts[i + 7],
+						iavf_timestamp_dynfield_offset + 4, uint32_t *) = (uint32_t)(rxq->phc_time >> 32);
+
+					max_ret = _mm256_max_epu32(ts_low2, ts_low1);
+					cmp_ret = _mm256_andnot_si256(_mm256_cmpeq_epi32(max_ret, ts_low1), cmp_mask);
+
+					if (_mm256_testz_si256(cmp_ret, cmp_mask)) {
+						inflection_point = 0;
+					} else {
+						inflection_point = 1;
+						while (shift > 1) {
+							shift = shift >> 1;
+							__m256i mask_low = _mm256_setzero_si256();
+							__m256i mask_high = _mm256_setzero_si256();
+							switch (shift) {
+							case 4:
+								mask_low = _mm256_set_epi32(0, 0, 0, 0, mask, mask, mask, mask);
+								mask_high = _mm256_set_epi32(mask, mask, mask, mask, 0, 0, 0, 0);
+								break;
+							case 2:
+								mask_low = _mm256_srli_si256(cmp_mask, 2 * 4);
+								mask_high = _mm256_slli_si256(cmp_mask, 2 * 4);
+								break;
+							case 1:
+								mask_low = _mm256_srli_si256(cmp_mask, 1 * 4);
+								mask_high = _mm256_slli_si256(cmp_mask, 1 * 4);
+								break;
+							}
+							ret = _mm256_testz_si256(cmp_ret, mask_low);
+							if (ret) {
+								ret = _mm256_testz_si256(cmp_ret, mask_high);
+								inflection_point += ret ? 0 : shift;
+								cmp_mask = mask_high;
+							} else {
+								cmp_mask = mask_low;
+							}
+						}
+					}
+					mbuf_flags = _mm256_or_si256(mbuf_flags,
+						_mm256_set1_epi32(iavf_timestamp_dynflag));
+				}
+#endif /* IAVF_RX_TS_OFFLOAD */
+			} /* if() on RSS hash or RX timestamp parsing */
 #endif
 		}
 #endif
@@ -1527,17 +1544,74 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 		status0_7 = _mm256_packs_epi32(status0_7,
 					       _mm256_setzero_si256());
 
-		uint64_t burst = __builtin_popcountll
+		uint64_t burst = rte_popcount64
 					(_mm_cvtsi128_si64
 						(_mm256_extracti128_si256
 							(status0_7, 1)));
-		burst += __builtin_popcountll
+		burst += rte_popcount64
 				(_mm_cvtsi128_si64
 					(_mm256_castsi256_si128(status0_7)));
 		received += burst;
+#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
+#ifdef IAVF_RX_TS_OFFLOAD
+		if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+			inflection_point = (inflection_point <= burst) ? inflection_point : 0;
+			switch (inflection_point) {
+			case 1:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 0],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 2:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 1],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 3:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 2],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 4:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 3],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 5:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 4],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 6:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 5],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 7:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 6],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				/* fallthrough */
+			case 8:
+				*RTE_MBUF_DYNFIELD(rx_pkts[i + 7],
+					iavf_timestamp_dynfield_offset + 4, uint32_t *) += 1;
+				rxq->phc_time += (uint64_t)1 << 32;
+				/* fallthrough */
+			case 0:
+				break;
+			default:
+				PMD_DRV_LOG(ERR, "invalid inflection point for rx timestamp");
+				break;
+			}
+
+			rxq->hw_time_update = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
+		}
+#endif
+#endif
 		if (burst != IAVF_DESCS_PER_LOOP_AVX)
 			break;
 	}
+
+#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
+#ifdef IAVF_RX_TS_OFFLOAD
+	if (received > 0 && (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP))
+		rxq->phc_time = *RTE_MBUF_DYNFIELD(rx_pkts[received - 1],
+			iavf_timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
+#endif
+#endif
 
 	/* update tail pointers */
 	rxq->rx_tail += received;
@@ -1785,13 +1859,13 @@ iavf_tx_free_bufs_avx512(struct iavf_tx_queue *txq)
 	    rte_cpu_to_le_64(IAVF_TX_DESC_DTYPE_DESC_DONE))
 		return 0;
 
-	n = txq->rs_thresh;
+	n = txq->rs_thresh >> txq->use_ctx;
 
 	 /* first buffer to free from S/W ring is at index
 	  * tx_next_dd - (tx_rs_thresh-1)
 	  */
 	txep = (void *)txq->sw_ring;
-	txep += txq->next_dd - (n - 1);
+	txep += (txq->next_dd >> txq->use_ctx) - (n - 1);
 
 	if (txq->offloads & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE && (n & 31) == 0) {
 		struct rte_mempool *mp = txep[0].mbuf->pool;
@@ -1818,6 +1892,7 @@ iavf_tx_free_bufs_avx512(struct iavf_tx_queue *txq)
 		uint32_t copied = 0;
 		/* n is multiple of 32 */
 		while (copied < n) {
+#ifdef RTE_ARCH_64
 			const __m512i a = _mm512_loadu_si512(&txep[copied]);
 			const __m512i b = _mm512_loadu_si512(&txep[copied + 8]);
 			const __m512i c = _mm512_loadu_si512(&txep[copied + 16]);
@@ -1827,6 +1902,12 @@ iavf_tx_free_bufs_avx512(struct iavf_tx_queue *txq)
 			_mm512_storeu_si512(&cache_objs[copied + 8], b);
 			_mm512_storeu_si512(&cache_objs[copied + 16], c);
 			_mm512_storeu_si512(&cache_objs[copied + 24], d);
+#else
+			const __m512i a = _mm512_loadu_si512(&txep[copied]);
+			const __m512i b = _mm512_loadu_si512(&txep[copied + 16]);
+			_mm512_storeu_si512(&cache_objs[copied], a);
+			_mm512_storeu_si512(&cache_objs[copied + 16], b);
+#endif
 			copied += 32;
 		}
 		cache->len += n;
@@ -1890,7 +1971,8 @@ tx_backlog_entry_avx512(struct iavf_tx_vec_entry *txep,
 
 static __rte_always_inline void
 iavf_vtx1(volatile struct iavf_tx_desc *txdp,
-	  struct rte_mbuf *pkt, uint64_t flags, bool offload)
+	  struct rte_mbuf *pkt, uint64_t flags,
+	  bool offload)
 {
 	uint64_t high_qw =
 		(IAVF_TX_DESC_DTYPE_DATA |
@@ -1908,8 +1990,8 @@ iavf_vtx1(volatile struct iavf_tx_desc *txdp,
 #define IAVF_TX_OFF_MASK 0x55
 static __rte_always_inline void
 iavf_vtx(volatile struct iavf_tx_desc *txdp,
-	 struct rte_mbuf **pkt, uint16_t nb_pkts,  uint64_t flags,
-	 bool offload)
+		struct rte_mbuf **pkt, uint16_t nb_pkts,  uint64_t flags,
+		bool offload)
 {
 	const uint64_t hi_qw_tmpl = (IAVF_TX_DESC_DTYPE_DATA |
 			((uint64_t)flags  << IAVF_TXD_QW1_CMD_SHIFT));
@@ -1926,26 +2008,24 @@ iavf_vtx(volatile struct iavf_tx_desc *txdp,
 			hi_qw_tmpl |
 			((uint64_t)pkt[3]->data_len <<
 			 IAVF_TXD_QW1_TX_BUF_SZ_SHIFT);
-		if (offload)
-			iavf_txd_enable_offload(pkt[3], &hi_qw3);
 		uint64_t hi_qw2 =
 			hi_qw_tmpl |
 			((uint64_t)pkt[2]->data_len <<
 			 IAVF_TXD_QW1_TX_BUF_SZ_SHIFT);
-		if (offload)
-			iavf_txd_enable_offload(pkt[2], &hi_qw2);
 		uint64_t hi_qw1 =
 			hi_qw_tmpl |
 			((uint64_t)pkt[1]->data_len <<
 			 IAVF_TXD_QW1_TX_BUF_SZ_SHIFT);
-		if (offload)
-			iavf_txd_enable_offload(pkt[1], &hi_qw1);
 		uint64_t hi_qw0 =
 			hi_qw_tmpl |
 			((uint64_t)pkt[0]->data_len <<
 			 IAVF_TXD_QW1_TX_BUF_SZ_SHIFT);
-		if (offload)
+		if (offload) {
+			iavf_txd_enable_offload(pkt[3], &hi_qw3);
+			iavf_txd_enable_offload(pkt[2], &hi_qw2);
+			iavf_txd_enable_offload(pkt[1], &hi_qw1);
 			iavf_txd_enable_offload(pkt[0], &hi_qw0);
+		}
 
 		__m512i desc0_3 =
 			_mm512_set_epi64
@@ -1965,6 +2045,257 @@ iavf_vtx(volatile struct iavf_tx_desc *txdp,
 		iavf_vtx1(txdp, *pkt, flags, offload);
 		txdp++, pkt++, nb_pkts--;
 	}
+}
+
+static __rte_always_inline void
+iavf_fill_ctx_desc_tunneling_avx512(uint64_t *low_ctx_qw, struct rte_mbuf *pkt)
+{
+	if (pkt->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+		uint64_t eip_typ = IAVF_TX_CTX_DESC_EIPT_NONE;
+		uint64_t eip_len = 0;
+		uint64_t eip_noinc = 0;
+		/* Default - IP_ID is increment in each segment of LSO */
+
+		switch (pkt->ol_flags & (RTE_MBUF_F_TX_OUTER_IPV4 |
+				RTE_MBUF_F_TX_OUTER_IPV6 |
+				RTE_MBUF_F_TX_OUTER_IP_CKSUM)) {
+		case RTE_MBUF_F_TX_OUTER_IPV4:
+			eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV4_NO_CHECKSUM_OFFLOAD;
+			eip_len = pkt->outer_l3_len >> 2;
+		break;
+		case RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IP_CKSUM:
+			eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV4_CHECKSUM_OFFLOAD;
+			eip_len = pkt->outer_l3_len >> 2;
+		break;
+		case RTE_MBUF_F_TX_OUTER_IPV6:
+			eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV6;
+			eip_len = pkt->outer_l3_len >> 2;
+		break;
+		}
+
+		/* L4TUNT: L4 Tunneling Type */
+		switch (pkt->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+		case RTE_MBUF_F_TX_TUNNEL_IPIP:
+			/* for non UDP / GRE tunneling, set to 00b */
+			break;
+		case RTE_MBUF_F_TX_TUNNEL_VXLAN:
+		case RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE:
+		case RTE_MBUF_F_TX_TUNNEL_GTP:
+		case RTE_MBUF_F_TX_TUNNEL_GENEVE:
+			eip_typ |= IAVF_TXD_CTX_UDP_TUNNELING;
+			break;
+		case RTE_MBUF_F_TX_TUNNEL_GRE:
+			eip_typ |= IAVF_TXD_CTX_GRE_TUNNELING;
+			break;
+		default:
+			PMD_TX_LOG(ERR, "Tunnel type not supported");
+			return;
+		}
+
+		/* L4TUNLEN: L4 Tunneling Length, in Words
+		 *
+		 * We depend on app to set rte_mbuf.l2_len correctly.
+		 * For IP in GRE it should be set to the length of the GRE
+		 * header;
+		 * For MAC in GRE or MAC in UDP it should be set to the length
+		 * of the GRE or UDP headers plus the inner MAC up to including
+		 * its last Ethertype.
+		 * If MPLS labels exists, it should include them as well.
+		 */
+		eip_typ |= (pkt->l2_len >> 1) << IAVF_TXD_CTX_QW0_NATLEN_SHIFT;
+
+		/**
+		 * Calculate the tunneling UDP checksum.
+		 * Shall be set only if L4TUNT = 01b and EIPT is not zero
+		 */
+		if ((eip_typ & (IAVF_TX_CTX_EXT_IP_IPV4 |
+					IAVF_TX_CTX_EXT_IP_IPV6 |
+					IAVF_TX_CTX_EXT_IP_IPV4_NO_CSUM)) &&
+				(eip_typ & IAVF_TXD_CTX_UDP_TUNNELING) &&
+				(pkt->ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
+			eip_typ |= IAVF_TXD_CTX_QW0_L4T_CS_MASK;
+
+		*low_ctx_qw = eip_typ << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPT_SHIFT |
+			eip_len << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPLEN_SHIFT |
+			eip_noinc << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIP_NOINC_SHIFT;
+
+	} else {
+		*low_ctx_qw = 0;
+	}
+}
+
+static inline void
+iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
+		const struct rte_mbuf *m)
+{
+	uint64_t eip_typ = IAVF_TX_CTX_DESC_EIPT_NONE;
+	uint64_t eip_len = 0;
+	uint64_t eip_noinc = 0;
+	/* Default - IP_ID is increment in each segment of LSO */
+
+	switch (m->ol_flags & (RTE_MBUF_F_TX_OUTER_IPV4 |
+			RTE_MBUF_F_TX_OUTER_IPV6 |
+			RTE_MBUF_F_TX_OUTER_IP_CKSUM)) {
+	case RTE_MBUF_F_TX_OUTER_IPV4:
+		eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV4_NO_CHECKSUM_OFFLOAD;
+		eip_len = m->outer_l3_len >> 2;
+	break;
+	case RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IP_CKSUM:
+		eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV4_CHECKSUM_OFFLOAD;
+		eip_len = m->outer_l3_len >> 2;
+	break;
+	case RTE_MBUF_F_TX_OUTER_IPV6:
+		eip_typ = IAVF_TX_CTX_DESC_EIPT_IPV6;
+		eip_len = m->outer_l3_len >> 2;
+	break;
+	}
+
+	/* L4TUNT: L4 Tunneling Type */
+	switch (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+	case RTE_MBUF_F_TX_TUNNEL_IPIP:
+		/* for non UDP / GRE tunneling, set to 00b */
+		break;
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE:
+	case RTE_MBUF_F_TX_TUNNEL_GTP:
+	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
+		eip_typ |= IAVF_TXD_CTX_UDP_TUNNELING;
+		break;
+	case RTE_MBUF_F_TX_TUNNEL_GRE:
+		eip_typ |= IAVF_TXD_CTX_GRE_TUNNELING;
+		break;
+	default:
+		PMD_TX_LOG(ERR, "Tunnel type not supported");
+		return;
+	}
+
+	/* L4TUNLEN: L4 Tunneling Length, in Words
+	 *
+	 * We depend on app to set rte_mbuf.l2_len correctly.
+	 * For IP in GRE it should be set to the length of the GRE
+	 * header;
+	 * For MAC in GRE or MAC in UDP it should be set to the length
+	 * of the GRE or UDP headers plus the inner MAC up to including
+	 * its last Ethertype.
+	 * If MPLS labels exists, it should include them as well.
+	 */
+	eip_typ |= (m->l2_len >> 1) << IAVF_TXD_CTX_QW0_NATLEN_SHIFT;
+
+	/**
+	 * Calculate the tunneling UDP checksum.
+	 * Shall be set only if L4TUNT = 01b and EIPT is not zero
+	 */
+	if ((eip_typ & (IAVF_TX_CTX_EXT_IP_IPV6 |
+				IAVF_TX_CTX_EXT_IP_IPV4 |
+				IAVF_TX_CTX_EXT_IP_IPV4_NO_CSUM)) &&
+			(eip_typ & IAVF_TXD_CTX_UDP_TUNNELING) &&
+			(m->ol_flags & RTE_MBUF_F_TX_OUTER_UDP_CKSUM))
+		eip_typ |= IAVF_TXD_CTX_QW0_L4T_CS_MASK;
+
+	*qw0 = eip_typ << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPT_SHIFT |
+		eip_len << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIPLEN_SHIFT |
+		eip_noinc << IAVF_TXD_CTX_QW0_TUN_PARAMS_EIP_NOINC_SHIFT;
+}
+
+static __rte_always_inline void
+ctx_vtx1(volatile struct iavf_tx_desc *txdp, struct rte_mbuf *pkt,
+		uint64_t flags, bool offload, uint8_t vlan_flag)
+{
+	uint64_t high_ctx_qw = IAVF_TX_DESC_DTYPE_CONTEXT;
+	uint64_t low_ctx_qw = 0;
+
+	if (((pkt->ol_flags & RTE_MBUF_F_TX_VLAN) || offload)) {
+		if (offload)
+			iavf_fill_ctx_desc_tunneling_avx512(&low_ctx_qw, pkt);
+		if ((pkt->ol_flags & RTE_MBUF_F_TX_VLAN) ||
+				(vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2)) {
+			high_ctx_qw |= IAVF_TX_CTX_DESC_IL2TAG2 << IAVF_TXD_CTX_QW1_CMD_SHIFT;
+			low_ctx_qw |= (uint64_t)pkt->vlan_tci << IAVF_TXD_CTX_QW0_L2TAG2_PARAM;
+		}
+	}
+	uint64_t high_data_qw = (IAVF_TX_DESC_DTYPE_DATA |
+				((uint64_t)flags  << IAVF_TXD_QW1_CMD_SHIFT) |
+				((uint64_t)pkt->data_len << IAVF_TXD_QW1_TX_BUF_SZ_SHIFT));
+	if (offload)
+		iavf_txd_enable_offload(pkt, &high_data_qw);
+
+	__m256i ctx_data_desc = _mm256_set_epi64x(high_data_qw, pkt->buf_iova + pkt->data_off,
+							high_ctx_qw, low_ctx_qw);
+
+	_mm256_storeu_si256((__m256i *)txdp, ctx_data_desc);
+}
+
+static __rte_always_inline void
+ctx_vtx(volatile struct iavf_tx_desc *txdp,
+		struct rte_mbuf **pkt, uint16_t nb_pkts,  uint64_t flags,
+		bool offload, uint8_t vlan_flag)
+{
+	uint64_t hi_data_qw_tmpl = (IAVF_TX_DESC_DTYPE_DATA |
+					((uint64_t)flags  << IAVF_TXD_QW1_CMD_SHIFT));
+
+	/* if unaligned on 32-bit boundary, do one to align */
+	if (((uintptr_t)txdp & 0x1F) != 0 && nb_pkts != 0) {
+		ctx_vtx1(txdp, *pkt, flags, offload, vlan_flag);
+		nb_pkts--, txdp++, pkt++;
+	}
+
+	for (; nb_pkts > 1; txdp += 4, pkt += 2, nb_pkts -= 2) {
+		uint64_t hi_ctx_qw1 = IAVF_TX_DESC_DTYPE_CONTEXT;
+		uint64_t hi_ctx_qw0 = IAVF_TX_DESC_DTYPE_CONTEXT;
+		uint64_t low_ctx_qw1 = 0;
+		uint64_t low_ctx_qw0 = 0;
+		uint64_t hi_data_qw1 = 0;
+		uint64_t hi_data_qw0 = 0;
+
+		hi_data_qw1 = hi_data_qw_tmpl |
+				((uint64_t)pkt[1]->data_len <<
+					IAVF_TXD_QW1_TX_BUF_SZ_SHIFT);
+		hi_data_qw0 = hi_data_qw_tmpl |
+				((uint64_t)pkt[0]->data_len <<
+					IAVF_TXD_QW1_TX_BUF_SZ_SHIFT);
+
+		if (pkt[1]->ol_flags & RTE_MBUF_F_TX_VLAN) {
+			if (vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2) {
+				hi_ctx_qw1 |=
+					IAVF_TX_CTX_DESC_IL2TAG2 << IAVF_TXD_CTX_QW1_CMD_SHIFT;
+				low_ctx_qw1 |=
+					(uint64_t)pkt[1]->vlan_tci << IAVF_TXD_CTX_QW0_L2TAG2_PARAM;
+			} else {
+				hi_data_qw1 |=
+					(uint64_t)pkt[1]->vlan_tci << IAVF_TXD_QW1_L2TAG1_SHIFT;
+			}
+		}
+
+		if (pkt[0]->ol_flags & RTE_MBUF_F_TX_VLAN) {
+			if (vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2) {
+				hi_ctx_qw0 |=
+					IAVF_TX_CTX_DESC_IL2TAG2 << IAVF_TXD_CTX_QW1_CMD_SHIFT;
+				low_ctx_qw0 |=
+					(uint64_t)pkt[0]->vlan_tci << IAVF_TXD_CTX_QW0_L2TAG2_PARAM;
+			} else {
+				hi_data_qw0 |=
+					(uint64_t)pkt[0]->vlan_tci << IAVF_TXD_QW1_L2TAG1_SHIFT;
+			}
+		}
+
+		if (offload) {
+			iavf_txd_enable_offload(pkt[1], &hi_data_qw1);
+			iavf_txd_enable_offload(pkt[0], &hi_data_qw0);
+			iavf_fill_ctx_desc_tunnelling_field(&low_ctx_qw1, pkt[1]);
+			iavf_fill_ctx_desc_tunnelling_field(&low_ctx_qw0, pkt[0]);
+		}
+
+		__m512i desc0_3 =
+				_mm512_set_epi64
+						(hi_data_qw1, pkt[1]->buf_iova + pkt[1]->data_off,
+						hi_ctx_qw1, low_ctx_qw1,
+						hi_data_qw0, pkt[0]->buf_iova + pkt[0]->data_off,
+						hi_ctx_qw0, low_ctx_qw0);
+		_mm512_storeu_si512((void *)txdp, desc0_3);
+	}
+
+	if (nb_pkts)
+		ctx_vtx1(txdp, *pkt, flags, offload, vlan_flag);
 }
 
 static __rte_always_inline uint16_t
@@ -2035,6 +2366,73 @@ iavf_xmit_fixed_burst_vec_avx512(void *tx_queue, struct rte_mbuf **tx_pkts,
 }
 
 static __rte_always_inline uint16_t
+iavf_xmit_fixed_burst_vec_avx512_ctx(void *tx_queue, struct rte_mbuf **tx_pkts,
+				 uint16_t nb_pkts, bool offload)
+{
+	struct iavf_tx_queue *txq = (struct iavf_tx_queue *)tx_queue;
+	volatile struct iavf_tx_desc *txdp;
+	struct iavf_tx_vec_entry *txep;
+	uint16_t n, nb_commit, nb_mbuf, tx_id;
+	/* bit2 is reserved and must be set to 1 according to Spec */
+	uint64_t flags = IAVF_TX_DESC_CMD_EOP | IAVF_TX_DESC_CMD_ICRC;
+	uint64_t rs = IAVF_TX_DESC_CMD_RS | flags;
+
+	if (txq->nb_free < txq->free_thresh)
+		iavf_tx_free_bufs_avx512(txq);
+
+	nb_commit = (uint16_t)RTE_MIN(txq->nb_free, nb_pkts << 1);
+	nb_commit &= 0xFFFE;
+	if (unlikely(nb_commit == 0))
+		return 0;
+
+	nb_pkts = nb_commit >> 1;
+	tx_id = txq->tx_tail;
+	txdp = &txq->tx_ring[tx_id];
+	txep = (void *)txq->sw_ring;
+	txep += (tx_id >> 1);
+
+	txq->nb_free = (uint16_t)(txq->nb_free - nb_commit);
+	n = (uint16_t)(txq->nb_tx_desc - tx_id);
+
+	if (n != 0 && nb_commit >= n) {
+		nb_mbuf = n >> 1;
+		tx_backlog_entry_avx512(txep, tx_pkts, nb_mbuf);
+
+		ctx_vtx(txdp, tx_pkts, nb_mbuf - 1, flags, offload, txq->vlan_flag);
+		tx_pkts += (nb_mbuf - 1);
+		txdp += (n - 2);
+		ctx_vtx1(txdp, *tx_pkts++, rs, offload, txq->vlan_flag);
+
+		nb_commit = (uint16_t)(nb_commit - n);
+
+		txq->next_rs = (uint16_t)(txq->rs_thresh - 1);
+		tx_id = 0;
+		/* avoid reach the end of ring */
+		txdp = txq->tx_ring;
+		txep = (void *)txq->sw_ring;
+	}
+
+	nb_mbuf = nb_commit >> 1;
+	tx_backlog_entry_avx512(txep, tx_pkts, nb_mbuf);
+
+	ctx_vtx(txdp, tx_pkts, nb_mbuf, flags, offload, txq->vlan_flag);
+	tx_id = (uint16_t)(tx_id + nb_commit);
+
+	if (tx_id > txq->next_rs) {
+		txq->tx_ring[txq->next_rs].cmd_type_offset_bsz |=
+			rte_cpu_to_le_64(((uint64_t)IAVF_TX_DESC_CMD_RS) <<
+					 IAVF_TXD_QW1_CMD_SHIFT);
+		txq->next_rs =
+			(uint16_t)(txq->next_rs + txq->rs_thresh);
+	}
+
+	txq->tx_tail = tx_id;
+
+	IAVF_PCI_REG_WC_WRITE(txq->qtx_tail, txq->tx_tail);
+	return nb_pkts;
+}
+
+static __rte_always_inline uint16_t
 iavf_xmit_pkts_vec_avx512_cmn(void *tx_queue, struct rte_mbuf **tx_pkts,
 			      uint16_t nb_pkts, bool offload)
 {
@@ -2069,18 +2467,19 @@ iavf_tx_queue_release_mbufs_avx512(struct iavf_tx_queue *txq)
 {
 	unsigned int i;
 	const uint16_t max_desc = (uint16_t)(txq->nb_tx_desc - 1);
+	const uint16_t end_desc = txq->tx_tail >> txq->use_ctx; /* next empty slot */
+	const uint16_t wrap_point = txq->nb_tx_desc >> txq->use_ctx;  /* end of SW ring */
 	struct iavf_tx_vec_entry *swr = (void *)txq->sw_ring;
 
 	if (!txq->sw_ring || txq->nb_free == max_desc)
 		return;
 
-	i = txq->next_dd - txq->rs_thresh + 1;
-	if (txq->tx_tail < i) {
-		for (; i < txq->nb_tx_desc; i++) {
-			rte_pktmbuf_free_seg(swr[i].mbuf);
-			swr[i].mbuf = NULL;
-		}
-		i = 0;
+	i = (txq->next_dd - txq->rs_thresh + 1) >> txq->use_ctx;
+	while (i != end_desc) {
+		rte_pktmbuf_free_seg(swr[i].mbuf);
+		swr[i].mbuf = NULL;
+		if (++i == wrap_point)
+			i = 0;
 	}
 }
 
@@ -2096,4 +2495,35 @@ iavf_xmit_pkts_vec_avx512_offload(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts)
 {
 	return iavf_xmit_pkts_vec_avx512_cmn(tx_queue, tx_pkts, nb_pkts, true);
+}
+
+static __rte_always_inline uint16_t
+iavf_xmit_pkts_vec_avx512_ctx_cmn(void *tx_queue, struct rte_mbuf **tx_pkts,
+				  uint16_t nb_pkts, bool offload)
+{
+	uint16_t nb_tx = 0;
+	struct iavf_tx_queue *txq = (struct iavf_tx_queue *)tx_queue;
+
+	while (nb_pkts) {
+		uint16_t ret, num;
+
+		/* cross rs_thresh boundary is not allowed */
+		num = (uint16_t)RTE_MIN(nb_pkts << 1, txq->rs_thresh);
+		num = num >> 1;
+		ret = iavf_xmit_fixed_burst_vec_avx512_ctx(tx_queue, &tx_pkts[nb_tx],
+						       num, offload);
+		nb_tx += ret;
+		nb_pkts -= ret;
+		if (ret < num)
+			break;
+	}
+
+	return nb_tx;
+}
+
+uint16_t
+iavf_xmit_pkts_vec_avx512_ctx_offload(void *tx_queue, struct rte_mbuf **tx_pkts,
+				  uint16_t nb_pkts)
+{
+	return iavf_xmit_pkts_vec_avx512_ctx_cmn(tx_queue, tx_pkts, nb_pkts, true);
 }

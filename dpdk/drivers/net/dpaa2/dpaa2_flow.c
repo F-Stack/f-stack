@@ -100,13 +100,13 @@ enum rte_flow_action_type dpaa2_supported_fs_action_type[] = {
 
 #ifndef __cplusplus
 static const struct rte_flow_item_eth dpaa2_flow_item_eth_mask = {
-	.dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-	.src.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-	.type = RTE_BE16(0xffff),
+	.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+	.hdr.src_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+	.hdr.ether_type = RTE_BE16(0xffff),
 };
 
 static const struct rte_flow_item_vlan dpaa2_flow_item_vlan_mask = {
-	.tci = RTE_BE16(0xffff),
+	.hdr.vlan_tci = RTE_BE16(0xffff),
 };
 
 static const struct rte_flow_item_ipv4 dpaa2_flow_item_ipv4_mask = {
@@ -966,7 +966,7 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 		return -1;
 	}
 
-	if (memcmp((const char *)&mask->src, zero_cmp, RTE_ETHER_ADDR_LEN)) {
+	if (memcmp((const char *)&mask->hdr.src_addr, zero_cmp, RTE_ETHER_ADDR_LEN)) {
 		index = dpaa2_flow_extract_search(
 				&priv->extract.qos_key_extract.dpkg,
 				NET_PROT_ETH, NH_FLD_ETH_SA);
@@ -1009,8 +1009,8 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 				&flow->qos_rule,
 				NET_PROT_ETH,
 				NH_FLD_ETH_SA,
-				&spec->src.addr_bytes,
-				&mask->src.addr_bytes,
+				&spec->hdr.src_addr.addr_bytes,
+				&mask->hdr.src_addr.addr_bytes,
 				sizeof(struct rte_ether_addr));
 		if (ret) {
 			DPAA2_PMD_ERR("QoS NH_FLD_ETH_SA rule data set failed");
@@ -1022,8 +1022,8 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 				&flow->fs_rule,
 				NET_PROT_ETH,
 				NH_FLD_ETH_SA,
-				&spec->src.addr_bytes,
-				&mask->src.addr_bytes,
+				&spec->hdr.src_addr.addr_bytes,
+				&mask->hdr.src_addr.addr_bytes,
 				sizeof(struct rte_ether_addr));
 		if (ret) {
 			DPAA2_PMD_ERR("FS NH_FLD_ETH_SA rule data set failed");
@@ -1031,7 +1031,7 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 		}
 	}
 
-	if (memcmp((const char *)&mask->dst, zero_cmp, RTE_ETHER_ADDR_LEN)) {
+	if (memcmp((const char *)&mask->hdr.dst_addr, zero_cmp, RTE_ETHER_ADDR_LEN)) {
 		index = dpaa2_flow_extract_search(
 				&priv->extract.qos_key_extract.dpkg,
 				NET_PROT_ETH, NH_FLD_ETH_DA);
@@ -1076,8 +1076,8 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 				&flow->qos_rule,
 				NET_PROT_ETH,
 				NH_FLD_ETH_DA,
-				&spec->dst.addr_bytes,
-				&mask->dst.addr_bytes,
+				&spec->hdr.dst_addr.addr_bytes,
+				&mask->hdr.dst_addr.addr_bytes,
 				sizeof(struct rte_ether_addr));
 		if (ret) {
 			DPAA2_PMD_ERR("QoS NH_FLD_ETH_DA rule data set failed");
@@ -1089,8 +1089,8 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 				&flow->fs_rule,
 				NET_PROT_ETH,
 				NH_FLD_ETH_DA,
-				&spec->dst.addr_bytes,
-				&mask->dst.addr_bytes,
+				&spec->hdr.dst_addr.addr_bytes,
+				&mask->hdr.dst_addr.addr_bytes,
 				sizeof(struct rte_ether_addr));
 		if (ret) {
 			DPAA2_PMD_ERR("FS NH_FLD_ETH_DA rule data set failed");
@@ -1098,7 +1098,7 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 		}
 	}
 
-	if (memcmp((const char *)&mask->type, zero_cmp, sizeof(rte_be16_t))) {
+	if (memcmp((const char *)&mask->hdr.ether_type, zero_cmp, sizeof(rte_be16_t))) {
 		index = dpaa2_flow_extract_search(
 				&priv->extract.qos_key_extract.dpkg,
 				NET_PROT_ETH, NH_FLD_ETH_TYPE);
@@ -1142,8 +1142,8 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 				&flow->qos_rule,
 				NET_PROT_ETH,
 				NH_FLD_ETH_TYPE,
-				&spec->type,
-				&mask->type,
+				&spec->hdr.ether_type,
+				&mask->hdr.ether_type,
 				sizeof(rte_be16_t));
 		if (ret) {
 			DPAA2_PMD_ERR("QoS NH_FLD_ETH_TYPE rule data set failed");
@@ -1155,8 +1155,8 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 				&flow->fs_rule,
 				NET_PROT_ETH,
 				NH_FLD_ETH_TYPE,
-				&spec->type,
-				&mask->type,
+				&spec->hdr.ether_type,
+				&mask->hdr.ether_type,
 				sizeof(rte_be16_t));
 		if (ret) {
 			DPAA2_PMD_ERR("FS NH_FLD_ETH_TYPE rule data set failed");
@@ -1266,7 +1266,7 @@ dpaa2_configure_flow_vlan(struct rte_flow *flow,
 		return -1;
 	}
 
-	if (!mask->tci)
+	if (!mask->hdr.vlan_tci)
 		return 0;
 
 	index = dpaa2_flow_extract_search(
@@ -1314,8 +1314,8 @@ dpaa2_configure_flow_vlan(struct rte_flow *flow,
 				&flow->qos_rule,
 				NET_PROT_VLAN,
 				NH_FLD_VLAN_TCI,
-				&spec->tci,
-				&mask->tci,
+				&spec->hdr.vlan_tci,
+				&mask->hdr.vlan_tci,
 				sizeof(rte_be16_t));
 	if (ret) {
 		DPAA2_PMD_ERR("QoS NH_FLD_VLAN_TCI rule data set failed");
@@ -1327,8 +1327,8 @@ dpaa2_configure_flow_vlan(struct rte_flow *flow,
 			&flow->fs_rule,
 			NET_PROT_VLAN,
 			NH_FLD_VLAN_TCI,
-			&spec->tci,
-			&mask->tci,
+			&spec->hdr.vlan_tci,
+			&mask->hdr.vlan_tci,
 			sizeof(rte_be16_t));
 	if (ret) {
 		DPAA2_PMD_ERR("FS NH_FLD_VLAN_TCI rule data set failed");
@@ -3360,7 +3360,7 @@ dpaa2_flow_verify_action(
 				rxq = priv->rx_vq[rss_conf->queue[i]];
 				if (rxq->tc_index != attr->group) {
 					DPAA2_PMD_ERR(
-						"Queue/Group combination are not supported\n");
+						"Queue/Group combination are not supported");
 					return -ENOTSUP;
 				}
 			}
@@ -3601,7 +3601,7 @@ dpaa2_generic_flow_set(struct rte_flow *flow,
 						priv->token, &qos_cfg);
 					if (ret < 0) {
 						DPAA2_PMD_ERR(
-						"RSS QoS table can not be configured(%d)\n",
+						"RSS QoS table can not be configured(%d)",
 							ret);
 						return -1;
 					}
@@ -3718,14 +3718,14 @@ dpaa2_generic_flow_set(struct rte_flow *flow,
 					&priv->extract.tc_key_extract[flow->tc_id].dpkg);
 			if (ret < 0) {
 				DPAA2_PMD_ERR(
-				"unable to set flow distribution.please check queue config\n");
+				"unable to set flow distribution.please check queue config");
 				return ret;
 			}
 
 			/* Allocate DMA'ble memory to write the rules */
 			param = (size_t)rte_malloc(NULL, 256, 64);
 			if (!param) {
-				DPAA2_PMD_ERR("Memory allocation failure\n");
+				DPAA2_PMD_ERR("Memory allocation failure");
 				return -1;
 			}
 
@@ -3747,7 +3747,7 @@ dpaa2_generic_flow_set(struct rte_flow *flow,
 						 priv->token, &tc_cfg);
 			if (ret < 0) {
 				DPAA2_PMD_ERR(
-					"RSS TC table cannot be configured: %d\n",
+					"RSS TC table cannot be configured: %d",
 					ret);
 				rte_free((void *)param);
 				return -1;
@@ -3772,7 +3772,7 @@ dpaa2_generic_flow_set(struct rte_flow *flow,
 							 priv->token, &qos_cfg);
 				if (ret < 0) {
 					DPAA2_PMD_ERR(
-					"RSS QoS dist can't be configured-%d\n",
+					"RSS QoS dist can't be configured-%d",
 					ret);
 					return -1;
 				}
@@ -3841,20 +3841,20 @@ dpaa2_dev_verify_attr(struct dpni_attr *dpni_attr,
 	int ret = 0;
 
 	if (unlikely(attr->group >= dpni_attr->num_rx_tcs)) {
-		DPAA2_PMD_ERR("Priority group is out of range\n");
+		DPAA2_PMD_ERR("Priority group is out of range");
 		ret = -ENOTSUP;
 	}
 	if (unlikely(attr->priority >= dpni_attr->fs_entries)) {
-		DPAA2_PMD_ERR("Priority within the group is out of range\n");
+		DPAA2_PMD_ERR("Priority within the group is out of range");
 		ret = -ENOTSUP;
 	}
 	if (unlikely(attr->egress)) {
 		DPAA2_PMD_ERR(
-			"Flow configuration is not supported on egress side\n");
+			"Flow configuration is not supported on egress side");
 		ret = -ENOTSUP;
 	}
 	if (unlikely(!attr->ingress)) {
-		DPAA2_PMD_ERR("Ingress flag must be configured\n");
+		DPAA2_PMD_ERR("Ingress flag must be configured");
 		ret = -EINVAL;
 	}
 	return ret;
@@ -3933,7 +3933,7 @@ int dpaa2_flow_validate(struct rte_eth_dev *dev,
 	ret = dpni_get_attributes(dpni, CMD_PRI_LOW, token, &dpni_attr);
 	if (ret < 0) {
 		DPAA2_PMD_ERR(
-			"Failure to get dpni@%p attribute, err code  %d\n",
+			"Failure to get dpni@%p attribute, err code  %d",
 			dpni, ret);
 		rte_flow_error_set(error, EPERM,
 			   RTE_FLOW_ERROR_TYPE_ATTR,
@@ -3945,7 +3945,7 @@ int dpaa2_flow_validate(struct rte_eth_dev *dev,
 	ret = dpaa2_dev_verify_attr(&dpni_attr, flow_attr);
 	if (ret < 0) {
 		DPAA2_PMD_ERR(
-			"Invalid attributes are given\n");
+			"Invalid attributes are given");
 		rte_flow_error_set(error, EPERM,
 			   RTE_FLOW_ERROR_TYPE_ATTR,
 			   flow_attr, "invalid");
@@ -3955,7 +3955,7 @@ int dpaa2_flow_validate(struct rte_eth_dev *dev,
 	ret = dpaa2_dev_verify_patterns(pattern);
 	if (ret < 0) {
 		DPAA2_PMD_ERR(
-			"Invalid pattern list is given\n");
+			"Invalid pattern list is given");
 		rte_flow_error_set(error, EPERM,
 			   RTE_FLOW_ERROR_TYPE_ITEM,
 			   pattern, "invalid");
@@ -3965,7 +3965,7 @@ int dpaa2_flow_validate(struct rte_eth_dev *dev,
 	ret = dpaa2_dev_verify_actions(actions);
 	if (ret < 0) {
 		DPAA2_PMD_ERR(
-			"Invalid action list is given\n");
+			"Invalid action list is given");
 		rte_flow_error_set(error, EPERM,
 			   RTE_FLOW_ERROR_TYPE_ACTION,
 			   actions, "invalid");
@@ -4012,13 +4012,13 @@ struct rte_flow *dpaa2_flow_create(struct rte_eth_dev *dev,
 	key_iova = (size_t)rte_zmalloc(NULL, 256, 64);
 	if (!key_iova) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configuration\n");
+			"Memory allocation failure for rule configuration");
 		goto mem_failure;
 	}
 	mask_iova = (size_t)rte_zmalloc(NULL, 256, 64);
 	if (!mask_iova) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configuration\n");
+			"Memory allocation failure for rule configuration");
 		goto mem_failure;
 	}
 
@@ -4029,13 +4029,13 @@ struct rte_flow *dpaa2_flow_create(struct rte_eth_dev *dev,
 	key_iova = (size_t)rte_zmalloc(NULL, 256, 64);
 	if (!key_iova) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configuration\n");
+			"Memory allocation failure for rule configuration");
 		goto mem_failure;
 	}
 	mask_iova = (size_t)rte_zmalloc(NULL, 256, 64);
 	if (!mask_iova) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configuration\n");
+			"Memory allocation failure for rule configuration");
 		goto mem_failure;
 	}
 

@@ -753,6 +753,7 @@ extern			void
 ef10_phy_link_ev(
 	__in		efx_nic_t *enp,
 	__in		efx_qword_t *eqp,
+	__in		boolean_t ev_is_v2,
 	__out		efx_link_mode_t *link_modep);
 
 LIBEFX_INTERNAL
@@ -1345,6 +1346,12 @@ ef10_filter_reconfigure(
 	__in				boolean_t brdcst,
 	__in_ecount(6*count)		uint8_t const *addrs,
 	__in				uint32_t count);
+
+LIBEFX_INTERNAL
+extern	__checkReturn	efx_rc_t
+ef10_filter_get_count(
+	__in	efx_nic_t *enp,
+	__out	uint32_t *countp);
 
 LIBEFX_INTERNAL
 extern		void

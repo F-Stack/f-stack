@@ -443,9 +443,7 @@ Per-lcore variables are implemented using *Thread Local Storage* (TLS) to provid
 Logs
 ~~~~
 
-A logging API is provided by EAL.
-By default, in a Linux application, logs are sent to syslog and also to the console.
-However, the log function can be overridden by the user to use a different logging mechanism.
+While originally part of EAL, DPDK logging functionality is now provided by the :doc:`log_lib`.
 
 Trace and Debug Functions
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -529,6 +527,31 @@ Misc Functions
 
 Locks and atomic operations are per-architecture (i686 and x86_64).
 
+Lock annotations
+~~~~~~~~~~~~~~~~
+
+R/W locks, seq locks and spinlocks have been instrumented to help developers in
+catching issues in DPDK.
+
+This instrumentation relies on
+`clang Thread Safety checks <https://clang.llvm.org/docs/ThreadSafetyAnalysis.html>`_.
+All attributes are prefixed with __rte and are fully described in the clang
+documentation.
+
+Some general comments:
+
+- it is important that lock requirements are expressed at the function
+  declaration level in headers so that other code units can be inspected,
+- when some global lock is necessary to some user-exposed API, it is preferred
+  to expose it via an internal helper rather than expose the global variable,
+- there are a list of known limitations with clang instrumentation, but before
+  waiving checks with ``__rte_no_thread_safety_analysis`` in your code, please
+  discuss it on the mailing list,
+
+The checks are enabled by default for libraries and drivers.
+They can be disabled by setting ``annotate_locks`` to ``false`` in
+the concerned library/driver ``meson.build``.
+
 IOVA Mode Detection
 ~~~~~~~~~~~~~~~~~~~
 
@@ -585,8 +608,6 @@ devices would fail anyway.
     ``RTE_PCI_DRV_NEED_IOVA_AS_VA`` flag is used to dictate that this PCI
     driver can only work in RTE_IOVA_VA mode.
 
-    When the KNI kernel module is detected, RTE_IOVA_PA mode is preferred as a
-    performance penalty is expected in RTE_IOVA_VA mode.
 
 IOVA Mode Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -735,7 +756,7 @@ Control Thread API
 ~~~~~~~~~~~~~~~~~~
 
 It is possible to create Control Threads using the public API
-``rte_ctrl_thread_create()``.
+``rte_thread_create_control()``.
 Those threads can be used for management/infrastructure tasks and are used
 internally by DPDK for multi process support and interrupt handling.
 
@@ -786,15 +807,15 @@ Known Issues
 
   This means, use cases involving preemptible pthreads should consider using rte_ring carefully.
 
-  1. It CAN be used for preemptible single-producer and single-consumer use case.
+  #. It CAN be used for preemptible single-producer and single-consumer use case.
 
-  2. It CAN be used for non-preemptible multi-producer and preemptible single-consumer use case.
+  #. It CAN be used for non-preemptible multi-producer and preemptible single-consumer use case.
 
-  3. It CAN be used for preemptible single-producer and non-preemptible multi-consumer use case.
+  #. It CAN be used for preemptible single-producer and non-preemptible multi-consumer use case.
 
-  4. It MAY be used by preemptible multi-producer and/or preemptible multi-consumer pthreads whose scheduling policy are all SCHED_OTHER(cfs), SCHED_IDLE or SCHED_BATCH. User SHOULD be aware of the performance penalty before using it.
+  #. It MAY be used by preemptible multi-producer and/or preemptible multi-consumer pthreads whose scheduling policy are all SCHED_OTHER(cfs), SCHED_IDLE or SCHED_BATCH. User SHOULD be aware of the performance penalty before using it.
 
-  5. It MUST not be used by multi-producer/consumer pthreads, whose scheduling policies are SCHED_FIFO or SCHED_RR.
+  #. It MUST not be used by multi-producer/consumer pthreads, whose scheduling policies are SCHED_FIFO or SCHED_RR.
 
   Alternatively, applications can use the lock-free stack mempool handler. When
   considering this handler, note that:

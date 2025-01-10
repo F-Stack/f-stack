@@ -162,6 +162,18 @@ The following are the application command-line options:
         Set crypto operation type. Use 0 for symmetric crypto ops (default)
         and 1 for asymmetric crypto ops.
 
+* ``--crypto_cipher_alg``
+
+        Cipher algorithm to be used. Default algorithm is NULL.
+
+* ``--crypto_cipher_key``
+
+        Key for the cipher algorithm selected.
+
+* ``--crypto_cipher_iv_sz``
+
+        IV size for the cipher algorithm
+
 * ``--mbuf_sz``
 
        Set packet mbuf size. Can be used to configure Jumbo Frames. Only
@@ -176,7 +188,8 @@ The following are the application command-line options:
 
        Set producer enqueue burst size. Can be used to configure the number of
        events the producer(s) will enqueue as a burst to the event device.
-       Only applicable for `perf_queue` test.
+       Only applicable for `perf_queue` and `perf_atq` test in combination with
+       CPU (default) or crypto device (``--prod_type_cryptodev``) producers.
 
 * ``--nb_eth_queues``
 
@@ -185,18 +198,18 @@ The following are the application command-line options:
 
 * ``--enable_vector``
 
-       Enable event vector for Rx/Tx adapters.
-       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+       Enable event vector for Rx/Tx/crypto adapters.
+       Only applicable for `pipeline_*` and `perf_*` tests.
 
 * ``--vector_size``
 
-       Vector size to configure for the Rx adapter.
-       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+       Vector size to configure for the Rx/crypto adapter.
+       Only applicable for `pipeline_*` and `perf_*` tests.
 
 * ``--vector_tmo_ns``
 
-       Vector timeout nanoseconds to be configured for the Rx adapter.
-       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+       Vector timeout nanoseconds to be configured for the Rx/crypto adapter.
+       Only applicable for `pipeline_*` and `perf_*` tests.
 
 * ``--per_port_pool``
 

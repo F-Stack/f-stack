@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -471,6 +471,8 @@ enum ice_status ice_read_sr_word(struct ice_hw *hw, u16 offset, u16 *data)
 	return status;
 }
 
+#define check_add_overflow __builtin_add_overflow
+
 /**
  * ice_get_pfa_module_tlv - Reads sub module TLV from NVM PFA
  * @hw: pointer to hardware structure
@@ -487,8 +489,7 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 		       u16 module_type)
 {
 	enum ice_status status;
-	u16 pfa_len, pfa_ptr;
-	u32 next_tlv;
+	u16 pfa_len, pfa_ptr, next_tlv, max_tlv;
 
 	status = ice_read_sr_word(hw, ICE_SR_PFA_PTR, &pfa_ptr);
 	if (status != ICE_SUCCESS) {
@@ -500,18 +501,30 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 		ice_debug(hw, ICE_DBG_INIT, "Failed to read PFA length.\n");
 		return status;
 	}
-	/* Starting with first TLV after PFA length, iterate through the list
+
+	if (check_add_overflow(pfa_ptr, (u16)(pfa_len - 1), &max_tlv)) {
+		ice_debug(hw, ICE_DBG_INIT, "PFA starts at offset %u. PFA length of %u caused 16-bit arithmetic overflow.\n",
+				  pfa_ptr, pfa_len);
+		return ICE_ERR_INVAL_SIZE;
+	}
+
+	/* The Preserved Fields Area contains a sequence of TLVs which define
+	 * its contents. The PFA length includes all of the TLVs, plus its
+	 * initial length word itself, *and* one final word at the end of all
+	 * of the TLVs.
+	 *
+	 * Starting with first TLV after PFA length, iterate through the list
 	 * of TLVs to find the requested one.
 	 */
 	next_tlv = pfa_ptr + 1;
-	while (next_tlv < ((u32)pfa_ptr + pfa_len)) {
+	while (next_tlv < max_tlv) {
 		u16 tlv_sub_module_type;
 		u16 tlv_len;
 
 		/* Read TLV type */
 		status = ice_read_sr_word(hw, (u16)next_tlv,
 					  &tlv_sub_module_type);
-		if (status != ICE_SUCCESS) {
+		if (status) {
 			ice_debug(hw, ICE_DBG_INIT, "Failed to read TLV type.\n");
 			break;
 		}
@@ -521,10 +534,6 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 			ice_debug(hw, ICE_DBG_INIT, "Failed to read TLV length.\n");
 			break;
 		}
-		if (tlv_len > pfa_len) {
-			ice_debug(hw, ICE_DBG_INIT, "Invalid TLV length.\n");
-			return ICE_ERR_INVAL_SIZE;
-		}
 		if (tlv_sub_module_type == module_type) {
 			if (tlv_len) {
 				*module_tlv = (u16)next_tlv;
@@ -533,10 +542,13 @@ ice_get_pfa_module_tlv(struct ice_hw *hw, u16 *module_tlv, u16 *module_tlv_len,
 			}
 			return ICE_ERR_INVAL_SIZE;
 		}
-		/* Check next TLV, i.e. current TLV pointer + length + 2 words
-		 * (for current TLV's type and length)
-		 */
-		next_tlv = next_tlv + tlv_len + 2;
+
+		if (check_add_overflow(next_tlv, (u16)2, &next_tlv) ||
+		    check_add_overflow(next_tlv, tlv_len, &next_tlv)) {
+			ice_debug(hw, ICE_DBG_INIT, "TLV of type %u and length 0x%04x caused 16-bit arithmetic overflow. The PFA starts at 0x%04x and has length of 0x%04x\n",
+					  tlv_sub_module_type, tlv_len, pfa_ptr, pfa_len);
+			return ICE_ERR_INVAL_SIZE;
+		}
 	}
 	/* Module does not exist */
 	return ICE_ERR_DOES_NOT_EXIST;
@@ -743,44 +755,70 @@ static enum ice_status
 ice_get_orom_civd_data(struct ice_hw *hw, enum ice_bank_select bank,
 		       struct ice_orom_civd_info *civd)
 {
-	struct ice_orom_civd_info tmp;
+	u8 *orom_data;
+	enum ice_status status;
 	u32 offset;
 
 	/* The CIVD section is located in the Option ROM aligned to 512 bytes.
 	 * The first 4 bytes must contain the ASCII characters "$CIV".
 	 * A simple modulo 256 sum of all of the bytes of the structure must
 	 * equal 0.
+	 *
+	 * The exact location is unknown and varies between images but is
+	 * usually somewhere in the middle of the bank. We need to scan the
+	 * Option ROM bank to locate it.
+	 *
+	 * It's significantly faster to read the entire Option ROM up front
+	 * using the maximum page size, than to read each possible location
+	 * with a separate firmware command.
 	 */
+	orom_data = (u8 *)ice_calloc(hw, hw->flash.banks.orom_size, sizeof(u8));
+	if (!orom_data)
+		return ICE_ERR_NO_MEMORY;
+
+	status = ice_read_flash_module(hw, bank, ICE_SR_1ST_OROM_BANK_PTR, 0,
+				       orom_data, hw->flash.banks.orom_size);
+	if (status) {
+		ice_debug(hw, ICE_DBG_NVM, "Unable to read Option ROM data\n");
+		goto exit_error;;
+	}
+
+	/* Scan the memory buffer to locate the CIVD data section */
 	for (offset = 0; (offset + 512) <= hw->flash.banks.orom_size; offset += 512) {
-		enum ice_status status;
+		struct ice_orom_civd_info *tmp;
 		u8 sum = 0, i;
 
-		status = ice_read_flash_module(hw, bank, ICE_SR_1ST_OROM_BANK_PTR,
-					       offset, (u8 *)&tmp, sizeof(tmp));
-		if (status) {
-			ice_debug(hw, ICE_DBG_NVM, "Unable to read Option ROM CIVD data\n");
-			return status;
-		}
+		tmp = (struct ice_orom_civd_info *)&orom_data[offset];
 
 		/* Skip forward until we find a matching signature */
-		if (memcmp("$CIV", tmp.signature, sizeof(tmp.signature)) != 0)
+		if (memcmp("$CIV", tmp->signature, sizeof(tmp->signature)) != 0)
 			continue;
 
+		ice_debug(hw, ICE_DBG_NVM, "Found CIVD section at offset %u\n",
+			  offset);
+
 		/* Verify that the simple checksum is zero */
-		for (i = 0; i < sizeof(tmp); i++)
-			sum += ((u8 *)&tmp)[i];
+		for (i = 0; i < sizeof(*tmp); i++)
+			sum += ((u8 *)tmp)[i];
 
 		if (sum) {
 			ice_debug(hw, ICE_DBG_NVM, "Found CIVD data with invalid checksum of %u\n",
 				  sum);
-			return ICE_ERR_NVM;
+			status = ICE_ERR_NVM;
+			goto exit_error;
 		}
 
-		*civd = tmp;
+		*civd = *tmp;
+		ice_free(hw, orom_data);
 		return ICE_SUCCESS;
 	}
 
-	return ICE_ERR_NVM;
+	status = ICE_ERR_NVM;
+	ice_debug(hw, ICE_DBG_NVM, "Unable to locate CIVD data within the Option ROM\n");
+
+exit_error:
+	ice_free(hw, orom_data);
+	return status;
 }
 
 /**

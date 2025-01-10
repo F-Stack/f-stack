@@ -55,7 +55,7 @@ tx_recover_qp(struct mlx5_txq_ctrl *txq_ctrl)
 
 /* Return 1 if the error CQE is signed otherwise, sign it and return 0. */
 static int
-check_err_cqe_seen(volatile struct mlx5_err_cqe *err_cqe)
+check_err_cqe_seen(volatile struct mlx5_error_cqe *err_cqe)
 {
 	static const uint8_t magic[] = "seen";
 	int ret = 1;
@@ -83,7 +83,7 @@ check_err_cqe_seen(volatile struct mlx5_err_cqe *err_cqe)
  */
 static int
 mlx5_tx_error_cqe_handle(struct mlx5_txq_data *__rte_restrict txq,
-			 volatile struct mlx5_err_cqe *err_cqe)
+			 volatile struct mlx5_error_cqe *err_cqe)
 {
 	if (err_cqe->syndrome != MLX5_CQE_SYNDROME_WR_FLUSH_ERR) {
 		const uint16_t wqe_m = ((1 << txq->wqe_n) - 1);
@@ -107,7 +107,7 @@ mlx5_tx_error_cqe_handle(struct mlx5_txq_data *__rte_restrict txq,
 			mlx5_dump_debug_information(name, "MLX5 Error CQ:",
 						    (const void *)((uintptr_t)
 						    txq->cqes),
-						    sizeof(struct mlx5_cqe) *
+						    sizeof(struct mlx5_error_cqe) *
 						    (1 << txq->cqe_n));
 			mlx5_dump_debug_information(name, "MLX5 Error SQ:",
 						    (const void *)((uintptr_t)
@@ -206,7 +206,7 @@ mlx5_tx_handle_completion(struct mlx5_txq_data *__rte_restrict txq,
 			 */
 			rte_wmb();
 			ret = mlx5_tx_error_cqe_handle
-				(txq, (volatile struct mlx5_err_cqe *)cqe);
+				(txq, (volatile struct mlx5_error_cqe *)cqe);
 			if (unlikely(ret < 0)) {
 				/*
 				 * Some error occurred on queue error
@@ -232,6 +232,15 @@ mlx5_tx_handle_completion(struct mlx5_txq_data *__rte_restrict txq,
 		MLX5_ASSERT((txq->fcqs[txq->cq_ci & txq->cqe_m] >> 16) ==
 			    cqe->wqe_counter);
 #endif
+		if (__rte_trace_point_fp_is_enabled()) {
+			uint64_t ts = rte_be_to_cpu_64(cqe->timestamp);
+			uint16_t wqe_id = rte_be_to_cpu_16(cqe->wqe_counter);
+
+			if (txq->rt_timestamp)
+				ts = mlx5_txpp_convert_rx_ts(NULL, ts);
+			rte_pmd_mlx5_trace_tx_complete(txq->port_id, txq->idx,
+						       wqe_id, ts);
+		}
 		ring_doorbell = true;
 		++txq->cq_ci;
 		last_cqe = cqe;

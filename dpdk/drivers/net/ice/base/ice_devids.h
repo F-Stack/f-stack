@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_DEVIDS_H_
@@ -27,6 +27,7 @@
 #define ICE_SUBDEV_ID_E810T4		0x02EA
 #define ICE_SUBDEV_ID_E810T5		0x0010
 #define ICE_SUBDEV_ID_E810T6		0x0012
+#define ICE_SUBDEV_ID_E810T7		0x0011
 /* Intel(R) Ethernet Controller E810-XXV for backplane */
 #define ICE_DEV_ID_E810_XXV_BACKPLANE	0x1599
 /* Intel(R) Ethernet Controller E810-XXV for QSFP */
@@ -72,9 +73,6 @@
 /* Intel(R) Ethernet Connection E825-C for SFP */
 #define ICE_DEV_ID_E825C_SFP	        0x579E
 /* Intel(R) Ethernet Connection E825-C 1GbE */
-#define ICE_DEV_ID_E825C_1GBE	        0x579F
-/* Intel(R) Ethernet Connection E825-X */
-#define ICE_DEV_ID_E825X	        0x0DCD
-
-
+#define ICE_DEV_ID_E825C_SGMII		0x579F
+#define ICE_DEV_ID_C825X		0x0DCD
 #endif /* _ICE_DEVIDS_H_ */

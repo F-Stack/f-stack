@@ -19,6 +19,7 @@
 #include <rte_test.h>
 
 #include "cnxk_eventdev.h"
+#include "cnxk_eventdev_dp.h"
 
 #define NUM_PACKETS (1024)
 #define MAX_EVENTS  (1024)
@@ -553,7 +554,7 @@ worker_multi_port_fn(void *arg)
 		ret = validate_event(&ev);
 		RTE_TEST_ASSERT_SUCCESS(ret, "Failed to validate event");
 		rte_pktmbuf_free(ev.mbuf);
-		__atomic_sub_fetch(total_events, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_sub(total_events, 1, __ATOMIC_RELAXED);
 	}
 
 	return 0;
@@ -915,7 +916,7 @@ worker_flow_based_pipeline(void *arg)
 
 			if (seqn_list_update(seqn) == 0) {
 				rte_pktmbuf_free(ev.mbuf);
-				__atomic_sub_fetch(total_events, 1,
+				__atomic_fetch_sub(total_events, 1,
 						   __ATOMIC_RELAXED);
 			} else {
 				plt_err("Failed to update seqn_list");
@@ -1071,7 +1072,7 @@ worker_group_based_pipeline(void *arg)
 
 			if (seqn_list_update(seqn) == 0) {
 				rte_pktmbuf_free(ev.mbuf);
-				__atomic_sub_fetch(total_events, 1,
+				__atomic_fetch_sub(total_events, 1,
 						   __ATOMIC_RELAXED);
 			} else {
 				plt_err("Failed to update seqn_list");
@@ -1216,7 +1217,7 @@ worker_flow_based_pipeline_max_stages_rand_sched_type(void *arg)
 
 		if (ev.sub_event_type == MAX_STAGES) { /* last stage */
 			rte_pktmbuf_free(ev.mbuf);
-			__atomic_sub_fetch(total_events, 1, __ATOMIC_RELAXED);
+			__atomic_fetch_sub(total_events, 1, __ATOMIC_RELAXED);
 		} else {
 			ev.event_type = RTE_EVENT_TYPE_CPU;
 			ev.sub_event_type++;
@@ -1292,7 +1293,7 @@ worker_queue_based_pipeline_max_stages_rand_sched_type(void *arg)
 
 		if (ev.queue_id == nr_queues - 1) { /* last stage */
 			rte_pktmbuf_free(ev.mbuf);
-			__atomic_sub_fetch(total_events, 1, __ATOMIC_RELAXED);
+			__atomic_fetch_sub(total_events, 1, __ATOMIC_RELAXED);
 		} else {
 			ev.event_type = RTE_EVENT_TYPE_CPU;
 			ev.queue_id++;
@@ -1337,7 +1338,7 @@ worker_mixed_pipeline_max_stages_rand_sched_type(void *arg)
 
 		if (ev.queue_id == nr_queues - 1) { /* Last stage */
 			rte_pktmbuf_free(ev.mbuf);
-			__atomic_sub_fetch(total_events, 1, __ATOMIC_RELAXED);
+			__atomic_fetch_sub(total_events, 1, __ATOMIC_RELAXED);
 		} else {
 			ev.event_type = RTE_EVENT_TYPE_CPU;
 			ev.queue_id++;

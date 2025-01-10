@@ -444,12 +444,15 @@ rxq_sync_cq(struct mlx5_rxq_data *rxq)
 			continue;
 		}
 		/* Compute the next non compressed CQE. */
-		rxq->cq_ci += rte_be_to_cpu_32(cqe->byte_cnt);
+		rxq->cq_ci += rxq->cqe_comp_layout ?
+			(MLX5_CQE_NUM_MINIS(cqe->op_own) + 1U) :
+			rte_be_to_cpu_32(cqe->byte_cnt);
 
 	} while (--i);
 	/* Move all CQEs to HW ownership, including possible MiniCQEs. */
 	for (i = 0; i < cqe_n; i++) {
 		cqe = &(*rxq->cqes)[i];
+		cqe->validity_iteration_count = MLX5_CQE_VIC_INIT;
 		cqe->op_own = MLX5_CQE_INVALIDATE;
 	}
 	/* Resync CQE and WQE (WQ in RESET state). */
@@ -652,6 +655,14 @@ mlx5_rx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t *desc,
 	struct mlx5_rxq_priv *rxq;
 	bool empty;
 
+	if (*desc > 1 << priv->sh->cdev->config.hca_attr.log_max_wq_sz) {
+		DRV_LOG(ERR,
+			"port %u number of descriptors requested for Rx queue"
+			" %u is more than supported",
+			dev->data->port_id, idx);
+		rte_errno = EINVAL;
+		return -EINVAL;
+	}
 	if (!rte_is_power_of_2(*desc)) {
 		*desc = 1 << log2above(*desc);
 		DRV_LOG(WARNING,
@@ -942,6 +953,7 @@ mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	/* Join owner list. */
 	LIST_INSERT_HEAD(&rxq_ctrl->owners, rxq, owner_entry);
 	rxq->ctrl = rxq_ctrl;
+	rte_atomic_fetch_add_explicit(&rxq_ctrl->ctrl_ref, 1, rte_memory_order_relaxed);
 	mlx5_rxq_ref(dev, idx);
 	DRV_LOG(DEBUG, "port %u adding Rx queue %u to list",
 		dev->data->port_id, idx);
@@ -1959,9 +1971,9 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		tmpl->rxq.shared = 1;
 		tmpl->share_group = conf->share_group;
 		tmpl->share_qid = conf->share_qid;
-		LIST_INSERT_HEAD(&priv->sh->shared_rxqs, tmpl, share_entry);
 	}
-	LIST_INSERT_HEAD(&priv->rxqsctrl, tmpl, next);
+	LIST_INSERT_HEAD(&priv->sh->shared_rxqs, tmpl, share_entry);
+	rte_atomic_store_explicit(&tmpl->ctrl_ref, 1, rte_memory_order_relaxed);
 	return tmpl;
 error:
 	mlx5_mr_btree_free(&tmpl->rxq.mr_ctrl.cache_bh);
@@ -2014,7 +2026,8 @@ mlx5_rxq_hairpin_new(struct rte_eth_dev *dev, struct mlx5_rxq_priv *rxq,
 	tmpl->rxq.idx = idx;
 	rxq->hairpin_conf = *hairpin_conf;
 	mlx5_rxq_ref(dev, idx);
-	LIST_INSERT_HEAD(&priv->rxqsctrl, tmpl, next);
+	LIST_INSERT_HEAD(&priv->sh->shared_rxqs, tmpl, share_entry);
+	rte_atomic_store_explicit(&tmpl->ctrl_ref, 1, rte_memory_order_relaxed);
 	return tmpl;
 }
 
@@ -2057,7 +2070,7 @@ mlx5_rxq_deref(struct rte_eth_dev *dev, uint16_t idx)
 
 	if (rxq == NULL)
 		return 0;
-	return __atomic_sub_fetch(&rxq->refcnt, 1, __ATOMIC_RELAXED);
+	return __atomic_fetch_sub(&rxq->refcnt, 1, __ATOMIC_RELAXED) - 1;
 }
 
 /**
@@ -2156,7 +2169,7 @@ mlx5_ext_rxq_deref(struct rte_eth_dev *dev, uint16_t idx)
 {
 	struct mlx5_external_rxq *rxq = mlx5_ext_rxq_get(dev, idx);
 
-	return __atomic_sub_fetch(&rxq->refcnt, 1, __ATOMIC_RELAXED);
+	return __atomic_fetch_sub(&rxq->refcnt, 1, __ATOMIC_RELAXED) - 1;
 }
 
 /**
@@ -2176,7 +2189,7 @@ mlx5_ext_rxq_get(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_priv *priv = dev->data->dev_private;
 
 	MLX5_ASSERT(mlx5_is_external_rxq(dev, idx));
-	return &priv->ext_rxqs[idx - MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
+	return &priv->ext_rxqs[idx - RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
 }
 
 /**
@@ -2256,6 +2269,7 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_rxq_priv *rxq;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 	uint32_t refcnt;
+	int32_t ctrl_ref;
 
 	if (priv->rxq_privs == NULL)
 		return 0;
@@ -2280,14 +2294,14 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
 					RTE_ETH_QUEUE_STATE_STOPPED;
 		}
 	} else { /* Refcnt zero, closing device. */
-		LIST_REMOVE(rxq_ctrl, next);
 		LIST_REMOVE(rxq, owner_entry);
-		if (LIST_EMPTY(&rxq_ctrl->owners)) {
+		ctrl_ref = rte_atomic_fetch_sub_explicit(&rxq_ctrl->ctrl_ref, 1,
+							 rte_memory_order_relaxed) - 1;
+		if (ctrl_ref == 1 && LIST_EMPTY(&rxq_ctrl->owners)) {
 			if (!rxq_ctrl->is_hairpin)
 				mlx5_mr_btree_free
 					(&rxq_ctrl->rxq.mr_ctrl.cache_bh);
-			if (rxq_ctrl->rxq.shared)
-				LIST_REMOVE(rxq_ctrl, share_entry);
+			LIST_REMOVE(rxq_ctrl, share_entry);
 			mlx5_free(rxq_ctrl);
 		}
 		dev->data->rx_queues[idx] = NULL;
@@ -2313,7 +2327,7 @@ mlx5_rxq_verify(struct rte_eth_dev *dev)
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 	int ret = 0;
 
-	LIST_FOREACH(rxq_ctrl, &priv->rxqsctrl, next) {
+	LIST_FOREACH(rxq_ctrl, &priv->sh->shared_rxqs, share_entry) {
 		DRV_LOG(DEBUG, "port %u Rx Queue %u still referenced",
 			dev->data->port_id, rxq_ctrl->rxq.idx);
 		++ret;
@@ -2341,7 +2355,7 @@ mlx5_ext_rxq_verify(struct rte_eth_dev *dev)
 	if (priv->ext_rxqs == NULL)
 		return 0;
 
-	for (i = MLX5_EXTERNAL_RX_QUEUE_ID_MIN; i <= UINT16_MAX ; ++i) {
+	for (i = RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN; i <= UINT16_MAX ; ++i) {
 		rxq = mlx5_ext_rxq_get(dev, i);
 		if (rxq->refcnt < 2)
 			continue;
@@ -2477,7 +2491,7 @@ mlx5_ind_table_obj_release(struct rte_eth_dev *dev,
 	unsigned int ret;
 
 	rte_rwlock_write_lock(&priv->ind_tbls_lock);
-	ret = __atomic_sub_fetch(&ind_tbl->refcnt, 1, __ATOMIC_RELAXED);
+	ret = __atomic_fetch_sub(&ind_tbl->refcnt, 1, __ATOMIC_RELAXED) - 1;
 	if (!ret)
 		LIST_REMOVE(ind_tbl, next);
 	rte_rwlock_write_unlock(&priv->ind_tbls_lock);
@@ -2774,6 +2788,7 @@ mlx5_hrxq_match_cb(void *tool_ctx __rte_unused, struct mlx5_list_entry *entry,
 	struct mlx5_hrxq *hrxq = container_of(entry, typeof(*hrxq), entry);
 
 	return (hrxq->rss_key_len != rss_desc->key_len ||
+	    hrxq->symmetric_hash_function != rss_desc->symmetric_hash_function ||
 	    memcmp(hrxq->rss_key, rss_desc->key, rss_desc->key_len) ||
 	    hrxq->hws_flags != rss_desc->hws_flags ||
 	    hrxq->hash_fields != rss_desc->hash_fields ||
@@ -2807,7 +2822,7 @@ mlx5_hrxq_match_cb(void *tool_ctx __rte_unused, struct mlx5_list_entry *entry,
 int
 mlx5_hrxq_modify(struct rte_eth_dev *dev, uint32_t hrxq_idx,
 		 const uint8_t *rss_key, uint32_t rss_key_len,
-		 uint64_t hash_fields,
+		 uint64_t hash_fields, bool symmetric_hash_function,
 		 const uint16_t *queues, uint32_t queues_n)
 {
 	int err;
@@ -2852,8 +2867,8 @@ mlx5_hrxq_modify(struct rte_eth_dev *dev, uint32_t hrxq_idx,
 		return -rte_errno;
 	}
 	MLX5_ASSERT(priv->obj_ops.hrxq_modify);
-	ret = priv->obj_ops.hrxq_modify(dev, hrxq, rss_key,
-					hash_fields, ind_tbl);
+	ret = priv->obj_ops.hrxq_modify(dev, hrxq, rss_key, hash_fields,
+					symmetric_hash_function, ind_tbl);
 	if (ret) {
 		rte_errno = errno;
 		goto error;
@@ -2880,6 +2895,7 @@ static void
 __mlx5_hrxq_remove(struct rte_eth_dev *dev, struct mlx5_hrxq *hrxq)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
+	bool deref_rxqs = true;
 
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 	if (hrxq->hws_flags)
@@ -2889,9 +2905,10 @@ __mlx5_hrxq_remove(struct rte_eth_dev *dev, struct mlx5_hrxq *hrxq)
 #endif
 	priv->obj_ops.hrxq_destroy(hrxq);
 	if (!hrxq->standalone) {
-		mlx5_ind_table_obj_release(dev, hrxq->ind_table,
-					   hrxq->hws_flags ?
-					   (!!dev->data->dev_started) : true);
+		if (!dev->data->dev_started && hrxq->hws_flags &&
+		    !priv->hws_rule_flushing)
+			deref_rxqs = false;
+		mlx5_ind_table_obj_release(dev, hrxq->ind_table, deref_rxqs);
 	}
 	mlx5_ipool_free(priv->sh->ipool[MLX5_IPOOL_HRXQ], hrxq->idx);
 }
@@ -2953,6 +2970,7 @@ __mlx5_hrxq_create(struct rte_eth_dev *dev,
 	hrxq->rss_key_len = rss_key_len;
 	hrxq->hash_fields = rss_desc->hash_fields;
 	hrxq->hws_flags = rss_desc->hws_flags;
+	hrxq->symmetric_hash_function = rss_desc->symmetric_hash_function;
 	memcpy(hrxq->rss_key, rss_key, rss_key_len);
 	ret = priv->obj_ops.hrxq_new(dev, hrxq, rss_desc->tunnel);
 	if (ret < 0)
@@ -3208,9 +3226,9 @@ mlx5_external_rx_queue_get_validate(uint16_t port_id, uint16_t dpdk_idx)
 	struct rte_eth_dev *dev;
 	struct mlx5_priv *priv;
 
-	if (dpdk_idx < MLX5_EXTERNAL_RX_QUEUE_ID_MIN) {
+	if (dpdk_idx < RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN) {
 		DRV_LOG(ERR, "Queue index %u should be in range: [%u, %u].",
-			dpdk_idx, MLX5_EXTERNAL_RX_QUEUE_ID_MIN, UINT16_MAX);
+			dpdk_idx, RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN, UINT16_MAX);
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -3241,7 +3259,7 @@ mlx5_external_rx_queue_get_validate(uint16_t port_id, uint16_t dpdk_idx)
 	 * DevX, external RxQs array is allocated.
 	 */
 	MLX5_ASSERT(priv->ext_rxqs != NULL);
-	return &priv->ext_rxqs[dpdk_idx - MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
+	return &priv->ext_rxqs[dpdk_idx - RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
 }
 
 int

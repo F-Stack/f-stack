@@ -20,15 +20,15 @@
  * Structure storing internal configuration (per-lcore)
  */
 struct lcore_config {
-	pthread_t thread_id;       /**< pthread identifier */
+	rte_thread_t thread_id;    /**< thread identifier */
 	int pipe_main2worker[2];   /**< communication pipe with main */
 	int pipe_worker2main[2];   /**< communication pipe with main */
 
-	lcore_function_t * volatile f; /**< function to call */
+	RTE_ATOMIC(lcore_function_t *) volatile f; /**< function to call */
 	void * volatile arg;       /**< argument of function */
 	volatile int ret;          /**< return value of function */
 
-	volatile enum rte_lcore_state_t state; /**< lcore state */
+	volatile RTE_ATOMIC(enum rte_lcore_state_t) state; /**< lcore state */
 	unsigned int socket_id;    /**< physical socket id for this lcore */
 	unsigned int core_id;      /**< core number on socket for this lcore */
 	int core_index;            /**< relative index, starting from 0 */
@@ -115,7 +115,8 @@ int rte_eal_memseg_init(void);
  * @return
  *   0 on success, negative on error
  */
-int rte_eal_memory_init(void);
+int rte_eal_memory_init(void)
+	__rte_shared_locks_required(rte_mcfg_mem_get_lock());
 
 /**
  * Configure timers
@@ -151,13 +152,6 @@ int rte_eal_tailqs_init(void);
  *  0 on success, negative on error
  */
 int rte_eal_intr_init(void);
-
-/**
- * Close the default log stream
- *
- * This function is private to EAL.
- */
-void rte_eal_log_cleanup(void);
 
 /**
  * Init alarm mechanism. This is to allow a callback be called after

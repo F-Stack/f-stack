@@ -3,6 +3,7 @@
  */
 
 #include <stdlib.h>
+#include <pthread.h>
 
 #include <rte_kvargs.h>
 #include <rte_malloc.h>
@@ -44,6 +45,7 @@ eth_dev_allocated(const char *name)
 
 static uint16_t
 eth_dev_find_free_port(void)
+	__rte_exclusive_locks_required(rte_mcfg_ethdev_get_lock())
 {
 	uint16_t i;
 
@@ -60,6 +62,7 @@ eth_dev_find_free_port(void)
 
 static struct rte_eth_dev *
 eth_dev_get(uint16_t port_id)
+	__rte_exclusive_locks_required(rte_mcfg_ethdev_get_lock())
 {
 	struct rte_eth_dev *eth_dev = &rte_eth_devices[port_id];
 
@@ -86,10 +89,11 @@ rte_eth_dev_allocate(const char *name)
 		return NULL;
 	}
 
-	eth_dev_shared_data_prepare();
+	/* Synchronize port creation between primary and secondary processes. */
+	rte_spinlock_lock(rte_mcfg_ethdev_get_lock());
 
-	/* Synchronize port creation between primary and secondary threads. */
-	rte_spinlock_lock(&eth_dev_shared_data->ownership_lock);
+	if (eth_dev_shared_data_prepare() == NULL)
+		goto unlock;
 
 	if (eth_dev_allocated(name) != NULL) {
 		RTE_ETHDEV_LOG(ERR,
@@ -111,9 +115,11 @@ rte_eth_dev_allocate(const char *name)
 	eth_dev->data->backer_port_id = RTE_MAX_ETHPORTS;
 	eth_dev->data->mtu = RTE_ETHER_MTU;
 	pthread_mutex_init(&eth_dev->data->flow_ops_mutex, NULL);
+	RTE_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	eth_dev_shared_data->allocated_ports++;
 
 unlock:
-	rte_spinlock_unlock(&eth_dev_shared_data->ownership_lock);
+	rte_spinlock_unlock(rte_mcfg_ethdev_get_lock());
 
 	return eth_dev;
 }
@@ -123,13 +129,14 @@ rte_eth_dev_allocated(const char *name)
 {
 	struct rte_eth_dev *ethdev;
 
-	eth_dev_shared_data_prepare();
+	rte_spinlock_lock(rte_mcfg_ethdev_get_lock());
 
-	rte_spinlock_lock(&eth_dev_shared_data->ownership_lock);
+	if (eth_dev_shared_data_prepare() != NULL)
+		ethdev = eth_dev_allocated(name);
+	else
+		ethdev = NULL;
 
-	ethdev = eth_dev_allocated(name);
-
-	rte_spinlock_unlock(&eth_dev_shared_data->ownership_lock);
+	rte_spinlock_unlock(rte_mcfg_ethdev_get_lock());
 
 	return ethdev;
 }
@@ -145,10 +152,11 @@ rte_eth_dev_attach_secondary(const char *name)
 	uint16_t i;
 	struct rte_eth_dev *eth_dev = NULL;
 
-	eth_dev_shared_data_prepare();
-
 	/* Synchronize port attachment to primary port creation and release. */
-	rte_spinlock_lock(&eth_dev_shared_data->ownership_lock);
+	rte_spinlock_lock(rte_mcfg_ethdev_get_lock());
+
+	if (eth_dev_shared_data_prepare() == NULL)
+		goto unlock;
 
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
 		if (strcmp(eth_dev_shared_data->data[i].name, name) == 0)
@@ -163,7 +171,8 @@ rte_eth_dev_attach_secondary(const char *name)
 		RTE_ASSERT(eth_dev->data->port_id == i);
 	}
 
-	rte_spinlock_unlock(&eth_dev_shared_data->ownership_lock);
+unlock:
+	rte_spinlock_unlock(rte_mcfg_ethdev_get_lock());
 	return eth_dev;
 }
 
@@ -216,10 +225,19 @@ rte_eth_dev_probing_finish(struct rte_eth_dev *dev)
 int
 rte_eth_dev_release_port(struct rte_eth_dev *eth_dev)
 {
+	int ret;
+
 	if (eth_dev == NULL)
 		return -EINVAL;
 
-	eth_dev_shared_data_prepare();
+	rte_spinlock_lock(rte_mcfg_ethdev_get_lock());
+	if (eth_dev_shared_data_prepare() == NULL)
+		ret = -EINVAL;
+	else
+		ret = 0;
+	rte_spinlock_unlock(rte_mcfg_ethdev_get_lock());
+	if (ret != 0)
+		return ret;
 
 	if (eth_dev->state != RTE_ETH_DEV_UNUSED)
 		rte_eth_dev_callback_process(eth_dev,
@@ -227,7 +245,7 @@ rte_eth_dev_release_port(struct rte_eth_dev *eth_dev)
 
 	eth_dev_fp_ops_reset(rte_eth_fp_ops + eth_dev->data->port_id);
 
-	rte_spinlock_lock(&eth_dev_shared_data->ownership_lock);
+	rte_spinlock_lock(rte_mcfg_ethdev_get_lock());
 
 	eth_dev->state = RTE_ETH_DEV_UNUSED;
 	eth_dev->device = NULL;
@@ -249,9 +267,13 @@ rte_eth_dev_release_port(struct rte_eth_dev *eth_dev)
 		rte_free(eth_dev->data->dev_private);
 		pthread_mutex_destroy(&eth_dev->data->flow_ops_mutex);
 		memset(eth_dev->data, 0, sizeof(struct rte_eth_dev_data));
+		eth_dev->data = NULL;
+
+		eth_dev_shared_data->allocated_ports--;
+		eth_dev_shared_data_release();
 	}
 
-	rte_spinlock_unlock(&eth_dev_shared_data->ownership_lock);
+	rte_spinlock_unlock(rte_mcfg_ethdev_get_lock());
 
 	return 0;
 }
@@ -292,8 +314,8 @@ rte_eth_dev_create(struct rte_device *device, const char *name,
 				}
 				/* got memory, but not local, so issue warning */
 				RTE_ETHDEV_LOG(WARNING,
-						"Private data for ethdev '%s' not allocated on local NUMA node %d\n",
-						device->name, device->numa_node);
+					       "Private data for ethdev '%s' not allocated on local NUMA node %d\n",
+					       device->name, device->numa_node);
 			}
 		}
 	} else {

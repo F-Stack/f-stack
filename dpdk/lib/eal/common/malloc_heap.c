@@ -168,7 +168,7 @@ find_suitable_element(struct malloc_heap *heap, size_t size,
 		}
 	}
 
-	if ((alt_elem != NULL) && (flags & RTE_MEMZONE_SIZE_HINT_ONLY))
+	if (flags & RTE_MEMZONE_SIZE_HINT_ONLY)
 		return alt_elem;
 
 	return NULL;
@@ -716,7 +716,16 @@ malloc_get_numa_socket(void)
 		if (conf->socket_mem[socket_id] != 0)
 			return socket_id;
 	}
-
+	/* We couldn't quickly find a NUMA node where memory was available,
+	 * so fall back to using main lcore socket ID.
+	 */
+	socket_id = rte_lcore_to_socket_id(rte_get_main_lcore());
+	/* Main lcore socket ID may be SOCKET_ID_ANY
+	 * when main lcore thread is affinitized to multiple NUMA nodes.
+	 */
+	if (socket_id != (unsigned int)SOCKET_ID_ANY)
+		return socket_id;
+	/* Failed to find meaningful socket ID, so use the first one available. */
 	return rte_socket_id_by_idx(0);
 }
 
@@ -1385,8 +1394,10 @@ malloc_heap_destroy(struct malloc_heap *heap)
 	if (heap->total_size != 0)
 		RTE_LOG(ERR, EAL, "Total size not zero, heap is likely corrupt\n");
 
-	/* after this, the lock will be dropped */
-	memset(heap, 0, sizeof(*heap));
+	/* Reset all of the heap but the (hold) lock so caller can release it. */
+	RTE_BUILD_BUG_ON(offsetof(struct malloc_heap, lock) != 0);
+	memset(RTE_PTR_ADD(heap, sizeof(heap->lock)), 0,
+		sizeof(*heap) - sizeof(heap->lock));
 
 	return 0;
 }
@@ -1419,18 +1430,20 @@ rte_eal_malloc_heap_init(void)
 		}
 	}
 
-
 	if (register_mp_requests()) {
 		RTE_LOG(ERR, EAL, "Couldn't register malloc multiprocess actions\n");
-		rte_mcfg_mem_read_unlock();
 		return -1;
 	}
 
-	/* unlock mem hotplug here. it's safe for primary as no requests can
+	return 0;
+}
+
+int rte_eal_malloc_heap_populate(void)
+{
+	/* mem hotplug is unlocked here. it's safe for primary as no requests can
 	 * even come before primary itself is fully initialized, and secondaries
 	 * do not need to initialize the heap.
 	 */
-	rte_mcfg_mem_read_unlock();
 
 	/* secondary process does not need to initialize anything */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)

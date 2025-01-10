@@ -151,6 +151,40 @@ instead of zero copy mode (if available).
 
     --vdev net_af_xdp,iface=ens786f1,force_copy=1
 
+use_cni
+~~~~~~~
+
+The EAL vdev argument ``use_cni`` is used to indicate that the user wishes to
+enable the `AF_XDP Device Plugin for Kubernetes`_ with a DPDK application/pod.
+
+.. _AF_XDP Device Plugin for Kubernetes: https://github.com/redhat-et/afxdp-plugins-for-kubernetes
+
+.. code-block:: console
+
+   --vdev=net_af_xdp0,use_cni=1
+
+.. note::
+
+   When using `use_cni`_, both parameters `xdp_prog`_ and `busy_budget`_ are disabled
+   as both of these will be handled by the AF_XDP plugin.
+   Since the DPDK application is running in limited privileges
+   so enabling and disabling of the promiscuous mode through the DPDK application
+   is also not supported.
+
+dp_path
+~~~~~~~
+
+The EAL vdev argument ``dp_path`` is used alongside the ``use_cni`` argument
+to explicitly tell the AF_XDP PMD where to find the UDS
+to interact with the `AF_XDP Device Plugin for Kubernetes`_.
+If this argument is not passed alongside the ``use_cni`` argument
+then the AF_XDP PMD configures it internally.
+
+.. _AF_XDP Device Plugin for Kubernetes: https://github.com/redhat-et/afxdp-plugins-for-kubernetes
+
+.. code-block:: console
+
+   --vdev=net_af_xdp0,use_cni=1,dp_path="/tmp/afxdp_dp/<<interface name>>/afxdp.sock"
 
 Limitations
 -----------

@@ -16,6 +16,7 @@ DevX
 DMA
 eCPRI
 EEPROM
+E-Switch
 FD
 FDIR
 FEC
@@ -26,6 +27,7 @@ GENEVE
 GTPU
 GUID
 HW
+IB
 ICMP
 ID
 IO
@@ -35,6 +37,7 @@ IP
 IPsec
 IPv4
 IPv6
+ISM
 L2
 L3
 L4
@@ -51,6 +54,7 @@ MPU
 MSI
 MSI-X
 MSS
+MSVC
 MTU
 NEON
 Netlink
@@ -73,6 +77,7 @@ QinQ
 RDMA
 RETA
 ROC
+RoCE
 RQ
 RSS
 RVU

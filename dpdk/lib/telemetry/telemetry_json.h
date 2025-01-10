@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <rte_common.h>
 #include <rte_telemetry.h>
 
@@ -17,8 +18,7 @@
  *
  * This file contains small inline functions to make it easier for applications
  * to build up valid JSON responses to telemetry requests.
- *
- ***/
+ */
 
 /**
  * @internal
@@ -30,17 +30,44 @@ __rte_format_printf(3, 4)
 static inline int
 __json_snprintf(char *buf, const int len, const char *format, ...)
 {
-	char tmp[len];
 	va_list ap;
+	char tmp[4];
+	char *newbuf;
 	int ret;
 
+	if (len == 0)
+		return 0;
+
+	/* to ensure unmodified if we overflow, we save off any values currently in buf
+	 * before we printf, if they are short enough. We restore them on error.
+	 */
+	if (strnlen(buf, sizeof(tmp)) < sizeof(tmp)) {
+		strcpy(tmp, buf);  /* strcpy is safe as we know the length */
+		va_start(ap, format);
+		ret = vsnprintf(buf, len, format, ap);
+		va_end(ap);
+		if (ret > 0 && ret < len)
+			return ret;
+		strcpy(buf, tmp);  /* restore on error */
+		return 0;
+	}
+
+	/* in normal operations should never hit this, but can do if buffer is
+	 * incorrectly initialized e.g. in unit test cases
+	 */
+	newbuf = malloc(len);
+	if (newbuf == NULL)
+		return 0;
+
 	va_start(ap, format);
-	ret = vsnprintf(tmp, sizeof(tmp), format, ap);
+	ret = vsnprintf(newbuf, len, format, ap);
 	va_end(ap);
-	if (ret > 0 && ret < (int)sizeof(tmp) && ret < len) {
-		strcpy(buf, tmp);
+	if (ret > 0 && ret < len) {
+		strcpy(buf, newbuf);
+		free(newbuf);
 		return ret;
 	}
+	free(newbuf);
 	return 0; /* nothing written or modified */
 }
 
@@ -52,6 +79,52 @@ static const char control_chars[0x20] = {
 
 /**
  * @internal
+ * Function that does the actual printing, used by __json_format_str. Modifies buffer
+ * directly, but returns 0 on overflow. Otherwise returns number of chars written to buffer.
+ */
+static inline int
+__json_format_str_to_buf(char *buf, const int len,
+		const char *prefix, const char *str, const char *suffix)
+{
+	int bufidx = 0;
+
+	while (*prefix != '\0' && bufidx < len)
+		buf[bufidx++] = *prefix++;
+	if (bufidx >= len)
+		return 0;
+
+	while (*str != '\0') {
+		if (*str < (int)RTE_DIM(control_chars)) {
+			int idx = *str;  /* compilers don't like char type as index */
+			if (control_chars[idx] != 0) {
+				buf[bufidx++] = '\\';
+				buf[bufidx++] = control_chars[idx];
+			}
+		} else if (*str == '"' || *str == '\\') {
+			buf[bufidx++] = '\\';
+			buf[bufidx++] = *str;
+		} else
+			buf[bufidx++] = *str;
+		/* we always need space for (at minimum) closing quote and null character.
+		 * Ensuring at least two free characters also means we can always take an
+		 * escaped character like "\n" without overflowing
+		 */
+		if (bufidx > len - 2)
+			return 0;
+		str++;
+	}
+
+	while (*suffix != '\0' && bufidx < len)
+		buf[bufidx++] = *suffix++;
+	if (bufidx >= len)
+		return 0;
+
+	buf[bufidx] = '\0';
+	return bufidx;
+}
+
+/**
+ * @internal
  * This function acts the same as __json_snprintf(buf, len, "%s%s%s", prefix, str, suffix)
  * except that it does proper escaping of "str" as necessary. Prefix and suffix should be compile-
  * time constants, or values not needing escaping.
@@ -60,44 +133,29 @@ static const char control_chars[0x20] = {
 static inline int
 __json_format_str(char *buf, const int len, const char *prefix, const char *str, const char *suffix)
 {
-	char tmp[len];
-	int tmpidx = 0;
+	int ret;
+	char saved[4] = "";
+	char *tmp;
 
-	while (*prefix != '\0' && tmpidx < len)
-		tmp[tmpidx++] = *prefix++;
-	if (tmpidx >= len)
-		return 0;
-
-	while (*str != '\0') {
-		if (*str < (int)RTE_DIM(control_chars)) {
-			int idx = *str;  /* compilers don't like char type as index */
-			if (control_chars[idx] != 0) {
-				tmp[tmpidx++] = '\\';
-				tmp[tmpidx++] = control_chars[idx];
-			}
-		} else if (*str == '"' || *str == '\\') {
-			tmp[tmpidx++] = '\\';
-			tmp[tmpidx++] = *str;
-		} else
-			tmp[tmpidx++] = *str;
-		/* we always need space for (at minimum) closing quote and null character.
-		 * Ensuring at least two free characters also means we can always take an
-		 * escaped character like "\n" without overflowing
-		 */
-		if (tmpidx > len - 2)
-			return 0;
-		str++;
+	if (strnlen(buf, sizeof(saved)) < sizeof(saved)) {
+		/* we have only a few bytes in buffer, so save them off to restore on error*/
+		strcpy(saved, buf);
+		ret = __json_format_str_to_buf(buf, len, prefix, str, suffix);
+		if (ret == 0)
+			strcpy(buf, saved); /* restore */
+		return ret;
 	}
 
-	while (*suffix != '\0' && tmpidx < len)
-		tmp[tmpidx++] = *suffix++;
-	if (tmpidx >= len)
+	tmp = malloc(len);
+	if (tmp == NULL)
 		return 0;
 
-	tmp[tmpidx] = '\0';
+	ret = __json_format_str_to_buf(tmp, len, prefix, str, suffix);
+	if (ret > 0)
+		strcpy(buf, tmp);
 
-	strcpy(buf, tmp);
-	return tmpidx;
+	free(tmp);
+	return ret;
 }
 
 /* Copies an empty array into the provided buffer. */
@@ -136,19 +194,19 @@ rte_tel_json_add_array_string(char *buf, const int len, const int used,
 
 /* Appends an integer into the JSON array in the provided buffer. */
 static inline int
-rte_tel_json_add_array_int(char *buf, const int len, const int used, int val)
+rte_tel_json_add_array_int(char *buf, const int len, const int used, int64_t val)
 {
 	int ret, end = used - 1; /* strip off final delimiter */
 	if (used <= 2) /* assume empty, since minimum is '[]' */
-		return __json_snprintf(buf, len, "[%d]", val);
+		return __json_snprintf(buf, len, "[%"PRId64"]", val);
 
-	ret = __json_snprintf(buf + end, len - end, ",%d]", val);
+	ret = __json_snprintf(buf + end, len - end, ",%"PRId64"]", val);
 	return ret == 0 ? used : end + ret;
 }
 
 /* Appends a uint64_t into the JSON array in the provided buffer. */
 static inline int
-rte_tel_json_add_array_u64(char *buf, const int len, const int used,
+rte_tel_json_add_array_uint(char *buf, const int len, const int used,
 		uint64_t val)
 {
 	int ret, end = used - 1; /* strip off final delimiter */
@@ -180,7 +238,7 @@ rte_tel_json_add_array_json(char *buf, const int len, const int used,
  * provided buffer.
  */
 static inline int
-rte_tel_json_add_obj_u64(char *buf, const int len, const int used,
+rte_tel_json_add_obj_uint(char *buf, const int len, const int used,
 		const char *name, uint64_t val)
 {
 	int ret, end = used - 1;
@@ -199,14 +257,14 @@ rte_tel_json_add_obj_u64(char *buf, const int len, const int used,
  */
 static inline int
 rte_tel_json_add_obj_int(char *buf, const int len, const int used,
-		const char *name, int val)
+		const char *name, int64_t val)
 {
 	int ret, end = used - 1;
 	if (used <= 2) /* assume empty, since minimum is '{}' */
-		return __json_snprintf(buf, len, "{\"%s\":%d}", name,
+		return __json_snprintf(buf, len, "{\"%s\":%"PRId64"}", name,
 				val);
 
-	ret = __json_snprintf(buf + end, len - end, ",\"%s\":%d}",
+	ret = __json_snprintf(buf + end, len - end, ",\"%s\":%"PRId64"}",
 			name, val);
 	return ret == 0 ? used : end + ret;
 }

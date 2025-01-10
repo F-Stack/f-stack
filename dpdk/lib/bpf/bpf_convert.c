@@ -23,11 +23,8 @@
 #include <rte_malloc.h>
 #include <rte_errno.h>
 
-/* Workaround name conflicts with libpcap */
-#define bpf_validate(f, len) bpf_validate_libpcap(f, len)
 #include <pcap/pcap.h>
 #include <pcap/bpf.h>
-#undef bpf_validate
 
 #include "bpf_impl.h"
 #include "bpf_def.h"
@@ -559,7 +556,7 @@ rte_bpf_convert(const struct bpf_program *prog)
 	ret = bpf_convert_filter(prog->bf_insns, prog->bf_len, ebpf, &ebpf_len);
 	if (ret < 0) {
 		RTE_BPF_LOG(ERR, "%s: cannot convert cBPF to eBPF\n", __func__);
-		free(prm);
+		rte_free(prm);
 		rte_errno = -ret;
 		return NULL;
 	}

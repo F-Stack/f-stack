@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016-2022 NXP
+ *   Copyright 2016-2023 NXP
  *
  */
 
@@ -106,7 +106,7 @@ struct sec_cdb {
 
 	uint32_t sh_desc[DPAA_SEC_MAX_DESC_SIZE];
 };
-#ifdef RTE_LIB_SECURITY
+
 /*!
  * The structure is to be filled by user as a part of
  * dpaa_sec_proto_ctxt for PDCP Protocol
@@ -124,7 +124,6 @@ struct sec_pdcp_ctxt {
 	uint32_t hfn;	/*!< Hyper Frame Number */
 	uint32_t hfn_threshold;	/*!< HFN Threashold for key renegotiation */
 };
-#endif
 
 typedef int (*dpaa_sec_build_fd_t)(
 	void *qp, uint8_t *drv_ctx, struct rte_crypto_vec *data_vec,
@@ -153,9 +152,7 @@ typedef struct dpaa_sec_session_entry {
 	enum rte_crypto_cipher_algorithm cipher_alg; /*!< Cipher Algorithm*/
 	enum rte_crypto_auth_algorithm auth_alg; /*!< Authentication Algorithm*/
 	enum rte_crypto_aead_algorithm aead_alg; /*!< AEAD Algorithm*/
-#ifdef RTE_LIB_SECURITY
 	enum rte_security_session_protocol proto_alg; /*!< Security Algorithm*/
-#endif
 	dpaa_sec_build_fd_t build_fd;
 	dpaa_sec_build_raw_dp_fd_t build_raw_dp_fd;
 	union {
@@ -198,9 +195,7 @@ typedef struct dpaa_sec_session_entry {
 			uint8_t auth_cipher_text;
 				/**< Authenticate/cipher ordering */
 		};
-#ifdef RTE_LIB_SECURITY
 		struct sec_pdcp_ctxt pdcp;
-#endif
 	};
 } dpaa_sec_session;
 
@@ -787,10 +782,49 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* NULL (AUTH) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_NULL,
+				.block_size = 1,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+			}, },
+		}, },
+	},
+	{	/* NULL (CIPHER) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_NULL,
+				.block_size = 1,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				}
+			}, },
+		}, }
+	},
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
 
-#ifdef RTE_LIB_SECURITY
 static const struct rte_cryptodev_capabilities dpaa_pdcp_capabilities[] = {
 	{	/* SNOW 3G (UIA2) */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
@@ -1003,7 +1037,6 @@ static const struct rte_security_capability dpaa_sec_security_cap[] = {
 		.action = RTE_SECURITY_ACTION_TYPE_NONE
 	}
 };
-#endif
 
 /**
  * Checksum

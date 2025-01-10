@@ -968,8 +968,12 @@ mlx5_txq_ibv_obj_new(struct rte_eth_dev *dev, uint16_t idx)
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
-	cqe_n = desc / MLX5_TX_COMP_THRESH +
-		1 + MLX5_TX_COMP_THRESH_INLINE_DIV;
+	if (__rte_trace_point_fp_is_enabled() &&
+	    txq_data->offloads & RTE_ETH_TX_OFFLOAD_SEND_ON_TIMESTAMP)
+		cqe_n = UINT16_MAX / 2 - 1;
+	else
+		cqe_n = desc / MLX5_TX_COMP_THRESH +
+			1 + MLX5_TX_COMP_THRESH_INLINE_DIV;
 	txq_obj->cq = mlx5_glue->create_cq(priv->sh->cdev->ctx, cqe_n,
 					   NULL, NULL, 0);
 	if (txq_obj->cq == NULL) {
@@ -1159,7 +1163,7 @@ error:
 		claim_zero(mlx5_glue->destroy_cq(sh->self_lb.ibv_cq));
 		sh->self_lb.ibv_cq = NULL;
 	}
-	(void)__atomic_sub_fetch(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED);
+	__atomic_fetch_sub(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED);
 	return -rte_errno;
 #else
 	RTE_SET_USED(dev);
@@ -1183,7 +1187,7 @@ mlx5_rxq_ibv_obj_dummy_lb_release(struct rte_eth_dev *dev)
 	if (!priv->lb_used)
 		return;
 	MLX5_ASSERT(__atomic_load_n(&sh->self_lb.refcnt, __ATOMIC_RELAXED));
-	if (!(__atomic_sub_fetch(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED))) {
+	if (!(__atomic_fetch_sub(&sh->self_lb.refcnt, 1, __ATOMIC_RELAXED) - 1)) {
 		if (sh->self_lb.qp) {
 			claim_zero(mlx5_glue->destroy_qp(sh->self_lb.qp));
 			sh->self_lb.qp = NULL;

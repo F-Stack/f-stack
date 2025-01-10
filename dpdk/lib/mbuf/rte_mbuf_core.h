@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include <rte_byteorder.h>
+#include <rte_stdatomic.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,7 +42,7 @@ extern "C" {
 
 /**
  * The RX packet is a 802.1q VLAN packet, and the tci has been
- * saved in in mbuf->vlan_tci.
+ * saved in mbuf->vlan_tci.
  * If the flag RTE_MBUF_F_RX_VLAN_STRIPPED is also present, the VLAN
  * header has been stripped from mbuf data, else it is still
  * present.
@@ -466,11 +467,11 @@ struct rte_mbuf {
 	RTE_MARKER cacheline0;
 
 	void *buf_addr;           /**< Virtual address of segment buffer. */
-#if RTE_IOVA_AS_PA
+#if RTE_IOVA_IN_MBUF
 	/**
 	 * Physical address of segment buffer.
 	 * This field is undefined if the build is configured to use only
-	 * virtual address as IOVA (i.e. RTE_IOVA_AS_PA is 0).
+	 * virtual address as IOVA (i.e. RTE_IOVA_IN_MBUF is 0).
 	 * Force alignment to 8-bytes, so as to ensure we have the exact
 	 * same mbuf cacheline0 layout for 32-bit and 64-bit. This makes
 	 * working on vector drivers easier.
@@ -497,7 +498,7 @@ struct rte_mbuf {
 	 * rte_mbuf_refcnt_set(). The functionality of these functions (atomic,
 	 * or non-atomic) is controlled by the RTE_MBUF_REFCNT_ATOMIC flag.
 	 */
-	uint16_t refcnt;
+	RTE_ATOMIC(uint16_t) refcnt;
 
 	/**
 	 * Number of segments. Only valid for the first segment of an mbuf
@@ -522,7 +523,6 @@ struct rte_mbuf {
 	 * would have RTE_PTYPE_L2_ETHER and not RTE_PTYPE_L2_VLAN because the
 	 * vlan is stripped from the data.
 	 */
-	RTE_STD_C11
 	union {
 		uint32_t packet_type; /**< L2/L3/L4 and tunnel information. */
 		__extension__
@@ -531,7 +531,6 @@ struct rte_mbuf {
 			uint8_t l3_type:4;   /**< (Outer) L3 type. */
 			uint8_t l4_type:4;   /**< (Outer) L4 type. */
 			uint8_t tun_type:4;  /**< Tunnel type. */
-			RTE_STD_C11
 			union {
 				uint8_t inner_esp_next_proto;
 				/**< ESP next protocol type, valid if
@@ -555,7 +554,6 @@ struct rte_mbuf {
 	/** VLAN TCI (CPU order), valid if RTE_MBUF_F_RX_VLAN is set. */
 	uint16_t vlan_tci;
 
-	RTE_STD_C11
 	union {
 		union {
 			uint32_t rss;     /**< RSS hash result if RSS enabled */
@@ -599,7 +597,7 @@ struct rte_mbuf {
 	/* second cache line - fields only used in slow path or on TX */
 	RTE_MARKER cacheline1 __rte_cache_min_aligned;
 
-#if RTE_IOVA_AS_PA
+#if RTE_IOVA_IN_MBUF
 	/**
 	 * Next segment of scattered packet. Must be NULL in the last
 	 * segment or in case of non-segmented packet.
@@ -608,13 +606,12 @@ struct rte_mbuf {
 #else
 	/**
 	 * Reserved for dynamic fields
-	 * when the next pointer is in first cache line (i.e. RTE_IOVA_AS_PA is 0).
+	 * when the next pointer is in first cache line (i.e. RTE_IOVA_IN_MBUF is 0).
 	 */
 	uint64_t dynfield2;
 #endif
 
 	/* fields to support TX offloads */
-	RTE_STD_C11
 	union {
 		uint64_t tx_offload;       /**< combined for easy fetch */
 		__extension__
@@ -678,7 +675,7 @@ typedef void (*rte_mbuf_extbuf_free_callback_t)(void *addr, void *opaque);
 struct rte_mbuf_ext_shared_info {
 	rte_mbuf_extbuf_free_callback_t free_cb; /**< Free callback function */
 	void *fcb_opaque;                        /**< Free callback argument */
-	uint16_t refcnt;
+	RTE_ATOMIC(uint16_t) refcnt;
 };
 
 /** Maximum number of nb_segs allowed. */

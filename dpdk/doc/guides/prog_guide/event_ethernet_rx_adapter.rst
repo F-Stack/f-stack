@@ -71,6 +71,28 @@ set to true. The function is passed the event device to be associated with
 the adapter and port configuration for the adapter to setup an event port
 if the adapter needs to use a service function.
 
+If the application desires to control both the event port allocation and event
+buffer size, ``rte_event_eth_rx_adapter_create_ext_with_params()`` can be used.
+
+Event device configuration for service based adapter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When ``rte_event_eth_rx_adapter_create()`` or
+``rte_event_eth_rx_adapter_create_with_params()`` is used for creating
+adapter instance, ``rte_event_dev_config::nb_event_ports`` is
+automatically incremented and the event device is reconfigured
+with the additional event port during service initialization.
+This event device reconfigure logic also increments the
+``rte_event_dev_config::nb_single_link_event_port_queues``
+parameter if the adapter event port config is of type
+``RTE_EVENT_PORT_CFG_SINGLE_LINK``.
+
+Application no longer needs to account for the
+``rte_event_dev_config::nb_event_ports`` and
+``rte_event_dev_config::nb_single_link_event_port_queues``
+parameters required for eth Rx adapter in the event device configuration,
+when the adapter is created using the above-mentioned APIs.
+
 Adding Rx Queues to the Adapter Instance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -165,6 +187,15 @@ The  ``rte_event_eth_rx_adapter_queue_conf_get()`` function reports
 flags for handling received packets, event queue identifier, scheduler type,
 event priority, polling frequency of the receive queue and flow identifier
 in struct ``rte_event_eth_rx_adapter_queue_conf``.
+
+Set/Get adapter runtime configuration parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The runtime configuration parameters of adapter can be set/get using
+``rte_event_eth_rx_adapter_runtime_params_set()`` and
+``rte_event_eth_rx_adapter_runtime_params_get()`` respectively.
+The parameters that can be set/get are defined in
+``struct rte_event_eth_rx_adapter_runtime_params``.
 
 Getting and resetting Adapter queue stats
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

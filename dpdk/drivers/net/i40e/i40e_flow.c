@@ -1263,27 +1263,31 @@ i40e_flow_parse_attr(const struct rte_flow_attr *attr,
 	return 0;
 }
 
-static uint16_t
-i40e_get_outer_vlan(struct rte_eth_dev *dev)
+static int
+i40e_get_outer_vlan(struct rte_eth_dev *dev, uint16_t *tpid)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	int qinq = dev->data->dev_conf.rxmode.offloads &
 		RTE_ETH_RX_OFFLOAD_VLAN_EXTEND;
 	uint64_t reg_r = 0;
 	uint16_t reg_id;
-	uint16_t tpid;
+	int ret;
 
 	if (qinq)
 		reg_id = 2;
 	else
 		reg_id = 3;
 
-	i40e_aq_debug_read_register(hw, I40E_GL_SWT_L2TAGCTRL(reg_id),
+	ret = i40e_aq_debug_read_register(hw, I40E_GL_SWT_L2TAGCTRL(reg_id),
 				    &reg_r, NULL);
+	if (ret != I40E_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to read from L2 tag ctrl register [%d]", reg_id);
+		return -EIO;
+	}
 
-	tpid = (reg_r >> I40E_GL_SWT_L2TAGCTRL_ETHERTYPE_SHIFT) & 0xFFFF;
+	*tpid = (reg_r >> I40E_GL_SWT_L2TAGCTRL_ETHERTYPE_SHIFT) & 0xFFFF;
 
-	return tpid;
+	return 0;
 }
 
 /* 1. Last in item should be NULL as range is not supported.
@@ -1303,6 +1307,8 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 	const struct rte_flow_item_eth *eth_spec;
 	const struct rte_flow_item_eth *eth_mask;
 	enum rte_flow_item_type item_type;
+	int ret;
+	uint16_t tpid;
 
 	for (; item->type != RTE_FLOW_ITEM_TYPE_END; item++) {
 		if (item->last) {
@@ -1330,9 +1336,9 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 			 * Mask bits of destination MAC address must be full
 			 * of 1 or full of 0.
 			 */
-			if (!rte_is_zero_ether_addr(&eth_mask->src) ||
-			    (!rte_is_zero_ether_addr(&eth_mask->dst) &&
-			     !rte_is_broadcast_ether_addr(&eth_mask->dst))) {
+			if (!rte_is_zero_ether_addr(&eth_mask->hdr.src_addr) ||
+			    (!rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr) &&
+			     !rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr))) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -1340,7 +1346,7 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 				return -rte_errno;
 			}
 
-			if ((eth_mask->type & UINT16_MAX) != UINT16_MAX) {
+			if ((eth_mask->hdr.ether_type & UINT16_MAX) != UINT16_MAX) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -1351,18 +1357,33 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 			/* If mask bits of destination MAC address
 			 * are full of 1, set RTE_ETHTYPE_FLAGS_MAC.
 			 */
-			if (rte_is_broadcast_ether_addr(&eth_mask->dst)) {
-				filter->mac_addr = eth_spec->dst;
+			if (rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr)) {
+				filter->mac_addr = eth_spec->hdr.dst_addr;
 				filter->flags |= RTE_ETHTYPE_FLAGS_MAC;
 			} else {
 				filter->flags &= ~RTE_ETHTYPE_FLAGS_MAC;
 			}
-			filter->ether_type = rte_be_to_cpu_16(eth_spec->type);
+			filter->ether_type = rte_be_to_cpu_16(eth_spec->hdr.ether_type);
 
 			if (filter->ether_type == RTE_ETHER_TYPE_IPV4 ||
 			    filter->ether_type == RTE_ETHER_TYPE_IPV6 ||
-			    filter->ether_type == RTE_ETHER_TYPE_LLDP ||
-			    filter->ether_type == i40e_get_outer_vlan(dev)) {
+			    filter->ether_type == RTE_ETHER_TYPE_LLDP) {
+				rte_flow_error_set(error, EINVAL,
+						   RTE_FLOW_ERROR_TYPE_ITEM,
+						   item,
+						   "Unsupported ether_type in control packet filter.");
+				return -rte_errno;
+			}
+
+			ret = i40e_get_outer_vlan(dev, &tpid);
+			if (ret != 0) {
+				rte_flow_error_set(error, EIO,
+						RTE_FLOW_ERROR_TYPE_ITEM,
+						item,
+						"Can not get the Ethertype identifying the L2 tag");
+				return -rte_errno;
+			}
+			if (filter->ether_type == tpid) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -1370,6 +1391,7 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 						   " control packet filter.");
 				return -rte_errno;
 			}
+
 			break;
 		default:
 			break;
@@ -1641,6 +1663,7 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 	bool outer_ip = true;
 	uint8_t field_idx;
 	int ret;
+	uint16_t tpid;
 
 	memset(off_arr, 0, sizeof(off_arr));
 	memset(len_arr, 0, sizeof(len_arr));
@@ -1670,25 +1693,25 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 			}
 
 			if (eth_spec && eth_mask) {
-				if (rte_is_broadcast_ether_addr(&eth_mask->dst) &&
-					rte_is_zero_ether_addr(&eth_mask->src)) {
+				if (rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr) &&
+					rte_is_zero_ether_addr(&eth_mask->hdr.src_addr)) {
 					filter->input.flow.l2_flow.dst =
-						eth_spec->dst;
+						eth_spec->hdr.dst_addr;
 					input_set |= I40E_INSET_DMAC;
-				} else if (rte_is_zero_ether_addr(&eth_mask->dst) &&
-					rte_is_broadcast_ether_addr(&eth_mask->src)) {
+				} else if (rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr) &&
+					rte_is_broadcast_ether_addr(&eth_mask->hdr.src_addr)) {
 					filter->input.flow.l2_flow.src =
-						eth_spec->src;
+						eth_spec->hdr.src_addr;
 					input_set |= I40E_INSET_SMAC;
-				} else if (rte_is_broadcast_ether_addr(&eth_mask->dst) &&
-					rte_is_broadcast_ether_addr(&eth_mask->src)) {
+				} else if (rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr) &&
+					rte_is_broadcast_ether_addr(&eth_mask->hdr.src_addr)) {
 					filter->input.flow.l2_flow.dst =
-						eth_spec->dst;
+						eth_spec->hdr.dst_addr;
 					filter->input.flow.l2_flow.src =
-						eth_spec->src;
+						eth_spec->hdr.src_addr;
 					input_set |= (I40E_INSET_DMAC | I40E_INSET_SMAC);
-				} else if (!rte_is_zero_ether_addr(&eth_mask->src) ||
-					   !rte_is_zero_ether_addr(&eth_mask->dst)) {
+				} else if (!rte_is_zero_ether_addr(&eth_mask->hdr.src_addr) ||
+					   !rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr)) {
 					rte_flow_error_set(error, EINVAL,
 						      RTE_FLOW_ERROR_TYPE_ITEM,
 						      item,
@@ -1698,7 +1721,7 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 			}
 			if (eth_spec && eth_mask &&
 			next_type == RTE_FLOW_ITEM_TYPE_END) {
-				if (eth_mask->type != RTE_BE16(0xffff)) {
+				if (eth_mask->hdr.ether_type != RTE_BE16(0xffff)) {
 					rte_flow_error_set(error, EINVAL,
 						      RTE_FLOW_ERROR_TYPE_ITEM,
 						      item,
@@ -1706,20 +1729,35 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 					return -rte_errno;
 				}
 
-				ether_type = rte_be_to_cpu_16(eth_spec->type);
+				ether_type = rte_be_to_cpu_16(eth_spec->hdr.ether_type);
 
 				if (ether_type == RTE_ETHER_TYPE_IPV4 ||
-				    ether_type == RTE_ETHER_TYPE_IPV6 ||
-				    ether_type == i40e_get_outer_vlan(dev)) {
+				    ether_type == RTE_ETHER_TYPE_IPV6) {
 					rte_flow_error_set(error, EINVAL,
 						     RTE_FLOW_ERROR_TYPE_ITEM,
 						     item,
 						     "Unsupported ether_type.");
 					return -rte_errno;
 				}
+				ret = i40e_get_outer_vlan(dev, &tpid);
+				if (ret != 0) {
+					rte_flow_error_set(error, EIO,
+							RTE_FLOW_ERROR_TYPE_ITEM,
+							item,
+							"Can not get the Ethertype identifying the L2 tag");
+					return -rte_errno;
+				}
+				if (ether_type == tpid) {
+					rte_flow_error_set(error, EINVAL,
+						     RTE_FLOW_ERROR_TYPE_ITEM,
+						     item,
+						     "Unsupported ether_type.");
+					return -rte_errno;
+				}
+
 				input_set |= I40E_INSET_LAST_ETHER_TYPE;
 				filter->input.flow.l2_flow.ether_type =
-					eth_spec->type;
+					eth_spec->hdr.ether_type;
 			}
 
 			pctype = I40E_FILTER_PCTYPE_L2_PAYLOAD;
@@ -1732,13 +1770,13 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 
 			RTE_ASSERT(!(input_set & I40E_INSET_LAST_ETHER_TYPE));
 			if (vlan_spec && vlan_mask) {
-				if (vlan_mask->tci !=
+				if (vlan_mask->hdr.vlan_tci !=
 				    rte_cpu_to_be_16(I40E_VLAN_TCI_MASK) &&
-				    vlan_mask->tci !=
+				    vlan_mask->hdr.vlan_tci !=
 				    rte_cpu_to_be_16(I40E_VLAN_PRI_MASK) &&
-				    vlan_mask->tci !=
+				    vlan_mask->hdr.vlan_tci !=
 				    rte_cpu_to_be_16(I40E_VLAN_CFI_MASK) &&
-				    vlan_mask->tci !=
+				    vlan_mask->hdr.vlan_tci !=
 				    rte_cpu_to_be_16(I40E_VLAN_VID_MASK)) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1747,10 +1785,10 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				}
 				input_set |= I40E_INSET_VLAN_INNER;
 				filter->input.flow_ext.vlan_tci =
-					vlan_spec->tci;
+					vlan_spec->hdr.vlan_tci;
 			}
-			if (vlan_spec && vlan_mask && vlan_mask->inner_type) {
-				if (vlan_mask->inner_type != RTE_BE16(0xffff)) {
+			if (vlan_spec && vlan_mask && vlan_mask->hdr.eth_proto) {
+				if (vlan_mask->hdr.eth_proto != RTE_BE16(0xffff)) {
 					rte_flow_error_set(error, EINVAL,
 						      RTE_FLOW_ERROR_TYPE_ITEM,
 						      item,
@@ -1760,20 +1798,35 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				}
 
 				ether_type =
-					rte_be_to_cpu_16(vlan_spec->inner_type);
+					rte_be_to_cpu_16(vlan_spec->hdr.eth_proto);
 
 				if (ether_type == RTE_ETHER_TYPE_IPV4 ||
-				    ether_type == RTE_ETHER_TYPE_IPV6 ||
-				    ether_type == i40e_get_outer_vlan(dev)) {
+				    ether_type == RTE_ETHER_TYPE_IPV6) {
 					rte_flow_error_set(error, EINVAL,
 						     RTE_FLOW_ERROR_TYPE_ITEM,
 						     item,
 						     "Unsupported inner_type.");
 					return -rte_errno;
 				}
+				ret = i40e_get_outer_vlan(dev, &tpid);
+				if (ret != 0) {
+					rte_flow_error_set(error, EIO,
+							RTE_FLOW_ERROR_TYPE_ITEM,
+							item,
+							"Can not get the Ethertype identifying the L2 tag");
+					return -rte_errno;
+				}
+				if (ether_type == tpid) {
+					rte_flow_error_set(error, EINVAL,
+						     RTE_FLOW_ERROR_TYPE_ITEM,
+						     item,
+						     "Unsupported ether_type.");
+					return -rte_errno;
+				}
+
 				input_set |= I40E_INSET_LAST_ETHER_TYPE;
 				filter->input.flow.l2_flow.ether_type =
-					vlan_spec->inner_type;
+					vlan_spec->hdr.eth_proto;
 			}
 
 			pctype = I40E_FILTER_PCTYPE_L2_PAYLOAD;
@@ -2142,10 +2195,10 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 			gtp_mask = item->mask;
 
 			if (gtp_spec && gtp_mask) {
-				if (gtp_mask->v_pt_rsv_flags ||
-				    gtp_mask->msg_type ||
-				    gtp_mask->msg_len ||
-				    gtp_mask->teid != UINT32_MAX) {
+				if (gtp_mask->hdr.gtp_hdr_info ||
+				    gtp_mask->hdr.msg_type ||
+				    gtp_mask->hdr.plen ||
+				    gtp_mask->hdr.teid != UINT32_MAX) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -2154,7 +2207,7 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				}
 
 				filter->input.flow.gtp_flow.teid =
-					gtp_spec->teid;
+					gtp_spec->hdr.teid;
 				filter->input.flow_ext.customized_pctype = true;
 				cus_proto = item_type;
 			}
@@ -2915,9 +2968,9 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 				/* DST address of inner MAC shouldn't be masked.
 				 * SRC address of Inner MAC should be masked.
 				 */
-				if (!rte_is_broadcast_ether_addr(&eth_mask->dst) ||
-				    !rte_is_zero_ether_addr(&eth_mask->src) ||
-				    eth_mask->type) {
+				if (!rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr) ||
+				    !rte_is_zero_ether_addr(&eth_mask->hdr.src_addr) ||
+				    eth_mask->hdr.ether_type) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -2927,12 +2980,12 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 
 				if (!vxlan_flag) {
 					rte_memcpy(&filter->outer_mac,
-						   &eth_spec->dst,
+						   &eth_spec->hdr.dst_addr,
 						   RTE_ETHER_ADDR_LEN);
 					filter_type |= RTE_ETH_TUNNEL_FILTER_OMAC;
 				} else {
 					rte_memcpy(&filter->inner_mac,
-						   &eth_spec->dst,
+						   &eth_spec->hdr.dst_addr,
 						   RTE_ETHER_ADDR_LEN);
 					filter_type |= RTE_ETH_TUNNEL_FILTER_IMAC;
 				}
@@ -2942,7 +2995,7 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 			vlan_spec = item->spec;
 			vlan_mask = item->mask;
 			if (!(vlan_spec && vlan_mask) ||
-			    vlan_mask->inner_type) {
+			    vlan_mask->hdr.eth_proto) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -2951,10 +3004,10 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 			}
 
 			if (vlan_spec && vlan_mask) {
-				if (vlan_mask->tci ==
+				if (vlan_mask->hdr.vlan_tci ==
 				    rte_cpu_to_be_16(I40E_VLAN_TCI_MASK))
 					filter->inner_vlan =
-					      rte_be_to_cpu_16(vlan_spec->tci) &
+					      rte_be_to_cpu_16(vlan_spec->hdr.vlan_tci) &
 					      I40E_VLAN_TCI_MASK;
 				filter_type |= RTE_ETH_TUNNEL_FILTER_IVLAN;
 			}
@@ -3016,7 +3069,7 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 			/* Check if VNI is masked. */
 			if (vxlan_spec && vxlan_mask) {
 				is_vni_masked =
-					!!memcmp(vxlan_mask->vni, vni_mask,
+					!!memcmp(vxlan_mask->hdr.vni, vni_mask,
 						 RTE_DIM(vni_mask));
 				if (is_vni_masked) {
 					rte_flow_error_set(error, EINVAL,
@@ -3027,7 +3080,7 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 				}
 
 				rte_memcpy(((uint8_t *)&tenant_id_be + 1),
-					   vxlan_spec->vni, 3);
+					   vxlan_spec->hdr.vni, 3);
 				filter->tenant_id =
 					rte_be_to_cpu_32(tenant_id_be);
 				filter_type |= RTE_ETH_TUNNEL_FILTER_TENID;
@@ -3145,9 +3198,9 @@ i40e_flow_parse_nvgre_pattern(__rte_unused struct rte_eth_dev *dev,
 				/* DST address of inner MAC shouldn't be masked.
 				 * SRC address of Inner MAC should be masked.
 				 */
-				if (!rte_is_broadcast_ether_addr(&eth_mask->dst) ||
-				    !rte_is_zero_ether_addr(&eth_mask->src) ||
-				    eth_mask->type) {
+				if (!rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr) ||
+				    !rte_is_zero_ether_addr(&eth_mask->hdr.src_addr) ||
+				    eth_mask->hdr.ether_type) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -3157,12 +3210,12 @@ i40e_flow_parse_nvgre_pattern(__rte_unused struct rte_eth_dev *dev,
 
 				if (!nvgre_flag) {
 					rte_memcpy(&filter->outer_mac,
-						   &eth_spec->dst,
+						   &eth_spec->hdr.dst_addr,
 						   RTE_ETHER_ADDR_LEN);
 					filter_type |= RTE_ETH_TUNNEL_FILTER_OMAC;
 				} else {
 					rte_memcpy(&filter->inner_mac,
-						   &eth_spec->dst,
+						   &eth_spec->hdr.dst_addr,
 						   RTE_ETHER_ADDR_LEN);
 					filter_type |= RTE_ETH_TUNNEL_FILTER_IMAC;
 				}
@@ -3173,7 +3226,7 @@ i40e_flow_parse_nvgre_pattern(__rte_unused struct rte_eth_dev *dev,
 			vlan_spec = item->spec;
 			vlan_mask = item->mask;
 			if (!(vlan_spec && vlan_mask) ||
-			    vlan_mask->inner_type) {
+			    vlan_mask->hdr.eth_proto) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -3182,10 +3235,10 @@ i40e_flow_parse_nvgre_pattern(__rte_unused struct rte_eth_dev *dev,
 			}
 
 			if (vlan_spec && vlan_mask) {
-				if (vlan_mask->tci ==
+				if (vlan_mask->hdr.vlan_tci ==
 				    rte_cpu_to_be_16(I40E_VLAN_TCI_MASK))
 					filter->inner_vlan =
-					      rte_be_to_cpu_16(vlan_spec->tci) &
+					      rte_be_to_cpu_16(vlan_spec->hdr.vlan_tci) &
 					      I40E_VLAN_TCI_MASK;
 				filter_type |= RTE_ETH_TUNNEL_FILTER_IVLAN;
 			}
@@ -3577,10 +3630,10 @@ i40e_flow_parse_gtp_pattern(struct rte_eth_dev *dev,
 				return -rte_errno;
 			}
 
-			if (gtp_mask->v_pt_rsv_flags ||
-			    gtp_mask->msg_type ||
-			    gtp_mask->msg_len ||
-			    gtp_mask->teid != UINT32_MAX) {
+			if (gtp_mask->hdr.gtp_hdr_info ||
+			    gtp_mask->hdr.msg_type ||
+			    gtp_mask->hdr.plen ||
+			    gtp_mask->hdr.teid != UINT32_MAX) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -3593,7 +3646,7 @@ i40e_flow_parse_gtp_pattern(struct rte_eth_dev *dev,
 			else if (item_type == RTE_FLOW_ITEM_TYPE_GTPU)
 				filter->tunnel_type = I40E_TUNNEL_TYPE_GTPU;
 
-			filter->tenant_id = rte_be_to_cpu_32(gtp_spec->teid);
+			filter->tenant_id = rte_be_to_cpu_32(gtp_spec->hdr.teid);
 
 			break;
 		default:
@@ -3682,7 +3735,7 @@ i40e_flow_parse_qinq_pattern(__rte_unused struct rte_eth_dev *dev,
 			vlan_mask = item->mask;
 
 			if (!(vlan_spec && vlan_mask) ||
-			    vlan_mask->inner_type) {
+			    vlan_mask->hdr.eth_proto) {
 				rte_flow_error_set(error, EINVAL,
 					   RTE_FLOW_ERROR_TYPE_ITEM,
 					   item,
@@ -3708,8 +3761,8 @@ i40e_flow_parse_qinq_pattern(__rte_unused struct rte_eth_dev *dev,
 
 	/* Get filter specification */
 	if (o_vlan_mask != NULL &&  i_vlan_mask != NULL) {
-		filter->outer_vlan = rte_be_to_cpu_16(o_vlan_spec->tci);
-		filter->inner_vlan = rte_be_to_cpu_16(i_vlan_spec->tci);
+		filter->outer_vlan = rte_be_to_cpu_16(o_vlan_spec->hdr.vlan_tci);
+		filter->inner_vlan = rte_be_to_cpu_16(i_vlan_spec->hdr.vlan_tci);
 	} else {
 			rte_flow_error_set(error, EINVAL,
 					   RTE_FLOW_ERROR_TYPE_ITEM,

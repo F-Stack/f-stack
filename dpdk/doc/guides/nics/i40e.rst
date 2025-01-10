@@ -104,6 +104,10 @@ For X710/XL710/XXV710,
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    23.07     |         2.22.20       |       9.20       |
+   +--------------+-----------------------+------------------+
+   |    23.03     |         2.22.18       |       9.20       |
+   +--------------+-----------------------+------------------+
    |    22.11     |         2.20.12       |       9.01       |
    +--------------+-----------------------+------------------+
    |    22.07     |         2.19.3        |       8.70       |
@@ -163,6 +167,10 @@ For X722,
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    23.07     |         2.22.20       |       6.20       |
+   +--------------+-----------------------+------------------+
+   |    23.03     |         2.22.18       |       6.20       |
+   +--------------+-----------------------+------------------+
    |    22.11     |         2.20.12       |       6.00       |
    +--------------+-----------------------+------------------+
    |    22.07     |         2.19.3        |       5.60       |
@@ -197,10 +205,10 @@ For X722,
    +--------------+-----------------------+------------------+
 
 
-Pre-Installation Configuration
-------------------------------
+Configuration
+-------------
 
-Config File Options
+Compilation Options
 ~~~~~~~~~~~~~~~~~~~
 
 The following options can be modified in the ``config/rte_config.h`` file.
@@ -213,8 +221,8 @@ The following options can be modified in the ``config/rte_config.h`` file.
 
   Number of queues reserved for each VMDQ Pool.
 
-Runtime Config Options
-~~~~~~~~~~~~~~~~~~~~~~
+Runtime Configuration
+~~~~~~~~~~~~~~~~~~~~~
 
 - ``Reserved number of Queues per VF`` (default ``4``)
 
@@ -956,7 +964,7 @@ See :numref:`figure_intel_perf_test_setup` for the performance test setup.
    Performance Test Setup
 
 
-1. Add two Intel Ethernet CNA XL710 to the platform, and use one port per card to get best performance.
+#. Add two Intel Ethernet CNA XL710 to the platform, and use one port per card to get best performance.
    The reason for using two NICs is to overcome a PCIe v3.0 limitation since it cannot provide 80GbE bandwidth
    for two 40GbE ports, but two different PCIe v3.0 x8 slot can.
    Refer to the sample NICs output above, then we can select ``82:00.0`` and ``85:00.0`` as test ports::
@@ -964,23 +972,23 @@ See :numref:`figure_intel_perf_test_setup` for the performance test setup.
       82:00.0 Ethernet [0200]: Intel XL710 for 40GbE QSFP+ [8086:1583]
       85:00.0 Ethernet [0200]: Intel XL710 for 40GbE QSFP+ [8086:1583]
 
-2. Connect the ports to the traffic generator. For high speed testing, it's best to use a hardware traffic generator.
+#. Connect the ports to the traffic generator. For high speed testing, it's best to use a hardware traffic generator.
 
-3. Check the PCI devices numa node (socket id) and get the cores number on the exact socket id.
+#. Check the PCI devices numa node (socket id) and get the cores number on the exact socket id.
    In this case, ``82:00.0`` and ``85:00.0`` are both in socket 1, and the cores on socket 1 in the referenced platform
    are 18-35 and 54-71.
    Note: Don't use 2 logical cores on the same core (e.g core18 has 2 logical cores, core18 and core54), instead, use 2 logical
    cores from different cores (e.g core18 and core19).
 
-4. Bind these two ports to igb_uio.
+#. Bind these two ports to igb_uio.
 
-5. As to Intel Ethernet CNA XL710 40GbE port, we need at least two queue pairs to achieve best performance, then two queues per port
+#. As to Intel Ethernet CNA XL710 40GbE port, we need at least two queue pairs to achieve best performance, then two queues per port
    will be required, and each queue pair will need a dedicated CPU core for receiving/transmitting packets.
 
-6. The DPDK sample application ``l3fwd`` will be used for performance testing, with using two ports for bi-directional forwarding.
+#. The DPDK sample application ``l3fwd`` will be used for performance testing, with using two ports for bi-directional forwarding.
    Compile the ``l3fwd sample`` with the default lpm mode.
 
-7. The command line of running l3fwd would be something like the following::
+#. The command line of running l3fwd would be something like the following::
 
       ./dpdk-l3fwd -l 18-21 -n 4 -a 82:00.0 -a 85:00.0 \
               -- -p 0x3 --config '(0,0,18),(0,1,19),(1,0,20),(1,1,21)'
@@ -988,7 +996,7 @@ See :numref:`figure_intel_perf_test_setup` for the performance test setup.
    This means that the application uses core 18 for port 0, queue pair 0 forwarding, core 19 for port 0, queue pair 1 forwarding,
    core 20 for port 1, queue pair 0 forwarding, and core 21 for port 1, queue pair 1 forwarding.
 
-8. Configure the traffic at a traffic generator.
+#. Configure the traffic at a traffic generator.
 
    * Start creating a stream on packet generator.
 

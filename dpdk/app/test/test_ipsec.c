@@ -943,7 +943,7 @@ crypto_ipsec_4grp(uint32_t pkt_num)
 {
 	uint32_t sa_ind;
 
-	/* group packets in 4 different size groups groups, 2 per SA */
+	/* group packets in 4 different size groups, 2 per SA */
 	if (pkt_num < PKT_4)
 		sa_ind = 0;
 	else if (pkt_num < PKT_12)
@@ -2532,4 +2532,4 @@ test_ipsec(void)
 
 #endif /* !RTE_EXEC_ENV_WINDOWS */
 
-REGISTER_TEST_COMMAND(ipsec_autotest, test_ipsec);
+REGISTER_FAST_TEST(ipsec_autotest, true, true, test_ipsec);

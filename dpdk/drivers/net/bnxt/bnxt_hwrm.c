@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -407,59 +407,6 @@ int bnxt_hwrm_tf_message_direct(struct bnxt *bp,
 	return rc;
 }
 
-int bnxt_hwrm_tf_message_tunneled(struct bnxt *bp,
-				  bool use_kong_mb,
-				  uint16_t tf_type,
-				  uint16_t tf_subtype,
-				  uint32_t *tf_response_code,
-				  void *msg,
-				  uint32_t msg_len,
-				  void *response,
-				  uint32_t response_len)
-{
-	int rc = 0;
-	struct hwrm_cfa_tflib_input req = { .req_type = 0 };
-	struct hwrm_cfa_tflib_output *resp = bp->hwrm_cmd_resp_addr;
-	bool mailbox = BNXT_USE_CHIMP_MB;
-
-	if (msg_len > sizeof(req.tf_req))
-		return -ENOMEM;
-
-	if (use_kong_mb)
-		mailbox = BNXT_USE_KONG(bp);
-
-	HWRM_PREP(&req, HWRM_TF, mailbox);
-	/* Build request using the user supplied request payload.
-	 * TLV request size is checked at build time against HWRM
-	 * request max size, thus no checking required.
-	 */
-	req.tf_type = tf_type;
-	req.tf_subtype = tf_subtype;
-	memcpy(req.tf_req, msg, msg_len);
-
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), mailbox);
-	HWRM_CHECK_RESULT();
-
-	/* Copy the resp to user provided response buffer */
-	if (response != NULL)
-		/* Post process response data. We need to copy only
-		 * the 'payload' as the HWRM data structure really is
-		 * HWRM header + msg header + payload and the TFLIB
-		 * only provided a payload place holder.
-		 */
-		if (response_len != 0) {
-			memcpy(response,
-			       resp->tf_resp,
-			       response_len);
-		}
-
-	/* Extract the internal tflib response code */
-	*tf_response_code = resp->tf_resp_code;
-	HWRM_UNLOCK();
-
-	return rc;
-}
-
 int bnxt_hwrm_cfa_l2_clear_rx_mask(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 {
 	int rc = 0;
@@ -721,6 +668,12 @@ int bnxt_hwrm_ptp_cfg(struct bnxt *bp)
 	else
 		flags |=
 			HWRM_PORT_MAC_CFG_INPUT_FLAGS_PTP_TX_TS_CAPTURE_DISABLE;
+
+	if (ptp->filter_all)
+		flags |=  HWRM_PORT_MAC_CFG_INPUT_FLAGS_ALL_RX_TS_CAPTURE_ENABLE;
+	else if (bp->fw_cap & BNXT_FW_CAP_RX_ALL_PKT_TS)
+		flags |= HWRM_PORT_MAC_CFG_INPUT_FLAGS_ALL_RX_TS_CAPTURE_DISABLE;
+
 	req.flags = rte_cpu_to_le_32(flags);
 	req.enables = rte_cpu_to_le_32
 		(HWRM_PORT_MAC_CFG_INPUT_ENABLES_RX_TS_CAPTURE_PTP_MSG_TYPE);
@@ -862,7 +815,7 @@ static int __bnxt_hwrm_func_qcaps(struct bnxt *bp)
 	struct hwrm_func_qcaps_input req = {.req_type = 0 };
 	struct hwrm_func_qcaps_output *resp = bp->hwrm_cmd_resp_addr;
 	uint16_t new_max_vfs;
-	uint32_t flags;
+	uint32_t flags, flags_ext2;
 
 	HWRM_PREP(&req, HWRM_FUNC_QCAPS, BNXT_USE_CHIMP_MB);
 
@@ -902,16 +855,23 @@ static int __bnxt_hwrm_func_qcaps(struct bnxt *bp)
 	bp->max_l2_ctx = rte_le_to_cpu_16(resp->max_l2_ctxs);
 	if (!BNXT_CHIP_P5(bp) && !bp->pdev->max_vfs)
 		bp->max_l2_ctx += bp->max_rx_em_flows;
-	bp->max_vnics = rte_le_to_cpu_16(resp->max_vnics);
+	if (bp->vnic_cap_flags & BNXT_VNIC_CAP_COS_CLASSIFY)
+		bp->max_vnics = rte_le_to_cpu_16(BNXT_MAX_VNICS_COS_CLASSIFY);
+	else
+		bp->max_vnics = rte_le_to_cpu_16(resp->max_vnics);
 	PMD_DRV_LOG(DEBUG, "Max l2_cntxts is %d vnics is %d\n",
 		    bp->max_l2_ctx, bp->max_vnics);
 	bp->max_stat_ctx = rte_le_to_cpu_16(resp->max_stat_ctx);
 	bp->max_mcast_addr = rte_le_to_cpu_32(resp->max_mcast_filters);
 	if (!bp->max_mcast_addr)
 		bp->max_mcast_addr = BNXT_DFLT_MAX_MC_ADDR;
-	if (BNXT_PF(bp)) {
+	memcpy(bp->dsn, resp->device_serial_number, sizeof(bp->dsn));
+
+	if (BNXT_PF(bp))
 		bp->pf->total_vnics = rte_le_to_cpu_16(resp->max_vnics);
-		if (flags & HWRM_FUNC_QCAPS_OUTPUT_FLAGS_PTP_SUPPORTED) {
+
+	if (flags & HWRM_FUNC_QCAPS_OUTPUT_FLAGS_PTP_SUPPORTED) {
+		if (BNXT_CHIP_P5(bp) || BNXT_PF(bp)) {
 			bp->flags |= BNXT_FLAG_PTP_SUPPORTED;
 			PMD_DRV_LOG(DEBUG, "PTP SUPPORTED\n");
 			HWRM_UNLOCK();
@@ -945,6 +905,11 @@ static int __bnxt_hwrm_func_qcaps(struct bnxt *bp)
 	if (bp->tunnel_disable_flag)
 		PMD_DRV_LOG(DEBUG, "Tunnel parsing capability is disabled, flags : %#x\n",
 			    bp->tunnel_disable_flag);
+
+	flags_ext2 = rte_le_to_cpu_32(resp->flags_ext2);
+	if (flags_ext2 & HWRM_FUNC_QCAPS_OUTPUT_FLAGS_EXT2_RX_ALL_PKTS_TIMESTAMPS_SUPPORTED)
+		bp->fw_cap |= BNXT_FW_CAP_RX_ALL_PKT_TS;
+
 unlock:
 	HWRM_UNLOCK();
 
@@ -1001,6 +966,11 @@ int bnxt_hwrm_vnic_qcaps(struct bnxt *bp)
 
 	if (flags & HWRM_VNIC_QCAPS_OUTPUT_FLAGS_OUTERMOST_RSS_CAP)
 		bp->vnic_cap_flags |= BNXT_VNIC_CAP_OUTER_RSS;
+
+	if (flags & HWRM_VNIC_QCAPS_OUTPUT_FLAGS_OUTERMOST_RSS_TRUSTED_VF_CAP) {
+		bp->vnic_cap_flags |= BNXT_VNIC_CAP_OUTER_RSS_TRUSTED_VF;
+		PMD_DRV_LOG(DEBUG, "Trusted VF's outer RSS capability is enabled\n");
+	}
 
 	if (flags & HWRM_VNIC_QCAPS_OUTPUT_FLAGS_RX_CMPL_V2_CAP)
 		bp->vnic_cap_flags |= BNXT_VNIC_CAP_RX_CMPL_V2;
@@ -1148,7 +1118,16 @@ int bnxt_hwrm_func_reserve_vf_resc(struct bnxt *bp, bool test)
 	req.num_cmpl_rings = rte_cpu_to_le_16(bp->rx_nr_rings +
 					      bp->tx_nr_rings +
 					      BNXT_NUM_ASYNC_CPR(bp));
-	req.num_vnics = rte_cpu_to_le_16(bp->rx_nr_rings);
+	if (BNXT_PF(bp) || BNXT_VF_IS_TRUSTED(bp)) {
+		req.num_vnics = rte_cpu_to_le_16(RTE_MIN(BNXT_VNIC_MAX_SUPPORTED_ID,
+							 bp->max_vnics));
+		enables |= HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_RSSCOS_CTXS;
+		req.num_rsscos_ctxs = rte_cpu_to_le_16(RTE_MIN(BNXT_VNIC_MAX_SUPPORTED_ID,
+							       bp->max_rsscos_ctx));
+	} else {
+		req.num_vnics = rte_cpu_to_le_16(bp->rx_nr_rings);
+	}
+
 	if (bp->vf_resv_strategy ==
 	    HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESV_STRATEGY_MINIMAL_STATIC) {
 		enables |= HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_VNICS |
@@ -1212,7 +1191,10 @@ int bnxt_hwrm_func_resc_qcaps(struct bnxt *bp)
 	bp->max_l2_ctx = rte_le_to_cpu_16(resp->max_l2_ctxs);
 	if (!BNXT_CHIP_P5(bp) && !bp->pdev->max_vfs)
 		bp->max_l2_ctx += bp->max_rx_em_flows;
-	bp->max_vnics = rte_le_to_cpu_16(resp->max_vnics);
+	if (bp->vnic_cap_flags & BNXT_VNIC_CAP_COS_CLASSIFY)
+		bp->max_vnics = rte_le_to_cpu_16(BNXT_MAX_VNICS_COS_CLASSIFY);
+	else
+		bp->max_vnics = rte_le_to_cpu_16(resp->max_vnics);
 	bp->max_stat_ctx = rte_le_to_cpu_16(resp->max_stat_ctx);
 	bp->max_nq_rings = rte_le_to_cpu_16(resp->max_msix);
 	bp->vf_resv_strategy = rte_le_to_cpu_16(resp->vf_reservation_strategy);
@@ -1984,25 +1966,10 @@ static int bnxt_hwrm_stat_ctx_free(struct bnxt *bp, struct bnxt_cp_ring_info *cp
 
 int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 {
-	int rc = 0, i, j;
+	int rc = 0;
 	struct hwrm_vnic_alloc_input req = { 0 };
 	struct hwrm_vnic_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 
-	if (!BNXT_HAS_RING_GRPS(bp))
-		goto skip_ring_grps;
-
-	/* map ring groups to this vnic */
-	PMD_DRV_LOG(DEBUG, "Alloc VNIC. Start %x, End %x\n",
-		vnic->start_grp_id, vnic->end_grp_id);
-	for (i = vnic->start_grp_id, j = 0; i < vnic->end_grp_id; i++, j++)
-		vnic->fw_grp_ids[j] = bp->grp_info[i].fw_grp_id;
-
-	vnic->dflt_ring_grp = bp->grp_info[vnic->start_grp_id].fw_grp_id;
-	vnic->rss_rule = (uint16_t)HWRM_NA_SIGNATURE;
-	vnic->cos_rule = (uint16_t)HWRM_NA_SIGNATURE;
-	vnic->lb_rule = (uint16_t)HWRM_NA_SIGNATURE;
-
-skip_ring_grps:
 	vnic->mru = BNXT_VNIC_MRU(bp->eth_dev->data->mtu);
 	HWRM_PREP(&req, HWRM_VNIC_ALLOC, BNXT_USE_CHIMP_MB);
 
@@ -2116,7 +2083,8 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 		 */
 		for (i = vnic->start_grp_id; i < vnic->end_grp_id; i++) {
 			rxq = bp->eth_dev->data->rx_queues[i];
-			if (rxq->rx_started) {
+			if (rxq->rx_started &&
+			    bnxt_vnic_queue_id_is_valid(vnic, i)) {
 				dflt_rxq = i;
 				break;
 			}
@@ -2346,14 +2314,22 @@ bnxt_hwrm_vnic_rss_cfg_p5(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 
 		req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 		req.hash_type = rte_cpu_to_le_32(vnic->hash_type);
-		req.hash_mode_flags = vnic->hash_mode;
+		/* When the vnic_id in the request field is a valid
+		 * one, the hash_mode_flags in the request field must
+		 * be set to DEFAULT. And any request to change the
+		 * default behavior must be done in a separate call
+		 * to HWRM_VNIC_RSS_CFG by exclusively setting hash
+		 * mode and vnic_id, rss_ctx_idx to INVALID.
+		 */
+		req.hash_mode_flags = BNXT_HASH_MODE_DEFAULT;
 
 		req.hash_key_tbl_addr =
 			rte_cpu_to_le_64(vnic->rss_hash_key_dma_addr);
 
 		req.ring_grp_tbl_addr =
 			rte_cpu_to_le_64(vnic->rss_table_dma_addr +
-					 i * HW_HASH_INDEX_SIZE);
+					 i * BNXT_RSS_ENTRIES_PER_CTX_P5 *
+					 2 * sizeof(uint16_t));
 		req.ring_table_pair_index = i;
 		req.rss_ctx_idx = rte_cpu_to_le_16(vnic->fw_grp_ids[i]);
 
@@ -2362,23 +2338,77 @@ bnxt_hwrm_vnic_rss_cfg_p5(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 
 		HWRM_CHECK_RESULT();
 		HWRM_UNLOCK();
+		PMD_DRV_LOG(DEBUG, "RSS CFG: Hash level %d\n", req.hash_mode_flags);
 	}
 
 	return rc;
 }
 
-int bnxt_hwrm_vnic_rss_cfg(struct bnxt *bp,
-			   struct bnxt_vnic_info *vnic)
+static int
+bnxt_hwrm_vnic_rss_cfg_hash_mode_p5(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 {
-	int rc = 0;
-	struct hwrm_vnic_rss_cfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_rss_cfg_output *resp = bp->hwrm_cmd_resp_addr;
+	struct hwrm_vnic_rss_cfg_input req = {.req_type = 0 };
+	int rc = 0;
 
-	if (!vnic->rss_table)
+	/* The reason we are returning success here is that this
+	 * call is in the context of user/stack RSS configuration.
+	 * Even though OUTER RSS is not supported, the normal RSS
+	 * configuration should continue to work.
+	 */
+	if ((BNXT_CHIP_P5(bp) && BNXT_VNIC_OUTER_RSS_UNSUPPORTED(bp)) ||
+	    (!BNXT_CHIP_P5(bp) && !(bp->vnic_cap_flags & BNXT_VNIC_CAP_OUTER_RSS)))
 		return 0;
 
-	if (BNXT_CHIP_P5(bp))
-		return bnxt_hwrm_vnic_rss_cfg_p5(bp, vnic);
+	/* Don't call RSS hash level configuration if the current
+	 * hash level is the same as the hash level that is requested.
+	 */
+	if (vnic->prev_hash_mode == vnic->hash_mode)
+		return 0;
+
+	HWRM_PREP(&req, HWRM_VNIC_RSS_CFG, BNXT_USE_CHIMP_MB);
+
+	/* For FW, hash_mode == DEFAULT means that
+	 * the FW is capable of doing INNER & OUTER RSS as well.
+	 * DEFAULT doesn't mean that the FW is
+	 * going to change the hash_mode to INNER. However, for
+	 * the USER, DEFAULT means, change the hash mode to the
+	 * NIC's DEFAULT hash mode which is INNER.
+	 *
+	 * Hence, driver should make the translation of hash_mode
+	 * to INNERMOST when hash_mode from the dpdk stack is
+	 * DEFAULT.
+	 */
+	if (vnic->hash_mode == BNXT_HASH_MODE_DEFAULT)
+		req.hash_mode_flags = BNXT_HASH_MODE_INNERMOST;
+	else
+		req.hash_mode_flags = vnic->hash_mode;
+	req.vnic_id = rte_cpu_to_le_16(BNXT_DFLT_VNIC_ID_INVALID);
+	req.rss_ctx_idx = rte_cpu_to_le_16(BNXT_RSS_CTX_IDX_INVALID);
+
+	PMD_DRV_LOG(DEBUG, "RSS CFG: Hash level %d\n", req.hash_mode_flags);
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req),
+				    BNXT_USE_CHIMP_MB);
+
+	HWRM_CHECK_RESULT();
+	/* Store the programmed hash_mode in prev_hash_mode so that
+	 * it can checked against the next user requested hash mode.
+	 */
+	if (!rc)
+		vnic->prev_hash_mode = vnic->hash_mode;
+	HWRM_UNLOCK();
+	return rc;
+}
+
+static int
+bnxt_hwrm_vnic_rss_cfg_non_p5(struct bnxt *bp, struct bnxt_vnic_info *vnic)
+{
+	struct hwrm_vnic_rss_cfg_input req = {.req_type = 0 };
+	struct hwrm_vnic_rss_cfg_output *resp = bp->hwrm_cmd_resp_addr;
+	int rc = 0;
+
+	if (vnic->num_lb_ctxts == 0)
+		return rc;
 
 	HWRM_PREP(&req, HWRM_VNIC_RSS_CFG, BNXT_USE_CHIMP_MB);
 
@@ -2398,6 +2428,39 @@ int bnxt_hwrm_vnic_rss_cfg(struct bnxt *bp,
 	HWRM_UNLOCK();
 
 	return rc;
+}
+
+int bnxt_hwrm_vnic_rss_cfg(struct bnxt *bp,
+			   struct bnxt_vnic_info *vnic)
+{
+	int rc = 0;
+
+	if (!vnic->rss_table)
+		return 0;
+
+	if (BNXT_CHIP_P5(bp)) {
+		rc = bnxt_hwrm_vnic_rss_cfg_p5(bp, vnic);
+		if (rc)
+			return rc;
+		/* Configuring the hash mode has to be done in a
+		 * different VNIC_RSS_CFG HWRM command by setting
+		 * vnic_id & rss_ctx_id to INVALID. The only
+		 * exception to this is if the USER doesn't want
+		 * to change the default behavior. So, ideally
+		 * bnxt_hwrm_vnic_rss_cfg_hash_mode_p5 should be
+		 * called when user is explicitly changing the hash
+		 * mode. However, this logic will unconditionally
+		 * call bnxt_hwrm_vnic_rss_cfg_hash_mode_p5 to
+		 * simplify the logic as there is no harm in calling
+		 * bnxt_hwrm_vnic_rss_cfg_hash_mode_p5 even when
+		 * user is not setting it explicitly. Because, this
+		 * routine will convert the default value to inner
+		 * which is our adapter's default behavior.
+		 */
+		return bnxt_hwrm_vnic_rss_cfg_hash_mode_p5(bp, vnic);
+	}
+
+	return bnxt_hwrm_vnic_rss_cfg_non_p5(bp, vnic);
 }
 
 int bnxt_hwrm_vnic_plcmode_cfg(struct bnxt *bp,
@@ -2911,6 +2974,10 @@ bnxt_free_tunnel_ports(struct bnxt *bp)
 	if (bp->geneve_port_cnt)
 		bnxt_hwrm_tunnel_dst_port_free(bp, bp->geneve_fw_dst_port_id,
 			HWRM_TUNNEL_DST_PORT_FREE_INPUT_TUNNEL_TYPE_GENEVE);
+
+	if (bp->ecpri_port_cnt)
+		bnxt_hwrm_tunnel_dst_port_free(bp, bp->ecpri_fw_dst_port_id,
+			HWRM_TUNNEL_DST_PORT_FREE_INPUT_TUNNEL_TYPE_ECPRI);
 }
 
 void bnxt_free_all_hwrm_resources(struct bnxt *bp)
@@ -2941,6 +3008,7 @@ void bnxt_free_all_hwrm_resources(struct bnxt *bp)
 		bnxt_hwrm_vnic_free(bp, vnic);
 
 		rte_free(vnic->fw_grp_ids);
+		vnic->fw_grp_ids = NULL;
 	}
 	/* Ring resources */
 	bnxt_free_all_hwrm_rings(bp);
@@ -4019,7 +4087,43 @@ int bnxt_hwrm_tunnel_dst_port_alloc(struct bnxt *bp, uint16_t port,
 			rte_le_to_cpu_16(resp->tunnel_dst_port_id);
 		bp->geneve_port = port;
 		break;
+	case HWRM_TUNNEL_DST_PORT_ALLOC_INPUT_TUNNEL_TYPE_ECPRI:
+		bp->ecpri_fw_dst_port_id =
+			rte_le_to_cpu_16(resp->tunnel_dst_port_id);
+		bp->ecpri_port = port;
+		bp->ecpri_upar_in_use = resp->upar_in_use;
+		break;
 	default:
+		break;
+	}
+
+	HWRM_UNLOCK();
+
+	return rc;
+}
+
+int bnxt_hwrm_tunnel_upar_id_get(struct bnxt *bp, uint8_t *upar_id,
+				 uint8_t tunnel_type)
+{
+	struct hwrm_tunnel_dst_port_query_input req = {0};
+	struct hwrm_tunnel_dst_port_query_output *resp = bp->hwrm_cmd_resp_addr;
+	int rc = 0;
+
+	HWRM_PREP(&req, HWRM_TUNNEL_DST_PORT_QUERY, BNXT_USE_CHIMP_MB);
+	req.tunnel_type = tunnel_type;
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+	HWRM_CHECK_RESULT();
+
+	switch (tunnel_type) {
+	case HWRM_TUNNEL_DST_PORT_ALLOC_INPUT_TUNNEL_TYPE_ECPRI:
+		*upar_id = resp->upar_in_use;
+		break;
+	case HWRM_TUNNEL_DST_PORT_ALLOC_INPUT_TUNNEL_TYPE_SRV6:
+		*upar_id = resp->upar_in_use;
+		break;
+	default:
+		/* INVALID UPAR Id if another tunnel type tries to retrieve */
+		*upar_id = 0xff;
 		break;
 	}
 
@@ -4054,6 +4158,13 @@ int bnxt_hwrm_tunnel_dst_port_free(struct bnxt *bp, uint16_t port,
 	    HWRM_TUNNEL_DST_PORT_FREE_INPUT_TUNNEL_TYPE_GENEVE) {
 		bp->geneve_port = 0;
 		bp->geneve_port_cnt = 0;
+	}
+
+	if (tunnel_type ==
+	    HWRM_TUNNEL_DST_PORT_FREE_INPUT_TUNNEL_TYPE_ECPRI) {
+		bp->ecpri_port = 0;
+		bp->ecpri_upar_in_use = 0;
+		bp->ecpri_port_cnt = 0;
 	}
 
 	return rc;

@@ -7,7 +7,6 @@ if is_windows
     subdir_done()
 endif
 
-cflags += '-std=gnu99'
 cflags += '-D_DEFAULT_SOURCE'
 cflags += '-D_XOPEN_SOURCE=700'
 cflags += '-pedantic'
@@ -27,4 +26,9 @@ sources = files(
         'failsafe_ops.c',
         'failsafe_rxtx.c',
 )
-pmd_supports_disable_iova_as_pa = true
+
+require_iova_in_mbuf = false
+
+if is_freebsd
+    annotate_locks = false
+endif

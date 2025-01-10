@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -112,7 +112,7 @@ uint16_t bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 int bnxt_rxq_vec_setup(struct bnxt_rx_queue *rxq);
 #endif
 
-#if defined(RTE_ARCH_X86) && defined(CC_AVX2_SUPPORT)
+#if defined(RTE_ARCH_X86)
 uint16_t bnxt_recv_pkts_vec_avx2(void *rx_queue, struct rte_mbuf **rx_pkts,
 				 uint16_t nb_pkts);
 #endif
@@ -386,5 +386,4 @@ bnxt_parse_pkt_type_v2(struct rte_mbuf *mbuf,
 
 	mbuf->packet_type = pkt_type;
 }
-
 #endif /*  _BNXT_RXR_H_ */

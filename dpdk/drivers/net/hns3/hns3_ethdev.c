@@ -49,11 +49,6 @@
 #define HNS3_RESET_WAIT_MS	100
 #define HNS3_RESET_WAIT_CNT	200
 
-/* FEC mode order defined in HNS3 hardware */
-#define HNS3_HW_FEC_MODE_NOFEC  0
-#define HNS3_HW_FEC_MODE_BASER  1
-#define HNS3_HW_FEC_MODE_RS     2
-
 enum hns3_evt_cause {
 	HNS3_VECTOR0_EVENT_RST,
 	HNS3_VECTOR0_EVENT_MBX,
@@ -99,7 +94,8 @@ static const struct rte_eth_fec_capa speed_fec_capa_tbl[] = {
 			      RTE_ETH_FEC_MODE_CAPA_MASK(RS) },
 
 	{ RTE_ETH_SPEED_NUM_200G, RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
-			      RTE_ETH_FEC_MODE_CAPA_MASK(RS) }
+			      RTE_ETH_FEC_MODE_CAPA_MASK(RS) |
+			      RTE_ETH_FEC_MODE_CAPA_MASK(LLRS) }
 };
 
 static enum hns3_reset_level hns3_get_reset_level(struct hns3_adapter *hns,
@@ -3902,7 +3898,7 @@ hns3_dev_promiscuous_enable(struct rte_eth_dev *dev)
 
 	/*
 	 * When promiscuous mode was enabled, disable the vlan filter to let
-	 * all packets coming in in the receiving direction.
+	 * all packets coming in the receiving direction.
 	 */
 	offloads = dev->data->dev_conf.rxmode.offloads;
 	if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER) {
@@ -4032,6 +4028,7 @@ static int
 hns3_get_sfp_info(struct hns3_hw *hw, struct hns3_mac *mac_info)
 {
 	struct hns3_sfp_info_cmd *resp;
+	uint32_t local_pause, lp_pause;
 	struct hns3_cmd_desc desc;
 	int ret;
 
@@ -4068,6 +4065,14 @@ hns3_get_sfp_info(struct hns3_hw *hw, struct hns3_mac *mac_info)
 		mac_info->support_autoneg = resp->autoneg_ability;
 		mac_info->link_autoneg = (resp->autoneg == 0) ? RTE_ETH_LINK_FIXED
 					: RTE_ETH_LINK_AUTONEG;
+		mac_info->fec_capa = resp->fec_ability;
+		local_pause = resp->pause_status & HNS3_FIBER_LOCAL_PAUSE_MASK;
+		lp_pause = (resp->pause_status & HNS3_FIBER_LP_PAUSE_MASK) >>
+						HNS3_FIBER_LP_PAUSE_S;
+		mac_info->advertising =
+				local_pause << HNS3_PHY_LINK_MODE_PAUSE_S;
+		mac_info->lp_advertising =
+				lp_pause << HNS3_PHY_LINK_MODE_PAUSE_S;
 	} else {
 		mac_info->query_type = HNS3_DEFAULT_QUERY;
 	}
@@ -4150,6 +4155,9 @@ hns3_update_fiber_link_info(struct hns3_hw *hw)
 		mac->supported_speed = mac_info.supported_speed;
 		mac->support_autoneg = mac_info.support_autoneg;
 		mac->link_autoneg = mac_info.link_autoneg;
+		mac->fec_capa = mac_info.fec_capa;
+		mac->advertising = mac_info.advertising;
+		mac->lp_advertising = mac_info.lp_advertising;
 
 		return 0;
 	}
@@ -4558,24 +4566,6 @@ hns3_get_port_supported_speed(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
-static void
-hns3_get_fc_autoneg_capability(struct hns3_adapter *hns)
-{
-	struct hns3_mac *mac = &hns->hw.mac;
-
-	if (mac->media_type == HNS3_MEDIA_TYPE_COPPER) {
-		hns->pf.support_fc_autoneg = true;
-		return;
-	}
-
-	/*
-	 * Flow control auto-negotiation requires the cooperation of the driver
-	 * and firmware. Currently, the optical port does not support flow
-	 * control auto-negotiation.
-	 */
-	hns->pf.support_fc_autoneg = false;
-}
-
 static int
 hns3_init_pf(struct rte_eth_dev *eth_dev)
 {
@@ -4677,8 +4667,6 @@ hns3_init_pf(struct rte_eth_dev *eth_dev)
 			     "by device, ret = %d.", ret);
 		goto err_supported_speed;
 	}
-
-	hns3_get_fc_autoneg_capability(hns);
 
 	hns3_tm_conf_init(eth_dev);
 
@@ -4956,7 +4944,7 @@ hns3_set_fiber_port_link_speed(struct hns3_hw *hw,
 	return hns3_cfg_mac_speed_dup(hw, cfg->speed, cfg->duplex);
 }
 
-static const char *
+const char *
 hns3_get_media_type_name(uint8_t media_type)
 {
 	if (media_type == HNS3_MEDIA_TYPE_FIBER)
@@ -5246,8 +5234,7 @@ hns3_dev_close(struct rte_eth_dev *eth_dev)
 }
 
 static void
-hns3_get_autoneg_rxtx_pause_copper(struct hns3_hw *hw, bool *rx_pause,
-				   bool *tx_pause)
+hns3_get_autoneg_rxtx_pause(struct hns3_hw *hw, bool *rx_pause, bool *tx_pause)
 {
 	struct hns3_mac *mac = &hw->mac;
 	uint32_t advertising = mac->advertising;
@@ -5258,8 +5245,7 @@ hns3_get_autoneg_rxtx_pause_copper(struct hns3_hw *hw, bool *rx_pause,
 	if (advertising & lp_advertising & HNS3_PHY_LINK_MODE_PAUSE_BIT) {
 		*rx_pause = true;
 		*tx_pause = true;
-	} else if (advertising & lp_advertising &
-		   HNS3_PHY_LINK_MODE_ASYM_PAUSE_BIT) {
+	} else if (advertising & lp_advertising & HNS3_PHY_LINK_MODE_ASYM_PAUSE_BIT) {
 		if (advertising & HNS3_PHY_LINK_MODE_PAUSE_BIT)
 			*rx_pause = true;
 		else if (lp_advertising & HNS3_PHY_LINK_MODE_PAUSE_BIT)
@@ -5274,26 +5260,7 @@ hns3_get_autoneg_fc_mode(struct hns3_hw *hw)
 	bool rx_pause = false;
 	bool tx_pause = false;
 
-	switch (hw->mac.media_type) {
-	case HNS3_MEDIA_TYPE_COPPER:
-		hns3_get_autoneg_rxtx_pause_copper(hw, &rx_pause, &tx_pause);
-		break;
-
-	/*
-	 * Flow control auto-negotiation is not supported for fiber and
-	 * backplane media type.
-	 */
-	case HNS3_MEDIA_TYPE_FIBER:
-	case HNS3_MEDIA_TYPE_BACKPLANE:
-		hns3_err(hw, "autoneg FC mode can't be obtained, but flow control auto-negotiation is enabled.");
-		current_mode = hw->requested_fc_mode;
-		goto out;
-	default:
-		hns3_err(hw, "autoneg FC mode can't be obtained for unknown media type(%u).",
-			 hw->mac.media_type);
-		current_mode = HNS3_FC_NONE;
-		goto out;
-	}
+	hns3_get_autoneg_rxtx_pause(hw, &rx_pause, &tx_pause);
 
 	if (rx_pause && tx_pause)
 		current_mode = HNS3_FC_FULL;
@@ -5304,7 +5271,6 @@ hns3_get_autoneg_fc_mode(struct hns3_hw *hw)
 	else
 		current_mode = HNS3_FC_NONE;
 
-out:
 	return current_mode;
 }
 
@@ -6028,7 +5994,7 @@ hns3_fec_get_capability(struct rte_eth_dev *dev,
 
 	speed_capa = hns3_get_speed_capa(hw);
 	/* speed_num counts number of speed capabilities */
-	speed_num = __builtin_popcount(speed_capa & HNS3_SPEEDS_SUPP_FEC);
+	speed_num = rte_popcount32(speed_capa & HNS3_SPEEDS_SUPP_FEC);
 	if (speed_num == 0)
 		return -ENOTSUP;
 
@@ -6119,14 +6085,17 @@ hns3_fec_get_internal(struct hns3_hw *hw, uint32_t *fec_capa)
 	 * to be converted.
 	 */
 	switch (resp->active_fec) {
-	case HNS3_HW_FEC_MODE_NOFEC:
+	case HNS3_MAC_FEC_OFF:
 		tmp_fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
 		break;
-	case HNS3_HW_FEC_MODE_BASER:
+	case HNS3_MAC_FEC_BASER:
 		tmp_fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
 		break;
-	case HNS3_HW_FEC_MODE_RS:
+	case HNS3_MAC_FEC_RS:
 		tmp_fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		break;
+	case HNS3_MAC_FEC_LLRS:
+		tmp_fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(LLRS);
 		break;
 	default:
 		tmp_fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
@@ -6168,6 +6137,10 @@ hns3_set_fec_hw(struct hns3_hw *hw, uint32_t mode)
 		hns3_set_field(req->fec_mode, HNS3_MAC_CFG_FEC_MODE_M,
 				HNS3_MAC_CFG_FEC_MODE_S, HNS3_MAC_FEC_RS);
 		break;
+	case RTE_ETH_FEC_MODE_CAPA_MASK(LLRS):
+		hns3_set_field(req->fec_mode, HNS3_MAC_CFG_FEC_MODE_M,
+				HNS3_MAC_CFG_FEC_MODE_S, HNS3_MAC_FEC_LLRS);
+		break;
 	case RTE_ETH_FEC_MODE_CAPA_MASK(AUTO):
 		hns3_set_bit(req->fec_mode, HNS3_MAC_CFG_FEC_AUTO_EN_B, 1);
 		break;
@@ -6182,9 +6155,36 @@ hns3_set_fec_hw(struct hns3_hw *hw, uint32_t mode)
 }
 
 static uint32_t
+hns3_parse_hw_fec_capa(uint8_t hw_fec_capa)
+{
+	const struct {
+		uint32_t hw_fec_capa;
+		uint32_t fec_capa;
+	} fec_capa_map[] = {
+		{ HNS3_FIBER_FEC_AUTO_BIT, RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) },
+		{ HNS3_FIBER_FEC_BASER_BIT, RTE_ETH_FEC_MODE_CAPA_MASK(BASER) },
+		{ HNS3_FIBER_FEC_RS_BIT, RTE_ETH_FEC_MODE_CAPA_MASK(RS) },
+		{ HNS3_FIBER_FEC_LLRS_BIT, RTE_ETH_FEC_MODE_CAPA_MASK(LLRS) },
+		{ HNS3_FIBER_FEC_NOFEC_BIT, RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) },
+	};
+	uint32_t capa = 0;
+	uint32_t i;
+
+	for (i = 0; i < RTE_DIM(fec_capa_map); i++) {
+		if ((hw_fec_capa & fec_capa_map[i].hw_fec_capa) != 0)
+			capa |= fec_capa_map[i].fec_capa;
+	}
+
+	return capa;
+}
+
+static uint32_t
 hns3_get_current_speed_fec_cap(struct hns3_mac *mac)
 {
 	uint32_t i;
+
+	if (mac->fec_capa != 0)
+		return hns3_parse_hw_fec_capa(mac->fec_capa);
 
 	for (i = 0; i < RTE_DIM(speed_fec_capa_tbl); i++) {
 		if (mac->link_speed == speed_fec_capa_tbl[i].speed)
@@ -6201,7 +6201,7 @@ hns3_fec_mode_valid(struct rte_eth_dev *dev, uint32_t mode)
 	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(hns);
 	uint32_t cur_capa;
 
-	if (__builtin_popcount(mode) != 1) {
+	if (rte_popcount32(mode) != 1) {
 		hns3_err(hw, "FEC mode(0x%x) should be only one bit set", mode);
 		return -EINVAL;
 	}
@@ -6650,8 +6650,6 @@ static const struct rte_pci_id pci_id_hns3_map[] = {
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_50GE_RDMA) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_100G_RDMA_MACSEC) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_200G_RDMA) },
-	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_100G_ROH) },
-	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_200G_ROH) },
 	{ .vendor_id = 0, }, /* sentinel */
 };
 
@@ -6669,6 +6667,13 @@ RTE_PMD_REGISTER_PARAM_STRING(net_hns3,
 		HNS3_DEVARG_RX_FUNC_HINT "=vec|sve|simple|common "
 		HNS3_DEVARG_TX_FUNC_HINT "=vec|sve|simple|common "
 		HNS3_DEVARG_DEV_CAPS_MASK "=<1-65535> "
-		HNS3_DEVARG_MBX_TIME_LIMIT_MS "=<uint16> ");
+		HNS3_DEVARG_MBX_TIME_LIMIT_MS "=<uint16> "
+		HNS3_DEVARG_FDIR_VLAN_MATCH_MODE "=strict|nostrict ");
 RTE_LOG_REGISTER_SUFFIX(hns3_logtype_init, init, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(hns3_logtype_driver, driver, NOTICE);
+#ifdef RTE_ETHDEV_DEBUG_RX
+RTE_LOG_REGISTER_SUFFIX(hns3_logtype_rx, rx, DEBUG);
+#endif
+#ifdef RTE_ETHDEV_DEBUG_TX
+RTE_LOG_REGISTER_SUFFIX(hns3_logtype_tx, tx, DEBUG);
+#endif

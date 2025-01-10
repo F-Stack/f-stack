@@ -78,6 +78,19 @@
 #define IGC_ALARM_INTERVAL	8000000u
 /* us, about 13.6s some per-queue registers will wrap around back to 0. */
 
+/* Transmit and receive latency (for PTP timestamps) */
+#define IGC_I225_TX_LATENCY_10		240
+#define IGC_I225_TX_LATENCY_100		58
+#define IGC_I225_TX_LATENCY_1000	80
+#define IGC_I225_TX_LATENCY_2500	1325
+#define IGC_I225_RX_LATENCY_10		6450
+#define IGC_I225_RX_LATENCY_100		185
+#define IGC_I225_RX_LATENCY_1000	300
+#define IGC_I225_RX_LATENCY_2500	1485
+
+uint64_t igc_tx_timestamp_dynflag;
+int igc_tx_timestamp_dynfield_offset = -1;
+
 static const struct rte_eth_desc_lim rx_desc_lim = {
 	.nb_max = IGC_MAX_RXD,
 	.nb_min = IGC_MIN_RXD,
@@ -94,6 +107,7 @@ static const struct rte_eth_desc_lim tx_desc_lim = {
 
 static const struct rte_pci_id pci_id_igc_map[] = {
 	{ RTE_PCI_DEVICE(IGC_INTEL_VENDOR_ID, IGC_DEV_ID_I225_LM) },
+	{ RTE_PCI_DEVICE(IGC_INTEL_VENDOR_ID, IGC_DEV_ID_I225_LMVP) },
 	{ RTE_PCI_DEVICE(IGC_INTEL_VENDOR_ID, IGC_DEV_ID_I225_V)  },
 	{ RTE_PCI_DEVICE(IGC_INTEL_VENDOR_ID, IGC_DEV_ID_I225_I)  },
 	{ RTE_PCI_DEVICE(IGC_INTEL_VENDOR_ID, IGC_DEV_ID_I225_IT)  },
@@ -245,6 +259,19 @@ eth_igc_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on);
 static int eth_igc_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 static int eth_igc_vlan_tpid_set(struct rte_eth_dev *dev,
 		      enum rte_vlan_type vlan_type, uint16_t tpid);
+static int eth_igc_timesync_enable(struct rte_eth_dev *dev);
+static int eth_igc_timesync_disable(struct rte_eth_dev *dev);
+static int eth_igc_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
+					  struct timespec *timestamp,
+					  uint32_t flags);
+static int eth_igc_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
+					  struct timespec *timestamp);
+static int eth_igc_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta);
+static int eth_igc_timesync_read_time(struct rte_eth_dev *dev,
+				  struct timespec *timestamp);
+static int eth_igc_timesync_write_time(struct rte_eth_dev *dev,
+				   const struct timespec *timestamp);
+static int eth_igc_read_clock(struct rte_eth_dev *dev, uint64_t *clock);
 
 static const struct eth_dev_ops eth_igc_ops = {
 	.dev_configure		= eth_igc_configure,
@@ -298,6 +325,14 @@ static const struct eth_dev_ops eth_igc_ops = {
 	.vlan_tpid_set		= eth_igc_vlan_tpid_set,
 	.vlan_strip_queue_set	= eth_igc_vlan_strip_queue_set,
 	.flow_ops_get		= eth_igc_flow_ops_get,
+	.timesync_enable	= eth_igc_timesync_enable,
+	.timesync_disable	= eth_igc_timesync_disable,
+	.timesync_read_rx_timestamp = eth_igc_timesync_read_rx_timestamp,
+	.timesync_read_tx_timestamp = eth_igc_timesync_read_tx_timestamp,
+	.timesync_adjust_time	= eth_igc_timesync_adjust_time,
+	.timesync_read_time	= eth_igc_timesync_read_time,
+	.timesync_write_time	= eth_igc_timesync_write_time,
+	.read_clock             = eth_igc_read_clock,
 };
 
 /*
@@ -920,7 +955,12 @@ eth_igc_start(struct rte_eth_dev *dev)
 	struct igc_adapter *adapter = IGC_DEV_PRIVATE(dev);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
+	uint32_t nsec, sec, baset_l, baset_h, tqavctrl;
+	struct timespec system_time;
+	int64_t n, systime;
+	uint32_t txqctl = 0;
 	uint32_t *speeds;
+	uint16_t i;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
@@ -978,6 +1018,55 @@ eth_igc_start(struct rte_eth_dev *dev)
 		PMD_DRV_LOG(ERR, "Unable to initialize RX hardware");
 		igc_dev_clear_queues(dev);
 		return ret;
+	}
+
+	if (igc_tx_timestamp_dynflag > 0) {
+		adapter->base_time = 0;
+		adapter->cycle_time = NSEC_PER_SEC;
+
+		IGC_WRITE_REG(hw, IGC_TSSDP, 0);
+		IGC_WRITE_REG(hw, IGC_TSIM, TSINTR_TXTS);
+		IGC_WRITE_REG(hw, IGC_IMS, IGC_ICR_TS);
+
+		IGC_WRITE_REG(hw, IGC_TSAUXC, 0);
+		IGC_WRITE_REG(hw, IGC_I350_DTXMXPKTSZ, IGC_DTXMXPKTSZ_TSN);
+		IGC_WRITE_REG(hw, IGC_TXPBS, IGC_TXPBSIZE_TSN);
+
+		tqavctrl = IGC_READ_REG(hw, IGC_I210_TQAVCTRL);
+		tqavctrl |= IGC_TQAVCTRL_TRANSMIT_MODE_TSN |
+			    IGC_TQAVCTRL_ENHANCED_QAV;
+		IGC_WRITE_REG(hw, IGC_I210_TQAVCTRL, tqavctrl);
+
+		IGC_WRITE_REG(hw, IGC_QBVCYCLET_S, adapter->cycle_time);
+		IGC_WRITE_REG(hw, IGC_QBVCYCLET, adapter->cycle_time);
+
+		for (i = 0; i < dev->data->nb_tx_queues; i++) {
+			IGC_WRITE_REG(hw, IGC_STQT(i), 0);
+			IGC_WRITE_REG(hw, IGC_ENDQT(i), NSEC_PER_SEC);
+
+			txqctl |= IGC_TXQCTL_QUEUE_MODE_LAUNCHT;
+			IGC_WRITE_REG(hw, IGC_TXQCTL(i), txqctl);
+		}
+
+		clock_gettime(CLOCK_REALTIME, &system_time);
+		IGC_WRITE_REG(hw, IGC_SYSTIML, system_time.tv_nsec);
+		IGC_WRITE_REG(hw, IGC_SYSTIMH, system_time.tv_sec);
+
+		nsec = IGC_READ_REG(hw, IGC_SYSTIML);
+		sec = IGC_READ_REG(hw, IGC_SYSTIMH);
+		systime = (int64_t)sec * NSEC_PER_SEC + (int64_t)nsec;
+
+		if (systime > adapter->base_time) {
+			n = (systime - adapter->base_time) /
+			     adapter->cycle_time;
+			adapter->base_time = adapter->base_time +
+				(n + 1) * adapter->cycle_time;
+		}
+
+		baset_h = adapter->base_time / NSEC_PER_SEC;
+		baset_l = adapter->base_time % NSEC_PER_SEC;
+		IGC_WRITE_REG(hw, IGC_BASET_H, baset_h);
+		IGC_WRITE_REG(hw, IGC_BASET_L, baset_l);
 	}
 
 	igc_clear_hw_cntrs_base_generic(hw);
@@ -2579,6 +2668,210 @@ eth_igc_vlan_tpid_set(struct rte_eth_dev *dev,
 	/* all other TPID values are read-only*/
 	PMD_DRV_LOG(ERR, "Not supported");
 	return -ENOTSUP;
+}
+
+static int
+eth_igc_timesync_enable(struct rte_eth_dev *dev)
+{
+	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	struct timespec system_time;
+	struct igc_rx_queue *rxq;
+	uint32_t val;
+	uint16_t i;
+
+	IGC_WRITE_REG(hw, IGC_TSAUXC, 0x0);
+
+	clock_gettime(CLOCK_REALTIME, &system_time);
+	IGC_WRITE_REG(hw, IGC_SYSTIML, system_time.tv_nsec);
+	IGC_WRITE_REG(hw, IGC_SYSTIMH, system_time.tv_sec);
+
+	/* Enable timestamping of received PTP packets. */
+	val = IGC_READ_REG(hw, IGC_RXPBS);
+	val |= IGC_RXPBS_CFG_TS_EN;
+	IGC_WRITE_REG(hw, IGC_RXPBS, val);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		val = IGC_READ_REG(hw, IGC_SRRCTL(i));
+		/* For now, only support retrieving Rx timestamp from timer0. */
+		val |= IGC_SRRCTL_TIMER1SEL(0) | IGC_SRRCTL_TIMER0SEL(0) |
+		       IGC_SRRCTL_TIMESTAMP;
+		IGC_WRITE_REG(hw, IGC_SRRCTL(i), val);
+	}
+
+	val = IGC_TSYNCRXCTL_ENABLED | IGC_TSYNCRXCTL_TYPE_ALL |
+	      IGC_TSYNCRXCTL_RXSYNSIG;
+	IGC_WRITE_REG(hw, IGC_TSYNCRXCTL, val);
+
+	/* Enable Timestamping of transmitted PTP packets. */
+	IGC_WRITE_REG(hw, IGC_TSYNCTXCTL, IGC_TSYNCTXCTL_ENABLED |
+		      IGC_TSYNCTXCTL_TXSYNSIG);
+
+	/* Read TXSTMP registers to discard any timestamp previously stored. */
+	IGC_READ_REG(hw, IGC_TXSTMPL);
+	IGC_READ_REG(hw, IGC_TXSTMPH);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxq = dev->data->rx_queues[i];
+		rxq->offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+	}
+
+	return 0;
+}
+
+static int
+eth_igc_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
+{
+	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+
+	ts->tv_nsec = IGC_READ_REG(hw, IGC_SYSTIML);
+	ts->tv_sec = IGC_READ_REG(hw, IGC_SYSTIMH);
+
+	return 0;
+}
+
+static int
+eth_igc_timesync_write_time(struct rte_eth_dev *dev, const struct timespec *ts)
+{
+	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+
+	IGC_WRITE_REG(hw, IGC_SYSTIML, ts->tv_nsec);
+	IGC_WRITE_REG(hw, IGC_SYSTIMH, ts->tv_sec);
+
+	return 0;
+}
+
+static int
+eth_igc_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta)
+{
+	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	uint32_t nsec, sec;
+	uint64_t systime, ns;
+	struct timespec ts;
+
+	nsec = (uint64_t)IGC_READ_REG(hw, IGC_SYSTIML);
+	sec = (uint64_t)IGC_READ_REG(hw, IGC_SYSTIMH);
+	systime = sec * NSEC_PER_SEC + nsec;
+
+	ns = systime + delta;
+	ts = rte_ns_to_timespec(ns);
+
+	IGC_WRITE_REG(hw, IGC_SYSTIML, ts.tv_nsec);
+	IGC_WRITE_REG(hw, IGC_SYSTIMH, ts.tv_sec);
+
+	return 0;
+}
+
+static int
+eth_igc_timesync_read_rx_timestamp(__rte_unused struct rte_eth_dev *dev,
+			       struct timespec *timestamp,
+			       uint32_t flags)
+{
+	struct rte_eth_link link;
+	int adjust = 0;
+	struct igc_rx_queue *rxq;
+	uint64_t rx_timestamp;
+
+	/* Get current link speed. */
+	eth_igc_link_update(dev, 1);
+	rte_eth_linkstatus_get(dev, &link);
+
+	switch (link.link_speed) {
+	case SPEED_10:
+		adjust = IGC_I225_RX_LATENCY_10;
+		break;
+	case SPEED_100:
+		adjust = IGC_I225_RX_LATENCY_100;
+		break;
+	case SPEED_1000:
+		adjust = IGC_I225_RX_LATENCY_1000;
+		break;
+	case SPEED_2500:
+		adjust = IGC_I225_RX_LATENCY_2500;
+		break;
+	}
+
+	rxq = dev->data->rx_queues[flags];
+	rx_timestamp = rxq->rx_timestamp - adjust;
+	*timestamp = rte_ns_to_timespec(rx_timestamp);
+
+	return 0;
+}
+
+static int
+eth_igc_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
+			       struct timespec *timestamp)
+{
+	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	struct rte_eth_link link;
+	uint32_t val, nsec, sec;
+	uint64_t tx_timestamp;
+	int adjust = 0;
+
+	val = IGC_READ_REG(hw, IGC_TSYNCTXCTL);
+	if (!(val & IGC_TSYNCTXCTL_VALID))
+		return -EINVAL;
+
+	nsec = (uint64_t)IGC_READ_REG(hw, IGC_TXSTMPL);
+	sec = (uint64_t)IGC_READ_REG(hw, IGC_TXSTMPH);
+	tx_timestamp = sec * NSEC_PER_SEC + nsec;
+
+	/* Get current link speed. */
+	eth_igc_link_update(dev, 1);
+	rte_eth_linkstatus_get(dev, &link);
+
+	switch (link.link_speed) {
+	case SPEED_10:
+		adjust = IGC_I225_TX_LATENCY_10;
+		break;
+	case SPEED_100:
+		adjust = IGC_I225_TX_LATENCY_100;
+		break;
+	case SPEED_1000:
+		adjust = IGC_I225_TX_LATENCY_1000;
+		break;
+	case SPEED_2500:
+		adjust = IGC_I225_TX_LATENCY_2500;
+		break;
+	}
+
+	tx_timestamp += adjust;
+	*timestamp = rte_ns_to_timespec(tx_timestamp);
+
+	return 0;
+}
+
+static int
+eth_igc_timesync_disable(struct rte_eth_dev *dev)
+{
+	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
+	uint32_t val;
+
+	/* Disable timestamping of transmitted PTP packets. */
+	IGC_WRITE_REG(hw, IGC_TSYNCTXCTL, 0);
+
+	/* Disable timestamping of received PTP packets. */
+	IGC_WRITE_REG(hw, IGC_TSYNCRXCTL, 0);
+
+	val = IGC_READ_REG(hw, IGC_RXPBS);
+	val &= ~IGC_RXPBS_CFG_TS_EN;
+	IGC_WRITE_REG(hw, IGC_RXPBS, val);
+
+	val = IGC_READ_REG(hw, IGC_SRRCTL(0));
+	val &= ~IGC_SRRCTL_TIMESTAMP;
+	IGC_WRITE_REG(hw, IGC_SRRCTL(0), val);
+
+	return 0;
+}
+
+static int
+eth_igc_read_clock(__rte_unused struct rte_eth_dev *dev, uint64_t *clock)
+{
+	struct timespec system_time;
+
+	clock_gettime(CLOCK_REALTIME, &system_time);
+	*clock = system_time.tv_sec * NSEC_PER_SEC + system_time.tv_nsec;
+
+	return 0;
 }
 
 static int

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 
 #include <rte_memcpy.h>
+#include <rte_stdatomic.h>
 #include <rte_string_fns.h>
 
 #include "power_acpi_cpufreq.h"
@@ -41,13 +42,13 @@ enum power_state {
  * Power info per lcore.
  */
 struct acpi_power_info {
-	unsigned int lcore_id;                   /**< Logical core id */
+	unsigned int lcore_id;               /**< Logical core id */
 	uint32_t freqs[RTE_MAX_LCORE_FREQS]; /**< Frequency array */
 	uint32_t nb_freqs;                   /**< number of available freqs */
 	FILE *f;                             /**< FD of scaling_setspeed */
 	char governor_ori[32];               /**< Original governor name */
 	uint32_t curr_idx;                   /**< Freq index in freqs array */
-	uint32_t state;                      /**< Power in use state */
+	RTE_ATOMIC(uint32_t) state;          /**< Power in use state */
 	uint16_t turbo_available;            /**< Turbo Boost available */
 	uint16_t turbo_enable;               /**< Turbo Boost enable/disable */
 } __rte_cache_aligned;
@@ -249,15 +250,19 @@ power_acpi_cpufreq_init(unsigned int lcore_id)
 	 * ordering below as lock to make sure the frequency operations
 	 * in the critical section are done under the correct state.
 	 */
-	if (!__atomic_compare_exchange_n(&(pi->state), &exp_state,
-					POWER_ONGOING, 0,
-					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&(pi->state), &exp_state,
+					POWER_ONGOING,
+					rte_memory_order_acquire, rte_memory_order_relaxed)) {
 		RTE_LOG(INFO, POWER, "Power management of lcore %u is "
 				"in use\n", lcore_id);
 		return -1;
 	}
 
-	pi->lcore_id = lcore_id;
+	if (power_get_lcore_mapped_cpu_id(lcore_id, &pi->lcore_id) < 0) {
+		RTE_LOG(ERR, POWER, "Cannot get CPU ID mapped for lcore %u\n", lcore_id);
+		return -1;
+	}
+
 	/* Check and set the governor */
 	if (power_set_governor_userspace(pi) < 0) {
 		RTE_LOG(ERR, POWER, "Cannot set governor of lcore %u to "
@@ -289,15 +294,15 @@ power_acpi_cpufreq_init(unsigned int lcore_id)
 	RTE_LOG(INFO, POWER, "Initialized successfully for lcore %u "
 			"power management\n", lcore_id);
 	exp_state = POWER_ONGOING;
-	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_USED,
-				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+	rte_atomic_compare_exchange_strong_explicit(&(pi->state), &exp_state, POWER_USED,
+				    rte_memory_order_release, rte_memory_order_relaxed);
 
 	return 0;
 
 fail:
 	exp_state = POWER_ONGOING;
-	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_UNKNOWN,
-				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+	rte_atomic_compare_exchange_strong_explicit(&(pi->state), &exp_state, POWER_UNKNOWN,
+				    rte_memory_order_release, rte_memory_order_relaxed);
 
 	return -1;
 }
@@ -321,9 +326,9 @@ power_acpi_cpufreq_exit(unsigned int lcore_id)
 	 * ordering below as lock to make sure the frequency operations
 	 * in the critical section are done under the correct state.
 	 */
-	if (!__atomic_compare_exchange_n(&(pi->state), &exp_state,
-					POWER_ONGOING, 0,
-					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&(pi->state), &exp_state,
+					POWER_ONGOING,
+					rte_memory_order_acquire, rte_memory_order_relaxed)) {
 		RTE_LOG(INFO, POWER, "Power management of lcore %u is "
 				"not used\n", lcore_id);
 		return -1;
@@ -344,15 +349,15 @@ power_acpi_cpufreq_exit(unsigned int lcore_id)
 			"'userspace' mode and been set back to the "
 			"original\n", lcore_id);
 	exp_state = POWER_ONGOING;
-	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_IDLE,
-				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+	rte_atomic_compare_exchange_strong_explicit(&(pi->state), &exp_state, POWER_IDLE,
+				    rte_memory_order_release, rte_memory_order_relaxed);
 
 	return 0;
 
 fail:
 	exp_state = POWER_ONGOING;
-	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_UNKNOWN,
-				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+	rte_atomic_compare_exchange_strong_explicit(&(pi->state), &exp_state, POWER_UNKNOWN,
+				    rte_memory_order_release, rte_memory_order_relaxed);
 
 	return -1;
 }

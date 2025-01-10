@@ -25,6 +25,11 @@
 #define CPT_LF_DEFAULT_NB_DESC	1024
 #define CPT_LF_FC_MIN_THRESHOLD 32
 
+static struct cpt_int_cb {
+	roc_cpt_int_misc_cb_t cb;
+	void *cb_args;
+} int_cb;
+
 static void
 cpt_lf_misc_intr_enb_dis(struct roc_cpt_lf *lf, bool enb)
 {
@@ -57,6 +62,11 @@ cpt_lf_misc_irq(void *param)
 
 	/* Clear interrupt */
 	plt_write64(intr, lf->rbase + CPT_LF_MISC_INT);
+
+	if (int_cb.cb != NULL) {
+		lf->error_event_pending = 1;
+		int_cb.cb(lf, int_cb.cb_args);
+	}
 }
 
 static int
@@ -225,11 +235,14 @@ cpt_lf_outb_cfg(struct dev *dev, uint16_t sso_pf_func, uint16_t nix_pf_func,
 		uint8_t lf_id, bool ena)
 {
 	struct cpt_inline_ipsec_cfg_msg *req;
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
 	req = mbox_alloc_msg_cpt_inline_ipsec_cfg(mbox);
-	if (req == NULL)
-		return -ENOSPC;
+	if (req == NULL) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	req->dir = CPT_INLINE_OUTBOUND;
 	req->slot = lf_id;
@@ -241,7 +254,10 @@ cpt_lf_outb_cfg(struct dev *dev, uint16_t sso_pf_func, uint16_t nix_pf_func,
 		req->enable = 0;
 	}
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
@@ -262,39 +278,66 @@ roc_cpt_inline_ipsec_cfg(struct dev *cpt_dev, uint8_t lf_id,
 
 int
 roc_cpt_inline_ipsec_inb_cfg_read(struct roc_cpt *roc_cpt,
-				  struct nix_inline_ipsec_cfg *inb_cfg)
+				  struct roc_cpt_inline_ipsec_inb_cfg *cfg)
 {
 	struct cpt *cpt = roc_cpt_to_cpt_priv(roc_cpt);
+	struct nix_inline_ipsec_cfg *inb_cfg;
 	struct dev *dev = &cpt->dev;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	struct msg_req *req;
+	int rc;
 
-	req = mbox_alloc_msg_nix_read_inline_ipsec_cfg(dev->mbox);
-	if (req == NULL)
-		return -EIO;
+	req = mbox_alloc_msg_nix_read_inline_ipsec_cfg(mbox);
+	if (req == NULL) {
+		rc = -EIO;
+		goto exit;
+	}
 
-	return mbox_process_msg(dev->mbox, (void *)&inb_cfg);
+	rc = mbox_process_msg(mbox, (void *)&inb_cfg);
+	if (rc) {
+		rc = -EIO;
+		goto exit;
+	}
+	cfg->cpt_credit = inb_cfg->cpt_credit;
+	cfg->egrp = inb_cfg->gen_cfg.egrp;
+	cfg->opcode = inb_cfg->gen_cfg.opcode;
+	cfg->param1 = inb_cfg->gen_cfg.param1;
+	cfg->param2 = inb_cfg->gen_cfg.param2;
+	cfg->bpid = inb_cfg->bpid;
+	cfg->credit_th = inb_cfg->credit_th;
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
-roc_cpt_inline_ipsec_inb_cfg(struct roc_cpt *roc_cpt, uint16_t param1,
-			     uint16_t param2, uint16_t opcode)
+roc_cpt_inline_ipsec_inb_cfg(struct roc_cpt *roc_cpt, struct roc_cpt_inline_ipsec_inb_cfg *cfg)
 {
 	struct cpt *cpt = roc_cpt_to_cpt_priv(roc_cpt);
 	struct cpt_rx_inline_lf_cfg_msg *req;
 	struct mbox *mbox;
+	int rc;
 
-	mbox = cpt->dev.mbox;
+	mbox = mbox_get(cpt->dev.mbox);
 
 	req = mbox_alloc_msg_cpt_rx_inline_lf_cfg(mbox);
-	if (req == NULL)
-		return -ENOSPC;
+	if (req == NULL) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	req->sso_pf_func = idev_sso_pffunc_get();
-	req->param1 = param1;
-	req->param2 = param2;
-	req->opcode = opcode;
+	req->param1 = cfg->param1;
+	req->param2 = cfg->param2;
+	req->opcode = cfg->opcode;
+	req->bpid = cfg->bpid;
+	req->ctx_ilen_valid = cfg->ctx_ilen_valid;
+	req->ctx_ilen = cfg->ctx_ilen;
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
@@ -303,10 +346,14 @@ roc_cpt_rxc_time_cfg(struct roc_cpt *roc_cpt, struct roc_cpt_rxc_time_cfg *cfg)
 	struct cpt *cpt = roc_cpt_to_cpt_priv(roc_cpt);
 	struct cpt_rxc_time_cfg_req *req;
 	struct dev *dev = &cpt->dev;
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
-	req = mbox_alloc_msg_cpt_rxc_time_cfg(dev->mbox);
-	if (req == NULL)
-		return -ENOSPC;
+	req = mbox_alloc_msg_cpt_rxc_time_cfg(mbox);
+	if (req == NULL) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	req->blkaddr = 0;
 
@@ -321,18 +368,22 @@ roc_cpt_rxc_time_cfg(struct roc_cpt *roc_cpt, struct roc_cpt_rxc_time_cfg *cfg)
 	req->active_limit = cfg->active_limit;
 	req->active_thres = cfg->active_thres;
 
-	return mbox_process(dev->mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
 cpt_get_msix_offset(struct dev *dev, struct msix_offset_rsp **msix_rsp)
 {
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	int rc;
 
 	/* Get MSIX vector offsets */
 	mbox_alloc_msg_msix_offset(mbox);
 	rc = mbox_process_msg(mbox, (void *)msix_rsp);
+	mbox_put(mbox);
 
 	return rc;
 }
@@ -340,70 +391,94 @@ cpt_get_msix_offset(struct dev *dev, struct msix_offset_rsp **msix_rsp)
 int
 cpt_lfs_attach(struct dev *dev, uint8_t blkaddr, bool modify, uint16_t nb_lf)
 {
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	struct rsrc_attach_req *req;
+	int rc;
 
-	if (blkaddr != RVU_BLOCK_ADDR_CPT0 && blkaddr != RVU_BLOCK_ADDR_CPT1)
-		return -EINVAL;
+	if (blkaddr != RVU_BLOCK_ADDR_CPT0 && blkaddr != RVU_BLOCK_ADDR_CPT1) {
+		rc = -EINVAL;
+		goto exit;
+	}
 
 	/* Attach CPT(lf) */
 	req = mbox_alloc_msg_attach_resources(mbox);
-	if (req == NULL)
-		return -ENOSPC;
+	if (req == NULL) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	req->cptlfs = nb_lf;
 	req->modify = modify;
 	req->cpt_blkaddr = blkaddr;
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
 cpt_lfs_detach(struct dev *dev)
 {
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	struct rsrc_detach_req *req;
+	int rc;
 
 	req = mbox_alloc_msg_detach_resources(mbox);
-	if (req == NULL)
-		return -ENOSPC;
+	if (req == NULL) {
+		rc =  -ENOSPC;
+		goto exit;
+	}
 
 	req->cptlfs = 1;
 	req->partial = 1;
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 static int
 cpt_available_lfs_get(struct dev *dev, uint16_t *nb_lf)
 {
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	struct free_rsrcs_rsp *rsp;
 	int rc;
 
 	mbox_alloc_msg_free_rsrc_cnt(mbox);
 
 	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
-		return -EIO;
+	if (rc) {
+		rc = -EIO;
+		goto exit;
+	}
 
 	*nb_lf = PLT_MAX((uint16_t)rsp->cpt, (uint16_t)rsp->cpt1);
-	return 0;
+	rc = 0;
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
-cpt_lfs_alloc(struct dev *dev, uint8_t eng_grpmsk, uint8_t blkaddr,
-	      bool inl_dev_sso)
+cpt_lfs_alloc(struct dev *dev, uint8_t eng_grpmsk, uint8_t blkaddr, bool inl_dev_sso,
+	      bool ctx_ilen_valid, uint8_t ctx_ilen)
 {
 	struct cpt_lf_alloc_req_msg *req;
-	struct mbox *mbox = dev->mbox;
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
-	if (blkaddr != RVU_BLOCK_ADDR_CPT0 && blkaddr != RVU_BLOCK_ADDR_CPT1)
-		return -EINVAL;
+	if (blkaddr != RVU_BLOCK_ADDR_CPT0 && blkaddr != RVU_BLOCK_ADDR_CPT1) {
+		rc = -EINVAL;
+		goto exit;
+	}
 
 	req = mbox_alloc_msg_cpt_lf_alloc(mbox);
-	if (!req)
-		return -ENOSPC;
+	if (!req) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	req->nix_pf_func = 0;
 	if (inl_dev_sso && nix_inl_dev_pffunc_get())
@@ -412,35 +487,52 @@ cpt_lfs_alloc(struct dev *dev, uint8_t eng_grpmsk, uint8_t blkaddr,
 		req->sso_pf_func = idev_sso_pffunc_get();
 	req->eng_grpmsk = eng_grpmsk;
 	req->blkaddr = blkaddr;
+	req->ctx_ilen_valid = ctx_ilen_valid;
+	req->ctx_ilen = ctx_ilen;
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 int
 cpt_lfs_free(struct dev *dev)
 {
-	mbox_alloc_msg_cpt_lf_free(dev->mbox);
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
-	return mbox_process(dev->mbox);
+	mbox_alloc_msg_cpt_lf_free(mbox);
+
+	rc = mbox_process(mbox);
+	mbox_put(mbox);
+	return rc;
 }
 
 static int
 cpt_hardware_caps_get(struct dev *dev, struct roc_cpt *roc_cpt)
 {
 	struct cpt_caps_rsp_msg *rsp;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	int ret;
 
-	mbox_alloc_msg_cpt_caps_get(dev->mbox);
+	mbox_alloc_msg_cpt_caps_get(mbox);
 
-	ret = mbox_process_msg(dev->mbox, (void *)&rsp);
-	if (ret)
-		return -EIO;
+	ret = mbox_process_msg(mbox, (void *)&rsp);
+	if (ret) {
+		ret = -EIO;
+		goto exit;
+	}
 
 	roc_cpt->cpt_revision = rsp->cpt_revision;
 	mbox_memcpy(roc_cpt->hw_caps, rsp->eng_caps,
 		    sizeof(union cpt_eng_caps) * CPT_MAX_ENG_TYPES);
 
-	return 0;
+	ret = 0;
+
+exit:
+	mbox_put(mbox);
+	return ret;
 }
 
 static uint32_t
@@ -499,6 +591,8 @@ roc_cpt_dev_configure(struct roc_cpt *roc_cpt, int nb_lf)
 	struct cpt *cpt = roc_cpt_to_cpt_priv(roc_cpt);
 	uint8_t blkaddr[ROC_CPT_MAX_BLKS];
 	struct msix_offset_rsp *rsp;
+	bool ctx_ilen_valid = false;
+	uint16_t ctx_ilen = 0;
 	uint8_t eng_grpmsk;
 	int blknum = 0;
 	int rc, i;
@@ -530,7 +624,13 @@ roc_cpt_dev_configure(struct roc_cpt *roc_cpt, int nb_lf)
 		     (1 << roc_cpt->eng_grp[CPT_ENG_TYPE_SE]) |
 		     (1 << roc_cpt->eng_grp[CPT_ENG_TYPE_IE]);
 
-	rc = cpt_lfs_alloc(&cpt->dev, eng_grpmsk, blkaddr[blknum], false);
+	if (roc_errata_cpt_has_ctx_fetch_issue()) {
+		ctx_ilen_valid = true;
+		/* Inbound SA size is max context size */
+		ctx_ilen = (PLT_ALIGN(ROC_OT_IPSEC_SA_SZ_MAX, ROC_ALIGN) / 128) - 1;
+	}
+
+	rc = cpt_lfs_alloc(&cpt->dev, eng_grpmsk, blkaddr[blknum], false, ctx_ilen_valid, ctx_ilen);
 	if (rc)
 		goto lfs_detach;
 
@@ -696,6 +796,7 @@ int
 roc_cpt_lf_ctx_flush(struct roc_cpt_lf *lf, void *cptr, bool inval)
 {
 	union cpt_lf_ctx_flush reg;
+	union cpt_lf_ctx_err err;
 
 	if (lf == NULL) {
 		plt_err("Could not trigger CTX flush");
@@ -707,6 +808,21 @@ roc_cpt_lf_ctx_flush(struct roc_cpt_lf *lf, void *cptr, bool inval)
 	reg.s.cptr = (uintptr_t)cptr >> 7;
 
 	plt_write64(reg.u, lf->rbase + CPT_LF_CTX_FLUSH);
+
+	plt_atomic_thread_fence(__ATOMIC_ACQ_REL);
+
+	/* Read a CSR to ensure that the FLUSH operation is complete */
+	err.u = plt_read64(lf->rbase + CPT_LF_CTX_ERR);
+
+	if (err.s.busy_sw_flush && inval) {
+		plt_err("CTX entry could not be invalidated due to active usage.");
+		return -EAGAIN;
+	}
+
+	if (err.s.flush_st_flt) {
+		plt_err("CTX flush could not complete due to store fault");
+		abort();
+	}
 
 	return 0;
 }
@@ -734,14 +850,21 @@ cpt_lf_reset(struct roc_cpt_lf *lf)
 {
 	struct cpt_lf_rst_req *req;
 	struct dev *dev = lf->dev;
+	struct mbox *mbox = mbox_get(dev->mbox);
+	int rc;
 
-	req = mbox_alloc_msg_cpt_lf_reset(dev->mbox);
-	if (req == NULL)
-		return -EIO;
+	req = mbox_alloc_msg_cpt_lf_reset(mbox);
+	if (req == NULL) {
+		rc = -EIO;
+		goto exit;
+	}
 
 	req->slot = lf->lf_id;
 
-	return mbox_process(dev->mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 static void
@@ -862,6 +985,9 @@ roc_cpt_dev_clear(struct roc_cpt *roc_cpt)
 	if (cpt == NULL)
 		return;
 
+	if (roc_cpt->nb_lf == 0)
+		return;
+
 	for (i = 0; i < roc_cpt->nb_lf; i++)
 		cpt->lf_msix_off[i] = 0;
 
@@ -879,11 +1005,14 @@ roc_cpt_eng_grp_add(struct roc_cpt *roc_cpt, enum cpt_eng_type eng_type)
 	struct dev *dev = &cpt->dev;
 	struct cpt_eng_grp_req *req;
 	struct cpt_eng_grp_rsp *rsp;
+	struct mbox *mbox = mbox_get(dev->mbox);
 	int ret;
 
-	req = mbox_alloc_msg_cpt_eng_grp_get(dev->mbox);
-	if (req == NULL)
-		return -EIO;
+	req = mbox_alloc_msg_cpt_eng_grp_get(mbox);
+	if (req == NULL) {
+		ret = -EIO;
+		goto exit;
+	}
 
 	switch (eng_type) {
 	case CPT_ENG_TYPE_AE:
@@ -891,22 +1020,29 @@ roc_cpt_eng_grp_add(struct roc_cpt *roc_cpt, enum cpt_eng_type eng_type)
 	case CPT_ENG_TYPE_IE:
 		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
 
 	req->eng_type = eng_type;
 	ret = mbox_process_msg(dev->mbox, (void *)&rsp);
-	if (ret)
-		return -EIO;
+	if (ret) {
+		ret = -EIO;
+		goto exit;
+	}
 
 	if (rsp->eng_grp_num > 8) {
 		plt_err("Invalid CPT engine group");
-		return -ENOTSUP;
+		ret = -ENOTSUP;
+		goto exit;
 	}
 
 	roc_cpt->eng_grp[eng_type] = rsp->eng_grp_num;
 
-	return rsp->eng_grp_num;
+	ret = rsp->eng_grp_num;
+exit:
+	mbox_put(mbox);
+	return ret;
 }
 
 void
@@ -985,6 +1121,11 @@ roc_cpt_iq_enable(struct roc_cpt_lf *lf)
 	lf_inprog.s.eena = 1;
 	plt_write64(lf_inprog.u, lf->rbase + CPT_LF_INPROG);
 
+	if (roc_errata_cpt_has_ctx_fetch_issue()) {
+		/* Enable flush on FLR */
+		plt_write64(1, lf->rbase + CPT_LF_CTX_CTL);
+	}
+
 	cpt_lf_dump(lf);
 }
 
@@ -1021,7 +1162,8 @@ roc_cpt_ctx_write(struct roc_cpt_lf *lf, void *sa_dptr, void *sa_cptr,
 	uint64_t *dptr;
 	int i;
 
-	ROC_LMT_CPT_BASE_ID_GET(lmt_base, lmt_id);
+	/* Use this lcore's LMT line as no one else is using it */
+	ROC_LMT_BASE_ID_GET(lmt_base, lmt_id);
 	inst = (struct cpt_inst_s *)lmt_base;
 
 	memset(inst, 0, sizeof(struct cpt_inst_s));
@@ -1073,10 +1215,33 @@ roc_cpt_ctx_write(struct roc_cpt_lf *lf, void *sa_dptr, void *sa_cptr,
 	plt_free(dptr);
 	plt_free(hw_res);
 
-	if (res.cn10k.compcode != CPT_COMP_WARN) {
+	if (res.cn10k.compcode != CPT_COMP_GOOD || res.cn10k.uc_compcode) {
 		plt_err("Write SA operation timed out");
 		return -ETIMEDOUT;
 	}
 
+	return 0;
+}
+
+void
+roc_cpt_int_misc_cb_register(roc_cpt_int_misc_cb_t cb, void *args)
+{
+	if (int_cb.cb != NULL)
+		return;
+
+	int_cb.cb = cb;
+	int_cb.cb_args = args;
+}
+
+int
+roc_cpt_int_misc_cb_unregister(roc_cpt_int_misc_cb_t cb, void *args)
+{
+	if (int_cb.cb == NULL)
+		return 0;
+	if (int_cb.cb != cb || int_cb.cb_args != args)
+		return -EINVAL;
+
+	int_cb.cb = NULL;
+	int_cb.cb_args = NULL;
 	return 0;
 }

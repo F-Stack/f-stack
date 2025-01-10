@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_DDP_H_
@@ -99,6 +99,7 @@ struct ice_pkg_hdr {
 #define SEGMENT_SIGN_TYPE_RSA2K		0x00000001
 #define SEGMENT_SIGN_TYPE_RSA3K		0x00000002
 #define SEGMENT_SIGN_TYPE_RSA3K_SBB	0x00000003 /* Secure Boot Block */
+#define SEGMENT_SIGN_TYPE_RSA3K_E825	0x00000005
 
 /* generic segment */
 struct ice_generic_seg_hdr {

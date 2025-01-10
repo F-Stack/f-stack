@@ -4,6 +4,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,13 +12,13 @@
 #include <time.h>
 #include <errno.h>
 
+#include <eal_trace_internal.h>
 #include <rte_alarm.h>
 #include <rte_cycles.h>
 #include <rte_common.h>
 #include <rte_errno.h>
 #include <rte_interrupts.h>
 #include <rte_spinlock.h>
-#include <rte_eal_trace.h>
 
 #include "eal_private.h"
 #include "eal_alarm_private.h"

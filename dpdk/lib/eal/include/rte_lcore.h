@@ -9,7 +9,6 @@
  * @file
  *
  * API for lcore and socket manipulation
- *
  */
 #include <stdio.h>
 
@@ -329,6 +328,55 @@ int
 rte_lcore_iterate(rte_lcore_iterate_cb cb, void *arg);
 
 /**
+ * lcore usage statistics.
+ */
+struct rte_lcore_usage {
+	/**
+	 * The total amount of time that the application has been running on
+	 * this lcore, in TSC cycles.
+	 */
+	uint64_t total_cycles;
+	/**
+	 * The amount of time the application was busy, handling some
+	 * workload on this lcore, in TSC cycles.
+	 */
+	uint64_t busy_cycles;
+};
+
+/**
+ * Callback to allow applications to report lcore usage.
+ *
+ * @param [in] lcore_id
+ *   The lcore to consider.
+ * @param [out] usage
+ *   Counters representing this lcore usage. This can never be NULL.
+ * @return
+ *   - 0 if fields in usage were updated successfully. The fields that the
+ *     application does not support must not be modified.
+ *   - a negative value if the information is not available or if any error
+ *     occurred.
+ */
+typedef int (*rte_lcore_usage_cb)(unsigned int lcore_id, struct rte_lcore_usage *usage);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Register a callback from an application to be called in rte_lcore_dump() and
+ * the /eal/lcore/info telemetry endpoint handler. Applications are expected to
+ * report lcore usage statistics via this callback.
+ *
+ * If a callback was already registered, it can be replaced with another callback
+ * or unregistered with NULL. The previously registered callback may remain in
+ * use for an undetermined period of time.
+ *
+ * @param cb
+ *   The callback function.
+ */
+__rte_experimental
+void rte_lcore_register_usage_cb(rte_lcore_usage_cb cb);
+
+/**
  * List all lcores.
  *
  * @param f
@@ -336,37 +384,6 @@ rte_lcore_iterate(rte_lcore_iterate_cb cb, void *arg);
  */
 void
 rte_lcore_dump(FILE *f);
-
-/**
- * Set thread names.
- *
- * @note It fails with glibc < 2.12.
- *
- * @param id
- *   Thread id.
- * @param name
- *   Thread name to set.
- * @return
- *   On success, return 0; otherwise return a negative value.
- */
-int rte_thread_setname(pthread_t id, const char *name);
-
-/**
- * Get thread name.
- *
- * @note It fails with glibc < 2.12.
- *
- * @param id
- *   Thread id.
- * @param name
- *   Thread name to set.
- * @param len
- *   Thread name buffer length.
- * @return
- *   On success, return 0; otherwise return a negative value.
- */
-__rte_experimental
-int rte_thread_getname(pthread_t id, char *name, size_t len);
 
 /**
  * Register current non-EAL thread as a lcore.
@@ -389,34 +406,6 @@ rte_thread_register(void);
  */
 void
 rte_thread_unregister(void);
-
-/**
- * Create a control thread.
- *
- * Creates a control thread with the given name and attributes. The
- * affinity of the new thread is based on the CPU affinity retrieved
- * at the time rte_eal_init() was called, the dataplane and service
- * lcores are then excluded. If setting the name of the thread fails,
- * the error is ignored and a debug message is logged.
- *
- * @param thread
- *   Filled with the thread id of the new created thread.
- * @param name
- *   The name of the control thread (max 16 characters including '\0').
- * @param attr
- *   Attributes for the new thread.
- * @param start_routine
- *   Function to be executed by the new thread.
- * @param arg
- *   Argument passed to start_routine.
- * @return
- *   On success, returns 0; on error, it returns a negative value
- *   corresponding to the error number.
- */
-int
-rte_ctrl_thread_create(pthread_t *thread, const char *name,
-		const pthread_attr_t *attr,
-		void *(*start_routine)(void *), void *arg);
 
 #ifdef __cplusplus
 }

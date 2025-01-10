@@ -96,7 +96,7 @@ ssf_add_dict_string(struct rte_tel_data *d, const char *name_str, const char *va
 {
 	struct tel_dict_entry *e = &d->data.dict[d->data_len];
 
-	if (d->type != RTE_TEL_DICT)
+	if (d->type != TEL_DICT)
 		return;
 	if (d->data_len >= RTE_TEL_MAX_DICT_ENTRIES) {
 		RTE_ETHDEV_LOG(ERR, "data_len has exceeded the maximum number of inserts\n");
@@ -126,7 +126,7 @@ eth_dev_handle_port_module_eeprom(const char *cmd __rte_unused, const char *para
 				  struct rte_tel_data *d)
 {
 	char *end_param;
-	int port_id;
+	uint64_t port_id;
 
 	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
 		return -1;
@@ -134,7 +134,7 @@ eth_dev_handle_port_module_eeprom(const char *cmd __rte_unused, const char *para
 	errno = 0;
 	port_id = strtoul(params, &end_param, 0);
 
-	if (errno != 0) {
+	if (errno != 0 || port_id >= UINT16_MAX) {
 		RTE_ETHDEV_LOG(ERR, "Invalid argument, %d\n", errno);
 		return -1;
 	}

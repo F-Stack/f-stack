@@ -5,18 +5,32 @@ ABI and API Deprecation
 =======================
 
 See the guidelines document for details of the :doc:`ABI policy
-<../contributing/abi_policy>`. API and ABI deprecation notices are to be posted
-here.
+<../contributing/abi_policy>`.
+
+With DPDK 23.11, there will be a new major ABI version: 24.
+This means that during the development of 23.11,
+new items may be added to structs or enums,
+even if those additions involve an ABI compatibility breakage.
+
+Other API and ABI deprecation notices are to be posted below.
 
 Deprecation Notices
 -------------------
 
+* build: The ``enable_kmods`` option is deprecated and will be removed in a future release.
+  Setting/clearing the option has no impact on the build.
+  Instead, kernel modules will be always built for OS's where out-of-tree kernel modules
+  are required for DPDK operation.
+  Currently, this means that modules will only be built for FreeBSD.
+  No modules are shipped with DPDK for either Linux or Windows.
+
 * kvargs: The function ``rte_kvargs_process`` will get a new parameter
   for returning key match count. It will ease handling of no-match case.
 
-* eal: RTE_FUNC_PTR_OR_* macros have been marked deprecated and will be removed
-  in the future. Applications can use ``devtools/cocci/func_or_ret.cocci``
-  to update their code.
+* telemetry: The functions ``rte_tel_data_add_array_u64`` and ``rte_tel_data_add_dict_u64``,
+  used by telemetry callbacks for adding unsigned integer values to be returned to the user,
+  are renamed to ``rte_tel_data_add_array_uint`` and ``rte_tel_data_add_dict_uint`` respectively.
+  As such, the old function names are deprecated and will be removed in a future release.
 
 * rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
   not allow for writing optimized code for all the CPU architectures supported
@@ -32,13 +46,6 @@ Deprecation Notices
   operations and a new wrapper ``rte_atomic_thread_fence`` instead of
   ``__atomic_thread_fence`` must be used for patches that need to be merged in
   20.08 onwards. This change will not introduce any performance degradation.
-
-* kni: The KNI kernel module and library are not recommended for use by new
-  applications - other technologies such as virtio-user are recommended instead.
-  Following the DPDK technical board
-  `decision <https://mails.dpdk.org/archives/dev/2021-January/197077.html>`_
-  and `refinement <https://mails.dpdk.org/archives/dev/2022-June/243596.html>`_,
-  the KNI kernel module, library and PMD will be removed from the DPDK 23.11 release.
 
 * lib: will fix extending some enum/define breaking the ABI. There are multiple
   samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
@@ -58,16 +65,16 @@ Deprecation Notices
   should start with relevant protocol header structure from lib/net/.
   The individual protocol header fields and the protocol header struct
   may be kept together in a union as a first migration step.
+  In future (target is DPDK 23.11), the protocol header fields will be cleaned
+  and only protocol header struct will remain.
 
   These items are not compliant (not including struct from lib/net/):
 
   - ``rte_flow_item_ah``
-  - ``rte_flow_item_arp_eth_ipv4``
   - ``rte_flow_item_e_tag``
   - ``rte_flow_item_geneve``
   - ``rte_flow_item_geneve_opt``
   - ``rte_flow_item_gre``
-  - ``rte_flow_item_gtp``
   - ``rte_flow_item_icmp6``
   - ``rte_flow_item_icmp6_nd_na``
   - ``rte_flow_item_icmp6_nd_ns``
@@ -83,7 +90,6 @@ Deprecation Notices
   - ``rte_flow_item_pfcp``
   - ``rte_flow_item_pppoe``
   - ``rte_flow_item_pppoe_proto_id``
-  - ``rte_flow_item_vxlan_gpe``
 
 * ethdev: Queue specific stats fields will be removed from ``struct rte_eth_stats``.
   Mentioned fields are: ``q_ipackets``, ``q_opackets``, ``q_ibytes``, ``q_obytes``,
@@ -114,8 +120,25 @@ Deprecation Notices
   which got error interrupt to the application,
   so that application can reset that particular queue pair.
 
-* flow_classify: The flow_classify library and example have no maintainer.
-  The library is experimental and, as such, it could be removed from DPDK.
-  Its removal has been postponed to let potential users report interest
-  in maintaining it.
-  In the absence of such interest, this library will be removed in DPDK 23.11.
+* eventdev: The single-event (non-burst) enqueue and dequeue operations,
+  used by static inline burst enqueue and dequeue functions in ``rte_eventdev.h``,
+  will be removed in DPDK 23.11.
+  This simplification includes changing the layout and potentially also
+  the size of the public ``rte_event_fp_ops`` struct, breaking the ABI.
+  Since these functions are not called directly by the application,
+  the API remains unaffected.
+
+* pipeline: The pipeline library legacy API (functions rte_pipeline_*)
+  will be deprecated and subsequently removed in DPDK 24.11 release.
+  Before this, the new pipeline library API (functions rte_swx_pipeline_*)
+  will gradually transition from experimental to stable status.
+
+* table: The table library legacy API (functions rte_table_*)
+  will be deprecated and subsequently removed in DPDK 24.11 release.
+  Before this, the new table library API (functions rte_swx_table_*)
+  will gradually transition from experimental to stable status.
+
+* port: The port library legacy API (functions rte_port_*)
+  will be deprecated and subsequently removed in DPDK 24.11 release.
+  Before this, the new port library API (functions rte_swx_port_*)
+  will gradually transition from experimental to stable status.

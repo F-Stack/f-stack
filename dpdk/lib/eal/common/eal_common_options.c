@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #ifndef RTE_EXEC_ENV_WINDOWS
 #include <syslog.h>
 #endif
@@ -39,7 +40,7 @@
 #include "eal_options.h"
 #include "eal_filesystem.h"
 #include "eal_private.h"
-#include "eal_log.h"
+#include "log_internal.h"
 #ifndef RTE_EXEC_ENV_WINDOWS
 #include "eal_trace.h"
 #endif
@@ -1686,7 +1687,7 @@ eal_parse_common_option(int opt, const char *optarg,
 		if (core_parsed) {
 			RTE_LOG(ERR, EAL, "Option -c is ignored, because (%s) is set!\n",
 				(core_parsed == LCORE_OPT_LST) ? "-l" :
-				(core_parsed == LCORE_OPT_MAP) ? "--lcores" :
+				(core_parsed == LCORE_OPT_MAP) ? "--lcore" :
 				"-c");
 			return -1;
 		}
@@ -1719,7 +1720,7 @@ eal_parse_common_option(int opt, const char *optarg,
 		if (core_parsed) {
 			RTE_LOG(ERR, EAL, "Option -l is ignored, because (%s) is set!\n",
 				(core_parsed == LCORE_OPT_MSK) ? "-c" :
-				(core_parsed == LCORE_OPT_MAP) ? "--lcores" :
+				(core_parsed == LCORE_OPT_MAP) ? "--lcore" :
 				"-l");
 			return -1;
 		}
@@ -1900,10 +1901,10 @@ eal_parse_common_option(int opt, const char *optarg,
 		}
 
 		if (core_parsed) {
-			RTE_LOG(ERR, EAL, "Option --lcores is ignored, because (%s) is set!\n",
+			RTE_LOG(ERR, EAL, "Option --lcore is ignored, because (%s) is set!\n",
 				(core_parsed == LCORE_OPT_LST) ? "-l" :
 				(core_parsed == LCORE_OPT_MSK) ? "-c" :
-				"--lcores");
+				"--lcore");
 			return -1;
 		}
 
@@ -1963,8 +1964,7 @@ eal_auto_detect_cores(struct rte_config *cfg)
 	unsigned int removed = 0;
 	rte_cpuset_t affinity_set;
 
-	if (pthread_getaffinity_np(pthread_self(), sizeof(rte_cpuset_t),
-				&affinity_set))
+	if (rte_thread_get_affinity_by_id(rte_thread_self(), &affinity_set) != 0)
 		CPU_ZERO(&affinity_set);
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
@@ -1992,8 +1992,7 @@ compute_ctrl_threads_cpuset(struct internal_config *internal_cfg)
 	}
 	RTE_CPU_NOT(cpuset, cpuset);
 
-	if (pthread_getaffinity_np(pthread_self(), sizeof(rte_cpuset_t),
-				&default_set))
+	if (rte_thread_get_affinity_by_id(rte_thread_self(), &default_set) != 0)
 		CPU_ZERO(&default_set);
 
 	RTE_CPU_AND(cpuset, cpuset, &default_set);
@@ -2247,7 +2246,7 @@ eal_common_usage(void)
 	       "                      must be specified once only.\n"
 #endif /* !RTE_EXEC_ENV_WINDOWS */
 	       "  -v                  Display version information on startup\n"
-	       "  -h, --help          This help\n"
+	       "  -h, --"OPT_HELP"          This help\n"
 	       "  --"OPT_IN_MEMORY"   Operate entirely in memory. This will\n"
 	       "                      disable secondary process support\n"
 	       "  --"OPT_BASE_VIRTADDR"     Base virtual address\n"

@@ -208,16 +208,19 @@ error:
 static int
 pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 {
+	struct rte_pci_device_internal *pdev;
 	struct rte_pci_device *dev;
 	struct pci_bar_io bar;
 	unsigned i, max;
 
-	dev = malloc(sizeof(*dev));
-	if (dev == NULL) {
+	pdev = malloc(sizeof(*pdev));
+	if (pdev == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot allocate memory for internal pci device\n");
 		return -1;
 	}
 
-	memset(dev, 0, sizeof(*dev));
+	memset(pdev, 0, sizeof(*pdev));
+	dev = &pdev->device;
 	dev->device.bus = &rte_pci_bus.bus;
 
 	dev->addr.domain = conf->pc_sel.pc_domain;
@@ -303,7 +306,7 @@ pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 				memmove(dev2->mem_resource,
 					dev->mem_resource,
 					sizeof(dev->mem_resource));
-				pci_free(dev);
+				pci_free(pdev);
 			}
 			return 0;
 		}
@@ -313,7 +316,7 @@ pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 	return 0;
 
 skipdev:
-	pci_free(dev);
+	pci_free(pdev);
 	return 0;
 }
 
@@ -484,6 +487,28 @@ int rte_pci_write_config(const struct rte_pci_device *dev,
 	if (fd >= 0)
 		close(fd);
 	return -1;
+}
+
+/* Read PCI MMIO space. */
+int rte_pci_mmio_read(const struct rte_pci_device *dev, int bar,
+		      void *buf, size_t len, off_t offset)
+{
+	if (bar >= PCI_MAX_RESOURCE || dev->mem_resource[bar].addr == NULL ||
+			(uint64_t)offset + len > dev->mem_resource[bar].len)
+		return -1;
+	memcpy(buf, (uint8_t *)dev->mem_resource[bar].addr + offset, len);
+	return len;
+}
+
+/* Write PCI MMIO space. */
+int rte_pci_mmio_write(const struct rte_pci_device *dev, int bar,
+		       const void *buf, size_t len, off_t offset)
+{
+	if (bar >= PCI_MAX_RESOURCE || dev->mem_resource[bar].addr == NULL ||
+			(uint64_t)offset + len > dev->mem_resource[bar].len)
+		return -1;
+	memcpy((uint8_t *)dev->mem_resource[bar].addr + offset, buf, len);
+	return len;
 }
 
 int
