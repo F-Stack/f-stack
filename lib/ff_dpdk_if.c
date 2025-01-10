@@ -809,7 +809,7 @@ init_port_start(void)
                 mode = rte_eth_bond_mode_get(port_id);
                 printf("Port %u, bond mode:%d\n", port_id, mode);
 
-                count = rte_eth_bond_slaves_get(port_id, slaves, len);
+                count = rte_eth_bond_members_get(port_id, slaves, len);
                 printf("Port %u, %s's slave ports count:%d\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, count);
                 for (x=0; x<count; x++) {
