@@ -372,10 +372,6 @@ ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
         return NULL;
     }
 
-    if (m_pkthdr_init(m, M_NOWAIT) != 0) {
-        return NULL;
-    }
-
     m_extadd(m, data, len, ff_mbuf_ext_free, pkt, NULL, 0, EXT_DISPOSABLE);
 
     m->m_pkthdr.len = total;
