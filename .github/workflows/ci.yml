@@ -27,8 +27,10 @@ jobs:
         cd lib/
         make
     - name: Check output
-      run: find . -type f -name "*.so"
+      run: find . -type f -name *.so
     - name: Check output
-      run: find . -type f -name "*.h"
+      run: find . -type f -name *.h
     - name: Check output
-      run: find . -type f -name "*.hpp"
+      run: find . -type f -name *.hpp
+    - name: Check output
+      run: find . -type f -name *.a
