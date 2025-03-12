@@ -1,4 +1,4 @@
-TOPDIR=..
+TOPDIR=../..
 
 ifeq ($(FF_PATH),)
 	FF_PATH=${TOPDIR}
