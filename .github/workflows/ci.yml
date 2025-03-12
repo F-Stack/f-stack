@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: shanakaprageeth/ubuntu24-dpdk:latest
 
     steps:
     - name: Checkout code
@@ -16,22 +18,16 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y coreutils build-essential git
-        sudo apt-get install -y linux-headers-$(uname -r)
-        sudo apt-get install -y libnuma-dev tree
+        apt-get update
+        apt install -y libssl-dev ninja-build
+        cd /root/dpdk/
+        ninja -C build install
+        cd -
+        export FF_PATH=f-stack
+        export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
+        cd f-stack/lib/
+        make
 
-    - name: Build dpdk
-      run: make -C dpdk install T=x86_64-native-linuxapp-gcc
 
-    - name: Build lib
-      run: make -C lib CONF_CFLAGS="-Wno-unused-but-set-variable"
-
-    - name: Build tools
-      run: make -C tools
-
-    - name: Build example
-      run: make -C example
-    
     - name: Check output
       run: tree .
