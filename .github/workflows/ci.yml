@@ -28,3 +28,7 @@ jobs:
         make
     - name: Check output
       run: find . -type f -name "*.so"
+    - name: Check output
+      run: find . -type f -name "*.h"
+    - name: Check output
+      run: find . -type f -name "*.hpp"
