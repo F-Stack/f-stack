@@ -22,10 +22,9 @@ jobs:
         apt install -y libssl-dev ninja-build
         cd /root/dpdk/
         ninja -C build install
-        cd -
-        export FF_PATH=f-stack
-        export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
-        cd f-stack/lib/
+    - name: Compile f-stack
+      run: |
+        cd lib/
         make
 
 
