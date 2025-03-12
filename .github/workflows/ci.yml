@@ -2,8 +2,6 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
@@ -35,5 +33,5 @@ jobs:
     - name: Build example
       run: make -C example
     
-    -name: Check output
+    - name: Check output
       run: tree .
