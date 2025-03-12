@@ -16,13 +16,15 @@ jobs:
       uses: actions/checkout@v2
     - name: Install dependencies
       run: |
-        apt-get update
-        apt install -y libssl-dev ninja-build tree
-        cd /root/dpdk/
+        apt-get -qq update
+        apt-get -qq install -y libssl-dev ninja-build
+        # using pre-built dpdk inside the container
+        cp -r /root/dpdk/ dpdk/
+        cd dpdk
         ninja -C build install
     - name: Compile f-stack
       run: |
         cd lib/
         make
     - name: Check output
-      run: tree .
+      run: find . -type f -name "*.so"
