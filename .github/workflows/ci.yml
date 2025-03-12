@@ -7,26 +7,22 @@ on:
       - main
 
 jobs:
-  build:
+  build-ubuntu:
     runs-on: ubuntu-latest
     container:
       image: shanakaprageeth/ubuntu24-dpdk:latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
-
     - name: Install dependencies
       run: |
         apt-get update
-        apt install -y libssl-dev ninja-build
+        apt install -y libssl-dev ninja-build tree
         cd /root/dpdk/
         ninja -C build install
     - name: Compile f-stack
       run: |
         cd lib/
         make
-
-
     - name: Check output
       run: tree .
