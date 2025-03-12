@@ -4,7 +4,8 @@ on:
   push:
   pull_request:
     branches:
-      - main
+      - master
+      - dev
 
 jobs:
   build-ubuntu:
@@ -26,11 +27,11 @@ jobs:
       run: |
         cd lib/
         make
-    - name: Check output
-      run: find . -type f -name *.so
-    - name: Check output
-      run: find . -type f -name *.h
-    - name: Check output
-      run: find . -type f -name *.hpp
-    - name: Check output
-      run: find . -type f -name *.a
+    - name: Archive production artifacts
+      if: github.ref_name == 'master' || github.ref_name == 'dev'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_output
+        path: |
+          dpdk/build
+          lib
