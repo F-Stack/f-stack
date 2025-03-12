@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y coreutils build-essential git
+        apt-get install -y linux-headers-$(uname -r)
+        apt-get install -y libnuma-dev tree
+
+    - name: Build dpdk
+      run: make -C dpdk install T=x86_64-native-linuxapp-gcc
+
+    - name: Build lib
+      run: make -C lib CONF_CFLAGS="-Wno-unused-but-set-variable"
+
+    - name: Build tools
+      run: make -C tools
+
+    - name: Build example
+      run: make -C example
+    
+    -name: Check output
+      run: tree .
