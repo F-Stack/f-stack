@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
