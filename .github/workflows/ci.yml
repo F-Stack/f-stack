@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches:
+      - master
+      - dev
+
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    container:
+      image: shanakaprageeth/ubuntu24-dpdk:latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+    - name: Install dependencies
+      run: |
+        apt-get -qq update
+        apt-get -qq install -y libssl-dev ninja-build
+        # using pre-built dpdk inside the container
+        cp -r /root/dpdk/build dpdk/build
+        cd dpdk
+        ninja -C build install
+    - name: Compile f-stack
+      run: |
+        cd lib/
+        make
+    - name: Archive production artifacts
+      if: github.ref_name == 'master' || github.ref_name == 'dev'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_output
+        path: |
+          dpdk/build
+          lib

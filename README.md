@@ -1,5 +1,4 @@
-[![Build Status](https://travis-ci.org/F-Stack/f-stack.svg?branch=master)](https://travis-ci.org/F-Stack/f-stack)
-
+![Build Status](https://github.com/F-Stack/f-stack/actions/workflows/ci.yml/badge.svg?branch=dev)
 # F-Stack
 ![](F-Stack.png)
 
