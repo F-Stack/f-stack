@@ -51,6 +51,9 @@ FF_INET6=1
 FF_TCPHPTS=1
 FF_EXTRA_TCP_STACKS=1
 
+# TCP/UDP loopback.
+#FF_LOOPBACK_SUPPORT=1
+
 include ${TOPDIR}/mk/kern.pre.mk
 
 ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -141,6 +144,11 @@ endif
 ifdef FF_IPSEC
 HOST_CFLAGS+= -DIPSEC
 CFLAGS+= -DIPSEC
+endif
+
+ifdef FF_LOOPBACK_SUPPORT
+HOST_CFLAGS+= -DFF_LOOPBACK_SUPPORT
+CFLAGS+= -DFF_LOOPBACK_SUPPORT
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
