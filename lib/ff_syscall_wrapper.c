@@ -371,7 +371,7 @@ freebsd2linux_fcntl(int cmd, int flags)
 
             if (flags & O_ASYNC) {
                 //clear linux O_ASYNC, set freebsd O_ASYNC.
-                *flags &= ~O_ASYNC;
+                flags &= ~O_ASYNC;
                 flags |= LINUX_O_ASYNC;
             }
 
