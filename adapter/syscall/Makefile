@@ -17,6 +17,10 @@ endif
 # If disable it, one socket can use in all threads.
 #FF_THREAD_SOCKET=1
 
+# Epoll polling mode, now only support freebsd socket, not support FF_KERNEL_EVENT.  
+# If disable it, epoll use sem_wait.
+#FF_PRELOAD_POLLING_MODE=1
+
 # If enable FF_KERNEL_EVENT, epoll_create/epoll_clt/epoll_wait always call f-stack and system API at the same time.
 # Use for some scenarios similar to Nginx.
 #FF_KERNEL_EVENT=1
@@ -39,6 +43,10 @@ endif
 
 ifdef FF_MULTI_SC
 	CFLAGS+= -DFF_MULTI_SC
+endif
+
+ifdef FF_PRELOAD_POLLING_MODE
+	CFLAGS+= -DFF_PRELOAD_POLLING_MODE
 endif
 
 CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)

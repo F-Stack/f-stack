@@ -117,6 +117,21 @@ static __thread int sh_iov_static_fill_idx_share = 0;
     }                                                             \
 } while (0)
 
+/* Dirty read first, and then try to lock sc and real read. */
+#define ACQUIRE_ZONE_TRY_LOCK(exp) do {                           \
+    while (1) {                                                   \
+        while (sc->status != exp) {                               \
+            rte_pause();                                          \
+        }                                                         \
+        if (rte_spinlock_trylock(&sc->lock)) {                    \
+            if (sc->status == exp) {                              \
+                break;                                            \
+            }                                                     \
+            rte_spinlock_unlock(&sc->lock);                       \
+        }                                                         \
+    }                                                             \
+} while (0)
+
 #define RELEASE_ZONE_LOCK(s) do {                                 \
     sc->status = s;                                               \
     rte_spinlock_unlock(&sc->lock);                               \
@@ -1724,6 +1739,128 @@ ff_hook_epoll_ctl(int epfd, int op, int fd,
     RETURN_NOFREE();
 }
 
+/* 
+ * Epoll polling mode, we not use sem_wait.
+ *
+ * Notice: cpu usage is 100%, but the RTT delay is very low.
+ * The first version currently does not support ff_linux_epoll_wait,
+ * because ff_linux_epoll_wait would introduce latency impacts.
+ * This ff_linux_epoll_wait issue will be resolved in the future.
+ */
+#if defined(FF_PRELOAD_POLLING_MODE) && !defined(FF_KERNEL_EVENT)
+int
+ff_hook_epoll_wait(int epfd, struct epoll_event *events,
+    int maxevents, int timeout)
+{
+    DEBUG_LOG("ff_hook_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n", epfd, maxevents, timeout);
+    int fd = epfd;
+
+    CHECK_FD_OWNERSHIP(epoll_wait, (epfd, events, maxevents, timeout));
+
+    DEFINE_REQ_ARGS_STATIC(epoll_wait);
+    static __thread struct epoll_event *sh_events = NULL;
+    static __thread int sh_events_len = 0;
+    struct timespec t_s, t_n;
+    time_t now_time_ms = 0;
+    time_t end_time_ms = 0;
+
+    if (sh_events == NULL || sh_events_len < maxevents) {
+        if (sh_events) {
+            share_mem_free(sh_events);
+        }
+
+        sh_events_len = maxevents;
+        sh_events = share_mem_alloc(sizeof(struct epoll_event) * sh_events_len);
+        if (sh_events == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    if (timeout > 0) {
+        if (clock_gettime(CLOCK_MONOTONIC_COARSE, &t_s) == -1) {
+            ret = -1;
+            goto epoll_exit;
+        }
+        end_time_ms = t_s.tv_sec * 1000 + t_s.tv_nsec / 1000000 + timeout;
+    }
+
+    args->epfd = fd;
+    args->events = sh_events;
+    args->maxevents = maxevents;
+    args->timeout = timeout;
+
+retry:
+    ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
+    sc->ops = FF_SO_EPOLL_WAIT;
+    sc->args = args;
+
+    /*
+     * sc->result, sc->error must reset in epoll_wait and kevent.
+     * Otherwise can access last sc call's result.
+     */
+    sc->result = 0;
+    sc->error = 0;
+    errno = 0;
+    RELEASE_ZONE_LOCK(FF_SC_REQ);
+
+    do {
+        /*
+         * we call freebsd epoll.
+         */
+        ACQUIRE_ZONE_TRY_LOCK(FF_SC_REP);
+        ret = sc->result;
+        if (ret < 0) {
+            errno = sc->error;
+        }
+        RELEASE_ZONE_LOCK(FF_SC_IDLE);
+        if (ret < 0) {
+            DEBUG_LOG("call ff_sys_epoll_wait occur error :%lu, ret:%d, errno:%d\n", ret, errno);
+            goto epoll_exit;
+        }
+        else if (ret > 0) {
+            goto epoll_exit;
+        }
+
+        if (timeout == 0) {
+            goto epoll_exit;
+        }
+        else  {
+            if (timeout > 0) {
+                clock_gettime(CLOCK_MONOTONIC_COARSE, &t_n);
+                now_time_ms = t_n * 1000 + t_n / 1000000;
+
+                if (now_time_ms >= end_time_ms) {
+                    goto epoll_exit;
+                }
+            }
+
+            goto retry;
+        }
+    }while(true);
+
+epoll_exit:
+    if (likely(ret > 0)) {
+        if (unlikely(ret > maxevents)) {
+            ERR_LOG("return events:%d, maxevents:%d, set return events to maxevents, may be some error occur\n",
+                ret, maxevents);
+            ret = maxevents;
+        }
+        rte_memcpy(events, sh_events, sizeof(struct epoll_event) * ret);
+    }
+
+    /*
+     * Don't free, to improve proformance.
+     * Will cause memory leak while APP exit , but fstack adapter not exit.
+     * May set them as gloabl variable and free in thread_destructor.
+     */
+    /*if (sh_events) {
+        share_mem_free(sh_events);
+        sh_events = NULL;
+    }*/
+    
+    RETURN_NOFREE();
+}
+#else
 int
 ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     int maxevents, int timeout)
@@ -1913,6 +2050,7 @@ RETRY:
 
     RETURN_NOFREE();
 }
+#endif
 
 pid_t
 ff_hook_fork(void)
