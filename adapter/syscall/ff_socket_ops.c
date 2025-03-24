@@ -308,9 +308,18 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
 
 #ifdef FF_PRELOAD_POLLING_MODE
     /*
-     * We set sem_flag 1, when set sc->status = FF_SC_REP, set sem_flag 0.
+     * If an event is generated or error occurs, user app epoll_wait return imme.
      */
-    sem_flag = 1;
+    if (ret != 0) {
+        sem_flag = 1;
+    } else {
+        if (args->timeout < 0) {
+            /* -1 : Block user app until an event or error occurs. */
+            sem_flag = 0;
+        } else {
+            sem_flag = 1;
+        }
+    }
 #else
     /*
      * If timeout is 0, and no event triggered,
