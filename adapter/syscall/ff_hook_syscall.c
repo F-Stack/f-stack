@@ -1827,7 +1827,7 @@ retry:
         else  {
             if (timeout > 0) {
                 clock_gettime(CLOCK_MONOTONIC_COARSE, &t_n);
-                now_time_ms = t_n * 1000 + t_n / 1000000;
+                now_time_ms = t_n.tv_sec * 1000 + t_n.tv_nsec / 1000000;
 
                 if (now_time_ms >= end_time_ms) {
                     goto epoll_exit;
@@ -1836,7 +1836,7 @@ retry:
 
             goto retry;
         }
-    }while(true);
+    } while(true);
 
 epoll_exit:
     if (likely(ret > 0)) {
