@@ -485,7 +485,6 @@ ff_handle_socket_ops(struct ff_so_context *sc)
 #ifdef FF_PRELOAD_POLLING_MODE
         if (sem_flag == 1 && sc->ops == FF_SO_EPOLL_WAIT) {
             sc->status = FF_SC_REP;
-            sem_flag = 0;
         }
 #else
         if (sem_flag == 1) {
