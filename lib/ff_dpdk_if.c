@@ -656,27 +656,29 @@ init_port_start(void)
                 rte_memcpy(pconf->mac,
                     addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 
-                /* Set RSS mode */
-                uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
-                port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
-                port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-                if (dev_info.hash_key_size == 52) {
-                    rsskey = default_rsskey_52bytes;
-                    rsskey_len = 52;
-                }
-                if (ff_global_cfg.dpdk.symmetric_rss) {
-                    printf("Use symmetric Receive-side Scaling(RSS) key\n");
-                    rsskey = symmetric_rsskey;
-                }
-                port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
-                port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
-                port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
-                if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                        RTE_ETH_RSS_PROTO_MASK) {
-                    printf("Port %u modified RSS hash function based on hardware support,"
-                            "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-                            port_id, default_rss_hf,
-                            port_conf.rx_adv_conf.rss_conf.rss_hf);
+                if (dev_info.hash_key_size > 0) {
+                    /* Set RSS mode */
+                    uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
+                    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+                    port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
+                    if (dev_info.hash_key_size == 52) {
+                        rsskey = default_rsskey_52bytes;
+                        rsskey_len = 52;
+                    }
+                    if (ff_global_cfg.dpdk.symmetric_rss) {
+                        printf("Use symmetric Receive-side Scaling(RSS) key\n");
+                        rsskey = symmetric_rsskey;
+                    }
+                    port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
+                    port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
+                    port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+                    if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
+                            RTE_ETH_RSS_PROTO_MASK) {
+                        printf("Port %u modified RSS hash function based on hardware support,"
+                                "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                                port_id, default_rss_hf,
+                                port_conf.rx_adv_conf.rss_conf.rss_hf);
+                    }
                 }
 
                 if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
