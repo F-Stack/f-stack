@@ -306,6 +306,21 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
     ret = ff_epoll_wait(args->epfd, args->events,
         args->maxevents, args->timeout);
 
+#ifdef FF_PRELOAD_POLLING_MODE
+    /*
+     * If an event is generated or error occurs, user app epoll_wait return imme.
+     */
+    if (ret != 0) {
+        sem_flag = 1;
+    } else {
+        if (args->timeout < 0) {
+            /* -1 : Block user app until an event or error occurs. */
+            sem_flag = 0;
+        } else {
+            sem_flag = 1;
+        }
+    }
+#else
     /*
      * If timeout is 0, and no event triggered,
      * no post sem, and next loop will continue to call ff_sys_epoll_wait,
@@ -316,6 +331,7 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
     } else {
         sem_flag = 1;
     }
+#endif
 
     return ret;
 }
@@ -466,13 +482,18 @@ ff_handle_socket_ops(struct ff_so_context *sc)
         } else {
             ff_event_loop_nb = 0;
         }*/
-
+#ifdef FF_PRELOAD_POLLING_MODE
+        if (sem_flag == 1 && sc->ops == FF_SO_EPOLL_WAIT) {
+            sc->status = FF_SC_REP;
+        }
+#else
         if (sem_flag == 1) {
             sc->status = FF_SC_REP;
             sem_post(&sc->wait_sem);
         } else {
             // do nothing with this sc
         }
+#endif
     } else {
         sc->status = FF_SC_REP;
     }
