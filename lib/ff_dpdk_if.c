@@ -2167,7 +2167,9 @@ main_loop(void *arg)
         }
 
         process_msg_ring(qconf->proc_id, pkts_burst);
-
+#ifdef FF_LOOPBACK_SUPPORT
+        ff_swi_net_excute();
+#endif
         div_tsc = rte_rdtsc();
 
         if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc >= drain_tsc))) {

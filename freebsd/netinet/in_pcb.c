@@ -1512,6 +1512,11 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			    cred);
 			if (error)
 				return (error);
+			/* Note:
+			 * LOOPBACK not support rss.
+			 */
+			if ((ifp->if_softc == NULL) && (ifp->if_flags & IFF_LOOPBACK))
+				break;
 			rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
 			    fport, lport);
 			if (rss) {

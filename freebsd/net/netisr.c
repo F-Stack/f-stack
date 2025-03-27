@@ -977,6 +977,14 @@ out:
 #endif
 }
 
+void inline
+ff_swi_net_excute(void)
+{
+	struct netisr_workstream *nwsp = DPCPU_ID_PTR(0, nws);
+
+	return swi_net((void*)nwsp);
+}
+
 static int
 netisr_queue_workstream(struct netisr_workstream *nwsp, u_int proto,
     struct netisr_work *npwp, struct mbuf *m, int *dosignalp)
