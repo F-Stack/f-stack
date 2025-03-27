@@ -781,6 +781,9 @@ ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
             }
         }
 
+        /* sh_fromlen is input and output param */
+        *sh_fromlen = *fromlen;
+
         args->from = sh_from;
         args->fromlen = sh_fromlen;
     } else {
