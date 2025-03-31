@@ -186,8 +186,7 @@ ff_sys_accept(struct ff_accept_args *args)
 static int
 ff_sys_accept4(struct ff_accept4_args *args)
 {
-    errno = ENOSYS;
-    return -1;
+    return ff_accept4(args->fd, args->addr, args->addrlen, args->flags);
 }
 
 static int

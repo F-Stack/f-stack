@@ -66,6 +66,7 @@ static __thread struct ff_getsockname_args *getsockname_args = NULL;
 static __thread struct ff_getpeername_args *getpeername_args = NULL;
 static __thread struct ff_setsockopt_args *setsockopt_args = NULL;
 static __thread struct ff_accept_args *accept_args = NULL;
+static __thread struct ff_accept4_args *accept4_args = NULL;
 static __thread struct ff_connect_args *connect_args = NULL;
 static __thread struct ff_recvfrom_args *recvfrom_args = NULL;
 static __thread struct ff_recvmsg_args *recvmsg_args = NULL;
@@ -680,8 +681,61 @@ ff_hook_accept4(int fd, struct sockaddr *addr,
 
     CHECK_FD_OWNERSHIP(accept4, (fd, addr, addrlen, flags));
 
-    errno = ENOSYS;
-    return -1;
+    DEFINE_REQ_ARGS_STATIC(accept4);
+    static __thread struct sockaddr *sh_addr = NULL;
+    static __thread socklen_t sh_addr_len = 0;
+    static __thread socklen_t *sh_addrlen = NULL;
+
+    if (addr != NULL) {
+        if (sh_addr == NULL || sh_addr_len < *addrlen) {
+            if(sh_addr) {
+                share_mem_free(sh_addr);
+            }
+
+            sh_addr_len = *addrlen;
+            sh_addr = share_mem_alloc(sh_addr_len);
+            if (sh_addr == NULL) {
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+
+        if (sh_addrlen == NULL) {
+            sh_addrlen = share_mem_alloc(sizeof(socklen_t));
+            if (sh_addrlen == NULL) {
+                //share_mem_free(sh_addr); // Don't free
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+        *sh_addrlen = *addrlen;
+
+        args->addr = sh_addr;
+        args->addrlen = sh_addrlen;
+        args->flags = flags;
+    }else {
+        args->addr = NULL;
+        args->addrlen = NULL;
+    }
+
+    args->fd = fd;
+
+    SYSCALL(FF_SO_ACCEPT4, args);
+
+    if (ret > 0) {
+        ret = convert_fstack_fd(ret);
+    }
+
+    if (addr) {
+        if (ret > 0) {
+            socklen_t cplen = *sh_addrlen > *addrlen ?
+                *addrlen : *sh_addrlen;
+            rte_memcpy(addr, sh_addr, cplen);
+            *addrlen = *sh_addrlen;
+        }
+        //share_mem_free(sh_addr); // Don't free
+        //share_mem_free(sh_addrlen);
+    }
+
+    RETURN_NOFREE();
 }
 
 int
