@@ -714,6 +714,7 @@ ff_hook_accept4(int fd, struct sockaddr *addr,
     }else {
         args->addr = NULL;
         args->addrlen = NULL;
+        args->flags = flags;
     }
 
     args->fd = fd;
