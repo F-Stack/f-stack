@@ -656,8 +656,8 @@ init_port_start(void)
                 rte_memcpy(pconf->mac,
                     addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 
-                if (dev_info.hash_key_size > 0) {
-                    /* Set RSS mode */
+                /* Set RSS mode */
+                if (dev_info.flow_type_rss_offloads) {
                     uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
                     port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
                     port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
