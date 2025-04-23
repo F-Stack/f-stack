@@ -88,6 +88,7 @@ int ff_getsockopt(int s, int level, int optname, void *optval,
 int ff_listen(int s, int backlog);
 int ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen);
 int ff_accept(int s, struct linux_sockaddr *addr, socklen_t *addrlen);
+int ff_accept4(int s, struct linux_sockaddr *addr, socklen_t *addrlen, int flags);
 int ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen);
 int ff_close(int fd);
 int ff_shutdown(int s, int how);
