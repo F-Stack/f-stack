@@ -173,19 +173,29 @@ All of these test cases use CPUs' physical cores.
 
 
 CPS (Connection:close, Small data packet)  test result
+
 ![](CPS.png)
 
 CPS_Reuseport (Connection:close, Small data packet)  test result, This test case runs in a different test environment
+
 ![](CPS_Reuseport.png)
 
 RPS (Connection:Keep-Alive, Small data packet) test data
+
 ![](RPS.png)
 
 Bandwidth (Connection:Keep-Alive, 3.7k bytes data packet) test data
+
 ![](Bandwidth.png)
 
 ## Licenses
+
 See [LICENSE](LICENSE)
+
+## Wiki
+
+See [wiki page](https://github.com/F-Stack/f-stack/wiki).
+And more info see [deepwiki of F-Stack](https://deepwiki.com/F-Stack/f-stack), [powerd by devin](https://devin.ai/).
 
 ## Join us
 
