@@ -195,7 +195,8 @@ See [LICENSE](LICENSE)
 ## Wiki
 
 See [wiki page](https://github.com/F-Stack/f-stack/wiki).
-And more info see [deepwiki of F-Stack](https://deepwiki.com/F-Stack/f-stack), [powerd by devin](https://devin.ai/).
+
+And more info see [deepwiki of F-Stack](https://deepwiki.com/F-Stack/f-stack), [powered by devin](https://devin.ai/).
 
 ## Join us
 
