@@ -95,6 +95,7 @@ ff_create_so_memzone()
                 sc->status = FF_SC_IDLE;
                 sc->idx = i;
                 sc->refcount = 0;
+                sc->ff_thread_handle = NULL;
                 //so_zone_tmp->inuse[i] = 0;
 
                 if (sem_init(&sc->wait_sem, 1, 0) == -1) {

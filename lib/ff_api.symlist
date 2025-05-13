@@ -65,3 +65,7 @@ ff_pthread_join
 pcurthread
 ff_dpdk_raw_packet_send
 ff_swi_net_excute
+ff_adapt_user_thread_add
+ff_adapt_user_thread_exit
+ff_switch_curthread
+ff_restore_curthread

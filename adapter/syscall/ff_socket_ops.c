@@ -370,8 +370,41 @@ ff_sys_kevent(struct ff_kevent_args *args)
 static pid_t
 ff_sys_fork(struct ff_fork_args *args)
 {
-    errno = ENOSYS;
-    return -1;
+    void *parent = args->parent_thread_handle;
+    /* 
+     * Linux has performed a real fork, and at this point, 
+     * we simply need to create a new thread and duplicate the file descriptors 
+     * that the parent process has already opened.
+     */
+     if (parent) {
+         args->child_thread_handle = ff_adapt_user_thread_add(parent);
+     }
+
+     return 0;
+}
+
+static int
+ff_sys_register_thread(struct ff_register_application_args *args)
+{
+    /* New user application, use default thread0 */
+    args->sc->ff_thread_handle = ff_adapt_user_thread_add(NULL);
+
+    if (args->sc->ff_thread_handle == NULL) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int
+ff_sys_exit_thread(struct ff_exit_application_args *args)
+{
+    /* Exit user application */
+    if (args->sc->ff_thread_handle) {
+        ff_adapt_user_thread_exit(args->sc->ff_thread_handle);
+    }
+
+    return 0;
 }
 
 static int
@@ -439,6 +472,10 @@ ff_so_handler(int ops, void *args)
             return ff_sys_kevent((struct ff_kevent_args *)args);
         case FF_SO_FORK:
             return ff_sys_fork((struct ff_fork_args *)args);
+        case FF_SO_REGISTER_APPLICATION:
+            return ff_sys_register_thread((struct ff_register_application_args *)args);
+        case FF_SO_EXIT_APPLICATION:
+            return ff_sys_exit_thread((struct ff_exit_application_args *)args);
         default:
             break;
     }
@@ -451,6 +488,11 @@ ff_so_handler(int ops, void *args)
 static inline void
 ff_handle_socket_ops(struct ff_so_context *sc)
 {
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    void *old_thread;
+    void *ff_thread_handle = sc->ff_thread_handle;
+#endif
+
     if (!rte_spinlock_trylock(&sc->lock)) {
         return;
     }
@@ -463,7 +505,17 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     DEBUG_LOG("ff_handle_socket_ops sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
 
     errno = 0;
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    if (ff_thread_handle) {
+        old_thread = ff_switch_curthread(ff_thread_handle);
+    }
+#endif
     sc->result = ff_so_handler(sc->ops, sc->args);
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    if (ff_thread_handle) {
+        ff_restore_curthread(old_thread);
+    }
+#endif
     sc->error = errno;
     DEBUG_LOG("ff_handle_socket_ops error:%d, ops:%d, result:%d\n", errno, sc->ops, sc->result);
 

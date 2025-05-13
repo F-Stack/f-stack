@@ -68,6 +68,8 @@ struct prisonlist allprison;
 MALLOC_DEFINE(M_FADVISE, "fadvise", "posix_fadvise(2) information");
 int async_io_version;
 extern unsigned int rand_r(unsigned int *seed);
+extern int ff_adapt_user_proc_add(struct thread *parent_td, struct thread *td);
+extern int ff_adapt_user_proc_exit(struct thread *td);
 unsigned int seed = 0;
 
 #define M_ZERO        0x0100        /* bzero the allocation */
@@ -78,6 +80,65 @@ int vttoif_tab[10] = {
 };
 
 void ff_init_thread0(void);
+//Only used by LD_PRELOAD mode.
+void *ff_adapt_user_thread_add(void *parent);
+void ff_adapt_user_thread_exit(void *td);
+void *ff_switch_curthread(void *new_curthread);
+void ff_restore_curthread(void *old_curthread);
+
+void *
+ff_adapt_user_thread_add(void *parent)
+{
+    struct thread *parent_td = (struct thread *)parent;
+
+    /* new application */
+    if (parent_td == NULL) {
+        parent_td = &thread0;
+    }
+
+    struct thread *td = malloc(sizeof(struct proc), M_TEMP, M_ZERO);
+    if (td == NULL) {
+        goto fail;
+    }
+
+    if (ff_adapt_user_proc_add(parent_td, td) < 0) {
+        free(td, M_TEMP);
+        goto fail;
+    }
+
+    return (void*)td;
+
+fail:
+    return NULL;
+}
+
+void
+ff_adapt_user_thread_exit(void *td)
+{
+    ff_adapt_user_proc_exit((struct thread*)td);
+
+    free(td, M_TEMP);
+}
+
+
+inline void *
+ff_switch_curthread(void *new_curthread)
+{
+    void *old_curthread = pcurthread;
+    if (new_curthread != NULL) {
+        pcurthread = new_curthread;
+    }
+
+    return old_curthread;
+}
+
+inline void
+ff_restore_curthread(void *old_curthread)
+{
+    if (old_curthread != NULL) {
+        pcurthread = old_curthread;
+    }
+}
 
 void
 resettodr(void)

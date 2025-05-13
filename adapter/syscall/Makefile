@@ -25,6 +25,10 @@ endif
 # Use for some scenarios similar to Nginx.
 #FF_KERNEL_EVENT=1
 
+# If enable FF_USE_THREAD_STRUCT_HANDLE, every ff_so_context has one struct thread  handle in fstack, fork will be supported
+# like linux kernel.
+#FF_USE_THREAD_STRUCT_HANDLE=1
+
 PKGCONF ?= pkg-config
 
 ifndef DEBUG
@@ -47,6 +51,10 @@ endif
 
 ifdef FF_PRELOAD_POLLING_MODE
 	CFLAGS+= -DFF_PRELOAD_POLLING_MODE
+endif
+
+ifdef FF_USE_THREAD_STRUCT_HANDLE
+	CFLAGS+= -DFF_USE_THREAD_STRUCT_HANDLE
 endif
 
 CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)
