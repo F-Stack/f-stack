@@ -37,6 +37,10 @@ struct ff_config ff_global_cfg;
 
 #undef FF_SYSCALL_DECL
 #define FF_SYSCALL_DECL(ret, fn, args) strong_alias(ff_hook_##fn, fn)
+FF_SYSCALL_DECL(ssize_t, __recv_chk, (int, void *, size_t, size_t, int));
+FF_SYSCALL_DECL(ssize_t, __read_chk, (int, void *, size_t, size_t));
+FF_SYSCALL_DECL(ssize_t, __recvfrom_chk, (int, void *, size_t, size_t, int,
+    struct sockaddr *, socklen_t *));
 #include <ff_declare_syscalls.h>
 
 #define share_mem_alloc(size) rte_malloc(NULL, (size), 0)
@@ -235,6 +239,8 @@ static int ff_kernel_max_fd = FF_KERNEL_MAX_FD_DEFAULT;
 
 /* not support thread socket now */
 static int need_alarm_sem = 0;
+
+void __chk_fail(void);
 
 static inline int convert_fstack_fd(int sockfd) {
     return sockfd + ff_kernel_max_fd;
@@ -789,11 +795,123 @@ ff_hook_recv(int fd, void *buf, size_t len, int flags)
 }
 
 ssize_t
+ff_hook___recv_chk(int fd, void *buf, size_t buflen, size_t len, int flags)
+{
+    DEBUG_LOG("ff_hook___recv_chk, fd:%d, buf:%p, len:%lu, flags:%d\n",
+        fd, buf, len, flags);
+    
+    if (buflen < len)
+        __chk_fail();
+    
+    return ff_hook_recvfrom(fd, buf, len, flags, NULL, NULL);
+}
+
+ssize_t
 ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
     struct sockaddr *from, socklen_t *fromlen)
 {
     DEBUG_LOG("ff_hook_recvfrom, fd:%d, buf:%p, len:%lu, flags:%d, from:%p, fromlen:%p\n",
         fd, buf, len, flags, from, fromlen);
+
+    if (buf == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if ((from == NULL && fromlen != NULL) ||
+        (from != NULL && fromlen == NULL)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    CHECK_FD_OWNERSHIP(recvfrom, (fd, buf, len, flags, from, fromlen));
+
+    DEFINE_REQ_ARGS_STATIC(recvfrom);
+    static __thread void *sh_buf = NULL;
+    static __thread size_t sh_buf_len = 0;
+    static __thread struct sockaddr *sh_from = NULL;
+    static __thread socklen_t sh_from_len = 0;
+    static __thread socklen_t *sh_fromlen = NULL;
+
+    if (from != NULL) {
+        if (sh_from == NULL || sh_from_len < *fromlen) {
+            if (sh_from) {
+                share_mem_free(sh_from);
+            }
+
+            sh_from_len = *fromlen;
+            sh_from = share_mem_alloc(sh_from_len);
+            if (sh_from == NULL) {
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+
+        if (sh_fromlen == NULL) {
+            sh_fromlen = share_mem_alloc(sizeof(socklen_t));
+            if (sh_fromlen == NULL) {
+                //share_mem_free(sh_from);
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+
+        /* sh_fromlen is input and output param */
+        *sh_fromlen = *fromlen;
+
+        args->from = sh_from;
+        args->fromlen = sh_fromlen;
+    } else {
+        args->from = NULL;
+        args->fromlen = NULL;
+    }
+
+    if (sh_buf == NULL || sh_buf_len < (len * 4)) {
+        if (sh_buf) {
+            share_mem_free(sh_buf);
+        }
+
+        sh_buf_len = len * 4;
+        sh_buf = share_mem_alloc(sh_buf_len);
+        if (sh_buf == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    args->fd = fd;
+    args->buf = sh_buf;
+    args->len = len;
+    args->flags = flags;
+
+    SYSCALL(FF_SO_RECVFROM, args);
+
+    if (ret >= 0) {
+        rte_memcpy(buf, sh_buf, ret);
+        if (from) {
+            socklen_t cplen = *sh_fromlen > *fromlen ? *fromlen
+                : *sh_fromlen;
+            rte_memcpy(from, sh_from, cplen);
+            *fromlen = *sh_fromlen;
+        }
+    }
+
+    /*if (from) {
+        share_mem_free(sh_from);
+        share_mem_free(sh_fromlen);
+    }
+
+    share_mem_free(sh_buf);*/
+
+    RETURN_NOFREE();
+}
+
+ssize_t
+ff_hook___recvfrom_chk(int fd, void *buf, size_t len, size_t buflen, int flags,
+    struct sockaddr *from, socklen_t *fromlen)
+{
+    DEBUG_LOG("ff_hook___recvfrom_chk, fd:%d, buf:%p, len:%lu, flags:%d, from:%p, fromlen:%p\n",
+        fd, buf, len, flags, from, fromlen);
+
+    if (buflen < len)
+        __chk_fail();
 
     if (buf == NULL || len == 0) {
         errno = EINVAL;
@@ -1266,6 +1384,54 @@ ssize_t
 ff_hook_read(int fd, void *buf, size_t len)
 {
     DEBUG_LOG("ff_hook_read, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
+
+    if (buf == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    CHECK_FD_OWNERSHIP(read, (fd, buf, len));
+
+    DEFINE_REQ_ARGS_STATIC(read);
+    static __thread void *sh_buf = NULL;
+    static __thread size_t sh_buf_len = 0;
+
+    /* alloc or realloc sh_buf */
+    if (sh_buf == NULL || sh_buf_len < (len * 4)) {
+        if (sh_buf) {
+            share_mem_free(sh_buf);;
+        }
+
+        /* alloc 4 times buf space */
+        sh_buf_len = len * 4;
+        sh_buf = share_mem_alloc(sh_buf_len);
+        if (sh_buf == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    args->fd = fd;
+    args->buf = sh_buf;
+    args->len = len;
+
+    SYSCALL(FF_SO_READ, args);
+
+    if (ret > 0) {
+        rte_memcpy(buf, sh_buf, ret);
+    }
+
+    //share_mem_free(sh_buf);
+
+    RETURN_NOFREE();
+}
+
+ssize_t
+ff_hook___read_chk(int fd, void *buf, size_t nbytes, size_t len)
+{
+    DEBUG_LOG("ff_hook___read_chk, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
+
+    if (buflen < nbytes)
+        __chk_fail();
 
     if (buf == NULL || len == 0) {
         errno = EINVAL;
