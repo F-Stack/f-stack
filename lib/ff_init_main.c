@@ -89,6 +89,8 @@ __FBSDID("$FreeBSD$");
 #include <ddb/db_sym.h>
 
 void mi_startup(void); /* Should be elsewhere */
+int ff_adapt_user_proc_add(struct thread *parent_td, struct thread *td);
+void ff_adapt_user_proc_exit(struct thread *td);
 
 /* Components of the first process -- never freed. */
 struct proc proc0;
@@ -536,3 +538,125 @@ proc0_post(void *dummy __unused)
 #endif
 }
 SYSINIT(p0post, SI_SUB_INTRINSIC_POST, SI_ORDER_FIRST, proc0_post, NULL);
+
+int
+ff_adapt_user_proc_add(struct thread *parent_td, struct thread *td)
+{
+    struct proc *p;
+
+    vm_paddr_t pageablemem;
+    int i;
+
+    GIANT_REQUIRED;
+
+    p = malloc(sizeof(struct proc), M_TEMP, M_ZERO);
+    if (p == NULL) {
+        return -1;
+    }
+
+    /*
+     * Initialize magic number and osrel.
+     */
+    p->p_magic = P_MAGIC;
+    p->p_sysent = &null_sysvec;
+    p->p_flag = P_SYSTEM | P_INMEM;
+    p->p_state = PRS_NORMAL;
+    p->p_klist = knlist_alloc(&p->p_mtx);
+    STAILQ_INIT(&p->p_ktr);
+    p->p_nice = NZERO;
+    td->td_tid = PID_MAX + 1;
+    td->td_state = TDS_RUNNING;
+    td->td_pri_class = PRI_TIMESHARE;
+    td->td_user_pri = PUSER;
+    td->td_base_user_pri = PUSER;
+    td->td_priority = PVM;
+    td->td_base_pri = PUSER;
+    td->td_oncpu = 0;
+    td->td_flags = TDF_INMEM|TDP_KTHREAD;
+    td->td_proc = p;
+    p->p_peers = 0;
+    p->p_leader = p;
+
+    strncpy(p->p_comm, "kernel", sizeof (p->p_comm));
+    strncpy(td->td_name, "swapper", sizeof (td->td_name));
+
+    callout_init(&p->p_itcallout, CALLOUT_MPSAFE);
+    callout_init_mtx(&p->p_limco, &p->p_mtx, 0);
+    callout_init(&td->td_slpcallout, CALLOUT_MPSAFE);
+
+    /* Create credentials. */
+    p->p_ucred = crget();
+    p->p_ucred->cr_ngroups = 1;    /* group 0 */
+    p->p_ucred->cr_uidinfo = uifind(0);
+    p->p_ucred->cr_ruidinfo = uifind(0);
+    p->p_ucred->cr_prison = &prison0;
+
+#ifdef AUDIT
+    audit_cred_kproc0(p->p_ucred);
+#endif
+#ifdef MAC
+    mac_cred_create_swapper(p->p_ucred);
+#endif
+
+    td->td_ucred = crhold(p->p_ucred);
+
+    /* 
+     * Create the file descriptor table. 
+     * Copy from parent thread.
+     */
+    p->p_fd = fdcopy(parent_td->td_proc->p_fd);
+    p->p_fdtol = NULL;
+
+    /* Create the limits structures. */
+    p->p_limit = lim_alloc();
+    for (i = 0; i < RLIM_NLIMITS; i++)
+        p->p_limit->pl_rlimit[i].rlim_cur =
+            p->p_limit->pl_rlimit[i].rlim_max = RLIM_INFINITY;
+    p->p_limit->pl_rlimit[RLIMIT_NOFILE].rlim_cur =
+        p->p_limit->pl_rlimit[RLIMIT_NOFILE].rlim_max = maxfiles;
+    p->p_limit->pl_rlimit[RLIMIT_NPROC].rlim_cur =
+        p->p_limit->pl_rlimit[RLIMIT_NPROC].rlim_max = maxproc;
+    p->p_limit->pl_rlimit[RLIMIT_DATA].rlim_cur = dfldsiz;
+    p->p_limit->pl_rlimit[RLIMIT_DATA].rlim_max = maxdsiz;
+    p->p_limit->pl_rlimit[RLIMIT_STACK].rlim_cur = dflssiz;
+    p->p_limit->pl_rlimit[RLIMIT_STACK].rlim_max = maxssiz;
+    /* Cast to avoid overflow on i386/PAE. */
+    pageablemem = ptoa((vm_paddr_t)vm_free_count());
+    p->p_limit->pl_rlimit[RLIMIT_RSS].rlim_cur =
+        p->p_limit->pl_rlimit[RLIMIT_RSS].rlim_max = pageablemem;
+    p->p_limit->pl_rlimit[RLIMIT_MEMLOCK].rlim_cur = pageablemem / 3;
+    p->p_limit->pl_rlimit[RLIMIT_MEMLOCK].rlim_max = pageablemem;
+    p->p_cpulimit = RLIM_INFINITY;
+
+    /*
+     * Call the init and ctor for the new thread and proc.  We wait
+     * to do this until all other structures are fairly sane.
+     */
+    EVENTHANDLER_INVOKE(process_init, p);
+    EVENTHANDLER_INVOKE(thread_init, td);
+    EVENTHANDLER_INVOKE(process_ctor, p);
+    EVENTHANDLER_INVOKE(thread_ctor, td);
+
+    return 0;
+}
+
+void
+ff_adapt_user_proc_exit(struct thread *td)
+{
+    struct proc *p = td->td_proc;
+
+    if (p->p_klist) {
+        knlist_detach(p->p_klist);
+    }
+
+    /* Close all  */
+    fdescfree_adapt_use(td);
+
+    if (p->p_limit) {
+        lim_free(p->p_limit);
+    }
+
+    free(p, M_TEMP);
+}
+
+

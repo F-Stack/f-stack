@@ -356,6 +356,18 @@ int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
  */
 int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);
 
+/*
+ * Create user thread context for LD_PRELOAD mode.
+ * It saved in ff_so_context.
+ */
+void *ff_adapt_user_thread_add(void *parent);
+
+void ff_adapt_user_thread_exit(void *td);
+
+void *ff_switch_curthread(void *new_curthread);
+
+void ff_restore_curthread(void *old_curthread);
+
 /* ZERO COPY API end */
 
 #ifdef __cplusplus

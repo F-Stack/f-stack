@@ -10,6 +10,8 @@
 int ff_adapter_init();
 //int __attribute__((constructor)) ff_adapter_init(int argc, char * const argv[]);
 
+int ff_adapter_child_process_init(void);
+
 void alarm_event_sem();
 
 /*-

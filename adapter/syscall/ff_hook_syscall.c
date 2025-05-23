@@ -2304,12 +2304,38 @@ ff_hook_fork(void)
             current_worker_id++;
             ERR_LOG("parent process, current_worker_id++:%d\n", current_worker_id);
 #endif
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+            sc->forking = 1;
+            /* Loop until child fork done. */
+            while (sc->forking);
+#endif
         }
         else if (pid == 0) {
             ERR_LOG("chilid process, sc:%p, sc->refcount:%d, ff_so_zone:%p\n",
                 sc, sc->refcount, ff_so_zone);
 #ifdef FF_MULTI_SC
             ERR_LOG("chilid process, current_worker_id:%d\n", current_worker_id);
+#endif
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+            struct ff_so_context *parent_sc = sc;
+
+            /* Child process attach new sc */
+            ff_adapter_child_process_init();
+    
+            /* 
+             * The fork system call duplicates the file 
+             * descriptors that were open in the parent process 
+             */
+            DEFINE_REQ_ARGS(fork);
+            args->parent_thread_handle = parent_sc->ff_thread_handle;
+            /* Output value */
+            args->child_thread_handle = NULL;
+            SYSCALL(FF_SO_FORK, args);
+            if (ret == 0) {
+                sc->ff_thread_handle = args->child_thread_handle;
+            }
+
+            parent_sc->forking = 0;
 #endif
         }
 
@@ -2608,6 +2634,16 @@ thread_destructor(void *sc)
     }
 }
 
+static inline int
+ff_application_exit(struct ff_so_context *sc)
+{
+    DEFINE_REQ_ARGS(exit_application);
+    args->sc = sc;
+    SYSCALL(FF_SO_EXIT_APPLICATION, args);
+
+    return ret;
+}
+
 void __attribute__((destructor))
 ff_adapter_exit()
 {
@@ -2621,13 +2657,19 @@ ff_adapter_exit()
         for (i = 0; i < worker_id; i++) {
             ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), scs[i].sc);
             ff_so_zone = ff_so_zones[i];
-            ff_detach_so_context(scs[i].sc);
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+            ff_application_exit(scs[i].sc);
+#endif
+            ff_detach_so_context(scs[i].sc);            
         }
     } else
 #endif
     {
         ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
-        ff_detach_so_context(sc);
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+        ff_application_exit(sc);
+#endif
+        ff_detach_so_context(sc);        
         sc = NULL;
     }
 #endif
@@ -2784,7 +2826,36 @@ ff_adapter_init()
 
     rte_spinlock_unlock(&worker_id_lock);
 
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    /* 
+     * Request to fstack, alloc sc->ff_thread_handle 
+     * Every appliaction 
+     */
+    {
+        DEFINE_REQ_ARGS(register_application);
+        args->sc = sc;
+        SYSCALL(FF_SO_REGISTER_APPLICATION, args);
+        if (ret < 0) {
+            return -1;
+        }
+    }
+#endif
+
     ERR_LOG("ff_adapter_init success, sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
+
+    return 0;
+}
+
+int
+ff_adapter_child_process_init(void)
+{
+    sc = ff_attach_so_context(0);
+    if (sc == NULL) {
+        ERR_LOG("ff_attach_so_context failed\n");
+        return -1;
+    }
+
+    ERR_LOG("ff_adapter_child_process_init success, sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
 
     return 0;
 }

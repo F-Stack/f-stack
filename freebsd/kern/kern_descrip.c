@@ -2517,6 +2517,82 @@ retry:
 }
 
 /*
+ * Release a filedesc structure, we use this.
+ */
+static void
+fdescfree_fds_adapt_use(struct thread *td, struct filedesc *fdp, bool needclose)
+{
+	struct filedesc0 *fdp0;
+	struct freetable *ft, *tft;
+	struct filedescent *fde;
+	struct file *fp;
+	int i, lastfile;
+
+	KASSERT(refcount_load(&fdp->fd_refcnt) == 0,
+	    ("%s: fd table %p carries references", __func__, fdp));
+
+	/*
+	 * Serialize with threads iterating over the table, if any.
+	 */
+	if (refcount_load(&fdp->fd_holdcnt) > 1) {
+		FILEDESC_XLOCK(fdp);
+		FILEDESC_XUNLOCK(fdp);
+	}
+
+	lastfile = fdlastfile_single(fdp);
+	for (i = 0; i <= lastfile; i++) {
+		fde = &fdp->fd_ofiles[i];
+		fp = fde->fde_file;
+		if (fp != NULL) {
+			fdefree_last(fde);
+			if (needclose)
+				(void) closefp_impl(fdp, i, fp, td, true);
+			else
+				fdrop(fp, td);
+		}
+	}
+
+	if (NDSLOTS(fdp->fd_nfiles) > NDSLOTS(NDFILE))
+		free(fdp->fd_map, M_FILEDESC);
+	if (fdp->fd_nfiles > NDFILE)
+		free(fdp->fd_files, M_FILEDESC);
+
+	fdp0 = (struct filedesc0 *)fdp;
+	SLIST_FOREACH_SAFE(ft, &fdp0->fd_free, ft_next, tft)
+		free(ft->ft_table, M_FILEDESC);
+
+	fddrop(fdp);
+}
+
+void
+fdescfree_adapt_use(struct thread *td)
+{
+	struct proc *p;
+	struct filedesc *fdp;
+
+	p = td->td_proc;
+	fdp = p->p_fd;
+	MPASS(fdp != NULL);
+
+#ifdef RACCT
+	if (RACCT_ENABLED())
+		racct_set_unlocked(p, RACCT_NOFILE, 0);
+#endif
+
+	if (p->p_fdtol != NULL)
+		fdclearlocks(td);
+
+	if (refcount_release(&fdp->fd_refcnt) == 0)
+		return;
+
+	fdescfree_fds_adapt_use(td, fdp, 1);
+
+	PROC_LOCK(p);
+	p->p_fd = NULL;
+	PROC_UNLOCK(p);
+}
+
+/*
  * Release a filedesc structure.
  */
 static void

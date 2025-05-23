@@ -64,6 +64,8 @@ enum FF_SOCKET_OPS {
     FF_SO_KQUEUE,
     FF_SO_KEVENT,
     FF_SO_FORK, // 29
+    FF_SO_REGISTER_APPLICATION,
+    FF_SO_EXIT_APPLICATION,
 };
 
 enum FF_SO_CONTEXT_STATUS {
@@ -110,6 +112,8 @@ struct ff_so_context {
     /* CACHE LINE 1 */
     /* listen fd, refcount.. */
     int refcount;
+    void *ff_thread_handle;
+    volatile int forking;
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 extern __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
