@@ -1430,7 +1430,7 @@ ff_hook___read_chk(int fd, void *buf, size_t nbytes, size_t len)
 {
     DEBUG_LOG("ff_hook___read_chk, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
 
-    if (buflen < nbytes)
+    if (len < nbytes)
         __chk_fail();
 
     if (buf == NULL || len == 0) {
