@@ -795,7 +795,7 @@ ff_hook_recv(int fd, void *buf, size_t len, int flags)
 }
 
 ssize_t
-ff_hook___recv_chk(int fd, void *buf, size_t buflen, size_t len, int flags)
+ff_hook___recv_chk(int fd, void *buf, size_t len, size_t buflen, int flags)
 {
     DEBUG_LOG("ff_hook___recv_chk, fd:%d, buf:%p, len:%lu, flags:%d\n",
         fd, buf, len, flags);
@@ -1426,7 +1426,7 @@ ff_hook_read(int fd, void *buf, size_t len)
 }
 
 ssize_t
-ff_hook___read_chk(int fd, void *buf, size_t nbytes, size_t len)
+ff_hook___read_chk(int fd, void *buf, size_t nbytes, size_t buflen)
 {
     DEBUG_LOG("ff_hook___read_chk, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
 
