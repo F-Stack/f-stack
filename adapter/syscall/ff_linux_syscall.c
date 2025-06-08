@@ -254,3 +254,10 @@ ff_linux_fork(void)
     SYSCALL(fork, ());
 }
 
+int
+ff_linux_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+    struct timeval *timeout)
+{
+    DEBUG_LOG("ff_linux_select\n");
+    SYSCALL(select, (nfds, readfds, writefds, exceptfds, timeout));
+}
