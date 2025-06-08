@@ -29,6 +29,12 @@ endif
 # like linux kernel.
 #FF_USE_THREAD_STRUCT_HANDLE=1
 
+# If FF_PRELOAD_SUPPORT_SELECT is enabled, we can use select in LD_PRELOAD mode. 
+# However, we need to set the value of FF_KERNEL_MAX_FD_SELECT based on our requirements to ensure file descriptors 
+# (FDs) for the user-space protocol stack can be covered by the select interface.
+#FF_PRELOAD_SUPPORT_SELECT=1
+#FF_KERNEL_MAX_FD_SELECT=128
+
 PKGCONF ?= pkg-config
 
 ifndef DEBUG
@@ -55,6 +61,10 @@ endif
 
 ifdef FF_USE_THREAD_STRUCT_HANDLE
 	CFLAGS+= -DFF_USE_THREAD_STRUCT_HANDLE
+endif
+
+ifdef FF_PRELOAD_SUPPORT_SELECT
+	CFLAGS+= -DFF_PRELOAD_SUPPORT_SELECT -DFF_KERNEL_MAX_FD_SELECT=$(FF_KERNEL_MAX_FD_SELECT) -DFF_USE_THREAD_STRUCT_HANDLE 
 endif
 
 CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)
