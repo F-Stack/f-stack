@@ -408,6 +408,18 @@ ff_sys_exit_thread(struct ff_exit_application_args *args)
 }
 
 static int
+ff_sys_select(struct ff_select_args *args)
+{
+    int ret;
+    struct timeval no_block_time = {0, 0};
+
+    DEBUG_LOG("to run ff_sys_select, nfds:%d\n", args->nfds);
+    ret = ff_select(args->nfds, args->readfds, args->writefds, args->exceptfds, &no_block_time);
+
+    return ret;
+}
+
+static int
 ff_so_handler(int ops, void *args)
 {
     DEBUG_LOG("ff_so_handler ops:%d, epoll create ops:%d\n", ops, FF_SO_EPOLL_CREATE);
@@ -476,6 +488,8 @@ ff_so_handler(int ops, void *args)
             return ff_sys_register_thread((struct ff_register_application_args *)args);
         case FF_SO_EXIT_APPLICATION:
             return ff_sys_exit_thread((struct ff_exit_application_args *)args);
+        case FF_SO_SELECT:
+            return ff_sys_select((struct ff_select_args *)args);
         default:
             break;
     }
