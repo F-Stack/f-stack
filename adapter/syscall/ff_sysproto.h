@@ -203,4 +203,11 @@ struct ff_exit_application_args {
     struct ff_so_context *sc;
 };
 
+struct ff_select_args {
+    int nfds;
+    fd_set *readfds;
+    fd_set *writefds;
+    fd_set *exceptfds;
+};
+
 #endif
