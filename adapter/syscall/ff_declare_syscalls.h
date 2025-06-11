@@ -28,4 +28,5 @@ FF_SYSCALL_DECL(int, epoll_create, (int));
 FF_SYSCALL_DECL(int, epoll_ctl, (int, int, int, struct epoll_event *));
 FF_SYSCALL_DECL(int, epoll_wait, (int, struct epoll_event *, int, int));
 FF_SYSCALL_DECL(pid_t, fork, (void));
+FF_SYSCALL_DECL(int, select, (int , fd_set *, fd_set *, fd_set *, struct timeval *));
 #undef FF_SYSCALL_DECL
