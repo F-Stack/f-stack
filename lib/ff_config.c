@@ -879,8 +879,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.base_virtaddr= strdup(value);
     } else if (MATCH("dpdk", "file_prefix")) {
         pconfig->dpdk.file_prefix = strdup(value);
-    } else if (MATCH("dpdk", "pci_whitelist")) {
-        pconfig->dpdk.pci_whitelist = strdup(value);
+    } else if (MATCH("dpdk", "allow")) {
+        pconfig->dpdk.allow = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -998,15 +998,14 @@ dpdk_args_setup(struct ff_config *cfg)
         sprintf(temp, "--file-prefix=container-%s", cfg->dpdk.file_prefix);
         dpdk_argv[n++] = strdup(temp);
     }
-    if (cfg->dpdk.pci_whitelist) {
+    if (cfg->dpdk.allow) {
         char* token;
-        char* rest = cfg->dpdk.pci_whitelist;
+        char* rest = cfg->dpdk.allow;
 
         while ((token = strtok_r(rest, ",", &rest))){
             sprintf(temp, "--allow=%s", token);
             dpdk_argv[n++] = strdup(temp);
         }
-
     }
 
     if (cfg->dpdk.nb_vdev) {
