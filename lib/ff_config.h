@@ -207,8 +207,8 @@ struct ff_config {
         /* allow processes that do not want to co-operate to have different memory regions */
         char *file_prefix;
 
-        /* load an external driver */
-        char *pci_whitelist;
+        /* pci whiltelist */
+        char *allow;
 
         int nb_channel;
         int memory;
