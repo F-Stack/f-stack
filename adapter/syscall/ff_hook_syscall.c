@@ -844,7 +844,7 @@ ff_hook_recv(int fd, void *buf, size_t len, int flags)
 }
 
 ssize_t
-ff_hook___recv_chk(int fd, void *buf, size_t buflen, size_t len, int flags)
+ff_hook___recv_chk(int fd, void *buf, size_t len, size_t buflen, int flags)
 {
     DEBUG_LOG("ff_hook___recv_chk, fd:%d, buf:%p, len:%lu, flags:%d\n",
         fd, buf, len, flags);
@@ -1479,7 +1479,7 @@ ff_hook___read_chk(int fd, void *buf, size_t nbytes, size_t len)
 {
     DEBUG_LOG("ff_hook___read_chk, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
 
-    if (buflen < nbytes)
+    if (len < nbytes)
         __chk_fail();
 
     if (buf == NULL || len == 0) {
@@ -2620,8 +2620,8 @@ ff_hook_select(int nfds, fd_set *restrict readfds, fd_set *restrict writefds,
     struct timespec t_s, t_n;
     time_t now_time_ms = 0;
     time_t end_time_ms = 0;
-    int ff_set_words, ff_set_bytes;
-    int kernel_set_words, kernel_set_bytes;
+    int ff_set_words, ff_set_bytes = 0;
+    int kernel_set_words, kernel_set_bytes = 0;
     int kernel_ret = 0;
     
     DEBUG_LOG("ff_hook_select nfds:%d\n", nfds);
