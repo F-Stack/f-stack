@@ -1680,7 +1680,7 @@ mlx5_dev_to_eswitch_info(struct rte_eth_dev *dev)
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int (*real_if_indextoname)(unsigned int, char *);
+static char *(*real_if_indextoname)(unsigned int, char *) = NULL;
 int
 mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 {
@@ -1702,7 +1702,7 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 
 	// for ff tools
 	if (!real_if_indextoname) {
-		real_if_indextoname = dlsym(RTLD_NEXT, "if_indextoname");
+		real_if_indextoname = __extension__ (char *(*)(unsigned int, char *))dlsym(RTLD_NEXT, "if_indextoname");
 		if (!real_if_indextoname) {
 			rte_errno = errno;
 			return -rte_errno;
