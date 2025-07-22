@@ -243,6 +243,7 @@ endif
 VPATH+= $S/netipsec
 ifdef FF_IPFW
 VPATH+= $S/netpfil/ipfw
+VPATH+= $S/netpfil/ipfw/pmod
 endif
 VPATH+= $S/opencrypto
 VPATH+= $S/vm
@@ -594,7 +595,9 @@ NETIPFW_SRCS+=             \
 	ip_fw_table.c   \
 	ip_fw_table_algo.c  \
 	ip_fw_table_value.c \
-	ip_fw2.c
+	ip_fw2.c \
+	ip_fw_pmod.c \
+	tcpmod.c
 endif
 
 ifdef FF_IPSEC
