@@ -661,11 +661,17 @@ in_pcbbind(struct inpcb *inp, struct sockaddr *nam, struct ucred *cred)
 	    &inp->inp_lport, cred);
 	if (error)
 		return (error);
+#ifdef FSTACK
+	if (inp->inp_lport != 0) {
+#endif
 	if (in_pcbinshash(inp) != 0) {
 		inp->inp_laddr.s_addr = INADDR_ANY;
 		inp->inp_lport = 0;
 		return (EAGAIN);
 	}
+#ifdef FSTACK
+	}
+#endif
 	if (anonport)
 		inp->inp_flags |= INP_ANONPORT;
 	return (0);
@@ -1062,11 +1068,13 @@ in_pcbbind_setup(struct inpcb *inp, struct sockaddr *nam, in_addr_t *laddrp,
 	}
 	if (*lportp != 0)
 		lport = *lportp;
+#ifndef FSTACK
 	if (lport == 0) {
 		error = in_pcb_lport(inp, &laddr, &lport, cred, lookupflags);
 		if (error != 0)
 			return (error);
 	}
+#endif
 	*laddrp = laddr.s_addr;
 	*lportp = lport;
 	return (0);
@@ -1508,8 +1516,7 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 		ifp = ifa->ifa_ifp;
 		while (lport == 0) {
 			int rss;
-			error = in_pcbbind_setup(inp, NULL, &laddr.s_addr, &lport,
-			    cred);
+			error = in_pcb_lport(inp, &laddr, &lport, cred, INPLOOKUP_WILDCARD);
 			if (error)
 				return (error);
 			/* Note:
