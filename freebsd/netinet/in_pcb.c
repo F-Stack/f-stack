@@ -361,11 +361,17 @@ in_pcbbind(struct inpcb *inp, struct sockaddr *nam, struct ucred *cred)
 	    &inp->inp_lport, cred);
 	if (error)
 		return (error);
+#ifdef FSTACK
+	if (inp->inp_lport != 0) {
+#endif
 	if (in_pcbinshash(inp) != 0) {
 		inp->inp_laddr.s_addr = INADDR_ANY;
 		inp->inp_lport = 0;
 		return (EAGAIN);
 	}
+#ifdef FSTACK
+	}
+#endif
 	if (anonport)
 		inp->inp_flags |= INP_ANONPORT;
 	return (0);
@@ -616,12 +622,12 @@ in_pcbbind_setup(struct inpcb *inp, struct sockaddr *nam, in_addr_t *laddrp,
 			sin->sin_port = 0;		/* yech... */
 			bzero(&sin->sin_zero, sizeof(sin->sin_zero));
 			/*
-			 * Is the address a local IP address? 
+			 * Is the address a local IP address?
 			 * If INP_BINDANY is set, then the socket may be bound
 			 * to any endpoint address, local or not.
 			 */
 			if ((inp->inp_flags & INP_BINDANY) == 0 &&
-			    ifa_ifwithaddr_check((struct sockaddr *)sin) == 0) 
+			    ifa_ifwithaddr_check((struct sockaddr *)sin) == 0)
 				return (EADDRNOTAVAIL);
 		}
 		laddr = sin->sin_addr;
@@ -697,12 +703,13 @@ in_pcbbind_setup(struct inpcb *inp, struct sockaddr *nam, in_addr_t *laddrp,
 	}
 	if (*lportp != 0)
 		lport = *lportp;
+#ifndef FSTACK
 	if (lport == 0) {
 		error = in_pcb_lport(inp, &laddr, &lport, cred, lookupflags);
 		if (error != 0)
 			return (error);
-
 	}
+#endif
 	*laddrp = laddr.s_addr;
 	*lportp = lport;
 	return (0);
@@ -806,7 +813,7 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	/*
 	 * If we found a route, use the address corresponding to
 	 * the outgoing interface.
-	 * 
+	 *
 	 * Otherwise assume faddr is reachable on a directly connected
 	 * network and try to find a corresponding interface to take
 	 * the source address from.
@@ -1139,10 +1146,16 @@ if (lport == 0)
     ifp = ifa->ifa_ifp;
     while (lport == 0) {
         int rss;
-        error = in_pcbbind_setup(inp, NULL, &laddr.s_addr, &lport,
-            cred);
+        error = in_pcb_lport(inp, &laddr, &lport, cred, INPLOOKUP_WILDCARD);
         if (error)
             return (error);
+        /* Note:
+         * if ifp->if_softc is NULL, such as laddr config in lo.
+         * just return. but maybe it can't receive response to this worker.
+         */
+        if (!ifp->if_softc) {
+            break;
+        }
         rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
             fport, lport);
         if (rss) {
@@ -2359,7 +2372,7 @@ ip_fini(void *xtp)
 	callout_stop(&ipport_tick_callout);
 }
 
-/* 
+/*
  * The ipport_callout should start running at about the time we attach the
  * inet or inet6 domains.
  */
@@ -2373,7 +2386,7 @@ ipport_tick_init(const void *unused __unused)
 	EVENTHANDLER_REGISTER(shutdown_pre_sync, ip_fini, NULL,
 		SHUTDOWN_PRI_DEFAULT);
 }
-SYSINIT(ipport_tick_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_MIDDLE, 
+SYSINIT(ipport_tick_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_MIDDLE,
     ipport_tick_init, NULL);
 
 void
