@@ -38,7 +38,19 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     type = (pc->type ? pc->type : SOCK_STREAM);
 
+#if (NGX_HAVE_FSTACK)
+    /*
+     We use a creation flags created by fstack's adaptable layer to
+      to explicitly call the needed socket() function.
+    */
+    if (!pc->belong_to_host) {
+        s = ngx_socket(pc->sockaddr->sa_family, type | SOCK_FSTACK, 0);
+    } else {
+        s = ngx_socket(pc->sockaddr->sa_family, type, 0);
+    }
+#else
     s = ngx_socket(pc->sockaddr->sa_family, type, 0);
+#endif
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, pc->log, 0, "%s socket %d",
                    (type == SOCK_STREAM) ? "stream" : "dgram", s);
@@ -197,7 +209,11 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     c->start_time = ngx_current_msec;
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (ngx_add_conn(c) == NGX_ERROR) {
             goto failed;
         }
@@ -249,7 +265,11 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         }
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (rc == -1) {
 
             /* NGX_EINPROGRESS */
@@ -333,10 +353,20 @@ failed:
 
 #if (NGX_HAVE_TRANSPARENT_PROXY)
 
+#if (NGX_HAVE_FSTACK)
+extern int is_fstack_fd(int sockfd);
+#ifndef IP_BINDANY
+#define IP_BINDANY	24
+#endif
+#endif
+
 static ngx_int_t
 ngx_event_connect_set_transparent(ngx_peer_connection_t *pc, ngx_socket_t s)
 {
     int  value;
+#if defined(NGX_HAVE_FSTACK)
+    int optname;
+#endif
 
     value = 1;
 
@@ -356,23 +386,31 @@ ngx_event_connect_set_transparent(ngx_peer_connection_t *pc, ngx_socket_t s)
 
     case AF_INET:
 
-#if defined(IP_TRANSPARENT)
+#if defined(NGX_HAVE_FSTACK)
+        /****
+        FreeBSD define IP_BINDANY in freebsd/netinet/in.h
+        Fstack should only support IP_BINDANY.
+        ****/
+        if(is_fstack_fd(s)){
+            optname = IP_BINDANY;
+        } else {
+            optname = IP_TRANSPARENT;
+        }
 
+        if (setsockopt(s, IPPROTO_IP, optname,
+                       (const void *) &value, sizeof(int)) == -1)
+        {
+            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
+                   "setsockopt(IP_BINDANY/IP_TRANSPARENT) failed");
+            return NGX_ERROR;
+        }
+
+#elif defined(IP_TRANSPARENT)
         if (setsockopt(s, IPPROTO_IP, IP_TRANSPARENT,
                        (const void *) &value, sizeof(int)) == -1)
         {
             ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
-                          "setsockopt(IP_TRANSPARENT) failed");
-            return NGX_ERROR;
-        }
-
-#elif defined(IP_BINDANY)
-
-        if (setsockopt(s, IPPROTO_IP, IP_BINDANY,
-                       (const void *) &value, sizeof(int)) == -1)
-        {
-            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
-                          "setsockopt(IP_BINDANY) failed");
+            "setsockopt(IP_TRANSPARENT) failed");
             return NGX_ERROR;
         }
 

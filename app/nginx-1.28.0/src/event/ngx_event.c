@@ -34,6 +34,10 @@ static char *ngx_event_debug_connection(ngx_conf_t *cf, ngx_command_t *cmd,
 static void *ngx_event_core_create_conf(ngx_cycle_t *cycle);
 static char *ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf);
 
+#if (NGX_HAVE_FSTACK)
+extern ngx_int_t ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
+    ngx_msec_t timer, ngx_uint_t flags);
+#endif
 
 static ngx_uint_t     ngx_timer_resolution;
 sig_atomic_t          ngx_event_timer_alarm;
@@ -57,6 +61,9 @@ ngx_msec_t            ngx_accept_mutex_delay;
 ngx_int_t             ngx_accept_disabled;
 ngx_uint_t            ngx_use_exclusive_accept;
 
+#if (NGX_HAVE_FSTACK)
+static ngx_msec_t     ngx_schedule_timeout;
+#endif
 
 #if (NGX_STAT_STUB)
 
@@ -196,6 +203,9 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 {
     ngx_uint_t  flags;
     ngx_msec_t  timer, delta;
+#if (NGX_HAVE_FSTACK)
+    static ngx_msec_t initial; //msec
+#endif
 
     if (ngx_timer_resolution) {
         timer = NGX_TIMER_INFINITE;
@@ -245,6 +255,30 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
     delta = ngx_current_msec;
 
+#if (NGX_HAVE_FSTACK)
+    /*
+     * NGX_FF_PROCESS_*s run on both fstack and kernel,
+     * others ( e.g. cache manager/loader ) only run on kernel.
+     */
+    if(!!ngx_ff_process) {
+        (void) ngx_process_events(cycle, timer, flags);
+
+        /*
+         * handle message from kernel ( e.g. signals)
+         * in case of network inactivity
+         */
+        if (ngx_current_msec - initial >= ngx_schedule_timeout) {
+            (void) ngx_ff_process_host_events(cycle, 0, flags);
+
+            /* Update timer*/
+            initial = ngx_current_msec;
+        }
+    } else {
+        (void) ngx_ff_process_host_events(cycle, timer, flags);
+    }
+
+    delta = ngx_current_msec - delta;
+#else
     (void) ngx_process_events(cycle, timer, flags);
 
     delta = ngx_current_msec - delta;
@@ -253,6 +287,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
                    "timer delta: %M", delta);
 
     ngx_event_process_posted(cycle, &ngx_posted_accept_events);
+#endif
 
     if (ngx_accept_mutex_held) {
         ngx_shmtx_unlock(&ngx_accept_mutex);
@@ -613,6 +648,10 @@ ngx_event_module_init(ngx_cycle_t *cycle)
 
 #endif
 
+#if (NGX_HAVE_FSTACK)
+    ngx_schedule_timeout = ccf->schedule_timeout;
+#endif
+
     return NGX_OK;
 }
 
@@ -631,6 +670,11 @@ ngx_timer_signal_handler(int signo)
 
 #endif
 
+#if (NGX_HAVE_FSTACK)
+
+extern ngx_event_actions_t   ngx_ff_host_event_actions;
+
+#endif
 
 static ngx_int_t
 ngx_event_process_init(ngx_cycle_t *cycle)
@@ -695,6 +739,13 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         break;
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_ff_host_event_actions.init(cycle, ngx_timer_resolution) != NGX_OK) {
+        /* fatal */
+        exit(2);
+    }
+#endif
+
 #if !(NGX_WIN32)
 
     if (ngx_timer_resolution && !(ngx_event_flags & NGX_USE_TIMER_EVENT)) {
@@ -733,8 +784,13 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
         cycle->files_n = (ngx_uint_t) rlmt.rlim_cur;
 
+#if (NGX_HAVE_FSTACK)
+        cycle->files = ngx_calloc(sizeof(ngx_connection_t *) * cycle->files_n * 2,
+                                  cycle->log);
+#else
         cycle->files = ngx_calloc(sizeof(ngx_connection_t *) * cycle->files_n,
                                   cycle->log);
+#endif
         if (cycle->files == NULL) {
             return NGX_ERROR;
         }
@@ -826,6 +882,12 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
         rev->log = c->log;
         rev->accept = 1;
+
+#if (NGX_HAVE_FSTACK)
+        /* Note when nginx running on fstack,
+            make sure that add the right fd to kqueue !! */
+        c->read->belong_to_host = c->write->belong_to_host = ls[i].belong_to_host;
+#endif
 
 #if (NGX_HAVE_DEFERRED_ACCEPT)
         rev->deferred_accept = ls[i].deferred_accept;
@@ -1319,7 +1381,7 @@ ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf)
 
 #endif
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
     module = &ngx_kqueue_module;
 

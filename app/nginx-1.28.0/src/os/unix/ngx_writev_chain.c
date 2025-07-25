@@ -26,7 +26,7 @@ ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
         return in;
     }
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
     if ((ngx_event_flags & NGX_USE_KQUEUE_EVENT) && wev->pending_eof) {
         (void) ngx_connection_error(c, wev->kq_errno,

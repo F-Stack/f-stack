@@ -77,6 +77,15 @@ static ngx_command_t  ngx_stream_core_commands[] = {
       0,
       NULL },
 
+#if (NGX_HAVE_FSTACK)
+	  { ngx_string("kernel_network_stack"),
+		NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+		ngx_conf_set_flag_slot,
+		NGX_STREAM_SRV_CONF_OFFSET,
+		offsetof(ngx_stream_core_srv_conf_t, kernel_network_stack),
+		NULL },
+#endif
+
     { ngx_string("server_name"),
       NGX_STREAM_SRV_CONF|NGX_CONF_1MORE,
       ngx_stream_core_server_name,
@@ -707,6 +716,10 @@ ngx_stream_core_create_srv_conf(ngx_conf_t *cf)
     cscf->preread_buffer_size = NGX_CONF_UNSET_SIZE;
     cscf->preread_timeout = NGX_CONF_UNSET_MSEC;
 
+#if (NGX_HAVE_FSTACK)
+    cscf->kernel_network_stack = NGX_CONF_UNSET;
+#endif
+
     return cscf;
 }
 
@@ -759,6 +772,12 @@ ngx_stream_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_msec_value(conf->preread_timeout,
                               prev->preread_timeout, 30000);
+
+#if (NGX_HAVE_FSTACK)
+	/* By default, we set up a server on fstack */
+	ngx_conf_merge_value(conf->kernel_network_stack,
+						 prev->kernel_network_stack, 0);
+#endif
 
     if (conf->server_names.nelts == 0) {
         /* the array has 4 empty preallocated elements, so push cannot fail */

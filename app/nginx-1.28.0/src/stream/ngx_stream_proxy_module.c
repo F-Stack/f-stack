@@ -56,6 +56,10 @@ typedef struct {
     ngx_ssl_t                       *ssl;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+    ngx_flag_t                       kernel_network_stack;
+#endif
+
     ngx_stream_upstream_srv_conf_t  *upstream;
     ngx_stream_complex_value_t      *upstream_value;
 } ngx_stream_proxy_srv_conf_t;
@@ -369,6 +373,15 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
 
 #endif
 
+#if (NGX_HAVE_FSTACK)
+      { ngx_string("proxy_kernel_network_stack"),
+        NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+        ngx_conf_set_flag_slot,
+        NGX_STREAM_SRV_CONF_OFFSET,
+        offsetof(ngx_stream_proxy_srv_conf_t, kernel_network_stack),
+        NULL },
+#endif
+
       ngx_null_command
 };
 
@@ -448,6 +461,10 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
     u->peer.type = c->type;
     u->start_sec = ngx_time();
+
+#if (NGX_HAVE_FSTACK)
+    u->peer.belong_to_host = pscf->kernel_network_stack;
+#endif
 
     c->write->handler = ngx_stream_proxy_downstream_handler;
     c->read->handler = ngx_stream_proxy_downstream_handler;
@@ -1672,7 +1689,7 @@ ngx_stream_proxy_test_connect(ngx_connection_t *c)
     int        err;
     socklen_t  len;
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
     if (ngx_event_flags & NGX_USE_KQUEUE_EVENT)  {
         err = c->write->kq_errno ? c->write->kq_errno : c->read->kq_errno;
@@ -2232,6 +2249,10 @@ ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf)
     conf->ssl_conf_commands = NGX_CONF_UNSET_PTR;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+    conf->kernel_network_stack = NGX_CONF_UNSET;
+#endif
+
     return conf;
 }
 
@@ -2328,6 +2349,12 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         return NGX_CONF_ERROR;
     }
 
+#endif
+
+#if (NGX_HAVE_FSTACK)
+    /* By default, we set up a proxy on fstack */
+    ngx_conf_merge_value(conf->kernel_network_stack,
+                              prev->kernel_network_stack, 0);
 #endif
 
     return NGX_CONF_OK;

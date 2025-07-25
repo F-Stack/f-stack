@@ -55,6 +55,13 @@ if [ $NGX_TEST_BUILD_SOLARIS_SENDFILEV = YES ]; then
     CORE_SRCS="$CORE_SRCS $SOLARIS_SENDFILEV_SRCS"
 fi
 
+if [ $USE_FSTACK = YES ]; then
+    have=NGX_HAVE_FSTACK . auto/have
+    have=NGX_HAVE_FSTACK . auto/have_headers
+    have=SOCK_FSTACK value=0x1000 . auto/define
+    CORE_SRCS="$CORE_SRCS $KQUEUE_SRCS"
+    EVENT_MODULES="$EVENT_MODULES $KQUEUE_MODULE"
+fi
 
 if [ $HTTP = YES ]; then
     HTTP_MODULES=

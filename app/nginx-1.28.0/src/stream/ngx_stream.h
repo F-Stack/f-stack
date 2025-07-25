@@ -165,6 +165,10 @@ typedef struct {
 
     ngx_msec_t                     proxy_protocol_timeout;
 
+	#if (NGX_HAVE_FSTACK)
+		ngx_flag_t                     kernel_network_stack;    /* kernel_network_stack */
+	#endif
+
     unsigned                       listen:1;
 #if (NGX_PCRE)
     unsigned                       captures:1;

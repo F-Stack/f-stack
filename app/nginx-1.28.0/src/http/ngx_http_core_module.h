@@ -202,6 +202,10 @@ typedef struct {
     ngx_flag_t                  merge_slashes;
     ngx_flag_t                  underscores_in_headers;
 
+#if (NGX_HAVE_FSTACK)
+    ngx_flag_t                  kernel_network_stack;    /* kernel_network_stack */
+#endif
+
     unsigned                    listen:1;
 #if (NGX_PCRE)
     unsigned                    captures:1;

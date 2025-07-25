@@ -403,7 +403,9 @@ ngx_feature_incs="#include <sys/socket.h>
 ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="setsockopt(0, IPPROTO_IP, IP_RECVDSTADDR, NULL, 0)"
-. auto/feature
+#. auto/feature
+have=NGX_HAVE_IP_RECVDSTADDR . auto/have
+have=IP_RECVDSTADDR value=7 . auto/define
 
 
 # BSD way to set IPv4 datagram source address
@@ -416,7 +418,9 @@ ngx_feature_incs="#include <sys/socket.h>
 ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="setsockopt(0, IPPROTO_IP, IP_SENDSRCADDR, NULL, 0)"
-. auto/feature
+#. auto/feature
+have=NGX_HAVE_IP_SENDSRCADDR . auto/have
+have=IP_SENDSRCADDR value=7 . auto/define
 
 
 # Linux way to get IPv4 datagram destination address
@@ -432,7 +436,7 @@ ngx_feature_test="struct in_pktinfo  pkt;
                   pkt.ipi_spec_dst.s_addr = INADDR_ANY;
                   (void) pkt;
                   setsockopt(0, IPPROTO_IP, IP_PKTINFO, NULL, 0)"
-. auto/feature
+#. auto/feature
 
 
 # RFC 3542 way to get IPv6 datagram destination address
@@ -459,7 +463,7 @@ ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="(void) IP_PMTUDISC_DO;
                   setsockopt(0, IPPROTO_IP, IP_MTU_DISCOVER, NULL, 0)"
-. auto/feature
+#. auto/feature
 
 
 ngx_feature="IPV6_MTU_DISCOVER"
@@ -471,7 +475,7 @@ ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="(void) IPV6_PMTUDISC_DO;
                   setsockopt(0, IPPROTO_IPV6, IPV6_MTU_DISCOVER, NULL, 0)"
-. auto/feature
+#. auto/feature
 
 
 ngx_feature="IP_DONTFRAG"
@@ -482,7 +486,9 @@ ngx_feature_incs="#include <sys/socket.h>
 ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="setsockopt(0, IPPROTO_IP, IP_DONTFRAG, NULL, 0)"
-. auto/feature
+#. auto/feature
+have=NGX_HAVE_IP_DONTFRAG . auto/have
+have=IP_DONTFRAG value=67 . auto/define
 
 
 ngx_feature="IPV6_DONTFRAG"
@@ -493,7 +499,9 @@ ngx_feature_incs="#include <sys/socket.h>
 ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="setsockopt(0, IPPROTO_IP, IPV6_DONTFRAG, NULL, 0)"
-. auto/feature
+#. auto/feature
+have=NGX_HAVE_IPV6_DONTFRAG . auto/have
+have=IPV6_DONTFRAG value=62 . auto/define
 
 
 ngx_feature="TCP_DEFER_ACCEPT"
@@ -559,7 +567,7 @@ ngx_feature_incs="#include <sys/socket.h>"
 ngx_feature_path=
 ngx_feature_libs=
 ngx_feature_test="accept4(0, NULL, NULL, SOCK_NONBLOCK)"
-. auto/feature
+#. auto/feature
 
 if [ $NGX_FILE_AIO = YES ]; then
 

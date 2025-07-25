@@ -1886,6 +1886,10 @@ ngx_http_add_listening(ngx_conf_t *cf, ngx_http_conf_addr_t *addr)
     ls->quic = addr->opt.quic;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+    ls->belong_to_host = cscf->kernel_network_stack;
+#endif
+
     return ls;
 }
 

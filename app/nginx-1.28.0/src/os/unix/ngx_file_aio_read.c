@@ -107,7 +107,7 @@ ngx_file_aio_read(ngx_file_t *file, u_char *buf, size_t size, off_t offset,
     aio->aiocb.aio_offset = offset;
     aio->aiocb.aio_buf = buf;
     aio->aiocb.aio_nbytes = size;
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
     aio->aiocb.aio_sigevent.sigev_notify_kqueue = ngx_kqueue;
     aio->aiocb.aio_sigevent.sigev_notify = SIGEV_KEVENT;
     aio->aiocb.aio_sigevent.sigev_value.sival_ptr = ev;

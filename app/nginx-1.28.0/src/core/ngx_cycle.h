@@ -119,6 +119,11 @@ typedef struct {
     char                    **environment;
 
     ngx_uint_t                transparent;  /* unsigned  transparent:1; */
+
+#if (NGX_HAVE_FSTACK)
+    ngx_str_t                 fstack_conf;
+    ngx_msec_t                schedule_timeout;
+#endif
 } ngx_core_conf_t;
 
 

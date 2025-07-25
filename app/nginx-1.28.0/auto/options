@@ -179,6 +179,8 @@ NGX_CPU_CACHE_LINE=
 
 NGX_POST_CONF_MSG=
 
+USE_FSTACK=NO
+
 opt=
 
 for option
@@ -213,6 +215,8 @@ do
         --without-select_module)         EVENT_SELECT=NONE          ;;
         --with-poll_module)              EVENT_POLL=YES             ;;
         --without-poll_module)           EVENT_POLL=NONE            ;;
+
+        --with-ff_module)                USE_FSTACK=YES             ;;
 
         --with-threads)                  USE_THREADS=YES            ;;
 
@@ -449,6 +453,8 @@ cat << END
   --without-select_module            disable select module
   --with-poll_module                 enable poll module
   --without-poll_module              disable poll module
+
+  --with-ff_module                   enable F-Stack module
 
   --with-threads                     enable thread pool support
 

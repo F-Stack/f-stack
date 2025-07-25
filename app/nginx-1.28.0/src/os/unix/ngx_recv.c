@@ -19,7 +19,7 @@ ngx_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
 
     rev = c->read;
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
     if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
         ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
@@ -77,7 +77,7 @@ ngx_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
             rev->ready = 0;
             rev->eof = 1;
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
             /*
              * on FreeBSD recv() may return 0 on closed socket
@@ -95,7 +95,7 @@ ngx_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
 
         if (n > 0) {
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
             if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
                 rev->available -= n;

@@ -31,7 +31,7 @@ ngx_udp_unix_sendmsg_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
         return in;
     }
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
     if ((ngx_event_flags & NGX_USE_KQUEUE_EVENT) && wev->pending_eof) {
         (void) ngx_connection_error(c, wev->kq_errno,
@@ -224,7 +224,11 @@ ngx_sendmsg_vec(ngx_connection_t *c, ngx_iovec_t *vec)
     msg.msg_iovlen = vec->count;
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
+#if (NGX_HAVE_FSTACK)
+    if ((!c->listening->belong_to_host) && c->listening && c->listening->wildcard && c->local_sockaddr) {
+#else
     if (c->listening && c->listening->wildcard && c->local_sockaddr) {
+#endif
 
         msg.msg_control = msg_control;
         msg.msg_controllen = sizeof(msg_control);
@@ -392,6 +396,12 @@ ngx_sendmsg(ngx_connection_t *c, struct msghdr *msg, int flags)
 #if (NGX_DEBUG)
     size_t      size;
     ngx_uint_t  i;
+
+#if (NGX_HAVE_FSTACK)
+    for (i = 0, size = 0; i < (size_t) msg->msg_iovlen; i++) {
+        size += msg->msg_iov[i].iov_len;
+    }
+#endif
 #endif
 
 eintr:
@@ -420,9 +430,11 @@ eintr:
     }
 
 #if (NGX_DEBUG)
+#if (!NGX_HAVE_FSTACK)
     for (i = 0, size = 0; i < (size_t) msg->msg_iovlen; i++) {
         size += msg->msg_iov[i].iov_len;
     }
+#endif
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
                    "sendmsg: %z of %uz", n, size);

@@ -27,7 +27,7 @@ ngx_udp_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
 
         if (n >= 0) {
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
             if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
                 rev->available -= n;

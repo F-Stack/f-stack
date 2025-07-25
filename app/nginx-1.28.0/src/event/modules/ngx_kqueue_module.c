@@ -50,6 +50,11 @@ static ngx_event_t     notify_event;
 static struct kevent   notify_kev;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+extern int kqueue(void);
+extern int kevent(int kq, const struct kevent *changelist, int nchanges,
+    struct kevent *eventlist, int nevents, const struct timespec *timeout);
+#endif
 
 static ngx_str_t      kqueue_name = ngx_string("kqueue");
 
@@ -120,6 +125,12 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
     struct timespec     ts;
 #if (NGX_HAVE_TIMER_EVENT)
     struct kevent       kev;
+#endif
+
+#if (NGX_HAVE_FSTACK)
+    if(ngx_ff_process == NGX_FF_PROCESS_NONE) {
+        return NGX_OK;
+    }
 #endif
 
     kcf = ngx_event_get_conf(cycle->conf_ctx, ngx_kqueue_module);
@@ -530,8 +541,15 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         tp = &ts;
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (n > 0) {
+        ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                   "kevent timer: %M, changes: %d", timer, n);
+    }
+#else
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "kevent timer: %M, changes: %d", timer, n);
+#endif
 
     events = kevent(ngx_kqueue, change_list, n, event_list, (int) nevents, tp);
 
@@ -541,8 +559,10 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         ngx_time_update();
     }
 
+#if !(NGX_HAVE_FSTACK)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "kevent events: %d", events);
+#endif
 
     if (err) {
         if (err == NGX_EINTR) {
@@ -563,6 +583,9 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
     }
 
     if (events == 0) {
+#if (NGX_HAVE_FSTACK)
+        return NGX_OK;
+#else
         if (timer != NGX_TIMER_INFINITE) {
             return NGX_OK;
         }
@@ -570,6 +593,7 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                       "kevent() returned no events without timeout");
         return NGX_ERROR;
+#endif
     }
 
     for (i = 0; i < events; i++) {

@@ -167,7 +167,7 @@ ngx_event_pipe_read_upstream(ngx_event_pipe_t *p)
 
         } else {
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
             /*
              * kqueue notifies about the end of file or a pending error.

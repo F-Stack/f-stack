@@ -20,6 +20,10 @@ typedef struct {
     ngx_flag_t  proxy_protocol;
     size_t      buffer_size;
     ngx_msec_t  timeout;
+
+#if (NGX_HAVE_FSTACK)
+     ngx_flag_t  kernel_network_stack;
+#endif
 } ngx_mail_proxy_conf_t;
 
 

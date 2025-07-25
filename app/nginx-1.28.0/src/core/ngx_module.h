@@ -23,7 +23,7 @@
     ngx_value(NGX_SIG_ATOMIC_T_SIZE) ","                                      \
     ngx_value(NGX_TIME_T_SIZE) ","
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 #define NGX_MODULE_SIGNATURE_1   "1"
 #else
 #define NGX_MODULE_SIGNATURE_1   "0"

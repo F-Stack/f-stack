@@ -4591,7 +4591,11 @@ ngx_tcp_connect(ngx_resolver_connection_t *rec)
 
     c->start_time = ngx_current_msec;
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (ngx_add_conn(c) == NGX_ERROR) {
             goto failed;
         }
@@ -4643,7 +4647,11 @@ ngx_tcp_connect(ngx_resolver_connection_t *rec)
         }
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (rc == -1) {
 
             /* NGX_EINPROGRESS */

@@ -1045,6 +1045,10 @@ ngx_stream_add_listening(ngx_conf_t *cf, ngx_stream_conf_addr_t *addr)
     ls->reuseport = addr->opt.reuseport;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+	ls->belong_to_host = cscf->kernel_network_stack;
+#endif
+
     ls->wildcard = addr->opt.wildcard;
 
     return ls;

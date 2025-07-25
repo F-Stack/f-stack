@@ -19,12 +19,28 @@ ngx_objs_dir=$NGX_OBJS$ngx_regex_dirsep
 ngx_use_pch=`echo $NGX_USE_PCH | sed -e "s/\//$ngx_regex_dirsep/g"`
 
 
+if [ ! $FF_PATH ]; then
+    FF_PATH=/usr/local
+    echo "FF_PATH environment variable not defined, default FF_PATH=$FF_PATH"
+fi
+
+if [ ! $(pkg-config --exists libdpdk && echo 1) ]; then
+    echo "error: no installation of DPDK found, maybe you shuld export environment variable \`PKG_CONFIG_PATH\`"
+    exit 1
+fi
+
+CORE_LIBS="$CORE_LIBS \$(shell pkg-config --static --libs libdpdk)"
+CORE_LIBS="$CORE_LIBS -L$FF_PATH/lib -Wl,--whole-archive,-lfstack,--no-whole-archive"
+CORE_LIBS="$CORE_LIBS -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma"
+
 cat << END                                                     > $NGX_MAKEFILE
 
 CC =	$CC
 CFLAGS = $CFLAGS
 CPP =	$CPP
 LINK =	$LINK
+
+CFLAGS += -I$FF_PATH/lib
 
 END
 

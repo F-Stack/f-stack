@@ -4596,7 +4596,7 @@ ngx_http_v2_idle_handler(ngx_event_t *rev)
         return;
     }
 
-#if (NGX_HAVE_KQUEUE)
+#if (NGX_HAVE_KQUEUE) || (NGX_HAVE_FSTACK)
 
     if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
         if (rev->pending_eof) {

@@ -213,6 +213,10 @@ ngx_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd, ngx_int_t event,
     rev = c->read;
     wev = c->write;
 
+#if (NGX_HAVE_FSTACK)
+    rev->belong_to_host = wev->belong_to_host = 1;
+#endif
+
     rev->log = cycle->log;
     wev->log = cycle->log;
 
@@ -223,7 +227,11 @@ ngx_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd, ngx_int_t event,
 
     ev->handler = handler;
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn && (ngx_event_flags & NGX_USE_EPOLL_EVENT) == 0) {
+#else
     if (ngx_add_conn && (ngx_event_flags & NGX_USE_EPOLL_EVENT) == 0) {
+#endif
         if (ngx_add_conn(c) == NGX_ERROR) {
             ngx_free_connection(c);
             return NGX_ERROR;

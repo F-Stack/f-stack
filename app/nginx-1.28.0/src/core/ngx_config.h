@@ -43,6 +43,9 @@
 
 #endif
 
+#if (NGX_HAVE_FSTACK)
+#include "ff_api.h"
+#endif
 
 #ifndef NGX_HAVE_SO_SNDLOWAT
 #define NGX_HAVE_SO_SNDLOWAT     1

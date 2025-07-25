@@ -119,6 +119,10 @@ typedef struct {
 
     ngx_str_t               server_name;
 
+#if (NGX_HAVE_FSTACK)
+    ngx_flag_t              kernel_network_stack;    /* kernel_network_stack */
+#endif
+
     u_char                 *file_name;
     ngx_uint_t              line;
 
