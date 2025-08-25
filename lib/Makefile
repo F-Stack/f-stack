@@ -38,7 +38,7 @@ endif
 
 #FF_FLOW_ISOLATE=1
 #FF_FDIR=1
-
+#FF_FLOW_IPIP=1
 # NETGRAPH drivers ipfw
 #FF_NETGRAPH=1
 #FF_IPFW=1
@@ -99,6 +99,10 @@ endif
 
 ifdef FF_FLOW_ISOLATE
 HOST_CFLAGS+= -DFF_FLOW_ISOLATE
+endif
+
+ifdef FF_FLOW_IPIP
+HOST_CFLAGS+= -DFF_FLOW_IPIP
 endif
 
 ifdef FF_NETGRAPH

@@ -544,7 +544,7 @@ init_kni(void)
 #endif
 
 //RSS reta update will failed when enable flow isolate
-#ifndef FF_FLOW_ISOLATE
+#if !defined(FF_FLOW_ISOLATE) && !defined(FF_FLOW_IPIP)
 static void
 set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 {
@@ -826,7 +826,7 @@ init_port_start(void)
             }
 
 //RSS reta update will failed when enable flow isolate
-#ifndef FF_FLOW_ISOLATE
+#if !defined(FF_FLOW_ISOLATE) && !defined(FF_FLOW_IPIP)
             if (nb_queues > 1) {
                 /*
                  * FIXME: modify RSS set to FDIR
@@ -1081,6 +1081,121 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
 
 #endif
 
+#ifdef FF_FLOW_IPIP
+static int 
+create_ipip_flow(uint16_t port_id) {
+    struct rte_flow_attr attr = {.ingress = 1};
+    struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+    int nb_queues = pconf->nb_lcores;
+    uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
+    // 1. Queue configuration check
+    if (nb_queues > RTE_MAX_QUEUES_PER_PORT) {
+        rte_exit(EXIT_FAILURE, "Queue count exceeds limit (%d > %d)\n", 
+                nb_queues, RTE_MAX_QUEUES_PER_PORT);
+    }
+    for (int i = 0; i < nb_queues; i++) 
+        queue[i] = i;
+
+    // 2. Get device info and check return value
+    struct rte_eth_dev_info dev_info;
+    int ret = rte_eth_dev_info_get(port_id, &dev_info);
+    if (ret != 0) {
+        rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n", 
+                port_id, strerror(-ret));
+    }
+    // 3. RSS config - key: set inner hash
+    struct rte_flow_action_rss rss = {
+        .func = RTE_ETH_HASH_FUNCTION_DEFAULT,
+        .level = 2,  // inner encapsulation layer RSS - hash based on inner protocol
+        .types = ETH_RSS_NONFRAG_IPV4_TCP,  // inner IPv4+TCP hash
+        .key_len = rsskey_len,
+        .key = rsskey,
+        .queue_num = nb_queues,
+        .queue = queue,
+    };
+    // 4. Hardware capability check and fallback handling
+    if (!(dev_info.flow_type_rss_offloads & ETH_RSS_NONFRAG_IPV4_TCP)) {  
+        // printf("warning: inner TCP RSS not supported, fallback to outer RSS\n"); 
+        fprintf(stderr, "Fallback handling!!!\n");
+        printf("I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n"); 
+        rss.level = 0;  // fallback to outer RSS  
+        rss.types = RTE_ETH_FLOW_IPV4;  // update to outer protocol type  
+    }
+
+    // 5. Outer IPv4 matches IPIP protocol
+    struct rte_flow_item_ipv4 outer_ipv4_spec = {
+        .hdr = {
+            .next_proto_id = IPPROTO_IPIP
+        }
+    };
+    struct rte_flow_item_ipv4 outer_ipv4_mask = {
+        .hdr = {
+            .next_proto_id = 0xFF
+        }
+    };
+
+    // 6. Pattern chain definition - match inner TCP to enable inner RSS
+    struct rte_flow_item pattern[] = {
+        // Outer Ethernet header (wildcard)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_ETH,
+            .spec = NULL,
+            .mask = NULL
+        },
+        // Outer IPv4 header (match only IPIP protocol)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_IPV4,
+            .spec = &outer_ipv4_spec,
+            .mask = &outer_ipv4_mask
+        },
+        // Inner IPv4 header (wildcard, RSS hashes based on this layer)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_IPV4,
+            .spec = NULL,
+            .mask = NULL
+        },
+        // Inner TCP header (wildcard, RSS hashes based on this layer)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_TCP,
+            .spec = NULL,
+            .mask = NULL
+        },
+        {
+            .type = RTE_FLOW_ITEM_TYPE_END
+        }
+    };
+
+    // 7. Action configuration
+    struct rte_flow_action action[] = {
+        {
+            .type = RTE_FLOW_ACTION_TYPE_RSS,
+            .conf = &rss
+        },
+        {
+            .type = RTE_FLOW_ACTION_TYPE_END
+        }
+    };
+
+    // 8. Validate and create flow rule
+    struct rte_flow_error error;
+    struct rte_flow *flow = NULL;
+
+    if (!rte_flow_validate(port_id, &attr, pattern, action, &error)) {
+        flow = rte_flow_create(port_id, &attr, pattern, action, &error);
+        if (!flow) {
+            fprintf(stderr, "Flow rule creation failed: %s\n", error.message);
+            return -error.type;
+        }
+    } else {
+        fprintf(stderr, "Flow rule validation failed: %s\n", error.message);
+        return -error.type;
+    }
+    fprintf(stderr, "IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
+    printf("IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
+    return 0;
+}
+#endif
+
 #ifdef FF_FDIR
 /*
  * Flow director allows the traffic to specific port to be processed on the
@@ -1251,6 +1366,17 @@ ff_dpdk_init(int argc, char **argv)
     ret = init_flow(0, 80);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
+    }
+#endif
+
+
+#ifdef FF_FLOW_IPIP
+    // create ipip flow for port 0
+    if (0 == lcore_conf.tx_queue_id[0]){
+        ret = create_ipip_flow(0);
+        if (ret != 0) {
+            rte_exit(EXIT_FAILURE, "create_ipip_flow failed\n");
+        }
     }
 #endif
 
