@@ -101,6 +101,7 @@
 
 #define LINUX_IPV6_V6ONLY           26
 #define LINUX_IPV6_RECVPKTINFO      49
+#define LINUX_IPV6_PKTINFO          50
 #define LINUX_IPV6_TRANSPARENT      75
 
 #define LINUX_TCP_NODELAY     1
@@ -807,6 +808,17 @@ linux2freebsd_cmsg(const struct linux_msghdr *linux_msg, struct msghdr *freebsd_
                         break;
                 }
 
+                break;
+            case IPPROTO_IPV6:
+                switch (linux_cmsg->cmsg_type) {
+                    case LINUX_IPV6_PKTINFO:
+                        freebsd_cmsg->cmsg_type = IPV6_PKTINFO;
+                        *freebsd_optval = *(struct in6_pktinfo *)linux_optval;
+                        break;
+                    default:
+                        memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
+                        break;
+                }
                 break;
             default:
                 memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
