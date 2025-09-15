@@ -106,7 +106,7 @@
 #define	LOGINCLASSLEN	17		/* size of returned ki_loginclass */
 
 #ifndef BURN_BRIDGES
-#define	OCOMMLEN	TDNAMLEN	
+#define	OCOMMLEN	TDNAMLEN
 #define	ki_ocomm	ki_tdname
 #endif
 
