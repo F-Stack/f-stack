@@ -386,31 +386,22 @@ ngx_event_connect_set_transparent(ngx_peer_connection_t *pc, ngx_socket_t s)
 
     case AF_INET:
 
-#if defined(NGX_HAVE_FSTACK)
-        /****
-        FreeBSD define IP_BINDANY in freebsd/netinet/in.h
-        Fstack should only support IP_BINDANY.
-        ****/
-        if(is_fstack_fd(s)){
-            optname = IP_BINDANY;
-        } else {
-            optname = IP_TRANSPARENT;
-        }
-
-        if (setsockopt(s, IPPROTO_IP, optname,
-                       (const void *) &value, sizeof(int)) == -1)
-        {
-            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
-                   "setsockopt(IP_BINDANY/IP_TRANSPARENT) failed");
-            return NGX_ERROR;
-        }
-
-#elif defined(IP_TRANSPARENT)
+#if defined(IP_TRANSPARENT)
         if (setsockopt(s, IPPROTO_IP, IP_TRANSPARENT,
                        (const void *) &value, sizeof(int)) == -1)
         {
             ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
             "setsockopt(IP_TRANSPARENT) failed");
+            return NGX_ERROR;
+        }
+
+#elif defined(IP_BINDANY)
+
+        if (setsockopt(s, IPPROTO_IP, IP_BINDANY,
+                       (const void *) &value, sizeof(int)) == -1)
+        {
+            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
+                          "setsockopt(IP_BINDANY) failed");
             return NGX_ERROR;
         }
 
