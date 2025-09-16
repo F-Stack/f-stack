@@ -813,7 +813,7 @@ linux2freebsd_cmsg(const struct linux_msghdr *linux_msg, struct msghdr *freebsd_
                 switch (linux_cmsg->cmsg_type) {
                     case LINUX_IPV6_PKTINFO:
                         freebsd_cmsg->cmsg_type = IPV6_PKTINFO;
-                        *freebsd_optval = *(struct in6_pktinfo *)linux_optval;
+                        *(struct in6_pktinfo *)freebsd_optval = *(struct in6_pktinfo *)linux_optval;
                         break;
                     default:
                         memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
