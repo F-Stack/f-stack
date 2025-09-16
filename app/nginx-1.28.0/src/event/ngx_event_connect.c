@@ -364,9 +364,6 @@ static ngx_int_t
 ngx_event_connect_set_transparent(ngx_peer_connection_t *pc, ngx_socket_t s)
 {
     int  value;
-#if defined(NGX_HAVE_FSTACK)
-    int optname;
-#endif
 
     value = 1;
 
