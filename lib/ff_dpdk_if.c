@@ -2308,7 +2308,7 @@ main_loop(void *arg)
 
         idle_sleep_tsc = rte_rdtsc();
         if (likely(idle && idle_sleep)) {
-            usleep(idle_sleep);
+            rte_delay_us_sleep(idle_sleep);
             end_tsc = rte_rdtsc();
         } else {
             end_tsc = idle_sleep_tsc;
