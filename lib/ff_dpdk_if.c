@@ -590,6 +590,7 @@ init_port_start(void)
         }
     }
 #endif
+
     for (i = 0; i < total_nb_ports; i++) {
         uint16_t port_id, u_port_id;
         struct ff_port_cfg *pconf = NULL;
@@ -611,7 +612,6 @@ init_port_start(void)
             nb_queues = 1; /* see ff_kni_alloc in ff_dpdk_kni.c */
             nb_slaves = 0;
         }
-
 
         for (j = 0; j <= nb_slaves; j++) {
             if (j < nb_slaves) {

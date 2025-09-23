@@ -189,15 +189,6 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
     return ret;
 }
 
-static void
-print_ethaddr(const char *name, struct rte_ether_addr *mac_addr)
-{
-    char buf[RTE_ETHER_ADDR_FMT_SIZE];
-    rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, mac_addr);
-    printf("\t%s%s\n", name, buf);
-}
-
-
 /* Callback for request of configuring mac address */
 static int
 kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
@@ -209,7 +200,8 @@ kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
         return -EINVAL;
     }
 
-    print_ethaddr("Address:", (struct rte_ether_addr *)mac_addr);
+    printf("Port %u Address:"RTE_ETHER_ADDR_PRT_FMT"\n",
+            port_id, RTE_ETHER_ADDR_BYTES((struct rte_ether_addr *)mac_addr));
 
     ret = rte_eth_dev_default_mac_addr_set(port_id,
                        (struct rte_ether_addr *)mac_addr);
@@ -538,7 +530,6 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
     struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        struct rte_eth_dev_info dev_info;
         struct rte_ether_addr addr = {{0}};
         int ret;
 
@@ -556,16 +547,9 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
         kni_stat[port_id]->tx_packets = 0;
         kni_stat[port_id]->tx_dropped = 0;
 
-        memset(&dev_info, 0, sizeof(dev_info));
-        ret = rte_eth_dev_info_get(port_id, &dev_info);
-        if (ret != 0) {
-            rte_panic("kni get dev info %u failed!\n", port_id);
-        }
-
         /* Get the interface default mac address */
         rte_eth_macaddr_get(port_id,
                 (struct rte_ether_addr *)&addr);
-
         printf("ff_kni_alloc get Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
             (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
