@@ -233,6 +233,20 @@ static inline void rte_ether_addr_copy(const struct rte_ether_addr *ea_from,
 #endif
 }
 
+/**
+ * Macro to print six-bytes of MAC address in hex format
+ */
+#define RTE_ETHER_ADDR_PRT_FMT     "%02X:%02X:%02X:%02X:%02X:%02X"
+/**
+ * Macro to extract the MAC address bytes from rte_ether_addr struct
+ */
+#define RTE_ETHER_ADDR_BYTES(mac_addrs) ((mac_addrs)->addr_bytes[0]), \
+					 ((mac_addrs)->addr_bytes[1]), \
+					 ((mac_addrs)->addr_bytes[2]), \
+					 ((mac_addrs)->addr_bytes[3]), \
+					 ((mac_addrs)->addr_bytes[4]), \
+					 ((mac_addrs)->addr_bytes[5])
+
 #define RTE_ETHER_ADDR_FMT_SIZE         18
 /**
  * Format 48bits Ethernet address in pattern xx:xx:xx:xx:xx:xx.
