@@ -83,7 +83,7 @@ struct kni_interface_stats {
     /* number of pkts received from NIC, and sent to KNI */
     uint64_t rx_packets;
 
-    /* number of pkts received from NIC, but failed to send to KNI */
+    /* number of pkts received from NIC, but failed to send to KNI or kni_ring */
     uint64_t rx_dropped;
 
     /* number of pkts received from KNI, and sent to NIC */
@@ -677,6 +677,7 @@ ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
     return 0;
 
 error:
+    kni_stat[port_id]->rx_dropped++;
     rte_pktmbuf_free(pkt);
 
     return -1;

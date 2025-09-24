@@ -105,6 +105,8 @@ struct ff_traffic_args {
     uint64_t rx_bytes;
     uint64_t tx_packets;
     uint64_t tx_bytes;
+    uint64_t rx_dropped; /* number of pkts received from NIC, but failed to send to dispatch_ring */
+    uint64_t tx_dropped; /* number of pkts failed to send to rte_mbuf or NIC. Not accurate, for reference only. */
 };
 
 enum FF_KNICTL_CMD {
