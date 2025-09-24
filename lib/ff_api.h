@@ -150,7 +150,7 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
 
-int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr, 
+int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr,
     void * (* start_routine) (void *), void * arg);
 int ff_pthread_join(pthread_t thread, void **retval);
 
@@ -164,7 +164,7 @@ extern int ff_getmaxfd(void);
 
 /*
  * Get traffic for QoS or other via API.
- * The size of buffer must >= siezof(struct ff_traffic_args), now is 32 bytes.
+ * The size of buffer must >= siezof(struct ff_traffic_args), now is 48 bytes.
  */
 void ff_get_traffic(void *buffer);
 

@@ -1479,14 +1479,17 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
 
             if (ret == FF_DISPATCH_ERROR || ret >= nb_queues) {
+                //ff_traffic.rx_dropped += rtem->nb_segs; /* Not counted as packet drop */
                 rte_pktmbuf_free(rtem);
                 continue;
             }
 
             if (ret != queue_id) {
                 ret = rte_ring_enqueue(dispatch_ring[port_id][ret], rtem);
-                if (ret < 0)
+                if (ret < 0) {
+                    ff_traffic.rx_dropped += rtem->nb_segs;
                     rte_pktmbuf_free(rtem);
+                }
 
                 continue;
             }
@@ -1516,8 +1519,10 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                     if(mbuf_clone) {
                         int ret = rte_ring_enqueue(dispatch_ring[port_id][j],
                             mbuf_clone);
-                        if (ret < 0)
+                        if (ret < 0) {
+                            ff_traffic.rx_dropped += mbuf_clone->nb_segs;
                             rte_pktmbuf_free(mbuf_clone);
+                        }
                     }
                 }
             }
@@ -1820,9 +1825,9 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     }
 
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
-    ff_traffic.tx_packets += ret;
     uint16_t i;
     for (i = 0; i < ret; i++) {
+        ff_traffic.tx_packets += m_table[i]->nb_segs; // use ret or rets' nb_segs?
         ff_traffic.tx_bytes += rte_pktmbuf_pkt_len(m_table[i]);
 #ifdef FF_USE_PAGE_ARRAY
         if (qconf->tx_mbufs[port].bsd_m_table[i])
@@ -1831,6 +1836,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     }
     if (unlikely(ret < n)) {
         do {
+            ff_traffic.tx_dropped += m_table[ret]->nb_segs;
             rte_pktmbuf_free(m_table[ret]);
 #ifdef FF_USE_PAGE_ARRAY
             if ( qconf->tx_mbufs[port].bsd_m_table[ret] )
@@ -1882,6 +1888,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
+        ff_traffic.tx_dropped++;
         ff_mbuf_free(m);
         return -1;
     }
@@ -1895,6 +1902,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         if (cur == NULL) {
             cur = rte_pktmbuf_alloc(mbuf_pool);
             if (cur == NULL) {
+                ff_traffic.tx_dropped += head->nb_segs + 1;
                 rte_pktmbuf_free(head);
                 ff_mbuf_free(m);
                 return -1;
@@ -1911,6 +1919,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
         int ret = ff_mbuf_copydata(m, data, off, len);
         if (ret < 0) {
+            ff_traffic.tx_dropped += head->nb_segs;
             rte_pktmbuf_free(head);
             ff_mbuf_free(m);
             return -1;
@@ -2003,6 +2012,7 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
+        ff_traffic.tx_dropped++;
         return -1;
     }
 
@@ -2015,6 +2025,7 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
         if (cur == NULL) {
             cur = rte_pktmbuf_alloc(mbuf_pool);
             if (cur == NULL) {
+                ff_traffic.tx_dropped += head->nb_segs  + 1;
                 rte_pktmbuf_free(head);
                 return -1;
             }
