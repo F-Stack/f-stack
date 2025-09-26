@@ -14,6 +14,7 @@
 #include <linux/sockios.h>
 #include <linux/ethtool.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 
 #include <rte_malloc.h>
 #include <ethdev_driver.h>
@@ -2027,6 +2028,7 @@ close_nlsk_fd:
 
 #define SYSFS_MPESW_PARAM_MAX_LEN 16
 
+static char *(*real_if_indextoname)(unsigned int, char *) = NULL;
 static int
 mlx5_sysfs_esw_multiport_get(struct ibv_device *ibv, struct rte_pci_addr *pci_addr, int *enabled)
 {
@@ -2056,7 +2058,16 @@ mlx5_sysfs_esw_multiport_get(struct ibv_device *ibv, struct rte_pci_addr *pci_ad
 		ifindex = mlx5_nl_ifindex(nl_rdma, ibv->name, i);
 		if (!ifindex)
 			continue;
-		if (!if_indextoname(ifindex, ifname))
+
+		// for ff tools
+		if (!real_if_indextoname) {
+			real_if_indextoname = __extension__ (char *(*)(unsigned int, char *))dlsym(RTLD_NEXT, "if_indextoname");
+			if (!real_if_indextoname) {
+				rte_errno = errno;
+				return -rte_errno;
+			}
+		}
+		if (!real_if_indextoname(ifindex, ifname))
 			continue;
 		MKSTR(sysfs_if_path, "/sys/class/net/%s", ifname);
 		if (mlx5_get_pci_addr(sysfs_if_path, &if_pci_addr))
