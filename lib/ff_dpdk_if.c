@@ -1082,7 +1082,7 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
 #endif
 
 #ifdef FF_FLOW_IPIP
-static int 
+static int
 create_ipip_flow(uint16_t port_id) {
     struct rte_flow_attr attr = {.ingress = 1};
     struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
@@ -1090,36 +1090,36 @@ create_ipip_flow(uint16_t port_id) {
     uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
     // 1. Queue configuration check
     if (nb_queues > RTE_MAX_QUEUES_PER_PORT) {
-        rte_exit(EXIT_FAILURE, "Queue count exceeds limit (%d > %d)\n", 
+        rte_exit(EXIT_FAILURE, "Queue count exceeds limit (%d > %d)\n",
                 nb_queues, RTE_MAX_QUEUES_PER_PORT);
     }
-    for (int i = 0; i < nb_queues; i++) 
+    for (int i = 0; i < nb_queues; i++)
         queue[i] = i;
 
     // 2. Get device info and check return value
     struct rte_eth_dev_info dev_info;
     int ret = rte_eth_dev_info_get(port_id, &dev_info);
     if (ret != 0) {
-        rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n", 
+        rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n",
                 port_id, strerror(-ret));
     }
     // 3. RSS config - key: set inner hash
     struct rte_flow_action_rss rss = {
         .func = RTE_ETH_HASH_FUNCTION_DEFAULT,
         .level = 2,  // inner encapsulation layer RSS - hash based on inner protocol
-        .types = ETH_RSS_NONFRAG_IPV4_TCP,  // inner IPv4+TCP hash
+        .types = RTE_ETH_RSS_NONFRAG_IPV4_TCP,  // inner IPv4+TCP hash
         .key_len = rsskey_len,
         .key = rsskey,
         .queue_num = nb_queues,
         .queue = queue,
     };
     // 4. Hardware capability check and fallback handling
-    if (!(dev_info.flow_type_rss_offloads & ETH_RSS_NONFRAG_IPV4_TCP)) {  
-        // printf("warning: inner TCP RSS not supported, fallback to outer RSS\n"); 
+    if (!(dev_info.flow_type_rss_offloads & RTE_ETH_RSS_NONFRAG_IPV4_TCP)) {
+        // printf("warning: inner TCP RSS not supported, fallback to outer RSS\n");
         fprintf(stderr, "Fallback handling!!!\n");
-        printf("I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n"); 
-        rss.level = 0;  // fallback to outer RSS  
-        rss.types = RTE_ETH_FLOW_IPV4;  // update to outer protocol type  
+        printf("I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n");
+        rss.level = 0;  // fallback to outer RSS
+        rss.types = RTE_ETH_FLOW_IPV4;  // update to outer protocol type
     }
 
     // 5. Outer IPv4 matches IPIP protocol
@@ -1345,7 +1345,7 @@ ff_dpdk_init(int argc, char **argv)
 
 #ifdef FF_FLOW_ISOLATE
     // run once in primary process
-    if (0 == lcore_conf.tx_queue_id[0]){
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = port_flow_isolate(0, 1);
         if (ret < 0)
             rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
@@ -1369,10 +1369,9 @@ ff_dpdk_init(int argc, char **argv)
     }
 #endif
 
-
 #ifdef FF_FLOW_IPIP
     // create ipip flow for port 0
-    if (0 == lcore_conf.tx_queue_id[0]){
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = create_ipip_flow(0);
         if (ret != 0) {
             rte_exit(EXIT_FAILURE, "create_ipip_flow failed\n");
