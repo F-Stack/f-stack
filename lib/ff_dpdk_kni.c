@@ -677,7 +677,9 @@ ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
     return 0;
 
 error:
-    kni_stat[port_id]->rx_dropped++;
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        kni_stat[port_id]->rx_dropped++;
+    }
     rte_pktmbuf_free(pkt);
 
     return -1;
