@@ -69,3 +69,6 @@ ff_adapt_user_thread_add
 ff_adapt_user_thread_exit
 ff_switch_curthread
 ff_restore_curthread
+ff_rss_tbl_init
+ff_veth_get_softc
+ff_veth_free_softc

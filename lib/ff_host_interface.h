@@ -78,6 +78,17 @@ int ff_in_pcbladdr(uint16_t family, void *faddr, uint16_t fport, void *laddr);
 int ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport);
 
+int ff_rss_tbl_init(void);
+int ff_rss_tbl_set_portrange(uint16_t first, uint16_t last);
+/*
+ * return value:
+ * 0: finded
+ * -1: Serious error, can't call it further.
+ * -ENOENT(-2): Not finded, can call it further.
+ */
+int ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
+    uint16_t *rss_first, uint16_t *rss_last, uint16_t **rss_portrange);
+
 void ff_swi_net_excute(void);
 
 #endif

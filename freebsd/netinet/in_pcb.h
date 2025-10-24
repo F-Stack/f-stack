@@ -761,6 +761,9 @@ int	inp_so_options(const struct inpcb *inp);
 #define	INPLOOKUP_WILDCARD	0x00000001	/* Allow wildcard sockets. */
 #define	INPLOOKUP_RLOCKPCB	0x00000002	/* Return inpcb read-locked. */
 #define	INPLOOKUP_WLOCKPCB	0x00000004	/* Return inpcb write-locked. */
+#ifdef FSTACK
+#define	INPLOOKUP_LPORT_RSS_CHECK	0x80000000	/* F-Stack lport RSS check */
+#endif
 
 #define	INPLOOKUP_MASK	(INPLOOKUP_WILDCARD | INPLOOKUP_RLOCKPCB | \
 			    INPLOOKUP_WLOCKPCB)

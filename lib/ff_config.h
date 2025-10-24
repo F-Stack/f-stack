@@ -61,6 +61,24 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 #define KNI_TYPE_KNI        0
 #define KNI_TYPE_VIRTIO     1
 
+/* ff_rss_check table args */
+/* remote IP:PORT */
+#define FF_RSS_TBL_MAX_SADDR        (4)
+#define FF_RSS_TBL_MAX_SPORT        (4)
+#define FF_RSS_TBL_MAX_SADDR_MASK   (FF_RSS_TBL_MAX_SADDR - 1)
+#define FF_RSS_TBL_MAX_SPORT_MASK   (FF_RSS_TBL_MAX_SPORT - 1)
+/* local IP:PORT */
+#define FF_RSS_TBL_MAX_DADDR        (4)
+#define FF_RSS_TBL_MAX_DPORT        (65536)
+#define FF_RSS_TBL_MAX_DIP_MASK     (FF_RSS_TBL_MAX_DADDR - 1)
+#define FF_RSS_TBL_MAX_DPORT_MASK   (FF_RSS_TBL_MAX_DPORT - 1)
+
+#define FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES      (FF_RSS_TBL_MAX_SADDR * FF_RSS_TBL_MAX_SPORT)
+#define FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK (FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES - 1)
+
+#define FF_RSS_TBL_MAX_ENTRIES      (FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES * FF_RSS_TBL_MAX_DADDR)
+#define FF_RSS_TBL_MAX_ENTRIES_MASK (FF_RSS_TBL_MAX_ENTRIES - 1)
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -184,6 +202,20 @@ struct ff_bond_cfg {
     uint16_t down_delay;
 };
 
+struct ff_rss_tbl_cfg {
+    uint16_t port_id;
+    uint16_t sport;
+    uint32_t daddr; /* local */
+    uint32_t saddr; /* remote */
+};
+
+struct ff_rss_check_cfg {
+    int enable;
+    uint32_t nb_rss_tbl;
+    char *rss_tbl_str;
+    struct ff_rss_tbl_cfg rss_tbl_cfgs[FF_RSS_TBL_MAX_ENTRIES];
+};
+
 struct ff_freebsd_cfg {
     char *name;
     char *str;
@@ -246,6 +278,7 @@ struct ff_config {
         struct ff_vlan_cfg *vlan_cfgs;
         struct ff_vdev_cfg *vdev_cfgs;
         struct ff_bond_cfg *bond_cfgs;
+        struct ff_rss_check_cfg *rss_check_cfgs;
     } dpdk;
 
     struct {

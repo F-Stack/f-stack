@@ -1054,6 +1054,30 @@ ff_veth_softc_to_hostc(void *softc)
     return (void *)sc->host_ctx;
 }
 
+void *
+ff_veth_get_softc(void *host_ctx)
+{
+    struct ff_veth_softc *sc = NULL;
+
+    sc = malloc(sizeof(struct ff_veth_softc), M_DEVBUF, M_WAITOK);
+    if (NULL == sc) {
+        printf("ff_veth_softc allocation failed\n");
+        return NULL;
+    }
+    memset(sc, 0, sizeof(struct ff_veth_softc));
+
+    sc->host_ctx = host_ctx;
+
+    return sc;
+}
+
+void
+ff_veth_free_softc(void *softc)
+{
+    if (softc)
+        free(softc, M_DEVBUF);
+}
+
 /********************
 *  get next mbuf's addr, current mbuf's data and datalen.
 *
