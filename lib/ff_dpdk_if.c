@@ -2569,7 +2569,17 @@ ff_rss_tbl_init(void)
                 prev_dport = j;
             }
         }
-        ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx = k - 1;
+        /*
+         * If num and k set 65536, it will be 0, otherwise will set portrange failed.
+         * It only appears in a single process, has no impact.
+         * And 65535 only used for comparative testing.
+         */
+        if (k == FF_RSS_TBL_MAX_DPORT + 1) {
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].num = k -2;
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx =  k - 2;
+        } else
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx = k - 1;
+
         ff_rss_tbl[idx].dip_tbl[daddr_idx].last = prev_dport;
         ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr = daddr;
 
