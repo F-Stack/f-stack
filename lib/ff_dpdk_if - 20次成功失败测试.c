@@ -54,6 +54,7 @@
 #include <rte_udp.h>
 #include <rte_eth_bond.h>
 #include <rte_eth_bond_8023ad.h>
+#include <rte_hash.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
@@ -145,26 +146,6 @@ static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
 static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
-
-struct ff_rss_tbl_dip_type {
-    uint32_t daddr;
-    uint16_t first; /* The start port in portrange */
-    uint16_t last; /* The end port in portrange */
-    uint16_t first_idx; /* The idx of the start port in portrange */
-    uint16_t last_idx; /* The idx of the end port in portrange */
-    uint16_t num;
-    uint16_t dport[FF_RSS_TBL_MAX_DPORT + 1]; /* [0] used as the idx of last seleted port */
-} __rte_cache_aligned;
-
-struct ff_rss_tbl_type {
-    //enum ff_rss_tbl_init_type init;
-    uint32_t saddr;
-    uint16_t sport;
-    uint16_t num;
-    struct ff_rss_tbl_dip_type dip_tbl[FF_RSS_TBL_MAX_DADDR];
-} __rte_cache_aligned;
-static struct ff_rss_tbl_type ff_rss_tbl[FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES];
-
 
 static void
 ff_hardclock_job(__rte_unused struct rte_timer *timer,
@@ -1377,16 +1358,6 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "init_port_start failed\n");
     }
 
-    if (ff_global_cfg.dpdk.rss_check_cfgs &&
-            ff_global_cfg.dpdk.rss_check_cfgs->enable) {
-        ret = ff_rss_tbl_init();
-        if (ret < 0) {
-            printf("ff_rss_tbl_init failed, disable it\n");
-        } else {
-            printf("ff_rss_tbl_init successed\n");
-        }
-    }
-
     init_clock();
 #ifdef FF_FLOW_ISOLATE
     //Only give a example usage: port_id=0, tcp_port= 80.
@@ -2463,254 +2434,211 @@ ff_regist_pcblddr_fun(pcblddr_func_t func)
     pcblddr_fun = func;
 }
 
-int
-ff_rss_tbl_init(void)
+
+//#define FF_RSS_NUMBER_TBL8S       (1 << 20) /* Need less than 1 << 21 */
+#define FF_RSS_KEY_LEN            (12) /* sip, dip, sport, dport */
+
+/* Not include all paras, just for get entries */
+struct rte_hash {
+    char name[RTE_HASH_NAMESIZE];   /**< Name of the hash. */
+    uint32_t entries;               /**< Total table entries. */
+    uint32_t num_buckets;           /**< Number of buckets in table. */
+};
+
+static inline uint32_t
+ff_rss_hash(const void *data, __rte_unused uint32_t data_len,
+    __rte_unused uint32_t init_val)
 {
-    uint32_t ori_idx, idx, ori_daddr_idx, daddr_idx;
-    uint32_t daddr, saddr;
+    uint32_t *hash_data = (uint32_t *)data;
+    uint32_t hash = *hash_data;
+
+    hash ^= *(hash_data + 1);
+    hash ^= *(hash_data + 2);
+
+    return hash;
+}
+
+/* Remote IP:PORT */
+#define FF_RSS_TBL_MAX_SIP          (4)
+#define FF_RSS_TBL_MAX_SPORT        (4)
+#define FF_RSS_TBL_MAX_SIP_MASK     (FF_RSS_TBL_MAX_SIP - 1)
+#define FF_RSS_TBL_MAX_SPORT_MASK   (FF_RSS_TBL_MAX_SPORT - 1)
+/* Sever/local IP:PORT */
+#define FF_RSS_TBL_MAX_DIP          (4)
+#define FF_RSS_TBL_MAX_DPORT        (65536)
+#define FF_RSS_TBL_MAX_DIP_MASK     (FF_RSS_TBL_MAX_DIP - 1)
+#define FF_RSS_TBL_MAX_DPORT_MASK   (FF_RSS_TBL_MAX_DPORT - 1)
+
+#define FF_RSS_TBL_SIP_ENTRIES      (FF_RSS_TBL_MAX_SIP * FF_RSS_TBL_MAX_SPORT)
+#define FF_RSS_TBL_SIP_ENTRIES_MASK (FF_RSS_TBL_SIP_ENTRIES - 1)
+//saddr 2429495146, daddr 4273001345, sport 13568, dport 24873
+
+enum ff_rss_tbl_stat_type {
+    FF_RSS_TBL_STAT_UNKNOWN = -1,
+    FF_RSS_TBL_STAT_NOT_MATCH = 0,
+    FF_RSS_TBL_STAT_MATCH = 1
+};
+
+enum ff_rss_tbl_init_type {
+    FF_RSS_TBL_NOT_INIT = 0,
+    FF_RSS_TBL_INITING = 1,
+    FF_RSS_TBL_INITED = 2
+};
+enum ff_rss_tbl_init_type ff_rss_tbl_init_flag = FF_RSS_TBL_NOT_INIT;
+
+struct ff_rss_tbl_dip_type {
+    uint32_t dip;
+    int8_t dport_stat[FF_RSS_TBL_MAX_DPORT];
+} __rte_cache_aligned;
+
+struct ff_rss_tbl_type {
+    uint32_t sip;
     uint16_t sport;
-    int prev_dport, stat, i, j, k;
-    void *sc;
-    struct ff_dpdk_if_context ctx;
+    struct ff_rss_tbl_dip_type dip_tbl[FF_RSS_TBL_MAX_DIP];
+} __rte_cache_aligned;
+static struct ff_rss_tbl_type ff_rss_tbl[FF_RSS_TBL_SIP_ENTRIES];
 
+int
+ff_rss_tbl_init(void *softc, uint32_t sip, uint32_t dip, uint16_t sport)
+{
+    uint32_t ori_idx, idx, ori_dip_idx, dip_idx;
+    int i, j, k;
+    uint32_t ori_sip = sip, ori_dip = dip;
+    uint16_t ori_sport = sport;
+
+    ff_rss_tbl_init_flag = FF_RSS_TBL_INITING;
     memset(ff_rss_tbl, 0, sizeof(ff_rss_tbl));
-    //ff_rss_tbl.init = FF_RSS_TBL_INITING;
 
-    sc = ff_veth_get_softc(&ctx);
-    if (sc == NULL) {
-        printf("ff_veth_get_softc failed\n");
-        //ff_rss_tbl.init = FF_RSS_TBL_INIT_FAILED;
-        return -1;
-    }
+    for (i = 0; i < FF_RSS_TBL_SIP_ENTRIES; i++) {
+        //ori_idx = idx = (sip ^ sport) & FF_RSS_TBL_SIP_ENTRIES_MASK;
+        ori_idx = idx = (ori_sip ^ ori_sport) & FF_RSS_TBL_SIP_ENTRIES_MASK;
 
-    for (i = 0; i < ff_global_cfg.dpdk.rss_check_cfgs->nb_rss_tbl; i++) {
-        struct ff_rss_tbl_cfg *rcc = &ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_cfgs[i];
-
-        ctx.port_id = rcc->port_id;
-        daddr = rcc->daddr;
-        saddr = rcc->saddr;
-        sport = rcc->sport;
-
-        /* Use DIR D to avoid getting the same idx while FF_RSS_TBL_MAX_DIP_MASK is very small*/
-        ori_idx = idx = ((saddr + (uint32_t)((uint8_t *)&saddr)[3]) ^ sport) & \
-            FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
-        ori_daddr_idx = daddr_idx = (daddr + (uint32_t)((uint8_t *)&daddr)[3]) & \
-            FF_RSS_TBL_MAX_DIP_MASK;
+        /* 仅用作测试，实际应该从配置中获取,最差循环16+4次 */
+        if (i != FF_RSS_TBL_SIP_ENTRIES - 1) { // 16次尝试成功
+            sip = ori_sip + i + 1;
+            sport = ori_sport + i + 1;
+        } else {
+            sip = ori_sip;
+            sport = ori_sport;
+        }
 
         do {
-            if (ff_rss_tbl[idx].saddr == INADDR_ANY ||
-                    (ff_rss_tbl[idx].saddr == saddr &&
+            if (ff_rss_tbl[idx].sip == INADDR_ANY ||
+                    (ff_rss_tbl[idx].sip == sip &&
                     ff_rss_tbl[idx].sport == sport)) {
                 break;
             }
 
-            if (ff_rss_tbl[idx].saddr != saddr ||
+            if (ff_rss_tbl[idx].sip != sip ||
                     ff_rss_tbl[idx].sport != sport) {
                 idx++;
-                idx &= FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+                idx &= FF_RSS_TBL_SIP_ENTRIES_MASK;
             }
         } while (idx != ori_idx);
 
         if (idx == ori_idx &&
-                ((ff_rss_tbl[idx].saddr != INADDR_ANY) &&
-                (ff_rss_tbl[idx].saddr != saddr ||
+                ((ff_rss_tbl[idx].sip != INADDR_ANY) &&
+                (ff_rss_tbl[idx].sip != sip ||
                 ff_rss_tbl[idx].sport != sport))) {
-            printf("There are too many 2-tuble(> %d) of saddrs(max %d) * sport(max %d),"
-                " this 4-tuple rss_tbl config will be ignored,"
-                 " idx %d, port_id %u, daddr %u, saddr %u, sport %u\n",
-                 FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES, FF_RSS_TBL_MAX_SADDR, FF_RSS_TBL_MAX_SPORT,
-                 i, ctx.port_id, daddr, saddr, sport);
-            //ff_rss_tbl.init = FF_RSS_TBL_INIT_FAILED;
-            goto IGNORE;
-            //ff_veth_free_softc(sc);
-            //return -1;
+            return -1;
         }
 
-        do {
-            if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr == INADDR_ANY) {
-                break;
-            }
+        for (k = 0; k < FF_RSS_TBL_MAX_DIP; k++) {
+            //ori_dip_idx = dip_idx = dip & FF_RSS_TBL_MAX_DIP_MASK;
+            ori_dip_idx = dip_idx = ori_dip & FF_RSS_TBL_MAX_DIP_MASK;
 
-            if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr != daddr) {
-                daddr_idx++;
-                daddr_idx &= FF_RSS_TBL_MAX_DIP_MASK;
+            /* 仅用作测试，实际应该从配置中获取,最差循环16+4次 */
+            //if (k != FF_RSS_TBL_MAX_DIP - 1) { // 20次尝试成功
+            if (k != FF_RSS_TBL_MAX_DIP) { // 20次尝试失败
+                dip = ori_dip + k + 1;
             } else {
-                /* Dup 3-tuple */
-                printf("Duplicate ff rss table 3-tuple,"
-                    " this 4-tuple rss_tbl config will be ignored,"
-                     " port_id %u, daddr %u, saddr %u, sport %u\n",
-                     ctx.port_id, daddr, saddr, sport);
-                goto IGNORE;
-            }
-        } while (daddr_idx != ori_daddr_idx);
-
-        if (daddr_idx == ori_daddr_idx && ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr != INADDR_ANY) {
-            printf("There are too many daddrs(> %d) with same saddr and sport,"
-                " this 4-tuple rss_tbl config will be ignored,"
-                 " idx %d, port_id %u, daddr %u, saddr %u, sport %u\n",
-                 i, FF_RSS_TBL_MAX_DADDR, ctx.port_id, daddr, saddr, sport);
-            goto IGNORE;
-            //return -1; /* Not used now */
-        }
-
-        /* The idx of port start form 1, 0 used as the idx of last selected port */
-        k = 1;
-        prev_dport = -1;
-        ff_rss_tbl[idx].dip_tbl[daddr_idx].dport[0] = k;
-        ff_rss_tbl[idx].dip_tbl[daddr_idx].first_idx = k;
-        for (j = 0; j < FF_RSS_TBL_MAX_DPORT; j++) {
-            stat = ff_rss_check(sc, saddr, daddr, sport, htons(j));
-            if (stat) {
-                ff_rss_tbl[idx].dip_tbl[daddr_idx].num++;
-                ff_rss_tbl[idx].dip_tbl[daddr_idx].dport[k++] = j;
-                if (prev_dport == -1) {
-                    ff_rss_tbl[idx].dip_tbl[daddr_idx].first = j;
-                }
-                prev_dport = j;
-            }
-        }
-        /*
-         * If num and k set 65536, it will be 0, otherwise will set portrange failed.
-         * It only appears in a single process, has no impact.
-         * And 65535 only used for comparative testing.
-         */
-        if (k == FF_RSS_TBL_MAX_DPORT + 1) {
-            ff_rss_tbl[idx].dip_tbl[daddr_idx].num = k -2;
-            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx =  k - 2;
-        } else
-            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx = k - 1;
-        ff_rss_tbl[idx].dip_tbl[daddr_idx].last = prev_dport;
-        ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr = daddr;
-
-        ff_rss_tbl[idx].saddr = saddr;
-        ff_rss_tbl[idx].sport = sport;
-        ff_rss_tbl[idx].num++;
-
-IGNORE:
-        // do nothing
-        ;
-    }
-
-    //ff_rss_tbl.init = FF_RSS_TBL_INITED;
-
-    ff_veth_free_softc(sc);
-
-    return 0;
-
-}
-
-int
-ff_rss_tbl_set_portrange(uint16_t first, uint16_t last)
-{
-    int i, j, k;
-
-    if (first > last || !ff_global_cfg.dpdk.rss_check_cfgs ||
-            ff_global_cfg.dpdk.rss_check_cfgs->enable == 0) {
-        return -1;
-    }
-
-    for (i = 0; i < FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES; i++) {
-        if (ff_rss_tbl[i].saddr == INADDR_ANY) {
-            continue;
-        }
-
-        for(j = 0; j < FF_RSS_TBL_MAX_DADDR; j++) {
-            if (ff_rss_tbl[i].dip_tbl[j].daddr == INADDR_ANY) {
-                continue;
+                dip = ori_dip;
             }
 
-            ff_rss_tbl[i].dip_tbl[j].first = first;
-            ff_rss_tbl[i].dip_tbl[j].last = last;
-
-            ff_rss_tbl[i].dip_tbl[j].first_idx = 0;
-            for (k = 1; k <= ff_rss_tbl[i].dip_tbl[j].num; k++) {
-                if (ff_rss_tbl[i].dip_tbl[j].first_idx == 0 &&
-                        ff_rss_tbl[i].dip_tbl[j].dport[k] >= first) {
-                    ff_rss_tbl[i].dip_tbl[j].first_idx = k;
-                    if (ff_rss_tbl[i].dip_tbl[j].dport[ff_rss_tbl[i].dip_tbl[j].num] < last) {
-                        /* ff_rss_tbl_init set last_idx as ff_rss_tbl[i].dip_tbl[j].num already. */
-                        break;
-                    }
-                    if (first == last) {
-                        ff_rss_tbl[i].dip_tbl[j].last_idx = k;
-                        break;
-                    }
-                }
-                if (ff_rss_tbl[i].dip_tbl[j].dport[k] == last) {
-                    ff_rss_tbl[i].dip_tbl[j].last_idx = k;
+            do {
+                if (ff_rss_tbl[idx].dip_tbl[dip_idx].dip == INADDR_ANY) {
                     break;
                 }
-                if (ff_rss_tbl[i].dip_tbl[j].dport[k] > last) {
-                    ff_rss_tbl[i].dip_tbl[j].last_idx = k > 1 ? k -1 : k;
-                    break;
-                }
-            }
 
-            if (ff_rss_tbl[i].dip_tbl[j].first_idx == 0 ||
-                    ff_rss_tbl[i].dip_tbl[j].last_idx < ff_rss_tbl[i].dip_tbl[j].first_idx) {
-                fprintf(stderr, "ff_rss_tbl_set_portrange failed, first %u, last %u\n",
-                    first, last);
+                if (ff_rss_tbl[idx].dip_tbl[dip_idx].dip != dip) {
+                    dip_idx++;
+                    dip_idx &= FF_RSS_TBL_MAX_DIP_MASK;
+                } else {
+                    /* Dup 3-tuple */
+                    printf("Duplicate ff rss table 3-tuple, please check your config.ini file\n");
+                    goto IGNORE_DUP;
+                }
+            } while (dip_idx != ori_dip_idx);
+
+            if (dip_idx == ori_dip_idx && ff_rss_tbl[idx].dip_tbl[dip_idx].dip != INADDR_ANY) {
                 return -1;
             }
+
+            for (j = 0; j < FF_RSS_TBL_MAX_DPORT; j++) {
+                ff_rss_tbl[idx].dip_tbl[dip_idx].dport_stat[j] = ff_rss_check(softc, sip, dip, sport, j);
+            }
+
+            ff_rss_tbl[idx].dip_tbl[dip_idx].dip = dip;
+
+IGNORE_DUP:
+            // do nothing
+            ;
         }
+        ff_rss_tbl[idx].sip = sip;
+        ff_rss_tbl[idx].sport = sport;
+
+        /* 仅用作测试时跳出,实际应该根据配置来 */
+        //break;
     }
 
+    ff_rss_tbl_init_flag = FF_RSS_TBL_INITED;
+
     return 0;
+
 }
 
 int
-ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
-    uint16_t *rss_first, uint16_t *rss_last, uint16_t **rss_portrange)
+ff_rss_tbl_get(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport)
 {
-    uint32_t ori_idx, idx, ori_daddr_idx, daddr_idx;
+    uint32_t ori_idx, idx, ori_dip_idx, dip_idx;
     int i;
 
-    if (!ff_global_cfg.dpdk.rss_check_cfgs ||
-            ff_global_cfg.dpdk.rss_check_cfgs->enable == 0) {
-        return -1;
-    }
-
-    ori_idx = idx = ((saddr + (uint32_t)((uint8_t *)&saddr)[3]) ^ sport) & \
-        FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+    ori_idx = idx = (sip ^ sport) & FF_RSS_TBL_SIP_ENTRIES_MASK;
     do {
-        /* If not inited, no need to continue find */
-        if (ff_rss_tbl[idx].saddr == INADDR_ANY) {
-            return -ENOENT;
+        /* If not inited, no need to continue check */
+        if (ff_rss_tbl[idx].sip == INADDR_ANY) {
+            return -1;
         }
 
-        if (ff_rss_tbl[idx].saddr == saddr && ff_rss_tbl[idx].sport == sport) {
-            ori_daddr_idx = daddr_idx = (daddr + (uint32_t)((uint8_t *)&daddr)[3]) & \
-                FF_RSS_TBL_MAX_DIP_MASK;
+        if (ff_rss_tbl[idx].sip == sip && ff_rss_tbl[idx].sport == sport) {
+            ori_dip_idx = dip_idx = dip & FF_RSS_TBL_MAX_DIP_MASK;
             do {
-                if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr == INADDR_ANY) {
-                    return -ENOENT;
+                if (ff_rss_tbl[idx].dip_tbl[dip_idx].dip == INADDR_ANY) {
+                    return -1;
                 }
 
-                if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr == daddr) {
-                    *rss_first = ff_rss_tbl[idx].dip_tbl[daddr_idx].first_idx;
-                    *rss_last = ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx;
-                    *rss_portrange = &ff_rss_tbl[idx].dip_tbl[daddr_idx].dport[0];
-                    return 0;
+                if (ff_rss_tbl[idx].dip_tbl[dip_idx].dip == dip) {
+                    return ff_rss_tbl[idx].dip_tbl[dip_idx].dport_stat[dport];
                 }
 
-                daddr_idx++;
-                daddr_idx &= FF_RSS_TBL_MAX_DIP_MASK;
-            } while (daddr_idx != ori_daddr_idx);
+                dip_idx++;
+                dip_idx &= FF_RSS_TBL_MAX_DIP_MASK;
+            } while (dip_idx != ori_dip_idx);
 
-            if (daddr_idx == ori_daddr_idx) {
-                return -ENOENT;
+            if (dip_idx == ori_dip_idx) {
+                return -1;
             }
         }
 
         idx++;
-        idx &= FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+        idx &= FF_RSS_TBL_SIP_ENTRIES_MASK;
     } while (idx != ori_idx);
 
     if (idx == ori_idx) {
-        return -ENOENT;
+        return -1;
     }
 
-    return -ENOENT;
+    return -1;
 }
 
 int
@@ -2720,17 +2648,31 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     struct lcore_conf *qconf = &lcore_conf;
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
+    uint16_t queueid;
+
+    int stat;
+    int ret;
+    uint64_t prev_tsc, cur_tsc;
+
 
     if (nb_queues <= 1) {
         return 1;
     }
 
-    uint16_t reta_size = rss_reta_size[ctx->port_id];
-    uint16_t queueid = qconf->tx_queue_id[ctx->port_id];
+    queueid = qconf->tx_queue_id[ctx->port_id];
+
+    if (ff_rss_tbl_init_flag == FF_RSS_TBL_NOT_INIT) {
+        prev_tsc = rte_rdtsc();
+        ff_rss_tbl_init(softc, saddr, daddr, sport);
+        cur_tsc = rte_rdtsc();
+        printf("Init rss tbl success, diff_tsc %lu, port %u, queue %u,"
+                " saddr %u, daddr %u, sport %u, dport %u\n",
+                cur_tsc - prev_tsc, ctx->port_id, queueid,
+                saddr, daddr, sport, dport);
+    }
 
     uint8_t data[sizeof(saddr) + sizeof(daddr) + sizeof(sport) +
             sizeof(dport)];
-
     unsigned datalen = 0;
 
     bcopy(&saddr, &data[datalen], sizeof(saddr));
@@ -2745,10 +2687,42 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     bcopy(&dport, &data[datalen], sizeof(dport));
     datalen += sizeof(dport);
 
-    uint32_t hash = 0;
-    hash = toeplitz_hash(rsskey_len, rsskey, datalen, data);
+    if (ff_rss_tbl_init_flag == FF_RSS_TBL_INITED) {
+        uint32_t idx = 0;
+        uint64_t hash_val;
 
-    return ((hash & (reta_size - 1)) % nb_queues) == queueid;
+        prev_tsc = rte_rdtsc();
+        ret = ff_rss_tbl_get(saddr, daddr, sport, dport);
+        cur_tsc = rte_rdtsc();
+        if (ret >= 0) {
+            stat = ret;
+            printf("Get rss tbl success, diff_tsc %lu, stat %d, port %u, queue %u,"
+                " saddr %u, daddr %u, sport %u, dport %u\n",
+                cur_tsc - prev_tsc, stat, ctx->port_id, queueid,
+                saddr, daddr, sport, dport);
+            return stat;
+        } else {
+            // do nothing
+            printf("Get rss tbl failed %d, diff_tsc %lu, fall back to toeplitz_hash,"
+                " port %u, queue %u,"
+                " saddr %u, daddr %u, sport %u, dport %u\n",
+                ret, cur_tsc - prev_tsc, ctx->port_id, queueid,
+                saddr, daddr, sport, dport);
+        }
+    }
+
+    uint16_t reta_size = rss_reta_size[ctx->port_id];
+    uint32_t hash = 0;
+    prev_tsc = rte_rdtsc();
+    hash = toeplitz_hash(rsskey_len, rsskey, datalen, data);
+    stat = ((hash & (reta_size - 1)) % nb_queues) == queueid;
+    cur_tsc = rte_rdtsc();
+    /*printf("toeplitz_hash diff tsc %lu, stat %d, port %u, queue %u,"
+        " saddr %u, daddr %u, sport %u, dport %u\n",
+        cur_tsc - prev_tsc, stat, ctx->port_id, queueid,
+        saddr, daddr, sport, dport);*/
+
+    return stat;
 }
 
 void
