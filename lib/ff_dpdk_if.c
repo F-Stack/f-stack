@@ -2515,9 +2515,9 @@ ff_rss_tbl_init(void)
                 ff_rss_tbl[idx].sport != sport))) {
             printf("There are too many 2-tuble(> %d) of saddrs(max %d) * sport(max %d),"
                 " this 4-tuple rss_tbl config will be ignored,"
-                 " idx %d, port_id %u, daddr %u, saddr %u, sport %u\n",
+                 " idx %d, port_id %u, daddr "NIPQUAD_FMT", saddr "NIPQUAD_FMT", sport %u\n",
                  FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES, FF_RSS_TBL_MAX_SADDR, FF_RSS_TBL_MAX_SPORT,
-                 i, ctx.port_id, daddr, saddr, sport);
+                 i, ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport));
             goto IGNORE;
             //ff_veth_free_softc(sc);
             //return -1;
@@ -2535,8 +2535,8 @@ ff_rss_tbl_init(void)
                 /* Dup 3-tuple */
                 printf("Duplicate ff rss table 3-tuple,"
                     " this 4-tuple rss_tbl config will be ignored,"
-                     " port_id %u, daddr %u, saddr %u, sport %u\n",
-                     ctx.port_id, daddr, saddr, sport);
+                     " port_id %u, daddr "NIPQUAD_FMT", saddr "NIPQUAD_FMT", sport %u\n",
+                     ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport));
                 goto IGNORE;
             }
         } while (daddr_idx != ori_daddr_idx);
@@ -2544,8 +2544,9 @@ ff_rss_tbl_init(void)
         if (daddr_idx == ori_daddr_idx && ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr != INADDR_ANY) {
             printf("There are too many daddrs(> %d) with same saddr and sport,"
                 " this 4-tuple rss_tbl config will be ignored,"
-                 " idx %d, port_id %u, daddr %u, saddr %u, sport %u\n",
-                 i, FF_RSS_TBL_MAX_DADDR, ctx.port_id, daddr, saddr, sport);
+                 " idx %d, port_id %u, daddr "NIPQUAD_FMT", saddr "NIPQUAD_FMT", sport %u\n",
+                 i, FF_RSS_TBL_MAX_DADDR, ctx.port_id,
+                 NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport));
             goto IGNORE;
             //return -1; /* Not used now */
         }
@@ -2586,7 +2587,7 @@ ff_rss_tbl_init(void)
         printf("Inited one ff_rss_tbl success, port_id %u, daddr "NIPQUAD_FMT
             ", saddr "NIPQUAD_FMT", sport %u,"
             " last idx %u, available lport num %u\n",
-            ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), htons(sport),
+            ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport),
             ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx,
             ff_rss_tbl[idx].dip_tbl[daddr_idx].num);
 
@@ -2650,7 +2651,7 @@ ff_rss_tbl_set_portrange(uint16_t first, uint16_t last)
 
             if (ff_rss_tbl[i].dip_tbl[j].first_idx == 0 ||
                     ff_rss_tbl[i].dip_tbl[j].last_idx < ff_rss_tbl[i].dip_tbl[j].first_idx) {
-                fprintf(stderr, "ff_rss_tbl_set_portrange failed, first %u, last %u\n",
+                printf("ff_rss_tbl_set_portrange failed, first %u, last %u\n",
                     first, last);
                 return -1;
             }
