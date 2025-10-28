@@ -2474,12 +2474,10 @@ ff_rss_tbl_init(void)
     struct ff_dpdk_if_context ctx;
 
     memset(ff_rss_tbl, 0, sizeof(ff_rss_tbl));
-    //ff_rss_tbl.init = FF_RSS_TBL_INITING;
 
     sc = ff_veth_get_softc(&ctx);
     if (sc == NULL) {
         printf("ff_veth_get_softc failed\n");
-        //ff_rss_tbl.init = FF_RSS_TBL_INIT_FAILED;
         return -1;
     }
 
@@ -2520,7 +2518,6 @@ ff_rss_tbl_init(void)
                  " idx %d, port_id %u, daddr %u, saddr %u, sport %u\n",
                  FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES, FF_RSS_TBL_MAX_SADDR, FF_RSS_TBL_MAX_SPORT,
                  i, ctx.port_id, daddr, saddr, sport);
-            //ff_rss_tbl.init = FF_RSS_TBL_INIT_FAILED;
             goto IGNORE;
             //ff_veth_free_softc(sc);
             //return -1;
@@ -2586,12 +2583,17 @@ ff_rss_tbl_init(void)
         ff_rss_tbl[idx].sport = sport;
         ff_rss_tbl[idx].num++;
 
+        printf("Inited one ff_rss_tbl success, port_id %u, daddr "NIPQUAD_FMT
+            ", saddr "NIPQUAD_FMT", sport %u,"
+            " last idx %u, available lport num %u\n",
+            ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), htons(sport),
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx,
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].num);
+
 IGNORE:
         // do nothing
         ;
     }
-
-    //ff_rss_tbl.init = FF_RSS_TBL_INITED;
 
     ff_veth_free_softc(sc);
 

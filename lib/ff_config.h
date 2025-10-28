@@ -79,6 +79,36 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 #define FF_RSS_TBL_MAX_ENTRIES      (FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES * FF_RSS_TBL_MAX_DADDR)
 #define FF_RSS_TBL_MAX_ENTRIES_MASK (FF_RSS_TBL_MAX_ENTRIES - 1)
 
+#ifndef NIPQUAD
+#define NIPQUAD_FMT "%u.%u.%u.%u"
+#define NIPQUAD(addr)                       \
+    (unsigned)((unsigned char *)&addr)[0],  \
+    (unsigned)((unsigned char *)&addr)[1],  \
+    (unsigned)((unsigned char *)&addr)[2],  \
+    (unsigned)((unsigned char *)&addr)[3]
+#endif
+
+#ifndef NIP6
+#define NIP6_FMT "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x"
+#define NIP6(addr)                          \
+    (unsigned)((addr).s6_addr[0]),          \
+    (unsigned)((addr).s6_addr[1]),          \
+    (unsigned)((addr).s6_addr[2]),          \
+    (unsigned)((addr).s6_addr[3]),          \
+    (unsigned)((addr).s6_addr[4]),          \
+    (unsigned)((addr).s6_addr[5]),          \
+    (unsigned)((addr).s6_addr[6]),          \
+    (unsigned)((addr).s6_addr[7]),          \
+    (unsigned)((addr).s6_addr[8]),          \
+    (unsigned)((addr).s6_addr[9]),          \
+    (unsigned)((addr).s6_addr[10]),         \
+    (unsigned)((addr).s6_addr[11]),         \
+    (unsigned)((addr).s6_addr[12]),         \
+    (unsigned)((addr).s6_addr[13]),         \
+    (unsigned)((addr).s6_addr[14]),         \
+    (unsigned)((addr).s6_addr[15])
+#endif
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -311,7 +341,7 @@ struct ff_config {
         uint16_t enable;
         uint16_t snap_len;
         uint32_t save_len;
-        char*	 save_path;
+        char*    save_path;
     } pcap;
 };
 
