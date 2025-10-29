@@ -143,7 +143,7 @@ kni_set_bitmap(const char *p, unsigned char *port_bitmap)
 #ifdef FF_KNI_KNI
 /* Currently we don't support change mtu. */
 static int
-kni_change_mtu(uint16_t port_id, unsigned new_mtu)
+kni_change_mtu(__rte_unused uint16_t port_id, __rte_unused unsigned new_mtu)
 {
     return 0;
 }
@@ -213,7 +213,7 @@ kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
 #endif
 
 static int
-kni_process_tx(uint16_t port_id, uint16_t queue_id,
+kni_process_tx(uint16_t port_id, __rte_unused uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     /* read packet from kni ring(phy port) and transmit to kni */
@@ -225,7 +225,7 @@ kni_process_tx(uint16_t port_id, uint16_t queue_id,
      * If there are too many processes, there is also the possibility that the control packet will be ratelimited.
      */
     if (ff_global_cfg.kni.kernel_packets_ratelimit) {
-        if (likely(kni_rate_limt.kernel_packets < ff_global_cfg.kni.kernel_packets_ratelimit)) {
+        if (likely(kni_rate_limt.kernel_packets < (uint64_t)ff_global_cfg.kni.kernel_packets_ratelimit)) {
             nb_to_tx = nb_tx;
         } else {
             nb_to_tx = 0;
@@ -526,8 +526,8 @@ ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports, const char *udp_
 }
 
 void
-ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
-    struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
+ff_kni_alloc(uint16_t port_id, unsigned socket_id, __rte_unused int type, int port_idx,
+    __rte_unused struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         struct rte_ether_addr addr = {{0}};
@@ -644,14 +644,14 @@ ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
     if (filter >= FILTER_ARP) {
         if (ff_global_cfg.kni.console_packets_ratelimit) {
             kni_rate_limt.console_packets++;
-            if (kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit) {
+            if (kni_rate_limt.console_packets > (uint64_t)ff_global_cfg.kni.console_packets_ratelimit) {
                 goto error;
             }
         }
     } else {
         if (ff_global_cfg.kni.general_packets_ratelimit) {
             kni_rate_limt.gerneal_packets++;
-            if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit) {
+            if (kni_rate_limt.gerneal_packets > (uint64_t)ff_global_cfg.kni.general_packets_ratelimit) {
                 goto error;
             }
         }

@@ -71,7 +71,7 @@ static int
 parse_lcore_mask(struct ff_config *cfg, const char *coremask)
 {
     int i, j, idx = 0, shift = 0, zero_num = 0;
-    unsigned count = 0;
+    int count = 0;
     char c;
     int val;
     uint16_t *proc_lcore;
@@ -121,7 +121,7 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
                     snprintf(buf, sizeof(buf) - 1, "%llx%s",
                         (unsigned long long)1<<shift, zero);
                     cfg->dpdk.proc_mask = strdup(buf);
-		}
+        }
                 count++;
             }
         }
@@ -857,7 +857,7 @@ bond_cfg_handler(struct ff_config *cfg, const char *section,
 }
 
 static int
-rss_tbl_cfg_handler(struct ff_config *cfg, struct ff_rss_check_cfg *cur)
+rss_tbl_cfg_handler(struct ff_rss_check_cfg *cur)
 {
     //vip cfg
     int ret, nb_rss_tbl, i, j, k;
@@ -900,7 +900,7 @@ rss_tbl_cfg_handler(struct ff_config *cfg, struct ff_rss_check_cfg *cur)
 }
 
 static int
-rss_check_cfg_handler(struct ff_config *cfg, const char *section,
+rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
     const char *name, const char *value)
 {
     if (cfg->dpdk.port_cfgs == NULL && cfg->dpdk.vlan_cfgs == NULL) {
@@ -924,7 +924,7 @@ rss_check_cfg_handler(struct ff_config *cfg, const char *section,
     } else if (strcmp(name, "rss_tbl") == 0) {
         cur->rss_tbl_str = strdup(value);
         if (cur->rss_tbl_str) {
-            return rss_tbl_cfg_handler(cfg, cur);
+            return rss_tbl_cfg_handler(cur);
         }
     }
 

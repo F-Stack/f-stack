@@ -572,7 +572,7 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
         return;
     }
 
-    int reta_conf_size = RTE_MAX(1, reta_size / RTE_ETH_RETA_GROUP_SIZE);
+    unsigned reta_conf_size = RTE_MAX(1, reta_size / RTE_ETH_RETA_GROUP_SIZE);
     struct rte_eth_rss_reta_entry64 reta_conf[reta_conf_size];
 
     /* config HW indirection table */
@@ -2249,9 +2249,9 @@ main_loop(void *arg)
 
                 ff_get_current_time(&sec, &nsec);
                 if (sec > last_sec) {
-                    if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit ||
-                        kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit ||
-                        kni_rate_limt.kernel_packets > ff_global_cfg.kni.kernel_packets_ratelimit) {
+                    if (kni_rate_limt.gerneal_packets > (uint64_t)ff_global_cfg.kni.general_packets_ratelimit ||
+                        kni_rate_limt.console_packets > (uint64_t)ff_global_cfg.kni.console_packets_ratelimit ||
+                        kni_rate_limt.kernel_packets > (uint64_t)ff_global_cfg.kni.kernel_packets_ratelimit) {
                         printf("kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
                             kni_rate_limt.gerneal_packets, ff_global_cfg.kni.general_packets_ratelimit,
                             kni_rate_limt.console_packets, ff_global_cfg.kni.console_packets_ratelimit,

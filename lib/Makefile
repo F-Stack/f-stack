@@ -62,7 +62,7 @@ endif
 
 PKGCONF ?= pkg-config
 
-DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
+DPDK_CFLAGS= -Wall -Wextra -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
