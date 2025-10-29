@@ -103,7 +103,7 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
     return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
 }
 
-static void 
+static void
 ff_event_to_epoll(void **ev, struct kevent *kev)
 {
     unsigned int event_one = 0;
@@ -144,10 +144,11 @@ ff_event_to_epoll(void **ev, struct kevent *kev)
     (*ppev)++;
 }
 
-int 
+int
 ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 {
     int i, ret;
+    (void)timeout;
     if (!events || maxevents < 1) {
         errno = EINVAL;
         return -1;

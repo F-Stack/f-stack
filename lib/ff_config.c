@@ -70,7 +70,7 @@ static int
 parse_lcore_mask(struct ff_config *cfg, const char *coremask)
 {
     int i, j, idx = 0, shift = 0, zero_num = 0;
-    unsigned count = 0;
+    int count = 0;
     char c;
     int val;
     uint16_t *proc_lcore;
@@ -120,7 +120,7 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
                     snprintf(buf, sizeof(buf) - 1, "%llx%s",
                         (unsigned long long)1<<shift, zero);
                     cfg->dpdk.proc_mask = strdup(buf);
-		}
+        }
                 count++;
             }
         }
