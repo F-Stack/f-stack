@@ -2741,6 +2741,9 @@ vhost_dequeue_offload_legacy(struct virtio_net *dev, struct virtio_net_hdr *hdr,
 	}
 
 	if (hdr->gso_type != VIRTIO_NET_HDR_GSO_NONE) {
+		if (hdr->gso_size == 0)
+			goto error;
+
 		switch (hdr->gso_type & ~VIRTIO_NET_HDR_GSO_ECN) {
 		case VIRTIO_NET_HDR_GSO_TCPV4:
 		case VIRTIO_NET_HDR_GSO_TCPV6:
@@ -3598,6 +3601,8 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 		rte_rwlock_read_unlock(&vq->access_lock);
 
 		virtio_dev_vring_translate(dev, vq);
+
+		count = 0;
 		goto out_no_unlock;
 	}
 
@@ -3926,6 +3931,16 @@ virtio_dev_tx_async_single_packed(struct virtio_net *dev,
 					 buf_vec, &nr_vec, &buf_id, &buf_len,
 					 VHOST_ACCESS_RO) < 0))
 		return -1;
+
+	if (unlikely(buf_len <= dev->vhost_hlen)) {
+		if (!allocerr_warned) {
+			VHOST_LOG_DATA(dev->ifname, ERR, "Invalid buffer length.\n");
+			allocerr_warned = true;
+		}
+		return -1;
+	}
+
+	buf_len -= dev->vhost_hlen;
 
 	if (unlikely(virtio_dev_pktmbuf_prep(dev, pkts, buf_len))) {
 		if (!allocerr_warned) {

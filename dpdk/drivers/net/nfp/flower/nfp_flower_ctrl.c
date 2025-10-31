@@ -192,10 +192,10 @@ nfp_flower_ctrl_vnic_nfd3_xmit(struct nfp_app_fw_flower *app_fw_flower,
 	*lmbuf = mbuf;
 	dma_addr = rte_mbuf_data_iova(mbuf);
 
-	txds->data_len = mbuf->pkt_len;
+	txds->data_len = rte_cpu_to_le_16(mbuf->pkt_len);
 	txds->dma_len = txds->data_len;
 	txds->dma_addr_hi = (dma_addr >> 32) & 0xff;
-	txds->dma_addr_lo = (dma_addr & 0xffffffff);
+	txds->dma_addr_lo = rte_cpu_to_le_32(dma_addr & 0xffffffff);
 	txds->offset_eop = FLOWER_PKT_DATA_OFFSET | NFD3_DESC_TX_EOP;
 
 	txq->wr_p++;
@@ -419,6 +419,8 @@ nfp_flower_cmsg_port_mod_rx(struct nfp_app_fw_flower *app_fw_flower,
 		struct rte_mbuf *pkt_burst)
 {
 	uint32_t port;
+	uint16_t link_status;
+	struct rte_eth_dev *eth_dev;
 	struct nfp_flower_representor *repr;
 	struct nfp_flower_cmsg_port_mod *msg;
 
@@ -447,10 +449,22 @@ nfp_flower_cmsg_port_mod_rx(struct nfp_app_fw_flower *app_fw_flower,
 	}
 
 	repr->link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+
+	link_status = repr->link.link_status;
 	if ((msg->info & NFP_FLOWER_CMSG_PORT_MOD_INFO_LINK) != 0)
 		repr->link.link_status = RTE_ETH_LINK_UP;
 	else
 		repr->link.link_status = RTE_ETH_LINK_DOWN;
+
+	if (link_status != repr->link.link_status) {
+		eth_dev = rte_eth_dev_get_by_name(repr->name);
+		if (eth_dev == NULL) {
+			PMD_DRV_LOG(ERR, "Can not get ethernet device by name %s.", repr->name);
+			return -EINVAL;
+		}
+
+		nfp_flower_repr_link_update(eth_dev, 0);
+	}
 
 	return 0;
 }

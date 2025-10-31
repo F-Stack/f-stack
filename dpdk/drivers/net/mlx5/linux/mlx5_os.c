@@ -14,7 +14,6 @@
 #include <linux/sockios.h>
 #include <linux/ethtool.h>
 #include <fcntl.h>
-#include <dlfcn.h>
 
 #include <rte_malloc.h>
 #include <ethdev_driver.h>
@@ -1563,7 +1562,8 @@ err_secondary:
 	eth_dev->rx_queue_count = mlx5_rx_queue_count;
 	/* Register MAC address. */
 	claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
-	if (sh->dev_cap.vf && sh->config.vf_nl_en)
+	/* Sync mac addresses for PF or VF/SF if vf_nl_en is true */
+	if ((!sh->dev_cap.vf && !sh->dev_cap.sf) || sh->config.vf_nl_en)
 		mlx5_nl_mac_addr_sync(priv->nl_socket_route,
 				      mlx5_ifindex(eth_dev),
 				      eth_dev->data->mac_addrs,
@@ -2028,7 +2028,6 @@ close_nlsk_fd:
 
 #define SYSFS_MPESW_PARAM_MAX_LEN 16
 
-static char *(*real_if_indextoname)(unsigned int, char *) = NULL;
 static int
 mlx5_sysfs_esw_multiport_get(struct ibv_device *ibv, struct rte_pci_addr *pci_addr, int *enabled)
 {
@@ -2058,16 +2057,7 @@ mlx5_sysfs_esw_multiport_get(struct ibv_device *ibv, struct rte_pci_addr *pci_ad
 		ifindex = mlx5_nl_ifindex(nl_rdma, ibv->name, i);
 		if (!ifindex)
 			continue;
-
-		// for ff tools
-		if (!real_if_indextoname) {
-			real_if_indextoname = __extension__ (char *(*)(unsigned int, char *))dlsym(RTLD_NEXT, "if_indextoname");
-			if (!real_if_indextoname) {
-				rte_errno = errno;
-				return -rte_errno;
-			}
-		}
-		if (!real_if_indextoname(ifindex, ifname))
+		if (!if_indextoname(ifindex, ifname))
 			continue;
 		MKSTR(sysfs_if_path, "/sys/class/net/%s", ifname);
 		if (mlx5_get_pci_addr(sysfs_if_path, &if_pci_addr))
@@ -2979,10 +2969,15 @@ mlx5_os_dev_shared_handler_install(struct mlx5_dev_ctx_shared *sh)
 void
 mlx5_os_dev_shared_handler_uninstall(struct mlx5_dev_ctx_shared *sh)
 {
+	int fd;
+
 	mlx5_os_interrupt_handler_destroy(sh->intr_handle,
 					  mlx5_dev_interrupt_handler, sh);
+	fd = rte_intr_fd_get(sh->intr_handle_nl);
 	mlx5_os_interrupt_handler_destroy(sh->intr_handle_nl,
 					  mlx5_dev_interrupt_handler_nl, sh);
+	if (fd >= 0)
+		close(fd);
 #ifdef HAVE_IBV_DEVX_ASYNC
 	mlx5_os_interrupt_handler_destroy(sh->intr_handle_devx,
 					  mlx5_dev_interrupt_handler_devx, sh);

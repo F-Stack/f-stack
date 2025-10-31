@@ -12270,6 +12270,8 @@ test_authenticated_encryption_oop(const struct aead_test_data *tdata)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
+	uint32_t i;
+	uint8_t *buffer_oop;
 	int retval;
 	uint8_t *ciphertext, *auth_tag;
 	uint16_t plaintext_pad_len;
@@ -12342,6 +12344,16 @@ test_authenticated_encryption_oop(const struct aead_test_data *tdata)
 			ut_params->op->sym->cipher.data.offset);
 	auth_tag = ciphertext + plaintext_pad_len;
 
+	/* Check if the data within the offset range is not overwritten in the OOP */
+	buffer_oop = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
+	for (i = 0; i < ut_params->op->sym->cipher.data.offset; i++) {
+		if (buffer_oop[i]) {
+			RTE_LOG(ERR, USER1, "Incorrect value of the output buffer header\n");
+			debug_hexdump(stdout, "Incorrect value:", buffer_oop, ut_params->op->sym->cipher.data.offset);
+			return TEST_FAILED;
+		}
+	}
+
 	debug_hexdump(stdout, "ciphertext:", ciphertext, tdata->ciphertext.len);
 	debug_hexdump(stdout, "auth tag:", auth_tag, tdata->auth_tag.len);
 
@@ -12374,6 +12386,8 @@ test_authenticated_decryption_oop(const struct aead_test_data *tdata)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
+	uint32_t i;
+	uint8_t *buffer_oop;
 	int retval;
 	uint8_t *plaintext;
 	struct rte_cryptodev_info dev_info;
@@ -12446,6 +12460,18 @@ test_authenticated_decryption_oop(const struct aead_test_data *tdata)
 			ut_params->op->sym->cipher.data.offset);
 
 	debug_hexdump(stdout, "plaintext:", plaintext, tdata->ciphertext.len);
+
+	/* Check if the data within the offset range is not overwritten in the OOP */
+	buffer_oop = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
+	for (i = 0; i < ut_params->op->sym->cipher.data.offset; i++) {
+		if (buffer_oop[i]) {
+			RTE_LOG(ERR, USER1,
+				"Incorrect value of the output buffer header\n");
+			debug_hexdump(stdout, "Incorrect value:", buffer_oop,
+				ut_params->op->sym->cipher.data.offset);
+			return TEST_FAILED;
+		}
+	}
 
 	/* Validate obuf */
 	TEST_ASSERT_BUFFERS_ARE_EQUAL(
@@ -13220,6 +13246,7 @@ test_multi_session(void)
 
 		/* free crypto operation structure */
 		rte_crypto_op_free(ut_params->op);
+		ut_params->op = NULL;
 
 		/*
 		 * free mbuf - both obuf and ibuf are usually the same,
@@ -13361,6 +13388,7 @@ test_multi_session_random_usage(void)
 					ut_paramz[j].iv);
 
 		rte_crypto_op_free(ut_paramz[j].ut_params.op);
+		ut_paramz[j].ut_params.op = NULL;
 
 		/*
 		 * free mbuf - both obuf and ibuf are usually the same,
@@ -13731,7 +13759,7 @@ test_enq_callback_setup(void)
 			"qp %u on cryptodev %u",
 			qp_id, ts_params->valid_devs[0]);
 
-	TEST_ASSERT(deq_cb_called == true, "Crypto dequeue callback not called");
+	TEST_ASSERT(enq_cb_called == true, "Crypto enqueue callback not called");
 
 	return TEST_SUCCESS;
 }
@@ -13856,7 +13884,7 @@ test_deq_callback_setup(void)
 			"qp %u on cryptodev %u",
 			qp_id, ts_params->valid_devs[0]);
 
-	TEST_ASSERT(enq_cb_called == true, "Crypto enqueue callback not called");
+	TEST_ASSERT(deq_cb_called == true, "Crypto dequeue callback not called");
 
 	return TEST_SUCCESS;
 }

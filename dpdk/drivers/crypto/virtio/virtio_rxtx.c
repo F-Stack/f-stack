@@ -107,6 +107,40 @@ virtqueue_dequeue_burst_rx(struct virtqueue *vq,
 	return i;
 }
 
+static __rte_always_inline uint8_t
+virtqueue_crypto_check_cipher_request(struct virtio_crypto_cipher_data_req *req)
+{
+	if (likely((req->para.iv_len <= VIRTIO_CRYPTO_MAX_IV_SIZE) &&
+		(req->para.src_data_len <= RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.dst_data_len >= req->para.src_data_len) &&
+		(req->para.dst_data_len <= RTE_MBUF_DEFAULT_BUF_SIZE)))
+		return VIRTIO_CRYPTO_OK;
+	return VIRTIO_CRYPTO_BADMSG;
+}
+
+static __rte_always_inline uint8_t
+virtqueue_crypto_check_chain_request(struct virtio_crypto_alg_chain_data_req *req)
+{
+	if (likely((req->para.iv_len <= VIRTIO_CRYPTO_MAX_IV_SIZE) &&
+		(req->para.src_data_len <= RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.dst_data_len >= req->para.src_data_len) &&
+		(req->para.dst_data_len <= RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.cipher_start_src_offset <
+			RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.len_to_cipher <= RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.hash_start_src_offset <
+			RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.len_to_hash <= RTE_MBUF_DEFAULT_BUF_SIZE) &&
+		(req->para.cipher_start_src_offset + req->para.len_to_cipher <=
+			req->para.src_data_len) &&
+		(req->para.hash_start_src_offset + req->para.len_to_hash <=
+			req->para.src_data_len) &&
+		(req->para.dst_data_len + req->para.hash_result_len <=
+			RTE_MBUF_DEFAULT_BUF_SIZE)))
+		return VIRTIO_CRYPTO_OK;
+	return VIRTIO_CRYPTO_BADMSG;
+}
+
 static int
 virtqueue_crypto_sym_pkt_header_arrange(
 		struct rte_crypto_op *cop,
@@ -142,6 +176,9 @@ virtqueue_crypto_sym_pkt_header_arrange(
 				sym_op->cipher.data.offset);
 		req_data->u.sym_req.u.cipher.para.dst_data_len =
 			req_data->u.sym_req.u.cipher.para.src_data_len;
+		if (virtqueue_crypto_check_cipher_request(
+			&req_data->u.sym_req.u.cipher) != VIRTIO_CRYPTO_OK)
+			return -1;
 		break;
 	case VIRTIO_CRYPTO_SYM_OP_ALGORITHM_CHAINING:
 		req_data->u.sym_req.op_type =
@@ -157,8 +194,10 @@ virtqueue_crypto_sym_pkt_header_arrange(
 		req_data->u.sym_req.u.chain.para.aad_len = session->aad.length;
 
 		req_data->u.sym_req.u.chain.para.src_data_len =
-			(sym_op->cipher.data.length +
-				sym_op->cipher.data.offset);
+			RTE_MAX((sym_op->cipher.data.length +
+				 sym_op->cipher.data.offset),
+				(sym_op->auth.data.length +
+				 sym_op->auth.data.offset));
 		req_data->u.sym_req.u.chain.para.dst_data_len =
 			req_data->u.sym_req.u.chain.para.src_data_len;
 		req_data->u.sym_req.u.chain.para.cipher_start_src_offset =
@@ -179,6 +218,9 @@ virtqueue_crypto_sym_pkt_header_arrange(
 			VIRTIO_CRYPTO_SYM_HASH_MODE_AUTH)
 			req_data->u.sym_req.u.chain.para.hash_result_len =
 				chain_para->u.mac_param.hash_result_len;
+		if (virtqueue_crypto_check_chain_request(
+			&req_data->u.sym_req.u.chain) != VIRTIO_CRYPTO_OK)
+			return -1;
 		break;
 	default:
 		return -1;
@@ -212,6 +254,7 @@ virtqueue_crypto_sym_enqueue_xmit(
 	uint32_t hash_result_len = 0;
 	struct virtio_crypto_op_cookie *crypto_op_cookie;
 	struct virtio_crypto_alg_chain_session_para *para;
+	uint32_t src_len;
 
 	if (unlikely(sym_op->m_src->nb_segs != 1))
 		return -EMSGSIZE;
@@ -285,21 +328,22 @@ virtqueue_crypto_sym_enqueue_xmit(
 		desc[idx++].flags = VRING_DESC_F_NEXT;
 	}
 
+	src_len = RTE_MAX((sym_op->cipher.data.offset +
+			   sym_op->cipher.data.length),
+			  (sym_op->auth.data.length +
+			   sym_op->auth.data.offset));
 	/* indirect vring: src data */
 	desc[idx].addr = rte_pktmbuf_iova_offset(sym_op->m_src, 0);
-	desc[idx].len = (sym_op->cipher.data.offset
-		+ sym_op->cipher.data.length);
+	desc[idx].len = src_len;
 	desc[idx++].flags = VRING_DESC_F_NEXT;
 
 	/* indirect vring: dst data */
 	if (sym_op->m_dst) {
 		desc[idx].addr = rte_pktmbuf_iova_offset(sym_op->m_dst, 0);
-		desc[idx].len = (sym_op->cipher.data.offset
-			+ sym_op->cipher.data.length);
+		desc[idx].len = src_len;
 	} else {
 		desc[idx].addr = rte_pktmbuf_iova_offset(sym_op->m_src, 0);
-		desc[idx].len = (sym_op->cipher.data.offset
-			+ sym_op->cipher.data.length);
+		desc[idx].len = src_len;
 	}
 	desc[idx++].flags = VRING_DESC_F_WRITE | VRING_DESC_F_NEXT;
 
@@ -419,12 +463,11 @@ virtio_crypto_dataq_start(struct rte_cryptodev *dev)
 	 * -	Setup vring structure for data queues
 	 */
 	uint16_t i;
-	struct virtio_crypto_hw *hw = dev->data->dev_private;
 
 	PMD_INIT_FUNC_TRACE();
 
 	/* Start data vring. */
-	for (i = 0; i < hw->max_dataqueues; i++) {
+	for (i = 0; i < dev->data->nb_queue_pairs; i++) {
 		virtio_crypto_vring_start(dev->data->queue_pairs[i]);
 		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->queue_pairs[i]);
 	}

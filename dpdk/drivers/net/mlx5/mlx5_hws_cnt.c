@@ -673,12 +673,6 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 			goto error;
 		return cpool;
 	}
-	/* init cnt service if not. */
-	if (priv->sh->cnt_svc == NULL) {
-		ret = mlx5_hws_cnt_svc_init(priv->sh);
-		if (ret != 0)
-			return NULL;
-	}
 	cparam.fetch_sz = HWS_CNT_CACHE_FETCH_DEFAULT;
 	cparam.preload_sz = HWS_CNT_CACHE_PRELOAD_DEFAULT;
 	cparam.q_num = nb_queue;
@@ -705,6 +699,12 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 	ret = mlx5_hws_cnt_pool_action_create(priv, cpool);
 	if (ret != 0)
 		goto error;
+	/* init cnt service if not. */
+	if (priv->sh->cnt_svc == NULL) {
+		ret = mlx5_hws_cnt_svc_init(priv->sh);
+		if (ret)
+			goto error;
+	}
 	priv->sh->cnt_svc->refcnt++;
 	cpool->priv = priv;
 	rte_spinlock_lock(&priv->sh->cpool_lock);
@@ -713,6 +713,7 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 	return cpool;
 error:
 	mlx5_hws_cnt_pool_destroy(priv->sh, cpool);
+	mlx5_free(mp_name);
 	return NULL;
 }
 
@@ -732,7 +733,7 @@ mlx5_hws_cnt_pool_destroy(struct mlx5_dev_ctx_shared *sh,
 		LIST_REMOVE(cpool, next);
 	rte_spinlock_unlock(&sh->cpool_lock);
 	if (cpool->cfg.host_cpool == NULL) {
-		if (--sh->cnt_svc->refcnt == 0)
+		if (sh->cnt_svc && --sh->cnt_svc->refcnt == 0)
 			mlx5_hws_cnt_svc_deinit(sh);
 	}
 	mlx5_hws_cnt_pool_action_destroy(cpool);

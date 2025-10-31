@@ -1420,6 +1420,8 @@ mlx5_flow_item_field_width(struct rte_eth_dev *dev,
 	case RTE_FLOW_FIELD_META:
 		return (flow_dv_get_metadata_reg(dev, attr, error) == REG_C_0) ?
 			rte_popcount32(priv->sh->dv_meta_mask) : 32;
+	case RTE_FLOW_FIELD_GTP_PSC_QFI:
+		return 6;
 	case RTE_FLOW_FIELD_POINTER:
 	case RTE_FLOW_FIELD_VALUE:
 		return inherit < 0 ? 0 : inherit;
@@ -7584,7 +7586,10 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 				mlx5_flow_tunnel_ip_check(items, next_protocol,
 							  item_flags,
 							  &l3_tunnel_flag);
-			if (l3_tunnel_detection == l3_tunnel_inner) {
+			/*
+			 * explicitly allow inner IPIP match
+			 */
+			if (l3_tunnel_detection == l3_tunnel_outer) {
 				item_flags |= l3_tunnel_flag;
 				tunnel = 1;
 			}
@@ -7605,7 +7610,10 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 				mlx5_flow_tunnel_ip_check(items, next_protocol,
 							  item_flags,
 							  &l3_tunnel_flag);
-			if (l3_tunnel_detection == l3_tunnel_inner) {
+			/*
+			 * explicitly allow inner IPIP match
+			 */
+			if (l3_tunnel_detection == l3_tunnel_outer) {
 				item_flags |= l3_tunnel_flag;
 				tunnel = 1;
 			}
@@ -9476,23 +9484,26 @@ flow_dv_translate_item_gre(void *key, const struct rte_flow_item *item,
 	} gre_crks_rsvd0_ver_m, gre_crks_rsvd0_ver_v;
 	uint16_t protocol_m, protocol_v;
 
-	if (key_type & MLX5_SET_MATCHER_M) {
+	/* Common logic to SWS/HWS */
+	if (key_type & MLX5_SET_MATCHER_M)
 		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol, 0xff);
-		if (!gre_m)
-			gre_m = &rte_flow_item_gre_mask;
-		gre_v = gre_m;
-	} else {
+	else
 		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol,
-			 IPPROTO_GRE);
-		if (!gre_v) {
-			gre_v = &empty_gre;
+			IPPROTO_GRE);
+	/* HWS mask logic only */
+	if (key_type & MLX5_SET_MATCHER_HS_M) {
+		if (!gre_m)
 			gre_m = &empty_gre;
-		} else if (!gre_m) {
-			gre_m = &rte_flow_item_gre_mask;
-		}
-		if (key_type == MLX5_SET_MATCHER_HS_V)
-			gre_m = gre_v;
+		gre_v = gre_m;
+	} else if (!gre_v) {
+		gre_v = &empty_gre;
+		gre_m = &empty_gre;
+	} else if (!gre_m) {
+		gre_m = &rte_flow_item_gre_mask;
 	}
+	/* SWS logic only */
+	if (key_type & MLX5_SET_MATCHER_SW_M)
+		gre_v = gre_m;
 	gre_crks_rsvd0_ver_m.value = rte_be_to_cpu_16(gre_m->c_rsvd0_ver);
 	gre_crks_rsvd0_ver_v.value = rte_be_to_cpu_16(gre_v->c_rsvd0_ver);
 	MLX5_SET(fte_match_set_misc, misc_v, gre_c_present,
@@ -17449,6 +17460,11 @@ flow_dv_query(struct rte_eth_dev *dev,
 						  error);
 			break;
 		case RTE_FLOW_ACTION_TYPE_AGE:
+			if (flow->indirect_type == MLX5_INDIRECT_ACTION_TYPE_CT)
+				return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  actions,
+						  "age not available");
 			ret = flow_dv_query_age(dev, flow, data, error);
 			break;
 		default:

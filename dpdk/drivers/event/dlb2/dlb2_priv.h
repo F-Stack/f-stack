@@ -346,7 +346,7 @@ struct dlb2_port {
 	bool gen_bit;
 	uint16_t dir_credits;
 	uint32_t dequeue_depth;
-	enum dlb2_token_pop_mode token_pop_mode;
+	enum rte_pmd_dlb2_token_pop_mode token_pop_mode;
 	union dlb2_port_config cfg;
 	uint32_t *credit_pool[DLB2_NUM_QUEUE_TYPES]; /* use __atomic builtins */
 	union {
@@ -636,7 +636,6 @@ struct dlb2_eventdev {
 	};
 	uint32_t cos_ports[DLB2_COS_NUM_VALS]; /* total ldb ports in each class */
 	uint32_t cos_bw[DLB2_COS_NUM_VALS]; /* bandwidth per cos domain */
-	uint8_t max_cos_port; /* Max LDB port from any cos */
 	bool enable_cq_weight;
 };
 

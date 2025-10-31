@@ -1748,13 +1748,13 @@ flow_rxq_mark_flag_set(struct rte_eth_dev *dev)
 			    opriv->domain_id != priv->domain_id ||
 			    opriv->mark_enabled)
 				continue;
-			LIST_FOREACH(rxq_ctrl, &opriv->sh->shared_rxqs, share_entry) {
+			LIST_FOREACH(rxq_ctrl, &opriv->rxqsctrl, next) {
 				rxq_ctrl->rxq.mark = 1;
 			}
 			opriv->mark_enabled = 1;
 		}
 	} else {
-		LIST_FOREACH(rxq_ctrl, &priv->sh->shared_rxqs, share_entry) {
+		LIST_FOREACH(rxq_ctrl, &priv->rxqsctrl, next) {
 			rxq_ctrl->rxq.mark = 1;
 		}
 		priv->mark_enabled = 1;
@@ -1965,8 +1965,8 @@ mlx5_flow_rxq_dynf_set(struct rte_eth_dev *dev)
 				data->flow_meta_offset = rte_flow_dynf_metadata_offs;
 				data->flow_meta_port_mask = priv->sh->dv_meta_mask;
 			}
-			data->mark_flag = mark_flag;
 		}
+		data->mark_flag = mark_flag;
 	}
 }
 
@@ -8104,7 +8104,6 @@ mlx5_flow_list_flush(struct rte_eth_dev *dev, enum mlx5_flow_type type,
 		priv->hws_rule_flushing = true;
 		flow_hw_q_flow_flush(dev, NULL);
 		priv->hws_rule_flushing = false;
-		return;
 	}
 #endif
 

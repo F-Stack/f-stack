@@ -2544,6 +2544,10 @@ hns3_query_pf_resource(struct hns3_hw *hw)
 	req = (struct hns3_pf_res_cmd *)desc.data;
 	hw->total_tqps_num = rte_le_to_cpu_16(req->tqp_num) +
 			     rte_le_to_cpu_16(req->ext_tqp_num);
+	if (hw->total_tqps_num == 0) {
+		PMD_INIT_LOG(ERR, "the total tqp number of the port is 0.");
+		return -EINVAL;
+	}
 	ret = hns3_get_pf_max_tqp_num(hw);
 	if (ret)
 		return ret;
@@ -2739,6 +2743,7 @@ hns3_get_capability(struct hns3_hw *hw)
 		hw->udp_cksum_mode = HNS3_SPECIAL_PORT_SW_CKSUM_MODE;
 		pf->support_multi_tc_pause = false;
 		hw->rx_dma_addr_align = HNS3_RX_DMA_ADDR_ALIGN_64;
+		hw->strip_crc_ptype = HNS3_STRIP_CRC_PTYPE_TCP;
 		return 0;
 	}
 
@@ -2760,6 +2765,7 @@ hns3_get_capability(struct hns3_hw *hw)
 	hw->udp_cksum_mode = HNS3_SPECIAL_PORT_HW_CKSUM_MODE;
 	pf->support_multi_tc_pause = true;
 	hw->rx_dma_addr_align = HNS3_RX_DMA_ADDR_ALIGN_128;
+	hw->strip_crc_ptype = HNS3_STRIP_CRC_PTYPE_IP;
 
 	return 0;
 }
@@ -2795,6 +2801,7 @@ hns3_check_media_type(struct hns3_hw *hw, uint8_t media_type)
 static int
 hns3_get_board_configuration(struct hns3_hw *hw)
 {
+#define HNS3_RSS_SIZE_MAX_DEFAULT	64
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	struct hns3_pf *pf = &hns->pf;
 	struct hns3_cfg cfg;
@@ -2813,6 +2820,11 @@ hns3_get_board_configuration(struct hns3_hw *hw)
 
 	hw->mac.media_type = cfg.media_type;
 	hw->rss_size_max = cfg.rss_size_max;
+	if (hw->rss_size_max == 0) {
+		PMD_INIT_LOG(WARNING, "rss_size_max is 0, already adjust to %u.",
+			     HNS3_RSS_SIZE_MAX_DEFAULT);
+		hw->rss_size_max = HNS3_RSS_SIZE_MAX_DEFAULT;
+	}
 	memcpy(hw->mac.mac_addr, cfg.mac_addr, RTE_ETHER_ADDR_LEN);
 	hw->mac.phy_addr = cfg.phy_addr;
 	hw->dcb_info.num_pg = 1;
@@ -4852,7 +4864,7 @@ hns3_get_link_duplex(uint32_t link_speeds)
 }
 
 static int
-hns3_set_copper_port_link_speed(struct hns3_hw *hw,
+hns3_copper_port_link_speed_cfg(struct hns3_hw *hw,
 				struct hns3_set_link_speed_cfg *cfg)
 {
 	struct hns3_cmd_desc desc[HNS3_PHY_PARAM_CFG_BD_NUM];
@@ -4884,6 +4896,33 @@ hns3_set_copper_port_link_speed(struct hns3_hw *hw,
 	}
 
 	return hns3_cmd_send(hw, desc, HNS3_PHY_PARAM_CFG_BD_NUM);
+}
+
+static int
+hns3_set_copper_port_link_speed(struct hns3_hw *hw,
+				struct hns3_set_link_speed_cfg *cfg)
+{
+#define HNS3_PHY_PARAM_CFG_RETRY_TIMES		10
+#define HNS3_PHY_PARAM_CFG_RETRY_DELAY_MS	100
+	uint32_t retry_cnt = 0;
+	int ret;
+
+	/*
+	 * The initialization of copper port contains the following two steps.
+	 * 1. Configure firmware takeover the PHY. The firmware will start an
+	 *    asynchronous task to initialize the PHY chip.
+	 * 2. Configure work speed and duplex.
+	 * In earlier versions of the firmware, when the asynchronous task is not
+	 * finished, the firmware will return -ENOTBLK in the second step. And this
+	 * will lead to driver failed to initialize. Here add retry for this case.
+	 */
+	ret = hns3_copper_port_link_speed_cfg(hw, cfg);
+	while (ret == -ENOTBLK && retry_cnt++ < HNS3_PHY_PARAM_CFG_RETRY_TIMES) {
+		rte_delay_ms(HNS3_PHY_PARAM_CFG_RETRY_DELAY_MS);
+		ret = hns3_copper_port_link_speed_cfg(hw, cfg);
+	}
+
+	return ret;
 }
 
 static int
@@ -5095,7 +5134,7 @@ hns3_dev_start(struct rte_eth_dev *dev)
 	 */
 	ret = hns3_start_all_txqs(dev);
 	if (ret)
-		goto map_rx_inter_err;
+		goto start_all_txqs_fail;
 
 	ret = hns3_start_all_rxqs(dev);
 	if (ret)
@@ -5128,6 +5167,8 @@ hns3_dev_start(struct rte_eth_dev *dev)
 
 start_all_rxqs_fail:
 	hns3_stop_all_txqs(dev);
+start_all_txqs_fail:
+	hns3_unmap_rx_interrupt(dev);
 map_rx_inter_err:
 	(void)hns3_do_stop(hns);
 do_start_fail:
@@ -5180,20 +5221,23 @@ hns3_dev_stop(struct rte_eth_dev *dev)
 	struct hns3_hw *hw = &hns->hw;
 
 	PMD_INIT_FUNC_TRACE();
+	if (rte_atomic_load_explicit(&hw->reset.resetting, rte_memory_order_relaxed) != 0) {
+		hns3_warn(hw, "device is resetting, stop operation is not allowed.");
+		return -EBUSY;
+	}
+
 	dev->data->dev_started = 0;
 
 	hw->adapter_state = HNS3_NIC_STOPPING;
 	hns3_stop_rxtx_datapath(dev);
 
 	rte_spinlock_lock(&hw->lock);
-	if (__atomic_load_n(&hw->reset.resetting, __ATOMIC_RELAXED) == 0) {
-		hns3_tm_dev_stop_proc(hw);
-		hns3_config_mac_tnl_int(hw, false);
-		hns3_stop_tqps(hw);
-		hns3_do_stop(hns);
-		hns3_unmap_rx_interrupt(dev);
-		hw->adapter_state = HNS3_NIC_CONFIGURED;
-	}
+	hns3_tm_dev_stop_proc(hw);
+	hns3_config_mac_tnl_int(hw, false);
+	hns3_stop_tqps(hw);
+	hns3_do_stop(hns);
+	hns3_unmap_rx_interrupt(dev);
+	hw->adapter_state = HNS3_NIC_CONFIGURED;
 	hns3_rx_scattered_reset(dev);
 	rte_eal_alarm_cancel(hns3_service_handler, dev);
 	hns3_stop_report_lse(dev);
@@ -5282,18 +5326,18 @@ hns3_get_current_fc_mode(struct rte_eth_dev *dev)
 	struct hns3_mac *mac = &hw->mac;
 
 	/*
-	 * When the flow control mode is obtained, the device may not complete
-	 * auto-negotiation. It is necessary to wait for link establishment.
-	 */
-	(void)hns3_dev_link_update(dev, 1);
-
-	/*
 	 * If the link auto-negotiation of the nic is disabled, or the flow
 	 * control auto-negotiation is not supported, the forced flow control
 	 * mode is used.
 	 */
 	if (mac->link_autoneg == 0 || !pf->support_fc_autoneg)
 		return hw->requested_fc_mode;
+
+	/*
+	 * When the flow control mode is obtained, the device may not complete
+	 * auto-negotiation. It is necessary to wait for link establishment.
+	 */
+	(void)hns3_dev_link_update(dev, 1);
 
 	return hns3_get_autoneg_fc_mode(hw);
 }

@@ -14,9 +14,6 @@
 #if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
 #include "mlx5_hws_cnt.h"
 
-/* The maximum actions support in the flow. */
-#define MLX5_HW_MAX_ACTS 16
-
 /*
  * The default ipool threshold value indicates which per_core_cache
  * value to set.
@@ -1045,10 +1042,6 @@ flow_hw_shared_action_translate(struct rte_eth_dev *dev,
 			return -1;
 		}
 		break;
-	case MLX5_INDIRECT_ACTION_TYPE_AGE:
-		/* Not supported, prevent by validate function. */
-		MLX5_ASSERT(0);
-		break;
 	case MLX5_INDIRECT_ACTION_TYPE_CT:
 		if (flow_hw_ct_compile(dev, MLX5_HW_INV_QUEUE,
 				       idx, &acts->rule_acts[action_dst])) {
@@ -1108,7 +1101,8 @@ flow_hw_action_modify_field_is_shared(const struct rte_flow_action *action,
 
 static __rte_always_inline bool
 flow_hw_should_insert_nop(const struct mlx5_hw_modify_header_action *mhdr,
-			  const struct mlx5_modification_cmd *cmd)
+			  const struct mlx5_modification_cmd *cmd,
+			  const struct rte_flow_attr *attr)
 {
 	struct mlx5_modification_cmd last_cmd = { { 0 } };
 	struct mlx5_modification_cmd new_cmd = { { 0 } };
@@ -1116,6 +1110,15 @@ flow_hw_should_insert_nop(const struct mlx5_hw_modify_header_action *mhdr,
 	unsigned int last_type;
 	bool should_insert = false;
 
+	/*
+	 * Modify header action list does not require NOPs in root table,
+	 * because different type of underlying object is used:
+	 * - in root table - MODIFY_HEADER_CONTEXT (does not require NOPs),
+	 * - in non-root - either inline modify action or based on Modify Header Pattern
+	 *   (which requires NOPs).
+	 */
+	if (attr->group == 0)
+		return false;
 	if (cmds_num == 0)
 		return false;
 	last_cmd = *(&mhdr->mhdr_cmds[cmds_num - 1]);
@@ -1191,7 +1194,8 @@ flow_hw_mhdr_cmd_append(struct mlx5_hw_modify_header_action *mhdr,
 
 static __rte_always_inline int
 flow_hw_converted_mhdr_cmds_append(struct mlx5_hw_modify_header_action *mhdr,
-				   struct mlx5_flow_dv_modify_hdr_resource *resource)
+				   struct mlx5_flow_dv_modify_hdr_resource *resource,
+				   const struct rte_flow_attr *attr)
 {
 	uint32_t idx;
 	int ret;
@@ -1199,7 +1203,7 @@ flow_hw_converted_mhdr_cmds_append(struct mlx5_hw_modify_header_action *mhdr,
 	for (idx = 0; idx < resource->actions_num; ++idx) {
 		struct mlx5_modification_cmd *src = &resource->actions[idx];
 
-		if (flow_hw_should_insert_nop(mhdr, src)) {
+		if (flow_hw_should_insert_nop(mhdr, src, attr)) {
 			ret = flow_hw_mhdr_cmd_nop_append(mhdr);
 			if (ret)
 				return ret;
@@ -1315,14 +1319,14 @@ flow_hw_modify_field_compile(struct rte_eth_dev *dev,
 	 * This NOP command will not be a part of action's command range used to update commands
 	 * on rule creation.
 	 */
-	if (flow_hw_should_insert_nop(mhdr, &resource->actions[0])) {
+	if (flow_hw_should_insert_nop(mhdr, &resource->actions[0], attr)) {
 		ret = flow_hw_mhdr_cmd_nop_append(mhdr);
 		if (ret)
 			return rte_flow_error_set(error, ret, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 						  NULL, "too many modify field operations specified");
 	}
 	cmds_start = mhdr->mhdr_cmds_num;
-	ret = flow_hw_converted_mhdr_cmds_append(mhdr, resource);
+	ret = flow_hw_converted_mhdr_cmds_append(mhdr, resource, attr);
 	if (ret)
 		return rte_flow_error_set(error, ret, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 					  NULL, "too many modify field operations specified");
@@ -1457,35 +1461,6 @@ flow_hw_represented_port_compile(struct rte_eth_dev *dev,
 					 "not enough memory to store"
 					 " vport action");
 	}
-	return 0;
-}
-
-static __rte_always_inline int
-flow_hw_meter_compile(struct rte_eth_dev *dev,
-		      const struct mlx5_flow_template_table_cfg *cfg,
-		      uint16_t aso_mtr_pos,
-		      uint16_t jump_pos,
-		      const struct rte_flow_action *action,
-		      struct mlx5_hw_actions *acts,
-		      struct rte_flow_error *error)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_aso_mtr *aso_mtr;
-	const struct rte_flow_action_meter *meter = action->conf;
-	uint32_t group = cfg->attr.flow_attr.group;
-
-	aso_mtr = mlx5_aso_meter_by_idx(priv, meter->mtr_id);
-	acts->rule_acts[aso_mtr_pos].action = priv->mtr_bulk.action;
-	acts->rule_acts[aso_mtr_pos].aso_meter.offset = aso_mtr->offset;
-	acts->jump = flow_hw_jump_action_register
-		(dev, cfg, aso_mtr->fm.group, error);
-	if (!acts->jump)
-		return -ENOMEM;
-	acts->rule_acts[jump_pos].action = (!!group) ?
-				    acts->jump->hws_action :
-				    acts->jump->root_action;
-	if (mlx5_aso_mtr_wait(priv, aso_mtr, true))
-		return -ENOMEM;
 	return 0;
 }
 
@@ -2141,12 +2116,16 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 	uint8_t *push_data = NULL, *push_data_m = NULL;
 	size_t data_size = 0, push_size = 0;
 	struct mlx5_hw_modify_header_action mhdr = { 0 };
+	struct rte_flow_error sub_error = {
+		.type = RTE_FLOW_ERROR_TYPE_NONE,
+		.cause = NULL,
+		.message = NULL,
+	};
 	bool actions_end = false;
 	uint32_t type;
 	bool reformat_used = false;
 	bool recom_used = false;
 	unsigned int of_vlan_offset;
-	uint16_t jump_pos;
 	uint32_t ct_idx;
 	int ret, err;
 	uint32_t target_grp = 0;
@@ -2249,7 +2228,7 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 					((const struct rte_flow_action_jump *)
 					actions->conf)->group;
 				acts->jump = flow_hw_jump_action_register
-						(dev, cfg, jump_group, error);
+						(dev, cfg, jump_group, &sub_error);
 				if (!acts->jump)
 					goto err;
 				acts->rule_acts[dr_pos].action = (!!attr->group) ?
@@ -2382,13 +2361,14 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 			break;
 		case RTE_FLOW_ACTION_TYPE_SEND_TO_KERNEL:
 			flow_hw_translate_group(dev, cfg, attr->group,
-						&target_grp, error);
+						&target_grp, &sub_error);
 			if (target_grp == 0) {
 				__flow_hw_action_template_destroy(dev, acts);
-				return rte_flow_error_set(error, ENOTSUP,
-						RTE_FLOW_ERROR_TYPE_ACTION,
-						NULL,
-						"Send to kernel action on root table is not supported in HW steering mode");
+				rte_flow_error_set(&sub_error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION,
+					NULL,
+					"Send to kernel action on root table is not supported in HW steering mode");
+					goto err;
 			}
 			table_type = attr->ingress ? MLX5DR_TABLE_TYPE_NIC_RX :
 				     ((attr->egress) ? MLX5DR_TABLE_TYPE_NIC_TX :
@@ -2398,45 +2378,26 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 		case RTE_FLOW_ACTION_TYPE_MODIFY_FIELD:
 			err = flow_hw_modify_field_compile(dev, attr, actions,
 							   masks, acts, &mhdr,
-							   src_pos, error);
+							   src_pos, &sub_error);
 			if (err)
 				goto err;
 			break;
 		case RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT:
 			if (flow_hw_represented_port_compile
 					(dev, attr, actions,
-					 masks, acts, src_pos, dr_pos, error))
-				goto err;
-			break;
-		case RTE_FLOW_ACTION_TYPE_METER:
-			/*
-			 * METER action is compiled to 2 DR actions - ASO_METER and FT.
-			 * Calculated DR offset is stored only for ASO_METER and FT
-			 * is assumed to be the next action.
-			 */
-			jump_pos = dr_pos + 1;
-			if (actions->conf && masks->conf &&
-			    ((const struct rte_flow_action_meter *)
-			     masks->conf)->mtr_id) {
-				err = flow_hw_meter_compile(dev, cfg,
-							    dr_pos, jump_pos, actions, acts, error);
-				if (err)
-					goto err;
-			} else if (__flow_hw_act_data_general_append(priv, acts,
-								     actions->type,
-								     src_pos,
-								     dr_pos))
+					 masks, acts, src_pos, dr_pos, &sub_error))
 				goto err;
 			break;
 		case RTE_FLOW_ACTION_TYPE_AGE:
 			flow_hw_translate_group(dev, cfg, attr->group,
-						&target_grp, error);
+						&target_grp, &sub_error);
 			if (target_grp == 0) {
 				__flow_hw_action_template_destroy(dev, acts);
-				return rte_flow_error_set(error, ENOTSUP,
-						RTE_FLOW_ERROR_TYPE_ACTION,
-						NULL,
-						"Age action on root table is not supported in HW steering mode");
+				rte_flow_error_set(&sub_error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION,
+					NULL,
+					"Age action on root table is not supported in HW steering mode");
+					goto err;
 			}
 			if (__flow_hw_act_data_general_append(priv, acts,
 							      actions->type,
@@ -2446,13 +2407,14 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 			break;
 		case RTE_FLOW_ACTION_TYPE_COUNT:
 			flow_hw_translate_group(dev, cfg, attr->group,
-						&target_grp, error);
+						&target_grp, &sub_error);
 			if (target_grp == 0) {
 				__flow_hw_action_template_destroy(dev, acts);
-				return rte_flow_error_set(error, ENOTSUP,
-						RTE_FLOW_ERROR_TYPE_ACTION,
-						NULL,
-						"Counter action on root table is not supported in HW steering mode");
+				rte_flow_error_set(&sub_error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION,
+					NULL,
+					"Counter action on root table is not supported in HW steering mode");
+					goto err;
 			}
 			if ((at->action_flags & MLX5_FLOW_ACTION_AGE) ||
 			    (at->action_flags & MLX5_FLOW_ACTION_INDIRECT_AGE))
@@ -2522,7 +2484,7 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 	}
 	if (mhdr.pos != UINT16_MAX) {
 		ret = mlx5_tbl_translate_modify_header(dev, cfg, acts, mp_ctx,
-						       &mhdr, error);
+						       &mhdr, &sub_error);
 		if (ret)
 			goto err;
 	}
@@ -2532,7 +2494,7 @@ __flow_hw_actions_translate(struct rte_eth_dev *dev,
 						  encap_data, encap_data_m,
 						  mp_ctx, data_size,
 						  reformat_src,
-						  refmt_type, error);
+						  refmt_type, &sub_error);
 		if (ret)
 			goto err;
 	}
@@ -2551,6 +2513,10 @@ err:
 		rte_errno = EINVAL;
 	err = rte_errno;
 	__flow_hw_action_template_destroy(dev, acts);
+	if (error != NULL && sub_error.type != RTE_FLOW_ERROR_TYPE_NONE) {
+		rte_memcpy(error, &sub_error, sizeof(sub_error));
+		return -EINVAL;
+	}
 	return rte_flow_error_set(error, err,
 				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 				  "fail to create rte table");
@@ -2971,7 +2937,6 @@ flow_hw_actions_construct(struct rte_eth_dev *dev,
 	const struct rte_flow_action_ipv6_ext_push *ipv6_push;
 	const struct rte_flow_item *enc_item = NULL;
 	const struct rte_flow_action_ethdev *port_action = NULL;
-	const struct rte_flow_action_meter *meter = NULL;
 	const struct rte_flow_action_age *age = NULL;
 	uint8_t *buf = job->encap_data;
 	uint8_t *push_buf = job->push_data;
@@ -3137,28 +3102,6 @@ flow_hw_actions_construct(struct rte_eth_dev *dev,
 			flow_hw_construct_quota(priv,
 						rule_acts + act_data->action_dst,
 						act_data->shared_meter.id);
-			break;
-		case RTE_FLOW_ACTION_TYPE_METER:
-			meter = action->conf;
-			mtr_id = meter->mtr_id;
-			aso_mtr = mlx5_aso_meter_by_idx(priv, mtr_id);
-			rule_acts[act_data->action_dst].action =
-				priv->mtr_bulk.action;
-			rule_acts[act_data->action_dst].aso_meter.offset =
-								aso_mtr->offset;
-			jump = flow_hw_jump_action_register
-				(dev, &table->cfg, aso_mtr->fm.group, NULL);
-			if (!jump)
-				goto error;
-			MLX5_ASSERT
-				(!rule_acts[act_data->action_dst + 1].action);
-			rule_acts[act_data->action_dst + 1].action =
-					(!!attr.group) ? jump->hws_action :
-							 jump->root_action;
-			job->flow->jump = jump;
-			job->flow->fate_type = MLX5_FLOW_FATE_JUMP;
-			if (mlx5_aso_mtr_wait(priv, aso_mtr, true))
-				goto error;
 			break;
 		case RTE_FLOW_ACTION_TYPE_AGE:
 			age = action->conf;
@@ -5404,6 +5347,10 @@ flow_hw_validate_action_indirect(struct rte_eth_dev *dev,
 		*action_flags |= MLX5_FLOW_ACTION_INDIRECT_COUNT;
 		break;
 	case RTE_FLOW_ACTION_TYPE_AGE:
+		if (action->conf && mask->conf)
+			return rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ACTION,
+						  action,
+						  "Fixed indirect age action is not supported");
 		ret = flow_hw_validate_action_age(dev, action, *action_flags,
 						  *fixed_cnt, error);
 		if (ret < 0)
@@ -5895,10 +5842,6 @@ mlx5_flow_hw_actions_validate(struct rte_eth_dev *dev,
 			}
 			action_flags |= MLX5_FLOW_ACTION_IPV6_ROUTING_REMOVE;
 			break;
-		case RTE_FLOW_ACTION_TYPE_METER:
-			/* TODO: Validation logic */
-			action_flags |= MLX5_FLOW_ACTION_METER;
-			break;
 		case RTE_FLOW_ACTION_TYPE_METER_MARK:
 			ret = flow_hw_validate_action_meter_mark(dev, action,
 								 error);
@@ -6203,13 +6146,6 @@ flow_hw_dr_actions_template_create(struct rte_eth_dev *dev,
 				type = mlx5_hw_dr_action_types[at->actions[i].type];
 				action_types[mhdr_off] = type;
 			}
-			break;
-		case RTE_FLOW_ACTION_TYPE_METER:
-			at->dr_off[i] = curr_off;
-			action_types[curr_off++] = MLX5DR_ACTION_TYP_ASO_METER;
-			if (curr_off >= MLX5_HW_MAX_ACTS)
-				goto err_actions_num;
-			action_types[curr_off++] = MLX5DR_ACTION_TYP_TBL;
 			break;
 		case RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN:
 			type = mlx5_hw_dr_action_types[at->actions[i].type];

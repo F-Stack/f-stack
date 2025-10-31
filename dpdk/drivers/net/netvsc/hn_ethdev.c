@@ -570,7 +570,7 @@ static void netvsc_hotplug_retry(void *args)
 	struct rte_devargs *d = &hot_ctx->da;
 	char buf[256];
 
-	DIR *di;
+	DIR *di = NULL;
 	struct dirent *dir;
 	struct ifreq req;
 	struct rte_ether_addr eth_addr;
@@ -590,7 +590,9 @@ static void netvsc_hotplug_retry(void *args)
 	if (!di) {
 		PMD_DRV_LOG(DEBUG, "%s: can't open directory %s, "
 			    "retrying in 1 second", __func__, buf);
-		goto retry;
+		/* The device is still being initialized, retry after 1 second */
+		rte_eal_alarm_set(1000000, netvsc_hotplug_retry, hot_ctx);
+		return;
 	}
 
 	while ((dir = readdir(di))) {
@@ -614,10 +616,9 @@ static void netvsc_hotplug_retry(void *args)
 				    dir->d_name);
 			break;
 		}
-		if (req.ifr_hwaddr.sa_family != ARPHRD_ETHER) {
-			closedir(di);
-			goto free_hotadd_ctx;
-		}
+		if (req.ifr_hwaddr.sa_family != ARPHRD_ETHER)
+			continue;
+
 		memcpy(eth_addr.addr_bytes, req.ifr_hwaddr.sa_data,
 		       RTE_DIM(eth_addr.addr_bytes));
 
@@ -636,22 +637,16 @@ static void netvsc_hotplug_retry(void *args)
 				PMD_DRV_LOG(ERR,
 					    "Failed to add PCI device %s",
 					    d->name);
-				break;
 			}
+
+			break;
 		}
-		/* When the code reaches here, we either have already added
-		 * the device, or its MAC address did not match.
-		 */
-		closedir(di);
-		goto free_hotadd_ctx;
 	}
-	closedir(di);
-retry:
-	/* The device is still being initialized, retry after 1 second */
-	rte_eal_alarm_set(1000000, netvsc_hotplug_retry, hot_ctx);
-	return;
 
 free_hotadd_ctx:
+	if (di)
+		closedir(di);
+
 	rte_spinlock_lock(&hv->hotadd_lock);
 	LIST_REMOVE(hot_ctx, list);
 	rte_spinlock_unlock(&hv->hotadd_lock);
@@ -814,8 +809,8 @@ static int hn_dev_stats_get(struct rte_eth_dev *dev,
 		stats->oerrors += txq->stats.errors;
 
 		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
-			stats->q_opackets[i] = txq->stats.packets;
-			stats->q_obytes[i] = txq->stats.bytes;
+			stats->q_opackets[i] += txq->stats.packets;
+			stats->q_obytes[i] += txq->stats.bytes;
 		}
 	}
 
@@ -831,12 +826,12 @@ static int hn_dev_stats_get(struct rte_eth_dev *dev,
 		stats->imissed += rxq->stats.ring_full;
 
 		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
-			stats->q_ipackets[i] = rxq->stats.packets;
-			stats->q_ibytes[i] = rxq->stats.bytes;
+			stats->q_ipackets[i] += rxq->stats.packets;
+			stats->q_ibytes[i] += rxq->stats.bytes;
 		}
 	}
 
-	stats->rx_nombuf = dev->data->rx_mbuf_alloc_failed;
+	stats->rx_nombuf += dev->data->rx_mbuf_alloc_failed;
 	return 0;
 }
 
