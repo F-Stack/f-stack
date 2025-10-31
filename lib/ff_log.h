@@ -31,11 +31,6 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <stdbool.h>
-
 /* FF log type, see rte_log.h */
 #define FF_LOGTYPE_EAL        0 /**< Log related to eal. */
 #define FF_LOGTYPE_MALLOC     1 /**< Log related to malloc. */
@@ -74,6 +69,7 @@ extern "C" {
 /** First identifier for extended logs */
 #define FF_LOGTYPE_FIRST_EXT_ID 32
 
+#define FF_LOG_DISABLE  0U /* 0 for disable log file */
 /* Can't use 0, as it gives compiler warnings */
 #define FF_LOG_EMERG    1U  /**< System is unusable.               */
 #define FF_LOG_ALERT    2U  /**< Action must be taken immediately. */
@@ -85,20 +81,47 @@ extern "C" {
 #define FF_LOG_DEBUG    8U  /**< Debug-level messages.             */
 #define FF_LOG_MAX FF_LOG_DEBUG /**< Most detailed log level.     */
 
+#define FF_LOGTYPE_FSTACK_APP FF_LOGTYPE_USER1
+
 #define FF_LOGTYPE_FSTACK_LIB       FF_LOGTYPE_USER7
 #define FF_LOGTYPE_FSTACK_FREEBSD   FF_LOGTYPE_USER8
 
-/* See rte_openlog_stream */
-int ff_openlog_stream(FILE *f);
+extern char FF_LOG_FILENAME_PREFIX[];
 
-/* See rte_log_set_global_level */
+/*
+ * Open F-Stack config or default log file.
+ * Set F-Stack lib and freebsd log level.
+ *
+ * return value:
+ * 0 : success.
+ * -1 : failed.
+ */
+int ff_log_open_set(void);
+
+/*
+ * Close F-Stack config or default log file.
+ * Should be called after use ff_log_reset_stream to set a custom FILE * streams
+ * in the app.
+ */
+void ff_log_close(void);
+
+/*
+ * The type of arg f is FILE *, and it managed by APP self.
+ * See rte_openlog_stream.
+ */
+int ff_log_reset_stream(void *f);
+
+/* See rte_log_set_global_level. */
 void ff_log_set_global_level(uint32_t level);
 
-/* See rte_log_set_level */
+/* See rte_log_set_level. */
 int ff_log_set_level(uint32_t logtype, uint32_t level);
 
-/* See rte_log */
+/* See rte_log. */
 int ff_log(uint32_t level, uint32_t logtype, const char *format, ...);
+
+/* See rte_vlog. */
+int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap);
 
 #ifdef __cplusplus
 }

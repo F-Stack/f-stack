@@ -44,6 +44,7 @@
 
 #include "ff_host_interface.h"
 #include "ff_errno.h"
+#include "ff_log.h"
 
 static struct timespec current_ts;
 extern void* ff_mem_get_page();
@@ -77,7 +78,7 @@ ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)
     void *ret = (mmap(addr, len, host_prot, host_flags, fd, offset));
 
     if (ret == MAP_FAILED) {
-        printf("fst mmap failed:%s\n", strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "fst mmap failed:%s\n", strerror(errno));
         exit(1);
     }
     return ret;

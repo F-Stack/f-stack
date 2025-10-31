@@ -31,6 +31,7 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <arpa/inet.h>
+#include <errno.h>
 #include <rte_log.h>
 #include <rte_config.h>
 #include <rte_string_fns.h>
@@ -38,22 +39,58 @@
 #include "ff_config.h"
 #include "ff_log.h"
 
-int ff_openlog_stream(FILE *f)
+#define FF_LOG_FILENAME_LEN 256
+
+char FF_LOG_FILENAME_PREFIX[] = "./f-stack-";
+static char ff_log_filename[FF_LOG_FILENAME_LEN];
+
+int
+ff_log_open_set(void)
 {
-    return rte_openlog_stream(f);
+    snprintf(ff_log_filename, sizeof(ff_log_filename) - 1, "%s%u.log",
+            ff_global_cfg.log.dir, ff_global_cfg.dpdk.proc_id);
+    ff_global_cfg.log.f = fopen(ff_log_filename, "a+");
+    if (ff_global_cfg.log.f == NULL) {
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+            "fopen log file %s failed, errno:%d, %s\n",
+            ff_log_filename, errno, strerror(errno));
+        return -1;
+    }
+
+    ff_log_reset_stream(ff_global_cfg.log.f);
+    ff_log_set_level(FF_LOGTYPE_FSTACK_LIB, ff_global_cfg.log.level);
+    ff_log_set_level(FF_LOGTYPE_FSTACK_FREEBSD, ff_global_cfg.log.level);
+
+    return 0;
 }
 
-void ff_log_set_global_level(uint32_t level)
+void
+ff_log_close(void)
+{
+    if (ff_global_cfg.log.f)
+        fclose(ff_global_cfg.log.f);
+}
+
+int
+ff_log_reset_stream(void *f)
+{
+    return rte_openlog_stream((FILE *)f);
+}
+
+void
+ff_log_set_global_level(uint32_t level)
 {
     rte_log_set_global_level(level);
 }
 
-int ff_log_set_level(uint32_t logtype, uint32_t level)
+int
+ff_log_set_level(uint32_t logtype, uint32_t level)
 {
     return rte_log_set_level(logtype, level);
 }
 
-int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
+int
+ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
 {
     va_list ap;
     int ret;
@@ -63,4 +100,10 @@ int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
     va_end(ap);
 
     return ret;
+}
+
+int
+ff_vlog(uint32_t level, uint32_t logtype, const char * format, va_list ap)
+{
+    return rte_vlog(level, logtype, format, ap);
 }

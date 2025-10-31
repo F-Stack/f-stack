@@ -36,6 +36,7 @@
 
 #include "ff_config.h"
 #include "ff_ini_parser.h"
+#include "ff_log.h"
 
 #define DEFAULT_CONFIG_FILE   "config.ini"
 
@@ -942,6 +943,10 @@ ini_parse_handler(void* user, const char* section, const char* name,
     #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
     if (MATCH("dpdk", "log_level")) {
         pconfig->dpdk.log_level = atoi(value);
+    } else if (MATCH("dpdk", "fstack_log_level")) {
+        pconfig->log.level = atoi(value);
+    } else if (MATCH("dpdk", "fstack_log_file_prefix")) {
+        pconfig->log.dir = strdup(value);
     } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
     } else if (MATCH("dpdk", "memory")) {
@@ -1339,6 +1344,9 @@ ff_default_config(struct ff_config *cfg)
     cfg->freebsd.physmem = 1048576*256;
     cfg->freebsd.fd_reserve = 0;
     cfg->freebsd.mem_size = 256;
+
+    cfg->log.level = FF_LOG_DISABLE;
+    cfg->log.dir = FF_LOG_FILENAME_PREFIX;
 }
 
 int

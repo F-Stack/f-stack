@@ -72,3 +72,9 @@ ff_restore_curthread
 ff_rss_tbl_init
 ff_veth_get_softc
 ff_veth_free_softc
+ff_openlog_stream
+ff_log_set_global_level
+ff_log_set_level
+ff_log
+ff_vlog
+ff_log_clse

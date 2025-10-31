@@ -281,12 +281,13 @@ endif
 
 FF_HOST_SRCS+=              \
 	ff_host_interface.c \
-	ff_thread.c			\
+	ff_thread.c         \
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
+	ff_log.c            \
 	ff_init.c	
 
 ifdef FF_KNI
@@ -740,6 +741,7 @@ install:
 	rm -rf ${PREFIX_INCLUDE}/ff_event.h
 	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_INCLUDE}/ff_log.h
 	rm -rf ${PREFIX_BIN}/ff_start
 
 	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
@@ -749,6 +751,7 @@ install:
 	cp -f ff_event.h ${PREFIX_INCLUDE}/ff_event.h
 	cp -f ff_errno.h ${PREFIX_INCLUDE}/ff_errno.h
 	cp -f ff_epoll.h ${PREFIX_INCLUDE}/ff_epoll.h
+	cp -f ff_log.h ${PREFIX_INCLUDE}/ff_log.h
 	cp -f ${TOPDIR}/start.sh ${PREFIX_BIN}/ff_start
 	test -f '${F-STACK_CONF}' || cp -f ${TOPDIR}/config.ini ${F-STACK_CONF}
 
@@ -760,6 +763,7 @@ uninstall:
 	rm -rf ${PREFIX_INCLUDE}/ff_event.h
 	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_INCLUDE}/ff_log.h
 	rm -rf ${PREFIX_BIN}/ff_start
 	rm -rf ${F-STACK_CONF}
 
