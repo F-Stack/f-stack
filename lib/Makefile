@@ -1,4 +1,4 @@
-# 
+#
 # Copyright (c) 2013 Patrick Kelsey. All rights reserved.
 # Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
 # All rights reserved.
@@ -31,9 +31,9 @@ HOST_OS:=$(shell uname -s)
 #DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 # No DPDK KNI support on FreeBSD
+# Enable KNI, via viritio only, no longer support rte_kni.ko.
 ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
-#FF_KNI_KNI=1
 endif
 
 #FF_FLOW_ISOLATE=1
@@ -79,15 +79,11 @@ endif
 ifndef DEBUG
 HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb -Wno-format-truncation
 else
-HOST_CFLAGS = ${DEBUG} 
+HOST_CFLAGS = ${DEBUG}
 endif
 
 ifdef FF_KNI
 HOST_CFLAGS+= -DFF_KNI
-endif
-
-ifdef FF_KNI_KNI
-HOST_CFLAGS+= -DFF_KNI_KNI
 endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}
@@ -124,7 +120,7 @@ CFLAGS+= -DINET
 GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
 ifeq "$(GCCVERGE10)" "1"
     CFLAGS+= -Wno-error=stringop-overflow
-endif 
+endif
 
 GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
 ifeq "$(GCCVERGE11)" "1"
@@ -288,7 +284,7 @@ FF_HOST_SRCS+=              \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
 	ff_log.c            \
-	ff_init.c	
+	ff_init.c
 
 ifdef FF_KNI
 FF_HOST_SRCS+=              \
@@ -578,7 +574,7 @@ EXTRA_TCP_STACKS_SRCS+=		\
 	bbr.c
 endif
 
- 
+
 ifneq ($(TGT_OS),FreeBSD)
 ifndef FF_KNI
 FF_HOST_SRCS+=         \
@@ -677,7 +673,7 @@ all: libfstack.a
 libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} ${ASM_OBJS} ${OBJS}
 	${LD} -d -r -o $*.ro ${ASM_OBJS} ${OBJS}
 	nm $*.ro  | grep -v ' U ' | cut -d ' ' -f 3 > $*_localize_list.tmp
-	objcopy --localize-symbols=$*_localize_list.tmp $*.ro 
+	objcopy --localize-symbols=$*_localize_list.tmp $*.ro
 	rm $*_localize_list.tmp
 	objcopy --globalize-symbols=ff_api.symlist $*.ro
 	rm -f $@

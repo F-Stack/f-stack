@@ -32,9 +32,6 @@
 #include <rte_ether.h>
 #include <rte_bus_pci.h>
 #include <rte_ethdev.h>
-#ifdef FF_KNI_KNI
-#include <rte_kni.h>
-#endif
 #include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_ip.h>
@@ -73,10 +70,6 @@ static unsigned char *tcp_port_bitmap = NULL;
 
 /* Structure type for recording kni interface specific stats */
 struct kni_interface_stats {
-#ifdef FF_KNI_KNI
-    struct rte_kni *kni;
-#endif
-
     /* port id of dev or virtio_user */
     uint16_t port_id;
 
@@ -140,78 +133,6 @@ kni_set_bitmap(const char *p, unsigned char *port_bitmap)
     }
 }
 
-#ifdef FF_KNI_KNI
-/* Currently we don't support change mtu. */
-static int
-kni_change_mtu(__rte_unused uint16_t port_id, __rte_unused unsigned new_mtu)
-{
-    return 0;
-}
-
-static int
-kni_config_network_interface(uint16_t port_id, uint8_t if_up)
-{
-    int ret = 0;
-
-    if (!rte_eth_dev_is_valid_port(port_id)) {
-        printf("Invalid port id %d\n", port_id);
-        return -EINVAL;
-    }
-
-    printf("Configure network interface of %d %s\n",
-            port_id, if_up ? "up" : "down");
-
-    ret = (if_up) ?
-        rte_eth_dev_set_link_up(port_id) :
-        rte_eth_dev_set_link_down(port_id);
-
-    /*
-     * Some NIC drivers will crash in secondary process after config kni , Such as ENA with DPDK-21.22.3.
-     * If you meet this crash, you can try disable the code below and return 0 directly.
-     * Or run primary first, then config kni interface in kernel, and run secondary processes last.
-     */
-    if(-ENOTSUP == ret) {
-        if (if_up != 0) {
-            /* Configure network interface up */
-            rte_eth_dev_stop(port_id);
-            ret = rte_eth_dev_start(port_id);
-        } else {
-            /* Configure network interface down */
-            rte_eth_dev_stop(port_id);
-            ret = 0;
-        }
-    }
-
-    if (ret < 0)
-        printf("Failed to Configure network interface of %d %s\n",
-            port_id, if_up ? "up" : "down");
-
-    return ret;
-}
-
-/* Callback for request of configuring mac address */
-static int
-kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
-{
-    int ret = 0;
-
-    if (!rte_eth_dev_is_valid_port(port_id)) {
-        printf("Invalid port id %d\n", port_id);
-        return -EINVAL;
-    }
-
-    printf("Port %u Address:"RTE_ETHER_ADDR_PRT_FMT"\n",
-            port_id, RTE_ETHER_ADDR_BYTES((struct rte_ether_addr *)mac_addr));
-
-    ret = rte_eth_dev_default_mac_addr_set(port_id,
-                       (struct rte_ether_addr *)mac_addr);
-    if (ret < 0)
-        printf("Failed to config mac_addr for port %d\n", port_id);
-
-    return ret;
-}
-#endif
-
 static int
 kni_process_tx(uint16_t port_id, __rte_unused uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
@@ -235,20 +156,7 @@ kni_process_tx(uint16_t port_id, __rte_unused uint16_t queue_id,
         nb_to_tx = nb_tx;
     }
 
-#ifdef FF_KNI_KNI
-    if (ff_global_cfg.kni.type == KNI_TYPE_KNI) {
-        /* NB.
-         * if nb_tx is 0,it must call rte_kni_tx_burst
-         * must Call regularly rte_kni_tx_burst(kni, NULL, 0).
-         * detail https://embedded.communities.intel.com/thread/6668
-         */
-        nb_kni_tx = rte_kni_tx_burst(kni_stat[port_id]->kni, pkts_burst, nb_to_tx);
-        rte_kni_handle_request(kni_stat[port_id]->kni);
-    } else if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
-#endif
-    {
-        nb_kni_tx = rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, nb_to_tx);
-    }
+    nb_kni_tx = rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, nb_to_tx);
 
     if(nb_kni_tx < nb_tx) {
         uint16_t i;
@@ -268,15 +176,7 @@ kni_process_rx(uint16_t port_id, uint16_t queue_id,
 {
     uint16_t nb_kni_rx = 0, nb_rx;
 
-#ifdef FF_KNI_KNI
-    if (ff_global_cfg.kni.type == KNI_TYPE_KNI) {
-        /* read packet from kni, and transmit to phy port */
-        nb_kni_rx = rte_kni_rx_burst(kni_stat[port_id]->kni, pkts_burst, count);
-    } else if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
-#endif
-    {
-        nb_kni_rx = rte_eth_rx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, count);
-    }
+    nb_kni_rx = rte_eth_rx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, count);
 
     if (nb_kni_rx > 0) {
         nb_rx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_kni_rx);
@@ -474,7 +374,7 @@ ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type)
 }
 
 void
-ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports, const char *udp_ports)
+ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         kni_stat = rte_zmalloc("kni:stat",
@@ -483,12 +383,6 @@ ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports, const char *udp_
         if (kni_stat == NULL)
             rte_exit(EXIT_FAILURE, "rte_zmalloc(1 (struct netio_kni_stat *)) "
                 "failed\n");
-
-        if (type == KNI_TYPE_KNI) {
-#ifdef FF_KNI_KNI
-            rte_kni_init(nb_ports);
-#endif
-        }
     }
 
     uint16_t lcoreid = rte_lcore_id();
@@ -526,8 +420,8 @@ ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports, const char *udp_
 }
 
 void
-ff_kni_alloc(uint16_t port_id, unsigned socket_id, __rte_unused int type, int port_idx,
-    __rte_unused struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
+ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
+    unsigned ring_queue_size)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         struct rte_ether_addr addr = {{0}};
@@ -553,60 +447,27 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, __rte_unused int type, int po
         printf("ff_kni_alloc get Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
             (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
-#ifdef FF_KNI_KNI
-        if (type == KNI_TYPE_KNI) {
-            struct rte_kni_conf conf;
-            struct rte_kni_ops ops;
+        /*
+         * to add virtio port for exception path(KNI),
+         * see https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html#virtio-user-as-exception-path
+         */
+        char port_name[32];
+        char port_args[256];
 
-            /* only support one kni */
-            memset(&conf, 0, sizeof(conf));
-            snprintf(conf.name, RTE_KNI_NAMESIZE, "veth%u", port_id);
-            conf.core_id = rte_lcore_id();
-            conf.force_bind = 1;
-            conf.group_id = port_id;
-            uint16_t mtu;
-            rte_eth_dev_get_mtu(port_id, &mtu);
-            conf.mbuf_size = mtu + KNI_ENET_HEADER_SIZE + KNI_ENET_FCS_SIZE;
-            rte_memcpy(&conf.addr, addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+        /* set the name and arguments */
+        snprintf(port_name, sizeof(port_name), "virtio_user%u", port_id);
+        snprintf(port_args, sizeof(port_args),
+            "path=/dev/vhost-net,queues=1,queue_size=%u,iface=veth%d,mac=" RTE_ETHER_ADDR_PRT_FMT,
+            ring_queue_size, port_id, RTE_ETHER_ADDR_BYTES(&addr));
+        printf("ff_kni_alloc to rte_eal_hotplug_add virtio user port, portname:%s, portargs:%s\n",
+            port_name, port_args);
 
-            memset(&ops, 0, sizeof(ops));
-            ops.port_id = port_id;
-            ops.change_mtu = kni_change_mtu;
-            ops.config_network_if = kni_config_network_interface;
-            ops.config_mac_address = kni_config_mac_address;
-
-            kni_stat[port_id]->kni = rte_kni_alloc(mbuf_pool, &conf, &ops);
-            if (kni_stat[port_id]->kni == NULL)
-                rte_panic("create kni on port %u failed!\n", port_id);
-            else
-                printf("create kni on port %u success!\n", port_id);
-
-            kni_stat[port_id]->port_id = port_id;
-        } else if (type == KNI_TYPE_VIRTIO)
-#endif
-        {
-            /*
-             * to add virtio port for exception path(KNI),
-             * see https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html#virtio-user-as-exception-path
-             */
-            char port_name[32];
-            char port_args[256];
-
-            /* set the name and arguments */
-            snprintf(port_name, sizeof(port_name), "virtio_user%u", port_id);
-            snprintf(port_args, sizeof(port_args),
-                "path=/dev/vhost-net,queues=1,queue_size=%u,iface=veth%d,mac=" RTE_ETHER_ADDR_PRT_FMT,
-                ring_queue_size, port_id, RTE_ETHER_ADDR_BYTES(&addr));
-            printf("ff_kni_alloc to rte_eal_hotplug_add virtio user port, portname:%s, portargs:%s\n",
-                port_name, port_args);
-
-            /* add the vdev for virtio_user */
-            if (rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
-                rte_exit(EXIT_FAILURE, "ff_kni_alloc cannot create virtio user paired port for port %u\n", port_id);
-            }
-
-            kni_stat[port_id]->port_id = port_idx + nb_dev_ports;
+        /* add the vdev for virtio_user */
+        if (rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
+            rte_exit(EXIT_FAILURE, "ff_kni_alloc cannot create virtio user paired port for port %u\n", port_id);
         }
+
+        kni_stat[port_id]->port_id = port_idx + nb_dev_ports;
     }
 
     char ring_name[RTE_KNI_NAMESIZE];

@@ -545,7 +545,7 @@ init_kni(void)
 
     knictl_action = get_kni_action(ff_global_cfg.kni.kni_action);
 
-    ff_kni_init(nb_ports, ff_global_cfg.kni.type, ff_global_cfg.kni.tcp_port,
+    ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
 
     unsigned socket_id = lcore_conf.socket_id;
@@ -555,7 +555,7 @@ init_kni(void)
     int i, ret;
     for (i = 0; i < nb_ports; i++) {
         uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
-        ff_kni_alloc(port_id, socket_id, ff_global_cfg.kni.type, i, mbuf_pool, KNI_QUEUE_SIZE);
+        ff_kni_alloc(port_id, socket_id, i, KNI_QUEUE_SIZE);
     }
 
     return 0;
@@ -601,12 +601,7 @@ init_port_start(void)
     total_nb_ports = nb_ports;
 #ifdef FF_KNI
     if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
-#ifdef FF_KNI_KNI
-        if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
-#endif
-        {
             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
-        }
     }
 #endif
 
