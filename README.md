@@ -49,9 +49,8 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     cd f-stack
     # Compile DPDK
     cd dpdk/
-    # re-enable kni now, to remove kni later
-    # disable crypto/openssl,net/ice for Redhat/Centos 7.x.
-    meson -Denable_kmods=true -Ddisable_libs=flow_classify -Ddisable_drivers=crypto/openssl,net/ice build
+    # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
+    meson -Denable_kmods=true build
     ninja -C build
     ninja -C build install
 
@@ -74,7 +73,6 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # For Linux:
     modprobe uio
     insmod /data/f-stack/dpdk/build/kernel/linux/igb_uio/igb_uio.ko
-    insmod /data/f-stack/dpdk/build/kernel/linux/kni/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
@@ -148,7 +146,6 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     sleep 10
     ifconfig veth0 <ipaddr>  netmask <netmask>  broadcast <broadcast> hw ether <mac addr>
     route add -net 0.0.0.0 gw <gateway> dev veth0
-    echo 1 > /sys/class/net/veth0/carrier # if `carrier=on` not set while `insmod rte_kni.ko` 
     # route add -net ...  # other route rules
 
 ## Nginx Testing Result
