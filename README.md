@@ -37,7 +37,6 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     yum install numactl-devel          # on Centos
     #sudo apt-get install libnuma-dev  # on Ubuntu
 
-    pip3 install pyelftools --upgrade
     # Install python and modules for running DPDK python scripts
     pip3 install pyelftools --upgrade # RedHat/Centos
     sudo apt install python # On ubuntu
