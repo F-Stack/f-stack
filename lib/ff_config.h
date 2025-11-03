@@ -263,6 +263,7 @@ struct ff_config {
     struct {
         int level;
         const char *dir;
+        void *f; /* FILE * */
     } log;
 
     struct {

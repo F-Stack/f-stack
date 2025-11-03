@@ -13,6 +13,7 @@
 #include "ff_config.h"
 #include "ff_api.h"
 #include "ff_epoll.h"
+#include "ff_log.h"
 
 
 #define MAX_EVENTS 512
@@ -23,7 +24,7 @@ struct epoll_event events[MAX_EVENTS];
 int epfd;
 int sockfd;
 
-char html[] = 
+char html[] =
 "HTTP/1.1 200 OK\r\n"
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
@@ -75,12 +76,12 @@ int loop(void *arg)
                 ev.data.fd = nclientfd;
                 ev.events  = EPOLLIN;
                 if (ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
-                    printf("ff_epoll_ctl failed:%d, %s\n", errno,
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_epoll_ctl failed:%d, %s\n", errno,
                         strerror(errno));
                     break;
                 }
             }
-        } else { 
+        } else {
             if (events[i].events & EPOLLERR ) {
                 /* Simply close socket */
                 ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
@@ -95,7 +96,7 @@ int loop(void *arg)
                     ff_close( events[i].data.fd);
                 }
             } else {
-                printf("unknown event: %8.8X\n", events[i].events);
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_APP, "unknown event: %8.8X\n", events[i].events);
             }
         }
     }
@@ -106,9 +107,9 @@ int main(int argc, char * argv[])
     ff_init(argc, argv);
 
     sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
-    printf("sockfd:%d\n", sockfd);
+    ff_log(FF_LOG_DEBUG, FF_LOGTYPE_FSTACK_APP, "sockfd:%d\n", sockfd);
     if (sockfd < 0) {
-        printf("ff_socket failed\n");
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed\n");
         exit(1);
     }
 
@@ -123,13 +124,13 @@ int main(int argc, char * argv[])
 
     int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
     if (ret < 0) {
-        printf("ff_bind failed\n");
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed\n");
         exit(1);
     }
 
     ret = ff_listen(sockfd, MAX_EVENTS);
     if (ret < 0) {
-        printf("ff_listen failed\n");
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed\n");
         exit(1);
     }
 

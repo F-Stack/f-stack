@@ -68,12 +68,24 @@ __FBSDID("$FreeBSD$");
  */
 #include <machine/stdarg.h>
 
+#include "ff_log.h"
+
 #define TOCONS    0x01
 #define TOTTY    0x02
 #define TOLOG    0x04
 
 /* Max number conversion buffer length: a u_quad_t in base 2, plus NUL byte. */
 #define MAXNBUF    (sizeof(intmax_t) * NBBY + 1)
+
+#ifndef PRINTF_BUFR_SIZE
+#define PRINTF_BUFR_SIZE 256
+#endif
+
+#ifdef PRINTF_BUFR_SIZE
+char bufr[PRINTF_BUFR_SIZE];
+#endif
+
+static int putbuf_done = 0;
 
 struct putchar_arg {
     int flags;
@@ -90,9 +102,11 @@ struct snprintf_arg {
     size_t remain;
 };
 
-int putchar(int c);
-int puts(const char *str);
-
+//int putchar(int c);
+//int puts(const char *str);
+/* Use ff_vlog/rte_vlog instead of putchar/puts's stdout */
+#define putchar(c) ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_FREEBSD, "%c", c)
+#define puts(str) ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_FREEBSD, "%s", str)
 
 static char *ksprintn(char *nbuf, uintmax_t num, int base, int *len, int upper);
 
@@ -145,6 +159,7 @@ putbuf(int c, struct putchar_arg *ap)
             ap->p_next = ap->p_bufr;
             ap->remain = ap->n_bufr;
             *ap->p_next = '\0';
+            putbuf_done = 1;
         }
 
         /*
@@ -170,16 +185,9 @@ kputchar(int c, void *arg)
 {
     struct putchar_arg *ap = (struct putchar_arg*) arg;
     int flags = ap->flags;
-    int putbuf_done = 0;
 
     if (flags & TOCONS) {
         putbuf(c, ap);
-        putbuf_done = 1;
-    }
-
-    if ((flags & TOLOG) && (putbuf_done == 0)) {
-        if (c != '\0')
-            putbuf(c, ap);
     }
 }
 
@@ -512,7 +520,7 @@ number:
             while (percent < fmt)
                 PCHAR(*percent++);
             /*
-             * Since we ignore an formatting argument it is no 
+             * Since we ignore an formatting argument it is no
              * longer safe to obey the remaining formatting
              * arguments as the arguments will no longer match
              * the format specs.
@@ -542,9 +550,6 @@ vprintf(const char *fmt, va_list ap)
 {
     struct putchar_arg pca;
     int retval;
-#ifdef PRINTF_BUFR_SIZE
-    char bufr[PRINTF_BUFR_SIZE];
-#endif
 
     pca.tty = NULL;
     pca.flags = TOCONS | TOLOG;
@@ -560,15 +565,32 @@ vprintf(const char *fmt, va_list ap)
     pca.p_bufr = NULL;
 #endif
 
+    putbuf_done = 0;
+
     retval = kvprintf(fmt, kputchar, &pca, 10, ap);
 
 #ifdef PRINTF_BUFR_SIZE
     /* Write any buffered console/log output: */
-    if (*pca.p_bufr != '\0') {
-        cnputs(pca.p_bufr);
-        msglogstr(pca.p_bufr, pca.pri, /*filter_cr*/ 1);
+    if (*pca.p_bufr != '\0' && putbuf_done == 0) {
+        puts(pca.p_bufr);
     }
 #endif
 
     return (retval);
+}
+
+void
+vlog(int level, const char *fmt, va_list ap)
+{
+    (void)vprintf(fmt, ap);
+}
+
+void
+log(int level, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vlog(level, fmt, ap);
+    va_end(ap);
 }

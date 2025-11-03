@@ -64,6 +64,7 @@
 #include "ff_msg.h"
 #include "ff_api.h"
 #include "ff_memory.h"
+#include "ff_log.h"
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
@@ -185,8 +186,7 @@ check_all_ports_link_status(void)
     uint8_t count, all_ports_up, print_flag = 0;
     struct rte_eth_link link;
 
-    printf("\nChecking link status");
-    fflush(stdout);
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "\nChecking link status");
 
     int i, nb_ports;
     nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -200,13 +200,13 @@ check_all_ports_link_status(void)
             /* print link status if flag set */
             if (print_flag == 1) {
                 if (link.link_status) {
-                    printf("Port %d Link Up - speed %u "
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %d Link Up - speed %u "
                         "Mbps - %s\n", (int)portid,
                         (unsigned)link.link_speed,
                         (link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
                         ("full-duplex") : ("half-duplex\n"));
                 } else {
-                    printf("Port %d Link Down\n", (int)portid);
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Port %d Link Down\n", (int)portid);
                 }
                 continue;
             }
@@ -222,15 +222,14 @@ check_all_ports_link_status(void)
             break;
 
         if (all_ports_up == 0) {
-            printf(".");
-            fflush(stdout);
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, ".");
             rte_delay_ms(CHECK_INTERVAL);
         }
 
         /* set the print_flag if all ports up or timeout */
         if (all_ports_up == 1 || count == (MAX_CHECK_TIME - 1)) {
             print_flag = 1;
-            printf("done\n");
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "done\n");
         }
     }
 }
@@ -280,7 +279,7 @@ init_lcore_conf(void)
         if (queueid < 0) {
             continue;
         }
-        printf("lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
+        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
         uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
         lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
         lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
@@ -359,7 +358,7 @@ init_mem_pool(void)
         if (pktmbuf_pool[socketid] == NULL) {
             rte_exit(EXIT_FAILURE, "Cannot create mbuf pool on socket %d\n", socketid);
         } else {
-            printf("create mbuf pool on socket %d\n", socketid);
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "create mbuf pool on socket %d\n", socketid);
         }
 
 #ifdef FF_USE_PAGE_ARRAY
@@ -433,7 +432,7 @@ init_dispatch_ring(void)
             if (dispatch_ring[portid][queueid] == NULL)
                 rte_panic("create ring:%s failed!\n", name_buf);
 
-            printf("create ring:%s success, %u ring entries are now free!\n",
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "create ring:%s success, %u ring entries are now free!\n",
                 name_buf, rte_ring_free_count(dispatch_ring[portid][queueid]));
         }
     }
@@ -615,7 +614,7 @@ init_port_start(void)
         for (j=0; j<=nb_slaves; j++) {
             if (j < nb_slaves) {
                 port_id = pconf->slave_portid_list[j];
-                printf("To init %s's %d'st slave port[%d]\n",
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "To init %s's %d'st slave port[%d]\n",
                         ff_global_cfg.dpdk.bond_cfgs->name,
                         j, port_id);
             } else {
@@ -647,7 +646,7 @@ init_port_start(void)
 
             struct rte_ether_addr addr;
             rte_eth_macaddr_get(port_id, &addr);
-            printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
                     (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
             /* Only config dev port, but not kernel virtio user port */
@@ -665,7 +664,7 @@ init_port_start(void)
                         rsskey_len = 52;
                     }
                     if (ff_global_cfg.dpdk.symmetric_rss) {
-                        printf("Use symmetric Receive-side Scaling(RSS) key\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Use symmetric Receive-side Scaling(RSS) key\n");
                         rsskey = symmetric_rsskey;
                     }
                     port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
@@ -673,7 +672,7 @@ init_port_start(void)
                     port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
                     if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
                             ETH_RSS_PROTO_MASK) {
-                        printf("Port %u modified RSS hash function based on hardware support,"
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u modified RSS hash function based on hardware support,"
                                 "requested:%#"PRIx64" configured:%#"PRIx64"\n",
                                 port_id, default_rss_hf,
                                 port_conf.rx_adv_conf.rss_conf.rss_hf);
@@ -689,7 +688,7 @@ init_port_start(void)
                 if (ff_global_cfg.dpdk.vlan_strip) {
                     if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
                         port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
-                        printf("RX vlan strip offload supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "RX vlan strip offload supported\n");
                     }
                 }
 
@@ -701,9 +700,9 @@ init_port_start(void)
                 if (ff_global_cfg.dpdk.nb_vlan_filter) {
                     if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_FILTER) {
                         port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_FILTER;
-                        printf("RX vlan filter offload supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "RX vlan filter offload supported\n");
                     } else {
-                        printf("RX vlan filter offload not supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "RX vlan filter offload not supported\n");
                     }
                 }
 
@@ -713,7 +712,7 @@ init_port_start(void)
                 /* FIXME: Enable TCP LRO ?*/
                 #if 0
                 if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
-                    printf("LRO is supported\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is supported\n");
                     port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
                     pconf->hw_features.rx_lro = 1;
                 }
@@ -723,39 +722,39 @@ init_port_start(void)
                 if ((dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
                     (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
                     (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
-                    printf("RX checksum offload supported\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "RX checksum offload supported\n");
                     port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
                     pconf->hw_features.rx_csum = 1;
                 }
 
                 if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
                     if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
-                        printf("TX ip checksum offload supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX ip checksum offload supported\n");
                         port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
                         pconf->hw_features.tx_csum_ip = 1;
                     }
 
                     if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
                         (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
-                        printf("TX TCP&UDP checksum offload supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX TCP&UDP checksum offload supported\n");
                         port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM;
                         pconf->hw_features.tx_csum_l4 = 1;
                     }
                 } else {
-                    printf("TX checksum offoad is disabled\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX checksum offoad is disabled\n");
                 }
 
                 if (ff_global_cfg.dpdk.tso) {
                     if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
-                        printf("TSO is supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is supported\n");
                         port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
                         pconf->hw_features.tx_tso = 1;
                     }
                     else {
-                        printf("TSO is not supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is not supported\n");
                     }
                 } else {
-                    printf("TSO is disabled\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is disabled\n");
                 }
 
                 if (dev_info.reta_size) {
@@ -763,7 +762,7 @@ init_port_start(void)
                     assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
 
                     rss_reta_size[port_id] = dev_info.reta_size;
-                    printf("port[%d]: rss table size: %d\n", port_id,
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "port[%d]: rss table size: %d\n", port_id,
                         dev_info.reta_size);
                 }
             }
@@ -786,10 +785,10 @@ init_port_start(void)
                     vlan_id = ff_global_cfg.dpdk.vlan_filter_id[vlan_idx];
 
                     if (rte_eth_dev_vlan_filter(port_id, vlan_id, on)) {
-                        printf("Port %u set vlan filter id %u on %d failed.\n",
+                        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Port %u set vlan filter id %u on %d failed.\n",
                             port_id, vlan_id, on);
                     } else {
-                        printf("Port %u set vlan filter id %u on %d success.\n",
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u set vlan filter id %u on %d success.\n",
                             port_id, vlan_id, on);
                     }
                 }
@@ -799,7 +798,7 @@ init_port_start(void)
             static uint16_t nb_txd = TX_QUEUE_SIZE;
             ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
             if (ret < 0)
-                printf("Could not adjust number of descriptors "
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Could not adjust number of descriptors "
                         "for port%u (%d)\n", (unsigned)port_id, ret);
 
             uint16_t q;
@@ -831,7 +830,7 @@ init_port_start(void)
                     strlen(dev_info.driver_name)) == 0) {
 
                 rte_eth_macaddr_get(port_id, &addr);
-                printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
                         (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
                 rte_memcpy(pconf->mac,
@@ -841,13 +840,13 @@ init_port_start(void)
                 uint16_t slaves[RTE_MAX_ETHPORTS], len = RTE_MAX_ETHPORTS;
 
                 mode = rte_eth_bond_mode_get(port_id);
-                printf("Port %u, bond mode:%d\n", port_id, mode);
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, bond mode:%d\n", port_id, mode);
 
                 count = rte_eth_bond_slaves_get(port_id, slaves, len);
-                printf("Port %u, %s's slave ports count:%d\n", port_id,
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, %s's slave ports count:%d\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, count);
                 for (x=0; x<count; x++) {
-                    printf("Port %u, %s's slave port[%u]\n", port_id,
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, %s's slave port[%u]\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, slaves[x]);
                 }
             }
@@ -880,9 +879,9 @@ init_port_start(void)
             if (ff_global_cfg.dpdk.promiscuous) {
                 ret = rte_eth_promiscuous_enable(port_id);
                 if (ret == 0) {
-                    printf("set port %u to promiscuous mode ok\n", port_id);
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode ok\n", port_id);
                 } else {
-                    printf("set port %u to promiscuous mode error\n", port_id);
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode error\n", port_id);
                 }
             }
         }
@@ -945,7 +944,7 @@ port_flow_complain(struct rte_flow_error *error)
         errstr = "unknown type";
     else
         errstr = errstrlist[error->type];
-    printf("Caught error type %d (%s): %s%s: %s\n",
+    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Caught error type %d (%s): %s%s: %s\n",
            error->type, errstr,
            error->cause ? (snprintf(buf, sizeof(buf), "cause: %p, ",
                                     error->cause), buf) : "",
@@ -966,7 +965,7 @@ port_flow_isolate(uint16_t port_id, int set)
     memset(&error, 0x66, sizeof(error));
     if (rte_flow_isolate(port_id, set, &error))
         return port_flow_complain(&error);
-    printf("Ingress traffic on port %u is %s to the defined flow rules\n",
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Ingress traffic on port %u is %s to the defined flow rules\n",
            port_id,
            set ? "now restricted" : "not restricted anymore");
     return 0;
@@ -1156,9 +1155,7 @@ create_ipip_flow(uint16_t port_id) {
     };
     // 4. Hardware capability check and fallback handling
     if (!(dev_info.flow_type_rss_offloads & ETH_RSS_NONFRAG_IPV4_TCP)) {
-        // printf("warning: inner TCP RSS not supported, fallback to outer RSS\n");
-        fprintf(stderr, "Fallback handling!!!\n");
-        printf("I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n");
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n");
         rss.level = 0;  // fallback to outer RSS
         rss.types = RTE_ETH_FLOW_IPV4;  // update to outer protocol type
     }
@@ -1224,15 +1221,14 @@ create_ipip_flow(uint16_t port_id) {
     if (!rte_flow_validate(port_id, &attr, pattern, action, &error)) {
         flow = rte_flow_create(port_id, &attr, pattern, action, &error);
         if (!flow) {
-            fprintf(stderr, "Flow rule creation failed: %s\n", error.message);
+            ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Flow rule creation failed: %s\n", error.message);
             return -error.type;
         }
     } else {
-        fprintf(stderr, "Flow rule validation failed: %s\n", error.message);
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Flow rule validation failed: %s\n", error.message);
         return -error.type;
     }
-    fprintf(stderr, "IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
-    printf("IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
     return 0;
 }
 #endif
@@ -1357,6 +1353,10 @@ ff_dpdk_init(int argc, char **argv)
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+    }
+
+    if (ff_global_cfg.log.level) {
+        ff_log_open_set();
     }
 
     numa_on = ff_global_cfg.dpdk.numa_on;
@@ -1878,10 +1878,23 @@ handle_knictl_msg(struct ff_msg *msg)
 {
     if (msg->knictl.kni_cmd == FF_KNICTL_CMD_SET){
         switch (msg->knictl.kni_action){
-            case FF_KNICTL_ACTION_ALL_TO_FF: knictl_action = FF_KNICTL_ACTION_ALL_TO_FF; msg->result = 0; printf("new kni action: alltoff\n"); break;
-            case FF_KNICTL_ACTION_ALL_TO_KNI: knictl_action = FF_KNICTL_ACTION_ALL_TO_KNI; msg->result = 0; printf("new kni action: alltokni\n"); break;
-            case FF_KNICTL_ACTION_DEFAULT: knictl_action = FF_KNICTL_ACTION_DEFAULT; msg->result = 0; printf("new kni action: default\n"); break;
-            default: msg->result = -1;
+            case FF_KNICTL_ACTION_ALL_TO_FF:
+                knictl_action = FF_KNICTL_ACTION_ALL_TO_FF;
+                msg->result = 0;
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "new kni action: alltoff\n");
+                break;
+            case FF_KNICTL_ACTION_ALL_TO_KNI:
+                knictl_action = FF_KNICTL_ACTION_ALL_TO_KNI;
+                msg->result = 0;
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "new kni action: alltokni\n");
+                break;
+            case FF_KNICTL_ACTION_DEFAULT:
+                knictl_action = FF_KNICTL_ACTION_DEFAULT;
+                msg->result = 0;
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "new kni action: default\n");
+                break;
+            default:
+                msg->result = -1;
         }
     }
     else if (msg->knictl.kni_cmd == FF_KNICTL_CMD_GET){
@@ -2252,7 +2265,7 @@ main_loop(void *arg)
                     if (kni_rate_limt.gerneal_packets > (uint64_t)ff_global_cfg.kni.general_packets_ratelimit ||
                         kni_rate_limt.console_packets > (uint64_t)ff_global_cfg.kni.console_packets_ratelimit ||
                         kni_rate_limt.kernel_packets > (uint64_t)ff_global_cfg.kni.kernel_packets_ratelimit) {
-                        printf("kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
+                        ff_log(FF_LOG_NOTICE, FF_LOGTYPE_FSTACK_LIB, "kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
                             kni_rate_limt.gerneal_packets, ff_global_cfg.kni.general_packets_ratelimit,
                             kni_rate_limt.console_packets, ff_global_cfg.kni.console_packets_ratelimit,
                             kni_rate_limt.kernel_packets, ff_global_cfg.kni.kernel_packets_ratelimit, last_sec, sec);
