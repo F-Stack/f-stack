@@ -72,7 +72,7 @@
 
 int enable_kni = 0;
 static int kni_accept;
-static int knictl_action = FF_KNICTL_ACTION_DEFAULT;
+static enum FF_KNICTL_ACTION knictl_action = FF_KNICTL_ACTION_DEFAULT;
 #endif
 int nb_dev_ports = 0;   /* primary is correct, secondary is not correct, but no impact now*/
 
@@ -498,7 +498,7 @@ init_msg_ring(void)
 
 #ifdef FF_KNI
 
-static enum FF_KNICTL_CMD get_kni_action(const char *c){
+static enum FF_KNICTL_ACTION get_kni_action(const char *c){
     if (!c)
         return FF_KNICTL_ACTION_DEFAULT;
     if (0 == strcasecmp(c, "alltokni")){
