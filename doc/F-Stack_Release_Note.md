@@ -2,6 +2,72 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+## 2025.11 F-Stack v1.25
+
+1. F-Stack lib:
+
+- Support CI. @shanakaprageeth
+- set the IP-type flag for tx_csum_l4 offload. @zcjie1
+- m_gethdr will call m_pkthdr_init also, so there is no need to initialize it again. @liujinhui-job
+- add tcp/udp loopback support, we can send packet through lo dev. @liujinhui-job
+- fix dev_info.hash_key_size is 0 init_port_start failed. @liujinhui-job
+- Add support for custom install prefix. @Clcanny
+- Disable RSS if hardware does not support it. @Clcanny
+- add \__recv_chk/\__read_chk/\__recvfrom_chk. @liujinhui-job
+- Change ff config pci whitelist to allow. @liujinhui-job
+- Modify real_if_indextoname return value and type. @giannisli
+- ff_ipfw support ip_fw_pmod and tcpmod for tcp-setmss.
+- f-stack supports the socket options IP_TRANSPARENT and IPV6_TRANSPARENT. Nginx does not require additional checks, and the translation for IPV6_PKTINFO has been added. @wenchengji159357
+- Modify usleep to rte_delay_us_sleep.
+- Remove some useless code of kni.
+- ff_traffic support rx_dropped and tx_dropped.
+- fix ff toos issue for mlx5 drivers.
+- Add inner IP and port-based flow steering capabilities for the IPIP protocol.(Authors: Zhiwen Wang @hirowang1, Huiqin Zhang).
+- Support bind no port like linux's IP_BIND_ADDRESS_NO_PORT.
+- Add the feature fo ff_rss_check table to improve the performance of ff_rss_check(). See https://github.com/F-Stack/f-stack/wiki/%E2%80%8B%E2%80%8BF%E2%80%90Stack-ff_rss_check()-Optimization-Introduction%E2%80%8B
+- Added the -Wextra compilation option and fixed compilation errors.
+- Add ff_log mod, that encapsulates some interfaces of the rte_log module.
+- Remove the code for rte_kni.ko, only retain virtio.
+- Add some cleanup action, however, it is incomplete.
+
+1. adapter
+- fix compile syscall directory compile issue. @liujinhui-job
+- add ld_preload mode fcntl linux flags convert to freebsd. @liujinhui-job
+- add epoll polling mode, improve latency performance in RTT mode. @liujinhui-job
+- ff_hook_recvfrom sh_fromlen not init, ff_sys_recvfrom will return -1. @liujinhui-job
+- add fork support, like linux kernel, every process has one freebsd struct thread. @liujinhui-job
+- Add select interface support. @liujinhui-job
+- add accept4 support, and LINUX_SOCK_CLOEXEC/LINUX_SOCK_NONBLOCK support for ff_socket. @liujinhui-job
+
+1. FreeBSD
+
+- Add the feature fo ff_rss_check table to improve the performance of ff_rss_check(). See https://github.com/F-Stack/f-stack/wiki/%E2%80%8B%E2%80%8BF%E2%80%90Stack-ff_rss_check()-Optimization-Introduction%E2%80%8B
+
+1. ff toos
+
+- update tools/compat/include/sys/*.h.
+- ff_traffic support rx_dropped and tx_dropped.
+
+1. DPDK
+
+- DPDK: Upgrade to 23.11.5.
+- Build fix : Copy missing igb_uio.c to build dir. @richqubit
+
+
+1. APP
+
+- Nginx: Upgrad to Nginx-1.28.0. @jinliu777
+- Nginx: f-stack supports the socket options IP_TRANSPARENT and IPV6_TRANSPARENT. Nginx does not require additional checks, and the translation for IPV6_PKTINFO has been added. @wenchengji159357
+- Redis: Fix Redis Lua security vulnerabilities (CVE-2024-31449, CVE-2025-29844, CVE-2025-46817, CVE-2025-46819). @KIMDONGYEON00 
+
+
+1. doc
+
+- Add wiki and deepwiki link in README.
+- Remove the relevant content for rte_kni.ko from the documentation.
+
+
+
 2024.10 F-Stack v1.24
 
 1. F-Stack lib, Sync some features from branch of dev:
