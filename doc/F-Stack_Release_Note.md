@@ -2,6 +2,42 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+## 2025.11 F-Stack v1.21.6(LTS)
+
+1. F-Stack lib:
+
+- Support bind no port like linux's IP_BIND_ADDRESS_NO_PORT.
+- Add inner IP and port-based flow steering capabilities for the IPIP protocol.(Authors: Zhiwen Wang @hirowang1, Huiqin Zhang).
+- Modify usleep to rte_delay_us_sleep.
+- Add viritio support for kni.
+- Build netgraph and ipfw by default.
+- Disable RSS if hardware does not support it. @Clcanny
+- ff_traffic support rx_dropped and tx_dropped.
+- Added the -Wextra compilation option and fixed compilation errors.
+- Add ff_log mod, that encapsulates some interfaces of the rte_log module.
+- set the IP-type flag for tx_csum_l4 offload. @zcjie1
+- Add ff_stop_run to stop the poll loop. @renzibei
+- Add some cleanup action, however, it is incomplete.
+- Add the feature fo ff_rss_check table to improve the performance of ff_rss_check(). See https://github.com/F-Stack/f-stack/wiki/%E2%80%8B%E2%80%8BF%E2%80%90Stack-ff_rss_check()-Optimization-Introduction%E2%80%8B
+
+1. FreeBSD
+
+- Add the feature fo ff_rss_check table to improve the performance of ff_rss_check(). See https://github.com/F-Stack/f-stack/wiki/%E2%80%8B%E2%80%8BF%E2%80%90Stack-ff_rss_check()-Optimization-Introduction%E2%80%8B
+
+1. ff toos
+
+- ff_traffic support rx_dropped and tx_dropped.
+
+1. DPDK
+
+- Modify real_if_indextoname return value and type. @giannisli
+
+1. APP
+
+- Nginx: Adapt nginx-1.28.0 to f-stack. @jinliu777
+
+
+
 2024.10 F-Stack v1.21.5(LTS)
 
 1. F-Stack lib:
