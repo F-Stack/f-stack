@@ -59,6 +59,9 @@ ff_zc_mbuf_write
 ff_zc_mbuf_read
 ff_get_traffic
 ff_dpdk_raw_packet_send
+ff_rss_tbl_init
+ff_veth_get_softc
+ff_veth_free_softc
 ff_openlog_stream
 ff_log_set_global_level
 ff_log_set_level

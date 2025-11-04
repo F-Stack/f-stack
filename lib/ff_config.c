@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <getopt.h>
 #include <ctype.h>
+#include <arpa/inet.h>
 #include <rte_config.h>
 #include <rte_string_fns.h>
 
@@ -857,6 +858,81 @@ bond_cfg_handler(struct ff_config *cfg, const char *section,
 }
 
 static int
+rss_tbl_cfg_handler(struct ff_rss_check_cfg *cur)
+{
+    //vip cfg
+    int ret, nb_rss_tbl, i, j, k;
+    char *rss_tbl_array[FF_RSS_TBL_MAX_ENTRIES], *rss_tbl_4tuble_array[4], *rss_tbl_str;
+    struct ff_rss_tbl_cfg *rss_tbl_cfg_p;
+
+    rss_tbl_str = cur->rss_tbl_str;
+
+    ret = rte_strsplit(rss_tbl_str, strlen(rss_tbl_str), &rss_tbl_array[0], FF_RSS_TBL_MAX_ENTRIES, ';');
+    if (ret <= 0) {
+        fprintf(stdout, "rss_tbl_cfg_handler nb_rss_tbl is 0, not set rss_tbl or set invalid rss_tbl %s\n",
+            rss_tbl_str);
+        return 1;
+    }
+
+    nb_rss_tbl = ret;
+
+    rss_tbl_cfg_p = &cur->rss_tbl_cfgs[0];
+
+    for (i = 0; i < nb_rss_tbl; i++) {
+        rss_tbl_str = rss_tbl_array[i];
+        /* port_id, daddr(local), saddr(remote), sport */
+        ret = rte_strsplit(rss_tbl_str, strlen(rss_tbl_str), &rss_tbl_4tuble_array[0], 4, ' ');
+        if (ret != 4) {
+            fprintf(stdout, "rss_tbl_cfg_handler daddr/saddr/sport format error %s\n",
+                rss_tbl_str);
+            return 1;
+        }
+
+        /* Note: daddr must be include by port_id's addr or vip_addr, but here not check it now */
+        rss_tbl_cfg_p[i].port_id = atoi(rss_tbl_4tuble_array[0]);
+        inet_pton(AF_INET, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr));
+        inet_pton(AF_INET, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr));
+        rss_tbl_cfg_p[i].sport = htons(atoi(rss_tbl_4tuble_array[3]));
+    }
+
+    cur->nb_rss_tbl = nb_rss_tbl;
+
+    return 1;
+}
+
+static int
+rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
+    const char *name, const char *value)
+{
+    if (cfg->dpdk.port_cfgs == NULL && cfg->dpdk.vlan_cfgs == NULL) {
+        fprintf(stderr, "rss_check_cfg_handler: must config dpdk.port or dpdk.vlan first\n");
+        return 0;
+    }
+
+    if (cfg->dpdk.rss_check_cfgs == NULL) {
+        struct ff_rss_check_cfg *rcc = calloc(1, sizeof(struct ff_rss_check_cfg));
+        if (rcc == NULL) {
+            fprintf(stderr, "rss_check_cfg_handler malloc failed\n");
+            return 0;
+        }
+        cfg->dpdk.rss_check_cfgs = rcc;
+    }
+
+    struct ff_rss_check_cfg *cur = cfg->dpdk.rss_check_cfgs;
+
+    if (strcmp(name, "enable") == 0) {
+        cur->enable = atoi(value);
+    } else if (strcmp(name, "rss_tbl") == 0) {
+        cur->rss_tbl_str = strdup(value);
+        if (cur->rss_tbl_str) {
+            return rss_tbl_cfg_handler(cur);
+        }
+    }
+
+    return 1;
+}
+
+static int
 ini_parse_handler(void* user, const char* section, const char* name,
     const char* value)
 {
@@ -960,6 +1036,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         } else if (strcmp(name, "savepath") == 0) {
             pconfig->pcap.save_path = strdup(value);
         }
+    } else if (strcmp(section, "rss_check") == 0) {
+        return rss_check_cfg_handler(pconfig, section, name, value);
     }
 
     return 1;

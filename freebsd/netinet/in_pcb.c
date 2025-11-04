@@ -106,6 +106,9 @@ __FBSDID("$FreeBSD$");
 
 #ifdef FSTACK
 #include "ff_host_interface.h"
+
+int ff_in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
+    struct in_addr *faddrp, u_short *fportp, struct ucred *cred, int lookupflags);
 #endif
 
 static struct callout	ipport_tick_callout;
@@ -499,6 +502,192 @@ in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
 
 	return (0);
 }
+
+#ifdef FSTACK
+int
+ff_in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
+    struct in_addr *faddrp, u_short *fportp, struct ucred *cred, int lookupflags)
+{
+	struct inpcbinfo *pcbinfo;
+	struct inpcb *tmpinp;
+	unsigned short *lastport;
+	int count, dorandom, error;
+	u_short aux, first, last, lport;
+#ifdef INET
+	struct in_addr laddr, faddr;
+#endif
+    u_short rss_first, rss_last, *rss_portrange;
+    /* 0:not init, 1:init successed, -1:init failed */
+    static int rss_tbl_init = 0;
+    int rss_ret, rss_port_idx, rss_match = 0;
+    struct ifaddr *ifa;
+    struct ifnet *ifp;
+
+	pcbinfo = inp->inp_pcbinfo;
+
+	/*
+	 * Because no actual state changes occur here, a global write lock on
+	 * the pcbinfo isn't required.
+	 */
+	INP_LOCK_ASSERT(inp);
+	INP_HASH_LOCK_ASSERT(pcbinfo);
+
+	if (inp->inp_flags & INP_HIGHPORT) {
+		first = V_ipport_hifirstauto;	/* sysctl */
+		last  = V_ipport_hilastauto;
+		lastport = &pcbinfo->ipi_lasthi;
+	} else if (inp->inp_flags & INP_LOWPORT) {
+		error = priv_check_cred(cred, PRIV_NETINET_RESERVEDPORT, 0);
+		if (error)
+			return (error);
+		first = V_ipport_lowfirstauto;	/* 1023 */
+		last  = V_ipport_lowlastauto;	/* 600 */
+		lastport = &pcbinfo->ipi_lastlow;
+	} else {
+		first = V_ipport_firstauto;	/* sysctl */
+		last  = V_ipport_lastauto;
+		lastport = &pcbinfo->ipi_lastport;
+	}
+	/*
+	 * For UDP(-Lite), use random port allocation as long as the user
+	 * allows it.  For TCP (and as of yet unknown) connections,
+	 * use random port allocation only if the user allows it AND
+	 * ipport_tick() allows it.
+	 */
+	if (V_ipport_randomized &&
+		(!V_ipport_stoprandom || pcbinfo == &V_udbinfo ||
+		pcbinfo == &V_ulitecbinfo))
+		dorandom = 1;
+	else
+		dorandom = 0;
+	/*
+	 * It makes no sense to do random port allocation if
+	 * we have the only port available.
+	 */
+	if (first == last)
+		dorandom = 0;
+	/* Make sure to not include UDP(-Lite) packets in the count. */
+	if (pcbinfo != &V_udbinfo || pcbinfo != &V_ulitecbinfo)
+		V_ipport_tcpallocs++;
+	/*
+	 * Instead of having two loops further down counting up or down
+	 * make sure that first is always <= last and go with only one
+	 * code path implementing all logic.
+	 */
+	if (first > last) {
+		aux = first;
+		first = last;
+		last = aux;
+	}
+
+#ifdef INET
+	/* Make the compiler happy. */
+	laddr.s_addr = 0;
+	if ((inp->inp_vflag & (INP_IPV4|INP_IPV6)) == INP_IPV4) {
+		KASSERT(laddrp != NULL, ("%s: laddrp NULL for v4 inp %p",
+		    __func__, inp));
+		laddr = *laddrp;
+        faddr = *faddrp;
+	}
+#endif
+	tmpinp = NULL;	/* Make compiler happy. */
+	lport = *lportp;
+
+    if (rss_tbl_init == 0) {
+        rss_ret = ff_rss_tbl_set_portrange(first, last);
+        if (rss_ret < 0)
+            rss_tbl_init = -1;
+        else
+            rss_tbl_init = 1;
+    }
+
+    if (rss_tbl_init == 1) {
+        rss_ret = ff_rss_tbl_get_portrange(faddr.s_addr, laddr.s_addr, *fportp,
+            &rss_first, &rss_last, &rss_portrange);
+        if (rss_ret < 0) {
+            if (rss_ret != -ENOENT)
+                rss_tbl_init = -1;
+        } else {
+            /* [0] store last port idx */
+            rss_match = 1;
+            count = rss_last - rss_first + 1;
+            if (dorandom)
+                rss_portrange[0] = rss_first + (arc4random() % (count));
+        }
+    }
+
+    if (!rss_match) {
+        struct sockaddr_in ifp_sin;
+        bzero(&ifp_sin, sizeof(ifp_sin));
+        ifp_sin.sin_addr.s_addr = laddr.s_addr;
+        ifp_sin.sin_family = AF_INET;
+        ifp_sin.sin_len = sizeof(ifp_sin);
+        ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
+        if (ifa == NULL) {
+
+            ifp_sin.sin_addr.s_addr = faddr.s_addr;
+            ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
+            if ( ifa == NULL )
+                return (EADDRNOTAVAIL);
+        }
+        ifp = ifa->ifa_ifp;
+
+    	if (dorandom)
+    		*lastport = first + (arc4random() % (last - first));
+
+    	count = last - first;
+    }
+
+	do {
+		if (count-- < 0)	/* completely used? */
+			return (EADDRNOTAVAIL);
+        if (rss_match) {
+            rss_portrange[0]++;
+            if (rss_portrange[0] < rss_first || rss_portrange[0] > rss_last)
+                rss_portrange[0] = rss_first;
+            *lastport = rss_portrange[rss_portrange[0]];
+        } else {
+    		++*lastport;
+    		if (*lastport < first || *lastport > last)
+    			*lastport = first;
+        }
+		lport = htons(*lastport);
+
+#ifdef INET6
+		if ((inp->inp_vflag & INP_IPV6) != 0)
+			tmpinp = in6_pcblookup_local(pcbinfo,
+			    &inp->in6p_laddr, lport, lookupflags, cred);
+#endif
+#if defined(INET) && defined(INET6)
+		else
+#endif
+#ifdef INET
+		{
+			tmpinp = in_pcblookup_local(pcbinfo, laddr,
+			    lport, lookupflags, cred);
+			if (!rss_match && tmpinp == NULL) {
+				int rss;
+				/* Note:
+				 * LOOPBACK not support rss.
+				 */
+				if ((ifp->if_softc == NULL) && (ifp->if_flags & IFF_LOOPBACK))
+					break;
+				rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
+				    *fportp, lport);
+				if (rss)
+					break;
+				else
+					tmpinp++; /* Set not NULL to find another lport */
+			}
+		}
+#endif
+	} while (tmpinp != NULL);
+
+	*lportp = lport;
+
+	return (0);
+}
+#endif
 
 /*
  * Return cached socket options.
@@ -1118,61 +1307,19 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			*oinpp = oinp;
 		return (EADDRINUSE);
 	}
-#ifndef FSTACK
+
 	if (lport == 0) {
+#ifndef FSTACK
 		error = in_pcbbind_setup(inp, NULL, &laddr.s_addr, &lport,
 		    cred);
+#else
+		error = ff_in_pcb_lport(inp, &laddr, &lport, &faddr, &fport,
+		    cred, INPLOOKUP_WILDCARD);
+#endif
 		if (error)
 			return (error);
 	}
-#else
-if (lport == 0)
-{
-    struct ifaddr *ifa;
-    struct ifnet *ifp;
-    struct sockaddr_in ifp_sin;
-    unsigned loop_count = 0;
-    bzero(&ifp_sin, sizeof(ifp_sin));
-    ifp_sin.sin_addr.s_addr = laddr.s_addr;
-    ifp_sin.sin_family = AF_INET;
-    ifp_sin.sin_len = sizeof(ifp_sin);
-    ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
-    if (ifa == NULL) {
-        ifp_sin.sin_addr.s_addr = faddr.s_addr;
-        ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
-        if ( ifa == NULL )
-            return (EADDRNOTAVAIL);
-    }
-    ifp = ifa->ifa_ifp;
-    while (lport == 0) {
-        int rss;
-        error = in_pcb_lport(inp, &laddr, &lport, cred, INPLOOKUP_WILDCARD);
-        if (error)
-            return (error);
-        /* Note:
-         * if ifp->if_softc is NULL, such as laddr config in lo.
-         * just return. but maybe it can't receive response to this worker.
-         */
-        if (!ifp->if_softc) {
-            break;
-        }
-        rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
-            fport, lport);
-        if (rss) {
-            break;
-        }
-        lport = 0;
-        /* Note:
-         * if all ports are completely used, just return.
-         * this ugly code is not a correct way, it just lets loop quit.
-         * we will fix it as soon as possible.
-         */
-        if (++loop_count >= 65535) {
-            return (EADDRNOTAVAIL);
-        }
-    }
-}
-#endif
+
 	*laddrp = laddr.s_addr;
 	*lportp = lport;
 	*faddrp = faddr.s_addr;
