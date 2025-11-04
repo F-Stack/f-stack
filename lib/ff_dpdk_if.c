@@ -207,7 +207,7 @@ check_all_ports_link_status(void)
     uint8_t count, all_ports_up, print_flag = 0;
     struct rte_eth_link link;
 
-    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "\nChecking link status");
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "\nChecking link status");
 
     int i, nb_ports;
     nb_ports = ff_global_cfg.dpdk.nb_ports;
