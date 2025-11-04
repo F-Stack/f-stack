@@ -2423,6 +2423,10 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
+
+    /* FIXME: Cleanup ff_config, freebsd etc. */
+    rte_eal_cleanup();
+    ff_log_close();
 }
 
 void
