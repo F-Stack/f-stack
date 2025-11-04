@@ -683,7 +683,7 @@ dpaa_rx_cb_atomic(void *event,
 	/* Save active dqrr entries */
 	index = DQRR_PTR2IDX(dqrr);
 	DPAA_PER_LCORE_DQRR_SIZE++;
-	DPAA_PER_LCORE_DQRR_HELD |= 1 << index;
+	DPAA_PER_LCORE_DQRR_HELD |= UINT64_C(1) << index;
 	DPAA_PER_LCORE_DQRR_MBUF(index) = mbuf;
 	ev->impl_opaque = index + 1;
 	*dpaa_seqn(mbuf) = (uint32_t)index + 1;
@@ -1034,7 +1034,7 @@ reallocate_mbuf(struct qman_fq *txq, struct rte_mbuf *mbuf)
 		/* Copy the data */
 		data = rte_pktmbuf_append(new_mbufs[0], bytes_to_copy);
 
-		rte_memcpy((uint8_t *)data, rte_pktmbuf_mtod_offset(mbuf,
+		rte_memcpy((uint8_t *)data, rte_pktmbuf_mtod_offset(temp_mbuf,
 			   void *, offset1), bytes_to_copy);
 
 		/* Set new offsets and the temp buffers */
@@ -1108,13 +1108,12 @@ dpaa_eth_queue_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 			seqn = *dpaa_seqn(mbuf);
 			if (seqn != DPAA_INVALID_MBUF_SEQN) {
 				index = seqn - 1;
-				if (DPAA_PER_LCORE_DQRR_HELD & (1 << index)) {
+				if (DPAA_PER_LCORE_DQRR_HELD & (UINT64_C(1) << index)) {
 					flags[loop] =
 					   ((index & QM_EQCR_DCA_IDXMASK) << 8);
 					flags[loop] |= QMAN_ENQUEUE_FLAG_DCA;
 					DPAA_PER_LCORE_DQRR_SIZE--;
-					DPAA_PER_LCORE_DQRR_HELD &=
-								~(1 << index);
+					DPAA_PER_LCORE_DQRR_HELD &= ~(UINT64_C(1) << index);
 				}
 			}
 

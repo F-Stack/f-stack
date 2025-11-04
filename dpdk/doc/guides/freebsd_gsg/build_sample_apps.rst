@@ -22,7 +22,7 @@ the system when DPDK is installed, and so can be built using GNU make.
    on the FreeBSD system.
 
 The following shows how to compile the helloworld example app, following
-the installation of DPDK using `ninja install` as described previously::
+the installation of DPDK using `meson install` as described previously::
 
         $ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
@@ -31,7 +31,7 @@ the installation of DPDK using `ninja install` as described previously::
         $ gmake
         cc -O3 -I/usr/local/include -include rte_config.h -march=native
         -D__BSD_VISIBLE  main.c -o build/helloworld-shared
-        -L/usr/local/lib -lrte_telemetry -lrte_bpf -lrte_flow_classify
+        -L/usr/local/lib -lrte_telemetry -lrte_bpf
         -lrte_pipeline -lrte_table -lrte_port -lrte_fib -lrte_ipsec
         -lrte_stack -lrte_security -lrte_sched -lrte_reorder -lrte_rib
         -lrte_rcu -lrte_rawdev -lrte_pdump -lrte_member -lrte_lpm
@@ -69,10 +69,6 @@ DPDK application. Some of the EAL options for FreeBSD are as follows:
 *   ``-b <domain:bus:devid.func>``:
     Blocklisting of ports; prevent EAL from using specified PCI device
     (multiple ``-b`` options are allowed).
-
-*   ``--use-device``:
-    Use the specified Ethernet device(s) only.  Use comma-separate
-    ``[domain:]bus:devid.func`` values. Cannot be used with ``-b`` option.
 
 *   ``-v``:
     Display version information on startup.

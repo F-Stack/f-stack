@@ -7,6 +7,7 @@
 #include <rte_mbuf.h>
 #include <rte_cryptodev.h>
 
+#include "iotlb.h"
 #include "rte_vhost_crypto.h"
 #include "vhost.h"
 #include "vhost_user.h"
@@ -451,7 +452,7 @@ vhost_crypto_msg_post_handler(int vid, void *msg)
 		return RTE_VHOST_MSG_RESULT_ERR;
 	}
 
-	switch (ctx->msg.request.master) {
+	switch (ctx->msg.request.frontend) {
 	case VHOST_USER_CRYPTO_CREATE_SESS:
 		vhost_crypto_create_sess(vcrypto,
 				&ctx->msg.payload.crypto_session);
@@ -490,6 +491,7 @@ static __rte_always_inline struct virtio_crypto_inhdr *
 reach_inhdr(struct vhost_crypto_data_req *vc_req,
 		struct vhost_crypto_desc *head,
 		uint32_t max_n_descs)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	struct virtio_crypto_inhdr *inhdr;
 	struct vhost_crypto_desc *last = head + (max_n_descs - 1);
@@ -536,6 +538,7 @@ static __rte_always_inline void *
 get_data_ptr(struct vhost_crypto_data_req *vc_req,
 		struct vhost_crypto_desc *cur_desc,
 		uint8_t perm)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	void *data;
 	uint64_t dlen = cur_desc->len;
@@ -552,6 +555,7 @@ get_data_ptr(struct vhost_crypto_data_req *vc_req,
 static __rte_always_inline uint32_t
 copy_data_from_desc(void *dst, struct vhost_crypto_data_req *vc_req,
 	struct vhost_crypto_desc *desc, uint32_t size)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	uint64_t remain;
 	uint64_t addr;
@@ -582,6 +586,7 @@ static __rte_always_inline int
 copy_data(void *data, struct vhost_crypto_data_req *vc_req,
 	struct vhost_crypto_desc *head, struct vhost_crypto_desc **cur_desc,
 	uint32_t size, uint32_t max_n_descs)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	struct vhost_crypto_desc *desc = *cur_desc;
 	uint32_t left = size;
@@ -665,6 +670,7 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 		uint32_t offset,
 		uint64_t write_back_len,
 		uint32_t max_n_descs)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	struct vhost_crypto_writeback_data *wb_data, *head;
 	struct vhost_crypto_desc *desc = *cur_desc;
@@ -785,6 +791,7 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		struct virtio_crypto_cipher_data_req *cipher,
 		struct vhost_crypto_desc *head,
 		uint32_t max_n_descs)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	struct vhost_crypto_desc *desc = head;
 	struct vhost_crypto_writeback_data *ewb = NULL;
@@ -938,6 +945,7 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		struct virtio_crypto_alg_chain_data_req *chain,
 		struct vhost_crypto_desc *head,
 		uint32_t max_n_descs)
+	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
 	struct vhost_crypto_desc *desc = head, *digest_desc;
 	struct vhost_crypto_writeback_data *ewb = NULL, *ewb2 = NULL;
@@ -1098,8 +1106,7 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 	op->sess_type = RTE_CRYPTO_OP_WITH_SESSION;
 
 	op->sym->cipher.data.offset = chain->para.cipher_start_src_offset;
-	op->sym->cipher.data.length = chain->para.src_data_len -
-			chain->para.cipher_start_src_offset;
+	op->sym->cipher.data.length = chain->para.len_to_cipher;
 
 	op->sym->auth.data.offset = chain->para.hash_start_src_offset;
 	op->sym->auth.data.length = chain->para.len_to_hash;
@@ -1123,6 +1130,7 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 		struct vhost_virtqueue *vq, struct rte_crypto_op *op,
 		struct vring_desc *head, struct vhost_crypto_desc *descs,
 		uint16_t desc_idx)
+	__rte_no_thread_safety_analysis /* FIXME: requires iotlb_lock? */
 {
 	struct vhost_crypto_data_req *vc_req = rte_mbuf_to_priv(op->sym->m_src);
 	struct rte_cryptodev_sym_session *session;
@@ -1571,6 +1579,20 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 
 	vq = dev->virtqueue[qid];
 
+	if (unlikely(vq == NULL)) {
+		VC_LOG_ERR("Invalid virtqueue %u", qid);
+		return 0;
+	}
+
+	if (unlikely(rte_rwlock_read_trylock(&vq->access_lock) != 0))
+		return 0;
+
+	vhost_user_iotlb_rd_lock(vq);
+	if (unlikely(!vq->access_ok)) {
+		VC_LOG_DBG("Virtqueue %u vrings not yet initialized", qid);
+		goto out_unlock;
+	}
+
 	avail_idx = *((volatile uint16_t *)&vq->avail->idx);
 	start_idx = vq->last_used_idx;
 	count = avail_idx - start_idx;
@@ -1578,7 +1600,7 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 	count = RTE_MIN(count, nb_ops);
 
 	if (unlikely(count == 0))
-		return 0;
+		goto out_unlock;
 
 	/* for zero copy, we need 2 empty mbufs for src and dst, otherwise
 	 * we need only 1 mbuf as src and dst
@@ -1588,7 +1610,7 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 		if (unlikely(rte_mempool_get_bulk(vcrypto->mbuf_pool,
 				(void **)mbufs, count * 2) < 0)) {
 			VC_LOG_ERR("Insufficient memory");
-			return 0;
+			goto out_unlock;
 		}
 
 		for (i = 0; i < count; i++) {
@@ -1618,7 +1640,7 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 		if (unlikely(rte_mempool_get_bulk(vcrypto->mbuf_pool,
 				(void **)mbufs, count) < 0)) {
 			VC_LOG_ERR("Insufficient memory");
-			return 0;
+			goto out_unlock;
 		}
 
 		for (i = 0; i < count; i++) {
@@ -1646,6 +1668,10 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 	}
 
 	vq->last_used_idx += i;
+
+out_unlock:
+	vhost_user_iotlb_rd_unlock(vq);
+	rte_rwlock_read_unlock(&vq->access_lock);
 
 	return i;
 }

@@ -138,6 +138,9 @@
  *  - rte_event_crypto_adapter_stop()
  *  - rte_event_crypto_adapter_stats_get()
  *  - rte_event_crypto_adapter_stats_reset()
+ *  - rte_event_crypto_adapter_runtime_params_get()
+ *  - rte_event_crypto_adapter_runtime_params_init()
+ *  - rte_event_crypto_adapter_runtime_params_set()
 
  * The application creates an instance using rte_event_crypto_adapter_create()
  * or rte_event_crypto_adapter_create_ext().
@@ -251,6 +254,31 @@ struct rte_event_crypto_adapter_conf {
 	 * max_nb crypto ops. This isn't treated as a requirement; batching
 	 * may cause the adapter to process more than max_nb crypto ops.
 	 */
+};
+
+/**
+ * Adapter runtime configuration parameters
+ */
+struct rte_event_crypto_adapter_runtime_params {
+	uint32_t max_nb;
+	/**< The adapter can return early if it has processed at least
+	 * max_nb crypto ops. This isn't treated as a requirement; batching
+	 * may cause the adapter to process more than max_nb crypto ops.
+	 *
+	 * rte_event_crypto_adapter_create() configures the
+	 * adapter with default value of max_nb.
+	 * rte_event_crypto_adapter_create_ext() configures the adapter with
+	 * user provided value of max_nb through
+	 * rte_event_crypto_adapter_conf::max_nb parameter.
+	 * rte_event_cryptoadapter_runtime_params_set() allows to re-configure
+	 * max_nb during runtime (after adding at least one queue pair)
+	 *
+	 * This is valid for the devices without
+	 * RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD or
+	 * RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW capability.
+	 */
+	uint32_t rsvd[15];
+	/**< Reserved fields for future expansion */
 };
 
 #define RTE_EVENT_CRYPTO_ADAPTER_EVENT_VECTOR	0x1
@@ -413,6 +441,20 @@ rte_event_crypto_adapter_create_ext(uint8_t id, uint8_t dev_id,
  * parameter passed into this function. In case the application needs more
  * control in configuration of the service, it should use the
  * rte_event_crypto_adapter_create_ext() version.
+ *
+ * When this API is used for creating adapter instance,
+ * ``rte_event_dev_config::nb_event_ports`` is automatically incremented,
+ * and the event device is reconfigured with additional event port during
+ * service initialization. This event device reconfigure logic also increments
+ * the ``rte_event_dev_config::nb_single_link_event_port_queues``
+ * parameter if the adapter event port config is of type
+ * ``RTE_EVENT_PORT_CFG_SINGLE_LINK``.
+ *
+ * Application no longer needs to account for
+ * ``rte_event_dev_config::nb_event_ports`` and
+ * ``rte_event_dev_config::nb_single_link_event_port_queues``
+ * parameters required for crypto adapter in event device configuration
+ * when the adapter is created with this API.
  *
  * @param id
  *  Adapter identifier.
@@ -595,9 +637,63 @@ int
 rte_event_crypto_adapter_event_port_get(uint8_t id, uint8_t *event_port_id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
+ * Initialize the adapter runtime configuration parameters
  *
+ * @param params
+ *  A pointer to structure of type struct rte_event_crypto_adapter_runtime_params
+ *
+ * @return
+ *  -  0: Success
+ *  - <0: Error code on failure
+ */
+__rte_experimental
+int
+rte_event_crypto_adapter_runtime_params_init(
+		struct rte_event_crypto_adapter_runtime_params *params);
+
+/**
+ * Set the adapter runtime configuration parameters
+ *
+ * @param id
+ *  Adapter identifier
+ *
+ * @param params
+ *  A pointer to structure of type struct rte_event_crypto_adapter_runtime_params
+ *  with configuration parameter values. The reserved fields of this structure
+ *  must be initialized to zero and the valid fields need to be set appropriately.
+ *  This struct can be initialized using
+ *  rte_event_crypto_adapter_runtime_params_init() API to default values or
+ *  application may reset this struct and update required fields.
+ *
+ * @return
+ *  -  0: Success
+ *  - <0: Error code on failure
+ */
+__rte_experimental
+int
+rte_event_crypto_adapter_runtime_params_set(uint8_t id,
+		struct rte_event_crypto_adapter_runtime_params *params);
+
+/**
+ * Get the adapter runtime configuration parameters
+ *
+ * @param id
+ *  Adapter identifier
+ *
+ * @param[out] params
+ *  A pointer to structure of type struct rte_event_crypto_adapter_runtime_params
+ *  containing valid adapter parameters when return value is 0.
+ *
+ * @return
+ *  -  0: Success
+ *  - <0: Error code on failure
+ */
+__rte_experimental
+int
+rte_event_crypto_adapter_runtime_params_get(uint8_t id,
+		struct rte_event_crypto_adapter_runtime_params *params);
+
+/**
  * Retrieve vector limits for a given event dev and crypto dev pair.
  * @see rte_event_crypto_adapter_vector_limits
  *
@@ -613,7 +709,6 @@ rte_event_crypto_adapter_event_port_get(uint8_t id, uint8_t *event_port_id);
  *  - 0: Success.
  *  - <0: Error code on failure.
  */
-__rte_experimental
 int rte_event_crypto_adapter_vector_limits_get(
 	uint8_t dev_id, uint16_t cdev_id,
 	struct rte_event_crypto_adapter_vector_limits *limits);

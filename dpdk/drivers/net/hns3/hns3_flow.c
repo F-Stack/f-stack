@@ -283,7 +283,7 @@ hns3_counter_new(struct rte_eth_dev *dev, uint32_t indirect, uint32_t id,
 	cnt = hns3_counter_lookup(dev, id);
 	if (cnt) {
 		if (!cnt->indirect || cnt->indirect != indirect)
-			return rte_flow_error_set(error, ENOTSUP,
+			return rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 				cnt,
 				"Counter id is used, indirect flag not match");
@@ -470,19 +470,20 @@ hns3_handle_action_indirect(struct rte_eth_dev *dev,
 			    struct hns3_fdir_rule *rule,
 			    struct rte_flow_error *error)
 {
-	const struct rte_flow_action_handle *indir = action->conf;
+	struct rte_flow_action_handle indir;
 
-	if (indir->indirect_type != HNS3_INDIRECT_ACTION_TYPE_COUNT)
+	indir.val64 = (uint64_t)action->conf;
+	if (indir.indirect_type != HNS3_INDIRECT_ACTION_TYPE_COUNT)
 		return rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 				action, "Invalid indirect type");
 
-	if (hns3_counter_lookup(dev, indir->counter_id) == NULL)
+	if (hns3_counter_lookup(dev, indir.counter_id) == NULL)
 		return rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 				action, "Counter id not exist");
 
-	rule->act_cnt.id = indir->counter_id;
+	rule->act_cnt.id = indir.counter_id;
 	rule->flags |= (HNS3_RULE_FLAG_COUNTER | HNS3_RULE_FLAG_COUNTER_INDIR);
 
 	return 0;
@@ -618,28 +619,28 @@ hns3_parse_eth(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (item->mask) {
 		eth_mask = item->mask;
-		if (eth_mask->type) {
+		if (eth_mask->hdr.ether_type) {
 			hns3_set_bit(rule->input_set, INNER_ETH_TYPE, 1);
 			rule->key_conf.mask.ether_type =
-			    rte_be_to_cpu_16(eth_mask->type);
+			    rte_be_to_cpu_16(eth_mask->hdr.ether_type);
 		}
-		if (!rte_is_zero_ether_addr(&eth_mask->src)) {
+		if (!rte_is_zero_ether_addr(&eth_mask->hdr.src_addr)) {
 			hns3_set_bit(rule->input_set, INNER_SRC_MAC, 1);
 			memcpy(rule->key_conf.mask.src_mac,
-			       eth_mask->src.addr_bytes, RTE_ETHER_ADDR_LEN);
+			       eth_mask->hdr.src_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 		}
-		if (!rte_is_zero_ether_addr(&eth_mask->dst)) {
+		if (!rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr)) {
 			hns3_set_bit(rule->input_set, INNER_DST_MAC, 1);
 			memcpy(rule->key_conf.mask.dst_mac,
-			       eth_mask->dst.addr_bytes, RTE_ETHER_ADDR_LEN);
+			       eth_mask->hdr.dst_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 		}
 	}
 
 	eth_spec = item->spec;
-	rule->key_conf.spec.ether_type = rte_be_to_cpu_16(eth_spec->type);
-	memcpy(rule->key_conf.spec.src_mac, eth_spec->src.addr_bytes,
+	rule->key_conf.spec.ether_type = rte_be_to_cpu_16(eth_spec->hdr.ether_type);
+	memcpy(rule->key_conf.spec.src_mac, eth_spec->hdr.src_addr.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
-	memcpy(rule->key_conf.spec.dst_mac, eth_spec->dst.addr_bytes,
+	memcpy(rule->key_conf.spec.dst_mac, eth_spec->hdr.dst_addr.addr_bytes,
 	       RTE_ETHER_ADDR_LEN);
 	return 0;
 }
@@ -663,17 +664,17 @@ hns3_parse_vlan(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (item->mask) {
 		vlan_mask = item->mask;
-		if (vlan_mask->tci) {
+		if (vlan_mask->hdr.vlan_tci) {
 			if (rule->key_conf.vlan_num == 1) {
 				hns3_set_bit(rule->input_set, INNER_VLAN_TAG1,
 					     1);
 				rule->key_conf.mask.vlan_tag1 =
-				    rte_be_to_cpu_16(vlan_mask->tci);
+				    rte_be_to_cpu_16(vlan_mask->hdr.vlan_tci);
 			} else {
 				hns3_set_bit(rule->input_set, INNER_VLAN_TAG2,
 					     1);
 				rule->key_conf.mask.vlan_tag2 =
-				    rte_be_to_cpu_16(vlan_mask->tci);
+				    rte_be_to_cpu_16(vlan_mask->hdr.vlan_tci);
 			}
 		}
 	}
@@ -681,10 +682,10 @@ hns3_parse_vlan(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 	vlan_spec = item->spec;
 	if (rule->key_conf.vlan_num == 1)
 		rule->key_conf.spec.vlan_tag1 =
-		    rte_be_to_cpu_16(vlan_spec->tci);
+		    rte_be_to_cpu_16(vlan_spec->hdr.vlan_tci);
 	else
 		rule->key_conf.spec.vlan_tag2 =
-		    rte_be_to_cpu_16(vlan_spec->tci);
+		    rte_be_to_cpu_16(vlan_spec->hdr.vlan_tci);
 	return 0;
 }
 
@@ -1058,23 +1059,23 @@ hns3_parse_vxlan(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 	vxlan_mask = item->mask;
 	vxlan_spec = item->spec;
 
-	if (vxlan_mask->flags)
+	if (vxlan_mask->hdr.flags)
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "Flags is not supported in VxLAN");
 
 	/* VNI must be totally masked or not. */
-	if (memcmp(vxlan_mask->vni, full_mask, VNI_OR_TNI_LEN) &&
-	    memcmp(vxlan_mask->vni, zero_mask, VNI_OR_TNI_LEN))
+	if (memcmp(vxlan_mask->hdr.vni, full_mask, VNI_OR_TNI_LEN) &&
+	    memcmp(vxlan_mask->hdr.vni, zero_mask, VNI_OR_TNI_LEN))
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "VNI must be totally masked or not in VxLAN");
-	if (vxlan_mask->vni[0]) {
+	if (vxlan_mask->hdr.vni[0]) {
 		hns3_set_bit(rule->input_set, OUTER_TUN_VNI, 1);
-		memcpy(rule->key_conf.mask.outer_tun_vni, vxlan_mask->vni,
+		memcpy(rule->key_conf.mask.outer_tun_vni, vxlan_mask->hdr.vni,
 			   VNI_OR_TNI_LEN);
 	}
-	memcpy(rule->key_conf.spec.outer_tun_vni, vxlan_spec->vni,
+	memcpy(rule->key_conf.spec.outer_tun_vni, vxlan_spec->hdr.vni,
 		   VNI_OR_TNI_LEN);
 	return 0;
 }
@@ -1181,6 +1182,11 @@ hns3_parse_tunnel(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "Tunnel packets must configure "
 					  "with mask");
+
+	if (rule->key_conf.spec.tunnel_type != 0)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
+					  item, "Too many tunnel headers!");
 
 	switch (item->type) {
 	case RTE_FLOW_ITEM_TYPE_VXLAN:
@@ -2543,19 +2549,11 @@ hns3_flow_action_create(struct rte_eth_dev *dev,
 	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct hns3_pf *pf = HNS3_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	const struct rte_flow_action_count *act_count;
-	struct rte_flow_action_handle *handle = NULL;
+	struct rte_flow_action_handle handle;
 	struct hns3_flow_counter *counter;
 
 	if (hns3_check_indir_action(conf, action, error))
 		return NULL;
-
-	handle = rte_zmalloc("hns3 action handle",
-			     sizeof(struct rte_flow_action_handle), 0);
-	if (handle == NULL) {
-		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
-				   NULL, "Failed to allocate action memory");
-		return NULL;
-	}
 
 	pthread_mutex_lock(&hw->flows_lock);
 
@@ -2579,15 +2577,14 @@ hns3_flow_action_create(struct rte_eth_dev *dev,
 	}
 
 	counter->indirect = true;
-	handle->indirect_type = HNS3_INDIRECT_ACTION_TYPE_COUNT;
-	handle->counter_id = counter->id;
+	handle.indirect_type = HNS3_INDIRECT_ACTION_TYPE_COUNT;
+	handle.counter_id = counter->id;
 
 	pthread_mutex_unlock(&hw->flows_lock);
-	return handle;
+	return (struct rte_flow_action_handle *)handle.val64;
 
 err_exit:
 	pthread_mutex_unlock(&hw->flows_lock);
-	rte_free(handle);
 	return NULL;
 }
 
@@ -2597,18 +2594,20 @@ hns3_flow_action_destroy(struct rte_eth_dev *dev,
 			 struct rte_flow_error *error)
 {
 	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct rte_flow_action_handle indir;
 	struct hns3_flow_counter *counter;
 
 	pthread_mutex_lock(&hw->flows_lock);
 
-	if (handle->indirect_type != HNS3_INDIRECT_ACTION_TYPE_COUNT) {
+	indir.val64 = (uint64_t)handle;
+	if (indir.indirect_type != HNS3_INDIRECT_ACTION_TYPE_COUNT) {
 		pthread_mutex_unlock(&hw->flows_lock);
 		return rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 					handle, "Invalid indirect type");
 	}
 
-	counter = hns3_counter_lookup(dev, handle->counter_id);
+	counter = hns3_counter_lookup(dev, indir.counter_id);
 	if (counter == NULL) {
 		pthread_mutex_unlock(&hw->flows_lock);
 		return rte_flow_error_set(error, EINVAL,
@@ -2623,8 +2622,7 @@ hns3_flow_action_destroy(struct rte_eth_dev *dev,
 				handle, "Counter id in use");
 	}
 
-	(void)hns3_counter_release(dev, handle->counter_id);
-	rte_free(handle);
+	(void)hns3_counter_release(dev, indir.counter_id);
 
 	pthread_mutex_unlock(&hw->flows_lock);
 	return 0;
@@ -2637,12 +2635,14 @@ hns3_flow_action_query(struct rte_eth_dev *dev,
 		 struct rte_flow_error *error)
 {
 	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct rte_flow_action_handle indir;
 	struct rte_flow flow;
 	int ret;
 
 	pthread_mutex_lock(&hw->flows_lock);
 
-	if (handle->indirect_type != HNS3_INDIRECT_ACTION_TYPE_COUNT) {
+	indir.val64 = (uint64_t)handle;
+	if (indir.indirect_type != HNS3_INDIRECT_ACTION_TYPE_COUNT) {
 		pthread_mutex_unlock(&hw->flows_lock);
 		return rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ACTION_CONF,
@@ -2650,7 +2650,7 @@ hns3_flow_action_query(struct rte_eth_dev *dev,
 	}
 
 	memset(&flow, 0, sizeof(flow));
-	flow.counter_id = handle->counter_id;
+	flow.counter_id = indir.counter_id;
 	ret = hns3_counter_query(dev, &flow,
 				 (struct rte_flow_query_count *)data, error);
 	pthread_mutex_unlock(&hw->flows_lock);

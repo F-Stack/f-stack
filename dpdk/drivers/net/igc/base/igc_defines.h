@@ -188,6 +188,15 @@
 #define IGC_RCTL_BSEX		0x02000000 /* Buffer size extension */
 #define IGC_RCTL_SECRC	0x04000000 /* Strip Ethernet CRC */
 
+#define IGC_DTXMXPKTSZ_TSN     0x19 /* 1600 bytes of max TX DMA packet size */
+#define IGC_TXPBSIZE_TSN       0x04145145 /* 5k bytes buffer for each queue */
+
+/* Transmit Scheduling */
+#define IGC_TQAVCTRL_TRANSMIT_MODE_TSN 0x00000001
+#define IGC_TQAVCTRL_ENHANCED_QAV      0x00000008
+
+#define IGC_TXQCTL_QUEUE_MODE_LAUNCHT  0x00000001
+
 /* Use byte values for the following shift parameters
  * Usage:
  *     psrctl |= (((ROUNDUP(value0, 128) >> IGC_PSRCTL_BSIZE0_SHIFT) &
@@ -516,6 +525,7 @@
 /* SW Semaphore Register */
 #define IGC_SWSM_SMBI		0x00000001 /* Driver Semaphore bit */
 #define IGC_SWSM_SWESMBI	0x00000002 /* FW Semaphore bit */
+#define IGC_SWSM_TIMEOUT	2000       /* Driver Semaphore max timeout counter */
 #define IGC_SWSM_DRV_LOAD	0x00000008 /* Driver Loaded Bit */
 
 #define IGC_SWSM2_LOCK	0x00000002 /* Secondary driver semaphore bit */
@@ -794,6 +804,17 @@
 #define TSINTR_AUTT1	(1 << 6) /* Auxiliary Timestamp 1 Taken. */
 
 #define TSYNC_INTERRUPTS	TSINTR_TXTS
+
+/* Split Replication Receive Control */
+#define IGC_SRRCTL_TIMESTAMP           0x40000000
+#define IGC_SRRCTL_TIMER1SEL(timer)    (((timer) & 0x3) << 14)
+#define IGC_SRRCTL_TIMER0SEL(timer)    (((timer) & 0x3) << 17)
+
+/* Sample RX tstamp in PHY sop */
+#define IGC_TSYNCRXCTL_RXSYNSIG         0x00000400
+
+/* Sample TX tstamp in PHY sop */
+#define IGC_TSYNCTXCTL_TXSYNSIG         0x00000020
 
 /* TSAUXC Configuration Bits */
 #define TSAUXC_EN_TT0	(1 << 0)  /* Enable target time 0. */

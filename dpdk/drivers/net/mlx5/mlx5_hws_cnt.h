@@ -86,6 +86,7 @@ struct mlx5_hws_cnt_pool_cfg {
 	char *name;
 	uint32_t request_num;
 	uint32_t alloc_factor;
+	struct mlx5_hws_cnt_pool *host_cpool;
 };
 
 struct mlx5_hws_cnt_pool_caches {
@@ -150,6 +151,22 @@ struct mlx5_hws_age_param {
 	void *context; /* Flow AGE context. */
 } __rte_packed __rte_cache_aligned;
 
+
+/**
+ * Return the actual counter pool should be used in cross vHCA sharing mode.
+ * as index of raw/cnt pool.
+ *
+ * @param cnt_id
+ *   The external counter id
+ * @return
+ *   Internal index
+ */
+static __rte_always_inline struct mlx5_hws_cnt_pool *
+mlx5_hws_cnt_host_pool(struct mlx5_hws_cnt_pool *cpool)
+{
+	return cpool->cfg.host_cpool ? cpool->cfg.host_cpool : cpool;
+}
+
 /**
  * Translate counter id into internal index (start from 0), which can be used
  * as index of raw/cnt pool.
@@ -162,11 +179,12 @@ struct mlx5_hws_age_param {
 static __rte_always_inline uint32_t
 mlx5_hws_cnt_iidx(struct mlx5_hws_cnt_pool *cpool, cnt_id_t cnt_id)
 {
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
 	uint8_t dcs_idx = cnt_id >> MLX5_HWS_CNT_DCS_IDX_OFFSET;
 	uint32_t offset = cnt_id & MLX5_HWS_CNT_IDX_MASK;
 
 	dcs_idx &= MLX5_HWS_CNT_DCS_IDX_MASK;
-	return (cpool->dcs_mng.dcs[dcs_idx].iidx + offset);
+	return (hpool->dcs_mng.dcs[dcs_idx].iidx + offset);
 }
 
 /**
@@ -193,7 +211,8 @@ mlx5_hws_cnt_id_valid(cnt_id_t cnt_id)
 static __rte_always_inline cnt_id_t
 mlx5_hws_cnt_id_gen(struct mlx5_hws_cnt_pool *cpool, uint32_t iidx)
 {
-	struct mlx5_hws_cnt_dcs_mng *dcs_mng = &cpool->dcs_mng;
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+	struct mlx5_hws_cnt_dcs_mng *dcs_mng = &hpool->dcs_mng;
 	uint32_t idx;
 	uint32_t offset;
 	cnt_id_t cnt_id;
@@ -214,7 +233,8 @@ static __rte_always_inline void
 __hws_cnt_query_raw(struct mlx5_hws_cnt_pool *cpool, cnt_id_t cnt_id,
 		uint64_t *raw_pkts, uint64_t *raw_bytes)
 {
-	struct mlx5_hws_cnt_raw_data_mng *raw_mng = cpool->raw_mng;
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+	struct mlx5_hws_cnt_raw_data_mng *raw_mng = hpool->raw_mng;
 	struct flow_counter_stats s[2];
 	uint8_t i = 0x1;
 	size_t stat_sz = sizeof(s[0]);
@@ -368,7 +388,7 @@ __mlx5_hws_cnt_pool_enqueue_revert(struct rte_ring *r, unsigned int n,
 
 	MLX5_ASSERT(r->prod.sync_type == RTE_RING_SYNC_ST);
 	MLX5_ASSERT(r->cons.sync_type == RTE_RING_SYNC_ST);
-	current_head = __atomic_load_n(&r->prod.head, __ATOMIC_RELAXED);
+	current_head = rte_atomic_load_explicit(&r->prod.head, rte_memory_order_relaxed);
 	MLX5_ASSERT(n <= r->capacity);
 	MLX5_ASSERT(n <= rte_ring_count(r));
 	revert2head = current_head - n;
@@ -376,7 +396,7 @@ __mlx5_hws_cnt_pool_enqueue_revert(struct rte_ring *r, unsigned int n,
 	__rte_ring_get_elem_addr(r, revert2head, sizeof(cnt_id_t), n,
 			&zcd->ptr1, &zcd->n1, &zcd->ptr2);
 	/* Update tail */
-	__atomic_store_n(&r->prod.tail, revert2head, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&r->prod.tail, revert2head, rte_memory_order_release);
 	return n;
 }
 
@@ -395,22 +415,23 @@ mlx5_hws_cnt_pool_put(struct mlx5_hws_cnt_pool *cpool, uint32_t *queue,
 		      cnt_id_t *cnt_id)
 {
 	unsigned int ret = 0;
+	struct mlx5_hws_cnt_pool *hpool;
 	struct rte_ring_zc_data zcdc = {0};
 	struct rte_ring_zc_data zcdr = {0};
 	struct rte_ring *qcache = NULL;
 	unsigned int wb_num = 0; /* cache write-back number. */
 	uint32_t iidx;
 
-	iidx = mlx5_hws_cnt_iidx(cpool, *cnt_id);
-	MLX5_ASSERT(cpool->pool[iidx].in_used);
-	cpool->pool[iidx].in_used = false;
-	cpool->pool[iidx].query_gen_when_free =
-		__atomic_load_n(&cpool->query_gen, __ATOMIC_RELAXED);
-	if (likely(queue != NULL))
-		qcache = cpool->cache->qcache[*queue];
+	hpool = mlx5_hws_cnt_host_pool(cpool);
+	iidx = mlx5_hws_cnt_iidx(hpool, *cnt_id);
+	hpool->pool[iidx].in_used = false;
+	hpool->pool[iidx].query_gen_when_free =
+		__atomic_load_n(&hpool->query_gen, __ATOMIC_RELAXED);
+	if (likely(queue != NULL) && cpool->cfg.host_cpool == NULL)
+		qcache = hpool->cache->qcache[*queue];
 	if (unlikely(qcache == NULL)) {
-		ret = rte_ring_enqueue_elem(cpool->wait_reset_list, cnt_id,
-					    sizeof(cnt_id_t));
+		ret = rte_ring_enqueue_elem(hpool->wait_reset_list, cnt_id,
+				sizeof(cnt_id_t));
 		MLX5_ASSERT(ret == 0);
 		return;
 	}
@@ -467,9 +488,10 @@ mlx5_hws_cnt_pool_get(struct mlx5_hws_cnt_pool *cpool, uint32_t *queue,
 	uint32_t iidx, query_gen = 0;
 	cnt_id_t tmp_cid = 0;
 
-	if (likely(queue != NULL))
+	if (likely(queue != NULL && cpool->cfg.host_cpool == NULL))
 		qcache = cpool->cache->qcache[*queue];
 	if (unlikely(qcache == NULL)) {
+		cpool = mlx5_hws_cnt_host_pool(cpool);
 		ret = rte_ring_dequeue_elem(cpool->reuse_list, &tmp_cid,
 				sizeof(cnt_id_t));
 		if (unlikely(ret != 0)) {
@@ -486,6 +508,7 @@ mlx5_hws_cnt_pool_get(struct mlx5_hws_cnt_pool *cpool, uint32_t *queue,
 		__hws_cnt_query_raw(cpool, *cnt_id,
 				    &cpool->pool[iidx].reset.hits,
 				    &cpool->pool[iidx].reset.bytes);
+		cpool->pool[iidx].share = 0;
 		MLX5_ASSERT(!cpool->pool[iidx].in_used);
 		cpool->pool[iidx].in_used = true;
 		cpool->pool[iidx].age_idx = age_idx;
@@ -549,6 +572,9 @@ static __rte_always_inline uint32_t *
 mlx5_hws_cnt_get_queue(struct mlx5_priv *priv, uint32_t *queue)
 {
 	if (priv && priv->hws_cpool) {
+		/* Do not use queue cache if counter pool is shared. */
+		if (priv->shared_refcnt || priv->hws_cpool->cfg.host_cpool != NULL)
+			return NULL;
 		/* Do not use queue cache if counter cache is disabled. */
 		if (priv->hws_cpool->cache == NULL)
 			return NULL;
@@ -562,7 +588,9 @@ mlx5_hws_cnt_get_queue(struct mlx5_priv *priv, uint32_t *queue)
 static __rte_always_inline unsigned int
 mlx5_hws_cnt_pool_get_size(struct mlx5_hws_cnt_pool *cpool)
 {
-	return rte_ring_get_capacity(cpool->free_list);
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+
+	return rte_ring_get_capacity(hpool->free_list);
 }
 
 static __rte_always_inline int
@@ -582,51 +610,56 @@ static __rte_always_inline int
 mlx5_hws_cnt_shared_get(struct mlx5_hws_cnt_pool *cpool, cnt_id_t *cnt_id,
 			uint32_t age_idx)
 {
-	int ret;
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
 	uint32_t iidx;
+	int ret;
 
-	ret = mlx5_hws_cnt_pool_get(cpool, NULL, cnt_id, age_idx);
+	ret = mlx5_hws_cnt_pool_get(hpool, NULL, cnt_id, age_idx);
 	if (ret != 0)
 		return ret;
-	iidx = mlx5_hws_cnt_iidx(cpool, *cnt_id);
-	cpool->pool[iidx].share = 1;
+	iidx = mlx5_hws_cnt_iidx(hpool, *cnt_id);
+	hpool->pool[iidx].share = 1;
 	return 0;
 }
 
 static __rte_always_inline void
 mlx5_hws_cnt_shared_put(struct mlx5_hws_cnt_pool *cpool, cnt_id_t *cnt_id)
 {
-	uint32_t iidx = mlx5_hws_cnt_iidx(cpool, *cnt_id);
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+	uint32_t iidx = mlx5_hws_cnt_iidx(hpool, *cnt_id);
 
-	cpool->pool[iidx].share = 0;
-	mlx5_hws_cnt_pool_put(cpool, NULL, cnt_id);
+	hpool->pool[iidx].share = 0;
+	mlx5_hws_cnt_pool_put(hpool, NULL, cnt_id);
 }
 
 static __rte_always_inline bool
 mlx5_hws_cnt_is_shared(struct mlx5_hws_cnt_pool *cpool, cnt_id_t cnt_id)
 {
-	uint32_t iidx = mlx5_hws_cnt_iidx(cpool, cnt_id);
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+	uint32_t iidx = mlx5_hws_cnt_iidx(hpool, cnt_id);
 
-	return cpool->pool[iidx].share ? true : false;
+	return hpool->pool[iidx].share ? true : false;
 }
 
 static __rte_always_inline void
 mlx5_hws_cnt_age_set(struct mlx5_hws_cnt_pool *cpool, cnt_id_t cnt_id,
 		     uint32_t age_idx)
 {
-	uint32_t iidx = mlx5_hws_cnt_iidx(cpool, cnt_id);
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+	uint32_t iidx = mlx5_hws_cnt_iidx(hpool, cnt_id);
 
-	MLX5_ASSERT(cpool->pool[iidx].share);
-	cpool->pool[iidx].age_idx = age_idx;
+	MLX5_ASSERT(hpool->pool[iidx].share);
+	hpool->pool[iidx].age_idx = age_idx;
 }
 
 static __rte_always_inline uint32_t
 mlx5_hws_cnt_age_get(struct mlx5_hws_cnt_pool *cpool, cnt_id_t cnt_id)
 {
-	uint32_t iidx = mlx5_hws_cnt_iidx(cpool, cnt_id);
+	struct mlx5_hws_cnt_pool *hpool = mlx5_hws_cnt_host_pool(cpool);
+	uint32_t iidx = mlx5_hws_cnt_iidx(hpool, cnt_id);
 
-	MLX5_ASSERT(cpool->pool[iidx].share);
-	return cpool->pool[iidx].age_idx;
+	MLX5_ASSERT(hpool->pool[iidx].share);
+	return hpool->pool[iidx].age_idx;
 }
 
 static __rte_always_inline cnt_id_t
@@ -673,33 +706,11 @@ mlx5_hws_age_is_indirect(uint32_t age_idx)
 }
 
 /* init HWS counter pool. */
-struct mlx5_hws_cnt_pool *
-mlx5_hws_cnt_pool_init(struct mlx5_dev_ctx_shared *sh,
-		       const struct mlx5_hws_cnt_pool_cfg *pcfg,
-		       const struct mlx5_hws_cache_param *ccfg);
-
-void
-mlx5_hws_cnt_pool_deinit(struct mlx5_hws_cnt_pool *cntp);
-
 int
 mlx5_hws_cnt_service_thread_create(struct mlx5_dev_ctx_shared *sh);
 
 void
 mlx5_hws_cnt_service_thread_destroy(struct mlx5_dev_ctx_shared *sh);
-
-int
-mlx5_hws_cnt_pool_dcs_alloc(struct mlx5_dev_ctx_shared *sh,
-		struct mlx5_hws_cnt_pool *cpool);
-void
-mlx5_hws_cnt_pool_dcs_free(struct mlx5_dev_ctx_shared *sh,
-		struct mlx5_hws_cnt_pool *cpool);
-
-int
-mlx5_hws_cnt_pool_action_create(struct mlx5_priv *priv,
-		struct mlx5_hws_cnt_pool *cpool);
-
-void
-mlx5_hws_cnt_pool_action_destroy(struct mlx5_hws_cnt_pool *cpool);
 
 struct mlx5_hws_cnt_pool *
 mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,

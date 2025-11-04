@@ -29,10 +29,6 @@ extern "C" {
 
 struct rte_cryptodev_asym_session;
 
-/** asym xform type name strings */
-extern const char *
-rte_crypto_asym_xform_strings[];
-
 /** asym key exchange operation type name strings */
 extern const char *
 rte_crypto_asym_ke_strings[];
@@ -68,14 +64,14 @@ enum rte_crypto_curve_id {
 	RTE_CRYPTO_EC_GROUP_SECP224R1 = 21,
 	RTE_CRYPTO_EC_GROUP_SECP256R1 = 23,
 	RTE_CRYPTO_EC_GROUP_SECP384R1 = 24,
-	RTE_CRYPTO_EC_GROUP_SECP521R1 = 25
+	RTE_CRYPTO_EC_GROUP_SECP521R1 = 25,
+	RTE_CRYPTO_EC_GROUP_SM2       = 41,
 };
 
 /**
  * Asymmetric crypto transformation types.
  * Each xform type maps to one asymmetric algorithm
  * performing specific operation
- *
  */
 enum rte_crypto_asym_xform_type {
 	RTE_CRYPTO_ASYM_XFORM_UNSPECIFIED = 0,
@@ -118,6 +114,11 @@ enum rte_crypto_asym_xform_type {
 	/**< Elliptic Curve Point Multiplication */
 	RTE_CRYPTO_ASYM_XFORM_ECFPM,
 	/**< Elliptic Curve Fixed Point Multiplication */
+	RTE_CRYPTO_ASYM_XFORM_SM2,
+	/**< ShangMi 2
+	 * Performs Encrypt, Decrypt, Sign and Verify.
+	 * Refer to rte_crypto_asym_op_type.
+	 */
 	RTE_CRYPTO_ASYM_XFORM_TYPE_LIST_END
 	/**< End of list */
 };
@@ -175,7 +176,6 @@ enum rte_crypto_rsa_padding_type {
  *
  * enumerates private key format required to perform RSA crypto
  * transform.
- *
  */
 enum rte_crypto_rsa_priv_key_type {
 	RTE_RSA_KEY_TYPE_EXP,
@@ -297,7 +297,6 @@ struct rte_crypto_rsa_padding {
  * Asymmetric RSA transform data
  *
  * Structure describing RSA xform params
- *
  */
 struct rte_crypto_rsa_xform {
 	rte_crypto_uint n;
@@ -307,7 +306,6 @@ struct rte_crypto_rsa_xform {
 
 	enum rte_crypto_rsa_priv_key_type key_type;
 
-	RTE_STD_C11
 	union {
 		rte_crypto_uint d;
 		/**< the RSA private exponent */
@@ -320,7 +318,6 @@ struct rte_crypto_rsa_xform {
  * Asymmetric Modular exponentiation transform data
  *
  * Structure describing modular exponentiation xform param
- *
  */
 struct rte_crypto_modex_xform {
 	rte_crypto_uint modulus;
@@ -333,7 +330,6 @@ struct rte_crypto_modex_xform {
  * Asymmetric modular multiplicative inverse transform operation
  *
  * Structure describing modular multiplicative inverse transform
- *
  */
 struct rte_crypto_modinv_xform {
 	rte_crypto_uint modulus;
@@ -344,7 +340,6 @@ struct rte_crypto_modinv_xform {
  * Asymmetric DH transform data
  *
  * Structure describing deffie-hellman xform params
- *
  */
 struct rte_crypto_dh_xform {
 	rte_crypto_uint p;
@@ -357,7 +352,6 @@ struct rte_crypto_dh_xform {
  * Asymmetric Digital Signature transform operation
  *
  * Structure describing DSA xform params
- *
  */
 struct rte_crypto_dsa_xform {
 	rte_crypto_uint p;
@@ -374,17 +368,21 @@ struct rte_crypto_dsa_xform {
  * Asymmetric elliptic curve transform data
  *
  * Structure describing all EC based xform params
- *
  */
 struct rte_crypto_ec_xform {
 	enum rte_crypto_curve_id curve_id;
 	/**< Pre-defined ec groups */
+
+	rte_crypto_uint pkey;
+	/**< Private key */
+
+	struct rte_crypto_ec_point q;
+	/**< Public key */
 };
 
 /**
  * Operations params for modular operations:
  * exponentiation and multiplicative inverse
- *
  */
 struct rte_crypto_mod_op_param {
 	rte_crypto_uint base;
@@ -395,7 +393,6 @@ struct rte_crypto_mod_op_param {
 
 /**
  * RSA operation params
- *
  */
 struct rte_crypto_rsa_op_param {
 	enum rte_crypto_asym_op_type op_type;
@@ -413,7 +410,8 @@ struct rte_crypto_rsa_op_param {
 	 * In this case the underlying array should have been
 	 * allocated with enough memory to hold plaintext output
 	 * (i.e. must be at least RSA key size). The message.length
-	 * field should be 0 and will be overwritten by the PMD
+	 * field could be either 0 or minimal length expected from PMD.
+	 * This could be validated and overwritten by the PMD
 	 * with the decrypted length.
 	 */
 
@@ -426,8 +424,10 @@ struct rte_crypto_rsa_op_param {
 	 * - for RSA public encrypt.
 	 * In this case the underlying array should have been allocated
 	 * with enough memory to hold ciphertext output (i.e. must be
-	 * at least RSA key size). The cipher.length field should
-	 * be 0 and will be overwritten by the PMD with the encrypted length.
+	 * at least RSA key size). The cipher.length field could be
+	 * either 0 or minimal length expected from PMD.
+	 * This could be validated and overwritten by the PMD
+	 * with the encrypted length.
 	 *
 	 * When RTE_CRYPTO_RSA_PADDING_NONE and RTE_CRYPTO_ASYM_OP_VERIFY
 	 * selected, this is an output of decrypted signature.
@@ -442,8 +442,10 @@ struct rte_crypto_rsa_op_param {
 	 * - for RSA private encrypt.
 	 * In this case the underlying array should have been allocated
 	 * with enough memory to hold signature output (i.e. must be
-	 * at least RSA key size). The sign.length field should
-	 * be 0 and will be overwritten by the PMD with the signature length.
+	 * at least RSA key size). The sign.length field could be
+	 * either 0 or minimal length expected from PMD.
+	 * This could be validated and overwritten by the PMD
+	 * with the signature length.
 	 */
 
 	struct rte_crypto_rsa_padding padding;
@@ -524,7 +526,6 @@ struct rte_crypto_ecdh_op_param {
 
 /**
  * DSA Operations params
- *
  */
 struct rte_crypto_dsa_op_param {
 	enum rte_crypto_asym_op_type op_type;
@@ -561,12 +562,6 @@ struct rte_crypto_dsa_op_param {
 struct rte_crypto_ecdsa_op_param {
 	enum rte_crypto_asym_op_type op_type;
 	/**< Signature generation or verification */
-
-	rte_crypto_uint pkey;
-	/**< Private key of the signer for signature generation */
-
-	struct rte_crypto_ec_point q;
-	/**< Public key of the signer for verification */
 
 	rte_crypto_param message;
 	/**< Input message digest to be signed or verified */
@@ -615,7 +610,6 @@ struct rte_crypto_asym_xform {
 	enum rte_crypto_asym_xform_type xform_type;
 	/**< Asymmetric crypto transform */
 
-	RTE_STD_C11
 	union {
 		struct rte_crypto_rsa_xform rsa;
 		/**< RSA xform parameters */
@@ -640,13 +634,75 @@ struct rte_crypto_asym_xform {
 };
 
 /**
+ * SM2 operation params.
+ */
+struct rte_crypto_sm2_op_param {
+	enum rte_crypto_asym_op_type op_type;
+	/**< Signature generation or verification. */
+
+	enum rte_crypto_auth_algorithm hash;
+	/**< Hash algorithm used in EC op. */
+
+	rte_crypto_param message;
+	/**<
+	 * Pointer to input data
+	 * - to be encrypted for SM2 public encrypt.
+	 * - to be signed for SM2 sign generation.
+	 * - to be authenticated for SM2 sign verification.
+	 *
+	 * Pointer to output data
+	 * - for SM2 private decrypt.
+	 * In this case the underlying array should have been
+	 * allocated with enough memory to hold plaintext output
+	 * (at least encrypted text length). The message.length field
+	 * will be overwritten by the PMD with the decrypted length.
+	 */
+
+	rte_crypto_param cipher;
+	/**<
+	 * Pointer to input data
+	 * - to be decrypted for SM2 private decrypt.
+	 *
+	 * Pointer to output data
+	 * - for SM2 public encrypt.
+	 * In this case the underlying array should have been allocated
+	 * with enough memory to hold ciphertext output (at least X bytes
+	 * for prime field curve of N bytes and for message M bytes,
+	 * where X = (C1 || C2 || C3) and computed based on SM2 RFC as
+	 * C1 (1 + N + N), C2 = M, C3 = N. The cipher.length field will
+	 * be overwritten by the PMD with the encrypted length.
+	 */
+
+	rte_crypto_uint id;
+	/**< The SM2 id used by signer and verifier. */
+
+	rte_crypto_uint k;
+	/**< The SM2 per-message secret number, which is an integer
+	 * in the interval (1, n-1).
+	 * If the random number is generated by the PMD,
+	 * the 'rte_crypto_param.data' parameter should be set to NULL.
+	 */
+
+	rte_crypto_uint r;
+	/**< r component of elliptic curve signature
+	 *     output : for signature generation (of at least N bytes
+	 *              where prime field length is N bytes)
+	 *     input  : for signature verification
+	 */
+	rte_crypto_uint s;
+	/**< s component of elliptic curve signature
+	 *     output : for signature generation (of at least N bytes
+	 *              where prime field length is N bytes)
+	 *     input  : for signature verification
+	 */
+};
+
+/**
  * Asymmetric Cryptographic Operation.
  *
  * Structure describing asymmetric crypto operation params.
- *
  */
 struct rte_crypto_asym_op {
-	RTE_STD_C11
 	union {
 		struct rte_cryptodev_asym_session *session;
 		/**< Handle for the initialised session context */
@@ -654,7 +710,6 @@ struct rte_crypto_asym_op {
 		/**< Session-less API crypto operation parameters */
 	};
 
-	RTE_STD_C11
 	union {
 		struct rte_crypto_rsa_op_param rsa;
 		struct rte_crypto_mod_op_param modex;
@@ -664,6 +719,7 @@ struct rte_crypto_asym_op {
 		struct rte_crypto_dsa_op_param dsa;
 		struct rte_crypto_ecdsa_op_param ecdsa;
 		struct rte_crypto_ecpm_op_param ecpm;
+		struct rte_crypto_sm2_op_param sm2;
 	};
 	uint16_t flags;
 	/**<

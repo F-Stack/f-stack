@@ -781,8 +781,8 @@ DPDK implements a light-weight library to allow PMDs to be bonded together and p
 
 .. code-block:: console
 
-    dpdk-testpmd -l 0-3 -n4 --vdev 'net_bonding0,mode=0,slave=<PCI B:D.F device 1>,slave=<PCI B:D.F device 2>,mac=XX:XX:XX:XX:XX:XX’ – --socket_num=1 – -i --port-topology=chained
-    (ex) dpdk-testpmd -l 1,3,5,7,9 -n4 --vdev 'net_bonding0,mode=0,slave=0000:82:00.0,slave=0000:82:00.1,mac=00:1e:67:1d:fd:1d' – --socket-num=1 – -i --port-topology=chained
+    dpdk-testpmd -l 0-3 -n4 --vdev 'net_bonding0,mode=0,member=<PCI B:D.F device 1>,member=<PCI B:D.F device 2>,mac=XX:XX:XX:XX:XX:XX’ – --socket_num=1 – -i --port-topology=chained
+    (ex) dpdk-testpmd -l 1,3,5,7,9 -n4 --vdev 'net_bonding0,mode=0,member=0000:82:00.0,member=0000:82:00.1,mac=00:1e:67:1d:fd:1d' – --socket-num=1 – -i --port-topology=chained
 
 Vector Processing
 -----------------
@@ -916,6 +916,7 @@ Shown below are DPDK LTS releases and their supported firmware versions:
 * ``DPDK Release 19.11`` ... Firmware 219.0.103 or later
 * ``DPDK Release 20.11`` ... Firmware 219.0.103 or later
 * ``DPDK Release 21.11`` ... Firmware 221.0.101 or later
+* ``DPDK Release 22.11`` ... Firmware 226.0.131 or later
 
 Supported APIs
 --------------

@@ -30,11 +30,13 @@
 #include <stdint.h>
 #include <getopt.h>
 #include <ctype.h>
+#include <arpa/inet.h>
 #include <rte_config.h>
 #include <rte_string_fns.h>
 
 #include "ff_config.h"
 #include "ff_ini_parser.h"
+#include "ff_log.h"
 
 #define DEFAULT_CONFIG_FILE   "config.ini"
 
@@ -70,7 +72,7 @@ static int
 parse_lcore_mask(struct ff_config *cfg, const char *coremask)
 {
     int i, j, idx = 0, shift = 0, zero_num = 0;
-    unsigned count = 0;
+    int count = 0;
     char c;
     int val;
     uint16_t *proc_lcore;
@@ -120,7 +122,7 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
                     snprintf(buf, sizeof(buf) - 1, "%llx%s",
                         (unsigned long long)1<<shift, zero);
                     cfg->dpdk.proc_mask = strdup(buf);
-		}
+        }
                 count++;
             }
         }
@@ -515,7 +517,7 @@ ipfw_pr_cfg_handler(struct ff_port_cfg *cur_port_cfg, struct ff_vlan_cfg *cur_vl
                 vip_addr_str);
             free(vipfw_pr_cfg_p);
             return 1;
-        };
+        }
 
         vipfw_pr_cfg_p[i].addr = vip_addr_mask_array[0];
         vipfw_pr_cfg_p[i].netmask = vip_addr_mask_array[1];
@@ -856,6 +858,81 @@ bond_cfg_handler(struct ff_config *cfg, const char *section,
 }
 
 static int
+rss_tbl_cfg_handler(struct ff_rss_check_cfg *cur)
+{
+    //vip cfg
+    int ret, nb_rss_tbl, i, j, k;
+    char *rss_tbl_array[FF_RSS_TBL_MAX_ENTRIES], *rss_tbl_4tuble_array[4], *rss_tbl_str;
+    struct ff_rss_tbl_cfg *rss_tbl_cfg_p;
+
+    rss_tbl_str = cur->rss_tbl_str;
+
+    ret = rte_strsplit(rss_tbl_str, strlen(rss_tbl_str), &rss_tbl_array[0], FF_RSS_TBL_MAX_ENTRIES, ';');
+    if (ret <= 0) {
+        fprintf(stdout, "rss_tbl_cfg_handler nb_rss_tbl is 0, not set rss_tbl or set invalid rss_tbl %s\n",
+            rss_tbl_str);
+        return 1;
+    }
+
+    nb_rss_tbl = ret;
+
+    rss_tbl_cfg_p = &cur->rss_tbl_cfgs[0];
+
+    for (i = 0; i < nb_rss_tbl; i++) {
+        rss_tbl_str = rss_tbl_array[i];
+        /* port_id, daddr(local), saddr(remote), sport */
+        ret = rte_strsplit(rss_tbl_str, strlen(rss_tbl_str), &rss_tbl_4tuble_array[0], 4, ' ');
+        if (ret != 4) {
+            fprintf(stdout, "rss_tbl_cfg_handler daddr/saddr/sport format error %s\n",
+                rss_tbl_str);
+            return 1;
+        }
+
+        /* Note: daddr must be include by port_id's addr or vip_addr, but here not check it now */
+        rss_tbl_cfg_p[i].port_id = atoi(rss_tbl_4tuble_array[0]);
+        inet_pton(AF_INET, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr));
+        inet_pton(AF_INET, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr));
+        rss_tbl_cfg_p[i].sport = htons(atoi(rss_tbl_4tuble_array[3]));
+    }
+
+    cur->nb_rss_tbl = nb_rss_tbl;
+
+    return 1;
+}
+
+static int
+rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
+    const char *name, const char *value)
+{
+    if (cfg->dpdk.port_cfgs == NULL && cfg->dpdk.vlan_cfgs == NULL) {
+        fprintf(stderr, "rss_check_cfg_handler: must config dpdk.port or dpdk.vlan first\n");
+        return 0;
+    }
+
+    if (cfg->dpdk.rss_check_cfgs == NULL) {
+        struct ff_rss_check_cfg *rcc = calloc(1, sizeof(struct ff_rss_check_cfg));
+        if (rcc == NULL) {
+            fprintf(stderr, "rss_check_cfg_handler malloc failed\n");
+            return 0;
+        }
+        cfg->dpdk.rss_check_cfgs = rcc;
+    }
+
+    struct ff_rss_check_cfg *cur = cfg->dpdk.rss_check_cfgs;
+
+    if (strcmp(name, "enable") == 0) {
+        cur->enable = atoi(value);
+    } else if (strcmp(name, "rss_tbl") == 0) {
+        cur->rss_tbl_str = strdup(value);
+        if (cur->rss_tbl_str) {
+            return rss_tbl_cfg_handler(cur);
+        }
+    }
+
+    return 1;
+}
+
+static int
 ini_parse_handler(void* user, const char* section, const char* name,
     const char* value)
 {
@@ -866,6 +943,10 @@ ini_parse_handler(void* user, const char* section, const char* name,
     #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
     if (MATCH("dpdk", "log_level")) {
         pconfig->dpdk.log_level = atoi(value);
+    } else if (MATCH("dpdk", "fstack_log_level")) {
+        pconfig->log.level = atoi(value);
+    } else if (MATCH("dpdk", "fstack_log_file_prefix")) {
+        pconfig->log.dir = strdup(value);
     } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
     } else if (MATCH("dpdk", "memory")) {
@@ -879,8 +960,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.base_virtaddr= strdup(value);
     } else if (MATCH("dpdk", "file_prefix")) {
         pconfig->dpdk.file_prefix = strdup(value);
-    } else if (MATCH("dpdk", "pci_whitelist")) {
-        pconfig->dpdk.pci_whitelist = strdup(value);
+    } else if (MATCH("dpdk", "allow")) {
+        pconfig->dpdk.allow = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -907,8 +988,6 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.symmetric_rss = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
-    } else if (MATCH("kni", "type")) {
-        pconfig->kni.type= atoi(value);
     } else if (MATCH("kni", "console_packets_ratelimit")) {
         pconfig->kni.console_packets_ratelimit= atoi(value);
     } else if (MATCH("kni", "general_packets_ratelimit")) {
@@ -955,6 +1034,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         } else if (strcmp(name, "savepath") == 0) {
             pconfig->pcap.save_path = strdup(value);
         }
+    } else if (strcmp(section, "rss_check") == 0) {
+        return rss_check_cfg_handler(pconfig, section, name, value);
     }
 
     return 1;
@@ -998,15 +1079,14 @@ dpdk_args_setup(struct ff_config *cfg)
         sprintf(temp, "--file-prefix=container-%s", cfg->dpdk.file_prefix);
         dpdk_argv[n++] = strdup(temp);
     }
-    if (cfg->dpdk.pci_whitelist) {
+    if (cfg->dpdk.allow) {
         char* token;
-        char* rest = cfg->dpdk.pci_whitelist;
+        char* rest = cfg->dpdk.allow;
 
         while ((token = strtok_r(rest, ",", &rest))){
             sprintf(temp, "--allow=%s", token);
             dpdk_argv[n++] = strdup(temp);
         }
-
     }
 
     if (cfg->dpdk.nb_vdev) {
@@ -1229,12 +1309,6 @@ ff_check_config(struct ff_config *cfg)
                          lcore_id, pc->port_id);
                 return -1;
             }
-
-            if (cfg->kni.type != KNI_TYPE_KNI && cfg->kni.type != KNI_TYPE_VIRTIO) {
-                fprintf(stderr,
-                         "kni type value must be 0 or 1, now is:%d\n", cfg->kni.type);
-                return -1;
-            }
         }
     }
 
@@ -1262,6 +1336,9 @@ ff_default_config(struct ff_config *cfg)
     cfg->freebsd.physmem = 1048576*256;
     cfg->freebsd.fd_reserve = 0;
     cfg->freebsd.mem_size = 256;
+
+    cfg->log.level = FF_LOG_DISABLE;
+    cfg->log.dir = FF_LOG_FILENAME_PREFIX;
 }
 
 int

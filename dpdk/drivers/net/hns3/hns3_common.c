@@ -59,6 +59,7 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 	info->max_tx_queues = hw->tqps_num;
 	info->max_rx_pktlen = HNS3_MAX_FRAME_LEN; /* CRC included */
 	info->min_rx_bufsize = HNS3_MIN_BD_BUF_SIZE;
+	info->max_rx_bufsize = HNS3_MAX_BD_BUF_SIZE;
 	info->max_mtu = info->max_rx_pktlen - HNS3_ETH_OVERHEAD;
 	info->max_lro_pkt_size = HNS3_MAX_LRO_SIZE;
 	info->rx_offload_capa = (RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
@@ -133,6 +134,10 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 	info->reta_size = hw->rss_ind_tbl_size;
 	info->hash_key_size = hw->rss_key_size;
 	info->flow_type_rss_offloads = HNS3_ETH_RSS_SUPPORT;
+	info->rss_algo_capa = RTE_ETH_HASH_ALGO_CAPA_MASK(DEFAULT) |
+			      RTE_ETH_HASH_ALGO_CAPA_MASK(TOEPLITZ) |
+			      RTE_ETH_HASH_ALGO_CAPA_MASK(SIMPLE_XOR) |
+			      RTE_ETH_HASH_ALGO_CAPA_MASK(SYMMETRIC_TOEPLITZ);
 
 	info->default_rxportconf.burst_size = HNS3_DEFAULT_PORT_CONF_BURST_SIZE;
 	info->default_txportconf.burst_size = HNS3_DEFAULT_PORT_CONF_BURST_SIZE;
@@ -239,6 +244,34 @@ hns3_parse_mbx_time_limit(const char *key, const char *value, void *extra_args)
 	return 0;
 }
 
+static int
+hns3_parse_vlan_match_mode(const char *key, const char *value, void *args)
+{
+	uint8_t mode;
+
+	RTE_SET_USED(key);
+
+	if (value == NULL) {
+		PMD_INIT_LOG(WARNING, "no value for key:\"%s\"", key);
+		return -1;
+	}
+
+	if (strcmp(value, "strict") == 0) {
+		mode = HNS3_FDIR_VLAN_STRICT_MATCH;
+	} else if (strcmp(value, "nostrict") == 0) {
+		mode = HNS3_FDIR_VLAN_NOSTRICT_MATCH;
+	} else {
+		PMD_INIT_LOG(WARNING, "invalid value:\"%s\" for key:\"%s\", "
+			"value must be 'strict' or 'nostrict'",
+			value, key);
+		return -1;
+	}
+
+	*(uint8_t *)args = mode;
+
+	return 0;
+}
+
 void
 hns3_parse_devargs(struct rte_eth_dev *dev)
 {
@@ -255,6 +288,8 @@ hns3_parse_devargs(struct rte_eth_dev *dev)
 	hns->tx_func_hint = HNS3_IO_FUNC_HINT_NONE;
 	hns->dev_caps_mask = 0;
 	hns->mbx_time_limit_ms = HNS3_MBX_DEF_TIME_LIMIT_MS;
+	if (!hns->is_vf)
+		hns->pf.fdir.vlan_match_mode = HNS3_FDIR_VLAN_STRICT_MATCH;
 
 	if (dev->device->devargs == NULL)
 		return;
@@ -271,6 +306,11 @@ hns3_parse_devargs(struct rte_eth_dev *dev)
 			   &hns3_parse_dev_caps_mask, &dev_caps_mask);
 	(void)rte_kvargs_process(kvlist, HNS3_DEVARG_MBX_TIME_LIMIT_MS,
 			   &hns3_parse_mbx_time_limit, &mbx_time_limit_ms);
+	if (!hns->is_vf)
+		(void)rte_kvargs_process(kvlist,
+					 HNS3_DEVARG_FDIR_VLAN_MATCH_MODE,
+					 &hns3_parse_vlan_match_mode,
+					 &hns->pf.fdir.vlan_match_mode);
 
 	rte_kvargs_free(kvlist);
 
@@ -794,8 +834,8 @@ hns3_unmap_rx_interrupt(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
-	uint8_t base = RTE_INTR_VEC_ZERO_OFFSET;
-	uint8_t vec = RTE_INTR_VEC_ZERO_OFFSET;
+	uint16_t base = RTE_INTR_VEC_ZERO_OFFSET;
+	uint16_t vec = RTE_INTR_VEC_ZERO_OFFSET;
 	uint16_t q_id;
 
 	if (dev->data->dev_conf.intr_conf.rxq == 0)

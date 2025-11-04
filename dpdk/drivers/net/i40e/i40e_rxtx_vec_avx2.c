@@ -22,7 +22,7 @@
 static __rte_always_inline void
 i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 {
-	return i40e_rxq_rearm_common(rxq, false);
+	i40e_rxq_rearm_common(rxq, false);
 }
 
 #ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
@@ -589,9 +589,9 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		status0_7 = _mm256_packs_epi32(status0_7,
 				_mm256_setzero_si256());
 
-		uint64_t burst = __builtin_popcountll(_mm_cvtsi128_si64(
+		uint64_t burst = rte_popcount64(_mm_cvtsi128_si64(
 				_mm256_extracti128_si256(status0_7, 1)));
-		burst += __builtin_popcountll(_mm_cvtsi128_si64(
+		burst += rte_popcount64(_mm_cvtsi128_si64(
 				_mm256_castsi256_si128(status0_7)));
 		received += burst;
 		if (burst != RTE_I40E_DESCS_PER_LOOP_AVX)

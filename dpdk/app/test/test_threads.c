@@ -232,6 +232,31 @@ test_thread_attributes_priority(void)
 	return 0;
 }
 
+static int
+test_thread_control_create_join(void)
+{
+	rte_thread_t thread_id;
+	rte_thread_t thread_main_id;
+
+	thread_id_ready = 0;
+	RTE_TEST_ASSERT(rte_thread_create_control(&thread_id, "dpdk-test-thcc",
+		thread_main, &thread_main_id) == 0,
+		"Failed to create thread.");
+
+	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
+		;
+
+	RTE_TEST_ASSERT(rte_thread_equal(thread_id, thread_main_id) != 0,
+		"Unexpected thread id.");
+
+	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+
+	RTE_TEST_ASSERT(rte_thread_join(thread_id, NULL) == 0,
+		"Failed to join thread.");
+
+	return 0;
+}
+
 static struct unit_test_suite threads_test_suite = {
 	.suite_name = "threads autotest",
 	.setup = NULL,
@@ -243,6 +268,7 @@ static struct unit_test_suite threads_test_suite = {
 		TEST_CASE(test_thread_priority),
 		TEST_CASE(test_thread_attributes_affinity),
 		TEST_CASE(test_thread_attributes_priority),
+		TEST_CASE(test_thread_control_create_join),
 		TEST_CASES_END()
 	}
 };
@@ -253,4 +279,4 @@ test_threads(void)
 	return unit_test_suite_runner(&threads_test_suite);
 }
 
-REGISTER_TEST_COMMAND(threads_autotest, test_threads);
+REGISTER_FAST_TEST(threads_autotest, true, true, test_threads);

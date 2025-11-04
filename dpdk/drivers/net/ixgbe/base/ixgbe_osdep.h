@@ -56,13 +56,16 @@
 
 /* Bunch of defines for shared code bogosity */
 #ifndef UNREFERENCED_PARAMETER
-#define UNREFERENCED_PARAMETER(_p)  
+#define UNREFERENCED_PARAMETER(_p) (void)(_p)
 #endif
-#define UNREFERENCED_1PARAMETER(_p) 
-#define UNREFERENCED_2PARAMETER(_p, _q)
-#define UNREFERENCED_3PARAMETER(_p, _q, _r) 
-#define UNREFERENCED_4PARAMETER(_p, _q, _r, _s) 
-#define UNREFERENCED_5PARAMETER(_p, _q, _r, _s, _t)
+#define UNREFERENCED_1PARAMETER(_p) (void)(_p)
+#define UNREFERENCED_2PARAMETER(_p, _q) do { (void)(_p); (void)(_q); } while(0)
+#define UNREFERENCED_3PARAMETER(_p, _q, _r) \
+	do { (void)(_p); (void)(_q); (void)(_r); } while(0)
+#define UNREFERENCED_4PARAMETER(_p, _q, _r, _s) \
+	do { (void)(_p); (void)(_q); (void)(_r); (void)(_s); } while(0)
+#define UNREFERENCED_5PARAMETER(_p, _q, _r, _s, _t) \
+	do { (void)(_p); (void)(_q); (void)(_r); (void)(_s); (void)(_t); } while(0)
 
 /* Shared code error reporting */
 enum {
@@ -80,7 +83,7 @@ enum {
 #define IXGBE_CPU_TO_LE16(_i)  rte_cpu_to_le_16(_i)
 #define IXGBE_CPU_TO_LE32(_i)  rte_cpu_to_le_32(_i)
 #define IXGBE_LE32_TO_CPU(_i)  rte_le_to_cpu_32(_i)
-#define IXGBE_LE32_TO_CPUS(_i) rte_le_to_cpu_32(_i)
+#define IXGBE_LE32_TO_CPUS(_i) do { *_i = rte_le_to_cpu_32(*_i); } while(0)
 #define IXGBE_CPU_TO_BE16(_i)  rte_cpu_to_be_16(_i)
 #define IXGBE_CPU_TO_BE32(_i)  rte_cpu_to_be_32(_i)
 #define IXGBE_BE32_TO_CPU(_i)  rte_be_to_cpu_32(_i)
@@ -127,8 +130,8 @@ static inline uint32_t ixgbe_read_addr(volatile void* addr)
 	IXGBE_PCI_REG_ADDR((hw), (reg) + ((index) << 2))
 
 /* Not implemented !! */
-#define IXGBE_READ_PCIE_WORD(hw, reg) 0	
-#define IXGBE_WRITE_PCIE_WORD(hw, reg, value) do { } while(0)
+#define IXGBE_READ_PCIE_WORD(hw, reg)  ((void)hw, (void)(reg), 0)
+#define IXGBE_WRITE_PCIE_WORD(hw, reg, value) do { (void)hw; (void)reg; (void)value; } while(0)
 
 #define IXGBE_WRITE_FLUSH(a) IXGBE_READ_REG(a, IXGBE_STATUS)
 

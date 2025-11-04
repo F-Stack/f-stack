@@ -29,7 +29,7 @@
 #include "rte_crypto.h"
 #include "rte_cryptodev.h"
 #include "cryptodev_pmd.h"
-#include "rte_cryptodev_trace.h"
+#include "cryptodev_trace.h"
 
 static uint8_t nb_drivers;
 
@@ -65,10 +65,11 @@ struct rte_cryptodev_callback {
 
 /**
  * The crypto cipher algorithm strings identifiers.
- * It could be used in application command line.
+ * Not to be used in application directly.
+ * Application can use rte_cryptodev_get_cipher_algo_string().
  */
-const char *
-rte_crypto_cipher_algorithm_strings[] = {
+static const char *
+crypto_cipher_algorithm_strings[] = {
 	[RTE_CRYPTO_CIPHER_3DES_CBC]	= "3des-cbc",
 	[RTE_CRYPTO_CIPHER_3DES_ECB]	= "3des-ecb",
 	[RTE_CRYPTO_CIPHER_3DES_CTR]	= "3des-ctr",
@@ -92,7 +93,9 @@ rte_crypto_cipher_algorithm_strings[] = {
 	[RTE_CRYPTO_CIPHER_ZUC_EEA3]	= "zuc-eea3",
 	[RTE_CRYPTO_CIPHER_SM4_ECB]	= "sm4-ecb",
 	[RTE_CRYPTO_CIPHER_SM4_CBC]	= "sm4-cbc",
-	[RTE_CRYPTO_CIPHER_SM4_CTR]	= "sm4-ctr"
+	[RTE_CRYPTO_CIPHER_SM4_CTR]	= "sm4-ctr",
+	[RTE_CRYPTO_CIPHER_SM4_CFB]	= "sm4-cfb",
+	[RTE_CRYPTO_CIPHER_SM4_OFB]	= "sm4-ofb"
 };
 
 /**
@@ -107,10 +110,11 @@ rte_crypto_cipher_operation_strings[] = {
 
 /**
  * The crypto auth algorithm strings identifiers.
- * It could be used in application command line.
+ * Not to be used in application directly.
+ * Application can use rte_cryptodev_get_auth_algo_string().
  */
-const char *
-rte_crypto_auth_algorithm_strings[] = {
+static const char *
+crypto_auth_algorithm_strings[] = {
 	[RTE_CRYPTO_AUTH_AES_CBC_MAC]	= "aes-cbc-mac",
 	[RTE_CRYPTO_AUTH_AES_CMAC]	= "aes-cmac",
 	[RTE_CRYPTO_AUTH_AES_GMAC]	= "aes-gmac",
@@ -145,19 +149,25 @@ rte_crypto_auth_algorithm_strings[] = {
 	[RTE_CRYPTO_AUTH_KASUMI_F9]	= "kasumi-f9",
 	[RTE_CRYPTO_AUTH_SNOW3G_UIA2]	= "snow3g-uia2",
 	[RTE_CRYPTO_AUTH_ZUC_EIA3]	= "zuc-eia3",
-	[RTE_CRYPTO_AUTH_SM3]		= "sm3"
+	[RTE_CRYPTO_AUTH_SM3]		= "sm3",
+	[RTE_CRYPTO_AUTH_SM3_HMAC]	= "sm3-hmac",
+
+	[RTE_CRYPTO_AUTH_SHAKE_128]	 = "shake-128",
+	[RTE_CRYPTO_AUTH_SHAKE_256]	 = "shake-256",
 };
 
 /**
  * The crypto AEAD algorithm strings identifiers.
- * It could be used in application command line.
+ * Not to be used in application directly.
+ * Application can use rte_cryptodev_get_aead_algo_string().
  */
-const char *
-rte_crypto_aead_algorithm_strings[] = {
+static const char *
+crypto_aead_algorithm_strings[] = {
 	[RTE_CRYPTO_AEAD_AES_CCM]	= "aes-ccm",
 	[RTE_CRYPTO_AEAD_AES_GCM]	= "aes-gcm",
 	[RTE_CRYPTO_AEAD_CHACHA20_POLY1305] = "chacha20-poly1305"
 };
+
 
 /**
  * The crypto AEAD operation strings identifiers.
@@ -171,8 +181,11 @@ rte_crypto_aead_operation_strings[] = {
 
 /**
  * Asymmetric crypto transform operation strings identifiers.
+ * Not to be used in application directly.
+ * Application can use rte_cryptodev_asym_get_xform_string().
  */
-const char *rte_crypto_asym_xform_strings[] = {
+static const char *
+crypto_asym_xform_strings[] = {
 	[RTE_CRYPTO_ASYM_XFORM_NONE]	= "none",
 	[RTE_CRYPTO_ASYM_XFORM_RSA]	= "rsa",
 	[RTE_CRYPTO_ASYM_XFORM_MODEX]	= "modexp",
@@ -181,6 +194,7 @@ const char *rte_crypto_asym_xform_strings[] = {
 	[RTE_CRYPTO_ASYM_XFORM_DSA]	= "dsa",
 	[RTE_CRYPTO_ASYM_XFORM_ECDSA]	= "ecdsa",
 	[RTE_CRYPTO_ASYM_XFORM_ECPM]	= "ecpm",
+	[RTE_CRYPTO_ASYM_XFORM_SM2]	= "sm2",
 };
 
 /**
@@ -227,8 +241,8 @@ rte_cryptodev_get_cipher_algo_enum(enum rte_crypto_cipher_algorithm *algo_enum,
 	unsigned int i;
 	int ret = -1;	/* Invalid string */
 
-	for (i = 1; i < RTE_DIM(rte_crypto_cipher_algorithm_strings); i++) {
-		if (strcmp(algo_string, rte_crypto_cipher_algorithm_strings[i]) == 0) {
+	for (i = 1; i < RTE_DIM(crypto_cipher_algorithm_strings); i++) {
+		if (strcmp(algo_string, crypto_cipher_algorithm_strings[i]) == 0) {
 			*algo_enum = (enum rte_crypto_cipher_algorithm) i;
 			ret = 0;
 			break;
@@ -247,8 +261,8 @@ rte_cryptodev_get_auth_algo_enum(enum rte_crypto_auth_algorithm *algo_enum,
 	unsigned int i;
 	int ret = -1;	/* Invalid string */
 
-	for (i = 1; i < RTE_DIM(rte_crypto_auth_algorithm_strings); i++) {
-		if (strcmp(algo_string, rte_crypto_auth_algorithm_strings[i]) == 0) {
+	for (i = 1; i < RTE_DIM(crypto_auth_algorithm_strings); i++) {
+		if (strcmp(algo_string, crypto_auth_algorithm_strings[i]) == 0) {
 			*algo_enum = (enum rte_crypto_auth_algorithm) i;
 			ret = 0;
 			break;
@@ -267,8 +281,8 @@ rte_cryptodev_get_aead_algo_enum(enum rte_crypto_aead_algorithm *algo_enum,
 	unsigned int i;
 	int ret = -1;	/* Invalid string */
 
-	for (i = 1; i < RTE_DIM(rte_crypto_aead_algorithm_strings); i++) {
-		if (strcmp(algo_string, rte_crypto_aead_algorithm_strings[i]) == 0) {
+	for (i = 1; i < RTE_DIM(crypto_aead_algorithm_strings); i++) {
+		if (strcmp(algo_string, crypto_aead_algorithm_strings[i]) == 0) {
 			*algo_enum = (enum rte_crypto_aead_algorithm) i;
 			ret = 0;
 			break;
@@ -287,9 +301,9 @@ rte_cryptodev_asym_get_xform_enum(enum rte_crypto_asym_xform_type *xform_enum,
 	unsigned int i;
 	int ret = -1;	/* Invalid string */
 
-	for (i = 1; i < RTE_DIM(rte_crypto_asym_xform_strings); i++) {
+	for (i = 1; i < RTE_DIM(crypto_asym_xform_strings); i++) {
 		if (strcmp(xform_string,
-			rte_crypto_asym_xform_strings[i]) == 0) {
+			crypto_asym_xform_strings[i]) == 0) {
 			*xform_enum = (enum rte_crypto_asym_xform_type) i;
 			ret = 0;
 			break;
@@ -299,6 +313,58 @@ rte_cryptodev_asym_get_xform_enum(enum rte_crypto_asym_xform_type *xform_enum,
 	rte_cryptodev_trace_asym_get_xform_enum(xform_string, *xform_enum, ret);
 
 	return ret;
+}
+
+const char *
+rte_cryptodev_get_cipher_algo_string(enum rte_crypto_cipher_algorithm algo_enum)
+{
+	const char *alg_str = NULL;
+
+	if ((unsigned int)algo_enum < RTE_DIM(crypto_cipher_algorithm_strings))
+		alg_str = crypto_cipher_algorithm_strings[algo_enum];
+
+	rte_cryptodev_trace_get_cipher_algo_string(algo_enum, alg_str);
+
+	return alg_str;
+}
+
+const char *
+rte_cryptodev_get_auth_algo_string(enum rte_crypto_auth_algorithm algo_enum)
+{
+	const char *alg_str = NULL;
+
+	if ((unsigned int)algo_enum < RTE_DIM(crypto_auth_algorithm_strings))
+		alg_str = crypto_auth_algorithm_strings[algo_enum];
+
+	rte_cryptodev_trace_get_auth_algo_string(algo_enum, alg_str);
+
+	return alg_str;
+}
+
+const char *
+rte_cryptodev_get_aead_algo_string(enum rte_crypto_aead_algorithm algo_enum)
+{
+	const char *alg_str = NULL;
+
+	if ((unsigned int)algo_enum < RTE_DIM(crypto_aead_algorithm_strings))
+		alg_str = crypto_aead_algorithm_strings[algo_enum];
+
+	rte_cryptodev_trace_get_aead_algo_string(algo_enum, alg_str);
+
+	return alg_str;
+}
+
+const char *
+rte_cryptodev_asym_get_xform_string(enum rte_crypto_asym_xform_type xform_enum)
+{
+	const char *xform_str = NULL;
+
+	if ((unsigned int)xform_enum < RTE_DIM(crypto_asym_xform_strings))
+		xform_str = crypto_asym_xform_strings[xform_enum];
+
+	rte_cryptodev_trace_asym_get_xform_string(xform_enum, xform_str);
+
+	return xform_str;
 }
 
 /**
@@ -540,6 +606,22 @@ rte_cryptodev_asym_xform_capability_check_modlen(
 done:
 	rte_cryptodev_trace_asym_xform_capability_check_modlen(capability,
 		modlen, ret);
+
+	return ret;
+}
+
+bool
+rte_cryptodev_asym_xform_capability_check_hash(
+	const struct rte_cryptodev_asymmetric_xform_capability *capability,
+	enum rte_crypto_auth_algorithm hash)
+{
+	bool ret = false;
+
+	if (capability->hash_algos & (1 << hash))
+		ret = true;
+
+	rte_cryptodev_trace_asym_xform_capability_check_hash(
+		capability->hash_algos, hash, ret);
 
 	return ret;
 }
@@ -1457,12 +1539,12 @@ rte_cryptodev_add_enq_callback(uint8_t dev_id,
 		/* Stores to cb->fn and cb->param should complete before
 		 * cb is visible to data plane.
 		 */
-		__atomic_store_n(&tail->next, cb, __ATOMIC_RELEASE);
+		rte_atomic_store_explicit(&tail->next, cb, rte_memory_order_release);
 	} else {
 		/* Stores to cb->fn and cb->param should complete before
 		 * cb is visible to data plane.
 		 */
-		__atomic_store_n(&list->next, cb, __ATOMIC_RELEASE);
+		rte_atomic_store_explicit(&list->next, cb, rte_memory_order_release);
 	}
 
 	rte_spinlock_unlock(&rte_cryptodev_callback_lock);
@@ -1480,7 +1562,8 @@ rte_cryptodev_remove_enq_callback(uint8_t dev_id,
 	return -ENOTSUP;
 #endif
 	struct rte_cryptodev *dev;
-	struct rte_cryptodev_cb **prev_cb, *curr_cb;
+	RTE_ATOMIC(struct rte_cryptodev_cb *) *prev_cb;
+	struct rte_cryptodev_cb *curr_cb;
 	struct rte_cryptodev_cb_rcu *list;
 	int ret;
 
@@ -1526,8 +1609,8 @@ rte_cryptodev_remove_enq_callback(uint8_t dev_id,
 		curr_cb = *prev_cb;
 		if (curr_cb == cb) {
 			/* Remove the user cb from the callback list. */
-			__atomic_store_n(prev_cb, curr_cb->next,
-				__ATOMIC_RELAXED);
+			rte_atomic_store_explicit(prev_cb, curr_cb->next,
+				rte_memory_order_relaxed);
 			ret = 0;
 			break;
 		}
@@ -1602,12 +1685,12 @@ rte_cryptodev_add_deq_callback(uint8_t dev_id,
 		/* Stores to cb->fn and cb->param should complete before
 		 * cb is visible to data plane.
 		 */
-		__atomic_store_n(&tail->next, cb, __ATOMIC_RELEASE);
+		rte_atomic_store_explicit(&tail->next, cb, rte_memory_order_release);
 	} else {
 		/* Stores to cb->fn and cb->param should complete before
 		 * cb is visible to data plane.
 		 */
-		__atomic_store_n(&list->next, cb, __ATOMIC_RELEASE);
+		rte_atomic_store_explicit(&list->next, cb, rte_memory_order_release);
 	}
 
 	rte_spinlock_unlock(&rte_cryptodev_callback_lock);
@@ -1626,7 +1709,8 @@ rte_cryptodev_remove_deq_callback(uint8_t dev_id,
 	return -ENOTSUP;
 #endif
 	struct rte_cryptodev *dev;
-	struct rte_cryptodev_cb **prev_cb, *curr_cb;
+	RTE_ATOMIC(struct rte_cryptodev_cb *) *prev_cb;
+	struct rte_cryptodev_cb *curr_cb;
 	struct rte_cryptodev_cb_rcu *list;
 	int ret;
 
@@ -1672,8 +1756,8 @@ rte_cryptodev_remove_deq_callback(uint8_t dev_id,
 		curr_cb = *prev_cb;
 		if (curr_cb == cb) {
 			/* Remove the user cb from the callback list. */
-			__atomic_store_n(prev_cb, curr_cb->next,
-				__ATOMIC_RELAXED);
+			rte_atomic_store_explicit(prev_cb, curr_cb->next,
+				rte_memory_order_relaxed);
 			ret = 0;
 			break;
 		}
@@ -1875,6 +1959,25 @@ rte_cryptodev_pmd_callback_process(struct rte_cryptodev *dev,
 		cb_lst->active = 0;
 	}
 	rte_spinlock_unlock(&rte_cryptodev_cb_lock);
+}
+
+int
+rte_cryptodev_queue_pair_event_error_query(uint8_t dev_id, uint16_t qp_id)
+{
+	struct rte_cryptodev *dev;
+
+	if (!rte_cryptodev_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
+	dev = &rte_crypto_devices[dev_id];
+
+	if (qp_id >= dev->data->nb_queue_pairs)
+		return -EINVAL;
+	if (*dev->dev_ops->queue_pair_event_error_query == NULL)
+		return -ENOTSUP;
+
+	return dev->dev_ops->queue_pair_event_error_query(dev, qp_id);
 }
 
 struct rte_mempool *
@@ -2706,13 +2809,13 @@ cryptodev_handle_dev_info(const char *cmd __rte_unused,
 	rte_tel_data_start_dict(d);
 	rte_tel_data_add_dict_string(d, "device_name",
 		cryptodev_info.device->name);
-	rte_tel_data_add_dict_u64(d, "max_nb_queue_pairs",
+	rte_tel_data_add_dict_uint(d, "max_nb_queue_pairs",
 		cryptodev_info.max_nb_queue_pairs);
 
 	return 0;
 }
 
-#define ADD_DICT_STAT(s) rte_tel_data_add_dict_u64(d, #s, cryptodev_stats.s)
+#define ADD_DICT_STAT(s) rte_tel_data_add_dict_uint(d, #s, cryptodev_stats.s)
 
 static int
 cryptodev_handle_dev_stats(const char *cmd __rte_unused,
@@ -2758,14 +2861,14 @@ crypto_caps_array(struct rte_tel_data *d,
 	uint64_t caps_val[CRYPTO_CAPS_SZ];
 	unsigned int i = 0, j;
 
-	rte_tel_data_start_array(d, RTE_TEL_U64_VAL);
+	rte_tel_data_start_array(d, RTE_TEL_UINT_VAL);
 
 	while ((dev_caps = &capabilities[i++])->op !=
 			RTE_CRYPTO_OP_TYPE_UNDEFINED) {
 		memset(&caps_val, 0, CRYPTO_CAPS_SZ * sizeof(caps_val[0]));
 		rte_memcpy(caps_val, dev_caps, sizeof(capabilities[0]));
 		for (j = 0; j < CRYPTO_CAPS_SZ; j++)
-			rte_tel_data_add_array_u64(d, caps_val[j]);
+			rte_tel_data_add_array_uint(d, caps_val[j]);
 	}
 
 	return i;

@@ -22,8 +22,8 @@ See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 Read DPDK Quick Started Guide or run the command below
 
 	cd /data/f-stack/dpdk
-	# re-enable kni now, to remove kni later
-	meson -Denable_kmods=true -Ddisable_libs=flow_classify build
+    # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
+	meson -Denable_kmods=true build
 	ninja -C build
 	ninja -C build install
 
@@ -51,7 +51,6 @@ The mount point can be made permanent across reboots, by adding the following li
 
     modprobe uio
     insmod /data/f-stack/dpdk/build/kernel/linux/igb_uio/igb_uio.ko
-    insmod /data/f-stack/dpdk/build/kernel/linux/kni/rte_kni.ko carrier=on
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0

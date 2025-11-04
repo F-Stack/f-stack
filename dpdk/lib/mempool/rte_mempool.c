@@ -28,8 +28,8 @@
 #include <rte_eal_paging.h>
 #include <rte_telemetry.h>
 
+#include "mempool_trace.h"
 #include "rte_mempool.h"
-#include "rte_mempool_trace.h"
 
 TAILQ_HEAD(rte_mempool_list, rte_tailq_entry);
 
@@ -55,7 +55,6 @@ mempool_event_callback_invoke(enum rte_mempool_event event,
 #if defined(RTE_ARCH_X86)
 /*
  * return the greatest common divisor between a and b (fast algorithm)
- *
  */
 static unsigned get_gcd(unsigned a, unsigned b)
 {
@@ -928,8 +927,10 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 	else
 		ret = rte_mempool_set_ops_byname(mp, "ring_mp_mc", NULL);
 
-	if (ret)
+	if (ret) {
+		rte_errno = -ret;
 		goto exit_unlock;
+	}
 
 	/*
 	 * local_cache pointer is set even if cache_size is zero.
@@ -1054,6 +1055,10 @@ rte_mempool_dump_cache(FILE *f, const struct rte_mempool *mp)
 	return count;
 }
 
+#ifndef __INTEL_COMPILER
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#endif
+
 /* check and update cookies or panic (internal) */
 void rte_mempool_check_cookies(const struct rte_mempool *mp,
 	void * const *obj_table_const, unsigned n, int free)
@@ -1068,7 +1073,7 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 
 	/* Force to drop the "const" attribute. This is done only when
 	 * DEBUG is enabled */
-	tmp = (void *)(uintptr_t)obj_table_const;
+	tmp = (void *) obj_table_const;
 	obj_table = tmp;
 
 	while (n--) {
@@ -1175,6 +1180,10 @@ mempool_audit_cookies(struct rte_mempool *mp)
 }
 #else
 #define mempool_audit_cookies(mp) do {} while(0)
+#endif
+
+#ifndef __INTEL_COMPILER
+#pragma GCC diagnostic error "-Wcast-qual"
 #endif
 
 /* check cookies before and after objects */
@@ -1486,32 +1495,45 @@ mempool_info_cb(struct rte_mempool *mp, void *arg)
 {
 	struct mempool_info_cb_arg *info = (struct mempool_info_cb_arg *)arg;
 	const struct rte_memzone *mz;
+	uint64_t cache_count, common_count;
 
 	if (strncmp(mp->name, info->pool_name, RTE_MEMZONE_NAMESIZE))
 		return;
 
 	rte_tel_data_add_dict_string(info->d, "name", mp->name);
-	rte_tel_data_add_dict_u64(info->d, "pool_id", mp->pool_id);
-	rte_tel_data_add_dict_u64(info->d, "flags", mp->flags);
+	rte_tel_data_add_dict_uint(info->d, "pool_id", mp->pool_id);
+	rte_tel_data_add_dict_uint(info->d, "flags", mp->flags);
 	rte_tel_data_add_dict_int(info->d, "socket_id", mp->socket_id);
-	rte_tel_data_add_dict_u64(info->d, "size", mp->size);
-	rte_tel_data_add_dict_u64(info->d, "cache_size", mp->cache_size);
-	rte_tel_data_add_dict_u64(info->d, "elt_size", mp->elt_size);
-	rte_tel_data_add_dict_u64(info->d, "header_size", mp->header_size);
-	rte_tel_data_add_dict_u64(info->d, "trailer_size", mp->trailer_size);
-	rte_tel_data_add_dict_u64(info->d, "private_data_size",
+	rte_tel_data_add_dict_uint(info->d, "size", mp->size);
+	rte_tel_data_add_dict_uint(info->d, "cache_size", mp->cache_size);
+	rte_tel_data_add_dict_uint(info->d, "elt_size", mp->elt_size);
+	rte_tel_data_add_dict_uint(info->d, "header_size", mp->header_size);
+	rte_tel_data_add_dict_uint(info->d, "trailer_size", mp->trailer_size);
+	rte_tel_data_add_dict_uint(info->d, "private_data_size",
 				  mp->private_data_size);
 	rte_tel_data_add_dict_int(info->d, "ops_index", mp->ops_index);
-	rte_tel_data_add_dict_u64(info->d, "populated_size",
+	rte_tel_data_add_dict_uint(info->d, "populated_size",
 				  mp->populated_size);
+
+	cache_count = 0;
+	if (mp->cache_size > 0) {
+		int lcore_id;
+		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++)
+			cache_count += mp->local_cache[lcore_id].len;
+	}
+	rte_tel_data_add_dict_uint(info->d, "total_cache_count", cache_count);
+	common_count = rte_mempool_ops_get_count(mp);
+	if ((cache_count + common_count) > mp->size)
+		common_count = mp->size - cache_count;
+	rte_tel_data_add_dict_uint(info->d, "common_pool_count", common_count);
 
 	mz = mp->mz;
 	rte_tel_data_add_dict_string(info->d, "mz_name", mz->name);
-	rte_tel_data_add_dict_u64(info->d, "mz_len", mz->len);
-	rte_tel_data_add_dict_u64(info->d, "mz_hugepage_sz",
+	rte_tel_data_add_dict_uint(info->d, "mz_len", mz->len);
+	rte_tel_data_add_dict_uint(info->d, "mz_hugepage_sz",
 				  mz->hugepage_sz);
 	rte_tel_data_add_dict_int(info->d, "mz_socket_id", mz->socket_id);
-	rte_tel_data_add_dict_u64(info->d, "mz_flags", mz->flags);
+	rte_tel_data_add_dict_uint(info->d, "mz_flags", mz->flags);
 }
 
 static int

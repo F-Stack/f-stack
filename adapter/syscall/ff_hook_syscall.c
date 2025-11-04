@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/select.h>
 
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
@@ -36,6 +38,10 @@ struct ff_config ff_global_cfg;
 
 #undef FF_SYSCALL_DECL
 #define FF_SYSCALL_DECL(ret, fn, args) strong_alias(ff_hook_##fn, fn)
+FF_SYSCALL_DECL(ssize_t, __recv_chk, (int, void *, size_t, size_t, int));
+FF_SYSCALL_DECL(ssize_t, __read_chk, (int, void *, size_t, size_t));
+FF_SYSCALL_DECL(ssize_t, __recvfrom_chk, (int, void *, size_t, size_t, int,
+    struct sockaddr *, socklen_t *));
 #include <ff_declare_syscalls.h>
 
 #define share_mem_alloc(size) rte_malloc(NULL, (size), 0)
@@ -65,6 +71,7 @@ static __thread struct ff_getsockname_args *getsockname_args = NULL;
 static __thread struct ff_getpeername_args *getpeername_args = NULL;
 static __thread struct ff_setsockopt_args *setsockopt_args = NULL;
 static __thread struct ff_accept_args *accept_args = NULL;
+static __thread struct ff_accept4_args *accept4_args = NULL;
 static __thread struct ff_connect_args *connect_args = NULL;
 static __thread struct ff_recvfrom_args *recvfrom_args = NULL;
 static __thread struct ff_recvmsg_args *recvmsg_args = NULL;
@@ -80,6 +87,7 @@ static __thread struct ff_fcntl_args *fcntl_args = NULL;
 static __thread struct ff_epoll_ctl_args *epoll_ctl_args = NULL;
 static __thread struct ff_epoll_wait_args *epoll_wait_args = NULL;
 static __thread struct ff_kevent_args *kevent_args = NULL;
+static __thread struct ff_select_args *select_args = NULL;
 
 #define IOV_MAX   16
 #define IOV_LEN_MAX     2048
@@ -113,6 +121,21 @@ static __thread int sh_iov_static_fill_idx_share = 0;
             break;                                                \
         }                                                         \
         rte_spinlock_unlock(&sc->lock);                           \
+    }                                                             \
+} while (0)
+
+/* Dirty read first, and then try to lock sc and real read. */
+#define ACQUIRE_ZONE_TRY_LOCK(exp) do {                           \
+    while (1) {                                                   \
+        while (sc->status != exp) {                               \
+            rte_pause();                                          \
+        }                                                         \
+        if (rte_spinlock_trylock(&sc->lock)) {                    \
+            if (sc->status == exp) {                              \
+                break;                                            \
+            }                                                     \
+            rte_spinlock_unlock(&sc->lock);                       \
+        }                                                         \
     }                                                             \
 } while (0)
 
@@ -214,10 +237,18 @@ rte_spinlock_t worker_id_lock;
 static int nb_procs = NB_FSTACK_INSTANCE_DEFAULT;
 
 #define FF_KERNEL_MAX_FD_DEFAULT    1024
+#if defined(FF_PRELOAD_SUPPORT_SELECT)
+static int ff_kernel_max_fd = FF_KERNEL_MAX_FD_SELECT;
+#else
 static int ff_kernel_max_fd = FF_KERNEL_MAX_FD_DEFAULT;
+#endif
 
 /* not support thread socket now */
 static int need_alarm_sem = 0;
+
+#define count_trailing_zeros(x) __builtin_ctzll(x)
+
+void __chk_fail(void);
 
 static inline int convert_fstack_fd(int sockfd) {
     return sockfd + ff_kernel_max_fd;
@@ -239,6 +270,47 @@ int is_fstack_fd(int sockfd) {
 
     /* FIXED ME: ff_linux_socket not limit fd < ff_kernel_max_fd, may be Misjudgment */
     return sockfd >= ff_kernel_max_fd;
+}
+
+static inline uint64_t 
+ff_bitmap_first_set(fd_mask *ai, int set_words) 
+{
+    fd_mask i = 0;
+
+    for (; i < set_words; i++) {
+        fd_mask x = ai[i];
+
+        if (x != 0) {
+            return i * NFDBITS + count_trailing_zeros(x);
+        }
+    }
+
+    return ~0;
+}
+
+static inline fd_mask 
+ff_bitmap_next_set(fd_mask *ai, fd_mask i, int set_words) 
+{
+    fd_mask i0 = i / NFDBITS;
+    fd_mask i1 = i % NFDBITS;
+    fd_mask t;
+
+    if (i0 < set_words) {
+        t = (ai[i0] >> i1) << i1;
+        
+        if (t) {
+            return count_trailing_zeros(t) + i0 * NFDBITS;
+        }
+        
+        for (i0++; i0 < set_words; i0++) {
+            t = ai[i0];
+            if (t) {
+                return count_trailing_zeros(t) + i0 * NFDBITS;
+            }
+        }
+    }
+
+    return ~0;
 }
 
 int
@@ -664,8 +736,62 @@ ff_hook_accept4(int fd, struct sockaddr *addr,
 
     CHECK_FD_OWNERSHIP(accept4, (fd, addr, addrlen, flags));
 
-    errno = ENOSYS;
-    return -1;
+    DEFINE_REQ_ARGS_STATIC(accept4);
+    static __thread struct sockaddr *sh_addr = NULL;
+    static __thread socklen_t sh_addr_len = 0;
+    static __thread socklen_t *sh_addrlen = NULL;
+
+    if (addr != NULL) {
+        if (sh_addr == NULL || sh_addr_len < *addrlen) {
+            if(sh_addr) {
+                share_mem_free(sh_addr);
+            }
+
+            sh_addr_len = *addrlen;
+            sh_addr = share_mem_alloc(sh_addr_len);
+            if (sh_addr == NULL) {
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+
+        if (sh_addrlen == NULL) {
+            sh_addrlen = share_mem_alloc(sizeof(socklen_t));
+            if (sh_addrlen == NULL) {
+                //share_mem_free(sh_addr); // Don't free
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+        *sh_addrlen = *addrlen;
+
+        args->addr = sh_addr;
+        args->addrlen = sh_addrlen;
+        args->flags = flags;
+    }else {
+        args->addr = NULL;
+        args->addrlen = NULL;
+        args->flags = flags;
+    }
+
+    args->fd = fd;
+
+    SYSCALL(FF_SO_ACCEPT4, args);
+
+    if (ret > 0) {
+        ret = convert_fstack_fd(ret);
+    }
+
+    if (addr) {
+        if (ret > 0) {
+            socklen_t cplen = *sh_addrlen > *addrlen ?
+                *addrlen : *sh_addrlen;
+            rte_memcpy(addr, sh_addr, cplen);
+            *addrlen = *sh_addrlen;
+        }
+        //share_mem_free(sh_addr); // Don't free
+        //share_mem_free(sh_addrlen);
+    }
+
+    RETURN_NOFREE();
 }
 
 int
@@ -718,6 +844,18 @@ ff_hook_recv(int fd, void *buf, size_t len, int flags)
 }
 
 ssize_t
+ff_hook___recv_chk(int fd, void *buf, size_t len, size_t buflen, int flags)
+{
+    DEBUG_LOG("ff_hook___recv_chk, fd:%d, buf:%p, len:%lu, flags:%d\n",
+        fd, buf, len, flags);
+    
+    if (buflen < len)
+        __chk_fail();
+    
+    return ff_hook_recvfrom(fd, buf, len, flags, NULL, NULL);
+}
+
+ssize_t
 ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
     struct sockaddr *from, socklen_t *fromlen)
 {
@@ -764,6 +902,109 @@ ff_hook_recvfrom(int fd, void *buf, size_t len, int flags,
                 RETURN_ERROR_NOFREE(ENOMEM);
             }
         }
+
+        /* sh_fromlen is input and output param */
+        *sh_fromlen = *fromlen;
+
+        args->from = sh_from;
+        args->fromlen = sh_fromlen;
+    } else {
+        args->from = NULL;
+        args->fromlen = NULL;
+    }
+
+    if (sh_buf == NULL || sh_buf_len < (len * 4)) {
+        if (sh_buf) {
+            share_mem_free(sh_buf);
+        }
+
+        sh_buf_len = len * 4;
+        sh_buf = share_mem_alloc(sh_buf_len);
+        if (sh_buf == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    args->fd = fd;
+    args->buf = sh_buf;
+    args->len = len;
+    args->flags = flags;
+
+    SYSCALL(FF_SO_RECVFROM, args);
+
+    if (ret >= 0) {
+        rte_memcpy(buf, sh_buf, ret);
+        if (from) {
+            socklen_t cplen = *sh_fromlen > *fromlen ? *fromlen
+                : *sh_fromlen;
+            rte_memcpy(from, sh_from, cplen);
+            *fromlen = *sh_fromlen;
+        }
+    }
+
+    /*if (from) {
+        share_mem_free(sh_from);
+        share_mem_free(sh_fromlen);
+    }
+
+    share_mem_free(sh_buf);*/
+
+    RETURN_NOFREE();
+}
+
+ssize_t
+ff_hook___recvfrom_chk(int fd, void *buf, size_t len, size_t buflen, int flags,
+    struct sockaddr *from, socklen_t *fromlen)
+{
+    DEBUG_LOG("ff_hook___recvfrom_chk, fd:%d, buf:%p, len:%lu, flags:%d, from:%p, fromlen:%p\n",
+        fd, buf, len, flags, from, fromlen);
+
+    if (buflen < len)
+        __chk_fail();
+
+    if (buf == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if ((from == NULL && fromlen != NULL) ||
+        (from != NULL && fromlen == NULL)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    CHECK_FD_OWNERSHIP(recvfrom, (fd, buf, len, flags, from, fromlen));
+
+    DEFINE_REQ_ARGS_STATIC(recvfrom);
+    static __thread void *sh_buf = NULL;
+    static __thread size_t sh_buf_len = 0;
+    static __thread struct sockaddr *sh_from = NULL;
+    static __thread socklen_t sh_from_len = 0;
+    static __thread socklen_t *sh_fromlen = NULL;
+
+    if (from != NULL) {
+        if (sh_from == NULL || sh_from_len < *fromlen) {
+            if (sh_from) {
+                share_mem_free(sh_from);
+            }
+
+            sh_from_len = *fromlen;
+            sh_from = share_mem_alloc(sh_from_len);
+            if (sh_from == NULL) {
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+
+        if (sh_fromlen == NULL) {
+            sh_fromlen = share_mem_alloc(sizeof(socklen_t));
+            if (sh_fromlen == NULL) {
+                //share_mem_free(sh_from);
+                RETURN_ERROR_NOFREE(ENOMEM);
+            }
+        }
+
+        /* sh_fromlen is input and output param */
+        *sh_fromlen = *fromlen;
 
         args->from = sh_from;
         args->fromlen = sh_fromlen;
@@ -1192,6 +1433,54 @@ ssize_t
 ff_hook_read(int fd, void *buf, size_t len)
 {
     DEBUG_LOG("ff_hook_read, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
+
+    if (buf == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    CHECK_FD_OWNERSHIP(read, (fd, buf, len));
+
+    DEFINE_REQ_ARGS_STATIC(read);
+    static __thread void *sh_buf = NULL;
+    static __thread size_t sh_buf_len = 0;
+
+    /* alloc or realloc sh_buf */
+    if (sh_buf == NULL || sh_buf_len < (len * 4)) {
+        if (sh_buf) {
+            share_mem_free(sh_buf);;
+        }
+
+        /* alloc 4 times buf space */
+        sh_buf_len = len * 4;
+        sh_buf = share_mem_alloc(sh_buf_len);
+        if (sh_buf == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    args->fd = fd;
+    args->buf = sh_buf;
+    args->len = len;
+
+    SYSCALL(FF_SO_READ, args);
+
+    if (ret > 0) {
+        rte_memcpy(buf, sh_buf, ret);
+    }
+
+    //share_mem_free(sh_buf);
+
+    RETURN_NOFREE();
+}
+
+ssize_t
+ff_hook___read_chk(int fd, void *buf, size_t nbytes, size_t len)
+{
+    DEBUG_LOG("ff_hook___read_chk, fd:%d, buf:%p, len:%lu\n", fd, buf, len);
+
+    if (len < nbytes)
+        __chk_fail();
 
     if (buf == NULL || len == 0) {
         errno = EINVAL;
@@ -1723,6 +2012,128 @@ ff_hook_epoll_ctl(int epfd, int op, int fd,
     RETURN_NOFREE();
 }
 
+/* 
+ * Epoll polling mode, we not use sem_wait.
+ *
+ * Notice: cpu usage is 100%, but the RTT delay is very low.
+ * The first version currently does not support ff_linux_epoll_wait,
+ * because ff_linux_epoll_wait would introduce latency impacts.
+ * This ff_linux_epoll_wait issue will be resolved in the future.
+ */
+#if defined(FF_PRELOAD_POLLING_MODE) && !defined(FF_KERNEL_EVENT)
+int
+ff_hook_epoll_wait(int epfd, struct epoll_event *events,
+    int maxevents, int timeout)
+{
+    DEBUG_LOG("ff_hook_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n", epfd, maxevents, timeout);
+    int fd = epfd;
+
+    CHECK_FD_OWNERSHIP(epoll_wait, (epfd, events, maxevents, timeout));
+
+    DEFINE_REQ_ARGS_STATIC(epoll_wait);
+    static __thread struct epoll_event *sh_events = NULL;
+    static __thread int sh_events_len = 0;
+    struct timespec t_s, t_n;
+    time_t now_time_ms = 0;
+    time_t end_time_ms = 0;
+
+    if (sh_events == NULL || sh_events_len < maxevents) {
+        if (sh_events) {
+            share_mem_free(sh_events);
+        }
+
+        sh_events_len = maxevents;
+        sh_events = share_mem_alloc(sizeof(struct epoll_event) * sh_events_len);
+        if (sh_events == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    if (timeout > 0) {
+        if (clock_gettime(CLOCK_MONOTONIC_COARSE, &t_s) == -1) {
+            ret = -1;
+            goto epoll_exit;
+        }
+        end_time_ms = t_s.tv_sec * 1000 + t_s.tv_nsec / 1000000 + timeout;
+    }
+
+    args->epfd = fd;
+    args->events = sh_events;
+    args->maxevents = maxevents;
+    args->timeout = timeout;
+
+retry:
+    ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
+    sc->ops = FF_SO_EPOLL_WAIT;
+    sc->args = args;
+
+    /*
+     * sc->result, sc->error must reset in epoll_wait and kevent.
+     * Otherwise can access last sc call's result.
+     */
+    sc->result = 0;
+    sc->error = 0;
+    errno = 0;
+    RELEASE_ZONE_LOCK(FF_SC_REQ);
+
+    do {
+        /*
+         * we call freebsd epoll.
+         */
+        ACQUIRE_ZONE_TRY_LOCK(FF_SC_REP);
+        ret = sc->result;
+        if (ret < 0) {
+            errno = sc->error;
+        }
+        RELEASE_ZONE_LOCK(FF_SC_IDLE);
+        if (ret < 0) {
+            DEBUG_LOG("call ff_sys_epoll_wait occur error :%lu, ret:%d, errno:%d\n", ret, errno);
+            goto epoll_exit;
+        }
+        else if (ret > 0) {
+            goto epoll_exit;
+        }
+
+        if (timeout == 0) {
+            goto epoll_exit;
+        }
+        else  {
+            if (timeout > 0) {
+                clock_gettime(CLOCK_MONOTONIC_COARSE, &t_n);
+                now_time_ms = t_n.tv_sec * 1000 + t_n.tv_nsec / 1000000;
+
+                if (now_time_ms >= end_time_ms) {
+                    goto epoll_exit;
+                }
+            }
+
+            goto retry;
+        }
+    } while(true);
+
+epoll_exit:
+    if (likely(ret > 0)) {
+        if (unlikely(ret > maxevents)) {
+            ERR_LOG("return events:%d, maxevents:%d, set return events to maxevents, may be some error occur\n",
+                ret, maxevents);
+            ret = maxevents;
+        }
+        rte_memcpy(events, sh_events, sizeof(struct epoll_event) * ret);
+    }
+
+    /*
+     * Don't free, to improve proformance.
+     * Will cause memory leak while APP exit , but fstack adapter not exit.
+     * May set them as gloabl variable and free in thread_destructor.
+     */
+    /*if (sh_events) {
+        share_mem_free(sh_events);
+        sh_events = NULL;
+    }*/
+    
+    RETURN_NOFREE();
+}
+#else
 int
 ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     int maxevents, int timeout)
@@ -1912,6 +2323,7 @@ RETRY:
 
     RETURN_NOFREE();
 }
+#endif
 
 pid_t
 ff_hook_fork(void)
@@ -1941,12 +2353,38 @@ ff_hook_fork(void)
             current_worker_id++;
             ERR_LOG("parent process, current_worker_id++:%d\n", current_worker_id);
 #endif
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+            sc->forking = 1;
+            /* Loop until child fork done. */
+            while (sc->forking);
+#endif
         }
         else if (pid == 0) {
             ERR_LOG("chilid process, sc:%p, sc->refcount:%d, ff_so_zone:%p\n",
                 sc, sc->refcount, ff_so_zone);
 #ifdef FF_MULTI_SC
             ERR_LOG("chilid process, current_worker_id:%d\n", current_worker_id);
+#endif
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+            struct ff_so_context *parent_sc = sc;
+
+            /* Child process attach new sc */
+            ff_adapter_child_process_init();
+    
+            /* 
+             * The fork system call duplicates the file 
+             * descriptors that were open in the parent process 
+             */
+            DEFINE_REQ_ARGS(fork);
+            args->parent_thread_handle = parent_sc->ff_thread_handle;
+            /* Output value */
+            args->child_thread_handle = NULL;
+            SYSCALL(FF_SO_FORK, args);
+            if (ret == 0) {
+                sc->ff_thread_handle = args->child_thread_handle;
+            }
+
+            parent_sc->forking = 0;
 #endif
         }
 
@@ -2169,6 +2607,315 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     RETURN_NOFREE();
 }
 
+int
+ff_hook_select(int nfds, fd_set *restrict readfds, fd_set *restrict writefds,
+    fd_set *restrict exceptfds, struct timeval *restrict timeout)
+{
+    int set_words;
+    int set_bytes;
+    int fd;
+    int max_kernel_fd = 0;
+    int max_ff_fd = 0;
+    fd_mask *fds_bit;
+    struct timespec t_s, t_n;
+    time_t now_time_ms = 0;
+    time_t end_time_ms = 0;
+    int ff_set_words, ff_set_bytes = 0;
+    int kernel_set_words, kernel_set_bytes = 0;
+    int kernel_ret = 0;
+    
+    DEBUG_LOG("ff_hook_select nfds:%d\n", nfds);
+
+    DEFINE_REQ_ARGS_STATIC(select);
+    static __thread fd_set *ff_readfds_share = NULL;
+    static __thread fd_set *ff_writefds_share = NULL;
+    static __thread fd_set *ff_exceptfds_share = NULL;
+    static __thread fd_set kernel_readfds;
+    static __thread fd_set kernel_writefds;
+    static __thread fd_set kernel_exceptfds;
+    static __thread fd_set ff_readfds;
+    static __thread fd_set ff_writefds;
+    static __thread fd_set ff_exceptfds;
+
+    bool have_ff_readfd = false;
+    bool have_ff_writefd = false;
+    bool have_ff_exceptfd = false;
+    bool have_kernel_fd = false;
+    bool have_exec_kernel_select = false;
+
+    if (nfds > FD_SETSIZE) {
+        nfds = FD_SETSIZE;
+    }
+
+    if (ff_kernel_max_fd >= FD_SETSIZE) {
+        return ff_linux_select(nfds, readfds, writefds, exceptfds, timeout);
+    }
+
+    set_words = (nfds + NFDBITS - 1) / NFDBITS;
+    set_bytes = set_words * sizeof(fd_mask);
+
+    if (ff_readfds_share == NULL) {
+        ff_readfds_share = share_mem_alloc(sizeof(fd_set));
+        if (ff_readfds_share == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    if (ff_writefds_share == NULL) {
+        ff_writefds_share = share_mem_alloc(sizeof(fd_set));
+        if (ff_writefds_share == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    if (ff_exceptfds_share == NULL) {
+        ff_exceptfds_share = share_mem_alloc(sizeof(fd_set));
+        if (ff_exceptfds_share == NULL) {
+            RETURN_ERROR_NOFREE(ENOMEM);
+        }
+    }
+
+    /* We first separate kernel fd and userspace fd. */
+    if (readfds != NULL) {
+        memset(&ff_readfds, 0, set_bytes);
+        memset(&kernel_readfds, 0, set_bytes);
+
+        fds_bit = (fd_mask *)readfds;
+
+        for (fd = ff_bitmap_first_set(fds_bit, set_words); (fd != ~0) && (fd < nfds); 
+             fd = ff_bitmap_next_set(fds_bit, fd + 1, set_words)) {
+            if (is_fstack_fd(fd)) {
+                have_ff_readfd = true;
+                if (restore_fstack_fd(fd) > max_ff_fd) {
+                    max_ff_fd = restore_fstack_fd(fd);
+                }
+                FD_SET(restore_fstack_fd(fd), &ff_readfds);
+            } else {
+                have_kernel_fd = true;
+                if (fd > max_kernel_fd) {
+                    max_kernel_fd = fd;
+                }
+                FD_SET(fd, &kernel_readfds);
+            }
+        }
+
+        memset(readfds, 0, set_bytes);
+    }
+
+    if (writefds != NULL) {
+        memset(&ff_writefds, 0, set_bytes);
+        memset(&kernel_writefds, 0, set_bytes);
+
+        fds_bit = (fd_mask *)writefds;
+
+        for (fd = ff_bitmap_first_set(fds_bit, set_words); (fd != ~0) && (fd < nfds); 
+             fd = ff_bitmap_next_set(fds_bit, fd + 1, set_words)) {
+            if (is_fstack_fd(fd)) {
+                have_ff_exceptfd = true;
+                if (restore_fstack_fd(fd) > max_ff_fd) {
+                    max_ff_fd = restore_fstack_fd(fd);
+                }
+                FD_SET(restore_fstack_fd(fd), &ff_writefds);
+            } else {
+                have_kernel_fd = true;
+                if (fd > max_kernel_fd) {
+                    max_kernel_fd = fd;
+                }
+                FD_SET(fd, &kernel_writefds);
+            }
+        }
+
+        memset(writefds, 0, set_bytes);
+    }
+
+    if (exceptfds != NULL) {
+        memset(&ff_exceptfds, 0, set_bytes);
+        memset(&kernel_exceptfds, 0, set_bytes);
+
+        fds_bit = (fd_mask *)exceptfds;
+
+        for (fd = ff_bitmap_first_set(fds_bit, set_words); (fd != ~0) && (fd < nfds); 
+             fd = ff_bitmap_next_set(fds_bit, fd + 1, set_words)) {
+            if (is_fstack_fd(fd)) {
+                have_ff_writefd = true;
+                if (restore_fstack_fd(fd) > max_ff_fd) {
+                    max_ff_fd = restore_fstack_fd(fd);
+                }
+                FD_SET(restore_fstack_fd(fd), &ff_exceptfds);
+            } else {
+                have_kernel_fd = true;
+                if (fd > max_kernel_fd) {
+                    max_kernel_fd = fd;
+                }
+                FD_SET(fd, &kernel_exceptfds);
+            }
+        }
+
+        memset(exceptfds, 0, set_bytes);
+    }
+
+    if (timeout != NULL) {
+        if (clock_gettime(CLOCK_MONOTONIC_COARSE, &t_s) == -1) {
+            ret = -1;
+            goto select_exit;
+        }
+        end_time_ms = (t_s.tv_sec + timeout->tv_sec) * 1000 + t_s.tv_nsec / 1000000 + timeout->tv_usec / 1000;
+    }    
+
+    if (have_ff_readfd || have_ff_writefd || have_ff_exceptfd) {
+        args->nfds = max_ff_fd + 1;
+        ff_set_words = (max_ff_fd + 1 + NFDBITS - 1) / NFDBITS;
+        ff_set_bytes = ff_set_words * sizeof(fd_mask);
+    }
+
+    if (have_kernel_fd) {
+        kernel_set_words = (max_kernel_fd + 1 + NFDBITS - 1) / NFDBITS;
+        kernel_set_bytes = kernel_set_words * sizeof(fd_mask);
+    }
+
+    struct timeval no_block_time = {0, 0};
+
+retry:
+    if (have_ff_readfd) {
+        memcpy(ff_readfds_share, &ff_readfds, ff_set_bytes);
+        args->readfds = ff_readfds_share;
+    } else {
+        args->readfds = NULL;
+    }
+
+    if (have_ff_writefd) {
+        memcpy(ff_writefds_share, &ff_writefds, ff_set_bytes);
+        args->writefds = ff_writefds_share;
+    } else {
+        args->writefds = NULL;
+    }
+
+    if (have_ff_exceptfd) {
+        memcpy(ff_exceptfds_share, &ff_exceptfds, ff_set_bytes);
+        args->exceptfds = ff_exceptfds_share;
+    } else {
+        args->exceptfds = NULL;
+    }
+    
+    ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
+    sc->ops = FF_SO_SELECT;
+    sc->args = args;
+
+    /*
+     * sc->result, sc->error must reset in select.
+     * Otherwise can access last sc call's result.
+     */
+    sc->result = 0;
+    sc->error = 0;
+    errno = 0;
+    RELEASE_ZONE_LOCK(FF_SC_REQ);
+
+    do {
+        /*
+         * we call freebsd select.
+         */
+        ACQUIRE_ZONE_TRY_LOCK(FF_SC_REP);
+        ret = sc->result;
+        if (ret < 0) {
+            //occur error, return imme.
+            errno = sc->error;
+            RELEASE_ZONE_LOCK(FF_SC_IDLE);
+            return ret;
+        }
+        RELEASE_ZONE_LOCK(FF_SC_IDLE);
+        if (ret > 0) {
+            goto select_exit;
+        }
+
+        if (have_kernel_fd) {
+            if (readfds)
+                memcpy(readfds, &kernel_readfds, kernel_set_bytes);
+            if (writefds)
+                memcpy(writefds, &kernel_writefds, kernel_set_bytes);
+            if (exceptfds)
+                memcpy(exceptfds, &kernel_exceptfds, kernel_set_bytes);
+            
+            kernel_ret = ff_linux_select(max_kernel_fd + 1, readfds, writefds, exceptfds, &no_block_time);
+            have_exec_kernel_select = true;
+            if (kernel_ret < 0) {
+                //occur error, return imme.
+                ret = kernel_ret;
+                goto select_exit;
+            }
+        }
+
+        if (timeout) {
+            if (timeout->tv_sec == 0 && timeout->tv_usec == 0) {
+                goto select_exit;
+            } else {
+                clock_gettime(CLOCK_MONOTONIC_COARSE, &t_n);
+                now_time_ms = t_n.tv_sec * 1000 + t_n.tv_nsec / 1000000;
+
+                if (now_time_ms >= end_time_ms) {
+                    goto select_exit;
+                }
+
+                goto retry;
+            }
+        } else {
+            goto retry;
+        }
+    } while(true);
+
+select_exit:
+    if (have_kernel_fd && have_exec_kernel_select == false) {
+        /* 
+         * Not been called even once.
+         */
+        if (readfds)
+            memcpy(readfds, &kernel_readfds, kernel_set_bytes);
+        if (writefds)
+            memcpy(writefds, &kernel_writefds, kernel_set_bytes);
+        if (exceptfds)
+            memcpy(exceptfds, &kernel_exceptfds, kernel_set_bytes);
+        
+        kernel_ret = ff_linux_select(max_kernel_fd + 1, readfds, writefds, exceptfds, &no_block_time);
+        if (kernel_ret < 0) {
+            //occur error, return imme.
+            return kernel_ret;
+        }
+    }
+
+    /* if have ff_event, set to intput read/write/except fds */
+    if (likely(ret > 0)) {
+        if (have_ff_readfd) {
+            fds_bit = (fd_mask *)ff_readfds_share;
+
+            for (fd = ff_bitmap_first_set(fds_bit, set_words); fd != ~0; 
+                 fd = ff_bitmap_next_set(fds_bit, fd + 1, set_words)) {
+                FD_SET(convert_fstack_fd(fd), readfds);
+            }
+        }
+
+        if (have_ff_writefd) {
+            fds_bit = (fd_mask *)ff_writefds_share;
+
+            for (fd = ff_bitmap_first_set(fds_bit, set_words); fd != ~0; 
+                 fd = ff_bitmap_next_set(fds_bit, fd + 1, set_words)) {
+                FD_SET(convert_fstack_fd(fd), writefds);
+            }
+        }
+
+        if (have_ff_exceptfd) {
+            fds_bit = (fd_mask *)ff_exceptfds_share;
+
+            for (fd = ff_bitmap_first_set(fds_bit, set_words); fd != ~0; 
+                 fd = ff_bitmap_next_set(fds_bit, fd + 1, set_words)) {
+                FD_SET(convert_fstack_fd(fd), exceptfds);
+            }
+        }
+    }
+
+    ret += kernel_ret;
+    
+    RETURN_NOFREE();
+}
+
 static void
 thread_destructor(void *sc)
 {
@@ -2245,6 +2992,16 @@ thread_destructor(void *sc)
     }
 }
 
+static inline int
+ff_application_exit(struct ff_so_context *sc)
+{
+    DEFINE_REQ_ARGS(exit_application);
+    args->sc = sc;
+    SYSCALL(FF_SO_EXIT_APPLICATION, args);
+
+    return ret;
+}
+
 void __attribute__((destructor))
 ff_adapter_exit()
 {
@@ -2258,13 +3015,19 @@ ff_adapter_exit()
         for (i = 0; i < worker_id; i++) {
             ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), scs[i].sc);
             ff_so_zone = ff_so_zones[i];
-            ff_detach_so_context(scs[i].sc);
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+            ff_application_exit(scs[i].sc);
+#endif
+            ff_detach_so_context(scs[i].sc);            
         }
     } else
 #endif
     {
         ERR_LOG("pthread self tid:%lu, detach sc:%p\n", pthread_self(), sc);
-        ff_detach_so_context(sc);
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+        ff_application_exit(sc);
+#endif
+        ff_detach_so_context(sc);        
         sc = NULL;
     }
 #endif
@@ -2305,7 +3068,9 @@ ff_adapter_init()
             ERR_LOG("getrlimit(RLIMIT_NOFILE) failed, use default ff_kernel_max_fd:%d\n", ff_kernel_max_fd);
             return -1;
         } else {
+#if !defined(FF_PRELOAD_SUPPORT_SELECT)
             ff_kernel_max_fd = (int)rlmt.rlim_cur;
+#endif
         }
         ERR_LOG("getrlimit(RLIMIT_NOFILE) successed, sed ff_kernel_max_fd:%d, and rlim_max is %ld\n",
             ff_kernel_max_fd, rlmt.rlim_max);
@@ -2421,7 +3186,36 @@ ff_adapter_init()
 
     rte_spinlock_unlock(&worker_id_lock);
 
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    /* 
+     * Request to fstack, alloc sc->ff_thread_handle 
+     * Every appliaction 
+     */
+    {
+        DEFINE_REQ_ARGS(register_application);
+        args->sc = sc;
+        SYSCALL(FF_SO_REGISTER_APPLICATION, args);
+        if (ret < 0) {
+            return -1;
+        }
+    }
+#endif
+
     ERR_LOG("ff_adapter_init success, sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
+
+    return 0;
+}
+
+int
+ff_adapter_child_process_init(void)
+{
+    sc = ff_attach_so_context(0);
+    if (sc == NULL) {
+        ERR_LOG("ff_attach_so_context failed\n");
+        return -1;
+    }
+
+    ERR_LOG("ff_adapter_child_process_init success, sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
 
     return 0;
 }

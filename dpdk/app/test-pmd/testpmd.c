@@ -198,6 +198,7 @@ struct fwd_engine * fwd_engines[] = {
 	&icmp_echo_engine,
 	&noisy_vnf_engine,
 	&five_tuple_swap_fwd_engine,
+	&recycle_mbufs_engine,
 #ifdef RTE_LIBRTE_IEEE1588
 	&ieee1588_fwd_engine,
 #endif
@@ -330,6 +331,20 @@ int16_t tx_free_thresh = RTE_PMD_PARAM_UNSET;
 int16_t tx_rs_thresh = RTE_PMD_PARAM_UNSET;
 
 /*
+ * Configurable sub-forwarding mode for the noisy_vnf forwarding mode.
+ */
+enum noisy_fwd_mode noisy_fwd_mode;
+
+/* String version of enum noisy_fwd_mode */
+const char * const noisy_fwd_mode_desc[] = {
+	[NOISY_FWD_MODE_IO] = "io",
+	[NOISY_FWD_MODE_MAC] = "mac",
+	[NOISY_FWD_MODE_MACSWAP] = "macswap",
+	[NOISY_FWD_MODE_5TSWAP] = "5tswap",
+	[NOISY_FWD_MODE_MAX] = NULL,
+};
+
+/*
  * Configurable value of buffered packets before sending.
  */
 uint16_t noisy_tx_sw_bufsz;
@@ -382,6 +397,11 @@ uint8_t no_flush_rx = 0; /* flush by default */
  * Flow API isolated mode.
  */
 uint8_t flow_isolate_all;
+
+/*
+ * Disable port flow flush when stop port.
+ */
+uint8_t no_flow_flush = 0; /* do flow flush by default */
 
 /*
  * Avoids to check link status when starting/stopping a port.
@@ -582,27 +602,27 @@ eth_dev_configure_mp(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 }
 
 static int
-change_bonding_slave_port_status(portid_t bond_pid, bool is_stop)
+change_bonding_member_port_status(portid_t bond_pid, bool is_stop)
 {
 #ifdef RTE_NET_BOND
 
-	portid_t slave_pids[RTE_MAX_ETHPORTS];
+	portid_t member_pids[RTE_MAX_ETHPORTS];
 	struct rte_port *port;
-	int num_slaves;
-	portid_t slave_pid;
+	int num_members;
+	portid_t member_pid;
 	int i;
 
-	num_slaves = rte_eth_bond_slaves_get(bond_pid, slave_pids,
+	num_members = rte_eth_bond_members_get(bond_pid, member_pids,
 						RTE_MAX_ETHPORTS);
-	if (num_slaves < 0) {
-		fprintf(stderr, "Failed to get slave list for port = %u\n",
+	if (num_members < 0) {
+		fprintf(stderr, "Failed to get member list for port = %u\n",
 			bond_pid);
-		return num_slaves;
+		return num_members;
 	}
 
-	for (i = 0; i < num_slaves; i++) {
-		slave_pid = slave_pids[i];
-		port = &ports[slave_pid];
+	for (i = 0; i < num_members; i++) {
+		member_pid = member_pids[i];
+		port = &ports[member_pid];
 		port->port_status =
 			is_stop ? RTE_PORT_STOPPED : RTE_PORT_STARTED;
 	}
@@ -626,12 +646,12 @@ eth_dev_start_mp(uint16_t port_id)
 		struct rte_port *port = &ports[port_id];
 
 		/*
-		 * Starting a bonded port also starts all slaves under the bonded
+		 * Starting a bonding port also starts all members under the bonding
 		 * device. So if this port is bond device, we need to modify the
-		 * port status of these slaves.
+		 * port status of these members.
 		 */
 		if (port->bond_flag == 1)
-			return change_bonding_slave_port_status(port_id, false);
+			return change_bonding_member_port_status(port_id, false);
 	}
 
 	return 0;
@@ -650,12 +670,12 @@ eth_dev_stop_mp(uint16_t port_id)
 		struct rte_port *port = &ports[port_id];
 
 		/*
-		 * Stopping a bonded port also stops all slaves under the bonded
+		 * Stopping a bonding port also stops all members under the bonding
 		 * device. So if this port is bond device, we need to modify the
-		 * port status of these slaves.
+		 * port status of these members.
 		 */
 		if (port->bond_flag == 1)
-			return change_bonding_slave_port_status(port_id, true);
+			return change_bonding_member_port_status(port_id, true);
 	}
 
 	return 0;
@@ -2053,7 +2073,7 @@ fwd_stats_display(void)
 				fs->rx_bad_outer_ip_csum;
 
 		if (record_core_cycles)
-			fwd_cycles += fs->core_cycles;
+			fwd_cycles += fs->busy_cycles;
 	}
 	for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++) {
 		uint64_t tx_dropped = 0;
@@ -2148,7 +2168,7 @@ fwd_stats_display(void)
 			else
 				total_pkts = total_recv;
 
-			printf("\n  CPU cycles/packet=%.2F (total cycles="
+			printf("\n  CPU cycles/packet=%.2F (busy cycles="
 			       "%"PRIu64" / total %s packets=%"PRIu64") at %"PRIu64
 			       " MHz Clock\n",
 			       (double) fwd_cycles / total_pkts,
@@ -2187,7 +2207,7 @@ fwd_stats_reset(void)
 
 		memset(&fs->rx_burst_stats, 0, sizeof(fs->rx_burst_stats));
 		memset(&fs->tx_burst_stats, 0, sizeof(fs->tx_burst_stats));
-		fs->core_cycles = 0;
+		fs->busy_cycles = 0;
 	}
 }
 
@@ -2199,7 +2219,6 @@ flush_fwd_rx_queues(void)
 	portid_t port_id;
 	queueid_t rxq;
 	uint16_t  nb_rx;
-	uint16_t  i;
 	uint8_t   j;
 	uint64_t prev_tsc = 0, diff_tsc, cur_tsc, timer_tsc = 0;
 	uint64_t timer_period;
@@ -2232,8 +2251,7 @@ flush_fwd_rx_queues(void)
 				do {
 					nb_rx = rte_eth_rx_burst(port_id, rxq,
 						pkts_burst, MAX_PKT_BURST);
-					for (i = 0; i < nb_rx; i++)
-						rte_pktmbuf_free(pkts_burst[i]);
+					rte_pktmbuf_free_bulk(pkts_burst, nb_rx);
 
 					cur_tsc = rte_rdtsc();
 					diff_tsc = cur_tsc - prev_tsc;
@@ -2251,6 +2269,7 @@ static void
 run_pkt_fwd_on_lcore(struct fwd_lcore *fc, packet_fwd_t pkt_fwd)
 {
 	struct fwd_stream **fsm;
+	uint64_t prev_tsc;
 	streamid_t nb_fs;
 	streamid_t sm_id;
 #ifdef RTE_LIB_BITRATESTATS
@@ -2265,10 +2284,21 @@ run_pkt_fwd_on_lcore(struct fwd_lcore *fc, packet_fwd_t pkt_fwd)
 #endif
 	fsm = &fwd_streams[fc->stream_idx];
 	nb_fs = fc->stream_nb;
+	prev_tsc = rte_rdtsc();
 	do {
-		for (sm_id = 0; sm_id < nb_fs; sm_id++)
-			if (!fsm[sm_id]->disabled)
-				(*pkt_fwd)(fsm[sm_id]);
+		for (sm_id = 0; sm_id < nb_fs; sm_id++) {
+			struct fwd_stream *fs = fsm[sm_id];
+			uint64_t start_fs_tsc = 0;
+			bool busy;
+
+			if (fs->disabled)
+				continue;
+			if (record_core_cycles)
+				start_fs_tsc = rte_rdtsc();
+			busy = (*pkt_fwd)(fs);
+			if (record_core_cycles && busy)
+				fs->busy_cycles += rte_rdtsc() - start_fs_tsc;
+		}
 #ifdef RTE_LIB_BITRATESTATS
 		if (bitrate_enabled != 0 &&
 				bitrate_lcore_id == rte_lcore_id()) {
@@ -2287,8 +2317,38 @@ run_pkt_fwd_on_lcore(struct fwd_lcore *fc, packet_fwd_t pkt_fwd)
 				latencystats_lcore_id == rte_lcore_id())
 			rte_latencystats_update();
 #endif
+		if (record_core_cycles) {
+			uint64_t tsc = rte_rdtsc();
 
+			fc->total_cycles += tsc - prev_tsc;
+			prev_tsc = tsc;
+		}
 	} while (! fc->stopped);
+}
+
+static int
+lcore_usage_callback(unsigned int lcore_id, struct rte_lcore_usage *usage)
+{
+	struct fwd_stream **fsm;
+	struct fwd_lcore *fc;
+	streamid_t nb_fs;
+	streamid_t sm_id;
+
+	fc = lcore_to_fwd_lcore(lcore_id);
+	if (fc == NULL)
+		return -1;
+
+	fsm = &fwd_streams[fc->stream_idx];
+	nb_fs = fc->stream_nb;
+	usage->busy_cycles = 0;
+	usage->total_cycles = fc->total_cycles;
+
+	for (sm_id = 0; sm_id < nb_fs; sm_id++) {
+		if (!fsm[sm_id]->disabled)
+			usage->busy_cycles += fsm[sm_id]->busy_cycles;
+	}
+
+	return 0;
 }
 
 static int
@@ -2340,6 +2400,16 @@ launch_packet_forwarding(lcore_function_t *pkt_fwd_on_lcore)
 					lc_id, diag);
 		}
 	}
+}
+
+void
+common_fwd_stream_init(struct fwd_stream *fs)
+{
+	bool rx_stopped, tx_stopped;
+
+	rx_stopped = (ports[fs->rx_port].rxq[fs->rx_queue].state == RTE_ETH_QUEUE_STATE_STOPPED);
+	tx_stopped = (ports[fs->tx_port].txq[fs->tx_queue].state == RTE_ETH_QUEUE_STATE_STOPPED);
+	fs->disabled = rx_stopped || tx_stopped;
 }
 
 static void
@@ -2570,7 +2640,7 @@ all_ports_started(void)
 		port = &ports[pi];
 		/* Check if there is a port which is not started */
 		if ((port->port_status != RTE_PORT_STARTED) &&
-			(port->slave_flag == 0))
+			(port->member_flag == 0))
 			return 0;
 	}
 
@@ -2584,7 +2654,7 @@ port_is_stopped(portid_t port_id)
 	struct rte_port *port = &ports[port_id];
 
 	if ((port->port_status != RTE_PORT_STOPPED) &&
-	    (port->slave_flag == 0))
+	    (port->member_flag == 0))
 		return 0;
 	return 1;
 }
@@ -2930,8 +3000,8 @@ fill_xstats_display_info(void)
 
 /*
  * Some capabilities (like, rx_offload_capa and tx_offload_capa) of bonding
- * device in dev_info is zero when no slave is added. And its capability
- * will be updated when add a new slave device. So adding a slave device need
+ * device in dev_info is zero when no member is added. And its capability
+ * will be updated when add a new member device. So adding a member device need
  * to update the port configurations of bonding device.
  */
 static void
@@ -2988,9 +3058,9 @@ start_port(portid_t pid)
 		if (pid != pi && pid != (portid_t)RTE_PORT_ALL)
 			continue;
 
-		if (port_is_bonding_slave(pi)) {
+		if (port_is_bonding_member(pi)) {
 			fprintf(stderr,
-				"Please remove port %d from bonded device.\n",
+				"Please remove port %d from bonding device.\n",
 				pi);
 			continue;
 		}
@@ -3309,9 +3379,9 @@ stop_port(portid_t pid)
 			continue;
 		}
 
-		if (port_is_bonding_slave(pi)) {
+		if (port_is_bonding_member(pi)) {
 			fprintf(stderr,
-				"Please remove port %d from bonded device.\n",
+				"Please remove port %d from bonding device.\n",
 				pi);
 			continue;
 		}
@@ -3338,7 +3408,7 @@ stop_port(portid_t pid)
 			}
 		}
 
-		if (port->flow_list)
+		if (port->flow_list && !no_flow_flush)
 			port_flow_flush(pi);
 
 		ret = eth_dev_stop_mp(pi);
@@ -3390,36 +3460,36 @@ flush_port_owned_resources(portid_t pi)
 {
 	mcast_addr_pool_destroy(pi);
 	port_flow_flush(pi);
-	port_flex_item_flush(pi);
 	port_flow_template_table_flush(pi);
 	port_flow_pattern_template_flush(pi);
 	port_flow_actions_template_flush(pi);
+	port_flex_item_flush(pi);
 	port_action_handle_flush(pi);
 }
 
 static void
-clear_bonding_slave_device(portid_t *slave_pids, uint16_t num_slaves)
+clear_bonding_member_device(portid_t *member_pids, uint16_t num_members)
 {
 	struct rte_port *port;
-	portid_t slave_pid;
+	portid_t member_pid;
 	uint16_t i;
 
-	for (i = 0; i < num_slaves; i++) {
-		slave_pid = slave_pids[i];
-		if (port_is_started(slave_pid) == 1) {
-			if (rte_eth_dev_stop(slave_pid) != 0)
+	for (i = 0; i < num_members; i++) {
+		member_pid = member_pids[i];
+		if (port_is_started(member_pid) == 1) {
+			if (rte_eth_dev_stop(member_pid) != 0)
 				fprintf(stderr, "rte_eth_dev_stop failed for port %u\n",
-					slave_pid);
+					member_pid);
 
-			port = &ports[slave_pid];
+			port = &ports[member_pid];
 			port->port_status = RTE_PORT_STOPPED;
 		}
 
-		clear_port_slave_flag(slave_pid);
+		clear_port_member_flag(member_pid);
 
-		/* Close slave device when testpmd quit or is killed. */
+		/* Close member device when testpmd quit or is killed. */
 		if (cl_quit == 1 || f_quit == 1)
-			rte_eth_dev_close(slave_pid);
+			rte_eth_dev_close(member_pid);
 	}
 }
 
@@ -3428,8 +3498,8 @@ close_port(portid_t pid)
 {
 	portid_t pi;
 	struct rte_port *port;
-	portid_t slave_pids[RTE_MAX_ETHPORTS];
-	int num_slaves = 0;
+	portid_t member_pids[RTE_MAX_ETHPORTS];
+	int num_members = 0;
 
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return;
@@ -3447,9 +3517,9 @@ close_port(portid_t pid)
 			continue;
 		}
 
-		if (port_is_bonding_slave(pi)) {
+		if (port_is_bonding_member(pi)) {
 			fprintf(stderr,
-				"Please remove port %d from bonded device.\n",
+				"Please remove port %d from bonding device.\n",
 				pi);
 			continue;
 		}
@@ -3464,17 +3534,17 @@ close_port(portid_t pid)
 			flush_port_owned_resources(pi);
 #ifdef RTE_NET_BOND
 			if (port->bond_flag == 1)
-				num_slaves = rte_eth_bond_slaves_get(pi,
-						slave_pids, RTE_MAX_ETHPORTS);
+				num_members = rte_eth_bond_members_get(pi,
+						member_pids, RTE_MAX_ETHPORTS);
 #endif
 			rte_eth_dev_close(pi);
 			/*
-			 * If this port is bonded device, all slaves under the
+			 * If this port is bonding device, all members under the
 			 * device need to be removed or closed.
 			 */
-			if (port->bond_flag == 1 && num_slaves > 0)
-				clear_bonding_slave_device(slave_pids,
-							num_slaves);
+			if (port->bond_flag == 1 && num_members > 0)
+				clear_bonding_member_device(member_pids,
+							num_members);
 		}
 
 		free_xstats_display_info(pi);
@@ -3514,9 +3584,9 @@ reset_port(portid_t pid)
 			continue;
 		}
 
-		if (port_is_bonding_slave(pi)) {
+		if (port_is_bonding_member(pi)) {
 			fprintf(stderr,
-				"Please remove port %d from bonded device.\n",
+				"Please remove port %d from bonding device.\n",
 				pi);
 			continue;
 		}
@@ -3954,6 +4024,28 @@ register_eth_event_callback(void)
 	return 0;
 }
 
+static int
+unregister_eth_event_callback(void)
+{
+	int ret;
+	enum rte_eth_event_type event;
+
+	for (event = RTE_ETH_EVENT_UNKNOWN;
+			event < RTE_ETH_EVENT_MAX; event++) {
+		ret = rte_eth_dev_callback_unregister(RTE_ETH_ALL,
+				event,
+				eth_event_callback,
+				NULL);
+		if (ret != 0) {
+			TESTPMD_LOG(ERR, "Failed to unregister callback for "
+					"%s event\n", eth_event_desc[event]);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
 /* This function is used by the interrupt thread */
 static void
 dev_event_callback(const char *device_name, enum rte_dev_event_type type,
@@ -4162,38 +4254,39 @@ init_port_config(void)
 	}
 }
 
-void set_port_slave_flag(portid_t slave_pid)
+void set_port_member_flag(portid_t member_pid)
 {
 	struct rte_port *port;
 
-	port = &ports[slave_pid];
-	port->slave_flag = 1;
+	port = &ports[member_pid];
+	port->member_flag = 1;
 }
 
-void clear_port_slave_flag(portid_t slave_pid)
+void clear_port_member_flag(portid_t member_pid)
 {
 	struct rte_port *port;
 
-	port = &ports[slave_pid];
-	port->slave_flag = 0;
+	port = &ports[member_pid];
+	port->member_flag = 0;
 }
 
-uint8_t port_is_bonding_slave(portid_t slave_pid)
+uint8_t port_is_bonding_member(portid_t member_pid)
 {
 	struct rte_port *port;
 	struct rte_eth_dev_info dev_info;
 	int ret;
 
-	port = &ports[slave_pid];
-	ret = eth_dev_info_get_print_err(slave_pid, &dev_info);
+	port = &ports[member_pid];
+	ret = eth_dev_info_get_print_err(member_pid, &dev_info);
 	if (ret != 0) {
 		TESTPMD_LOG(ERR,
 			"Failed to get device info for port id %d,"
-			"cannot determine if the port is a bonded slave",
-			slave_pid);
+			"cannot determine if the port is a bonding member",
+			member_pid);
 		return 0;
 	}
-	if ((*dev_info.dev_flags & RTE_ETH_DEV_BONDED_SLAVE) || (port->slave_flag == 1))
+
+	if ((*dev_info.dev_flags & RTE_ETH_DEV_BONDING_MEMBER) || (port->member_flag == 1))
 		return 1;
 	return 0;
 }
@@ -4604,6 +4697,10 @@ main(int argc, char** argv)
 		rte_stats_bitrate_reg(bitrate_data);
 	}
 #endif
+
+	if (record_core_cycles)
+		rte_lcore_register_usage_cb(lcore_usage_callback);
+
 #ifdef RTE_LIB_CMDLINE
 	if (init_cmdline() != 0)
 		rte_exit(EXIT_FAILURE,
@@ -4669,6 +4766,11 @@ main(int argc, char** argv)
 	if (latencystats_enabled != 0)
 		rte_latencystats_uninit();
 #endif
+
+	ret = unregister_eth_event_callback();
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE, "Cannot unregister for ethdev events");
+
 
 	ret = rte_eal_cleanup();
 	if (ret != 0)

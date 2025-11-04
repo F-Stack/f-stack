@@ -1722,6 +1722,7 @@ STATIC s32 e1000_get_media_type_82575(struct e1000_hw *hw)
 			break;
 		}
 		/* Fall through for I2C based SGMII */
+		/* Fall through */
 	case E1000_CTRL_EXT_LINK_MODE_PCIE_SERDES:
 		/* read media type from SFP EEPROM */
 		ret_val = e1000_set_sfp_media_type_82575(hw);
@@ -2279,7 +2280,7 @@ STATIC s32 e1000_reset_hw_82580(struct e1000_hw *hw)
 	s32 ret_val = E1000_SUCCESS;
 	/* BH SW mailbox bit in SW_FW_SYNC */
 	u16 swmbsw_mask = E1000_SW_SYNCH_MB;
-	u32 ctrl;
+	u32 ctrl, status;
 	bool global_device_reset = hw->dev_spec._82575.global_device_reset;
 
 	DEBUGFUNC("e1000_reset_hw_82580");
@@ -2344,7 +2345,8 @@ STATIC s32 e1000_reset_hw_82580(struct e1000_hw *hw)
 	}
 
 	/* clear global device reset status bit */
-	E1000_WRITE_REG(hw, E1000_STATUS, E1000_STAT_DEV_RST_SET);
+	status = E1000_READ_REG(hw, E1000_STATUS);
+	E1000_WRITE_REG(hw, E1000_STATUS, status | E1000_STAT_DEV_RST_SET);
 
 	/* Clear any pending interrupt events. */
 	E1000_WRITE_REG(hw, E1000_IMC, 0xffffffff);

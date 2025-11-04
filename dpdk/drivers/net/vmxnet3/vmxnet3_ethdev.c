@@ -301,6 +301,61 @@ eth_vmxnet3_txdata_get(struct vmxnet3_hw *hw)
 		sizeof(struct Vmxnet3_TxDataDesc) : txdata_desc_size;
 }
 
+static int
+eth_vmxnet3_setup_capabilities(struct vmxnet3_hw *hw,
+			       struct rte_eth_dev *eth_dev)
+{
+	uint32_t dcr, ptcr, value;
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+
+	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD,
+			       VMXNET3_CMD_GET_MAX_CAPABILITIES);
+	value = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_CMD);
+	hw->max_capabilities[0] = value;
+	dcr = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_DCR);
+	hw->DCR_capabilities[0] = dcr;
+	hw->used_DCR_capabilities[0] = 0;
+	ptcr = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_PTCR);
+	hw->PTCR_capabilities[0] = ptcr;
+	hw->used_PTCR_capabilities[0] = 0;
+
+	if (hw->uptv2_enabled && !(ptcr & (1 << VMXNET3_DCR_ERROR))) {
+		PMD_DRV_LOG(NOTICE, "UPTv2 enabled");
+		hw->used_PTCR_capabilities[0] = ptcr;
+	} else {
+		/* Use all DCR capabilities, but disable large bar */
+		hw->used_DCR_capabilities[0] = dcr &
+					(~(1UL << VMXNET3_CAP_LARGE_BAR));
+		PMD_DRV_LOG(NOTICE, "UPTv2 disabled");
+	}
+	if (hw->DCR_capabilities[0] & (1UL << VMXNET3_CAP_OOORX_COMP) &&
+	    hw->PTCR_capabilities[0] & (1UL << VMXNET3_CAP_OOORX_COMP)) {
+		if (hw->uptv2_enabled) {
+			hw->used_PTCR_capabilities[0] |=
+				(1UL << VMXNET3_CAP_OOORX_COMP);
+		}
+	}
+	if (hw->used_PTCR_capabilities[0]) {
+		VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_DCR,
+				       hw->used_PTCR_capabilities[0]);
+	} else if (hw->used_DCR_capabilities[0]) {
+		VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_DCR,
+				       hw->used_DCR_capabilities[0]);
+	}
+	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_GET_DCR0_REG);
+	dcr = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_CMD);
+	hw->used_DCR_capabilities[0] = dcr;
+	PMD_DRV_LOG(DEBUG, "Dev " PCI_PRI_FMT ", vmxnet3 v%d, UPT enabled: %s, "
+		    "DCR0=0x%08x, used DCR=0x%08x, "
+		    "PTCR=0x%08x, used PTCR=0x%08x",
+		    pci_dev->addr.domain, pci_dev->addr.bus,
+		    pci_dev->addr.devid, pci_dev->addr.function, hw->version,
+		    hw->uptv2_enabled ? "true" : "false",
+		    hw->DCR_capabilities[0], hw->used_DCR_capabilities[0],
+		    hw->PTCR_capabilities[0], hw->used_PTCR_capabilities[0]);
+	return 0;
+}
+
 /*
  * It returns 0 on success.
  */
@@ -347,6 +402,7 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
+	hw->adapter_stopped = TRUE;
 	hw->hw_addr0 = (void *)pci_dev->mem_resource[0].addr;
 	hw->hw_addr1 = (void *)pci_dev->mem_resource[1].addr;
 
@@ -357,7 +413,11 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	/* Check h/w version compatibility with driver. */
 	ver = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_VRRS);
 
-	if (ver & (1 << VMXNET3_REV_6)) {
+	if (ver & (1 << VMXNET3_REV_7)) {
+		VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_VRRS,
+				       1 << VMXNET3_REV_7);
+		hw->version = VMXNET3_REV_7 + 1;
+	} else if (ver & (1 << VMXNET3_REV_6)) {
 		VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_VRRS,
 				       1 << VMXNET3_REV_6);
 		hw->version = VMXNET3_REV_6 + 1;
@@ -396,6 +456,22 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	else {
 		PMD_INIT_LOG(ERR, "Incompatible UPT version.");
 		return -EIO;
+	}
+
+	if (VMXNET3_VERSION_GE_7(hw)) {
+		/* start with UPTv2 enabled to avoid ESXi issues */
+		hw->uptv2_enabled = TRUE;
+		eth_vmxnet3_setup_capabilities(hw, eth_dev);
+	}
+
+	if (hw->used_DCR_capabilities[0] & (1 << VMXNET3_CAP_LARGE_BAR)) {
+		hw->tx_prod_offset = VMXNET3_REG_LB_TXPROD;
+		hw->rx_prod_offset[0] = VMXNET3_REG_LB_RXPROD;
+		hw->rx_prod_offset[1] = VMXNET3_REG_LB_RXPROD2;
+	} else {
+		hw->tx_prod_offset = VMXNET3_REG_TXPROD;
+		hw->rx_prod_offset[0] = VMXNET3_REG_RXPROD;
+		hw->rx_prod_offset[1] = VMXNET3_REG_RXPROD2;
 	}
 
 	/* Getting MAC Address */
@@ -949,6 +1025,22 @@ vmxnet3_setup_driver_shared(struct rte_eth_dev *dev)
 	return VMXNET3_SUCCESS;
 }
 
+static void
+vmxnet3_init_bufsize(struct vmxnet3_hw *hw)
+{
+	struct Vmxnet3_DriverShared *shared = hw->shared;
+	union Vmxnet3_CmdInfo *cmd_info = &shared->cu.cmdInfo;
+
+	if (!VMXNET3_VERSION_GE_7(hw))
+		return;
+
+	cmd_info->ringBufSize.ring1BufSizeType0 = hw->rxdata_buf_size;
+	cmd_info->ringBufSize.ring1BufSizeType1 = 0;
+	cmd_info->ringBufSize.ring2BufSizeType1 = hw->rxdata_buf_size;
+	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD,
+			       VMXNET3_CMD_SET_RING_BUFFER_SIZE);
+}
+
 /*
  * Configure device link speed and setup link.
  * Must be called after eth_vmxnet3_dev_init. Other wise it might fail
@@ -1003,10 +1095,10 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 			ret = VMXNET3_READ_BAR1_REG(hw, VMXNET3_REG_CMD);
 			if (ret != 0)
 				PMD_INIT_LOG(DEBUG,
-					"Failed in setup memory region cmd\n");
+					"Failed in setup memory region cmd");
 			ret = 0;
 		} else {
-			PMD_INIT_LOG(DEBUG, "Failed to setup memory region\n");
+			PMD_INIT_LOG(DEBUG, "Failed to setup memory region");
 		}
 	} else {
 		PMD_INIT_LOG(WARNING, "Memregs can't init (rx: %d, tx: %d)",
@@ -1032,6 +1124,8 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 		PMD_INIT_LOG(ERR, "Device queue init: UNSUCCESSFUL");
 		return ret;
 	}
+
+	vmxnet3_init_bufsize(hw);
 
 	hw->adapter_stopped = FALSE;
 
@@ -1376,42 +1470,52 @@ vmxnet3_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	struct vmxnet3_hw *hw = dev->data->dev_private;
 	struct UPT1_TxStats txStats;
 	struct UPT1_RxStats rxStats;
+	uint64_t packets, bytes;
 
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_GET_STATS);
 
 	for (i = 0; i < hw->num_tx_queues; i++) {
 		vmxnet3_tx_stats_get(hw, i, &txStats);
 
-		stats->q_opackets[i] = txStats.ucastPktsTxOK +
+		packets = txStats.ucastPktsTxOK +
 			txStats.mcastPktsTxOK +
 			txStats.bcastPktsTxOK;
 
-		stats->q_obytes[i] = txStats.ucastBytesTxOK +
+		bytes = txStats.ucastBytesTxOK +
 			txStats.mcastBytesTxOK +
 			txStats.bcastBytesTxOK;
 
-		stats->opackets += stats->q_opackets[i];
-		stats->obytes += stats->q_obytes[i];
+		stats->opackets += packets;
+		stats->obytes += bytes;
 		stats->oerrors += txStats.pktsTxError + txStats.pktsTxDiscard;
+
+		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
+			stats->q_opackets[i] = packets;
+			stats->q_obytes[i] = bytes;
+		}
 	}
 
 	for (i = 0; i < hw->num_rx_queues; i++) {
 		vmxnet3_rx_stats_get(hw, i, &rxStats);
 
-		stats->q_ipackets[i] = rxStats.ucastPktsRxOK +
+		packets = rxStats.ucastPktsRxOK +
 			rxStats.mcastPktsRxOK +
 			rxStats.bcastPktsRxOK;
 
-		stats->q_ibytes[i] = rxStats.ucastBytesRxOK +
+		bytes = rxStats.ucastBytesRxOK +
 			rxStats.mcastBytesRxOK +
 			rxStats.bcastBytesRxOK;
 
-		stats->ipackets += stats->q_ipackets[i];
-		stats->ibytes += stats->q_ibytes[i];
-
-		stats->q_errors[i] = rxStats.pktsRxError;
+		stats->ipackets += packets;
+		stats->ibytes += bytes;
 		stats->ierrors += rxStats.pktsRxError;
 		stats->imissed += rxStats.pktsRxOutOfBuf;
+
+		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
+			stats->q_ipackets[i] = packets;
+			stats->q_ibytes[i] = bytes;
+			stats->q_errors[i] = rxStats.pktsRxError;
+		}
 	}
 
 	return 0;
@@ -1426,8 +1530,6 @@ vmxnet3_dev_stats_reset(struct rte_eth_dev *dev)
 	struct UPT1_RxStats rxStats = {0};
 
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_GET_STATS);
-
-	RTE_BUILD_BUG_ON(RTE_ETHDEV_QUEUE_STAT_CNTRS < VMXNET3_MAX_TX_QUEUES);
 
 	for (i = 0; i < hw->num_tx_queues; i++) {
 		vmxnet3_hw_tx_stats_get(hw, i, &txStats);
@@ -1472,7 +1574,7 @@ vmxnet3_dev_info_get(struct rte_eth_dev *dev,
 	dev_info->min_rx_bufsize = 1518 + RTE_PKTMBUF_HEADROOM;
 	dev_info->max_rx_pktlen = 16384; /* includes CRC, cf MAXFRS register */
 	dev_info->min_mtu = VMXNET3_MIN_MTU;
-	dev_info->max_mtu = VMXNET3_MAX_MTU;
+	dev_info->max_mtu = VMXNET3_VERSION_GE_6(hw) ? VMXNET3_V6_MAX_MTU : VMXNET3_MAX_MTU;
 	dev_info->speed_capa = RTE_ETH_LINK_SPEED_10G;
 	dev_info->max_mac_addrs = VMXNET3_MAX_MAC_ADDRS;
 
@@ -1756,6 +1858,7 @@ vmxnet3_process_events(struct rte_eth_dev *dev)
 {
 	struct vmxnet3_hw *hw = dev->data->dev_private;
 	uint32_t events = hw->shared->ecr;
+	int i;
 
 	if (!events)
 		return;
@@ -1780,16 +1883,28 @@ vmxnet3_process_events(struct rte_eth_dev *dev)
 		VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD,
 				       VMXNET3_CMD_GET_QUEUE_STATUS);
 
-		if (hw->tqd_start->status.stopped)
-			PMD_DRV_LOG(ERR, "tq error 0x%x",
-				    hw->tqd_start->status.error);
+		PMD_DRV_LOG(ERR, "queue error event 0x%x for "
+			    RTE_ETHER_ADDR_PRT_FMT, events,
+			    hw->perm_addr[0], hw->perm_addr[1],
+			    hw->perm_addr[2], hw->perm_addr[3],
+			    hw->perm_addr[4], hw->perm_addr[5]);
 
-		if (hw->rqd_start->status.stopped)
-			PMD_DRV_LOG(ERR, "rq error 0x%x",
-				     hw->rqd_start->status.error);
+		for (i = 0; i < hw->num_tx_queues; i++) {
+			if (hw->tqd_start[i].status.stopped)
+				PMD_DRV_LOG(ERR, "tq %d error 0x%x",
+					    i, hw->tqd_start[i].status.error);
+		}
+		for (i = 0; i < hw->num_rx_queues; i++) {
+			if (hw->rqd_start[i].status.stopped)
+				PMD_DRV_LOG(ERR, "rq %d error 0x%x",
+					    i, hw->rqd_start[i].status.error);
+		}
 
-		/* Reset the device */
 		/* Have to reset the device */
+		/* Notify the application so that it can reset the device */
+		rte_eth_dev_callback_process(dev,
+					     RTE_ETH_EVENT_INTR_RESET,
+					     NULL);
 	}
 
 	if (events & VMXNET3_ECR_DIC)

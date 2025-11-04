@@ -129,11 +129,11 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
-	if (priv->ext_rxqs && rxqs_n >= MLX5_EXTERNAL_RX_QUEUE_ID_MIN) {
+	if (priv->ext_rxqs && rxqs_n >= RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN) {
 		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u), "
 			"the maximal number of internal Rx queues is %u",
 			dev->data->port_id, rxqs_n,
-			MLX5_EXTERNAL_RX_QUEUE_ID_MIN - 1);
+			RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN - 1);
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
@@ -307,6 +307,37 @@ mlx5_set_txlimit_params(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 }
 
 /**
+ * Get maximal work queue size in WQEs
+ *
+ * @param sh
+ *   Pointer to the device shared context.
+ * @return
+ *   Maximal number of WQEs in queue
+ */
+uint16_t
+mlx5_dev_get_max_wq_size(struct mlx5_dev_ctx_shared *sh)
+{
+	uint16_t max_wqe = MLX5_WQ_INDEX_MAX;
+
+	if (sh->cdev->config.devx) {
+		/* use HCA properties for DevX config */
+		MLX5_ASSERT(sh->cdev->config.hca_attr.log_max_wq_sz != 0);
+		MLX5_ASSERT(sh->cdev->config.hca_attr.log_max_wq_sz < MLX5_WQ_INDEX_WIDTH);
+		if (sh->cdev->config.hca_attr.log_max_wq_sz != 0 &&
+		    sh->cdev->config.hca_attr.log_max_wq_sz < MLX5_WQ_INDEX_WIDTH)
+			max_wqe = 1u << sh->cdev->config.hca_attr.log_max_wq_sz;
+	} else {
+		/* use IB device capabilities */
+		MLX5_ASSERT(sh->dev_cap.max_qp_wr > 0);
+		MLX5_ASSERT((unsigned int)sh->dev_cap.max_qp_wr <= MLX5_WQ_INDEX_MAX);
+		if (sh->dev_cap.max_qp_wr > 0 &&
+		    (uint32_t)sh->dev_cap.max_qp_wr <= MLX5_WQ_INDEX_MAX)
+			max_wqe = (uint16_t)sh->dev_cap.max_qp_wr;
+	}
+	return max_wqe;
+}
+
+/**
  * DPDK callback to get information about the device.
  *
  * @param dev
@@ -319,6 +350,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int max;
+	uint16_t max_wqe;
 
 	/* FIXME: we should ask the device for these values. */
 	info->min_rx_bufsize = 32;
@@ -351,6 +383,9 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->flow_type_rss_offloads = ~MLX5_RSS_HF_MASK;
 	mlx5_set_default_params(dev, info);
 	mlx5_set_txlimit_params(dev, info);
+	max_wqe = mlx5_dev_get_max_wq_size(priv->sh);
+	info->rx_desc_lim.nb_max = max_wqe;
+	info->tx_desc_lim.nb_max = max_wqe;
 	if (priv->sh->cdev->config.hca_attr.mem_rq_rmp &&
 	    priv->obj_ops.rxq_obj_new == devx_obj_ops.rxq_obj_new)
 		info->dev_capa |= RTE_ETH_DEV_CAPA_RXQ_SHARE;
@@ -401,18 +436,30 @@ uint16_t
 mlx5_representor_id_encode(const struct mlx5_switch_info *info,
 			   enum rte_eth_representor_type hpf_type)
 {
-	enum rte_eth_representor_type type = RTE_ETH_REPRESENTOR_VF;
+	enum rte_eth_representor_type type;
 	uint16_t repr = info->port_name;
+	int32_t pf = info->pf_num;
 
-	if (info->representor == 0)
-		return UINT16_MAX;
-	if (info->name_type == MLX5_PHYS_PORT_NAME_TYPE_PFSF)
+	switch (info->name_type) {
+	case MLX5_PHYS_PORT_NAME_TYPE_UPLINK:
+		if (!info->representor)
+			return UINT16_MAX;
+		type = RTE_ETH_REPRESENTOR_PF;
+		pf = info->mpesw_owner;
+		break;
+	case MLX5_PHYS_PORT_NAME_TYPE_PFSF:
 		type = RTE_ETH_REPRESENTOR_SF;
-	if (info->name_type == MLX5_PHYS_PORT_NAME_TYPE_PFHPF) {
+		break;
+	case MLX5_PHYS_PORT_NAME_TYPE_PFHPF:
 		type = hpf_type;
 		repr = UINT16_MAX;
+		break;
+	case MLX5_PHYS_PORT_NAME_TYPE_PFVF:
+	default:
+		type = RTE_ETH_REPRESENTOR_VF;
+		break;
 	}
-	return MLX5_REPRESENTOR_ID(info->pf_num, type, repr);
+	return MLX5_REPRESENTOR_ID(pf, type, repr);
 }
 
 /**
@@ -436,7 +483,7 @@ mlx5_representor_info_get(struct rte_eth_dev *dev,
 			  struct rte_eth_representor_info *info)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	int n_type = 4; /* Representor types, VF, HPF@VF, SF and HPF@SF. */
+	int n_type = 5; /* Representor types: PF, VF, HPF@VF, SF and HPF@SF. */
 	int n_pf = 2; /* Number of PFs. */
 	int i = 0, pf;
 	int n_entries;
@@ -449,7 +496,30 @@ mlx5_representor_info_get(struct rte_eth_dev *dev,
 		n_entries = info->nb_ranges_alloc;
 
 	info->controller = 0;
-	info->pf = priv->pf_bond >= 0 ? priv->pf_bond : 0;
+	info->pf = 0;
+	if (mlx5_is_port_on_mpesw_device(priv)) {
+		info->pf = priv->mpesw_port;
+		/* PF range, both ports will show the same information. */
+		info->ranges[i].type = RTE_ETH_REPRESENTOR_PF;
+		info->ranges[i].controller = 0;
+		info->ranges[i].pf = priv->mpesw_owner + 1;
+		info->ranges[i].vf = 0;
+		/*
+		 * The representor indexes should be the values set of "priv->mpesw_port".
+		 * In the real case now, only 1 PF/UPLINK representor is supported.
+		 * The port index will always be the value of "owner + 1".
+		 */
+		info->ranges[i].id_base =
+			MLX5_REPRESENTOR_ID(priv->mpesw_owner, info->ranges[i].type,
+					    info->ranges[i].pf);
+		info->ranges[i].id_end =
+			MLX5_REPRESENTOR_ID(priv->mpesw_owner, info->ranges[i].type,
+					    info->ranges[i].pf);
+		snprintf(info->ranges[i].name, sizeof(info->ranges[i].name),
+			 "pf%d", info->ranges[i].pf);
+		i++;
+	} else if (priv->pf_bond >= 0)
+		info->pf = priv->pf_bond;
 	for (pf = 0; pf < n_pf; ++pf) {
 		/* VF range. */
 		info->ranges[i].type = RTE_ETH_REPRESENTOR_VF;
@@ -571,6 +641,7 @@ mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	};
 
 	if (dev->rx_pkt_burst == mlx5_rx_burst ||
+	    dev->rx_pkt_burst == mlx5_rx_burst_out_of_order ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_mprq ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_vec ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_mprq_vec)
@@ -599,6 +670,14 @@ mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	ret = mlx5_get_mtu(dev, &kern_mtu);
 	if (ret)
 		return ret;
+
+	if (kern_mtu == mtu) {
+		priv->mtu = mtu;
+		DRV_LOG(DEBUG, "port %u adapter MTU was already set to %u",
+			dev->data->port_id, mtu);
+		return 0;
+	}
+
 	/* Set kernel interface MTU first. */
 	ret = mlx5_set_mtu(dev, mtu);
 	if (ret)
@@ -631,7 +710,12 @@ mlx5_select_rx_function(struct rte_eth_dev *dev)
 	eth_rx_burst_t rx_pkt_burst = mlx5_rx_burst;
 
 	MLX5_ASSERT(dev != NULL);
-	if (mlx5_check_vec_rx_support(dev) > 0) {
+	if (mlx5_shared_rq_enabled(dev)) {
+		rx_pkt_burst = mlx5_rx_burst_out_of_order;
+		DRV_LOG(DEBUG, "port %u forced to use SPRQ"
+			" Rx function with Out-of-Order completions",
+			dev->data->port_id);
+	} else if (mlx5_check_vec_rx_support(dev) > 0) {
 		if (mlx5_mprq_enabled(dev)) {
 			rx_pkt_burst = mlx5_rx_burst_mprq_vec;
 			DRV_LOG(DEBUG, "port %u selected vectorized"

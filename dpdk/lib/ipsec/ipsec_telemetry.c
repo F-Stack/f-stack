@@ -22,11 +22,11 @@ handle_telemetry_cmd_ipsec_sa_list(const char *cmd __rte_unused,
 		struct rte_tel_data *data)
 {
 	struct ipsec_telemetry_entry *entry;
-	rte_tel_data_start_array(data, RTE_TEL_U64_VAL);
+	rte_tel_data_start_array(data, RTE_TEL_UINT_VAL);
 
 	LIST_FOREACH(entry, &ipsec_telemetry_list, next) {
 		const struct rte_ipsec_sa *sa = entry->sa;
-		rte_tel_data_add_array_u64(data, rte_be_to_cpu_32(sa->spi));
+		rte_tel_data_add_array_uint(data, rte_be_to_cpu_32(sa->spi));
 	}
 
 	return 0;
@@ -41,7 +41,6 @@ handle_telemetry_cmd_ipsec_sa_list(const char *cmd __rte_unused,
  *     "SA_SPI_XX": {"count": 0, "bytes": 0, "errors": 0},
  *     "SA_SPI_YY": {"count": 0, "bytes": 0, "errors": 0}
  * }
- *
  */
 static int
 handle_telemetry_cmd_ipsec_sa_stats(const char *cmd __rte_unused,
@@ -80,15 +79,15 @@ handle_telemetry_cmd_ipsec_sa_stats(const char *cmd __rte_unused,
 		rte_tel_data_start_dict(sa_data);
 
 		/* add telemetry key/values pairs */
-		rte_tel_data_add_dict_u64(sa_data, name_pkt_cnt,
-					sa->statistics.count);
+		rte_tel_data_add_dict_uint(sa_data, name_pkt_cnt,
+					   sa->statistics.count);
 
-		rte_tel_data_add_dict_u64(sa_data, name_byte_cnt,
-					sa->statistics.bytes -
-					(sa->statistics.count * sa->hdr_len));
+		rte_tel_data_add_dict_uint(sa_data, name_byte_cnt,
+					   sa->statistics.bytes -
+					   (sa->statistics.count * sa->hdr_len));
 
-		rte_tel_data_add_dict_u64(sa_data, name_error_cnt,
-					sa->statistics.errors.count);
+		rte_tel_data_add_dict_uint(sa_data, name_error_cnt,
+					   sa->statistics.errors.count);
 
 		/* generate telemetry label */
 		snprintf(sa_name, sizeof(sa_name), "SA_SPI_%i",
@@ -177,15 +176,16 @@ handle_telemetry_cmd_ipsec_sa_details(const char *cmd __rte_unused,
 			RTE_IPSEC_SATP_DIR_IB)
 
 			if (sa->sqn.inb.rsn[sa->sqn.inb.rdidx])
-				rte_tel_data_add_dict_u64(data,
-				"sequence-number",
-				sa->sqn.inb.rsn[sa->sqn.inb.rdidx]->sqn);
+				rte_tel_data_add_dict_uint(data,
+							   "sequence-number",
+							   sa->sqn.inb.rsn[sa->sqn.inb.rdidx]->sqn);
 			else
-				rte_tel_data_add_dict_u64(data,
-					"sequence-number", 0);
+				rte_tel_data_add_dict_uint(data,
+							   "sequence-number",
+							   0);
 		else
-			rte_tel_data_add_dict_u64(data, "sequence-number",
-					sa->sqn.outb);
+			rte_tel_data_add_dict_uint(data, "sequence-number",
+						   sa->sqn.outb);
 
 		rte_tel_data_add_dict_string(data,
 				"explicit-congestion-notification",

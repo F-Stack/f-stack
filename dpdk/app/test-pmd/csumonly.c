@@ -466,6 +466,12 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 	uint64_t ol_flags = 0;
 	uint32_t max_pkt_len, tso_segsz = 0;
 	uint16_t l4_off;
+	uint64_t all_tunnel_tso = RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_IP_TNL_TSO |
+				RTE_ETH_TX_OFFLOAD_UDP_TNL_TSO;
 
 	/* ensure packet is large enough to require tso */
 	if (!info->is_tunnel) {
@@ -505,7 +511,9 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 		udp_hdr = (struct rte_udp_hdr *)((char *)l3_hdr + info->l3_len);
 		/* do not recalculate udp cksum if it was 0 */
 		if (udp_hdr->dgram_cksum != 0) {
-			if (tx_offloads & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) {
+			if (tso_segsz && (tx_offloads & RTE_ETH_TX_OFFLOAD_UDP_TSO))
+				ol_flags |= RTE_MBUF_F_TX_UDP_SEG;
+			else if (tx_offloads & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) {
 				ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
 			} else {
 				if (info->is_tunnel)
@@ -526,7 +534,8 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 #endif
 	} else if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct rte_tcp_hdr *)((char *)l3_hdr + info->l3_len);
-		if (tso_segsz)
+		if (tso_segsz &&
+		    (tx_offloads & (RTE_ETH_TX_OFFLOAD_TCP_TSO | all_tunnel_tso)))
 			ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
 		else if (tx_offloads & RTE_ETH_TX_OFFLOAD_TCP_CKSUM) {
 			ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
@@ -592,8 +601,10 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 	udp_hdr = (struct rte_udp_hdr *)
 		((char *)outer_l3_hdr + info->outer_l3_len);
 
-	if (tso_enabled)
+	if (tso_enabled && info->l4_proto == IPPROTO_TCP)
 		ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
+	else if (tso_enabled && info->l4_proto == IPPROTO_UDP)
+		ol_flags |= RTE_MBUF_F_TX_UDP_SEG;
 
 	/* Skip SW outer UDP checksum generation if HW supports it */
 	if (tx_offloads & RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM) {
@@ -823,7 +834,7 @@ pkts_ip_csum_recalc(struct rte_mbuf **pkts_burst, const uint16_t nb_pkts, uint64
  * IP, UDP, TCP and SCTP flags always concern the inner layer. The
  * OUTER_IP is only useful for tunnel packets.
  */
-static void
+static bool
 pkt_burst_checksum_forward(struct fwd_stream *fs)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
@@ -842,29 +853,21 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 	uint8_t gro_enable;
 #endif
 	uint16_t nb_rx;
-	uint16_t nb_tx;
 	uint16_t nb_prep;
 	uint16_t i;
 	uint64_t rx_ol_flags, tx_ol_flags;
 	uint64_t tx_offloads;
-	uint32_t retry;
 	uint32_t rx_bad_ip_csum;
 	uint32_t rx_bad_l4_csum;
 	uint32_t rx_bad_outer_l4_csum;
 	uint32_t rx_bad_outer_ip_csum;
 	struct testpmd_offload_info info;
 
-	uint64_t start_tsc = 0;
-
-	get_start_cycles(&start_tsc);
-
 	/* receive a burst of packet */
-	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue, pkts_burst,
-				 nb_pkt_per_burst);
-	inc_rx_burst_stats(fs, nb_rx);
+	nb_rx = common_fwd_stream_receive(fs, pkts_burst, nb_pkt_per_burst);
 	if (unlikely(nb_rx == 0)) {
 #ifndef RTE_LIB_GRO
-		return ;
+		return false;
 #else
 		gro_enable = gro_ports[fs->rx_port].enable;
 		/*
@@ -876,11 +879,10 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		 */
 		if (!gro_enable || (gro_flush_cycles == GRO_DEFAULT_FLUSH_CYCLES) ||
 			(rte_gro_get_pkt_count(current_fwd_lcore()->gro_ctx) == 0))
-			return ;
+			return false;
 #endif
 	}
 
-	fs->rx_packets += nb_rx;
 	rx_bad_ip_csum = 0;
 	rx_bad_l4_csum = 0;
 	rx_bad_outer_l4_csum = 0;
@@ -1007,7 +1009,8 @@ tunnel_update:
 		if (info.is_tunnel == 1) {
 			tx_ol_flags |= process_outer_cksums(outer_l3_hdr, &info,
 					tx_offloads,
-					!!(tx_ol_flags & RTE_MBUF_F_TX_TCP_SEG),
+					!!(tx_ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
+						RTE_MBUF_F_TX_UDP_SEG)),
 					m);
 		}
 
@@ -1099,11 +1102,13 @@ tunnel_update:
 						m->outer_l2_len,
 						m->outer_l3_len);
 				if (info.tunnel_tso_segsz != 0 &&
-						(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG))
+						(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
+							RTE_MBUF_F_TX_UDP_SEG)))
 					printf("tx: m->tso_segsz=%d\n",
 						m->tso_segsz);
 			} else if (info.tso_segsz != 0 &&
-					(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG))
+					(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
+						RTE_MBUF_F_TX_UDP_SEG)))
 				printf("tx: m->tso_segsz=%d\n", m->tso_segsz);
 			rte_get_tx_ol_flag_list(m->ol_flags, buf, sizeof(buf));
 			printf("tx: flags=%s", buf);
@@ -1133,7 +1138,7 @@ tunnel_update:
 				fs->gro_times = 0;
 			}
 			if (nb_rx == 0)
-				return;
+				return false;
 		}
 
 		pkts_ip_csum_recalc(pkts_burst, nb_rx, tx_offloads);
@@ -1186,53 +1191,18 @@ tunnel_update:
 		rte_pktmbuf_free_bulk(&tx_pkts_burst[nb_prep], nb_rx - nb_prep);
 	}
 
-	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, tx_pkts_burst,
-			nb_prep);
+	common_fwd_stream_transmit(fs, tx_pkts_burst, nb_prep);
 
-	/*
-	 * Retry if necessary
-	 */
-	if (unlikely(nb_tx < nb_prep) && fs->retry_enabled) {
-		retry = 0;
-		while (nb_tx < nb_prep && retry++ < burst_tx_retry_num) {
-			rte_delay_us(burst_tx_delay_time);
-			nb_tx += rte_eth_tx_burst(fs->tx_port, fs->tx_queue,
-					&tx_pkts_burst[nb_tx], nb_prep - nb_tx);
-		}
-	}
-	fs->tx_packets += nb_tx;
 	fs->rx_bad_ip_csum += rx_bad_ip_csum;
 	fs->rx_bad_l4_csum += rx_bad_l4_csum;
 	fs->rx_bad_outer_l4_csum += rx_bad_outer_l4_csum;
 	fs->rx_bad_outer_ip_csum += rx_bad_outer_ip_csum;
 
-	inc_tx_burst_stats(fs, nb_tx);
-	if (unlikely(nb_tx < nb_prep)) {
-		fs->fwd_dropped += (nb_prep - nb_tx);
-		do {
-			rte_pktmbuf_free(tx_pkts_burst[nb_tx]);
-		} while (++nb_tx < nb_prep);
-	}
-
-	get_end_cycles(fs, start_tsc);
-}
-
-static void
-stream_init_checksum_forward(struct fwd_stream *fs)
-{
-	bool rx_stopped, tx_stopped;
-
-	rx_stopped = ports[fs->rx_port].rxq[fs->rx_queue].state ==
-						RTE_ETH_QUEUE_STATE_STOPPED;
-	tx_stopped = ports[fs->tx_port].txq[fs->tx_queue].state ==
-						RTE_ETH_QUEUE_STATE_STOPPED;
-	fs->disabled = rx_stopped || tx_stopped;
+	return true;
 }
 
 struct fwd_engine csum_fwd_engine = {
 	.fwd_mode_name  = "csum",
-	.port_fwd_begin = NULL,
-	.port_fwd_end   = NULL,
-	.stream_init    = stream_init_checksum_forward,
+	.stream_init    = common_fwd_stream_init,
 	.packet_fwd     = pkt_burst_checksum_forward,
 };

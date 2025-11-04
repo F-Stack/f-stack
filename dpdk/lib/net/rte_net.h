@@ -121,7 +121,8 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 	 * no offloads are requested.
 	 */
 	if (!(ol_flags & (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_L4_MASK | RTE_MBUF_F_TX_TCP_SEG |
-			  RTE_MBUF_F_TX_OUTER_IP_CKSUM | RTE_MBUF_F_TX_OUTER_UDP_CKSUM)))
+					RTE_MBUF_F_TX_UDP_SEG | RTE_MBUF_F_TX_OUTER_IP_CKSUM |
+					RTE_MBUF_F_TX_OUTER_UDP_CKSUM)))
 		return 0;
 
 	if (ol_flags & (RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IPV6)) {
@@ -169,7 +170,8 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 			ipv4_hdr->hdr_checksum = 0;
 	}
 
-	if ((ol_flags & RTE_MBUF_F_TX_L4_MASK) == RTE_MBUF_F_TX_UDP_CKSUM) {
+	if ((ol_flags & RTE_MBUF_F_TX_L4_MASK) == RTE_MBUF_F_TX_UDP_CKSUM ||
+			(ol_flags & RTE_MBUF_F_TX_UDP_SEG)) {
 		if (ol_flags & RTE_MBUF_F_TX_IPV4) {
 			udp_hdr = (struct rte_udp_hdr *)((char *)ipv4_hdr +
 					m->l3_len);

@@ -18,6 +18,7 @@
 #define ACC_DMA_BLKID_OUT_HARQ      3
 #define ACC_DMA_BLKID_IN_HARQ       3
 #define ACC_DMA_BLKID_IN_MLD_R      3
+#define ACC_DMA_BLKID_DEWIN_IN      3
 
 /* Values used in filling in decode FCWs */
 #define ACC_FCW_TD_VER              1
@@ -87,6 +88,7 @@
 #define ACC_FCW_LE_BLEN                32
 #define ACC_FCW_LD_BLEN                36
 #define ACC_FCW_FFT_BLEN               28
+#define ACC_FCW_MLDTS_BLEN             32
 #define ACC_5GUL_SIZE_0                16
 #define ACC_5GUL_SIZE_1                40
 #define ACC_5GUL_OFFSET_0              36
@@ -101,6 +103,10 @@
 #define ACC_NUM_QGRPS_PER_WORD         8
 #define ACC_MAX_NUM_QGRPS              32
 #define ACC_RING_SIZE_GRANULARITY      64
+#define ACC_MAX_FCW_SIZE              128
+#define ACC_IQ_SIZE                    4
+
+#define ACC_FCW_FFT_BLEN_3             28
 
 /* Constants from K0 computation from 3GPP 38.212 Table 5.4.2.1-2 */
 #define ACC_N_ZC_1 66 /* N = 66 Zc for BG 1 */
@@ -130,12 +136,23 @@
 #define ACC_LIM_21 14 /* 0.21 */
 #define ACC_LIM_31 20 /* 0.31 */
 #define ACC_MAX_E (128 * 1024 - 2)
+#define ACC_MAX_CS 12
 
-extern int acc_common_logtype;
+#define ACC100_VARIANT          0
+#define VRB1_VARIANT		2
+#define VRB2_VARIANT		3
+
+/* Queue Index Hierarchy */
+#define VRB1_GRP_ID_SHIFT    10
+#define VRB1_VF_ID_SHIFT     4
+#define VRB2_GRP_ID_SHIFT    12
+#define VRB2_VF_ID_SHIFT     6
+
+#define ACC_MAX_FFT_WIN      16
 
 /* Helper macro for logging */
 #define rte_acc_log(level, fmt, ...) \
-	rte_log(RTE_LOG_ ## level, acc_common_logtype, fmt "\n", \
+	rte_log(RTE_LOG_ ## level, RTE_LOG_NOTICE, fmt "\n", \
 		##__VA_ARGS__)
 
 /* ACC100 DMA Descriptor triplet */
@@ -287,13 +304,13 @@ struct __rte_packed acc_fcw_ld {
 		hcin_decomp_mode:3,
 		llr_pack_mode:1,
 		hcout_comp_mode:3,
-		saturate_input:1, /* Not supported in ACC200 */
+		saturate_input:1, /* Not supported in VRB1 */
 		dec_convllr:4,
 		hcout_convllr:4;
 	uint32_t itmax:7,
 		itstop:1,
 		so_it:7,
-		minsum_offset:1,  /* Not supported in ACC200 */
+		minsum_offset:1,  /* Not supported in VRB1 */
 		hcout_offset:16;
 	uint32_t hcout_size0:16,
 		hcout_size1:16;
@@ -303,7 +320,7 @@ struct __rte_packed acc_fcw_ld {
 	uint32_t negstop_it:7,
 		negstop_en:1,
 		tb_crc_select:2, /* Not supported in ACC100 */
-		dec_llrclip:2,  /* Not supported in ACC200 */
+		dec_llrclip:2,  /* Not supported in VRB1 */
 		tb_trailer_size:20; /* Not supported in ACC100 */
 };
 
@@ -324,13 +341,44 @@ struct __rte_packed acc_fcw_fft {
 		dft_shift:8,
 		cs_multiplier:16;
 	uint32_t bypass:2,
-		fp16_in:1, /* Not supported in ACC200 */
+		fp16_in:1, /* Not supported in VRB1 */
 		fp16_out:1,
 		exp_adj:4,
 		power_shift:4,
 		power_en:1,
 		res:19;
 };
+
+/* FFT Frame Control Word. */
+struct __rte_packed acc_fcw_fft_3 {
+	uint32_t in_frame_size:16,
+		leading_pad_size:16;
+	uint32_t out_frame_size:16,
+		leading_depad_size:16;
+	uint32_t cs_window_sel;
+	uint32_t cs_window_sel2:16,
+		cs_enable_bmap:16;
+	uint32_t num_antennas:8,
+		idft_size:8,
+		dft_size:8,
+		cs_offset:8;
+	uint32_t idft_shift:8,
+		dft_shift:8,
+		cs_multiplier:16;
+	uint32_t bypass:2,
+		fp16_in:1,
+		fp16_out:1,
+		exp_adj:4,
+		power_shift:4,
+		power_en:1,
+		enable_dewin:1,
+		freq_resample_mode:2,
+		depad_output_size:16;
+	uint16_t cs_theta_0[ACC_MAX_CS];
+	uint32_t cs_theta_d[ACC_MAX_CS];
+	int8_t cs_time_offset[ACC_MAX_CS];
+};
+
 
 /* MLD-TS Frame Control Word */
 struct __rte_packed acc_fcw_mldts {
@@ -400,7 +448,7 @@ struct __rte_packed acc_dma_req_desc {
 				sdone_enable:1,
 				irq_enable:1,
 				timeStampEn:1,
-				dltb:1, /* Not supported in ACC200 */
+				dltb:1, /* Not supported in VRB1 */
 				res0:4,
 				numCBs:8,
 				m2dlen:4,
@@ -473,14 +521,14 @@ union acc_info_ring_data {
 		uint16_t valid: 1;
 	};
 	struct {
-		uint32_t aq_id_3: 6;
-		uint32_t qg_id_3: 5;
-		uint32_t vf_id_3: 6;
-		uint32_t int_nb_3: 6;
-		uint32_t msi_0_3: 1;
-		uint32_t vf2pf_3: 6;
-		uint32_t loop_3: 1;
-		uint32_t valid_3: 1;
+		uint32_t aq_id_vrb2: 6;
+		uint32_t qg_id_vrb2: 5;
+		uint32_t vf_id_vrb2: 6;
+		uint32_t int_nb_vrb2: 6;
+		uint32_t msi_0_vrb2: 1;
+		uint32_t vf2pf_vrb2: 6;
+		uint32_t loop_vrb2: 1;
+		uint32_t valid_vrb2: 1;
 	};
 } __rte_packed;
 
@@ -514,12 +562,16 @@ struct acc_deq_intr_details {
 enum {
 	ACC_VF2PF_STATUS_REQUEST = 1,
 	ACC_VF2PF_USING_VF = 2,
+	ACC_VF2PF_LUT_VER_REQUEST = 3,
+	ACC_VF2PF_FFT_WIN_REQUEST = 4,
 };
 
 
 typedef void (*acc10x_fcw_ld_fill_fun_t)(struct rte_bbdev_dec_op *op,
 		struct acc_fcw_ld *fcw,
 		union acc_harq_layout_data *harq_layout);
+typedef uint32_t (*queue_offset_fun_t)(bool pf_device, uint8_t vf_id,
+		uint8_t qgrp_id, uint16_t aq_id);
 
 /* Private data structure for each ACC100 device */
 struct acc_device {
@@ -553,7 +605,12 @@ struct acc_device {
 	bool pf_device; /**< True if this is a PF ACC100 device */
 	bool configured; /**< True if this ACC100 device is configured */
 	uint16_t device_variant;  /**< Device variant */
+	const struct acc_registry_addr *reg_addr;
 	acc10x_fcw_ld_fill_fun_t fcw_ld_fill;  /**< 5GUL FCW generation function */
+	queue_offset_fun_t queue_offset;  /* Device specific queue offset */
+	uint16_t num_qgroups;
+	uint16_t num_aqs;
+	uint16_t fft_window_width[ACC_MAX_FFT_WIN]; /* FFT windowing size. */
 };
 
 /* Structure associated with each queue. */
@@ -577,13 +634,14 @@ struct __rte_cache_aligned acc_queue {
 	uint32_t aq_enqueued;  /* Count how many "batches" have been enqueued */
 	uint32_t aq_dequeued;  /* Count how many "batches" have been dequeued */
 	uint32_t irq_enable;  /* Enable ops dequeue interrupts if set to 1 */
-	struct rte_mempool *fcw_mempool;  /* FCW mempool */
 	enum rte_bbdev_op_type op_type;  /* Type of this Queue: TE or TD */
 	/* Internal Buffers for loopback input */
 	uint8_t *lb_in;
 	uint8_t *lb_out;
+	uint8_t *fcw_ring;
 	rte_iova_t lb_in_addr_iova;
 	rte_iova_t lb_out_addr_iova;
+	rte_iova_t fcw_ring_addr_iova;
 	int8_t *derm_buffer; /* interim buffer for de-rm in SDK */
 	struct acc_device *d;
 };
@@ -729,7 +787,7 @@ alloc_sw_rings_min_mem(struct rte_bbdev *dev, struct acc_device *d,
 				sw_rings_base, ACC_SIZE_64MBYTE);
 		next_64mb_align_addr_iova = sw_rings_base_iova +
 				next_64mb_align_offset;
-		sw_ring_iova_end_addr = sw_rings_base_iova + dev_sw_ring_size;
+		sw_ring_iova_end_addr = sw_rings_base_iova + dev_sw_ring_size - 1;
 
 		/* Check if the end of the sw ring memory block is before the
 		 * start of next 64MB aligned mem address
@@ -751,22 +809,114 @@ alloc_sw_rings_min_mem(struct rte_bbdev *dev, struct acc_device *d,
 	free_base_addresses(base_addrs, i);
 }
 
+/* Wrapper to provide VF index from ring data. */
+static inline uint16_t
+vf_from_ring(const union acc_info_ring_data ring_data, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return ring_data.vf_id_vrb2;
+	else
+		return ring_data.vf_id;
+}
+
+/* Wrapper to provide QG index from ring data. */
+static inline uint16_t
+qg_from_ring(const union acc_info_ring_data ring_data, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return ring_data.qg_id_vrb2;
+	else
+		return ring_data.qg_id;
+}
+
+/* Wrapper to provide AQ index from ring data. */
+static inline uint16_t
+aq_from_ring(const union acc_info_ring_data ring_data, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return ring_data.aq_id_vrb2;
+	else
+		return ring_data.aq_id;
+}
+
+/* Wrapper to provide int index from ring data. */
+static inline uint16_t
+int_from_ring(const union acc_info_ring_data ring_data, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return ring_data.int_nb_vrb2;
+	else
+		return ring_data.int_nb;
+}
+
+/* Wrapper to provide queue index from group and aq index. */
+static inline int
+queue_index(uint16_t group_idx, uint16_t aq_idx, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return (group_idx << VRB2_GRP_ID_SHIFT) + aq_idx;
+	else
+		return (group_idx << VRB1_GRP_ID_SHIFT) + aq_idx;
+}
+
+/* Wrapper to provide queue group from queue index. */
+static inline int
+qg_from_q(uint32_t q_idx, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return (q_idx >> VRB2_GRP_ID_SHIFT) & 0x1F;
+	else
+		return (q_idx >> VRB1_GRP_ID_SHIFT) & 0xF;
+}
+
+/* Wrapper to provide vf from queue index. */
+static inline int32_t
+vf_from_q(uint32_t q_idx, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return (q_idx >> VRB2_VF_ID_SHIFT)  & 0x3F;
+	else
+		return (q_idx >> VRB1_VF_ID_SHIFT)  & 0x3F;
+}
+
+/* Wrapper to provide aq index from queue index. */
+static inline int32_t
+aq_from_q(uint32_t q_idx, uint16_t device_variant)
+{
+	if (device_variant == VRB2_VARIANT)
+		return q_idx & 0x3F;
+	else
+		return q_idx & 0xF;
+}
+
+/* Wrapper to set VF index in ring data. */
+static inline int32_t
+set_vf_in_ring(volatile union acc_info_ring_data *ring_data,
+		uint16_t device_variant, uint16_t value)
+{
+	if (device_variant == VRB2_VARIANT)
+		return ring_data->vf_id_vrb2 = value;
+	else
+		return ring_data->vf_id = value;
+}
+
 /*
  * Find queue_id of a device queue based on details from the Info Ring.
  * If a queue isn't found UINT16_MAX is returned.
  */
 static inline uint16_t
-get_queue_id_from_ring_info(struct rte_bbdev_data *data,
-		const union acc_info_ring_data ring_data)
+get_queue_id_from_ring_info(struct rte_bbdev_data *data, const union acc_info_ring_data ring_data)
 {
 	uint16_t queue_id;
+	struct acc_queue *acc_q;
+	struct acc_device *d = data->dev_private;
 
 	for (queue_id = 0; queue_id < data->num_queues; ++queue_id) {
-		struct acc_queue *acc_q =
-				data->queues[queue_id].queue_private;
-		if (acc_q != NULL && acc_q->aq_id == ring_data.aq_id &&
-				acc_q->qgrp_id == ring_data.qg_id &&
-				acc_q->vf_id == ring_data.vf_id)
+		acc_q = data->queues[queue_id].queue_private;
+
+		if (acc_q != NULL && acc_q->aq_id == aq_from_ring(ring_data, d->device_variant) &&
+				acc_q->qgrp_id == qg_from_ring(ring_data, d->device_variant) &&
+				acc_q->vf_id == vf_from_ring(ring_data, d->device_variant))
 			return queue_id;
 	}
 
@@ -919,12 +1069,8 @@ acc_dma_enqueue(struct acc_queue *q, uint16_t n,
 {
 	union acc_enqueue_reg_fmt enq_req;
 	union acc_dma_desc *desc;
-#ifdef RTE_BBDEV_OFFLOAD_COST
 	uint64_t start_time = 0;
 	queue_stats->acc_offload_cycles = 0;
-#else
-	RTE_SET_USED(queue_stats);
-#endif
 
 	/* Set Sdone and IRQ enable bit on last descriptor. */
 	desc = acc_desc(q, n - 1);
@@ -969,17 +1115,13 @@ acc_dma_enqueue(struct acc_queue *q, uint16_t n,
 
 		rte_wmb();
 
-#ifdef RTE_BBDEV_OFFLOAD_COST
 		/* Start time measurement for enqueue function offload. */
 		start_time = rte_rdtsc_precise();
-#endif
+
 		rte_acc_log(DEBUG, "Debug : MMIO Enqueue");
 		mmio_write(q->mmio_reg_enqueue, enq_req.val);
 
-#ifdef RTE_BBDEV_OFFLOAD_COST
-		queue_stats->acc_offload_cycles +=
-				rte_rdtsc_precise() - start_time;
-#endif
+		queue_stats->acc_offload_cycles += rte_rdtsc_precise() - start_time;
 
 		n -= enq_batch_size;
 
@@ -1123,7 +1265,7 @@ cmp_ldpc_dec_op(struct rte_bbdev_dec_op **ops) {
  * @param op_flags
  *   Store information about device capabilities
  * @param next_triplet
- *   Index for ACC200 DMA Descriptor triplet
+ *   Index for VRB1 DMA Descriptor triplet
  * @param scattergather
  *   Flag to support scatter-gather for the mbuf
  *
@@ -1435,6 +1577,13 @@ get_num_cbs_in_tb_ldpc_enc(struct rte_bbdev_op_ldpc_enc *ldpc_enc)
 		cbs_in_tb++;
 	}
 	return cbs_in_tb;
+}
+
+static inline void
+acc_reg_fast_write(struct acc_device *d, uint32_t offset, uint32_t value)
+{
+	void *reg_addr = RTE_PTR_ADD(d->mmio_base, offset);
+	mmio_write(reg_addr, value);
 }
 
 #endif /* _ACC_COMMON_H_ */

@@ -38,8 +38,11 @@ idev_set_defaults(struct idev_cfg *idev)
 	idev->num_lmtlines = 0;
 	idev->bphy = NULL;
 	idev->cpt = NULL;
+	TAILQ_INIT(&idev->mcs_list);
 	idev->nix_inl_dev = NULL;
+	TAILQ_INIT(&idev->roc_nix_list);
 	plt_spinlock_init(&idev->nix_inl_dev_lock);
+	plt_spinlock_init(&idev->npa_dev_lock);
 	__atomic_store_n(&idev->npa_refcnt, 0, __ATOMIC_RELEASE);
 }
 
@@ -185,6 +188,51 @@ roc_idev_cpt_get(void)
 	return NULL;
 }
 
+struct roc_mcs *
+roc_idev_mcs_get(uint8_t mcs_idx)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+	struct roc_mcs *mcs = NULL;
+
+	if (idev != NULL) {
+		TAILQ_FOREACH(mcs, &idev->mcs_list, next) {
+			if (mcs->idx == mcs_idx)
+				return mcs;
+		}
+	}
+
+	return NULL;
+}
+
+void
+roc_idev_mcs_set(struct roc_mcs *mcs)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+	struct roc_mcs *mcs_iter = NULL;
+
+	if (idev != NULL) {
+		TAILQ_FOREACH(mcs_iter, &idev->mcs_list, next) {
+			if (mcs_iter->idx == mcs->idx)
+				return;
+		}
+		TAILQ_INSERT_TAIL(&idev->mcs_list, mcs, next);
+	}
+}
+
+void
+roc_idev_mcs_free(struct roc_mcs *mcs)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+	struct roc_mcs *mcs_iter = NULL;
+
+	if (idev != NULL) {
+		TAILQ_FOREACH(mcs_iter, &idev->mcs_list, next) {
+			if (mcs_iter->idx == mcs->idx)
+				TAILQ_REMOVE(&idev->mcs_list, mcs, next);
+		}
+	}
+}
+
 uint64_t *
 roc_nix_inl_outb_ring_base_get(struct roc_nix *roc_nix)
 {
@@ -198,6 +246,17 @@ roc_nix_inl_outb_ring_base_get(struct roc_nix *roc_nix)
 	inl_dev = idev->nix_inl_dev;
 
 	return (uint64_t *)&inl_dev->sa_soft_exp_ring[nix->outb_se_ring_base];
+}
+
+struct roc_nix_list *
+roc_idev_nix_list_get(void)
+{
+	struct idev_cfg *idev;
+
+	idev = idev_get_cfg();
+	if (idev != NULL)
+		return &idev->roc_nix_list;
+	return NULL;
 }
 
 void

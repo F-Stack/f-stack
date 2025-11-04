@@ -8,7 +8,8 @@
 #include <rte_security.h>
 #include <rte_security_driver.h>
 
-#include "roc_api.h"
+#include "roc_constants.h"
+#include "roc_ie_ot.h"
 
 #include "cnxk_ipsec.h"
 
@@ -33,6 +34,7 @@ struct cn10k_sec_session {
 	uint16_t max_extended_len;
 	uint16_t iv_offset;
 	uint8_t iv_length;
+	uint8_t ip_csum;
 	bool is_outbound;
 	/** Queue pair */
 	struct cnxk_cpt_qp *qp;

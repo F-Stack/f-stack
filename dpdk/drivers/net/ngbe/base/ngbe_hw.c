@@ -812,6 +812,15 @@ s32 ngbe_setup_fc_em(struct ngbe_hw *hw)
 		goto out;
 	}
 
+	/*
+	 * Reconfig mac ctrl frame fwd rule to make sure it still
+	 * working after port stop/start.
+	 */
+	wr32m(hw, NGBE_MACRXFLT, NGBE_MACRXFLT_CTL_MASK,
+	      (hw->fc.mac_ctrl_frame_fwd ?
+	       NGBE_MACRXFLT_CTL_NOPS : NGBE_MACRXFLT_CTL_DROP));
+	ngbe_flush(hw);
+
 	err = hw->phy.set_pause_adv(hw, reg_cu);
 
 out:
@@ -1064,26 +1073,10 @@ s32 ngbe_set_pcie_master(struct ngbe_hw *hw, bool enable)
 {
 	struct rte_pci_device *pci_dev = (struct rte_pci_device *)hw->back;
 	s32 status = 0;
-	s32 ret = 0;
 	u32 i;
-	u16 reg;
 
-	ret = rte_pci_read_config(pci_dev, &reg,
-			sizeof(reg), PCI_COMMAND);
-	if (ret != sizeof(reg)) {
-		DEBUGOUT("Cannot read command from PCI config space!\n");
-		return -1;
-	}
-
-	if (enable)
-		reg |= PCI_COMMAND_MASTER;
-	else
-		reg &= ~PCI_COMMAND_MASTER;
-
-	ret = rte_pci_write_config(pci_dev, &reg,
-			sizeof(reg), PCI_COMMAND);
-	if (ret != sizeof(reg)) {
-		DEBUGOUT("Cannot write command to PCI config space!\n");
+	if (rte_pci_set_bus_master(pci_dev, enable) < 0) {
+		DEBUGOUT("Cannot configure PCI bus master");
 		return -1;
 	}
 

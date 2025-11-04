@@ -104,6 +104,7 @@ skeleton_eventdev_info_get(struct rte_eventdev *dev,
 					RTE_EVENT_DEV_CAP_EVENT_QOS |
 					RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 					RTE_EVENT_DEV_CAP_MAINTENANCE_FREE;
+	dev_info->max_profiles_per_port = 1;
 }
 
 static int
@@ -372,7 +373,7 @@ skeleton_eventdev_init(struct rte_eventdev *eventdev)
 	skel->subsystem_device_id = pci_dev->id.subsystem_device_id;
 	skel->subsystem_vendor_id = pci_dev->id.subsystem_vendor_id;
 
-	PMD_DRV_LOG(DEBUG, "pci device (%x:%x) %u:%u:%u:%u",
+	PMD_DRV_LOG(DEBUG, "PCI device (%x:%x) " PCI_PRI_FMT,
 			pci_dev->id.vendor_id, pci_dev->id.device_id,
 			pci_dev->addr.domain, pci_dev->addr.bus,
 			pci_dev->addr.devid, pci_dev->addr.function);

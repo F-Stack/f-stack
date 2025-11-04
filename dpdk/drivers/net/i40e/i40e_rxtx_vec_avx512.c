@@ -24,130 +24,7 @@
 static __rte_always_inline void
 i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union i40e_rx_desc *rxdp;
-	struct i40e_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
-	struct rte_mempool_cache *cache = rte_mempool_default_cache(rxq->mp,
-			rte_lcore_id());
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	if (unlikely(!cache))
-		return i40e_rxq_rearm_common(rxq, true);
-
-	/* We need to pull 'n' more MBUFs into the software ring from mempool
-	 * We inline the mempool function here, so we can vectorize the copy
-	 * from the cache into the shadow ring.
-	 */
-
-	if (cache->len < RTE_I40E_RXQ_REARM_THRESH) {
-		/* No. Backfill the cache first, and then fill from it */
-		uint32_t req = RTE_I40E_RXQ_REARM_THRESH + (cache->size -
-				cache->len);
-
-		/* How many do we require
-		 * i.e. number to fill the cache + the request
-		 */
-		int ret = rte_mempool_ops_dequeue_bulk(rxq->mp,
-				&cache->objs[cache->len], req);
-		if (ret == 0) {
-			cache->len += req;
-		} else {
-			if (rxq->rxrearm_nb + RTE_I40E_RXQ_REARM_THRESH >=
-					rxq->nb_rx_desc) {
-				__m128i dma_addr0;
-
-				dma_addr0 = _mm_setzero_si128();
-				for (i = 0; i < RTE_I40E_DESCS_PER_LOOP; i++) {
-					rxep[i].mbuf = &rxq->fake_mbuf;
-					_mm_store_si128
-						((__m128i *)&rxdp[i].read,
-							dma_addr0);
-				}
-			}
-			rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-					RTE_I40E_RXQ_REARM_THRESH;
-			return;
-		}
-	}
-
-	const __m512i iova_offsets =  _mm512_set1_epi64
-		(offsetof(struct rte_mbuf, buf_iova));
-	const __m512i headroom = _mm512_set1_epi64(RTE_PKTMBUF_HEADROOM);
-
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
-	/* to shuffle the addresses to correct slots. Values 4-7 will contain
-	 * zeros, so use 7 for a zero-value.
-	 */
-	const __m512i permute_idx = _mm512_set_epi64(7, 7, 3, 1, 7, 7, 2, 0);
-#else
-	const __m512i permute_idx = _mm512_set_epi64(7, 3, 6, 2, 5, 1, 4, 0);
-#endif
-
-	/* Initialize the mbufs in vector, process 8 mbufs in one loop, taking
-	 * from mempool cache and populating both shadow and HW rings
-	 */
-	for (i = 0; i < RTE_I40E_RXQ_REARM_THRESH / 8; i++) {
-		const __m512i mbuf_ptrs = _mm512_loadu_si512
-			(&cache->objs[cache->len - 8]);
-		_mm512_store_si512(rxep, mbuf_ptrs);
-
-		/* gather iova of mbuf0-7 into one zmm reg */
-		const __m512i iova_base_addrs = _mm512_i64gather_epi64
-			(_mm512_add_epi64(mbuf_ptrs, iova_offsets),
-				0, /* base */
-				1 /* scale */);
-		const __m512i iova_addrs = _mm512_add_epi64(iova_base_addrs,
-				headroom);
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
-		const __m512i iovas0 = _mm512_castsi256_si512
-			(_mm512_extracti64x4_epi64(iova_addrs, 0));
-		const __m512i iovas1 = _mm512_castsi256_si512
-			(_mm512_extracti64x4_epi64(iova_addrs, 1));
-
-		/* permute leaves desc 2-3 addresses in header address slots 0-1
-		 * but these are ignored by driver since header split not
-		 * enabled. Similarly for desc 4 & 5.
-		 */
-		const __m512i desc_rd_0_1 = _mm512_permutexvar_epi64
-			(permute_idx, iovas0);
-		const __m512i desc_rd_2_3 = _mm512_bsrli_epi128(desc_rd_0_1, 8);
-
-		const __m512i desc_rd_4_5 = _mm512_permutexvar_epi64
-			(permute_idx, iovas1);
-		const __m512i desc_rd_6_7 = _mm512_bsrli_epi128(desc_rd_4_5, 8);
-
-		_mm512_store_si512((void *)rxdp, desc_rd_0_1);
-		_mm512_store_si512((void *)(rxdp + 2), desc_rd_2_3);
-		_mm512_store_si512((void *)(rxdp + 4), desc_rd_4_5);
-		_mm512_store_si512((void *)(rxdp + 6), desc_rd_6_7);
-#else
-		/* permute leaves desc 4-7 addresses in header address slots 0-3
-		 * but these are ignored by driver since header split not
-		 * enabled.
-		 */
-		const __m512i desc_rd_0_3 = _mm512_permutexvar_epi64
-			(permute_idx, iova_addrs);
-		const __m512i desc_rd_4_7 = _mm512_bsrli_epi128(desc_rd_0_3, 8);
-
-		_mm512_store_si512((void *)rxdp, desc_rd_0_3);
-		_mm512_store_si512((void *)(rxdp + 4), desc_rd_4_7);
-#endif
-		rxep += 8, rxdp += 8, cache->len -= 8;
-	}
-
-	rxq->rxrearm_start += RTE_I40E_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
-		rxq->rxrearm_start = 0;
-
-	rxq->rxrearm_nb -= RTE_I40E_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
-
-	/* Update the tail pointer on the NIC */
-	I40E_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
+	i40e_rxq_rearm_common(rxq, true);
 }
 
 #ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
@@ -777,11 +654,11 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		status0_7 = _mm256_packs_epi32
 			(status0_7, _mm256_setzero_si256());
 
-		uint64_t burst = __builtin_popcountll
+		uint64_t burst = rte_popcount64
 				(_mm_cvtsi128_si64
 					(_mm256_extracti128_si256
 						(status0_7, 1)));
-		burst += __builtin_popcountll(_mm_cvtsi128_si64
+		burst += rte_popcount64(_mm_cvtsi128_si64
 				(_mm256_castsi256_si128(status0_7)));
 		received += burst;
 		if (burst != RTE_I40E_DESCS_PER_LOOP_AVX)
@@ -922,6 +799,7 @@ i40e_tx_free_bufs_avx512(struct i40e_tx_queue *txq)
 		uint32_t copied = 0;
 		/* n is multiple of 32 */
 		while (copied < n) {
+#ifdef RTE_ARCH_64
 			const __m512i a = _mm512_load_si512(&txep[copied]);
 			const __m512i b = _mm512_load_si512(&txep[copied + 8]);
 			const __m512i c = _mm512_load_si512(&txep[copied + 16]);
@@ -931,6 +809,12 @@ i40e_tx_free_bufs_avx512(struct i40e_tx_queue *txq)
 			_mm512_storeu_si512(&cache_objs[copied + 8], b);
 			_mm512_storeu_si512(&cache_objs[copied + 16], c);
 			_mm512_storeu_si512(&cache_objs[copied + 24], d);
+#else
+			const __m512i a = _mm512_load_si512(&txep[copied]);
+			const __m512i b = _mm512_load_si512(&txep[copied + 16]);
+			_mm512_storeu_si512(&cache_objs[copied], a);
+			_mm512_storeu_si512(&cache_objs[copied + 16], b);
+#endif
 			copied += 32;
 		}
 		cache->len += n;

@@ -5,11 +5,17 @@
 #ifndef MLX5DR_DEFINER_H_
 #define MLX5DR_DEFINER_H_
 
+/* Max available selecotrs */
+#define DW_SELECTORS 9
+#define BYTE_SELECTORS 8
+
 /* Selectors based on match TAG */
 #define DW_SELECTORS_MATCH 6
 #define DW_SELECTORS_LIMITED 3
-#define DW_SELECTORS 9
-#define BYTE_SELECTORS 8
+
+/* Selectors based on range TAG */
+#define DW_SELECTORS_RANGE 2
+#define BYTE_SELECTORS_RANGE 8
 
 enum mlx5dr_definer_fname {
 	MLX5DR_DEFINER_FNAME_ETH_SMAC_48_16_O,
@@ -38,8 +44,8 @@ enum mlx5dr_definer_fname {
 	MLX5DR_DEFINER_FNAME_IP_VERSION_I,
 	MLX5DR_DEFINER_FNAME_IP_FRAG_O,
 	MLX5DR_DEFINER_FNAME_IP_FRAG_I,
-	MLX5DR_DEFINER_FNAME_IPV6_PAYLOAD_LEN_O,
-	MLX5DR_DEFINER_FNAME_IPV6_PAYLOAD_LEN_I,
+	MLX5DR_DEFINER_FNAME_IP_LEN_O,
+	MLX5DR_DEFINER_FNAME_IP_LEN_I,
 	MLX5DR_DEFINER_FNAME_IP_TOS_O,
 	MLX5DR_DEFINER_FNAME_IP_TOS_I,
 	MLX5DR_DEFINER_FNAME_IPV6_FLOW_LABEL_O,
@@ -71,6 +77,7 @@ enum mlx5dr_definer_fname {
 	MLX5DR_DEFINER_FNAME_GTP_TEID,
 	MLX5DR_DEFINER_FNAME_GTP_MSG_TYPE,
 	MLX5DR_DEFINER_FNAME_GTP_EXT_FLAG,
+	MLX5DR_DEFINER_FNAME_GTP_FLAGS,
 	MLX5DR_DEFINER_FNAME_GTP_NEXT_EXT_HDR,
 	MLX5DR_DEFINER_FNAME_GTP_EXT_HDR_PDU,
 	MLX5DR_DEFINER_FNAME_GTP_EXT_HDR_QFI,
@@ -94,6 +101,10 @@ enum mlx5dr_definer_fname {
 	MLX5DR_DEFINER_FNAME_REG_5,
 	MLX5DR_DEFINER_FNAME_REG_6,
 	MLX5DR_DEFINER_FNAME_REG_7,
+	MLX5DR_DEFINER_FNAME_REG_8,
+	MLX5DR_DEFINER_FNAME_REG_9,
+	MLX5DR_DEFINER_FNAME_REG_10,
+	MLX5DR_DEFINER_FNAME_REG_11,
 	MLX5DR_DEFINER_FNAME_REG_A,
 	MLX5DR_DEFINER_FNAME_REG_B,
 	MLX5DR_DEFINER_FNAME_GRE_KEY_PRESENT,
@@ -106,20 +117,57 @@ enum mlx5dr_definer_fname {
 	MLX5DR_DEFINER_FNAME_INTEGRITY_I,
 	MLX5DR_DEFINER_FNAME_ICMP_DW1,
 	MLX5DR_DEFINER_FNAME_ICMP_DW2,
+	MLX5DR_DEFINER_FNAME_ESP_SPI,
+	MLX5DR_DEFINER_FNAME_ESP_SEQUENCE_NUMBER,
+	MLX5DR_DEFINER_FNAME_MPLS0_O,
+	MLX5DR_DEFINER_FNAME_MPLS1_O,
+	MLX5DR_DEFINER_FNAME_MPLS2_O,
+	MLX5DR_DEFINER_FNAME_MPLS3_O,
+	MLX5DR_DEFINER_FNAME_MPLS4_O,
+	MLX5DR_DEFINER_FNAME_MPLS0_I,
+	MLX5DR_DEFINER_FNAME_MPLS1_I,
+	MLX5DR_DEFINER_FNAME_MPLS2_I,
+	MLX5DR_DEFINER_FNAME_MPLS3_I,
+	MLX5DR_DEFINER_FNAME_MPLS4_I,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS0_O,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS1_O,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS2_O,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS3_O,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS4_O,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS0_I,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS1_I,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS2_I,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS3_I,
+	MLX5DR_DEFINER_FNAME_OKS2_MPLS4_I,
+	MLX5DR_DEFINER_FNAME_IB_L4_OPCODE,
+	MLX5DR_DEFINER_FNAME_IB_L4_QPN,
+	MLX5DR_DEFINER_FNAME_IB_L4_A,
+	MLX5DR_DEFINER_FNAME_PTYPE_L2_O,
+	MLX5DR_DEFINER_FNAME_PTYPE_L2_I,
+	MLX5DR_DEFINER_FNAME_PTYPE_L3_O,
+	MLX5DR_DEFINER_FNAME_PTYPE_L3_I,
+	MLX5DR_DEFINER_FNAME_PTYPE_L4_O,
+	MLX5DR_DEFINER_FNAME_PTYPE_L4_I,
+	MLX5DR_DEFINER_FNAME_PTYPE_TUNNEL,
+	MLX5DR_DEFINER_FNAME_PTYPE_FRAG_O,
+	MLX5DR_DEFINER_FNAME_PTYPE_FRAG_I,
 	MLX5DR_DEFINER_FNAME_MAX,
 };
 
 enum mlx5dr_definer_type {
 	MLX5DR_DEFINER_TYPE_MATCH,
 	MLX5DR_DEFINER_TYPE_JUMBO,
+	MLX5DR_DEFINER_TYPE_RANGE,
 };
 
 struct mlx5dr_definer_fc {
 	uint8_t item_idx;
+	uint8_t is_range;
 	uint32_t byte_off;
 	int bit_off;
 	uint32_t bit_mask;
 	enum mlx5dr_definer_fname fname;
+	uint8_t not_overwrite;
 	void (*tag_set)(struct mlx5dr_definer_fc *fc,
 			const void *item_spec,
 			uint8_t *tag);
@@ -429,6 +477,14 @@ struct mlx5_ifc_definer_hl_registers_bits {
 	u8 register_c_1[0x20];
 };
 
+struct mlx5_ifc_definer_hl_mpls_bits {
+	u8 mpls0_label[0x20];
+	u8 mpls1_label[0x20];
+	u8 mpls2_label[0x20];
+	u8 mpls3_label[0x20];
+	u8 mpls4_label[0x20];
+};
+
 struct mlx5_ifc_definer_hl_bits {
 	struct mlx5_ifc_definer_hl_eth_l2_bits eth_l2_outer;
 	struct mlx5_ifc_definer_hl_eth_l2_bits eth_l2_inner;
@@ -457,8 +513,8 @@ struct mlx5_ifc_definer_hl_bits {
 	u8 unsupported_udp_misc_inner[0x20];
 	struct mlx5_ifc_definer_tcp_icmp_header_bits tcp_icmp;
 	struct mlx5_ifc_definer_hl_tunnel_header_bits tunnel_header;
-	u8 unsupported_mpls_outer[0xa0];
-	u8 unsupported_mpls_inner[0xa0];
+	struct mlx5_ifc_definer_hl_mpls_bits mpls_outer;
+	struct mlx5_ifc_definer_hl_mpls_bits mpls_inner;
 	u8 unsupported_config_headers_outer[0x80];
 	u8 unsupported_config_headers_inner[0x80];
 	u8 unsupported_random_number[0x20];
@@ -479,12 +535,17 @@ enum mlx5dr_definer_gtp {
 };
 
 struct mlx5_ifc_header_gtp_bits {
-	u8 version[0x3];
-	u8 proto_type[0x1];
-	u8 reserved1[0x1];
-	u8 ext_hdr_flag[0x1];
-	u8 seq_num_flag[0x1];
-	u8 pdu_flag[0x1];
+	union {
+		 u8 v_pt_rsv_flags[0x8];
+		struct {
+			u8 version[0x3];
+			u8 proto_type[0x1];
+			u8 reserved1[0x1];
+			u8 ext_hdr_flag[0x1];
+			u8 seq_num_flag[0x1];
+			u8 pdu_flag[0x1];
+		};
+	};
 	u8 msg_type[0x8];
 	u8 msg_len[0x8];
 	u8 teid[0x20];
@@ -514,6 +575,21 @@ struct mlx5_ifc_header_ipv6_vtc_bits {
 		};
 	};
 	u8 flow_label[0x14];
+};
+
+struct mlx5_ifc_header_ipv6_routing_ext_bits {
+	u8 next_hdr[0x8];
+	u8 hdr_len[0x8];
+	u8 type[0x8];
+	u8 segments_left[0x8];
+	union {
+		u8 flags[0x20];
+		struct {
+			u8 last_entry[0x8];
+			u8 flag[0x8];
+			u8 tag[0x10];
+		};
+	};
 };
 
 struct mlx5_ifc_header_vxlan_bits {
@@ -566,6 +642,16 @@ struct mlx5dr_definer {
 	struct mlx5dr_devx_obj *obj;
 };
 
+struct mlx5dr_definer_cache {
+	LIST_HEAD(definer_head, mlx5dr_definer_cache_item) head;
+};
+
+struct mlx5dr_definer_cache_item {
+	struct mlx5dr_definer definer;
+	uint32_t refcount;
+	LIST_ENTRY(mlx5dr_definer_cache_item) next;
+};
+
 static inline bool
 mlx5dr_definer_is_jumbo(struct mlx5dr_definer *definer)
 {
@@ -577,14 +663,20 @@ void mlx5dr_definer_create_tag(const struct rte_flow_item *items,
 			       uint32_t fc_sz,
 			       uint8_t *tag);
 
-int mlx5dr_definer_compare(struct mlx5dr_definer *definer_a,
-			   struct mlx5dr_definer *definer_b);
+void mlx5dr_definer_create_tag_range(const struct rte_flow_item *items,
+				     struct mlx5dr_definer_fc *fc,
+				     uint32_t fc_sz,
+				     uint8_t *tag);
 
 int mlx5dr_definer_get_id(struct mlx5dr_definer *definer);
 
-int mlx5dr_definer_get(struct mlx5dr_context *ctx,
-		       struct mlx5dr_match_template *mt);
+int mlx5dr_definer_matcher_init(struct mlx5dr_context *ctx,
+				struct mlx5dr_matcher *matcher);
 
-void mlx5dr_definer_put(struct mlx5dr_match_template *mt);
+void mlx5dr_definer_matcher_uninit(struct mlx5dr_matcher *matcher);
 
-#endif /* MLX5DR_DEFINER_H_ */
+int mlx5dr_definer_init_cache(struct mlx5dr_definer_cache **cache);
+
+void mlx5dr_definer_uninit_cache(struct mlx5dr_definer_cache *cache);
+
+#endif

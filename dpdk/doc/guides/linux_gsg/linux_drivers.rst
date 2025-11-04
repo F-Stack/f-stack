@@ -180,6 +180,23 @@ VFIO module parameter ``dma_entry_limit`` with a default value of 64K.
 When application is out of DMA entries, these limits need to be adjusted to
 increase the allowed limit.
 
+When ``--no-huge`` option is used,
+the page size used is of smaller size of ``4K`` or ``64K``
+and we shall need to increase ``dma_entry_limit``.
+
+To update the ``dma_entry_limit``,
+``vfio_iommu_type1`` has to be loaded with additional module parameter:
+
+.. code-block:: console
+
+   modprobe vfio_iommu_type1 dma_entry_limit=512000
+
+Alternatively, one can also change this value in an already loaded kernel module:
+
+.. code-block:: console
+
+   echo 512000 > /sys/module/vfio_iommu_type1/parameters/dma_entry_limit
+
 Creating Virtual Functions using vfio-pci
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -295,6 +312,54 @@ This can be checked in the boot configuration of your system:
 If ``CONFIG_VFIO_NOIOMMU`` is not enabled in the kernel configuration,
 VFIO driver will not support the no-IOMMU mode,
 and other alternatives (such as UIO drivers) will have to be used.
+
+VFIO Platform
+-------------
+
+VFIO Platform is a kernel driver that extends capabilities of VFIO
+by adding support for platform devices that reside behind an IOMMU.
+Linux usually learns about platform devices directly from device tree
+during boot-up phase,
+unlike for example, PCI devices which have necessary information built-in.
+
+To make use of VFIO platform, the ``vfio-platform`` module must be loaded first:
+
+.. code-block:: console
+
+   sudo modprobe vfio-platform
+
+.. note::
+
+   By default ``vfio-platform`` assumes that platform device has dedicated reset driver.
+   If such driver is missing or device does not require one,
+   this option can be turned off by setting ``reset_required=0`` module parameter.
+
+Afterwards platform device needs to be bound to ``vfio-platform``.
+This is standard procedure requiring two steps.
+First ``driver_override``, which is available inside platform device directory,
+needs to be set to ``vfio-platform``:
+
+.. code-block:: console
+
+   sudo echo vfio-platform > /sys/bus/platform/devices/DEV/driver_override
+
+Next ``DEV`` device must be bound to ``vfio-platform`` driver:
+
+.. code-block:: console
+
+   sudo echo DEV > /sys/bus/platform/drivers/vfio-platform/bind
+
+On application startup, DPDK platform bus driver scans ``/sys/bus/platform/devices``
+searching for devices that have ``driver`` symbolic link
+pointing to ``vfio-platform`` driver.
+Finally, scanned devices are matched against available PMDs.
+Matching is successful if either PMD name or PMD alias matches kernel driver name
+or PMD name matches platform device name, all in that order.
+
+VFIO Platform depends on ARM/ARM64 and is usually enabled on distributions
+running on these systems.
+Consult your distributions documentation to make sure that is the case.
+
 
 .. _bifurcated_driver:
 

@@ -11,6 +11,7 @@
 #include <rte_io.h>
 #include <rte_net.h>
 #include <rte_malloc.h>
+#include <rte_net_crc.h>
 #if defined(RTE_ARCH_ARM64)
 #include <rte_cpuflags.h>
 #include <rte_vect.h>
@@ -51,7 +52,7 @@ hns3_rx_queue_release_mbufs(struct hns3_rx_queue *rxq)
 			}
 		}
 		for (i = 0; i < rxq->rx_rearm_nb; i++)
-			rxq->sw_ring[rxq->rx_rearm_start + i].mbuf = NULL;
+			rxq->sw_ring[(rxq->rx_rearm_start + i) % rxq->nb_rx_desc].mbuf = NULL;
 	}
 
 	for (i = 0; i < rxq->bulk_mbuf_num; i++)
@@ -276,12 +277,25 @@ hns3_free_all_queues(struct rte_eth_dev *dev)
 static int
 hns3_check_rx_dma_addr(struct hns3_hw *hw, uint64_t dma_addr)
 {
+	uint64_t rx_offload = hw->data->dev_conf.rxmode.offloads;
 	uint64_t rem;
 
 	rem = dma_addr & (hw->rx_dma_addr_align - 1);
 	if (rem > 0) {
-		hns3_err(hw, "The IO address of the beginning of the mbuf data "
-			 "must be %u-byte aligned", hw->rx_dma_addr_align);
+		hns3_err(hw,
+			 "mbuf DMA address must be %u-byte aligned",
+			 hw->rx_dma_addr_align);
+		return -EINVAL;
+	}
+
+	/*
+	 * This check is for HIP08 network engine. The GRO function
+	 * requires that mbuf DMA address is 64-byte aligned.
+	 */
+	rem = dma_addr & (HNS3_RX_DMA_ADDR_ALIGN_128 - 1);
+	if ((rx_offload & RTE_ETH_RX_OFFLOAD_TCP_LRO) && rem > 0) {
+		hns3_err(hw,
+			 "GRO requires that mbuf DMA address be 64-byte aligned");
 		return -EINVAL;
 	}
 	return 0;
@@ -784,7 +798,7 @@ hns3pf_reset_all_tqps(struct hns3_hw *hw)
 		for (i = 0; i < hw->cfg_max_queues; i++) {
 			ret = hns3pf_reset_tqp(hw, i);
 			if (ret) {
-				hns3_err(hw, "fail to reset tqp, queue_id = %d, ret = %d.",
+				hns3_err(hw, "fail to reset tqp, queue_id = %u, ret = %d.",
 					 i, ret);
 				return ret;
 			}
@@ -861,15 +875,13 @@ hns3_send_reset_queue_cmd(struct hns3_hw *hw, uint16_t queue_id,
 {
 	struct hns3_reset_tqp_queue_cmd *req;
 	struct hns3_cmd_desc desc;
-	int queue_direction;
 	int ret;
 
 	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_RESET_TQP_QUEUE_INDEP, false);
 
 	req = (struct hns3_reset_tqp_queue_cmd *)desc.data;
 	req->tqp_id = rte_cpu_to_le_16(queue_id);
-	queue_direction = queue_type == HNS3_RING_TYPE_TX ? 0 : 1;
-	req->queue_direction = rte_cpu_to_le_16(queue_direction);
+	req->queue_direction = queue_type == HNS3_RING_TYPE_TX ? 0 : 1;
 	hns3_set_bit(req->reset_req, HNS3_TQP_RESET_B, enable ? 1 : 0);
 
 	ret = hns3_cmd_send(hw, &desc, 1);
@@ -887,15 +899,13 @@ hns3_get_queue_reset_status(struct hns3_hw *hw, uint16_t queue_id,
 {
 	struct hns3_reset_tqp_queue_cmd *req;
 	struct hns3_cmd_desc desc;
-	int queue_direction;
 	int ret;
 
 	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_RESET_TQP_QUEUE_INDEP, true);
 
 	req = (struct hns3_reset_tqp_queue_cmd *)desc.data;
 	req->tqp_id = rte_cpu_to_le_16(queue_id);
-	queue_direction = queue_type == HNS3_RING_TYPE_TX ? 0 : 1;
-	req->queue_direction = rte_cpu_to_le_16(queue_direction);
+	req->queue_direction = queue_type == HNS3_RING_TYPE_TX ? 0 : 1;
 
 	ret = hns3_cmd_send(hw, &desc, 1);
 	if (ret) {
@@ -1166,12 +1176,14 @@ hns3_init_txq(struct hns3_tx_queue *txq)
 	hns3_init_tx_queue_hw(txq);
 }
 
-static void
+static int
 hns3_init_tx_ring_tc(struct hns3_adapter *hns)
 {
+	struct hns3_cmd_desc desc;
+	struct hns3vf_tx_ring_tc_cmd *req = (struct hns3vf_tx_ring_tc_cmd *)desc.data;
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_tx_queue *txq;
-	int i, num;
+	int i, num, ret;
 
 	for (i = 0; i < HNS3_MAX_TC_NUM; i++) {
 		struct hns3_tc_queue_info *tc_queue = &hw->tc_queue[i];
@@ -1186,9 +1198,24 @@ hns3_init_tx_ring_tc(struct hns3_adapter *hns)
 			if (txq == NULL)
 				continue;
 
-			hns3_write_dev(txq, HNS3_RING_TX_TC_REG, tc_queue->tc);
+			if (!hns->is_vf) {
+				hns3_write_dev(txq, HNS3_RING_TX_TC_REG, tc_queue->tc);
+				continue;
+			}
+
+			hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_TQP_TX_QUEUE_TC, false);
+			req->tqp_id = rte_cpu_to_le_16(num);
+			req->tc_id  = tc_queue->tc;
+			ret = hns3_cmd_send(hw, &desc, 1);
+			if (ret != 0) {
+				hns3_err(hw, "config Tx queue (%u)'s TC failed! ret = %d.",
+					 num, ret);
+				return ret;
+			}
 		}
 	}
+
+	return 0;
 }
 
 static int
@@ -1264,9 +1291,8 @@ hns3_init_tx_queues(struct hns3_adapter *hns)
 		txq = (struct hns3_tx_queue *)hw->fkq_data.tx_queues[i];
 		hns3_init_txq(txq);
 	}
-	hns3_init_tx_ring_tc(hns);
 
-	return 0;
+	return hns3_init_tx_ring_tc(hns);
 }
 
 /*
@@ -1770,8 +1796,9 @@ hns3_rx_buf_len_calc(struct rte_mempool *mp, uint16_t *rx_buf_len)
 }
 
 static int
-hns3_rxq_conf_runtime_check(struct hns3_hw *hw, uint16_t buf_size,
-				uint16_t nb_desc)
+hns3_rxq_conf_runtime_check(struct hns3_hw *hw,
+			    const struct rte_eth_rxconf *conf,
+			    uint16_t buf_size, uint16_t nb_desc)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[hw->data->port_id];
 	eth_rx_burst_t pkt_burst = dev->rx_pkt_burst;
@@ -1804,6 +1831,14 @@ hns3_rxq_conf_runtime_check(struct hns3_hw *hw, uint16_t buf_size,
 			return -EINVAL;
 		}
 	}
+
+	if ((conf->offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC) &&
+	    pkt_burst != hns3_recv_pkts_simple &&
+	    pkt_burst != hns3_recv_scattered_pkts) {
+		hns3_err(hw, "KEEP_CRC offload is not supported with the current Rx function.");
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -1840,7 +1875,7 @@ hns3_rx_queue_conf_check(struct hns3_hw *hw, const struct rte_eth_rxconf *conf,
 	}
 
 	if (hw->data->dev_started) {
-		ret = hns3_rxq_conf_runtime_check(hw, *buf_size, nb_desc);
+		ret = hns3_rxq_conf_runtime_check(hw, conf, *buf_size, nb_desc);
 		if (ret) {
 			hns3_err(hw, "Rx queue runtime setup fail.");
 			return ret;
@@ -1960,6 +1995,8 @@ hns3_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 		rxq->crc_len = RTE_ETHER_CRC_LEN;
 	else
 		rxq->crc_len = 0;
+
+	rxq->keep_crc_fail_ptype = hw->strip_crc_ptype;
 
 	rxq->bulk_mbuf_num = 0;
 
@@ -2387,18 +2424,16 @@ hns3_rxd_to_vlan_tci(struct hns3_rx_queue *rxq, struct rte_mbuf *mb,
 }
 
 static inline void
-recalculate_data_len(struct rte_mbuf *first_seg, struct rte_mbuf *last_seg,
-		    struct rte_mbuf *rxm, struct hns3_rx_queue *rxq,
-		    uint16_t data_len)
+recalculate_data_len(struct rte_mbuf *last_seg, struct rte_mbuf *rxm,
+		     struct hns3_rx_queue *rxq)
 {
+	uint16_t data_len = rxm->data_len;
 	uint8_t crc_len = rxq->crc_len;
 
 	if (data_len <= crc_len) {
-		rte_pktmbuf_free_seg(rxm);
-		first_seg->nb_segs--;
+		rxm->data_len = 0;
 		last_seg->data_len = (uint16_t)(last_seg->data_len -
 			(crc_len - data_len));
-		last_seg->next = NULL;
 	} else
 		rxm->data_len = (uint16_t)(data_len - crc_len);
 }
@@ -2434,6 +2469,55 @@ hns3_rx_ptp_timestamp_handle(struct hns3_rx_queue *rxq, struct rte_mbuf *mbuf,
 	}
 
 	pf->rx_timestamp = timestamp;
+}
+
+static inline bool
+hns3_need_recalculate_crc(struct hns3_rx_queue *rxq, struct rte_mbuf *m)
+{
+	uint32_t ptype = m->packet_type;
+
+	if (rxq->keep_crc_fail_ptype == HNS3_STRIP_CRC_PTYPE_NONE)
+		return false;
+
+	if (m->pkt_len > HNS3_KEEP_CRC_OK_MIN_PKT_LEN)
+		return false;
+
+	if (!(RTE_ETH_IS_IPV4_HDR(ptype) || RTE_ETH_IS_IPV6_HDR(ptype)))
+		return false;
+
+	if (rxq->keep_crc_fail_ptype == HNS3_STRIP_CRC_PTYPE_TCP)
+		return (ptype & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_TCP;
+
+	return true;
+}
+
+/*
+ * The hns3 driver requires that mbuf size must be at least 512B.
+ * When CRC is stripped by hardware, the pkt_len must be less than
+ * or equal to 60B. Therefore, the space of the mbuf is enough
+ * to insert the CRC.
+ */
+static_assert(HNS3_KEEP_CRC_OK_MIN_PKT_LEN < HNS3_MIN_BD_BUF_SIZE,
+	      "buffer size too small to insert CRC");
+
+static inline void
+hns3_recalculate_crc(struct rte_mbuf *m)
+{
+	char *append_data;
+	uint32_t crc;
+
+	crc = rte_net_crc_calc(rte_pktmbuf_mtod(m, void *),
+			       m->data_len, RTE_NET_CRC32_ETH);
+
+	/*
+	 * After CRC is stripped by hardware, pkt_len and data_len do not
+	 * contain the CRC length. Therefore, after CRC data is appended
+	 * by PMD again.
+	 */
+	append_data = rte_pktmbuf_append(m, RTE_ETHER_CRC_LEN);
+
+	/* CRC data is binary data and does not care about the byte order. */
+	memcpy(append_data, &crc, RTE_ETHER_CRC_LEN);
 }
 
 uint16_t
@@ -2506,8 +2590,7 @@ hns3_recv_pkts_simple(void *rx_queue,
 		rxdp->rx.bd_base_info = 0;
 
 		rxm->data_off = RTE_PKTMBUF_HEADROOM;
-		rxm->pkt_len = (uint16_t)(rte_le_to_cpu_16(rxd.rx.pkt_len)) -
-				rxq->crc_len;
+		rxm->pkt_len = (uint16_t)(rte_le_to_cpu_16(rxd.rx.pkt_len));
 		rxm->data_len = rxm->pkt_len;
 		rxm->port = rxq->port_id;
 		rxm->hash.rss = rte_le_to_cpu_32(rxd.rx.rss_hash);
@@ -2531,6 +2614,12 @@ hns3_recv_pkts_simple(void *rx_queue,
 
 		if (rxm->packet_type == RTE_PTYPE_L2_ETHER_TIMESYNC)
 			rxm->ol_flags |= RTE_MBUF_F_RX_IEEE1588_PTP;
+
+		if (unlikely(rxq->crc_len > 0) &&
+		    hns3_need_recalculate_crc(rxq, rxm))
+			hns3_recalculate_crc(rxm);
+		rxm->pkt_len -= rxq->crc_len;
+		rxm->data_len -= rxq->crc_len;
 
 		hns3_rxd_to_vlan_tci(rxq, rxm, l234_info, &rxd);
 
@@ -2657,6 +2746,7 @@ hns3_recv_scattered_pkts(void *rx_queue,
 		 */
 		rxd = rxdp[(bd_base_info & (1u << HNS3_RXD_VLD_B)) -
 			   (1u << HNS3_RXD_VLD_B)];
+		RX_BD_LOG(&rxq->hns->hw, DEBUG, &rxd);
 
 		nmb = hns3_rx_alloc_buffer(rxq);
 		if (unlikely(nmb == NULL)) {
@@ -2697,10 +2787,10 @@ hns3_recv_scattered_pkts(void *rx_queue,
 
 		rxm->data_off = RTE_PKTMBUF_HEADROOM;
 		rxm->data_len = rte_le_to_cpu_16(rxd.rx.size);
+		rxm->next = NULL;
 
 		if (!(bd_base_info & BIT(HNS3_RXD_FE_B))) {
 			last_seg = rxm;
-			rxm->next = NULL;
 			continue;
 		}
 
@@ -2714,23 +2804,6 @@ hns3_recv_scattered_pkts(void *rx_queue,
 		 * subtract it, same as data len.
 		 */
 		first_seg->pkt_len = rte_le_to_cpu_16(rxd.rx.pkt_len);
-
-		/*
-		 * This is the last buffer of the received packet. If the CRC
-		 * is not stripped by the hardware:
-		 *  - Subtract the CRC length from the total packet length.
-		 *  - If the last buffer only contains the whole CRC or a part
-		 *  of it, free the mbuf associated to the last buffer. If part
-		 *  of the CRC is also contained in the previous mbuf, subtract
-		 *  the length of that CRC part from the data length of the
-		 *  previous mbuf.
-		 */
-		rxm->next = NULL;
-		if (unlikely(rxq->crc_len > 0)) {
-			first_seg->pkt_len -= rxq->crc_len;
-			recalculate_data_len(first_seg, last_seg, rxm, rxq,
-				rxm->data_len);
-		}
 
 		first_seg->port = rxq->port_id;
 		first_seg->hash.rss = rte_le_to_cpu_32(rxd.rx.rss_hash);
@@ -2760,6 +2833,31 @@ hns3_recv_scattered_pkts(void *rx_queue,
 
 		if (first_seg->packet_type == RTE_PTYPE_L2_ETHER_TIMESYNC)
 			rxm->ol_flags |= RTE_MBUF_F_RX_IEEE1588_PTP;
+		/*
+		 * This is the last buffer of the received packet. If the CRC
+		 * is not stripped by the hardware:
+		 *  - Subtract the CRC length from the total packet length.
+		 *  - If the last buffer only contains the whole CRC or a part
+		 *  of it, free the mbuf associated to the last buffer. If part
+		 *  of the CRC is also contained in the previous mbuf, subtract
+		 *  the length of that CRC part from the data length of the
+		 *  previous mbuf.
+		 *
+		 * In addition, the CRC is still stripped for a kind of packets
+		 * in hns3 NIC:
+		 * 1. All IP-TCP packet whose the length is less than and equal
+		 *    to 60 Byte (no CRC) on HIP08 network engine.
+		 * 2. All IP packet whose the length is less than and equal to
+		 *    60 Byte (no CRC) on HIP09 network engine.
+		 * In this case, the PMD calculates the CRC and appends it to
+		 * mbuf.
+		 */
+		if (unlikely(rxq->crc_len > 0)) {
+			if (hns3_need_recalculate_crc(rxq, first_seg))
+				hns3_recalculate_crc(first_seg);
+			first_seg->pkt_len -= rxq->crc_len;
+			recalculate_data_len(last_seg, rxm, rxq);
+		}
 
 		hns3_rxd_to_vlan_tci(rxq, first_seg, l234_info, &rxd);
 
@@ -3086,6 +3184,10 @@ hns3_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 					HNS3_PORT_BASE_VLAN_ENABLE;
 	else
 		txq->pvid_sw_shift_en = false;
+
+	if (hns3_dev_get_support(hw, SIMPLE_BD))
+		txq->simple_bd_enable = true;
+
 	txq->max_non_tso_bd_num = hw->max_non_tso_bd_num;
 	txq->configured = true;
 	txq->io_base = (void *)((char *)hw->io_base +
@@ -3205,7 +3307,7 @@ hns3_set_tso(struct hns3_desc *desc, uint32_t paylen, struct rte_mbuf *rxm)
 		return;
 
 	desc->tx.type_cs_vlan_tso_len |= rte_cpu_to_le_32(BIT(HNS3_TXD_TSO_B));
-	desc->tx.mss = rte_cpu_to_le_16(rxm->tso_segsz);
+	desc->tx.ckst_mss |= rte_cpu_to_le_16(rxm->tso_segsz);
 }
 
 static inline void
@@ -3901,6 +4003,50 @@ hns3_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	return i;
 }
 
+static inline int
+hns3_handle_simple_bd(struct hns3_tx_queue *txq, struct hns3_desc *desc,
+		      struct rte_mbuf *m)
+{
+#define HNS3_TCP_CSUM_OFFSET	16
+#define HNS3_UDP_CSUM_OFFSET	6
+
+	/*
+	 * In HIP09, NIC HW support Tx simple BD mode that the HW will
+	 * calculate the checksum from the start position of checksum and fill
+	 * the checksum result to the offset position without packet type and
+	 * header length of L3/L4.
+	 * For non-tunneling packet:
+	 * - Tx simple BD support for TCP and UDP checksum.
+	 * For tunneling packet:
+	 * - Tx simple BD support for inner L4 checksum(except sctp checksum).
+	 * - Tx simple BD not support the outer checksum and the inner L3
+	 *   checksum.
+	 * - Besides, Tx simple BD is not support for TSO.
+	 */
+	if (txq->simple_bd_enable && !(m->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) &&
+	    !(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) &&
+	    !(m->ol_flags & RTE_MBUF_F_TX_OUTER_IP_CKSUM) &&
+	    ((m->ol_flags & RTE_MBUF_F_TX_L4_MASK) == RTE_MBUF_F_TX_TCP_CKSUM ||
+	    (m->ol_flags & RTE_MBUF_F_TX_L4_MASK) == RTE_MBUF_F_TX_UDP_CKSUM)) {
+		/* set checksum start and offset, defined in 2 Bytes */
+		hns3_set_field(desc->tx.type_cs_vlan_tso_len,
+			       HNS3_TXD_L4_START_M, HNS3_TXD_L4_START_S,
+			       (m->l2_len + m->l3_len) >> HNS3_SIMPLE_BD_UNIT);
+		hns3_set_field(desc->tx.ol_type_vlan_len_msec,
+			   HNS3_TXD_L4_CKS_OFFSET_M, HNS3_TXD_L4_CKS_OFFSET_S,
+			   (m->ol_flags & RTE_MBUF_F_TX_L4_MASK) ==
+			   RTE_MBUF_F_TX_TCP_CKSUM ?
+			   HNS3_TCP_CSUM_OFFSET >> HNS3_SIMPLE_BD_UNIT :
+			   HNS3_UDP_CSUM_OFFSET >> HNS3_SIMPLE_BD_UNIT);
+
+		hns3_set_bit(desc->tx.ckst_mss, HNS3_TXD_CKST_B, 1);
+
+		return 0;
+	}
+
+	return -ENOTSUP;
+}
+
 static int
 hns3_parse_cksum(struct hns3_tx_queue *txq, uint16_t tx_desc_id,
 		 struct rte_mbuf *m)
@@ -3910,6 +4056,8 @@ hns3_parse_cksum(struct hns3_tx_queue *txq, uint16_t tx_desc_id,
 
 	/* Enable checksum offloading */
 	if (m->ol_flags & HNS3_TX_CKSUM_OFFLOAD_MASK) {
+		if (hns3_handle_simple_bd(txq, desc, m) == 0)
+			return 0;
 		/* Fill in tunneling parameters if necessary */
 		if (hns3_parse_tunneling_params(txq, m, tx_desc_id)) {
 			txq->dfx_stats.unsupported_tunnel_pkt_cnt++;
@@ -4000,7 +4148,7 @@ hns3_tx_free_buffer_simple(struct hns3_tx_queue *txq)
 		for (i = 0; i < txq->tx_rs_thresh; i++)
 			rte_prefetch0((tx_entry + i)->mbuf);
 		for (i = 0; i < txq->tx_rs_thresh; i++, tx_entry++) {
-			rte_mempool_put(tx_entry->mbuf->pool, tx_entry->mbuf);
+			rte_pktmbuf_free_seg(tx_entry->mbuf);
 			tx_entry->mbuf = NULL;
 		}
 
@@ -4224,6 +4372,8 @@ hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				tx_next_use = 0;
 				tx_bak_pkt = txq->sw_ring;
 			}
+			if (m_seg != NULL)
+				TX_BD_LOG(&txq->hns->hw, DEBUG, desc);
 
 			i++;
 		} while (m_seg != NULL);
@@ -4231,6 +4381,7 @@ hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		/* Add end flag for the last Tx Buffer Descriptor */
 		desc->tx.tp_fe_sc_vld_ra_ri |=
 				 rte_cpu_to_le_16(BIT(HNS3_TXD_FE_B));
+		TX_BD_LOG(&txq->hns->hw, DEBUG, desc);
 
 		/* Increment bytes counter */
 		txq->basic_stats.bytes += tx_pkt->pkt_len;

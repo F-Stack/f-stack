@@ -101,6 +101,7 @@
 
 #define LINUX_IPV6_V6ONLY           26
 #define LINUX_IPV6_RECVPKTINFO      49
+#define LINUX_IPV6_PKTINFO          50
 #define LINUX_IPV6_TRANSPARENT      75
 
 #define LINUX_TCP_NODELAY     1
@@ -177,11 +178,41 @@
 
 /* ioctl define end */
 
+/* fcntl define start */
+
+#define LINUX_F_DUPFD           0
+#define LINUX_F_GETFD           1
+#define LINUX_F_SETFD           2
+#define LINUX_F_GETFL           3
+#define LINUX_F_SETFL           4
+#define LINUX_F_GETLK           5
+#define LINUX_F_SETLK           6
+#define LINUX_F_SETLKW          7
+#define LINUX_F_SETOWN          8
+#define LINUX_F_GETOWN          9
+#define LINUX_F_OFD_GETLK       36
+#define LINUX_F_OFD_SETLK       37
+#define LINUX_F_OFD_SETLKW      38
+
+#define LINUX_O_APPEND          0x400
+#define LINUX_O_NONBLOCK        0x800
+#define LINUX_O_ASYNC           0x2000
+#define LINUX_O_DIRECT          0x4000
+#define LINUX_O_NOATIME         0x40000
+#define LINUX_O_CLOEXEC         0x80000
+
+/* fcntl define end */
+
 /* af define start */
 
 #define LINUX_AF_INET6        10
 
 /* af define end */
+
+/* Flags for socket, socketpair, accept4 */
+
+#define	LINUX_SOCK_CLOEXEC	LINUX_O_CLOEXEC
+#define	LINUX_SOCK_NONBLOCK	LINUX_O_NONBLOCK
 
 /* msghdr define start */
 
@@ -245,6 +276,140 @@ struct linux_cmsghdr
 /* cmsghdr define end */
 
 extern int sendit(struct thread *td, int s, struct msghdr *mp, int flags);
+
+/* convert linux argp to freebsd argp. */
+static inline int
+linux2freebsd_fcntl(int cmd, intptr_t *argp)
+{
+    switch(cmd) {
+        case LINUX_F_DUPFD:
+            return F_DUPFD;
+        case LINUX_F_GETFD:
+            return F_GETFD;
+        case LINUX_F_SETFD:
+            if (*argp & LINUX_O_CLOEXEC) {
+                //clear linux O_CLOEXEC, set freebsd O_CLOEXEC.
+                *argp &= ~LINUX_O_CLOEXEC;
+                *argp |= O_CLOEXEC;
+            }
+
+            return F_SETFD;
+        case LINUX_F_GETFL:
+            return F_GETFL;
+        case LINUX_F_SETFL:
+            if (*argp & LINUX_O_NONBLOCK) {
+                //clear linux O_NONBLOCK, set freebsd O_NONBLOCK.
+                *argp &= ~LINUX_O_NONBLOCK;
+                *argp |= O_NONBLOCK;
+            }
+
+            if (*argp & LINUX_O_APPEND) {
+                //clear linux O_APPEND, set freebsd O_APPEND.
+                *argp &= ~LINUX_O_APPEND;
+                *argp |= O_APPEND;
+            }
+
+            if (*argp & LINUX_O_ASYNC) {
+                //clear linux O_ASYNC, set freebsd O_ASYNC.
+                *argp &= ~LINUX_O_ASYNC;
+                *argp |= O_ASYNC;
+            }
+
+            if (*argp & LINUX_O_DIRECT) {
+                //clear linux O_DIRECT, set freebsd O_DIRECT.
+                *argp &= ~LINUX_O_DIRECT;
+                *argp |= O_DIRECT;
+            }
+
+            return F_SETFL;
+        case LINUX_F_GETLK:
+            return F_GETLK;
+        case LINUX_F_SETLK:
+            return F_SETLK;
+        case LINUX_F_SETLKW:
+            return F_SETLKW;
+        case LINUX_F_SETOWN:
+            return F_SETOWN;
+        case LINUX_F_GETOWN:
+            return F_GETOWN;
+        case LINUX_F_OFD_GETLK:
+            return F_OGETLK;
+        case LINUX_F_OFD_SETLK:
+            return F_OSETLK;
+        case LINUX_F_OFD_SETLKW:
+            return F_OSETLKW;
+        default:
+            return cmd;
+    }
+}
+
+/*
+ * convert freebsd flags to linux flags.
+ * cmd has been converted to freebsd mode.
+ */
+static inline int
+freebsd2linux_fcntl(int cmd, int flags)
+{
+    switch(cmd) {
+        case F_DUPFD:
+            return flags;
+        case F_GETFD:
+            if (flags & O_CLOEXEC) {
+                //clear freebsd O_DIRECT, set linux O_DIRECT.
+                flags &= ~O_CLOEXEC;
+                flags |= LINUX_O_CLOEXEC;
+            }
+            return flags;
+        case F_SETFD:
+            return flags;
+        case F_GETFL:
+            if (flags & O_NONBLOCK) {
+                //clear linux O_NONBLOCK, set freebsd O_NONBLOCK.
+                flags &= ~O_NONBLOCK;
+                flags |= LINUX_O_NONBLOCK;
+            }
+
+            if (flags & O_APPEND) {
+                //clear linux O_APPEND, set freebsd O_APPEND.
+                flags &= ~O_APPEND;
+                flags |= LINUX_O_APPEND;
+            }
+
+            if (flags & O_ASYNC) {
+                //clear linux O_ASYNC, set freebsd O_ASYNC.
+                flags &= ~O_ASYNC;
+                flags |= LINUX_O_ASYNC;
+            }
+
+            if (flags & O_DIRECT) {
+                //clear linux O_DIRECT, set freebsd O_DIRECT.
+                flags &= ~O_DIRECT;
+                flags |= LINUX_O_DIRECT;
+            }
+
+            return flags;
+        case LINUX_F_SETFL:
+            return flags;
+        case F_GETLK:
+            return flags;
+        case F_SETLK:
+            return flags;
+        case F_SETLKW:
+            return flags;
+        case F_SETOWN:
+            return flags;
+        case F_GETOWN:
+            return flags;
+        case F_OGETLK:
+            return flags;
+        case F_OSETLK:
+            return flags;
+        case F_OSETLKW:
+            return flags;
+        default:
+            return flags;
+    }
+}
 
 static long
 linux2freebsd_ioctl(unsigned long request)
@@ -496,6 +661,20 @@ linux2freebsd_opt(int level, int optname)
     }
 }
 
+static int
+linux2freebsd_socket_flags(int flags)
+{
+    if (flags & LINUX_SOCK_NONBLOCK) {
+        flags &= ~LINUX_SOCK_NONBLOCK;
+        flags |= SOCK_NONBLOCK;
+    }
+    if (flags & LINUX_SOCK_CLOEXEC) {
+        flags &= ~LINUX_SOCK_CLOEXEC;
+        flags |= SOCK_CLOEXEC;
+    }
+    return flags;
+}
+
 static void
 linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
     socklen_t addrlen, struct sockaddr *freebsd)
@@ -630,6 +809,17 @@ linux2freebsd_cmsg(const struct linux_msghdr *linux_msg, struct msghdr *freebsd_
                 }
 
                 break;
+            case IPPROTO_IPV6:
+                switch (linux_cmsg->cmsg_type) {
+                    case LINUX_IPV6_PKTINFO:
+                        freebsd_cmsg->cmsg_type = IPV6_PKTINFO;
+                        *(struct in6_pktinfo *)freebsd_optval = *(struct in6_pktinfo *)linux_optval;
+                        break;
+                    default:
+                        memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
+                        break;
+                }
+                break;
             default:
                 memcpy(freebsd_optval, linux_optval, linux_cmsg->cmsg_len - sizeof(struct linux_cmsghdr));
                 break;
@@ -721,7 +911,7 @@ ff_socket(int domain, int type, int protocol)
     int rc;
     struct socket_args sa;
     sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
-    sa.type = type;
+    sa.type = linux2freebsd_socket_flags(type);
     sa.protocol = protocol;
     if ((rc = sys_socket(curthread, &sa)))
         goto kern_fail;
@@ -1150,9 +1340,11 @@ ff_fcntl(int fd, int cmd, ...)
     argp = va_arg(ap, uintptr_t);
     va_end(ap);
 
+    cmd = linux2freebsd_fcntl(cmd, &argp);
+
     if ((rc = kern_fcntl(curthread, fd, cmd, argp)))
         goto kern_fail;
-    rc = curthread->td_retval[0];
+    rc = freebsd2linux_fcntl(cmd, curthread->td_retval[0]);
     return (rc);
 kern_fail:
     ff_os_errno(rc);
@@ -1169,6 +1361,38 @@ ff_accept(int s, struct linux_sockaddr * addr,
     socklen_t socklen = sizeof(struct sockaddr_storage);
 
     if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
+        goto kern_fail;
+
+    rc = curthread->td_retval[0];
+    fdrop(fp, curthread);
+
+    if (addr && pf)
+        freebsd2linux_sockaddr(addr, pf);
+
+    if (addrlen)
+        *addrlen = pf->sa_len;
+
+    if(pf != NULL)
+        free(pf, M_SONAME);
+    return (rc);
+
+kern_fail:
+    if(pf != NULL)
+        free(pf, M_SONAME);
+    ff_os_errno(rc);
+    return (-1);
+}
+
+int
+ff_accept4(int s, struct linux_sockaddr * addr,
+    socklen_t * addrlen, int flags)
+{
+    int rc;
+    struct file *fp;
+    struct sockaddr *pf = NULL;
+    socklen_t socklen = sizeof(struct sockaddr_storage);
+
+    if ((rc = kern_accept4(curthread, s, &pf, &socklen, linux2freebsd_socket_flags(flags), &fp)))
         goto kern_fail;
 
     rc = curthread->td_retval[0];

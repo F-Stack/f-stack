@@ -8,10 +8,21 @@ if not dpdk_conf.get('RTE_ARCH_64')
     subdir_done()
 endif
 
+if meson.is_cross_build()
+        soc_type = meson.get_cross_property('platform', '')
+else
+        soc_type = platform
+endif
+
+if soc_type != 'cn9k' and soc_type != 'cn10k'
+        soc_type = 'all'
+endif
+
 sources = files(
         'cnxk_ethdev.c',
         'cnxk_ethdev_cman.c',
         'cnxk_ethdev_devargs.c',
+        'cnxk_ethdev_mcs.c',
         'cnxk_ethdev_mtr.c',
         'cnxk_ethdev_ops.c',
         'cnxk_ethdev_sec.c',
@@ -25,6 +36,7 @@ sources = files(
         'cnxk_tm.c',
 )
 
+if soc_type == 'cn9k' or soc_type == 'all'
 # CN9K
 sources += files(
         'cn9k_ethdev.c',
@@ -34,6 +46,7 @@ sources += files(
         'cn9k_tx_select.c',
 )
 
+if host_machine.cpu_family().startswith('aarch')
 sources += files(
         'rx/cn9k/rx_0_15.c',
         'rx/cn9k/rx_16_31.c',
@@ -103,7 +116,10 @@ sources += files(
         'tx/cn9k/tx_96_111_vec_mseg.c',
         'tx/cn9k/tx_112_127_vec_mseg.c',
 )
+endif
+endif
 
+if soc_type == 'cn10k' or soc_type == 'all'
 # CN10K
 sources += files(
         'cn10k_ethdev.c',
@@ -113,6 +129,7 @@ sources += files(
         'cn10k_tx_select.c',
 )
 
+if host_machine.cpu_family().startswith('aarch')
 sources += files(
         'rx/cn10k/rx_0_15.c',
         'rx/cn10k/rx_16_31.c',
@@ -182,12 +199,17 @@ sources += files(
         'tx/cn10k/tx_96_111_vec_mseg.c',
         'tx/cn10k/tx_112_127_vec_mseg.c',
 )
+endif
+endif
 
 deps += ['bus_pci', 'cryptodev', 'eventdev', 'security']
 deps += ['common_cnxk', 'mempool_cnxk']
 
 # Allow implicit vector conversions and strict aliasing warning
 extra_flags = ['-flax-vector-conversions', '-Wno-strict-aliasing']
+if cc.get_id() == 'clang'
+        extra_flags += ['-Wno-asm-operand-widths']
+endif
 foreach flag: extra_flags
     if cc.has_argument(flag)
         cflags += flag
@@ -195,4 +217,7 @@ foreach flag: extra_flags
 endforeach
 
 headers = files('rte_pmd_cnxk.h')
-pmd_supports_disable_iova_as_pa = true
+
+require_iova_in_mbuf = false
+
+annotate_locks = false

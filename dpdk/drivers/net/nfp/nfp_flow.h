@@ -3,89 +3,24 @@
  * All rights reserved.
  */
 
-#ifndef _NFP_FLOW_H_
-#define _NFP_FLOW_H_
+#ifndef __NFP_FLOW_H__
+#define __NFP_FLOW_H__
 
-#include <sys/queue.h>
-#include <rte_bitops.h>
-#include <ethdev_driver.h>
-
-#define NFP_FLOWER_LAYER_EXT_META       RTE_BIT32(0)
-#define NFP_FLOWER_LAYER_PORT           RTE_BIT32(1)
-#define NFP_FLOWER_LAYER_MAC            RTE_BIT32(2)
-#define NFP_FLOWER_LAYER_TP             RTE_BIT32(3)
-#define NFP_FLOWER_LAYER_IPV4           RTE_BIT32(4)
-#define NFP_FLOWER_LAYER_IPV6           RTE_BIT32(5)
-#define NFP_FLOWER_LAYER_CT             RTE_BIT32(6)
-#define NFP_FLOWER_LAYER_VXLAN          RTE_BIT32(7)
-
-#define NFP_FLOWER_LAYER2_GRE           RTE_BIT32(0)
-#define NFP_FLOWER_LAYER2_QINQ          RTE_BIT32(4)
-#define NFP_FLOWER_LAYER2_GENEVE        RTE_BIT32(5)
-#define NFP_FLOWER_LAYER2_GENEVE_OP     RTE_BIT32(6)
-#define NFP_FLOWER_LAYER2_TUN_IPV6      RTE_BIT32(7)
-
-/* Compressed HW representation of TCP Flags */
-#define NFP_FL_TCP_FLAG_FIN             RTE_BIT32(0)
-#define NFP_FL_TCP_FLAG_SYN             RTE_BIT32(1)
-#define NFP_FL_TCP_FLAG_RST             RTE_BIT32(2)
-#define NFP_FL_TCP_FLAG_PSH             RTE_BIT32(3)
-#define NFP_FL_TCP_FLAG_URG             RTE_BIT32(4)
-
-#define NFP_FL_META_FLAG_MANAGE_MASK    RTE_BIT32(7)
-
-#define NFP_FLOWER_MASK_VLAN_CFI        RTE_BIT32(12)
-
-#define NFP_MASK_TABLE_ENTRIES          1024
-
-/* The maximum action list size (in bytes) supported by the NFP. */
-#define NFP_FL_MAX_A_SIZ                1216
+#include "nfp_net_common.h"
 
 /* The firmware expects lengths in units of long words */
 #define NFP_FL_LW_SIZ                   2
 
-#define NFP_FL_SC_ACT_DROP      0x80000000
-#define NFP_FL_SC_ACT_USER      0x7D000000
-#define NFP_FL_SC_ACT_POPV      0x6A000000
-#define NFP_FL_SC_ACT_NULL      0x00000000
+/*
+ * Maximum number of items in struct rte_flow_action_vxlan_encap.
+ * ETH / IPv4(6) / UDP / VXLAN / END
+ */
+#define ACTION_VXLAN_ENCAP_ITEMS_NUM 5
 
-/* GRE Tunnel flags */
-#define NFP_FL_GRE_FLAG_KEY         (1 << 2)
-
-/* Action opcodes */
-#define NFP_FL_ACTION_OPCODE_OUTPUT             0
-#define NFP_FL_ACTION_OPCODE_PUSH_VLAN          1
-#define NFP_FL_ACTION_OPCODE_POP_VLAN           2
-#define NFP_FL_ACTION_OPCODE_PUSH_MPLS          3
-#define NFP_FL_ACTION_OPCODE_POP_MPLS           4
-#define NFP_FL_ACTION_OPCODE_USERSPACE          5
-#define NFP_FL_ACTION_OPCODE_SET_TUNNEL         6
-#define NFP_FL_ACTION_OPCODE_SET_ETHERNET       7
-#define NFP_FL_ACTION_OPCODE_SET_MPLS           8
-#define NFP_FL_ACTION_OPCODE_SET_IPV4_ADDRS     9
-#define NFP_FL_ACTION_OPCODE_SET_IPV4_TTL_TOS   10
-#define NFP_FL_ACTION_OPCODE_SET_IPV6_SRC       11
-#define NFP_FL_ACTION_OPCODE_SET_IPV6_DST       12
-#define NFP_FL_ACTION_OPCODE_SET_IPV6_TC_HL_FL  13
-#define NFP_FL_ACTION_OPCODE_SET_UDP            14
-#define NFP_FL_ACTION_OPCODE_SET_TCP            15
-#define NFP_FL_ACTION_OPCODE_PRE_LAG            16
-#define NFP_FL_ACTION_OPCODE_PRE_TUNNEL         17
-#define NFP_FL_ACTION_OPCODE_PRE_GS             18
-#define NFP_FL_ACTION_OPCODE_GS                 19
-#define NFP_FL_ACTION_OPCODE_PUSH_NSH           20
-#define NFP_FL_ACTION_OPCODE_POP_NSH            21
-#define NFP_FL_ACTION_OPCODE_SET_QUEUE          22
-#define NFP_FL_ACTION_OPCODE_CONNTRACK          23
-#define NFP_FL_ACTION_OPCODE_METER              24
-#define NFP_FL_ACTION_OPCODE_CT_NAT_EXT         25
-#define NFP_FL_ACTION_OPCODE_PUSH_GENEVE        26
-#define NFP_FL_ACTION_OPCODE_NUM                32
-
-#define NFP_FL_OUT_FLAGS_LAST            RTE_BIT32(15)
-
-/* Tunnel ports */
-#define NFP_FL_PORT_TYPE_TUN            0x50000000
+struct vxlan_data {
+	struct rte_flow_action_vxlan_encap conf;
+	struct rte_flow_item items[ACTION_VXLAN_ENCAP_ITEMS_NUM];
+};
 
 enum nfp_flower_tun_type {
 	NFP_FL_TUN_NONE   = 0,
@@ -191,30 +126,41 @@ struct nfp_ipv6_addr_entry {
 struct nfp_flow_priv {
 	uint32_t hash_seed; /**< Hash seed for hash tables in this structure. */
 	uint64_t flower_version; /**< Flow version, always increase. */
-	/* mask hash table */
+
+	/* Mask hash table */
 	struct nfp_fl_mask_id mask_ids; /**< Entry for mask hash table */
 	struct rte_hash *mask_table; /**< Hash table to store mask ids. */
-	/* flow hash table */
+
+	/* Flow hash table */
 	struct rte_hash *flow_table; /**< Hash table to store flow rules. */
-	/* flow stats */
+
+	/* Flow stats */
 	uint32_t active_mem_unit; /**< The size of active mem units. */
 	uint32_t total_mem_units; /**< The size of total mem units. */
 	uint32_t stats_ring_size; /**< The size of stats id ring. */
 	struct nfp_fl_stats_id stats_ids; /**< The stats id ring. */
 	struct nfp_fl_stats *stats; /**< Store stats of flow. */
 	rte_spinlock_t stats_lock; /** < Lock the update of 'stats' field. */
-	/* pre tunnel rule */
+
+	/* Pre tunnel rule */
 	uint16_t pre_tun_cnt; /**< The size of pre tunnel rule */
 	uint8_t pre_tun_bitmap[NFP_TUN_PRE_TUN_RULE_LIMIT]; /**< Bitmap of pre tunnel rule */
 	struct rte_hash *pre_tun_table; /**< Hash table to store pre tunnel rule */
+
 	/* IPv4 off */
 	LIST_HEAD(, nfp_ipv4_addr_entry) ipv4_off_list; /**< Store ipv4 off */
 	rte_spinlock_t ipv4_off_lock; /**< Lock the ipv4 off list */
+
 	/* IPv6 off */
 	LIST_HEAD(, nfp_ipv6_addr_entry) ipv6_off_list; /**< Store ipv6 off */
 	rte_spinlock_t ipv6_off_lock; /**< Lock the ipv6 off list */
-	/* neighbor next */
+
+	/* Neighbor next */
 	LIST_HEAD(, nfp_fl_tun)nn_list; /**< Store nn entry */
+	/* Conntrack */
+	struct rte_hash *ct_zone_table; /**< Hash table to store ct zone entry */
+	struct nfp_ct_zone_entry *ct_zone_wc; /**< The wildcard ct zone entry */
+	struct rte_hash *ct_map_table; /**< Hash table to store ct map entry */
 };
 
 struct rte_flow {
@@ -222,14 +168,38 @@ struct rte_flow {
 	struct nfp_fl_tun tun;
 	size_t length;
 	uint32_t hash_key;
+	uint32_t mtr_id;
 	uint32_t port_id;
 	bool install_flag;
 	bool tcp_flag;    /**< Used in the SET_TP_* action */
+	bool merge_flag;
 	enum nfp_flow_type type;
+	uint16_t ref_cnt;
 };
+
+/* Forward declaration */
+struct nfp_flower_representor;
 
 int nfp_flow_priv_init(struct nfp_pf_dev *pf_dev);
 void nfp_flow_priv_uninit(struct nfp_pf_dev *pf_dev);
 int nfp_net_flow_ops_get(struct rte_eth_dev *dev, const struct rte_flow_ops **ops);
+bool nfp_flow_inner_item_get(const struct rte_flow_item items[],
+		const struct rte_flow_item **inner_item);
+struct rte_flow *nfp_flow_process(struct nfp_flower_representor *representor,
+		const struct rte_flow_item items[],
+		const struct rte_flow_action actions[],
+		bool validate_flag,
+		uint64_t cookie,
+		bool install_flag,
+		bool merge_flag);
+int nfp_flow_table_add_merge(struct nfp_flow_priv *priv,
+		struct rte_flow *nfp_flow);
+int nfp_flow_teardown(struct nfp_flow_priv *priv,
+		struct rte_flow *nfp_flow,
+		bool validate_flag);
+void nfp_flow_free(struct rte_flow *nfp_flow);
+int nfp_flow_destroy(struct rte_eth_dev *dev,
+		struct rte_flow *nfp_flow,
+		struct rte_flow_error *error);
 
-#endif /* _NFP_FLOW_H_ */
+#endif /* __NFP_FLOW_H__ */

@@ -17,6 +17,12 @@
 /* Single Root I/O Virtualization */
 #define ROC_PCI_SRIOV_TOTAL_VF 0x0e /* Total VFs */
 
+/* VF Mbox handler thread name */
+#define MBOX_HANDLER_NAME_MAX_LEN RTE_THREAD_INTERNAL_NAME_SIZE
+
+/* VF interrupt message pending bits - mbox or flr */
+#define ROC_DEV_MBOX_PEND BIT_ULL(0)
+#define ROC_DEV_FLR_PEND  BIT_ULL(1)
 static void *
 mbox_mem_map(off_t off, size_t size)
 {
@@ -98,6 +104,9 @@ pf_af_sync_msg(struct dev *dev, struct mbox_msghdr **rsp)
 	return rc;
 }
 
+/* PF will send the messages to AF and wait for responses and forward the
+ * responses to VF.
+ */
 static int
 af_pf_wait_msg(struct dev *dev, uint16_t vf, int num_msg)
 {
@@ -115,9 +124,10 @@ af_pf_wait_msg(struct dev *dev, uint16_t vf, int num_msg)
 	/* We need to disable PF interrupts. We are in timer interrupt */
 	plt_write64(~0ull, dev->bar2 + RVU_PF_INT_ENA_W1C);
 
-	/* Send message */
+	/* Send message to AF */
 	mbox_msg_send(mbox, 0);
 
+	/* Wait for AF response */
 	do {
 		plt_delay_ms(sleep);
 		timeout++;
@@ -134,8 +144,6 @@ af_pf_wait_msg(struct dev *dev, uint16_t vf, int num_msg)
 
 	/* Enable interrupts */
 	plt_write64(~0ull, dev->bar2 + RVU_PF_INT_ENA_W1S);
-
-	plt_spinlock_lock(&mdev->mbox_lock);
 
 	req_hdr = (struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->rx_start);
 	if (req_hdr->num_msgs != num_msg)
@@ -196,17 +204,18 @@ af_pf_wait_msg(struct dev *dev, uint16_t vf, int num_msg)
 				vf_msg->rc = msg->rc;
 				vf_msg->pcifunc = msg->pcifunc;
 				/* Send to VF */
-				mbox_msg_send(&dev->mbox_vfpf_up, vf);
+				mbox_msg_send_up(&dev->mbox_vfpf_up, vf);
+				mbox_wait_for_zero(&dev->mbox_vfpf_up, vf);
 			}
 		}
 
 		offset = mbox->rx_start + msg->next_msgoff;
 	}
-	plt_spinlock_unlock(&mdev->mbox_lock);
 
 	return req_hdr->num_msgs;
 }
 
+/* PF receives mbox DOWN messages from VF and forwards to AF */
 static int
 vf_pf_process_msgs(struct dev *dev, uint16_t vf)
 {
@@ -224,6 +233,7 @@ vf_pf_process_msgs(struct dev *dev, uint16_t vf)
 
 	offset = mbox->rx_start + PLT_ALIGN(sizeof(*req_hdr), MBOX_MSG_ALIGN);
 
+	mbox_get(dev->mbox);
 	for (i = 0; i < req_hdr->num_msgs; i++) {
 		msg = (struct mbox_msghdr *)((uintptr_t)mdev->mbase + offset);
 		size = mbox->rx_start + msg->next_msgoff - offset;
@@ -274,9 +284,11 @@ vf_pf_process_msgs(struct dev *dev, uint16_t vf)
 	if (routed > 0) {
 		plt_base_dbg("pf:%d routed %d messages from vf:%d to AF",
 			     dev->pf, routed, vf);
+		/* PF will send the messages to AF and wait for responses */
 		af_pf_wait_msg(dev, vf, routed);
 		mbox_reset(dev->mbox, 0);
 	}
+	mbox_put(dev->mbox);
 
 	/* Send mbox responses to VF */
 	if (mdev->num_msgs) {
@@ -288,6 +300,7 @@ vf_pf_process_msgs(struct dev *dev, uint16_t vf)
 	return i;
 }
 
+/* VF sends Ack to PF's UP messages */
 static int
 vf_pf_process_up_msgs(struct dev *dev, uint16_t vf)
 {
@@ -338,8 +351,9 @@ vf_pf_process_up_msgs(struct dev *dev, uint16_t vf)
 	return i;
 }
 
+/* PF handling messages from VF */
 static void
-roc_vf_pf_mbox_handle_msg(void *param)
+roc_vf_pf_mbox_handle_msg(void *param, dev_intr_t *intr)
 {
 	uint16_t vf, max_vf, max_bits;
 	struct dev *dev = param;
@@ -348,27 +362,30 @@ roc_vf_pf_mbox_handle_msg(void *param)
 	max_vf = max_bits * MAX_VFPF_DWORD_BITS;
 
 	for (vf = 0; vf < max_vf; vf++) {
-		if (dev->intr.bits[vf / max_bits] & BIT_ULL(vf % max_bits)) {
+		if (intr->bits[vf / max_bits] & BIT_ULL(vf % max_bits)) {
 			plt_base_dbg("Process vf:%d request (pf:%d, vf:%d)", vf,
 				     dev->pf, dev->vf);
+			/* VF initiated down messages */
 			vf_pf_process_msgs(dev, vf);
-			/* UP messages */
+			/* VF replies to PF's UP messages */
 			vf_pf_process_up_msgs(dev, vf);
-			dev->intr.bits[vf / max_bits] &=
-				~(BIT_ULL(vf % max_bits));
+			intr->bits[vf / max_bits] &= ~(BIT_ULL(vf % max_bits));
 		}
 	}
-	dev->timer_set = 0;
 }
 
+/* IRQ to PF from VF - PF context (interrupt thread) */
 static void
 roc_vf_pf_mbox_irq(void *param)
 {
+	bool signal_thread = false;
 	struct dev *dev = param;
-	bool alarm_set = false;
+	dev_intr_t intrb;
 	uint64_t intr;
-	int vfpf;
+	int vfpf, sz;
 
+	sz = sizeof(intrb.bits[0]) * MAX_VFPF_DWORD_BITS;
+	memset(intrb.bits, 0, sz);
 	for (vfpf = 0; vfpf < MAX_VFPF_DWORD_BITS; ++vfpf) {
 		intr = plt_read64(dev->bar2 + RVU_PF_VFPF_MBOX_INTX(vfpf));
 		if (!intr)
@@ -378,19 +395,26 @@ roc_vf_pf_mbox_irq(void *param)
 			     vfpf, intr, dev->pf, dev->vf);
 
 		/* Save and clear intr bits */
-		dev->intr.bits[vfpf] |= intr;
+		intrb.bits[vfpf] |= intr;
 		plt_write64(intr, dev->bar2 + RVU_PF_VFPF_MBOX_INTX(vfpf));
-		alarm_set = true;
+		signal_thread = true;
 	}
 
-	if (!dev->timer_set && alarm_set) {
-		dev->timer_set = 1;
-		/* Start timer to handle messages */
-		plt_alarm_set(VF_PF_MBOX_TIMER_MS, roc_vf_pf_mbox_handle_msg,
-			      dev);
+	if (signal_thread) {
+		pthread_mutex_lock(&dev->sync.mutex);
+		/* Interrupt state was saved in local variable first, as dev->intr.bits
+		 * is a shared resources between VF msg and interrupt thread.
+		 */
+		memcpy(dev->intr.bits, intrb.bits, sz);
+		/* MBOX message received from VF */
+		dev->sync.msg_avail |= ROC_DEV_MBOX_PEND;
+		/* Signal vf message handler thread */
+		pthread_cond_signal(&dev->sync.pfvf_msg_cond);
+		pthread_mutex_unlock(&dev->sync.mutex);
 	}
 }
 
+/* Received response from AF (PF context) / PF (VF context) */
 static void
 process_msgs(struct dev *dev, struct mbox *mbox)
 {
@@ -421,11 +445,11 @@ process_msgs(struct dev *dev, struct mbox *mbox)
 			dev->pf_func = msg->pcifunc;
 			break;
 		case MBOX_MSG_CGX_PRIO_FLOW_CTRL_CFG:
+		case MBOX_MSG_CGX_CFG_PAUSE_FRM:
 			/* Handling the case where one VF tries to disable PFC
 			 * while PFC already configured on other VFs. This is
 			 * not an error but a warning which can be ignored.
 			 */
-#define LMAC_AF_ERR_PERM_DENIED -1103
 			if (msg->rc) {
 				if (msg->rc == LMAC_AF_ERR_PERM_DENIED) {
 					plt_mbox_dbg(
@@ -438,18 +462,30 @@ process_msgs(struct dev *dev, struct mbox *mbox)
 				}
 			}
 			break;
+		case MBOX_MSG_CGX_PROMISC_DISABLE:
+		case MBOX_MSG_CGX_PROMISC_ENABLE:
+			if (msg->rc) {
+				if (msg->rc == LMAC_AF_ERR_INVALID_PARAM) {
+					plt_mbox_dbg("Already in same promisc state");
+					msg->rc = 0;
+				} else {
+					plt_err("Message (%s) response has err=%d",
+						mbox_id2name(msg->id), msg->rc);
+				}
+			}
+			break;
 
 		default:
 			if (msg->rc)
-				plt_err("Message (%s) response has err=%d",
-					mbox_id2name(msg->id), msg->rc);
+				plt_err("Message (%s) response has err=%d (%s)",
+					mbox_id2name(msg->id), msg->rc, roc_error_msg_get(msg->rc));
 			break;
 		}
 		offset = mbox->rx_start + msg->next_msgoff;
 	}
 
 	mbox_reset(mbox, 0);
-	/* Update acked if someone is waiting a message */
+	/* Update acked if someone is waiting a message - mbox_wait is waiting */
 	mdev->msgs_acked = msgs_acked;
 	plt_wmb();
 }
@@ -499,7 +535,93 @@ pf_vf_mbox_send_up_msg(struct dev *dev, void *rec_msg)
 
 		/* Send to VF */
 		mbox_msg_send(vf_mbox, vf);
+		mbox_wait_for_zero(&dev->mbox_vfpf_up, vf);
 	}
+}
+
+static int
+mbox_up_handler_mcs_intr_notify(struct dev *dev, struct mcs_intr_info *info, struct msg_rsp *rsp)
+{
+	struct roc_mcs_event_desc desc = {0};
+	struct roc_mcs *mcs;
+
+	plt_base_dbg("pf:%d/vf:%d msg id 0x%x (%s) from: pf:%d/vf:%d", dev_get_pf(dev->pf_func),
+		     dev_get_vf(dev->pf_func), info->hdr.id, mbox_id2name(info->hdr.id),
+		     dev_get_pf(info->hdr.pcifunc), dev_get_vf(info->hdr.pcifunc));
+
+	mcs = roc_idev_mcs_get(info->mcs_id);
+	if (!mcs)
+		goto exit;
+
+	if (info->intr_mask) {
+		switch (info->intr_mask) {
+		case MCS_CPM_RX_SECTAG_V_EQ1_INT:
+			desc.type = ROC_MCS_EVENT_SECTAG_VAL_ERR;
+			desc.subtype = ROC_MCS_EVENT_RX_SECTAG_V_EQ1;
+			break;
+		case MCS_CPM_RX_SECTAG_E_EQ0_C_EQ1_INT:
+			desc.type = ROC_MCS_EVENT_SECTAG_VAL_ERR;
+			desc.subtype = ROC_MCS_EVENT_RX_SECTAG_E_EQ0_C_EQ1;
+			break;
+		case MCS_CPM_RX_SECTAG_SL_GTE48_INT:
+			desc.type = ROC_MCS_EVENT_SECTAG_VAL_ERR;
+			desc.subtype = ROC_MCS_EVENT_RX_SECTAG_SL_GTE48;
+			break;
+		case MCS_CPM_RX_SECTAG_ES_EQ1_SC_EQ1_INT:
+			desc.type = ROC_MCS_EVENT_SECTAG_VAL_ERR;
+			desc.subtype = ROC_MCS_EVENT_RX_SECTAG_ES_EQ1_SC_EQ1;
+			break;
+		case MCS_CPM_RX_SECTAG_SC_EQ1_SCB_EQ1_INT:
+			desc.type = ROC_MCS_EVENT_SECTAG_VAL_ERR;
+			desc.subtype = ROC_MCS_EVENT_RX_SECTAG_SC_EQ1_SCB_EQ1;
+			break;
+		case MCS_CPM_RX_PACKET_XPN_EQ0_INT:
+			desc.type = ROC_MCS_EVENT_RX_SA_PN_HARD_EXP;
+			desc.metadata.sa_idx = info->sa_id;
+			break;
+		case MCS_CPM_RX_PN_THRESH_REACHED_INT:
+			desc.type = ROC_MCS_EVENT_RX_SA_PN_SOFT_EXP;
+			desc.metadata.sa_idx = info->sa_id;
+			break;
+		case MCS_CPM_TX_PACKET_XPN_EQ0_INT:
+			desc.type = ROC_MCS_EVENT_TX_SA_PN_HARD_EXP;
+			desc.metadata.sa_idx = info->sa_id;
+			break;
+		case MCS_CPM_TX_PN_THRESH_REACHED_INT:
+			desc.type = ROC_MCS_EVENT_TX_SA_PN_SOFT_EXP;
+			desc.metadata.sa_idx = info->sa_id;
+			break;
+		case MCS_CPM_TX_SA_NOT_VALID_INT:
+			desc.type = ROC_MCS_EVENT_SA_NOT_VALID;
+			break;
+		case MCS_BBE_RX_DFIFO_OVERFLOW_INT:
+		case MCS_BBE_TX_DFIFO_OVERFLOW_INT:
+			desc.type = ROC_MCS_EVENT_FIFO_OVERFLOW;
+			desc.subtype = ROC_MCS_EVENT_DATA_FIFO_OVERFLOW;
+			desc.metadata.lmac_id = info->lmac_id;
+			break;
+		case MCS_BBE_RX_PLFIFO_OVERFLOW_INT:
+		case MCS_BBE_TX_PLFIFO_OVERFLOW_INT:
+			desc.type = ROC_MCS_EVENT_FIFO_OVERFLOW;
+			desc.subtype = ROC_MCS_EVENT_POLICY_FIFO_OVERFLOW;
+			desc.metadata.lmac_id = info->lmac_id;
+			break;
+		case MCS_PAB_RX_CHAN_OVERFLOW_INT:
+		case MCS_PAB_TX_CHAN_OVERFLOW_INT:
+			desc.type = ROC_MCS_EVENT_FIFO_OVERFLOW;
+			desc.subtype = ROC_MCS_EVENT_PKT_ASSM_FIFO_OVERFLOW;
+			desc.metadata.lmac_id = info->lmac_id;
+			break;
+		default:
+			goto exit;
+		}
+
+		mcs_event_cb_process(mcs, &desc);
+	}
+
+exit:
+	rsp->hdr.rc = 0;
+	return 0;
 }
 
 static int
@@ -590,12 +712,14 @@ mbox_process_msgs_up(struct dev *dev, struct mbox_msghdr *req)
 		return err;                                                    \
 	}
 		MBOX_UP_CGX_MESSAGES
+		MBOX_UP_MCS_MESSAGES
 #undef M
 	}
 
 	return -ENODEV;
 }
 
+/* Received up messages from AF (PF context) / PF (in context) */
 static void
 process_msgs_up(struct dev *dev, struct mbox *mbox)
 {
@@ -628,10 +752,12 @@ process_msgs_up(struct dev *dev, struct mbox *mbox)
 	}
 }
 
+/* IRQ to VF from PF - VF context (interrupt thread) */
 static void
 roc_pf_vf_mbox_irq(void *param)
 {
 	struct dev *dev = param;
+	uint64_t mbox_data;
 	uint64_t intr;
 
 	intr = plt_read64(dev->bar2 + RVU_VF_INT);
@@ -641,17 +767,34 @@ roc_pf_vf_mbox_irq(void *param)
 	plt_write64(intr, dev->bar2 + RVU_VF_INT);
 	plt_base_dbg("Irq 0x%" PRIx64 "(pf:%d,vf:%d)", intr, dev->pf, dev->vf);
 
-	/* First process all configuration messages */
-	process_msgs(dev, dev->mbox);
+	/* Reading for UP/DOWN message, next message sending will be delayed
+	 * by 1ms until this region is zeroed mbox_wait_for_zero()
+	 */
+	mbox_data = plt_read64(dev->bar2 + RVU_VF_VFPF_MBOX0);
+	/* If interrupt occurred for down message */
+	if (mbox_data & MBOX_DOWN_MSG) {
+		mbox_data &= ~MBOX_DOWN_MSG;
+		plt_write64(mbox_data, dev->bar2 + RVU_VF_VFPF_MBOX0);
 
-	/* Process Uplink messages */
-	process_msgs_up(dev, &dev->mbox_up);
+		/* First process all configuration messages */
+		process_msgs(dev, dev->mbox);
+	}
+	/* If interrupt occurred for UP message */
+	if (mbox_data & MBOX_UP_MSG) {
+		mbox_data &= ~MBOX_UP_MSG;
+		plt_write64(mbox_data, dev->bar2 + RVU_VF_VFPF_MBOX0);
+
+		/* Process Uplink messages */
+		process_msgs_up(dev, &dev->mbox_up);
+	}
 }
 
+/* IRQ to PF from AF - PF context (interrupt thread) */
 static void
 roc_af_pf_mbox_irq(void *param)
 {
 	struct dev *dev = param;
+	uint64_t mbox_data;
 	uint64_t intr;
 
 	intr = plt_read64(dev->bar2 + RVU_PF_INT);
@@ -661,11 +804,26 @@ roc_af_pf_mbox_irq(void *param)
 	plt_write64(intr, dev->bar2 + RVU_PF_INT);
 	plt_base_dbg("Irq 0x%" PRIx64 "(pf:%d,vf:%d)", intr, dev->pf, dev->vf);
 
-	/* First process all configuration messages */
-	process_msgs(dev, dev->mbox);
+	/* Reading for UP/DOWN message, next message sending will be delayed
+	 * by 1ms until this region is zeroed mbox_wait_for_zero()
+	 */
+	mbox_data = plt_read64(dev->bar2 + RVU_PF_PFAF_MBOX0);
+	/* If interrupt occurred for down message */
+	if (mbox_data & MBOX_DOWN_MSG) {
+		mbox_data &= ~MBOX_DOWN_MSG;
+		plt_write64(mbox_data, dev->bar2 + RVU_PF_PFAF_MBOX0);
 
-	/* Process Uplink messages */
-	process_msgs_up(dev, &dev->mbox_up);
+		/* First process all configuration messages */
+		process_msgs(dev, dev->mbox);
+	}
+	/* If interrupt occurred for up message */
+	if (mbox_data & MBOX_UP_MSG) {
+		mbox_data &= ~MBOX_UP_MSG;
+		plt_write64(mbox_data, dev->bar2 + RVU_PF_PFAF_MBOX0);
+
+		/* Process Uplink messages */
+		process_msgs_up(dev, &dev->mbox_up);
+	}
 }
 
 static int
@@ -680,8 +838,6 @@ mbox_register_pf_irq(struct plt_pci_device *pci_dev, struct dev *dev)
 			    dev->bar2 + RVU_PF_VFPF_MBOX_INT_ENA_W1CX(i));
 
 	plt_write64(~0ull, dev->bar2 + RVU_PF_INT_ENA_W1C);
-
-	dev->timer_set = 0;
 
 	/* MBOX interrupt for VF(0...63) <-> PF */
 	rc = dev_irq_register(intr_handle, roc_vf_pf_mbox_irq, dev,
@@ -742,8 +898,8 @@ mbox_register_vf_irq(struct plt_pci_device *pci_dev, struct dev *dev)
 	return rc;
 }
 
-static int
-mbox_register_irq(struct plt_pci_device *pci_dev, struct dev *dev)
+int
+dev_mbox_register_irq(struct plt_pci_device *pci_dev, struct dev *dev)
 {
 	if (dev_is_vf(dev))
 		return mbox_register_vf_irq(pci_dev, dev);
@@ -763,10 +919,6 @@ mbox_unregister_pf_irq(struct plt_pci_device *pci_dev, struct dev *dev)
 			    dev->bar2 + RVU_PF_VFPF_MBOX_INT_ENA_W1CX(i));
 
 	plt_write64(~0ull, dev->bar2 + RVU_PF_INT_ENA_W1C);
-
-	dev->timer_set = 0;
-
-	plt_alarm_cancel(roc_vf_pf_mbox_handle_msg, dev);
 
 	/* Unregister the interrupt handler for each vectors */
 	/* MBOX interrupt for VF(0...63) <-> PF */
@@ -795,8 +947,8 @@ mbox_unregister_vf_irq(struct plt_pci_device *pci_dev, struct dev *dev)
 			   RVU_VF_INT_VEC_MBOX);
 }
 
-static void
-mbox_unregister_irq(struct plt_pci_device *pci_dev, struct dev *dev)
+void
+dev_mbox_unregister_irq(struct plt_pci_device *pci_dev, struct dev *dev)
 {
 	if (dev_is_vf(dev))
 		mbox_unregister_vf_irq(pci_dev, dev);
@@ -811,7 +963,7 @@ vf_flr_send_msg(struct dev *dev, uint16_t vf)
 	struct msg_req *req;
 	int rc;
 
-	req = mbox_alloc_msg_vf_flr(mbox);
+	req = mbox_alloc_msg_vf_flr(mbox_get(mbox));
 	if (req == NULL)
 		return -ENOSPC;
 	/* Overwrite pcifunc to indicate VF */
@@ -822,6 +974,8 @@ vf_flr_send_msg(struct dev *dev, uint16_t vf)
 	if (rc)
 		plt_err("Failed to send VF FLR mbox msg, rc=%d", rc);
 
+	mbox_put(mbox);
+
 	return rc;
 }
 
@@ -829,45 +983,51 @@ static void
 roc_pf_vf_flr_irq(void *param)
 {
 	struct dev *dev = (struct dev *)param;
-	uint16_t max_vf = 64, vf;
+	bool signal_thread = false;
+	dev_intr_t flr;
 	uintptr_t bar2;
 	uint64_t intr;
-	int i;
+	int i, sz;
 
-	max_vf = (dev->maxvf > 0) ? dev->maxvf : 64;
 	bar2 = dev->bar2;
 
-	plt_base_dbg("FLR VF interrupt: max_vf: %d", max_vf);
-
+	sz = sizeof(flr.bits[0]) * MAX_VFPF_DWORD_BITS;
+	memset(flr.bits, 0, sz);
 	for (i = 0; i < MAX_VFPF_DWORD_BITS; ++i) {
 		intr = plt_read64(bar2 + RVU_PF_VFFLR_INTX(i));
 		if (!intr)
 			continue;
 
-		for (vf = 0; vf < max_vf; vf++) {
-			if (!(intr & (1ULL << vf)))
-				continue;
+		/* Clear interrupt */
+		plt_write64(intr, bar2 + RVU_PF_VFFLR_INTX(i));
+		/* Disable the interrupt */
+		plt_write64(intr,
+			    bar2 + RVU_PF_VFFLR_INT_ENA_W1CX(i));
 
-			plt_base_dbg("FLR: i :%d intr: 0x%" PRIx64 ", vf-%d", i,
-				     intr, (64 * i + vf));
-			/* Clear interrupt */
-			plt_write64(BIT_ULL(vf), bar2 + RVU_PF_VFFLR_INTX(i));
-			/* Disable the interrupt */
-			plt_write64(BIT_ULL(vf),
-				    bar2 + RVU_PF_VFFLR_INT_ENA_W1CX(i));
-			/* Inform AF about VF reset */
-			vf_flr_send_msg(dev, vf);
+		/* Save FLR interrupts per VF as bits */
+		flr.bits[i] |= intr;
+		/* Enable interrupt */
+		plt_write64(~0ull,
+			    bar2 + RVU_PF_VFFLR_INT_ENA_W1SX(i));
+		signal_thread = true;
+	}
 
-			/* Signal FLR finish */
-			plt_write64(BIT_ULL(vf), bar2 + RVU_PF_VFTRPENDX(i));
-			/* Enable interrupt */
-			plt_write64(~0ull, bar2 + RVU_PF_VFFLR_INT_ENA_W1SX(i));
-		}
+	if (signal_thread) {
+		pthread_mutex_lock(&dev->sync.mutex);
+		/* Interrupt state was saved in local variable first, as dev->flr.bits
+		 * is a shared resources between VF msg and interrupt thread.
+		 */
+		memcpy(dev->flr.bits, flr.bits, sz);
+		/* FLR message received from VF */
+		dev->sync.msg_avail |= ROC_DEV_FLR_PEND;
+		/* Signal vf message handler thread */
+		pthread_cond_signal(&dev->sync.pfvf_msg_cond);
+		pthread_mutex_unlock(&dev->sync.mutex);
 	}
 }
 
-static int
-vf_flr_unregister_irqs(struct plt_pci_device *pci_dev, struct dev *dev)
+void
+dev_vf_flr_unregister_irqs(struct plt_pci_device *pci_dev, struct dev *dev)
 {
 	struct plt_intr_handle *intr_handle = pci_dev->intr_handle;
 	int i;
@@ -883,12 +1043,10 @@ vf_flr_unregister_irqs(struct plt_pci_device *pci_dev, struct dev *dev)
 
 	dev_irq_unregister(intr_handle, roc_pf_vf_flr_irq, dev,
 			   RVU_PF_INT_VEC_VFFLR1);
-
-	return 0;
 }
 
-static int
-vf_flr_register_irqs(struct plt_pci_device *pci_dev, struct dev *dev)
+int
+dev_vf_flr_register_irqs(struct plt_pci_device *pci_dev, struct dev *dev)
 {
 	struct plt_intr_handle *handle = pci_dev->intr_handle;
 	int i, rc;
@@ -911,6 +1069,77 @@ vf_flr_register_irqs(struct plt_pci_device *pci_dev, struct dev *dev)
 		plt_write64(~0ull, dev->bar2 + RVU_PF_VFTRPENDX(i));
 		plt_write64(~0ull, dev->bar2 + RVU_PF_VFFLR_INT_ENA_W1SX(i));
 	}
+	return 0;
+}
+
+static void
+vf_flr_handle_msg(void *param, dev_intr_t *flr)
+{
+	uint16_t vf, max_vf, max_bits;
+	struct dev *dev = param;
+
+	max_bits = sizeof(flr->bits[0]) * sizeof(uint64_t);
+	max_vf = max_bits * MAX_VFPF_DWORD_BITS;
+
+	for (vf = 0; vf < max_vf; vf++) {
+		if (flr->bits[vf / max_bits] & BIT_ULL(vf % max_bits)) {
+			plt_base_dbg("Process FLR vf:%d request (pf:%d, vf:%d)",
+				     vf, dev->pf, dev->vf);
+			/* Inform AF about VF reset */
+			vf_flr_send_msg(dev, vf);
+			flr->bits[vf / max_bits] &= ~(BIT_ULL(vf % max_bits));
+
+			/* Signal FLR finish */
+			plt_write64(BIT_ULL(vf % max_bits),
+				    dev->bar2 + RVU_PF_VFTRPENDX(vf / max_bits));
+		}
+	}
+}
+
+static uint32_t
+pf_vf_mbox_thread_main(void *arg)
+{
+	struct dev *dev = arg;
+	bool is_flr, is_mbox;
+	dev_intr_t flr, intr;
+	int sz, rc;
+
+	sz = sizeof(intr.bits[0]) * MAX_VFPF_DWORD_BITS;
+	pthread_mutex_lock(&dev->sync.mutex);
+	while (dev->sync.start_thread) {
+		do {
+			rc = pthread_cond_wait(&dev->sync.pfvf_msg_cond, &dev->sync.mutex);
+		} while (rc != 0);
+
+		if (!dev->sync.msg_avail) {
+			continue;
+		} else {
+			while (dev->sync.msg_avail) {
+				/* Check which VF msg received */
+				is_mbox = dev->sync.msg_avail & ROC_DEV_MBOX_PEND;
+				is_flr = dev->sync.msg_avail & ROC_DEV_FLR_PEND;
+				memcpy(intr.bits, dev->intr.bits, sz);
+				memcpy(flr.bits, dev->flr.bits, sz);
+				memset(dev->flr.bits, 0, sz);
+				memset(dev->intr.bits, 0, sz);
+				dev->sync.msg_avail = 0;
+				/* Unlocking for interrupt thread to grab lock
+				 * and update msg_avail field.
+				 */
+				pthread_mutex_unlock(&dev->sync.mutex);
+				/* Calling respective message handlers */
+				if (is_mbox)
+					roc_vf_pf_mbox_handle_msg(dev, &intr);
+				if (is_flr)
+					vf_flr_handle_msg(dev, &flr);
+				/* Locking as cond wait will unlock before wait */
+				pthread_mutex_lock(&dev->sync.mutex);
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&dev->sync.mutex);
+
 	return 0;
 }
 
@@ -952,7 +1181,7 @@ dev_active_vfs(struct dev *dev)
 	int i, count = 0;
 
 	for (i = 0; i < MAX_VFPF_DWORD_BITS; i++)
-		count += __builtin_popcount(dev->active_vfs[i]);
+		count += plt_popcount32(dev->active_vfs[i]);
 
 	return count;
 }
@@ -1017,10 +1246,13 @@ static int
 dev_setup_shared_lmt_region(struct mbox *mbox, bool valid_iova, uint64_t iova)
 {
 	struct lmtst_tbl_setup_req *req;
+	int rc;
 
-	req = mbox_alloc_msg_lmtst_tbl_setup(mbox);
-	if (!req)
-		return -ENOSPC;
+	req = mbox_alloc_msg_lmtst_tbl_setup(mbox_get(mbox));
+	if (!req) {
+		rc = -ENOSPC;
+		goto exit;
+	}
 
 	/* This pcifunc is defined with primary pcifunc whose LMT address
 	 * will be shared. If call contains valid IOVA, following pcifunc
@@ -1030,7 +1262,10 @@ dev_setup_shared_lmt_region(struct mbox *mbox, bool valid_iova, uint64_t iova)
 	req->use_local_lmt_region = valid_iova;
 	req->lmt_iova = iova;
 
-	return mbox_process(mbox);
+	rc = mbox_process(mbox);
+exit:
+	mbox_put(mbox);
+	return rc;
 }
 
 /* Total no of lines * size of each lmtline */
@@ -1140,6 +1375,7 @@ dev_cache_line_size_valid(void)
 int
 dev_init(struct dev *dev, struct plt_pci_device *pci_dev)
 {
+	char name[MBOX_HANDLER_NAME_MAX_LEN];
 	int direction, up_direction, rc;
 	uintptr_t bar2, bar4, mbox;
 	uintptr_t vf_mbase = 0;
@@ -1147,6 +1383,11 @@ dev_init(struct dev *dev, struct plt_pci_device *pci_dev)
 
 	if (!dev_cache_line_size_valid())
 		return -EFAULT;
+
+	if (!roc_plt_lmt_validate()) {
+		plt_err("Failed to validate LMT line");
+		return -EFAULT;
+	}
 
 	bar2 = (uintptr_t)pci_dev->mem_resource[2].addr;
 	bar4 = (uintptr_t)pci_dev->mem_resource[4].addr;
@@ -1201,7 +1442,7 @@ dev_init(struct dev *dev, struct plt_pci_device *pci_dev)
 		goto mbox_fini;
 
 	/* Register mbox interrupts */
-	rc = mbox_register_irq(pci_dev, dev);
+	rc = dev_mbox_register_irq(pci_dev, dev);
 	if (rc)
 		goto mbox_fini;
 
@@ -1240,30 +1481,53 @@ dev_init(struct dev *dev, struct plt_pci_device *pci_dev)
 			       MBOX_DIR_PFVF_UP, pci_dev->max_vfs, intr_offset);
 		if (rc)
 			goto iounmap;
+
+		/* Create a thread for handling msgs from VFs */
+		pthread_cond_init(&dev->sync.pfvf_msg_cond, NULL);
+		pthread_mutex_init(&dev->sync.mutex, NULL);
+
+		snprintf(name, MBOX_HANDLER_NAME_MAX_LEN, "mbox_pf%d", dev->pf);
+		dev->sync.start_thread = true;
+		rc = plt_thread_create_control(&dev->sync.pfvf_msg_thread, name,
+				pf_vf_mbox_thread_main, dev);
+		if (rc != 0) {
+			plt_err("Failed to create thread for VF mbox handling");
+			goto thread_fail;
+		}
 	}
 
 	/* Register VF-FLR irq handlers */
 	if (!dev_is_vf(dev)) {
-		rc = vf_flr_register_irqs(pci_dev, dev);
+		rc = dev_vf_flr_register_irqs(pci_dev, dev);
 		if (rc)
-			goto iounmap;
+			goto stop_msg_thrd;
 	}
 	dev->mbox_active = 1;
 
 	rc = npa_lf_init(dev, pci_dev);
 	if (rc)
-		goto iounmap;
+		goto stop_msg_thrd;
 
 	/* Setup LMT line base */
 	rc = dev_lmt_setup(dev);
 	if (rc)
-		goto iounmap;
+		goto stop_msg_thrd;
 
 	return rc;
+stop_msg_thrd:
+	/* Exiting the mbox sync thread */
+	if (dev->sync.start_thread) {
+		dev->sync.start_thread = false;
+		pthread_cond_signal(&dev->sync.pfvf_msg_cond);
+		plt_thread_join(dev->sync.pfvf_msg_thread, NULL);
+	}
+thread_fail:
+	pthread_mutex_destroy(&dev->sync.mutex);
+	pthread_cond_destroy(&dev->sync.pfvf_msg_cond);
 iounmap:
 	dev_vf_mbase_put(pci_dev, vf_mbase);
 mbox_unregister:
-	mbox_unregister_irq(pci_dev, dev);
+	dev_mbox_unregister_irq(pci_dev, dev);
 	if (dev->ops)
 		plt_free(dev->ops);
 mbox_fini:
@@ -1283,6 +1547,15 @@ dev_fini(struct dev *dev, struct plt_pci_device *pci_dev)
 	if (idev_npa_lf_active(dev) > 1)
 		return -EAGAIN;
 
+	/* Exiting the mbox sync thread */
+	if (dev->sync.start_thread) {
+		dev->sync.start_thread = false;
+		pthread_cond_signal(&dev->sync.pfvf_msg_cond);
+		plt_thread_join(dev->sync.pfvf_msg_thread, NULL);
+		pthread_mutex_destroy(&dev->sync.mutex);
+		pthread_cond_destroy(&dev->sync.pfvf_msg_cond);
+	}
+
 	/* Clear references to this pci dev */
 	npa_lf_fini();
 
@@ -1290,10 +1563,10 @@ dev_fini(struct dev *dev, struct plt_pci_device *pci_dev)
 	if (dev->lmt_mz)
 		plt_memzone_free(dev->lmt_mz);
 
-	mbox_unregister_irq(pci_dev, dev);
+	dev_mbox_unregister_irq(pci_dev, dev);
 
 	if (!dev_is_vf(dev))
-		vf_flr_unregister_irqs(pci_dev, dev);
+		dev_vf_flr_unregister_irqs(pci_dev, dev);
 	/* Release PF - VF */
 	mbox = &dev->mbox_vfpf;
 	if (mbox->hwbase && mbox->dev)

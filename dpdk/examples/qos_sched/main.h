@@ -26,7 +26,7 @@ extern "C" {
 
 #define MAX_PKT_RX_BURST 64
 #define PKT_ENQUEUE 64
-#define PKT_DEQUEUE 32
+#define PKT_DEQUEUE 63
 #define MAX_PKT_TX_BURST 64
 
 #define RX_PTHRESH 8 /**< Default values of RX prefetch threshold reg. */
@@ -37,17 +37,7 @@ extern "C" {
 #define TX_HTHRESH 0  /**< Default values of TX host threshold reg. */
 #define TX_WTHRESH 0  /**< Default values of TX write-back threshold reg. */
 
-#define BURST_TX_DRAIN_US 100
-
-#ifndef APP_MAX_LCORE
-#if (RTE_MAX_LCORE > 64)
-#define APP_MAX_LCORE 64
-#else
-#define APP_MAX_LCORE RTE_MAX_LCORE
-#endif
-#endif
-
-#define MAX_DATA_STREAMS (APP_MAX_LCORE/2)
+#define MAX_DATA_STREAMS RTE_MAX_LCORE/2
 #define MAX_SCHED_SUBPORTS		8
 #define MAX_SCHED_PIPES		4096
 #define MAX_SCHED_PIPE_PROFILES		256
@@ -75,10 +65,6 @@ struct thread_stat
 
 struct thread_conf
 {
-	uint32_t counter;
-	uint32_t n_mbufs;
-	struct rte_mbuf **m_table;
-
 	uint16_t rx_port;
 	uint16_t tx_port;
 	uint16_t rx_queue;

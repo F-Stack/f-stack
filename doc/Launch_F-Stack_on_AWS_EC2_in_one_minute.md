@@ -12,8 +12,8 @@
 
     # Compile DPDK
     cd /data/f-stack/dpdk
-    # re-enable kni now, to remove kni later
-    meson -Denable_kmods=true -Ddisable_libs=flow_classify build
+    # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
+    meson -Denable_kmods=true build
     ninja -C build
     ninja -C build install
 
@@ -29,7 +29,6 @@
     modprobe uio
     modprobe hwmon
     insmod build/kernel/linux/igb_uio/igb_uio.ko
-    insmod build/kernel/linux/kni/rte_kni.ko carrier=on
 
     # set ip address
     #redhat7.3
@@ -94,4 +93,3 @@
     sleep 10
     ifconfig veth0 ${myaddr}  netmask ${mymask}  broadcast ${mybc} hw ether ${myhw}
     route add -net 0.0.0.0 gw ${mygw} dev veth0
-    echo 1 > /sys/class/net/veth0/carrier # if `carrier=on` not set while `insmod rte_kni.ko`.

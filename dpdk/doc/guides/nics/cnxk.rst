@@ -311,10 +311,10 @@ Runtime Config Options
 
    In CN10K, in event mode, driver can work in two modes,
 
-   1. Inbound encrypted traffic received by probed ipsec inline device while
+   #. Inbound encrypted traffic received by probed ipsec inline device while
       plain traffic post decryption is received by ethdev.
 
-   2. Both Inbound encrypted traffic and plain traffic post decryption are
+   #. Both Inbound encrypted traffic and plain traffic post decryption are
       received by ethdev.
 
    By default event mode works using inline device i.e mode ``1``.
@@ -348,6 +348,25 @@ Runtime Config Options
    set with this custom mask, inbound encrypted traffic from all ports with
    matching channel number pattern will be directed to the inline IPSec device.
 
+- ``Inline IPsec device flow rules`` (default ``none``)
+
+   For inline IPsec device, reserve number of rules specified by ``max_ipsec_rules``
+   and use them while installing rules with action as security.
+   Rule priority should be 0.
+   If specified number of rules not available,
+   then only available number of rules will be allocated and used.
+   If application try to insert more than allocated rules, flow creation will fail.
+
+   For example::
+
+      -a 0002:1d:00.0,max_ipsec_rules=100
+
+   With the above configuration, 100 rules will be allocated from 0-99 if available
+   and will be used for rules with action security.
+   If 100 rules are not available, and only 50 are available,
+   then only 50 rules will be allocated and used for flow rule creation.
+   If application try to add more than 50 rules, the flow creation will fail.
+
 - ``SDP device channel and mask`` (default ``none``)
    Set channel and channel mask configuration for the SDP device. This
    will be used when creating flow rules on the SDP device.
@@ -369,6 +388,46 @@ Runtime Config Options
    specified should match all the channels(or rings) configured on the SDP
    interface.
 
+- ``Transmit completion handler`` (default ``0``)
+
+   When transmit completion handler is enabled,
+   the PMD invokes the callback handler provided by the application
+   for every packet which has external buf attached to mbuf
+   and frees main mbuf, external buffer is provided to applicatoin.
+   Once external buffer is handed over to application,
+   it is application responsibility either to free or reuse external buffer
+   using ``tx_compl_ena`` devargs parameter.
+
+   For example::
+
+      -a 0002:01:00.1,tx_compl_ena=1
+
+- ``Meta buffer size per ethdev port for inline inbound IPsec second pass``
+
+   Size of meta buffer allocated for inline inbound IPsec second pass per
+   ethdev port can be specified by ``meta_buf_sz`` ``devargs`` parameter.
+   Default value is computed runtime based on pkt mbuf pools created and in use.
+   This option is for OCTEON CN106-B0/CN103XX SoC family.
+
+   For example::
+
+      -a 0002:02:00.0,meta_buf_sz=512
+
+   With the above configuration, PMD would allocate meta buffers of size 512 for
+   inline inbound IPsec processing second pass.
+
+- ``NPC MCAM Aging poll frequency in seconds`` (default ``10``)
+
+   Poll frequency for aging control thread can be specified by
+   ``aging_poll_freq`` devargs parameter.
+
+   For example::
+
+      -a 0002:01:00.2,aging_poll_freq=50
+
+   With the above configuration, driver would poll for aging flows
+   every 50 seconds.
+
 .. note::
 
    Above devarg parameters are configurable per device, user needs to pass the
@@ -385,6 +444,26 @@ The OCTEON CN9K/CN10K SoC family NIC has inbuilt HW assisted external mempool ma
 ``net_cnxk`` PMD only works with ``mempool_cnxk`` mempool handler
 as it is performance wise most effective way for packet allocation and Tx buffer
 recycling on OCTEON 9 SoC platform.
+
+``mempool_cnxk`` rte_mempool cache sizes for CN10K
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The OCTEON CN10K SoC Family supports asynchronous batch allocation
+of objects from an NPA pool.
+In the CNXK mempool driver, asynchronous batch allocation is enabled
+when local caches are enabled.
+This asynchronous batch allocation will be using an additional local async buffer
+whose size will be equal to ``RTE_ALIGN_CEIL(rte_mempool->cache_size, 16)``.
+This can result in additional objects being cached locally.
+While creating an rte_mempool using ``mempool_cnxk`` driver for OCTEON CN10K,
+this must be taken into consideration
+and the local cache sizes should be adjusted accordingly
+so that starvation does not happen.
+
+For Eg: If the ``cache_size`` passed into ``rte_mempool_create`` is ``8``,
+then the max objects than can get cached locally on a core
+would be the sum of max objects in the local cache + max objects in the async buffer
+i.e ``8 + RTE_ALIGN_CEIL(8, 16) = 24``.
 
 CRC stripping
 ~~~~~~~~~~~~~
@@ -544,7 +623,7 @@ Debugging Options
    +---+------------+-------------------------------------------------------+
    | # | Component  | EAL log command                                       |
    +===+============+=======================================================+
-   | 1 | NIX        | --log-level='pmd\.net.cnxk,8'                         |
+   | 1 | NIX        | --log-level='pmd\.common.cnxk\.nix,8'                 |
    +---+------------+-------------------------------------------------------+
-   | 2 | NPC        | --log-level='pmd\.net.cnxk\.flow,8'                   |
+   | 2 | NPC        | --log-level='pmd\.common.cnxk\.flow,8'                |
    +---+------------+-------------------------------------------------------+

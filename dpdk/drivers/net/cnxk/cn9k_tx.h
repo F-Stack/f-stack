@@ -32,12 +32,13 @@
 
 #define NIX_XMIT_FC_OR_RETURN(txq, pkts)                                       \
 	do {                                                                   \
+		int64_t avail;                                                 \
 		/* Cached value is low, Update the fc_cache_pkts */            \
 		if (unlikely((txq)->fc_cache_pkts < (pkts))) {                 \
+			avail = txq->nb_sqb_bufs_adj - *txq->fc_mem;           \
 			/* Multiply with sqe_per_sqb to express in pkts */     \
 			(txq)->fc_cache_pkts =                                 \
-				((txq)->nb_sqb_bufs_adj - *(txq)->fc_mem)      \
-				<< (txq)->sqes_per_sqb_log2;                   \
+				(avail << (txq)->sqes_per_sqb_log2) - avail;   \
 			/* Check it again for the room */                      \
 			if (unlikely((txq)->fc_cache_pkts < (pkts)))           \
 				return 0;                                      \
@@ -80,6 +81,198 @@ cn9k_nix_tx_skeleton(struct cn9k_eth_txq *txq, uint64_t *cmd,
 		cmd[2] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
 	}
 }
+
+static __rte_always_inline void
+cn9k_nix_free_extmbuf(struct rte_mbuf *m)
+{
+	struct rte_mbuf *m_next;
+	while (m != NULL) {
+		m_next = m->next;
+		rte_pktmbuf_free_seg(m);
+		m = m_next;
+	}
+}
+
+static __rte_always_inline uint64_t
+cn9k_nix_prefree_seg(struct rte_mbuf *m, struct rte_mbuf **extm, struct cn9k_eth_txq *txq,
+		     struct nix_send_hdr_s *send_hdr, uint64_t *aura)
+{
+	struct rte_mbuf *prev;
+	uint32_t sqe_id;
+
+	if (RTE_MBUF_HAS_EXTBUF(m)) {
+		if (unlikely(txq->tx_compl.ena == 0)) {
+			m->next = *extm;
+			*extm = m;
+			return 1;
+		}
+		if (send_hdr->w0.pnc) {
+			sqe_id = send_hdr->w1.sqe_id;
+			prev = txq->tx_compl.ptr[sqe_id];
+			m->next = prev;
+			txq->tx_compl.ptr[sqe_id] = m;
+		} else {
+			sqe_id = __atomic_fetch_add(&txq->tx_compl.sqe_id, 1, __ATOMIC_RELAXED);
+			send_hdr->w0.pnc = 1;
+			send_hdr->w1.sqe_id = sqe_id &
+				txq->tx_compl.nb_desc_mask;
+			txq->tx_compl.ptr[send_hdr->w1.sqe_id] = m;
+			m->next = NULL;
+		}
+		return 1;
+	} else {
+		return cnxk_nix_prefree_seg(m, aura);
+	}
+}
+
+#if defined(RTE_ARCH_ARM64)
+/* Only called for first segments of single segmented mbufs */
+static __rte_always_inline void
+cn9k_nix_prefree_seg_vec(struct rte_mbuf **mbufs, struct rte_mbuf **extm, struct cn9k_eth_txq *txq,
+			 uint64x2_t *senddesc01_w0, uint64x2_t *senddesc23_w0,
+			 uint64x2_t *senddesc01_w1, uint64x2_t *senddesc23_w1)
+{
+	struct rte_mbuf **tx_compl_ptr = txq->tx_compl.ptr;
+	uint32_t nb_desc_mask = txq->tx_compl.nb_desc_mask;
+	bool tx_compl_ena = txq->tx_compl.ena;
+	struct rte_mbuf *m0, *m1, *m2, *m3;
+	struct rte_mbuf *cookie;
+	uint64_t w0, w1, aura;
+	uint64_t sqe_id;
+
+	m0 = mbufs[0];
+	m1 = mbufs[1];
+	m2 = mbufs[2];
+	m3 = mbufs[3];
+
+	/* mbuf 0 */
+	w0 = vgetq_lane_u64(*senddesc01_w0, 0);
+	if (RTE_MBUF_HAS_EXTBUF(m0)) {
+		w0 |= BIT_ULL(19);
+		w1 = vgetq_lane_u64(*senddesc01_w1, 0);
+		w1 &= ~0xFFFF000000000000UL;
+		if (unlikely(!tx_compl_ena)) {
+			m0->next = *extm;
+			*extm = m0;
+		} else {
+			sqe_id = rte_atomic_fetch_add_explicit(&txq->tx_compl.sqe_id, 1,
+							       rte_memory_order_relaxed);
+			sqe_id = sqe_id & nb_desc_mask;
+			/* Set PNC */
+			w0 |= BIT_ULL(43);
+			w1 |= sqe_id << 48;
+			tx_compl_ptr[sqe_id] = m0;
+			*senddesc01_w1 = vsetq_lane_u64(w1, *senddesc01_w1, 0);
+		}
+	} else {
+		cookie = RTE_MBUF_DIRECT(m0) ? m0 : rte_mbuf_from_indirect(m0);
+		aura = (w0 >> 20) & 0xFFFFF;
+		w0 &= ~0xFFFFF00000UL;
+		w0 |= cnxk_nix_prefree_seg(m0, &aura) << 19;
+		w0 |= aura << 20;
+
+		if ((w0 & BIT_ULL(19)) == 0)
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
+	}
+	*senddesc01_w0 = vsetq_lane_u64(w0, *senddesc01_w0, 0);
+
+	/* mbuf1 */
+	w0 = vgetq_lane_u64(*senddesc01_w0, 1);
+	if (RTE_MBUF_HAS_EXTBUF(m1)) {
+		w0 |= BIT_ULL(19);
+		w1 = vgetq_lane_u64(*senddesc01_w1, 1);
+		w1 &= ~0xFFFF000000000000UL;
+		if (unlikely(!tx_compl_ena)) {
+			m1->next = *extm;
+			*extm = m1;
+		} else {
+			sqe_id = rte_atomic_fetch_add_explicit(&txq->tx_compl.sqe_id, 1,
+							       rte_memory_order_relaxed);
+			sqe_id = sqe_id & nb_desc_mask;
+			/* Set PNC */
+			w0 |= BIT_ULL(43);
+			w1 |= sqe_id << 48;
+			tx_compl_ptr[sqe_id] = m1;
+			*senddesc01_w1 = vsetq_lane_u64(w1, *senddesc01_w1, 1);
+		}
+	} else {
+		cookie = RTE_MBUF_DIRECT(m1) ? m1 : rte_mbuf_from_indirect(m1);
+		aura = (w0 >> 20) & 0xFFFFF;
+		w0 &= ~0xFFFFF00000UL;
+		w0 |= cnxk_nix_prefree_seg(m1, &aura) << 19;
+		w0 |= aura << 20;
+
+		if ((w0 & BIT_ULL(19)) == 0)
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
+	}
+	*senddesc01_w0 = vsetq_lane_u64(w0, *senddesc01_w0, 1);
+
+	/* mbuf 2 */
+	w0 = vgetq_lane_u64(*senddesc23_w0, 0);
+	if (RTE_MBUF_HAS_EXTBUF(m2)) {
+		w0 |= BIT_ULL(19);
+		w1 = vgetq_lane_u64(*senddesc23_w1, 0);
+		w1 &= ~0xFFFF000000000000UL;
+		if (unlikely(!tx_compl_ena)) {
+			m2->next = *extm;
+			*extm = m2;
+		} else {
+			sqe_id = rte_atomic_fetch_add_explicit(&txq->tx_compl.sqe_id, 1,
+							       rte_memory_order_relaxed);
+			sqe_id = sqe_id & nb_desc_mask;
+			/* Set PNC */
+			w0 |= BIT_ULL(43);
+			w1 |= sqe_id << 48;
+			tx_compl_ptr[sqe_id] = m2;
+			*senddesc23_w1 = vsetq_lane_u64(w1, *senddesc23_w1, 0);
+		}
+	} else {
+		cookie = RTE_MBUF_DIRECT(m2) ? m2 : rte_mbuf_from_indirect(m2);
+		aura = (w0 >> 20) & 0xFFFFF;
+		w0 &= ~0xFFFFF00000UL;
+		w0 |= cnxk_nix_prefree_seg(m2, &aura) << 19;
+		w0 |= aura << 20;
+
+		if ((w0 & BIT_ULL(19)) == 0)
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
+	}
+	*senddesc23_w0 = vsetq_lane_u64(w0, *senddesc23_w0, 0);
+
+	/* mbuf3 */
+	w0 = vgetq_lane_u64(*senddesc23_w0, 1);
+	if (RTE_MBUF_HAS_EXTBUF(m3)) {
+		w0 |= BIT_ULL(19);
+		w1 = vgetq_lane_u64(*senddesc23_w1, 1);
+		w1 &= ~0xFFFF000000000000UL;
+		if (unlikely(!tx_compl_ena)) {
+			m3->next = *extm;
+			*extm = m3;
+		} else {
+			sqe_id = rte_atomic_fetch_add_explicit(&txq->tx_compl.sqe_id, 1,
+							       rte_memory_order_relaxed);
+			sqe_id = sqe_id & nb_desc_mask;
+			/* Set PNC */
+			w0 |= BIT_ULL(43);
+			w1 |= sqe_id << 48;
+			tx_compl_ptr[sqe_id] = m3;
+			*senddesc23_w1 = vsetq_lane_u64(w1, *senddesc23_w1, 1);
+		}
+	} else {
+		cookie = RTE_MBUF_DIRECT(m3) ? m3 : rte_mbuf_from_indirect(m3);
+		aura = (w0 >> 20) & 0xFFFFF;
+		w0 &= ~0xFFFFF00000UL;
+		w0 |= cnxk_nix_prefree_seg(m3, &aura) << 19;
+		w0 |= aura << 20;
+
+		if ((w0 & BIT_ULL(19)) == 0)
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
+	}
+	*senddesc23_w0 = vsetq_lane_u64(w0, *senddesc23_w0, 1);
+#ifndef RTE_LIBRTE_MEMPOOL_DEBUG
+	RTE_SET_USED(cookie);
+#endif
+}
+#endif
 
 static __rte_always_inline void
 cn9k_nix_xmit_prepare_tso(struct rte_mbuf *m, const uint64_t flags)
@@ -134,9 +327,9 @@ cn9k_nix_xmit_prepare_tso(struct rte_mbuf *m, const uint64_t flags)
 }
 
 static __rte_always_inline void
-cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
-		      const uint64_t lso_tun_fmt, uint8_t mark_flag,
-		      uint64_t mark_fmt)
+cn9k_nix_xmit_prepare(struct cn9k_eth_txq *txq, struct rte_mbuf *m, struct rte_mbuf **extm,
+		      uint64_t *cmd, const uint16_t flags, const uint64_t lso_tun_fmt,
+		      uint8_t mark_flag, uint64_t mark_fmt)
 {
 	uint8_t mark_off = 0, mark_vlan = 0, markptr = 0;
 	struct nix_send_ext_s *send_hdr_ext;
@@ -163,6 +356,8 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 		ol_flags = m->ol_flags;
 		w1.u = 0;
 	}
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F)
+		send_hdr->w0.pnc = 0;
 
 	if (!(flags & NIX_TX_MULTI_SEG_F))
 		send_hdr->w0.total = m->data_len;
@@ -317,23 +512,33 @@ cn9k_nix_xmit_prepare(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags,
 		send_hdr->w1.u = w1.u;
 
 	if (!(flags & NIX_TX_MULTI_SEG_F)) {
+		struct rte_mbuf *cookie;
+
 		sg->seg1_size = m->data_len;
 		*(rte_iova_t *)(++sg) = rte_mbuf_data_iova(m);
+		cookie = RTE_MBUF_DIRECT(m) ? m : rte_mbuf_from_indirect(m);
 
 		if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
+			uint64_t aura;
 			/* DF bit = 1 if refcount of current mbuf or parent mbuf
 			 *		is greater than 1
 			 * DF bit = 0 otherwise
 			 */
-			send_hdr->w0.df = cnxk_nix_prefree_seg(m);
+			aura = send_hdr->w0.aura;
+			send_hdr->w0.df = cn9k_nix_prefree_seg(m, extm, txq, send_hdr, &aura);
+			send_hdr->w0.aura = aura;
 			/* Ensuring mbuf fields which got updated in
 			 * cnxk_nix_prefree_seg are written before LMTST.
 			 */
 			rte_io_wmb();
 		}
+#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 		/* Mark mempool object as "put" since it is freed by NIX */
 		if (!send_hdr->w0.df)
-			RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
+#else
+		RTE_SET_USED(cookie);
+#endif
 	} else {
 		sg->seg1_size = m->data_len;
 		*(rte_iova_t *)(sg + 1) = rte_mbuf_data_iova(m);
@@ -411,9 +616,12 @@ cn9k_nix_xmit_submit_lmt_release(const rte_iova_t io_addr)
 }
 
 static __rte_always_inline uint16_t
-cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
+cn9k_nix_prepare_mseg(struct cn9k_eth_txq *txq, struct rte_mbuf *m, struct rte_mbuf **extm,
+		      uint64_t *cmd, const uint16_t flags)
 {
 	struct nix_send_hdr_s *send_hdr;
+	uint64_t prefree = 0, aura;
+	struct rte_mbuf *cookie;
 	union nix_send_sg_s *sg;
 	struct rte_mbuf *m_next;
 	uint64_t *slist, sg_u;
@@ -433,21 +641,28 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 	/* Start from second segment, first segment is already there */
 	i = 1;
 	sg_u = sg->u;
+	sg_u &= 0xFC0000000000FFFF;
 	nb_segs = m->nb_segs - 1;
 	m_next = m->next;
 	slist = &cmd[3 + off + 1];
 
+	cookie = RTE_MBUF_DIRECT(m) ? m : rte_mbuf_from_indirect(m);
 	/* Set invert df if buffer is not to be freed by H/W */
 	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
-		sg_u |= (cnxk_nix_prefree_seg(m) << 55);
+		aura = send_hdr->w0.aura;
+		prefree = (cn9k_nix_prefree_seg(m, extm, txq, send_hdr, &aura) << 55);
+		send_hdr->w0.aura = aura;
+		sg_u |= prefree;
 		rte_io_wmb();
 	}
 
 	/* Mark mempool object as "put" since it is freed by NIX */
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 	if (!(sg_u & (1ULL << 55)))
-		RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+		RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
 	rte_io_wmb();
+#else
+	RTE_SET_USED(cookie);
 #endif
 #ifdef RTE_ENABLE_ASSERT
 	m->next = NULL;
@@ -462,16 +677,17 @@ cn9k_nix_prepare_mseg(struct rte_mbuf *m, uint64_t *cmd, const uint16_t flags)
 		m_next = m->next;
 		sg_u = sg_u | ((uint64_t)m->data_len << (i << 4));
 		*slist = rte_mbuf_data_iova(m);
+		cookie = RTE_MBUF_DIRECT(m) ? m : rte_mbuf_from_indirect(m);
 		/* Set invert df if buffer is not to be freed by H/W */
 		if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
-			sg_u |= (cnxk_nix_prefree_seg(m) << (i + 55));
+			sg_u |= (cn9k_nix_prefree_seg(m, extm, txq, send_hdr, NULL) << (i + 55));
 			/* Commit changes to mbuf */
 			rte_io_wmb();
 		}
 		/* Mark mempool object as "put" since it is freed by NIX */
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 		if (!(sg_u & (1ULL << (i + 55))))
-			RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
 		rte_io_wmb();
 #endif
 		slist++;
@@ -548,8 +764,12 @@ cn9k_nix_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts,
 	const rte_iova_t io_addr = txq->io_addr;
 	uint64_t lso_tun_fmt = 0, mark_fmt = 0;
 	void *lmt_addr = txq->lmt_addr;
+	struct rte_mbuf *extm = NULL;
 	uint8_t mark_flag = 0;
 	uint16_t i;
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && txq->tx_compl.ena)
+		handle_tx_completion_pkts(txq, 0);
 
 	NIX_XMIT_FC_OR_RETURN(txq, pkts);
 
@@ -575,12 +795,15 @@ cn9k_nix_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t pkts,
 		rte_io_wmb();
 
 	for (i = 0; i < pkts; i++) {
-		cn9k_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt,
+		cn9k_nix_xmit_prepare(txq, tx_pkts[i], &extm, cmd, flags, lso_tun_fmt,
 				      mark_flag, mark_fmt);
 		cn9k_nix_xmit_prepare_tstamp(txq, cmd, tx_pkts[i]->ol_flags, 4,
 					     flags);
 		cn9k_nix_xmit_one(cmd, lmt_addr, io_addr, flags);
 	}
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && !txq->tx_compl.ena)
+		cn9k_nix_free_extmbuf(extm);
 
 	/* Reduce the cached count */
 	txq->fc_cache_pkts -= pkts;
@@ -596,9 +819,13 @@ cn9k_nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 	const rte_iova_t io_addr = txq->io_addr;
 	uint64_t lso_tun_fmt = 0, mark_fmt = 0;
 	void *lmt_addr = txq->lmt_addr;
+	struct rte_mbuf *extm = NULL;
 	uint8_t mark_flag = 0;
 	uint16_t segdw;
 	uint64_t i;
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && txq->tx_compl.ena)
+		handle_tx_completion_pkts(txq, 0);
 
 	NIX_XMIT_FC_OR_RETURN(txq, pkts);
 
@@ -624,13 +851,16 @@ cn9k_nix_xmit_pkts_mseg(void *tx_queue, struct rte_mbuf **tx_pkts,
 		rte_io_wmb();
 
 	for (i = 0; i < pkts; i++) {
-		cn9k_nix_xmit_prepare(tx_pkts[i], cmd, flags, lso_tun_fmt,
+		cn9k_nix_xmit_prepare(txq, tx_pkts[i], &extm, cmd, flags, lso_tun_fmt,
 				      mark_flag, mark_fmt);
-		segdw = cn9k_nix_prepare_mseg(tx_pkts[i], cmd, flags);
+		segdw = cn9k_nix_prepare_mseg(txq, tx_pkts[i], &extm, cmd, flags);
 		cn9k_nix_xmit_prepare_tstamp(txq, cmd, tx_pkts[i]->ol_flags,
 					     segdw, flags);
 		cn9k_nix_xmit_mseg_one(cmd, lmt_addr, io_addr, segdw);
 	}
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && !txq->tx_compl.ena)
+		cn9k_nix_free_extmbuf(extm);
 
 	/* Reduce the cached count */
 	txq->fc_cache_pkts -= pkts;
@@ -659,6 +889,9 @@ cn9k_nix_prepare_tso(struct rte_mbuf *m, union nix_send_hdr_w1_u *w1,
 	w0->lso_mps = m->tso_segsz;
 	w0->lso_format = NIX_LSO_FORMAT_IDX_TSOV4 + !!(ol_flags & RTE_MBUF_F_TX_IPV6);
 	w1->ol4type = NIX_SENDL4TYPE_TCP_CKSUM;
+	w1->ol3type = ((!!(ol_flags & RTE_MBUF_F_TX_IPV4)) << 1) +
+		      ((!!(ol_flags & RTE_MBUF_F_TX_IPV6)) << 2) +
+		      !!(ol_flags & RTE_MBUF_F_TX_IP_CKSUM);
 
 	/* Handle tunnel tso */
 	if ((flags & NIX_TX_OFFLOAD_OL3_OL4_CSUM_F) &&
@@ -678,17 +911,18 @@ cn9k_nix_prepare_tso(struct rte_mbuf *m, union nix_send_hdr_w1_u *w1,
 }
 
 static __rte_always_inline uint8_t
-cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
-			       union nix_send_hdr_w0_u *sh,
+cn9k_nix_prepare_mseg_vec_list(struct cn9k_eth_txq *txq,
+			       struct rte_mbuf *m, struct rte_mbuf **extm, uint64_t *cmd,
+			       struct nix_send_hdr_s *send_hdr,
 			       union nix_send_sg_s *sg, const uint32_t flags)
 {
-	struct rte_mbuf *m_next;
-	uint64_t *slist, sg_u;
+	struct rte_mbuf *m_next, *cookie;
+	uint64_t *slist, sg_u, aura;
 	uint16_t nb_segs;
 	uint64_t segdw;
 	int i = 1;
 
-	sh->total = m->pkt_len;
+	send_hdr->w0.total = m->pkt_len;
 	/* Clear sg->u header before use */
 	sg->u &= 0xFC00000000000000;
 	sg_u = sg->u;
@@ -700,13 +934,19 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 	m_next = m->next;
 
 	/* Set invert df if buffer is not to be freed by H/W */
-	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F)
-		sg_u |= (cnxk_nix_prefree_seg(m) << 55);
-		/* Mark mempool object as "put" since it is freed by NIX */
+	cookie = RTE_MBUF_DIRECT(m) ? m : rte_mbuf_from_indirect(m);
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
+		aura = send_hdr->w0.aura;
+		sg_u |= (cn9k_nix_prefree_seg(m, extm, txq, send_hdr, &aura) << 55);
+		send_hdr->w0.aura = aura;
+	}
+	/* Mark mempool object as "put" since it is freed by NIX */
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 	if (!(sg_u & (1ULL << 55)))
-		RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+		RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
 	rte_io_wmb();
+#else
+	RTE_SET_USED(cookie);
 #endif
 
 #ifdef RTE_ENABLE_ASSERT
@@ -719,14 +959,15 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 		m_next = m->next;
 		sg_u = sg_u | ((uint64_t)m->data_len << (i << 4));
 		*slist = rte_mbuf_data_iova(m);
+		cookie = RTE_MBUF_DIRECT(m) ? m : rte_mbuf_from_indirect(m);
 		/* Set invert df if buffer is not to be freed by H/W */
 		if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F)
-			sg_u |= (cnxk_nix_prefree_seg(m) << (i + 55));
+			sg_u |= (cn9k_nix_prefree_seg(m, extm, txq, send_hdr, &aura) << (i + 55));
 			/* Mark mempool object as "put" since it is freed by NIX
 			 */
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 		if (!(sg_u & (1ULL << (i + 55))))
-			RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
 		rte_io_wmb();
 #endif
 		slist++;
@@ -758,7 +999,7 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 	/* Default dwords */
 	segdw += 1 + !!(flags & NIX_TX_NEED_EXT_HDR) +
 		 !!(flags & NIX_TX_OFFLOAD_TSTAMP_F);
-	sh->sizem1 = segdw - 1;
+	send_hdr->w0.sizem1 = segdw - 1;
 
 #ifdef RTE_ENABLE_ASSERT
 	rte_io_wmb();
@@ -767,36 +1008,49 @@ cn9k_nix_prepare_mseg_vec_list(struct rte_mbuf *m, uint64_t *cmd,
 }
 
 static __rte_always_inline uint8_t
-cn9k_nix_prepare_mseg_vec(struct rte_mbuf *m, uint64_t *cmd, uint64x2_t *cmd0,
-			  uint64x2_t *cmd1, const uint32_t flags)
+cn9k_nix_prepare_mseg_vec(struct cn9k_eth_txq *txq, struct rte_mbuf *m, struct rte_mbuf **extm,
+			  uint64_t *cmd, uint64x2_t *cmd0, uint64x2_t *cmd1, const uint32_t flags)
 {
-	union nix_send_hdr_w0_u sh;
+	struct nix_send_hdr_s send_hdr;
+	struct rte_mbuf *cookie;
 	union nix_send_sg_s sg;
+	uint64_t aura;
 	uint8_t ret;
 
 	if (m->nb_segs == 1) {
+		cookie = RTE_MBUF_DIRECT(m) ? m : rte_mbuf_from_indirect(m);
 		if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
+			send_hdr.w0.u = vgetq_lane_u64(cmd0[0], 0);
+			send_hdr.w1.u = vgetq_lane_u64(cmd0[0], 1);
 			sg.u = vgetq_lane_u64(cmd1[0], 0);
-			sg.u |= (cnxk_nix_prefree_seg(m) << 55);
+			aura = send_hdr.w0.aura;
+			sg.u |= (cn9k_nix_prefree_seg(m, extm, txq, &send_hdr, &aura) << 55);
+			send_hdr.w0.aura = aura;
 			cmd1[0] = vsetq_lane_u64(sg.u, cmd1[0], 0);
+			cmd0[0] = vsetq_lane_u64(send_hdr.w0.u, cmd0[0], 0);
+			cmd0[0] = vsetq_lane_u64(send_hdr.w1.u, cmd0[0], 1);
 		}
 
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 		sg.u = vgetq_lane_u64(cmd1[0], 0);
 		if (!(sg.u & (1ULL << 55)))
-			RTE_MEMPOOL_CHECK_COOKIES(m->pool, (void **)&m, 1, 0);
+			RTE_MEMPOOL_CHECK_COOKIES(cookie->pool, (void **)&cookie, 1, 0);
 		rte_io_wmb();
+#else
+		RTE_SET_USED(cookie);
 #endif
 		return 2 + !!(flags & NIX_TX_NEED_EXT_HDR) +
 		       !!(flags & NIX_TX_OFFLOAD_TSTAMP_F);
 	}
 
-	sh.u = vgetq_lane_u64(cmd0[0], 0);
+	send_hdr.w0.u = vgetq_lane_u64(cmd0[0], 0);
+	send_hdr.w1.u = vgetq_lane_u64(cmd0[0], 1);
 	sg.u = vgetq_lane_u64(cmd1[0], 0);
 
-	ret = cn9k_nix_prepare_mseg_vec_list(m, cmd, &sh, &sg, flags);
+	ret = cn9k_nix_prepare_mseg_vec_list(txq, m, extm, cmd, &send_hdr, &sg, flags);
 
-	cmd0[0] = vsetq_lane_u64(sh.u, cmd0[0], 0);
+	cmd0[0] = vsetq_lane_u64(send_hdr.w0.u, cmd0[0], 0);
+	cmd0[0] = vsetq_lane_u64(send_hdr.w1.u, cmd0[0], 1);
 	cmd1[0] = vsetq_lane_u64(sg.u, cmd1[0], 0);
 	return ret;
 }
@@ -940,10 +1194,14 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint64_t *lmt_addr = txq->lmt_addr;
 	rte_iova_t io_addr = txq->io_addr;
 	uint64x2_t ltypes01, ltypes23;
+	struct rte_mbuf *extm = NULL;
 	uint64x2_t xtmp128, ytmp128;
 	uint64x2_t xmask01, xmask23;
 	uint64_t lmt_status, i;
 	uint16_t pkts_left;
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && txq->tx_compl.ena)
+		handle_tx_completion_pkts(txq, 0);
 
 	NIX_XMIT_FC_OR_RETURN(txq, pkts);
 
@@ -998,7 +1256,7 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 	for (i = 0; i < pkts; i += NIX_DESCS_PER_LOOP) {
 		/* Clear lower 32bit of SEND_HDR_W0 and SEND_SG_W0 */
 		senddesc01_w0 =
-			vbicq_u64(senddesc01_w0, vdupq_n_u64(0xFFFFFFFF));
+			vbicq_u64(senddesc01_w0, vdupq_n_u64(0x800FFFFFFFF));
 		sgdesc01_w0 = vbicq_u64(sgdesc01_w0, vdupq_n_u64(0xFFFFFFFF));
 
 		senddesc23_w0 = senddesc01_w0;
@@ -1147,7 +1405,7 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 */
 			const uint8x16_t tbl = {
 				/* [0-15] = il4type:il3type */
-				0x04, /* none (IPv6 assumed) */
+				0x00, /* none */
 				0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6 assumed) */
 				0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6 assumed) */
 				0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6 assumed) */
@@ -1351,7 +1609,7 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 			const uint8x16x2_t tbl = {{
 				{
 					/* [0-15] = il4type:il3type */
-					0x04, /* none (IPv6) */
+					0x00, /* none */
 					0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6) */
 					0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6) */
 					0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6) */
@@ -1702,44 +1960,8 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 		if ((flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) &&
 		    !(flags & NIX_TX_MULTI_SEG_F)) {
 			/* Set don't free bit if reference count > 1 */
-			xmask01 = vdupq_n_u64(0);
-			xmask23 = xmask01;
-
-			/* Move mbufs to iova */
-			mbuf0 = (uint64_t *)tx_pkts[0];
-			mbuf1 = (uint64_t *)tx_pkts[1];
-			mbuf2 = (uint64_t *)tx_pkts[2];
-			mbuf3 = (uint64_t *)tx_pkts[3];
-
-			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf0))
-				xmask01 = vsetq_lane_u64(0x80000, xmask01, 0);
-			else
-				RTE_MEMPOOL_CHECK_COOKIES(
-					((struct rte_mbuf *)mbuf0)->pool,
-					(void **)&mbuf0, 1, 0);
-
-			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf1))
-				xmask01 = vsetq_lane_u64(0x80000, xmask01, 1);
-			else
-				RTE_MEMPOOL_CHECK_COOKIES(
-					((struct rte_mbuf *)mbuf1)->pool,
-					(void **)&mbuf1, 1, 0);
-
-			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf2))
-				xmask23 = vsetq_lane_u64(0x80000, xmask23, 0);
-			else
-				RTE_MEMPOOL_CHECK_COOKIES(
-					((struct rte_mbuf *)mbuf2)->pool,
-					(void **)&mbuf2, 1, 0);
-
-			if (cnxk_nix_prefree_seg((struct rte_mbuf *)mbuf3))
-				xmask23 = vsetq_lane_u64(0x80000, xmask23, 1);
-			else
-				RTE_MEMPOOL_CHECK_COOKIES(
-					((struct rte_mbuf *)mbuf3)->pool,
-					(void **)&mbuf3, 1, 0);
-			senddesc01_w0 = vorrq_u64(senddesc01_w0, xmask01);
-			senddesc23_w0 = vorrq_u64(senddesc23_w0, xmask23);
+			cn9k_nix_prefree_seg_vec(tx_pkts, &extm, txq, &senddesc01_w0,
+						 &senddesc23_w0, &senddesc01_w1, &senddesc23_w1);
 			/* Ensuring mbuf fields which got updated in
 			 * cnxk_nix_prefree_seg are written before LMTST.
 			 */
@@ -1799,7 +2021,8 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 			/* Build mseg list for each packet individually. */
 			for (j = 0; j < NIX_DESCS_PER_LOOP; j++)
-				segdw[j] = cn9k_nix_prepare_mseg_vec(tx_pkts[j],
+				segdw[j] = cn9k_nix_prepare_mseg_vec(txq,
+							tx_pkts[j], &extm,
 							seg_list[j], &cmd0[j],
 							&cmd1[j], flags);
 			segdw[4] = 8;
@@ -1873,6 +2096,9 @@ cn9k_nix_xmit_pkts_vector(void *tx_queue, struct rte_mbuf **tx_pkts,
 		}
 		tx_pkts = tx_pkts + NIX_DESCS_PER_LOOP;
 	}
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && !txq->tx_compl.ena)
+		cn9k_nix_free_extmbuf(extm);
 
 	if (unlikely(pkts_left)) {
 		if (flags & NIX_TX_MULTI_SEG_F)

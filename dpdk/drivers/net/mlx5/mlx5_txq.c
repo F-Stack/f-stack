@@ -332,6 +332,14 @@ mlx5_tx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t *desc)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
+	if (*desc > mlx5_dev_get_max_wq_size(priv->sh)) {
+		DRV_LOG(ERR,
+			"port %u number of descriptors requested for Tx queue"
+			" %u is more than supported",
+			dev->data->port_id, idx);
+		rte_errno = EINVAL;
+		return -EINVAL;
+	}
 	if (*desc <= MLX5_TX_COMP_THRESH) {
 		DRV_LOG(WARNING,
 			"port %u number of descriptors requested for Tx queue"
@@ -699,6 +707,7 @@ txq_calc_wqebb_cnt(struct mlx5_txq_ctrl *txq_ctrl)
 		   MLX5_WSEG_SIZE -
 		   MLX5_ESEG_MIN_INLINE_SIZE +
 		   txq_ctrl->max_inline_data;
+	wqe_size = RTE_MAX(wqe_size, MLX5_WQE_SIZE);
 	return rte_align32pow2(wqe_size * desc) / MLX5_WQE_SIZE;
 }
 
@@ -718,7 +727,7 @@ txq_calc_inline_max(struct mlx5_txq_ctrl *txq_ctrl)
 	struct mlx5_priv *priv = txq_ctrl->priv;
 	unsigned int wqe_size;
 
-	wqe_size = priv->sh->dev_cap.max_qp_wr / desc;
+	wqe_size = mlx5_dev_get_max_wq_size(priv->sh) / desc;
 	if (!wqe_size)
 		return 0;
 	/*
@@ -767,7 +776,7 @@ txq_set_params(struct mlx5_txq_ctrl *txq_ctrl)
 		txqs_inline =
 #if defined(RTE_ARCH_ARM64)
 		(priv->pci_dev && priv->pci_dev->id.device_id ==
-			PCI_DEVICE_ID_MELLANOX_CONNECTX5BF) ?
+			PCI_DEVICE_ID_MELLANOX_BLUEFIELD) ?
 			MLX5_INLINE_MAX_TXQS_BLUEFIELD :
 #endif
 			MLX5_INLINE_MAX_TXQS;
@@ -1073,6 +1082,7 @@ mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *tmpl;
+	uint16_t max_wqe;
 
 	tmpl = mlx5_malloc(MLX5_MEM_RTE | MLX5_MEM_ZERO, sizeof(*tmpl) +
 			   desc * sizeof(struct rte_mbuf *), 0, socket);
@@ -1098,13 +1108,12 @@ mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	txq_set_params(tmpl);
 	if (txq_adjust_params(tmpl))
 		goto error;
-	if (txq_calc_wqebb_cnt(tmpl) >
-	    priv->sh->dev_cap.max_qp_wr) {
+	max_wqe = mlx5_dev_get_max_wq_size(priv->sh);
+	if (txq_calc_wqebb_cnt(tmpl) > max_wqe) {
 		DRV_LOG(ERR,
 			"port %u Tx WQEBB count (%d) exceeds the limit (%d),"
 			" try smaller queue size",
-			dev->data->port_id, txq_calc_wqebb_cnt(tmpl),
-			priv->sh->dev_cap.max_qp_wr);
+			dev->data->port_id, txq_calc_wqebb_cnt(tmpl), max_wqe);
 		rte_errno = ENOMEM;
 		goto error;
 	}
@@ -1203,7 +1212,7 @@ mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx)
 	if (priv->txqs == NULL || (*priv->txqs)[idx] == NULL)
 		return 0;
 	txq_ctrl = container_of((*priv->txqs)[idx], struct mlx5_txq_ctrl, txq);
-	if (__atomic_sub_fetch(&txq_ctrl->refcnt, 1, __ATOMIC_RELAXED) > 1)
+	if (__atomic_fetch_sub(&txq_ctrl->refcnt, 1, __ATOMIC_RELAXED) - 1 > 1)
 		return 1;
 	if (txq_ctrl->obj) {
 		priv->obj_ops.txq_obj_release(txq_ctrl->obj);
@@ -1379,4 +1388,47 @@ mlx5_txq_dynf_timestamp_set(struct rte_eth_dev *dev)
 				     RTE_ETH_TX_OFFLOAD_SEND_ON_TIMESTAMP) ?
 				     ts_mask : 0;
 	}
+}
+
+int mlx5_count_aggr_ports(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	return priv->sh->bond.n_port;
+}
+
+int mlx5_map_aggr_tx_affinity(struct rte_eth_dev *dev, uint16_t tx_queue_id,
+			      uint8_t affinity)
+{
+	struct mlx5_txq_ctrl *txq_ctrl;
+	struct mlx5_txq_data *txq;
+	struct mlx5_priv *priv;
+
+	priv = dev->data->dev_private;
+	if (!mlx5_devx_obj_ops_en(priv->sh)) {
+		DRV_LOG(ERR, "Tx affinity mapping isn't supported by Verbs API.");
+		rte_errno = ENOTSUP;
+		return -rte_errno;
+	}
+	txq = (*priv->txqs)[tx_queue_id];
+	if (!txq)
+		return -1;
+	txq_ctrl = container_of(txq, struct mlx5_txq_ctrl, txq);
+	if (tx_queue_id >= priv->txqs_n) {
+		DRV_LOG(ERR, "port %u Tx queue index out of range (%u >= %u)",
+			dev->data->port_id, tx_queue_id, priv->txqs_n);
+		rte_errno = EOVERFLOW;
+		return -rte_errno;
+	}
+	if (affinity > priv->num_lag_ports) {
+		DRV_LOG(ERR, "port %u unable to setup Tx queue index %u"
+			" affinity is %u exceeds the maximum %u", dev->data->port_id,
+			tx_queue_id, affinity, priv->num_lag_ports);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	DRV_LOG(DEBUG, "port %u configuring queue %u for aggregated affinity %u",
+		dev->data->port_id, tx_queue_id, affinity);
+	txq_ctrl->txq.tx_aggr_affinity = affinity;
+	return 0;
 }

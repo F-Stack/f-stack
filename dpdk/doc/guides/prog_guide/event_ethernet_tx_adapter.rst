@@ -56,6 +56,24 @@ and needs to create an event port for it. The callback is expected to fill the
 
         err = rte_event_eth_tx_adapter_create(id, dev_id, &tx_p_conf);
 
+Event device configuration for service based adapter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When ``rte_event_eth_tx_adapter_create()`` is used for creating
+adapter instance, ``rte_event_dev_config::nb_event_ports`` is
+automatically incremented, and the event device is reconfigured
+with additional event port during service initialization.
+This event device reconfigure logic also increments
+the ``rte_event_dev_config::nb_single_link_event_port_queues``
+parameter if the adapter event port config is of type
+``RTE_EVENT_PORT_CFG_SINGLE_LINK``.
+
+Application no longer needs to configure the event device with
+``rte_event_dev_config::nb_event_ports`` and
+``rte_event_dev_config::nb_single_link_event_port_queues``
+parameters required for eth Tx adapter when the adapter is created
+using the above-mentioned API.
+
 Adding Tx Queues to the Adapter Instance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -207,3 +225,12 @@ Stop function stops the adapter runtime function from enqueueing any
 packets to the associated Tx queue. This API also frees any packets that
 may have been buffered for this queue. All inflight packets destined to the
 queue are freed by the adapter runtime until the queue is started again.
+
+Set/Get adapter runtime configuration parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The runtime configuration parameters of adapter can be set/get using
+``rte_event_eth_tx_adapter_runtime_params_set()`` and
+``rte_event_eth_tx_adapter_runtime_params_get()`` respectively.
+The parameters that can be set/get are defined in
+``struct rte_event_eth_tx_adapter_runtime_params``.

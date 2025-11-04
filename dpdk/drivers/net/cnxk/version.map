@@ -1,15 +1,20 @@
-DPDK_23 {
+DPDK_24 {
 	local: *;
 };
 
 EXPERIMENTAL {
-	# added in 22.07
 	global:
+
+	# added in 22.07
 	rte_pmd_cnxk_hw_sa_read;
 	rte_pmd_cnxk_hw_sa_write;
+
+	# added in 23.11
+	rte_pmd_cnxk_inl_ipsec_res;
 };
 
 INTERNAL {
 	global:
 	cnxk_nix_inb_mode_set;
+	cnxk_ethdev_rx_offload_cb_register;
 };

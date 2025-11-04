@@ -103,12 +103,16 @@ struct ipsec_test_flags {
 	bool fragment;
 	bool stats_success;
 	bool antireplay;
+	bool use_ext_mbuf;
 	enum df_flags df;
 	enum dscp_flags dscp;
 	enum flabel_flags flabel;
 	bool dec_ttl_or_hop_limit;
 	bool ah;
 	uint32_t plaintext_len;
+	int nb_segs_in_mbuf;
+	bool inb_oop;
+	bool rx_inject;
 };
 
 struct crypto_param {
@@ -288,7 +292,7 @@ void test_ipsec_td_update(struct ipsec_test_data td_inb[],
 void test_ipsec_display_alg(const struct crypto_param *param1,
 			    const struct crypto_param *param2);
 
-int test_ipsec_post_process(struct rte_mbuf *m,
+int test_ipsec_post_process(const struct rte_mbuf *m,
 			    const struct ipsec_test_data *td,
 			    struct ipsec_test_data *res_d, bool silent,
 			    const struct ipsec_test_flags *flags);
@@ -299,7 +303,7 @@ int test_ipsec_status_check(const struct ipsec_test_data *td,
 			    enum rte_security_ipsec_sa_direction dir,
 			    int pkt_num);
 
-int test_ipsec_stats_verify(struct rte_security_ctx *ctx,
+int test_ipsec_stats_verify(void *ctx,
 			    void *sess,
 			    const struct ipsec_test_flags *flags,
 			    enum rte_security_ipsec_sa_direction dir);

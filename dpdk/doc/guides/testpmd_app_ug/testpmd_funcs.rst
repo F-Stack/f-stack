@@ -235,9 +235,9 @@ size is used to indicate the hardware supported reta size
 show port rss-hash
 ~~~~~~~~~~~~~~~~~~
 
-Display the RSS hash functions and RSS hash key of a port::
+Display the RSS hash functions and RSS hash key or RSS hash algorithm of a port::
 
-   testpmd> show port (port_id) rss-hash [key]
+   testpmd> show port (port_id) rss-hash [key | algorithm]
 
 clear port
 ~~~~~~~~~~
@@ -318,7 +318,7 @@ set fwd
 Set the packet forwarding mode::
 
    testpmd> set fwd (io|mac|macswap|flowgen| \
-                     rxonly|txonly|csum|icmpecho|noisy|5tswap|shared-rxq) (""|retry)
+                     rxonly|txonly|csum|icmpecho|noisy|5tswap|shared-rxq|recycle_mbufs) (""|retry)
 
 ``retry`` can be specified for forwarding engines except ``rx_only``.
 
@@ -363,6 +363,9 @@ The available information categories are:
 
 * ``shared-rxq``: Receive only for shared Rx queue.
   Resolve packet source port from mbuf and update stream statistics accordingly.
+
+* ``recycle_mbufs``:  Recycle Tx queue used mbufs for Rx queue mbuf ring.
+  This mode uses fast path mbuf recycle feature and forwards packets in I/O mode.
 
 Example::
 
@@ -590,6 +593,20 @@ dump devargs
 Dumps the user device list::
 
    testpmd> dump_devargs
+
+dump lcores
+~~~~~~~~~~~
+
+Dumps the logical cores list::
+
+   testpmd> dump_lcores
+
+dump trace
+~~~~~~~~~~
+
+Dumps the tracing data to the folder according to the current EAL settings::
+
+   testpmd> dump_trace
 
 dump log types
 ~~~~~~~~~~~~~~
@@ -1306,6 +1323,13 @@ filtered by port::
 
    testpmd> mcast_addr remove (port_id) (mcast_addr)
 
+mcast_addr flush
+~~~~~~~~~~~~~~~~
+
+Flush all multicast MAC addresses on port_id::
+
+   testpmd> mcast_addr flush (port_id)
+
 mac_addr add (for VF)
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -1546,12 +1570,12 @@ Enable/disable E-tag based forwarding on a port::
 config per port Rx offloading
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Enable or disable a per port Rx offloading on all Rx queues of a port::
+Enable or disable port Rx offloading on all Rx queues of a port::
 
-   testpmd> port config (port_id) rx_offload (offloading) on|off
+   testpmd> port config (port_id|all) rx_offload (offloading) on|off
 
 * ``offloading``: can be any of these offloading capability:
-                  vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
+                  all, vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
                   vlan_filter, vlan_extend, scatter, timestamp, security,
                   keep_crc, rss_hash
@@ -1566,7 +1590,7 @@ Enable or disable a per queue Rx offloading only on a specific Rx queue::
    testpmd> port (port_id) rxq (queue_id) rx_offload (offloading) on|off
 
 * ``offloading``: can be any of these offloading capability:
-                  vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
+                  all, vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
                   vlan_filter, vlan_extend, scatter, timestamp, security,
                   keep_crc
@@ -1576,12 +1600,12 @@ This command should be run when the port is stopped, or else it will fail.
 config per port Tx offloading
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Enable or disable a per port Tx offloading on all Tx queues of a port::
+Enable or disable port Tx offloading on all Tx queues of a port::
 
-   testpmd> port config (port_id) tx_offload (offloading) on|off
+   testpmd> port config (port_id|all) tx_offload (offloading) on|off
 
 * ``offloading``: can be any of these offloading capability:
-                  vlan_insert, ipv4_cksum, udp_cksum, tcp_cksum,
+                  all, vlan_insert, ipv4_cksum, udp_cksum, tcp_cksum,
                   sctp_cksum, tcp_tso, udp_tso, outer_ipv4_cksum,
                   qinq_insert, vxlan_tnl_tso, gre_tnl_tso,
                   ipip_tnl_tso, geneve_tnl_tso, macsec_insert,
@@ -1597,13 +1621,27 @@ Enable or disable a per queue Tx offloading only on a specific Tx queue::
    testpmd> port (port_id) txq (queue_id) tx_offload (offloading) on|off
 
 * ``offloading``: can be any of these offloading capability:
-                  vlan_insert, ipv4_cksum, udp_cksum, tcp_cksum,
+                  all, vlan_insert, ipv4_cksum, udp_cksum, tcp_cksum,
                   sctp_cksum, tcp_tso, udp_tso, outer_ipv4_cksum,
                   qinq_insert, vxlan_tnl_tso, gre_tnl_tso,
                   ipip_tnl_tso, geneve_tnl_tso, macsec_insert,
                   mt_lockfree, multi_segs, mbuf_fast_free, security
 
 This command should be run when the port is stopped, or else it will fail.
+
+config per queue Tx affinity mapping
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Map a Tx queue with an aggregated port of the DPDK port (specified with port_id)::
+
+   testpmd> port (port_id) txq (queue_id) affinity (value)
+
+* ``affinity``: the number of the aggregated port.
+                When multiple ports are aggregated into a single one,
+                it allows to choose which port to use for Tx via a queue.
+
+This command should be run when the port is stopped, otherwise it fails.
+
 
 Config VXLAN Encap outer layers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1779,7 +1817,7 @@ Set fec mode
 
 Set fec mode for a specific port::
 
-  testpmd> set port (port_id) fec_mode auto|off|rs|baser
+  testpmd> set port (port_id) fec_mode auto|off|rs|baser|llrs
 
 Config Sample actions list
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1879,7 +1917,7 @@ For example, to attach a port created by pcap PMD.
 In this case, identifier is ``net_pcap0``.
 This identifier format is the same as ``--vdev`` format of DPDK applications.
 
-For example, to re-attach a bonded port which has been previously detached,
+For example, to re-attach a bonding port which has been previously detached,
 the mode and slave parameters must be given.
 
 .. code-block:: console
@@ -1887,7 +1925,7 @@ the mode and slave parameters must be given.
    testpmd> port attach net_bond_0,mode=0,slave=1
    Attaching a new port...
    EAL: Initializing pmd_bond for net_bond_0
-   EAL: Create bonded device net_bond_0 on port 0 in mode 0 on socket 0.
+   EAL: Create bonding device net_bond_0 on port 0 in mode 0 on socket 0.
    Port 0 is attached. Now total ports is 1
    Done
 
@@ -2027,7 +2065,7 @@ port config - speed
 
 Set the speed and duplex mode for all ports or a specific port::
 
-   testpmd> port config (port_id|all) speed (10|100|1000|10000|25000|40000|50000|100000|200000|auto) \
+   testpmd> port config (port_id|all) speed (10|100|1000|2500|5000|10000|25000|40000|50000|100000|200000|400000|auto) \
             duplex (half|full|auto)
 
 port config - queues/descriptors
@@ -2104,7 +2142,7 @@ Set the DCB mode for an individual port::
 
    testpmd> port config (port_id) dcb vt (on|off) (traffic_class) pfc (on|off)
 
-The traffic class should be 4 or 8.
+The traffic class could be 2~8.
 
 port config - Burst
 ~~~~~~~~~~~~~~~~~~~
@@ -2843,6 +2881,35 @@ where:
 * ``red`` enable 1, disable 0 marking IP ecn for yellow marked packets with ecn of 2'b01  or 2'b10
   to ecn of 2'b11 when IP is caring TCP or SCTP
 
+Congestion Management
+---------------------
+
+Get capabilities
+~~~~~~~~~~~~~~~~
+
+Retrieve congestion management capabilities supported by driver for given port.
+Below example command retrieves capabilities for port 0::
+
+   testpmd> show port cman capa 0
+
+Get configuration
+~~~~~~~~~~~~~~~~~
+
+Retrieve congestion management configuration for given port.
+Below example command retrieves configuration for port 0::
+
+   testpmd> show port cman config 0
+
+Set configuration
+~~~~~~~~~~~~~~~~~
+
+Configures congestion management settings on given queue
+or mempool associated with queue.
+Below example command configures RED as congestion management algorithm
+for port 0 and queue 0::
+
+   testpmd> set port cman config 0 0 obj queue mode red 10 100 1
+
 .. _testpmd_rte_flow:
 
 Flow rules management
@@ -2947,13 +3014,14 @@ following sections.
 - Create a flow rule::
 
    flow create {port_id}
-       [group {group_id}] [priority {level}] [ingress] [egress] [transfer]
-       pattern {item} [/ {item} [...]] / end
+       [group {group_id}] [priority {level}] [ingress] [egress]
+       [transfer] [tunnel_set {tunnel_id}] [tunnel_match {tunnel_id}]
+       [user_id {user_id}] pattern {item} [/ {item} [...]] / end
        actions {action} [/ {action} [...]] / end
 
 - Destroy specific flow rules::
 
-   flow destroy {port_id} rule {rule_id} [...]
+   flow destroy {port_id} rule {rule_id} [...] [user_id]
 
 - Destroy all flow rules::
 
@@ -2961,7 +3029,7 @@ following sections.
 
 - Query an existing flow rule::
 
-   flow query {port_id} {rule_id} {action}
+   flow query {port_id} {rule_id} {action} [user_id]
 
 - List existing flow rules sorted by priority, filtered by group
   identifiers::
@@ -2974,11 +3042,11 @@ following sections.
 
 - Dump internal representation information of all flows in hardware::
 
-   flow dump {port_id} all {output_file}
+   flow dump {port_id} all {output_file} [user_id]
 
   for one flow::
 
-   flow dump {port_id} rule {rule_id} {output_file}
+   flow dump {port_id} rule {rule_id} {output_file} [user_id]
 
 - List and destroy aged flow rules::
 
@@ -3035,7 +3103,9 @@ for asynchronous flow creation/destruction operations. It is bound to
        [queues_number {number}] [queues_size {size}]
        [counters_number {number}]
        [aging_counters_number {number}]
-       [meters_number {number}] [flags {number}]
+       [host_port {number}]
+       [meters_number {number}]
+       [flags {number}]
 
 If successful, it will show::
 
@@ -3134,7 +3204,8 @@ It is bound to ``rte_flow_template_table_create()``::
 
    flow template_table {port_id} create
        [table_id {id}] [group {group_id}]
-       [priority {level}] [ingress] [egress] [transfer]
+       [priority {level}] [ingress] [egress]
+       [transfer [vport_orig] [wire_orig]]
        rules_number {number}
        pattern_template {pattern_template_id}
        actions_template {actions_template_id}
@@ -3199,6 +3270,28 @@ If successful, it will show::
 The usual error message is shown when operations results cannot be pulled::
 
    Caught error type [...] ([...]): [...]
+
+Calculating hash
+~~~~~~~~~~~~~~~~
+
+``flow hash`` calculates the hash for a given pattern.
+It is bound to ``rte_flow_calc_table_hash()``::
+
+   flow hash {port_id} template_table {table_id}
+       pattern_template {pattern_template_index}
+       actions_template {actions_template_index}
+       pattern {item} [/ {item} [...]] / end
+
+If successful, it will show the calculated hash result as seen below::
+
+   Hash results 0x[...]
+
+Otherwise, it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+This command uses the same pattern items as ``flow create``,
+their format is described in `Creating flow rules`_.
 
 Creating a tunnel stub for offload
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3274,12 +3367,16 @@ to ``rte_flow_create()``::
    flow create {port_id}
       [group {group_id}] [priority {level}] [ingress] [egress] [transfer]
       [tunnel_set {tunnel_id}] [tunnel_match {tunnel_id}]
-      pattern {item} [/ {item} [...]] / end
+      [user_id {user_id}] pattern {item} [/ {item} [...]] / end
       actions {action} [/ {action} [...]] / end
 
 If successful, it will return a flow rule ID usable with other commands::
 
    Flow rule #[...] created
+
+Or if ``user_id`` is provided::
+
+   Flow rule #[...] created, user-id [...]
 
 Otherwise it will show an error message of the form::
 
@@ -3289,6 +3386,7 @@ Parameters describe in the following order:
 
 - Attributes (*group*, *priority*, *ingress*, *egress*, *transfer* tokens).
 - Tunnel offload specification (tunnel_set, tunnel_match)
+- User identifier for the flow.
 - A matching pattern, starting with the *pattern* token and terminated by an
   *end* pattern item.
 - Actions, starting with the *actions* token and terminated by an *end*
@@ -3610,6 +3708,16 @@ This section lists supported pattern items and their attributes, if any.
   - ``type {unsigned}``: ICMPv6 type.
   - ``code {unsigned}``: ICMPv6 code.
 
+- ``icmp6_echo_request``: match ICMPv6 echo request.
+
+  - ``ident {unsigned}``: ICMPv6 echo request identifier.
+  - ``seq {unsigned}``: ICMPv6 echo request sequence number.
+
+- ``icmp6_echo_reply``: match ICMPv6 echo reply.
+
+  - ``ident {unsigned}``: ICMPv6 echo reply identifier.
+  - ``seq {unsigned}``: ICMPv6 echo reply sequence number.
+
 - ``icmp6_nd_ns``: match ICMPv6 neighbor discovery solicitation.
 
   - ``target_addr {ipv6 address}``: target address.
@@ -3696,11 +3804,30 @@ This section lists supported pattern items and their attributes, if any.
   - ``ctrl {unsigned}``: PPP control.
   - ``proto_id {unsigned}``: PPP protocol identifier.
 
+- ``ib_bth``: match InfiniBand BTH(base transport header).
+
+  - ``opcode {unsigned}``: Opcode.
+  - ``pkey {unsigned}``: Partition key.
+  - ``dst_qp {unsigned}``: Destination Queue Pair.
+  - ``psn {unsigned}``: Packet Sequence Number.
+
 - ``meter``: match meter color.
 
   - ``color {value}``: meter color value (green/yellow/red).
 
+- ``aggr_affinity``: match aggregated port.
+
+  - ``affinity {value}``: aggregated port (starts from 1).
+
+- ``tx_queue``: match Tx queue of sent packet.
+
+  - ``tx_queue {value}``: send queue value (starts from 0).
+
 - ``send_to_kernel``: send packets to kernel.
+
+- ``ptype``: match the packet type (L2/L3/L4 and tunnel information).
+
+        - ``packet_type {unsigned}``: packet type.
 
 
 Actions list
@@ -3991,6 +4118,27 @@ This section lists supported actions and their attributes, if any.
   - ``mtr_init_color {value}``: initial color value (green/yellow/red)
   - ``mtr_state {unsigned}``: meter state (disabled/enabled)
 
+- ``modify_field``:  Modify packet field
+
+  - ``op``: modify operation (set/add/sub)
+  - ``dst_type``: the destination field to be modified, the supported fields as
+    ``enum rte_flow_field_id`` listed.
+  - ``dst_level``: destination field level.
+  - ``dst_tag_index``: destination field tag array.
+  - ``dst_type_id``: destination field type ID.
+  - ``dst_class``: destination field class ID.
+  - ``dst_offset``: destination field bit offset.
+  - ``src_type``: the modify source field, the supported fields as
+    ``enum rte_flow_field_id`` listed.
+  - ``src_level``: source field level.
+  - ``src_tag_index``: source field tag array.
+  - ``src_type_id``: source field type ID.
+  - ``src_class``: source field class ID.
+  - ``src_offset``: source field bit offset.
+  - ``src_value``: source immediate value.
+  - ``src_ptr``: pointer to source immediate value.
+  - ``width``: number of bits to copy.
+
 Destroying flow rules
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -3998,12 +4146,18 @@ Destroying flow rules
 by ``flow create``), this command calls ``rte_flow_destroy()`` as many
 times as necessary::
 
-   flow destroy {port_id} rule {rule_id} [...]
+   flow destroy {port_id} rule {rule_id} [...] [user_id]
 
 If successful, it will show::
 
    Flow rule #[...] destroyed
 
+Or if ``user_id`` flag is provided::
+
+   Flow rule #[...] destroyed, user-id [...]
+
+Optional ``user_id`` is a flag that signifies the rule ID
+is the one provided by the user at creation.
 It does not report anything for rule IDs that do not exist. The usual error
 message is shown when a rule cannot be destroyed::
 
@@ -4082,8 +4236,10 @@ Querying flow rules
 ability. Such actions collect information that can be reported using this
 command. It is bound to ``rte_flow_query()``::
 
-   flow query {port_id} {rule_id} {action}
+   flow query {port_id} {rule_id} {action} [user_id]
 
+Optional ``user_id`` is a flag that signifies the rule ID
+is the one provided by the user at creation.
 If successful, it will display either the retrieved data for known actions
 or the following message::
 
@@ -4234,7 +4390,7 @@ Dumping HW internal information
 ``flow dump`` dumps the hardware's internal representation information of
 all flows. It is bound to ``rte_flow_dev_dump()``::
 
-   flow dump {port_id} {output_file}
+   flow dump {port_id} {output_file} [user_id]
 
 If successful, it will show::
 
@@ -4243,6 +4399,9 @@ If successful, it will show::
 Otherwise, it will complain error occurred::
 
    Caught error type [...] ([...]): [...]
+
+Optional ``user_id`` is a flag that signifies the rule ID
+is the one provided by the user at creation.
 
 Listing and destroying aged flow rules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -180,7 +180,7 @@ ifpga_scan_one(struct rte_rawdev *rawdev,
 		rawdev->dev_ops->firmware_load &&
 		rawdev->dev_ops->firmware_load(rawdev,
 				&afu_pr_conf)){
-		IFPGA_BUS_ERR("firmware load error %d\n", ret);
+		IFPGA_BUS_ERR("firmware load error %d", ret);
 		goto end;
 	}
 	afu_dev->id.uuid.uuid_low  = afu_pr_conf.afu_id.uuid.uuid_low;
@@ -316,7 +316,7 @@ ifpga_probe_all_drivers(struct rte_afu_device *afu_dev)
 
 	/* Check if a driver is already loaded */
 	if (rte_dev_is_probed(&afu_dev->device)) {
-		IFPGA_BUS_DEBUG("Device %s is already probed\n",
+		IFPGA_BUS_DEBUG("Device %s is already probed",
 				rte_ifpga_device_name(afu_dev));
 		return -EEXIST;
 	}
@@ -353,11 +353,46 @@ ifpga_probe(void)
 		if (ret == -EEXIST)
 			continue;
 		if (ret < 0)
-			IFPGA_BUS_ERR("failed to initialize %s device\n",
+			IFPGA_BUS_ERR("failed to initialize %s device",
 				rte_ifpga_device_name(afu_dev));
 	}
 
 	return ret;
+}
+
+/*
+ * Cleanup the content of the Intel FPGA bus, and call the remove() function
+ * for all registered devices.
+ */
+static int
+ifpga_cleanup(void)
+{
+	struct rte_afu_device *afu_dev, *tmp_dev;
+	int error = 0;
+
+	RTE_TAILQ_FOREACH_SAFE(afu_dev, &ifpga_afu_dev_list, next, tmp_dev) {
+		struct rte_afu_driver *drv = afu_dev->driver;
+		int ret = 0;
+
+		if (drv == NULL || drv->remove == NULL)
+			goto free;
+
+		ret = drv->remove(afu_dev);
+		if (ret < 0) {
+			rte_errno = errno;
+			error = -1;
+		}
+		afu_dev->driver = NULL;
+		afu_dev->device.driver = NULL;
+
+free:
+		TAILQ_REMOVE(&ifpga_afu_dev_list, afu_dev, next);
+		rte_devargs_remove(afu_dev->device.devargs);
+		rte_intr_instance_free(afu_dev->intr_handle);
+		free(afu_dev);
+	}
+
+	return error;
 }
 
 static int
@@ -373,7 +408,7 @@ ifpga_remove_driver(struct rte_afu_device *afu_dev)
 
 	name = rte_ifpga_device_name(afu_dev);
 	if (afu_dev->driver == NULL) {
-		IFPGA_BUS_DEBUG("no driver attach to device %s\n", name);
+		IFPGA_BUS_DEBUG("no driver attach to device %s", name);
 		return 1;
 	}
 
@@ -470,6 +505,7 @@ ifpga_parse(const char *name, void *addr)
 static struct rte_bus rte_ifpga_bus = {
 	.scan        = ifpga_scan,
 	.probe       = ifpga_probe,
+	.cleanup     = ifpga_cleanup,
 	.find_device = ifpga_find_device,
 	.plug        = ifpga_plug,
 	.unplug      = ifpga_unplug,

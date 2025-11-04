@@ -23,13 +23,16 @@
 #include <rte_cycles.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
+#define RTE_GRAPH_MODEL_SELECT RTE_GRAPH_MODEL_RTC
 #include <rte_graph_worker.h>
 #include <rte_launch.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
+#include <rte_lpm6.h>
 #include <rte_mempool.h>
 #include <rte_node_eth_api.h>
 #include <rte_node_ip4_api.h>
+#include <rte_node_ip6_api.h>
 #include <rte_per_lcore.h>
 #include <rte_string_fns.h>
 #include <rte_vect.h>
@@ -55,6 +58,9 @@
 
 #define NB_SOCKETS 8
 
+/* Graph module */
+#define WORKER_MODEL_RTC "rtc"
+#define WORKER_MODEL_MCORE_DISPATCH "dispatch"
 /* Static global variables used within this file. */
 static uint16_t nb_rxd = RX_DESC_DEFAULT;
 static uint16_t nb_txd = TX_DESC_DEFAULT;
@@ -76,11 +82,19 @@ xmm_t val_eth[RTE_MAX_ETHPORTS];
 /* Mask of enabled ports */
 static uint32_t enabled_port_mask;
 
+/* Pcap trace */
+static char pcap_filename[RTE_GRAPH_PCAP_FILE_SZ];
+static uint64_t packet_to_capture;
+static int pcap_trace_enable;
+
+
 struct lcore_rx_queue {
 	uint16_t port_id;
 	uint16_t queue_id;
 	char node_name[RTE_NODE_NAMESIZE];
 };
+
+static uint8_t model_conf = RTE_GRAPH_MODEL_DEFAULT;
 
 /* Lcore conf */
 struct lcore_conf {
@@ -136,6 +150,12 @@ struct ipv4_l3fwd_lpm_route {
 	uint8_t if_out;
 };
 
+struct ipv6_l3fwd_lpm_route {
+	uint8_t ip[RTE_LPM6_IPV6_ADDR_SIZE];
+	uint8_t depth;
+	uint8_t if_out;
+};
+
 #define IPV4_L3FWD_LPM_NUM_ROUTES                                              \
 	(sizeof(ipv4_l3fwd_lpm_route_array) /                                  \
 	 sizeof(ipv4_l3fwd_lpm_route_array[0]))
@@ -146,6 +166,41 @@ static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 	{RTE_IPV4(198, 18, 4, 0), 24, 4}, {RTE_IPV4(198, 18, 5, 0), 24, 5},
 	{RTE_IPV4(198, 18, 6, 0), 24, 6}, {RTE_IPV4(198, 18, 7, 0), 24, 7},
 };
+
+#define IPV6_L3FWD_LPM_NUM_ROUTES                                              \
+	(sizeof(ipv6_l3fwd_lpm_route_array) /                                  \
+	 sizeof(ipv6_l3fwd_lpm_route_array[0]))
+static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00}, 48, 0},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x01}, 48, 1},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x02}, 48, 2},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x03}, 48, 3},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x04}, 48, 4},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x05}, 48, 5},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x06}, 48, 6},
+	{{0x20, 0x01, 0xdb, 0x08, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x02}, 48, 7},
+};
+
+static int
+check_worker_model_params(void)
+{
+	if (model_conf == RTE_GRAPH_MODEL_MCORE_DISPATCH &&
+	    nb_lcore_params > 1) {
+		printf("Exceeded max number of lcore params for remote model: %hu\n",
+		       nb_lcore_params);
+		return -1;
+	}
+
+	return 0;
+}
 
 static int
 check_lcore_params(void)
@@ -261,7 +316,8 @@ print_usage(const char *prgname)
 		" [--eth-dest=X,MM:MM:MM:MM:MM:MM]"
 		" [--max-pkt-len PKTLEN]"
 		" [--no-numa]"
-		" [--per-port-pool]\n\n"
+		" [--per-port-pool]"
+		" [--num-pkt-cap]\n\n"
 
 		"  -p PORTMASK: Hexadecimal bitmask of ports to configure\n"
 		"  -P : Enable promiscuous mode\n"
@@ -269,9 +325,30 @@ print_usage(const char *prgname)
 		"  --eth-dest=X,MM:MM:MM:MM:MM:MM: Ethernet destination for "
 		"port X\n"
 		"  --max-pkt-len PKTLEN: maximum packet length in decimal (64-9600)\n"
+		"  --model NAME: walking model name, dispatch or rtc(by default)\n"
 		"  --no-numa: Disable numa awareness\n"
-		"  --per-port-pool: Use separate buffer pool per port\n\n",
+		"  --per-port-pool: Use separate buffer pool per port\n"
+		"  --pcap-enable: Enables pcap capture\n"
+		"  --pcap-num-cap NUMPKT: Number of packets to capture\n"
+		"  --pcap-file-name NAME: Pcap file name\n\n",
 		prgname);
+}
+
+static uint64_t
+parse_num_pkt_cap(const char *num_pkt_cap)
+{
+	uint64_t num_pkt;
+	char *end = NULL;
+
+	/* Parse decimal string */
+	num_pkt = strtoull(num_pkt_cap, &end, 10);
+	if ((num_pkt_cap[0] == '\0') || (end == NULL) || (*end != '\0'))
+		return 0;
+
+	if (num_pkt == 0)
+		return 0;
+
+	return num_pkt;
 }
 
 static int
@@ -289,6 +366,23 @@ parse_max_pkt_len(const char *pktlen)
 		return -1;
 
 	return len;
+}
+
+static void
+parse_worker_model(const char *model)
+{
+	if (strcmp(model, WORKER_MODEL_MCORE_DISPATCH) == 0)
+		model_conf = RTE_GRAPH_MODEL_MCORE_DISPATCH;
+	else if (strcmp(model, WORKER_MODEL_RTC) == 0)
+		model_conf = RTE_GRAPH_MODEL_RTC;
+	else
+		rte_exit(EXIT_FAILURE, "Invalid worker model: %s", model);
+
+#if defined(RTE_GRAPH_MODEL_SELECT)
+	if (model_conf != RTE_GRAPH_MODEL_SELECT)
+		printf("Warning: model mismatch, will use the RTE_GRAPH_MODEL_SELECT model\n");
+	model_conf = RTE_GRAPH_MODEL_SELECT;
+#endif
 }
 
 static int
@@ -404,6 +498,11 @@ static const char short_options[] = "p:" /* portmask */
 #define CMD_LINE_OPT_NO_NUMA	   "no-numa"
 #define CMD_LINE_OPT_MAX_PKT_LEN   "max-pkt-len"
 #define CMD_LINE_OPT_PER_PORT_POOL "per-port-pool"
+#define CMD_LINE_OPT_PCAP_ENABLE   "pcap-enable"
+#define CMD_LINE_OPT_NUM_PKT_CAP   "pcap-num-cap"
+#define CMD_LINE_OPT_PCAP_FILENAME "pcap-file-name"
+#define CMD_LINE_OPT_WORKER_MODEL  "model"
+
 enum {
 	/* Long options mapped to a short option */
 
@@ -416,6 +515,10 @@ enum {
 	CMD_LINE_OPT_NO_NUMA_NUM,
 	CMD_LINE_OPT_MAX_PKT_LEN_NUM,
 	CMD_LINE_OPT_PARSE_PER_PORT_POOL,
+	CMD_LINE_OPT_PARSE_PCAP_ENABLE,
+	CMD_LINE_OPT_PARSE_NUM_PKT_CAP,
+	CMD_LINE_OPT_PCAP_FILENAME_CAP,
+	CMD_LINE_OPT_WORKER_MODEL_TYPE,
 };
 
 static const struct option lgopts[] = {
@@ -424,6 +527,10 @@ static const struct option lgopts[] = {
 	{CMD_LINE_OPT_NO_NUMA, 0, 0, CMD_LINE_OPT_NO_NUMA_NUM},
 	{CMD_LINE_OPT_MAX_PKT_LEN, 1, 0, CMD_LINE_OPT_MAX_PKT_LEN_NUM},
 	{CMD_LINE_OPT_PER_PORT_POOL, 0, 0, CMD_LINE_OPT_PARSE_PER_PORT_POOL},
+	{CMD_LINE_OPT_PCAP_ENABLE, 0, 0, CMD_LINE_OPT_PARSE_PCAP_ENABLE},
+	{CMD_LINE_OPT_NUM_PKT_CAP, 1, 0, CMD_LINE_OPT_PARSE_NUM_PKT_CAP},
+	{CMD_LINE_OPT_PCAP_FILENAME, 1, 0, CMD_LINE_OPT_PCAP_FILENAME_CAP},
+	{CMD_LINE_OPT_WORKER_MODEL, 1, 0, CMD_LINE_OPT_WORKER_MODEL_TYPE},
 	{NULL, 0, 0, 0},
 };
 
@@ -496,6 +603,28 @@ parse_args(int argc, char **argv)
 		case CMD_LINE_OPT_PARSE_PER_PORT_POOL:
 			printf("Per port buffer pool is enabled\n");
 			per_port_pool = 1;
+			break;
+
+		case CMD_LINE_OPT_PARSE_PCAP_ENABLE:
+			printf("Packet capture enabled\n");
+			pcap_trace_enable = 1;
+			break;
+
+		case CMD_LINE_OPT_PARSE_NUM_PKT_CAP:
+			packet_to_capture = parse_num_pkt_cap(optarg);
+			printf("Number of packets to capture: %"PRIu64"\n",
+			       packet_to_capture);
+			break;
+
+		case CMD_LINE_OPT_PCAP_FILENAME_CAP:
+			rte_strlcpy(pcap_filename, optarg,
+				    sizeof(pcap_filename));
+			printf("Pcap file name: %s\n", pcap_filename);
+			break;
+
+		case CMD_LINE_OPT_WORKER_MODEL_TYPE:
+			printf("Use new worker model: %s\n", optarg);
+			parse_worker_model(optarg);
 			break;
 
 		default:
@@ -735,6 +864,142 @@ config_port_max_pkt_len(struct rte_eth_conf *conf,
 	return 0;
 }
 
+static void
+graph_config_mcore_dispatch(struct rte_graph_param graph_conf)
+{
+	uint16_t nb_patterns = graph_conf.nb_node_patterns;
+	int worker_count = rte_lcore_count() - 1;
+	int main_lcore_id = rte_get_main_lcore();
+	rte_graph_t main_graph_id = 0;
+	struct rte_node *node_tmp;
+	struct lcore_conf *qconf;
+	struct rte_graph *graph;
+	rte_graph_t graph_id;
+	rte_graph_off_t off;
+	int n_rx_node = 0;
+	int worker_lcore;
+	rte_node_t count;
+	int i, j;
+	int ret;
+
+	for (j = 0; j < nb_lcore_params; j++) {
+		qconf = &lcore_conf[lcore_params[j].lcore_id];
+		/* Add rx node patterns of all lcore */
+		for (i = 0; i < qconf->n_rx_queue; i++) {
+			char *node_name = qconf->rx_queue_list[i].node_name;
+			unsigned int lcore_id = lcore_params[j].lcore_id;
+
+			graph_conf.node_patterns[nb_patterns + n_rx_node + i] = node_name;
+			n_rx_node++;
+			ret = rte_graph_model_mcore_dispatch_node_lcore_affinity_set(node_name,
+										     lcore_id);
+			if (ret == 0)
+				printf("Set node %s affinity to lcore %u\n", node_name,
+				       lcore_params[j].lcore_id);
+		}
+	}
+
+	graph_conf.nb_node_patterns = nb_patterns + n_rx_node;
+	graph_conf.socket_id = rte_lcore_to_socket_id(main_lcore_id);
+
+	qconf = &lcore_conf[main_lcore_id];
+	snprintf(qconf->name, sizeof(qconf->name), "worker_%u",
+		 main_lcore_id);
+
+	/* create main graph */
+	main_graph_id = rte_graph_create(qconf->name, &graph_conf);
+	if (main_graph_id == RTE_GRAPH_ID_INVALID)
+		rte_exit(EXIT_FAILURE,
+			 "rte_graph_create(): main_graph_id invalid for lcore %u\n",
+			 main_lcore_id);
+
+	/* set the graph model for the main graph */
+	rte_graph_worker_model_set(RTE_GRAPH_MODEL_MCORE_DISPATCH);
+	qconf->graph_id = main_graph_id;
+	qconf->graph = rte_graph_lookup(qconf->name);
+	if (!qconf->graph)
+		rte_exit(EXIT_FAILURE,
+			 "rte_graph_lookup(): graph %s not found\n",
+			 qconf->name);
+
+	graph = qconf->graph;
+	worker_lcore = lcore_params[nb_lcore_params - 1].lcore_id;
+	rte_graph_foreach_node(count, off, graph, node_tmp) {
+		/* Need to set the node Lcore affinity before clone graph for each lcore */
+		if (node_tmp->dispatch.lcore_id == RTE_MAX_LCORE) {
+			worker_lcore = rte_get_next_lcore(worker_lcore, true, 1);
+			ret = rte_graph_model_mcore_dispatch_node_lcore_affinity_set(node_tmp->name,
+										     worker_lcore);
+			if (ret == 0)
+				printf("Set node %s affinity to lcore %u\n",
+				       node_tmp->name, worker_lcore);
+		}
+	}
+
+	worker_lcore = main_lcore_id;
+	for (i = 0; i < worker_count; i++) {
+		worker_lcore = rte_get_next_lcore(worker_lcore, true, 1);
+
+		qconf = &lcore_conf[worker_lcore];
+		snprintf(qconf->name, sizeof(qconf->name), "cloned-%u", worker_lcore);
+		graph_id = rte_graph_clone(main_graph_id, qconf->name, &graph_conf);
+		ret = rte_graph_model_mcore_dispatch_core_bind(graph_id, worker_lcore);
+		if (ret == 0)
+			printf("bind graph %d to lcore %u\n", graph_id, worker_lcore);
+
+		/* full cloned graph name */
+		snprintf(qconf->name, sizeof(qconf->name), "%s",
+			 rte_graph_id_to_name(graph_id));
+		qconf->graph_id = graph_id;
+		qconf->graph = rte_graph_lookup(qconf->name);
+		if (!qconf->graph)
+			rte_exit(EXIT_FAILURE,
+				 "Failed to lookup graph %s\n",
+				 qconf->name);
+		continue;
+	}
+}
+
+static void
+graph_config_rtc(struct rte_graph_param graph_conf)
+{
+	uint16_t nb_patterns = graph_conf.nb_node_patterns;
+	struct lcore_conf *qconf;
+	rte_graph_t graph_id;
+	uint32_t lcore_id;
+	rte_edge_t i;
+
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		if (rte_lcore_is_enabled(lcore_id) == 0)
+			continue;
+
+		qconf = &lcore_conf[lcore_id];
+		/* Skip graph creation if no source exists */
+		if (!qconf->n_rx_queue)
+			continue;
+		/* Add rx node patterns of this lcore */
+		for (i = 0; i < qconf->n_rx_queue; i++) {
+			graph_conf.node_patterns[nb_patterns + i] =
+				qconf->rx_queue_list[i].node_name;
+		}
+		graph_conf.nb_node_patterns = nb_patterns + i;
+		graph_conf.socket_id = rte_lcore_to_socket_id(lcore_id);
+		snprintf(qconf->name, sizeof(qconf->name), "worker_%u",
+			 lcore_id);
+		graph_id = rte_graph_create(qconf->name, &graph_conf);
+		if (graph_id == RTE_GRAPH_ID_INVALID)
+			rte_exit(EXIT_FAILURE,
+				 "rte_graph_create(): graph_id invalid for lcore %u\n",
+				 lcore_id);
+		qconf->graph_id = graph_id;
+		qconf->graph = rte_graph_lookup(qconf->name);
+		if (!qconf->graph)
+			rte_exit(EXIT_FAILURE,
+				 "rte_graph_lookup(): graph %s not found\n",
+				 qconf->name);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -787,6 +1052,9 @@ main(int argc, char **argv)
 
 	if (check_lcore_params() < 0)
 		rte_exit(EXIT_FAILURE, "check_lcore_params() failed\n");
+
+	if (check_worker_model_params() < 0)
+		rte_exit(EXIT_FAILURE, "check_worker_model_params() failed\n");
 
 	ret = init_lcore_rx_queues();
 	if (ret < 0)
@@ -1027,51 +1295,25 @@ main(int argc, char **argv)
 
 	memset(&graph_conf, 0, sizeof(graph_conf));
 	graph_conf.node_patterns = node_patterns;
+	graph_conf.nb_node_patterns = nb_patterns;
 
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-		rte_graph_t graph_id;
-		rte_edge_t i;
+	/* Pcap config */
+	graph_conf.pcap_enable = pcap_trace_enable;
+	graph_conf.num_pkt_to_capture = packet_to_capture;
+	graph_conf.pcap_filename = pcap_filename;
 
-		if (rte_lcore_is_enabled(lcore_id) == 0)
-			continue;
+	if (model_conf == RTE_GRAPH_MODEL_MCORE_DISPATCH)
+		graph_config_mcore_dispatch(graph_conf);
+	else
+		graph_config_rtc(graph_conf);
 
-		qconf = &lcore_conf[lcore_id];
-
-		/* Skip graph creation if no source exists */
-		if (!qconf->n_rx_queue)
-			continue;
-
-		/* Add rx node patterns of this lcore */
-		for (i = 0; i < qconf->n_rx_queue; i++) {
-			graph_conf.node_patterns[nb_patterns + i] =
-				qconf->rx_queue_list[i].node_name;
-		}
-
-		graph_conf.nb_node_patterns = nb_patterns + i;
-		graph_conf.socket_id = rte_lcore_to_socket_id(lcore_id);
-
-		snprintf(qconf->name, sizeof(qconf->name), "worker_%u",
-			 lcore_id);
-
-		graph_id = rte_graph_create(qconf->name, &graph_conf);
-		if (graph_id == RTE_GRAPH_ID_INVALID)
-			rte_exit(EXIT_FAILURE,
-				 "rte_graph_create(): graph_id invalid"
-				 " for lcore %u\n", lcore_id);
-
-		qconf->graph_id = graph_id;
-		qconf->graph = rte_graph_lookup(qconf->name);
-		/* >8 End of graph initialization. */
-		if (!qconf->graph)
-			rte_exit(EXIT_FAILURE,
-				 "rte_graph_lookup(): graph %s not found\n",
-				 qconf->name);
-	}
+	rte_graph_worker_model_set(model_conf);
+	/* >8 End of graph initialization. */
 
 	memset(&rewrite_data, 0, sizeof(rewrite_data));
 	rewrite_len = sizeof(rewrite_data);
 
-	/* Add route to ip4 graph infra. 8< */
+	/* Add routes and rewrite data to graph infra. 8< */
 	for (i = 0; i < IPV4_L3FWD_LPM_NUM_ROUTES; i++) {
 		char route_str[INET6_ADDRSTRLEN * 4];
 		char abuf[INET6_ADDRSTRLEN];
@@ -1115,7 +1357,50 @@ main(int argc, char **argv)
 		RTE_LOG(INFO, L3FWD_GRAPH, "Added route %s, next_hop %u\n",
 			route_str, i);
 	}
-	/* >8 End of adding route to ip4 graph infa. */
+
+	for (i = 0; i < IPV6_L3FWD_LPM_NUM_ROUTES; i++) {
+		char route_str[INET6_ADDRSTRLEN * 4];
+		char abuf[INET6_ADDRSTRLEN];
+		struct in6_addr in6;
+		uint32_t dst_port;
+
+		/* Skip unused ports */
+		if ((1 << ipv6_l3fwd_lpm_route_array[i].if_out &
+		     enabled_port_mask) == 0)
+			continue;
+
+		dst_port = ipv6_l3fwd_lpm_route_array[i].if_out;
+
+		memcpy(in6.s6_addr, ipv6_l3fwd_lpm_route_array[i].ip, RTE_LPM6_IPV6_ADDR_SIZE);
+		snprintf(route_str, sizeof(route_str), "%s / %d (%d)",
+			 inet_ntop(AF_INET6, &in6, abuf, sizeof(abuf)),
+			 ipv6_l3fwd_lpm_route_array[i].depth,
+			 ipv6_l3fwd_lpm_route_array[i].if_out);
+
+		/* Use route index 'i' as next hop id */
+		ret = rte_node_ip6_route_add(ipv6_l3fwd_lpm_route_array[i].ip,
+			ipv6_l3fwd_lpm_route_array[i].depth, i,
+			RTE_NODE_IP6_LOOKUP_NEXT_REWRITE);
+
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Unable to add ip6 route %s to graph\n",
+				 route_str);
+
+		memcpy(rewrite_data, val_eth + dst_port, rewrite_len);
+
+		/* Add next hop rewrite data for id 'i' */
+		ret = rte_node_ip6_rewrite_add(i, rewrite_data,
+					       rewrite_len, dst_port);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Unable to add next hop %u for "
+				 "route %s\n", i, route_str);
+
+		RTE_LOG(INFO, L3FWD_GRAPH, "Added route %s, next_hop %u\n",
+			route_str, i);
+	}
+	/* >8 End of adding routes and rewrite data to graph infa. */
 
 	/* Launch per-lcore init on every worker lcore */
 	rte_eal_mp_remote_launch(graph_main_loop, NULL, SKIP_MAIN);

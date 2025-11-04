@@ -1,4 +1,4 @@
-DPDK_23 {
+DPDK_24 {
 	global:
 
 	__rte_panic;
@@ -17,10 +17,13 @@ DPDK_23 {
 	rte_bus_scan;
 	rte_calloc;
 	rte_calloc_socket;
+	rte_class_find;
+	rte_class_find_by_name;
+	rte_class_register;
+	rte_class_unregister;
 	rte_cpu_get_flag_enabled;
 	rte_cpu_get_flag_name;
 	rte_cpu_is_supported; # WINDOWS_NO_EXPORT
-	rte_ctrl_thread_create;
 	rte_cycles_vmware_tsc_map; # WINDOWS_NO_EXPORT
 	rte_delay_us;
 	rte_delay_us_block;
@@ -29,8 +32,19 @@ DPDK_23 {
 	rte_dev_bus;
 	rte_dev_bus_info;
 	rte_dev_devargs;
+	rte_dev_dma_map;
+	rte_dev_dma_unmap;
 	rte_dev_driver;
+	rte_dev_event_callback_process;
+	rte_dev_event_callback_register;
+	rte_dev_event_callback_unregister;
+	rte_dev_event_monitor_start;
+	rte_dev_event_monitor_stop;
+	rte_dev_hotplug_handle_disable;
+	rte_dev_hotplug_handle_enable;
 	rte_dev_is_probed;
+	rte_dev_iterator_init;
+	rte_dev_iterator_next;
 	rte_dev_name;
 	rte_dev_numa_node;
 	rte_dev_probe;
@@ -42,7 +56,9 @@ DPDK_23 {
 	rte_devargs_parse;
 	rte_devargs_parsef;
 	rte_devargs_remove;
+	rte_devargs_reset;
 	rte_devargs_type_count;
+	rte_drand;
 	rte_driver_name;
 	rte_dump_physmem_layout;
 	rte_dump_stack;
@@ -72,6 +88,7 @@ DPDK_23 {
 	rte_eal_tailq_lookup;
 	rte_eal_tailq_register;
 	rte_eal_using_phys_addrs;
+	rte_eal_vfio_get_vf_token; # WINDOWS_NO_EXPORT
 	rte_eal_vfio_intr_mode; # WINDOWS_NO_EXPORT
 	rte_eal_wait_lcore;
 	rte_epoll_ctl;
@@ -121,8 +138,15 @@ DPDK_23 {
 	rte_intr_callback_register;
 	rte_intr_callback_unregister;
 	rte_intr_callback_unregister_pending;
+	rte_intr_callback_unregister_sync;
 	rte_intr_disable;
 	rte_intr_enable;
+	rte_intr_fd_get;
+	rte_intr_fd_set;
+	rte_intr_instance_alloc;
+	rte_intr_instance_free;
+	rte_intr_type_get;
+	rte_intr_type_set;
 	rte_keepalive_create; # WINDOWS_NO_EXPORT
 	rte_keepalive_dispatch_pings; # WINDOWS_NO_EXPORT
 	rte_keepalive_mark_alive; # WINDOWS_NO_EXPORT
@@ -140,21 +164,6 @@ DPDK_23 {
 	rte_lcore_iterate;
 	rte_lcore_to_cpu_id;
 	rte_lcore_to_socket_id;
-	rte_log;
-	rte_log_can_log;
-	rte_log_cur_msg_loglevel;
-	rte_log_cur_msg_logtype;
-	rte_log_dump;
-	rte_log_get_global_level;
-	rte_log_get_level;
-	rte_log_get_stream;
-	rte_log_list_types;
-	rte_log_register;
-	rte_log_register_type_and_pick_level;
-	rte_log_set_global_level;
-	rte_log_set_level;
-	rte_log_set_level_pattern;
-	rte_log_set_level_regexp;
 	rte_malloc;
 	rte_malloc_dump_heaps;
 	rte_malloc_dump_stats;
@@ -225,7 +234,10 @@ DPDK_23 {
 	rte_mp_request_async;
 	rte_mp_request_sync;
 	rte_mp_sendmsg;
-	rte_openlog_stream;
+	rte_power_monitor; # WINDOWS_NO_EXPORT
+	rte_power_monitor_multi; # WINDOWS_NO_EXPORT
+	rte_power_monitor_wakeup; # WINDOWS_NO_EXPORT
+	rte_power_pause; # WINDOWS_NO_EXPORT
 	rte_rand;
 	rte_rand_max;
 	rte_realloc;
@@ -250,6 +262,7 @@ DPDK_23 {
 	rte_service_lcore_count_services;
 	rte_service_lcore_del;
 	rte_service_lcore_list;
+	rte_service_lcore_may_be_active;
 	rte_service_lcore_reset_all;
 	rte_service_lcore_start;
 	rte_service_lcore_stop;
@@ -273,17 +286,43 @@ DPDK_23 {
 	rte_strscpy;
 	rte_strsplit;
 	rte_sys_gettid;
+	rte_thread_attr_get_affinity;
+	rte_thread_attr_init;
+	rte_thread_attr_set_affinity;
+	rte_thread_attr_set_priority;
+	rte_thread_create;
+	rte_thread_create_control;
+	rte_thread_detach;
+	rte_thread_equal;
 	rte_thread_get_affinity;
+	rte_thread_get_affinity_by_id;
+	rte_thread_get_priority;
 	rte_thread_is_intr;
+	rte_thread_join;
+	rte_thread_key_create;
+	rte_thread_key_delete;
 	rte_thread_register;
+	rte_thread_self;
 	rte_thread_set_affinity;
-	rte_thread_setname;
+	rte_thread_set_affinity_by_id;
+	rte_thread_set_name;
+	rte_thread_set_priority;
 	rte_thread_unregister;
+	rte_thread_value_get;
+	rte_thread_value_set;
 	rte_uuid_compare;
 	rte_uuid_is_null;
 	rte_uuid_parse;
 	rte_uuid_unparse;
+	rte_vect_get_max_simd_bitwidth;
+	rte_vect_set_max_simd_bitwidth;
 	rte_version;
+	rte_version_minor;
+	rte_version_month;
+	rte_version_prefix;
+	rte_version_release;
+	rte_version_suffix;
+	rte_version_year;
 	rte_vfio_clear_group; # WINDOWS_NO_EXPORT
 	rte_vfio_container_create; # WINDOWS_NO_EXPORT
 	rte_vfio_container_destroy; # WINDOWS_NO_EXPORT
@@ -299,7 +338,6 @@ DPDK_23 {
 	rte_vfio_noiommu_is_enabled; # WINDOWS_NO_EXPORT
 	rte_vfio_release_device; # WINDOWS_NO_EXPORT
 	rte_vfio_setup_device; # WINDOWS_NO_EXPORT
-	rte_vlog;
 	rte_zmalloc;
 	rte_zmalloc_socket;
 
@@ -309,32 +347,7 @@ DPDK_23 {
 EXPERIMENTAL {
 	global:
 
-	# added in 18.05
-	rte_dev_event_callback_register;
-	rte_dev_event_callback_unregister;
-	rte_dev_event_monitor_start;
-	rte_dev_event_monitor_stop;
-
-	# added in 18.08
-	rte_class_find;
-	rte_class_find_by_name;
-	rte_class_register;
-	rte_class_unregister;
-	rte_dev_iterator_init;
-	rte_dev_iterator_next;
-
-	# added in 18.11
-	rte_dev_event_callback_process;
-	rte_dev_hotplug_handle_disable;
-	rte_dev_hotplug_handle_enable;
-
-	# added in 19.05
-	rte_dev_dma_map;
-	rte_dev_dma_unmap;
-
 	# added in 20.05
-	__rte_eal_trace_alarm_cancel;
-	__rte_eal_trace_alarm_set;
 	__rte_eal_trace_generic_double;
 	__rte_eal_trace_generic_float;
 	__rte_eal_trace_generic_func;
@@ -351,25 +364,11 @@ EXPERIMENTAL {
 	__rte_eal_trace_generic_u64;
 	__rte_eal_trace_generic_u8;
 	__rte_eal_trace_generic_void;
-	__rte_eal_trace_intr_callback_register;
-	__rte_eal_trace_intr_callback_unregister;
-	__rte_eal_trace_intr_enable;
-	__rte_eal_trace_intr_disable;
-	__rte_eal_trace_mem_free;
-	__rte_eal_trace_mem_malloc;
-	__rte_eal_trace_mem_realloc;
-	__rte_eal_trace_mem_zmalloc;
-	__rte_eal_trace_memzone_free;
-	__rte_eal_trace_memzone_lookup;
-	__rte_eal_trace_memzone_reserve;
-	__rte_eal_trace_thread_lcore_ready;
-	__rte_eal_trace_thread_remote_launch;
 	__rte_trace_mem_per_thread_alloc;
 	__rte_trace_point_emit_field;
 	__rte_trace_point_register;
 	per_lcore_trace_mem;
 	per_lcore_trace_point_sz;
-	rte_thread_getname; # WINDOWS_NO_EXPORT
 	rte_trace_dump; # WINDOWS_NO_EXPORT
 	rte_trace_is_enabled; # WINDOWS_NO_EXPORT
 	rte_trace_metadata_dump; # WINDOWS_NO_EXPORT
@@ -383,63 +382,17 @@ EXPERIMENTAL {
 	rte_trace_regexp; # WINDOWS_NO_EXPORT
 	rte_trace_save; # WINDOWS_NO_EXPORT
 
-	# added in 20.08
-	rte_eal_vfio_get_vf_token; # WINDOWS_NO_EXPORT
-
 	# added in 20.11
 	__rte_eal_trace_generic_size_t; # WINDOWS_NO_EXPORT
 	rte_cpu_get_intrinsics_support; # WINDOWS_NO_EXPORT
-	rte_service_lcore_may_be_active;
-	rte_vect_get_max_simd_bitwidth;
-	rte_vect_set_max_simd_bitwidth;
 
-	# added in 21.02
-	rte_power_monitor; # WINDOWS_NO_EXPORT
-	rte_power_monitor_wakeup; # WINDOWS_NO_EXPORT
-	rte_power_pause; # WINDOWS_NO_EXPORT
+	# added in 23.03
+	rte_lcore_register_usage_cb;
+	__rte_eal_trace_generic_blob;
 
-	# added in 21.05
-	rte_devargs_reset;
-	rte_intr_callback_unregister_sync;
-	rte_thread_key_create;
-	rte_thread_key_delete;
-	rte_thread_value_get;
-	rte_thread_value_set;
-	rte_version_minor;
-	rte_version_month;
-	rte_version_prefix;
-	rte_version_release;
-	rte_version_suffix;
-	rte_version_year;
-
-	# added in 21.08
-	rte_power_monitor_multi; # WINDOWS_NO_EXPORT
-
-	# added in 21.11
-	rte_intr_fd_get;
-	rte_intr_fd_set;
-	rte_intr_instance_alloc;
-	rte_intr_instance_free;
-	rte_intr_type_get;
-	rte_intr_type_set;
-
-	# added in 22.07
-	rte_drand;
-	rte_thread_get_affinity_by_id;
-	rte_thread_get_priority;
-	rte_thread_self;
-	rte_thread_set_affinity_by_id;
-	rte_thread_set_priority;
-
-	# added in 22.11
-	rte_thread_attr_get_affinity;
-	rte_thread_attr_init;
-	rte_thread_attr_set_affinity;
-	rte_thread_attr_set_priority;
-	rte_thread_create;
-	rte_thread_detach;
-	rte_thread_equal;
-	rte_thread_join;
+	# added in 23.07
+	rte_memzone_max_get;
+	rte_memzone_max_set;
 };
 
 INTERNAL {
@@ -479,8 +432,15 @@ INTERNAL {
 	rte_intr_vec_list_free;
 	rte_intr_vec_list_index_get;
 	rte_intr_vec_list_index_set;
+	rte_mcfg_ethdev_get_lock;
+	rte_mcfg_mem_get_lock;
+	rte_mcfg_mempool_get_lock;
+	rte_mcfg_tailq_get_lock;
+	rte_mcfg_timer_get_lock;
 	rte_mem_lock;
 	rte_mem_map;
 	rte_mem_page_size;
 	rte_mem_unmap;
+	rte_thread_create_internal_control;
+	rte_thread_set_prefixed_name;
 };

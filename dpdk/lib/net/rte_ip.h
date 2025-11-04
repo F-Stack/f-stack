@@ -28,7 +28,6 @@
 #include <netinet/ip6.h>
 #endif
 
-#include <rte_compat.h>
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
 
@@ -345,7 +344,7 @@ rte_ipv4_phdr_cksum(const struct rte_ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
 	psd_hdr.dst_addr = ipv4_hdr->dst_addr;
 	psd_hdr.zero = 0;
 	psd_hdr.proto = ipv4_hdr->next_proto_id;
-	if (ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+	if (ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG)) {
 		psd_hdr.len = 0;
 	} else {
 		l3_len = rte_be_to_cpu_16(ipv4_hdr->total_length);
@@ -438,9 +437,6 @@ __rte_ipv4_udptcp_cksum_mbuf(const struct rte_mbuf *m,
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Compute the IPv4 UDP/TCP checksum of a packet.
  *
  * @param m
@@ -452,7 +448,6 @@ __rte_ipv4_udptcp_cksum_mbuf(const struct rte_mbuf *m,
  * @return
  *   The complemented checksum to set in the L4 header.
  */
-__rte_experimental
 static inline uint16_t
 rte_ipv4_udptcp_cksum_mbuf(const struct rte_mbuf *m,
 			   const struct rte_ipv4_hdr *ipv4_hdr, uint16_t l4_off)
@@ -485,7 +480,6 @@ rte_ipv4_udptcp_cksum_mbuf(const struct rte_mbuf *m,
  * @return
  *   Return 0 if the checksum is correct, else -1.
  */
-__rte_experimental
 static inline int
 rte_ipv4_udptcp_cksum_verify(const struct rte_ipv4_hdr *ipv4_hdr,
 			     const void *l4_hdr)
@@ -499,9 +493,6 @@ rte_ipv4_udptcp_cksum_verify(const struct rte_ipv4_hdr *ipv4_hdr,
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Verify the IPv4 UDP/TCP checksum of a packet.
  *
  * In case of UDP, the caller must first check if udp_hdr->dgram_cksum is 0
@@ -516,7 +507,6 @@ rte_ipv4_udptcp_cksum_verify(const struct rte_ipv4_hdr *ipv4_hdr,
  * @return
  *   Return 0 if the checksum is correct, else -1.
  */
-__rte_experimental
 static inline int
 rte_ipv4_udptcp_cksum_mbuf_verify(const struct rte_mbuf *m,
 				  const struct rte_ipv4_hdr *ipv4_hdr,
@@ -540,6 +530,29 @@ struct rte_ipv6_hdr {
 	uint8_t  hop_limits;	/**< Hop limits. */
 	uint8_t  src_addr[16];	/**< IP address of source host. */
 	uint8_t  dst_addr[16];	/**< IP address of destination host(s). */
+} __rte_packed;
+
+/* IPv6 routing extension type definition. */
+#define RTE_IPV6_SRCRT_TYPE_4 4
+
+/**
+ * IPv6 Routing Extension Header
+ */
+struct rte_ipv6_routing_ext {
+	uint8_t next_hdr;			/**< Protocol, next header. */
+	uint8_t hdr_len;			/**< Header length. */
+	uint8_t type;				/**< Extension header type. */
+	uint8_t segments_left;			/**< Valid segments number. */
+	__extension__
+	union {
+		rte_be32_t flags;		/**< Packet control data per type. */
+		struct {
+			uint8_t last_entry;	/**< The last_entry field of SRH */
+			uint8_t flag;		/**< Packet flag. */
+			rte_be16_t tag;		/**< Packet tag. */
+		};
+	};
+	/* Next are 128-bit IPv6 address fields to describe segments. */
 } __rte_packed;
 
 /* IPv6 vtc_flow: IPv / TC / flow_label */
@@ -579,7 +592,7 @@ rte_ipv6_phdr_cksum(const struct rte_ipv6_hdr *ipv6_hdr, uint64_t ol_flags)
 	} psd_hdr;
 
 	psd_hdr.proto = (uint32_t)(ipv6_hdr->proto << 24);
-	if (ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+	if (ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG)) {
 		psd_hdr.len = 0;
 	} else {
 		psd_hdr.len = ipv6_hdr->payload_len;
@@ -667,9 +680,6 @@ __rte_ipv6_udptcp_cksum_mbuf(const struct rte_mbuf *m,
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Process the IPv6 UDP or TCP checksum of a packet.
  *
  * The IPv6 header must not be followed by extension headers. The layer 4
@@ -684,7 +694,6 @@ __rte_ipv6_udptcp_cksum_mbuf(const struct rte_mbuf *m,
  * @return
  *   The complemented checksum to set in the L4 header.
  */
-__rte_experimental
 static inline uint16_t
 rte_ipv6_udptcp_cksum_mbuf(const struct rte_mbuf *m,
 			   const struct rte_ipv6_hdr *ipv6_hdr, uint16_t l4_off)
@@ -718,7 +727,6 @@ rte_ipv6_udptcp_cksum_mbuf(const struct rte_mbuf *m,
  * @return
  *   Return 0 if the checksum is correct, else -1.
  */
-__rte_experimental
 static inline int
 rte_ipv6_udptcp_cksum_verify(const struct rte_ipv6_hdr *ipv6_hdr,
 			     const void *l4_hdr)
@@ -732,9 +740,6 @@ rte_ipv6_udptcp_cksum_verify(const struct rte_ipv6_hdr *ipv6_hdr,
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice.
- *
  * Validate the IPv6 UDP or TCP checksum of a packet.
  *
  * In case of UDP, the caller must first check if udp_hdr->dgram_cksum is 0:
@@ -750,7 +755,6 @@ rte_ipv6_udptcp_cksum_verify(const struct rte_ipv6_hdr *ipv6_hdr,
  * @return
  *   Return 0 if the checksum is correct, else -1.
  */
-__rte_experimental
 static inline int
 rte_ipv6_udptcp_cksum_mbuf_verify(const struct rte_mbuf *m,
 				  const struct rte_ipv6_hdr *ipv6_hdr,
@@ -805,7 +809,6 @@ struct rte_ipv6_fragment_ext {
  * @return
  *   next protocol number if proto is an IPv6 extension, -EINVAL otherwise
  */
-__rte_experimental
 static inline int
 rte_ipv6_get_next_ext(const uint8_t *p, int proto, size_t *ext_len)
 {

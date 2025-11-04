@@ -17,13 +17,9 @@
 
 static int hns3_get_dfx_reg_line(struct hns3_hw *hw, uint32_t *lines);
 
-static const uint32_t cmdq_reg_addrs[] = {HNS3_CMDQ_TX_ADDR_L_REG,
-					  HNS3_CMDQ_TX_ADDR_H_REG,
-					  HNS3_CMDQ_TX_DEPTH_REG,
+static const uint32_t cmdq_reg_addrs[] = {HNS3_CMDQ_TX_DEPTH_REG,
 					  HNS3_CMDQ_TX_TAIL_REG,
 					  HNS3_CMDQ_TX_HEAD_REG,
-					  HNS3_CMDQ_RX_ADDR_L_REG,
-					  HNS3_CMDQ_RX_ADDR_H_REG,
 					  HNS3_CMDQ_RX_DEPTH_REG,
 					  HNS3_CMDQ_RX_TAIL_REG,
 					  HNS3_CMDQ_RX_HEAD_REG,
@@ -44,9 +40,7 @@ static const uint32_t common_vf_reg_addrs[] = {HNS3_MISC_VECTOR_REG_BASE,
 					       HNS3_FUN_RST_ING,
 					       HNS3_GRO_EN_REG};
 
-static const uint32_t ring_reg_addrs[] = {HNS3_RING_RX_BASEADDR_L_REG,
-					  HNS3_RING_RX_BASEADDR_H_REG,
-					  HNS3_RING_RX_BD_NUM_REG,
+static const uint32_t ring_reg_addrs[] = {HNS3_RING_RX_BD_NUM_REG,
 					  HNS3_RING_RX_BD_LEN_REG,
 					  HNS3_RING_RX_EN_REG,
 					  HNS3_RING_RX_MERGE_EN_REG,
@@ -57,8 +51,6 @@ static const uint32_t ring_reg_addrs[] = {HNS3_RING_RX_BASEADDR_L_REG,
 					  HNS3_RING_RX_FBD_OFFSET_REG,
 					  HNS3_RING_RX_STASH_REG,
 					  HNS3_RING_RX_BD_ERR_REG,
-					  HNS3_RING_TX_BASEADDR_L_REG,
-					  HNS3_RING_TX_BASEADDR_H_REG,
 					  HNS3_RING_TX_BD_NUM_REG,
 					  HNS3_RING_TX_EN_REG,
 					  HNS3_RING_TX_PRIORITY_REG,
@@ -135,7 +127,7 @@ hns3_get_regs_length(struct hns3_hw *hw, uint32_t *length)
 	tqp_intr_lines = sizeof(tqp_intr_reg_addrs) / REG_LEN_PER_LINE + 1;
 
 	len = (cmdq_lines + common_lines + ring_lines * hw->tqps_num +
-	      tqp_intr_lines * hw->num_msi) * REG_NUM_PER_LINE;
+	      tqp_intr_lines * hw->intr_tqps_num) * REG_NUM_PER_LINE;
 
 	if (!hns->is_vf) {
 		ret = hns3_get_regs_num(hw, &regs_num_32_bit, &regs_num_64_bit);
@@ -355,7 +347,7 @@ hns3_get_dfx_reg_bd_num(struct hns3_hw *hw, uint32_t *bd_num_list,
 
 	ret = hns3_cmd_send(hw, desc, HNS3_GET_DFX_REG_BD_NUM_SIZE);
 	if (ret) {
-		hns3_err(hw, "fail to get dfx bd num, ret = %d.\n", ret);
+		hns3_err(hw, "fail to get dfx bd num, ret = %d.", ret);
 		return ret;
 	}
 
@@ -385,10 +377,9 @@ hns3_dfx_reg_cmd_send(struct hns3_hw *hw, struct hns3_cmd_desc *desc,
 	hns3_cmd_setup_basic_desc(&desc[i], opcode, true);
 
 	ret = hns3_cmd_send(hw, desc, bd_num);
-	if (ret) {
+	if (ret)
 		hns3_err(hw, "fail to query dfx registers, opcode = 0x%04X, "
-			 "ret = %d.\n", opcode, ret);
-	}
+			 "ret = %d.", opcode, ret);
 
 	return ret;
 }
@@ -453,7 +444,7 @@ hns3_get_dfx_regs(struct hns3_hw *hw, void **data)
 	for (i = 0; i < opcode_num; i++)
 		max_bd_num = RTE_MAX(bd_num_list[i], max_bd_num);
 
-	cmd_descs = rte_zmalloc(NULL, sizeof(*cmd_descs) * max_bd_num, 0);
+	cmd_descs = calloc(max_bd_num, sizeof(*cmd_descs));
 	if (cmd_descs == NULL)
 		return -ENOMEM;
 
@@ -466,8 +457,9 @@ hns3_get_dfx_regs(struct hns3_hw *hw, void **data)
 		if (ret)
 			break;
 		reg_val += hns3_dfx_reg_fetch_data(cmd_descs, bd_num, reg_val);
+			free(cmd_descs);
 	}
-	rte_free(cmd_descs);
+	free(cmd_descs);
 	*data = (void *)reg_val;
 
 	return ret;

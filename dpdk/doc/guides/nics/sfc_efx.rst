@@ -18,6 +18,48 @@ More information can be found at `Solarflare Communications website
 <http://solarflare.com>`_.
 
 
+Supported NICs
+--------------
+
+- Xilinx Adapters:
+
+   - Alveo SN1022 SmartNIC
+
+- Solarflare XtremeScale Adapters:
+
+   - Solarflare X2522 Dual Port SFP28 10/25GbE Adapter
+
+   - Solarflare X2541 Single Port QSFP28 10/25G/100G Adapter
+
+   - Solarflare X2542 Dual Port QSFP28 10/25G/100G Adapter
+
+- Solarflare Flareon [Ultra] Server Adapters:
+
+   - Solarflare SFN8522 Dual Port SFP+ Server Adapter
+
+   - Solarflare SFN8522M Dual Port SFP+ Server Adapter
+
+   - Solarflare SFN8042 Dual Port QSFP+ Server Adapter
+
+   - Solarflare SFN8542 Dual Port QSFP+ Server Adapter
+
+   - Solarflare SFN8722 Dual Port SFP+ OCP Server Adapter
+
+   - Solarflare SFN7002F Dual Port SFP+ Server Adapter
+
+   - Solarflare SFN7004F Quad Port SFP+ Server Adapter
+
+   - Solarflare SFN7042Q Dual Port QSFP+ Server Adapter
+
+   - Solarflare SFN7122F Dual Port SFP+ Server Adapter
+
+   - Solarflare SFN7124F Quad Port SFP+ Server Adapter
+
+   - Solarflare SFN7142Q Dual Port QSFP+ Server Adapter
+
+   - Solarflare SFN7322F Precision Time Synchronization Server Adapter
+
+
 Features
 --------
 
@@ -72,9 +114,15 @@ SFC EFX PMD has support for:
 
 - Loopback
 
+- Configurable Rx CRC stripping (if running firmware variant supports it and
+  if NIC is configured with single PF per port and without VFs, otherwise
+  always stripped)
+
 - SR-IOV PF
 
 - Port representors (see :ref: switch_representation)
+
+- VLAN stripping (if running firmware variant supports it)
 
 
 Non-supported Features
@@ -84,13 +132,9 @@ The features not yet supported include:
 
 - Priority-based flow control
 
-- Configurable RX CRC stripping (always stripped)
-
 - Header split on receive
 
 - VLAN filtering
-
-- VLAN stripping
 
 - LRO
 
@@ -228,9 +272,17 @@ Supported actions (***transfer*** rules):
 
 - OF_VLAN_SET_PCP
 
+- SET_IPV4_DST
+
+- SET_IPV4_SRC
+
 - SET_MAC_DST
 
 - SET_MAC_SRC
+
+- SET_TP_DST
+
+- SET_TP_SRC
 
 - OF_DEC_NW_TTL
 
@@ -255,6 +307,8 @@ Supported actions (***transfer*** rules):
 - PORT_ID
 
 - COUNT
+
+- INDIRECT
 
 - DROP
 
@@ -290,48 +344,6 @@ conditions is met:
 - The last item is TCP or UDP, and it's empty.
 
 
-Supported NICs
---------------
-
-- Xilinx Adapters:
-
-   - Alveo SN1022 SmartNIC
-
-- Solarflare XtremeScale Adapters:
-
-   - Solarflare X2522 Dual Port SFP28 10/25GbE Adapter
-
-   - Solarflare X2541 Single Port QSFP28 10/25G/100G Adapter
-
-   - Solarflare X2542 Dual Port QSFP28 10/25G/100G Adapter
-
-- Solarflare Flareon [Ultra] Server Adapters:
-
-   - Solarflare SFN8522 Dual Port SFP+ Server Adapter
-
-   - Solarflare SFN8522M Dual Port SFP+ Server Adapter
-
-   - Solarflare SFN8042 Dual Port QSFP+ Server Adapter
-
-   - Solarflare SFN8542 Dual Port QSFP+ Server Adapter
-
-   - Solarflare SFN8722 Dual Port SFP+ OCP Server Adapter
-
-   - Solarflare SFN7002F Dual Port SFP+ Server Adapter
-
-   - Solarflare SFN7004F Quad Port SFP+ Server Adapter
-
-   - Solarflare SFN7042Q Dual Port QSFP+ Server Adapter
-
-   - Solarflare SFN7122F Dual Port SFP+ Server Adapter
-
-   - Solarflare SFN7124F Quad Port SFP+ Server Adapter
-
-   - Solarflare SFN7142Q Dual Port QSFP+ Server Adapter
-
-   - Solarflare SFN7322F Precision Time Synchronization Server Adapter
-
-
 Prerequisites
 -------------
 
@@ -347,12 +359,12 @@ Follow instructions from Solarflare Server Adapter User's Guide to
 update firmware and configure the adapter.
 
 
-Pre-Installation Configuration
-------------------------------
+Configuration
+-------------
 
 
-Build Options
-~~~~~~~~~~~~~
+Compilation Options
+~~~~~~~~~~~~~~~~~~~
 
 The following build-time options may be enabled on build time using
 ``-Dc_args=`` meson argument (e.g.  ``-Dc_args=-DRTE_LIBRTE_SFC_EFX_DEBUG``).
@@ -364,7 +376,7 @@ Please note that enabling debugging options may affect system performance.
   Enable compilation of the extra run-time consistency checks.
 
 
-Per-Device Parameters
+Runtime Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 
 The following per-device parameters can be passed via EAL PCI device

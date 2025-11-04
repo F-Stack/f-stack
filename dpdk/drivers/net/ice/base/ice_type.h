@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_TYPE_H_
@@ -25,7 +25,7 @@
  */
 static inline bool ice_is_pow2(u64 val)
 {
-	return (val && !(val & (val - 1)));
+	return val != 0 && (val & (val - 1)) == 0;
 }
 
 /**
@@ -206,6 +206,7 @@ enum ice_mac_type {
 	ICE_MAC_E810,
 	ICE_MAC_GENERIC,
 	ICE_MAC_GENERIC_3K,
+	ICE_MAC_GENERIC_3K_E825,
 };
 
 /* Media Types */
@@ -693,6 +694,15 @@ struct ice_ts_dev_info {
 	u8 ts_ll_read : 1;
 };
 
+#define ICE_NAC_TOPO_PRIMARY_M	BIT(0)
+#define ICE_NAC_TOPO_DUAL_M	BIT(1)
+#define ICE_NAC_TOPO_ID_M	MAKEMASK(0xf, 0)
+
+struct ice_nac_topology {
+	u32 mode;
+	u8 id;
+};
+
 /* Function specific capabilities */
 struct ice_hw_func_caps {
 	struct ice_hw_common_caps common_cap;
@@ -709,6 +719,7 @@ struct ice_hw_dev_caps {
 	u32 num_flow_director_fltr;	/* Number of FD filters available */
 	struct ice_ts_dev_info ts_dev_info;
 	u32 num_funcs;
+	struct ice_nac_topology nac_topo;
 };
 
 /* Information about MAC such as address, etc... */
@@ -1364,6 +1375,7 @@ enum ice_sw_fwd_act_type {
 	ICE_FWD_TO_VSI_LIST, /* Do not use this when adding filter */
 	ICE_FWD_TO_Q,
 	ICE_FWD_TO_QGRP,
+	ICE_SET_MARK,
 	ICE_DROP_PACKET,
 	ICE_INVAL_ACT
 };

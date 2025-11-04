@@ -11,12 +11,14 @@
 
 #include <rte_common.h>
 #include <rte_ethdev.h>
+#include <rte_ring.h>
 #include <rte_swx_port_ethdev.h>
 #include <rte_swx_port_ring.h>
 #include <rte_swx_port_source_sink.h>
 #include <rte_swx_port_fd.h>
 #include <rte_swx_pipeline.h>
 #include <rte_swx_ctl.h>
+#include <rte_swx_ipsec.h>
 
 #include "cli.h"
 
@@ -192,72 +194,88 @@ parse_table_entry(struct rte_swx_ctl_pipeline *p,
 }
 
 static const char cmd_mempool_help[] =
-"mempool <mempool_name>\n"
-"   buffer <buffer_size>\n"
-"   pool <pool_size>\n"
-"   cache <cache_size>\n"
-"   cpu <cpu_id>\n";
+"mempool <mempool_name> "
+"meta <mbuf_private_size> "
+"pkt <pkt_buffer_size> "
+"pool <pool_size> "
+"cache <cache_size> "
+"numa <numa_node>\n";
 
 static void
 cmd_mempool(char **tokens,
-	uint32_t n_tokens,
-	char *out,
-	size_t out_size,
-	void *obj)
+	    uint32_t n_tokens,
+	    char *out,
+	    size_t out_size,
+	    void *obj __rte_unused)
 {
-	struct mempool_params p;
-	char *name;
-	struct mempool *mempool;
+	struct rte_mempool *mp;
+	char *mempool_name;
+	uint32_t mbuf_private_size, pkt_buffer_size, pool_size, cache_size, numa_node;
 
-	if (n_tokens != 10) {
+	if (n_tokens != 12) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
 
-	name = tokens[1];
+	mempool_name = tokens[1];
 
-	if (strcmp(tokens[2], "buffer") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "buffer");
+	if (strcmp(tokens[2], "meta")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "meta");
 		return;
 	}
 
-	if (parser_read_uint32(&p.buffer_size, tokens[3]) != 0) {
-		snprintf(out, out_size, MSG_ARG_INVALID, "buffer_size");
+	if (parser_read_uint32(&mbuf_private_size, tokens[3])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "mbuf_private_size");
 		return;
 	}
 
-	if (strcmp(tokens[4], "pool") != 0) {
+	if (strcmp(tokens[4], "pkt")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pkt");
+		return;
+	}
+
+	if (parser_read_uint32(&pkt_buffer_size, tokens[5])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "pkt_buffer_size");
+		return;
+	}
+
+	if (strcmp(tokens[6], "pool")) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pool");
 		return;
 	}
 
-	if (parser_read_uint32(&p.pool_size, tokens[5]) != 0) {
+	if (parser_read_uint32(&pool_size, tokens[7])) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "pool_size");
 		return;
 	}
 
-	if (strcmp(tokens[6], "cache") != 0) {
+	if (strcmp(tokens[8], "cache")) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cache");
 		return;
 	}
 
-	if (parser_read_uint32(&p.cache_size, tokens[7]) != 0) {
+	if (parser_read_uint32(&cache_size, tokens[9])) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "cache_size");
 		return;
 	}
 
-	if (strcmp(tokens[8], "cpu") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cpu");
+	if (strcmp(tokens[10], "numa")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "numa");
 		return;
 	}
 
-	if (parser_read_uint32(&p.cpu_id, tokens[9]) != 0) {
-		snprintf(out, out_size, MSG_ARG_INVALID, "cpu_id");
+	if (parser_read_uint32(&numa_node, tokens[11])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "numa_node");
 		return;
 	}
 
-	mempool = mempool_create(obj, name, &p);
-	if (mempool == NULL) {
+	mp = rte_pktmbuf_pool_create(mempool_name,
+				     pool_size,
+				     cache_size,
+				     mbuf_private_size,
+				     pkt_buffer_size,
+				     numa_node);
+	if (!mp) {
 		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
 		return;
 	}
@@ -275,16 +293,17 @@ cmd_ethdev(char **tokens,
 	uint32_t n_tokens,
 	char *out,
 	size_t out_size,
-	void *obj)
+	void *obj __rte_unused)
 {
-	struct link_params p;
-	struct link_params_rss rss;
-	struct link *link;
+	struct ethdev_params p;
+	struct ethdev_params_rss rss;
 	char *name;
+	int status;
 
 	memset(&p, 0, sizeof(p));
+	memset(&rss, 0, sizeof(rss));
 
-	if ((n_tokens < 11) || (n_tokens > 12 + LINK_RXQ_RSS_MAX)) {
+	if (n_tokens < 11 || n_tokens > 12 + ETHDEV_RXQ_RSS_MAX) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
@@ -360,111 +379,98 @@ cmd_ethdev(char **tokens,
 		}
 	}
 
-	link = link_create(obj, name, &p);
-	if (link == NULL) {
+	status = ethdev_config(name, &p);
+	if (status) {
 		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
 		return;
 	}
 }
 
-/* Print the link stats and info */
 static void
-print_link_info(struct link *link, char *out, size_t out_size)
+ethdev_show(uint16_t port_id, char **out, size_t *out_size)
 {
+	char name[RTE_ETH_NAME_MAX_LEN];
+	struct rte_eth_dev_info info;
 	struct rte_eth_stats stats;
-	struct rte_ether_addr mac_addr;
-	struct rte_eth_link eth_link;
-	uint16_t mtu;
-	int ret;
+	struct rte_ether_addr addr;
+	struct rte_eth_link link;
+	uint32_t length;
+	uint16_t mtu = 0;
 
-	memset(&stats, 0, sizeof(stats));
-	rte_eth_stats_get(link->port_id, &stats);
-
-	ret = rte_eth_macaddr_get(link->port_id, &mac_addr);
-	if (ret != 0) {
-		snprintf(out, out_size, "\n%s: MAC address get failed: %s",
-			 link->name, rte_strerror(-ret));
+	if (!rte_eth_dev_is_valid_port(port_id))
 		return;
-	}
 
-	ret = rte_eth_link_get(link->port_id, &eth_link);
-	if (ret < 0) {
-		snprintf(out, out_size, "\n%s: link get failed: %s",
-			 link->name, rte_strerror(-ret));
-		return;
-	}
+	rte_eth_dev_get_name_by_port(port_id, name);
+	rte_eth_dev_info_get(port_id, &info);
+	rte_eth_stats_get(port_id, &stats);
+	rte_eth_macaddr_get(port_id, &addr);
+	rte_eth_link_get(port_id, &link);
+	rte_eth_dev_get_mtu(port_id, &mtu);
 
-	rte_eth_dev_get_mtu(link->port_id, &mtu);
+	snprintf(*out, *out_size,
+		 "%s: flags=<%s> mtu %u\n"
+		 "\tether " RTE_ETHER_ADDR_PRT_FMT " rxqueues %u txqueues %u\n"
+		 "\tport# %u  speed %s\n"
+		 "\tRX packets %" PRIu64"  bytes %" PRIu64"\n"
+		 "\tRX errors %" PRIu64"  missed %" PRIu64"  no-mbuf %" PRIu64"\n"
+		 "\tTX packets %" PRIu64"  bytes %" PRIu64"\n"
+		 "\tTX errors %" PRIu64"\n\n",
+		 name,
+		 link.link_status ? "UP" : "DOWN",
+		 mtu,
+		 RTE_ETHER_ADDR_BYTES(&addr),
+		 info.nb_rx_queues,
+		 info.nb_tx_queues,
+		 port_id,
+		 rte_eth_link_speed_to_str(link.link_speed),
+		 stats.ipackets,
+		 stats.ibytes,
+		 stats.ierrors,
+		 stats.imissed,
+		 stats.rx_nombuf,
+		 stats.opackets,
+		 stats.obytes,
+		 stats.oerrors);
 
-	snprintf(out, out_size,
-		"\n"
-		"%s: flags=<%s> mtu %u\n"
-		"\tether " RTE_ETHER_ADDR_PRT_FMT " rxqueues %u txqueues %u\n"
-		"\tport# %u  speed %s\n"
-		"\tRX packets %" PRIu64"  bytes %" PRIu64"\n"
-		"\tRX errors %" PRIu64"  missed %" PRIu64"  no-mbuf %" PRIu64"\n"
-		"\tTX packets %" PRIu64"  bytes %" PRIu64"\n"
-		"\tTX errors %" PRIu64"\n",
-		link->name,
-		eth_link.link_status == 0 ? "DOWN" : "UP",
-		mtu,
-		RTE_ETHER_ADDR_BYTES(&mac_addr),
-		link->n_rxq,
-		link->n_txq,
-		link->port_id,
-		rte_eth_link_speed_to_str(eth_link.link_speed),
-		stats.ipackets,
-		stats.ibytes,
-		stats.ierrors,
-		stats.imissed,
-		stats.rx_nombuf,
-		stats.opackets,
-		stats.obytes,
-		stats.oerrors);
+	length = strlen(*out);
+	*out_size -= length;
+	*out += length;
 }
 
-/*
- * ethdev show [<ethdev_name>]
- */
+
+static char cmd_ethdev_show_help[] =
+"ethdev show [ <ethdev_name> ]\n";
+
 static void
 cmd_ethdev_show(char **tokens,
 	      uint32_t n_tokens,
 	      char *out,
 	      size_t out_size,
-	      void *obj)
+	      void *obj __rte_unused)
 {
-	struct link *link;
-	char *link_name;
+	uint16_t port_id;
 
 	if (n_tokens != 2 && n_tokens != 3) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
 
-	if (n_tokens == 2) {
-		link = link_next(obj, NULL);
+	/* Single device. */
+	if (n_tokens == 3) {
+		int status;
 
-		while (link != NULL) {
-			out_size = out_size - strlen(out);
-			out = &out[strlen(out)];
+		status = rte_eth_dev_get_port_by_name(tokens[2], &port_id);
+		if (status)
+			snprintf(out, out_size, "Error: Invalid Ethernet device name.\n");
 
-			print_link_info(link, out, out_size);
-			link = link_next(obj, link);
-		}
-	} else {
-		out_size = out_size - strlen(out);
-		out = &out[strlen(out)];
-
-		link_name = tokens[2];
-		link = link_find(obj, link_name);
-
-		if (link == NULL) {
-			snprintf(out, out_size, MSG_ARG_INVALID,
-					"Link does not exist");
-			return;
-		}
-		print_link_info(link, out, out_size);
+		ethdev_show(port_id, &out, &out_size);
+		return;
 	}
+
+	/*  All devices. */
+	for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++)
+		if (rte_eth_dev_is_valid_port(port_id))
+			ethdev_show(port_id, &out, &out_size);
 }
 
 static const char cmd_ring_help[] =
@@ -475,11 +481,11 @@ cmd_ring(char **tokens,
 	uint32_t n_tokens,
 	char *out,
 	size_t out_size,
-	void *obj)
+	void *obj __rte_unused)
 {
-	struct ring_params p;
+	struct rte_ring *r;
 	char *name;
-	struct ring *ring;
+	uint32_t size, numa_node;
 
 	if (n_tokens != 6) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
@@ -488,31 +494,87 @@ cmd_ring(char **tokens,
 
 	name = tokens[1];
 
-	if (strcmp(tokens[2], "size") != 0) {
+	if (strcmp(tokens[2], "size")) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "size");
 		return;
 	}
 
-	if (parser_read_uint32(&p.size, tokens[3]) != 0) {
+	if (parser_read_uint32(&size, tokens[3])) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "size");
 		return;
 	}
 
-	if (strcmp(tokens[4], "numa") != 0) {
+	if (strcmp(tokens[4], "numa")) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "numa");
 		return;
 	}
 
-	if (parser_read_uint32(&p.numa_node, tokens[5]) != 0) {
+	if (parser_read_uint32(&numa_node, tokens[5])) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "numa_node");
 		return;
 	}
 
-	ring = ring_create(obj, name, &p);
-	if (!ring) {
+	r = rte_ring_create(
+		name,
+		size,
+		(int)numa_node,
+		RING_F_SP_ENQ | RING_F_SC_DEQ);
+	if (!r) {
 		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
 		return;
 	}
+}
+
+static const char cmd_cryptodev_help[] =
+"cryptodev <cryptodev_name> queues <n_queue_pairs> qsize <queue_size>\n";
+
+static void
+cmd_cryptodev(char **tokens,
+	      uint32_t n_tokens,
+	      char *out,
+	      size_t out_size,
+	      void *obj __rte_unused)
+{
+	struct cryptodev_params params;
+	char *cryptodev_name;
+	int status;
+
+	if (n_tokens != 6) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	if (strcmp(tokens[0], "cryptodev")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cryptodev");
+		return;
+	}
+
+	cryptodev_name = tokens[1];
+
+	if (strcmp(tokens[2], "queues")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "queues");
+		return;
+	}
+
+	if (parser_read_uint32(&params.n_queue_pairs, tokens[3])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "n_queue_pairs");
+		return;
+	}
+
+	if (strcmp(tokens[4], "qsize")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "qsize");
+		return;
+	}
+
+
+	if (parser_read_uint32(&params.queue_size, tokens[5])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "queue_size");
+		return;
+	}
+
+	status = cryptodev_config(cryptodev_name, &params);
+	if (status)
+		snprintf(out, out_size, "Crypto device configuration failed (%d).\n", status);
 }
 
 static const char cmd_pipeline_codegen_help[] =
@@ -652,6 +714,7 @@ cmd_pipeline_libbuild(char **tokens,
 		 "-I %s/lib/eal/include "
 		 "-I %s/lib/eal/x86/include "
 		 "-I %s/lib/eal/include/generic "
+		 "-I %s/lib/log "
 		 "-I %s/lib/meter "
 		 "-I %s/lib/port "
 		 "-I %s/lib/table "
@@ -665,6 +728,7 @@ cmd_pipeline_libbuild(char **tokens,
 		 ">>%s 2>&1",
 		 obj_file,
 		 code_file,
+		 install_dir,
 		 install_dir,
 		 install_dir,
 		 install_dir,
@@ -2560,6 +2624,67 @@ cmd_pipeline_meter_stats(char **tokens,
 	return;
 }
 
+static const char cmd_pipeline_rss_help[] =
+"pipeline <pipeline_name> rss <rss_obj_name> key <key_byte0> ...\n";
+
+static void
+cmd_pipeline_rss(char **tokens,
+	uint32_t n_tokens,
+	char *out,
+	size_t out_size,
+	void *obj __rte_unused)
+{
+	uint8_t rss_key[CMD_MAX_TOKENS];
+	struct rte_swx_pipeline *p;
+	const char *rss_obj_name;
+	uint32_t rss_key_size, i;
+	int status;
+
+	if (n_tokens < 6) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	p = rte_swx_pipeline_find(tokens[1]);
+	if (!p) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "pipeline_name");
+		return;
+	}
+
+	if (strcmp(tokens[2], "rss")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "rss");
+		return;
+	}
+
+	rss_obj_name = tokens[3];
+
+	if (strcmp(tokens[4], "key")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "key");
+		return;
+	}
+
+	tokens += 5;
+	n_tokens -= 5;
+	rss_key_size = n_tokens;
+
+	for (i = 0; i < rss_key_size; i++) {
+		uint32_t key_byte;
+
+		if (parser_read_uint32(&key_byte, tokens[i]) || (key_byte >= UINT8_MAX)) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "key byte");
+			return;
+		}
+
+		rss_key[i] = (uint8_t)key_byte;
+	}
+
+	status = rte_swx_ctl_pipeline_rss_key_write(p, rss_obj_name, rss_key_size, rss_key);
+	if (status) {
+		snprintf(out, out_size, "Command failed.\n");
+		return;
+	}
+}
+
 static const char cmd_pipeline_stats_help[] =
 "pipeline <pipeline_name> stats\n";
 
@@ -2852,83 +2977,275 @@ cmd_pipeline_mirror_session(char **tokens,
 	}
 }
 
-static const char cmd_thread_pipeline_enable_help[] =
-"thread <thread_id> pipeline <pipeline_name> enable [ period <timer_period_ms> ]\n";
-
-#ifndef TIMER_PERIOD_MS_DEFAULT
-#define TIMER_PERIOD_MS_DEFAULT 10
-#endif
+static const char cmd_ipsec_create_help[] =
+"ipsec <ipsec_instance_name> create "
+"in <ring_in_name> out <ring_out_name> "
+"cryptodev <crypto_dev_name> cryptoq <crypto_dev_queue_pair_id> "
+"bsz <ring_rd_bsz> <ring_wr_bsz> <crypto_wr_bsz> <crypto_rd_bsz> "
+"samax <n_sa_max> "
+"numa <numa_node>\n";
 
 static void
-cmd_thread_pipeline_enable(char **tokens,
-	uint32_t n_tokens,
-	char *out,
-	size_t out_size,
-	void *obj __rte_unused)
+cmd_ipsec_create(char **tokens,
+		 uint32_t n_tokens,
+		 char *out,
+		 size_t out_size,
+		 void *obj __rte_unused)
 {
-	char *pipeline_name;
-	struct rte_swx_pipeline *p;
-	uint32_t thread_id, timer_period_ms = TIMER_PERIOD_MS_DEFAULT;
+	struct rte_swx_ipsec_params p;
+	struct rte_swx_ipsec *ipsec;
+	char *ipsec_instance_name;
+	uint32_t numa_node;
 	int status;
 
-	if ((n_tokens != 5) && (n_tokens != 7)) {
+	if (n_tokens != 20) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
 
-	if (parser_read_uint32(&thread_id, tokens[1]) != 0) {
-		snprintf(out, out_size, MSG_ARG_INVALID, "thread_id");
+	ipsec_instance_name = tokens[1];
+
+	if (strcmp(tokens[2], "create")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "create");
 		return;
 	}
 
-	if (strcmp(tokens[2], "pipeline") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pipeline");
+	if (strcmp(tokens[3], "in")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "in");
 		return;
 	}
 
-	pipeline_name = tokens[3];
-	p = rte_swx_pipeline_find(pipeline_name);
-	if (!p) {
-		snprintf(out, out_size, MSG_ARG_INVALID, "pipeline_name");
+	p.ring_in_name = tokens[4];
+
+	if (strcmp(tokens[5], "out")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "out");
 		return;
 	}
 
-	if (strcmp(tokens[4], "enable") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "enable");
+	p.ring_out_name = tokens[6];
+
+	if (strcmp(tokens[7], "cryptodev")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cryptodev");
 		return;
 	}
 
-	if (n_tokens == 7) {
-		if (strcmp(tokens[5], "period") != 0) {
-			snprintf(out, out_size, MSG_ARG_NOT_FOUND, "period");
-			return;
-		}
+	p.crypto_dev_name = tokens[8];
 
-		if (parser_read_uint32(&timer_period_ms, tokens[6]) != 0) {
-			snprintf(out, out_size, MSG_ARG_INVALID, "timer_period_ms");
-			return;
-		}
-	}
-
-	status = thread_pipeline_enable(thread_id, p, timer_period_ms);
-	if (status) {
-		snprintf(out, out_size, MSG_CMD_FAIL, "thread pipeline enable");
+	if (strcmp(tokens[9], "cryptoq")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cryptoq");
 		return;
 	}
+
+	if (parser_read_uint32(&p.crypto_dev_queue_pair_id, tokens[10])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "crypto_dev_queue_pair_id");
+		return;
+	}
+
+	if (strcmp(tokens[11], "bsz")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "bsz");
+		return;
+	}
+
+	if (parser_read_uint32(&p.bsz.ring_rd, tokens[12])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "ring_rd_bsz");
+		return;
+	}
+
+	if (parser_read_uint32(&p.bsz.ring_wr, tokens[13])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "ring_wr_bsz");
+		return;
+	}
+
+	if (parser_read_uint32(&p.bsz.crypto_wr, tokens[14])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "crypto_wr_bsz");
+		return;
+	}
+
+	if (parser_read_uint32(&p.bsz.crypto_rd, tokens[15])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "crypto_rd_bsz");
+		return;
+	}
+
+	if (strcmp(tokens[16], "samax")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "samax");
+		return;
+	}
+
+	if (parser_read_uint32(&p.n_sa_max, tokens[17])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "n_sa_max");
+		return;
+	}
+
+	if (strcmp(tokens[18], "numa")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "numa");
+		return;
+	}
+
+	if (parser_read_uint32(&numa_node, tokens[19])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "numa_node");
+		return;
+	}
+
+	status = rte_swx_ipsec_create(&ipsec,
+				      ipsec_instance_name,
+				      &p,
+				      (int)numa_node);
+	if (status)
+		snprintf(out, out_size, "IPsec instance creation failed (%d).\n", status);
 }
 
-static const char cmd_thread_pipeline_disable_help[] =
-"thread <thread_id> pipeline <pipeline_name> disable\n";
+static const char cmd_ipsec_sa_add_help[] =
+"ipsec <ipsec_instance_name> sa add <file_name>\n";
 
 static void
-cmd_thread_pipeline_disable(char **tokens,
-	uint32_t n_tokens,
-	char *out,
-	size_t out_size,
-	void *obj __rte_unused)
+cmd_ipsec_sa_add(char **tokens,
+		 uint32_t n_tokens,
+		 char *out,
+		 size_t out_size,
+		 void *obj __rte_unused)
 {
-	struct rte_swx_pipeline *p;
+	struct rte_swx_ipsec *ipsec;
+	char *ipsec_instance_name, *file_name, *line = NULL;
+	FILE *file = NULL;
+	uint32_t line_id = 0;
+
+	if (n_tokens != 5) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	ipsec_instance_name = tokens[1];
+	ipsec = rte_swx_ipsec_find(ipsec_instance_name);
+	if (!ipsec) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "ipsec_instance_name");
+		goto free;
+	}
+
+	if (strcmp(tokens[2], "sa")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "sa");
+		goto free;
+	}
+
+	if (strcmp(tokens[3], "add")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "add");
+		goto free;
+	}
+
+	file_name = tokens[4];
+	file = fopen(file_name, "r");
+	if (!file) {
+		snprintf(out, out_size, "Cannot open file %s.\n", file_name);
+		goto free;
+	}
+
+	/* Buffer allocation. */
+	line = malloc(MAX_LINE_SIZE);
+	if (!line) {
+		snprintf(out, out_size, MSG_OUT_OF_MEMORY);
+		goto free;
+	}
+
+	/* File read. */
+	for (line_id = 1; ; line_id++) {
+		struct rte_swx_ipsec_sa_params *sa;
+		const char *err_msg;
+		uint32_t sa_id = 0;
+		int is_blank_or_comment, status = 0;
+
+		if (fgets(line, MAX_LINE_SIZE, file) == NULL)
+			break;
+
+		/* Read SA from file. */
+		sa = rte_swx_ipsec_sa_read(ipsec, line, &is_blank_or_comment, &err_msg);
+		if (!sa) {
+			if (is_blank_or_comment)
+				continue;
+
+			snprintf(out, out_size, "Invalid SA in file \"%s\" at line %u: \"%s\"\n",
+				file_name, line_id, err_msg);
+			goto free;
+		}
+
+		snprintf(out, out_size, "%s", line);
+		out_size -= strlen(out);
+		out += strlen(out);
+
+		/* Add the SA to the IPsec instance. Free the SA. */
+		status = rte_swx_ipsec_sa_add(ipsec, sa, &sa_id);
+		if (status)
+			snprintf(out, out_size, "\t: Error (%d)\n", status);
+		else
+			snprintf(out, out_size, "\t: OK (SA ID = %u)\n", sa_id);
+		out_size -= strlen(out);
+		out += strlen(out);
+
+		free(sa);
+		if (status)
+			goto free;
+	}
+
+free:
+	if (file)
+		fclose(file);
+	free(line);
+}
+
+static const char cmd_ipsec_sa_delete_help[] =
+"ipsec <ipsec_instance_name> sa delete <sa_id>\n";
+
+static void
+cmd_ipsec_sa_delete(char **tokens,
+		    uint32_t n_tokens,
+		    char *out,
+		    size_t out_size,
+		    void *obj __rte_unused)
+{
+	struct rte_swx_ipsec *ipsec;
+	char *ipsec_instance_name;
+	uint32_t sa_id;
+
+	if (n_tokens != 5) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	ipsec_instance_name = tokens[1];
+	ipsec = rte_swx_ipsec_find(ipsec_instance_name);
+	if (!ipsec) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "ipsec_instance_name");
+		return;
+	}
+
+	if (strcmp(tokens[2], "sa")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "sa");
+		return;
+	}
+
+	if (strcmp(tokens[3], "delete")) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "delete");
+		return;
+	}
+
+	if (parser_read_uint32(&sa_id, tokens[4])) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "sa_id");
+		return;
+	}
+
+	rte_swx_ipsec_sa_delete(ipsec, sa_id);
+}
+
+static const char cmd_pipeline_enable_help[] =
+"pipeline <pipeline_name> enable thread <thread_id>\n";
+
+static void
+cmd_pipeline_enable(char **tokens,
+		    uint32_t n_tokens,
+		    char *out,
+		    size_t out_size,
+		    void *obj __rte_unused)
+{
 	char *pipeline_name;
+	struct rte_swx_pipeline *p;
 	uint32_t thread_id;
 	int status;
 
@@ -2937,34 +3254,194 @@ cmd_thread_pipeline_disable(char **tokens,
 		return;
 	}
 
-	if (parser_read_uint32(&thread_id, tokens[1]) != 0) {
-		snprintf(out, out_size, MSG_ARG_INVALID, "thread_id");
-		return;
-	}
-
-	if (strcmp(tokens[2], "pipeline") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pipeline");
-		return;
-	}
-
-	pipeline_name = tokens[3];
+	pipeline_name = tokens[1];
 	p = rte_swx_pipeline_find(pipeline_name);
 	if (!p) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "pipeline_name");
 		return;
 	}
 
-	if (strcmp(tokens[4], "disable") != 0) {
+	if (strcmp(tokens[2], "enable") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "enable");
+		return;
+	}
+
+	if (strcmp(tokens[3], "thread") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "thread");
+		return;
+	}
+
+	if (parser_read_uint32(&thread_id, tokens[4]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "thread_id");
+		return;
+	}
+
+	status = pipeline_enable(p, thread_id);
+	if (status) {
+		snprintf(out, out_size, MSG_CMD_FAIL, "pipeline enable");
+		return;
+	}
+}
+
+static const char cmd_pipeline_disable_help[] =
+"pipeline <pipeline_name> disable\n";
+
+static void
+cmd_pipeline_disable(char **tokens,
+		     uint32_t n_tokens,
+		     char *out,
+		     size_t out_size,
+		     void *obj __rte_unused)
+{
+	struct rte_swx_pipeline *p;
+	char *pipeline_name;
+
+	if (n_tokens != 3) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	pipeline_name = tokens[1];
+	p = rte_swx_pipeline_find(pipeline_name);
+	if (!p) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "pipeline_name");
+		return;
+	}
+
+	if (strcmp(tokens[2], "disable") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "disable");
 		return;
 	}
 
-	status = thread_pipeline_disable(thread_id, p);
-	if (status) {
-		snprintf(out, out_size, MSG_CMD_FAIL,
-			"thread pipeline disable");
+	pipeline_disable(p);
+}
+
+static const char cmd_block_enable_help[] =
+"block type <block_type> instance <block_name> enable thread <thread_id>\n";
+
+static void
+cmd_block_enable(char **tokens,
+		 uint32_t n_tokens,
+		 char *out,
+		 size_t out_size,
+		 void *obj __rte_unused)
+{
+	char *block_type, *block_name;
+	block_run_f block_func = NULL;
+	void *block = NULL;
+	uint32_t thread_id;
+	int status;
+
+	if (n_tokens != 8) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
+
+	if (strcmp(tokens[1], "type") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "type");
+		return;
+	}
+
+	block_type = tokens[2];
+
+	if (strcmp(tokens[3], "instance") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "instance");
+		return;
+	}
+
+	block_name = tokens[4];
+
+	if (strcmp(tokens[5], "enable") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "enable");
+		return;
+	}
+
+	if (strcmp(tokens[6], "thread") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "thread");
+		return;
+	}
+
+	if (parser_read_uint32(&thread_id, tokens[7]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "thread_id");
+		return;
+	}
+
+	if (!strcmp(block_type, "ipsec")) {
+		struct rte_swx_ipsec *ipsec;
+
+		ipsec = rte_swx_ipsec_find(block_name);
+		if (!ipsec) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "block_name");
+			return;
+		}
+
+		block_func = (block_run_f)rte_swx_ipsec_run;
+		block = (void *)ipsec;
+	} else {
+		snprintf(out, out_size, MSG_ARG_INVALID, "block_type");
+		return;
+	}
+
+	status = block_enable(block_func, block, thread_id);
+	if (status) {
+		snprintf(out, out_size, MSG_CMD_FAIL, "block enable");
+		return;
+	}
+}
+
+static const char cmd_block_disable_help[] =
+"block type <block_type> instance <block_name> disable\n";
+
+static void
+cmd_block_disable(char **tokens,
+		  uint32_t n_tokens,
+		  char *out,
+		  size_t out_size,
+		  void *obj __rte_unused)
+{
+	char *block_type, *block_name;
+	void *block = NULL;
+
+	if (n_tokens != 6) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	if (strcmp(tokens[1], "type") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "type");
+		return;
+	}
+
+	block_type = tokens[2];
+
+	if (strcmp(tokens[3], "instance") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "instance");
+		return;
+	}
+
+	block_name = tokens[4];
+
+	if (strcmp(tokens[5], "disable") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "disable");
+		return;
+	}
+
+	if (!strcmp(block_type, "ipsec")) {
+		struct rte_swx_ipsec *ipsec;
+
+		ipsec = rte_swx_ipsec_find(block_name);
+		if (!ipsec) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "block_name");
+			return;
+		}
+
+		block = (void *)ipsec;
+	} else {
+		snprintf(out, out_size, MSG_ARG_INVALID, "block_type");
+		return;
+	}
+
+	block_disable(block);
 }
 
 static void
@@ -2983,6 +3460,9 @@ cmd_help(char **tokens,
 			"List of commands:\n"
 			"\tmempool\n"
 			"\tethdev\n"
+			"\tethdev show\n"
+			"\tring\n"
+			"\tcryptodev\n"
 			"\tpipeline codegen\n"
 			"\tpipeline libbuild\n"
 			"\tpipeline build\n"
@@ -3005,10 +3485,17 @@ cmd_help(char **tokens,
 			"\tpipeline meter reset\n"
 			"\tpipeline meter set\n"
 			"\tpipeline meter stats\n"
+			"\tpipeline rss\n"
 			"\tpipeline stats\n"
 			"\tpipeline mirror session\n"
-			"\tthread pipeline enable\n"
-			"\tthread pipeline disable\n\n");
+			"\tpipeline enable\n"
+			"\tpipeline disable\n\n"
+			"\tipsec create\n"
+			"\tipsec sa add\n"
+			"\tipsec sa delete\n"
+			"\tblock enable\n"
+			"\tblock disable\n"
+			);
 		return;
 	}
 
@@ -3017,13 +3504,25 @@ cmd_help(char **tokens,
 		return;
 	}
 
-	if (strcmp(tokens[0], "ethdev") == 0) {
-		snprintf(out, out_size, "\n%s\n", cmd_ethdev_help);
-		return;
+	if (!strcmp(tokens[0], "ethdev")) {
+		if (n_tokens == 1) {
+			snprintf(out, out_size, "\n%s\n", cmd_ethdev_help);
+			return;
+		}
+
+		if (n_tokens == 2 && !strcmp(tokens[1], "show")) {
+			snprintf(out, out_size, "\n%s\n", cmd_ethdev_show_help);
+			return;
+		}
 	}
 
 	if (strcmp(tokens[0], "ring") == 0) {
 		snprintf(out, out_size, "\n%s\n", cmd_ring_help);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "cryptodev")) {
+		snprintf(out, out_size, "\n%s\n", cmd_cryptodev_help);
 		return;
 	}
 
@@ -3206,6 +3705,12 @@ cmd_help(char **tokens,
 		return;
 	}
 
+	if (!strcmp(tokens[0], "pipeline") &&
+		(n_tokens == 2) && !strcmp(tokens[1], "rss")) {
+		snprintf(out, out_size, "\n%s\n", cmd_pipeline_rss_help);
+		return;
+	}
+
 	if ((strcmp(tokens[0], "pipeline") == 0) &&
 		(n_tokens == 2) && (strcmp(tokens[1], "stats") == 0)) {
 		snprintf(out, out_size, "\n%s\n", cmd_pipeline_stats_help);
@@ -3219,20 +3724,48 @@ cmd_help(char **tokens,
 		return;
 	}
 
-	if ((n_tokens == 3) &&
-		(strcmp(tokens[0], "thread") == 0) &&
-		(strcmp(tokens[1], "pipeline") == 0)) {
-		if (strcmp(tokens[2], "enable") == 0) {
-			snprintf(out, out_size, "\n%s\n",
-				cmd_thread_pipeline_enable_help);
-			return;
-		}
+	if (!strcmp(tokens[0], "pipeline") &&
+		(n_tokens == 2) && !strcmp(tokens[1], "enable")) {
+		snprintf(out, out_size, "\n%s\n", cmd_pipeline_enable_help);
+		return;
+	}
 
-		if (strcmp(tokens[2], "disable") == 0) {
-			snprintf(out, out_size, "\n%s\n",
-				cmd_thread_pipeline_disable_help);
-			return;
-		}
+	if (!strcmp(tokens[0], "pipeline") &&
+		(n_tokens == 2) && !strcmp(tokens[1], "disable")) {
+		snprintf(out, out_size, "\n%s\n", cmd_pipeline_disable_help);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "ipsec") &&
+		(n_tokens == 2) && !strcmp(tokens[1], "create")) {
+		snprintf(out, out_size, "\n%s\n", cmd_ipsec_create_help);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "ipsec") &&
+		(n_tokens == 3) && !strcmp(tokens[1], "sa")
+		&& !strcmp(tokens[2], "add")) {
+		snprintf(out, out_size, "\n%s\n", cmd_ipsec_sa_add_help);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "ipsec") &&
+		(n_tokens == 3) && !strcmp(tokens[1], "sa")
+		&& !strcmp(tokens[2], "delete")) {
+		snprintf(out, out_size, "\n%s\n", cmd_ipsec_sa_delete_help);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "block") &&
+		(n_tokens == 2) && !strcmp(tokens[1], "enable")) {
+		snprintf(out, out_size, "\n%s\n", cmd_block_enable_help);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "block") &&
+		(n_tokens == 2) && !strcmp(tokens[1], "disable")) {
+		snprintf(out, out_size, "\n%s\n", cmd_block_disable_help);
+		return;
 	}
 
 	snprintf(out, out_size, "Invalid command\n");
@@ -3279,6 +3812,11 @@ cli_process(char *in, char *out, size_t out_size, void *obj)
 
 	if (strcmp(tokens[0], "ring") == 0) {
 		cmd_ring(tokens, n_tokens, out, out_size, obj);
+		return;
+	}
+
+	if (!strcmp(tokens[0], "cryptodev")) {
+		cmd_cryptodev(tokens, n_tokens, out, out_size, obj);
 		return;
 	}
 
@@ -3447,6 +3985,11 @@ cli_process(char *in, char *out, size_t out_size, void *obj)
 			return;
 		}
 
+		if (n_tokens >= 3 && !strcmp(tokens[2], "rss")) {
+			cmd_pipeline_rss(tokens, n_tokens, out, out_size, obj);
+			return;
+		}
+
 		if ((n_tokens >= 3) &&
 			(strcmp(tokens[2], "stats") == 0)) {
 			cmd_pipeline_stats(tokens, n_tokens, out, out_size,
@@ -3460,20 +4003,43 @@ cli_process(char *in, char *out, size_t out_size, void *obj)
 			cmd_pipeline_mirror_session(tokens, n_tokens, out, out_size, obj);
 			return;
 		}
-	}
 
-	if (strcmp(tokens[0], "thread") == 0) {
-		if ((n_tokens >= 5) &&
-			(strcmp(tokens[4], "enable") == 0)) {
-			cmd_thread_pipeline_enable(tokens, n_tokens,
-				out, out_size, obj);
+		if (n_tokens >= 3 && !strcmp(tokens[2], "enable")) {
+			cmd_pipeline_enable(tokens, n_tokens, out, out_size, obj);
 			return;
 		}
 
-		if ((n_tokens >= 5) &&
-			(strcmp(tokens[4], "disable") == 0)) {
-			cmd_thread_pipeline_disable(tokens, n_tokens,
-				out, out_size, obj);
+		if (n_tokens >= 3 && !strcmp(tokens[2], "disable")) {
+			cmd_pipeline_disable(tokens, n_tokens, out, out_size, obj);
+			return;
+		}
+	}
+
+	if (!strcmp(tokens[0], "ipsec")) {
+		if (n_tokens >= 3 && !strcmp(tokens[2], "create")) {
+			cmd_ipsec_create(tokens, n_tokens, out, out_size, obj);
+			return;
+		}
+
+		if (n_tokens >= 4 && !strcmp(tokens[2], "sa") && !strcmp(tokens[3], "add")) {
+			cmd_ipsec_sa_add(tokens, n_tokens, out, out_size, obj);
+			return;
+		}
+
+		if (n_tokens >= 4 && !strcmp(tokens[2], "sa") && !strcmp(tokens[3], "delete")) {
+			cmd_ipsec_sa_delete(tokens, n_tokens, out, out_size, obj);
+			return;
+		}
+	}
+
+	if (!strcmp(tokens[0], "block")) {
+		if (n_tokens >= 6 && !strcmp(tokens[5], "enable")) {
+			cmd_block_enable(tokens, n_tokens, out, out_size, obj);
+			return;
+		}
+
+		if (n_tokens >= 6 && !strcmp(tokens[5], "disable")) {
+			cmd_block_disable(tokens, n_tokens, out, out_size, obj);
 			return;
 		}
 	}

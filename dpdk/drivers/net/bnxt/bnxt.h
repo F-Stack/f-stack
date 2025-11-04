@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -8,6 +8,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <pthread.h>
 #include <sys/queue.h>
 
 #include <rte_pci.h>
@@ -24,6 +25,7 @@
 #include "tf_core.h"
 #include "bnxt_ulp.h"
 #include "bnxt_tf_common.h"
+#include "bnxt_vnic.h"
 
 /* Vendor ID */
 #define PCI_VENDOR_ID_BROADCOM		0x14E4
@@ -137,6 +139,7 @@
 #define BNXT_NUM_CMPL_DMA_AGGR			36
 #define BNXT_CMPL_AGGR_DMA_TMR_DURING_INT	50
 #define BNXT_NUM_CMPL_DMA_AGGR_DURING_INT	12
+#define BNXT_DEVICE_SERIAL_NUM_SIZE		8
 
 #define	BNXT_DEFAULT_VNIC_STATE_MASK			\
 	HWRM_ASYNC_EVENT_CMPL_DEFAULT_VNIC_CHANGE_EVENT_DATA1_DEF_VNIC_STATE_MASK
@@ -162,6 +165,8 @@
 
 #define BNXT_HWRM_CMD_TO_FORWARD(cmd)	\
 		(bp->pf->vf_req_fwd[(cmd) / 32] |= (1 << ((cmd) % 32)))
+
+#define BNXT_NTOHS              rte_be_to_cpu_16
 
 struct bnxt_led_info {
 	uint8_t	     num_leds;
@@ -238,11 +243,11 @@ struct bnxt_parent_info {
 struct bnxt_pf_info {
 #define BNXT_FIRST_PF_FID	1
 #define BNXT_MAX_VFS(bp)	((bp)->pf->max_vfs)
-#define BNXT_MAX_VF_REPS_WH     64
-#define BNXT_MAX_VF_REPS_TH     256
+#define BNXT_MAX_VF_REPS_P4     64
+#define BNXT_MAX_VF_REPS_P5     256
 #define BNXT_MAX_VF_REPS(bp) \
-				(BNXT_CHIP_P5(bp) ? BNXT_MAX_VF_REPS_TH : \
-				BNXT_MAX_VF_REPS_WH)
+				(BNXT_CHIP_P5(bp) ? BNXT_MAX_VF_REPS_P5 : \
+				BNXT_MAX_VF_REPS_P4)
 #define BNXT_TOTAL_VFS(bp)	((bp)->pf->total_vfs)
 #define BNXT_FIRST_VF_FID	128
 #define BNXT_PF_RINGS_USED(bp)	bnxt_get_num_queues(bp)
@@ -346,6 +351,7 @@ struct bnxt_ptp_cfg {
 					 BNXT_PTP_MSG_PDELAY_RESP)
 	uint8_t			tx_tstamp_en:1;
 	int			rx_filter;
+	uint8_t			filter_all;
 
 #define BNXT_PTP_RX_TS_L	0
 #define BNXT_PTP_RX_TS_H	1
@@ -366,9 +372,11 @@ struct bnxt_ptp_cfg {
 	uint32_t			tx_regs[BNXT_PTP_TX_REGS];
 	uint32_t			tx_mapped_regs[BNXT_PTP_TX_REGS];
 
-	/* On Thor, the Rx timestamp is present in the Rx completion record */
+	/* On P5, the Rx timestamp is present in the Rx completion record */
 	uint64_t			rx_timestamp;
 	uint64_t			current_time;
+	uint64_t			old_time;
+	rte_spinlock_t			ptp_lock;
 };
 
 struct bnxt_coal {
@@ -632,6 +640,13 @@ struct bnxt_ring_stats {
 	uint64_t	rx_agg_aborts;
 };
 
+enum bnxt_session_type {
+	BNXT_SESSION_TYPE_REGULAR = 0,
+	BNXT_SESSION_TYPE_SHARED_COMMON,
+	BNXT_SESSION_TYPE_SHARED_WC,
+	BNXT_SESSION_TYPE_LAST
+};
+
 struct bnxt {
 	void				*bar0;
 
@@ -671,8 +686,8 @@ struct bnxt {
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
 #define BNXT_NPAR(bp)		((bp)->flags & BNXT_FLAG_NPAR_PF)
-#define BNXT_MH(bp)             ((bp)->flags & BNXT_FLAG_MULTI_HOST)
-#define BNXT_SINGLE_PF(bp)      (BNXT_PF(bp) && !BNXT_NPAR(bp) && !BNXT_MH(bp))
+#define BNXT_MH(bp)		((bp)->flags & BNXT_FLAG_MULTI_HOST)
+#define BNXT_SINGLE_PF(bp)	(BNXT_PF(bp) && !BNXT_NPAR(bp) && !BNXT_MH(bp))
 #define BNXT_USE_CHIMP_MB	0 //For non-CFA commands, everything uses Chimp.
 #define BNXT_USE_KONG(bp)	((bp)->flags & BNXT_FLAG_KONG_MB_EN)
 #define BNXT_VF_IS_TRUSTED(bp)	((bp)->flags & BNXT_FLAG_TRUSTED_VF_EN)
@@ -681,7 +696,7 @@ struct bnxt {
 #define BNXT_HAS_NQ(bp)		BNXT_CHIP_P5(bp)
 #define BNXT_HAS_RING_GRPS(bp)	(!BNXT_CHIP_P5(bp))
 #define BNXT_FLOW_XSTATS_EN(bp)	((bp)->flags & BNXT_FLAG_FLOW_XSTATS_EN)
-#define BNXT_HAS_DFLT_MAC_SET(bp)      ((bp)->flags & BNXT_FLAG_DFLT_MAC_SET)
+#define BNXT_HAS_DFLT_MAC_SET(bp)	((bp)->flags & BNXT_FLAG_DFLT_MAC_SET)
 #define BNXT_GFID_ENABLED(bp)	((bp)->flags & BNXT_FLAG_GFID_ENABLE)
 
 	uint32_t			flags2;
@@ -689,6 +704,9 @@ struct bnxt {
 #define BNXT_FLAGS2_PTP_ALARM_SCHEDULED		BIT(1)
 #define BNXT_P5_PTP_TIMESYNC_ENABLED(bp)	\
 	((bp)->flags2 & BNXT_FLAGS2_PTP_TIMESYNC_ENABLED)
+#define BNXT_FLAGS2_TESTPMD_EN			BIT(3)
+#define BNXT_TESTPMD_EN(bp)			\
+	((bp)->flags2 & BNXT_FLAGS2_TESTPMD_EN)
 
 	uint16_t		chip_num;
 #define CHIP_NUM_58818		0xd818
@@ -708,7 +726,9 @@ struct bnxt {
 #define BNXT_FW_CAP_LINK_ADMIN		BIT(7)
 #define BNXT_FW_CAP_TRUFLOW_EN		BIT(8)
 #define BNXT_FW_CAP_VLAN_TX_INSERT	BIT(9)
-#define BNXT_TRUFLOW_EN(bp)	((bp)->fw_cap & BNXT_FW_CAP_TRUFLOW_EN)
+#define BNXT_FW_CAP_RX_ALL_PKT_TS	BIT(10)
+#define BNXT_TRUFLOW_EN(bp)	((bp)->fw_cap & BNXT_FW_CAP_TRUFLOW_EN &&\
+				 (bp)->app_id != 0xFF)
 
 	pthread_mutex_t         flow_lock;
 
@@ -718,6 +738,7 @@ struct bnxt {
 #define BNXT_VNIC_CAP_RX_CMPL_V2	BIT(2)
 #define BNXT_VNIC_CAP_VLAN_RX_STRIP	BIT(3)
 #define BNXT_RX_VLAN_STRIP_EN(bp)	((bp)->vnic_cap_flags & BNXT_VNIC_CAP_VLAN_RX_STRIP)
+#define BNXT_VNIC_CAP_OUTER_RSS_TRUSTED_VF	BIT(4)
 	unsigned int		rx_nr_rings;
 	unsigned int		rx_cp_nr_rings;
 	unsigned int		rx_num_qs_per_vnic;
@@ -747,7 +768,6 @@ struct bnxt {
 
 	uint16_t			nr_vnics;
 
-#define BNXT_GET_DEFAULT_VNIC(bp)	(&(bp)->vnic_info[0])
 	struct bnxt_vnic_info	*vnic_info;
 	STAILQ_HEAD(, bnxt_vnic_info)	free_vnic_list;
 
@@ -810,6 +830,7 @@ struct bnxt {
 	uint16_t		max_l2_ctx;
 	uint16_t		max_rx_em_flows;
 	uint16_t		max_vnics;
+#define BNXT_MAX_VNICS_COS_CLASSIFY	8
 	uint16_t		max_stat_ctx;
 	uint16_t		max_tpa_v2;
 	uint16_t		first_vf_id;
@@ -823,15 +844,21 @@ struct bnxt {
 	uint8_t			port_cnt;
 	uint8_t			vxlan_port_cnt;
 	uint8_t			geneve_port_cnt;
+	uint8_t			ecpri_port_cnt;
 	uint16_t		vxlan_port;
 	uint16_t		geneve_port;
+	uint16_t		ecpri_port;
 	uint16_t		vxlan_fw_dst_port_id;
 	uint16_t		geneve_fw_dst_port_id;
+	uint16_t		ecpri_fw_dst_port_id;
+	uint16_t		ecpri_upar_in_use;
 	uint32_t		fw_ver;
 	uint32_t		hwrm_spec_code;
 
 	struct bnxt_led_info	*leds;
+	uint8_t			ieee_1588;
 	struct bnxt_ptp_cfg     *ptp_cfg;
+	uint8_t			ptp_all_rx_tstamp;
 	uint16_t		vf_resv_strategy;
 	struct bnxt_ctx_mem_info        *ctx;
 
@@ -841,6 +868,8 @@ struct bnxt {
 	uint16_t		num_reps;
 	struct bnxt_rep_info	*rep_info;
 	uint16_t                *cfa_code_map;
+	/* Device Serial Number */
+	uint8_t			dsn[BNXT_DEVICE_SERIAL_NUM_SIZE];
 	/* Struct to hold adapter error recovery related info */
 	struct bnxt_error_recovery_info *recovery_info;
 #define BNXT_MARK_TABLE_SZ	(sizeof(struct bnxt_mark_info)  * 64 * 1024)
@@ -852,8 +881,7 @@ struct bnxt {
 	uint16_t		func_svif;
 	uint16_t		port_svif;
 
-	struct tf		tfp;
-	struct tf		tfp_shared;
+	struct tf		tfp[BNXT_SESSION_TYPE_LAST];
 	struct bnxt_ulp_context	*ulp_ctx;
 	struct bnxt_flow_stat_info *flow_stat;
 	uint16_t		max_num_kflows;
@@ -861,6 +889,7 @@ struct bnxt {
 	uint16_t		tx_cfa_action;
 	struct bnxt_ring_stats	*prev_rx_ring_stats;
 	struct bnxt_ring_stats	*prev_tx_ring_stats;
+	struct bnxt_vnic_queue_db vnic_queue_db;
 
 #define BNXT_MAX_MC_ADDRS	((bp)->max_mcast_addr)
 	struct rte_ether_addr	*mcast_addr_list;
@@ -894,7 +923,7 @@ inline uint16_t bnxt_max_rings(struct bnxt *bp)
 	}
 
 	/*
-	 * RSS table size in Thor is 512.
+	 * RSS table size in P5 is 512.
 	 * Cap max Rx rings to the same value for RSS.
 	 */
 	if (BNXT_CHIP_P5(bp))
@@ -986,11 +1015,19 @@ void bnxt_schedule_fw_health_check(struct bnxt *bp);
 bool is_bnxt_supported(struct rte_eth_dev *dev);
 bool bnxt_stratus_device(struct bnxt *bp);
 void bnxt_print_link_info(struct rte_eth_dev *eth_dev);
+uint16_t bnxt_rss_ctxts(const struct bnxt *bp);
 uint16_t bnxt_rss_hash_tbl_size(const struct bnxt *bp);
 int bnxt_link_update_op(struct rte_eth_dev *eth_dev,
 			int wait_to_complete);
+int
+bnxt_udp_tunnel_port_del_op(struct rte_eth_dev *eth_dev,
+			    struct rte_eth_udp_tunnel *udp_tunnel);
+int
+bnxt_udp_tunnel_port_add_op(struct rte_eth_dev *eth_dev,
+			    struct rte_eth_udp_tunnel *udp_tunnel);
 
 extern const struct rte_flow_ops bnxt_flow_ops;
+extern const struct rte_flow_ops bnxt_flow_meter_ops;
 
 #define bnxt_acquire_flow_lock(bp) \
 	pthread_mutex_lock(&(bp)->flow_lock)
@@ -1042,5 +1079,7 @@ int bnxt_flow_ops_get_op(struct rte_eth_dev *dev,
 int bnxt_dev_start_op(struct rte_eth_dev *eth_dev);
 int bnxt_dev_stop_op(struct rte_eth_dev *eth_dev);
 void bnxt_handle_vf_cfg_change(void *arg);
-
+int bnxt_flow_meter_ops_get(struct rte_eth_dev *eth_dev, void *arg);
+struct bnxt_vnic_info *bnxt_get_default_vnic(struct bnxt *bp);
+struct tf *bnxt_get_tfp_session(struct bnxt *bp, enum bnxt_session_type type);
 #endif

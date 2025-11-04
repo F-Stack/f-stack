@@ -253,7 +253,7 @@ enetfec_eth_link_update(struct rte_eth_dev *dev,
 	link.link_status = lstatus;
 	link.link_speed = RTE_ETH_SPEED_NUM_1G;
 
-	ENETFEC_PMD_INFO("Port (%d) link is %s\n", dev->data->port_id,
+	ENETFEC_PMD_INFO("Port (%d) link is %s", dev->data->port_id,
 			 "Up");
 
 	return rte_eth_linkstatus_set(dev, &link);
@@ -414,7 +414,6 @@ enetfec_tx_queue_setup(struct rte_eth_dev *dev,
 			offset_des_active_txq[queue_idx];
 	bd_base = (struct bufdesc *)(((uintptr_t)bd_base) + size);
 	txq->bd.last = (struct bufdesc *)(((uintptr_t)bd_base) - dsize);
-	bdp = txq->bd.base;
 	bdp = txq->bd.cur;
 
 	for (i = 0; i < txq->bd.ring_size; i++) {
@@ -462,7 +461,7 @@ enetfec_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	if (queue_idx >= ENETFEC_MAX_Q) {
-		ENETFEC_PMD_ERR("Invalid queue id %" PRIu16 ", max %d\n",
+		ENETFEC_PMD_ERR("Invalid queue id %" PRIu16 ", max %d",
 			queue_idx, ENETFEC_MAX_Q);
 		return -EINVAL;
 	}

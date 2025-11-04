@@ -17,12 +17,13 @@
 
 #define QAT_DEV_NAME_MAX_LEN	64
 
-#define QAT_IPSEC_MB_LIB "qat_ipsec_mb_lib"
+#define QAT_LEGACY_CAPA "qat_legacy_capa"
 #define SYM_ENQ_THRESHOLD_NAME "qat_sym_enq_threshold"
 #define ASYM_ENQ_THRESHOLD_NAME "qat_asym_enq_threshold"
 #define COMP_ENQ_THRESHOLD_NAME "qat_comp_enq_threshold"
+#define SYM_CIPHER_CRC_ENABLE_NAME "qat_sym_cipher_crc_enable"
 #define QAT_CMD_SLICE_MAP "qat_cmd_slice_disable"
-#define QAT_CMD_SLICE_MAP_POS	4
+#define QAT_CMD_SLICE_MAP_POS	5
 #define MAX_QP_THRESHOLD_SIZE	32
 
 /**
@@ -132,6 +133,8 @@ struct qat_pci_device {
 	/**< Address of misc bar */
 	void *dev_private;
 	/**< Per generation specific information */
+	uint32_t slice_map;
+	/**< Map of the crypto and compression slices */
 };
 
 struct qat_gen_hw_data {

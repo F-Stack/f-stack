@@ -58,8 +58,8 @@ struct ifcvf_internal {
 	int vfio_container_fd;
 	int vfio_group_fd;
 	int vfio_dev_fd;
-	pthread_t tid;	/* thread for notify relay */
-	pthread_t intr_tid; /* thread for config space change interrupt relay */
+	rte_thread_t tid; /* thread for notify relay */
+	rte_thread_t intr_tid; /* thread for config space change interrupt relay */
 	int epfd;
 	int csc_epfd;
 	int vid;
@@ -367,11 +367,7 @@ vdpa_ifcvf_stop(struct ifcvf_internal *internal)
 					(u16)(ring_state & IFCVF_16_BIT_MASK);
 				hw->vring[i].last_used_idx =
 					(u16)(ring_state >> 16);
-				if (hw->vring[i].last_avail_idx !=
-					hw->vring[i].last_used_idx) {
-					ifcvf_notify_queue(hw, i);
-					usleep(10);
-				}
+				usleep(10);
 			} while (hw->vring[i].last_avail_idx !=
 				hw->vring[i].last_used_idx);
 		}
@@ -500,7 +496,7 @@ vdpa_disable_vfio_intr(struct ifcvf_internal *internal)
 	return 0;
 }
 
-static void *
+static uint32_t
 notify_relay(void *arg)
 {
 	int i, kickfd, epfd, nfds = 0;
@@ -518,7 +514,7 @@ notify_relay(void *arg)
 	epfd = epoll_create(IFCVF_MAX_QUEUES * 2);
 	if (epfd < 0) {
 		DRV_LOG(ERR, "failed to create epoll instance.");
-		return NULL;
+		return 1;
 	}
 	internal->epfd = epfd;
 
@@ -531,7 +527,7 @@ notify_relay(void *arg)
 		ev.data.u64 = qid | (uint64_t)vring.kickfd << 32;
 		if (epoll_ctl(epfd, EPOLL_CTL_ADD, vring.kickfd, &ev) < 0) {
 			DRV_LOG(ERR, "epoll add error: %s", strerror(errno));
-			return NULL;
+			return 1;
 		}
 	}
 
@@ -540,8 +536,8 @@ notify_relay(void *arg)
 		if (nfds < 0) {
 			if (errno == EINTR)
 				continue;
-			DRV_LOG(ERR, "epoll_wait return fail\n");
-			return NULL;
+			DRV_LOG(ERR, "epoll_wait return fail");
+			return 1;
 		}
 
 		for (i = 0; i < nfds; i++) {
@@ -565,18 +561,18 @@ notify_relay(void *arg)
 		}
 	}
 
-	return NULL;
+	return 0;
 }
 
 static int
 setup_notify_relay(struct ifcvf_internal *internal)
 {
-	char name[THREAD_NAME_LEN];
+	char name[RTE_THREAD_INTERNAL_NAME_SIZE];
 	int ret;
 
-	snprintf(name, sizeof(name), "ifc-notify-%d", internal->vid);
-	ret = rte_ctrl_thread_create(&internal->tid, name, NULL, notify_relay,
-				     (void *)internal);
+	snprintf(name, sizeof(name), "ifc-noti%d", internal->vid);
+	ret = rte_thread_create_internal_control(&internal->tid, name,
+			notify_relay, internal);
 	if (ret != 0) {
 		DRV_LOG(ERR, "failed to create notify relay pthread.");
 		return -1;
@@ -588,13 +584,11 @@ setup_notify_relay(struct ifcvf_internal *internal)
 static int
 unset_notify_relay(struct ifcvf_internal *internal)
 {
-	void *status;
-
-	if (internal->tid) {
-		pthread_cancel(internal->tid);
-		pthread_join(internal->tid, &status);
+	if (internal->tid.opaque_id != 0) {
+		pthread_cancel((pthread_t)internal->tid.opaque_id);
+		rte_thread_join(internal->tid, NULL);
 	}
-	internal->tid = 0;
+	internal->tid.opaque_id = 0;
 
 	if (internal->epfd >= 0)
 		close(internal->epfd);
@@ -609,12 +603,12 @@ virtio_interrupt_handler(struct ifcvf_internal *internal)
 	int vid = internal->vid;
 	int ret;
 
-	ret = rte_vhost_slave_config_change(vid, 1);
+	ret = rte_vhost_backend_config_change(vid, 1);
 	if (ret)
 		DRV_LOG(ERR, "failed to notify the guest about configuration space change.");
 }
 
-static void *
+static uint32_t
 intr_relay(void *arg)
 {
 	struct ifcvf_internal *internal = (struct ifcvf_internal *)arg;
@@ -627,7 +621,7 @@ intr_relay(void *arg)
 	csc_epfd = epoll_create(1);
 	if (csc_epfd < 0) {
 		DRV_LOG(ERR, "failed to create epoll for config space change.");
-		return NULL;
+		return 1;
 	}
 
 	ev.events = EPOLLIN | EPOLLPRI | EPOLLRDHUP | EPOLLHUP;
@@ -657,12 +651,12 @@ intr_relay(void *arg)
 				    errno == EWOULDBLOCK ||
 				    errno == EAGAIN)
 					continue;
-				DRV_LOG(ERR, "Error reading from file descriptor %d: %s\n",
+				DRV_LOG(ERR, "Error reading from file descriptor %d: %s",
 					csc_event.data.fd,
 					strerror(errno));
 				goto out;
 			} else if (nbytes == 0) {
-				DRV_LOG(ERR, "Read nothing from file descriptor %d\n",
+				DRV_LOG(ERR, "Read nothing from file descriptor %d",
 					csc_event.data.fd);
 				continue;
 			} else {
@@ -676,18 +670,18 @@ out:
 		close(csc_epfd);
 	internal->csc_epfd = -1;
 
-	return NULL;
+	return 0;
 }
 
 static int
 setup_intr_relay(struct ifcvf_internal *internal)
 {
-	char name[THREAD_NAME_LEN];
+	char name[RTE_THREAD_INTERNAL_NAME_SIZE];
 	int ret;
 
-	snprintf(name, sizeof(name), "ifc-intr-%d", internal->vid);
-	ret = rte_ctrl_thread_create(&internal->intr_tid, name, NULL,
-				     intr_relay, (void *)internal);
+	snprintf(name, sizeof(name), "ifc-int%d", internal->vid);
+	ret = rte_thread_create_internal_control(&internal->intr_tid, name,
+			intr_relay, (void *)internal);
 	if (ret) {
 		DRV_LOG(ERR, "failed to create notify relay pthread.");
 		return -1;
@@ -698,13 +692,11 @@ setup_intr_relay(struct ifcvf_internal *internal)
 static void
 unset_intr_relay(struct ifcvf_internal *internal)
 {
-	void *status;
-
-	if (internal->intr_tid) {
-		pthread_cancel(internal->intr_tid);
-		pthread_join(internal->intr_tid, &status);
+	if (internal->intr_tid.opaque_id != 0) {
+		pthread_cancel((pthread_t)internal->intr_tid.opaque_id);
+		rte_thread_join(internal->intr_tid, NULL);
 	}
-	internal->intr_tid = 0;
+	internal->intr_tid.opaque_id = 0;
 
 	if (internal->csc_epfd >= 0)
 		close(internal->csc_epfd);
@@ -865,8 +857,30 @@ m_ifcvf_stop(struct ifcvf_internal *internal)
 	struct ifcvf_hw *hw = &internal->hw;
 	uint64_t m_vring_iova = IFCVF_MEDIATED_VRING;
 	uint64_t size, len;
+	u32 ring_state = 0;
 
 	vid = internal->vid;
+
+	/* to make sure no packet is lost for blk device
+	 * do not stop until last_avail_idx == last_used_idx
+	 */
+	if (internal->hw.device_type == IFCVF_BLK) {
+		for (i = 0; i < hw->nr_vring; i++) {
+			do {
+				if (hw->lm_cfg != NULL)
+					ring_state = *(u32 *)(hw->lm_cfg +
+						IFCVF_LM_RING_STATE_OFFSET +
+						i * IFCVF_LM_CFG_SIZE);
+				hw->vring[i].last_avail_idx =
+					(u16)(ring_state & IFCVF_16_BIT_MASK);
+				hw->vring[i].last_used_idx =
+					(u16)(ring_state >> 16);
+				usleep(10);
+			} while (hw->vring[i].last_avail_idx !=
+				hw->vring[i].last_used_idx);
+		}
+	}
+
 	ifcvf_stop_hw(hw);
 
 	for (i = 0; i < hw->nr_vring; i++) {
@@ -904,7 +918,7 @@ update_used_ring(struct ifcvf_internal *internal, uint16_t qid)
 	rte_vhost_vring_call(internal->vid, qid);
 }
 
-static void *
+static uint32_t
 vring_relay(void *arg)
 {
 	int i, vid, epfd, fd, nfds;
@@ -923,7 +937,7 @@ vring_relay(void *arg)
 	epfd = epoll_create(IFCVF_MAX_QUEUES * 2);
 	if (epfd < 0) {
 		DRV_LOG(ERR, "failed to create epoll instance.");
-		return NULL;
+		return 1;
 	}
 	internal->epfd = epfd;
 
@@ -934,7 +948,7 @@ vring_relay(void *arg)
 		ev.data.u64 = qid << 1 | (uint64_t)vring.kickfd << 32;
 		if (epoll_ctl(epfd, EPOLL_CTL_ADD, vring.kickfd, &ev) < 0) {
 			DRV_LOG(ERR, "epoll add error: %s", strerror(errno));
-			return NULL;
+			return 1;
 		}
 	}
 
@@ -948,7 +962,7 @@ vring_relay(void *arg)
 		if (epoll_ctl(epfd, EPOLL_CTL_ADD, internal->intr_fd[qid], &ev)
 				< 0) {
 			DRV_LOG(ERR, "epoll add error: %s", strerror(errno));
-			return NULL;
+			return 1;
 		}
 		update_used_ring(internal, qid);
 	}
@@ -964,7 +978,7 @@ vring_relay(void *arg)
 			if (errno == EINTR)
 				continue;
 			DRV_LOG(ERR, "epoll_wait return fail.");
-			return NULL;
+			return 1;
 		}
 
 		for (i = 0; i < nfds; i++) {
@@ -992,18 +1006,18 @@ vring_relay(void *arg)
 		}
 	}
 
-	return NULL;
+	return 0;
 }
 
 static int
 setup_vring_relay(struct ifcvf_internal *internal)
 {
-	char name[THREAD_NAME_LEN];
+	char name[RTE_THREAD_INTERNAL_NAME_SIZE];
 	int ret;
 
-	snprintf(name, sizeof(name), "ifc-vring-%d", internal->vid);
-	ret = rte_ctrl_thread_create(&internal->tid, name, NULL, vring_relay,
-				     (void *)internal);
+	snprintf(name, sizeof(name), "ifc-ring%d", internal->vid);
+	ret = rte_thread_create_internal_control(&internal->tid, name,
+			vring_relay, internal);
 	if (ret != 0) {
 		DRV_LOG(ERR, "failed to create ring relay pthread.");
 		return -1;
@@ -1015,13 +1029,11 @@ setup_vring_relay(struct ifcvf_internal *internal)
 static int
 unset_vring_relay(struct ifcvf_internal *internal)
 {
-	void *status;
-
-	if (internal->tid) {
-		pthread_cancel(internal->tid);
-		pthread_join(internal->tid, &status);
+	if (internal->tid.opaque_id != 0) {
+		pthread_cancel((pthread_t)internal->tid.opaque_id);
+		rte_thread_join(internal->tid, NULL);
 	}
-	internal->tid = 0;
+	internal->tid.opaque_id = 0;
 
 	if (internal->epfd >= 0)
 		close(internal->epfd);
@@ -1297,8 +1309,8 @@ ifcvf_get_vdpa_features(struct rte_vdpa_device *vdev, uint64_t *features)
 
 #define VDPA_SUPPORTED_PROTOCOL_FEATURES \
 		(1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK | \
-		 1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ | \
-		 1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD | \
+		 1ULL << VHOST_USER_PROTOCOL_F_BACKEND_REQ | \
+		 1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD | \
 		 1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER | \
 		 1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD | \
 		 1ULL << VHOST_USER_PROTOCOL_F_MQ | \
@@ -1488,7 +1500,7 @@ ifcvf_pci_get_device_type(struct rte_pci_device *pci_dev)
 	uint16_t device_id;
 
 	if (pci_device_id < 0x1000 || pci_device_id > 0x107f) {
-		DRV_LOG(ERR, "Probe device is not a virtio device\n");
+		DRV_LOG(ERR, "Probe device is not a virtio device");
 		return -1;
 	}
 
@@ -1565,7 +1577,7 @@ ifcvf_blk_get_config(int vid, uint8_t *config, uint32_t size)
 	DRV_LOG(DEBUG, "      sectors  : %u", dev_cfg->geometry.sectors);
 	DRV_LOG(DEBUG, "num_queues: 0x%08x", dev_cfg->num_queues);
 
-	DRV_LOG(DEBUG, "config: [%x] [%x] [%x] [%x] [%x] [%x] [%x] [%x]\n",
+	DRV_LOG(DEBUG, "config: [%x] [%x] [%x] [%x] [%x] [%x] [%x] [%x]",
 		config[0], config[1], config[2], config[3], config[4],
 		config[5], config[6], config[7]);
 	return 0;
@@ -1855,6 +1867,13 @@ static const struct rte_pci_id pci_id_ifcvf_map[] = {
 	  .subsystem_vendor_id = IFCVF_SUBSYS_VENDOR_ID,
 	  .subsystem_device_id = IFCVF_SUBSYS_BLK_DEVICE_ID,
 	},
+
+	{ .class_id = RTE_CLASS_ANY_ID,
+	  .vendor_id = IFCVF_VENDOR_ID,
+	  .device_id = IFCVF_BLK_MODERN_DEVICE_ID,
+	  .subsystem_vendor_id = IFCVF_SUBSYS_VENDOR_ID,
+	  .subsystem_device_id = IFCVF_SUBSYS_DEFAULT_DEVICE_ID,
+	}, /* virtio-blk devices with default subsystem IDs */
 
 	{ .vendor_id = 0, /* sentinel */
 	},

@@ -112,9 +112,9 @@ struct rte_higig2_ppt_type0 {
  */
 __extension__
 struct rte_higig2_ppt_type1 {
-	uint16_t classification;
-	uint16_t resv;
-	uint16_t vid;
+	rte_be16_t classification;
+	rte_be16_t resv;
+	rte_be16_t vid;
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 	uint16_t opcode:3;
 	uint16_t resv1:2;
@@ -136,7 +136,6 @@ struct rte_higig2_ppt_type1 {
  *
  * higig2 header
  */
-RTE_STD_C11
 struct rte_higig2_hdr {
 	struct rte_higig2_frc fcr;
 	union {

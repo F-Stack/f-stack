@@ -149,6 +149,7 @@ Queue start/stop
 ----------------
 
 Supports starting/stopping a specific Rx/Tx queue of a port.
+This is required for use deferred start configuration option.
 
 * **[implements] eth_dev_ops**: ``rx_queue_start``, ``rx_queue_stop``, ``tx_queue_start``,
   ``tx_queue_stop``.
@@ -288,10 +289,20 @@ RSS hash
 Supports RSS hashing on RX.
 
 * **[uses]     user config**: ``dev_conf.rxmode.mq_mode`` = ``RTE_ETH_MQ_RX_RSS_FLAG``.
-* **[uses]     user config**: ``dev_conf.rx_adv_conf.rss_conf``.
+* **[uses]     user config**: ``rss_conf.rss_hf``.
 * **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:RTE_ETH_RX_OFFLOAD_RSS_HASH``.
 * **[provides] rte_eth_dev_info**: ``flow_type_rss_offloads``.
 * **[provides] mbuf**: ``mbuf.ol_flags:RTE_MBUF_F_RX_RSS_HASH``, ``mbuf.rss``.
+* **[related]  API**: ``rte_eth_dev_configure()``, ``rte_eth_dev_rss_hash_update``
+  ``rte_eth_dev_rss_hash_conf_get()``.
+
+Supports RSS hash algorithm on Rx.
+
+* **[implements] eth_dev_ops**: ``dev_configure``, ``rss_hash_update``, ``rss_hash_conf_get``.
+* **[uses]       user config**: ``rss_conf.algorithm``
+* **[provides]   rte_eth_dev_info**: ``rss_algo_capa``.
+* **[related]    API**: ``rte_eth_dev_configure()``, ``rte_eth_dev_rss_hash_update()``,
+  ``rte_eth_dev_rss_hash_conf_get()``.
 
 
 .. _nic_features_inner_rss:
@@ -299,7 +310,7 @@ Supports RSS hashing on RX.
 Inner RSS
 ---------
 
-Supports RX RSS hashing on Inner headers.
+Supports RSS hashing on inner headers with flow API.
 
 * **[uses]    rte_flow_action_rss**: ``level``.
 * **[uses]    rte_eth_rxconf,rte_eth_rxmode**: ``offloads:RTE_ETH_RX_OFFLOAD_RSS_HASH``.
@@ -314,9 +325,10 @@ RSS key update
 Supports configuration of Receive Side Scaling (RSS) hash computation. Updating
 Receive Side Scaling (RSS) hash key.
 
-* **[implements] eth_dev_ops**: ``rss_hash_update``, ``rss_hash_conf_get``.
+* **[implements] eth_dev_ops**: ``dev_configure``, ``rss_hash_update``, ``rss_hash_conf_get``.
+* **[uses]       user config**: ``rss_conf.rss_key``, ``rss_conf.rss_key_len``.
 * **[provides]   rte_eth_dev_info**: ``hash_key_size``.
-* **[related]    API**: ``rte_eth_dev_rss_hash_update()``,
+* **[related]    API**: ``rte_eth_dev_configure()``, ``rte_eth_dev_rss_hash_update()``,
   ``rte_eth_dev_rss_hash_conf_get()``.
 
 
@@ -705,12 +717,30 @@ Basic stats
 Support basic statistics such as: ipackets, opackets, ibytes, obytes,
 imissed, ierrors, oerrors, rx_nombuf.
 
-And per queue stats: q_ipackets, q_opackets, q_ibytes, q_obytes, q_errors.
-
 These apply to all drivers.
 
 * **[implements] eth_dev_ops**: ``stats_get``, ``stats_reset``.
 * **[related]    API**: ``rte_eth_stats_get``, ``rte_eth_stats_reset()``.
+
+
+.. _nic_features_stats_per_queue:
+
+Stats per queue
+---------------
+
+Supports per queue stats: q_ipackets, q_opackets, q_ibytes, q_obytes, q_errors.
+Statistics only supplied for first ``RTE_ETHDEV_QUEUE_STAT_CNTRS`` (16) queues.
+If driver does not support this feature the per queue stats will be zero.
+
+* **[implements] eth_dev_ops**: ``stats_get``, ``stats_reset``.
+* **[related]    API**: ``rte_eth_stats_get``, ``rte_eth_stats_reset()``.
+
+May also support configuring per-queue stat counter mapping.
+Used by some drivers to workaround HW limitations.
+
+* **[implements] eth_dev_ops**: ``queue_stats_mapping_set``.
+* **[related]    API**: ``rte_eth_dev_set_rx_queue_stats_mapping()``,
+  ``rte_eth_dev_set_tx_queue_stats_mapping()``.
 
 
 .. _nic_features_extended_stats:
@@ -725,18 +755,6 @@ Supports Extended Statistics, changes from driver to driver.
 * **[related]    API**: ``rte_eth_xstats_get()``, ``rte_eth_xstats_reset()``,
   ``rte_eth_xstats_get_names``, ``rte_eth_xstats_get_by_id()``,
   ``rte_eth_xstats_get_names_by_id()``, ``rte_eth_xstats_get_id_by_name()``.
-
-
-.. _nic_features_stats_per_queue:
-
-Stats per queue
----------------
-
-Supports configuring per-queue stat counter mapping.
-
-* **[implements] eth_dev_ops**: ``queue_stats_mapping_set``.
-* **[related]    API**: ``rte_eth_dev_set_rx_queue_stats_mapping()``,
-  ``rte_eth_dev_set_tx_queue_stats_mapping()``.
 
 
 .. _nic_features_congestion_management:

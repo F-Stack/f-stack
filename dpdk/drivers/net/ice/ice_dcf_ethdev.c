@@ -11,7 +11,6 @@
 #include <rte_interrupts.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_atomic.h>
 #include <rte_eal.h>
 #include <rte_ether.h>
 #include <ethdev_pci.h>
@@ -1394,30 +1393,59 @@ ice_dcf_dev_rss_reta_query(struct rte_eth_dev *dev,
 }
 
 static int
+ice_dcf_set_rss_key(struct ice_dcf_hw *hw, uint8_t *key, uint8_t key_len)
+{
+	/* HENA setting, it is enabled by default, no change */
+	if (!key || key_len == 0) {
+		PMD_DRV_LOG(DEBUG, "No key to be configured");
+		return 0;
+	} else if (key_len != hw->vf_res->rss_key_size) {
+		PMD_DRV_LOG(ERR, "The size of hash key configured "
+			"(%d) doesn't match the size of hardware can "
+			"support (%d)", key_len,
+			hw->vf_res->rss_key_size);
+		return -EINVAL;
+	}
+
+	rte_memcpy(hw->rss_key, key, key_len);
+
+	return ice_dcf_configure_rss_key(hw);
+}
+
+static int
 ice_dcf_dev_rss_hash_update(struct rte_eth_dev *dev,
 			struct rte_eth_rss_conf *rss_conf)
 {
 	struct ice_dcf_adapter *adapter = dev->data->dev_private;
 	struct ice_dcf_hw *hw = &adapter->real_hw;
+	int ret;
 
 	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
 		return -ENOTSUP;
 
-	/* HENA setting, it is enabled by default, no change */
-	if (!rss_conf->rss_key || rss_conf->rss_key_len == 0) {
-		PMD_DRV_LOG(DEBUG, "No key to be configured");
-		return 0;
-	} else if (rss_conf->rss_key_len != hw->vf_res->rss_key_size) {
-		PMD_DRV_LOG(ERR, "The size of hash key configured "
-			"(%d) doesn't match the size of hardware can "
-			"support (%d)", rss_conf->rss_key_len,
-			hw->vf_res->rss_key_size);
-		return -EINVAL;
+	/* set hash key */
+	ret = ice_dcf_set_rss_key(hw, rss_conf->rss_key, rss_conf->rss_key_len);
+	if (ret)
+		return ret;
+
+	/* Clear existing RSS. */
+	ret = ice_dcf_set_hena(hw, 0);
+
+	/* It is a workaround, temporarily allow error to be returned
+	 * due to possible lack of PF handling for hena = 0.
+	 */
+	if (ret)
+		PMD_DRV_LOG(WARNING, "fail to clean existing RSS,"
+				"lack PF support");
+
+	/* Set new RSS configuration. */
+	ret = ice_dcf_rss_hash_set(hw, rss_conf->rss_hf, true);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "fail to set new RSS");
+		return ret;
 	}
 
-	rte_memcpy(hw->rss_key, rss_conf->rss_key, rss_conf->rss_key_len);
-
-	return ice_dcf_configure_rss_key(hw);
+	return 0;
 }
 
 static int
@@ -1430,8 +1458,7 @@ ice_dcf_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
 		return -ENOTSUP;
 
-	/* Just set it to default value now. */
-	rss_conf->rss_hf = ICE_RSS_OFFLOAD_ALL;
+	rss_conf->rss_hf = dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
 
 	if (!rss_conf->rss_key)
 		return 0;
@@ -1625,7 +1652,7 @@ ice_dcf_init_repr_info(struct ice_dcf_adapter *dcf_adapter)
 				   dcf_adapter->real_hw.num_vfs,
 				   sizeof(dcf_adapter->repr_infos[0]), 0);
 	if (!dcf_adapter->repr_infos) {
-		PMD_DRV_LOG(ERR, "Failed to alloc memory for VF representors\n");
+		PMD_DRV_LOG(ERR, "Failed to alloc memory for VF representors");
 		return -ENOMEM;
 	}
 
@@ -2066,7 +2093,7 @@ eth_ice_dcf_pci_probe(__rte_unused struct rte_pci_driver *pci_drv,
 		}
 
 		if (dcf_adapter->real_hw.vf_vsi_map[vf_id] == dcf_vsi_id) {
-			PMD_DRV_LOG(ERR, "VF ID %u is DCF's ID.\n", vf_id);
+			PMD_DRV_LOG(ERR, "VF ID %u is DCF's ID.", vf_id);
 			ret = -EINVAL;
 			break;
 		}

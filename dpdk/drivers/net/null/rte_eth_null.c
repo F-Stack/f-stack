@@ -35,10 +35,10 @@ struct null_queue {
 	struct pmd_internals *internals;
 
 	struct rte_mempool *mb_pool;
-	struct rte_mbuf *dummy_packet;
+	void *dummy_packet;
 
-	rte_atomic64_t rx_pkts;
-	rte_atomic64_t tx_pkts;
+	uint64_t rx_pkts;
+	uint64_t tx_pkts;
 };
 
 struct pmd_options {
@@ -101,7 +101,8 @@ eth_null_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 		bufs[i]->port = h->internals->port_id;
 	}
 
-	rte_atomic64_add(&(h->rx_pkts), i);
+	/* NOTE: review for potential ordering optimization */
+	__atomic_fetch_add(&h->rx_pkts, i, __ATOMIC_SEQ_CST);
 
 	return i;
 }
@@ -128,7 +129,8 @@ eth_null_copy_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 		bufs[i]->port = h->internals->port_id;
 	}
 
-	rte_atomic64_add(&(h->rx_pkts), i);
+	/* NOTE: review for potential ordering optimization */
+	__atomic_fetch_add(&h->rx_pkts, i, __ATOMIC_SEQ_CST);
 
 	return i;
 }
@@ -152,7 +154,8 @@ eth_null_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 	for (i = 0; i < nb_bufs; i++)
 		rte_pktmbuf_free(bufs[i]);
 
-	rte_atomic64_add(&(h->tx_pkts), i);
+	/* NOTE: review for potential ordering optimization */
+	__atomic_fetch_add(&h->tx_pkts, i, __ATOMIC_SEQ_CST);
 
 	return i;
 }
@@ -160,21 +163,22 @@ eth_null_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 static uint16_t
 eth_null_copy_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 {
-	int i;
 	struct null_queue *h = q;
-	unsigned int packet_size;
+	unsigned int i;
 
 	if ((q == NULL) || (bufs == NULL))
 		return 0;
 
-	packet_size = h->internals->packet_size;
 	for (i = 0; i < nb_bufs; i++) {
-		rte_memcpy(h->dummy_packet, rte_pktmbuf_mtod(bufs[i], void *),
-					packet_size);
+		struct rte_mbuf *m = bufs[i];
+		size_t len = RTE_MIN(h->internals->packet_size, m->data_len);
+
+		rte_memcpy(h->dummy_packet, rte_pktmbuf_mtod(m, void *), len);
 		rte_pktmbuf_free(bufs[i]);
 	}
 
-	rte_atomic64_add(&(h->tx_pkts), i);
+	/* NOTE: review for potential ordering optimization */
+	__atomic_fetch_add(&h->tx_pkts, i, __ATOMIC_SEQ_CST);
 
 	return i;
 }
@@ -312,6 +316,7 @@ eth_dev_info(struct rte_eth_dev *dev,
 	dev_info->min_rx_bufsize = 0;
 	dev_info->reta_size = internals->reta_size;
 	dev_info->flow_type_rss_offloads = internals->flow_type_rss_offloads;
+	dev_info->hash_key_size = sizeof(internals->rss_key);
 
 	return 0;
 }
@@ -331,8 +336,9 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *igb_stats)
 			RTE_MIN(dev->data->nb_rx_queues,
 				RTE_DIM(internal->rx_null_queues)));
 	for (i = 0; i < num_stats; i++) {
+		/* NOTE: review for atomic access */
 		igb_stats->q_ipackets[i] =
-			internal->rx_null_queues[i].rx_pkts.cnt;
+			internal->rx_null_queues[i].rx_pkts;
 		rx_total += igb_stats->q_ipackets[i];
 	}
 
@@ -340,8 +346,9 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *igb_stats)
 			RTE_MIN(dev->data->nb_tx_queues,
 				RTE_DIM(internal->tx_null_queues)));
 	for (i = 0; i < num_stats; i++) {
+		/* NOTE: review for atomic access */
 		igb_stats->q_opackets[i] =
-			internal->tx_null_queues[i].tx_pkts.cnt;
+			internal->tx_null_queues[i].tx_pkts;
 		tx_total += igb_stats->q_opackets[i];
 	}
 
@@ -362,9 +369,11 @@ eth_stats_reset(struct rte_eth_dev *dev)
 
 	internal = dev->data->dev_private;
 	for (i = 0; i < RTE_DIM(internal->rx_null_queues); i++)
-		internal->rx_null_queues[i].rx_pkts.cnt = 0;
+		/* NOTE: review for atomic access */
+		internal->rx_null_queues[i].rx_pkts = 0;
 	for (i = 0; i < RTE_DIM(internal->tx_null_queues); i++)
-		internal->tx_null_queues[i].tx_pkts.cnt = 0;
+		/* NOTE: review for atomic access */
+		internal->tx_null_queues[i].tx_pkts = 0;
 
 	return 0;
 }

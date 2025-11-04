@@ -58,11 +58,11 @@ enum FilterReturn {
     FILTER_MULTI = 5,
 };
 
-void ff_kni_init(uint16_t nb_ports, int type, const char *tcp_ports,
+void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
     const char *udp_ports);
 
-void ff_kni_alloc(uint16_t port_id, unsigned socket_id, int type, int port_idx,
-    struct rte_mempool *mbuf_pool, unsigned ring_queue_size);
+void ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
+    unsigned ring_queue_size);
 
 void ff_kni_process(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count);

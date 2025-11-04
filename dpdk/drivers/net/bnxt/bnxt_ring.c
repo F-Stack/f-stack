@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -54,7 +54,7 @@ int bnxt_alloc_ring_grps(struct bnxt *bp)
 		return -EBUSY;
 	}
 
-	/* THOR does not support ring groups.
+	/* P5 does not support ring groups.
 	 * But we will use the array to save RSS context IDs.
 	 */
 	if (BNXT_CHIP_P5(bp)) {
@@ -227,6 +227,9 @@ int bnxt_alloc_rings(struct bnxt *bp, unsigned int socket_id, uint16_t qidx,
 		tx_ring->bd_dma = mz_phys_addr + tx_ring_start;
 		tx_ring_info->tx_desc_mapping = tx_ring->bd_dma;
 		tx_ring->mem_zone = (const void *)mz;
+		tx_ring_info->nr_bds = rte_zmalloc("bnxt_nr_bds",
+						   sizeof(unsigned short) *
+						   tx_ring->ring_size, 0);
 
 		if (!tx_ring->bd)
 			return -ENOMEM;

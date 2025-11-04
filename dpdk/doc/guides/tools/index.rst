@@ -14,6 +14,7 @@ DPDK Tools User Guides
     pmdinfo
     dumpcap
     pdump
+    dmaperf
     flow-perf
     securityperf
     testbbdev
@@ -21,4 +22,6 @@ DPDK Tools User Guides
     comp_perf
     testeventdev
     testregex
+    testmldev
+    graph
     dts

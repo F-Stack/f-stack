@@ -28,11 +28,12 @@ extern "C" {
 #include <rte_compat.h>
 #include <rte_cycles.h>
 #include <rte_per_lcore.h>
+#include <rte_stdatomic.h>
 #include <rte_string_fns.h>
 #include <rte_uuid.h>
 
 /** The tracepoint object. */
-typedef uint64_t rte_trace_point_t;
+typedef RTE_ATOMIC(uint64_t) rte_trace_point_t;
 
 /**
  * Macro to define the tracepoint arguments in RTE_TRACE_POINT macro.
@@ -144,6 +145,16 @@ _tp _args \
 #define rte_trace_point_emit_ptr(val)
 /** Tracepoint function payload for string datatype */
 #define rte_trace_point_emit_string(val)
+/**
+ * Tracepoint function to capture a blob.
+ *
+ * @param val
+ *   Pointer to the array to be captured.
+ * @param len
+ *   Length to be captured. The maximum supported length is
+ *   RTE_TRACE_BLOB_LEN_MAX bytes.
+ */
+#define rte_trace_point_emit_blob(val, len)
 
 #endif /* __DOXYGEN__ */
 
@@ -151,6 +162,9 @@ _tp _args \
 #define __RTE_TRACE_EMIT_STRING_LEN_MAX 32
 /** @internal Macro to define event header size. */
 #define __RTE_TRACE_EVENT_HEADER_SZ sizeof(uint64_t)
+
+/** Macro to define maximum emit length of blob. */
+#define RTE_TRACE_BLOB_LEN_MAX 64
 
 /**
  * Enable recording events of the given tracepoint in the trace buffer.
@@ -221,7 +235,6 @@ __rte_trace_point_fp_is_enabled(void)
  * @internal
  *
  * Allocate trace memory buffer per thread.
- *
  */
 __rte_experimental
 void __rte_trace_mem_per_thread_alloc(void);
@@ -310,7 +323,7 @@ __rte_trace_mem_get(uint64_t in)
 			return NULL;
 	}
 	/* Check the wrap around case */
-	uint32_t offset = trace->offset;
+	uint32_t offset = RTE_ALIGN_CEIL(trace->offset, __RTE_TRACE_EVENT_HEADER_SZ);
 	if (unlikely((offset + sz) >= trace->len)) {
 		/* Disable the trace event if it in DISCARD mode */
 		if (unlikely(in & __RTE_TRACE_FIELD_ENABLE_DISCARD))
@@ -318,8 +331,6 @@ __rte_trace_mem_get(uint64_t in)
 
 		offset = 0;
 	}
-	/* Align to event header size */
-	offset = RTE_ALIGN_CEIL(offset, __RTE_TRACE_EVENT_HEADER_SZ);
 	void *mem = RTE_PTR_ADD(&trace->mem[0], offset);
 	offset += sz;
 	trace->offset = offset;
@@ -346,7 +357,7 @@ __rte_trace_point_emit_ev_header(void *mem, uint64_t in)
 #define __rte_trace_point_emit_header_generic(t) \
 void *mem; \
 do { \
-	const uint64_t val = __atomic_load_n(t, __ATOMIC_ACQUIRE); \
+	const uint64_t val = rte_atomic_load_explicit(t, rte_memory_order_acquire); \
 	if (likely(!(val & __RTE_TRACE_FIELD_ENABLE_MASK))) \
 		return; \
 	mem = __rte_trace_mem_get(val); \
@@ -374,12 +385,30 @@ do { \
 	mem = RTE_PTR_ADD(mem, __RTE_TRACE_EMIT_STRING_LEN_MAX); \
 } while (0)
 
+#define rte_trace_point_emit_blob(in, len) \
+do { \
+	if (unlikely(in == NULL)) \
+		return; \
+	if (len > RTE_TRACE_BLOB_LEN_MAX) \
+		len = RTE_TRACE_BLOB_LEN_MAX; \
+	__rte_trace_point_emit(len, uint8_t); \
+	memcpy(mem, in, len); \
+	memset(RTE_PTR_ADD(mem, len), 0, RTE_TRACE_BLOB_LEN_MAX - len); \
+	mem = RTE_PTR_ADD(mem, RTE_TRACE_BLOB_LEN_MAX); \
+} while (0)
+
 #else
 
 #define __rte_trace_point_emit_header_generic(t) RTE_SET_USED(t)
 #define __rte_trace_point_emit_header_fp(t) RTE_SET_USED(t)
 #define __rte_trace_point_emit(in, type) RTE_SET_USED(in)
 #define rte_trace_point_emit_string(in) RTE_SET_USED(in)
+#define rte_trace_point_emit_blob(in, len) \
+do { \
+	RTE_SET_USED(in); \
+	RTE_SET_USED(len); \
+} while (0)
+
 
 #endif /* ALLOW_EXPERIMENTAL_API */
 #endif /* _RTE_TRACE_POINT_REGISTER_H_ */

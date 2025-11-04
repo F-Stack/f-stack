@@ -273,6 +273,120 @@ test_crypto_adapter_stats(void)
 }
 
 static int
+test_crypto_adapter_params(void)
+{
+	int err, rc;
+	struct rte_event_crypto_adapter_runtime_params in_params;
+	struct rte_event_crypto_adapter_runtime_params out_params;
+	uint32_t cap;
+	struct rte_event_crypto_adapter_queue_conf queue_conf = {
+		.ev = response_info,
+	};
+
+	err = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
+	if (err == -ENOTSUP)
+		return TEST_SKIPPED;
+
+	TEST_ASSERT_SUCCESS(err, "Failed to get adapter capabilities\n");
+
+	if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) {
+		err = rte_event_crypto_adapter_queue_pair_add(TEST_ADAPTER_ID,
+				TEST_CDEV_ID, TEST_CDEV_QP_ID, &queue_conf);
+	} else
+		err = rte_event_crypto_adapter_queue_pair_add(TEST_ADAPTER_ID,
+					TEST_CDEV_ID, TEST_CDEV_QP_ID, NULL);
+
+	TEST_ASSERT_SUCCESS(err, "Failed to add queue pair\n");
+
+	err = rte_event_crypto_adapter_runtime_params_init(&in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	err = rte_event_crypto_adapter_runtime_params_init(&out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Case 1: Get the default value of mbufs processed by adapter */
+	err = rte_event_crypto_adapter_runtime_params_get(TEST_ADAPTER_ID,
+							  &out_params);
+	if (err == -ENOTSUP) {
+		rc = TEST_SKIPPED;
+		goto queue_pair_del;
+	}
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Case 2: Set max_nb = 32 (=BATCH_SEIZE) */
+	in_params.max_nb = 32;
+
+	err = rte_event_crypto_adapter_runtime_params_set(TEST_ADAPTER_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_crypto_adapter_runtime_params_get(TEST_ADAPTER_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb == out_params.max_nb, "Expected %u got %u",
+		    in_params.max_nb, out_params.max_nb);
+
+	/* Case 3: Set max_nb = 192 */
+	in_params.max_nb = 192;
+
+	err = rte_event_crypto_adapter_runtime_params_set(TEST_ADAPTER_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_crypto_adapter_runtime_params_get(TEST_ADAPTER_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb == out_params.max_nb, "Expected %u got %u",
+		    in_params.max_nb, out_params.max_nb);
+
+	/* Case 4: Set max_nb = 256 */
+	in_params.max_nb = 256;
+
+	err = rte_event_crypto_adapter_runtime_params_set(TEST_ADAPTER_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_crypto_adapter_runtime_params_get(TEST_ADAPTER_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb == out_params.max_nb, "Expected %u got %u",
+		    in_params.max_nb, out_params.max_nb);
+
+	/* Case 5: Set max_nb = 30(<BATCH_SIZE) */
+	in_params.max_nb = 30;
+
+	err = rte_event_crypto_adapter_runtime_params_set(TEST_ADAPTER_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_crypto_adapter_runtime_params_get(TEST_ADAPTER_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb == out_params.max_nb, "Expected %u got %u",
+		    in_params.max_nb, out_params.max_nb);
+
+	/* Case 6: Set max_nb = 512 */
+	in_params.max_nb = 512;
+
+	err = rte_event_crypto_adapter_runtime_params_set(TEST_ADAPTER_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_crypto_adapter_runtime_params_get(TEST_ADAPTER_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb == out_params.max_nb, "Expected %u got %u",
+		    in_params.max_nb, out_params.max_nb);
+
+	rc = TEST_SUCCESS;
+queue_pair_del:
+	err = rte_event_crypto_adapter_queue_pair_del(TEST_ADAPTER_ID,
+					TEST_CDEV_ID, TEST_CDEV_QP_ID);
+	TEST_ASSERT_SUCCESS(err, "Failed to delete add queue pair\n");
+
+	return rc;
+}
+
+static int
 test_op_forward_mode(uint8_t session_less)
 {
 	struct rte_crypto_sym_xform cipher_xform;
@@ -1040,21 +1154,17 @@ configure_cryptodev(void)
 
 static inline void
 evdev_set_conf_values(struct rte_event_dev_config *dev_conf,
-			struct rte_event_dev_info *info)
+		      const struct rte_event_dev_info *info)
 {
-	memset(dev_conf, 0, sizeof(struct rte_event_dev_config));
-	dev_conf->dequeue_timeout_ns = info->min_dequeue_timeout_ns;
-	dev_conf->nb_event_ports = NB_TEST_PORTS;
-	dev_conf->nb_event_queues = NB_TEST_QUEUES;
-	dev_conf->nb_event_queue_flows = info->max_event_queue_flows;
-	dev_conf->nb_event_port_dequeue_depth =
-			info->max_event_port_dequeue_depth;
-	dev_conf->nb_event_port_enqueue_depth =
-			info->max_event_port_enqueue_depth;
-	dev_conf->nb_event_port_enqueue_depth =
-			info->max_event_port_enqueue_depth;
-	dev_conf->nb_events_limit =
-			info->max_num_events;
+	*dev_conf = (struct rte_event_dev_config) {
+		.dequeue_timeout_ns = info->min_dequeue_timeout_ns,
+		.nb_event_ports = NB_TEST_PORTS,
+		.nb_event_queues = NB_TEST_QUEUES,
+		.nb_event_queue_flows = info->max_event_queue_flows,
+		.nb_event_port_dequeue_depth = info->max_event_port_dequeue_depth,
+		.nb_event_port_enqueue_depth = info->max_event_port_enqueue_depth,
+		.nb_events_limit = info->max_num_events,
+	};
 }
 
 static int
@@ -1140,7 +1250,12 @@ test_crypto_adapter_create(void)
 		.enqueue_depth = 8,
 		.new_event_threshold = 1200,
 	};
+	uint32_t cap;
 	int ret;
+
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
+	if (ret == -ENOTSUP)
+		return ret;
 
 	/* Create adapter with default port creation callback */
 	ret = rte_event_crypto_adapter_create(TEST_ADAPTER_ID,
@@ -1162,6 +1277,9 @@ test_crypto_adapter_qp_add_del(void)
 	int ret;
 
 	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
+	if (ret == -ENOTSUP)
+		return TEST_SKIPPED;
+
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) {
@@ -1197,6 +1315,9 @@ configure_event_crypto_adapter(enum rte_event_crypto_adapter_mode mode)
 	int ret;
 
 	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
+	if (ret == -ENOTSUP)
+		return ret;
+
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	/* Skip mode and capability mismatch check for SW eventdev */
@@ -1363,6 +1484,9 @@ crypto_adapter_teardown(void)
 {
 	int ret;
 
+	if (!crypto_adapter_setup_done)
+		return;
+
 	ret = rte_event_crypto_adapter_stop(TEST_ADAPTER_ID);
 	if (ret < 0)
 		RTE_LOG(ERR, USER1, "Failed to stop adapter!");
@@ -1452,6 +1576,10 @@ static struct unit_test_suite functional_testsuite = {
 		TEST_CASE_ST(test_crypto_adapter_create,
 				test_crypto_adapter_free,
 				test_crypto_adapter_stats),
+
+		TEST_CASE_ST(test_crypto_adapter_create,
+				test_crypto_adapter_free,
+				test_crypto_adapter_params),
 
 		TEST_CASE_ST(test_crypto_adapter_conf_op_forward_mode,
 				test_crypto_adapter_stop,

@@ -43,7 +43,11 @@
 #define TRUNCATED_DIGEST_BYTE_LENGTH_SHA384		(24)
 #define TRUNCATED_DIGEST_BYTE_LENGTH_SHA512		(32)
 
-#define MAXIMUM_IV_LENGTH				(16)
+/*
+ * maximum IV length need to include both the
+ * auth IV length (16 bytes) and the cipher IV length (16 bytes)
+ */
+#define MAXIMUM_IV_LENGTH				(32)
 #define AES_GCM_J0_LENGTH				(16)
 
 #define IV_OFFSET			(sizeof(struct rte_crypto_op) + \
@@ -90,7 +94,6 @@ struct crypto_testsuite_params {
 	struct rte_mempool *large_mbuf_pool;
 	struct rte_mempool *op_mpool;
 	struct rte_mempool *session_mpool;
-	struct rte_mempool *session_priv_mpool;
 	struct rte_cryptodev_config conf;
 	struct rte_cryptodev_qp_conf qp_conf;
 
@@ -235,7 +238,7 @@ fail:
 	return NULL;
 }
 
-void
+int
 process_sym_raw_dp_op(uint8_t dev_id, uint16_t qp_id,
 		struct rte_crypto_op *op, uint8_t is_cipher, uint8_t is_auth,
 		uint8_t len_in_bits, uint8_t cipher_iv_len);

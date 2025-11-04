@@ -12,6 +12,7 @@
 
 #include "ff_config.h"
 #include "ff_api.h"
+#include "ff_log.h"
 
 #define MAX_EVENTS 512
 
@@ -65,7 +66,7 @@ int loop(void *arg)
     int i;
 
     if (nevents < 0) {
-        printf("ff_kevent failed:%d, %s\n", errno,
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kevent failed:%d, %s\n", errno,
                         strerror(errno));
         return -1;
     }
@@ -87,7 +88,7 @@ int loop(void *arg)
             do {
                 int nclientfd = ff_accept(clientfd, NULL, NULL);
                 if (nclientfd < 0) {
-                    printf("ff_accept failed:%d, %s\n", errno,
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_accept failed:%d, %s\n", errno,
                         strerror(errno));
                     break;
                 }
@@ -96,7 +97,7 @@ int loop(void *arg)
                 EV_SET(&kevSet, nclientfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
 
                 if(ff_kevent(kq, &kevSet, 1, NULL, 0, NULL) < 0) {
-                    printf("ff_kevent error:%d, %s\n", errno,
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kevent error:%d, %s\n", errno,
                         strerror(errno));
                     return -1;
                 }
@@ -108,12 +109,12 @@ int loop(void *arg)
             ssize_t readlen = ff_read(clientfd, buf, sizeof(buf));
             ssize_t writelen = ff_write(clientfd, html, sizeof(html) - 1);
             if (writelen < 0){
-                printf("ff_write failed:%d, %s\n", errno,
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_write failed:%d, %s\n", errno,
                     strerror(errno));
                 ff_close(clientfd);
             }
         } else {
-            printf("unknown event: %8.8X\n", event.flags);
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_APP, "unknown event: %8.8X\n", event.flags);
         }
     }
 
@@ -122,17 +123,33 @@ int loop(void *arg)
 
 int main(int argc, char * argv[])
 {
+    FILE *log_file;
+
     ff_init(argc, argv);
+
+    /* Set APP's log file to instead F-Stack log file */
+    log_file = fopen("./helloworld.log", "a+");
+    if (log_file == NULL) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "fopen log file failed, errno:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    ff_log_reset_stream((void *)log_file);
+    /* Close F-Stack log file */
+    ff_log_close();
+
+    ff_log_set_global_level(FF_LOG_INFO);
+    ff_log_set_level(FF_LOGTYPE_FSTACK_APP, FF_LOG_INFO);
 
     kq = ff_kqueue();
     if (kq < 0) {
-        printf("ff_kqueue failed, errno:%d, %s\n", errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kqueue failed, errno:%d, %s\n", errno, strerror(errno));
         exit(1);
     }
 
     sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
-        printf("ff_socket failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
 
@@ -148,13 +165,13 @@ int main(int argc, char * argv[])
 
     int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
     if (ret < 0) {
-        printf("ff_bind failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
+       ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
 
      ret = ff_listen(sockfd, MAX_EVENTS);
     if (ret < 0) {
-        printf("ff_listen failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
 
@@ -165,7 +182,7 @@ int main(int argc, char * argv[])
 #ifdef INET6
     sockfd6 = ff_socket(AF_INET6, SOCK_STREAM, 0);
     if (sockfd6 < 0) {
-        printf("ff_socket failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
         exit(1);
     }
 
@@ -177,24 +194,29 @@ int main(int argc, char * argv[])
 
     ret = ff_bind(sockfd6, (struct linux_sockaddr *)&my_addr6, sizeof(my_addr6));
     if (ret < 0) {
-        printf("ff_bind failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
         exit(1);
     }
 
     ret = ff_listen(sockfd6, MAX_EVENTS);
     if (ret < 0) {
-        printf("ff_listen failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
         exit(1);
     }
 
     EV_SET(&kevSet, sockfd6, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
     ret = ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
     if (ret < 0) {
-        printf("ff_kevent failed:%d, %s\n", errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kevent failed:%d, %s\n", errno, strerror(errno));
         exit(1);
     }
 #endif
 
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_APP, "helloworld init success.\n");
+
     ff_run(loop, NULL);
+
+    fclose(log_file);
+
     return 0;
 }

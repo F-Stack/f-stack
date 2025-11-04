@@ -17,8 +17,7 @@ extern "C" {
  * associate data to lookup keys.
  *
  * Use-cases: Firewall rule database, etc.
- *
- ***/
+ */
 
 #include <stdint.h>
 

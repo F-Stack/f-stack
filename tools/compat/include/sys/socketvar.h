@@ -183,9 +183,6 @@ struct socket {
 			int		sol_overcount;	/* (e) */
 		};
 	};
-#ifdef LVS_TCPOPT_TOA
-	uint8_t so_toa[8];  /* lvs toa option */
-#endif
 };
 #endif	/* defined(_KERNEL) || defined(_WANT_SOCKET) */
 

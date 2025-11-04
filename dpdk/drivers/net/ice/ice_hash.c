@@ -572,7 +572,7 @@ static struct ice_flow_engine ice_hash_engine = {
 };
 
 /* Register parser for os package. */
-static struct ice_flow_parser ice_hash_parser = {
+struct ice_flow_parser ice_hash_parser = {
 	.engine = &ice_hash_engine,
 	.array = ice_hash_pattern_list,
 	.array_len = RTE_DIM(ice_hash_pattern_list),
@@ -587,16 +587,9 @@ RTE_INIT(ice_hash_engine_init)
 }
 
 static int
-ice_hash_init(struct ice_adapter *ad)
+ice_hash_init(struct ice_adapter *ad __rte_unused)
 {
-	struct ice_flow_parser *parser = NULL;
-
-	if (ad->hw.dcf_enabled)
-		return 0;
-
-	parser = &ice_hash_parser;
-
-	return ice_register_parser(parser, ad);
+	return 0;
 }
 
 static int
@@ -1039,7 +1032,7 @@ ice_any_invalid_rss_type(enum rte_eth_hash_function rss_func,
 
 	/* check invalid combination */
 	for (i = 0; i < RTE_DIM(invalid_rss_comb); i++) {
-		if (__builtin_popcountll(rss_type & invalid_rss_comb[i]) > 1)
+		if (rte_popcount64(rss_type & invalid_rss_comb[i]) > 1)
 			return true;
 	}
 
@@ -1249,13 +1242,13 @@ ice_hash_add_raw_cfg(struct ice_adapter *ad,
 					   ice_get_hw_vsi_num(hw, vsi_handle),
 					   id);
 		if (ret) {
-			PMD_DRV_LOG(ERR, "remove RSS flow failed\n");
+			PMD_DRV_LOG(ERR, "remove RSS flow failed");
 			return ret;
 		}
 
 		ret = ice_rem_prof(hw, ICE_BLK_RSS, id);
 		if (ret) {
-			PMD_DRV_LOG(ERR, "remove RSS profile failed\n");
+			PMD_DRV_LOG(ERR, "remove RSS profile failed");
 			return ret;
 		}
 	}
@@ -1263,7 +1256,7 @@ ice_hash_add_raw_cfg(struct ice_adapter *ad,
 	/* add new profile */
 	ret = ice_flow_set_hw_prof(hw, vsi_handle, 0, prof, ICE_BLK_RSS);
 	if (ret) {
-		PMD_DRV_LOG(ERR, "HW profile add failed\n");
+		PMD_DRV_LOG(ERR, "HW profile add failed");
 		return ret;
 	}
 
@@ -1385,7 +1378,7 @@ ice_hash_rem_raw_cfg(struct ice_adapter *ad,
 	return 0;
 
 err:
-	PMD_DRV_LOG(ERR, "HW profile remove failed\n");
+	PMD_DRV_LOG(ERR, "HW profile remove failed");
 	return ret;
 }
 
@@ -1448,12 +1441,8 @@ error:
 }
 
 static void
-ice_hash_uninit(struct ice_adapter *ad)
+ice_hash_uninit(struct ice_adapter *ad __rte_unused)
 {
-	if (ad->hw.dcf_enabled)
-		return;
-
-	ice_unregister_parser(&ice_hash_parser, ad);
 }
 
 static void

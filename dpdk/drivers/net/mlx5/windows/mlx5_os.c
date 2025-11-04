@@ -173,7 +173,6 @@ mlx5_os_capabilities_prepare(struct mlx5_dev_ctx_shared *sh)
 	sh->dev_cap.max_qp = 1 << hca_attr->log_max_qp;
 	sh->dev_cap.max_qp_wr = 1 << hca_attr->log_max_qp_sz;
 	sh->dev_cap.dv_flow_en = 1;
-	sh->dev_cap.mps = MLX5_MPW_DISABLED;
 	DRV_LOG(DEBUG, "MPW isn't supported.");
 	DRV_LOG(DEBUG, "MPLS over GRE/UDP tunnel offloading is no supported.");
 	sh->dev_cap.hw_csum = hca_attr->csum_cap;
@@ -187,6 +186,32 @@ mlx5_os_capabilities_prepare(struct mlx5_dev_ctx_shared *sh)
 	if (sh->dev_cap.tso)
 		sh->dev_cap.tso_max_payload_sz = 1 << hca_attr->max_lso_cap;
 	DRV_LOG(DEBUG, "Counters are not supported.");
+	if (hca_attr->striding_rq) {
+		sh->dev_cap.mprq.enabled = 1;
+		sh->dev_cap.mprq.log_min_stride_size =
+			MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES;
+		sh->dev_cap.mprq.log_max_stride_size =
+			MLX5_MAX_SINGLE_STRIDE_LOG_NUM_BYTES;
+		if (hca_attr->ext_stride_num_range)
+			sh->dev_cap.mprq.log_min_stride_num =
+				MLX5_EXT_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
+		else
+			sh->dev_cap.mprq.log_min_stride_num =
+				MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
+		sh->dev_cap.mprq.log_max_stride_num =
+			MLX5_MAX_SINGLE_WQE_LOG_NUM_STRIDES;
+		DRV_LOG(DEBUG, "\tmin_single_stride_log_num_of_bytes: %u",
+			sh->dev_cap.mprq.log_min_stride_size);
+		DRV_LOG(DEBUG, "\tmax_single_stride_log_num_of_bytes: %u",
+			sh->dev_cap.mprq.log_max_stride_size);
+		DRV_LOG(DEBUG, "\tmin_single_wqe_log_num_of_strides: %u",
+			sh->dev_cap.mprq.log_min_stride_num);
+		DRV_LOG(DEBUG, "\tmax_single_wqe_log_num_of_strides: %u",
+			sh->dev_cap.mprq.log_max_stride_num);
+		DRV_LOG(DEBUG, "\tmin_stride_wqe_log_size: %u",
+			sh->dev_cap.mprq.log_min_stride_wqe_size);
+		DRV_LOG(DEBUG, "Device supports Multi-Packet RQ.");
+	}
 	if (hca_attr->rss_ind_tbl_cap) {
 		/*
 		 * DPDK doesn't support larger/variable indirection tables.
@@ -198,6 +223,13 @@ mlx5_os_capabilities_prepare(struct mlx5_dev_ctx_shared *sh)
 		DRV_LOG(DEBUG, "Maximum Rx indirection table size is %u",
 			sh->dev_cap.ind_table_max_size);
 	}
+	if (hca_attr->enhanced_multi_pkt_send_wqe)
+		sh->dev_cap.mps = MLX5_MPW_ENHANCED;
+	else if (hca_attr->multi_pkt_send_wqe &&
+		 sh->dev_cap.mps != MLX5_ARG_UNSET)
+		sh->dev_cap.mps = MLX5_MPW;
+	else
+		sh->dev_cap.mps = MLX5_MPW_DISABLED;
 	sh->dev_cap.swp = mlx5_get_supported_sw_parsing_offloads(hca_attr);
 	sh->dev_cap.tunnel_en = mlx5_get_supported_tunneling_offloads(hca_attr);
 	if (sh->dev_cap.tunnel_en) {
@@ -211,6 +243,18 @@ mlx5_os_capabilities_prepare(struct mlx5_dev_ctx_shared *sh)
 	} else {
 		DRV_LOG(DEBUG, "Tunnel offloading is not supported.");
 	}
+	sh->dev_cap.cqe_comp = 0;
+#if (RTE_CACHE_LINE_SIZE == 128)
+	if (hca_attr->cqe_compression_128)
+		sh->dev_cap.cqe_comp = 1;
+	DRV_LOG(DEBUG, "Rx CQE 128B compression is %ssupported.",
+		sh->dev_cap.cqe_comp ? "" : "not ");
+#else
+	if (hca_attr->cqe_compression)
+		sh->dev_cap.cqe_comp = 1;
+	DRV_LOG(DEBUG, "Rx CQE compression is %ssupported.",
+		sh->dev_cap.cqe_comp ? "" : "not ");
+#endif
 	snprintf(sh->dev_cap.fw_ver, 64, "%x.%x.%04x",
 		 MLX5_GET(initial_seg, pv_iseg, fw_rev_major),
 		 MLX5_GET(initial_seg, pv_iseg, fw_rev_minor),
@@ -474,9 +518,11 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
 	priv->ctrl_flows = 0;
 	TAILQ_INIT(&priv->flow_meters);
-	priv->mtr_profile_tbl = mlx5_l3t_create(MLX5_L3T_TYPE_PTR);
-	if (!priv->mtr_profile_tbl)
-		goto error;
+	if (priv->mtr_en) {
+		priv->mtr_profile_tbl = mlx5_l3t_create(MLX5_L3T_TYPE_PTR);
+		if (!priv->mtr_profile_tbl)
+			goto error;
+	}
 	/* Bring Ethernet device up. */
 	DRV_LOG(DEBUG, "port %u forcing Ethernet interface up.",
 		eth_dev->data->port_id);

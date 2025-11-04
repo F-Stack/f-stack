@@ -30,7 +30,7 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)
 		flags |= NIX_RX_MULTI_SEG_F;
 
-	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP))
+	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) || dev->ptp_en)
 		flags |= NIX_RX_OFFLOAD_TSTAMP_F;
 
 	if (!dev->ptype_disable)
@@ -38,9 +38,6 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
 		flags |= NIX_RX_OFFLOAD_SECURITY_F;
-
-	if (dev->rx_mark_update)
-		flags |= NIX_RX_OFFLOAD_MARK_UPDATE_F;
 
 	return flags;
 }
@@ -50,6 +47,7 @@ nix_tx_offload_flags(struct rte_eth_dev *eth_dev)
 {
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
 	uint64_t conf = dev->tx_offloads;
+	struct roc_nix *nix = &dev->nix;
 	uint16_t flags = 0;
 
 	/* Fastpath is dependent on these enums */
@@ -113,6 +111,9 @@ nix_tx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->tx_mark)
 		flags |= NIX_TX_OFFLOAD_VLAN_QINQ_F;
 
+	if (nix->tx_compl_ena)
+		flags |= NIX_TX_OFFLOAD_MBUF_NOFF_F;
+
 	return flags;
 }
 
@@ -166,6 +167,49 @@ nix_form_default_desc(struct cnxk_eth_dev *dev, struct cn10k_eth_txq *txq,
 }
 
 static int
+cn10k_nix_tx_compl_setup(struct cnxk_eth_dev *dev,
+		struct cn10k_eth_txq *txq,
+		struct roc_nix_sq *sq, uint16_t nb_desc)
+{
+	struct roc_nix_cq *cq;
+
+	cq = &dev->cqs[sq->cqid];
+	txq->tx_compl.desc_base = (uintptr_t)cq->desc_base;
+	txq->tx_compl.cq_door = cq->door;
+	txq->tx_compl.cq_status = cq->status;
+	txq->tx_compl.wdata = cq->wdata;
+	txq->tx_compl.head = cq->head;
+	txq->tx_compl.qmask = cq->qmask;
+	/* Total array size holding buffers is equal to
+	 * number of entries in cq and sq
+	 * max buffer in array = desc in cq + desc in sq
+	 */
+	txq->tx_compl.nb_desc_mask = (2 * rte_align32pow2(nb_desc)) - 1;
+	txq->tx_compl.ena = true;
+
+	txq->tx_compl.ptr = (struct rte_mbuf **)plt_zmalloc(txq->tx_compl.nb_desc_mask *
+			sizeof(struct rte_mbuf *), 0);
+	if (!txq->tx_compl.ptr)
+		return -1;
+
+	return 0;
+}
+
+static void
+cn10k_nix_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t qid)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *nix = &dev->nix;
+	struct cn10k_eth_txq *txq;
+
+	cnxk_nix_tx_queue_release(eth_dev, qid);
+	txq = eth_dev->data->tx_queues[qid];
+
+	if (nix->tx_compl_ena)
+		plt_free(txq->tx_compl.ptr);
+}
+
+static int
 cn10k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 			 uint16_t nb_desc, unsigned int socket,
 			 const struct rte_eth_txconf *tx_conf)
@@ -191,6 +235,15 @@ cn10k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 	/* Update fast path queue */
 	txq = eth_dev->data->tx_queues[qid];
 	txq->fc_mem = sq->fc;
+	if (nix->tx_compl_ena) {
+		rc = cn10k_nix_tx_compl_setup(dev, txq, sq, nb_desc);
+		if (rc)
+			return rc;
+	}
+
+	/* Set Txq flag for MT_LOCKFREE */
+	txq->flag = !!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_MT_LOCKFREE);
+
 	/* Store lmt base in tx queue for easy access */
 	txq->lmt_base = nix->lmt_base;
 	txq->io_addr = sq->io_addr;
@@ -209,7 +262,7 @@ cn10k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 
 		txq->cpt_desc = inl_lf->nb_desc * 0.7;
 		txq->sa_base = (uint64_t)dev->outb.sa_base;
-		txq->sa_base |= eth_dev->data->port_id;
+		txq->sa_base |= (uint64_t)eth_dev->data->port_id;
 		PLT_STATIC_ASSERT(ROC_NIX_INL_SA_BASE_ALIGN == BIT_ULL(16));
 	}
 
@@ -230,7 +283,6 @@ cn10k_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 			 struct rte_mempool *mp)
 {
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
-	struct cnxk_eth_rxq_sp *rxq_sp;
 	struct cn10k_eth_rxq *rxq;
 	struct roc_nix_rq *rq;
 	struct roc_nix_cq *cq;
@@ -282,12 +334,6 @@ cn10k_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 		rxq->lmt_base = dev->nix.lmt_base;
 		rxq->sa_base = roc_nix_inl_inb_sa_base_get(&dev->nix,
 							   dev->inb.inl_dev);
-		rxq->meta_aura = rq->meta_aura_handle;
-		rxq_sp = cnxk_eth_rxq_to_sp(rxq);
-		/* Assume meta packet from normal aura if meta aura is not setup
-		 */
-		if (!rxq->meta_aura)
-			rxq->meta_aura = rxq_sp->qconf.mp->pool_id;
 	}
 
 	/* Lookup mem */
@@ -295,10 +341,41 @@ cn10k_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 	return 0;
 }
 
+static void
+cn10k_nix_rx_queue_meta_aura_update(struct rte_eth_dev *eth_dev)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct cnxk_eth_rxq_sp *rxq_sp;
+	struct cn10k_eth_rxq *rxq;
+	struct roc_nix_rq *rq;
+	int i;
+
+	/* Update Aura handle for fastpath rx queues */
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
+		rq = &dev->rqs[i];
+		rxq = eth_dev->data->rx_queues[i];
+		rxq->meta_aura = rq->meta_aura_handle;
+		rxq->meta_pool = dev->nix.meta_mempool;
+		/* Assume meta packet from normal aura if meta aura is not setup
+		 */
+		if (!rxq->meta_aura) {
+			rxq_sp = cnxk_eth_rxq_to_sp(rxq);
+			rxq->meta_aura = rxq_sp->qconf.mp->pool_id;
+			rxq->meta_pool = (uintptr_t)rxq_sp->qconf.mp;
+		}
+	}
+	/* Store mempool in lookup mem */
+	cnxk_nix_lookup_mem_metapool_set(dev);
+}
+
 static int
 cn10k_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qidx)
 {
 	struct cn10k_eth_txq *txq = eth_dev->data->tx_queues[qidx];
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	uint16_t flags = dev->tx_offload_flags;
+	struct roc_nix *nix = &dev->nix;
+	uint32_t head = 0, tail = 0;
 	int rc;
 
 	rc = cnxk_nix_tx_queue_stop(eth_dev, qidx);
@@ -307,6 +384,21 @@ cn10k_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qidx)
 
 	/* Clear fc cache pkts to trigger worker stop */
 	txq->fc_cache_pkts = 0;
+
+	if ((flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) && txq->tx_compl.ena) {
+		struct roc_nix_sq *sq = &dev->sqs[qidx];
+		do {
+			handle_tx_completion_pkts(txq, flags & NIX_TX_VWQE_F);
+			/* Check if SQ is empty */
+			roc_nix_sq_head_tail_get(nix, sq->qid, &head, &tail);
+			if (head != tail)
+				continue;
+
+			/* Check if completion CQ is empty */
+			roc_nix_cq_head_tail_get(nix, sq->cqid, &head, &tail);
+		} while (head != tail);
+	}
+
 	return 0;
 }
 
@@ -381,7 +473,7 @@ cn10k_nix_ptp_info_update_cb(struct roc_nix *nix, bool ptp_en)
 	struct cnxk_eth_dev *dev = (struct cnxk_eth_dev *)nix;
 	struct rte_eth_dev *eth_dev;
 	struct cn10k_eth_rxq *rxq;
-	int i;
+	int i, rc;
 
 	if (!dev)
 		return -EINVAL;
@@ -404,8 +496,22 @@ cn10k_nix_ptp_info_update_cb(struct roc_nix *nix, bool ptp_en)
 		 * and MTU setting also requires MBOX message to be
 		 * sent(VF->PF)
 		 */
+		if (dev->ptp_en) {
+			rc = rte_mbuf_dyn_rx_timestamp_register
+				(&dev->tstamp.tstamp_dynfield_offset,
+				 &dev->tstamp.rx_tstamp_dynflag);
+			if (rc != 0) {
+				plt_err("Failed to register Rx timestamp field/flag");
+				return -EINVAL;
+			}
+		}
 		eth_dev->rx_pkt_burst = nix_ptp_vf_burst;
+		rte_eth_fp_ops[eth_dev->data->port_id].rx_pkt_burst = eth_dev->rx_pkt_burst;
 		rte_mb();
+		if (dev->cnxk_sso_ptp_tstamp_cb)
+			dev->cnxk_sso_ptp_tstamp_cb(eth_dev->data->port_id,
+						    NIX_RX_OFFLOAD_TSTAMP_F, dev->ptp_en);
+
 	}
 
 	return 0;
@@ -504,29 +610,11 @@ cn10k_nix_dev_start(struct rte_eth_dev *eth_dev)
 	dev->rx_offload_flags |= nix_rx_offload_flags(eth_dev);
 	dev->tx_offload_flags |= nix_tx_offload_flags(eth_dev);
 
+	if (dev->rx_offload_flags & NIX_RX_OFFLOAD_SECURITY_F)
+		cn10k_nix_rx_queue_meta_aura_update(eth_dev);
+
 	cn10k_eth_set_tx_function(eth_dev);
 	cn10k_eth_set_rx_function(eth_dev);
-	return 0;
-}
-
-static int
-cn10k_nix_rx_metadata_negotiate(struct rte_eth_dev *eth_dev, uint64_t *features)
-{
-	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
-
-	*features &=
-		(RTE_ETH_RX_METADATA_USER_FLAG | RTE_ETH_RX_METADATA_USER_MARK);
-
-	if (*features) {
-		dev->rx_offload_flags |= NIX_RX_OFFLOAD_MARK_UPDATE_F;
-		dev->rx_mark_update = true;
-	} else {
-		dev->rx_offload_flags &= ~NIX_RX_OFFLOAD_MARK_UPDATE_F;
-		dev->rx_mark_update = false;
-	}
-
-	cn10k_eth_set_rx_function(eth_dev);
-
 	return 0;
 }
 
@@ -538,7 +626,7 @@ cn10k_nix_reassembly_capability_get(struct rte_eth_dev *eth_dev,
 	int rc = -ENOTSUP;
 	RTE_SET_USED(eth_dev);
 
-	if (!roc_nix_has_reass_support(&dev->nix))
+	if (!roc_feature_nix_has_reass())
 		return -ENOTSUP;
 
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY) {
@@ -568,19 +656,22 @@ cn10k_nix_reassembly_conf_set(struct rte_eth_dev *eth_dev,
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
 	int rc = 0;
 
-	if (!roc_nix_has_reass_support(&dev->nix))
+	if (!roc_feature_nix_has_reass())
 		return -ENOTSUP;
 
 	if (!conf->flags) {
 		/* Clear offload flags on disable */
-		dev->rx_offload_flags &= ~NIX_RX_REAS_F;
+		if (!dev->inb.nb_oop)
+			dev->rx_offload_flags &= ~NIX_RX_REAS_F;
+		dev->inb.reass_en = false;
 		return 0;
 	}
 
-	rc = roc_nix_reassembly_configure(conf->timeout_ms,
-				conf->max_frags);
-	if (!rc && dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
+	rc = roc_nix_reassembly_configure(conf->timeout_ms, conf->max_frags);
+	if (!rc && dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY) {
 		dev->rx_offload_flags |= NIX_RX_REAS_F;
+		dev->inb.reass_en = true;
+	}
 
 	return rc;
 }
@@ -711,13 +802,12 @@ nix_eth_dev_ops_override(void)
 	cnxk_eth_dev_ops.dev_configure = cn10k_nix_configure;
 	cnxk_eth_dev_ops.tx_queue_setup = cn10k_nix_tx_queue_setup;
 	cnxk_eth_dev_ops.rx_queue_setup = cn10k_nix_rx_queue_setup;
+	cnxk_eth_dev_ops.tx_queue_release = cn10k_nix_tx_queue_release;
 	cnxk_eth_dev_ops.tx_queue_stop = cn10k_nix_tx_queue_stop;
 	cnxk_eth_dev_ops.dev_start = cn10k_nix_dev_start;
 	cnxk_eth_dev_ops.dev_ptypes_set = cn10k_nix_ptypes_set;
 	cnxk_eth_dev_ops.timesync_enable = cn10k_nix_timesync_enable;
 	cnxk_eth_dev_ops.timesync_disable = cn10k_nix_timesync_disable;
-	cnxk_eth_dev_ops.rx_metadata_negotiate =
-		cn10k_nix_rx_metadata_negotiate;
 	cnxk_eth_dev_ops.timesync_read_tx_timestamp =
 		cn10k_nix_timesync_read_tx_timestamp;
 	cnxk_eth_dev_ops.ip_reassembly_capability_get =
@@ -754,6 +844,7 @@ npc_flow_ops_override(void)
 	/* Update platform specific ops */
 	cnxk_flow_ops.create = cn10k_flow_create;
 	cnxk_flow_ops.destroy = cn10k_flow_destroy;
+	cnxk_flow_ops.info_get = cn10k_flow_info_get;
 }
 
 static int

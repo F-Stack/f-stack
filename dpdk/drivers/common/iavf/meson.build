@@ -6,3 +6,5 @@ sources = files('iavf_adminq.c', 'iavf_common.c', 'iavf_impl.c')
 if cc.has_argument('-Wno-pointer-to-int-cast')
         cflags += '-Wno-pointer-to-int-cast'
 endif
+
+require_iova_in_mbuf = false

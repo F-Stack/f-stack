@@ -22,10 +22,13 @@ extern "C" {
  *
  *   if (likely(x > 1))
  *      do_stuff();
- *
  */
 #ifndef likely
+#ifdef RTE_TOOLCHAIN_MSVC
+#define likely(x)	(!!(x))
+#else
 #define likely(x)	__builtin_expect(!!(x), 1)
+#endif
 #endif /* likely */
 
 /**
@@ -36,10 +39,13 @@ extern "C" {
  *
  *   if (unlikely(x < 1))
  *      do_stuff();
- *
  */
 #ifndef unlikely
+#ifdef RTE_TOOLCHAIN_MSVC
+#define unlikely(x)	(!!(x))
+#else
 #define unlikely(x)	__builtin_expect(!!(x), 0)
+#endif
 #endif /* unlikely */
 
 #ifdef __cplusplus

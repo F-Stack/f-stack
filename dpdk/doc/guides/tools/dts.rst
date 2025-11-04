@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2022 PANTHEON.tech s.r.o.
+    Copyright(c) 2022-2023 PANTHEON.tech s.r.o.
 
 DPDK Test Suite
 ===============
@@ -56,7 +56,7 @@ DTS runtime environment or just plain DTS environment are used interchangeably.
 
 
 Setting up DTS environment
---------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 #. **Python Version**
 
@@ -82,6 +82,7 @@ Setting up DTS environment
    Another benefit is the usage of ``pyproject.toml``, which has become the standard config file
    for python projects, improving project organization.
    To install Poetry, visit their `doc pages <https://python-poetry.org/docs/>`_.
+   The recommended Poetry version is at least 1.5.1.
 
 #. **Getting a Poetry shell**
 
@@ -92,6 +93,219 @@ Setting up DTS environment
 
       poetry install
       poetry shell
+
+#. **SSH Connection**
+
+   DTS uses the Fabric Python library for SSH connections between DTS environment
+   and the other hosts.
+   The authentication method used is pubkey authentication.
+   Fabric tries to use a passed key/certificate,
+   then any key it can with through an SSH agent,
+   then any "id_rsa", "id_dsa" or "id_ecdsa" key discoverable in ``~/.ssh/``
+   (with any matching OpenSSH-style certificates).
+   DTS doesn't pass any keys, so Fabric tries to use the other two methods.
+
+
+Setting up System Under Test
+----------------------------
+
+There are two areas that need to be set up on a System Under Test:
+
+#. **DPDK dependencies**
+
+   DPDK will be built and run on the SUT.
+   Consult the Getting Started guides for the list of dependencies for each distribution.
+
+#. **Hardware dependencies**
+
+   Any hardware DPDK uses needs a proper driver
+   and most OS distributions provide those, but the version may not be satisfactory.
+   It's up to each user to install the driver they're interested in testing.
+   The hardware also may also need firmware upgrades, which is also left at user discretion.
+
+#. **Hugepages**
+
+   There are two ways to configure hugepages:
+
+   * DTS configuration
+
+     You may specify the optional hugepage configuration in the DTS config file.
+     If you do, DTS will take care of configuring hugepages,
+     overwriting your current SUT hugepage configuration.
+
+   * System under test configuration
+
+     It's possible to use the hugepage configuration already present on the SUT.
+     If you wish to do so, don't specify the hugepage configuration in the DTS config file.
+
+#. **User with administrator privileges**
+
+.. _sut_admin_user:
+
+   DTS needs administrator privileges to run DPDK applications (such as testpmd) on the SUT.
+   The SUT user must be able run commands in privileged mode without asking for password.
+   On most Linux distributions, it's a matter of setting up passwordless sudo:
+
+   #. Run ``sudo visudo`` and check that it contains ``%sudo	ALL=(ALL:ALL) NOPASSWD:ALL``.
+
+   #. Add the SUT user to the sudo group with:
+
+   .. code-block:: console
+
+      sudo usermod -aG sudo <sut_user>
+
+
+Setting up Traffic Generator Node
+---------------------------------
+
+These need to be set up on a Traffic Generator Node:
+
+#. **Traffic generator dependencies**
+
+   The traffic generator running on the traffic generator node must be installed beforehand.
+   For Scapy traffic generator, only a few Python libraries need to be installed:
+
+   .. code-block:: console
+
+      sudo apt install python3-pip
+      sudo pip install --upgrade pip
+      sudo pip install scapy==2.5.0
+
+#. **Hardware dependencies**
+
+   The traffic generators, like DPDK, need a proper driver and firmware.
+   The Scapy traffic generator doesn't have strict requirements - the drivers that come
+   with most OS distributions will be satisfactory.
+
+
+#. **User with administrator privileges**
+
+   Similarly to the System Under Test, traffic generators need administrator privileges
+   to be able to use the devices.
+   Refer to the `System Under Test section <sut_admin_user>` for details.
+
+
+Running DTS
+-----------
+
+DTS needs to know which nodes to connect to and what hardware to use on those nodes.
+Once that's configured, DTS needs a DPDK tarball and it's ready to run.
+
+Configuring DTS
+~~~~~~~~~~~~~~~
+
+DTS configuration is split into nodes and executions and build targets within executions.
+By default, DTS will try to use the ``dts/conf.yaml`` config file,
+which is a template that illustrates what can be configured in DTS:
+
+  .. literalinclude:: ../../../dts/conf.yaml
+     :language: yaml
+     :start-at: executions:
+
+
+The user must have :ref:`administrator privileges <sut_admin_user>`
+which don't require password authentication.
+The other fields are mostly self-explanatory
+and documented in more detail in ``dts/framework/config/conf_yaml_schema.json``.
+
+DTS Execution
+~~~~~~~~~~~~~
+
+DTS is run with ``main.py`` located in the ``dts`` directory after entering Poetry shell::
+
+   usage: main.py [-h] [--config-file CONFIG_FILE] [--output-dir OUTPUT_DIR] [-t TIMEOUT]
+                  [-v VERBOSE] [-s SKIP_SETUP] [--tarball TARBALL]
+                  [--compile-timeout COMPILE_TIMEOUT] [--test-cases TEST_CASES]
+                  [--re-run RE_RUN]
+
+   Run DPDK test suites. All options may be specified with the environment variables provided in
+   brackets. Command line arguments have higher priority.
+
+   options:
+     -h, --help            show this help message and exit
+     --config-file CONFIG_FILE
+                           [DTS_CFG_FILE] configuration file that describes the test cases, SUTs
+                           and targets. (default: conf.yaml)
+     --output-dir OUTPUT_DIR, --output OUTPUT_DIR
+                           [DTS_OUTPUT_DIR] Output directory where dts logs and results are
+                           saved. (default: output)
+     -t TIMEOUT, --timeout TIMEOUT
+                           [DTS_TIMEOUT] The default timeout for all DTS operations except for
+                           compiling DPDK. (default: 15)
+     -v VERBOSE, --verbose VERBOSE
+                           [DTS_VERBOSE] Set to 'Y' to enable verbose output, logging all
+                           messages to the console. (default: N)
+     -s SKIP_SETUP, --skip-setup SKIP_SETUP
+                           [DTS_SKIP_SETUP] Set to 'Y' to skip all setup steps on SUT and TG
+                           nodes. (default: N)
+     --tarball TARBALL, --snapshot TARBALL
+                           [DTS_DPDK_TARBALL] Path to DPDK source code tarball which will be
+                           used in testing. (default: dpdk.tar.xz)
+     --compile-timeout COMPILE_TIMEOUT
+                           [DTS_COMPILE_TIMEOUT] The timeout for compiling DPDK. (default: 1200)
+     --test-cases TEST_CASES
+                           [DTS_TESTCASES] Comma-separated list of test cases to execute.
+                           Unknown test cases will be silently ignored. (default: )
+     --re-run RE_RUN, --re_run RE_RUN
+                           [DTS_RERUN] Re-run each test case the specified amount of times if a
+                           test failure occurs (default: 0)
+
+
+The brackets contain the names of environment variables that set the same thing.
+The minimum DTS needs is a config file and a DPDK tarball.
+You may pass those to DTS using the command line arguments or use the default paths.
+
+
+DTS Results
+~~~~~~~~~~~
+
+Results are stored in the output dir by default
+which be changed with the ``--output-dir`` command line argument.
+The results contain basic statistics of passed/failed test cases and DPDK version.
+
+
+How To Write a Test Suite
+-------------------------
+
+All test suites inherit from ``TestSuite`` defined in ``dts/framework/test_suite.py``.
+There are four types of methods that comprise a test suite:
+
+#. **Test cases**
+
+   | Test cases are methods that start with a particular prefix.
+   | Functional test cases start with ``test_``, e.g. ``test_hello_world_single_core``.
+   | Performance test cases start with ``test_perf_``, e.g. ``test_perf_nic_single_core``.
+   | A test suite may have any number of functional and/or performance test cases.
+     However, these test cases must test the same feature,
+     following the rule of one feature = one test suite.
+     Test cases for one feature don't need to be grouped in just one test suite, though.
+     If the feature requires many testing scenarios to cover,
+     the test cases would be better off spread over multiple test suites
+     so that each test suite doesn't take too long to execute.
+
+#. **Setup and Teardown methods**
+
+   | There are setup and teardown methods for the whole test suite and each individual test case.
+   | Methods ``set_up_suite`` and ``tear_down_suite`` will be executed
+     before any and after all test cases have been executed, respectively.
+   | Methods ``set_up_test_case`` and ``tear_down_test_case`` will be executed
+     before and after each test case, respectively.
+   | These methods don't need to be implemented if there's no need for them in a test suite.
+     In that case, nothing will happen when they're is executed.
+
+#. **Test case verification**
+
+   Test case verification should be done with the ``verify`` method, which records the result.
+   The method should be called at the end of each test case.
+
+#. **Other methods**
+
+   Of course, all test suite code should adhere to coding standards.
+   Only the above methods will be treated specially and any other methods may be defined
+   (which should be mostly private methods needed by each particular test suite).
+   Any specific features (such as NIC configuration) required by a test suite
+   should be implemented in the ``SutNode`` class (and the underlying classes that ``SutNode`` uses)
+   and used by the test suite via the ``sut_node`` field.
 
 
 DTS Developer Tools

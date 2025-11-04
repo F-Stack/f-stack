@@ -34,12 +34,17 @@ enum rte_pmd_cnxk_sec_action_alg {
 	 *  SA_alg = { 7'b0, SA_mcam[24:0] + SPI[27:25]}
 	 */
 	RTE_PMD_CNXK_SEC_ACTION_ALG2,
+	/** SPI<28:25> segment the sequence number space.
+	 * Initial SA_index is from SA_XOR if enabled.
+	 * SA_alg = { 7'b0, SA_mcam[24:0] + SPI[28:25]}
+	 */
+	RTE_PMD_CNXK_SEC_ACTION_ALG3,
 	/** The inbound SPI maybe "random", therefore we want the MCAM to be
 	 * capable of remapping the SPI to an arbitrary SA_index.
 	 * SPI to SA is done using a lookup in NIX/NPC cam entry with key as
 	 * SPI, MATCH_ID, LFID.
 	 */
-	RTE_PMD_CNXK_SEC_ACTION_ALG3,
+	RTE_PMD_CNXK_SEC_ACTION_ALG4,
 };
 
 struct rte_pmd_cnxk_sec_action {
@@ -91,4 +96,21 @@ int rte_pmd_cnxk_hw_sa_read(void *device, struct rte_security_session *sess,
 __rte_experimental
 int rte_pmd_cnxk_hw_sa_write(void *device, struct rte_security_session *sess,
 			     void *data, uint32_t len);
+
+/**
+ * Get pointer to CPT result info for inline inbound processed pkt.
+ *
+ * It is recommended to use this API only when mbuf indicates packet
+ * was processed with inline IPsec and there was a failure with the same i.e
+ * mbuf->ol_flags indicates (RTE_MBUF_F_RX_SEC_OFFLOAD | RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED).
+ *
+ * @param mbuf
+ *   Pointer to packet that was just received and was processed with Inline IPsec.
+ *
+ * @return
+ *   - Pointer to mbuf location where CPT result info is stored on success.
+ *   - NULL on failure.
+ */
+__rte_experimental
+void *rte_pmd_cnxk_inl_ipsec_res(struct rte_mbuf *mbuf);
 #endif /* _PMD_CNXK_H_ */

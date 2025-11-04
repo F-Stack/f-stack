@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _IDPF_LAN_VF_REGS_H_
@@ -9,7 +9,7 @@
 /* Reset */
 #define VFGEN_RSTAT			0x00008800
 #define VFGEN_RSTAT_VFR_STATE_S		0
-#define VFGEN_RSTAT_VFR_STATE_M		MAKEMASK(0x3, VFGEN_RSTAT_VFR_STATE_S)
+#define VFGEN_RSTAT_VFR_STATE_M		GENMASK(1, 0)
 
 /* Control(VF Mailbox) Queue */
 #define VF_BASE				0x00006000
@@ -18,7 +18,7 @@
 #define VF_ATQBAH			(VF_BASE + 0x1800)
 #define VF_ATQLEN			(VF_BASE + 0x0800)
 #define VF_ATQLEN_ATQLEN_S		0
-#define VF_ATQLEN_ATQLEN_M		MAKEMASK(0x3FF, VF_ATQLEN_ATQLEN_S)
+#define VF_ATQLEN_ATQLEN_M		GENMASK(9, 0)
 #define VF_ATQLEN_ATQVFE_S		28
 #define VF_ATQLEN_ATQVFE_M		BIT(VF_ATQLEN_ATQVFE_S)
 #define VF_ATQLEN_ATQOVFL_S		29
@@ -29,14 +29,14 @@
 #define VF_ATQLEN_ATQENABLE_M		BIT(VF_ATQLEN_ATQENABLE_S)
 #define VF_ATQH				(VF_BASE + 0x0400)
 #define VF_ATQH_ATQH_S			0
-#define VF_ATQH_ATQH_M			MAKEMASK(0x3FF, VF_ATQH_ATQH_S)
+#define VF_ATQH_ATQH_M			GENMASK(9, 0)
 #define VF_ATQT				(VF_BASE + 0x2400)
 
 #define VF_ARQBAL			(VF_BASE + 0x0C00)
 #define VF_ARQBAH			(VF_BASE)
 #define VF_ARQLEN			(VF_BASE + 0x2000)
 #define VF_ARQLEN_ARQLEN_S		0
-#define VF_ARQLEN_ARQLEN_M		MAKEMASK(0x3FF, VF_ARQLEN_ARQLEN_S)
+#define VF_ARQLEN_ARQLEN_M		GENMASK(9, 0)
 #define VF_ARQLEN_ARQVFE_S		28
 #define VF_ARQLEN_ARQVFE_M		BIT(VF_ARQLEN_ARQVFE_S)
 #define VF_ARQLEN_ARQOVFL_S		29
@@ -47,7 +47,7 @@
 #define VF_ARQLEN_ARQENABLE_M		BIT(VF_ARQLEN_ARQENABLE_S)
 #define VF_ARQH				(VF_BASE + 0x1400)
 #define VF_ARQH_ARQH_S			0
-#define VF_ARQH_ARQH_M			MAKEMASK(0x1FFF, VF_ARQH_ARQH_S)
+#define VF_ARQH_ARQH_M			GENMASK(12, 0)
 #define VF_ARQT				(VF_BASE + 0x1000)
 
 /* Transmit queues */
@@ -69,7 +69,7 @@
 #define VF_INT_DYN_CTL0_INTENA_S	0
 #define VF_INT_DYN_CTL0_INTENA_M	BIT(VF_INT_DYN_CTL0_INTENA_S)
 #define VF_INT_DYN_CTL0_ITR_INDX_S	3
-#define VF_INT_DYN_CTL0_ITR_INDX_M	MAKEMASK(0x3, VF_INT_DYN_CTL0_ITR_INDX_S)
+#define VF_INT_DYN_CTL0_ITR_INDX_M	GENMASK(4, 3)
 #define VF_INT_DYN_CTLN(_INT)		(0x00003800 + ((_INT) * 4))
 #define VF_INT_DYN_CTLN_EXT(_INT)	(0x00070000 + ((_INT) * 4))
 #define VF_INT_DYN_CTLN_INTENA_S	0
@@ -79,7 +79,7 @@
 #define VF_INT_DYN_CTLN_SWINT_TRIG_S	2
 #define VF_INT_DYN_CTLN_SWINT_TRIG_M	BIT(VF_INT_DYN_CTLN_SWINT_TRIG_S)
 #define VF_INT_DYN_CTLN_ITR_INDX_S	3
-#define VF_INT_DYN_CTLN_ITR_INDX_M	MAKEMASK(0x3, VF_INT_DYN_CTLN_ITR_INDX_S)
+#define VF_INT_DYN_CTLN_ITR_INDX_M	GENMASK(4, 3)
 #define VF_INT_DYN_CTLN_INTERVAL_S	5
 #define VF_INT_DYN_CTLN_INTERVAL_M	BIT(VF_INT_DYN_CTLN_INTERVAL_S)
 #define VF_INT_DYN_CTLN_SW_ITR_INDX_ENA_S	24
@@ -94,17 +94,26 @@
  * b/w itrn registers of the same vector
  */
 #define VF_INT_ITR0(_ITR)		(0x00004C00 + ((_ITR) * 4))
-#define VF_INT_ITRN_ADDR(_ITR, _reg_start, _itrn_indx_spacing) \
-		 ((_reg_start) + (((_ITR)) * (_itrn_indx_spacing)))
-/* For VF with 16 vector support, itrn_reg_spacing is 0x4 and itrn_indx_spacing is 0x40 */
-#define VF_INT_ITRN(_INT, _ITR)	(0x00002800 + ((_INT) * 4) + ((_ITR) * 0x40))
-/* For VF with 64 vector support, itrn_reg_spacing is 0x4 and itrn_indx_spacing is 0x100 */
-#define VF_INT_ITRN_64(_INT, _ITR) (0x00002C00 + ((_INT) * 4) + ((_ITR) * 0x100))
-/* For VF with 2k vector support, itrn_reg_spacing is 0x4 and itrn_indx_spacing is 0x2000 */
-#define VF_INT_ITRN_2K(_INT, _ITR) (0x00072000 + ((_INT) * 4) + ((_ITR) * 0x2000))
+#define VF_INT_ITRN_ADDR(_ITR, _reg_start, _itrn_indx_spacing)	\
+	((_reg_start) + ((_ITR) * (_itrn_indx_spacing)))
+/* For VF with 16 vector support, itrn_reg_spacing is 0x4, itrn_indx_spacing
+ * is 0x40 and base register offset is 0x00002800
+ */
+#define VF_INT_ITRN(_INT, _ITR)		\
+	(0x00002800 + ((_INT) * 4) + ((_ITR) * 0x40))
+/* For VF with 64 vector support, itrn_reg_spacing is 0x4, itrn_indx_spacing
+ * is 0x100 and base register offset is 0x00002C00
+ */
+#define VF_INT_ITRN_64(_INT, _ITR)	\
+	(0x00002C00 + ((_INT) * 4) + ((_ITR) * 0x100))
+/* For VF with 2k vector support, itrn_reg_spacing is 0x4, itrn_indx_spacing
+ * is 0x2000 and base register offset is 0x00072000
+ */
+#define VF_INT_ITRN_2K(_INT, _ITR)	\
+	(0x00072000 + ((_INT) * 4) + ((_ITR) * 0x2000))
 #define VF_INT_ITRN_MAX_INDEX		2
 #define VF_INT_ITRN_INTERVAL_S		0
-#define VF_INT_ITRN_INTERVAL_M		MAKEMASK(0xFFF, VF_INT_ITRN_INTERVAL_S)
+#define VF_INT_ITRN_INTERVAL_M		GENMASK(11, 0)
 #define VF_INT_PBA_CLEAR		0x00008900
 
 #define VF_INT_ICR0_ENA1		0x00005000

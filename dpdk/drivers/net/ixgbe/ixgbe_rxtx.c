@@ -27,7 +27,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_mempool.h>
 #include <rte_malloc.h>
@@ -2553,9 +2552,13 @@ ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ixgbe_tx_queue *txq)
 				(rte_eal_process_type() != RTE_PROC_PRIMARY ||
 					ixgbe_txq_vec_setup(txq) == 0)) {
 			PMD_INIT_LOG(DEBUG, "Vector tx enabled.");
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+			dev->recycle_tx_mbufs_reuse = ixgbe_recycle_tx_mbufs_reuse_vec;
+#endif
 			dev->tx_pkt_burst = ixgbe_xmit_pkts_vec;
-		} else
-		dev->tx_pkt_burst = ixgbe_xmit_pkts_simple;
+		} else {
+			dev->tx_pkt_burst = ixgbe_xmit_pkts_simple;
+		}
 	} else {
 		PMD_INIT_LOG(DEBUG, "Using full-featured tx code path");
 		PMD_INIT_LOG(DEBUG,
@@ -3458,18 +3461,92 @@ static uint8_t rss_intel_key[40] = {
 	0x6A, 0x42, 0xB7, 0x3B, 0xBE, 0xAC, 0x01, 0xFA,
 };
 
+/*
+ * This function removes the rss configuration in the mrqe field of MRQC
+ * register and tries to maintain other configurations in the field, such
+ * DCB and Virtualization.
+ *
+ * The MRQC register supplied in section 8.2.3.7.12 of the Intel 82599
+ * datasheet. From the datasheet, we know that the mrqe field is an enum. So,
+ * masking the mrqe field with '~IXGBE_MRQC_RSSEN' may not completely disable
+ * rss configuration. For example, the value of mrqe is equal to 0101b when DCB
+ * and RSS with 4 TCs configured, however 'mrqe &= ~0x01' is equal to 0100b
+ * which corresponds to DCB and RSS with 8 TCs.
+ */
+static void
+ixgbe_mrqc_rss_remove(struct ixgbe_hw *hw)
+{
+	uint32_t mrqc;
+	uint32_t mrqc_reg;
+	uint32_t mrqe_val;
+
+	mrqc_reg = ixgbe_mrqc_reg_get(hw->mac.type);
+	mrqc = IXGBE_READ_REG(hw, mrqc_reg);
+	mrqe_val = mrqc & IXGBE_MRQC_MRQE_MASK;
+
+	switch (mrqe_val) {
+	case IXGBE_MRQC_RSSEN:
+		/* Completely disable rss */
+		mrqe_val = 0;
+		break;
+	case IXGBE_MRQC_RTRSS8TCEN:
+		mrqe_val = IXGBE_MRQC_RT8TCEN;
+		break;
+	case IXGBE_MRQC_RTRSS4TCEN:
+		mrqe_val = IXGBE_MRQC_RT4TCEN;
+		break;
+	case IXGBE_MRQC_VMDQRSS64EN:
+		mrqe_val = IXGBE_MRQC_VMDQEN;
+		break;
+	case IXGBE_MRQC_VMDQRSS32EN:
+		PMD_DRV_LOG(WARNING, "There is no regression for virtualization"
+			" and RSS with 32 pools among the MRQE configurations"
+			" after removing RSS, and left it unchanged.");
+		break;
+	default:
+		/* No rss configured, leave it as it is */
+		break;
+	}
+	mrqc = (mrqc & ~IXGBE_MRQC_MRQE_MASK) | mrqe_val;
+	IXGBE_WRITE_REG(hw, mrqc_reg, mrqc);
+}
+
 static void
 ixgbe_rss_disable(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw;
-	uint32_t mrqc;
-	uint32_t mrqc_reg;
 
 	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	/* Remove the rss configuration and maintain the other configurations */
+	ixgbe_mrqc_rss_remove(hw);
+}
+
+/*
+ * This function checks whether the rss is enabled or not by comparing the mrqe
+ * field with some RSS related enums and also considers the configurations for
+ * DCB + RSS and Virtualization + RSS. It is necessary for getting the correct
+ * rss hash configurations from the RSS Field Enable field of MRQC register
+ * when both RSS and DCB/VMDQ are used.
+ */
+static bool
+ixgbe_rss_enabled(struct ixgbe_hw *hw)
+{
+	uint32_t mrqc;
+	uint32_t mrqc_reg;
+	uint32_t mrqe_val;
+
 	mrqc_reg = ixgbe_mrqc_reg_get(hw->mac.type);
 	mrqc = IXGBE_READ_REG(hw, mrqc_reg);
-	mrqc &= ~IXGBE_MRQC_RSSEN;
-	IXGBE_WRITE_REG(hw, mrqc_reg, mrqc);
+	mrqe_val = mrqc & IXGBE_MRQC_MRQE_MASK;
+
+	if (mrqe_val == IXGBE_MRQC_RSSEN ||
+		mrqe_val == IXGBE_MRQC_RTRSS8TCEN ||
+		mrqe_val == IXGBE_MRQC_RTRSS4TCEN ||
+		mrqe_val == IXGBE_MRQC_VMDQRSS64EN ||
+		mrqe_val == IXGBE_MRQC_VMDQRSS32EN)
+		return true;
+
+	return false;
 }
 
 static void
@@ -3527,9 +3604,7 @@ ixgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
 			  struct rte_eth_rss_conf *rss_conf)
 {
 	struct ixgbe_hw *hw;
-	uint32_t mrqc;
 	uint64_t rss_hf;
-	uint32_t mrqc_reg;
 
 	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
@@ -3538,7 +3613,6 @@ ixgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
 			"NIC.");
 		return -ENOTSUP;
 	}
-	mrqc_reg = ixgbe_mrqc_reg_get(hw->mac.type);
 
 	/*
 	 * Excerpt from section 7.1.2.8 Receive-Side Scaling (RSS):
@@ -3550,8 +3624,7 @@ ixgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
 	 * disabled at initialization time.
 	 */
 	rss_hf = rss_conf->rss_hf & IXGBE_RSS_OFFLOAD_ALL;
-	mrqc = IXGBE_READ_REG(hw, mrqc_reg);
-	if (!(mrqc & IXGBE_MRQC_RSSEN)) { /* RSS disabled */
+	if (!ixgbe_rss_enabled(hw)) { /* RSS disabled */
 		if (rss_hf != 0) /* Enable RSS */
 			return -(EINVAL);
 		return 0; /* Nothing to do */
@@ -3591,12 +3664,14 @@ ixgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 		}
 	}
 
-	/* Get RSS functions configured in MRQC register */
-	mrqc = IXGBE_READ_REG(hw, mrqc_reg);
-	if ((mrqc & IXGBE_MRQC_RSSEN) == 0) { /* RSS is disabled */
+	if (!ixgbe_rss_enabled(hw)) { /* RSS is disabled */
 		rss_conf->rss_hf = 0;
 		return 0;
 	}
+
+	/* Get RSS functions configured in MRQC register */
+	mrqc = IXGBE_READ_REG(hw, mrqc_reg);
+
 	rss_hf = 0;
 	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV4)
 		rss_hf |= RTE_ETH_RSS_IPV4;
@@ -4819,7 +4894,10 @@ ixgbe_set_rx_function(struct rte_eth_dev *dev)
 			PMD_INIT_LOG(DEBUG, "Using Vector Scattered Rx "
 					    "callback (port=%d).",
 				     dev->data->port_id);
-
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+			dev->recycle_rx_descriptors_refill =
+				ixgbe_recycle_rx_descriptors_refill_vec;
+#endif
 			dev->rx_pkt_burst = ixgbe_recv_scattered_pkts_vec;
 		} else if (adapter->rx_bulk_alloc_allowed) {
 			PMD_INIT_LOG(DEBUG, "Using a Scattered with bulk "
@@ -4848,7 +4926,9 @@ ixgbe_set_rx_function(struct rte_eth_dev *dev)
 				    "burst size no less than %d (port=%d).",
 			     RTE_IXGBE_DESCS_PER_LOOP,
 			     dev->data->port_id);
-
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+		dev->recycle_rx_descriptors_refill = ixgbe_recycle_rx_descriptors_refill_vec;
+#endif
 		dev->rx_pkt_burst = ixgbe_recv_pkts_vec;
 	} else if (adapter->rx_bulk_alloc_allowed) {
 		PMD_INIT_LOG(DEBUG, "Rx Burst Bulk Alloc Preconditions are "
@@ -5618,6 +5698,31 @@ ixgbe_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	qinfo->conf.tx_rs_thresh = txq->tx_rs_thresh;
 	qinfo->conf.offloads = txq->offloads;
 	qinfo->conf.tx_deferred_start = txq->tx_deferred_start;
+}
+
+void
+ixgbe_recycle_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_recycle_rxq_info *recycle_rxq_info)
+{
+	struct ixgbe_rx_queue *rxq;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
+
+	rxq = dev->data->rx_queues[queue_id];
+
+	recycle_rxq_info->mbuf_ring = (void *)rxq->sw_ring;
+	recycle_rxq_info->mp = rxq->mb_pool;
+	recycle_rxq_info->mbuf_ring_size = rxq->nb_rx_desc;
+	recycle_rxq_info->receive_tail = &rxq->rx_tail;
+
+	if (adapter->rx_vec_allowed) {
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+		recycle_rxq_info->refill_requirement = RTE_IXGBE_RXQ_REARM_THRESH;
+		recycle_rxq_info->refill_head = &rxq->rxrearm_start;
+#endif
+	} else {
+		recycle_rxq_info->refill_requirement = rxq->rx_free_thresh;
+		recycle_rxq_info->refill_head = &rxq->rx_free_trigger;
+	}
 }
 
 /*

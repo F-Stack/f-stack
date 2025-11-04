@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2008-2016 Freescale Semiconductor Inc.
- * Copyright 2016,2019-2020 NXP
+ * Copyright 2016,2019-2022 NXP
  *
  */
 
@@ -710,6 +710,11 @@ static inline void __gen_auth_key(struct program *program,
 	case OP_PCL_IPSEC_HMAC_SHA2_512_256:
 		dkp_protid = OP_PCLID_DKP_SHA512;
 		break;
+	case OP_PCL_IPSEC_HMAC_SHA2_224_96:
+	case OP_PCL_IPSEC_HMAC_SHA2_224_112:
+	case OP_PCL_IPSEC_HMAC_SHA2_224_224:
+		dkp_protid = OP_PCLID_DKP_SHA224;
+		break;
 	default:
 		KEY(program, KEY2, authdata->key_enc_flags, authdata->key,
 		    authdata->keylen, INLINE_KEY(authdata));
@@ -775,6 +780,11 @@ rta_inline_ipsec_query(unsigned int sd_base_len,
 		break;
 	case OP_PCL_IPSEC_HMAC_SHA2_512_256:
 		dkp_protid = OP_PCLID_DKP_SHA512;
+		break;
+	case OP_PCL_IPSEC_HMAC_SHA2_224_96:
+	case OP_PCL_IPSEC_HMAC_SHA2_224_112:
+	case OP_PCL_IPSEC_HMAC_SHA2_224_224:
+		dkp_protid = OP_PCLID_DKP_SHA224;
 		break;
 	default:
 		return rta_inline_query(sd_base_len,
@@ -1448,7 +1458,7 @@ cnstr_shdsc_ipsec_new_decap(uint32_t *descbuf, bool ps,
  * layers to determine whether keys can be inlined or not. To be used as first
  * parameter of rta_inline_query().
  */
-#define IPSEC_AUTH_VAR_BASE_DESC_LEN	(27 * CAAM_CMD_SZ)
+#define IPSEC_AUTH_VAR_BASE_DESC_LEN	(31 * CAAM_CMD_SZ)
 
 /**
  * IPSEC_AUTH_VAR_AES_DEC_BASE_DESC_LEN - IPsec AES decap shared descriptor

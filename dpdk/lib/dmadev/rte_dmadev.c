@@ -17,6 +17,7 @@
 
 #include "rte_dmadev.h"
 #include "rte_dmadev_pmd.h"
+#include "rte_dmadev_trace.h"
 
 static int16_t dma_devices_max;
 
@@ -443,6 +444,8 @@ rte_dma_info_get(int16_t dev_id, struct rte_dma_info *dev_info)
 	dev_info->numa_node = dev->device->numa_node;
 	dev_info->nb_vchans = dev->data->dev_conf.nb_vchans;
 
+	rte_dma_trace_info_get(dev_id, dev_info);
+
 	return 0;
 }
 
@@ -492,6 +495,8 @@ rte_dma_configure(int16_t dev_id, const struct rte_dma_conf *dev_conf)
 		memcpy(&dev->data->dev_conf, dev_conf,
 		       sizeof(struct rte_dma_conf));
 
+	rte_dma_trace_configure(dev_id, dev_conf, ret);
+
 	return ret;
 }
 
@@ -518,6 +523,7 @@ rte_dma_start(int16_t dev_id)
 		goto mark_started;
 
 	ret = (*dev->dev_ops->dev_start)(dev);
+	rte_dma_trace_start(dev_id, ret);
 	if (ret != 0)
 		return ret;
 
@@ -544,6 +550,7 @@ rte_dma_stop(int16_t dev_id)
 		goto mark_stopped;
 
 	ret = (*dev->dev_ops->dev_stop)(dev);
+	rte_dma_trace_stop(dev_id, ret);
 	if (ret != 0)
 		return ret;
 
@@ -573,6 +580,8 @@ rte_dma_close(int16_t dev_id)
 	ret = (*dev->dev_ops->dev_close)(dev);
 	if (ret == 0)
 		dma_release(dev);
+
+	rte_dma_trace_close(dev_id, ret);
 
 	return ret;
 }
@@ -664,8 +673,11 @@ rte_dma_vchan_setup(int16_t dev_id, uint16_t vchan,
 
 	if (*dev->dev_ops->vchan_setup == NULL)
 		return -ENOTSUP;
-	return (*dev->dev_ops->vchan_setup)(dev, vchan, conf,
+	ret = (*dev->dev_ops->vchan_setup)(dev, vchan, conf,
 					sizeof(struct rte_dma_vchan_conf));
+	rte_dma_trace_vchan_setup(dev_id, vchan, conf, ret);
+
+	return ret;
 }
 
 int
@@ -694,6 +706,7 @@ int
 rte_dma_stats_reset(int16_t dev_id, uint16_t vchan)
 {
 	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	int ret;
 
 	if (!rte_dma_is_valid(dev_id))
 		return -EINVAL;
@@ -707,7 +720,10 @@ rte_dma_stats_reset(int16_t dev_id, uint16_t vchan)
 
 	if (*dev->dev_ops->stats_reset == NULL)
 		return -ENOTSUP;
-	return (*dev->dev_ops->stats_reset)(dev, vchan);
+	ret = (*dev->dev_ops->stats_reset)(dev, vchan);
+	rte_dma_trace_stats_reset(dev_id, vchan, ret);
+
+	return ret;
 }
 
 int
@@ -715,7 +731,7 @@ rte_dma_vchan_status(int16_t dev_id, uint16_t vchan, enum rte_dma_vchan_status *
 {
 	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
 
-	if (!rte_dma_is_valid(dev_id))
+	if (!rte_dma_is_valid(dev_id) || status == NULL)
 		return -EINVAL;
 
 	if (vchan >= dev->data->dev_conf.nb_vchans) {
@@ -767,7 +783,7 @@ dma_dump_capability(FILE *f, uint64_t dev_capa)
 
 	(void)fprintf(f, "  dev_capa: 0x%" PRIx64 " -", dev_capa);
 	while (dev_capa > 0) {
-		capa = 1ull << __builtin_ctzll(dev_capa);
+		capa = 1ull << rte_ctz64(dev_capa);
 		(void)fprintf(f, " %s", dma_capability_name(capa));
 		dev_capa &= ~capa;
 	}
@@ -801,9 +817,10 @@ rte_dma_dump(int16_t dev_id, FILE *f)
 		dev->data->dev_conf.enable_silent ? "on" : "off");
 
 	if (dev->dev_ops->dev_dump != NULL)
-		return (*dev->dev_ops->dev_dump)(dev, f);
+		ret = (*dev->dev_ops->dev_dump)(dev, f);
+	rte_dma_trace_dump(dev_id, f, ret);
 
-	return 0;
+	return ret;
 }
 
 static int
@@ -953,7 +970,7 @@ dmadev_handle_dev_info(const char *cmd __rte_unused,
 	return 0;
 }
 
-#define ADD_DICT_STAT(s) rte_tel_data_add_dict_u64(d, #s, dma_stats.s)
+#define ADD_DICT_STAT(s) rte_tel_data_add_dict_uint(d, #s, dma_stats.s)
 
 static int
 dmadev_handle_dev_stats(const char *cmd __rte_unused,

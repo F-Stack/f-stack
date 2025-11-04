@@ -114,6 +114,7 @@ static int txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 static int txgbe_dev_interrupt_action(struct rte_eth_dev *dev,
 				      struct rte_intr_handle *handle);
 static void txgbe_dev_interrupt_handler(void *param);
+static void txgbe_dev_detect_sfp(void *param);
 static void txgbe_dev_interrupt_delayed_handler(void *param);
 static void txgbe_configure_msix(struct rte_eth_dev *dev);
 
@@ -330,6 +331,8 @@ txgbe_pf_reset_hw(struct txgbe_hw *hw)
 	status = hw->mac.reset_hw(hw);
 
 	ctrl_ext = rd32(hw, TXGBE_PORTCTL);
+	/* let hardware know driver is loaded */
+	ctrl_ext |= TXGBE_PORTCTL_DRVLOAD;
 	/* Set PF Reset Done bit so PF/VF Mail Ops can work */
 	ctrl_ext |= TXGBE_PORTCTL_RSTDONE;
 	wr32(hw, TXGBE_PORTCTL, ctrl_ext);
@@ -611,7 +614,7 @@ eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		ssid = txgbe_flash_read_dword(hw, 0xFFFDC);
 		if (ssid == 0x1) {
 			PMD_INIT_LOG(ERR,
-				"Read of internal subsystem device id failed\n");
+				"Read of internal subsystem device id failed");
 			return -ENODEV;
 		}
 		hw->subsystem_device_id = (u16)ssid >> 8 | (u16)ssid << 8;
@@ -1550,6 +1553,9 @@ static void txgbe_reinit_gpio_intr(struct txgbe_hw *hw)
 	wr32(hw, TXGBE_GPIOINTMASK, 0xFF);
 	reg = rd32(hw, TXGBE_GPIORAWINTSTAT);
 
+	if (reg & TXGBE_GPIOBIT_0)
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_0);
+
 	if (reg & TXGBE_GPIOBIT_2)
 		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_2);
 
@@ -1567,13 +1573,23 @@ txgbe_dev_phy_intr_setup(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_interrupt *intr = TXGBE_DEV_INTR(dev);
+	u8 device_type = hw->subsystem_device_id & 0xF0;
 	uint32_t gpie;
 
-	gpie = rd32(hw, TXGBE_GPIOINTEN);
-	gpie |= TXGBE_GPIOBIT_6;
-	wr32(hw, TXGBE_GPIOINTEN, gpie);
+	if (device_type != TXGBE_DEV_ID_MAC_XAUI &&
+			device_type != TXGBE_DEV_ID_MAC_SGMII) {
+		gpie = rd32(hw, TXGBE_GPIOINTEN);
+		gpie |= TXGBE_GPIOBIT_2 | TXGBE_GPIOBIT_3 | TXGBE_GPIOBIT_6;
+		wr32(hw, TXGBE_GPIOINTEN, gpie);
+
+		gpie = rd32(hw, TXGBE_GPIOINTTYPE);
+		gpie |= TXGBE_GPIOBIT_2 | TXGBE_GPIOBIT_3 | TXGBE_GPIOBIT_6;
+		wr32(hw, TXGBE_GPIOINTTYPE, gpie);
+	}
+
 	intr->mask_misc |= TXGBE_ICRMISC_GPIO;
 	intr->mask_misc |= TXGBE_ICRMISC_ANDONE;
+	intr->mask_misc |= TXGBE_ICRMISC_HEAT;
 }
 
 int
@@ -1679,6 +1695,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Stop the link setup handler before resetting the HW. */
+	rte_eal_alarm_cancel(txgbe_dev_detect_sfp, dev);
 	txgbe_dev_wait_setup_link_complete(dev, 0);
 
 	/* disable uio/vfio intr/eventfd mapping */
@@ -1919,6 +1936,7 @@ txgbe_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
+	rte_eal_alarm_cancel(txgbe_dev_detect_sfp, dev);
 	txgbe_dev_wait_setup_link_complete(dev, 0);
 
 	/* disable interrupts */
@@ -2046,6 +2064,9 @@ txgbe_dev_close(struct rte_eth_dev *dev)
 
 	ret = txgbe_dev_stop(dev);
 
+	/* Let firmware take over control of hardware */
+	wr32m(hw, TXGBE_PORTCTL, TXGBE_PORTCTL_DRVLOAD, 0);
+
 	txgbe_dev_free_queues(dev);
 
 	txgbe_set_pcie_master(hw, false);
@@ -2074,6 +2095,7 @@ txgbe_dev_close(struct rte_eth_dev *dev)
 
 	/* cancel all alarm handler before remove dev */
 	rte_eal_alarm_cancel(txgbe_dev_interrupt_delayed_handler, dev);
+	rte_eal_alarm_cancel(txgbe_dev_detect_sfp, dev);
 	rte_eal_alarm_cancel(txgbe_dev_setup_link_alarm_handler, dev);
 
 	/* uninitialize PF if max_vfs not zero */
@@ -2225,7 +2247,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 	hw_stats->rx_total_bytes += rd64(hw, TXGBE_MACRXGBOCTL);
 
 	hw_stats->rx_broadcast_packets += rd64(hw, TXGBE_MACRXOCTL);
-	hw_stats->tx_broadcast_packets += rd32(hw, TXGBE_MACTXOCTL);
+	hw_stats->tx_broadcast_packets += rd64(hw, TXGBE_MACTXOCTL);
 
 	hw_stats->rx_size_64_packets += rd64(hw, TXGBE_MACRX1TO64L);
 	hw_stats->rx_size_65_to_127_packets += rd64(hw, TXGBE_MACRX65TO127L);
@@ -2244,7 +2266,8 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 	hw_stats->tx_size_1024_to_max_packets +=
 			rd64(hw, TXGBE_MACTX1024TOMAXL);
 
-	hw_stats->rx_undersize_errors += rd64(hw, TXGBE_MACRXERRLENL);
+	hw_stats->rx_length_errors += rd64(hw, TXGBE_MACRXERRLENL);
+	hw_stats->rx_undersize_errors += rd32(hw, TXGBE_MACRXUNDERSIZE);
 	hw_stats->rx_oversize_cnt += rd32(hw, TXGBE_MACRXOVERSIZE);
 	hw_stats->rx_jabber_errors += rd32(hw, TXGBE_MACRXJABBER);
 
@@ -2728,6 +2751,75 @@ txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	return NULL;
 }
 
+static void
+txgbe_dev_detect_sfp(void *param)
+{
+	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	s32 err;
+
+	err = hw->phy.identify_sfp(hw);
+	if (err == TXGBE_ERR_SFP_NOT_SUPPORTED) {
+		PMD_DRV_LOG(ERR, "Unsupported SFP+ module type was detected.");
+	} else if (err == TXGBE_ERR_SFP_NOT_PRESENT) {
+		PMD_DRV_LOG(INFO, "SFP not present.");
+	} else if (err == 0) {
+		hw->mac.setup_sfp(hw);
+		PMD_DRV_LOG(INFO, "detected SFP+: %d", hw->phy.sfp_type);
+		txgbe_dev_setup_link_alarm_handler(dev);
+		txgbe_dev_link_update(dev, 0);
+	}
+}
+
+static void
+txgbe_dev_sfp_event(struct rte_eth_dev *dev)
+{
+	struct txgbe_interrupt *intr = TXGBE_DEV_INTR(dev);
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	u32 reg;
+
+	wr32(hw, TXGBE_GPIOINTMASK, 0xFF);
+	reg = rd32(hw, TXGBE_GPIORAWINTSTAT);
+	if (reg & TXGBE_GPIOBIT_0)
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_0);
+	if (reg & TXGBE_GPIOBIT_2) {
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_2);
+		rte_eal_alarm_set(1000 * 100, txgbe_dev_detect_sfp, dev);
+	}
+	if (reg & TXGBE_GPIOBIT_3) {
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_3);
+		intr->flags |= TXGBE_FLAG_NEED_LINK_UPDATE;
+	}
+	if (reg & TXGBE_GPIOBIT_6) {
+		wr32(hw, TXGBE_GPIOEOI, TXGBE_GPIOBIT_6);
+		intr->flags |= TXGBE_FLAG_NEED_LINK_UPDATE;
+	}
+
+	wr32(hw, TXGBE_GPIOINTMASK, 0);
+}
+
+static void
+txgbe_dev_overheat(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	s32 temp_state;
+
+	temp_state = hw->phy.check_overtemp(hw);
+	if (!temp_state)
+		return;
+
+	if (temp_state == TXGBE_ERR_UNDERTEMP) {
+		PMD_DRV_LOG(CRIT, "Network adapter has been started again, "
+			"since the temperature has been back to normal state.");
+		wr32m(hw, TXGBE_PBRXCTL, TXGBE_PBRXCTL_ENA, TXGBE_PBRXCTL_ENA);
+		txgbe_dev_set_link_up(dev);
+	} else if (temp_state == TXGBE_ERR_OVERTEMP) {
+		PMD_DRV_LOG(CRIT, "Network adapter has been stopped because it has over heated.");
+		wr32m(hw, TXGBE_PBRXCTL, TXGBE_PBRXCTL_ENA, 0);
+		txgbe_dev_set_link_down(dev);
+	}
+}
+
 void
 txgbe_dev_setup_link_alarm_handler(void *param)
 {
@@ -2838,8 +2930,9 @@ txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 				 * when there is no link thread running.
 				 */
 				intr->flags |= TXGBE_FLAG_NEED_LINK_CONFIG;
-				if (rte_thread_create(&ad->link_thread_tid, NULL,
-					txgbe_dev_setup_link_thread_handler, dev) < 0) {
+				if (rte_thread_create_internal_control(&ad->link_thread_tid,
+						"txgbe-link",
+						txgbe_dev_setup_link_thread_handler, dev) < 0) {
 					PMD_DRV_LOG(ERR, "Create link thread failed!");
 					__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
 				}
@@ -3093,8 +3186,11 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 	if (eicr & TXGBE_ICRMISC_GPIO)
 		intr->flags |= TXGBE_FLAG_PHY_INTERRUPT;
 
+	if (eicr & TXGBE_ICRMISC_HEAT)
+		intr->flags |= TXGBE_FLAG_OVERHEAT;
 
 	((u32 *)hw->isb_mem)[TXGBE_ISB_MISC] = 0;
+
 	return 0;
 }
 
@@ -3159,7 +3255,7 @@ txgbe_dev_interrupt_action(struct rte_eth_dev *dev,
 	}
 
 	if (intr->flags & TXGBE_FLAG_PHY_INTERRUPT) {
-		hw->phy.handle_lasi(hw);
+		txgbe_dev_sfp_event(dev);
 		intr->flags &= ~TXGBE_FLAG_PHY_INTERRUPT;
 	}
 
@@ -3205,6 +3301,11 @@ txgbe_dev_interrupt_action(struct rte_eth_dev *dev,
 			/* only disable all misc interrupts */
 			intr->mask &= ~(1ULL << TXGBE_MISC_VEC_ID);
 		}
+	}
+
+	if (intr->flags & TXGBE_FLAG_OVERHEAT) {
+		txgbe_dev_overheat(dev);
+		intr->flags &= ~TXGBE_FLAG_OVERHEAT;
 	}
 
 	PMD_DRV_LOG(DEBUG, "enable intr immediately");
@@ -3401,6 +3502,7 @@ txgbe_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	hw->fc.low_water[0]   = fc_conf->low_water;
 	hw->fc.send_xon       = fc_conf->send_xon;
 	hw->fc.disable_fc_autoneg = !fc_conf->autoneg;
+	hw->fc.mac_ctrl_frame_fwd = fc_conf->mac_ctrl_frame_fwd;
 
 	err = txgbe_fc_enable(hw);
 

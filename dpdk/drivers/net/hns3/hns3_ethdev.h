@@ -28,9 +28,7 @@
 #define HNS3_DEV_ID_25GE_RDMA			0xA222
 #define HNS3_DEV_ID_50GE_RDMA			0xA224
 #define HNS3_DEV_ID_100G_RDMA_MACSEC		0xA226
-#define HNS3_DEV_ID_100G_ROH	                0xA227
 #define HNS3_DEV_ID_200G_RDMA			0xA228
-#define HNS3_DEV_ID_200G_ROH	                0xA22C
 #define HNS3_DEV_ID_100G_VF			0xA22E
 #define HNS3_DEV_ID_100G_RDMA_PFC_VF		0xA22F
 
@@ -55,6 +53,10 @@
 
 #define HNS3_SPECIAL_PORT_SW_CKSUM_MODE         0
 #define HNS3_SPECIAL_PORT_HW_CKSUM_MODE         1
+
+#define HNS3_STRIP_CRC_PTYPE_NONE         0
+#define HNS3_STRIP_CRC_PTYPE_TCP          1
+#define HNS3_STRIP_CRC_PTYPE_IP           2
 
 #define HNS3_UC_MACADDR_NUM		128
 #define HNS3_VF_UC_MACADDR_NUM		48
@@ -216,6 +218,8 @@ struct hns3_mac {
 	uint32_t advertising;     /* advertised capability in the local part */
 	uint32_t lp_advertising; /* advertised capability in the link partner */
 	uint8_t support_autoneg;
+	/* current supported fec modes. see HNS3_FIBER_FEC_XXX_BIT */
+	uint32_t fec_capa;
 };
 
 struct hns3_fake_queue_data {
@@ -655,6 +659,25 @@ struct hns3_hw {
 	 */
 	uint8_t udp_cksum_mode;
 
+	/*
+	 * When KEEP_CRC offload is enabled, the CRC data of some type packets
+	 * whose length is less than or equal to HNS3_KEEP_CRC_OK_MIN_PKT_LEN
+	 * is still be stripped on some network engine. So here has to use this
+	 * field to distinguish the difference between different network engines.
+	 * value range:
+	 *  - HNS3_STRIP_CRC_PTYPE_TCP
+	 *     This value for HIP08 network engine.
+	 *     Indicates that only the IP-TCP packet type is stripped.
+	 *
+	 *  - HNS3_STRIP_CRC_PTYPE_IP
+	 *     This value for HIP09 network engine.
+	 *     Indicates that all IP packet types are stripped.
+	 *
+	 *  - HNS3_STRIP_CRC_PTYPE_NONE
+	 *     Indicates that all packet types are not stripped.
+	 */
+	uint8_t strip_crc_ptype;
+
 	struct hns3_port_base_vlan_config port_base_vlan_cfg;
 
 	pthread_mutex_t flows_lock; /* rte_flow ops lock */
@@ -889,11 +912,13 @@ enum hns3_dev_cap {
 	HNS3_DEV_SUPPORT_TX_PUSH_B,
 	HNS3_DEV_SUPPORT_INDEP_TXRX_B,
 	HNS3_DEV_SUPPORT_STASH_B,
+	HNS3_DEV_SUPPORT_SIMPLE_BD_B,
 	HNS3_DEV_SUPPORT_RXD_ADV_LAYOUT_B,
 	HNS3_DEV_SUPPORT_OUTER_UDP_CKSUM_B,
 	HNS3_DEV_SUPPORT_RAS_IMP_B,
 	HNS3_DEV_SUPPORT_TM_B,
 	HNS3_DEV_SUPPORT_VF_VLAN_FLT_MOD_B,
+	HNS3_DEV_SUPPORT_FC_AUTO_B,
 	HNS3_DEV_SUPPORT_GRO_B,
 };
 
@@ -1043,6 +1068,7 @@ void hns3vf_update_push_lsc_cap(struct hns3_hw *hw, bool supported);
 void hns3_clear_reset_event(struct hns3_hw *hw);
 void hns3vf_clear_reset_event(struct hns3_hw *hw);
 
+const char *hns3_get_media_type_name(uint8_t media_type);
 
 static inline bool
 is_reset_pending(struct hns3_adapter *hns)

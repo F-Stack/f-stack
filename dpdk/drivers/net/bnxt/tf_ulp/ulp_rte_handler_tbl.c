@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -38,8 +38,8 @@ struct bnxt_ulp_rte_act_info ulp_act_info[] = {
 	.proto_act_func          = NULL
 	},
 	[RTE_FLOW_ACTION_TYPE_QUEUE] = {
-	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
-	.proto_act_func          = NULL
+	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
+	.proto_act_func          = ulp_rte_queue_act_handler
 	},
 	[RTE_FLOW_ACTION_TYPE_DROP] = {
 	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
@@ -66,8 +66,8 @@ struct bnxt_ulp_rte_act_info ulp_act_info[] = {
 	.proto_act_func          = ulp_rte_port_act_handler
 	},
 	[RTE_FLOW_ACTION_TYPE_METER] = {
-	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
-	.proto_act_func          = NULL
+	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
+	.proto_act_func          = ulp_rte_meter_act_handler
 	},
 	[RTE_FLOW_ACTION_TYPE_SECURITY] = {
 	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
@@ -162,12 +162,12 @@ struct bnxt_ulp_rte_act_info ulp_act_info[] = {
 	.proto_act_func          = NULL
 	},
 	[RTE_FLOW_ACTION_TYPE_SET_MAC_SRC] = {
-	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
-	.proto_act_func          = NULL
+	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
+	.proto_act_func          = ulp_rte_set_mac_src_act_handler
 	},
 	[RTE_FLOW_ACTION_TYPE_SET_MAC_DST] = {
-	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
-	.proto_act_func          = NULL
+	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
+	.proto_act_func          = ulp_rte_set_mac_dst_act_handler
 	},
 	[RTE_FLOW_ACTION_TYPE_INC_TCP_SEQ] = {
 	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
@@ -197,6 +197,14 @@ struct bnxt_ulp_rte_act_info ulp_act_info[] = {
 	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
 	.proto_act_func          = ulp_rte_port_act_handler
 	},
+	[RTE_FLOW_ACTION_TYPE_INDIRECT] = {
+	.act_type                = BNXT_ULP_ACT_TYPE_SUPPORTED,
+	.proto_act_func          = ulp_rte_action_hdlr_handler
+	},
+	[RTE_FLOW_ACTION_TYPE_INDIRECT + 1] = {
+	.act_type                = BNXT_ULP_ACT_TYPE_NOT_SUPPORTED,
+	.proto_act_func          = NULL
+	}
 };
 
 struct bnxt_ulp_rte_act_info ulp_vendor_act_info[] = {
@@ -399,6 +407,10 @@ struct bnxt_ulp_rte_hdr_info ulp_hdr_info[] = {
 	[RTE_FLOW_ITEM_TYPE_HIGIG2] = {
 	.hdr_type                = BNXT_ULP_HDR_TYPE_NOT_SUPPORTED,
 	.proto_hdr_func          = NULL
+	},
+	[RTE_FLOW_ITEM_TYPE_ECPRI] = {
+	.hdr_type                = BNXT_ULP_HDR_TYPE_SUPPORTED,
+	.proto_hdr_func          = ulp_rte_ecpri_hdr_handler
 	},
 	[RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR] = {
 	.hdr_type                = BNXT_ULP_HDR_TYPE_SUPPORTED,

@@ -16,9 +16,6 @@
 #define DPI_REG_DUMP	0x3
 #define DPI_GET_REG_CFG 0x4
 
-#define DPI_CMD_QUEUE_SIZE 4096
-#define DPI_CMD_QUEUE_BUFS 1024
-
 typedef union dpi_mbox_msg_t {
 	uint64_t u[2];
 	struct dpi_mbox_message_s {
@@ -27,7 +24,7 @@ typedef union dpi_mbox_msg_t {
 		/* Command code */
 		uint64_t cmd : 4;
 		/* Command buffer size in 8-byte words */
-		uint64_t csize : 14;
+		uint64_t csize : 16;
 		/* aura of the command buffer */
 		uint64_t aura : 20;
 		/* SSO PF function */

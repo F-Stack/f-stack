@@ -61,9 +61,12 @@ static const struct model_db {
 } model_db[] = {
 	{VENDOR_ARM, PART_106xx, 0, 0, ROC_MODEL_CN106xx_A0, "cn10ka_a0"},
 	{VENDOR_ARM, PART_106xx, 0, 1, ROC_MODEL_CN106xx_A1, "cn10ka_a1"},
+	{VENDOR_ARM, PART_106xx, 1, 0, ROC_MODEL_CN106xx_B0, "cn10ka_b0"},
 	{VENDOR_ARM, PART_105xx, 0, 0, ROC_MODEL_CNF105xx_A0, "cnf10ka_a0"},
+	{VENDOR_ARM, PART_105xx, 0, 1, ROC_MODEL_CNF105xx_A1, "cnf10ka_a1"},
 	{VENDOR_ARM, PART_103xx, 0, 0, ROC_MODEL_CN103xx_A0, "cn10kb_a0"},
 	{VENDOR_ARM, PART_105xxN, 0, 0, ROC_MODEL_CNF105xxN_A0, "cnf10kb_a0"},
+	{VENDOR_ARM, PART_105xxN, 1, 0, ROC_MODEL_CNF105xxN_B0, "cnf10kb_b0"},
 	{VENDOR_CAVIUM, PART_98xx, 0, 0, ROC_MODEL_CN98xx_A0, "cn98xx_a0"},
 	{VENDOR_CAVIUM, PART_98xx, 0, 1, ROC_MODEL_CN98xx_A1, "cn98xx_a1"},
 	{VENDOR_CAVIUM, PART_96xx, 0, 0, ROC_MODEL_CN96xx_A0, "cn96xx_a0"},
@@ -145,11 +148,12 @@ cn10k_part_pass_get(uint32_t *part, uint32_t *pass)
 #define SYSFS_PCI_DEVICES "/sys/bus/pci/devices"
 	char dirname[PATH_MAX];
 	struct dirent *e;
+	int ret = -1;
 	DIR *dir;
 
 	dir = opendir(SYSFS_PCI_DEVICES);
 	if (dir == NULL) {
-		plt_err("%s(): opendir failed: %s\n", __func__,
+		plt_err("%s(): opendir failed: %s", __func__,
 			strerror(errno));
 		return -errno;
 	}
@@ -162,18 +166,19 @@ cn10k_part_pass_get(uint32_t *part, uint32_t *pass)
 			 e->d_name);
 
 		/* Lookup for rvu device and get part pass information */
-		if (!rvu_device_lookup(dirname, part, pass))
+		ret = rvu_device_lookup(dirname, part, pass);
+		if (!ret)
 			break;
 	}
 
 	closedir(dir);
-	return 0;
+	return ret;
 }
 
 static bool
 populate_model(struct roc_model *model, uint32_t midr)
 {
-	uint32_t impl, major, part, minor, pass;
+	uint32_t impl, major, part, minor, pass = 0;
 	bool found = false;
 	size_t i;
 

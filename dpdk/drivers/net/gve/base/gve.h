@@ -7,9 +7,7 @@
 #define _GVE_H_
 
 #include "gve_desc.h"
-
-#define GVE_VERSION		"1.3.0"
-#define GVE_VERSION_PREFIX	"GVE-"
+#include "gve_desc_dqo.h"
 
 #ifndef GOOGLE_VENDOR_ID
 #define GOOGLE_VENDOR_ID	0x1ae0

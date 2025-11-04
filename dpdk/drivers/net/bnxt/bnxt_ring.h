@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -142,5 +142,4 @@ static inline void bnxt_db_cq(struct bnxt_cp_ring_info *cpr)
 		B_CP_DIS_DB(cpr, cp_raw_cons);
 	}
 }
-
 #endif

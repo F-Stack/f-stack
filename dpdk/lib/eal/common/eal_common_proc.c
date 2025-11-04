@@ -26,14 +26,15 @@
 #include <rte_errno.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
+#include <rte_thread.h>
 
 #include "eal_memcfg.h"
 #include "eal_private.h"
 #include "eal_filesystem.h"
 #include "eal_internal_cfg.h"
 
-static int mp_fd = -1;
-static pthread_t mp_handle_tid;
+static RTE_ATOMIC(int) mp_fd = -1;
+static rte_thread_t mp_handle_tid;
 static char mp_filter[PATH_MAX];   /* Filter for secondary process sockets */
 static char mp_dir_path[PATH_MAX]; /* The directory path for all mp sockets */
 static pthread_mutex_t mp_mutex_action = PTHREAD_MUTEX_INITIALIZER;
@@ -80,7 +81,6 @@ struct pending_request {
 	struct rte_mp_msg *request;
 	struct rte_mp_msg *reply;
 	int reply_received;
-	RTE_STD_C11
 	union {
 		struct {
 			struct async_request_param *param;
@@ -397,14 +397,14 @@ process_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
 	}
 }
 
-static void *
+static uint32_t
 mp_handle(void *arg __rte_unused)
 {
 	struct mp_msg_internal msg;
 	struct sockaddr_un sa;
 	int fd;
 
-	while ((fd = __atomic_load_n(&mp_fd, __ATOMIC_RELAXED)) >= 0) {
+	while ((fd = rte_atomic_load_explicit(&mp_fd, rte_memory_order_relaxed)) >= 0) {
 		int ret;
 
 		ret = read_msg(fd, &msg, &sa);
@@ -414,7 +414,7 @@ mp_handle(void *arg __rte_unused)
 		process_msg(&msg, &sa);
 	}
 
-	return NULL;
+	return 0;
 }
 
 static int
@@ -647,12 +647,12 @@ rte_mp_channel_init(void)
 		return -1;
 	}
 
-	if (rte_ctrl_thread_create(&mp_handle_tid, "rte_mp_handle",
-			NULL, mp_handle, NULL) < 0) {
+	if (rte_thread_create_internal_control(&mp_handle_tid, "mp-msg",
+			mp_handle, NULL) < 0) {
 		RTE_LOG(ERR, EAL, "failed to create mp thread: %s\n",
 			strerror(errno));
 		close(dir_fd);
-		close(__atomic_exchange_n(&mp_fd, -1, __ATOMIC_RELAXED));
+		close(rte_atomic_exchange_explicit(&mp_fd, -1, rte_memory_order_relaxed));
 		return -1;
 	}
 
@@ -668,12 +668,12 @@ rte_mp_channel_cleanup(void)
 {
 	int fd;
 
-	fd = __atomic_exchange_n(&mp_fd, -1, __ATOMIC_RELAXED);
+	fd = rte_atomic_exchange_explicit(&mp_fd, -1, rte_memory_order_relaxed);
 	if (fd < 0)
 		return;
 
-	pthread_cancel(mp_handle_tid);
-	pthread_join(mp_handle_tid, NULL);
+	pthread_cancel((pthread_t)mp_handle_tid.opaque_id);
+	rte_thread_join(mp_handle_tid, NULL);
 	close_socket_fd(fd);
 }
 
@@ -681,7 +681,6 @@ rte_mp_channel_cleanup(void)
  * Return -1, as fail to send message and it's caused by the local side.
  * Return 0, as fail to send message and it's caused by the remote side.
  * Return 1, as succeed to send message.
- *
  */
 static int
 send_msg(const char *dst_path, struct rte_mp_msg *msg, int type)
@@ -1283,11 +1282,11 @@ set_mp_status(enum mp_status status)
 
 	expected = MP_STATUS_UNKNOWN;
 	desired = status;
-	if (__atomic_compare_exchange_n(&mcfg->mp_status, &expected, desired,
-			false, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+	if (rte_atomic_compare_exchange_strong_explicit(&mcfg->mp_status, &expected, desired,
+			rte_memory_order_relaxed, rte_memory_order_relaxed))
 		return true;
 
-	return __atomic_load_n(&mcfg->mp_status, __ATOMIC_RELAXED) == desired;
+	return rte_atomic_load_explicit(&mcfg->mp_status, rte_memory_order_relaxed) == desired;
 }
 
 bool

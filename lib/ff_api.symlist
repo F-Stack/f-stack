@@ -21,6 +21,7 @@ ff_fcntl
 ff_socketpair
 ff_poll
 ff_accept
+ff_accept4
 ff_listen
 ff_bind
 ff_connect
@@ -63,3 +64,17 @@ ff_pthread_create
 ff_pthread_join
 pcurthread
 ff_dpdk_raw_packet_send
+ff_swi_net_excute
+ff_adapt_user_thread_add
+ff_adapt_user_thread_exit
+ff_switch_curthread
+ff_restore_curthread
+ff_rss_tbl_init
+ff_veth_get_softc
+ff_veth_free_softc
+ff_openlog_stream
+ff_log_set_global_level
+ff_log_set_level
+ff_log
+ff_vlog
+ff_log_clse

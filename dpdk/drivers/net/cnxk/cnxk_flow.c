@@ -58,7 +58,11 @@ const struct cnxk_rte_flow_term_info term[] = {
 	[RTE_FLOW_ITEM_TYPE_RAW] = {ROC_NPC_ITEM_TYPE_RAW,
 				    sizeof(struct rte_flow_item_raw)},
 	[RTE_FLOW_ITEM_TYPE_MARK] = {ROC_NPC_ITEM_TYPE_MARK,
-				     sizeof(struct rte_flow_item_mark)}};
+				     sizeof(struct rte_flow_item_mark)},
+	[RTE_FLOW_ITEM_TYPE_IPV6_ROUTING_EXT] = {ROC_NPC_ITEM_TYPE_IPV6_ROUTING_EXT,
+				     sizeof(struct rte_flow_item_ipv6_routing_ext)},
+	[RTE_FLOW_ITEM_TYPE_TX_QUEUE] = {ROC_NPC_ITEM_TYPE_TX_QUEUE,
+				     sizeof(struct rte_flow_item_tx_queue)}};
 
 static int
 npc_rss_action_validate(struct rte_eth_dev *eth_dev,
@@ -115,14 +119,13 @@ npc_rss_flowkey_get(struct cnxk_eth_dev *eth_dev, const struct roc_npc_action *r
 
 static int
 cnxk_map_actions(struct rte_eth_dev *eth_dev, const struct rte_flow_attr *attr,
-		 const struct rte_flow_action actions[],
-		 struct roc_npc_action in_actions[], uint32_t *flowkey_cfg)
+		 const struct rte_flow_action actions[], struct roc_npc_action in_actions[],
+		 uint32_t *flowkey_cfg, uint16_t *dst_pf_func)
 {
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
 	const struct rte_flow_action_queue *act_q = NULL;
 	const struct rte_flow_action_ethdev *act_ethdev;
 	const struct rte_flow_action_port_id *port_act;
-	struct roc_npc *roc_npc_src = &dev->npc;
 	struct rte_eth_dev *portid_eth_dev;
 	char if_name[RTE_ETH_NAME_MAX_LEN];
 	struct cnxk_eth_dev *hw_dst;
@@ -190,12 +193,7 @@ cnxk_map_actions(struct rte_eth_dev *eth_dev, const struct rte_flow_attr *attr,
 			}
 			hw_dst = portid_eth_dev->data->dev_private;
 			roc_npc_dst = &hw_dst->npc;
-
-			rc = roc_npc_validate_portid_action(roc_npc_src,
-							    roc_npc_dst);
-
-			if (rc)
-				goto err_exit;
+			*dst_pf_func = roc_npc_dst->pf_func;
 			break;
 
 		case RTE_FLOW_ACTION_TYPE_QUEUE:
@@ -239,6 +237,10 @@ cnxk_map_actions(struct rte_eth_dev *eth_dev, const struct rte_flow_attr *attr,
 			in_actions[i].type = ROC_NPC_ACTION_TYPE_METER;
 			in_actions[i].conf = actions->conf;
 			break;
+		case RTE_FLOW_ACTION_TYPE_AGE:
+			in_actions[i].type = ROC_NPC_ACTION_TYPE_AGE;
+			in_actions[i].conf = actions->conf;
+			break;
 		default:
 			plt_npc_dbg("Action is not supported = %d",
 				    actions->type);
@@ -262,13 +264,10 @@ err_exit:
 }
 
 static int
-cnxk_map_flow_data(struct rte_eth_dev *eth_dev,
-		   const struct rte_flow_attr *attr,
-		   const struct rte_flow_item pattern[],
-		   const struct rte_flow_action actions[],
-		   struct roc_npc_attr *in_attr,
-		   struct roc_npc_item_info in_pattern[],
-		   struct roc_npc_action in_actions[], uint32_t *flowkey_cfg)
+cnxk_map_flow_data(struct rte_eth_dev *eth_dev, const struct rte_flow_attr *attr,
+		   const struct rte_flow_item pattern[], const struct rte_flow_action actions[],
+		   struct roc_npc_attr *in_attr, struct roc_npc_item_info in_pattern[],
+		   struct roc_npc_action in_actions[], uint32_t *flowkey_cfg, uint16_t *dst_pf_func)
 {
 	int i = 0;
 
@@ -287,15 +286,12 @@ cnxk_map_flow_data(struct rte_eth_dev *eth_dev,
 	}
 	in_pattern[i].type = ROC_NPC_ITEM_TYPE_END;
 
-	return cnxk_map_actions(eth_dev, attr, actions, in_actions,
-				flowkey_cfg);
+	return cnxk_map_actions(eth_dev, attr, actions, in_actions, flowkey_cfg, dst_pf_func);
 }
 
 static int
-cnxk_flow_validate(struct rte_eth_dev *eth_dev,
-		   const struct rte_flow_attr *attr,
-		   const struct rte_flow_item pattern[],
-		   const struct rte_flow_action actions[],
+cnxk_flow_validate(struct rte_eth_dev *eth_dev, const struct rte_flow_attr *attr,
+		   const struct rte_flow_item pattern[], const struct rte_flow_action actions[],
 		   struct rte_flow_error *error)
 {
 	struct roc_npc_item_info in_pattern[ROC_NPC_ITEM_TYPE_END + 1];
@@ -305,15 +301,22 @@ cnxk_flow_validate(struct rte_eth_dev *eth_dev,
 	struct roc_npc_attr in_attr;
 	struct roc_npc_flow flow;
 	uint32_t flowkey_cfg = 0;
+	uint16_t dst_pf_func = 0;
 	int rc;
 
-	memset(&flow, 0, sizeof(flow));
+	/* Skip flow validation for MACsec. */
+	if (actions[0].type == RTE_FLOW_ACTION_TYPE_SECURITY &&
+	    cnxk_eth_macsec_sess_get_by_sess(dev, actions[0].conf) != NULL)
+		return 0;
 
-	rc = cnxk_map_flow_data(eth_dev, attr, pattern, actions, &in_attr,
-				in_pattern, in_actions, &flowkey_cfg);
+	memset(&flow, 0, sizeof(flow));
+	flow.is_validate = true;
+
+	rc = cnxk_map_flow_data(eth_dev, attr, pattern, actions, &in_attr, in_pattern, in_actions,
+				&flowkey_cfg, &dst_pf_func);
 	if (rc) {
-		rte_flow_error_set(error, 0, RTE_FLOW_ERROR_TYPE_ACTION_NUM,
-				   NULL, "Failed to map flow data");
+		rte_flow_error_set(error, 0, RTE_FLOW_ERROR_TYPE_ACTION_NUM, NULL,
+				   "Failed to map flow data");
 		return rc;
 	}
 
@@ -339,23 +342,21 @@ cnxk_flow_create(struct rte_eth_dev *eth_dev, const struct rte_flow_attr *attr,
 	struct roc_npc *npc = &dev->npc;
 	struct roc_npc_attr in_attr;
 	struct roc_npc_flow *flow;
+	uint16_t dst_pf_func = 0;
 	int errcode = 0;
 	int rc;
 
-	rc = cnxk_map_flow_data(eth_dev, attr, pattern, actions, &in_attr,
-				in_pattern, in_actions,
-				&npc->flowkey_cfg_state);
+	rc = cnxk_map_flow_data(eth_dev, attr, pattern, actions, &in_attr, in_pattern, in_actions,
+				&npc->flowkey_cfg_state, &dst_pf_func);
 	if (rc) {
-		rte_flow_error_set(error, 0, RTE_FLOW_ERROR_TYPE_ACTION_NUM,
-				   NULL, "Failed to map flow data");
+		rte_flow_error_set(error, 0, RTE_FLOW_ERROR_TYPE_ACTION_NUM, NULL,
+				   "Failed to map flow data");
 		return NULL;
 	}
 
-	flow = roc_npc_flow_create(npc, &in_attr, in_pattern, in_actions,
-				   &errcode);
+	flow = roc_npc_flow_create(npc, &in_attr, in_pattern, in_actions, dst_pf_func, &errcode);
 	if (errcode != 0) {
-		rte_flow_error_set(error, errcode, errcode, NULL,
-				   roc_error_msg_get(errcode));
+		rte_flow_error_set(error, errcode, errcode, NULL, roc_error_msg_get(errcode));
 		return NULL;
 	}
 
@@ -417,7 +418,10 @@ cnxk_flow_query(struct rte_eth_dev *eth_dev, struct rte_flow *flow,
 		goto err_exit;
 	}
 
-	rc = roc_npc_mcam_read_counter(npc, in_flow->ctr_id, &query->hits);
+	if (in_flow->use_pre_alloc)
+		rc = roc_npc_inl_mcam_read_counter(in_flow->ctr_id, &query->hits);
+	else
+		rc = roc_npc_mcam_read_counter(npc, in_flow->ctr_id, &query->hits);
 	if (rc != 0) {
 		errcode = EIO;
 		errmsg = "Error reading flow counter";
@@ -426,8 +430,12 @@ cnxk_flow_query(struct rte_eth_dev *eth_dev, struct rte_flow *flow,
 	query->hits_set = 1;
 	query->bytes_set = 0;
 
-	if (query->reset)
-		rc = roc_npc_mcam_clear_counter(npc, in_flow->ctr_id);
+	if (query->reset) {
+		if (in_flow->use_pre_alloc)
+			rc = roc_npc_inl_mcam_clear_counter(in_flow->ctr_id);
+		else
+			rc = roc_npc_mcam_clear_counter(npc, in_flow->ctr_id);
+	}
 	if (rc != 0) {
 		errcode = EIO;
 		errmsg = "Error clearing flow counter";
@@ -483,10 +491,54 @@ cnxk_flow_dev_dump(struct rte_eth_dev *eth_dev, struct rte_flow *flow,
 	return 0;
 }
 
+static int
+cnxk_flow_get_aged_flows(struct rte_eth_dev *eth_dev, void **context,
+			 uint32_t nb_contexts, struct rte_flow_error *err)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_npc *roc_npc = &dev->npc;
+	struct roc_npc_flow_age *flow_age;
+	uint32_t start_id;
+	uint32_t end_id;
+	int cnt = 0;
+	uint32_t sn;
+	uint32_t i;
+
+	RTE_SET_USED(err);
+
+	flow_age = &roc_npc->flow_age;
+
+	if (!flow_age->age_flow_refcnt)
+		return 0;
+
+	do {
+		sn = plt_seqcount_read_begin(&flow_age->seq_cnt);
+
+		if (nb_contexts == 0) {
+			cnt = flow_age->aged_flows_cnt;
+		} else {
+			start_id = flow_age->start_id;
+			end_id = flow_age->end_id;
+			for (i = start_id; i <= end_id; i++) {
+				if ((int)nb_contexts == cnt)
+					break;
+				if (plt_bitmap_get(flow_age->aged_flows, i)) {
+					context[cnt] =
+						roc_npc_aged_flow_ctx_get(roc_npc, i);
+					cnt++;
+				}
+			}
+		}
+	} while (plt_seqcount_read_retry(&flow_age->seq_cnt, sn));
+
+	return cnt;
+}
+
 struct rte_flow_ops cnxk_flow_ops = {
 	.validate = cnxk_flow_validate,
 	.flush = cnxk_flow_flush,
 	.query = cnxk_flow_query,
 	.isolate = cnxk_flow_isolate,
 	.dev_dump = cnxk_flow_dev_dump,
+	.get_aged_flows = cnxk_flow_get_aged_flows,
 };

@@ -25,6 +25,10 @@ sources = files(
         'roc_irq.c',
         'roc_ie_ot.c',
         'roc_mbox.c',
+        'roc_mcs.c',
+        'roc_mcs_sec_cfg.c',
+        'roc_mcs_stats.c',
+        'roc_ml.c',
         'roc_model.c',
         'roc_nix.c',
         'roc_nix_bpf.c',
@@ -52,6 +56,7 @@ sources = files(
         'roc_npa_irq.c',
         'roc_npa_type.c',
         'roc_npc.c',
+        'roc_npc_aging.c',
         'roc_npc_mcam.c',
         'roc_npc_mcam_dump.c',
         'roc_npc_parse.c',
@@ -86,4 +91,7 @@ sources += files('cnxk_telemetry_bphy.c',
 )
 
 deps += ['bus_pci', 'net', 'telemetry']
-pmd_supports_disable_iova_as_pa = true
+
+require_iova_in_mbuf = false
+
+annotate_locks = false

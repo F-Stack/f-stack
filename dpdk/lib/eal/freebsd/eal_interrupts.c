@@ -8,12 +8,12 @@
 #include <sys/queue.h>
 #include <unistd.h>
 
+#include <eal_trace_internal.h>
 #include <rte_errno.h>
 #include <rte_lcore.h>
 #include <rte_spinlock.h>
 #include <rte_common.h>
 #include <rte_interrupts.h>
-#include <rte_eal_trace.h>
 
 #include "eal_private.h"
 #include "eal_alarm_private.h"
@@ -52,7 +52,7 @@ static rte_spinlock_t intr_lock = RTE_SPINLOCK_INITIALIZER;
 static struct rte_intr_source_list intr_sources;
 
 /* interrupt handling thread */
-static pthread_t intr_thread;
+static rte_thread_t intr_thread;
 
 static volatile int kq = -1;
 
@@ -591,7 +591,7 @@ eal_intr_process_interrupts(struct kevent *events, int nfds)
 	}
 }
 
-static void *
+static uint32_t
 eal_intr_thread_main(void *arg __rte_unused)
 {
 	struct kevent events[MAX_INTR_EVENTS];
@@ -619,7 +619,7 @@ eal_intr_thread_main(void *arg __rte_unused)
 	}
 	close(kq);
 	kq = -1;
-	return NULL;
+	return 0;
 }
 
 int
@@ -637,7 +637,7 @@ rte_eal_intr_init(void)
 	}
 
 	/* create the host thread to wait/handle the interrupt */
-	ret = rte_ctrl_thread_create(&intr_thread, "eal-intr-thread", NULL,
+	ret = rte_thread_create_internal_control(&intr_thread, "intr",
 			eal_intr_thread_main, NULL);
 	if (ret != 0) {
 		rte_errno = -ret;
@@ -746,5 +746,5 @@ rte_intr_free_epoll_fd(struct rte_intr_handle *intr_handle)
 
 int rte_thread_is_intr(void)
 {
-	return pthread_equal(intr_thread, pthread_self());
+	return rte_thread_equal(intr_thread, rte_thread_self());
 }

@@ -16,8 +16,8 @@ $ git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
 # compile dpdk
 $ cd /data/f-stack/dpdk
-# re-enable kni now, to remove kni later
-$ meson -Denable_kmods=true -Ddisable_libs=flow_classify build
+# igb_uio is about 5% more efficient than vfio-pci, so continue using it.
+$ meson -Denable_kmods=true build
 $ ninja -C build
 $ ninja -C build install
 

@@ -661,11 +661,17 @@ in_pcbbind(struct inpcb *inp, struct sockaddr *nam, struct ucred *cred)
 	    &inp->inp_lport, cred);
 	if (error)
 		return (error);
+#ifdef FSTACK
+	if (inp->inp_lport != 0) {
+#endif
 	if (in_pcbinshash(inp) != 0) {
 		inp->inp_laddr.s_addr = INADDR_ANY;
 		inp->inp_lport = 0;
 		return (EAGAIN);
 	}
+#ifdef FSTACK
+	}
+#endif
 	if (anonport)
 		inp->inp_flags |= INP_ANONPORT;
 	return (0);
@@ -693,6 +699,17 @@ in_pcb_lport_dest(struct inpcb *inp, struct sockaddr *lsa, u_short *lportp,
 #endif
 #ifdef INET6
 	struct in6_addr *laddr6 = NULL, *faddr6 = NULL;
+#endif
+#ifdef FSTACK
+	u_short rss_first, rss_last, *rss_portrange;
+	/* 0:not init, 1:init successed, -1:init failed */
+	static int rss_tbl_init = 0;
+	int rss_check_flag = lookupflags & INPLOOKUP_LPORT_RSS_CHECK;
+	int rss_ret, rss_port_idx, rss_match = 0;
+	struct ifaddr *ifa;
+	struct ifnet *ifp;
+
+	lookupflags = lookupflags & (~INPLOOKUP_LPORT_RSS_CHECK);
 #endif
 
 	pcbinfo = inp->inp_pcbinfo;
@@ -774,20 +791,81 @@ in_pcb_lport_dest(struct inpcb *inp, struct sockaddr *lsa, u_short *lportp,
 	tmpinp = NULL;
 	lport = *lportp;
 
+#ifdef FSTACK
+	if (rss_check_flag) {
+		if (rss_tbl_init == 0) {
+			rss_ret = ff_rss_tbl_set_portrange(first, last);
+			if (rss_ret < 0)
+				rss_tbl_init = -1;
+			else
+				rss_tbl_init = 1;
+		}
+
+		if (rss_tbl_init == 1) {
+			rss_ret = ff_rss_tbl_get_portrange(faddr.s_addr, laddr.s_addr, fport,
+			    &rss_first, &rss_last, &rss_portrange);
+			if (rss_ret < 0) {
+				if (rss_ret != -ENOENT)
+					rss_tbl_init = -1;
+			} else {
+				/* [0] store last port idx */
+				rss_match = 1;
+				count = rss_last - rss_first + 1;
+				if (dorandom)
+					rss_portrange[0] = rss_first + (arc4random() % (count));
+			}
+		}
+
+		if (!rss_match) {
+			lsa->sa_len = sizeof(struct sockaddr_in);
+			ifa = ifa_ifwithnet(lsa, 0, RT_ALL_FIBS);
+			if (ifa == NULL) {
+				fsa->sa_len = sizeof(struct sockaddr_in);
+				ifa = ifa_ifwithnet(fsa, 0, RT_ALL_FIBS);
+				if ( ifa == NULL )
+					return (EADDRNOTAVAIL);
+			}
+			ifp = ifa->ifa_ifp;
+		}
+	}
+
+	if (!rss_check_flag || !rss_match) {
+#endif
 	if (dorandom)
 		*lastport = first + (arc4random() % (last - first));
 
 	count = last - first;
+#ifdef FSTACK
+	}
+#endif
 
 	do {
 		if (count-- < 0)	/* completely used? */
 			return (EADDRNOTAVAIL);
+#ifdef FSTACK
+		if (rss_check_flag && rss_match) {
+			rss_portrange[0]++;
+			if (rss_portrange[0] < rss_first || rss_portrange[0] > rss_last)
+			    rss_portrange[0] = rss_first;
+			*lastport = rss_portrange[rss_portrange[0]];
+		}
+
+		if (!rss_check_flag || !rss_match) {
+#endif
 		++*lastport;
 		if (*lastport < first || *lastport > last)
 			*lastport = first;
+#ifdef FSTACK
+		}
+#endif
 		lport = htons(*lastport);
 
-		if (fsa != NULL) {
+#ifdef FSTACK
+		if (!rss_check_flag && fsa != NULL)
+#else
+		if (fsa != NULL)
+#endif
+		{
 #ifdef INET
 			if (lsa->sa_family == AF_INET) {
 				tmpinp = in_pcblookup_hash_locked(pcbinfo,
@@ -812,8 +890,26 @@ in_pcb_lport_dest(struct inpcb *inp, struct sockaddr *lsa, u_short *lportp,
 			else
 #endif
 #ifdef INET
+			{
 				tmpinp = in_pcblookup_local(pcbinfo, laddr,
 				    lport, lookupflags, cred);
+#ifdef FSTACK
+				if (rss_check_flag && !rss_match && tmpinp == NULL) {
+					int rss;
+					/* Note:
+					 * LOOPBACK not support rss.
+					 */
+					if ((ifp->if_softc == NULL) && (ifp->if_flags & IFF_LOOPBACK))
+						break;
+					rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
+					    fport, lport);
+					if (rss)
+						break;
+					else
+						tmpinp++; /* Set not NULL to find another lport */
+				}
+#endif
+			}
 #endif
 		}
 	} while (tmpinp != NULL);
@@ -1062,11 +1158,13 @@ in_pcbbind_setup(struct inpcb *inp, struct sockaddr *nam, in_addr_t *laddrp,
 	}
 	if (*lportp != 0)
 		lport = *lportp;
+#ifndef FSTACK
 	if (lport == 0) {
 		error = in_pcb_lport(inp, &laddr, &lport, cred, lookupflags);
 		if (error != 0)
 			return (error);
 	}
+#endif
 	*laddrp = laddr.s_addr;
 	*lportp = lport;
 	return (0);
@@ -1475,9 +1573,7 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			return (EADDRINUSE);
 		}
 	} else {
-#ifndef FSTACK
 		struct sockaddr_in lsin, fsin;
-
 		bzero(&lsin, sizeof(lsin));
 		bzero(&fsin, sizeof(fsin));
 		lsin.sin_family = AF_INET;
@@ -1486,48 +1582,13 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 		fsin.sin_addr = faddr;
 		error = in_pcb_lport_dest(inp, (struct sockaddr *) &lsin,
 		    &lport, (struct sockaddr *)& fsin, fport, cred,
+#ifndef FSTACK
 		    INPLOOKUP_WILDCARD);
+#else
+		    INPLOOKUP_WILDCARD | INPLOOKUP_LPORT_RSS_CHECK);
+#endif
 		if (error)
 			return (error);
-#else
-		struct ifaddr *ifa;
-		struct ifnet *ifp;
-		struct sockaddr_in ifp_sin;
-		unsigned loop_count = 0;
-		bzero(&ifp_sin, sizeof(ifp_sin));
-		ifp_sin.sin_addr.s_addr = laddr.s_addr;
-		ifp_sin.sin_family = AF_INET;
-		ifp_sin.sin_len = sizeof(ifp_sin);
-		ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
-		if (ifa == NULL) {
-			ifp_sin.sin_addr.s_addr = faddr.s_addr;
-			ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
-			if ( ifa == NULL )
-				return (EADDRNOTAVAIL);
-		}
-		ifp = ifa->ifa_ifp;
-		while (lport == 0) {
-			int rss;
-			error = in_pcbbind_setup(inp, NULL, &laddr.s_addr, &lport,
-			    cred);
-			if (error)
-				return (error);
-			rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
-			    fport, lport);
-			if (rss) {
-				break;
-			}
-			lport = 0;
-			/* Note:
-			 * if all ports are completely used, just return.
-			 * this ugly code is not a correct way, it just lets loop quit.
-			 * we will fix it as soon as possible.
-			*/
-			if (++loop_count >= 65535) {
-				return (EADDRNOTAVAIL);
-			}
-		}
-#endif
 	}
 	*laddrp = laddr.s_addr;
 	*lportp = lport;

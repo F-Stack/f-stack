@@ -24,18 +24,17 @@ enum {
 struct mlx5dr_pattern_cache {
 	/* Protect pattern list */
 	pthread_spinlock_t lock;
-	LIST_HEAD(pattern_head, mlx5dr_pat_cached_pattern) head;
+	LIST_HEAD(pattern_head, mlx5dr_pattern_cache_item) head;
 };
 
-struct mlx5dr_pat_cached_pattern {
-	enum mlx5dr_action_type type;
+struct mlx5dr_pattern_cache_item {
 	struct {
 		struct mlx5dr_devx_obj *pattern_obj;
 		uint8_t *data;
 		uint16_t num_of_actions;
 	} mh_data;
 	uint32_t refcount;
-	LIST_ENTRY(mlx5dr_pat_cached_pattern) next;
+	LIST_ENTRY(mlx5dr_pattern_cache_item) next;
 };
 
 enum mlx5dr_arg_chunk_size
@@ -52,17 +51,34 @@ int mlx5dr_pat_init_pattern_cache(struct mlx5dr_pattern_cache **cache);
 
 void mlx5dr_pat_uninit_pattern_cache(struct mlx5dr_pattern_cache *cache);
 
-int mlx5dr_pat_arg_create_modify_header(struct mlx5dr_context *ctx,
-					struct mlx5dr_action *action,
-					size_t pattern_sz,
-					__be64 pattern[],
-					uint32_t bulk_size);
+bool mlx5dr_pat_verify_actions(__be64 pattern[], size_t sz);
 
-void mlx5dr_pat_arg_destroy_modify_header(struct mlx5dr_context *ctx,
-					  struct mlx5dr_action *action);
+struct mlx5dr_devx_obj *
+mlx5dr_arg_create(struct mlx5dr_context *ctx,
+		  uint8_t *data,
+		  size_t data_sz,
+		  uint32_t log_bulk_sz,
+		  bool write_data);
+
+struct mlx5dr_devx_obj *
+mlx5dr_arg_create_modify_header_arg(struct mlx5dr_context *ctx,
+				    __be64 *data,
+				    uint8_t num_of_actions,
+				    uint32_t log_bulk_sz,
+				    bool write_data);
+
+struct mlx5dr_devx_obj *
+mlx5dr_pat_get_pattern(struct mlx5dr_context *ctx,
+		       __be64 *pattern,
+		       size_t pattern_sz);
+
+void mlx5dr_pat_put_pattern(struct mlx5dr_context *ctx,
+			    struct mlx5dr_devx_obj *pat_obj);
 
 bool mlx5dr_arg_is_valid_arg_request_size(struct mlx5dr_context *ctx,
 					  uint32_t arg_size);
+
+bool mlx5dr_pat_require_reparse(__be64 *actions, uint16_t num_of_actions);
 
 void mlx5dr_arg_write(struct mlx5dr_send_engine *queue,
 		      void *comp_data,

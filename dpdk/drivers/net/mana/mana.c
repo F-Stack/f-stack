@@ -6,11 +6,14 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_kvargs.h>
 #include <rte_eal_paging.h>
+#include <rte_pci.h>
 
 #include <infiniband/verbs.h>
 #include <infiniband/manadv.h>
@@ -20,9 +23,14 @@
 #include "mana.h"
 
 /* Shared memory between primary/secondary processes, per driver */
-/* Data to track primary/secondary usage */
 struct mana_shared_data *mana_shared_data;
-static struct mana_shared_data mana_local_data;
+
+/* Local data to track device instance usage for primary/secondary processes */
+static struct mana_local_data {
+	int init_done;
+	unsigned int primary_cnt;
+	unsigned int secondary_cnt;
+} mana_local_data;
 
 /* The memory region for the above data */
 static const struct rte_memzone *mana_shared_mz;
@@ -286,11 +294,12 @@ mana_dev_info_get(struct rte_eth_dev *dev,
 {
 	struct mana_priv *priv = dev->data->dev_private;
 
-	dev_info->max_mtu = RTE_ETHER_MTU;
+	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
+	dev_info->max_mtu = MANA_MAX_MTU;
 
 	/* RX params */
 	dev_info->min_rx_bufsize = MIN_RX_BUF_SIZE;
-	dev_info->max_rx_pktlen = MAX_FRAME_SIZE;
+	dev_info->max_rx_pktlen = MANA_MAX_MTU + RTE_ETHER_HDR_LEN;
 
 	dev_info->max_rx_queues = RTE_MIN(priv->max_rx_queues, UINT16_MAX);
 	dev_info->max_tx_queues = RTE_MIN(priv->max_tx_queues, UINT16_MAX);
@@ -704,6 +713,94 @@ mana_dev_stats_reset(struct rte_eth_dev *dev __rte_unused)
 	return 0;
 }
 
+static int
+mana_get_ifname(const struct mana_priv *priv, char (*ifname)[IF_NAMESIZE])
+{
+	int ret = -ENODEV;
+	DIR *dir;
+	struct dirent *dent;
+
+	MANA_MKSTR(dirpath, "%s/device/net", priv->ib_ctx->device->ibdev_path);
+
+	dir = opendir(dirpath);
+	if (dir == NULL)
+		return -ENODEV;
+
+	while ((dent = readdir(dir)) != NULL) {
+		char *name = dent->d_name;
+		FILE *file;
+		struct rte_ether_addr addr;
+		char *mac = NULL;
+
+		if ((name[0] == '.') &&
+		    ((name[1] == '\0') ||
+		     ((name[1] == '.') && (name[2] == '\0'))))
+			continue;
+
+		MANA_MKSTR(path, "%s/%s/address", dirpath, name);
+
+		file = fopen(path, "r");
+		if (!file) {
+			ret = -ENODEV;
+			break;
+		}
+
+		ret = fscanf(file, "%ms", &mac);
+		fclose(file);
+
+		if (ret <= 0) {
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = rte_ether_unformat_addr(mac, &addr);
+		free(mac);
+		if (ret)
+			break;
+
+		if (rte_is_same_ether_addr(&addr, priv->dev_data->mac_addrs)) {
+			strlcpy(*ifname, name, sizeof(*ifname));
+			ret = 0;
+			break;
+		}
+	}
+
+	closedir(dir);
+	return ret;
+}
+
+static int
+mana_ifreq(const struct mana_priv *priv, int req, struct ifreq *ifr)
+{
+	int sock, ret;
+
+	sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+	if (sock == -1)
+		return -errno;
+
+	ret = mana_get_ifname(priv, &ifr->ifr_name);
+	if (ret) {
+		close(sock);
+		return ret;
+	}
+
+	if (ioctl(sock, req, ifr) == -1)
+		ret = -errno;
+
+	close(sock);
+
+	return ret;
+}
+
+static int
+mana_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
+{
+	struct mana_priv *priv = dev->data->dev_private;
+	struct ifreq request = { .ifr_mtu = mtu, };
+
+	return mana_ifreq(priv, SIOCSIFMTU, &request);
+}
+
 static const struct eth_dev_ops mana_dev_ops = {
 	.dev_configure		= mana_dev_configure,
 	.dev_start		= mana_dev_start,
@@ -724,6 +821,7 @@ static const struct eth_dev_ops mana_dev_ops = {
 	.link_update		= mana_dev_link_update,
 	.stats_get		= mana_dev_stats_get,
 	.stats_reset		= mana_dev_stats_reset,
+	.mtu_set		= mana_mtu_set,
 };
 
 static const struct eth_dev_ops mana_dev_secondary_ops = {
@@ -826,7 +924,6 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 	DIR *dir;
 	struct dirent *dent;
 	unsigned int dev_port;
-	char mac[20];
 
 	MANA_MKSTR(path, "%s/device/net", device->ibdev_path);
 
@@ -836,6 +933,7 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 
 	while ((dent = readdir(dir))) {
 		char *name = dent->d_name;
+		char *mac = NULL;
 
 		MANA_MKSTR(port_path, "%s/%s/dev_port", path, name);
 
@@ -863,7 +961,7 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 			if (!file)
 				continue;
 
-			ret = fscanf(file, "%s", mac);
+			ret = fscanf(file, "%ms", &mac);
 			fclose(file);
 
 			if (ret < 0)
@@ -872,6 +970,8 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 			ret = rte_ether_unformat_addr(mac, addr);
 			if (ret)
 				DRV_LOG(ERR, "unrecognized mac addr %s", mac);
+
+			free(mac);
 			break;
 		}
 	}
@@ -1068,8 +1168,12 @@ mana_init_shared_data(void)
 	rte_spinlock_lock(&mana_shared_data_lock);
 
 	/* Skip if shared data is already initialized */
-	if (mana_shared_data)
+	if (mana_shared_data) {
+		DRV_LOG(INFO, "shared data is already initialized");
 		goto exit;
+	}
+
+	memset(&mana_local_data, 0, sizeof(mana_local_data));
 
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
 		mana_shared_mz = rte_memzone_reserve(MZ_MANA_SHARED_DATA,
@@ -1082,8 +1186,8 @@ mana_init_shared_data(void)
 		}
 
 		mana_shared_data = mana_shared_mz->addr;
-		memset(mana_shared_data, 0, sizeof(*mana_shared_data));
-		rte_spinlock_init(&mana_shared_data->lock);
+		rte_atomic_store_explicit(&mana_shared_data->secondary_cnt, 0,
+					  rte_memory_order_relaxed);
 	} else {
 		secondary_mz = rte_memzone_lookup(MZ_MANA_SHARED_DATA);
 		if (!secondary_mz) {
@@ -1093,7 +1197,6 @@ mana_init_shared_data(void)
 		}
 
 		mana_shared_data = secondary_mz->addr;
-		memset(&mana_local_data, 0, sizeof(mana_local_data));
 	}
 
 exit:
@@ -1114,11 +1217,11 @@ mana_init_once(void)
 	if (ret)
 		return ret;
 
-	rte_spinlock_lock(&mana_shared_data->lock);
+	rte_spinlock_lock(&mana_shared_data_lock);
 
 	switch (rte_eal_process_type()) {
 	case RTE_PROC_PRIMARY:
-		if (mana_shared_data->init_done)
+		if (mana_local_data.init_done)
 			break;
 
 		ret = mana_mp_init_primary();
@@ -1126,7 +1229,7 @@ mana_init_once(void)
 			break;
 		DRV_LOG(ERR, "MP INIT PRIMARY");
 
-		mana_shared_data->init_done = 1;
+		mana_local_data.init_done = 1;
 		break;
 
 	case RTE_PROC_SECONDARY:
@@ -1149,7 +1252,7 @@ mana_init_once(void)
 		break;
 	}
 
-	rte_spinlock_unlock(&mana_shared_data->lock);
+	rte_spinlock_unlock(&mana_shared_data_lock);
 
 	return ret;
 }
@@ -1219,11 +1322,6 @@ mana_probe_port(struct ibv_device *ibdev, struct ibv_device_attr_ex *dev_attr,
 
 		eth_dev->tx_pkt_burst = mana_tx_burst_removed;
 		eth_dev->rx_pkt_burst = mana_rx_burst_removed;
-
-		rte_spinlock_lock(&mana_shared_data->lock);
-		mana_shared_data->secondary_cnt++;
-		mana_local_data.secondary_cnt++;
-		rte_spinlock_unlock(&mana_shared_data->lock);
 
 		rte_eth_copy_pci_info(eth_dev, pci_dev);
 		rte_eth_dev_probing_finish(eth_dev);
@@ -1307,10 +1405,6 @@ mana_probe_port(struct ibv_device *ibdev, struct ibv_device_attr_ex *dev_attr,
 		goto failed;
 	}
 
-	rte_spinlock_lock(&mana_shared_data->lock);
-	mana_shared_data->primary_cnt++;
-	rte_spinlock_unlock(&mana_shared_data->lock);
-
 	eth_dev->device = &pci_dev->device;
 
 	DRV_LOG(INFO, "device %s at port %u", name, eth_dev->data->port_id);
@@ -1374,10 +1468,7 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 			continue;
 
 		/* Ignore if this IB device is not this PCI device */
-		if (pci_dev->addr.domain != pci_addr.domain ||
-		    pci_dev->addr.bus != pci_addr.bus ||
-		    pci_dev->addr.devid != pci_addr.devid ||
-		    pci_dev->addr.function != pci_addr.function)
+		if (rte_pci_addr_cmp(&pci_dev->addr, &pci_addr) != 0)
 			continue;
 
 		ctx = ibv_open_device(ibdev);
@@ -1393,6 +1484,20 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 			DRV_LOG(ERR, "Failed to query IB device %s",
 				ibdev->name);
 			continue;
+		}
+
+		if (dev_attr.orig_attr.vendor_part_id) {
+			if (dev_attr.orig_attr.vendor_part_id !=
+			    GDMA_DEVICE_MANA) {
+				DRV_LOG(INFO, "Skip device vendor part id %x",
+					dev_attr.orig_attr.vendor_part_id);
+				continue;
+			}
+			if (!dev_attr.raw_packet_caps) {
+				DRV_LOG(INFO,
+					"Skip device without RAW support");
+				continue;
+			}
 		}
 
 		for (port = 1; port <= dev_attr.orig_attr.phys_port_cnt;
@@ -1456,13 +1561,38 @@ mana_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		count = mana_pci_probe_mac(pci_dev, NULL);
 	}
 
+	/* If no device is found, clean up resources if this is the last one */
 	if (!count) {
-		rte_memzone_free(mana_shared_mz);
-		mana_shared_mz = NULL;
-		ret = -ENODEV;
+		rte_spinlock_lock(&mana_shared_data_lock);
+		if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+			if (!mana_local_data.primary_cnt) {
+				mana_mp_uninit_primary();
+				rte_memzone_free(mana_shared_mz);
+				mana_shared_mz = NULL;
+				mana_shared_data = NULL;
+			}
+		} else {
+			if (!mana_local_data.secondary_cnt) {
+				mana_mp_uninit_secondary();
+				mana_shared_data = NULL;
+			}
+		}
+		rte_spinlock_unlock(&mana_shared_data_lock);
+		return -ENODEV;
 	}
 
-	return ret;
+	/* At least one eth_dev is probed, increase counter for shared data */
+	rte_spinlock_lock(&mana_shared_data_lock);
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		mana_local_data.primary_cnt++;
+	} else {
+		rte_atomic_fetch_add_explicit(&mana_shared_data->secondary_cnt, 1,
+					      rte_memory_order_relaxed);
+		mana_local_data.secondary_cnt++;
+	}
+	rte_spinlock_unlock(&mana_shared_data_lock);
+
+	return 0;
 }
 
 static int
@@ -1477,45 +1607,36 @@ mana_dev_uninit(struct rte_eth_dev *dev)
 static int
 mana_pci_remove(struct rte_pci_device *pci_dev)
 {
+	rte_spinlock_lock(&mana_shared_data_lock);
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-		rte_spinlock_lock(&mana_shared_data_lock);
+		RTE_VERIFY(mana_local_data.primary_cnt > 0);
+		mana_local_data.primary_cnt--;
 
-		rte_spinlock_lock(&mana_shared_data->lock);
-
-		RTE_VERIFY(mana_shared_data->primary_cnt > 0);
-		mana_shared_data->primary_cnt--;
-		if (!mana_shared_data->primary_cnt) {
+		if (!mana_local_data.primary_cnt) {
 			DRV_LOG(DEBUG, "mp uninit primary");
 			mana_mp_uninit_primary();
-		}
 
-		rte_spinlock_unlock(&mana_shared_data->lock);
-
-		/* Also free the shared memory if this is the last */
-		if (!mana_shared_data->primary_cnt) {
+			/* Also free the shared memory if this is the last */
 			DRV_LOG(DEBUG, "free shared memezone data");
 			rte_memzone_free(mana_shared_mz);
 			mana_shared_mz = NULL;
+			mana_shared_data = NULL;
 		}
-
-		rte_spinlock_unlock(&mana_shared_data_lock);
 	} else {
-		rte_spinlock_lock(&mana_shared_data_lock);
-
-		rte_spinlock_lock(&mana_shared_data->lock);
-		RTE_VERIFY(mana_shared_data->secondary_cnt > 0);
-		mana_shared_data->secondary_cnt--;
-		rte_spinlock_unlock(&mana_shared_data->lock);
+		RTE_VERIFY(rte_atomic_load_explicit(&mana_shared_data->secondary_cnt,
+						    rte_memory_order_relaxed) > 0);
+		rte_atomic_fetch_sub_explicit(&mana_shared_data->secondary_cnt, 1,
+					      rte_memory_order_relaxed);
 
 		RTE_VERIFY(mana_local_data.secondary_cnt > 0);
 		mana_local_data.secondary_cnt--;
 		if (!mana_local_data.secondary_cnt) {
 			DRV_LOG(DEBUG, "mp uninit secondary");
 			mana_mp_uninit_secondary();
+			mana_shared_data = NULL;
 		}
-
-		rte_spinlock_unlock(&mana_shared_data_lock);
 	}
+	rte_spinlock_unlock(&mana_shared_data_lock);
 
 	return rte_eth_dev_pci_generic_remove(pci_dev, mana_dev_uninit);
 }

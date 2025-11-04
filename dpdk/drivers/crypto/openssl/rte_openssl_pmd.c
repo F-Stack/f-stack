@@ -2,6 +2,7 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_hexdump.h>
 #include <rte_cryptodev.h>
@@ -13,6 +14,7 @@
 #include <openssl/cmac.h>
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
+#include <openssl/ec.h>
 
 #include "openssl_pmd_private.h"
 #include "compat.h"
@@ -56,13 +58,13 @@ static void ossl_legacy_provider_load(void)
 	/* Load Multiple providers into the default (NULL) library context */
 	legacy = OSSL_PROVIDER_load(NULL, "legacy");
 	if (legacy == NULL) {
-		OPENSSL_LOG(ERR, "Failed to load Legacy provider\n");
+		OPENSSL_LOG(ERR, "Failed to load Legacy provider");
 		return;
 	}
 
 	deflt = OSSL_PROVIDER_load(NULL, "default");
 	if (deflt == NULL) {
-		OPENSSL_LOG(ERR, "Failed to load Default provider\n");
+		OPENSSL_LOG(ERR, "Failed to load Default provider");
 		OSSL_PROVIDER_unload(legacy);
 		return;
 	}
@@ -97,22 +99,6 @@ digest_name_get(enum rte_crypto_auth_algorithm algo)
 #endif
 
 static int cryptodev_openssl_remove(struct rte_vdev_device *vdev);
-
-/*----------------------------------------------------------------------------*/
-
-/**
- * Increment counter by 1
- * Counter is 64 bit array, big-endian
- */
-static void
-ctr_inc(uint8_t *ctr)
-{
-	uint64_t *ctr64 = (uint64_t *)ctr;
-
-	*ctr64 = __builtin_bswap64(*ctr64);
-	(*ctr64)++;
-	*ctr64 = __builtin_bswap64(*ctr64);
-}
 
 /*
  *------------------------------------------------------------------------------
@@ -691,7 +677,7 @@ openssl_set_session_auth_parameters(struct openssl_session *sess,
 		else
 			return -EINVAL;
 
-		rte_memcpy(algo_name, algo, strlen(algo) + 1);
+		strlcpy(algo_name, algo, sizeof(algo_name));
 		params[0] = OSSL_PARAM_construct_utf8_string(
 				OSSL_MAC_PARAM_CIPHER, algo_name, 0);
 		params[1] = OSSL_PARAM_construct_end();
@@ -1191,7 +1177,8 @@ static int
 process_openssl_cipher_des3ctr(struct rte_mbuf *mbuf_src, uint8_t *dst,
 		int offset, uint8_t *iv, int srclen, EVP_CIPHER_CTX *ctx)
 {
-	uint8_t ebuf[8], ctr[8];
+	uint8_t ebuf[8];
+	uint64_t ctr;
 	int unused, n;
 	struct rte_mbuf *m;
 	uint8_t *src;
@@ -1207,15 +1194,19 @@ process_openssl_cipher_des3ctr(struct rte_mbuf *mbuf_src, uint8_t *dst,
 	src = rte_pktmbuf_mtod_offset(m, uint8_t *, offset);
 	l = rte_pktmbuf_data_len(m) - offset;
 
-	memcpy(ctr, iv, 8);
+	memcpy(&ctr, iv, 8);
 
 	for (n = 0; n < srclen; n++) {
 		if (n % 8 == 0) {
+			uint64_t cpu_ctr;
+
 			if (EVP_EncryptUpdate(ctx,
 					(unsigned char *)&ebuf, &unused,
 					(const unsigned char *)&ctr, 8) <= 0)
 				goto process_cipher_des3ctr_err;
-			ctr_inc(ctr);
+			cpu_ctr = rte_be_to_cpu_64(ctr);
+			cpu_ctr++;
+			ctr = rte_cpu_to_be_64(cpu_ctr);
 		}
 		dst[n] = *(src++) ^ ebuf[n % 8];
 
@@ -1604,9 +1595,6 @@ process_openssl_auth_cmac(struct rte_mbuf *mbuf_src, uint8_t *dst, int offset,
 process_auth_final:
 	if (CMAC_Final(ctx, dst, (size_t *)&dstlen) != 1)
 		goto process_auth_err;
-
-	CMAC_CTX_cleanup(ctx);
-
 	return 0;
 
 process_auth_err:
@@ -2080,6 +2068,7 @@ process_openssl_dsa_sign_op_evp(struct rte_crypto_op *cop,
 	size_t outlen;
 	unsigned char *dsa_sign_data;
 	const unsigned char *dsa_sign_data_p;
+	int ret = -1;
 
 	cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	params = OSSL_PARAM_BLD_to_param(param_bld);
@@ -2121,7 +2110,7 @@ process_openssl_dsa_sign_op_evp(struct rte_crypto_op *cop,
 	dsa_sign_data_p = (const unsigned char *)dsa_sign_data;
 	DSA_SIG *sign = d2i_DSA_SIG(NULL, &dsa_sign_data_p, outlen);
 	if (!sign) {
-		OPENSSL_LOG(ERR, "%s:%d\n", __func__, __LINE__);
+		OPENSSL_LOG(ERR, "%s:%d", __func__, __LINE__);
 		OPENSSL_free(dsa_sign_data);
 		goto err_dsa_sign;
 	} else {
@@ -2133,19 +2122,17 @@ process_openssl_dsa_sign_op_evp(struct rte_crypto_op *cop,
 		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 	}
 
+	ret = 0;
 	DSA_SIG_free(sign);
 	OPENSSL_free(dsa_sign_data);
-	return 0;
 
 err_dsa_sign:
 	if (params)
 		OSSL_PARAM_free(params);
-	if (key_ctx)
-		EVP_PKEY_CTX_free(key_ctx);
-	if (dsa_ctx)
-		EVP_PKEY_CTX_free(dsa_ctx);
+	EVP_PKEY_CTX_free(key_ctx);
+	EVP_PKEY_CTX_free(dsa_ctx);
 	EVP_PKEY_free(pkey);
-	return -1;
+	return ret;
 }
 
 /* process dsa verify operation */
@@ -2168,7 +2155,7 @@ process_openssl_dsa_verify_op_evp(struct rte_crypto_op *cop,
 
 	cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	if (!param_bld) {
-		OPENSSL_LOG(ERR, " %s:%d\n", __func__, __LINE__);
+		OPENSSL_LOG(ERR, " %s:%d", __func__, __LINE__);
 		return -1;
 	}
 
@@ -2218,15 +2205,17 @@ process_openssl_dsa_verify_op_evp(struct rte_crypto_op *cop,
 		ret = 0;
 	}
 
+	OPENSSL_free(dsa_sig);
 err_dsa_verify:
 	if (sign)
 		DSA_SIG_free(sign);
 	if (params)
 		OSSL_PARAM_free(params);
-	if (key_ctx)
-		EVP_PKEY_CTX_free(key_ctx);
-	if (dsa_ctx)
-		EVP_PKEY_CTX_free(dsa_ctx);
+	EVP_PKEY_CTX_free(key_ctx);
+	EVP_PKEY_CTX_free(dsa_ctx);
+
+	BN_free(pub_key);
+	EVP_PKEY_free(pkey);
 
 	return ret;
 }
@@ -2244,7 +2233,7 @@ process_openssl_dsa_sign_op(struct rte_crypto_op *cop,
 			dsa);
 
 	if (sign == NULL) {
-		OPENSSL_LOG(ERR, "%s:%d\n", __func__, __LINE__);
+		OPENSSL_LOG(ERR, "%s:%d", __func__, __LINE__);
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	} else {
 		const BIGNUM *r = NULL, *s = NULL;
@@ -2273,7 +2262,7 @@ process_openssl_dsa_verify_op(struct rte_crypto_op *cop,
 	BIGNUM *pub_key = NULL;
 
 	if (sign == NULL) {
-		OPENSSL_LOG(ERR, " %s:%d\n", __func__, __LINE__);
+		OPENSSL_LOG(ERR, " %s:%d", __func__, __LINE__);
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
 	}
@@ -2350,7 +2339,7 @@ process_openssl_dh_op_evp(struct rte_crypto_op *cop,
 
 		if (!OSSL_PARAM_BLD_push_BN(param_bld_peer, OSSL_PKEY_PARAM_PUB_KEY,
 				pub_key)) {
-			OPENSSL_LOG(ERR, "Failed to set public key\n");
+			OPENSSL_LOG(ERR, "Failed to set public key");
 			OSSL_PARAM_BLD_free(param_bld_peer);
 			BN_free(pub_key);
 			return ret;
@@ -2395,7 +2384,7 @@ process_openssl_dh_op_evp(struct rte_crypto_op *cop,
 
 		if (!OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY,
 				priv_key)) {
-			OPENSSL_LOG(ERR, "Failed to set private key\n");
+			OPENSSL_LOG(ERR, "Failed to set private key");
 			EVP_PKEY_CTX_free(peer_ctx);
 			OSSL_PARAM_free(params_peer);
 			BN_free(pub_key);
@@ -2421,7 +2410,7 @@ process_openssl_dh_op_evp(struct rte_crypto_op *cop,
 		goto err_dh;
 
 	if (op->ke_type == RTE_CRYPTO_ASYM_KE_PUB_KEY_GENERATE) {
-		OPENSSL_LOG(DEBUG, "%s:%d updated pub key\n", __func__, __LINE__);
+		OPENSSL_LOG(DEBUG, "%s:%d updated pub key", __func__, __LINE__);
 		if (!EVP_PKEY_get_bn_param(dhpkey, OSSL_PKEY_PARAM_PUB_KEY, &pub_key))
 			goto err_dh;
 				/* output public key */
@@ -2430,7 +2419,7 @@ process_openssl_dh_op_evp(struct rte_crypto_op *cop,
 
 	if (op->ke_type == RTE_CRYPTO_ASYM_KE_PRIV_KEY_GENERATE) {
 
-		OPENSSL_LOG(DEBUG, "%s:%d updated priv key\n", __func__, __LINE__);
+		OPENSSL_LOG(DEBUG, "%s:%d updated priv key", __func__, __LINE__);
 		if (!EVP_PKEY_get_bn_param(dhpkey, OSSL_PKEY_PARAM_PRIV_KEY, &priv_key))
 			goto err_dh;
 
@@ -2478,16 +2467,12 @@ process_openssl_dh_op_evp(struct rte_crypto_op *cop,
 	ret = 0;
 
  err_dh:
-	if (pub_key)
-		BN_free(pub_key);
-	if (priv_key)
-		BN_free(priv_key);
+	BN_free(pub_key);
+	BN_free(priv_key);
 	if (params)
 		OSSL_PARAM_free(params);
-	if (dhpkey)
-		EVP_PKEY_free(dhpkey);
-	if (peerkey)
-		EVP_PKEY_free(peerkey);
+	EVP_PKEY_free(dhpkey);
+	EVP_PKEY_free(peerkey);
 
 	EVP_PKEY_CTX_free(dh_ctx);
 
@@ -2529,7 +2514,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 		}
 		ret = set_dh_priv_key(dh_key, priv_key);
 		if (ret) {
-			OPENSSL_LOG(ERR, "Failed to set private key\n");
+			OPENSSL_LOG(ERR, "Failed to set private key");
 			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 			BN_free(peer_key);
 			BN_free(priv_key);
@@ -2576,7 +2561,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 		}
 		ret = set_dh_priv_key(dh_key, priv_key);
 		if (ret) {
-			OPENSSL_LOG(ERR, "Failed to set private key\n");
+			OPENSSL_LOG(ERR, "Failed to set private key");
 			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 			BN_free(priv_key);
 			return 0;
@@ -2598,7 +2583,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 	if (asym_op->dh.ke_type == RTE_CRYPTO_ASYM_KE_PUB_KEY_GENERATE) {
 		const BIGNUM *pub_key = NULL;
 
-		OPENSSL_LOG(DEBUG, "%s:%d update public key\n",
+		OPENSSL_LOG(DEBUG, "%s:%d update public key",
 				__func__, __LINE__);
 
 		/* get the generated keys */
@@ -2612,7 +2597,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 	if (asym_op->dh.ke_type == RTE_CRYPTO_ASYM_KE_PRIV_KEY_GENERATE) {
 		const BIGNUM *priv_key = NULL;
 
-		OPENSSL_LOG(DEBUG, "%s:%d updated priv key\n",
+		OPENSSL_LOG(DEBUG, "%s:%d updated priv key",
 				__func__, __LINE__);
 
 		/* get the generated keys */
@@ -2721,7 +2706,7 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 	default:
 		cop->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 		OPENSSL_LOG(ERR,
-				"rsa pad type not supported %d\n", pad);
+				"rsa pad type not supported %d", pad);
 		return ret;
 	}
 
@@ -2748,7 +2733,7 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 		op->rsa.cipher.length = outlen;
 
 		OPENSSL_LOG(DEBUG,
-				"length of encrypted text %zu\n", outlen);
+				"length of encrypted text %zu", outlen);
 		break;
 
 	case RTE_CRYPTO_ASYM_OP_DECRYPT:
@@ -2772,7 +2757,7 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 			goto err_rsa;
 		op->rsa.message.length = outlen;
 
-		OPENSSL_LOG(DEBUG, "length of decrypted text %zu\n", outlen);
+		OPENSSL_LOG(DEBUG, "length of decrypted text %zu", outlen);
 		break;
 
 	case RTE_CRYPTO_ASYM_OP_SIGN:
@@ -2818,16 +2803,22 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 			goto err_rsa;
 		}
 
-		if (EVP_PKEY_verify_recover(rsa_ctx, tmp, &outlen,
+		ret = EVP_PKEY_verify_recover(rsa_ctx, tmp, &outlen,
 				op->rsa.sign.data,
-				op->rsa.sign.length) <= 0) {
+				op->rsa.sign.length);
+		if (ret <= 0) {
+			/* OpenSSL RSA verification returns one on
+			 * successful verification, otherwise 0. Hence,
+			 * this enqueue operation should succeed even if
+			 * invalid signature has been requested in verify.
+			 */
 			OPENSSL_free(tmp);
 			goto err_rsa;
 		}
 
 		OPENSSL_LOG(DEBUG,
 				"Length of public_decrypt %zu "
-				"length of message %zd\n",
+				"length of message %zd",
 				outlen, op->rsa.message.length);
 		if (CRYPTO_memcmp(tmp, op->rsa.message.data,
 				op->rsa.message.length)) {
@@ -2850,6 +2841,232 @@ err_rsa:
 	return ret;
 
 }
+
+static int
+process_openssl_sm2_op_evp(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	EVP_PKEY_CTX *kctx = NULL, *sctx = NULL, *cctx = NULL;
+	struct rte_crypto_asym_op *op = cop->asym;
+	OSSL_PARAM *params = sess->u.sm2.params;
+	EVP_MD_CTX *md_ctx = NULL;
+	ECDSA_SIG *ec_sign = NULL;
+	EVP_MD *check_md = NULL;
+	EVP_PKEY *pkey = NULL;
+	int ret = -1;
+
+	cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+
+	if (cop->asym->sm2.k.data != NULL)
+		goto err_sm2;
+
+	switch (op->sm2.op_type) {
+	case RTE_CRYPTO_ASYM_OP_ENCRYPT:
+		{
+			OSSL_PARAM *eparams = sess->u.sm2.params;
+			size_t output_len = 0;
+
+			kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_SM2, NULL);
+			if (kctx == NULL || EVP_PKEY_fromdata_init(kctx) <= 0 ||
+				EVP_PKEY_fromdata(kctx, &pkey, EVP_PKEY_KEYPAIR, params) <= 0)
+				goto err_sm2;
+
+			cctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+			if (!cctx)
+				goto err_sm2;
+
+			if (!EVP_PKEY_encrypt_init(cctx))
+				goto err_sm2;
+
+			if (!EVP_PKEY_CTX_set_params(cctx, eparams))
+				goto err_sm2;
+
+			if (!EVP_PKEY_encrypt(cctx, op->sm2.cipher.data, &output_len,
+								 op->sm2.message.data,
+								 op->sm2.message.length))
+				goto err_sm2;
+			op->sm2.cipher.length = output_len;
+		}
+		break;
+	case RTE_CRYPTO_ASYM_OP_DECRYPT:
+		{
+			OSSL_PARAM *eparams = sess->u.sm2.params;
+
+			kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_SM2, NULL);
+			if (kctx == NULL
+				|| EVP_PKEY_fromdata_init(kctx) <= 0
+				|| EVP_PKEY_fromdata(kctx, &pkey, EVP_PKEY_KEYPAIR, params) <= 0)
+				goto err_sm2;
+
+			cctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+			if (!cctx)
+				goto err_sm2;
+
+			if (!EVP_PKEY_decrypt_init(cctx))
+				goto err_sm2;
+
+			if (!EVP_PKEY_CTX_set_params(cctx, eparams))
+				goto err_sm2;
+
+			if (!EVP_PKEY_decrypt(cctx, op->sm2.message.data, &op->sm2.message.length,
+					op->sm2.cipher.data, op->sm2.cipher.length))
+				goto err_sm2;
+		}
+		break;
+	case RTE_CRYPTO_ASYM_OP_SIGN:
+		{
+			unsigned char signbuf[128] = {0};
+			const unsigned char *signptr;
+			const BIGNUM *r, *s;
+			size_t signlen;
+
+			kctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+			if (kctx == NULL || EVP_PKEY_fromdata_init(kctx) <= 0 ||
+				EVP_PKEY_fromdata(kctx, &pkey, EVP_PKEY_KEYPAIR, params) <= 0)
+				goto err_sm2;
+
+			md_ctx = EVP_MD_CTX_new();
+			if (!md_ctx)
+				goto err_sm2;
+
+			sctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+			if (!sctx)
+				goto err_sm2;
+
+			EVP_MD_CTX_set_pkey_ctx(md_ctx, sctx);
+
+			check_md = EVP_MD_fetch(NULL, "sm3", NULL);
+			if (!check_md)
+				goto err_sm2;
+
+			if (!EVP_DigestSignInit(md_ctx, NULL, check_md, NULL, pkey))
+				goto err_sm2;
+
+			if (EVP_PKEY_CTX_set1_id(sctx, op->sm2.id.data, op->sm2.id.length) <= 0)
+				goto err_sm2;
+
+			if (!EVP_DigestSignUpdate(md_ctx, op->sm2.message.data,
+					op->sm2.message.length))
+				goto err_sm2;
+
+			if (!EVP_DigestSignFinal(md_ctx, NULL, &signlen))
+				goto err_sm2;
+
+			if (!EVP_DigestSignFinal(md_ctx, signbuf, &signlen))
+				goto err_sm2;
+
+			signptr = signbuf;
+			ec_sign = d2i_ECDSA_SIG(NULL, &signptr, signlen);
+			if (!ec_sign)
+				goto err_sm2;
+
+			r = ECDSA_SIG_get0_r(ec_sign);
+			s = ECDSA_SIG_get0_s(ec_sign);
+			if (!r || !s)
+				goto err_sm2;
+
+			op->sm2.r.length = BN_num_bytes(r);
+			op->sm2.s.length = BN_num_bytes(s);
+			BN_bn2bin(r, op->sm2.r.data);
+			BN_bn2bin(s, op->sm2.s.data);
+
+			ECDSA_SIG_free(ec_sign);
+		}
+		break;
+	case RTE_CRYPTO_ASYM_OP_VERIFY:
+		{
+			unsigned char signbuf[128] = {0}, *signbuf_new = NULL;
+			BIGNUM *r = NULL, *s = NULL;
+			size_t signlen;
+
+			kctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+			if (kctx == NULL || EVP_PKEY_fromdata_init(kctx) <= 0 ||
+				EVP_PKEY_fromdata(kctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0)
+				goto err_sm2;
+
+			if (!EVP_PKEY_is_a(pkey, "SM2"))
+				goto err_sm2;
+
+			md_ctx = EVP_MD_CTX_new();
+			if (!md_ctx)
+				goto err_sm2;
+
+			sctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+			if (!sctx)
+				goto err_sm2;
+
+			EVP_MD_CTX_set_pkey_ctx(md_ctx, sctx);
+
+			check_md = EVP_MD_fetch(NULL, "sm3", NULL);
+			if (!check_md)
+				goto err_sm2;
+
+			if (!EVP_DigestVerifyInit(md_ctx, NULL, check_md, NULL, pkey))
+				goto err_sm2;
+
+			if (EVP_PKEY_CTX_set1_id(sctx, op->sm2.id.data, op->sm2.id.length) <= 0)
+				goto err_sm2;
+
+			if (!EVP_DigestVerifyUpdate(md_ctx, op->sm2.message.data,
+					op->sm2.message.length))
+				goto err_sm2;
+
+			ec_sign = ECDSA_SIG_new();
+			if (!ec_sign)
+				goto err_sm2;
+
+			r = BN_bin2bn(op->sm2.r.data, op->sm2.r.length, r);
+			s = BN_bin2bn(op->sm2.s.data, op->sm2.s.length, s);
+			if (!r || !s)
+				goto err_sm2;
+
+			if (!ECDSA_SIG_set0(ec_sign, r, s)) {
+				BN_free(r);
+				BN_free(s);
+				goto err_sm2;
+			}
+
+			r = NULL;
+			s = NULL;
+
+			signbuf_new = signbuf;
+			signlen = i2d_ECDSA_SIG(ec_sign, (unsigned char **)&signbuf_new);
+			if (signlen <= 0)
+				goto err_sm2;
+
+			if (!EVP_DigestVerifyFinal(md_ctx, signbuf_new, signlen))
+				goto err_sm2;
+
+			BN_free(r);
+			BN_free(s);
+			ECDSA_SIG_free(ec_sign);
+	}
+		break;
+	default:
+		/* allow ops with invalid args to be pushed to
+		 * completion queue
+		 */
+		cop->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		goto err_sm2;
+	}
+
+	ret = 0;
+	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+err_sm2:
+	EVP_MD_free(check_md);
+	EVP_MD_CTX_free(md_ctx);
+
+	EVP_PKEY_CTX_free(kctx);
+
+	EVP_PKEY_CTX_free(sctx);
+
+	EVP_PKEY_CTX_free(cctx);
+
+	EVP_PKEY_free(pkey);
+
+	return ret;
+}
+
 #else
 static int
 process_openssl_rsa_op(struct rte_crypto_op *cop,
@@ -2873,7 +3090,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 	default:
 		cop->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 		OPENSSL_LOG(ERR,
-				"rsa pad type not supported %d\n", pad);
+				"rsa pad type not supported %d", pad);
 		return 0;
 	}
 
@@ -2888,7 +3105,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 		if (ret > 0)
 			op->rsa.cipher.length = ret;
 		OPENSSL_LOG(DEBUG,
-				"length of encrypted text %d\n", ret);
+				"length of encrypted text %d", ret);
 		break;
 
 	case RTE_CRYPTO_ASYM_OP_DECRYPT:
@@ -2926,7 +3143,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 
 		OPENSSL_LOG(DEBUG,
 				"Length of public_decrypt %d "
-				"length of message %zd\n",
+				"length of message %zd",
 				ret, op->rsa.message.length);
 		if ((ret <= 0) || (CRYPTO_memcmp(tmp, op->rsa.message.data,
 				op->rsa.message.length))) {
@@ -2948,6 +3165,15 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 
 	return 0;
+}
+
+static int
+process_openssl_sm2_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	RTE_SET_USED(cop);
+	RTE_SET_USED(sess);
+	return -ENOTSUP;
 }
 #endif
 
@@ -2997,6 +3223,13 @@ process_asym_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 				process_openssl_dsa_verify_op(op, sess);
 		else
 			op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+#endif
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_SM2:
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+		retval = process_openssl_sm2_op_evp(op, sess);
+#else
+		retval = process_openssl_sm2_op(op, sess);
 #endif
 		break;
 	default:

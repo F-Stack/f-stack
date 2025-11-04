@@ -200,9 +200,12 @@ cn10k_ipsec_inb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 	/* Disable IP checksum verification by default */
 	param1.s.ip_csum_disable = ROC_IE_OT_SA_INNER_PKT_IP_CSUM_DISABLE;
 
+	/* Set the ip chksum flag in mbuf before enqueue.
+	 * Reset the flag in post process in case of errors
+	 */
 	if (ipsec_xfrm->options.ip_csum_enable) {
-		param1.s.ip_csum_disable =
-			ROC_IE_OT_SA_INNER_PKT_IP_CSUM_ENABLE;
+		param1.s.ip_csum_disable = ROC_IE_OT_SA_INNER_PKT_IP_CSUM_ENABLE;
+		sec_sess->ip_csum = RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 	}
 
 	/* Disable L4 checksum verification by default */
@@ -419,14 +422,12 @@ cn10k_sec_session_update(void *device, struct rte_security_session *sess,
 			 struct rte_security_session_conf *conf)
 {
 	struct rte_cryptodev *crypto_dev = device;
-	struct cn10k_sec_session *priv;
 	struct roc_cpt *roc_cpt;
 	struct cnxk_cpt_qp *qp;
 	struct cnxk_cpt_vf *vf;
 	int ret;
 
-	priv = SECURITY_GET_SESS_PRIV(sess);
-	if (priv == NULL)
+	if (sess == NULL)
 		return -EINVAL;
 
 	qp = crypto_dev->data->queue_pairs[0];

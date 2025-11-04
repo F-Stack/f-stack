@@ -304,8 +304,17 @@ hns3_cmd_get_hardware_reply(struct hns3_hw *hw,
 	return hns3_cmd_convert_err_code(desc_ret);
 }
 
-static int hns3_cmd_poll_reply(struct hns3_hw *hw)
+static uint32_t hns3_get_cmd_tx_timeout(uint16_t opcode)
 {
+	if (opcode == HNS3_OPC_CFG_RST_TRIGGER)
+		return HNS3_COMQ_CFG_RST_TIMEOUT;
+
+	return HNS3_CMDQ_TX_TIMEOUT_DEFAULT;
+}
+
+static int hns3_cmd_poll_reply(struct hns3_hw *hw, uint16_t opcode)
+{
+	uint32_t cmdq_tx_timeout = hns3_get_cmd_tx_timeout(opcode);
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	uint32_t timeout = 0;
 
@@ -326,7 +335,7 @@ static int hns3_cmd_poll_reply(struct hns3_hw *hw)
 
 		rte_delay_us(1);
 		timeout++;
-	} while (timeout < hw->cmq.tx_timeout);
+	} while (timeout < cmdq_tx_timeout);
 	hns3_err(hw, "Wait for reply timeout");
 	return -ETIME;
 }
@@ -400,7 +409,7 @@ hns3_cmd_send(struct hns3_hw *hw, struct hns3_cmd_desc *desc, int num)
 	 * if multi descriptors to be sent, use the first one to check.
 	 */
 	if (HNS3_CMD_SEND_SYNC(rte_le_to_cpu_16(desc->flag))) {
-		retval = hns3_cmd_poll_reply(hw);
+		retval = hns3_cmd_poll_reply(hw, desc->opcode);
 		if (!retval)
 			retval = hns3_cmd_get_hardware_reply(hw, desc, num,
 							     ntc);
@@ -419,6 +428,7 @@ hns3_get_caps_name(uint32_t caps_id)
 	} dev_caps[] = {
 		{ HNS3_CAPS_FD_QUEUE_REGION_B, "fd_queue_region" },
 		{ HNS3_CAPS_PTP_B,             "ptp"             },
+		{ HNS3_CAPS_SIMPLE_BD_B,       "simple_bd"       },
 		{ HNS3_CAPS_TX_PUSH_B,         "tx_push"         },
 		{ HNS3_CAPS_PHY_IMP_B,         "phy_imp"         },
 		{ HNS3_CAPS_TQP_TXRX_INDEP_B,  "tqp_txrx_indep"  },
@@ -427,7 +437,8 @@ hns3_get_caps_name(uint32_t caps_id)
 		{ HNS3_CAPS_UDP_TUNNEL_CSUM_B, "udp_tunnel_csum" },
 		{ HNS3_CAPS_RAS_IMP_B,         "ras_imp"         },
 		{ HNS3_CAPS_RXD_ADV_LAYOUT_B,  "rxd_adv_layout"  },
-		{ HNS3_CAPS_TM_B,              "tm_capability"   }
+		{ HNS3_CAPS_TM_B,              "tm_capability"   },
+		{ HNS3_CAPS_FC_AUTO_B,         "fc_autoneg"      }
 	};
 	uint32_t i;
 
@@ -489,6 +500,8 @@ hns3_parse_capability(struct hns3_hw *hw,
 			hns3_warn(hw, "ignore PTP capability due to lack of "
 				  "rxd advanced layout capability.");
 	}
+	if (hns3_get_bit(caps, HNS3_CAPS_SIMPLE_BD_B))
+		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_SIMPLE_BD_B, 1);
 	if (hns3_get_bit(caps, HNS3_CAPS_TX_PUSH_B))
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_TX_PUSH_B, 1);
 	if (hns3_get_bit(caps, HNS3_CAPS_PHY_IMP_B))
@@ -507,6 +520,8 @@ hns3_parse_capability(struct hns3_hw *hw,
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_RAS_IMP_B, 1);
 	if (hns3_get_bit(caps, HNS3_CAPS_TM_B))
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_TM_B, 1);
+	if (hns3_get_bit(caps, HNS3_CAPS_FC_AUTO_B))
+		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_FC_AUTO_B, 1);
 	if (hns3_get_bit(caps, HNS3_CAPS_GRO_B))
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_GRO_B, 1);
 }
@@ -539,9 +554,7 @@ hns3_set_dcb_capability(struct hns3_hw *hw)
 	if (device_id == HNS3_DEV_ID_25GE_RDMA ||
 	    device_id == HNS3_DEV_ID_50GE_RDMA ||
 	    device_id == HNS3_DEV_ID_100G_RDMA_MACSEC ||
-	    device_id == HNS3_DEV_ID_200G_RDMA ||
-	    device_id == HNS3_DEV_ID_100G_ROH ||
-	    device_id == HNS3_DEV_ID_200G_ROH)
+	    device_id == HNS3_DEV_ID_200G_RDMA)
 		hns3_set_bit(hw->capability, HNS3_DEV_SUPPORT_DCB_B, 1);
 }
 
@@ -607,9 +620,6 @@ hns3_cmd_init_queue(struct hns3_hw *hw)
 	hw->cmq.csq.desc_num = HNS3_NIC_CMQ_DESC_NUM;
 	hw->cmq.crq.desc_num = HNS3_NIC_CMQ_DESC_NUM;
 
-	/* Setup Tx write back timeout */
-	hw->cmq.tx_timeout = HNS3_CMDQ_TX_TIMEOUT;
-
 	/* Setup queue rings */
 	ret = hns3_alloc_cmd_queue(hw, HNS3_TYPE_CSQ);
 	if (ret) {
@@ -652,9 +662,31 @@ hns3_update_dev_lsc_cap(struct hns3_hw *hw, int fw_compact_cmd_result)
 	}
 }
 
+static void
+hns3_set_fc_autoneg_cap(struct hns3_adapter *hns, int fw_compact_cmd_result)
+{
+	struct hns3_hw *hw = &hns->hw;
+	struct hns3_mac *mac = &hw->mac;
+
+	if (mac->media_type == HNS3_MEDIA_TYPE_COPPER) {
+		hns->pf.support_fc_autoneg = true;
+		return;
+	}
+
+	/*
+	 * Flow control auto-negotiation requires the cooperation of the driver
+	 * and firmware.
+	 */
+	hns->pf.support_fc_autoneg = (hns3_dev_get_support(hw, FC_AUTO) &&
+					fw_compact_cmd_result == 0) ?
+					true : false;
+}
+
 static int
 hns3_apply_fw_compat_cmd_result(struct hns3_hw *hw, int result)
 {
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+
 	if (result != 0 && hns3_dev_get_support(hw, COPPER)) {
 		hns3_err(hw, "firmware fails to initialize the PHY, ret = %d.",
 			 result);
@@ -662,6 +694,7 @@ hns3_apply_fw_compat_cmd_result(struct hns3_hw *hw, int result)
 	}
 
 	hns3_update_dev_lsc_cap(hw, result);
+	hns3_set_fc_autoneg_cap(hns, result);
 
 	return 0;
 }
@@ -679,8 +712,11 @@ hns3_firmware_compat_config(struct hns3_hw *hw, bool is_init)
 	if (is_init) {
 		hns3_set_bit(compat, HNS3_LINK_EVENT_REPORT_EN_B, 1);
 		hns3_set_bit(compat, HNS3_NCSI_ERROR_REPORT_EN_B, 0);
+		hns3_set_bit(compat, HNS3_LLRS_FEC_EN_B, 1);
 		if (hns3_dev_get_support(hw, COPPER))
 			hns3_set_bit(compat, HNS3_FIRMWARE_PHY_DRIVER_EN_B, 1);
+		if (hns3_dev_get_support(hw, FC_AUTO))
+			hns3_set_bit(compat, HNS3_MAC_FC_AUTONEG_EN_B, 1);
 	}
 	req->compat = rte_cpu_to_le_32(compat);
 

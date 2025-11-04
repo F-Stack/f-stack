@@ -290,13 +290,14 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	const uint16_t q_mask = q_n - 1;
 	const uint16_t e_n = 1 << rxq->elts_n;
 	const uint16_t e_mask = e_n - 1;
-	volatile struct mlx5_cqe *cq;
+	volatile struct mlx5_cqe *cq, *next;
 	struct rte_mbuf **elts;
 	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
 	uint16_t nocmp_n = 0;
 	uint16_t rcvd_pkt = 0;
 	unsigned int cq_idx = rxq->cq_ci & q_mask;
 	unsigned int elts_idx;
+	int ret;
 
 	MLX5_ASSERT(rxq->sges_n == 0);
 	MLX5_ASSERT(rxq->cqe_n == rxq->elts_n);
@@ -324,6 +325,9 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	/* Not to cross queue end. */
 	pkts_n = RTE_MIN(pkts_n, q_n - elts_idx);
 	pkts_n = RTE_MIN(pkts_n, q_n - cq_idx);
+	/* Not to move past the allocated mbufs. */
+	pkts_n = RTE_MIN(pkts_n, RTE_ALIGN_FLOOR(rxq->rq_ci - rxq->rq_pi,
+						MLX5_VPMD_DESCS_PER_LOOP));
 	if (!pkts_n) {
 		*no_cq = !rcvd_pkt;
 		return rcvd_pkt;
@@ -342,6 +346,15 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	rxq->cq_ci += nocmp_n;
 	rxq->rq_pi += nocmp_n;
 	rcvd_pkt += nocmp_n;
+	/* Copy title packet for future compressed sessions. */
+	if (rxq->cqe_comp_layout) {
+		next = &(*rxq->cqes)[rxq->cq_ci & q_mask];
+		ret = check_cqe_iteration(next,	rxq->cqe_n, rxq->cq_ci);
+		if (ret != MLX5_CQE_STATUS_SW_OWN ||
+		    MLX5_CQE_FORMAT(next->op_own) == MLX5_COMPRESSED)
+			rte_memcpy(&rxq->title_pkt, elts[nocmp_n - 1],
+				   sizeof(struct rte_mbuf));
+	}
 	/* Decompress the last CQE if compressed. */
 	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP) {
 		MLX5_ASSERT(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));
@@ -431,7 +444,7 @@ rxq_burst_mprq_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
 	const uint32_t elts_n = wqe_n * strd_n;
 	const uint32_t elts_mask = elts_n - 1;
-	volatile struct mlx5_cqe *cq;
+	volatile struct mlx5_cqe *cq, *next;
 	struct rte_mbuf **elts;
 	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
 	uint16_t nocmp_n = 0;
@@ -439,6 +452,7 @@ rxq_burst_mprq_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	uint16_t cp_pkt = 0;
 	unsigned int cq_idx = rxq->cq_ci & q_mask;
 	unsigned int elts_idx;
+	int ret;
 
 	MLX5_ASSERT(rxq->sges_n == 0);
 	cq = &(*rxq->cqes)[cq_idx];
@@ -482,6 +496,15 @@ rxq_burst_mprq_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	MLX5_ASSERT(nocmp_n <= pkts_n);
 	cp_pkt = rxq_copy_mprq_mbuf_v(rxq, pkts, nocmp_n);
 	rcvd_pkt += cp_pkt;
+	/* Copy title packet for future compressed sessions. */
+	if (rxq->cqe_comp_layout) {
+		next = &(*rxq->cqes)[rxq->cq_ci & q_mask];
+		ret = check_cqe_iteration(next,	rxq->cqe_n, rxq->cq_ci);
+		if (ret != MLX5_CQE_STATUS_SW_OWN ||
+		    MLX5_CQE_FORMAT(next->op_own) == MLX5_COMPRESSED)
+			rte_memcpy(&rxq->title_pkt, elts[nocmp_n - 1],
+				   sizeof(struct rte_mbuf));
+	}
 	/* Decompress the last CQE if compressed. */
 	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP) {
 		MLX5_ASSERT(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));

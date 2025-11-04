@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_SCHED_H_
@@ -117,7 +117,8 @@ ice_sched_find_node_by_teid(struct ice_sched_node *start_node, u32 teid);
 /* Add a scheduling node into SW DB for given info */
 enum ice_status
 ice_sched_add_node(struct ice_port_info *pi, u8 layer,
-		   struct ice_aqc_txsched_elem_data *info);
+		   struct ice_aqc_txsched_elem_data *info,
+		   struct ice_sched_node *prealloc_node);
 void ice_free_sched_node(struct ice_port_info *pi, struct ice_sched_node *node);
 struct ice_sched_node *ice_sched_get_tc_node(struct ice_port_info *pi, u8 tc);
 struct ice_sched_node *

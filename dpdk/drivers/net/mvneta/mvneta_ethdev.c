@@ -91,6 +91,12 @@ mvneta_ifnames_get(const char *key __rte_unused, const char *value,
 {
 	struct mvneta_ifnames *ifnames = extra_args;
 
+	if (ifnames->idx >= NETA_NUM_ETH_PPIO) {
+		MVNETA_LOG(ERR, "Too many ifnames specified (max %u)",
+			   NETA_NUM_ETH_PPIO);
+		return -EINVAL;
+	}
+
 	ifnames->names[ifnames->idx++] = value;
 
 	return 0;
@@ -346,7 +352,7 @@ mvneta_dev_start(struct rte_eth_dev *dev)
 	mvneta_stats_reset(dev);
 
 	/*
-	 * In case there are some some stale uc/mc mac addresses flush them
+	 * In case there are some stale uc/mc mac addresses flush them
 	 * here. It cannot be done during mvneta_dev_close() as port information
 	 * is already gone at that point (due to neta_ppio_deinit() in
 	 * mvneta_dev_stop()).

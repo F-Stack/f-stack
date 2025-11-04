@@ -746,6 +746,14 @@ lim_alloc()
     return (limp);
 }
 
+void
+lim_free(struct plimit *limp)
+{
+
+	if (refcount_release(&limp->pl_refcnt))
+		free((void *)limp, M_PLIMIT);
+}
+
 struct plimit *
 lim_hold(struct plimit *limp)
 {

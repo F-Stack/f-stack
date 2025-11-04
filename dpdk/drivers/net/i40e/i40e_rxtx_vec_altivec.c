@@ -89,13 +89,14 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 	}
 
 	rxq->rxrearm_start += RTE_I40E_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
+	rx_id = rxq->rxrearm_start - 1;
+
+	if (unlikely(rxq->rxrearm_start >= rxq->nb_rx_desc)) {
 		rxq->rxrearm_start = 0;
+		rx_id = rxq->nb_rx_desc - 1;
+	}
 
 	rxq->rxrearm_nb -= RTE_I40E_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
 
 	/* Update the tail pointer on the NIC */
 	I40E_PCI_REG_WRITE(rxq->qrx_tail, rx_id);
@@ -431,7 +432,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		desc_to_olflags_v(descs, &rx_pkts[pos]);
 
 		/* C.4 calc available number of desc */
-		var = __builtin_popcountll((vec_ld(0,
+		var = rte_popcount64((vec_ld(0,
 			(__vector unsigned long *)&staterr)[0]));
 		nb_pkts_recd += var;
 		if (likely(var != RTE_I40E_DESCS_PER_LOOP))

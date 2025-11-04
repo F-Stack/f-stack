@@ -384,7 +384,7 @@ eval_umax_bits(uint64_t v, size_t opsz)
 	if (v == 0)
 		return 0;
 
-	v = __builtin_clzll(v);
+	v = rte_clz64(v);
 	return RTE_LEN2MASK(opsz - v, uint64_t);
 }
 
@@ -2196,9 +2196,8 @@ save_safe_eval_state(struct bpf_verifier *bvf, struct inst_node *node)
 	SLIST_INSERT_HEAD(&node->evst.safe, node->evst.start, next);
 	node->evst.nb_safe++;
 
-	RTE_BPF_LOG(DEBUG, "%s(bvf=%p,node=%u,state=%p): nb_safe=%u;\n",
-		__func__, bvf, get_node_idx(bvf, node), node->evst.start,
-		node->evst.nb_safe);
+	RTE_BPF_LOG(DEBUG, "%s(bvf=%p,node=%u,state=%p): nb_safe=%u;\n", __func__, bvf, get_node_idx(bvf, node),
+		    node->evst.start, node->evst.nb_safe);
 
 	node->evst.start = NULL;
 }
@@ -2356,11 +2355,11 @@ prune_eval_state(struct bpf_verifier *bvf, const struct inst_node *node,
 	if (rc != 0)
 		save_start_eval_state(bvf, next);
 
-	RTE_BPF_LOG(DEBUG, "%s(bvf=%p,node=%u,next=%u) returns %d, "
-		"next->evst.start=%p, next->evst.nb_safe=%u\n",
-		__func__, bvf, get_node_idx(bvf, node),
-		get_node_idx(bvf, next), rc,
-		next->evst.start, next->evst.nb_safe);
+	RTE_BPF_LOG(DEBUG,
+		    "%s(bvf=%p,node=%u,next=%u) returns %d, "
+		    "next->evst.start=%p, next->evst.nb_safe=%u\n",
+		    __func__, bvf, get_node_idx(bvf, node), get_node_idx(bvf, next), rc, next->evst.start,
+		    next->evst.nb_safe);
 	return rc;
 }
 
@@ -2497,19 +2496,19 @@ evaluate(struct bpf_verifier *bvf)
 		}
 	}
 
-	RTE_BPF_LOG(DEBUG, "%s(%p) returns %d, stats:\n"
-		"node evaluations=%u;\n"
-		"state pruned=%u;\n"
-		"state saves=%u;\n"
-		"state restores=%u;\n",
-		__func__, bvf, rc,
-		stats.nb_eval, stats.nb_prune, stats.nb_save, stats.nb_restore);
+	RTE_BPF_LOG(DEBUG,
+		    "%s(%p) returns %d, stats:\n"
+		    "node evaluations=%u;\n"
+		    "state pruned=%u;\n"
+		    "state saves=%u;\n"
+		    "state restores=%u;\n",
+		    __func__, bvf, rc, stats.nb_eval, stats.nb_prune, stats.nb_save, stats.nb_restore);
 
 	return rc;
 }
 
 int
-bpf_validate(struct rte_bpf *bpf)
+__rte_bpf_validate(struct rte_bpf *bpf)
 {
 	int32_t rc;
 	struct bpf_verifier bvf;

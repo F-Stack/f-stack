@@ -55,7 +55,7 @@ void cxgbe_clip_release(struct rte_eth_dev *dev, struct clip_entry *ce)
 	int ret;
 
 	t4_os_lock(&ce->lock);
-	if (__atomic_sub_fetch(&ce->refcnt, 1, __ATOMIC_RELAXED) == 0) {
+	if (__atomic_fetch_sub(&ce->refcnt, 1, __ATOMIC_RELAXED) - 1 == 0) {
 		ret = clip6_release_mbox(dev, ce->addr);
 		if (ret)
 			dev_debug(adap, "CLIP FW DEL CMD failed: %d", ret);
@@ -129,7 +129,7 @@ static struct clip_entry *t4_clip_alloc(struct rte_eth_dev *dev,
 				ce->type = FILTER_TYPE_IPV4;
 			}
 		} else {
-			__atomic_add_fetch(&ce->refcnt, 1, __ATOMIC_RELAXED);
+			__atomic_fetch_add(&ce->refcnt, 1, __ATOMIC_RELAXED);
 		}
 		t4_os_unlock(&ce->lock);
 	}

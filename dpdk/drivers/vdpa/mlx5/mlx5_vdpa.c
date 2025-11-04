@@ -37,8 +37,8 @@
 			    (1ULL << VIRTIO_NET_F_MTU))
 
 #define MLX5_VDPA_PROTOCOL_FEATURES \
-			    ((1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
-			     (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
+			    ((1ULL << VHOST_USER_PROTOCOL_F_BACKEND_REQ) | \
+			     (1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD) | \
 			     (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
 			     (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) | \
 			     (1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
@@ -845,7 +845,7 @@ mlx5_vdpa_dev_probe(struct mlx5_common_device *cdev,
 	mlx5_vdpa_config_get(mkvlist, priv);
 	if (priv->use_c_thread) {
 		if (conf_thread_mng.initializer_priv == priv)
-			if (mlx5_vdpa_mult_threads_create(priv->event_core))
+			if (mlx5_vdpa_mult_threads_create())
 				goto error;
 		__atomic_fetch_add(&conf_thread_mng.refcnt, 1,
 			__ATOMIC_RELAXED);
@@ -962,7 +962,7 @@ static const struct rte_pci_id mlx5_vdpa_pci_id_map[] = {
 	},
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
-				PCI_DEVICE_ID_MELLANOX_CONNECTX6DXBF)
+				PCI_DEVICE_ID_MELLANOX_BLUEFIELD2)
 	},
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
@@ -974,7 +974,7 @@ static const struct rte_pci_id mlx5_vdpa_pci_id_map[] = {
 	},
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
-				PCI_DEVICE_ID_MELLANOX_CONNECTX7BF)
+				PCI_DEVICE_ID_MELLANOX_BLUEFIELD3)
 	},
 	{
 		.vendor_id = 0

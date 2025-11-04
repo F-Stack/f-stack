@@ -1,4 +1,4 @@
-# 
+#
 # Copyright (c) 2013 Patrick Kelsey. All rights reserved.
 # Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
 # All rights reserved.
@@ -15,12 +15,12 @@ C=${TOPDIR}/freebsd/contrib/ck/include
 MACHINE_INCLUDES_ROOT:=${CURDIR}/machine_include
 OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
-PREFIX=/usr/local
+PREFIX?=/usr/local
 PREFIX_LIB=${PREFIX}/lib
-PREFIX_INCLUDE=/usr/local/include
-PREFIX_BIN=/usr/local/bin
+PREFIX_INCLUDE=${PREFIX}/include
+PREFIX_BIN=${PREFIX}/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.24
+F-STACK_VERSION=1.25
 TGT_OS=$(shell uname)
 ifeq ($(TGT_OS),FreeBSD)
 CC=gcc
@@ -31,14 +31,14 @@ HOST_OS:=$(shell uname -s)
 #DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 # No DPDK KNI support on FreeBSD
+# Enable KNI, via viritio only, no longer support rte_kni.ko.
 ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
-#FF_KNI_KNI=1
 endif
 
 #FF_FLOW_ISOLATE=1
 #FF_FDIR=1
-
+#FF_FLOW_IPIP=1
 # NETGRAPH drivers ipfw
 #FF_NETGRAPH=1
 #FF_IPFW=1
@@ -51,6 +51,9 @@ FF_INET6=1
 FF_TCPHPTS=1
 FF_EXTRA_TCP_STACKS=1
 
+# TCP/UDP loopback.
+#FF_LOOPBACK_SUPPORT=1
+
 include ${TOPDIR}/mk/kern.pre.mk
 
 ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -59,7 +62,7 @@ endif
 
 PKGCONF ?= pkg-config
 
-DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
+DPDK_CFLAGS= -Wall -Wextra -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
@@ -76,15 +79,11 @@ endif
 ifndef DEBUG
 HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb -Wno-format-truncation
 else
-HOST_CFLAGS = ${DEBUG} 
+HOST_CFLAGS = ${DEBUG}
 endif
 
 ifdef FF_KNI
 HOST_CFLAGS+= -DFF_KNI
-endif
-
-ifdef FF_KNI_KNI
-HOST_CFLAGS+= -DFF_KNI_KNI
 endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}
@@ -96,6 +95,10 @@ endif
 
 ifdef FF_FLOW_ISOLATE
 HOST_CFLAGS+= -DFF_FLOW_ISOLATE
+endif
+
+ifdef FF_FLOW_IPIP
+HOST_CFLAGS+= -DFF_FLOW_IPIP
 endif
 
 ifdef FF_NETGRAPH
@@ -117,7 +120,7 @@ CFLAGS+= -DINET
 GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
 ifeq "$(GCCVERGE10)" "1"
     CFLAGS+= -Wno-error=stringop-overflow
-endif 
+endif
 
 GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
 ifeq "$(GCCVERGE11)" "1"
@@ -141,6 +144,11 @@ endif
 ifdef FF_IPSEC
 HOST_CFLAGS+= -DIPSEC
 CFLAGS+= -DIPSEC
+endif
+
+ifdef FF_LOOPBACK_SUPPORT
+HOST_CFLAGS+= -DFF_LOOPBACK_SUPPORT
+CFLAGS+= -DFF_LOOPBACK_SUPPORT
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -235,6 +243,7 @@ endif
 VPATH+= $S/netipsec
 ifdef FF_IPFW
 VPATH+= $S/netpfil/ipfw
+VPATH+= $S/netpfil/ipfw/pmod
 endif
 VPATH+= $S/opencrypto
 VPATH+= $S/vm
@@ -268,13 +277,14 @@ endif
 
 FF_HOST_SRCS+=              \
 	ff_host_interface.c \
-	ff_thread.c			\
+	ff_thread.c         \
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
-	ff_init.c	
+	ff_log.c            \
+	ff_init.c
 
 ifdef FF_KNI
 FF_HOST_SRCS+=              \
@@ -564,7 +574,7 @@ EXTRA_TCP_STACKS_SRCS+=		\
 	bbr.c
 endif
 
- 
+
 ifneq ($(TGT_OS),FreeBSD)
 ifndef FF_KNI
 FF_HOST_SRCS+=         \
@@ -586,7 +596,9 @@ NETIPFW_SRCS+=             \
 	ip_fw_table.c   \
 	ip_fw_table_algo.c  \
 	ip_fw_table_value.c \
-	ip_fw2.c
+	ip_fw2.c \
+	ip_fw_pmod.c \
+	tcpmod.c
 endif
 
 ifdef FF_IPSEC
@@ -661,7 +673,7 @@ all: libfstack.a
 libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} ${ASM_OBJS} ${OBJS}
 	${LD} -d -r -o $*.ro ${ASM_OBJS} ${OBJS}
 	nm $*.ro  | grep -v ' U ' | cut -d ' ' -f 3 > $*_localize_list.tmp
-	objcopy --localize-symbols=$*_localize_list.tmp $*.ro 
+	objcopy --localize-symbols=$*_localize_list.tmp $*.ro
 	rm $*_localize_list.tmp
 	objcopy --globalize-symbols=ff_api.symlist $*.ro
 	rm -f $@
@@ -725,6 +737,7 @@ install:
 	rm -rf ${PREFIX_INCLUDE}/ff_event.h
 	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_INCLUDE}/ff_log.h
 	rm -rf ${PREFIX_BIN}/ff_start
 
 	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
@@ -734,6 +747,7 @@ install:
 	cp -f ff_event.h ${PREFIX_INCLUDE}/ff_event.h
 	cp -f ff_errno.h ${PREFIX_INCLUDE}/ff_errno.h
 	cp -f ff_epoll.h ${PREFIX_INCLUDE}/ff_epoll.h
+	cp -f ff_log.h ${PREFIX_INCLUDE}/ff_log.h
 	cp -f ${TOPDIR}/start.sh ${PREFIX_BIN}/ff_start
 	test -f '${F-STACK_CONF}' || cp -f ${TOPDIR}/config.ini ${F-STACK_CONF}
 
@@ -745,6 +759,7 @@ uninstall:
 	rm -rf ${PREFIX_INCLUDE}/ff_event.h
 	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_INCLUDE}/ff_log.h
 	rm -rf ${PREFIX_BIN}/ff_start
 	rm -rf ${F-STACK_CONF}
 

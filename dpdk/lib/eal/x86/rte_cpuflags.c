@@ -133,6 +133,7 @@ const struct feature_entry rte_cpu_feature_table[] = {
 
 	FEAT_DEF(LAHF_SAHF, 0x80000001, 0, RTE_REG_ECX,  0)
 	FEAT_DEF(LZCNT, 0x80000001, 0, RTE_REG_ECX,  4)
+	FEAT_DEF(MONITORX, 0x80000001, 0, RTE_REG_ECX,  29)
 
 	FEAT_DEF(SYSCALL, 0x80000001, 0, RTE_REG_EDX, 11)
 	FEAT_DEF(XD, 0x80000001, 0, RTE_REG_EDX, 20)
@@ -150,7 +151,7 @@ rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature)
 	cpuid_registers_t regs;
 	unsigned int maxleaf;
 
-	if (feature >= RTE_CPUFLAG_NUMFLAGS)
+	if ((unsigned int)feature >= RTE_DIM(rte_cpu_feature_table))
 		/* Flag does not match anything in the feature tables */
 		return -ENOENT;
 
@@ -165,9 +166,13 @@ rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature)
 	if (maxleaf < feat->leaf)
 		return 0;
 
-	 __cpuid_count(feat->leaf, feat->subleaf,
+#ifdef RTE_TOOLCHAIN_MSVC
+	__cpuidex(regs, feat->leaf, feat->subleaf);
+#else
+	__cpuid_count(feat->leaf, feat->subleaf,
 			 regs[RTE_REG_EAX], regs[RTE_REG_EBX],
 			 regs[RTE_REG_ECX], regs[RTE_REG_EDX]);
+#endif
 
 	/* check if the feature is enabled */
 	return (regs[feat->reg] >> feat->bit) & 1;
@@ -176,7 +181,7 @@ rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature)
 const char *
 rte_cpu_get_flag_name(enum rte_cpu_flag_t feature)
 {
-	if (feature >= RTE_CPUFLAG_NUMFLAGS)
+	if ((unsigned int)feature >= RTE_DIM(rte_cpu_feature_table))
 		return NULL;
 	return rte_cpu_feature_table[feature].name;
 }
@@ -191,5 +196,7 @@ rte_cpu_get_intrinsics_support(struct rte_cpu_intrinsics *intrinsics)
 		intrinsics->power_pause = 1;
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_RTM))
 			intrinsics->power_monitor_multi = 1;
+	} else if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_MONITORX)) {
+		intrinsics->power_monitor = 1;
 	}
 }

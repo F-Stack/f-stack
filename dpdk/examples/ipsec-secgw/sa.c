@@ -96,6 +96,7 @@ const struct supported_cipher_algo cipher_algos[] = {
 	{
 		.keyword = "aes-128-ctr",
 		.algo = RTE_CRYPTO_CIPHER_AES_CTR,
+		/* Per packet IV length */
 		.iv_len = 8,
 		.block_size = 4,
 		.key_len = 20
@@ -103,14 +104,14 @@ const struct supported_cipher_algo cipher_algos[] = {
 	{
 		.keyword = "aes-192-ctr",
 		.algo = RTE_CRYPTO_CIPHER_AES_CTR,
-		.iv_len = 16,
+		.iv_len = 8,
 		.block_size = 16,
 		.key_len = 28
 	},
 	{
 		.keyword = "aes-256-ctr",
 		.algo = RTE_CRYPTO_CIPHER_AES_CTR,
-		.iv_len = 16,
+		.iv_len = 8,
 		.block_size = 16,
 		.key_len = 36
 	},
@@ -1329,8 +1330,13 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 			case RTE_CRYPTO_CIPHER_DES_CBC:
 			case RTE_CRYPTO_CIPHER_3DES_CBC:
 			case RTE_CRYPTO_CIPHER_AES_CBC:
-			case RTE_CRYPTO_CIPHER_AES_CTR:
 				iv_length = sa->iv_len;
+				break;
+			case RTE_CRYPTO_CIPHER_AES_CTR:
+				/* Length includes 8B per packet IV, 4B nonce and
+				 * 4B counter as populated in datapath.
+				 */
+				iv_length = 16;
 				break;
 			default:
 				RTE_LOG(ERR, IPSEC_ESP,
@@ -1847,7 +1853,6 @@ sa_check_offloads(uint16_t port_id, uint64_t *rx_offloads,
 				&& rule->portid == port_id)
 			*rx_offloads |= RTE_ETH_RX_OFFLOAD_SECURITY;
 		if (IS_HW_REASSEMBLY_EN(rule->flags)) {
-			*rx_offloads |= RTE_ETH_RX_OFFLOAD_SCATTER;
 			*tx_offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 			*hw_reassembly = 1;
 		}

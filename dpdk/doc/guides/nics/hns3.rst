@@ -55,11 +55,22 @@ Prerequisites
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to
   setup the basic DPDK environment.
 
+Link status event Pre-conditions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Pre-Installation Configuration
-------------------------------
+Firmware 1.8.0.0 and later versions support reporting link changes to the PF.
+Therefore, to use the LSC for the PF driver, ensure that the firmware version
+also supports reporting link changes.
+If the VF driver needs to support LSC, special patch must be added:
+`<https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=18b6e31f8bf4ac7af7b057228f38a5a530378e4e>`_.
 
-Config File Options
+Note: The patch has been uploaded to 5.13 of the Linux kernel mainline.
+
+
+Configuration
+-------------
+
+Compilation Options
 ~~~~~~~~~~~~~~~~~~~
 
 The following options can be modified in the ``config/rte_config.h`` file.
@@ -69,8 +80,8 @@ The following options can be modified in the ``config/rte_config.h`` file.
   Number of MAX queues reserved for PF on HIP09 and HIP10.
   The MAX queue number is also determined by the value the firmware report.
 
-Runtime Config Options
-~~~~~~~~~~~~~~~~~~~~~~
+Runtime Configuration
+~~~~~~~~~~~~~~~~~~~~~
 
 - ``rx_func_hint`` (default ``none``)
 
@@ -144,17 +155,33 @@ Runtime Config Options
 
     -a 0000:7d:00.0,mbx_time_limit_ms=600
 
-Link status event Pre-conditions
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- ``fdir_vlan_match_mode`` (default ``strict``)
 
-Firmware 1.8.0.0 and later versions support reporting link changes to the PF.
-Therefore, to use the LSC for the PF driver, ensure that the firmware version
-also supports reporting link changes.
-If the VF driver needs to support LSC, special patch must be added:
-`<https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=18b6e31f8bf4ac7af7b057228f38a5a530378e4e>`_.
+  Used to select VLAN match mode. This runtime config can be ``strict``
+  or ``nostrict`` and is only valid for PF devices.
+  If driver works on ``strict`` mode (default mode), hardware does strictly
+  match the input flow base on VLAN number.
 
-Note: The patch has been uploaded to 5.13 of the Linux kernel mainline.
+  For the following scenarios with two rules:
 
+  .. code-block:: console
+
+     rule0:
+       pattern: eth type is 0x0806
+       actions: queue index 3
+     rule1:
+       pattern: eth type is 0x0806 / vlan vid is 20
+       actions: queue index 4
+
+  If application select ``strict`` mode, only the ARP packets with VLAN
+  20 are directed to queue 4, and the ARP packets with other VLAN ID
+  cannot be directed to the specified queue. If application want to all
+  ARP packets with or without VLAN to be directed to the specified queue,
+  application can select ``nostrict`` mode and just need to set rule0.
+
+  For example::
+
+    -a 0000:7d:00.0,fdir_vlan_match_mode=nostrict
 
 Driver compilation and testing
 ------------------------------

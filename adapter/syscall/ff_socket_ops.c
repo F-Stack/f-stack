@@ -186,8 +186,7 @@ ff_sys_accept(struct ff_accept_args *args)
 static int
 ff_sys_accept4(struct ff_accept4_args *args)
 {
-    errno = ENOSYS;
-    return -1;
+    return ff_accept4(args->fd, args->addr, args->addrlen, args->flags);
 }
 
 static int
@@ -306,6 +305,21 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
     ret = ff_epoll_wait(args->epfd, args->events,
         args->maxevents, args->timeout);
 
+#ifdef FF_PRELOAD_POLLING_MODE
+    /*
+     * If an event is generated or error occurs, user app epoll_wait return imme.
+     */
+    if (ret != 0) {
+        sem_flag = 1;
+    } else {
+        if (args->timeout < 0) {
+            /* -1 : Block user app until an event or error occurs. */
+            sem_flag = 0;
+        } else {
+            sem_flag = 1;
+        }
+    }
+#else
     /*
      * If timeout is 0, and no event triggered,
      * no post sem, and next loop will continue to call ff_sys_epoll_wait,
@@ -316,6 +330,7 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
     } else {
         sem_flag = 1;
     }
+#endif
 
     return ret;
 }
@@ -355,8 +370,53 @@ ff_sys_kevent(struct ff_kevent_args *args)
 static pid_t
 ff_sys_fork(struct ff_fork_args *args)
 {
-    errno = ENOSYS;
-    return -1;
+    void *parent = args->parent_thread_handle;
+    /* 
+     * Linux has performed a real fork, and at this point, 
+     * we simply need to create a new thread and duplicate the file descriptors 
+     * that the parent process has already opened.
+     */
+     if (parent) {
+         args->child_thread_handle = ff_adapt_user_thread_add(parent);
+     }
+
+     return 0;
+}
+
+static int
+ff_sys_register_thread(struct ff_register_application_args *args)
+{
+    /* New user application, use default thread0 */
+    args->sc->ff_thread_handle = ff_adapt_user_thread_add(NULL);
+
+    if (args->sc->ff_thread_handle == NULL) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int
+ff_sys_exit_thread(struct ff_exit_application_args *args)
+{
+    /* Exit user application */
+    if (args->sc->ff_thread_handle) {
+        ff_adapt_user_thread_exit(args->sc->ff_thread_handle);
+    }
+
+    return 0;
+}
+
+static int
+ff_sys_select(struct ff_select_args *args)
+{
+    int ret;
+    struct timeval no_block_time = {0, 0};
+
+    DEBUG_LOG("to run ff_sys_select, nfds:%d\n", args->nfds);
+    ret = ff_select(args->nfds, args->readfds, args->writefds, args->exceptfds, &no_block_time);
+
+    return ret;
 }
 
 static int
@@ -424,6 +484,12 @@ ff_so_handler(int ops, void *args)
             return ff_sys_kevent((struct ff_kevent_args *)args);
         case FF_SO_FORK:
             return ff_sys_fork((struct ff_fork_args *)args);
+        case FF_SO_REGISTER_APPLICATION:
+            return ff_sys_register_thread((struct ff_register_application_args *)args);
+        case FF_SO_EXIT_APPLICATION:
+            return ff_sys_exit_thread((struct ff_exit_application_args *)args);
+        case FF_SO_SELECT:
+            return ff_sys_select((struct ff_select_args *)args);
         default:
             break;
     }
@@ -436,6 +502,11 @@ ff_so_handler(int ops, void *args)
 static inline void
 ff_handle_socket_ops(struct ff_so_context *sc)
 {
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    void *old_thread;
+    void *ff_thread_handle = sc->ff_thread_handle;
+#endif
+
     if (!rte_spinlock_trylock(&sc->lock)) {
         return;
     }
@@ -448,7 +519,17 @@ ff_handle_socket_ops(struct ff_so_context *sc)
     DEBUG_LOG("ff_handle_socket_ops sc:%p, status:%d, ops:%d\n", sc, sc->status, sc->ops);
 
     errno = 0;
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    if (ff_thread_handle) {
+        old_thread = ff_switch_curthread(ff_thread_handle);
+    }
+#endif
     sc->result = ff_so_handler(sc->ops, sc->args);
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    if (ff_thread_handle) {
+        ff_restore_curthread(old_thread);
+    }
+#endif
     sc->error = errno;
     DEBUG_LOG("ff_handle_socket_ops error:%d, ops:%d, result:%d\n", errno, sc->ops, sc->result);
 
@@ -466,13 +547,18 @@ ff_handle_socket_ops(struct ff_so_context *sc)
         } else {
             ff_event_loop_nb = 0;
         }*/
-
+#ifdef FF_PRELOAD_POLLING_MODE
+        if (sem_flag == 1 && sc->ops == FF_SO_EPOLL_WAIT) {
+            sc->status = FF_SC_REP;
+        }
+#else
         if (sem_flag == 1) {
             sc->status = FF_SC_REP;
             sem_post(&sc->wait_sem);
         } else {
             // do nothing with this sc
         }
+#endif
     } else {
         sc->status = FF_SC_REP;
     }

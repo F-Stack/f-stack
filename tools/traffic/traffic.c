@@ -52,11 +52,11 @@ int main(int argc, char **argv)
     int ch, delay = 1, n = 0;
     int single = 0;
     unsigned int i, j;
-    struct ff_traffic_args traffic = {0, 0, 0, 0}, otr;
+    struct ff_traffic_args traffic = {0, 0, 0, 0, 0, 0}, otr;
     struct ff_traffic_args ptraffic[RTE_MAX_LCORE], potr[RTE_MAX_LCORE];
     int proc_id = 0, max_proc_id = -1;
-    uint64_t rxp, rxb, txp, txb;
-    uint64_t prxp, prxb, ptxp, ptxb;
+    uint64_t rxp, rxb, txp, txb, rxd, txd;
+    uint64_t prxp, prxb, ptxp, ptxb, prxd, ptxd;
     int title_line = 40;
 
     ff_ipc_init();
@@ -106,8 +106,9 @@ int main(int argc, char **argv)
                 return -1;
             }
 
-            printf("%lu,%lu,%lu,%lu\n", traffic.rx_packets, traffic.rx_bytes,
-                traffic.tx_packets, traffic.tx_bytes);
+            printf("%lu,%lu,%lu,%lu,%lu,%lu\n", traffic.rx_packets, traffic.rx_bytes,
+                traffic.tx_packets, traffic.tx_bytes,
+                traffic.rx_dropped, traffic.tx_dropped);
         } else {
             for (j = proc_id; j <= max_proc_id; j++) {
                 ff_set_proc_id(j);
@@ -117,9 +118,10 @@ int main(int argc, char **argv)
                     return -1;
                 }
 
-                printf("%9d,%20lu,%20lu,%20lu,%20lu,\n",
+                printf("%9d,%20lu,%20lu,%20lu,%20lu,%20lu,%20lu,\n",
                     j, ptraffic[j].rx_packets, ptraffic[j].rx_bytes,
-                    ptraffic[j].tx_packets, ptraffic[j].tx_bytes);
+                    ptraffic[j].tx_packets, ptraffic[j].tx_bytes,
+                    traffic.rx_dropped, traffic.tx_dropped);
 
                 ADD_S(rx_packets);
                 ADD_S(rx_bytes);
@@ -127,9 +129,10 @@ int main(int argc, char **argv)
                 ADD_S(tx_bytes);
             }
 
-            printf("%9s,%20lu,%20lu,%20lu,%20lu,\n",
+            printf("%9s,%20lu,%20lu,%20lu,%20lu,%20lu,%20lu\n",
                 "total", traffic.rx_packets, traffic.rx_bytes,
-                traffic.tx_packets, traffic.tx_bytes);
+                traffic.tx_packets, traffic.tx_bytes,
+                traffic.rx_dropped, traffic.tx_dropped);
         }
         ff_ipc_exit();
         return 0;
@@ -145,11 +148,13 @@ int main(int argc, char **argv)
 
             if (i % title_line == 0) {
                 printf("|--------------------|--------------------|");
-                printf("--------------------|--------------------|\n");
-                printf("|%20s|%20s|%20s|%20s|\n", "rx packets", "rx bytes",
-                    "tx packets", "tx bytes");
+                printf("--------------------|--------------------|"
+                "--------------------|--------------------|\n");
+                printf("|%20s|%20s|%20s|%20s|%20s|%20s|\n", "rx packets", "rx bytes",
+                    "tx packets", "tx bytes", "rx_dropped", "tx_dropped");
                 printf("|--------------------|--------------------|");
-                printf("--------------------|--------------------|\n");
+                printf("--------------------|--------------------|"
+                    "--------------------|--------------------|\n");
             }
 
             if (i) {
@@ -157,8 +162,11 @@ int main(int argc, char **argv)
                 rxb = DIFF(rx_bytes);
                 txp = DIFF(tx_packets);
                 txb = DIFF(tx_bytes);
+                rxd = DIFF(rx_dropped);
+                txd = DIFF(tx_dropped);
 
-                printf("|%20lu|%20lu|%20lu|%20lu|\n", rxp, rxb, txp, txb);
+                printf("|%20lu|%20lu|%20lu|%20lu|%20lu|%20lu|\n",
+                    rxp, rxb, txp, txb, rxd, txd);
             }
         } else {
             /*
@@ -166,15 +174,17 @@ int main(int argc, char **argv)
              */
             if (i % (title_line / (max_proc_id - proc_id + 2)) == 0) {
                 printf("|---------|--------------------|--------------------|"
+                    "--------------------|--------------------|"
                     "--------------------|--------------------|\n");
-                printf("|%9s|%20s|%20s|%20s|%20s|\n",
+                printf("|%9s|%20s|%20s|%20s|%20s|%20s|%20s|\n",
                     "proc_id", "rx packets", "rx bytes",
-                    "tx packets", "tx bytes");
+                    "tx packets", "tx bytes", "rx_dropped", "tx_dropped");
                 printf("|---------|--------------------|--------------------|"
+                    "--------------------|--------------------|"
                     "--------------------|--------------------|\n");
             }
 
-            rxp = rxb = txp = txb = 0;
+            rxp = rxb = txp = txb = rxd = txd = 0;
             for (j = proc_id; j <= max_proc_id; j++) {
                 potr[j] = ptraffic[j];
 
@@ -190,18 +200,23 @@ int main(int argc, char **argv)
                     prxb = DIFF_P(rx_bytes);
                     ptxp = DIFF_P(tx_packets);
                     ptxb = DIFF_P(tx_bytes);
-                    printf("|%9d|%20lu|%20lu|%20lu|%20lu|\n",
-                        j, prxp, prxb, ptxp, ptxb);
+                    prxd = DIFF_P(rx_dropped);
+                    ptxd = DIFF_P(tx_dropped);
+                    printf("|%9d|%20lu|%20lu|%20lu|%20lu|%20lu|%20lu|\n",
+                        j, prxp, prxb, ptxp, ptxb, prxd, ptxd);
 
                     rxp += prxp;
                     rxb += prxb;
                     txp += ptxp;
                     txb += ptxb;
+                    rxd += prxd;
+                    txd += ptxd;
 
                     if (j == max_proc_id) {
-                        printf("|%9s|%20lu|%20lu|%20lu|%20lu|\n",
-                            "total", rxp, rxb, txp, txb);
+                        printf("|%9s|%20lu|%20lu|%20lu|%20lu|%20lu|%20lu|\n",
+                            "total", rxp, rxb, txp, txb, rxd, txd);
                         printf("|         |                    |"
+                            "                    |                    |"
                             "                    |                    |"
                             "                    |\n");
                     }

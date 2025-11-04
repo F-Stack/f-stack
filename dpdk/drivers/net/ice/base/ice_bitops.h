@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_BITOPS_H_
@@ -10,6 +10,13 @@
 
 /* Define the size of the bitmap chunk */
 typedef u32 ice_bitmap_t;
+
+/* NOTE!
+ * Do not use any of the functions declared in this file
+ * on memory that was not declared with ice_declare_bitmap.
+ * Not following this rule might cause issues like split
+ * locks.
+ */
 
 /* Number of bits per bitmap chunk */
 #define BITS_PER_CHUNK		(BITS_PER_BYTE * sizeof(ice_bitmap_t))
@@ -426,7 +433,7 @@ ice_bitmap_hweight(ice_bitmap_t *bm, u16 size)
 }
 
 /**
- * ice_cmp_bitmaps - compares two bitmaps.
+ * ice_cmp_bitmap - compares two bitmaps.
  * @bmp1: the bitmap to compare
  * @bmp2: the bitmap to compare with bmp1
  * @size: Size of the bitmaps in bits

@@ -88,6 +88,7 @@ int ff_getsockopt(int s, int level, int optname, void *optval,
 int ff_listen(int s, int backlog);
 int ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen);
 int ff_accept(int s, struct linux_sockaddr *addr, socklen_t *addrlen);
+int ff_accept4(int s, struct linux_sockaddr *addr, socklen_t *addrlen, int flags);
 int ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen);
 int ff_close(int fd);
 int ff_shutdown(int s, int how);
@@ -149,7 +150,7 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
 
-int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr, 
+int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr,
     void * (* start_routine) (void *), void * arg);
 int ff_pthread_join(pthread_t thread, void **retval);
 
@@ -163,7 +164,7 @@ extern int ff_getmaxfd(void);
 
 /*
  * Get traffic for QoS or other via API.
- * The size of buffer must >= siezof(struct ff_traffic_args), now is 32 bytes.
+ * The size of buffer must >= siezof(struct ff_traffic_args), now is 48 bytes.
  */
 void ff_get_traffic(void *buffer);
 
@@ -354,6 +355,18 @@ int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
  * not implemented now.
  */
 int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);
+
+/*
+ * Create user thread context for LD_PRELOAD mode.
+ * It saved in ff_so_context.
+ */
+void *ff_adapt_user_thread_add(void *parent);
+
+void ff_adapt_user_thread_exit(void *td);
+
+void *ff_switch_curthread(void *new_curthread);
+
+void ff_restore_curthread(void *old_curthread);
 
 /* ZERO COPY API end */
 

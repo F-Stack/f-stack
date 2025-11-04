@@ -48,6 +48,7 @@ Features of the OCTEON cnxk SSO PMD are:
 - HW managed event vectorization on CN10K for packets enqueued from ethdev to
   eventdev configurable per each Rx queue in Rx adapter.
 - Event vector transmission via Tx adapter.
+- Up to 2 event link profiles.
 
 Prerequisites and Compilation procedure
 ---------------------------------------
@@ -101,6 +102,21 @@ Runtime Config Options
   For example::
 
     -a 0002:0e:00.0,qos=[1-50-50]
+
+- ``CN10K WQE stashing support``
+
+  CN10K supports stashing the scheduled WQE carried by `rte_event` to the
+  cores L2 Dcache. The number of cache lines to be stashed and the offset
+  is configurable per HWGRP i.e. event queue. The dictionary format is as
+  follows `[Qx|stash_offset|stash_length]` here the stash offset can be
+  a negative integer.
+  By default, stashing is enabled on queues which have been connected to
+  Rx adapter. Both MBUF and NIX_RX_WQE_HDR + NIX_RX_PARSE_S are stashed.
+
+  For example::
+
+    For stashing mbuf on queue 0 and mbuf + headroom on queue 1
+    -a 0002:0e:00.0,stash="[0|-1|1][1|-1|2]"
 
 - ``Force Rx Back pressure``
 
@@ -192,9 +208,9 @@ Debugging Options
    +---+------------+-------------------------------------------------------+
    | # | Component  | EAL log command                                       |
    +===+============+=======================================================+
-   | 1 | SSO        | --log-level='pmd\.event\.cnxk,8'                      |
+   | 1 | SSO        | --log-level='pmd\.common\.cnxk\.event,8'              |
    +---+------------+-------------------------------------------------------+
-   | 2 | TIM        | --log-level='pmd\.event\.cnxk\.timer,8'               |
+   | 2 | TIM        | --log-level='pmd\.common\.cnxk\.timer,8'              |
    +---+------------+-------------------------------------------------------+
 
 Limitations

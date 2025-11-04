@@ -11,6 +11,7 @@
 
 #include "ff_config.h"
 #include "ff_api.h"
+#include "ff_log.h"
 
 #define MAX_EVENTS 512
 
@@ -160,7 +161,7 @@ int loop(void *arg)
             do {
                 int nclientfd = ff_accept(clientfd, NULL, NULL);
                 if (nclientfd < 0) {
-                    printf("ff_accept failed:%d, %s\n", errno,
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_accept failed:%d, %s\n", errno,
                         strerror(errno));
                     break;
                 }
@@ -169,7 +170,7 @@ int loop(void *arg)
                 EV_SET(&kevSet, nclientfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
 
                 if(ff_kevent(kq, &kevSet, 1, NULL, 0, NULL) < 0) {
-                    printf("ff_kevent error:%d, %s\n", errno,
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kevent error:%d, %s\n", errno,
                         strerror(errno));
                     return -1;
                 }
@@ -182,7 +183,7 @@ int loop(void *arg)
 #ifdef FSTACK_ZC_SEND
             int ret = ff_zc_mbuf_get(&zc_buf, buf_len);
             if (ret < 0) {
-                printf("ff_zc_mbuf_get failed, len:%d, errno:%d, %s\n", buf_len, errno, strerror(errno));
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_zc_mbuf_get failed, len:%d, errno:%d, %s\n", buf_len, errno, strerror(errno));
                 exit(1);
             }
 
@@ -192,7 +193,7 @@ int loop(void *arg)
                 to_write_len = (buf_len - off) > len_part ? len_part : (buf_len - off);
                  ret = ff_zc_mbuf_write(&zc_buf, (const char *)buf_tmp + off, to_write_len);
                  if (ret != to_write_len) {
-                     printf("ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", to_write_len, errno, strerror(errno));
+                     ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", to_write_len, errno, strerror(errno));
                      exit(1);
                  }
                 off += to_write_len;
@@ -201,7 +202,7 @@ int loop(void *arg)
             /* Or call ff_zc_mbuf_write one time */
             /*
             if (ret != buf_len) {
-                printf("ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", buf_len, errno, strerror(errno));
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", buf_len, errno, strerror(errno));
                 exit(1);
             }
             */
@@ -224,7 +225,7 @@ int loop(void *arg)
             ff_write(clientfd, html_buf, buf_len);
 #endif
         } else {
-            printf("unknown event: %8.8X\n", event.flags);
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_APP, "unknown event: %8.8X\n", event.flags);
         }
 
     }
@@ -238,7 +239,7 @@ int main(int argc, char * argv[])
 
     sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
-        printf("ff_socket failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
 
@@ -250,13 +251,13 @@ int main(int argc, char * argv[])
 
     int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
     if (ret < 0) {
-        printf("ff_bind failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
 
      ret = ff_listen(sockfd, MAX_EVENTS);
     if (ret < 0) {
-        printf("ff_listen failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
         exit(1);
     }
 
@@ -267,7 +268,7 @@ int main(int argc, char * argv[])
 #ifdef INET6
     sockfd6 = ff_socket(AF_INET6, SOCK_STREAM, 0);
     if (sockfd6 < 0) {
-        printf("ff_socket failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
         exit(1);
     }
 
@@ -279,13 +280,13 @@ int main(int argc, char * argv[])
 
     ret = ff_bind(sockfd6, (struct linux_sockaddr *)&my_addr6, sizeof(my_addr6));
     if (ret < 0) {
-        printf("ff_bind failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
         exit(1);
     }
 
     ret = ff_listen(sockfd6, MAX_EVENTS);
     if (ret < 0) {
-        printf("ff_listen failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
         exit(1);
     }
 

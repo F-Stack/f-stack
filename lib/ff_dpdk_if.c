@@ -64,6 +64,7 @@
 #include "ff_msg.h"
 #include "ff_api.h"
 #include "ff_memory.h"
+#include "ff_log.h"
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
@@ -71,7 +72,7 @@
 
 int enable_kni = 0;
 static int kni_accept;
-static int knictl_action = FF_KNICTL_ACTION_DEFAULT;
+static enum FF_KNICTL_ACTION knictl_action = FF_KNICTL_ACTION_DEFAULT;
 #endif
 int nb_dev_ports = 0;   /* primary is correct, secondary is not correct, but no impact now*/
 
@@ -146,6 +147,26 @@ static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
 
+struct ff_rss_tbl_dip_type {
+    uint32_t daddr;
+    uint16_t first; /* The start port in portrange */
+    uint16_t last; /* The end port in portrange */
+    uint16_t first_idx; /* The idx of the start port in portrange */
+    uint16_t last_idx; /* The idx of the end port in portrange */
+    uint16_t num;
+    uint16_t dport[FF_RSS_TBL_MAX_DPORT + 1]; /* [0] used as the idx of last seleted port */
+} __rte_cache_aligned;
+
+struct ff_rss_tbl_type {
+    //enum ff_rss_tbl_init_type init;
+    uint32_t saddr;
+    uint16_t sport;
+    uint16_t num;
+    struct ff_rss_tbl_dip_type dip_tbl[FF_RSS_TBL_MAX_DADDR];
+} __rte_cache_aligned;
+static struct ff_rss_tbl_type ff_rss_tbl[FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES];
+
+
 static void
 ff_hardclock_job(__rte_unused struct rte_timer *timer,
     __rte_unused void *arg) {
@@ -186,8 +207,7 @@ check_all_ports_link_status(void)
     uint8_t count, all_ports_up, print_flag = 0;
     struct rte_eth_link link;
 
-    printf("\nChecking link status");
-    fflush(stdout);
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "\nChecking link status");
 
     int i, nb_ports;
     nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -201,13 +221,13 @@ check_all_ports_link_status(void)
             /* print link status if flag set */
             if (print_flag == 1) {
                 if (link.link_status) {
-                    printf("Port %d Link Up - speed %u "
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %d Link Up - speed %u "
                         "Mbps - %s\n", (int)portid,
                         (unsigned)link.link_speed,
                         (link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
                         ("full-duplex") : ("half-duplex\n"));
                 } else {
-                    printf("Port %d Link Down\n", (int)portid);
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Port %d Link Down\n", (int)portid);
                 }
                 continue;
             }
@@ -223,15 +243,14 @@ check_all_ports_link_status(void)
             break;
 
         if (all_ports_up == 0) {
-            printf(".");
-            fflush(stdout);
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, ".");
             rte_delay_ms(CHECK_INTERVAL);
         }
 
         /* set the print_flag if all ports up or timeout */
         if (all_ports_up == 1 || count == (MAX_CHECK_TIME - 1)) {
             print_flag = 1;
-            printf("done\n");
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "done\n");
         }
     }
 }
@@ -281,7 +300,7 @@ init_lcore_conf(void)
         if (queueid < 0) {
             continue;
         }
-        printf("lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
+        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
         uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
         lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
         lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
@@ -360,7 +379,7 @@ init_mem_pool(void)
         if (pktmbuf_pool[socketid] == NULL) {
             rte_exit(EXIT_FAILURE, "Cannot create mbuf pool on socket %d\n", socketid);
         } else {
-            printf("create mbuf pool on socket %d\n", socketid);
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "create mbuf pool on socket %d\n", socketid);
         }
 
 #ifdef FF_USE_PAGE_ARRAY
@@ -434,7 +453,7 @@ init_dispatch_ring(void)
             if (dispatch_ring[portid][queueid] == NULL)
                 rte_panic("create ring:%s failed!\n", name_buf);
 
-            printf("create ring:%s success, %u ring entries are now free!\n",
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "create ring:%s success, %u ring entries are now free!\n",
                 name_buf, rte_ring_free_count(dispatch_ring[portid][queueid]));
         }
     }
@@ -500,7 +519,7 @@ init_msg_ring(void)
 
 #ifdef FF_KNI
 
-static enum FF_KNICTL_CMD get_kni_action(const char *c){
+static enum FF_KNICTL_ACTION get_kni_action(const char *c){
     if (!c)
         return FF_KNICTL_ACTION_DEFAULT;
     if (0 == strcasecmp(c, "alltokni")){
@@ -526,7 +545,7 @@ init_kni(void)
 
     knictl_action = get_kni_action(ff_global_cfg.kni.kni_action);
 
-    ff_kni_init(nb_ports, ff_global_cfg.kni.type, ff_global_cfg.kni.tcp_port,
+    ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
 
     unsigned socket_id = lcore_conf.socket_id;
@@ -536,7 +555,7 @@ init_kni(void)
     int i, ret;
     for (i = 0; i < nb_ports; i++) {
         uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
-        ff_kni_alloc(port_id, socket_id, ff_global_cfg.kni.type, i, mbuf_pool, KNI_QUEUE_SIZE);
+        ff_kni_alloc(port_id, socket_id, i, KNI_QUEUE_SIZE);
     }
 
     return 0;
@@ -544,7 +563,7 @@ init_kni(void)
 #endif
 
 //RSS reta update will failed when enable flow isolate
-#ifndef FF_FLOW_ISOLATE
+#if !defined(FF_FLOW_ISOLATE) && !defined(FF_FLOW_IPIP)
 static void
 set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 {
@@ -552,7 +571,7 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
         return;
     }
 
-    int reta_conf_size = RTE_MAX(1, reta_size / RTE_ETH_RETA_GROUP_SIZE);
+    unsigned reta_conf_size = RTE_MAX(1, reta_size / RTE_ETH_RETA_GROUP_SIZE);
     struct rte_eth_rss_reta_entry64 reta_conf[reta_conf_size];
 
     /* config HW indirection table */
@@ -582,14 +601,10 @@ init_port_start(void)
     total_nb_ports = nb_ports;
 #ifdef FF_KNI
     if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
-#ifdef FF_KNI_KNI
-        if (ff_global_cfg.kni.type == KNI_TYPE_VIRTIO)
-#endif
-        {
             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
-        }
     }
 #endif
+
     for (i = 0; i < total_nb_ports; i++) {
         uint16_t port_id, u_port_id;
         struct ff_port_cfg *pconf = NULL;
@@ -612,11 +627,10 @@ init_port_start(void)
             nb_slaves = 0;
         }
 
-
         for (j = 0; j <= nb_slaves; j++) {
             if (j < nb_slaves) {
                 port_id = pconf->slave_portid_list[j];
-                printf("To init %s's %d'st slave port[%d]\n",
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "To init %s's %d'st slave port[%d]\n",
                         ff_global_cfg.dpdk.bond_cfgs->name,
                         j, port_id);
             } else {
@@ -648,7 +662,7 @@ init_port_start(void)
 
             struct rte_ether_addr addr;
             rte_eth_macaddr_get(port_id, &addr);
-            printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
                     (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
             /* Only config dev port, but not kernel virtio user port */
@@ -657,26 +671,28 @@ init_port_start(void)
                     addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 
                 /* Set RSS mode */
-                uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
-                port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
-                port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-                if (dev_info.hash_key_size == 52) {
-                    rsskey = default_rsskey_52bytes;
-                    rsskey_len = 52;
-                }
-                if (ff_global_cfg.dpdk.symmetric_rss) {
-                    printf("Use symmetric Receive-side Scaling(RSS) key\n");
-                    rsskey = symmetric_rsskey;
-                }
-                port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
-                port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
-                port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
-                if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                        RTE_ETH_RSS_PROTO_MASK) {
-                    printf("Port %u modified RSS hash function based on hardware support,"
-                            "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-                            port_id, default_rss_hf,
-                            port_conf.rx_adv_conf.rss_conf.rss_hf);
+                if (dev_info.flow_type_rss_offloads) {
+                    uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
+                    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+                    port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
+                    if (dev_info.hash_key_size == 52) {
+                        rsskey = default_rsskey_52bytes;
+                        rsskey_len = 52;
+                    }
+                    if (ff_global_cfg.dpdk.symmetric_rss) {
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Use symmetric Receive-side Scaling(RSS) key\n");
+                        rsskey = symmetric_rsskey;
+                    }
+                    port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
+                    port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
+                    port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+                    if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
+                            RTE_ETH_RSS_PROTO_MASK) {
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u modified RSS hash function based on hardware support,"
+                                "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                                port_id, default_rss_hf,
+                                port_conf.rx_adv_conf.rss_conf.rss_hf);
+                    }
                 }
 
                 if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
@@ -697,7 +713,7 @@ init_port_start(void)
                 /* FIXME: Enable TCP LRO ?*/
                 #if 0
                 if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
-                    printf("LRO is supported\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is supported\n");
                     port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
                     pconf->hw_features.rx_lro = 1;
                 }
@@ -707,39 +723,39 @@ init_port_start(void)
                 if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
                     (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
                     (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
-                    printf("RX checksum offload supported\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "RX checksum offload supported\n");
                     port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
                     pconf->hw_features.rx_csum = 1;
                 }
 
                 if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
                     if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
-                        printf("TX ip checksum offload supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX ip checksum offload supported\n");
                         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
                         pconf->hw_features.tx_csum_ip = 1;
                     }
 
                     if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
                         (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
-                        printf("TX TCP&UDP checksum offload supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX TCP&UDP checksum offload supported\n");
                         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
                         pconf->hw_features.tx_csum_l4 = 1;
                     }
                 } else {
-                    printf("TX checksum offoad is disabled\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX checksum offoad is disabled\n");
                 }
 
                 if (ff_global_cfg.dpdk.tso) {
                     if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
-                        printf("TSO is supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is supported\n");
                         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
                         pconf->hw_features.tx_tso = 1;
                     }
                     else {
-                        printf("TSO is not supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is not supported\n");
                     }
                 } else {
-                    printf("TSO is disabled\n");
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is disabled\n");
                 }
 
                 if (dev_info.reta_size) {
@@ -747,7 +763,7 @@ init_port_start(void)
                     assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
 
                     rss_reta_size[port_id] = dev_info.reta_size;
-                    printf("port[%d]: rss table size: %d\n", port_id,
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "port[%d]: rss table size: %d\n", port_id,
                         dev_info.reta_size);
                 }
             }
@@ -765,7 +781,7 @@ init_port_start(void)
             static uint16_t nb_txd = TX_QUEUE_SIZE;
             ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
             if (ret < 0)
-                printf("Could not adjust number of descriptors "
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Could not adjust number of descriptors "
                         "for port%u (%d)\n", (unsigned)port_id, ret);
 
             uint16_t q;
@@ -797,7 +813,7 @@ init_port_start(void)
                     strlen(dev_info.driver_name)) == 0) {
 
                 rte_eth_macaddr_get(port_id, &addr);
-                printf("Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
                         (unsigned)port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
                 rte_memcpy(pconf->mac,
@@ -807,13 +823,13 @@ init_port_start(void)
                 uint16_t slaves[RTE_MAX_ETHPORTS], len = RTE_MAX_ETHPORTS;
 
                 mode = rte_eth_bond_mode_get(port_id);
-                printf("Port %u, bond mode:%d\n", port_id, mode);
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, bond mode:%d\n", port_id, mode);
 
-                count = rte_eth_bond_slaves_get(port_id, slaves, len);
-                printf("Port %u, %s's slave ports count:%d\n", port_id,
+                count = rte_eth_bond_members_get(port_id, slaves, len);
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, %s's slave ports count:%d\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, count);
                 for (x=0; x<count; x++) {
-                    printf("Port %u, %s's slave port[%u]\n", port_id,
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, %s's slave port[%u]\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, slaves[x]);
                 }
             }
@@ -824,7 +840,7 @@ init_port_start(void)
             }
 
 //RSS reta update will failed when enable flow isolate
-#ifndef FF_FLOW_ISOLATE
+#if !defined(FF_FLOW_ISOLATE) && !defined(FF_FLOW_IPIP)
             if (nb_queues > 1) {
                 /*
                  * FIXME: modify RSS set to FDIR
@@ -837,9 +853,9 @@ init_port_start(void)
             if (ff_global_cfg.dpdk.promiscuous) {
                 ret = rte_eth_promiscuous_enable(port_id);
                 if (ret == 0) {
-                    printf("set port %u to promiscuous mode ok\n", port_id);
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode ok\n", port_id);
                 } else {
-                    printf("set port %u to promiscuous mode error\n", port_id);
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode error\n", port_id);
                 }
             }
         }
@@ -902,7 +918,7 @@ port_flow_complain(struct rte_flow_error *error)
         errstr = "unknown type";
     else
         errstr = errstrlist[error->type];
-    printf("Caught error type %d (%s): %s%s: %s\n",
+    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Caught error type %d (%s): %s%s: %s\n",
            error->type, errstr,
            error->cause ? (snprintf(buf, sizeof(buf), "cause: %p, ",
                                     error->cause), buf) : "",
@@ -923,7 +939,7 @@ port_flow_isolate(uint16_t port_id, int set)
     memset(&error, 0x66, sizeof(error));
     if (rte_flow_isolate(port_id, set, &error))
         return port_flow_complain(&error);
-    printf("Ingress traffic on port %u is %s to the defined flow rules\n",
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Ingress traffic on port %u is %s to the defined flow rules\n",
            port_id,
            set ? "now restricted" : "not restricted anymore");
     return 0;
@@ -1079,6 +1095,118 @@ init_flow(uint16_t port_id, uint16_t tcp_port) {
 
 #endif
 
+#ifdef FF_FLOW_IPIP
+static int
+create_ipip_flow(uint16_t port_id) {
+    struct rte_flow_attr attr = {.ingress = 1};
+    struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+    int nb_queues = pconf->nb_lcores;
+    uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
+    // 1. Queue configuration check
+    if (nb_queues > RTE_MAX_QUEUES_PER_PORT) {
+        rte_exit(EXIT_FAILURE, "Queue count exceeds limit (%d > %d)\n",
+                nb_queues, RTE_MAX_QUEUES_PER_PORT);
+    }
+    for (int i = 0; i < nb_queues; i++)
+        queue[i] = i;
+
+    // 2. Get device info and check return value
+    struct rte_eth_dev_info dev_info;
+    int ret = rte_eth_dev_info_get(port_id, &dev_info);
+    if (ret != 0) {
+        rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n",
+                port_id, strerror(-ret));
+    }
+    // 3. RSS config - key: set inner hash
+    struct rte_flow_action_rss rss = {
+        .func = RTE_ETH_HASH_FUNCTION_DEFAULT,
+        .level = 2,  // inner encapsulation layer RSS - hash based on inner protocol
+        .types = RTE_ETH_RSS_NONFRAG_IPV4_TCP,  // inner IPv4+TCP hash
+        .key_len = rsskey_len,
+        .key = rsskey,
+        .queue_num = nb_queues,
+        .queue = queue,
+    };
+    // 4. Hardware capability check and fallback handling
+    if (!(dev_info.flow_type_rss_offloads & RTE_ETH_RSS_NONFRAG_IPV4_TCP)) {
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n");
+        rss.level = 0;  // fallback to outer RSS
+        rss.types = RTE_ETH_FLOW_IPV4;  // update to outer protocol type
+    }
+
+    // 5. Outer IPv4 matches IPIP protocol
+    struct rte_flow_item_ipv4 outer_ipv4_spec = {
+        .hdr = {
+            .next_proto_id = IPPROTO_IPIP
+        }
+    };
+    struct rte_flow_item_ipv4 outer_ipv4_mask = {
+        .hdr = {
+            .next_proto_id = 0xFF
+        }
+    };
+
+    // 6. Pattern chain definition - match inner TCP to enable inner RSS
+    struct rte_flow_item pattern[] = {
+        // Outer Ethernet header (wildcard)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_ETH,
+            .spec = NULL,
+            .mask = NULL
+        },
+        // Outer IPv4 header (match only IPIP protocol)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_IPV4,
+            .spec = &outer_ipv4_spec,
+            .mask = &outer_ipv4_mask
+        },
+        // Inner IPv4 header (wildcard, RSS hashes based on this layer)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_IPV4,
+            .spec = NULL,
+            .mask = NULL
+        },
+        // Inner TCP header (wildcard, RSS hashes based on this layer)
+        {
+            .type = RTE_FLOW_ITEM_TYPE_TCP,
+            .spec = NULL,
+            .mask = NULL
+        },
+        {
+            .type = RTE_FLOW_ITEM_TYPE_END
+        }
+    };
+
+    // 7. Action configuration
+    struct rte_flow_action action[] = {
+        {
+            .type = RTE_FLOW_ACTION_TYPE_RSS,
+            .conf = &rss
+        },
+        {
+            .type = RTE_FLOW_ACTION_TYPE_END
+        }
+    };
+
+    // 8. Validate and create flow rule
+    struct rte_flow_error error;
+    struct rte_flow *flow = NULL;
+
+    if (!rte_flow_validate(port_id, &attr, pattern, action, &error)) {
+        flow = rte_flow_create(port_id, &attr, pattern, action, &error);
+        if (!flow) {
+            ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Flow rule creation failed: %s\n", error.message);
+            return -error.type;
+        }
+    } else {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Flow rule validation failed: %s\n", error.message);
+        return -error.type;
+    }
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
+    return 0;
+}
+#endif
+
 #ifdef FF_FDIR
 /*
  * Flow director allows the traffic to specific port to be processed on the
@@ -1201,6 +1329,10 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
     }
 
+    if (ff_global_cfg.log.level) {
+        ff_log_open_set();
+    }
+
     numa_on = ff_global_cfg.dpdk.numa_on;
 
     idle_sleep = ff_global_cfg.dpdk.idle_sleep;
@@ -1228,7 +1360,7 @@ ff_dpdk_init(int argc, char **argv)
 
 #ifdef FF_FLOW_ISOLATE
     // run once in primary process
-    if (0 == lcore_conf.tx_queue_id[0]){
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = port_flow_isolate(0, 1);
         if (ret < 0)
             rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
@@ -1240,6 +1372,16 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "init_port_start failed\n");
     }
 
+    if (ff_global_cfg.dpdk.rss_check_cfgs &&
+            ff_global_cfg.dpdk.rss_check_cfgs->enable) {
+        ret = ff_rss_tbl_init();
+        if (ret < 0) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "ff_rss_tbl_init failed, disable it\n");
+        } else {
+            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "ff_rss_tbl_init successed\n");
+        }
+    }
+
     init_clock();
 #ifdef FF_FLOW_ISOLATE
     //Only give a example usage: port_id=0, tcp_port= 80.
@@ -1249,6 +1391,16 @@ ff_dpdk_init(int argc, char **argv)
     ret = init_flow(0, 80);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
+    }
+#endif
+
+#ifdef FF_FLOW_IPIP
+    // create ipip flow for port 0
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY){
+        ret = create_ipip_flow(0);
+        if (ret != 0) {
+            rte_exit(EXIT_FAILURE, "create_ipip_flow failed\n");
+        }
     }
 #endif
 
@@ -1477,14 +1629,17 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
 
             if (ret == FF_DISPATCH_ERROR || ret >= nb_queues) {
+                //ff_traffic.rx_dropped += rtem->nb_segs; /* Not counted as packet drop */
                 rte_pktmbuf_free(rtem);
                 continue;
             }
 
             if (ret != queue_id) {
                 ret = rte_ring_enqueue(dispatch_ring[port_id][ret], rtem);
-                if (ret < 0)
+                if (ret < 0) {
+                    ff_traffic.rx_dropped += rtem->nb_segs;
                     rte_pktmbuf_free(rtem);
+                }
 
                 continue;
             }
@@ -1514,8 +1669,10 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                     if(mbuf_clone) {
                         int ret = rte_ring_enqueue(dispatch_ring[port_id][j],
                             mbuf_clone);
-                        if (ret < 0)
+                        if (ret < 0) {
+                            ff_traffic.rx_dropped += mbuf_clone->nb_segs;
                             rte_pktmbuf_free(mbuf_clone);
+                        }
                     }
                 }
             }
@@ -1705,10 +1862,23 @@ handle_knictl_msg(struct ff_msg *msg)
 {
     if (msg->knictl.kni_cmd == FF_KNICTL_CMD_SET){
         switch (msg->knictl.kni_action){
-            case FF_KNICTL_ACTION_ALL_TO_FF: knictl_action = FF_KNICTL_ACTION_ALL_TO_FF; msg->result = 0; printf("new kni action: alltoff\n"); break;
-            case FF_KNICTL_ACTION_ALL_TO_KNI: knictl_action = FF_KNICTL_ACTION_ALL_TO_KNI; msg->result = 0; printf("new kni action: alltokni\n"); break;
-            case FF_KNICTL_ACTION_DEFAULT: knictl_action = FF_KNICTL_ACTION_DEFAULT; msg->result = 0; printf("new kni action: default\n"); break;
-            default: msg->result = -1;
+            case FF_KNICTL_ACTION_ALL_TO_FF:
+                knictl_action = FF_KNICTL_ACTION_ALL_TO_FF;
+                msg->result = 0;
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "new kni action: alltoff\n");
+                break;
+            case FF_KNICTL_ACTION_ALL_TO_KNI:
+                knictl_action = FF_KNICTL_ACTION_ALL_TO_KNI;
+                msg->result = 0;
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "new kni action: alltokni\n");
+                break;
+            case FF_KNICTL_ACTION_DEFAULT:
+                knictl_action = FF_KNICTL_ACTION_DEFAULT;
+                msg->result = 0;
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "new kni action: default\n");
+                break;
+            default:
+                msg->result = -1;
         }
     }
     else if (msg->knictl.kni_cmd == FF_KNICTL_CMD_GET){
@@ -1818,9 +1988,9 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     }
 
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
-    ff_traffic.tx_packets += ret;
     uint16_t i;
     for (i = 0; i < ret; i++) {
+        ff_traffic.tx_packets += m_table[i]->nb_segs; // use ret or rets' nb_segs?
         ff_traffic.tx_bytes += rte_pktmbuf_pkt_len(m_table[i]);
 #ifdef FF_USE_PAGE_ARRAY
         if (qconf->tx_mbufs[port].bsd_m_table[i])
@@ -1829,6 +1999,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     }
     if (unlikely(ret < n)) {
         do {
+            ff_traffic.tx_dropped += m_table[ret]->nb_segs;
             rte_pktmbuf_free(m_table[ret]);
 #ifdef FF_USE_PAGE_ARRAY
             if ( qconf->tx_mbufs[port].bsd_m_table[ret] )
@@ -1880,6 +2051,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
+        ff_traffic.tx_dropped++;
         ff_mbuf_free(m);
         return -1;
     }
@@ -1893,6 +2065,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         if (cur == NULL) {
             cur = rte_pktmbuf_alloc(mbuf_pool);
             if (cur == NULL) {
+                ff_traffic.tx_dropped += head->nb_segs + 1;
                 rte_pktmbuf_free(head);
                 ff_mbuf_free(m);
                 return -1;
@@ -1909,6 +2082,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
         int ret = ff_mbuf_copydata(m, data, off, len);
         if (ret < 0) {
+            ff_traffic.tx_dropped += head->nb_segs;
             rte_pktmbuf_free(head);
             ff_mbuf_free(m);
             return -1;
@@ -1943,6 +2117,12 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         int iph_len;
         iph = (struct rte_ipv4_hdr *)(data + RTE_ETHER_HDR_LEN);
         iph_len = (iph->version_ihl & 0x0f) << 2;
+
+        if (iph->version == 4) {
+            head->ol_flags |= RTE_MBUF_F_TX_IPV4;
+        } else {
+            head->ol_flags |= RTE_MBUF_F_TX_IPV6;
+        }
 
         if (offload.tcp_csum) {
             head->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
@@ -1995,6 +2175,7 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
+        ff_traffic.tx_dropped++;
         return -1;
     }
 
@@ -2007,6 +2188,7 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
         if (cur == NULL) {
             cur = rte_pktmbuf_alloc(mbuf_pool);
             if (cur == NULL) {
+                ff_traffic.tx_dropped += head->nb_segs  + 1;
                 rte_pktmbuf_free(head);
                 return -1;
             }
@@ -2075,10 +2257,10 @@ main_loop(void *arg)
 
                 ff_get_current_time(&sec, &nsec);
                 if (sec > last_sec) {
-                    if (kni_rate_limt.gerneal_packets > ff_global_cfg.kni.general_packets_ratelimit ||
-                        kni_rate_limt.console_packets > ff_global_cfg.kni.console_packets_ratelimit ||
-                        kni_rate_limt.kernel_packets > ff_global_cfg.kni.kernel_packets_ratelimit) {
-                        printf("kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
+                    if (kni_rate_limt.gerneal_packets > (uint64_t)ff_global_cfg.kni.general_packets_ratelimit ||
+                        kni_rate_limt.console_packets > (uint64_t)ff_global_cfg.kni.console_packets_ratelimit ||
+                        kni_rate_limt.kernel_packets > (uint64_t)ff_global_cfg.kni.kernel_packets_ratelimit) {
+                        ff_log(FF_LOG_NOTICE, FF_LOGTYPE_FSTACK_LIB, "kni ratelimit, general:%lu/%d, console:%lu/%d, kernel:%lu/%d, last sec:%ld, sec:%ld\n",
                             kni_rate_limt.gerneal_packets, ff_global_cfg.kni.general_packets_ratelimit,
                             kni_rate_limt.console_packets, ff_global_cfg.kni.console_packets_ratelimit,
                             kni_rate_limt.kernel_packets, ff_global_cfg.kni.kernel_packets_ratelimit, last_sec, sec);
@@ -2161,7 +2343,9 @@ main_loop(void *arg)
         }
 
         process_msg_ring(qconf->proc_id, pkts_burst);
-
+#ifdef FF_LOOPBACK_SUPPORT
+        ff_swi_net_excute();
+#endif
         div_tsc = rte_rdtsc();
 
         if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc >= drain_tsc))) {
@@ -2171,7 +2355,7 @@ main_loop(void *arg)
 
         idle_sleep_tsc = rte_rdtsc();
         if (likely(idle && idle_sleep)) {
-            usleep(idle_sleep);
+            rte_delay_us_sleep(idle_sleep);
             end_tsc = rte_rdtsc();
         } else {
             end_tsc = idle_sleep_tsc;
@@ -2224,6 +2408,10 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MAIN);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
+
+    /* FIXME: Cleanup ff_config, freebsd etc. */
+    rte_eal_cleanup();
+    ff_log_close();
 }
 
 void
@@ -2288,6 +2476,259 @@ ff_regist_pcblddr_fun(pcblddr_func_t func)
 }
 
 int
+ff_rss_tbl_init(void)
+{
+    uint32_t ori_idx, idx, ori_daddr_idx, daddr_idx;
+    uint32_t daddr, saddr;
+    uint16_t sport;
+    int prev_dport, stat, i, j, k;
+    void *sc;
+    struct ff_dpdk_if_context ctx;
+
+    memset(ff_rss_tbl, 0, sizeof(ff_rss_tbl));
+
+    sc = ff_veth_get_softc(&ctx);
+    if (sc == NULL) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "ff_veth_get_softc failed\n");
+        return -1;
+    }
+
+    for (i = 0; i < ff_global_cfg.dpdk.rss_check_cfgs->nb_rss_tbl; i++) {
+        struct ff_rss_tbl_cfg *rcc = &ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_cfgs[i];
+
+        ctx.port_id = rcc->port_id;
+        daddr = rcc->daddr;
+        saddr = rcc->saddr;
+        sport = rcc->sport;
+
+        /* Use DIR D to avoid getting the same idx while FF_RSS_TBL_MAX_DIP_MASK is very small*/
+        ori_idx = idx = ((saddr + (uint32_t)((uint8_t *)&saddr)[3]) ^ sport) & \
+            FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+        ori_daddr_idx = daddr_idx = (daddr + (uint32_t)((uint8_t *)&daddr)[3]) & \
+            FF_RSS_TBL_MAX_DIP_MASK;
+
+        do {
+            if (ff_rss_tbl[idx].saddr == INADDR_ANY ||
+                    (ff_rss_tbl[idx].saddr == saddr &&
+                    ff_rss_tbl[idx].sport == sport)) {
+                break;
+            }
+
+            if (ff_rss_tbl[idx].saddr != saddr ||
+                    ff_rss_tbl[idx].sport != sport) {
+                idx++;
+                idx &= FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+            }
+        } while (idx != ori_idx);
+
+        if (idx == ori_idx &&
+                ((ff_rss_tbl[idx].saddr != INADDR_ANY) &&
+                (ff_rss_tbl[idx].saddr != saddr ||
+                ff_rss_tbl[idx].sport != sport))) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "There are too many 2-tuble(> %d) of saddrs(max %d) * sport(max %d),"
+                " this 4-tuple rss_tbl config will be ignored,"
+                 " idx %d, port_id %u, daddr "NIPQUAD_FMT", saddr "NIPQUAD_FMT", sport %u\n",
+                 FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES, FF_RSS_TBL_MAX_SADDR, FF_RSS_TBL_MAX_SPORT,
+                 i, ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport));
+            goto IGNORE;
+            //ff_veth_free_softc(sc);
+            //return -1;
+        }
+
+        do {
+            if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr == INADDR_ANY) {
+                break;
+            }
+
+            if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr != daddr) {
+                daddr_idx++;
+                daddr_idx &= FF_RSS_TBL_MAX_DIP_MASK;
+            } else {
+                /* Dup 3-tuple */
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "Duplicate ff rss table 3-tuple,"
+                    " this 4-tuple rss_tbl config will be ignored,"
+                     " port_id %u, daddr "NIPQUAD_FMT", saddr "NIPQUAD_FMT", sport %u\n",
+                     ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport));
+                goto IGNORE;
+            }
+        } while (daddr_idx != ori_daddr_idx);
+
+        if (daddr_idx == ori_daddr_idx && ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr != INADDR_ANY) {
+           ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "There are too many daddrs(> %d) with same saddr and sport,"
+                " this 4-tuple rss_tbl config will be ignored,"
+                 " idx %d, port_id %u, daddr "NIPQUAD_FMT", saddr "NIPQUAD_FMT", sport %u\n",
+                 i, FF_RSS_TBL_MAX_DADDR, ctx.port_id,
+                 NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport));
+            goto IGNORE;
+            //return -1; /* Not used now */
+        }
+
+        /* The idx of port start form 1, 0 used as the idx of last selected port */
+        k = 1;
+        prev_dport = -1;
+        ff_rss_tbl[idx].dip_tbl[daddr_idx].dport[0] = k;
+        ff_rss_tbl[idx].dip_tbl[daddr_idx].first_idx = k;
+        for (j = 0; j < FF_RSS_TBL_MAX_DPORT; j++) {
+            stat = ff_rss_check(sc, saddr, daddr, sport, htons(j));
+            if (stat) {
+                ff_rss_tbl[idx].dip_tbl[daddr_idx].num++;
+                ff_rss_tbl[idx].dip_tbl[daddr_idx].dport[k++] = j;
+                if (prev_dport == -1) {
+                    ff_rss_tbl[idx].dip_tbl[daddr_idx].first = j;
+                }
+                prev_dport = j;
+            }
+        }
+        /*
+         * If num and k set 65536, it will be 0, otherwise will set portrange failed.
+         * It only appears in a single process, has no impact.
+         * And 65535 only used for comparative testing.
+         */
+        if (k == FF_RSS_TBL_MAX_DPORT + 1) {
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].num = k -2;
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx =  k - 2;
+        } else
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx = k - 1;
+        ff_rss_tbl[idx].dip_tbl[daddr_idx].last = prev_dport;
+        ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr = daddr;
+
+        ff_rss_tbl[idx].saddr = saddr;
+        ff_rss_tbl[idx].sport = sport;
+        ff_rss_tbl[idx].num++;
+
+        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Inited one ff_rss_tbl success, port_id %u, daddr "NIPQUAD_FMT
+            ", saddr "NIPQUAD_FMT", sport %u,"
+            " last idx %u, available lport num %u\n",
+            ctx.port_id, NIPQUAD(daddr), NIPQUAD(saddr), ntohs(sport),
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx,
+            ff_rss_tbl[idx].dip_tbl[daddr_idx].num);
+
+IGNORE:
+        // do nothing
+        ;
+    }
+
+    ff_veth_free_softc(sc);
+
+    return 0;
+
+}
+
+int
+ff_rss_tbl_set_portrange(uint16_t first, uint16_t last)
+{
+    int i, j, k;
+
+    if (first > last || !ff_global_cfg.dpdk.rss_check_cfgs ||
+            ff_global_cfg.dpdk.rss_check_cfgs->enable == 0) {
+        return -1;
+    }
+
+    for (i = 0; i < FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES; i++) {
+        if (ff_rss_tbl[i].saddr == INADDR_ANY) {
+            continue;
+        }
+
+        for(j = 0; j < FF_RSS_TBL_MAX_DADDR; j++) {
+            if (ff_rss_tbl[i].dip_tbl[j].daddr == INADDR_ANY) {
+                continue;
+            }
+
+            ff_rss_tbl[i].dip_tbl[j].first = first;
+            ff_rss_tbl[i].dip_tbl[j].last = last;
+
+            ff_rss_tbl[i].dip_tbl[j].first_idx = 0;
+            for (k = 1; k <= ff_rss_tbl[i].dip_tbl[j].num; k++) {
+                if (ff_rss_tbl[i].dip_tbl[j].first_idx == 0 &&
+                        ff_rss_tbl[i].dip_tbl[j].dport[k] >= first) {
+                    ff_rss_tbl[i].dip_tbl[j].first_idx = k;
+                    if (ff_rss_tbl[i].dip_tbl[j].dport[ff_rss_tbl[i].dip_tbl[j].num] < last) {
+                        /* ff_rss_tbl_init set last_idx as ff_rss_tbl[i].dip_tbl[j].num already. */
+                        break;
+                    }
+                    if (first == last) {
+                        ff_rss_tbl[i].dip_tbl[j].last_idx = k;
+                        break;
+                    }
+                }
+                if (ff_rss_tbl[i].dip_tbl[j].dport[k] == last) {
+                    ff_rss_tbl[i].dip_tbl[j].last_idx = k;
+                    break;
+                }
+                if (ff_rss_tbl[i].dip_tbl[j].dport[k] > last) {
+                    ff_rss_tbl[i].dip_tbl[j].last_idx = k > 1 ? k -1 : k;
+                    break;
+                }
+            }
+
+            if (ff_rss_tbl[i].dip_tbl[j].first_idx == 0 ||
+                    ff_rss_tbl[i].dip_tbl[j].last_idx < ff_rss_tbl[i].dip_tbl[j].first_idx) {
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "ff_rss_tbl_set_portrange failed, first %u, last %u\n",
+                    first, last);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+int
+ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
+    uint16_t *rss_first, uint16_t *rss_last, uint16_t **rss_portrange)
+{
+    uint32_t ori_idx, idx, ori_daddr_idx, daddr_idx;
+    int i;
+
+    if (!ff_global_cfg.dpdk.rss_check_cfgs ||
+            ff_global_cfg.dpdk.rss_check_cfgs->enable == 0) {
+        return -1;
+    }
+
+    ori_idx = idx = ((saddr + (uint32_t)((uint8_t *)&saddr)[3]) ^ sport) & \
+        FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+    do {
+        /* If not inited, no need to continue find */
+        if (ff_rss_tbl[idx].saddr == INADDR_ANY) {
+            return -ENOENT;
+        }
+
+        if (ff_rss_tbl[idx].saddr == saddr && ff_rss_tbl[idx].sport == sport) {
+            ori_daddr_idx = daddr_idx = (daddr + (uint32_t)((uint8_t *)&daddr)[3]) & \
+                FF_RSS_TBL_MAX_DIP_MASK;
+            do {
+                if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr == INADDR_ANY) {
+                    return -ENOENT;
+                }
+
+                if (ff_rss_tbl[idx].dip_tbl[daddr_idx].daddr == daddr) {
+                    *rss_first = ff_rss_tbl[idx].dip_tbl[daddr_idx].first_idx;
+                    *rss_last = ff_rss_tbl[idx].dip_tbl[daddr_idx].last_idx;
+                    *rss_portrange = &ff_rss_tbl[idx].dip_tbl[daddr_idx].dport[0];
+                    return 0;
+                }
+
+                daddr_idx++;
+                daddr_idx &= FF_RSS_TBL_MAX_DIP_MASK;
+            } while (daddr_idx != ori_daddr_idx);
+
+            if (daddr_idx == ori_daddr_idx) {
+                return -ENOENT;
+            }
+        }
+
+        idx++;
+        idx &= FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES_MASK;
+    } while (idx != ori_idx);
+
+    if (idx == ori_idx) {
+        return -ENOENT;
+    }
+
+    return -ENOENT;
+}
+
+int
 ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport)
 {
@@ -2303,7 +2744,7 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t queueid = qconf->tx_queue_id[ctx->port_id];
 
     uint8_t data[sizeof(saddr) + sizeof(daddr) + sizeof(sport) +
-        sizeof(dport)];
+            sizeof(dport)];
 
     unsigned datalen = 0;
 

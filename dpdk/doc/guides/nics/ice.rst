@@ -69,13 +69,18 @@ are listed in the Tested Platforms section of the Release Notes for each release
    +-----------+---------------+-----------------+-----------+--------------+-----------+
    |    22.07  |     1.9.11    |      1.3.30     |  1.3.37   |    1.3.10    |    4.0    |
    +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    22.11  |     1.10.1    |      1.3.30     |  1.3.37   |    1.3.10    |    4.1    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    23.03  |     1.11.1    |      1.3.30     |  1.3.40   |    1.3.10    |    4.2    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    23.07  |     1.12.6    |      1.3.35     |  1.3.45   |    1.3.13    |    4.3    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
 
-Pre-Installation Configuration
-------------------------------
+Configuration
+-------------
 
-
-Runtime Config Options
-~~~~~~~~~~~~~~~~~~~~~~
+Runtime Configuration
+~~~~~~~~~~~~~~~~~~~~~
 
 - ``Safe Mode Support`` (default ``0``)
 
@@ -89,24 +94,15 @@ Runtime Config Options
   NOTE: In Safe mode, only very limited features are available, features like RSS,
   checksum, fdir, tunneling ... are all disabled.
 
-- ``Generic Flow Pipeline Mode Support`` (default ``0``)
+- ``Default MAC Disable`` (default ``0``)
 
-  In pipeline mode, a flow can be set at one specific stage by setting parameter
-  ``priority``. Currently, we support two stages: priority = 0 or !0. Flows with
-  priority 0 located at the first pipeline stage which typically be used as a firewall
-  to drop the packet on a blocklist(we called it permission stage). At this stage,
-  flow rules are created for the device's exact match engine: switch. Flows with priority
-  !0 located at the second stage, typically packets are classified here and be steered to
-  specific queue or queue group (we called it distribution stage), At this stage, flow
-  rules are created for device's flow director engine.
-  For none-pipeline mode, ``priority`` is ignored, a flow rule can be created as a flow director
-  rule or a switch rule depends on its pattern/action and the resource allocation situation,
-  all flows are virtually at the same pipeline stage.
-  By default, generic flow API is enabled in none-pipeline mode, user can choose to
-  use pipeline mode by setting ``devargs`` parameter ``pipeline-mode-support``,
+  Disable the default MAC make the device drop all packets by default,
+  only packets hit on filter rules will pass.
+
+  Default MAC can be disabled by setting the devargs parameter ``default-mac-disable``,
   for example::
 
-    -a 80:00.0,pipeline-mode-support=1
+    -a 80:00.0,default-mac-disable=1
 
 - ``Protocol extraction for per queue``
 
@@ -308,6 +304,51 @@ as switch, ACL) for the rest VFs.
 The DCF PMD needs to advertise and acquire DCF capability which allows DCF to
 send AdminQ commands that it would like to execute over to the PF and receive
 responses for the same from PF.
+
+Generic Flow Support
+~~~~~~~~~~~~~~~~~~~~
+
+The ice PMD provides support for the Generic Flow API (RTE_FLOW), enabling
+users to offload various flow classification tasks to the E810 NIC.
+The E810 NIC's  packet processing pipeline consists of the following stages:
+
+Switch: Supports exact match and limited wildcard matching with a large flow
+capacity.
+
+ACL: Supports wildcard matching with a smaller flow capacity (DCF mode only).
+
+FDIR: Supports exact match with a large flow capacity (PF mode only).
+
+Hash: Supports RSS (PF mode only)
+
+The ice PMD utilizes the ice_flow_engine structure to represent each of these
+stages and leverages the rte_flow rule's ``group`` attribute for selecting the
+appropriate engine for Switch, ACL, and FDIR operations:
+
+Group 0 maps to Switch
+Group 1 maps to ACL
+Group 2 maps to FDIR
+
+In the case of RSS, it will only be selected if a ``RTE_FLOW_ACTION_RSS`` action
+is targeted to no queue group, and the group attribute is ignored.
+
+For each engine, a list of supported patterns is maintained in a global array
+named ``ice_<engine>_supported_pattern``. The Ice PMD will reject any rule with
+a pattern that is not included in the supported list.
+
+One notable feature is the ice PMD's ability to leverage the Raw pattern,
+enabling protocol-agnostic flow offloading. Here is an example of creating
+a rule that matches an IPv4 destination address of 1.2.3.4 and redirects it to
+queue 3 using a raw pattern::
+
+  flow create 0 ingress group 2 pattern raw \
+  pattern spec \
+  00000000000000000000000008004500001400004000401000000000000001020304 \
+  pattern mask \
+  000000000000000000000000000000000000000000000000000000000000ffffffff \
+  end actions queue index 3 / mark id 3 / end
+
+Currently, raw pattern support is limited to the FDIR and Hash engines.
 
 Additional Options
 ++++++++++++++++++

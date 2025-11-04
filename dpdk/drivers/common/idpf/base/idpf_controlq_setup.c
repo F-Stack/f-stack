@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 
@@ -11,9 +11,8 @@
  * @hw: pointer to hw struct
  * @cq: pointer to the specific Control queue
  */
-static int
-idpf_ctlq_alloc_desc_ring(struct idpf_hw *hw,
-			  struct idpf_ctlq_info *cq)
+static int idpf_ctlq_alloc_desc_ring(struct idpf_hw *hw,
+				     struct idpf_ctlq_info *cq)
 {
 	size_t size = cq->ring_size * sizeof(struct idpf_ctlq_desc);
 

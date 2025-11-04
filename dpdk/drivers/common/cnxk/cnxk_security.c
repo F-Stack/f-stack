@@ -19,7 +19,7 @@ ipsec_hmac_opad_ipad_gen(struct rte_crypto_sym_xform *auth_xform,
 	uint32_t i;
 
 	/* HMAC OPAD and IPAD */
-	for (i = 0; i < 127 && i < length; i++) {
+	for (i = 0; i < 128 && i < length; i++) {
 		opad[i] = opad[i] ^ key[i];
 		ipad[i] = ipad[i] ^ key[i];
 	}
@@ -37,8 +37,8 @@ ipsec_hmac_opad_ipad_gen(struct rte_crypto_sym_xform *auth_xform,
 		roc_hash_sha1_gen(ipad, (uint32_t *)&hmac_opad_ipad[24]);
 		break;
 	case RTE_CRYPTO_AUTH_SHA256_HMAC:
-		roc_hash_sha256_gen(opad, (uint32_t *)&hmac_opad_ipad[0]);
-		roc_hash_sha256_gen(ipad, (uint32_t *)&hmac_opad_ipad[64]);
+		roc_hash_sha256_gen(opad, (uint32_t *)&hmac_opad_ipad[0], 256);
+		roc_hash_sha256_gen(ipad, (uint32_t *)&hmac_opad_ipad[64], 256);
 		break;
 	case RTE_CRYPTO_AUTH_SHA384_HMAC:
 		roc_hash_sha512_gen(opad, (uint64_t *)&hmac_opad_ipad[0], 384);
@@ -155,6 +155,10 @@ ot_ipsec_sa_common_param_fill(union roc_ot_ipsec_sa_word2 *w2,
 
 		switch (auth_xfrm->auth.algo) {
 		case RTE_CRYPTO_AUTH_NULL:
+			if (w2->s.dir == ROC_IE_SA_DIR_INBOUND && ipsec_xfrm->replay_win_sz) {
+				plt_err("anti-replay can't be supported with integrity service disabled");
+				return -EINVAL;
+			}
 			w2->s.auth_type = ROC_IE_OT_SA_AUTH_NULL;
 			break;
 		case RTE_CRYPTO_AUTH_SHA1_HMAC:
@@ -356,7 +360,7 @@ cnxk_ot_ipsec_inb_sa_fill(struct roc_ot_ipsec_inb_sa *sa,
 	/* Initialize the SA */
 	roc_ot_ipsec_inb_sa_init(sa, is_inline);
 
-	w2.u64 = 0;
+	w2.u64 = sa->w2.u64;
 	rc = ot_ipsec_sa_common_param_fill(&w2, sa->cipher_key, sa->w8.s.salt,
 					   sa->hmac_opad_ipad, ipsec_xfrm,
 					   crypto_xfrm);
@@ -1131,7 +1135,7 @@ cnxk_on_ipsec_outb_sa_create(struct rte_security_ipsec_xform *ipsec,
 	} else
 		ctx_len += sizeof(template->ip4);
 
-	ctx_len += RTE_ALIGN_CEIL(ctx_len, 8);
+	ctx_len = RTE_ALIGN_CEIL(ctx_len, 8);
 
 	if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_AEAD) {
 		uint8_t *hmac_opad_ipad = (uint8_t *)&out_sa->sha2;
@@ -1163,6 +1167,11 @@ cnxk_on_ipsec_inb_sa_create(struct rte_security_ipsec_xform *ipsec,
 	if (ret)
 		return ret;
 
+	if (crypto_xform->type != RTE_CRYPTO_SYM_XFORM_AEAD &&
+	    crypto_xform->auth.algo == RTE_CRYPTO_AUTH_NULL && ipsec->replay_win_sz) {
+		plt_err("anti-replay can't be supported with integrity service disabled");
+		return -EINVAL;
+	}
 	if (crypto_xform->type == RTE_CRYPTO_SYM_XFORM_AEAD ||
 	    auth_xform->auth.algo == RTE_CRYPTO_AUTH_NULL ||
 	    auth_xform->auth.algo == RTE_CRYPTO_AUTH_AES_GMAC) {

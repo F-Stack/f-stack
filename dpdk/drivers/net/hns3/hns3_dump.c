@@ -68,12 +68,14 @@ hns3_get_dev_mac_info(FILE *file, struct hns3_adapter *hns)
 
 	fprintf(file, "  - MAC Info:\n");
 	fprintf(file,
+		"\t  -- media_type=%s\n"
 		"\t  -- query_type=%u\n"
 		"\t  -- supported_speed=0x%x\n"
 		"\t  -- advertising=0x%x\n"
 		"\t  -- lp_advertising=0x%x\n"
 		"\t  -- support_autoneg=%s\n"
 		"\t  -- support_fc_autoneg=%s\n",
+		hns3_get_media_type_name(hw->mac.media_type),
 		hw->mac.query_type,
 		hw->mac.supported_speed,
 		hw->mac.advertising,
@@ -96,11 +98,13 @@ hns3_get_dev_feature_capability(FILE *file, struct hns3_hw *hw)
 		{HNS3_DEV_SUPPORT_TX_PUSH_B, "TX PUSH"},
 		{HNS3_DEV_SUPPORT_INDEP_TXRX_B, "INDEP TXRX"},
 		{HNS3_DEV_SUPPORT_STASH_B, "STASH"},
+		{HNS3_DEV_SUPPORT_SIMPLE_BD_B, "SIMPLE BD"},
 		{HNS3_DEV_SUPPORT_RXD_ADV_LAYOUT_B, "RXD Advanced Layout"},
 		{HNS3_DEV_SUPPORT_OUTER_UDP_CKSUM_B, "OUTER UDP CKSUM"},
 		{HNS3_DEV_SUPPORT_RAS_IMP_B, "RAS IMP"},
 		{HNS3_DEV_SUPPORT_TM_B, "TM"},
 		{HNS3_DEV_SUPPORT_VF_VLAN_FLT_MOD_B, "VF VLAN FILTER MOD"},
+		{HNS3_DEV_SUPPORT_FC_AUTO_B, "FC AUTO"},
 		{HNS3_DEV_SUPPORT_GRO_B, "GRO"}
 	};
 	uint32_t i;
@@ -238,7 +242,7 @@ hns3_get_rx_queue(struct rte_eth_dev *dev)
 	for (queue_id = 0; queue_id < dev->data->nb_rx_queues; queue_id++) {
 		rx_queues = dev->data->rx_queues;
 		if (rx_queues == NULL || rx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect rx_queues is NULL!\n");
+			hns3_err(hw, "detect rx_queues is NULL!");
 			return NULL;
 		}
 
@@ -263,7 +267,7 @@ hns3_get_tx_queue(struct rte_eth_dev *dev)
 	for (queue_id = 0; queue_id < dev->data->nb_tx_queues; queue_id++) {
 		tx_queues = dev->data->tx_queues;
 		if (tx_queues == NULL || tx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect tx_queues is NULL!\n");
+			hns3_err(hw, "detect tx_queues is NULL!");
 			return NULL;
 		}
 
@@ -293,7 +297,7 @@ hns3_get_rxtx_fake_queue_info(FILE *file, struct rte_eth_dev *dev)
 	if (dev->data->nb_rx_queues < dev->data->nb_tx_queues) {
 		rx_queues = hw->fkq_data.rx_queues;
 		if (rx_queues == NULL || rx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect rx_queues is NULL!\n");
+			hns3_err(hw, "detect rx_queues is NULL!");
 			return;
 		}
 		rxq = (struct hns3_rx_queue *)rx_queues[queue_id];
@@ -307,7 +311,7 @@ hns3_get_rxtx_fake_queue_info(FILE *file, struct rte_eth_dev *dev)
 		queue_id = 0;
 
 		if (tx_queues == NULL || tx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect tx_queues is NULL!\n");
+			hns3_err(hw, "detect tx_queues is NULL!");
 			return;
 		}
 		txq = (struct hns3_tx_queue *)tx_queues[queue_id];
@@ -628,6 +632,10 @@ hns3_get_vlan_tx_offload_cfg(FILE *file, struct hns3_hw *hw)
 static void
 hns3_get_port_pvid_info(FILE *file, struct hns3_hw *hw)
 {
+	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
+	if (hns->is_vf)
+		return;
+
 	fprintf(file, "  - pvid status: %s\n",
 		hw->port_base_vlan_cfg.state ? "On" : "Off");
 }
@@ -957,7 +965,7 @@ hns3_rx_descriptor_dump(const struct rte_eth_dev *dev, uint16_t queue_id,
 		return -EINVAL;
 
 	if (num > rxq->nb_rx_desc) {
-		hns3_err(hw, "Invalid BD num=%u\n", num);
+		hns3_err(hw, "Invalid BD num=%u", num);
 		return -EINVAL;
 	}
 
@@ -999,7 +1007,7 @@ hns3_tx_descriptor_dump(const struct rte_eth_dev *dev, uint16_t queue_id,
 		return -EINVAL;
 
 	if (num > txq->nb_tx_desc) {
-		hns3_err(hw, "Invalid BD num=%u\n", num);
+		hns3_err(hw, "Invalid BD num=%u", num);
 		return -EINVAL;
 	}
 

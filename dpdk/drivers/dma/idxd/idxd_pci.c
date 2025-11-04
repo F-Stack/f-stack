@@ -6,7 +6,6 @@
 #include <rte_devargs.h>
 #include <rte_dmadev_pmd.h>
 #include <rte_malloc.h>
-#include <rte_atomic.h>
 
 #include "idxd_internal.h"
 
@@ -136,7 +135,8 @@ idxd_pci_dev_close(struct rte_dma_dev *dev)
 	/* if this is the last WQ on the device, disable the device and free
 	 * the PCI struct
 	 */
-	is_last_wq = rte_atomic16_dec_and_test(&idxd->u.pci->ref_count);
+	/* NOTE: review for potential ordering optimization */
+	is_last_wq = (__atomic_fetch_sub(&idxd->u.pci->ref_count, 1, __ATOMIC_SEQ_CST) == 1);
 	if (is_last_wq) {
 		/* disable the device */
 		err_code = idxd_pci_dev_command(idxd, idxd_disable_dev);
@@ -195,6 +195,14 @@ init_pci_device(struct rte_pci_device *dev, struct idxd_dmadev *idxd,
 	pci->wq_regs_base = RTE_PTR_ADD(pci->regs, wq_offset * 0x100);
 	pci->portals = dev->mem_resource[2].addr;
 	pci->wq_cfg_sz = (pci->regs->wqcap >> 24) & 0x0F;
+
+	/* reset */
+	idxd->u.pci = pci;
+	err_code = idxd_pci_dev_command(idxd, idxd_reset_device);
+	if (err_code) {
+		IDXD_PMD_ERR("Error reset device: code %#x", err_code);
+		goto err;
+	}
 
 	/* sanity check device status */
 	if (pci->regs->gensts & GENSTS_DEV_STATE_MASK) {
@@ -292,7 +300,7 @@ init_pci_device(struct rte_pci_device *dev, struct idxd_dmadev *idxd,
 	return nb_wqs;
 
 err:
-	free(pci);
+	rte_free(pci);
 	return err_code;
 }
 
@@ -308,6 +316,37 @@ idxd_dmadev_probe_pci(struct rte_pci_driver *drv, struct rte_pci_device *dev)
 	rte_pci_device_name(&dev->addr, name, sizeof(name));
 	IDXD_PMD_INFO("Init %s on NUMA node %d", name, dev->device.numa_node);
 	dev->device.driver = &drv->driver;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		char qname[32];
+		int max_qid;
+
+		/* look up queue 0 to get the PCI structure */
+		snprintf(qname, sizeof(qname), "%s-q0", name);
+		IDXD_PMD_INFO("Looking up %s", qname);
+		ret = idxd_dmadev_create(qname, &dev->device, NULL, &idxd_pci_ops);
+		if (ret != 0) {
+			IDXD_PMD_ERR("Failed to create dmadev %s", name);
+			return ret;
+		}
+		qid = rte_dma_get_dev_id_by_name(qname);
+		max_qid = __atomic_load_n(
+			&((struct idxd_dmadev *)rte_dma_fp_objs[qid].dev_private)->u.pci->ref_count,
+			__ATOMIC_SEQ_CST);
+
+		/* we have queue 0 done, now configure the rest of the queues */
+		for (qid = 1; qid < max_qid; qid++) {
+			/* add the queue number to each device name */
+			snprintf(qname, sizeof(qname), "%s-q%d", name, qid);
+			IDXD_PMD_INFO("Looking up %s", qname);
+			ret = idxd_dmadev_create(qname, &dev->device, NULL, &idxd_pci_ops);
+			if (ret != 0) {
+				IDXD_PMD_ERR("Failed to create dmadev %s", name);
+				return ret;
+			}
+		}
+		return 0;
+	}
 
 	if (dev->device.devargs && dev->device.devargs->args[0] != '\0') {
 		/* if the number of devargs grows beyond just 1, use rte_kvargs */
@@ -325,7 +364,7 @@ idxd_dmadev_probe_pci(struct rte_pci_driver *drv, struct rte_pci_device *dev)
 		return ret;
 	}
 	if (idxd.u.pci->portals == NULL) {
-		IDXD_PMD_ERR("Error, invalid portal assigned during initialization\n");
+		IDXD_PMD_ERR("Error, invalid portal assigned during initialization");
 		free(idxd.u.pci);
 		return -EINVAL;
 	}
@@ -350,7 +389,7 @@ idxd_dmadev_probe_pci(struct rte_pci_driver *drv, struct rte_pci_device *dev)
 				free(idxd.u.pci);
 			return ret;
 		}
-		rte_atomic16_inc(&idxd.u.pci->ref_count);
+		__atomic_fetch_add(&idxd.u.pci->ref_count, 1, __ATOMIC_SEQ_CST);
 	}
 
 	return 0;

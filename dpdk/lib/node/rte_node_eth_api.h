@@ -14,7 +14,6 @@
  *
  * This API allows to setup ethdev_rx and ethdev_tx nodes
  * and its queue associations.
- *
  */
 
 #ifdef __cplusplus
@@ -56,7 +55,6 @@ struct rte_node_ethdev_config {
  * @return
  *   0 on successful initialization, negative otherwise.
  */
-__rte_experimental
 int rte_node_eth_config(struct rte_node_ethdev_config *cfg,
 			uint16_t cnt, uint16_t nb_graphs);
 #ifdef __cplusplus

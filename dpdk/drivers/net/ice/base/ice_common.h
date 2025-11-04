@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_COMMON_H_
@@ -86,6 +86,9 @@ ice_aq_get_internal_data(struct ice_hw *hw, u8 cluster_id, u16 table_id,
 enum ice_status
 ice_write_rxq_ctx(struct ice_hw *hw, struct ice_rlan_ctx *rlan_ctx,
 		  u32 rxq_index);
+enum ice_status
+ice_read_rxq_ctx(struct ice_hw *hw, struct ice_rlan_ctx *rlan_ctx,
+		 u32 rxq_index);
 enum ice_status ice_clear_rxq_ctx(struct ice_hw *hw, u32 rxq_index);
 enum ice_status
 ice_clear_tx_cmpltnq_ctx(struct ice_hw *hw, u32 tx_cmpltnq_index);
@@ -128,6 +131,8 @@ extern const struct ice_ctx_ele ice_tlan_ctx_info[];
 enum ice_status
 ice_set_ctx(struct ice_hw *hw, u8 *src_ctx, u8 *dest_ctx,
 	    const struct ice_ctx_ele *ce_info);
+enum ice_status
+ice_get_ctx(u8 *src_ctx, u8 *dest_ctx, const struct ice_ctx_ele *ce_info);
 
 enum ice_status
 ice_aq_send_cmd(struct ice_hw *hw, struct ice_aq_desc *desc,
@@ -222,8 +227,6 @@ ice_aq_read_topo_dev_nvm(struct ice_hw *hw,
 			 struct ice_sq_cd *cd);
 
 enum ice_status
-ice_get_ctx(u8 *src_ctx, u8 *dest_ctx, struct ice_ctx_ele *ce_info);
-enum ice_status
 ice_dis_vsi_txq(struct ice_port_info *pi, u16 vsi_handle, u8 tc, u8 num_queues,
 		u16 *q_handle, u16 *q_ids, u32 *q_teids,
 		enum ice_disq_rst_src rst_src, u16 vmvf_num,
@@ -246,6 +249,10 @@ enum ice_status ice_sbq_rw_reg_lp(struct ice_hw *hw,
 void ice_sbq_lock(struct ice_hw *hw);
 void ice_sbq_unlock(struct ice_hw *hw);
 enum ice_status ice_sbq_rw_reg(struct ice_hw *hw, struct ice_sbq_msg_input *in);
+enum ice_status
+ice_aq_get_sensor_reading(struct ice_hw *hw, u8 sensor, u8 format,
+			  struct ice_aqc_get_sensor_reading_resp *data,
+			  struct ice_sq_cd *cd);
 void
 ice_stat_update40(struct ice_hw *hw, u32 reg, bool prev_stat_loaded,
 		  u64 *prev_stat, u64 *cur_stat);

@@ -81,6 +81,8 @@ has_member_args = [
 # [ "MACRO to define if found", "header for the search",
 #   "symbol to search" ]
 has_sym_args = [
+        [ 'HAVE_IBV_FLOW_SPEC_ESP', 'infiniband/verbs.h',
+            'IBV_FLOW_SPEC_ESP' ],
         [ 'HAVE_IBV_RX_HASH_IPSEC_SPI', 'infiniband/verbs.h',
             'IBV_RX_HASH_IPSEC_SPI' ],
         [ 'HAVE_IBV_RELAXED_ORDERING', 'infiniband/verbs.h',
@@ -217,6 +219,8 @@ has_sym_args = [
             'ibv_import_device' ],
         [ 'HAVE_MLX5DV_DR_ACTION_CREATE_DEST_ROOT_TABLE', 'infiniband/mlx5dv.h',
             'mlx5dv_dr_action_create_dest_root_table' ],
+        [ 'HAVE_MLX5DV_CREATE_STEERING_ANCHOR', 'infiniband/mlx5dv.h',
+            'mlx5dv_create_steering_anchor'],
         [ 'HAVE_IBV_FORK_UNNEEDED', 'infiniband/verbs.h',
             'ibv_is_fork_initialized'],
 ]
@@ -227,11 +231,12 @@ if  libmtcr_ul_found
 endif
 
 foreach arg:has_sym_args
-    mlx5_config.set(arg[0], cc.has_header_symbol(arg[1], arg[2], dependencies: libs))
+    mlx5_config.set(arg[0], cc.has_header_symbol(arg[1], arg[2], dependencies: libs, args: cflags))
 endforeach
 foreach arg:has_member_args
     file_prefix = '#include <' + arg[1] + '>'
-    mlx5_config.set(arg[0], cc.has_member(arg[2], arg[3], prefix : file_prefix, dependencies: libs))
+    mlx5_config.set(arg[0],
+            cc.has_member(arg[2], arg[3], prefix : file_prefix, dependencies: libs, args: cflags))
 endforeach
 
 # Build Glue Library

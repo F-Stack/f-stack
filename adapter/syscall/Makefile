@@ -1,4 +1,4 @@
-TOPDIR=..
+TOPDIR=../..
 
 ifeq ($(FF_PATH),)
 	FF_PATH=${TOPDIR}
@@ -17,9 +17,23 @@ endif
 # If disable it, one socket can use in all threads.
 #FF_THREAD_SOCKET=1
 
+# Epoll polling mode, now only support freebsd socket, not support FF_KERNEL_EVENT.  
+# If disable it, epoll use sem_wait.
+#FF_PRELOAD_POLLING_MODE=1
+
 # If enable FF_KERNEL_EVENT, epoll_create/epoll_clt/epoll_wait always call f-stack and system API at the same time.
 # Use for some scenarios similar to Nginx.
 #FF_KERNEL_EVENT=1
+
+# If enable FF_USE_THREAD_STRUCT_HANDLE, every ff_so_context has one struct thread  handle in fstack, fork will be supported
+# like linux kernel.
+#FF_USE_THREAD_STRUCT_HANDLE=1
+
+# If FF_PRELOAD_SUPPORT_SELECT is enabled, we can use select in LD_PRELOAD mode. 
+# However, we need to set the value of FF_KERNEL_MAX_FD_SELECT based on our requirements to ensure file descriptors 
+# (FDs) for the user-space protocol stack can be covered by the select interface.
+#FF_PRELOAD_SUPPORT_SELECT=1
+#FF_KERNEL_MAX_FD_SELECT=128
 
 PKGCONF ?= pkg-config
 
@@ -39,6 +53,18 @@ endif
 
 ifdef FF_MULTI_SC
 	CFLAGS+= -DFF_MULTI_SC
+endif
+
+ifdef FF_PRELOAD_POLLING_MODE
+	CFLAGS+= -DFF_PRELOAD_POLLING_MODE
+endif
+
+ifdef FF_USE_THREAD_STRUCT_HANDLE
+	CFLAGS+= -DFF_USE_THREAD_STRUCT_HANDLE
+endif
+
+ifdef FF_PRELOAD_SUPPORT_SELECT
+	CFLAGS+= -DFF_PRELOAD_SUPPORT_SELECT -DFF_KERNEL_MAX_FD_SELECT=$(FF_KERNEL_MAX_FD_SELECT) -DFF_USE_THREAD_STRUCT_HANDLE 
 endif
 
 CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)

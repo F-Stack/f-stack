@@ -310,15 +310,15 @@ static int cons_parse_ethertype_filter(const struct rte_flow_attr *attr,
 	 * Mask bits of destination MAC address must be full
 	 * of 1 or full of 0.
 	 */
-	if (!rte_is_zero_ether_addr(&eth_mask->src) ||
-	    (!rte_is_zero_ether_addr(&eth_mask->dst) &&
-	     !rte_is_broadcast_ether_addr(&eth_mask->dst))) {
+	if (!rte_is_zero_ether_addr(&eth_mask->hdr.src_addr) ||
+	    (!rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr) &&
+	     !rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr))) {
 		rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Invalid ether address mask");
 		return -rte_errno;
 	}
 
-	if ((eth_mask->type & UINT16_MAX) != UINT16_MAX) {
+	if ((eth_mask->hdr.ether_type & UINT16_MAX) != UINT16_MAX) {
 		rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Invalid ethertype mask");
 		return -rte_errno;
@@ -328,13 +328,13 @@ static int cons_parse_ethertype_filter(const struct rte_flow_attr *attr,
 	 * If mask bits of destination MAC address
 	 * are full of 1, set RTE_ETHTYPE_FLAGS_MAC.
 	 */
-	if (rte_is_broadcast_ether_addr(&eth_mask->dst)) {
-		filter->mac_addr = eth_spec->dst;
+	if (rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr)) {
+		filter->mac_addr = eth_spec->hdr.dst_addr;
 		filter->flags |= RTE_ETHTYPE_FLAGS_MAC;
 	} else {
 		filter->flags &= ~RTE_ETHTYPE_FLAGS_MAC;
 	}
-	filter->ether_type = rte_be_to_cpu_16(eth_spec->type);
+	filter->ether_type = rte_be_to_cpu_16(eth_spec->hdr.ether_type);
 
 	/* Check if the next non-void item is END. */
 	item = next_no_void_pattern(pattern, item);
@@ -1979,8 +1979,8 @@ static int hinic_lookup_new_filter(struct hinic_5tuple_filter *filter,
 		return -EINVAL;
 	}
 
-	if (!(filter_info->type_mask & (1 << type_id))) {
-		filter_info->type_mask |= 1 << type_id;
+	if (!(filter_info->type_mask & (UINT64_C(1) << type_id))) {
+		filter_info->type_mask |= UINT64_C(1) << type_id;
 		filter->index = type_id;
 		filter_info->pkt_filters[type_id].enable = true;
 		filter_info->pkt_filters[type_id].pkt_proto =
@@ -2138,7 +2138,7 @@ static void hinic_remove_5tuple_filter(struct rte_eth_dev *dev,
 	filter_info->pkt_type = 0;
 	filter_info->qid = 0;
 	filter_info->pkt_filters[filter->index].qid = 0;
-	filter_info->type_mask &= ~(1 <<  (filter->index));
+	filter_info->type_mask &= ~(UINT64_C(1) << filter->index);
 	TAILQ_REMOVE(&filter_info->fivetuple_list, filter, entries);
 
 	rte_free(filter);
@@ -2268,8 +2268,8 @@ hinic_ethertype_filter_insert(struct hinic_filter_info *filter_info,
 	if (id < 0)
 		return -EINVAL;
 
-	if (!(filter_info->type_mask & (1 << id))) {
-		filter_info->type_mask |= 1 << id;
+	if (!(filter_info->type_mask & (UINT64_C(1) << id))) {
+		filter_info->type_mask |= UINT64_C(1) << id;
 		filter_info->pkt_filters[id].pkt_proto =
 			ethertype_filter->pkt_proto;
 		filter_info->pkt_filters[id].enable = ethertype_filter->enable;
@@ -2289,7 +2289,7 @@ hinic_ethertype_filter_remove(struct hinic_filter_info *filter_info,
 		return;
 
 	filter_info->pkt_type = 0;
-	filter_info->type_mask &= ~(1 << idx);
+	filter_info->type_mask &= ~(UINT64_C(1) << idx);
 	filter_info->pkt_filters[idx].pkt_proto = (uint16_t)0;
 	filter_info->pkt_filters[idx].enable = FALSE;
 	filter_info->pkt_filters[idx].qid = 0;
@@ -2355,7 +2355,7 @@ hinic_add_del_ethertype_filter(struct rte_eth_dev *dev,
 		if (i < 0)
 			return -EINVAL;
 
-		if ((filter_info->type_mask & (1 << i))) {
+		if ((filter_info->type_mask & (UINT64_C(1) << i))) {
 			filter_info->pkt_filters[i].enable = FALSE;
 			(void)hinic_set_fdir_filter(nic_dev->hwdev,
 					filter_info->pkt_type,

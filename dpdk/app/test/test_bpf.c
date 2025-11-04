@@ -3262,7 +3262,7 @@ test_bpf(void)
 
 #endif /* !RTE_LIB_BPF */
 
-REGISTER_TEST_COMMAND(bpf_autotest, test_bpf);
+REGISTER_FAST_TEST(bpf_autotest, true, true, test_bpf);
 
 #ifndef RTE_HAS_LIBPCAP
 
@@ -3341,7 +3341,6 @@ test_bpf_filter_sanity(pcap_t *pcap)
 		struct rte_ipv4_hdr ip_hdr;
 	} *hdr;
 
-	memset(&mb, 0, sizeof(mb));
 	dummy_mbuf_prep(&mb, tbuf, sizeof(tbuf), plen);
 	m = &mb;
 
@@ -3474,4 +3473,4 @@ test_bpf_convert(void)
 
 #endif /* RTE_HAS_LIBPCAP */
 
-REGISTER_TEST_COMMAND(bpf_convert_autotest, test_bpf_convert);
+REGISTER_FAST_TEST(bpf_convert_autotest, true, true, test_bpf_convert);

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #include "idpf_type.h"
 #include "idpf_prototype.h"
-#include "virtchnl.h"
+#include <virtchnl.h>
 
 
 /**
@@ -239,8 +239,10 @@ int idpf_clean_arq_element(struct idpf_hw *hw,
 	e->desc.ret_val = msg.status;
 	e->desc.datalen = msg.data_len;
 	if (msg.data_len > 0) {
-		if (!msg.ctx.indirect.payload)
-			return -EINVAL;
+		if (!msg.ctx.indirect.payload || !msg.ctx.indirect.payload->va ||
+		    !e->msg_buf) {
+			return -EFAULT;
+		}
 		e->buf_len = msg.data_len;
 		msg_data_len = msg.data_len;
 		idpf_memcpy(e->msg_buf, msg.ctx.indirect.payload->va, msg_data_len,
@@ -260,12 +262,12 @@ exit:
  *  idpf_deinit_hw - shutdown routine
  *  @hw: pointer to the hardware structure
  */
-int idpf_deinit_hw(struct idpf_hw *hw)
+void idpf_deinit_hw(struct idpf_hw *hw)
 {
 	hw->asq = NULL;
 	hw->arq = NULL;
 
-	return idpf_ctlq_deinit(hw);
+	idpf_ctlq_deinit(hw);
 }
 
 /**

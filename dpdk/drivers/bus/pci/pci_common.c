@@ -99,20 +99,10 @@ pci_common_set(struct rte_pci_device *dev)
 	/* Each device has its internal, canonical name set. */
 	rte_pci_device_name(&dev->addr,
 			dev->name, sizeof(dev->name));
+	dev->device.name = dev->name;
+
 	devargs = pci_devargs_lookup(&dev->addr);
 	dev->device.devargs = devargs;
-
-	/* When using a blocklist, only blocked devices will have
-	 * an rte_devargs. Allowed devices won't have one.
-	 */
-	if (devargs != NULL)
-		/* If an rte_devargs exists, the generic rte_device uses the
-		 * given name as its name.
-		 */
-		dev->device.name = dev->device.devargs->name;
-	else
-		/* Otherwise, it uses the internal, canonical form. */
-		dev->device.name = dev->name;
 
 	if (dev->bus_info != NULL ||
 			asprintf(&dev->bus_info, "vendor_id=%"PRIx16", device_id=%"PRIx16,
@@ -121,12 +111,12 @@ pci_common_set(struct rte_pci_device *dev)
 }
 
 void
-pci_free(struct rte_pci_device *dev)
+pci_free(struct rte_pci_device_internal *pdev)
 {
-	if (dev == NULL)
+	if (pdev == NULL)
 		return;
-	free(dev->bus_info);
-	free(dev);
+	free(pdev->device.bus_info);
+	free(pdev);
 }
 
 /* map a particular resource from a file */
@@ -465,7 +455,8 @@ free:
 		rte_intr_instance_free(dev->vfio_req_intr_handle);
 		dev->vfio_req_intr_handle = NULL;
 
-		pci_free(dev);
+		TAILQ_REMOVE(&rte_pci_bus.device_list, dev, next);
+		pci_free(RTE_PCI_DEVICE_INTERNAL(dev));
 	}
 
 	return error;
@@ -681,7 +672,7 @@ pci_unplug(struct rte_device *dev)
 	if (ret == 0) {
 		rte_pci_remove_device(pdev);
 		rte_devargs_remove(dev->devargs);
-		pci_free(pdev);
+		pci_free(RTE_PCI_DEVICE_INTERNAL(pdev));
 	}
 	return ret;
 }
@@ -813,8 +804,62 @@ rte_pci_get_iommu_class(void)
 	return iova_mode;
 }
 
+bool
+rte_pci_has_capability_list(const struct rte_pci_device *dev)
+{
+	uint16_t status;
+
+	if (rte_pci_read_config(dev, &status, sizeof(status), RTE_PCI_STATUS) != sizeof(status))
+		return false;
+
+	return (status & RTE_PCI_STATUS_CAP_LIST) != 0;
+}
+
 off_t
-rte_pci_find_ext_capability(struct rte_pci_device *dev, uint32_t cap)
+rte_pci_find_capability(const struct rte_pci_device *dev, uint8_t cap)
+{
+	return rte_pci_find_next_capability(dev, cap, 0);
+}
+
+off_t
+rte_pci_find_next_capability(const struct rte_pci_device *dev, uint8_t cap,
+	off_t offset)
+{
+	uint8_t pos;
+	int ttl;
+
+	if (offset == 0)
+		offset = RTE_PCI_CAPABILITY_LIST;
+	else
+		offset += RTE_PCI_CAP_NEXT;
+	ttl = (RTE_PCI_CFG_SPACE_SIZE - RTE_PCI_STD_HEADER_SIZEOF) / RTE_PCI_CAP_SIZEOF;
+
+	if (rte_pci_read_config(dev, &pos, sizeof(pos), offset) < 0)
+		return -1;
+
+	while (pos && ttl--) {
+		uint16_t ent;
+		uint8_t id;
+
+		offset = pos;
+		if (rte_pci_read_config(dev, &ent, sizeof(ent), offset) < 0)
+			return -1;
+
+		id = ent & 0xff;
+		if (id == 0xff)
+			break;
+
+		if (id == cap)
+			return offset;
+
+		pos = (ent >> 8);
+	}
+
+	return 0;
+}
+
+off_t
+rte_pci_find_ext_capability(const struct rte_pci_device *dev, uint32_t cap)
 {
 	off_t offset = RTE_PCI_CFG_SPACE_SIZE;
 	uint32_t header;
@@ -857,7 +902,7 @@ rte_pci_find_ext_capability(struct rte_pci_device *dev, uint32_t cap)
 }
 
 int
-rte_pci_set_bus_master(struct rte_pci_device *dev, bool enable)
+rte_pci_set_bus_master(const struct rte_pci_device *dev, bool enable)
 {
 	uint16_t old_cmd, cmd;
 
@@ -889,9 +934,8 @@ rte_pci_pasid_set_state(const struct rte_pci_device *dev,
 		off_t offset, bool enable)
 {
 	uint16_t pasid = enable;
-	return rte_pci_write_config(dev, &pasid, sizeof(pasid), offset) < 0
-		? -1
-		: 0;
+	return rte_pci_write_config(dev, &pasid, sizeof(pasid),
+			offset + RTE_PCI_PASID_CTRL) != sizeof(pasid) ? -1 : 0;
 }
 
 struct rte_pci_bus rte_pci_bus = {

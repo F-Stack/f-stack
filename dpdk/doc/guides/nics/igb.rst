@@ -7,6 +7,15 @@ IGB Poll Mode Driver
 The IGB PMD (**librte_net_e1000**) provides poll mode driver
 support for Intel 1GbE nics.
 
+Supported Chipsets and NICs
+---------------------------
+
+- Intel 82576EB 10 Gigabit Ethernet Controller
+- Intel 82580EB 10 Gigabit Ethernet Controller
+- Intel 82580DB 10 Gigabit Ethernet Controller
+- Intel Ethernet Controller I210
+- Intel Ethernet Controller I350
+
 Features
 --------
 
@@ -23,16 +32,15 @@ Features of the IGB PMD are:
 * TCP segmentation offload
 * Jumbo frames supported
 
+Secondary Process Support
+-------------------------
 
-Limitations or Known issues
----------------------------
+IGB Physical Function Driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+Control plane operations are currently not supported in secondary processes.
 
-Supported Chipsets and NICs
----------------------------
+IGB Virtual Function Driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- Intel 82576EB 10 Gigabit Ethernet Controller
-- Intel 82580EB 10 Gigabit Ethernet Controller
-- Intel 82580DB 10 Gigabit Ethernet Controller
-- Intel Ethernet Controller I210
-- Intel Ethernet Controller I350
+Control plane operations are currently not supported in secondary processes.

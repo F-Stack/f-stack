@@ -39,6 +39,8 @@ enum roc_npc_item_type {
 	ROC_NPC_ITEM_TYPE_QINQ,
 	ROC_NPC_ITEM_TYPE_RAW,
 	ROC_NPC_ITEM_TYPE_MARK,
+	ROC_NPC_ITEM_TYPE_TX_QUEUE,
+	ROC_NPC_ITEM_TYPE_IPV6_ROUTING_EXT,
 	ROC_NPC_ITEM_TYPE_END,
 };
 
@@ -66,7 +68,6 @@ struct roc_ether_addr {
 
 struct roc_ether_hdr {
 	struct roc_ether_addr d_addr; /**< Destination address. */
-	PLT_STD_C11
 	union {
 		struct roc_ether_addr s_addr; /**< Source address. */
 		struct {
@@ -76,7 +77,6 @@ struct roc_ether_hdr {
 	uint16_t ether_type; /**< Frame type. */
 } __plt_aligned(2);
 
-PLT_STD_C11
 struct roc_npc_flow_item_eth {
 	union {
 		struct {
@@ -100,7 +100,6 @@ struct roc_vlan_hdr {
 	uint16_t eth_proto; /**< Ethernet type of encapsulated frame. */
 } __plt_packed;
 
-PLT_STD_C11
 struct roc_npc_flow_item_vlan {
 	union {
 		struct {
@@ -128,6 +127,22 @@ struct roc_ipv6_fragment_ext {
 	uint8_t reserved;    /**< Reserved */
 	uint16_t frag_data;  /**< All fragmentation data */
 	uint32_t id;	     /**< Packet ID */
+} __plt_packed;
+
+struct roc_ipv6_routing_ext {
+	uint8_t next_hdr;	/**< Protocol, next header. */
+	uint8_t hdr_len;	/**< Header length. */
+	uint8_t type;		/**< Extension header type. */
+	uint8_t segments_left;	/**< Valid segments number. */
+	union {
+		uint32_t flags; /**< Packet control data per type. */
+		struct {
+			uint8_t last_entry; /**< The last_entry field of SRH */
+			uint8_t flag;	    /**< Packet flag. */
+			uint16_t tag;	    /**< Packet tag. */
+		};
+	};
+	/* Next are 128-bit IPv6 address fields to describe segments. */
 } __plt_packed;
 
 struct roc_flow_item_ipv6_ext {
@@ -179,6 +194,7 @@ enum roc_npc_action_type {
 	ROC_NPC_ACTION_TYPE_VLAN_PCP_INSERT = (1 << 15),
 	ROC_NPC_ACTION_TYPE_PORT_ID = (1 << 16),
 	ROC_NPC_ACTION_TYPE_METER = (1 << 17),
+	ROC_NPC_ACTION_TYPE_AGE = (1 << 18),
 };
 
 struct roc_npc_action {
@@ -200,6 +216,21 @@ struct roc_npc_action_port_id {
 	uint32_t original : 1;	/**< Use original port ID if possible. */
 	uint32_t reserved : 31; /**< Reserved, must be zero. */
 	uint32_t id;		/**< port ID. */
+};
+
+struct roc_npc_action_age {
+	uint32_t timeout : 24; /**< Time in seconds. */
+	uint32_t reserved : 8; /**< Reserved, must be zero. */
+	/** The user flow context, NULL means the flow pointer. */
+	void *context;
+};
+
+/**
+ * ESP Header
+ */
+struct roc_npc_item_esp_hdr {
+	uint32_t spi; /**< Security Parameters Index */
+	uint32_t seq; /**< packet sequence number */
 };
 
 struct roc_npc_action_queue {
@@ -227,6 +258,7 @@ enum roc_npc_sec_action_alg {
 	ROC_NPC_SEC_ACTION_ALG1,
 	ROC_NPC_SEC_ACTION_ALG2,
 	ROC_NPC_SEC_ACTION_ALG3,
+	ROC_NPC_SEC_ACTION_ALG4,
 };
 
 struct roc_npc_sec_action {
@@ -253,6 +285,14 @@ struct roc_npc_flow_dump_data {
 	uint16_t ltype;
 };
 
+struct roc_npc_spi_to_sa_action_info {
+	uint32_t spi;
+	uint32_t hash_index;
+	uint8_t way;
+	bool duplicate;
+	bool has_action;
+};
+
 struct roc_npc_flow {
 	uint8_t nix_intf;
 	uint8_t enable;
@@ -272,6 +312,15 @@ struct roc_npc_flow {
 #define ROC_NPC_MAX_FLOW_PATTERNS 32
 	struct roc_npc_flow_dump_data dump_data[ROC_NPC_MAX_FLOW_PATTERNS];
 	uint16_t num_patterns;
+	struct roc_npc_spi_to_sa_action_info spi_to_sa_info;
+	bool is_validate;
+	uint16_t match_id;
+	uint8_t is_inline_dev;
+	bool use_pre_alloc;
+	uint64_t timeout_cycles;
+	void *age_context;
+	uint32_t timeout;
+	bool has_age_action;
 
 	TAILQ_ENTRY(roc_npc_flow) next;
 };
@@ -304,6 +353,19 @@ enum flow_vtag_cfg_dir { VTAG_TX, VTAG_RX };
 #define ROC_ETHER_TYPE_VLAN 0x8100 /**< IEEE 802.1Q VLAN tagging. */
 #define ROC_ETHER_TYPE_QINQ 0x88A8 /**< IEEE 802.1ad QinQ tagging. */
 
+struct roc_npc_flow_age {
+	plt_seqcount_t seq_cnt;
+	uint32_t aging_poll_freq;
+	uint32_t age_flow_refcnt;
+	uint32_t aged_flows_cnt;
+	uint32_t start_id;
+	uint32_t end_id;
+	plt_thread_t aged_flows_poll_thread;
+	struct plt_bitmap *aged_flows;
+	void *age_mem;
+	bool aged_flows_get_thread_exit;
+};
+
 struct roc_npc {
 	struct roc_nix *roc_nix;
 	uint8_t switch_header_type;
@@ -326,65 +388,58 @@ struct roc_npc {
 	bool is_sdp_mask_set;
 	uint16_t sdp_channel;
 	uint16_t sdp_channel_mask;
+	struct roc_npc_flow_age flow_age;
 
-#define ROC_NPC_MEM_SZ (5 * 1024)
+#define ROC_NPC_MEM_SZ (6 * 1024)
 	uint8_t reserved[ROC_NPC_MEM_SZ];
 } __plt_cache_aligned;
+
+#define ROC_NPC_AGE_POLL_FREQ_MIN 10
 
 int __roc_api roc_npc_init(struct roc_npc *roc_npc);
 int __roc_api roc_npc_fini(struct roc_npc *roc_npc);
 const char *__roc_api roc_npc_profile_name_get(struct roc_npc *roc_npc);
 
-struct roc_npc_flow *__roc_api
-roc_npc_flow_create(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
-		    const struct roc_npc_item_info pattern[],
-		    const struct roc_npc_action actions[], int *errcode);
-int __roc_api roc_npc_flow_destroy(struct roc_npc *roc_npc,
-				   struct roc_npc_flow *flow);
-int __roc_api roc_npc_mcam_free(struct roc_npc *roc_npc,
-				struct roc_npc_flow *mcam);
+struct roc_npc_flow *__roc_api roc_npc_flow_create(struct roc_npc *roc_npc,
+						   const struct roc_npc_attr *attr,
+						   const struct roc_npc_item_info pattern[],
+						   const struct roc_npc_action actions[],
+						   uint16_t dst_pf_func, int *errcode);
+int __roc_api roc_npc_flow_destroy(struct roc_npc *roc_npc, struct roc_npc_flow *flow);
+int __roc_api roc_npc_mcam_free(struct roc_npc *roc_npc, struct roc_npc_flow *mcam);
 int __roc_api roc_npc_mcam_free_entry(struct roc_npc *roc_npc, uint32_t entry);
-int __roc_api roc_npc_mcam_enable_all_entries(struct roc_npc *roc_npc,
-					      bool enable);
-int __roc_api roc_npc_mcam_alloc_entry(struct roc_npc *roc_npc,
-				       struct roc_npc_flow *mcam,
-				       struct roc_npc_flow *ref_mcam, int prio,
-				       int *resp_count);
-int __roc_api roc_npc_mcam_alloc_entries(struct roc_npc *roc_npc, int ref_entry,
-					 int *alloc_entry, int req_count,
-					 int priority, int *resp_count);
-int __roc_api roc_npc_mcam_ena_dis_entry(struct roc_npc *roc_npc,
-					 struct roc_npc_flow *mcam,
+int __roc_api roc_npc_mcam_enable_all_entries(struct roc_npc *roc_npc, bool enable);
+int __roc_api roc_npc_mcam_alloc_entry(struct roc_npc *roc_npc, struct roc_npc_flow *mcam,
+				       struct roc_npc_flow *ref_mcam, int prio, int *resp_count);
+int __roc_api roc_npc_mcam_alloc_entries(struct roc_npc *roc_npc, int ref_entry, int *alloc_entry,
+					 int req_count, int priority, int *resp_count);
+int __roc_api roc_npc_mcam_ena_dis_entry(struct roc_npc *roc_npc, struct roc_npc_flow *mcam,
 					 bool enable);
-int __roc_api roc_npc_mcam_write_entry(struct roc_npc *roc_npc,
-				       struct roc_npc_flow *mcam);
-int __roc_api roc_npc_flow_parse(struct roc_npc *roc_npc,
-				 const struct roc_npc_attr *attr,
+int __roc_api roc_npc_mcam_write_entry(struct roc_npc *roc_npc, struct roc_npc_flow *mcam);
+int __roc_api roc_npc_flow_parse(struct roc_npc *roc_npc, const struct roc_npc_attr *attr,
 				 const struct roc_npc_item_info pattern[],
-				 const struct roc_npc_action actions[],
-				 struct roc_npc_flow *flow);
+				 const struct roc_npc_action actions[], struct roc_npc_flow *flow);
 int __roc_api roc_npc_get_low_priority_mcam(struct roc_npc *roc_npc);
-int __roc_api roc_npc_mcam_free_counter(struct roc_npc *roc_npc,
-					uint16_t ctr_id);
-int __roc_api roc_npc_mcam_read_counter(struct roc_npc *roc_npc,
-					uint32_t ctr_id, uint64_t *count);
-int __roc_api roc_npc_mcam_clear_counter(struct roc_npc *roc_npc,
-					 uint32_t ctr_id);
+int __roc_api roc_npc_mcam_free_counter(struct roc_npc *roc_npc, uint16_t ctr_id);
+int __roc_api roc_npc_mcam_read_counter(struct roc_npc *roc_npc, uint32_t ctr_id, uint64_t *count);
+int __roc_api roc_npc_mcam_clear_counter(struct roc_npc *roc_npc, uint32_t ctr_id);
+int __roc_api roc_npc_inl_mcam_read_counter(uint32_t ctr_id, uint64_t *count);
+int __roc_api roc_npc_inl_mcam_clear_counter(uint32_t ctr_id);
 int __roc_api roc_npc_mcam_free_all_resources(struct roc_npc *roc_npc);
 void __roc_api roc_npc_flow_dump(FILE *file, struct roc_npc *roc_npc);
 void __roc_api roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc,
 				      struct roc_npc_flow *mcam);
+int __roc_api roc_npc_mark_actions_get(struct roc_npc *roc_npc);
+int __roc_api roc_npc_mark_actions_sub_return(struct roc_npc *roc_npc, uint32_t count);
 int __roc_api roc_npc_vtag_actions_get(struct roc_npc *roc_npc);
-int __roc_api roc_npc_vtag_actions_sub_return(struct roc_npc *roc_npc,
-					      uint32_t count);
+int __roc_api roc_npc_vtag_actions_sub_return(struct roc_npc *roc_npc, uint32_t count);
 int __roc_api roc_npc_mcam_merge_base_steering_rule(struct roc_npc *roc_npc,
 						    struct roc_npc_flow *flow);
 int __roc_api roc_npc_validate_portid_action(struct roc_npc *roc_npc_src,
 					     struct roc_npc *roc_npc_dst);
-int __roc_api roc_npc_mcam_init(struct roc_npc *roc_npc,
-				struct roc_npc_flow *flow, int mcam_id);
-int __roc_api roc_npc_mcam_move(struct roc_npc *roc_npc, uint16_t old_ent,
-				uint16_t new_ent);
+int __roc_api roc_npc_mcam_init(struct roc_npc *roc_npc, struct roc_npc_flow *flow, int mcam_id);
+int __roc_api roc_npc_mcam_move(struct roc_npc *roc_npc, uint16_t old_ent, uint16_t new_ent);
+void *__roc_api roc_npc_aged_flow_ctx_get(struct roc_npc *roc_npc, uint32_t mcam_id);
 void __roc_api roc_npc_sdp_channel_get(struct roc_npc *roc_npc, uint16_t *chan_base,
 				       uint16_t *chan_mask);
 #endif /* _ROC_NPC_H_ */

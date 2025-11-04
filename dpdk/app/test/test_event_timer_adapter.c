@@ -1889,6 +1889,77 @@ adapter_create_max(void)
 	return TEST_SUCCESS;
 }
 
+static inline int
+test_timer_ticks_remaining(void)
+{
+	uint64_t ticks_remaining = UINT64_MAX;
+	struct rte_event_timer *ev_tim;
+	struct rte_event ev;
+	int ret, i;
+	const struct rte_event_timer tim = {
+		.ev.op = RTE_EVENT_OP_NEW,
+		.ev.queue_id = 0,
+		.ev.sched_type = RTE_SCHED_TYPE_ATOMIC,
+		.ev.priority = RTE_EVENT_DEV_PRIORITY_NORMAL,
+		.ev.event_type =  RTE_EVENT_TYPE_TIMER,
+		.state = RTE_EVENT_TIMER_NOT_ARMED,
+	};
+
+	rte_mempool_get(eventdev_test_mempool, (void **)&ev_tim);
+	*ev_tim = tim;
+	ev_tim->ev.event_ptr = ev_tim;
+#define TEST_TICKS 5
+	ev_tim->timeout_ticks = CALC_TICKS(TEST_TICKS);
+
+	ret = rte_event_timer_remaining_ticks_get(timdev, ev_tim,
+						  &ticks_remaining);
+	if (ret == -ENOTSUP) {
+		rte_mempool_put(eventdev_test_mempool, (void *)ev_tim);
+		printf("API not supported, skipping test\n");
+		return TEST_SKIPPED;
+	}
+
+	/* Test that unarmed timer returns error */
+	TEST_ASSERT_FAIL(ret,
+			 "Didn't fail to get ticks for unarmed event timer");
+
+	TEST_ASSERT_EQUAL(rte_event_timer_arm_burst(timdev, &ev_tim, 1), 1,
+			  "Failed to arm timer with proper timeout.");
+	TEST_ASSERT_EQUAL(ev_tim->state, RTE_EVENT_TIMER_ARMED,
+			  "Improper timer state set expected %d returned %d",
+			  RTE_EVENT_TIMER_ARMED, ev_tim->state);
+
+	for (i = 0; i < TEST_TICKS; i++) {
+		ret = rte_event_timer_remaining_ticks_get(timdev, ev_tim,
+							  &ticks_remaining);
+		if (ret < 0)
+			return TEST_FAILED;
+
+		TEST_ASSERT_EQUAL((int)ticks_remaining, TEST_TICKS - i,
+				  "Expected %d ticks remaining, got %"PRIu64"",
+				  TEST_TICKS - i, ticks_remaining);
+
+		rte_delay_ms(100);
+	}
+
+	TEST_ASSERT_EQUAL(timeout_event_dequeue(&ev, 1, WAIT_TICKS(1)), 1,
+			  "Armed timer failed to trigger.");
+
+	if (ev_tim->state != RTE_EVENT_TIMER_NOT_ARMED)
+		ev_tim->state = RTE_EVENT_TIMER_NOT_ARMED;
+
+	/* Test that timer that fired returns error */
+	TEST_ASSERT_FAIL(rte_event_timer_remaining_ticks_get(timdev, ev_tim,
+							   &ticks_remaining),
+			 "Didn't fail to get ticks for unarmed event timer");
+
+	rte_mempool_put(eventdev_test_mempool, (void *)ev_tim);
+
+#undef TEST_TICKS
+	return TEST_SUCCESS;
+}
+
+
 static struct unit_test_suite event_timer_adptr_functional_testsuite  = {
 	.suite_name = "event timer functional test suite",
 	.setup = testsuite_setup,
@@ -1951,6 +2022,8 @@ static struct unit_test_suite event_timer_adptr_functional_testsuite  = {
 		TEST_CASE_ST(timdev_setup_msec, timdev_teardown,
 				adapter_tick_resolution),
 		TEST_CASE(adapter_create_max),
+		TEST_CASE_ST(timdev_setup_msec, timdev_teardown,
+				test_timer_ticks_remaining),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };

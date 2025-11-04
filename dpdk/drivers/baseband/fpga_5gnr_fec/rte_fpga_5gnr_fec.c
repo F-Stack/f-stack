@@ -13,10 +13,7 @@
 #include <rte_pci.h>
 #include <bus_pci_driver.h>
 #include <rte_byteorder.h>
-#ifdef RTE_BBDEV_OFFLOAD_COST
 #include <rte_cycles.h>
-#endif
-#include <rte_random.h>
 
 #include <rte_bbdev.h>
 #include <rte_bbdev_pmd.h>
@@ -803,28 +800,20 @@ static inline void
 fpga_dma_enqueue(struct fpga_queue *q, uint16_t num_desc,
 		struct rte_bbdev_stats *queue_stats)
 {
-#ifdef RTE_BBDEV_OFFLOAD_COST
 	uint64_t start_time = 0;
 	queue_stats->acc_offload_cycles = 0;
-#else
-	RTE_SET_USED(queue_stats);
-#endif
 
 	/* Update tail and shadow_tail register */
 	q->tail = (q->tail + num_desc) & q->sw_ring_wrap_mask;
 
 	rte_wmb();
 
-#ifdef RTE_BBDEV_OFFLOAD_COST
 	/* Start time measurement for enqueue function offload. */
 	start_time = rte_rdtsc_precise();
-#endif
 	mmio_write_16(q->shadow_tail_addr, q->tail);
 
-#ifdef RTE_BBDEV_OFFLOAD_COST
 	rte_wmb();
 	queue_stats->acc_offload_cycles += rte_rdtsc_precise() - start_time;
-#endif
 }
 
 /* Read flag value 0/1/ from bitmap */
@@ -1503,20 +1492,20 @@ fpga_mutex_acquisition(struct fpga_queue *q)
 {
 	uint32_t mutex_ctrl, mutex_read, cnt = 0;
 	/* Assign a unique id for the duration of the DDR access */
-	q->ddr_mutex_uuid = rte_rand();
+	q->ddr_mutex_uuid = rand();
 	/* Request and wait for acquisition of the mutex */
 	mutex_ctrl = (q->ddr_mutex_uuid << 16) + 1;
 	do {
 		if (cnt > 0)
 			usleep(FPGA_TIMEOUT_CHECK_INTERVAL);
-		rte_bbdev_log_debug("Acquiring Mutex for %x\n",
+		rte_bbdev_log_debug("Acquiring Mutex for %x",
 				q->ddr_mutex_uuid);
 		fpga_reg_write_32(q->d->mmio_base,
 				FPGA_5GNR_FEC_MUTEX,
 				mutex_ctrl);
 		mutex_read = fpga_reg_read_32(q->d->mmio_base,
 				FPGA_5GNR_FEC_MUTEX);
-		rte_bbdev_log_debug("Mutex %x cnt %d owner %x\n",
+		rte_bbdev_log_debug("Mutex %x cnt %d owner %x",
 				mutex_read, cnt, q->ddr_mutex_uuid);
 		cnt++;
 	} while ((mutex_read >> 16) != q->ddr_mutex_uuid);
@@ -1557,7 +1546,7 @@ fpga_harq_write_loopback(struct fpga_queue *q,
 			FPGA_5GNR_FEC_HARQ_BUF_SIZE_REGS);
 	if (reg_32 < harq_in_length) {
 		left_length = reg_32;
-		rte_bbdev_log(ERR, "HARQ in length > HARQ buffer size\n");
+		rte_bbdev_log(ERR, "HARQ in length > HARQ buffer size");
 	}
 
 	input = (uint64_t *)rte_pktmbuf_mtod_offset(harq_input,
@@ -1620,18 +1609,18 @@ fpga_harq_read_loopback(struct fpga_queue *q,
 			FPGA_5GNR_FEC_HARQ_BUF_SIZE_REGS);
 	if (reg < harq_in_length) {
 		harq_in_length = reg;
-		rte_bbdev_log(ERR, "HARQ in length > HARQ buffer size\n");
+		rte_bbdev_log(ERR, "HARQ in length > HARQ buffer size");
 	}
 
 	if (!mbuf_append(harq_output, harq_output, harq_in_length)) {
-		rte_bbdev_log(ERR, "HARQ output buffer warning %d %d\n",
+		rte_bbdev_log(ERR, "HARQ output buffer warning %d %d",
 				harq_output->buf_len -
 				rte_pktmbuf_headroom(harq_output),
 				harq_in_length);
 		harq_in_length = harq_output->buf_len -
 				rte_pktmbuf_headroom(harq_output);
 		if (!mbuf_append(harq_output, harq_output, harq_in_length)) {
-			rte_bbdev_log(ERR, "HARQ output buffer issue %d %d\n",
+			rte_bbdev_log(ERR, "HARQ output buffer issue %d %d",
 					harq_output->buf_len, harq_in_length);
 			return -1;
 		}
@@ -1653,7 +1642,7 @@ fpga_harq_read_loopback(struct fpga_queue *q,
 				FPGA_5GNR_FEC_DDR4_RD_RDY_REGS);
 			if (reg == FPGA_DDR_OVERFLOW) {
 				rte_bbdev_log(ERR,
-						"Read address is overflow!\n");
+						"Read address is overflow!");
 				return -1;
 			}
 		}

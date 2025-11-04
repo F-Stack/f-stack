@@ -28,6 +28,7 @@
 #include <rte_pause.h>
 #include <rte_dmadev.h>
 #include <rte_vhost_async.h>
+#include <rte_thread.h>
 
 #include "main.h"
 
@@ -1051,9 +1052,9 @@ sync_virtio_xmit(struct vhost_dev *dst_vdev, struct vhost_dev *src_vdev,
 	}
 
 	if (enable_stats) {
-		__atomic_add_fetch(&dst_vdev->stats.rx_total_atomic, 1,
+		__atomic_fetch_add(&dst_vdev->stats.rx_total_atomic, 1,
 				__ATOMIC_SEQ_CST);
-		__atomic_add_fetch(&dst_vdev->stats.rx_atomic, ret,
+		__atomic_fetch_add(&dst_vdev->stats.rx_atomic, ret,
 				__ATOMIC_SEQ_CST);
 		src_vdev->stats.tx_total++;
 		src_vdev->stats.tx += ret;
@@ -1071,9 +1072,9 @@ drain_vhost(struct vhost_dev *vdev)
 	ret = vdev_queue_ops[vdev->vid].enqueue_pkt_burst(vdev, VIRTIO_RXQ, m, nr_xmit);
 
 	if (enable_stats) {
-		__atomic_add_fetch(&vdev->stats.rx_total_atomic, nr_xmit,
+		__atomic_fetch_add(&vdev->stats.rx_total_atomic, nr_xmit,
 				__ATOMIC_SEQ_CST);
-		__atomic_add_fetch(&vdev->stats.rx_atomic, ret,
+		__atomic_fetch_add(&vdev->stats.rx_atomic, ret,
 				__ATOMIC_SEQ_CST);
 	}
 
@@ -1403,9 +1404,9 @@ drain_eth_rx(struct vhost_dev *vdev)
 	}
 
 	if (enable_stats) {
-		__atomic_add_fetch(&vdev->stats.rx_total_atomic, rx_count,
+		__atomic_fetch_add(&vdev->stats.rx_total_atomic, rx_count,
 				__ATOMIC_SEQ_CST);
-		__atomic_add_fetch(&vdev->stats.rx_atomic, enqueue_count,
+		__atomic_fetch_add(&vdev->stats.rx_atomic, enqueue_count,
 				__ATOMIC_SEQ_CST);
 	}
 
@@ -1810,7 +1811,7 @@ static const struct rte_vhost_device_ops virtio_net_device_ops =
  * This is a thread will wake up after a period to print stats if the user has
  * enabled them.
  */
-static void *
+static uint32_t
 print_stats(__rte_unused void *arg)
 {
 	struct vhost_dev *vdev;
@@ -1855,7 +1856,7 @@ print_stats(__rte_unused void *arg)
 		fflush(stdout);
 	}
 
-	return NULL;
+	return 0;
 }
 
 static void
@@ -1910,7 +1911,7 @@ main(int argc, char *argv[])
 	unsigned nb_ports, valid_num_ports;
 	int ret, i;
 	uint16_t portid;
-	static pthread_t tid;
+	rte_thread_t tid;
 	uint64_t flags = RTE_VHOST_USER_NET_COMPLIANT_OL_FLAGS;
 
 	signal(SIGINT, sigint_handler);
@@ -1989,11 +1990,11 @@ main(int argc, char *argv[])
 
 	/* Enable stats if the user option is set. */
 	if (enable_stats) {
-		ret = rte_ctrl_thread_create(&tid, "print-stats", NULL,
+		ret = rte_thread_create_control(&tid, "dpdk-vhost-stat",
 					print_stats, NULL);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
-				"Cannot create print-stats thread\n");
+				"Cannot create dpdk-vhost-stat thread\n");
 	}
 
 	/* Launch all data cores. */

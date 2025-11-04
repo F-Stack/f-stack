@@ -12,6 +12,8 @@ Programmer's Guide
     overview
     source_org
     env_abstraction_layer
+    log_lib
+    cmdline
     service_cores
     trace_lib
     rcu_lib
@@ -28,6 +30,7 @@ Programmer's Guide
     cryptodev_lib
     compressdev
     regexdev
+    mldev
     dmadev
     gpudev
     rte_security
@@ -42,22 +45,24 @@ Programmer's Guide
     lpm6_lib
     fib_lib
     rib_lib
-    flow_classify_lib
     packet_distrib_lib
     reorder_lib
     ip_fragment_reassembly_lib
     generic_receive_offload_lib
     generic_segmentation_offload_lib
+    ipsec_lib
+    pdcp_lib
     pcapng_lib
     pdump_lib
     multi_proc_support
-    kernel_nic_interface
     thread_safety_dpdk_functions
     eventdev
     event_ethernet_rx_adapter
     event_ethernet_tx_adapter
     event_timer_adapter
     event_crypto_adapter
+    event_dma_adapter
+    dispatcher_lib
     qos_framework
     power_man
     packet_classif_access_ctrl
@@ -66,7 +71,6 @@ Programmer's Guide
     metrics_lib
     telemetry_lib
     bpf_lib
-    ipsec_lib
     graph_lib
     build-sdk-meson
     meson_ut

@@ -1210,7 +1210,7 @@ test_failing_mbuf_sanity_check(struct rte_mempool *pktmbuf_pool)
 		return -1;
 	}
 
-	if (RTE_IOVA_AS_PA) {
+	if (RTE_IOVA_IN_MBUF) {
 		badbuf = *buf;
 		rte_mbuf_iova_set(&badbuf, 0);
 		if (mbuf_check_pass(&badbuf)) {
@@ -2952,4 +2952,4 @@ err:
 }
 #undef GOTO_FAIL
 
-REGISTER_TEST_COMMAND(mbuf_autotest, test_mbuf);
+REGISTER_FAST_TEST(mbuf_autotest, false, true, test_mbuf);

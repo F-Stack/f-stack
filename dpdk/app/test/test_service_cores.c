@@ -751,12 +751,12 @@ delay_as_a_mt_safe_service(void *args)
 	uint32_t *lock = &params[1];
 
 	while (!*done) {
-		__atomic_add_fetch(lock, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_add(lock, 1, __ATOMIC_RELAXED);
 		rte_delay_us(500);
 		if (__atomic_load_n(lock, __ATOMIC_RELAXED) > 1)
 			/* pass: second core has simultaneously incremented */
 			*done = 1;
-		__atomic_sub_fetch(lock, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_sub(lock, 1, __ATOMIC_RELAXED);
 	}
 
 	return 0;
@@ -1022,17 +1022,12 @@ static struct unit_test_suite service_tests  = {
 		TEST_CASE_ST(dummy_register, NULL, service_name),
 		TEST_CASE_ST(dummy_register, NULL, service_get_by_name),
 		TEST_CASE_ST(dummy_register, NULL, service_dump),
-		TEST_CASE_ST(dummy_register, NULL, service_attr_get),
-		TEST_CASE_ST(dummy_register, NULL, service_lcore_attr_get),
 		TEST_CASE_ST(dummy_register, NULL, service_probe_capability),
 		TEST_CASE_ST(dummy_register, NULL, service_start_stop),
 		TEST_CASE_ST(dummy_register, NULL, service_lcore_add_del),
-		TEST_CASE_ST(dummy_register, NULL, service_lcore_start_stop),
 		TEST_CASE_ST(dummy_register, NULL, service_lcore_en_dis_able),
 		TEST_CASE_ST(dummy_register, NULL, service_mt_unsafe_poll),
 		TEST_CASE_ST(dummy_register, NULL, service_mt_safe_poll),
-		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_safe),
-		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_unsafe),
 		TEST_CASE_ST(dummy_register, NULL, service_may_be_active),
 		TEST_CASE_ST(dummy_register, NULL, service_active_two_cores),
 		TEST_CASES_END() /**< NULL terminate unit test array */
@@ -1045,4 +1040,26 @@ test_service_common(void)
 	return unit_test_suite_runner(&service_tests);
 }
 
-REGISTER_TEST_COMMAND(service_autotest, test_service_common);
+REGISTER_FAST_TEST(service_autotest, true, true, test_service_common);
+
+static struct unit_test_suite service_perf_tests  = {
+	.suite_name = "service core performance test suite",
+	.setup = testsuite_setup,
+	.teardown = testsuite_teardown,
+	.unit_test_cases = {
+		TEST_CASE_ST(dummy_register, NULL, service_attr_get),
+		TEST_CASE_ST(dummy_register, NULL, service_lcore_attr_get),
+		TEST_CASE_ST(dummy_register, NULL, service_lcore_start_stop),
+		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_safe),
+		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_unsafe),
+		TEST_CASES_END() /**< NULL terminate unit test array */
+	}
+};
+
+static int
+test_service_perf(void)
+{
+	return unit_test_suite_runner(&service_perf_tests);
+}
+
+REGISTER_PERF_TEST(service_perf_autotest, test_service_perf);

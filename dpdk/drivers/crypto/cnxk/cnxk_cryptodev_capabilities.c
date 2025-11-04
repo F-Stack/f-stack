@@ -92,6 +92,20 @@ static const struct rte_cryptodev_capabilities caps_mul[] = {
 			},
 		}
 	},
+	{	/* ECDH */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_ECDH,
+				.op_types = ((1 << RTE_CRYPTO_ASYM_KE_PRIV_KEY_GENERATE) |
+						(1 << RTE_CRYPTO_ASYM_KE_PUB_KEY_GENERATE) |
+						(1 << RTE_CRYPTO_ASYM_KE_PUB_KEY_VERIFY) |
+						(1 << RTE_CRYPTO_ASYM_KE_SHARED_SECRET_COMPUTE)
+						),
+				}
+			},
+		}
+	},
 };
 
 static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
@@ -108,9 +122,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 20,
+					.min = 1,
 					.max = 20,
-					.increment = 0
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -128,9 +142,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 12,
+					.min = 1,
 					.max = 20,
-					.increment = 8
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -148,9 +162,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 28,
+					.min = 1,
 					.max = 28,
-					.increment = 0
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -168,9 +182,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 28,
+					.min = 1,
 					.max = 28,
-					.increment = 0
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -188,9 +202,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 32,
+					.min = 1,
 					.max = 32,
-					.increment = 0
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -208,9 +222,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 16,
+					.min = 1,
 					.max = 32,
-					.increment = 16
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -228,9 +242,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 48,
+					.min = 1,
 					.max = 48,
-					.increment = 0
+					.increment = 1
 					},
 			}, }
 		}, }
@@ -248,9 +262,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 24,
+					.min = 1,
 					.max = 48,
-					.increment = 24
+					.increment = 1
 					},
 			}, }
 		}, }
@@ -268,9 +282,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 64,
+					.min = 1,
 					.max = 64,
-					.increment = 0
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -288,9 +302,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 32,
+					.min = 1,
 					.max = 64,
-					.increment = 32
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -308,9 +322,9 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 16,
+					.min = 1,
 					.max = 16,
-					.increment = 0
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -328,9 +342,235 @@ static const struct rte_cryptodev_capabilities caps_sha1_sha2[] = {
 					.increment = 8
 				},
 				.digest_size = {
-					.min = 12,
+					.min = 1,
 					.max = 16,
-					.increment = 4
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+};
+
+static const struct rte_cryptodev_capabilities caps_sm3[] = {
+	{	/* SM3 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SM3,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 32,
+					.max = 32,
+					.increment = 0
+				},
+			}, }
+		}, }
+	}
+};
+
+static const struct rte_cryptodev_capabilities caps_sha3[] = {
+	{	/* SHA3_224 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_224,
+				.block_size = 144,
+					.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 28,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA3_224 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_224_HMAC,
+				.block_size = 144,
+					.key_size = {
+					.min = 1,
+					.max = 1024,
+					.increment = 1
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 28,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA3_256 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_256,
+				.block_size = 136,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 32,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA3_256 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_256_HMAC,
+				.block_size = 136,
+				.key_size = {
+					.min = 1,
+					.max = 1024,
+					.increment = 1
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 32,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA3_384 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_384,
+				.block_size = 104,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 48,
+					.increment = 0
+					},
+			}, }
+		}, }
+	},
+	{	/* SHA3_384 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_384_HMAC,
+				.block_size = 104,
+				.key_size = {
+					.min = 1,
+					.max = 1024,
+					.increment = 1
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 48,
+					.increment = 1
+					},
+			}, }
+		}, }
+	},
+	{	/* SHA3_512 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_512,
+				.block_size = 72,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 64,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA3_512 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA3_512_HMAC,
+				.block_size = 72,
+				.key_size = {
+					.min = 1,
+					.max = 1024,
+					.increment = 1
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 64,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHAKE_128 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHAKE_128,
+				.block_size = 168,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 255,
+					.increment = 1
+				},
+			}, }
+		}, }
+	},
+	{	/* SHAKE_256 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHAKE_256,
+				.block_size = 136,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 255,
+					.increment = 1
 				},
 			}, }
 		}, }
@@ -579,6 +819,36 @@ static const struct rte_cryptodev_capabilities caps_aes[] = {
 			}, }
 		}, }
 	},
+	{	/* AES CCM */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
+			{.aead = {
+				.algo = RTE_CRYPTO_AEAD_AES_CCM,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.digest_size = {
+					.min = 4,
+					.max = 16,
+					.increment = 1
+				},
+				.aad_size = {
+					.min = 0,
+					.max = 1024,
+					.increment = 1
+				},
+				.iv_size = {
+					.min = 11,
+					.max = 13,
+					.increment = 1
+				}
+			}, }
+		}, }
+	},
 	{	/* AES CMAC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -791,6 +1061,123 @@ static const struct rte_cryptodev_capabilities caps_null[] = {
 			}, },
 		}, }
 	},
+};
+
+static const struct rte_cryptodev_capabilities caps_sm4[] = {
+	{	/* SM4 CBC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_SM4_CBC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* SM4 ECB */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_SM4_ECB,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* SM4 CTR */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_SM4_CTR,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* SM4 OFB */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_SM4_OFB,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* SM4 CFB */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_SM4_CFB,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+};
+
+static const struct rte_cryptodev_capabilities caps_sm2[] = {
+	{	/* SM2 */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_SM2,
+				.op_types = ((1 << RTE_CRYPTO_ASYM_OP_SIGN) |
+					     (1 << RTE_CRYPTO_ASYM_OP_VERIFY))
+			}
+		}
+		}
+	}
 };
 
 static const struct rte_cryptodev_capabilities caps_end[] = {
@@ -1212,8 +1599,7 @@ static void
 cpt_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos,
 	     const struct rte_cryptodev_capabilities *caps, int nb_caps)
 {
-	if (*cur_pos + nb_caps > CNXK_CPT_MAX_CAPS)
-		return;
+	PLT_VERIFY(*cur_pos + nb_caps <= CNXK_CPT_MAX_CAPS);
 
 	memcpy(&cnxk_caps[*cur_pos], caps, nb_caps * sizeof(caps[0]));
 	*cur_pos += nb_caps;
@@ -1258,6 +1644,19 @@ cn9k_crypto_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos
 }
 
 static void
+cn10k_crypto_caps_add(struct rte_cryptodev_capabilities cnxk_caps[],
+		     union cpt_eng_caps *hw_caps, int *cur_pos)
+{
+	if (hw_caps[CPT_ENG_TYPE_SE].sg_ver2) {
+		CPT_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, sm3);
+		CPT_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, sm4);
+	}
+
+	if (hw_caps[CPT_ENG_TYPE_AE].sm2)
+		CPT_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, sm2);
+}
+
+static void
 crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
 		     union cpt_eng_caps *hw_caps)
 {
@@ -1265,6 +1664,7 @@ crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
 
 	CPT_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, mul);
 	CPT_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, sha1_sha2);
+	CPT_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, sha3);
 	CPT_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, chacha20);
 	CPT_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, zuc_snow3g);
 	CPT_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, aes);
@@ -1273,6 +1673,9 @@ crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
 
 	if (!roc_model_is_cn10k())
 		cn9k_crypto_caps_add(cnxk_caps, &cur_pos);
+
+	if (roc_model_is_cn10k())
+		cn10k_crypto_caps_add(cnxk_caps, hw_caps, &cur_pos);
 
 	cpt_caps_add(cnxk_caps, &cur_pos, caps_null, RTE_DIM(caps_null));
 	cpt_caps_add(cnxk_caps, &cur_pos, caps_end, RTE_DIM(caps_end));
@@ -1287,23 +1690,17 @@ cnxk_crypto_capabilities_get(struct cnxk_cpt_vf *vf)
 	return vf->crypto_caps;
 }
 
-static bool
+static void
 sec_caps_limit_check(int *cur_pos, int nb_caps)
 {
-	if (*cur_pos + nb_caps > CNXK_SEC_CRYPTO_MAX_CAPS) {
-		rte_panic("Could not add sec crypto caps");
-		return true;
-	}
-
-	return false;
+	PLT_VERIFY(*cur_pos + nb_caps <= CNXK_SEC_CRYPTO_MAX_CAPS);
 }
 
 static void
 sec_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos,
 	     const struct rte_cryptodev_capabilities *caps, int nb_caps)
 {
-	if (sec_caps_limit_check(cur_pos, nb_caps))
-		return;
+	sec_caps_limit_check(cur_pos, nb_caps);
 
 	memcpy(&cnxk_caps[*cur_pos], caps, nb_caps * sizeof(caps[0]));
 	*cur_pos += nb_caps;
@@ -1316,8 +1713,7 @@ cn10k_sec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[],
 	const struct rte_cryptodev_capabilities *cap;
 	unsigned int i;
 
-	if (sec_caps_limit_check(cur_pos, 1))
-		return;
+	sec_caps_limit_check(cur_pos, 1);
 
 	/* NULL auth */
 	for (i = 0; i < RTE_DIM(caps_null); i++) {

@@ -1,6 +1,7 @@
-EXPERIMENTAL {
+DPDK_24 {
 	global:
 
+	rte_pcapng_add_interface;
 	rte_pcapng_close;
 	rte_pcapng_copy;
 	rte_pcapng_fdopen;

@@ -22,6 +22,7 @@
 
 /* Support tunnel matching. */
 #define MLX5_FLOW_TUNNEL 10
+#define MLX5_WINOOO_BITS  (sizeof(uint32_t) * CHAR_BIT)
 
 #define RXQ_PORT(rxq_ctrl) LIST_FIRST(&(rxq_ctrl)->owners)->priv
 #define RXQ_DEV(rxq_ctrl) ETH_DEV(RXQ_PORT(rxq_ctrl))
@@ -41,11 +42,12 @@ struct mlx5_rxq_stats {
 
 /* Compressed CQE context. */
 struct rxq_zip {
+	uint16_t cqe_cnt; /* Number of CQEs. */
 	uint16_t ai; /* Array index. */
-	uint16_t ca; /* Current array index. */
-	uint16_t na; /* Next array index. */
-	uint16_t cq_ci; /* The next CQE. */
-	uint32_t cqe_cnt; /* Number of CQEs. */
+	uint32_t ca; /* Current array index. */
+	uint32_t na; /* Next array index. */
+	uint32_t cq_ci; /* The next CQE. */
+	uint16_t wqe_idx; /* WQE index */
 };
 
 /* Get pointer to the first stride. */
@@ -100,14 +102,16 @@ struct mlx5_rxq_data {
 	unsigned int mcqe_format:3; /* CQE compression format. */
 	unsigned int shared:1; /* Shared RXQ. */
 	unsigned int delay_drop:1; /* Enable delay drop. */
+	unsigned int cqe_comp_layout:1; /* CQE Compression Layout*/
+	uint16_t port_id;
 	volatile uint32_t *rq_db;
 	volatile uint32_t *cq_db;
-	uint16_t port_id;
 	uint32_t elts_ci;
 	uint32_t rq_ci;
+	uint32_t rq_ci_ooo;
 	uint16_t consumed_strd; /* Number of consumed strides in WQE. */
 	uint32_t rq_pi;
-	uint32_t cq_ci;
+	uint32_t cq_ci:24;
 	uint16_t rq_repl_thresh; /* Threshold for buffer replenishment. */
 	uint32_t byte_mask;
 	union {
@@ -119,7 +123,9 @@ struct mlx5_rxq_data {
 	uint16_t mprq_max_memcpy_len; /* Maximum size of packet to memcpy. */
 	volatile void *wqes;
 	volatile struct mlx5_cqe(*cqes)[];
+	struct mlx5_cqe title_cqe; /* Title CQE for CQE compression. */
 	struct rte_mbuf *(*elts)[];
+	struct rte_mbuf title_pkt; /* Title packet for CQE compression. */
 	struct mlx5_mprq_buf *(*mprq_bufs)[];
 	struct rte_mempool *mp;
 	struct rte_mempool *mprq_mp; /* Mempool for Multi-Packet RQ. */
@@ -133,6 +139,7 @@ struct mlx5_rxq_data {
 	struct mlx5_uar_data uar_data; /* CQ doorbell. */
 	uint32_t cqn; /* CQ number. */
 	uint8_t cq_arm_sn; /* CQ arm seq number. */
+	uint64_t mark_flag; /* ol_flags to set with marks. */
 	uint32_t tunnel; /* Tunnel information. */
 	int timestamp_offset; /* Dynamic mbuf field for timestamp. */
 	uint64_t timestamp_rx_flag; /* Dynamic mbuf flag for timestamp. */
@@ -142,6 +149,10 @@ struct mlx5_rxq_data {
 	uint32_t rxseg_n; /* Number of split segment descriptions. */
 	struct mlx5_eth_rxseg rxseg[MLX5_MAX_RXQ_NSEG];
 	/* Buffer split segment descriptions - sizes, offsets, pools. */
+	uint16_t rq_win_cnt; /* Number of packets in the sliding window data. */
+	uint16_t rq_win_idx_mask; /* Sliding window index wrapping mask. */
+	uint16_t rq_win_idx; /* Index of the first element in sliding window. */
+	uint32_t *rq_win_data; /* Out-of-Order completions sliding window. */
 } __rte_cache_aligned;
 
 /* RX queue control descriptor. */
@@ -154,6 +165,7 @@ struct mlx5_rxq_ctrl {
 	bool is_hairpin; /* Whether RxQ type is Hairpin. */
 	unsigned int socket; /* CPU socket ID for allocations. */
 	LIST_ENTRY(mlx5_rxq_ctrl) share_entry; /* Entry in shared RXQ list. */
+	RTE_ATOMIC(int32_t) ctrl_ref; /* Reference counter. */
 	uint32_t share_group; /* Group ID of shared RXQ. */
 	uint16_t share_qid; /* Shared RxQ ID in group. */
 	unsigned int started:1; /* Whether (shared) RXQ has been started. */
@@ -280,13 +292,14 @@ uint64_t mlx5_get_rx_queue_offloads(struct rte_eth_dev *dev);
 void mlx5_rxq_timestamp_set(struct rte_eth_dev *dev);
 int mlx5_hrxq_modify(struct rte_eth_dev *dev, uint32_t hxrq_idx,
 		     const uint8_t *rss_key, uint32_t rss_key_len,
-		     uint64_t hash_fields,
+		     uint64_t hash_fields, bool symmetric_hash_function,
 		     const uint16_t *queues, uint32_t queues_n);
 
 /* mlx5_rx.c */
 
 uint16_t mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
-void mlx5_rxq_initialize(struct mlx5_rxq_data *rxq);
+uint16_t mlx5_rx_burst_out_of_order(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
+int mlx5_rxq_initialize(struct mlx5_rxq_data *rxq);
 __rte_noinline int mlx5_rx_err_handle(struct mlx5_rxq_data *rxq, uint8_t vec,
 				      uint16_t err_n, uint16_t *skip_cnt);
 void mlx5_mprq_buf_free(struct mlx5_mprq_buf *buf);
@@ -312,6 +325,7 @@ uint16_t mlx5_rx_burst_vec(void *dpdk_rxq, struct rte_mbuf **pkts,
 			   uint16_t pkts_n);
 uint16_t mlx5_rx_burst_mprq_vec(void *dpdk_rxq, struct rte_mbuf **pkts,
 				uint16_t pkts_n);
+void rxq_sync_cq(struct mlx5_rxq_data *rxq);
 
 static int mlx5_rxq_mprq_enabled(struct mlx5_rxq_data *rxq);
 
@@ -371,25 +385,6 @@ mlx5_rx_mb2mr(struct mlx5_rxq_data *rxq, struct rte_mbuf *mb)
 		return lkey;
 	/* Slower search in the mempool database on miss. */
 	return mlx5_mr_mempool2mr_bh(mr_ctrl, mb->pool, addr);
-}
-
-/**
- * Convert timestamp from HW format to linear counter
- * from Packet Pacing Clock Queue CQE timestamp format.
- *
- * @param sh
- *   Pointer to the device shared context. Might be needed
- *   to convert according current device configuration.
- * @param ts
- *   Timestamp from CQE to convert.
- * @return
- *   UTC in nanoseconds
- */
-static __rte_always_inline uint64_t
-mlx5_txpp_convert_rx_ts(struct mlx5_dev_ctx_shared *sh, uint64_t ts)
-{
-	RTE_SET_USED(sh);
-	return (ts & UINT32_MAX) + (ts >> 32) * NS_PER_S;
 }
 
 /**
@@ -539,7 +534,7 @@ mprq_buf_to_pkt(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt, uint32_t len,
 		void *buf_addr;
 
 		/* Increment the refcnt of the whole chunk. */
-		__atomic_add_fetch(&buf->refcnt, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_add(&buf->refcnt, 1, __ATOMIC_RELAXED);
 		MLX5_ASSERT(__atomic_load_n(&buf->refcnt,
 			    __ATOMIC_RELAXED) <= strd_n + 1);
 		buf_addr = RTE_PTR_SUB(addr, RTE_PKTMBUF_HEADROOM);
@@ -662,6 +657,23 @@ mlx5_mprq_enabled(struct rte_eth_dev *dev)
 }
 
 /**
+ * Check whether Shared RQ is enabled for the device.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ *
+ * @return
+ *   0 if disabled, otherwise enabled.
+ */
+static __rte_always_inline int
+mlx5_shared_rq_enabled(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	return !LIST_EMPTY(&priv->sh->shared_rxqs);
+}
+
+/**
  * Check whether given RxQ is external.
  *
  * @param dev
@@ -678,9 +690,9 @@ mlx5_is_external_rxq(struct rte_eth_dev *dev, uint16_t queue_idx)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_external_rxq *rxq;
 
-	if (!priv->ext_rxqs || queue_idx < MLX5_EXTERNAL_RX_QUEUE_ID_MIN)
+	if (!priv->ext_rxqs || queue_idx < RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN)
 		return false;
-	rxq = &priv->ext_rxqs[queue_idx - MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
+	rxq = &priv->ext_rxqs[queue_idx - RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
 	return !!__atomic_load_n(&rxq->refcnt, __ATOMIC_RELAXED);
 }
 

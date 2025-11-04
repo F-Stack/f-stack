@@ -212,7 +212,7 @@ static void
 cnxk_sso_tstamp_cfg(uint16_t port_id, struct cnxk_eth_dev *cnxk_eth_dev,
 		    struct cnxk_sso_evdev *dev)
 {
-	if (cnxk_eth_dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+	if (cnxk_eth_dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP || cnxk_eth_dev->ptp_en)
 		dev->tstamp[port_id] = &cnxk_eth_dev->tstamp;
 }
 
@@ -260,10 +260,8 @@ cnxk_sso_rx_adapter_queue_add(
 							     false);
 		}
 
-		if (rxq_sp->tx_pause)
-			roc_nix_fc_npa_bp_cfg(&cnxk_eth_dev->nix,
-					      rxq_sp->qconf.mp->pool_id, true,
-					      dev->force_ena_bp, rxq_sp->tc);
+		/* Propagate force bp devarg */
+		cnxk_eth_dev->nix.force_rx_aura_bp = dev->force_ena_bp;
 		cnxk_sso_tstamp_cfg(eth_dev->data->port_id, cnxk_eth_dev, dev);
 		cnxk_eth_dev->nb_rxq_sso++;
 	}
@@ -275,15 +273,6 @@ cnxk_sso_rx_adapter_queue_add(
 	}
 
 	dev->rx_offloads |= cnxk_eth_dev->rx_offload_flags;
-
-	/* Switch to use PF/VF's NIX LF instead of inline device for inbound
-	 * when all the RQ's are switched to event dev mode. We do this only
-	 * when dev arg no_inl_dev=1 is selected.
-	 */
-	if (cnxk_eth_dev->inb.no_inl_dev &&
-	    cnxk_eth_dev->nb_rxq_sso == cnxk_eth_dev->nb_rxq)
-		cnxk_nix_inb_mode_set(cnxk_eth_dev, false);
-
 	return 0;
 }
 
@@ -293,8 +282,6 @@ cnxk_sso_rx_adapter_queue_del(const struct rte_eventdev *event_dev,
 			      int32_t rx_queue_id)
 {
 	struct cnxk_eth_dev *cnxk_eth_dev = eth_dev->data->dev_private;
-	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
-	struct cnxk_eth_rxq_sp *rxq_sp;
 	int i, rc = 0;
 
 	RTE_SET_USED(event_dev);
@@ -302,12 +289,7 @@ cnxk_sso_rx_adapter_queue_del(const struct rte_eventdev *event_dev,
 		for (i = 0; i < eth_dev->data->nb_rx_queues; i++)
 			cnxk_sso_rx_adapter_queue_del(event_dev, eth_dev, i);
 	} else {
-		rxq_sp = cnxk_eth_rxq_to_sp(
-			eth_dev->data->rx_queues[rx_queue_id]);
 		rc = cnxk_sso_rxq_disable(cnxk_eth_dev, (uint16_t)rx_queue_id);
-		roc_nix_fc_npa_bp_cfg(&cnxk_eth_dev->nix,
-				      rxq_sp->qconf.mp->pool_id, false,
-				      dev->force_ena_bp, 0);
 		cnxk_eth_dev->nb_rxq_sso--;
 
 		/* Enable drop_re if it was disabled earlier */
@@ -318,12 +300,6 @@ cnxk_sso_rx_adapter_queue_del(const struct rte_eventdev *event_dev,
 	if (rc < 0)
 		plt_err("Failed to clear Rx adapter config port=%d, q=%d",
 			eth_dev->data->port_id, rx_queue_id);
-
-	/* Removing RQ from Rx adapter implies need to use
-	 * inline device for CQ/Poll mode.
-	 */
-	cnxk_nix_inb_mode_set(cnxk_eth_dev, true);
-
 	return rc;
 }
 
@@ -331,9 +307,9 @@ int
 cnxk_sso_rx_adapter_start(const struct rte_eventdev *event_dev,
 			  const struct rte_eth_dev *eth_dev)
 {
-	RTE_SET_USED(event_dev);
-	RTE_SET_USED(eth_dev);
-
+	struct cnxk_eth_dev *cnxk_eth_dev = eth_dev->data->dev_private;
+	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
+	dev->rx_offloads |= cnxk_eth_dev->rx_offload_flags;
 	return 0;
 }
 
@@ -341,9 +317,9 @@ int
 cnxk_sso_rx_adapter_stop(const struct rte_eventdev *event_dev,
 			 const struct rte_eth_dev *eth_dev)
 {
-	RTE_SET_USED(event_dev);
 	RTE_SET_USED(eth_dev);
-
+	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
+	dev->rx_offloads = 0;
 	return 0;
 }
 

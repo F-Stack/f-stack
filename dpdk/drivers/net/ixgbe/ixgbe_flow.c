@@ -18,7 +18,6 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
@@ -744,16 +743,16 @@ cons_parse_ethertype_filter(const struct rte_flow_attr *attr,
 	 * Mask bits of destination MAC address must be full
 	 * of 1 or full of 0.
 	 */
-	if (!rte_is_zero_ether_addr(&eth_mask->src) ||
-	    (!rte_is_zero_ether_addr(&eth_mask->dst) &&
-	     !rte_is_broadcast_ether_addr(&eth_mask->dst))) {
+	if (!rte_is_zero_ether_addr(&eth_mask->hdr.src_addr) ||
+	    (!rte_is_zero_ether_addr(&eth_mask->hdr.dst_addr) &&
+	     !rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr))) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Invalid ether address mask");
 		return -rte_errno;
 	}
 
-	if ((eth_mask->type & UINT16_MAX) != UINT16_MAX) {
+	if ((eth_mask->hdr.ether_type & UINT16_MAX) != UINT16_MAX) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Invalid ethertype mask");
@@ -763,13 +762,13 @@ cons_parse_ethertype_filter(const struct rte_flow_attr *attr,
 	/* If mask bits of destination MAC address
 	 * are full of 1, set RTE_ETHTYPE_FLAGS_MAC.
 	 */
-	if (rte_is_broadcast_ether_addr(&eth_mask->dst)) {
-		filter->mac_addr = eth_spec->dst;
+	if (rte_is_broadcast_ether_addr(&eth_mask->hdr.dst_addr)) {
+		filter->mac_addr = eth_spec->hdr.dst_addr;
 		filter->flags |= RTE_ETHTYPE_FLAGS_MAC;
 	} else {
 		filter->flags &= ~RTE_ETHTYPE_FLAGS_MAC;
 	}
-	filter->ether_type = rte_be_to_cpu_16(eth_spec->type);
+	filter->ether_type = rte_be_to_cpu_16(eth_spec->hdr.ether_type);
 
 	/* Check if the next non-void item is END. */
 	item = next_no_void_pattern(pattern, item);
@@ -1645,6 +1644,8 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 	memset(&rule->mask, 0xFF, sizeof(struct ixgbe_hw_fdir_mask));
 	rule->mask.vlan_tci_mask = 0;
 	rule->mask.flex_bytes_mask = 0;
+	rule->mask.dst_port_mask = 0;
+	rule->mask.src_port_mask = 0;
 
 	/**
 	 * The first not void item should be
@@ -1698,7 +1699,7 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			/* Get the dst MAC. */
 			for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 				rule->ixgbe_fdir.formatted.inner_mac[j] =
-					eth_spec->dst.addr_bytes[j];
+					eth_spec->hdr.dst_addr.addr_bytes[j];
 			}
 		}
 
@@ -1709,7 +1710,7 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			eth_mask = item->mask;
 
 			/* Ether type should be masked. */
-			if (eth_mask->type ||
+			if (eth_mask->hdr.ether_type ||
 			    rule->mode == RTE_FDIR_MODE_SIGNATURE) {
 				memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 				rte_flow_error_set(error, EINVAL,
@@ -1726,8 +1727,8 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			 * and don't support dst MAC address mask.
 			 */
 			for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
-				if (eth_mask->src.addr_bytes[j] ||
-					eth_mask->dst.addr_bytes[j] != 0xFF) {
+				if (eth_mask->hdr.src_addr.addr_bytes[j] ||
+					eth_mask->hdr.dst_addr.addr_bytes[j] != 0xFF) {
 					memset(rule, 0,
 					sizeof(struct ixgbe_fdir_rule));
 					rte_flow_error_set(error, EINVAL,
@@ -1790,9 +1791,9 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 		vlan_spec = item->spec;
 		vlan_mask = item->mask;
 
-		rule->ixgbe_fdir.formatted.vlan_id = vlan_spec->tci;
+		rule->ixgbe_fdir.formatted.vlan_id = vlan_spec->hdr.vlan_tci;
 
-		rule->mask.vlan_tci_mask = vlan_mask->tci;
+		rule->mask.vlan_tci_mask = vlan_mask->hdr.vlan_tci;
 		rule->mask.vlan_tci_mask &= rte_cpu_to_be_16(0xEFFF);
 		/* More than one tags are not supported. */
 
@@ -2481,7 +2482,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 		rule->mask.tunnel_type_mask = 1;
 
 		vxlan_mask = item->mask;
-		if (vxlan_mask->flags) {
+		if (vxlan_mask->hdr.flags) {
 			memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 			rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2489,11 +2490,11 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 			return -rte_errno;
 		}
 		/* VNI must be totally masked or not. */
-		if ((vxlan_mask->vni[0] || vxlan_mask->vni[1] ||
-			vxlan_mask->vni[2]) &&
-			((vxlan_mask->vni[0] != 0xFF) ||
-			(vxlan_mask->vni[1] != 0xFF) ||
-				(vxlan_mask->vni[2] != 0xFF))) {
+		if ((vxlan_mask->hdr.vni[0] || vxlan_mask->hdr.vni[1] ||
+			vxlan_mask->hdr.vni[2]) &&
+			((vxlan_mask->hdr.vni[0] != 0xFF) ||
+			(vxlan_mask->hdr.vni[1] != 0xFF) ||
+				(vxlan_mask->hdr.vni[2] != 0xFF))) {
 			memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 			rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2501,15 +2502,15 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 			return -rte_errno;
 		}
 
-		rte_memcpy(&rule->mask.tunnel_id_mask, vxlan_mask->vni,
-			RTE_DIM(vxlan_mask->vni));
+		rte_memcpy(&rule->mask.tunnel_id_mask, vxlan_mask->hdr.vni,
+			RTE_DIM(vxlan_mask->hdr.vni));
 
 		if (item->spec) {
 			rule->b_spec = TRUE;
 			vxlan_spec = item->spec;
 			rte_memcpy(((uint8_t *)
 				&rule->ixgbe_fdir.formatted.tni_vni),
-				vxlan_spec->vni, RTE_DIM(vxlan_spec->vni));
+				vxlan_spec->hdr.vni, RTE_DIM(vxlan_spec->hdr.vni));
 		}
 	}
 
@@ -2642,7 +2643,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 	eth_mask = item->mask;
 
 	/* Ether type should be masked. */
-	if (eth_mask->type) {
+	if (eth_mask->hdr.ether_type) {
 		memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2652,7 +2653,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 
 	/* src MAC address should be masked. */
 	for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
-		if (eth_mask->src.addr_bytes[j]) {
+		if (eth_mask->hdr.src_addr.addr_bytes[j]) {
 			memset(rule, 0,
 			       sizeof(struct ixgbe_fdir_rule));
 			rte_flow_error_set(error, EINVAL,
@@ -2664,9 +2665,9 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 	rule->mask.mac_addr_byte_mask = 0;
 	for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 		/* It's a per byte mask. */
-		if (eth_mask->dst.addr_bytes[j] == 0xFF) {
+		if (eth_mask->hdr.dst_addr.addr_bytes[j] == 0xFF) {
 			rule->mask.mac_addr_byte_mask |= 0x1 << j;
-		} else if (eth_mask->dst.addr_bytes[j]) {
+		} else if (eth_mask->hdr.dst_addr.addr_bytes[j]) {
 			memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 			rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2685,7 +2686,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 		/* Get the dst MAC. */
 		for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 			rule->ixgbe_fdir.formatted.inner_mac[j] =
-				eth_spec->dst.addr_bytes[j];
+				eth_spec->hdr.dst_addr.addr_bytes[j];
 		}
 	}
 
@@ -2722,9 +2723,9 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 		vlan_spec = item->spec;
 		vlan_mask = item->mask;
 
-		rule->ixgbe_fdir.formatted.vlan_id = vlan_spec->tci;
+		rule->ixgbe_fdir.formatted.vlan_id = vlan_spec->hdr.vlan_tci;
 
-		rule->mask.vlan_tci_mask = vlan_mask->tci;
+		rule->mask.vlan_tci_mask = vlan_mask->hdr.vlan_tci;
 		rule->mask.vlan_tci_mask &= rte_cpu_to_be_16(0xEFFF);
 		/* More than one tags are not supported. */
 

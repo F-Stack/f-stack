@@ -288,6 +288,7 @@ typedef struct efx_filter_ops_s {
 	efx_rc_t	(*efo_reconfigure)(efx_nic_t *, uint8_t const *, boolean_t,
 				   boolean_t, boolean_t, boolean_t,
 				   uint8_t const *, uint32_t);
+	efx_rc_t	(*efo_get_count)(efx_nic_t *, uint32_t *);
 } efx_filter_ops_t;
 
 LIBEFX_INTERNAL
@@ -301,6 +302,12 @@ efx_filter_reconfigure(
 	__in				boolean_t brdcst,
 	__in_ecount(6*count)		uint8_t const *addrs,
 	__in				uint32_t count);
+
+LIBEFX_INTERNAL
+extern	__checkReturn	efx_rc_t
+efx_filter_get_count(
+	__in	efx_nic_t *enp,
+	__out	uint32_t *countp);
 
 #endif /* EFSYS_OPT_FILTER */
 
@@ -363,6 +370,8 @@ typedef struct efx_port_s {
 	uint32_t		ep_default_adv_cap_mask;
 	uint32_t		ep_phy_cap_mask;
 	boolean_t		ep_mac_drain;
+	boolean_t		ep_include_fcs;
+	boolean_t		ep_vlan_strip;
 #if EFSYS_OPT_BIST
 	efx_bist_type_t		ep_current_bist;
 #endif
@@ -841,7 +850,8 @@ typedef struct efx_mae_s {
 	/** Outer rule match field capabilities. */
 	efx_mae_field_cap_t		*em_outer_rule_field_caps;
 	size_t				em_outer_rule_field_caps_size;
-	uint32_t			em_max_ncounters;
+	uint32_t			em_max_n_action_counters;
+	uint32_t			em_max_n_conntrack_counters;
 } efx_mae_t;
 
 #endif /* EFSYS_OPT_MAE */
@@ -1761,6 +1771,7 @@ struct efx_mae_match_spec_s {
 		uint8_t			outer[MAE_ENC_FIELD_PAIRS_LEN];
 	} emms_mask_value_pairs;
 	uint8_t				emms_outer_rule_recirc_id;
+	boolean_t			emms_outer_rule_do_ct;
 };
 
 typedef enum efx_mae_action_e {
@@ -1770,6 +1781,7 @@ typedef enum efx_mae_action_e {
 	EFX_MAE_ACTION_SET_DST_MAC,
 	EFX_MAE_ACTION_SET_SRC_MAC,
 	EFX_MAE_ACTION_DECR_IP_TTL,
+	EFX_MAE_ACTION_NAT,
 	EFX_MAE_ACTION_VLAN_PUSH,
 	EFX_MAE_ACTION_COUNT,
 	EFX_MAE_ACTION_ENCAP,

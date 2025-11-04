@@ -479,10 +479,13 @@ virtio_crypto_free_queues(struct rte_cryptodev *dev)
 
 	/* control queue release */
 	virtio_crypto_queue_release(hw->cvq);
+	hw->cvq = NULL;
 
 	/* data queue release */
-	for (i = 0; i < hw->max_dataqueues; i++)
+	for (i = 0; i < hw->max_dataqueues; i++) {
 		virtio_crypto_queue_release(dev->data->queue_pairs[i]);
+		dev->data->queue_pairs[i] = NULL;
+	}
 }
 
 static int
@@ -591,7 +594,7 @@ virtio_crypto_qp_setup(struct rte_cryptodev *dev, uint16_t queue_pair_id,
 			qp_conf->nb_descriptors, socket_id, &vq);
 	if (ret < 0) {
 		VIRTIO_CRYPTO_INIT_LOG_ERR(
-			"virtio crypto data queue initialization failed\n");
+			"virtio crypto data queue initialization failed");
 		return ret;
 	}
 
@@ -614,6 +617,7 @@ virtio_crypto_qp_release(struct rte_cryptodev *dev, uint16_t queue_pair_id)
 	}
 
 	virtio_crypto_queue_release(vq);
+	dev->data->queue_pairs[queue_pair_id] = NULL;
 	return 0;
 }
 
@@ -727,7 +731,6 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 	if (cryptodev == NULL)
 		return -ENODEV;
 
-	cryptodev->driver_id = cryptodev_virtio_driver_id;
 	cryptodev->dev_ops = &virtio_crypto_dev_ops;
 
 	cryptodev->enqueue_burst = virtio_crypto_pkt_tx_burst;
@@ -751,6 +754,7 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 
 	if (virtio_crypto_init_device(cryptodev,
 			VIRTIO_CRYPTO_PMD_GUEST_FEATURES) < 0)
+	cryptodev->driver_id = cryptodev_virtio_driver_id;
 		return -1;
 
 	rte_cryptodev_pmd_probing_finish(cryptodev);
@@ -761,8 +765,6 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 static int
 virtio_crypto_dev_uninit(struct rte_cryptodev *cryptodev)
 {
-	struct virtio_crypto_hw *hw = cryptodev->data->dev_private;
-
 	PMD_INIT_FUNC_TRACE();
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
@@ -777,11 +779,7 @@ virtio_crypto_dev_uninit(struct rte_cryptodev *cryptodev)
 	cryptodev->enqueue_burst = NULL;
 	cryptodev->dequeue_burst = NULL;
 
-	/* release control queue */
-	virtio_crypto_queue_release(hw->cvq);
-
-	rte_free(cryptodev->data);
-	cryptodev->data = NULL;
+	rte_cryptodev_pmd_release_device(cryptodev);
 
 	VIRTIO_CRYPTO_DRV_LOG_INFO("dev_uninit completed");
 
@@ -850,9 +848,8 @@ static void
 virtio_crypto_dev_free_mbufs(struct rte_cryptodev *dev)
 {
 	uint32_t i;
-	struct virtio_crypto_hw *hw = dev->data->dev_private;
 
-	for (i = 0; i < hw->max_dataqueues; i++) {
+	for (i = 0; i < dev->data->nb_queue_pairs; i++) {
 		VIRTIO_CRYPTO_INIT_LOG_DBG("Before freeing dataq[%d] used "
 			"and unused buf", i);
 		VIRTQUEUE_DUMP((struct virtqueue *)
@@ -1395,7 +1392,7 @@ virtio_crypto_dev_info_get(struct rte_cryptodev *dev,
 	PMD_INIT_FUNC_TRACE();
 
 	if (info != NULL) {
-		info->driver_id = cryptodev_virtio_driver_id;
+		info->driver_id = dev->driver_id;
 		info->feature_flags = dev->feature_flags;
 		info->max_nb_queue_pairs = hw->max_dataqueues;
 		/* No limit of number of sessions */

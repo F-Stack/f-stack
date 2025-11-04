@@ -27,7 +27,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <errno.h>
-     
+
 #include <rte_common.h>
 #include <rte_byteorder.h>
 #include <rte_log.h>
@@ -92,9 +92,9 @@ static inline void ff_txring_init(struct mbuf_txring* r, uint32_t len);
 
 typedef struct _list_manager_s
 {
-    uint64_t    *ele;        
-    int        size;        
-    //int        FreeNum;    
+    uint64_t    *ele;
+    int        size;
+    //int        FreeNum;
     int     top;
 }StackList_t;
 
@@ -107,9 +107,9 @@ static inline int         stklist_push(StackList_t * p, uint64_t val);
 
 static int                 stklist_init(StackList_t*p, int size)
 {
-    
+
     int i = 0;
-    
+
     if (p==NULL || size<=0){
         return -1;
     }
@@ -117,14 +117,14 @@ static int                 stklist_init(StackList_t*p, int size)
     p->top = 0;
     if ( posix_memalign((void**)&p->ele, sizeof(uint64_t), sizeof(uint64_t)*size) != 0)
         return -2;
-    
+
     return 0;
 }
 
 static inline void *stklist_pop(StackList_t *p)
 {
     int head = 0;
-    
+
     if (p==NULL)
         return NULL;
 
@@ -139,7 +139,7 @@ static inline void *stklist_pop(StackList_t *p)
 //return code: -1: faile;  >=0:OK.
 static inline int stklist_push(StackList_t *p,  const uint64_t val){
     int tail = 0;
-    
+
     if (p==NULL)
         return -1;
     if (p->top < p->size){
@@ -167,7 +167,7 @@ static inline int ff_mbuf_set_uint64(struct rte_mbuf* p, uint64_t data)
 * if mbuf has num segment in all, Dev's sw_ring will use num descriptions. ff_txring also use num segments as below:
 * <---     num-1          ---->|ptr| head |
 * ----------------------------------------------
-* | 0 | 0 | ..............| 0  | p | XXX  |         
+* | 0 | 0 | ..............| 0  | p | XXX  |
 *-----------------------------------------------
 *************************/
 static inline int ff_txring_enqueue(struct mbuf_txring* q, void *p, int seg_num)
@@ -184,7 +184,7 @@ static inline int ff_txring_enqueue(struct mbuf_txring* q, void *p, int seg_num)
         ff_mbuf_free(q->m_table[q->head]);
     q->m_table[q->head] = p;
     Head_INC(q->head);
-    
+
     return 0;
 }
 
@@ -202,7 +202,7 @@ static inline int ff_txring_pop(struct mbuf_txring* q, int num)
             ff_mbuf_free(q->m_table[q->head]);
             q->m_table[q->head] = NULL;
         }
-    }    
+    }
 }
 
 static inline void ff_txring_init(struct mbuf_txring* q, uint32_t num)
@@ -213,7 +213,7 @@ static inline void ff_txring_init(struct mbuf_txring* q, uint32_t num)
 void ff_init_ref_pool(int nb_mbuf, int socketid)
 {
     char s[64] = {0};
-    
+
     if (ff_ref_pool[socketid] != NULL) {
             return;
     }
@@ -233,13 +233,13 @@ int ff_mmap_init()
     phys_addr_t    phys_addr = 0;
     uint64_t    bsd_memsz = (ff_global_cfg.freebsd.mem_size << 20);
     unsigned int bsd_pagesz = 0;
-    
+
     ff_page_start = (uint64_t)mmap( NULL, bsd_memsz, PROT_READ | PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_POPULATE, -1, 0);
     if (ff_page_start == (uint64_t)-1){
         rte_panic("ff_mmap_init get ff_page_start failed, err=%d.\n", errno);
         return -1;
     }
-    
+
     if ( mlock((void*)ff_page_start, bsd_memsz)<0 )    {
         rte_panic("mlock failed, err=%d.\n", errno);
         return -1;
@@ -253,13 +253,13 @@ int ff_mmap_init()
         rte_panic("posix_memalign get ff_mpage_phy failed, err=%d.\n", errno);
         return -1;
     }
-    
+
     stklist_init(&ff_mpage_ctl, bsd_pagesz);
-    
-    for (i=0; i<bsd_pagesz; i++ ){
+
+    for (i=0; (unsigned)i<bsd_pagesz; i++ ){
         virt_addr = ff_page_start + PAGE_SIZE*i;
         memset((void*)virt_addr, 0, PAGE_SIZE);
-        
+
         stklist_push( &ff_mpage_ctl, virt_addr);
         ff_mpage_phy[i] = rte_mem_virt2phy((const void*)virt_addr);
         if ( ff_mpage_phy[i] == RTE_BAD_IOVA ){
@@ -269,7 +269,7 @@ int ff_mmap_init()
     }
 
     ff_txring_init(&nic_tx_ring[0], RTE_MAX_ETHPORTS);
-    
+
     return 0;
 }
 
@@ -288,11 +288,11 @@ static inline uint64_t ff_mem_virt2phy(const void* virtaddr)
     uint32_t    pages = 0;
 
     pages = (((uint64_t)virtaddr - (uint64_t)ff_page_start)>>PAGE_SHIFT);
-    if (pages >= stklist_size(&ff_mpage_ctl)){
+    if (pages >= (uint32_t)stklist_size(&ff_mpage_ctl)){
         rte_panic("ff_mbuf_virt2phy get invalid pages %d.", pages);
         return -1;
     }
-    
+
     addr = ff_mpage_phy[pages] + ((const uint64_t)virtaddr & PAGE_MASK);
     return addr;
 }
@@ -312,7 +312,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
 {
     void                    *data = NULL;
     struct ff_tx_offload     offload = {0};
-    
+
     ff_mbuf_tx_offload(m, &offload);
     data = rte_pktmbuf_mtod(head, void*);
 
@@ -323,7 +323,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
         iph = (struct rte_ipv4_hdr *)(data + RTE_ETHER_HDR_LEN);
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
-        head->ol_flags |= PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+        head->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
         head->l2_len = RTE_ETHER_HDR_LEN;
         head->l3_len = iph_len;
     }
@@ -335,7 +335,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
         if (offload.tcp_csum) {
-            head->ol_flags |= PKT_TX_TCP_CKSUM;
+            head->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
             head->l2_len = RTE_ETHER_HDR_LEN;
             head->l3_len = iph_len;
         }
@@ -360,15 +360,15 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
             int tcph_len;
             tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
             tcph_len = (tcph->data_off & 0xf0) >> 2;
-            tcph->cksum = rte_ipv4_phdr_cksum(iph, PKT_TX_TCP_SEG);
+            tcph->cksum = rte_ipv4_phdr_cksum(iph, RTE_MBUF_F_TX_TCP_SEG);
 
-            head->ol_flags |= PKT_TX_TCP_SEG;
+            head->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
             head->l4_len = tcph_len;
             head->tso_segsz = offload.tso_seg_size;
         }
 
         if (offload.udp_csum) {
-            head->ol_flags |= PKT_TX_UDP_CKSUM;
+            head->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
             head->l2_len = RTE_ETHER_HDR_LEN;
             head->l3_len = iph_len;
         }
@@ -390,7 +390,7 @@ static inline struct rte_mbuf*     ff_extcl_to_rte(void *m )
     if (p_head == NULL){
         return NULL;
     }
-    
+
     return p_head;
 }
 
@@ -403,7 +403,7 @@ static inline struct rte_mbuf*     ff_bsd_to_rte(void *m, int total)
     void    *data = NULL;
     void    *p_bsdbuf = NULL;
     unsigned len = 0;
-    
+
     p_head = rte_pktmbuf_alloc(mbuf_pool);
     if (p_head == NULL){
         return NULL;
@@ -424,7 +424,7 @@ static inline struct rte_mbuf*     ff_bsd_to_rte(void *m, int total)
         cur->buf_addr = data;
         cur->buf_iova = ff_mem_virt2phy((const void*)(cur->buf_addr));
         cur->data_off = 0;
-        cur->data_len = len;        
+        cur->data_len = len;
 
         p_head->nb_segs++;
         if (prev != NULL) {
@@ -433,7 +433,7 @@ static inline struct rte_mbuf*     ff_bsd_to_rte(void *m, int total)
         prev = cur;
         cur = NULL;
     }
-    
+
     return p_head;
 }
 
@@ -457,13 +457,13 @@ int ff_if_send_onepkt(struct ff_dpdk_if_context *ctx, void *m, int total)
            rte_panic("data address 0x%lx is out of page bound or not malloced by DPDK recver.", (uint64_t)p_data);
         return 0;
     }
-    
+
     if (head == NULL){
         rte_log(RTE_LOG_CRIT, RTE_LOGTYPE_USER1, "ff_if_send_onepkt call ff_bsd_to_rte failed.");
         ff_mbuf_free(m);
         return 0;
     }
-    
+
     ff_offload_set(ctx, m, head);
     qconf = &lcore_conf;
     len = qconf->tx_mbufs[ctx->port_id].len;

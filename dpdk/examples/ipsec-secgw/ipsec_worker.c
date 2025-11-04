@@ -20,7 +20,7 @@
 
 struct port_drv_mode_data {
 	void *sess;
-	struct rte_security_ctx *ctx;
+	void *ctx;
 };
 
 typedef void (*ipsec_worker_fn_t)(void);
@@ -578,7 +578,7 @@ process_ipsec_ev_outbound(struct ipsec_ctx *ctx, struct route_table *rt,
 		 * Only plain IPv4 & IPv6 packets are allowed
 		 * on protected port. Drop the rest.
 		 */
-		RTE_LOG(ERR, IPSEC, "Unsupported packet type = %d\n", type);
+		RTE_LOG_DP(DEBUG, IPSEC, "Unsupported packet type = %d\n", type);
 		goto drop_pkt_and_exit;
 	}
 
@@ -705,6 +705,9 @@ ipsec_ev_inbound_route_pkts(struct rte_event_vector *vec,
 	struct rte_ipsec_session *sess;
 	struct rte_mbuf *pkt;
 	struct ipsec_sa *sa;
+	uint8_t mask = (1UL << RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO) |
+		       (1UL << RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL);
+
 
 	j = ipsec_ev_route_ip_pkts(vec, rt, t);
 
@@ -712,7 +715,7 @@ ipsec_ev_inbound_route_pkts(struct rte_event_vector *vec,
 	for (i = 0; i < t->ipsec.num; i++) {
 		pkt = t->ipsec.pkts[i];
 		sa = ipsec_mask_saptr(t->ipsec.saptr[i]);
-		if (unlikely(sa == NULL)) {
+		if (unlikely(sa == NULL) || ((1UL << sa->sessions[0].type) & mask)) {
 			free_pkts(&pkt, 1);
 			continue;
 		}

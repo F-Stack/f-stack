@@ -232,6 +232,7 @@ The command line options are:
        noisy
        5tswap
        shared-rxq
+       recycle_mbufs
 
 *   ``--rss-ip``
 
@@ -388,12 +389,15 @@ The command line options are:
        10 - 10Mbps (not supported)
        100 - 100Mbps (not supported)
        1000 - 1Gbps
+       2500 - 2.5Gbps
+       5000 - 5Gbps
        10000 - 10Gbps
        25000 - 25Gbps
        40000 - 40Gbps
        50000 - 50Gbps
        100000 - 100Gbps
        200000 - 200Gbps
+       400000 - 400Gbps
        ...
 
 *   ``--disable-link-check``
@@ -440,6 +444,11 @@ The command line options are:
 
     Ports that do not support this mode are automatically discarded.
 
+*   ``--disable-flow-flush``
+
+    Disable port flow flush when stopping port.
+    This allows testing keep flow rules or shared flow objects across restart.
+
 *   ``--tx-offloads=0xXXXXXXXX``
 
     Set the hexadecimal bitmask of TX queue offloads.
@@ -484,6 +493,15 @@ The command line options are:
       allocated area
     * xmemhuge: create and populate mempool using externally and anonymously
       allocated hugepage area
+
+*   ``--noisy-forward-mode=mode``
+
+    Set the noisy vnf forwarding mode where ``mode`` is one of the following::
+
+       io (the default)
+       mac
+       macswap
+       5tswap
 
 *   ``--noisy-tx-sw-buffer-size``
 

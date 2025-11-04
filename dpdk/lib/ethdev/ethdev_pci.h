@@ -111,8 +111,8 @@ rte_eth_dev_pci_allocate(struct rte_pci_device *dev, size_t private_data_size)
 				}
 				/* got memory, but not local, so issue warning */
 				RTE_ETHDEV_LOG(WARNING,
-						"Private data for ethdev '%s' not allocated on local NUMA node %d\n",
-						dev->device.name, dev->device.numa_node);
+					       "Private data for ethdev '%s' not allocated on local NUMA node %d\n",
+					       dev->device.name, dev->device.numa_node);
 			}
 		}
 	} else {

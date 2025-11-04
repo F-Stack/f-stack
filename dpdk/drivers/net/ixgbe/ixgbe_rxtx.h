@@ -24,7 +24,7 @@
  * descriptors should meet the following condition:
  *      (num_ring_desc * sizeof(rx/tx descriptor)) % 128 == 0
  */
-#define	IXGBE_MIN_RING_DESC	32
+#define	IXGBE_MIN_RING_DESC	64
 #define	IXGBE_MAX_RING_DESC	4096
 
 #define RTE_PMD_IXGBE_TX_MAX_BURST 32
@@ -294,6 +294,10 @@ int ixgbe_dev_tx_done_cleanup(void *tx_queue, uint32_t free_cnt);
 
 extern const uint32_t ptype_table[IXGBE_PACKET_TYPE_MAX];
 extern const uint32_t ptype_table_tn[IXGBE_PACKET_TYPE_TN_MAX];
+
+uint16_t ixgbe_recycle_tx_mbufs_reuse_vec(void *tx_queue,
+		struct rte_eth_recycle_rxq_info *recycle_rxq_info);
+void ixgbe_recycle_rx_descriptors_refill_vec(void *rx_queue, uint16_t nb_mbufs);
 
 uint16_t ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 				    uint16_t nb_pkts);

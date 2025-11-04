@@ -13,6 +13,7 @@ struct nix_inl_dev;
 
 struct idev_nix_inl_cfg {
 	uint64_t meta_aura;
+	uintptr_t meta_mempool;
 	uint32_t nb_bufs;
 	uint32_t buf_sz;
 	uint32_t refs;
@@ -30,9 +31,12 @@ struct idev_cfg {
 	struct roc_bphy *bphy;
 	struct roc_cpt *cpt;
 	struct roc_sso *sso;
+	struct roc_mcs_head mcs_list;
 	struct nix_inl_dev *nix_inl_dev;
 	struct idev_nix_inl_cfg inl_cfg;
+	struct roc_nix_list roc_nix_list;
 	plt_spinlock_t nix_inl_dev_lock;
+	plt_spinlock_t npa_dev_lock;
 };
 
 /* Generic */

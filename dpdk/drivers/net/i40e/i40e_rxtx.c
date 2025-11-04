@@ -1229,11 +1229,11 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			ctx_txd->type_cmd_tso_mss =
 				rte_cpu_to_le_64(cd_type_cmd_tso_mss);
 
-			PMD_TX_LOG(DEBUG, "mbuf: %p, TCD[%u]:\n"
-				"tunneling_params: %#x;\n"
-				"l2tag2: %#hx;\n"
-				"rsvd: %#hx;\n"
-				"type_cmd_tso_mss: %#"PRIx64";\n",
+			PMD_TX_LOG(DEBUG, "mbuf: %p, TCD[%u]: "
+				"tunneling_params: %#x; "
+				"l2tag2: %#hx; "
+				"rsvd: %#hx; "
+				"type_cmd_tso_mss: %#"PRIx64";",
 				tx_pkt, tx_id,
 				ctx_txd->tunneling_params,
 				ctx_txd->l2tag2,
@@ -1276,12 +1276,12 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				txd = &txr[tx_id];
 				txn = &sw_ring[txe->next_id];
 			}
-			PMD_TX_LOG(DEBUG, "mbuf: %p, TDD[%u]:\n"
-				"buf_dma_addr: %#"PRIx64";\n"
-				"td_cmd: %#x;\n"
-				"td_offset: %#x;\n"
-				"td_len: %u;\n"
-				"td_tag: %#x;\n",
+			PMD_TX_LOG(DEBUG, "mbuf: %p, TDD[%u]: "
+				"buf_dma_addr: %#"PRIx64"; "
+				"td_cmd: %#x; "
+				"td_offset: %#x; "
+				"td_len: %u; "
+				"td_tag: %#x;",
 				tx_pkt, tx_id, buf_dma_addr,
 				td_cmd, td_offset, slen, td_tag);
 
@@ -3214,6 +3214,30 @@ i40e_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	qinfo->conf.offloads = txq->offloads;
 }
 
+void
+i40e_recycle_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_recycle_rxq_info *recycle_rxq_info)
+{
+	struct i40e_rx_queue *rxq;
+	struct i40e_adapter *ad =
+		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+
+	rxq = dev->data->rx_queues[queue_id];
+
+	recycle_rxq_info->mbuf_ring = (void *)rxq->sw_ring;
+	recycle_rxq_info->mp = rxq->mp;
+	recycle_rxq_info->mbuf_ring_size = rxq->nb_rx_desc;
+	recycle_rxq_info->receive_tail = &rxq->rx_tail;
+
+	if (ad->rx_vec_allowed) {
+		recycle_rxq_info->refill_requirement = RTE_I40E_RXQ_REARM_THRESH;
+		recycle_rxq_info->refill_head = &rxq->rxrearm_start;
+	} else {
+		recycle_rxq_info->refill_requirement = rxq->rx_free_thresh;
+		recycle_rxq_info->refill_head = &rxq->rx_free_trigger;
+	}
+}
+
 #ifdef RTE_ARCH_X86
 static inline bool
 get_avx_supported(bool request_avx512)
@@ -3231,15 +3255,9 @@ get_avx_supported(bool request_avx512)
 #endif
 	} else {
 		if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256 &&
-		rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 &&
-		rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1)
-#ifdef CC_AVX2_SUPPORT
+				rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 &&
+				rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1)
 			return true;
-#else
-		PMD_DRV_LOG(NOTICE,
-			"AVX2 is not supported in build env");
-		return false;
-#endif
 	}
 
 	return false;
@@ -3308,6 +3326,8 @@ i40e_set_rx_function(struct rte_eth_dev *dev)
 				dev->rx_pkt_burst = ad->rx_use_avx2 ?
 					i40e_recv_scattered_pkts_vec_avx2 :
 					i40e_recv_scattered_pkts_vec;
+				dev->recycle_rx_descriptors_refill =
+					i40e_recycle_rx_descriptors_refill_vec;
 			}
 		} else {
 			if (ad->rx_use_avx512) {
@@ -3326,9 +3346,12 @@ i40e_set_rx_function(struct rte_eth_dev *dev)
 				dev->rx_pkt_burst = ad->rx_use_avx2 ?
 					i40e_recv_pkts_vec_avx2 :
 					i40e_recv_pkts_vec;
+				dev->recycle_rx_descriptors_refill =
+					i40e_recycle_rx_descriptors_refill_vec;
 			}
 		}
 #else /* RTE_ARCH_X86 */
+		dev->recycle_rx_descriptors_refill = i40e_recycle_rx_descriptors_refill_vec;
 		if (dev->data->scattered_rx) {
 			PMD_INIT_LOG(DEBUG,
 				     "Using Vector Scattered Rx (port %d).",
@@ -3444,7 +3467,7 @@ i40e_set_tx_function_flag(struct rte_eth_dev *dev, struct i40e_tx_queue *txq)
 				txq->queue_id);
 	else
 		PMD_INIT_LOG(DEBUG,
-				"Neither simple nor vector Tx enabled on Tx queue %u\n",
+				"Neither simple nor vector Tx enabled on Tx queue %u",
 				txq->queue_id);
 }
 
@@ -3496,15 +3519,18 @@ i40e_set_tx_function(struct rte_eth_dev *dev)
 				dev->tx_pkt_burst = ad->tx_use_avx2 ?
 						    i40e_xmit_pkts_vec_avx2 :
 						    i40e_xmit_pkts_vec;
+				dev->recycle_tx_mbufs_reuse = i40e_recycle_tx_mbufs_reuse_vec;
 			}
 #else /* RTE_ARCH_X86 */
 			PMD_INIT_LOG(DEBUG, "Using Vector Tx (port %d).",
 				     dev->data->port_id);
 			dev->tx_pkt_burst = i40e_xmit_pkts_vec;
+			dev->recycle_tx_mbufs_reuse = i40e_recycle_tx_mbufs_reuse_vec;
 #endif /* RTE_ARCH_X86 */
 		} else {
 			PMD_INIT_LOG(DEBUG, "Simple tx finally be used.");
 			dev->tx_pkt_burst = i40e_xmit_pkts_simple;
+			dev->recycle_tx_mbufs_reuse = i40e_recycle_tx_mbufs_reuse_vec;
 		}
 		dev->tx_pkt_prepare = i40e_simple_prep_pkts;
 	} else {
@@ -3577,6 +3603,8 @@ i40e_set_default_pctype_table(struct rte_eth_dev *dev)
 	ad->flow_types_mask = 0ULL;
 	ad->pctypes_mask = 0ULL;
 
+	ad->pctypes_tbl[RTE_ETH_FLOW_IPV4] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_OTHER);
 	ad->pctypes_tbl[RTE_ETH_FLOW_FRAG_IPV4] =
 				(1ULL << I40E_FILTER_PCTYPE_FRAG_IPV4);
 	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] =
@@ -3623,7 +3651,7 @@ i40e_set_default_pctype_table(struct rte_eth_dev *dev)
 	}
 }
 
-#ifndef CC_AVX2_SUPPORT
+#ifndef RTE_ARCH_X86
 uint16_t
 i40e_recv_pkts_vec_avx2(void __rte_unused *rx_queue,
 			struct rte_mbuf __rte_unused **rx_pkts,
@@ -3647,4 +3675,4 @@ i40e_xmit_pkts_vec_avx2(void __rte_unused * tx_queue,
 {
 	return 0;
 }
-#endif /* ifndef CC_AVX2_SUPPORT */
+#endif /* ifndef RTE_ARCH_X86 */

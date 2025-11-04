@@ -18,7 +18,8 @@ enum icp_qat_fw_la_cmd_id {
 	ICP_QAT_FW_LA_CMD_MGF1 = 9,
 	ICP_QAT_FW_LA_CMD_AUTH_PRE_COMP = 10,
 	ICP_QAT_FW_LA_CMD_CIPHER_PRE_COMP = 11,
-	ICP_QAT_FW_LA_CMD_DELIMITER = 12
+	ICP_QAT_FW_LA_CMD_CIPHER_CRC = 17,
+	ICP_QAT_FW_LA_CMD_DELIMITER = 18
 };
 
 #define ICP_QAT_FW_LA_ICV_VER_STATUS_PASS ICP_QAT_FW_COMN_STATUS_FLAG_OK
@@ -186,6 +187,16 @@ struct icp_qat_fw_la_bulk_req {
 #define ICP_QAT_FW_LA_PARTIAL_SET(flags, val) \
 	QAT_FIELD_SET(flags, val, QAT_LA_PARTIAL_BITPOS, \
 	QAT_LA_PARTIAL_MASK)
+
+#define QAT_FW_LA_MODE2 1
+#define QAT_FW_LA_NO_MODE2 0
+#define QAT_FW_LA_MODE2_MASK 0x1
+#define QAT_FW_LA_MODE2_BITPOS 5
+#define ICP_QAT_FW_HASH_FLAG_MODE2_SET(flags, val) \
+QAT_FIELD_SET(flags, \
+		val, \
+		QAT_FW_LA_MODE2_BITPOS, \
+		QAT_FW_LA_MODE2_MASK)
 
 struct icp_qat_fw_cipher_req_hdr_cd_pars {
 	union {

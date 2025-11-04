@@ -559,7 +559,7 @@ octeontx_dev_close(struct rte_eth_dev *dev)
 		return 0;
 
 	/* Stopping/closing event device once all eth ports are closed. */
-	if (__atomic_sub_fetch(&evdev_refcnt, 1, __ATOMIC_ACQUIRE) == 0) {
+	if (__atomic_fetch_sub(&evdev_refcnt, 1, __ATOMIC_ACQUIRE) - 1 == 0) {
 		rte_event_dev_stop(nic->evdev);
 		rte_event_dev_close(nic->evdev);
 	}
@@ -1223,7 +1223,7 @@ octeontx_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 	if (dev->data->tx_queues[qid]) {
 		res = octeontx_dev_tx_queue_stop(dev, qid);
 		if (res < 0)
-			octeontx_log_err("failed stop tx_queue(%d)\n", qid);
+			octeontx_log_err("failed stop tx_queue(%d)", qid);
 
 		rte_free(dev->data->tx_queues[qid]);
 	}
@@ -1342,7 +1342,7 @@ octeontx_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 
 	/* Verify queue index */
 	if (qidx >= dev->data->nb_rx_queues) {
-		octeontx_log_err("QID %d not supported (0 - %d available)\n",
+		octeontx_log_err("QID %d not supported (0 - %d available)",
 				qidx, (dev->data->nb_rx_queues - 1));
 		return -ENOTSUP;
 	}
@@ -1592,7 +1592,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	nic->pko_vfid = pko_vfid;
 	nic->port_id = port;
 	nic->evdev = evdev;
-	__atomic_add_fetch(&evdev_refcnt, 1, __ATOMIC_ACQUIRE);
+	__atomic_fetch_add(&evdev_refcnt, 1, __ATOMIC_ACQUIRE);
 
 	res = octeontx_port_open(nic);
 	if (res < 0)

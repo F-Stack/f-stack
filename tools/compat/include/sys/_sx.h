@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007 Attilio Rao <attilio@freebsd.org>
  * All rights reserved.
  *
@@ -36,7 +38,7 @@
  */
 struct sx {
 	struct lock_object	lock_object;
-	void*	sx_lock;
+	volatile uintptr_t	sx_lock;
 };
 
 #endif	/* !_SYS__SX_H_ */

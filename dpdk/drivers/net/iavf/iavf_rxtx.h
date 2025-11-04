@@ -31,8 +31,10 @@
 		RTE_ETH_TX_OFFLOAD_QINQ_INSERT |		 \
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS |		 \
 		RTE_ETH_TX_OFFLOAD_TCP_TSO |		 \
-		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |    \
-		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM |	\
+		RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |	 \
+		RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO |	 \
+		RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO |	 \
+		RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO |	 \
 		RTE_ETH_TX_OFFLOAD_SECURITY)
 
 #define IAVF_TX_VECTOR_OFFLOAD (				 \
@@ -41,14 +43,29 @@
 		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |		 \
 		RTE_ETH_TX_OFFLOAD_TCP_CKSUM)
 
+#define IAVF_TX_VECTOR_OFFLOAD_CTX (			\
+		RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |	\
+		RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM)
+
 #define IAVF_RX_VECTOR_OFFLOAD (				 \
 		RTE_ETH_RX_OFFLOAD_CHECKSUM |		 \
 		RTE_ETH_RX_OFFLOAD_SCTP_CKSUM |		 \
 		RTE_ETH_RX_OFFLOAD_VLAN |		 \
-		RTE_ETH_RX_OFFLOAD_RSS_HASH)
+		RTE_ETH_RX_OFFLOAD_RSS_HASH |    \
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+
+/**
+ * According to the vlan capabilities returned by the driver and FW, the vlan tci
+ * needs to be inserted to the L2TAG1 or L2TAG2 fields.
+ * If L2TAG1, it should be inserted to the L2TAG1 field in data desc.
+ * If L2TAG2, it should be inserted to the L2TAG2 field in ctx desc.
+ * Besides, tunneling parameters and other fields need be configured in ctx desc
+ * if the outer checksum offload is enabled.
+ */
 
 #define IAVF_VECTOR_PATH 0
 #define IAVF_VECTOR_OFFLOAD_PATH 1
+#define IAVF_VECTOR_CTX_OFFLOAD_PATH 2
 
 #define DEFAULT_TX_RS_THRESH     32
 #define DEFAULT_TX_FREE_THRESH   32
@@ -64,6 +81,7 @@
 		RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
 		RTE_MBUF_F_TX_TCP_SEG |          \
+		RTE_MBUF_F_TX_UDP_SEG |          \
 		RTE_MBUF_F_TX_OUTER_IP_CKSUM |   \
 		RTE_MBUF_F_TX_OUTER_UDP_CKSUM)
 
@@ -76,6 +94,7 @@
 		RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
 		RTE_MBUF_F_TX_TCP_SEG |		 \
+		RTE_MBUF_F_TX_UDP_SEG |      \
 		RTE_MBUF_F_TX_TUNNEL_MASK |	\
 		RTE_MBUF_F_TX_OUTER_IP_CKSUM |  \
 		RTE_MBUF_F_TX_OUTER_UDP_CKSUM | \
@@ -269,6 +288,7 @@ struct iavf_tx_queue {
 	uint16_t free_thresh;
 	uint16_t rs_thresh;
 	uint8_t rel_mbufs_type;
+	struct iavf_vsi *vsi; /**< the VSI this queue belongs to */
 
 	uint16_t port_id;
 	uint16_t queue_id;
@@ -284,6 +304,7 @@ struct iavf_tx_queue {
 #define IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2	BIT(1)
 	uint8_t vlan_flag;
 	uint8_t tc;
+	uint8_t use_ctx:1;            /* if use the ctx desc, a packet needs two descriptors */
 };
 
 /* Offload features */
@@ -416,6 +437,7 @@ enum iavf_rxtx_rel_mbufs_type {
 	IAVF_REL_MBUFS_DEFAULT		= 0,
 	IAVF_REL_MBUFS_SSE_VEC		= 1,
 	IAVF_REL_MBUFS_AVX512_VEC	= 2,
+	IAVF_REL_MBUFS_NEON_VEC		= 3,
 };
 
 /* Receive Flex Descriptor profile IDs: There are a total
@@ -670,19 +692,32 @@ uint16_t iavf_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts);
 uint16_t iavf_recv_pkts_vec_avx2(void *rx_queue, struct rte_mbuf **rx_pkts,
 				 uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_avx2_offload(void *rx_queue, struct rte_mbuf **rx_pkts,
+					 uint16_t nb_pkts);
 uint16_t iavf_recv_pkts_vec_avx2_flex_rxd(void *rx_queue,
 					  struct rte_mbuf **rx_pkts,
 					  uint16_t nb_pkts);
+uint16_t iavf_recv_pkts_vec_avx2_flex_rxd_offload(void *rx_queue,
+						  struct rte_mbuf **rx_pkts,
+						  uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts_vec_avx2(void *rx_queue,
 					   struct rte_mbuf **rx_pkts,
 					   uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx2_offload(void *rx_queue,
+						   struct rte_mbuf **rx_pkts,
+						   uint16_t nb_pkts);
 uint16_t iavf_recv_scattered_pkts_vec_avx2_flex_rxd(void *rx_queue,
 						    struct rte_mbuf **rx_pkts,
 						    uint16_t nb_pkts);
+uint16_t iavf_recv_scattered_pkts_vec_avx2_flex_rxd_offload(void *rx_queue,
+							    struct rte_mbuf **rx_pkts,
+							    uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 			    uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 				 uint16_t nb_pkts);
+uint16_t iavf_xmit_pkts_vec_avx2_offload(void *tx_queue, struct rte_mbuf **tx_pkts,
+					 uint16_t nb_pkts);
 int iavf_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
 int iavf_rx_vec_dev_check(struct rte_eth_dev *dev);
 int iavf_tx_vec_dev_check(struct rte_eth_dev *dev);
@@ -716,6 +751,8 @@ uint16_t iavf_xmit_pkts_vec_avx512(void *tx_queue, struct rte_mbuf **tx_pkts,
 uint16_t iavf_xmit_pkts_vec_avx512_offload(void *tx_queue,
 					   struct rte_mbuf **tx_pkts,
 					   uint16_t nb_pkts);
+uint16_t iavf_xmit_pkts_vec_avx512_ctx_offload(void *tx_queue, struct rte_mbuf **tx_pkts,
+				  uint16_t nb_pkts);
 int iavf_txq_vec_setup_avx512(struct iavf_tx_queue *txq);
 
 uint8_t iavf_proto_xtr_type_to_rxdid(uint8_t xtr_type);
@@ -724,6 +761,7 @@ void iavf_set_default_ptype_table(struct rte_eth_dev *dev);
 void iavf_tx_queue_release_mbufs_avx512(struct iavf_tx_queue *txq);
 void iavf_rx_queue_release_mbufs_sse(struct iavf_rx_queue *rxq);
 void iavf_tx_queue_release_mbufs_sse(struct iavf_tx_queue *txq);
+void iavf_rx_queue_release_mbufs_neon(struct iavf_rx_queue *rxq);
 
 static inline
 void iavf_dump_rx_descriptor(struct iavf_rx_queue *rxq,

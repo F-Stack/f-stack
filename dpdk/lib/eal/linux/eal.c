@@ -30,6 +30,7 @@
 #include <rte_memory.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
+#include <rte_eal_memconfig.h>
 #include <rte_errno.h>
 #include <rte_lcore.h>
 #include <rte_service_component.h>
@@ -49,10 +50,10 @@
 #include "eal_hugepages.h"
 #include "eal_memcfg.h"
 #include "eal_trace.h"
-#include "eal_log.h"
 #include "eal_options.h"
 #include "eal_vfio.h"
 #include "hotplug_mp.h"
+#include "log_internal.h"
 
 #define MEMSIZE_IF_NO_HUGE_PAGE (64ULL * 1024ULL * 1024ULL)
 
@@ -664,7 +665,7 @@ eal_parse_args(int argc, char **argv)
 			continue;
 
 		switch (opt) {
-		case 'h':
+		case OPT_HELP_NUM:
 			eal_usage(prgname);
 			exit(EXIT_SUCCESS);
 
@@ -909,6 +910,12 @@ is_iommu_enabled(void)
 	return n > 2;
 }
 
+static __rte_noreturn void *
+eal_worker_thread_loop(void *arg)
+{
+	eal_thread_loop(arg);
+}
+
 static int
 eal_worker_thread_create(unsigned int lcore_id)
 {
@@ -943,8 +950,8 @@ eal_worker_thread_create(unsigned int lcore_id)
 		}
 	}
 
-	if (pthread_create(&lcore_config[lcore_id].thread_id, attrp,
-			eal_thread_loop, (void *)(uintptr_t)lcore_id) == 0)
+	if (pthread_create((pthread_t *)&lcore_config[lcore_id].thread_id.opaque_id,
+			attrp, eal_worker_thread_loop, (void *)(uintptr_t)lcore_id) == 0)
 		ret = 0;
 
 out:
@@ -960,12 +967,10 @@ int
 rte_eal_init(int argc, char **argv)
 {
 	int i, fctret, ret;
-	static uint32_t run_once;
+	static RTE_ATOMIC(uint32_t) run_once;
 	uint32_t has_run = 0;
-	const char *p;
-	static char logid[PATH_MAX];
 	char cpuset[RTE_CPU_AFFINITY_STR_LEN];
-	char thread_name[RTE_MAX_THREAD_NAME_LEN];
+	char thread_name[RTE_THREAD_NAME_SIZE];
 	bool phys_addrs;
 	const struct rte_config *config = rte_eal_get_configuration();
 	struct internal_config *internal_conf =
@@ -978,15 +983,12 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
-	if (!__atomic_compare_exchange_n(&run_once, &has_run, 1, 0,
-					__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&run_once, &has_run, 1,
+					rte_memory_order_relaxed, rte_memory_order_relaxed)) {
 		rte_eal_init_alert("already called initialization.");
 		rte_errno = EALREADY;
 		return -1;
 	}
-
-	p = strrchr(argv[0], '/');
-	strlcpy(logid, p ? p + 1 : argv[0], sizeof(logid));
 
 	eal_reset_internal_config(internal_conf);
 
@@ -1006,14 +1008,14 @@ rte_eal_init(int argc, char **argv)
 	if (fctret < 0) {
 		rte_eal_init_alert("Invalid 'command line' arguments.");
 		rte_errno = EINVAL;
-		__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 		return -1;
 	}
 
 	if (eal_plugins_init() < 0) {
 		rte_eal_init_alert("Cannot init plugins");
 		rte_errno = EINVAL;
-		__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 		return -1;
 	}
 
@@ -1025,7 +1027,7 @@ rte_eal_init(int argc, char **argv)
 
 	if (eal_option_device_parse()) {
 		rte_errno = ENODEV;
-		__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 		return -1;
 	}
 
@@ -1059,7 +1061,7 @@ rte_eal_init(int argc, char **argv)
 	if (rte_bus_scan()) {
 		rte_eal_init_alert("Cannot scan the buses for devices");
 		rte_errno = ENODEV;
-		__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 		return -1;
 	}
 
@@ -1073,17 +1075,15 @@ rte_eal_init(int argc, char **argv)
 		if (iova_mode == RTE_IOVA_DC) {
 			RTE_LOG(DEBUG, EAL, "Buses did not request a specific IOVA mode.\n");
 
-			if (!phys_addrs) {
+			if (!RTE_IOVA_IN_MBUF) {
+				iova_mode = RTE_IOVA_VA;
+				RTE_LOG(DEBUG, EAL, "IOVA as VA mode is forced by build option.\n");
+			} else if (!phys_addrs) {
 				/* if we have no access to physical addresses,
 				 * pick IOVA as VA mode.
 				 */
 				iova_mode = RTE_IOVA_VA;
 				RTE_LOG(DEBUG, EAL, "Physical addresses are unavailable, selecting IOVA as VA mode.\n");
-#if defined(RTE_LIB_KNI) && LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
-			} else if (rte_eal_check_module("rte_kni") == 1) {
-				iova_mode = RTE_IOVA_PA;
-				RTE_LOG(DEBUG, EAL, "KNI is loaded, selecting IOVA as PA mode for better KNI performance.\n");
-#endif
 			} else if (is_iommu_enabled()) {
 				/* we have an IOMMU, pick IOVA as VA mode */
 				iova_mode = RTE_IOVA_VA;
@@ -1096,20 +1096,6 @@ rte_eal_init(int argc, char **argv)
 				RTE_LOG(DEBUG, EAL, "IOMMU is not available, selecting IOVA as PA mode.\n");
 			}
 		}
-#if defined(RTE_LIB_KNI) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
-		/* Workaround for KNI which requires physical address to work
-		 * in kernels < 4.10
-		 */
-		if (iova_mode == RTE_IOVA_VA &&
-				rte_eal_check_module("rte_kni") == 1) {
-			if (phys_addrs) {
-				iova_mode = RTE_IOVA_PA;
-				RTE_LOG(WARNING, EAL, "Forcing IOVA as 'PA' because KNI module is loaded\n");
-			} else {
-				RTE_LOG(DEBUG, EAL, "KNI can not work since physical addresses are unavailable\n");
-			}
-		}
-#endif
 		rte_eal_get_configuration()->iova_mode = iova_mode;
 	} else {
 		rte_eal_get_configuration()->iova_mode =
@@ -1122,7 +1108,7 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
-	if (rte_eal_iova_mode() == RTE_IOVA_PA && !RTE_IOVA_AS_PA) {
+	if (rte_eal_iova_mode() == RTE_IOVA_PA && !RTE_IOVA_IN_MBUF) {
 		rte_eal_init_alert("Cannot use IOVA as 'PA' as it is disabled during build");
 		rte_errno = EINVAL;
 		return -1;
@@ -1139,7 +1125,7 @@ rte_eal_init(int argc, char **argv)
 		if (ret < 0) {
 			rte_eal_init_alert("Cannot get hugepage information.");
 			rte_errno = EACCES;
-			__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+			rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 			return -1;
 		}
 	}
@@ -1160,10 +1146,11 @@ rte_eal_init(int argc, char **argv)
 #endif
 	}
 
-	if (eal_log_init(logid, internal_conf->syslog_facility) < 0) {
+	if (eal_log_init(program_invocation_short_name,
+			 internal_conf->syslog_facility) < 0) {
 		rte_eal_init_alert("Cannot init logging.");
 		rte_errno = ENOMEM;
-		__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 		return -1;
 	}
 
@@ -1171,7 +1158,7 @@ rte_eal_init(int argc, char **argv)
 	if (rte_eal_vfio_setup() < 0) {
 		rte_eal_init_alert("Cannot init VFIO");
 		rte_errno = EAGAIN;
-		__atomic_store_n(&run_once, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
 		return -1;
 	}
 #endif
@@ -1185,7 +1172,10 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	rte_mcfg_mem_read_lock();
+
 	if (rte_eal_memory_init() < 0) {
+		rte_mcfg_mem_read_unlock();
 		rte_eal_init_alert("Cannot init memory");
 		rte_errno = ENOMEM;
 		return -1;
@@ -1195,6 +1185,15 @@ rte_eal_init(int argc, char **argv)
 	eal_hugedirs_unlock();
 
 	if (rte_eal_malloc_heap_init() < 0) {
+		rte_mcfg_mem_read_unlock();
+		rte_eal_init_alert("Cannot init malloc heap");
+		rte_errno = ENODEV;
+		return -1;
+	}
+
+	rte_mcfg_mem_read_unlock();
+
+	if (rte_eal_malloc_heap_populate() < 0) {
 		rte_eal_init_alert("Cannot init malloc heap");
 		rte_errno = ENODEV;
 		return -1;
@@ -1220,7 +1219,7 @@ rte_eal_init(int argc, char **argv)
 
 	eal_check_mem_on_local_socket();
 
-	if (pthread_setaffinity_np(pthread_self(), sizeof(rte_cpuset_t),
+	if (rte_thread_set_affinity_by_id(rte_thread_self(),
 			&lcore_config[config->main_lcore].cpuset) != 0) {
 		rte_eal_init_alert("Cannot set affinity");
 		rte_errno = EINVAL;
@@ -1254,15 +1253,11 @@ rte_eal_init(int argc, char **argv)
 
 		/* Set thread_name for aid in debugging. */
 		snprintf(thread_name, sizeof(thread_name),
-			"rte-worker-%d", i);
-		ret = rte_thread_setname(lcore_config[i].thread_id,
-						thread_name);
-		if (ret != 0)
-			RTE_LOG(DEBUG, EAL,
-				"Cannot set name for lcore thread\n");
+			"dpdk-worker%d", i);
+		rte_thread_set_name(lcore_config[i].thread_id, thread_name);
 
-		ret = pthread_setaffinity_np(lcore_config[i].thread_id,
-			sizeof(rte_cpuset_t), &lcore_config[i].cpuset);
+		ret = rte_thread_set_affinity_by_id(lcore_config[i].thread_id,
+			&lcore_config[i].cpuset);
 		if (ret != 0)
 			rte_panic("Cannot set affinity\n");
 	}
@@ -1319,13 +1314,9 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY && !internal_conf->no_telemetry) {
-		int tlog = rte_log_register_type_and_pick_level(
-				"lib.telemetry", RTE_LOG_WARNING);
-		if (tlog < 0)
-			tlog = RTE_LOGTYPE_EAL;
 		if (rte_telemetry_init(rte_eal_get_runtime_dir(),
 				rte_version(),
-				&internal_conf->ctrl_cpuset, rte_log, tlog) != 0)
+				&internal_conf->ctrl_cpuset) != 0)
 			return -1;
 	}
 
@@ -1354,11 +1345,11 @@ mark_freeable(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
 int
 rte_eal_cleanup(void)
 {
-	static uint32_t run_once;
+	static RTE_ATOMIC(uint32_t) run_once;
 	uint32_t has_run = 0;
 
-	if (!__atomic_compare_exchange_n(&run_once, &has_run, 1, 0,
-					__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&run_once, &has_run, 1,
+					rte_memory_order_relaxed, rte_memory_order_relaxed)) {
 		RTE_LOG(WARNING, EAL, "Already called cleanup\n");
 		rte_errno = EALREADY;
 		return -1;
@@ -1380,10 +1371,10 @@ rte_eal_cleanup(void)
 #endif
 	rte_mp_channel_cleanup();
 	eal_bus_cleanup();
+	rte_eal_alarm_cleanup();
 	rte_trace_save();
 	eal_trace_fini();
 	eal_mp_dev_hotplug_cleanup();
-	rte_eal_alarm_cleanup();
 	/* after this point, any DPDK pointers will become dangling */
 	rte_eal_memory_detach();
 	rte_eal_malloc_heap_cleanup();

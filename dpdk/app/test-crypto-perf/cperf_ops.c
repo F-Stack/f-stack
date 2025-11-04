@@ -535,7 +535,9 @@ cperf_set_ops_aead(struct rte_crypto_op **ops,
 	uint16_t i;
 	/* AAD is placed after the IV */
 	uint16_t aad_offset = iv_offset +
-			RTE_ALIGN_CEIL(test_vector->aead_iv.length, 16);
+			((options->aead_algo == RTE_CRYPTO_AEAD_AES_CCM) ?
+			RTE_ALIGN_CEIL(test_vector->aead_iv.length, 16) :
+			test_vector->aead_iv.length);
 
 	for (i = 0; i < nb_ops; i++) {
 		struct rte_crypto_sym_op *sym_op = ops[i]->sym;
@@ -746,8 +748,7 @@ create_ipsec_session(struct rte_mempool *sess_mp,
 	else
 		sess_conf.ipsec.direction = RTE_SECURITY_IPSEC_SA_DIR_INGRESS;
 
-	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-				rte_cryptodev_get_sec_ctx(dev_id);
+	void *ctx = rte_cryptodev_get_sec_ctx(dev_id);
 
 	/* Create security session */
 	return (void *)rte_security_session_create(ctx, &sess_conf, sess_mp);
@@ -850,8 +851,7 @@ cperf_create_session(struct rte_mempool *sess_mp,
 			.crypto_xform = &cipher_xform
 		};
 
-		struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-					rte_cryptodev_get_sec_ctx(dev_id);
+		void *ctx = rte_cryptodev_get_sec_ctx(dev_id);
 
 		/* Create security session */
 		return (void *)rte_security_session_create(ctx, &sess_conf, sess_mp);
@@ -898,8 +898,7 @@ cperf_create_session(struct rte_mempool *sess_mp,
 			} },
 			.crypto_xform = &cipher_xform
 		};
-		struct rte_security_ctx *ctx = (struct rte_security_ctx *)
-					rte_cryptodev_get_sec_ctx(dev_id);
+		void *ctx = rte_cryptodev_get_sec_ctx(dev_id);
 
 		/* Create security session */
 		return (void *)rte_security_session_create(ctx, &sess_conf, sess_mp);

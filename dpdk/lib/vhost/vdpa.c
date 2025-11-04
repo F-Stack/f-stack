@@ -24,21 +24,22 @@
 /** Double linked list of vDPA devices. */
 TAILQ_HEAD(vdpa_device_list, rte_vdpa_device);
 
-static struct vdpa_device_list vdpa_device_list =
-		TAILQ_HEAD_INITIALIZER(vdpa_device_list);
+static struct vdpa_device_list vdpa_device_list__ =
+	TAILQ_HEAD_INITIALIZER(vdpa_device_list__);
 static rte_spinlock_t vdpa_device_list_lock = RTE_SPINLOCK_INITIALIZER;
+static struct vdpa_device_list * const vdpa_device_list
+	__rte_guarded_by(&vdpa_device_list_lock) = &vdpa_device_list__;
 
-
-/* Unsafe, needs to be called with vdpa_device_list_lock held */
 static struct rte_vdpa_device *
 __vdpa_find_device_by_name(const char *name)
+	__rte_exclusive_locks_required(&vdpa_device_list_lock)
 {
 	struct rte_vdpa_device *dev, *ret = NULL;
 
 	if (name == NULL)
 		return NULL;
 
-	TAILQ_FOREACH(dev, &vdpa_device_list, next) {
+	TAILQ_FOREACH(dev, vdpa_device_list, next) {
 		if (!strncmp(dev->device->name, name, RTE_DEV_NAME_MAX_LEN)) {
 			ret = dev;
 			break;
@@ -117,7 +118,7 @@ rte_vdpa_register_device(struct rte_device *rte_dev,
 		dev->type = RTE_VHOST_VDPA_DEVICE_TYPE_NET;
 	}
 
-	TAILQ_INSERT_TAIL(&vdpa_device_list, dev, next);
+	TAILQ_INSERT_TAIL(vdpa_device_list, dev, next);
 out_unlock:
 	rte_spinlock_unlock(&vdpa_device_list_lock);
 
@@ -131,11 +132,11 @@ rte_vdpa_unregister_device(struct rte_vdpa_device *dev)
 	int ret = -1;
 
 	rte_spinlock_lock(&vdpa_device_list_lock);
-	RTE_TAILQ_FOREACH_SAFE(cur_dev, &vdpa_device_list, next, tmp_dev) {
+	RTE_TAILQ_FOREACH_SAFE(cur_dev, vdpa_device_list, next, tmp_dev) {
 		if (dev != cur_dev)
 			continue;
 
-		TAILQ_REMOVE(&vdpa_device_list, dev, next);
+		TAILQ_REMOVE(vdpa_device_list, dev, next);
 		rte_free(dev);
 		ret = 0;
 		break;
@@ -173,6 +174,7 @@ rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 	idx = vq->used->idx;
 	idx_m = s_vring->used->idx;
 	ret = (uint16_t)(idx_m - idx);
+	vq->used->flags = s_vring->used->flags;
 
 	while (idx != idx_m) {
 		/* copy used entry, used ring logging is not covered here */
@@ -241,7 +243,8 @@ rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 	}
 
 	/* used idx is the synchronization point for the split vring */
-	__atomic_store_n(&vq->used->idx, idx_m, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit((unsigned short __rte_atomic *)&vq->used->idx,
+		idx_m, rte_memory_order_release);
 
 	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))
 		vring_used_event(s_vring) = idx_m;
@@ -343,7 +346,7 @@ vdpa_find_device(const struct rte_vdpa_device *start, rte_vdpa_cmp_t cmp,
 
 	rte_spinlock_lock(&vdpa_device_list_lock);
 	if (start == NULL)
-		dev = TAILQ_FIRST(&vdpa_device_list);
+		dev = TAILQ_FIRST(vdpa_device_list);
 	else
 		dev = TAILQ_NEXT(start, next);
 

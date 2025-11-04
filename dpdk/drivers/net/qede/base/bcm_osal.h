@@ -8,6 +8,7 @@
 #define __BCM_OSAL_H
 
 #include <stdbool.h>
+#include <pthread.h>
 #include <time.h>
 #include <rte_bitops.h>
 #include <rte_byteorder.h>
@@ -476,5 +477,8 @@ enum dbg_status	qed_dbg_alloc_user_data(struct ecore_hwfn *p_hwfn,
 #define OSAL_DBG_ALLOC_USER_DATA(p_hwfn, user_data_ptr) \
 	qed_dbg_alloc_user_data(p_hwfn, user_data_ptr)
 #define OSAL_DB_REC_OCCURRED(p_hwfn) nothing
+
+int ecore_mz_mapping_alloc(void);
+void ecore_mz_mapping_free(void);
 
 #endif /* __BCM_OSAL_H */

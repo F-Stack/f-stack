@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Mike Barcroft <mike@FreeBSD.org>
  * All rights reserved.
  *
@@ -32,6 +34,8 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 #include <stdint.h>
+
+typedef	__uint64_t	__uintptr_t;
 
 /*
  * Standard type definitions.

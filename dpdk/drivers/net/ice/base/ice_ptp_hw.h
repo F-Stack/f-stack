@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2022 Intel Corporation
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_PTP_HW_H_
@@ -297,7 +297,6 @@ enum ice_status ice_ptp_init_phy_cfg(struct ice_hw *hw);
 #define SYNC_EXEC_CMD			0x3
 #define TS_CMD_RX_TYPE_S		0x4
 #define TS_CMD_RX_TYPE			MAKEMASK(0x18, TS_CMD_RX_TYPE_S)
-
 
 /* Macros to derive port low and high addresses on both quads */
 #define P_Q0_L(a, p) ((((a) + (0x2000 * (p)))) & 0xFFFF)

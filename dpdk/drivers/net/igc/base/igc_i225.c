@@ -122,6 +122,9 @@ static s32 igc_init_mac_params_i225(struct igc_hw *hw)
 
 	mac->ops.write_vfta = igc_write_vfta_generic;
 
+	/* Disable EEE by default */
+	dev_spec->eee_disable = true;
+
 	return IGC_SUCCESS;
 }
 
@@ -330,11 +333,18 @@ void igc_release_swfw_sync_i225(struct igc_hw *hw, u16 mask)
 
 	DEBUGFUNC("igc_release_swfw_sync_i225");
 
-	while (igc_get_hw_semaphore_i225(hw) != IGC_SUCCESS)
-		; /* Empty */
+	/* Releasing the resource requires first getting the HW semaphore.
+	 * If we fail to get the semaphore, there is nothing we can do,
+	 * except log an error and quit. We are not allowed to hang here
+	 * indefinitely, as it may cause denial of service or system crash.
+	 */
+	if (igc_get_hw_semaphore_i225(hw) != IGC_SUCCESS) {
+		DEBUGOUT("Failed to release SW_FW_SYNC.\n");
+		return;
+	}
 
 	swfw_sync = IGC_READ_REG(hw, IGC_SW_FW_SYNC);
-	swfw_sync &= ~mask;
+	swfw_sync &= ~(u32)mask;
 	IGC_WRITE_REG(hw, IGC_SW_FW_SYNC, swfw_sync);
 
 	igc_put_hw_semaphore_generic(hw);
@@ -378,7 +388,7 @@ s32 igc_setup_copper_link_i225(struct igc_hw *hw)
 static s32 igc_get_hw_semaphore_i225(struct igc_hw *hw)
 {
 	u32 swsm;
-	s32 timeout = hw->nvm.word_size + 1;
+	s32 timeout = IGC_SWSM_TIMEOUT;
 	s32 i = 0;
 
 	DEBUGFUNC("igc_get_hw_semaphore_i225");
@@ -555,6 +565,7 @@ static s32 __igc_write_nvm_srwr(struct igc_hw *hw, u16 offset, u16 words,
 	}
 
 	for (i = 0; i < words; i++) {
+		ret_val = -IGC_ERR_NVM;
 		eewr = ((offset + i) << IGC_NVM_RW_ADDR_SHIFT) |
 			(data[i] << IGC_NVM_RW_REG_DATA) |
 			IGC_NVM_RW_REG_START;
@@ -1060,7 +1071,9 @@ static s32 igc_set_ltr_i225(struct igc_hw *hw, bool link)
 		scale_max = (ltr_max / 1024) < 1024 ? IGC_LTRMAXV_SCALE_1024 :
 			    IGC_LTRMAXV_SCALE_32768;
 		ltr_min /= scale_min == IGC_LTRMINV_SCALE_1024 ? 1024 : 32768;
+		ltr_min -= 1;
 		ltr_max /= scale_max == IGC_LTRMAXV_SCALE_1024 ? 1024 : 32768;
+		ltr_max -= 1;
 
 		/* Only write the LTR thresholds if they differ from before. */
 		ltrv = IGC_READ_REG(hw, IGC_LTRMINV);
@@ -1073,7 +1086,7 @@ static s32 igc_set_ltr_i225(struct igc_hw *hw, bool link)
 		ltrv = IGC_READ_REG(hw, IGC_LTRMAXV);
 		if (ltr_max != (ltrv & IGC_LTRMAXV_LTRV_MASK)) {
 			ltrv = IGC_LTRMAXV_LSNP_REQ | ltr_max |
-			      (scale_min << IGC_LTRMAXV_SCALE_SHIFT);
+			      (scale_max << IGC_LTRMAXV_SCALE_SHIFT);
 			IGC_WRITE_REG(hw, IGC_LTRMAXV, ltrv);
 		}
 	}
@@ -1101,10 +1114,8 @@ s32 igc_check_for_link_i225(struct igc_hw *hw)
 	 * changed.  The get_link_status flag is set upon receiving
 	 * a Link Status Change or Rx Sequence Error interrupt.
 	 */
-	if (!mac->get_link_status) {
-		ret_val = IGC_SUCCESS;
+	if (!mac->get_link_status)
 		goto out;
-	}
 
 	/* First we want to see if the MII Status Register reports
 	 * link.  If so, then we want to get the current speed/duplex
@@ -1243,6 +1254,7 @@ s32 igc_init_hw_i225(struct igc_hw *hw)
 
 	hw->phy.ops.get_cfg_done = igc_get_cfg_done_i225;
 	ret_val = igc_init_hw_base(hw);
+	igc_set_eee_i225(hw, false, false, false);
 	return ret_val;
 }
 

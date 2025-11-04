@@ -53,8 +53,7 @@ cperf_latency_test_free(struct cperf_latency_ctx *ctx)
 		else if (ctx->options->op_type == CPERF_PDCP ||
 			 ctx->options->op_type == CPERF_DOCSIS ||
 			 ctx->options->op_type == CPERF_IPSEC) {
-			struct rte_security_ctx *sec_ctx =
-				rte_cryptodev_get_sec_ctx(ctx->dev_id);
+			void *sec_ctx = rte_cryptodev_get_sec_ctx(ctx->dev_id);
 			rte_security_session_destroy(sec_ctx, ctx->sess);
 		}
 #endif
@@ -138,6 +137,7 @@ cperf_latency_test_runner(void *arg)
 	uint16_t test_burst_size;
 	uint8_t burst_size_idx = 0;
 	uint32_t imix_idx = 0;
+	int ret = 0;
 
 	static uint16_t display_once;
 
@@ -266,10 +266,16 @@ cperf_latency_test_runner(void *arg)
 			}
 
 			if (likely(ops_deqd))  {
-				/* Free crypto ops so they can be reused. */
-				for (i = 0; i < ops_deqd; i++)
-					store_timestamp(ops_processed[i], tsc_end);
+				for (i = 0; i < ops_deqd; i++) {
+					struct rte_crypto_op *op = ops_processed[i];
 
+					if (op->status != RTE_CRYPTO_OP_STATUS_SUCCESS)
+						ret = -1;
+
+					store_timestamp(ops_processed[i], tsc_end);
+				}
+
+				/* Free crypto ops so they can be reused. */
 				rte_mempool_put_bulk(ctx->pool,
 						(void **)ops_processed, ops_deqd);
 
@@ -297,8 +303,14 @@ cperf_latency_test_runner(void *arg)
 			tsc_end = rte_rdtsc_precise();
 
 			if (ops_deqd != 0) {
-				for (i = 0; i < ops_deqd; i++)
+				for (i = 0; i < ops_deqd; i++) {
+					struct rte_crypto_op *op = ops_processed[i];
+
+					if (op->status != RTE_CRYPTO_OP_STATUS_SUCCESS)
+						ret = -1;
+
 					store_timestamp(ops_processed[i], tsc_end);
+				}
 
 				rte_mempool_put_bulk(ctx->pool,
 						(void **)ops_processed, ops_deqd);
@@ -308,6 +320,10 @@ cperf_latency_test_runner(void *arg)
 				deqd_min = RTE_MIN(ops_deqd, deqd_min);
 			}
 		}
+
+		/* If there was any failure in crypto op, exit */
+		if (ret)
+			return ret;
 
 		for (i = 0; i < tsc_idx; i++) {
 			tsc_val = ctx->res[i].tsc_end - ctx->res[i].tsc_start;

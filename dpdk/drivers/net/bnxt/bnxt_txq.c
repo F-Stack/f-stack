@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2021 Broadcom
+ * Copyright(c) 2014-2023 Broadcom
  * All rights reserved.
  */
 
@@ -96,6 +96,7 @@ void bnxt_tx_queue_release_op(struct rte_eth_dev *dev, uint16_t queue_idx)
 		if (txq->tx_ring) {
 			bnxt_free_ring(txq->tx_ring->tx_ring_struct);
 			rte_free(txq->tx_ring->tx_ring_struct);
+			rte_free(txq->tx_ring->nr_bds);
 			rte_free(txq->tx_ring);
 		}
 

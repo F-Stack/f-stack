@@ -88,7 +88,7 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 			   (2 * DIST_PARAM_IOVA_SIZE), RTE_CACHE_LINE_SIZE);
 	if (!flow) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configuration\n");
+			"Memory allocation failure for rule configuration");
 		goto creation_error;
 	}
 	key_iova = (void *)((size_t)flow + sizeof(struct rte_flow));
@@ -150,7 +150,7 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 		kg_cfg.num_extracts = 1;
 
 		spec = (const struct rte_flow_item_eth *)pattern[0]->spec;
-		eth_type = rte_constant_bswap16(spec->type);
+		eth_type = rte_constant_bswap16(spec->hdr.ether_type);
 		memcpy((void *)key_iova, (const void *)&eth_type,
 							sizeof(rte_be16_t));
 		memcpy(mask_iova, pattern[0]->mask, sizeof(uint16_t));
@@ -211,7 +211,7 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 
 	vf_conf = (const struct rte_flow_action_vf *)(actions[0]->conf);
 	if (vf_conf->id == 0 || vf_conf->id > dpdmux_dev->num_ifs) {
-		DPAA2_PMD_ERR("Invalid destination id\n");
+		DPAA2_PMD_ERR("Invalid destination id");
 		goto creation_error;
 	}
 	dpdmux_action.dest_if = vf_conf->id;

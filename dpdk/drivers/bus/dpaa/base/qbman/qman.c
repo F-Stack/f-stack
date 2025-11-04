@@ -294,10 +294,32 @@ static inline void qman_stop_dequeues_ex(struct qman_portal *p)
 		qm_dqrr_set_maxfill(&p->p, 0);
 }
 
+static inline void qm_mr_pvb_update(struct qm_portal *portal)
+{
+	register struct qm_mr *mr = &portal->mr;
+	const struct qm_mr_entry *res = qm_cl(mr->ring, mr->pi);
+
+#ifdef RTE_LIBRTE_DPAA_HWDEBUG
+	DPAA_ASSERT(mr->pmode == qm_mr_pvb);
+#endif
+	/* when accessing 'verb', use __raw_readb() to ensure that compiler
+	 * inlining doesn't try to optimise out "excess reads".
+	 */
+	if ((__raw_readb(&res->ern.verb) & QM_MR_VERB_VBIT) == mr->vbit) {
+		mr->pi = (mr->pi + 1) & (QM_MR_SIZE - 1);
+		if (!mr->pi)
+			mr->vbit ^= QM_MR_VERB_VBIT;
+		mr->fill++;
+		res = MR_INC(res);
+	}
+	dcbit_ro(res);
+}
+
 static int drain_mr_fqrni(struct qm_portal *p)
 {
 	const struct qm_mr_entry *msg;
 loop:
+	qm_mr_pvb_update(p);
 	msg = qm_mr_current(p);
 	if (!msg) {
 		/*
@@ -319,6 +341,7 @@ loop:
 		do {
 			now = mfatb();
 		} while ((then + 10000) > now);
+		qm_mr_pvb_update(p);
 		msg = qm_mr_current(p);
 		if (!msg)
 			return 0;
@@ -479,27 +502,6 @@ static inline int qm_mr_init(struct qm_portal *portal,
 		((cmode & 1) << 8);		/* QCSP_CFG:MM */
 	qm_out(CFG, cfg);
 	return 0;
-}
-
-static inline void qm_mr_pvb_update(struct qm_portal *portal)
-{
-	register struct qm_mr *mr = &portal->mr;
-	const struct qm_mr_entry *res = qm_cl(mr->ring, mr->pi);
-
-#ifdef RTE_LIBRTE_DPAA_HWDEBUG
-	DPAA_ASSERT(mr->pmode == qm_mr_pvb);
-#endif
-	/* when accessing 'verb', use __raw_readb() to ensure that compiler
-	 * inlining doesn't try to optimise out "excess reads".
-	 */
-	if ((__raw_readb(&res->ern.verb) & QM_MR_VERB_VBIT) == mr->vbit) {
-		mr->pi = (mr->pi + 1) & (QM_MR_SIZE - 1);
-		if (!mr->pi)
-			mr->vbit ^= QM_MR_VERB_VBIT;
-		mr->fill++;
-		res = MR_INC(res);
-	}
-	dcbit_ro(res);
 }
 
 struct qman_portal *
@@ -1825,6 +1827,8 @@ int qman_retire_fq(struct qman_fq *fq, u32 *flags)
 	}
 out:
 	FQUNLOCK(fq);
+	/* Draining FQRNIs, if any */
+	drain_mr_fqrni(&p->p);
 	return rval;
 }
 
@@ -2165,8 +2169,10 @@ int qman_set_vdq(struct qman_fq *fq, u16 num, uint32_t vdqcr_flags)
 
 	if (!p->vdqcr_owned) {
 		FQLOCK(fq);
-		if (fq_isset(fq, QMAN_FQ_STATE_VDQCR))
+		if (fq_isset(fq, QMAN_FQ_STATE_VDQCR)) {
+			FQUNLOCK(fq);
 			goto escape;
+		}
 		fq_set(fq, QMAN_FQ_STATE_VDQCR);
 		FQUNLOCK(fq);
 		p->vdqcr_owned = fq;
@@ -2199,8 +2205,10 @@ int qman_volatile_dequeue(struct qman_fq *fq, u32 flags __maybe_unused,
 
 	if (!p->vdqcr_owned) {
 		FQLOCK(fq);
-		if (fq_isset(fq, QMAN_FQ_STATE_VDQCR))
+		if (fq_isset(fq, QMAN_FQ_STATE_VDQCR)) {
+			FQUNLOCK(fq);
 			goto escape;
+		}
 		fq_set(fq, QMAN_FQ_STATE_VDQCR);
 		FQUNLOCK(fq);
 		p->vdqcr_owned = fq;

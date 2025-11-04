@@ -76,6 +76,8 @@ DPDK subsystem.
    +---+-----+--------------------------------------------------------------+
    | 12| GPIO| rte_rawdev                                                   |
    +---+-----+--------------------------------------------------------------+
+   | 13| ML  | rte_mldev                                                    |
+   +---+-----+--------------------------------------------------------------+
 
 PF0 is called the administrative / admin function (AF) and has exclusive
 privileges to provision RVU functional block's LFs to each of the PF/VF.
@@ -93,9 +95,11 @@ It is only a configuration driver used in control path.
 The :numref:`figure_cnxk_resource_virtualization` diagram also shows a
 resource provisioning example where,
 
-1. PFx and PFx-VF0 bound to Linux netdev driver.
-2. PFx-VF1 ethdev driver bound to the first DPDK application.
-3. PFy ethdev driver, PFy-VF0 ethdev driver, PFz eventdev driver, PFm-VF0 cryptodev driver bound to the second DPDK application.
+#. PFx and PFx-VF0 bound to Linux netdev driver.
+
+#. PFx-VF1 ethdev driver bound to the first DPDK application.
+
+#. PFy ethdev driver, PFy-VF0 ethdev driver, PFz eventdev driver, PFm-VF0 cryptodev driver bound to the second DPDK application.
 
 LBK HW Access
 -------------
@@ -168,13 +172,16 @@ This section lists dataplane H/W block(s) available in cnxk SoC.
 #. **Regex Device Driver**
    See :doc:`../regexdevs/cn9k` for REE Regex device driver information.
 
+#. **ML Device Driver**
+   See :doc:`../mldevs/cnxk` for Machine Learning device driver information.
+
 Procedure to Setup Platform
 ---------------------------
 
 There are three main prerequisites for setting up DPDK on cnxk
 compatible board:
 
-1. **RVU AF Linux kernel driver**
+#. **RVU AF Linux kernel driver**
 
    The dependent kernel drivers can be obtained from the
    `kernel.org <https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/net/ethernet/marvell/octeontx2>`_.
@@ -183,7 +190,7 @@ compatible board:
 
    Linux kernel should be configured with the following features enabled:
 
-.. code-block:: console
+   .. code-block:: console
 
         # 64K pages enabled for better performance
         CONFIG_ARM64_64K_PAGES=y
@@ -213,7 +220,7 @@ compatible board:
         # Enable if OCTEONTX2 DMA PF driver required
         CONFIG_OCTEONTX2_DPI_PF=n
 
-2. **ARM64 Linux Tool Chain**
+#. **ARM64 Linux Tool Chain**
 
    For example, the *aarch64* Linaro Toolchain, which can be obtained from
    `here <https://releases.linaro.org/components/toolchain/binaries/7.4-2019.02/aarch64-linux-gnu/>`_.
@@ -221,7 +228,7 @@ compatible board:
    Alternatively, the Marvell SDK also provides GNU GCC toolchain, which is
    optimized for cnxk CPU.
 
-3. **Rootfile system**
+#. **Rootfile system**
 
    Any *aarch64* supporting filesystem may be used. For example,
    Ubuntu 15.10 (Wily) or 16.04 LTS (Xenial) userland which can be obtained
@@ -243,9 +250,9 @@ Debugging Options
    +---+------------+-------------------------------------------------------+
    | # | Component  | EAL log command                                       |
    +===+============+=======================================================+
-   | 1 | Common     | --log-level='pmd\.cnxk\.base,8'                       |
+   | 1 | Common     | --log-level='pmd\.common\.cnxk\.base,8'               |
    +---+------------+-------------------------------------------------------+
-   | 2 | Mailbox    | --log-level='pmd\.cnxk\.mbox,8'                       |
+   | 2 | Mailbox    | --log-level='pmd\.common\.cnxk\.mbox,8'               |
    +---+------------+-------------------------------------------------------+
 
 Debugfs support
@@ -256,11 +263,13 @@ context or stats using debugfs.
 
 Enable ``debugfs`` by:
 
-1. Compile kernel with debugfs enabled, i.e ``CONFIG_DEBUG_FS=y``.
-2. Boot OCTEON CN9K/CN10K with debugfs supported kernel.
-3. Verify ``debugfs`` mounted by default "mount | grep -i debugfs" or mount it manually by using.
+#. Compile kernel with debugfs enabled, i.e ``CONFIG_DEBUG_FS=y``.
 
-.. code-block:: console
+#. Boot OCTEON CN9K/CN10K with debugfs supported kernel.
+
+#. Verify ``debugfs`` mounted by default "mount | grep -i debugfs" or mount it manually by using.
+
+   .. code-block:: console
 
        # mount -t debugfs none /sys/kernel/debug
 

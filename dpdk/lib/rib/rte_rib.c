@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/queue.h>
 
 #include <rte_eal_memconfig.h>
 #include <rte_errno.h>
@@ -301,7 +302,7 @@ rte_rib_insert(struct rte_rib *rib, uint32_t ip, uint8_t depth)
 	/* closest node found, new_node should be inserted in the middle */
 	common_depth = RTE_MIN(depth, (*tmp)->depth);
 	common_prefix = ip ^ (*tmp)->ip;
-	d = (common_prefix == 0) ? 32 : __builtin_clz(common_prefix);
+	d = (common_prefix == 0) ? 32 : rte_clz32(common_prefix);
 
 	common_depth = RTE_MIN(d, common_depth);
 	common_prefix = ip & rte_rib_depth_to_mask(common_depth);

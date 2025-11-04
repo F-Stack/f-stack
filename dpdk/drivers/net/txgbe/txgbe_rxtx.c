@@ -1231,7 +1231,7 @@ txgbe_rx_scan_hw_ring(struct txgbe_rx_queue *rxq)
 		for (j = 0; j < LOOK_AHEAD; j++)
 			s[j] = rte_le_to_cpu_32(rxdp[j].qw1.lo.status);
 
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		/* Compute how many status bits were set */
 		for (nb_dd = 0; nb_dd < LOOK_AHEAD &&
@@ -1495,7 +1495,7 @@ txgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * Use acquire fence to ensure that status_error which includes
 		 * DD bit is loaded before loading of other descriptor words.
 		 */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		rxd = *rxdp;
 
@@ -1672,6 +1672,8 @@ txgbe_fill_cluster_head_buf(struct rte_mbuf *head, struct txgbe_rx_desc *desc,
 	pkt_flags = rx_desc_status_to_pkt_flags(staterr, rxq->vlan_flags);
 	pkt_flags |= rx_desc_error_to_pkt_flags(staterr);
 	pkt_flags |= txgbe_rxd_pkt_info_to_pkt_flags(pkt_info);
+	if (TXGBE_RXD_RSCCNT(desc->qw0.dw0))
+		pkt_flags |= RTE_MBUF_F_RX_LRO;
 	head->ol_flags = pkt_flags;
 	head->packet_type = txgbe_rxd_pkt_info_to_pkt_type(pkt_info,
 						rxq->pkt_type_mask);
@@ -1757,7 +1759,7 @@ next_desc:
 		 * Use acquire fence to ensure that status_error which includes
 		 * DD bit is loaded before loading of other descriptor words.
 		 */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		rxd = *rxdp;
 
@@ -2254,8 +2256,7 @@ txgbe_get_tx_port_offloads(struct rte_eth_dev *dev)
 
 	tx_offload_capa |= RTE_ETH_TX_OFFLOAD_MACSEC_INSERT;
 
-	tx_offload_capa |= RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-			   RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
+	tx_offload_capa |= RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM;
 
 #ifdef RTE_LIB_SECURITY
 	if (dev->security_ctx)

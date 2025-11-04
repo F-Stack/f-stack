@@ -8,16 +8,16 @@
 #define	PCI_VENDOR_ID_MICROSOFT		0x1414
 #define PCI_DEVICE_ID_MICROSOFT_MANA	0x00ba
 
-/* Shared data between primary/secondary processes */
 struct mana_shared_data {
-	rte_spinlock_t lock;
-	int init_done;
-	unsigned int primary_cnt;
-	unsigned int secondary_cnt;
+	RTE_ATOMIC(uint32_t) secondary_cnt;
 };
 
+/* vendor_part_id returned from ibv_query_device */
+#define GDMA_DEVICE_MANA	2
+#define GDMA_DEVICE_MANA_IB	3
+
+#define MANA_MAX_MTU	9000
 #define MIN_RX_BUF_SIZE	1024
-#define MAX_FRAME_SIZE	RTE_ETHER_MAX_LEN
 #define MANA_MAX_MAC_ADDR 1
 
 #define MANA_DEV_RX_OFFLOAD_SUPPORT ( \
@@ -368,6 +368,7 @@ struct mana_priv {
 struct mana_txq_desc {
 	struct rte_mbuf *pkt;
 	uint32_t wqe_size_in_bu;
+	bool suppress_tx_cqe;
 };
 
 struct mana_rxq_desc {
@@ -416,7 +417,7 @@ struct mana_txq {
 	/* desc_ring_head is where we put pending requests to ring,
 	 * completion pull off desc_ring_tail
 	 */
-	uint32_t desc_ring_head, desc_ring_tail;
+	uint32_t desc_ring_head, desc_ring_tail, desc_ring_len;
 
 	struct mana_mr_btree mr_btree;
 	struct mana_stats stats;
@@ -447,6 +448,10 @@ struct mana_rxq {
 	struct mana_gdma_queue gdma_rq;
 	struct mana_gdma_queue gdma_cq;
 	struct gdma_comp *gdma_comp_buf;
+
+	uint32_t comp_buf_len;
+	uint32_t comp_buf_idx;
+	uint32_t backlog_idx;
 
 	struct mana_stats stats;
 	struct mana_mr_btree mr_btree;
