@@ -2134,10 +2134,10 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         iph = (struct rte_ipv4_hdr *)(data + RTE_ETHER_HDR_LEN);
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
-        if (iph->version == 4) {
-            head->ol_flags |= RTE_MBUF_F_TX_IPV4;
+        if (((iph->version_ihl) >> 4) == 4) {
+            head->ol_flags |= PKT_TX_IPV4;
         } else {
-            head->ol_flags |= RTE_MBUF_F_TX_IPV6;
+            head->ol_flags |= PKT_TX_IPV6;
         }
 
         if (offload.tcp_csum) {
