@@ -67,8 +67,10 @@ ff_log_open_set(void)
 void
 ff_log_close(void)
 {
-    if (ff_global_cfg.log.f)
+    if (ff_global_cfg.log.f) {
         fclose(ff_global_cfg.log.f);
+        ff_global_cfg.log.f = NULL;
+    }
 }
 
 int

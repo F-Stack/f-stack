@@ -781,7 +781,7 @@ init_port_start(void)
             static uint16_t nb_txd = TX_QUEUE_SIZE;
             ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
             if (ret < 0)
-                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Could not adjust number of descriptors "
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Could not adjust number of descriptors "
                         "for port%u (%d)\n", (unsigned)port_id, ret);
 
             uint16_t q;
@@ -855,7 +855,7 @@ init_port_start(void)
                 if (ret == 0) {
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode ok\n", port_id);
                 } else {
-                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode error\n", port_id);
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "set port %u to promiscuous mode error\n", port_id);
                 }
             }
         }
@@ -918,7 +918,7 @@ port_flow_complain(struct rte_flow_error *error)
         errstr = "unknown type";
     else
         errstr = errstrlist[error->type];
-    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Caught error type %d (%s): %s%s: %s\n",
+    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Caught error type %d (%s): %s%s: %s\n",
            error->type, errstr,
            error->cause ? (snprintf(buf, sizeof(buf), "cause: %p, ",
                                     error->cause), buf) : "",
@@ -1202,7 +1202,7 @@ create_ipip_flow(uint16_t port_id) {
         ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Flow rule validation failed: %s\n", error.message);
         return -error.type;
     }
-    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "IPIP flow rule created successfully (port %d, RSS level=%d)\n", port_id, rss.level);
     return 0;
 }
 #endif

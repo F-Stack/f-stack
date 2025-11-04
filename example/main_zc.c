@@ -202,7 +202,7 @@ int loop(void *arg)
             /* Or call ff_zc_mbuf_write one time */
             /*
             if (ret != buf_len) {
-                printf("ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", buf_len, errno, strerror(errno));
+                ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_zc_mbuf_write failed, len:%d, errno:%d, %s\n", buf_len, errno, strerror(errno));
                 exit(1);
             }
             */
