@@ -125,6 +125,7 @@ static pcblddr_func_t pcblddr_fun;
 
 static struct rte_ring **dispatch_ring[RTE_MAX_ETHPORTS];
 static dispatch_func_t packet_dispatcher;
+static dispatch_func_context_t packet_dispatcher_with_context;
 
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
@@ -1614,10 +1615,27 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             ff_traffic.rx_bytes += rte_pktmbuf_pkt_len(rtem);
         }
 
-        if (!pkts_from_ring && packet_dispatcher) {
-            uint64_t cur_tsc = rte_rdtsc();
-            int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
-            usr_cb_tsc += rte_rdtsc() - cur_tsc;
+        if (!pkts_from_ring && (packet_dispatcher || packet_dispatcher_with_context)) {
+            uint64_t cur_tsc;
+            int ret;
+            if (packet_dispatcher) {
+                cur_tsc = rte_rdtsc();
+                ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
+                usr_cb_tsc += rte_rdtsc() - cur_tsc;
+            } else if (packet_dispatcher_with_context) {
+                struct ff_dispatcher_context ctx;
+                if (rtem->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) {
+                    ctx.vlan.stripped = 1;
+                    ctx.vlan.vlan_tci = rte_cpu_to_be_16(rtem->vlan_tci);
+                } else {
+                   ctx.vlan.stripped = 0;
+                   ctx.vlan.vlan_tci = 0;
+                }
+                cur_tsc = rte_rdtsc();
+                ret = (*packet_dispatcher_with_context)(data, &len, queue_id, nb_queues, ctx);
+                usr_cb_tsc += rte_rdtsc() - cur_tsc;
+            }
+
             if (ret == FF_DISPATCH_RESPONSE) {
                 rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
                 /*
@@ -2770,6 +2788,12 @@ void
 ff_regist_packet_dispatcher(dispatch_func_t func)
 {
     packet_dispatcher = func;
+}
+
+void
+ff_regist_packet_dispatcher_context(dispatch_func_context_t func)
+{
+    packet_dispatcher_with_context = func;
 }
 
 uint64_t
