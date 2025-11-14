@@ -1132,10 +1132,6 @@ iovec_share2local(struct iovec *share,
             count = total;
         }
 
-        share[i].iov_base =
-            (char *)share[i].iov_base - count;
-        share[i].iov_len += count;
-
         if (copy) {
             rte_memcpy(local[i].iov_base,
                 share[i].iov_base, count);
@@ -1672,12 +1668,6 @@ ff_hook_sendmsg(int fd, const struct msghdr *msg, int flags)
     args->flags = flags;
 
     SYSCALL(FF_SO_SENDMSG, args);
-
-    if (ret > 0) {
-        iovec_share2local(sh_msg->msg_iov,
-            msg->msg_iov, msg->msg_iovlen,
-            ret, 0);
-    }
 
     msghdr_share_free(sh_msg);
 
