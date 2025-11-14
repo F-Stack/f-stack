@@ -642,6 +642,8 @@ ff_hook_setsockopt(int fd, int level, int optname,
                 RETURN_ERROR_NOFREE(ENOMEM);
             }
         }
+
+        rte_memcpy(sh_optval, optval, optlen);
     }
 
     args->fd = fd;
