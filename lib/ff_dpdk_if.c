@@ -676,11 +676,22 @@ init_port_start(void)
                     uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
                     port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
                     port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-                    if (dev_info.hash_key_size == 52) {
-                        rsskey = default_rsskey_52bytes;
-                        rsskey_len = 52;
+                    switch (dev_info.hash_key_size) {
+                        case 40:
+                            rsskey = default_rsskey_40bytes;
+                            rsskey_len = 40;
+                            break;
+                        case 52:
+                            rsskey = default_rsskey_52bytes;
+                            rsskey_len = 52;
+                            break;
+                        default:
+                            ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Unsupported RSS key length 40 or 52 bytes, use NIC default\n");
+                            rsskey = NULL;
+                            rsskey_len = 0;
+                            break;
                     }
-                    if (ff_global_cfg.dpdk.symmetric_rss) {
+                    if (ff_global_cfg.dpdk.symmetric_rss && dev_info.hash_key_size != 0) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Use symmetric Receive-side Scaling(RSS) key\n");
                         rsskey = symmetric_rsskey;
                     }
