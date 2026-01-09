@@ -873,8 +873,7 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
             printf("%s: ff_veth_setaddr failed\n", sc->host_ifname);
         }
 
-        fib_num = cfg->port_id;
-        ret = ff_veth_set_gateway(sc, fib_num);
+        ret = ff_veth_set_gateway(sc, RT_DEFAULT_FIB);
         if (ret != 0) {
             printf("%s: ff_veth_set_gateway failed\n", sc->host_ifname);
         }
@@ -885,6 +884,7 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
 
 #ifdef FF_IPFW
         if (cfg->nb_pr) {
+            fib_num = cfg->port_id;
             ff_ipfw_add_simple_v4(cfg, NULL, fib_num);
         }
 #endif
