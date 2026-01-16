@@ -884,6 +884,7 @@ static int
 init_clock(void)
 {
     rte_timer_subsystem_init();
+    rte_timer_meta_init();
     uint64_t hz = rte_get_timer_hz();
     uint64_t intrs = US_PER_S / ff_global_cfg.freebsd.hz;
     uint64_t tsc = (hz + US_PER_S - 1) / US_PER_S * intrs;
@@ -894,6 +895,12 @@ init_clock(void)
 
     ff_update_current_ts();
 
+    return 0;
+}
+
+static int
+stop_clock(void) {
+    rte_timer_stop_sync(&freebsd_clock);
     return 0;
 }
 
@@ -2436,6 +2443,7 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
     lr->arg = arg;
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MAIN);
     rte_eal_mp_wait_lcore();
+    stop_clock();
     rte_free(lr);
 
     /* FIXME: Cleanup ff_config, freebsd etc. */
