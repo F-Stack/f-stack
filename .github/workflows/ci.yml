@@ -19,9 +19,8 @@ jobs:
       run: |
         apt-get -qq update
         apt-get -qq install -y libssl-dev ninja-build
-        # using pre-built dpdk inside the container
-        cp -r /root/dpdk/build dpdk/build
         cd dpdk
+        meson -Denable_kmods=true build
         ninja -C build install
     - name: Compile f-stack
       run: |
