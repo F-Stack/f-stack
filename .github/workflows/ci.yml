@@ -20,7 +20,7 @@ jobs:
         apt-get -qq update
         apt-get -qq install -y libssl-dev ninja-build
         cd dpdk
-        meson -Denable_kmods=true build
+        meson setup build -Dkernel_dir=/lib/modules/6.8.0-64-generic/build
         ninja -C build install
     - name: Compile f-stack
       run: |
