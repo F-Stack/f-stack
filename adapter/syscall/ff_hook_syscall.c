@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include <sys/epoll.h>
 #include <sys/resource.h>
 #include <errno.h>
@@ -1880,6 +1881,25 @@ ff_hook_ioctl(int fd, unsigned long req, unsigned long data)
     //share_mem_free(sh_data);
 
     RETURN_NOFREE();
+}
+
+/*
+ * Public ioctl() entry point with variadic signature matching glibc's
+ * declaration: int ioctl(int fd, unsigned long request, ...)
+ * This avoids the 'conflicting types' compile error when strong_alias is
+ * used against the fixed-arg ff_hook_ioctl prototype (issue #942).
+ */
+int
+ioctl(int fd, unsigned long req, ...)
+{
+    va_list ap;
+    unsigned long data;
+
+    va_start(ap, req);
+    data = va_arg(ap, unsigned long);
+    va_end(ap);
+
+    return ff_hook_ioctl(fd, req, data);
 }
 
 int
