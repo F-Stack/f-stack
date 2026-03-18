@@ -58,6 +58,10 @@ ff_ipc_init(void)
         return 0;
     }
 
+    if (getuid() != 0) {
+        rte_exit(EXIT_FAILURE, "Error: F-Stack tools must be run as root.\n");
+    }
+
     char *dpdk_argv[] = {
         "ff-ipc", "-c1", "-n4",
         "--proc-type=secondary",
