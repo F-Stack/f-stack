@@ -54,6 +54,7 @@
 #include <rte_udp.h>
 #include <rte_eth_bond.h>
 #include <rte_eth_bond_8023ad.h>
+#include <rte_mbuf_dyn.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
@@ -80,6 +81,8 @@ static int numa_on;
 
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
+static int timestamp_dynfield_offset = -1;
+static uint64_t timestamp_dynflag_mask;
 static uint64_t usr_cb_tsc;
 static int stop_loop;
 
@@ -740,6 +743,11 @@ init_port_start(void)
                     pconf->hw_features.rx_csum = 1;
                 }
 
+                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "RX timestamp offload supported\n");
+                    port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+                }
+
                 if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
                     if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX ip checksum offload supported\n");
@@ -849,6 +857,20 @@ init_port_start(void)
             ret = rte_eth_dev_start(port_id);
             if (ret < 0) {
                 return ret;
+            }
+
+            if ((port_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) &&
+                timestamp_dynfield_offset < 0) {
+                ret = rte_mbuf_dyn_rx_timestamp_register(
+                    &timestamp_dynfield_offset, &timestamp_dynflag_mask);
+                if (ret == 0) {
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+                        "RX timestamp dynfield registered, offset=%d\n",
+                        timestamp_dynfield_offset);
+                } else {
+                    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
+                        "RX timestamp dynfield registration failed\n");
+                }
             }
 
 //RSS reta update will failed when enable flow isolate
@@ -1457,6 +1479,13 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 
     if (pkt->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) {
         ff_mbuf_set_vlan_info(hdr, pkt->vlan_tci);
+    }
+
+    if ((pkt->ol_flags & timestamp_dynflag_mask) &&
+        timestamp_dynfield_offset >= 0) {
+        rte_mbuf_timestamp_t ts = *RTE_MBUF_DYNFIELD(
+            pkt, timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
+        ff_mbuf_set_timestamp(hdr, (uint64_t)ts);
     }
 
     struct rte_mbuf *pn = pkt->next;
