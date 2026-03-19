@@ -217,7 +217,8 @@ check_all_ports_link_status(void)
         for (i = 0; i < nb_ports; i++) {
             uint16_t portid = ff_global_cfg.dpdk.portid_list[i];
             memset(&link, 0, sizeof(link));
-            rte_eth_link_get_nowait(portid, &link);
+            if (rte_eth_link_get_nowait(portid, &link) < 0)
+                link.link_status = 0;
 
             /* print link status if flag set */
             if (print_flag == 1) {
