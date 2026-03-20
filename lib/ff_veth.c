@@ -1124,3 +1124,10 @@ ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci) {
     return;
 }
 
+void
+ff_mbuf_set_timestamp(void *hdr, uint64_t timestamp) {
+    struct mbuf *m = (struct mbuf *)hdr;
+    m->m_pkthdr.rcv_tstmp = timestamp;
+    m->m_flags |= M_TSTMP | M_TSTMP_HPREC;
+}
+

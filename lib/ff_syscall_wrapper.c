@@ -80,6 +80,7 @@
 #define LINUX_SO_SNDLOWAT     19
 #define LINUX_SO_RCVTIMEO     20
 #define LINUX_SO_SNDTIMEO     21
+#define LINUX_SO_TIMESTAMP    29
 #define LINUX_SO_ACCEPTCONN   30
 #define LINUX_SO_PROTOCOL     38
 
@@ -566,6 +567,8 @@ so_opt_convert(int optname)
             return SO_ACCEPTCONN;
         case LINUX_SO_PROTOCOL:
             return SO_PROTOCOL;
+        case LINUX_SO_TIMESTAMP:
+            return SO_TIMESTAMP;
         default:
             return -1;
     }
