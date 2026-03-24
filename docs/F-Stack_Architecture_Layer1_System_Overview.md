@@ -88,7 +88,7 @@ F-Stack 模式 (用户态网络)
 │   ├── ff_host_interface.c               # 主机 OS 接口
 │   ├── ff_dpdk_kni.c                      # 虚拟网卡支持
 │   ├── ff_*.h                             # API 和数据结构定义
-│   └── Makefile              (264行)      # 编译系统
+│   └── Makefile              (765行)      # 编译系统
 │
 ├── freebsd/                                # FreeBSD 13.0 内核移植
 │   ├── sys/
@@ -748,7 +748,7 @@ int main() {
 **方式 2：LD_PRELOAD 拦截 (如 Nginx)**
 ```bash
 # Nginx 启用 F-Stack 支持
-LD_PRELOAD=libfstack.so nginx
+LD_PRELOAD=libff_syscall.so nginx
 
 # LD_PRELOAD 钩子拦截：
   socket() → ff_socket()

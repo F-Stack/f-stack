@@ -62,7 +62,7 @@ F-Stack 导出 **80+ 个公开符号**，分为以下几大类：
 
 ### 1.2 六个主要头文件详解
 
-#### **ff_api.h (412 行) - 主 API**
+#### **ff_api.h (416 行) - 主 API**
 
 **初始化与启动**：
 ```c
@@ -301,58 +301,104 @@ int ff_clock_gettime(clockid_t clock_id, struct timespec *tp);
 
 仅包装 ff_kqueue 为 epoll 接口，供 Linux 应用兼容性使用。
 
-#### **ff_config.h (2855 行) - 配置接口**
+#### **ff_config.h (352 行) - 配置接口**
 
 **核心结构体**：
+
 ```c
 struct ff_config {
-    // DPDK 配置
+    char *filename;
+  
+    // DPDK 配置部分
     struct {
-        int dpdk_argc;
-        char *dpdk_argv[64];
-        uint32_t dpdk_lcore_mask;        // 十六进制，指定使用的核心
-        uint32_t dpdk_memory;            // 内存大小 (MB)
-        uint32_t dpdk_channel;           // 内存通道
+        char *proc_type;
+        /* mask of enabled lcores */
+        char *lcore_mask;         // [0x4] CPU 核心掩码 (十六进制)
+        /* mask of current proc on all lcores */
+        char *proc_mask;
+
+        /* specify base virtual address to map. */
+        char *base_virtaddr;
+
+        /* allow processes that do not want to co-operate to have different memory regions */
+        char *file_prefix;
+
+        /* pci whiltelist */
+        char *allow;
+
+        int nb_channel;           // [0x8] 内存通道数
+        int memory;               // [0xC] 预留内存 (MB)
+        int no_huge;
+        int nb_procs;
+        int proc_id;
+        int promiscuous;               // [0x10] 混杂模式
+        int nb_vdev;
+        int nb_bond;
+        int numa_on;                   // [0x14] NUMA 支持
+        int tso;
+        int tx_csum_offoad_skip;
+        int vlan_strip;
+        int nb_vlan_filter;
+        uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
+        int symmetric_rss;
+
+        /* sleep x microseconds when no pkts incomming */
+        unsigned idle_sleep;
+
+        /* TX burst queue drain nodelay dalay time */
+        unsigned pkt_tx_delay;
+
+        /* list of proc-lcore */
+        uint16_t *proc_lcore;
+
+        int nb_ports;
+        uint16_t max_portid;
+        uint16_t *portid_list;
+
+        // load dpdk log level
+        uint16_t log_level;
+        // MAP(portid => struct ff_port_cfg*)
+        struct ff_port_cfg *port_cfgs;
+        struct ff_vlan_cfg *vlan_cfgs;
+        struct ff_vdev_cfg *vdev_cfgs;
+        struct ff_bond_cfg *bond_cfgs;
+        struct ff_rss_check_cfg *rss_check_cfgs;
     } dpdk;
     
-    // 端口配置
-    struct ff_port_cfg {
-        struct in_addr addr;             // IPv4 地址
-        struct in_addr netmask;          // 网掩码
-        struct in_addr gateway;          // 网关
-        struct in6_addr addr6;           // IPv6 地址
-        struct in_addr broadcast;
-        
-        // VIP 列表 (最多 64 个)
-        struct in_addr vip_addr[FF_VIP_MAX];
-        int nb_vips;
-        
-        // 硬件特性
-        int rx_csum;                     // RX checksum offload
-        int tx_csum;                     // TX checksum offload
-        int tso;                         // TSO/GSO 支持
-        int lro;                         // LRO 支持
-        int vlan_strip;                  // VLAN strip
-    } port_cfg[RTE_MAX_ETHPORTS];
-    
-    // KNI 配置 (可选)
+    // KNI 配置
     struct {
         int enable;
-        uint32_t rate_limit;
+        int console_packets_ratelimit;           // 速率限制 (QPS)
+        int general_packets_ratelimit;
+        int kernel_packets_ratelimit;
+        char *kni_action;
+        char *method;
+        char *tcp_port;
+        char *udp_port;
     } kni;
-    
-    // FreeBSD 启动配置
+
     struct {
-        uint32_t hz;                     // 时钟频率 (默认 1000)
-        uint32_t fd_reserve;             // 预留文件描述符
-    } freebsd_boot;
-    
-    // FreeBSD Sysctl
+        int level;
+        const char *dir;
+        void *f; /* FILE * */
+    } log;
+  
+    // FreeBSD 启动参数
     struct {
-        char *cc_algorithm;              // TCP 拥塞控制算法
-        uint32_t sendspace;              // socket 发送缓冲 (字节)
-        uint32_t recvspace;              // socket 接收缓冲 (字节)
-    } freebsd_sysctl;
+        struct ff_freebsd_cfg *boot;
+        struct ff_freebsd_cfg *sysctl;
+        long physmem;
+        int hz;                   // 时钟频率 (1000 = 1kHz)
+        int fd_reserve;           // 预留 fd 数
+        int mem_size;
+    } freebsd;
+
+    struct {
+        uint16_t enable;
+        uint16_t snap_len;
+        uint32_t save_len;
+        char*    save_path;
+    } pcap;
 };
 ```
 
@@ -402,13 +448,13 @@ struct kevent {
 提供 POSIX/FreeBSD 兼容的错误编号：
 
 ```c
-#define FF_EPERM     1     // 操作不允许
-#define FF_ENOENT    2     // 没有这样的文件或目录
-#define FF_ECONNREFUSED  111  // 连接被拒绝
-#define FF_ETIMEDOUT 110   // 连接超时
-#define FF_ECONNRESET 104  // 连接重置
-#define FF_EAGAIN    11    // 请重试
-#define FF_EINPROGRESS 115 // 操作正在进行中
+#define ff_EPERM     1     // 操作不允许
+#define ff_ENOENT    2     // 没有这样的文件或目录
+#define ff_ECONNREFUSED  61  // 连接被拒绝
+#define ff_ETIMEDOUT 60   // 连接超时
+#define ff_ECONNRESET 54  // 连接重置
+#define ff_EAGAIN    35    // 请重试
+#define ff_EINPROGRESS 36 // 操作正在进行中
 // ... 等等
 ```
 
@@ -593,7 +639,8 @@ net.inet.tcp.syncache.hashsize = 512
 net.inet.tcp.syncache.bucketlimit = 30
 
 # TCP 算法
-net.inet.tcp.cc.algorithm = cubic   # cubic/freebsd/rack/bbr
+net.inet.tcp.cc.algorithm = cubic
+net.inet.tcp.functions_default=freebsd    # freebsd/rack/bbr
 
 # socket 缓冲 (关键性能参数)
 net.inet.tcp.sendspace = 32768      # 发送缓冲 (字节)
@@ -1114,13 +1161,21 @@ symmetric_rss = 1  # 双向连接到同一队列
 ```ini
 [freebsd.sysctl]
 # 高延迟网络: bbr (瓶颈带宽和往返时间)
-# net.inet.tcp.cc.algorithm = bbr
+# hz=1000000
+# net.inet.tcp.functions_default=bbr
+# net.inet.tcp.hpts.minsleep=250
+# net.inet.tcp.hpts.maxsleep=51200
 
 # 低延迟网络: cubic (默认，平衡)
+# hz=100
+# net.inet.tcp.functions_default=freebsd
 # net.inet.tcp.cc.algorithm = cubic
 
 # 特定场景: rack (TCP 选择性确认)
-# net.inet.tcp.cc.algorithm = rack
+# hz=1000000
+# net.inet.tcp.functions_default=rack
+# net.inet.tcp.hpts.minsleep=250
+# net.inet.tcp.hpts.maxsleep=51200
 ```
 
 ---

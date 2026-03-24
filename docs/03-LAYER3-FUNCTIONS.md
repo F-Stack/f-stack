@@ -51,7 +51,7 @@
 
 | 函数 | 用途 | 参数数 | 返回值 |
 |-----|------|--------|--------|
-| `ff_kqueue` | BSD 事件队列 | 1 | int(kq_fd) |
+| `ff_kqueue` | BSD 事件队列 | 0 | int(kq_fd) |
 | `ff_kevent` | BSD 事件等待 | 6 | 事件数/-1 |
 | `ff_kevent_do_each` | BSD 遍历事件 | 4 | void |
 | `ff_epoll_create` | Linux epoll | 1 | int(ep_fd) |
@@ -124,15 +124,20 @@ struct kevent {
 };
 
 // 过滤器类型 (filter 值)
-#define EVFILT_READ      0     // 读就绪
-#define EVFILT_WRITE     1     // 写就绪
-#define EVFILT_AIO       2     // 异步 I/O
-#define EVFILT_TIMER     3     // 定时器
-#define EVFILT_SIGNAL    4     // 信号
-#define EVFILT_VNODE     5     // 文件变化
-#define EVFILT_PROC      6     // 进程事件
-#define EVFILT_NETDEV    7     // 网卡事件
-// ... 共 13 种过滤器
+#define EVFILT_READ      -1     // 读就绪
+#define EVFILT_WRITE     -2     // 写就绪
+#define EVFILT_AIO       -3     // 异步 I/O
+#define EVFILT_VNODE     -4     // 文件/目录 inode 事件
+#define EVFILT_PROC      -5     // 进程事件	
+#define EVFILT_SIGNAL    -6     // 信号递送
+#define EVFILT_TIMER     -7     // 定时器
+#define EVFILT_PROCDESC  -8     // 进程描述符事件
+#define EVFILT_FS        -9     // 文件变化
+#define EVFILT_LIO      -10     // 异步 I/O 列表
+#define EVFILT_USER     -11     // 用户事件
+#define EVFILT_SENDFILE -12     // 内核发送文件事件
+#define EVFILT_EMPTY    -13     // 清空发送套接字缓冲区
+#define EVFILT_SYSCOUNT  13     // ... 共 13 种过滤器
 
 // 控制标志 (flags)
 #define EV_ADD      0x0001     // 添加事件

@@ -455,15 +455,20 @@ struct kevent {
 };
 
 // 支持的过滤器类型
-#define EVFILT_READ      1  // socket 或文件可读
-#define EVFILT_WRITE     2  // socket 或文件可写
-#define EVFILT_TIMER     7  // 定时器 (单位: ms)
-#define EVFILT_SIGNAL   10  // 信号递送
-#define EVFILT_VNODE    11  // 文件/目录 inode 事件
-#define EVFILT_PROC     12  // 进程事件
-#define EVFILT_EXCEPT   13  // 异常条件 (如 TCP OOB 数据)
-#define EVFILT_AIO      14  // 异步 I/O
-#define EVFILT_LIO      15  // 异步 I/O 列表
+#define EVFILT_READ      -1     // 读就绪
+#define EVFILT_WRITE     -2     // 写就绪
+#define EVFILT_AIO       -3     // 异步 I/O
+#define EVFILT_VNODE     -4     // 文件/目录 inode 事件
+#define EVFILT_PROC      -5     // 进程事件	
+#define EVFILT_SIGNAL    -6     // 信号递送
+#define EVFILT_TIMER     -7     // 定时器
+#define EVFILT_PROCDESC  -8     // 进程描述符事件
+#define EVFILT_FS        -9     // 文件变化
+#define EVFILT_LIO      -10     // 异步 I/O 列表
+#define EVFILT_USER     -11     // 用户事件
+#define EVFILT_SENDFILE -12     // 内核发送文件事件
+#define EVFILT_EMPTY    -13     // 清空发送套接字缓冲区
+#define EVFILT_SYSCOUNT  13     // ... 共 13 种过滤器
 
 // 事件标志
 #define EV_ADD       0x0001   // 添加事件 (注册)
@@ -567,57 +572,98 @@ struct epoll_event {
 
 ```c
 struct ff_config {
+    char *filename;
+  
     // DPDK 配置部分
     struct {
-        uint32_t lcore_mask;           // [0x4] CPU 核心掩码 (十六进制)
-        int channel;                   // [0x8] 内存通道数
-        uint32_t memory;               // [0xC] 预留内存 (MB)
+        char *proc_type;
+        /* mask of enabled lcores */
+        char *lcore_mask;         // [0x4] CPU 核心掩码 (十六进制)
+        /* mask of current proc on all lcores */
+        char *proc_mask;
+
+        /* specify base virtual address to map. */
+        char *base_virtaddr;
+
+        /* allow processes that do not want to co-operate to have different memory regions */
+        char *file_prefix;
+
+        /* pci whiltelist */
+        char *allow;
+
+        int nb_channel;           // [0x8] 内存通道数
+        int memory;               // [0xC] 预留内存 (MB)
+        int no_huge;
+        int nb_procs;
+        int proc_id;
         int promiscuous;               // [0x10] 混杂模式
+        int nb_vdev;
+        int nb_bond;
         int numa_on;                   // [0x14] NUMA 支持
-        // ... 其他 DPDK 参数
+        int tso;
+        int tx_csum_offoad_skip;
+        int vlan_strip;
+        int nb_vlan_filter;
+        uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
+        int symmetric_rss;
+
+        /* sleep x microseconds when no pkts incomming */
+        unsigned idle_sleep;
+
+        /* TX burst queue drain nodelay dalay time */
+        unsigned pkt_tx_delay;
+
+        /* list of proc-lcore */
+        uint16_t *proc_lcore;
+
+        int nb_ports;
+        uint16_t max_portid;
+        uint16_t *portid_list;
+
+        // load dpdk log level
+        uint16_t log_level;
+        // MAP(portid => struct ff_port_cfg*)
+        struct ff_port_cfg *port_cfgs;
+        struct ff_vlan_cfg *vlan_cfgs;
+        struct ff_vdev_cfg *vdev_cfgs;
+        struct ff_bond_cfg *bond_cfgs;
+        struct ff_rss_check_cfg *rss_check_cfgs;
     } dpdk;
-    
-    // 网卡配置数组
-    struct ff_port_cfg {
-        uint8_t  id;
-        struct in_addr addr;           // IPv4 地址
-        struct in_addr netmask;        // 子网掩码
-        struct in_addr gateway;        // 网关
-        struct in6_addr addr6;         // IPv6 地址
-        
-        struct in_addr vip_addr[FF_VIP_MAX];  // VIP 数组 (最多 64 个)
-        int nb_vips;
-        
-        struct ff_hw_features {
-            int rx_csum;               // RX checksum offload
-            int tx_csum;               // TX checksum offload
-            int tso;                   // TCP 段卸载
-            int lro;                   // 大包接收合并
-            int vlan_strip;            // VLAN 硬件剥离
-        } hw_features;
-        
-        int lcore_list[RTE_MAX_LCORE]; // 绑定的 lcore 列表
-        int nb_lcores;
-    } port_cfg[RTE_MAX_ETHPORTS];
     
     // KNI 配置
     struct {
         int enable;
-        uint32_t rate_limit;           // 速率限制 (QPS)
+        int console_packets_ratelimit;           // 速率限制 (QPS)
+        int general_packets_ratelimit;
+        int kernel_packets_ratelimit;
+        char *kni_action;
+        char *method;
+        char *tcp_port;
+        char *udp_port;
     } kni;
-    
+
+    struct {
+        int level;
+        const char *dir;
+        void *f; /* FILE * */
+    } log;
+  
     // FreeBSD 启动参数
     struct {
-        uint32_t hz;                   // 时钟频率 (1000 = 1kHz)
-        uint32_t fd_reserve;           // 预留 fd 数
-    } freebsd_boot;
-    
-    // FreeBSD sysctl 参数
+        struct ff_freebsd_cfg *boot;
+        struct ff_freebsd_cfg *sysctl;
+        long physmem;
+        int hz;                   // 时钟频率 (1000 = 1kHz)
+        int fd_reserve;           // 预留 fd 数
+        int mem_size;
+    } freebsd;
+
     struct {
-        char *cc_algorithm;            // TCP CC: cubic/bbr/rack
-        uint32_t sendspace;            // socket 发送缓冲 (字节)
-        uint32_t recvspace;            // socket 接收缓冲 (字节)
-    } freebsd_sysctl;
+        uint16_t enable;
+        uint16_t snap_len;
+        uint32_t save_len;
+        char*    save_path;
+    } pcap;
 };
 ```
 
