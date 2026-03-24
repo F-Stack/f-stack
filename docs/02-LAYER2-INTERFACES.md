@@ -6,6 +6,14 @@
 
 ## 1. F-Stack API 完整列表 (80+ 导出函数)
 
+<!-- 注: 此补充基于 2/3 评审意见一致 (GPT-5.4 + Claude) -->
+> **API 层次说明**: F-Stack 的接口体系分为三个层级：
+> 1. **`ff_api.h` 主接口** — 包含 ff_init/ff_run/ff_stop_run 等生命周期函数及所有 socket/kqueue/sysctl 等函数声明
+> 2. **`ff_epoll.h` 补充接口** — epoll 兼容层 (ff_epoll_create/ff_epoll_ctl/ff_epoll_wait)，独立于 ff_api.h
+> 3. **`ff_api.symlist` 动态导出符号表** — 定义实际动态链接时导出的符号。**注意**: ff_init/ff_run/ff_stop_run 不在此列表中，仅通过静态链接 (libfstack.a) 可用
+>
+> 做动态链接或语言绑定 (FFI) 时，应以 `ff_api.symlist` 为准确定可用符号。
+
 ### 1.1 核心生命周期函数
 
 ```c

@@ -115,7 +115,7 @@ F-Stack 模式 (用户态网络)
 │   └── compiler.mk           # 编译器配置
 │
 ├── app/                                    # 应用集成示例
-│   ├── nginx-1.25.2/         # Nginx 集成
+│   ├── nginx-1.28.0/         # Nginx 集成
 │   └── redis-6.2.6/          # Redis 集成
 │
 ├── example/                                # 开发示例

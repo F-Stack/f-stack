@@ -616,7 +616,7 @@ net.inet.tcp.cc.algorithm = bbr    # BBR 算法 (高延迟网络)
 优先级 3 (深入):
   └─ example/main.c (222 行)       - Kqueue 应用示例
   └─ example/main_epoll.c (143 行) - Epoll 应用示例
-  └─ app/nginx-1.25.2/src/event/modules/ngx_ff_module.c - Nginx 集成
+  └─ app/nginx-1.28.0/src/event/modules/ngx_ff_module.c - Nginx 集成
 ```
 
 ### 7.3 外部参考
