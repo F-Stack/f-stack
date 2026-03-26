@@ -11,7 +11,7 @@
 
 ### 1.1 80+ 导出函数分类总览
 
-F-Stack 通过 `/projects/f-stack/lib/ff_api.symlist` 定义所有公开符号。以下是完整清单按功能分类：
+F-Stack 通过 `/data/workspace/f-stack/lib/ff_api.symlist` 定义所有公开符号。以下是完整清单按功能分类：
 
 #### **生命周期管理 (3 个)**
 
@@ -1073,7 +1073,7 @@ ssize_t ff_read(int fd, void *buf, size_t nbytes) {
 
 ```bash
 # 编译 F-Stack 库
-cd /projects/f-stack/lib
+cd /data/workspace/f-stack/lib
 make clean
 make
 

@@ -591,7 +591,7 @@ struct prison prison0;                     // 命名空间
 ### 5.1 编译 F-Stack 库
 
 ```bash
-cd /projects/f-stack/lib
+cd /data/workspace/f-stack/lib
 
 # 基础编译
 make clean

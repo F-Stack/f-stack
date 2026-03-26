@@ -3,7 +3,7 @@
 **文档版本**: 1.0  
 **生成日期**: 2026-03-20  
 **内容范围**: F-Stack v1.25 (+ DPDK 23.11.5) 完整三层架构知识库  
-**文档位置**: `/projects/f-stack/docs/`  
+**文档位置**: `/data/workspace/f-stack/docs/`  
 **用途**: 规格驱动开发 (Spec-Driven Development) 的前置架构文档
 
 ---
@@ -636,15 +636,15 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
 ```
 DPDK 相关:
   □ DPDK 官方文档: https://doc.dpdk.org
-  □ DPDK 代码: /projects/f-stack/dpdk (23.11.5)
+  □ DPDK 代码: /data/workspace/f-stack/dpdk (23.11.5)
 
 FreeBSD 相关:
-  □ FreeBSD TCP/IP 源码: /projects/f-stack/freebsd/
+  □ FreeBSD TCP/IP 源码: /data/workspace/f-stack/freebsd/
   □ FreeBSD 文档: https://www.freebsd.org/doc/
 
 F-Stack 相关:
   □ F-Stack 项目: https://github.com/F-Stack/f-stack
-  □ 官方文档: /projects/f-stack/doc、/projects/f-stack/docs	
+  □ 官方文档: /data/workspace/f-stack/doc、/data/workspace/f-stack/docs	
 
 性能优化:
   □ TCP 拥塞控制: RFC 5681 (CUBIC) / RFC 9002 (BBR)
@@ -746,7 +746,7 @@ DPDK 版本: 23.11.5
 
 ---
 
-**文档位置**: `/projects/f-stack/docs/`
+**文档位置**: `/data/workspace/f-stack/docs/`
 
 ```
 F-Stack_Architecture_Layer1_System_Overview.md       (8.2 KB)

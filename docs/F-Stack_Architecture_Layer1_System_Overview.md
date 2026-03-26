@@ -76,7 +76,7 @@ F-Stack 模式 (用户态网络)
 ### 2.1 源码树布局
 
 ```
-/projects/f-stack/
+/data/workspace/f-stack/
 │
 ├── lib/                                    # F-Stack 核心库 (~21K 行C代码)
 │   ├── ff_dpdk_if.c          (2855行)     # ⭐ 最核心：DPDK/NIC驱动

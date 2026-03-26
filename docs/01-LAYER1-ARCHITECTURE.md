@@ -50,7 +50,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 ### 2.1 核心目录布局
 
 ```
-/projects/f-stack/
+/data/workspace/f-stack/
 ├── lib/                          # F-Stack 核心库 (~21K 行 C 代码)
 │   ├── ff_dpdk_if.c   (2855行) # DPDK 网卡接口层 - 最核心
 │   ├── ff_glue.c      (1466行) # FreeBSD 粘合层
