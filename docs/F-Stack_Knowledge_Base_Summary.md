@@ -365,7 +365,7 @@ F-Stack 架构知识库
 调优步骤:
   - 启用 TSO (tso=1)
   - 调整 socket 缓冲 (sendspace=65536)
-  - 选择 TCP 拥塞控制算法 (bbr/rack/cubic)
+  - 选择 TCP 网络栈/拥塞控制算法 (bbr/rack/cubic)
   - 对齐 RSS (symmetric_rss=1)
   - 性能测试和基准对标
 ```
@@ -491,7 +491,7 @@ gateway = 10.0.0.254
 [freebsd.sysctl]
 net.inet.tcp.sendspace = 65536     # 发送缓冲 (字节)
 net.inet.tcp.recvspace = 65536     # 接收缓冲
-net.inet.tcp.cc.algorithm = bbr    # BBR 算法 (高延迟网络)
+net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/rack/bbr
 ```
 
 ### 5.4 常见错误速查
@@ -515,7 +515,7 @@ net.inet.tcp.cc.algorithm = bbr    # BBR 算法 (高延迟网络)
 ```
 □ CPU 隔离
   └─ 使用 taskset 绑定进程到特定核心
-  └─ 禁用 CPU 动态调频: echo powersave > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+  └─ 禁用 CPU 动态调频: echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 
 □ 内存优化
   └─ 申请 hugepage: sysctl vm.nr_hugepages=2048
@@ -523,14 +523,20 @@ net.inet.tcp.cc.algorithm = bbr    # BBR 算法 (高延迟网络)
   └─ 配置 NUMA: numactl --membind=0 ./app
 
 □ 网卡优化
-  └─ 启用 RSS: symmetric_rss=1
+  └─ 启用 symmetric_rss=1 (网关)
   └─ 启用 TSO: tso=1
   └─ 启用 Checksum offload: tx_csum=1, rx_csum=1
   └─ 关闭 LRO (降低延迟): lro=0
 
+□ F-Stack lib 优化
+  └─ 调整发送延迟: pkt_tx_delay=100 (高吞吐) / pkt_tx_delay=0 (低延迟)
+  └─ 启用 RSS tbl: rss_check.enable=1 (反向代理)
+  └─ 调整 CPU 占用率：idle_sleep=0 (cpu 100%, 低延迟，性能最好) / idle_sleep=20 (降低cpu占用率)
+
 □ 应用优化
   └─ 调整 socket 缓冲: sendspace=65536
-  └─ 选择 TCP 算法: cc.algorithm=bbr (高延迟) / cubic (低延迟)
+  └─ 调整delay ack：delayed_ack=1 (高吞吐) / delayed_ack=0 (低延迟)
+  └─ 选择 TCP 算法: functions_default=bbr (高延迟) / unctions_default=freebsd、cc.algorithm=cubic (低延迟)
   └─ 启用 SACK: sack.enable=1
   └─ 监控性能: 使用 ff_log 输出性能指标
 ```
@@ -632,7 +638,7 @@ FreeBSD 相关:
 
 F-Stack 相关:
   □ F-Stack 项目: https://github.com/F-Stack/f-stack
-  □ 官方文档: https://f-stack.github.io/
+  □ 官方文档: /data/workspace/f-stack/doc、/data/workspace/f-stack/docs	
 
 性能优化:
   □ TCP 拥塞控制: RFC 5681 (CUBIC) / RFC 9002 (BBR)

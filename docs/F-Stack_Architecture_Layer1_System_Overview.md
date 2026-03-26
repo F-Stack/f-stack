@@ -589,7 +589,7 @@ bash start.sh  (启动脚本)
 选项 A：移植 FreeBSD 协议栈（F-Stack 采用）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 优点：
-✓ 代码成熟 (20+ 年优化)
+✓ 代码成熟 (20+ 年优化)且清晰度较好
 ✓ 功能完整 (TCP/UDP/ICMP/IGMP/IPv6)
 ✓ RFC 兼容性高
 ✓ 已有 BBR/RACK/DCTCP 等算法
@@ -617,15 +617,23 @@ bash start.sh  (启动脚本)
 选项 C：使用 Linux 内核栈 (Kernel Bypass)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✗ 不满足需求 (核心目标就是绕过内核)
+
+移植到用户态优点：
+✓ 版本迭代快，新功能支持早
+✓ 性能一般略高于FreeBSD
+
+移植到用户态缺点：
+✗ 代码更复杂，清晰度不如FreeBSD
+✗ 版本迭代快，跟进社区新版本工作量大
 ```
 
 **历史背景**：
-- F-Stack 初期（2015-2016）自研了简单 TCP/IP 栈
+- F-Stack 初期（2013-2016）自研了简单 TCP/IP 栈
 - 发现协议功能缺陷、性能优化空间有限
 - 2017 年参考 libuinet/libplebnet，完整移植 FreeBSD 11.0
 - 2021 年升级到 FreeBSD 13.0（支持 BBR 等算法）
 
-### 5.3 KNI (Kernel Network Interface) 的设计决策
+### 5.3 KNI (Kernel Network Interface) 和virtio的设计决策
 
 **KNI 的用途**：与 Linux 内核通信的虚拟网卡
 
@@ -650,8 +658,13 @@ F-Stack (用户态)
 - KNI 会增加数据拷贝，影响吞吐 (2-3%)
 
 **性能特性**：
-- 速率限制：1K QPS 数据、9K QPS 控制、10K QPS 总体
+
+- 默认速率限制：1K QPS 数据、9K QPS 控制、10K QPS 总体
 - 可选的报文分发回调：应用自定义哪些流进入 KNI
+
+**kni和virtio选择：
+
+- 当前版本已经全面弃用传统的kni模块，改用性能和linux源生兼容性更好的virtio
 
 ---
 
@@ -678,7 +691,7 @@ F-Stack 充分利用现代 NIC 的硬件加速：
 NIC → kernel 缓冲 → 应用缓冲 (2 次拷贝)
 
 F-Stack 方式：
-NIC → DPDK mbuf → 应用 (0 次拷贝，仅指针传递)
+NIC → DPDK mbuf → FreeBSD mbuf(0 次拷贝，仅指针传递) → 应用  # 【注】当前mbuf到应用使用的socket接口，零拷贝暂未支持，后续考虑将单独的零拷贝API ff_zc_mbuf_read()做实际实现支持
 ```
 
 **2. 批处理 (Batch Processing)**
@@ -757,16 +770,6 @@ LD_PRELOAD=libff_syscall.so nginx
   read() → ff_read()
   write() → ff_write()
   ...
-```
-
-**方式 3：配置文件启用 (如 Redis)**
-```bash
-# redis.conf
-port 6379
-...
-
-# Redis 在启动时调用 ff_init()
-# 自动拦截所有网络操作
 ```
 
 ### 7.2 工具支持

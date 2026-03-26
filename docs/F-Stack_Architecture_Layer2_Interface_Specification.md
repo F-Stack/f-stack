@@ -568,22 +568,21 @@ F-Stack 使用 INI 格式配置文件，通过 `ff_load_config()` 加载：
 lcore_mask = 0xf              # 使用核心 0-3 (十六进制)
 channel = 4                   # 内存通道数
 memory = 4096                 # 预留内存 (MB)
-promiscuous = 0               # 混杂模式
-numa_on = 0                   # NUMA 支持
+promiscuous = 1               # 混杂模式
+numa_on = 1                   # NUMA 支持
 
 # 网卡配置
 port_list = 0,1               # 使用网卡 0 和 1
 nb_vdev = 0                   # 虚拟设备数
-nb_bond = 0                   # 网卡绑定数
+nb_bond = 0                   # bondding网卡数
 
 # 性能调优
 tso = 1                       # 启用 TSO (硬件分段)
-lro = 1                       # 启用 LRO (硬件合并)
 vlan_strip = 1                # VLAN 硬件标签剥离
 symmetric_rss = 0             # 双向 RSS 对称性
 idle_sleep = 0                # 空闲时 sleep (微秒)
-pkt_tx_delay = 0              # 包发送延迟 (关闭立即发)
-enable_kni = 0                # 启用虚拟网卡
+pkt_tx_delay = 100              # 包发送延迟 (关闭立即发)
+enable_kni = 1                # 启用虚拟网卡
 
 [port0]
 # 网卡 0 的配置
@@ -592,7 +591,7 @@ netmask = 255.255.255.0
 gateway = 10.0.0.254
 broadcast = 10.0.0.255
 
-# VIP (虚拟 IP，用于负载均衡)
+# VIP (虚拟 IP，用于单机支持多IP)
 vip_addr = 10.0.0.100; 10.0.0.101; 10.0.0.102
 
 # IPv6 支持
@@ -600,8 +599,8 @@ addr6 = 2001:db8::1
 prefix_len = 64
 gateway6 = 2001:db8::ff
 
-# 策略路由
-ipfw_pr = /etc/ipfw_rules.txt
+# 用于支持多网段IP时设置简单的策略路由
+ipfw_pr = 10.0.0.100 255.255.255.0;192.168.0.0 255.255.255.0
 
 # lcore 绑定 (可选)
 lcore_list = 0,1
@@ -612,50 +611,54 @@ addr = 192.168.1.1
 netmask = 255.255.255.0
 gateway = 192.168.1.254
 
-[vlan0]
+[vlan<vlan id>]
 # VLAN 配置 (优先级高于 [portN])
 portid = 0
 addr = 172.16.0.1
 netmask = 255.255.0.0
-vid = 100                     # VLAN ID
-priority = 3                  # 优先级
+gateway = 172.16.0.1
+broadcast = 172.16.255.255
 
-[kni0]
+[kni]
 # 虚拟网卡配置
-portid = 0
-lcore = 0
-type = tap                    # 虚拟网卡类型
+enable=1
+method=reject
+# The format is same as port_list
+tcp_port=80,443
+udp_port=53
+# KNI ratelimit value, default: 0, means disable ratelimit.
+# example:
+# The total speed limit for a single process entering the kni ring is 10,000 QPS,
+# 1000 QPS for general packets, 9000 QPS for console packets (ospf/arp, etc.)
+# The total speed limit for kni forwarding to the kernel is 20,000 QPS.
+#console_packets_ratelimit=0
+#general_packets_ratelimit=0
+#kernel_packets_ratelimit=0
 
 [freebsd.boot]
 # FreeBSD 启动时配置
-hz = 1000                     # 时钟频率 (Hz)
-fd_reserve = 100              # 预留文件描述符
+hz = 100                     # 时钟频率 (Hz)
+fd_reserve = 1204              # 预留文件描述符
 kern.ipc.maxsockets = 1000000 # 最大 socket 数
 
 [freebsd.sysctl]
 # FreeBSD 运行时 sysctl 配置
-kern.ipc.somaxconn = 1024     # socket 监听队列
-net.inet.tcp.syncache.hashsize = 512
-net.inet.tcp.syncache.bucketlimit = 30
+kern.ipc.somaxconn = 32768     # socket 监听队列
+net.inet.tcp.syncache.hashsize = 4096
+net.inet.tcp.syncache.bucketlimit = 100
 
 # TCP 算法
 net.inet.tcp.cc.algorithm = cubic
 net.inet.tcp.functions_default=freebsd    # freebsd/rack/bbr
 
 # socket 缓冲 (关键性能参数)
-net.inet.tcp.sendspace = 32768      # 发送缓冲 (字节)
-net.inet.tcp.recvspace = 32768      # 接收缓冲
+net.inet.tcp.sendspace = 16384      # 发送缓冲 (字节)
+net.inet.tcp.recvspace = 8192      # 接收缓冲
 
 # TCP 特性
 net.inet.tcp.sack.enable = 1        # SACK 选择性确认
 net.inet.tcp.rfc1323 = 1            # 时间戳选项
-net.inet.tcp.delayed_ack = 1        # 延迟确认
-
-# 性能相关
-net.inet.tcp.inflight.enable = 1    # 输入流量控制
-net.inet.tcp.inflight.debug = 0
-net.inet.tcp.inflight.min = 6144
-net.inet.tcp.inflight.max = 2097152
+net.inet.tcp.delayed_ack = 1        # 延迟确认高吞吐， 0则低延迟
 ```
 
 ### 3.2 配置优先级规则
@@ -700,9 +703,8 @@ F-Stack 采用 DPDK 的 Primary-Secondary 进程模型：
 #### **主进程 (Primary Process)**
 
 ```c
-// 启动时设置
-export proc_type=primary
-export proc_id=0
+// 启动时命令行设置
+proc_type=primary proc_id=0
 
 ff_init(argc, argv)
   ├─ 初始化 DPDK EAL (rte_eal_init)
@@ -720,9 +722,8 @@ ff_init(argc, argv)
 #### **从进程 (Secondary Process)**
 
 ```c
-// 启动时设置
-export proc_type=secondary
-export proc_id=1  # 不同从进程使用不同 ID
+// 启动时命令行设置
+proc_type=secondary proc_id=1  # 不同从进程使用不同 ID
 
 ff_init(argc, argv)
   ├─ 连接到 DPDK 共享内存 (由主进程创建)
@@ -1021,30 +1022,6 @@ int main(int argc, char *argv[]) {
 }
 ```
 
-#### **模式 3: Select/Poll (传统)**
-
-```c
-int main_loop(void *arg) {
-    fd_set readfds, writefds;
-    struct timeval tv = {0, 0};  // 非阻塞
-    
-    FD_ZERO(&readfds);
-    FD_ZERO(&writefds);
-    
-    // 添加你关注的 fd
-    FD_SET(sockfd1, &readfds);
-    FD_SET(sockfd2, &writefds);
-    
-    int nfds = ff_select(64, &readfds, &writefds, NULL, &tv);
-    
-    if (FD_ISSET(sockfd1, &readfds)) {
-        // sockfd1 可读
-    }
-    
-    return 0;
-}
-```
-
 ### 5.2 关键开发规范
 
 **规则 1: 强制非阻塞**
@@ -1054,6 +1031,7 @@ ff_ioctl(sockfd, FIONBIO, &flags);  // 必须设置!
 ```
 
 **规则 2: Main Loop 时间限制**
+
 ```c
 // ✗ 错误: 阻塞太长
 int main_loop(void *arg) {

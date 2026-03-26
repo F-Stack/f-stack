@@ -6,7 +6,6 @@
 
 ## 1. 导出函数完整索引 (80+ 函数)
 
-<!-- 注: 此补充基于 2/3 评审意见一致 (GPT-5.4 + Claude) -->
 > **符号导出层次**: 以下函数索引包含 `ff_api.h` 和 `ff_epoll.h` 中声明的全部接口。实际通过 `ff_api.symlist` 动态导出的符号是其子集。
 > - ff_init / ff_run / ff_stop_run 在 `ff_api.h` 中声明但**不在** `ff_api.symlist` 中，仅通过静态链接可用
 > - ff_epoll_* 系列函数声明在 `ff_epoll.h` 中，不在 `ff_api.h` 中

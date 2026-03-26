@@ -6,7 +6,6 @@
 
 ## 1. F-Stack API 完整列表 (80+ 导出函数)
 
-<!-- 注: 此补充基于 2/3 评审意见一致 (GPT-5.4 + Claude) -->
 > **API 层次说明**: F-Stack 的接口体系分为三个层级：
 > 1. **`ff_api.h` 主接口** — 包含 ff_init/ff_run/ff_stop_run 等生命周期函数及所有 socket/kqueue/sysctl 等函数声明
 > 2. **`ff_epoll.h` 补充接口** — epoll 兼容层 (ff_epoll_create/ff_epoll_ctl/ff_epoll_wait)，独立于 ff_api.h
@@ -135,13 +134,9 @@ nb_ports = 1                 # 端口数量
 # CPU 核心配置
 lcore_mask = 0x1             # 使用的 CPU 核心 (十六进制位掩码)
                              # 0x1 = CPU-0, 0x3 = CPU-0,1, 0x7 = CPU-0,1,2
-proc_type = primary          # primary(主进程) 或 secondary(从进程)
-proc_id = 0                  # 进程 ID (多进程模式)
-nb_procs = 1                 # 总进程数
 
 # 内存配置
-pktmbuf_pool_size = 512000   # 报文内存池大小 (mbuf 数量)
-numa_on = 0                  # NUMA 支持 (0=关闭, 1=开启)
+numa_on = 1                  # NUMA 支持 (0=关闭, 1=开启)
 
 [host]
 # 网络地址配置
@@ -155,8 +150,6 @@ iface = eth0                 # 物理网卡名称
 [kni]
 # 虚拟网卡支持 (可选)
 enable = 0                   # 启用虚拟网卡 (0=禁用, 1=启用)
-name = veth0                 # 虚拟网卡名称
-core = 0                     # 处理虚拟网卡的 CPU 核心
 ```
 
 ### 2.2 编程方式配置
@@ -286,7 +279,8 @@ int loop_func(void *arg) {
     int nevents = ff_epoll_wait(epfd, events, MAX_EVENTS, -1);
     
     for (int i = 0; i < nevents; i++) {
-        // 处理事件...
+        // 循环处理事件...
+        // 特别注意，ff_accept时需要循环调用，直到失败
     }
     
     return 0;
@@ -338,10 +332,7 @@ if (m) {
 ```
 
 **3. CPU 亲和性**
-在启动参数中指定 CPU 核心:
-```bash
-./app --lcores=0@0,1@1  # lcore 0 运行在 CPU-0, lcore 1 运行在 CPU-1
-```
+通过配置文件指定 CPU 核心的亲和性绑定:
 
 ## 4. 多进程开发规范
 
