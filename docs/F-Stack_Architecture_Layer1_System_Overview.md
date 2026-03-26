@@ -76,7 +76,7 @@ F-Stack 模式 (用户态网络)
 ### 2.1 源码树布局
 
 ```
-/data/workspace/f-stack/
+/projects/f-stack/
 │
 ├── lib/                                    # F-Stack 核心库 (~21K 行C代码)
 │   ├── ff_dpdk_if.c          (2855行)     # ⭐ 最核心：DPDK/NIC驱动
@@ -675,7 +675,7 @@ F-Stack (用户态)
 
 **kni和virtio选择：
 
-- 当前版本已经全面弃用传统的kni模块，改用性能和linux源生兼容性更好的virtio
+- 当前版本 KNI 功能保留，但底层实现已从 `rte_kni.ko` 内核模块切换为 `virtio_user`（见 lib/Makefile:34），不再依赖内核 KNI 模块
 
 ---
 

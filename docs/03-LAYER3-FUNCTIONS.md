@@ -14,7 +14,7 @@
 
 | 函数 | 签名 | 功能 | 线程安全 |
 |-----|------|------|--------|
-| `ff_init` | `int ff_init(int argc, char *argv[])` | 初始化 DPDK/FreeBSD/网卡 | 否 |
+| `ff_init` | `int ff_init(int argc, char * const argv[])` | 初始化 DPDK/FreeBSD/网卡 | 否 |
 | `ff_run` | `void ff_run(loop_func_t, void *arg)` | 启动主循环 (阻塞) | 否 |
 | `ff_stop_run` | `void ff_stop_run(void)` | 优雅停止循环 | 是 |
 
@@ -52,7 +52,7 @@
 |-----|------|--------|--------|
 | `ff_kqueue` | BSD 事件队列 | 0 | int(kq_fd) |
 | `ff_kevent` | BSD 事件等待 | 6 | 事件数/-1 |
-| `ff_kevent_do_each` | BSD 遍历事件 | 4 | void |
+| `ff_kevent_do_each` | BSD 遍历事件 | 7 | int |
 | `ff_epoll_create` | Linux epoll | 1 | int(ep_fd) |
 | `ff_epoll_ctl` | epoll 控制 | 4 | 0/-1 |
 | `ff_epoll_wait` | epoll 等待 | 4 | 事件数/-1 |
@@ -73,7 +73,7 @@
 | 函数 | 参数 | 功能 |
 |-----|------|------|
 | `ff_sysctl` | 6 | 读写内核变量 |
-| `ff_route_ctl` | 2 | 路由表控制 |
+| `ff_route_ctl` | 5 | 路由表控制 |
 | `ff_rtioctl` | 2 | 路由 ioctl |
 | `ff_gettimeofday` | 2 | 获取系统时间 |
 
@@ -95,7 +95,6 @@
 |-----|------|
 | `ff_pthread_create` | 创建 pthread |
 | `ff_pthread_join` | 等待 pthread |
-| `ff_msg_send` | 发送跨 lcore 消息 |
 
 ### 1.9 日志函数
 
@@ -115,11 +114,12 @@
 ```c
 struct kevent {
     uintptr_t ident;           // 事件标识符 (fd 或定时器 ID)
-    short filter;              // 事件过滤器类型
-    u_short flags;             // 控制标志 (EV_ADD, EV_DELETE 等)
-    u_int fflags;              // 过滤器特定标志
-    intptr_t data;             // 事件数据 (就绪数、超时等)
+    short filter;              // 事件过滤器类型 (short，非 int16_t)
+    unsigned short flags;      // 控制标志 (EV_ADD, EV_DELETE 等)
+    unsigned int fflags;       // 过滤器特定标志
+    __int64_t data;            // 事件数据 (就绪数、超时等，固定 64 位)
     void *udata;               // 用户定义数据指针
+    __uint64_t ext[4];         // FreeBSD 13 新增扩展字段
 };
 
 // 过滤器类型 (filter 值)
@@ -151,36 +151,31 @@ struct kevent {
 
 ### 2.2 ff_config 结构 (全局配置)
 
+> **注意**: 以下为简化示意，非 `ff_config.h` 中的完整定义。实际结构中配置值均以字符串 (`char *`) 形式存储，由 `ff_load_config()` 解析 config.ini 后填充。关键字段类型如下：
+
 ```c
 struct ff_config {
-    // DPDK 配置
+    char *filename;           // 配置文件路径
     struct {
-        char portid_list[32];        // NIC 端口列表
-        uint32_t nb_ports;           // 端口数
-        uint32_t lcore_mask;         // CPU 核心掩码
-        char proc_type;              // 主/从进程
-        uint32_t proc_id;            // 进程 ID
-        uint32_t nb_procs;           // 进程总数
+        char *lcore_mask;     // CPU 核心掩码 (字符串，如 "0x01")
+        char *proc_type;      // 进程类型 (字符串 "primary"/"secondary")
+        uint32_t proc_id;     // 进程 ID
+        uint32_t nb_procs;    // 进程总数
         uint32_t pktmbuf_pool_size;  // mbuf 池大小
-        uint32_t numa_on;            // NUMA 支持
+        uint32_t numa_on;     // NUMA 支持
+        uint16_t *portid_list; // NIC 端口 ID 列表
+        uint32_t nb_ports;    // 端口数
     } dpdk;
-    
-    // 主机配置
+
+    // 端口配置通过 dpdk.port_cfgs 访问 (struct ff_port_cfg 数组)
+    // 每个 ff_port_cfg 包含 IP/mask/gw 等字段
+
     struct {
-        struct in_addr ipaddr;       // IP 地址
-        struct in_addr netmask;      // 子网掩码
-        struct in_addr gateway;      // 网关
-        char iface[IFNAMSIZ];        // 网卡名称
-    } host;
-    
-    // KNI 虚拟网卡配置
-    struct {
-        uint32_t enable;             // 启用标志
-        char name[IFNAMSIZ];         // 网卡名
-        uint32_t core;               // CPU 核心
+        uint32_t enable;      // KNI 启用标志
+        char *kni_action;     // KNI 转发策略
     } kni;
-    
-    // 其他配置...
+
+    // ... 更多字段见 lib/ff_config.h
 } ff_global_cfg;
 ```
 
@@ -211,38 +206,55 @@ struct ff_port_cfg {
 
 ### 2.4 ff_rss_tbl 结构 (RSS 查表)
 
-```c
-// RSS 表项：将源 IP/端口映射到目标队列
-struct ff_rss_tbl_entry {
-    struct in_addr saddr;          // 源 IP
-    uint16_t sport;                // 源端口
-    
-    struct in_addr daddr;          // 目标 IP 范围开始
-    uint16_t dport_start;          // 目标端口范围开始
-    uint16_t dport_end;
-    
-    uint16_t queue_id;             // 目标 RX 队列
-    uint16_t lcore_id;             // 目标 CPU 核心
-};
+> **注意**: `ff_rss_tbl_lookup()` 函数不存在于公开 API 中，RSS 表仅供内部使用。实际结构体为 `ff_rss_tbl_type`（定义在 `lib/ff_dpdk_if.c`），外部无需直接访问。
 
-// 查表函数
-uint16_t ff_rss_tbl_lookup(struct in_addr saddr, uint16_t sport,
-                           struct in_addr daddr, uint16_t dport);
+```c
+// 内部结构（仅供参考，不在公开头文件中）
+struct ff_rss_tbl_type {
+    uint32_t saddr;       // 源 IP
+    uint16_t sport;       // 源端口
+    uint16_t num;         // dip 表项数量
+    struct ff_rss_tbl_dip_type dip_tbl[FF_RSS_TBL_MAX_DADDR];
+} __rte_cache_aligned;
+
+// 公开初始化接口 (ff_host_interface.h)
+int ff_rss_tbl_init(void);
 ```
 
 ### 2.5 ff_msg_ring 结构 (进程间通信)
 
+> **注意**: `ff_msg_send()` 不是公开 API，在 `ff_api.h` 和 `ff_api.symlist` 中均不存在。进程间通信通过 `ff_msg` 消息队列（`lib/ff_msg.h`）实现，由 F-Stack 内部工具（knictl/sysctl 等）使用，应用层无需直接调用。
+
 ```c
-// 轻量级消息队列，用于跨 lcore 消息传递
-struct ff_msg_ring {
-    void (*cb)(void *arg);         // 回调函数指针
-    void *arg;                     // 回调参数
+// 消息类型枚举 (lib/ff_msg.h)
+enum FF_MSG_TYPE {
+    FF_UNKNOWN = 0,
+    FF_SYSCTL,
+    FF_IOCTL,
+    FF_IOCTL6,
+    FF_ROUTE,
+    FF_TOP,
+    FF_NGCTL,
+    FF_IPFW_CTL,
+    FF_TRAFFIC,
+    FF_KNICTL,
+    FF_MSG_NUM,
 };
 
-// 发送消息到另一个 lcore
-int ff_msg_send(unsigned lcore_id, 
-                void (*cb)(void *), 
-                void *arg);
+// 消息结构体 (简化)
+struct ff_msg {
+    enum FF_MSG_TYPE msg_type;
+    int result;
+    size_t buf_len;
+    char *buf_addr;
+    union {
+        struct ff_sysctl_args sysctl;
+        struct ff_route_args route;
+        struct ff_traffic_args traffic;
+        struct ff_knictl_args knictl;
+        // ...
+    };
+} __attribute__((packed)) __rte_cache_aligned;
 ```
 
 ### 2.6 ff_tx_offload 结构 (发送卸载)
@@ -260,10 +272,25 @@ struct ff_tx_offload {
 ### 2.7 ff_zc_mbuf 结构 (零拷贝)
 
 ```c
+// 定义于 lib/ff_api.h
 struct ff_zc_mbuf {
-    struct rte_mbuf **m;           // mbuf 指针数组
-    uint16_t nb_mbufs;             // 缓冲区数量
+    void *bsd_mbuf;         // 指向 mbuf 链头
+    void *bsd_mbuf_off;     // 指向当前偏移处的 mbuf
+    int off;                // 当前总偏移量 (APP 不应修改)
+    int len;                // mbuf 链总长度
 };
+
+// 使用方法：
+//   1. 调用方分配 struct ff_zc_mbuf zm; (栈上或堆上均可)
+//   2. ff_zc_mbuf_get(&zm, len)   — 分配 mbuf 链，填充 zm
+//   3. ff_zc_mbuf_write(&zm, data, len) — 写入数据到 mbuf 链
+//   4. ff_write(fd, zm.bsd_mbuf, len)   — 以 bsd_mbuf 为 buf 发送
+//
+// 注意: ff_zc_mbuf_read() 暂未实现
+
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
+int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // 暂未实现
 ```
 
 ### 2.8 ff_dispatcher_context 结构 (包分发)
@@ -564,7 +591,7 @@ struct prison prison0;                     // 命名空间
 ### 5.1 编译 F-Stack 库
 
 ```bash
-cd /data/workspace/f-stack/lib
+cd /projects/f-stack/lib
 
 # 基础编译
 make clean

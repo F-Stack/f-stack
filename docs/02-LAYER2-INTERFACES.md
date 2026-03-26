@@ -123,7 +123,7 @@ int ff_pthread_join(pthread_t thread, void **value_ptr);
 
 ### 2.1 配置文件格式 (INI)
 
-文件位置: `/data/workspace/f-stack/config.ini`
+文件位置: `/projects/f-stack/config.ini`
 
 ```ini
 [dpdk]
@@ -416,7 +416,7 @@ rte_pktmbuf_free(m);                           // 多进程安全
 ### 6.1 编译 F-Stack 库
 
 ```bash
-cd /data/workspace/f-stack/lib
+cd /projects/f-stack/lib
 make clean
 make
 make install PREFIX=/usr/local

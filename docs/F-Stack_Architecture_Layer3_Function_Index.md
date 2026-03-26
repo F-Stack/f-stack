@@ -11,7 +11,7 @@
 
 ### 1.1 80+ 导出函数分类总览
 
-F-Stack 通过 `/data/workspace/f-stack/lib/ff_api.symlist` 定义所有公开符号。以下是完整清单按功能分类：
+F-Stack 通过 `/projects/f-stack/lib/ff_api.symlist` 定义所有公开符号。以下是完整清单按功能分类：
 
 #### **生命周期管理 (3 个)**
 
@@ -23,7 +23,7 @@ int ff_init(int argc, char * const argv[])
     // 返回: 0 成功, -1 失败
     // 线程安全: 否 (仅在初始化时调用)
 
-int ff_run(loop_func_t loop, void *arg)
+void ff_run(loop_func_t loop, void *arg)
     // 启动主轮询循环
     // 每个 lcore 会调用一次
     // 参数: 用户回调函数指针, 回调参数
@@ -262,14 +262,14 @@ struct hostent * ff_gethostbyname2(const char *name, int af)
 #### **路由管理 (1 个)**
 
 ```c
-int ff_route_ctl(unsigned int cmd, const char *ifname,
-                 struct linux_sockaddr *dst, struct linux_sockaddr *gateway,
+int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
+                 struct linux_sockaddr *dst, struct linux_sockaddr *gw,
                  struct linux_sockaddr *netmask)
     // 路由表操作
-    // cmd: ROUTE_CMD_ADD(0) / ROUTE_CMD_DEL(1) / ROUTE_CMD_CHANGE(2)
-    // ifname: 网卡名称 (如 "eth0")
+    // req:  FF_ROUTE_ADD / FF_ROUTE_DEL / FF_ROUTE_CHANGE
+    // flag: FF_RTF_HOST / FF_RTF_GATEWAY
     // dst: 目标网络地址
-    // gateway: 网关地址
+    // gw: 网关地址
     // netmask: 子网掩码
     // 返回: 0 成功, -1 失败
     // 线程安全: 是
@@ -301,19 +301,21 @@ ssize_t ff_mbuf_copydata(struct ff_mbuf *mbuf, uint16_t off,
     // 线程安全: 是
 
 // Zero-Copy 发送/接收 (3 个)
-struct ff_zc_mbuf * ff_zc_mbuf_get(uint16_t len)
-    // 分配零拷贝 mbuf (应用直接写数据)
-    // 返回: zc_mbuf 指针
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len)
+    // 分配零拷贝 mbuf 链（调用方提供已分配的 struct ff_zc_mbuf）
+    // m: 调用方分配的 ff_zc_mbuf 指针（不能为 NULL）
+    // len: 要分配的 mbuf 链总长度
+    // 返回: 0 成功, -1 失败
     // 线程安全: 是
 
-ssize_t ff_zc_mbuf_write(int fd, struct ff_zc_mbuf *zm)
-    // 零拷贝发送 (应用预填充 mbuf 后调用)
+int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len)
+    // 零拷贝写入数据到 mbuf 链（调用方再用 ff_write 发送）
+    // 需先调用 ff_zc_mbuf_get
     // 线程安全: 是
 
-ssize_t ff_zc_mbuf_read(int fd, struct ff_zc_mbuf *zm)
-    // 零拷贝接收 (应用获取指向报文的指针)
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
+    // 零拷贝读取（暂未实现，后续考虑支持）
     // 线程安全: 是
-    // 【注】暂未实现，后续考虑支持
 ```
 
 #### **多线程支持 (2 个)**
@@ -333,41 +335,36 @@ int ff_pthread_join(pthread_t thread, void **retval)
 #### **日志和诊断 (8 个)**
 
 ```c
-int ff_log_open_set(const char *logfile, int level)
-    // 设置日志文件和全局级别
-    // level: FF_LOG_DEBUG (最详细) ~ FF_LOG_EMERG (最紧急)
+int ff_log_open_set(void)
+    // 打开 F-Stack 日志文件（路径和级别均从 config.ini 读取）
     // 返回: 0 成功, -1 失败
     // 线程安全: 否 (需外部同步)
 
-int ff_log_reset_stream(int type)
-    // 重置日志流 (重新打开日志文件)
-    // 用于日志轮转后刷新句柄
+int ff_log_reset_stream(void *f)
+    // 重置日志输出流（f 为 FILE *，由 APP 自行管理）
+    // 用于将日志重定向到自定义 FILE 流
     // 线程安全: 否
 
-int ff_log_set_global_level(int level)
+void ff_log_set_global_level(uint32_t level)
     // 设置全局日志级别
     // 线程安全: 否
 
-int ff_log_set_level(int type, int level)
+int ff_log_set_level(uint32_t logtype, uint32_t level)
     // 设置特定日志类型的级别
-    // type: FF_LOGTYPE_* (如 FF_LOGTYPE_USER1)
+    // logtype: FF_LOGTYPE_* (如 FF_LOGTYPE_USER1)
     // 线程安全: 否
 
-int ff_openlog_stream(const char *logfile, const char *mode)
-    // 打开日志流 (返回 FILE 指针)
-    // mode: "a" (追加) 或 "w" (覆盖)
-    // 线程安全: 否
-
-int ff_log(int level, const char *fmt, ...)
+int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
     // 输出日志消息 (printf 风格)
     // level: FF_LOG_* (如 FF_LOG_INFO)
+    // logtype: FF_LOGTYPE_* (如 FF_LOGTYPE_USER1)
     // 线程安全: 是 (每个线程独立缓冲)
 
-int ff_vlog(int level, const char *fmt, va_list ap)
+int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)
     // ff_log() 的 va_list 版本
     // 线程安全: 是
 
-int ff_log_close(void)
+void ff_log_close(void)
     // 关闭日志系统
     // 线程安全: 否
 ```
@@ -417,9 +414,11 @@ int ff_packet_filter(ff_pkt_type type, uint16_t proto)
 #### **其他 (3+ 个)**
 
 ```c
-int ff_sysctl(const char *name, void *old, size_t *oldlen,
-              const void *new, size_t newlen)
+int ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
+              const void *newp, size_t newlen)
     // sysctl 接口 (查询/修改内核参数)
+    // name: MIB 整数数组 (如 {CTL_NET, PF_INET, IPPROTO_TCP, TCPCTL_SENDSPACE})
+    // namelen: MIB 数组长度
     // 线程安全: 是
 
 int ff_arp_add(const char *ip, const char *mac)
@@ -444,15 +443,16 @@ const char * ff_strerror(int errnum)
 
 ```c
 struct kevent {
-    uintptr_t ident;      // [0] 事件标识 (socket fd, PID, 定时器 ID 等)
-    int16_t filter;       // [2] 事件过滤器类型 (EVFILT_READ/WRITE/TIMER/...)
-    uint16_t flags;       // [4] 事件标志 (EV_ADD/DELETE/ONESHOT/CLEAR/...)
-    uint32_t fflags;      // [6] 过滤器特定标志 (ioctl/timeout 等)
-    intptr_t data;        // [10] 过滤器返回的数据
+    uintptr_t ident;      // [0]  事件标识 (socket fd, PID, 定时器 ID 等)
+    short filter;         // [8]  事件过滤器类型 (EVFILT_READ/WRITE/TIMER/...)，值为负数
+    unsigned short flags; // [10] 事件标志 (EV_ADD/DELETE/ONESHOT/CLEAR/...)
+    unsigned int fflags;  // [12] 过滤器特定标志 (ioctl/timeout 等)
+    __int64_t data;       // [16] 过滤器返回的数据（固定 64 位）
                           //      EVFILT_READ: 可读字节数
                           //      EVFILT_WRITE: 可写字节数
                           //      EVFILT_TIMER: 触发次数
-    void *udata;          // [18] 用户自定义数据指针 (回调参数)
+    void *udata;          // [24] 用户自定义数据指针 (回调参数)
+    __uint64_t ext[4];    // [32] FreeBSD 13 新增扩展字段
 };
 
 // 支持的过滤器类型
@@ -1073,7 +1073,7 @@ ssize_t ff_read(int fd, void *buf, size_t nbytes) {
 
 ```bash
 # 编译 F-Stack 库
-cd /data/workspace/f-stack/lib
+cd /projects/f-stack/lib
 make clean
 make
 

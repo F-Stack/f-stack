@@ -72,7 +72,7 @@ int ff_init(int argc, char * const argv[]);
     // 返回: 0 成功, -1 失败
     // 必须在主进程首先调用
 
-int ff_run(loop_func_t loop, void *arg);
+void ff_run(loop_func_t loop, void *arg);
     // 启动主轮询循环
     // 参数: 用户回调函数、用户参数
     // 不返回 (除非 ff_stop_run() 调用)
@@ -218,11 +218,12 @@ struct hostent * ff_gethostbyname2(const char *name, int af);
 
 **路由管理**：
 ```c
-int ff_route_ctl(unsigned int cmd, const char *ifname, 
-                 struct linux_sockaddr *dst, struct linux_sockaddr *gateway,
+int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
+                 struct linux_sockaddr *dst, struct linux_sockaddr *gw,
                  struct linux_sockaddr *netmask);
     // 路由操作
-    // cmd: ROUTE_CMD_ADD / ROUTE_CMD_DEL / ROUTE_CMD_CHANGE
+    // req: FF_ROUTE_ADD / FF_ROUTE_DEL / FF_ROUTE_CHANGE
+    // flag: FF_RTF_HOST / FF_RTF_GATEWAY
 ```
 
 **零拷贝 Mbuf**：
@@ -258,24 +259,25 @@ ssize_t ff_zc_mbuf_read(int fd, struct ff_zc_mbuf *zm);
 #define FF_LOGTYPE_USER1       20
 #define FF_LOGTYPE_USER8       27
 
-int ff_log_open_set(const char *logfile, int level);
-    // 设置日志文件和级别
+int ff_log_open_set(void);
+    // 打开 F-Stack 日志文件（路径和级别均从 config.ini 读取）
+    // 返回 0 成功，-1 失败
 
-int ff_log_set_level(int logtype, int level);
+int ff_log_set_level(uint32_t logtype, uint32_t level);
     // 设置特定日志类型的级别
 
-int ff_log(int level, const char *fmt, ...);
-    // 输出日志
+int ff_log(uint32_t level, uint32_t logtype, const char *format, ...);
+    // 输出日志（level: FF_LOG_ERR 等；logtype: FF_LOGTYPE_USER1 等）
 
-// 日志级别
-#define FF_LOG_EMERG     0
-#define FF_LOG_ALERT     1
-#define FF_LOG_CRIT      2
-#define FF_LOG_ERR       3
-#define FF_LOG_WARNING   4
-#define FF_LOG_NOTICE    5
-#define FF_LOG_INFO      6
-#define FF_LOG_DEBUG     7
+// 日志级别（值从 1 开始，0 为禁用）
+#define FF_LOG_EMERG     1U
+#define FF_LOG_ALERT     2U
+#define FF_LOG_CRIT      3U
+#define FF_LOG_ERR       4U
+#define FF_LOG_WARNING   5U
+#define FF_LOG_NOTICE    6U
+#define FF_LOG_INFO      7U
+#define FF_LOG_DEBUG     8U
 ```
 
 **多线程支持**：
@@ -407,21 +409,23 @@ struct ff_config {
 ```c
 struct kevent {
     uintptr_t ident;                     // 事件 ID (socket fd)
-    int16_t filter;                      // 事件过滤器
+    int16_t filter;                      // 事件过滤器 (short，值为负数)
     uint16_t flags;                      // 事件标志
     uint32_t fflags;                     // 过滤器标志
-    intptr_t data;                       // 数据 (就绪数/错误)
+    __int64_t data;                      // 数据 (就绪数/错误，固定 64 位)
     void *udata;                         // 用户数据指针
+    __uint64_t ext[4];                   // FreeBSD 13 扩展字段
 };
 
-// 支持的过滤器
-#define EVFILT_READ     1    // 套接字可读
-#define EVFILT_WRITE    2    // 套接字可写
-#define EVFILT_TIMER    7    // 定时器
-#define EVFILT_SIGNAL  10    // 信号
-#define EVFILT_VNODE   11    // 文件系统事件
-#define EVFILT_PROC    12    // 进程事件
-// ... 还有 7 种
+// 支持的过滤器 (值为负数！)
+#define EVFILT_READ     (-1)  // 套接字可读
+#define EVFILT_WRITE    (-2)  // 套接字可写
+#define EVFILT_AIO      (-3)  // 异步 I/O
+#define EVFILT_VNODE    (-4)  // 文件系统事件
+#define EVFILT_PROC     (-5)  // 进程事件
+#define EVFILT_SIGNAL   (-6)  // 信号
+#define EVFILT_TIMER    (-7)  // 定时器
+// ... 还有 6 种，见 freebsd/sys/event.h
 
 // 事件标志
 #define EV_ADD      0x0001   // 添加事件

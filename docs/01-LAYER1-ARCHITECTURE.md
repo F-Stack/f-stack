@@ -50,7 +50,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 ### 2.1 核心目录布局
 
 ```
-/data/workspace/f-stack/
+/projects/f-stack/
 ├── lib/                          # F-Stack 核心库 (~21K 行 C 代码)
 │   ├── ff_dpdk_if.c   (2855行) # DPDK 网卡接口层 - 最核心
 │   ├── ff_glue.c      (1466行) # FreeBSD 粘合层
@@ -59,7 +59,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 │   ├── ff_host_interface.c      # 主机接口 (pthread/mmap/时间)
 │   ├── ff_init.c         (69行) # 初始化协调
 │   ├── ff_epoll.c       (159行) # epoll 接口转换
-│   ├── ff_dpdk_kni.c            # 虚拟网卡支持
+│   ├── ff_dpdk_kni.c            # 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko）
 │   ├── Makefile                 # 编译系统
 │   └── include/                 # 头文件
 │
@@ -109,7 +109,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 | **ff_init.c** | 69 | 初始化流程协调 | 上述所有模块 |
 | **ff_epoll.c** | 159 | Linux epoll→FreeBSD kqueue 转换 | FreeBSD kqueue |
 | **ff_host_interface.c** | -- | 主机 OS 接口 (mmap/pthread/rand) | 系统库 |
-| **ff_dpdk_kni.c** | -- | 虚拟网卡支持 (可选) | DPDK KNI |
+| **ff_dpdk_kni.c** | -- | 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko） | DPDK virtio_user |
 
 ## 3. FreeBSD TCP/IP 栈移植方式
 
