@@ -28,7 +28,7 @@ F-Stack v1.25 完整架构知识库 - 生成总结
 
 内容:
   - F-Stack 三大核心创新: Kernel Bypass / FreeBSD 移植 / 多核并行
-  - 顶层目录结构 (lib/, freebsd/, dpdk/, example/ 等)
+  - 顶层目录结构 (lib/, freebsd/, dpdk/, adapter/, example/, tools/, doc/, docs/ 等)
   - 模块职责边界 (8 个核心模块分析)
   - FreeBSD TCP/IP 栈完整移植方式
   - DPDK 集成与 NIC 驱动层详解

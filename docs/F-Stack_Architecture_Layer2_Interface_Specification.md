@@ -48,7 +48,7 @@ F-Stack 导出 **80+ 个公开符号**，分为以下几大类：
 │                                                 │
 │ 8. 零拷贝 Mbuf (3 个)                          │
 │    ff_zc_mbuf_get / ff_zc_mbuf_write           │
-│    ff_zc_mbuf_read / ...                       │
+│    ff_zc_mbuf_read (暂未实现) / ...             │
 │                                                 │
 │ 9. 多线程支持 (2 个)                           │
 │    ff_pthread_create / ff_pthread_join         │
@@ -246,7 +246,7 @@ struct ff_zc_mbuf * ff_zc_mbuf_get(uint16_t len);
 
 ssize_t ff_zc_mbuf_write(int fd, struct ff_zc_mbuf *zm);
 ssize_t ff_zc_mbuf_read(int fd, struct ff_zc_mbuf *zm);
-    // 零拷贝 I/O
+    // 零拷贝 I/O  【注】ff_zc_mbuf_read 暂未实现，后续考虑支持
 ```
 
 **日志接口**：
@@ -490,7 +490,9 @@ F-Stack 提供 Linux 兼容的系统调用接口，但底层依赖 FreeBSD 协�
 | 发送 | ff_send() | send() | flags: MSG_MORE 等 |
 | 接收 | ff_recv() | recv() | 同上 |
 | 发送到 | ff_sendto() | sendto() | UDP only |
+| 发送消息 | ff_sendmsg() | sendmsg() | 支持 msghdr 控制信息 |
 | 接收自 | ff_recvfrom() | recvfrom() | UDP only |
+| 接收消息 | ff_recvmsg() | recvmsg() | 支持 msghdr 控制信息 |
 
 ### 2.3 事件多路复用映射
 
@@ -739,29 +741,25 @@ ff_init(argc, argv)
 #### **进程启动脚本示例**
 
 ```bash
-#!/bin/bash
-# start.sh - 启动多进程 F-Stack
+# 使用 F-Stack 自带的 start.sh 启动（推荐方式）
+# start.sh 参数说明:
+#   -c [conf]   配置文件路径 (默认 config.ini)
+#   -b [bin]    应用程序路径 (默认 ./example/helloworld)
+#   -o [args]   传递给应用的额外参数
 
-CONFIG_FILE="config.ini"
-LCORE_MASK=0x0f  # 使用核心 0-3
+# 示例: 使用 config.ini 启动自定义应用
+bash start.sh -c config.ini -b ./app
 
-# 计算进程数 = lcore_mask 中设置的位数
-NUM_PROCESSES=4
+# start.sh 会自动完成以下工作:
+# 1. 读取 config.ini 中的 lcore_mask，计算需要启动的进程数
+# 2. 启动主进程: ./app --conf config.ini --proc-type=primary --proc-id=0
+# 3. 等待 5 秒后依次启动从进程:
+#    ./app --conf config.ini --proc-type=secondary --proc-id=1
+#    ./app --conf config.ini --proc-type=secondary --proc-id=2
+#    ...
 
-# 启动主进程
-export proc_type=primary
-export proc_id=0
-./app ${CONFIG_FILE} -l ${LCORE_MASK} &
-sleep 5  # 等待主进程初始化完成
-
-# 启动从进程
-for i in $(seq 1 $((NUM_PROCESSES-1))); do
-    export proc_type=secondary
-    export proc_id=$i
-    ./app ${CONFIG_FILE} -l ${LCORE_MASK} &
-done
-
-wait  # 等待所有进程
+# 如需传递额外参数给应用:
+bash start.sh -c config.ini -b ./app -o "--extra-arg value"
 ```
 
 ### 4.2 进程间通信 (IPC)
@@ -1172,7 +1170,9 @@ symmetric_rss = 1  # 双向连接到同一队列
 | **arp** | ARP 表查询 | 直接读内存 | `arp -a` |
 | **ipfw** | 防火墙规则 | FF_IPFW_CTL | `ipfw add ...` |
 | **knictl** | 虚拟网卡控制 | FF_KNICTL | `knictl set-rate ...` |
-| **traffic** | 流量统计导出 | FF_TRAFFIC | `traffic --json` |
+| **traffic** | 流量统计导出 | FF_TRAFFIC | `traffic -p <proc_id> -d <secs>` |
+| **ndp** | IPv6 邻居发现 | ioctl (SIOCGNBRINFO_IN6) | `ndp -C <proc_id> -a` |
+| **ngctl** | Netgraph 控制 | FF_NGCTL | `ngctl -p <proc_id> list` |
 
 ### 6.2 应用集成接口
 

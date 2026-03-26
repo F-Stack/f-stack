@@ -161,7 +161,7 @@ F-Stack 架构知识库
 
 生态集成
   → Nginx/Redis 集成方式
-  → 运维工具列表 (top/sysctl/route/etc)
+  → 运维工具列表 (top/sysctl/route/traffic/ndp/ngctl/etc)
 ```
 
 **适读人群**: 架构师、CTO、性能分析师、系统设计师
@@ -211,7 +211,7 @@ F-Stack 架构知识库
   → 5 个性能优化建议
 
 工具与集成
-  → 8 个 IPC 运维工具
+  → 11 个 IPC 运维工具
   → LD_PRELOAD 集成方式
   → 应用集成接口
 ```
@@ -410,8 +410,14 @@ ff_close(fd);
 // I/O 操作
 ssize_t n = ff_read(fd, buf, sizeof(buf));
 ssize_t n = ff_write(fd, data, len);      // 缓冲满返回 -1!
+ssize_t n = ff_readv(fd, iov, iovcnt);    // 分散读
+ssize_t n = ff_writev(fd, iov, iovcnt);   // 分散写
 ssize_t n = ff_send(fd, data, len, 0);
+ssize_t n = ff_sendto(fd, data, len, 0, &addr, addrlen);  // UDP 发送到指定地址
+ssize_t n = ff_sendmsg(fd, &msg, 0);      // 发送消息 (msghdr)
 ssize_t n = ff_recv(fd, buf, sizeof(buf), 0);
+ssize_t n = ff_recvfrom(fd, buf, sizeof(buf), 0, &addr, &addrlen);  // UDP 接收
+ssize_t n = ff_recvmsg(fd, &msg, 0);      // 接收消息 (msghdr)
 
 // 事件多路复用
 int kq = ff_kqueue();

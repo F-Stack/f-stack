@@ -114,7 +114,9 @@ ff_init / ff_run / ff_stop_run
 
 // Socket (25+)
 ff_socket / ff_bind / ff_listen / ff_accept / ff_connect / ff_close
-ff_read / ff_write / ff_send / ff_recv / ...
+ff_read / ff_write / ff_readv / ff_writev
+ff_send / ff_sendto / ff_sendmsg
+ff_recv / ff_recvfrom / ff_recvmsg / ...
 
 // 事件多路复用 (5)
 ff_kqueue / ff_kevent / ff_select / ff_poll

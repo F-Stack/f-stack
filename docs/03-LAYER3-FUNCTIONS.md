@@ -83,7 +83,7 @@
 |-----|------|------|
 | `ff_zc_mbuf_get` | 获取零拷贝 mbuf | 直接访问 DMA 缓冲 |
 | `ff_zc_mbuf_write` | 零拷贝写入 | 跳过内存拷贝 |
-| `ff_zc_mbuf_read` | 零拷贝读取 | 接收原始 mbuf |
+| `ff_zc_mbuf_read` | 零拷贝读取 | 接收原始 mbuf（**暂未实现，后续考虑支持**） |
 | `ff_mbuf_gethdr` | 获取 mbuf | DPDK 内存池分配 |
 | `ff_mbuf_get` | 分配 mbuf | - |
 | `ff_mbuf_free` | 释放 mbuf | - |
@@ -592,8 +592,15 @@ gcc -o myapp main.c \
     -lpthread -lm -O2
 
 # 运行示例
-# 指定 CPU 核心和 NIC 端口
-./myapp -l 0 -w 0000:01:00.0
+# 使用 start.sh 指定 config.ini 配置文件启动（推荐方式）
+bash start.sh -c config.ini -b ./myapp
+
+# start.sh 会根据 config.ini 中的 lcore_mask 自动计算进程数，
+# 依次启动主进程 (--proc-type=primary) 和从进程 (--proc-type=secondary)。
+# 等效于:
+#   ./myapp --conf config.ini --proc-type=primary --proc-id=0
+#   ./myapp --conf config.ini --proc-type=secondary --proc-id=1
+#   ...
 ```
 
 ## 6. 线程安全性规则

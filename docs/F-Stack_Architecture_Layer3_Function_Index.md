@@ -313,6 +313,7 @@ ssize_t ff_zc_mbuf_write(int fd, struct ff_zc_mbuf *zm)
 ssize_t ff_zc_mbuf_read(int fd, struct ff_zc_mbuf *zm)
     // 零拷贝接收 (应用获取指向报文的指针)
     // 线程安全: 是
+    // 【注】暂未实现，后续考虑支持
 ```
 
 #### **多线程支持 (2 个)**
@@ -1125,8 +1126,9 @@ python dpdk_devbind.py -b igb_uio 0000:05:00.0  # 绑定网卡
 modprobe vfio_pci
 python dpdk_devbind.py -b vfio-pci 0000:05:00.0
 
-# 3. 运行应用
-./app -c 0x0f -n 4 -- -c config.ini
+# 3. 运行应用（使用 start.sh 指定 config.ini 配置文件启动）
+bash start.sh -c config.ini -b ./app
+# start.sh 会根据 config.ini 中的 lcore_mask 自动启动主/从进程
 ```
 
 ---

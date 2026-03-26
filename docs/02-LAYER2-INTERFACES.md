@@ -100,7 +100,7 @@ int ff_rtioctl(int req, struct rt_addrinfo *info);
 // 零拷贝 mbuf 操作
 struct rte_mbuf *ff_zc_mbuf_get(int s);
 int ff_zc_mbuf_write(int s, struct rte_mbuf *m);
-int ff_zc_mbuf_read(int s, struct rte_mbuf **m);
+int ff_zc_mbuf_read(int s, struct rte_mbuf **m);  // 【注】暂未实现，后续考虑支持
 
 // 时间相关
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);

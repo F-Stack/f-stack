@@ -90,7 +90,11 @@ NIC 驱动 (igb_uio / vfio-pci)
 │   └── compiler.mk     # 编译器配置
 │
 ├── tools/                        # 工具脚本
-├── doc/                          # 文档
+├── adapter/                      # 网络适配器
+│   ├── micro_thread/             # 微线程接口，方便有状态应用使用 F-Stack
+│   └── syscall/                  # 通过 LD_PRELOAD 劫持 Linux syscall 为 F-Stack API
+├── doc/                          # 原始英文文档
+├── docs/                         # 三层架构知识库文档
 └── config.ini                    # 默认配置文件
 ```
 
@@ -176,7 +180,7 @@ process_packets() 函数
 ### 4.3 发包流程 (Egress)
 
 ```
-应用 (ff_write/ff_sendto)
+应用 (ff_write/ff_send/ff_sendto/ff_sendmsg)
   ↓
 FreeBSD TCP/UDP 栈
   ├─ tcp_output() / udp_output()

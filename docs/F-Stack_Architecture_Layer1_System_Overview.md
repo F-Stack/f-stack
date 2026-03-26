@@ -126,10 +126,21 @@ F-Stack 模式 (用户态网络)
 │   ├── top/                  # CPU 统计
 │   ├── sysctl/               # 参数管理
 │   ├── ifconfig/             # 网卡配置
+│   ├── route/                # 路由管理
+│   ├── netstat/              # 网络统计
+│   ├── arp/                  # ARP 表管理
+│   ├── ipfw/                 # 防火墙管理
+│   ├── knictl/               # KNI 控制
+│   ├── traffic/              # 流量统计
+│   ├── ndp/                  # IPv6 邻居发现
+│   ├── ngctl/                # Netgraph 控制
 │   └── compat/ff_ipc.*       # IPC 通信库
 │
 ├── adapter/                                # 网络适配器
-├── doc/                                    # 文档
+│   ├── micro_thread/             # 微线程接口，方便有状态应用使用 F-Stack
+│   └── syscall/                  # 通过 LD_PRELOAD 劫持 Linux syscall 为 F-Stack API
+├── doc/                                    # 原始英文文档
+├── docs/                                   # 三层架构知识库文档
 ├── config.ini                # 默认配置文件
 └── start.sh                  # 多进程启动脚本
 ```
@@ -309,7 +320,7 @@ FreeBSD 网络栈
   ├─ tcp_input()/udp_input() [L4 层]
   └─ sorecvX()            [Socket 接收缓冲]
   ↓
-应用通过 ff_read()/ff_recv() 获取数据
+应用通过 ff_read()/ff_recv()/ff_recvfrom()/ff_recvmsg() 获取数据
 ```
 
 **关键特性**：
@@ -320,7 +331,7 @@ FreeBSD 网络栈
 #### **发送路径 (Egress)**
 
 ```
-应用调用 ff_write()/ff_send()/ff_sendto()
+应用调用 ff_write()/ff_send()/ff_sendto()/ff_sendmsg()
   ↓
 FreeBSD TCP/UDP 协议栈
   ├─ tcp_output()      [TCP 分段/排序]
@@ -769,6 +780,12 @@ LD_PRELOAD=libff_syscall.so nginx
   connect() → ff_connect()
   read() → ff_read()
   write() → ff_write()
+  send() → ff_send()
+  sendto() → ff_sendto()
+  sendmsg() → ff_sendmsg()
+  recv() → ff_recv()
+  recvfrom() → ff_recvfrom()
+  recvmsg() → ff_recvmsg()
   ...
 ```
 
@@ -786,6 +803,9 @@ LD_PRELOAD=libff_syscall.so nginx
 | **arp** | ARP 表 | 查询 DPDK 内部状态 |
 | **ipfw** | 防火墙 | FF_IPFW_CTL 消息 |
 | **knictl** | KNI 控制 | FF_KNICTL 消息 |
+| **traffic** | 流量统计 | FF_TRAFFIC 消息，支持多进程汇总 |
+| **ndp** | IPv6 邻居发现 | ioctl 通信 (SIOCGNBRINFO_IN6 等) |
+| **ngctl** | Netgraph 控制 | FF_NGCTL 消息 |
 
 ---
 
