@@ -3,7 +3,7 @@
 > **文档编号**: SPEC-001  
 > **版本**: v1.0 Draft  
 > **日期**: 2026-03-27  
-> **状态**: 待审核  
+> **状态**: 已审核 by fengbojiang 2026-03-27 ，大方向没问题，修改了一点细节
 > **范围**: `/data/workspace/f-stack/adapter/syscall/`
 
 ---
@@ -231,7 +231,7 @@ for (i = 0; i < ff_so_zone->count; i++) {
 ### AC-002: 性能验收
 
 - [ ] 单次 syscall RTT 在 ring 方案下 ≤ 1μs（yield-poll 模式）
-- [ ] Nginx 600B body 长连接 RPS ≥ sem 方案的 100%
+- [ ] Nginx 600B body 长连接 RPS ≥ sem 方案的性能
 - [ ] 三种等待策略可正确切换，CPU 占用符合 NFR-003
 
 ### AC-003: 稳定性验收

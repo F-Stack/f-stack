@@ -3,7 +3,7 @@
 > **文档编号**: SPEC-002  
 > **版本**: v1.0 Draft  
 > **日期**: 2026-03-27  
-> **状态**: 待审核  
+> **状态**: 已评审 by fengbojiang 2026.03.27，大的架构没看到什么问题，细节后续实现有问题再进行调整
 > **前置文档**: SPEC-001 需求规格文档
 
 ---
@@ -225,7 +225,8 @@ ff_sc_ring_zone (每个 fstack 实例一个，在 Hugepage 上)
             │  响应 Ring      │
             └───────┬────────┘
                     │
-                    ▼ rte_ring_sc_dequeue()
+                    ▼ 
+    rte_ring_sc_dequeue()
     ③ 读取 sc->result, sc->error
 
 注意：
@@ -265,6 +266,7 @@ rte_spinlock_unlock(&ff_so_zone->lock);
 ```
 
 **新实现方案**:
+
 ```c
 void ff_handle_each_context()
 {
