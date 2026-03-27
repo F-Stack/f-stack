@@ -3466,7 +3466,7 @@ bbr_get_target_cwnd(struct tcp_bbr *bbr, uint64_t bw, uint32_t gain)
 
 	mss = min((bbr->rc_tp->t_maxseg - bbr->rc_last_options), bbr->r_ctl.rc_pace_max_segs);
 	/* Get the base cwnd with gain rounded to a mss */
-	cwnd = roundup(bbr_get_raw_target_cwnd(bbr, bw, gain), mss);
+	cwnd = roundup(bbr_get_raw_target_cwnd(bbr, gain, bw), mss);
 	/*
 	 * Add in N (2 default since we do not have a
 	 * fq layer to trap packets in) quanta's per the I-D
@@ -10718,8 +10718,8 @@ bbr_get_a_state_target(struct tcp_bbr *bbr, uint32_t gain)
 		mss = min((bbr->rc_tp->t_maxseg - bbr->rc_last_options),
 			  bbr->r_ctl.rc_pace_max_segs);
 		/* Get the base cwnd with gain rounded to a mss */
-		tar = roundup(bbr_get_raw_target_cwnd(bbr, bbr_get_bw(bbr),
-						      gain), mss);
+		tar = roundup(bbr_get_raw_target_cwnd(bbr, gain,
+						      bbr_get_bw(bbr)), mss);
 		/* Make sure it is within our min */
 		if (tar < get_min_cwnd(bbr))
 			return (get_min_cwnd(bbr));
