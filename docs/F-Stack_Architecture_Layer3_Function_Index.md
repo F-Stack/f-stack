@@ -814,8 +814,8 @@ static struct ff_config ff_global_cfg;
 static volatile int stop_run = 0;      // 停止标志
 
 // 网卡管理
-static struct rte_mempool *pktmbuf_pool[RTE_MAX_LCORE];
-static uint32_t nb_dev_ports = 0;      // 激活网卡数
+static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
+static int nb_dev_ports = 0;           // 激活网卡数（源码为 int 非 uint32_t）
 static uint32_t nb_lcores = 0;         // 激活 lcore 数
 static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
@@ -823,9 +823,9 @@ static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 static struct ff_rss_tbl ff_rss_tbl[FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES];
 
 // 性能参数
-static uint32_t idle_sleep = 0;        // 空闲 sleep (微秒)
+static unsigned idle_sleep;             // 空闲 sleep (微秒，无默认值)
 static uint32_t pkt_tx_delay = 1;      // 包发送延迟 (微秒)
-static int enable_kni = 0;             // KNI 启用
+int enable_kni = 0;                    // KNI 启用（非 static，全局可见）
 
 // 定时器状态
 static struct {

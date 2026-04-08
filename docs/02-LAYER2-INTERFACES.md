@@ -27,25 +27,25 @@ void ff_stop_run(void);                          // 优雅停止循环
 ```c
 // Socket 创建和管理
 int ff_socket(int domain, int type, int protocol);
-int ff_bind(int s, const struct sockaddr *addr, socklen_t addrlen);
+int ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen);
 int ff_listen(int s, int backlog);
-int ff_accept(int s, struct sockaddr *addr, socklen_t *addrlen);
-int ff_accept4(int s, struct sockaddr *addr, socklen_t *addrlen, int flags);
-int ff_connect(int s, const struct sockaddr *addr, socklen_t addrlen);
-int ff_close(int s);
+int ff_accept(int s, struct linux_sockaddr *addr, socklen_t *addrlen);
+int ff_accept4(int s, struct linux_sockaddr *addr, socklen_t *addrlen, int flags);
+int ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen);
+int ff_close(int fd);
 
 // 数据 I/O
-ssize_t ff_read(int s, void *buf, size_t len);
-ssize_t ff_readv(int s, const struct iovec *iov, int iovcnt);
-ssize_t ff_write(int s, const void *buf, size_t len);
-ssize_t ff_writev(int s, const struct iovec *iov, int iovcnt);
+ssize_t ff_read(int d, void *buf, size_t nbytes);
+ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt);
+ssize_t ff_write(int fd, const void *buf, size_t nbytes);
+ssize_t ff_writev(int fd, const struct iovec *iov, int iovcnt);
 ssize_t ff_send(int s, const void *buf, size_t len, int flags);
 ssize_t ff_sendto(int s, const void *buf, size_t len, int flags,
-                  const struct sockaddr *to, socklen_t tolen);
+                  const struct linux_sockaddr *to, socklen_t tolen);
 ssize_t ff_sendmsg(int s, const struct msghdr *msg, int flags);
 ssize_t ff_recv(int s, void *buf, size_t len, int flags);
 ssize_t ff_recvfrom(int s, void *buf, size_t len, int flags,
-                    struct sockaddr *from, socklen_t *fromlen);
+                    struct linux_sockaddr *from, socklen_t *fromlen);
 ssize_t ff_recvmsg(int s, struct msghdr *msg, int flags);
 
 // Socket 选项
@@ -63,8 +63,9 @@ int ff_kqueue(void);
 int ff_kevent(int kq, const struct kevent *changelist, int nchanges,
               struct kevent *eventlist, int nevents,
               const struct timespec *timeout);
-void ff_kevent_do_each(int kq, void *arg, 
-                       void (*cb)(int fd, short, void *));
+int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
+                      void *eventlist, int nevents, const struct timespec *timeout,
+                      void (*do_each)(void **, struct kevent *));
 
 // Linux epoll (兼容)
 int ff_epoll_create(int size);
@@ -86,31 +87,33 @@ int ff_fcntl(int s, int cmd, ...);
 int ff_ioctl(int s, unsigned long request, ...);
 
 // 系统配置
-int ff_sysctl(int *name, u_int namelen, void *oldp,
-              size_t *oldlenp, void *newp, size_t newlen);
+int ff_sysctl(const int *name, u_int namelen, void *oldp,
+              size_t *oldlenp, const void *newp, size_t newlen);
 ```
 
 ### 1.5 特殊功能 API
 
 ```c
-// 原始包发送
-int ff_route_ctl(int cmd, struct rtentry *rt);
-int ff_rtioctl(int req, struct rt_addrinfo *info);
+// 路由控制
+int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
+                 struct linux_sockaddr *dst, struct linux_sockaddr *gw,
+                 struct linux_sockaddr *netmask);
+int ff_rtioctl(int fib, void *data, unsigned *plen, unsigned maxlen);
 
 // 零拷贝 mbuf 操作
-struct rte_mbuf *ff_zc_mbuf_get(int s);
-int ff_zc_mbuf_write(int s, struct rte_mbuf *m);
-int ff_zc_mbuf_read(int s, struct rte_mbuf **m);  // 【注】暂未实现，后续考虑支持
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
+int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // 【注】暂未实现
 
 // 时间相关
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 
 // 日志
-void ff_log(const char *format, ...);
-void ff_vlog(const char *format, va_list ap);
-void ff_openlog_stream(FILE *fp);
-void ff_log_set_global_level(unsigned int level);
-void ff_log_set_level(unsigned int level);
+int ff_log(uint32_t level, uint32_t logtype, const char *format, ...);
+int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap);
+int ff_log_reset_stream(void *f);
+void ff_log_set_global_level(uint32_t level);
+int ff_log_set_level(uint32_t logtype, uint32_t level);
 void ff_log_close(void);
 
 // 多线程支持
@@ -379,15 +382,7 @@ void worker_main(int worker_id) {
 
 ### 4.3 进程间通信
 
-```c
-// 发送消息到其他 lcore
-int ff_msg_send(unsigned lcore_id, void (*cb)(void *), void *arg);
-
-// 在另一个 lcore 接收消息
-void msg_handler(void *arg) {
-    // 在消息接收的 lcore 中执行
-}
-```
+> **注意**: `ff_msg_send()` 不是公开 API，在 `ff_api.h` 和 `ff_api.symlist` 中均不存在。进程间通信通过 `ff_msg` 消息队列（`lib/ff_msg.h`）实现，由 F-Stack 内部工具（knictl/sysctl 等）使用，应用层无需直接调用。
 
 ## 5. 线程安全性
 

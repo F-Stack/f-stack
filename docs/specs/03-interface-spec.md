@@ -164,8 +164,8 @@ struct ff_so_context {
 
     /* CACHE LINE 1 */
     int refcount;                         /*  4B, offset 64 */
-    void *ff_thread_handle;               /*  8B, offset 68 */
-    volatile int forking;                 /*  4B, offset 76 */
+    void *ff_thread_handle;               /*  8B, offset 72 (8-byte aligned) */
+    volatile int forking;                 /*  4B, offset 80 */
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 ```
 
@@ -407,7 +407,10 @@ alarm_event_sem(void)
 
 ```c
 #ifdef FF_USE_RING_IPC
-/* Ring 模式下不需要 zone lock，直接等待 completion 标志 */
+/* Ring 模式下不使用 ACQUIRE_ZONE_LOCK / RELEASE_ZONE_LOCK，
+ * SYSCALL 宏已改为 rte_ring enqueue/dequeue + 轮询 rsp_ring。
+ * 此定义仅用于防止编译错误（若有遗留引用）。
+ * 实际 Ring 模式 IPC 流程见 §5 SYSCALL 宏改造。 */
 #define ACQUIRE_ZONE_LOCK(exp) do {                               \
     while (__atomic_load_n(&sc->completion, __ATOMIC_ACQUIRE) != (exp)) { \
         rte_pause();                                              \
@@ -749,7 +752,7 @@ while (rte_ring_sc_dequeue(ring, &obj) != 0) {
             rte_pause();
             break;
         case FF_RING_WAIT_YIELD_POLL:
-            if (++spin_count & 0xFF == 0) sched_yield();
+            if ((++spin_count & 0xFF) == 0) sched_yield();
             else rte_pause();
             break;
         case FF_RING_WAIT_EVENTFD:

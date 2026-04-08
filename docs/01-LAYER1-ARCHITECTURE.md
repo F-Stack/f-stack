@@ -10,7 +10,7 @@
 
 F-Stack 采用了"用户态网络栈"架构，解决 Linux 内核网络处理的性能瓶颈：
 
-```
+```text
 应用层 (Applications)
   ↓ (ff_socket/ff_read/ff_write 等 Linux-like API)
 F-Stack 库 (libfstack.a)
@@ -49,7 +49,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 
 ### 2.1 核心目录布局
 
-```
+```text
 /data/workspace/f-stack/
 ├── lib/                          # F-Stack 核心库 (~21K 行 C 代码)
 │   ├── ff_dpdk_if.c   (2855行) # DPDK 网卡接口层 - 最核心
@@ -123,7 +123,7 @@ F-Stack 采用了**完整移植**策略：
 
 ### 3.2 FreeBSD 移植的子系统
 
-```
+```text
 freebsd/sys/
 ├── netinet/        # IPv4: tcp_*.c, udp_*.c, ip_*.c, if_arp.c
 ├── netinet6/       # IPv6: ip6_*.c, tcp6_*.c
@@ -151,7 +151,7 @@ freebsd/sys/
 这是最核心的模块 (2855 行)，负责整个数据链路：
 
 **初始化流程**:
-```
+```text
 ff_dpdk_init()
   ├─ rte_eal_init()              // DPDK 环境初始化
   ├─ init_lcore_conf()           // CPU 核心/端口映射
@@ -164,7 +164,7 @@ ff_dpdk_init()
 
 ### 4.2 收包流程 (Ingress)
 
-```
+```text
 NIC 硬件 (RSS 处理器分发)
   ↓
 多个 RX 队列 (per-CPU-core)
@@ -179,7 +179,7 @@ process_packets() 函数
 
 ### 4.3 发包流程 (Egress)
 
-```
+```text
 应用 (ff_write/ff_send/ff_sendto/ff_sendmsg)
   ↓
 FreeBSD TCP/UDP 栈
@@ -241,7 +241,7 @@ int main_loop(void *arg) {
 
 ### 6.1 单进程模式 (推荐)
 
-```
+```text
 F-Stack 进程 (1 个)
   └─ 单个 lcore (1 个 CPU 核心)
     ├─ NIC RX/TX 队列映射
@@ -253,7 +253,7 @@ F-Stack 进程 (1 个)
 
 ### 6.2 多进程模式
 
-```
+```text
 主进程 (Primary)
   ├─ DPDK EAL 初始化
   └─ 启动 N 个 Worker 进程
@@ -335,4 +335,5 @@ F-Stack 的架构设计围绕三个核心支柱：
 1. **Kernel Bypass**: 规避 Linux 内核瓶颈
 2. **成熟协议栈**: 复用 FreeBSD 久经考验的实现
 3. **多核并行**: 充分利用现代多核 CPU 和 NIC 硬件能力
-   这使得 F-Stack 能够达到 500 万+ RPS、1000 万+ 并发连接的性能水平，是云计算核心网络设施的理想选择。
+
+这使得 F-Stack 能够达到 500 万+ RPS、1000 万+ 并发连接的性能水平，是云计算核心网络设施的理想选择。

@@ -182,7 +182,8 @@ ff_sc_ring_zone (每个 fstack 实例一个，在 Hugepage 上)
 │  │  rsp_ring : struct rte_ring* (响应队列指针)     │  │
 │  │  ring_size: uint32_t (容量，默认 64)            │  │
 │  │  wait_mode: uint8_t (0=busy, 1=yield, 2=evfd)  │  │
-│  │  evfd     : int (eventfd 文件描述符, mode=2时)  │  │
+│  │  eventfd_req: int (APP->fstack eventfd, mode=2) │  │
+│  │  eventfd_rsp: int (fstack->APP eventfd, mode=2)│  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
 │  请求 Ring (rte_ring, SPSC):                         │
@@ -325,7 +326,7 @@ static inline void ff_handle_socket_ops_ring(struct ff_so_context *sc) {
     // 如果 wait_mode == eventfd，同时 write eventfd 通知
     if (ring_zone->wait_mode == FF_RING_WAIT_EVENTFD) {
         uint64_t val = 1;
-        write(ring_zone->evfd, &val, sizeof(val));
+        write(ring_zone->eventfd_rsp, &val, sizeof(val));
     }
 }
 ```
@@ -564,7 +565,7 @@ void ff_detach_so_context(struct ff_so_context *sc) {
 ### 8.3 Ring 创建失败回退
 
 ```c
-int ff_create_ring_zone(int proc_id) {
+int ff_create_sc_ring_zone(int proc_id) {
     ring_zone->req_ring = rte_ring_create(name, size, socket_id,
         RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (ring_zone->req_ring == NULL) {

@@ -74,7 +74,7 @@
 |-----|------|------|
 | `ff_sysctl` | 6 | 读写内核变量 |
 | `ff_route_ctl` | 5 | 路由表控制 |
-| `ff_rtioctl` | 2 | 路由 ioctl |
+| `ff_rtioctl` | 4 | 路由 ioctl |
 | `ff_gettimeofday` | 2 | 获取系统时间 |
 
 ### 1.7 特殊功能函数
@@ -98,14 +98,14 @@
 
 ### 1.9 日志函数
 
-| 函数 | 功能 |
-|-----|------|
-| `ff_log` | 格式化日志 |
-| `ff_vlog` | va_list 日志 |
-| `ff_openlog_stream` | 打开日志流 |
-| `ff_log_set_global_level` | 设置全局日志级别 |
-| `ff_log_set_level` | 设置模块日志级别 |
-| `ff_log_close` | 关闭日志 |
+| 函数 | 签名 | 功能 |
+|-----|------|------|
+| `ff_log` | `int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)` | 格式化日志 |
+| `ff_vlog` | `int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)` | va_list 日志 |
+| `ff_log_reset_stream` | `int ff_log_reset_stream(void *f)` | 重设日志输出流 |
+| `ff_log_set_global_level` | `void ff_log_set_global_level(uint32_t level)` | 设置全局日志级别 |
+| `ff_log_set_level` | `int ff_log_set_level(uint32_t logtype, uint32_t level)` | 设置模块日志级别 |
+| `ff_log_close` | `void ff_log_close(void)` | 关闭日志 |
 
 ## 2. 核心数据结构
 
@@ -261,11 +261,11 @@ struct ff_msg {
 
 ```c
 struct ff_tx_offload {
+    uint8_t ip_csum;               // IP 校验和卸载
+    uint8_t tcp_csum;              // TCP 校验和卸载
+    uint8_t udp_csum;              // UDP 校验和卸载
+    uint8_t sctp_csum;             // SCTP 校验和卸载
     uint16_t tso_seg_size;         // TSO 分段大小 (0 = 禁用)
-    uint8_t tx_csum_ip;            // IP 校验和卸载
-    uint8_t tx_csum_l4;            // L4 校验和卸载
-    uint8_t vlan_insert;           // VLAN 插入标志
-    uint16_t vlan_id;              // VLAN ID
 };
 ```
 
@@ -295,21 +295,14 @@ int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // 暂未
 
 ### 2.8 ff_dispatcher_context 结构 (包分发)
 
+> **注意**: 以下为 `ff_api.h` 中的实际定义。此结构作为 `dispatch_func_context_t` 回调的额外上下文参数传入，仅包含 VLAN 相关信息。报文数据、长度、队列等信息通过回调函数的其他参数传递。
+
 ```c
 struct ff_dispatcher_context {
-    uint16_t port_id;              // 入口网卡
-    uint16_t queue_id;             // 入口队列
-    
-    uint8_t *data;                 // 报文数据
-    uint16_t len;                  // 报文长度
-    
-    // 解析结果
-    uint16_t vlan_id;              // VLAN ID
-    uint8_t *l3_data;              // L3 头指针
-    uint8_t *l4_data;              // L4 头指针
-    
-    // 控制信息
-    uint32_t flags;                // 标志位
+    struct {
+        uint8_t stripped;          // VLAN 是否已剥离
+        uint16_t vlan_tci;         // Priority (3) + CFI (1) + Identifier Code (12)
+    } vlan;
 };
 ```
 
@@ -405,10 +398,10 @@ ff_dpdk_if.c
 **关键全局变量**:
 
 ```c
-static uint32_t enable_kni = 0;              // KNI 启用标志
-static uint16_t nb_dev_ports = 0;            // NIC 数量
-static uint32_t idle_sleep = 100;            // 空闲睡眠微秒数
-static struct rte_mempool *pktmbuf_pool[RTE_MAX_LCORE];  // 每核 mbuf 池
+int enable_kni = 0;                                   // KNI 启用标志（非 static）
+int nb_dev_ports = 0;                                  // NIC 数量（非 static，非 uint16_t）
+static unsigned idle_sleep;                            // 空闲睡眠微秒数（由配置赋值，无硬编码默认值）
+struct rte_mempool *pktmbuf_pool[NB_SOCKETS];          // 按 NUMA socket 索引的 mbuf 池
 ```
 
 **初始化函数调用链**:
@@ -446,42 +439,42 @@ int main_loop(void *arg) {
     uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
     uint64_t cur_tsc, prev_tsc = 0;
     
-    while (!stop_loop) {
+    while (1) {
+        if (unlikely(stop_loop)) break;
+        
         cur_tsc = rte_rdtsc();
         
         // === 1. 驱动 FreeBSD 定时器 ===
         if (unlikely(freebsd_clock.expire < cur_tsc)) {
             rte_timer_manage();        // 触发 TCP timers 等
-            freebsd_clock.expire = cur_tsc + FREEBSD_CLOCK_TICK;
         }
         
-        // === 2. 接收报文 ===
-        for (each_port in lr->ports) {
-            for (each_queue) {
-                uint16_t nb_rx = rte_eth_rx_burst(
-                    port_id, queue_id, 
-                    pkts_burst, MAX_PKT_BURST
-                );
-                process_packets(pkts_burst, nb_rx);
-            }
-        }
-        
-        // === 3. 发送报文 (定时刷新) ===
-        if (drain_tsc && (cur_tsc - prev_tsc) > drain_tsc) {
-            for (each_port in lr->ports) {
-                uint16_t nb_tx = rte_eth_tx_buffer_flush(
-                    port_id, queue_id, tx_buffer
-                );
+        // === 2. TX burst queue drain (先于 RX) ===
+        diff_tsc = cur_tsc - prev_tsc;
+        if (unlikely(diff_tsc >= drain_tsc)) {
+            for (each_port in qconf->tx_ports) {
+                send_burst(qconf, ...);
             }
             prev_tsc = cur_tsc;
         }
         
+        // === 3. 接收报文 (RX) ===
+        for (each_rx_queue in qconf->rx_queues) {
+            uint16_t nb_rx = rte_eth_rx_burst(
+                port_id, queue_id, 
+                pkts_burst, MAX_PKT_BURST
+            );
+            process_packets(pkts_burst, nb_rx);
+        }
+        
         // === 4. 执行用户回调 ===
         if (lr->loop) {
-            int ret = lr->loop(lr->arg);  // 应用业务逻辑
-            if (ret < 0) {
-                ff_stop_run();
-            }
+            lr->loop(lr->arg);         // 应用业务逻辑
+        }
+        
+        // === 5. 空闲睡眠 ===
+        if (likely(idle && idle_sleep)) {
+            rte_delay_us_sleep(idle_sleep);
         }
     }
     

@@ -166,7 +166,7 @@ for (i = 0; i < ff_so_zone->count; i++) {
 
 ### NFR-004: 内存开销
 
-- 每个 fstack 实例新增内存开销 < 64KB（2 个 ring × 32 entries × cache line）
+- 每个 fstack 实例新增内存开销 < 64KB（2 个 ring × 64 entries × cache line）
 - ring 结构在 Hugepage 上分配，不增加常规内存使用
 
 ### NFR-005: 可维护性

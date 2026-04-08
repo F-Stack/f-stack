@@ -55,7 +55,7 @@ F-Stack 导出 **80+ 个公开符号**，分为以下几大类：
 │                                                 │
 │ 10. 系统接口 (10+ 个)                          │
 │     ff_gettimeofday / ff_clock_gettime         │
-│     ff_openlog_stream / ff_log / ff_vlog       │
+│     ff_log_open_set / ff_log / ff_vlog          │
 │     ...                                         │
 └─────────────────────────────────────────────────┘
 ```
@@ -160,10 +160,11 @@ int ff_kevent(int kq, const struct kevent *changelist, int nchanges,
     // timeout: NULL 阻塞, 0 非阻塞, > 0 超时等待
     // 返回: 返回的事件数
 
-void ff_kevent_do_each(int kq, struct kevent *changelist, int nchanges,
-                       void (*callback)(struct kevent *kev, void *arg),
-                       void *arg);
-    // 便利函数: 遍历所有就绪事件
+int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
+                      void *eventlist, int nevents,
+                      const struct timespec *timeout,
+                      void (*do_each)(void **, struct kevent *));
+    // 便利函数: 内部调用 ff_kevent 并对每个事件回调 do_each
 
 int ff_select(int nfds, fd_set *readfds, fd_set *writefds,
               fd_set *exceptfds, struct timeval *timeout);
@@ -242,8 +243,8 @@ ssize_t ff_mbuf_copydata(struct ff_mbuf *mbuf, uint16_t off,
     // 从 mbuf 拷贝数据
 
 // 零拷贝发送
-struct ff_zc_mbuf * ff_zc_mbuf_get(uint16_t len);
-    // 获取零拷贝 mbuf (应用直接写)
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
+    // 获取零拷贝 mbuf (0 成功，-1 失败)
 
 ssize_t ff_zc_mbuf_write(int fd, struct ff_zc_mbuf *zm);
 ssize_t ff_zc_mbuf_read(int fd, struct ff_zc_mbuf *zm);
@@ -887,7 +888,7 @@ void *thread_func(void *arg) {
         .sin_addr.s_addr = inet_addr(ta->bind_addr)
     };
     
-    ff_bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+    ff_bind(sockfd, (struct linux_sockaddr *)&addr, sizeof(addr));
     ff_listen(sockfd, 128);
     
     // 进入轮询
@@ -962,7 +963,7 @@ int main(int argc, char *argv[]) {
     
     int sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr = {...};
-    ff_bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+    ff_bind(sockfd, (struct linux_sockaddr *)&addr, sizeof(addr));
     ff_listen(sockfd, 128);
     
     int kq = ff_kqueue();

@@ -673,7 +673,7 @@ F-Stack (用户态)
 - 默认速率限制：1K QPS 数据、9K QPS 控制、10K QPS 总体
 - 可选的报文分发回调：应用自定义哪些流进入 KNI
 
-**kni和virtio选择：
+**KNI 和 virtio 选择**：
 
 - 当前版本 KNI 功能保留，但底层实现已从 `rte_kni.ko` 内核模块切换为 `virtio_user`（见 lib/Makefile:34），不再依赖内核 KNI 模块
 

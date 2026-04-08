@@ -542,7 +542,7 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
 □ 应用优化
   └─ 调整 socket 缓冲: sendspace=65536
   └─ 调整delay ack：delayed_ack=1 (高吞吐) / delayed_ack=0 (低延迟)
-  └─ 选择 TCP 算法: functions_default=bbr (高延迟) / unctions_default=freebsd、cc.algorithm=cubic (低延迟)
+  └─ 选择 TCP 算法: functions_default=bbr (高延迟) / functions_default=freebsd、cc.algorithm=cubic (低延迟)
   └─ 启用 SACK: sack.enable=1
   └─ 监控性能: 使用 ff_log 输出性能指标
 ```
