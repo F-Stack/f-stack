@@ -32,3 +32,5 @@ dpdk/.travis.yml
 .code.yml
 .orange-ci.yml
 SMEDockerfile
+.gitnexus
+.gitnexusignore
