@@ -12,6 +12,12 @@
 
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
+#ifdef FF_USE_RING_IPC
+#include <rte_ring.h>
+#include <rte_cycles.h>
+#include <sys/eventfd.h>
+#include <sched.h>
+#endif
 
 #include "ff_config.h"
 #include "ff_socket_ops.h"
@@ -111,6 +117,38 @@ static __thread int sh_iov_static_fill_idx_share = 0;
     }                                                             \
     args = name##_args;
 
+#ifdef FF_USE_RING_IPC
+/*
+ * Ring mode macros: ACQUIRE/RELEASE_ZONE_LOCK are not used in the
+ * normal request path (SYSCALL macro is rewritten), but kept as
+ * no-ops to prevent compilation errors from any residual references.
+ */
+#define ACQUIRE_ZONE_LOCK(exp) do { (void)(exp); } while (0)
+#define ACQUIRE_ZONE_TRY_LOCK(exp) ACQUIRE_ZONE_LOCK(exp)
+#define RELEASE_ZONE_LOCK(s) do { (void)(s); } while (0)
+
+/*
+ * Ring mode SYSCALL: enqueue to req_ring, wait on rsp_ring.
+ * No spinlock, no status machine — ring operations are lock-free.
+ */
+#define SYSCALL(op, arg) do {                                     \
+    sc->ops = (op);                                               \
+    sc->args = (arg);                                             \
+    sc->result = 0;                                               \
+    sc->error = 0;                                                \
+    if (ff_ring_submit_and_wait(ff_so_zone->ring_zone, sc, -1) < 0) { \
+        errno = ETIMEDOUT;                                        \
+        ret = -1;                                                 \
+    } else {                                                      \
+        ret = sc->result;                                         \
+        if (ret < 0) {                                            \
+            errno = sc->error;                                    \
+        }                                                         \
+    }                                                             \
+} while (0)
+
+#else /* !FF_USE_RING_IPC */
+
 /* Dirty read first, and then try to lock sc and real read. */
 #define ACQUIRE_ZONE_LOCK(exp) do {                               \
     while (1) {                                                   \
@@ -158,6 +196,8 @@ static __thread int sh_iov_static_fill_idx_share = 0;
     }                                                             \
     RELEASE_ZONE_LOCK(FF_SC_IDLE);                                \
 } while (0)
+
+#endif /* FF_USE_RING_IPC */
 
 #define RETURN_NOFREE() do {                                      \
     DEBUG_LOG("RETURN_NOFREE ret:%d, errno:%d\n", ret, errno);    \
@@ -245,7 +285,9 @@ static int ff_kernel_max_fd = FF_KERNEL_MAX_FD_DEFAULT;
 #endif
 
 /* not support thread socket now */
+#ifndef FF_USE_RING_IPC
 static int need_alarm_sem = 0;
+#endif
 
 #define count_trailing_zeros(x) __builtin_ctzll(x)
 
@@ -2152,7 +2194,9 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
 {
     DEBUG_LOG("ff_hook_epoll_wait, epfd:%d, maxevents:%d, timeout:%d\n", epfd, maxevents, timeout);
     int fd = epfd;
+#ifndef FF_USE_RING_IPC
     struct timespec abs_timeout;
+#endif
 
     CHECK_FD_OWNERSHIP(epoll_wait, (epfd, events, maxevents, timeout));
 
@@ -2190,6 +2234,7 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
         }
     }
 
+#ifndef FF_USE_RING_IPC
     if (timeout > 0) {
         clock_gettime(CLOCK_REALTIME, &abs_timeout);
         DEBUG_LOG("before wait, sec:%ld, nsec:%ld\n", abs_timeout.tv_sec, abs_timeout.tv_nsec);
@@ -2206,6 +2251,7 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
             RETURN_ERROR_NOFREE(EINVAL);
         }
     }
+#endif
 
     args->epfd = fd;
     args->events = sh_events;
@@ -2213,6 +2259,40 @@ ff_hook_epoll_wait(int epfd, struct epoll_event *events,
     args->timeout = timeout;
 
 RETRY:
+#ifdef FF_USE_RING_IPC
+    {
+        int64_t timeout_us;
+        if (timeout < 0) {
+            timeout_us = -1;       /* block forever */
+        } else if (timeout == 0) {
+            timeout_us = 0;        /* non-blocking */
+        } else {
+            timeout_us = (int64_t)timeout * 1000;  /* ms -> us */
+        }
+
+        args->epfd = fd;
+        args->events = sh_events;
+        args->maxevents = maxevents;
+        args->timeout = timeout;
+
+        sc->ops = FF_SO_EPOLL_WAIT;
+        sc->args = args;
+        sc->result = 0;
+        sc->error = 0;
+        errno = 0;
+
+        ret = ff_ring_submit_and_wait(ff_so_zone->ring_zone, sc, timeout_us);
+
+        if (ret == -ETIMEDOUT) {
+            ret = 0;  /* timeout: 0 events */
+        } else {
+            ret = sc->result;
+            if (ret < 0) {
+                errno = sc->error;
+            }
+        }
+    }
+#else /* !FF_USE_RING_IPC */
     /* for timeout, Although not really effective in FreeBSD stack */
     //SYSCALL(FF_SO_EPOLL_WAIT, args);
     ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
@@ -2296,6 +2376,7 @@ RETRY:
 
     sc->status = FF_SC_IDLE;
     rte_spinlock_unlock(&sc->lock);
+#endif /* !FF_USE_RING_IPC */
 
     if (likely(ret > 0)) {
         if (unlikely(ret > maxevents)) {
@@ -2512,6 +2593,33 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     args->kq = kq;
     args->timeout = (struct timespec *)timeout;
 
+#ifdef FF_USE_RING_IPC
+    {
+        int64_t timeout_us;
+        if (timeout == NULL) {
+            timeout_us = -1;       /* block forever */
+        } else {
+            timeout_us = timeout->tv_sec * 1000000LL + timeout->tv_nsec / 1000;
+        }
+
+        sc->ops = FF_SO_KEVENT;
+        sc->args = args;
+        sc->result = 0;
+        sc->error = 0;
+        errno = 0;
+
+        ret = ff_ring_submit_and_wait(ff_so_zone->ring_zone, sc, timeout_us);
+
+        if (ret == -ETIMEDOUT) {
+            ret = 0;  /* timeout: 0 events */
+        } else {
+            ret = sc->result;
+            if (ret < 0) {
+                errno = sc->error;
+            }
+        }
+    }
+#else /* !FF_USE_RING_IPC */
     ACQUIRE_ZONE_LOCK(FF_SC_IDLE);
     //rte_spinlock_lock(&sc->lock);
 
@@ -2583,6 +2691,7 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
     sc->status = FF_SC_IDLE;
 
     rte_spinlock_unlock(&sc->lock);
+#endif /* !FF_USE_RING_IPC */
 
     if (ret > 0) {
         if (eventlist && nevents) {
@@ -3236,6 +3345,12 @@ void
 alarm_event_sem()
 {
 #ifndef FF_THREAD_SOCKET
+#ifdef FF_USE_RING_IPC
+    /* Ring mode: wakeup APP via response ring sentinel */
+    if (ff_so_zone && ff_so_zone->ring_zone && sc) {
+        ff_ring_alarm_wakeup(ff_so_zone->ring_zone, sc);
+    }
+#else
     DEBUG_LOG("check whether need to alarm sem sc:%p, status:%d, ops:%d, need_alarm_sem:%d\n",
         sc, sc->status, sc->ops, need_alarm_sem);
     rte_spinlock_lock(&sc->lock);
@@ -3248,6 +3363,58 @@ alarm_event_sem()
 
     DEBUG_LOG("finish alarm sem sc:%p, status:%d, ops:%d, need_alarm_sem:%d\n",
         sc, sc->status, sc->ops, need_alarm_sem);
+#endif /* FF_USE_RING_IPC */
 #endif
 }
+
+#ifdef FF_USE_RING_IPC
+/*
+ * APP side: submit request to req_ring and wait for response on rsp_ring.
+ *
+ * @param ring_zone Ring zone pointer
+ * @param sc        so_context with ops/args already filled
+ * @param timeout_us Timeout in microseconds: -1=forever, 0=non-blocking, >0=wait
+ * @return 0 on success, -ETIMEDOUT on timeout
+ */
+int
+ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
+                        struct ff_so_context *sc,
+                        int64_t timeout_us)
+{
+    void *obj = NULL;
+
+    if (ring_zone == NULL || ring_zone->req_ring == NULL ||
+        ring_zone->rsp_ring == NULL) {
+        return -EINVAL;
+    }
+
+    /* Enqueue request — spin if ring full */
+    while (rte_ring_sp_enqueue(ring_zone->req_ring, sc) != 0) {
+        ERR_LOG("req_ring full, waiting... sc:%p, ops:%d\n", sc, sc->ops);
+        rte_pause();
+    }
+
+    /* Notify fstack via eventfd if configured */
+    if (ring_zone->wait_mode == FF_RING_WAIT_EVENTFD &&
+        ring_zone->eventfd_req >= 0) {
+        uint64_t val = 1;
+        write(ring_zone->eventfd_req, &val, sizeof(val));
+    }
+
+    /* Wait for response from rsp_ring */
+    int ret = ff_ring_dequeue_wait(ring_zone->rsp_ring, &obj,
+        timeout_us, ring_zone->wait_mode);
+
+    if (ret == -ETIMEDOUT) {
+        return -ETIMEDOUT;
+    }
+
+    /* Verify we got our own sc back (SPSC guarantees ordering) */
+    if (obj != sc) {
+        ERR_LOG("ring response mismatch: expected sc:%p, got:%p\n", sc, obj);
+    }
+
+    return 0;
+}
+#endif /* FF_USE_RING_IPC */
 

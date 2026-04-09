@@ -1,5 +1,8 @@
 #include <rte_memcpy.h>
 #include <rte_spinlock.h>
+#ifdef FF_USE_RING_IPC
+#include <sched.h>
+#endif
 
 #include "ff_socket_ops.h"
 #include "ff_sysproto.h"
@@ -17,7 +20,9 @@ static int ff_sys_kevent(struct ff_kevent_args *args);
 #define FF_MAX_BOUND_NUM 8
 
 /* Where to call sem_post in kevent or epoll_wait */
+#ifndef FF_USE_RING_IPC
 static int sem_flag = 0;
+#endif
 
 /*
  * The event num kevent or epoll_wait returned.
@@ -305,6 +310,7 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
     ret = ff_epoll_wait(args->epfd, args->events,
         args->maxevents, args->timeout);
 
+#ifndef FF_USE_RING_IPC
 #ifdef FF_PRELOAD_POLLING_MODE
     /*
      * If an event is generated or error occurs, user app epoll_wait return imme.
@@ -331,6 +337,7 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
         sem_flag = 1;
     }
 #endif
+#endif /* !FF_USE_RING_IPC */
 
     return ret;
 }
@@ -353,6 +360,7 @@ ff_sys_kevent(struct ff_kevent_args *args)
         args->nchanges = 0;
     }
 
+#ifndef FF_USE_RING_IPC
     /*
      * If timeout is NULL, and no event triggered,
      * no post sem, and next loop will continue to call ff_sys_kevent,
@@ -363,6 +371,7 @@ ff_sys_kevent(struct ff_kevent_args *args)
     } else {
         sem_flag = 1;
     }
+#endif
 
     return ret;
 }
@@ -499,6 +508,40 @@ ff_so_handler(int ops, void *args)
     return (-1);
 }
 
+#ifdef FF_USE_RING_IPC
+/*
+ * Ring mode: process a single request dequeued from req_ring.
+ * No lock needed — SPSC dequeue guarantees mutual exclusion.
+ */
+static void
+ff_handle_socket_ops_ring(struct ff_so_context *sc)
+{
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    void *old_thread = NULL;
+    if (sc->ff_thread_handle) {
+        old_thread = ff_switch_curthread(sc->ff_thread_handle);
+    }
+#endif
+
+    errno = 0;
+    sc->result = ff_so_handler(sc->ops, sc->args);
+    sc->error = errno;
+
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    if (sc->ff_thread_handle) {
+        ff_restore_curthread(old_thread);
+    }
+#endif
+
+    DEBUG_LOG("ff_handle_socket_ops_ring sc:%p, ops:%d, result:%d, error:%d\n",
+        sc, sc->ops, sc->result, sc->error);
+
+    /* Enqueue response — replaces sem_post */
+    ff_ring_send_response(ff_so_zone->ring_zone, sc);
+}
+#endif /* FF_USE_RING_IPC */
+
+#ifndef FF_USE_RING_IPC
 static inline void
 ff_handle_socket_ops(struct ff_so_context *sc)
 {
@@ -565,10 +608,40 @@ ff_handle_socket_ops(struct ff_so_context *sc)
 
     rte_spinlock_unlock(&sc->lock);
 }
+#endif /* !FF_USE_RING_IPC */
 
 void
 ff_handle_each_context()
 {
+#ifdef FF_USE_RING_IPC
+    /*
+     * Ring mode: O(1) batch dequeue from req_ring.
+     * No global zone lock needed — ring is lock-free.
+     */
+    static uint64_t cur_tsc, diff_tsc, drain_tsc = 0;
+
+    if (unlikely(drain_tsc == 0 && ff_global_cfg.dpdk.pkt_tx_delay)) {
+        drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S *
+            ff_global_cfg.dpdk.pkt_tx_delay;
+    }
+
+    if (ff_so_zone == NULL || ff_so_zone->ring_zone == NULL) {
+        return;
+    }
+
+    cur_tsc = rte_rdtsc();
+
+    while (1) {
+        ff_ring_process_requests(ff_so_zone->ring_zone,
+            ff_handle_socket_ops_ring, FF_RING_SIZE);
+
+        diff_tsc = rte_rdtsc() - cur_tsc;
+        if (diff_tsc >= drain_tsc) {
+            break;
+        }
+        rte_pause();
+    }
+#else
     uint16_t i, nb_handled, tmp;
     static uint64_t loop_count = 0;
     static uint64_t cur_tsc, diff_tsc, drain_tsc = 0;
@@ -635,5 +708,145 @@ ff_handle_each_context()
     DEBUG_LOG("loop_count:%lu, nb:%d, all_nb:%d\n",
         loop_count, nb_handled, tmp/*, ff_event_loop_nb, ff_next_event_flag*/);
     //, ff_event_loop_nb:%d, ff_next_event_flag:%d
+#endif /* FF_USE_RING_IPC */
 }
+
+#ifdef FF_USE_RING_IPC
+/*
+ * Batch dequeue requests from req_ring and invoke handler for each.
+ */
+uint16_t
+ff_ring_process_requests(struct ff_sc_ring_zone *ring_zone,
+                         void (*handler)(struct ff_so_context *),
+                         uint16_t max_burst)
+{
+    void *objs[SOCKET_OPS_CONTEXT_MAX_NUM];
+    unsigned int nb, i;
+
+    if (ring_zone == NULL || ring_zone->req_ring == NULL) {
+        return 0;
+    }
+
+    nb = rte_ring_sc_dequeue_burst(ring_zone->req_ring,
+        objs, max_burst, NULL);
+
+    for (i = 0; i < nb; i++) {
+        handler((struct ff_so_context *)objs[i]);
+    }
+
+    return (uint16_t)nb;
+}
+
+/*
+ * Enqueue processed sc to response ring.
+ * If eventfd mode, also write to eventfd to wake up APP.
+ */
+int
+ff_ring_send_response(struct ff_sc_ring_zone *ring_zone,
+                      struct ff_so_context *sc)
+{
+    int ret;
+
+    if (ring_zone == NULL || ring_zone->rsp_ring == NULL) {
+        return -1;
+    }
+
+    ret = rte_ring_sp_enqueue(ring_zone->rsp_ring, sc);
+    if (ret != 0) {
+        ERR_LOG("rsp_ring enqueue failed, sc:%p, ret:%d\n", sc, ret);
+        return -1;
+    }
+
+    if (ring_zone->wait_mode == FF_RING_WAIT_EVENTFD &&
+        ring_zone->eventfd_rsp >= 0) {
+        uint64_t val = 1;
+        if (write(ring_zone->eventfd_rsp, &val, sizeof(val)) < 0) {
+            ERR_LOG("eventfd_rsp write failed, errno:%d\n", errno);
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Timeout-aware ring dequeue using rte_rdtsc for high-precision timing.
+ * Returns 0 on success, -ETIMEDOUT on timeout.
+ */
+int
+ff_ring_dequeue_wait(struct rte_ring *ring, void **obj_p,
+                     int64_t timeout_us, uint8_t wait_mode)
+{
+    uint64_t tsc_hz, timeout_tsc, start_tsc;
+    uint32_t spin_count = 0;
+
+    if (ring == NULL || obj_p == NULL) {
+        return -EINVAL;
+    }
+
+    tsc_hz = rte_get_tsc_hz();
+    start_tsc = rte_rdtsc();
+
+    if (timeout_us > 0) {
+        timeout_tsc = (uint64_t)timeout_us * tsc_hz / 1000000ULL;
+    } else if (timeout_us == 0) {
+        /* Non-blocking: single try */
+        if (rte_ring_sc_dequeue(ring, obj_p) == 0) {
+            return 0;
+        }
+        return -ETIMEDOUT;
+    } else {
+        timeout_tsc = UINT64_MAX; /* -1 = wait forever */
+    }
+
+    while (rte_ring_sc_dequeue(ring, obj_p) != 0) {
+        if (rte_rdtsc() - start_tsc >= timeout_tsc) {
+            return -ETIMEDOUT;
+        }
+
+        switch (wait_mode) {
+        case FF_RING_WAIT_BUSY_POLL:
+            rte_pause();
+            break;
+        case FF_RING_WAIT_YIELD_POLL:
+            if ((++spin_count & 0xFF) == 0) {
+                sched_yield();
+            } else {
+                rte_pause();
+            }
+            break;
+        case FF_RING_WAIT_EVENTFD:
+            /* Eventfd handled by caller */
+            rte_pause();
+            break;
+        default:
+            rte_pause();
+            break;
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Wakeup APP by enqueuing a sentinel to rsp_ring.
+ * Replaces alarm_event_sem() in ring mode.
+ */
+void
+ff_ring_alarm_wakeup(struct ff_sc_ring_zone *ring_zone,
+                     struct ff_so_context *sc)
+{
+    if (ring_zone == NULL || ring_zone->rsp_ring == NULL || sc == NULL) {
+        return;
+    }
+
+    /* Enqueue sc as sentinel — APP will dequeue and check */
+    rte_ring_sp_enqueue(ring_zone->rsp_ring, sc);
+
+    if (ring_zone->wait_mode == FF_RING_WAIT_EVENTFD &&
+        ring_zone->eventfd_rsp >= 0) {
+        uint64_t val = 1;
+        write(ring_zone->eventfd_rsp, &val, sizeof(val));
+    }
+}
+#endif /* FF_USE_RING_IPC */
 

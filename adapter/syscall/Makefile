@@ -21,6 +21,10 @@ endif
 # If disable it, epoll use sem_wait.
 #FF_PRELOAD_POLLING_MODE=1
 
+# Lock-free ring IPC mode, replace sem_wait/sem_post with rte_ring.
+# If enable it, FF_PRELOAD_POLLING_MODE must be disabled.
+#FF_USE_RING_IPC=1
+
 # If enable FF_KERNEL_EVENT, epoll_create/epoll_clt/epoll_wait always call f-stack and system API at the same time.
 # Use for some scenarios similar to Nginx.
 #FF_KERNEL_EVENT=1
@@ -57,6 +61,13 @@ endif
 
 ifdef FF_PRELOAD_POLLING_MODE
 	CFLAGS+= -DFF_PRELOAD_POLLING_MODE
+endif
+
+ifdef FF_USE_RING_IPC
+ifdef FF_PRELOAD_POLLING_MODE
+$(error "FF_USE_RING_IPC and FF_PRELOAD_POLLING_MODE are mutually exclusive")
+endif
+	CFLAGS+= -DFF_USE_RING_IPC
 endif
 
 ifdef FF_USE_THREAD_STRUCT_HANDLE
