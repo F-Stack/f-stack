@@ -1829,8 +1829,23 @@ fdgrowtable(struct filedesc *fdp, int nfd)
 	    M_FILEDESC, M_ZERO | M_WAITOK);
 	/* copy the old data */
 	ntable->fdt_nfiles = nnfiles;
+	/*
+	 * GCC 12+ inlines fdgrowtable into fdinit/fdcopy/fdunshare and its
+	 * Value Range Propagation (VRP) infers that onfiles could be negative,
+	 * triggering false-positive -Wstringop-overflow and -Wrestrict warnings.
+	 * At runtime fd_nfiles is always > 0 (guaranteed by KASSERT above).
+	 * See: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=99578
+	 */
+#if __GNUC__ >= 12
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#pragma GCC diagnostic ignored "-Wrestrict"
+#endif
 	memcpy(ntable->fdt_ofiles, otable->fdt_ofiles,
 	    onfiles * sizeof(ntable->fdt_ofiles[0]));
+#if __GNUC__ >= 12
+#pragma GCC diagnostic pop
+#endif
 
 	/*
 	 * Allocate a new map only if the old is not large enough.  It will
