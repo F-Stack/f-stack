@@ -5,6 +5,7 @@
 #include <rte_memzone.h>
 #ifdef FF_USE_RING_IPC
 #include <rte_ring.h>
+#include <rte_errno.h>
 #include <sys/eventfd.h>
 #endif
 

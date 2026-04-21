@@ -104,10 +104,18 @@ FSTACK_SRCS=                  \
 	ff_so_zone.c              \
 	ff_socket_ops.c
 
+ifdef FF_USE_RING_IPC
+FSTACK_SRCS += ff_ring_ipc.c
+endif
+
 FF_SYSCALL_SRCS=              \
 	ff_so_zone.c              \
 	ff_hook_syscall.c         \
 	ff_linux_syscall.c
+
+ifdef FF_USE_RING_IPC
+FF_SYSCALL_SRCS += ff_ring_ipc.c
+endif
 
 FSTACK_OBJS= $(patsubst %.c,%.o,${FSTACK_SRCS})
 
