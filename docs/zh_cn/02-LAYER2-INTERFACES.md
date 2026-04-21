@@ -1,31 +1,31 @@
-# F-Stack v1.25 Layer 2: Interface Definitions and Development Guidelines
+# F-Stack v1.25 第二层：接口定义与开发规范
 
-> **Target Audience**: Application developers, integration engineers  
-> **Key Concepts**: API interfaces, configuration system, development guidelines, best practices  
-> **Generation Date**: 2026-03-20
+> **目标受众**: 应用开发工程师、集成工程师  
+> **关键概念**: API 接口、配置系统、开发规范、最佳实践  
+> **生成日期**: 2026-03-20
 
-## 1. F-Stack Complete API List (80+ Exported Functions)
+## 1. F-Stack API 完整列表 (80+ 导出函数)
 
-> **API Hierarchy Notes**: The F-Stack interface system is organized into three levels:
-> 1. **`ff_api.h` main interface** — Contains lifecycle functions such as ff_init/ff_run/ff_stop_run and all socket/kqueue/sysctl function declarations
-> 2. **`ff_epoll.h` supplementary interface** — epoll compatibility layer (ff_epoll_create/ff_epoll_ctl/ff_epoll_wait), independent of ff_api.h
-> 3. **`ff_api.symlist` dynamic export symbol table** — Defines the symbols actually exported during dynamic linking. **Note**: ff_init/ff_run/ff_stop_run are not in this list; they are only available through static linking (libfstack.a)
+> **API 层次说明**: F-Stack 的接口体系分为三个层级：
+> 1. **`ff_api.h` 主接口** — 包含 ff_init/ff_run/ff_stop_run 等生命周期函数及所有 socket/kqueue/sysctl 等函数声明
+> 2. **`ff_epoll.h` 补充接口** — epoll 兼容层 (ff_epoll_create/ff_epoll_ctl/ff_epoll_wait)，独立于 ff_api.h
+> 3. **`ff_api.symlist` 动态导出符号表** — 定义实际动态链接时导出的符号。**注意**: ff_init/ff_run/ff_stop_run 不在此列表中，仅通过静态链接 (libfstack.a) 可用
 >
-> When doing dynamic linking or language bindings (FFI), use `ff_api.symlist` as the authoritative reference for available symbols.
+> 做动态链接或语言绑定 (FFI) 时，应以 `ff_api.symlist` 为准确定可用符号。
 
-### 1.1 Core Lifecycle Functions
+### 1.1 核心生命周期函数
 
 ```c
-// Initialization and cleanup
-int ff_init(int argc, char * const argv[]);      // Initialize F-Stack
-void ff_run(loop_func_t loop, void *arg);        // Start main loop (blocking)
-void ff_stop_run(void);                          // Gracefully stop loop
+// 初始化和清理
+int ff_init(int argc, char * const argv[]);      // 初始化 F-Stack
+void ff_run(loop_func_t loop, void *arg);        // 启动主循环 (阻塞)
+void ff_stop_run(void);                          // 优雅停止循环
 ```
 
-### 1.2 Socket API (POSIX Compatible)
+### 1.2 Socket API (POSIX 兼容)
 
 ```c
-// Socket creation and management
+// Socket 创建和管理
 int ff_socket(int domain, int type, int protocol);
 int ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen);
 int ff_listen(int s, int backlog);
@@ -34,7 +34,7 @@ int ff_accept4(int s, struct linux_sockaddr *addr, socklen_t *addrlen, int flags
 int ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen);
 int ff_close(int fd);
 
-// Data I/O
+// 数据 I/O
 ssize_t ff_read(int d, void *buf, size_t nbytes);
 ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt);
 ssize_t ff_write(int fd, const void *buf, size_t nbytes);
@@ -48,17 +48,17 @@ ssize_t ff_recvfrom(int s, void *buf, size_t len, int flags,
                     struct linux_sockaddr *from, socklen_t *fromlen);
 ssize_t ff_recvmsg(int s, struct msghdr *msg, int flags);
 
-// Socket options
+// Socket 选项
 int ff_setsockopt(int s, int level, int optname,
                   const void *optval, socklen_t optlen);
 int ff_getsockopt(int s, int level, int optname,
                   void *optval, socklen_t *optlen);
 ```
 
-### 1.3 Event Multiplexing API
+### 1.3 事件多路复用 API
 
 ```c
-// BSD kqueue (recommended)
+// BSD kqueue (推荐)
 int ff_kqueue(void);
 int ff_kevent(int kq, const struct kevent *changelist, int nchanges,
               struct kevent *eventlist, int nevents,
@@ -67,48 +67,48 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
                       void *eventlist, int nevents, const struct timespec *timeout,
                       void (*do_each)(void **, struct kevent *));
 
-// Linux epoll (compatible)
+// Linux epoll (兼容)
 int ff_epoll_create(int size);
 int ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
 int ff_epoll_wait(int epfd, struct epoll_event *events,
                   int maxevents, int timeout);
 
-// Traditional interfaces
+// 传统接口
 int ff_select(int nfds, fd_set *readfds, fd_set *writefds,
               fd_set *exceptfds, struct timeval *timeout);
 int ff_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 ```
 
-### 1.4 System Control API
+### 1.4 系统控制 API
 
 ```c
-// fcntl and ioctl
+// fcntl 和 ioctl
 int ff_fcntl(int s, int cmd, ...);
 int ff_ioctl(int s, unsigned long request, ...);
 
-// System configuration
+// 系统配置
 int ff_sysctl(const int *name, u_int namelen, void *oldp,
               size_t *oldlenp, const void *newp, size_t newlen);
 ```
 
-### 1.5 Special Feature API
+### 1.5 特殊功能 API
 
 ```c
-// Route control
+// 路由控制
 int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
                  struct linux_sockaddr *dst, struct linux_sockaddr *gw,
                  struct linux_sockaddr *netmask);
 int ff_rtioctl(int fib, void *data, unsigned *plen, unsigned maxlen);
 
-// Zero-copy mbuf operations
+// 零拷贝 mbuf 操作
 int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
 int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
-int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // [Note] Not yet implemented
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // 【注】暂未实现
 
-// Time-related
+// 时间相关
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 
-// Logging
+// 日志
 int ff_log(uint32_t level, uint32_t logtype, const char *format, ...);
 int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap);
 int ff_log_reset_stream(void *f);
@@ -116,71 +116,71 @@ void ff_log_set_global_level(uint32_t level);
 int ff_log_set_level(uint32_t logtype, uint32_t level);
 void ff_log_close(void);
 
-// Multi-threading support
+// 多线程支持
 int ff_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                       void *(*start_routine)(void *), void *arg);
 int ff_pthread_join(pthread_t thread, void **value_ptr);
 ```
 
-## 2. Configuration System
+## 2. 配置系统
 
-### 2.1 Configuration File Format (INI)
+### 2.1 配置文件格式 (INI)
 
-File location: `/data/workspace/f-stack/config.ini`
+文件位置: `/data/workspace/f-stack/config.ini`
 
 ```ini
 [dpdk]
-# NIC port configuration
-portid_list = 0              # NIC port IDs to use (comma-separated)
-nb_ports = 1                 # Number of ports
+# NIC 端口配置
+portid_list = 0              # 使用的网卡端口 ID (逗号分隔)
+nb_ports = 1                 # 端口数量
 
-# CPU core configuration
-lcore_mask = 0x1             # CPU cores to use (hexadecimal bitmask)
+# CPU 核心配置
+lcore_mask = 0x1             # 使用的 CPU 核心 (十六进制位掩码)
                              # 0x1 = CPU-0, 0x3 = CPU-0,1, 0x7 = CPU-0,1,2
 
-# Memory configuration
-numa_on = 1                  # NUMA support (0=disabled, 1=enabled)
+# 内存配置
+numa_on = 1                  # NUMA 支持 (0=关闭, 1=开启)
 
 [host]
-# Network address configuration
-ipaddr = 192.168.1.2         # IP address
-netmask = 255.255.255.0      # Subnet mask
-gateway = 192.168.1.1        # Gateway address
+# 网络地址配置
+ipaddr = 192.168.1.2         # IP 地址
+netmask = 255.255.255.0      # 子网掩码
+gateway = 192.168.1.1        # 网关地址
 
-# Network interface
-iface = eth0                 # Physical NIC name
+# 网络接口
+iface = eth0                 # 物理网卡名称
 
 [kni]
-# Virtual NIC support (optional)
-enable = 0                   # Enable virtual NIC (0=disabled, 1=enabled)
+# 虚拟网卡支持 (可选)
+enable = 0                   # 启用虚拟网卡 (0=禁用, 1=启用)
 ```
 
-### 2.2 Programmatic Configuration
+### 2.2 编程方式配置
 
 ```c
-// Set configuration before calling ff_init()
+// 在调用 ff_init() 之前设置配置
 struct ff_config *cfg = &ff_global_cfg;
 
-// Set NIC ports
+// 设置 NIC 端口
 cfg->dpdk.portid_list[0] = 0;
 cfg->dpdk.nb_ports = 1;
 
-// Set CPU cores
-cfg->dpdk.lcore_mask = 0x1;  // Use CPU-0
+// 设置 CPU 核心
+cfg->dpdk.lcore_mask = 0x1;  // 使用 CPU-0
 
-// Set IP address
+// 设置 IP 地址
 inet_aton("192.168.1.2", &cfg->host.ipaddr);
 inet_aton("255.255.255.0", &cfg->host.netmask);
 
-// Initialize
+// 初始化
 ff_init(argc, argv);
 ```
 
-## 3. Application Development Guidelines
+## 3. 应用开发规范
 
-### 3.1 Three Event Modes
+### 3.1 三种事件模式
 
-#### Mode 1: Recommended kqueue (BSD Style)
+#### 模式 1: 推荐的 kqueue (BSD 风格)
 
 ```c
 #include <ff_api.h>
@@ -190,10 +190,10 @@ ff_init(argc, argv);
 int main(int argc, char *argv[]) {
     ff_init(argc, argv);
     
-    // Create socket
+    // 创建 socket
     int sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     
-    // Bind and listen
+    // 绑定和监听
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -202,41 +202,41 @@ int main(int argc, char *argv[]) {
     ff_bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
     ff_listen(sockfd, 32);
     
-    // Create kqueue
+    // 创建 kqueue
     int kq = ff_kqueue();
     
-    // Add listen event
+    // 添加监听事件
     struct kevent kev;
     EV_SET(&kev, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
     ff_kevent(kq, &kev, 1, NULL, 0, NULL);
     
-    // Start main loop
+    // 启动主循环
     ff_run(loop_func, (void *)kq);
     
     return 0;
 }
 
-// User-defined loop function
+// 用户定义的循环函数
 int loop_func(void *arg) {
     int kq = (int)(intptr_t)arg;
     struct kevent events[MAX_EVENTS];
     int nevents;
     
-    // Wait for events
+    // 等待事件
     nevents = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
     
     for (int i = 0; i < nevents; i++) {
         int fd = events[i].ident;
         
         if (events[i].filter == EVFILT_READ) {
-            // Read-ready event - accept connection or read data
+            // 可读事件 - 接受连接或读数据
             if (fd == listening_socket) {
                 int client = ff_accept(fd, NULL, NULL);
-                // Add client to kqueue
+                // 添加客户端到 kqueue
                 EV_SET(&kev, client, EVFILT_READ, EV_ADD, 0, 0, NULL);
                 ff_kevent(kq, &kev, 1, NULL, 0, NULL);
             } else {
-                // Read data
+                // 读数据
                 char buf[1024];
                 ssize_t n = ff_read(fd, buf, sizeof(buf));
                 if (n > 0) {
@@ -250,7 +250,7 @@ int loop_func(void *arg) {
 }
 ```
 
-#### Mode 2: Linux epoll (Compatible)
+#### 模式 2: Linux epoll (兼容)
 
 ```c
 #include <ff_api.h>
@@ -262,7 +262,7 @@ int main(int argc, char *argv[]) {
     int sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     // ... bind/listen ...
     
-    // Create epoll
+    // 创建 epoll
     int epfd = ff_epoll_create(0);
     
     struct epoll_event ev;
@@ -282,41 +282,41 @@ int loop_func(void *arg) {
     int nevents = ff_epoll_wait(epfd, events, MAX_EVENTS, -1);
     
     for (int i = 0; i < nevents; i++) {
-        // Process events in loop...
-        // Note: ff_accept should be called in a loop until it fails
+        // 循环处理事件...
+        // 特别注意，ff_accept时需要循环调用，直到失败
     }
     
     return 0;
 }
 ```
 
-### 3.2 Key Development Rules
+### 3.2 关键开发规则
 
-**Must follow**:
-1. **Non-blocking mode**: Must set non-blocking
+**必须遵循**:
+1. **非阻塞模式**: 必须设置非阻塞
    ```c
    int on = 1;
    ff_ioctl(sockfd, FIONBIO, &on);
    ```
 
-2. **Single-threaded model**: Each DPDK lcore runs an independent F-Stack instance, no cross-core synchronization
+2. **单线程模型**: 每个 DPDK lcore 运行一个独立的 F-Stack 实例，无跨核同步
 
-3. **Proper shutdown**: Use `ff_stop_run()` for graceful shutdown
+3. **正确的关闭**: 使用 `ff_stop_run()` 优雅关闭
    ```c
-   // In signal handler
+   // 在信号处理中
    signal(SIGTERM, sighandler);
    void sighandler(int sig) {
-       ff_stop_run();  // Stop the loop
+       ff_stop_run();  // 停止循环
    }
    ```
 
-4. **Memory management**: All socket/file descriptor operations stay within a single lcore
+4. **内存管理**: 所有 socket/文件描述符操作保持在单个 lcore 内
 
-### 3.3 Performance Optimization Recommendations
+### 3.3 性能优化建议
 
-**1. Batch processing**
+**1. 批量处理**
 ```c
-// Process multiple events at once
+// 一次处理多个事件
 struct kevent events[MAX_BATCH];
 int n = ff_kevent(kq, NULL, 0, events, MAX_BATCH, NULL);
 for (int i = 0; i < n; i++) {
@@ -324,9 +324,9 @@ for (int i = 0; i < n; i++) {
 }
 ```
 
-**2. Zero-copy send**
+**2. 零拷贝发送**
 ```c
-// Use zero-copy mbuf
+// 使用零拷贝 mbuf
 struct rte_mbuf *m = ff_zc_mbuf_get(sockfd);
 if (m) {
     prepare_packet(m);
@@ -334,23 +334,23 @@ if (m) {
 }
 ```
 
-**3. CPU affinity**
-Specify CPU core affinity binding through the configuration file:
+**3. CPU 亲和性**
+通过配置文件指定 CPU 核心的亲和性绑定:
 
-## 4. Multi-Process Development Guidelines
+## 4. 多进程开发规范
 
-### 4.1 Primary Process Initialization
+### 4.1 主进程初始化
 
 ```c
 int main(int argc, char *argv[]) {
-    // Configure primary process
+    // 配置主进程
     struct ff_config *cfg = &ff_global_cfg;
     cfg->dpdk.proc_type = FF_PROC_PRIMARY;
-    cfg->dpdk.nb_procs = 4;  // 4 workers
+    cfg->dpdk.nb_procs = 4;  // 4 个 worker
     
     ff_init(argc, argv);
     
-    // Start worker child processes
+    // 启动 worker 子进程
     for (int i = 0; i < 4; i++) {
         pid_t pid = fork();
         if (pid == 0) {
@@ -359,12 +359,12 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    // Primary process continues running
+    // 主进程继续运行
     ff_run(primary_loop, NULL);
 }
 ```
 
-### 4.2 Worker Process Initialization
+### 4.2 Worker 进程初始化
 
 ```c
 void worker_main(int worker_id) {
@@ -372,43 +372,43 @@ void worker_main(int worker_id) {
     cfg->dpdk.proc_type = FF_PROC_SECONDARY;
     cfg->dpdk.proc_id = worker_id;
     
-    // Worker initializes with the same configuration
+    // Worker 使用相同的配置初始化
     ff_init(0, NULL);
     
-    // Each worker runs independently
+    // 各 worker 独立运行
     ff_run(worker_loop, (void *)(intptr_t)worker_id);
 }
 ```
 
-### 4.3 Inter-Process Communication
+### 4.3 进程间通信
 
-> **Note**: `ff_msg_send()` is not a public API; it does not exist in either `ff_api.h` or `ff_api.symlist`. Inter-process communication is implemented through the `ff_msg` message queue (`lib/ff_msg.h`), used by F-Stack internal tools (knictl/sysctl, etc.). Application-level code does not need to call it directly.
+> **注意**: `ff_msg_send()` 不是公开 API，在 `ff_api.h` 和 `ff_api.symlist` 中均不存在。进程间通信通过 `ff_msg` 消息队列（`lib/ff_msg.h`）实现，由 F-Stack 内部工具（knictl/sysctl 等）使用，应用层无需直接调用。
 
-## 5. Thread Safety
+## 5. 线程安全性
 
-### 5.1 Safe Operations
+### 5.1 安全操作
 
-✓ **Thread-safe** (within a single lcore):
-- Socket API (ff_socket, ff_read, ff_write, etc.)
-- Configuration queries
-- Event waiting
+✓ **线程安全** (在单个 lcore 内):
+- Socket API (ff_socket, ff_read, ff_write 等)
+- 配置查询
+- 事件等待
 
-✗ **Not thread-safe**:
-- Creating/destroying threads while running
-- Registering new callbacks after ff_run()
-- Cross-lcore socket operations
+✗ **非线程安全**:
+- 运行中创建/销毁线程
+- 在 ff_run() 之后注册新的回调
+- 跨 lcore 的 socket 操作
 
-### 5.2 DPDK Atomic Operations
+### 5.2 DPDK 原子操作
 
 ```c
-// DPDK memory pool operations are atomic
-struct rte_mbuf *m = rte_pktmbuf_alloc(pool);  // Multi-process safe
-rte_pktmbuf_free(m);                           // Multi-process safe
+// DPDK 内存池是原子操作的
+struct rte_mbuf *m = rte_pktmbuf_alloc(pool);  // 多进程安全
+rte_pktmbuf_free(m);                           // 多进程安全
 ```
 
-## 6. Compilation and Linking
+## 6. 编译和链接
 
-### 6.1 Compiling the F-Stack Library
+### 6.1 编译 F-Stack 库
 
 ```bash
 cd /data/workspace/f-stack/lib
@@ -417,7 +417,7 @@ make
 make install PREFIX=/usr/local
 ```
 
-### 6.2 Compiling User Applications
+### 6.2 编译用户应用
 
 ```bash
 gcc -o myapp main.c \
@@ -425,7 +425,7 @@ gcc -o myapp main.c \
     $(pkg-config --cflags --libs libdpdk) \
     -lpthread -lm
 
-# Or use a Makefile
+# 或使用 Makefile
 CFLAGS = $(shell pkg-config --cflags libdpdk)
 LDFLAGS = $(shell pkg-config --libs libdpdk) -lfstack -lpthread
 
@@ -433,38 +433,38 @@ myapp: main.o
 	gcc -o $@ $< $(LDFLAGS)
 ```
 
-### 6.3 Conditional Compilation Options
+### 6.3 条件编译选项
 
 ```makefile
-# IPv6 support
+# IPv6 支持
 FF_INET6=1 make
 
-# KNI virtual NIC support
+# KNI 虚拟网卡支持
 FF_KNI=1 make
 
-# High-precision TCP timers
+# 高精度 TCP 定时器
 FF_TCPHPTS=1 make
 ```
 
-## 7. Common Errors and Solutions
+## 7. 常见错误和解决方案
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `ff_read()` returns -1 | Buffer full or connection error | Check errno; in non-blocking mode, continue |
-| `ff_write()` returns -1 | Send queue full | Retry later, or increase memory pool |
-| Segmentation fault | Cross-lcore socket operation | Ensure each socket operates within a single lcore |
-| Connection dropped | Network issue or timeout | Check RST/FIN flags, reconnect |
-| Uneven RSS flow distribution | NIC not supported or misconfigured | Check `ff_rss_tbl_init()` logs |
+| 错误 | 原因 | 解决方案 |
+|-----|------|--------|
+| `ff_read()` 返回 -1 | 缓冲区满或连接错误 | 检查 errno，非阻塞模式下应继续 |
+| `ff_write()` 返回 -1 | 发送队列满 | 稍后重试，或增加内存池 |
+| 段错误 | 跨 lcore 操作 socket | 确保每个 socket 在单个 lcore 内操作 |
+| 连接断开 | 网络问题或超时 | 检查 RST/FIN 标志，重新连接 |
+| RSS 流不均衡 | NIC 不支持或配置错误 | 检查 `ff_rss_tbl_init()` 日志 |
 
-## 8. Best Practices
+## 8. 最佳实践
 
-1. **Use kqueue** (BSD style) instead of select/poll for better performance
-2. **Batch process events** instead of one at a time
-3. **Set appropriate memory pool size** based on expected connection count
-4. **Use RSS in multi-process mode** to maintain connection affinity
-5. **Monitor DPDK statistics** to identify performance bottlenecks
-6. **Test failure scenarios** such as NIC disconnection, out of memory, etc.
+1. **使用 kqueue** (BSD 风格) 而不是 select/poll，性能更好
+2. **批量处理事件** 而不是一次一个
+3. **设置合理的内存池大小** 根据预期连接数
+4. **在多进程模式下使用 RSS** 维持连接亲和性
+5. **监控 DPDK 统计信息** 了解性能瓶颈
+6. **测试故障场景** 如 NIC 掉线、内存不足等
 
-## Summary
+## 总结
 
-F-Stack provides POSIX socket API-compatible interfaces while enhancing performance-related features (kqueue, epoll, zero-copy mbuf, etc.). Application development must follow the single-threaded + polling model and fully leverage multi-core and hardware offload capabilities to achieve optimal performance.
+F-Stack 提供了与 POSIX socket API 兼容的接口，同时增强了性能相关的特性 (kqueue, epoll, 零拷贝 mbuf 等)。应用开发需要遵循单线程 + 轮询的模型，充分利用多核和硬件卸载能力，才能获得最佳性能。

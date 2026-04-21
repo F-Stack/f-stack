@@ -1,532 +1,532 @@
-# F-Stack v1.25 第三层架构分析：函数级索引与数据模型
+# F-Stack v1.25 Layer 3 Architecture Analysis: Function-Level Index & Data Models
 
-**文档版本**: 1.0  
-**分析日期**: 2026-03-20  
-**覆盖范围**: F-Stack v1.25 导出函数、数据结构、线程安全性  
-**目标受众**: 内核开发者、性能分析师、调试工程师
+**Document Version**: 1.0  
+**Analysis Date**: 2026-03-20  
+**Coverage**: F-Stack v1.25 Exported Functions, Data Structures, Thread Safety  
+**Target Audience**: Kernel Developers, Performance Analysts, Debugging Engineers
 
 ---
 
-## 1. 完整函数导出清单
+## 1. Complete Function Export List
 
-### 1.1 80+ 导出函数分类总览
+### 1.1 Overview of 80+ Exported Functions by Category
 
-F-Stack 通过 `/data/workspace/f-stack/lib/ff_api.symlist` 定义所有公开符号。以下是完整清单按功能分类：
+F-Stack defines all public symbols through `/data/workspace/f-stack/lib/ff_api.symlist`. The following is the complete list categorized by functionality:
 
-#### **生命周期管理 (3 个)**
+#### **Lifecycle Management (3)**
 
 ```c
 int ff_init(int argc, char * const argv[])
-    // 初始化 F-Stack 库
-    // 必须首先调用，仅主进程调用
-    // 参数: DPDK EAL 格式的命令行参数
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 否 (仅在初始化时调用)
+    // Initialize the F-Stack library
+    // Must be called first, only by the primary process
+    // Parameters: Command-line arguments in DPDK EAL format
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: No (call only during initialization)
 
 void ff_run(loop_func_t loop, void *arg)
-    // 启动主轮询循环
-    // 每个 lcore 会调用一次
-    // 参数: 用户回调函数指针, 回调参数
-    // 不返回 (除非 ff_stop_run() 被调用)
-    // 线程安全: 否 (阻塞直到停止)
+    // Start the main polling loop
+    // Called once per lcore
+    // Parameters: User callback function pointer, callback argument
+    // Does not return (unless ff_stop_run() is called)
+    // Thread safety: No (blocks until stopped)
 
 void ff_stop_run(void)
-    // 停止轮询循环
-    // 可从任何线程调用
-    // 安全关闭，等待所有报文处理完成
-    // 线程安全: 是 (原子操作)
+    // Stop the polling loop
+    // Can be called from any thread
+    // Graceful shutdown, waits for all packet processing to complete
+    // Thread safety: Yes (atomic operation)
 ```
 
-#### **Socket 生命周期 (12 个)**
+#### **Socket Lifecycle (12)**
 
 ```c
 int ff_socket(int domain, int type, int protocol)
-    // 创建套接字
+    // Create a socket
     // domain: AF_INET(=2) / AF_INET6(=10 Linux/28 FreeBSD)
     // type: SOCK_STREAM(1) / SOCK_DGRAM(2) / SOCK_RAW(3)
-    // protocol: 0 (自动), IPPROTO_TCP(6), IPPROTO_UDP(17)
-    // 返回: fd >= 0, -1 on error
-    // 线程安全: 是 (per-thread socket table)
+    // protocol: 0 (auto), IPPROTO_TCP(6), IPPROTO_UDP(17)
+    // Returns: fd >= 0, -1 on error
+    // Thread safety: Yes (per-thread socket table)
 
 int ff_bind(int sockfd, const struct linux_sockaddr *addr, socklen_t addrlen)
-    // 绑定本地地址
-    // addr: 指向 sockaddr 结构体的指针
-    // addrlen: 地址结构体大小
-    // 返回: 0 成功, -1 失败 + errno
-    // 线程安全: 是 (fd 隔离)
+    // Bind a local address
+    // addr: Pointer to sockaddr structure
+    // addrlen: Size of the address structure
+    // Returns: 0 on success, -1 on failure + errno
+    // Thread safety: Yes (fd isolation)
 
 int ff_listen(int sockfd, int backlog)
-    // 标记 socket 为 listening 状态 (TCP only)
-    // backlog: 未接受连接队列大小
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 是
+    // Mark socket as listening state (TCP only)
+    // backlog: Size of the pending connection queue
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
 
 int ff_accept(int sockfd, struct linux_sockaddr *addr, socklen_t *addrlen)
-    // 接受新连接 (TCP only)
-    // 返回: 新 socket fd, -1 on error
-    // 返回地址到 addr 结构体
-    // 线程安全: 是
+    // Accept a new connection (TCP only)
+    // Returns: New socket fd, -1 on error
+    // Returns the address to the addr structure
+    // Thread safety: Yes
 
 int ff_accept4(int sockfd, struct linux_sockaddr *addr, socklen_t *addrlen, int flags)
-    // ff_accept() 增强版，支持 flags (如 SOCK_NONBLOCK)
-    // 线程安全: 是
+    // Enhanced version of ff_accept(), supports flags (e.g., SOCK_NONBLOCK)
+    // Thread safety: Yes
 
 int ff_connect(int sockfd, const struct linux_sockaddr *addr, socklen_t addrlen)
-    // 建立连接 (TCP only)
-    // 非阻塞: 可能返回 -1 + errno=EINPROGRESS
-    // 监听 EVFILT_WRITE 检测连接完成
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 是
+    // Establish a connection (TCP only)
+    // Non-blocking: May return -1 + errno=EINPROGRESS
+    // Monitor EVFILT_WRITE to detect connection completion
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
 
 int ff_close(int sockfd)
-    // 关闭套接字
-    // 等待所有待发数据被发送，优雅关闭
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 是
+    // Close a socket
+    // Waits for all pending data to be sent, graceful close
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
 
 int ff_shutdown(int sockfd, int how)
-    // 关闭通信的一个或两个方向
+    // Shut down one or both directions of communication
     // how: SHUT_RD(0), SHUT_WR(1), SHUT_RDWR(2)
-    // 线程安全: 是
+    // Thread safety: Yes
 
 int ff_dup(int oldfd)
-    // 复制文件描述符 (返回最小的空 fd)
-    // 线程安全: 是
+    // Duplicate a file descriptor (returns the lowest available fd)
+    // Thread safety: Yes
 
 int ff_dup2(int oldfd, int newfd)
-    // 复制文件描述符 (指定目标 fd)
-    // 线程安全: 是
+    // Duplicate a file descriptor (to a specified target fd)
+    // Thread safety: Yes
 
 int ff_dup3(int oldfd, int newfd, int flags)
-    // ff_dup2() 增强版，支持 flags
-    // 线程安全: 是
+    // Enhanced version of ff_dup2(), supports flags
+    // Thread safety: Yes
 
 int ff_getpeername(int sockfd, struct linux_sockaddr *addr, socklen_t *addrlen)
-    // 获取对端地址
-    // 线程安全: 是
+    // Get the peer address
+    // Thread safety: Yes
 ```
 
-#### **数据 I/O 操作 (13 个)**
+#### **Data I/O Operations (13)**
 
 ```c
 ssize_t ff_read(int fd, void *buf, size_t nbytes)
-    // 读取数据
-    // 返回: > 0 实际读取字节数, 0 EOF, -1 错误
-    // 错误时 errno 设置
-    // 非阻塞: 无数据时返回 -1 + EAGAIN
-    // 线程安全: 是
+    // Read data
+    // Returns: > 0 actual bytes read, 0 EOF, -1 error
+    // errno is set on error
+    // Non-blocking: Returns -1 + EAGAIN when no data available
+    // Thread safety: Yes
 
 ssize_t ff_write(int fd, const void *buf, size_t nbytes)
-    // 写入数据
-    // 返回: > 0 实际发送字节数, -1 缓冲满或错误
-    // 特点: 缓冲满时返回 -1，不是部分发送!
-    // 应监听 EVFILT_WRITE 事件后重试
-    // 线程安全: 是
+    // Write data
+    // Returns: > 0 actual bytes sent, -1 buffer full or error
+    // Note: Returns -1 when buffer is full, NOT partial send!
+    // Should monitor EVFILT_WRITE event then retry
+    // Thread safety: Yes
 
 ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt)
-    // 分散读 (scatter-gather read)
-    // iov: iovec 数组指针
-    // iovcnt: iovec 数组元素个数
-    // 线程安全: 是
+    // Scatter-gather read
+    // iov: Pointer to iovec array
+    // iovcnt: Number of elements in the iovec array
+    // Thread safety: Yes
 
 ssize_t ff_writev(int fd, const struct iovec *iov, int iovcnt)
-    // 分散写
-    // 线程安全: 是
+    // Scatter-gather write
+    // Thread safety: Yes
 
 ssize_t ff_pread(int fd, void *buf, size_t nbytes, off_t offset)
-    // 从指定偏移读取 (仅文件)
-    // 线程安全: 是
+    // Read from a specified offset (files only)
+    // Thread safety: Yes
 
 ssize_t ff_pwrite(int fd, const void *buf, size_t nbytes, off_t offset)
-    // 从指定偏移写入 (仅文件)
-    // 线程安全: 是
+    // Write to a specified offset (files only)
+    // Thread safety: Yes
 
 ssize_t ff_send(int fd, const void *buf, size_t len, int flags)
-    // 发送数据 (TCP/UDP)
-    // flags: MSG_MORE (不立即发送), MSG_OOB (带外数据)
-    // 线程安全: 是
+    // Send data (TCP/UDP)
+    // flags: MSG_MORE (do not send immediately), MSG_OOB (out-of-band data)
+    // Thread safety: Yes
 
 ssize_t ff_sendto(int fd, const void *buf, size_t len, int flags,
                   const struct linux_sockaddr *to, socklen_t tolen)
-    // 发送数据到指定地址 (UDP only)
-    // 线程安全: 是
+    // Send data to a specified address (UDP only)
+    // Thread safety: Yes
 
 ssize_t ff_sendmsg(int fd, const struct msghdr *msg, int flags)
-    // 发送消息 (使用 msghdr 结构体，支持控制信息)
-    // 线程安全: 是
+    // Send a message (using msghdr structure, supports control information)
+    // Thread safety: Yes
 
 ssize_t ff_recv(int fd, void *buf, size_t len, int flags)
-    // 接收数据 (TCP/UDP)
-    // 线程安全: 是
+    // Receive data (TCP/UDP)
+    // Thread safety: Yes
 
 ssize_t ff_recvfrom(int fd, void *buf, size_t len, int flags,
                     struct linux_sockaddr *from, socklen_t *fromlen)
-    // 接收数据和来源地址 (UDP)
-    // 线程安全: 是
+    // Receive data and source address (UDP)
+    // Thread safety: Yes
 
 ssize_t ff_recvmsg(int fd, struct msghdr *msg, int flags)
-    // 接收消息 (支持控制信息)
-    // 线程安全: 是
+    // Receive a message (supports control information)
+    // Thread safety: Yes
 
 ssize_t ff_recvfrom_timeout(int fd, void *buf, size_t len, int flags,
                            struct linux_sockaddr *from, socklen_t *fromlen,
                            int timeout)
-    // ff_recvfrom() 增强版，支持超时
-    // 线程安全: 是
+    // Enhanced version of ff_recvfrom(), supports timeout
+    // Thread safety: Yes
 ```
 
-#### **事件多路复用 (7 个)**
+#### **Event Multiplexing (7)**
 
 ```c
 int ff_kqueue(void)
-    // 创建 kqueue 事件对象
-    // 返回: kqueue fd, -1 on error
-    // 线程安全: 是
+    // Create a kqueue event object
+    // Returns: kqueue fd, -1 on error
+    // Thread safety: Yes
 
 int ff_kevent(int kq, const struct kevent *changelist, int nchanges,
               struct kevent *eventlist, int nevents,
               const struct timespec *timeout)
-    // 注册事件并等待事件就绪
-    // changelist: 要注册的事件数组 (可 NULL)
-    // eventlist: 返回的就绪事件数组
-    // timeout: NULL 阻塞, 0 非阻塞, > 0 超时
-    // 返回: 就绪事件个数, -1 on error
-    // 线程安全: 是
+    // Register events and wait for events to be ready
+    // changelist: Array of events to register (may be NULL)
+    // eventlist: Array of ready events to return
+    // timeout: NULL for blocking, 0 for non-blocking, > 0 for timeout
+    // Returns: Number of ready events, -1 on error
+    // Thread safety: Yes
 
 void ff_kevent_do_each(int kq, struct kevent *changelist, int nchanges,
                        void (*callback)(struct kevent *kev, void *arg),
                        void *arg)
-    // 便利函数: 一次调用 kevent 并对每个事件调用 callback
-    // 线程安全: 是
+    // Convenience function: calls kevent once and invokes callback for each event
+    // Thread safety: Yes
 
 int ff_select(int nfds, fd_set *readfds, fd_set *writefds,
               fd_set *exceptfds, struct timeval *timeout)
-    // select() 实现 (兼容性，不推荐)
-    // 线程安全: 是
+    // select() implementation (for compatibility, not recommended)
+    // Thread safety: Yes
 
 int ff_poll(struct pollfd *fds, nfds_t nfds, int timeout)
-    // poll() 实现 (兼容性，不推荐)
-    // timeout: -1 阻塞, 0 非阻塞, > 0 毫秒
-    // 线程安全: 是
+    // poll() implementation (for compatibility, not recommended)
+    // timeout: -1 blocking, 0 non-blocking, > 0 milliseconds
+    // Thread safety: Yes
 
-// Epoll 兼容 (3 个)
+// Epoll compatibility (3)
 int ff_epoll_create(int size)
-    // 创建 epoll 对象 (实际调用 ff_kqueue)
-    // 线程安全: 是
+    // Create an epoll object (actually calls ff_kqueue)
+    // Thread safety: Yes
 
 int ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
-    // 注册/修改/删除 epoll 事件
+    // Register/modify/delete epoll events
     // op: EPOLL_CTL_ADD(1) / EPOLL_CTL_MOD(2) / EPOLL_CTL_DEL(3)
-    // 线程安全: 是
+    // Thread safety: Yes
 
 int ff_epoll_wait(int epfd, struct epoll_event *events, 
                   int maxevents, int timeout)
-    // 等待 epoll 事件
-    // timeout: -1 阻塞, 0 非阻塞, > 0 毫秒
-    // 线程安全: 是
+    // Wait for epoll events
+    // timeout: -1 blocking, 0 non-blocking, > 0 milliseconds
+    // Thread safety: Yes
 ```
 
-#### **Socket 选项操作 (6 个)**
+#### **Socket Option Operations (6)**
 
 ```c
 int ff_setsockopt(int s, int level, int optname, const void *optval, socklen_t optlen)
-    // 设置 socket 选项
+    // Set socket options
     // level: SOL_SOCKET / IPPROTO_IP / IPPROTO_TCP / IPPROTO_IPV6
-    // optname: SO_* / IP_* / TCP_* 常量
-    // 线程安全: 是
+    // optname: SO_* / IP_* / TCP_* constants
+    // Thread safety: Yes
 
 int ff_getsockopt(int s, int level, int optname, void *optval, socklen_t *optlen)
-    // 获取 socket 选项值
-    // 线程安全: 是
+    // Get socket option values
+    // Thread safety: Yes
 
 int ff_ioctl(int fd, unsigned long request, ...)
-    // I/O 控制 (可变参数)
-    // 常用: FIONBIO (非阻塞), FIONREAD (可读字节)
-    // 线程安全: 是
+    // I/O control (variadic)
+    // Common: FIONBIO (non-blocking), FIONREAD (readable bytes)
+    // Thread safety: Yes
 
 int ff_fcntl(int fd, int cmd, ...)
-    // 文件控制 (可变参数)
+    // File control (variadic)
     // cmd: F_GETFL / F_SETFL / F_GETFD / F_SETFD
-    // 线程安全: 是
+    // Thread safety: Yes
 
 struct hostent * ff_gethostbyname(const char *name)
-    // 域名 → IPv4 地址 (基础实现)
-    // 返回: hostent 指针, NULL on error
-    // 线程安全: 否 (返回静态缓冲，需 mutex)
+    // Domain name → IPv4 address (basic implementation)
+    // Returns: hostent pointer, NULL on error
+    // Thread safety: No (returns static buffer, requires mutex)
 
 struct hostent * ff_gethostbyname2(const char *name, int af)
-    // 域名 → 地址 (支持 AF_INET / AF_INET6)
-    // 线程安全: 否
+    // Domain name → address (supports AF_INET / AF_INET6)
+    // Thread safety: No
 ```
 
-#### **路由管理 (1 个)**
+#### **Route Management (1)**
 
 ```c
 int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
                  struct linux_sockaddr *dst, struct linux_sockaddr *gw,
                  struct linux_sockaddr *netmask)
-    // 路由表操作
+    // Routing table operations
     // req:  FF_ROUTE_ADD / FF_ROUTE_DEL / FF_ROUTE_CHANGE
     // flag: FF_RTF_HOST / FF_RTF_GATEWAY
-    // dst: 目标网络地址
-    // gw: 网关地址
-    // netmask: 子网掩码
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 是
+    // dst: Destination network address
+    // gw: Gateway address
+    // netmask: Subnet mask
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
 ```
 
-#### **Zero-Copy Mbuf (5 个)**
+#### **Zero-Copy Mbuf (5)**
 
 ```c
 struct ff_mbuf * ff_mbuf_gethdr(void)
-    // 获取空 mbuf 头部
-    // 返回: mbuf 指针, NULL on error
-    // 线程安全: 是 (内存池无锁分配)
+    // Get an empty mbuf header
+    // Returns: mbuf pointer, NULL on error
+    // Thread safety: Yes (lock-free allocation from memory pool)
 
 struct ff_mbuf * ff_mbuf_get(const void *data, uint16_t len)
-    // 创建包含数据的 mbuf
-    // 返回: 新 mbuf, NULL on error
-    // 线程安全: 是
+    // Create an mbuf containing data
+    // Returns: New mbuf, NULL on error
+    // Thread safety: Yes
 
 void ff_mbuf_free(struct ff_mbuf *mbuf)
-    // 释放 mbuf (返回内存池)
-    // 线程安全: 是
+    // Free an mbuf (return to memory pool)
+    // Thread safety: Yes
 
 ssize_t ff_mbuf_copydata(struct ff_mbuf *mbuf, uint16_t off,
                          uint16_t len, void *buf)
-    // 从 mbuf 拷贝数据到缓冲区
-    // off: 偏移量 (字节)
-    // len: 要拷贝的长度
-    // 返回: 实际拷贝的字节数, -1 on error
-    // 线程安全: 是
+    // Copy data from mbuf to buffer
+    // off: Offset (bytes)
+    // len: Length to copy
+    // Returns: Actual bytes copied, -1 on error
+    // Thread safety: Yes
 
-// Zero-Copy 发送/接收 (3 个)
+// Zero-Copy send/receive (3)
 int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len)
-    // 分配零拷贝 mbuf 链（调用方提供已分配的 struct ff_zc_mbuf）
-    // m: 调用方分配的 ff_zc_mbuf 指针（不能为 NULL）
-    // len: 要分配的 mbuf 链总长度
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 是
+    // Allocate a zero-copy mbuf chain (caller provides pre-allocated struct ff_zc_mbuf)
+    // m: Caller-allocated ff_zc_mbuf pointer (must not be NULL)
+    // len: Total length of mbuf chain to allocate
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
 
 int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len)
-    // 零拷贝写入数据到 mbuf 链（调用方再用 ff_write 发送）
-    // 需先调用 ff_zc_mbuf_get
-    // 线程安全: 是
+    // Write data to mbuf chain in zero-copy mode (caller then sends with ff_write)
+    // Requires prior call to ff_zc_mbuf_get
+    // Thread safety: Yes
 
 int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
-    // 零拷贝读取（暂未实现，后续考虑支持）
-    // 线程安全: 是
+    // Zero-copy read (not yet implemented, planned for future support)
+    // Thread safety: Yes
 ```
 
-#### **多线程支持 (2 个)**
+#### **Multi-Threading Support (2)**
 
 ```c
 int ff_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                       void *(*start_routine)(void *), void *arg)
-    // 创建线程 (包装 pthread_create)
-    // 每个线程必须独立 ff_init() 和 ff_run()
-    // 线程安全: 是
+    // Create a thread (wraps pthread_create)
+    // Each thread must independently call ff_init() and ff_run()
+    // Thread safety: Yes
 
 int ff_pthread_join(pthread_t thread, void **retval)
-    // 等待线程结束 (包装 pthread_join)
-    // 线程安全: 是
+    // Wait for thread termination (wraps pthread_join)
+    // Thread safety: Yes
 ```
 
-#### **日志和诊断 (8 个)**
+#### **Logging and Diagnostics (8)**
 
 ```c
 int ff_log_open_set(void)
-    // 打开 F-Stack 日志文件（路径和级别均从 config.ini 读取）
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 否 (需外部同步)
+    // Open the F-Stack log file (path and level read from config.ini)
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: No (requires external synchronization)
 
 int ff_log_reset_stream(void *f)
-    // 重置日志输出流（f 为 FILE *，由 APP 自行管理）
-    // 用于将日志重定向到自定义 FILE 流
-    // 线程安全: 否
+    // Reset log output stream (f is FILE *, managed by the application)
+    // Used to redirect logs to a custom FILE stream
+    // Thread safety: No
 
 void ff_log_set_global_level(uint32_t level)
-    // 设置全局日志级别
-    // 线程安全: 否
+    // Set the global log level
+    // Thread safety: No
 
 int ff_log_set_level(uint32_t logtype, uint32_t level)
-    // 设置特定日志类型的级别
-    // logtype: FF_LOGTYPE_* (如 FF_LOGTYPE_USER1)
-    // 线程安全: 否
+    // Set the log level for a specific log type
+    // logtype: FF_LOGTYPE_* (e.g., FF_LOGTYPE_USER1)
+    // Thread safety: No
 
 int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
-    // 输出日志消息 (printf 风格)
-    // level: FF_LOG_* (如 FF_LOG_INFO)
-    // logtype: FF_LOGTYPE_* (如 FF_LOGTYPE_USER1)
-    // 线程安全: 是 (每个线程独立缓冲)
+    // Output a log message (printf-style)
+    // level: FF_LOG_* (e.g., FF_LOG_INFO)
+    // logtype: FF_LOGTYPE_* (e.g., FF_LOGTYPE_USER1)
+    // Thread safety: Yes (per-thread independent buffer)
 
 int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)
-    // ff_log() 的 va_list 版本
-    // 线程安全: 是
+    // va_list version of ff_log()
+    // Thread safety: Yes
 
 void ff_log_close(void)
-    // 关闭日志系统
-    // 线程安全: 否
+    // Close the logging system
+    // Thread safety: No
 ```
 
-#### **系统接口 (8 个)**
+#### **System Interfaces (8)**
 
 ```c
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz)
-    // 获取当前时间 (壁钟时间)
-    // 精度: 微秒 (μs)
-    // 返回: 0 成功, -1 失败
-    // 线程安全: 是
+    // Get the current time (wall clock time)
+    // Precision: Microseconds (μs)
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
 
 int ff_clock_gettime(clockid_t clock_id, struct timespec *tp)
-    // 高精度时间查询
+    // High-precision time query
     // clock_id: CLOCK_REALTIME / CLOCK_MONOTONIC
-    // 精度: 纳秒 (ns)
-    // 线程安全: 是
+    // Precision: Nanoseconds (ns)
+    // Thread safety: Yes
 
 int ff_usleep(unsigned int useconds)
-    // 微秒级 sleep (仅在初始化期间使用)
-    // 线程安全: 否
+    // Microsecond-level sleep (use only during initialization)
+    // Thread safety: No
 
 void ff_sync_time_to_freebsd(void)
-    // 同步 Linux 系统时间到 FreeBSD 栈
-    // 线程安全: 否 (仅初始化时)
+    // Synchronize Linux system time to the FreeBSD stack
+    // Thread safety: No (initialization only)
 
 time_t ff_time(time_t *tloc)
-    // 获取秒级时间戳
-    // 线程安全: 是
+    // Get second-level timestamp
+    // Thread safety: Yes
 
 int ff_nanosleep(const struct timespec *req, struct timespec *rem)
-    // 纳秒级 sleep
-    // 线程安全: 是
+    // Nanosecond-level sleep
+    // Thread safety: Yes
 
-// 数据包分发回调 (可选)
+// Packet dispatch callback (optional)
 void ff_set_pkt_dispatcher(pkt_dispatcher_t func)
-    // 注册自定义包分发函数
-    // 功能: 在协议处理前拦截包，用户自定义处理 (如 VLAN 分类)
-    // 线程安全: 否 (初始化时设置)
+    // Register a custom packet dispatch function
+    // Function: Intercept packets before protocol processing for custom handling (e.g., VLAN classification)
+    // Thread safety: No (set during initialization)
 
 int ff_packet_filter(ff_pkt_type type, uint16_t proto)
-    // 查询是否应该接收该类型的包
-    // 线程安全: 是
+    // Query whether this type of packet should be received
+    // Thread safety: Yes
 ```
 
-#### **其他 (3+ 个)**
+#### **Others (3+)**
 
 ```c
 int ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
               const void *newp, size_t newlen)
-    // sysctl 接口 (查询/修改内核参数)
-    // name: MIB 整数数组 (如 {CTL_NET, PF_INET, IPPROTO_TCP, TCPCTL_SENDSPACE})
-    // namelen: MIB 数组长度
-    // 线程安全: 是
+    // sysctl interface (query/modify kernel parameters)
+    // name: MIB integer array (e.g., {CTL_NET, PF_INET, IPPROTO_TCP, TCPCTL_SENDSPACE})
+    // namelen: Length of the MIB array
+    // Thread safety: Yes
 
 int ff_arp_add(const char *ip, const char *mac)
-    // 添加 ARP 条目
-    // 线程安全: 是
+    // Add an ARP entry
+    // Thread safety: Yes
 
 int ff_arp_del(const char *ip)
-    // 删除 ARP 条目
-    // 线程安全: 是
+    // Delete an ARP entry
+    // Thread safety: Yes
 
-// 其他实用函数...
+// Other utility functions...
 const char * ff_strerror(int errnum)
-    // 错误号 → 错误消息字符串
-    // 线程安全: 是
+    // Error number → error message string
+    // Thread safety: Yes
 ```
 
 ---
 
-## 2. 核心数据结构详解
+## 2. Core Data Structures in Detail
 
-### 2.1 Kevent 事件结构
+### 2.1 Kevent Event Structure
 
 ```c
 struct kevent {
-    uintptr_t ident;      // [0]  事件标识 (socket fd, PID, 定时器 ID 等)
-    short filter;         // [8]  事件过滤器类型 (EVFILT_READ/WRITE/TIMER/...)，值为负数
-    unsigned short flags; // [10] 事件标志 (EV_ADD/DELETE/ONESHOT/CLEAR/...)
-    unsigned int fflags;  // [12] 过滤器特定标志 (ioctl/timeout 等)
-    __int64_t data;       // [16] 过滤器返回的数据（固定 64 位）
-                          //      EVFILT_READ: 可读字节数
-                          //      EVFILT_WRITE: 可写字节数
-                          //      EVFILT_TIMER: 触发次数
-    void *udata;          // [24] 用户自定义数据指针 (回调参数)
-    __uint64_t ext[4];    // [32] FreeBSD 13 新增扩展字段
+    uintptr_t ident;      // [0]  Event identifier (socket fd, PID, timer ID, etc.)
+    short filter;         // [8]  Event filter type (EVFILT_READ/WRITE/TIMER/...), values are negative
+    unsigned short flags; // [10] Event flags (EV_ADD/DELETE/ONESHOT/CLEAR/...)
+    unsigned int fflags;  // [12] Filter-specific flags (ioctl/timeout, etc.)
+    __int64_t data;       // [16] Data returned by the filter (fixed 64-bit)
+                          //      EVFILT_READ: Number of readable bytes
+                          //      EVFILT_WRITE: Number of writable bytes
+                          //      EVFILT_TIMER: Number of triggers
+    void *udata;          // [24] User-defined data pointer (callback argument)
+    __uint64_t ext[4];    // [32] FreeBSD 13 extended fields
 };
 
-// 支持的过滤器类型
-#define EVFILT_READ      -1     // 读就绪
-#define EVFILT_WRITE     -2     // 写就绪
-#define EVFILT_AIO       -3     // 异步 I/O
-#define EVFILT_VNODE     -4     // 文件/目录 inode 事件
-#define EVFILT_PROC      -5     // 进程事件	
-#define EVFILT_SIGNAL    -6     // 信号递送
-#define EVFILT_TIMER     -7     // 定时器
-#define EVFILT_PROCDESC  -8     // 进程描述符事件
-#define EVFILT_FS        -9     // 文件变化
-#define EVFILT_LIO      -10     // 异步 I/O 列表
-#define EVFILT_USER     -11     // 用户事件
-#define EVFILT_SENDFILE -12     // 内核发送文件事件
-#define EVFILT_EMPTY    -13     // 清空发送套接字缓冲区
-#define EVFILT_SYSCOUNT  13     // ... 共 13 种过滤器
+// Supported filter types
+#define EVFILT_READ      -1     // Read ready
+#define EVFILT_WRITE     -2     // Write ready
+#define EVFILT_AIO       -3     // Asynchronous I/O
+#define EVFILT_VNODE     -4     // File/directory inode events
+#define EVFILT_PROC      -5     // Process events
+#define EVFILT_SIGNAL    -6     // Signal delivery
+#define EVFILT_TIMER     -7     // Timer
+#define EVFILT_PROCDESC  -8     // Process descriptor events
+#define EVFILT_FS        -9     // Filesystem changes
+#define EVFILT_LIO      -10     // Asynchronous I/O list
+#define EVFILT_USER     -11     // User events
+#define EVFILT_SENDFILE -12     // Kernel sendfile events
+#define EVFILT_EMPTY    -13     // Empty send socket buffer
+#define EVFILT_SYSCOUNT  13     // ... 13 filter types in total
 
-// 事件标志
-#define EV_ADD       0x0001   // 添加事件 (注册)
-#define EV_DELETE    0x0002   // 删除事件 (取消注册)
-#define EV_ENABLE    0x0004   // 启用事件 (从禁用恢复)
-#define EV_DISABLE   0x0008   // 禁用事件 (暂时关闭)
-#define EV_ONESHOT   0x0010   // 单次触发 (自动删除)
-#define EV_CLEAR     0x0020   // 自动清除 (边缘触发)
-#define EV_RECEIPT   0x0040   // 事件状态反馈
-#define EV_DISPATCH  0x0080   // 禁用事件在添加后
-#define EV_EOF       0x8000   // 连接/文件关闭标志
-#define EV_ERROR     0x4000   // 错误标志
+// Event flags
+#define EV_ADD       0x0001   // Add event (register)
+#define EV_DELETE    0x0002   // Delete event (unregister)
+#define EV_ENABLE    0x0004   // Enable event (restore from disabled)
+#define EV_DISABLE   0x0008   // Disable event (temporarily turn off)
+#define EV_ONESHOT   0x0010   // One-shot trigger (auto-delete)
+#define EV_CLEAR     0x0020   // Auto-clear (edge-triggered)
+#define EV_RECEIPT   0x0040   // Event status feedback
+#define EV_DISPATCH  0x0080   // Disable event after addition
+#define EV_EOF       0x8000   // Connection/file close flag
+#define EV_ERROR     0x4000   // Error flag
 
-// 便利宏
+// Convenience macro
 #define EV_SET(kevp, a, b, c, d, e, f) do { \
         (kevp)->ident = (a);      /* socket fd */ \
         (kevp)->filter = (b);     /* EVFILT_* */ \
         (kevp)->flags = (c);      /* EV_ADD/DELETE/... */ \
-        (kevp)->fflags = (d);     /* 过滤器标志 */ \
-        (kevp)->data = (e);       /* 初始数据 */ \
-        (kevp)->udata = (f);      /* 用户指针 */ \
+        (kevp)->fflags = (d);     /* filter flags */ \
+        (kevp)->data = (e);       /* initial data */ \
+        (kevp)->udata = (f);      /* user pointer */ \
     } while (0)
 ```
 
-### 2.2 Socket 地址结构体
+### 2.2 Socket Address Structures
 
 ```c
-// Linux sockaddr (用于 F-Stack API)
+// Linux sockaddr (used for F-Stack API)
 struct linux_sockaddr {
-    unsigned short sa_family;     // AF_INET (2) 或 AF_INET6 (10)
-    char sa_data[14];             // 地址数据 (依赖协议族)
+    unsigned short sa_family;     // AF_INET (2) or AF_INET6 (10)
+    char sa_data[14];             // Address data (protocol-dependent)
 };
 
-// IPv4 地址结构体
+// IPv4 address structure
 struct sockaddr_in {
     __kernel_sa_family_t sin_family;     // AF_INET
-    __be16 sin_port;                      // 网络字节序端口 (htons())
-    struct in_addr sin_addr;              // IPv4 地址
+    __be16 sin_port;                      // Port in network byte order (htons())
+    struct in_addr sin_addr;              // IPv4 address
     unsigned char __pad[sizeof(struct sockaddr) - sizeof(short int) -
                         sizeof(unsigned short int) - sizeof(struct in_addr)];
 };
 
-// IPv6 地址结构体
+// IPv6 address structure
 struct sockaddr_in6 {
     __kernel_sa_family_t sin6_family;     // AF_INET6
-    __be16 sin6_port;                      // 端口 (htons())
-    __be32 sin6_flowinfo;                  // 流量信息
-    struct in6_addr sin6_addr;             // IPv6 地址
-    __u32 sin6_scope_id;                   // 域 ID
+    __be16 sin6_port;                      // Port (htons())
+    __be32 sin6_flowinfo;                  // Flow information
+    struct in6_addr sin6_addr;             // IPv6 address
+    __u32 sin6_scope_id;                   // Scope ID
 };
 
-// 内存地址结构体
+// IPv4 address
 struct in_addr {
-    __be32 s_addr;  // IPv4 地址 (网络字节序)
+    __be32 s_addr;  // IPv4 address (network byte order)
 };
 
-// IPv6 地址结构体
+// IPv6 address
 struct in6_addr {
     union {
         __u8 u6_addr8[16];
@@ -539,47 +539,47 @@ struct in6_addr {
 };
 ```
 
-### 2.3 Epoll 事件结构体
+### 2.3 Epoll Event Structure
 
 ```c
 struct epoll_event {
-    uint32_t events;      // 事件掩码 (EPOLLIN/EPOLLOUT/...)
-    epoll_data_t data;    // 用户数据
+    uint32_t events;      // Event mask (EPOLLIN/EPOLLOUT/...)
+    epoll_data_t data;    // User data
 
     union epoll_data {
-        void *ptr;        // 指针 (常用)
-        int fd;           // 文件描述符
-        uint32_t u32;     // 32 位整数
-        uint64_t u64;     // 64 位整数
+        void *ptr;        // Pointer (commonly used)
+        int fd;           // File descriptor
+        uint32_t u32;     // 32-bit integer
+        uint64_t u64;     // 64-bit integer
     };
 };
 
-// 支持的事件
-#define EPOLLIN   0x00000001      // 可读
-#define EPOLLPRI  0x00000002      // 优先级数据
-#define EPOLLOUT  0x00000004      // 可写
-#define EPOLLRDNORM 0x00000040    // 正常数据可读
-#define EPOLLRDBAND 0x00000080    // 优先级数据可读
-#define EPOLLWRNORM 0x00000100    // 正常数据可写
-#define EPOLLWRBAND 0x00000200    // 优先级数据可写
-#define EPOLLERR  0x00000008      // 错误
-#define EPOLLHUP  0x00000010      // 关闭
-#define EPOLLRDHUP 0x00002000     // 对端关闭
-#define EPOLLET   0x80000000      // 边缘触发 (EV_CLEAR)
-#define EPOLLONESHOT 0x40000000   // 单次触发 (EV_ONESHOT)
+// Supported events
+#define EPOLLIN   0x00000001      // Readable
+#define EPOLLPRI  0x00000002      // Priority data
+#define EPOLLOUT  0x00000004      // Writable
+#define EPOLLRDNORM 0x00000040    // Normal data readable
+#define EPOLLRDBAND 0x00000080    // Priority data readable
+#define EPOLLWRNORM 0x00000100    // Normal data writable
+#define EPOLLWRBAND 0x00000200    // Priority data writable
+#define EPOLLERR  0x00000008      // Error
+#define EPOLLHUP  0x00000010      // Hang up
+#define EPOLLRDHUP 0x00002000     // Peer closed
+#define EPOLLET   0x80000000      // Edge-triggered (EV_CLEAR)
+#define EPOLLONESHOT 0x40000000   // One-shot trigger (EV_ONESHOT)
 ```
 
-### 2.4 Config 结构体
+### 2.4 Config Structure
 
 ```c
 struct ff_config {
     char *filename;
   
-    // DPDK 配置部分
+    // DPDK configuration section
     struct {
         char *proc_type;
         /* mask of enabled lcores */
-        char *lcore_mask;         // [0x4] CPU 核心掩码 (十六进制)
+        char *lcore_mask;         // [0x4] CPU core mask (hexadecimal)
         /* mask of current proc on all lcores */
         char *proc_mask;
 
@@ -589,18 +589,18 @@ struct ff_config {
         /* allow processes that do not want to co-operate to have different memory regions */
         char *file_prefix;
 
-        /* pci whiltelist */
+        /* pci whitelist */
         char *allow;
 
-        int nb_channel;           // [0x8] 内存通道数
-        int memory;               // [0xC] 预留内存 (MB)
+        int nb_channel;           // [0x8] Number of memory channels
+        int memory;               // [0xC] Reserved memory (MB)
         int no_huge;
         int nb_procs;
         int proc_id;
-        int promiscuous;               // [0x10] 混杂模式
+        int promiscuous;               // [0x10] Promiscuous mode
         int nb_vdev;
         int nb_bond;
-        int numa_on;                   // [0x14] NUMA 支持
+        int numa_on;                   // [0x14] NUMA support
         int tso;
         int tx_csum_offoad_skip;
         int vlan_strip;
@@ -608,10 +608,10 @@ struct ff_config {
         uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
         int symmetric_rss;
 
-        /* sleep x microseconds when no pkts incomming */
+        /* sleep x microseconds when no pkts incoming */
         unsigned idle_sleep;
 
-        /* TX burst queue drain nodelay dalay time */
+        /* TX burst queue drain nodelay delay time */
         unsigned pkt_tx_delay;
 
         /* list of proc-lcore */
@@ -631,10 +631,10 @@ struct ff_config {
         struct ff_rss_check_cfg *rss_check_cfgs;
     } dpdk;
     
-    // KNI 配置
+    // KNI configuration
     struct {
         int enable;
-        int console_packets_ratelimit;           // 速率限制 (QPS)
+        int console_packets_ratelimit;           // Rate limit (QPS)
         int general_packets_ratelimit;
         int kernel_packets_ratelimit;
         char *kni_action;
@@ -649,13 +649,13 @@ struct ff_config {
         void *f; /* FILE * */
     } log;
   
-    // FreeBSD 启动参数
+    // FreeBSD boot parameters
     struct {
         struct ff_freebsd_cfg *boot;
         struct ff_freebsd_cfg *sysctl;
         long physmem;
-        int hz;                   // 时钟频率 (1000 = 1kHz)
-        int fd_reserve;           // 预留 fd 数
+        int hz;                   // Clock frequency (1000 = 1kHz)
+        int fd_reserve;           // Reserved fd count
         int mem_size;
     } freebsd;
 
@@ -668,38 +668,38 @@ struct ff_config {
 };
 ```
 
-### 2.5 Iovec 结构体 (分散聚集 I/O)
+### 2.5 Iovec Structure (Scatter-Gather I/O)
 
 ```c
 struct iovec {
-    void  *iov_base;      // 缓冲区指针
-    size_t iov_len;       // 缓冲区长度 (字节)
+    void  *iov_base;      // Buffer pointer
+    size_t iov_len;       // Buffer length (bytes)
 };
 
-// 示例: 分散读 3 个缓冲区
+// Example: Scatter read into 3 buffers
 struct iovec iov[3] = {
-    {buf1, 1024},         // 读 1024 字节到 buf1
-    {buf2, 2048},         // 读 2048 字节到 buf2
-    {buf3, 512}           // 读 512 字节到 buf3
+    {buf1, 1024},         // Read 1024 bytes into buf1
+    {buf2, 2048},         // Read 2048 bytes into buf2
+    {buf3, 512}           // Read 512 bytes into buf3
 };
 
-ssize_t n = ff_readv(sockfd, iov, 3);  // 一次系统调用读入 3 个缓冲区
+ssize_t n = ff_readv(sockfd, iov, 3);  // Read into 3 buffers in one system call
 ```
 
-### 2.6 Msghdr 结构体 (消息头)
+### 2.6 Msghdr Structure (Message Header)
 
 ```c
 struct msghdr {
-    void         *msg_name;           // 对端地址指针
-    socklen_t     msg_namelen;        // 地址长度
-    struct iovec *msg_iov;            // iovec 数组
-    size_t        msg_iovlen;         // iovec 元素个数
-    void         *msg_control;        // 控制信息 (辅助数据)
-    socklen_t     msg_controllen;     // 控制信息长度
-    int           msg_flags;          // 返回的标志 (MSG_EOR/MSG_TRUNC)
+    void         *msg_name;           // Peer address pointer
+    socklen_t     msg_namelen;        // Address length
+    struct iovec *msg_iov;            // iovec array
+    size_t        msg_iovlen;         // Number of iovec elements
+    void         *msg_control;        // Control information (ancillary data)
+    socklen_t     msg_controllen;     // Control information length
+    int           msg_flags;          // Returned flags (MSG_EOR/MSG_TRUNC)
 };
 
-// 示例: 发送消息
+// Example: Send a message
 char buf[] = "Hello";
 struct iovec iov = {buf, strlen(buf)};
 struct msghdr msg = {
@@ -710,151 +710,151 @@ struct msghdr msg = {
 ff_sendmsg(sockfd, &msg, 0);
 ```
 
-### 2.7 Pollfd 结构体 (poll 多路复用)
+### 2.7 Pollfd Structure (poll Multiplexing)
 
 ```c
 struct pollfd {
-    int fd;        // 文件描述符 (-1 忽略)
-    short events;  // 关注的事件 (POLLIN/POLLOUT/...)
-    short revents; // 返回的事件 (由 ff_poll() 填充)
+    int fd;        // File descriptor (-1 to ignore)
+    short events;  // Events of interest (POLLIN/POLLOUT/...)
+    short revents; // Returned events (filled by ff_poll())
 };
 
-// 事件类型
-#define POLLIN    0x001   // 数据可读
-#define POLLPRI   0x002   // 优先级数据
-#define POLLOUT   0x004   // 可写
-#define POLLERR   0x008   // 错误
-#define POLLHUP   0x010   // 挂起
-#define POLLNVAL  0x020   // 无效 fd
+// Event types
+#define POLLIN    0x001   // Data readable
+#define POLLPRI   0x002   // Priority data
+#define POLLOUT   0x004   // Writable
+#define POLLERR   0x008   // Error
+#define POLLHUP   0x010   // Hang up
+#define POLLNVAL  0x020   // Invalid fd
 
-// 示例: poll 多个 fd
+// Example: poll multiple fds
 struct pollfd fds[2] = {
     {sockfd1, POLLIN | POLLOUT},
     {sockfd2, POLLIN}
 };
 
-ff_poll(fds, 2, -1);  // 阻塞直到事件到达
+ff_poll(fds, 2, -1);  // Block until events arrive
 ```
 
 ---
 
-## 3. 三个关键源文件深度分析
+## 3. In-Depth Analysis of Three Key Source Files
 
-### 3.1 ff_syscall_wrapper.c (1825 行)
+### 3.1 ff_syscall_wrapper.c (1825 Lines)
 
-**职责**：Linux ↔ FreeBSD 系统调用和参数映射
+**Responsibility**: Linux ↔ FreeBSD system call and parameter mapping
 
-**关键映射表**：
+**Key Mapping Tables**:
 
 ```c
-// Socket 选项级别映射
+// Socket option level mapping
 #define LINUX_SOL_SOCKET  1          // → SOL_SOCKET
 #define LINUX_IPPROTO_IP  0          // → IPPROTO_IP
 #define LINUX_IPPROTO_TCP 6          // → IPPROTO_TCP
 #define LINUX_IPPROTO_UDP 17         // → IPPROTO_UDP
 
-// IPv4 socket 选项映射 (Linux → FreeBSD)
+// IPv4 socket option mapping (Linux → FreeBSD)
 struct linux_to_bsd_opt_map {
-    int linux_opt;  // Linux 选项编号
-    int bsd_opt;    // FreeBSD 选项编号
+    int linux_opt;  // Linux option number
+    int bsd_opt;    // FreeBSD option number
 } ipv4_opt_map[] = {
     {LINUX_IP_TOS, IP_TOS},
     {LINUX_IP_TTL, IP_TTL},
     {LINUX_IP_HDRINCL, IP_HDRINCL},
     {LINUX_IP_MULTICAST_IF, IP_MULTICAST_IF},
     {LINUX_IP_MULTICAST_TTL, IP_MULTICAST_TTL},
-    // ... 更多
+    // ... more
 };
 
-// TCP socket 选项映射
+// TCP socket option mapping
 struct linux_to_bsd_opt_map tcp_opt_map[] = {
-    {LINUX_TCP_NODELAY, TCP_NODELAY},        // Nagle 算法关闭
-    {LINUX_TCP_MAXSEG, TCP_MAXSEG},          // MSS (最大分段长度)
-    {LINUX_TCP_CORK, TCP_CORK},              // 缓存数据
-    {LINUX_TCP_KEEPIDLE, TCP_KEEPIDLE},      // TCP keepalive 空闲时间
-    {LINUX_TCP_KEEPINTVL, TCP_KEEPINTVL},    // TCP keepalive 间隔
-    {LINUX_TCP_KEEPCNT, TCP_KEEPCNT},        // TCP keepalive 重试次数
-    // ... 更多
+    {LINUX_TCP_NODELAY, TCP_NODELAY},        // Disable Nagle algorithm
+    {LINUX_TCP_MAXSEG, TCP_MAXSEG},          // MSS (Maximum Segment Size)
+    {LINUX_TCP_CORK, TCP_CORK},              // Buffer data
+    {LINUX_TCP_KEEPIDLE, TCP_KEEPIDLE},      // TCP keepalive idle time
+    {LINUX_TCP_KEEPINTVL, TCP_KEEPINTVL},    // TCP keepalive interval
+    {LINUX_TCP_KEEPCNT, TCP_KEEPCNT},        // TCP keepalive retry count
+    // ... more
 };
 
-// 核心函数
+// Core function
 int ff_setsockopt_wrapper(int s, int level, int optname,
                           const void *optval, socklen_t optlen) {
-    int bsd_level = convert_level(level);      // 转换 level
-    int bsd_optname = convert_optname(optname); // 转换 optname
+    int bsd_level = convert_level(level);      // Convert level
+    int bsd_optname = convert_optname(optname); // Convert optname
     
-    // 处理特殊参数值映射
+    // Handle special parameter value mapping
     if (level == IPPROTO_IP && optname == IP_TOS) {
-        // Linux 和 FreeBSD 的 TOS 值兼容，无需转换
+        // Linux and FreeBSD TOS values are compatible, no conversion needed
     }
     
-    // 处理 sockaddr 结构体映射 (如有需要)
+    // Handle sockaddr structure mapping (if needed)
     if (special_struct_conversion_needed()) {
         convert_params(...);
     }
     
-    // 调用 FreeBSD 实现
+    // Call FreeBSD implementation
     return ff_setsockopt_real(s, bsd_level, bsd_optname, 
                              converted_val, optlen);
 }
 ```
 
-**关键特性**：
-- **IOCTL 映射**：FIONBIO (0x5421) → FIONBIO (不同码值)
-- **Error Code 映射**：Linux errno → FreeBSD errno
-- **Address Family 映射**：AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
+**Key Features**:
+- **IOCTL Mapping**: FIONBIO (0x5421) → FIONBIO (different code values)
+- **Error Code Mapping**: Linux errno → FreeBSD errno
+- **Address Family Mapping**: AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
 
-### 3.2 ff_dpdk_if.c (2855 行) - NIC 驱动层
+### 3.2 ff_dpdk_if.c (2855 Lines) - NIC Driver Layer
 
-**全局变量**（影响性能的关键状态）：
+**Global Variables** (key state affecting performance):
 
 ```c
-// 全局配置
+// Global configuration
 static struct ff_config ff_global_cfg;
-static volatile int stop_run = 0;      // 停止标志
+static volatile int stop_run = 0;      // Stop flag
 
-// 网卡管理
+// NIC management
 static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
-static int nb_dev_ports = 0;           // 激活网卡数（源码为 int 非 uint32_t）
-static uint32_t nb_lcores = 0;         // 激活 lcore 数
+static int nb_dev_ports = 0;           // Number of active NICs (int in source, not uint32_t)
+static uint32_t nb_lcores = 0;         // Number of active lcores
 static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
-// RSS 表 (连接亲和性)
+// RSS table (connection affinity)
 static struct ff_rss_tbl ff_rss_tbl[FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES];
 
-// 性能参数
-static unsigned idle_sleep;             // 空闲 sleep (微秒，无默认值)
-static uint32_t pkt_tx_delay = 1;      // 包发送延迟 (微秒)
-int enable_kni = 0;                    // KNI 启用（非 static，全局可见）
+// Performance parameters
+static unsigned idle_sleep;             // Idle sleep (microseconds, no default value)
+static uint32_t pkt_tx_delay = 1;      // Packet TX delay (microseconds)
+int enable_kni = 0;                    // KNI enabled (non-static, globally visible)
 
-// 定时器状态
+// Timer state
 static struct {
     uint64_t prev_tsc;
     uint64_t cur_tsc;
-    uint64_t drain_tsc;    // TX drain 周期
+    uint64_t drain_tsc;    // TX drain period
 } timer_state;
 ```
 
-**关键函数**：
+**Key Functions**:
 
 ```c
-// 初始化流程
+// Initialization flow
 int ff_dpdk_init(int argc, char *argv[]) {
-    // 1. DPDK EAL 初始化
+    // 1. DPDK EAL initialization
     if (rte_eal_init(dpdk_argc, dpdk_argv) < 0) {
         rte_exit(EXIT_FAILURE, "EAL init failed\n");
     }
     
-    // 2. lcore 和 NIC 配置
+    // 2. lcore and NIC configuration
     init_lcore_conf();
     init_mem_pool();
     
-    // 3. NIC 初始化
+    // 3. NIC initialization
     for (port_id = 0; port_id < nb_dev_ports; port_id++) {
-        // 3.1 配置网卡
+        // 3.1 Configure NIC
         rte_eth_dev_configure(port_id, nb_rx_queue, nb_tx_queue, &port_conf);
         
-        // 3.2 配置 RSS
+        // 3.2 Configure RSS
         struct rte_eth_rss_conf rss_conf = {
             .rss_key = rss_key,
             .rss_key_len = sizeof(rss_key),
@@ -862,36 +862,36 @@ int ff_dpdk_init(int argc, char *argv[]) {
         };
         rte_eth_dev_rss_hash_update(port_id, &rss_conf);
         
-        // 3.3 配置卸载 (TSO/Checksum)
+        // 3.3 Configure offloads (TSO/Checksum)
         configure_offload(port_id);
         
-        // 3.4 启动网卡
+        // 3.4 Start NIC
         rte_eth_dev_start(port_id);
     }
     
-    // 4. 初始化 RSS 分类表
+    // 4. Initialize RSS classification table
     ff_rss_tbl_init();
     
     return 0;
 }
 
-// 报文处理
+// Packet processing
 static inline void process_packets(struct rte_mbuf **m, uint16_t nb_m) {
     for (i = 0; i < nb_m; i++) {
         struct rte_mbuf *pkt = m[i];
         
-        // 1. 获取以太网头部
+        // 1. Get Ethernet header
         struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt, ...);
         
-        // 2. 协议过滤
+        // 2. Protocol filtering
         if (eth_hdr->ether_type == RTE_ETHER_TYPE_IPv4) {
-            // 3. 调用 FreeBSD 协议栈
+            // 3. Forward to FreeBSD protocol stack
             if_input(ifp, pkt);
         }
     }
 }
 
-// 主轮询循环
+// Main polling loop
 static int main_loop(void *arg) {
     struct lcore_conf *qconf = rte_lcore_conf + rte_lcore_id();
     struct rte_mbuf *pkts[MAX_PKT_BURST];
@@ -899,12 +899,12 @@ static int main_loop(void *arg) {
     while (!stop_run) {
         cur_tsc = rte_rdtsc();
         
-        // [1] 时钟驱动
+        // [1] Clock-driven
         if (freebsd_clock.expire < cur_tsc) {
-            rte_timer_manage();  // 触发 TCP 定时器等
+            rte_timer_manage();  // Trigger TCP timers, etc.
         }
         
-        // [2] 接收报文
+        // [2] Receive packets
         for (qconf->port in port_list) {
             nb_rx = rte_eth_rx_burst(qconf->port, qconf->queue, 
                                      pkts, MAX_PKT_BURST);
@@ -913,7 +913,7 @@ static int main_loop(void *arg) {
             }
         }
         
-        // [3] 定时发送
+        // [3] Timed transmission
         if ((cur_tsc - prev_tsc) > drain_tsc) {
             for (each port) {
                 rte_eth_tx_burst(port, qconf->tx_queue, 
@@ -922,7 +922,7 @@ static int main_loop(void *arg) {
             prev_tsc = cur_tsc;
         }
         
-        // [4] 应用回调
+        // [4] Application callback
         if (loop_func) {
             loop_func(loop_arg);
         }
@@ -932,20 +932,20 @@ static int main_loop(void *arg) {
 }
 ```
 
-**关键优化**：
-- **无中断轮询**：100% CPU 换低延迟
-- **批处理**：一次收/发 32 个报文
-- **缓存亲和性**：RSS 确保连接不迁移
-- **硬件卸载**：TSO、Checksum offload
+**Key Optimizations**:
+- **Interrupt-free polling**: 100% CPU for low latency
+- **Batch processing**: Receive/send 32 packets at a time
+- **Cache affinity**: RSS ensures connections do not migrate
+- **Hardware offloading**: TSO, Checksum offload
 
-### 3.3 ff_glue.c (1466 行) - 内核模拟层
+### 3.3 ff_glue.c (1466 Lines) - Kernel Emulation Layer
 
-**内核原语模拟**：
+**Kernel Primitive Emulation**:
 
 ```c
-// 互斥锁
+// Mutex
 struct mtx {
-    void *ctx;  // 实际指向 pthread_mutex_t
+    void *ctx;  // Actually points to pthread_mutex_t
 };
 
 void mtx_init(struct mtx *m, const char *name, const char *type, int opts) {
@@ -958,9 +958,9 @@ void mtx_lock(struct mtx *m) {
     pthread_mutex_lock((pthread_mutex_t *)m->ctx);
 }
 
-// 条件变量
+// Condition variable
 struct condvar {
-    void *ctx;  // 实际指向 pthread_cond_t
+    void *ctx;  // Actually points to pthread_cond_t
 };
 
 void cv_init(struct condvar *cv, const char *desc) {
@@ -969,139 +969,138 @@ void cv_init(struct condvar *cv, const char *desc) {
     cv->ctx = cond;
 }
 
-// 内存管理
+// Memory management
 void *malloc(size_t size, struct malloc_type *type, int flags) {
-    // 使用 DPDK rte_malloc，支持 NUMA
+    // Uses DPDK rte_malloc with NUMA support
     return rte_malloc("malloc", size, 0);
 }
 
-// 全局变量模拟
-volatile int ticks = 0;           // 时钟滴答计数
-int mp_ncpus = 1;                 // CPU 数量
-struct vmspace *vmspace0;         // 全局地址空间
-struct prison *prison0;           // 全局命名空间
+// Global variable emulation
+volatile int ticks = 0;           // Clock tick counter
+int mp_ncpus = 1;                 // CPU count
+struct vmspace *vmspace0;         // Global address space
+struct prison *prison0;           // Global namespace
 ```
 
-**关键特性**：
-- **无 VFS 支持**：文件操作有限
-- **简化 IPC**：进程通信通过 DPDK Ring
-- **软中断模拟**：通过 taskqueue 处理
+**Key Features**:
+- **No VFS support**: Limited file operations
+- **Simplified IPC**: Inter-process communication via DPDK Ring
+- **Soft interrupt emulation**: Handled via taskqueue
 
 ---
 
-## 4. 线程安全性分析
+## 4. Thread Safety Analysis
 
-### 4.1 线程安全分类
+### 4.1 Thread Safety Classification
 
-**完全线程安全** ✓ (可跨线程调用)：
+**Fully Thread-Safe** ✓ (can be called across threads):
 - ff_socket / ff_bind / ff_listen / ff_accept / ff_connect / ff_close
 - ff_read / ff_write / ff_send / ff_recv
-- ff_kqueue / ff_kevent / ff_epoll_* (per-fd 隔离)
+- ff_kqueue / ff_kevent / ff_epoll_* (per-fd isolation)
 - ff_setsockopt / ff_getsockopt / ff_fcntl / ff_ioctl
-- ff_route_ctl (路由操作原子)
+- ff_route_ctl (atomic routing operations)
 - ff_gettimeofday / ff_clock_gettime
 - ff_mbuf_get / ff_mbuf_free
 - ff_pthread_create / ff_pthread_join
 
-**条件线程安全** ⚠️ (需外部同步)：
-- ff_init (仅初始化时，需单线程)
-- ff_run (独占一个 lcore，不能并行)
-- ff_log / ff_vlog (建议使用互斥锁)
-- ff_gethostbyname / ff_gethostbyname2 (返回静态缓冲)
+**Conditionally Thread-Safe** ⚠️ (requires external synchronization):
+- ff_init (initialization only, requires single thread)
+- ff_run (exclusive to one lcore, cannot run in parallel)
+- ff_log / ff_vlog (recommend using a mutex)
+- ff_gethostbyname / ff_gethostbyname2 (returns static buffer)
 
-**非线程安全** ✗ (不可跨线程)：
-- ff_stop_run (可从任意线程，但 ff_run 线程会退出)
-- 配置相关函数 (仅初始化)
-- ff_set_pkt_dispatcher (仅初始化)
+**Not Thread-Safe** ✗ (cannot be called across threads):
+- ff_stop_run (can be called from any thread, but the ff_run thread will exit)
+- Configuration-related functions (initialization only)
+- ff_set_pkt_dispatcher (initialization only)
 
 ### 4.2 Per-Thread Socket Table
 
 ```c
-// 每个线程维护独立的 socket 表
+// Each thread maintains an independent socket table
 struct ff_thread_local {
     struct socket *socket_table[FF_MAX_SOCKETS];
     int max_fd;
 } __thread ff_tls;
 
-// Socket 创建时分配本线程的 fd
+// Socket is assigned to the current thread's fd on creation
 int ff_socket(...) {
     struct socket *so = socreate(...);
     ff_tls.socket_table[fd] = so;
     return fd;
 }
 
-// 读写时查表
+// Table lookup during read/write
 ssize_t ff_read(int fd, void *buf, size_t nbytes) {
     struct socket *so = ff_tls.socket_table[fd];
     return sorecvX(so, buf, nbytes);
 }
 
-// ✓ 线程安全：不同线程的 socket_table 独立
-// ✓ 无竞态：每个 socket 只被创建该 socket 的线程访问
+// ✓ Thread-safe: socket_table is independent per thread
+// ✓ No race conditions: each socket is accessed only by the thread that created it
 ```
 
-### 4.3 并发模型
+### 4.3 Concurrency Model
 
 ```
-多线程模型：
+Multi-threaded Model:
 
-主线程                   Worker 线程 1
-├─ ff_init()            ├─ ff_init()
-├─ ff_run(loop1)        ├─ ff_run(loop2)
-│  独占 lcore 0          │  独占 lcore 1
-│  持续轮询              │  持续轮询
-│  ├─ 接收报文           │  ├─ 接收报文
-│  ├─ 处理报文           │  ├─ 处理报文
-│  └─ 应用 loop1         │  └─ 应用 loop2
-│                         │
-└─ 通过共享 mempool      └─ 通过共享 mempool
-  和 atomic 操作            和 atomic 操作
-  实现通信                  实现通信
+Main Thread                   Worker Thread 1
+├─ ff_init()                 ├─ ff_init()
+├─ ff_run(loop1)             ├─ ff_run(loop2)
+│  Exclusive lcore 0          │  Exclusive lcore 1
+│  Continuous polling          │  Continuous polling
+│  ├─ Receive packets         │  ├─ Receive packets
+│  ├─ Process packets         │  ├─ Process packets
+│  └─ Application loop1       │  └─ Application loop2
+│                              │
+└─ Communication via shared   └─ Communication via shared
+   mempool and atomic ops        mempool and atomic ops
 
-特点：
-✓ 每个线程独占 lcore (无CPU竞争)
-✓ 每个线程独立 socket table
-✓ 共享资源 (mempool) 通过原子操作保护
-✗ 不能跨线程共享 socket
+Characteristics:
+✓ Each thread has exclusive lcore (no CPU contention)
+✓ Each thread has independent socket table
+✓ Shared resources (mempool) protected by atomic operations
+✗ Cannot share sockets across threads
 ```
 
 ---
 
-## 5. 编译和链接
+## 5. Compilation and Linking
 
-### 5.1 编译命令
+### 5.1 Compilation Commands
 
 ```bash
-# 编译 F-Stack 库
+# Compile F-Stack library
 cd /data/workspace/f-stack/lib
 make clean
 make
 
-# 输出: libfstack.a (4.7 MB)
+# Output: libfstack.a (4.7 MB)
 
-# 安装头文件和库
+# Install headers and library
 make install PREFIX=/usr/local
 
-# 目标位置:
+# Target locations:
 #   /usr/local/lib/libfstack.a
 #   /usr/local/include/ff_*.h
 ```
 
-### 5.2 应用链接
+### 5.2 Application Linking
 
 ```bash
-# 编译选项
+# Compilation flags
 FSTACK_CFLAGS = $(shell pkg-config --cflags libfstack)
 FSTACK_LIBS = $(shell pkg-config --libs libfstack)
 
-# 或手动指定
+# Or specify manually
 FSTACK_CFLAGS = -I/usr/local/include
 FSTACK_LIBS = -L/usr/local/lib -lfstack $(shell pkg-config --libs libdpdk)
 
-# 编译应用
+# Compile application
 gcc -o app main.c $(FSTACK_CFLAGS) $(FSTACK_LIBS)
 
-# 依赖库链接顺序
+# Library link order
 ld -o app main.o \
     -lfstack \
     -ldpdk \
@@ -1110,51 +1109,52 @@ ld -o app main.o \
     -lnuma
 ```
 
-### 5.3 运行时依赖
+### 5.3 Runtime Dependencies
 
 ```bash
-# 必要的 DPDK 设置
-# 1. hugepage 内存
-sysctl vm.nr_hugepages=2048  # 申请 2GB huge pages
+# Required DPDK setup
+# 1. Hugepage memory
+sysctl vm.nr_hugepages=2048  # Allocate 2GB huge pages
 
-# 2. NIC 驱动绑定 (二选一)
-# 方法 A: igb_uio (性能更好)
+# 2. NIC driver binding (choose one)
+# Method A: igb_uio (better performance)
 modprobe igb_uio
-python dpdk_devbind.py -b igb_uio 0000:05:00.0  # 绑定网卡
+python dpdk_devbind.py -b igb_uio 0000:05:00.0  # Bind NIC
 
-# 方法 B: vfio-pci (更安全)
+# Method B: vfio-pci (more secure)
 modprobe vfio_pci
 python dpdk_devbind.py -b vfio-pci 0000:05:00.0
 
-# 3. 运行应用（使用 start.sh 指定 config.ini 配置文件启动）
+# 3. Run application (use start.sh with config.ini to launch)
 bash start.sh -c config.ini -b ./app
-# start.sh 会根据 config.ini 中的 lcore_mask 自动启动主/从进程
+# start.sh will automatically launch primary/secondary processes
+# based on the lcore_mask in config.ini
 ```
 
 ---
 
-## 总结
+## Summary
 
-**关键数据结构**：
-- `kevent` - BSD 事件结构体
-- `epoll_event` - Linux epoll 兼容
-- `ff_config` - F-Stack 全局配置
-- Socket 地址结构体 (sockaddr_in/in6)
+**Key Data Structures**:
+- `kevent` - BSD event structure
+- `epoll_event` - Linux epoll compatibility
+- `ff_config` - F-Stack global configuration
+- Socket address structures (sockaddr_in/in6)
 
-**线程安全**：
-- Socket 操作：完全线程安全 (per-thread 隔离)
-- 多线程模型：每个线程独占 lcore + socket table
-- 共享资源：mempool 通过原子操作保护
+**Thread Safety**:
+- Socket operations: Fully thread-safe (per-thread isolation)
+- Multi-threaded model: Each thread has exclusive lcore + socket table
+- Shared resources: mempool protected by atomic operations
 
-**性能优化**：
-- 批处理：单次收/发 32 个报文
-- 缓存亲和性：RSS 分类 + CPU 隔离
-- 硬件卸载：TSO、Checksum、LRO
-- 零拷贝：mbuf 直接操作，无数据拷贝
+**Performance Optimizations**:
+- Batch processing: Receive/send 32 packets at a time
+- Cache affinity: RSS classification + CPU isolation
+- Hardware offloading: TSO, Checksum, LRO
+- Zero-copy: Direct mbuf operations, no data copying
 
 ---
 
-**相关文档**：
-- [第一层：系统总体架构](./F-Stack_Architecture_Layer1_System_Overview.md)
-- [第二层：接口定义和规范](./F-Stack_Architecture_Layer2_Interface_Specification.md)
-- [知识库总结](./F-Stack_Knowledge_Base_Summary.md)
+**Related Documents**:
+- [Layer 1: System Architecture Overview](./F-Stack_Architecture_Layer1_System_Overview.md)
+- [Layer 2: Interface Definition and Specification](./F-Stack_Architecture_Layer2_Interface_Specification.md)
+- [Knowledge Base Summary](./F-Stack_Knowledge_Base_Summary.md)

@@ -1,232 +1,232 @@
-# F-Stack v1.25 第三层：函数级索引与数据模型
+# F-Stack v1.25 Layer 3: Function-Level Index and Data Model
 
-> **目标受众**: 内核/驱动开发工程师、性能优化工程师  
-> **关键概念**: 函数索引、数据结构、系统调用适配、符号导出  
-> **生成日期**: 2026-03-20
+> **Target Audience**: Kernel/driver developers, performance optimization engineers  
+> **Key Concepts**: Function index, data structures, system call adaptation, symbol export  
+> **Generation Date**: 2026-03-20
 
-## 1. 导出函数完整索引 (80+ 函数)
+## 1. Complete Exported Function Index (80+ Functions)
 
-> **符号导出层次**: 以下函数索引包含 `ff_api.h` 和 `ff_epoll.h` 中声明的全部接口。实际通过 `ff_api.symlist` 动态导出的符号是其子集。
-> - ff_init / ff_run / ff_stop_run 在 `ff_api.h` 中声明但**不在** `ff_api.symlist` 中，仅通过静态链接可用
-> - ff_epoll_* 系列函数声明在 `ff_epoll.h` 中，不在 `ff_api.h` 中
+> **Symbol Export Hierarchy**: The following function index includes all interfaces declared in `ff_api.h` and `ff_epoll.h`. The symbols actually dynamically exported through `ff_api.symlist` are a subset.
+> - ff_init / ff_run / ff_stop_run are declared in `ff_api.h` but are **not in** `ff_api.symlist`; they are only available through static linking
+> - ff_epoll_* family functions are declared in `ff_epoll.h`, not in `ff_api.h`
 
-### 1.1 生命周期管理函数
+### 1.1 Lifecycle Management Functions
 
-| 函数 | 签名 | 功能 | 线程安全 |
-|-----|------|------|--------|
-| `ff_init` | `int ff_init(int argc, char * const argv[])` | 初始化 DPDK/FreeBSD/网卡 | 否 |
-| `ff_run` | `void ff_run(loop_func_t, void *arg)` | 启动主循环 (阻塞) | 否 |
-| `ff_stop_run` | `void ff_stop_run(void)` | 优雅停止循环 | 是 |
+| Function | Signature | Purpose | Thread-Safe |
+|----------|-----------|---------|-------------|
+| `ff_init` | `int ff_init(int argc, char * const argv[])` | Initialize DPDK/FreeBSD/NIC | No |
+| `ff_run` | `void ff_run(loop_func_t, void *arg)` | Start main loop (blocking) | No |
+| `ff_stop_run` | `void ff_stop_run(void)` | Gracefully stop loop | Yes |
 
-### 1.2 Socket 族函数
+### 1.2 Socket Family Functions
 
-| 函数 | 参数数 | 返回值 | 说明 |
-|-----|--------|--------|------|
-| `ff_socket` | 3 | int(fd) | 创建 socket |
-| `ff_bind` | 3 | 0/error | 绑定地址 |
-| `ff_listen` | 2 | 0/error | 监听 |
-| `ff_accept` | 3 | int(fd) | 接受连接 |
-| `ff_accept4` | 4 | int(fd) | 接受连接 (带标志) |
-| `ff_connect` | 3 | 0/error | 发起连接 |
-| `ff_close` | 1 | 0/error | 关闭 socket |
-| `ff_shutdown` | 2 | 0/error | 关闭连接方向 |
+| Function | Param Count | Return Value | Description |
+|----------|-------------|-------------|-------------|
+| `ff_socket` | 3 | int(fd) | Create socket |
+| `ff_bind` | 3 | 0/error | Bind address |
+| `ff_listen` | 2 | 0/error | Listen |
+| `ff_accept` | 3 | int(fd) | Accept connection |
+| `ff_accept4` | 4 | int(fd) | Accept connection (with flags) |
+| `ff_connect` | 3 | 0/error | Initiate connection |
+| `ff_close` | 1 | 0/error | Close socket |
+| `ff_shutdown` | 2 | 0/error | Shut down connection direction |
 
-### 1.3 数据 I/O 函数
+### 1.3 Data I/O Functions
 
-| 函数 | 参数数 | 返回值 | 说明 |
-|-----|--------|--------|------|
-| `ff_read` | 3 | 字节数/-1 | 读取数据 |
-| `ff_readv` | 3 | 字节数/-1 | 向量读 |
-| `ff_write` | 3 | 字节数/-1 | 写入数据 |
-| `ff_writev` | 3 | 字节数/-1 | 向量写 |
-| `ff_send` | 4 | 字节数/-1 | 发送 |
-| `ff_sendto` | 6 | 字节数/-1 | 发送到地址 |
-| `ff_sendmsg` | 3 | 字节数/-1 | 发送消息 |
-| `ff_recv` | 4 | 字节数/-1 | 接收 |
-| `ff_recvfrom` | 6 | 字节数/-1 | 从地址接收 |
-| `ff_recvmsg` | 3 | 字节数/-1 | 接收消息 |
+| Function | Param Count | Return Value | Description |
+|----------|-------------|-------------|-------------|
+| `ff_read` | 3 | bytes/-1 | Read data |
+| `ff_readv` | 3 | bytes/-1 | Scatter read |
+| `ff_write` | 3 | bytes/-1 | Write data |
+| `ff_writev` | 3 | bytes/-1 | Gather write |
+| `ff_send` | 4 | bytes/-1 | Send |
+| `ff_sendto` | 6 | bytes/-1 | Send to address |
+| `ff_sendmsg` | 3 | bytes/-1 | Send message |
+| `ff_recv` | 4 | bytes/-1 | Receive |
+| `ff_recvfrom` | 6 | bytes/-1 | Receive from address |
+| `ff_recvmsg` | 3 | bytes/-1 | Receive message |
 
-### 1.4 事件多路复用函数
+### 1.4 Event Multiplexing Functions
 
-| 函数 | 用途 | 参数数 | 返回值 |
-|-----|------|--------|--------|
-| `ff_kqueue` | BSD 事件队列 | 0 | int(kq_fd) |
-| `ff_kevent` | BSD 事件等待 | 6 | 事件数/-1 |
-| `ff_kevent_do_each` | BSD 遍历事件 | 7 | int |
+| Function | Purpose | Param Count | Return Value |
+|----------|---------|-------------|-------------|
+| `ff_kqueue` | BSD event queue | 0 | int(kq_fd) |
+| `ff_kevent` | BSD event wait | 6 | event_count/-1 |
+| `ff_kevent_do_each` | BSD iterate events | 7 | int |
 | `ff_epoll_create` | Linux epoll | 1 | int(ep_fd) |
-| `ff_epoll_ctl` | epoll 控制 | 4 | 0/-1 |
-| `ff_epoll_wait` | epoll 等待 | 4 | 事件数/-1 |
-| `ff_select` | 传统 select | 5 | 就绪数/-1 |
-| `ff_poll` | 传统 poll | 3 | 就绪数/-1 |
+| `ff_epoll_ctl` | epoll control | 4 | 0/-1 |
+| `ff_epoll_wait` | epoll wait | 4 | event_count/-1 |
+| `ff_select` | Traditional select | 5 | ready_count/-1 |
+| `ff_poll` | Traditional poll | 3 | ready_count/-1 |
 
-### 1.5 Socket 选项函数
+### 1.5 Socket Option Functions
 
-| 函数 | 功能 | 说明 |
-|-----|------|------|
-| `ff_setsockopt` | 设置 socket 选项 | 支持 SO_*, TCP_*, IP_* 等 |
-| `ff_getsockopt` | 获取 socket 选项 | 读取当前选项值 |
-| `ff_fcntl` | 文件控制 | 支持 F_SETFL, F_GETFL 等 |
-| `ff_ioctl` | 设备控制 | 支持 FIONBIO, FIONREAD 等 |
+| Function | Purpose | Description |
+|----------|---------|-------------|
+| `ff_setsockopt` | Set socket options | Supports SO_*, TCP_*, IP_*, etc. |
+| `ff_getsockopt` | Get socket options | Read current option values |
+| `ff_fcntl` | File control | Supports F_SETFL, F_GETFL, etc. |
+| `ff_ioctl` | Device control | Supports FIONBIO, FIONREAD, etc. |
 
-### 1.6 系统控制函数
+### 1.6 System Control Functions
 
-| 函数 | 参数 | 功能 |
-|-----|------|------|
-| `ff_sysctl` | 6 | 读写内核变量 |
-| `ff_route_ctl` | 5 | 路由表控制 |
-| `ff_rtioctl` | 4 | 路由 ioctl |
-| `ff_gettimeofday` | 2 | 获取系统时间 |
+| Function | Params | Purpose |
+|----------|--------|---------|
+| `ff_sysctl` | 6 | Read/write kernel variables |
+| `ff_route_ctl` | 5 | Routing table control |
+| `ff_rtioctl` | 4 | Routing ioctl |
+| `ff_gettimeofday` | 2 | Get system time |
 
-### 1.7 特殊功能函数
+### 1.7 Special Feature Functions
 
-| 函数 | 功能 | 备注 |
-|-----|------|------|
-| `ff_zc_mbuf_get` | 获取零拷贝 mbuf | 直接访问 DMA 缓冲 |
-| `ff_zc_mbuf_write` | 零拷贝写入 | 跳过内存拷贝 |
-| `ff_zc_mbuf_read` | 零拷贝读取 | 接收原始 mbuf（**暂未实现，后续考虑支持**） |
-| `ff_mbuf_gethdr` | 获取 mbuf | DPDK 内存池分配 |
-| `ff_mbuf_get` | 分配 mbuf | - |
-| `ff_mbuf_free` | 释放 mbuf | - |
-| `ff_mbuf_copydata` | 拷贝 mbuf 数据 | - |
+| Function | Purpose | Notes |
+|----------|---------|-------|
+| `ff_zc_mbuf_get` | Get zero-copy mbuf | Direct access to DMA buffer |
+| `ff_zc_mbuf_write` | Zero-copy write | Skip memory copy |
+| `ff_zc_mbuf_read` | Zero-copy read | Receive raw mbuf (**not yet implemented, may be supported later**) |
+| `ff_mbuf_gethdr` | Get mbuf | DPDK memory pool allocation |
+| `ff_mbuf_get` | Allocate mbuf | - |
+| `ff_mbuf_free` | Free mbuf | - |
+| `ff_mbuf_copydata` | Copy mbuf data | - |
 
-### 1.8 多线程函数
+### 1.8 Multi-Threading Functions
 
-| 函数 | 功能 |
-|-----|------|
-| `ff_pthread_create` | 创建 pthread |
-| `ff_pthread_join` | 等待 pthread |
+| Function | Purpose |
+|----------|---------|
+| `ff_pthread_create` | Create pthread |
+| `ff_pthread_join` | Wait for pthread |
 
-### 1.9 日志函数
+### 1.9 Logging Functions
 
-| 函数 | 签名 | 功能 |
-|-----|------|------|
-| `ff_log` | `int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)` | 格式化日志 |
-| `ff_vlog` | `int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)` | va_list 日志 |
-| `ff_log_reset_stream` | `int ff_log_reset_stream(void *f)` | 重设日志输出流 |
-| `ff_log_set_global_level` | `void ff_log_set_global_level(uint32_t level)` | 设置全局日志级别 |
-| `ff_log_set_level` | `int ff_log_set_level(uint32_t logtype, uint32_t level)` | 设置模块日志级别 |
-| `ff_log_close` | `void ff_log_close(void)` | 关闭日志 |
+| Function | Signature | Purpose |
+|----------|-----------|---------|
+| `ff_log` | `int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)` | Formatted logging |
+| `ff_vlog` | `int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)` | va_list logging |
+| `ff_log_reset_stream` | `int ff_log_reset_stream(void *f)` | Reset log output stream |
+| `ff_log_set_global_level` | `void ff_log_set_global_level(uint32_t level)` | Set global log level |
+| `ff_log_set_level` | `int ff_log_set_level(uint32_t logtype, uint32_t level)` | Set module log level |
+| `ff_log_close` | `void ff_log_close(void)` | Close logging |
 
-## 2. 核心数据结构
+## 2. Core Data Structures
 
-### 2.1 kevent 结构 (BSD 事件)
+### 2.1 kevent Structure (BSD Events)
 
 ```c
 struct kevent {
-    uintptr_t ident;           // 事件标识符 (fd 或定时器 ID)
-    short filter;              // 事件过滤器类型 (short，非 int16_t)
-    unsigned short flags;      // 控制标志 (EV_ADD, EV_DELETE 等)
-    unsigned int fflags;       // 过滤器特定标志
-    __int64_t data;            // 事件数据 (就绪数、超时等，固定 64 位)
-    void *udata;               // 用户定义数据指针
-    __uint64_t ext[4];         // FreeBSD 13 新增扩展字段
+    uintptr_t ident;           // Event identifier (fd or timer ID)
+    short filter;              // Event filter type (short, not int16_t)
+    unsigned short flags;      // Control flags (EV_ADD, EV_DELETE, etc.)
+    unsigned int fflags;       // Filter-specific flags
+    __int64_t data;            // Event data (ready count, timeout, etc., fixed 64-bit)
+    void *udata;               // User-defined data pointer
+    __uint64_t ext[4];         // FreeBSD 13 new extension fields
 };
 
-// 过滤器类型 (filter 值)
-#define EVFILT_READ      -1     // 读就绪
-#define EVFILT_WRITE     -2     // 写就绪
-#define EVFILT_AIO       -3     // 异步 I/O
-#define EVFILT_VNODE     -4     // 文件/目录 inode 事件
-#define EVFILT_PROC      -5     // 进程事件	
-#define EVFILT_SIGNAL    -6     // 信号递送
-#define EVFILT_TIMER     -7     // 定时器
-#define EVFILT_PROCDESC  -8     // 进程描述符事件
-#define EVFILT_FS        -9     // 文件变化
-#define EVFILT_LIO      -10     // 异步 I/O 列表
-#define EVFILT_USER     -11     // 用户事件
-#define EVFILT_SENDFILE -12     // 内核发送文件事件
-#define EVFILT_EMPTY    -13     // 清空发送套接字缓冲区
-#define EVFILT_SYSCOUNT  13     // ... 共 13 种过滤器
+// Filter types (filter values)
+#define EVFILT_READ      -1     // Read ready
+#define EVFILT_WRITE     -2     // Write ready
+#define EVFILT_AIO       -3     // Asynchronous I/O
+#define EVFILT_VNODE     -4     // File/directory inode events
+#define EVFILT_PROC      -5     // Process events
+#define EVFILT_SIGNAL    -6     // Signal delivery
+#define EVFILT_TIMER     -7     // Timer
+#define EVFILT_PROCDESC  -8     // Process descriptor events
+#define EVFILT_FS        -9     // File change
+#define EVFILT_LIO      -10     // Asynchronous I/O list
+#define EVFILT_USER     -11     // User events
+#define EVFILT_SENDFILE -12     // Kernel sendfile events
+#define EVFILT_EMPTY    -13     // Empty send socket buffer
+#define EVFILT_SYSCOUNT  13     // ... 13 filter types total
 
-// 控制标志 (flags)
-#define EV_ADD      0x0001     // 添加事件
-#define EV_DELETE   0x0002     // 删除事件
-#define EV_ENABLE   0x0004     // 启用事件
-#define EV_DISABLE  0x0008     // 禁用事件
-#define EV_ONESHOT  0x0010     // 一次性事件
-#define EV_CLEAR    0x0020     // 边缘触发
-#define EV_ERROR    0x4000     // 错误标志
-#define EV_EOF      0x8000     // EOF 标志
+// Control flags (flags)
+#define EV_ADD      0x0001     // Add event
+#define EV_DELETE   0x0002     // Delete event
+#define EV_ENABLE   0x0004     // Enable event
+#define EV_DISABLE  0x0008     // Disable event
+#define EV_ONESHOT  0x0010     // One-shot event
+#define EV_CLEAR    0x0020     // Edge-triggered
+#define EV_ERROR    0x4000     // Error flag
+#define EV_EOF      0x8000     // EOF flag
 ```
 
-### 2.2 ff_config 结构 (全局配置)
+### 2.2 ff_config Structure (Global Configuration)
 
-> **注意**: 以下为简化示意，非 `ff_config.h` 中的完整定义。实际结构中配置值均以字符串 (`char *`) 形式存储，由 `ff_load_config()` 解析 config.ini 后填充。关键字段类型如下：
+> **Note**: The following is a simplified illustration, not the complete definition from `ff_config.h`. In the actual structure, configuration values are stored as strings (`char *`), populated by `ff_load_config()` after parsing config.ini. Key field types are as follows:
 
 ```c
 struct ff_config {
-    char *filename;           // 配置文件路径
+    char *filename;           // Configuration file path
     struct {
-        char *lcore_mask;     // CPU 核心掩码 (字符串，如 "0x01")
-        char *proc_type;      // 进程类型 (字符串 "primary"/"secondary")
-        uint32_t proc_id;     // 进程 ID
-        uint32_t nb_procs;    // 进程总数
-        uint32_t pktmbuf_pool_size;  // mbuf 池大小
-        uint32_t numa_on;     // NUMA 支持
-        uint16_t *portid_list; // NIC 端口 ID 列表
-        uint32_t nb_ports;    // 端口数
+        char *lcore_mask;     // CPU core mask (string, e.g., "0x01")
+        char *proc_type;      // Process type (string "primary"/"secondary")
+        uint32_t proc_id;     // Process ID
+        uint32_t nb_procs;    // Total number of processes
+        uint32_t pktmbuf_pool_size;  // mbuf pool size
+        uint32_t numa_on;     // NUMA support
+        uint16_t *portid_list; // NIC port ID list
+        uint32_t nb_ports;    // Number of ports
     } dpdk;
 
-    // 端口配置通过 dpdk.port_cfgs 访问 (struct ff_port_cfg 数组)
-    // 每个 ff_port_cfg 包含 IP/mask/gw 等字段
+    // Port configuration accessed via dpdk.port_cfgs (struct ff_port_cfg array)
+    // Each ff_port_cfg contains IP/mask/gw and other fields
 
     struct {
-        uint32_t enable;      // KNI 启用标志
-        char *kni_action;     // KNI 转发策略
+        uint32_t enable;      // KNI enable flag
+        char *kni_action;     // KNI forwarding policy
     } kni;
 
-    // ... 更多字段见 lib/ff_config.h
+    // ... more fields in lib/ff_config.h
 } ff_global_cfg;
 ```
 
-### 2.3 ff_port_cfg 结构 (端口配置)
+### 2.3 ff_port_cfg Structure (Port Configuration)
 
 ```c
 struct ff_port_cfg {
-    uint16_t port_id;               // 端口 ID
+    uint16_t port_id;               // Port ID
     
-    // 硬件特性
+    // Hardware features
     struct ff_hw_features {
-        uint32_t rx_csum: 1;         // RX 校验和卸载
-        uint32_t rx_lro: 1;          // LRO (合并报文)
-        uint32_t tx_csum: 1;         // TX 校验和卸载
-        uint32_t tx_tso: 1;          // TSO (分段卸载)
-        uint32_t tx_vlan: 1;         // VLAN 插入
-        // ... 更多标志
+        uint32_t rx_csum: 1;         // RX checksum offload
+        uint32_t rx_lro: 1;          // LRO (packet coalescing)
+        uint32_t tx_csum: 1;         // TX checksum offload
+        uint32_t tx_tso: 1;          // TSO (segmentation offload)
+        uint32_t tx_vlan: 1;         // VLAN insertion
+        // ... more flags
     } hw_features;
     
-    // RSS 配置
+    // RSS configuration
     struct rte_eth_rss_conf rss_conf;
     
-    // VLAN 配置
+    // VLAN configuration
     uint32_t vlan_enable;
     uint16_t vlan_id;
 };
 ```
 
-### 2.4 ff_rss_tbl 结构 (RSS 查表)
+### 2.4 ff_rss_tbl Structure (RSS Lookup Table)
 
-> **注意**: `ff_rss_tbl_lookup()` 函数不存在于公开 API 中，RSS 表仅供内部使用。实际结构体为 `ff_rss_tbl_type`（定义在 `lib/ff_dpdk_if.c`），外部无需直接访问。
+> **Note**: The `ff_rss_tbl_lookup()` function does not exist in the public API; the RSS table is for internal use only. The actual structure is `ff_rss_tbl_type` (defined in `lib/ff_dpdk_if.c`), and external code does not need to access it directly.
 
 ```c
-// 内部结构（仅供参考，不在公开头文件中）
+// Internal structure (for reference only, not in public headers)
 struct ff_rss_tbl_type {
-    uint32_t saddr;       // 源 IP
-    uint16_t sport;       // 源端口
-    uint16_t num;         // dip 表项数量
+    uint32_t saddr;       // Source IP
+    uint16_t sport;       // Source port
+    uint16_t num;         // Number of dip entries
     struct ff_rss_tbl_dip_type dip_tbl[FF_RSS_TBL_MAX_DADDR];
 } __rte_cache_aligned;
 
-// 公开初始化接口 (ff_host_interface.h)
+// Public initialization interface (ff_host_interface.h)
 int ff_rss_tbl_init(void);
 ```
 
-### 2.5 ff_msg_ring 结构 (进程间通信)
+### 2.5 ff_msg_ring Structure (Inter-Process Communication)
 
-> **注意**: `ff_msg_send()` 不是公开 API，在 `ff_api.h` 和 `ff_api.symlist` 中均不存在。进程间通信通过 `ff_msg` 消息队列（`lib/ff_msg.h`）实现，由 F-Stack 内部工具（knictl/sysctl 等）使用，应用层无需直接调用。
+> **Note**: `ff_msg_send()` is not a public API; it does not exist in either `ff_api.h` or `ff_api.symlist`. Inter-process communication is implemented through the `ff_msg` message queue (`lib/ff_msg.h`), used by F-Stack internal tools (knictl/sysctl, etc.). Application-level code does not need to call it directly.
 
 ```c
-// 消息类型枚举 (lib/ff_msg.h)
+// Message type enumeration (lib/ff_msg.h)
 enum FF_MSG_TYPE {
     FF_UNKNOWN = 0,
     FF_SYSCTL,
@@ -241,7 +241,7 @@ enum FF_MSG_TYPE {
     FF_MSG_NUM,
 };
 
-// 消息结构体 (简化)
+// Message structure (simplified)
 struct ff_msg {
     enum FF_MSG_TYPE msg_type;
     int result;
@@ -257,65 +257,65 @@ struct ff_msg {
 } __attribute__((packed)) __rte_cache_aligned;
 ```
 
-### 2.6 ff_tx_offload 结构 (发送卸载)
+### 2.6 ff_tx_offload Structure (TX Offload)
 
 ```c
 struct ff_tx_offload {
-    uint8_t ip_csum;               // IP 校验和卸载
-    uint8_t tcp_csum;              // TCP 校验和卸载
-    uint8_t udp_csum;              // UDP 校验和卸载
-    uint8_t sctp_csum;             // SCTP 校验和卸载
-    uint16_t tso_seg_size;         // TSO 分段大小 (0 = 禁用)
+    uint8_t ip_csum;               // IP checksum offload
+    uint8_t tcp_csum;              // TCP checksum offload
+    uint8_t udp_csum;              // UDP checksum offload
+    uint8_t sctp_csum;             // SCTP checksum offload
+    uint16_t tso_seg_size;         // TSO segment size (0 = disabled)
 };
 ```
 
-### 2.7 ff_zc_mbuf 结构 (零拷贝)
+### 2.7 ff_zc_mbuf Structure (Zero-Copy)
 
 ```c
-// 定义于 lib/ff_api.h
+// Defined in lib/ff_api.h
 struct ff_zc_mbuf {
-    void *bsd_mbuf;         // 指向 mbuf 链头
-    void *bsd_mbuf_off;     // 指向当前偏移处的 mbuf
-    int off;                // 当前总偏移量 (APP 不应修改)
-    int len;                // mbuf 链总长度
+    void *bsd_mbuf;         // Pointer to mbuf chain head
+    void *bsd_mbuf_off;     // Pointer to mbuf at current offset
+    int off;                // Current total offset (APP should not modify)
+    int len;                // Total length of mbuf chain
 };
 
-// 使用方法：
-//   1. 调用方分配 struct ff_zc_mbuf zm; (栈上或堆上均可)
-//   2. ff_zc_mbuf_get(&zm, len)   — 分配 mbuf 链，填充 zm
-//   3. ff_zc_mbuf_write(&zm, data, len) — 写入数据到 mbuf 链
-//   4. ff_write(fd, zm.bsd_mbuf, len)   — 以 bsd_mbuf 为 buf 发送
+// Usage:
+//   1. Caller allocates struct ff_zc_mbuf zm; (on stack or heap)
+//   2. ff_zc_mbuf_get(&zm, len)   — Allocate mbuf chain, populate zm
+//   3. ff_zc_mbuf_write(&zm, data, len) — Write data to mbuf chain
+//   4. ff_write(fd, zm.bsd_mbuf, len)   — Send using bsd_mbuf as buf
 //
-// 注意: ff_zc_mbuf_read() 暂未实现
+// Note: ff_zc_mbuf_read() is not yet implemented
 
 int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
 int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
-int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // 暂未实现
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);  // Not yet implemented
 ```
 
-### 2.8 ff_dispatcher_context 结构 (包分发)
+### 2.8 ff_dispatcher_context Structure (Packet Dispatch)
 
-> **注意**: 以下为 `ff_api.h` 中的实际定义。此结构作为 `dispatch_func_context_t` 回调的额外上下文参数传入，仅包含 VLAN 相关信息。报文数据、长度、队列等信息通过回调函数的其他参数传递。
+> **Note**: The following is the actual definition from `ff_api.h`. This structure is passed as additional context to the `dispatch_func_context_t` callback and only contains VLAN-related information. Packet data, length, queue, and other information are passed through other callback function parameters.
 
 ```c
 struct ff_dispatcher_context {
     struct {
-        uint8_t stripped;          // VLAN 是否已剥离
+        uint8_t stripped;          // Whether VLAN has been stripped
         uint16_t vlan_tci;         // Priority (3) + CFI (1) + Identifier Code (12)
     } vlan;
 };
 ```
 
-## 3. 三个关键源文件分析
+## 3. Three Key Source File Analyses
 
-### 3.1 ff_syscall_wrapper.c (1825 行) - Linux/FreeBSD 适配
+### 3.1 ff_syscall_wrapper.c (1825 Lines) - Linux/FreeBSD Adaptation
 
-**主要职责**: 将 Linux 系统调用参数/选项转换为 FreeBSD 等价物
+**Main Responsibility**: Convert Linux system call parameters/options to FreeBSD equivalents
 
-**Linux 选项映射示例**:
+**Linux Option Mapping Examples**:
 
 ```c
-// SOL_SOCKET 级选项
+// SOL_SOCKET level options
 #define LINUX_SOL_SOCKET      1
 #define LINUX_SO_REUSEADDR    2       // → SO_REUSEADDR
 #define LINUX_SO_TYPE         3       // → SO_TYPE
@@ -328,7 +328,7 @@ struct ff_dispatcher_context {
 #define LINUX_SO_SNDLOWAT     19      // → SO_SNDLOWAT
 #define LINUX_SO_REUSEPORT    15      // → SO_REUSEPORT
 
-// IPPROTO_IP 级选项
+// IPPROTO_IP level options
 #define LINUX_IP_TOS          1       // → IP_TOS
 #define LINUX_IP_TTL          2       // → IP_TTL
 #define LINUX_IP_HDRINCL      3       // → IP_HDRINCL
@@ -336,7 +336,7 @@ struct ff_dispatcher_context {
 #define LINUX_IP_MULTICAST_TTL 33     // → IP_MULTICAST_TTL
 #define LINUX_IP_ADD_MEMBERSHIP 35    // → IP_ADD_MEMBERSHIP
 
-// IPPROTO_TCP 级选项
+// IPPROTO_TCP level options
 #define LINUX_TCP_NODELAY     1       // → TCP_NODELAY
 #define LINUX_TCP_MAXSEG      2       // → TCP_MAXSEG
 #define LINUX_TCP_KEEPIDLE    4       // → TCP_KEEPIDLE
@@ -344,67 +344,67 @@ struct ff_dispatcher_context {
 #define LINUX_TCP_KEEPCNT     6       // → TCP_KEEPCNT
 ```
 
-**关键转换函数**:
+**Key Conversion Functions**:
 
 ```c
 int ff_setsockopt(int s, int level, int optname,
                   const void *optval, socklen_t optlen) {
-    // 1. 转换 level (SOL_SOCKET → SOL_SOCKET)
-    // 2. 转换 optname (LINUX_SO_REUSEADDR → SO_REUSEADDR)
-    // 3. 转换 optval 格式 (如果需要)
-    // 4. 调用 FreeBSD setsockopt()
+    // 1. Convert level (SOL_SOCKET → SOL_SOCKET)
+    // 2. Convert optname (LINUX_SO_REUSEADDR → SO_REUSEADDR)
+    // 3. Convert optval format (if needed)
+    // 4. Call FreeBSD setsockopt()
 }
 ```
 
-**支持的 ioctl 命令**:
+**Supported ioctl Commands**:
 
 ```c
-#define LINUX_FIONBIO       0x5421    // 非阻塞 I/O
-#define LINUX_FIONREAD      0x541B    // 可读字节数
-#define LINUX_SIOCGIFNAME   0x8910    // 获取网卡名
-#define LINUX_SIOCGIFCONF   0x8912    // 获取网卡配置
-#define LINUX_SIOCGIFFLAGS  0x8913    // 获取网卡标志
+#define LINUX_FIONBIO       0x5421    // Non-blocking I/O
+#define LINUX_FIONREAD      0x541B    // Readable byte count
+#define LINUX_SIOCGIFNAME   0x8910    // Get NIC name
+#define LINUX_SIOCGIFCONF   0x8912    // Get NIC configuration
+#define LINUX_SIOCGIFFLAGS  0x8913    // Get NIC flags
 ```
 
-### 3.2 ff_dpdk_if.c (2855 行) - NIC 驱动层
+### 3.2 ff_dpdk_if.c (2855 Lines) - NIC Driver Layer
 
-**文件结构**:
+**File Structure**:
 
 ```
 ff_dpdk_if.c
-├─ 全局变量 (行 50-150)
+├─ Global variables (lines 50-150)
 │  ├─ enable_kni
 │  ├─ nb_dev_ports
 │  ├─ idle_sleep
 │  └─ pktmbuf_pool[]
 │
-├─ DPDK 初始化 (行 200-400)
+├─ DPDK initialization (lines 200-400)
 │  ├─ ff_dpdk_init()
 │  ├─ init_mem_pool()
 │  ├─ init_lcore_conf()
 │  └─ init_port_start()
 │
-├─ 报文处理 (行 1500-1800)
+├─ Packet processing (lines 1500-1800)
 │  ├─ process_packets()
 │  ├─ protocol_filter()
 │  └─ veth_input()
 │
-└─ 主循环 (行 2000-2200)
+└─ Main loop (lines 2000-2200)
    ├─ main_loop()
    ├─ ff_dpdk_run()
-   └─ 定时器管理
+   └─ Timer management
 ```
 
-**关键全局变量**:
+**Key Global Variables**:
 
 ```c
-int enable_kni = 0;                                   // KNI 启用标志（非 static）
-int nb_dev_ports = 0;                                  // NIC 数量（非 static，非 uint16_t）
-static unsigned idle_sleep;                            // 空闲睡眠微秒数（由配置赋值，无硬编码默认值）
-struct rte_mempool *pktmbuf_pool[NB_SOCKETS];          // 按 NUMA socket 索引的 mbuf 池
+int enable_kni = 0;                                   // KNI enable flag (non-static)
+int nb_dev_ports = 0;                                  // NIC count (non-static, not uint16_t)
+static unsigned idle_sleep;                            // Idle sleep microseconds (assigned from config, no hardcoded default)
+struct rte_mempool *pktmbuf_pool[NB_SOCKETS];          // mbuf pools indexed by NUMA socket
 ```
 
-**初始化函数调用链**:
+**Initialization Function Call Chain**:
 
 ```
 ff_dpdk_init()
@@ -412,13 +412,13 @@ ff_dpdk_init()
 ├─ init_mem_pool()
 │  └─ rte_pktmbuf_pool_create()
 ├─ init_lcore_conf()
-│  └─ 配置 lcore/port/queue 映射
+│  └─ Configure lcore/port/queue mapping
 ├─ init_dispatch_ring()
 │  └─ rte_ring_create()
 ├─ init_msg_ring()
-│  └─ 进程间消息队列
+│  └─ Inter-process message queue
 ├─ init_kni()
-│  └─ rte_kni_init()                        (可选)
+│  └─ rte_kni_init()                        (optional)
 ├─ init_port_start()
 │  ├─ rte_eth_dev_configure()
 │  ├─ rte_eth_rx_queue_setup()
@@ -430,7 +430,7 @@ ff_dpdk_init()
    └─ rte_get_tsc_hz()
 ```
 
-**main_loop() 伪代码详解**:
+**main_loop() Detailed Pseudocode**:
 
 ```c
 int main_loop(void *arg) {
@@ -444,12 +444,12 @@ int main_loop(void *arg) {
         
         cur_tsc = rte_rdtsc();
         
-        // === 1. 驱动 FreeBSD 定时器 ===
+        // === 1. Drive FreeBSD timers ===
         if (unlikely(freebsd_clock.expire < cur_tsc)) {
-            rte_timer_manage();        // 触发 TCP timers 等
+            rte_timer_manage();        // Trigger TCP timers, etc.
         }
         
-        // === 2. TX burst queue drain (先于 RX) ===
+        // === 2. TX burst queue drain (before RX) ===
         diff_tsc = cur_tsc - prev_tsc;
         if (unlikely(diff_tsc >= drain_tsc)) {
             for (each_port in qconf->tx_ports) {
@@ -458,7 +458,7 @@ int main_loop(void *arg) {
             prev_tsc = cur_tsc;
         }
         
-        // === 3. 接收报文 (RX) ===
+        // === 3. Receive packets (RX) ===
         for (each_rx_queue in qconf->rx_queues) {
             uint16_t nb_rx = rte_eth_rx_burst(
                 port_id, queue_id, 
@@ -467,12 +467,12 @@ int main_loop(void *arg) {
             process_packets(pkts_burst, nb_rx);
         }
         
-        // === 4. 执行用户回调 ===
+        // === 4. Execute user callback ===
         if (lr->loop) {
-            lr->loop(lr->arg);         // 应用业务逻辑
+            lr->loop(lr->arg);         // Application business logic
         }
         
-        // === 5. 空闲睡眠 ===
+        // === 5. Idle sleep ===
         if (likely(idle && idle_sleep)) {
             rte_delay_us_sleep(idle_sleep);
         }
@@ -482,31 +482,31 @@ int main_loop(void *arg) {
 }
 ```
 
-**KNI 速率限制**:
+**KNI Rate Limiting**:
 
 ```c
 struct ff_kni_rate_limit {
-    uint32_t general_packets;              // 一般数据限制
-    uint32_t console_packets;              // 控制消息限制
-    uint32_t kernel_packets;               // 内核通信限制
-    // 典型值: general=10K QPS, console=1K, kernel=9K
+    uint32_t general_packets;              // General data limit
+    uint32_t console_packets;              // Control message limit
+    uint32_t kernel_packets;               // Kernel communication limit
+    // Typical values: general=10K QPS, console=1K, kernel=9K
 };
 ```
 
-### 3.3 ff_glue.c (1466 行) - FreeBSD 粘合层
+### 3.3 ff_glue.c (1466 Lines) - FreeBSD Glue Layer
 
-**核心职责**: 为用户态 FreeBSD 协议栈提供内核原语
+**Core Responsibility**: Provide kernel primitives for the user-space FreeBSD protocol stack
 
-**内存管理模拟**:
+**Memory Management Emulation**:
 
 ```c
-#define M_DEVBUF     1             // 设备缓冲
-#define M_TEMP       2             // 临时缓冲
-#define M_CRED       3             // 凭证
-#define M_IP6OPT     4             // IPv6 选项
+#define M_DEVBUF     1             // Device buffer
+#define M_TEMP       2             // Temporary buffer
+#define M_CRED       3             // Credential
+#define M_IP6OPT     4             // IPv6 option
 
 void *malloc(size_t size, struct malloc_type *type, int flags) {
-    // 底层使用 DPDK rte_malloc
+    // Underlying uses DPDK rte_malloc
     if (flags & M_NOWAIT) {
         return rte_malloc_socket(NULL, size, 0, rte_socket_id());
     } else {
@@ -519,21 +519,21 @@ void free(void *ptr, struct malloc_type *type) {
 }
 ```
 
-**全局内核变量模拟**:
+**Global Kernel Variable Emulation**:
 
 ```c
-// FreeBSD 内核变量
-volatile int ticks = 0;                    // 内核滴答计数
-int mp_ncpus = 1;                          // CPU 数量
+// FreeBSD kernel variables
+volatile int ticks = 0;                    // Kernel tick counter
+int mp_ncpus = 1;                          // CPU count
 int mp_maxcpus = RTE_MAX_LCORE;
-cpuset_t all_cpus;                         // CPU 集合
-struct vm_cnt vm_cnt = {0};                // 虚拟内存统计
+cpuset_t all_cpus;                         // CPU set
+struct vm_cnt vm_cnt = {0};                // Virtual memory statistics
 ```
 
-**同步原语模拟**:
+**Synchronization Primitive Emulation**:
 
 ```c
-// FreeBSD 互斥锁
+// FreeBSD mutex
 struct mtx {
     void *ctx;                             // pthread_mutex_t
 };
@@ -548,62 +548,62 @@ void mtx_lock(struct mtx *m) {
     pthread_mutex_lock((pthread_mutex_t *)m->ctx);
 }
 
-// 条件变量类似...
+// Condition variables similar...
 ```
 
-**进程模拟**:
+**Process Emulation**:
 
 ```c
-// 全局进程对象
-struct proc proc0;                         // 初始进程
-struct thread thread0_st;                  // 初始线程
-struct vmspace vmspace0;                   // 虚拟内存空间
-struct prison prison0;                     // 命名空间
+// Global process objects
+struct proc proc0;                         // Initial process
+struct thread thread0_st;                  // Initial thread
+struct vmspace vmspace0;                   // Virtual memory space
+struct prison prison0;                     // Namespace
 ```
 
-## 4. 关键头文件总览
+## 4. Key Header File Overview
 
-| 头文件 | 行数 | 用途 |
-|-------|------|------|
-| `ff_api.h` | ~500 | 所有公开 API 声明 |
-| `ff_config.h` | ~100 | 配置结构体定义 |
-| `ff_event.h` | ~150 | kevent 结构和宏 |
-| `ff_errno.h` | ~100 | 96 个 errno 映射 |
-| `ff_host_interface.h` | ~80 | OS 抽象层 (pthread/mmap) |
-| `ff_dpdk_if.h` | ~50 | DPDK 初始化接口 |
-| `ff_veth.h` | ~100 | 虚拟以太网和 mbuf 操作 |
-| `ff_log.h` | ~50 | 日志级别和宏 |
-| `ff_memory.h` | ~80 | 内存管理函数 |
-| `ff_msg.h` | ~60 | 跨 lcore 消息传递 |
-| `ff_epoll.h` | ~80 | epoll 包装实现 |
-| `ff_ini_parser.h` | ~50 | 配置文件解析 |
-| `ff_dpdk_kni.h` | ~50 | KNI 接口 (可选) |
+| Header | Lines | Purpose |
+|--------|-------|---------|
+| `ff_api.h` | ~500 | All public API declarations |
+| `ff_config.h` | ~100 | Configuration structure definitions |
+| `ff_event.h` | ~150 | kevent structures and macros |
+| `ff_errno.h` | ~100 | 96 errno mappings |
+| `ff_host_interface.h` | ~80 | OS abstraction layer (pthread/mmap) |
+| `ff_dpdk_if.h` | ~50 | DPDK initialization interface |
+| `ff_veth.h` | ~100 | Virtual Ethernet and mbuf operations |
+| `ff_log.h` | ~50 | Log levels and macros |
+| `ff_memory.h` | ~80 | Memory management functions |
+| `ff_msg.h` | ~60 | Cross-lcore message passing |
+| `ff_epoll.h` | ~80 | epoll wrapper implementation |
+| `ff_ini_parser.h` | ~50 | Configuration file parsing |
+| `ff_dpdk_kni.h` | ~50 | KNI interface (optional) |
 
-## 5. 编译链接指令
+## 5. Compilation and Linking Instructions
 
-### 5.1 编译 F-Stack 库
+### 5.1 Compiling the F-Stack Library
 
 ```bash
 cd /data/workspace/f-stack/lib
 
-# 基础编译
+# Basic compilation
 make clean
 make
 
-# 带 IPv6 支持
+# With IPv6 support
 FF_INET6=1 make
 
-# 带 KNI 虚拟网卡
+# With KNI virtual NIC
 FF_KNI=1 make
 
-# 带高精度 TCP 定时器
+# With high-precision TCP timers
 FF_TCPHPTS=1 make
 
-# 安装到系统
+# Install to system
 make install PREFIX=/usr/local
 ```
 
-### 5.2 编译应用
+### 5.2 Compiling Applications
 
 ```bash
 gcc -o myapp main.c \
@@ -611,53 +611,53 @@ gcc -o myapp main.c \
     $(pkg-config --cflags --libs libdpdk) \
     -lpthread -lm -O2
 
-# 运行示例
-# 使用 start.sh 指定 config.ini 配置文件启动（推荐方式）
+# Running examples
+# Use start.sh to specify config.ini configuration file for startup (recommended approach)
 bash start.sh -c config.ini -b ./myapp
 
-# start.sh 会根据 config.ini 中的 lcore_mask 自动计算进程数，
-# 依次启动主进程 (--proc-type=primary) 和从进程 (--proc-type=secondary)。
-# 等效于:
+# start.sh automatically calculates the number of processes based on lcore_mask in config.ini,
+# and sequentially starts the primary process (--proc-type=primary) and secondary processes (--proc-type=secondary).
+# Equivalent to:
 #   ./myapp --conf config.ini --proc-type=primary --proc-id=0
 #   ./myapp --conf config.ini --proc-type=secondary --proc-id=1
 #   ...
 ```
 
-## 6. 线程安全性规则
+## 6. Thread Safety Rules
 
-### 6.1 安全操作 (✓)
+### 6.1 Safe Operations (✓)
 
 - Socket API (ff_socket, ff_read, ff_write)
-- 配置查询 (ff_sysctl)
-- 事件等待 (ff_kevent, ff_epoll_wait)
-- **限制**: 必须在同一 lcore 内
+- Configuration queries (ff_sysctl)
+- Event waiting (ff_kevent, ff_epoll_wait)
+- **Restriction**: Must be within the same lcore
 
-### 6.2 非安全操作 (✗)
+### 6.2 Unsafe Operations (✗)
 
-- 跨 lcore 的 socket 操作
-- 运行中修改配置
-- 运行中创建/销毁线程
+- Cross-lcore socket operations
+- Modifying configuration while running
+- Creating/destroying threads while running
 
-### 6.3 原子操作 (✓)
+### 6.3 Atomic Operations (✓)
 
-DPDK 内存池原子操作:
+DPDK memory pool atomic operations:
 ```c
-rte_pktmbuf_alloc(pool);       // 多进程安全
-rte_pktmbuf_free(m);           // 多进程安全
+rte_pktmbuf_alloc(pool);       // Multi-process safe
+rte_pktmbuf_free(m);           // Multi-process safe
 ```
 
-## 7. 常见错误码
+## 7. Common Error Codes
 
-| 错误 | 值 | 说明 |
-|-----|---|----|
-| ENOTSOCK | 38 | 不是 socket |
-| ECONNREFUSED | 61 | 连接被拒绝 |
-| ETIMEDOUT | 60 | 操作超时 |
-| ENOTCONN | 57 | socket 未连接 |
-| EWOULDBLOCK | 35 | 资源暂不可用 |
-| EMFILE | 24 | 打开文件过多 |
-| ENOMEM | 12 | 内存不足 |
+| Error | Value | Description |
+|-------|-------|-------------|
+| ENOTSOCK | 38 | Not a socket |
+| ECONNREFUSED | 61 | Connection refused |
+| ETIMEDOUT | 60 | Operation timed out |
+| ENOTCONN | 57 | Socket not connected |
+| EWOULDBLOCK | 35 | Resource temporarily unavailable |
+| EMFILE | 24 | Too many open files |
+| ENOMEM | 12 | Out of memory |
 
-## 总结
+## Summary
 
-F-Stack 的第三层定义了 80+ 导出函数、11 个核心数据结构、三个关键源文件 (ff_syscall_wrapper, ff_dpdk_if, ff_glue)。这些组件协同工作，实现了完整的用户态 TCP/IP 协议栈。掌握这些基础是高性能网络应用开发的前提。
+F-Stack's Layer 3 defines 80+ exported functions, 11 core data structures, and three key source files (ff_syscall_wrapper, ff_dpdk_if, ff_glue). These components work together to implement a complete user-space TCP/IP protocol stack. Mastering these fundamentals is a prerequisite for high-performance network application development.
