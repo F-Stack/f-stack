@@ -219,7 +219,7 @@ f-stack/
 ├── tools/          # 工具（ifconfig, netstat, arp, route 等用户态移植）
 ├── mk/             # 构建系统（Makefile include 文件）
 ├── doc/            # 原始文档
-├── docs/           # 架构文档和 Specs 文档
+├── docs/           # 架构文档和 LD_PRELOAD Ring IPC Spec 文档
 ├── dpdk/           # DPDK 23.11.5 子模块（已从索引排除）
 └── freebsd/        # FreeBSD 13.1 内核源码（已从索引排除）
 ```
