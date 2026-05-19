@@ -83,6 +83,7 @@ CFLAGS += -fPIC -Wall -Werror $(shell $(PKGCONF) --cflags libdpdk)
 INCLUDES= -I. -I${FF_PATH}/lib
 
 LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread -lnuma
+#LIBS+= -lmnl -lmlx5 -libverbs
 FF_LIBS= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
 
 DPDK_LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
