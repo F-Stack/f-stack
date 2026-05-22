@@ -3381,17 +3381,33 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
                         struct ff_so_context *sc,
                         int64_t timeout_us)
 {
-    void *obj = NULL;
-
     if (ring_zone == NULL || ring_zone->req_ring == NULL ||
         ring_zone->rsp_ring == NULL) {
         return -EINVAL;
     }
 
     /* Enqueue request — spin if ring full */
+#ifdef FF_RING_SC_COMPLETION
+    /* v3.3 H23 fix (D2): clear completion BEFORE enqueue, otherwise fstack
+     * might finish processing and set completion=1 before we clear it,
+     * causing us to spin forever waiting for a flag that's already been reset. */
+    __atomic_store_n(&sc->completion, 0, __ATOMIC_RELAXED);
+#endif
+#ifdef FF_RING_PENDING_BYPASS
+    /* v3.2 H19-final fix: bump pending_count before enqueue so that
+     * fstack main loop sees the request via the fast-path bypass.
+     * Roll back on full-ring spin to avoid count drift. */
+    rte_atomic32_inc(&ff_so_zone->pending_count);
+#endif
     while (rte_ring_sp_enqueue(ring_zone->req_ring, sc) != 0) {
+#ifdef FF_RING_PENDING_BYPASS
+        rte_atomic32_dec(&ff_so_zone->pending_count);
+#endif
         ERR_LOG("req_ring full, waiting... sc:%p, ops:%d\n", sc, sc->ops);
         rte_pause();
+#ifdef FF_RING_PENDING_BYPASS
+        rte_atomic32_inc(&ff_so_zone->pending_count);
+#endif
     }
 
     /* Notify fstack via eventfd if configured */
@@ -3401,7 +3417,42 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
         write(ring_zone->eventfd_req, &val, sizeof(val));
     }
 
+#ifdef FF_RING_SC_COMPLETION
+    /* v3.3 H23 fix (D2): wait via sc->completion (same cache line as sc->result),
+     * mirroring sem mode's `while (sc->status != FF_SC_REP) rte_pause()`. */
+    {
+        uint64_t start_tsc = rte_rdtsc();
+        uint64_t timeout_tsc = (timeout_us < 0) ? UINT64_MAX :
+            (uint64_t)timeout_us * rte_get_tsc_hz() / 1000000ULL;
+        uint32_t spin_count = 0;
+
+        while (__atomic_load_n(&sc->completion, __ATOMIC_ACQUIRE) == 0) {
+            if (timeout_us >= 0 && rte_rdtsc() - start_tsc >= timeout_tsc) {
+                return -ETIMEDOUT;
+            }
+            /* Mirror ff_ring_dequeue_wait's wait_mode dispatch */
+            switch (ring_zone->wait_mode) {
+            case FF_RING_WAIT_BUSY_POLL:
+                rte_pause();
+                break;
+            case FF_RING_WAIT_YIELD_POLL:
+                if ((++spin_count & 0xFF) == 0) {
+                    sched_yield();
+                } else {
+                    rte_pause();
+                }
+                break;
+            default:
+                rte_pause();
+                break;
+            }
+        }
+
+        return 0;
+    }
+#else
     /* Wait for response from rsp_ring */
+    void *obj = NULL;
     int ret = ff_ring_dequeue_wait(ring_zone->rsp_ring, &obj,
         timeout_us, ring_zone->wait_mode);
 
@@ -3413,6 +3464,7 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
     if (obj != sc) {
         ERR_LOG("ring response mismatch: expected sc:%p, got:%p\n", sc, obj);
     }
+#endif
 
     return 0;
 }

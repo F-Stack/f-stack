@@ -104,7 +104,12 @@ struct ff_socket_ops_zone {
 
 #ifdef FF_USE_RING_IPC
     struct ff_sc_ring_zone *ring_zone;
+#ifdef FF_RING_PENDING_BYPASS
+    rte_atomic32_t pending_count;     /* v3.2 H19-final fix: fstack main loop fast-path bypass */
+    uint8_t padding[4];
+#else
     uint8_t padding[8];
+#endif
 #else
     uint8_t padding[16];
 #endif

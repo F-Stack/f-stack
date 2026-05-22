@@ -70,6 +70,35 @@ endif
 	CFLAGS+= -DFF_USE_RING_IPC
 endif
 
+# v3.2 H19-final fix: fstack main loop fast-path bypass via pending_count.
+# Only meaningful when FF_USE_RING_IPC=1.
+# NOTE: 2026-05-22 实测劣化 4%（atomic_read 高频跨核乒乓），默认不启用，保留供后续 D1 探索。
+ifdef FF_RING_PENDING_BYPASS
+	CFLAGS+= -DFF_RING_PENDING_BYPASS
+endif
+
+# v3.3 H23 fix (D2): response path via sc->completion (same cache line as sc->result),
+# replacing rsp_ring enqueue. Only meaningful when FF_USE_RING_IPC=1.
+ifdef FF_RING_SC_COMPLETION
+	CFLAGS+= -DFF_RING_SC_COMPLETION
+endif
+
+# v3.3 H19-final fix (D5): inline rte_ring_empty fast-path check before
+# ff_ring_process_requests, avoiding the dequeue burst function call stack
+# when req_ring is empty. Reuses existing ring metadata, NO new cross-core
+# fields. Independent from FF_RING_PENDING_BYPASS (which was abandoned).
+ifdef FF_RING_FAST_EMPTY_CHECK
+	CFLAGS+= -DFF_RING_FAST_EMPTY_CHECK
+endif
+
+# v3.4 D6: inline dequeue burst + handler call within ff_handle_each_context,
+# eliminating ff_ring_process_requests() call stack and function pointer
+# indirection. Requires FF_RING_FAST_EMPTY_CHECK to be set (D6 lives inside
+# the D5 branch). NO new cross-core fields, only reduces local CPU.
+ifdef FF_RING_INLINE_DISPATCH
+	CFLAGS+= -DFF_RING_INLINE_DISPATCH
+endif
+
 ifdef FF_USE_THREAD_STRUCT_HANDLE
 	CFLAGS+= -DFF_USE_THREAD_STRUCT_HANDLE
 endif
