@@ -382,9 +382,9 @@ static pid_t
 ff_sys_fork(struct ff_fork_args *args)
 {
     void *parent = args->parent_thread_handle;
-    /* 
-     * Linux has performed a real fork, and at this point, 
-     * we simply need to create a new thread and duplicate the file descriptors 
+    /*
+     * Linux has performed a real fork, and at this point,
+     * we simply need to create a new thread and duplicate the file descriptors
      * that the parent process has already opened.
      */
      if (parent) {
@@ -706,7 +706,7 @@ ff_handle_each_context()
 
     while(1) {
         nb_handled = tmp;
-        if (nb_handled) {
+        if (likely(nb_handled)) {
             for (i = 0; i < ff_so_zone->count; i++) {
                 struct ff_so_context *sc = &ff_so_zone->sc[i];
 
@@ -741,7 +741,15 @@ ff_handle_each_context()
             break;
         }
 
-        rte_pause();
+         /*
+          * When there are no requests, add a lock window to prevent applications such as Nginx from being starved
+          * to death when they attempt to initialize and acquire a lock when idle_sleep is set to 0
+          */
+        if (unlikely(!tmp)) {
+            rte_spinlock_unlock(&ff_so_zone->lock);
+            rte_pause();
+            rte_spinlock_lock(&ff_so_zone->lock);
+        }
     }
 
     rte_spinlock_unlock(&ff_so_zone->lock);
